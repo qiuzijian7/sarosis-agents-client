@@ -90,7 +90,7 @@
   .chip.native { background: rgba(245,158,11,.15); color: #fbbf24; border: 1px solid rgba(245,158,11,.3); }
   .n-desc { font-size: 10.5px; color: var(--fg-dim); line-height: 1.6; margin: 4px 0; }
   .n-desc code { color: #9cdcfe; font-family: Consolas, monospace; }
-  /* Sarosis 卡片（React 表单感） */
+  /* Saros 卡片（React 表单感） */
   .react-row { display: flex; gap: 6px; margin: 4px 0; }
   .react-row input { flex: 1; padding: 4px 7px; font-size: 11px; background: var(--panel2);
     color: var(--fg); border: 1px solid var(--border); border-radius: 4px; }
@@ -163,7 +163,7 @@
   <div class="note">
     画布换 <b>LiteGraph</b>（ComfyUI 底层，框架无关）；三种节点的卡片全部用 <b>React</b> 实现，
     不加载 Vue 运行时。<br><br>
-    ① <span class="chip react">React</span> Sarosis 现有节点（组件不变，包一层 widgetBridge）<br>
+    ① <span class="chip react">React</span> Saros 现有节点（组件不变，包一层 widgetBridge）<br>
     ② <span class="chip schema">schema→React</span> ComfyTV 节点（只消费其 kind/inputs/outputs 注册信息，卡片 React 重写）<br>
     ③ <span class="chip native">原生</span> ComfyUI 节点（object_info 动态注册，用 LiteGraph 原生 widget）
   </div>
@@ -176,7 +176,7 @@
   "last_node_id": 6,
   "last_link_id": 7,
   "nodes": [
-    { "id": 1, "type": "Sarosis.Prompt", "pos": [60, 200], "size": [220, 150], "widgets_values": ["黄昏森林小径…"] },
+    { "id": 1, "type": "Saros.Prompt", "pos": [60, 200], "size": [220, 150], "widgets_values": ["黄昏森林小径…"] },
     { "id": 2, "type": "ComfyTV.ImageStage", "pos": [340, 200], "size": [230, 260], "widgets_values": ["nano-banana-pro", 1] },
     { "id": 3, "type": "KSampler", "pos": [640, 160], "size": [220, 220], "widgets_values": [123, 20] }
   ],
@@ -198,16 +198,16 @@ function img(hue, w = 320, h = 180) {
 
 /* ═══════ 节点 / 边（LiteGraph link type） ═══════ */
 const NODES = [
-  { id: 1, type:'Sarosis.Start',  title:'开始',    color:'#22c55e', x:40,  y:210, w:170, kind:'react', desc:'/wf storyboard', height:70 },
-  { id: 2, type:'Sarosis.Prompt', title:'分镜描述', color:'#a855f7', x:250, y:180, w:230, kind:'react',
+  { id: 1, type:'Saros.Start',  title:'开始',    color:'#22c55e', x:40,  y:210, w:170, kind:'react', desc:'/wf storyboard', height:70 },
+  { id: 2, type:'Saros.Prompt', title:'分镜描述', color:'#a855f7', x:250, y:180, w:230, kind:'react',
     desc:'prompt → <code>{{output}}</code>', height:160, prompt:true },
   { id: 3, type:'ComfyTV.ImageStage', title:'文生图', color:'#e879f9', x:530, y:120, w:240, kind:'schema',
     desc:'schema: {kind:image, workflow_kind:image}', schema:true, height:250 },
   { id: 4, type:'KSampler',      title:'KSampler',  color:'#f59e0b', x:830, y:80,  w:230, kind:'native',
     desc:'ComfyUI 原生节点 · object_info 动态注册', native:true, height:230, fail:true },
-  { id: 5, type:'Sarosis.Agent', title:'视觉分析',  color:'#3b82f6', x:1120, y:170, w:230, kind:'react',
+  { id: 5, type:'Saros.Agent', title:'视觉分析',  color:'#3b82f6', x:1120, y:170, w:230, kind:'react',
     desc:'input: <code>{{n3.image}}</code>', height:130 },
-  { id: 6, type:'Sarosis.End',   title:'结束',      color:'#f97316', x:1400, y:190, w:160, kind:'react', desc:'→ 会话', height:70 },
+  { id: 6, type:'Saros.End',   title:'结束',      color:'#f97316', x:1400, y:190, w:160, kind:'react', desc:'→ 会话', height:70 },
 ];
 const LINKS = [
   { id:1, from:1, to:2, type:'json',   label:'SAROSIS_JSON' },

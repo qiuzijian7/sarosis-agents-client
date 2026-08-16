@@ -71,15 +71,15 @@ suite('buildParallelExecutionPlan', () => {
 
 	test('non-executable nodes are skipped and excluded from layers', () => {
 		const nodes = [
-			{ id: 's', type: 'Sarosis.Start' },
-			{ id: 'img', type: 'Sarosis.ModelImageGen' },
-			{ id: 'e', type: 'Sarosis.End' },
+			{ id: 's', type: 'Saros.Start' },
+			{ id: 'img', type: 'Saros.ModelImageGen' },
+			{ id: 'e', type: 'Saros.End' },
 		];
 		const edges = [
 			{ source: 's', target: 'img' },
 			{ source: 'img', target: 'e' },
 		];
-		const plan = buildParallelExecutionPlan(nodes, edges, t => t === 'Sarosis.ModelImageGen');
+		const plan = buildParallelExecutionPlan(nodes, edges, t => t === 'Saros.ModelImageGen');
 		assert.deepStrictEqual(plan.layers.map(l => l.map(s => s.id)), [['img']]);
 		// Skipped preserves topological order (Start before End).
 		assert.deepStrictEqual(plan.skipped, ['s', 'e']);

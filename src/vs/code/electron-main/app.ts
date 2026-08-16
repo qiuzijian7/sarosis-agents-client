@@ -148,6 +148,7 @@ import { CODEBASE_GRAPH_STORE_CHANNEL } from '../../sessions/contrib/agentStudio
 import { KbSqliteStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/kbSqliteStoreChannel.js';
 import { KB_SQLITE_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/kbSqliteStoreChannel.js';
 import { GitVersionChannel } from '../../sessions/contrib/agentStudio/electron-main/gitVersionChannel.js';
+import { ComfyLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/comfyLaunchChannel.js';
 import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
 import { MediaStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/mediaStoreChannel.js';
 import { MEDIA_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/mediaStoreChannel.js';
@@ -678,25 +679,49 @@ export class CodeApplication extends Disposable {
 	// anysearch API endpoints — DDG returns 403 for origin vscode-file://vscode-app).
 	// Uses Chromium's net.fetch (Electron main process, no CORS constraints).
 	// Backs the agentStudio web_search / web_extract tools in the renderer process.
-	validatedIpcMain.handle('vscode:webFetch', async (_event, payload: { url: string; headers?: Record<string, string> }) => {
+	validatedIpcMain.handle('vscode:webFetch', async (_event, payload: { url: string; method?: string; headers?: Record<string, string>; body?: string; binary?: boolean }) => {
 		const url = (payload?.url ?? '').trim();
 		if (!url) { throw new Error('url is required'); }
 
 		// net.fetch 使用 Chromium 网络栈：自动处理重定向、HTTPS、压缩，
 		// 且无 CORS 限制。比 Node.js http/https 模块更可靠。
+		// method/body 支持：ComfyUI 代理（comfy.fetch）需要 POST /prompt。
 		const response = await net.fetch(url, {
-			method: 'GET',
+			method: payload?.method ?? 'GET',
 			headers: payload?.headers ?? { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' },
+			...(payload?.body !== undefined ? { body: payload.body } : {}),
 		});
+
+		// ★ binary 模式：ComfyUI 的 `/view?filename=…` 返回 PNG/JPEG 二进制。
+		//   走 `response.text()` 会用 UTF-8 解码字节流 → 非法序列被替换成 U+FFFD
+		//   → 图像**不可逆损坏**。instant stage（Rotate/Mirror/Crop）需要真实
+		//   像素做 canvas 变换，因此必须以 base64 原样回传。
+		//   非 binary 调用路径（web_search / prompt / history JSON）保持原样。
+		if (payload?.binary) {
+			const buf = Buffer.from(await response.arrayBuffer());
+			return {
+				ok: response.ok,
+				status: response.status,
+				statusText: response.statusText,
+				// 4MB cap 与文本路径一致（ComfyUI 单张预览图远小于此）。
+				base64: buf.subarray(0, 4 * 1024 * 1024).toString('base64'),
+				contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+			};
+		}
 
 		const body = await response.text();
 		return {
 			ok: response.ok,
 			status: response.status,
 			statusText: response.statusText,
-			body: body.slice(0, 512 * 1024), // 512KB cap — DDG HTML/lite pages are ~30-80KB
+			body: body.slice(0, 4 * 1024 * 1024), // 4MB cap — ComfyUI prompt/history/images fit
 		};
 	});
+
+	// ComfyUI 一键启动 / 路径查询 / 路径写入：逻辑已抽离到独立 channel
+	// （sessions/contrib/agentStudio/electron-main/comfyLaunchChannel.ts），
+	// 此处仅负责注册其生命周期。
+	this._register(new ComfyLaunchChannel(this.logService, this.configurationService));
 
 	//#endregion
 }

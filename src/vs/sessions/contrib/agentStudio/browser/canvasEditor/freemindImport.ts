@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — FreeMind Import（Browser 层）
+ *  Saros Agents — FreeMind Import（Browser 层）
  *
  *  使用 DOMParser 解析 FreeMind/Coggle .mm XML 文件，
  *  调用 common/mindmap/freemindLayout 转换为 Canvas JSON 数据。

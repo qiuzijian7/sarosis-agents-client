@@ -237,7 +237,7 @@ export class CompositeBarActionViewItem extends BaseActionViewItem {
 			this.container.classList.add('icon');
 		}
 
-		// [Sarosis] Expose composite ID as data attribute for CSS targeting
+		// [Saros] Expose composite ID as data attribute for CSS targeting
 		if (this.compositeBarActionItem.id) {
 			this.container.setAttribute('data-composite-id', this.compositeBarActionItem.id);
 		}

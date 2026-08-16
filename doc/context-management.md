@@ -256,7 +256,7 @@ The context manager builds different prompt sections:
 
 ## Comparison with Paperclip
 
-| Feature | Paperclip | Sarosis-Agents-Client |
+| Feature | Paperclip | Saros-Agents-Client |
 |---------|---------|----------------------|
 | Context Hierarchy | Company → Project → Task → Agent | Workspace → Project → Task → Agent → Session |
 | Context Snapshot | ✅ `contextSnapshot` field | ✅ `IContextSnapshot` interface |

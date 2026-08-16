@@ -396,7 +396,7 @@ function connectToRenderer(protocol: IMessagePassingProtocol): Promise<IRenderer
 
 async function startExtensionHostProcess(): Promise<void> {
 
-	// ── Sarosis diagnostic: report the ACTUAL V8 heap limit this process got.
+	// ── Saros diagnostic: report the ACTUAL V8 heap limit this process got.
 	// Goes to stdout → relayed to the renderer window log via
 	// localProcessExtensionHost.ts (console.log 'Extension Host'). If the
 	// --max-old-space-size=8192 flag took effect, heap_size_limit will be

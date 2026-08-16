@@ -4090,7 +4090,9 @@ h3.integration-section-title {
 }
 
 .provider-card-expanded .provider-card-body {
-	max-height: 500px;
+	/* 不限制高度：模型列表（每项 15+ 字段）远超 500px，限高 + overflow:hidden 会裁剪内容；
+	   滚动交给外层容器（.provider-list / .as-settings-content-scroll）。 */
+	max-height: none;
 	padding: 0 12px 10px 40px;
 	opacity: 1;
 }
@@ -4114,6 +4116,128 @@ h3.integration-section-title {
 	margin: 10px 0 2px;
 	padding-top: 8px;
 	border-top: 1px dashed var(--vscode-panel-border);
+}
+
+/* 高级配置区块（providerCardRenderer.ts renderProviderCardBody） */
+.provider-advanced-section {
+	margin-top: 10px;
+	padding-top: 8px;
+	border-top: 1px dashed var(--vscode-panel-border);
+}
+
+.provider-advanced-title {
+	font-size: 10px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 6px;
+}
+
+/* ─── 模型列表区块（providerCardRenderer.ts renderModelListSection / renderModelItem） ─── */
+.provider-models-section {
+	margin-top: 10px;
+	padding-top: 8px;
+	border-top: 1px dashed var(--vscode-panel-border);
+}
+
+.provider-models-section-title {
+	font-size: 10px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 6px;
+}
+
+.provider-models-section > .provider-card-btn {
+	margin-top: 6px;
+}
+
+.provider-model-item {
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 4px;
+	margin-bottom: 6px;
+	background: var(--vscode-editor-background);
+}
+
+.provider-model-item-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 8px;
+	cursor: pointer;
+	user-select: none;
+	border-radius: 4px;
+}
+
+.provider-model-item-head:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.provider-model-item-chevron {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	flex-shrink: 0;
+	width: 12px;
+	text-align: center;
+	transition: transform 0.15s ease;
+}
+
+.provider-model-item.expanded .provider-model-item-chevron {
+	transform: rotate(90deg);
+}
+
+.provider-model-item-title {
+	flex: 1;
+	min-width: 0;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-editor-foreground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.provider-model-item-badge {
+	font-size: 9px;
+	padding: 0px 5px;
+	border-radius: 6px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	line-height: 15px;
+	flex-shrink: 0;
+}
+
+/* item body 默认折叠，点击 head（.expanded）展开 */
+.provider-model-item-body {
+	display: none;
+	padding: 6px 8px 8px;
+	border-top: 1px solid var(--vscode-panel-border);
+}
+
+.provider-model-item.expanded .provider-model-item-body {
+	display: block;
+}
+
+.provider-model-toggles {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 14px;
+}
+
+.provider-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 11px;
+	color: var(--vscode-editor-foreground);
+	cursor: pointer;
+}
+
+.provider-toggle input {
+	margin: 0;
+	cursor: pointer;
 }
 
 .provider-field-label {

@@ -5,6 +5,7 @@
 	"version": "0.0.2",
 	"publisher": "saros",
 	"license": "MIT",
+	"type": "module",
 	"main": "./out/extension.js",
 	"engines": {
 		"vscode": "^1.100.0"

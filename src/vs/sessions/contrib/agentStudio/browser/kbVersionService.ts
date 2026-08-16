@@ -25,9 +25,9 @@ export const IKbVersionService = createDecorator<KbVersionService>('kbVersionSer
 
 // ─── 常量 ───────────────────────────────────────────────────────────────────
 
-const AUTHOR: core.GitAuthor = { name: 'Sarosis', email: 'vssaros@local' };
+const AUTHOR: core.GitAuthor = { name: 'Saros', email: 'vssaros@local' };
 const GITIGNORE: readonly string[] = [
-	'# Sarosis KB AutoGit defaults',
+	'# Saros KB AutoGit defaults',
 	'.DS_Store',
 	'Thumbs.db',
 	'desktop.ini',
@@ -113,7 +113,7 @@ export class KbVersionService {
 		const dir = toFsPath(vaultRoot);
 		await core.gitInitRepo(dir, {
 			gitignore: GITIGNORE,
-			initMessage: 'init: Sarosis KB vault',
+			initMessage: 'init: Saros KB vault',
 			author: AUTHOR,
 			addPath: '.',
 			commitWhen: 'always',

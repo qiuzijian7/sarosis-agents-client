@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Node UI Visual Harness</title>
+<style>
+	/* ── VS Code 暗色主题变量：nodeCard 仅依赖这 8 个，与 workbench 默认暗色一致 ── */
+	:root {
+		--vscode-foreground: #cccccc;
+		--vscode-descriptionForeground: #9d9d9d;
+		--vscode-editor-background: #1f1f1f;
+		--vscode-panel-border: #2b2b2b;
+		--vscode-input-background: #313131;
+		--vscode-input-border: #3c3c3c;
+		--vscode-button-secondaryBackground: #313131;
+		--vscode-focusBorder: #0078d4;
+	}
+
+	* { box-sizing: border-box; }
+
+	body {
+		margin: 0;
+		background: #141414;
+		color: var(--vscode-foreground);
+		font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+		font-size: 12px;
+	}
+
+	#toolbar {
+		position: sticky;
+		top: 0;
+		z-index: 10;
+		display: flex;
+		gap: 10px;
+		align-items: center;
+		flex-wrap: wrap;
+		padding: 8px 12px;
+		background: #1b1b1b;
+		border-bottom: 1px solid var(--vscode-panel-border);
+	}
+	#toolbar select,
+	#toolbar input { background: var(--vscode-input-background); color: var(--vscode-foreground); border: 1px solid var(--vscode-input-border); border-radius: 3px; padding: 2px 4px; }
+	#toolbar .vt-count { opacity: .6; }
+	#toolbar .vt-hint { margin-left: auto; opacity: .5; }
+	#toolbar code { background: #262626; padding: 1px 4px; border-radius: 3px; }
+
+	/* ── 画廊：卡片网格 ── */
+	.vt-gallery {
+		display: grid;
+		/* 300px = 节点卡片实际宽度上限（LiteGraph 默认 ~280px）+ 边距 */
+		grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+		gap: 16px;
+		padding: 16px;
+		align-items: start;
+	}
+
+	/* ── 聚焦：单卡片居中，尺寸与画布上一致，供像素基线 ── */
+	.vt-focus { padding: 24px; display: flex; flex-direction: column; gap: 16px; align-items: flex-start; }
+
+	.vt-cell {
+		border: 1px solid var(--vscode-panel-border);
+		border-radius: 6px;
+		background: #181818;
+		overflow: hidden;
+	}
+	.vt-cell[data-vt-mounted="error"] { border-color: #f14c4c; }
+
+	.vt-label {
+		padding: 4px 8px;
+		font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+		font-size: 10px;
+		color: var(--vscode-descriptionForeground);
+		background: #202020;
+		border-bottom: 1px solid var(--vscode-panel-border);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	/* ★ 关键：卡片宿主宽度必须与画布上真实节点宽度一致（280px），
+	   否则"宽度写死"类 bug（如 TransformEditor VIEW_W=360）测不出来。 */
+	.vt-card-host {
+		width: 280px;
+		padding: 8px;
+		background: var(--vscode-editor-background);
+	}
+
+	.vt-mount-error {
+		margin: 0;
+		padding: 8px;
+		color: #f14c4c;
+		background: #2a1414;
+		font-size: 10px;
+		white-space: pre-wrap;
+		word-break: break-all;
+	}
+
+	/* ★★ 截图基线稳定性：冻结一切时变视觉。
+	   不冻结的话 running 态进度条动画 / spinner / transition 会让每次截图都不同
+	   （实测像素差 98%），基线彻底失效。
+	   `!important` 是必须的 —— nodeCard 用 inline style 写 transition。 */
+	body[data-vt-freeze="1"] *,
+	body[data-vt-freeze="1"] *::before,
+	body[data-vt-freeze="1"] *::after {
+		animation-play-state: paused !important;
+		animation-delay: 0s !important;
+		animation-duration: 0s !important;
+		animation-iteration-count: 1 !important;
+		transition-property: none !important;
+		transition-duration: 0s !important;
+		transition-delay: 0s !important;
+		caret-color: transparent !important;
+	}
+	/* 光标闪烁也会污染截图 */
+	body[data-vt-freeze="1"] textarea,
+	body[data-vt-freeze="1"] input { caret-color: transparent !important; }
+</style>
+</head>
+<body>
+	<div id="toolbar"></div>
+	<div id="root"></div>
+	<script src="./harness.js"></script>
+</body>
+</html>

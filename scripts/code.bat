@@ -43,7 +43,7 @@ for %%A in (%*) do (
 )
 
 :: Launch Code
-:: [Sarosis] Pass the repo root as an absolute path (`%CD%`) instead of `.` so
+:: [Saros] Pass the repo root as an absolute path (`%CD%`) instead of `.` so
 :: `app.getAppPath()` is absolute — the taskbar jump-list "New Window" task needs
 :: an absolute app path to reload this app from an arbitrary cwd.
 %CODE% "%CD%" %DISABLE_TEST_EXTENSION% %*

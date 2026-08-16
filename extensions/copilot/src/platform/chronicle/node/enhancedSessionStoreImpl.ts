@@ -102,8 +102,10 @@ export class EnhancedSessionStore extends SessionStore implements IEnhancedSessi
 
 	// ── Private Helpers ──────────────────────────────────────────────────
 
-	protected override ensureDb(): DatabaseSync {
-		const db = super.ensureDb();
+	private override ensureDb(): DatabaseSync {
+		// Access parent's private ensureDb() via prototype to avoid infinite recursion
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const db = (SessionStore.prototype as any).ensureDb.call(this) as DatabaseSync;
 		// Run v4 migration (memories + compression_log) on first access
 		this.ensureEnhancedSchema(db);
 		return db;

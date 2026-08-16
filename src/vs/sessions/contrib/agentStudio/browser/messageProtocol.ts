@@ -160,7 +160,14 @@ export type RequestType =
 	| 'workflow.open'            // v19: open a workflow in the editor (WebView → Host)
 	| 'workflow.submitVariables' // v6: submit pre-execution variable values (WebView → Host)
 	| 'workflow.canvasOpsResult' // Agent-driven canvas: webview replies with the result of applying canvas ops (P0)
-	| 'reversePrompt.generate';  // P2: describe an image via provider chat (WebView → Host)
+	| 'reversePrompt.generate'   // P2: describe an image via provider chat (WebView → Host)
+	| 'comfy.fetch'              // ComfyUI 跨源 403：主进程代理（node fetch 无 Origin 头）
+	| 'comfy.launch'             // ComfyUI 一键启动（--enable-cors-header，方案A 直连前置）
+	| 'comfy.getLaunchPaths'     // 查询主进程解析的启动路径（含来源：env/auto/override）
+	| 'comfy.setLaunchPaths'     // 写入 sarosis.comfyui.pythonPath/mainPath（持久化）
+	| 'comfy.checkDeps'          // 依赖检测：ComfyUI 安装/运行状态 + 本地模型文件列表
+	| 'comfy.downloadModel'      // 模型下载（流式，返回 taskId 供进度轮询）
+	| 'comfy.getDownloadProgress'; // 查询模型下载进度（前端 1s 轮询）
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =

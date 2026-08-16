@@ -1983,7 +1983,7 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			return;
 		}
 		if (!this.marketplaceService.isLoggedIn()) {
-			this.notificationService.info('Please log in to the marketplace first (Settings > Sarosis > Marketplace).');
+			this.notificationService.info('Please log in to the marketplace first (Settings > Saros > Marketplace).');
 			return;
 		}
 		// 检查所有权：如果包已在商城存在，验证当前用户是否为所有者

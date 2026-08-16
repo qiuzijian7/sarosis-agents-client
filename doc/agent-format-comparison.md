@@ -1,6 +1,6 @@
 # Agent 设计与存储格式对比分析
 
-> 对比对象：VS Code Custom Agent、Hermes-Agent、OpenClaw、OpenHuman、本项目（Sarosis Agents Client）
+> 对比对象：VS Code Custom Agent、Hermes-Agent、OpenClaw、OpenHuman、本项目（Saros Agents Client）
 >
 > 生成日期：2026-05-26
 
@@ -14,7 +14,7 @@
 | **Hermes-Agent** | Python 3.12+ | 单体 CLI + Gateway | 1 (AIAgent 类) | Nous Research 的工具调用循环框架 |
 | **OpenClaw** | TypeScript / ESM (Node 22+) | Gateway 中心化 | 多 (AgentConfig 数组) | 开源个人 AI 助手框架 |
 | **OpenHuman** | Rust + Tauri (桌面) | 多层域架构 | 18 内置 + 自定义 | Rust 实现的个人 AI 助手 |
-| **本项目 (Sarosis)** | TypeScript (VS Code fork) | IDE 扩展 + 画布 | 预设模板 + 运行时实例 | VS Code 深度集成的多 Agent 工作台 |
+| **本项目 (Saros)** | TypeScript (VS Code fork) | IDE 扩展 + 画布 | 预设模板 + 运行时实例 | VS Code 深度集成的多 Agent 工作台 |
 
 ---
 
@@ -148,7 +148,7 @@
 | **Hermes** | Python 类 + 文件系统 | `~/.hermes/config.yaml` | `~/.hermes/` |
 | **OpenClaw** | YAML 配置文件 | `.agents/*.yml`, `agents.yml` | `~/.openclaw/agents/` |
 | **OpenHuman** | TOML 定义 + Markdown 提示词 | `agents/{id}/agent.toml` + `agents/{id}/SOUL.md` | `~/.openhuman/` |
-| **本项目** | JSON (employees.json) + Markdown (五文件体系) | `.sarosworkspace/employees.json` | `.sarosworkspace/agents/{slug}/` |
+| **本项目** | JSON (employees.json) + Markdown (五文件体系) | `.sarosisworkspace/employees.json` | `.sarosisworkspace/agents/{slug}/` |
 
 ### 3.2 详细存储结构
 
@@ -274,7 +274,7 @@ agents/researcher/
 #### 本项目: JSON + 五文件 Markdown 体系
 
 ```
-.sarosworkspace/
+.sarosisworkspace/
 ├── employees.json                    # 所有 Agent 实例的元数据
 └── agents/
     └── coder/

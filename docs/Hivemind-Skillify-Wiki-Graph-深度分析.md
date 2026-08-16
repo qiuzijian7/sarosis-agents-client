@@ -587,11 +587,11 @@ git commit → .git/hooks/post-commit
 
 ---
 
-## 五、对 Sarosis 的启示
+## 五、对 Saros 的启示
 
 ### 5.1 可立即借鉴的设计
 
-| Hivemind 设计 | Sarosis 适配建议 |
+| Hivemind 设计 | Saros 适配建议 |
 |-------------|----------------|
 | **Stop Counter 触发** | Workflow 节点执行后递增 `executeCounter`，达到阈值触发 Skillify |
 | **Gate 三态判定** | 实现 `ISkillGate`，用低成本模型（Knot/DeepSeek）做 KEEP/MERGE/SKIP |
@@ -601,7 +601,7 @@ git commit → .git/hooks/post-commit
 
 ### 5.2 架构差异需调整
 
-| Hivemind | Sarosis 差异 | 调整方向 |
+| Hivemind | Saros 差异 | 调整方向 |
 |----------|------------|---------|
 | 分离 Worker 进程（detached） | VS Code 进程内服务 | 用 `fork()` 或 VS Code `ExtensionHost` 隔离 |
 | Deeplake SQL 后端 | TDBAM + JSON 文件 | 扩展 `IMemoryProvider` 支持向量搜索 |
@@ -611,4 +611,4 @@ git commit → .git/hooks/post-commit
 
 ---
 
-> 报告结束。三大子系统总计覆盖 **100+ 源文件**，形成了 Hivemind "记忆-技能-图谱" 三位一体的 Agent 增强体系。Sarosis 可在保持其"深度工作台"优势的同时，吸收这些横向能力，实现 Agent 智能化水平的飞跃。
+> 报告结束。三大子系统总计覆盖 **100+ 源文件**，形成了 Hivemind "记忆-技能-图谱" 三位一体的 Agent 增强体系。Saros 可在保持其"深度工作台"优势的同时，吸收这些横向能力，实现 Agent 智能化水平的飞跃。

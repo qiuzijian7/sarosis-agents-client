@@ -150,13 +150,13 @@ suite('Agent Studio - Agent Version Management', () => {
 				sha: 'abc1234567890defabc1234567890defabc12345',
 				shortSha: 'abc1234',
 				message: 'auto: 2026-07-18 21:00:00',
-				author: 'Sarosis Agent',
+				author: 'Saros Agent',
 				time: '2026-07-18T21:00:00.000Z',
 			};
 			assert.strictEqual(meta.sha.length, 41);
 			assert.strictEqual(meta.shortSha.length, 7);
 			assert.ok(meta.message.includes('auto:'));
-			assert.strictEqual(meta.author, 'Sarosis Agent');
+			assert.strictEqual(meta.author, 'Saros Agent');
 			assert.ok(meta.time.endsWith('Z'));
 		});
 

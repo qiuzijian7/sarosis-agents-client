@@ -1,6 +1,7 @@
 import { $, append } from '../../../base/browser/dom.js';
 import { OrchestrationPlan, PlanTask } from './agentChatTypes.js';
 import { AgentChatPanelAttachments } from './agentChatPanel.attachments.js';
+import { buildWorkflowTrigger, extractTextAfterWorkflowMark, parseInlineWorkflowArgs } from './agentChatPanel.workflowChip.js';
 
 // Feature: send. Extracted from AgentChatPanelBase.
 export class AgentChatPanelSend extends AgentChatPanelAttachments {
@@ -36,8 +37,23 @@ protected override _handleSendMessage(): void {
 	const skillChipIds = this._getSkillChipIds();
 	const explicitSkillIds = skillChipIds.length > 0 ? skillChipIds : undefined;
 
-		// Snapshot attachments before clearing
-		const attachments = this._attachments.length > 0 ? this._attachments.slice() : undefined;
+	// Get workflow trigger from inline workflow chip（DOM 为唯一真源）
+	// - chip 之后的文本：先剥离 `--k=v` 参数，剩余作为 input（兼容手打参数）
+	// - 变量：优先取 chip data-params（表单填写），否则取文本解析结果（手打 `--k=v`）
+	let workflowTrigger: ReturnType<typeof buildWorkflowTrigger> = undefined;
+	const workflowId = this._getWorkflowChipId();
+	if (workflowId) {
+		const after = extractTextAfterWorkflowMark(text, workflowId);
+		const parsed = parseInlineWorkflowArgs(after);
+		const params = this._getWorkflowChipParams(workflowId);
+		const variables = (params && Object.keys(params).length > 0)
+			? params
+			: (Object.keys(parsed.variables).length > 0 ? parsed.variables : undefined);
+		workflowTrigger = buildWorkflowTrigger(workflowId, parsed.input, variables);
+	}
+
+	// Snapshot attachments before clearing
+	const attachments = this._attachments.length > 0 ? this._attachments.slice() : undefined;
 
 		// Clear composer content and skill chips
 		this._setComposerText('');
@@ -51,8 +67,8 @@ protected override _handleSendMessage(): void {
 	// Clear attachments (inline chips already cleared by _setComposerText)
 	this._attachments = [];
 
-		// Send message with skill IDs + attachments
-		this._onSendMessage(text || '', explicitSkillIds, attachments);
+		// Send message with skill IDs + workflow trigger + attachments
+		this._onSendMessage(text || '', explicitSkillIds, attachments, workflowTrigger);
 	}
 
 public override closeOrchestrationPlanDialog(): void {

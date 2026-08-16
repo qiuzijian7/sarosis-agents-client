@@ -13,7 +13,6 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensions as ViewExtensions, WindowEnablement } from '../../../../workbench/common/views.js';
-import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
 import { IContextKeyService, ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
@@ -24,7 +23,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { Action2, registerAction2, MenuId } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
+import { ActiveEditorContext, IsAuxiliaryWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { KeyMod, KeyCode } from '../../../../base/common/keyCodes.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
@@ -229,18 +228,11 @@ import { IWikiTagService } from './services/wikiTagService.js';
 import { WikiTagServiceImpl } from './services/wikiTagServiceImpl.js';
 import { ITofAuthService } from '../common/tofAuth.js';
 import { TofAuthService } from './tofAuthService.js';
-import { WorktreeViewPane } from '../../worktree/browser/worktreeView.js';
-import { WorktreeCommands } from '../../worktree/common/worktreeTypes.js';
-import { IWorktreeService } from '../../worktree/common/worktreeService.js';
-import { SESSIONS_SCM_WORKTREE_VIEW_ID } from '../../sourceControl/browser/sourceControl.contribution.js';
-import { WorktreeItem } from '../../worktree/browser/worktreeDataProvider.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { WorkspaceFolderCountContext } from '../../../../workbench/common/contextkeys.js';
 import { IsPhoneLayoutContext } from '../../../common/contextkeys.js';
-import { ICommandService, CommandsRegistry } from '../../../../platform/commands/common/commands.js';
-import { IHostService } from '../../../../workbench/services/host/browser/host.js';
-import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
+import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 import { TaskOverviewEditorPane } from './taskOverviewEditorPane.js';
 import { TaskOverviewEditorInput } from './taskOverviewEditorInput.js';
 import { TaskDetailEditorPane } from './taskDetailEditorPane.js';
@@ -397,7 +389,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_BOT_NAME_SETTING]: {
 			type: 'string',
-			default: 'Sarosis',
+			default: 'Saros',
 			description: localize('agentStudio.preferences.botName', "Display name for the AI assistant."),
 		},
 		[AGENT_STUDIO_SHOW_TOKEN_USAGE_SETTING]: {
@@ -424,7 +416,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[MARKETPLACE_URL_SETTING]: {
 			type: 'string',
 			default: 'http://21.6.92.5:3040',
-			description: localize('agentStudio.marketplace.url', "Sarosis 商城服务端地址，用于浏览、上传下载 agent/skill/mcp/知识库。"),
+			description: localize('agentStudio.marketplace.url', "Saros 商城服务端地址，用于浏览、上传下载 agent/skill/mcp/知识库。"),
 		},
 		[MARKETPLACE_AUTO_CHECK_SETTING]: {
 			type: 'boolean',
@@ -640,6 +632,23 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 });
 
 // --- Canvas Editor Settings -------------------------------------------------------
+// ComfyUI 一键启动可配置覆盖（覆盖 comfyLauncher 自动解析的结果；留空则回退自动探测）。
+// 排查/特殊安装用：环境变量 SAROS_COMFYUI_PYTHON / SAROS_COMFYUI_MAIN 优先级高于设置。
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'sarosis.comfyui',
+	title: localize('sarosis.comfyui', "ComfyUI 启动"),
+	properties: {
+		'sarosis.comfyui.pythonPath': {
+			type: 'string', default: '',
+			description: localize('sarosis.comfyui.pythonPath', "ComfyUI 启动用的 python.exe 绝对路径（留空则按 Comfy Desktop 配置自动解析：<basePath>\\.venv\\Scripts\\python.exe）。"),
+		},
+		'sarosis.comfyui.mainPath': {
+			type: 'string', default: '',
+			description: localize('sarosis.comfyui.mainPath', "ComfyUI 的 main.py 绝对路径（留空则自动解析：<desktopRoot>\\resources\\ComfyUI\\main.py）。"),
+		},
+	},
+});
+
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'sarosis.canvas',
 	title: localize('sarosis.canvas', "思维导图编辑器"),
@@ -1110,7 +1119,7 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
-// Register MarketplaceEditorPane so that the Sarosis Marketplace page opens
+// Register MarketplaceEditorPane so that the Saros Marketplace page opens
 // in the editor area. Triggered by clicking "🛒 Market" in the Integration
 // sidebar view's global action bar.
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
@@ -1655,7 +1664,8 @@ registerAction2(class extends Action2 {
 			icon: Codicon.linkExternal,
 			menu: [{
 				id: MenuId.EditorTitle,
-				when: chatEditorActive,
+				// 独立聊天窗口（aux window）隐藏 popout 按钮——已在外弹，无需再弹。
+				when: ContextKeyExpr.and(chatEditorActive, IsAuxiliaryWindowContext.toNegated()),
 				group: 'navigation',
 				order: -1,
 			}],
@@ -1862,7 +1872,9 @@ registerAction2(class extends Action2 {
 			icon: Codicon.add,
 			menu: [{
 				id: MenuId.EditorTitle,
-				when: chatEditorActive,
+				// 独立聊天窗口（aux window）隐藏 group 内「+ 新建聊天」按钮——改由
+				// 该窗口标题栏（最小化按钮左侧）的「新建聊天 Group」按钮负责新建 group。
+				when: ContextKeyExpr.and(chatEditorActive, IsAuxiliaryWindowContext.toNegated()),
 				group: 'navigation',
 				order: -2,
 			}],
@@ -1932,6 +1944,80 @@ registerAction2(class extends Action2 {
 		// 极端兜底：agentPart 也不可用时回退到 editorService。
 		editorService.openEditor(input, { pinned: true }).catch((err: any) => {
 			logService.error('[newChatInEditor] failed to open editor:', err);
+		});
+	}
+});
+
+// ── 独立聊天窗口标题栏「新建聊天 Group」按钮 ──────────────────────────
+// 在 aux 窗口（popout 独立聊天窗口）标题栏、最小化按钮左侧渲染一个「新建 Group」按钮。
+// 点击后：在【当前活动 part】（aux part 优先，其次 agentPart）里新建一个 group，
+// 并在该 group 中打开一个新的聊天编辑器。区别于 agentStudio.newChatInEditor
+// （group 内 + 按钮，在 aux 窗口已隐藏）——本命令是「新建 group + 打开聊天」。
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.newChatGroup',
+			title: localize2('agentStudio.newChatGroup', '新建聊天 Group'),
+			f1: false,
+			icon: Codicon.add,
+		});
+	}
+
+	run(accessor: ServicesAccessor): void {
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const editorService = accessor.get(IEditorService);
+		const logService = accessor.get(ILogService);
+		const input = NativeChatEditorInput.create();
+
+		// [diag] 定位 popout aux 窗口「新建聊天 Group」按钮点击无反应 —— 用 console.info
+		// 直接打到 DevTools console（logService 通常只接受字符串）。
+		// eslint-disable-next-line no-console
+		console.info('[diag][newChatGroup] run() entered');
+
+		// 目标 part：活动编辑器所在 part（aux 窗口聚焦时即 aux part），
+		// 其次 agentPart（主窗口 agent 专区），最后 mainPart 兜底。
+		const agentPart = getAgentPart(editorGroupsService);
+		const activePane = editorService.activeEditorPane;
+		const activeGroup = activePane?.group;
+		const activePart = activeGroup ? editorGroupsService.getPart(activeGroup) : undefined;
+		const targetPart = activePart ?? agentPart ?? editorGroupsService.mainPart;
+
+		// eslint-disable-next-line no-console
+		console.info('[diag][newChatGroup] resolved', {
+			hasActivePane: !!activePane,
+			activePaneInputType: activePane?.input?.constructor?.name,
+			activeGroupId: activeGroup?.id,
+			activePartClass: activePart?.constructor?.name,
+			hasAgentPart: !!agentPart,
+			targetPartClass: targetPart?.constructor?.name,
+			targetPartGroupCount: targetPart?.groups?.length,
+		});
+
+		const baseGroup = activeGroup ?? targetPart.activeGroup;
+		if (!baseGroup) {
+			// eslint-disable-next-line no-console
+			console.warn('[diag][newChatGroup] no baseGroup, fallback to editorService.openEditor');
+			editorService.openEditor(input, { pinned: true }).catch((err: any) => {
+				logService.error('[newChatGroup] failed to open editor:', err);
+			});
+			return;
+		}
+
+		// 在目标 part 内新建 group（向右分栏），并在其中打开新聊天。
+		// 若已存在空 group 则复用，避免拆出「空 group + 聊天 group」两个分栏。
+		const emptyGroup = targetPart.groups.find(g => g.editors.length === 0);
+		// eslint-disable-next-line no-console
+		console.info('[diag][newChatGroup] emptyGroup?', { hasEmpty: !!emptyGroup, emptyGroupId: emptyGroup?.id });
+		const newGroup = emptyGroup ?? targetPart.addGroup(baseGroup, 3 /* GroupDirection.RIGHT */);
+		// eslint-disable-next-line no-console
+		console.info('[diag][newChatGroup] newGroup resolved', { newGroupId: newGroup?.id, isReused: !!emptyGroup });
+		newGroup.openEditor(input, { pinned: true }).then(() => {
+			// eslint-disable-next-line no-console
+			console.info('[diag][newChatGroup] openEditor resolved');
+		}).catch((err: any) => {
+			// eslint-disable-next-line no-console
+			console.error('[diag][newChatGroup] openEditor failed:', err);
+			logService.error('[newChatGroup] failed to open editor:', err);
 		});
 	}
 });
@@ -2074,10 +2160,10 @@ class AgentStudioProviderContribution extends Disposable implements IWorkbenchCo
 			const provider = this._register(this.instantiationService.createInstance(AgentStudioProvider));
 			this._register(this.sessionsProvidersService.registerProvider(provider));
 
-			// [Sarosis] Activate Agent Studio views immediately so UI is visible
+			// [Saros] Activate Agent Studio views immediately so UI is visible
 			AgentStudioActiveContext.bindTo(this.contextKeyService).set(true);
 
-			// [Sarosis] Two-column layout: Sidebar (activity bar + content) | Editor (Agent Studio EditorPanes)
+			// [Saros] Two-column layout: Sidebar (activity bar + content) | Editor (Agent Studio EditorPanes)
 			// Agent Chat, Task Board, and Canvas open as EditorPanes in the editor area.
 		}
 	}
@@ -2870,7 +2956,7 @@ class RegisterAgentStudioViewsContribution implements IWorkbenchContribution {
 		}
 
 		// --- Layout Reference: Two-Column Layout ---------------------------------
-		// [Sarosis] Two-column layout:
+		// [Saros] Two-column layout:
 		//   Left: Sidebar (activity bar icons + content panel)
 		//   Right: Editor Area (Agent Studio EditorPanes: Chat, TaskBoard, Canvas)
 		//   AuxiliaryBar: Hidden by default (available for supplementary views)
@@ -2941,7 +3027,7 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			}], container);
 		}
 
-		// 2. Search (order: 20) - [Sarosis] Reuse native VSCode SearchView with workspace selector
+		// 2. Search (order: 20) - [Saros] Reuse native VSCode SearchView with workspace selector
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.search',
 			title: localize2('agentStudio.search.title', "Search"),
@@ -3049,7 +3135,7 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		}
 	): void {
 		// Register ViewContainer in Sidebar
-		// [Sarosis] Use WindowEnablement.Both so icons show in both main window and sessions window
+		// [Saros] Use WindowEnablement.Both so icons show in both main window and sessions window
 		const container = viewContainerRegistry.registerViewContainer({
 			id: config.id,
 			title: config.title,
@@ -3076,177 +3162,12 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 
 registerWorkbenchContribution2(AgentStudioToolbarContribution.ID, AgentStudioToolbarContribution, WorkbenchPhase.BlockStartup);
 
-// ─── Worktree Commands (action registrations) ────────────────────────────
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: WorktreeCommands.Refresh,
-			title: localize2('worktreeRefresh', 'Refresh Worktrees'),
-			icon: Codicon.refresh,
-		});
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const worktreeService = accessor.get(IWorktreeService);
-		const repoRoot = await worktreeService.getRepositoryRoot();
-		if (repoRoot) {
-			await worktreeService.listWorktrees(repoRoot);
-		}
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: WorktreeCommands.Create,
-			title: localize2('worktreeCreate', 'Create Worktree'),
-			icon: Codicon.add,
-		});
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const viewsService = accessor.get(IViewsService);
-		// Try to get existing view first (avoids layout jump)
-		let view = viewsService.getViewWithId<WorktreeViewPane>(SESSIONS_SCM_WORKTREE_VIEW_ID);
-		if (!view) {
-			// View not yet created, open it (first time)
-			view = await viewsService.openView<WorktreeViewPane>(SESSIONS_SCM_WORKTREE_VIEW_ID);
-		}
-		if (view) {
-			await view.showCreateInput();
-		}
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: WorktreeCommands.Delete,
-			title: localize2('worktreeDelete', 'Delete Worktree'),
-			icon: Codicon.trash,
-		});
-	}
-	async run(accessor: ServicesAccessor, item: WorktreeItem): Promise<void> {
-		if (!item || item.worktree.isMain) {
-			return;
-		}
-		const worktreeService = accessor.get(IWorktreeService);
-		const notificationService = accessor.get(INotificationService);
-		try {
-			await worktreeService.removeWorktree(item.path);
-			notificationService.info(localize('worktreeDeleted', 'Deleted worktree: {0}', item.label));
-		} catch (e) {
-			notificationService.error(localize('worktreeDeleteError', 'Failed to delete worktree: {0}', (e as Error).message));
-		}
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: WorktreeCommands.Open,
-			title: localize2('worktreeOpen', 'Open Worktree Folder'),
-		});
-	}
-	async run(accessor: ServicesAccessor, path: string): Promise<void> {
-		if (!path) { return; }
-		const hostService = accessor.get(IHostService);
-		const uri = URI.file(path);
-		hostService.openWindow([{ folderUri: uri }], { forceNewWindow: true });
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: WorktreeCommands.OpenInTerminal,
-			title: localize2('worktreeOpenInTerminal', 'Open in Terminal'),
-		});
-	}
-	async run(accessor: ServicesAccessor, item: WorktreeItem): Promise<void> {
-		if (!item) { return; }
-		const commandService = accessor.get(ICommandService);
-		const uri = URI.file(item.path);
-		await commandService.executeCommand('openInIntegratedTerminal', uri);
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: WorktreeCommands.Prune,
-			title: localize2('worktreePrune', 'Prune Stale Worktrees'),
-		});
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const worktreeService = accessor.get(IWorktreeService);
-		const notificationService = accessor.get(INotificationService);
-		const repoRoot = await worktreeService.getRepositoryRoot();
-		if (!repoRoot) {
-			notificationService.warn(localize('worktreeNoRepo', 'No git repository found in workspace.'));
-			return;
-		}
-		try {
-			await worktreeService.pruneWorktrees(repoRoot);
-			notificationService.info(localize('worktreePruned', 'Pruned stale worktrees.'));
-		} catch (e) {
-			notificationService.error(localize('worktreePruneError', 'Failed to prune worktrees: {0}', (e as Error).message));
-		}
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: WorktreeCommands.Reset,
-			title: localize2('worktreeReset', 'Reset Worktree'),
-			icon: Codicon.discard,
-		});
-	}
-	async run(accessor: ServicesAccessor, ...args: any[]): Promise<void> {
-		const worktreeService = accessor.get(IWorktreeService);
-		const notificationService = accessor.get(INotificationService);
-		const worktreePath = args[0]?.worktreePath ?? args[0]?.path;
-		if (!worktreePath) {
-			notificationService.warn(localize('worktreeResetNoPath', 'No worktree selected.'));
-			return;
-		}
-		try {
-			await worktreeService.resetWorktree(worktreePath);
-			notificationService.info(localize('worktreeResetDone', 'Worktree reset to default branch.'));
-		} catch (e) {
-			notificationService.error(localize('worktreeResetError', 'Failed to reset worktree: {0}', (e as Error).message));
-		}
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: WorktreeCommands.CreateWithBranch,
-			title: localize2('worktreeCreateWithBranch', 'Create Isolated Worktree'),
-			icon: Codicon.gitBranch,
-		});
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const worktreeService = accessor.get(IWorktreeService);
-		const notificationService = accessor.get(INotificationService);
-		const quickInputService = accessor.get(IQuickInputService);
-		const name = await quickInputService.input({
-			placeHolder: localize('worktreeCreateNamePlaceholder', 'Worktree name (e.g. feature-auth)'),
-			prompt: localize('worktreeCreateNamePrompt', 'Enter a name for the new worktree. A branch "opencode/<name>" will be created.'),
-		});
-		if (!name?.trim()) { return; }
-		try {
-			const info = await worktreeService.makeWorktreeInfo({ name: name.trim() });
-			await worktreeService.createFromInfo(info);
-			notificationService.info(localize('worktreeCreateWithBranchDone',
-				'Created worktree "{0}" at branch "{1}"', info.name, info.branch ?? '(detached)'));
-		} catch (e) {
-			notificationService.error(localize('worktreeCreateWithBranchError',
-				'Failed to create worktree: {0}', (e as Error).message));
-		}
-	}
-});
+// ─── Worktree Commands ──────────────────────────────────────────────────────
+// Moved to `sessions/contrib/files/browser/files.contribution.ts` (the unified
+// Explorer owns the worktree views, so it owns their commands too). Registering
+// them here as well threw "Cannot register two commands with the same id:
+// sessions.worktree.refresh" at startup and aborted the whole workbench load.
+// Menu entries live in `sessions/contrib/sourceControl/browser/sourceControl.contribution.ts`.
 
 // ─── Create Workspace (the title-bar "+" button) ────────────────────────────
 const CREATE_WORKSPACE_COMMAND_ID = 'agentStudio.workspace.createWorkspace';

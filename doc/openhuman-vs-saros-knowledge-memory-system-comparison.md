@@ -1,8 +1,8 @@
-# OpenHuman vs Sarosis-Agents-Client: 知识库与记忆系统对比分析
+# OpenHuman vs Saros-Agents-Client: 知识库与记忆系统对比分析
 
 ## 1. 概述
 
-本文档对比分析 **OpenHuman** 和 **Sarosis-Agents-Client** 两个项目的知识库与记忆系统实现，总结各自优缺点，为后续系统优化提供参考。
+本文档对比分析 **OpenHuman** 和 **Saros-Agents-Client** 两个项目的知识库与记忆系统实现，总结各自优缺点，为后续系统优化提供参考。
 
 ---
 
@@ -157,10 +157,10 @@ OpenHuman 支持多种嵌入提供程序：
 pub trait EmbeddingProvider: Send + Sync {
     /// 生成文本的嵌入向量
     fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError>;
-    
+
     /// 批量生成嵌入向量
     fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError>;
-    
+
     /// 获取嵌入维度
     fn dimensions(&self) -> usize;
 }
@@ -338,11 +338,11 @@ Tree (树)
 
 ---
 
-## 3. Sarosis-Agents-Client 项目分析
+## 3. Saros-Agents-Client 项目分析
 
 ### 3.1 项目架构
 
-**Sarosis-Agents-Client** 是一个 VS Code 扩展，提供 AI 助手功能。
+**Saros-Agents-Client** 是一个 VS Code 扩展，提供 AI 助手功能。
 
 **技术栈**：
 - **前端**：TypeScript/React（Webview）
@@ -371,7 +371,7 @@ src/vs/sessions/contrib/agentStudio/
 
 #### 3.2.1 多层上下文架构
 
-Sarosis-Agents-Client 的上下文管理系统采用 **多层上下文** 架构：
+Saros-Agents-Client 的上下文管理系统采用 **多层上下文** 架构：
 
 ```
 Workspace (工作区)
@@ -508,31 +508,31 @@ async buildExecutionContext(options: {
 }): Promise<IExecutionContext> {
     // 1. 构建代理上下文
     const agentContext = await this._buildAgentContext(agentId);
-    
+
     // 2. 构建工作区上下文
     const workspaceContext = await this._buildWorkspaceContext(workspaceId || agentContext.agentId);
-    
+
     // 3. 构建项目上下文（从工作区派生）
     const projectContext = await this._buildProjectContext(workspaceContext);
-    
+
     // 4. 构建任务上下文（如果提供了 taskId）
     const taskContext = taskId ? await this._buildTaskContext(taskId) : undefined;
-    
+
     // 5. 构建会话上下文
     const sessionContext = await this._buildSessionContext(sessionId || 'default', agentId);
-    
+
     // 6. 构建环境变量
     const env = this._buildEnvironmentVariables({...});
-    
+
     // 7. 构建提示
     const prompts = this.buildDefaultPrompts({...});
-    
+
     // 8. 创建快照
     const snapshot: IContextSnapshot = {...};
-    
+
     // 9. 构建执行上下文
     const executionContext: IExecutionContext = {...};
-    
+
     return executionContext;
 }
 ```
@@ -664,7 +664,7 @@ setStorage(storage: IContextStorage): void {
 
 ### 4.1 架构对比
 
-| 维度 | OpenHuman | Sarosis-Agents-Client |
+| 维度 | OpenHuman | Saros-Agents-Client |
 |------|-----------|----------------------|
 | **架构风格** | 分层架构（编排层、存储层、检索层、树引擎层） | 多层上下文架构（Workspace → Project → Task → Agent → Session） |
 | **存储后端** | 多模态存储（文件、SQLite、向量数据库、键值存储） | 内存存储（缺乏持久化） |
@@ -673,11 +673,11 @@ setStorage(storage: IContextStorage): void {
 
 **对比结论**：
 - OpenHuman 的架构更复杂、更强大，支持多种存储后端和检索策略
-- Sarosis-Agents-Client 的架构更简单、更清晰，但功能有限
+- Saros-Agents-Client 的架构更简单、更清晰，但功能有限
 
 ### 4.2 功能对比
 
-| 功能 | OpenHuman | Sarosis-Agents-Client |
+| 功能 | OpenHuman | Saros-Agents-Client |
 |------|-----------|----------------------|
 | **知识库** | ✅ 完整的知识库系统 | ❌ 缺乏知识库系统 |
 | **记忆系统** | ✅ 高级记忆系统（命名空间、类别、分数） | ⚠️ 基础记忆系统（短期/长期） |
@@ -692,7 +692,7 @@ setStorage(storage: IContextStorage): void {
 
 **对比结论**：
 - OpenHuman 的功能更丰富、更强大，支持知识库、向量搜索、嵌入、RAG 等高级功能
-- Sarosis-Agents-Client 的功能更简单，只有基础的上下文管理和记忆系统
+- Saros-Agents-Client 的功能更简单，只有基础的上下文管理和记忆系统
 
 ### 4.3 优点对比
 
@@ -718,7 +718,7 @@ setStorage(storage: IContextStorage): void {
    - 支持本地、OpenAI、自定义
    - 用户可以根据需求选择
 
-#### 4.3.2 Sarosis-Agents-Client 的优点
+#### 4.3.2 Saros-Agents-Client 的优点
 
 1. **简单的架构**
    - 易于理解和维护
@@ -752,7 +752,7 @@ setStorage(storage: IContextStorage): void {
    - 需要通过 Tauri IPC 与前端通信
    - 增加了开发复杂度
 
-#### 4.4.2 Sarosis-Agents-Client 的缺点
+#### 4.4.2 Saros-Agents-Client 的缺点
 
 1. **缺乏知识库系统**
    - 当前只有上下文管理，没有真正的知识库
@@ -774,7 +774,7 @@ setStorage(storage: IContextStorage): void {
 
 ## 5. 改进建议
 
-基于对比分析，为 **Sarosis-Agents-Client** 项目提出以下改进建议：
+基于对比分析，为 **Saros-Agents-Client** 项目提出以下改进建议：
 
 ### 5.1 高优先级改进
 
@@ -911,7 +911,7 @@ setStorage(storage: IContextStorage): void {
 - 多租户 SaaS 应用
 - 需要强大检索能力的应用
 
-### 6.2 Sarosis-Agents-Client 项目
+### 6.2 Saros-Agents-Client 项目
 
 **定位**：VS Code 扩展，提供 AI 助手功能，当前只有基础的上下文管理和记忆系统
 
@@ -934,7 +934,7 @@ setStorage(storage: IContextStorage): void {
 
 ### 6.3 改进方向
 
-**Sarosis-Agents-Client** 项目可以借鉴 **OpenHuman** 项目的优点，逐步引入知识库系统、向量搜索、嵌入支持、命名空间隔离、记忆类别系统等功能，提高系统的智能水平和扩展性。
+**Saros-Agents-Client** 项目可以借鉴 **OpenHuman** 项目的优点，逐步引入知识库系统、向量搜索、嵌入支持、命名空间隔离、记忆类别系统等功能，提高系统的智能水平和扩展性。
 
 **建议优先级**：
 1. **高优先级**：引入知识库系统、向量搜索和嵌入支持、实现持久化存储
@@ -946,17 +946,17 @@ setStorage(storage: IContextStorage): void {
 ## 7. 参考资料
 
 1. OpenHuman 项目：`G:\CustomWorkspaces\AIProjects\openhuman`
-2. Sarosis-Agents-Client 项目：`G:\CustomWorkspaces\AIProjects\saros-agents-client`
+2. Saros-Agents-Client 项目：`G:\CustomWorkspaces\AIProjects\saros-agents-client`
 3. OpenHuman 记忆系统文档：`src/openhuman/memory/README.md`
 4. OpenHuman 记忆存储文档：`src/openhuman/memory_store/README.md`
 5. OpenHuman 记忆树文档：`src/openhuman/memory_tree/README.md`
-6. Sarosis-Agents-Client 上下文管理文档：`doc/context-management.md`
-7. Sarosis-Agents-Client 上下文管理器使用指南：`doc/context-manager-usage.md`
-8. Sarosis-Agents-Client 上下文管理实现总结：`doc/context-management-implementation-summary.md`
+6. Saros-Agents-Client 上下文管理文档：`doc/context-management.md`
+7. Saros-Agents-Client 上下文管理器使用指南：`doc/context-manager-usage.md`
+8. Saros-Agents-Client 上下文管理实现总结：`doc/context-management-implementation-summary.md`
 
 ---
 
-**文档版本**：v1.0  
-**创建日期**：2026-05-25  
-**作者**：AI Assistant  
+**文档版本**：v1.0
+**创建日期**：2026-05-25
+**作者**：AI Assistant
 **审核者**：待定

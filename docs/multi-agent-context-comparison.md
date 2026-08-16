@@ -7,7 +7,7 @@
 
 ## 一、架构总览对比
 
-| 维度 | Sarosis (本项目) | OpenClaw | Hermes-Agent | open-multi-agent | LangGraph |
+| 维度 | Saros (本项目) | OpenClaw | Hermes-Agent | open-multi-agent | LangGraph |
 |------|:---:|:---:|:---:|:---:|:---:|
 | **语言** | TypeScript (VSCode fork) | TypeScript (Node.js) | Python | TypeScript | Python |
 | **编排模式** | DAG 工作流 | 层次化生成 (树形) | 树形委托 | Coordinator + 任务队列 | 有状态图 (BSP 模型) |
@@ -23,7 +23,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Sarosis:  每个 session 的完整 JSON 文件 + 内存 historyCache     │
+│  Saros:  每个 session 的完整 JSON 文件 + 内存 historyCache     │
 │  OpenClaw: ContextEngine 可插拔 + SessionEntry JSON 文件          │
 │  Hermes:   SQLite SessionDB + Memory Provider 可插拔系统          │
 │  oma:      每个 Agent 独立 messageHistory[] + SharedMemory KV    │
@@ -35,15 +35,15 @@
 
 | 项目 | 传递方式 | 粒度 | 优缺点 |
 |------|---------|------|--------|
-| **Sarosis** | 完整历史 → priorMessages → Driver → Provider 压缩 | 会话级（粗） | ✅ 简单可靠 ❌ 短工作流全量冗余 |
+| **Saros** | 完整历史 → priorMessages → Driver → Provider 压缩 | 会话级（粗） | ✅ 简单可靠 ❌ 短工作流全量冗余 |
 | **OpenClaw** | SteeringQueue 注入 + Announcement 交付 | 消息级（精） | ✅ 精准注入 ✅ 父代理可引导子代理 |
 | **Hermes** | 函数调用 + 结构化结果字典 + Memory Provider | 调用级（精） | ✅ Memory Provider 跨轮次关联 ❌ 无消息总线 |
 | **oma** | 依赖结果注入 + SharedMemory + MessageBus | 三层分级 | ✅ 多种粒度可选 ✅ 默认拒绝(最小上下文) |
 | **LangGraph** | Channels 共享状态 + Send 动态路由 + Command 显式路由 | 状态键级（最精） | ✅ 精确到单个 key ❌ 学习曲线陡峭 |
 
-### 2.3 核心发现：Sarosis 的"全量历史捆绑" vs 其它项目的"按需上下文"
+### 2.3 核心发现：Saros 的"全量历史捆绑" vs 其它项目的"按需上下文"
 
-**Sarosis 的问题**（已在 `docs/workflow-agent-context-analysis.md` 详述）：
+**Saros 的问题**（已在 `docs/workflow-agent-context-analysis.md` 详述）：
 ```
 Agent Node 1 → 执行（产生对话历史）
 Agent Node 2 → getHistory() → 完整历史 → sendMessage
@@ -82,7 +82,7 @@ def node_b(state: AgentState) -> dict:
 
 | 项目 | 策略 | 触发阈值 | 粒度 |
 |------|------|---------|------|
-| **Sarosis** | Hermes 三段式压缩 (Provider 层) | 50% contextWindow | 迭代级 |
+| **Saros** | Hermes 三段式压缩 (Provider 层) | 50% contextWindow | 迭代级 |
 | **OpenClaw** | LLM 摘要压缩 + 轮次分割 | `tokens > window - reserve(16K)` | 轮次级 |
 | **Hermes** | ContextCompressor LLM 摘要 | 75% contextWindow | 轮次级 |
 | **oma** | 4 种策略可选: 滑动窗口 / LLM摘要 / 规则压缩 / 工具结果压缩 | 可配置 `maxTokenBudget` | 策略可配 |
@@ -91,7 +91,7 @@ def node_b(state: AgentState) -> dict:
 ### 3.2 压缩时机的关键差异
 
 ```
-Sarosis:    [Provider 层压缩]  ← 每次迭代都传全量历史，压缩在此层
+Saros:    [Provider 层压缩]  ← 每次迭代都传全量历史，压缩在此层
             ↑ 问题：AgentChatService 不感知压缩，下次加载又全量
 
 OpenClaw:  [ContextEngine.compact()] ← 引擎感知压缩，压缩后写回
@@ -106,16 +106,16 @@ oma:       [AgentRunner 循环每次检查 maxTokenBudget]
 LangGraph: [无内置] ← 需手动 trim_messages() + DeltaChannel 增量
 ```
 
-### 3.3 Sarosis 的压缩滞后问题（对比验证）
+### 3.3 Saros 的压缩滞后问题（对比验证）
 
-| 场景 | Sarosis (50% 阈值) | OpenClaw (token > window-16K) | oma (可配 maxTokenBudget) |
+| 场景 | Saros (50% 阈值) | OpenClaw (token > window-16K) | oma (可配 maxTokenBudget) |
 |------|:---:|:---:|:---:|
 | 128K 窗口, 5 节点(15K) | 不触发 (11.7%) | 不触发 (15K < 112K) | 可配 20K 预算 → 触发截断 |
 | 128K 窗口, 10 节点(30K) | 不触发 (23.4%) | 不触发 (30K < 112K) | 可配 20K 预算 → 触发截断 |
 | 128K 窗口, 20 节点(60K) | 不触发 (46.9%) | 不触发 (60K < 112K) | 可配 30K 预算 → 触发截断 |
 | 128K 窗口, 25 节点(75K) | 触发 (58.6%) | 不触发 (75K < 112K) | 可配 50K 预算 → 触发截断 |
 
-**结论**：OpenClaw 的 `window - 16K reserve` 策略也对中短工作流很宽松，但 Sarosis 的 50% 阈值更宽。
+**结论**：OpenClaw 的 `window - 16K reserve` 策略也对中短工作流很宽松，但 Saros 的 50% 阈值更宽。
 
 ---
 
@@ -123,7 +123,7 @@ LangGraph: [无内置] ← 需手动 trim_messages() + DeltaChannel 增量
 
 ### 4.1 恢复能力矩阵
 
-| 恢复能力 | Sarosis | OpenClaw | Hermes | oma | LangGraph |
+| 恢复能力 | Saros | OpenClaw | Hermes | oma | LangGraph |
 |----------|:---:|:---:|:---:|:---:|:---:|
 | **取消当前执行** | ✅ (v21 修复) | ✅ | ✅ | ✅ | ✅ |
 | **节点级重试** | ❌ | ✅ (子代理恢复) | ✅ (21种错误分类+16种恢复路径) | ✅ (指数退避, max 3) | ✅ (RetryPolicy 指数退避+抖动) |
@@ -205,7 +205,7 @@ loopDetection: {
 
 ---
 
-## 五、Sarosis 与各项目的差异总结
+## 五、Saros 与各项目的差异总结
 
 ### 5.1 最大优势
 
@@ -234,7 +234,7 @@ loopDetection: {
 
 ---
 
-## 六、对 Sarosis 的优化建议
+## 六、对 Saros 的优化建议
 
 ### 6.1 P0：按需上下文（借鉴 open-multi-agent）
 
@@ -319,7 +319,7 @@ const result = await Promise.race([
 在 Provider 层将当前的"仅 Hermes 三段式"扩展为可选策略：
 
 ```typescript
-type ContextStrategy = 
+type ContextStrategy =
   | { type: 'hermes-segment'; threshold: number }   // 当前默认
   | { type: 'sliding-window'; keepTurns: number }    // 借鉴 oma
   | { type: 'summarize'; budgetTokens: number }      // 借鉴 oma
@@ -412,7 +412,7 @@ interface IWorkflowMessageBus {
 
 ## 八、附录：各项目关键文件速查
 
-| 关注点 | Sarosis | OpenClaw | Hermes | oma | LangGraph |
+| 关注点 | Saros | OpenClaw | Hermes | oma | LangGraph |
 |--------|---------|----------|--------|-----|-----------|
 | **Agent 上下文** | `agentChatService.ts:417` getHistory | `context-engine/types.ts` ContextEngine | `agent/context_compressor.py` | `agent/runner.ts:390` truncateToSlidingWindow | `channels/base.py` BaseChannel |
 | **消息传递** | `agentChatService.ts:686` sendMessage | `subagent-announce-delivery.ts` | `tools/delegate_tool.py:1970` delegate_task | `team/messaging.ts` MessageBus | `types.py:664` Send / `types.py:758` Command |

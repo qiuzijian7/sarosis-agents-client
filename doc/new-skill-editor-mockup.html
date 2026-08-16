@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>New Skill Editor Pane - Mockup</title>
+<style>
+  /* ─── VS Code Dark Theme Reset ─────────────────────────────── */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    background: #1e1e1e;
+    color: #cccccc;
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  /* ─── Editor Pane Container ────────────────────────────────── */
+  .editor-pane {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    background: #1e1e1e;
+  }
+
+  /* ─── Tab Bar (simulates VS Code editor tab) ──────────────── */
+  .tab-bar {
+    display: flex;
+    align-items: center;
+    height: 36px;
+    background: #252526;
+    border-bottom: 1px solid #3c3c3c;
+    padding: 0 8px;
+    flex-shrink: 0;
+  }
+  .tab-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 12px;
+    background: #1e1e1e;
+    border-right: 1px solid #3c3c3c;
+    font-size: 13px;
+    color: #cccccc;
+    cursor: pointer;
+    position: relative;
+  }
+  .tab-item.active::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: #ffffff;
+  }
+  .tab-icon { font-size: 14px; }
+  .tab-close {
+    margin-left: 4px;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    font-size: 12px;
+    color: #969696;
+  }
+  .tab-close:hover { background: #333333; color: #ffffff; }
+
+  /* ─── Header / Toolbar ─────────────────────────────────────── */
+  .pane-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: #252526;
+    border-bottom: 1px solid #3c3c3c;
+    flex-shrink: 0;
+  }
+  .pane-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #ffffff;
+  }
+  .pane-title-icon { font-size: 18px; }
+  .header-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  /* ─── Buttons ──────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 14px;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+    outline: none;
+  }
+  .btn-primary {
+    background: #0e639c;
+    color: #ffffff;
+    border-color: #0e639c;
+  }
+  .btn-primary:hover { background: #1177bb; }
+  .btn-secondary {
+    background: #333333;
+    color: #cccccc;
+    border-color: #555555;
+  }
+  .btn-secondary:hover { background: #3c3c3c; }
+  .btn-danger {
+    background: #5a2d2d;
+    color: #f48771;
+    border-color: #5a2d2d;
+  }
+  .btn-danger:hover { background: #6e3636; }
+
+  /* ─── Form Body ────────────────────────────────────────────── */
+  .pane-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px;
+  }
+  .pane-body::-webkit-scrollbar { width: 8px; }
+  .pane-body::-webkit-scrollbar-track { background: #1e1e1e; }
+  .pane-body::-webkit-scrollbar-thumb { background: #424242; border-radius: 4px; }
+
+  /* ─── Section ─────────────────────────────────────────────── */
+  .form-section {
+    margin-bottom: 24px;
+  }
+  .section-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #969696;
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #2d2d2d;
+  }
+
+  /* ─── Form Row ──────────────────────────────────────────────── */
+  .form-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .form-label {
+    width: 120px;
+    flex-shrink: 0;
+    padding-top: 5px;
+    font-size: 13px;
+    color: #cccccc;
+  }
+  .form-label .required {
+    color: #f48771;
+    margin-left: 2px;
+  }
+  .form-control {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* ─── Inputs ────────────────────────────────────────────────── */
+  .text-input {
+    width: 100%;
+    padding: 6px 10px;
+    background: #3c3c3c;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    color: #cccccc;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .text-input:focus { border-color: #0e639c; }
+  .text-input::placeholder { color: #666666; }
+  .text-area {
+    width: 100%;
+    padding: 8px 10px;
+    background: #3c3c3c;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    color: #cccccc;
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 80px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .text-area:focus { border-color: #0e639c; }
+  .text-area::placeholder { color: #666666; }
+
+  /* ─── Select ────────────────────────────────────────────────── */
+  .select-input {
+    padding: 5px 10px;
+    background: #3c3c3c;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    color: #cccccc;
+    font-size: 13px;
+    outline: none;
+    cursor: pointer;
+  }
+  .select-input:focus { border-color: #0e639c; }
+
+  /* ─── Tags Input ────────────────────────────────────────────── */
+  .tags-input {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px;
+    background: #3c3c3c;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    min-height: 34px;
+    align-items: center;
+    cursor: text;
+    transition: border-color 0.15s;
+  }
+  .tags-input:focus-within { border-color: #0e639c; }
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: #2d2d2d;
+    border: 1px solid #555555;
+    border-radius: 3px;
+    font-size: 12px;
+    color: #cccccc;
+  }
+  .tag-remove {
+    cursor: pointer;
+    color: #969696;
+    font-size: 11px;
+  }
+  .tag-remove:hover { color: #f48771; }
+  .tag-text-input {
+    border: none;
+    background: transparent;
+    color: #cccccc;
+    font-size: 12px;
+    outline: none;
+    min-width: 80px;
+    flex: 1;
+  }
+
+  /* ─── Toggle / Switch ──────────────────────────────────────── */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .toggle-switch {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    background: #3c3c3c;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .toggle-switch.on { background: #0e639c; }
+  .toggle-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: #ffffff;
+    border-radius: 50%;
+    transition: left 0.2s;
+  }
+  .toggle-switch.on::after { left: 18px; }
+  .toggle-label { font-size: 13px; color: #cccccc; }
+
+  /* ─── Info Box ─────────────────────────────────────────────── */
+  .info-box {
+    display: flex;
+    gap: 8px;
+    padding: 10px 14px;
+    background: #1a2a3a;
+    border: 1px solid #1e3a5f;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #75beff;
+    line-height: 1.5;
+    margin-bottom: 16px;
+  }
+  .info-icon { flex-shrink: 0; font-size: 14px; }
+
+  /* ─── Preview Box ──────────────────────────────────────────── */
+  .preview-box {
+    padding: 12px 14px;
+    background: #1e1e1e;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #969696;
+    line-height: 1.6;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .preview-box strong { color: #cccccc; }
+
+  /* ─── Integration Skill View (for button placement reference) ── */
+  .ref-panel {
+    margin-top: 30px;
+    padding: 16px;
+    background: #252526;
+    border: 1px solid #3c3c3c;
+    border-radius: 6px;
+  }
+  .ref-title {
+    font-size: 12px;
+    color: #969696;
+    margin-bottom: 10px;
+  }
+  .ref-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #2d2d2d;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div class="editor-pane">
+
+  <!-- ─── Tab Bar (simulates VS Code editor tab) ──────────────── -->
+  <div class="tab-bar">
+    <div class="tab-item">
+      <span class="tab-icon">💡</span>
+      <span>New Skill</span>
+      <span class="tab-close">×</span>
+    </div>
+  </div>
+
+  <!-- ─── Pane Header ─────────────────────────────────────────── -->
+  <div class="pane-header">
+    <div class="pane-title">
+      <span class="pane-title-icon">✨</span>
+      <span>Create New Skill</span>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-secondary" onclick="alert('Preview SKILL.md')">
+        👁️ Preview SKILL.md
+      </button>
+      <button class="btn btn-primary" onclick="alert('Save skill')">
+        💾 Create Skill
+      </button>
+    </div>
+  </div>
+
+  <!-- ─── Form Body ────────────────────────────────────────────── -->
+  <div class="pane-body">
+
+    <!-- Info Box -->
+    <div class="info-box">
+      <span class="info-icon">ℹ️</span>
+      <span>新建技能将创建一个包含 SKILL.md 和基础目录结构的技能文件夹。你可以通过 Resource Manager 随时编辑技能内容。</span>
+    </div>
+
+    <!-- Section: Basic Info -->
+    <div class="form-section">
+      <div class="section-title">基本信息</div>
+
+      <div class="form-row">
+        <label class="form-label">技能名称 <span class="required">*</span></label>
+        <div class="form-control">
+          <input class="text-input" type="text" placeholder="例如: code-review-skill" id="skillName" oninput="updatePreview()">
+          <div style="font-size:11px;color:#666;margin-top:4px;">技能 ID 将自动生成：<strong id="generatedId" style="color:#75beff;">code-review-skill</strong></div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label class="form-label">显示名称 <span class="required">*</span></label>
+        <div class="form-control">
+          <input class="text-input" type="text" placeholder="例如: Code Review Skill" id="skillDisplayName">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label class="form-label">描述</label>
+        <div class="form-control">
+          <textarea class="text-area" placeholder="描述该技能的功能和用途..." id="skillDesc" rows="3"></textarea>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label class="form-label">版本</label>
+        <div class="form-control">
+          <input class="text-input" type="text" value="1.0.0" style="width:160px;" id="skillVersion">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label class="form-label">作者</label>
+        <div class="form-control">
+          <input class="text-input" type="text" placeholder="你的名字或组织" id="skillAuthor">
+        </div>
+      </div>
+    </div>
+
+    <!-- Section: Classification -->
+    <div class="form-section">
+      <div class="section-title">分类与标签</div>
+
+      <div class="form-row">
+        <label class="form-label">分类</label>
+        <div class="form-control">
+          <select class="select-input" id="skillCategory">
+            <option value="code">💻 代码 (code)</option>
+            <option value="data">📊 数据 (data)</option>
+            <option value="web">🌐 Web (web)</option>
+            <option value="filesystem">📁 文件系统 (filesystem)</option>
+            <option value="shell">⚙️ Shell (shell)</option>
+            <option value="utility">🔧 实用工具 (utility)</option>
+            <option value="other">📦 其他 (other)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label class="form-label">标签</label>
+        <div class="form-control">
+          <div class="tags-input" onclick="this.querySelector('input').focus()">
+            <span class="tag">code-review <span class="tag-remove" onclick="removeTag(this)">×</span></span>
+            <span class="tag">ai <span class="tag-remove" onclick="removeTag(this)">×</span></span>
+            <input class="tag-text-input" type="text" placeholder="输入后回车添加..." onkeydown="addTag(event)">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label class="form-label">激活方式</label>
+        <div class="form-control">
+          <select class="select-input" id="skillActivation">
+            <option value="always">始终激活 (always)</option>
+            <option value="on_command">命令激活 (on_command)</option>
+            <option value="on_context">上下文激活 (on_context)</option>
+            <option value="manual">手动激活 (manual)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section: SKILL.md Preview -->
+    <div class="form-section">
+      <div class="section-title">SKILL.md 预览</div>
+      <div class="preview-box" id="skillMdPreview">
+        <strong>---</strong><br>
+        <strong>name:</strong> code-review-skill<br>
+        <strong>description:</strong> Code review skill using AI<br>
+        <strong>version:</strong> 1.0.0<br>
+        <strong>author:</strong> Your Name<br>
+        <strong>category:</strong> code<br>
+        <strong>tags:</strong> [code-review, ai]<br>
+        <strong>activation:</strong> always<br>
+        <strong>---</strong><br><br>
+        # Code Review Skill<br><br>
+        Describe your skill here...<br>
+        描述你的技能功能...
+      </div>
+    </div>
+
+    <!-- Section: Advanced (optional) -->
+    <div class="form-section">
+      <div class="section-title">高级选项</div>
+
+      <div class="form-row">
+        <label class="form-label">创建示例文件</label>
+        <div class="form-control">
+          <div class="toggle-row">
+            <div class="toggle-switch on" onclick="this.classList.toggle('on')"></div>
+            <span class="toggle-label">自动创建 SKILL.md 和示例文件结构</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label class="form-label">立即发布到商城</label>
+        <div class="form-control">
+          <div class="toggle-row">
+            <div class="toggle-switch" onclick="this.classList.toggle('on')"></div>
+            <span class="toggle-label">创建后自动发布到技能商城（需要填写完整信息）</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /pane-body -->
+</div><!-- /editor-pane -->
+
+<!-- ─── Reference: Integration Skill View Header ──────────────── -->
+<div style="padding:20px;background:#1e1e1e;">
+  <div class="ref-panel">
+    <div class="ref-title">参考：Integration Skill View 中的按钮位置</div>
+    <div class="ref-header">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:14px;font-weight:600;color:#fff;">💡 Skills Library</span>
+        <span style="background:#0e639c;color:#fff;font-size:11px;padding:1px 6px;border-radius:3px;">12</span>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <!-- 新增的 New Skill 按钮 -->
+        <button class="btn btn-secondary" style="background:#2d2d2d;border-color:#555;color:#ffffff;">
+          ✨ New Skill
+        </button>
+        <!-- 原有的 Install 按钮 -->
+        <button class="btn btn-secondary" style="background:#2d2d2d;border-color:#555;color:#ffffff;">
+          + Install
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Generate skill ID from name
+  function updatePreview() {
+    const name = document.getElementById('skillName').value;
+    const id = name.toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/[^a-z0-9\-_]/g, '')
+      .replace(/-+/g, '-');
+    document.getElementById('generatedId').textContent = id || '(输入名称后自动生成)';
+  }
+
+  // Tag management
+  function addTag(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const input = e.target;
+      const val = input.value.trim();
+      if (!val) return;
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.innerHTML = `${val} <span class="tag-remove" onclick="removeTag(this)">×</span>`;
+      input.parentNode.insertBefore(tag, input);
+      input.value = '';
+    }
+  }
+
+  function removeTag(el) {
+    el.parentElement.remove();
+  }
+
+  // Initialize
+  updatePreview();
+</script>
+
+</body>
+</html>

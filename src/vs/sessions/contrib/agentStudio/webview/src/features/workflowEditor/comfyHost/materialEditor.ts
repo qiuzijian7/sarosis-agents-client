@@ -1,64 +1,108 @@
 /*---------------------------------------------------------------------------------------------
  *  materialEditor — ComfyTV Material stage support (P3 embedded editor).
  *
- *  The stage holds hidden `material_state` (PBR JSON) + `captured_image` (the
- *  material-ball preview uploaded by the node body); output material
- *  (COMFYTV_MATERIAL) + image. We mirror the exact MaterialParams contract from
- *  ComfyTV `widgets/material/types.ts` (portable), render a lightweight
- *  material ball on a 2D canvas and debounce-upload it.
+ *  数据契约对齐 ComfyTV widgets/material/types.ts（MaterialParams 11 字段，
+ *  含 version/opacity/ior/emissive/emissiveIntensity）。material_state JSON
+ *  可直接被 ComfyTV 后端消费。
+ *
+ *  渲染：MaterialEditor.tsx 用 three.js MeshPhysicalMaterial + RoomEnvironment
+ *  环境贴图（对齐 ComfyTV MaterialSphere.vue）。本模块保留纯逻辑 + 2D fallback
+ *  renderer（WebGL 不可用时）。
  *--------------------------------------------------------------------------------------------*/
 
 export interface MaterialParams {
+	version: 1;
 	color: string;
 	metalness: number;
 	roughness: number;
 	transmission: number;
+	opacity: number;
 	clearcoat: number;
 	clearcoatRoughness: number;
+	ior: number;
+	emissive: string;
+	emissiveIntensity: number;
 }
 
 export const DEFAULT_MATERIAL: MaterialParams = {
+	version: 1,
 	color: '#8fbf8f',
 	metalness: 0,
 	roughness: 0.4,
 	transmission: 0,
+	opacity: 1,
 	clearcoat: 0,
 	clearcoatRoughness: 0.1,
+	ior: 1.5,
+	emissive: '#000000',
+	emissiveIntensity: 0,
 };
 
 export interface MaterialPreset {
 	key: string;
-	params: Partial<MaterialParams>;
+	params: Omit<MaterialParams, 'version' | 'color' | 'emissive'>;
 }
+
+const preset = (p: Partial<Omit<MaterialParams, 'version' | 'color' | 'emissive'>>): MaterialPreset['params'] => ({
+	metalness: 0,
+	roughness: 0.4,
+	transmission: 0,
+	opacity: 1,
+	clearcoat: 0,
+	clearcoatRoughness: 0.1,
+	ior: 1.5,
+	emissiveIntensity: 0,
+	...p,
+});
 
 export const MATERIAL_PRESETS: MaterialPreset[] = [
-	{ key: 'plasticGlossy', params: { roughness: 0.15, clearcoat: 0.6 } },
-	{ key: 'plasticMatte', params: { roughness: 0.75 } },
-	{ key: 'metalPolished', params: { metalness: 1, roughness: 0.08 } },
-	{ key: 'metalBrushed', params: { metalness: 1, roughness: 0.45 } },
-	{ key: 'glassClear', params: { roughness: 0.05, transmission: 1 } },
-	{ key: 'glassFrosted', params: { roughness: 0.45, transmission: 1 } },
-	{ key: 'rubber', params: { roughness: 0.95 } },
-	{ key: 'ceramic', params: { roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.05 } },
+	{ key: 'plasticGlossy', params: preset({ roughness: 0.15, clearcoat: 0.6 }) },
+	{ key: 'plasticMatte', params: preset({ roughness: 0.75 }) },
+	{ key: 'metalPolished', params: preset({ metalness: 1, roughness: 0.08 }) },
+	{ key: 'metalBrushed', params: preset({ metalness: 1, roughness: 0.45 }) },
+	{ key: 'glassClear', params: preset({ roughness: 0.05, transmission: 1 }) },
+	{ key: 'glassFrosted', params: preset({ roughness: 0.45, transmission: 1 }) },
+	{ key: 'rubber', params: preset({ roughness: 0.95 }) },
+	{ key: 'ceramic', params: preset({ roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.05 }) },
 ];
 
-export function clamp01(v: number, fallback: number): number {
-	return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : fallback;
-}
+/** Slider 定义（对齐 ComfyTV MATERIAL_SLIDERS）。 */
+export const MATERIAL_SLIDERS: Array<{ key: keyof MaterialParams; min: number; max: number; step: number; label: string }> = [
+	{ key: 'metalness', min: 0, max: 1, step: 0.01, label: 'Metalness' },
+	{ key: 'roughness', min: 0, max: 1, step: 0.01, label: 'Roughness' },
+	{ key: 'transmission', min: 0, max: 1, step: 0.01, label: 'Transmission' },
+	{ key: 'opacity', min: 0, max: 1, step: 0.01, label: 'Opacity' },
+	{ key: 'clearcoat', min: 0, max: 1, step: 0.01, label: 'Clearcoat' },
+	{ key: 'clearcoatRoughness', min: 0, max: 1, step: 0.01, label: 'Clearcoat Roughness' },
+	{ key: 'ior', min: 1, max: 2.333, step: 0.001, label: 'IOR' },
+	{ key: 'emissiveIntensity', min: 0, max: 1, step: 0.01, label: 'Emissive Intensity' },
+];
+
+const clamp01 = (v: unknown, fallback: number): number => {
+	const n = Number(v);
+	return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;
+};
+
+const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+const asHex = (v: unknown, fallback: string): string =>
+	typeof v === 'string' && HEX_RE.test(v) ? v.toLowerCase() : fallback;
 
 /** Normalize a material (mirrors ComfyTV normalizeMaterial). Pure. */
 export function normalizeMaterial(src: Record<string, unknown>): MaterialParams {
-	const color = typeof src.color === 'string' && /^#[0-9a-f]{6}$/i.test(src.color)
-		? src.color.toLowerCase()
-		: DEFAULT_MATERIAL.color;
-	const num = (k: string, d: number) => clamp01(Number(src[k]), d);
+	const d = DEFAULT_MATERIAL;
+	const ior = Number(src.ior);
 	return {
-		color,
-		metalness: num('metalness', DEFAULT_MATERIAL.metalness),
-		roughness: num('roughness', DEFAULT_MATERIAL.roughness),
-		transmission: num('transmission', DEFAULT_MATERIAL.transmission),
-		clearcoat: num('clearcoat', DEFAULT_MATERIAL.clearcoat),
-		clearcoatRoughness: num('clearcoatRoughness', DEFAULT_MATERIAL.clearcoatRoughness),
+		version: 1,
+		color: asHex(src.color, d.color),
+		metalness: clamp01(src.metalness, d.metalness),
+		roughness: clamp01(src.roughness, d.roughness),
+		transmission: clamp01(src.transmission, d.transmission),
+		opacity: clamp01(src.opacity, d.opacity),
+		clearcoat: clamp01(src.clearcoat, d.clearcoat),
+		clearcoatRoughness: clamp01(src.clearcoatRoughness, d.clearcoatRoughness),
+		ior: Number.isFinite(ior) ? Math.min(2.333, Math.max(1, ior)) : d.ior,
+		emissive: asHex(src.emissive, d.emissive),
+		emissiveIntensity: clamp01(src.emissiveIntensity, d.emissiveIntensity),
 	};
 }
 
@@ -73,18 +117,18 @@ export function parseMaterialState(value: unknown): MaterialParams {
 }
 
 export function materialStateToJson(p: MaterialParams): string {
-	return JSON.stringify(p);
+	return JSON.stringify(normalizeMaterial(p));
 }
 
-export function applyPreset(base: MaterialParams, preset: Partial<MaterialParams>): MaterialParams {
-	return { ...base, ...preset };
+export function applyPreset(base: MaterialParams, presetParams: Partial<MaterialParams>): MaterialParams {
+	return normalizeMaterial({ ...base, ...presetParams });
 }
 
 export function isMaterialNode(type: string): boolean {
 	return type === 'ComfyTV.MaterialStage';
 }
 
-/** Structural canvas-2D-like context for the material ball renderer. */
+/** Structural canvas-2D-like context for the 2D material ball fallback renderer. */
 export interface MaterialCtxLike {
 	fillStyle?: string;
 	globalAlpha?: number;
@@ -99,7 +143,7 @@ export interface MaterialCtxLike {
 	ellipse?: (x: number, y: number, rx: number, ry: number, rot: number, a0: number, a1: number) => void;
 }
 
-/** Rendered material ball (dark studio backdrop, specular highlights). Pure (draws). */
+/** Rendered material ball (2D fallback, dark studio backdrop, specular highlights). */
 export function renderMaterialBall(
 	ctx: MaterialCtxLike,
 	p: MaterialParams,
@@ -152,6 +196,15 @@ export function renderMaterialBall(
 	ctx.arc?.(cx - r * 0.32, cy - r * 0.4, hr, 0, Math.PI * 2);
 	ctx.fill?.();
 	ctx.globalAlpha = 1;
+	// emissive glow
+	if (p.emissiveIntensity > 0.01) {
+		ctx.fillStyle = p.emissive;
+		ctx.globalAlpha = p.emissiveIntensity * 0.6;
+		ctx.beginPath?.();
+		ctx.arc?.(cx, cy, r * 0.95, 0, Math.PI * 2);
+		ctx.fill?.();
+		ctx.globalAlpha = 1;
+	}
 	// secondary soft bounce
 	ctx.fillStyle = `rgba(255,255,255,${0.14 * (1 - p.metalness)})`;
 	ctx.beginPath?.();

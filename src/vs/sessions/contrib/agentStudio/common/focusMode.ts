@@ -73,8 +73,8 @@ const CODE_PROJECT_MARKERS: ReadonlyArray<{
 		{ filename: '*.uplugin', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Unreal Engine plugin' },
 		// VCS
 		{ filename: '.git', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Git' },
-		// Sarosis
-		{ filename: 'vssaros.config.json', toolsets: ['core', 'tool-search', 'mcp', 'memory', 'kanban'], label: 'Sarosis' },
+		// Saros
+		{ filename: 'vssaros.config.json', toolsets: ['core', 'tool-search', 'mcp', 'memory', 'kanban'], label: 'Saros' },
 	];
 
 /** 推荐的 focus 模式工具集（编码姿态，Hermes `TOOLSETS['coding']` 对齐） */

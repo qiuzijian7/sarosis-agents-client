@@ -707,6 +707,13 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
 			let initialSizes;
 			for (let i = 0; i < this.viewContainerModel.visibleViewDescriptors.length; i++) {
 				const pane = this.panes[i];
+				// [Saros] `panes` can be shorter than `visibleViewDescriptors` when a view
+				// descriptor is visible in the model but no pane was created for it (happens when
+				// `windowEnablement` disables the view in this window while its container is still
+				// instantiated). Upstream assumes a 1:1 mapping and crashed on `pane.id`.
+				if (!pane) {
+					continue;
+				}
 				const viewDescriptor = this.viewContainerModel.visibleViewDescriptors[i];
 				const size = this.viewContainerModel.getSize(viewDescriptor.id);
 

@@ -1,8 +1,8 @@
-# Claw 类产品竞品分析与 Sarosis 解决方案
+# Claw 类产品竞品分析与 Saros 解决方案
 
-> **文档版本**: v1.0  
-> **日期**: 2026-05-11  
-> **目标**: 从产品角度分析 WorkBuddy、CodeBuddy、Hermes Agent、OpenClaw 等 Claw 类产品的优缺点，明确 Sarosis Agents Client 的差异化定位与技术解决方案
+> **文档版本**: v1.0
+> **日期**: 2026-05-11
+> **目标**: 从产品角度分析 WorkBuddy、CodeBuddy、Hermes Agent、OpenClaw 等 Claw 类产品的优缺点，明确 Saros Agents Client 的差异化定位与技术解决方案
 
 ---
 
@@ -17,7 +17,7 @@
 7. [QClaw — 腾讯消费级 Claw 产品](#七qclaw--腾讯消费级-claw-产品)
 8. [综合对比矩阵](#八综合对比矩阵)
 9. [市场痛点总结](#九市场痛点总结)
-10. [Sarosis Agents Client — 我们的解决方案](#十saros-agents-client--我们的解决方案)
+10. [Saros Agents Client — 我们的解决方案](#十saros-agents-client--我们的解决方案)
 11. [结论与路线图建议](#十一结论与路线图建议)
 
 ---
@@ -58,7 +58,7 @@
 │                                                                 │
 │  我们的定位:                                                     │
 │  ┌──────────────────────────────────────────────┐              │
-│  │      Sarosis Agents Client (Agent Studio)     │              │
+│  │      Saros Agents Client (Agent Studio)     │              │
 │  │    IDE 级 Agent 编排 + 多后端能力聚合平台       │              │
 │  └──────────────────────────────────────────────┘              │
 └─────────────────────────────────────────────────────────────────┘
@@ -75,7 +75,7 @@
 | **CodeBuddy** | 腾讯 | AI 编程全流程工具 | 专业开发者 | 否 | IDE/插件/CLI |
 | **Hermes Agent** | Nous Research | 自我进化 AI 智能体 | 开发者/高级用户 | MIT | CLI + Gateway |
 | **QClaw** | 腾讯 | 消费级 AI Agent | 普通用户 | 否 | App/小程序 |
-| **Sarosis** | 我们 | IDE 级 Agent 编排平台 | 专业开发者/企业团队 | 内部 | VS Code 扩展 |
+| **Saros** | 我们 | IDE 级 Agent 编排平台 | 专业开发者/企业团队 | 内部 | VS Code 扩展 |
 
 ---
 
@@ -362,7 +362,7 @@
 
 ### 8.1 能力维度对比
 
-| 维度 | OpenClaw | WorkBuddy | CodeBuddy | Hermes | Sarosis |
+| 维度 | OpenClaw | WorkBuddy | CodeBuddy | Hermes | Saros |
 |------|----------|-----------|-----------|--------|---------|
 | **本地系统访问** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
 | **IDE 深度集成** | ⭐ | ⭐ | ⭐⭐⭐⭐⭐ | ⭐ | ⭐⭐⭐⭐⭐ |
@@ -382,7 +382,7 @@
 ```
                     专业深度 ↑
                             │
-              CodeBuddy ●   │   ● Sarosis Agents Client
+              CodeBuddy ●   │   ● Saros Agents Client
                             │          (我们的目标位置)
           ──────────────────┼──────────────────→ 通用广度
                             │
@@ -401,7 +401,7 @@
 | CodeBuddy | 中 | 专业开发者 | 日常编码/代码审查 |
 | OpenClaw | 高 | 极客/DevOps | 个人自动化/服务器管理 |
 | Hermes | 高 | 研究者/高级用户 | 自我进化助手/研究探索 |
-| **Sarosis** | **中** | **开发团队/企业** | **Agent 编排/团队协作/IDE 内一站式** |
+| **Saros** | **中** | **开发团队/企业** | **Agent 编排/团队协作/IDE 内一站式** |
 
 ---
 
@@ -447,18 +447,18 @@
 
 ---
 
-## 十、Sarosis Agents Client — 我们的解决方案
+## 十、Saros Agents Client — 我们的解决方案
 
 ### 10.1 核心定位
 
-> **Sarosis Agents Client = IDE 级 Agent 编排平台**  
+> **Saros Agents Client = IDE 级 Agent 编排平台**
 > 在 VS Code 的专业开发环境中，提供多后端能力聚合、多 Agent 团队协作、可视化任务编排的一站式 AI Agent 解决方案。
 
-**一句话差异化**：其他产品让 AI 帮你做事，Sarosis 让你**管理一支 AI 团队**在 IDE 中做事。
+**一句话差异化**：其他产品让 AI 帮你做事，Saros 让你**管理一支 AI 团队**在 IDE 中做事。
 
 ### 10.2 解决痛点映射
 
-| 市场痛点 | Sarosis 解决方案 | 对应架构 |
+| 市场痛点 | Saros 解决方案 | 对应架构 |
 |----------|-----------------|----------|
 | IDE 与 Agent 割裂 | Agent Studio 深度嵌入 VS Code Workbench | sessions 层 + WebView |
 | 单 Agent 天花板 | 多员工工作区 + 任务委派 + 团队编排 | IAgentDelegationService |
@@ -522,7 +522,7 @@
 
 #### 特性 3: IDE 原生体验
 
-| 维度 | 其他产品 | Sarosis |
+| 维度 | 其他产品 | Saros |
 |------|----------|---------|
 | 代码修改 | 在独立窗口生成 → 手动复制 → 粘贴到 IDE | Agent 直接操作编辑器文件 |
 | 上下文感知 | 需要手动提供代码片段 | 自动感知当前项目/文件/选区 |
@@ -552,11 +552,11 @@
 
 ### 10.5 与竞品的精准定位差异
 
-| vs OpenClaw | Sarosis 提供 GUI 管理 + 多 Agent + IDE 集成，OpenClaw 作为 Provider 接入 |
+| vs OpenClaw | Saros 提供 GUI 管理 + 多 Agent + IDE 集成，OpenClaw 作为 Provider 接入 |
 |-------------|----------------------------------------------------------------------------|
-| vs WorkBuddy | Sarosis 面向专业开发者，提供深度可定制、透明可控的执行，WorkBuddy 面向泛职场人 |
-| vs CodeBuddy | Sarosis 提供多 Agent 编排 + 持久化能力 + 多后端组合，CodeBuddy 聚焦单人编码 |
-| vs Hermes | Sarosis 提供可视化管理 + IDE 集成 + 团队协作，Hermes 作为 Memory/Skill Provider 接入 |
+| vs WorkBuddy | Saros 面向专业开发者，提供深度可定制、透明可控的执行，WorkBuddy 面向泛职场人 |
+| vs CodeBuddy | Saros 提供多 Agent 编排 + 持久化能力 + 多后端组合，CodeBuddy 聚焦单人编码 |
+| vs Hermes | Saros 提供可视化管理 + IDE 集成 + 团队协作，Hermes 作为 Memory/Skill Provider 接入 |
 
 ### 10.6 技术架构核心设计原则
 
@@ -581,7 +581,7 @@
 - **CodeBuddy** 有专业深度但 Agent 能力有限
 - **没有产品** 同时提供：IDE 深度集成 + 多 Agent 协作 + 能力自由组合 + 可视化管控
 
-**Sarosis Agents Client 的机会窗口**: 成为开发团队的 "AI 团队管理平台"，在 IDE 中统一编排多个 AI Agent 协作完成复杂任务。
+**Saros Agents Client 的机会窗口**: 成为开发团队的 "AI 团队管理平台"，在 IDE 中统一编排多个 AI Agent 协作完成复杂任务。
 
 ### 11.2 建议优先级
 
@@ -601,7 +601,7 @@
 | 风险 | 应对策略 |
 |------|----------|
 | 产品过于复杂导致使用门槛高 | 提供"新手模式"（单 Agent + 默认配置），渐进式解锁高级功能 |
-| 与 CodeBuddy 功能重叠 | 明确定位差异：CodeBuddy 是"编程搭子"，Sarosis 是"AI 团队管理" |
+| 与 CodeBuddy 功能重叠 | 明确定位差异：CodeBuddy 是"编程搭子"，Saros 是"AI 团队管理" |
 | 多后端集成维护成本 | Provider 接口标准化 + 社区贡献机制 |
 | 性能瓶颈（多 Agent 并行） | 工作区隔离 + 独立 QuotaGuard + 资源上限配置 |
 
@@ -616,7 +616,7 @@
 | CodeBuddy | copilot.tencent.com / copilot.tencent.com/home/ |
 | Hermes Agent | github.com/NousResearch/hermes-agent |
 | QClaw | (腾讯内部产品) |
-| Sarosis Agents Client | git.tencent.com:zijianqiu/saros-agents-client |
+| Saros Agents Client | git.tencent.com:zijianqiu/saros-agents-client |
 
 ---
 

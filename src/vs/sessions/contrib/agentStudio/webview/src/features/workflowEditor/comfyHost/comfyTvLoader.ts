@@ -8,7 +8,7 @@
  *  `registerComfyTVNode`, and return the registered list for the palette.
  *--------------------------------------------------------------------------------------------*/
 
-import { registerComfyTVNode, getNodeSpec, type NodeSpec } from './registry.js';
+import { registerComfyTVNode, getNodeSpec, patchComfyTVWorkflowOptions, type NodeSpec } from './registry.js';
 
 export interface ComfyTVStageMeta {
 	node_id: string;
@@ -104,8 +104,39 @@ export async function loadComfyTVStages(
 		if (!Array.isArray(body.stages)) {
 			return { ...empty, error: 'missing stages array' };
 		}
-		return registerComfyTVStages(body);
+		const result = registerComfyTVStages(body);
+		// ComfyTV ImageStage 的 workflow COMBO options 由 /comfytv/workflows 动态生成
+		//（generators.py labels_for → workflowCombo）。拉取真实 workflow 列表并 patch
+		// 到已注册 spec 的 workflow 控件，使下拉可选项与 ComfyTV 一致。
+		void refreshComfyTVWorkflowOptions(baseUrl, fetchImpl, opts).catch(() => undefined);
+		return result;
 	} catch (err) {
 		return { ...empty, error: err instanceof Error ? err.message : String(err) };
 	}
+}
+
+export interface ComfyTVWorkflowsResponse {
+	workflows?: Array<{ id?: number | string; kind?: string; label?: string; default?: boolean }>;
+}
+
+/** 拉取 /comfytv/workflows，把 label 列表 patch 进已注册 ComfyTV 节点的 workflow 控件。 */
+export async function refreshComfyTVWorkflowOptions(
+	baseUrl: string,
+	fetchImpl: typeof fetch = fetch as typeof fetch,
+	opts?: { signal?: AbortSignal },
+): Promise<void> {
+	try {
+		const res = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/comfytv/workflows`, {
+			method: 'GET',
+			signal: opts?.signal,
+		});
+		if (!res.ok) { return; }
+		const body = (await res.json()) as ComfyTVWorkflowsResponse;
+		const labels = (body.workflows ?? [])
+			.map(w => typeof w?.label === 'string' && w.label ? w.label : undefined)
+			.filter((l): l is string => !!l);
+		if (labels.length > 0) {
+			patchComfyTVWorkflowOptions(labels);
+		}
+	} catch { /* 非致命：无 runner 时保持回退 options */ }
 }

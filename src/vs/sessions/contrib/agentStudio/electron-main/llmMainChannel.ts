@@ -8,7 +8,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILoggerService } from '../../../../platform/log/common/log.js';
 import { type IModelDelta } from '../common/providers.js';
-import { VSSAROS_LLM_CHANNEL, discoverModels, generateImage, streamChatCompletions, type IImageGenBridgeParams, type ISarosisLlmChatRequest, type LogFn, type LogLevel } from '../common/llmBridge.js';
+import { VSSAROS_LLM_CHANNEL, discoverModels, generateImage, httpRequest, streamChatCompletions, type IHttpRequestParams, type IImageGenBridgeParams, type ISarosisLlmChatRequest, type LogFn, type LogLevel } from '../common/llmBridge.js';
 import type { IBYOKProviderDefinition } from '../browser/builtInBYOKModelProvider.js';
 
 /**
@@ -83,6 +83,11 @@ export class LlmMainChannel<TContext> extends Disposable implements IServerChann
 					...params,
 					log: (level, msg, ...a) => this._log(level, msg, ...a),
 				});
+				return result as unknown as T;
+			}
+			case 'httpRequest': {
+				const params = (args as unknown) as IHttpRequestParams;
+				const result = await httpRequest(params, (level, msg, ...a) => this._log(level, msg, ...a));
 				return result as unknown as T;
 			}
 		}

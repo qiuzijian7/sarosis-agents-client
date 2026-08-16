@@ -12,6 +12,7 @@ import {
 	type MediaAsset,
 } from './mediaAssets';
 import { formatBytes, assetFileName } from './mediaGalleryUtils';
+import { ASSET_DRAG_MIME } from './comfyHost/actionSpawn';
 
 function readFileAsBase64(file: File): Promise<string> {
 	return new Promise((resolve, reject) => {
@@ -316,11 +317,25 @@ export function MediaGallery({ workflowId, onClose }: { workflowId: string; onCl
 							{items.map(a => {
 								const url = urls[a.id] ?? null;
 								return (
-									<div key={a.id} style={{
-										width: THUMB + 20, display: 'flex', flexDirection: 'column', gap: 4,
-										border: '1px solid var(--vscode-panel-border)', borderRadius: 6, padding: 6,
-										background: 'var(--vscode-sideBar-background)',
-									}}>
+									<div
+										key={a.id}
+										draggable
+										onDragStart={e => {
+											// 拖拽媒体库资产到画布（对齐 ComfyTV handleAssetDrop）。
+											// 写入自定义 MIME 供画布 drop 读取；延迟关闭媒体库 modal
+											// 让画布露出来（HTML5 拖拽由浏览器接管，源移除不中断）。
+											e.dataTransfer.setData(ASSET_DRAG_MIME, JSON.stringify({ id: a.id, kind: a.kind, ref: a.ref }));
+											e.dataTransfer.setData('text/plain', assetFileName(a));
+											e.dataTransfer.effectAllowed = 'copy';
+											const close = onClose;
+											setTimeout(() => close(), 0);
+										}}
+										title={`拖到画布创建加载节点 · ${assetFileName(a)}`}
+										style={{
+											width: THUMB + 20, display: 'flex', flexDirection: 'column', gap: 4,
+											border: '1px solid var(--vscode-panel-border)', borderRadius: 6, padding: 6,
+											background: 'var(--vscode-sideBar-background)', cursor: 'grab',
+										}}>
 										<div style={{ position: 'relative', width: THUMB, height: THUMB, borderRadius: 4, overflow: 'hidden', background: 'rgba(255,255,255,.04)' }}>
 											{url ? (
 												<img src={url} alt={assetFileName(a)} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />

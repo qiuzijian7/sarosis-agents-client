@@ -118,7 +118,7 @@ export class SessionsLayoutPolicy extends Disposable {
 				return { sidebar: false, auxiliaryBar: false, panel: false, chatBar: false, editor: true };
 		case 'tablet':
 		case 'desktop':
-			// [Sarosis] Two-column layout: Sidebar | Editor (split into files + Agent Studio)
+			// [Saros] Two-column layout: Sidebar | Editor (split into files + Agent Studio)
 			// No Panel, no AuxiliaryBar, no ChatBar.
 			return { sidebar: true, auxiliaryBar: false, panel: false, chatBar: false, editor: true };
 		}
@@ -140,7 +140,7 @@ export class SessionsLayoutPolicy extends Disposable {
 				};
 		case 'tablet':
 		case 'desktop':
-			// [Sarosis] Sidebar with activity bar + content panel (250px default)
+			// [Saros] Sidebar with activity bar + content panel (250px default)
 			return {
 				sideBarSize: 250,
 			};

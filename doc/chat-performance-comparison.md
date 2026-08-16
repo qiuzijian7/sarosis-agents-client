@@ -1,6 +1,6 @@
 # 聊天框渲染性能架构对比分析
 
-> 对比项目：VS Code 原生聊天、Void 聊天、Sarosis Agents Client 聊天
+> 对比项目：VS Code 原生聊天、Void 聊天、Saros Agents Client 聊天
 > 分析日期：2026-06-27
 > 重点关注：聊天框内容显示性能优化
 
@@ -8,7 +8,7 @@
 
 ## 一、架构总览对比
 
-| 维度 | VS Code 原生 | Void | Sarosis（本项目） |
+| 维度 | VS Code 原生 | Void | Saros（本项目） |
 |------|-------------|------|-------------------|
 | **列表渲染** | WorkbenchObjectTree 虚拟化 | 同 VS Code（fork） | 扁平 DOM，全量挂载 |
 | **DOM 复用** | 模板回收（template recycling） | 同 VS Code | 无复用，每次重建 |
@@ -56,7 +56,7 @@ this.tree = this._register(instantiationService.createInstance(
 这是 VS Code 聊天渲染的**核心性能机制**：
 
 ```typescript
-if (isResponseVM(element) && index === this.delegate.getListLength() - 1 
+if (isResponseVM(element) && index === this.delegate.getListLength() - 1
     && (!element.isComplete || element.renderData)) {
     const timer = templateData.elementDisposables.add(new dom.WindowIntervalTimer());
     const runProgressiveRender = (initial?: boolean) => {
@@ -75,7 +75,7 @@ if (isResponseVM(element) && index === this.delegate.getListLength() - 1
    ```
    应渲染词数 = 已渲染词数 + floor((当前时间 - 上次渲染时间) / 1000 * 速率)
    ```
-   
+
 2. **自适应速率**（`getProgressiveRenderRate`）：
    - 范围：40-2000 词/秒
    - 基于模型输出的 `impliedWordLoadRate`（隐含词加载速率）
@@ -159,7 +159,7 @@ VS Code 的代码块渲染：
 
 ---
 
-## 三、Sarosis（本项目）的架构分析
+## 三、Saros（本项目）的架构分析
 
 ### 3.1 扁平 DOM 全量挂载
 
@@ -205,7 +205,7 @@ updateMessage() → _updateMessageDom() → _renderMarkdownContent() → 完整 
 
 **优化后**（200ms 节流 + rAF 批处理）：
 ```
-updateMessage() 
+updateMessage()
   → 关键更新？→ 立即处理（isStreaming/toolCalls/parts 变化）
   → 流式文本更新？→ rAF 批处理（每帧最多一次）
     → _updateMessageDom() fast path
@@ -295,7 +295,7 @@ private _renderMarkdownContent(parent: HTMLElement, content: string): void {
 
 #### 场景 1：100 条历史消息加载
 
-| 操作 | VS Code/Void | Sarosis |
+| 操作 | VS Code/Void | Saros |
 |------|-------------|---------|
 | DOM 创建 | ~10-15 个可见消息的模板 | 100 个完整 DOM 子树（4000-10000 元素） |
 | 初始渲染时间 | ~50ms | ~500-2000ms |
@@ -304,7 +304,7 @@ private _renderMarkdownContent(parent: HTMLElement, content: string): void {
 
 #### 场景 2：流式输出 1000 词
 
-| 操作 | VS Code/Void | Sarosis（优化后） |
+| 操作 | VS Code/Void | Saros（优化后） |
 |------|-------------|-------------------|
 | 渲染频率 | 50ms 定时器（~20 次） | rAF 批处理 + 200ms 节流（~5-8 次） |
 | 每次渲染成本 | 增量 diff + 增量更新 | textContent（0 成本）+ 200ms markdown |
@@ -314,7 +314,7 @@ private _renderMarkdownContent(parent: HTMLElement, content: string): void {
 
 #### 场景 3：工具调用 + 文本混合流式
 
-| 操作 | VS Code/Void | Sarosis |
+| 操作 | VS Code/Void | Saros |
 |------|-------------|---------|
 | 工具卡渲染 | 随 part diff 增量添加 | slow-path 完整重建 |
 | 文本更新 | 增量 markdown 更新 | fast path 2 textContent + 200ms markdown |

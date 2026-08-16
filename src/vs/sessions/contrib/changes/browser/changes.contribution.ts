@@ -42,6 +42,12 @@ const changesViewContainer = viewContainersRegistry.registerViewContainer({
 		order: 1,
 	},
 	windowEnablement: WindowEnablement.Sessions
+	// [Saros] Keep this in the AuxiliaryBar (as documented in sessions/LAYOUT.md §10.1).
+	// Registering it in the Sidebar added a duplicate "Changes" Activity Bar icon next to the
+	// `Changes` view that already lives inside the Source Control container
+	// (`sessions.scm.changes`). The container must stay registered either way so that
+	// `openView(CHANGES_VIEW_ID)` / `getViewWithId(CHANGES_VIEW_ID)` keep working — they are
+	// used by the modal diff editor navigation in sessions/contrib/editor/browser/editor.contribution.ts.
 }, ViewContainerLocation.AuxiliaryBar);
 
 const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);

@@ -22,9 +22,8 @@ import { IViewsService } from '../../../../../workbench/services/views/common/vi
 import { IWorkflowStorageService, type IStoredWorkflow } from '../../common/workflowStorage.js';
 import { IWorkflowExecutionService } from '../../common/workflowExecutionService.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
-import type { Agent } from '../../../../common/agentStudioTypes.js';
 import { IModelSelectorService } from '../../common/modelSelector.js';
-import { AGENT_STUDIO_CHAT_VIEW_ID } from '../../common/constants.js';
+import { AGENT_STUDIO_CHAT_VIEW_ID, SAROS_CLAW_AGENT_ID } from '../../common/constants.js';
 import { WorkflowEditorInput } from '../workflowEditorInput.js';
 import { WorkflowMarketEditorInput } from '../workflowMarketEditorInput.js';
 import { IMarketplaceService } from '../../common/marketplace.js';
@@ -380,23 +379,14 @@ export class WorkflowViewPane extends ViewPane {
 	}
 
 	/**
-	 * Open the ClawChat view with the workflow agent selected, but do NOT send any message.
+	 * Open the ClawChat view with the saros-claw（内置主助理）selected, but do NOT send any message.
+	 * v34: 不再为工作流绑定专用 agent——默认选中内置主助理。
 	 */
-	private async _selectWorkflowAgentInChat(wf: IStoredWorkflow): Promise<void> {
+	private async _selectWorkflowAgentInChat(_wf: IStoredWorkflow): Promise<void> {
 		try {
-			const agent = await this._ensureWorkflowAgent(wf);
-			if (!agent) { return; }
-
-			// Persist agentId binding (first time)
-			if (wf.agentId !== agent.id) {
-				try {
-					await this.workflowStorage.updateWorkflow(wf.id, { agentId: agent.id });
-				} catch { /* non-fatal */ }
-			}
-
-			// Select the agent and open the chat view (no prompt) — use webview-based Agent Chat (right sidebar)
-			this.modelSelectorService.setSelectedAgentId(agent.id);
-			this.agentStudioService.fireSelectAgent(agent.id);
+			// Select the built-in saros-claw agent and open the chat view (no prompt).
+			this.modelSelectorService.setSelectedAgentId(SAROS_CLAW_AGENT_ID);
+			this.agentStudioService.fireSelectAgent(SAROS_CLAW_AGENT_ID);
 			await this.viewsService.openView(AGENT_STUDIO_CHAT_VIEW_ID, true);
 		} catch {
 			// Silently fail — the editor is already open
@@ -526,7 +516,7 @@ export class WorkflowViewPane extends ViewPane {
 		}
 
 		try {
-			// 1. Create the workflow (no steps initially)
+			// 1. Create the workflow (no steps initially)——不再创建/绑定专用 agent。
 			const wf = await this.workflowStorage.createWorkflow({
 				name,
 				description: description || '',
@@ -534,32 +524,12 @@ export class WorkflowViewPane extends ViewPane {
 				slug: slug || undefined,
 			});
 
-			// 2. Create a dedicated agent for this workflow
-			let agentCreated = false;
-			try {
-				const agent = await this._createWorkflowAgent(wf);
-				if (agent) {
-					wf.agentId = agent.id;
-					await this.workflowStorage.updateWorkflow(wf.id, { agentId: agent.id });
-					agentCreated = true;
-				}
-			} catch (agentErr) {
-				this.notificationService.warn(
-					`Workflow created but agent creation failed: ${agentErr instanceof Error ? agentErr.message : String(agentErr)}`
-				);
-			}
-
 			this._hideCreateForm();
 			this._workflows = [wf, ...this._workflows];
 			this._renderList();
 
 			// 2. Auto-open the new workflow in the editor area (middle column)
 			this._openWorkflow(wf);
-
-			// 3. Auto-select the new agent and open the right-side chat panel
-			if (agentCreated && wf.agentId) {
-				void this._selectWorkflowAgentInChat(wf);
-			}
 		} catch (err) {
 			this._flashMessage(err instanceof Error ? err.message : 'Failed to create workflow');
 		}
@@ -646,213 +616,6 @@ export class WorkflowViewPane extends ViewPane {
 		} catch (err) {
 			this.notificationService.error(`执行工作流失败: ${err instanceof Error ? err.message : String(err)}`);
 		}
-	}
-
-	/**
-	 * Ensure a dedicated agent exists for this workflow.
-	 * Each workflow has its OWN agent — no more sharing 'workflow-agent'.
-	 * - If wf.agentId exists and the agent is found, return it.
-	 * - Otherwise, create a new dedicated agent and bind it.
-	 */
-	private async _ensureWorkflowAgent(wf: IStoredWorkflow): Promise<Agent | undefined> {
-		// (a) Fast path: agentId already recorded
-		if (wf.agentId) {
-			const existing = await this.agentStudioService.getAgent(wf.agentId);
-			if (existing) { return existing; }
-			// agentId is stale — fall through to create a new one
-		}
-
-		// (b) Create a new dedicated agent for this workflow
-		const agent = await this._createWorkflowAgent(wf);
-		if (agent) {
-			try {
-				await this.workflowStorage.updateWorkflow(wf.id, { agentId: agent.id });
-				wf.agentId = agent.id;
-			} catch { /* non-fatal */ }
-		}
-		return agent;
-	}
-
-	/**
-	 * Create a dedicated agent for a workflow.
-	 * Each workflow gets its own agent with a system prompt built from the workflow definition.
-	 */
-	private async _createWorkflowAgent(wf: IStoredWorkflow): Promise<Agent | undefined> {
-		try {
-			// v9: use the workflow name directly (no suffix) to keep names consistent.
-			const agentName = wf.name;
-			const systemPrompt = this._buildWorkflowSystemPrompt(wf);
-
-			return await this.agentStudioService.createAgent({
-				id: wf.id,
-				name: agentName,
-				role: 'Workflow Manager',
-				description: `Manages and executes workflow: ${wf.name}`,
-				model: 'claude-sonnet-4-20250514',
-				systemPrompt,
-				skills: ['workflow-execution'],
-				tools: [
-					'read_file', 'list_dir', 'search_files', 'grep_search',
-					'write_to_file', 'replace_in_file', 'terminal', 'use_skill',
-					'workflow_get', 'workflow_get_schema', 'workflow_apply', 'workflow_list',
-				],
-				source: 'custom',
-				category: 'workflow',
-				icon: '🔀',
-			});
-		} catch (err) {
-			this.notificationService.error(
-				`Failed to create agent for workflow "${wf.name}": ${err instanceof Error ? err.message : String(err)}`
-			);
-			return undefined;
-		}
-	}
-
-	/**
-	 * Build a system prompt for a workflow agent from the workflow definition.
-	 */
-	private _buildWorkflowSystemPrompt(wf: IStoredWorkflow): string {
-		const lines: string[] = [];
-		lines.push(`You manage workflow "${wf.name}" (id: \`${wf.id}\`).`);
-		lines.push('');
-		lines.push('You are responsible for both executing AND editing this workflow graph.');
-		lines.push('Users may ask you to add, remove, or modify nodes. You have full control.');
-		lines.push('');
-
-		// ── Workflow tool instructions ─────────────────────────────────
-		lines.push('## Workflow Tools');
-		lines.push('');
-		lines.push('Available workflow editing tools:');
-		lines.push('- `workflow_list` — List all workflows in the current workspace');
-		lines.push('- `workflow_get` — Get the full state of a workflow (nodes, connections, metadata)');
-		lines.push('- `workflow_get_schema` — Get available node types and their data schemas');
-		lines.push('- `workflow_apply` — Apply a complete workflow definition (replaces all nodes/connections)');
-		lines.push('');
-		lines.push('Workflow creation/modification process:');
-		lines.push(`1. First call \`workflow_get\` with workflow_id="${wf.id}" to see the current state`);
-		lines.push('2. Call `workflow_get_schema` if you need to understand available node types');
-		lines.push('3. Generate the complete workflow JSON with ALL nodes and connections');
-		lines.push('4. Call `workflow_apply` with workflow_id, nodes, connections, and optional name/description');
-		lines.push('');
-		lines.push('Node types you can create:');
-		lines.push('- System: `start`, `end` (every workflow MUST have both)');
-		lines.push('- Basic: `prompt`, `agent`, `skill`, `tool`, `task`');
-		lines.push('- Control flow: `ifElse`, `switch`, `condition`, `loop`, `parallel`, `askUser`');
-		lines.push('- Layout: `group` (visual container, no execution logic)');
-		lines.push('');
-		lines.push('Guidelines:');
-		lines.push('- Every workflow MUST have exactly one `start` and one `end` node');
-		lines.push('- Position nodes with horizontal spacing of ~300px and vertical spacing of ~150px');
-		lines.push('- Start node typically at {x: 80, y: 250}');
-		lines.push('- Each connection requires: `id` (unique), `from` (source node id), `to` (target node id)');
-		lines.push('- `workflow_apply` replaces the ENTIRE workflow — always provide ALL nodes and connections');
-		lines.push('- Use descriptive labels for nodes so the workflow is readable');
-		lines.push('- For branching nodes (ifElse, switch), include the branches array with unique IDs');
-		lines.push('- Explain your changes briefly to the user after applying');
-		lines.push('');
-
-		if (wf.description) {
-			lines.push('## Workflow Description');
-			lines.push(wf.description);
-			lines.push('');
-		}
-
-		const nodes = wf.nodes;
-		if (nodes && nodes.length > 0) {
-			const userNodes = nodes.filter(n => n.type !== 'start' && n.type !== 'end' && n.type !== 'group');
-			if (userNodes.length > 0) {
-				lines.push('## Current Workflow Graph');
-				userNodes.forEach((n, i) => {
-					const label = (n.data?.label as string) || n.name || `Node ${i + 1}`;
-					lines.push(`- **${label}** (${n.type})`);
-				});
-				lines.push('');
-			}
-		}
-
-		lines.push('## Available Node Types');
-		lines.push('You can add any of these node types to the workflow:');
-		lines.push('- `prompt`: A text prompt template with {{variable}} substitution');
-		lines.push('- `agent`: Execute a specific agent with model configuration');
-		lines.push('- `skill`: Execute a named skill');
-		lines.push('- `tool`: Execute a tool with parameters');
-		lines.push('- `task`: A single task with an optional executor');
-		lines.push('- `ifElse`: Binary conditional branch (True/False)');
-		lines.push('- `switch`: Multi-way branch (2-N cases with a default)');
-		lines.push('- `condition`: Branch based on a condition expression (legacy)');
-		lines.push('- `loop`: Repeat over items with configurable variable');
-		lines.push('- `parallel`: Run multiple branches simultaneously');
-		lines.push('- `askUser`: Ask the user a question and branch based on selection');
-		lines.push('- `group`: Visual grouping container (layout only, not executable)');
-		lines.push('');
-
-		lines.push('## Workflow Tools');
-		lines.push('Use these tools to read and modify the workflow:');
-		lines.push('- `workflow_get`: Read the current workflow graph (nodes + connections)');
-		lines.push('- `workflow_get_schema`: Get the JSON schema for ALL node types AND the list of available agents with their IDs');
-		lines.push('- `workflow_apply`: Apply changes (add/remove/modify nodes and connections)');
-		lines.push('- `workflow_list`: List all workflows in this workspace');
-		lines.push('');
-
-		lines.push('## Agent Node Rules (CRITICAL)');
-		lines.push('When adding `agent` type nodes, you MUST populate both `agentId` AND `agentConfig`:');
-		lines.push('1. ALWAYS call `workflow_get_schema` first — it returns the `availableAgents` list with exact IDs and their models.');
-		lines.push('2. Set `agentId` to one of the ids from availableAgents exactly.');
-		lines.push('3. Set `agentConfig.modelId` to the agent\'s model (e.g., "claude-sonnet-4-20250514").');
-		lines.push('4. Set `agentConfig.providerId` to the appropriate provider if known, otherwise omit it.');
-		lines.push('5. If the user asks for an agent that does not exist, tell them to create it first.');
-		lines.push('6. Example: { "agentId": "coder", "agentConfig": { "modelId": "claude-sonnet-4-20250514" } }');
-		lines.push('');
-
-		lines.push('## Editing Rules');
-		lines.push('1. When asked to modify the workflow, first use `workflow_get` to see current state.');
-		lines.push('2. Then use `workflow_get_schema` to get valid agent IDs and node type schemas.');
-		lines.push('3. Build the complete nodes+connections array and apply via `workflow_apply`.');
-		lines.push('4. Always include Start and End nodes.');
-		lines.push('');
-		lines.push('### CRITICAL: Node Format');
-		lines.push('Every node MUST use this exact structure with a `data` wrapper for all content fields:');
-		lines.push('```');
-		lines.push('{');
-		lines.push('  "id": "unique-id",          // string, unique in this workflow');
-		lines.push('  "type": "agent",            // from schema nodeTypes');
-		lines.push('  "position": { "x": 320, "y": 200 },');
-		lines.push('  "data": {                    // ALL content fields go inside data');
-		lines.push('    "label": "Display Name",');
-		lines.push('    "agentId": "coder",');
-		lines.push('    "agentConfig": { "providerId": "knot", "modelId": "claude-sonnet-4-20250514" }');
-		lines.push('  }');
-		lines.push('}');
-		lines.push('```');
-		lines.push('DO NOT put label/agentId/agentConfig at the top level — they MUST be inside `data`.');
-		lines.push('For agent nodes: always include agentConfig.modelId from availableAgents.');
-		lines.push('');
-		lines.push('### Connection Format');
-		lines.push('```');
-		lines.push('{ "id": "e1", "from": "start", "to": "dev" }');
-		lines.push('{ "id": "e2", "from": "ask", "to": "opt1", "fromPort": "option-0" }  // multi-port nodes');
-		lines.push('```');
-		lines.push('');
-		lines.push('## Connection Port Rules (CRITICAL for branch nodes)');
-		lines.push('Multi-port nodes (ifElse, switch, condition, askUser) have MULTIPLE output handles.');
-		lines.push('Each connection FROM these nodes MUST include `fromPort` to specify which branch:');
-		lines.push('- `ifElse` / `condition`: `fromPort` = "branch-0" (True) or "branch-1" (False)');
-		lines.push('- `switch`: `fromPort` = "branch-0", "branch-1", "branch-2", ... (one per branch)');
-		lines.push('- `askUser`: `fromPort` = "option-0", "option-1", ... (one per option)');
-		lines.push('Example for ifElse: { "id": "e1", "from": "if-node", "to": "task-true", "fromPort": "branch-0" }');
-		lines.push('Example for askUser: { "id": "e1", "from": "ask-node", "to": "opt1-node", "fromPort": "option-0" }');
-		lines.push('Single-port nodes (start, end, task, prompt, agent, skill, tool, loop, parallel) do NOT need fromPort.');
-		lines.push('');
-
-		lines.push('## Execution Rules (when asked to run the workflow)');
-		lines.push('1. Execute steps following the workflow connections in topological order.');
-		lines.push('2. For branch nodes (ifElse/switch/condition/askUser), evaluate and follow the matching branch.');
-		lines.push('3. For parallel nodes, run all branches simultaneously.');
-		lines.push('4. For loop nodes, iterate over each item.');
-		lines.push('5. Narrate your progress and summarize results when done.');
-		lines.push('6. If any step is unclear, ask for clarification.');
-
-		return lines.join('\n');
 	}
 
 	private _getScopedCSS(): string {

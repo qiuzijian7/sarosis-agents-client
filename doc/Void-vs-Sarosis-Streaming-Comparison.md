@@ -1,4 +1,4 @@
-# Void vs Sarosis 流式消息链路深度对比分析
+# Void vs Saros 流式消息链路深度对比分析
 
 ## 一、架构总览
 
@@ -8,7 +8,7 @@
 LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染层
 ```
 
-| 层次 | Void | Sarosis |
+| 层次 | Void | Saros |
 |------|------|---------|
 | Provider | Electron 主进程 SDK 原生流 | Extension Host 原生 fetch SSE |
 | 解析 | extractGrammar wrapper 链 | IModelDelta → IChatStreamDelta 转换 |
@@ -22,7 +22,7 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 
 ### 2.1 LLM Provider 层
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | SDK 依赖 | OpenAI SDK / Anthropic SDK / Google GenAI SDK | 无 SDK 依赖，原生 fetch + SSE 解析 |
 | 进程模型 | Electron 主进程（Node.js） | Extension Host 进程（Node.js） |
@@ -37,12 +37,12 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 - 依赖多个 SDK，bundle 体积大
 - SDK 版本升级可能导致 breaking changes
 
-**Sarosis 优点**：
+**Saros 优点**：
 - 零 SDK 依赖，bundle 体积小
 - 统一 SSE 解析逻辑，新增 provider 只需实现 `IModelProvider` 接口
 - DI 注册模式更灵活，可运行时切换 provider
 
-**Sarosis 缺点**：
+**Saros 缺点**：
 - 手动 SSE 解析需要处理各种边界情况（不完整 JSON、换行、编码）
 - 每种 provider 的特殊流事件需要自行适配
 
@@ -50,7 +50,7 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 
 ### 2.2 解析层
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | 核心机制 | `extractGrammar.ts` wrapper 函数链 | `IModelDelta` → `IChatStreamDelta` 格式转换 |
 | 文本传递 | **全量 fullTextSoFar** | **增量 delta content** |
@@ -67,13 +67,13 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 - XML 工具解析仅支持单一格式，不支持 JSON/ReAct 等其他格式
 - `extractGrammar.ts` 的状态机逻辑复杂，流式中 `<think` 标签前缀缓冲难以调试
 
-**Sarosis 优点**：
+**Saros 优点**：
 - **7 种文本格式兜底**：覆盖 JSON code block、raw JSON、XML、bracket、ReAct、Python kwargs、thinking 推理
 - 原生 tool_calls 直接透传，无需从文本中提取
 - `content_replace` 事件支持：提取 tool call 后替换原始文本，避免 UI 闪现 JSON 噪点
 - `IModelCapabilityConfig` 声明式配置：新增模型无需修改代码逻辑
 
-**Sarosis 缺点**：
+**Saros 缺点**：
 - **增量累积风险**：WebView 侧需要自行维护 `textBuffer += content`，组件卸载/切换期间可能丢失 delta
 - 7 种格式提取逻辑集中在 `_tryExtractToolCallsFromText`，正则嵌套深、难以维护
 - 分布式格式转换：虽然已有 `MessageFormatConverter`，但 `builtInBYOKModelProvider` 内仍有大量 inline 转换
@@ -82,7 +82,7 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 
 ### 2.3 传输层
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | IPC 机制 | Electron IPC Channel（主进程↔渲染进程） | VS Code postMessage（Host↔WebView） |
 | 事件路由 | `requestId` + Emitter | `employeeId` + `sessionId` |
@@ -96,12 +96,12 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 **Void 缺点**：
 - 无流控机制，LLM 快速输出时可能导致渲染进程消息堆积
 
-**Sarosis 优点**：
+**Saros 优点**：
 - Host 侧 16ms frame 节流，避免 WebView 消息洪水
 - `backgroundStreams` 机制：多 Agent 并行流式时，非活跃 Agent 的 delta 在后台累积，切换时恢复
 - RAF 批次合并：`scheduleNotify()` 将同一帧内的多次 delta 合并为一次 React 渲染
 
-**Sarosis 缺点**：
+**Saros 缺点**：
 - postMessage 是结构化克隆，性能不如 Electron IPC
 - 多层 employeeId/sessionId 守卫逻辑复杂，边界情况多
 
@@ -109,7 +109,7 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 
 ### 2.4 状态管理层
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | 状态模型 | `IsRunningType` 5 状态 | `boolean isStreaming` |
 | 状态定义 | `'LLM' \| 'tool' \| 'awaiting_user' \| 'idle' \| undefined` | `true \| false` |
@@ -130,12 +130,12 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 - 状态机流转逻辑复杂，需要正确维护 `idle` 过渡态
 - 5 状态 + 关联数据导致 `ThreadStreamState` 类型定义庞大
 
-**Sarosis 优点**：
+**Saros 优点**：
 - 简单直观，`isStreaming` boolean 易于理解
 - `StreamState` 扁平结构，所有字段平铺，不需要 discriminated union
 - 额外的 `toolCalls[].status`（`running/done/error`）提供了细粒度的工具状态
 
-**Sarosis 缺点**：
+**Saros 缺点**：
 - **无法区分 "LLM 输出中" 和 "工具执行中"**：都是 `isStreaming=true`
 - **无法表达 `awaiting_user`**：需要用户审批的场景只能用 `ConfirmationCard` 单独处理
 - `idle` 过渡态缺失：LLM 流结束到工具执行开始之间，`isStreaming` 可能为 false（闪断）
@@ -145,7 +145,7 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 
 ### 2.5 UI 渲染层
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | 状态订阅 | 全局变量 + `Set<Listener>` | Zustand `subscribeStream` → `set({ streamState })` |
 | 流式消息 | `currStreamingMessageHTML` 虚拟 ChatBubble | `StreamingBubble` memo 组件 |
@@ -167,7 +167,7 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 - 不支持多 Agent 并行
 - 代码集中在单个 `SidebarChat.tsx`（3000+ 行），维护困难
 
-**Sarosis 优点**：
+**Saros 优点**：
 - **StreamingBubble 独立 memo**：父列表不因流式 delta 重新渲染
 - **InterleavedMarkdownRenderer**：工具卡片根据 `textPosition` 嵌入 Markdown 流中，视觉连贯
 - **backgroundStreams**：多 Agent 并行流式互不干扰
@@ -175,7 +175,7 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 - **结构化错误**：`StreamError` 接口支持 `level/retryable/isRateLimited`，UI 可区分展示
 - **VS Code Copilot Chat 卡片模式**：references/progress/confirmation/todos/tips/questions 6 种富卡片
 
-**Sarosis 缺点**：
+**Saros 缺点**：
 - 增量 `textBuffer` 累积：如果 RAF 被取消（如切换 Agent），部分 delta 可能丢失
 - `cancelStream` 需要手动保存部分内容为 `cancelled_*` 消息，逻辑复杂
 - `loadHistoryForSession` 去重逻辑 3 层嵌套（id → content → planId），过度防御
@@ -189,7 +189,7 @@ LLM Provider API → 解析层 → 传输层 → 状态管理层 → UI 渲染�
 
 ```
 Void:   LLM → fullTextSoFar += newChunk → onText({ fullText }) → UI 直接渲染
-Sarosis: LLM → yield { type: 'text', content: newChunk } → textBuffer += newChunk → UI 渲染 textBuffer
+Saros: LLM → yield { type: 'text', content: newChunk } → textBuffer += newChunk → UI 渲染 textBuffer
 ```
 
 | 维度 | fullTextSoFar | delta textBuffer |
@@ -200,7 +200,7 @@ Sarosis: LLM → yield { type: 'text', content: newChunk } → textBuffer += new
 | 断点恢复 | 天然支持（全量快照） | 需要额外机制（hostMessage 对比） |
 | 内容一致性 | 天然一致 | 需要防御（hostMessage vs buffer 取较长者） |
 
-**Sarosis 的防御措施**：
+**Saros 的防御措施**：
 - `onStreamComplete` 中取 `max(hostText.length, textBuffer.length)` 作为最终内容
 - `CONTENT MISMATCH` 检测日志
 - `resetStreamSilent()` + 原子提交避免中间态
@@ -211,20 +211,20 @@ Sarosis: LLM → yield { type: 'text', content: newChunk } → textBuffer += new
 Void 状态流转:
   undefined → LLM → idle → tool → idle → LLM → ... → undefined
 
-Sarosis 状态流转:
+Saros 状态流转:
   false → true (isStreaming) → false
   (内部无法区分 LLM/tool/awaiting_user)
 ```
 
-**关键问题**：Sarosis 的 `isStreaming=true` 期间，如果 LLM 输出结束、工具开始执行，会出现：
+**关键问题**：Saros 的 `isStreaming=true` 期间，如果 LLM 输出结束、工具开始执行，会出现：
 1. LLM 最后一帧 `onText` → `isStreaming=true, textBuffer=完整文本`
 2. 工具开始执行 → 仍 `isStreaming=true`，但 `textBuffer` 不再增长
 3. UI 层无法得知"LLM 已结束，工具正在执行"，只能靠 `toolCalls` 变化推断
 
-**Void 的 `awaiting_user` 状态** 是 Sarosis 缺失的重要场景：
+**Void 的 `awaiting_user` 状态** 是 Saros 缺失的重要场景：
 - 工具执行前需要用户审批（安全工具：文件删除、命令执行）
 - Void 直接在 `streamState` 中表达，UI 显示审批按钮
-- Sarosis 需要额外的 `ConfirmationCard` 机制，与 `isStreaming` 状态脱节
+- Saros 需要额外的 `ConfirmationCard` 机制，与 `isStreaming` 状态脱节
 
 ### 3.3 消息格式转换：集中式 vs 分布式+工具类
 
@@ -232,7 +232,7 @@ Sarosis 状态流转:
 Void:
   SDK 流 → extractReasoningWrapper → extractXMLToolsWrapper → 统一 onText/onFinalMessage
 
-Sarosis:
+Saros:
   SDK 流 → IModelDelta (per-provider) → IChatStreamDelta (统一) → StreamChunk (webview)
           ↑ formatAdapter.ts          ↑ messageProtocol.ts     ↑ streamHandler.ts
 ```
@@ -242,7 +242,7 @@ Sarosis:
 - 条件组合：仅当 `manuallyParseReasoning=true` 时加推理 wrapper，仅当 `!specialToolFormat` 时加 XML wrapper
 - 缺点：XML wrapper 仅支持一种格式
 
-**Sarosis 的分布式**：
+**Saros 的分布式**：
 - 每个 provider 自行将原始响应转换为 `IModelDelta`
 - `MessageFormatConverter` 提供共享的格式转换工具
 - `_tryExtractToolCallsFromText` 提供 7 种格式兜底
@@ -268,7 +268,7 @@ Sarosis:
 4. **SidebarChat.tsx 过大** — 3000+ 行单文件，维护困难
 5. **无虚拟滚动** — 消息量大时性能下降
 
-### Sarosis 的优势
+### Saros 的优势
 
 1. **零 SDK 依赖** — bundle 体积小，维护成本低
 2. **7 种工具格式兜底** — 覆盖面广，适配开源模型能力强
@@ -279,7 +279,7 @@ Sarosis:
 7. **VS Code Copilot Chat 卡片** — references/progress/confirmation 等富内容
 8. **声明式能力配置** — `IModelCapabilityConfig` 新增模型无需改代码
 
-### Sarosis 的劣势
+### Saros 的劣势
 
 1. **增量累积风险** — WebView 侧 textBuffer 可能丢失
 2. **状态模型粗糙** — boolean isStreaming 无法区分 LLM/tool/awaiting_user

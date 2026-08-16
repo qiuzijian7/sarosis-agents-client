@@ -9,7 +9,8 @@ import {
 	registerComfyTVStages,
 	loadComfyTVStages,
 } from '../../webview/src/features/workflowEditor/comfyHost/comfyTvLoader.js';
-import { getNodeSpec, unregisterNodeSpec } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
+import { getNodeSpec, unregisterNodeSpec, registerComfyTVNode, patchComfyTVWorkflowOptions, COMFYTV_IMAGE_WORKFLOWS, getAllSpecs } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
+import { COMFYTV_STAGE_META } from '../../webview/src/features/workflowEditor/comfyHost/comfyTVStageMeta.generated.js';
 
 function cleanup(types: string[]): void {
 	for (const t of types) { unregisterNodeSpec(t); }
@@ -91,6 +92,133 @@ suite('comfyTvLoader', () => {
 		});
 	});
 
+	suite('ComfyTV ImageStage 控件对齐（对齐 generators.py）', () => {
+
+		test('registerDefaultComfyTVStages 的 ImageStage 回退控件与 ComfyTV 上游一致（workflow/resolution/aspect_ratio/batch_size）', () => {
+			cleanup(['ComfyTV.ImageStage']);
+			// 直接调用回退注册
+			const { registerDefaultComfyTVStages } = require('../../webview/src/features/workflowEditor/comfyHost/registry.js') as typeof import('../../webview/src/features/workflowEditor/comfyHost/registry.js');
+			registerDefaultComfyTVStages();
+			const spec = getNodeSpec('ComfyTV.ImageStage');
+			assert.ok(spec, 'ImageStage 已注册');
+			const names = (spec!.widgets ?? []).map(w => w.name);
+			// ComfyTV 真实字段：workflow/resolution/aspect_ratio/batch_size/prompt，
+			// 无 seed/width/height/steps（分辨率由 resolution+aspect_ratio 推导）。
+			assert.deepStrictEqual(names, ['workflow', 'resolution', 'aspect_ratio', 'batch_size', 'prompt']);
+			assert.strictEqual(spec!.widgets!.find(w => w.name === 'workflow')!.default, COMFYTV_IMAGE_WORKFLOWS[0]);
+			const resolution = spec!.widgets!.find(w => w.name === 'resolution')!;
+			assert.ok((resolution.options ?? []).includes('1K'));
+			cleanup(['ComfyTV.ImageStage']);
+		});
+
+		test('registerComfyTVNode 覆盖时保留已有 widgets + 端口（/comfytv/stages 元数据无 widgets/ports）', () => {
+			cleanup(['ComfyTV.ImageStage']);
+			// 先注册带控件 + Autogrow 端口（模拟回退表的 texts/images）
+			registerComfyTVNode({
+				type: 'ComfyTV.ImageStage',
+				kind: 'image',
+				workflowKind: 'image-to-image',
+				inputs: [{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'images', type: 'COMFYTV_IMAGE' }],
+				outputs: [{ name: 'images', type: 'COMFYTV_IMAGES' }],
+				widgets: [
+					{ name: 'workflow', type: 'COMBO', default: 'Local SD1.5', options: ['Local SD1.5'] },
+					{ name: 'prompt', type: 'TEXT', default: '' },
+				],
+			});
+			// 再用 /comfytv/stages 元数据覆盖（无 widgets、空 ports）→ 控件与端口不能丢
+			registerComfyTVNode({ type: 'ComfyTV.ImageStage', kind: 'image', workflowKind: 'image', inputs: [], outputs: [] });
+			const spec = getNodeSpec('ComfyTV.ImageStage')!;
+			assert.strictEqual((spec.widgets ?? []).length, 2, '覆盖后控件保留');
+			assert.strictEqual(spec.widgets![0].name, 'workflow');
+			assert.strictEqual(spec.inputs.length, 2, '覆盖后 Autogrow 输入端口保留');
+			assert.strictEqual(spec.inputs[0].name, 'texts');
+			assert.strictEqual(spec.outputs[0].name, 'images');
+			cleanup(['ComfyTV.ImageStage']);
+		});
+
+		test('patchComfyTVWorkflowOptions 填充 workflow 控件 options（ComfyTV 上游 labels_for 等价）', () => {
+			cleanup(['ComfyTV.ImageStage']);
+			registerComfyTVNode({
+				type: 'ComfyTV.ImageStage',
+				kind: 'image',
+				widgets: [{ name: 'workflow', type: 'COMBO', default: '', options: [] }],
+			});
+			patchComfyTVWorkflowOptions(['Local SD1.5', 'Local SD1.5 I2I', 'Image Ideogram4 T2I']);
+			const wf = getNodeSpec('ComfyTV.ImageStage')!.widgets!.find(w => w.name === 'workflow')!;
+			assert.deepStrictEqual(wf.options, ['Local SD1.5', 'Local SD1.5 I2I', 'Image Ideogram4 T2I']);
+			cleanup(['ComfyTV.ImageStage']);
+		});
+
+		test('patchComfyTVWorkflowOptions 空列表不动作', () => {
+			cleanup(['ComfyTV.ImageStage']);
+			registerComfyTVNode({ type: 'ComfyTV.ImageStage', kind: 'image', widgets: [{ name: 'workflow', type: 'COMBO', default: '', options: [] }] });
+			patchComfyTVWorkflowOptions([]);
+			assert.deepStrictEqual(getNodeSpec('ComfyTV.ImageStage')!.widgets!.find(w => w.name === 'workflow')!.options, []);
+			cleanup(['ComfyTV.ImageStage']);
+		});
+	});
+
+	suite('registerDefaultComfyTVStages 全量复刻', () => {
+
+		test('171 个 ComfyTV stage 全部注册（与 get_node_list 对齐）', () => {
+			const { registerDefaultComfyTVStages } = require('../../webview/src/features/workflowEditor/comfyHost/registry.js') as typeof import('../../webview/src/features/workflowEditor/comfyHost/registry.js');
+			registerDefaultComfyTVStages();
+			const all = getAllSpecs();
+			const overrideNative = new Set([
+				// 浏览器本地 editor/instant 覆盖（非运行型 stage）
+				'ComfyTV.RelightStage', 'ComfyTV.PosterStage', 'ComfyTV.LayerEditorStage',
+				'ComfyTV.StoryboardEditorStage', 'ComfyTV.MaterialStage', 'ComfyTV.Scene3DStage',
+				'ComfyTV.CropStage', 'ComfyTV.RotateStage', 'ComfyTV.MirrorStage',
+			]);
+			for (const meta of COMFYTV_STAGE_META) {
+				const spec = getNodeSpec(meta.nodeId);
+				assert.ok(spec, `${meta.nodeId} 未注册`);
+				if (overrideNative.has(meta.nodeId)) { continue; } // native 覆盖例外
+				assert.strictEqual(spec!.comfyTV?.stageKind, meta.kind, `${meta.nodeId} kind 不匹配`);
+				assert.strictEqual(spec!.title, meta.title, `${meta.nodeId} title 不匹配`);
+			}
+			// 清理（避免污染其它测试）
+			for (const meta of COMFYTV_STAGE_META) { unregisterNodeSpec(meta.nodeId); }
+			// 清理 bridge/instant/editor 等手动注册节点
+			for (const spec of all) {
+				if (spec.type.startsWith('ComfyTV.')) { unregisterNodeSpec(spec.type); }
+			}
+		});
+
+		test('ImageStage 控件精确对齐（workflow/resolution/aspect_ratio/batch_size/prompt）', () => {
+			const { registerDefaultComfyTVStages } = require('../../webview/src/features/workflowEditor/comfyHost/registry.js') as typeof import('../../webview/src/features/workflowEditor/comfyHost/registry.js');
+			registerDefaultComfyTVStages();
+			const spec = getNodeSpec('ComfyTV.ImageStage')!;
+			const names = (spec.widgets ?? []).map(w => w.name);
+			assert.deepStrictEqual(names, ['workflow', 'resolution', 'aspect_ratio', 'batch_size', 'prompt']);
+			assert.strictEqual(spec.inputs.length, 2);
+			assert.strictEqual(spec.outputs.length, 2);
+			for (const meta of COMFYTV_STAGE_META) { unregisterNodeSpec(meta.nodeId); }
+		});
+
+		test('VideoStage 控件精确对齐（workflow/resolution/aspect_ratio/duration_s/generate_audio/prompt）', () => {
+			const { registerDefaultComfyTVStages } = require('../../webview/src/features/workflowEditor/comfyHost/registry.js') as typeof import('../../webview/src/features/workflowEditor/comfyHost/registry.js');
+			registerDefaultComfyTVStages();
+			const spec = getNodeSpec('ComfyTV.VideoStage')!;
+			const names = (spec.widgets ?? []).map(w => w.name);
+			assert.deepStrictEqual(names, ['workflow', 'resolution', 'aspect_ratio', 'duration_s', 'generate_audio', 'prompt']);
+			assert.strictEqual(spec.outputs[0].name, 'videos');
+			for (const meta of COMFYTV_STAGE_META) { unregisterNodeSpec(meta.nodeId); }
+		});
+
+		test('泛型 stage 注册 schema + workflow widget + kind 输出端口', () => {
+			const { registerDefaultComfyTVStages } = require('../../webview/src/features/workflowEditor/comfyHost/registry.js') as typeof import('../../webview/src/features/workflowEditor/comfyHost/registry.js');
+			registerDefaultComfyTVStages();
+			const spec = getNodeSpec('ComfyTV.GlowStage')!; // 泛型 video stage
+			assert.strictEqual(spec.kind, 'schema');
+			assert.strictEqual(spec.outputs[0].type, 'COMFYTV_VIDEO');
+			assert.strictEqual(spec.comfyTV?.stageKind, 'video');
+			const names = (spec.widgets ?? []).map(w => w.name);
+			assert.deepStrictEqual(names, ['workflow']);
+			for (const meta of COMFYTV_STAGE_META) { unregisterNodeSpec(meta.nodeId); }
+		});
+	});
+
 	suite('loadComfyTVStages (HTTP)', () => {
 
 		test('fetches and registers stages', async () => {
@@ -108,13 +236,15 @@ suite('comfyTvLoader', () => {
 		});
 
 		test('trims trailing slash from baseUrl', async () => {
-			let called = '';
+			const called: string[] = [];
 			const fakeFetch = async (url: string) => {
-				called = url;
+				called.push(url);
 				return { ok: true, status: 200, json: async () => ({ stages: [] }) };
 			};
 			await loadComfyTVStages('http://x:8188/', fakeFetch as never);
-			assert.strictEqual(called, 'http://x:8188/comfytv/stages');
+			// 首次是 stages；其后可能异步拉 workflows（options 填充）。
+			assert.strictEqual(called[0], 'http://x:8188/comfytv/stages');
+			assert.ok(called.every(u => !u.startsWith('http://x:8188//')), '无双斜杠');
 		});
 
 		test('non-ok response → error, no registration', async () => {

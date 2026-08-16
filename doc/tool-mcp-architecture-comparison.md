@@ -1,6 +1,6 @@
 # Tool & MCP 架构对比分析
 
-> OpenClaw vs Sarosis-Agents-Client 工具注入、解析、调用逻辑深度对比
+> OpenClaw vs Saros-Agents-Client 工具注入、解析、调用逻辑深度对比
 
 ---
 
@@ -43,7 +43,7 @@
   └──────────────┘
 ```
 
-### Sarosis-Agents-Client 架构
+### Saros-Agents-Client 架构
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
@@ -68,7 +68,7 @@
 
 ### 核心差异
 
-| 维度 | OpenClaw | Sarosis |
+| 维度 | OpenClaw | Saros |
 |------|----------|---------|
 | **执行模型** | SDK 驱动（pi-agent-core 自动执行 tool） | 手动驱动（自行解析 + 分发执行） |
 | **工具来源** | 4 种 owner: core / plugin / channel / mcp | 3 种 provider: Builtin / MCP / Extension |
@@ -113,7 +113,7 @@ interface AgentTool<TParams, TResult> {
 4. `buildToolPlan()` 评估可用性，输出 visible/hidden 两组
 5. `toToolDefinitions()` 适配为 SDK 可消费的格式
 
-### 2.2 Sarosis 的工具定义
+### 2.2 Saros 的工具定义
 
 **核心类型文件：** `src/vs/sessions/contrib/agentStudio/common/providers.ts`
 
@@ -146,12 +146,12 @@ interface IToolProvider {
 
 ### 2.3 对比分析
 
-| 方面 | OpenClaw | Sarosis | 评价 |
+| 方面 | OpenClaw | Saros | 评价 |
 |------|----------|---------|------|
-| **Schema 格式** | TypeBox (TSchema) | 原生 JSON Schema | OpenClaw 更类型安全，Sarosis 更灵活 |
+| **Schema 格式** | TypeBox (TSchema) | 原生 JSON Schema | OpenClaw 更类型安全，Saros 更灵活 |
 | **可用性控制** | 声明式表达式 (`auth`/`env`/`config`) | 命令式 `enable/disable` | OpenClaw 可自动评估运行时条件 |
 | **策略管线** | 7 层策略逐步过滤 | 无（仅 enable/disable） | OpenClaw 更精细但复杂度极高 |
-| **工具发现** | 编译时注册 + 运行时策略 | 运行时动态注册 + Observable | Sarosis 架构更灵活 |
+| **工具发现** | 编译时注册 + 运行时策略 | 运行时动态注册 + Observable | Saros 架构更灵活 |
 | **去重策略** | name 冲突时按策略决定 | priority 高的覆盖低的 | 各有道理 |
 
 ---
@@ -185,7 +185,7 @@ SessionMcpRuntimeManager (全局单例)
 5. **名称安全化**：`{safeServerName}__{toolName}`，最长 64 字符
 6. **重建而非重连**：不实现自动重连，通过配置变更检测触发重建
 
-### 3.2 Sarosis 的 MCP 实现
+### 3.2 Saros 的 MCP 实现
 
 **核心文件：**
 - `src/vs/sessions/contrib/agentStudio/browser/providers/tool/mcpToolProvider.ts` — McpToolProvider
@@ -222,15 +222,15 @@ IMcpService (VS Code 上游)
 
 ### 3.3 MCP 对比
 
-| 方面 | OpenClaw | Sarosis | 评价 |
+| 方面 | OpenClaw | Saros | 评价 |
 |------|----------|---------|------|
-| **连接管理** | 自建 runtime + 手动 lifecycle | 复用 VS Code 上游 McpService | Sarosis 更轻量，但灵活性受限 |
+| **连接管理** | 自建 runtime + 手动 lifecycle | 复用 VS Code 上游 McpService | Saros 更轻量，但灵活性受限 |
 | **缓存策略** | SHA1 配置指纹 + 空闲回收 | Observable 响应式 + 懒启动 | 各有优势 |
-| **工具发现** | cursor 分页获取全部 | Observable 自动同步 | Sarosis 更实时 |
+| **工具发现** | cursor 分页获取全部 | Observable 自动同步 | Saros 更实时 |
 | **传输支持** | stdio / sse / streamable-http | stdio / HTTP(SSE) | OpenClaw 多一种 |
 | **容错** | 单 server 失败不阻塞 | 依赖上游 McpService 处理 | 类似 |
-| **配置来源** | 自有配置 + plugin bundle | 多 IDE 配置兼容 | Sarosis 兼容性更强 |
-| **预置模板** | 无（靠 plugin） | 16 个内置预设 | Sarosis 开箱体验更好 |
+| **配置来源** | 自有配置 + plugin bundle | 多 IDE 配置兼容 | Saros 兼容性更强 |
+| **预置模板** | 无（靠 plugin） | 16 个内置预设 | Saros 开箱体验更好 |
 
 ---
 
@@ -259,7 +259,7 @@ params.tools = convertAnthropicTools(context.tools, isOAuthToken);
 - OpenAI strict 模式要求 `additionalProperties: false`
 - Gemini 不支持 `$ref`/`$defs`
 
-### 4.2 Sarosis
+### 4.2 Saros
 
 同样通过 **API tool_use 参数**：
 
@@ -280,7 +280,7 @@ body.tool_choice = 'auto';
 
 ### 4.3 对比
 
-| 方面 | OpenClaw | Sarosis |
+| 方面 | OpenClaw | Saros |
 |------|----------|---------|
 | **API 格式** | OpenAI Responses / Completions / Anthropic | 仅 OpenAI Function Calling |
 | **Schema 标准化** | 有（per-provider 适配） | 无（直接传递） |
@@ -316,7 +316,7 @@ body.tool_choice = 'auto';
    - `function_call` 的 `arguments` 是流式拼接的
    - SDK 在 `done` 事件后完成 JSON 解析并触发 execute
 
-### 5.2 Sarosis
+### 5.2 Saros
 
 **双层解析机制：**
 
@@ -344,7 +344,7 @@ body.tool_choice = 'auto';
 
 ### 5.3 对比
 
-| 方面 | OpenClaw | Sarosis |
+| 方面 | OpenClaw | Saros |
 |------|----------|---------|
 | **Native 解析** | SDK 自动（多 provider） | 手动实现（仅 OpenAI） |
 | **文本降级** | 检测+标记（不自动执行） | 检测+提取+执行 |
@@ -377,7 +377,7 @@ LLM 流式响应
 - **结果截断**：`TOOL_RESULT_MAX_CHARS = 8000`
 - **客户端工具**：部分工具标记为 `clientToolCalls`，需要外部执行后手动回传
 
-### 6.2 Sarosis
+### 6.2 Saros
 
 **手动分发模型：**
 
@@ -405,7 +405,7 @@ LLM 流式响应
 
 ### 6.3 对比
 
-| 方面 | OpenClaw | Sarosis |
+| 方面 | OpenClaw | Saros |
 |------|----------|---------|
 | **执行方式** | SDK 自动 | 手动循环 |
 | **并行策略** | LLM API 参数 + SDK 并行 | 运行时智能判断 |
@@ -441,7 +441,7 @@ LLM 流式响应
 - 超时 → 标记 `timedOut: true` 并记录
 - 多模态支持 → text / image / resource 三种内容类型
 
-### 7.2 Sarosis
+### 7.2 Saros
 
 **结果格式化流程：**
 
@@ -470,7 +470,7 @@ LLM 流式响应
 
 ### 7.3 对比
 
-| 方面 | OpenClaw | Sarosis |
+| 方面 | OpenClaw | Saros |
 |------|----------|---------|
 | **内容类型** | text / image / resource | text / image / resource |
 | **错误截断** | 400 chars | sanitizeToolError() |
@@ -500,7 +500,7 @@ LLM 流式响应
    - 工具可标记 sandbox 限制
    - Subagent 策略限制子代理可用工具集
 
-### 8.2 Sarosis
+### 8.2 Saros
 
 **当前机制：**
 - 工具 enable/disable 开关（用户手动管理）
@@ -511,7 +511,7 @@ LLM 流式响应
 
 ## 9. 对比总结表
 
-| 维度 | OpenClaw | Sarosis | 差距评估 |
+| 维度 | OpenClaw | Saros | 差距评估 |
 |------|----------|---------|----------|
 | **工具类型系统** | TypeBox + 声明式 Descriptor | 原生 JSON Schema + IToolProvider | ⭐ 中等 |
 | **可用性评估** | 表达式引擎（auth/env/config） | 简单开关 | ⭐⭐ 较大 |
@@ -523,10 +523,10 @@ LLM 流式响应
 | **工具调用解析** | SDK + 多格式文本检测 | 手动 + 仅 JSON 提取 | ⭐⭐ 较大 |
 | **并行执行** | API 参数 + SDK | 智能判断 + Promise.all | ⭐ 基本对等 |
 | **安全审批** | 双层审批 + 沙箱 | 仅 enable/disable | ⭐⭐⭐ 显著 |
-| **工具名修复** | 无 | repairToolName (优势) | Sarosis 更好 |
+| **工具名修复** | 无 | repairToolName (优势) | Saros 更好 |
 | **执行超时** | AbortSignal | 无 | ⭐⭐ 较大 |
-| **预置模板** | 无（靠 plugin） | 16 个内置 | Sarosis 更好 |
-| **配置兼容** | 自有格式 | 多 IDE 兼容 | Sarosis 更好 |
+| **预置模板** | 无（靠 plugin） | 16 个内置 | Saros 更好 |
+| **配置兼容** | 自有格式 | 多 IDE 兼容 | Saros 更好 |
 
 ---
 
@@ -730,7 +730,7 @@ Phase 3 (持续): P2 项目
 
 ## 附录：关键文件路径对照
 
-| 功能模块 | OpenClaw | Sarosis |
+| 功能模块 | OpenClaw | Saros |
 |----------|----------|---------|
 | 工具类型定义 | `src/tools/types.ts` | `src/vs/sessions/.../common/providers.ts` |
 | 工具注册 | `src/agents/openclaw-tools.registration.ts` | `src/vs/sessions/.../browser/agentStudio.contribution.ts` |

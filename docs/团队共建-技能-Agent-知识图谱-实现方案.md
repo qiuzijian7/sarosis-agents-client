@@ -1,6 +1,6 @@
-# Sarosis 团队共建：技能 / Agent / 知识图谱 实现方案
+# Saros 团队共建：技能 / Agent / 知识图谱 实现方案
 
-> 日期：2026-06-15 | 参考项目：Hivemind (Activeloop) | 目标：Sarosis Agents Client 多人协作扩展
+> 日期：2026-06-15 | 参考项目：Hivemind (Activeloop) | 目标：Saros Agents Client 多人协作扩展
 
 ---
 
@@ -16,9 +16,9 @@
 
 ### 1.2 关键约束
 
-| 约束 | 影响 | Hivemind 做法 | Sarosis 调整 |
+| 约束 | 影响 | Hivemind 做法 | Saros 调整 |
 |------|------|-------------|------------|
-| Sarosis 是单用户桌面 App | 无天然的多用户模型 | 每个用户独立认证 | 需要用户身份标识（Gongfeng/企业微信）|
+| Saros 是单用户桌面 App | 无天然的多用户模型 | 每个用户独立认证 | 需要用户身份标识（Gongfeng/企业微信）|
 | Workspace 严格隔离 | 跨工作区数据不可见 | 无工作区概念 | 扩展 ISkillRegistry 支持 team source |
 | 无云后端 | 必须自建或复用 | Deeplake SQL API | 使用 Gongfeng API / 轻量 Git 仓库 / 自定义 Server |
 | VS Code 进程模型 | 后台服务需要分离进程 | `spawn detached` Worker | VS Code Extension Host 或分离 Node 进程 |
@@ -62,7 +62,7 @@
 
 ### 2.2 核心设计原则（源自 Hivemind）
 
-| 原则 | Hivemind 实现 | Sarosis 采用 |
+| 原则 | Hivemind 实现 | Saros 采用 |
 |------|-------------|------------|
 | **Pull 优先** | SessionStart 自动 pull | Workspace 打开时自动 sync |
 | **INSERT-only 版本化** | Rules/Skills 永不 UPDATE | Team 资源 INSERT-only，version 递增 |
@@ -913,9 +913,9 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
 | 存储后端 | 先 Git Backend, 后 Gongfeng | MVP 快速上线；Git 天然支持版本控制、冲突解决、分布 |
 | 技能冲突 | 三方合并 + 标记冲突 | 比 CRDT 简单，比 last-write-wins 安全 |
 | 图谱压缩 | gzip | 图谱 JSON 可达数 MB，gzip 压缩率 5-10x |
-| 多 Agent 符号链接 | 不需要（VS Code 单 Agent） | Hivemind 的符号链接扇出是为多 Agent 设计的；Sarosis 是单一平台 |
+| 多 Agent 符号链接 | 不需要（VS Code 单 Agent） | Hivemind 的符号链接扇出是为多 Agent 设计的；Saros 是单一平台 |
 | 团队目标管理 | 延后到 Phase 5 | 优先级低于技能/Agent/图谱 |
 
 ---
 
-> 本文档覆盖了 Sarosis 团队共建的完整设计，包括数据模型、存储结构、同步协议、权限模型和 UI 扩展。核心设计哲学取自 Hivemind：**Pull-first 同步、INSERT-only 版本化、Manifest 驱动、原子写入、失败安全**，并针对 Sarosis 的 VS Code Fork 架构做了适配。
+> 本文档覆盖了 Saros 团队共建的完整设计，包括数据模型、存储结构、同步协议、权限模型和 UI 扩展。核心设计哲学取自 Hivemind：**Pull-first 同步、INSERT-only 版本化、Manifest 驱动、原子写入、失败安全**，并针对 Saros 的 VS Code Fork 架构做了适配。

@@ -129,7 +129,7 @@ export class LaunchMainService implements ILaunchMainService {
 	}
 
 	private async startOpenWindow(args: NativeParsedArgs, userEnv: IProcessEnvironment): Promise<void> {
-		// [Sarosis] Dev-mode "New Window": a second instance launched from the taskbar
+		// [Saros] Dev-mode "New Window": a second instance launched from the taskbar
 		// jump list passes the app path as argv[1] (bare electron needs it to load the
 		// app). That path is NOT a folder the user asked to open — drop it so we create
 		// an empty new window, matching the packaged behaviour of `VsSaros.exe -n`.
@@ -176,7 +176,7 @@ export class LaunchMainService implements ILaunchMainService {
 			await this.windowsMainService.openExtensionDevelopmentHostWindow(args.extensionDevelopmentPath, baseConfig);
 		}
 
-		// Agents window — [Sarosis] Disabled: Agent Studio embedded in main window
+		// Agents window — [Saros] Disabled: Agent Studio embedded in main window
 		// else if (args['agents'] && this._productService.quality !== 'stable') {
 		// 	usedWindows = await this.windowsMainService.openAgentsWindow(baseConfig);
 		// }

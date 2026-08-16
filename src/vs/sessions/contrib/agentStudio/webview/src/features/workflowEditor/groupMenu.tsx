@@ -37,59 +37,20 @@ export function applyGroupEdit(group: Pick<LGraphGroup, 'title' | 'color' | 'fon
 	}
 }
 
-export interface GroupMenuState {
-	group: LGraphGroup;
-	clientX: number;
-	clientY: number;
-}
-
-const MENU_W = 240;
-
-export const GroupMenu: React.FC<{
-	menu: GroupMenuState;
-	onEdit: () => void;
-	onPin: () => void;
-	onRemove: () => void;
-	onClose: () => void;
-}> = ({ menu, onEdit, onPin, onRemove, onClose }) => {
-	const top = Math.max(8, Math.min(menu.clientY, (window.innerHeight ?? 0) - 180));
-	const left = Math.max(8, Math.min(menu.clientX, (window.innerWidth ?? 0) - MENU_W - 12));
-
-	const row: React.CSSProperties = {
-		display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-		textAlign: 'left', background: 'transparent', border: 'none',
-		borderRadius: 5, padding: '6px 10px', cursor: 'pointer', color: '#e6e6e6', fontSize: 12,
-	};
-
-	return (
-		<div
-			style={{
-				position: 'fixed', left, top, width: MENU_W,
-				display: 'flex', flexDirection: 'column',
-				background: '#202020', border: '1px solid rgba(255,255,255,0.12)',
-				borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,0.6)',
-				zIndex: 100, padding: 6, gap: 2,
-			}}
-			onContextMenu={(e) => e.preventDefault()}
-		>
-			<div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.5px', color: '#8a8a8a', textTransform: 'uppercase', padding: '4px 10px 2px' }}>
-				Group · {menu.group.title}
-			</div>
-			<button style={row} onClick={onEdit}>✏️ Edit Group…</button>
-			<button style={row} onClick={onPin}>{menu.group.pinned ? '📌 Unpin' : '📌 Pin'}</button>
-			<button style={row} onClick={onRemove}>🗑 Remove Group</button>
-		</div>
-	);
-};
-
 export const GroupEditPopup: React.FC<{
 	group: LGraphGroup;
+	/** Which field to autofocus (group menu M2: Title vs Font size). */
+	initialFocus?: 'title' | 'font';
 	onSave: (edit: GroupEditFields) => void;
 	onClose: () => void;
-}> = ({ group, onSave, onClose }) => {
+}> = ({ group, initialFocus = 'title', onSave, onClose }) => {
 	const [title, setTitle] = React.useState(group.title);
 	const [color, setColor] = React.useState<string | undefined>(group.color);
 	const [fontSize, setFontSize] = React.useState(group.font_size || 24);
+	const fontRef = React.useRef<HTMLInputElement | null>(null);
+	React.useEffect(() => {
+		if (initialFocus === 'font') { fontRef.current?.focus(); }
+	}, [initialFocus]);
 
 	return (
 		<div
@@ -107,7 +68,7 @@ export const GroupEditPopup: React.FC<{
 			<label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
 				<span style={{ fontSize: 11, color: '#aaa' }}>Title</span>
 				<input
-					autoFocus
+					autoFocus={initialFocus !== 'font'}
 					value={title}
 					onChange={(e) => setTitle(e.target.value)}
 					onKeyDown={(e) => { if (e.key === 'Enter') { onSave({ title, color, font_size: fontSize }); } if (e.key === 'Escape') { onClose(); } }}
@@ -144,6 +105,7 @@ export const GroupEditPopup: React.FC<{
 			<label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
 				<span style={{ fontSize: 11, color: '#aaa' }}>Font size</span>
 				<input
+					ref={fontRef}
 					type="number" min={10} max={64} value={fontSize}
 					onChange={(e) => setFontSize(Number(e.target.value))}
 					style={{

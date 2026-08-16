@@ -982,11 +982,12 @@ export class CollapsedCodeBlock extends Disposable {
 				const changes = diffObservable.read(r);
 				if (changes === undefined) {
 					return;
-				}
+			}
 
-				const labelAdded =
+			const labelAdded =
 					this.pillElement.querySelector(".label-added") ??
 					this.pillElement.appendChild(dom.$("span.label-added"));
+				// eslint-disable-next-line no-restricted-syntax
 				const labelRemoved =
 					this.pillElement.querySelector(".label-removed") ??
 					this.pillElement.appendChild(dom.$("span.label-removed"));

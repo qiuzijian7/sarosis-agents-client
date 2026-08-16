@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Mindmap Contour-based Layout Engine
+ *  Saros Agents — Mindmap Contour-based Layout Engine
  *
  *  移植自 Mindvas mindmap/layout-engine.ts。
  *  Contour packing 算法：

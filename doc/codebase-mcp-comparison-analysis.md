@@ -1,8 +1,8 @@
-# codebase-memory-mcp (C) vs Sarosis 内置 Codebase 工具 — 对比分析
+# codebase-memory-mcp (C) vs Saros 内置 Codebase 工具 — 对比分析
 
 > 分析日期：2026-07-18（2026-07-04 旧版已过期，本文档覆盖当前状态）
 > C 源码位置：`G:\CustomWorkspaces\AIProjects\codebase-memory-mcp`（v0.8.1，15 个 MCP 工具）
-> Sarosis 内置实现：`src/vs/sessions/contrib/agentStudio/browser/providers/tool/codebaseTools.ts`（15 个内置工具）+ `ICodebaseGraphService`
+> Saros 内置实现：`src/vs/sessions/contrib/agentStudio/browser/providers/tool/codebaseTools.ts`（15 个内置工具）+ `ICodebaseGraphService`
 
 ---
 
@@ -155,7 +155,7 @@
 
 ## 六、结论
 
-Sarosis 内置 codebase 工具的**骨架已与 C 版对齐**，且 `manage_adr`/`get_code_snippet`/语义搜索已**反超** C。剩余差距已从"基础可用性缺陷"转为"**覆盖率可信度 + 指标可查性 + 输出效率 + 参数完备度**"四类增强。按 P0→P1→P2→P3 推进即可系统性追平 C 版。
+Saros 内置 codebase 工具的**骨架已与 C 版对齐**，且 `manage_adr`/`get_code_snippet`/语义搜索已**反超** C。剩余差距已从"基础可用性缺陷"转为"**覆盖率可信度 + 指标可查性 + 输出效率 + 参数完备度**"四类增强。按 P0→P1→P2→P3 推进即可系统性追平 C 版。
 
 ---
 ---
@@ -167,11 +167,11 @@ Sarosis 内置 codebase 工具的**骨架已与 C 版对齐**，且 `manage_adr`
 
 ## 七、架构差异总表
 
-| 维度 | C 版（native） | Sarosis（TS/Electron renderer） | 差距定性 |
+| 维度 | C 版（native） | Saros（TS/Electron renderer） | 差距定性 |
 |------|----------------|--------------------------------|----------|
-| 图谱存储 | SQLite WAL + 64MB **mmap 窗口读**，`.zst` 仅为压缩快照；批量写入走 direct page writer（绕过 SQL 层） | 内存 `GraphStore`（Maps）全量物化；`.zst` 加载即全量进堆；SQLite 后端为实验性代理（>30k 节点自动启用） | **读路径**：C 从不全量加载，Sarosis 全量进 V8 堆 |
-| 内存治理 | mimalloc + **RSS 预算**（RAM 25-50%）+ 背压 spin + ≤64B slab 分配器 + per-file/total retain 硬顶（挤出后按需重读） | **V8 4GB 硬顶**（pointer compression，`--max-old-space-size` 无效）；无 RSS 预算/背压；`_contentCache` 按文件数（6000）而非字节 | **OOM 防护**：C 有完整预算体系，Sarosis 靠运气 |
-| 索引进程 | **监督式子进程**（fork+exec，crash 只死 child；毒文件 quarantine 重跑） | renderer 内 browser Worker 池；索引 OOM/crash = **整个 UI 死** | 崩溃隔离：C 有，Sarosis 无 |
+| 图谱存储 | SQLite WAL + 64MB **mmap 窗口读**，`.zst` 仅为压缩快照；批量写入走 direct page writer（绕过 SQL 层） | 内存 `GraphStore`（Maps）全量物化；`.zst` 加载即全量进堆；SQLite 后端为实验性代理（>30k 节点自动启用） | **读路径**：C 从不全量加载，Saros 全量进 V8 堆 |
+| 内存治理 | mimalloc + **RSS 预算**（RAM 25-50%）+ 背压 spin + ≤64B slab 分配器 + per-file/total retain 硬顶（挤出后按需重读） | **V8 4GB 硬顶**（pointer compression，`--max-old-space-size` 无效）；无 RSS 预算/背压；`_contentCache` 按文件数（6000）而非字节 | **OOM 防护**：C 有完整预算体系，Saros 靠运气 |
+| 索引进程 | **监督式子进程**（fork+exec，crash 只死 child；毒文件 quarantine 重跑） | renderer 内 browser Worker 池；索引 OOM/crash = **整个 UI 死** | 崩溃隔离：C 有，Saros 无 |
 | tree-sitter parser | **线程本地复用**（`get_thread_parser`，大库省 ~70K 次 new/delete） | 主线程按语言缓存复用 ✅；但 **Worker 内每条 parse 消息都 `new Parser()`**（`_buildWorkerCode`），未复用 | **实测性能坑**：worker 路径每文件一次 parser 创建 |
 | 增量判定 | **stat-only**（mtime_ns+size 对 `file_hashes` 表，不读内容）；sha256 仅记录 | watcher 用 **sha256 内容哈希 + 每轮仅采样 200 文件**（`computeHash` 全量读盘） | 每轮 200 次整文件读 + 采样可能漏判；C 全量 stat 零读盘 |
 | search_code grep | **外部 grep / PowerShell 流式**（scoped filelist 预过滤），不建全量内容缓存 | 首次搜索把**全部已索引文件读进 6000 项 LRU**（`_contentCache`），之后内存 grep | 冷启动首次 search = 全量读盘入堆；C 常驻零额外内存 |
@@ -179,7 +179,7 @@ Sarosis 内置 codebase 工具的**骨架已与 C 版对齐**，且 `manage_adr`
 | watcher | git porcelain + **dirty-state 签名**（全文件覆盖去重）；缺根 prune（MISSING_ROOT_DELETE_AFTER）；pipeline lock | git HEAD 轮询 + 全量扫描 + hash 采样；多 root 支持 ✅；无缺根 prune / 脏签名 | 大体对齐，C 的去重/清理更完善 |
 | 工具门控 | tool_profile（analysis/scout/all）dispatch+list+initialize 三处生效 | toolset 优先级折叠（tool_search 桥接）+ toolExecutionGuard 超时（分析类 30s） | 机制不同但能力等价 ✅ |
 
-## 八、Sarosis 已反超 C 的项（保持）
+## 八、Saros 已反超 C 的项（保持）
 
 - `manage_adr` 全 CRUD、`get_code_snippet` contextLines、6 信号语义搜索、Cypher 高级语法（UNION/变长路径/CASE WHEN/WITH）、TOON 紧凑输出、覆盖率体系、MinHash 克隆边、跨仓库发现、`search_code` 未索引路径直接 grep 回落（2026-07-21 新增）、有界并发读盘（`_runBounded`）、Agent 编排/沙箱集成。
 
@@ -216,7 +216,7 @@ Sarosis 内置 codebase 工具的**骨架已与 C 版对齐**，且 `manage_adr`
 
 ## 十、结论（2026-07-22）
 
-工具层已对齐，**真实差距集中在运行期韧性**：C 的护城河是「RSS 预算 + 背压 + 监督子进程 + stat-only 增量 + 流式 grep」，全部是围绕"大仓库不炸"的工程治理；Sarosis 受 V8 4GB 硬顶约束，必须更快地把大库流量卸到主进程 SQLite/子进程。按 P0（内存治理）→ P1（parser 复用 + stat 增量）→ P2（进程隔离 + FTS5 搜索）推进，可在不改变功能契约的前提下把 UE5 级仓库的可用性拉到 C 同级。
+工具层已对齐，**真实差距集中在运行期韧性**：C 的护城河是「RSS 预算 + 背压 + 监督子进程 + stat-only 增量 + 流式 grep」，全部是围绕"大仓库不炸"的工程治理；Saros 受 V8 4GB 硬顶约束，必须更快地把大库流量卸到主进程 SQLite/子进程。按 P0（内存治理）→ P1（parser 复用 + stat 增量）→ P2（进程隔离 + FTS5 搜索）推进，可在不改变功能契约的前提下把 UE5 级仓库的可用性拉到 C 同级。
 
 **执行状态（2026-07-22 当日全部闭环）**：
 - P0 ✅ 内容缓存字节预算 / searchCode 流式模式 / 堆水位触发 SQLite 后端 / search_graph 走主进程 FTS5（`searchGraphAsync`）

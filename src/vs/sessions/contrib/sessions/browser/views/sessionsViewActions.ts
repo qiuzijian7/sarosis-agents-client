@@ -674,6 +674,47 @@ registerAction2(class RenameSessionAction extends Action2 {
 	}
 });
 
+registerAction2(class DeleteSessionAction extends Action2 {
+	constructor() {
+		super({
+			id: 'sessionsViewPane.deleteSession',
+			title: localize2('deleteSession', "Delete..."),
+			icon: Codicon.trash,
+			menu: [{
+				id: SessionItemContextMenuId,
+				group: '1_edit',
+				order: 3,
+				when: ContextKeyExpr.regex(ChatSessionProviderIdContext.key, ANY_AGENT_HOST_PROVIDER_RE),
+			}]
+		});
+	}
+	async run(accessor: ServicesAccessor, context?: ISession | ISession[]): Promise<void> {
+		if (!context) {
+			return;
+		}
+		const sessions = Array.isArray(context) ? context : [context];
+		const sessionsManagementService = accessor.get(ISessionsManagementService);
+		const dialogService = accessor.get(IDialogService);
+
+		const message = sessions.length === 1
+			? localize('deleteSession.confirmSingle', "Are you sure you want to permanently delete this session? This action cannot be undone.")
+			: localize('deleteSession.confirm', "Are you sure you want to permanently delete {0} sessions? This action cannot be undone.", sessions.length);
+
+		const confirmed = await dialogService.confirm({
+			message,
+			primaryButton: localize('deleteSession.delete', "Delete"),
+		});
+
+		if (!confirmed.confirmed) {
+			return;
+		}
+
+		for (const session of sessions) {
+			await sessionsManagementService.deleteSession(session);
+		}
+	}
+});
+
 registerAction2(class MarkSessionReadAction extends Action2 {
 	constructor() {
 		super({

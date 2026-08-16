@@ -418,7 +418,11 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 		const element = document.createElement('iframe');
 		element.name = this.id;
 		element.className = `webview ${options.customClasses || ''}`;
-		element.sandbox.add('allow-scripts', 'allow-same-origin', 'allow-forms', 'allow-pointer-lock', 'allow-downloads');
+		// Note: We intentionally do NOT set sandbox attributes here. The sandbox
+		// attribute prevents document.domain setter, which TAPD and other sites
+		// rely on for cross-subdomain communication. The pre/index.html newFrame
+		// provides sandbox isolation when needed (controlled by the no-sandbox
+		// marker comment in the webview HTML content).
 
 		const allowRules = ['cross-origin-isolated', 'autoplay', 'local-network-access'];
 		if (!isFirefox) {

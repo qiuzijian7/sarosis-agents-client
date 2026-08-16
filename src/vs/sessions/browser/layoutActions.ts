@@ -24,7 +24,7 @@ const sidebarToggleCollapsedIcon = registerIcon('agent-sidebar-toggle-collapsed'
 const sidebarToggleExpandedIcon = registerIcon('agent-sidebar-toggle-expanded', Codicon.layoutSidebarLeft, localize('agentSidebarToggleExpandedIcon', "Icon for the sessions sidebar when content is expanded."));
 
 /**
- * [Sarosis] Toggle the sidebar content panel visibility.
+ * [Saros] Toggle the sidebar content panel visibility.
  * The activity bar icon strip always stays visible; this action
  * only expands/collapses the content panel next to it.
  *
@@ -75,7 +75,7 @@ class ToggleSidebarVisibilityAction extends Action2 {
 		const layoutService = accessor.get(IWorkbenchLayoutService);
 		const contextKeyService = accessor.get(IContextKeyService);
 
-		// [Sarosis] The sidebar (activity bar icon strip) is always visible.
+		// [Saros] The sidebar (activity bar icon strip) is always visible.
 		// This action toggles the content panel. We check the SidebarContentVisibleContext
 		// to determine whether content is currently expanded.
 		const isContentVisible = SidebarContentVisibleContext.getValue(contextKeyService);

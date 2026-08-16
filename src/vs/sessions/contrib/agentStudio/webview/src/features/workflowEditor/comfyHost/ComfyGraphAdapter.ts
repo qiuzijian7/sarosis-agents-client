@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
  *  ComfyGraphAdapter — bidirectional conversion between
- *    (A) sarosis workflow JSON (WorkflowGraphNode[] + WorkflowGraphConnection[]) and
+ *    (A) saros workflow JSON (WorkflowGraphNode[] + WorkflowGraphConnection[]) and
  *    (B) LiteGraph graph.serialize() format.
  *
  *  Pure functions, no LiteGraph singleton dependency — unit-testable in isolation.
@@ -15,6 +15,7 @@ import type {
 	WorkflowNodePosition,
 } from '../../../types/workflowStorage';
 import { isUsableNodeTitle } from './schemaLiteGraphNodes';
+import { getNodeSpec } from './registry';
 
 /** LiteGraph serialised node (subset we read/write). */
 export interface LiteGraphSerialisedNode {
@@ -44,18 +45,18 @@ export interface LiteGraphSerialisedGraph {
 	version?: number;
 }
 
-/** Map a sarosis node type → LiteGraph node type (namespaced). */
+/** Map a saros node type → LiteGraph node type (namespaced). */
 export function toLiteGraphType(nodeType: string): string {
-	if (nodeType.startsWith('Sarosis.') || nodeType.includes('.')) {
+	if (nodeType.startsWith('Saros.') || nodeType.includes('.')) {
 		return nodeType;
 	}
-	return `Sarosis.${capitalize(nodeType)}`;
+	return `Saros.${capitalize(nodeType)}`;
 }
 
-/** Map a LiteGraph node type → sarosis node type (de-namespaced). */
-export function toSarosisType(liteType: string): string {
-	if (liteType.startsWith('Sarosis.')) {
-		return liteType.slice('Sarosis.'.length).toLowerCase();
+/** Map a LiteGraph node type → saros node type (de-namespaced). */
+export function toSarosType(liteType: string): string {
+	if (liteType.startsWith('Saros.')) {
+		return liteType.slice('Saros.'.length).toLowerCase();
 	}
 	return liteType;
 }
@@ -65,8 +66,8 @@ function capitalize(s: string): string {
 }
 
 /**
- * Convert sarosis workflow graph to LiteGraph serialize format.
- * Node IDs are remapped to numeric ids; a map preserves the original sarosis id
+ * Convert saros workflow graph to LiteGraph serialize format.
+ * Node IDs are remapped to numeric ids; a map preserves the original saros id
  * so `fromLiteGraph` can restore it.
  */
 export function toLiteGraph(
@@ -104,25 +105,68 @@ export function toLiteGraph(
 			pos: [position.x, position.y],
 			size: [width, height],
 			title: keepTitle ? savedTitle : undefined,
-			properties: { ...(wfNode.data ?? {}), __sarosisId: wfNode.id },
+			properties: { ...(wfNode.data ?? {}), __sarosId: wfNode.id },
 		});
 	}
 
 	const idToLite = new Map<string, number>();
-	for (const [liteId, sarosisId] of nodeIdMap) {
-		idToLite.set(sarosisId, liteId);
+	for (const [liteId, sarosId] of nodeIdMap) {
+		idToLite.set(sarosId, liteId);
 	}
 
 	for (const conn of wfConnections) {
 		const from = idToLite.get(conn.from);
 		const to = idToLite.get(conn.to);
 		if (from === undefined || to === undefined) {
+			// 诊断：打印被丢弃的边（source/target 节点未注册/被过滤）
+			// eslint-disable-next-line no-console
+			console.warn('[toLiteGraph] dropped edge', conn.from, '->', conn.to,
+				'reason:', from === undefined ? 'from not in idToLite' : 'to not in idToLite');
 			continue; // dangling edge — drop (same as LiteGraph would)
 		}
-		const linkType = conn.fromPort && conn.toPort
-			? (typeof conn.fromPort === 'string' && conn.fromPort.toUpperCase() === 'IMAGE' ? 'IMAGE' : 'ANY')
-			: 'ANY';
-		liteLinks.push([nextLinkId++, from, 0, to, 0, linkType]);
+		// ⚠ 根据 port 名推断正确的源/目标 slot（旧版硬编码 0 会导致
+		// ImageStage.texts(slot0) 连到 ImagePicker.batch 而非 images(slot1)）。
+		const srcNode = wfNodes.find(n => n.id === conn.from);
+		const tgtNode = wfNodes.find(n => n.id === conn.to);
+		let srcSlot = 0;
+		let tgtSlot = 0;
+		if (srcNode && conn.fromPort) {
+			const srcSpec = getNodeSpec(srcNode.type);
+			if (srcSpec?.kind === 'schema') {
+				const idx = srcSpec.outputs.findIndex(o => o.name === conn.fromPort);
+				if (idx >= 0) { srcSlot = idx; }
+			}
+		}
+		if (tgtNode && conn.toPort) {
+			const tgtSpec = getNodeSpec(tgtNode.type);
+			if (tgtSpec?.kind === 'schema') {
+				const idx = tgtSpec.inputs.findIndex(i => i.name === conn.toPort);
+				if (idx >= 0) { tgtSlot = idx; }
+			}
+		}
+		let linkType: string = 'ANY';
+		if (conn.fromPort && conn.toPort) {
+			// 优先用真实端口类型（如 COMFYTV_IMAGES），确保与对端输入类型匹配、
+			// 不被 LiteGraph 类型检查拒绝；否则回退到粗粒度 media 类型。
+			const srcSpec = getNodeSpec(srcNode.type);
+			const outSpec = srcSpec?.outputs?.find(o => o.name === conn.fromPort);
+			const tgtSpec = getNodeSpec(tgtNode.type);
+			const inSpec = tgtSpec?.inputs?.find(i => i.name === conn.toPort);
+			if (outSpec?.type) { linkType = outSpec.type; }
+			else if (inSpec?.type) { linkType = inSpec.type; }
+			else if (typeof conn.fromPort === 'string') {
+				const fromU = conn.fromPort.toUpperCase();
+				linkType = fromU === 'IMAGE' ? 'IMAGE' : fromU === 'VIDEO' ? 'VIDEO' : fromU === 'AUDIO' ? 'AUDIO' : 'ANY';
+			}
+		}
+		liteLinks.push([nextLinkId++, from, srcSlot, to, tgtSlot, linkType]);
+		// 诊断：记录每条 liteLink 的解析结果
+		// eslint-disable-next-line no-console
+		console.warn('[toLiteGraph] LINK', JSON.stringify({
+			linkId: nextLinkId - 1, from, to, srcSlot, tgtSlot, linkType,
+			fromPort: conn.fromPort, toPort: conn.toPort,
+			fromFound: from !== undefined, toFound: to !== undefined,
+		}));
 	}
 
 	return {
@@ -138,23 +182,23 @@ export function toLiteGraph(
 }
 
 /**
- * Convert LiteGraph serialize format back to sarosis workflow graph.
+ * Convert LiteGraph serialize format back to saros workflow graph.
  */
 export function fromLiteGraph(
 	graph: LiteGraphSerialisedGraph,
 ): { nodes: WorkflowGraphNode[]; connections: WorkflowGraphConnection[] } {
 	const nodes: WorkflowGraphNode[] = [];
-	const liteToSarosis = new Map<number, string>();
+	const liteToSaros = new Map<number, string>();
 
 	for (const liteNode of graph.nodes ?? []) {
 		const props = liteNode.properties ?? {};
-		// Prefer the preserved sarosis id; otherwise generate one from LiteGraph id.
-		const sarosisId = (props.__sarosisId as string | undefined) ?? `node-${liteNode.id}`;
-		liteToSarosis.set(liteNode.id, sarosisId);
-		const { __sarosisId, ...data } = props as Record<string, unknown>;
+		// Prefer the preserved saros id; otherwise generate one from LiteGraph id.
+		const sarosId = (props.__sarosId as string | undefined) ?? `node-${liteNode.id}`;
+		liteToSaros.set(liteNode.id, sarosId);
+		const { __sarosId, ...data } = props as Record<string, unknown>;
 		nodes.push({
-			id: sarosisId,
-			type: toSarosisType(liteNode.type) as WorkflowGraphNode['type'],
+			id: sarosId,
+			type: toSarosType(liteNode.type) as WorkflowGraphNode['type'],
 			name: liteNode.title ?? liteNode.type,
 			position: { x: liteNode.pos[0], y: liteNode.pos[1] },
 			data: Object.keys(data).length ? (data as WorkflowGraphNode['data']) : undefined,
@@ -165,8 +209,8 @@ export function fromLiteGraph(
 	const connections: WorkflowGraphConnection[] = [];
 	for (const link of graph.links ?? []) {
 		const [id, fromLite, , toLite, , linkType] = link;
-		const from = liteToSarosis.get(fromLite);
-		const to = liteToSarosis.get(toLite);
+		const from = liteToSaros.get(fromLite);
+		const to = liteToSaros.get(toLite);
 		if (!from || !to) { continue; }
 		connections.push({
 			id: `edge-${id}`,

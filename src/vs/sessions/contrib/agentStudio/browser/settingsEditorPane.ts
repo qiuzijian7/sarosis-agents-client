@@ -14,6 +14,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { SettingsEditorInput } from './settingsEditorInput.js';
@@ -119,7 +120,7 @@ const PREFERENCES_SECTIONS: SettingSection[] = [
 				{ value: 'ctrl+enter', label: 'Ctrl+Enter 发送，Enter 换行' },
 			] },
 			// Default Provider and Model settings have been moved to the dedicated Provider view
-			{ key: AGENT_STUDIO_BOT_NAME_SETTING, label: '助手名称', description: 'AI 助手在界面中的显示名称', type: 'string', default: 'Sarosis', placeholder: 'Sarosis' },
+			{ key: AGENT_STUDIO_BOT_NAME_SETTING, label: '助手名称', description: 'AI 助手在界面中的显示名称', type: 'string', default: 'Saros', placeholder: 'Saros' },
 		],
 	},
 	{
@@ -296,6 +297,7 @@ export class SettingsEditorPane extends EditorPane {
 	@IConfigurationService readonly configurationService: IConfigurationService,
 	@IAgentStudioService readonly agentStudioService: IAgentStudioService,
 	@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
+	@IMainProcessService readonly mainProcessService: IMainProcessService,
 	) {
 		super(SettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 	}

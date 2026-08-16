@@ -13,6 +13,8 @@
  * 使用 VS Code 内置的 @vscode/sqlite3 原生模块。
  */
 
+import { createRequire } from 'node:module';
+
 import * as fs from 'fs';
 import type { Database, RunResult } from '@vscode/sqlite3';
 import { dirname } from '../../../../base/common/path.js';
@@ -174,9 +176,10 @@ function dbClose(db: Database): Promise<void> {
 
 function dbOpen(path: string): Promise<Database> {
 	return new Promise((resolve, reject) => {
-		// @vscode/sqlite3 is available via require() in the VS Code extension host
-		// eslint-disable-next-line local/code-no-var-require
-		const sqlite3 = require('@vscode/sqlite3');
+		// @vscode/sqlite3 is available via require() in the VS Code extension host.
+		// This module is compiled to ESM (see package.json "type": "module" in this dir),
+		// so `require` is unavailable; use createRequire to load the CJS native module.
+		const sqlite3 = createRequire(import.meta.url)('@vscode/sqlite3');
 		const db = new sqlite3.Database(path, (err: Error | null) => {
 			if (err) {
 				return reject(err);

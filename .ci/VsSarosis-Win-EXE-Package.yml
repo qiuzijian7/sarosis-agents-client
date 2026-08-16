@@ -1,0 +1,261 @@
+version: v3.0
+name: VsSarosis-Win-EXE-Package
+on:
+  push:
+    name: Git事件触发
+    branches:
+    - '*'
+    action:
+    - push-file
+    - new-branch
+  manual: enabled
+variables:
+  NODE_OPTIONS:
+    value: --max-old-space-size=8192
+  SAROS_UPDATE_SERVER:
+    value: http://zijianqiu-any1.devcloud.woa.com:3030
+    readonly: true
+    props:
+      type: vuex-input
+      description: 升级服务器地址
+      required: true
+stages:
+- name: 编译与打包
+  label:
+  - Build
+  jobs:
+    build-win-exe:
+      name: Build & Package Windows EXE
+      runs-on:
+        pool-name: windows
+      steps:
+      - checkout:
+          repo-id: yWNpX
+        name: 拉取源码
+        with:
+          refName: main
+      - name: 设置版本号
+        id: ZXb4BJ
+        with:
+          charsetType: UTF_8
+        run: ' powershell -ExecutionPolicy Bypass -File deploy-package/scripts/bk-set-version.ps1'
+        shell: powershell
+      - name: 安装依赖 (npm ci)
+        with:
+          charsetType: UTF_8
+        run: |+
+          # ===== 1. Node =====
+          $nodeVersion = "22.22.1"
+          if (-not (nvm list 2>$null | Select-String $nodeVersion)) { nvm install $nodeVersion }
+          nvm use $nodeVersion
+          node --version
+
+          # ===== 2. Cleanup =====
+          cmd /c "rd /s /q node_modules 2>nul"
+          cmd /c "rd /s /q build\node_modules 2>nul"
+
+          # ===== 3. Install Spectre =====
+          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Community"
+          $vsInstaller = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs_installer.exe"
+          $latestMsvc = Get-ChildItem "$vsPath\VC\Tools\MSVC" -Directory -EA SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+          if ($latestMsvc -and -not (Test-Path "$vsPath\VC\Tools\MSVC\$($latestMsvc.Name)\lib\spectre\x64\libcmt.lib")) {
+            Write-Host "=== Installing Spectre Libraries ==="
+            & "$vsInstaller" modify --installPath $vsPath --quiet --norestart `
+              --add Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre `
+              --add Microsoft.VisualStudio.Component.VC.ATL.Spectre `
+              --add Microsoft.VisualStudio.Component.VC.MFC.Spectre 2>&1 | Out-Null
+          }
+          cmd /c "rd /s /q `"$vsPath\VC\Tools\MSVC\14.38.33130`" 2>nul"
+
+          # ===== 4. Env vars for Electron native build =====
+          $env:GYP_MSVS_VERSION      = "2022"
+          $env:npm_config_target     = "39.8.8"
+          $env:npm_config_runtime    = "electron"
+          $env:npm_config_disturl    = "https://electronjs.org/headers"
+          $env:npm_config_arch       = "x64"
+          $env:npm_config_target_arch = "x64"
+          $env:npm_config_build_from_source = "true"
+          $env:npm_config_registry   = "https://registry.npmmirror.com/"
+          $env:ELECTRON_MIRROR       = "https://npmmirror.com/mirrors/electron/"
+
+          # ===== 5. Install root dependencies (--ignore-scripts avoids ripgrep 403 rollback) =====
+          npm install --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: npm install --ignore-scripts failed"; exit 1 }
+
+          npm rebuild `
+            @parcel/watcher @vscode/native-watchdog @vscode/policy-watcher `
+            @vscode/spdlog @vscode/windows-process-tree @vscode/windows-registry `
+            @vscode/deviceid @vscode/sqlite3 @vscode/windows-mutex `
+            @vscode/windows-ca-certs kerberos native-keymap node-pty `
+            windows-foreground-love `
+            --foreground-scripts
+          if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: native rebuild failed"; exit 1 }
+
+          if (-not (Test-Path "node_modules\gulp\bin\gulp.js")) {
+            Write-Error "FATAL: node_modules/gulp not found after npm install + rebuild"
+            exit 1
+          }
+          Write-Host "[OK] node_modules/gulp found"
+
+          # ===== 6. Install build/ dependencies =====
+          Push-Location build
+          npm install --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: build/ npm install failed"; exit 1 }
+
+          # FIX: tree-sitter binding.gyp forces /std:c++17, but Node 39.8.8 requires C++20
+          $tsGyp = "node_modules\tree-sitter\binding.gyp"
+          if (Test-Path $tsGyp) {
+            $gypContent = Get-Content $tsGyp -Raw
+            $gypContent = $gypContent -replace '/std:c\+\+17', '/std:c++20'
+            [System.IO.File]::WriteAllText((Resolve-Path $tsGyp), $gypContent, (New-Object System.Text.UTF8Encoding $false))
+            Write-Host "[FIX] tree-sitter binding.gyp patched: /std:c++17 -> /std:c++20"
+          }
+
+          # FIX: only rebuild tree-sitter (avoids triggering ripgrep postinstall -> 403)
+          npm rebuild tree-sitter --foreground-scripts
+          if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: build/ tree-sitter rebuild failed"; exit 1 }
+          Pop-Location
+
+          # ===== 7. ripgrep fallback =====
+          $mainRg = "node_modules\@vscode\ripgrep\bin\rg.exe"
+          $buildRg = "build\node_modules\@vscode\ripgrep\bin\rg.exe"
+          if (-not (Test-Path $mainRg) -and (Test-Path $buildRg)) {
+            New-Item -Force -ItemType Directory (Split-Path $mainRg) | Out-Null
+            Copy-Item $buildRg $mainRg -Force
+            Write-Host "[FIX] ripgrep copied from build/"
+          } elseif (-not (Test-Path $mainRg)) {
+            Write-Host "[WARN] ripgrep not available (GitHub 403). Build continues - search falls back to built-in engine."
+          }
+
+          # ===== 8. Install extension dependencies =====
+          $extRoots = Get-ChildItem extensions -Directory -Depth 2
+          foreach ($extDir in $extRoots) {
+            if (Test-Path "$($extDir.FullName)/package.json") {
+              Push-Location $extDir.FullName
+              npm install --ignore-scripts
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "[WARN] $extDir npm install exited $LASTEXITCODE (non-critical)"
+              }
+              Pop-Location
+            }
+          }
+          Write-Host "[OK] Extension dependencies installed"
+
+          # ===== 8b. Install .vscode/extensions dependencies =====
+          if (Test-Path ".vscode/extensions") {
+            $vscExtRoots = Get-ChildItem .vscode/extensions -Directory
+            foreach ($extDir in $vscExtRoots) {
+              if (Test-Path "$($extDir.FullName)/package.json") {
+                Push-Location $extDir.FullName
+                npm install --ignore-scripts
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "[WARN] $extDir npm install exited $LASTEXITCODE (non-critical)"
+                }
+                Pop-Location
+              }
+            }
+            Write-Host "[OK] .vscode/extensions dependencies installed"
+          }
+
+          # ===== 8c. Hoist typescript to extensions/node_modules =====
+          # extensions/typescript-language-features/src/tsServer/protocol/protocol.d.ts
+          # references "../../../../node_modules/typescript/lib/typescript" which
+          # resolves to extensions/node_modules/typescript. Normally postinstall.ts
+          # runs `npm install` at extensions/ root which hoists typescript there.
+          # We bypass that, so we manually link from root node_modules/typescript.
+          $extTsTarget = "extensions\node_modules\typescript"
+          $rootTs = "node_modules\typescript"
+          if ((Test-Path $rootTs) -and -not (Test-Path $extTsTarget)) {
+            New-Item -Force -ItemType Directory "extensions\node_modules" | Out-Null
+            cmd /c "mklink /J `"$extTsTarget`" `"$((Resolve-Path $rootTs).Path)`"" 2>&1 | Out-Null
+            if (-not (Test-Path "$extTsTarget\lib\typescript.d.ts")) {
+              Write-Host "[INFO] junction failed, falling back to copy"
+              Copy-Item -Recurse -Force $rootTs $extTsTarget
+            }
+            Write-Host "[FIX] typescript hoisted to $extTsTarget"
+          }
+
+
+
+        shell: powershell
+      - name: 生产编译 compile-build-with-mangling
+        with:
+          charsetType: UTF_8
+        run: |
+          # 1. 安装并使用 Node 22（如果已安装则跳过安装直接使用）
+          $nodeVersion = "22.22.1"
+          $installed = nvm list 2>$null | Select-String $nodeVersion
+          if (-not $installed) {
+            Write-Host "Installing Node $nodeVersion..."
+            nvm install $nodeVersion
+          }
+          nvm use $nodeVersion
+          node --version
+          npm --version
+
+          # 2. 然后编译
+          npx gulp compile-build-with-mangling --verbose
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "compile-build-with-mangling failed, fallback to dev compile..."
+            npm run compile
+            if ($LASTEXITCODE -ne 0) { Write-Error "Compile failed"; exit 1 }
+          }
+        shell: powershell
+      - name: 编译扩展 compile-extensions-build
+        run: |
+          # Delete extensions known to fail vsce packaging (workspace cache safety)
+          cmd /c "rd /s /q extensions\hermes-agent 2>nul"
+          cmd /c "rd /s /q extensions\execution-example 2>nul"
+          cmd /c "rd /s /q extensions\kanban-example 2>nul"
+          cmd /c "rd /s /q extensions\memory-example 2>nul"
+          cmd /c "rd /s /q extensions\planning-example 2>nul"
+          cmd /c "rd /s /q extensions\retrieval-example 2>nul"
+          cmd /c "rd /s /q extensions\tool-example 2>nul"
+
+          # 强制修正 shared/package.json 的 name（workspace 跨次复用，旧 @saros/shared 可能残留）。
+          # 内容纯 ASCII，但必须写【无 BOM】：PS 5.1 的 Set-Content -Encoding utf8 会加 BOM，
+          # vsce 的 JSON.parse 拒绝 BOM 前缀，报 "Unexpected token"。用 WriteAllText + UTF8Encoding($false)。
+          $sharedJson = '{"name":"saros-shared","version":"1.0.0","description":"Shared utilities","main":"./out/index.js","engines":{"vscode":"^1.95.0"},"activationEvents":[],"types":"./out/index.d.ts","dependencies":{},"scripts":{"compile":"tsc -p ./","watch":"tsc -watch -p ./"},"devDependencies":{"@types/node":"22.x","@types/vscode":"^1.95.0","typescript":"^6.0.3"}}'
+          [IO.File]::WriteAllText("$pwd\extensions\shared\package.json", $sharedJson, (New-Object Text.UTF8Encoding $false))
+
+          # 切勿重写 codebuddy-provider/package.json：含中文 description，GBK 下会污染字节。
+          # 仓库副本已正确（dep=saros-shared, UTF-8），只需 reinstall 刷新符号链接。
+          Push-Location extensions\codebuddy-provider
+          Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\@sarosis
+          Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\saros-shared
+          npm install --ignore-scripts
+          Pop-Location
+
+          npx gulp compile-extensions-build --verbose
+          if ($LASTEXITCODE -ne 0) { Write-Error "Extensions build failed"; exit 1 }
+        shell: powershell
+      - name: 打包 vscode-win32-x64
+        run: |
+          npx gulp vscode-win32-x64 --verbose
+          if ($LASTEXITCODE -ne 0) { Write-Error "Packaging failed"; exit 1 }
+        shell: powershell
+      - name: 生成 EXE 安装包 (user & system setup)
+        run: |-
+          npx gulp vscode-win32-x64-inno-updater --verbose
+          if ($LASTEXITCODE -ne 0) { Write-Error "Inno updater setup failed"; exit 1 }
+          Start-Sleep -Seconds 5
+          npx gulp vscode-win32-x64-user-setup --verbose
+          if ($LASTEXITCODE -ne 0) { Write-Error "User setup failed"; exit 1 }
+          Start-Sleep -Seconds 5
+          npx gulp vscode-win32-x64-system-setup --verbose
+          if ($LASTEXITCODE -ne 0) { Write-Error "System setup failed"; exit 1 }
+        shell: powershell
+      - name: 归档构件
+        id: Rz97AF
+        uses: UploadArtifactory@8.*
+        with:
+          filePath: .build/win32-x64/**/*.exe
+          downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
+      - name: 上传 exe 到升级服务器
+        id: hgg5hu
+        with:
+          charsetType: UTF_8
+        run: "powershell -ExecutionPolicy Bypass -File deploy-package/scripts/bk-pipeline-upload.ps1\r\n"
+        shell: powershell
+concurrency: {}
+syntax-dialect: INHERIT

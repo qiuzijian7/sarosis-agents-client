@@ -21,7 +21,7 @@ async function makeStore(withImage: boolean): Promise<MediaSnapshotStore> {
 
 const nodes = [
 	{ id: 'prompt1', data: { label: '提示-1' } },
-	{ id: 'img1', type: 'Sarosis.ModelImageGen', data: { label: '图像-1', providerId: 'p1', modelId: 'm-text' } },
+	{ id: 'img1', type: 'Saros.ModelImageGen', data: { label: '图像-1', providerId: 'p1', modelId: 'm-text' } },
 ];
 
 const edges = [{ source: 'prompt1', target: 'img1' }];

@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Mindmap Edge Side Computation
+ *  Saros Agents — Mindmap Edge Side Computation
  *
  *  移植自 Mindvas canvas/edge-updater.ts。
  *  dominant-axis 启发式：两节点中心水平偏移决定连接侧。

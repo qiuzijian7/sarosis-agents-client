@@ -257,7 +257,7 @@
 .agent-sessions-workbench .part.editor .title.tabs {
 	background-color: transparent !important;
 	/*
-	 * [Sarosis] Do NOT override --editor-group-tab-height here.
+	 * [Saros] Do NOT override --editor-group-tab-height here.
 	 * EditorTabsControl.EDITOR_TAB_HEIGHT.normal = 35, and the JS
 	 * computes editorContainer height as (totalHeight - tabHeight).
 	 * Overriding the CSS variable to 26px makes tabs render shorter
@@ -309,7 +309,7 @@
 	--tabs-border-bottom-color: transparent !important;
 	align-items: center;
 	/*
-	 * [Sarosis] CRITICAL: Do NOT add vertical padding here.
+	 * [Saros] CRITICAL: Do NOT add vertical padding here.
 	 * EditorGroupView.layout() calculates editorContainer height as
 	 * (totalHeight - tabHeight) where tabHeight comes from
 	 * --editor-group-tab-height (26px). Any padding on this container

@@ -39,10 +39,16 @@ suite('workflowRun — isExecutableSpec / isLLMImageNode', () => {
 		assert.strictEqual(isExecutableSpec(undefined), false);
 	});
 
-	test('isLLMImageNode only matches kind llm', () => {
+	test('isLLMImageNode matches llm AND schema+backendKind=provider', () => {
 		assert.strictEqual(isLLMImageNode({ kind: 'llm' }), true);
-		assert.strictEqual(isLLMImageNode({ kind: 'schema' }), false);
 		assert.strictEqual(isLLMImageNode({ kind: 'llm', backendKind: 'provider' }), true);
+		// Saros.ModelImageGen is rendered like a ComfyTV stage but still
+		// executes via the provider RPC — kind='schema' + backendKind='provider'.
+		assert.strictEqual(isLLMImageNode({ kind: 'schema', backendKind: 'provider' }), true);
+		// Plain ComfyTV schema stages are NOT provider nodes.
+		assert.strictEqual(isLLMImageNode({ kind: 'schema' }), false);
+		assert.strictEqual(isLLMImageNode({ kind: 'schema', backendKind: 'comfy' }), false);
+		assert.strictEqual(isLLMImageNode(undefined), false);
 	});
 });
 
@@ -81,7 +87,7 @@ suite('workflowRun — runProviderImage', () => {
 		return {
 			runner: {} as never,
 			nodeId: 'n1',
-			type: 'Sarosis.ModelImageGen',
+			type: 'Saros.ModelImageGen',
 			getSpec: () => ({ kind: 'llm' as const }),
 			values: { providerId: 'openrouter', modelId: 'flux', prompt: 'a cat' },
 			store: makeStore(),
@@ -318,7 +324,7 @@ suite('workflowRun — runProviderPickerNode', () => {
 		return {
 			runner: {} as never,
 			nodeId: 'picker',
-			type: 'Sarosis.ProviderPicker',
+			type: 'Saros.ProviderPicker',
 			getSpec: () => ({ kind: 'react' as const }),
 			values: { providerId: 'openrouter', modelId: 'flux' },
 			store: makeStore(),

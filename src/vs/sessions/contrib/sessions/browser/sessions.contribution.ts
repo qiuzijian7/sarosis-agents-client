@@ -6,6 +6,7 @@
 import { localize } from '../../../../nls.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
+import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { SessionsTitleBarContribution } from './sessionsTitleBarWidget.js';
 import './views/sessionsViewActions.js';
 import './sessionsActions.js';
@@ -15,12 +16,4 @@ import './sessionsActions.js';
 const _agentSessionsViewIcon = registerIcon('chat-sessions-icon', Codicon.commentDiscussionSparkle, localize('agentSessionsViewIcon', 'Icon for Agent Sessions View'));
 void _agentSessionsViewIcon; // keep icon registration for potential references elsewhere
 
-// [Sarosis] Session title pill removed from the title bar command center.
-// In the path-A three-column layout the command center sits centered, which
-// places this pill directly above the middle (File) column — it read as a
-// stray "New Session" button at the top of the middle column. The right
-// column's own titlebar (stage 3) carries the workspace dropdown + agent
-// count + window controls instead, so this widget is no longer registered.
-// Re-enable by uncommenting if a session-title affordance is needed again.
-// registerWorkbenchContribution2(SessionsTitleBarContribution.ID, SessionsTitleBarContribution, WorkbenchPhase.AfterRestored);
-void SessionsTitleBarContribution;
+registerWorkbenchContribution2(SessionsTitleBarContribution.ID, SessionsTitleBarContribution, WorkbenchPhase.AfterRestored);

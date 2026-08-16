@@ -1,0 +1,1018 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>GitFlow Styles EditorPane — Mockup v2</title>
+<style>
+/* ─── Reset & Base ─── */
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { height:100%; overflow:hidden; }
+body {
+	background: #1e1e1e;
+	color: #cccccc;
+	font-family: 'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+	display: flex; flex-direction: column; font-size:13px;
+}
+
+/* ─── Top Toolbar ─── */
+.toolbar {
+	display: flex; align-items: center; gap: 8px;
+	padding: 6px 16px;
+	background: #252526;
+	border-bottom: 1px solid #3c3c3c;
+	flex-shrink: 0; min-height: 40px;
+	user-select: none;
+}
+.toolbar-left {
+	display:flex; align-items:center; gap:6px;
+}
+.branch-select {
+	background: #2d2d30; color: #ccc;
+	border: 1px solid #3c3c3c; border-radius: 4px;
+	padding: 3px 24px 3px 8px; font-size:12px;
+	appearance:none; -webkit-appearance:none;
+	cursor:pointer; outline:none;
+	background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+	background-repeat:no-repeat; background-position:right 6px center;
+}
+.branch-select:hover { border-color:#555; }
+.checkbox-label {
+	color:#aaa; font-size:12px; cursor:pointer;
+	display:flex; align-items:center; gap:4px;
+	user-select:none;
+}
+.checkbox-label input { accent-color:#3794ff; }
+.toolbar-spacer { flex:1; }
+.toolbar-icon {
+	width:28px; height:28px; border:none; background:transparent;
+	color:#888; font-size:16px; cursor:pointer; border-radius:4px;
+	display:flex; align-items:center; justify-content:center;
+}
+.toolbar-icon:hover { background:rgba(255,255,255,.06); color:#ccc; }
+
+/* ─── Style Tab Bar (below toolbar) ─── */
+.style-tabs {
+	display: flex; align-items: center; gap: 0;
+	padding: 0 20px;
+	background: #252526;
+	border-bottom: 1px solid #3c3c3c;
+	flex-shrink: 0; min-height: 36px;
+}
+.tab-btn {
+	padding: 5px 18px; font-size: 12px;
+	color: #9d9d9d; cursor: pointer;
+	border: none; background: transparent;
+	border-bottom: 2px solid transparent;
+	transition: .15s; white-space: nowrap;
+	font-family: inherit;
+}
+.tab-btn:hover { color: #ccc; background: rgba(255,255,255,.04); }
+.tab-btn.active {
+	color: #3794ff; border-bottom-color: #3794ff;
+	font-weight: 600;
+}
+
+/* ─── Main Content Area ─── */
+.content-area {
+	flex: 1; overflow-y: auto;
+	scrollbar-width: thin; scrollbar-color: #555 transparent;
+}
+.content-area::-webkit-scrollbar { width: 10px; }
+.content-area::-webkit-scrollbar-thumb { background:#444; border-radius:5px; }
+.content-area::-webkit-scrollbar-thumb:hover { background:#555; }
+
+/* ─── COMMIT TABLE (core of each panel) ─── */
+.commit-table {
+	width: 100%; border-collapse: collapse;
+	table-layout: fixed;
+	font-size: 12.5px;
+}
+.commit-table thead th {
+	position: sticky; top:0; z-index: 10;
+	background: #2d2d30;
+	color: #9d9d9d; font-weight: 600;
+	text-align: left; padding: 7px 12px;
+	border-bottom: 1px solid #3c3c3c;
+	font-size: 11.5px; letter-spacing:.3px;
+	user-select:none;
+	white-space: nowrap;
+}
+.commit-table thead th:first-child { padding-left: 14px; }
+.col-graph   { width: 200px; }   /* graph drawing area */
+.col-desc    { width: 38%; }     /* description + tags */
+.col-date    { width: 120px; }
+.col-author  { width: 130px; }
+.col-commit  { width: 90px; }
+
+.commit-table tbody tr {
+	height: 32px;
+	cursor: default;
+	transition: background .08s;
+}
+.commit-table tbody tr:hover {
+	background: rgba(255,255,255,.04);
+}
+.commit-table tbody tr.selected {
+	background: rgba(56,148,255,.12);
+}
+.commit-table td {
+	padding: 3px 8px;
+	vertical-align: middle;
+	border-bottom: 1px solid rgba(255,255,255,.03);
+	overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.commit-table td:first-child { padding-left: 14px; }
+
+/* ─── Tag Badge (inside Description) ─── */
+.tag-badge {
+	display:inline-block; font-size:10px; padding:1px 7px;
+	border-radius:3px; margin-right:6px; font-weight:600;
+	letter-spacing:.15px; vertical-align:middle; line-height:1.5;
+	white-space:nowrap;
+}
+.tag-branch  { background:#3794ff22; color:#3794ff; border:1px solid rgba(56,148,255,.3); }
+.tag-head    { background:#f4877122; color:#f48771; border:1px solid rgba(244,135,113,.3); }
+.tag-origin  { background:#c586c022; color:#c586c0; border:1px solid rgba(198,134,192,.3); }
+.tag-local   { background:#6a995522; color:#6a9955; border:1px solid rgba(106,153,85,.3); }
+.tag-hotfix  { background:#ce917822; color:#ce9178; border:1px solid rgba(206,145,120,.3); }
+.tag-release { background:#dcdcaa22; color:#dcdcaa; border:1px solid rgba(220,220,170,.3); }
+
+.msg-text {
+	color: #ddd; font-size: 12.5px;
+}
+.hash-text {
+	color: #888; font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+	font-size: 11.5px;
+}
+.date-text {
+	color: #999; font-size: 11.5px;
+}
+.author-text {
+	color: #bbb; font-size: 12px;
+
+}
+.author-self { color: #3794ff; }
+
+/* ══════════════════════════════════════
+   STYLE 1: git-graph — Unicode box-drawing
+   ══════════════════════════════════════ */
+.gg-cell {
+	font-family: 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+	font-size: 12px; line-height: 18px;
+	white-space: pre; letter-spacing: -0.5px;
+	color: #ccc;
+}
+
+/* ══════════════════════════════════════
+   STYLE 2: git log — Terminal ASCII
+   ══════════════════════════════════════ */
+.gl-cell {
+	font-family: 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+	font-size: 12px; line-height: 18px;
+	white-space: pre; letter-spacing: 0;
+}
+
+/* ══════════════════════════════════════
+   STYLE 3: GitExtensions — DOM nodes
+   ══════════════════════════════════════ */
+.ge-cell {
+	display: flex; align-items: center; gap: 2px;
+	height: 32px; position: relative;
+	min-width: 180px;
+}
+.ge-lane {
+	width: 13px; display: flex; flex-direction: column;
+	align-items: center; position: relative; flex-shrink: 0;
+}
+.ge-vline {
+	width: 2px; flex-grow: 1; margin: -2px 0;
+	border-left-style: solid; border-left-width: 2px;
+}
+.ge-hline {
+	height: 2px; width: 50%;
+	border-top-style: solid; border-top-width: 2px;
+	position: absolute;
+}
+.ge-node {
+	width: 9px; height: 9px; border-radius: 50%;
+	flex-shrink: 0; z-index: 2;
+	border: 2px solid transparent;
+	box-shadow: 0 0 0 1px rgba(0,0,0,.5);
+	cursor: pointer; transition: transform .12s;
+}
+.ge-node:hover { transform: scale(1.4); z-index: 3; }
+.ge-node.merge {
+	background: #1e1e1e !important;
+	border-width: 2.5px;
+}
+/* merge connector lines */
+.ge-merge-left {
+	position: absolute; height: 2px;
+	left: 0; border-top-style: solid; border-top-width: 2px;
+}
+.ge-merge-right {
+	position: absolute; height: 2px;
+	right: 0; border-top-style: solid; border-top-width: 2px;
+}
+
+/* ══════════════════════════════════════
+   STYLE 4: Sourcetree — Inline SVG
+   ══════════════════════════════════════ */
+.st-cell {
+	display: block; width: 200px; height: 32px;
+	position: relative;
+}
+
+/* ─── Panel visibility toggle ─── */
+.panel { display: none; }
+.panel.active { display: table-row-group; animation: fadeIn .15s ease; }
+@keyframes fadeIn { from{opacity:.6} to{opacity:1} }
+
+/* ─── Legend Bar (bottom) ─── */
+.legend-bar {
+	display: flex; flex-wrap: wrap; gap: 16px;
+	padding: 10px 16px 14px;
+	background: #252526;
+	border-top: 1px solid #3c3c3c;
+}
+.legend-item {
+	display: flex; align-items: center; gap: 6px;
+	font-size: 11px; color: #999;
+}
+.legend-dot {
+	width: 10px; height: 10px; border-radius: 2px;
+	display: inline-block; flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ TOP TOOLBAR ═══ -->
+<div class="toolbar">
+	<div class="toolbar-left">
+		<span style="color:#999;font-size:12px;">Branches:</span>
+		<select class="branch-select">
+			<option>Show All</option>
+			<option>main</option>
+			<option>develop</option>
+			<option>feature/*</option>
+			<option>release/*</option>
+		</select>
+		<label class="checkbox-label">
+			<input type="checkbox" checked /> Show Remote Branches
+		</label>
+	</div>
+	<div class="toolbar-spacer"></div>
+	<button class="toolbar-icon" title="Search">&#128269;</button>
+	<button class="toolbar-icon" title="Settings">&#9881;</button>
+	<button class="toolbar-icon" title="Refresh">&#8635;</button>
+	<button class="toolbar-icon" title="Cloud">&#9729;</button>
+</div>
+
+<!-- ═══ STYLE TABS ═══ -->
+<div class="style-tabs">
+	<button class="tab-btn active" data-tab="gitgraph">git-graph</button>
+	<button class="tab-btn" data-tab="gitlog">git log</button>
+	<button class="tab-btn" data-tab="gitext">GitExtensions</button>
+	<button class="tab-btn" data-tab="sourcetree">Sourcetree</button>
+</div>
+
+<!-- ═══ MAIN CONTENT (TABLE) ═══ -->
+<div class="content-area">
+
+<!-- Shared header for all styles -->
+<table class="commit-table">
+<thead>
+	<tr>
+		<th class="col-graph">Graph</th>
+		<th class="col-desc">Description</th>
+		<th class="col-date">Date</th>
+		<th class="col-author">Author</th>
+		<th class="col-commit">Commit</th>
+	</tr>
+</thead>
+
+<!-- ═══════════════════════════════════════════════════
+     PANEL 1: git-graph style (Unicode box-drawing)
+     ═══════════════════════════════════════════════════ -->
+<tbody class="panel active" id="p-gitgraph">
+	<!-- Row 1: HEAD → feature/feature-6 merge develop -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">●</span></div></td>
+		<td><span class="tag-badge tag-branch">feature/feature-6</span><span class="tag-badge tag-head">HEAD</span><span class="msg-text">Merge branch 'develop' into feature/feature-6</span></td>
+		<td><span class="date-text">3 Sep 2019 23:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">4e2d355b</span></td>
+	</tr>
+	<!-- Row 2: ardaljs/scaling-scenarios -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#dcdcaa">●</span></div></td>
+		<td><span class="tag-badge tag-origin">origin</span><span class="tag-badge tag-local">ardaljs/scaling-scenarios</span><span class="msg-text">Update scaling scenarios for new test environment</span></td>
+		<td><span class="date-text">3 Sep 2019 21:37</span></td>
+		<td><span class="author-text">Steve Smith</span></td>
+		<td><span class="hash-text">5a3b41ec</span></td>
+	</tr>
+	<!-- Row 3: upstream/latex -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#c586c0">●</span></div></td>
+		<td><span class="tag-badge tag-branch">upstream/latex</span><span class="msg-text">Test double escape to remove latex rendering issues</span></td>
+		<td><span class="date-text">3 Sep 2019 20:47</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">2ad84bf7</span></td>
+	</tr>
+	<!-- Row 4: upstream/mairaw-patch-1 merge -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#c586c0">○</span></div></td>
+		<td><span class="tag-badge tag-branch">upstream/mairaw-patch-1</span><span class="msg-text">Update version number and changelog for patch release</span></td>
+		<td><span class="date-text">3 Sep 2019 20:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">3691754b</span></td>
+	</tr>
+	<!-- Row 5: updating scaling chapter -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#6a9955">╰─●</span></div></td>
+		<td><span class="msg-text">Updating scaling chapter with new benchmarks</span></td>
+		<td><span class="date-text">3 Sep 2019 20:04</span></td>
+		<td><span class="author-text">Steve Smith</span></td>
+		<td><span class="hash-text">a5fbc086</span></td>
+	</tr>
+	<!-- Row 6: upstream/master merge article -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#f48771">○</span></div></td>
+		<td><span class="tag-badge tag-branch">upstream/master</span><span class="msg-text">move article to tutorials section and update links</span></td>
+		<td><span class="date-text">3 Sep 2019 19:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">06ba6e56</span></td>
+	</tr>
+	<!-- Row 7: turn off feedback -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#569cd6">●</span></div></td>
+		<td><span class="msg-text">turn off feedback for a few areas (#14187)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:26</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">7fbe3c8f</span></td>
+	</tr>
+	<!-- Row 8: US 1583733 Add missing language IDs -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#569cd6">●</span></div></td>
+		<td><span class="msg-text">US 1583733 Add missing language IDs - 09 (language pack updates)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:24</span></td>
+		<td><span class="author-text">Tom Pratt</span></td>
+		<td><span class="hash-text">37c9da37</span></td>
+	</tr>
+	<!-- Row 9: Update errorreport-compiler-option.md -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#569cd6">●</span></div></td>
+		<td><span class="msg-text">Update errorreport-compiler-option.md (#14186)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:19</span></td>
+		<td><span class="author-text">Youssef Victor</span></td>
+		<td><span class="hash-text">57688c47</span></td>
+	</tr>
+	<!-- Row 10: Update bc30456.md -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#569cd6">●</span></div></td>
+		<td><span class="msg-text">Update bc30456.md (#14186)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:14</span></td>
+		<td><span class="author-text">Youssef Victor</span></td>
+		<td><span class="hash-text">2b1732a4</span></td>
+	</tr>
+	<!-- Row 11: instance method call -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#569cd6">●</span></div></td>
+		<td><span class="msg-text">"instance method call" -> "static method call" in code sample</span></td>
+		<td><span class="date-text">3 Sep 2019 19:11</span></td>
+		<td><span class="author-text">Ron Petrusha</span></td>
+		<td><span class="hash-text">9433f0c2</span></td>
+	</tr>
+	<!-- Row 12: Converting <code> tag -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#569cd6">●</span></div></td>
+		<td><span class="msg-text">Converting &lt;code&gt; tag to code block to avoid markdown rendering issue</span></td>
+		<td><span class="date-text">3 Sep 2019 19:09</span></td>
+		<td><span class="author-text">Mauricio de los Santos</span></td>
+		<td><span class="hash-text">a43af573</span></td>
+	</tr>
+	<!-- Row 13: upstream/broken-links fix -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#ce9178">●</span></div></td>
+		<td><span class="tag-badge tag-hotfix">upstream/broken-links</span><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:04</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">4b647aed</span></td>
+	</tr>
+	<!-- Row 14: initial checkin -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#ce9178">●</span></div></td>
+		<td><span class="msg-text">initial checkin (#14139)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:04</span></td>
+		<td><span class="author-text">Terry Kim</span></td>
+		<td><span class="hash-text">59fc85db</span></td>
+	</tr>
+	<!-- Row 15: fix broken link -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#ce9178">●</span></div></td>
+		<td><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:02</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">92cf5f0b</span></td>
+	</tr>
+	<!-- Row 16: fix broken link (duplicate) -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#ce9178">●</span></div></td>
+		<td><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:01</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">9ecfb5e1</span></td>
+	</tr>
+	<!-- Row 17: upstream/hub-page -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">│</span><span style="color:#c586c0">●</span></div></td>
+		<td><span class="tag-badge tag-branch">upstream/hub-page</span><span class="msg-text">fix links to not redirect to external site</span></td>
+		<td><span class="date-text">3 Sep 2019 18:45</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">3e566025</span></td>
+	</tr>
+	<!-- Row 18: Add platform clarification -->
+	<tr>
+		<td><div class="gg-cell"><span style="color:#569cd6">●</span></div></td>
+		<td><span class="msg-text">Add platform clarification (#14189)</span></td>
+		<td><span class="date-text">3 Sep 2019 18:17</span></td>
+		<td><span class="author-text">Tom Dykstra</span></td>
+		<td><span class="hash-text">43a6d908</span></td>
+	</tr>
+</tbody>
+
+<!-- ═══════════════════════════════════════════════════
+     PANEL 2: git log style (Terminal ASCII)
+     ═══════════════════════════════════════════════════ -->
+<tbody class="panel" id="p-gitlog">
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">* </span></div></td>
+		<td><span class="tag-badge tag-branch">feature/feature-6</span><span class="tag-badge tag-head">HEAD</span><span class="msg-text">Merge branch 'develop' into feature/feature-6</span></td>
+		<td><span class="date-text">3 Sep 2019 23:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">4e2d355b</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#dcdcaa">* </span></div></td>
+		<td><span class="tag-badge tag-origin">origin</span><span class="tag-badge tag-local">ardaljs/scaling-scenarios</span><span class="msg-text">Update scaling scenarios for new test env</span></td>
+		<td><span class="date-text">3 Sep 2019 21:37</span></td>
+		<td><span class="author-text">Steve Smith</span></td>
+		<td><span class="hash-text">5a3b41ec</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">\ </span><span style="color:#c586c0">* </span></div></td>
+		<td><span class="tag-badge tag-branch">upstream/latex</span><span class="msg-text">Test double escape for latex rendering</span></td>
+		<td><span class="date-text">3 Sep 2019 20:47</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">2ad84bf7</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">| </span><span style="color:#c586c0">| \ </span><span style="color:#6a9955">* </span></div></td>
+		<td><span class="tag-badge tag-branch">upstream/mairaw-patch-1</span><span class="msg-text">Update version and changelog for patch</span></td>
+		<td><span class="date-text">3 Sep 2019 20:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">3691754b</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">| </span><span style="color:#6a9955">* </span></div></td>
+		<td><span class="msg-text">Updating scaling chapter with benchmarks</span></td>
+		<td><span class="date-text">3 Sep 2019 20:04</span></td>
+		<td><span class="author-text">Steve Smith</span></td>
+		<td><span class="hash-text">a5fbc086</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">| </span><span style="color:#f48771">\ </span><span style="color:#f48771">* </span></div></td>
+		<td><span class="tag-badge tag-branch">upstream/master</span><span class="msg-text">move article to tutorials section</span></td>
+		<td><span class="date-text">3 Sep 2019 19:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">06ba6e56</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">| </span><span style="color:#f48771">| </span><span style="color:#569cd6">* </span></div></td>
+		<td><span class="msg-text">turn off feedback for areas (#14187)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:26</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">7fbe3c8f</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">| </span><span style="color:#f48771">| </span><span style="color:#569cd6">* </span></div></td>
+		<td><span class="msg-text">Add missing language IDs - 09</span></td>
+		<td><span class="date-text">3 Sep 2019 19:24</span></td>
+		<td><span class="author-text">Tom Pratt</span></td>
+		<td><span class="hash-text">37c9da37</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">| </span><span style="color:#f48771">| </span><span style="color:#569cd6">* </span></div></td>
+		<td><span class="msg-text">Update errorreport-compiler-option.md (#14186)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:19</span></td>
+		<td><span class="author-text">Youssef Victor</span></td>
+		<td><span class="hash-text">57688c47</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">| </span><span style="color:#f48771">| </span><span style="color:#569cd6">* </span></div></td>
+		<td><span class="msg-text">Update bc30456.md (#14186)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:14</span></td>
+		<td><span class="author-text">Youssef Victor</span></td>
+		<td><span class="hash-text">2b1732a4</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">| </span><span style="color:#f48771">| </span><span style="color:#569cd6">* </span></div></td>
+		<td><span class="msg-text">"instance method call" -> "static method call"</span></td>
+		<td><span class="date-text">3 Sep 2019 19:11</span></td>
+		<td><span class="author-text">Ron Petrusha</span></td>
+		<td><span class="hash-text">9433f0c2</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">| </span><span style="color:#f48771">| </span><span style="color:#569cd6">* </span></div></td>
+		<td><span class="msg-text">Converting &lt;code&gt; tag to code block</span></td>
+		<td><span class="date-text">3 Sep 2019 19:09</span></td>
+		<td><span class="author-text">Mauricio de los Santos</span></td>
+		<td><span class="hash-text">a43af573</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">| </span><span style="color:#ce9178">* </span></div></td>
+		<td><span class="tag-badge tag-hotfix">upstream/broken-links</span><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:04</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">4b647aed</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#ce9178">* </span></div></td>
+		<td><span class="msg-text">initial checkin (#14139)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:04</span></td>
+		<td><span class="author-text">Terry Kim</span></td>
+		<td><span class="hash-text">59fc85db</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#ce9178">* </span></div></td>
+		<td><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:02</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">92cf5f0b</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#ce9178">* </span></div></td>
+		<td><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:01</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">9ecfb5e1</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">| </span><span style="color:#c586c0">* </span></div></td>
+		<td><span class="tag-badge tag-branch">upstream/hub-page</span><span class="msg-text">fix links to not redirect externally</span></td>
+		<td><span class="date-text">3 Sep 2019 18:45</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">3e566025</span></td>
+	</tr>
+	<tr>
+		<td><div class="gl-cell"><span style="color:#569cd6">* </span></div></td>
+		<td><span class="msg-text">Add platform clarification (#14189)</span></td>
+		<td><span class="date-text">3 Sep 2019 18:17</span></td>
+		<td><span class="author-text">Tom Dykstra</span></td>
+		<td><span class="hash-text">43a6d908</span></td>
+	</tr>
+</tbody>
+
+<!-- ═══════════════════════════════════════════════════
+     PANEL 3: GitExtensions style (DOM nodes + lanes)
+     ═══════════════════════════════════════════════════ -->
+<tbody class="panel" id="p-gitext">
+	<!-- Row 1: HEAD merge -->
+	<tr>
+		<td><div class="ge-cell" style="--lanes:5;">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div><div class="ge-node" style="background:#569cd6;border-color:#569cd6;" title="commit"></div></div>
+		</div></td>
+		<td><span class="tag-badge tag-branch">feature/feature-6</span><span class="tag-badge tag-head">HEAD</span><span class="msg-text">Merge branch 'develop' into feature/feature-6</span></td>
+		<td><span class="date-text">3 Sep 2019 23:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">4e2d355b</span></td>
+	</tr>
+	<!-- Row 2: ardaljs/scaling-scenarios on lane 1 (yellow) -->
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#dcdcaa;height:100%;"></div><div class="ge-node" style="background:#dcdcaa;border-color:#dcdcaa;" title="commit"></div></div>
+		</div></td>
+		<td><span class="tag-badge tag-origin">origin</span><span class="tag-badge tag-local">ardaljs/scaling-scenarios</span><span class="msg-text">Update scaling scenarios for new test env</span></td>
+		<td><span class="date-text">3 Sep 2019 21:37</span></td>
+		<td><span class="author-text">Steve Smith</span></td>
+		<td><span class="hash-text">5a3b41ec</span></td>
+	</tr>
+	<!-- Row 3: upstream/latex on lane 2 (purple) branching off main -->
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div><div class="ge-hline" style="border-color:#c586c0;top:50%;width:60%;right:0;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#dcdcaa;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#c586c0;height:100%;"></div><div class="ge-node" style="background:#c586c0;border-color:#c586c0;" title="commit"></div></div>
+		</div></td>
+		<td><span class="tag-badge tag-branch">upstream/latex</span><span class="msg-text">Test double escape for latex rendering</span></td>
+		<td><span class="date-text">3 Sep 2019 20:47</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">2ad84bf7</span></td>
+	</tr>
+	<!-- Row 4: mairaw-patch-1 merge (hollow node) -->
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#dcdcaa;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#c586c0;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#6a9955;height:100%;"></div><div class="ge-node merge" style="border-color:#6a9955;" title="merge commit"></div></div>
+		</div></td>
+		<td><span class="tag-badge tag-branch">upstream/mairaw-patch-1</span><span class="msg-text">Update version and changelog for patch release</span></td>
+		<td><span class="date-text">3 Sep 2019 20:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">3691754b</span></td>
+	</tr>
+	<!-- Row 5: green lane commit -->
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#dcdcaa;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#c586c0;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#6a9955;height:100%;"></div><div class="ge-node" style="background:#6a9955;border-color:#6a9955;" title="commit"></div></div>
+		</div></td>
+		<td><span class="msg-text">Updating scaling chapter with new benchmarks</span></td>
+		<td><span class="date-text">3 Sep 2019 20:04</span></td>
+		<td><span class="author-text">Steve Smith</span></td>
+		<td><span class="hash-text">a5fbc086</span></td>
+	</tr>
+	<!-- Row 6: coral lane merge -->
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#dcdcaa;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#c586c0;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#6a9955;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#f48771;height:100%;"></div><div class="ge-node merge" style="border-color:#f48771;" title="merge"></div></div>
+		</div></td>
+		<td><span class="tag-badge tag-branch">upstream/master</span><span class="msg-text">move article to tutorials section</span></td>
+		<td><span class="date-text">3 Sep 2019 19:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">06ba6e56</span></td>
+	</tr>
+	<!-- Rows 7-11: main track commits (blue) -->
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div><div class="ge-node" style="background:#569cd6;border-color:#569cd6;" title="commit"></div></div>
+		</div></td>
+		<td><span class="msg-text">turn off feedback for areas (#14187)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:26</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">7fbe3c8f</span></td>
+	</tr>
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div><div class="ge-node" style="background:#569cd6;border-color:#569cd6;" title="commit"></div></div>
+		</div></td>
+		<td><span class="msg-text">Add missing language IDs - 09</span></td>
+		<td><span class="date-text">3 Sep 2019 19:24</span></td>
+		<td><span class="author-text">Tom Pratt</span></td>
+		<td><span class="hash-text">37c9da37</span></td>
+	</tr>
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div><div class="ge-node" style="background:#569cd6;border-color:#569cd6;" title="commit"></div></div>
+		</div></td>
+		<td><span class="msg-text">Update errorreport-compiler-option.md (#14186)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:19</span></td>
+		<td><span class="author-text">Youssef Victor</span></td>
+		<td><span class="hash-text">57688c47</span></td>
+	</tr>
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div><div class="ge-node" style="background:#569cd6;border-color:#569cd6;" title="commit"></div></div>
+		</div></td>
+		<td><span class="msg-text">Update bc30456.md (#14186)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:14</span></td>
+		<td><span class="author-text">Youssef Victor</span></td>
+		<td><span class="hash-text">2b1732a4</span></td>
+	</tr>
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div><div class="ge-node" style="background:#569cd6;border-color:#569cd6;" title="commit"></div></div>
+		</div></td>
+		<td><span class="msg-text">"instance method call" -> "static method call"</span></td>
+		<td><span class="date-text">3 Sep 2019 19:11</span></td>
+		<td><span class="author-text">Ron Petrusha</span></td>
+		<td><span class="hash-text">9433f0c2</span></td>
+	</tr>
+	<!-- Row 12: hotfix branch (orange) -->
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#ce9178;height:100%;"></div><div class="ge-node" style="background:#ce9178;border-color:#ce9178;" title="hotfix"></div></div>
+		</div></td>
+		<td><span class="tag-badge tag-hotfix">upstream/broken-links</span><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:04</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">4b647aed</span></td>
+	</tr>
+	<!-- Rows 13-16: hotfix commits -->
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#ce9178;height:100%;"></div><div class="ge-node" style="background:#ce9178;border-color:#ce9178;" title="hotfix"></div></div>
+		</div></td>
+		<td><span class="msg-text">initial checkin (#14139)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:04</span></td>
+		<td><span class="author-text">Terry Kim</span></td>
+		<td><span class="hash-text">59fc85db</span></td>
+	</tr>
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#ce9178;height:100%;"></div><div class="ge-node" style="background:#ce9178;border-color:#ce9178;" title="hotfix"></div></div>
+		</div></td>
+		<td><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:02</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">92cf5f0b</span></td>
+	</tr>
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#ce9178;height:100%;"></div><div class="ge-node" style="background:#ce9178;border-color:#ce9178;" title="hotfix"></div></div>
+		</div></td>
+		<td><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:01</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">9ecfb5e1</span></td>
+	</tr>
+	<!-- Row 17: hub-page (purple again) -->
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:100%;"></div></div>
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#c586c0;height:100%;"></div><div class="ge-node" style="background:#c586c0;border-color:#c586c0;" title="hub-page"></div></div>
+		</div></td>
+		<td><span class="tag-badge tag-branch">upstream/hub-page</span><span class="msg-text">fix links to not redirect externally</span></td>
+		<td><span class="date-text">3 Sep 2019 18:45</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">3e566025</span></td>
+	</tr>
+	<!-- Row 18: root -->
+	<tr>
+		<td><div class="ge-cell">
+			<div class="ge-lane"><div class="ge-vline" style="border-color:#569cd6;height:80%;"></div><div class="ge-node" style="background:#569cd6;border-color:#569cd6;" title="root"></div></div>
+		</div></td>
+		<td><span class="msg-text">Add platform clarification (#14189)</span></td>
+		<td><span class="date-text">3 Sep 2019 18:17</span></td>
+		<td><span class="author-text">Tom Dykstra</span></td>
+		<td><span class="hash-text">43a6d908</span></td>
+	</tr>
+</tbody>
+
+<!-- ═══════════════════════════════════════════════════
+     PANEL 4: Sourcetree style (Inline SVG per row)
+     ═══════════════════════════════════════════════════ -->
+<tbody class="panel" id="p-sourcetree">
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<circle cx="12" cy="16" r="5" fill="#569cd6" stroke="#569cd6" stroke-width="1"/>
+				<text x="24" y="19" fill="#888" font-family="monospace" font-size="10">●</text>
+			</svg>
+		</td>
+		<td><span class="tag-badge tag-branch">feature/feature-6</span><span class="tag-badge tag-head">HEAD</span><span class="msg-text">Merge branch 'develop' into feature/feature-6</span></td>
+		<td><span class="date-text">3 Sep 2019 23:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">4e2d355b</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="40" cy="16" r="4.5" fill="#dcdcaa" stroke="#dcdcaa" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="tag-badge tag-origin">origin</span><span class="tag-badge tag-local">ardaljs/scaling-scenarios</span><span class="msg-text">Update scaling scenarios for new test env</span></td>
+		<td><span class="date-text">3 Sep 2019 21:37</span></td>
+		<td><span class="author-text">Steve Smith</span></td>
+		<td><span class="hash-text">5a3b41ec</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<path d="M40 16 Q 26 16 68 16" stroke="#c586c0" stroke-width="1.5" fill="none" opacity=".4"/>
+				<circle cx="68" cy="16" r="4.5" fill="#c586c0" stroke="#c586c0" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="tag-badge tag-branch">upstream/latex</span><span class="msg-text">Test double escape for latex rendering</span></td>
+		<td><span class="date-text">3 Sep 2019 20:47</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">2ad84bf7</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<line x1="40" y1="0" x2="40" y2="32" stroke="#dcdcaa" stroke-width="2" opacity=".4"/>
+				<line x1="68" y1="0" x2="68" y2="32" stroke="#c586c0" stroke-width="2" opacity=".4"/>
+				<circle cx="96" cy="16" r="5" fill="none" stroke="#6a9955" stroke-width="2"/>
+			</svg>
+		</td>
+		<td><span class="tag-badge tag-branch">upstream/mairaw-patch-1</span><span class="msg-text">Update version and changelog for patch release</span></td>
+		<td><span class="date-text">3 Sep 2019 20:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">3691754b</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<line x1="40" y1="0" x2="40" y2="32" stroke="#dcdcaa" stroke-width="2" opacity=".4"/>
+				<line x1="68" y1="0" x2="68" y2="32" stroke="#c586c0" stroke-width="2" opacity=".4"/>
+				<circle cx="96" cy="16" r="4.5" fill="#6a9955" stroke="#6a9955" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="msg-text">Updating scaling chapter with new benchmarks</span></td>
+		<td><span class="date-text">3 Sep 2019 20:04</span></td>
+		<td><span class="author-text">Steve Smith</span></td>
+		<td><span class="hash-text">a5fbc086</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<line x1="40" y1="0" x2="40" y2="32" stroke="#dcdcaa" stroke-width="2" opacity=".4"/>
+				<line x1="68" y1="0" x2="68" y2="32" stroke="#c586c0" stroke-width="2" opacity=".4"/>
+				<line x1="96" y1="0" x2="96" y2="32" stroke="#6a9955" stroke-width="2" opacity=".4"/>
+				<circle cx="124" cy="16" r="5" fill="none" stroke="#f48771" stroke-width="2"/>
+			</svg>
+		</td>
+		<td><span class="tag-badge tag-branch">upstream/master</span><span class="msg-text">move article to tutorials section</span></td>
+		<td><span class="date-text">3 Sep 2019 19:27</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">06ba6e56</span></td>
+	</tr>
+	<!-- Rows 7-11: main blue line commits -->
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="12" cy="16" r="4.5" fill="#569cd6" stroke="#3794ff" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="msg-text">turn off feedback for areas (#14187)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:26</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">7fbe3c8f</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="12" cy="16" r="4.5" fill="#569cd6" stroke="#3794ff" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="msg-text">Add missing language IDs - 09</span></td>
+		<td><span class="date-text">3 Sep 2019 19:24</span></td>
+		<td><span class="author-text">Tom Pratt</span></td>
+		<td><span class="hash-text">37c9da37</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="12" cy="16" r="4.5" fill="#569cd6" stroke="#3794ff" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="msg-text">Update errorreport-compiler-option.md (#14186)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:19</span></td>
+		<td><span class="author-text">Youssef Victor</span></td>
+		<td><span class="hash-text">57688c47</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="12" cy="16" r="4.5" fill="#569cd6" stroke="#3794ff" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="msg-text">Update bc30456.md (#14186)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:14</span></td>
+		<td><span class="author-text">Youssef Victor</span></td>
+		<td><span class="hash-text">2b1732a4</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="12" cy="16" r="4.5" fill="#569cd6" stroke="#3794ff" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="msg-text">"instance method call" -> "static method call"</span></td>
+		<td><span class="date-text">3 Sep 2019 19:11</span></td>
+		<td><span class="author-text">Ron Petrusha</span></td>
+		<td><span class="hash-text">9433f0c2</span></td>
+	</tr>
+	<!-- Hotfix rows (orange) -->
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="40" cy="16" r="4.5" fill="#ce9178" stroke="#ce9178" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="tag-badge tag-hotfix">upstream/broken-links</span><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:04</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">4b647aed</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="40" cy="16" r="4.5" fill="#ce9178" stroke="#ce9178" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="msg-text">initial checkin (#14139)</span></td>
+		<td><span class="date-text">3 Sep 2019 19:04</span></td>
+		<td><span class="author-text">Terry Kim</span></td>
+		<td><span class="hash-text">59fc85db</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="40" cy="16" r="4.5" fill="#ce9178" stroke="#ce9178" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:02</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">92cf5f0b</span></td>
+	</tr>
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="40" cy="16" r="4.5" fill="#ce9178" stroke="#ce9178" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="msg-text">fix broken link</span></td>
+		<td><span class="date-text">3 Sep 2019 19:01</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">9ecfb5e1</span></td>
+	</tr>
+	<!-- hub-page row -->
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="32" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="68" cy="16" r="4.5" fill="#c586c0" stroke="#c586c0" stroke-width="1"/>
+			</svg>
+		</td>
+		<td><span class="tag-badge tag-branch">upstream/hub-page</span><span class="msg-text">fix links to not redirect externally</span></td>
+		<td><span class="date-text">3 Sep 2019 18:45</span></td>
+		<td><span class="author-text author-self">Maira Wenzel</span></td>
+		<td><span class="hash-text">3e566025</span></td>
+	</tr>
+	<!-- Root commit -->
+	<tr>
+		<td>
+			<svg class="st-cell" viewBox="0 0 200 32" xmlns="http://www.w3.org/2000/svg">
+				<line x1="12" y1="0" x2="12" y2="20" stroke="#569cd6" stroke-width="2" opacity=".5"/>
+				<circle cx="12" cy="16" r="5" fill="#569cd6" stroke="#3794ff" stroke-width="1.5"/>
+			</svg>
+		</td>
+		<td><span class="msg-text">Add platform clarification (#14189)</span></td>
+		<td><span class="date-text">3 Sep 2019 18:17</span></td>
+		<td><span class="author-text">Tom Dykstra</span></td>
+		<td><span class="hash-text">43a6d908</span></td>
+	</tr>
+</tbody>
+
+</table><!-- end commit-table -->
+
+<!-- ═══ Legend Bar (bottom) ═══ -->
+<div class="legend-bar">
+	<div class="legend-item"><i class="legend-dot" style="background:#569cd6"></i>main / master</div>
+	<div class="legend-item"><i class="legend-dot" style="background:#dcdcaa"></i>develop</div>
+	<div class="legend-item"><i class="legend-dot" style="background:#c586c0"></i>feature/*</div>
+	<div class="legend-item"><i class="legend-dot" style="background:#6a9955"></i>release/*</div>
+	<div class="legend-item"><i class="legend-dot" style="background:#f48771"></i>hotfix / bugfix</div>
+	<div class="legend-item"><i class="legend-dot" style="background:#ce9178"></i>broken-links</div>
+</div>
+
+</div><!-- end content-area -->
+
+<script>
+// ─── Tab Switcher Logic ───
+const tabs = document.querySelectorAll('.tab-btn');
+const panels = document.querySelectorAll('.panel');
+
+tabs.forEach((tab, idx) => {
+	tab.addEventListener('click', () => {
+		tabs.forEach(t => t.classList.remove('active'));
+		panels.forEach(p => p.classList.remove('active'));
+		tab.classList.add('active');
+		const panelId = 'p-' + tab.dataset.tab;
+		const targetPanel = document.getElementById(panelId);
+		if (targetPanel) targetPanel.classList.add('active');
+	});
+});
+</script>
+</body>
+</html>

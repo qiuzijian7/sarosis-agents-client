@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
  *  Unit tests for canvasNodeFilter — which nodes are rendered on LiteGraph.
- *  After registering real LiteGraph classes for Sarosis types, those nodes are KEPT;
+ *  After registering real LiteGraph classes for Saros types, those nodes are KEPT;
  *  only completely unknown node types are dropped.
  *--------------------------------------------------------------------------------------------*/
 import assert from 'assert';
@@ -17,7 +17,7 @@ const GRAPH = {
 	last_node_id: 4,
 	last_link_id: 3,
 	nodes: [
-		{ id: 1, type: 'Sarosis.Start', pos: [0, 0] } as any,
+		{ id: 1, type: 'Saros.Start', pos: [0, 0] } as any,
 		{ id: 2, type: 'ComfyTV.ImageStage', pos: [100, 0] } as any,
 		{ id: 3, type: 'KSampler', pos: [200, 0] } as any,
 		{ id: 4, type: 'TotallyUnknown', pos: [300, 0] } as any,
@@ -32,9 +32,9 @@ const GRAPH = {
 suite('canvasNodeFilter', () => {
 
 	suite('SAROSIS_NODE_TYPES', () => {
-		test('includes the 11 Sarosis custom types', () => {
-			assert.strictEqual(SAROSIS_NODE_TYPES.has('Sarosis.Start'), true);
-			assert.strictEqual(SAROSIS_NODE_TYPES.has('Sarosis.AskUser'), true);
+		test('includes the 11 Saros custom types', () => {
+			assert.strictEqual(SAROSIS_NODE_TYPES.has('Saros.Start'), true);
+			assert.strictEqual(SAROSIS_NODE_TYPES.has('Saros.AskUser'), true);
 			assert.strictEqual(SAROSIS_NODE_TYPES.has('ComfyTV.X'), false);
 		});
 
@@ -43,11 +43,23 @@ suite('canvasNodeFilter', () => {
 				assert.ok(SAROSIS_NODE_TYPES.has(cfg.type), `missing ${cfg.type}`);
 			}
 		});
+
+		test('ModelImageGen stays OUT of sarosisNodeConfigs (schema class owns it)', () => {
+			// Regression: a stale SarosisNode config for Saros.ModelImageGen
+			// re-registered after registerSarosisNodes() overwrote the schema
+			// class (registerNodeType is last-write-wins) → old canvas widgets
+			// (providerId/modelId/…) rendered underneath the DOM form card.
+			assert.strictEqual(
+				sarosisNodeConfigs().some(c => c.type === 'Saros.ModelImageGen'),
+				false,
+				'Saros.ModelImageGen is a schema node — a SarosisNode config would clobber its LiteGraph class',
+			);
+		});
 	});
 
 	suite('isLiteGraphRenderable', () => {
-		test('Sarosis types render without a spec', () => {
-			assert.strictEqual(isLiteGraphRenderable('Sarosis.Prompt', false), true);
+		test('Saros types render without a spec', () => {
+			assert.strictEqual(isLiteGraphRenderable('Saros.Prompt', false), true);
 		});
 		test('unknown types render only with a spec', () => {
 			assert.strictEqual(isLiteGraphRenderable('KSampler', true), true);
@@ -56,10 +68,10 @@ suite('canvasNodeFilter', () => {
 	});
 
 	suite('filterNodesForLiteGraph', () => {
-		test('keeps Sarosis nodes + registered types, drops unknown', () => {
+		test('keeps Saros nodes + registered types, drops unknown', () => {
 			const hasSpec = (t: string) => t === 'ComfyTV.ImageStage' || t === 'KSampler';
 			const { keep, dropped } = filterNodesForLiteGraph(GRAPH, hasSpec);
-			// nodes 1 (Sarosis) kept, 2+3 kept, 4 (unknown) dropped
+			// nodes 1 (Saros) kept, 2+3 kept, 4 (unknown) dropped
 			assert.strictEqual(keep.nodes.length, 3);
 			assert.strictEqual(dropped.length, 1);
 			assert.strictEqual(dropped[0].id, 4);
@@ -71,7 +83,7 @@ suite('canvasNodeFilter', () => {
 
 		test('drops everything unknown (no spec)', () => {
 			const { keep, dropped } = filterNodesForLiteGraph(GRAPH, () => false);
-			// Sarosis kept, ComfyTV/KSampler unknown → dropped
+			// Saros kept, ComfyTV/KSampler unknown → dropped
 			assert.strictEqual(keep.nodes.length, 1);
 			assert.strictEqual(keep.nodes[0].id, 1);
 			assert.strictEqual(dropped.length, 3);
@@ -90,9 +102,9 @@ suite('canvasNodeFilter', () => {
 	});
 
 	suite('findUnsupportedNodes', () => {
-		test('flags only unknown types (Sarosis is supported)', () => {
+		test('flags only unknown types (Saros is supported)', () => {
 			const list = findUnsupportedNodes(
-				[{ id: 'a', type: 'Sarosis.Prompt' }, { id: 'b', type: 'KSampler' }, { id: 'c', type: 'NewType' }],
+				[{ id: 'a', type: 'Saros.Prompt' }, { id: 'b', type: 'KSampler' }, { id: 'c', type: 'NewType' }],
 				(t: string) => t === 'KSampler',
 			);
 			assert.strictEqual(list.length, 1);
@@ -102,7 +114,7 @@ suite('canvasNodeFilter', () => {
 
 		test('empty when everything supported', () => {
 			assert.deepStrictEqual(
-				findUnsupportedNodes([{ id: 'a', type: 'KSampler' }, { id: 'b', type: 'Sarosis.Agent' }], () => true),
+				findUnsupportedNodes([{ id: 'a', type: 'KSampler' }, { id: 'b', type: 'Saros.Agent' }], () => true),
 				[],
 			);
 		});
@@ -111,12 +123,12 @@ suite('canvasNodeFilter', () => {
 
 // smoke-test the registry integration used by the filter
 suite('canvasNodeFilter + registry', () => {
-	test('using registry hasSpec for real Sarosis specs', () => {
+	test('using registry hasSpec for real Saros specs', () => {
 		unregisterNodeSpec('TestFilter.A');
 		registerNodeSpec({ type: 'TestFilter.A', kind: 'native', title: 'A', category: 'c', inputs: [], outputs: [] });
 		const hasSpec = (t: string) => t === 'TestFilter.A';
 		assert.strictEqual(hasSpec('TestFilter.A'), true);
-		assert.strictEqual(hasSpec('Sarosis.Agent'), false);
+		assert.strictEqual(hasSpec('Saros.Agent'), false);
 		unregisterNodeSpec('TestFilter.A');
 	});
 });

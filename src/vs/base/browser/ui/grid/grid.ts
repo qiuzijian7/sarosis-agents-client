@@ -397,7 +397,7 @@ export class Grid<T extends IView = IView> extends Disposable {
 		}
 
 		const referenceLocation = this.getViewLocation(referenceView);
-		// [Sarosis] When forceSameOrientation is requested, override the
+		// [Saros] When forceSameOrientation is requested, override the
 		// computed location so it lands *on* the reference leaf (instead of
 		// next to it as a sibling). This forces the cross-axis path inside
 		// `gridview.addView`, which combined with `forceSameOrientation`
@@ -427,7 +427,7 @@ export class Grid<T extends IView = IView> extends Disposable {
 	}
 
 	/**
-	 * [Sarosis] Compute a location that lands on the reference leaf (so the
+	 * [Saros] Compute a location that lands on the reference leaf (so the
 	 * cross-axis branch-creation path runs inside `gridview.addView`), with
 	 * the trailing index chosen to put the new view on the requested side.
 	 *
@@ -440,7 +440,7 @@ export class Grid<T extends IView = IView> extends Disposable {
 	}
 
 	/**
-	 * [Sarosis] Compute the target grid location for a split, based on the
+	 * [Saros] Compute the target grid location for a split, based on the
 	 * **actual orientation** of the reference leaf's parent `BranchNode`
 	 * (read from the live grid tree) — not on the alternating-axis
 	 * inference used by the standalone `getRelativeLocation` helper.
@@ -508,7 +508,7 @@ export class Grid<T extends IView = IView> extends Disposable {
 	}
 
 	/**
-	 * [Sarosis] Add a view at a specific {@link GridLocation location}, with
+	 * [Saros] Add a view at a specific {@link GridLocation location}, with
 	 * optional control over the orientation of any wrapping `BranchNode` that
 	 * has to be created.
 	 *
@@ -598,7 +598,7 @@ export class Grid<T extends IView = IView> extends Disposable {
 			: this._getRelativeLocationByActualOrientation(referenceLocation, direction);
 		const [targetParentLocation, to] = tail(targetLocation);
 
-		// [Sarosis] When forceSameOrientation is requested, the desired result
+		// [Saros] When forceSameOrientation is requested, the desired result
 		// is a parallel-axis nested branch under the reference leaf. The base
 		// "same parent" optimization (a simple reorder) cannot produce that
 		// shape — it can only re-index siblings. So we fall through to the
@@ -783,7 +783,7 @@ export class Grid<T extends IView = IView> extends Disposable {
 	}
 
 	/**
-	 * [Sarosis] Return information about the BranchNode that directly
+	 * [Saros] Return information about the BranchNode that directly
 	 * contains the given leaf view in the live grid tree.
 	 *
 	 * Returns:

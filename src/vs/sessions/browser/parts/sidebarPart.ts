@@ -120,7 +120,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 
 	//#region IView
 
-	// [Sarosis] Sidebar with activity bar icons + content panel
+	// [Saros] Sidebar with activity bar icons + content panel
 	// The sidebar can expand to show content when an icon is clicked.
 	// Width is dynamic based on collapsed state.
 	get minimumWidth(): number {
@@ -1159,7 +1159,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		// fills all remaining space after row 1 (title, auto). The footer is
 		// absolutely positioned and doesn't affect the grid sizing.
 		//
-		// [Sarosis] Width root-cause fix for viewpanel content overflow:
+		// [Saros] Width root-cause fix for viewpanel content overflow:
 		// This fork embeds the activity-bar icon strip INSIDE the sidebar part.
 		// CSS Grid (`grid-template-columns: 48px 1fr`) renders the icon strip in
 		// column 1 (48px) and the content panel in column 2, so the truly visible
@@ -1220,7 +1220,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	}
 
 	protected getCompositeBarPosition(): CompositeBarPosition {
-		// [Sarosis] Use TOP position — the composite bar is placed in a header area
+		// [Saros] Use TOP position — the composite bar is placed in a header area
 		// above the content, then styled vertically via CSS to create the Activity Bar look.
 		return CompositeBarPosition.TOP;
 	}

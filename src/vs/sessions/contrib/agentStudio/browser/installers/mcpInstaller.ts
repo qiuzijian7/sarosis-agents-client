@@ -45,7 +45,7 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
-		) {
+	) {
 		super();
 	}
 

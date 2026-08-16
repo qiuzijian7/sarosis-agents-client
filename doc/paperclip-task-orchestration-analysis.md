@@ -1,8 +1,8 @@
 # Paperclip 项目任务编排功能深度分析报告
 
-> **分析日期**: 2026-05-23  
-> **分析对象**: G:\CustomWorkspaces\AIProjects\paperclip  
-> **对比对象**: G:\CustomWorkspaces\AIProjects\saros-agents-client (Sarosis)  
+> **分析日期**: 2026-05-23
+> **分析对象**: G:\CustomWorkspaces\AIProjects\paperclip
+> **对比对象**: G:\CustomWorkspaces\AIProjects\saros-agents-client (Saros)
 > **分析人**: AI Assistant
 
 ---
@@ -44,7 +44,7 @@ paperclip/
 
 ---
 
-### 1.2 Sarosis (saros-agents-client) 项目
+### 1.2 Saros (saros-agents-client) 项目
 
 **项目类型**: VS Code 扩展（Electron 应用）
 
@@ -124,7 +124,7 @@ const ALL_ISSUE_STATUSES = [
 
 ---
 
-#### Sarosis - OrchestrationPlan 模型
+#### Saros - OrchestrationPlan 模型
 
 **数据接口**: `src/vs/sessions/contrib/agentStudio/browser/agentStudioService.ts`
 
@@ -158,7 +158,7 @@ interface PlanTask {
 
 **状态机（Plan 6种状态）**:
 ```typescript
-type OrchestrationPlanStatus = 
+type OrchestrationPlanStatus =
   | 'pending_approval'  // 等待审批
   | 'approved'          // 已审批
   | 'executing'        // 执行中
@@ -169,7 +169,7 @@ type OrchestrationPlanStatus =
 
 **状态机（Task 6种状态）**:
 ```typescript
-type PlanTaskStatus = 
+type PlanTaskStatus =
   | 'pending'     // 待执行
   | 'running'     // 执行中
   | 'completed'   // 已完成
@@ -182,7 +182,7 @@ type PlanTaskStatus =
 
 ### 2.2 对比分析
 
-| 维度 | Paperclip (Issue) | Sarosis (OrchestrationPlan) |
+| 维度 | Paperclip (Issue) | Saros (OrchestrationPlan) |
 |------|-------------------|-------------------------------|
 | **模型粒度** | Issue = 单个任务 | Plan = 任务计划（包含多个 Task） |
 | **层级支持** | ✅ 支持 parentId 父子关系 | ✅ 支持 Task 依赖（dependencies） |
@@ -196,7 +196,7 @@ type PlanTaskStatus =
 
 **结论**:
 - **Paperclip** 的 Issue 模型更企业级，支持多租户、优先级、执行锁、监控等企业特性
-- **Sarosis** 的 OrchestrationPlan 模型更轻量，专注于任务计划的创建和审批流程
+- **Saros** 的 OrchestrationPlan 模型更轻量，专注于任务计划的创建和审批流程
 
 ---
 
@@ -226,7 +226,7 @@ createIssue: async (input: IssueCreateInput) => {
 
 ---
 
-#### Sarosis - Plan 创建
+#### Saros - Plan 创建
 
 **入口**: `webview/src/features/chat/EmployeeChat.tsx` (聊天命令)
 
@@ -237,10 +237,10 @@ handlePlanCommand: async (args: string) => {
   const goal = args || '默认目标';
   const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
   const plannerId = activeEmployeeId;
-  
+
   // 2. 调用后端创建 Plan
   const plan = await useOrchestrationStore.getState().createPlan(goal, workspaceId, plannerId);
-  
+
   // 3. 在聊天框中显示计划卡片
   const planMessage: ChatMessage = {
     id: `plan_${plan.id}`,
@@ -257,7 +257,7 @@ handlePlanCommand: async (args: string) => {
 createPlan: async (goal: string, workspaceId: string, plannerId: string) => {
   // 1. 调用 TaskDecomposer 分解目标
   const decomposition = await this.taskDecomposer.decompose(goal, workspaceId);
-  
+
   // 2. 创建 Plan 记录
   const plan: OrchestrationPlan = {
     id: generateUuid(),
@@ -268,13 +268,13 @@ createPlan: async (goal: string, workspaceId: string, plannerId: string) => {
     tasks: decomposition.tasks,
     summary: decomposition.summary,
   };
-  
+
   // 3. 保存 Plan
   this.plans.set(plan.id, plan);
-  
+
   // 4. 发送事件（通知前端）
   this._onDidChangePlan.fire(plan);
-  
+
   return plan;
 }
 ```
@@ -309,7 +309,7 @@ updateIssue: async (id: string, data: Partial<Issue>) => {
 
 ---
 
-#### Sarosis - Task 分配
+#### Saros - Task 分配
 
 **机制**: `AgentFactory.assignAgents()` 自动分配
 
@@ -320,13 +320,13 @@ assignAgents: async (plan: OrchestrationPlan) => {
     // Strategy 1: 按名称查找
     let assigned = await this._findAgentByName(task.assigneeRole);
     if (assigned) continue;
-    
+
     // Strategy 2: 评分选择（跳过 autoCreateAgent=true）
     if (!task.autoCreateAgent) {
       assigned = this._selectBestAgent(allEmps, task.assigneeRole, usedAgentIds);
       if (assigned) continue;
     }
-    
+
     // Strategy 3: 自动创建新 Agent
     if (task.autoCreateAgent) {
       assigned = await this._autoCreateAgent(task.assigneeRole, plan.workspaceId);
@@ -352,19 +352,19 @@ assignAgents: async (plan: OrchestrationPlan) => {
 // 定时心跳调度
 tickTimers: async (now = new Date()) => {
   const allAgents = await db.select().from(agents);
-  
+
   for (const agent of allAgents) {
     // 1. 检查 Agent 状态（paused/terminated 跳过）
     if (agent.status === "paused" || agent.status === "terminated") continue;
-    
+
     // 2. 解析心跳策略
     const policy = parseHeartbeatPolicy(agent);
     if (!policy.enabled || policy.intervalSec <= 0) continue;
-    
+
     // 3. 检查是否到达心跳间隔
     const elapsedMs = now.getTime() - baseline;
     if (elapsedMs < policy.intervalSec * 1000) continue;
-    
+
     // 4. 入列唤醒请求
     const run = await enqueueWakeup(agent.id, {
       source: "timer",
@@ -372,7 +372,7 @@ tickTimers: async (now = new Date()) => {
       reason: "heartbeat_timer",
     });
   }
-  
+
   // 5. 检查到期的 Issue 监控
   const issueMonitors = await tickDueIssueMonitors(now);
 }
@@ -393,13 +393,13 @@ async function tickDueIssueMonitors(now = new Date()) {
       inArray(issues.status, ["in_progress", "in_review"]),
     ))
     .limit(50);
-  
+
   // 2. Claim 这个 monitor（防止重复处理）
   for (const due of dueMonitors) {
     const claimed = await db.transaction(async (tx) => {
       // 更新 monitorWakeRequestedAt 抢占锁
     });
-    
+
     // 3. 分发 claimed issue monitor
     const result = await dispatchClaimedIssueMonitor(claimed, {
       wakeReason: "issue_monitor_due",
@@ -418,7 +418,7 @@ async function tickDueIssueMonitors(now = new Date()) {
 
 ---
 
-#### Sarosis - 直接执行机制
+#### Saros - 直接执行机制
 
 **核心**: `browser/taskOrchestrationService.ts`
 
@@ -428,14 +428,14 @@ approvePlan: async (planId: string) => {
   // 1. 更新 Plan 状态
   plan.status = 'approved';
   this._onDidChangePlan.fire(plan);
-  
+
   // 2. 分配 Agents
   await this.agentFactory.assignAgents(plan);
-  
+
   // 3. 更新状态为 executing
   plan.status = 'executing';
   this._onDidChangePlan.fire(plan);
-  
+
   // 4. 执行任务（串行或并行）
   await this._executeTasks(plan);
 }
@@ -448,16 +448,16 @@ _executeTask: async (plan: OrchestrationPlan, task: PlanTask) => {
     const dep = plan.tasks.find(t => t.id === depId);
     return dep && dep.status !== 'completed';
   });
-  
+
   if (blocked) {
     task.status = 'blocked';
     return;
   }
-  
+
   // 2. 执行任务（调用 Agent）
   task.status = 'running';
   const result = await this._callAgent(task.assigneeId, task);
-  
+
   // 3. 更新状态
   task.status = result.success ? 'completed' : 'failed';
   task.result = result.output;
@@ -485,7 +485,7 @@ Paperclip 的 Issue 模型**无内置审批流程**，任务创建后直接进�
 
 ---
 
-#### Sarosis - Human-in-the-Loop 审批
+#### Saros - Human-in-the-Loop 审批
 
 **核心**: `webview/src/features/orchestration/OrchestrationPlanInline.tsx`
 
@@ -542,7 +542,7 @@ server/src/services/
 
 ---
 
-#### Sarosis
+#### Saros
 
 **文件结构**:
 ```
@@ -577,7 +577,7 @@ fetchIssues: async (params: ListIssuesParams) => {
 
 ---
 
-#### Sarosis
+#### Saros
 
 **Zustand 存储**: 前端状态管理
 
@@ -586,7 +586,7 @@ fetchIssues: async (params: ListIssuesParams) => {
 export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
   plans: [],
   activePlan: null,
-  
+
   createPlan: async (goal, workspaceId, plannerId) => {
     const plan = await sendRequest('orchestration.plan', { goal, workspaceId, plannerId });
     set(state => ({ plans: [...state.plans, plan] }));
@@ -620,13 +620,13 @@ export function KanbanBoard({ issues, agents, onUpdateIssue }: KanbanBoardProps)
     const targetStatus = resolveKanbanTargetStatus(over.id as string, issues);
     onUpdateIssue(issueId, { status: targetStatus });
   };
-  
+
   // 2. 列折叠/展开
   const [collapsedStatuses, setCollapsedStatuses] = useState<string[]>([]);
-  
+
   // 3. 分页加载
   const [displayCounts, setDisplayCounts] = useState<Record<string, number>>({});
-  
+
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       {boardStatuses.map(status => (
@@ -646,7 +646,7 @@ export function KanbanBoard({ issues, agents, onUpdateIssue }: KanbanBoardProps)
 
 ---
 
-#### Sarosis - TaskOverviewEditorPane.tsx
+#### Saros - TaskOverviewEditorPane.tsx
 
 **文件**: `src/vs/sessions/contrib/agentStudio/browser/taskOverviewEditorPane.tsx`
 
@@ -656,7 +656,7 @@ export class TaskOverviewEditorPane extends EditorPane {
   // 1. 显示任务列表（表格形式）
   // 2. 点击任务打开详情
   // 3. 支持审批操作
-  
+
   renderBody(): void {
     // 渲染任务表格
   }
@@ -680,7 +680,7 @@ Paperclip **无任务计划内联卡片**功能，任务创建后直接进入看
 
 ---
 
-#### Sarosis - OrchestrationPlanInline.tsx
+#### Saros - OrchestrationPlanInline.tsx
 
 **文件**: `webview/src/features/orchestration/OrchestrationPlanInline.tsx`
 
@@ -688,14 +688,14 @@ Paperclip **无任务计划内联卡片**功能，任务创建后直接进入看
 ```tsx
 export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanInlineProps) {
   const plan = useOrchestrationStore(state => state.plans.find(p => p.id === planId));
-  
+
   return (
     <div className="orch-plan-inline">
       <div className="orch-plan-inline-header">
         <span className="orch-plan-inline-goal">{plan.goal}</span>
         <button onClick={onClose}>✕</button>
       </div>
-      
+
       <div className="orch-plan-inline-tasks">
         {plan.tasks.map(task => (
           <div key={task.id} className="orch-task-item">
@@ -704,7 +704,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
           </div>
         ))}
       </div>
-      
+
       <div className="orch-plan-inline-actions">
         <button onClick={handleApprove}>✅ 批准执行</button>
         <button onClick={handleReject}>❌ 拒绝</button>
@@ -726,7 +726,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 
 ### 6.1 技术栈
 
-| 维度 | Paperclip | Sarosis |
+| 维度 | Paperclip | Saros |
 |------|-----------|---------|
 | **前端框架** | React + Vite | React + Vite |
 | **前端状态** | React Query | Zustand |
@@ -741,7 +741,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 
 ### 6.2 基础设施
 
-| 维度 | Paperclip | Sarosis |
+| 维度 | Paperclip | Saros |
 |------|-----------|---------|
 | **部署方式** | Docker + Kubernetes | VS Code 扩展 |
 | **多租户** | ✅ companyId 隔离 | ❌ 本地项目 |
@@ -758,7 +758,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 
 ### 7.1 核心差异总结
 
-| 维度 | Paperclip | Sarosis |
+| 维度 | Paperclip | Saros |
 |------|-----------|---------|
 | **定位** | 企业级 SaaS 平台 | VS Code 开发工具扩展 |
 | **任务模型** | Issue（单任务） | Plan + Task（计划+任务） |
@@ -790,7 +790,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 
 ---
 
-#### Sarosis 优点
+#### Saros 优点
 
 1. **轻量易用**: VS Code 集成，开箱即用
 2. **AI 驱动**: 自动任务分解（TaskDecomposer）
@@ -798,7 +798,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 4. **内联交互**: 聊天框中直接审批，体验流畅
 5. **自动分配**: 3层分配策略，智能匹配 Agent
 
-#### Sarosis 缺点
+#### Saros 缺点
 
 1. **功能受限**: 无定时调度、无监控、无恢复机制
 2. **单实例**: 不支持分布式部署
@@ -809,7 +809,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 
 ### 7.3 改进建议
 
-#### 对 Sarosis 的建议
+#### 对 Saros 的建议
 
 1. **增加定时调度**: 参考 Paperclip 的 Heartbeat 机制，支持定时任务执行
 2. **增加监控机制**: 参考 Issue Monitor，主动检查任务状态
@@ -820,7 +820,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 
 #### 对 Paperclip 的建议
 
-1. **增加审批流程**: 参考 Sarosis 的 Human-in-the-Loop，增加任务审批功能
+1. **增加审批流程**: 参考 Saros 的 Human-in-the-Loop，增加任务审批功能
 2. **AI 集成**: 参考 TaskDecomposer，增加自动任务分解功能
 3. **简化 UI**: 参考 OrchestrationPlanInline，提供轻量级内联审批界面
 4. **自动分配**: 参考 AgentFactory，增加智能 Agent 分配算法
@@ -836,7 +836,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 - **Heartbeat 服务**: `server/src/services/heartbeat.ts`
 - **Kanban 看板**: `ui/src/components/KanbanBoard.tsx`
 
-### 8.2 Sarosis 关键代码
+### 8.2 Saros 关键代码
 
 - **OrchestrationPlan 接口**: `src/vs/sessions/contrib/agentStudio/browser/agentStudioService.ts`
 - **任务编排服务**: `src/vs/sessions/contrib/agentStudio/browser/taskOrchestrationService.ts`
@@ -849,6 +849,6 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 
 **报告结束**
 
-> **生成时间**: 2026-05-23  
-> **作者**: AI Assistant  
+> **生成时间**: 2026-05-23
+> **作者**: AI Assistant
 > **审核**: 待审核

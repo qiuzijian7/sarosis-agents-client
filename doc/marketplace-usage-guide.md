@@ -1,4 +1,4 @@
-# Sarosis 商城使用说明
+# Saros 商城使用说明
 
 > 版本：v0.1（mockup）｜ 更新：2026-06-24
 > 涵盖：商城网站 + VsSaros 客户端集成 + 资源包格式
@@ -237,7 +237,7 @@ storeId: pdf-skill
 #### knowledge - index.json
 ```jsonc
 {
-  "name": "Sarosis 使用手册",
+  "name": "Saros 使用手册",
   "version": "2026.06",
   "files": [
     { "path": "docs/intro.md", "title": "简介", "summary": "平台概述" }

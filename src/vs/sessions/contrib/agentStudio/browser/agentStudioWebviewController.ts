@@ -30,6 +30,7 @@ import {
 import { ISkillRegistry } from "../common/skills.js";
 import { IWorkflowStorageService } from "../common/workflowStorage.js";
 import { IWorkflowExecutionService } from "../common/workflowExecutionService.js";
+import { SAROS_CLAW_AGENT_ID } from "../common/constants.js";
 import { IAgentStudioWebviewPool } from "./agentStudioWebviewPool.js";
 import type { IChatStreamDelta } from "../common/agentStudio.js";
 import {
@@ -59,7 +60,7 @@ import { canvasContextStore } from './messageEnrichment/canvasContextStore.js';
 import { IWorkbenchThemeService } from "../../../../workbench/services/themes/common/workbenchThemeService.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
 import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
-import { VSBuffer } from "../../../../base/common/buffer.js";
+import { VSBuffer, encodeBase64 } from "../../../../base/common/buffer.js";
 import { IModelService } from "../../../../editor/common/services/model.js";
 import type { IDiffEditorOptions } from "../../../../editor/common/config/editorOptions.js";
 import { IOpenerService } from "../../../../platform/opener/common/opener.js";
@@ -407,6 +408,30 @@ export class AgentStudioWebviewController extends Disposable {
 		);
 	}
 
+	/**
+	 * 媒体资产库根目录（生成图片自动保存的落盘位置）。
+	 *
+	 * 必须加入 webview 的 `localResourceRoots`：`_handleMediaGetUrl` 会把已落盘
+	 * 资产的绝对路径经 `asWebviewUri` 转成 `vscode-webview://`，而 webview 只允许
+	 * 加载白名单目录下的本地文件——否则媒体库/节点缩略图会加载失败（图像不显示）。
+	 *
+	 * 与主进程 `MediaStoreChannel` 的 rootDir 保持一致：`${userDataPath}/media`
+	 * （打包 `~/.vssaros/media`，dev `~/.vssaros-dev/media`）。
+	 */
+	private _getMediaLibraryUri(): URI {
+		const userDataPath = (this._environmentService as INativeEnvironmentService)
+			.userDataPath;
+		return URI.joinPath(URI.file(userDataPath), "media");
+	}
+
+	/**
+	 * 重新初始化 webview（iframe 跨 document 移动后重建通信通道）。
+	 */
+	reinitializeWebview(newSyncLayout?: () => void): void {
+		this._createWebview();
+		newSyncLayout?.();
+	}
+
 	private _createWebview(): void {
 		this.logService.info(`[AS-DIAG] _createWebview() CALLED — panelType=${this.panelType}`);
 		// Fire-and-forget, but surface any synchronous or early async errors
@@ -602,7 +627,9 @@ export class AgentStudioWebviewController extends Disposable {
 				// "An instance of the VS Code API has already been acquired", which
 				// aborts the whole IIFE and leaves the panel on the loading spinner.
 				allowMultipleAPIAcquire: true,
-				localResourceRoots: [mediaUri],
+				// 第二个 root = 媒体资产库（生成图片落盘目录），否则 media.getUrl
+				// 返回的 vscode-webview:// 资源会被拒绝加载。
+				localResourceRoots: [mediaUri, this._getMediaLibraryUri()],
 			},
 			extension: undefined,
 		});
@@ -731,7 +758,7 @@ export class AgentStudioWebviewController extends Disposable {
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: https: vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: blob: https: http://127.0.0.1:* http://localhost:* vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:; connect-src data: blob: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*;">
 	<title>Agent Studio</title>
 	${styleTag}
 	<style nonce="${nonce}">
@@ -1290,7 +1317,36 @@ export class AgentStudioWebviewController extends Disposable {
 						prompt?: string;
 					},
 				);
-
+			case "comfy.fetch":
+				// ComfyUI 跨源保护：仅放行 Origin http://127.0.0.1:8188（自 origin）。
+				// webview fetch 必带 Origin: vscode-webview://... → 被 403 → Failed to fetch。
+				// 主进程代理：node fetch 默认不带 Origin 头，绕开 ComfyUI 的 403。
+				return this._handleComfyFetch(
+					p as unknown as {
+						url: string;
+						method?: string;
+						headers?: Record<string, string>;
+						body?: string;
+					},
+				);
+			case "comfy.launch":
+				// ComfyUI 一键启动（--enable-cors-header）。主进程 comfy:launch handler。
+				return this._handleComfyLaunch(p as unknown as { baseUrl?: string; port?: number } | undefined);
+			case "comfy.getLaunchPaths":
+				// 查询主进程解析的启动路径（含 overrides 来源 env/override/auto）。
+				return this._handleComfyGetLaunchPaths();
+			case "comfy.setLaunchPaths":
+				// 写入 sarosis.comfyui.pythonPath/mainPath（持久化）。
+				return this._handleComfySetLaunchPaths(p as unknown as { pythonPath?: string; mainPyPath?: string } | undefined);
+			case "comfy.checkDeps":
+				// 依赖检测：ComfyUI 安装/运行状态 + 本地模型文件列表。
+				return this._handleComfyCheckDeps(p as unknown as { baseUrl?: string } | undefined);
+			case "comfy.downloadModel":
+				// 模型下载：流式下载到 models/<type>/<filename>，返回 taskId 供进度轮询。
+				return this._handleComfyDownloadModel(p as unknown as { url: string; filename: string; type?: string } | undefined);
+			case "comfy.getDownloadProgress":
+				// 查询模型下载进度（前端 1s 轮询）。
+				return this._handleComfyGetDownloadProgress();
 			// ─── Workspace Sessions (Fork) ─────────────────────────
 			case "workspaceSession.list":
 				return this._sessionService.getSessions(p.workspaceId as string);
@@ -2360,9 +2416,9 @@ export class AgentStudioWebviewController extends Disposable {
 		//
 		// CRITICAL: the file_read tool resolves relative paths against a
 		// *prioritized list of roots* — VS Code workspace folders FIRST, then
-		// the Sarosis workspace.path, then any agent worktree path (see
+		// the Saros workspace.path, then any agent worktree path (see
 		// builtinToolProvider._resolveAndCheckWorkspacePath). If we only join
-		// against the Sarosis workspace.path here, we can produce a path the
+		// against the Saros workspace.path here, we can produce a path the
 		// tool never actually read from (file readable, but not openable). To
 		// stay consistent we build the SAME candidate-root list and open the
 		// first candidate that actually exists on disk.
@@ -2435,12 +2491,12 @@ export class AgentStudioWebviewController extends Disposable {
 	 * The tool (builtinToolProvider._resolveAndCheckWorkspacePath) tries a
 	 * prioritized list of roots:
 	 *   1. VS Code workspace folders (in order)
-	 *   2. the Sarosis workspace.path for the owning agent/workspace
+	 *   2. the Saros workspace.path for the owning agent/workspace
 	 *   3. the agent's worktreePath (if any)
 	 *
 	 * It joins the relative path onto the FIRST root for reads, but here we
 	 * cannot assume which root actually contained the file (the user may be
-	 * looking at a workspace whose Sarosis path differs from the VS Code
+	 * looking at a workspace whose Saros path differs from the VS Code
 	 * folder). So we build the same candidate list and return the first
 	 * candidate that EXISTS on disk. Falls back to joining onto the first
 	 * candidate root (so the editor surfaces a sensible "not found" path) and
@@ -2472,7 +2528,7 @@ export class AgentStudioWebviewController extends Disposable {
 			/* ignore — context service may be unavailable */
 		}
 
-		// 2 & 3. Sarosis workspace.path + agent worktreePath.
+		// 2 & 3. Saros workspace.path + agent worktreePath.
 		let wsId = workspaceId;
 		try {
 			if (agentId) {
@@ -3523,6 +3579,207 @@ export class AgentStudioWebviewController extends Disposable {
 		throw new Error(`不支持的图片引用：${ref.slice(0, 64)}`);
 	}
 
+	/**
+	 * Proxy a ComfyUI HTTP request from the webview.
+	 *
+	 * ComfyUI（aiohttp）跨源保护：仅放行 `Origin: http://127.0.0.1:8188`
+	 * （自身 origin），任何其他 Origin（含 webview 的 vscode-webview://）
+	 * 直接 403。webview 的 fetch 必带 Origin 头且无法自定义（受限头），
+	 * 所以直连必然失败。主进程用 node fetch 调用（默认不带 Origin 头）
+	 * 绕开该限制。返回 `{ ok, status, json|text, error }` 给 webview runner。
+	 */
+	private async _handleComfyFetch(payload: {
+		url: string;
+		method?: string;
+		headers?: Record<string, string>;
+		body?: string;
+		/**
+		 * 二进制模式：以 base64 回传原始字节（`{ base64, contentType }`）。
+		 * ComfyUI 的 `/view?filename=…` 返回 PNG/JPEG —— 走文本路径会被
+		 * UTF-8 解码破坏（非法字节 → U+FFFD），instant stage（Rotate/Mirror/
+		 * Crop）拿到的就不再是可解码的图像。必须显式走本分支。
+		 */
+		binary?: boolean;
+	}): Promise<{ ok: boolean; status: number; json?: unknown; text?: string; base64?: string; contentType?: string; error?: string }> {
+		if (!payload?.url || !/^https?:\/\//.test(payload.url)) {
+			return { ok: false, status: 0, error: `comfy.fetch: 无效的 URL（${payload?.url?.slice(0, 64)}）` };
+		}
+		// 关键：本 controller 运行在 renderer（workbench）进程。renderer 的
+		// fetch() 是浏览器 fetch，自动带 `Origin: vscode-file://vscode-app`；
+		// ComfyUI 跨源保护仅放行 `Origin: http://127.0.0.1:8188`（自 origin）
+		// → 任何 renderer 直连必然 403。
+		// 与 webTools.ts 同款方案：走主进程 IPC `vscode:webFetch`
+		// （Chromium 网络栈 net.fetch，无 CORS 限制、无 Origin 头）。
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				const result = await vscodeBridge.ipcRenderer.invoke('vscode:webFetch', {
+					url: payload.url,
+					method: payload.method ?? 'GET',
+					headers: payload.headers ?? {},
+					body: payload.body,
+					binary: payload.binary === true,
+				}) as { ok?: boolean; status?: number; statusText?: string; body?: string; base64?: string; contentType?: string; error?: string };
+				if (result?.error) { throw new Error(result.error); }
+				const status = result.status ?? 0;
+				if (payload.binary) {
+					return {
+						ok: status >= 200 && status < 300,
+						status,
+						base64: result.base64 ?? '',
+						contentType: result.contentType ?? 'application/octet-stream',
+					};
+				}
+				const body = result.body ?? '';
+				if (status >= 200 && status < 300 || body.startsWith('{')) {
+					const json = this._tryParseJson(body);
+					if (json !== undefined) { return { ok: status >= 200 && status < 300, status, json }; }
+				}
+				return { ok: status >= 200 && status < 300, status, text: body };
+			}
+		} catch (ipcErr) {
+			this.logService.info?.(`[AgentStudio] comfy.fetch: vscode:webFetch 失败，回退 requestService：${ipcErr}`);
+		}
+		// 回退：renderer requestService（浏览器 fetch，可能受 CORS 限制，
+		// 但 ComfyUI 对同源 localhost 也许放行——尽力而为）。
+		try {
+			const resp = await fetch(payload.url, {
+				method: payload.method ?? 'GET',
+				headers: payload.headers,
+				body: payload.body,
+			});
+			const status = resp.status;
+			if (payload.binary) {
+				// 同上：二进制必须以字节读出再 base64，绝不能过 text()。
+				const buf = new Uint8Array(await resp.arrayBuffer().catch(() => new ArrayBuffer(0)));
+				let bin = '';
+				for (let i = 0; i < buf.length; i++) { bin += String.fromCharCode(buf[i]); }
+				return {
+					ok: resp.ok,
+					status,
+					base64: buf.length ? btoa(bin) : '',
+					contentType: resp.headers.get('content-type') ?? 'application/octet-stream',
+				};
+			}
+			const contentType = resp.headers.get('content-type') ?? '';
+			if (contentType.includes('application/json')) {
+				const json = await resp.json().catch(() => undefined);
+				return { ok: resp.ok, status, json };
+			}
+			const text = await resp.text().catch(() => '');
+			return { ok: resp.ok, status, text };
+		} catch (err) {
+			return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
+		}
+	}
+
+	/**
+	 * ComfyUI 一键启动（--enable-cors-header）。走主进程 `comfy:launch` IPC
+	 * （主进程有 child_process spawn + net.fetch 探活能力）。失败回退返回错误结果。
+	 */
+	private async _handleComfyLaunch(payload?: { baseUrl?: string; port?: number }): Promise<{
+		ok: boolean;
+		alreadyRunning?: boolean;
+		starting?: boolean;
+		pid?: number;
+		version?: string;
+		error?: string;
+		pythonPath?: string;
+		mainPyPath?: string;
+		baseUrl?: string;
+	}> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:comfyLaunch', payload ?? {}) as {
+					ok: boolean;
+					alreadyRunning?: boolean;
+					starting?: boolean;
+					pid?: number;
+					version?: string;
+					error?: string;
+					pythonPath?: string;
+					mainPyPath?: string;
+					baseUrl?: string;
+				};
+			}
+			return { ok: false, error: 'comfy:launch: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `comfy:launch 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	/** 透传到主进程 vscode:comfyGetLaunchPaths。 */
+	private async _handleComfyGetLaunchPaths(): Promise<{ ok: boolean; pythonPath?: string; mainPyPath?: string; source?: string; overrides?: { pythonPath: string; mainPyPath: string }; error?: string }> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:comfyGetLaunchPaths') as { ok: boolean; pythonPath?: string; mainPyPath?: string; source?: string; overrides?: { pythonPath: string; mainPyPath: string } };
+			}
+			return { ok: false, error: 'comfy:getLaunchPaths: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `comfy:getLaunchPaths 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	/** 透传到主进程 vscode:comfySetLaunchPaths（写配置）。 */
+	private async _handleComfySetLaunchPaths(payload?: { pythonPath?: string; mainPyPath?: string }): Promise<{ ok: boolean; error?: string }> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:comfySetLaunchPaths', payload ?? {}) as { ok: boolean };
+			}
+			return { ok: false, error: 'comfy:setLaunchPaths: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `comfy:setLaunchPaths 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	/** 透传到主进程 vscode:comfyCheckDeps（依赖检测）。 */
+	private async _handleComfyCheckDeps(payload?: { baseUrl?: string }): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:comfyCheckDeps', payload ?? {});
+			}
+			return { ok: false, error: 'comfy:checkDeps: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `comfy:checkDeps 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	/** 透传到主进程 vscode:comfyDownloadModel（模型下载）。 */
+	private async _handleComfyDownloadModel(payload?: { url: string; filename: string; type?: string }): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:comfyDownloadModel', payload ?? {});
+			}
+			return { ok: false, error: 'comfy:downloadModel: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `comfy:downloadModel 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	/** 透传到主进程 vscode:comfyGetDownloadProgress（下载进度查询）。 */
+	private async _handleComfyGetDownloadProgress(): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:comfyGetDownloadProgress');
+			}
+			return { ok: false, error: 'comfy:getDownloadProgress: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `comfy:getDownloadProgress 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	/** 尝试 JSON 解析；失败返回 undefined（保持文本返回）。 */
+	private _tryParseJson(body: string): unknown {
+		if (!body) { return undefined; }
+		try { return JSON.parse(body); } catch { return undefined; }
+	}
+
 	// ─── Skills ─────────────────────────────────────────────────────
 
 	/**
@@ -3569,17 +3826,38 @@ export class AgentStudioWebviewController extends Disposable {
 		return backend.get(payload.id);
 	}
 
-	/** 返回 webview 可加载的资产 URL：本地镜像经 asWebviewUri 转 vscode-webview://，
-	 *  其余（http/data URL 引用）原样返回。 */
+	/** 返回 webview 可加载的资产 URL。
+	 *
+	 * 本地文件 → 读取为 base64 data URI（绕过 webview 资源协议：
+	 * asWebviewUri 生成的 https://file+*.vscode-cdn.net 域名在 pooled
+	 * webview 中无法被 DNS 解析 → ERR_NAME_NOT_RESOLVED）。
+	 * http/data URL 引用 → 原样透传。 */
 	private async _handleMediaGetUrl(payload: { id: string }) {
 		const backend = this._getMediaBackend();
 		if (!backend) { return null; }
 		const asset = await backend.get(payload.id);
 		if (!asset) { return null; }
+		if (asset.ref && /^(https?|data):/i.test(asset.ref)) {
+			return asset.ref;
+		}
 		if (asset.filePath) {
 			try {
-				return asWebviewUri(URI.file(asset.filePath)).toString();
-			} catch {
+				const content = await this.fileService.readFile(URI.file(asset.filePath));
+				// content.value 是 string | VSBuffer（VSBuffer 非 Uint8Array 子类，只有
+				// buffer/byteLength）。用官方 encodeBase64 转 base64，它会按 buffer.byteLength
+				// 精确遍历，避免 Buffer.from(value.buffer) 因底层 ArrayBuffer 多余字节
+				// （Buffer 池复用）导致图片损坏无法显示。
+				const value = content.value;
+				const vsbuf = typeof value === 'string' ? VSBuffer.fromString(value) : value;
+				const b64 = encodeBase64(vsbuf);
+				const ext = asset.filePath.match(/\.(\w+)$/)?.[1] ?? 'png';
+				const mime = ext === 'svg' ? 'image/svg+xml'
+					: ext === 'webp' ? 'image/webp'
+					: ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+					: 'image/png';
+				return `data:${mime};base64,${b64}`;
+			} catch (err) {
+				this.logService.error(`[MediaGetUrl] readFile failed for ${asset.filePath}: ${err}`);
 				return null;
 			}
 		}
@@ -3931,30 +4209,7 @@ export class AgentStudioWebviewController extends Disposable {
 				return { success: false };
 			}
 
-			const existing = await this.workflowStorageService.getWorkflow(wf.id);
-
-			// v7: ensure the workflow has an owner agent. If it was created without
-			// one (e.g. agent creation failed at creation time), create it now.
-			if (existing && !existing.agentId) {
-				this.logService.info(`[AgentStudioWebviewController] Workflow ${wf.id} has no agentId; creating owner agent on save.`);
-				await this._ensureWorkflowAgent(existing);
-			}
-
-			// v9: if the name changed, also rename the bound agent so they stay in sync.
-			if (typeof wf.name === 'string' && existing && existing.name !== wf.name && existing.agentId) {
-				try {
-					// v9: agent name = workflow name (no suffix)
-					await this.agentStudioService.updateAgent(existing.agentId, {
-						name: wf.name,
-					});
-					this.logService.info(
-						`[AgentStudioWebviewController] Synced agent name: workflow="${existing.name}" → "${wf.name}", agentId=${existing.agentId}`,
-					);
-				} catch (err) {
-					this.logService.warn('[AgentStudioWebviewController] Failed to sync agent name:', err);
-				}
-			}
-
+			// v34: 不再为工作流创建/同步专用 agent——工作流与 agent 解耦。
 			await this.workflowStorageService.updateWorkflow(wf.id, payload.workflow, payload.workspaceId);
 			// Also fire an event so the workflow list sidebar refreshes
 			this._sendEvent('workflow.saved', { id: wf.id });
@@ -3973,21 +4228,9 @@ export class AgentStudioWebviewController extends Disposable {
 		try {
 			this.logService.info(`[AgentStudioWebviewController] workflow.execute: workflowId=${payload.workflowId}, agentId=${payload.agentId}`);
 
-			// v7: ensure the workflow has an owner agent before executing.
-			// If workflow.agentId is missing (e.g. workflow created without deploying),
-			// create a dedicated agent on-the-fly so the chat trace and __workflow__
-			// event work correctly.
-			let agentId = payload.agentId;
-			if (!agentId) {
-				const wf = await this.workflowStorageService.getWorkflow(payload.workflowId);
-				if (wf) {
-					agentId = wf.agentId;
-					if (!agentId) {
-						this.logService.info(`[AgentStudioWebviewController] Workflow has no agentId; creating owner agent on-the-fly.`);
-						agentId = await this._ensureWorkflowAgent(wf);
-					}
-				}
-			}
+			// v34: 画布 Run 默认在 saros-claw（内置主助理）中执行——不再创建/绑定专用 agent。
+			// 若 webview 显式传了 agentId（用户指定）则优先使用。
+			const agentId = payload.agentId || SAROS_CLAW_AGENT_ID;
 
 			const executionId = await this.workflowExecutionService.executeWorkflow(payload.workflowId, {
 				agentId,
@@ -4003,110 +4246,6 @@ export class AgentStudioWebviewController extends Disposable {
 			this.logService.error('[AgentStudioWebviewController] workflow.execute failed', err);
 			throw err;
 		}
-	}
-
-	/**
-	 * v7: Ensure the workflow has a dedicated owner agent. If it doesn't, create
-	 * one on-the-fly and persist the agentId binding. Replicates the logic from
-	 * `workflowView._ensureWorkflowAgent` / `_createWorkflowAgent` so that
-	 * workflows executed directly from the editor (without prior deployment)
-	 * still get a chat trace.
-	 */
-	private async _ensureWorkflowAgent(wf: import('../common/workflowStorage.js').IStoredWorkflow): Promise<string | undefined> {
-		try {
-			const agentName = wf.name || 'Workflow Agent';
-			const systemPrompt = this._buildWorkflowSystemPrompt(wf);
-			const agent = await this.agentStudioService.createAgent({
-				id: wf.id,
-				name: agentName,
-				role: 'Workflow Manager',
-				description: `Manages and executes workflow: ${wf.name}`,
-				model: 'claude-sonnet-4-20250514',
-				systemPrompt,
-				skills: ['workflow-execution'],
-				tools: [
-					'read_file', 'list_dir', 'search_files', 'grep_search',
-					'write_to_file', 'replace_in_file', 'terminal', 'use_skill',
-					'workflow_get', 'workflow_get_schema', 'workflow_apply', 'workflow_list',
-				],
-				source: 'custom',
-				category: 'workflow',
-				icon: '🔀',
-			}) as any;
-			if (agent?.id) {
-				await this.workflowStorageService.updateWorkflow(wf.id, { agentId: agent.id });
-				wf.agentId = agent.id; // Update in-memory so callers see the new agentId.
-				this.logService.info(`[AgentStudioWebviewController] Created workflow owner agent: ${agent.id} for workflow ${wf.id}`);
-				return agent.id;
-			}
-		} catch (err) {
-			this.logService.error(`[AgentStudioWebviewController] Failed to create workflow owner agent: ${err instanceof Error ? err.message : err}`);
-		}
-		return undefined;
-	}
-
-	/**
-	 * Build a system prompt for the workflow owner agent.
-	 * Replicates `workflowView._buildWorkflowSystemPrompt`.
-	 */
-	private _buildWorkflowSystemPrompt(wf: import('../common/workflowStorage.js').IStoredWorkflow): string {
-		const lines: string[] = [];
-		lines.push(`You manage workflow "${wf.name}" (id: \`${wf.id}\`).`);
-		lines.push('');
-		lines.push('You are responsible for both executing AND editing this workflow graph.');
-		lines.push('Users may ask you to add, remove, or modify nodes. You have full control.');
-		lines.push('');
-
-		// ── Workflow tool instructions ─────────────────────────────────
-		lines.push('## Workflow Tools');
-		lines.push('');
-		lines.push('Available workflow editing tools:');
-		lines.push('- `workflow_list` — List all workflows in the current workspace');
-		lines.push('- `workflow_get` — Get the full state of a workflow (nodes, connections, metadata)');
-		lines.push('- `workflow_get_schema` — Get available node types and their data schemas');
-		lines.push('- `workflow_apply` — Apply a complete workflow definition (replaces all nodes/connections)');
-		lines.push('');
-		lines.push('Workflow creation/modification process:');
-		lines.push(`1. First call \`workflow_get\` with workflow_id="${wf.id}" to see the current state`);
-		lines.push('2. Call `workflow_get_schema` if you need to understand available node types');
-		lines.push('3. Generate the complete workflow JSON with ALL nodes and connections');
-		lines.push('4. Call `workflow_apply` with workflow_id, nodes, connections, and optional name/description');
-		lines.push('');
-		lines.push('Node types you can create:');
-		lines.push('- System: `start`, `end` (every workflow MUST have both)');
-		lines.push('- Basic: `prompt`, `agent`, `skill`, `tool`, `task`');
-		lines.push('- Control flow: `ifElse`, `switch`, `condition`, `loop`, `parallel`, `askUser`');
-		lines.push('- Layout: `group` (visual container, no execution logic)');
-		lines.push('');
-		lines.push('Guidelines:');
-		lines.push('- Every workflow MUST have exactly one `start` and one `end` node');
-		lines.push('- Position nodes with horizontal spacing of ~300px and vertical spacing of ~150px');
-		lines.push('- Start node typically at {x: 80, y: 250}');
-		lines.push('- Each connection requires: `id` (unique), `from` (source node id), `to` (target node id)');
-		lines.push('- `workflow_apply` replaces the ENTIRE workflow — always provide ALL nodes and connections');
-		lines.push('- Use descriptive labels for nodes so the workflow is readable');
-		lines.push('- For branching nodes (ifElse, switch), include the branches array with unique IDs');
-		lines.push('- Explain your changes briefly to the user after applying');
-		lines.push('');
-
-		if (wf.description) {
-			lines.push('## Workflow Description');
-			lines.push(wf.description);
-			lines.push('');
-		}
-		const nodes = wf.nodes;
-		if (nodes && nodes.length > 0) {
-			const userNodes = nodes.filter((n: any) => n.type !== 'start' && n.type !== 'end' && n.type !== 'group');
-			if (userNodes.length > 0) {
-				lines.push('## Current Workflow Graph');
-				userNodes.forEach((n: any, i: number) => {
-					const label = (n.data?.label as string) || n.name || `Node ${i + 1}`;
-					lines.push(`- **${label}** (${n.type})`);
-				});
-				lines.push('');
-			}
-		}
-		return lines.join('\n');
 	}
 
 	/**

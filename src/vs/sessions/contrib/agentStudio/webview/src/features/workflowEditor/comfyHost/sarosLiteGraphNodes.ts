@@ -1,7 +1,7 @@
 /*---------------------------------------------------------------------------------------------
- *  sarosisLiteGraphNodes — real LiteGraph node classes for Sarosis custom node types.
+ *  sarosLiteGraphNodes — real LiteGraph node classes for Saros custom node types.
  *
- *  Previously, Sarosis nodes (start/end/task/prompt/agent/skill/tool/ifElse/switch/
+ *  Previously, Saros nodes (start/end/task/prompt/agent/skill/tool/ifElse/switch/
  *  askUser/group) were filtered out of the LiteGraph canvas because the engine had
  *  no node class for them and would render a giant empty rectangle. Here we register
  *  a real LGraphNode subclass per type so the engine can draw them natively:
@@ -14,13 +14,14 @@
  *  fromLiteGraph reads properties → data). `onConfigure` re-hydrates widget
  *  values from the incoming properties so loading a workflow shows the params.
  *
- *  Registration is idempotent and mirrors `registerSarosisNodes()` in registry.ts.
+ *  Registration is idempotent and mirrors `registerSarosNodes()` in registry.ts.
  *--------------------------------------------------------------------------------------------*/
 
 import { LiteGraph, LGraphNode } from '@comfyorg/litegraph';
 import { comfyDrawWidgets } from '../comfyNodeStyle.js';
+import { getNodeSpec } from './registry.js';
 
-export interface SarosisNodeConfig {
+export interface SarosNodeConfig {
 	type: string;
 	title: string;
 	color?: string;
@@ -29,35 +30,39 @@ export interface SarosisNodeConfig {
 	widgets?: Array<{ type: 'text' | 'button' | 'toggle'; name: string; value: unknown; multiline?: boolean }>;
 }
 
-const NODE_CONFIGS: SarosisNodeConfig[] = [
-	{ type: 'Sarosis.Start', title: '开始', color: '#22c55e', outputs: [{ name: 'value', type: 'SAROSIS_JSON' }] },
-	{ type: 'Sarosis.End', title: '结束', color: '#ef4444', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }] },
-	{ type: 'Sarosis.Task', title: '任务', color: '#3b82f6', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'value', type: 'SAROSIS_JSON' }], widgets: [{ type: 'text', name: 'taskId', value: '' }] },
-	{ type: 'Sarosis.Prompt', title: '提示', color: '#8b5cf6', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'output', type: 'TEXT' }], widgets: [{ type: 'text', name: 'prompt', value: '', multiline: true }] },
-	{ type: 'Sarosis.Agent', title: 'Agent', color: '#f97316', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'value', type: 'SAROSIS_JSON' }], widgets: [{ type: 'text', name: 'agentId', value: '' }] },
-	{ type: 'Sarosis.Skill', title: 'Skill', color: '#eab308', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'value', type: 'SAROSIS_JSON' }], widgets: [{ type: 'text', name: 'skillName', value: '' }] },
-	{ type: 'Sarosis.Tool', title: 'Tool', color: '#10b981', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'value', type: 'SAROSIS_JSON' }], widgets: [{ type: 'text', name: 'toolName', value: '' }] },
-	{ type: 'Sarosis.IfElse', title: 'If/Else', color: '#ef4444', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'true', type: 'SAROSIS_JSON' }, { name: 'false', type: 'SAROSIS_JSON' }], widgets: [{ type: 'text', name: 'evaluationTarget', value: '' }] },
-	{ type: 'Sarosis.Switch', title: 'Switch', color: '#a855f7', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'case', type: 'SAROSIS_JSON' }], widgets: [{ type: 'text', name: 'evaluationTarget', value: '' }] },
-	{ type: 'Sarosis.AskUser', title: '询问', color: '#06b6d4', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'answer', type: 'SAROSIS_JSON' }], widgets: [{ type: 'text', name: 'questionText', value: '' }] },
-	{ type: 'Sarosis.Group', title: '分组', color: '#888780' },
-	{ type: 'Sarosis.ProviderPicker', title: 'Provider 选择', color: '#8b5cf6', inputs: [], outputs: [{ name: 'config', type: 'TEXT' }], widgets: [
+const NODE_CONFIGS: SarosNodeConfig[] = [
+	{ type: 'Saros.Start', title: '开始', color: '#22c55e', outputs: [{ name: 'value', type: 'SAROS_JSON' }] },
+	{ type: 'Saros.End', title: '结束', color: '#ef4444', inputs: [{ name: 'value', type: 'SAROS_JSON' }] },
+	{ type: 'Saros.Task', title: '任务', color: '#3b82f6', inputs: [{ name: 'value', type: 'SAROS_JSON' }], outputs: [{ name: 'value', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'taskId', value: '' }] },
+	{ type: 'Saros.Prompt', title: '提示', color: '#8b5cf6', inputs: [{ name: 'value', type: 'SAROS_JSON' }], outputs: [{ name: 'output', type: 'TEXT' }], widgets: [{ type: 'text', name: 'prompt', value: '', multiline: true }] },
+	{ type: 'Saros.Agent', title: 'Agent', color: '#f97316', inputs: [{ name: 'value', type: 'SAROS_JSON' }], outputs: [{ name: 'value', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'agentId', value: '' }] },
+	{ type: 'Saros.Skill', title: 'Skill', color: '#eab308', inputs: [{ name: 'value', type: 'SAROS_JSON' }], outputs: [{ name: 'value', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'skillName', value: '' }] },
+	{ type: 'Saros.Tool', title: 'Tool', color: '#10b981', inputs: [{ name: 'value', type: 'SAROS_JSON' }], outputs: [{ name: 'value', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'toolName', value: '' }] },
+	{ type: 'Saros.IfElse', title: 'If/Else', color: '#ef4444', inputs: [{ name: 'value', type: 'SAROS_JSON' }], outputs: [{ name: 'true', type: 'SAROS_JSON' }, { name: 'false', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'evaluationTarget', value: '' }] },
+	{ type: 'Saros.Switch', title: 'Switch', color: '#a855f7', inputs: [{ name: 'value', type: 'SAROS_JSON' }], outputs: [{ name: 'case', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'evaluationTarget', value: '' }] },
+	{ type: 'Saros.AskUser', title: '询问', color: '#06b6d4', inputs: [{ name: 'value', type: 'SAROS_JSON' }], outputs: [{ name: 'answer', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'questionText', value: '' }] },
+	{ type: 'Saros.Group', title: '分组', color: '#888780' },
+	{ type: 'Saros.Subflow', title: '子流程', color: '#64748b', inputs: [{ name: 'value', type: 'SAROS_JSON' }], outputs: [{ name: 'value', type: 'SAROS_JSON' }] },
+	{ type: 'Saros.ProviderPicker', title: 'Provider 选择', color: '#8b5cf6', inputs: [], outputs: [{ name: 'config', type: 'TEXT' }], widgets: [
 		{ type: 'text', name: 'providerId', value: '' },
 		{ type: 'text', name: 'modelId', value: '' },
 	] },
-	// Provider 文生图：经 imagegen.generate RPC 调已认证 LLM provider。
-	// kind='llm' → runNodeOrStage 走 runProviderImage，不依赖 ComfyUI runner。
-	{ type: 'Sarosis.ModelImageGen', title: '模型文生图', color: '#06b6d4', inputs: [{ name: 'prompt', type: 'TEXT' }], outputs: [{ name: 'image', type: 'IMAGE' }], widgets: [
-		{ type: 'text', name: 'providerId', value: '' },
-		{ type: 'text', name: 'modelId', value: '' },
-		{ type: 'text', name: 'prompt', value: '', multiline: true },
-		{ type: 'text', name: 'size', value: '1024x1024' },
-	] },
+	// NOTE: Saros.ModelImageGen is deliberately NOT here. It migrated to a
+	// schema node (kind='schema' + backendKind='provider', see registry.ts) and
+	// gets its LiteGraph class from schemaLiteGraphNodes (canvas title/ports +
+	// addDOMWidget form). A duplicate SarosNode config here would OVERWRITE
+	// that class at registration time (registerNodeType: last write wins),
+	// resurrecting the old canvas widgets (providerId/modelId/…) underneath
+	// the DOM card — the "两层参数 UI" bug.
 ];
 
-/** Build the LGraphNode subclass for a Sarosis node config. */
-export function createSarosisNodeClass(cfg: SarosisNodeConfig): typeof LGraphNode {
-	return class SarosisNode extends LGraphNode {
+/** Build the LGraphNode subclass for a Saros node config. */
+export function createSarosNodeClass(cfg: SarosNodeConfig): typeof LGraphNode {
+	return class SarosNode extends LGraphNode {
+		// LiteGraph's `configure()` does `if (!info.title) this.title =
+		// this.constructor.title` — without a static title the instance title
+		// gets wiped to undefined on every load (blank title bar).
+		static override title = cfg.title;
 		constructor() {
 			super(cfg.title);
 			this.color = cfg.color ?? '#888';
@@ -120,11 +125,11 @@ export function createSarosisNodeClass(cfg: SarosisNodeConfig): typeof LGraphNod
 		}
 
 		/**
-		 * Override `drawWidgets` on the Sarosis subclass instead of relying on
+		 * Override `drawWidgets` on the Saros subclass instead of relying on
 		 * the `LGraphNode.prototype.drawWidgets` patch from
 		 * `applyComfyNodeStyle`. LiteGraph 0.17's subclass `extends LGraphNode`
 		 * still resolves `drawWidgets` through the prototype chain, so the
-		 * Sarosis nodes were double-painted — once by the original
+		 * Saros nodes were double-painted — once by the original
 		 * 0.17 `drawWidgets` (TextWidget.draw 渲染 label+value 文字，无背景框
 		 * 的"参数面板上面一层") and once by our `comfyDrawWidgets` (字段框).
 		 * Owning the override on the subclass guarantees a single render path.
@@ -141,18 +146,23 @@ export function createSarosisNodeClass(cfg: SarosisNodeConfig): typeof LGraphNod
 
 let registered = false;
 
-/** Register all Sarosis node classes onto LiteGraph (idempotent). */
-export function registerSarosisLiteGraphNodes(): void {
+/** Register all Saros node classes onto LiteGraph (idempotent). */
+export function registerSarosLiteGraphNodes(): void {
 	if (registered) { return; }
 	for (const cfg of NODE_CONFIGS) {
-		const cls = createSarosisNodeClass(cfg);
+		// Defensive: a node that migrated to kind='schema' owns its LiteGraph
+		// class via schemaLiteGraphNodes (canvas title/ports + addDOMWidget
+		// form). Never overwrite that registration — registerNodeType is
+		// last-write-wins and we run after registerSarosNodes().
+		if (getNodeSpec(cfg.type)?.kind === 'schema') { continue; }
+		const cls = createSarosNodeClass(cfg);
 		LiteGraph.registerNodeType(cfg.type, cls);
 	}
 	registered = true;
 }
 
 /** Reset registration (used by tests). */
-export function unregisterSarosisLiteGraphNodes(): void {
+export function unregisterSarosLiteGraphNodes(): void {
 	for (const cfg of NODE_CONFIGS) {
 		try {
 			LiteGraph.unregisterNodeType(cfg.type);
@@ -164,6 +174,6 @@ export function unregisterSarosisLiteGraphNodes(): void {
 }
 
 /** Public config list (tests + diagnostics). */
-export function sarosisNodeConfigs(): SarosisNodeConfig[] {
+export function sarosNodeConfigs(): SarosNodeConfig[] {
 	return NODE_CONFIGS;
 }

@@ -2,13 +2,14 @@
  *  CornerPinEditor — four-corner drag editor for the ComfyTV Corner Pin stage
  *  (P3). Draws the upstream video's first frame (when available) under a
  *  draggable quadrilateral (TL/TR/BR/BL); corners are stored in ComfyTV's
- *  normalized JSON contract. The stage itself is an fx-chain builder, so this
- *  editor only persists `corners` into the node values.
+ *  **pixel-coordinate** JSON contract (aligned with useCornerPinEditor.ts).
+ *  The stage itself is an fx-chain builder, so this editor only persists
+ *  `corners` into the node values.
  *--------------------------------------------------------------------------------------------*/
 
 import * as React from 'react';
 import {
-	CORNER_LABELS, clampCorner, cornersToJson, parseCorners,
+	CORNER_LABELS, clampCorner, defaultCorners, nearestCornerIndex, parseCorners, serializeCorners,
 	type Corners,
 } from './comfyHost/cornerPinEditor';
 
@@ -22,13 +23,17 @@ const VIEW_W = 360;
 const VIEW_H = 204;
 
 export function CornerPinEditor({ initialCorners, videoRef, onCornersChange }: CornerPinEditorProps): React.JSX.Element {
-	const [corners, setCorners] = React.useState<Corners>(() => parseCorners(initialCorners));
+	// 视频实际分辨率未知前，corners 暂为空；加载后按 vw/vh 解析/默认。
+	const [videoSize, setVideoSize] = React.useState<{ w: number; h: number } | null>(null);
+	const [corners, setCorners] = React.useState<Corners>([[0, 0], [0, 0], [0, 0], [0, 0]]);
 	const [dragIndex, setDragIndex] = React.useState(-1);
 	const canvasRef = React.useRef<HTMLCanvasElement>(null);
 	const videoRefEl = React.useRef<HTMLVideoElement | null>(null);
 	const [frameReady, setFrameReady] = React.useState(false);
+	const initializedRef = React.useRef(false);
+	const videoSizeRef = React.useRef(videoSize); videoSizeRef.current = videoSize;
 
-	// Load the upstream video's first frame as the backdrop (best effort).
+	// Load the upstream video's first frame + actual resolution (best effort).
 	React.useEffect(() => {
 		if (!videoRef || !videoRef.startsWith('http')) { return; }
 		const video = document.createElement('video');
@@ -37,7 +42,12 @@ export function CornerPinEditor({ initialCorners, videoRef, onCornersChange }: C
 		video.playsInline = true;
 		video.preload = 'auto';
 		video.crossOrigin = 'anonymous';
-		const onData = () => { setFrameReady(true); };
+		const onData = () => {
+			setFrameReady(true);
+			if (video.videoWidth > 0 && video.videoHeight > 0) {
+				setVideoSize({ w: video.videoWidth, h: video.videoHeight });
+			}
+		};
 		const onError = () => { setFrameReady(false); };
 		video.addEventListener('loadeddata', onData);
 		video.addEventListener('error', onError);
@@ -49,6 +59,42 @@ export function CornerPinEditor({ initialCorners, videoRef, onCornersChange }: C
 		};
 	}, [videoRef]);
 
+	// 视频分辨率就绪后，解析初始 corners（像素）或默认全图。
+	React.useEffect(() => {
+		if (!videoSize || initializedRef.current) { return; }
+		initializedRef.current = true;
+		const parsed = parseCorners(initialCorners, videoSize.w, videoSize.h);
+		setCorners(parsed);
+		// 若初始为空/非法，回写默认值（保证 values 里有合法像素 corners）
+		if (!initialCorners || !initialCorners.trim()) {
+			onCornersChange(serializeCorners(parsed));
+		}
+	}, [videoSize, initialCorners, onCornersChange]);
+
+	// 无视频时，用 1280×720 兜底分辨率（仍可编辑像素角点）。
+	React.useEffect(() => {
+		if (videoSize || initializedRef.current || videoRef) { return; }
+		initializedRef.current = true;
+		const fallback = { w: 1280, h: 720 };
+		setVideoSize(fallback);
+		const parsed = parseCorners(initialCorners, fallback.w, fallback.h);
+		setCorners(parsed);
+	}, [videoSize, videoRef, initialCorners, onCornersChange]);
+
+	// fit scale（视频 → 视图）：保持宽高比居中。
+	const fit = React.useMemo(() => {
+		if (!videoSize) { return { scale: 1, ox: 0, oy: 0 }; }
+		const s = Math.min(VIEW_W / videoSize.w, VIEW_H / videoSize.h);
+		const dw = videoSize.w * s;
+		const dh = videoSize.h * s;
+		return { scale: s, ox: (VIEW_W - dw) / 2, oy: (VIEW_H - dh) / 2 };
+	}, [videoSize]);
+
+	// 像素 → 视图坐标
+	const pxToView = (x: number, y: number): [number, number] => [fit.ox + x * fit.scale, fit.oy + y * fit.scale];
+	// 视图坐标 → 像素
+	const viewToPx = (x: number, y: number): [number, number] => [(x - fit.ox) / fit.scale, (y - fit.oy) / fit.scale];
+
 	React.useEffect(() => {
 		const canvas = canvasRef.current;
 		if (!canvas) { return; }
@@ -58,11 +104,8 @@ export function CornerPinEditor({ initialCorners, videoRef, onCornersChange }: C
 		ctx.fillStyle = '#17181c';
 		ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 		const video = videoRefEl.current;
-		if (frameReady && video && video.videoWidth) {
-			const vw = video.videoWidth; const vh = video.videoHeight;
-			const scale = Math.min(VIEW_W / vw, VIEW_H / vh);
-			const dw = vw * scale; const dh = vh * scale;
-			ctx.drawImage(video, (VIEW_W - dw) / 2, (VIEW_H - dh) / 2, dw, dh);
+		if (frameReady && video && video.videoWidth && videoSize) {
+			ctx.drawImage(video, fit.ox, fit.oy, videoSize.w * fit.scale, videoSize.h * fit.scale);
 		} else {
 			ctx.strokeStyle = 'rgba(255,255,255,.12)';
 			ctx.lineWidth = 1;
@@ -76,14 +119,14 @@ export function CornerPinEditor({ initialCorners, videoRef, onCornersChange }: C
 		ctx.lineWidth = 2;
 		ctx.beginPath();
 		corners.forEach((p, i) => {
-			const x = p[0] * VIEW_W; const y = p[1] * VIEW_H;
+			const [x, y] = pxToView(p[0], p[1]);
 			if (i === 0) { ctx.moveTo(x, y); } else { ctx.lineTo(x, y); }
 		});
 		ctx.closePath();
 		ctx.stroke();
 		// handles
 		corners.forEach((p, i) => {
-			const x = p[0] * VIEW_W; const y = p[1] * VIEW_H;
+			const [x, y] = pxToView(p[0], p[1]);
 			ctx.fillStyle = i === dragIndex ? '#fff' : '#4a9eff';
 			ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill();
 			ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
@@ -93,39 +136,37 @@ export function CornerPinEditor({ initialCorners, videoRef, onCornersChange }: C
 			ctx.textAlign = 'center';
 			ctx.fillText(CORNER_LABELS[i], x, y - 14);
 		});
-	}, [corners, dragIndex, frameReady]);
+	}, [corners, dragIndex, frameReady, fit, videoSize, pxToView]);
 
-	const localN = (e: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } => {
+	const viewLocal = (e: React.PointerEvent<HTMLCanvasElement>): [number, number] => {
 		const rect = e.currentTarget.getBoundingClientRect();
-		return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height };
+		return [(e.clientX - rect.left) / rect.width * VIEW_W, (e.clientY - rect.top) / rect.height * VIEW_H];
 	};
 
 	const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-		const { x, y } = localN(e);
-		for (let i = 0; i < corners.length; i++) {
-			if (Math.hypot(corners[i][0] - x, corners[i][1] - y) < 0.05) {
-				setDragIndex(i);
-				return;
-			}
-		}
-		setDragIndex(-1);
+		const [vx, vy] = viewLocal(e);
+		const [px, py] = viewToPx(vx, vy);
+		const idx = nearestCornerIndex(corners, px, py);
+		setDragIndex(idx);
 	};
 
 	const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-		if (dragIndex < 0) { return; }
-		const { x, y } = localN(e);
+		if (dragIndex < 0 || !videoSize) { return; }
+		const [vx, vy] = viewLocal(e);
+		const [px, py] = viewToPx(vx, vy);
 		const next = [...corners] as Corners;
-		next[dragIndex] = clampCorner([x, y]);
+		next[dragIndex] = clampCorner([px, py], videoSize.w, videoSize.h);
 		setCorners(next);
-		onCornersChange(cornersToJson(next));
+		onCornersChange(serializeCorners(next));
 	};
 
 	const onPointerUp = () => { setDragIndex(-1); };
 
 	const reset = () => {
-		const next = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]] as Corners;
+		if (!videoSize) { return; }
+		const next = defaultCorners(videoSize.w, videoSize.h);
 		setCorners(next);
-		onCornersChange(cornersToJson(next));
+		onCornersChange(serializeCorners(next));
 	};
 
 	return (
@@ -152,7 +193,7 @@ export function CornerPinEditor({ initialCorners, videoRef, onCornersChange }: C
 				</span>
 			</div>
 			<div style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', fontFamily: 'monospace' }}>
-				{cornersToJson(corners)}
+				{serializeCorners(corners)}{videoSize ? ` / 源 ${videoSize.w}×${videoSize.h}` : ''}
 			</div>
 		</div>
 	);

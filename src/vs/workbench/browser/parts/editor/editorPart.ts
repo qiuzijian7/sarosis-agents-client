@@ -593,7 +593,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 				this.getSplitSizingStyle(),
 				locationView,
 				this.toGridViewDirection(direction),
-				// [Sarosis] Containment hook — subclasses may force a parallel-axis
+				// [Saros] Containment hook — subclasses may force a parallel-axis
 				// nested branch instead of a sibling, to keep the new view inside
 				// a logical "zone" rooted at locationView. Defaults to false.
 				this.shouldForceSameOrientation(locationView, direction),
@@ -853,7 +853,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 				this.getSplitSizingStyle(),
 				targetView,
 				this.toGridViewDirection(direction),
-				// [Sarosis] Same containment hook for moves between groups
+				// [Saros] Same containment hook for moves between groups
 				// living in this groups view.
 				this.shouldForceSameOrientation(targetView, direction),
 			);
@@ -988,7 +988,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 	}
 
 	/**
-	 * [Sarosis] Hook used by {@link addGroup} and {@link moveGroup} to
+	 * [Saros] Hook used by {@link addGroup} and {@link moveGroup} to
 	 * decide whether the new view should be inserted as a *parallel-axis
 	 * nested branch* under `locationView` instead of as a sibling of
 	 * `locationView` in its parent.

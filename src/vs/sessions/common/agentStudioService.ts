@@ -538,6 +538,8 @@ export interface IChatSendOptions {
 	readonly workflowTrigger?: {
 		readonly workflowId: string;
 		readonly input?: string;
+		/** 表单收集的自定义模板变量（{{topic}} 等）；合并进 execution context 供变量替换。 */
+		readonly variables?: Record<string, string>;
 	};
 	/** @deprecated 已移除 ChatMode（craft/plan/ask/workflow）。改为 chatOnly 开关。 */
 	readonly chatMode?: ChatMode;
@@ -581,13 +583,15 @@ export interface IChatSendOptions {
  */
 export interface IChatAttachmentSend {
 	readonly id: string;
-	readonly type: 'image' | 'file';
+	readonly type: 'image' | 'file' | 'folder';
 	readonly name: string;
 	readonly mimeType: string;
-	/** base64 编码内容（图片和二进制文件）或原文（文本文件） */
+	/** base64 编码内容（图片和二进制文件）或原文（文本文件）；文件夹时为系统路径 */
 	readonly data: string;
 	readonly size: number;
 	readonly isPasted?: boolean;
+	/** 文件夹附件的系统路径（type === 'folder' 时存在） */
+	readonly filePath?: string;
 }
 
 /**
@@ -1185,6 +1189,11 @@ export interface IConfigHtmlService {
 	 * Read the agent's `config.html` content.
 	 */
 	getHtml(agentId: string): Promise<{ html: string; version: number }>;
+
+	/**
+	 * Render the agent's config markdown/html and return the rendered HTML.
+	 */
+	renderHtml(agentId: string, markdown?: string): Promise<{ html: string; version: number }>;
 
 	/**
 	 * Write the agent's `config.html` content.

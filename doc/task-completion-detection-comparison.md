@@ -1,6 +1,6 @@
-# 任务完成检测机制对比分析：OpenClaw vs Sarosis Agents Client
+# 任务完成检测机制对比分析：OpenClaw vs Saros Agents Client
 
-> 本文档分析了 OpenClaw 和 Sarosis Agents Client (VS Code Copilot) 两个项目中如何判断 Agent 任务是否完成，并进行了详细对比。
+> 本文档分析了 OpenClaw 和 Saros Agents Client (VS Code Copilot) 两个项目中如何判断 Agent 任务是否完成，并进行了详细对比。
 
 ---
 
@@ -15,9 +15,9 @@ OpenClaw 采用**被动检测**方式：不要求 Agent 显式声明任务完成
 - 系统通过循环检测防止 LLM 陷入重复工具调用的死循环
 - 当检测到循环时，系统向 LLM 发送警告或强制停止消息
 
-### 1.2 Sarosis Agents Client 的任务完成检测
+### 1.2 Saros Agents Client 的任务完成检测
 
-Sarosis Agents Client (VS Code Copilot) 采用**主动声明**方式：要求 Agent 必须调用 `task_complete` 工具来显式声明任务已完成。
+Saros Agents Client (VS Code Copilot) 采用**主动声明**方式：要求 Agent 必须调用 `task_complete` 工具来显式声明任务已完成。
 
 **核心思路**：
 - Agent 必须通过调用 `task_complete` 工具来声明任务完成
@@ -202,13 +202,13 @@ OpenClaw 没有显式的 `task_complete` 工具。任务完成的判定依赖于
 
 ---
 
-## 3. Sarosis Agents Client 的任务完成检测机制
+## 3. Saros Agents Client 的任务完成检测机制
 
 ### 3.1 task_complete 工具
 
 **核心文件**：`src/vs/workbench/contrib/chat/common/tools/builtinTools/taskCompleteTool.ts`
 
-Sarosis Agents Client 实现了一个专门的 `task_complete` 工具，Agent 必须调用此工具来声明任务完成。
+Saros Agents Client 实现了一个专门的 `task_complete` 工具，Agent 必须调用此工具来声明任务完成。
 
 #### 3.1.1 工具定义
 
@@ -365,7 +365,7 @@ protected shouldAutopilotContinue(result: IToolCallSingleResult): string | undef
 
 #### 2.3.3 停止 Hook 机制
 
-Sarosis Agents Client 实现了 **Stop Hook** 机制，允许外部钩子阻止 Agent 停止。
+Saros Agents Client 实现了 **Stop Hook** 机制，允许外部钩子阻止 Agent 停止。
 
 **Stop Hook 工作流程**：
 
@@ -406,7 +406,7 @@ interface StopHookOutput {
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│            Sarosis Agents Client 任务完成判定流程                │
+│            Saros Agents Client 任务完成判定流程                │
 ├─────────────────────────────────────────────────────────────────┤
 │  用户发送请求                                                 │
 │       │                                                       │
@@ -466,7 +466,7 @@ interface StopHookOutput {
 
 ### 4.1 架构对比
 
-| 维度 | OpenClaw | Sarosis Agents Client |
+| 维度 | OpenClaw | Saros Agents Client |
 |------|----------|----------------------|
 | **任务完成声明方式** | 被动：LLM 自主决定停止 | 主动：必须调用 `task_complete` 工具 |
 | **循环检测机制** | 工具循环检测（5 种检测类型） | 工具调用限制 + Autopilot 继续判断 |
@@ -487,7 +487,7 @@ interface StopHookOutput {
 | 任务超时 | 执行时间超限 | 高 |
 | 用户取消 | 用户主动取消 | 最高 |
 
-#### Sarosis Agents Client 的触发条件
+#### Saros Agents Client 的触发条件
 
 | 条件 | 描述 | 优先级 |
 |------|------|--------|
@@ -514,7 +514,7 @@ interface StopHookOutput {
 - **默认关闭**：`enabled: false`，需要手动启用
 - **可能产生误报**：某些合理的重复调用可能被误判为循环
 
-#### Sarosis Agents Client 的循环防止
+#### Saros Agents Client 的循环防止
 
 **优势**：
 - **主动预防**：通过 `task_complete` 工具让 Agent 显式声明完成
@@ -558,7 +558,7 @@ export function detectToolCallLoop(
 }
 ```
 
-#### Sarosis Agents Client: `shouldAutopilotContinue()`
+#### Saros Agents Client: `shouldAutopilotContinue()`
 
 ```typescript
 protected shouldAutopilotContinue(result: IToolCallSingleResult): string | undefined {
@@ -616,7 +616,7 @@ protected shouldAutopilotContinue(result: IToolCallSingleResult): string | undef
 4. **无显式完成信号**：依赖 LLM 自主判断，可能提前或延迟停止
 5. **调试困难**：循环检测的日志可能难以解读
 
-### 5.2 Sarosis Agents Client 方案
+### 5.2 Saros Agents Client 方案
 
 #### 优点
 
@@ -646,7 +646,7 @@ protected shouldAutopilotContinue(result: IToolCallSingleResult): string | undef
 ┌─────────────────────────────────────────────────────────────────┐
 │                    推荐的任务完成检测方案                       │
 ├─────────────────────────────────────────────────────────────────┤
-│  1. 显式完成信号（借鉴 Sarosis）                          │
+│  1. 显式完成信号（借鉴 Saros）                          │
 │     - 实现 task_complete 工具                                │
 │     - Agent 必须调用此工具声明完成                           │
 │     - 系统检测到调用后停止循环                              │
@@ -656,7 +656,7 @@ protected shouldAutopilotContinue(result: IToolCallSingleResult): string | undef
 │     - 可配置的阈值和检测器                                 │
 │     - 检测到循环时发送警告或强制停止                       │
 │                                                               │
-│  3. Hook 机制（借鉴 Sarosis）                              │
+│  3. Hook 机制（借鉴 Saros）                              │
 │     - 实现 Stop Hook 和 Subagent Stop Hook                  │
 │     - 允许外部系统阻止 Agent 停止                          │
 │     - 提供原因反馈给 Agent                                │
@@ -728,12 +728,12 @@ protected shouldAutopilotContinue(result: IToolCallSingleResult): string | undef
 ### 7.1 关键发现
 
 1. **OpenClaw** 采用**被动检测**方式，依赖循环检测防止无限循环，不要求 Agent 显式声明完成
-2. **Sarosis Agents Client** 采用**主动声明**方式，要求 Agent 调用 `task_complete` 工具，并通过 Stop Hook 提供外部控制
+2. **Saros Agents Client** 采用**主动声明**方式，要求 Agent 调用 `task_complete` 工具，并通过 Stop Hook 提供外部控制
 3. 两种方案各有优劣，推荐采用**混合方案**
 
 ### 7.2 对比结论
 
-| 维度 | OpenClaw | Sarosis Agents Client | 推荐方案 |
+| 维度 | OpenClaw | Saros Agents Client | 推荐方案 |
 |------|----------|----------------------|----------|
 | **完成声明** | 被动（LLM 自主） | 主动（task_complete） | 主动 + 被动备份 |
 | **循环检测** | 精细化（5 种类型） | 粗糙（总数限制） | 精细化检测 |
@@ -755,16 +755,16 @@ protected shouldAutopilotContinue(result: IToolCallSingleResult): string | undef
 
 1. OpenClaw 源代码：`G:\CustomWorkspaces\AIProjects\openclaw\src\agents\tool-loop-detection.ts`
 2. OpenClaw 源代码：`G:\CustomWorkspaces\AIProjects\openclaw\src\tasks\task-executor.ts`
-3. Sarosis Agents Client 源代码：`G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\workbench\contrib\chat\common\tools\builtinTools\taskCompleteTool.ts`
-4. Sarosis Agents Client 源代码：`G:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\extension\intents\node\toolCallingLoop.ts`
+3. Saros Agents Client 源代码：`G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\workbench\contrib\chat\common\tools\builtinTools\taskCompleteTool.ts`
+4. Saros Agents Client 源代码：`G:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\extension\intents\node\toolCallingLoop.ts`
 
 ### B. 术语表
 
 | 术语 | 定义 |
 |------|------|
-| **task_complete** | Sarosis Agents Client 中用于声明任务完成的工具 |
+| **task_complete** | Saros Agents Client 中用于声明任务完成的工具 |
 | **Tool Loop Detection** | OpenClaw 中检测工具调用循环的机制 |
-| **Stop Hook** | Sarosis Agents Client 中阻止 Agent 停止的钩子机制 |
+| **Stop Hook** | Saros Agents Client 中阻止 Agent 停止的钩子机制 |
 | **Circuit Breaker** | 断路器模式，防止系统资源耗尽 |
 | **Autopilot Mode** | VS Code Copilot 的自动批准模式 |
 
@@ -772,4 +772,4 @@ protected shouldAutopilotContinue(result: IToolCallSingleResult): string | undef
 
 | 版本 | 日期 | 作者 | 变更说明 |
 |------|------|------|----------|
-| 1.0 | 2026-05-22 | AI Assistant | 初始版本，完成 OpenClaw 和 Sarosis Agents Client 任务完成检测机制对比分析 |
+| 1.0 | 2026-05-22 | AI Assistant | 初始版本，完成 OpenClaw 和 Saros Agents Client 任务完成检测机制对比分析 |

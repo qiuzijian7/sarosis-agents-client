@@ -18,7 +18,7 @@
  *
  *  Key difference from deer-flow:
  *  - deer-flow uses Langfuse for external usage reporting
- *  - Sarosis stores usage in-memory and exposes it via SubAgentResult.tokensUsed
+ *  - Saros stores usage in-memory and exposes it via SubAgentResult.tokensUsed
  *    and optionally via a usage ledger for dashboard consumption
  *--------------------------------------------------------------------------------------------*/
 

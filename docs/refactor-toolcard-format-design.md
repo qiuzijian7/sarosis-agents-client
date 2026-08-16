@@ -569,10 +569,10 @@ export class AGUIFormatAdapter implements IFormatAdapter<AGUIMessage[]> {
 ### 5.1 当前数据流（需重构）
 
 ```
-[Model Provider] 
+[Model Provider]
     ↓ IModelDelta
 [AgentOS Service / Execution Provider]
-    ↓ IChatStreamDelta  
+    ↓ IChatStreamDelta
 [WebView StreamHandler]
     ↓ StreamChunk → StreamState
 [React UI - ToolCallCard]
@@ -581,7 +581,7 @@ export class AGUIFormatAdapter implements IFormatAdapter<AGUIMessage[]> {
 ### 5.2 重构后数据流
 
 ```
-[Model Provider (Knot/Anthropic/OpenAI/etc)] 
+[Model Provider (Knot/Anthropic/OpenAI/etc)]
     ↓ LLM Raw Format (AG-UI/Anthropic/OpenAI/Gemini)
 [Format Adapter (插件内或共享)]
     ↓ ChatMessage (统一格式)
@@ -667,7 +667,7 @@ export class AGUIFormatAdapter implements IFormatAdapter<AGUIMessage[]> {
 ### 8.1 参考资料
 - Void 项目消息格式：`G:\CustomWorkspaces\AIProjects\void\src\vs\workbench\contrib\void\common\sendLLMMessageTypes.ts`
 - Void 项目工具消息：`G:\CustomWorkspaces\AIProjects\void\src\vs\workbench\contrib\void\common\chatThreadServiceTypes.ts`
-- Sarosis 项目当前消息格式：`G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\sessions\contrib\agentStudio\common\providers.ts`
+- Saros 项目当前消息格式：`G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\sessions\contrib\agentStudio\common\providers.ts`
 
 ### 8.2 相关文件清单
 | 文件 | 当前职责 | 重构后职责 |

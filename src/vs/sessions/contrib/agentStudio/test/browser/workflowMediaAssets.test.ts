@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { shouldCollectMedia } from '../../webview/src/features/workflowEditor/comfyHost/mediaCollect.js';
+import { shouldCollectMedia, parseDataUrl } from '../../webview/src/features/workflowEditor/comfyHost/mediaCollect.js';
 import { inferPickerKind } from '../../webview/src/features/workflowEditor/comfyHost/workflowRun.js';
 import { formatBytes, assetFileName } from '../../webview/src/features/workflowEditor/mediaGalleryUtils.js';
 
@@ -40,6 +40,42 @@ suite('shouldCollectMedia (自动收录判定)', () => {
 		assert.ok(d);
 		collected.add(d.key);
 		assert.strictEqual(shouldCollectMedia('wf', 'http://h/x.png', collected), null);
+	});
+});
+
+suite('parseDataUrl (物化 data URL → 落盘载荷)', () => {
+
+	test('拆出 base64 / mime / ext', () => {
+		const p = parseDataUrl('data:image/png;base64,iVBORw0KGgo=');
+		assert.ok(p);
+		assert.strictEqual(p.base64, 'iVBORw0KGgo=');
+		assert.strictEqual(p.mime, 'image/png');
+		assert.strictEqual(p.ext, 'png');
+	});
+
+	test('jpeg → jpg；webp 保持；未知 mime 用 subtype 兜底', () => {
+		assert.strictEqual(parseDataUrl('data:image/jpeg;base64,AA')?.ext, 'jpg');
+		assert.strictEqual(parseDataUrl('data:image/webp;base64,AA')?.ext, 'webp');
+		assert.strictEqual(parseDataUrl('data:video/mp4;base64,AA')?.ext, 'mp4');
+		// 未在映射表内 → 取 subtype
+		assert.strictEqual(parseDataUrl('data:image/heic;base64,AA')?.ext, 'heic');
+	});
+
+	test('非 data URL / 非 base64 / 空载荷 → null（调用方回退为 URL 引用）', () => {
+		assert.strictEqual(parseDataUrl('http://localhost:8188/view?filename=a.png'), null);
+		assert.strictEqual(parseDataUrl(''), null);
+		// URL-encoded（非 base64）data URL 不能当二进制落盘
+		assert.strictEqual(parseDataUrl('data:text/plain,hello'), null);
+		// 有 base64 标记但载荷为空
+		assert.strictEqual(parseDataUrl('data:image/png;base64,'), null);
+	});
+
+	test('header 带额外参数时仍能解析', () => {
+		const p = parseDataUrl('data:image/png;charset=utf-8;base64,AAAB');
+		assert.ok(p);
+		assert.strictEqual(p.mime, 'image/png');
+		assert.strictEqual(p.ext, 'png');
+		assert.strictEqual(p.base64, 'AAAB');
 	});
 });
 

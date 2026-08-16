@@ -1,4 +1,4 @@
-# Sarosis-Agents-Client vs Hermes Agent：Session & 上下文管理对比分析
+# Saros-Agents-Client vs Hermes Agent：Session & 上下文管理对比分析
 
 ## 一、概述
 
@@ -6,7 +6,7 @@
 
 ---
 
-## 二、Sarosis-Agents-Client 的 Session 管理实现
+## 二、Saros-Agents-Client 的 Session 管理实现
 
 ### 2.1 架构概览
 
@@ -182,7 +182,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 
 ## 四、功能对比表
 
-| 功能特性 | Sarosis-Agents-Client | Hermes Agent (Python) |
+| 功能特性 | Saros-Agents-Client | Hermes Agent (Python) |
 |---------|----------------------|----------------------|
 | **数据存储** | SQLite (@vscode/sqlite3) | SQLite (sqlite3) |
 | **数据表数量** | 3 (turns, file_edits, metadata) | 7+ (sessions, messages, interactions, summaries, etc.) |
@@ -202,7 +202,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 
 ## 五、上下文管理对比
 
-### 5.1 Sarosis-Agents-Client 的上下文管理
+### 5.1 Saros-Agents-Client 的上下文管理
 
 **管理方式**：
 - 通过 VSCode 的 `IChatWidgetService` 管理聊天界面
@@ -244,7 +244,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 
 ## 六、使用场景对比
 
-### 6.1 Sarosis-Agents-Client 适用场景
+### 6.1 Saros-Agents-Client 适用场景
 
 ✅ **适合**：
 - VSCode 内的代码编辑辅助
@@ -298,7 +298,7 @@ AIAgent + ToolRegistry + Providers
 
 ## 八、结论
 
-### 8.1 Sarosis-Agents-Client 是否支持相同功能？
+### 8.1 Saros-Agents-Client 是否支持相同功能？
 
 **答案：部分支持**
 
@@ -329,7 +329,7 @@ AIAgent + ToolRegistry + Providers
 
 ## 九、附录：关键代码路径
 
-### Sarosis-Agents-Client
+### Saros-Agents-Client
 
 | 功能 | 文件路径 |
 |------|----------|
@@ -375,6 +375,6 @@ AIAgent + ToolRegistry + Providers
 
 ---
 
-**文档版本**：v1.0  
-**生成时间**：2026-05-13  
+**文档版本**：v1.0
+**生成时间**：2026-05-13
 **作者**：AI Assistant

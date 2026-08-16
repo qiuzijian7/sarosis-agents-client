@@ -1,6 +1,7 @@
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { IAgentChatMessage, IToolCall, IChatAttachment, IPlanTaskCard, IConfirmationData } from './agentChatTypes.js';
 import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST_TOOLS, TOOL_CODEBASE_TOOLS, READ_FILE_KEYS, TOOL_PLAN_TOOLS, TOOL_DELEGATE_TOOLS, TOOL_SEARCH_TOOLS, TOOL_WEB_TOOLS, TOOL_SKILL_TOOLS, TOOL_MERMAID_TOOLS } from './agentChatPanel.base.js';
+import { parseInlineWorkflowArgs } from './agentChatPanel.workflowChip.js';
 
 /** 解析 tc.args —— 兼容 string(JSON) / object / undefined 三种形态。 */
 export function parseToolArgs(raw: unknown): Record<string, unknown> {
@@ -1212,32 +1213,60 @@ protected _createPlanTasksCard(planTasks: IPlanTaskCard): HTMLElement {
 
 
 protected override _renderUserContent(parent: HTMLElement, content: string): void {
-		// 解析内联 skill 标记（/skill <id>）→ 只读 pill；其余文本高亮 @mentions
-		const segments = content.split(/(\/skill\s+[\w-]+)/g);
-		for (const seg of segments) {
-			const skillMatch = seg.match(/^\/skill\s+([\w-]+)$/);
-			if (skillMatch) {
-				const id = skillMatch[1];
-				const name = this._onListSkills().find(s => s.id === id)?.name || id;
-				const chip = append(parent, $('span.bubble-skill-chip'));
-				const icon = append(chip, $('span.bubble-skill-chip-icon'));
-				icon.textContent = '⚡';
-				const label = append(chip, $('span.bubble-skill-chip-name'));
-				label.textContent = name;
-				chip.title = `技能: ${name} (${id})`;
-				continue;
-			}
-			const parts = seg.split(/(@[\w\u4e00-\u9fff]+)/g);
-			for (const part of parts) {
-				if (part.startsWith("@") && part.length > 1) {
-					const mention = append(parent, $("span.msg-mention"));
-					mention.textContent = part;
-				} else {
-					append(parent, $("span")).textContent = part;
+	// 解析内联 skill / workflow 标记（/skill <id>、/workflow <id> --k=v）→ 只读 pill；其余文本高亮 @mentions
+	const segments = content.split(/(\/skill\s+[\w-]+|\/workflow\s+wf-[\w-]+)/g);
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i];
+		const wfMatch = seg.match(/^\/workflow\s+(wf-[\w-]+)$/);
+		if (wfMatch) {
+			const id = wfMatch[1];
+			const name = this._onListWorkflows?.().find(w => w.id === id)?.name || id;
+			// 消费 mark 之后紧跟的 `--k=v` 参数（序列化格式 `/workflow <id> --k=v input`）
+			let params: Record<string, string> | undefined;
+			if (i + 1 < segments.length) {
+				const parsed = parseInlineWorkflowArgs(segments[i + 1]);
+				if (Object.keys(parsed.variables).length > 0) {
+					params = parsed.variables;
+					segments[i + 1] = parsed.input; // 剩余文本作为 input 保留
 				}
+			}
+			const chip = append(parent, $('span.bubble-workflow-chip'));
+			const icon = append(chip, $('span.bubble-workflow-chip-icon'));
+			icon.textContent = '▶';
+			const label = append(chip, $('span.bubble-workflow-chip-name'));
+			label.textContent = name;
+			if (params && Object.keys(params).length > 0) {
+				const badge = append(chip, $('span.bubble-workflow-chip-badge'));
+				badge.textContent = `· ${Object.keys(params).length} 参数`;
+				chip.title = `工作流: ${name} (${id})\n` + Object.entries(params).map(([k, v]) => `${k}=${v}`).join('\n');
+			} else {
+				chip.title = `工作流: ${name} (${id})`;
+			}
+			continue;
+		}
+		const skillMatch = seg.match(/^\/skill\s+([\w-]+)$/);
+		if (skillMatch) {
+			const id = skillMatch[1];
+			const name = this._onListSkills().find(s => s.id === id)?.name || id;
+			const chip = append(parent, $('span.bubble-skill-chip'));
+			const icon = append(chip, $('span.bubble-skill-chip-icon'));
+			icon.textContent = '⚡';
+			const label = append(chip, $('span.bubble-skill-chip-name'));
+			label.textContent = name;
+			chip.title = `技能: ${name} (${id})`;
+			continue;
+		}
+		const parts = seg.split(/(@[\w\u4e00-\u9fff]+)/g);
+		for (const part of parts) {
+			if (part.startsWith("@") && part.length > 1) {
+				const mention = append(parent, $("span.msg-mention"));
+				mention.textContent = part;
+			} else {
+				append(parent, $("span")).textContent = part;
 			}
 		}
 	}
+}
 
 protected override _appendEditToolbarBtn(
 		parent: HTMLElement,
@@ -1451,7 +1480,7 @@ protected override _createAttachmentChipNode(att: IChatAttachment): HTMLElement 
 
 		const icon = document.createElement('span');
 		icon.className = 'inline-attachment-chip-icon';
-		icon.textContent = att.type === 'image' ? '\u{1F4F7}' : '\u{1F4C4}';
+		icon.textContent = att.type === 'image' ? '\u{1F4F7}' : att.type === 'folder' ? '\u{1F4C1}' : '\u{1F4C4}';
 		chip.appendChild(icon);
 
 		const label = document.createElement('span');
@@ -1477,11 +1506,19 @@ protected override _createAttachmentChipNode(att: IChatAttachment): HTMLElement 
 		this._updateSendButton();
 		}));
 
-		if (att.type === 'image' && att.data) {
+		// 点击 chip：有系统路径的资源在文件编辑器中打开；图片（含无路径的粘贴图）
+		// 回退到 lightbox；文件夹除外（无对应资源可打开）。
+		if (att.type !== 'folder') {
 			this._register(addDisposableListener(chip, EventType.CLICK, (e) => {
 				if ((e.target as HTMLElement).classList.contains('inline-attachment-chip-remove')) { return; }
-				this._showLightbox(`data:${att.mimeType};base64,${att.data}`);
+				if (att.filePath && this._onOpenFile) {
+					this._onOpenFile(att.filePath);
+				} else if (att.type === 'image' && att.data) {
+					this._showLightbox(`data:${att.mimeType};base64,${att.data}`);
+				}
 			}));
+		}
+		if (att.type === 'image' && att.data) {
 			// hover 时显示图片缩略图预览
 			this._register(addDisposableListener(chip, EventType.MOUSE_ENTER, () => {
 				if ((chip.querySelector('.inline-attachment-chip-remove') as HTMLElement)?.matches(':hover')) { return; }

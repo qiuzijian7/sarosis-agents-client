@@ -1,8 +1,8 @@
-# Sarosis Agents Client — 项目框架全景分析
+# Saros Agents Client — 项目框架全景分析
 
-> **版本**: v2.0  
-> **更新日期**: 2026-05-26  
-> **基于源码**: `src/`, `extensions/`, `package.json`, `.github/copilot-instructions.md`  
+> **版本**: v2.0
+> **更新日期**: 2026-05-26
+> **基于源码**: `src/`, `extensions/`, `package.json`, `.github/copilot-instructions.md`
 > **关联文档**: [Four-Layer-Architecture-Framework.md](./Four-Layer-Architecture-Framework.md) · [SESSIONS_PROVIDER.md](../src/vs/sessions/SESSIONS_PROVIDER.md) · [LAYOUT.md](../src/vs/sessions/LAYOUT.md)
 
 ---
@@ -13,7 +13,7 @@
 - [二、架构分层](#二架构分层)
 - [三、源码结构详解](#三源码结构详解)
 - [四、核心系统分析](#四核心系统分析)
-- [五、Sessions 层 — Sarosis 核心创新](#五sessions-层--saros-核心创新)
+- [五、Sessions 层 — Saros 核心创新](#五sessions-层--saros-核心创新)
 - [六、Agent Studio 四层子架构](#六agent-studio-四层子架构)
 - [七、Workbench Chat 系统](#七workbench-chat-系统)
 - [八、扩展系统](#八扩展系统)
@@ -34,7 +34,7 @@
 
 | 属性 | 值 |
 |------|-----|
-| **项目名称** | Sarosis Agents Client |
+| **项目名称** | Saros Agents Client |
 | **基础框架** | VS Code Code-OSS v1.120.0 |
 | **许可证** | MIT |
 | **模块系统** | ES Modules (`"type": "module"`) |
@@ -44,7 +44,7 @@
 
 ### 1.2 项目定位
 
-Sarosis Agents Client 是基于 VS Code 开源核心 (Code-OSS) 深度定制的 **AI 代理客户端平台**，核心定位：
+Saros Agents Client 是基于 VS Code 开源核心 (Code-OSS) 深度定制的 **AI 代理客户端平台**，核心定位：
 
 1. **AI-First 开发环境** — 将 AI Agent 能力作为一等公民集成到 IDE 中
 2. **多代理编排平台** — 支持多模型、多工具、多技能的代理编排
@@ -55,7 +55,7 @@ Sarosis Agents Client 是基于 VS Code 开源核心 (Code-OSS) 深度定制的 
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    Sarosis 核心能力                          │
+│                    Saros 核心能力                          │
 ├─────────────┬─────────────┬──────────────┬─────────────────┤
 │  多模型接入  │  代理编排    │  会话管理     │  上下文增强     │
 │  Knot AG-UI │  任务规划    │  多会话并行   │  文件上下文     │
@@ -96,13 +96,13 @@ VS Code 采用严格的分层架构，依赖方向单向向下：
         依赖方向: workbench → editor → platform → base
 ```
 
-### 2.2 Sarosis 扩展分层
+### 2.2 Saros 扩展分层
 
-Sarosis 在 VS Code 分层之上增加了 **Sessions 层**，与 workbench 同级：
+Saros 在 VS Code 分层之上增加了 **Sessions 层**，与 workbench 同级：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  vs/sessions  — Agent Sessions 窗口层 (Sarosis 核心扩展)    │
+│  vs/sessions  — Agent Sessions 窗口层 (Saros 核心扩展)    │
 │    browser/ common/ contrib/ services/                       │
 ├─────────────────────────────────────────────────────────────┤
 │  vs/workbench — 标准工作台                                   │
@@ -159,7 +159,7 @@ saros-agents-client/
 │   ├── bootstrap-*.ts      # 启动引导文件
 │   ├── main.ts             # Electron 主入口
 │   └── server-main.ts      # 服务器入口
-├── extensions/              # 内置扩展 (含 Sarosis 专有扩展)
+├── extensions/              # 内置扩展 (含 Saros 专有扩展)
 ├── build/                   # 构建脚本和 CI/CD 工具
 ├── test/                    # 集成测试和测试基础设施
 ├── scripts/                 # 开发和构建脚本
@@ -182,11 +182,11 @@ src/vs/
 │   └── test/               # 基础测试工具
 │
 ├── platform/               # 平台服务 (约 80+ 服务模块)
-│   ├── agentHost/          # 代理宿主服务 ← Sarosis 新增
+│   ├── agentHost/          # 代理宿主服务 ← Saros 新增
 │   ├── chat/               # 聊天服务
-│   ├── contextManagement/  # 上下文管理 ← Sarosis 新增
-│   ├── sessions/           # 会话服务 ← Sarosis 新增
-│   ├── aiRouter/           # AI 路由服务 ← Sarosis 新增
+│   ├── contextManagement/  # 上下文管理 ← Saros 新增
+│   ├── sessions/           # 会话服务 ← Saros 新增
+│   ├── aiRouter/           # AI 路由服务 ← Saros 新增
 │   ├── languageModel/      # 语言模型服务
 │   ├── workspace/          # 工作区服务
 │   ├── instantiation/      # 依赖注入框架
@@ -205,7 +205,7 @@ src/vs/
 │   ├── contrib/            # 功能贡献 (git, debug, search, terminal, chat...)
 │   └── api/                # Extension Host + VS Code API
 │
-├── sessions/               # Agent Sessions 窗口 ← Sarosis 核心扩展
+├── sessions/               # Agent Sessions 窗口 ← Saros 核心扩展
 │   ├── browser/            # Sessions 工作台实现
 │   ├── common/             # 共享类型和上下文
 │   ├── contrib/            # 30+ 功能贡献模块
@@ -217,9 +217,9 @@ src/vs/
 └── server/                 # 服务器端实现
 ```
 
-### 3.3 `src/vs/platform/` Sarosis 新增服务
+### 3.3 `src/vs/platform/` Saros 新增服务
 
-Sarosis 在平台层新增了多个关键服务：
+Saros 在平台层新增了多个关键服务：
 
 | 服务目录 | 功能 | 说明 |
 |----------|------|------|
@@ -349,11 +349,11 @@ Task Orchestration
 
 ---
 
-## 五、Sessions 层 — Sarosis 核心创新
+## 五、Sessions 层 — Saros 核心创新
 
 ### 5.1 定位与设计理念
 
-Sessions 层是 Sarosis 最核心的架构创新，它是一个 **独立的 Agent Sessions 窗口**，与标准 VS Code 工作台平行：
+Sessions 层是 Saros 最核心的架构创新，它是一个 **独立的 Agent Sessions 窗口**，与标准 VS Code 工作台平行：
 
 | 特性 | 标准工作台 (workbench) | Sessions 窗口 |
 |------|----------------------|---------------|
@@ -582,7 +582,7 @@ src/vs/sessions/contrib/agentStudio/
 
 ## 七、Workbench Chat 系统
 
-标准工作台的 `workbench/contrib/chat/` 是 VS Code 原生聊天系统的实现，Sarosis 对其进行了深度扩展。
+标准工作台的 `workbench/contrib/chat/` 是 VS Code 原生聊天系统的实现，Saros 对其进行了深度扩展。
 
 ### 7.1 核心模块
 
@@ -628,11 +628,11 @@ workbench/contrib/chat/
     └── builtInTools/               # 内置工具
 ```
 
-### 7.2 Sarosis 扩展的关键文件
+### 7.2 Saros 扩展的关键文件
 
 | 文件 | 大小 | 功能 |
 |------|------|------|
-| `chat.contribution.ts` | 128KB | 核心贡献注册，含大量 Sarosis 定制 |
+| `chat.contribution.ts` | 128KB | 核心贡献注册，含大量 Saros 定制 |
 | `agentSessionsViewer.ts` | 62KB | 代理会话查看器 |
 | `aiCustomizationManagementEditor.ts` | 99KB | AI 定制化管理编辑器 |
 | `pluginListWidget.ts` | 48KB | 插件列表组件 |
@@ -648,7 +648,7 @@ workbench/contrib/chat/
 
 `extensions/` 目录包含约 60+ 内置扩展，分为以下类别：
 
-### 8.2 Sarosis 专有扩展
+### 8.2 Saros 专有扩展
 
 | 扩展 | 功能 | 状态 |
 |------|------|------|
@@ -678,7 +678,7 @@ workbench/contrib/chat/
 
 ### 8.5 扩展注册机制
 
-Sarosis 扩展了标准 VS Code 扩展 manifest，新增了 `agentCapabilities` 贡献点：
+Saros 扩展了标准 VS Code 扩展 manifest，新增了 `agentCapabilities` 贡献点：
 
 ```jsonc
 // extensions/knot-agui/package.json (示例)
@@ -846,17 +846,17 @@ sequenceDiagram
     UI->>Driver: messageProtocol.send()
     Driver->>Driver: TurnManager: 创建Turn (Running)
     Driver->>Driver: PipelineBuilder: 选择 FULL_AGENT
-    
+
     Driver->>OS: Step1: Memory.loadContext()
     OS->>Provider: MemoryProvider.loadContext()
     Provider-->>OS: 记忆条目
     OS-->>Driver: 上下文数据
-    
+
     Driver->>OS: Step2: Planning.analyzeIntent()
     OS->>Provider: PlanningProvider.analyzeIntent()
     Provider-->>OS: 意图分析
     OS-->>Driver: 规划结果
-    
+
     Driver->>Driver: LoopEngine: Plan→Act→Observe→Reflect
     loop Agent Loop
         Driver->>OS: Model.chat()
@@ -870,7 +870,7 @@ sequenceDiagram
             Provider-->>OS: 工具结果
         end
     end
-    
+
     Driver->>OS: Step4: Kanban.updateCard()
     Driver->>OS: Step5: Memory.writeMemory()
     Driver->>Driver: TurnManager: Turn → Completed
@@ -920,7 +920,7 @@ User picks workspace → SessionsManagementService.createNewSession()
 |------|----------|
 | `workbench/contrib/chat/` | 新增 agentSessions, aiCustomization, pluginEditor 等子系统 |
 | `workbench/contrib/chat/common/languageModels.ts` | 73KB 类型文件，深度扩展模型定义 |
-| `workbench/contrib/chat/browser/chat.contribution.ts` | 128KB，Sarosis 大量定制注册 |
+| `workbench/contrib/chat/browser/chat.contribution.ts` | 128KB，Saros 大量定制注册 |
 
 ### 12.3 新增扩展
 
@@ -934,7 +934,7 @@ User picks workspace → SessionsManagementService.createNewSession()
 
 ### 12.4 API 扩展 (Proposed APIs)
 
-在 `vscode-dts/` 中定义的 Sarosis 专有提案 API：
+在 `vscode-dts/` 中定义的 Saros 专有提案 API：
 
 | API 文件 | 功能 |
 |----------|------|
@@ -1106,7 +1106,7 @@ User picks workspace → SessionsManagementService.createNewSession()
 
 ---
 
-**文档版本**: v2.0  
-**更新日期**: 2026-05-26  
-**基于源码审查**: `src/vs/`, `extensions/`, `package.json`  
+**文档版本**: v2.0
+**更新日期**: 2026-05-26
+**基于源码审查**: `src/vs/`, `extensions/`, `package.json`
 **关联文档**: [Four-Layer-Architecture-Framework.md](./Four-Layer-Architecture-Framework.md)

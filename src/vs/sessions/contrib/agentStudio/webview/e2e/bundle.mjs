@@ -51852,24 +51852,24 @@ function applyComfyNodeStyle(liteCanvas2, LGraphNodeCtor, LiteGraph2, getNodeSta
 
 // src/features/workflowEditor/comfyHost/sarosisLiteGraphNodes.ts
 var NODE_CONFIGS = [
-  { type: "Sarosis.Start", title: "\u5F00\u59CB", color: "#22c55e", outputs: [{ name: "value", type: "SAROSIS_JSON" }] },
-  { type: "Sarosis.End", title: "\u7ED3\u675F", color: "#ef4444", inputs: [{ name: "value", type: "SAROSIS_JSON" }] },
-  { type: "Sarosis.Task", title: "\u4EFB\u52A1", color: "#3b82f6", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "value", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "taskId", value: "" }] },
-  { type: "Sarosis.Prompt", title: "\u63D0\u793A", color: "#8b5cf6", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "output", type: "TEXT" }], widgets: [{ type: "text", name: "prompt", value: "", multiline: true }] },
-  { type: "Sarosis.Agent", title: "Agent", color: "#f97316", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "value", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "agentId", value: "" }] },
-  { type: "Sarosis.Skill", title: "Skill", color: "#eab308", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "value", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "skillName", value: "" }] },
-  { type: "Sarosis.Tool", title: "Tool", color: "#10b981", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "value", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "toolName", value: "" }] },
-  { type: "Sarosis.IfElse", title: "If/Else", color: "#ef4444", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "true", type: "SAROSIS_JSON" }, { name: "false", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "evaluationTarget", value: "" }] },
-  { type: "Sarosis.Switch", title: "Switch", color: "#a855f7", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "case", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "evaluationTarget", value: "" }] },
-  { type: "Sarosis.AskUser", title: "\u8BE2\u95EE", color: "#06b6d4", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "answer", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "questionText", value: "" }] },
-  { type: "Sarosis.Group", title: "\u5206\u7EC4", color: "#888780" },
-  { type: "Sarosis.ProviderPicker", title: "Provider \u9009\u62E9", color: "#8b5cf6", inputs: [], outputs: [{ name: "config", type: "TEXT" }], widgets: [
+  { type: "Saros.Start", title: "\u5F00\u59CB", color: "#22c55e", outputs: [{ name: "value", type: "SAROSIS_JSON" }] },
+  { type: "Saros.End", title: "\u7ED3\u675F", color: "#ef4444", inputs: [{ name: "value", type: "SAROSIS_JSON" }] },
+  { type: "Saros.Task", title: "\u4EFB\u52A1", color: "#3b82f6", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "value", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "taskId", value: "" }] },
+  { type: "Saros.Prompt", title: "\u63D0\u793A", color: "#8b5cf6", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "output", type: "TEXT" }], widgets: [{ type: "text", name: "prompt", value: "", multiline: true }] },
+  { type: "Saros.Agent", title: "Agent", color: "#f97316", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "value", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "agentId", value: "" }] },
+  { type: "Saros.Skill", title: "Skill", color: "#eab308", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "value", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "skillName", value: "" }] },
+  { type: "Saros.Tool", title: "Tool", color: "#10b981", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "value", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "toolName", value: "" }] },
+  { type: "Saros.IfElse", title: "If/Else", color: "#ef4444", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "true", type: "SAROSIS_JSON" }, { name: "false", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "evaluationTarget", value: "" }] },
+  { type: "Saros.Switch", title: "Switch", color: "#a855f7", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "case", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "evaluationTarget", value: "" }] },
+  { type: "Saros.AskUser", title: "\u8BE2\u95EE", color: "#06b6d4", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "answer", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "questionText", value: "" }] },
+  { type: "Saros.Group", title: "\u5206\u7EC4", color: "#888780" },
+  { type: "Saros.ProviderPicker", title: "Provider \u9009\u62E9", color: "#8b5cf6", inputs: [], outputs: [{ name: "config", type: "TEXT" }], widgets: [
     { type: "text", name: "providerId", value: "" },
     { type: "text", name: "modelId", value: "" }
   ] },
   // Provider 文生图：经 imagegen.generate RPC 调已认证 LLM provider。
   // kind='llm' → runNodeOrStage 走 runProviderImage，不依赖 ComfyUI runner。
-  { type: "Sarosis.ModelImageGen", title: "\u6A21\u578B\u6587\u751F\u56FE", color: "#06b6d4", inputs: [{ name: "prompt", type: "TEXT" }], outputs: [{ name: "image", type: "IMAGE" }], widgets: [
+  { type: "Saros.ModelImageGen", title: "\u6A21\u578B\u6587\u751F\u56FE", color: "#06b6d4", inputs: [{ name: "prompt", type: "TEXT" }], outputs: [{ name: "image", type: "IMAGE" }], widgets: [
     { type: "text", name: "providerId", value: "" },
     { type: "text", name: "modelId", value: "" },
     { type: "text", name: "prompt", value: "", multiline: true },
@@ -51930,11 +51930,11 @@ function createSarosisNodeClass(cfg) {
       }
     }
     /**
-     * Override `drawWidgets` on the Sarosis subclass instead of relying on
+     * Override `drawWidgets` on the Saros subclass instead of relying on
      * the `LGraphNode.prototype.drawWidgets` patch from
      * `applyComfyNodeStyle`. LiteGraph 0.17's subclass `extends LGraphNode`
      * still resolves `drawWidgets` through the prototype chain, so the
-     * Sarosis nodes were double-painted — once by the original
+     * Saros nodes were double-painted — once by the original
      * 0.17 `drawWidgets` (TextWidget.draw 渲染 label+value 文字，无背景框
      * 的"参数面板上面一层") and once by our `comfyDrawWidgets` (字段框).
      * Owning the override on the subclass guarantees a single render path.
@@ -52103,7 +52103,7 @@ function isUsableNodeTitle(title2, specType) {
   if (specType && t === specType) {
     return false;
   }
-  if (/^(?:ComfyTV|Comfy|Sarosis)\./i.test(t)) {
+  if (/^(?:ComfyTV|Comfy|Saros)\./i.test(t)) {
     return false;
   }
   return true;
@@ -52237,15 +52237,15 @@ function buildComfyPaletteItems(kind) {
 }
 function registerSarosisNodes() {
   const json = (required = true) => ({ name: "value", type: "SAROSIS_JSON", required });
-  registerNodeSpec({ type: "Sarosis.Start", kind: "react", title: "\u5F00\u59CB", category: "system", inputs: [], outputs: [json(false)], color: "#22c55e" });
-  registerNodeSpec({ type: "Sarosis.End", kind: "react", title: "\u7ED3\u675F", category: "system", inputs: [json(true)], outputs: [], color: "#ef4444" });
-  registerNodeSpec({ type: "Sarosis.Task", kind: "react", title: "\u4EFB\u52A1", category: "basic", inputs: [json()], outputs: [json(false)], color: "#3b82f6" });
-  registerNodeSpec({ type: "Sarosis.Prompt", kind: "react", title: "\u63D0\u793A", category: "basic", inputs: [json()], outputs: [{ name: "output", type: "TEXT" }], color: "#8b5cf6" });
-  registerNodeSpec({ type: "Sarosis.Agent", kind: "react", title: "Agent", category: "basic", inputs: [json()], outputs: [json(false)], color: "#f97316" });
-  registerNodeSpec({ type: "Sarosis.Skill", kind: "react", title: "Skill", category: "basic", inputs: [json()], outputs: [json(false)], color: "#eab308" });
-  registerNodeSpec({ type: "Sarosis.Tool", kind: "react", title: "Tool", category: "basic", inputs: [json()], outputs: [json(false)], color: "#10b981" });
+  registerNodeSpec({ type: "Saros.Start", kind: "react", title: "\u5F00\u59CB", category: "system", inputs: [], outputs: [json(false)], color: "#22c55e" });
+  registerNodeSpec({ type: "Saros.End", kind: "react", title: "\u7ED3\u675F", category: "system", inputs: [json(true)], outputs: [], color: "#ef4444" });
+  registerNodeSpec({ type: "Saros.Task", kind: "react", title: "\u4EFB\u52A1", category: "basic", inputs: [json()], outputs: [json(false)], color: "#3b82f6" });
+  registerNodeSpec({ type: "Saros.Prompt", kind: "react", title: "\u63D0\u793A", category: "basic", inputs: [json()], outputs: [{ name: "output", type: "TEXT" }], color: "#8b5cf6" });
+  registerNodeSpec({ type: "Saros.Agent", kind: "react", title: "Agent", category: "basic", inputs: [json()], outputs: [json(false)], color: "#f97316" });
+  registerNodeSpec({ type: "Saros.Skill", kind: "react", title: "Skill", category: "basic", inputs: [json()], outputs: [json(false)], color: "#eab308" });
+  registerNodeSpec({ type: "Saros.Tool", kind: "react", title: "Tool", category: "basic", inputs: [json()], outputs: [json(false)], color: "#10b981" });
   registerNodeSpec({
-    type: "Sarosis.ProviderPicker",
+    type: "Saros.ProviderPicker",
     kind: "react",
     title: "Provider \u9009\u62E9",
     category: "basic",
@@ -52258,7 +52258,7 @@ function registerSarosisNodes() {
     color: "#8b5cf6"
   });
   registerNodeSpec({
-    type: "Sarosis.ModelImageGen",
+    type: "Saros.ModelImageGen",
     kind: "llm",
     title: "\u6A21\u578B\u6587\u751F\u56FE",
     category: "sarosis",
@@ -52276,10 +52276,10 @@ function registerSarosisNodes() {
     providerCaps: "imageGen",
     color: "#06b6d4"
   });
-  registerNodeSpec({ type: "Sarosis.IfElse", kind: "react", title: "If/Else", category: "controlFlow", inputs: [json()], outputs: [{ name: "true", type: "SAROSIS_JSON" }, { name: "false", type: "SAROSIS_JSON" }], color: "#ef4444" });
-  registerNodeSpec({ type: "Sarosis.Switch", kind: "react", title: "Switch", category: "controlFlow", inputs: [json()], outputs: [{ name: "case", type: "SAROSIS_JSON" }], color: "#a855f7" });
-  registerNodeSpec({ type: "Sarosis.AskUser", kind: "react", title: "\u8BE2\u95EE", category: "controlFlow", inputs: [json()], outputs: [{ name: "answer", type: "SAROSIS_JSON" }], color: "#06b6d4" });
-  registerNodeSpec({ type: "Sarosis.Group", kind: "react", title: "\u5206\u7EC4", category: "layout", inputs: [], outputs: [], color: "#888780" });
+  registerNodeSpec({ type: "Saros.IfElse", kind: "react", title: "If/Else", category: "controlFlow", inputs: [json()], outputs: [{ name: "true", type: "SAROSIS_JSON" }, { name: "false", type: "SAROSIS_JSON" }], color: "#ef4444" });
+  registerNodeSpec({ type: "Saros.Switch", kind: "react", title: "Switch", category: "controlFlow", inputs: [json()], outputs: [{ name: "case", type: "SAROSIS_JSON" }], color: "#a855f7" });
+  registerNodeSpec({ type: "Saros.AskUser", kind: "react", title: "\u8BE2\u95EE", category: "controlFlow", inputs: [json()], outputs: [{ name: "answer", type: "SAROSIS_JSON" }], color: "#06b6d4" });
+  registerNodeSpec({ type: "Saros.Group", kind: "react", title: "\u5206\u7EC4", category: "layout", inputs: [], outputs: [], color: "#888780" });
 }
 function registerComfyTVNode(schema) {
   const toPort = (p) => ({
@@ -52523,14 +52523,14 @@ function normalizeNativeType(t) {
 
 // src/features/workflowEditor/comfyHost/ComfyGraphAdapter.ts
 function toLiteGraphType(nodeType) {
-  if (nodeType.startsWith("Sarosis.") || nodeType.includes(".")) {
+  if (nodeType.startsWith("Saros.") || nodeType.includes(".")) {
     return nodeType;
   }
-  return `Sarosis.${capitalize(nodeType)}`;
+  return `Saros.${capitalize(nodeType)}`;
 }
 function toSarosisType(liteType) {
-  if (liteType.startsWith("Sarosis.")) {
-    return liteType.slice("Sarosis.".length).toLowerCase();
+  if (liteType.startsWith("Saros.")) {
+    return liteType.slice("Saros.".length).toLowerCase();
   }
   return liteType;
 }
@@ -52894,7 +52894,7 @@ function defaultDataForType(type) {
     case "group":
       return { ...base, label: "Group", isCollapsed: false };
     default:
-      return { ...base, label: /^(?:ComfyTV|Comfy|Sarosis)\./i.test(type) ? "" : type };
+      return { ...base, label: /^(?:ComfyTV|Comfy|Saros)\./i.test(type) ? "" : type };
   }
 }
 var useWorkflowEditorStore = create()(
@@ -53275,38 +53275,38 @@ var STAGE_KIND_FIELDS = {
   ]
 };
 var VSSAROS_FIELDS = {
-  "Sarosis.Prompt": [
+  "Saros.Prompt": [
     { key: "prompt", label: "\u63D0\u793A\u8BCD", kind: "textarea", defaultValue: "", placeholder: "\u63D0\u793A\u8BCD\u6A21\u677F\uFF0C\u652F\u6301 {{input}} \u7B49\u53D8\u91CF\u66FF\u6362" },
     { key: "variables", label: "\u53D8\u91CF (JSON)", kind: "textarea", defaultValue: "{}" }
   ],
-  "Sarosis.Agent": [
+  "Saros.Agent": [
     { key: "agentId", label: "Agent", kind: "agent", defaultValue: "", placeholder: "\u9009\u62E9 Agent" },
     { key: "providerId", label: "Provider ID", kind: "text", defaultValue: "" },
     { key: "modelId", label: "Model ID", kind: "text", defaultValue: "" },
     { key: "prompt", label: "\u63D0\u793A\u8BCD", kind: "textarea", defaultValue: "", placeholder: "\u53D1\u7ED9 Agent \u7684\u4EFB\u52A1\u6A21\u677F\uFF0C{{input}} = \u4E0A\u6E38\u8F93\u51FA" }
   ],
-  "Sarosis.Skill": [
+  "Saros.Skill": [
     { key: "skillName", label: "Skill", kind: "skill", defaultValue: "", placeholder: "\u9009\u62E9 Skill" },
     { key: "skillArgs", label: "\u53C2\u6570 (JSON)", kind: "textarea", defaultValue: "{}" }
   ],
-  "Sarosis.Tool": [
+  "Saros.Tool": [
     { key: "toolName", label: "Tool \u540D\u79F0", kind: "text", defaultValue: "" },
     { key: "toolParams", label: "\u53C2\u6570 (JSON)", kind: "textarea", defaultValue: "{}" }
   ],
-  "Sarosis.IfElse": [
+  "Saros.IfElse": [
     { key: "evaluationTarget", label: "\u8BC4\u4F30\u76EE\u6807", kind: "text", defaultValue: "", placeholder: "\u4F8B\u5982 {{input.value}}" },
     { key: "branches", label: "\u5206\u652F (JSON)", kind: "textarea", defaultValue: '[{"label":"True","condition":""},{"label":"False","condition":""}]' }
   ],
-  "Sarosis.Switch": [
+  "Saros.Switch": [
     { key: "evaluationTarget", label: "\u8BC4\u4F30\u76EE\u6807", kind: "text", defaultValue: "", placeholder: "\u4F8B\u5982 {{input.value}}" },
     { key: "branches", label: "\u5206\u652F (JSON)", kind: "textarea", defaultValue: '[{"label":"Case 1","condition":""},{"label":"Default","condition":""}]' }
   ],
-  "Sarosis.AskUser": [
+  "Saros.AskUser": [
     { key: "questionText", label: "\u95EE\u9898\u6587\u672C", kind: "text", defaultValue: "Select an option" },
     { key: "options", label: "\u9009\u9879 (JSON)", kind: "textarea", defaultValue: '[{"label":"Option 1"},{"label":"Option 2"}]' },
     { key: "multiSelect", label: "\u591A\u9009", kind: "select", defaultValue: "no", options: ["yes", "no"] }
   ],
-  "Sarosis.ProviderPicker": [
+  "Saros.ProviderPicker": [
     { key: "providerId", label: "Provider", kind: "provider", defaultValue: "" },
     { key: "modelId", label: "Model", kind: "providerModel", defaultValue: "" }
   ]
@@ -55413,19 +55413,19 @@ function removeGroupsContaining(graph, groups, nodes) {
 
 // src/features/workflowEditor/comfyHost/canvasNodeFilter.ts
 var SAROSIS_NODE_TYPES = /* @__PURE__ */ new Set([
-  "Sarosis.Start",
-  "Sarosis.End",
-  "Sarosis.Task",
-  "Sarosis.Prompt",
-  "Sarosis.Agent",
-  "Sarosis.Skill",
-  "Sarosis.Tool",
-  "Sarosis.IfElse",
-  "Sarosis.Switch",
-  "Sarosis.AskUser",
-  "Sarosis.Group",
-  "Sarosis.ModelImageGen",
-  "Sarosis.ProviderPicker"
+  "Saros.Start",
+  "Saros.End",
+  "Saros.Task",
+  "Saros.Prompt",
+  "Saros.Agent",
+  "Saros.Skill",
+  "Saros.Tool",
+  "Saros.IfElse",
+  "Saros.Switch",
+  "Saros.AskUser",
+  "Saros.Group",
+  "Saros.ModelImageGen",
+  "Saros.ProviderPicker"
 ]);
 function filterNodesForLiteGraph(graph, hasSpec) {
   const dropped = [];
@@ -55571,7 +55571,7 @@ function firstNonEmpty(...values) {
 function getNodeCardMeta(spec, properties) {
   const isSchema = spec?.kind === "schema";
   const rawTitle = isSchema ? firstNonEmpty(spec?.title, properties.title, properties.label, spec?.type, "Node") : firstNonEmpty(properties.title, properties.label, spec?.title, spec?.type, "Node");
-  const title2 = rawTitle.replace(/^(?:ComfyTV\.|Comfy\.|Sarosis\.)/i, "");
+  const title2 = rawTitle.replace(/^(?:ComfyTV\.|Comfy\.|Saros\.)/i, "");
   const kind = spec?.kind ?? "react";
   const kindLabel = kind === "schema" ? "schema\u2192React" : kind === "native" ? "ComfyUI \u539F\u751F" : kind === "llm" ? "Provider \u6587\u751F\u56FE" : "React";
   let widgetSummary = spec?.widgets?.length ? spec.widgets.slice(0, 4).map((w) => {
@@ -57809,7 +57809,7 @@ function isLLMImageNode(spec) {
   return spec?.kind === "llm";
 }
 function isProviderPickerNode(type) {
-  return type === "Sarosis.ProviderPicker";
+  return type === "Saros.ProviderPicker";
 }
 var PROVIDER_PICKER_PREFIX = "provider:";
 function parseProviderPickerConfig(text) {
@@ -58391,12 +58391,12 @@ function expect(cond, label) {
 function section(name) {
   console.log("\n-- " + name + " --");
 }
-section("Sarosis node registration");
+section("Saros node registration");
 registerSarosisLiteGraphNodes();
 registerSarosisNodes();
-expect(typeof LiteGraph.registered_node_types["Sarosis.Start"] === "function", "Sarosis.Start class registered");
-expect(typeof LiteGraph.registered_node_types["Sarosis.Prompt"] === "function", "Sarosis.Prompt class registered");
-expect(typeof getNodeSpec("Sarosis.Prompt") === "object", "getNodeSpec returns spec");
+expect(typeof LiteGraph.registered_node_types["Saros.Start"] === "function", "Saros.Start class registered");
+expect(typeof LiteGraph.registered_node_types["Saros.Prompt"] === "function", "Saros.Prompt class registered");
+expect(typeof getNodeSpec("Saros.Prompt") === "object", "getNodeSpec returns spec");
 section("LGraph.configure applies node title (not TODO)");
 {
   const graph = new LGraph();
@@ -58412,7 +58412,7 @@ section("LGraph.configure applies node title (not TODO)");
 }
 section("onConfigure hook does NOT exist on LiteGraph 0.17.2");
 {
-  const LGraphNode2 = LiteGraph.registered_node_types["Sarosis.Prompt"];
+  const LGraphNode2 = LiteGraph.registered_node_types["Saros.Prompt"];
   const hookExists = (() => {
     let v2 = false;
     for (let p = LGraphNode2.__proto__; p; p = p.__proto__) {
@@ -59038,7 +59038,7 @@ section("workflowRun: isComfyExecutableSpec");
 {
   expect(isComfyExecutableSpec(getNodeSpec("ComfyTV.ImageStage")), "schema stage executable");
   expect(isComfyExecutableSpec({ kind: "native" }), "native node executable");
-  expect(!isComfyExecutableSpec(getNodeSpec("Sarosis.Prompt")), "react orchestration node skipped");
+  expect(!isComfyExecutableSpec(getNodeSpec("Saros.Prompt")), "react orchestration node skipped");
   expect(!isComfyExecutableSpec(void 0), "unknown node skipped");
 }
 section("workflowRun: runGraphExecution (order / failure / cycle / no runner)");
@@ -59908,7 +59908,7 @@ section("P1 fx-spec chain: pack/unpack/merge + node classifiers");
   expect(!isFxBuildNode("ComfyTV.VideoClipStage"), "VideoClip (tool) not a builder");
   expect(isFxChainNode("ComfyTV.FXChainStage"), "FXChain is the terminal");
   expect(!isFxBuildNode("ComfyTV.FXChainStage"), "terminal is not a builder");
-  expect(isFxBuildNode("Sarosis.Prompt") === false, "non-ComfyTV types never classified as fx");
+  expect(isFxBuildNode("Saros.Prompt") === false, "non-ComfyTV types never classified as fx");
   const d = fxDeliveryParams({ out_colorspace: "bt709", out_size: "1080", out_fps: "30", out_codec: "hevc", out_quality: "high" });
   expect(d.size === 1080 && d.fps === 30 && d.codec === "hevc", "delivery params normalized");
   const d2 = fxDeliveryParams({ out_size: "source", out_fps: "source" });

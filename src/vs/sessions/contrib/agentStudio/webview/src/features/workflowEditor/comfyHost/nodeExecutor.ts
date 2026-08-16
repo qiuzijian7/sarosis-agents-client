@@ -17,6 +17,13 @@ import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
 import type { MediaSnapshotEntry, MediaRef } from './mediaSnapshot.js';
 import { normalizeOutputSlot, comfyViewUrl } from './mediaSnapshot.js';
 import { unpackFxVideo } from './fxChain.js';
+import { materializeComfyImageRefs } from './comfyImagePersist.js';
+// ⚠ 见 messageClient.ts 同款注释：命名导入在 esbuild IIFE bundle 下取到的是
+// CJS `module.exports`（只含前 5 个 export function）。createComfyFetch 不在其中。
+// Fallback: 用 IIFE-side-effect 挂在 globalThis.__vssarosBridge 上的副本。
+const _bridge = (globalThis as { __vssarosBridge?: { createComfyFetch: typeof import('../../../bridge/messageClient.js')['createComfyFetch'] } }).__vssarosBridge
+	?? (() => { throw new Error('vssarosBridge not initialised — messageClient.ts side-effect not executed'); })();
+const { createComfyFetch } = _bridge;
 
 /** A single-node api.json prompt: nodeKey → { class_type, inputs }. */
 export type SingleNodePrompt = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
@@ -54,13 +61,43 @@ export function unwrapNodeOutputs(
  * as inputs. Pure.
  */
 export function buildNodeApiPrompt(type: string, values: Record<string, unknown>): SingleNodePrompt {
+	const inputs: Record<string, unknown> = { ...values };
+	// ComfyTV 自定义节点（class_type 以 ComfyTV. 开头）的 inputs 在 ComfyUI 端声明为 required，
+	// 但前端控件只覆盖子集；缺失的 key 会触发 `required_input_missing`（execution.py 按 key 存在性判断）。
+	// 单节点降级路径也须补 key 兜底（类型按 /object_info 的 INPUT_TYPES 定义）。
+	if (type.startsWith('ComfyTV.')) {
+		for (const [k, v] of Object.entries(COMFYTV_RUNTIME_INPUTS)) {
+			if (!(k in inputs)) { inputs[k] = v; }
+		}
+	}
 	return {
 		[PROMPT_NODE_KEY]: {
 			class_type: type,
-			inputs: { ...values },
+			inputs,
 		},
 	};
 }
+
+/**
+ * ComfyTV 自定义节点 required inputs 兜底值（类型对齐 /object_info 的 INPUT_TYPES）。
+ * 这些字段由 ComfyTV 后端在运行期解析（session/project 上下文），前端无对应控件。
+ * aspect_ratio/workflow 是 COMBO，兜底值必须落在 options 内（否则报 value_not_in_list）。
+ */
+const COMFYTV_RUNTIME_INPUTS: Record<string, unknown> = {
+	// 类型严格对齐 /object_info 的 INPUT_TYPES（INT→number、COMBO→options 内值、STRING→string）。
+	force_run_token: 0,            // INT，运行期 bump 使缓存失效
+	project_id: '',                // STRING，由 projectStore 填充
+	parent_output_id: 0,           // INT，lineage parent
+	workflow: 'Local SD1.5',       // COMBO，须在 options 内
+	resolution: '1K',              // COMBO options: 480P/720P/1K/1080P/1440P/2K/2160P/4K
+	aspect_ratio: '1:1',           // COMBO options: 1:1/9:16/16:9/3:4/4:3/3:2/2:3/4:5/5:4/21:9
+	batch_size: 1,                 // INT
+	main_prompt: '',               // STRING
+	selected_index: 1,             // INT
+	custom_params: '{}',           // STRING（JSON）
+	// 注意：texts/images 是 io.Autogrow.Input（COMFY_AUTOGROW_V3 连线槽位，min:0 可空），
+	// 不能兜底——给 []/'' 会破坏类型；无上游连线时 ComfyUI 允许为空。
+};
 
 /**
  * Normalize a **single node's** ComfyUI /history outputs (already unwrapped from
@@ -86,7 +123,13 @@ export function comfyOutputsToSnapshots(
 		const media = normalizeOutputSlot(slotName, outputs[slotName]);
 		for (const m of media) {
 			const resolved: MediaRef = m.kind === 'image' || m.kind === 'video' || m.kind === 'audio'
-				? { kind: m.kind, ref: comfyViewUrl(baseUrl, m.ref, String(m.meta?.subfolder ?? ''), String(m.meta?.type ?? 'output')), meta: m.meta }
+				? {
+					kind: m.kind,
+					ref: comfyViewUrl(baseUrl, m.ref, String(m.meta?.subfolder ?? ''), String(m.meta?.type ?? 'output')),
+					meta: m.meta,
+					locator: m.locator,
+					fxChain: m.fxChain,
+				}
 				: m;
 			entries.push({
 				nodeId,
@@ -122,7 +165,9 @@ export function comfyOutputsToFxSnapshots(
 		const looksPacked = typeof raw === 'string' && raw.trim().startsWith('{');
 		const packed = looksPacked ? unpackFxVideo(raw) : { url: '', entries: [] };
 		if (looksPacked && packed.url) {
-			const ref = packed.url.startsWith('/') || packed.url.startsWith('http')
+			// 只有以 `/` 开头的相对绝对路径才补 baseUrl 前缀；完整 http(s)/data/blob
+			// URL 直接使用（否则会拼成 `http://host/http://host/…` 的损坏地址）。
+			const ref = packed.url.startsWith('/')
 				? `${baseUrl.replace(/\/$/, '')}/${packed.url.replace(/^\//, '')}`
 				: packed.url;
 			entries.push({
@@ -138,7 +183,13 @@ export function comfyOutputsToFxSnapshots(
 		const media = normalizeOutputSlot(slotName, raw);
 		for (const m of media) {
 			const resolved: MediaRef = m.kind === 'image' || m.kind === 'video' || m.kind === 'audio'
-				? { kind: m.kind, ref: comfyViewUrl(baseUrl, m.ref, String(m.meta?.subfolder ?? ''), String(m.meta?.type ?? 'output')), meta: m.meta }
+				? {
+					kind: m.kind,
+					ref: comfyViewUrl(baseUrl, m.ref, String(m.meta?.subfolder ?? ''), String(m.meta?.type ?? 'output')),
+					meta: m.meta,
+					locator: m.locator,
+					fxChain: m.fxChain,
+				}
 				: m;
 			entries.push({ nodeId, port: 'output', key: `${nodeId}:output:${index}`, media: resolved, index });
 			index++;
@@ -162,6 +213,8 @@ export interface SingleNodeRunOptions {
 	runner: IComfyRunner;
 	/** logical node id (used for snapshot keys) */
 	nodeId: string;
+	/** 快照归档键（= stageUid）。缺省回退 nodeId（见 StageWorkflowRunOptions）。 */
+	snapshotKey?: string;
 	/** ComfyUI class_type (e.g. "ComfyTV.ImageStage" or "KSampler") */
 	type: string;
 	/** widget/input values (prompt, seed, …) */
@@ -183,6 +236,8 @@ export interface SingleNodeRunOptions {
  */
 export async function runSingleNode(options: SingleNodeRunOptions): Promise<SingleNodeRunResult> {
 	const { runner, nodeId, type, values, store } = options;
+	// 快照归档键：优先 stageUid（与 nodeCard 读侧一致），缺省 nodeId。
+	const snapshotKey = options.snapshotKey ?? nodeId;
 	const empty: SingleNodeRunResult = { promptId: '', status: 'error', entries: [] };
 	try {
 		const prompt = buildNodeApiPrompt(type, values);
@@ -203,8 +258,10 @@ export async function runSingleNode(options: SingleNodeRunOptions): Promise<Sing
 		// /history outputs keyed by ComfyUI node id → unwrap to the slot layer.
 		const nodeOutputs = unwrapNodeOutputs(result.outputs);
 		const extract = options.extractOutputs ?? comfyOutputsToSnapshots;
-		const entries = extract(runner.baseUrl, nodeOutputs, nodeId);
-		for (const e of entries) {
+		const entries = extract(runner.baseUrl, nodeOutputs, snapshotKey);
+		// 物化 ComfyUI /view 引用为自包含 data: URL，app 重启后仍可显示。
+		const persisted = await materializeComfyImageRefs(entries, runner.baseUrl, createComfyFetch(runner.baseUrl));
+		for (const e of persisted) {
 			store.put(e);
 		}
 		return { promptId: result.promptId, status: 'success', durationMs: result.durationMs, entries };

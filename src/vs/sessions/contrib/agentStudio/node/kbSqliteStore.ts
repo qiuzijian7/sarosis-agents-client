@@ -5,10 +5,20 @@
  *  但在同一个 db 文件中使用不同的表前缀（`kb_*`）。
  *--------------------------------------------------------------------------------------------*/
 
+import { createRequire } from 'node:module';
+
+// ⚠ 主进程编译产物是 **ESM**，ESM scope 无 `require`：裸 `require('better-sqlite3')`
+// 会抛 `ReferenceError: require is not defined in ES module scope`，被 catch 吞掉后
+// Database 恒为 null → KbSqliteStore.open() 永远抛错。必须用 createRequire。
+const nodeRequire = createRequire(import.meta.url);
+
 // 主进程方能加载 better-sqlite3（@vscode/sqlite3 API 不兼容，不可回退）
 let Database: any;
 try {
-	({ default: Database } = require('better-sqlite3') as any);
+	// better-sqlite3 是 CJS 模块，require 直接返回构造函数本身（无 .default）。
+	// 注意：esbuild/TS 的 `import X from 'better-sqlite3'` 会转成 `({ default: X } = require(...))`，
+	// 对 CJS 模块解构 .default 会得到 undefined，故这里用直接赋值。
+	Database = nodeRequire('better-sqlite3');
 } catch {
 	// better-sqlite3 不可用 → KbSqliteStore.open() 会抛明确错误
 }

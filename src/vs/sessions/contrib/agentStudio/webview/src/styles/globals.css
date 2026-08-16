@@ -6530,7 +6530,7 @@ html, body, #root {
  *    imported. Without `position: absolute` the inline `style.left`/`style.top`
  *    that LGraphCanvas#prompt() sets are ignored, and the dialog collapses into
  *    document flow at the canvas parent's origin (invisible behind the workflow
- *    overlay, hence "右侧 Sarosis 节点参数无法编辑"). z-index must exceed our
+ *    overlay, hence "右侧 Saros 节点参数无法编辑"). z-index must exceed our
  *    workflow overlay layer (which is also z-index 10) so the dialog appears on top. */
 .graphdialog {
   position: absolute;
@@ -6627,4 +6627,74 @@ html, body, #root {
   padding-top: 2px;
   padding-bottom: 2px;
   line-height: 1.2;
+}
+
+/* ═══ LiteGraph Context Menu (combo dropdown, right-click menu) ══════════════
+ * LiteGraph appends <div class="litecontextmenu dark"> to document.body.
+ * The upstream CSS uses selector `.litegraph.litecontextmenu` which requires
+ * a `.litegraph` ancestor — but our context menu is NOT inside the canvas
+ * container (it's a body-level child), so that selector never matches.
+ *
+ * Style source: ComfyUI index-CdVnxhJg.css (desktop_app build).
+ * Hover = white bg + black text (ComfyUI signature look). */
+
+.litecontextmenu {
+  position: fixed;
+  top: 100px; left: 100px;       /* JS overrides these via event.clientX/Y */
+  min-width: 100px;
+  color: #aaf;
+  padding: 0;
+  box-shadow: 0 0 10px #000 !important;
+  background-color: #2e2e2e !important;
+  z-index: 2147483647 !important;  /* max-int — above overlay (z:10), VS Code panels */
+  max-height: -webkit-fill-available;
+  overflow-y: auto;
+}
+
+@supports not (max-height: -webkit-fill-available) {
+  .litecontextmenu { max-height: 80vh; overflow-y: scroll; }
+}
+
+.litecontextmenu.dark {
+  background-color: #000 !important;
+}
+
+.litecontextmenu .litemenu-title img {
+  margin-top: 2px; margin-left: 2px; margin-right: 4px;
+}
+
+.litecontextmenu .litemenu-entry {
+  margin: 2px; padding: 2px;
+  color: #aaa; cursor: pointer; font-size: 12px;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+}
+.litecontextmenu .litemenu-entry:hover:not(.disabled):not(.separator) {
+  /* ComfyUI signature: white background + black text on hover */
+  background-color: #fff !important;
+  color: #000 !important;
+  transition: all 0.2s;
+}
+.litecontextmenu .litemenu-entry.disabled {
+  opacity: 0.5; cursor: default;
+}
+.litecontextmenu .litemenu-entry.separator {
+  display: block;
+  border-top: 1px solid #555;
+  border-bottom: 1px solid #888;
+  width: 100%; height: 0;
+  margin: 3px 0 2px 0;
+  background-color: transparent;
+  padding: 0 !important;
+  cursor: default !important;
+}
+.litecontextmenu .litemenu-entry.submenu {
+  background-color: #2e2e2e !important;
+}
+.litecontextmenu.dark .litemenu-entry.submenu {
+  background-color: #000 !important;
+}
+.litecontextmenu .litemenu-entry.has_submenu {
+  border-right: 2px solid #0ff;   /* cyan accent — matches upstream litegraph.css */
 }

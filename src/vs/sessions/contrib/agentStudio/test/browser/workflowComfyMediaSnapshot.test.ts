@@ -282,4 +282,104 @@ suite('mediaSnapshotStore', () => {
 			assert.strictEqual(store.getSnapshot(), store.getSnapshot());
 		});
 	});
+
+	suite('alias resolution (nodeId ↔ stageUid)', () => {
+
+		const runEntry = (uid: string, ref: string) => ({
+			nodeId: uid,
+			port: 'output',
+			key: `${uid}:output:0`,
+			media: { kind: 'image' as const, ref },
+			index: 0,
+		});
+
+		test('byNode MERGES the nodeId archive with the alias (uid) archive', async () => {
+			const store = new MediaSnapshotStore(createMemoryBackend(), { persistent: true });
+			// 节点弹窗本地渲染 → savePayload 按 nodeId 归档
+			await store.savePayload('poster-1', 'image', 0, 'local-render', 'image');
+			// run 链路（snapshotKey = stageUid）→ 按 uid 归档
+			store.put(runEntry('uid-A', 'http://cdn/run.png'));
+			store.registerAlias('poster-1', 'uid-A');
+
+			assert.deepStrictEqual(
+				store.byNode('poster-1').map(e => e.key),
+				['poster-1:image:0', 'uid-A:output:0'],
+			);
+		});
+
+		test('local editor render is not masked by the alias (poster/relight/scene3d regression)', async () => {
+			const store = new MediaSnapshotStore(createMemoryBackend(), { persistent: true });
+			store.registerAlias('poster-1', 'uid-A');
+			await store.savePayload('poster-1', 'image', 0, 'local-render', 'image');
+			// 这一行就是 runPosterNode / runRelightNode / runScene3DNode 的实际查询
+			const render = store.byNode('poster-1').find(e => e.media.kind === 'image');
+			assert.ok(render, '弹窗写入的快照必须能被 byNode(nodeId) 查到');
+			assert.strictEqual(render!.key, 'poster-1:image:0');
+		});
+
+		test('downstream keeps resolving the uid archive through the alias', () => {
+			const store = new MediaSnapshotStore(createMemoryBackend(), { persistent: true });
+			store.put(runEntry('uid-A', 'http://cdn/run.png'));
+			store.registerAlias('stage-1', 'uid-A');
+			const entries = store.byNode('stage-1');
+			assert.strictEqual(entries.length, 1);
+			assert.strictEqual(entries[0].media.ref, 'http://cdn/run.png');
+		});
+
+		test('clearNode wipes both the nodeId and the uid archive', async () => {
+			const store = new MediaSnapshotStore(createMemoryBackend(), { persistent: true });
+			await store.savePayload('poster-1', 'image', 0, 'local-render', 'image');
+			store.put(runEntry('uid-A', 'http://cdn/run.png'));
+			store.registerAlias('poster-1', 'uid-A');
+			store.clearNode('poster-1');
+			assert.strictEqual(store.byNode('poster-1').length, 0);
+			assert.strictEqual(store.has('poster-1:image:0'), false);
+			assert.strictEqual(store.has('uid-A:output:0'), false);
+		});
+
+		test('unregisterAlias stops resolving the uid archive (nodeId reuse guard)', () => {
+			const store = new MediaSnapshotStore(createMemoryBackend(), { persistent: true });
+			store.put(runEntry('uid-A', 'http://cdn/old.png'));
+			store.registerAlias('stage-1', 'uid-A');
+			assert.strictEqual(store.byNode('stage-1').length, 1);
+			store.unregisterAlias('stage-1');
+			assert.strictEqual(store.byNode('stage-1').length, 0, '别名注销后不得再读到已删节点的输出');
+			assert.deepStrictEqual(store.aliasEntries(), []);
+		});
+
+		test('pruneAliases drops stale nodeIds but refuses an empty live set', () => {
+			const store = new MediaSnapshotStore(createMemoryBackend(), { persistent: true });
+			store.registerAlias('a', 'uid-a');
+			store.registerAlias('b', 'uid-b');
+			assert.strictEqual(store.pruneAliases([]), 0, '空存活集合必须拒绝裁剪（加载中的瞬时窗口）');
+			assert.strictEqual(store.aliasEntries().length, 2);
+			assert.strictEqual(store.pruneAliases(['a']), 1);
+			assert.deepStrictEqual(store.aliasEntries(), [{ nodeId: 'a', uid: 'uid-a' }]);
+		});
+
+		test('pruneOrphans removes archives of deleted nodes only', async () => {
+			const store = new MediaSnapshotStore(createMemoryBackend(), { persistent: true });
+			await store.savePayload('poster-1', 'image', 0, 'local-render', 'image');
+			store.put(runEntry('uid-A', 'r1'));
+			store.put(runEntry('uid-GONE', 'r2'));
+			assert.strictEqual(store.pruneOrphans([]), 0, '空存活集合必须拒绝裁剪');
+			assert.strictEqual(store.pruneOrphans(['poster-1', 'uid-A']), 1);
+			assert.strictEqual(store.has('uid-GONE:output:0'), false);
+			assert.strictEqual(store.has('uid-A:output:0'), true);
+			assert.strictEqual(store.has('poster-1:image:0'), true);
+		});
+
+		test('aliases survive hydrate and never pollute refs', async () => {
+			const backend = createMemoryBackend();
+			const source = new MediaSnapshotStore(backend, { persistent: true });
+			source.registerAlias('stage-1', 'uid-A');
+			source.put(runEntry('uid-A', 'http://cdn/run.png'));
+
+			const restored = new MediaSnapshotStore(backend, { persistent: true });
+			await restored.hydrate();
+			assert.deepStrictEqual(restored.aliasEntries(), [{ nodeId: 'stage-1', uid: 'uid-A' }]);
+			assert.strictEqual(restored.byNode('stage-1').length, 1);
+			assert.strictEqual(restored.has('__saros_aliases__'), false, '别名保留键不得作为普通 ref 恢复');
+		});
+	});
 });

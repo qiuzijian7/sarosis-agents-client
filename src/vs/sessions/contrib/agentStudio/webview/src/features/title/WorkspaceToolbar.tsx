@@ -21,7 +21,7 @@ export function WorkspaceToolbar({
 	onExport,
 	onImport,
 }: WorkspaceToolbarProps): React.ReactElement {
-	const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, deleteWorkspace } = useWorkspaceStore();
+	const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, openWorkspaceFromFile, deleteWorkspace } = useWorkspaceStore();
 	const { agents } = useAgentStore();
 	const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 	const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
@@ -106,6 +106,15 @@ export function WorkspaceToolbar({
 		setIsCreating(true);
 		setNewWorkspaceName('');
 	}, []);
+
+	const handleOpenFromFile = useCallback(async () => {
+		const newId = await openWorkspaceFromFile();
+		if (newId) {
+			setIsDropdownOpen(false);
+			setIsCreating(false);
+			setNewWorkspaceName('');
+		}
+	}, [openWorkspaceFromFile]);
 
 	const handleCancelCreate = useCallback(() => {
 		setIsCreating(false);
@@ -244,6 +253,17 @@ export function WorkspaceToolbar({
 						</div>
 
 						<div className="toolbar-ws-dd-divider" />
+
+						{/* Open workspace from file */}
+						<div
+							className="toolbar-ws-dd-opt toolbar-ws-dd-opt-action"
+							onClick={handleOpenFromFile}
+						>
+							<svg className="toolbar-ws-dd-opt-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2zM9 13h6M12 10v6" />
+							</svg>
+							<span className="toolbar-ws-dd-opt-name">从文件打开工作区</span>
+						</div>
 
 						{/* Create workspace section */}
 						{isCreating ? (

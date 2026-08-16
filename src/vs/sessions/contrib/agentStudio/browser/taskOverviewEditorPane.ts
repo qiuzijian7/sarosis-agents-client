@@ -370,7 +370,6 @@ export class TaskOverviewEditorPane extends EditorPane {
 			// drop handler — skip the full _refresh() to avoid visual flash.
 			if (this._suppressNextBoardRefresh) {
 				this._suppressNextBoardRefresh = false;
-				console.info('[PerfDiag] 🟠 onDidChangeTaskBoard SKIP (drag suppression), data already synced');
 				return;
 			}
 			this._scheduleRefresh();

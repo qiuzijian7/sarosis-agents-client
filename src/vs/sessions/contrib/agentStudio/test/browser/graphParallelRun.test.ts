@@ -40,7 +40,7 @@ function baseOptions(nodes: NodeLike[], edges: EdgeLike[], overrides?: Record<st
 suite('workflowRun — parallel execution', () => {
 
 	test('independent provider steps run concurrently (overlapping time)', async () => {
-		const nodes: NodeLike[] = [{ id: 'a', type: 'Sarosis.ModelImageGen' }, { id: 'b', type: 'Sarosis.ModelImageGen' }];
+		const nodes: NodeLike[] = [{ id: 'a', type: 'Saros.ModelImageGen' }, { id: 'b', type: 'Saros.ModelImageGen' }];
 		const running = new Set<string>();
 		let maxConcurrent = 0;
 		let seq = 0;
@@ -60,7 +60,7 @@ suite('workflowRun — parallel execution', () => {
 	});
 
 	test('chain steps still run in dependency order (barrier between layers)', async () => {
-		const nodes: NodeLike[] = [{ id: 'a', type: 'Sarosis.ModelImageGen' }, { id: 'b', type: 'Sarosis.ModelImageGen' }, { id: 'c', type: 'Sarosis.ModelImageGen' }];
+		const nodes: NodeLike[] = [{ id: 'a', type: 'Saros.ModelImageGen' }, { id: 'b', type: 'Saros.ModelImageGen' }, { id: 'c', type: 'Saros.ModelImageGen' }];
 		const started: string[] = [];
 		const r = await runGraphExecution(baseOptions(nodes, [
 			{ source: 'a', target: 'b' },
@@ -73,7 +73,7 @@ suite('workflowRun — parallel execution', () => {
 	});
 
 	test('a failure stops later layers but records layer stats', async () => {
-		const nodes: NodeLike[] = [{ id: 'a', type: 'Sarosis.ModelImageGen' }, { id: 'b', type: 'Sarosis.ModelImageGen' }, { id: 'c', type: 'Sarosis.ModelImageGen' }];
+		const nodes: NodeLike[] = [{ id: 'a', type: 'Saros.ModelImageGen' }, { id: 'b', type: 'Saros.ModelImageGen' }, { id: 'c', type: 'Saros.ModelImageGen' }];
 		// a succeeds; b fails (no images); c is in the next layer and must not start.
 		const started: string[] = [];
 		const send = async (args: { prompt: string }) => {
@@ -111,7 +111,7 @@ suite('workflowRun — parallel execution', () => {
 	});
 
 	test('cycle short-circuits with no layers', async () => {
-		const nodes: NodeLike[] = [{ id: 'a', type: 'Sarosis.ModelImageGen' }, { id: 'b', type: 'Sarosis.ModelImageGen' }];
+		const nodes: NodeLike[] = [{ id: 'a', type: 'Saros.ModelImageGen' }, { id: 'b', type: 'Saros.ModelImageGen' }];
 		const r = await runGraphExecution(baseOptions(nodes, [
 			{ source: 'a', target: 'b' },
 			{ source: 'b', target: 'a' },

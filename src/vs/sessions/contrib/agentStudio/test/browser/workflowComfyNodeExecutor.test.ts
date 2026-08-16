@@ -32,15 +32,43 @@ suite('nodeExecutor', () => {
 	suite('buildNodeApiPrompt', () => {
 
 		test('wraps class_type + inputs under the stable node key', () => {
-			const prompt = buildNodeApiPrompt('ComfyTV.ImageStage', { prompt: 'a cat', seed: -1 });
+			// 非 ComfyTV 节点不注入运行期字段
+			const prompt = buildNodeApiPrompt('KSampler', { prompt: 'a cat', seed: -1 });
 			assert.deepStrictEqual(prompt, {
-				[PROMPT_NODE_KEY]: { class_type: 'ComfyTV.ImageStage', inputs: { prompt: 'a cat', seed: -1 } },
+				[PROMPT_NODE_KEY]: { class_type: 'KSampler', inputs: { prompt: 'a cat', seed: -1 } },
 			});
+		});
+
+		test('ComfyTV.* 节点自动补齐 required 运行期字段（类型对齐 /object_info）', () => {
+			const prompt = buildNodeApiPrompt('ComfyTV.ImageStage', { main_prompt: 'a cat', seed: -1 });
+			const inputs = prompt[PROMPT_NODE_KEY].inputs as Record<string, unknown>;
+			// 控件值保留
+			assert.strictEqual(inputs.main_prompt, 'a cat');
+			assert.strictEqual(inputs.seed, -1);
+			// 运行期字段已补齐（且类型正确）
+			assert.strictEqual(inputs.force_run_token, 0);
+			assert.strictEqual(inputs.parent_output_id, 0);
+			assert.strictEqual(inputs.resolution, '1K');
+			assert.strictEqual(inputs.aspect_ratio, '1:1');
+			assert.strictEqual(inputs.workflow, 'Local SD1.5');
+			assert.strictEqual(inputs.batch_size, 1);
+			assert.strictEqual(inputs.selected_index, 1);
+			assert.strictEqual(inputs.custom_params, '{}');
+			// Autogrow 槽位不注入（texts/images 由连线提供）
+			assert.ok(!('texts' in inputs));
+			assert.ok(!('images' in inputs));
+		});
+
+		test('ComfyTV.* 兜底不覆盖已有控件值', () => {
+			const prompt = buildNodeApiPrompt('ComfyTV.ImageStage', { resolution: '2K', aspect_ratio: '16:9' });
+			const inputs = prompt[PROMPT_NODE_KEY].inputs as Record<string, unknown>;
+			assert.strictEqual(inputs.resolution, '2K');
+			assert.strictEqual(inputs.aspect_ratio, '16:9');
 		});
 
 		test('does not mutate the input values object', () => {
 			const values = { prompt: 'x' };
-			buildNodeApiPrompt('KSampler', values);
+			buildNodeApiPrompt('ComfyTV.ImageStage', values);
 			assert.deepStrictEqual(values, { prompt: 'x' });
 		});
 	});

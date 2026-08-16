@@ -23,7 +23,7 @@ import {
 import * as core from './gitVersionCore.js';
 
 const TRACKED_FILE = 'workflow.json';
-const AUTHOR: core.GitAuthor = { name: 'Sarosis Agent', email: 'agent@sarosis.local' };
+const AUTHOR: core.GitAuthor = { name: 'Saros Agent', email: 'agent@sarosis.local' };
 const GITIGNORE: readonly string[] = [
 	'# Workflow version management — only track workflow.json',
 	'*.tmp',

@@ -1,5 +1,5 @@
-﻿# 构建 KB markdown webview bundle (kbblocks.js)
-$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
+# 构建 KB markdown webview bundle (kbblocks.js)
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 Set-Location $repoRoot
 
 $webviewDir = "src\vs\sessions\contrib\agentStudio\webview"

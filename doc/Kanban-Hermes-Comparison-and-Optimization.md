@@ -4,7 +4,7 @@
 
 ## 一、架构总览对比
 
-| 维度 | Hermes-Agent | Sarosis (本项目) | 差距评级 |
+| 维度 | Hermes-Agent | Saros (本项目) | 差距评级 |
 |------|-------------|-----------------|---------|
 | 状态模型 | 7 状态 (triage→todo→ready→running→blocked→done→archived) | 5 状态 (todo→running→done→cancelled→archived) | **大** |
 | 数据持久化 | SQLite (`kanban.db`) | JSON 文件 (`taskboard.json`) | **中** |
@@ -70,12 +70,12 @@ export enum TaskBoardStatus {
 1. 定义 ITriageService 接口
    └─ specify(taskId: string): Promise<TaskBoardRecord>     // 细化
    └─ decompose(taskId: string): Promise<TaskBoardRecord[]> // 分解
-   
+
 2. 实现 LlmTriageService
    └─ 调用当前 chat backend（Knot/OpenClaw/Direct）做 LLM 推理
    └─ 解析 LLM 输出为结构化子任务列表
    └─ 创建子任务 + 设置父子依赖 link
-   
+
 3. 集成到 AgentTaskBoardService
    └─ 新增 triage 自动触发入口（手动按钮 + 自动检测大任务）
    └─ WebView 增加 "分解" / "细化" 按钮在 triage 卡片上
@@ -118,11 +118,11 @@ class Diagnostic:
 1. 定义 IKanbanDiagnosticsService
    └─ runDiagnostics(boardId: string): Promise<Diagnostic[]>
    └─ onDidDetectDiagnostic: Event<Diagnostic>
-   
+
 2. 实现 KanbanDiagnosticsService
    └─ 8 条规则移植（优先级：repeated_failures > stuck_in_blocked > stranded_in_ready）
    └─ 定时检测（30min 间隔）+ 事件触发检测（状态变更时）
-   
+
 3. WebView 集成
    └─ TaskBoard 顶部增加 "诊断" 按钮 + 警告徽章
    └─ 诊断结果以 toast/snackbar 展示
@@ -183,11 +183,11 @@ export class KanbanToolHandler implements IBundledToolHandler {
 1. AgentTaskBoardService 改为依赖 IKanbanProvider
    └─ 所有数据操作委托给 IKanbanProvider
    └─ 不再直接读写 taskboard.json
-   
+
 2. 实现 JsonFileKanbanProvider
    └─ 保持当前 JSON 文件读写逻辑
    └─ 迁移到 provider 层
-   
+
 3. 未来可扩展 SqliteKanbanProvider
    └─ SQLite 持久化（见 2.6）
    └─ 通过 DI 注册切换实现
@@ -231,12 +231,12 @@ Root Task (done immediately)
    └─ createSwarm(spec: SwarmSpec): Promise<SwarmResult>
    └─ getBlackboard(swarmId: string): Promise<BlackboardEntry[]>
    └─ postBlackboardUpdate(swarmId: string, entry: BlackboardEntry): Promise<void>
-   
+
 2. 实现 SwarmService（基于现有 SubAgent 系统）
    └─ 复用 unifiedSubAgentDispatch 做 Worker 调度
    └─ Worker 间通过 kanban comment 传递 blackboard
    └─ Verifier/Synthesizer 作为特殊 Worker
-   
+
 3. WebView 集成
    └─ TaskBoard 增加 "Swarm 视图" 模式
    └─ 显示拓扑关系 + blackboard 实时流
@@ -443,10 +443,10 @@ Hermes 的 `ready` 状态自动由依赖满足触发，而非手动设置。建�
 async transitionToReadyIfDepsMet(taskId: string): Promise<boolean> {
   const task = await this.getTask(taskId);
   if (task.status !== 'todo') return false;
-  
+
   const deps = await this.getDependencies(taskId);
   const allDepsDone = deps.every(d => d.status === 'done');
-  
+
   if (allDepsDone) {
     await this.moveCard(taskId, 'ready');
     return true;

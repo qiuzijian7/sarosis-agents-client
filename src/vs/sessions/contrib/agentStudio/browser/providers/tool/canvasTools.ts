@@ -10,8 +10,8 @@
  * The host bridges them via canvasOpsBridge (request → workflow.canvasOps event →
  * webview applyCanvasOps → workflow.canvasOpsResult request → resolve).
  *
- * Node type vocabulary is the registry's namespaced types (Sarosis.Prompt,
- * Sarosis.ModelImageGen, Sarosis.ProviderPicker, ComfyTV.*, ComfyUI native names).
+ * Node type vocabulary is the registry's namespaced types (Saros.Prompt,
+ * Saros.ModelImageGen, Saros.ProviderPicker, ComfyTV.*, ComfyUI native names).
  */
 
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
@@ -40,7 +40,7 @@ export function registerCanvasTools(ctx: CanvasToolContext): void {
 				'Ops run atomically — if any op fails the WHOLE batch is rolled back. ' +
 				'Requires the workflow canvas (workflow editor panel) to be open.\n\n' +
 				'OPS (op + fields):\n' +
-				'  add_node    { type, id?, label?, position?{x,y}, data? } — create a node. type examples: "Sarosis.Prompt", "Sarosis.ModelImageGen", "Sarosis.ProviderPicker".\n' +
+				'  add_node    { type, id?, label?, position?{x,y}, data? } — create a node. type examples: "Saros.Prompt", "Saros.ModelImageGen", "Saros.ProviderPicker".\n' +
 				'  update_node { node, patch } — patch node data (node = id or label).\n' +
 				'  delete_node { node } — delete a node and its connections.\n' +
 				'  connect     { source, target, sourceHandle?, targetHandle? } — connect two nodes (port types are validated).\n' +
@@ -57,7 +57,7 @@ export function registerCanvasTools(ctx: CanvasToolContext): void {
 							type: 'object',
 							properties: {
 								op: { type: 'string', enum: ['add_node', 'update_node', 'delete_node', 'connect', 'disconnect', 'select'] },
-								type: { type: 'string', description: 'Node type for add_node (e.g. Sarosis.ModelImageGen)' },
+								type: { type: 'string', description: 'Node type for add_node (e.g. Saros.ModelImageGen)' },
 								id: { type: 'string', description: 'Optional explicit node id' },
 								label: { type: 'string', description: 'Optional display label (defaults to auto-name)' },
 								node: { type: 'string', description: 'Node reference (id or label) for update/delete/select' },
@@ -106,7 +106,7 @@ export function registerCanvasTools(ctx: CanvasToolContext): void {
 			description: 'Semantic image generation on the canvas: create Prompt + ModelImageGen nodes ' +
 				'(optionally N variants), auto-connect them, auto-route provider/model, and run. ' +
 				'Call this instead of manually adding prompt/image nodes one by one.\n\n' +
-				'For each variant it creates a Sarosis.Prompt → Sarosis.ModelImageGen pair. ' +
+				'For each variant it creates a Saros.Prompt → Saros.ModelImageGen pair. ' +
 				'Requires the workflow canvas to be open.',
 			inputSchema: {
 				type: 'object',

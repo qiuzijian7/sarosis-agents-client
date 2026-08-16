@@ -291,7 +291,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	 */
 	private async *_executeWorkflowTurn(
 		request: IAgentTurnRequest,
-		trigger: { workflowId: string; input?: string },
+		trigger: { workflowId: string; input?: string; variables?: Record<string, string> },
 		controller: AbortController,
 	): AsyncIterable<IChatStreamDelta> {
 		const wfService = this._instantiationService.invokeFunction((accessor) =>
@@ -308,7 +308,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			executionId = await wfService.executeWorkflow(trigger.workflowId, {
 				agentId: request.agentId,
 				sessionId: request.sessionId,
-				context: { input: trigger.input ?? '' },
+				context: { input: trigger.input ?? '', ...(trigger.variables ?? {}) },
 				skipVariableCollection: true,
 			});
 		} catch (err) {
@@ -1445,7 +1445,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	 *      sandbox. The agent operates entirely inside the worktree (its own
 	 *      branch), isolated from the main checkout. This MUST take precedence
 	 *      and MUST NOT be auto-synced away to the VS Code open folder.
-	 *   2. Otherwise the Sarosis workspace path, kept in sync with the VS Code
+	 *   2. Otherwise the Saros workspace path, kept in sync with the VS Code
 	 *      currently-open folder.
 	 *
 	 * Also includes a sandbox rule: the agent may ONLY operate within the
@@ -1517,7 +1517,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	 * working-directory root. Shared by both the worktree-bound path and the
 	 * regular workspace path so the sandbox wording stays consistent.
 	 *
-	 * @param workspaceName Display name of the Sarosis workspace.
+	 * @param workspaceName Display name of the Saros workspace.
 	 * @param rootDir The resolved working directory (worktree dir or workspace path).
 	 * @param isWorktree Whether `rootDir` is a git worktree the agent is bound to.
 	 */
@@ -1530,7 +1530,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		const lines: string[] = [
 			'## Workspace Context',
 			'',
-			`You are operating inside the Sarosis workspace "${workspaceName}".`,
+			`You are operating inside the Saros workspace "${workspaceName}".`,
 		];
 
 		if (isWorktree) {
@@ -1703,6 +1703,14 @@ export function buildUserContentParts(
 				(contentParts[0] as { type: 'text'; text: string }).text += fileContext;
 			} else {
 				contentParts.push({ type: 'text', text: fileContext });
+			}
+		} else if (att.type === 'folder') {
+			// 文件夹：无法读取目录内容，仅把系统路径交给 agent 由其自行读取/操作
+			const folderContext = `\n\n--- Folder: ${att.name} ---\nPath: ${att.filePath ?? att.data}\n--- End of ${att.name} ---`;
+			if (contentParts.length > 0 && contentParts[0].type === 'text') {
+				(contentParts[0] as { type: 'text'; text: string }).text += folderContext;
+			} else {
+				contentParts.push({ type: 'text', text: folderContext });
 			}
 		}
 	}

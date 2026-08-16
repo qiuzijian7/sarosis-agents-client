@@ -22,7 +22,7 @@ import { IContextKeyService } from '../../../../platform/contextkey/common/conte
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IAgentChatService } from '../../../common/agentStudioService.js';
+import { IAgentChatService, IAgentStudioService } from '../../../common/agentStudioService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -36,6 +36,11 @@ import { SelectBox } from '../../../../base/browser/ui/selectBox/selectBox.js';
 import { ISelectOptionItem } from '../../../../base/browser/ui/selectBox/selectBox.js';
 import { defaultSelectBoxStyles, defaultInputBoxStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { userDataRootFromRoamingHome } from '../../../contrib/agentStudio/common/sarosPaths.js';
+import { Action, Separator } from '../../../../base/common/actions.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { localize } from '../../../../nls.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 
 const $ = DOM.$;
 
@@ -80,6 +85,7 @@ interface SessionData {
 	info: SessionInfo;
 	messages: UserMessageInfo[];
 	chatOpen: boolean;
+	pinned: boolean;
 }
 
 export class SessionHistoryViewPane extends ViewPane {
@@ -88,6 +94,9 @@ export class SessionHistoryViewPane extends ViewPane {
 	private sessionListEl: HTMLElement | undefined;
 	private agentSelect: SelectBox | undefined;
 	private searchInput: InputBox | undefined;
+	private newSessionPanel: HTMLElement | undefined;
+	private newSessionPanelDisposables: DisposableStore | undefined;
+	private newSessionState: { agentId: string; name: string; busy: boolean } | undefined;
 	private agentSelectContainer: HTMLElement | undefined;
 	private searchInputContainer: HTMLElement | undefined;
 
@@ -96,6 +105,15 @@ export class SessionHistoryViewPane extends ViewPane {
 	private currentAgentFilter = '';
 	private currentSearchTerm = '';
 	private _reloadTimer: any = undefined;
+
+	/** Pinned session keys (agentId\u0000sessionId), persisted across reloads. */
+	private readonly pinnedSessions = new Set<string>();
+	/** Manual session ordering (agentId\u0000sessionId, display order), persisted. */
+	private sessionOrder: string[] = [];
+	private static readonly PINNED_KEY = 'sessionHistoryView.pinnedSessions';
+	private static readonly ORDER_KEY = 'sessionHistoryView.sessionOrder';
+	/** Pending single-click expand timer — cancelled on double-click so the open-chat action wins. */
+	private _pendingExpandTimer: any = undefined;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -110,13 +128,17 @@ export class SessionHistoryViewPane extends ViewPane {
 		@IHoverService hoverService: IHoverService,
 		@ILogService private readonly logService: ILogService,
 		@IAgentChatService private readonly chatService: IAgentChatService,
+		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IFileService private readonly fileService: IFileService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
+		@IStorageService private readonly storageService: IStorageService,
+		@IDialogService private readonly dialogService: IDialogService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
+		this._loadPersistedState();
 	}
 
 	protected override renderBody(parent: HTMLElement): void {
@@ -182,6 +204,16 @@ export class SessionHistoryViewPane extends ViewPane {
 			this.currentAgentFilter = this._agentOptionIds[idx] ?? '';
 			this._applyFilters();
 		}));
+
+		// Row 3: "New session" toggle button
+		const newBtn = DOM.append(filterBar, $<HTMLButtonElement>('button.session-history-new-btn'));
+		newBtn.title = localize('newSession', "New session");
+		newBtn.textContent = `+ ${localize('newSession', "New session")}`;
+		this.newSessionPanel = DOM.append(filterBar, $('.session-history-new-panel'));
+		this.newSessionPanel.style.display = 'none';
+		this._register(DOM.addDisposableListener(newBtn, DOM.EventType.CLICK, () => {
+			void this._toggleNewSessionPanel();
+		}));
 	}
 
 	private _agentOptionIds: string[] = [''];
@@ -246,6 +278,7 @@ export class SessionHistoryViewPane extends ViewPane {
 							messages: [],           // lazy-loaded on expand
 							_messagesLoaded: false,  // tracks whether history was fetched
 							chatOpen: hasOpenChat,
+							pinned: this.pinnedSessions.has(this._sessionKey(agentId, session.id)),
 						} as SessionData);
 						totalCount++;
 					}
@@ -255,6 +288,7 @@ export class SessionHistoryViewPane extends ViewPane {
 			}
 
 			this.logService.info(`[SessionHistoryView] _loadSessions: total ${totalCount} sessions (history lazy)`);
+			sessionDataList.sort((a, b) => this._compareSessions(a, b));
 			this.allSessions = sessionDataList;
 
 			// Batch-render to avoid blocking the UI with large session lists
@@ -586,14 +620,25 @@ export class SessionHistoryViewPane extends ViewPane {
 	}
 
 	private _renderSessionItem(item: HTMLElement, sessionData: SessionData): void {
-		const { info, messages, chatOpen } = sessionData;
+		const { info, messages, chatOpen, pinned } = sessionData;
 
 		// Allow finding this item by sessionId for lazy-load updates
 		item.setAttribute('data-session-id', info.sessionId);
+		item.setAttribute('data-agent-id', info.agentId);
+		item.setAttribute('data-session-key', this._sessionKey(info.agentId, info.sessionId));
+		item.draggable = true;
 
 		// Header
 		const header = DOM.append(item, $('.session-history-item-header'));
 		const agentColor = _getAgentColor(info.agentName);
+
+		// Pin marker
+		if (pinned) {
+			const pinEl = DOM.append(header, $('.session-history-pin'));
+			pinEl.textContent = '📌';
+			pinEl.title = 'Pinned';
+		}
+
 		const statusDot = DOM.append(header, $('.session-history-status-dot'));
 		statusDot.style.setProperty('--agent-color', agentColor);
 		if (chatOpen) {
@@ -609,11 +654,7 @@ export class SessionHistoryViewPane extends ViewPane {
 		const infoEl = DOM.append(header, $('.session-history-info'));
 		const title = DOM.append(infoEl, $('.session-history-title'));
 		title.textContent = info.sessionName || 'Untitled Session';
-		title.title = `${info.sessionName || 'Untitled Session'} — Double-click to rename`;
-		this._register(DOM.addDisposableListener(title, DOM.EventType.DBLCLICK, (e) => {
-			e.stopPropagation();
-			this._startRenameSession(sessionData, title, item);
-		}));
+		title.title = `${info.sessionName || 'Untitled Session'} — Right-click for actions, double-click to open chat`;
 
 		const meta = DOM.append(infoEl, $('.session-history-meta'));
 		const agentBadge = DOM.append(meta, $('.session-history-agent-badge'));
@@ -646,17 +687,69 @@ export class SessionHistoryViewPane extends ViewPane {
 
 		let expanded = false;
 
-		this._register(DOM.addDisposableListener(header, DOM.EventType.CLICK, () => {
+		const toggleExpand = () => {
 			expanded = !expanded;
 			if (expanded) {
 				item.classList.add('expanded');
 				arrow.textContent = '▼';
 				// Lazy-load history on first expand
-				this._renderMessages(messagesContainer, sessionData);
+				void this._renderMessages(messagesContainer, sessionData);
 			} else {
 				item.classList.remove('expanded');
 				arrow.textContent = '▶';
 				DOM.clearNode(messagesContainer);
+			}
+		};
+
+		// Single click expands/collapses (delayed so a double-click cancels it
+		// and opens the chat instead of toggling twice).
+		this._register(DOM.addDisposableListener(header, DOM.EventType.CLICK, () => {
+			this._pendingExpandTimer = setTimeout(() => {
+				this._pendingExpandTimer = undefined;
+				toggleExpand();
+			}, 220);
+		}));
+
+		// Double click opens the agent chat (focus input if already open).
+		this._register(DOM.addDisposableListener(header, DOM.EventType.DBLCLICK, (e) => {
+			e.stopPropagation();
+			if (this._pendingExpandTimer) {
+				clearTimeout(this._pendingExpandTimer);
+				this._pendingExpandTimer = undefined;
+			}
+			void this._openSessionChat(sessionData);
+		}));
+
+		// Right-click context menu: pin / rename / delete.
+		this._register(DOM.addDisposableListener(header, DOM.EventType.CONTEXT_MENU, (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this._showContextMenu(sessionData, e as MouseEvent);
+		}));
+
+		// Drag & drop reordering.
+		this._register(DOM.addDisposableListener(item, 'dragstart', (e) => {
+			const dragEvent = e as DragEvent;
+			dragEvent.dataTransfer?.setData('text/plain', item.getAttribute('data-session-key') ?? '');
+			if (dragEvent.dataTransfer) { dragEvent.dataTransfer.effectAllowed = 'move'; }
+			item.classList.add('dragging');
+		}));
+		this._register(DOM.addDisposableListener(item, 'dragend', () => {
+			item.classList.remove('dragging');
+		}));
+		this._register(DOM.addDisposableListener(item, 'dragover', (e) => {
+			const dragEvent = e as DragEvent;
+			dragEvent.preventDefault();
+			if (dragEvent.dataTransfer) { dragEvent.dataTransfer.dropEffect = 'move'; }
+		}));
+		this._register(DOM.addDisposableListener(item, 'drop', (e) => {
+			const dragEvent = e as DragEvent;
+			e.preventDefault();
+			e.stopPropagation();
+			const draggedKey = dragEvent.dataTransfer?.getData('text/plain');
+			const targetKey = item.getAttribute('data-session-key') ?? '';
+			if (draggedKey && targetKey && draggedKey !== targetKey) {
+				this._reorderSession(draggedKey, targetKey);
 			}
 		}));
 	}
@@ -716,10 +809,6 @@ export class SessionHistoryViewPane extends ViewPane {
 
 		const textEl = DOM.append(body, $('.session-history-message-text'));
 		textEl.textContent = msg.content;
-		// Truncate long messages
-		if (msg.content.length > 200) {
-			textEl.classList.add('truncated');
-		}
 
 		// Action buttons
 		const actions = DOM.append(msgEl, $('.session-history-message-actions'));
@@ -867,6 +956,341 @@ export class SessionHistoryViewPane extends ViewPane {
 		} catch {
 			return '';
 		}
+	}
+
+	// ─── Session actions: pin / rename / delete / open / reorder ──────────
+
+	/**
+	 * Resolve human-readable agent names for the given agent IDs. Falls back
+	 * to the raw ID when the agent definition is unavailable.
+	 */
+	private async _resolveAgentNames(agentIds: string[]): Promise<ReadonlyMap<string, string>> {
+		const names = new Map<string, string>();
+		try {
+			const agents = await this.agentStudioService.getAgents();
+			for (const agent of agents) {
+				if (agentIds.includes(agent.id) && agent.name && agent.name.trim()) {
+					names.set(agent.id, agent.name.trim());
+				}
+			}
+		} catch (err) {
+			this.logService.warn('[SessionHistoryView] failed to resolve agent names:', err);
+		}
+		return names;
+	}
+
+	/**
+	 * Toggle the inline "new session" panel that lives just under the
+	 * "+ New session" button. The panel lets the user pick an agent (chips)
+	 * and name the session, then calls `createAgentSession` on confirm.
+	 */
+	private async _toggleNewSessionPanel(): Promise<void> {
+		if (!this.newSessionPanel) { return; }
+
+		// Already open? Close it.
+		if (this.newSessionPanel.style.display !== 'none') {
+			this._closeNewSessionPanel();
+			return;
+		}
+
+		const agentIds = await this._discoverAgentIds();
+		if (agentIds.length === 0) {
+			await this.dialogService.info(
+				localize('newSession.noAgents', "No agents found"),
+				localize('newSession.noAgentsDetail', "There are no agents with an existing chat-history directory yet. Create or open an agent chat first."),
+			);
+			return;
+		}
+
+		// Resolve human-readable agent names (id → name) for the dropdown.
+		const agentNames = await this._resolveAgentNames(agentIds);
+
+		// Tear down any previous disposable store before re-rendering.
+		this._disposeNewSessionPanel();
+		this.newSessionPanelDisposables = this._register(new DisposableStore());
+
+		this.newSessionState = {
+			agentId: this.currentAgentFilter && agentIds.includes(this.currentAgentFilter) ? this.currentAgentFilter : agentIds[0],
+			name: '',
+			busy: false,
+		};
+
+		DOM.clearNode(this.newSessionPanel);
+		this._renderNewSessionPanel(agentIds, agentNames);
+		this.newSessionPanel.style.display = 'flex';
+
+		// Focus the session name input for keyboard-driven flow.
+		const nameInputEl = this.newSessionPanel.querySelector<HTMLInputElement>('.session-history-new-name-input .input');
+		nameInputEl?.focus();
+	}
+
+	private _closeNewSessionPanel(): void {
+		if (this.newSessionPanel) {
+			this.newSessionPanel.style.display = 'none';
+			DOM.clearNode(this.newSessionPanel);
+		}
+		this._disposeNewSessionPanel();
+		this.newSessionState = undefined;
+	}
+
+	private _disposeNewSessionPanel(): void {
+		this.newSessionPanelDisposables?.clear();
+		this.newSessionPanelDisposables = undefined;
+	}
+
+	private _renderNewSessionPanel(agentIds: string[], agentNames: ReadonlyMap<string, string>): void {
+		if (!this.newSessionPanel) { return; }
+
+		const state = this.newSessionState;
+		if (!state) { return; }
+
+		// Agent label
+		const agentLabel = DOM.append(this.newSessionPanel, $('.session-history-new-label'));
+		agentLabel.textContent = localize('newSession.agentLabel', "Agent");
+
+		// Agent select (native dropdown — reuses the same SelectBox as the
+		// top-level agent filter for consistency).
+		const agentSelectContainer = DOM.append(this.newSessionPanel, $('.session-history-new-agent-select-container'));
+		const agentOptions: ISelectOptionItem[] = agentIds.map(id => ({
+			text: agentNames.get(id) || id,
+			description: agentNames.has(id) ? id : undefined,
+		}));
+		const initialIdx = Math.max(0, agentIds.indexOf(state.agentId));
+		const agentSelect = this.newSessionPanelDisposables?.add(new SelectBox(agentOptions, initialIdx, this.contextViewService, defaultSelectBoxStyles, {
+			ariaLabel: localize('newSession.agentAriaLabel', "Agent for the new session"),
+			useCustomDrawn: true,
+		}));
+		if (agentSelect) {
+			agentSelect.render(agentSelectContainer);
+			this.newSessionPanelDisposables?.add(agentSelect.onDidSelect((selected) => {
+				const idx = typeof selected.index === 'number' ? selected.index : 0;
+				state.agentId = agentIds[idx] ?? state.agentId;
+				// Re-focus the name input for keyboard flow.
+				const nameInputEl = this.newSessionPanel?.querySelector<HTMLInputElement>('.session-history-new-name-input .input');
+				nameInputEl?.focus();
+			}));
+		}
+
+		// Name label
+		const nameLabel = DOM.append(this.newSessionPanel, $('.session-history-new-label'));
+		nameLabel.textContent = localize('newSession.nameLabel', "Session name (optional)");
+
+		// Name input (re-using VS Code InputBox)
+		const nameInputContainer = DOM.append(this.newSessionPanel, $('.session-history-new-name-input'));
+		const nameInput = this.newSessionPanelDisposables?.add(new InputBox(nameInputContainer, this.contextViewService, {
+			placeholder: localize('newSession.namePlaceholder', "Leave blank to use default"),
+			ariaLabel: localize('newSession.nameAriaLabel', "Session name"),
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
+		if (nameInput) {
+			nameInput.value = state.name;
+			this.newSessionPanelDisposables?.add(nameInput.onDidChange((value) => {
+				state.name = value;
+			}));
+			// Enter to confirm
+			this.newSessionPanelDisposables?.add(DOM.addDisposableListener(nameInput.element, DOM.EventType.KEY_DOWN, (e) => {
+				if (e instanceof KeyboardEvent && e.key === 'Enter' && !state.busy) {
+					e.preventDefault();
+					void this._confirmNewSession();
+				}
+			}));
+		}
+
+		// Actions row
+		const actions = DOM.append(this.newSessionPanel, $('.session-history-new-actions'));
+
+		const createBtn = DOM.append(actions, $<HTMLButtonElement>('button.monaco-button.session-history-new-create-btn'));
+		createBtn.textContent = localize('newSession.create', "Create");
+		this.newSessionPanelDisposables?.add(DOM.addDisposableListener(createBtn, DOM.EventType.CLICK, () => {
+			void this._confirmNewSession();
+		}));
+
+		const cancelBtn = DOM.append(actions, $<HTMLButtonElement>('button.session-history-new-cancel-btn'));
+		cancelBtn.textContent = localize('newSession.cancel', "Cancel");
+		this.newSessionPanelDisposables?.add(DOM.addDisposableListener(cancelBtn, DOM.EventType.CLICK, () => {
+			this._closeNewSessionPanel();
+		}));
+	}
+
+	private async _confirmNewSession(): Promise<void> {
+		const state = this.newSessionState;
+		if (!state || state.busy) { return; }
+		state.busy = true;
+
+		const agentId = state.agentId;
+		const name = state.name.trim();
+		try {
+			const created = await this.chatService.createAgentSession(agentId, name || undefined);
+			this.logService.info(`[SessionHistoryView] created session ${created.id} for agent ${agentId}`);
+			this._closeNewSessionPanel();
+			void this._loadSessions();
+		} catch (err) {
+			state.busy = false;
+			this.logService.warn(`[SessionHistoryView] failed to create session for agent ${agentId}:`, err);
+		}
+	}
+
+	private _sessionKey(agentId: string, sessionId: string): string {
+		return `${agentId}::${sessionId}`;
+	}
+
+	/** Stable ordering: pinned first, then manual order, then updatedAt desc. */
+	private _compareSessions(a: SessionData, b: SessionData): number {
+		if (a.pinned !== b.pinned) { return a.pinned ? -1 : 1; }
+		const aKey = this._sessionKey(a.info.agentId, a.info.sessionId);
+		const bKey = this._sessionKey(b.info.agentId, b.info.sessionId);
+		const ai = this.sessionOrder.indexOf(aKey);
+		const bi = this.sessionOrder.indexOf(bKey);
+		if (ai !== -1 || bi !== -1) {
+			return (ai === -1 ? Number.MAX_SAFE_INTEGER : ai) - (bi === -1 ? Number.MAX_SAFE_INTEGER : bi);
+		}
+		return b.info.updatedAt - a.info.updatedAt;
+	}
+
+	private _loadPersistedState(): void {
+		try {
+			const pinnedRaw = this.storageService.get(SessionHistoryViewPane.PINNED_KEY, StorageScope.PROFILE);
+			if (pinnedRaw) {
+				const arr = JSON.parse(pinnedRaw);
+				if (Array.isArray(arr)) {
+					for (const k of arr) { if (typeof k === 'string') { this.pinnedSessions.add(k); } }
+				}
+			}
+		} catch { /* ignore corrupt data */ }
+		try {
+			const orderRaw = this.storageService.get(SessionHistoryViewPane.ORDER_KEY, StorageScope.PROFILE);
+			if (orderRaw) {
+				const arr = JSON.parse(orderRaw);
+				if (Array.isArray(arr)) {
+					this.sessionOrder = arr.filter((k): k is string => typeof k === 'string');
+				}
+			}
+		} catch { /* ignore corrupt data */ }
+	}
+
+	private _savePinned(): void {
+		this.storageService.store(SessionHistoryViewPane.PINNED_KEY, JSON.stringify([...this.pinnedSessions]), StorageScope.PROFILE, StorageTarget.USER);
+	}
+
+	private _saveOrder(): void {
+		if (this.sessionOrder.length === 0) {
+			this.storageService.remove(SessionHistoryViewPane.ORDER_KEY, StorageScope.PROFILE);
+		} else {
+			this.storageService.store(SessionHistoryViewPane.ORDER_KEY, JSON.stringify(this.sessionOrder), StorageScope.PROFILE, StorageTarget.USER);
+		}
+	}
+
+	private _showContextMenu(sessionData: SessionData, event: MouseEvent): void {
+		const pinned = sessionData.pinned;
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => ({ x: event.clientX, y: event.clientY }),
+			getActions: () => [
+				new Action('sessionHistory.open', localize('openSession', "Open"), undefined, true, () => {
+					void this._openSessionChat(sessionData);
+				}),
+				new Separator(),
+				new Action('sessionHistory.pin', pinned ? localize('unpinSession', "Unpin") : localize('pinSession', "Pin"), undefined, true, () => {
+					this._togglePin(sessionData);
+				}),
+				new Action('sessionHistory.rename', localize('renameSession', "Rename"), undefined, true, () => {
+					this._triggerRename(sessionData);
+				}),
+				new Separator(),
+				new Action('sessionHistory.delete', localize('deleteSession', "Delete"), undefined, true, () => {
+					void this._deleteSession(sessionData);
+				}),
+			],
+		});
+	}
+
+	private _togglePin(sessionData: SessionData): void {
+		const key = this._sessionKey(sessionData.info.agentId, sessionData.info.sessionId);
+		if (this.pinnedSessions.has(key)) {
+			this.pinnedSessions.delete(key);
+		} else {
+			this.pinnedSessions.add(key);
+		}
+		sessionData.pinned = this.pinnedSessions.has(key);
+		this._savePinned();
+		this.allSessions.sort((a, b) => this._compareSessions(a, b));
+		this._applyFilters();
+	}
+
+	private async _deleteSession(sessionData: SessionData): Promise<void> {
+		const { agentId, sessionId, sessionName } = sessionData.info;
+		const confirmed = await this.dialogService.confirm({
+			message: localize('deleteSession.confirm', "Delete session '{0}'?", sessionName || 'Untitled Session'),
+			detail: localize('deleteSession.detail', "This permanently deletes the session and its message history. This action cannot be undone."),
+			primaryButton: localize('delete', "Delete"),
+		});
+		if (!confirmed.confirmed) { return; }
+
+		try {
+			await this.chatService.deleteAgentSession(agentId, sessionId);
+			this.logService.info(`[SessionHistoryView] deleted session ${sessionId}`);
+			const key = this._sessionKey(agentId, sessionId);
+			this.pinnedSessions.delete(key);
+			this.sessionOrder = this.sessionOrder.filter(k => k !== key);
+			this._savePinned();
+			this._saveOrder();
+			await this._loadSessions();
+		} catch (err) {
+			this.logService.warn(`[SessionHistoryView] failed to delete session ${sessionId}:`, err);
+		}
+	}
+
+	/** Trigger rename from the context menu — find the rendered title element and start inline edit. */
+	private _triggerRename(sessionData: SessionData): void {
+		const { agentId, sessionId } = sessionData.info;
+		const items = this.sessionListEl?.querySelectorAll<HTMLElement>('.session-history-item');
+		items?.forEach((itemEl) => {
+			if (itemEl.getAttribute('data-session-id') === sessionId && itemEl.getAttribute('data-agent-id') === agentId) {
+				const titleEl = itemEl.querySelector<HTMLElement>('.session-history-title');
+				if (titleEl) {
+					this._startRenameSession(sessionData, titleEl, itemEl);
+				}
+			}
+		});
+	}
+
+	private async _openSessionChat(sessionData: SessionData): Promise<void> {
+		const { agentId, sessionId, sessionName } = sessionData.info;
+
+		// Already open: reveal the tab and focus its input box.
+		const openEditor = this._findOpenEditorForSession(agentId, sessionId);
+		if (openEditor) {
+			await this.editorService.openEditor(openEditor.editor, { pinned: true, revealIfOpened: true }, openEditor.groupId);
+			openEditor.pane.focusInput();
+			return;
+		}
+
+		// Not open: create a new editor input and open it, then focus the input.
+		const displayName = `${agentId} (${sessionName})`;
+		const input = NativeChatEditorInput.create(`session-history-${sessionId}`, agentId, sessionId, displayName);
+		const agentPart = (this.editorGroupsService as unknown as { agentPart?: IEditorGroupsService }).agentPart;
+		if (agentPart?.activeGroup) {
+			await agentPart.activeGroup.openEditor(input, { pinned: true });
+		} else {
+			await this.editorService.openEditor(input, { pinned: true });
+		}
+		const opened = this._findOpenEditorForSession(agentId, sessionId);
+		if (opened) {
+			opened.pane.focusInput();
+		}
+	}
+
+	private _reorderSession(draggedKey: string, targetKey: string): void {
+		const currentKeys = this.filteredSessions.map(s => this._sessionKey(s.info.agentId, s.info.sessionId));
+		const fromIdx = currentKeys.indexOf(draggedKey);
+		if (fromIdx < 0) { return; }
+		currentKeys.splice(fromIdx, 1);
+		const toIdx = currentKeys.indexOf(targetKey);
+		if (toIdx < 0) { return; }
+		currentKeys.splice(toIdx + 1, 0, draggedKey);
+		this.sessionOrder = currentKeys;
+		this._saveOrder();
+		this.allSessions.sort((a, b) => this._compareSessions(a, b));
+		this._renderSessionList();
 	}
 
 	protected override layoutBody(height: number, width: number): void {

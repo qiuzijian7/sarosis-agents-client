@@ -12,9 +12,9 @@ import {
 } from '../../webview/src/features/workflowEditor/comfyHost/subflow.js';
 
 const nodes = [
-	{ id: 'p1', type: 'Sarosis.Prompt', data: { label: '提示' } },
-	{ id: 'g1', type: 'Sarosis.ModelImageGen', data: { label: '图像' } },
-	{ id: 'outside', type: 'Sarosis.Prompt', data: { label: '外部' } },
+	{ id: 'p1', type: 'Saros.Prompt', data: { label: '提示' } },
+	{ id: 'g1', type: 'Saros.ModelImageGen', data: { label: '图像' } },
+	{ id: 'outside', type: 'Saros.Prompt', data: { label: '外部' } },
 ];
 
 const edges = [
@@ -23,8 +23,8 @@ const edges = [
 ];
 
 const portTypesFor = (type: string) => {
-	if (type === 'Sarosis.Prompt') { return { inputs: ['SAROSIS_JSON'], outputs: ['TEXT'] }; }
-	if (type === 'Sarosis.ModelImageGen') { return { inputs: ['TEXT'], outputs: ['IMAGE'] }; }
+	if (type === 'Saros.Prompt') { return { inputs: ['SAROSIS_JSON'], outputs: ['TEXT'] }; }
+	if (type === 'Saros.ModelImageGen') { return { inputs: ['TEXT'], outputs: ['IMAGE'] }; }
 	return undefined;
 };
 
@@ -110,9 +110,9 @@ suite('substituteSubflow', () => {
 			id: 'sf',
 			name: '菱形',
 			nodes: [
-				{ id: 'a', type: 'Sarosis.Prompt', data: {} },
-				{ id: 'b', type: 'Sarosis.ModelImageGen', data: {} },
-				{ id: 'c', type: 'Sarosis.ModelImageGen', data: {} },
+				{ id: 'a', type: 'Saros.Prompt', data: {} },
+				{ id: 'b', type: 'Saros.ModelImageGen', data: {} },
+				{ id: 'c', type: 'Saros.ModelImageGen', data: {} },
 			],
 			edges: [
 				{ source: 'a', target: 'b' },
@@ -148,7 +148,7 @@ suite('substituteSubflow', () => {
 	});
 
 	test('def without entries/exits produces only the internal graph', () => {
-		const def: SubflowDefinition = { id: 'sf', name: '空', nodes: [{ id: 'x', type: 'Sarosis.Prompt' }], edges: [], entryIds: [], exitIds: [] };
+		const def: SubflowDefinition = { id: 'sf', name: '空', nodes: [{ id: 'x', type: 'Saros.Prompt' }], edges: [], entryIds: [], exitIds: [] };
 		const r = substituteSubflow('sf-node', def, [
 			{ source: 'ext', target: 'sf-node' },
 			{ source: 'sf-node', target: 'ext' },
@@ -165,9 +165,9 @@ suite('flattenSubflows', () => {
 			id: 'sf',
 			name: '菱形',
 			nodes: [
-				{ id: 'a', type: 'Sarosis.Prompt', data: {} },
-				{ id: 'b', type: 'Sarosis.ModelImageGen', data: {} },
-				{ id: 'c', type: 'Sarosis.ModelImageGen', data: {} },
+				{ id: 'a', type: 'Saros.Prompt', data: {} },
+				{ id: 'b', type: 'Saros.ModelImageGen', data: {} },
+				{ id: 'c', type: 'Saros.ModelImageGen', data: {} },
 			],
 			edges: [
 				{ source: 'a', target: 'b' },
@@ -179,7 +179,7 @@ suite('flattenSubflows', () => {
 	}
 
 	test('graph without subflow nodes is returned unchanged', () => {
-		const nodes = [{ id: 'p1', type: 'Sarosis.Prompt', data: {} }];
+		const nodes = [{ id: 'p1', type: 'Saros.Prompt', data: {} }];
 		const edges = [{ source: 'p1', target: 'x', id: 'e1' }];
 		const r = flattenSubflows(nodes, edges);
 		assert.strictEqual(r.nodes.length, 1);
@@ -190,9 +190,9 @@ suite('flattenSubflows', () => {
 	test('expands a subflow node into its internal graph with remapped boundary edges', () => {
 		const def = diamondDef();
 		const nodes = [
-			{ id: 'ext-in', type: 'Sarosis.Prompt', data: { label: '外部入' } },
-			{ id: 'sf1', type: 'Sarosis.Subflow', data: { subflow: def } },
-			{ id: 'ext-out', type: 'Sarosis.ModelImageGen', data: { label: '外部出' } },
+			{ id: 'ext-in', type: 'Saros.Prompt', data: { label: '外部入' } },
+			{ id: 'sf1', type: 'Saros.Subflow', data: { subflow: def } },
+			{ id: 'ext-out', type: 'Saros.ModelImageGen', data: { label: '外部出' } },
 		];
 		const edges = [
 			{ id: 'in', source: 'ext-in', target: 'sf1' },
@@ -219,11 +219,11 @@ suite('flattenSubflows', () => {
 	test('multiple subflow nodes flatten independently', () => {
 		const def1 = diamondDef();
 		const def2: SubflowDefinition = {
-			id: 'sf2', name: '小', nodes: [{ id: 'x', type: 'Sarosis.Prompt', data: {} }], edges: [], entryIds: ['x'], exitIds: ['x'],
+			id: 'sf2', name: '小', nodes: [{ id: 'x', type: 'Saros.Prompt', data: {} }], edges: [], entryIds: ['x'], exitIds: ['x'],
 		};
 		const nodes = [
-			{ id: 's1', type: 'Sarosis.Subflow', data: { subflow: def1 } },
-			{ id: 's2', type: 'Sarosis.Subflow', data: { subflow: def2 } },
+			{ id: 's1', type: 'Saros.Subflow', data: { subflow: def1 } },
+			{ id: 's2', type: 'Saros.Subflow', data: { subflow: def2 } },
 		];
 		const r = flattenSubflows(nodes, []);
 		assert.strictEqual(r.nodes.length, 4);

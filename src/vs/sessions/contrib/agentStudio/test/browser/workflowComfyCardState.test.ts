@@ -93,7 +93,7 @@ suite('nodeCard ComfyTV metadata (getNodeCardMeta)', () => {
 		const native: any = { type: 'KSampler', kind: 'native', category: 'c', inputs: [], outputs: [] };
 		assert.strictEqual(getNodeCardMeta(native, {}).hasPrompt, false);
 		assert.strictEqual(getNodeCardMeta(native, {}).stageKind, undefined);
-		const react: any = { type: 'Sarosis.Prompt', kind: 'react', category: 'c', inputs: [], outputs: [] };
+		const react: any = { type: 'Saros.Prompt', kind: 'react', category: 'c', inputs: [], outputs: [] };
 		assert.strictEqual(getNodeCardMeta(react, {}).hasPrompt, false);
 	});
 });

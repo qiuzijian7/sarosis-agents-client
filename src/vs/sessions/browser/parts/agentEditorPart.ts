@@ -16,7 +16,7 @@ import { IHostService } from '../../../workbench/services/host/browser/host.js';
 import { IContextKeyService } from '../../../platform/contextkey/common/contextkey.js';
 
 /**
- * [Sarosis] AgentEditorPart — the second main-window-level EditorPart that
+ * [Saros] AgentEditorPart — the second main-window-level EditorPart that
  * hosts the Agent Studio zone (Canvas / Chat) on the right column.
  *
  * It is a thin subclass of the upstream `EditorPart`, identical to the
@@ -46,7 +46,7 @@ export class AgentEditorPart extends EditorPart {
 	) {
 		super(editorPartsView, Parts.AGENT_EDITOR_PART, '', mainWindow.vscodeWindowId, instantiationService, themeService, configurationService, storageService, layoutService, hostService, contextKeyService);
 
-		// [Sarosis] Show tab bar when multiple editors are open.
+		// [Saros] Show tab bar when multiple editors are open.
 		//
 		// The Agent zone can host multiple editors (Native Chat, Canvas,
 		// TaskBoard, etc.). `showTabs: 'multiple'` shows the tab bar
@@ -61,12 +61,12 @@ export class AgentEditorPart extends EditorPart {
 		});
 	}
 
-	// [Sarosis] Constrain Agent zone width: prevent the panel from growing
+	// [Saros] Constrain Agent zone width: prevent the panel from growing
 	// wider than 650px or narrower than 450px when dragging the sash.
 	override get minimumWidth(): number { return 450; }
 	override get maximumWidth(): number { return 650; }
 
-	// [Sarosis] Add a distinguishing class to the part's root element so
+	// [Saros] Add a distinguishing class to the part's root element so
 	// CSS can target the agent editor's title bar independently of the
 	// file editor zone.
 	protected override createContentArea(parent: HTMLElement, options?: IEditorPartCreationOptions): HTMLElement {

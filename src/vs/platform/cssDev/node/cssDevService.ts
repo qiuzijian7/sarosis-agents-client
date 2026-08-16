@@ -6,9 +6,8 @@
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { join, relative } from '../../../base/common/path.js';
-import { FileAccess } from '../../../base/common/network.js';
 import { StopWatch } from '../../../base/common/stopwatch.js';
-import { IEnvironmentService } from '../../environment/common/environment.js';
+import { IEnvironmentService, INativeEnvironmentService } from '../../environment/common/environment.js';
 import { createDecorator } from '../../instantiation/common/instantiation.js';
 import { ILogService } from '../../log/common/log.js';
 
@@ -27,7 +26,7 @@ export class CSSDevelopmentService implements ICSSDevelopmentService {
 	private _cssModules?: Promise<string[]>;
 
 	constructor(
-		@IEnvironmentService private readonly envService: IEnvironmentService,
+		@IEnvironmentService private readonly envService: INativeEnvironmentService,
 		@ILogService private readonly logService: ILogService
 	) { }
 
@@ -51,17 +50,29 @@ export class CSSDevelopmentService implements ICSSDevelopmentService {
 			const sw = StopWatch.create();
 
 			const chunks: Buffer[] = [];
-			const basePath = FileAccess.asFileUri('').fsPath;
+			const appRoot = this.envService.appRoot;
+
+			// The renderer builds its CSS import-map base URL from `appRoot + '/out/'`
+			// (see sessions.ts / workbench.ts setupCSSImportMaps). We must compute CSS module
+			// paths relative to that exact `out` directory, otherwise the generated import-map
+			// keys (new URL(cssModule, baseUrl)) carry a spurious `out/` segment and never match
+			// the real `import "*.css"` specifiers. In the main process FileAccess.asFileUri('')
+			// resolves to the repo root (its _VSCODE_FILE_ROOT differs from the renderer's), which
+			// produced `out/...`-prefixed keys -> every `import "*.css"` failed with a "text/css"
+			// MIME error and the workbench (sessions.desktop.main.js) never loaded.
+			const basePath = existsSync(join(appRoot, 'vs')) ? appRoot : join(appRoot, 'out');
 
 			// Resolve the ripgrep binary with fallbacks. `npm install --ignore-scripts`
 			// skips the @vscode/ripgrep postinstall download, leaving bin/rg.exe missing;
 			// without a working rg the CSS module list is empty and the dev CSS import-map
 			// is never generated -> every `import "*.css"` fails with a MIME error.
+			// NOTE: the binary lives under the *repo root* (build/saros/bin, node_modules/@vscode/
+			// ripgrep/bin), which is `appRoot`, NOT the `out` scan root used above.
 			const binName = process.platform === 'win32' ? 'rg.exe' : 'rg';
 			const rgCandidates = [
 				rg.rgPath,
-				join(basePath, 'node_modules', '@vscode', 'ripgrep', 'bin', binName),
-				join(basePath, 'build', 'saros', 'bin', binName)
+				join(appRoot, 'node_modules', '@vscode', 'ripgrep', 'bin', binName),
+				join(appRoot, 'build', 'saros', 'bin', binName)
 			];
 			const rgPath = rgCandidates.find(candidate => existsSync(candidate));
 			if (!rgPath) {

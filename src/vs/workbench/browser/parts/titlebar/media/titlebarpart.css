@@ -304,6 +304,23 @@
 	display: none;
 }
 
+/* Sessions 独立聊天窗口标题栏「新建聊天 Group」按钮：必须脱离父级 drag region 才能
+   接收 click。注意 -webkit-app-region 只能写在样式表里生效（内联 style 的 vendor 前缀
+   会被 Chromium 归一化成 app-region，Electron 不识别，点击被 drag 吞掉）。
+   不依赖任何祖先选择器（aux 独立窗口里 .monaco-workbench / .part.titlebar 层级可能与
+   主窗口不同），直接用唯一的 .titlebar-new-chat-group 类命中，确保 no-drag 必然生效。 */
+.titlebar-new-chat-group {
+	/* 必须脱离父级 drag region 才能接收 click：
+	   1) no-drag：让 Electron 不把该元素当作拖拽区；
+	   2) position:relative + z-index:3000：drag-region 是一个 position:absolute、
+	      铺满整个标题栏的 overlay，会盖在标题栏内容之上吞掉鼠标事件。窗口控制按钮
+	      (min/max/close) 之所以能点，正是靠 z-index:3000 浮到 overlay 之上；本按钮
+	      同样需要，否则即便设了 no-drag 也会被 overlay 挡住而收不到点击。 */
+	-webkit-app-region: no-drag;
+	position: relative;
+	z-index: 3000;
+}
+
 /* Window Controls Container */
 .monaco-workbench .part.titlebar .window-controls-container {
 	display: flex;

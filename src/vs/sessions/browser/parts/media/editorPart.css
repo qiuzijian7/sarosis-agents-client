@@ -15,7 +15,7 @@
 	box-sizing: border-box;
 	overflow: hidden;
 	/*
-	 * [Sarosis] Force the part element to fill its split-view-view container
+	 * [Saros] Force the part element to fill its split-view-view container
 	 * in both dimensions. The base VS Code layout relies on JS-set inline
 	 * dimensions cascading through, but the sessions three-column horizontal
 	 * split (Sidebar | FileEditor | AgentEditor) leaves the .part.editor
@@ -28,7 +28,7 @@
 }
 
 /*
- * [Sarosis] Ensure the .content wrapper also fills the part so the
+ * [Saros] Ensure the .content wrapper also fills the part so the
  * editor-group-container and its children are properly constrained.
  */
 .agent-sessions-workbench .part.editor:not(.modal-editor-part) > .content {
@@ -90,13 +90,13 @@
 	transform: rotate(180deg);
 }
 
-/* [Sarosis] Hide the "Close Group" button (X) on empty editor groups.
+/* [Saros] Hide the "Close Group" button (X) on empty editor groups.
    Both editor groups are permanent and cannot be closed. */
 .agent-sessions-workbench .part.editor > .content .editor-group-container > .editor-group-container-toolbar .action-label.codicon-close {
 	display: none !important;
 }
 
-/* [Sarosis] Style the agent editor tab bar. Previously hidden with
+/* [Saros] Style the agent editor tab bar. Previously hidden with
    display:none, now visible to show tabs for multiple editors.
    Force the tab bar to a compact height and remove any border/gap. */
 .agent-sessions-workbench .agent-editor-part .editor-group-container > .title {
@@ -107,7 +107,7 @@
 }
 
 /*
- * [Sarosis] Force column flex on the agent editor group so children
+ * [Saros] Force column flex on the agent editor group so children
  * stack vertically (title bar → editor container) and the editor
  * container consumes all remaining vertical space.
  *
@@ -130,7 +130,7 @@
 	min-height: 0 !important;
 }
 
-/* [Sarosis] Hide the overflow "..." menu button in sessions workbench editors */
+/* [Saros] Hide the overflow "..." menu button in sessions workbench editors */
 .agent-sessions-workbench .part.editor > .content .editor-group-container > .title .editor-actions .codicon-toolbar-more {
 	display: none !important;
 }

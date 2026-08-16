@@ -56,7 +56,7 @@ export function correctSchemaReferences<T extends IToolDefinition>(tools: T[]): 
 		}
 
 		// ② execute_code 重建（简化版，对齐 Hermes `_build_execute_code_schema` 思路）
-		// Hermes 在 sandbox 中允许调用所有 enabled 工具，Sarosis 当前没有 sandbox 工具列表
+		// Hermes 在 sandbox 中允许调用所有 enabled 工具，Saros 当前没有 sandbox 工具列表
 		// 配置。如果未来加入，需要重建 inputSchema.properties。
 		// 这里是占位实现：清理不可用工具的引用。
 		if (td.name === 'execute_code' && td.inputSchema) {

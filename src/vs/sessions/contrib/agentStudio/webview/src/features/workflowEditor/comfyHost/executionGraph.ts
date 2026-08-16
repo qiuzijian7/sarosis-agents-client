@@ -81,7 +81,7 @@ export interface ExecutionPlan {
 	steps: ExecutableStep[];
 	/** True when the whole graph contains a cycle (execution must stop). */
 	hasCycle: boolean;
-	/** Node ids that were filtered out (not executable, e.g. Sarosis orchestration). */
+	/** Node ids that were filtered out (not executable, e.g. Saros orchestration). */
 	skipped: string[];
 }
 

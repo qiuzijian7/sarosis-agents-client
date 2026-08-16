@@ -54,7 +54,7 @@ import {
 } from '../common/providers.js';
 
 /**
- * Sarosis 约定 MIME：标识由 provider 扩展经 `LanguageModelDataPart.json(usage, MIME)`
+ * Saros 约定 MIME：标识由 provider 扩展经 `LanguageModelDataPart.json(usage, MIME)`
  * 透传的「末块 usage」数据 part。
  *
  * 背景：provider 扩展（如 codebuddy-provider）运行在 ExtHost，无法直接 emit `step` part

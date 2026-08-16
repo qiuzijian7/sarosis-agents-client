@@ -21,8 +21,6 @@ import { IWorkflowStorageService, IStoredWorkflow } from '../../common/workflowS
 import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
-import { IAgentStudioService } from '../../../../common/agentStudioService.js';
-import type { Agent } from '../../../../common/agentStudioTypes.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
 import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 
@@ -38,7 +36,6 @@ export class WorkflowInstaller extends Disposable implements IPackageInstaller {
 		@ILogService private readonly logService: ILogService,
 		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
 			@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
-		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 	) {
 		super();
 	}
@@ -115,15 +112,7 @@ export class WorkflowInstaller extends Disposable implements IPackageInstaller {
 
 		this.logService.info(`[WorkflowInstaller] 安装完成: ${workflow.name} (${workflow.id})`);
 
-		// 5. 为工作流创建对应的 Agent
-		try {
-			await this._ensureWorkflowAgent(workflow);
-		} catch (agentErr) {
-			// Agent 创建失败不阻断工作流导入
-			this.logService.warn(`[WorkflowInstaller] Agent 创建失败: ${agentErr instanceof Error ? agentErr.message : String(agentErr)}`);
-		}
-
-		// 6. 同时保存到 ~/.vssaros/saros/workflows/{id}/ 作为备份（供升级检查溯源）
+		// 5. 同时保存到 ~/.vssaros/saros/workflows/{id}/ 作为备份（供升级检查溯源）
 		const backupDir = await this._resolveBackupDir(manifest.id);
 		await this.fileService.createFolder(backupDir);
 		const backupFile = URI.joinPath(backupDir, WORKFLOW_FILE);
@@ -179,76 +168,6 @@ export class WorkflowInstaller extends Disposable implements IPackageInstaller {
 	}
 
 	// ── 内部 ─────────────────────────────────────────────────
-
-	/**
-	 * 确保工作流有对应的 Agent。
-	 * - 如果工作流已有 agentId 且 agent 存在，跳过
-	 * - 否则创建新 agent，id 与 workflowId 一致
-	 */
-	private async _ensureWorkflowAgent(workflow: IStoredWorkflow): Promise<Agent | undefined> {
-		// 检查是否已有 agent
-		if (workflow.agentId) {
-			try {
-				const existing = await this.agentStudioService.getAgent(workflow.agentId);
-				if (existing) {
-					this.logService.trace(`[WorkflowInstaller] Agent 已存在: ${workflow.agentId}`);
-					return existing;
-				}
-			} catch {
-				// agent 记录丢失，创建新的
-			}
-		}
-
-		// 创建 agent
-		const agent = await this.agentStudioService.createAgent({
-			id: workflow.id,
-			name: workflow.name,
-			role: 'Workflow Manager',
-			description: `Manages and executes workflow: ${workflow.name}`,
-			model: 'claude-sonnet-4-20250514',
-			systemPrompt: this._buildAgentSystemPrompt(workflow),
-			skills: ['workflow-execution'],
-			tools: [
-				'read_file', 'list_dir', 'search_files', 'grep_search',
-				'write_to_file', 'replace_in_file', 'terminal', 'use_skill',
-				'workflow_get', 'workflow_get_schema', 'workflow_apply', 'workflow_list',
-			],
-			source: 'custom',
-			category: 'workflow',
-			icon: '🔀',
-		});
-
-		// 回写 agentId 到 workflow
-		try {
-			await this.workflowStorage.updateWorkflow(
-				workflow.id,
-				{ agentId: agent.id },
-			);
-		} catch { /* 非致命 */ }
-
-		this.logService.info(`[WorkflowInstaller] Agent 已创建: ${agent.id}`);
-		return agent;
-	}
-
-	/** 生成 workflow agent 的基础 system prompt */
-	private _buildAgentSystemPrompt(wf: IStoredWorkflow): string {
-		const lines: string[] = [];
-		lines.push(`You manage workflow "${wf.name}" (id: \`${wf.id}\`).`);
-		lines.push('');
-		lines.push('You are responsible for both executing AND editing this workflow graph.');
-		lines.push('Users may ask you to add, remove, or modify nodes. You have full control.');
-		lines.push('');
-		lines.push('## Workflow Tools');
-		lines.push('');
-		lines.push('Available workflow editing tools:');
-		lines.push('- `workflow_list` — List all workflows in the current workspace');
-		lines.push('- `workflow_get` — Get the full state of a workflow (nodes, connections, metadata)');
-		lines.push('- `workflow_get_schema` — Get available node types and their data schemas');
-		lines.push('- `workflow_apply` — Apply a complete workflow definition (replaces all nodes/connections)');
-		lines.push('');
-		lines.push('Use these tools to inspect and modify the workflow as requested.');
-		return lines.join('\n');
-	}
 
 	private _getWorkspaceId(): string | undefined {
 		const workspace = this.workspaceService.getWorkspace();

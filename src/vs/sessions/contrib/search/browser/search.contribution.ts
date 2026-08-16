@@ -28,7 +28,7 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { SearchSortOrder, SEARCH_EXCLUDE_CONFIG, ViewMode, DEFAULT_MAX_SEARCH_RESULTS, SemanticSearchBehavior } from '../../../../workbench/services/search/common/search.js';
 
-// [Sarosis] The Sessions window deliberately does NOT import the full workbench
+// [Saros] The Sessions window deliberately does NOT import the full workbench
 // `search.contribution.ts` (which would register the native `workbench.view.search`
 // container and clash with our AgentStudio search icon). However, the native
 // `SearchView` — which `AgentStudioSearchViewPane` extends — depends on
@@ -42,7 +42,7 @@ import { SearchSortOrder, SEARCH_EXCLUDE_CONFIG, ViewMode, DEFAULT_MAX_SEARCH_RE
 // only need to backfill the view-model service here.
 registerSingleton(ISearchViewModelWorkbenchService, SearchViewModelWorkbenchService, InstantiationType.Delayed);
 
-// [Sarosis] The Sessions window does NOT import the full workbench `search.contribution.ts`,
+// [Saros] The Sessions window does NOT import the full workbench `search.contribution.ts`,
 // which is where the entire `search` configuration schema (and crucially its DEFAULT values)
 // is registered. Without these defaults, `configurationService.getValue('search')` returns an
 // object missing the `decorations` and `searchView` sub-nodes, so the native SearchView crashes

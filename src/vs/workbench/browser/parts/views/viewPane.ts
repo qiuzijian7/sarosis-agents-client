@@ -613,7 +613,17 @@ export abstract class ViewPane extends Pane implements IView {
 	}
 
 	private calculateTitle(title: string): string {
-		const viewContainer = this.viewDescriptorService.getViewContainerByViewId(this.id)!;
+		// [Saros] `getViewContainerByViewId` returns `null` when the view's `windowEnablement`
+		// excludes the current window (see viewDescriptorService.isViewEnabled). Upstream asserts
+		// non-null here, which made a disabled-but-instantiated view (e.g. the native Explorer's
+		// `workbench.explorer.emptyView` inside the sessions window) call
+		// `getViewContainerModel(null)` -> `new ViewContainerModel(null)` -> TypeError reading
+		// 'storageId'. Fall back to the plain title instead of crashing the view render.
+		const viewContainer = this.viewDescriptorService.getViewContainerByViewId(this.id);
+		if (!viewContainer) {
+			return title;
+		}
+
 		const model = this.viewDescriptorService.getViewContainerModel(viewContainer);
 		const viewDescriptor = this.viewDescriptorService.getViewDescriptorById(this.id);
 		const isDefault = this.viewDescriptorService.getDefaultContainerById(this.id) === viewContainer;
@@ -656,7 +666,9 @@ export abstract class ViewPane extends Pane implements IView {
 	}
 
 	protected getProgressLocation(): string {
-		return this.viewDescriptorService.getViewContainerByViewId(this.id)!.id;
+		// [Saros] Same null contract as `calculateTitle`: the container is null when this view's
+		// `windowEnablement` excludes the current window. Scope progress to the view itself then.
+		return this.viewDescriptorService.getViewContainerByViewId(this.id)?.id ?? this.id;
 	}
 
 	protected getLocationBasedColors(): IViewPaneLocationColors {

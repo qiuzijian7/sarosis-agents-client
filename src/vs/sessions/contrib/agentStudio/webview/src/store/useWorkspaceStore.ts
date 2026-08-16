@@ -48,6 +48,8 @@ interface WorkspaceState {
 	loadWorkspaces: () => Promise<void>;
 	createWorkspace: (name: string, description?: string) => Promise<string | null>;
 	createWorkspaceWithWorktree: (name: string, options?: { mode?: 'main' | 'create' | 'existing'; worktreeName?: string; existingPath?: string; detached?: boolean }) => Promise<string | null>;
+	/** Open a workspace from a `.code-workspace` / `.sarosworkspace` file (host shows the file dialog). */
+	openWorkspaceFromFile: () => Promise<string | null>;
 	deleteWorkspace: (id: string) => Promise<boolean>;
 	setActiveWorkspace: (id: string) => Promise<void>;
 	updateNodes: (nodes: WorkspaceNode[]) => void;
@@ -133,6 +135,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 			return null;
 		} catch (err) {
 			console.error('[WorkspaceStore] Failed to create workspace with worktree:', err);
+			return null;
+		}
+	},
+
+	openWorkspaceFromFile: async () => {
+		try {
+			const result = await sendRequest<unknown, { id: string } | null>('workspace.openFromFile', {});
+			if (result?.id) {
+				const workspaces = await sendRequest<unknown, Workspace[]>('workspace.list', {});
+				set({ workspaces, activeWorkspaceId: result.id, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } });
+				return result.id;
+			}
+			return null;
+		} catch (err) {
+			console.error('[WorkspaceStore] Failed to open workspace from file:', err);
 			return null;
 		}
 	},

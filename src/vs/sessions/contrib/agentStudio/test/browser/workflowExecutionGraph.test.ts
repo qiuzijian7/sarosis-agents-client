@@ -168,28 +168,28 @@ suite('executionGraph', () => {
 
 		test('keeps only executable nodes, skipping the rest', () => {
 			const nodes: ExecutionNodeLike[] = [
-				{ id: 'start', type: 'Sarosis.Start' },
-				{ id: 'img', type: 'Sarosis.ModelImageGen' },
-				{ id: 'end', type: 'Sarosis.End' },
+				{ id: 'start', type: 'Saros.Start' },
+				{ id: 'img', type: 'Saros.ModelImageGen' },
+				{ id: 'end', type: 'Saros.End' },
 			];
 			const edges = [
 				{ source: 'start', target: 'img' },
 				{ source: 'img', target: 'end' },
 			];
-			const isExec = (t: string) => t === 'Sarosis.ModelImageGen';
+			const isExec = (t: string) => t === 'Saros.ModelImageGen';
 			const plan = buildExecutionPlan(nodes, edges, isExec);
 			assert.strictEqual(plan.hasCycle, false);
 			assert.deepStrictEqual(plan.steps.map(s => s.id), ['img']);
-			assert.deepStrictEqual(plan.steps[0].type, 'Sarosis.ModelImageGen');
+			assert.deepStrictEqual(plan.steps[0].type, 'Saros.ModelImageGen');
 			assert.deepStrictEqual(plan.steps[0].upstreams, ['start']);
 			assert.deepStrictEqual(plan.skipped, ['start', 'end']);
 		});
 
 		test('executable step upstreams are direct edges only', () => {
 			const nodes: ExecutionNodeLike[] = [
-				{ id: 'a', type: 'Sarosis.ModelImageGen' },
-				{ id: 'b', type: 'Sarosis.ModelImageGen' },
-				{ id: 'c', type: 'Sarosis.ModelImageGen' },
+				{ id: 'a', type: 'Saros.ModelImageGen' },
+				{ id: 'b', type: 'Saros.ModelImageGen' },
+				{ id: 'c', type: 'Saros.ModelImageGen' },
 			];
 			const edges = [
 				{ source: 'a', target: 'b' },
@@ -203,8 +203,8 @@ suite('executionGraph', () => {
 
 		test('non-executable-only graph yields empty steps, no cycle', () => {
 			const nodes: ExecutionNodeLike[] = [
-				{ id: 'x', type: 'Sarosis.Prompt' },
-				{ id: 'y', type: 'Sarosis.Group' },
+				{ id: 'x', type: 'Saros.Prompt' },
+				{ id: 'y', type: 'Saros.Group' },
 			];
 			const plan = buildExecutionPlan(nodes, [], () => false);
 			assert.strictEqual(plan.hasCycle, false);
@@ -214,8 +214,8 @@ suite('executionGraph', () => {
 
 		test('cycle propagates to the plan', () => {
 			const nodes: ExecutionNodeLike[] = [
-				{ id: 'a', type: 'Sarosis.ModelImageGen' },
-				{ id: 'b', type: 'Sarosis.ModelImageGen' },
+				{ id: 'a', type: 'Saros.ModelImageGen' },
+				{ id: 'b', type: 'Saros.ModelImageGen' },
 			];
 			const edges = [
 				{ source: 'a', target: 'b' },

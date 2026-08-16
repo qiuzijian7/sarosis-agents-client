@@ -176,7 +176,7 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	 * the CodeEditorWidget inside the given parent.
 	 */
 	protected override createEditorControl(parent: HTMLElement, initialOptions: ICodeEditorOptions): void {
-		// [Sarosis 2026-07-04] Make the parent the positioning context for our
+		// [Saros 2026-07-04] Make the parent the positioning context for our
 		// `position: absolute; inset: 0` containers. Without this, the absolute
 		// containers (preview / edit webview) would resolve `inset: 0` against
 		// the nearest positioned ancestor — which is the editor group's

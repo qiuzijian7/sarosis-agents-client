@@ -1,4 +1,4 @@
-﻿# VS Sarosis — Windows EXE 打包：依赖安装脚本
+﻿# VS Saros — Windows EXE 打包：依赖安装脚本
 # 该脚本由 .ci/package-win-exe.yml 的「安装依赖 (npm ci)」步骤通过
 #   powershell -ExecutionPolicy Bypass -File .ci/scripts/install-deps.ps1
 # 调用。抽离为独立文件可彻底避免蓝盾 PAC 对 inline script 的 PowerShell 内容转换 bug。

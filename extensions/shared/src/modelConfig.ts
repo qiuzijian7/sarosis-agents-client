@@ -132,3 +132,35 @@ export interface IModelConfig {
 	isDefault?: boolean;
 	supportsExtra?: boolean;
 }
+
+// ─── 兼容 cc-internal 的旧导出 ───────────────────────────────────────────────
+// cc-internal 仍依赖以下按模型名推断 token 限制与默认模型列表的旧 API。
+// 新代码优先使用 getDefaultTokenLimits()（数据驱动回退）；此处保留旧启发式以兼容。
+
+/**
+ * [兼容 cc-internal] 按模型名推断 token 限制（Claude/GPT 启发式）。
+ */
+export function getModelTokenLimits(modelName: string): IModelTokenLimits {
+	// Claude models with 1M context
+	if (modelName.includes('claude') && modelName.includes('1m')) {
+		return { maxInputTokens: 1_000_000, maxOutputTokens: 16_384, maxAllowedSize: 1_000_000 };
+	}
+	// Claude models
+	if (modelName.includes('claude')) {
+		return { maxInputTokens: 200_000, maxOutputTokens: 16_384, maxAllowedSize: 200_000 };
+	}
+	// GPT models
+	if (modelName.includes('gpt')) {
+		return { maxInputTokens: 128_000, maxOutputTokens: 16_384, maxAllowedSize: 128_000 };
+	}
+	return getDefaultTokenLimits();
+}
+
+/** [兼容 cc-internal] 默认 CC Internal 模型列表（Claude 系列） */
+export const CC_INTERNAL_DEFAULT_MODELS = [
+	'claude-sonnet-4.6', 'claude-sonnet-4.6-1m',
+	'claude-4.5', 'claude-haiku-4.5',
+	'claude-opus-4.7', 'claude-opus-4.7-1m',
+	'claude-opus-4.6', 'claude-opus-4.6-1m',
+	'claude-opus-4.5',
+];

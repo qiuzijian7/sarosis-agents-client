@@ -1,4 +1,4 @@
-# Open-Multi-Agent vs Sarosis-Agents-Client 任务编排功能对比分析
+# Open-Multi-Agent vs Saros-Agents-Client 任务编排功能对比分析
 
 > 对比两个项目的多智能体任务编排架构、实现方式和设计哲学
 
@@ -6,7 +6,7 @@
 
 ## 1. 项目定位与架构哲学
 
-| 维度 | Open-Multi-Agent (OMA) | Sarosis-Agents-Client (SAC) |
+| 维度 | Open-Multi-Agent (OMA) | Saros-Agents-Client (SAC) |
 |------|--------------------------|----------------------------|
 | **项目性质** | 独立 TypeScript 多智能体编排框架（npm 包） | VSCode 二次开发项目的内置 Agent Studio 功能 |
 | **架构哲学** | **Goal-First**（目标驱动）：描述目标，协调器自动分解任务 DAG | **Graph-First**（图驱动）：任务 DAG 由 AI 分解或通过 UI 手动构建 |
@@ -41,7 +41,7 @@ OpenMultiAgent (Orchestrator)
 5. 每个结果写入 `SharedMemory` 供后续 Agent 使用
 6. 协调器汇总最终结果
 
-### 2.2 Sarosis-Agents-Client 架构
+### 2.2 Saros-Agents-Client 架构
 
 ```
 TaskOrchestrationService (VSCode Service)
@@ -270,7 +270,7 @@ AgentOS (中间层)
 4. **沙箱不完整**：`bash` 工具无沙箱，有安全风险
 5. **社区生态新**：2026-04-01 发布，生态还在建设
 
-### 11.3 Sarosis-Agents-Client 优点
+### 11.3 Saros-Agents-Client 优点
 
 1. **VSCode 深度集成**：任务板、画布布局、代码编辑无缝衔接
 2. **编程场景优化**：类型导向分解（coding/design/impl/test），更适合开发工作流
@@ -279,7 +279,7 @@ AgentOS (中间层)
 5. **可视化布局**：`CanvasLayoutEngine` 自动布局 DAG，交互体验好
 6. **统一调度**：`UnifiedSubAgentDispatch` 统一三种调度路径
 
-### 11.4 Sarosis-Agents-Client 缺点
+### 11.4 Saros-Agents-Client 缺点
 
 1. **依赖 VSCode**：无法独立部署，绑定 VSCode 生态
 2. **生产功能缺失**：无循环检测、无上下文管理、无 Token 预算硬上限

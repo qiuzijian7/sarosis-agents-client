@@ -12,11 +12,11 @@ import { formatCanvasStateText } from '../../browser/providers/tool/canvasTools.
 function snapshot(overrides: Partial<CanvasContextSnapshot> = {}): CanvasContextSnapshot {
 	return {
 		nodes: [
-			{ id: 'n1', label: '图像-1', type: 'Sarosis.ModelImageGen', runState: 'success', durationMs: 1234 },
-			{ id: 'n2', label: '提示-1', type: 'Sarosis.Prompt', runState: 'idle' },
-			{ id: 'n3', label: '图像-2', type: 'Sarosis.ModelImageGen', runState: 'error', errorMsg: '接口超时' },
+			{ id: 'n1', label: '图像-1', type: 'Saros.ModelImageGen', runState: 'success', durationMs: 1234 },
+			{ id: 'n2', label: '提示-1', type: 'Saros.Prompt', runState: 'idle' },
+			{ id: 'n3', label: '图像-2', type: 'Saros.ModelImageGen', runState: 'error', errorMsg: '接口超时' },
 		],
-		lastOpsSummary: ['added node 图像-1 (Sarosis.ModelImageGen)', 'connected 提示-1 → 图像-1'],
+		lastOpsSummary: ['added node 图像-1 (Saros.ModelImageGen)', 'connected 提示-1 → 图像-1'],
 		updatedAt: new Date().toISOString(),
 		...overrides,
 	};
@@ -71,20 +71,20 @@ suite('formatCanvasContextContent', () => {
 
 	test('renders each node with state label', () => {
 		const text = formatCanvasContextContent(snapshot());
-		assert.ok(text.includes('- 图像-1 [Sarosis.ModelImageGen] → 成功，耗时 1234ms'));
-		assert.ok(text.includes('- 提示-1 [Sarosis.Prompt] → 待执行'));
-		assert.ok(text.includes('- 图像-2 [Sarosis.ModelImageGen] → 失败，错误: 接口超时'));
+		assert.ok(text.includes('- 图像-1 [Saros.ModelImageGen] → 成功，耗时 1234ms'));
+		assert.ok(text.includes('- 提示-1 [Saros.Prompt] → 待执行'));
+		assert.ok(text.includes('- 图像-2 [Saros.ModelImageGen] → 失败，错误: 接口超时'));
 	});
 
 	test('lists lastOpsSummary', () => {
 		const text = formatCanvasContextContent(snapshot());
 		assert.ok(text.includes('最近画布操作:'));
-		assert.ok(text.includes('  added node 图像-1 (Sarosis.ModelImageGen)'));
+		assert.ok(text.includes('  added node 图像-1 (Saros.ModelImageGen)'));
 	});
 
 	test('truncates nodes beyond maxNodes', () => {
 		const many = Array.from({ length: 40 }, (_, i) => ({
-			id: `n${i}`, label: `节点-${i}`, type: 'Sarosis.Prompt', runState: 'idle' as const,
+			id: `n${i}`, label: `节点-${i}`, type: 'Saros.Prompt', runState: 'idle' as const,
 		}));
 		const text = formatCanvasContextContent({ nodes: many, updatedAt: new Date().toISOString() }, { maxNodes: 30 });
 		assert.ok(text.includes('节点-29'));
@@ -100,7 +100,7 @@ suite('formatCanvasContextContent', () => {
 	test('XML-injectable content has no raw < > &', () => {
 		const text = formatCanvasContextContent(snapshot({
 			nodes: [{
-				id: 'x', label: 'A&B<C>', type: 'Sarosis.Prompt', runState: 'error', errorMsg: 'fail<&>',
+				id: 'x', label: 'A&B<C>', type: 'Saros.Prompt', runState: 'error', errorMsg: 'fail<&>',
 			}],
 		}));
 		assert.ok(!text.includes('<C>'));
@@ -148,8 +148,8 @@ suite('formatCanvasStateText (canvas_get_state)', () => {
 		const s = snapshot({ edges: [{ id: 'e1', source: 'n1', target: 'n2' }] });
 		const text = formatCanvasStateText(s);
 		assert.ok(text.includes('画布节点（3 个'));
-		assert.ok(text.includes('- 图像-1 [Sarosis.ModelImageGen] → 成功'));
-		assert.ok(text.includes('- 图像-2 [Sarosis.ModelImageGen] → 失败：接口超时'));
+		assert.ok(text.includes('- 图像-1 [Saros.ModelImageGen] → 成功'));
+		assert.ok(text.includes('- 图像-2 [Saros.ModelImageGen] → 失败：接口超时'));
 	});
 
 	test('lists connections with port handles', () => {

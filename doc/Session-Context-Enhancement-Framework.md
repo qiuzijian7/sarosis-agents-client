@@ -1,10 +1,10 @@
-# Sarosis-Agents-Client Session & 上下文增强框架设计
+# Saros-Agents-Client Session & 上下文增强框架设计
 
-> **方案2**：在 `saros-agents-client` TypeScript 端原生实现上下文压缩、记忆管理和 FTS5 全文搜索，  
+> **方案2**：在 `saros-agents-client` TypeScript 端原生实现上下文压缩、记忆管理和 FTS5 全文搜索，
 > 参考 Hermes Agent (Python) 的成熟实现，融入现有的 AgentHost / Sessions / Chronicle 架构。
 
-**版本**：v1.0  
-**日期**：2026-05-13  
+**版本**：v1.0
+**日期**：2026-05-13
 **状态**：设计稿
 
 ---
@@ -1352,7 +1352,7 @@ extensions/copilot/src/platform/chronicle/
 
 ## 附录 B：Hermes → TypeScript 移植映射
 
-| Hermes (Python) | Sarosis (TypeScript) | 备注 |
+| Hermes (Python) | Saros (TypeScript) | 备注 |
 |-----------------|---------------------|------|
 | `context_compressor.py` | `contextCompressionService.ts` | 5 阶段策略完整移植 |
 | `memory_manager.py` | `memoryServiceImpl.ts` | 协调器模式 |
@@ -1366,6 +1366,6 @@ extensions/copilot/src/platform/chronicle/
 
 ---
 
-**文档版本**：v1.0  
-**生成时间**：2026-05-13  
+**文档版本**：v1.0
+**生成时间**：2026-05-13
 **作者**：AI Assistant

@@ -18,8 +18,8 @@
  *   - bridge_tool_schemas: tool_search / tool_describe / tool_call 三个独立桥接
  *
  * 与 Hermes 的差异：
- *   - Hermes 用 _HERMES_CORE_TOOLS 硬编码白名单；Sarosis 用 toolsetConfig 的 deferrable 标志
- *   - Hermes 的 threshold gate 每次都重新估算；Sarosis 同样无状态
+ *   - Hermes 用 _HERMES_CORE_TOOLS 硬编码白名单；Saros 用 toolsetConfig 的 deferrable 标志
+ *   - Hermes 的 threshold gate 每次都重新估算；Saros 同样无状态
  */
 
 import { IToolDefinition } from './providers.js';
@@ -168,7 +168,7 @@ export function shouldActivate(
  *
  * 设计原则：搜索算法应该是数据驱动的，不依赖硬编码的领域分类。
  * OpenClaw 的 `scoreEntry` 仅从 entry 的 name/id/label/description 评分，
- * 不预设 "codebase"/"memory" 等关键词——Sarosis 对齐此设计。
+ * 不预设 "codebase"/"memory" 等关键词——Saros 对齐此设计。
  */
 function summarizeDeferredTools(
 	deferred: Array<IToolDefinition & { enabled: boolean }>,

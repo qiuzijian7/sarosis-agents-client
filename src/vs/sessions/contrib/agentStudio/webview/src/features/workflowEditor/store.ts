@@ -171,7 +171,7 @@ interface WorkflowEditorState {
 
 	// Actions
 	setSelectedNode: (id: string | null) => void;
-	addNode: (type: string, position: { x: number; y: number }) => void;
+	addNode: (type: string, position: { x: number; y: number }) => string;
 	removeNode: (id: string) => void;
 	duplicateNode: (id: string) => string | null;
 	deleteEdge: (id: string) => void;
@@ -255,10 +255,10 @@ function defaultDataForType(type: string): Record<string, unknown> {
 		case 'group':
 			return { ...base, label: 'Group', isCollapsed: false };
 		default:
-			// Namespaced types (ComfyTV.ImageStage / Sarosis.ModelImageGen) must
+			// Namespaced types (ComfyTV.ImageStage / Saros.ModelImageGen) must
 			// NOT leak their raw type into the visible label — the node's
 			// registered spec title is used instead (see isUsableNodeTitle).
-			return { ...base, label: /^(?:ComfyTV|Comfy|Sarosis)\./i.test(type) ? '' : type };
+			return { ...base, label: /^(?:ComfyTV|Comfy|Saros)\./i.test(type) ? '' : type };
 	}
 }
 
@@ -323,6 +323,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 					selectedNodeId: id,
 					isPropertyPanelOpen: true,
 				});
+				return id;
 			},
 
 			removeNode: (id) => {

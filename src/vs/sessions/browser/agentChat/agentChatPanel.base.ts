@@ -579,6 +579,12 @@ protected _slashMenuEl: HTMLElement | null = null;
 
 protected _slashMenuIndex = 0;
 
+/** 工作流参数表单面板（点击 workflow chip 弹出）。 */
+protected _workflowParamsEl: HTMLElement | null = null;
+
+/** 工作流参数面板的外部点击关闭 disposable。 */
+protected _workflowParamsDisposable: IDisposable | null = null;
+
 protected _mentionEl: HTMLElement | null = null;
 
 protected _mentionIndex = 0;
@@ -599,7 +605,7 @@ protected _markdownDisposables = new Map<HTMLElement, IDisposable>();
 
 protected _nodeCollapsedState = new Map<string, boolean>();
 
-protected readonly _onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => void;
+protected readonly _onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => void;
 
 protected readonly _onCancelExecution: () => void;
 
@@ -639,6 +645,8 @@ protected readonly _onConfirmationAction?: (confirmationId: string, buttonId: st
 protected readonly _onEditMessage?: (messageId: string, newText: string) => void;
 
 protected readonly _onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string; activation?: string; source?: string; version?: string; enabled: boolean; category?: string }>;
+
+protected readonly _onListWorkflows?: () => ReadonlyArray<{ id: string; name: string; description?: string; variables?: ReadonlyArray<{ name: string; defaultValue: string }> }>;
 
 protected readonly _onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
 
@@ -721,7 +729,7 @@ protected readonly _importedKbFileToolIds = new Set<string>();
 	protected readonly _onSetFeishuDefaultAgent?: (agentId: string | undefined) => void;
 
 constructor(opts: {
-		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => void;
+		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => void;
 		onCancelExecution: () => void;
 		onToggleCollapse: () => void;
 		onSelectAgent: (id: string) => void;
@@ -745,6 +753,7 @@ constructor(opts: {
 		onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
 		onEditMessage?: (messageId: string, newText: string) => void;
 		onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string; activation?: string; source?: string; version?: string; enabled: boolean; category?: string }>;
+		onListWorkflows?: () => ReadonlyArray<{ id: string; name: string; description?: string; variables?: ReadonlyArray<{ name: string; defaultValue: string }> }>;
 		onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
 		onOpenMcpSettings?: () => void;
 		onOpenHtmlPreview?: () => void;
@@ -825,6 +834,7 @@ constructor(opts: {
 		this._onConfirmationAction = opts.onConfirmationAction;
 		this._onEditMessage = opts.onEditMessage;
 		this._onListSkills = opts.onListSkills;
+		this._onListWorkflows = opts.onListWorkflows;
 		this._onListMcpServers = opts.onListMcpServers;
 		this._onOpenMcpSettings = opts.onOpenMcpSettings;
 		this._onOpenHtmlPreview = opts.onOpenHtmlPreview;

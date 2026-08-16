@@ -52,8 +52,8 @@ suite('workflowRun — runGraphExecution', () => {
 
 	test('provider-only graph runs without a ComfyUI runner', async () => {
 		const nodes: NodeLike[] = [
-			{ id: 'a', type: 'Sarosis.ModelImageGen' },
-			{ id: 'b', type: 'Sarosis.ModelImageGen' },
+			{ id: 'a', type: 'Saros.ModelImageGen' },
+			{ id: 'b', type: 'Saros.ModelImageGen' },
 		];
 		const r = await runGraphExecution(baseOptions(nodes, [{ source: 'a', target: 'b' }], { nodeValues: nodeValues(nodes) }));
 		assert.strictEqual(r.success, true);
@@ -63,9 +63,9 @@ suite('workflowRun — runGraphExecution', () => {
 
 	test('stops on the first failure — downstream nodes never start', async () => {
 		const nodes: NodeLike[] = [
-			{ id: 'a', type: 'Sarosis.ModelImageGen' },
-			{ id: 'b', type: 'Sarosis.ModelImageGen' },
-			{ id: 'c', type: 'Sarosis.ModelImageGen' },
+			{ id: 'a', type: 'Saros.ModelImageGen' },
+			{ id: 'b', type: 'Saros.ModelImageGen' },
+			{ id: 'c', type: 'Saros.ModelImageGen' },
 		];
 		const started: string[] = [];
 		// Only `a` succeeds; `b` returns no images; `c` would be next.
@@ -90,8 +90,8 @@ suite('workflowRun — runGraphExecution', () => {
 
 	test('cycle short-circuits — nothing executes', async () => {
 		const nodes: NodeLike[] = [
-			{ id: 'a', type: 'Sarosis.ModelImageGen' },
-			{ id: 'b', type: 'Sarosis.ModelImageGen' },
+			{ id: 'a', type: 'Saros.ModelImageGen' },
+			{ id: 'b', type: 'Saros.ModelImageGen' },
 		];
 		let started = 0;
 		const r = await runGraphExecution(baseOptions(nodes, [
@@ -105,7 +105,7 @@ suite('workflowRun — runGraphExecution', () => {
 	});
 
 	test('missing imagegen channel fails the first node without crashing', async () => {
-		const nodes: NodeLike[] = [{ id: 'a', type: 'Sarosis.ModelImageGen' }];
+		const nodes: NodeLike[] = [{ id: 'a', type: 'Saros.ModelImageGen' }];
 		const r = await runGraphExecution(baseOptions(nodes, [], {
 			nodeValues: nodeValues(nodes),
 			sendImageGen: undefined,
@@ -117,8 +117,8 @@ suite('workflowRun — runGraphExecution', () => {
 
 	test('snapshots land in the store before downstream consumers run', async () => {
 		const nodes: NodeLike[] = [
-			{ id: 'a', type: 'Sarosis.ModelImageGen' },
-			{ id: 'b', type: 'Sarosis.ModelImageGen' },
+			{ id: 'a', type: 'Saros.ModelImageGen' },
+			{ id: 'b', type: 'Saros.ModelImageGen' },
 		];
 		const store = makeStore();
 		const seen: string[] = [];
@@ -141,9 +141,9 @@ suite('workflowRun — runGraphExecution', () => {
 
 	test('aborted signal stops mid-graph — treated as a clean stop, not a failure', async () => {
 		const nodes: NodeLike[] = [
-			{ id: 'a', type: 'Sarosis.ModelImageGen' },
-			{ id: 'b', type: 'Sarosis.ModelImageGen' },
-			{ id: 'c', type: 'Sarosis.ModelImageGen' },
+			{ id: 'a', type: 'Saros.ModelImageGen' },
+			{ id: 'b', type: 'Saros.ModelImageGen' },
+			{ id: 'c', type: 'Saros.ModelImageGen' },
 		];
 		const ctrl = new AbortController();
 		const r = await runGraphExecution(baseOptions(nodes, [
@@ -167,13 +167,13 @@ suite('workflowRun — runGraphExecution', () => {
 		const def = {
 			id: 'sf',
 			name: '子流程',
-			nodes: [{ id: 'inner', type: 'Sarosis.ModelImageGen' }],
+			nodes: [{ id: 'inner', type: 'Saros.ModelImageGen' }],
 			edges: [],
 			entryIds: ['inner'],
 			exitIds: ['inner'],
 		};
 		const nodes: Array<{ id: string; type: string; data?: unknown }> = [
-			{ id: 'sf1', type: 'Sarosis.Subflow', data: { subflow: def } },
+			{ id: 'sf1', type: 'Saros.Subflow', data: { subflow: def } },
 		];
 		const r = await runGraphExecution(baseOptions(nodes as never, [], {
 			nodeValues: { 'sf1:inner': { providerId: 'p', modelId: 'm', prompt: 'x' } },
@@ -181,5 +181,65 @@ suite('workflowRun — runGraphExecution', () => {
 		// The internal node sf1:inner is flattened and executed.
 		assert.strictEqual(r.success, true);
 		assert.deepStrictEqual(r.ran, ['sf1:inner']);
+	});
+
+	// ── 快照归档键（stageUid）贯穿全图 Run ────────────────────────────────
+	// 卡片读侧用 stageUid；若图执行仍按 nodeId 归档就是「写 nodeId、读 uid」→
+	// 跑成功但所有 OUTPUT 静默不刷新。上游键同样必须映射，否则下游 img2img /
+	// picker 拿不到上游刚生成的图。
+	const uidOf = (id: string) => `uid-${id}`;
+
+	test('snapshotKeyOf archives under stageUid and maps upstream keys (serial)', async () => {
+		const nodes: NodeLike[] = [
+			{ id: 'a', type: 'Saros.ModelImageGen' },
+			{ id: 'b', type: 'Saros.ModelImageGen' },
+		];
+		const store = makeStore();
+		const imageInputs: Array<string | undefined> = [];
+		const send = async (args: { prompt: string; imageInput?: string }) => {
+			if (args.prompt.includes('b')) { imageInputs.push(args.imageInput); }
+			return { images: [{ url: `http://img/${args.prompt}.png` }] };
+		};
+		const r = await runGraphExecution(baseOptions(nodes, [{ source: 'a', target: 'b' }], {
+			snapshotStore: store,
+			nodeValues: nodeValues(nodes),
+			sendImageGen: send,
+			snapshotKeyOf: uidOf,
+		}));
+		assert.strictEqual(r.success, true);
+		assert.strictEqual(store.byNode('uid-a').length, 1, '快照必须落在 stageUid 名下');
+		assert.strictEqual(store.byNode('uid-b').length, 1);
+		assert.strictEqual(store.byNode('a').length, 0, 'nodeId 名下不应再有归档');
+		// b 的 img2img 输入取自上游归档（uid-a）→ 证明 upstreams 已映射成归档键。
+		assert.deepStrictEqual(imageInputs, ['http://img/prompt-a.png']);
+	});
+
+	test('snapshotKeyOf is honoured in parallel mode too', async () => {
+		const nodes: NodeLike[] = [
+			{ id: 'a', type: 'Saros.ModelImageGen' },
+			{ id: 'b', type: 'Saros.ModelImageGen' },
+		];
+		const store = makeStore();
+		const r = await runGraphExecution(baseOptions(nodes, [{ source: 'a', target: 'b' }], {
+			snapshotStore: store,
+			nodeValues: nodeValues(nodes),
+			snapshotKeyOf: uidOf,
+			mode: 'parallel',
+		}));
+		assert.strictEqual(r.success, true);
+		assert.strictEqual(store.byNode('uid-a').length, 1);
+		assert.strictEqual(store.byNode('uid-b').length, 1);
+		assert.strictEqual(store.byNode('b').length, 0);
+	});
+
+	test('without snapshotKeyOf the archive stays under nodeId (backward compatible)', async () => {
+		const nodes: NodeLike[] = [{ id: 'a', type: 'Saros.ModelImageGen' }];
+		const store = makeStore();
+		const r = await runGraphExecution(baseOptions(nodes, [], {
+			snapshotStore: store,
+			nodeValues: nodeValues(nodes),
+		}));
+		assert.strictEqual(r.success, true);
+		assert.strictEqual(store.byNode('a').length, 1);
 	});
 });

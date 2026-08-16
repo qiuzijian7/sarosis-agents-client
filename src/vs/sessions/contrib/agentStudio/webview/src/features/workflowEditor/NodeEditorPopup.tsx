@@ -11,7 +11,7 @@
 
 import * as React from 'react';
 import { getNodeSpec } from './comfyHost/registry';
-import { buildEditorFields, coerceEditorValue, buildSarosisEditorFields, sarosisDataToValues, sarosisValuesToData, type EditorField } from './comfyHost/nodeEditorForm';
+import { buildEditorFields, coerceEditorValue, buildSarosEditorFields, sarosDataToValues, sarosValuesToData, type EditorField } from './comfyHost/nodeEditorForm';
 import { type SingleNodeRunResult } from './comfyHost/nodeExecutor';
 import { runNodeOrStage, runProviderImage, isPickerNode, isLoaderNode, collectUpstreamCandidates, resolveFirstImageGenDefaults } from './comfyHost/workflowRun';
 import { ComfyRunnerRegistry } from './comfyHost/comfyRunner';
@@ -38,6 +38,8 @@ import { isMaterialNode } from './comfyHost/materialEditor';
 import { MaterialEditor } from './MaterialEditor';
 import { isScene3DNode } from './comfyHost/scene3dEditor';
 import { Scene3DEditor } from './Scene3DEditor';
+import { CropEditor } from './CropEditor';
+import { MaskPainter } from './MaskPainter';
 import { sendRequest } from '../../bridge/messageClient';
 import { useProviderStore, type ProviderInfo } from '../../store/useProviderStore';
 import { useAgentStore } from '../../store/useAgentStore';
@@ -47,9 +49,10 @@ import { usePicklistStore } from './picklistStore';
 export const COMFY_IMAGE_PROVIDER_ID = 'comfyui';
 
 /** 判定该 schema 节点是否为文生图类（ImageStage / ImageBatchStage 等）。 */
-export function isImageGenStage(spec: { kind?: string; comfyTV?: { stageKind?: string } } | undefined, nodeType: string): boolean {
-	// Provider 文生图节点（kind='llm'，如 Sarosis.ModelImageGen）固定走 imagegen RPC。
-	if (spec?.kind === 'llm') { return true; }
+export function isImageGenStage(spec: { kind?: string; backendKind?: string; comfyTV?: { stageKind?: string } } | undefined, nodeType: string): boolean {
+	// Provider 文生图节点（kind='llm' 或 schema+backendKind='provider'，
+	// 如 Saros.ModelImageGen）固定走 imagegen RPC。
+	if (spec?.kind === 'llm' || (spec?.kind === 'schema' && spec?.backendKind === 'provider')) { return true; }
 	if (spec?.kind !== 'schema') { return false; }
 	const kind = spec.comfyTV?.stageKind ?? nodeType;
 	return kind === 'image' || kind === 'image-batch';
@@ -58,6 +61,14 @@ export function isImageGenStage(spec: { kind?: string; comfyTV?: { stageKind?: s
 export interface NodeEditorPopupProps {
 	nodeId: string;
 	nodeType: string;
+	/**
+	 * 快照归档键（= stageUid）。缺省回退 nodeId。
+	 *
+	 * ★ 弹窗里的本地渲染（Relight/Poster/Layer 的 render、Loader 上传）都要按
+	 *   这个键写入，否则「弹窗写 nodeId、卡片读 stageUid」→ 画好的图不显示，
+	 *   而且 run 时 executor 按归档键查不到 → 误报「请先在节点弹窗中绘制」。
+	 */
+	snapshotKey?: string;
 	runners: ComfyRunnerRegistry;
 	store: MediaSnapshotStore;
 	/** card execution state store (cards under nodes re-render on run) */
@@ -66,7 +77,7 @@ export interface NodeEditorPopupProps {
 	preference?: string;
 	/** persist coerced form values so the workflow Run button reuses them */
 	onValuesCommit?: (nodeId: string, values: Record<string, unknown>) => void;
-	/** persisted node.data for Sarosis (react) nodes — initial form values */
+	/** persisted node.data for Saros (react) nodes — initial form values */
 	initialData?: Record<string, unknown>;
 	/** upstream node ids (picker candidates are collected from their snapshots) */
 	upstreams?: string[];
@@ -86,6 +97,7 @@ type RunState = 'idle' | 'running' | 'success' | 'error';
 export function NodeEditorPopup({
 	nodeId,
 	nodeType,
+	snapshotKey,
 	runners,
 	store,
 	cardStateStore,
@@ -96,11 +108,13 @@ export function NodeEditorPopup({
 	onClose,
 	onSelectRunner,
 }: NodeEditorPopupProps): React.JSX.Element {
+	// 快照归档键：与卡片读侧（stageUid）一致，缺省回退 nodeId。
+	const snapKey = snapshotKey ?? nodeId;
 	const spec = getNodeSpec(nodeType);
 	const fields = React.useMemo(() => buildEditorFields(spec), [spec]);
-	// Sarosis (react) orchestration nodes: parameter-only popup, no Comfy run.
+	// Saros (react) orchestration nodes: parameter-only popup, no Comfy run.
 	const isReactNode = spec?.kind === 'react';
-	const reactFields = React.useMemo(() => (isReactNode ? buildSarosisEditorFields(nodeType) : []), [isReactNode, nodeType]);
+	const reactFields = React.useMemo(() => (isReactNode ? buildSarosEditorFields(nodeType) : []), [isReactNode, nodeType]);
 	// Agent / Skill dropdown picklists. Agents come from the app-wide agent
 	// store (lazily loaded on first workflow open); skills are fetched once via
 	// the module-wide picklist store.
@@ -123,6 +137,10 @@ export function NodeEditorPopup({
 	const isStoryboard = isStoryboardEditorNode(nodeType);
 	const isMaterial = isMaterialNode(nodeType);
 	const isScene3D = isScene3DNode(nodeType);
+	const isCrop = nodeType === 'ComfyTV.CropStage';
+	const isErase = nodeType === 'ComfyTV.EraseStage';
+	const isInpaint = nodeType === 'ComfyTV.InpaintStage';
+	const isMaskEdit = isErase || isInpaint;
 	const candidates = React.useMemo(
 		() => (isPicker ? collectUpstreamCandidates(store, upstreams) : []),
 		[isPicker, store, upstreams],
@@ -152,6 +170,14 @@ export function NodeEditorPopup({
 		() => (isRotoMask ? collectUpstreamCandidates(store, upstreams).find(c => c.media.kind === 'video')?.media.ref : undefined),
 		[isRotoMask, store, upstreams],
 	);
+	const cropImageRef = React.useMemo(
+		() => (isCrop ? collectUpstreamCandidates(store, upstreams).find(c => c.media.kind === 'image')?.media.ref : undefined),
+		[isCrop, store, upstreams],
+	);
+	const maskImageRef = React.useMemo(
+		() => (isMaskEdit ? collectUpstreamCandidates(store, upstreams).find(c => c.media.kind === 'image')?.media.ref : undefined),
+		[isMaskEdit, store, upstreams],
+	);
 	const fileRef = React.useRef<HTMLInputElement>(null);
 	const [uploading, setUploading] = React.useState(false);
 
@@ -162,33 +188,40 @@ export function NodeEditorPopup({
 
 	const handleRelightRender = React.useCallback((url: string | null) => {
 		if (!url) { return; }
+		// entry.nodeId 决定归档前缀（store.put 忽略传入 key）→ 必须用 snapKey。
 		store.put({
-			nodeId,
+			nodeId: snapKey,
 			port: 'output',
-			key: `${nodeId}:output:0`,
+			key: `${snapKey}:output:0`,
 			media: { kind: 'image', ref: url },
 			index: 0,
 		});
 		onValuesCommit?.(nodeId, { light_render_url: url });
 		cardStateStore?.set(nodeId, { runState: 'success', progress: 100 });
-	}, [nodeId, store, onValuesCommit, cardStateStore]);
+	}, [nodeId, snapKey, store, onValuesCommit, cardStateStore]);
 
 	// P3 Poster: persist the layout blob + register the composed render.
 	const handlePosterLayout = React.useCallback((layoutJson: string) => {
 		onValuesCommit?.(nodeId, { layout: layoutJson });
 	}, [nodeId, onValuesCommit]);
 
+	// P3 Poster: size preset → 写回 width/height widget。
+	const handlePosterSize = React.useCallback((w: number, h: number) => {
+		setValues(v => ({ ...v, width: w, height: h }));
+		onValuesCommit?.(nodeId, { width: w, height: h });
+	}, [nodeId, onValuesCommit]);
+
 	const handlePosterRender = React.useCallback((url: string | null) => {
 		if (!url) { return; }
 		store.put({
-			nodeId,
+			nodeId: snapKey,
 			port: 'output',
-			key: `${nodeId}:output:0`,
+			key: `${snapKey}:output:0`,
 			media: { kind: 'image', ref: url },
 			index: 0,
 		});
 		cardStateStore?.set(nodeId, { runState: 'success', progress: 100 });
-	}, [nodeId, store, cardStateStore]);
+	}, [nodeId, snapKey, store, cardStateStore]);
 
 	// P3 Corner Pin: persist the four corners JSON into the node values.
 	const handleCornersChange = React.useCallback((json: string) => {
@@ -208,14 +241,14 @@ export function NodeEditorPopup({
 	const handleLayerRender = React.useCallback((url: string | null) => {
 		if (!url) { return; }
 		store.put({
-			nodeId,
+			nodeId: snapKey,
 			port: 'output',
-			key: `${nodeId}:output:0`,
+			key: `${snapKey}:output:0`,
 			media: { kind: 'image', ref: url },
 			index: 0,
 		});
 		cardStateStore?.set(nodeId, { runState: 'success', progress: 100 });
-	}, [nodeId, store, cardStateStore]);
+	}, [nodeId, snapKey, store, cardStateStore]);
 
 	// P3 Storyboard Editor: persist board_state + register the cover render.
 	const handleStoryboardState = React.useCallback((json: string) => {
@@ -231,12 +264,35 @@ export function NodeEditorPopup({
 	const handleSceneState = React.useCallback((json: string) => {
 		onValuesCommit?.(nodeId, { scene_state: json });
 	}, [nodeId, onValuesCommit]);
+
+	// P3 Crop（交互式裁剪）：拖拽裁剪框 → 持久化像素 x/y/width/height。
+	// 同时同步 values state，保证点「生成」时 handleRun 读到最新裁剪矩形。
+	const handleCropChange = React.useCallback((rect: { x: number; y: number; width: number; height: number }) => {
+		setValues(v => ({ ...v, x: rect.x, y: rect.y, width: rect.width, height: rect.height }));
+		onValuesCommit?.(nodeId, { x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+	}, [nodeId, onValuesCommit]);
+
+	// P3 Mask（交互式擦除/内绘）：mask 上传成功 → 持久化 mask_data（annotated path）。
+	const handleMaskChange = React.useCallback((annotated: string) => {
+		setValues(v => ({ ...v, mask_data: annotated }));
+		onValuesCommit?.(nodeId, { mask_data: annotated });
+	}, [nodeId, onValuesCommit]);
+
+	const handleMaskOpsChange = React.useCallback((opsJson: string) => {
+		setValues(v => ({ ...v, mask_ops: opsJson }));
+		onValuesCommit?.(nodeId, { mask_ops: opsJson });
+	}, [nodeId, onValuesCommit]);
+
+	const handleMaskPromptChange = React.useCallback((prompt: string) => {
+		setValues(v => ({ ...v, prompt, main_prompt: prompt }));
+		onValuesCommit?.(nodeId, { prompt, main_prompt: prompt });
+	}, [nodeId, onValuesCommit]);
 	const [values, setValues] = React.useState<Record<string, unknown>>(() => {
 		const init: Record<string, unknown> = {};
 		for (const f of fields) { init[f.key] = f.defaultValue; }
-		// Sarosis nodes: seed the form from the persisted node.data.
+		// Saros nodes: seed the form from the persisted node.data.
 		if (isReactNode && initialData) {
-			Object.assign(init, sarosisDataToValues(nodeType, initialData));
+			Object.assign(init, sarosDataToValues(nodeType, initialData));
 		}
 		return init;
 	});
@@ -244,7 +300,7 @@ export function NodeEditorPopup({
 	const [result, setResult] = React.useState<SingleNodeRunResult | null>(null);
 
 	// live refresh when a snapshot lands for this node (generation completes)
-	const preview = useMediaSnapshotRef(store, primarySnapshotKey(nodeId));
+	const preview = useMediaSnapshotRef(store, primarySnapshotKey(snapKey));
 
 	const setField = React.useCallback((key: string, value: unknown) => {
 		setValues(v => ({ ...v, [key]: value }));
@@ -290,13 +346,15 @@ export function NodeEditorPopup({
 		setImageGenModelId(first?.id ?? '');
 	}, [imageGenProviders]);
 
-	// Provider (llm) 文生图节点不能选 ComfyUI —— 自动选中第一个 imagegen provider。
+	// Provider (llm 或 schema+backendKind='provider') 文生图节点不能选 ComfyUI
+	// —— 自动选中第一个 imagegen provider。
+	const isProviderImageGen = spec?.kind === 'llm' || (spec?.kind === 'schema' && spec?.backendKind === 'provider');
 	React.useEffect(() => {
-		if (spec?.kind === 'llm' && imageGenProviderId === COMFY_IMAGE_PROVIDER_ID && imageGenProviders.length > 0) {
+		if (isProviderImageGen && imageGenProviderId === COMFY_IMAGE_PROVIDER_ID && imageGenProviders.length > 0) {
 			handleImageGenProviderChange(imageGenProviders[0].id);
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [spec?.kind, imageGenProviderId, imageGenProviders]);
+	}, [isProviderImageGen, imageGenProviderId, imageGenProviders]);
 
 	// 首次出现 image 类节点时若默认是 LLM provider 则补选 model
 	React.useEffect(() => {
@@ -322,11 +380,13 @@ export function NodeEditorPopup({
 
 		// 文生图节点选择非 ComfyUI provider → 走统一的 Provider 文生图执行器
 		// （runProviderImage：自动路由 provider/model + img2img 上游 IMAGE 注入）。
-		// kind='llm'（如 Sarosis.ModelImageGen）固定走 provider，不允许回退 ComfyUI。
-		if (isImageGen && (spec?.kind === 'llm' || imageGenProviderId !== COMFY_IMAGE_PROVIDER_ID)) {
+		// Provider 后端节点（kind='llm' 或 schema+backendKind='provider'）固定走
+		// provider，不允许回退 ComfyUI。
+		if (isImageGen && (isProviderImageGen || imageGenProviderId !== COMFY_IMAGE_PROVIDER_ID)) {
 			const r = await runProviderImage({
 				runner: runners.resolve(preference)!,
 				nodeId,
+				snapshotKey: snapKey,
 				type: nodeType,
 				getSpec: (t) => getNodeSpec(t),
 				values: {
@@ -367,6 +427,7 @@ export function NodeEditorPopup({
 		const r = await runNodeOrStage({
 			runner,
 			nodeId,
+			snapshotKey: snapKey,
 			type: nodeType,
 			getSpec: (t) => getNodeSpec(t),
 			values: coerced,
@@ -409,6 +470,7 @@ export function NodeEditorPopup({
 		const r = await runNodeOrStage({
 			runner,
 			nodeId,
+			snapshotKey: snapKey,
 			type: nodeType,
 			getSpec: (t) => getNodeSpec(t),
 			values: { selected_index: idx + 1 },
@@ -439,6 +501,7 @@ export function NodeEditorPopup({
 		const r = await runNodeOrStage({
 			runner,
 			nodeId,
+			snapshotKey: snapKey,
 			type: nodeType,
 			getSpec: (t) => getNodeSpec(t),
 			values: { mediaAssetId: asset.id, selected_index: 0 },
@@ -482,7 +545,7 @@ export function NodeEditorPopup({
 			const subfolder = String(data?.subfolder ?? '');
 			const type = String(data?.type ?? 'output');
 			const ref = `${runner.baseUrl}/view?filename=${encodeURIComponent(name)}${subfolder ? '&subfolder=' + encodeURIComponent(subfolder) : ''}&type=${type}`;
-			const entry = { nodeId, port: 'output', key: `${nodeId}:output:0`, media: { kind: loaderMediaKind(nodeType), ref }, index: 0 };
+			const entry = { nodeId: snapKey, port: 'output', key: `${snapKey}:output:0`, media: { kind: loaderMediaKind(nodeType), ref }, index: 0 };
 			store.put(entry);
 			onValuesCommit?.(nodeId, { uploaded: { name, subfolder, type } });
 			setState('success');
@@ -503,7 +566,10 @@ export function NodeEditorPopup({
 		<div
 			style={{
 				position: 'absolute', top: 60, right: 12, zIndex: 40, width: 340,
-				maxHeight: 'calc(100% - 80px)', overflowY: 'auto',
+				// P2-fix: calc(100% - 80px) 在 webview 父链高度未定义时退化为 0 导致内容被截。
+				// 用 viewport 单位兜底，确保 popup 始终能滚动展示完整内容。
+				maxHeight: 'min(calc(100% - 80px), calc(100vh - 100px), 760px)',
+				overflowY: 'auto',
 				borderRadius: 8, background: 'var(--vscode-sideBar-background)',
 				border: '1px solid var(--vscode-panel-border)',
 				boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
@@ -659,6 +725,35 @@ export function NodeEditorPopup({
 					/>
 				)}
 
+				{/* P3 Crop: interactive drag-crop editor (增强：替代纯数字 x/y/width/height) */}
+				{isCrop && (
+					<CropEditor
+						initial={{
+							x: Number(values.x ?? 0),
+							y: Number(values.y ?? 0),
+							width: Number(values.width ?? 512),
+							height: Number(values.height ?? 512),
+						}}
+						imageRef={cropImageRef}
+						onCropChange={handleCropChange}
+					/>
+				)}
+
+				{/* P3 Mask: interactive erase/inpaint mask painter（增强：替代纯 mask_data 字符串） */}
+				{isMaskEdit && (
+					<MaskPainter
+						imageRef={maskImageRef}
+						initialOps={typeof values.mask_ops === 'string' ? values.mask_ops : undefined}
+						showPrompt={isInpaint}
+						initialPrompt={typeof values.prompt === 'string' ? values.prompt : ''}
+						onPromptChange={handleMaskPromptChange}
+						runners={runners}
+						preference={preference}
+						onMaskChange={handleMaskChange}
+						onOpsChange={handleMaskOpsChange}
+					/>
+				)}
+
 				{/* P3 Poster: embedded layout editor */}
 				{isPoster && (
 					<PosterEditor
@@ -666,6 +761,9 @@ export function NodeEditorPopup({
 						images={posterImages}
 						runners={runners}
 						preference={preference}
+						width={typeof values.width === 'number' ? values.width : 1240}
+						height={typeof values.height === 'number' ? values.height : 1754}
+						onSizeChange={handlePosterSize}
 						onLayoutChange={handlePosterLayout}
 						onRenderUploaded={handlePosterRender}
 					/>
@@ -739,8 +837,8 @@ export function NodeEditorPopup({
 					</div>
 				)}
 
-				{/* Generic form (non picker/loader/relight/poster/cornerpin/roto/layereditor/storyboard/material/scene3d) */}
-				{!isPicker && !isLoader && !isRelight && !isPoster && !isCornerPin && !isRotoMask && !isLayerEditor && !isStoryboard && !isMaterial && !isScene3D && (
+				{/* Generic form (non picker/loader/relight/poster/cornerpin/roto/layereditor/storyboard/material/scene3d/crop/mask) */}
+				{!isPicker && !isLoader && !isRelight && !isPoster && !isCornerPin && !isRotoMask && !isLayerEditor && !isStoryboard && !isMaterial && !isScene3D && !isCrop && !isMaskEdit && (
 					<>
 						{fields.length === 0 && !isReactNode && (
 							<div style={{ color: 'var(--vscode-descriptionForeground)', fontSize: 11 }}>
@@ -757,7 +855,7 @@ export function NodeEditorPopup({
 						{isReactNode ? (
 							<button
 								onClick={() => {
-									onValuesCommit?.(nodeId, sarosisValuesToData(nodeType, values));
+									onValuesCommit?.(nodeId, sarosValuesToData(nodeType, values));
 									onClose();
 								}}
 								style={{

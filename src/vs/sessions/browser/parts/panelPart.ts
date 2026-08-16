@@ -74,7 +74,7 @@ export class PanelPart extends AbstractPaneCompositePart {
 
 	override async create(parent: HTMLElement): Promise<void> {
 		const result = await super.create(parent);
-		// [Sarosis Debug] Log registered composites and composite bar state
+		// [Saros Debug] Log registered composites and composite bar state
 		const composites = this.getPaneComposites();
 		console.log('[PanelPart] Registered pane composites:', composites.map(c => ({ id: c.id, name: c.name, order: c.order })));
 		const compositeBar = (this as any).paneCompositeBar?.value;
@@ -190,7 +190,7 @@ export class PanelPart extends AbstractPaneCompositePart {
 			return;
 		}
 
-		// [Sarosis Debug] Trace when layout receives height <= 0
+		// [Saros Debug] Trace when layout receives height <= 0
 		if (height <= 0) {
 			console.trace(`[PanelPart] layout height<=0: height=${height}, width=${width}, top=${top}, left=${left}`);
 		}
@@ -208,7 +208,7 @@ export class PanelPart extends AbstractPaneCompositePart {
 		// Restore the full grid-allocated dimensions so that Part.relayout() works correctly.
 		Part.prototype.layout.call(this, width, height, top, left);
 
-		// [Sarosis Debug] Inspect width chain after layout settles
+		// [Saros Debug] Inspect width chain after layout settles
 		setTimeout(() => this._inspectWidthChain(width), 200);
 	}
 

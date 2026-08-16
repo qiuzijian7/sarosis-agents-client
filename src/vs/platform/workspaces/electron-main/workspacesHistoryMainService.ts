@@ -354,7 +354,7 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 					type: 'task',
 					title: localize('newWindow', "New Window"),
 					description: localize('newWindowDesc', "Opens a new window"),
-					// [Sarosis] "New Window" 启动一个【独立】的 VsSaros 实例（多开），
+					// [Saros] "New Window" 启动一个【独立】的 VsSaros 实例（多开），
 					// 而不是转发给已运行的主实例。经 PowerShell 隐藏窗口脚本每次生成
 					// 唯一 --instance <id>：新进程 IPC 单实例锁/可变状态按实例拆分，
 					// agents/skills/settings/extensions 共享；agentmemory 网关自动复用
@@ -436,7 +436,7 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 	}
 
 	/**
-	 * [Sarosis] Jump-list "New Window" 的 PowerShell 启动参数。
+	 * [Saros] Jump-list "New Window" 的 PowerShell 启动参数。
 	 *
 	 * 用隐藏窗口的 PowerShell 跑 new-window.ps1，每次点击生成唯一 --instance <id>
 	 * 并启动一个独立的 VsSaros 实例（多开），而不是把请求转发给主实例。

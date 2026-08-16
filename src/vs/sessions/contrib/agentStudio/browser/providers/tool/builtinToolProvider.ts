@@ -125,7 +125,7 @@ export { type IBuiltinToolRegistration } from './toolRegistry.js';
 export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
 	readonly id: string = 'saros.builtin-tools';
-	readonly name: string = 'Sarosis Built-in Tools';
+	readonly name: string = 'Saros Built-in Tools';
 
 	/** 工具注册表 —— 封装工具描述符集合、启用状态与变更事件（见 toolRegistry.ts）。 */
 	private readonly _registry = new ToolRegistry(this.logService);
@@ -416,7 +416,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * 注册兼容性工具 — Hermes 命名对齐 + 缺失核心工具。
 	 *
 	 * 问题：bundledTools.ts 中某些工具名与实际 handler 注册名不一致，
-	 * 或 Hermes 核心工具在 Sarosis 中缺少 handler。这导致 LLM 调用时
+	 * 或 Hermes 核心工具在 Saros 中缺少 handler。这导致 LLM 调用时
 	 * 报 "Tool does not exist"。
 	 *
 	 * 修复策略：

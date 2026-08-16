@@ -16,7 +16,7 @@
 
 ### 1.2 与 MiMo 的架构差距
 
-| 维度 | MiMo | Sarosis | 差距等级 |
+| 维度 | MiMo | Saros | 差距等级 |
 |------|------|---------|----------|
 | 工具 schema 稳定性 | 始终不变（permission 运行时拦截） | filterToolsByChatMode 移除 → cache 失效 | 🔴 P1 |
 | 权限拦截时机 | 运行时 `ctx.ask({permission:"edit"})` | schema 层 `applyHardPermission` 剥离 | 🟡 P2 |
@@ -674,7 +674,7 @@ suite('plan→craft 切换检测', () => {
 
 - **MiMo-Code**：保留稳定 agent/chat 策略、Plan 文件、运行时 hard permission、BUILD_SWITCH 和显式审批边界；本项目按产品要求只对 Plan ChatMode审批，Craft 自动通过。
 - **LangGraph**：采用 JSON 可序列化 state + reducer；审批表示为可观测的 `pending/approved/rejected` 状态；Plan 任务解析为 DAG，由 ready queue 按依赖 fan-out，失败任务可独立重试。
-- **Sarosis 既有能力复用**：`TaskOrchestrationService.createPlanFromTasks → approvePlan → _executePlan → getReadyTasks → _executeTask` 已具备 DAG、并发上限、任务板、重试和动态推进，因此不在 `agentTurnExecutor` 重造并行执行器。
+- **Saros 既有能力复用**：`TaskOrchestrationService.createPlanFromTasks → approvePlan → _executePlan → getReadyTasks → _executeTask` 已具备 DAG、并发上限、任务板、重试和动态推进，因此不在 `agentTurnExecutor` 重造并行执行器。
 
 ### 6.3 函数执行图
 

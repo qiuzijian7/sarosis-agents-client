@@ -1,8 +1,8 @@
 # AI Agent 编排实现对比分析报告
 
-> **文档版本**: v1.0  
-> **生成时间**: 2026-05-20  
-> **分析项目**: Ruflo, Paperclip, Rudder, OpenClaw, Hermes-Agent, Sarosis (当前项目)  
+> **文档版本**: v1.0
+> **生成时间**: 2026-05-20
+> **分析项目**: Ruflo, Paperclip, Rudder, OpenClaw, Hermes-Agent, Saros (当前项目)
 
 ---
 
@@ -91,7 +91,7 @@
 
 ---
 
-### 1.6 Sarosis (当前项目)
+### 1.6 Saros (当前项目)
 
 **定位**: VS Code 扩展中的 Agent Studio，提供可视化的 Agent 编排环境。
 
@@ -116,7 +116,7 @@
 | **Rudder** | 心跳调度 + 队列 | WakeupCoordinator | 树状 (reports_to) |
 | **OpenClaw** | Gateway 中心化 | Gateway + Orchestrator | 3 层 (Main/Orch/Leaf) |
 | **Hermes-Agent** | 对话循环 + 工具调用 | AIAgent | 2 层 (Parent/Child) |
-| **Sarosis** | VS Code 扩展 + 服务 | TaskOrchestrationService | 3 层 (Planner/PM/Worker) |
+| **Saros** | VS Code 扩展 + 服务 | TaskOrchestrationService | 3 层 (Planner/PM/Worker) |
 
 ### 2.2 架构图对比
 
@@ -176,7 +176,7 @@
 └─────────────────────────────────────────────────────────┘
 ```
 
-#### Sarosis 架构 (角色治理)
+#### Saros 架构 (角色治理)
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                  Workspace                             │
@@ -201,7 +201,7 @@
 
 ### 2.3 架构评价
 
-| 维度 | Ruflo | Paperclip | Rudder | OpenClaw | Hermes | Sarosis |
+| 维度 | Ruflo | Paperclip | Rudder | OpenClaw | Hermes | Saros |
 |------|-------|-----------|--------|----------|--------|---------|
 | **扩展性** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ |
 | **复杂度** | 高 | 中 | 中 | 低 | 低 | 中 |
@@ -221,7 +221,7 @@
 | **Rudder** | Wakeup 协调 + 队列 | 无 | 无 | Issue 依赖 |
 | **OpenClaw** | sessions_spawn 工具 | 深度/数量限制 | 无 | 无 (串行) |
 | **Hermes-Agent** | delegate_task 工具 | 迭代预算 | 无 | 无 |
-| **Sarosis** | 多维评分 + 并发控制 | Agent 评分 | 有 (0-3) | DAG 拓扑排序 |
+| **Saros** | 多维评分 + 并发控制 | Agent 评分 | 有 (0-3) | DAG 拓扑排序 |
 
 ### 3.2 任务分配算法对比
 
@@ -239,7 +239,7 @@ async analyzeTask(task: TaskDefinition): Promise<TaskAnalysis> {
 }
 ```
 
-#### Sarosis - 多维 Agent 评分
+#### Saros - 多维 Agent 评分
 ```typescript
 // TaskOrchestrationService._scoreAgent()
 private _scoreAgent(agent: Employee, task: PlanTask): number {
@@ -278,7 +278,7 @@ backlog → ready → in_progress → review → done
                 ↘ cancelled
 ```
 
-#### Sarosis 任务状态机
+#### Saros 任务状态机
 ```
 Pending → Running → Done
             ↘ Error (retryCount < max → Pending 重试)
@@ -300,7 +300,7 @@ Pending → Paused → Pending (resume)
 | **Rudder** | Adapter | REST API | HTTP Polling |
 | **OpenClaw** | Gateway RPC | 自定义 | EventEmitter |
 | **Hermes-Agent** | 工具调用 | Python 函数调用 | 无 |
-| **Sarosis** | MessageProtocol | JSON-RPC 风格 | EventEmitter |
+| **Saros** | MessageProtocol | JSON-RPC 风格 | EventEmitter |
 
 ### 4.2 通信机制详解
 
@@ -337,7 +337,7 @@ await callSubagentGateway({
 });
 ```
 
-#### Sarosis - MessageProtocol
+#### Saros - MessageProtocol
 ```typescript
 // WebView ↔ Host 通信协议
 interface MessageProtocol {
@@ -362,7 +362,7 @@ onmessage = (event: MessageEvent<MessageProtocol>) => void;
 | **Rudder** | Issue 流水线 | ❌ | ❌ | ❌ |
 | **OpenClaw** | 会话树 | ❌ | ✅ (工具级) | ❌ |
 | **Hermes-Agent** | 对话循环 | ❌ | ✅ (工具级) | ❌ |
-| **Sarosis** | DAG 拓扑排序 | ✅ | ✅ | ❌ |
+| **Saros** | DAG 拓扑排序 | ✅ | ✅ | ❌ |
 
 ### 5.2 工作流设计对比
 
@@ -398,7 +398,7 @@ Leaf Agent 执行
 结果 push 回父 Agent
 ```
 
-#### Sarosis - DAG 拓扑排序
+#### Saros - DAG 拓扑排序
 ```
 Planner.createPlan()  // 创建编排计划
   ↓
@@ -430,7 +430,7 @@ _unblockDependentTasks()  // 自动解锁下游任务
 | **Rudder** | ✅ | ✅ | ❌ | ✅ (Recovery Handler) |
 | **OpenClaw** | ✅ | ✅ (模型回退) | ❌ | ❌ |
 | **Hermes-Agent** | ✅ | ❌ | ❌ | ✅ (中断机制) |
-| **Sarosis** | ✅ (5min) | ✅ (3次) | ❌ | ✅ (自动解锁) |
+| **Saros** | ✅ (5min) | ✅ (3次) | ❌ | ✅ (自动解锁) |
 
 ### 6.2 错误处理代码对比
 
@@ -492,7 +492,7 @@ async function runWithModelFallback<T>(params: {
 }
 ```
 
-#### Sarosis - 超时 + 重试
+#### Saros - 超时 + 重试
 ```typescript
 // Timeout monitoring
 private _checkTimeouts(): void {
@@ -635,7 +635,7 @@ private async _failTask(planId: string, taskId: string, reason: string): Promise
 
 ---
 
-### 7.6 Sarosis (当前项目)
+### 7.6 Saros (当前项目)
 
 #### 优点
 1. **角色治理**: Planner/PM/Worker 角色模型，权限清晰
@@ -665,7 +665,7 @@ private async _failTask(planId: string, taskId: string, reason: string): Promise
 
 ### 8.1 综合对比矩阵
 
-| 维度 | Ruflo | Paperclip | Rudder | OpenClaw | Hermes | Sarosis |
+| 维度 | Ruflo | Paperclip | Rudder | OpenClaw | Hermes | Saros |
 |------|-------|-----------|--------|----------|--------|---------|
 | **架构完整性** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ |
 | **任务编排能力** | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐ | ⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ |
@@ -674,9 +674,9 @@ private async _failTask(planId: string, taskId: string, reason: string): Promise
 | **易用性** | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
 | **创新性** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
 
-### 8.2 Sarosis 项目改进建议
+### 8.2 Saros 项目改进建议
 
-基于对比分析，对 Sarosis 项目提出以下改进建议：
+基于对比分析，对 Saros 项目提出以下改进建议：
 
 #### P0 - 关键改进 (短期)
 1. **添加熔断机制**: 参考 Ruflo 的 Circuit Breaker，防止级联失败
@@ -702,7 +702,7 @@ private async _failTask(planId: string, taskId: string, reason: string): Promise
 | **Rudder** | 1. 树状组织符合人类模式<br>2. 多组织隔离<br>3. 运行智能分析 |
 | **OpenClaw** | 1. Gateway 中心化简化管理<br>2. 模型回退提高可用性<br>3. 会话管理支持上下文传递 |
 | **Hermes-Agent** | 1. 自我改进持续学习<br>2. 迭代预算管理<br>3. 中断机制支持父控子 |
-| **Sarosis** | 1. 角色治理权限清晰<br>2. DAG 拓扑排序支持复杂依赖<br>3. 可视化降低使用门槛 |
+| **Saros** | 1. 角色治理权限清晰<br>2. DAG 拓扑排序支持复杂依赖<br>3. 可视化降低使用门槛 |
 
 ---
 
@@ -713,7 +713,7 @@ private async _failTask(planId: string, taskId: string, reason: string): Promise
 3. Rudder 项目: `G:\CustomWorkspaces\AIProjects\rudder`
 4. OpenClaw 项目: `G:\CustomWorkspaces\AIProjects\openclaw`
 5. Hermes-Agent 项目: `G:\CustomWorkspaces\AIProjects\Hermes-Agent`
-6. Sarosis 项目: `G:\CustomWorkspaces\AIProjects\saros-agents-client`
+6. Saros 项目: `G:\CustomWorkspaces\AIProjects\sarosis-agents-client`
 
 ---
 

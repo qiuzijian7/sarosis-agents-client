@@ -344,7 +344,7 @@ export class WorkflowPublishModal extends Disposable {
 		title.textContent = '发布工作流';
 		titleWrap.appendChild(title);
 		const subtitle = $('div.wpm-subtitle');
-		subtitle.textContent = '上传到 Sarosis 工作流商城';
+		subtitle.textContent = '上传到 Saros 工作流商城';
 		titleWrap.appendChild(subtitle);
 		headerLeft.appendChild(titleWrap);
 		header.appendChild(headerLeft);

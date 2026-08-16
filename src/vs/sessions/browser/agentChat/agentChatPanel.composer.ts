@@ -1,7 +1,15 @@
-import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
+import { $, append, clearNode, addDisposableListener, addStandardDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { IChatAttachment, IContextUsage } from './agentChatTypes.js';
 import { renderContextUsageRing } from './modules/contextRing.js';
 import { AgentChatPanelMarkdown } from './agentChatPanel.markdown.js';
+import {
+	filterWorkflowItems,
+	serializeInlineWorkflowArgs,
+	parseInlineWorkflowArgs,
+	encodeWorkflowChipParams,
+	decodeWorkflowChipParams,
+	type IWorkflowChipItem,
+} from './agentChatPanel.workflowChip.js';
 
 /** 内部剪贴板格式：选区含 chip 时用自定义 MIME 保存结构化内容（文本+技能+附件），
  *  粘贴时据此恢复 chip，避免 contenteditable=false 的 chip 被浏览器序列化成纯文本。 */
@@ -9,15 +17,16 @@ const COMPOSER_CLIPBOARD_MIME = 'application/vnd.vssaros-composer';
 
 /** 选区剪贴板片段：文本 / 技能 chip / 附件（图片）chip。 */
 interface IComposerClipSegment {
-	type: 'text' | 'skill' | 'attachment';
+	type: 'text' | 'skill' | 'workflow' | 'attachment';
 	text?: string;
-	id?: string;                  // skill id
+	id?: string;                  // skill / workflow id
+	params?: Record<string, string>;  // workflow 表单参数
 	attId?: string;               // attachment id（序列化前）
 	name?: string;                // attachment 文件名
 	mimeType?: string;
 	data?: string;                // base64
 	size?: number;
-	attType?: 'image' | 'file';
+	attType?: 'image' | 'file' | 'folder';
 	isPasted?: boolean;
 	filePath?: string;
 }
@@ -133,7 +142,8 @@ protected override _renderInputArea(): void {
 				const val = this._getComposerText();
 
 				// Detect /skill /command patterns — show slash menu
-				const slashMatch = val.match(/^\/(\w*)$/);
+				// 允许 `-`（工作流 id 形如 wf-xxx），使 `/wf-` 输入过程中菜单持续显示。
+				const slashMatch = val.match(/^\/([\w-]*)$/);
 				if (slashMatch) {
 					t.style.color = 'var(--ec-accent, #60a5fa)';
 					t.setAttribute('data-slash-command', slashMatch[1]);
@@ -209,26 +219,32 @@ protected override _renderInputArea(): void {
 			dragOverlay.style.display = 'none';
 			const dt = e.dataTransfer;
 			if (!dt) { return; }
-			// 1. OS 文件拖放
-			if (dt.files && dt.files.length > 0) {
-				this._addFiles(Array.from(dt.files));
-				return;
+			// 1. 文件夹拖放：出于安全浏览器不暴露目录内容（dt.files 为空），
+			//    通过 webkitGetAsEntry().isDirectory 判定目录，再用 text/uri-list 取系统路径
+			const folderPaths = this._collectFolderPathsFromDataTransfer(dt);
+			if (folderPaths.length > 0) {
+				this._addFolderAttachments(folderPaths);
 			}
-			// 2. 代码/文本拖放（从编辑器选中代码拖入）
-			const text = dt.getData('text/plain');
-			if (text && text.trim().length > 0) {
-				const att: IChatAttachment = {
-					id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-					type: 'file',
-					name: `code-snippet.txt`,
-					mimeType: 'text/plain',
-					data: text,
-					size: text.length,
-					isPasted: false,
-				};
-				this._attachments.push(att);
-				this._renderAttachmentPreviews();
-				this._insertInlineAttachmentChip(att);
+			// 2. OS 文件/图片拖放
+			if (dt.files && dt.files.length > 0) {
+				this._addFiles(Array.from(dt.files), false);
+			} else if (folderPaths.length === 0) {
+				// 3. 代码/文本拖放（从编辑器选中代码拖入）
+				const text = dt.getData('text/plain');
+				if (text && text.trim().length > 0) {
+					const att: IChatAttachment = {
+						id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+						type: 'file',
+						name: `code-snippet.txt`,
+						mimeType: 'text/plain',
+						data: text,
+						size: text.length,
+						isPasted: false,
+					};
+					this._attachments.push(att);
+					this._renderAttachmentPreviews();
+					this._insertInlineAttachmentChip(att);
+				}
 			}
 		}));
 		} // end else (drag overlay 已存在则跳过)
@@ -251,28 +267,40 @@ protected override _renderInputArea(): void {
 				} catch { /* 损坏的自定义数据 → 走默认逻辑 */ }
 			}
 
-			// 收集所有图片文件。复制的图片（截图、从图片软件复制等）通常以
-			// clipboardData.items 中 kind==='file' 的形式存在，此时 clipboardData.files 为空；
-			// 而从文件管理器/拖拽复制则在 files 中。两者都要覆盖，否则图片 chip 不显示。
-			const imageFiles: File[] = [];
+			// 收集粘贴的文件（图片 + 普通文件）。复制的图片（截图、从图片软件复制等）
+			// 通常以 clipboardData.items 中 kind==='file' 的形式存在，此时 clipboardData.files
+			// 为空；而从文件管理器/拖拽复制则在 files 中。两者都要覆盖，否则图片/文件
+			// chip 不显示。普通文件（.txt/.md/.js 等）也必须收集——否则粘贴文件会被
+			// 下方「格式化粘贴」分支丢弃（只粘出纯文本、无 chip）。
+			const pastedFiles: File[] = [];
 			if (clipboardData.files?.length) {
 				for (const f of Array.from(clipboardData.files)) {
-					if (f.type.startsWith("image/")) { imageFiles.push(f); }
+					pastedFiles.push(f);
 				}
 			}
-			if (!imageFiles.length && clipboardData.items?.length) {
+			if (!pastedFiles.length && clipboardData.items?.length) {
 				for (const it of Array.from(clipboardData.items)) {
-					if (it.kind === 'file' && it.type.startsWith("image/")) {
+					if (it.kind === 'file') {
 						const f = it.getAsFile();
-						if (f) { imageFiles.push(f); }
+						if (f) { pastedFiles.push(f); }
 					}
 				}
 			}
 
-			// 有图片 → 保持本地图片 chip 显示（原逻辑），不做格式化、不受影响
-			if (imageFiles.length > 0) {
+			// 有文件（图片/普通文件）→ 保持本地 chip 显示（_addFiles 内部按类型创建
+			// image chip 或 file chip），不做格式化、不受影响。
+			if (pastedFiles.length > 0) {
 				e.preventDefault();
-				this._addFiles(imageFiles, true);
+				this._addFiles(pastedFiles, true);
+				return;
+			}
+
+			// 粘贴文件夹：操作系统通常以 file:// 路径（text/uri-list）暴露目录，而非二进制
+			// 文件内容（此时 pastedFiles 为空）。解析为文件夹 chip（📁 图标，data 为系统路径）。
+			const folderPaths = this._collectFolderPathsFromDataTransfer(clipboardData as unknown as DataTransfer);
+			if (folderPaths.length > 0) {
+				e.preventDefault();
+				this._addFolderAttachments(folderPaths);
 				return;
 			}
 
@@ -374,8 +402,11 @@ protected override _renderInputArea(): void {
 							// 若前一个是空白文本节点且再前一个是芯片，则定位到芯片（删除芯片）
 							if (prevNode && prevNode.nodeType === Node.TEXT_NODE && /^\s*$/.test(prevNode.textContent ?? '') && offset - 2 >= 0) {
 								const beforeThat = container.childNodes[offset - 2];
-								if (beforeThat && (beforeThat as HTMLElement).classList?.contains('inline-attachment-chip')) {
-									prevNode = beforeThat;
+								if (beforeThat && (beforeThat as HTMLElement).classList) {
+									const bc = (beforeThat as HTMLElement).classList;
+									if (bc.contains('inline-attachment-chip') || bc.contains('inline-skill-chip') || bc.contains('inline-workflow-chip')) {
+										prevNode = beforeThat;
+									}
 								}
 							}
 						} else if (container.nodeType === Node.TEXT_NODE && offset === 0) {
@@ -394,6 +425,12 @@ protected override _renderInputArea(): void {
 								return;
 							}
 							if (prevEl.classList.contains('inline-skill-chip')) {
+								e.preventDefault();
+								prevEl.remove();
+								this._updateSendButton();
+								return;
+							}
+							if (prevEl.classList.contains('inline-workflow-chip')) {
 								e.preventDefault();
 								prevEl.remove();
 								this._updateSendButton();
@@ -1024,113 +1061,118 @@ protected override _closeMentionMenu(): void {
 	}
 
 protected override _openSlashMenu(filter: string): void {
-		this._closeSlashMenu();
+	this._closeSlashMenu();
 
-		const skills = this._onListSkills();
-		if (!skills.length) { return; }
+	const items = this._collectSlashItems(filter);
+	if (!items.length) { return; }
 
-		const filtered = filter
-			? skills.filter(s =>
-				s.id.toLowerCase().includes(filter.toLowerCase()) ||
-				s.name.toLowerCase().includes(filter.toLowerCase()))
-			: skills;
-		if (!filtered.length) { return; }
+	const textarea = this._textarea;
+	const rect = textarea.getBoundingClientRect();
 
-		const textarea = this._textarea;
-		const rect = textarea.getBoundingClientRect();
+	this._slashMenuEl = this._createEl('div');
+	this._slashMenuEl.className = 'slash-menu';
+	this._slashMenuEl.style.left = `${rect.left}px`;
+	this._slashMenuEl.style.maxWidth = `${Math.max(rect.width, 260)}px`;
+	// 智能定位（同上 _openMentionMenu）
+	this._positionDropdownRelativeTo(this._slashMenuEl, rect, 280);
 
-		this._slashMenuEl = this._createEl('div');
-		this._slashMenuEl.className = 'slash-menu';
-		this._slashMenuEl.style.left = `${rect.left}px`;
-		this._slashMenuEl.style.maxWidth = `${Math.max(rect.width, 260)}px`;
-		// 智能定位（同上 _openMentionMenu）
-		this._positionDropdownRelativeTo(this._slashMenuEl, rect, 280);
+	// Items (render directly since we just created the element)
+	const list = this._createEl('div');
+	list.className = 'slash-menu-list';
+	this._renderSlashItems(list, items);
 
-		// Items (render directly since we just created the element)
-		const list = this._createEl('div');
-		list.className = 'slash-menu-list';
-		filtered.forEach((s, i) => {
-			const item = this._createEl('div');
-			item.className = 'slash-menu-item';
-			item.dataset.skillId = s.id;
-			item.dataset.skillName = s.name || s.id;
-			const icon = this._createEl('span');
-			icon.className = 'slash-menu-item-icon';
-			icon.textContent = '/';
-			item.appendChild(icon);
-			const info = this._createEl('span');
-			info.className = 'slash-menu-item-info';
-			const name = this._createEl('span');
-			name.className = 'slash-menu-item-name';
-			name.textContent = s.id;
-			info.appendChild(name);
-			const desc = this._createEl('span');
-			desc.className = 'slash-menu-item-desc';
-			desc.textContent = s.name;
-			info.appendChild(desc);
-			item.appendChild(info);
-			item.addEventListener('mousedown', (e) => {
-				e.preventDefault();
-				this._insertSlashSkill(s.id, s.name || s.id);
-				this._closeSlashMenu();
-			});
-			list.appendChild(item);
-		});
+	this._slashMenuEl.appendChild(list);
+	this._ownerDocument.body.appendChild(this._slashMenuEl);
+	this._slashMenuIndex = 0;
+	this._highlightSlashMenuItem();
+}
 
-		this._slashMenuEl.appendChild(list);
-		this._ownerDocument.body.appendChild(this._slashMenuEl);
-		this._slashMenuIndex = 0;
-		this._highlightSlashMenuItem();
+/** 收集 slash 菜单条目：skills + workflows（工作流按 id/name 过滤）。 */
+private _collectSlashItems(filter: string): Array<{ kind: 'skill' | 'workflow'; id: string; label: string; description: string }> {
+	const skills = this._onListSkills();
+	const workflows: ReadonlyArray<IWorkflowChipItem> = this._onListWorkflows?.() ?? [];
+
+	const skillFiltered = filter
+		? skills.filter(s =>
+			s.id.toLowerCase().includes(filter.toLowerCase()) ||
+			s.name.toLowerCase().includes(filter.toLowerCase()))
+		: skills;
+	const wfFiltered = filterWorkflowItems(
+		workflows.map(w => ({ id: w.id, name: w.name, description: w.description })),
+		filter,
+	);
+
+	const items: Array<{ kind: 'skill' | 'workflow'; id: string; label: string; description: string }> = [];
+	for (const s of skillFiltered) {
+		items.push({ kind: 'skill', id: s.id, label: s.id, description: s.name || s.id });
 	}
+	for (const w of wfFiltered) {
+		items.push({ kind: 'workflow', id: w.id, label: w.name || w.id, description: w.description || w.id });
+	}
+	return items;
+}
+
+/** 渲染 slash 菜单条目到列表容器（skill 与 workflow 混排，靠 dataset 区分）。 */
+private _renderSlashItems(
+	list: HTMLElement,
+	items: Array<{ kind: 'skill' | 'workflow'; id: string; label: string; description: string }>,
+): void {
+	for (const it of items) {
+		const item = this._createEl('div');
+		item.className = 'slash-menu-item';
+		if (it.kind === 'skill') {
+			item.dataset.skillId = it.id;
+			item.dataset.skillName = it.label;
+		} else {
+			item.dataset.workflowId = it.id;
+			item.dataset.workflowName = it.label;
+		}
+		const icon = this._createEl('span');
+		icon.className = 'slash-menu-item-icon';
+		icon.textContent = it.kind === 'workflow' ? '▶' : '/';
+		item.appendChild(icon);
+		const info = this._createEl('span');
+		info.className = 'slash-menu-item-info';
+		const name = this._createEl('span');
+		name.className = 'slash-menu-item-name';
+		name.textContent = it.label;
+		info.appendChild(name);
+		const desc = this._createEl('span');
+		desc.className = 'slash-menu-item-desc';
+		desc.textContent = it.description;
+		info.appendChild(desc);
+		item.appendChild(info);
+		item.addEventListener('mousedown', (e) => {
+			e.preventDefault();
+			if (it.kind === 'workflow') {
+				this._insertSlashWorkflow(it.id, it.label);
+			} else {
+				this._insertSlashSkill(it.id, it.label);
+			}
+			this._closeSlashMenu();
+		});
+		list.appendChild(item);
+	}
+}
 
 protected override _renderSlashMenuItems(filter: string): void {
-		if (!this._slashMenuEl) { return; }
-		const skills = this._onListSkills();
-		const filtered = filter
-			? skills.filter(s =>
-				s.id.toLowerCase().includes(filter.toLowerCase()) ||
-				s.name.toLowerCase().includes(filter.toLowerCase()))
-			: skills;
+	if (!this._slashMenuEl) { return; }
+	const items = this._collectSlashItems(filter);
 
-		const list = this._slashMenuEl.querySelector('.slash-menu-list') as HTMLElement | null;
-		if (!list) { return; }
-		clearNode(list);
+	const list = this._slashMenuEl.querySelector('.slash-menu-list') as HTMLElement | null;
+	if (!list) { return; }
+	clearNode(list);
 
-		if (!filtered.length) {
-			this._closeSlashMenu();
-			return;
-		}
-
-		filtered.forEach((s, i) => {
-			const item = this._createEl('div');
-			item.className = 'slash-menu-item';
-			item.dataset.skillId = s.id;
-			const icon = this._createEl('span');
-			icon.className = 'slash-menu-item-icon';
-			icon.textContent = '/';
-			item.appendChild(icon);
-			const info = this._createEl('span');
-			info.className = 'slash-menu-item-info';
-			const name = this._createEl('span');
-			name.className = 'slash-menu-item-name';
-			name.textContent = s.id;
-			info.appendChild(name);
-			const desc = this._createEl('span');
-			desc.className = 'slash-menu-item-desc';
-			desc.textContent = s.name;
-			info.appendChild(desc);
-			item.appendChild(info);
-			item.addEventListener('mousedown', (e) => {
-				e.preventDefault();
-				this._insertSlashSkill(s.id, s.name || s.id);
-				this._closeSlashMenu();
-			});
-			list.appendChild(item);
-		});
-
-		this._slashMenuIndex = Math.min(this._slashMenuIndex, filtered.length - 1);
-		this._highlightSlashMenuItem();
+	if (!items.length) {
+		this._closeSlashMenu();
+		return;
 	}
+
+	this._renderSlashItems(list, items);
+
+	this._slashMenuIndex = Math.min(this._slashMenuIndex, items.length - 1);
+	this._highlightSlashMenuItem();
+}
 
 protected override _highlightSlashMenuItem(): void {
 		const items = this._slashMenuEl?.querySelectorAll('.slash-menu-item');
@@ -1142,6 +1184,323 @@ protected override _highlightSlashMenuItem(): void {
 		const selected = items[this._slashMenuIndex] as HTMLElement | undefined;
 		if (selected) { selected.scrollIntoView({ block: 'nearest' }); }
 	}
+
+/** 创建内联 workflow chip 节点：嵌在 contentEditable 文本流中，与文字混排。 */
+protected _createWorkflowChipNode(id: string, name: string, params?: Record<string, string>): HTMLElement {
+	const chip = this._createEl('span');
+	chip.className = 'inline-workflow-chip';
+	chip.dataset.workflowId = id;
+	chip.setAttribute('contenteditable', 'false');
+	chip.title = `工作流: ${name} (${id})`;
+
+	const icon = this._createEl('span');
+	icon.className = 'inline-workflow-chip-icon';
+	icon.textContent = '▶';
+	chip.appendChild(icon);
+
+	const label = this._createEl('span');
+	label.className = 'inline-workflow-chip-name';
+	label.textContent = name;
+	chip.appendChild(label);
+
+	// 已设参数徽标（点击 chip 主体可重新编辑）
+	if (params && Object.keys(params).length > 0) {
+		const badge = this._createEl('span');
+		badge.className = 'inline-workflow-chip-badge';
+		badge.textContent = `· ${Object.keys(params).length} 参数`;
+		chip.appendChild(badge);
+		chip.dataset.params = encodeWorkflowChipParams(params);
+	}
+
+	const removeBtn = this._createEl('span');
+	removeBtn.className = 'inline-workflow-chip-remove';
+	removeBtn.textContent = '✕';
+	chip.appendChild(removeBtn);
+	this._register(addDisposableListener(removeBtn, EventType.MOUSE_DOWN, (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+	}));
+	this._register(addDisposableListener(removeBtn, EventType.CLICK, (e) => {
+		e.stopPropagation();
+		e.preventDefault();
+		this._removeWorkflowChip(id);
+	}));
+	// 点击 chip 主体（非 ✕）→ 打开参数表单
+	this._register(addDisposableListener(chip, EventType.CLICK, (e) => {
+		e.stopPropagation();
+		e.preventDefault();
+		this._openWorkflowParamsPanel(chip);
+	}));
+	return chip;
+}
+
+/** 从 DOM 收集当前 composer 内的 workflow id（DOM 是唯一真源；最多取首个）。 */
+protected _getWorkflowChipId(): string | undefined {
+	const root = this._textarea;
+	if (!root) { return undefined; }
+	const el = root.querySelector('.inline-workflow-chip') as HTMLElement | null;
+	return el?.dataset.workflowId || undefined;
+}
+
+/** 从 DOM 读取指定 workflow chip 的表单参数（data-params）。 */
+protected _getWorkflowChipParams(id: string): Record<string, string> | undefined {
+	const root = this._textarea;
+	if (!root) { return undefined; }
+	const el = root.querySelector(`.inline-workflow-chip[data-workflow-id="${CSS.escape(id)}"]`) as HTMLElement | null;
+	return decodeWorkflowChipParams(el?.dataset.params);
+}
+
+/** 读取指定工作流需填写的模板变量（排除 {{input}}——input 由 chip 后聊天文本提供）。 */
+private _getWorkflowFormVariables(id: string): ReadonlyArray<{ name: string; defaultValue: string }> {
+	const wf = this._onListWorkflows?.().find(w => w.id === id);
+	if (!wf?.variables) { return []; }
+	return wf.variables.filter(v => v.name !== 'input');
+}
+
+/** 打开工作流参数表单面板（点击 chip 主体触发；无变量则不弹）。 */
+protected _openWorkflowParamsPanel(chip: HTMLElement): void {
+	this._closeWorkflowParamsPanel();
+	const id = chip.dataset.workflowId;
+	if (!id) { return; }
+	const variables = this._getWorkflowFormVariables(id);
+	if (variables.length === 0) { return; }
+
+	const rect = chip.getBoundingClientRect();
+	const current = decodeWorkflowChipParams(chip.dataset.params) ?? {};
+
+	const panel = this._createEl('div');
+	panel.className = 'workflow-params-panel';
+	panel.style.left = `${rect.left}px`;
+	this._positionDropdownRelativeTo(panel, rect, 360);
+
+	const header = this._createEl('div');
+	header.className = 'workflow-params-header';
+	header.textContent = '工作流参数';
+	panel.appendChild(header);
+
+	const body = this._createEl('div');
+	body.className = 'workflow-params-body';
+
+	// 预填字段（变量 → input 映射，供提交时收集）
+	const fields: Array<{ name: string; input: HTMLInputElement }> = [];
+	for (const v of variables) {
+		const row = this._createEl('div');
+		row.className = 'workflow-params-row';
+		const label = this._createEl('label');
+		label.className = 'workflow-params-label';
+		label.textContent = v.name;
+		label.title = v.name;
+		const input = this._createEl('input') as HTMLInputElement;
+		input.className = 'workflow-params-input';
+		input.type = 'text';
+		input.placeholder = v.defaultValue || `请输入 {{${v.name}}}`;
+		input.value = current[v.name] ?? '';
+		row.appendChild(label);
+		row.appendChild(input);
+		body.appendChild(row);
+		fields.push({ name: v.name, input });
+	}
+
+	const actions = this._createEl('div');
+	actions.className = 'workflow-params-actions';
+	const cancelBtn = this._createEl('button');
+	cancelBtn.className = 'workflow-params-btn';
+	cancelBtn.textContent = '取消';
+	const okBtn = this._createEl('button');
+	okBtn.className = 'workflow-params-btn workflow-params-btn-primary';
+	okBtn.textContent = '确定';
+	actions.appendChild(cancelBtn);
+	actions.appendChild(okBtn);
+	body.appendChild(actions);
+
+	panel.appendChild(body);
+	this._ownerDocument.body.appendChild(panel);
+	this._workflowParamsEl = panel;
+
+	const submit = () => {
+		const values: Record<string, string> = {};
+		for (const f of fields) {
+			const v = f.input.value;
+			// 保留用户显式填写的值；空值也保留（避免丢键），但空字符串由序列化 `--k=` 承载
+			values[f.name] = v;
+		}
+		// 去掉全空值（用户未填任何内容时不写入 data-params，避免空徽标）
+		const nonEmpty: Record<string, string> = {};
+		for (const [k, v] of Object.entries(values)) {
+			if (v !== '') { nonEmpty[k] = v; }
+		}
+		chip.dataset.params = encodeWorkflowChipParams(nonEmpty);
+		// 刷新徽标
+		const oldBadge = chip.querySelector('.inline-workflow-chip-badge');
+		oldBadge?.remove();
+		if (Object.keys(nonEmpty).length > 0) {
+			const badge = this._createEl('span');
+			badge.className = 'inline-workflow-chip-badge';
+			badge.textContent = `· ${Object.keys(nonEmpty).length} 参数`;
+			chip.appendChild(badge);
+		}
+		this._closeWorkflowParamsPanel();
+		this._updateSendButton();
+		this._textarea?.dispatchEvent(new Event('input'));
+	};
+
+	this._register(addDisposableListener(cancelBtn, EventType.CLICK, () => this._closeWorkflowParamsPanel()));
+	this._register(addDisposableListener(okBtn, EventType.CLICK, submit));
+
+	// 外部点击关闭（capture 阶段；点击面板/chip 内部不关闭）
+	const onDocMouseDown = (e: MouseEvent) => {
+		const target = e.target as Node | null;
+		if (!target) { return; }
+		if (panel.contains(target) || chip.contains(target)) { return; }
+		this._closeWorkflowParamsPanel();
+	};
+	this._workflowParamsDisposable = addStandardDisposableListener(this._ownerDocument, EventType.MOUSE_DOWN, onDocMouseDown, true);
+	this._register(this._workflowParamsDisposable);
+
+	// 首个输入框自动聚焦
+	requestAnimationFrame(() => fields[0]?.input.focus());
+}
+
+/** 关闭工作流参数表单面板。 */
+protected _closeWorkflowParamsPanel(): void {
+	if (this._workflowParamsDisposable) {
+		this._workflowParamsDisposable.dispose();
+		this._workflowParamsDisposable = null;
+	}
+	if (this._workflowParamsEl) {
+		this._workflowParamsEl.remove();
+		this._workflowParamsEl = null;
+	}
+}
+
+/** 从拖放/粘贴的 DataTransfer 中提取文件夹的系统路径（文件夹附件 chip 用）。 */
+protected _collectFolderPathsFromDataTransfer(dtf: DataTransfer | null): string[] {
+	if (!dtf) { return []; }
+	const items = (dtf as unknown as { items?: DataTransferItem[] }).items;
+	if (!items || items.length === 0) { return []; }
+	const dirNames: string[] = [];
+	for (const it of Array.from(items)) {
+		if (it.kind !== 'file') { continue; }
+		// webkitGetAsEntry 非标准，但 Chromium/Electron 支持，用于区分目录
+		const entry = (it as unknown as { webkitGetAsEntry?: () => { isDirectory: boolean; name: string } | null }).webkitGetAsEntry?.();
+		if (entry && entry.isDirectory) {
+			dirNames.push(entry.name);
+		}
+	}
+	if (dirNames.length === 0) {
+		// 拖放普通文件时 dtf.files 有内容，走 _addFiles；仅当无 files 且 uri-list 含 file:// 路径时按文件夹处理。
+		const noFiles = !dtf.files || dtf.files.length === 0;
+		if (!noFiles) { return []; }
+		const uriList = dtf.getData('text/uri-list') ?? '';
+		return uriList
+			.split(/\r\n|\r|\n/)
+			.map(s => s.trim())
+			.filter(Boolean)
+			.filter(s => s.startsWith('file://'))
+			.map(s => decodeURIComponent(s.replace(/^file:\/\//, '')).replace(/^\/+/, ''));
+	}
+
+	const uriList = dtf.getData('text/uri-list') ?? '';
+	const paths = uriList
+		.split(/\r\n|\r|\n/)
+		.map(s => s.trim())
+		.filter(Boolean)
+		.filter(s => s.startsWith('file://'))
+		.map(s => decodeURIComponent(s.replace(/^file:\/\//, '')).replace(/^\/+/, ''));
+
+	const result: string[] = [];
+	for (const name of dirNames) {
+		const matched = paths.find(p => p.endsWith('/' + name) || p.endsWith('\\' + name) || p === name);
+		result.push(matched ?? name);
+	}
+	return result;
+}
+
+/**
+ * 从拖放的 DataTransfer 中提取「文件名 → 系统路径」映射（来自 text/uri-list 的
+ * file:// 路径）。文件路径用于点击 chip 时在文件编辑器中打开对应资源。
+ * 说明：Chromium 出于安全限制不会在 File 对象上暴露真实路径，但拖放时
+ * text/uri-list 会携带 file:// 完整路径，故按文件名匹配。
+ */
+protected _collectFilePathsFromDataTransfer(dtf: DataTransfer | null): Record<string, string> {
+	const map: Record<string, string> = {};
+	if (!dtf) { return map; }
+	const uriList = dtf.getData('text/uri-list') ?? '';
+	for (const line of uriList.split(/\r\n|\r|\n/)) {
+		const t = line.trim();
+		if (!t.startsWith('file://')) { continue; }
+		const p = decodeURIComponent(t.replace(/^file:\/\//, '')).replace(/^\/+/, '');
+		if (!p) { continue; }
+		const name = p.split(/[\\/]/).pop() || p;
+		if (!map[name]) { map[name] = p; }
+	}
+	return map;
+}
+
+/** 给定文件夹系统路径数组，逐个生成文件夹附件 chip（📁 图标，data 为路径）。 */
+protected _addFolderAttachments(paths: string[]): void {
+	for (const p of paths) {
+		const name = p.split(/[\\/]/).pop() || p;
+		const att: IChatAttachment = {
+			id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+			type: 'folder',
+			name,
+			mimeType: 'application/x-folder',
+			data: p,
+			filePath: p,
+			size: 0,
+			isPasted: false,
+		};
+		this._attachments.push(att);
+		this._renderAttachmentPreviews();
+		this._insertInlineAttachmentChip(att);
+	}
+}
+
+/** 内联插入 workflow chip（去重 + 光标后置）。 */
+protected _addWorkflowChip(id: string, name: string): void {
+	const root = this._textarea;
+	if (!root) { return; }
+	if (root.querySelector(`.inline-workflow-chip[data-workflow-id="${CSS.escape(id)}"]`)) { return; }
+	const chip = this._createWorkflowChipNode(id, name);
+	const spaceBefore = this._ownerDocument.createTextNode(' ');
+	const spaceAfter = this._ownerDocument.createTextNode(' ');
+	root.focus();
+	const sel = this._ownerWindow?.getSelection();
+	if (sel && sel.rangeCount > 0) {
+		const range = sel.getRangeAt(0);
+		range.deleteContents();
+		const frag = this._ownerDocument.createDocumentFragment();
+		frag.appendChild(spaceBefore);
+		frag.appendChild(chip);
+		frag.appendChild(spaceAfter);
+		range.insertNode(frag);
+		range.setStartAfter(spaceAfter);
+		range.collapse(true);
+		sel.removeAllRanges();
+		sel.addRange(range);
+	} else {
+		root.appendChild(spaceBefore);
+		root.appendChild(chip);
+		root.appendChild(spaceAfter);
+		this._focusComposerEnd();
+	}
+	root.dispatchEvent(new Event('input'));
+}
+
+/** 从 DOM 移除指定 workflow chip。 */
+protected _removeWorkflowChip(id: string): void {
+	const root = this._textarea;
+	if (!root) { return; }
+	root.querySelector(`.inline-workflow-chip[data-workflow-id="${CSS.escape(id)}"]`)?.remove();
+	this._updateSendButton();
+}
+
+/** 按 workflow id 查显示名；查不到回退 id 本身。 */
+private _resolveWorkflowName(id: string): string {
+	const workflows = this._onListWorkflows?.() ?? [];
+	return workflows.find(w => w.id === id)?.name || id;
+}
 
 /** 创建内联 skill chip 节点：嵌在 contentEditable 文本流中，与文字混排。 */
 protected _createSkillChipNode(id: string, name: string): HTMLElement {
@@ -1235,7 +1594,9 @@ protected override _selectSlashMenuItem(): void {
 		const items = this._slashMenuEl?.querySelectorAll('.slash-menu-item');
 		if (!items?.length) { return; }
 		const selected = items[Math.min(this._slashMenuIndex, items.length - 1)] as HTMLElement | undefined;
-		if (selected?.dataset.skillId) {
+		if (selected?.dataset.workflowId) {
+			this._insertSlashWorkflow(selected.dataset.workflowId, selected.dataset.workflowName || selected.dataset.workflowId);
+		} else if (selected?.dataset.skillId) {
 			this._insertSlashSkill(selected.dataset.skillId, selected.dataset.skillName || selected.dataset.skillId);
 		}
 		this._closeSlashMenu();
@@ -1249,6 +1610,15 @@ protected override _insertSlashSkill(skillId: string, skillName: string): void {
 	this._textarea.removeAttribute('data-slash-command');
 	// Add skill chip（内联插入到 composer 文本流末尾）
 	this._addSkillChip(skillId, skillName);
+	this._focusComposerEnd();
+}
+
+/** slash 菜单选中工作流：清空输入后插入 workflow chip，光标落在 chip 之后。 */
+protected _insertSlashWorkflow(workflowId: string, workflowName: string): void {
+	this._setComposerText('');
+	this._textarea.style.color = '';
+	this._textarea.removeAttribute('data-slash-command');
+	this._addWorkflowChip(workflowId, workflowName);
 	this._focusComposerEnd();
 }
 
@@ -1410,6 +1780,17 @@ protected override _getComposerText(): string {
 			out += id ? `/skill ${id}` : '';
 			return;
 		}
+		// workflow chip → 内联标记 `/workflow <id>`（+ 参数 `--k=v`）：保留 chip 位置，气泡/历史恢复据此还原。
+		if (el.classList.contains('inline-workflow-chip')) {
+			const id = el.dataset.workflowId;
+			if (!id) { return; }
+			out += `/workflow ${id}`;
+			const params = decodeWorkflowChipParams(el.dataset.params);
+			if (params && Object.keys(params).length > 0) {
+				out += ' ' + serializeInlineWorkflowArgs(params);
+			}
+			return;
+		}
 		const tag = el.tagName;
 			if (tag === 'BR') { out += '\n'; return; }
 			if (tag === 'DIV' || tag === 'P') {
@@ -1433,9 +1814,24 @@ protected override _setComposerText(text: string): void {
 		if (!root) { return; }
 		clearNode(root);
 		if (text) {
-			// 解析内联 skill 标记（/skill <id>）→ 重建 chip 节点（历史恢复/草稿恢复）
-			const segments = text.split(/(\/skill\s+[\w-]+)/g);
-			for (const seg of segments) {
+			// 解析内联 skill / workflow 标记（/skill <id>、/workflow <id>）→ 重建 chip 节点（历史恢复/草稿恢复）
+			const segments = text.split(/(\/skill\s+[\w-]+|\/workflow\s+wf-[\w-]+)/g);
+			for (let i = 0; i < segments.length; i++) {
+				const seg = segments[i];
+				const wm = seg.match(/^\/workflow\s+(wf-[\w-]+)$/);
+				if (wm) {
+					// 消费 mark 之后紧跟的 `--k=v` 参数（序列化格式 `/workflow <id> --k=v input`）
+					let params: Record<string, string> | undefined;
+					if (i + 1 < segments.length) {
+						const parsed = parseInlineWorkflowArgs(segments[i + 1]);
+						if (Object.keys(parsed.variables).length > 0) {
+							params = parsed.variables;
+							segments[i + 1] = parsed.input; // 剩余文本作为 input 保留
+						}
+					}
+					root.appendChild(this._createWorkflowChipNode(wm[1], this._resolveWorkflowName(wm[1]), params));
+					continue;
+				}
 				const m = seg.match(/^\/skill\s+([\w-]+)$/);
 				if (m) {
 					root.appendChild(this._createSkillChipNode(m[1], this._resolveSkillName(m[1])));
@@ -1476,7 +1872,7 @@ protected override _getCaretOffset(): number {
 				offset += (n.textContent ?? '').length;
 			} else if (n.nodeType === Node.ELEMENT_NODE) {
 				const el = n as HTMLElement;
-				if (!el.classList.contains('inline-attachment-chip') && !el.classList.contains('inline-skill-chip')) {
+				if (!el.classList.contains('inline-attachment-chip') && !el.classList.contains('inline-skill-chip') && !el.classList.contains('inline-workflow-chip')) {
 					offset += (el.textContent ?? '').length;
 				}
 			}
@@ -1536,7 +1932,7 @@ protected override _insertTextAtCaret(text: string): void {
 				offset += (n.textContent ?? '').length;
 			} else if (n.nodeType === Node.ELEMENT_NODE) {
 				const el = n as HTMLElement;
-				if (!el.classList.contains('inline-attachment-chip') && !el.classList.contains('inline-skill-chip')) {
+				if (!el.classList.contains('inline-attachment-chip') && !el.classList.contains('inline-skill-chip') && !el.classList.contains('inline-workflow-chip')) {
 					offset += (el.textContent ?? '').length;
 				}
 			}
@@ -1555,7 +1951,7 @@ protected override _insertTextAtCaret(text: string): void {
 		const walker = this._ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
 			acceptNode: (n) => {
 				const p = (n as Text).parentElement;
-				return (p && p.closest('.inline-attachment-chip, .inline-skill-chip')) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+				return (p && p.closest('.inline-attachment-chip, .inline-skill-chip, .inline-workflow-chip')) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
 			},
 		});
 		let node: Node | null;
@@ -1636,6 +2032,15 @@ protected override _insertTextAtCaret(text: string): void {
 				}
 				return;
 			}
+			if (el.classList.contains('inline-workflow-chip')) {
+				const id = el.dataset.workflowId;
+				if (id) {
+					const params = decodeWorkflowChipParams(el.dataset.params);
+					segments.push({ type: 'workflow', id, params });
+					hasChip = true;
+				}
+				return;
+			}
 			if (el.classList.contains('inline-attachment-chip')) {
 				const attId = el.dataset.attId;
 				const att = attId ? this._attachments.find(a => a.id === attId) : undefined;
@@ -1655,11 +2060,15 @@ protected override _insertTextAtCaret(text: string): void {
 
 		if (!segments.length || !hasChip) { return null; }
 
-		// 可读纯文本（复制到外部程序时用）：技能用 /skill 标记、附件用文件名
+		// 可读纯文本（复制到外部程序时用）：技能用 /skill 标记、工作流带参数、附件用文件名
 		let text = '';
 		for (const s of segments) {
 			if (s.type === 'text') { text += s.text; }
 			else if (s.type === 'skill') { text += `/skill ${s.id}`; }
+			else if (s.type === 'workflow') {
+				text += `/workflow ${s.id}`;
+				if (s.params && Object.keys(s.params).length > 0) { text += ' ' + serializeInlineWorkflowArgs(s.params); }
+			}
 			else if (s.type === 'attachment') { text += `[${s.name ?? '附件'}]`; }
 		}
 		return { json: JSON.stringify({ v: 1, segments }), text };
@@ -1683,6 +2092,11 @@ protected override _insertTextAtCaret(text: string): void {
 			} else if (seg.type === 'skill' && seg.id) {
 				if (!lastWasChip) { frag.appendChild(this._ownerDocument.createTextNode(' ')); }
 				frag.appendChild(this._createSkillChipNode(seg.id, this._resolveSkillName(seg.id)));
+				frag.appendChild(this._ownerDocument.createTextNode(' '));
+				lastWasChip = true;
+			} else if (seg.type === 'workflow' && seg.id) {
+				if (!lastWasChip) { frag.appendChild(this._ownerDocument.createTextNode(' ')); }
+				frag.appendChild(this._createWorkflowChipNode(seg.id, this._resolveWorkflowName(seg.id), seg.params));
 				frag.appendChild(this._ownerDocument.createTextNode(' '));
 				lastWasChip = true;
 			} else if (seg.type === 'attachment' && seg.name && seg.mimeType) {

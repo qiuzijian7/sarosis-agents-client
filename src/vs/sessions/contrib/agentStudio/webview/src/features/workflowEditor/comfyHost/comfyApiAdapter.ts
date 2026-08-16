@@ -129,17 +129,17 @@ export function guiToApi(wf: ComfyGuiWorkflow): ComfyApiPrompt {
 export interface ExportFilterResult {
 	/** GUI workflow with non-Comfy nodes (and their links) removed. */
 	workflow: ComfyGuiWorkflow;
-	/** Distinct node types that were skipped (react/llm Sarosis nodes). */
+	/** Distinct node types that were skipped (react/llm Saros nodes). */
 	skipped: string[];
 }
 
 /**
- * Strip Sarosis orchestration/provider nodes (kind 'react'/'llm') from a GUI
+ * Strip Saros orchestration/provider nodes (kind 'react'/'llm') from a GUI
  * workflow before exporting to ComfyUI api.json. These types have no ComfyUI
  * class_type and would otherwise be exported as broken nodes. Links touching a
  * removed node are dropped. Pure + injectable predicate → unit-testable.
  */
-export function stripSarosisNodesForExport(
+export function stripSarosNodesForExport(
 	wf: ComfyGuiWorkflow,
 	isNonComfyNode: (type: string) => boolean,
 ): ExportFilterResult {

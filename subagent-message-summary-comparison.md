@@ -7,7 +7,7 @@
 
 ## 1. 核心结论（一句话版）
 
-| 维度 | **Sarosis-Agents-Client (SAC)** | **Hermes-Agent (HA)** |
+| 维度 | **Saros-Agents-Client (SAC)** | **Hermes-Agent (HA)** |
 |---|---|---|
 | **返回格式** | 纯文本字符串 `output` | 结构化 JSON（`summary` + 元数据） |
 | **父 Agent 可见内容** | 仅子 Agent 的最终文本输出 | 子任务 `summary` + `status` + `api_calls` + `tool_trace` + `tokens` 等 |

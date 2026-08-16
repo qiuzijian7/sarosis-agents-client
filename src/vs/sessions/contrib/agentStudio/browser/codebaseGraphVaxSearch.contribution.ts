@@ -211,7 +211,7 @@ registerAction2(class OpenGraphFileAction extends Action2 {
 			id: 'sarosis.openGraphFile',
 			title: localize2('sarosis.openGraphFile', 'Open File in Codebase'),
 			f1: true,
-			category: localize2('sarosis.category', 'Sarosis'),
+			category: localize2('sarosis.category', 'Saros'),
 			keybinding: {
 				primary: KeyMod.Shift | KeyMod.Alt | KeyCode.KeyO,
 				weight: KeybindingWeight.WorkbenchContrib,
@@ -247,7 +247,7 @@ registerAction2(class FindGraphReferencesAction extends Action2 {
 			id: 'sarosis.findGraphReferences',
 			title: localize2('sarosis.findGraphReferences', 'Find References'),
 			f1: true,
-			category: localize2('sarosis.category', 'Sarosis'),
+			category: localize2('sarosis.category', 'Saros'),
 			keybinding: {
 				// Shift+Alt+F 让位给"Search view 搜索选中词"；Find References 改绑 Ctrl+Shift+Alt+F
 				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyMod.Alt | KeyCode.KeyF,
@@ -324,7 +324,7 @@ registerAction2(class GotoGraphImplementationAction extends Action2 {
 			id: 'sarosis.gotoGraphImplementation',
 			title: localize2('sarosis.gotoGraphImplementation', 'Go to Implementation'),
 			f1: true,
-			category: localize2('sarosis.category', 'Sarosis'),
+			category: localize2('sarosis.category', 'Saros'),
 			keybinding: {
 				// Alt+G：菜单栏 mnemonic 已改为 Ctrl+Alt+字母，不再拦截
 				primary: KeyMod.Alt | KeyCode.KeyG,
@@ -510,7 +510,7 @@ registerAction2(class ListGraphMethodsAction extends Action2 {
 			id: 'sarosis.listGraphMethods',
 			title: localize2('sarosis.listGraphMethods', 'List Methods in Current File'),
 			f1: true,
-			category: localize2('sarosis.category', 'Sarosis'),
+			category: localize2('sarosis.category', 'Saros'),
 			keybinding: {
 				// Alt+M：菜单栏 mnemonic 已改为 Ctrl+Alt+字母，不再拦截
 				primary: KeyMod.Alt | KeyCode.KeyM,
@@ -609,7 +609,7 @@ registerAction2(class SearchSelectionInFilesAction extends Action2 {
 			id: 'sarosis.searchSelectionInFiles',
 			title: localize2('sarosis.searchSelectionInFiles', 'Search Selected Text in Files'),
 			f1: true,
-			category: localize2('sarosis.category', 'Sarosis'),
+			category: localize2('sarosis.category', 'Saros'),
 			keybinding: {
 				// Shift+Alt+F：搜索选中词（Find References 已让位到 Ctrl+Shift+Alt+F）
 				primary: KeyMod.Shift | KeyMod.Alt | KeyCode.KeyF,

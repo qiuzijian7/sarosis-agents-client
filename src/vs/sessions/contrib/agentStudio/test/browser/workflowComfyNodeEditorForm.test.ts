@@ -55,6 +55,35 @@ suite('nodeEditorForm', () => {
 			assert.ok(!fields.some(f => f.key === 'prompt'));
 		});
 
+		test('provider-backend schema node (ModelImageGen) gets provider/model combo fields', () => {
+			// Saros.ModelImageGen is kind='schema' + backendKind='provider' with
+			// widgets [provider, model, seed, width, height, steps, prompt]. Its
+			// editor must render provider → ProviderModelSelect, model →
+			// providerModel (linked to the provider), numbers for seed/width/height.
+			const fields = buildEditorFields(spec({
+				kind: 'schema',
+				backendKind: 'provider',
+				widgets: [
+					{ name: 'provider', type: 'COMBO', default: '' },
+					{ name: 'model', type: 'COMBO', default: '' },
+					{ name: 'seed', type: 'INT', default: -1 },
+					{ name: 'width', type: 'INT', default: 1024 },
+					{ name: 'prompt', type: 'TEXT', default: '' },
+				],
+			}));
+			const provider = fields.find(f => f.key === 'provider');
+			const model = fields.find(f => f.key === 'model');
+			assert.ok(provider, 'provider field exists');
+			assert.strictEqual(provider.kind, 'provider');
+			assert.ok(model, 'model field exists');
+			assert.strictEqual(model.kind, 'providerModel');
+			assert.ok(fields.some(f => f.key === 'seed' && f.kind === 'number'));
+			assert.ok(fields.some(f => f.key === 'width' && f.kind === 'number'));
+			// prompt kept at the front, not duplicated from widgets.
+			assert.strictEqual(fields[0].key, 'prompt');
+			assert.strictEqual(fields.filter(f => f.key === 'prompt').length, 1);
+		});
+
 		test('native node renders widgets: combo → select, int → number, string → text', () => {
 			const native = spec({
 				kind: 'native',
@@ -77,30 +106,30 @@ suite('nodeEditorForm', () => {
 			assert.deepStrictEqual(buildEditorFields(undefined), []);
 		});
 
-		test('react (Sarosis) spec → per-type parameter fields', () => {
-			const prompt = buildEditorFields(spec({ type: 'Sarosis.Prompt', kind: 'react' }));
+		test('react (Saros) spec → per-type parameter fields', () => {
+			const prompt = buildEditorFields(spec({ type: 'Saros.Prompt', kind: 'react' }));
 			assert.ok(prompt.some(f => f.key === 'prompt' && f.kind === 'textarea'));
 			assert.ok(prompt.some(f => f.key === 'variables'));
-			const agent = buildEditorFields(spec({ type: 'Sarosis.Agent', kind: 'react' }));
+			const agent = buildEditorFields(spec({ type: 'Saros.Agent', kind: 'react' }));
 			assert.ok(agent.some(f => f.key === 'agentId'));
 			assert.ok(agent.some(f => f.key === 'providerId'));
-			const ifElse = buildEditorFields(spec({ type: 'Sarosis.IfElse', kind: 'react' }));
+			const ifElse = buildEditorFields(spec({ type: 'Saros.IfElse', kind: 'react' }));
 			assert.ok(ifElse.some(f => f.key === 'evaluationTarget'));
 			assert.ok(ifElse.some(f => f.key === 'branches'));
-			const askUser = buildEditorFields(spec({ type: 'Sarosis.AskUser', kind: 'react' }));
+			const askUser = buildEditorFields(spec({ type: 'Saros.AskUser', kind: 'react' }));
 			assert.ok(askUser.some(f => f.key === 'questionText'));
 			assert.ok(askUser.some(f => f.key === 'options' && f.kind === 'textarea'));
 		});
 
 		test('unknown react type → no fields', () => {
-			assert.deepStrictEqual(buildEditorFields(spec({ type: 'Sarosis.Unknown', kind: 'react' })), []);
+			assert.deepStrictEqual(buildEditorFields(spec({ type: 'Saros.Unknown', kind: 'react' })), []);
 		});
 	});
 
-	suite('Sarosis field converters', () => {
+	suite('Saros field converters', () => {
 
 		test('sarosisDataToValues stringifies JSON fields and maps agentConfig', () => {
-			const values = sarosisDataToValues('Sarosis.Agent', {
+			const values = sarosisDataToValues('Saros.Agent', {
 				agentId: 'code',
 				agentConfig: { providerId: 'p', modelId: 'm' },
 				prompt: 'hello',
@@ -112,13 +141,13 @@ suite('nodeEditorForm', () => {
 		});
 
 		test('sarosisDataToValues falls back to defaults for missing fields', () => {
-			const values = sarosisDataToValues('Sarosis.Prompt', undefined);
+			const values = sarosisDataToValues('Saros.Prompt', undefined);
 			assert.strictEqual(values.prompt, '');
 			assert.strictEqual(values.variables, '{}');
 		});
 
 		test('sarosisValuesToData parses JSON fields and rebuilds agentConfig', () => {
-			const data = sarosisValuesToData('Sarosis.Agent', {
+			const data = sarosisValuesToData('Saros.Agent', {
 				agentId: 'code',
 				providerId: 'p',
 				modelId: 'm',
@@ -129,12 +158,12 @@ suite('nodeEditorForm', () => {
 		});
 
 		test('sarosisValuesToData keeps invalid JSON as the raw string', () => {
-			const data = sarosisValuesToData('Sarosis.Skill', { skillName: 's', skillArgs: 'not-json' });
+			const data = sarosisValuesToData('Saros.Skill', { skillName: 's', skillArgs: 'not-json' });
 			assert.strictEqual(data.skillArgs, 'not-json');
 		});
 
 		test('sarosisValuesToData multiSelect string → boolean', () => {
-			const data = sarosisValuesToData('Sarosis.AskUser', { questionText: 'q', options: '[]', multiSelect: 'yes' });
+			const data = sarosisValuesToData('Saros.AskUser', { questionText: 'q', options: '[]', multiSelect: 'yes' });
 			assert.strictEqual(data.multiSelect, true);
 			assert.deepStrictEqual(data.options, []);
 		});
@@ -168,7 +197,7 @@ suite('nodeEditorForm', () => {
 	suite('ProviderPicker fields', () => {
 
 		test('react ProviderPicker spec → provider + providerModel fields', () => {
-			const fields = buildEditorFields(spec({ type: 'Sarosis.ProviderPicker', kind: 'react' }));
+			const fields = buildEditorFields(spec({ type: 'Saros.ProviderPicker', kind: 'react' }));
 			const provider = fields.find(f => f.key === 'providerId');
 			const model = fields.find(f => f.key === 'modelId');
 			assert.ok(provider, 'expected providerId field');
@@ -178,20 +207,20 @@ suite('nodeEditorForm', () => {
 		});
 
 		test('ProviderPicker persists providerId/modelId flat (no agentConfig)', () => {
-			const data = sarosisValuesToData('Sarosis.ProviderPicker', { providerId: 'openrouter', modelId: 'flux' });
+			const data = sarosisValuesToData('Saros.ProviderPicker', { providerId: 'openrouter', modelId: 'flux' });
 			assert.strictEqual(data.providerId, 'openrouter');
 			assert.strictEqual(data.modelId, 'flux');
 			assert.strictEqual(data.agentConfig, undefined);
 		});
 
 		test('ProviderPicker round-trips through sarosisDataToValues', () => {
-			const values = sarosisDataToValues('Sarosis.ProviderPicker', { providerId: 'openrouter', modelId: 'flux' });
+			const values = sarosisDataToValues('Saros.ProviderPicker', { providerId: 'openrouter', modelId: 'flux' });
 			assert.strictEqual(values.providerId, 'openrouter');
 			assert.strictEqual(values.modelId, 'flux');
 		});
 
 		test('Agent still uses agentConfig (regression guard)', () => {
-			const data = sarosisValuesToData('Sarosis.Agent', { providerId: 'p', modelId: 'm' });
+			const data = sarosisValuesToData('Saros.Agent', { providerId: 'p', modelId: 'm' });
 			assert.deepStrictEqual(data.agentConfig, { providerId: 'p', modelId: 'm' });
 			assert.strictEqual(data.providerId, undefined);
 		});

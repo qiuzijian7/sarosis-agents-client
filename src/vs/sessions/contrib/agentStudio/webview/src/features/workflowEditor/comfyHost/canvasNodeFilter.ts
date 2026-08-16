@@ -3,13 +3,13 @@
  *
  *  The LiteGraph engine is "ComfyUI native": it draws node bodies (the rectangle,
  *  the title, the resize handles) on the canvas itself. It does NOT know how to
- *  render Sarosis custom nodes (e.g. type='call', 'askUser', 'ifElse') — feeding
+ *  render Saros custom nodes (e.g. type='call', 'askUser', 'ifElse') — feeding
  *  them through `graph.configure()` would create a node with a valid title but no
  *  body, producing a giant empty red-bordered rectangle on the canvas (see the
  *  observed "大空白节点" bug).
  *
  *  This module produces a small, pure decision that the canvas can apply both:
- *    - on engine change (drop Sarosis nodes before graph.configure)
+ *    - on engine change (drop Saros nodes before graph.configure)
  *    - on store → graph sync (same)
  *  plus a `findUnsupportedNodes` helper for the UI to surface a warning.
  *--------------------------------------------------------------------------------------------*/
@@ -17,28 +17,29 @@
 import type { LiteGraphSerialisedGraph, LiteGraphSerialisedNode } from './ComfyGraphAdapter.js';
 import { isPortTypeCompatible } from './registry.js';
 
-/** Known Sarosis node types that now have real LiteGraph node classes. */
-export const SAROSIS_NODE_TYPES = new Set<string>([
-	'Sarosis.Start',
-	'Sarosis.End',
-	'Sarosis.Task',
-	'Sarosis.Prompt',
-	'Sarosis.Agent',
-	'Sarosis.Skill',
-	'Sarosis.Tool',
-	'Sarosis.IfElse',
-	'Sarosis.Switch',
-	'Sarosis.AskUser',
-	'Sarosis.Group',
-	'Sarosis.ModelImageGen',
-	'Sarosis.ProviderPicker',
+/** Known Saros node types that now have real LiteGraph node classes. */
+export const SAROS_NODE_TYPES = new Set<string>([
+	'Saros.Start',
+	'Saros.End',
+	'Saros.Task',
+	'Saros.Prompt',
+	'Saros.Agent',
+	'Saros.Skill',
+	'Saros.Tool',
+	'Saros.IfElse',
+	'Saros.Switch',
+	'Saros.AskUser',
+	'Saros.Group',
+	'Saros.ModelImageGen',
+	'Saros.ProviderPicker',
+	'Saros.Subflow',
 ]);
 
 /** Node types the LiteGraph engine can render meaningfully.
- *  Sarosis types are renderable now (they have real LGraphNode classes);
+ *  Saros types are renderable now (they have real LGraphNode classes);
  *  ComfyUI-compat (schema/native) types are renderable; anything else is dropped. */
 export function isLiteGraphRenderable(type: string, hasComfyUISpec: boolean): boolean {
-	if (SAROSIS_NODE_TYPES.has(type)) { return true; }
+	if (SAROS_NODE_TYPES.has(type)) { return true; }
 	return hasComfyUISpec;
 }
 
@@ -56,8 +57,8 @@ export function filterNodesForLiteGraph(
 	const dropped: UnsupportedNode[] = [];
 	const nodes: LiteGraphSerialisedNode[] = [];
 	for (const n of graph.nodes ?? []) {
-		if (SAROSIS_NODE_TYPES.has(n.type)) {
-			// Sarosis nodes now have real LiteGraph classes → keep them.
+		if (SAROS_NODE_TYPES.has(n.type)) {
+			// Saros nodes now have real LiteGraph classes → keep them.
 			nodes.push(n);
 			continue;
 		}
@@ -80,7 +81,7 @@ export function findUnsupportedNodes(
 ): UnsupportedNode[] {
 	const out: UnsupportedNode[] = [];
 	for (const n of nodes) {
-		if (SAROSIS_NODE_TYPES.has(n.type)) { continue; }
+		if (SAROS_NODE_TYPES.has(n.type)) { continue; }
 		if (!hasSpec(n.type)) {
 			out.push({ id: 0, type: n.type, reason: 'unknown' });
 		}

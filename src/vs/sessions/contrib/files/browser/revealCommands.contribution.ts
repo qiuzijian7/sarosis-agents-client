@@ -1,13 +1,13 @@
 /*---------------------------------------------------------------------------------------------
- *  [Sarosis 2026-07-04] 修复文本编辑器右键菜单中两个失效命令。
+ *  [Saros 2026-07-04] 修复文本编辑器右键菜单中两个失效命令。
  *
  * 问题：
- *  1. "Reveal in Explorer View" (revealInExplorer) 在 Sarosis 会话窗口中静默失效。
+ *  1. "Reveal in Explorer View" (revealInExplorer) 在 Saros 会话窗口中静默失效。
  *     标准实现在 fileCommands.ts 中先用 `contextService.isInsideWorkspace(uri)` 做判断，
- *     Sarosis 的 SessionsWorkspaceContextService 是合成的内存 workspace，用户的本地文件
+ *     Saros 的 SessionsWorkspaceContextService 是合成的内存 workspace，用户的本地文件
  *     不会落在该 workspace 的 folders 里，导致该检查直接走 else 分支（只 focus
  *     OpenEditorsView），不打开 Explorer。同时即便 isInsideWorkspace 返回 true，
- *     标准实现也只会打开 `workbench.explorer.fileView`，在 Sarosis 的会话窗口中
+ *     标准实现也只会打开 `workbench.explorer.fileView`，在 Saros 的会话窗口中
  *     标准 Explorer 容器并不总是可见/可达。
  *  2. "Reveal in File Explorer" (revealFileInOS) 也偶发失效。当传进来的 resource
  *     经过 getMultiSelectedResources 推断后落到非 file scheme，或者原生 IPC 失败
@@ -16,9 +16,9 @@
  * 修复策略：
  *  - 用 CommandsRegistry 重新注册同名命令。由于 CommandsRegistry 用 LinkedList 存储
  *    handler，新注册的会排在最前并被 getCommand 优先返回，从而覆盖标准实现。
- *  - Sarosis 端实现：
+ *  - Saros 端实现：
  *      · revealInExplorer：跳过 isInsideWorkspace 检查，优先打开
- *        `sessions.files.explorer`（Sarosis 自定义 Explorer），回退到标准
+ *        `sessions.files.explorer`（Saros 自定义 Explorer），回退到标准
  *        `workbench.explorer.fileView`。
  *      · revealFileInOS：复用 getMultiSelectedResources 拿到的 URI 列表，对
  *        `file` / `vscodeUserData` / `vscodeRemote(WSL)` 全部用本地路径走
@@ -90,14 +90,14 @@ CommandsRegistry.registerCommand({
 
 		const uri = getResourceForCommand(resource, editorService, listService);
 		if (!uri) {
-			logService.warn('[Sarosis][revealInExplorer] No resource could be resolved from command arg.');
+			logService.warn('[Saros][revealInExplorer] No resource could be resolved from command arg.');
 			return;
 		}
 
-		logService.info(`[Sarosis][revealInExplorer] request for ${uri.toString()}`);
+		logService.info(`[Saros][revealInExplorer] request for ${uri.toString()}`);
 
-		// 优先尝试 Sarosis 自定义 Explorer 视图；其次回退到标准 Explorer 视图。
-		// Sarosis 会话窗口的 `isInsideWorkspace` 在大多数本地文件场景下会返回 false，
+		// 优先尝试 Saros 自定义 Explorer 视图；其次回退到标准 Explorer 视图。
+		// Saros 会话窗口的 `isInsideWorkspace` 在大多数本地文件场景下会返回 false，
 		// 但 Explorer 视图本身仍然能展示并选中文件，因此这里直接跳过该检查。
 		const candidateIds = [SESSIONS_FILES_VIEW_ID, STANDARD_EXPLORER_VIEW_ID];
 		for (const id of candidateIds) {
@@ -107,15 +107,15 @@ CommandsRegistry.registerCommand({
 					view.setExpanded(true);
 					await explorerService.select(uri, 'force');
 					view.focus();
-					logService.info(`[Sarosis][revealInExplorer] revealed in view ${id}`);
+					logService.info(`[Saros][revealInExplorer] revealed in view ${id}`);
 					return;
 				}
 			} catch (err) {
-				logService.warn(`[Sarosis][revealInExplorer] openView ${id} failed:`, err);
+				logService.warn(`[Saros][revealInExplorer] openView ${id} failed:`, err);
 			}
 		}
 
-		logService.warn('[Sarosis][revealInExplorer] No explorer view available.');
+		logService.warn('[Saros][revealInExplorer] No explorer view available.');
 	},
 });
 
@@ -140,7 +140,7 @@ CommandsRegistry.registerCommand({
 			explorerService
 		);
 
-		logService.info(`[Sarosis][revealFileInOS] resolved ${resolved.length} resources`);
+		logService.info(`[Saros][revealFileInOS] resolved ${resolved.length} resources`);
 
 		if (resolved.length) {
 			for (const r of resolved) {
@@ -149,10 +149,10 @@ CommandsRegistry.registerCommand({
 					try {
 						await nativeHostService.showItemInFolder(p);
 					} catch (err) {
-						logService.error(`[Sarosis][revealFileInOS] showItemInFolder failed for ${p}:`, err);
+						logService.error(`[Saros][revealFileInOS] showItemInFolder failed for ${p}:`, err);
 					}
 				} else {
-					logService.warn(`[Sarosis][revealFileInOS] skip non-local resource ${r.scheme}:${r.path}`);
+					logService.warn(`[Saros][revealFileInOS] skip non-local resource ${r.scheme}:${r.path}`);
 				}
 			}
 			return;
@@ -166,13 +166,13 @@ CommandsRegistry.registerCommand({
 				try {
 					await nativeHostService.showItemInFolder(p);
 				} catch (err) {
-					logService.error('[Sarosis][revealFileInOS] workspace fallback showItemInFolder failed:', err);
+					logService.error('[Saros][revealFileInOS] workspace fallback showItemInFolder failed:', err);
 				}
 			} else {
-				logService.warn('[Sarosis][revealFileInOS] workspace fallback has non-local folder uri:', first.toString());
+				logService.warn('[Saros][revealFileInOS] workspace fallback has non-local folder uri:', first.toString());
 			}
 		} else {
-			logService.warn('[Sarosis][revealFileInOS] no resources and no workspace folders to reveal.');
+			logService.warn('[Saros][revealFileInOS] no resources and no workspace folders to reveal.');
 		}
 	},
 });

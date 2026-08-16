@@ -1,8 +1,8 @@
-# Sarosis Agents Client — 四层架构完整框架
+# Saros Agents Client — 四层架构完整框架
 
-> **版本**: v1.1  
-> **日期**: 2026-05-11  
-> **状态**: 设计定稿 + 部分实现（核心服务层已落地）  
+> **版本**: v1.1
+> **日期**: 2026-05-11
+> **状态**: 设计定稿 + 部分实现（核心服务层已落地）
 > **基于**: OpenClaw-VSCode-Architecture-v2.md (v1.7, 28章)
 
 ---
@@ -70,7 +70,7 @@
 VSCode 原有分层:
   base → platform → editor → workbench
 
-Sarosis 新增:
+Saros 新增:
   sessions（顶层，与 workbench 同级）
     ├── 可 import workbench
     └── workbench 不可 import sessions（反向禁止）
@@ -1232,7 +1232,7 @@ enum StreamDeltaType {
 
 ## 附录 D: 实现状态与源码对照
 
-> **更新日期**: 2026-05-11 (v1.1)  
+> **更新日期**: 2026-05-11 (v1.1)
 > **来源**: 源码审查 `src/vs/sessions/contrib/agentStudio/`
 
 ### D.1 服务/组件实现状态总览
@@ -1386,8 +1386,8 @@ AGENT_STUDIO_DATA_PATH_SETTING       = 'sessions.agentStudio.dataPath'
 
 ---
 
-> **文档维护说明**: 本文档为 Sarosis Agents Client 架构设计的权威参考。如有更新请同步修改版本号并记录变更。
-> 
+> **文档维护说明**: 本文档为 Saros Agents Client 架构设计的权威参考。如有更新请同步修改版本号并记录变更。
+>
 > **变更记录**:
 > - v1.0 (2026-05-11): 初版，设计定稿
 > - v1.1 (2026-05-11): 源码审查后补充实现状态，新增附录 D，更新目录结构，新增 §6.9-6.11

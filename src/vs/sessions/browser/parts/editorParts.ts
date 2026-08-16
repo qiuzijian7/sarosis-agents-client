@@ -15,7 +15,7 @@ export class EditorParts extends EditorPartsBase {
 		return this.instantiationService.createInstance(MainEditorPart, this);
 	}
 
-	// ── [Sarosis] Agent zone EditorPart (second main-window part) ──────
+	// ── [Saros] Agent zone EditorPart (second main-window part) ──────
 	// Lazily created the first time the workbench bootstrap asks for it
 	// (during createEditorPart()). It cannot be created eagerly in the
 	// constructor because `this.instantiationService` is wired up by the

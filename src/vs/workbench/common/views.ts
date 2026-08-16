@@ -76,6 +76,15 @@ export const enum WindowEnablement {
 	 * Visible in both editor and agent sessions windows
 	 */
 	Both = 3,
+	/**
+	 * [Saros] Visible in NO window. Use for containers/views that must stay
+	 * registered (so their commands, keybindings and `openView()` callers keep
+	 * working) while never showing an Activity Bar entry.
+	 *
+	 * NOTE: the value must not be 0 — `isEnabled()` treats a falsy enablement as
+	 * "main window only" (the historical default for descriptors that omit it).
+	 */
+	None = 4,
 }
 
 /**

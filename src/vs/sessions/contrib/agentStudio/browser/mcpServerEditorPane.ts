@@ -20,8 +20,10 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { McpServerEditorInput } from './mcpServerEditorInput.js';
+import { McpDetailEditorInput } from './mcpDetailEditorInput.js';
 import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
 import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
+import { getMcpPresets, type IMcpServerPreset } from '../common/bundled-tools/bundledMcpPresets.js';
 import { IMarketplaceService, IMarketplacePackage, IUpgradeInfo, PackageKind } from '../common/marketplace.js';
 import { IWorkbenchMcpManagementService } from '../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
 import { IEventBridgeService } from '../common/eventBridge.js';
@@ -308,12 +310,20 @@ export class McpServerEditorPane extends EditorPane {
 		} catch (err) {
 			console.error('[McpServerEditor] Failed to load MCP packages:', err);
 			clearNode(this._gridEl);
+			// Built-in presets stay reachable even when the marketplace is down.
+			const builtins = getMcpPresets().filter(p => p.builtin);
+			if (builtins.length > 0) {
+				this._gridEl.appendChild(this._builtinSectionHeader(builtins.length));
+				for (const preset of builtins) {
+					this._gridEl.appendChild(this._createBuiltinCard(preset));
+				}
+			}
 			const errEl = $('div');
 			errEl.style.gridColumn = '1 / -1';
 			errEl.style.textAlign = 'center';
 			errEl.style.padding = '40px';
 			errEl.style.color = 'var(--vscode-errorForeground)';
-			errEl.textContent = `加载失败: ${err instanceof Error ? err.message : String(err)}`;
+			errEl.textContent = `商城加载失败: ${err instanceof Error ? err.message : String(err)}`;
 			this._gridEl.appendChild(errEl);
 		} finally {
 			this._refreshBtn.textContent = '\u{1F504}';
@@ -330,14 +340,26 @@ export class McpServerEditorPane extends EditorPane {
 		if (!this._gridEl) { return; }
 		clearNode(this._gridEl);
 
+		// Built-in presets (Comfy MCP etc.) — always shown on top, search-filtered.
+		const q = this._searchQuery;
+		const builtins = getMcpPresets().filter(p => p.builtin && (
+			!q || p.name.toLowerCase().includes(q) || (p.description ?? '').toLowerCase().includes(q)
+		));
+		if (builtins.length > 0) {
+			this._gridEl.appendChild(this._builtinSectionHeader(builtins.length));
+			for (const preset of builtins) {
+				this._gridEl.appendChild(this._createBuiltinCard(preset));
+			}
+		}
+
 		// Apply search filter
 		let items = this._packages;
-		if (this._searchQuery) {
+		if (q) {
 			items = items.filter(p =>
-				p.name.toLowerCase().includes(this._searchQuery) ||
-				(p.description ?? '').toLowerCase().includes(this._searchQuery) ||
-				(p.tags ?? []).some(t => t.toLowerCase().includes(this._searchQuery)) ||
-				(p.category ?? '').toLowerCase().includes(this._searchQuery)
+				p.name.toLowerCase().includes(q) ||
+				(p.description ?? '').toLowerCase().includes(q) ||
+				(p.tags ?? []).some(t => t.toLowerCase().includes(q)) ||
+				(p.category ?? '').toLowerCase().includes(q)
 			);
 		}
 
@@ -359,6 +381,117 @@ export class McpServerEditorPane extends EditorPane {
 		for (const pkg of items) {
 			this._gridEl.appendChild(this._createCard(pkg));
 		}
+	}
+
+	/** "内置 MCP" 区块标题（跨满网格）。 */
+	private _builtinSectionHeader(count: number): HTMLElement {
+		const header = $('div.mcp-editor-builtin-header');
+		header.style.gridColumn = '1 / -1';
+		header.style.display = 'flex';
+		header.style.alignItems = 'center';
+		header.style.gap = '8px';
+		header.style.marginTop = '6px';
+		header.style.fontSize = '13px';
+		header.style.fontWeight = '600';
+		header.style.color = 'var(--vscode-descriptionForeground)';
+		const label = $('span');
+		label.textContent = '⭐ 内置 MCP';
+		header.appendChild(label);
+		const cnt = $('span');
+		cnt.textContent = `${count} 个`;
+		cnt.style.fontSize = '11px';
+		cnt.style.color = 'var(--vscode-textLink-foreground)';
+		header.appendChild(cnt);
+		return header;
+	}
+
+	/** 内置预设卡片：点击打开 detail（支持一键"自动安装并配置"）。 */
+	private _createBuiltinCard(preset: IMcpServerPreset): HTMLElement {
+		const card = $('div.mcp-editor-card');
+		card.style.background = 'var(--vscode-sideBar-background, #252526)';
+		card.style.border = '1px solid var(--vscode-panel-border)';
+		card.style.borderRadius = '8px';
+		card.style.padding = '14px';
+		card.style.cursor = 'pointer';
+		card.style.transition = 'all 0.15s';
+		card.style.display = 'flex';
+		card.style.flexDirection = 'column';
+		card.style.gap = '10px';
+		card.style.borderLeft = '3px solid var(--vscode-textLink-foreground, #3794ff)';
+		card.onmouseenter = () => { card.style.background = 'var(--vscode-list-hoverBackground)'; card.style.borderColor = 'var(--vscode-focusBorder)'; };
+		card.onmouseleave = () => { card.style.background = 'var(--vscode-sideBar-background, #252526)'; card.style.borderColor = 'var(--vscode-panel-border)'; };
+		card.onclick = () => { void this.editorService.openEditor(McpDetailEditorInput.getInstance(preset.id), { pinned: true }); };
+
+		const top = $('div');
+		top.style.display = 'flex';
+		top.style.alignItems = 'flex-start';
+		top.style.gap = '10px';
+
+		const icon = $('div');
+		icon.textContent = preset.icon || '\u{1F50C}';
+		icon.style.width = '34px';
+		icon.style.height = '34px';
+		icon.style.flexShrink = '0';
+		icon.style.display = 'flex';
+		icon.style.alignItems = 'center';
+		icon.style.justifyContent = 'center';
+		icon.style.fontSize = '18px';
+		icon.style.borderRadius = '8px';
+		icon.style.background = 'var(--vscode-sideBarSectionHeader-background)';
+		icon.style.border = '1px solid var(--vscode-panel-border)';
+		top.appendChild(icon);
+
+		const info = $('div');
+		info.style.flex = '1';
+		info.style.minWidth = '0';
+		const nameRow = $('div');
+		nameRow.style.display = 'flex';
+		nameRow.style.alignItems = 'center';
+		nameRow.style.gap = '6px';
+		const nameEl = $('span');
+		nameEl.textContent = preset.name;
+		nameEl.style.fontSize = '13px';
+		nameEl.style.fontWeight = '600';
+		nameRow.appendChild(nameEl);
+		const badge = $('span');
+		badge.textContent = '内置';
+		badge.style.fontSize = '10px';
+		badge.style.padding = '1px 6px';
+		badge.style.borderRadius = '8px';
+		badge.style.background = 'var(--vscode-badge-background)';
+		badge.style.color = 'var(--vscode-badge-foreground)';
+		nameRow.appendChild(badge);
+		info.appendChild(nameRow);
+		if (preset.description) {
+			const desc = $('div');
+			desc.textContent = preset.description.length > 110 ? preset.description.slice(0, 110) + '…' : preset.description;
+			desc.style.fontSize = '11px';
+			desc.style.color = 'var(--vscode-descriptionForeground)';
+			desc.style.marginTop = '3px';
+			desc.style.lineHeight = '1.45';
+			info.appendChild(desc);
+		}
+		top.appendChild(info);
+		card.appendChild(top);
+
+		const footer = $('div');
+		footer.style.display = 'flex';
+		footer.style.alignItems = 'center';
+		footer.style.gap = '8px';
+		footer.style.fontSize = '11px';
+		footer.style.color = 'var(--vscode-descriptionForeground)';
+		const type = $('span');
+		type.textContent = preset.transportType === 'http' ? 'HTTP' : 'stdio';
+		footer.appendChild(type);
+		if (preset.autoInstall) {
+			const hint = $('span');
+			hint.textContent = '⚙ 支持自动安装并配置';
+			hint.style.color = 'var(--vscode-textLink-foreground, #3794ff)';
+			footer.appendChild(hint);
+		}
+		card.appendChild(footer);
+
+		return card;
 	}
 
 	private _createCard(pkg: IMarketplacePackage): HTMLElement {

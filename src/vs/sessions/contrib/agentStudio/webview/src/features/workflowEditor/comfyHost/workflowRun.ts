@@ -17,6 +17,7 @@ import type { CardStateStore } from './cardState.js';
 import type { SingleNodeRunResult } from './nodeExecutor.js';
 import { runSingleNode, comfyOutputsToFxSnapshots } from './nodeExecutor.js';
 import { runStageWorkflow, StageWorkflowUnavailableError } from './stageWorkflowExecutor.js';
+import { getPluginNodeRunner } from './pluginLoader.js';
 import { isFxNode, isFxChainNode } from './fxChain.js';
 import type { MediaSnapshotEntry, MediaKind } from './mediaSnapshot.js';
 import { mediaGet, resolveAssetUrl } from '../mediaAssets.js';
@@ -53,7 +54,7 @@ export interface RunNode extends ExecutionNodeLike {
 
 /**
  * A node spec kind is executable when it maps to a Comfy class_type.
- * Sarosis orchestration nodes (kind 'react') and unregistered nodes are skipped.
+ * Saros orchestration nodes (kind 'react') and unregistered nodes are skipped.
  */
 export function isComfyExecutableSpec(spec: { kind?: string } | undefined): boolean {
 	return spec?.kind === 'schema' || spec?.kind === 'native';
@@ -68,14 +69,19 @@ export function isExecutableSpec(spec: { kind?: string } | undefined): boolean {
 	return isComfyExecutableSpec(spec) || spec?.kind === 'llm';
 }
 
-/** Provider image-gen node (e.g. Sarosis.ModelImageGen, kind 'llm'). */
+/** Provider image-gen node (e.g. Saros.ModelImageGen).
+ *
+ * Matches both legacy kind 'llm' specs and schema-styled provider nodes
+ * (kind 'schema' + backendKind 'provider', since 2026-08-12 the node is
+ * rendered like a ComfyTV Image Stage but still executes via the provider
+ * RPC — never a ComfyUI runner). */
 export function isLLMImageNode(spec: { kind?: string; backendKind?: string } | undefined): boolean {
-	return spec?.kind === 'llm';
+	return spec?.kind === 'llm' || (spec?.kind === 'schema' && spec?.backendKind === 'provider');
 }
 
-/** Provider Picker node (Sarosis.ProviderPicker): local, no RPC — emits a TEXT config. */
+/** Provider Picker node (Saros.ProviderPicker): local, no RPC — emits a TEXT config. */
 export function isProviderPickerNode(type: string): boolean {
-	return type === 'Sarosis.ProviderPicker';
+	return type === 'Saros.ProviderPicker';
 }
 
 /** TEXT config ref emitted by a Provider Picker ("providerId:modelId"). */
@@ -115,7 +121,7 @@ export function collectUpstreamProviderConfig(
 
 /**
  * Collect text values from upstream orchestration nodes that a media stage can
- * consume. Currently: a Sarosis Prompt node's `data.prompt` feeds the stage's
+ * consume. Currently: a Saros Prompt node's `data.prompt` feeds the stage's
  * prompt input — the first non-empty prompt wins. Pure.
  */
 export function collectOrchestrationValues(
@@ -136,11 +142,23 @@ export function collectOrchestrationValues(
 	return out;
 }
 
+/**
+ * 把一组上游 nodeId 映射成**快照归档键**（stageUid）。
+ * 解析器缺省或某节点没有 uid 时该项原样保留 nodeId（向后兼容旧工作流）。
+ */
+function mapSnapshotKeys(
+	upstreams: string[] | undefined,
+	snapshotKeyOf: ((nodeId: string) => string | undefined) | undefined,
+): string[] | undefined {
+	if (!upstreams || !snapshotKeyOf) { return upstreams; }
+	return upstreams.map(id => snapshotKeyOf(id) ?? id);
+}
+
 export interface GraphRunOptions {
 	nodes: RunNode[];
 	edges: ExecutionEdgeLike[];
 	/** resolve the spec for a node type (from the node registry) */
-	getSpec: (type: string) => { kind?: string; comfyTV?: ComfyTVSpecMeta } | undefined;
+	getSpec: (type: string) => { kind?: string; backendKind?: string; comfyTV?: ComfyTVSpecMeta } | undefined;
 	/** resolve the runner to use; undefined when nothing is connected */
 	resolveRunner: () => IComfyRunner | undefined;
 	snapshotStore: MediaSnapshotStore;
@@ -169,6 +187,19 @@ export interface GraphRunOptions {
 	parallelConcurrency?: number;
 	/** Stable identifier for the run (cross-session task tracking, P1). */
 	taskId?: string;
+	/** Injectable fetch (proxy for ComfyUI localhost 403 bypass); instant nodes use it. */
+	fetchImpl?: typeof fetch;
+	/**
+	 * nodeId → 快照归档键（stageUid）解析器。由画布层注入
+	 * （`LiteGraphCanvas.stageUidOf`）。
+	 *
+	 * ★ 为什么图执行必须要它：卡片读快照用 stageUid，若全图 Run 仍按 nodeId 归档，
+	 *   就是「写 nodeId、读 uid」→ 运行成功但 OUTPUT 永不刷新（静默）。
+	 *   同时**上游键也要映射**：`store.byNode(upstream)` 查的是归档键，
+	 *   传 nodeId 会让下游节点拿不到上游刚生成的图。
+	 *   缺省（未注入 / 该节点无 uid）时回退 nodeId，行为与旧版一致。
+	 */
+	snapshotKeyOf?: (nodeId: string) => string | undefined;
 }
 
 export interface GraphRunResult {
@@ -195,13 +226,21 @@ export type RunProgress = (p: { progress?: number; value?: number }) => void;
 export interface NodeExecutionInput {
 	runner: IComfyRunner;
 	nodeId: string;
+	/**
+	 * 快照归档键（= stageUid）。缺省回退 nodeId。
+	 * 见 stageWorkflowExecutor.StageWorkflowRunOptions.snapshotKey —— 与 nodeCard
+	 * 读侧（stageUid）保持一致，否则写 nodeId、读 stageUid，OUTPUT 不刷新。
+	 */
+	snapshotKey?: string;
 	type: string;
-	getSpec: (type: string) => { kind?: string; comfyTV?: ComfyTVSpecMeta } | undefined;
+	getSpec: (type: string) => { kind?: string; backendKind?: string; comfyTV?: ComfyTVSpecMeta } | undefined;
 	values: Record<string, unknown>;
 	/** upstream node ids — snapshots feed `upstream_*` bindings (P2) */
 	upstreams?: string[];
 	/** All canvas nodes (for @[node:label] mention resolution, P2). */
 	nodes?: Array<{ id: string; type?: string; data?: { label?: string } }>;
+	/** Injectable fetch (proxy for ComfyUI localhost 403 bypass); instant nodes use it. */
+	fetchImpl?: typeof fetch;
 	store: MediaSnapshotStore;
 	onProgress?: RunProgress;
 	signal?: AbortSignal;
@@ -253,11 +292,11 @@ export async function resolveLoadImageInputForNode(input: NodeExecutionInput): P
 }
 
 /** 默认上传实现：全局 fetch + runner baseUrl → Comfy /upload/image。 */
-export function defaultResolveLoadImageRef(runner: IComfyRunner): (ref: string) => Promise<{ ok: boolean; image?: string; error?: string }> {
+export function defaultResolveLoadImageRef(runner: IComfyRunner, fetchImpl?: BridgeFetchLike): (ref: string) => Promise<{ ok: boolean; image?: string; error?: string }> {
 	return (ref) => resolveLoadImageImageRef({
 		ref,
 		baseUrl: runner.baseUrl,
-		fetchImpl: globalThis.fetch as unknown as BridgeFetchLike,
+		fetchImpl: (fetchImpl ?? globalThis.fetch as unknown as BridgeFetchLike),
 	});
 }
 
@@ -347,19 +386,32 @@ export function collectUpstreamCandidates(
 	return out;
 }
 
-/** Local picker execution: emit the candidate chosen by selected_index (1-based, ComfyTV semantics). */
+/** Local picker execution: emit the candidate chosen by selected_index (1-based, ComfyTV semantics).
+ *  Picker 是路由节点（不产生新内容），put 时 skipImport=true 避免重复导入媒体库。 */
 async function runPickerNode(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
+	// 归档键（= stageUid，缺省 nodeId）。entry.nodeId 决定 `store.put` 的键前缀，
+	// 必须与卡片读侧一致，否则 picker 自己的 OUTPUT 不刷新。
+	const snapKey = input.snapshotKey ?? input.nodeId;
 	// 优先：节点弹窗里选的媒体库历史资产（生成图片管理 P2 复用入口）
 	const mediaAssetId = typeof input.values?.mediaAssetId === 'string' ? input.values.mediaAssetId : '';
 	if (mediaAssetId) {
 		const ref = await resolveMediaAssetUrl(mediaAssetId);
 		if (ref) {
 			const kind = inferPickerKind(input.type, mediaAssetId);
-			const entry: MediaSnapshotEntry = { nodeId: input.nodeId, port: 'output', key: `${input.nodeId}:output:0`, media: { kind, ref }, index: 0 };
-			input.store.put(entry);
+			const entry: MediaSnapshotEntry = { nodeId: snapKey, port: 'output', key: `${snapKey}:output:0`, media: { kind, ref }, index: 0 };
+			input.store.put(entry, true /* skipImport */);
 			return { promptId: '', status: 'success', entries: [entry] };
 		}
 		return { promptId: '', status: 'error', error: '媒体库资产不可用（已删除？）', entries: [] };
+	}
+	// 次优先：跨节点「全部生成图」视图选中的 directRef（节点卡片 pool scope='all'
+	// 点选 → 直接输出该 ref，无需上游 batch 索引）。
+	const directRef = typeof input.values?.directRef === 'string' ? input.values.directRef : '';
+	if (directRef) {
+		const kind = inferPickerKind(input.type, directRef);
+		const entry: MediaSnapshotEntry = { nodeId: snapKey, port: 'output', key: `${snapKey}:output:0`, media: { kind, ref: directRef }, index: 0 };
+		input.store.put(entry, true /* skipImport */);
+		return { promptId: '', status: 'success', entries: [entry] };
 	}
 	const candidates = collectUpstreamCandidates(input.store, input.upstreams);
 	if (!candidates.length) {
@@ -368,13 +420,13 @@ async function runPickerNode(input: NodeExecutionInput): Promise<SingleNodeRunRe
 	const idx = Math.max(0, Math.min((Number(input.values?.selected_index) || 1) - 1, candidates.length - 1));
 	const picked = candidates[idx];
 	const entry: MediaSnapshotEntry = {
-		nodeId: input.nodeId,
+		nodeId: snapKey,
 		port: 'output',
-		key: `${input.nodeId}:output:0`,
+		key: `${snapKey}:output:0`,
 		media: picked.media,
 		index: 0,
 	};
-	input.store.put(entry);
+	input.store.put(entry, true /* skipImport */);
 	return { promptId: '', status: 'success', entries: [entry] };
 }
 
@@ -396,9 +448,24 @@ export function inferPickerKind(type: string, assetId: string): MediaKind {
 	return 'image';
 }
 
-/** Local loader execution: emit the snapshot the user picked in the popup. */
+/** Local loader execution: emit the snapshot the user picked in the popup,
+ *  or the media-library asset injected via drag-to-canvas (mediaAssetId). */
 async function runLoaderNode(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
-	const mine = input.store.byNode(input.nodeId).filter(e => e.media.kind !== 'unknown');
+	const snapKey = input.snapshotKey ?? input.nodeId;
+	// 优先：拖拽注入的媒体库资产（mediaAssetId）→ resolve 资产 URL 产出快照。
+	// 对齐 ComfyTV AssetLoaderStage 语义（setWidget asset_id/asset_url）。
+	const mediaAssetId = typeof input.values?.mediaAssetId === 'string' ? input.values.mediaAssetId : '';
+	if (mediaAssetId) {
+		const ref = await resolveMediaAssetUrl(mediaAssetId);
+		if (ref) {
+			const kind = inferPickerKind(input.type, mediaAssetId);
+			const entry: MediaSnapshotEntry = { nodeId: snapKey, port: 'output', key: `${snapKey}:output:0`, media: { kind, ref }, index: 0 };
+			input.store.put(entry, true /* skipImport */);
+			return { promptId: '', status: 'success', entries: [entry] };
+		}
+		return { promptId: '', status: 'error', error: '媒体库资产不存在或无法解析', entries: [] };
+	}
+	const mine = input.store.byNode(snapKey).filter(e => e.media.kind !== 'unknown');
 	if (!mine.length) {
 		return { promptId: '', status: 'error', error: '请先在节点弹窗中选择文件', entries: [] };
 	}
@@ -406,13 +473,14 @@ async function runLoaderNode(input: NodeExecutionInput): Promise<SingleNodeRunRe
 }
 
 /**
- * Local Provider Picker execution (Sarosis.ProviderPicker, kind 'react'):
+ * Local Provider Picker execution (Saros.ProviderPicker, kind 'react'):
  * resolves an explicit provider/model (node editor values, else auto-route)
  * and emits a TEXT snapshot `provider:<providerId>:<modelId>` that downstream
  * image-gen nodes consume via `collectUpstreamProviderConfig`. No RPC.
  */
 export async function runProviderPickerNode(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
 	const { nodeId, store } = input;
+	const snapKey = input.snapshotKey ?? nodeId;
 	const empty: SingleNodeRunResult = { promptId: '', status: 'error', entries: [] };
 	let providerId = typeof input.values?.providerId === 'string' ? input.values.providerId : '';
 	let modelId = typeof input.values?.modelId === 'string' ? input.values.modelId : '';
@@ -428,18 +496,18 @@ export async function runProviderPickerNode(input: NodeExecutionInput): Promise<
 	}
 	const ref = `${PROVIDER_PICKER_PREFIX}${providerId}:${modelId}`;
 	const entry: MediaSnapshotEntry = {
-		nodeId,
+		nodeId: snapKey,
 		port: 'output',
-		key: `${nodeId}:output:0`,
+		key: `${snapKey}:output:0`,
 		media: { kind: 'text', ref },
 		index: 0,
 	};
-	store.put(entry);
+	store.put(entry, true /* skipImport */);
 	return { promptId: '', status: 'success', entries: [entry] };
 }
 
 /**
- * Execute a provider (LLM) image-gen node — `Sarosis.ModelImageGen` and other
+ * Execute a provider (LLM) image-gen node — `Saros.ModelImageGen` and other
  * kind='llm' specs. Calls the injected `imagegen.generate` RPC (host resolves
  * provider.generateImage against an authenticated provider), then normalizes
  * the returned image refs into snapshot entries under the node's primary key.
@@ -450,13 +518,21 @@ export async function runProviderPickerNode(input: NodeExecutionInput): Promise<
  */
 export async function runProviderImage(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
 	const { nodeId, values, store, onProgress } = input;
+	// 快照归档键（= stageUid，缺省 nodeId）—— 与卡片读侧一致。
+	const snapKey = input.snapshotKey ?? nodeId;
 	const empty: SingleNodeRunResult = { promptId: '', status: 'error', entries: [] };
 	const send = input.sendImageGen;
 	if (!send) {
 		return { ...empty, error: 'Provider 文生图通道未注入（imagegen.generate）' };
 	}
-	let providerId = typeof values.providerId === 'string' ? values.providerId : '';
-	let modelId = typeof values.modelId === 'string' ? values.modelId : '';
+	// 兼容两种 widget 命名：schema 卡片用 `provider`/`model`（仿 Image Stage），
+	// 旧 llm 弹窗用 `providerId`/`modelId`。前者优先。
+	let providerId = typeof values.provider === 'string' && values.provider
+		? values.provider
+		: typeof values.providerId === 'string' ? values.providerId : '';
+	let modelId = typeof values.model === 'string' && values.model
+		? values.model
+		: typeof values.modelId === 'string' ? values.modelId : '';
 	// Precedence: ① explicit node values → ② upstream Provider Picker config
 	// → ③ auto-route (first authenticated image-gen provider+model).
 	const picker = providerId && modelId
@@ -521,9 +597,9 @@ export async function runProviderImage(input: NodeExecutionInput): Promise<Singl
 				const ref = img.url ?? (img.b64 ? `data:image/png;base64,${img.b64}` : '');
 				if (!ref) { return undefined; }
 				return {
-					nodeId,
+					nodeId: snapKey,
 					port: 'output',
-					key: `${nodeId}:output:${i}`,
+					key: `${snapKey}:output:${i}`,
 					media: { kind: 'image' as const, ref },
 					index: i,
 				};
@@ -563,7 +639,7 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 	if (isFxNode(type)) {
 		const fxValues = { ...collectUpstreamValues(store, upstreams), ...values };
 		return runSingleNode({
-			runner, nodeId, type, values: fxValues, store,
+			runner, nodeId, snapshotKey: input.snapshotKey, type, values: fxValues, store,
 			// The chain terminal emits a real video snapshot (standard
 			// extraction); intermediate builders emit the threaded fx value.
 			extractOutputs: isFxChainNode(type) ? undefined : comfyOutputsToFxSnapshots,
@@ -576,9 +652,11 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 		return runStageWorkflow({
 			runner,
 			nodeId,
+			snapshotKey: input.snapshotKey,
 			type,
 			kind: spec.comfyTV?.kind ?? type.replace(/^ComfyTV\./, '').replace(/Stage$/, '').toLowerCase(),
 			workflowKind: spec.comfyTV?.workflowKind,
+			workflowKinds: type === 'ComfyTV.ImageVariationsStage' ? ['multiview', 'sequence'] : undefined,
 			values,
 			upstreams,
 			store,
@@ -586,7 +664,12 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 			signal,
 		}).catch((err: unknown): SingleNodeRunResult => {
 			if (err instanceof StageWorkflowUnavailableError) {
-				return runSingleNode({ runner, nodeId, type, values, store, onProgress: (p) => onProgress?.({ value: p.value }), signal });
+				// ComfyTV 扩展不可用（纯 ComfyUI / workflow 未准备）→ 按设计契约降级单节点执行。
+				// StageWorkflowUnavailableError 的语义即 "→ degrade"，见 stageWorkflowExecutor.ts
+				// 与 runStageWorkflow 的 JSDoc。单节点跑 ComfyTV 自定义节点可能报
+				// required_input_missing / node not found，这是尽力而为的兜底路径。
+				// 降级路径同样用 snapshotKey（快照归档键保持一致）。
+				return runSingleNode({ runner, nodeId, snapshotKey: input.snapshotKey, type, values, store, onProgress: (p) => onProgress?.({ value: p.value }), signal });
 			}
 			return { promptId: '', status: 'error', error: err instanceof Error ? err.message : String(err), entries: [] };
 		});
@@ -597,7 +680,7 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 		const bridged = await resolveLoadImageInputForNode(input);
 		if (bridged.status === 'error') { return bridged.result; }
 		if (bridged.values !== values) {
-			return runSingleNode({ runner, nodeId, type, values: bridged.values, store, onProgress: (p) => onProgress?.({ value: p.value }), signal });
+			return runSingleNode({ runner, nodeId, snapshotKey: input.snapshotKey, type, values: bridged.values, store, onProgress: (p) => onProgress?.({ value: p.value }), signal });
 		}
 	}
 	// P2: plugin nodes — run the plugin's onRun hook (if any) to transform the
@@ -627,7 +710,7 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 			return { promptId: '', status: 'error', error: `插件节点执行失败：${msg}`, entries: [] };
 		}
 	}
-	return runSingleNode({ runner, nodeId, type, values, store, onProgress: (p) => onProgress?.({ value: p.value }), signal });
+	return runSingleNode({ runner, nodeId, snapshotKey: input.snapshotKey, type, values, store, onProgress: (p) => onProgress?.({ value: p.value }), signal });
 }
 
 /**
@@ -639,7 +722,7 @@ export async function runGraphExecution(options: GraphRunOptions): Promise<Graph
 	const {
 		nodes, edges, getSpec, resolveRunner, snapshotStore, cardState, nodeValues,
 		onNodeStart, signal, sendImageGen, resolveImageGenDefaults, resolveLoadImageRef,
-		mode = 'serial', parallelConcurrency = 4, taskId,
+		mode = 'serial', parallelConcurrency = 4, taskId, fetchImpl, snapshotKeyOf,
 	} = options;
 	const result: GraphRunResult = {
 		success: false, hasCycle: false, ran: [], failed: null, results: {},
@@ -664,7 +747,19 @@ export async function runGraphExecution(options: GraphRunOptions): Promise<Graph
 	// purely of provider (llm) nodes can run without a connected runner.
 	const needsRunner = plan.steps.some(s => isComfyExecutableSpec(getSpec(s.type)));
 	const runner = needsRunner ? resolveRunner() : undefined;
-	if (needsRunner && !runner) { return result; }
+	if (needsRunner && !runner) {
+		// P2 engine-ready gate: surface a clear per-node error instead of a
+		// silent "nothing happened". Every backend step shows "未连接 ComfyUI
+		// 引擎"; result.failed points at the first one.
+		const backendSteps = plan.steps.filter(s => isComfyExecutableSpec(getSpec(s.type)));
+		for (const s of backendSteps) {
+			cardState.set(s.id, { runState: 'error', progress: 0, errorMsg: '未连接 ComfyUI 引擎：请先在 Runner 面板连接并测试 ComfyUI/ComfyTV' });
+		}
+		if (backendSteps[0]) {
+			result.failed = { nodeId: backendSteps[0].id, error: '未连接 ComfyUI 引擎' };
+		}
+		return result;
+	}
 
 	for (const step of plan.steps) {
 		if (signal?.aborted) { break; }
@@ -672,16 +767,21 @@ export async function runGraphExecution(options: GraphRunOptions): Promise<Graph
 		cardState.set(step.id, { runState: 'running', progress: 5 });
 		// P2-tail: orchestration nodes are skipped, but their data flows into the
 		// media node's values (e.g. Prompt 文本 → prompt). Editor values win.
+		// ⚠ collectOrchestrationValues 按 **nodeId** 在 runNodes 里查节点，必须用
+		//   原始 step.upstreams（不是归档键映射后的 uid）。
 		const values = { ...collectOrchestrationValues(runNodes, step.upstreams), ...(nodeValues?.[step.id] ?? {}) };
 		const progress = (p: { progress?: number; value?: number }) =>
 			cardState.set(step.id, { runState: 'running', progress: p.progress ?? p.value ?? 50 });
 		const r = await runNodeOrStage({
 			runner: runner as IComfyRunner,
 			nodeId: step.id,
+			snapshotKey: snapshotKeyOf?.(step.id),
 			type: step.type,
 			getSpec,
 			values,
-			upstreams: step.upstreams,
+			// executor 侧的 upstreams 只用于 `store.byNode(...)`（快照查询），
+			// 因此这里传**归档键**；节点身份相关的消费方拿 `nodes` + step.id。
+			upstreams: mapSnapshotKeys(step.upstreams, snapshotKeyOf),
 			nodes: runNodes,
 			store: snapshotStore,
 			onProgress: progress,
@@ -713,13 +813,23 @@ export async function runGraphExecution(options: GraphRunOptions): Promise<Graph
  * recorded), matching the serial stop-on-first-failure contract.
  */
 async function runGraphExecutionParallel(options: GraphRunOptions, result: GraphRunResult): Promise<GraphRunResult> {
-	const { nodes, edges, getSpec, resolveRunner, snapshotStore, cardState, nodeValues, onNodeStart, signal, sendImageGen, resolveImageGenDefaults, resolveLoadImageRef, parallelConcurrency = 4 } = options;
+	const { nodes, edges, getSpec, resolveRunner, snapshotStore, cardState, nodeValues, onNodeStart, signal, sendImageGen, resolveImageGenDefaults, resolveLoadImageRef, parallelConcurrency = 4, fetchImpl, snapshotKeyOf } = options;
 	const plan = buildParallelExecutionPlan(nodes, edges, type => isExecutableSpec(getSpec(type)));
 	result.hasCycle = plan.hasCycle;
 	if (plan.hasCycle) { return result; }
 	const needsRunner = plan.layers.some(l => l.some(s => isComfyExecutableSpec(getSpec(s.type))));
 	const runner = needsRunner ? resolveRunner() : undefined;
-	if (needsRunner && !runner) { return result; }
+	if (needsRunner && !runner) {
+		// P2 engine-ready gate (parallel): same per-node error surfacing as serial.
+		const backendSteps = plan.layers.flat().filter(s => isComfyExecutableSpec(getSpec(s.type)));
+		for (const s of backendSteps) {
+			cardState.set(s.id, { runState: 'error', progress: 0, errorMsg: '未连接 ComfyUI 引擎：请先在 Runner 面板连接并测试 ComfyUI/ComfyTV' });
+		}
+		if (backendSteps[0]) {
+			result.failed = { nodeId: backendSteps[0].id, error: '未连接 ComfyUI 引擎' };
+		}
+		return result;
+	}
 
 	const isBackend = (step: { type: string }) => isComfyExecutableSpec(getSpec(step.type));
 
@@ -742,19 +852,21 @@ async function runGraphExecutionParallel(options: GraphRunOptions, result: Graph
 			const r = await runNodeOrStage({
 				runner: runner as IComfyRunner,
 				nodeId: step.id,
+				snapshotKey: snapshotKeyOf?.(step.id),
 				type: step.type,
 				getSpec,
 				values,
-				upstreams: step.upstreams,
+				upstreams: mapSnapshotKeys(step.upstreams, snapshotKeyOf),
 				nodes,
+				fetchImpl,
 				store: snapshotStore,
 				onProgress: progress,
 				signal,
 				sendImageGen,
 				resolveImageGenDefaults,
 				resolveLoadImageRef,
-			});
-			if (r.status === 'success') {
+				});
+				if (r.status === 'success') {
 				cardState.set(step.id, { runState: 'success', progress: 100, durationMs: r.durationMs });
 				result.ran.push(step.id);
 				result.results[step.id] = r;

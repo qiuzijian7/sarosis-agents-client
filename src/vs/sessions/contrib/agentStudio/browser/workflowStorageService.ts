@@ -97,12 +97,7 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 	async listWorkflows(workspaceId?: string): Promise<IStoredWorkflow[]> {
 		const workflows: IStoredWorkflow[] = [];
 
-		// 1. 内置工作流（产品源）
-		const builtinWorkflows = await this._loadBuiltinWorkflows();
-		const builtinIds = new Set(builtinWorkflows.map(w => w.id));
-		workflows.push(...builtinWorkflows);
-
-		// 2. 用户/商城工作流（工作区 .sarosworkspace/workflows/）
+		// 用户/商城工作流（工作区 .sarosworkspace/workflows/）
 		const dir = await this._resolveWorkflowsDir(workspaceId);
 		if (dir) {
 			try {
@@ -114,7 +109,7 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 							const workflowFile = URI.joinPath(child.resource, WORKFLOW_FILE);
 							const content = await this._fileService.readFile(workflowFile);
 							const wf = JSON.parse(content.value.toString()) as IStoredWorkflow;
-							if (wf && wf.id && !builtinIds.has(wf.id)) {
+							if (wf && wf.id) {
 								workflows.push(wf);
 							}
 						} catch (parseErr) {
@@ -128,45 +123,6 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		// 按更新时间倒序
 		workflows.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 		return workflows;
-	}
-
-	/**
-	 * 加载内置工作流（产品源 `resources/.agents/builtin-workflows/`）。
-	 * 内置工作流只读，source='builtin' 标记。
-	 */
-	private async _loadBuiltinWorkflows(): Promise<IStoredWorkflow[]> {
-		const { FileAccess } = await import('../../../../base/common/network.js');
-		const candidates: URI[] = [];
-		try {
-			candidates.push(FileAccess.asFileUri('vs/../../resources/.agents/builtin-workflows'));
-		} catch { /* dev fallback */ }
-		const appRoot = (this._envService as any).appRoot as string | undefined;
-		if (appRoot) {
-			const uri2 = URI.joinPath(URI.file(appRoot), 'resources', '.agents', 'builtin-workflows');
-			if (!candidates.some(c => c.toString() === uri2.toString())) { candidates.push(uri2); }
-		}
-
-		for (const candidate of candidates) {
-			try {
-				const stat = await this._fileService.resolve(candidate);
-				if (!stat.children) { continue; }
-				const workflows: IStoredWorkflow[] = [];
-				for (const child of stat.children) {
-					if (child.isDirectory) { continue; }
-					if (!child.name.endsWith('.json')) { continue; }
-					try {
-						const content = await this._fileService.readFile(child.resource);
-						const wf = JSON.parse(content.value.toString()) as IStoredWorkflow;
-						if (wf && wf.id) {
-							wf.source = 'builtin';
-							workflows.push(wf);
-						}
-					} catch { /* skip unparseable */ }
-				}
-				if (workflows.length > 0) { return workflows; }
-			} catch { /* candidate not accessible */ }
-		}
-		return [];
 	}
 
 	async getWorkflow(id: string, workspaceId?: string): Promise<IStoredWorkflow | undefined> {
@@ -262,12 +218,6 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 	}
 
 	async deleteWorkflow(id: string, workspaceId?: string): Promise<void> {
-		// 内置工作流不可删除
-		const builtinWorkflows = await this._loadBuiltinWorkflows();
-		if (builtinWorkflows.some(w => w.id === id)) {
-			this._logService.warn(`[WorkflowStorage] deleteWorkflow(${id}): rejected — builtin workflow is read-only`);
-			throw new Error(`内置工作流 "${id}" 不允许删除。`);
-		}
 		const dir = await this._resolveWorkflowsDir(workspaceId);
 		if (!dir) { return; }
 		// 目录式存储：删除整个 {id}/ 目录

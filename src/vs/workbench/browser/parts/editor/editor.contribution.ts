@@ -465,7 +465,7 @@ const SPLIT_ORDER = 100000;  // towards the end
 const CLOSE_ORDER = 1000000; // towards the far end
 
 // Editor Title Menu: Split Editor
-// [Sarosis] Only show split button when editor has CanSplitInGroup capability
+// [Saros] Only show split button when editor has CanSplitInGroup capability
 appendEditorToolItem(
 	{
 		id: SPLIT_EDITOR,
@@ -573,14 +573,16 @@ appendEditorToolItem(
 	}
 );
 
-// Lock Group: only on auxiliary window and when group is unlocked
+// Lock Group: only on auxiliary window and when group is unlocked.
+// 但在 Sessions 窗口（含 popout 独立聊天窗口，isSessionsWindow=true）隐藏——
+// 用户要求独立聊天窗口的 group 不显示 lock 按钮（新建 group 由标题栏按钮负责）。
 appendEditorToolItem(
 	{
 		id: LOCK_GROUP_COMMAND_ID,
 		title: localize('lockEditorGroup', "Lock Group"),
 		icon: Codicon.unlock
 	},
-	ContextKeyExpr.and(IsAuxiliaryWindowContext, ActiveEditorGroupLockedContext.toNegated()),
+	ContextKeyExpr.and(IsAuxiliaryWindowContext, ActiveEditorGroupLockedContext.toNegated(), IsSessionsWindowContext.toNegated()),
 	CLOSE_ORDER - 1, // immediately to the left of close action
 );
 

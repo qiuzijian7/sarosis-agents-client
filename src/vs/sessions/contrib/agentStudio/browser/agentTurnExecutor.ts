@@ -1417,7 +1417,7 @@ interface ITurnContext {
 
 		// ─── shouldTerminateToolBatch（借鉴 OpenClaw）──────────────
 		// 所有工具返回 terminate=true 时提前结束 agent loop
-		// 当前 Sarosis 的 IToolResult 没有 terminate 字段，但预留接口
+		// 当前 Saros 的 IToolResult 没有 terminate 字段，但预留接口
 		// 为将来扩展（如 "任务已完成"信号工具）做准备
 		if (toolResults.length > 0 && toolResults.every(r => (r as any).terminate === true)) {
 			host._logService.info(`[AgentOS] All ${toolResults.length} tool results signaled terminate — ending loop early`);
@@ -2603,7 +2603,7 @@ interface ITurnContext {
 			//   - 不添加到 messages 历史中的 tool 消息（服务端已将结果融入后续文本）
 			//   - 标记 endedToolIds 避免孤儿检测重复发送
 			//
-			// [Sarosis] Server-executed tool detection:
+			// [Saros] Server-executed tool detection:
 			// 由 IModelProvider.isServerSideProvider 决定（不再硬编码 providerId）。
 			// - Knot AG-UI: provider 内部封装了完整 agent 循环，chat() 流中
 			//   包含 tool execution + response → isServerSideProvider = true。

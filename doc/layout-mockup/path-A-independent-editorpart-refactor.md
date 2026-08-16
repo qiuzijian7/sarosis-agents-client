@@ -96,7 +96,7 @@ export class AgentEditorPart extends EditorPart {
  	TITLEBAR_PART = 'workbench.parts.titlebar',
  	...
  	EDITOR_PART = 'workbench.parts.editor',
-+	AGENT_EDITOR_PART = 'workbench.parts.agenteditor',   // ★ Sarosis
++	AGENT_EDITOR_PART = 'workbench.parts.agenteditor',   // ★ Saros
  	STATUSBAR_PART = 'workbench.parts.statusbar'
  }
 ```

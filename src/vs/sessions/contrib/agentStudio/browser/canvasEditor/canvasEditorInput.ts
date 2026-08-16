@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Canvas Editor Input
+ *  Saros Agents — Canvas Editor Input
  *
  *  EditorInput 用于在中栏文件编辑器打开 .canvas 思维导图。
  *  携带文件 URI 和已解析的 IMindmapData。

@@ -1,12 +1,12 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Tool Isolator
  *
- *  Bridges Agent.tools[] to Sarosis internal tool names for real tool isolation.
+ *  Bridges Agent.tools[] to Saros internal tool names for real tool isolation.
  *  When an agent sends a chat request, the isolator computes an enabledTools map
  *  that only enables the tools declared in the agent's `tools` field, disabling all others.
  *
  *  Tool naming system:
- *    - Sarosis internal tool names: read_file, write_to_file, terminal, etc.
+ *    - Saros internal tool names: read_file, write_to_file, terminal, etc.
  *    - Legacy aliases (vscode, read, execute) and old internal names (file_read, file_write,
  *      file_list, read_skill, list_skills) are expanded to current names for backward compat.
  *--------------------------------------------------------------------------------------------*/
@@ -41,7 +41,7 @@ export interface IAgentToolIsolator {
 	 *   all other registered tools are explicitly disabled.
 	 * - If the agent has no `tools` (undefined or empty), all tools are allowed
 	 *   (returns undefined to signal "no restriction").
-	 * - Legacy aliases and old internal names are expanded to current Sarosis tool names.
+	 * - Legacy aliases and old internal names are expanded to current Saros tool names.
 	 * - Unknown tool references (declared but not in the platform registry) are
 	 *   reported but still enabled in the map so they can be resolved lazily.
 	 *
@@ -54,20 +54,20 @@ export interface IAgentToolIsolator {
 	/**
 	 * Check if a specific tool is allowed for an agent.
 	 * @param agent The agent
-	 * @param toolName The Sarosis internal tool name to check
+	 * @param toolName The Saros internal tool name to check
 	 * @returns true if the tool is allowed, false if blocked
 	 */
 	isToolAllowed(agent: Agent, toolName: string): boolean;
 
 	/**
-	 * Expand legacy aliases and old internal names to current Sarosis tool names.
+	 * Expand legacy aliases and old internal names to current Saros tool names.
 	 * @param toolIds Tool IDs (may include legacy aliases or old internal names)
-	 * @returns Expanded list of Sarosis internal tool names
+	 * @returns Expanded list of Saros internal tool names
 	 */
 	expandToolAliases(toolIds: readonly string[]): string[];
 
 	/**
-	 * Get all known Sarosis tool names (for UI display).
+	 * Get all known Saros tool names (for UI display).
 	 */
 	getKnownToolNames(): readonly string[];
 
@@ -77,10 +77,10 @@ export interface IAgentToolIsolator {
 	getToolMetadata(): ReadonlyArray<{ name: string; label: string; description: string; category: string }>;
 }
 
-// ─── Sarosis Internal Tool Name Constants ──────────────────────────────
+// ─── Saros Internal Tool Name Constants ──────────────────────────────
 
 /**
- * Well-known Sarosis internal tool names.
+ * Well-known Saros internal tool names.
  * These are the canonical tool identifiers used throughout the system.
  *
  * 22 tools total, organized by category:
@@ -133,10 +133,10 @@ export const VSSAROS_TOOL_NAMES = {
 	// MCP — no direct MCP tool; use tool_search/tool_describe/tool_call bridge
 } as const;
 
-// ─── Legacy Alias → Current Sarosis Tool Name Mapping ──────────────────
+// ─── Legacy Alias → Current Saros Tool Name Mapping ──────────────────
 
 /**
- * Maps legacy VS Code tool IDs and old Sarosis internal names to current tool names.
+ * Maps legacy VS Code tool IDs and old Saros internal names to current tool names.
  * Used for backward compatibility with existing agent configs.
  *
  * Expansion rules:
@@ -148,7 +148,7 @@ export const VSSAROS_TOOL_NAMES = {
  *   search    → search_files
  *   webFetch  → browser_navigate
  *
- *   ── Sarosis actual tool names（对齐 builtinToolProvider 注册名）──
+ *   ── Saros actual tool names（对齐 builtinToolProvider 注册名）──
  *   read_file → file_read
  *   write_to_file → file_write
  *   list_dir → file_list
@@ -172,7 +172,7 @@ export const TOOL_ALIAS_MAP: Readonly<Record<string, string[]>> = {
 	webFetch: [VSSAROS_TOOL_NAMES.WEB_PREVIEW],
 	notebook: [],  // reserved
 
-	// Old Sarosis internal names (renamed)
+	// Old Saros internal names (renamed)
 	file_read: [VSSAROS_TOOL_NAMES.READ_FILE],
 	file_write: [VSSAROS_TOOL_NAMES.WRITE_TO_FILE],
 	file_list: [VSSAROS_TOOL_NAMES.LIST_DIR],
@@ -198,7 +198,7 @@ export const TOOL_ALIAS_MAP: Readonly<Record<string, string[]>> = {
 
 /**
  * Tool metadata for display in the UI.
- * Uses current Sarosis internal tool names.
+ * Uses current Saros internal tool names.
  */
 // Note: multiple VSSAROS_TOOL_NAMES aliases resolve to the same actual tool name
 // (e.g. GREP_SEARCH/SEARCH_FILES → 'search_files'). Keep only one entry per actual name.
@@ -233,7 +233,7 @@ export const TOOL_METADATA: Record<string, { label: string; description: string;
 
 /**
  * Default tool sets for common agent roles.
- * Uses current Sarosis internal tool names directly.
+ * Uses current Saros internal tool names directly.
  * Used when creating agents from presets that don't explicitly declare tools.
  */
 export const DEFAULT_TOOL_SETS: Record<string, string[]> = {
@@ -266,9 +266,9 @@ export class AgentToolIsolator implements IAgentToolIsolator {
 	declare readonly _serviceBrand: undefined;
 
 	/**
-	 * Expand legacy aliases and old internal names to current Sarosis tool names.
+	 * Expand legacy aliases and old internal names to current Saros tool names.
 	 * If a tool ID is a known alias, it's replaced with its expanded set.
-	 * If it's already a current Sarosis name, it passes through unchanged.
+	 * If it's already a current Saros name, it passes through unchanged.
 	 * Known aliases with empty expansion (e.g. 'echo', 'http_get') are silently dropped.
 	 */
 	expandToolAliases(toolIds: readonly string[]): string[] {
@@ -280,7 +280,7 @@ export class AgentToolIsolator implements IAgentToolIsolator {
 					expanded.add(name);
 				}
 			} else if (!TOOL_ALIAS_MAP.hasOwnProperty(id)) {
-				// Not a known alias — treat as a direct Sarosis tool name
+				// Not a known alias — treat as a direct Saros tool name
 				expanded.add(id);
 			}
 			// Known alias with empty expansion is silently dropped
@@ -328,7 +328,7 @@ export class AgentToolIsolator implements IAgentToolIsolator {
 			return undefined;
 		}
 
-		// Expand legacy aliases → current Sarosis tool names
+		// Expand legacy aliases → current Saros tool names
 		const declared = this.expandToolAliases(rawTools);
 		const unknownTools = declared.filter(t => !registeredSet.has(t));
 		const disabledTools = [...registeredSet].filter(t => !declared.includes(t));

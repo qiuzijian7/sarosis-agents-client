@@ -14,7 +14,7 @@
 - **Markdown 渲染**：`ChatMarkdownRender.tsx`（使用 `marked.js` 库）
 - **架构**：单一大文件，所有组件都在 `SidebarChat.tsx` 中
 
-### 本项目（Sarosis Agents Client）
+### 本项目（Saros Agents Client）
 - **定位**：Agent Studio，多 Agent 协作平台
 - **聊天 UI 文件**：`src/vs/sessions/contrib/agentStudio/webview/src/features/chat/`
   - `ChatMessage.tsx` - 消息气泡
@@ -155,7 +155,7 @@ const StreamingBubble = memo(function StreamingBubble({
     () => sanitizeStreamingText(textBuffer),
     [textBuffer]
   )
-  
+
   return (
     <div className="chat-message assistant">
       <div className="message-content message-streaming">
@@ -221,7 +221,7 @@ const RenderToken = ({ token, ... }) => {
 // MarkdownRenderer.tsx
 export function MarkdownRenderer({ content, showCursor, className }) {
   const normalized = normalizeStreamingMarkdown(content); // 预处理
-  
+
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}

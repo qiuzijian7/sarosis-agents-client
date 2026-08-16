@@ -1,10 +1,10 @@
-# Sarosis vs LangGraph 深度源码对比：优化建议与风险评估
+# Saros vs LangGraph 深度源码对比：优化建议与风险评估
 
 ## 概述
 
-本文档基于对 LangGraph（`G:\CustomWorkspaces\AIProjects\langgraph`）和 Sarosis（`src/vs/sessions/contrib/agentStudio/`）核心源码的逐行分析，从 7 个维度进行深度对比，给出可落地的优化建议和风险评估。
+本文档基于对 LangGraph（`G:\CustomWorkspaces\AIProjects\langgraph`）和 Saros（`src/vs/sessions/contrib/agentStudio/`）核心源码的逐行分析，从 7 个维度进行深度对比，给出可落地的优化建议和风险评估。
 
-> **v2 更新（2026-07-12）**：新增第「六」节「兼容多聊天窗口同时存在」，基于对 `nativeChatEditorPane.ts` / `agentChatService.ts` / `agentOSService.ts` / `workbench.ts` 的逐行源码调研。这是 Sarosis 相对 LangGraph 的**独有 UI 架构维度**（LangGraph 是无 UI 的执行引擎），也是暴露「执行引擎单例串行化」问题的关键切入点。
+> **v2 更新（2026-07-12）**：新增第「六」节「兼容多聊天窗口同时存在」，基于对 `nativeChatEditorPane.ts` / `agentChatService.ts` / `agentOSService.ts` / `workbench.ts` 的逐行源码调研。这是 Saros 相对 LangGraph 的**独有 UI 架构维度**（LangGraph 是无 UI 的执行引擎），也是暴露「执行引擎单例串行化」问题的关键切入点。
 
 ---
 
@@ -32,9 +32,9 @@ graph.invoke(
 - **恢复机制**：`graph.invoke(None, config)` 从该 thread 的最新 checkpoint 恢复
 - **时间旅行**：`graph.get_state_history(config)` 获取所有历史 checkpoint，可从任意点分支
 
-### 1.2 Sarosis 的方案
+### 1.2 Saros 的方案
 
-Sarosis 通过 `agentChatService` 管理 session：
+Saros 通过 `agentChatService` 管理 session：
 
 ```typescript
 // session 创建
@@ -55,7 +55,7 @@ _selectAndLoadAgent(agentId: string) {
 
 ### 1.3 差异与风险
 
-| 维度 | LangGraph | Sarosis | 风险等级 |
+| 维度 | LangGraph | Saros | 风险等级 |
 |------|-----------|---------|---------|
 | Session 隔离 | thread_id + checkpoint | 消息历史文件 | 🟡 中 |
 | 并行 Session | ✅ 天然支持 | ❌ 单 active session | 🔴 高 |
@@ -143,7 +143,7 @@ parent_graph.add_node("child_team", child_graph)  # 子图作为节点
 - 支持**多层嵌套**（子图内可再嵌子图）
 - `max_concurrency` 信号量控制最大并发数
 
-### 2.2 Sarosis 的方案
+### 2.2 Saros 的方案
 
 **UnifiedSubAgentDispatch — 批量并行**：
 
@@ -173,7 +173,7 @@ async dispatchParallelExplore(parentAgentId, tasks, executeFn, ...) {
 
 ### 2.3 差异与风险
 
-| 维度 | LangGraph | Sarosis | 风险等级 |
+| 维度 | LangGraph | Saros | 风险等级 |
 |------|-----------|---------|---------|
 | 动态并行 | ✅ Send API 运行时决定 | ❌ 预先传入 task 列表 | 🟡 中 |
 | 结果合并 | ✅ Reducer 自动合并 | ❌ 手动处理 | 🟡 中 |
@@ -262,9 +262,9 @@ class ToolNode:
 - 每个工具有独立的 **RetryPolicy** 和 **TimeoutPolicy**
 - 工具失败可触发 **error_handler 节点**（不中断其他并行工具）
 
-### 3.2 Sarosis 的方案
+### 3.2 Saros 的方案
 
-Sarosis 在 agent loop 内有条件并行：
+Saros 在 agent loop 内有条件并行：
 
 ```typescript
 // agentOSService.ts — 工具执行
@@ -293,7 +293,7 @@ if (canParallel) {
 
 ### 3.3 差异与风险
 
-| 维度 | LangGraph | Sarosis | 风险等级 |
+| 维度 | LangGraph | Saros | 风险等级 |
 |------|-----------|---------|---------|
 | 并行模型 | Pregel 超步（全部并行） | 条件并行（安全工具才并行） | 🟢 低 |
 | 并行度 | max_concurrency 信号量 | 无限制（所有 safe 工具同时启动） | 🟡 中 |
@@ -425,9 +425,9 @@ def commit(self, task, fut):
             raise
 ```
 
-### 4.2 Sarosis 的方案
+### 4.2 Saros 的方案
 
-Sarosis 的容错机制**较为分散**：
+Saros 的容错机制**较为分散**：
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -456,7 +456,7 @@ Sarosis 的容错机制**较为分散**：
 
 ### 4.3 差异与风险
 
-| 维度 | LangGraph | Sarosis | 风险等级 |
+| 维度 | LangGraph | Saros | 风险等级 |
 |------|-----------|---------|---------|
 | 重试策略 | ✅ per-task RetryPolicy | ❌ 无工具重试 | 🔴 高 |
 | 超时保护 | ✅ per-task TimeoutPolicy | ❌ 无工具超时 | 🔴 高 |
@@ -581,7 +581,7 @@ apply_writes: 更新 channel_versions
 - `versions_seen` 记录每个节点已处理的版本（避免重复触发）
 - **确定性**：相同输入 + 相同 channel 状态 → 相同执行顺序
 
-### 5.2 Sarosis 的方案
+### 5.2 Saros 的方案
 
 **消息历史 + IterationBudget**：
 
@@ -614,7 +614,7 @@ budget.consume(1);
 
 ### 5.3 差异与风险
 
-| 维度 | LangGraph | Sarosis | 风险等级 |
+| 维度 | LangGraph | Saros | 风险等级 |
 |------|-----------|---------|---------|
 | 状态模型 | Channel + Reducer | 消息数组 | 🟡 中 |
 | 状态合并 | ✅ Reducer 自动 | ❌ 手动 | 🟡 中 |
@@ -654,9 +654,9 @@ interface IAgentState {
 
 ## 六、兼容多聊天窗口同时存在
 
-> 本维度是 Sarosis 特有的：LangGraph 是无 UI 的执行引擎，"多窗口"对它不存在。但 Sarosis 作为 IDE 内的 Agent Studio，需要支持多个聊天窗口（多 tab / 多 EditorGroup / pop-out 独立窗口）同时存在。这直接考验底层执行引擎能否支持多个 agent loop 真正并发。
+> 本维度是 Saros 特有的：LangGraph 是无 UI 的执行引擎，"多窗口"对它不存在。但 Saros 作为 IDE 内的 Agent Studio，需要支持多个聊天窗口（多 tab / 多 EditorGroup / pop-out 独立窗口）同时存在。这直接考验底层执行引擎能否支持多个 agent loop 真正并发。
 
-### 6.1 Sarosis 的多窗口架构（三层）
+### 6.1 Saros 的多窗口架构（三层）
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -744,7 +744,7 @@ cancelAgentLoop(): void {
 
 ### 6.4 与 LangGraph 多 thread 并行对比
 
-| 能力 | LangGraph | Sarosis |
+| 能力 | LangGraph | Saros |
 |------|-----------|---------|
 | 并行执行单元 | thread（checkpointer 隔离，天然并发） | agent loop（单例 OS，单 AbortController） |
 | 状态隔离 | 每 thread 独立 state graph | Chat/Driver 层 Map 隔离 ✅ / OS 层单例共享 ❌ |
@@ -752,11 +752,11 @@ cancelAgentLoop(): void {
 | 流路由 | 按 run_id 独立 | 本地闭包隔离 ✅ / 外部广播缺 sessionId ⚠️ |
 | 并发工具执行 | 每 thread 独立 | 全局池 + cancelAll 无差别 ❌ |
 
-**结论**：Sarosis 多窗口是「**UI 与会话状态多实例，但执行引擎（AgentOS）单例串行化**」。两窗口 UI 层完全隔离，可同时**显示**流式内容；但底层 agent loop 共享单例 OS 状态，**并非为真正并发多 loop 设计**。当前实际可用性：多窗口**交替使用**没问题（切 tab、后台查看历史），但**两窗口同时跑 loop** 会互相干扰。
+**结论**：Saros 多窗口是「**UI 与会话状态多实例，但执行引擎（AgentOS）单例串行化**」。两窗口 UI 层完全隔离，可同时**显示**流式内容；但底层 agent loop 共享单例 OS 状态，**并非为真正并发多 loop 设计**。当前实际可用性：多窗口**交替使用**没问题（切 tab、后台查看历史），但**两窗口同时跑 loop** 会互相干扰。
 
 ### 6.5 差异与风险
 
-| 维度 | LangGraph | Sarosis | 风险等级 |
+| 维度 | LangGraph | Saros | 风险等级 |
 |------|-----------|---------|---------|
 | UI 多窗口 | N/A（无 UI） | ✅ 多 tab/group/pop-out | 🟢 低 |
 | 会话状态隔离 | thread | Map 分桶 ✅ | 🟢 低 |
@@ -842,39 +842,39 @@ this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }
 
 ### 7.1 上下文压缩
 
-| 维度 | LangGraph | Sarosis |
+| 维度 | LangGraph | Saros |
 |------|-----------|---------|
 | 压缩方式 | Checkpoint 快照（不压缩，存全量） | LLM 摘要 + 消息裁剪 |
 | 触发时机 | 每超步 | ContextManager 阈值 + pruneMessagesForContext |
 | Token 计数 | N/A | chars/4 启发式 |
 | 精确度 | 100%（全量快照） | ~95%（摘要可能丢信息） |
 
-**Sarosis 优势**：LLM 摘要保留了语义信息，比简单裁剪更智能。
-**Sarosis 劣势**：chars/4 启发式可能高估或低估 token 数。
+**Saros 优势**：LLM 摘要保留了语义信息，比简单裁剪更智能。
+**Saros 劣势**：chars/4 启发式可能高估或低估 token 数。
 
 **建议**：引入 tiktoken 或类似精确计数器（P2，低风险）。
 
 ### 7.2 工具调用循环检测
 
-| 维度 | LangGraph | Sarosis |
+| 维度 | LangGraph | Saros |
 |------|-----------|---------|
 | 循环检测 | ❌ 无 | ✅ 窗口 10 条，重复 3 次阻止 |
 | 死锁预防 | ❌ 无 | ✅ IterationBudget 硬上限 |
 
-**Sarosis 优势**：Tool Call Loop Detection 是 Sarosis 独有的，LangGraph 需要用户自行实现。
+**Saros 优势**：Tool Call Loop Detection 是 Saros 独有的，LangGraph 需要用户自行实现。
 
 ### 7.3 续跑兜底（Auto-continuation）
 
-| 维度 | LangGraph | Sarosis |
+| 维度 | LangGraph | Saros |
 |------|-----------|---------|
 | 自动续跑 | ❌ 无 | ✅ "未完成意图"检测 + tool_choice='required' |
 | 反思机制 | ❌ 无 | ✅ Plan-Execute-Reflect（文件修改后自查） |
 
-**Sarosis 优势**：续跑兜底和反思机制是 Sarosis 独有的工程实践。
+**Saros 优势**：续跑兜底和反思机制是 Saros 独有的工程实践。
 
 ### 7.4 多 Agent 协作模式
 
-| 维度 | LangGraph | Sarosis |
+| 维度 | LangGraph | Saros |
 |------|-----------|---------|
 | Supervisor | ✅ 预构建 | ❌ |
 | Swarm (Handoff) | ✅ 预构建 | ❌ |
@@ -925,9 +925,9 @@ this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }
 
 ---
 
-## 九、Sarosis 独特优势（不应丢失）
+## 九、Saros 独特优势（不应丢失）
 
-在向 LangGraph 学习的同时，以下 Sarosis 独有特性是 LangGraph 没有的，应保持：
+在向 LangGraph 学习的同时，以下 Saros 独有特性是 LangGraph 没有的，应保持：
 
 1. **IterationBudget 父子联动** — 防止子 Agent 无限循环耗尽资源
 2. **权限 Profile**（Explore/General/Scout） — 比 LangGraph 的"全权"子 Agent 更安全

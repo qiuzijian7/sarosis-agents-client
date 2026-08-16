@@ -238,7 +238,7 @@ function computeAllowedRoots(
 		for (const folder of vscodeFolders) {
 			allowedRoots.push(folder.replace(/[\\/]+$/, ''));
 		}
-		// Sarosis 工作区路径 + 关联文件夹
+		// Saros 工作区路径 + 关联文件夹
 		if (workspacePath) {
 			allowedRoots.push(workspacePath.replace(/[\\/]+$/, ''));
 		}
@@ -503,7 +503,7 @@ suite('Workspace/Worktree 选择器 — 聊天框功能', () => {
 
 			assert.ok(roots.includes('/repo/wt-feature'), 'worktree 路径应在 allowedRoots 中');
 			assert.ok(roots.includes('/repo/UE5EA'), 'VS Code 工作区文件夹应放行');
-			assert.ok(roots.includes('/repo/S1Game'), 'Sarosis workspace 应放行');
+			assert.ok(roots.includes('/repo/S1Game'), 'Saros workspace 应放行');
 			assert.ok(roots.includes('/repo/Engine'), 'relatedFolders 应放行');
 			assert.ok(roots.includes('/home/user/.vssaros'), '用户数据目录应放行');
 		});
@@ -519,7 +519,7 @@ suite('Workspace/Worktree 选择器 — 聊天框功能', () => {
 
 			assert.ok(!roots.includes('/repo/wt-feature'), '未绑定 worktree 时不应包含 worktree 路径');
 			assert.ok(roots.includes('/repo/UE5EA'), 'VS Code 工作区文件夹应放行');
-			assert.ok(roots.includes('/repo/S1Game'), 'Sarosis workspace 应放行');
+			assert.ok(roots.includes('/repo/S1Game'), 'Saros workspace 应放行');
 			assert.ok(roots.includes('/repo/Engine'), 'relatedFolders 应放行');
 		});
 
@@ -535,7 +535,7 @@ suite('Workspace/Worktree 选择器 — 聊天框功能', () => {
 			assert.ok(roots.includes('/repo/wt-feature'), 'worktree 路径末尾斜杠应被移除');
 			// vscodeFolders 在真实代码中直接 push（不 strip 末尾斜杠），这里验证 root 确实含文件夹路径
 			assert.ok(roots.some(r => r.startsWith('/repo/UE5EA')), 'VS Code 工作区文件夹应在 roots 中');
-			assert.ok(roots.includes('/repo/S1Game'), 'Sarosis workspace 末尾斜杠应被移除');
+			assert.ok(roots.includes('/repo/S1Game'), 'Saros workspace 末尾斜杠应被移除');
 			assert.ok(roots.includes('/home/user/.vssaros'), '用户数据目录末尾斜杠应被移除');
 		});
 	});

@@ -1,4 +1,4 @@
-# Sarosis-Agents-Client 内置 Goal 工作流设计方案
+# Saros-Agents-Client 内置 Goal 工作流设计方案
 
 ## 1. 背景
 

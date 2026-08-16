@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Mindmap Data Model
+ *  Saros Agents — Mindmap Data Model
  *
  *  JSON Canvas 格式的数据模型，与 kbMindmapGenerator 产物兼容。
  *  对齐 JSON Canvas spec 1.0（text/file/link/group 节点类型）。

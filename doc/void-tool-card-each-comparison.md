@@ -1,4 +1,4 @@
-# Void vs Sarosis 聊天框工具卡片逐一对比
+# Void vs Saros 聊天框工具卡片逐一对比
 
 > 生成日期：2026-05-27
 > 逐一对比每个工具/卡片类型在两个项目中的渲染差异
@@ -21,7 +21,7 @@
 | 8 | MCPToolWrapper | `MCPToolWrapper` | `ToolMessage<MCP>` |
 | 9 | InvalidTool | `InvalidTool` | `ToolMessage<invalid_params>` |
 
-### Sarosis 卡片类型（共 10 种）
+### Saros 卡片类型（共 10 种）
 
 | # | 卡片 | 组件 | 数据源 |
 |---|------|------|--------|
@@ -44,7 +44,7 @@
 
 ### 1. read_file / 读取文件
 
-| 维度 | Void — ReadFileWrapper | Sarosis — CodeApplyRenderer |
+| 维度 | Void — ReadFileWrapper | Saros — CodeApplyRenderer |
 |------|----------------------|---------------------------|
 | **标题** | done: "Read file" / proposed: "Read file" / running: "Reading file..." (蓝色加载) | 📄 "读取文件" + `path` 详情 |
 | **描述行** | `desc1`: 文件路径，可点击跳转 | 折叠态显示参数摘要（文件路径） |
@@ -69,7 +69,7 @@ Void:
 │                        [Apply] ← 悬浮   │
 └─────────────────────────────────────────┘
 
-Sarosis:
+Saros:
 ┌─────────────────────────────────────────┐
 │ 🔄 📄 读取文件  src/main.ts     [查看] │
 ├─────────────────────────────────────────┤
@@ -88,16 +88,16 @@ Sarosis:
 ```
 
 **差异要点**：
-- Void **有行号**，Sarosis 无
-- Void 内容用 **SmallProseWrapper（Markdown 渲染）**，Sarosis 用 **pre/code（纯文本）**
-- Void 有 **Apply 悬浮按钮**（一键应用代码块），Sarosis 只有"查看文件"
-- Sarosis 有 **三级结果截断**，Void 无显式限制
+- Void **有行号**，Saros 无
+- Void 内容用 **SmallProseWrapper（Markdown 渲染）**，Saros 用 **pre/code（纯文本）**
+- Void 有 **Apply 悬浮按钮**（一键应用代码块），Saros 只有"查看文件"
+- Saros 有 **三级结果截断**，Void 无显式限制
 
 ---
 
 ### 2. edit_file / 编辑文件
 
-| 维度 | Void — EditFileWrapper | Sarosis — CodeApplyRenderer |
+| 维度 | Void — EditFileWrapper | Saros — CodeApplyRenderer |
 |------|----------------------|---------------------------|
 | **标题** | done: "Edited file" / proposed: "Edit file" / running: "Editing file..." | 📝 "编辑文件" + `path` 详情 |
 | **描述行** | `desc1`: 文件路径，可点击跳转 | 折叠态显示参数摘要（文件路径） |
@@ -121,7 +121,7 @@ Void:
 │ ⚠ Lint Errors (1)                   [▼] │  ← Lint 检查
 └─────────────────────────────────────────┘
 
-Sarosis:
+Saros:
 ┌─────────────────────────────────────────┐
 │ 📝 编辑文件  src/main.ts        [查看] │
 ├─────────────────────────────────────────┤
@@ -140,15 +140,15 @@ Sarosis:
 ```
 
 **差异要点**：
-- Void 有 **Diff 视图**（红绿高亮），Sarosis 无
-- Void 有 **Lint 检查**（bottomChildren），Sarosis 无
-- Void 有 **Apply 悬浮按钮**，Sarosis 只有"查看文件"
+- Void 有 **Diff 视图**（红绿高亮），Saros 无
+- Void 有 **Lint 检查**（bottomChildren），Saros 无
+- Void 有 **Apply 悬浮按钮**，Saros 只有"查看文件"
 
 ---
 
 ### 3. run_command / 运行命令
 
-| 维度 | Void — RunCommandWrapper | Sarosis — RunTerminalRenderer |
+| 维度 | Void — RunCommandWrapper | Saros — RunTerminalRenderer |
 |------|-------------------------|-------------------------------|
 | **标题** | done: "Ran terminal" / proposed: "Run terminal" / running: "Running terminal..." | ⌨️ "运行命令" + `command` 详情 |
 | **描述行** | `desc1`: 命令文本，可点击跳转终端 | 折叠态显示 command 参数 |
@@ -173,7 +173,7 @@ Void:
 │ Build completed successfully.            │
 └─────────────────────────────────────────┘
 
-Sarosis:
+Saros:
 ┌─────────────────────────────────────────┐
 │ ⌨️ 运行命令  npm run build              │  ← 无折叠
 ├─────────────────────────────────────────┤
@@ -185,16 +185,16 @@ Sarosis:
 ```
 
 **差异要点**：
-- Void 显示 **退出码**，Sarosis 无
-- Void 支持 **持续终端**（持久化运行 + Kill），Sarosis 无
-- Void **可折叠**，Sarosis RunTerminal 渲染器不可折叠
-- Sarosis 有 **绿色 $ 提示符**，终端风格更地道
+- Void 显示 **退出码**，Saros 无
+- Void 支持 **持续终端**（持久化运行 + Kill），Saros 无
+- Void **可折叠**，Saros RunTerminal 渲染器不可折叠
+- Saros 有 **绿色 $ 提示符**，终端风格更地道
 
 ---
 
 ### 4. create_file_or_folder / 创建文件
 
-| 维度 | Void — CreateFileWrapper | Sarosis — CodeApplyRenderer |
+| 维度 | Void — CreateFileWrapper | Saros — CodeApplyRenderer |
 |------|-------------------------|---------------------------|
 | **标题** | done: "Created file" / proposed: "Create file" / running: "Creating file..." | ✏️ "写入文件" + `path` 详情 |
 | **描述行** | `desc1`: 文件路径 | 折叠态显示文件路径 |
@@ -204,14 +204,14 @@ Sarosis:
 | **文件夹创建** | **有** — 独立判断文件夹 vs 文件 | **无** — 统一 CodeApply |
 
 **差异要点**：
-- Void 区分 **文件创建** vs **文件夹创建**，Sarosis 统一处理
-- Void 有 **Apply 悬浮按钮**，Sarosis 只有"查看文件"
+- Void 区分 **文件创建** vs **文件夹创建**，Saros 统一处理
+- Void 有 **Apply 悬浮按钮**，Saros 只有"查看文件"
 
 ---
 
 ### 5. delete_file_or_folder / 删除文件
 
-| 维度 | Void — DeleteFileWrapper | Sarosis — GenericToolCallCard |
+| 维度 | Void — DeleteFileWrapper | Saros — GenericToolCallCard |
 |------|-------------------------|-------------------------------|
 | **标题** | done: "Deleted file" / proposed: "Delete file" / running: "Deleting file..." | 🗑️ (fallback 🔧) + "delete_file_or_folder" |
 | **描述行** | `desc1`: 文件路径 | 折叠态显示参数摘要 |
@@ -220,15 +220,15 @@ Sarosis:
 | **审批** | **有** — edits 类别需审批 | 无 |
 
 **差异要点**：
-- Void **需要用户审批**（edits 类别），Sarosis 静默执行
-- Void 有 **专用图标** 🗑️，Sarosis 使用 fallback 🔧
-- Void 显示 **简洁确认信息**，Sarosis 显示完整 JSON
+- Void **需要用户审批**（edits 类别），Saros 静默执行
+- Void 有 **专用图标** 🗑️，Saros 使用 fallback 🔧
+- Void 显示 **简洁确认信息**，Saros 显示完整 JSON
 
 ---
 
 ### 6. ls_dir / 列出目录
 
-| 维度 | Void — LsDirWrapper | Sarosis — ListItemsRenderer |
+| 维度 | Void — LsDirWrapper | Saros — ListItemsRenderer |
 |------|---------------------|----------------------------|
 | **标题** | done: "Inspected folder" / proposed: "Inspect folder" / running: "Inspecting folder..." | 📂 "列出目录" + `path` 详情 |
 | **描述行** | `desc1`: 目录路径，可点击 | 折叠态显示路径 |
@@ -251,7 +251,7 @@ Void:
 │ • utils.ts                              │
 └─────────────────────────────────────────┘
 
-Sarosis:
+Saros:
 ┌─────────────────────────────────────────┐
 │ 📂 列出目录  src/                       │  ← 无折叠
 ├─────────────────────────────────────────┤
@@ -262,15 +262,15 @@ Sarosis:
 ```
 
 **差异要点**：
-- Void 有 **分页指示**（N+ results），Sarosis 无
-- Void 用 **小圆点** 标记列表项，Sarosis 用 **📁/📄 emoji**
-- Sarosis 的 ListItems 支持 **Knot ListItem 格式**（content_tip, suffix_content, item_click_event），Void 不支持
+- Void 有 **分页指示**（N+ results），Saros 无
+- Void 用 **小圆点** 标记列表项，Saros 用 **📁/📄 emoji**
+- Saros 的 ListItems 支持 **Knot ListItem 格式**（content_tip, suffix_content, item_click_event），Void 不支持
 
 ---
 
 ### 7. search_files / 搜索文件
 
-| 维度 | Void — SearchWrapper | Sarosis — ListItemsRenderer |
+| 维度 | Void — SearchWrapper | Saros — ListItemsRenderer |
 |------|---------------------|----------------------------|
 | **标题** | done: "Searched files" / proposed: "Search files" / running: "Searching files..." | 🔍 "搜索文件" + `query` 详情 |
 | **描述行** | `desc1`: 搜索词，`numResults`: 结果数 | 折叠态显示 query/pattern |
@@ -281,14 +281,14 @@ Sarosis:
 | **可点击** | **有** — 跳转到文件 | **有** — openFile() |
 
 **差异要点**：
-- Void 有 **搜索词高亮**，Sarosis 无
-- Void 有 **分页指示**，Sarosis 无
+- Void 有 **搜索词高亮**，Saros 无
+- Void 有 **分页指示**，Saros 无
 
 ---
 
 ### 8. MCP 工具
 
-| 维度 | Void — MCPToolWrapper | Sarosis — GenericToolCallCard |
+| 维度 | Void — MCPToolWrapper | Saros — GenericToolCallCard |
 |------|----------------------|-------------------------------|
 | **标题** | "Called {serverName}" / "Calling {serverName}..." | 🔧 (fallback) + 工具名 |
 | **描述行** | `desc1`: MCP 服务器名 | 折叠态显示参数摘要 |
@@ -299,27 +299,27 @@ Sarosis:
 | **审批** | **有** — MCP 类别需审批 | 无 |
 
 **差异要点**：
-- Void 对 MCP 工具有 **专用视觉标识**（标题显示服务器名），Sarosis 无区分
-- Void MCP 工具 **需要审批**，Sarosis 静默处理
+- Void 对 MCP 工具有 **专用视觉标识**（标题显示服务器名），Saros 无区分
+- Void MCP 工具 **需要审批**，Saros 静默处理
 
 ---
 
 ### 9. InvalidTool（参数无效）
 
-| 维度 | Void — InvalidTool | Sarosis |
+| 维度 | Void — InvalidTool | Saros |
 |------|-------------------|---------|
 | **存在** | **有** — 独立组件 | **无** — 无对应状态 |
 | **显示内容** | 红色警告：工具名 + 错误信息 | — |
 | **交互** | 无（仅提示） | — |
 | **对循环影响** | 不阻塞 Agent Loop（仅添加消息） | — |
 
-**差异要点**：Void 有独立的参数校验失败展示，Sarosis 完全没有。
+**差异要点**：Void 有独立的参数校验失败展示，Saros 完全没有。
 
 ---
 
 ### 10. 工具审批（Tool Request）
 
-| 维度 | Void — ToolRequestAcceptRejectButtons | Sarosis |
+| 维度 | Void — ToolRequestAcceptRejectButtons | Saros |
 |------|--------------------------------------|---------|
 | **存在** | **有** — 独立组件 | **无** |
 | **触发条件** | `type === 'tool_request'` 且 `!autoApprove` | — |
@@ -331,13 +331,13 @@ Sarosis:
 
 ---
 
-## 三、Sarosis 独有的卡片类型（Void 中不存在）
+## 三、Saros 独有的卡片类型（Void 中不存在）
 
 ### 11. ThinkingCard（思考过程）
 
 **Void 无对应卡片。** Void 的思考过程在 `ThreadStreamState.isRunning === 'LLM'` 时的 `reasoningSoFar` 字段中，作为流式状态的一部分，不是独立卡片。
 
-**Sarosis 实现**：
+**Saros 实现**：
 ```
 ┌─────────────────────────────────────────┐
 │ 💡 思考过程                          [▼] │  ← 默认折叠
@@ -356,7 +356,7 @@ Sarosis:
 
 **Void 无对应卡片。** Void 的文件引用通过 `stagingSelections` 在消息发送前处理，不在消息中展示。
 
-**Sarosis 实现**：
+**Saros 实现**：
 ```
 ┌─────────────────────────────────────────┐
 │ 📚 使用了 3 个引用                    [▼] │
@@ -375,7 +375,7 @@ Sarosis:
 
 **Void 无对应卡片。** Void 没有进度展示卡片。
 
-**Sarosis 实现**：
+**Saros 实现**：
 ```
 ┌─────────────────────────────────────────┐
 │ ○ 步骤1: 读取文件                       │
@@ -393,7 +393,7 @@ Sarosis:
 
 **Void 的对应**：`ToolRequestAcceptRejectButtons`（简单的批准/拒绝按钮）。
 
-**Sarosis 的 ConfirmationCard 更强大**：
+**Saros 的 ConfirmationCard 更强大**：
 ```
 ┌─────────────────────────────────────────┐
 │ 📋 执行计划确认                      [▼] │
@@ -425,7 +425,7 @@ Sarosis:
 
 **Void 无对应卡片。** Void 没有子 Agent 概念。
 
-**Sarosis 实现**：
+**Saros 实现**：
 ```
 单个 Agent:
 ┌─────────────────────────────────────────┐
@@ -456,7 +456,7 @@ Sarosis:
 
 **Void 无对应卡片。**
 
-**Sarosis 实现**：
+**Saros 实现**：
 ```
 ┌─────────────────────────────────────────┐
 │ ☑️ 任务清单    2/3                     [▼] │
@@ -485,9 +485,9 @@ Sarosis:
 
 ## 四、共享核心组件对比
 
-### ToolHeaderWrapper (Void) vs ToolCallCard (Sarosis)
+### ToolHeaderWrapper (Void) vs ToolCallCard (Saros)
 
-| 维度 | Void — ToolHeaderWrapper | Sarosis — ToolCallCard |
+| 维度 | Void — ToolHeaderWrapper | Saros — ToolCallCard |
 |------|-------------------------|----------------------|
 | **设计模式** | 每工具传入 params → 统一渲染 | renderType 分发 → 专用渲染器 |
 | **标题生成** | `titleOfBuiltinToolName` 硬编码 3 变体 | `ToolDisplayRegistry` 配置化 |
@@ -502,7 +502,7 @@ Sarosis:
 
 ## 五、完整对比矩阵
 
-| 功能 | Void | Sarosis | 优势方 |
+| 功能 | Void | Saros | 优势方 |
 |------|------|---------|--------|
 | 文件读取 | 行号 + 高亮 + Apply | 无行号 + 查看文件 + 截断 | Void |
 | 文件编辑 | Diff 视图 + Lint + Apply | 纯文本 + 查看文件 | Void |
@@ -514,20 +514,20 @@ Sarosis:
 | MCP 工具 | 专用标识 + 审批 | 与内置统一 | Void |
 | 参数无效 | 独立 InvalidTool 组件 | 无 | Void |
 | 工具审批 | 批准/拒绝按钮 | 无 | Void |
-| 思考过程 | 流式状态中（非卡片） | 独立 ThinkingCard | Sarosis |
-| 引用展示 | 无 | ReferencesCard + 状态标签 | Sarosis |
-| 进度展示 | 无 | ProgressCard + 步骤跟踪 | Sarosis |
-| 确认/审批 | 简单按钮 | ConfirmationCard + 计划审批 | Sarosis |
-| 子 Agent | 无 | SubAgentCard + 并行分组 | Sarosis |
-| 任务清单 | 无 | TodoListCard + 交互 | Sarosis |
-| 推荐问题 | 无 | QuestionCarouselCard | Sarosis |
-| 配置化 | 硬编码 | ToolDisplayRegistry | Sarosis |
-| 结果截断 | 无 | 500/5000/全部 | Sarosis |
-| 交织布局 | 独立消息 | Placeholder 精确定位 | Sarosis |
+| 思考过程 | 流式状态中（非卡片） | 独立 ThinkingCard | Saros |
+| 引用展示 | 无 | ReferencesCard + 状态标签 | Saros |
+| 进度展示 | 无 | ProgressCard + 步骤跟踪 | Saros |
+| 确认/审批 | 简单按钮 | ConfirmationCard + 计划审批 | Saros |
+| 子 Agent | 无 | SubAgentCard + 并行分组 | Saros |
+| 任务清单 | 无 | TodoListCard + 交互 | Saros |
+| 推荐问题 | 无 | QuestionCarouselCard | Saros |
+| 配置化 | 硬编码 | ToolDisplayRegistry | Saros |
+| 结果截断 | 无 | 500/5000/全部 | Saros |
+| 交织布局 | 独立消息 | Placeholder 精确定位 | Saros |
 
 ---
 
-## 六、优化建议（针对 Sarosis）
+## 六、优化建议（针对 Saros）
 
 ### 紧急（体验差距大）
 

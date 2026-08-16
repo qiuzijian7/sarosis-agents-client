@@ -1,8 +1,8 @@
 # Codebase-Memory-MCP 知识图谱构建原理深度分析
 
-> **分析日期**: 2026-06-23  
-> **项目版本**: v0.8.0+  
-> **作者**: AI Assistant  
+> **分析日期**: 2026-06-23
+> **项目版本**: v0.8.0+
+> **作者**: AI Assistant
 > **适用场景**: 代码智能引擎架构设计参考
 
 ---
@@ -537,24 +537,24 @@ cbm_registry_resolve(r, callee_name, module_qn, import_map)
 struct cbm_gbuf {
     const char *project;        // 项目名称
     const char *root_path;      // 仓库根路径
-    
+
     // 节点存储
     cbm_gbuf_node_t *nodes;    // 节点数组
     int node_cap;                // 节点容量
     int node_count;              // 节点数量
-    
+
     // 边存储
     cbm_gbuf_edge_t *edges;    // 边数组
     int edge_cap;                // 边容量
     int edge_count;              // 边数量
-    
+
     // 快速查找索引
     CBMHashTable *qn_to_id;    // qualified_name → node_id
     CBMHashTable *edge_dedup;  // (source, target, type) → edge_id
-    
+
     // 向量存储（用于语义搜索）
     cbm_vector_store_t *vectors;
-    
+
     // 共享 ID 源（用于并行提取）
     _Atomic int64_t *id_source;
 };
@@ -679,13 +679,13 @@ similarity = cbm_minhash_similarity(fp1, fp2, k)
 
 ---
 
-## 七、与 Sarosis Agents Client 的集成建议
+## 七、与 Saros Agents Client 的集成建议
 
 ### 7.1 集成架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│            Sarosis Agents Client (前端工作区)                       │
+│            Saros Agents Client (前端工作区)                       │
 │  - Agent Studio (多 Agent 编排)                                 │
 │  - Skill System (技能管理)                                      │
 │  - Memory Framework (记忆管理)                                    │
@@ -705,7 +705,7 @@ similarity = cbm_minhash_similarity(fp1, fp2, k)
 
 #### 步骤 1：添加 MCP Server 配置
 
-在 Sarosis 工作区中添加 `codebase-memory-mcp` 作为 MCP Server：
+在 Saros 工作区中添加 `codebase-memory-mcp` 作为 MCP Server：
 
 ```json
 // .sarosworkspace/mcp.json
@@ -727,12 +727,12 @@ similarity = cbm_minhash_similarity(fp1, fp2, k)
 // agentChatService.ts
 async function onAgentStart(agentId: string) {
     const workspacePath = this.workspaceService.getCurrentWorkspacePath();
-    
+
     // 调用 index_repository 工具
     await this.mcpToolCaller.callTool('codebase-memory', 'index_repository', {
         repo_path: workspacePath
     });
-    
+
     console.log(`Indexed workspace: ${workspacePath}`);
 }
 ```
@@ -746,13 +746,13 @@ async function onAgentStart(agentId: string) {
 async function enhancePrompt(userQuery: string) {
     // 1. 从用户查询中提取关键实体名
     const entities = extractEntities(userQuery);
-    
+
     // 2. 调用 search_graph 获取相关代码
     const graphContext = await this.mcpToolCaller.callTool('codebase-memory', 'search_graph', {
         name_pattern: `.*${entities.join('|')}.*`,
         limit: 10
     });
-    
+
     // 3. 将图谱上下文注入到系统提示
     const enhancedPrompt = `
 # Code Graph Context
@@ -761,7 +761,7 @@ ${graphContext.results.map(r => `- ${r.label}: ${r.qualified_name} (${r.file_pat
 # User Query
 ${userQuery}
 `;
-    
+
     return enhancedPrompt;
 }
 ```
@@ -780,7 +780,7 @@ class CallChainView extends ViewPane {
             direction: 'both',
             depth: 5
         });
-        
+
         // 渲染调用链图（使用 D3.js 或 Cytoscape.js）
         this.renderCallGraph(result.visited, result.edges);
     }
@@ -793,19 +793,19 @@ class CallChainView extends ViewPane {
 
 **问题**: 每次调用 MCP 工具都有进程间通信开销
 
-**解决方案**: 在 Sarosis 中添加 MCP 工具结果缓存
+**解决方案**: 在 Saros 中添加 MCP 工具结果缓存
 
 ```typescript
 class CachedMCPToolCaller {
     private cache: Map<string, any> = new Map();
-    
+
     async callTool(server: string, tool: string, args: any) {
         const cacheKey = `${server}:${tool}:${JSON.stringify(args)}`;
-        
+
         if (this.cache.has(cacheKey)) {
             return this.cache.get(cacheKey);
         }
-        
+
         const result = await this.mcpCaller.callTool(server, tool, args);
         this.cache.set(cacheKey, result);
         return result;
@@ -868,7 +868,7 @@ Only read files directly if the tools don't return enough information.
 5. **并行提取**: 使用线程池加速
 6. **跨文件 LSP**: 类型感知的调用解析
 
-### 8.3 与 Sarosis 集成的收益
+### 8.3 与 Saros 集成的收益
 
 | 收益 | 说明 |
 |------|------|

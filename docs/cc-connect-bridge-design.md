@@ -1,7 +1,7 @@
-# cc-connect 平台桥接层 → Sarosis 复刻实施方案
+# cc-connect 平台桥接层 → Saros 复刻实施方案
 
-> 目标：把 `G:\CustomWorkspaces\AIProjects\cc-connect`（Go 实现的「本地 Agent ↔ 聊天平台」桥接器）的核心能力，复刻进 Sarosis 客户端。
-> Sarosis 侧 **Agent 侧已完整**：`IAgentOSService`（OS 编排层）、`IAgentChatService`（对话/流式）、`IAgentStudioService`（Agent 目录）都已存在。缺口是 **平台桥接层（Platform Bridge Layer）**：让飞书 / Telegram / Discord 等 IM 把消息喂给本地 Agent，并把 Agent 的流式输出回传。
+> 目标：把 `G:\CustomWorkspaces\AIProjects\cc-connect`（Go 实现的「本地 Agent ↔ 聊天平台」桥接器）的核心能力，复刻进 Saros 客户端。
+> Saros 侧 **Agent 侧已完整**：`IAgentOSService`（OS 编排层）、`IAgentChatService`（对话/流式）、`IAgentStudioService`（Agent 目录）都已存在。缺口是 **平台桥接层（Platform Bridge Layer）**：让飞书 / Telegram / Discord 等 IM 把消息喂给本地 Agent，并把 Agent 的流式输出回传。
 
 ---
 
@@ -9,7 +9,7 @@
 
 ```
                  ┌─────────────────────────────────────────────┐
-   外部 IM        │               Sarosis 客户端                 │
+   外部 IM        │               Saros 客户端                 │
   (飞书/Telegram)  │                                             │
       │          │   IBridgePlatform (适配器, 每平台一个)        │
       │  inbound │   ┌─────────────────────────────────────┐   │
@@ -28,15 +28,15 @@
 ```
 
 关键差异（对比 cc-connect 的 Go 实现）：
-- cc-connect 用 **子进程** 拉起 Claude Code/Codex CLI；Sarosis 直接 **进程内** 调 `IAgentChatService.sendMessage`，无需子进程、无 stdin/stdout 协议解析。
-- cc-connect 的 `Agent` 抽象（`StartSession`/持久进程）在 Sarosis 中由 `IAgentChatService` 的 `agentSessionId` 概念替代（每个会话一个 session）。
+- cc-connect 用 **子进程** 拉起 Claude Code/Codex CLI；Saros 直接 **进程内** 调 `IAgentChatService.sendMessage`，无需子进程、无 stdin/stdout 协议解析。
+- cc-connect 的 `Agent` 抽象（`StartSession`/持久进程）在 Saros 中由 `IAgentChatService` 的 `agentSessionId` 概念替代（每个会话一个 session）。
 - 统一消息模型沿用 cc-connect 的 `Message`/`Event`/`Card` 思路，但改为 TS 类型 `InboundMessage`/`OutboundMessage`/`BridgeCard`。
 
 ---
 
-## 2. cc-connect → Sarosis 模块映射表
+## 2. cc-connect → Saros 模块映射表
 
-| cc-connect (Go) | Sarosis 复刻位置 | 说明 |
+| cc-connect (Go) | Saros 复刻位置 | 说明 |
 |---|---|---|
 | `core.Platform` 接口 (`interfaces.go:10`) | `common/bridge/bridgeTypes.ts` → `IBridgePlatform` | 平台适配器端口 |
 | `core.Message` (`message.go:211`) | `InboundMessage` | 统一入站消息 |

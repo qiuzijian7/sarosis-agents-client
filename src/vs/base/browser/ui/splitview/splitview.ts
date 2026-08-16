@@ -1206,7 +1206,7 @@ export class SplitView<TLayoutContext = undefined, TView extends IView<TLayoutCo
 				this.sashItems.splice(index - 1, 0, sashItem);
 			}
 
-			// [Sarosis] Validate view.element before appending
+			// [Saros] Validate view.element before appending
 			// Fix: "Failed to execute 'appendChild' on 'Node': parameter 1 is not of type 'Node'"
 			if (!view.element) {
 				const viewInfo = (view as unknown as { constructor?: { name?: string } }).constructor?.name || 'unknown';

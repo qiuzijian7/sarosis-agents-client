@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Mindmap Tree Model
+ *  Saros Agents — Mindmap Tree Model
  *
  *  从扁平 nodes+edges 构建森林（多棵树）。
  *  移植自 Mindvas mindmap/tree-model.ts，去掉 Obsidian Canvas 运行时依赖。

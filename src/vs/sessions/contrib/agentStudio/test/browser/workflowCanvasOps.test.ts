@@ -13,12 +13,12 @@ import {
 	type CanvasNode,
 } from '../../webview/src/features/workflowEditor/comfyHost/canvasOps.js';
 
-/** Small registry stub so tests don't depend on the real Sarosis registration. */
+/** Small registry stub so tests don't depend on the real Saros registration. */
 function specStub(type: string) {
-	if (type === 'Sarosis.Prompt') {
+	if (type === 'Saros.Prompt') {
 		return { inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'output', type: 'TEXT' }] };
 	}
-	if (type === 'Sarosis.ModelImageGen') {
+	if (type === 'Saros.ModelImageGen') {
 		return { inputs: [{ name: 'prompt', type: 'TEXT' }], outputs: [{ name: 'image', type: 'IMAGE' }] };
 	}
 	return undefined;
@@ -27,8 +27,8 @@ function specStub(type: string) {
 function baseModel(): CanvasModel {
 	return {
 		nodes: [
-			{ id: 'n1', type: 'Sarosis.Prompt', position: { x: 0, y: 0 }, data: { label: '提示-1', prompt: 'a cat' } },
-			{ id: 'n2', type: 'Sarosis.ModelImageGen', position: { x: 200, y: 0 }, data: { label: '图像-1' } },
+			{ id: 'n1', type: 'Saros.Prompt', position: { x: 0, y: 0 }, data: { label: '提示-1', prompt: 'a cat' } },
+			{ id: 'n2', type: 'Saros.ModelImageGen', position: { x: 200, y: 0 }, data: { label: '图像-1' } },
 		],
 		edges: [{ id: 'e1', source: 'n1', target: 'n2', sourceHandle: 'output', targetHandle: 'prompt' }],
 	};
@@ -37,11 +37,11 @@ function baseModel(): CanvasModel {
 suite('canvasOps — applyCanvasOps', () => {
 
 	test('add_node creates a node with auto id, auto name and default position', () => {
-		const r = applyCanvasOps(baseModel(), [{ op: 'add_node', type: 'Sarosis.ModelImageGen' }], { getSpec: specStub });
+		const r = applyCanvasOps(baseModel(), [{ op: 'add_node', type: 'Saros.ModelImageGen' }], { getSpec: specStub });
 		assert.strictEqual(r.ok, true);
 		assert.strictEqual(r.model.nodes.length, 3);
 		const added = r.model.nodes[2];
-		assert.strictEqual(added.type, 'Sarosis.ModelImageGen');
+		assert.strictEqual(added.type, 'Saros.ModelImageGen');
 		assert.strictEqual(added.data.label, 'ModelImageGen-1', 'auto-name uses the type-derived kind when no prior name matches');
 		assert.ok(added.position.x >= 0 && added.position.y >= 0);
 		assert.strictEqual(r.results[0].summary.includes('added node'), true);
@@ -49,8 +49,8 @@ suite('canvasOps — applyCanvasOps', () => {
 
 	test('add_node auto-name continues the counter across repeated adds', () => {
 		const r = applyCanvasOps(baseModel(), [
-			{ op: 'add_node', type: 'Sarosis.ModelImageGen' },
-			{ op: 'add_node', type: 'Sarosis.ModelImageGen' },
+			{ op: 'add_node', type: 'Saros.ModelImageGen' },
+			{ op: 'add_node', type: 'Saros.ModelImageGen' },
 		], { getSpec: specStub });
 		assert.strictEqual(r.ok, true);
 		assert.deepStrictEqual(r.model.nodes.slice(2).map(n => n.data.label), ['ModelImageGen-1', 'ModelImageGen-2']);
@@ -58,7 +58,7 @@ suite('canvasOps — applyCanvasOps', () => {
 
 	test('add_node with explicit id/label/position/data is honored', () => {
 		const r = applyCanvasOps(baseModel(), [{
-			op: 'add_node', type: 'Sarosis.Prompt', id: 'p9', label: '风格提示',
+			op: 'add_node', type: 'Saros.Prompt', id: 'p9', label: '风格提示',
 			position: { x: 10, y: 20 }, data: { prompt: 'neon' },
 		}], { getSpec: specStub });
 		assert.strictEqual(r.ok, true);
@@ -76,7 +76,7 @@ suite('canvasOps — applyCanvasOps', () => {
 	});
 
 	test('add_node with duplicate explicit id fails', () => {
-		const r = applyCanvasOps(baseModel(), [{ op: 'add_node', type: 'Sarosis.Prompt', id: 'n1' }], { getSpec: specStub });
+		const r = applyCanvasOps(baseModel(), [{ op: 'add_node', type: 'Saros.Prompt', id: 'n1' }], { getSpec: specStub });
 		assert.strictEqual(r.ok, false);
 		assert.match(r.error ?? '', /已存在/);
 	});
@@ -154,7 +154,7 @@ suite('canvasOps — applyCanvasOps', () => {
 	test('a failing op mid-batch rolls the ENTIRE batch back', () => {
 		const original = baseModel();
 		const r = applyCanvasOps(original, [
-			{ op: 'add_node', type: 'Sarosis.Prompt', id: 'p-new', label: '新提示' },
+			{ op: 'add_node', type: 'Saros.Prompt', id: 'p-new', label: '新提示' },
 			{ op: 'delete_node', node: 'n1' },
 			{ op: 'add_node', type: 'No.SuchNode' },   // fails → rollback
 		], { getSpec: specStub });
@@ -166,8 +166,8 @@ suite('canvasOps — applyCanvasOps', () => {
 
 	test('batch order is preserved in results and model', () => {
 		const r = applyCanvasOps(baseModel(), [
-			{ op: 'add_node', type: 'Sarosis.Prompt', id: 'p1' },
-			{ op: 'add_node', type: 'Sarosis.ModelImageGen', id: 'g1' },
+			{ op: 'add_node', type: 'Saros.Prompt', id: 'p1' },
+			{ op: 'add_node', type: 'Saros.ModelImageGen', id: 'g1' },
 		], { getSpec: specStub });
 		assert.strictEqual(r.ok, true);
 		assert.deepStrictEqual(r.model.nodes.map(n => n.id), ['n1', 'n2', 'p1', 'g1']);
@@ -178,8 +178,8 @@ suite('canvasOps — applyCanvasOps', () => {
 suite('canvasOps — resolveNodeRef', () => {
 
 	const nodes: CanvasNode[] = [
-		{ id: 'a1', type: 'Sarosis.Prompt', position: { x: 0, y: 0 }, data: { label: 'Alpha' } },
-		{ id: 'b2', type: 'Sarosis.ModelImageGen', position: { x: 0, y: 0 }, data: { label: 'beta' } },
+		{ id: 'a1', type: 'Saros.Prompt', position: { x: 0, y: 0 }, data: { label: 'Alpha' } },
+		{ id: 'b2', type: 'Saros.ModelImageGen', position: { x: 0, y: 0 }, data: { label: 'beta' } },
 	];
 
 	test('exact id wins', () => {
@@ -221,6 +221,6 @@ suite('canvasOps — nextAutoName / nextNodeId', () => {
 
 	test('nextNodeId sanitizes type and continues counter', () => {
 		const nodes = [{ id: 'model-image-gen-2', type: 'x', position: { x: 0, y: 0 }, data: {} }];
-		assert.strictEqual(nextNodeId('Sarosis.ModelImageGen', nodes), 'model-image-gen-3');
+		assert.strictEqual(nextNodeId('Saros.ModelImageGen', nodes), 'model-image-gen-3');
 	});
 });

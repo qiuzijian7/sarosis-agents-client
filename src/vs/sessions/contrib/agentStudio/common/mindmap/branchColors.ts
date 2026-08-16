@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Mindmap Branch Colors
+ *  Saros Agents — Mindmap Branch Colors
  *
  *  移植自 Mindvas mindmap/branch-colors.ts。
  *  为顶层分支分配调色板颜色，逐级级联到后代节点和边。

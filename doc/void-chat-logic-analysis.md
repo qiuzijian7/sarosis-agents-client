@@ -1,4 +1,4 @@
-# Void vs Sarosis 聊天框逻辑层深度对比分析与优化建议
+# Void vs Saros 聊天框逻辑层深度对比分析与优化建议
 
 > 生成日期：2026-05-27
 > 分析范围：消息处理、流式管理、状态机、工具执行、错误恢复、取消机制
@@ -7,7 +7,7 @@
 
 ## 一、架构总览对比
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | **核心架构** | VS Code 服务 + React 全局变量桥接 | VS Code 服务 + WebView postMessage + Zustand |
 | **状态管理** | `ChatThreadService` 单一服务集中管理 | Zustand Store + StreamHandler 双层管理 |
@@ -28,7 +28,7 @@ React UI ←(全局变量+Listener)→ ChatThreadService ←(IPC)→ LLMMessageS
                                                                                      sendLLMMessage → Provider SDK
 ```
 
-**Sarosis**:
+**Saros**:
 ```
 React UI ←(postMessage)→ Controller ←→ AgentChatService ←→ AgentDriverService ←→ AgentOSService
                               ↑                                    ↓                     ↓
@@ -56,9 +56,9 @@ Void 的 `ChatThreadService` 是唯一的状态真相源（Single Source of Trut
 - 单一大类（2000+ 行），内聚性低
 - React 桥接层使用**全局变量 + Listener Set**（非 React 惯用模式），时序问题难以追踪
 
-### 2.2 Sarosis: 双层分离式
+### 2.2 Saros: 双层分离式
 
-Sarosis 使用 **Zustand（持久消息状态） + StreamHandler（实时流状态）** 双层架构：
+Saros 使用 **Zustand（持久消息状态） + StreamHandler（实时流状态）** 双层架构：
 
 - **Zustand Store** `useChatStore`: 管理消息列表、输入框、加载状态等
 - **StreamHandler**: 独立管理实时流（`textBuffer`, `thinkingBuffer`, `toolCalls`），通过观察者模式通知 UI
@@ -78,7 +78,7 @@ Sarosis 使用 **Zustand（持久消息状态） + StreamHandler（实时流状�
 
 ### 2.3 对比总结
 
-| 特性 | Void | Sarosis |
+| 特性 | Void | Saros |
 |------|------|---------|
 | 状态源数量 | 1（ChatThreadService） | 2+（Zustand + StreamHandler + 其他 Store） |
 | React 集成 | 全局变量 + 手动 Listener | Zustand Hook（原生 React） |
@@ -108,9 +108,9 @@ ToolMessage 子状态:
 
 **优势**：TypeScript 可穷举检查，UI 可精确匹配每种状态渲染不同组件。
 
-### 3.2 Sarosis: 扁平接口 + 状态字段
+### 3.2 Saros: 扁平接口 + 状态字段
 
-Sarosis 的 `ChatMessage` 是**单一接口**，工具调用状态存储在 `toolCalls` 数组中：
+Saros 的 `ChatMessage` 是**单一接口**，工具调用状态存储在 `toolCalls` 数组中：
 
 ```typescript
 interface ChatMessage {
@@ -153,9 +153,9 @@ isRunning:
 
 **interrupt 机制**：在 `'LLM'` 状态时携带一个 `interrupt: Promise`，当用户发送新消息时 resolve 此 Promise，实现流式中断。
 
-### 4.2 Sarosis: 基于 AbortController 的三级取消链
+### 4.2 Saros: 基于 AbortController 的三级取消链
 
-Sarosis 的取消信号从 UI → ChatService → Driver → OS 逐级传递：
+Saros 的取消信号从 UI → ChatService → Driver → OS 逐级传递：
 
 ```
 UI cancelStream()
@@ -180,7 +180,7 @@ AgentOSService.cancelAgentLoop()
 
 ### 4.3 对比
 
-| 特性 | Void | Sarosis |
+| 特性 | Void | Saros |
 |------|------|---------|
 | 取消机制 | `interrupt` Promise | `AbortController` 三级链 |
 | 取消后内容 | 丢弃 | 保留部分内容 |
@@ -213,9 +213,9 @@ Void 的工具执行流程相对简单：
 - 每个类别可独立配置 `autoApprove`
 - **即使 autoApprove=true，也先添加 `tool_request` 消息**（UI 加载态），再自动继续
 
-### 5.2 Sarosis: 复杂的 Agent Loop + 多格式兼容
+### 5.2 Saros: 复杂的 Agent Loop + 多格式兼容
 
-Sarosis 的工具执行流程极其复杂：
+Saros 的工具执行流程极其复杂：
 
 ```
 1. 获取启用工具列表
@@ -248,7 +248,7 @@ Sarosis 的工具执行流程极其复杂：
 - 执行出错 → 添加 `tool_error` 消息，继续循环
 - 用户拒绝 → 添加 `rejected` 消息，结束流式状态
 
-**Sarosis**（精细的 5 级容错链）:
+**Saros**（精细的 5 级容错链）:
 
 | 步骤 | 错误场景 | 处理方式 |
 |------|---------|---------|
@@ -264,7 +264,7 @@ Sarosis 的工具执行流程极其复杂：
 
 ### 5.4 对比总结
 
-| 特性 | Void | Sarosis |
+| 特性 | Void | Saros |
 |------|------|---------|
 | 工具调用格式 | 标准 function_call | 7 种格式兼容 |
 | 工具审批 | 三类别 + autoApprove | ToolApprovalService 安全等级 |
@@ -285,7 +285,7 @@ Void 的错误恢复策略较为简单：
 - 工具错误：添加错误消息，继续 Agent Loop
 - 无 Fallback 机制
 
-### 6.2 Sarosis: 三级 Fallback + 结构化错误
+### 6.2 Saros: 三级 Fallback + 结构化错误
 
 **三级 Fallback 机制** (`_executeWithFallback`):
 
@@ -321,7 +321,7 @@ interface StreamError {
 
 ### 6.3 对比
 
-| 特性 | Void | Sarosis |
+| 特性 | Void | Saros |
 |------|------|---------|
 | Fallback 机制 | 无 | 三级 Fallback |
 | 错误分类 | 无 | 结构化 5 维度 |
@@ -342,7 +342,7 @@ interface StreamError {
 | **Tool Approval UI** | 6 种工具子状态的精细 UI | 安全控制 |
 | **Checkpoint Auto-approve** | 每个类别独立配置自动批准 | 便利性与安全性的平衡 |
 
-### 7.2 Sarosis 独有
+### 7.2 Saros 独有
 
 | 功能 | 描述 | 价值 |
 |------|------|------|
@@ -362,7 +362,7 @@ interface StreamError {
 
 #### 1. 引入工具审批 UI（Tool Approval System）
 
-**现状**：Sarosis 有 `ToolApprovalService` 安全等级检查，但缺少用户侧的审批 UI。工具调用要么被静默拒绝，要么静默执行。
+**现状**：Saros 有 `ToolApprovalService` 安全等级检查，但缺少用户侧的审批 UI。工具调用要么被静默拒绝，要么静默执行。
 
 **建议**：借鉴 Void 的 6 种工具子状态，在 `ToolCallState` 中增加 `approval_required` 和 `rejected` 状态：
 
@@ -378,7 +378,7 @@ interface ToolCallState {
 
 #### 2. 添加 Checkpoint 系统
 
-**现状**：Sarosis 没有时间旅行功能，用户无法回溯到之前的状态。
+**现状**：Saros 没有时间旅行功能，用户无法回溯到之前的状态。
 
 **建议**：
 1. 在 Agent Loop 的关键节点（每次工具执行前、每次模型调用后）创建 Checkpoint
@@ -388,7 +388,7 @@ interface ToolCallState {
 
 #### 3. 增强流式状态机
 
-**现状**：Sarosis 的 `StreamState` 只有 `isStreaming` 布尔值，无法区分 LLM 输出中、工具执行中、等待审批等状态。
+**现状**：Saros 的 `StreamState` 只有 `isStreaming` 布尔值，无法区分 LLM 输出中、工具执行中、等待审批等状态。
 
 **建议**：借鉴 Void 的 `isRunning` 标记联合类型：
 
@@ -407,7 +407,7 @@ UI 可据此显示更精确的状态指示器（如"正在调用 read_file..."�
 
 #### 4. 结构化错误恢复
 
-**现状**：Sarosis 已有 `parseStreamError` 和三级 Fallback，但缺少面向用户的重试 UI。
+**现状**：Saros 已有 `parseStreamError` 和三级 Fallback，但缺少面向用户的重试 UI。
 
 **建议**：
 1. 在错误消息中添加"重试"按钮，仅当 `retryable=true` 时显示
@@ -430,7 +430,7 @@ pending → approval_required → running → completed/error
 
 #### 6. 消息编辑与重发
 
-**现状**：Sarosis 不支持编辑已发送的消息。
+**现状**：Saros 不支持编辑已发送的消息。
 
 **建议**：在用户消息上添加"编辑"按钮，编辑后重新发送，生成新的响应。这是 Cursor 等 AI 编辑器的标配功能。
 
@@ -465,7 +465,7 @@ pending → approval_required → running → completed/error
 
 #### 11. 并行工具执行可视化
 
-**现状**：Sarosis 支持并行工具执行，但 UI 上无法区分顺序执行和并行执行。
+**现状**：Saros 支持并行工具执行，但 UI 上无法区分顺序执行和并行执行。
 
 **建议**：并行执行的工具卡片使用缩进 + 并排排列，顺序执行的卡片使用纵向堆叠。添加连接线指示依赖关系。
 
@@ -526,12 +526,12 @@ Week 5-6:
 两个项目代表了两种不同的设计哲学：
 
 - **Void** 追求**简洁与安全**：单一服务、联合类型、工具审批、Checkpoint。适合追求可控性和安全感的用户。
-- **Sarosis** 追求**功能与兼容**：多 Agent 协作、7 种工具格式兼容、三级 Fallback、复杂任务编排。适合追求自动化和复杂场景的用户。
+- **Saros** 追求**功能与兼容**：多 Agent 协作、7 种工具格式兼容、三级 Fallback、复杂任务编排。适合追求自动化和复杂场景的用户。
 
 **最优策略是取两者之长**：
 1. 从 Void 借鉴**工具审批系统**和**Checkpoint 系统**，提升用户安全感
 2. 从 Void 借鉴**流式状态机**，提升状态可见性
-3. 保持 Sarosis 现有的**多 Agent 并行**、**三级 Fallback**、**7 种格式兼容**等优势
+3. 保持 Saros 现有的**多 Agent 并行**、**三级 Fallback**、**7 种格式兼容**等优势
 4. 在此基础上增强**错误恢复 UI**、**工具执行可视化**、**Agent Loop 生命周期展示**
 
-这样既能保持 Sarosis 在功能和兼容性上的领先，又能补齐在用户安全感和状态可见性上的短板。
+这样既能保持 Saros 在功能和兼容性上的领先，又能补齐在用户安全感和状态可见性上的短板。

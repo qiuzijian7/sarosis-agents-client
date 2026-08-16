@@ -12,7 +12,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { $, clearNode } from '../../../../base/browser/dom.js';
-import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, type IDisposable } from '../../../../base/common/lifecycle.js';
 import { Dimension } from '../../../../base/browser/dom.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { renderMarkdown } from '../../../../base/browser/markdownRenderer.js';
@@ -22,10 +22,12 @@ import { IEventBridgeService } from '../common/eventBridge.js';
 import { IWorkbenchMcpManagementService } from '../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
 import { IInstallableMcpServer } from '../../../../platform/mcp/common/mcpManagement.js';
 import { IMcpServerConfiguration, McpServerType } from '../../../../platform/mcp/common/mcpPlatformTypes.js';
-import { BUNDLED_MCP_PRESETS } from '../common/bundled-tools/bundledMcpPresets.js';
+import { getMcpPresets, type IMcpAutoInstall } from '../common/bundled-tools/bundledMcpPresets.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IMarketplaceService } from '../common/marketplace.js';
+import { ITerminalService, type ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import type { ITerminalLaunchError } from '../../../../platform/terminal/common/terminal.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
@@ -47,13 +49,15 @@ interface IMcpDetailModel {
 	args?: readonly string[];
 	headers?: Record<string, string>;
 	tags: string[];
+	/** 一键"自动安装并配置"流程（内置 pip 型 MCP，如 Comfy MCP）。 */
+	autoInstall?: IMcpAutoInstall;
 }
 
 const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
 
 /** Resolve a detail model by market id, from bundled presets (synchronous). */
 export function resolveMcpDetailModel(marketId: string): IMcpDetailModel | undefined {
-	const preset = BUNDLED_MCP_PRESETS.find(p => p.id === marketId);
+	const preset = getMcpPresets().find(p => p.id === marketId);
 	if (preset) {
 		return {
 			id: preset.id,
@@ -62,7 +66,7 @@ export function resolveMcpDetailModel(marketId: string): IMcpDetailModel | undef
 			description: preset.description,
 			useGuide: '',
 			toolsDescription: '',
-			icon: '',
+			icon: preset.icon ?? '',
 			type: 'builtin',
 			creator: '',
 			transportType: preset.transportType === 'http' ? 'http' : 'stdio',
@@ -71,6 +75,7 @@ export function resolveMcpDetailModel(marketId: string): IMcpDetailModel | undef
 			args: preset.args,
 			headers: preset.headers ? { ...preset.headers } : undefined,
 			tags: preset.envKeys ? preset.envKeys.map(k => k) : [],
+			autoInstall: preset.autoInstall ? { ...preset.autoInstall } : undefined,
 		};
 	}
 	return undefined;
@@ -118,6 +123,7 @@ export class McpDetailEditorPane extends EditorPane {
 		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
 		@IFileService private readonly fileService: IFileService,
 			@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
+		@ITerminalService private readonly terminalService: ITerminalService,
 	) {
 		super(McpDetailEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -208,6 +214,20 @@ export class McpDetailEditorPane extends EditorPane {
 			}
 		} catch { /* ignore */ }
 
+		// 1b. Built-in auto-install type (Comfy MCP): "installed" = registered in
+		// the MCP config (auto-install writes directly via mcpManagementService,
+		// it never touches installed-packages.json).
+		if (!this._installed && this._model?.autoInstall && this._marketSlug) {
+			try {
+				const registered = await this.mcpManagementService.getInstalled();
+				const hit = registered.find(s => s.name === this._marketSlug || sanitize(s.name) === sanitize(this._marketSlug!));
+				if (hit) {
+					this._installed = true;
+					this._localVersion = '已配置';
+				}
+			} catch { /* ignore */ }
+		}
+
 		// 2. Get server latest version
 		try {
 			const pkg = await this.marketplaceService.getPackage(this._marketSlug);
@@ -268,13 +288,20 @@ export class McpDetailEditorPane extends EditorPane {
 		iconBox.style.background = 'var(--vscode-sideBarSectionHeader-background)';
 		iconBox.style.border = '1px solid var(--vscode-panel-border)';
 		if (model.icon) {
-			const img = $('img') as HTMLImageElement;
-			img.src = model.icon;
-			img.style.width = '100%';
-			img.style.height = '100%';
-			img.style.objectFit = 'cover';
-			img.onerror = () => { iconBox.textContent = '\u{1F50C}'; iconBox.style.fontSize = '28px'; };
-			iconBox.appendChild(img);
+			// Emoji icons (e.g. "🎨") are rendered as text — treating them as an
+			// <img src> fired a bogus file:// request (net::ERR_FILE_NOT_FOUND).
+			if (/^https?:\/\//i.test(model.icon) || /^data:/i.test(model.icon)) {
+				const img = $('img') as HTMLImageElement;
+				img.src = model.icon;
+				img.style.width = '100%';
+				img.style.height = '100%';
+				img.style.objectFit = 'cover';
+				img.onerror = () => { iconBox.textContent = '\u{1F50C}'; iconBox.style.fontSize = '28px'; };
+				iconBox.appendChild(img);
+			} else {
+				iconBox.textContent = model.icon;
+				iconBox.style.fontSize = '28px';
+			}
 		} else {
 			iconBox.textContent = '\u{1F50C}';
 			iconBox.style.fontSize = '28px';
@@ -334,6 +361,28 @@ export class McpDetailEditorPane extends EditorPane {
 		hero.appendChild(this._buildActionButton());
 
 		this._container.appendChild(hero);
+
+		// Auto-install result strip (Comfy MCP etc.)
+		if (this._lastAutoInstallLog) {
+			const strip = $('div.mcp-detail-install-log');
+			strip.style.margin = '0 32px 18px';
+			strip.style.padding = '10px 14px';
+			strip.style.borderRadius = '6px';
+			strip.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+			strip.style.fontSize = '12px';
+			strip.style.lineHeight = '1.5';
+			strip.style.whiteSpace = 'pre-wrap';
+			strip.style.wordBreak = 'break-all';
+			strip.style.maxHeight = '200px';
+			strip.style.overflowY = 'auto';
+			strip.style.background = this._autoInstallFailed
+				? 'var(--vscode-inputValidation-errorBackground, #5a1d1d)'
+				: 'var(--vscode-textCodeBlock-background, rgba(127,127,127,0.1))';
+			strip.style.border = this._autoInstallFailed ? '1px solid var(--vscode-inputValidation-errorBorder, #be1100)' : '1px solid var(--vscode-panel-border)';
+			strip.style.color = this._autoInstallFailed ? 'var(--vscode-errorForeground, #f48771)' : 'var(--vscode-foreground)';
+			strip.textContent = this._lastAutoInstallLog;
+			this._container.appendChild(strip);
+		}
 
 		// ── Body ────────────────────────────────────────────────────
 		const body = $('div.mcp-detail-body');
@@ -452,19 +501,36 @@ export class McpDetailEditorPane extends EditorPane {
 		}
 
 		if (!this._installed) {
-			// Not installed → Install button
-			const btn = $('button') as HTMLButtonElement;
-			btn.textContent = '⬇ 安装';
-			btn.style.padding = '8px 22px';
-			btn.style.fontSize = '13px';
-			btn.style.fontWeight = '600';
-			btn.style.border = 'none';
-			btn.style.borderRadius = '6px';
-			btn.style.cursor = 'pointer';
-			btn.style.background = 'var(--vscode-button-background)';
-			btn.style.color = 'var(--vscode-button-foreground)';
-			btn.onclick = () => { void this._install(); };
-			wrap.appendChild(btn);
+			// Built-in pip 型 MCP（如 Comfy MCP）：一键"自动安装并配置"
+			if (this._model?.autoInstall) {
+				const btn = $('button') as HTMLButtonElement;
+				btn.textContent = '⚙️ 自动安装并配置';
+				btn.title = '检测并安装依赖（pip），完成后自动写入 MCP 服务器配置';
+				btn.style.padding = '8px 22px';
+				btn.style.fontSize = '13px';
+				btn.style.fontWeight = '600';
+				btn.style.border = 'none';
+				btn.style.borderRadius = '6px';
+				btn.style.cursor = 'pointer';
+				btn.style.background = 'var(--vscode-button-background)';
+				btn.style.color = 'var(--vscode-button-foreground)';
+				btn.onclick = () => { void this._autoInstall(); };
+				wrap.appendChild(btn);
+			} else {
+				// Not installed → Install button
+				const btn = $('button') as HTMLButtonElement;
+				btn.textContent = '⬇ 安装';
+				btn.style.padding = '8px 22px';
+				btn.style.fontSize = '13px';
+				btn.style.fontWeight = '600';
+				btn.style.border = 'none';
+				btn.style.borderRadius = '6px';
+				btn.style.cursor = 'pointer';
+				btn.style.background = 'var(--vscode-button-background)';
+				btn.style.color = 'var(--vscode-button-foreground)';
+				btn.onclick = () => { void this._install(); };
+				wrap.appendChild(btn);
+			}
 		} else {
 			// Installed → check if upgrade available
 			const canUpgrade = this._localVersion && this._serverVersion &&
@@ -543,8 +609,187 @@ export class McpDetailEditorPane extends EditorPane {
 		}
 	}
 
+	/**
+	 * 一键"自动安装并配置"（内置 pip 型 MCP，如 Comfy MCP）：
+	 *  1. checkCommands 任一在 PATH → 视为已安装，跳过安装步骤；
+	 *  2. 否则依次执行 install 命令（shell）；
+	 *  3. 成功后将 preset 配置写入 MCP 注册（~/.vssaros/saros/mcp.json）。
+	 */
+	private async _autoInstall(): Promise<void> {
+		const model = this._model;
+		if (!model?.autoInstall || !this._marketSlug || this._installing) { return; }
+		this._installing = true;
+		this._render();
+
+		const log: string[] = [];
+		try {
+			// 1. check
+			const present = await this._checkCommands(model.autoInstall.checkCommands);
+			if (present) {
+				log.push(`✓ 已检测到 ${model.autoInstall.checkCommands.join(' / ')}，跳过安装。`);
+			} else {
+				// 2. install
+				for (const cmd of model.autoInstall.install) {
+					log.push(`$ ${cmd}`);
+					const res = await this._runShell(cmd);
+					if (res.code !== 0) {
+						throw new Error(`命令执行失败 (exit ${res.code}): ${cmd}\n${res.output.slice(-400)}`);
+					}
+					log.push(res.output.trim() || '(无输出)');
+				}
+			}
+
+			// 3. register to ~/.vssaros/saros/mcp.json via MCP management service
+			await this._syncToVsCodeConfigDirect(this._marketSlug, model);
+			this.eventBridgeService.emit('mcp:servers-changed', { action: 'add', presetId: sanitize(this._marketSlug) });
+			log.push('✓ 已写入 MCP 服务器配置。重启应用后生效。');
+		} catch (err) {
+			log.push(`✗ ${(err as Error).message}`);
+		} finally {
+			this._installing = false;
+			await this._refreshInstallState();
+			this._render();
+			this._showAutoInstallResult(log.join('\n'));
+		}
+	}
+
+	/** 任一命令存在即返回 true（win 用 where，其余用 which）。 */
+	private async _checkCommands(commands: readonly string[]): Promise<boolean> {
+		const isWin = typeof process !== 'undefined' && process.platform === 'win32';
+		const finder = isWin ? 'where' : 'which';
+		for (const cmd of commands) {
+			try {
+				const res = await this._runShell(`${finder} ${cmd}`);
+				if (res.code === 0 && res.output.trim().length > 0) { return true; }
+			} catch { /* 尝试下一个 */ }
+		}
+		return false;
+	}
+
+	/**
+	 * 在 shell 中执行一条命令，返回退出码与合并输出。
+	 * 走主进程 terminal (pty)（复用 coreTools 的 executeTerminalCommand 模式）——
+	 * editor pane 运行在 renderer 沙箱，`require('child_process')` 不可用
+	 * （返回 undefined → "Cannot read properties of undefined (reading 'spawn')"）。
+	 */
+	private _runShell(command: string): Promise<{ code: number; output: string }> {
+		return new Promise((resolve, reject) => {
+			void (async () => {
+				let instance: ITerminalInstance | undefined;
+				try {
+					instance = await this.terminalService.createTerminal({
+						config: {
+							type: 'Task',
+							name: `MCP 安装: ${command.slice(0, 30)}`,
+							isFeatureTerminal: true,
+							hideFromUser: true,
+						},
+					});
+					if (!instance) {
+						reject(new Error('无法创建终端实例'));
+						return;
+					}
+
+					// 等待 pty 就绪（PowerShell profile 加载 1.5–3s）后发送命令。
+					try { await instance.processReady; } catch { /* 忽略 */ }
+					await new Promise<void>((ok) => {
+						const sub = instance!.onData(() => { sub.dispose(); ok(); });
+						setTimeout(() => { sub.dispose(); ok(); }, 6000);
+					});
+
+					// 追加退出码标记，用于判定成败（VsSaros 默认 shell 为 PowerShell）。
+					const exitMarker = 'SAROS_MCP_EXIT';
+					const cmdWithMarker = `${command}; echo "${exitMarker}=$LASTEXITCODE"`;
+
+					const chunks: string[] = [];
+					const clean = (d: string) => d
+						.replace(/\x1b\[[0-9;:?]*[a-zA-Z]/g, '')
+						.replace(/\x1b\][^\x07]*\x07/g, '')
+						.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+						.replace(/\r\n/g, '\n')
+						.replace(/\r/g, '\n');
+
+					let idle: ReturnType<typeof setTimeout>;
+					let hardCap: ReturnType<typeof setTimeout>;
+					let dataSub: IDisposable | undefined;
+					let exitSub: IDisposable | undefined;
+					let settled = false;
+
+					const settle = (code: number) => {
+						if (settled) { return; }
+						settled = true;
+						clearTimeout(idle); clearTimeout(hardCap);
+						dataSub?.dispose(); exitSub?.dispose();
+						const raw = chunks.join('');
+						const m = raw.match(new RegExp(`${exitMarker}=(\\d+)`));
+						const resolvedCode = m ? Number(m[1]) : code;
+						const output = raw.replace(new RegExp(`${exitMarker}=\\d+`, 'g'), '').trim();
+						resolve({ code: resolvedCode, output });
+					};
+
+					const markIdle = () => {
+						clearTimeout(idle);
+						idle = setTimeout(() => settle(0), 1500);
+					};
+
+					dataSub = instance.onData((data: string) => { chunks.push(clean(data)); markIdle(); });
+					exitSub = instance.onExit((e: number | ITerminalLaunchError | undefined) => {
+						settle(typeof e === 'number' ? e : -1);
+					});
+					// 总超时兜底（pip 安装可能较久，给 5 分钟）。
+					hardCap = setTimeout(() => settle(-1), 5 * 60 * 1000);
+					markIdle();
+
+					await instance.sendText(cmdWithMarker, true);
+				} catch (e) {
+					reject(e as Error);
+				}
+			})();
+		});
+	}
+
+	/** 将内置 preset 的服务器配置直接写入 MCP 注册（不走 marketplace 下载）。 */
+	private async _syncToVsCodeConfigDirect(slug: string, model: IMcpDetailModel): Promise<void> {
+		const config = buildInstallableConfig(model);
+		const installable: IInstallableMcpServer = { name: slug, config };
+		await this.mcpManagementService.install(installable);
+	}
+
+	/** 展示自动安装结果（成功→通知，失败→对话框）。 */
+	private _showAutoInstallResult(log: string): void {
+		const failed = log.includes('✗') || log.includes('失败');
+		// detail pane 没有 notificationService —— 用 console + 渲染一个结果条。
+		console.log(`[McpDetail] auto-install ${failed ? 'failed' : 'ok'}:\n${log}`);
+		this._lastAutoInstallLog = log;
+		this._autoInstallFailed = failed;
+		this._render();
+	}
+
+	private _lastAutoInstallLog: string | undefined;
+	private _autoInstallFailed = false;
+
 	private async _uninstall(): Promise<void> {
 		if (!this._marketSlug) { return; }
+		// Built-in auto-install type (Comfy MCP): no marketplace package — only
+		// remove the MCP registration from ~/.vssaros/saros/mcp.json.
+		if (this._model?.autoInstall) {
+			try {
+				console.log('[McpDetail] Uninstalling built-in MCP:', this._marketSlug);
+				const installed = await this.mcpManagementService.getInstalled();
+				const match = installed.find(s => s.name === this._marketSlug || sanitize(s.name) === sanitize(this._marketSlug!));
+				if (match) { await this.mcpManagementService.uninstall(match); }
+				this._lastAutoInstallLog = `已移除 MCP 服务器 "${this._marketSlug}" 配置。`;
+				this._autoInstallFailed = false;
+			} catch (e) {
+				this._lastAutoInstallLog = `移除失败: ${(e as Error).message}`;
+				this._autoInstallFailed = true;
+			}
+			this.eventBridgeService.emit('mcp:servers-changed', { action: 'remove', serverId: sanitize(this._marketSlug) });
+			this._installing = false;
+			await this._refreshInstallState();
+			this._render();
+			return;
+		}
 		try {
 			console.log('[McpDetail] Uninstalling MCP:', this._marketSlug);
 			// 1. Uninstall from marketplace (removes ~/.vssaros/saros/mcp/{slug}/ + installed-packages.json)

@@ -1,8 +1,8 @@
-# Sarosis Agents Client — 分阶段实现与测试任务文档
+# Saros Agents Client — 分阶段实现与测试任务文档
 
-> **版本**: v1.0  
-> **日期**: 2026-05-11  
-> **基于**: Four-Layer-Architecture-Framework.md v1.1  
+> **版本**: v1.0
+> **日期**: 2026-05-11
+> **基于**: Four-Layer-Architecture-Framework.md v1.1
 > **目标**: 将四层架构设计拆分为可独立实现、独立测试、独立合并的原子任务
 
 ---

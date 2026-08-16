@@ -251,7 +251,7 @@ import '../workbench/contrib/files/browser/explorerViewlet.js';
 import '../workbench/contrib/files/browser/fileActions.contribution.js';
 import '../workbench/contrib/files/browser/files.contribution.js';
 
-// [Sarosis 2026-07-04] 覆盖标准 revealInExplorer，修复会话窗口里
+// [Saros 2026-07-04] 覆盖标准 revealInExplorer，修复会话窗口里
 // 文本编辑器右键菜单 "Reveal in Explorer View" 按钮失效的问题。
 // (revealFileInOS 仅在 desktop 主进程中替换，详见 sessions.desktop.main.ts)
 import './contrib/files/browser/revealCommands.contribution.js';
@@ -328,7 +328,7 @@ registerSingleton(IExtensionsWorkbenchService, ExtensionsWorkbenchService, Insta
 import '../workbench/contrib/output/browser/output.contribution.js';
 import '../workbench/contrib/output/browser/outputView.js';
 
-// [Sarosis] Register Output as a ViewContainer in the Panel (bottom area)
+// [Saros] Register Output as a ViewContainer in the Panel (bottom area)
 import './contrib/outputPanel/browser/outputPanel.contribution.js';
 
 // Terminal
@@ -484,9 +484,9 @@ import './contrib/browserView/browser/sessionBrowserView.contribution.js';
 import './contrib/editor/browser/editor.contribution.js';
 
 import './contrib/terminal/browser/sessionsTerminalContribution.js';
-// [Sarosis] Chat Debug 面板已移除，调试控制台（Debug Console / REPL）现在出现在 Panel 中
+// [Saros] Chat Debug 面板已移除，调试控制台（Debug Console / REPL）现在出现在 Panel 中
 // import './contrib/chatDebug/browser/chatDebug.contribution.js';
-// [Sarosis] Output 视图保留在 Panel（不再搬到 Sidebar），与 Debug Console、Terminal 并列
+// [Saros] Output 视图保留在 Panel（不再搬到 Sidebar），与 Debug Console、Terminal 并列
 // import './contrib/output/browser/output.contribution.js';
 import './contrib/welcome/browser/welcome.contribution.js';
 import './contrib/aquarium/browser/aquarium.contribution.js';

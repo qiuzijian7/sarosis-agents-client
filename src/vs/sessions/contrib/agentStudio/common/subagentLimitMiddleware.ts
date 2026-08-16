@@ -21,7 +21,7 @@
  *
  *  Key difference from deer-flow:
  *  - deer-flow modifies LangGraph AgentState.messages directly
- *  - Sarosis operates on the raw tool_calls array before dispatching,
+ *  - Saros operates on the raw tool_calls array before dispatching,
  *    since it doesn't have LangGraph's state model
  *
  *  Valid range for maxConcurrent: [2, 4] (aligned with deer-flow)

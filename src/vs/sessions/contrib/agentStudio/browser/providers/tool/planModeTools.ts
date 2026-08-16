@@ -2,7 +2,7 @@
  *  Plan Mode Tools — plan_enter / plan_exit (MiMo-Code-inspired)
  *
  *  MiMo-Code uses `plan_enter`/`plan_exit` TOOLS to switch between plan and build
- *  modes, with user confirmation dialogs. This mirrors that design in Sarosis:
+ *  modes, with user confirmation dialogs. This mirrors that design in Saros:
  *
  *  Flow:
  *    1. User sends message (craft mode)

@@ -1,4 +1,4 @@
-# Void vs Sarosis 聊天框工具卡片深度对比分析
+# Void vs Saros 聊天框工具卡片深度对比分析
 
 > 生成日期：2026-05-27
 > 分析范围：工具卡片渲染架构、状态可视化、布局策略、样式体系、交互设计
@@ -22,13 +22,13 @@ _ChatBubble (调度器)
   │     ├── LsDirWrapper
   │     └── SearchWrapper
   └── MCP → <MCPToolWrapper>
-  
+
   + type === 'tool_request' → <ToolRequestAcceptRejectButtons />
 ```
 
 **核心特征**：每个内置工具一个**专用 Wrapper 组件**，工具结果直接嵌入消息列表（独立消息），审批按钮独立渲染。
 
-### Sarosis 工具卡片架构
+### Saros 工具卡片架构
 
 ```
 ToolCallCardRaw (调度器)
@@ -73,7 +73,7 @@ ToolCallCardRaw (调度器)
 - 即使 `autoApprove=true`，也先添加 `tool_request` 消息再自动继续（UI 加载态）
 - 每种状态是**不可变消息**——状态变化通过替换整条消息实现
 
-### Sarosis: 3 种状态的动态卡片
+### Saros: 3 种状态的动态卡片
 
 | 状态 | CSS class | 边框颜色 | 图标 | 动画 |
 |------|----------|---------|------|------|
@@ -89,7 +89,7 @@ ToolCallCardRaw (调度器)
 
 ### 对比
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | 状态数量 | 6 种 | 3 种 |
 | 状态表示 | 不可变消息替换 | 同一卡片动态更新 |
@@ -124,9 +124,9 @@ Void 的工具消息是**独立的 ChatMessage**，在消息列表中按时间�
 - 工具消息占据独立的垂直空间，消息流较长
 - 文本和工具调用之间的上下文关联被距离割裂
 
-### Sarosis: 交织布局
+### Saros: 交织布局
 
-Sarosis 的工具卡片**交织嵌入在助手文本内容中**：
+Saros 的工具卡片**交织嵌入在助手文本内容中**：
 
 ```
 [用户消息]
@@ -180,9 +180,9 @@ Void 为每个内置工具定义了**独立的 ResultWrapper 组件**：
 - **行号高亮**：`read_file` 结果带行号，支持高亮指定行范围
 - **搜索高亮**：`search_files` 结果支持搜索词高亮
 
-### Sarosis: renderType 驱动的 3 种渲染器
+### Saros: renderType 驱动的 3 种渲染器
 
-Sarosis 通过 `renderType` 字段和 `ToolDisplayRegistry` 配置驱动渲染：
+Saros 通过 `renderType` 字段和 `ToolDisplayRegistry` 配置驱动渲染：
 
 | renderType | 渲染器 | 适用工具 |
 |-----------|--------|---------|
@@ -206,7 +206,7 @@ Sarosis 通过 `renderType` 字段和 `ToolDisplayRegistry` 配置驱动渲染�
 
 ### 对比
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | 特化方式 | 每工具一个 Wrapper | renderType + 3 种渲染器 |
 | 扩展方式 | 添加新 Wrapper 组件 | 添加 Registry 配置项 |
@@ -225,9 +225,9 @@ Sarosis 通过 `renderType` 字段和 `ToolDisplayRegistry` 配置驱动渲染�
 
 Void 的所有工具调用都渲染为可见消息。没有"隐藏工具"的概念。
 
-### Sarosis: 三层 Phantom 过滤
+### Saros: 三层 Phantom 过滤
 
-Sarosis 引入了 Phantom 工具概念（UI 指示器工具，不应渲染为可见卡片）：
+Saros 引入了 Phantom 工具概念（UI 指示器工具，不应渲染为可见卡片）：
 
 1. **入口过滤**（`streamHandler.ts`）：`render_type="none"` 的工具不进入 `toolCalls` 数组
 2. **组件过滤**（`ChatMessage.tsx`）：`defaultShow === false` 或 `renderType.toLowerCase() === 'none'` 的过滤掉
@@ -253,9 +253,9 @@ const titleOfBuiltinToolName = {
 
 每个工具需要**3 种标题变体**（done / proposed / running），手动维护。
 
-### Sarosis: 配置化 Registry
+### Saros: 配置化 Registry
 
-Sarosis 的 `ToolDisplayRegistry` 使用 JSON 配置：
+Saros 的 `ToolDisplayRegistry` 使用 JSON 配置：
 
 ```typescript
 const TOOL_DISPLAY_CONFIG = {
@@ -285,7 +285,7 @@ const TOOL_DISPLAY_CONFIG = {
 - 每个工具有独立的折叠状态
 - Checkpoint 覆盖的工具消息变半透明 (`opacity-50`)
 
-### Sarosis: 两种折叠模式
+### Saros: 两种折叠模式
 
 1. **GenericToolCallCard**：可折叠，点击标题行展开/折叠
    - 折叠态：图标 + 工具名 + 参数摘要 + 查看文件按钮 + 耗时 + 折叠箭头
@@ -306,7 +306,7 @@ const TOOL_DISPLAY_CONFIG = {
 - **加载态**：`loadingTitleWrapper` 用 CSS animation 实现蓝色脉冲
 - **Apply 按钮**：悬浮在代码块右上角，hover 时显示
 
-### Sarosis 样式
+### Saros 样式
 
 - **颜色**：使用 VS Code CSS 变量 `var(--as-accent)`, `var(--as-success)` 等
 - **边框颜色**：按状态动态切换
@@ -322,17 +322,17 @@ const TOOL_DISPLAY_CONFIG = {
 
 ## 九、关键差异总结
 
-| 维度 | Void | Sarosis | 评价 |
+| 维度 | Void | Saros | 评价 |
 |------|------|---------|------|
-| **布局** | 消息列表（独立消息） | 交织嵌入（Placeholder + Fallback） | Sarosis 阅读体验更好 |
+| **布局** | 消息列表（独立消息） | 交织嵌入（Placeholder + Fallback） | Saros 阅读体验更好 |
 | **状态** | 6 种不可变子状态 | 3 种动态状态 | Void 状态更精细 |
 | **审批 UI** | 有（批准/拒绝按钮） | 无 | Void 安全性更好 |
-| **特化渲染** | 每工具一个 Wrapper | renderType + 3 种渲染器 | Sarosis 扩展性更好 |
-| **配置驱动** | 硬编码 | ToolDisplayRegistry | Sarosis 维护成本更低 |
-| **Phantom 过滤** | 无 | 三层过滤 | Sarosis 更干净 |
+| **特化渲染** | 每工具一个 Wrapper | renderType + 3 种渲染器 | Saros 扩展性更好 |
+| **配置驱动** | 硬编码 | ToolDisplayRegistry | Saros 维护成本更低 |
+| **Phantom 过滤** | 无 | 三层过滤 | Saros 更干净 |
 | **Apply 功能** | 代码块悬浮 Apply 按钮 | CodeApply 渲染器 | Void 体验更自然 |
 | **行号/搜索高亮** | 有 | 无 | Void 信息展示更丰富 |
-| **结果截断** | 无 | 三级截断 | Sarosis 更适合长输出 |
+| **结果截断** | 无 | 三级截断 | Saros 更适合长输出 |
 | **MCP 工具** | 专用 Wrapper | 与内置统一 | Void 区分更清晰 |
 | **Checkpoint 集成** | 有（半透明覆盖） | 无 | Void 有时间旅行支持 |
 
@@ -344,7 +344,7 @@ const TOOL_DISPLAY_CONFIG = {
 
 #### 1. 添加工具审批 UI
 
-**现状**：Sarosis 的 `ToolApprovalService` 在后端静默处理审批，用户无感知。
+**现状**：Saros 的 `ToolApprovalService` 在后端静默处理审批，用户无感知。
 
 **建议**：在 `ToolCallState` 中增加 `approval_required` 和 `rejected` 状态：
 
@@ -373,13 +373,13 @@ interface ToolCallState {
 
 #### 2. 增加工具参数校验失败状态
 
-**现状**：Void 有 `invalid_params` 独立组件，Sarosis 没有。
+**现状**：Void 有 `invalid_params` 独立组件，Saros 没有。
 
 **建议**：在 `ToolCallState.status` 中增加 `invalid_params` 状态，渲染为灰色警告卡片，显示工具名和错误信息。
 
 #### 3. 为 ReadFile 添加行号显示
 
-**现状**：Void 的 `ReadFileWrapper` 显示行号，Sarosis 的 `CodeApplyRenderer` 不显示。
+**现状**：Void 的 `ReadFileWrapper` 显示行号，Saros 的 `CodeApplyRenderer` 不显示。
 
 **建议**：在 `CodeApplyRenderer` 中检测 `read_file` 工具，渲染带行号的代码块：
 
@@ -400,7 +400,7 @@ interface ToolCallState {
 
 #### 4. 添加 Apply Code Blocks 悬浮按钮
 
-**现状**：Void 的代码块有"Apply"悬浮按钮，Sarosis 的 `CodeApplyRenderer` 有"查看文件"按钮但没有"Apply"。
+**现状**：Void 的代码块有"Apply"悬浮按钮，Saros 的 `CodeApplyRenderer` 有"查看文件"按钮但没有"Apply"。
 
 **建议**：在 `CodeApplyRenderer` 的代码预览区添加"应用更改"悬浮按钮，调用后端 `applyCodeChange` 接口。
 
@@ -412,7 +412,7 @@ interface ToolCallState {
 
 #### 6. MCP 工具视觉区分
 
-**现状**：Void 对 MCP 工具有专用 `MCPToolWrapper`，显示 MCP 服务器名；Sarosis 的 MCP 工具与内置工具使用相同的 Generic 卡片。
+**现状**：Void 对 MCP 工具有专用 `MCPToolWrapper`，显示 MCP 服务器名；Saros 的 MCP 工具与内置工具使用相同的 Generic 卡片。
 
 **建议**：在 `ToolDisplayRegistry` 中增加 `isMcp` 标记，`GenericToolCallCard` 渲染时对 MCP 工具添加"MCP"标签和服务器名称。
 
@@ -420,7 +420,7 @@ interface ToolCallState {
 
 #### 7. 搜索结果高亮
 
-**现状**：Void 的 `SearchWrapper` 支持搜索词高亮，Sarosis 的 `ListItemsRenderer` 不支持。
+**现状**：Void 的 `SearchWrapper` 支持搜索词高亮，Saros 的 `ListItemsRenderer` 不支持。
 
 **建议**：在 `ListItemsRenderer` 中对 `search_*` 和 `grep` 工具的结果，高亮匹配的关键词。
 

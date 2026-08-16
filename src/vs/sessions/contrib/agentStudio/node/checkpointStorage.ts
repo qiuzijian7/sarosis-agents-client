@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as fs from 'fs';
+import { createRequire } from 'node:module';
 import { URI } from '../../../../base/common/uri.js';
 import type { Database, RunResult } from '@vscode/sqlite3';
 import type { ICheckpoint, IFileSnapshot, IFileSnapshotData } from '../common/checkpointTypes.js';
@@ -108,8 +109,9 @@ function dbClose(db: Database): Promise<void> {
 function dbOpen(path: string): Promise<Database> {
 	return new Promise((resolve, reject) => {
 		// In VS Code extension host, @vscode/sqlite3 should be available via require()
-		// eslint-disable-next-line local/code-no-var-require
-		const sqlite3 = require('@vscode/sqlite3');
+		// This module is compiled to ESM (see package.json "type": "module" in this dir),
+		// so `require` is unavailable; use createRequire to load the CJS native module.
+		const sqlite3 = createRequire(import.meta.url)('@vscode/sqlite3');
 		const db = new sqlite3.Database(path, (err: Error | null) => {
 			if (err) {
 				return reject(err);

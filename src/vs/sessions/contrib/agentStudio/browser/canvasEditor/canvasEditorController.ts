@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Canvas Editor Controller
+ *  Saros Agents — Canvas Editor Controller
  *
  *  编排层：持有内存模型，协调视图、布局引擎、节点操作的调用。
  *  负责 undo/redo、保存、键盘命令路由。

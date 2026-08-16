@@ -10,13 +10,15 @@ import type { SingleNodeRunResult } from './nodeExecutor.js';
 
 export interface StoryboardNodeInput {
 	nodeId: string;
+	/** 快照归档键（= stageUid）。缺省回退 nodeId。 */
+	snapshotKey?: string;
 	values: Record<string, unknown>;
 	store: MediaSnapshotStore;
 }
 
 /** Emit the cover composite produced by the embedded storyboard editor. */
 export async function runStoryboardEditorNode(input: StoryboardNodeInput): Promise<SingleNodeRunResult> {
-	const render = input.store.byNode(input.nodeId).find(e => e.media.kind === 'image');
+	const render = input.store.byNode(input.snapshotKey ?? input.nodeId).find(e => e.media.kind === 'image');
 	if (!render) {
 		return { promptId: '', status: 'error', error: '请先在节点弹窗中绘制分镜。', entries: [] };
 	}

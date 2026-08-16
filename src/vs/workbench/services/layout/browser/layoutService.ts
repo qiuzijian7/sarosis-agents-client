@@ -27,7 +27,7 @@ export const enum Parts {
 	AUXILIARYBAR_PART = 'workbench.parts.auxiliarybar',
 	CHATBAR_PART = 'workbench.parts.chatbar',
 	EDITOR_PART = 'workbench.parts.editor',
-	// ★ Sarosis: second main-window editor part hosting the Agent Studio zone
+	// ★ Saros: second main-window editor part hosting the Agent Studio zone
 	// (Canvas/Chat). Physically isolated from EDITOR_PART (file zone) so editors
 	// cannot be dragged across the two. Shares mainWindow.vscodeWindowId with
 	// EDITOR_PART; NOT a multi-window/auxiliary part.

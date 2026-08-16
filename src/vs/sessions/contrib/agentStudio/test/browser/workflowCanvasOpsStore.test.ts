@@ -8,7 +8,7 @@ import { applyCanvasOpsToStore } from '../../webview/src/features/workflowEditor
 import { registerSarosisNodes } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
 
 // The webview calls registerSarosisNodes() on mount; tests do the same so
-// applyCanvasOps' getNodeSpec() finds Sarosis.* types.
+// applyCanvasOps' getNodeSpec() finds Saros.* types.
 suiteSetup(() => { registerSarosisNodes(); });
 
 interface TestNode { id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown>; }
@@ -30,10 +30,10 @@ suite('applyCanvasOpsToStore', () => {
 	test('regular ops apply atomically through the store', () => {
 		const store = makeStore();
 		store.setNodes([
-			{ id: 'a', type: 'Sarosis.Prompt', position: { x: 0, y: 0 }, data: { label: '提示-1', prompt: 'cat' } },
+			{ id: 'a', type: 'Saros.Prompt', position: { x: 0, y: 0 }, data: { label: '提示-1', prompt: 'cat' } },
 		]);
 		const r = applyCanvasOpsToStore(store as never, [
-			{ op: 'add_node', type: 'Sarosis.Prompt', id: 'b', label: '提示-2', data: { prompt: 'dog' } },
+			{ op: 'add_node', type: 'Saros.Prompt', id: 'b', label: '提示-2', data: { prompt: 'dog' } },
 			{ op: 'connect', source: 'a', target: 'b' },
 		], []);
 		assert.strictEqual(r.ok, true);
@@ -46,10 +46,10 @@ suite('applyCanvasOpsToStore', () => {
 	test('failing op mid-batch leaves the store untouched (rollback)', () => {
 		const store = makeStore();
 		store.setNodes([
-			{ id: 'a', type: 'Sarosis.Prompt', position: { x: 0, y: 0 }, data: { label: '提示-1' } },
+			{ id: 'a', type: 'Saros.Prompt', position: { x: 0, y: 0 }, data: { label: '提示-1' } },
 		]);
 		const r = applyCanvasOpsToStore(store as never, [
-			{ op: 'add_node', type: 'Sarosis.Prompt', id: 'b', label: '提示-2' },
+			{ op: 'add_node', type: 'Saros.Prompt', id: 'b', label: '提示-2' },
 			{ op: 'update_node', node: 'ghost', patch: {} },   // fails → rollback
 		], []);
 		assert.strictEqual(r.ok, false);
@@ -67,7 +67,7 @@ suite('applyCanvasOpsToStore', () => {
 		assert.strictEqual(r.model.nodes.length, 2, 'prompt + image gen');
 		assert.strictEqual(r.model.edges.length, 1, 'prompt → image gen');
 		const types = r.model.nodes.map(n => n.type);
-		assert.deepStrictEqual(types.sort(), ['Sarosis.ModelImageGen', 'Sarosis.Prompt']);
+		assert.deepStrictEqual(types.sort(), ['Saros.ModelImageGen', 'Saros.Prompt']);
 		assert.strictEqual(r.results[0].summary.includes('已生成画布流程'), true);
 		// Store receives the expanded graph.
 		assert.strictEqual(store.nodes.length, 2);
@@ -77,7 +77,7 @@ suite('applyCanvasOpsToStore', () => {
 	test('__generate_flow__ honors variants and existing graph', () => {
 		const store = makeStore();
 		store.setNodes([
-			{ id: 'seed', type: 'Sarosis.Prompt', position: { x: 0, y: 0 }, data: { label: '已有' } },
+			{ id: 'seed', type: 'Saros.Prompt', position: { x: 0, y: 0 }, data: { label: '已有' } },
 		]);
 		const r = applyCanvasOpsToStore(store as never, [
 			{ op: 'add_node', type: '__generate_flow__', data: {
@@ -104,7 +104,7 @@ suite('applyCanvasOpsToStore', () => {
 			{ op: 'add_node', type: '__generate_flow__', data: { goal: 'x' } },
 		], providers as never);
 		assert.strictEqual(r.ok, true);
-		const gen = r.model.nodes.find(n => n.type === 'Sarosis.ModelImageGen');
+		const gen = r.model.nodes.find(n => n.type === 'Saros.ModelImageGen');
 		assert.strictEqual(gen?.data.providerId, 'p1');
 		assert.strictEqual(gen?.data.modelId, 'm1');
 	});

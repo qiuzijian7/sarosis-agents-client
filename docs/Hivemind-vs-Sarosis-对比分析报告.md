@@ -1,4 +1,4 @@
-# Hivemind vs Sarosis Agents Client — 对比分析报告
+# Hivemind vs Saros Agents Client — 对比分析报告
 
 > 日期：2025-06-15 | 分析者：WorkBuddy
 
@@ -6,7 +6,7 @@
 
 ## 一、项目定位对比
 
-| 维度 | **Hivemind** (Activeloop) | **Sarosis Agents Client** (VS Code Fork) |
+| 维度 | **Hivemind** (Activeloop) | **Saros Agents Client** (VS Code Fork) |
 |------|--------------------------|----------------------------------------|
 | **核心定位** | 跨 AI 代理的共享记忆基础设施 | 一站式 AI 代理开发工作台 |
 | **目标用户** | 使用多种 AI 编程工具的团队 | 单个 Agent 开发者/使用者 |
@@ -18,7 +18,7 @@
 
 ## 二、架构对比
 
-### 2.1 Sarosis — "深而全"的垂直架构
+### 2.1 Saros — "深而全"的垂直架构
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -57,7 +57,7 @@
 
 ### 2.3 架构差异总结
 
-| 特性 | Sarosis | Hivemind |
+| 特性 | Saros | Hivemind |
 |------|:-------:|:--------:|
 | Agent 执行引擎 | ✅ 完整的 Agent Loop | ❌ 依赖宿主代理 |
 | Agent 工作台 UI | ✅ ReactFlow + 15 个 View | ⚠️ 仅 Dashboard |
@@ -72,7 +72,7 @@
 
 ## 三、功能逐项对比
 
-### 3.1 Sarosis 的独特优势（Hivemind 不具备）
+### 3.1 Saros 的独特优势（Hivemind 不具备）
 
 | 功能 | 说明 |
 |------|------|
@@ -88,7 +88,7 @@
 | **工作流变量系统** | `{{variable}}` 两轮替换机制，上下游节点数据传递 |
 | **Node-level Provider/Model Override** | 每个工作流节点可独立选择 Provider/Model |
 
-### 3.2 Hivemind 的独特优势（Sarosis 不具备）
+### 3.2 Hivemind 的独特优势（Saros 不具备）
 
 | 功能 | 说明 |
 |------|------|
@@ -106,11 +106,11 @@
 
 ### 3.3 共同能力对比
 
-| 能力 | Sarosis 实现 | Hivemind 实现 | 评价 |
+| 能力 | Saros 实现 | Hivemind 实现 | 评价 |
 |------|------------|--------------|------|
 | **MCP 集成** | 复用上游 `IMcpService`，平铺为 `serverPrefix__toolName` | 自建 MCP Server，暴露 hivemind_search/read/index 工具 | 各有千秋 |
 | **Skill 系统** | 手动定义 Skill，有 SkillRegistry + Lifecycle | 自动挖掘 Skill，Skillify + pull/unpull 传播 | **Hivemind 更智能** |
-| **Agent Hook** | start/stop/preRequest/postRequest/preToolUse/postToolUse | SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop/SessionEnd | **Sarosis 更灵活** |
+| **Agent Hook** | start/stop/preRequest/postRequest/preToolUse/postToolUse | SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop/SessionEnd | **Saros 更灵活** |
 | **持久化** | TDBAM 记忆 + JSON 文件 + Checkpoint | Deeplake 云 SQL 后端 | **Hivemind 更可靠** |
 | **多代理** | CrewTeam（同平台内协作） | 6 种外部 AI 代理统一抽象 | **不同维度** |
 
@@ -132,7 +132,7 @@
 | **构建输出规范化** | 所有 bundle 设置 0o755、写入 package.json 声明 ESM、CLI/MCP 添加 shebang |
 | **LoCoMo 基准测试** | 在长期记忆基准上验证：25% 成本更低、1.7x 更少 Token、31% 更少轮次 |
 
-### 4.2 Sarosis 的工程亮点
+### 4.2 Saros 的工程亮点
 
 | 亮点 | 说明 |
 |------|------|
@@ -148,7 +148,7 @@
 
 ### 4.3 工程劣势分析
 
-| 问题 | Sarosis | Hivemind |
+| 问题 | Saros | Hivemind |
 |------|:-------:|:--------:|
 | **编译内存过大** | ⚠️ 需 `--max-old-space-size=8192` 否则 OOM | ✅ esbuild 精简快速 |
 | **SQL 注入防护** | ⚠️ 未明确处理（TDBAM 层） | ✅ 三层安全防护 |
@@ -162,13 +162,13 @@
 
 ---
 
-## 五、Sarosis 的核心不足与优化方案
+## 五、Saros 的核心不足与优化方案
 
 ### 5.1 ⭐⭐⭐ 高优先级
 
 #### 1. 缺乏跨 Agent 共享记忆层
 
-**现状**：Sarosis 的记忆通过 TDBAM 实现，但仅限于单个 Agent 的 session 内记忆，无法跨 Agent 共享经验。
+**现状**：Saros 的记忆通过 TDBAM 实现，但仅限于单个 Agent 的 session 内记忆，无法跨 Agent 共享经验。
 
 **Hivemind 的做法**：
 - 所有 Agent 会话的结构化事件存入统一的 `sessions` 表
@@ -201,7 +201,7 @@
 
 #### 2. 缺乏智能技能挖掘 (Skillify)
 
-**现状**：Sarosis 的 Skill 系统需要用户手动定义 `SKILL.md`，没有自动化能力。
+**现状**：Saros 的 Skill 系统需要用户手动定义 `SKILL.md`，没有自动化能力。
 
 **Hivemind 的做法**：
 - Stop counter：每 N 轮（默认 20）触发生成尝试
@@ -240,7 +240,7 @@
 
 #### 3. 缺乏代码库图谱分析
 
-**现状**：Sarosis 仅通过文件路径和基础索引理解代码库，缺乏结构化调用关系分析。
+**现状**：Saros 仅通过文件路径和基础索引理解代码库，缺乏结构化调用关系分析。
 
 **Hivemind 的做法**：
 - tree-sitter 解析 9 种语言的 AST
@@ -279,7 +279,7 @@
 
 #### 4. 会话自动摘要与记忆召回
 
-**现状**：Sarosis 的聊天历史是线性的消息列表，没有结构化的摘要和语义召回。
+**现状**：Saros 的聊天历史是线性的消息列表，没有结构化的摘要和语义召回。
 
 **优化方案**：
 ```
@@ -306,7 +306,7 @@
 
 #### 5. 仪表盘与 KPI 追踪
 
-**现状**：Sarosis 没有集中展示 Agent 使用情况和效率的面板。
+**现状**：Saros 没有集中展示 Agent 使用情况和效率的面板。
 
 **优化方案**：
 ```
@@ -358,7 +358,7 @@
 
 #### 7. 通知框架
 
-**现状**：Sarosis 通过 WebView 的 toast/弹窗通知，无统一的通知框架。
+**现状**：Saros 通过 WebView 的 toast/弹窗通知，无统一的通知框架。
 
 **优化方案**：
 ```
@@ -410,9 +410,9 @@
 
 ## 六、总结评分
 
-| 评估维度 | Sarosis | Hivemind | 说明 |
+| 评估维度 | Saros | Hivemind | 说明 |
 |---------|:-------:|:--------:|------|
-| **完整度** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | Sarosis 是全栈，Hivemind 是薄层 |
+| **完整度** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | Saros 是全栈，Hivemind 是薄层 |
 | **可扩展性** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | 各有侧重 |
 | **跨平台/Agent** | ⭐⭐ | ⭐⭐⭐⭐⭐ | Hivemind 核心优势 |
 | **工程成熟度** | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | Hivemind 更规范 |
@@ -449,4 +449,4 @@ Phase 3 (3-6 月) — 工程质量提升
 
 ---
 
-> 两大项目的设计哲学互为补充：**Sarosis 是"深"的，提供了完整的 Agent 开发工作台；Hivemind 是"广"的，解决了多 Agent 共享记忆的横向问题。** 优化的核心思路是将 Hivemind 的记忆/技能/图谱能力引入 Sarosis，使 Sarosis 的 Agents 也能享受"经验共享"和"智能进化"的红利。
+> 两大项目的设计哲学互为补充：**Saros 是"深"的，提供了完整的 Agent 开发工作台；Hivemind 是"广"的，解决了多 Agent 共享记忆的横向问题。** 优化的核心思路是将 Hivemind 的记忆/技能/图谱能力引入 Saros，使 Saros 的 Agents 也能享受"经验共享"和"智能进化"的红利。

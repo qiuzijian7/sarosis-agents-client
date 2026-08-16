@@ -12,7 +12,7 @@ import { OUTPUT_VIEW_ID } from '../../../../workbench/services/output/common/out
 import { OutputViewPane } from '../../../../workbench/contrib/output/browser/outputView.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 
-// [Sarosis] Register Output as a ViewContainer in the Panel (bottom area)
+// [Saros] Register Output as a ViewContainer in the Panel (bottom area)
 // In native VS Code, Output can be shown as an editor pane or in the Panel.
 // This contribution registers it as a Panel viewlet so it appears in the Panel tab bar.
 // NOTE: Container ID must differ from view ID — sharing the same ID breaks

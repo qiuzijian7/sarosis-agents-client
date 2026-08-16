@@ -7,7 +7,7 @@
 
 **工作流结构**:
 ```
-Start → Agent (执行目标步骤) → Judge (评估完成状态) 
+Start → Agent (执行目标步骤) → Judge (评估完成状态)
   → IfElse (检查评估结果)
     → branch-done → End (Goal Completed)
     → branch-continue → Check Turns (检查轮次预算)
@@ -114,7 +114,7 @@ Agent 输出：{agentOutput}
 ```
 
 ### 与 Hermes-Agent 的对比
-| 特性 | Hermes-Agent (Python) | Sarosis (TypeScript) |
+| 特性 | Hermes-Agent (Python) | Saros (TypeScript) |
 |------|---------------------|---------------------|
 | Goal 存储 | `~/.config/hermes/goals.json` | `IStorageService` (浏览器存储) |
 | Judge 实现 | `hermes_cli/goals.py:GoalManager.evaluate_after_turn()` | `GoalWorkflowService.evaluateGoal()` |

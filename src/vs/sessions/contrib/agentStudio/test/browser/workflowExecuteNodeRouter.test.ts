@@ -52,7 +52,7 @@ suite('executeNodeRouter', () => {
 	suite('routeLabel', () => {
 
 		test('labels all routes', () => {
-			assert.match(routeLabel('sarosis'), /Sarosis/);
+			assert.match(routeLabel('sarosis'), /Saros/);
 			assert.match(routeLabel('comfyStage'), /stage/);
 			assert.match(routeLabel('comfyNative'), /原生/);
 			assert.match(routeLabel('unknown'), /未注册/);

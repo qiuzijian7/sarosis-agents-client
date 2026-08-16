@@ -1,6 +1,6 @@
-# Sarosis Agents Client - 项目深度分析报告
+# Saros Agents Client - 项目深度分析报告
 
-生成时间: 2026-06-30  
+生成时间: 2026-06-30
 分析工具: AI 自动化分析
 
 ---
@@ -56,7 +56,7 @@ src/vs/
 - **运行时**: Electron 39.8.7 (桌面应用框架)
 - **构建工具**: Gulp 4.0.0 + Node.js 22.18.10
 - **测试框架**: Playwright 1.59.1 + Mocha
-- **AI SDK**: 
+- **AI SDK**:
   - @anthropic-ai/sdk@^0.82.0
   - @github/copilot-sdk@^0.3.0
   - @vscode/copilot-api@^0.3.0
@@ -408,9 +408,9 @@ npm run package           # 打包安装程序
 
 ## 📞 联系和支持
 
-**项目维护者**: Microsoft VS Code Team + Saros Community  
-**问题反馈**: https://github.com/microsoft/vscode/issues  
-**文档**: （待完善）  
+**项目维护者**: Microsoft VS Code Team + Saros Community
+**问题反馈**: https://github.com/microsoft/vscode/issues
+**文档**: （待完善）
 
 ---
 

@@ -6,7 +6,7 @@ graph pipeline that `LiteGraphCanvas` uses at runtime.
 
 ## What it covers
 
-- **Sarosis node registration** — `Sarosis.Start`, `Sarosis.Prompt` etc. are
+- **Saros node registration** — `Saros.Start`, `Saros.Prompt` etc. are
   registered as real `LGraphNode` subclasses (not TODO placeholders).
 - **`LGraph.configure` applies `info.title`** — node title is read from the
   serialized payload, not LiteGraph's `"TODO"` default. `__sarosisId` is
@@ -43,7 +43,7 @@ graph pipeline that `LiteGraphCanvas` uses at runtime.
 - **ComfyUI native registration** — `registerComfyUINativeNode` derives
   widgets from `input.required` (INT→number, COMBO→select); nodes appear in
   `buildComfyPaletteItems('native')` and produce editor fields.
-- **Link type compatibility** — `isPortTypeCompatible` / 
+- **Link type compatibility** — `isPortTypeCompatible` /
   `isValidLiteGraphConnection`: identical types connect, ANY is a wildcard,
   mismatches (image→text) are rejected, numeric SlotType enums act as ANY.
 - **Runner registry** — `ComfyRunnerRegistry.resolve` ('auto' → local) and

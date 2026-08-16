@@ -1,10 +1,10 @@
-# MiMo-Code vs Sarosis Plan Mode 对比分析
+# MiMo-Code vs Saros Plan Mode 对比分析
 
 > 2026-07-18
 
 ## 核心差异一览
 
-| 维度 | MiMo-Code | Sarosis（当前） | 影响 |
+| 维度 | MiMo-Code | Saros（当前） | 影响 |
 |------|-----------|----------------|------|
 | **指令注入** | `<system-reminder>` 注入到**每条 user message** | System prompt 末尾（即使 prepend） | 🔴 长对话中 LLM 遗忘 |
 | **Plan 载体** | **文件**：写 `.mimocode/plans/*.md` | **工具参数**：`exit_plan_mode(tasks=[...])` | 🟡 LLM 更擅长写文件 |
@@ -45,7 +45,7 @@ Phase 5: Call plan_exit tool ← MUST end with this
 
 LLM 在**每次回复前**都读到这段提醒。165K token 上下文也掩盖不住——因为它就在 user message 末尾。
 
-**Sarosis**：
+**Saros**：
 
 Plan 指令在 system prompt 中（即使 prepend 到最前），LLM 只在**对话开始时**读一次。165K token 的上下文中，这段指令被淹没在历史消息之后。
 
@@ -58,7 +58,7 @@ Plan 指令在 system prompt 中（即使 prepend 到最前），LLM 只在**对
 - `plan_exit()` 无参数，只触发 Yes/No 对话框
 - Plan 内容在文件中，用户可查看、编辑、保留
 
-**Sarosis**：
+**Saros**：
 - LLM 必须把 plan 打包成 JSON 传入 `exit_plan_mode(plan_summary, tasks=[{title, description, files, complexity, ...}])`
 - 参数 schema 复杂，LLM 难以正确构造
 - 165K token 上下文中 LLM 退化时可理解——它算不动复杂的 JSON
@@ -76,13 +76,13 @@ Your turn should only end with either asking the user a question or calling plan
 Do not stop unless it's for these 2 reasons.
 ```
 
-**Sarosis**（`PLAN_MODE_SYSTEM_PROMPT_FULL`）：
+**Saros**（`PLAN_MODE_SYSTEM_PROMPT_FULL`）：
 ```
 You are in PLAN mode — a planning and task-decomposition assistant.
 Your job is to analyze the user's request and produce a clear, structured plan.
 ```
 
-MiMo 用的是**命令式 + 绝对否定**（"Do NOT", "MUST NOT", "supersedes any other instructions"），Sarosis 用的是**描述式 + 建议**（"You are in", "Your job is"）。
+MiMo 用的是**命令式 + 绝对否定**（"Do NOT", "MUST NOT", "supersedes any other instructions"），Saros 用的是**描述式 + 建议**（"You are in", "Your job is"）。
 
 **建议**：改写 `PLAN_MODE_SYSTEM_PROMPT` 和 `PLAN_WORKFLOW_SECTION` 为 MiMo 风格的命令式语言。
 
@@ -93,7 +93,7 @@ MiMo 用的是**命令式 + 绝对否定**（"Do NOT", "MUST NOT", "supersedes a
 - 进入/退出 plan mode 意味着切换 agent（消息头变更）
 - Plan agent 看不到普通 agent 的 conversation history（干净上下文）
 
-**Sarosis**：
+**Saros**：
 - Plan 是同 agent 内的 chat mode（`chatMode: 'plan'`）
 - 上下文包含所有历史消息（670+ messages，165K tokens）
 - LLM 看到的历史消息让它认为"分析已完成"，不执行 plan 工作流
@@ -106,7 +106,7 @@ MiMo 用的是**命令式 + 绝对否定**（"Do NOT", "MUST NOT", "supersedes a
 - Phase 1：最多 3 个 `explore` subagent 并行探索
 - Phase 2：最多 1 个 `general` subagent 设计方案
 
-**Sarosis**：无 subagent 参与 plan 流程。LLM 自行探索。
+**Saros**：无 subagent 参与 plan 流程。LLM 自行探索。
 
 ## 建议的改进优先级
 

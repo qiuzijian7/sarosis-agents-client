@@ -95,7 +95,7 @@ export function getBuiltinAgents(): Agent[] {
 			id: 'saros-claw',
 		name: '助理',
 		role: '助理',
-		description: '通用助理，内置在 Sarosis Agent Studio 中。能处理编码、研究、写作、规划和任务协调等工作。',
+		description: '通用助理，内置在 Saros Agent Studio 中。能处理编码、研究、写作、规划和任务协调等工作。',
 			icon: '🦞',
 			avatar: LOBSTER_AVATAR,
 			category: 'General',
@@ -489,7 +489,7 @@ Only report issues with high confidence (>= 80%). Flag low-confidence findings f
 			icon: '📚',
 			category: 'Knowledge',
 			model: 'claude-sonnet-4-20250514',
-			systemPrompt: `You are a Knowledge Base Expert, responsible for managing the Sarosis knowledge base (KB). Your primary role is to ingest, organize, and transform information into well-structured, linked notes.
+			systemPrompt: `You are a Knowledge Base Expert, responsible for managing the Saros knowledge base (KB). Your primary role is to ingest, organize, and transform information into well-structured, linked notes.
 
 ## Knowledge Base Structure
 The KB is organized as a file tree with two top-level sections per vault:

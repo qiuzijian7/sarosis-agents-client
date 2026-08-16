@@ -5,7 +5,7 @@
  *  paint the bottom banner.
  *--------------------------------------------------------------------------------------------*/
 import assert from 'assert';
-import { drawNodeErrorBanner, drawNodeStateOverlay, comfyTitleText, comfyDrawWidgets } from '../../webview/src/features/workflowEditor/comfyNodeStyle.js';
+import { applyComfyNodeStyle, drawNodeErrorBanner, drawNodeStateOverlay, comfyTitleText, comfyDrawWidgets } from '../../webview/src/features/workflowEditor/comfyNodeStyle.js';
 
 function makeCtx() {
 	const calls: { method: string; args: unknown[] }[] = [];
@@ -151,39 +151,49 @@ suite('comfyNodeStyle — comfyDrawWidgets layout', () => {
 		};
 	}
 
-	test('manually arranges widgets: widget.y is cumulative below title (no y=0 stacking)', () => {
+	test('draws at arrange()-assigned widget.y (does NOT re-stack at 0)', () => {
+		// Layout (widget.y / computedHeight) is owned by node.arrange(), which
+		// runs in drawNode every frame. comfyDrawWidgets only *draws* at the
+		// already-arranged position — it must never re-stack widgets at y=0.
 		const { ctx, calls } = makeCtx();
-		const n = node({
-			widgets: [
-				{ name: 'providerId', value: '' },
-				{ name: 'modelId', value: '' },
-			],
-		});
+		const arranged = [
+			{ name: 'providerId', value: '', y: 30, computedHeight: 22 },
+			{ name: 'modelId', value: '', y: 56, computedHeight: 22 },
+		];
+		const n = node({ widgets: arranged });
 		comfyDrawWidgets.call(n, ctx, undefined);
-		// Two widgets → yCursor 30, 56 (30 + 26); label center y = yCursor + wH/2.
+		// label center y = widget.y + wH/2 = 30+11=41, 56+11=67.
 		const labelYs = calls.filter(c => c.method === 'fillText').map(c => Number(c.args[2]));
-		assert.ok(labelYs.includes(43), 'expected providerId label at y=43 (30 + 26/2)');
-		assert.ok(labelYs.includes(69), 'expected modelId label at y=69 (56 + 26/2)');
-		assert.ok(!labelYs.every(y => y === 43), 'widgets must not all stack at the same y');
+		assert.ok(labelYs.includes(41), 'expected providerId label at y=41 (30 + 22/2)');
+		assert.ok(labelYs.includes(67), 'expected modelId label at y=67 (56 + 22/2)');
+		// arrange() stays the single source of truth: comfyDrawWidgets must not
+		// mutate widget.y.
+		assert.strictEqual(arranged[0].y, 30, 'providerId.y untouched');
+		assert.strictEqual(arranged[1].y, 56, 'modelId.y untouched');
 	});
 
-	test('multiline widget (>22px) bumps next widget.y, no overlap', () => {
+	test('multiline widget (computedHeight>22) is vertically centered on computedHeight', () => {
+		// A textarea widget reports computedHeight (>22) via arrange(); its
+		// label must center on computedHeight, not the default 22.
 		const { ctx, calls } = makeCtx();
-		const n = node({
-			widgets: [
-				{ name: 'prompt', value: 'multi\nline', type: 'textarea' },
-				{ name: 'size', value: '1024x1024' },
-			],
-		});
+		const arranged = [
+			{ name: 'prompt', value: 'multi\nline', type: 'textarea', y: 30, computedHeight: 60 },
+			{ name: 'size', value: '1024x1024', y: 92, computedHeight: 22 },
+		];
+		const n = node({ widgets: arranged });
 		comfyDrawWidgets.call(n, ctx, undefined);
-		// prompt widget uses computeSize() (returns ~60+4 for multiline). 2nd
-		// widget must sit AFTER the first — not overlap at the same y.
 		const labelYs = calls.filter(c => c.method === 'fillText').map(c => Number(c.args[2]));
+		// prompt label centers on 60 → 30 + 60/2 = 60; size → 92 + 22/2 = 103.
+		assert.ok(labelYs.includes(60), 'expected multiline prompt label centered on computedHeight (y=60)');
+		assert.ok(labelYs.includes(103), 'expected size label at y=103');
 		const uniqueYs = new Set(labelYs);
-		assert.ok(uniqueYs.size >= 2, 'expected distinct y values for two widgets, no overlap');
+		assert.ok(uniqueYs.size >= 2, 'expected distinct y values for the two widgets, no overlap');
 	});
 
-	test('node size is grown to wrap all widgets', () => {
+	test('does NOT grow node.size — arrange() owns sizing', () => {
+		// Older behavior grew node.size inside comfyDrawWidgets; sizing now
+		// lives in arrange()/computeSize. Guard against a regression that
+		// would let comfyDrawWidgets mutate node.size again.
 		const { ctx } = makeCtx();
 		const n = node({
 			widgets: [
@@ -194,7 +204,7 @@ suite('comfyNodeStyle — comfyDrawWidgets layout', () => {
 			size: [220, 80],
 		});
 		comfyDrawWidgets.call(n, ctx, undefined);
-		assert.ok(n.size[1] > 80, `expected size[1] to grow past 80, got ${n.size[1]}`);
+		assert.strictEqual(n.size[1], 80, 'comfyDrawWidgets must not mutate node.size');
 	});
 
 	test('collapsed node skips widgets entirely', () => {
@@ -203,5 +213,66 @@ suite('comfyNodeStyle — comfyDrawWidgets layout', () => {
 		n.collapsed = true;
 		comfyDrawWidgets.call(n, ctx, undefined);
 		assert.strictEqual(calls.length, 0, 'collapsed node should draw nothing');
+	});
+
+	test('dom widgets (addDOMWidget) are never re-positioned, drawn, or hit-testable', () => {
+		const { ctx, calls } = makeCtx();
+		const dom = { name: '__saros_form', type: 'dom', y: 52, computedHeight: 204, value: undefined };
+		const text = { name: 'seed', value: 1 };
+		const n = node({ widgets: [dom, text] });
+		comfyDrawWidgets.call(n, ctx, undefined);
+		assert.strictEqual(dom.y, 52, 'y stays at the arrange()-assigned position');
+		assert.strictEqual(dom.computedHeight, 204, 'computedHeight untouched');
+		assert.strictEqual((dom as { last_y?: number }).last_y, undefined,
+			'no last_y → getWidgetOnPos never returns it → clicks fall through to the canvas (drag/select/dblclick preserved)');
+		// Only the text widget paints (label + value); nothing drawn for 'dom'.
+		const fillTexts = calls.filter(c => c.method === 'fillText').map(c => String(c.args[0]));
+		assert.ok(fillTexts.includes('seed'), 'regular widget still drawn');
+		assert.ok(!fillTexts.some(t => t.includes('saros_form')), 'dom widget not drawn on canvas');
+	});
+});
+
+// ─── ctx that records fill/stroke state (not just call counts) ───────────────
+function makeCtxFull() {
+	const state: Record<string, unknown> = {};
+	const calls: { method: string; args: unknown[] }[] = [];
+	const ctx = new Proxy({} as CanvasRenderingContext2D, {
+		get(_t, prop: string) {
+			if (prop === 'canvas') { return { width: 200, height: 200 }; }
+			if (prop === 'measureText') {
+				return (text: string) => { calls.push({ method: 'measureText', args: [text] }); return { width: String(text).length * 7 }; };
+			}
+			if (prop in state) { return state[prop]; }
+			return (...args: unknown[]) => { calls.push({ method: prop, args }); };
+		},
+		set(_t, prop: string, value: unknown) { state[prop] = value; return true; },
+	});
+	return { ctx: ctx as unknown as CanvasRenderingContext2D, calls, state };
+}
+
+suite('comfyNodeStyle — applyComfyNodeStyle palette constants', () => {
+
+	test('rewrites LiteGraph dark palette + title color', () => {
+		// Mirrors the runtime canvas-init call (LiteGraphCanvas boot).
+		// LiteGraph is passed by reference; we assert on the same object the
+		// runtime would mutate, so a local mock captures the exact writes.
+		const liteCanvas: Record<string, unknown> = {};
+		const LiteGraphMock: Record<string, unknown> = {};
+		const FakeNode = function () {} as unknown as { prototype: Record<string, unknown> };
+		applyComfyNodeStyle(liteCanvas as never, FakeNode, LiteGraphMock as never);
+		assert.strictEqual(liteCanvas['node_title_color'], '#e6e6e6', 'title text color is #e6e6e6');
+		assert.strictEqual(LiteGraphMock['NODE_DEFAULT_COLOR'], '#2a2a2a', 'node default color dark');
+		assert.strictEqual(LiteGraphMock['NODE_DEFAULT_BGCOLOR'], '#1f1f1f', 'node bg dark');
+		assert.strictEqual(LiteGraphMock['NODE_DEFAULT_BOXCOLOR'], '#4a4a4a', 'node box dark');
+		assert.strictEqual(LiteGraphMock['WIDGET_OUTLINE_COLOR'], '#3a3a3a', 'widget outline dark');
+	});
+
+	test('execution-state overlay stroke colors (running/success)', () => {
+		const r = makeCtxFull();
+		drawNodeStateOverlay(r.ctx, 220, 150, 'running');
+		assert.strictEqual(r.state['strokeStyle'], '#4a9eff', 'running border is blue');
+		const s = makeCtxFull();
+		drawNodeStateOverlay(s.ctx, 220, 150, 'success');
+		assert.strictEqual(s.state['strokeStyle'], '#2ecc71', 'success border is green');
 	});
 });

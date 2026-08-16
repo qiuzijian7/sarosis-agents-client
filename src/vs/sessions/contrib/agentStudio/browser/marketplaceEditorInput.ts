@@ -13,7 +13,7 @@ import { PackageKind } from '../common/marketplace.js';
 
  *
  * Opens in the editor area as a marketplace page for browsing and installing
- * skills/agents/mcp/knowledge-bases from the Sarosis marketplace server.
+ * skills/agents/mcp/knowledge-bases from the Saros marketplace server.
  * Singleton pattern: only one instance, reopening reuses it.
  *
  * Triggered by clicking the "🛒 Market" button in the Integration sidebar.

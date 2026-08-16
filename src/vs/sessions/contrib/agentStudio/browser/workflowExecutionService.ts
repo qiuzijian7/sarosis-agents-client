@@ -16,7 +16,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceRegistry } from '../common/agentWorkspace.js';
-import { substituteHostVariables, buildRuntimeValueMap } from './utils/templateUtils.js';
+import { substituteHostVariables, buildRuntimeValueMap, collectWorkflowVariables } from './utils/templateUtils.js';
 
 export class WorkflowExecutionService extends Disposable implements IWorkflowExecutionService {
 	declare readonly _serviceBrand: undefined;
@@ -142,7 +142,9 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		// BEFORE returning so that `_handleWorkflowExecute` can include sessionInfo
 		// in the `workflow.execute` response. Session creation is fast (in-memory +
 		// single file write), so this won't block the response.
-		const workflowAgentId = workflow.agentId || options?.agentId;
+		// v34: 不再一对一绑定专用 agent——调用者指定的 agent（/workflow 传当前聊天 agent、
+		// 画布 Run 传 saros-claw）优先于 workflow.agentId 历史绑定。任何 agent 都能触发工作流。
+		const workflowAgentId = options?.agentId || workflow.agentId;
 		let ownerSessionId: string | undefined;
 		let ownerAgentId: string | undefined;
 
@@ -2035,66 +2037,9 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	 * by the runtime value map.
 	 */
 	private static _collectTemplateVariables(workflow: IStoredWorkflow): Array<{ name: string; defaultValue?: string }> {
-		const seen = new Set<string>();
-		const vars: Array<{ name: string; defaultValue?: string }> = [];
-		const nodes = workflow.nodes ?? [];
-		const regex = /\{\{(\$?\w+)\}\}/g;
-
-		// v22: `{{input}}` is NO LONGER treated as a built-in auto-resolved variable.
-		// Previously it was auto-mapped to `taskDescription` (workflow input from
-		// chat). When the user clicks Run in the workflow editor without typing
-		// anything in chat, the workflow started executing with `{{input}}`
-		// resolving to empty string — so the agent received a literal
-		// `{{input}}` as the task (visible as a red placeholder in the
-		// subagent card). The fix: always collect `{{input}}` from the user via
-		// the variable collection card. If the user truly wants to pass
-		// `taskDescription` automatically, they can pre-fill the input card
-		// from chat or change the workflow to use a custom variable name.
-		// `$prev` and upstream-node aliases ARE still built-in (auto-resolved
-		// at runtime from the previous node's output) because they don't need
-		// any user-supplied data.
-		const isBuiltin = (n: string) => /^(taskDescription|taskTitle|workflowName|workflowDescription|\$prev|\$prev\.output|\$preNode|\$preNode\.output)$/.test(n);
-
-		const scan = (text: string) => {
-			regex.lastIndex = 0;
-			let match: RegExpExecArray | null;
-			while ((match = regex.exec(text)) !== null) {
-				const name = match[1];
-				if (isBuiltin(name)) { continue; }
-				if (name.startsWith('$')) { continue; } // any other $-prefixed alias
-				if (!seen.has(name)) {
-					seen.add(name);
-					vars.push({ name, defaultValue: '' });
-				}
-			}
-		};
-
-		for (const node of nodes) {
-			const data = node.data ?? {};
-
-			// 1. Scan prompt (string field).
-			if (typeof data.prompt === 'string') {
-				scan(data.prompt);
-			}
-			// 2. Scan skillArgs values (Record<string, string>).
-			if (data.skillArgs && typeof data.skillArgs === 'object') {
-				for (const value of Object.values(data.skillArgs)) {
-					if (typeof value === 'string') {
-						scan(value);
-					}
-				}
-			}
-			// 3. Scan toolParams values (Record<string, string>).
-			if (data.toolParams && typeof data.toolParams === 'object') {
-				for (const value of Object.values(data.toolParams)) {
-					if (typeof value === 'string') {
-						scan(value);
-					}
-				}
-			}
-		}
-
-		return vars;
+		// 委托给纯函数 collectWorkflowVariables（templateUtils.ts），与 composer 参数表单
+		// 共用同一实现，避免前后端变量列表漂移。
+		return collectWorkflowVariables(workflow.nodes);
 	}
 
 	/**

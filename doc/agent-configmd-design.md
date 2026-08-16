@@ -8,7 +8,7 @@ MD 与 HTML 之间**实时双向同步**：在编辑器中改 MD 会实时刷新
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  agent 实例目录 .sarosworkspace/agents/{slug}/                     │
+│  agent 实例目录 .sarosisworkspace/agents/{slug}/                     │
 │   ├── agent.yaml         (configMd 配置)                             │
 │   ├── config.md          ★ 数据源（用户/Agent 都可读写）             │
 │   └── ui/                                                            │

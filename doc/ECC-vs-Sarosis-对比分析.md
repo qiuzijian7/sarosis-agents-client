@@ -1,4 +1,4 @@
-# ECC 框架 vs Sarosis Agents Client 深度对比分析
+# ECC 框架 vs Saros Agents Client 深度对比分析
 
 > 分析日期：2026-06-07
 
@@ -6,7 +6,7 @@
 
 ## 一、项目定位对比
 
-| 维度 | ECC | Sarosis Agents Client |
+| 维度 | ECC | Saros Agents Client |
 |------|-----|----------------------|
 | **本质** | 跨平台 Agent 插件生态系统 | VS Code 深度二次开发的 AI Agent 操作系统 |
 | **形态** | 可插拔的 Skill/Agent/Hook 配置包 | 完整的 IDE 产品（嵌入 VS Code 的 Agent Studio） |
@@ -19,7 +19,7 @@
 
 ECC 是**横向生态**——它不绑定任何单一平台，而是通过适配器让 12+ 平台共享同一套 Agent/Skill/Hook 体系。它的价值在于"内容的广度"。
 
-Sarosis 是**纵向深度**——它 fork 了整个 VS Code 源码，在 workbench 之上构建了完整的 Agent 操作系统。它的价值在于"集成的深度"。
+Saros 是**纵向深度**——它 fork 了整个 VS Code 源码，在 workbench 之上构建了完整的 Agent 操作系统。它的价值在于"集成的深度"。
 
 ---
 
@@ -40,7 +40,7 @@ Observability & Evaluation Loop（可观测性）
 Security & Commercial Platform（安全与商业）
 ```
 
-**Sarosis（四层）：**
+**Saros（四层）：**
 ```
 WebView Frontend（React + Zustand + ReactFlow）
     ↓
@@ -53,7 +53,7 @@ Provider Plugins（多后端 + 多能力）
 
 ### 2.2 架构优劣
 
-| 维度 | ECC 优势 | Sarosis 优势 |
+| 维度 | ECC 优势 | Saros 优势 |
 |------|---------|-------------|
 | **抽象层次** | 分层清晰，每层职责单一 | Agent OS 层是创新性的能力槽抽象，解耦彻底 |
 | **扩展性** | 新增 Platform 只需增加适配目录 | 新增 Provider 只需实现接口并注册到 SlotRegistry |
@@ -61,7 +61,7 @@ Provider Plugins（多后端 + 多能力）
 | **状态管理** | Session 级 SQLite + Rust 持久化 | Zustand Store 层（14+ Store）+ Node 端文件/数据库存储 |
 | **并发隔离** | 通过环境变量 `ECC_AGENT_DATA_HOME` 隔离 | 通过 `IWorkspaceRegistry` 为每个工作区创建独立 AgentOS 实例栈 |
 
-**总结：** ECC 的架构更"产品化"——每个横切关注点（安全、观测、适配）都有独立层。Sarosis 的架构更"系统化"——Agent OS 的 SlotRegistry 设计使得六种能力（Model/Memory/Tool/Planning/Execution/Retrieval）可以任意组合，**理论上 ECC 的概念可以作为一个 Sarosis ToolProvider 来嵌入**。
+**总结：** ECC 的架构更"产品化"——每个横切关注点（安全、观测、适配）都有独立层。Saros 的架构更"系统化"——Agent OS 的 SlotRegistry 设计使得六种能力（Model/Memory/Tool/Planning/Execution/Retrieval）可以任意组合，**理论上 ECC 的概念可以作为一个 Saros ToolProvider 来嵌入**。
 
 ---
 
@@ -90,13 +90,13 @@ model: opus
 - 无法定义复杂的执行逻辑（只能通过 prompt 引导 LLM）
 - Skill 之间缺乏类型安全的组合机制
 
-### 3.2 Sarosis：Provider 接口的代码驱动
+### 3.2 Saros：Provider 接口的代码驱动
 
 ```typescript
-// Sarosis 扩展一个能力：实现接口 + 注册到 SlotRegistry
+// Saros 扩展一个能力：实现接口 + 注册到 SlotRegistry
 class MyToolProvider implements IToolProvider {
     readonly providerId = 'my-tools';
-    
+
     async listTools(context: IAgentContext): Promise<IToolInfo[]> { ... }
     async executeTool(toolName: string, parameters: any): Promise<IToolResult> { ... }
     async getToolSchema(toolName: string): Promise<IToolSchema> { ... }
@@ -116,7 +116,7 @@ class MyToolProvider implements IToolProvider {
 
 ### 3.3 关键差距
 
-| 场景 | ECC | Sarosis |
+| 场景 | ECC | Saros |
 |------|-----|---------|
 | 新增一个编程语言的规则 | 写 `rules/python/SKILL.md` | 无对应机制（需写代码） |
 | 新增一个专业 Agent | 写 `agents/dba.md` | 需实现 `IAgentProvider` + 注册 |
@@ -127,9 +127,9 @@ class MyToolProvider implements IToolProvider {
 
 ## 四、前后端分离与 UI 体验
 
-这是 Sarosis 最显著的**结构性优势**。
+这是 Saros 最显著的**结构性优势**。
 
-### 4.1 Sarosis：完整的 WebView UI
+### 4.1 Saros：完整的 WebView UI
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -163,7 +163,7 @@ class MyToolProvider implements IToolProvider {
 
 ### 4.3 优劣对比
 
-| 维度 | ECC | Sarosis |
+| 维度 | ECC | Saros |
 |------|-----|---------|
 | **Rich Text 渲染** | 终端 ANSI | Markdown + 代码高亮 + 工具卡片 |
 | **可视化** | 无 | ReactFlow 工作区画布 |
@@ -174,7 +174,7 @@ class MyToolProvider implements IToolProvider {
 | **任务看板** | 无 | 完整的 TaskBoard 面板 |
 | **安装成本** | 零（CLI 即用） | 高（需编译整个 VS Code） |
 
-**结论：** Sarosis 的 UI 体验是 **IDE 级的**，ECC 的 UI 体验是**终端级的**。对于日常 IDE 内开发的用户，Sarosis 的体验碾压式领先。但 ECC 适用于任何终端环境，无需启动 IDE。
+**结论：** Saros 的 UI 体验是 **IDE 级的**，ECC 的 UI 体验是**终端级的**。对于日常 IDE 内开发的用户，Saros 的体验碾压式领先。但 ECC 适用于任何终端环境，无需启动 IDE。
 
 ---
 
@@ -208,7 +208,7 @@ You are an expert code reviewer...
 - 无结构化的执行追踪
 - Agent 之间无正式的通讯协议
 
-### 5.2 Sarosis：SubAgent 调度系统
+### 5.2 Saros：SubAgent 调度系统
 
 ```typescript
 export const enum SubAgentType {
@@ -227,7 +227,7 @@ const SUB_AGENT_PERMISSIONS = {
 
 **功能矩阵：**
 
-| 能力 | ECC | Sarosis |
+| 能力 | ECC | Saros |
 |------|-----|---------|
 | Agent 类型 | 64 种（Prompt 驱动） | 3 种（权限驱动） |
 | 工具权限控制 | 声明式 tools 列表 | 正则匹配 + 白名单/黑名单 |
@@ -242,11 +242,11 @@ const SUB_AGENT_PERMISSIONS = {
 
 **关键差异解读：**
 
-ECC 的 Agent 是**"角色卡片"**——定义了一个 Agent 应该怎么思考和行事，但执行完全依赖 LLM。Sarosis 的 Agent 是**"有权限约束的运行实例"**——有明确的类型边界、权限矩阵、事件追踪、中断机制和预算控制。
+ECC 的 Agent 是**"角色卡片"**——定义了一个 Agent 应该怎么思考和行事，但执行完全依赖 LLM。Saros 的 Agent 是**"有权限约束的运行实例"**——有明确的类型边界、权限矩阵、事件追踪、中断机制和预算控制。
 
 这导致一个根本性的差异：
 - ECC 的 code-reviewer 能否真的 review 代码？**取决于 LLM 是否遵循 Prompt**。
-- Sarosis 的 Explore subagent 能否执行 shell 命令？**绝对不会**，因为权限系统在代码层面阻止了。
+- Saros 的 Explore subagent 能否执行 shell 命令？**绝对不会**，因为权限系统在代码层面阻止了。
 
 ---
 
@@ -275,7 +275,7 @@ class LLMProvider(ABC):
 
 **支持的后端：** Anthropic、OpenAI、Ollama、Astraflow（中国通道）
 
-### 6.2 Sarosis：ModelProvider 接口 + 适配器层
+### 6.2 Saros：ModelProvider 接口 + 适配器层
 
 ```typescript
 interface IModelProvider {
@@ -289,7 +289,7 @@ interface IModelProvider {
 
 **支持的后端：** OpenRouter、Anthropic、OpenAI、Gemini（Native）、Nous Research、Ollama、Custom OpenAI Compatible + LanguageModelsBridge（VSCode 扩展生态）
 
-### 6.3 模型能力声明式配置（Sarosis 独有）
+### 6.3 模型能力声明式配置（Saros 独有）
 
 ```typescript
 interface IModelCapabilityConfig {
@@ -300,11 +300,11 @@ interface IModelCapabilityConfig {
 }
 ```
 
-这是 Sarosis 独有的能力——通过声明式配置消除不同模型 API 的差异性，实现真正的 Provider-agnostic 编排。
+这是 Saros 独有的能力——通过声明式配置消除不同模型 API 的差异性，实现真正的 Provider-agnostic 编排。
 
 ### 6.4 消息格式转换器
 
-Sarosis 有独立的 `MessageFormatConverter`（`common/adapters/messageFormatConverter.ts`），支持五种格式的双向转换：
+Saros 有独立的 `MessageFormatConverter`（`common/adapters/messageFormatConverter.ts`），支持五种格式的双向转换：
 - **AG-UI**（Knot 内部协议）
 - **OpenAI**（Chat Completions API）
 - **Anthropic**（Messages API，含 tool_use 格式）
@@ -313,7 +313,7 @@ Sarosis 有独立的 `MessageFormatConverter`（`common/adapters/messageFormatCo
 
 ECC 在 Python 层也有 `to_anthropic_tool()` / `to_openai_tool()` 转换，但仅限工具格式。
 
-| 维度 | ECC | Sarosis |
+| 维度 | ECC | Saros |
 |------|-----|---------|
 | Provider 架构 | Python ABC 抽象类 | TypeScript 接口 + DI 注册 |
 | 后端数量 | 4 | 7+（含 LanguageModelsBridge 无限扩展） |
@@ -343,7 +343,7 @@ ECC 在 Python 层也有 `to_anthropic_tool()` / `to_openai_tool()` 转换，但
 - `config-protection.js` 配置保护
 - `block-no-verify.js` 阻止 `--no-verify`
 
-### 7.2 Sarosis：工具安全审批 + 权限矩阵
+### 7.2 Saros：工具安全审批 + 权限矩阵
 
 **ToolSecurityLevel 三级安全：**
 ```typescript
@@ -360,7 +360,7 @@ enum ToolSecurityLevel {
 
 ### 7.3 对比
 
-| 维度 | ECC | Sarosis |
+| 维度 | ECC | Saros |
 |------|-----|---------|
 | Secrets 检测 | ✅ AgentShield 14 模式 | 无 |
 | Hook 注入分析 | ✅ AgentShield | 无（无 Hook 系统） |
@@ -370,7 +370,7 @@ enum ToolSecurityLevel {
 | 红队/蓝队审计 | ✅ AgentShield --opus 管道 | 无 |
 | 审计日志 | ✅ governance-capture.js | 部分（Checkpoint 系统） |
 
-**结论：** ECC 在**静态安全分析**和**审计合规**方面遥遥领先（AgentShield 是独立的安全产品）。Sarosis 在**运行时工具安全**和**Agent 权限隔离**方面更严格（代码级强制）。
+**结论：** ECC 在**静态安全分析**和**审计合规**方面遥遥领先（AgentShield 是独立的安全产品）。Saros 在**运行时工具安全**和**Agent 权限隔离**方面更严格（代码级强制）。
 
 ---
 
@@ -385,9 +385,9 @@ Rust 实现的 ECC 2.0 有独立的 Worktree 模块（`ecc2/src/worktree/`），
 
 但**没有多仓库管理**——ECC 假设单仓库工作流。
 
-### 8.2 Sarosis：Workspace + RelatedFolders 多仓库模型
+### 8.2 Saros：Workspace + RelatedFolders 多仓库模型
 
-这是 Sarosis 最独特的设计之一：
+这是 Saros 最独特的设计之一：
 
 ```typescript
 // 两类根目录
@@ -405,7 +405,7 @@ class WorkspaceRegistryService {
 }
 ```
 
-| 维度 | ECC | Sarosis |
+| 维度 | ECC | Saros |
 |------|-----|---------|
 | Worktree 管理 | ✅ git2 原生 | ✅ 独立 worktree 模块 |
 | 多仓库支持 | 无 | ✅ relatedFolders（关联/移除代码仓库） |
@@ -413,13 +413,13 @@ class WorkspaceRegistryService {
 | SCM 集成 | 无 | ✅ SourceControl 多仓库显示 |
 | Session 管理 | ✅ SQLite（Rust） | ✅ 文件存储 + Fork 模式会话 |
 
-**结论：** Sarosis 的工作区设计是"微服务化"的——每个工作区是独立的 AgentOS 实例，拥有独立的 Provider 集合。这对多仓库 monorepo 场景至关重要。ECC 没有这个概念。
+**结论：** Saros 的工作区设计是"微服务化"的——每个工作区是独立的 AgentOS 实例，拥有独立的 Provider 集合。这对多仓库 monorepo 场景至关重要。ECC 没有这个概念。
 
 ---
 
 ## 九、Hook/事件自动化系统
 
-这是 ECC 独有的能力，Sarosis **完全没有等价物**。
+这是 ECC 独有的能力，Saros **完全没有等价物**。
 
 ### 9.1 ECC Hook 系统（69 个 Hook）
 
@@ -439,13 +439,13 @@ scripts/hooks/       # 69 个 Hook 实现
 
 **支持的事件：** SessionStart、SessionEnd、PreToolUse、PostToolUse、PreCompaction、Notification 等 8+ 种
 
-### 9.2 Sarosis：事件仅限内部通信
+### 9.2 Saros：事件仅限内部通信
 
 ```
 WebView <--messageProtocol--> Host
 ```
 
-Sarosis 的事件系统**仅服务于 WebView ↔ Host 通信**，没有对外的 Hook 机制。所有自动化逻辑必须硬编码在服务实现中。
+Saros 的事件系统**仅服务于 WebView ↔ Host 通信**，没有对外的 Hook 机制。所有自动化逻辑必须硬编码在服务实现中。
 
 **这是一个巨大的结构性差距。** ECC 的 Hook 系统意味着：
 - 用户可以为任何平台事件编写自定义脚本
@@ -456,7 +456,7 @@ Sarosis 的事件系统**仅服务于 WebView ↔ Host 通信**，没有对外�
 
 ## 十、生态与社区
 
-| 维度 | ECC | Sarosis |
+| 维度 | ECC | Saros |
 |------|-----|---------|
 | GitHub Stars | 182K+ | 私有仓库 |
 | 贡献者 | 170+ | 个人/小团队 |
@@ -470,7 +470,7 @@ Sarosis 的事件系统**仅服务于 WebView ↔ Host 通信**，没有对外�
 
 ## 十一、总结：核心优势与劣势
 
-### Sarosis 的结构性优势（ECC 无法复制的）
+### Saros 的结构性优势（ECC 无法复制的）
 
 1. **IDE 级 UI 体验**——React + Zustand + ReactFlow 的可视化面板，流式消息渲染，工具卡片，检查点导航。ECC 永远达不到这个水平的 UI，因为它是 CLI/TUI 的。
 
@@ -484,25 +484,25 @@ Sarosis 的事件系统**仅服务于 WebView ↔ Host 通信**，没有对外�
 
 6. **运行时安全隔离**——三级安全审批 + SubAgent 权限矩阵（代码级强制），不是 Prompt 级建议。
 
-### ECC 的结构性优势（Sarosis 难以复制的）
+### ECC 的结构性优势（Saros 难以复制的）
 
-1. **Hooks 事件自动化系统**——69 个 Hook，覆盖 Session 生命周期、工具前后、安全审计的全事件驱动。Sarosis **完全没有等价物**。这可能是 Sarosis 在架构上最大的缺失。
+1. **Hooks 事件自动化系统**——69 个 Hook，覆盖 Session 生命周期、工具前后、安全审计的全事件驱动。Saros **完全没有等价物**。这可能是 Saros 在架构上最大的缺失。
 
-2. **AgentShield 安全审计**——独立安全产品，1282 测试，98% 覆盖率，CI Gate 集成。Sarosis 缺少静态安全分析能力。
+2. **AgentShield 安全审计**——独立安全产品，1282 测试，98% 覆盖率，CI Gate 集成。Saros 缺少静态安全分析能力。
 
-3. **Skills-First 零代码扩展**——写 Markdown 即可定义 Agent/Skill，261 个 Skills 覆盖极广。Sarosis 必须写 TypeScript。
+3. **Skills-First 零代码扩展**——写 Markdown 即可定义 Agent/Skill，261 个 Skills 覆盖极广。Saros 必须写 TypeScript。
 
-4. **Continuous Learning v2 (Instinct)**——从对话中自动提取模式，置信度评分，`/evolve` 聚类为 Skills。Sarosis 无自我进化能力。
+4. **Continuous Learning v2 (Instinct)**——从对话中自动提取模式，置信度评分，`/evolve` 聚类为 Skills。Saros 无自我进化能力。
 
-5. **跨平台适配器矩阵**——一次编写，12+ 平台运行。Sarosis 深度绑定 VS Code。
+5. **跨平台适配器矩阵**——一次编写，12+ 平台运行。Saros 深度绑定 VS Code。
 
-6. **选择性安装系统**——Manifest-driven，用户只装需要的组件。Sarosis 编译时全量包含。
+6. **选择性安装系统**——Manifest-driven，用户只装需要的组件。Saros 编译时全量包含。
 
-7. **多语言文档**——12 种语言翻译，18 种语言编码规范。Sarosis 无国际化。
+7. **多语言文档**——12 种语言翻译，18 种语言编码规范。Saros 无国际化。
 
 8. **社区与生态**——182K Stars，170+ 贡献者，活跃的社区驱动开发。
 
-### Sarosis 应该向 ECC 学习的
+### Saros 应该向 ECC 学习的
 
 | 优先级 | 功能 | 理由 |
 |--------|------|------|
@@ -514,7 +514,7 @@ Sarosis 的事件系统**仅服务于 WebView ↔ Host 通信**，没有对外�
 | **P2** | 多语言编码规范 | 参考 ECC 的 18 种语言 rules/ 目录。 |
 | **P2** | 社区生态建设 | 开放贡献、文档、测试、CI。 |
 
-### ECC 可以向 Sarosis 学习的
+### ECC 可以向 Saros 学习的
 
 | 功能 | 理由 |
 |------|------|
@@ -528,25 +528,25 @@ Sarosis 的事件系统**仅服务于 WebView ↔ Host 通信**，没有对外�
 
 ## 十二、最终评分
 
-| 维度 | ECC | Sarosis | 评语 |
+| 维度 | ECC | Saros | 评语 |
 |------|-----|---------|------|
-| 架构设计 | ★★★★☆ | ★★★★★ | Sarosis 的 Agent OS 槽抽象更底层、更系统 |
-| 用户体验 | ★★★☆☆ | ★★★★★ | Sarosis 的 IDE 级 GUI 碾压 ECC 的终端 |
+| 架构设计 | ★★★★☆ | ★★★★★ | Saros 的 Agent OS 槽抽象更底层、更系统 |
+| 用户体验 | ★★★☆☆ | ★★★★★ | Saros 的 IDE 级 GUI 碾压 ECC 的终端 |
 | 可扩展性 | ★★★★★ | ★★★☆☆ | ECC 的 Markdown 驱动 + Hook 系统完胜 |
 | 安全性 | ★★★★★ | ★★★★☆ | ECC 有独立的 AgentShield 产品 |
-| 多后端支持 | ★★★★☆ | ★★★★★ | Sarosis 的声明式能力配置更优雅 |
-| 工作区管理 | ★★★☆☆ | ★★★★★ | Sarosis 的多仓库 + 实例隔离是独特设计 |
+| 多后端支持 | ★★★★☆ | ★★★★★ | Saros 的声明式能力配置更优雅 |
+| 工作区管理 | ★★★☆☆ | ★★★★★ | Saros 的多仓库 + 实例隔离是独特设计 |
 | 生态/社区 | ★★★★★ | ★☆☆☆☆ | 182K Stars vs 私有仓库，不在一个量级 |
-| 安装/部署 | ★★★★★ | ★★☆☆☆ | ECC 一行命令安装，Sarosis 需编译 VS Code |
-| Agent 系统 | ★★★☆☆ | ★★★★★ | Sarosis 的权限+事件+中断机制更可靠 |
-| 自动化 | ★★★★★ | ★★☆☆☆ | ECC Hook 系统是 Sarosis 最大的结构性差距 |
+| 安装/部署 | ★★★★★ | ★★☆☆☆ | ECC 一行命令安装，Saros 需编译 VS Code |
+| Agent 系统 | ★★★☆☆ | ★★★★★ | Saros 的权限+事件+中断机制更可靠 |
+| 自动化 | ★★★★★ | ★★☆☆☆ | ECC Hook 系统是 Saros 最大的结构性差距 |
 | **综合评价** | **★★★★☆** | **★★★★☆** | 互补性强，最佳策略是整合而非竞争 |
 
 ---
 
-**核心结论：这两个项目不是竞争关系，而是互补关系。ECC 是一个"Agent 的 App Store"（横向生态），Sarosis 是一个"Agent-first IDE"（纵向深度）。理想情况下，ECC 的 261 个 Skills、69 个 Hooks 和 AgentShield 可以集成到 Sarosis 的 Agent OS 中，作为 ToolProvider 和 HookProvider 运行；而 Sarosis 的能力槽架构可以作为 ECC 的参考升级方向。**
+**核心结论：这两个项目不是竞争关系，而是互补关系。ECC 是一个"Agent 的 App Store"（横向生态），Saros 是一个"Agent-first IDE"（纵向深度）。理想情况下，ECC 的 261 个 Skills、69 个 Hooks 和 AgentShield 可以集成到 Saros 的 Agent OS 中，作为 ToolProvider 和 HookProvider 运行；而 Saros 的能力槽架构可以作为 ECC 的参考升级方向。**
 
 ---
 
-> 原报告路径：`doc/ECC-vs-Sarosis-对比分析.md`
+> 原报告路径：`doc/ECC-vs-Saros-对比分析.md`
 > 分析工具：WorkBuddy Agent + 双项目深度探索

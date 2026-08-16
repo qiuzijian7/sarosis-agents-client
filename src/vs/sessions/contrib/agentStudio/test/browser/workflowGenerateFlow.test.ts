@@ -14,8 +14,8 @@ suite('generateFlow — buildGenerateFlow', () => {
 		assert.strictEqual(r.promptIds.length, 1);
 		const prompt = r.nodes.find(n => n.id === r.promptIds[0]);
 		const gen = r.nodes.find(n => n.id === r.entryIds[0]);
-		assert.strictEqual(prompt?.type, 'Sarosis.Prompt');
-		assert.strictEqual(gen?.type, 'Sarosis.ModelImageGen');
+		assert.strictEqual(prompt?.type, 'Saros.Prompt');
+		assert.strictEqual(gen?.type, 'Saros.ModelImageGen');
 		assert.strictEqual(prompt?.data.prompt, 'a cyberpunk cat');
 		assert.strictEqual(gen?.data.prompt, 'a cyberpunk cat');
 		assert.strictEqual(r.edges.length, 1);
@@ -84,8 +84,8 @@ suite('generateFlow — buildGenerateFlow', () => {
 	test('existing graph is preserved and new ids do not collide', () => {
 		const existing = {
 			nodes: [
-				{ id: 'prompt-1', type: 'Sarosis.Prompt', position: { x: 0, y: 0 }, data: { label: 'Prompt-1' } },
-				{ id: 'model-image-gen-1', type: 'Sarosis.ModelImageGen', position: { x: 0, y: 0 }, data: { label: 'ModelImageGen-1' } },
+				{ id: 'prompt-1', type: 'Saros.Prompt', position: { x: 0, y: 0 }, data: { label: 'Prompt-1' } },
+				{ id: 'model-image-gen-1', type: 'Saros.ModelImageGen', position: { x: 0, y: 0 }, data: { label: 'ModelImageGen-1' } },
 			],
 			edges: [{ id: 'e1', source: 'prompt-1', target: 'model-image-gen-1' }],
 		};
@@ -104,7 +104,7 @@ suite('generateFlow — buildGenerateFlow', () => {
 
 	test('chainAfterId links the upstream node to the first prompt', () => {
 		const existing = {
-			nodes: [{ id: 'up', type: 'Sarosis.Prompt', position: { x: 0, y: 0 }, data: { label: '上游' } }],
+			nodes: [{ id: 'up', type: 'Saros.Prompt', position: { x: 0, y: 0 }, data: { label: '上游' } }],
 			edges: [],
 		};
 		const r = buildGenerateFlow('x', { existing, chainAfterId: 'up' });

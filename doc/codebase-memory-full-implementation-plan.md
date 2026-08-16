@@ -1,6 +1,6 @@
 # Codebase Memory 完整功能对标设计方案
 
-> 目标：在 VS Code (Sarosis) 内嵌实现 codebase-memory-mcp 的全部核心功能，消除对外部 C 二进制的依赖。
+> 目标：在 VS Code (Saros) 内嵌实现 codebase-memory-mcp 的全部核心功能，消除对外部 C 二进制的依赖。
 
 ## 一、现状差距总览
 

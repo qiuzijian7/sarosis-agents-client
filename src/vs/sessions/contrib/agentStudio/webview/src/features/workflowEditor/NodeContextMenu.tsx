@@ -10,6 +10,7 @@
 import * as React from 'react';
 import { useWorkflowEditorStore, nodeCategories, type NodeCategory } from './store';
 import { buildComfyPaletteItems, type PaletteItem, subscribeNodeRegistry, getNodeRegistryVersion } from './comfyHost/registry';
+import type { MenuItem } from './menuItems';
 
 export interface NodeContextMenuState {
 	clientX: number;
@@ -23,6 +24,27 @@ export interface MenuGroup {
 	label: string;
 	color: string;
 	items: PaletteItem[];
+}
+
+/**
+ * 复刻 ComfyUI 右键菜单层级：把"添加节点"从扁平搜索浮窗改为二级级联菜单。
+ * 一级=Add Node；二级=节点分组（system/basic/controlFlow/layout + llm/comfyTV/comfyUI，
+ * 空组被 buildMenuGroups 过滤）；三级=每个分组下的具体节点（叶子）。
+ * NodeActionsMenu 已支持任意层 submenu；本函数只构造二级 + 三级。
+ */
+export function buildAddNodeSubmenu(addNode: (type: string) => void): MenuItem[] {
+	return buildMenuGroups().map<MenuItem>(g => ({
+		id: `addNode:${g.id}`,
+		label: g.label,
+		// 用分组色的小方块作为图标（NodeActionsMenu 渲染 icon 字符 18px）
+		icon: '◆',
+		submenu: g.items.map<MenuItem>(it => ({
+			id: `addNode:${g.id}:${it.type}`,
+			label: it.label,
+			icon: it.icon,
+			onPick: () => addNode(it.type),
+		})),
+	}));
 }
 
 const CATEGORY_COLORS: Record<NodeCategory, string> = {
@@ -45,7 +67,9 @@ export function buildMenuGroups(): MenuGroup[] {
 		{ id: 'llm', label: 'PROVIDER 文生图', color: '#06b6d4', items: buildComfyPaletteItems('llm') },
 		{ id: 'comfyTV', label: 'COMFYTV STAGES', color: '#e879f9', items: buildComfyPaletteItems('schema') },
 		{ id: 'comfyUI', label: 'COMFYUI NATIVE', color: '#f59e0b', items: buildComfyPaletteItems('native') },
-	];
+		// 过滤空组：如 'llm'（PROVIDER 文生图）当前无任何 kind='llm' 节点（ModelImageGen
+		// 已迁移为 kind='schema'），空分组不该出现在搜索浮窗/级联菜单里（点开是空）。
+	].filter(g => g.items.length > 0);
 }
 
 /** Filter groups by query (label or type, case-insensitive). Pure. */
@@ -83,6 +107,7 @@ export const NodeContextMenu: React.FC<{
 
 	return (
 		<div
+			data-saros-menu
 			style={{
 				position: 'fixed',
 				left, top, width: MENU_W, maxHeight: MENU_MAX_H,

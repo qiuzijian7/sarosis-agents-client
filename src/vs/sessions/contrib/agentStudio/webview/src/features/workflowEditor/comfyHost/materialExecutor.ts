@@ -12,6 +12,8 @@ import { materialStateToJson, parseMaterialState } from './materialEditor.js';
 
 export interface MaterialNodeInput {
 	nodeId: string;
+	/** 快照归档键（= stageUid）。缺省回退 nodeId。 */
+	snapshotKey?: string;
 	values: Record<string, unknown>;
 	store: MediaSnapshotStore;
 }
@@ -19,15 +21,17 @@ export interface MaterialNodeInput {
 /** Emit material-ball image (when present) + material JSON text. */
 export async function runMaterialNode(input: MaterialNodeInput): Promise<SingleNodeRunResult> {
 	const { nodeId, values, store } = input;
-	const mine = store.byNode(nodeId);
+	const snapKey = input.snapshotKey ?? nodeId;
+	const mine = store.byNode(snapKey);
 	const image = mine.find(e => e.media.kind === 'image');
 	const material = parseMaterialState(typeof values.material_state === 'string' ? values.material_state : '');
 	const entries: MediaSnapshotEntry[] = [];
 	if (image) { entries.push(image); }
+	// entry.nodeId 决定归档前缀（put 忽略传入 key）→ 用 snapKey，见 relightExecutor。
 	entries.push({
-		nodeId,
+		nodeId: snapKey,
 		port: 'output',
-		key: `${nodeId}:output:1`,
+		key: `${snapKey}:output:1`,
 		media: { kind: 'text', ref: materialStateToJson(material) },
 		index: 1,
 	});

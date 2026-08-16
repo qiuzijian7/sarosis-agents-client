@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  [Sarosis 2026-07-04] MdFileEditorPane — TextFileEditor with a 2-mode segmented
+ *  [Saros 2026-07-04] MdFileEditorPane — TextFileEditor with a 2-mode segmented
  *  toggle (预览 / Markdown) for `.md` files, displayed in the editor group's
  *  trailing breadcrumbs.
  *
@@ -199,7 +199,7 @@ export class MdFileEditorPane extends TextFileEditor {
 
 	private async _renderMdToHtml(md: string): Promise<string> {
 		try {
-			// [Sarosis 2026-07-04] YAML frontmatter is preserved and rendered
+			// [Saros 2026-07-04] YAML frontmatter is preserved and rendered
 			// as a styled code-ish block (monospace, subtle background) so the
 			// user can inspect the metadata. The block is assembled BEFORE the
 			// native renderer runs so that the underlying `marked` parser never

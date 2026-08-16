@@ -15,7 +15,7 @@
 | Agent 本体 | `agentLoopStrategy.ts` 五钩子 + 7 范式（react/plan-explore/budgeted-react/graph/delegation/readonly/mimo）；`interceptToolCall` 可拦截控制类工具；`prepareIteration` 可控制本轮工具面 |
 | 任务编排 | `taskDag.ts` 纯函数：`topologicalSort`（分层 depth + priority）、`getReadyTasks`（maxConcurrency 就绪任务选择）；`taskDecomposer.ts` 拆解 |
 | 画布执行 | `workflowRun.ts` `runGraphExecution`：`buildExecutionPlan`（`executionGraph.ts` Kahn 拓扑）→ **串行** for-of 执行 → `runNodeOrStage` 统一路由（llm→provider RPC / schema→ComfyTV / native→单节点 / instant / fx 链 / 8 内嵌编辑器） |
-| 节点注册 | `registry.ts` `registerNodeSpec`（Map + version bump，支持 overwrite）；NodeKind = react/schema/native/llm；已有 Sarosis 13 编排节点 + 178 ComfyTV stage + ComfyUI 原生 + ProviderPicker |
+| 节点注册 | `registry.ts` `registerNodeSpec`（Map + version bump，支持 overwrite）；NodeKind = react/schema/native/llm；已有 Saros 13 编排节点 + 178 ComfyTV stage + ComfyUI 原生 + ProviderPicker |
 | 媒体 | `MediaSnapshotStore`（内存快照，key=`nodeId:port:index`）+ `cardStateStore`（执行状态）；主进程 MediaService 资产库见《生成图片管理-设计方案.md》 |
 
 ### 1.2 关键差距
@@ -98,7 +98,7 @@
 ```
 入参：goal、provider?、model?、count?、variants?[prompt]
 动作：
-  1. 自动创建 Sarosis.Prompt（变体为多个）+ Sarosis.ModelImageGen + Sarosis.ProviderPicker（可选）
+  1. 自动创建 Saros.Prompt（变体为多个）+ Saros.ModelImageGen + Saros.ProviderPicker（可选）
   2. 自动连线 Prompt → ModelImageGen，自动路由 provider（resolveImageGenDefaults）
   3. 可选 canvas_run_graph 直接执行
 返回：新建节点 label 清单 + 执行结果/任务引用
@@ -173,7 +173,7 @@
 > 与原文的差异：
 > - **执行模型改为"展平"而非"递归"**：`flattenSubflows(nodes, edges)` 在执行/导出前把 `data.subflow` 节点展开为内部子图（`substituteSubflow` 前缀防冲突、跨界边重映射），`runGraphExecution` 开头统一展平——零运行时递归复杂度
 > - 端口派生：`getSubflowPorts`——entry 节点 outputs[0]→输入端口、exit 节点 inputs[0]→输出端口（未解析回退 'ANY'）
-> - **未做**：`Sarosis.Subflow` 节点类型注册（UI 封装入口：选中子图右键"封装为 Subflow"）、双击嵌套画布编辑
+> - **未做**：`Saros.Subflow` 节点类型注册（UI 封装入口：选中子图右键"封装为 Subflow"）、双击嵌套画布编辑
 
 ### 5.3 Prompt 引用语法 `@[node:xxx]`（对齐 IC composer）
 
@@ -189,7 +189,7 @@
 
 > **✅ 已落地（2026-08-11）**：完整工具链（`canvas_reverse_prompt` 工具 + `reversePrompt.generate` RPC + `runReversePrompt` 编排）。
 
-- `Sarosis.ReversePrompt` 节点 或 ModelImageGen 右键菜单"反推提示词"：
+- `Saros.ReversePrompt` 节点 或 ModelImageGen 右键菜单"反推提示词"：
   - 上游 IMAGE 快照 → provider LLM（text RPC）→ 写回本节点/下游 Prompt 节点。
   - 纯函数：`buildReversePromptRequest(imageRef, provider) → { prompt, model }`。
 - 差异：UI 走 **Agent 工具 `canvas_reverse_prompt`**（非右键菜单）；RPC 为新增 `reversePrompt.generate`（`_resolveImageData` dataURL/HTTP→base64 + `provider.chat` 流式收集）；`runReversePrompt` 编排纯逻辑（目标解析→快照→路由→RPC→写回，单步 undo）
@@ -248,7 +248,7 @@
 | `computeDagLayout` | `dagLayout.test.ts` | 分层 x/y；环图不挂死；孤立节点落位 |
 | `nextAutoName` | `autoName.test.ts` | kind 计数递增；删除后复用计数不回落（对齐 TapCanvas） |
 | `canvas_context` 标签组装 | `canvasContextTag.test.ts` | 成功/失败/截断格式；≤30% 预算；节点 label 优先 |
-| 插件 SDK | `pluginLoader.test.ts` | 动态加载注册；命名空间冲突拒绝；卸载后 prune；manifest 校验失败 | 
+| 插件 SDK | `pluginLoader.test.ts` | 动态加载注册；命名空间冲突拒绝；卸载后 prune；manifest 校验失败 |
 
 > **现有可先落地的补测**（不依赖新功能）：
 > - `executionGraph.test.ts` 补：多入口、链式、菱形 DAG 的 `collectUpstreamNodeIds` 顺序稳定性。
@@ -265,7 +265,7 @@
 | 并行粒度 | **层间屏障 + comfy 槽位=1** | 快照注入顺序受保护；ComfyUI 队列串行本质不伪造并发 |
 | 工具注入 | `prepareIteration` 控制工具面，`interceptToolCall` 消费 | 复用既有策略钩子，范式无感知 |
 | 状态回传 | UserMessageEnricher 新标签 | 复用既有消息富化管道，≤30% 预算 |
-| 插件类型命名 | `<pluginId>:<name>` | 防止与 Sarosis/ComfyTV 冲突；卸载 prune 简单 |
+| 插件类型命名 | `<pluginId>:<name>` | 防止与 Saros/ComfyTV 冲突；卸载 prune 简单 |
 
 **风险**：
 - **模型幻觉 label** → 三级解析 + 失败候选提示（纯函数可测）。

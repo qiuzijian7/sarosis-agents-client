@@ -292,7 +292,7 @@ private async _resolveAndCheckWorkspacePath(agentId: string | undefined, request
 		allowedRoots.push(folder.uri.fsPath.replace(/[\\/]+$/, ''));
 	}
 
-	// 2. Sarosis Agent 工作区：主目录 + 关联仓库 + worktree
+	// 2. Saros Agent 工作区：主目录 + 关联仓库 + worktree
 	if (agentId) {
 		try {
 			const employee = await this.studioService.getEmployee(agentId);

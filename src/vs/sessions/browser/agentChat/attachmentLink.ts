@@ -23,9 +23,9 @@ export const ATTACHMENT_LINK_SCHEME = 'saros-attachment';
 /** Matches a whole markdown link whose target uses the attachment scheme. */
 const ATTACHMENT_LINK_RE = new RegExp(`\\[[^\\]]*\\]\\(${ATTACHMENT_LINK_SCHEME}://[^)\\s]+\\)`, 'g');
 
-/** Leading emoji used to distinguish image vs file attachments in the label. */
+/** Leading emoji used to distinguish image / file / folder attachments in the label. */
 function iconFor(type: IChatAttachment['type']): string {
-	return type === 'image' ? '📷' : '📄';
+	return type === 'image' ? '📷' : type === 'folder' ? '📁' : '📄';
 }
 
 /**

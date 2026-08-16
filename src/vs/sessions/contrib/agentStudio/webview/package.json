@@ -8,7 +8,12 @@
     "watch": "node esbuild.config.mjs --watch",
     "build:kbblocks": "node esbuild.kbblocks.config.mjs",
     "watch:kbblocks": "node esbuild.kbblocks.config.mjs --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "visual": "node visual/build.mjs --serve",
+    "visual:watch": "node visual/build.mjs --watch",
+    "visual:test": "node visual/visual.spec.mjs",
+    "visual:dom": "node visual/visual.spec.mjs --no-shot",
+    "visual:baseline": "node visual/visual.spec.mjs --baseline"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",
@@ -32,6 +37,7 @@
     "react-syntax-highlighter": "^15.6.0",
     "remark-gfm": "^4.0.0",
     "remark-math": "^6.0.0",
+    "three": "^0.169.0",
     "zundo": "^2.3.0",
     "zustand": "^5.0.0"
   },
@@ -39,6 +45,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/react-syntax-highlighter": "^15.5.0",
+    "@types/three": "^0.169.0",
     "esbuild": "^0.24.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0"

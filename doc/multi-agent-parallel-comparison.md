@@ -1,8 +1,8 @@
-# 多 Agent 并行处理与状态管理：Continue vs LangGraph vs Sarosis 对比分析
+# 多 Agent 并行处理与状态管理：Continue vs LangGraph vs Saros 对比分析
 
 ## 一、架构总览
 
-| 维度 | Continue | LangGraph | Sarosis (本项目) |
+| 维度 | Continue | LangGraph | Saros (本项目) |
 |------|----------|-----------|-----------------|
 | **语言** | TypeScript | Python | TypeScript |
 | **并行模型** | 串行 Subagent（beta） | Pregel 超步并行（true parallel） | Promise.allSettled 批量并行 |
@@ -90,14 +90,14 @@ ServiceContainer (全局单例)
 async function compactMessages(messages, llm) {
   // 1. 保留最后 N 条消息（不压缩）
   const keepRecent = messages.slice(-6);
-  
+
   // 2. 将较早的消息送给 LLM 摘要
   const toCompress = messages.slice(0, -6);
   const summary = await llm.chat([
     { role: "system", content: "Summarize the following conversation..." },
     { role: "user", content: JSON.stringify(toCompress) },
   ]);
-  
+
   // 3. 用摘要消息替换旧消息
   return [
     { role: "system", content: `Previous conversation summary:\n${summary}` },
@@ -141,7 +141,7 @@ class PregelRunner:
                 ...
             )
             futures.append(fut)
-        
+
         # 等待所有任务完成（FIRST_COMPLETED 逐个收割）
         while futures:
             done, pending = await asyncio.wait(futures, return_when=FIRST_COMPLETED)
@@ -319,7 +319,7 @@ class PostgresSaver(BaseCheckpointSaver): ...     # PostgreSQL
 
 ---
 
-## 四、Sarosis（本项目）的方案
+## 四、Saros（本项目）的方案
 
 ### 4.1 Agent Loop（迭代循环）
 
@@ -327,26 +327,26 @@ class PostgresSaver(BaseCheckpointSaver): ...     # PostgreSQL
 // agentOSService.ts — 主循环
 while (iteration < MAX_TOOL_ITERATIONS) {
     iteration++;
-    
+
     // Yield to event loop every 5 iterations
     if (iteration % 5 === 0) {
         await new Promise(r => setTimeout(r, 0));
     }
-    
+
     // 1. 调用模型
     const stream = modelProvider.chat(modelId, messages, modelOptions, context);
-    
+
     // 2. 处理流式响应
     for await (const delta of stream) {
         // 收集 text / tool_calls / thinking
     }
-    
+
     // 3. 执行工具调用（串行）
     for (const toolCall of effectiveToolCalls) {
         const result = await executeTool(toolCall);
         // 将结果加入 messages
     }
-    
+
     // 4. 无工具调用 → break
     if (effectiveToolCalls.length === 0) break;
 }
@@ -363,11 +363,11 @@ async executeMultipleSubAgents(
     groupId?: string,
 ): Promise<Map<string, SubAgentResult>> {
     const results = new Map<string, SubAgentResult>();
-    
+
     // 按 maxConcurrent 分批执行
     for (let i = 0; i < subAgentIds.length; i += this._maxConcurrent) {
         const batch = subAgentIds.slice(i, i + this._maxConcurrent);
-        
+
         // Promise.allSettled — 一个失败不影响其他
         const settled = await Promise.allSettled(
             batch.map(async (subAgentId) => {
@@ -375,7 +375,7 @@ async executeMultipleSubAgents(
                 return { subAgentId, result };
             })
         );
-        
+
         for (const outcome of settled) {
             if (outcome.status === 'fulfilled') {
                 results.set(outcome.value.subAgentId, outcome.value.result);
@@ -407,7 +407,7 @@ async executeMultipleSubAgents(
 class IterationBudget {
     private _remaining: number;
     private readonly _parentBudget?: IterationBudget;
-    
+
     consume(count = 1): void {
         this._remaining = Math.max(0, this._remaining - count);
         // 同步消耗父预算
@@ -415,7 +415,7 @@ class IterationBudget {
             this._parentBudget.consume(count);
         }
     }
-    
+
     createChildBudget(maxIterations?: number): IterationBudget {
         return new IterationBudget(maxIterations ?? this._remaining, this);
     }
@@ -444,7 +444,7 @@ ContextManager
 
 ### 5.1 并行能力
 
-| 能力 | Continue | LangGraph | Sarosis |
+| 能力 | Continue | LangGraph | Saros |
 |------|----------|-----------|---------|
 | **工具并行执行** | ❌ 串行 | ✅ Pregel 超步并行 | ❌ 串行（循环内） |
 | **子 Agent 并行** | ❌ 串行阻塞 | ✅ Send API 动态并行 | ✅ Promise.allSettled 批量 |
@@ -454,7 +454,7 @@ ContextManager
 
 ### 5.2 状态管理
 
-| 能力 | Continue | LangGraph | Sarosis |
+| 能力 | Continue | LangGraph | Saros |
 |------|----------|-----------|---------|
 | **状态结构** | Service Container | Channel + Reducer | 消息历史 + Budget |
 | **状态隔离** | 临时覆盖+恢复 | 独立 Channel 空间 | 独立 Budget + 权限 |
@@ -465,7 +465,7 @@ ContextManager
 
 ### 5.3 上下文管理
 
-| 能力 | Continue | LangGraph | Sarosis |
+| 能力 | Continue | LangGraph | Saros |
 |------|----------|-----------|---------|
 | **压缩策略** | LLM 摘要 (80%) | N/A（依赖 checkpoint） | LLM 摘要 + 裁剪 |
 | **消息裁剪** | compileChatMessages | N/A | pruneMessagesForContext |
@@ -474,7 +474,7 @@ ContextManager
 
 ### 5.4 多 Agent 架构
 
-| 能力 | Continue | LangGraph | Sarosis |
+| 能力 | Continue | LangGraph | Saros |
 |------|----------|-----------|---------|
 | **协作模式** | 仅 Subagent 工具 | Supervisor/Swarm/Hierarchical | Explore/General/Scout |
 | **子图组合** | ❌ | ✅ 多层嵌套子图 | ❌ |
@@ -484,7 +484,7 @@ ContextManager
 
 ---
 
-## 六、Sarosis 可借鉴的改进方向
+## 六、Saros 可借鉴的改进方向
 
 ### 6.1 从 LangGraph 借鉴
 
@@ -520,7 +520,7 @@ ContextManager
    - 改进：引入 tiktoken 或类似精确计数器
    - 场景：更精确的裁剪，减少误裁或漏裁
 
-### 6.3 Sarosis 的独特优势
+### 6.3 Saros 的独特优势
 
 1. **IterationBudget 父子联动** — Continue 和 LangGraph 都没有的迭代预算控制
 2. **权限 Profile** — Explore/General/Scout 三类权限隔离比 Continue 的 allow-all 更安全

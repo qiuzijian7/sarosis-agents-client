@@ -1,5 +1,5 @@
-﻿# 打包 vscode-win32-x64
-$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
+# 打包 vscode-win32-x64
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 Set-Location $repoRoot
 
 npx gulp vscode-win32-x64 --verbose

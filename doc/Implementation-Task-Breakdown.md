@@ -1,4 +1,4 @@
-# Sarosis Agents Client — 分阶段实现与测试任务文档
+# Saros Agents Client — 分阶段实现与测试任务文档
 
 > **版本**: v2.0（全面增强版）
 > **日期**: 2026-05-11

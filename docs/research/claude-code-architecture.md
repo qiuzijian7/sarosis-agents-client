@@ -12,7 +12,7 @@
 3. [Batch —— 批量/并行执行](#3-batch--批量并行执行)
 4. [Simplify —— 上下文压缩](#4-simplify--上下文压缩)
 5. [Debug —— 验证与自修正](#5-debug--验证与自修正)
-6. [对 Sarosis 的借鉴意义](#6-对-saros-的借鉴意义)
+6. [对 Saros 的借鉴意义](#6-对-saros-的借鉴意义)
 
 ---
 
@@ -99,7 +99,7 @@ Claude Code 的循环不是简单的 `while`，而是一个**两层异步状态�
 while (true) {
   const response = await model.generate(messages);
   if (response.stop_reason !== "tool_use") break;
-  
+
   for (const block of response.content) {
     if (block.type === "tool_use") {
       const result = await executeTool(block.name, block.input);
@@ -164,7 +164,7 @@ interface Tool {
 function partitionTools(toolCalls: ToolCall[]): ToolCall[][] {
   const partitions: ToolCall[][] = [];
   let current: ToolCall[] = [];
-  
+
   for (const call of toolCalls) {
     if (isToolConcurrencySafe(call.name, call.input)) {
       current.push(call);  // 同一个并行分区
@@ -337,11 +337,11 @@ messages.push({ role: "user", content: [result] });
 
 ---
 
-## 6. 对 Sarosis 的借鉴意义
+## 6. 对 Saros 的借鉴意义
 
 ### 6.1 Goal：可直接借鉴的模式
 
-| Claude Code 特性 | Sarosis 可借鉴 |
+| Claude Code 特性 | Saros 可借鉴 |
 |------------------|---------------|
 | TodoWrite 全量更新 | 已有类似机制（AgentChat 中的任务卡），可增加 `oldTodos`/`newTodos` diff 校验 |
 | /goal 双模型循环 | 工作流 Agent 中可引入"执行→评估→修正"循环体，用轻量模型做验收 |
@@ -349,14 +349,14 @@ messages.push({ role: "user", content: [result] });
 
 ### 6.2 Loop：架构差异分析
 
-| 特性 | Claude Code | Sarosis 现状 |
+| 特性 | Claude Code | Saros 现状 |
 |------|------------|-------------|
 | 循环模型 | 单主循环 + 最多 1 sub-agent | 多 Agent 独立会话，通过会话隔离 |
 | 消息结构 | 平坦消息列表 | 按 session 分组的 ChatMessages |
 | 取消机制 | AsyncGenerator `.return()` 级联 | `cancelAgentLoop()` + `cancelStream()` |
 | 实时转向 | h2A 队列 | 直接 postMessage 到 webview |
 
-**建议**：Sarosis 的 Agent Chat 本质上是多会话并行，与 Claude Code 的单线程模型不同。但可以在工作流执行层面引入"单一控制循环 + 子节点 AsyncGenerator 嵌套"模式。
+**建议**：Saros 的 Agent Chat 本质上是多会话并行，与 Claude Code 的单线程模型不同。但可以在工作流执行层面引入"单一控制循环 + 子节点 AsyncGenerator 嵌套"模式。
 
 ### 6.3 Batch：可立即实施
 
@@ -367,16 +367,16 @@ messages.push({ role: "user", content: [result] });
 
 ### 6.4 Simplify：高优先级
 
-当前 Sarosis 缺少上下文压缩，长对话后质量下降。建议：
+当前 Saros 缺少上下文压缩，长对话后质量下降。建议：
 1. **CLAUDE.md 等价物**：已在用 Agent Studio 的 System Prompt 配置
 2. **AutoCompact**：引入阈值触发（如 >80% 上下文窗口），用轻量模型生成摘要
 3. **四层策略**：本地清理→渐进式折叠→API 摘要→重建关键文件
 
 ### 6.5 Debug：差异化需求
 
-Claude Code 的三层 Hooks 体系可对齐到 Sarosis：
+Claude Code 的三层 Hooks 体系可对齐到 Saros：
 - Layer 1（Syntax）：已有 TypeScript 编译错误诊断
 - Layer 2（Intent）：工作流中的验证节点（已在实施）
 - Layer 3（Regression）：工作流完成后自动运行测试 → 失败则自动重试
 
-**独有的 Sarosis 优势**：工作流可视化使得 debug 过程对用户完全透明——每个节点的输入/输出/错误都可实时查看。
+**独有的 Saros 优势**：工作流可视化使得 debug 过程对用户完全透明——每个节点的输入/输出/错误都可实时查看。

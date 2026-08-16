@@ -103,6 +103,9 @@ export const AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID = 'agentStudio.sidebar';
 export const AGENT_STUDIO_AUXBAR_VIEW_CONTAINER_ID = 'agentStudio.auxiliaryBar';
 
 // View IDs
+/** 内置主助理 Agent id（saros-claw / 助理）——工作流画布 Run 的默认执行 agent。 */
+export const SAROS_CLAW_AGENT_ID = 'saros-claw';
+
 export const AGENT_STUDIO_MAIN_VIEW_ID = 'agentStudio.mainView';
 export const AGENT_STUDIO_CANVAS_VIEW_ID = 'agentStudio.canvasView';
 export const AGENT_STUDIO_CHAT_VIEW_ID = 'agentStudio.chatView';
@@ -116,8 +119,10 @@ export const AGENT_STUDIO_TOOLBAR_VIEW_ID = 'agentStudio.toolbarView';
 export const AGENT_STUDIO_CLAW_CHAT_VIEW_ID = 'agentStudio.clawChatView';
 export const AGENT_STUDIO_WORKSPACE_VIEW_ID = 'agentStudio.workspaceView';
 export const AGENT_STUDIO_PRESET_AGENT_VIEW_ID = 'agentStudio.presetAgentView';
+export const AGENT_STUDIO_SKILLS_VIEW_ID = 'agentStudio.skillsView';
 export const AGENT_STUDIO_TASKS_VIEW_ID = 'agentStudio.tasksView';
 export const AGENT_STUDIO_SCHEDULE_VIEW_ID = 'agentStudio.scheduleView';
+export const AGENT_STUDIO_TOOLS_VIEW_ID = 'agentStudio.toolsView';
 export const AGENT_STUDIO_INTEGRATION_VIEW_ID = 'agentStudio.integrationView';
 export const AGENT_STUDIO_CHANGES_VIEW_ID = 'agentStudio.changesView';
 export const AGENT_STUDIO_SEARCH_VIEW_ID = 'agentStudio.searchView';

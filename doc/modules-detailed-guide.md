@@ -1,4 +1,4 @@
-# Sarosis Memory System — 9 大模块详细使用指南
+# Saros Memory System — 9 大模块详细使用指南
 
 > 本文详细介绍 agentmemory 扩展中 9 个核心模块的原理与使用方法
 

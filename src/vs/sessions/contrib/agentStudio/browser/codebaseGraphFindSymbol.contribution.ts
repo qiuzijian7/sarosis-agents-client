@@ -33,7 +33,7 @@ registerAction2(class FindGraphSymbolAction extends Action2 {
 			id: 'sarosis.findGraphSymbol',
 			title: localize2('sarosis.findGraphSymbol', 'Find Symbol in Codebase'),
 			f1: true,
-			category: localize2('sarosis.category', 'Sarosis'),
+			category: localize2('sarosis.category', 'Saros'),
 			keybinding: {
 				primary: KeyMod.Shift | KeyMod.Alt | KeyCode.KeyS,
 				weight: KeybindingWeight.WorkbenchContrib,

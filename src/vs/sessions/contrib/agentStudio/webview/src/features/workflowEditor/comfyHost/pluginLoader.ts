@@ -12,7 +12,7 @@
  *     unregister, version reload, duplicate guard) is unit-testable without a
  *     browser.
  *   - Namespace isolation: node types are `<pluginId>:<NodeName>` so plugins can
- *     never collide with Sarosis.* / ComfyTV.* or each other.
+ *     never collide with Saros.* / ComfyTV.* or each other.
  *   - Uninstall prunes every node type the plugin registered.
  *--------------------------------------------------------------------------------------------*/
 

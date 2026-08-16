@@ -55,6 +55,13 @@ export type RequestType =
 	| 'providers.openSettings'
 	| 'imagegen.generate'
 	| 'reversePrompt.generate'
+	| 'comfy.fetch'
+	| 'comfy.launch'
+	| 'comfy.getLaunchPaths'
+	| 'comfy.setLaunchPaths'
+	| 'comfy.checkDeps'
+	| 'comfy.downloadModel'
+	| 'comfy.getDownloadProgress'
 	| 'media.import'
 	| 'media.list'
 	| 'media.get'
@@ -256,6 +263,296 @@ export function sendRequest<TPayload = unknown, TResponse = unknown>(
 	});
 }
 
+// ─── ComfyUI 直连（方案A）CORS 状态机 ───────────────────────────────────────
+// 背景（本机 ComfyUI server.py 0.19.x 实测）：中间件互斥——
+//  - 未开 `--enable-cors-header` → create_origin_only_middleware()：
+//      `Sec-Fetch-Site: cross-site` → 403（webview 请求必带此头，且 Origin 是
+//      forbidden header 无法自定义）→ 直连必挂，必须走主进程代理。
+//  - 开启 `--enable-cors-header`（无值=*，见 comfy/cli_args.py）→
+//      create_cors_middleware()：回 `Access-Control-Allow-Origin: *` → 直连可通。
+//
+// 策略：按 origin 维护 CORS 状态机 `unknown | direct | proxied`。
+//  - unknown：后台探测一次（GET /system_stats, mode:cors），不阻塞首个请求。
+//  - direct：直连全局 fetch（真 Response：blob/arrayBuffer/stream，无 4MB cap）。
+//  - proxied：经 sendRequest('comfy.fetch') 主进程代理。
+//  - direct 态请求抛 TypeError（服务重启关闭 CORS）→ 自动降级 proxied 并重探。
+//  - proxied 态定时（默认 60s）重探 → 用户开启 CORS 后自动升级 direct。
+
+export type ComfyCorsMode = 'unknown' | 'direct' | 'proxied';
+
+const corsModeCache = new Map<string, ComfyCorsMode>();
+const probeInFlight = new Set<string>();
+const reprobeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const modeListeners = new Map<string, Set<(mode: ComfyCorsMode) => void>>();
+
+/** origin → 当前 CORS 模式（未探测过返回 'unknown'）。 */
+export function getComfyCorsMode(origin: string): ComfyCorsMode {
+	return corsModeCache.get(origin) ?? 'unknown';
+}
+
+/** 订阅某 origin 的 CORS 模式变化，返回取消订阅函数（供 UI 徽标/引导实时刷新）。 */
+export function subscribeComfyCors(origin: string, cb: (mode: ComfyCorsMode) => void): () => void {
+	let set = modeListeners.get(origin);
+	if (!set) { set = new Set(); modeListeners.set(origin, set); }
+	set.add(cb);
+	return () => set?.delete(cb);
+}
+
+function notifyComfyCorsMode(origin: string, mode: ComfyCorsMode): void {
+	for (const cb of modeListeners.get(origin) ?? []) { cb(mode); }
+}
+
+const LOCALHOST_URL_RE = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//i;
+
+/** `url` 是否与 `origin` 同源（解析失败一律 false，不误伤 data:/blob:）。纯函数。 */
+export function urlHasOrigin(url: string, origin: string): boolean {
+	if (!origin) { return false; }
+	try { return new URL(url).origin === origin; } catch { return false; }
+}
+
+/**
+ * 解析 `data:` URL 为 `{ bytes, contentType }`。纯函数。
+ *
+ * 支持 `;base64` 与百分号编码两种载荷形式。
+ */
+export function parseDataUrl(url: string): { bytes: Uint8Array; contentType: string } {
+	const comma = url.indexOf(',');
+	if (comma < 0) { throw new TypeError('Invalid data: URL'); }
+	const meta = url.slice(5, comma); // 去掉前缀 `data:`
+	const payload = url.slice(comma + 1);
+	const isB64 = /;base64$/i.test(meta);
+	const contentType = (isB64 ? meta.replace(/;base64$/i, '') : meta) || 'text/plain';
+	if (isB64) {
+		const bin = atob(payload);
+		const out = new Uint8Array(bin.length);
+		for (let i = 0; i < bin.length; i++) { out[i] = bin.charCodeAt(i); }
+		return { bytes: out, contentType };
+	}
+	return { bytes: new TextEncoder().encode(decodeURIComponent(payload)), contentType };
+}
+
+/**
+ * 把 `data:` URL 直接变成一个可用的 Response —— **不经过网络**。
+ *
+ * ★ 这是 `TypeError: Failed to fetch` 的真凶所在：AgentStudio webview 的 CSP
+ *   `connect-src` 白名单只有 `http(s)://127.0.0.1|localhost` 与 `ws(s):`，
+ *   **不含 `data:`**。而节点快照（ImageStage 的输出）常以 `data:image/png;base64,…`
+ *   形式存在，于是 instant transform（Rotate/Mirror/Crop）里的
+ *   `fetch(src)` 被 CSP 拦截 → 抛 TypeError → 变换永远失败 →
+ *   snapshotStore 无输出 → 卡片 OUTPUT / ACTIONS 区块不渲染。
+ *   （`img-src` 里有 `data:`，所以预览 <img> 正常显示 —— 这正是
+ *   「图看得见、变换必失败」的原因。）
+ *   data: 载荷本来就在内存里，本地解码即可，完全没有走网络的必要。
+ */
+function dataUrlToResponse(url: string): Response {
+	const { bytes, contentType } = parseDataUrl(url);
+	const blob = new Blob([bytes as unknown as BlobPart], { type: contentType });
+	return {
+		ok: true,
+		status: 200,
+		blob: async () => blob,
+		arrayBuffer: async () => bytes.buffer as ArrayBuffer,
+		text: async () => new TextDecoder().decode(bytes),
+		json: async () => JSON.parse(new TextDecoder().decode(bytes)),
+	} as Response;
+}
+
+/**
+ * 探测某 origin 的 ComfyUI 是否允许 webview 直连（即是否开了 --enable-cors-header）。
+ * GET /system_stats + mode:cors：resolve 且 ok → 允许；抛 TypeError（CORS 拦截）
+ * 或非 ok → 不允许。纯探测，无副作用，可安全在任何环境调用。
+ */
+export async function probeDirectCors(origin: string, timeoutMs = 2000): Promise<boolean> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const res = await fetch(`${origin.replace(/\/+$/, '')}/system_stats`, {
+			method: 'GET',
+			mode: 'cors',
+			cache: 'no-store',
+			headers: { Accept: 'application/json' },
+			signal: controller.signal,
+		});
+		return res.ok;
+	} catch {
+		return false;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function ensureComfyCorsMode(origin: string): Promise<ComfyCorsMode> {
+	const cached = corsModeCache.get(origin);
+	if (cached && cached !== 'unknown') { return cached; }
+	if (probeInFlight.has(origin)) { return cached ?? 'proxied'; }
+	probeInFlight.add(origin);
+	const ok = await probeDirectCors(origin);
+	probeInFlight.delete(origin);
+	const mode: ComfyCorsMode = ok ? 'direct' : 'proxied';
+	corsModeCache.set(origin, mode);
+	notifyComfyCorsMode(origin, mode);
+	return mode;
+}
+
+function markComfyProxied(origin: string): void {
+	corsModeCache.set(origin, 'proxied');
+	notifyComfyCorsMode(origin, 'proxied');
+}
+
+function scheduleReprobe(origin: string, intervalMs: number): void {
+	if (reprobeTimers.has(origin)) { return; }
+	const timer = setTimeout(() => {
+		reprobeTimers.delete(origin);
+		if (corsModeCache.get(origin) !== 'proxied') { return; }
+		void probeDirectCors(origin).then(ok => {
+			if (ok) {
+				corsModeCache.set(origin, 'direct');
+				notifyComfyCorsMode(origin, 'direct');
+			} else {
+				scheduleReprobe(origin, intervalMs);
+			}
+		});
+	}, intervalMs);
+	reprobeTimers.set(origin, timer);
+}
+
+/** 强制重新探测某 origin（供 Runner 面板"重新探测"按钮），并返回最新模式。 */
+export async function reprobeComfyCors(origin: string): Promise<ComfyCorsMode> {
+	probeInFlight.delete(origin);
+	const ok = await probeDirectCors(origin);
+	const mode: ComfyCorsMode = ok ? 'direct' : 'proxied';
+	corsModeCache.set(origin, mode);
+	notifyComfyCorsMode(origin, mode);
+	return mode;
+}
+
+/** base64 → Uint8Array（webview 无 Buffer，用 atob 逐字节还原）。纯函数。 */
+function base64ToBytes(b64: string): Uint8Array {
+	const bin = atob(b64);
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) { out[i] = bin.charCodeAt(i); }
+	return out;
+}
+
+/**
+ * 经主进程代理的二进制取数（`comfy.fetch` + `binary:true` → base64）。
+ * 供 `proxiedComfyFetch` 返回对象的 `blob()` / `arrayBuffer()` 惰性调用。
+ */
+async function proxiedComfyBinary(url: string, init?: RequestInit): Promise<{ bytes: Uint8Array; contentType: string }> {
+	const r = await sendRequest('comfy.fetch', {
+		url,
+		method: init?.method as string | undefined,
+		headers: init?.headers as Record<string, string> | undefined,
+		body: typeof init?.body === 'string' ? init.body : undefined,
+		binary: true,
+	}, 120_000) as { ok: boolean; status: number; base64?: string; contentType?: string; error?: string };
+	if (r.error) { throw new Error(r.error); }
+	return {
+		bytes: r.base64 ? base64ToBytes(r.base64) : new Uint8Array(0),
+		contentType: r.contentType ?? 'application/octet-stream',
+	};
+}
+
+async function proxiedComfyFetch(url: string, init?: RequestInit): Promise<Response> {
+	const r = await sendRequest('comfy.fetch', {
+		url,
+		method: init?.method as string | undefined,
+		headers: init?.headers as Record<string, string> | undefined,
+		body: typeof init?.body === 'string' ? init.body : undefined,
+	}, 120_000) as { ok: boolean; status: number; json?: unknown; text?: string; error?: string };
+	if (r.error) { throw new Error(r.error); }
+	return {
+		ok: r.ok,
+		status: r.status,
+		json: async () => r.json,
+		text: async () => r.text ?? (r.json !== undefined ? JSON.stringify(r.json) : ''),
+		// ★ blob()/arrayBuffer() 必须存在且返回**真二进制**。
+		//   此前的伪 Response 只有 json/text，`instantExecutor` 的
+		//   `(await fetchImpl(src)).blob()` 直接抛 TypeError，导致 proxied 模式下
+		//   Rotate/Mirror/Crop 的变换 100% 失败 → snapshotStore 永远没有输出 →
+		//   卡片的 OUTPUT / ACTIONS 区块（gate 在 ownSnapshots.length>0）永不出现。
+		//   文本路径拿不到字节（主进程 text() 会 UTF-8 破坏 PNG），所以这里独立
+		//   发一次 `binary:true` 请求换 base64 再还原。
+		blob: async () => {
+			const bin = await proxiedComfyBinary(url, init);
+			return new Blob([bin.bytes as unknown as BlobPart], { type: bin.contentType });
+		},
+		arrayBuffer: async () => {
+			const bin = await proxiedComfyBinary(url, init);
+			return bin.bytes.buffer as ArrayBuffer;
+		},
+	} as Response;
+}
+
+/**
+ * 方案A fetch 工厂：对 `http(s)://127.0.0.1|localhost` 做 直连优先/代理兜底 路由。
+ *
+ * @param baseUrl 目标 ComfyUI 地址（决定探测的 origin）。仅 localhost 走本路由，
+ *                其余 URL（data:/blob:/https 资源）原生 fetch（智能降级）。
+ * @param opts.reprobeIntervalMs proxied 态定时重探间隔（默认 60000ms）。
+ */
+export function createComfyFetch(baseUrl: string, opts?: { reprobeIntervalMs?: number }): typeof fetch {
+	const intervalMs = opts?.reprobeIntervalMs ?? 60_000;
+	let origin = '';
+	try { origin = new URL(baseUrl).origin; } catch { origin = ''; }
+	if (origin) {
+		// 后台探测（不阻塞首个请求）：determine direct/proxied 后按需启动重探。
+		void ensureComfyCorsMode(origin).then(mode => {
+			if (mode === 'proxied') { scheduleReprobe(origin, intervalMs); }
+		});
+	}
+	return (async (input: RequestInfo | URL, init?: RequestInit) => {
+		const url = typeof input === 'string' ? input : (input as URL).toString();
+		// ★ data: 一律本地解码，绝不走 fetch —— webview CSP 的 connect-src
+		//   不含 data:，`fetch('data:image/png;base64,…')` 会被直接拦截并抛
+		//   `TypeError: Failed to fetch`（详见 dataUrlToResponse 注释）。
+		if (/^data:/i.test(url)) { return dataUrlToResponse(url); }
+		// ★ FormData（/upload/image 的 multipart 上传）无法经 IPC 结构化克隆，
+		//   代理层只透传字符串 body → 走代理必然丢包体。这类请求一律直连：
+		//   失败时由调用方兜底（instantExecutor 会退回 data: URL），
+		//   总好过“代理成功但服务端收到空 multipart”的静默错误。
+		if (typeof FormData !== 'undefined' && init?.body instanceof FormData) {
+			return fetch(url, init);
+		}
+		// ★ 路由判据 = 「这个 URL 属于我们要访问的 ComfyUI 吗」，
+		//   而**不是**「它是不是 localhost」。
+		//   旧实现只认 127.0.0.1/localhost，ComfyUI 跑在 LAN IP / 域名 / 远程
+		//   runner 时，`/view?filename=…` 直接落到下面的裸 `fetch()` →
+		//   webview 的 `Origin: vscode-webview://…` 被 ComfyUI 403 →
+		//   `TypeError: Failed to fetch`（且该分支**未 try/catch**，无法降级）。
+		//   现在同源于配置的 runner origin 时一律走状态机（direct 优先、
+		//   代理兜底），localhost 仍作为保底判据保留。
+		const sameAsRunner = !!origin && urlHasOrigin(url, origin);
+		if (!sameAsRunner && !LOCALHOST_URL_RE.test(url)) { return fetch(url, init); }
+		if (!origin) { return proxiedComfyFetch(url, init); }
+		const mode = corsModeCache.get(origin) ?? await ensureComfyCorsMode(origin);
+		if (mode === 'direct') {
+			try {
+				return await fetch(url, init);
+			} catch (err) {
+				// TypeError（CORS 被关闭/网络抖动）→ 降级代理重试一次，并启动定时重探。
+				markComfyProxied(origin);
+				scheduleReprobe(origin, intervalMs);
+				return proxiedComfyFetch(url, init);
+			}
+		}
+		return proxiedComfyFetch(url, init);
+	}) as typeof fetch;
+}
+
+/**
+ * 兼容封装：旧调用点显式不传参（即默认 ComfyUI 在 127.0.0.1:8188）。
+ *
+ * 注意：transform pipeline（Rotate/Mirror/Crop 等 instant stage）必须传
+ * 真实的 runner.baseUrl —— 若用户配置的是 8189 / remote / LAN IP，硬编码
+ * 8188 会让 fetch 走代理到错的端口 → TypeError: Failed to fetch → 变换
+ * 永远不进 snapshotStore → 卡片 OUTPUT 区块看不到处理后的图。新调用点请传
+ * `getActiveRunnerRegistry().resolve(pref)?.baseUrl`。
+ */
+export function createProxiedFetch(baseUrl?: string): typeof fetch {
+	return createComfyFetch(baseUrl ?? 'http://127.0.0.1:8188');
+}
+
 /**
  * Handle incoming messages from the Host.
  * Call this once during initialization.
@@ -315,3 +612,32 @@ export function getState<T>(): T | undefined {
 export function setState<T>(state: T): void {
 	vscode.setState(state);
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// ESM → IIFE interop workaround (esbuild 0.24 + format:'iife')
+// ════════════════════════════════════════════════════════════════════════
+// esbuild's auto-generated factory only copies the FIRST ~5 `export function`s
+// (in file-scope order) onto CJS `module.exports`. The remaining 6 named
+// exports are hung only on the ESM namespace `Object` that esbuild creates
+// but does NOT wire ESM consumers to use — both `import { X } from '...'`
+// and `import * as B from '...'` resolve to the CJS exports object, so
+// `X.createComfyFetch` is undefined → runtime `(0, X.createComfyFetch) is
+// not a function`.
+//
+// Fix: side-effect-copy every named export onto `globalThis.__vssarosBridge`
+// so consumers can pull them from there. Use the comma operator +
+// `void (0)` trick to defeat esbuild's dead-code elimination of the
+// `typeof X !== 'undefined'` check.
+//
+// Consumers in nodeExecutor.ts / stageWorkflowExecutor.ts / nodeCard.tsx /
+// comfyRunner.ts fall back to `(globalThis as any).__vssarosBridge.X` when
+// the standard import returns undefined.
+// ════════════════════════════════════════════════════════════════════════
+(globalThis as unknown as { __vssarosBridge?: Record<string, unknown> }).__vssarosBridge ??= {
+	createComfyFetch,
+	createProxiedFetch,
+	getComfyCorsMode,
+	probeDirectCors,
+	reprobeComfyCors,
+	subscribeComfyCors,
+};

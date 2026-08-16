@@ -1216,8 +1216,8 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 					return false; // groups cannot be dropped on group it originates from
 				}
 
-				// [Sarosis] Block cross-zone group merges; same-zone = allowed.
-				const crossZoneBlocked = (globalThis as any).__sarosCrossZoneDragBlocked__;
+				// [Saros] Block cross-zone group merges; same-zone = allowed.
+				const crossZoneBlocked = (globalThis as any).__sarosisCrossZoneDragBlocked__;
 				if (typeof crossZoneBlocked === 'function' && crossZoneBlocked(group.identifier, this.groupView.id)) {
 					return false;
 				}
@@ -1227,10 +1227,10 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		}
 
 		if (this.editorTransfer.hasData(DraggedEditorIdentifier.prototype)) {
-			// [Sarosis] Block cross-zone editor tab drags; same-zone = allowed.
+			// [Saros] Block cross-zone editor tab drags; same-zone = allowed.
 			const data = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
 			if (Array.isArray(data) && data.length > 0) {
-				const crossZoneBlocked = (globalThis as any).__sarosCrossZoneDragBlocked__;
+				const crossZoneBlocked = (globalThis as any).__sarosisCrossZoneDragBlocked__;
 				if (typeof crossZoneBlocked === 'function' && crossZoneBlocked(data[0].identifier.groupId, this.groupView.id)) {
 					return false;
 				}
@@ -2242,8 +2242,8 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		this.updateDropFeedback(tabsContainer, false, e, targetTabIndex);
 		tabsContainer.classList.remove('scroll');
 
-		// [Sarosis] Block cross-zone drops; same-zone operations are fully allowed.
-		const crossZoneBlocked = (globalThis as any).__sarosCrossZoneDragBlocked__;
+		// [Saros] Block cross-zone drops; same-zone operations are fully allowed.
+		const crossZoneBlocked = (globalThis as any).__sarosisCrossZoneDragBlocked__;
 		if (typeof crossZoneBlocked === 'function') {
 			if (this.editorTransfer.hasData(DraggedEditorIdentifier.prototype)) {
 				const data = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);

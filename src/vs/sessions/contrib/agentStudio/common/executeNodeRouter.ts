@@ -2,7 +2,7 @@
  *  executeNodeRouter — decide how a workflow node is executed, based on its type.
  *
  *  With the LiteGraph canvas, three tiers of nodes coexist on one graph:
- *   - 'sarosis' : existing Sarosis node types (start/end/task/prompt/agent/skill/tool/
+ *   - 'saros'   : existing Saros node types (start/end/task/prompt/agent/skill/tool/
  *                 ifElse/switch/askUser/group) — routed to the existing executor.
  *   - 'comfyStage' : ComfyTV-style stages (`ComfyTV.*` or node.type 'comfyStage') —
  *                 routed to the Comfy runner with stage schema + bindings.
@@ -15,7 +15,7 @@
 import { WorkflowNodeType } from './workflowStorage.js';
 
 export type ExecutionRoute =
-	| 'sarosis'
+	| 'saros'
 	| 'comfyStage'
 	| 'comfyNative'
 	| 'unknown';
@@ -25,7 +25,7 @@ export interface RouteNodeLike {
 	data?: { mode?: string; workflowId?: string; stageClass?: string; comfy?: { mode?: 'workflow' | 'stage' } };
 }
 
-const SAROSIS_TYPES = new Set<string>([
+const SAROS_TYPES = new Set<string>([
 	WorkflowNodeType.Start,
 	WorkflowNodeType.End,
 	WorkflowNodeType.Task,
@@ -41,15 +41,15 @@ const SAROSIS_TYPES = new Set<string>([
 
 /**
  * Classify a node's execution route.
- *  - sarosis types → 'sarosis'
+ *  - saros types → 'saros'
  *  - `ComfyTV.*` / type 'comfyStage' → 'comfyStage'
  *  - type 'comfy' with comfy.mode === 'stage' → 'comfyStage'
  *  - type 'comfy' (workflow mode) / any other registered native → 'comfyNative'
  *  - everything else → 'unknown'
  */
 export function routeNodeExecution(node: RouteNodeLike): ExecutionRoute {
-	if (SAROSIS_TYPES.has(node.type)) {
-		return 'sarosis';
+	if (SAROS_TYPES.has(node.type)) {
+		return 'saros';
 	}
 	if (node.type.startsWith('ComfyTV.') || node.type === WorkflowNodeType.ComfyStage) {
 		return 'comfyStage';
@@ -58,7 +58,7 @@ export function routeNodeExecution(node: RouteNodeLike): ExecutionRoute {
 		const mode = node.data?.comfy?.mode ?? node.data?.mode;
 		return mode === 'stage' ? 'comfyStage' : 'comfyNative';
 	}
-	// Native ComfyUI node types (KSampler, LoadImage, …) carry no Sarosis prefix.
+	// Native ComfyUI node types (KSampler, LoadImage, …) carry no Saros prefix.
 	if (node.type.length > 0 && !node.type.includes('.') && node.type !== WorkflowNodeType.Group) {
 		return 'comfyNative';
 	}
@@ -68,7 +68,7 @@ export function routeNodeExecution(node: RouteNodeLike): ExecutionRoute {
 /** Human-readable label for the route (logging / status panel). */
 export function routeLabel(route: ExecutionRoute): string {
 	switch (route) {
-		case 'sarosis': return 'Sarosis 执行器';
+		case 'saros': return 'Saros 执行器';
 		case 'comfyStage': return 'Comfy Runner（stage）';
 		case 'comfyNative': return 'Comfy Runner（原生节点）';
 		default: return '未注册（跳过）';

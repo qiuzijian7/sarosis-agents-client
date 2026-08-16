@@ -1,4 +1,4 @@
-# Mindvas 功能复刻设计方案 —— Sarosis Canvas 思维导图编辑器
+# Mindvas 功能复刻设计方案 —— Saros Canvas 思维导图编辑器
 
 > 源项目：`G:\CustomWorkspaces\AIProjects\mindvas`（Obsidian 插件，v0.3.0，16 个 TS 文件，MIT）
 > 目标：在本项目复刻其全部思维导图能力，落地为 **`.canvas`（JSON Canvas）思维导图编辑器**，与 KB 已有的 `kbMindmapGenerator` 产物天然兼容。

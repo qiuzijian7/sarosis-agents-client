@@ -371,7 +371,7 @@ function listTools(): Tool[];
 
 ## 5. 与本项目的关联
 
-本架构流程图与当前项目（Sarosis Agents Client）的对应关系：
+本架构流程图与当前项目（Saros Agents Client）的对应关系：
 
 | 架构模块 | 项目实现 |
 |---------|---------|

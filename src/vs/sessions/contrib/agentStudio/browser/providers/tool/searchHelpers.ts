@@ -56,7 +56,7 @@ export class SearchHelpers {
 		'**/venv/**', '**/.venv/**',
 		// UE (Unreal) 构建产物：事故 1785143114444
 		'**/Intermediate/**', '**/Saved/**', '**/Binaries/**', '**/DerivedDataCache/**',
-		// out-build/out-test/out-vscode（Sarosis 自身仓库）
+		// out-build/out-test/out-vscode（Saros 自身仓库）
 		'**/out-build/**', '**/out-test/**', '**/out-vscode/**',
 		// 敏感文件（P4 2026-07-29，对齐 kimi SENSITIVE_FILTER_RG_ARGS）：密钥/凭据
 		// 永不进 grep 结果（redactSecrets 是后过滤，此处源头排除更彻底）
@@ -86,7 +86,7 @@ export class SearchHelpers {
 		'.angular', 'venv', '.venv', 'env', '.env',
 		// UE (Unreal) 构建产物
 		'Intermediate', 'Saved', 'Binaries', 'DerivedDataCache',
-		// Sarosis 自身仓库
+		// Saros 自身仓库
 		'out-build', 'out-test', 'out-vscode',
 	]);
 

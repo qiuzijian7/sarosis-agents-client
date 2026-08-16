@@ -1899,7 +1899,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			this.mainContainer.classList.remove(LayoutClasses.SIDEBAR_HIDDEN);
 		}
 
-		// [Sarosis] Save auxiliary bar width before sidebar toggle so the freed
+		// [Saros] Save auxiliary bar width before sidebar toggle so the freed
 		// horizontal space is absorbed entirely by the editor area, not shared
 		// with the auxiliary bar (which would cause a jarring width jump).
 		const auxiliaryBarWasVisible = this.isVisible(Parts.AUXILIARYBAR_PART);

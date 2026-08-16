@@ -4,8 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { getZoomFactor } from '../../../base/browser/browser.js';
-import { getWindow, getWindowId } from '../../../base/browser/dom.js';
+import { $, addDisposableListener, EventType, getWindow, getWindowId } from '../../../base/browser/dom.js';
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
+import { ICommandService } from '../../../platform/commands/common/commands.js';
 import { IContextKeyService } from '../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../platform/instantiation/common/instantiation.js';
@@ -175,6 +176,7 @@ class AuxiliaryNativeTitlebarPart extends NativeTitlebarPart implements IAuxilia
 		@INativeHostService nativeHostService: INativeHostService,
 		@IOpenerService openerService: IOpenerService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		const id = AuxiliaryNativeTitlebarPart.COUNTER++;
 		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, nativeHostService, openerService, environmentService);
@@ -186,6 +188,94 @@ class AuxiliaryNativeTitlebarPart extends NativeTitlebarPart implements IAuxilia
 
 	/** popout 独立窗口：隐藏标题栏的反馈 / Toggle Panel / Toggle Sidebar 按钮（只作用于主窗口布局） */
 	protected override get _showTitlebarToggles(): boolean { return false; }
+
+	/**
+	 * popout 独立窗口标题栏：在最小化按钮（window-controls-container）左侧新增
+	 * 「新建聊天 Group」按钮。点击后执行 agentStudio.newChatGroup——在当前 aux part
+	 * 新建一个 group 并在其中打开新聊天（替代 group 内被隐藏的 + 按钮）。
+	 */
+	protected override createContentArea(parent: HTMLElement): HTMLElement {
+		const el = super.createContentArea(parent);
+
+		const btn = $('a.titlebar-new-chat-group', { role: 'button', 'aria-label': '新建聊天 Group' });
+		btn.title = '新建聊天 Group';
+		btn.classList.add('codicon', 'codicon-add');
+		// 关键：titlebar 整体是 -webkit-app-region: drag（用于拖拽窗口），按钮必须设 no-drag
+		// 才能接收 click。注意：-webkit-app-region 不能写在内联 style（vendor 前缀会被
+		// Chromium 归一化成 app-region，Electron 不识别），必须写在样式表里——见
+		// workbench/browser/parts/titlebar/media/titlebarpart.css 的 .titlebar-new-chat-group 规则
+		//（aux titlebar 继承链实际加载的是该文件，而非 sessions 版的同名 css）。
+		btn.style.cssText = 'display:flex;align-items:center;justify-content:center;width:28px;height:100%;font-size:15px;cursor:pointer;color:var(--vscode-titleBar-inactiveForeground,var(--vscode-foreground));';
+		// 兜底：setProperty 直接写 CSSOM 声明（属性名原样保留 -webkit-app-region，不会被
+		// cssText 解析器归一化剥掉 vendor 前缀）。双保险：样式表规则 + 运行时 setProperty。
+		try {
+			btn.style.setProperty('-webkit-app-region', 'no-drag');
+			btn.style.setProperty('app-region', 'no-drag');
+		} catch { /* ignore */ }
+		btn.setAttribute('data-testid', 'titlebar-new-chat-group');
+		// [diag] mousedown 是否到达（drag region 会吞掉 mousedown + click 整套鼠标事件）
+		this._register(addDisposableListener(btn, EventType.MOUSE_DOWN, () => {
+			// eslint-disable-next-line no-console
+			console.info('[diag][titlebar] newChatGroup button MOUSE_DOWN');
+		}));
+		// [diag] 定位 popout aux 窗口「新建聊天 Group」按钮点击无反应
+		this._register(addDisposableListener(btn, EventType.CLICK, (e) => {
+			// eslint-disable-next-line no-console
+			console.info('[diag][titlebar] newChatGroup button CLICKED', { target: (e.target as HTMLElement)?.tagName, hasCommandService: !!this.commandService });
+			try {
+				const promise = this.commandService.executeCommand('agentStudio.newChatGroup');
+				// eslint-disable-next-line no-console
+				console.info('[diag][titlebar] executeCommand returned:', promise);
+				if (promise && typeof (promise as Promise<unknown>).then === 'function') {
+					(promise as Promise<unknown>).then(
+						() => { /* eslint-disable-next-line no-console */ console.info('[diag][titlebar] executeCommand resolved'); },
+						(err: any) => { /* eslint-disable-next-line no-console */ console.error('[diag][titlebar] executeCommand rejected:', err); }
+					);
+				}
+			} catch (err) {
+				// eslint-disable-next-line no-console
+				console.error('[diag][titlebar] executeCommand sync throw:', err);
+			}
+		}));
+
+		const windowControls = this.rightWindowControlsContainer;
+		if (windowControls) {
+			this.rightContainer.insertBefore(btn, windowControls);
+		} else {
+			this.rightContainer.appendChild(btn);
+		}
+
+		// [diag] 插入 DOM 之后再打印：确认 CSS 的 -webkit-app-region:no-drag 是否真的
+		// 命中。用 getPropertyValue 直接读（.webkitAppRegion 读法可能拿到默认 'none'）。
+		// eslint-disable-next-line no-console
+		const csBtn = getComputedStyle(btn);
+		const csWco = windowControls ? getComputedStyle(windowControls) : null;
+		// 完整祖先链（一直往上到 html），确认 aux 窗口 DOM 里是否有 .monaco-workbench
+		const chain: string[] = [];
+		let cur: HTMLElement | null = btn.parentElement;
+		while (cur && chain.length < 10) {
+			chain.push(`${cur.tagName}.${cur.className}`);
+			cur = cur.parentElement;
+		}
+		console.info('[diag][titlebar] newChatGroup button mounted', {
+			chain,
+			bodyClass: document.body?.className,
+			htmlClass: document.documentElement?.className,
+			// matches() 直接判断 CSS 选择器是否命中当前 DOM（决定性验证）
+			matchesWorkbench: btn.matches('.monaco-workbench .part.titlebar .titlebar-new-chat-group'),
+			matchesWco: windowControls ? windowControls.matches('.monaco-workbench .part.titlebar .window-controls-container') : null,
+			btnInlineStyle: btn.getAttribute('style'),
+			btnRegion_prop: csBtn.getPropertyValue('-webkit-app-region'),
+			btnRegion_camel: (csBtn as any).webkitAppRegion,
+			btnDisplay: csBtn.display,
+			btnW: btn.offsetWidth, btnH: btn.offsetHeight,
+			wcoRegion_prop: csWco ? csWco.getPropertyValue('-webkit-app-region') : null,
+			wcoRegion_camel: csWco ? (csWco as any).webkitAppRegion : null,
+			wcoClass: windowControls?.className,
+		});
+
+		return el;
+	}
 }
 
 export class NativeTitleService extends TitleService {

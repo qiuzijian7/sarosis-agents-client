@@ -1,8 +1,8 @@
-# Void vs Sarosis 聊天框渲染逻辑对比分析
+# Void vs Saros 聊天框渲染逻辑对比分析
 
 ## 一、技术栈对比
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | UI 框架 | **React** (VDOM diffing) | **原生 DOM 操作** (imperative) |
 | Markdown 解析 | `marked.lexer()` — **同步** | VS Code `renderMarkdown` — **含异步代码块** |
@@ -42,7 +42,7 @@ const currStreamingMessageHTML = ...
    - `marked.lexer(string)` 重新解析完整文本为 token 数组
    - React diff token 数组，**只更新变化的 DOM 节点**（通常是最后一个文本节点追加字符）
 
-#### Sarosis：清空容器 + 全量重建
+#### Saros：清空容器 + 全量重建
 
 ```typescript
 // agentChatPanel.ts:1857 — 快速路径 1
@@ -85,7 +85,7 @@ export const ChatMarkdownRender = ({ string, ... }) => {
 - React 同步渲染所有 token 为 VDOM
 - **代码块也是同步渲染**：直接创建 `BlockCode` 组件
 
-#### Sarosis：`renderMarkdown` 代码块异步插入
+#### Saros：`renderMarkdown` 代码块异步插入
 
 ```typescript
 // agentChatPanel.ts:4000 — codeBlockRenderer 返回 Promise
@@ -104,7 +104,7 @@ const disposable = renderMarkdown(md, options, parent);
 
 **性能影响**：
 - Void：所有 DOM 变化在一个同步帧内完成 → `scrollHeight` 立即可用
-- Sarosis：代码块异步插入 → 同步 `_scrollToBottom` 读到的 `scrollHeight` 不含代码块 → 视图脱离底部（已用 rAF 循环修复）
+- Saros：代码块异步插入 → 同步 `_scrollToBottom` 读到的 `scrollHeight` 不含代码块 → 视图脱离底部（已用 rAF 循环修复）
 
 ---
 
@@ -125,7 +125,7 @@ useEffect(() => {
 - **编辑器 widget 不销毁、不重建**，只更新文本内容
 - 语法高亮由 Monaco 增量 tokenization 处理
 
-#### Sarosis：每次 token 都清空 + 重建代码块 HTML
+#### Saros：每次 token 都清空 + 重建代码块 HTML
 
 ```typescript
 // agentChatPanel.ts:1858 — 快速路径
@@ -153,7 +153,7 @@ const previousMessagesHTML = useMemo(() => {
 - `useMemo` 命中缓存 → **已提交消息完全不参与重渲染**
 - React 只 reconcile `currStreamingMessageHTML` 一棵子树
 
-#### Sarosis：无隔离，全量操作
+#### Saros：无隔离，全量操作
 
 ```typescript
 // agentChatPanel.ts:438 — setMessages
@@ -188,7 +188,7 @@ React 渲染周期：
 3. `useEffect` — **在 commit 之后执行**，此时 `scrollHeight` 包含所有新内容
 4. `scrollTop = scrollHeight` — 读到正确的高度
 
-#### Sarosis：同步调用，在 DOM 操作之后立即执行
+#### Saros：同步调用，在 DOM 操作之后立即执行
 
 ```typescript
 // agentChatPanel.ts:809
@@ -213,7 +213,7 @@ React reconciler 对比新旧 VDOM 树：
 - 属性变化：只 `setAttribute` 变化的属性
 - **已存在的节点不会被销毁重建**
 
-#### Sarosis：`textContent = ''` 暴力清空
+#### Saros：`textContent = ''` 暴力清空
 
 ```typescript
 streamingContainer.textContent = '';  // 销毁所有子节点
@@ -229,7 +229,7 @@ this._renderMarkdownContent(streamingContainer, msg.content);  // 从零创建
 
 ## 三、性能影响量化
 
-| 操作 | Void (React) | Sarosis (Raw DOM) |
+| 操作 | Void (React) | Saros (Raw DOM) |
 |------|-------------|-------------------|
 | 单 token 更新成本 | O(1) — React diff 只更新最后一个变化节点 | O(n) — 清空 + 重建所有 markdown 节点 |
 | 代码块更新 | O(1) — `setValue()` 更新文本模型 | O(m) — 重建代码块全部 DOM (header + buttons + pre + code) |
@@ -240,7 +240,7 @@ this._renderMarkdownContent(streamingContainer, msg.content);  // 从零创建
 
 ---
 
-## 四、优化建议（Sarosis 侧）
+## 四、优化建议（Saros 侧）
 
 ### P0：流式更新改为增量追加（而非清空重建）
 

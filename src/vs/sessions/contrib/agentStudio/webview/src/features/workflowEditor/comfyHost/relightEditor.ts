@@ -135,13 +135,18 @@ export function isRelightNode(type: string): boolean {
 
 /** Unit direction of a light (target → position). Pure. */
 export function lightDirection(light: LightInfoEntry): Vec3 {
-	const t = light.target ?? { x: 0, y: 0, z: 0 };
+	const t = lightTarget(light);
 	const dx = light.position.x - t.x;
 	const dy = light.position.y - t.y;
 	const dz = light.position.z - t.z;
 	const m = Math.hypot(dx, dy, dz);
 	if (!m) { return { x: 0, y: 0, z: 0 }; }
 	return { x: dx / m, y: dy / m, z: dz / m };
+}
+
+/** Light target (defaults to origin). Aligned with ComfyTV types.ts lightTarget. */
+export function lightTarget(light: LightInfoEntry): Vec3 {
+	return light.target ?? { x: 0, y: 0, z: 0 };
 }
 
 /**

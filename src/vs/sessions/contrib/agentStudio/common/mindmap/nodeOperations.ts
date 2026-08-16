@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Mindmap Node Operations
+ *  Saros Agents — Mindmap Node Operations
  *
  *  移植自 Mindvas mindmap/node-operations.ts。
  *  节点操作：增（子/兄）、删（重连孤儿子节点）、翻转分支、平衡布局切换。

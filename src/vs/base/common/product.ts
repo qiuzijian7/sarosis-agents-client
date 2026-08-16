@@ -66,6 +66,14 @@ export type ExtensionVirtualWorkspaceSupport = {
 
 export interface IProductConfiguration {
 	readonly version: string;
+	/**
+	 * Engine version reported to extensions as `vscode.version`. This fork brands the
+	 * product as `2.x` (see `version`) but remains API-compatible with the `1.x` line, so
+	 * built-in extensions declare `engines.vscode: ^1.x`. When set, the extension host
+	 * reports this value instead of `version` to keep language clients / engine checks happy.
+	 * Falls back to `version` when absent.
+	 */
+	readonly extensionEngineVersion?: string;
 	readonly date?: string;
 	readonly quality?: string;
 	readonly commit?: string;

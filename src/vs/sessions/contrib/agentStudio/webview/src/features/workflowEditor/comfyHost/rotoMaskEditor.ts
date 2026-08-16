@@ -104,3 +104,24 @@ export function removeShapePoint(points: RotoPoint[], i: number): RotoPoint[] {
 export function isRotoMaskNode(type: string): boolean {
 	return type === 'ComfyTV.RotoMaskStage';
 }
+
+/**
+ * 对齐 ComfyTV useRotoMaskEditor.buildShapePoints：smooth 开关决定顶点切线。
+ *  - smooth=true：用相邻顶点的 1/6 切线近似贝塞尔（自动平滑）
+ *  - smooth=false：切线 = 顶点自身（直线多边形）
+ * 纯函数，输入顶点（带或忽略旧切线），输出带切线的新顶点。
+ */
+export function applySmooth(points: RotoPoint[], smooth: boolean): RotoPoint[] {
+	const n = points.length;
+	if (n === 0) { return points; }
+	return points.map((p, i) => {
+		if (!smooth) {
+			return { ...p, lx: p.x, ly: p.y, rx: p.x, ry: p.y };
+		}
+		const prev = points[(i - 1 + n) % n];
+		const next = points[(i + 1) % n];
+		const tx = (next.x - prev.x) / 6;
+		const ty = (next.y - prev.y) / 6;
+		return clampPoint({ x: p.x, y: p.y, lx: p.x - tx, ly: p.y - ty, rx: p.x + tx, ry: p.y + ty });
+	});
+}

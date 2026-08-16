@@ -23,7 +23,7 @@ import { Parts } from '../../../../workbench/services/layout/browser/layoutServi
 import { MOVE_MODAL_EDITOR_TO_MAIN_COMMAND_ID } from '../../../../workbench/browser/parts/editor/editorCommands.js';
 import { AgentStudioEditorInput } from '../../agentStudio/browser/agentStudioEditorInput.js';
 
-// [Sarosis 2026-06-03] Removed `MaximizeMainEditorPartAction` /
+// [Saros 2026-06-03] Removed `MaximizeMainEditorPartAction` /
 // `RestoreMainEditorPartAction` (the "最大化编辑器区域" / "Maximize Editor
 // Area" toolbar button on the right column's EditorTitleLayout). The
 // dual-zone layout (file zone | agent zone) makes "maximize" semantically

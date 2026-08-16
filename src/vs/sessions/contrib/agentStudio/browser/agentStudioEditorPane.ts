@@ -13,8 +13,10 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { AgentStudioEditorInput } from './agentStudioEditorInput.js';
 import { AgentStudioWebviewController } from './agentStudioWebviewController.js';
+import { AgentStudioActiveContext } from '../../../common/contextkeys.js';
 import * as DOM from '../../../../base/browser/dom.js';
 
 /**
@@ -34,6 +36,7 @@ export class AgentStudioEditorPane extends EditorPane {
 
 	private _container: HTMLElement | undefined;
 	private _webviewController: AgentStudioWebviewController | undefined;
+	private _chatActiveCtxKey: ReturnType<typeof AgentStudioActiveContext.bindTo>;
 
 	constructor(
 		group: IEditorGroup,
@@ -41,8 +44,10 @@ export class AgentStudioEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 	) {
 		super(AgentStudioEditorPane.ID, group, telemetryService, themeService, storageService);
+		this._chatActiveCtxKey = AgentStudioActiveContext.bindTo(this.contextKeyService);
 	}
 
 	protected createEditor(parent: HTMLElement): void {
@@ -70,6 +75,9 @@ export class AgentStudioEditorPane extends EditorPane {
 		const panelType = input.panelType;
 		console.log('[AgentStudioEditorPane] setInput:', panelType, 'container:', this._container, 'containerInDOM:', this._container?.isConnected);
 
+		// 更新 Agent Chat 激活状态 context key
+		this._chatActiveCtxKey.set(panelType === 'chat');
+
 		// Always recreate the webview controller.
 		this._disposeWebview();
 
@@ -85,13 +93,28 @@ export class AgentStudioEditorPane extends EditorPane {
 
 	override layout(dimension: DOM.Dimension): void {
 		if (this._container) {
-			// [Sarosis] Use width from dimension but force height to 100%
-			// of parent. The upstream editorGroupView passes (parent - 35)
-			// to account for the tab bar, but .title is hidden via CSS.
+			// [Saros] The upstream editorGroupView passes (parent - 35) as
+			// height to account for the tab bar. We use flex layout:
+			// `.editor-container` has `flex: 1 1 0%` → fills space below
+			// the tab bar, and this._container fills it with `height: 100%`.
 			this._container.style.width = `${dimension.width}px`;
 			this._container.style.height = '100%';
 		}
 		this._webviewController?.layout(dimension.width, dimension.height);
+	}
+
+	/**
+	 * 重新初始化 webview，用于 webview iframe 跨 document 移动后重新建立通信通道。
+	 */
+	reinitializeWebview(newSyncLayout?: () => void): void {
+		this._webviewController?.reinitializeWebview(newSyncLayout);
+	}
+
+	/**
+	 * 获取内部容器元素（用于 popout 恢复后获取尺寸）。
+	 */
+	override getContainer(): HTMLElement | undefined {
+		return this._container;
 	}
 
 	private _disposeWebview(): void {
@@ -105,6 +128,7 @@ export class AgentStudioEditorPane extends EditorPane {
 	}
 
 	override dispose(): void {
+		this._chatActiveCtxKey.reset();
 		this._disposeWebview();
 		super.dispose();
 	}

@@ -151,13 +151,13 @@ suite('comfyApiAdapter', () => {
 
 	suite('stripSarosisNodesForExport', () => {
 
-		const isNonComfy = (t: string) => t === 'Sarosis.ModelImageGen' || t === 'Sarosis.Prompt';
+		const isNonComfy = (t: string) => t === 'Saros.ModelImageGen' || t === 'Saros.Prompt';
 
 		const MIXED: ComfyGuiWorkflow = {
 			nodes: [
 				{ id: 1, type: 'CheckpointLoaderSimple', pos: [0, 0], inputs: [], outputs: [], widgets_values: ['a'] },
-				{ id: 2, type: 'Sarosis.Prompt', pos: [0, 0], inputs: [], outputs: [] },
-				{ id: 3, type: 'Sarosis.ModelImageGen', pos: [0, 0], inputs: [{ name: 'prompt', type: 'TEXT', link: 100 }], outputs: [] },
+				{ id: 2, type: 'Saros.Prompt', pos: [0, 0], inputs: [], outputs: [] },
+				{ id: 3, type: 'Saros.ModelImageGen', pos: [0, 0], inputs: [{ name: 'prompt', type: 'TEXT', link: 100 }], outputs: [] },
 				{ id: 4, type: 'KSampler', pos: [0, 0], inputs: [{ name: 'model', type: 'MODEL', link: 101 }], outputs: [] },
 			],
 			links: [
@@ -166,17 +166,17 @@ suite('comfyApiAdapter', () => {
 			],
 		};
 
-		test('removes Sarosis nodes and dangling links, keeps Comfy nodes', () => {
+		test('removes Saros nodes and dangling links, keeps Comfy nodes', () => {
 			const { workflow, skipped } = stripSarosisNodesForExport(MIXED, isNonComfy);
-			assert.deepStrictEqual(skipped, ['Sarosis.Prompt', 'Sarosis.ModelImageGen']);
+			assert.deepStrictEqual(skipped, ['Saros.Prompt', 'Saros.ModelImageGen']);
 			assert.deepStrictEqual(workflow.nodes.map(n => n.type), ['CheckpointLoaderSimple', 'KSampler']);
 			assert.strictEqual(workflow.links!.length, 1);
 			assert.deepStrictEqual(workflow.links![0], [101, 1, 0, 4, 0, 'MODEL']);
 		});
 
-		test('all-Sarosis workflow → empty nodes, no links', () => {
+		test('all-Saros workflow → empty nodes, no links', () => {
 			const { workflow, skipped } = stripSarosisNodesForExport(
-				{ nodes: [{ id: 9, type: 'Sarosis.Prompt', inputs: [], outputs: [] }], links: [] },
+				{ nodes: [{ id: 9, type: 'Saros.Prompt', inputs: [], outputs: [] }], links: [] },
 				isNonComfy,
 			);
 			assert.strictEqual(workflow.nodes.length, 0);

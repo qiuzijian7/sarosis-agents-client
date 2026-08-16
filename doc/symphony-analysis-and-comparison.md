@@ -1,7 +1,7 @@
 # Symphony 项目分析与对比报告
 
-> 分析日期：2026-05-24  
-> 对比项目：Symphony (OpenAI) vs Sarosis Agents Client (本项目)
+> 分析日期：2026-05-24
+> 对比项目：Symphony (OpenAI) vs Saros Agents Client (本项目)
 
 ---
 
@@ -155,11 +155,11 @@ You are working on {{ issue.identifier }}: {{ issue.title }}.
 
 ---
 
-## 四、与 Sarosis Agents Client 的对比
+## 四、与 Saros Agents Client 的对比
 
 ### 4.1 架构对比
 
-| 维度 | Symphony | Sarosis Agents Client |
+| 维度 | Symphony | Saros Agents Client |
 |------|----------|----------------------|
 | **架构范式** | 单编排器 + 文件系统隔离 | 四层架构 (UI → Driver → OS → Provider) |
 | **运行时** | Elixir/OTP (BEAM VM) | TypeScript/VS Code Extension Host |
@@ -172,7 +172,7 @@ You are working on {{ issue.identifier }}: {{ issue.title }}.
 
 ### 4.2 功能对比
 
-| 功能 | Symphony | Sarosis Agents Client |
+| 功能 | Symphony | Saros Agents Client |
 |------|----------|----------------------|
 | **自动 PR** | ✅ 完整（push + land 技能） | ❌ 仅有 gitCommitService（基础提交） |
 | **自动 Worktree** | ❌ 使用独立目录 clone | ❌ 不支持 |
@@ -195,7 +195,7 @@ You are working on {{ issue.identifier }}: {{ issue.title }}.
 
 ### 4.3 设计哲学对比
 
-| 维度 | Symphony | Sarosis Agents Client |
+| 维度 | Symphony | Saros Agents Client |
 |------|----------|----------------------|
 | **核心理念** | "让团队管理工作，而非监督 Agent" | "多 Agent 协作 + 能力可组合" |
 | **规范驱动** | SPEC.md 是真理源，实现可替换 | 四层架构约束，接口隔离 |
@@ -221,7 +221,7 @@ commit → push → create PR → watch CI → handle review → land (squash-me
 - 代码级别的命令示例
 - 边界情况处理（冲突、closed PR、flaky CI）
 
-**建议**：Sarosis 应该构建类似的 Git 工作流技能链，至少覆盖 `commit → push → create PR`。
+**建议**：Saros 应该构建类似的 Git 工作流技能链，至少覆盖 `commit → push → create PR`。
 
 ### 5.2 🏆 WORKFLOW.md 配置即代码
 
@@ -231,7 +231,7 @@ commit → push → create PR → watch CI → handle review → land (squash-me
 - 支持模板变量（`{{ issue.identifier }}`、`{{ attempt }}`）
 - 热重载无需重启
 
-**建议**：Sarosis 的 ConfigMD 系统可以借鉴这种混合格式，增强模板能力。
+**建议**：Saros 的 ConfigMD 系统可以借鉴这种混合格式，增强模板能力。
 
 ### 5.3 🏆 独立工作空间隔离
 
@@ -240,7 +240,7 @@ commit → push → create PR → watch CI → handle review → land (squash-me
 - 文件系统竞争
 - 状态污染
 
-**建议**：Sarosis 可以在 workspaceSessionService 基础上，增加 git worktree 级别的隔离。
+**建议**：Saros 可以在 workspaceSessionService 基础上，增加 git worktree 级别的隔离。
 
 ### 5.4 🏆 可观测性三件套
 
@@ -249,7 +249,7 @@ commit → push → create PR → watch CI → handle review → land (squash-me
 - 团队可以通过浏览器共享状态
 - 自动化系统可以通过 API 查询
 
-**建议**：Sarosis 可以利用 VS Code 的 Webview API 和现有的 messageProtocol 构建类似的能力。
+**建议**：Saros 可以利用 VS Code 的 Webview API 和现有的 messageProtocol 构建类似的能力。
 
 ### 5.5 🏆 审查反馈自动处理
 
@@ -261,7 +261,7 @@ land 技能定义了完整的审查反馈处理协议：
 
 ---
 
-## 六、Sarosis 相对于 Symphony 的优势
+## 六、Saros 相对于 Symphony 的优势
 
 ### 6.1 🏆 更丰富的 Agent 协作模型
 
@@ -340,6 +340,6 @@ land 技能定义了完整的审查反馈处理协议：
 
 Symphony 是一个**聚焦的、工程化的 Agent 编排服务**，在 Git 工作流自动化（自动 PR、自动着陆）和工作空间隔离方面做得非常出色。它的设计哲学是"最小化人类介入"，让 Agent 完全自主地完成从 Issue 到 PR 合并的全流程。
 
-Sarosis Agents Client 则是一个**更全面的、IDE 原生的多 Agent 协作平台**，在 Agent 协作模型、能力组合、技能生态、自进化等方面有显著优势，但在 Git 工作流自动化和工作空间隔离方面存在明显短板。
+Saros Agents Client 则是一个**更全面的、IDE 原生的多 Agent 协作平台**，在 Agent 协作模型、能力组合、技能生态、自进化等方面有显著优势，但在 Git 工作流自动化和工作空间隔离方面存在明显短板。
 
-**核心差距**：Sarosis 缺少 Symphony 那样端到端的 Git 工作流自动化能力（自动 PR、自动着陆、审查处理），这直接影响了"从任务到代码合入"的自动化程度。建议优先补齐这一短板。
+**核心差距**：Saros 缺少 Symphony 那样端到端的 Git 工作流自动化能力（自动 PR、自动着陆、审查处理），这直接影响了"从任务到代码合入"的自动化程度。建议优先补齐这一短板。

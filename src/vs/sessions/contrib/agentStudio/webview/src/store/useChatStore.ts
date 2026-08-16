@@ -16,16 +16,31 @@ import { useAgentStore } from './useAgentStore';
 
 // ── streamHandler stubs (Phase 2: streamHandler.ts deleted) ──
 // These were chat streaming functions. Chat is now native; these are no-ops.
-interface StreamState { [key: string]: unknown }
+interface StreamState {
+	phase?: string;
+	agentId?: string;
+	sessionId?: string;
+	thinkingBuffer?: string;
+	textBuffer?: string;
+	isStreaming?: boolean;
+	errorMessage?: string;
+	error?: { message?: string; level?: 'error' | 'warning' | 'info'; retryable?: boolean };
+	toolCalls?: any[];
+	subAgents?: any[];
+	compression?: any;
+	compressionInfo?: any;
+	usage?: any;
+	[key: string]: unknown;
+}
 interface StreamError { [key: string]: unknown }
-function subscribeStream(_a: string, _b: string, _h: object): () => void { return () => {}; }
-function onStreamComplete(_a: string, _m: unknown): void {}
-function getStreamState(_a: string): StreamState | null { return null; }
-function resetStream(_a: string): void {}
-function resetStreamSilent(_a: string): void {}
-function switchActiveStream(_a: string): void {}
-function buildChatMessagesFromState(): unknown[] { return []; }
-function isPhaseActive(_p: string): boolean { return false; }
+function subscribeStream(callback: (state: StreamState) => void): () => void { return () => {}; }
+function onStreamComplete(callback: (state: StreamState, hostMessage?: unknown) => void): void {}
+function getStreamState(): StreamState | null { return null; }
+function resetStream(): void {}
+function resetStreamSilent(): void {}
+function switchActiveStream(..._args: unknown[]): StreamState | null { return null; }
+function buildChatMessagesFromState(..._args: unknown[]): unknown[] { return []; }
+function isPhaseActive(phase?: string): boolean { return false; }
 
 /**
  * Phantom tool names — DEPRECATED: visibility is now controlled solely by
@@ -422,7 +437,7 @@ export interface AgentSessionInfo {
 
 interface ChatState {
 	messages: ChatMessage[];
-	streamState: StreamState;
+	streamState: StreamState | null;
 	inputValue: string;
 	isLoading: boolean;
 	activeAgentId: string | null;
@@ -680,8 +695,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 		console.log('[ChatStore] onStreamComplete fired:', {
 			phase: finalState.phase,
 			isStreaming: finalState.isStreaming,
-			textBufferLen: finalState.textBuffer.length,
-			thinkingBufferLen: finalState.thinkingBuffer.length,
+			textBufferLen: finalState.textBuffer?.length ?? 0,
+			thinkingBufferLen: finalState.thinkingBuffer?.length ?? 0,
 			errorMessage: finalState.errorMessage,
 			hostMessage: hostMessage ? {
 				id: hostMessage.id,
@@ -778,10 +793,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 			hostThinking.startsWith(finalState.thinkingBuffer);
 
 		const textContent = sameTextResponse
-			? (hostText.length >= finalState.textBuffer.length ? hostText : finalState.textBuffer)
+			? (hostText.length >= (finalState.textBuffer ?? '').length ? hostText : (finalState.textBuffer ?? ''))
 			: hostText;
 		const thinkingContent = sameThinkingResponse
-			? (hostThinking.length >= finalState.thinkingBuffer.length ? hostThinking : finalState.thinkingBuffer)
+			? (hostThinking.length >= (finalState.thinkingBuffer ?? '').length ? hostThinking : (finalState.thinkingBuffer ?? ''))
 			: hostThinking;
 
 		console.log('[ChatStore] Building assistant message:', {
@@ -792,8 +807,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 			usedHostThinking: thinkingContent === hostThinking,
 			hostTextLen: hostText.length,
 			hostThinkingLen: hostThinking.length,
-			bufferTextLen: finalState.textBuffer.length,
-			bufferThinkingLen: finalState.thinkingBuffer.length,
+			bufferTextLen: finalState.textBuffer?.length ?? 0,
+			bufferThinkingLen: finalState.thinkingBuffer?.length ?? 0,
 		});
 
 		// DEBUG: Detect content mismatch between streaming buffer and host message.
@@ -849,7 +864,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				role: 'assistant',
 				content: textContent || '(思考完成)',
 				thinking: thinkingContent || undefined,
-				toolCalls: finalState.toolCalls.map(tc => ({
+				toolCalls: (finalState.toolCalls ?? []).map(tc => ({
 					id: tc.id,
 					name: tc.name,
 					arguments: tc.arguments,
@@ -873,8 +888,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 				todos: (hostMessage?.todos as ChatMessage['todos']) || undefined,
 				tips: (hostMessage?.tips as ChatMessage['tips']) || undefined,
 				questions: (hostMessage?.questions as ChatMessage['questions']) || undefined,
-				subAgents: (hostMessage?.subAgents as ChatMessage['subAgents']) || finalState.subAgents.length > 0
-					? finalState.subAgents.map(sa => ({
+				subAgents: (hostMessage?.subAgents as ChatMessage['subAgents']) || (finalState.subAgents ?? []).length > 0
+					? (finalState.subAgents ?? []).map(sa => ({
 						id: sa.id,
 						type: sa.type,
 						task: sa.task,
@@ -1261,7 +1276,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 			// ── Auto-cancel current stream if still running (VS Code Copilot Chat
 			// "steering" pattern: sending a new message interrupts the current one) ──
-			if (isPhaseActive(streamState.phase)) {
+			if (isPhaseActive(streamState?.phase)) {
 				console.log('[ChatStore] sendMessage: auto-cancelling active stream before sending new message');
 				get().cancelStream();
 			}
@@ -1397,13 +1412,13 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 			// ── Preserve already-generated content (VS Code Copilot Chat pattern) ──
 			// Instead of discarding everything, commit partial content as a cancelled message.
-			const partialText = streamState.textBuffer || '';
-			const partialThinking = streamState.thinkingBuffer || '';
+			const partialText = streamState?.textBuffer || '';
+			const partialThinking = streamState?.thinkingBuffer || '';
 			// CRITICAL: also preserve any tool calls that were in flight when the
 			// user pressed stop. Without this, those tool cards vanish from history
 			// (or, worse, remain "running" in stale state). Force every running
 			// tool to a terminal state so cards never spin forever.
-			const partialToolCalls = (streamState.toolCalls || []).map(tc => ({
+			const partialToolCalls = (streamState?.toolCalls || []).map(tc => ({
 				id: tc.id,
 				name: tc.name,
 				arguments: tc.arguments,
@@ -2174,7 +2189,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					role: 'assistant',
 					content: `▶ Workflow run: **${exec.workflowName}** — ${status === 'completed' ? '✓ 完成' : status === 'failed' ? '✗ 失败' : '已取消'}`,
 					timestamp: new Date(exec.startTime).toISOString(),
-					subAgents: subAgentsForMessage,
+					subAgents: subAgentsForMessage as ChatMessage['subAgents'],
 					// v7: include top-level toolCalls for NativeChat rendering
 					...(allToolCalls.length > 0 ? { toolCalls: allToolCalls } : {}),
 					// v5d: persist only when there are answered AskUser cards

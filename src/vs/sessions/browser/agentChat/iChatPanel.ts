@@ -27,7 +27,7 @@ import type {
  * one without changing its wiring code.
  */
 export interface IChatPanelCallbacks {
-	onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => void;
+	onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => void;
 	onCancelExecution: () => void;
 	onToggleCollapse: () => void;
 	onSelectAgent: (id: string) => void;
@@ -48,6 +48,8 @@ export interface IChatPanelCallbacks {
 	onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
 	onEditMessage?: (messageId: string, newText: string) => void;
 	onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string; activation?: string; source?: string; version?: string; enabled: boolean; category?: string }>;
+	/** 列出当前项目可用的工作流（供 composer `/` 菜单「工作流」分组）。 */
+	onListWorkflows?: () => ReadonlyArray<{ id: string; name: string; description?: string; variables?: ReadonlyArray<{ name: string; defaultValue: string }> }>;
 	onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
 	onOpenMcpSettings?: () => void;
 	onOpenHtmlPreview?: () => void;

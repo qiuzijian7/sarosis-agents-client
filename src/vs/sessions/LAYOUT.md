@@ -459,7 +459,16 @@ The Agent Sessions workbench registers contributions via module imports in `sess
 
 Additionally, `BranchChatSessionAction` is registered in `contrib/chat/browser/chat.contribution.ts`.
 
-### 10.1 Changes View
+### 10.1 Workspace View
+
+The Workspace view is registered in `contrib/workspace/browser/workspace.contribution.ts`:
+
+- **Container**: Workspace container in `ViewContainerLocation.Sidebar` (default, not default view)
+- **View**: `WorkspaceViewId` with `WorkspaceView`
+- **Window visibility**: `WindowVisibility.Sessions`
+- **Purpose**: Displays current workspace information, folder list, and allows adding folders to workspace
+
+### 10.2 Changes View
 
 The Changes view is registered in `contrib/changesView/browser/changesView.contribution.ts`:
 
@@ -548,7 +557,34 @@ src/vs/sessions/
 │       ├── sessionsTitleBarWidget.ts       # Title bar widget (SessionsTitleBarWidget, SessionsTitleBarContribution)
 │       ├── activeSessionService.ts         # IActiveSessionService implementation
 │       └── media/
-│           └── sessionsTitleBarWidget.css
+├── contrib/                                # Feature contributions
+│   ├── accountMenu/browser/                # Account menu and titlebar account widget
+│   │   ├── account.contribution.ts
+│   │   └── media/
+│   ├── aiCustomizationManagement/browser/  # AI customization management editor
+│   ├── aiCustomizationTreeView/browser/    # AI customization tree view sidebar
+│   ├── changesView/browser/                # File changes view
+│   │   ├── changesView.contribution.ts
+│   │   ├── changesView.ts
+│   │   └── media/
+│   ├── chat/browser/                       # Chat actions and services
+│   │   ├── chat.contribution.ts            # Open in VS Code, Open Terminal, branch chat, run script, prompts service
+│   │   ├── branchChatSessionAction.ts      # Branch chat session action
+│   │   ├── runScriptAction.ts              # Run script contribution and split button
+│   │   └── promptsService.ts              # Agentic prompts service override
+│   ├── configuration/browser/              # Configuration contribution
+│   │   └── configuration.contribution.ts
+│   ├── sessions/browser/                   # Sessions view and title bar widget
+│   │   ├── sessions.contribution.ts        # Sessions view container, view, and title bar widget registration
+│   │   ├── sessionsView.ts                # Sessions list view pane
+│   │   ├── sessionsTitleBarWidget.ts       # Title bar widget (SessionsTitleBarWidget, SessionsTitleBarContribution)
+│   │   ├── activeSessionService.ts         # IActiveSessionService implementation
+│   │   └── media/
+│   └── workspace/browser/                  # Workspace view
+│       ├── workspace.contribution.ts        # Workspace view container and view registration
+│       ├── workspaceView.ts                 # Workspace view pane
+│       └── media/
+│           └── workspaceView.css
 ```
 
 ---

@@ -163,6 +163,67 @@ suite('widgetBridge', () => {
 			assert.strictEqual(el.style.transformOrigin, '0 0');
 		});
 
+		test('widgetRect (addDOMWidget): top/height come from LiteGraph layout, not insets', () => {
+			const layer = new FakeElement() as unknown as HTMLElement;
+			const host = createWidgetBridgeHost(layer, fakeDocument);
+			// widget.y=52 / computedHeight=204 as assigned by node.arrange()
+			host.sync([
+				{ id: 'w', node: { pos: [10, 20], size: [100, 300] }, widgetRect: { y: 52, height: 204 } },
+			], { x: 0, y: 0, scale: 1 });
+			const el = (layer as unknown as FakeElement).children[0];
+			// Flush with the node body: NodeCard's root uses an INSET box-shadow
+			// (not a `border`), so same-width == pixel-aligned with the node bg.
+			assert.strictEqual(el.style.left, '10px', 'left = node.left — widgetRect mode is flush so edges align with the node background');
+			assert.strictEqual(el.style.top, '72px', 'top = node.top + widget.y');
+			assert.strictEqual(el.style.width, '100px', 'width = full node width — a side margin would leave the node bg visible as a gutter');
+			assert.strictEqual(el.style.height, '204px', 'height = widget.computedHeight (not node - insets)');
+		});
+
+		test('widgetRect mode clips the container (content never paints outside node bounds)', () => {
+			const layer = new FakeElement() as unknown as HTMLElement;
+			const host = createWidgetBridgeHost(layer, fakeDocument);
+			host.sync([
+				{ id: 'w', node: { pos: [10, 20], size: [100, 300] }, widgetRect: { y: 52, height: 204 } },
+			], { x: 0, y: 0, scale: 1 });
+			const el = (layer as unknown as FakeElement).children[0];
+			assert.strictEqual(el.style.overflow, 'hidden', 'widgetRect mode must clip — card content can never spill past the node rect');
+		});
+
+		test('non-widgetRect mode keeps overflow:visible (port bars sit on the node edge)', () => {
+			const layer = new FakeElement() as unknown as HTMLElement;
+			const host = createWidgetBridgeHost(layer, fakeDocument);
+			host.sync([
+				{ id: 'n', node: { pos: [10, 20], size: [100, 300] } },
+			], { x: 0, y: 0, scale: 1 });
+			const el = (layer as unknown as FakeElement).children[0];
+			assert.strictEqual(el.style.overflow, 'visible');
+		});
+
+		test('widgetRect scales with zoom: position in screen px, size in design units', () => {
+			const layer = new FakeElement() as unknown as HTMLElement;
+			const host = createWidgetBridgeHost(layer, fakeDocument);
+			host.sync([
+				{ id: 'w', node: { pos: [10, 20], size: [100, 300] }, widgetRect: { y: 52, height: 204 } },
+			], { x: 5, y: 5, scale: 2 });
+			const el = (layer as unknown as FakeElement).children[0];
+			// rect.left=(10+5)*2=30, rect.top=(20+5)*2=50; y inset = 52*2=104
+			assert.strictEqual(el.style.left, '30px');
+			assert.strictEqual(el.style.top, '154px');
+			assert.strictEqual(el.style.height, '204px', 'design units — transform: scale does the zoom');
+			assert.strictEqual(el.style.transform, 'scale(2)');
+		});
+
+		test('fullCover wins over widgetRect (flush with the node rect)', () => {
+			const layer = new FakeElement() as unknown as HTMLElement;
+			const host = createWidgetBridgeHost(layer, fakeDocument);
+			host.sync([
+				{ id: 'fc', node: { pos: [0, 0], size: [230, 320] }, fullCover: true, widgetRect: { y: 52, height: 204 } },
+			], { x: 0, y: 0, scale: 1 });
+			const el = (layer as unknown as FakeElement).children[0];
+			assert.strictEqual(el.style.top, '0px');
+			assert.strictEqual(el.style.height, '320px');
+		});
+
 		test('explicit insets override the defaults', () => {
 			const layer = new FakeElement() as unknown as HTMLElement;
 			const host = createWidgetBridgeHost(layer, fakeDocument);

@@ -1,0 +1,13 @@
+{
+  "id": "comfy-mcp",
+  "name": "Comfy MCP",
+  "description": "Drive the local ComfyUI engine via MCP (official Comfy-Org/comfy-mcp). Generate images/video/audio/3D, run workflows, search installed nodes & models, fetch outputs. 前置：保持本地 ComfyUI 运行中（comfy launch）。若 comfy 不在 PATH，在服务器配置里设置 COMFY_BIN 环境变量为绝对路径。",
+  "transportType": "stdio",
+  "command": "comfy-mcp",
+  "icon": "🎨",
+  "builtin": true,
+  "autoInstall": {
+    "checkCommands": ["comfy-mcp", "comfy"],
+    "install": ["pip install \"comfy-cli>=1.14.0\"", "pip install comfy-mcp"]
+  }
+}

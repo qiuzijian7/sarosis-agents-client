@@ -13,7 +13,7 @@
  *
  * 与 Hermes 的差异：
  *   - Hermes 用 Python dict + includes 递归组合
- *   - Sarosis 用 TS Map + 名称模式匹配自动推断 toolset
+ *   - Saros 用 TS Map + 名称模式匹配自动推断 toolset
  *   - 不支持嵌套 includes（Sarosis 工具数量远少于 Hermes，不需要组合）
  */
 

@@ -1,9 +1,9 @@
-# Sarosis Agents Client - 项目框架分析总结
+# Saros Agents Client - 项目框架分析总结
 
-> **文档版本**: v1.0  
-> **生成时间**: 2026-05-26  
-> **项目版本**: code-oss-dev 1.120.0  
-> **作者**: AI Assistant  
+> **文档版本**: v1.0
+> **生成时间**: 2026-05-26
+> **项目版本**: code-oss-dev 1.120.0
+> **作者**: AI Assistant
 > **文档定位**: 项目框架综合分析总结，整合各模块分析结果
 
 ---
@@ -26,7 +26,7 @@
 
 ### 1.1 项目定位
 
-**Sarosis Agents Client** 是基于 VS Code 开源版本（Code - OSS）深度定制的企业级 AI Agent 开发平台，专为大模型应用开发和智能体编排而设计。
+**Saros Agents Client** 是基于 VS Code 开源版本（Code - OSS）深度定制的企业级 AI Agent 开发平台，专为大模型应用开发和智能体编排而设计。
 
 **核心特性**：
 - 🏗️ **四层架构**：在 VS Code 三层架构基础上新增 Sessions 层
@@ -41,7 +41,7 @@
   "name": "code-oss-dev",
   "version": "1.120.0",
   "publisher": "saros-agents",
-  "description": "Sarosis Agents Client - AI Agent Development Platform",
+  "description": "Saros Agents Client - AI Agent Development Platform",
   "engines": {
     "vscode": "^1.120.0"
   }
@@ -50,7 +50,7 @@
 
 ### 1.3 与 VS Code 的关系
 
-| 维度 | VS Code OSS | Sarosis Agents Client |
+| 维度 | VS Code OSS | Saros Agents Client |
 |------|-------------|----------------------|
 | **架构** | 三层架构（Platform/Editor/Workbench） | 四层架构（+ Sessions 层） |
 | **定位** | 通用代码编辑器 | AI Agent 开发平台 |
@@ -66,7 +66,7 @@
 
 ### 2.1 四层架构模型
 
-Sarosis Agents Client 在 VS Code 原有三层架构基础上，创新性地引入了 **Sessions 层**，形成了四层架构：
+Saros Agents Client 在 VS Code 原有三层架构基础上，创新性地引入了 **Sessions 层**，形成了四层架构：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -290,7 +290,7 @@ platform/
 │   ├── workspace/              # 工作区
 │   └── ...                     # 其他 40+ 服务
 │
-└── [Sarosis 新增服务] (20+) ⭐
+└── [Saros 新增服务] (20+) ⭐
     ├── agentHost/              # Agent 宿主服务
     ├── aiRouter/               # AI 路由服务
     ├── chat/                   # 聊天服务
@@ -395,13 +395,13 @@ sessions/
 interface IAgentHost {
   // 创建 Agent
   createAgent(config: AgentConfig): Promise<Agent>;
-  
+
   // 启动 Agent
   startAgent(agentId: string): Promise<void>;
-  
+
   // 停止 Agent
   stopAgent(agentId: string): Promise<void>;
-  
+
   // 发送消息
   sendMessage(agentId: string, message: string): Promise<Response>;
 }
@@ -496,7 +496,7 @@ Stage 5: 迭代更新
 
 **记忆类型**：
 ```typescript
-type MemoryCategory = 
+type MemoryCategory =
   | 'user_preference'     // 用户偏好
   | 'project_knowledge'   // 项目知识
   | 'decision'            // 决策记录
@@ -574,12 +574,12 @@ extensions/
 │   ├── nestjs/                  # NestJS
 │   └── ...
 │
-├── [Sarosis 专有] ⭐
+├── [Saros 专有] ⭐
 │   ├── agent-studio/            # Agent 工作室
 │   ├── hermes-agent/            # Hermes Agent
 │   ├── knot-agui/               # Knot GUI
 │   ├── mcp-builder/             # MCP 构建器
-│   ├── saros-agent/           # Sarosis Agent
+│   ├── saros-agent/           # Saros Agent
 │   ├── skill-creator/           # 技能创建器
 │   └── ...
 │
@@ -667,7 +667,7 @@ HermesAgent
 传统 IDE:
   代码编辑器 + 插件式 AI 功能
 
-Sarosis:
+Saros:
   AI 驱动的智能开发环境
   ↓
   - AI 能力贯穿所有层级
@@ -1112,7 +1112,7 @@ pnpm deploy:web
 | `Project-Framework-Analysis.md` | 项目框架分析（详细版） |
 | `Four-Layer-Architecture-Framework.md` | 四层架构框架设计 |
 | `Plugin-System-Architecture.md` | 插件系统架构分析 |
-| `Sarosis-Project-Framework-Complete-Analysis.md` | 项目框架完整分析 |
+| `Saros-Project-Framework-Complete-Analysis.md` | 项目框架完整分析 |
 | `Session-Context-Enhancement-Framework.md` | Session & 上下文增强框架设计 |
 | `Agent-Architecture-Flow.md` | Agent 架构流程 |
 | `Implementation-Roadmap-FunctionFirst.md` | 实施路线图（功能优先） |
@@ -1134,4 +1134,4 @@ pnpm deploy:web
 
 **文档结束**
 
-> 本文档提供了 Sarosis Agents Client 项目的综合框架分析总结，基于 `doc/` 目录下的多个详细分析文档整合而成。希望对理解和使用本项目有所帮助。
+> 本文档提供了 Saros Agents Client 项目的综合框架分析总结，基于 `doc/` 目录下的多个详细分析文档整合而成。希望对理解和使用本项目有所帮助。

@@ -48,12 +48,12 @@ export interface WorkspacePathDeps {
 
 /**
  * 检查请求的路径是否在允许的工作区目录内，并将相对路径解析为绝对路径。
- * 同时检查 VS Code 工作区文件夹和 Sarosis Agent 工作区路径。Windows 路径大小写不敏感。
+ * 同时检查 VS Code 工作区文件夹和 Saros Agent 工作区路径。Windows 路径大小写不敏感。
  *
  * 从 builtinToolProvider._resolveAndCheckWorkspacePath 抽取为纯函数，
  * 由主文件薄包装（持有 _sandboxBypassRoots 字段）经 ctx 复用。
  *
- * @param agentId 当前 agent 的 ID，用于查找 Sarosis workspace 路径
+ * @param agentId 当前 agent 的 ID，用于查找 Saros workspace 路径
  * @param requestedPath 请求的文件/目录路径（支持相对路径，如 "."、"./src"）
  * @returns 解析后的绝对路径
  * @throws SandboxViolationError 如果路径不在任何允许的工作区内
@@ -110,7 +110,7 @@ export async function resolveAndCheckWorkspacePathImpl(
 			allowedRoots.push(folder.uri.fsPath.replace(/[\\/]+$/, ''));
 		}
 
-		// 同时放行 Sarosis 工作区路径 + 关联文件夹
+		// 同时放行 Saros 工作区路径 + 关联文件夹
 		if (activeWsId) {
 			try {
 				const workspace = await studioService.getWorkspace(activeWsId);
@@ -134,7 +134,7 @@ export async function resolveAndCheckWorkspacePathImpl(
 			allowedRoots.push(folder.uri.fsPath.replace(/[\\/]+$/, ''));
 		}
 
-		// 2. Sarosis Agent 工作区路径（agent 是全局，运行 workspace 取自
+		// 2. Saros Agent 工作区路径（agent 是全局，运行 workspace 取自
 		//    getActiveWorkspaceId — 已在上面解析为 activeWsId）。
 		if (activeWsId) {
 			try {
@@ -149,7 +149,7 @@ export async function resolveAndCheckWorkspacePathImpl(
 					}
 				}
 			} catch (err) {
-				logService.warn(`[BuiltinTools] Failed to resolve Sarosis workspace for agent ${agentId}:`, err);
+				logService.warn(`[BuiltinTools] Failed to resolve Saros workspace for agent ${agentId}:`, err);
 			}
 		}
 	}
@@ -250,7 +250,7 @@ export async function resolveAndCheckWorkspacePathImpl(
 				`请在上述目录内操作。如需访问其它目录，请解除该 Agent 的 worktree 绑定或将其添加为工作区文件夹。`
 			: `安全沙箱限制：路径 "${requestedPath}" (解析后: "${resolvedPath}") 不在允许的工作区目录内。\n` +
 				`当前允许的工作区目录：\n${allowedList}\n` +
-				`请在上述目录内操作，或在 Sarosis 工作区设置中配置正确的路径。`;
+				`请在上述目录内操作，或在 Saros 工作区设置中配置正确的路径。`;
 		// 抛出结构化错误，供 agentOSService 检测并弹出确认卡片
 		// （而非仅回显一段错误文本导致 agent loop 无效重试）。
 		throw new SandboxViolationError(

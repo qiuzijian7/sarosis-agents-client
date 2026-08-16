@@ -1,0 +1,5 @@
+# 构建产物与运行产物（基线 baseline/ 需要提交入库）
+dist/
+actual/
+diff/
+report.md

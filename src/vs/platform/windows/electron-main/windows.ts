@@ -186,7 +186,7 @@ export function defaultBrowserWindowOptions(accessor: ServicesAccessor, windowSt
 			// icon will be used when creating windows if the following override is not set.
 			// This avoids sharing icon with the main application.
 			//
-			// [Sarosis] `resources/win32/sessions.ico` is referenced by the build pipeline
+			// [Saros] `resources/win32/sessions.ico` is referenced by the build pipeline
 			// (gulpfile.vscode.ts + win32ProxyIcon) but the file is not present in the repo.
 			// When F5-debugging the built embedded binary (e.g. "Launch VS Code" / "Main
 			// Process" configs that don't set VSCODE_DEV), Electron would otherwise receive

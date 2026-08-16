@@ -5,8 +5,8 @@ import assert from 'assert';
 import { resolveNodeMentions, NODE_MENTION_RE } from '../../webview/src/features/workflowEditor/comfyHost/nodeMentions.js';
 
 const nodes = [
-	{ id: 'p1', type: 'Sarosis.Prompt', data: { label: '风格提示' } },
-	{ id: 'img1', type: 'Sarosis.ModelImageGen', data: { label: '参考图' } },
+	{ id: 'p1', type: 'Saros.Prompt', data: { label: '风格提示' } },
+	{ id: 'img1', type: 'Saros.ModelImageGen', data: { label: '参考图' } },
 ];
 
 const lookup = (id: string) => {

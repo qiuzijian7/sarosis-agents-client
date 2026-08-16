@@ -332,6 +332,51 @@ export async function discoverModels(
 	}
 }
 
+// ─── 通用 HTTP 代理（主进程侧执行）──────────────────────────────────────────
+
+/**
+ * 通用 HTTP 请求参数（经 IPC 从 renderer 传到主进程执行）。
+ * 用于设置页「测试连接 / 查询模型」等一次性请求——renderer（origin
+ * `vscode-file://vscode-app`）直连第三方网关会被 CORS preflight 拦截，
+ * 主进程 Node fetch 无此限制。
+ */
+export interface IHttpRequestParams {
+	readonly url: string;
+	readonly method?: string;
+	readonly headers?: Record<string, string>;
+	readonly timeoutMs?: number;
+}
+
+export interface IHttpRequestResult {
+	readonly ok: boolean;
+	readonly status: number;
+	readonly statusText: string;
+	readonly body: string;
+}
+
+/**
+ * 在主进程执行一次性 HTTP 请求，返回状态码 + 文本 body。
+ * 网络层失败（DNS/连接拒绝/超时）直接 throw，由 IPC call 侧 reject。
+ */
+export async function httpRequest(params: IHttpRequestParams, log?: LogFn): Promise<IHttpRequestResult> {
+	const method = params.method ?? 'GET';
+	const timeoutMs = params.timeoutMs ?? 15000;
+	log?.('info', `[vssaros-llm] httpRequest ${method} ${params.url}`);
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const response = await fetch(params.url, {
+			method,
+			headers: params.headers ?? {},
+			signal: controller.signal,
+		});
+		const body = await response.text().catch(() => '');
+		return { ok: response.ok, status: response.status, statusText: response.statusText, body };
+	} finally {
+		clearTimeout(timeoutId);
+	}
+}
+
 // ─── 文生图（主进程侧执行）───────────────────────────────────────────────────
 
 /**

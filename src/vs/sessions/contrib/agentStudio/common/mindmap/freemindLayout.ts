@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Mindmap FreeMind Layout Engine
+ *  Saros Agents — Mindmap FreeMind Layout Engine
  *
  *  移植自 Mindvas import/freemind-import.ts 中的布局部分。
  *  输入：FreeMind 树形数据（已解析的 XML 节点树）

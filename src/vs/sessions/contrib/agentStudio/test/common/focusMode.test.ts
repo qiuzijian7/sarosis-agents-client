@@ -132,14 +132,14 @@ suite('FocusMode — detectFocusModeWithProbe', () => {
 		assert.ok(result.detectedSignals.length >= 3, 'should detect multiple signals');
 	});
 
-	test('Sarosis workspace detected (vssaros.config.json)', async () => {
+	test('Saros workspace detected (vssaros.config.json)', async () => {
 		const probe = new MockFileProbe(new Map([
 			['/workspace/vssaros-app', ['vssaros.config.json', 'agents/']],
 		]));
 		const result = await detectFocusModeWithProbe(['/workspace/vssaros-app'], probe);
 		assert.strictEqual(result.mode, 'focus');
-		assert.ok(result.detectedSignals.some(s => s.includes('Sarosis')));
-		// Sarosis 推荐包含 kanban
+		assert.ok(result.detectedSignals.some(s => s.includes('Saros')));
+		// Saros 推荐包含 kanban
 		assert.ok(result.recommendedToolsets.includes('kanban'));
 	});
 });

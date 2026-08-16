@@ -47,9 +47,9 @@ export interface SkillDiffResult {
 // ─── 常量 ───────────────────────────────────────────────────────────────────
 
 const TRACKED_FILE = 'SKILL.md';
-const AUTHOR: core.GitAuthor = { name: 'Sarosis', email: 'vssaros@local' };
+const AUTHOR: core.GitAuthor = { name: 'Saros', email: 'vssaros@local' };
 const GITIGNORE: readonly string[] = [
-	'# Sarosis Skill AutoGit',
+	'# Saros Skill AutoGit',
 	'.DS_Store', 'Thumbs.db', '*.tmp', '*~',
 ];
 

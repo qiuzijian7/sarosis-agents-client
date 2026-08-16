@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Canvas Editor Pane
+ *  Saros Agents — Canvas Editor Pane
  *
  *  EditorPane 用于 .canvas 文件的思维导图编辑。
  *  对齐 kbGraphEditorPane 模式。

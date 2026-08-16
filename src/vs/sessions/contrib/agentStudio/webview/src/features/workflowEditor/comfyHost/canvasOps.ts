@@ -16,7 +16,7 @@
  *  This module is UI-free and unit-testable without LiteGraph/React.
  *--------------------------------------------------------------------------------------------*/
 
-import { getNodeSpec, isPortTypeCompatible, type PortSpec } from './registry.js';
+import { getNodeSpec, isPortTypeCompatible, canConnectLayers, type PortSpec } from './registry.js';
 
 // ─── Framework-agnostic model (mirrors store.ts shape) ─────────────────────────
 
@@ -112,11 +112,21 @@ export function nextAutoName(kind: string, existing: CanvasNode[], seed = 0): st
 	return `${kind}-${max + 1}`;
 }
 
-/** Deterministic "type-N" id (unused if explicit id is provided). */
-export function nextNodeId(type: string, existing: CanvasNode[], seed = 0): string {
-	// "Sarosis.ModelImageGen" → "model-image-gen" (camelCase split + kebab).
+/**
+ * Deterministic "type-N" id (unused if explicit id is provided).
+ *
+ * @param counter 可选：按 base 分桶的**持久化单调计数器**。传入时，id 取
+ *   `max(扫描现有节点, counter 已记录值) + 1`，并把新值写回 counter —— 这样
+ *   **删除节点后不会再复用旧 id**（扫描 existing 拿不到已删的 max，counter 兜住）。
+ *   不传（undefined）保持纯函数确定性，向后兼容既有测试与调用点。
+ *
+ *   注意 counter 的生命周期由**调用方**决定：单次生成流内用局部 Map 即可；
+ *   跨会话不复用需把 Map 持久化到工作流 JSON（方案 #5，暂缓）。
+ */
+export function nextNodeId(type: string, existing: CanvasNode[], seed = 0, counter?: Map<string, number>): string {
+	// "Saros.ModelImageGen" → "model-image-gen" (camelCase split + kebab).
 	const base = type
-		.replace(/^Sarosis\./, '')
+		.replace(/^Saros\./, '')
 		.replace(/([a-z0-9])([A-Z])/g, '$1-$2')
 		.replace(/[^A-Za-z0-9]+/g, '-')
 		.replace(/^-+|-+$/g, '')
@@ -125,6 +135,11 @@ export function nextNodeId(type: string, existing: CanvasNode[], seed = 0): stri
 	for (const n of existing) {
 		const m = n.id.match(new RegExp(`^${base}-(\\d+)$`));
 		if (m) { max = Math.max(max, Number(m[1])); }
+	}
+	if (counter) {
+		// 已记录的 base 计数兜底（覆盖「节点已删、扫描拿不到」的复用场景）。
+		max = Math.max(max, counter.get(base) ?? 0);
+		counter.set(base, max + 1);
 	}
 	return `${base}-${max + 1}`;
 }
@@ -177,7 +192,7 @@ export function applyCanvasOps(model: CanvasModel, ops: CanvasOp[], options: App
 					if (working.nodes.some(n => n.id === id)) {
 						throw new Error(`add_node: 节点 id "${id}" 已存在`);
 					}
-					const kind = type.replace(/^Sarosis\./, '');
+					const kind = type.replace(/^Saros\./, '');
 					const label = op.label ?? nextName(kind, working.nodes);
 					const node: CanvasNode = {
 						id,
@@ -219,6 +234,14 @@ export function applyCanvasOps(model: CanvasModel, ops: CanvasOp[], options: App
 					// Port-type validation when both handles are known.
 					const srcSpec = getSpec(src.type);
 					const dstSpec = getSpec(dst.type);
+					// Cross-layer gate: orchestration nodes must NOT connect directly
+					// to media nodes — they must route through a bridge (ComfyTV stage).
+					// Skipped when either spec is unknown (kind unavailable).
+					if (srcSpec && dstSpec && !canConnectLayers(srcSpec.kind, dstSpec.kind)) {
+						throw new Error(
+							`connect: 禁止跨层直连 ${src.data?.label ?? src.id} (${srcSpec.kind}) → ${dst.data?.label ?? dst.id} (${dstSpec.kind})，须经 ComfyTV stage 中转`,
+						);
+					}
 					if (op.sourceHandle && op.targetHandle) {
 						const outPort = srcSpec?.outputs.find(p => p.name === op.sourceHandle);
 						const inPort = dstSpec?.inputs.find(p => p.name === op.targetHandle);

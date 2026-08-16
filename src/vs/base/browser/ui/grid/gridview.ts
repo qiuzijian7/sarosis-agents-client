@@ -1205,7 +1205,7 @@ export class GridView implements IDisposable {
 	 * @param view The view to add.
 	 * @param size Either a fixed size, or a dynamic {@link Sizing} strategy.
 	 * @param location The {@link GridLocation location} to insert the view on.
-	 * @param forceSameOrientation [Sarosis] When the target location lands on a
+	 * @param forceSameOrientation [Saros] When the target location lands on a
 	 *   `LeafNode`, the new wrapping `BranchNode` is normally created with the
 	 *   leaf's own orientation (which is orthogonal to its grandparent — i.e.
 	 *   the standard "alternating axis" rule). When `forceSameOrientation` is
@@ -1248,7 +1248,7 @@ export class GridView implements IDisposable {
 			const oldChild = grandParent.removeChild(parentIndex);
 			oldChild.dispose();
 
-			// [Sarosis] When forceSameOrientation is true, the wrapping branch
+			// [Saros] When forceSameOrientation is true, the wrapping branch
 			// adopts the grandparent's orientation (instead of the leaf's own
 			// orthogonal orientation). The new sibling/leaf then take the
 			// leaf's original orientation so the alternating-axis invariant
@@ -1716,7 +1716,7 @@ export class GridView implements IDisposable {
 	}
 
 	/**
-	 * [Sarosis] Return the actual `Orientation` of the `BranchNode` that
+	 * [Saros] Return the actual `Orientation` of the `BranchNode` that
 	 * sits at the given location. Falls back to the root orientation when
 	 * the path is empty.
 	 *

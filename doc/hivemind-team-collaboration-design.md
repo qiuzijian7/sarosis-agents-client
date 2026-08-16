@@ -300,7 +300,7 @@ DeeplakeFs 将 Deeplake 表映射为文件系统：
 
 ### 6.1 现有能力的边界
 
-| 维度 | Hivemind 已有 | Sarosis 已有 | 差距 |
+| 维度 | Hivemind 已有 | Saros 已有 | 差距 |
 |------|-------------|-------------|------|
 | **技能共享** | Org 级自动 pull/push | 本地 SkillRegistry（4级优先级） | 缺少云端同步和跨组织传播 |
 | **Agent 管理** | 6+ Agent 集成，钩子式 | Agent Studio 多员工管理 | 缺少 Agent 间实时协作 |
@@ -964,7 +964,7 @@ interface AgentEndpoint {
 
 ---
 
-### 7.4 集成到 Sarosis Agent Studio 的设计
+### 7.4 集成到 Saros Agent Studio 的设计
 
 #### 7.4.1 UI 层集成
 
@@ -1110,7 +1110,7 @@ flowchart TB
 
     subgraph "数据层 Data Layer"
         ServerRegistry[服务器注册表<br/>远程模块仓库]
-        LocalRegistry[本地注册表<br/>Sarosis Agent Studio]
+        LocalRegistry[本地注册表<br/>Saros Agent Studio]
         UpgradeStore[升级存储<br/>SQLite / JSON]
     end
 
@@ -1745,7 +1745,7 @@ async function rollbackUpgrade(
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 🏠 Sarosis Module Hub          [🔍 搜索框...]  [🔔 通知]  [👤 用户] │
+│ 🏠 Saros Module Hub          [🔍 搜索框...]  [🔔 通知]  [👤 用户] │
 ├──────────────────────────────────────────────────────────────────────────┤
 │                                                                        │
 │  ┌─ 筛选栏 ──────────────────────────────────────────────────────────┐  │
@@ -2319,7 +2319,7 @@ gantt
 | 通知 | `src/notifications/index.ts` | 通知框架 |
 | 规则 | `src/rules/write.ts` | 规则读写 |
 
-## 附录 B：Sarosis 对应模块参考
+## 附录 B：Saros 对应模块参考
 
 | 模块 | 核心路径 | 说明 |
 |------|---------|------|

@@ -14,8 +14,7 @@ import {
 	isPortTypeCompatible,
 	isValidLiteGraphConnection,
 	buildComfyPaletteItems,
-	registerSarosisNodes,
-	registerComfyTVNode,
+	registerSarosNodes,
 	registerComfyUINativeNode,
 	normalizePortType,
 } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
@@ -95,7 +94,7 @@ suite('comfyHost registry', () => {
 
 		test('mismatched non-ANY types reject', () => {
 			assert.strictEqual(isPortTypeCompatible('IMAGE', 'AUDIO'), false);
-			assert.strictEqual(isPortTypeCompatible('TEXT', 'SAROSIS_JSON'), false);
+			assert.strictEqual(isPortTypeCompatible('TEXT', 'SAROS_JSON'), false);
 		});
 	});
 
@@ -113,47 +112,21 @@ suite('comfyHost registry', () => {
 		});
 	});
 
-	suite('registerSarosisNodes', () => {
+	suite('registerSarosNodes', () => {
 
-		test('registers all 11 Sarosis node types', () => {
-			registerSarosisNodes();
-			const types = ['Sarosis.Start', 'Sarosis.End', 'Sarosis.Task', 'Sarosis.Prompt', 'Sarosis.Agent',
-				'Sarosis.Skill', 'Sarosis.Tool', 'Sarosis.IfElse', 'Sarosis.Switch', 'Sarosis.AskUser', 'Sarosis.Group'];
+		test('registers all 11 Saros node types', () => {
+			registerSarosNodes();
+			const types = ['Saros.Start', 'Saros.End', 'Saros.Task', 'Saros.Prompt', 'Saros.Agent',
+				'Saros.Skill', 'Saros.Tool', 'Saros.IfElse', 'Saros.Switch', 'Saros.AskUser', 'Saros.Group'];
 			for (const t of types) {
 				assert.ok(getNodeSpec(t), `missing ${t}`);
 			}
 		});
 
 		test('IfElse has true/false output ports', () => {
-			const spec = getNodeSpec('Sarosis.IfElse');
+			const spec = getNodeSpec('Saros.IfElse');
 			assert.ok(spec);
 			assert.deepStrictEqual(spec!.outputs.map(p => p.name), ['true', 'false']);
-		});
-	});
-
-	suite('registerComfyTVNode (schema → React, no Vue)', () => {
-
-		test('registers a stage from schema with normalized ports', () => {
-			registerComfyTVNode({
-				type: 'ComfyTV.ImageStage',
-				kind: 'image',
-				workflowKind: 'image',
-				inputs: [{ name: 'main_prompt', type: 'text' }],
-				outputs: [{ name: 'image', type: 'image' }],
-				title: '文生图',
-			});
-			const spec = getNodeSpec('ComfyTV.ImageStage');
-			assert.ok(spec);
-			assert.strictEqual(spec!.kind, 'schema');
-			assert.strictEqual(spec!.inputs[0].type, 'TEXT');
-			assert.strictEqual(spec!.outputs[0].type, 'IMAGE');
-			assert.strictEqual(spec!.comfyTV?.stageKind, 'image');
-		});
-
-		test('does not require a Vue runtime (kind is schema)', () => {
-			registerComfyTVNode({ type: 'ComfyTV.TTSStage', outputs: [{ name: 'audio' }] });
-			const spec = getNodeSpec('ComfyTV.TTSStage');
-			assert.strictEqual(spec!.kind, 'schema');
 		});
 	});
 
@@ -193,7 +166,7 @@ suite('comfyHost registry', () => {
 			assert.strictEqual(normalizePortType('IMAGE'), 'IMAGE');
 			assert.strictEqual(normalizePortType('video'), 'VIDEO');
 			assert.strictEqual(normalizePortType('audio'), 'AUDIO');
-			assert.strictEqual(normalizePortType('json'), 'SAROSIS_JSON');
+			assert.strictEqual(normalizePortType('json'), 'SAROS_JSON');
 			assert.strictEqual(normalizePortType('weird'), 'ANY');
 		});
 	});
@@ -202,7 +175,7 @@ suite('comfyHost registry', () => {
 
 		test('maps schema nodes to palette items', () => {
 			unregisterNodeSpec('PaletteTV.A');
-			registerComfyTVNode({ type: 'PaletteTV.A', kind: 'image', title: '文生图', outputs: [{ name: 'image' }] });
+			registerNodeSpec({ type: 'PaletteTV.A', kind: 'schema', title: '文生图', category: 'comfyTV', inputs: [], outputs: [{ name: 'image', type: 'IMAGE' }] });
 			const items = buildComfyPaletteItems('schema');
 			const a = items.find(i => i.type === 'PaletteTV.A');
 			assert.ok(a);

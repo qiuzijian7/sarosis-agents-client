@@ -27,12 +27,12 @@ suite('ComfyGraphAdapter', () => {
 	suite('toLiteGraphType / toSarosisType', () => {
 
 		test('namespaced round trip', () => {
-			assert.strictEqual(toLiteGraphType('prompt'), 'Sarosis.Prompt');
-			assert.strictEqual(toSarosisType('Sarosis.Prompt'), 'prompt');
+			assert.strictEqual(toLiteGraphType('prompt'), 'Saros.Prompt');
+			assert.strictEqual(toSarosisType('Saros.Prompt'), 'prompt');
 		});
 
 		test('already-namespaced passes through', () => {
-			assert.strictEqual(toLiteGraphType('Sarosis.Prompt'), 'Sarosis.Prompt');
+			assert.strictEqual(toLiteGraphType('Saros.Prompt'), 'Saros.Prompt');
 			assert.strictEqual(toLiteGraphType('ComfyTV.ImageStage'), 'ComfyTV.ImageStage');
 			assert.strictEqual(toSarosisType('KSampler'), 'KSampler');
 		});
@@ -67,9 +67,9 @@ suite('ComfyGraphAdapter', () => {
 			assert.strictEqual(graph.links[0][5], 'ANY');
 		});
 
-		test('type mapping produces namespaced Sarosis.* types', () => {
+		test('type mapping produces namespaced Saros.* types', () => {
 			const { graph } = toLiteGraph(SAMPLE_NODES, SAMPLE_CONNECTIONS);
-			assert.strictEqual(graph.nodes.find(n => n.id === 2)!.type, 'Sarosis.Prompt');
+			assert.strictEqual(graph.nodes.find(n => n.id === 2)!.type, 'Saros.Prompt');
 		});
 	});
 
@@ -107,7 +107,7 @@ suite('ComfyGraphAdapter', () => {
 		test('skips links referencing missing nodes', () => {
 			const { nodes, connections } = fromLiteGraph({
 				last_node_id: 2, last_link_id: 1,
-				nodes: [{ id: 1, type: 'Sarosis.Start', pos: [0, 0] }],
+				nodes: [{ id: 1, type: 'Saros.Start', pos: [0, 0] }],
 				links: [[1, 1, 0, 99, 0, 'ANY']],
 			});
 			assert.strictEqual(nodes.length, 1);
@@ -131,16 +131,16 @@ suite('ComfyGraphAdapter', () => {
 			const g1 = {
 				last_node_id: 2, last_link_id: 1,
 				nodes: [
-					{ id: 2, type: 'Sarosis.End', pos: [900, 250] },
-					{ id: 1, type: 'Sarosis.Start', pos: [80, 250] },
+					{ id: 2, type: 'Saros.End', pos: [900, 250] },
+					{ id: 1, type: 'Saros.Start', pos: [80, 250] },
 				],
 				links: [[1, 1, 0, 2, 0, 'ANY']],
 			};
 			const g2 = {
 				last_node_id: 2, last_link_id: 1,
 				nodes: [
-					{ id: 1, type: 'Sarosis.Start', pos: [80, 250] },
-					{ id: 2, type: 'Sarosis.End', pos: [900, 250] },
+					{ id: 1, type: 'Saros.Start', pos: [80, 250] },
+					{ id: 2, type: 'Saros.End', pos: [900, 250] },
 				],
 				links: [[1, 1, 0, 2, 0, 'ANY']],
 			};

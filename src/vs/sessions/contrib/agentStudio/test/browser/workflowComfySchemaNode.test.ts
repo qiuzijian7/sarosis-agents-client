@@ -9,6 +9,7 @@
  *--------------------------------------------------------------------------------------------*/
 import assert from 'assert';
 import { createSchemaNodeClass, portTypeColor, isUsableNodeTitle } from '../../webview/src/features/workflowEditor/comfyHost/schemaLiteGraphNodes.js';
+import { getDomFormWidget } from '../../webview/src/features/workflowEditor/comfyHost/domWidget.js';
 import type { NodeSpec } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
 
 suite('schemaLiteGraphNodes', () => {
@@ -18,7 +19,7 @@ suite('schemaLiteGraphNodes', () => {
 			// Legacy workflows persisted the node TYPE as its title; showing it
 			// would leak internal implementation detail into the title bar.
 			assert.strictEqual(isUsableNodeTitle('ComfyTV.ImageStage'), false);
-			assert.strictEqual(isUsableNodeTitle('Sarosis.ModelImageGen'), false);
+			assert.strictEqual(isUsableNodeTitle('Saros.ModelImageGen'), false);
 		});
 
 		test('rejects single-character and empty titles', () => {
@@ -130,6 +131,20 @@ suite('schemaLiteGraphNodes', () => {
 			const node = new Cls();
 			assert.ok(node.size[0] >= 220);
 			assert.ok(node.size[1] >= 300);
+		});
+
+		test('carries the addDOMWidget form widget (constructor + configure self-heal)', () => {
+			const Cls = createSchemaNodeClass(spec);
+			const node = new Cls();
+			const w = getDomFormWidget(node as never);
+			assert.ok(w, 'form widget attached by the constructor');
+			assert.strictEqual(w!.type, 'dom');
+			assert.strictEqual(w!.serialize, false, 'never persisted into the workflow JSON');
+			// Legacy save round-trip: widgets never serialize → configure must
+			// re-attach the form widget or the DOM card loses its layout anchor.
+			node.widgets = undefined;
+			node.configure({ id: 1, type: spec.type, title: 'Image Stage' } as never);
+			assert.ok(getDomFormWidget(node as never), 're-attached on configure');
 		});
 	});
 });

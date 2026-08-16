@@ -2,6 +2,7 @@
 	"nameShort": "VsSaros",
 	"nameLong": "VsSaros",
 	"version": "2.2.25991",
+	"extensionEngineVersion": "1.120.0",
 	"applicationName": "vssaros",
 	"dataFolderName": ".vssaros",
 	"sharedDataFolderName": ".vssaros-shared",

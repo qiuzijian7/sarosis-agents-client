@@ -1,4 +1,4 @@
-# Sarosis Agents Client - 插件系统架构分析
+# Saros Agents Client - 插件系统架构分析
 
 ## 目录
 1. [概述](#概述)
@@ -16,7 +16,7 @@
 
 ## 概述
 
-Sarosis Agents Client 采用了一套灵活的插件系统架构，支持多种插件格式和多种发现机制。插件系统允许扩展 AI 代理的功能，包括添加自定义命令、技能、钩子（hooks）、指令和 MCP 服务器定义。
+Saros Agents Client 采用了一套灵活的插件系统架构，支持多种插件格式和多种发现机制。插件系统允许扩展 AI 代理的功能，包括添加自定义命令、技能、钩子（hooks）、指令和 MCP 服务器定义。
 
 ### 核心特性
 - **多格式支持**: 支持 Copilot、Claude 和 OpenPlugin 三种插件格式
@@ -108,13 +108,13 @@ export async function detectPluginFormat(pluginUri: URI, fileService: IFileServi
     if (await pathExists(joinPath(pluginUri, '.plugin', 'plugin.json'), fileService)) {
         return OPEN_PLUGIN_FORMAT;
     }
-    
+
     // 2. 检查是否在 .claude 目录或存在 Claude 格式
     const isInClaudeDirectory = pluginUri.path.split('/').includes('.claude');
     if (isInClaudeDirectory || await pathExists(joinPath(pluginUri, '.claude-plugin', 'plugin.json'), fileService)) {
         return CLAUDE_FORMAT;
     }
-    
+
     // 3. 默认 Copilot 格式
     return COPILOT_FORMAT;
 }
@@ -215,7 +215,7 @@ class ConfiguredAgentPluginDiscovery extends AbstractAgentPluginDiscovery {
     protected override async _discoverPluginSources(): Promise<readonly IPluginSource[]> {
         const config = this._pluginLocationsConfig.get();
         const userHome = await this._getUserHome();
-        
+
         for (const [path, enabled] of Object.entries(config)) {
             if (!path.trim() || enabled === false) continue;
             const resources = this._resolvePluginPath(path.trim(), userHome);
@@ -234,7 +234,7 @@ class ConfiguredAgentPluginDiscovery extends AbstractAgentPluginDiscovery {
 class MarketplaceAgentPluginDiscovery extends AbstractAgentPluginDiscovery {
     protected override async _discoverPluginSources(): Promise<readonly IPluginSource[]> {
         const installed = this._pluginMarketplaceService.installedPlugins.get();
-        
+
         for (const entry of installed) {
             // 从安装目录中发现插件
         }
@@ -251,7 +251,7 @@ class MarketplaceAgentPluginDiscovery extends AbstractAgentPluginDiscovery {
 class ExtensionAgentPluginDiscovery extends AbstractAgentPluginDiscovery {
     protected override async _discoverPluginSources(): Promise<readonly IPluginSource[]> {
         const extensions = this._extensionsWorkbenchService.local;
-        
+
         for (const ext of extensions) {
             // 检查扩展是否包含插件
         }
@@ -318,7 +318,7 @@ export interface IAgentPlugin {
     readonly enablement: IObservable<ContributionEnablementState>;
     /** 从发现源中移除插件 */
     remove(): void;
-    
+
     /** 插件包含的资源 */
     readonly hooks: IObservable<readonly IAgentPluginHook[]>;
     readonly commands: IObservable<readonly IAgentPluginCommand[]>;
@@ -326,7 +326,7 @@ export interface IAgentPlugin {
     readonly agents: IObservable<readonly IAgentPluginAgent[]>;
     readonly instructions: IObservable<readonly IAgentPluginInstruction[]>;
     readonly mcpServerDefinitions: IObservable<readonly IAgentPluginMcpServerDefinition[]>;
-    
+
     /** 是否从市场安装 */
     readonly fromMarketplace?: IMarketplacePlugin;
 }
@@ -353,7 +353,7 @@ export interface IAgentPlugin {
 // 文件位置: src/vs/workbench/contrib/chat/common/plugins/agentPluginServiceImpl.ts
 
 export abstract class AbstractAgentPluginDiscovery extends Disposable implements IAgentPluginDiscovery {
-    
+
     private async _discoverAndBuildPlugins(): Promise<readonly IAgentPlugin[]> {
         const sources = await this._discoverPluginSources();
         const plugins: IAgentPlugin[] = [];
@@ -372,7 +372,7 @@ export abstract class AbstractAgentPluginDiscovery extends Disposable implements
         plugins.sort((a, b) => a.uri.toString().localeCompare(b.uri.toString()));
         return plugins;
     }
-    
+
     private _toPlugin(uri: URI, format: IPluginFormatConfig, fromMarketplace: IMarketplacePlugin | undefined, repositoryUri: URI | undefined, removeCallback: () => void): IAgentPlugin {
         // 创建插件对象，设置 Observable 属性
         // 监听文件系统变化，动态更新插件资源
@@ -444,7 +444,7 @@ export interface IPluginMarketplaceService {
     readonly lastFetchedPlugins: IObservable<readonly IMarketplacePlugin[]>;
     /** 推荐的插件 */
     readonly recommendedPlugins: IObservable<ReadonlySet<string>>;
-    
+
     /** 获取市场插件列表 */
     fetchMarketplacePlugins(token: CancellationToken): Promise<IMarketplacePlugin[]>;
     /** 获取插件元数据 */
@@ -480,13 +480,13 @@ const MARKETPLACE_DEFINITIONS: { type: MarketplaceType; path: string }[] = [
 // 文件位置: src/vs/workbench/contrib/chat/browser/agentPluginsView.ts
 
 class AgentPluginsView extends ... {
-    
+
     // 渲染插件列表
     private renderPluginsList(plugins: IAgentPlugin[]): void {
         // 使用 WorkbenchPagedList 渲染分页列表
         // 每个插件显示：名称、描述、状态、操作按钮
     }
-    
+
     // 创建插件操作
     private getPluginActions(plugin: IAgentPlugin): IAction[] {
         // 启用/禁用
@@ -602,12 +602,12 @@ protected override async _discoverPluginSources(): Promise<readonly IPluginSourc
     const config = this._pluginLocationsConfig.get();
     const userHome = await this._getUserHome();
     const sources: IPluginSource[] = [];
-    
+
     for (const [path, enabled] of Object.entries(config)) {
         if (!path.trim() || enabled === false) continue;
         const resolvedPath = this._resolvePluginPath(path.trim(), userHome);
         const uri = URI.file(resolvedPath);
-        
+
         if (await this._pathExists(uri)) {
             sources.push({
                 uri,
@@ -616,7 +616,7 @@ protected override async _discoverPluginSources(): Promise<readonly IPluginSourc
             });
         }
     }
-    
+
     return sources;
 }
 ```
@@ -629,13 +629,13 @@ protected override async _discoverPluginSources(): Promise<readonly IPluginSourc
 private async _discoverAndBuildPlugins(): Promise<readonly IAgentPlugin[]> {
     const sources = await this._discoverPluginSources();
     const plugins: IAgentPlugin[] = [];
-    
+
     for (const source of sources) {
         const format = await detectPluginFormat(source.uri, this._fileService);
         const plugin = this._toPlugin(source.uri, format, source.fromMarketplace, source.repositoryUri, () => source.remove());
         plugins.push(plugin);
     }
-    
+
     return plugins;
 }
 ```
@@ -648,7 +648,7 @@ private async _discoverAndBuildPlugins(): Promise<readonly IAgentPlugin[]> {
 private _renderPlugins(plugins: IAgentPlugin[]): void {
     // 清空列表
     this.listView.splice(0, this.listView.length);
-    
+
     // 添加插件项
     const items = plugins.map(p => installedPluginToItem(p, this.labelService));
     this.listView.splice(0, 0, items);
@@ -711,7 +711,7 @@ class CustomAgentPluginDiscovery extends AbstractAgentPluginDiscovery {
         // 实现自定义发现逻辑
         return [];
     }
-    
+
     public start(enablementModel: IEnablementModel): void {
         this._enablementModel = enablementModel;
         this._register(this._fileService.onDidFilesChange(() => this._refreshPlugins()));
@@ -758,7 +758,7 @@ export async function detectPluginFormat(pluginUri: URI, fileService: IFileServi
     if (await pathExists(joinPath(pluginUri, 'custom-plugin.json'), fileService)) {
         return CUSTOM_FORMAT;
     }
-    
+
     // ... 其他格式检查
 }
 ```
@@ -775,7 +775,7 @@ export async function detectPluginFormat(pluginUri: URI, fileService: IFileServi
 // 示例: 添加新资源类型
 export interface IAgentPlugin {
     // ... 现有属性
-    
+
     /** 新资源类型 */
     readonly customResources: IObservable<readonly ICustomResource[]>;
 }
@@ -796,7 +796,7 @@ return {
 
 ## 总结
 
-Sarosis Agents Client 的插件系统是一个高度模块化、可扩展的架构：
+Saros Agents Client 的插件系统是一个高度模块化、可扩展的架构：
 
 ### 核心设计原则
 1. **策略模式**: 使用发现器策略支持多种插件来源
@@ -856,6 +856,6 @@ Sarosis Agents Client 的插件系统是一个高度模块化、可扩展的架�
 
 ---
 
-**文档版本**: 1.0  
-**生成时间**: 2026-05-12  
+**文档版本**: 1.0
+**生成时间**: 2026-05-12
 **作者**: AI Assistant

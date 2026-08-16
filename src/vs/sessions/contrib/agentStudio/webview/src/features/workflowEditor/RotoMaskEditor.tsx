@@ -8,7 +8,7 @@
 
 import * as React from 'react';
 import {
-	addShapePoint, defaultShapePoints, moveShapePoint, moveShapeTangent, parseShapeKeys,
+	addShapePoint, applySmooth, defaultShapePoints, moveShapePoint, moveShapeTangent, parseShapeKeys,
 	removeShapePoint, shapeKeysToJson,
 	type RotoPoint, type ShapeKeyframe,
 } from './comfyHost/rotoMaskEditor';
@@ -30,6 +30,7 @@ export function RotoMaskEditor({ initialShapeKeys, videoRef, initialFeather, ini
 	const [keyframe, setKeyframe] = React.useState<ShapeKeyframe>(() => parseShapeKeys(initialShapeKeys) ?? { t: 0, points: defaultShapePoints() });
 	const [feather, setFeather] = React.useState(initialFeather);
 	const [invert, setInvert] = React.useState(initialInvert);
+	const [smooth, setSmooth] = React.useState(true);
 	const [drag, setDrag] = React.useState<{ kind: DragKind; index: number } | null>(null);
 	const canvasRef = React.useRef<HTMLCanvasElement>(null);
 	const videoRefEl = React.useRef<HTMLVideoElement | null>(null);
@@ -135,15 +136,36 @@ export function RotoMaskEditor({ initialShapeKeys, videoRef, initialFeather, ini
 		const { x, y } = localN(e);
 		const pts = keyframe.points;
 		if (drag.kind === 'v') { commit({ t: 0, points: moveShapePoint(pts, drag.index, x, y) }); }
-		else { commit({ t: 0, points: moveShapeTangent(pts, drag.index, drag.kind, x, y) }); }
+		else {
+			// 手动拖切线 → 切到手动模式（smooth 自动切线被覆盖）
+			if (smooth) { setSmooth(false); }
+			commit({ t: 0, points: moveShapeTangent(pts, drag.index, drag.kind, x, y) });
+		}
 	};
 
 	const onPointerUp = () => { setDrag(null); };
+
+	// 双击删除顶点（对齐 ComfyTV useRotoMaskEditor.onDbl）
+	const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+		const { x, y } = localN(e);
+		const pts = keyframe.points;
+		for (let i = 0; i < pts.length; i++) {
+			if (Math.hypot(pts[i].x - x, pts[i].y - y) < 0.05) {
+				commit({ t: 0, points: removeShapePoint(pts, i) });
+				return;
+			}
+		}
+	};
 
 	const removeVertex = () => {
 		if (drag?.kind === 'v') {
 			commit({ t: 0, points: removeShapePoint(keyframe.points, drag.index) });
 		}
+	};
+
+	const toggleSmooth = (next: boolean) => {
+		setSmooth(next);
+		commit({ t: 0, points: applySmooth(keyframe.points, next) });
 	};
 
 	return (
@@ -156,9 +178,16 @@ export function RotoMaskEditor({ initialShapeKeys, videoRef, initialFeather, ini
 				onPointerMove={onPointerMove}
 				onPointerUp={onPointerUp}
 				onPointerLeave={onPointerUp}
+				onDoubleClick={onDoubleClick}
 				style={{ width: '100%', borderRadius: 8, touchAction: 'none', cursor: 'crosshair', background: '#17181c', display: 'block' }}
 			/>
 			<div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+				<label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--vscode-descriptionForeground)' }}>
+					<input type="checkbox" checked={smooth}
+						onChange={e => toggleSmooth(e.target.checked)}
+						style={{ accentColor: '#4a9eff' }} />
+					平滑
+				</label>
 				<button
 					onClick={removeVertex}
 					disabled={keyframe.points.length <= 3}
@@ -180,7 +209,7 @@ export function RotoMaskEditor({ initialShapeKeys, videoRef, initialFeather, ini
 				</label>
 			</div>
 			<div style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)' }}>
-				点击画布空白处添加顶点，拖拽顶点/切线手柄调整样条；执行时输出动画蒙版视频。
+				点击画布空白处添加顶点，拖拽顶点/切线手柄调整样条，双击顶点删除；执行时输出动画蒙版视频。
 			</div>
 		</div>
 	);

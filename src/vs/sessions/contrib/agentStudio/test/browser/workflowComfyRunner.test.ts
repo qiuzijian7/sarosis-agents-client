@@ -68,6 +68,50 @@ suite('comfyRunner', () => {
 			assert.ok(calls.some(u => u.endsWith('/history/p1')));
 		});
 
+		test('/prompt body wraps prompt + client_id（ComfyUI 协议要求 prompt 字段是 api_json）', async () => {
+			const bodies: { url: string; body: string }[] = [];
+			const runner = createLocalComfyRunner(fakeFetch(async (url, init) => {
+				if (typeof url === 'string' && url.endsWith('/prompt')) {
+					bodies.push({ url, body: String((init as { body?: string } | undefined)?.body ?? '') });
+					return jsonResponse({ prompt_id: 'p1' });
+				}
+				return jsonResponse({ p1: { status: { status_str: 'success', completed: true }, outputs: {} } });
+			}), undefined, 0);
+			await runner.invoke({ prompt: { '10': { class_type: 'KSampler', inputs: { seed: 42 } } } });
+			assert.strictEqual(bodies.length, 1);
+			const parsed = JSON.parse(bodies[0].body) as { prompt?: unknown; client_id?: string };
+			// 关键：顶层必须有 `prompt` 字段（之前漏包装时 ComfyUI 返回 "No prompt provided"）。
+			assert.deepStrictEqual(parsed.prompt, { '10': { class_type: 'KSampler', inputs: { seed: 42 } } });
+			// client_id 必须是 string 且非空（crypto.randomUUID 或 vs-<rand> 兜底）。
+			assert.strictEqual(typeof parsed.client_id, 'string');
+			assert.ok((parsed.client_id ?? '').length > 0);
+		});
+
+		test('/prompt body merges extraData（ComfyTV/前端扩展）', async () => {
+			const bodies: string[] = [];
+			const runner = createLocalComfyRunner(fakeFetch(async (url, init) => {
+				if (typeof url === 'string' && url.endsWith('/prompt')) {
+					bodies.push(String((init as { body?: string } | undefined)?.body ?? ''));
+					return jsonResponse({ prompt_id: 'p1' });
+				}
+				return jsonResponse({ p1: { status: { status_str: 'success', completed: true }, outputs: {} } });
+			}), undefined, 0);
+			await runner.invoke({ prompt: { '1': { class_type: 'X', inputs: {} } }, extraData: { extra_pnginfo: { hello: 'world' } } });
+			const parsed = JSON.parse(bodies[0]) as Record<string, unknown>;
+			assert.deepStrictEqual(parsed.extra_pnginfo, { hello: 'world' });
+		});
+
+		test('non-ok /prompt throws with body snippet', async () => {
+			const runner = createLocalComfyRunner(fakeFetch(async () => ({
+				ok: false, status: 400, json: async () => ({}),
+				text: async () => '{"error":{"type":"no_prompt","message":"No prompt provided"}}',
+			})));
+			await assert.rejects(
+				() => runner.invoke({ prompt: {} }),
+				/HTTP 400[\s\S]*no_prompt/,
+			);
+		});
+
 		test('non-ok /prompt throws', async () => {
 			const runner = createLocalComfyRunner(fakeFetch(async () => jsonResponse({}, 503)));
 			await assert.rejects(() => runner.invoke({ prompt: {} }), /HTTP 503/);

@@ -2,27 +2,32 @@
  *  stageWorkflowExecutor — P1: execute a ComfyTV stage as its FULL ComfyUI workflow.
  *
  *  A ComfyTV stage (e.g. ComfyTV.ImageStage) is not a plain class_type — it maps
- *  to a complete workflow saved in ComfyTV's workflow DB. Executing it properly
- *  means:
+ *  to a complete workflow. 本项目**完全不依赖 ComfyTV 后端 API**：workflow 的
+ *  api_json 已静态打包进 builtinWorkflows/（由 scripts/export-builtin-workflows.py
+ *  从本机 ComfyTV DB 导出）。执行流程：
  *
- *    1. GET /comfytv/workflows?kind=…      → pick the (default) workflow label
- *    2. GET /comfytv/workflows/config?kind&label → { api_json, result, inputs(bindings), … }
- *    3. clone api_json, inject form/upstream values into the bound inputs
+ *    1. 读内置模板 getBuiltinWorkflowConfig(kind, label) → { api_json, result, inputs }
+ *    2. clone api_json, inject form/upstream values into the bound inputs
  *       (bindings: node_id → input_name → { from, default, cast, prefix, suffix })
- *    4. POST /prompt (runner.invoke) with the injected prompt
- *    5. read the workflow's result node output and persist it as snapshots
+ *    3. POST /prompt (runner.invoke) with the injected prompt
+ *    4. read the workflow's result node output and persist it as snapshots
  *
- *  All helpers are pure except the async fetch/invoke path (injected runner).
- *  When the runner has no ComfyTV extension (plain ComfyUI) or the workflow
- *  hasn't been prepared, `runStageWorkflow` throws `StageWorkflowUnavailableError`
- *  so callers can degrade to single-node execution.
+ *  All helpers are pure except the invoke path (injected runner).
+ *  当 kind 无内置模板时，`runStageWorkflow` 抛 `StageWorkflowUnavailableError`
+ *  使调用方可降级到单节点执行。
  *--------------------------------------------------------------------------------------------*/
 
 import type { IComfyRunner } from './comfyRunner.js';
 import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
 import type { MediaSnapshotEntry } from './mediaSnapshot.js';
 import { comfyOutputsToSnapshots } from './nodeExecutor.js';
+import { materializeComfyImageRefs } from './comfyImagePersist.js';
+// 见 nodeExecutor.ts 同款注释。
+const _bridge = (globalThis as { __vssarosBridge?: { createComfyFetch: typeof import('../../../bridge/messageClient.js')['createComfyFetch'] } }).__vssarosBridge
+	?? (() => { throw new Error('vssarosBridge not initialised'); })();
+const { createComfyFetch } = _bridge;
 import type { MediaKind } from './mediaSnapshot.js';
+import { getBuiltinWorkflowConfig, listBuiltinWorkflows } from './builtinWorkflows/index.js';
 
 /** One bound input inside a workflow config (ComfyTV WorkflowInputBinding). */
 export interface WorkflowInputBindingSpec {
@@ -54,6 +59,46 @@ export interface StageWorkflowConfig {
 	prune_when_missing?: unknown[];
 	meta?: Record<string, unknown>;
 }
+
+/**
+ * ComfyTV 自定义节点（ImageStage/VideoStage/...）运行时由后端解析、但在前端 UI 没有对应控件的
+ * required inputs 占位表。ComfyUI `validate_node_inputs`（execution.py:850-861）只在键完全
+ * 缺失时才报 `Required input is missing`，空字符串不算 missing。我们按字段名推断类型补占位：
+ *   - 数字字段给 0；字符串字段给 ''；列表字段给 []；对象字段给 {}；可选 enum 给首项。
+ * 出现 "Required input is missing: xxx" 时把 xxx 添到这里即可（key 不区分大小写）。
+ */
+export const RUNTIME_REQUIRED_INPUTS: Record<string, unknown> = {
+	// 类型严格对齐 /object_info 的 INPUT_TYPES（INT→number、COMBO→options 内值、STRING→string）。
+	force_run_token: 0,
+	project_id: '',
+	parent_output_id: 0,
+	workflow: 'Local SD1.5',
+	resolution: '1K',
+	aspect_ratio: '1:1',
+	batch_size: 1,
+	main_prompt: '',
+	selected_index: 1,
+	custom_params: '{}',
+	// texts/images 是 Autogrow 连线槽位，不能兜底。
+};
+
+/**
+ * 节点级运行期占位字段（由 ComfyTV 后端运行时解析），非 binding 的 string
+ * inputs 命中此集合才会被强制清空为 ''，其余 string inputs（真实值，如
+ * sampler_name="euler"、ckpt_name="…safetensors"、CLIPTextEncode.text）
+ * 必须保留。
+ */
+export const RUNTIME_PLACEHOLDER_KEYS: ReadonlySet<string> = new Set([
+	'selected_index',
+	'force_run_token',
+	'project_id',
+	'parent_output_id',
+	'custom_params',
+	'asset_id',
+	'asset_key',
+	'asset_subkey',
+	'output_format',
+]);
 
 export interface StageWorkflowListEntry {
 	id?: number | string;
@@ -190,15 +235,20 @@ export function pickDefaultWorkflowLabel(
  * (node_id.input_name), resolve the value via `resolveBindingValue` (form values
  * + upstream snapshot refs); fall back to the binding's `default`; apply
  * `cast`/`prefix`/`suffix`. Unbound inputs are left untouched. Pure.
+ *
+ * Defensive: returns `{prompt: {}, applied: 0}` when `apiJson` is null/undefined
+ * or a non-object so the caller (runStageWorkflow) gets a graceful empty result
+ * instead of "Cannot convert undefined or null to object".
  */
 export function injectWorkflowValues(
-	apiJson: StageWorkflowApiJson,
+	apiJson: StageWorkflowApiJson | null | undefined,
 	bindings: WorkflowBindings | undefined,
 	values: Record<string, unknown>,
 	upstreamValues?: Record<string, string>,
 ): { prompt: StageWorkflowApiJson; applied: number } {
 	const prompt: StageWorkflowApiJson = {};
 	let applied = 0;
+	if (!apiJson || typeof apiJson !== 'object') { return { prompt, applied }; }
 	for (const [nodeId, node] of Object.entries(apiJson)) {
 		const inputs = { ...(node.inputs ?? {}) };
 		const nodeBindings = bindings?.[nodeId];
@@ -233,50 +283,78 @@ export function injectWorkflowValues(
 	return { prompt, applied };
 }
 
-async function fetchJson(
-	runner: IComfyRunner,
-	path: string,
-	signal?: AbortSignal,
-): Promise<unknown | undefined> {
-	// Any network / HTTP failure means the ComfyTV extension is unavailable —
-	// callers degrade to single-node execution (StageWorkflowUnavailableError).
-	try {
-		const res = await runner.fetchApi?.(path, { method: 'GET', signal });
-		if (!res?.ok) { return undefined; }
-		return await res.json();
-	} catch {
-		return undefined;
+/**
+ * ComfyTV 的 Stage 节点（ComfyTV.ImageStage 等）把 batch_size / resolution /
+ * aspect_ratio / workflow / selected_index / main_prompt 等作为节点 INPUTS，
+ * 由节点 execute() 透传给底层流程（见 ComfyTV nodes/stages/generators.py 的
+ * ImageStage.execute → invoke_runner(options={resolution, aspect_ratio, batch_size})）。
+ *
+ * 内置模板（builtinWorkflows/）对多数 workflow 的 bindings 只暴露 main_prompt
+ * （注入 CLIPTextEncode 的 text），其余 option 不在 bindings 里 →
+ * injectWorkflowValues 不会覆盖 → 永远用模板默认值（batch_size=1、resolution=1K…）。
+ * 这与用户实际改动（画布/表单控件）不符，正是「batch_size 不生效」的根因。
+ *
+ * 这里把用户在画布控件里改过的值直接覆写到 stage 节点（class_type === type）的
+ * inputs，与 ComfyTV 后端 expansion 读取节点 inputs 的行为完全一致。仅当该 input
+ * 确实存在于 stage 节点时才覆写，避免误写不存在的字段。
+ */
+const STAGE_OPTION_MAP: ReadonlyArray<readonly [input: string, src: string, kind: 'int' | 'float' | 'str']> = [
+	['batch_size', 'batch_size', 'int'],
+	['resolution', 'resolution', 'str'],
+	['aspect_ratio', 'aspect_ratio', 'str'],
+	['workflow', 'workflow', 'str'],
+	['selected_index', 'selected_index', 'int'],
+	['seed', 'seed', 'int'],
+	['negative', 'negative', 'str'],
+	['main_prompt', 'main_prompt', 'str'],
+	['main_prompt', 'prompt', 'str'],
+];
+
+function applyStageOptionValues(
+	apiJson: StageWorkflowApiJson,
+	stageType: string,
+	values: Record<string, unknown>,
+): void {
+	let stageId: string | undefined;
+	for (const [id, n] of Object.entries(apiJson)) {
+		if (n.class_type === stageType) { stageId = id; break; }
 	}
+	if (!stageId) { return; }
+	const stageInputs = apiJson[stageId].inputs;
+	if (!stageInputs || typeof stageInputs !== 'object') { return; }
+	let applied = 0;
+	for (const [input, src, kind] of STAGE_OPTION_MAP) {
+		const raw = values[src];
+		if (raw === undefined || raw === null || raw === '') { continue; }
+		let v: unknown = raw;
+		if (kind === 'int') {
+			v = Math.round(Number(raw));
+			if (!Number.isFinite(v as number)) { continue; }
+		} else if (kind === 'float') {
+			v = Number(raw);
+			if (!Number.isFinite(v as number)) { continue; }
+		}
+		if (input in stageInputs) {
+			stageInputs[input] = v;
+			applied++;
+			// eslint-disable-next-line no-console
+			console.warn(`[applyStageOptionValues] ${stageId}.${input} <- ${JSON.stringify(v)} (values.${src})`);
+		}
+	}
+	// eslint-disable-next-line no-console
+	console.warn(`[applyStageOptionValues] stage=${stageId} type=${stageType} applied=${applied}`);
 }
 
-/** GET /comfytv/workflows?kind=… via the runner's ComfyTV extension. */
-export async function fetchStageWorkflowList(
-	runner: IComfyRunner,
-	kind: string | undefined,
-	opts?: { signal?: AbortSignal },
-): Promise<StageWorkflowListResponse | undefined> {
-	const q = kind ? `?kind=${encodeURIComponent(kind)}` : '';
-	const body = await fetchJson(runner, `/comfytv/workflows${q}`, opts?.signal);
-	return Array.isArray((body as StageWorkflowListResponse | undefined)?.workflows) ? body as StageWorkflowListResponse : undefined;
-}
-
-/** GET /comfytv/workflows/config?kind&label via the runner's ComfyTV extension. */
-export async function fetchStageWorkflowConfig(
-	runner: IComfyRunner,
-	kind: string,
-	label: string,
-	opts?: { signal?: AbortSignal },
-): Promise<StageWorkflowConfig | undefined> {
-	const body = await fetchJson(runner, `/comfytv/workflows/config?kind=${encodeURIComponent(kind)}&label=${encodeURIComponent(label)}`, opts?.signal);
-	const cfg = body as StageWorkflowConfig | undefined;
-	return cfg && typeof cfg?.api_json === 'object' ? cfg : undefined;
-}
-
-/** Normalize the result node's /history output into slot-layer outputs. Pure. */
+/** Normalize the result node's /history output into slot-layer outputs. Pure.
+ *
+ * Defensive: returns `undefined` for `undefined`/`null`/non-object inputs so
+ * callers can short-circuit cleanly (no "Cannot read properties of undefined").
+ */
 export function extractResultOutputs(
-	outputs: Record<string, unknown>,
+	outputs: Record<string, unknown> | undefined | null,
 	resultNode: string | undefined,
 ): Record<string, unknown> | undefined {
+	if (!outputs || typeof outputs !== 'object') { return undefined; }
 	if (resultNode && outputs[resultNode] && typeof outputs[resultNode] === 'object') {
 		return outputs[resultNode] as Record<string, unknown>;
 	}
@@ -295,12 +373,24 @@ export interface StageWorkflowRunOptions {
 	runner: IComfyRunner;
 	/** logical node id (snapshot keys) */
 	nodeId: string;
+	/**
+	 * 快照归档键（= stageUid，见 stageIdentity）。缺省回退 nodeId。
+	 *
+	 * ★ 为什么必须与 nodeId 分离：nodeCard 读快照用 `stageUid`（随机 uuid，
+	 *   永不复用，防止 nodeId 复用串号），而旧代码这里用 nodeId 归档 →
+	 *   写入 nodeId、读取 stageUid → OUTPUT 永远读不到新图。
+	 */
+	snapshotKey?: string;
 	/** stage class type (e.g. "ComfyTV.ImageStage") */
 	type: string;
 	/** stage kind (e.g. "image") — used for workflow lookup */
 	kind: string;
 	/** workflow kind override (spec.comfyTV.workflowKind) */
 	workflowKind?: string;
+	/** extra workflow kinds whose labels populate this stage's shared dropdown
+	 *  (e.g. ImageVariationsStage = ['multiview','sequence']). When set, the
+	 *  resolved kind is chosen by which kind contains the selected label. */
+	workflowKinds?: string[];
 	/** form/editor values (prompt, seed, …) */
 	values: Record<string, unknown>;
 	/** upstream node ids (P2: their snapshots feed `upstream_*` bindings) */
@@ -325,29 +415,100 @@ export interface StageWorkflowRunResult {
  */
 export async function runStageWorkflow(options: StageWorkflowRunOptions): Promise<StageWorkflowRunResult> {
 	const { runner, nodeId, type, kind, workflowKind, values, upstreams, store, onProgress, signal } = options;
-	if (!runner.fetchApi) {
-		throw new StageWorkflowUnavailableError('runner 不支持 ComfyTV workflow 扩展');
-	}
+	// 快照归档键：优先 stageUid（与 nodeCard 读侧一致），缺省 nodeId。
+	const snapshotKey = options.snapshotKey ?? nodeId;
 	const wfKind = workflowKind || kind;
-	const list = await fetchStageWorkflowList(runner, wfKind, { signal });
-	const label = pickDefaultWorkflowLabel(list, wfKind);
-	if (!label) {
-		throw new StageWorkflowUnavailableError(`kind ${wfKind} 没有可用 workflow`);
+	// 完全不依赖 ComfyTV 后端 API：直接读内置静态模板（builtinWorkflows/）。
+	// 模板 api_json 是纯原生 ComfyUI workflow，POST /prompt 即可出图，无需
+	// ComfyTV 扩展的 /comfytv/workflows、/comfytv/workflows/config 等端点。
+	// 未命中才抛 StageWorkflowUnavailableError，由调用方降级单节点执行。
+	const candidateKinds = options.workflowKinds?.length ? options.workflowKinds : [wfKind];
+	const rawWf = values?.workflow;
+	const selectedLabel = typeof rawWf === 'string' && rawWf ? rawWf : undefined;
+	// 解析实际 kind：优先按用户选中的 label 落在哪个候选 kind 的列表里，
+	// 否则回退到默认 kind + 默认 label（对齐 ComfyTV 运行时按 label 推断 kind）。
+	let resolvedKind = wfKind;
+	if (selectedLabel) {
+		for (const k of candidateKinds) {
+			if (listBuiltinWorkflows(k).workflows.some(w => w.label === selectedLabel)) { resolvedKind = k; break; }
+		}
 	}
-	const cfg = await fetchStageWorkflowConfig(runner, wfKind, label, { signal });
-	if (!cfg) {
-		throw new StageWorkflowUnavailableError(`workflow ${wfKind}/${label} 未准备（需在 ComfyTV 中打开过一次）`);
+	const builtinList = listBuiltinWorkflows(resolvedKind);
+	const label = selectedLabel ?? pickDefaultWorkflowLabel(builtinList, resolvedKind);
+	const cfg: StageWorkflowConfig | undefined = label
+		? getBuiltinWorkflowConfig(resolvedKind, label)
+		: undefined;
+	if (!cfg || typeof cfg.api_json !== 'object' || cfg.api_json === null) {
+		throw new StageWorkflowUnavailableError(`kind ${wfKind} 没有可用内置 workflow`);
 	}
 	// P2: inject upstream snapshots (first ref per media kind) so chained
 	// stages consume their predecessor's output.
 	const upstreamValues = collectUpstreamRefs(store, upstreams);
+	// eslint-disable-next-line no-console
+	console.warn('[runStageWorkflow] upstreams=' + JSON.stringify(upstreams) + ' upstreamValues=' + JSON.stringify(upstreamValues));
 	const { prompt } = injectWorkflowValues(cfg.api_json, cfg.inputs, values, upstreamValues);
+	// 把画布/表单里改过的 stage option（batch_size/resolution/aspect_ratio/workflow…）
+	// 直接覆写到 stage 节点的 inputs（后端 bindings 多数不覆盖这些 option，否则永远用模板默认值）。
+	applyStageOptionValues(prompt, type, values);
+	// 诊断：遍历所有 CLIPTextEncode 节点，打印注入后的 text 值，确认用户输入是否生效
+	const clipNodes = Object.entries(prompt as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>)
+		.filter(([, n]) => n.class_type === 'CLIPTextEncode')
+		.map(([id, n]) => `${id}:${JSON.stringify(n.inputs?.text)}`);
+	// eslint-disable-next-line no-console
+	console.warn('[runStageWorkflow] injected CLIPTextEncode=' + clipNodes.join(' | ') + ' from values.prompt=' + JSON.stringify(values.prompt ?? values.main_prompt));
+	// 诊断：打印后端/内置 cfg.inputs bindings 全貌，确认 prompt 绑定是否命中
+	// eslint-disable-next-line no-console
+	console.warn('[runStageWorkflow] cfg.inputs=' + JSON.stringify(cfg.inputs), 'api_json nodeIds=' + Object.keys(cfg.api_json ?? {}).join(','));
+	// ComfyTV 自定义节点（ImageStage/VideoStage/...）的 inputs 列表里大量"运行期由后端解析"字段
+	//（如 selected_index/force_run_token/project_id/parent_output_id 等）在 ComfyUI 端声明为
+	// required，但前端无对应控件——ComfyUI /prompt validation 对**键完全缺失**才返回
+	// `Required input is missing`（execution.py:850-861 `if x not in inputs`），空字符串则不会触发。
+	// 我们做两层兜底：
+	//   1) 已存在的**非 binding** string inputs → 强制空串（兜底如 selected_index 等运行期字段）；
+	//   2) 已知的运行期必需键白名单（按字段名推断类型）→ 在 inputs 里补 key+占位值。
+	// 注意：cfg.inputs 里有绑定（binding）的字段（prompt/seed/upstream_* 等）已被
+	// injectWorkflowValues 注入实际值，绝不能在这里被清空。
+	const boundKeys = new Map<string, Set<string>>();
+	for (const [nid, nodeBindings] of Object.entries(cfg.inputs ?? {})) {
+		if (nodeBindings && typeof nodeBindings === 'object') {
+			boundKeys.set(nid, new Set(Object.keys(nodeBindings)));
+		}
+	}
+	for (const nodeId of Object.keys(prompt)) {
+		const node = prompt[nodeId];
+		if (!node || typeof node !== 'object') { continue; }
+		const inputs = (node as { inputs?: Record<string, unknown> }).inputs;
+		if (!inputs || typeof inputs !== 'object') { continue; }
+		const bound = boundKeys.get(nodeId);
+		// 仅清空「运行期由 ComfyTV 后端解析」的占位字符串字段（节点级白名单）。
+		// ComfyUI 标准节点（KSampler/CheckpointLoaderSimple/CLIPTextEncode/...）的
+		// string inputs 是真实值（如 sampler_name="euler"、ckpt_name="…safetensors"），
+		// 必须保留——之前无差别清空导致 value_not_in_list。
+		for (const k of Object.keys(inputs)) {
+			if (bound?.has(k)) { continue; }
+			if (typeof inputs[k] === 'string' && RUNTIME_PLACEHOLDER_KEYS.has(k)) {
+				inputs[k] = '';
+			}
+		}
+		// (2) 补 key：ComfyTV 节点已知 required 但前端未注入的运行时字段，按字段名推断占位类型。
+		for (const [k, v] of Object.entries(RUNTIME_REQUIRED_INPUTS)) {
+			if (!(k in inputs)) { inputs[k] = v; }
+		}
+	}
 	const started = Date.now();
+	// eslint-disable-next-line no-console
+	console.warn('[runStageWorkflow] invoking runner.invoke, prompt keys=' + Object.keys(prompt).join(','));
 	const run = await runner.invoke({
 		prompt,
-		onProgress: (p) => onProgress?.({ progress: p.value }),
+		onProgress: (p) => {
+			// eslint-disable-next-line no-console
+			console.warn('[runStageWorkflow] onProgress value=' + p.value);
+			onProgress?.({ progress: p.value });
+		},
 		signal,
 	});
+	// eslint-disable-next-line no-console
+	console.warn('[runStageWorkflow] invoke done status=' + run.status + ' outputs=' + Object.keys(run.outputs ?? {}).join(','));
 	const durationMs = run.durationMs ?? Date.now() - started;
 	if (run.status !== 'success') {
 		return {
@@ -360,10 +521,21 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 	}
 	// The result node's /history output is already slot-layer (e.g. { images: [...] }).
 	const resultNode = cfg.result?.node;
+	// 诊断：打印 /history 返回的全部节点 key 和 resultNode，确认输出提取是否正确
+	// eslint-disable-next-line no-console
+	console.warn('[runStageWorkflow] outputs keys=', Object.keys(run.outputs ?? {}), 'resultNode=', resultNode, 'nodeId=', nodeId);
 	const slotOutputs = extractResultOutputs(run.outputs ?? {}, resultNode);
+	// 诊断：打印提取结果
+	// eslint-disable-next-line no-console
+	console.warn('[runStageWorkflow] slotOutputs=', slotOutputs ? Object.keys(slotOutputs) : 'null/undefined');
 	const entries: MediaSnapshotEntry[] = slotOutputs
-		? comfyOutputsToSnapshots(runner.baseUrl, slotOutputs, nodeId)
+		? comfyOutputsToSnapshots(runner.baseUrl, slotOutputs, snapshotKey)
 		: [];
-	for (const e of entries) { store.put(e); }
+	// 物化 ComfyUI /view 引用为自包含 data: URL，app 重启后仍可显示。
+	const persisted = await materializeComfyImageRefs(entries, runner.baseUrl, createComfyFetch(runner.baseUrl));
+	// 诊断：打印生成的 snapshot entries
+	// eslint-disable-next-line no-console
+	console.warn('[runStageWorkflow] entries count=', persisted.length, 'firstKey=', persisted[0]?.key ?? 'none');
+	for (const e of persisted) { store.put(e); }
 	return { promptId: run.promptId, status: 'success', durationMs, entries };
 }

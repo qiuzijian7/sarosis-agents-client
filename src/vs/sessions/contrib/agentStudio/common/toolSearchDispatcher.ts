@@ -20,7 +20,7 @@
  *
  * 与 Hermes 的差异：
  *   - Hermes 的 dispatch_tool_call 直接递归 handle_function_call 执行
- *   - Sarosis 的 dispatch 仅解析 + scope 检查，执行交给 Executor（保持 dispatch 纯函数）
+ *   - Saros 的 dispatch 仅解析 + scope 检查，执行交给 Executor（保持 dispatch 纯函数）
  */
 
 import { IToolDefinition } from './providers.js';
@@ -330,7 +330,7 @@ export interface IDispatcherContext {
 /**
  * 构建 Dispatcher 上下文。
  * 参考 Hermes `_tool_search_scoped_names` — 缓存 scoped names 以避免每次重建。
- * 
+ *
  * 2026-07-03: 新增 Catalog 指纹复用（借鉴 OpenClaw `catalogEntriesFingerprint` + `ReusableCatalogSnapshot`）。
  * deferredDefs 未变化时复用预构建的 ICatalogEntry[]（含预分词 tokens），避免 BM25 文档统计重复计算。
  */
@@ -345,7 +345,7 @@ export function buildDispatcherContext(
 // ─── Catalog 指纹复用（借鉴 OpenClaw `reusableCatalogSnapshots`）─────────
 //
 // OpenClaw 设计：工具集未变化时，catalog entries（含预分词 tokens）可跨 session 复用。
-// Sarosis 实现：模块级 LRU 缓存，fingerprint = 工具名列表排序哈希。
+// Saros 实现：模块级 LRU 缓存，fingerprint = 工具名列表排序哈希。
 // 工具集不变 → 跳过 buildCatalog() 的 tokenize + entry 构造 → 节省 ~5ms。
 
 /** 缓存的 Catalog 条目（含预分词 tokens） */

@@ -1,16 +1,16 @@
-# 聊天框功能差异对比：Void vs Sarosis
+# 聊天框功能差异对比：Void vs Saros
 
 > 分析日期：2026-06-27
 > Void 项目：`G:\CustomWorkspaces\AIProjects\void`（VS Code fork，含 React 聊天）
-> Sarosis 项目：`G:\CustomWorkspaces\AIProjects\vssaros-agents-client`
+> Saros 项目：`G:\CustomWorkspaces\AIProjects\vssaros-agents-client`
 
 ---
 
-## 一、Void 有但 Sarosis 没有的功能
+## 一、Void 有但 Saros 没有的功能
 
 ### 1.1 代码块功能差异
 
-| 功能 | Void 实现 | Sarosis 状态 |
+| 功能 | Void 实现 | Saros 状态 |
 |------|-----------|-------------|
 | **Diff 视图（Accept/Reject）** | `ApplyBlockHoverButtons.tsx` L378-419 — Apply 后显示 Keep/Remove 按钮，可视化 diff | ❌ 缺失 — Apply 仅写入文件，无 diff 预览 |
 | **跳转到文件** | `ApplyBlockHoverButtons.tsx` L104-119 — 代码块旁显示文件路径按钮 | ❌ 缺失 |
@@ -21,7 +21,7 @@
 
 ### 1.2 上下文/@提及
 
-| 功能 | Void 实现 | Sarosis 状态 |
+| 功能 | Void 实现 | Saros 状态 |
 |------|-----------|-------------|
 | **@提及文件搜索** | `util/inputs.tsx` L195-215 — 模糊匹配文件路径 | ❌ 缺失 — 有附件但无 @提及 |
 | **@提及文件夹** | `util/inputs.tsx` L218-278 — 文件夹级别上下文 | ❌ 缺失 |
@@ -34,7 +34,7 @@
 
 ### 1.3 会话管理
 
-| 功能 | Void 实现 | Sarosis 状态 |
+| 功能 | Void 实现 | Saros 状态 |
 |------|-----------|-------------|
 | **删除线程（带确认）** | `SidebarThreadSelector.tsx` L133-169 — 两步确认 | ❌ 缺失 — 无删除会话功能 |
 | **复制线程** | `SidebarThreadSelector.tsx` L118-131 | ❌ 缺失 |
@@ -43,7 +43,7 @@
 
 ### 1.4 其他 Void 独有功能
 
-| 功能 | Void 实现 | Sarosis 状态 |
+| 功能 | Void 实现 | Saros 状态 |
 |------|-----------|-------------|
 | **Gather 模式** | `SidebarChat.tsx` L256-258 — 只读文件不能编辑 | ❌ 缺失 — 有 craft/plan 模式但无 Gather |
 | **拖放文件** | `SidebarChat.tsx` — 拖放文件到聊天框 | ❌ 缺失 — 有文件选择按钮但无拖放 |
@@ -56,7 +56,7 @@
 
 ### 2.1 Agent/工具系统
 
-| 功能 | Sarosis 实现 | Void 状态 |
+| 功能 | Saros 实现 | Void 状态 |
 |------|-------------|-----------|
 | **Agent 选择器** | 多 Agent 切换，含搜索过滤 | ❌ Void 只有单线程 |
 | **工具调用审批** | 4 级审批（allow_once/session/always/deny） | ❌ 缺失 |
@@ -69,7 +69,7 @@
 
 ### 2.2 Token/上下文显示
 
-| 功能 | Sarosis 实现 | Void 状态 |
+| 功能 | Saros 实现 | Void 状态 |
 |------|-------------|-----------|
 | **Token 消耗明细弹窗** | 完整的 input/output/cached/cacheMiss/cacheWrite/reasoning 分组 + 缓存命中率 | ❌ 缺失 |
 | **Footer 积分显示** | `tokenUsage.credit` | ❌ 缺失 |
@@ -79,7 +79,7 @@
 
 ### 2.3 系统消息面板
 
-| 功能 | Sarosis 实现 | Void 状态 |
+| 功能 | Saros 实现 | Void 状态 |
 |------|-------------|-----------|
 | **上下文压缩提示** | 压缩前/后消息数、节省 token、耗时 | ❌ 缺失 |
 | **记忆注入通知** | `<agentmemory-context>` 注入提示 | ❌ 缺失 |
@@ -88,7 +88,7 @@
 
 ### 2.4 消息交互
 
-| 功能 | Sarosis 实现 | Void 状态 |
+| 功能 | Saros 实现 | Void 状态 |
 |------|-------------|-----------|
 | **用户消息 Undo** | 回撤 checkpoint 改动 + 确认对话框 | ❌ 缺失 |
 | **回合聚合** | 相同 turnId 的多条助手消息合并为一条气泡 | ❌ 缺失 |
@@ -101,7 +101,7 @@
 
 ### 2.5 流式/滚动优化
 
-| 功能 | Sarosis 实现 | Void 状态 |
+| 功能 | Saros 实现 | Void 状态 |
 |------|-------------|-----------|
 | **增量 Markdown 渲染** | 只解析追加部分 | ❌ Void 用渐进式渲染（不同方案） |
 | **消息列表懒加载** | IntersectionObserver 30+20 分块 | ❌ Void 用 Tree 虚拟化 |
@@ -116,7 +116,7 @@
 
 ### 3.1 代码块 Apply
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | Apply 按钮 | ✅ 有，含状态指示器 | ✅ 有，一次性操作 |
 | Diff 预览 | ✅ Keep/Remove 可视化 | ❌ 直接写入 |
@@ -126,7 +126,7 @@
 
 ### 3.2 消息编辑
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | 编辑用户消息 | ✅ 内联编辑 + 重新流式 | ✅ 内联编辑覆盖层 + 截断重生成 |
 | 键盘快捷键 | ✅ Enter/Shift+Enter/Esc | ✅ Ctrl/Cmd+Enter/Esc |
@@ -135,7 +135,7 @@
 
 ### 3.3 聊天模式
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | 模式 | Chat / Gather / Agent | Craft / Plan / etc. |
 | Gather（只读） | ✅ 有 | ❌ 缺失 |
@@ -144,7 +144,7 @@
 
 ### 3.4 滚动管理
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | 虚拟化 | ✅ WorkbenchObjectTree | ✅ IntersectionObserver 懒加载 |
 | 渐进式渲染 | ✅ 50ms 定时器 + 词数节流 | ✅ 200ms markdown 节流 + 增量更新 |
@@ -155,7 +155,7 @@
 
 ### 3.5 性能架构
 
-| 维度 | Void | Sarosis |
+| 维度 | Void | Saros |
 |------|------|---------|
 | 列表虚拟化 | Tree 模板回收 | IntersectionObserver 懒加载 |
 | Markdown 渲染 | 增量 tryIncrementalUpdate | 增量追加渲染 |
@@ -166,7 +166,7 @@
 
 ---
 
-## 四、优先级建议（Void 有 → Sarosis 应补齐）
+## 四、优先级建议（Void 有 → Saros 应补齐）
 
 ### P0: 高价值，用户体验影响大
 
@@ -207,7 +207,7 @@
 
 ## 五、总结
 
-### Sarosis 的优势
+### Saros 的优势
 - **Agent 生态完善**：多 Agent、工具审批、子代理、工作流、MCP 桥接、技能系统
 - **Token 可视化**：详细消耗弹窗、积分、耗时、缓存命中率
 - **消息类型丰富**：Ask-User、Todo、Question、References、Progress 等 8+ 种卡片
@@ -222,4 +222,4 @@
 - **Tree 虚拟化**：成熟的模板回收机制
 
 ### 核心差距
-Sarosis 在 **Agent/工具系统** 和 **性能优化** 方面领先，但在 **代码交互**（Diff/终端/跳转）和 **上下文管理**（@提及/拖放）方面有较大差距。补齐 P0 的 3 项功能将显著提升编码体验。
+Saros 在 **Agent/工具系统** 和 **性能优化** 方面领先，但在 **代码交互**（Diff/终端/跳转）和 **上下文管理**（@提及/拖放）方面有较大差距。补齐 P0 的 3 项功能将显著提升编码体验。

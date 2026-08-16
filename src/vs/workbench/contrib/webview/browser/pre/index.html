@@ -5,7 +5,7 @@
 	<meta charset="UTF-8">
 
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-q+WTr+fBXpLLE3++yWNaxT6BTWQtsKscoeIlynBRk4E=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'unsafe-inline' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"
@@ -865,6 +865,39 @@
 				newDocument.head.prepend(defaultScript);
 			}
 
+			// For no-sandbox content (e.g. external site embedding), inject a script
+			// that intercepts window.top.location.href assignments so that OAuth
+			// redirects (like TAPD/WeCom SSO) navigate the iframe itself instead
+			// of the cross-origin top-level window.
+			const isNoSandboxContent = typeof text === 'string' && text.includes('<!-- vscode-webview-no-sandbox -->');
+			if (isNoSandboxContent && options.allowScripts) {
+				const redirectInterceptor = newDocument.createElement('script');
+				redirectInterceptor.textContent = `
+					(function() {
+						try {
+							var origTop = window.top;
+							var fakeTop = {
+								get location() {
+									return window.location;
+								},
+								set location(val) {
+									if (typeof val === 'string') {
+										window.location.href = val;
+									} else if (val && typeof val.href !== 'undefined') {
+										window.location.href = val.href;
+									} else if (val && typeof val.toString === 'function') {
+										window.location.href = val.toString();
+									}
+								}
+							};
+							try { Object.defineProperty(window, 'top', { value: fakeTop, writable: false, configurable: false }); } catch(e) {}
+							try { Object.defineProperty(window, 'parent', { value: fakeTop, writable: false, configurable: false }); } catch(e) {}
+						} catch(e) {}
+					})();
+				`;
+				newDocument.head.prepend(redirectInterceptor);
+			}
+
 			// Inject default styles
 			newDocument.head.prepend(defaultStyles.cloneNode(true));
 
@@ -1015,15 +1048,22 @@
 				newFrame.setAttribute('id', 'pending-frame');
 				newFrame.setAttribute('frameborder', '0');
 
-				const sandboxRules = new Set(['allow-same-origin', 'allow-pointer-lock']);
-				if (options.allowScripts) {
-					sandboxRules.add('allow-scripts');
-					sandboxRules.add('allow-downloads');
+				// Check if the content requests no sandbox (e.g. for embedding external
+				// sites that need document.domain setter, like TAPD). When the HTML
+				// contains the marker comment, we skip the sandbox attribute entirely.
+				const noSandbox = typeof newDocument === 'string' && newDocument.includes('<!-- vscode-webview-no-sandbox -->');
+
+				if (!noSandbox) {
+					const sandboxRules = new Set(['allow-same-origin', 'allow-pointer-lock', 'allow-top-navigation']);
+					if (options.allowScripts) {
+						sandboxRules.add('allow-scripts');
+						sandboxRules.add('allow-downloads');
+					}
+					if (options.allowForms) {
+						sandboxRules.add('allow-forms');
+					}
+					newFrame.setAttribute('sandbox', Array.from(sandboxRules).join(' '));
 				}
-				if (options.allowForms) {
-					sandboxRules.add('allow-forms');
-				}
-				newFrame.setAttribute('sandbox', Array.from(sandboxRules).join(' '));
 
 				const allowRules = ['cross-origin-isolated;', 'autoplay;', 'local-network-access;'];
 				if (!isFirefox && options.allowScripts) {

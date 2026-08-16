@@ -59,6 +59,113 @@
 	width: 100% !important;
 }
 
+/* New session button */
+.session-history-new-btn {
+	display: block;
+	width: 100%;
+	padding: 4px 10px;
+	border: none;
+	border-radius: 2px;
+	background: var(--vscode-button-secondaryBackground, #3a3d41);
+	color: var(--vscode-button-secondaryForeground, #cccccc);
+	font-size: 12px;
+	line-height: 20px;
+	cursor: pointer;
+	text-align: center;
+}
+
+.session-history-new-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+/* Inline new-session panel */
+.session-history-new-panel {
+	flex-direction: column;
+	gap: 4px;
+	padding: 8px 6px 6px 6px;
+	border-top: 1px solid var(--vscode-widget-border, #454545);
+	background-color: var(--vscode-sideBar-background, #252526);
+}
+
+.session-history-new-agent-select-container {
+	width: 100%;
+}
+
+.session-history-new-agent-select-container .monaco-select-box {
+	min-width: 0 !important;
+	max-width: 100% !important;
+	width: 100% !important;
+}
+
+.session-history-new-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+	line-height: 16px;
+}
+
+.session-history-new-agent-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	max-height: 88px;
+	overflow-y: auto;
+}
+
+.session-history-new-agent-chip {
+	padding: 2px 8px;
+	border: 1px solid var(--vscode-widget-border, #454545);
+	border-radius: 10px;
+	background: var(--vscode-editor-background, #1e1e1e);
+	color: var(--vscode-foreground, #cccccc);
+	font-size: 11px;
+	line-height: 18px;
+	cursor: pointer;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.session-history-new-agent-chip:hover {
+	background: var(--vscode-toolbar-hoverBackground, #2a2d2e);
+}
+
+.session-history-new-agent-chip.selected {
+	background: var(--vscode-button-background, #007acc);
+	border-color: var(--vscode-button-background, #007acc);
+	color: var(--vscode-button-foreground, #ffffff);
+}
+
+.session-history-new-name-input {
+	width: 100%;
+}
+
+.session-history-new-actions {
+	display: flex;
+	gap: 6px;
+	margin-top: 4px;
+}
+
+.session-history-new-actions .monaco-button.session-history-new-create-btn {
+	padding: 2px 12px;
+	font-size: 12px;
+}
+
+.session-history-new-cancel-btn {
+	padding: 2px 10px;
+	border: 1px solid var(--vscode-widget-border, #454545);
+	border-radius: 2px;
+	background: transparent;
+	color: var(--vscode-foreground, #cccccc);
+	font-size: 12px;
+	line-height: 20px;
+	cursor: pointer;
+}
+
+.session-history-new-cancel-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground, #2a2d2e);
+}
+
 /* ========== Session List ========== */
 .session-history-list {
 	flex: 1;
@@ -107,6 +214,14 @@
 	background: var(--vscode-list-activeSelectionBackground, #37373d);
 }
 
+/* Pin marker */
+.session-history-pin {
+	font-size: 10px;
+	flex-shrink: 0;
+	opacity: 0.8;
+	filter: grayscale(0.2);
+}
+
 /* Status dot — color determined by agent via --agent-color CSS var */
 .session-history-status-dot {
 	width: 8px;
@@ -114,6 +229,11 @@
 	border-radius: 50%;
 	flex-shrink: 0;
 	background: var(--agent-color, var(--vscode-descriptionForeground, #6e6e6e));
+	opacity: 0.4;
+}
+
+/* Drag & drop reordering */
+.session-history-item.dragging {
 	opacity: 0.4;
 }
 
@@ -336,21 +456,7 @@
 	color: var(--vscode-foreground, #cccccc);
 	white-space: pre-wrap;
 	word-break: break-word;
-	max-height: 60px;
-	overflow: hidden;
-	position: relative;
-	background-color: transparent;
-}
-
-.session-history-message-text.truncated::after {
-	content: '';
-	position: absolute;
-	bottom: 0;
-	left: 0;
-	right: 0;
-	height: 20px;
-	background: linear-gradient(transparent, var(--vscode-editor-background, #1e1e1e));
-	pointer-events: none;
+	overflow-wrap: anywhere;
 }
 
 /* ========== Action Buttons ========== */

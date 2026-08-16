@@ -107,7 +107,7 @@ export const CLAUDE_AGENTS_SOURCE_FOLDER = '.claude/agents';
 export const COPILOT_USER_AGENTS_SOURCE_FOLDER = '~/.copilot/agents';
 
 /**
- * Saros user agents folder — the unified agent data source for Sarosis.
+ * Saros user agents folder — the unified agent data source for Saros.
  * Both builtin presets and user-created agents are stored here as .agent.md files.
  */
 export const SAROS_USER_AGENTS_SOURCE_FOLDER = '~/.saros/agents';

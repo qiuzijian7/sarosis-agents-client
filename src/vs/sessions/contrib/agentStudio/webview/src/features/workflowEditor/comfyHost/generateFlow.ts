@@ -4,7 +4,7 @@
  *  Docs: docs/Agent-画布编排设计方案.md P0 → `canvas_generate` tool.
  *
  *  `buildGenerateFlow(goal, opts)` produces a store-shaped { nodes, edges } graph:
- *    - one (or N) Sarosis.Prompt nodes (variants) → Sarosis.ModelImageGen nodes,
+ *    - one (or N) Saros.Prompt nodes (variants) → Saros.ModelImageGen nodes,
  *    - auto-wired prompt → model (TEXT → TEXT) and upstream JSON → prompt when chained,
  *    - provider/model auto-routed (explicit > resolveFirstImageGenDefaults).
  *
@@ -89,14 +89,18 @@ export function buildGenerateFlow(goal: string, options: BuildGenerateFlowOption
 	const promptIds: string[] = [];
 	const origin = options.origin ?? DEFAULT_ORIGIN;
 
-	let idSeed = options.seed ?? 0;
+	// ★ 用单调 counter 替代 idSeed 兜底：counter 按 kind 分桶，保证同一次生成流内
+	//   同类节点 id 严格递增（即便 existing 里没有该 kind 节点，连续调用也
+	//   image-1、image-2 而非撞车后靠 idSeed++ 补救）。确定性 id 语义不变
+	//   （仍是 image-N），只是不复用、不回退。
+	//   注意：counter 是**本次生成流局部**的；跨会话/跨调用不复用需持久化（方案 #5）。
+	const idCounter = new Map<string, number>();
+	const idSeed = options.seed ?? 0;
 	const uid = (kind: string): string => {
-		let id = nextNodeId(kind, nodes, idSeed);
-		// nextNodeId with a fixed seed collides across repeated calls with no
-		// matching existing ids — bump the seed so ids stay unique in this flow.
+		let id = nextNodeId(kind, nodes, idSeed, idCounter);
+		// 兜底（理论上 counter 已保证不撞，保留以防 explicit 节点占位同一 id）。
 		if (nodes.some(n => n.id === id) || entryIds.includes(id) || promptIds.includes(id)) {
-			idSeed++;
-			id = nextNodeId(kind, nodes, idSeed);
+			id = nextNodeId(kind, nodes, idSeed + 1, idCounter);
 		}
 		return id;
 	};
@@ -112,7 +116,7 @@ export function buildGenerateFlow(goal: string, options: BuildGenerateFlowOption
 
 		const promptNode: CanvasNode = {
 			id: promptId,
-			type: 'Sarosis.Prompt',
+			type: 'Saros.Prompt',
 			position: { x: px, y: py },
 			data: {
 				label: variant.label ?? (variantList.length > 1 ? `${IMAGE_NODE_KIND}-${i + 1} 提示` : '提示'),
@@ -121,7 +125,7 @@ export function buildGenerateFlow(goal: string, options: BuildGenerateFlowOption
 		};
 		const genNode: CanvasNode = {
 			id: genId,
-			type: 'Sarosis.ModelImageGen',
+			type: 'Saros.ModelImageGen',
 			position: { x: px + 220, y: py },
 			data: {
 				label: `${IMAGE_NODE_KIND}-${i + 1}`,

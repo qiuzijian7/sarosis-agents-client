@@ -58,6 +58,16 @@
 	height: 100%;
 }
 
+/* 独立聊天窗口标题栏「新建聊天 Group」按钮：必须脱离父级 drag region 才能点击。
+   -webkit-app-region 只能写在样式表里生效；同时需 position:relative + z-index:3000，
+   因为 .titlebar-drag-region 是铺满标题栏的 absolute overlay，会盖在按钮之上吞掉鼠标
+   事件（窗口控制按钮正是靠 z-index:3000 浮到 overlay 之上才可被点击）。 */
+.titlebar-right > .titlebar-new-chat-group {
+	-webkit-app-region: no-drag;
+	position: relative;
+	z-index: 3000;
+}
+
 .monaco-workbench .part.titlebar > .sessions-titlebar-container > .titlebar-right > .titlebar-actions-container:not(.has-no-actions) {
 	display: flex;
 	align-items: center;

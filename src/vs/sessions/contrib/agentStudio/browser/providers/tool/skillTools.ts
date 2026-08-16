@@ -328,7 +328,7 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 
 		// ── skill_manage: 对齐 Hermes skill_manager_tool.py ──────────────────
 		// Hermes 支持 6 种 action：create / edit / patch / delete / write_file / remove_file
-		// Sarosis 完整支持 create（新建）/ edit（全量覆盖）/ patch（精确替换）/ delete。
+		// Saros 完整支持 create（新建）/ edit（全量覆盖）/ patch（精确替换）/ delete。
 		// 相比旧版改进：edit→updateSkill（不再拒绝已存在技能），patch→patchSkill（带唯一性+有效性校验+备份）
 		ctx.register({
 			definition: {

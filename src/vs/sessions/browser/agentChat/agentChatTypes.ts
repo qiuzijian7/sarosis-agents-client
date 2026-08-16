@@ -81,16 +81,17 @@ export interface IAgentChatMessage {
 	taskCard?: { title: string; description: string; source?: string; taskId?: string; dependencies?: readonly string[]; attachments?: readonly { name: string; mimeType: string }[] };
 }
 
-/** File/image attachment for chat messages */
+/** File/image/folder attachment for chat messages */
 export interface IChatAttachment {
 	id: string;
-	type: 'image' | 'file';
+	type: 'image' | 'file' | 'folder';
 	name: string;
 	mimeType: string;
-	data: string; // base64
+	/** base64（image）| utf8 文本（file）| 系统路径（folder） */
+	data: string;
 	size: number;
 	isPasted?: boolean;
-	/** 原始文件路径（点击附件时在编辑器中打开） */
+	/** 原始文件路径 / 文件夹路径（点击附件时在编辑器中打开，或交给 agent 操作） */
 	filePath?: string;
 }
 

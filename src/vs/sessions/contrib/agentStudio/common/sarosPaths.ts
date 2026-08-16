@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Centralized path resolution for Sarosis Agent Studio user data.
+ * Centralized path resolution for Saros Agent Studio user data.
  *
  * All Agent Studio data now lives under the VS Code user data directory
  * (`.vssaros/` or `.vssaros-dev/` in dev mode) in a `saros/` subdirectory.

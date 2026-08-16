@@ -11,7 +11,7 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │                       AnyDev 云服务器                                │
 │   ┌───────────────────────────────────────────────────────────┐     │
-│   │   Sarosis Marketplace Server  (Node + Express + SQLite)    │     │
+│   │   Saros Marketplace Server  (Node + Express + SQLite)    │     │
 │   │   ├── REST API  (/api/v1/...)                              │     │
 │   │   ├── 管理网站  (React 静态站，由 Express 托管)              │     │
 │   │   ├── JWT 用户认证                                          │     │

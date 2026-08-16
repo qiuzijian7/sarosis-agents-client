@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Mindmap Agent Tools
+ *  Saros Agents — Mindmap Agent Tools
  *
  *  通过 Agent 工具暴露画布编辑能力：读取大纲、添加子节点、触发布局。
  *  走 builtinToolProvider 的 ctx.register() 模式注册。

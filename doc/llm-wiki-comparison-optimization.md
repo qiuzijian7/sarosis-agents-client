@@ -1,8 +1,8 @@
-# llm_wiki vs Sarosis AgentStudio KB — 差异对比与优化方案
+# llm_wiki vs Saros AgentStudio KB — 差异对比与优化方案
 
 > 对比对象：
 > - **llm_wiki**：`G:\CustomWorkspaces\AIProjects\llm_wiki`（Tauri v2 + Rust + React 19，"自维护知识库"，基于 Karpathy LLM Wiki pattern）
-> - **Sarosis AgentStudio KB**：本项目 `src/vs/sessions/contrib/agentStudio`（VS Code 扩展内的知识库子系统，已落地 P0–P3）
+> - **Saros AgentStudio KB**：本项目 `src/vs/sessions/contrib/agentStudio`（VS Code 扩展内的知识库子系统，已落地 P0–P3）
 >
 > 目的：识别 llm_wiki 在知识库工程化上的成熟设计，给出本项目可落地的优化方案（不盲目照搬其 Tauri/Rust 栈）。
 
@@ -10,7 +10,7 @@
 
 ## 1. 定位与技术栈
 
-| 维度 | llm_wiki | Sarosis AgentStudio KB |
+| 维度 | llm_wiki | Saros AgentStudio KB |
 |------|----------|------------------------|
 | 形态 | 独立桌面应用（Tauri） | VS Code 扩展子系统 |
 | 后端 | Rust（tokio + LanceDB + notify + pdfium/docx/epub 解析） | TS（main/renderer，复用 VS Code IFileService） |

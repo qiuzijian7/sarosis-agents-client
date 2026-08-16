@@ -51,6 +51,8 @@ import { ITaskOrchestrationService } from '../../../common/agentStudioService.js
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
+import { IWorkflowStorageService } from '../common/workflowStorage.js';
+import { collectWorkflowVariables } from './utils/templateUtils.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
@@ -115,6 +117,8 @@ export class NativeChatEditorPane extends EditorPane {
 	private _currentSessionId: string | null = null;
 	private _currentChatOnly: boolean = false;
 	private _currentWorkspaceId: string | null = null;
+	/** 工作流缓存（composer `/` 菜单「工作流」分组，同步返回；异步刷新）。 */
+	private _workflowCache: ReadonlyArray<{ id: string; name: string; description?: string; variables?: ReadonlyArray<{ name: string; defaultValue: string }> }> = [];
 	/**
 	 * 面板本地 Provider/Model 选择状态（不写入共享单例 IModelSelectorService）。
 	 * 多面板共存时（主窗口 + popout），每个面板的选择互不影响。
@@ -234,7 +238,7 @@ export class NativeChatEditorPane extends EditorPane {
 	private readonly _chatPanelImportedIds = new Set<string>();
 	private _isTabActive = false;
 	/** Reusable streaming-send function, captured from the panel's onSendMessage. */
-	private _sendMessageInternal!: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => Promise<void>;
+	private _sendMessageInternal!: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => Promise<void>;
 	/**
 	 * Async race guard: incremented before each `_selectAndLoadAgent` call.
 	 * Only the latest generation's result is applied — stale loads are silently discarded.
@@ -262,6 +266,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@ICheckpointService private readonly _checkpointService: ICheckpointService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IWorkflowExecutionService private readonly _workflowExecutionService: IWorkflowExecutionService,
+		@IWorkflowStorageService private readonly _workflowStorageService: IWorkflowStorageService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
 		@IFileService private readonly _fileService: IFileService,
@@ -303,6 +308,22 @@ export class NativeChatEditorPane extends EditorPane {
 			() => {},
 			(err) => this._logService.error('[NativeChatEditorPane] openExternalInSystemBrowser failed:', err),
 		);
+	}
+
+	/** 异步刷新工作流缓存（供 composer `/` 菜单同步读取）。 */
+	private async _refreshWorkflowCache(): Promise<void> {
+		try {
+			const workflows = await this._workflowStorageService.listWorkflows();
+			this._workflowCache = workflows.map(w => ({
+				id: w.id,
+				name: w.name ?? w.id,
+				description: w.description ?? '',
+				variables: collectWorkflowVariables(w.nodes),
+			}));
+		} catch (err) {
+			this._logService.error('[NativeChatEditorPane] _refreshWorkflowCache failed:', err);
+			this._workflowCache = [];
+		}
 	}
 
 	// ─── 中间栏编辑器实例路由 ──────────────────────────────────────────
@@ -445,6 +466,12 @@ export class NativeChatEditorPane extends EditorPane {
 		const t0 = performance.now();
 		this._logService.debug(`[NativeChatEditorPane][Init] _initChatPanel START`);
 
+		// 预填充工作流缓存 + 订阅变更（composer `/` 菜单「工作流」分组同步读取）
+		void this._refreshWorkflowCache();
+		this._register(this._workflowStorageService.onDidChangeWorkflows(() => {
+			void this._refreshWorkflowCache();
+		}));
+
 		// Choose panel type based on cliMode.
 		// - XtermCliPanel: xterm.js-based TUI rendering (true terminal emulator)
 		// - AgentChatPanel: rich bubble UI (default)
@@ -452,7 +479,7 @@ export class NativeChatEditorPane extends EditorPane {
 		const useCliPanel = this.input instanceof NativeChatEditorInput && this.input.cliMode;
 		const PanelCtor = useCliPanel ? XtermCliPanel : AgentChatPanel;
 		this._chatPanel = this._register(new PanelCtor({
-			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => {
+			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => {
 			// 注：防重入逻辑已下移到 AgentChatPanel._handleSendMessage（流式时入队，非流式时直接发送）
 			// 此处不再拦截，让 Panel 的队列机制处理并发发送。
 			// 跨 pane 串台防护用的 sessionId（在 finally 中统一释放，避免本地发送异常时泄漏标记）。
@@ -481,11 +508,17 @@ export class NativeChatEditorPane extends EditorPane {
 			// 发送后清空该 session 的输入框草稿（panel 已在 _onSendMessage 前清空 composer）
 			this._saveComposerDraft(agentId, sessionId);
 
-				// ── 首条消息 → 会话名自动设为消息内容 ──
+				// ── 首条消息 → 会话名自动设为消息内容（workflow 模式用工作流名）──
 				try {
 					const history = await this._chatService.getHistory(agentId, sessionId);
 					if (!history || history.length === 0) {
-						const autoName = text.trim().substring(0, 30);
+						let autoName = text.trim().substring(0, 30);
+						if (workflowTrigger?.workflowId) {
+							const wfName = await this._workflowStorageService.getWorkflow(workflowTrigger.workflowId)
+								.then(w => w?.name)
+								.catch(() => undefined);
+							autoName = wfName || workflowTrigger.workflowId;
+						}
 						if (autoName) {
 							await this._chatService.renameAgentSession(agentId, sessionId, autoName);
 							this._logService.debug(`[NativeChatEditorPane] Auto-renamed session ${sessionId} to "${autoName}"`);
@@ -545,6 +578,8 @@ export class NativeChatEditorPane extends EditorPane {
 							chatOnly: this._currentChatOnly,
 							agentSessionId: sessionId,
 							explicitSkillIds: explicitSkillIds,
+							// 工作流触发：chip 选中工作流后，后端走 _executeWorkflowTurn 而非普通 LLM 回合。
+							workflowTrigger: workflowTrigger,
 							// 透传附件：图片/文件真实内容经 agentDriverService 构建多模态
 							// contentParts，最终正确送达 LLM（修复此前仅发送占位文本的问题）。
 							attachments: attachments as IChatAttachmentSend[] | undefined,
@@ -679,6 +714,13 @@ export class NativeChatEditorPane extends EditorPane {
 					category: s.category,
 				}));
 			},
+			onListWorkflows: () => {
+				// 首次为空时触发异步刷新（下次打开菜单即显示），本次返回已有缓存
+				if (this._workflowCache.length === 0) {
+					void this._refreshWorkflowCache();
+				}
+				return this._workflowCache;
+			},
 			onListMcpServers: () => {
 				// 从 IMcpService 获取 MCP 服务器列表
 				const servers = this._mcpService.servers.get();
@@ -695,22 +737,6 @@ export class NativeChatEditorPane extends EditorPane {
 				this._commandService.executeCommand('workbench.action.openSettings', 'mcp').catch(err => {
 					this._logService.error('[NativeChatEditorPane] onOpenMcpSettings failed:', err);
 				});
-			},
-			onGetAgentSkills: () => {
-				return this._currentAgentSkills;
-			},
-			onAddSkill: async (skillId: string) => {
-				if (!this._currentAgentId) { return; }
-				if (this._currentAgentSkills.includes(skillId)) { return; }
-				const newSkills = [...this._currentAgentSkills, skillId];
-				await this._agentStudioService.updateAgent(this._currentAgentId, { skills: newSkills } as any);
-				this._currentAgentSkills = newSkills;
-			},
-			onRemoveSkill: async (skillId: string) => {
-				if (!this._currentAgentId) { return; }
-				const newSkills = this._currentAgentSkills.filter(s => s !== skillId);
-				await this._agentStudioService.updateAgent(this._currentAgentId, { skills: newSkills } as any);
-				this._currentAgentSkills = newSkills;
 			},
 			onOpenHtmlPreview: () => {
 				// 打开 agent 的 config.html 文件（检查并创建默认文件，用文本编辑器打开）
@@ -905,37 +931,6 @@ export class NativeChatEditorPane extends EditorPane {
 					await this._refreshSessionList();
 				} catch (err) {
 					this._logService.error('[NativeChatEditorPane] onDeleteSession failed:', err);
-				}
-			},
-			onForkSession: async (sessionId: string) => {
-				if (!this._currentAgentId) {
-					this._logService.info('[NativeChatEditorPane] onForkSession: no agent selected');
-					return;
-				}
-			const agentId = this._currentAgentId;
-			try {
-				// 保存旧 session 草稿（await fork 之前）
-				this._saveComposerDraft();
-				const meta = await this._chatService.forkAgentSession(agentId, sessionId);
-					this._logService.debug(`[NativeChatEditorPane] onForkSession: forked ${sessionId} → ${meta.id} ("${meta.name}")`);
-					// 切换到新分叉出的独立会话（丢弃外部 provider 线程，可安全发散）
-					this._currentSessionId = meta.id;
-					void this._updateSessionLock();
-					if (this.input instanceof NativeChatEditorInput && this._currentAgentId) {
-						this.input.setAgentInfo(this.input.name, agentId, meta.id);
-					}
-				try {
-					const history = await this._chatService.getHistory(agentId, meta.id);
-					this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
-				} catch {
-					this._chatPanel?.setMessages([]);
-				}
-				// fork 出的新 session 无草稿 → 清空输入框
-				this._restoreComposerDraft();
-				this._activateCheckpointSession(agentId, meta.id);
-				await this._refreshSessionList();
-			} catch (err) {
-				this._logService.error('[NativeChatEditorPane] onForkSession failed:', err);
 				}
 			},
 			// Orchestration plan callbacks
@@ -1266,9 +1261,9 @@ export class NativeChatEditorPane extends EditorPane {
 					this._notificationService.notify({ severity: Severity.Info, message: '已取消飞书渠道默认 Agent' });
 				}
 			},
-		}));
+		} as any) as IChatPanel);
 
-		this._container.appendChild(this._chatPanel.element);
+		this._container!.appendChild(this._chatPanel.element);
 		this._isInitialized = true;
 		this._logService.debug(`[NativeChatEditorPane][Init] _initChatPanel panel constructed + appended t=${(performance.now() - t0).toFixed(1)}ms`);
 
@@ -1276,7 +1271,7 @@ export class NativeChatEditorPane extends EditorPane {
 		// （xterm TUI 需要根据容器高度计算内部布局）
 		if (this._container) {
 			const rect = this._container.getBoundingClientRect();
-			this._chatPanel.layout(rect.width, rect.height);
+			this._chatPanel!.layout(rect.width, rect.height);
 		}
 
 		// 设置系统消息面板的详情回调
@@ -1676,7 +1671,10 @@ export class NativeChatEditorPane extends EditorPane {
 			this._logService, this._skillRegistry, this._agentOSService, this._envService,
 			{
 				getCurrentAgentId: () => this._currentAgentId,
-				setCurrentAgentSkills: (skills) => { this._currentAgentSkills = skills; },
+				setCurrentAgentSkills: (skills) => {
+					this._currentAgentSkills = skills;
+					this._logService.debug(`[NativeChatEditorPane] skills cache updated: ${this._currentAgentSkills.length}`);
+				},
 				refreshMemoryDetailPane: async () => {
 					try {
 						const activePane = this._editorService.activeEditorPane;

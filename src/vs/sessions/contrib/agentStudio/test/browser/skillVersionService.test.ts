@@ -96,7 +96,7 @@ const MOCK_COMMIT: SkillCommitMeta = {
 	sha: 'a1b2c3d4e5f6789012345678901234567890abcd',
 	shortSha: 'a1b2c3d',
 	message: 'auto: 2026-07-18 10:30:00',
-	author: 'Sarosis',
+	author: 'Saros',
 	time: 1721298600,
 };
 

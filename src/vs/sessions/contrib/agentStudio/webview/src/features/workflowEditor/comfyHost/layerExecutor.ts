@@ -10,13 +10,15 @@ import type { SingleNodeRunResult } from './nodeExecutor.js';
 
 export interface LayerNodeInput {
 	nodeId: string;
+	/** 快照归档键（= stageUid）。缺省回退 nodeId。 */
+	snapshotKey?: string;
 	values: Record<string, unknown>;
 	store: MediaSnapshotStore;
 }
 
 /** Emit the composite snapshot produced by the embedded artboard editor. */
 export async function runLayerEditorNode(input: LayerNodeInput): Promise<SingleNodeRunResult> {
-	const render = input.store.byNode(input.nodeId).find(e => e.media.kind === 'image');
+	const render = input.store.byNode(input.snapshotKey ?? input.nodeId).find(e => e.media.kind === 'image');
 	if (!render) {
 		return { promptId: '', status: 'error', error: '请先在节点弹窗中绘制并合成画面。', entries: [] };
 	}

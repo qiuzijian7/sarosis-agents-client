@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  Sarosis Agents — Canvas Viewport
+ *  Saros Agents — Canvas Viewport
  *
  *  Pan/zoom 容器 + DOM 节点渲染 + SVG 边渲染 + 交互。
  *  对齐 Mindvas Canvas API 的交互模型（选择、拖拽、子树拖拽、内联编辑）。

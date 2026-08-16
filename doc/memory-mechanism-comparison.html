@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>记忆机制对比 — MiMo-Code vs Sarosis</title>
+<title>记忆机制对比 — MiMo-Code vs Saros</title>
 <style>
   :root {
     --bg: #1a1a24;
@@ -108,14 +108,14 @@
 
 <header>
   <div class="kicker">Memory Mechanism Deep-Dive Comparison</div>
-  <h1>记忆机制对比 <span class="sub">MiMo-Code × Sarosis × agentmemory（原始项目）</span></h1>
-  <p class="dim" style="color:var(--fg-dim)">主体：MiMo-Code vs Sarosis 六维对比（分类 · 存储 · 沉淀 · 召回 · 遗忘 · 注入时机）｜ 附录：agentmemory 原始项目 vs 本项目移植版 ｜ 2026-07-24</p>
+  <h1>记忆机制对比 <span class="sub">MiMo-Code × Saros × agentmemory（原始项目）</span></h1>
+  <p class="dim" style="color:var(--fg-dim)">主体：MiMo-Code vs Saros 六维对比（分类 · 存储 · 沉淀 · 召回 · 遗忘 · 注入时机）｜ 附录：agentmemory 原始项目 vs 本项目移植版 ｜ 2026-07-24</p>
 </header>
 
 <h2>0. 总览：两种范式</h2>
 
 <table>
-  <tr><th style="width:130px"></th><th class="mimo">MiMo-Code</th><th class="saros">Sarosis（本项目）</th></tr>
+  <tr><th style="width:130px"></th><th class="mimo">MiMo-Code</th><th class="saros">Saros（本项目）</th></tr>
   <tr><td><b>范式</b></td>
     <td><b>Prompt-first</b>：记忆 = 提示词内容，文件即记忆</td>
     <td><b>Engine-first</b>：记忆 = 带生命周期的结构化数据</td></tr>
@@ -131,7 +131,7 @@
 </table>
 
 <div class="callout blue">
-<b>一句话总结</b>：MiMo 把记忆当作「提示词的一部分」——单文件全文注入，极简可移植但只增不减；Sarosis 把记忆当作「带生命周期的数据」——检索式注入 + 自动沉淀管线 + TTL/衰减/驱逐，可扩展但依赖网关进程与检索质量。
+<b>一句话总结</b>：MiMo 把记忆当作「提示词的一部分」——单文件全文注入，极简可移植但只增不减；Saros 把记忆当作「带生命周期的数据」——检索式注入 + 自动沉淀管线 + TTL/衰减/驱逐，可扩展但依赖网关进程与检索质量。
 </div>
 
 <h2>1. 记忆分类</h2>
@@ -148,7 +148,7 @@
     <p class="dim">对话侧只有 fork lineage（<code>[summary]-[text]</code> 段）+ compaction 摘要，<b>没有</b> episodic/semantic/procedural 概念。</p>
   </div>
   <div class="card saros">
-    <h4>Sarosis — 多维度类型体系</h4>
+    <h4>Saros — 多维度类型体系</h4>
     <ul>
       <li><b>9 类原生类型</b>：<span class="tag">working</span><span class="tag g">pattern</span><span class="tag w">fact</span><span class="tag">preference</span><span class="tag p">architecture</span><span class="tag d">bug</span><span class="tag o">workflow</span><span class="tag p">semantic</span><span class="tag o">procedural</span></li>
       <li><b>8 个固定槽位</b>：persona / user_preferences / project_context / tool_guidelines / guidance / pending_items / session_patterns / self_notes</li>
@@ -162,7 +162,7 @@
 <h2>2. 记忆存储</h2>
 
 <table>
-  <tr><th style="width:110px"></th><th class="mimo">MiMo-Code</th><th class="saros">Sarosis</th></tr>
+  <tr><th style="width:110px"></th><th class="mimo">MiMo-Code</th><th class="saros">Saros</th></tr>
   <tr><td><b>主存储</b></td>
     <td><code>~/.config/opencode/saros/memory/MEMORY.md</code>（单 markdown）</td>
     <td>网关进程 KV：<code>~/.vssaros/.agentmemory/state_store.db</code>（SQLite WAL；Node &lt; 22.5 降级 <code>kv_store.json</code>；数据根目录由主进程经 <code>AGENTMEMORY_DATA_DIR</code> 注入）</td></tr>
@@ -180,7 +180,7 @@
     <td>SQLite/JSON 双后端自动切换</td></tr>
 </table>
 
-<div class="flow"><span class="c-dim"># Sarosis 存储拓扑</span>
+<div class="flow"><span class="c-dim"># Saros 存储拓扑</span>
 <span class="c-a">renderer</span> ── HTTP POST /provider/&lt;method&gt; ──▶ <span class="c-g">gateway :3111</span>
                                                           │
         ┌─────────────────────────────────────────────────┤
@@ -205,7 +205,7 @@
     <p class="dim">沉淀质量完全取决于模型意愿——容易「什么都不记」。</p>
   </div>
   <div class="card saros">
-    <h4>Sarosis — 五级沉淀管线（自动 + 半自动）</h4>
+    <h4>Saros — 五级沉淀管线（自动 + 半自动）</h4>
     <ul>
       <li><span class="num" style="width:18px;height:18px;font-size:11px">0</span><b>turn observations</b>：每轮把非 system 消息写为 <code>episodic</code>（hash 去重，≤1500 字符）</li>
       <li><span class="num" style="width:18px;height:18px;font-size:11px">1</span><b>L1 episodic 提取</b>：LLM 抽取 durable facts（<code>{content, type:persona/episodic/instruction}</code>），每 3 turn 阈值</li>
@@ -216,7 +216,7 @@
   </div>
 </div>
 
-<div class="flow"><span class="c-dim"># Sarosis 引擎侧 ConsolidationPipeline</span>
+<div class="flow"><span class="c-dim"># Saros 引擎侧 ConsolidationPipeline</span>
 原始写入 ──▶ <span class="c-a">dedup</span>（Jaccard ≥ 0.95 判重）
          ──▶ <span class="c-g">supersede</span>（同主题新版替代旧版，旧版 isLatest=false）
          ──▶ <span class="c-w">merge</span>（相似条目合并）
@@ -227,7 +227,7 @@ session ──▶ <span class="c-p">autoCrystallize</span>（结晶为长期记�
 <h2>4. 记忆召回</h2>
 
 <table>
-  <tr><th style="width:110px"></th><th class="mimo">MiMo-Code</th><th class="saros">Sarosis</th></tr>
+  <tr><th style="width:110px"></th><th class="mimo">MiMo-Code</th><th class="saros">Saros</th></tr>
   <tr><td><b>主召回</b></td>
     <td><code>MEMORY.md</code> <b>全量原文</b>进 system prompt（无检索、无截断）</td>
     <td><code>loadContext</code>（session 首次）：短/长程分组 + <code>systemPrompt</code> 槽位 + relevantDocuments，<b>budget-aware</b></td></tr>
@@ -243,7 +243,7 @@ session ──▶ <span class="c-p">autoCrystallize</span>（结晶为长期记�
 </table>
 
 <div class="callout">
-<b>关键差异</b>：MiMo 是 <b>always-on 全量注入</b>（记忆 = prompt 前缀的一部分，随记忆增长线性膨胀）；Sarosis 是 <b>检索式注入</b>（按预算取相关子集，可扩展但依赖检索质量）。
+<b>关键差异</b>：MiMo 是 <b>always-on 全量注入</b>（记忆 = prompt 前缀的一部分，随记忆增长线性膨胀）；Saros 是 <b>检索式注入</b>（按预算取相关子集，可扩展但依赖检索质量）。
 </div>
 
 <h2>5. 记忆遗忘</h2>
@@ -259,7 +259,7 @@ session ──▶ <span class="c-p">autoCrystallize</span>（结晶为长期记�
     <p class="dim">长期会积累过时结论污染 prompt——它用「手动编辑」对冲。</p>
   </div>
   <div class="card saros">
-    <h4>Sarosis — 完整生命周期</h4>
+    <h4>Saros — 完整生命周期</h4>
     <ul>
       <li><b>TTL</b>：<code>forgetAfter</code> 字段；recall 时过滤；<code>autoForget</code> 物理删除过期项</li>
       <li><b>矛盾淘汰</b>：<code>autoForget</code>：Jaccard &gt; 阈值 → 旧条目 <code>isLatest=false</code>（软删除）</li>
@@ -282,7 +282,7 @@ session ──▶ <span class="c-p">autoCrystallize</span>（结晶为长期记�
   <li>无「session 首次注入」概念——是「每调用注入」</li>
 </ul>
 
-<h3>Sarosis — 多入口、分层注入</h3>
+<h3>Saros — 多入口、分层注入</h3>
 
 <table>
   <tr><th style="width:170px">时机</th><th>内容</th><th style="width:340px">形式</th></tr>
@@ -314,34 +314,34 @@ session ──▶ <span class="c-p">autoCrystallize</span>（结晶为长期记�
 <table>
   <tr><th style="width:30px">#</th><th>差异</th><th>影响</th></tr>
   <tr><td>1</td>
-    <td><b>全量 vs 检索式注入</b>：MiMo 每次调用注入 MEMORY.md 全文；Sarosis 按 budget 检索子集</td>
-    <td>MiMo 简单但随记忆增长 prompt 线性膨胀；Sarosis 可扩展但依赖检索质量</td></tr>
+    <td><b>全量 vs 检索式注入</b>：MiMo 每次调用注入 MEMORY.md 全文；Saros 按 budget 检索子集</td>
+    <td>MiMo 简单但随记忆增长 prompt 线性膨胀；Saros 可扩展但依赖检索质量</td></tr>
   <tr><td>2</td>
-    <td><b>手动 vs 自动沉淀</b>：MiMo 靠 agent 自觉编辑；Sarosis 五级管线自动 + LLM 半自动</td>
-    <td>MiMo 沉淀质量取决于模型意愿，容易「什么都不记」；Sarosis 容易「什么都记」需要遗忘对冲</td></tr>
+    <td><b>手动 vs 自动沉淀</b>：MiMo 靠 agent 自觉编辑；Saros 五级管线自动 + LLM 半自动</td>
+    <td>MiMo 沉淀质量取决于模型意愿，容易「什么都不记」；Saros 容易「什么都记」需要遗忘对冲</td></tr>
   <tr><td>3</td>
-    <td><b>无生命周期 vs 完整遗忘</b>：MiMo 只增不减；Sarosis TTL/衰减/矛盾淘汰/分层驱逐</td>
-    <td>MiMo 长期会积累过时结论污染 prompt；Sarosis 自动化但复杂度高</td></tr>
+    <td><b>无生命周期 vs 完整遗忘</b>：MiMo 只增不减；Saros TTL/衰减/矛盾淘汰/分层驱逐</td>
+    <td>MiMo 长期会积累过时结论污染 prompt；Saros 自动化但复杂度高</td></tr>
   <tr><td>4</td>
-    <td><b>文件 vs 引擎</b>：MiMo 单文件纯文本；Sarosis KV+索引+图谱</td>
-    <td>MiMo 零依赖可移植；Sarosis 需要网关进程但有混合检索与审计</td></tr>
+    <td><b>文件 vs 引擎</b>：MiMo 单文件纯文本；Saros KV+索引+图谱</td>
+    <td>MiMo 零依赖可移植；Saros 需要网关进程但有混合检索与审计</td></tr>
   <tr><td>5</td>
-    <td><b>注入时机</b>：MiMo 每调用全量；Sarosis session 首次 + volatile 分层 + 压缩期检索</td>
-    <td>Sarosis 与提示词缓存对齐设计耦合（volatile 层不打断前缀缓存），MiMo 靠锚定 session 日期保缓存</td></tr>
+    <td><b>注入时机</b>：MiMo 每调用全量；Saros session 首次 + volatile 分层 + 压缩期检索</td>
+    <td>Saros 与提示词缓存对齐设计耦合（volatile 层不打断前缀缓存），MiMo 靠锚定 session 日期保缓存</td></tr>
 </table>
 
 <h2>8. 互相可借鉴的点</h2>
 
 <div class="grid2">
   <div class="card saros">
-    <h4>Sarosis ← 借鉴 MiMo</h4>
+    <h4>Saros ← 借鉴 MiMo</h4>
     <ul>
       <li><b>用户可编辑的核心记忆文件</b>（MEMORY.md 式）：当前 Persona 槽位已接近，但用户不可直接编辑文件；可提供一个「核心记忆」markdown，用户/agent 都可编辑，注入优先级最高</li>
       <li><b>极简兜底</b>：网关不可用时降级为单文件全量注入（当前降级是「无记忆」）</li>
     </ul>
   </div>
   <div class="card mimo">
-    <h4>MiMo ← 借鉴 Sarosis</h4>
+    <h4>MiMo ← 借鉴 Saros</h4>
     <ul>
       <li><b>TTL / 矛盾淘汰</b>：防止 MEMORY.md 无限膨胀、过时结论污染 prompt</li>
       <li><b>budget-aware 检索式注入</b>：替代全量注入，记忆增长后仍可扩展</li>
@@ -363,7 +363,7 @@ session ──▶ <span class="c-p">autoCrystallize</span>（结晶为长期记�
     <td>VS Code 客户端<b>内置扩展</b>（<code>extensions/agentmemory-memory</code>）+ 自研轻量网关（<code>host.mjs</code>，Electron 子进程，<code>:3111</code>）</td></tr>
   <tr><td><b>面向用户</b></td>
     <td>通用：Claude Code / Copilot CLI / Cursor / Gemini CLI / Codex / Hermes / OpenClaw / OpenCode 等 10+ agent 框架（<code>plugin/</code> 目录各配 hooks+skills）</td>
-    <td>专用：仅 Sarosis 客户端（agentStudio 子系统）</td></tr>
+    <td>专用：仅 Saros 客户端（agentStudio 子系统）</td></tr>
   <tr><td><b>消费接口</b></td>
     <td><b>四路并存</b>：MCP server（53 tools + 6 resources + 3 prompts）、REST API（<b>128 个端点</b>，<code>src/triggers/api.ts</code> 123KB）、CLI（28 文件，<code>agentmemory start/doctor/connect…</code>）、Viewer 单页 Web UI（~200KB HTML，:3113）</td>
     <td><b>单路</b>：renderer <code>AgentMemoryProviderProxy</code> → HTTP <code>/provider/*</code> 方法路由 → 网关 in-process V2 引擎（~40 个 provider 方法）；网关仅有少量固定路由（<code>/health /ready /kv /search /embed /skill-md /provider</code>）</td></tr>
@@ -602,7 +602,7 @@ Claude Code / Cursor / … ── MCP/REST ──▶ <span class="c-g">iii engin
 <h3>10.1 注入机制总表</h3>
 
 <table>
-  <tr><th style="width:120px"></th><th class="mimo">MiMo-Code</th><th class="mimo">agentmemory 原版</th><th class="saros">Sarosis</th></tr>
+  <tr><th style="width:120px"></th><th class="mimo">MiMo-Code</th><th class="mimo">agentmemory 原版</th><th class="saros">Saros</th></tr>
   <tr><td><b>注入时机</b></td>
     <td><b>每次 LLM 调用</b>（主循环/subagent/fork/标题生成全部）</td>
     <td><b>3 个 hook 点</b>：session-start（首轮前）/ pre-tool-use（文件类工具前）/ pre-compact（压缩前）</td>
@@ -678,7 +678,7 @@ Claude Code      hook 脚本              agentmemory server(:3111)      LLM
     │─ Agent 主动 ──│─ MCP recall/search ─────▶│  <span class="c-a">← 默认召回路径</span>      │
     │◀──────────────│◀── 结果 ─────────────────│                       │</div>
 
-<h3>10.4 时序图：Sarosis（分层注入 + 缓存对齐）</h3>
+<h3>10.4 时序图：Saros（分层注入 + 缓存对齐）</h3>
 
 <div class="flow"><span class="c-dim"># 注入分三层，位置全在 system 区（冻结前缀之后、对话历史之前）</span>
 
@@ -718,13 +718,13 @@ Claude Code      hook 脚本              agentmemory server(:3111)      LLM
   <tr><td class="mimo" style="color:var(--accent2)"><b>agentmemory 原版</b></td>
     <td>默认零成本（capture-only，#143 事故后的保守姿态）；MCP 主动召回精准（agent 需要才取）；hook 生命周期清晰；注入发生在 user 侧不触碰 system 前缀</td>
     <td>注入依赖宿主框架 hook 协议（stdout prepend），<b>框架不支持就没有注入</b>；默认关 = 「记忆写了不用」，价值依赖 agent 主动召回意愿；enrich 模式被证明不可持续（每工具调用 +1000 tokens 被禁用）；三处注入点无统一预算协调</td></tr>
-  <tr><td class="saros" style="color:var(--accent)"><b>Sarosis</b></td>
+  <tr><td class="saros" style="color:var(--accent)"><b>Saros</b></td>
     <td>分层注入与<b>缓存架构对齐</b>（volatile 不打断前缀）；session 级显式去重；预算+配额双控（maxEntries/字符）；场景化补丁（plan 警告/压缩检索/Knot user 侧补丁）；事件链到 UI 卡片可见</td>
     <td>注入点分散（7 处）维护成本高；<code>&lt;agentmemory-context&gt;</code> 首 turn 注入使该 session 前缀一次性失效（每 session 付一次缓存代价）；多入口语义重叠（volatile Persona 与 agentmemory-context 的 systemPrompt 块可能内容相近）；复杂度带来调试难度（需专门日志链）</td></tr>
 </table>
 
 <div class="callout blue">
-<b>设计启示</b>：三方的注入演化都指向同一条规律——<b>注入成本必须与注入价值匹配</b>。MiMo 用「极简」换「必然注入」但牺牲扩展性；agentmemory 原版用「默认关」换「零成本」但牺牲被动可用性；Sarosis 曾用「分层 + 去重 + 预算」取平衡但复杂度失控——已于 2026-07-25 简化为原版姿态，并进一步把注入内容 1:1 对齐 <code>mem::context</code>（见下两条）。
+<b>设计启示</b>：三方的注入演化都指向同一条规律——<b>注入成本必须与注入价值匹配</b>。MiMo 用「极简」换「必然注入」但牺牲扩展性；agentmemory 原版用「默认关」换「零成本」但牺牲被动可用性；Saros 曾用「分层 + 去重 + 预算」取平衡但复杂度失控——已于 2026-07-25 简化为原版姿态，并进一步把注入内容 1:1 对齐 <code>mem::context</code>（见下两条）。
 </div>
 
 <div class="callout green">
@@ -749,7 +749,7 @@ Claude Code      hook 脚本              agentmemory server(:3111)      LLM
 </div>
 
 <div class="callout green">
-<b>已简化（2026-07-25）：Sarosis 注入姿态对齐 agentmemory 原版</b>——「capture 常开 + 注入默认关 + 召回走工具」：
+<b>已简化（2026-07-25）：Saros 注入姿态对齐 agentmemory 原版</b>——「capture 常开 + 注入默认关 + 召回走工具」：
 <ul style="margin:6px 0;padding-left:20px">
   <li><b>移除</b>：每轮冻结前缀中的 <code>memoryExtractGuide</code>（~1.5KB 指令文本）与 Knot user 消息补丁（原版 prompt 无任何每轮记忆指令；capture 靠 PostToolUse 钩子 + remember 工具，本项目等价通道为 turn observations + L1/L2/L3 自动管线 + memory_remember 工具）</li>
   <li><b>门控</b>：Persona Memory volatile 注入收编到 <code>AGENTMEMORY_INJECT_CONTEXT</code> 开关（与 <code>&lt;agentmemory-context&gt;</code> 同一开关，默认关）</li>
@@ -1257,7 +1257,7 @@ agentTurnExecutor（每轮开始）
 
 <h3>15.1 总体框架图（进程拓扑）</h3>
 
-<div class="flow"><span class="c-dim"># ═════════════════════════ IDE 进程（Sarosis Workbench / renderer）═════════════════════════</span>
+<div class="flow"><span class="c-dim"># ═════════════════════════ IDE 进程（Saros Workbench / renderer）═════════════════════════</span>
 
 ┌─ 用户交互层 ─────────────────────────────────────────────────────────┐
 │  memoryViewPane（记忆侧栏）   memoryDetailEditorPane（详情编辑器）      │
@@ -1568,7 +1568,7 @@ remember ──→ remember → mem:memories ─→ searchMemories ────�
 
 <h2>17. 移除 L1-L3 客户端管线，回归原版逻辑（2026-07-26）</h2>
 
-<p>结论：L1 Episodic / L2 Semantic / L3 Procedural 三级 LLM 级联是 Sarosis 自创、<b>原版不存在的机制</b>（原版无层级提炼概念；等价能力由 capture→compress→session_end 链 + 手动 consolidate-pipeline 覆盖）。2026-07-26 门控改造后 L1-L3 已默认全关（空转），故整层移除——<b>默认行为零变化</b>。</p>
+<p>结论：L1 Episodic / L2 Semantic / L3 Procedural 三级 LLM 级联是 Saros 自创、<b>原版不存在的机制</b>（原版无层级提炼概念；等价能力由 capture→compress→session_end 链 + 手动 consolidate-pipeline 覆盖）。2026-07-26 门控改造后 L1-L3 已默认全关（空转），故整层移除——<b>默认行为零变化</b>。</p>
 
 <h3>17.1 能力对照（删除后由谁接管）</h3>
 
@@ -1604,7 +1604,7 @@ remember ──→ remember → mem:memories ─→ searchMemories ────�
 </div>
 
 <footer>
-  <p>参考源码：MiMo-Code <code>G:\CustomWorkspaces\AIProjects\MiMo-Code\packages\opencode\src</code>（memory.ts / fork.ts / compaction.ts / instructions.ts / hook 系统）｜ Sarosis <code>extensions/agentmemory-memory/src</code>（amFunctions.ts / consolidation.ts / agentMemoryProviderV2.ts）+ <code>src/vs/sessions/contrib/agentStudio</code>（agentMemoryInjection.ts / agentContextRetrieval.ts / agentDriverService.ts / agentOSService.ts / agentTurnExecutor.ts）+ <code>extensions/agentmemory-gateway/host/host.mjs</code> ｜ agentmemory 原始项目 <code>G:\CustomWorkspaces\AIProjects\agentmemory</code>（src/functions/ 64 文件 261 注册函数、src/state/ 12 文件、src/hooks/ 15 hook 脚本、src/triggers/api.ts、src/mcp/server.ts、src/cli.ts、plugin/、benchmark/）</p>
+  <p>参考源码：MiMo-Code <code>G:\CustomWorkspaces\AIProjects\MiMo-Code\packages\opencode\src</code>（memory.ts / fork.ts / compaction.ts / instructions.ts / hook 系统）｜ Saros <code>extensions/agentmemory-memory/src</code>（amFunctions.ts / consolidation.ts / agentMemoryProviderV2.ts）+ <code>src/vs/sessions/contrib/agentStudio</code>（agentMemoryInjection.ts / agentContextRetrieval.ts / agentDriverService.ts / agentOSService.ts / agentTurnExecutor.ts）+ <code>extensions/agentmemory-gateway/host/host.mjs</code> ｜ agentmemory 原始项目 <code>G:\CustomWorkspaces\AIProjects\agentmemory</code>（src/functions/ 64 文件 261 注册函数、src/state/ 12 文件、src/hooks/ 15 hook 脚本、src/triggers/api.ts、src/mcp/server.ts、src/cli.ts、plugin/、benchmark/）</p>
   <p>生成日期：2026-07-24（9.6 节函数级对比、第 10 节注入专项对比、第 11 节存储频率优化方案补于 2026-07-25）｜ 数据目录已统一至 <code>~/.vssaros/.agentmemory/</code> ｜ 编排/治理模块与 sentinel 生命周期已于 2026-07-25 接线 ｜ 原版机制复刻完成于 2026-07-25（amReplication）｜ 第 12 节注入逻辑审计补于 2026-07-25（P0+P1+P2 同日落地）｜ 第 13 节全面差异重审补于 2026-07-25，复刻方案 P0+P1+P3 于 2026-07-26 落地（单实例场景功能完备）｜ 第 14 节注入与召回函数调用图对比、第 15 节本项目架构全解（框架图/模块详解/注入专项）、第 16 节运行日志驱动优化方案补于 2026-07-26 ｜ 第 17 节 L1-L3 客户端管线移除（回归原版逻辑）补于 2026-07-26</p>
 </footer>
 

@@ -11,13 +11,15 @@ import type { SingleNodeRunResult } from './nodeExecutor.js';
 
 export interface PosterNodeInput {
 	nodeId: string;
+	/** 快照归档键（= stageUid）。缺省回退 nodeId —— 见 nodeExecutor.SingleNodeRunOptions。 */
+	snapshotKey?: string;
 	values: Record<string, unknown>;
 	store: MediaSnapshotStore;
 }
 
 /** Emit the poster snapshot produced by the embedded editor. */
 export async function runPosterNode(input: PosterNodeInput): Promise<SingleNodeRunResult> {
-	const render = input.store.byNode(input.nodeId).find(e => e.media.kind === 'image');
+	const render = input.store.byNode(input.snapshotKey ?? input.nodeId).find(e => e.media.kind === 'image');
 	if (!render) {
 		return { promptId: '', status: 'error', error: '请先在节点弹窗中排版并生成海报。', entries: [] };
 	}

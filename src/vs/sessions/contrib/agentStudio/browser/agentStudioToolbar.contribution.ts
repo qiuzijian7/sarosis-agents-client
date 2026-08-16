@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// [Sarosis] This file is DISABLED — all toolbar icon registrations are now handled
+// [Saros] This file is DISABLED — all toolbar icon registrations are now handled
 // by agentStudio.contribution.ts → AgentStudioToolbarContribution.
 // Keeping the file so imports don't break, but the contribution is no longer registered.
 //

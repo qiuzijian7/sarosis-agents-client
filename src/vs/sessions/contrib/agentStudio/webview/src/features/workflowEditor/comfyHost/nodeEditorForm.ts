@@ -9,13 +9,13 @@
  *     audio → seed, …). ComfyTV inputs are dynamic upstream ports, so the form
  *     only exposes text/param inputs.
  *   - native (ComfyUI): widgets from the spec (text / number / combo).
- *   - react (Sarosis): no Comfy form (rendered by its own card).
+ *   - react (Saros): no Comfy form (rendered by its own card).
  *
  *  `values` are flat Record<string, unknown>; textarea/number/select all map to
  *  strings/numbers by the popup when submitted.
  *--------------------------------------------------------------------------------------------*/
 
-import { getStageOptions, type NodeSpec } from './registry.js';
+import { type NodeSpec } from './registry.js';
 
 export type EditorFieldKind = 'textarea' | 'text' | 'number' | 'select' | 'agent' | 'skill' | 'provider' | 'providerModel';
 
@@ -61,68 +61,68 @@ const STAGE_KIND_FIELDS: Record<string, Omit<EditorField, 'key'>[]> = {
 	],
 };
 
-// ── Sarosis (react) node parameter forms ─────────────────────────────────────
+// ── Saros (react) node parameter forms ─────────────────────────────────────
 // These are the orchestration nodes (prompt/agent/skill/tool/ifElse/switch/
 // askUser). Each has a flat parameter set persisted in `node.data`. The form
 // uses JSON textareas for structured fields (variables/skillArgs/toolParams/
 // branches/options) so a workflow can be round-tripped without data loss.
 
 const VSSAROS_FIELDS: Record<string, EditorField[]> = {
-	'Sarosis.Prompt': [
+	'Saros.Prompt': [
 		{ key: 'prompt', label: '提示词', kind: 'textarea', defaultValue: '', placeholder: '提示词模板，支持 {{input}} 等变量替换' },
 		{ key: 'variables', label: '变量 (JSON)', kind: 'textarea', defaultValue: '{}' },
 	],
-	'Sarosis.Agent': [
+	'Saros.Agent': [
 		{ key: 'agentId', label: 'Agent', kind: 'agent', defaultValue: '', placeholder: '选择 Agent' },
 		{ key: 'providerId', label: 'Provider ID', kind: 'text', defaultValue: '' },
 		{ key: 'modelId', label: 'Model ID', kind: 'text', defaultValue: '' },
 		{ key: 'prompt', label: '提示词', kind: 'textarea', defaultValue: '', placeholder: '发给 Agent 的任务模板，{{input}} = 上游输出' },
 	],
-	'Sarosis.Skill': [
+	'Saros.Skill': [
 		{ key: 'skillName', label: 'Skill', kind: 'skill', defaultValue: '', placeholder: '选择 Skill' },
 		{ key: 'skillArgs', label: '参数 (JSON)', kind: 'textarea', defaultValue: '{}' },
 	],
-	'Sarosis.Tool': [
+	'Saros.Tool': [
 		{ key: 'toolName', label: 'Tool 名称', kind: 'text', defaultValue: '' },
 		{ key: 'toolParams', label: '参数 (JSON)', kind: 'textarea', defaultValue: '{}' },
 	],
-	'Sarosis.IfElse': [
+	'Saros.IfElse': [
 		{ key: 'evaluationTarget', label: '评估目标', kind: 'text', defaultValue: '', placeholder: '例如 {{input.value}}' },
 		{ key: 'branches', label: '分支 (JSON)', kind: 'textarea', defaultValue: '[{"label":"True","condition":""},{"label":"False","condition":""}]' },
 	],
-	'Sarosis.Switch': [
+	'Saros.Switch': [
 		{ key: 'evaluationTarget', label: '评估目标', kind: 'text', defaultValue: '', placeholder: '例如 {{input.value}}' },
 		{ key: 'branches', label: '分支 (JSON)', kind: 'textarea', defaultValue: '[{"label":"Case 1","condition":""},{"label":"Default","condition":""}]' },
 	],
-	'Sarosis.AskUser': [
+	'Saros.AskUser': [
 		{ key: 'questionText', label: '问题文本', kind: 'text', defaultValue: 'Select an option' },
 		{ key: 'options', label: '选项 (JSON)', kind: 'textarea', defaultValue: '[{"label":"Option 1"},{"label":"Option 2"}]' },
 		{ key: 'multiSelect', label: '多选', kind: 'select', defaultValue: 'no', options: ['yes', 'no'] },
 	],
-	'Sarosis.ProviderPicker': [
+	'Saros.ProviderPicker': [
 		{ key: 'providerId', label: 'Provider', kind: 'provider', defaultValue: '' },
 		{ key: 'modelId', label: 'Model', kind: 'providerModel', defaultValue: '' },
 	],
 };
 
 /** JSON-typed field keys whose value is stored as a structured object/array. */
-const SAROSIS_JSON_KEYS = new Set(['variables', 'skillArgs', 'toolParams', 'branches', 'options']);
+const SAROS_JSON_KEYS = new Set(['variables', 'skillArgs', 'toolParams', 'branches', 'options']);
 
-/** Editor fields for a Sarosis (react) node type. */
-export function buildSarosisEditorFields(type: string): EditorField[] {
+/** Editor fields for a Saros (react) node type. */
+export function buildSarosEditorFields(type: string): EditorField[] {
 	return VSSAROS_FIELDS[type] ?? [];
 }
 
 /** Convert persisted `node.data` → flat editor values (JSON fields stringified). */
-export function sarosisDataToValues(type: string, data: Record<string, unknown> | undefined): Record<string, unknown> {
+export function sarosDataToValues(type: string, data: Record<string, unknown> | undefined): Record<string, unknown> {
 	const fields = VSSAROS_FIELDS[type] ?? [];
 	const out: Record<string, unknown> = {};
 	for (const f of fields) {
 		// Agent 用 agentConfig 子对象；ProviderPicker 等节点平铺存 providerId/modelId。
-		if ((f.key === 'providerId' || f.key === 'modelId') && type === 'Sarosis.Agent') {
+		if ((f.key === 'providerId' || f.key === 'modelId') && type === 'Saros.Agent') {
 			const cfg = (data?.agentConfig as { providerId?: string; modelId?: string } | undefined) ?? {};
 			out[f.key] = cfg[f.key as 'providerId' | 'modelId'] ?? '';
-		} else if (SAROSIS_JSON_KEYS.has(f.key)) {
+		} else if (SAROS_JSON_KEYS.has(f.key)) {
 			const raw = data?.[f.key];
 			out[f.key] = raw === undefined ? f.defaultValue : safeJsonStringify(raw);
 		} else if (f.key === 'multiSelect') {
@@ -135,15 +135,15 @@ export function sarosisDataToValues(type: string, data: Record<string, unknown> 
 }
 
 /** Convert flat editor values → persisted `node.data` (JSON fields parsed). */
-export function sarosisValuesToData(type: string, values: Record<string, unknown>): Record<string, unknown> {
+export function sarosValuesToData(type: string, values: Record<string, unknown>): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
 	for (const f of VSSAROS_FIELDS[type] ?? []) {
 		// Agent 用 agentConfig 子对象；ProviderPicker 等节点平铺存 providerId/modelId。
-		if ((f.key === 'providerId' || f.key === 'modelId') && type === 'Sarosis.Agent') {
+		if ((f.key === 'providerId' || f.key === 'modelId') && type === 'Saros.Agent') {
 			const cfg = (out.agentConfig as { providerId?: string; modelId?: string } | undefined) ?? {};
 			cfg[f.key as 'providerId' | 'modelId'] = String(values[f.key] ?? '');
 			out.agentConfig = cfg;
-		} else if (SAROSIS_JSON_KEYS.has(f.key)) {
+		} else if (SAROS_JSON_KEYS.has(f.key)) {
 			const v = values[f.key];
 			out[f.key] = typeof v === 'string' ? tryParseJson(v, v) : v;
 		} else if (f.key === 'multiSelect') {
@@ -180,8 +180,8 @@ export function buildEditorFields(spec: NodeSpec | undefined, excludePrompt = fa
 	const fields: EditorField[] = [];
 
 	if (spec.kind === 'react') {
-		// Sarosis orchestration nodes → per-type parameter form.
-		return buildSarosisEditorFields(spec.type);
+		// Saros orchestration nodes → per-type parameter form.
+		return buildSarosEditorFields(spec.type);
 	}
 
 	if (spec.kind === 'native') {
@@ -204,24 +204,36 @@ export function buildEditorFields(spec: NodeSpec | undefined, excludePrompt = fa
 
 	if (spec.kind === 'schema') {
 		// ComfyTV stage → prompt textarea + params.
-		// P3: prefer the live schema fields from /comfytv/caps (option_keys),
-		// falling back to the kind-based presets until a runner is connected.
+		// 完全不依赖 /comfytv/caps：表单字段走静态内置 STAGE_KIND_FIELDS（按 stageKind 预设）。
 		if (!excludePrompt) {
 			fields.push({
 				key: 'prompt', label: '提示词 (Prompt)', kind: 'textarea', defaultValue: '',
 				placeholder: '输入提示词，例如：a cat astronaut on the moon, 4k, detailed',
 			});
 		}
+		// Provider 后端 schema 节点（Saros.ModelImageGen）——仿 Image Stage 但
+		// 参数面板用 provider/model 联动下拉（provider → 该 provider 的文生图
+		// 模型），其余数字参数来自 widgets。
+		if (spec.backendKind === 'provider') {
+			for (const w of spec.widgets ?? []) {
+				if (w.name === 'prompt') { continue; } // 已在上方
+				if (w.type === 'COMBO') {
+					if (w.name === 'provider') {
+						fields.push({ key: 'provider', label: 'Provider', kind: 'provider', defaultValue: w.default ?? '' });
+					} else if (w.name === 'model') {
+						fields.push({ key: 'model', label: 'Model', kind: 'providerModel', defaultValue: w.default ?? '' });
+					} else {
+						fields.push({ key: w.name, label: w.name, kind: 'select', defaultValue: w.default ?? '', options: w.options });
+					}
+				} else if (w.type === 'INT' || w.type === 'FLOAT') {
+					fields.push({ key: w.name, label: w.name, kind: 'number', defaultValue: w.default ?? 0 });
+				}
+			}
+			return fields;
+		}
 		const stageKind = spec.comfyTV?.stageKind ?? 'image';
-		const capsFields = getStageOptions(stageKind);
-		if (capsFields && capsFields.length > 0) {
-			for (const o of capsFields) {
-				fields.push({ key: o.key, label: o.label, kind: o.kind, defaultValue: o.defaultValue ?? '', options: o.options });
-			}
-		} else {
-			for (const f of STAGE_KIND_FIELDS[stageKind] ?? STAGE_KIND_FIELDS.image) {
-				fields.push({ key: f.label.toLowerCase().replace(/\s+/g, '_'), ...f });
-			}
+		for (const f of STAGE_KIND_FIELDS[stageKind] ?? STAGE_KIND_FIELDS.image) {
+			fields.push({ key: f.label.toLowerCase().replace(/\s+/g, '_'), ...f });
 		}
 		return fields;
 	}

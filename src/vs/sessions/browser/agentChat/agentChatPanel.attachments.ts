@@ -11,7 +11,7 @@ protected override _handleFileSelection(): void {
 		this._fileInput.value = ''; // reset so same file can be re-selected
 	}
 
-protected override _addFiles(files: File[], isPasted = false): void {
+protected override _addFiles(files: File[], isPasted = false, pathByName?: Record<string, string>): void {
 		const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB per image
 		const MAX_FILE_SIZE = 30 * 1024 * 1024;  // 30MB per file
 		const MAX_TOTAL_SIZE = 30 * 1024 * 1024; // 30MB total
@@ -38,6 +38,7 @@ protected override _addFiles(files: File[], isPasted = false): void {
 						data: base64,
 						size: file.size,
 						isPasted,
+						filePath: pathByName?.[file.name],
 					};
 					const currentTotal = this._attachments.reduce((sum, a) => sum + a.size, 0);
 					if (currentTotal + file.size > MAX_TOTAL_SIZE) { return; }
@@ -58,6 +59,7 @@ protected override _addFiles(files: File[], isPasted = false): void {
 						data: base64,
 						size: file.size,
 						isPasted,
+						filePath: pathByName?.[file.name],
 					};
 					const currentTotal = this._attachments.reduce((sum, a) => sum + a.size, 0);
 					if (currentTotal + file.size > MAX_TOTAL_SIZE) { return; }
@@ -66,9 +68,9 @@ protected override _addFiles(files: File[], isPasted = false): void {
 					this._insertInlineAttachmentChip(att);
 				};
 				reader.readAsDataURL(file);
-			}
-		}
-	}
+				}
+				}
+				}
 
 protected override _resizeImage(file: File, maxWidth: number, maxHeight: number): Promise<string> {
 		return new Promise((resolve, reject) => {
@@ -137,7 +139,7 @@ protected override _createReadOnlyAttachmentChip(att: IChatAttachment): HTMLElem
 
 		const icon = this._createEl('span');
 		icon.className = 'inline-attachment-chip-icon';
-		icon.textContent = att.type === 'image' ? '\u{1F4F7}' : '\u{1F4C4}';
+		icon.textContent = att.type === 'image' ? '\u{1F4F7}' : att.type === 'folder' ? '\u{1F4C1}' : '\u{1F4C4}';
 		chip.appendChild(icon);
 
 		const label = this._createEl('span');
@@ -145,10 +147,18 @@ protected override _createReadOnlyAttachmentChip(att: IChatAttachment): HTMLElem
 		label.textContent = att.name;
 		chip.appendChild(label);
 
-		if (att.type === 'image' && att.data) {
+		// 点击 chip：有系统路径的资源在文件编辑器中打开；图片（含无路径的粘贴图）
+		// 回退到 lightbox；文件夹除外（无对应资源可打开）。
+		if (att.type !== 'folder') {
 			this._register(addDisposableListener(chip, EventType.CLICK, () => {
-				this._showLightbox(`data:${att.mimeType};base64,${att.data}`);
+				if (att.filePath && this._onOpenFile) {
+					this._onOpenFile(att.filePath);
+				} else if (att.type === 'image' && att.data) {
+					this._showLightbox(`data:${att.mimeType};base64,${att.data}`);
+				}
 			}));
+		}
+		if (att.type === 'image' && att.data) {
 			this._register(addDisposableListener(chip, EventType.MOUSE_ENTER, () => {
 				this._showImageTooltip(att, chip);
 			}));

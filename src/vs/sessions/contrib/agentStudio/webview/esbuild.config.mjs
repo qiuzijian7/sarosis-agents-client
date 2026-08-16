@@ -59,8 +59,13 @@ const buildOptions = {
 	define: {
 		'process.env.NODE_ENV': isWatch ? '"development"' : '"production"',
 	},
-	drop: isWatch ? [] : ['console', 'debugger'],
-	pure: isWatch ? [] : ['console.log', 'console.warn', 'console.error', 'console.info', 'console.debug', 'console.trace'],
+	// NOTE: do NOT drop the whole `console` — `console.warn`/`console.error`
+	// are the ONLY diagnostics for runtime issues in the webview (e.g. the
+	// "DOM card disappeared" syncOverlay tracing). Dropping them leaves no
+	// observability in production builds. We only strip the noisy debug
+	// channels via `pure` below.
+	drop: isWatch ? [] : ['debugger'],
+	pure: isWatch ? [] : ['console.log', 'console.info', 'console.debug', 'console.trace'],
 	// External - VS Code API is provided by the webview host
 	external: [],
 	logLevel: 'info',

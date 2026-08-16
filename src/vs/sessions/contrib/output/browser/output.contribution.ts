@@ -23,10 +23,10 @@ import {
 import { OUTPUT_VIEW_ID } from '../../../../workbench/services/output/common/output.js';
 
 /**
- * [Sarosis] Sidebar Output 视图容器
+ * [Saros] Sidebar Output 视图容器
  *
  * 背景：
- *   Sarosis 的桌面布局是双栏（Sidebar | Editor），不挂 Panel 区域，
+ *   Saros 的桌面布局是双栏（Sidebar | Editor），不挂 Panel 区域，
  *   原生 Output 视图被注册到 ViewContainerLocation.Panel，因此用户
  *   按 Ctrl+Shift+U 或在菜单选 View → Output 都看不到面板。
  *

@@ -163,3 +163,59 @@ export function buildRuntimeValueMap(args: {
 
 	return values;
 }
+
+/**
+ * Scan an entire workflow graph for `{{variable}}` references that the user must supply.
+ *
+ * This is the pure-function counterpart of `WorkflowExecutionService._collectTemplateVariables`:
+ * it scans every node's `data.prompt`, `data.skillArgs`, and `data.toolParams`, dedupes by name,
+ * and skips built-in / auto-resolved names. Unlike the runtime `extractHostVariables` (which is
+ * per-string and strips `input` via BUILTIN_VAR_NAMES), this function mirrors the host's variable
+ * collection semantics exactly — it DOES include `{{input}}` (the chat text) so the caller (the
+ * composer parameter form) can decide whether to surface it or hide it (chat mode supplies
+ * `input` from the message body instead of the form).
+ *
+ * Zero-dependency (structural node type only) so it can be imported from unit tests directly.
+ */
+export function collectWorkflowVariables(
+	nodes: ReadonlyArray<{ data?: Record<string, unknown> }> | undefined,
+): Array<{ name: string; defaultValue: string }> {
+	const seen = new Set<string>();
+	const vars: Array<{ name: string; defaultValue: string }> = [];
+	const regex = /\{\{(\$?\w+)\}\}/g;
+
+	// Mirrors workflowExecutionService._collectTemplateVariables isBuiltin.
+	// NOTE: `input` is intentionally NOT here — see doc comment above.
+	const isBuiltin = (n: string) => /^(taskDescription|taskTitle|workflowName|workflowDescription|\$prev|\$prev\.output|\$preNode|\$preNode\.output)$/.test(n);
+
+	const scan = (text: string) => {
+		regex.lastIndex = 0;
+		let match: RegExpExecArray | null;
+		while ((match = regex.exec(text)) !== null) {
+			const name = match[1];
+			if (isBuiltin(name)) { continue; }
+			if (name.startsWith('$')) { continue; } // any other $-prefixed alias
+			if (!seen.has(name)) {
+				seen.add(name);
+				vars.push({ name, defaultValue: '' });
+			}
+		}
+	};
+
+	for (const node of nodes ?? []) {
+		const data = node.data ?? {};
+		if (typeof data.prompt === 'string') { scan(data.prompt); }
+		if (data.skillArgs && typeof data.skillArgs === 'object') {
+			for (const value of Object.values(data.skillArgs)) {
+				if (typeof value === 'string') { scan(value); }
+			}
+		}
+		if (data.toolParams && typeof data.toolParams === 'object') {
+			for (const value of Object.values(data.toolParams)) {
+				if (typeof value === 'string') { scan(value); }
+			}
+		}
+	}
+
+	return vars;
+}

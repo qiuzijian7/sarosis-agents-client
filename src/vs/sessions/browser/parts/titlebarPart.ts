@@ -235,7 +235,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 					this._handleFeedback();
 				});
 
-				// [Sarosis] 移除 Toggle Output 按钮（用户要求）\n\n				// Panel 切换按钮 — 切换面板显示/隐藏（Ctrl+J），与 VS Code 原生行为一致
+				// [Saros] 移除 Toggle Output 按钮（用户要求）\n\n				// Panel 切换按钮 — 切换面板显示/隐藏（Ctrl+J），与 VS Code 原生行为一致
 				const panelBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
 				panelBtn.classList.add('codicon', 'codicon-panel-bottom');
 				panelBtn.title = 'Toggle Panel (Ctrl+J)';

@@ -21,7 +21,7 @@ import {
 import * as core from './gitVersionCore.js';
 
 const TRACKED_FILE = '.agent.md';
-const AUTHOR: core.GitAuthor = { name: 'Sarosis Agent', email: 'agent@sarosis.local' };
+const AUTHOR: core.GitAuthor = { name: 'Saros Agent', email: 'agent@sarosis.local' };
 const GITIGNORE: readonly string[] = [
 	'# Agent version management — exclude non-definition files',
 	'config.html',

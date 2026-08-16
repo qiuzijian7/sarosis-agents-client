@@ -6,7 +6,7 @@
 /**
  * Bundled MCP Server Presets — 从 Hermes-Agent 迁移的 MCP 服务器预置配置
  *
- * 这些预置定义了常见的 MCP 服务器启动配置，用户在 Sarosis 中
+ * 这些预置定义了常见的 MCP 服务器启动配置，用户在 Saros 中
  * 添加 MCP 服务器时可直接选择预置，简化配置流程。
  *
  * 资源文件化：
@@ -19,6 +19,17 @@
  * MCP 服务器传输类型
  */
 export type McpTransportType = 'stdio' | 'http';
+
+/**
+ * 内置 MCP 的"自动安装并配置"描述（editor pane 一键执行）。
+ * - checkCommands: 任一命令在 PATH 中存在 → 视为已安装（跳过安装步骤）。
+ * - install: 依次在 shell 中执行的安装命令（如 pip install …）。
+ * - envKeys: 可选环境变量提示（渲染为配置引导，如 COMFY_BIN）。
+ */
+export interface IMcpAutoInstall {
+	readonly checkCommands: readonly string[];
+	readonly install: readonly string[];
+}
 
 /**
  * MCP 服务器预置配置
@@ -36,6 +47,8 @@ export interface IMcpServerPreset {
 	readonly icon?: string;
 	/** Built-in MCP: auto-installed and auto-started on app launch. */
 	readonly builtin?: boolean;
+	/** 一键"自动安装并配置"流程（见 IMcpAutoInstall）。 */
+	readonly autoInstall?: IMcpAutoInstall;
 }
 
 // ── Hardcoded fallback (used when JSON loading fails) ─────────────────────
@@ -174,6 +187,19 @@ const FALLBACK_PRESETS: readonly IMcpServerPreset[] = [
 		transportType: "stdio",
 		command: "npx",
 		args: ["-y","@modelcontextprotocol/server-everything"],
+	},
+	{
+		id: "comfy-mcp",
+		name: "Comfy MCP",
+		description: "Drive the local ComfyUI engine via MCP (official Comfy-Org/comfy-mcp). Generate images/video/audio/3D, run workflows, search installed nodes & models, fetch outputs.",
+		transportType: "stdio",
+		command: "comfy-mcp",
+		icon: "🎨",
+		builtin: true,
+		autoInstall: {
+			checkCommands: ["comfy-mcp", "comfy"],
+			install: ['pip install "comfy-cli>=1.14.0"', "pip install comfy-mcp"],
+		},
 	},
 ];
 
