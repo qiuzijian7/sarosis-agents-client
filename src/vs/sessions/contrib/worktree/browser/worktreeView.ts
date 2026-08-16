@@ -29,6 +29,7 @@ import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IAccessibleViewInformationService } from '../../../../workbench/services/accessibility/common/accessibleViewInformationService.js';
 import { WorktreeItem, WorktreeTreeDataProvider, WorktreeRepoGroup, WorktreeTreeElement, isWorktreeRepoGroup } from './worktreeDataProvider.js';
 import { IWorktreeService } from '../common/worktreeService.js';
+import { slugify } from './worktreeService.js';
 import { IWorktreeCheckpointService } from '../common/worktreeCheckpointService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ISCMViewService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
@@ -48,6 +49,7 @@ class WorktreeTreeRenderer implements ICompressibleTreeRenderer<WorktreeItem, vo
 		private readonly _onDelete: (item: WorktreeItem) => void,
 		private readonly _onOpen: (item: WorktreeItem) => void,
 		private readonly _onCreateCheckpoint: (item: WorktreeItem) => void,
+		private readonly _onDebug: (item: WorktreeItem, e: MouseEvent) => void,
 	) { }
 
 	get templateId(): string { return WorktreeTreeRenderer.TEMPLATE_ID; }
@@ -65,6 +67,13 @@ class WorktreeTreeRenderer implements ICompressibleTreeRenderer<WorktreeItem, vo
 		const item = node.element;
 		templateData.label.textContent = item.label;
 		templateData.desc.textContent = item.description ?? '';
+
+		// 右键 worktree item → 「调试」菜单（oncontextmenu 赋值覆盖，避免重复注册）
+		templateData.element.oncontextmenu = (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this._onDebug(item, e);
+		};
 
 		// Set icon
 		const iconClasses = ThemeIcon.asClassNameArray(item.iconPath);
@@ -214,14 +223,21 @@ export class WorktreeViewPane extends ViewPane {
 	private _createContainer!: HTMLElement;
 	private _createInput!: HTMLInputElement;
 	private _createBranchSelect!: HTMLSelectElement;
-	private _createBranchInput!: HTMLInputElement;
-	private _createNewBranchBtn!: HTMLButtonElement;
-	private _isCreatingBranch!: boolean;
+	private _createBranchField!: HTMLElement;      // wraps label + select (existing-branch mode)
+	private _createPreviewBranch!: HTMLSpanElement;
+	private _createPreviewPath!: HTMLSpanElement;
 	private _createConfirmBtn!: HTMLButtonElement;
 	private _createCancelBtn!: HTMLButtonElement;
+	private _segNewBtn!: HTMLButtonElement;
+	private _segExistingBtn!: HTMLButtonElement;
+	private _useExisting = false;
 
 	// Deleting state tracking
 	private readonly _deletingWorktrees = new Set<string>();
+
+	// Worktree item right-click "调试" menu
+	private _debugMenuEl: HTMLElement | null = null;
+	private _debugMenuOutsideClickCleanup: (() => void) | null = null;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -250,6 +266,7 @@ export class WorktreeViewPane extends ViewPane {
 			(item) => this.onDeleteWorktree(item),
 			(item) => this.openWorktreeInNewWindow(item),
 			(item) => this._onCreateCheckpoint(item),
+			(item, e) => this._openWorktreeDebugMenu(item, e),
 		);
 		this.groupRenderer = new WorktreeRepoGroupRenderer();
 	}
@@ -312,54 +329,56 @@ export class WorktreeViewPane extends ViewPane {
 	}
 
 	private _buildCreateForm(): void {
-		// Name row
-		const nameRow = dom.append(this._createContainer, $('.worktree-create-row'));
-		const nameLabel = dom.append(nameRow, $('label.worktree-create-label'));
-		nameLabel.textContent = localize('worktreeCreateName', 'Name:');
-		nameLabel.style.cssText = 'white-space: nowrap;';
-		this._createInput = dom.append(nameRow, $('input.worktree-create-input')) as HTMLInputElement;
+		// Name field
+		const nameField = dom.append(this._createContainer, $('.worktree-create-field'));
+		const nameLabel = dom.append(nameField, $('label.worktree-create-field-label'));
+		nameLabel.textContent = localize('worktreeCreateName', 'Name');
+		this._createInput = dom.append(nameField, $('input.worktree-create-input')) as HTMLInputElement;
 		this._createInput.type = 'text';
 		this._createInput.placeholder = localize('worktreeCreateNamePlaceholder', 'worktree name');
-
-		// Branch row
-		const branchRow = dom.append(this._createContainer, $('.worktree-create-row'));
-		const branchLabel = dom.append(branchRow, $('label.worktree-create-label'));
-		branchLabel.textContent = localize('worktreeCreateBranch', 'Branch:');
-		branchLabel.style.cssText = 'white-space: nowrap;';
-
-		// Dropdown: existing branches
-		this._createBranchSelect = dom.append(branchRow, $('select.worktree-create-select')) as HTMLSelectElement;
-		this._createBranchSelect.style.flex = '1';
-		this._createBranchSelect.addEventListener('change', () => {
-			if (this._createBranchSelect.value === '__new__') {
-				this._createBranchInput.style.display = '';
-				this._createBranchInput.focus();
-				this._isCreatingBranch = true;
-			} else {
-				this._createBranchInput.style.display = 'none';
-				this._isCreatingBranch = false;
+		this._createInput.addEventListener('input', () => this._updateCreatePreview());
+		this._createInput.addEventListener('keydown', (e) => {
+			if (e.key === 'Enter') {
+				this._confirmCreate();
+			} else if (e.key === 'Escape') {
+				this._createContainer.style.display = 'none';
 			}
 		});
 
-		// Inline input: new branch name (hidden by default)
-		this._createBranchInput = dom.append(branchRow, $('input.worktree-create-input')) as HTMLInputElement;
-		this._createBranchInput.type = 'text';
-		this._createBranchInput.style.display = 'none';
-		this._createBranchInput.placeholder = localize('worktreeCreateNewBranchPlaceholder', 'new branch name');
+		// Branch source segmented control (replaces the old "Use existing branch" checkbox)
+		const segField = dom.append(this._createContainer, $('.worktree-create-field'));
+		const segLabel = dom.append(segField, $('label.worktree-create-field-label'));
+		segLabel.textContent = localize('worktreeCreateBranchSource', 'Branch source');
+		const seg = dom.append(segField, $('.worktree-create-segmented'));
+		this._segNewBtn = dom.append(seg, $('button.worktree-create-segment.worktree-create-segment-active')) as HTMLButtonElement;
+		this._segNewBtn.textContent = localize('worktreeCreateNewBranch', 'Create new branch');
+		this._segNewBtn.onclick = () => this._setMode(false);
+		this._segExistingBtn = dom.append(seg, $('button.worktree-create-segment')) as HTMLButtonElement;
+		this._segExistingBtn.textContent = localize('worktreeCreateUseExisting', 'Use existing branch');
+		this._segExistingBtn.onclick = () => this._setMode(true);
 
-		// "New Branch" button
-		this._createNewBranchBtn = dom.append(branchRow, $('button.worktree-create-btn')) as HTMLButtonElement;
-		this._createNewBranchBtn.textContent = localize('worktreeCreateNewBranchBtn', '+ New');
-		this._createNewBranchBtn.onclick = () => {
-			this._createBranchSelect.value = '__new__';
-			this._createBranchInput.style.display = '';
-			this._createBranchInput.focus();
-			this._isCreatingBranch = true;
-		};
+		// Existing branch selector (only visible in "existing" mode)
+		this._createBranchField = dom.append(this._createContainer, $('.worktree-create-field'));
+		this._createBranchField.style.display = 'none';
+		const branchLabel = dom.append(this._createBranchField, $('label.worktree-create-field-label'));
+		branchLabel.textContent = localize('worktreeCreateBranch', 'Branch');
+		this._createBranchSelect = dom.append(this._createBranchField, $('select.worktree-create-select')) as HTMLSelectElement;
+		this._createBranchSelect.addEventListener('change', () => this._updateCreatePreview());
+
+		// Live preview card (branch + path rows)
+		const preview = dom.append(this._createContainer, $('.worktree-create-preview'));
+		const branchRow = dom.append(preview, $('.worktree-create-preview-row'));
+		const branchKey = dom.append(branchRow, $('span.worktree-create-preview-key'));
+		branchKey.textContent = localize('worktreeCreateBranchLabel', 'Branch');
+		this._createPreviewBranch = dom.append(branchRow, $('span.worktree-create-preview-value')) as HTMLSpanElement;
+		const pathRow = dom.append(preview, $('.worktree-create-preview-row'));
+		const pathKey = dom.append(pathRow, $('span.worktree-create-preview-key'));
+		pathKey.textContent = localize('worktreeCreatePathLabel', 'Path');
+		this._createPreviewPath = dom.append(pathRow, $('span.worktree-create-preview-value')) as HTMLSpanElement;
 
 		// Buttons row
-		const btnRow = dom.append(this._createContainer, $('.worktree-create-row'));
-		this._createConfirmBtn = dom.append(btnRow, $('button.worktree-create-btn')) as HTMLButtonElement;
+		const btnRow = dom.append(this._createContainer, $('.worktree-create-actions'));
+		this._createConfirmBtn = dom.append(btnRow, $('button.worktree-create-btn.worktree-create-btn-primary')) as HTMLButtonElement;
 		this._createConfirmBtn.textContent = localize('worktreeCreateConfirm', 'Create');
 		this._createConfirmBtn.onclick = () => this._confirmCreate();
 
@@ -374,19 +393,8 @@ export class WorktreeViewPane extends ViewPane {
 	async showCreateInput(): Promise<void> {
 		this._createContainer.style.display = 'block';
 		this._createInput.value = '';
-		this._createBranchInput.value = '';
-		// Populate branch dropdown (defaults to "create new branch")
-		await this._populateBranchDropdown();
-		this._createInput.focus();
-	}
-
-	private async _populateBranchDropdown(): Promise<void> {
-		dom.clearNode(this._createBranchSelect);
-		// Default empty option
-		const defaultOpt = dom.append(this._createBranchSelect, $('option')) as HTMLOptionElement;
-		defaultOpt.value = '';
-		defaultOpt.label = localize('worktreeSelectBranchPlaceholder', '(select a branch or create new)');
-
+		this._setMode(false);
+		// Resolve repo root (for the existing-branch dropdown) and populate it
 		try {
 			let repoRoot = await this._worktreeService.getRepositoryRoot();
 			if (!repoRoot) {
@@ -395,6 +403,17 @@ export class WorktreeViewPane extends ViewPane {
 					repoRoot = folders[0].uri.fsPath;
 				}
 			}
+			await this._populateBranchDropdown(repoRoot);
+		} catch (e) {
+			console.warn('[WorktreeView] showCreateInput error:', e);
+		}
+		this._updateCreatePreview();
+		this._createInput.focus();
+	}
+
+	private async _populateBranchDropdown(repoRoot: string | undefined): Promise<void> {
+		dom.clearNode(this._createBranchSelect);
+		try {
 			if (repoRoot) {
 				const branches = await this._worktreeService.listGitBranches(repoRoot);
 				for (const branch of branches) {
@@ -406,13 +425,31 @@ export class WorktreeViewPane extends ViewPane {
 		} catch (e) {
 			console.warn('[WorktreeView] _populateBranchDropdown error:', e);
 		}
-		// "Create new branch" option (default selection)
-		const newOpt = dom.append(this._createBranchSelect, $('option')) as HTMLOptionElement;
-		newOpt.value = '__new__';
-		newOpt.label = localize('worktreeCreateNewBranchOption', '+ Create new branch...');
-		this._createBranchSelect.value = '__new__';
-		this._createBranchInput.style.display = '';
-		this._isCreatingBranch = true;
+	}
+
+	/** Live preview: branch is auto-derived from the name (branch = <slug>, no prefix). */
+	private _updateCreatePreview(): void {
+		const name = this._createInput.value.trim();
+		const slug = name ? slugify(name) : '';
+		if (this._useExisting) {
+			this._setPreviewValue(this._createPreviewBranch, this._createBranchSelect.value);
+		} else {
+			this._setPreviewValue(this._createPreviewBranch, slug);
+		}
+		this._setPreviewValue(this._createPreviewPath, slug ? `.worktrees/${slug}` : '');
+	}
+
+	private _setPreviewValue(el: HTMLSpanElement, text: string): void {
+		el.textContent = text || '—';
+		el.classList.toggle('worktree-create-preview-value-empty', !text);
+	}
+
+	private _setMode(useExisting: boolean): void {
+		this._useExisting = useExisting;
+		this._segNewBtn.classList.toggle('worktree-create-segment-active', !useExisting);
+		this._segExistingBtn.classList.toggle('worktree-create-segment-active', useExisting);
+		this._createBranchField.style.display = useExisting ? '' : 'none';
+		this._updateCreatePreview();
 	}
 
 	private async _confirmCreate(): Promise<void> {
@@ -423,14 +460,21 @@ export class WorktreeViewPane extends ViewPane {
 		}
 
 		let branch: string | undefined;
-		if (this._isCreatingBranch) {
-			branch = this._createBranchInput.value.trim();
+		if (this._useExisting) {
+			branch = this._createBranchSelect.value || undefined;
 			if (!branch) {
-				this.notificationService.warn(localize('worktreeCreateEmptyBranch', 'Please enter a branch name.'));
+				this.notificationService.warn(localize('worktreeCreateSelectBranch', 'Please select an existing branch.'));
 				return;
 			}
 		} else {
-			branch = this._createBranchSelect.value || undefined;
+			// New-branch mode: pass the slug explicitly so makeWorktreeInfo uses it
+			// as-is (override its `worktree/<name>` default fallback).
+			const slug = slugify(name);
+			if (!slug) {
+				this.notificationService.warn(localize('worktreeCreateNameInvalid', 'Please enter a valid name.'));
+				return;
+			}
+			branch = slug;
 		}
 
 		this._createConfirmBtn.disabled = true;
@@ -564,6 +608,59 @@ export class WorktreeViewPane extends ViewPane {
 			await this._commandService.executeCommand('vscode.openFolder', worktreeUri, { forceNewWindow: true });
 		} catch (e) {
 			this.notificationService.error(localize('worktreeOpenWindowError', 'Failed to open worktree in VS Code: {0}', (e as Error).message));
+		}
+	}
+
+	/**
+	 * Worktree item 右键 → 弹出自定义「调试」菜单（编译 worktree out/ 并启动其 VsSaros 实例）。
+	 * 复用主 repo 的 electron 二进制（与代码目录解耦），与聊天框下拉的「调试」入口一致。
+	 */
+	private _openWorktreeDebugMenu(item: WorktreeItem, e: MouseEvent): void {
+		this._closeWorktreeDebugMenu();
+
+		const menu = dom.append(document.body, $('.worktree-debug-menu'));
+		this._debugMenuEl = menu;
+
+		const debugItem = dom.append(menu, $('.worktree-debug-menu-item'));
+		dom.append(debugItem, $('span.worktree-debug-menu-icon', undefined, '🔧'));
+		dom.append(debugItem, $('span.worktree-debug-menu-label', undefined, localize('worktreeDebug', '调试')));
+
+		menu.style.position = 'fixed';
+		menu.style.left = `${e.clientX}px`;
+		menu.style.top = `${e.clientY}px`;
+		menu.style.zIndex = '1000';
+
+		debugItem.onclick = () => {
+			this._closeWorktreeDebugMenu();
+			this._debugWorktree(item);
+		};
+
+		// Outside click 关闭
+		const onClickOutside = (ev: MouseEvent) => {
+			if (!menu.contains(ev.target as Node)) {
+				this._closeWorktreeDebugMenu();
+			}
+		};
+		setTimeout(() => document.addEventListener('mousedown', onClickOutside, true), 0);
+		this._debugMenuOutsideClickCleanup = () => document.removeEventListener('mousedown', onClickOutside, true);
+	}
+
+	private _closeWorktreeDebugMenu(): void {
+		this._debugMenuOutsideClickCleanup?.();
+		this._debugMenuOutsideClickCleanup = null;
+		if (this._debugMenuEl) {
+			this._debugMenuEl.remove();
+			this._debugMenuEl = null;
+		}
+	}
+
+	private async _debugWorktree(item: WorktreeItem): Promise<void> {
+		this.notificationService.info(localize('worktreeDebugStarting', '正在编译并启动 worktree [{0}] ...', item.label));
+		const result = await this._worktreeService.launchDebug(item.path);
+		if (result.success) {
+			this.notificationService.info(localize('worktreeDebugStarted', '已启动 worktree [{0}] 的 VsSaros 实例', item.label));
+		} else {
+			this.notificationService.error(localize('worktreeDebugFailed', '启动 worktree 调试失败: {0}', result.stderr));
 		}
 	}
 

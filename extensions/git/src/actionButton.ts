@@ -111,10 +111,14 @@ export class ActionButton {
 		// Commit Changes (enabled) -> Publish Branch -> Sync Changes -> Commit Changes (disabled)
 		actionButton = actionButton ?? this.getPublishBranchActionButton() ?? this.getSyncChangesActionButton() ?? this.getCommitActionButton();
 
-		this.logger.trace(`[ActionButton][getButton] ${JSON.stringify({
+		console.log(`[Git][ActionButton][getButton] repo="${this.repository.root}" ${JSON.stringify({
 			command: actionButton?.command.command,
 			title: actionButton?.command.title,
-			enabled: actionButton?.enabled
+			enabled: actionButton?.enabled,
+			isSyncInProgress: this.state.isSyncInProgress,
+			isCheckoutInProgress: this.state.isCheckoutInProgress,
+			HEAD: this.state.HEAD?.name ?? '<none>',
+			upstream: this.state.HEAD?.upstream?.name ?? '<none>'
 		})}`);
 
 		return actionButton;

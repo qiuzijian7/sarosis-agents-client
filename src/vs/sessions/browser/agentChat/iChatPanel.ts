@@ -34,6 +34,8 @@ export interface IChatPanelCallbacks {
 	onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
 	onClearWorktree?: () => void;
 	onLoadWorktrees?: () => Promise<ReadonlyArray<IWorktreeItem>>;
+	/** 右键 worktree 项 → 「调试」：以该 worktree 目录启动 F5 调试（打开 worktree 开发窗口） */
+	onDebugWorktree?: (worktree: { path: string; branch: string }) => void;
 	onScrollToMessage?: (messageId: string) => void;
 	onNewSession?: () => void;
 	onOpenSession?: (sessionId: string) => void;

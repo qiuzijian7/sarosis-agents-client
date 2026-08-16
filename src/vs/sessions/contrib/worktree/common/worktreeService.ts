@@ -116,6 +116,17 @@ export interface IWorktreeService {
 	pruneWorktrees(repoPath: string): Promise<void>;
 
 	/**
+	 * Launch the worktree's VsSaros instance ("debug" the worktree): compile
+	 * the worktree's out/ (transpile-client) then start a dev-mode instance
+	 * that loads that worktree's source. Reuses the main repo's electron binary
+	 * (which is decoupled from the code directory), so no re-packaging needed.
+	 *
+	 * @param worktreePath Absolute directory path of the worktree.
+	 * @returns success flag + stderr on failure.
+	 */
+	launchDebug(worktreePath: string): Promise<{ success: boolean; stderr: string }>;
+
+	/**
 	 * Get the repository root path for the current workspace.
 	 * Returns undefined if no git repo is found.
 	 */

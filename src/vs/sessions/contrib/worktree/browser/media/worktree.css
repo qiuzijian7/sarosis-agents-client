@@ -117,66 +117,116 @@
 	padding: 0 4px;
 }
 
-/* Create worktree form */
+/* Create worktree form (polished) */
 .worktree-create-container {
-	padding: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px;
 	border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
 }
 
-.worktree-create-row {
+.worktree-create-field {
 	display: flex;
-	align-items: center;
-	margin-bottom: 6px;
+	flex-direction: column;
 	gap: 6px;
 }
 
-.worktree-create-label {
-	flex-shrink: 0;
-	font-size: 13px;
-	color: var(--vscode-foreground, #cccccc);
-	min-width: 50px;
+.worktree-create-field-label {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.2px;
+	color: var(--vscode-descriptionForeground, #8c8c8c);
 }
 
-.worktree-create-input {
-	flex: 1;
-	padding: 4px 8px;
-	font-size: 13px;
-	border: 1px solid var(--vscode-input-border, #3c3c3c);
-	background-color: var(--vscode-input-background, #3c3c3c);
-	color: var(--vscode-input-foreground, #cccccc);
-	outline: none;
-	border-radius: 3px;
-	min-width: 0;
-}
-
-.worktree-create-input:focus {
-	border-color: var(--vscode-focusBorder, #007fd4);
-}
-
+.worktree-create-input,
 .worktree-create-select {
 	flex: 1;
-	padding: 4px 8px;
+	min-width: 0;
+	padding: 6px 10px;
 	font-size: 13px;
-	border: 1px solid var(--vscode-input-border, #3c3c3c);
+	border: 1px solid transparent;
 	background-color: var(--vscode-input-background, #3c3c3c);
 	color: var(--vscode-input-foreground, #cccccc);
 	outline: none;
-	border-radius: 3px;
-	min-width: 0;
+	border-radius: 4px;
+	transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.worktree-create-input::placeholder {
+	color: var(--vscode-input-placeholderForeground, #888);
+}
+
+.worktree-create-input:focus,
+.worktree-create-select:focus {
+	border-color: var(--vscode-focusBorder, #007fd4);
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
+}
+
+/* Branch source segmented control */
+.worktree-create-segmented {
+	display: flex;
+	gap: 3px;
+	padding: 3px;
+	background-color: rgba(0, 0, 0, 0.2);
+	border-radius: 6px;
+}
+
+.worktree-create-segment {
+	flex: 1;
+	padding: 6px 10px;
+	font-size: 12px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground, #8c8c8c);
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background-color 120ms ease, color 120ms ease;
+}
+
+.worktree-create-segment:hover {
+	color: var(--vscode-foreground, #cccccc);
+}
+
+.worktree-create-segment-active,
+.worktree-create-segment-active:hover {
+	background-color: rgba(255, 255, 255, 0.1);
+	color: var(--vscode-foreground, #cccccc);
+	font-weight: 600;
+}
+
+/* Actions row: right-aligned with primary/secondary hierarchy */
+.worktree-create-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 2px;
 }
 
 .worktree-create-btn {
-	padding: 4px 12px;
-	font-size: 13px;
-	border: 1px solid var(--vscode-button-border, transparent);
-	background-color: var(--vscode-button-background, #0e639c);
-	color: var(--vscode-button-foreground, #ffffff);
+	padding: 5px 14px;
+	font-size: 12px;
+	border: 1px solid transparent;
+	background-color: var(--vscode-button-secondaryBackground, rgba(255, 255, 255, 0.08));
+	color: var(--vscode-button-secondaryForeground, #cccccc);
 	cursor: pointer;
-	border-radius: 3px;
+	border-radius: 4px;
 	white-space: nowrap;
+	transition: background-color 120ms ease;
 }
 
 .worktree-create-btn:hover {
+	background-color: var(--vscode-button-secondaryHoverBackground, rgba(255, 255, 255, 0.16));
+}
+
+.worktree-create-btn-primary {
+	background-color: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+}
+
+.worktree-create-btn-primary:hover {
 	background-color: var(--vscode-button-hoverBackground, #1c6ce0);
 }
 
@@ -287,4 +337,82 @@
 	font-size: 10px;
 	font-weight: 600;
 	padding: 0 5px;
+}
+
+/* Live preview card: branch + path rows */
+.worktree-create-preview {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 10px 12px;
+	margin-top: 4px;
+	background-color: rgba(255, 255, 255, 0.04);
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 6px;
+	font-size: 12px;
+}
+
+.worktree-create-preview-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.worktree-create-preview-key {
+	flex-shrink: 0;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #8c8c8c);
+}
+
+.worktree-create-preview-value {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	color: var(--vscode-foreground, #cccccc);
+	font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+	font-size: 12px;
+}
+
+.worktree-create-preview-value-empty {
+	color: var(--vscode-descriptionForeground, #8c8c8c);
+	font-style: italic;
+	font-family: inherit;
+}
+
+/* Worktree item 右键「调试」菜单 */
+.worktree-debug-menu {
+	position: fixed;
+	min-width: 140px;
+	background-color: var(--vscode-menu-background, #1f2428);
+	border: 1px solid var(--vscode-menu-border, rgba(128, 128, 128, 0.35));
+	border-radius: 6px;
+	padding: 4px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+	z-index: 1000;
+}
+
+.worktree-debug-menu-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 13px;
+	color: var(--vscode-menu-foreground, #e6edf3);
+	user-select: none;
+}
+
+.worktree-debug-menu-item:hover {
+	background-color: var(--vscode-menu-selectionBackground, #04395e);
+	color: var(--vscode-menu-selectionForeground, #ffffff);
+}
+
+.worktree-debug-menu-icon {
+	font-size: 14px;
+}
+
+.worktree-debug-menu-label {
+	flex: 1;
 }

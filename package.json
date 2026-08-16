@@ -27,7 +27,7 @@
     "compile-shared": "npm --prefix extensions/shared run compile",
     "compile-codebuddy-provider": "npm --prefix extensions/codebuddy-provider run compile",
     "compile-check-ts-native": "tsgo --project ./src/tsconfig.json --noEmit --skipLibCheck",
-    "watch": "npm-run-all2 -lp watch-client-transpile watch-client watch-extensions watch-copilot",
+    "watch": "npm-run-all2 -lp watch-client-transpile watch-client watch-extensions",
     "watchd": "deemon npm run watch",
     "watch-webd": "deemon npm run watch-web",
     "kill-watchd": "deemon --kill npm run watch",

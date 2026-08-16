@@ -18,8 +18,9 @@ import { timeout } from '../../../../base/common/async.js';
 
 /**
  * Slugify a name: lowercase, replace non-alphanumeric with hyphens, collapse multiple hyphens.
+ * Exported so the Worktree view can live-preview the derived branch/path for a typed name.
  */
-function slugify(name: string): string {
+export function slugify(name: string): string {
 	return name
 		.toLowerCase()
 		.trim()
@@ -336,10 +337,49 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			}
 		}
 
+		// Phase 2d: 修复 single-branch clone 的 fetch refspec。
+		// 若仓库是 single-branch clone（remote.origin.fetch 只跟踪默认分支，如
+		// +refs/heads/main:refs/remotes/origin/main），push 新分支后本地
+		// refs/remotes/origin/<branch> 永远无法创建，导致 git 扩展解析 upstream
+		// 失败（"upstream branch not stored as a remote-tracking branch"），
+		// publish 按钮永远显示 "Publish Branch"（看似"没反应"）。修正为通配符即可。
+		await this.ensureWildcardFetchRefspec(repoRoot);
+
 		this._onDidChangeWorktrees.fire();
 
 		// Boot phase (fire-and-forget, like opencode's fork pattern)
 		this.bootWorktree(info);
+	}
+
+	/**
+	 * 确保 `remote.origin.fetch` 使用通配符 refspec（`+refs/heads/*:refs/remotes/origin/*`）。
+	 *
+	 * 背景：single-branch clone（`git clone --single-branch` / `--depth 1`）会把 fetch
+	 * refspec 设为只跟踪默认分支（如 `+refs/heads/main:refs/remotes/origin/main`）。此时
+	 * push 新分支后，本地 `refs/remotes/origin/<branch>` 无法创建，`@{u}` 解析失败
+	 * （"upstream branch 'x' not stored as a remote-tracking branch"），git 扩展的
+	 * HEAD.upstream 恒为 undefined，publish 按钮不变成 Sync、看似"没反应"（实际已 push 成功）。
+	 */
+	private async ensureWildcardFetchRefspec(repoRoot: string): Promise<void> {
+		try {
+			let fetch = '';
+			try {
+				fetch = (await this.execGit(repoRoot, ['config', '--get', 'remote.origin.fetch'])).trim();
+			} catch {
+				// 无 origin remote 或无 fetch 配置 —— 无需修复
+				return;
+			}
+
+			if (!fetch || fetch.includes('*')) {
+				// 已含通配符，或为空，无需修正
+				return;
+			}
+
+			this.logService.info(`[WorktreeService] Fixing single-branch fetch refspec: "${fetch}" → wildcard`);
+			await this.execGit(repoRoot, ['config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*']);
+		} catch (e) {
+			this.logService.warn('[WorktreeService] ensureWildcardFetchRefspec failed:', e);
+		}
 	}
 
 	private async bootWorktree(info: IWorktreeInfo): Promise<void> {
@@ -635,6 +675,27 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			// which are already logged above; unexpected errors (IPC failure, etc.) are rare.
 			this.logService.debug('[WorktreeService] execGit: error:', err);
 			throw err;
+		}
+	}
+
+	/**
+	 * Launch a worktree's VsSaros instance ("debug"): compile the worktree's
+	 * out/ then start a dev-mode instance loading that worktree's source. The
+	 * heavy lifting (junction node_modules → transpile-client → detached spawn)
+	 * happens in the main process via the 'vscode:launchWorktreeDebug' IPC
+	 * handler, mirroring scripts/code.bat + dev-worktree.ps1.
+	 */
+	async launchDebug(worktreePath: string): Promise<{ success: boolean; stderr: string }> {
+		try {
+			this.logService.debug(`[WorktreeService] launchDebug: ${worktreePath}`);
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:launchWorktreeDebug', { worktreePath });
+			}
+			return { success: false, stderr: 'IPC bridge (vscode.ipcRenderer.invoke) not available in this context' };
+		} catch (err) {
+			this.logService.debug('[WorktreeService] launchDebug: error:', err);
+			return { success: false, stderr: (err as Error)?.message ?? String(err) };
 		}
 	}
 

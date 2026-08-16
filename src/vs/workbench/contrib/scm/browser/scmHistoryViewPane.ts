@@ -1975,6 +1975,28 @@ export class SCMHistoryViewPane extends ViewPane {
 		const historyItemsFilter = this._treeViewModel.getHistoryItemsFilter();
 
 		if (!historyProvider || !historyItemsFilter) {
+			// Fallback for sessions windows / worktree instances where the active
+			// SCM repository has no historyProvider (e.g. the built-in git extension
+			// resolves to nullExtensionDescription because its out/ is loaded via
+			// a worktree junction). The previous silent `return` made the branch
+			// picker button feel broken. Show a minimal All/Auto picker so the UI
+			// is responsive; selecting either still drives setHistoryItemsFilter,
+			// which is the best we can do without a real historyProvider.
+			const quickPick = this._quickInputService.createQuickPick<{ id: 'all' | 'auto'; label: string; description: string }>();
+			quickPick.placeholder = localize('scmGraphHistoryItemRefUnavailable', "No history provider available (git extension not active in this worktree)");
+			quickPick.items = [
+				{ id: 'all', label: localize('all', "All"), description: localize('allHistoryItemRefs', "All history item references") },
+				{ id: 'auto', label: localize('auto', "Auto"), description: localize('currentHistoryItemRef', "Current history item reference(s)") },
+			];
+			quickPick.show();
+			const accepted = await new Promise<string | undefined>(resolve => {
+				quickPick.onDidAccept(() => resolve(quickPick.selectedItems[0]?.id));
+				quickPick.onDidHide(() => resolve(undefined));
+			});
+			quickPick.hide();
+			if (accepted) {
+				this._treeViewModel.setHistoryItemsFilter(accepted as 'all' | 'auto');
+			}
 			return;
 		}
 

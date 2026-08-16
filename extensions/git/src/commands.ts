@@ -4349,6 +4349,7 @@ export class CommandCenter {
 	async publish(repository: Repository): Promise<void> {
 		const branchName = repository.HEAD && repository.HEAD.name || '';
 		const remotes = repository.remotes;
+		console.log(`[Git][publish] root="${repository.root}" branch="${branchName}" remotes=${remotes.length} upstream=${repository.HEAD?.upstream?.name ?? '<none>'}`);
 
 		if (remotes.length === 0) {
 			const publishers = this.model.getRemoteSourcePublishers();
@@ -5519,10 +5520,17 @@ export class CommandCenter {
 			let result: Promise<any>;
 
 			if (!options.repository) {
+				console.log(`[Git][CommandCenter] command="${id}" triggered (no repository option)`);
 				result = Promise.resolve(method.apply(this, args));
 			} else {
 				// try to guess the repository based on the first argument
+				{
+					const a0: any = args[0];
+					const a0Desc = a0 === undefined ? '<none>' : (typeof a0 === 'string' ? a0 : (a0.id ?? a0.rootUri?.toString() ?? a0.fsPath ?? JSON.stringify(a0)));
+					console.log(`[Git][CommandCenter] command="${id}" triggered, args0=${a0Desc}`);
+				}
 				const repository = this.model.getRepository(args[0]);
+				console.log(`[Git][CommandCenter] command="${id}" getRepository(args0) -> ${repository ? repository.root : 'undefined'} (willPick=${!repository})`);
 				let repositoryPromise: Promise<Repository | undefined>;
 
 				if (repository) {
@@ -5533,9 +5541,17 @@ export class CommandCenter {
 
 				result = repositoryPromise.then(repository => {
 					if (!repository) {
-						return Promise.resolve();
+						// 带 repository 参数的命令解析不到目标仓库（多仓库工作区下
+						// SourceControl 引用已失效，或用户取消了仓库选择）。原实现静默
+						// return，导致点击按钮毫无反应；改为显式提示并记录日志，便于定位。
+						const argId = args[0] && typeof args[0].id === 'string' ? args[0].id : undefined;
+						console.warn(`[Git][CommandCenter] "${id}": unable to resolve target repository (argId=${argId ?? '<none>'})`);
+						return window.showWarningMessage(
+							l10n.t('Unable to determine the target Git repository for "{0}". Please run the command again from the Source Control view of the desired repository.', id)
+						);
 					}
 
+					console.log(`[Git][CommandCenter] command="${id}" resolved repo="${repository.root}", invoking method`);
 					return Promise.resolve(method.apply(this, [repository, ...args.slice(1)]));
 				});
 			}

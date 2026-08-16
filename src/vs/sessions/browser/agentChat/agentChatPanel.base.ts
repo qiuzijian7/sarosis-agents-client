@@ -545,6 +545,9 @@ protected _worktreeDropdownEl: HTMLElement | null = null;
 
 protected _worktreeTrigger: HTMLElement | null = null;
 
+protected _worktreeContextMenuEl: HTMLElement | null = null;
+protected _worktreeContextMenuOutsideClick: IDisposable | null = null;
+
 protected _msgNavOverlayEl: HTMLElement | null = null;
 
 protected _msgNavTrigger: HTMLElement | null = null;
@@ -616,6 +619,8 @@ protected readonly _onSelectWorktree?: (worktree: { path: string; branch: string
 protected readonly _onClearWorktree?: () => void;
 
 protected readonly _onLoadWorktrees?: () => Promise<ReadonlyArray<IWorktreeItem>>;
+
+protected readonly _onDebugWorktree?: (worktree: { path: string; branch: string }) => void;
 
 protected readonly _onScrollToMessage?: (messageId: string) => void;
 
@@ -736,6 +741,7 @@ constructor(opts: {
 		onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
 		onClearWorktree?: () => void;
 		onLoadWorktrees?: () => Promise<ReadonlyArray<IWorktreeItem>>;
+		onDebugWorktree?: (worktree: { path: string; branch: string }) => void;
 		// 工作区选择器（输入区工具栏，位于 worktree 下拉框左侧）
 		onLoadWorkspaces?: () => Promise<ReadonlyArray<IWorkspaceItem>>;
 		onSelectWorkspace?: (workspaceId: string, workspaceName: string) => void;
@@ -818,6 +824,7 @@ constructor(opts: {
 		this._onSelectWorktree = opts.onSelectWorktree;
 		this._onClearWorktree = opts.onClearWorktree;
 		this._onLoadWorktrees = opts.onLoadWorktrees;
+		this._onDebugWorktree = opts.onDebugWorktree;
 		this._onLoadWorkspaces = opts.onLoadWorkspaces;
 		this._onSelectWorkspace = opts.onSelectWorkspace;
 		this._onScrollToMessage = opts.onScrollToMessage;
@@ -1930,6 +1937,14 @@ protected async _loadWorktreesAndRender(list: HTMLElement, loadingEl: HTMLElemen
 							}
 						}),
 					);
+					// 右键 worktree 项 → 显示「调试」上下文菜单
+					this._register(
+						addDisposableListener(item, EventType.CONTEXT_MENU, (e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							this._openWorktreeContextMenu(wt, e);
+						}),
+					);
 				}
 			}
 		} catch (err) {
@@ -1939,6 +1954,10 @@ protected async _loadWorktreesAndRender(list: HTMLElement, loadingEl: HTMLElemen
 	}
 
 protected _closeWorktreeDropdown(): void  { throw new Error('[moved-to-feature] _closeWorktreeDropdown'); }
+
+protected _openWorktreeContextMenu(wt: IWorktreeItem, e: MouseEvent): void  { throw new Error('[moved-to-feature] _openWorktreeContextMenu'); }
+
+protected _closeWorktreeContextMenu(): void  { throw new Error('[moved-to-feature] _closeWorktreeContextMenu'); }
 
 protected _getWorktreeLabel(): string  { throw new Error('[moved-to-feature] _getWorktreeLabel'); }
 

@@ -1,4 +1,4 @@
-# Sarosis Agents Client — Skill 系统分析
+# Saros Agents Client — Skill 系统分析
 
 > 分析日期：2026-05-18
 > 涉及模块：Agent Studio SkillRegistry
@@ -11,13 +11,13 @@
 
 | 子系统 | 核心位置 | 用途 |
 |--------|----------|------|
-| **Sarosis Agent Studio** | `src/vs/sessions/contrib/agentStudio/` | 多 Agent 工作台内的 Skill 注册/激活/注入 |
+| **Saros Agent Studio** | `src/vs/sessions/contrib/agentStudio/` | 多 Agent 工作台内的 Skill 注册/激活/注入 |
 
 架构分层：
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│  Agent Studio 业务层 (Sarosis 专属)                               │
+│  Agent Studio 业务层 (Saros 专属)                               │
 │     ISkillRegistry / SkillRegistry / ISkillDefinition             │
 │     SkillsViewPane (UI) / EmployeeSkill                          │
 └───────────────────────────────────────────────────────────────────┘
@@ -34,8 +34,8 @@ Skill 文件按以下四级优先级加载（后注册的同名 skill 覆盖前�
 ```
 优先级（低→高）：
   1. 内置常量    BUILTIN_SKILLS 硬编码数组（随产品发布，零 IO 开销）
-  2. 用户全局    <userRoamingDataHome>/saros/skills/<id>/SKILL.md
-  3. 工作区      <workspaceFolder>/.sarosworkspace/agents/<agentDir>/skills/<id>/SKILL.md
+  2. 用户全局    <userRoamingDataHome>/sarosis/skills/<id>/SKILL.md
+  3. 工作区      <workspaceFolder>/.sarosisworkspace/agents/<agentDir>/skills/<id>/SKILL.md
   4. 运行时注入  扩展通过 ISkillRegistry.registerSkill() 注册的内存 skill
 ```
 
@@ -49,7 +49,7 @@ async reload(agentId?: string): Promise<void> {
     this._skills.clear();
     this._loadBuiltins();                         // 1. 内置
     const userDir = URI.joinPath(                 // 2. 用户全局
-        this.environmentService.userRoamingDataHome, 'saros', 'skills');
+        this.environmentService.userRoamingDataHome, 'sarosis', 'skills');
     await this._scanFolder(userDir, 'user');
     for (const f of wsFolders) {                  // 3. 工作区（按 agent 实例隔离）
         if (agentId) {
@@ -68,7 +68,7 @@ async reload(agentId?: string): Promise<void> {
 
 ```typescript
 const SKILL_DIR_NAME = 'skills';  // 相对于 agents/<agentDir>/ 目录
-// 完整路径 = <workspaceFolder>/.sarosworkspace/agents/<agentDir>/skills/<id>/SKILL.md
+// 完整路径 = <workspaceFolder>/.sarosisworkspace/agents/<agentDir>/skills/<id>/SKILL.md
 ```
 
 ### 2.2 扩展插件 Skill 路径
@@ -290,7 +290,7 @@ export interface Employee {
 **autoSkill = true（默认）**：
 1. `resolveActivations()` 从所有来源（内置、全局、工作区）匹配 skill
 2. 匹配到的非工作区 skill 自动「采纳」到 agent 实例的 skills 目录
-3. 采纳 = 在 `.sarosworkspace/agents/{agentDir}/skills/{id}/` 下创建 `SKILL.md`（不覆盖已有）
+3. 采纳 = 在 `.sarosisworkspace/agents/{agentDir}/skills/{id}/` 下创建 `SKILL.md`（不覆盖已有）
 
 **autoSkill = false**：
 1. `resolveActivations()` 仅返回 `source === 'workspace'` 的 skill
@@ -394,10 +394,10 @@ this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 
 ```
 # 用户全局 skill
-<userRoamingDataHome>/saros/skills/my-skill/SKILL.md
+<userRoamingDataHome>/sarosis/skills/my-skill/SKILL.md
 
 # 工作区 skill（按 agent 实例隔离）
-<workspace>/.sarosworkspace/agents/<agentDir>/skills/my-skill/SKILL.md
+<workspace>/.sarosisworkspace/agents/<agentDir>/skills/my-skill/SKILL.md
 ```
 
 ### 方式二：运行时注册

@@ -251,3 +251,4 @@ dev/new-mcp-editor-mockup.html
 # Removed-extensions backup & local debug scripts (not for commit)
 _removed_extensions/
 scripts/_run_*.bat
+*_mockup*.html

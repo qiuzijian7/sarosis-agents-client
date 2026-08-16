@@ -47,6 +47,7 @@ import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { XtermCliPanel } from '../../../browser/agentChat/xtermTui/xtermCliPanel.js';
 import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
 import { IAgentStudioService, IAgentChatService, IAgentTaskBoardService, IChatAttachmentSend } from '../../../common/agentStudioService.js';
+import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { ICheckpointService } from '../common/checkpointService.js';
@@ -283,6 +284,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IBridgeService private readonly _bridgeService: IBridgeService,
 		@IViewsService private readonly _viewsService: IViewsService,
 		@IOpenerService private readonly _openerService: IOpenerService,
+		@IWorktreeService private readonly _worktreeService: IWorktreeService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, _storageService);
 	}
@@ -1013,6 +1015,18 @@ export class NativeChatEditorPane extends EditorPane {
 			// 参考 React WorktreeSwitcher 逻辑：下拉框打开时主动加载 worktree 列表
 			onLoadWorktrees: async () => {
 				return await this._getWorktrees();
+			},
+			// 右键 worktree 项 → 「调试」：编译 worktree out/ 并启动其 VsSaros 实例（复用主 exe）
+			onDebugWorktree: async (worktree: { path: string; branch: string }) => {
+				this._logService.debug(`[NativeChatEditorPane] onDebugWorktree: ${worktree.path} (${worktree.branch})`);
+				this._notificationService.notify({ severity: Severity.Info, message: `正在编译并启动 worktree [${worktree.branch}] ...` });
+				const result = await this._worktreeService.launchDebug(worktree.path);
+				if (result.success) {
+					this._notificationService.notify({ severity: Severity.Info, message: `已启动 worktree [${worktree.branch}] 的 VsSaros 实例` });
+				} else {
+					this._logService.error('[NativeChatEditorPane] onDebugWorktree failed:', result.stderr);
+					this._notificationService.notify({ severity: Severity.Error, message: `启动 worktree 调试失败: ${result.stderr}` });
+				}
 			},
 			// 工作区选择器回调
 			onLoadWorkspaces: async () => {

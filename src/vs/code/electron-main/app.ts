@@ -9,6 +9,7 @@ import { validatedIpcMain } from '../../base/parts/ipc/electron-main/ipcMain.js'
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import { hostname, release } from 'os';
 import { existsSync } from 'fs';
+import { dispatchWorktreeDebug } from './worktreeDebugStrategies.js';
 import { initWindowsVersionInfo } from '../../base/node/windowsVersion.js';
 import { VSBuffer } from '../../base/common/buffer.js';
 import { toErrorMessage } from '../../base/common/errorMessage.js';
@@ -672,6 +673,20 @@ export class CodeApplication extends Disposable {
 				}
 			});
 		});
+	});
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Launch a worktree ("debug" it) — dispatch by project type. The strategy
+	// resolver lives in worktreeDebugStrategies.ts; it supports vscode-fork /
+	// web / node / python (explicit .vscode/launch.json > marker auto-detect),
+	// with a folder-open fallback for unknown types.
+	// ─────────────────────────────────────────────────────────────────────────
+	validatedIpcMain.handle('vscode:launchWorktreeDebug', async (_event, payload: { worktreePath: string }) => {
+		const worktreePath = payload?.worktreePath?.trim();
+		if (!worktreePath || !existsSync(worktreePath)) {
+			return { success: false, stderr: `worktree path not found: ${worktreePath}` };
+		}
+		return dispatchWorktreeDebug(worktreePath, process.execPath);
 	});
 
 	// Renderer → main process HTTP fetch channel: bypasses CORS (the renderer's

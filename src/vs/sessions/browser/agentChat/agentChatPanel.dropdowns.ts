@@ -1,7 +1,7 @@
 import { IDisposable } from '../../../base/common/lifecycle.js';
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { mainWindow } from '../../../base/browser/window.js';
-import { IAgentChatMessage, IWorkspaceItem } from './agentChatTypes.js';
+import { IAgentChatMessage, IWorkspaceItem, IWorktreeItem } from './agentChatTypes.js';
 import { positionDropdownAbove, disposeOutsideClick, registerOutsideClickClose } from './modules/dropdownHelpers.js';
 import { renderHistoryOverlay } from './modules/historyOverlay.js';
 import { AgentChatPanelComposer } from './agentChatPanel.composer.js';
@@ -53,6 +53,44 @@ protected override _closeWorktreeDropdown(): void {
 		if (this._worktreeTrigger) { this._worktreeTrigger.classList.remove('open'); }
 		if (this._activeHeaderPanel === 'worktree') {
 			this._activeHeaderPanel = null;
+		}
+	}
+
+protected override _openWorktreeContextMenu(wt: IWorktreeItem, e: MouseEvent): void {
+		// 关闭已有右键菜单，避免叠加
+		this._closeWorktreeContextMenu();
+
+		const body = this._dropdownBody(this._worktreeTrigger);
+		const menu = append(body, $(".chat-worktree-context-menu"));
+		this._worktreeContextMenuEl = menu;
+
+		const debugItem = append(menu, $(".chat-worktree-context-menu-item"));
+		append(debugItem, $("span.chat-worktree-context-menu-icon", undefined, '🔧'));
+		append(debugItem, $("span.chat-worktree-context-menu-label", undefined, '调试'));
+
+		// 定位到鼠标右键位置（与 dropdown 同一 viewport）
+		menu.style.position = 'fixed';
+		menu.style.left = `${e.clientX}px`;
+		menu.style.top = `${e.clientY}px`;
+		menu.style.zIndex = '1000';
+
+		this._register(addDisposableListener(debugItem, EventType.CLICK, () => {
+			this._closeWorktreeContextMenu();
+			this._closeWorktreeDropdown();
+			this._onDebugWorktree?.({ path: wt.path, branch: wt.branch });
+		}));
+
+		this._worktreeContextMenuOutsideClick = this._registerOutsideClickClose(
+			menu, null, () => this._closeWorktreeContextMenu()
+		);
+	}
+
+protected override _closeWorktreeContextMenu(): void {
+		this._disposeOutsideClick(this._worktreeContextMenuOutsideClick);
+		this._worktreeContextMenuOutsideClick = null;
+		if (this._worktreeContextMenuEl) {
+			this._worktreeContextMenuEl.remove();
+			this._worktreeContextMenuEl = null;
 		}
 	}
 

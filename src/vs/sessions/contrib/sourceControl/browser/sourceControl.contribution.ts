@@ -243,33 +243,46 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 
 		// Listen for active workspace switches via the service event (unified path).
 		// This drives SCM multi-repo sync whenever setActiveWorkspace / addRelatedFolder fires.
+		//
+		// CRITICAL: do NOT set _hasGitRepoKey.set(false) when workspaceId is undefined. The
+		// active-workspace-changed event commonly fires with undefined both at startup ("no
+		// active yet") and during multi-workspace transitions ("old workspace cleared").
+		// Synchronously setting false here immediately hides the Worktree view (whose
+		// `when` requires SessionsHasGitRepo), and even if a workspaceId is set moments
+		// later in the same tick, there is a real window where the view disappears. The
+		// authoritative decision on hasGitRepo must come from _updateGitContextKey()
+		// after the folder change, when we can actually stat .git in the new folder set.
 		this._register(this.agentStudioService.onDidChangeActiveWorkspace((workspaceId: string | undefined) => {
 			this._activeWorkspaceId = workspaceId;
 			if (workspaceId) {
 				this._syncWorkspaceFolder(workspaceId);
-			} else {
-				this._hasGitRepoKey.set(false);
 			}
 		}));
 
 		// When VS Code workspace folders change, update git detection context key
-		// and refresh the worktree view
+		// and refresh the worktree view.
 		//
-		// ALSO re-run the full _initialSync() so that setUrisTrust + addFolders
-		// run for the active workspace's roots. Without this, if agentStudioService
-		// was not yet ready at BlockStartup (so the original _initialSync took the
-		// "no activeId" else-branch and never called _syncWorkspaceFolder) AND the
-		// user has not switched the active workspace since, the git extension's
-		// openRepository() never gets the workspace-trusted roots it needs to
-		// register an SCM provider, and the Changes view shows "No Git repository
-		// found" even though .git exists. The onDidChangeWorkspaceFolders event
-		// fires reliably whenever any code path (sessions/agentStudio) injects the
-		// workspace folder into the synthetic workspace, so this is the right hook
-		// to re-drive the trust injection. _syncWorkspaceFolder is idempotent
-		// (sameAsCurrent + _isUriTrusted filter), so this is safe to fire often.
-		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => {
-			this._initialSync();
-			this._updateGitContextKey();
+		// CRITICAL: We must NOT call _initialSync() here. _initialSync()'s else-branch
+		// (when agentStudioService.getActiveWorkspaceId() returns undefined, e.g. when
+		// the listener fires during BlockStartup before the service is ready) synchronously
+		// sets _hasGitRepoKey.set(false). That immediately makes SessionsHasGitRepo=false,
+		// which removes the Worktree view (whose `when` condition requires
+		// SessionsHasGitRepo). The subsequent async _updateGitContextKey() would
+		// normally re-set it to true after stat'ing .git, but there a window where the
+		// view disappears, and if agentStudioService never becomes ready on this path,
+		// the view stays gone.
+		//
+		// Instead, drive _updateGitContextKey() (which is the authoritative decision on
+		// hasGitRepo based on .git presence) and, if we already know the active
+		// workspace, re-drive _syncWorkspaceFolder() so the trust injection that lets
+		// the git extension's openRepository() register an SCM provider still runs on
+		// folder changes.
+		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(async () => {
+			await this._updateGitContextKey();
+			const activeId = this._activeWorkspaceId ?? this.agentStudioService.getActiveWorkspaceId();
+			if (activeId) {
+				await this._syncWorkspaceFolder(activeId);
+			}
 		}));
 
 		// When a repository is registered asynchronously (the git extension opens
@@ -299,11 +312,15 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 			if (activeId) {
 				this._activeWorkspaceId = activeId;
 				await this._syncWorkspaceFolder(activeId);
-			} else {
-				this._hasGitRepoKey.set(false);
 			}
+			// else: do NOT set _hasGitRepoKey.set(false) here. The onDidChangeWorkspaceFolders
+			// listener (registered above) will run _updateGitContextKey() which is the
+			// authoritative decision on hasGitRepo based on .git presence in the workspace
+			// folders. Setting false here would cause a synchronous false→true flicker that
+			// hides the Worktree view (whose `when` requires SessionsHasGitRepo).
 		} catch {
-			this._hasGitRepoKey.set(false);
+			// Real errors (e.g. agentStudioService unavailable) are still surfaced by the
+			// listener's subsequent _updateGitContextKey() call; we don't mutate the key here.
 		}
 	}
 

@@ -7327,6 +7327,43 @@
 	color: var(--vscode-gitDecoration-conflictingResourceForeground, #bd2c00);
 }
 
+/* Worktree 右键菜单（「调试」按钮） */
+.chat-worktree-context-menu {
+	position: fixed;
+	min-width: 140px;
+	background-color: var(--vscode-menu-background, #1f2428);
+	border: 1px solid var(--vscode-menu-border, rgba(128, 128, 128, 0.35));
+	border-radius: 6px;
+	padding: 4px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+	z-index: 1000;
+}
+
+.chat-worktree-context-menu-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 13px;
+	color: var(--vscode-menu-foreground, #e6edf3);
+	user-select: none;
+}
+
+.chat-worktree-context-menu-item:hover {
+	background-color: var(--vscode-menu-selectionBackground, #04395e);
+	color: var(--vscode-menu-selectionForeground, #ffffff);
+}
+
+.chat-worktree-context-menu-icon {
+	font-size: 14px;
+}
+
+.chat-worktree-context-menu-label {
+	flex: 1;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    Workspace dropdown (input-area toolbar)
    ═══════════════════════════════════════════════════════════════════ */

@@ -2676,6 +2676,7 @@ export class Repository implements Disposable {
 		try {
 			await this.repository.push(remote, refspec, setUpstream, followTags, forcePushMode, tags);
 		} catch (err) {
+			console.error(`[Git][_push] FAILED remote="${remote}" refspec="${refspec}" setUpstream=${setUpstream} gitErrorCode=${(err as any)?.gitErrorCode ?? '<none>'} msg=${(err as any)?.message ?? ''} stderr=${(err as any)?.stderr ?? ''}`);
 			if (!remote || !refspec) {
 				throw err;
 			}
@@ -2722,6 +2723,7 @@ export class Repository implements Disposable {
 			return result;
 		} catch (err) {
 			error = err;
+			console.error(`[Git][run] operation=${operation.kind} FAILED msg=${(err as any)?.message ?? ''} stderr=${(err as any)?.stderr ?? ''}`);
 
 			if (err instanceof GitError && err.gitErrorCode === GitErrorCodes.NotAGitRepository) {
 				this.state = RepositoryState.Disposed;
