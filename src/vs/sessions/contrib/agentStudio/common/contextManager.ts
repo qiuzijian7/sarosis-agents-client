@@ -1977,10 +1977,24 @@ ${conversationText}
 		// P3: 冷却期检查。上次压缩后 60 秒内不再次压缩，避免压缩后几条消息又超阈值
 		// 导致频繁压缩抖动。仅在已有压缩历史时生效（首次压缩不受限）。
 		// 高水位豁免：token 已逼近窗口时无视冷却，继续压缩直至脱离溢出风险。
+		// 重新超阈值豁免（2026-08-17 日志 1786981850420，HTTP 400 code 11133）：
+		// 压缩后 token 降下来（60526→34903），但冷却期内继续迭代又涨回超阈值
+		// （60319→61543），此时若仍被冷却期拦截，token 会持续增长直到超服务端
+		// maxInputTokens → 400。冷却期本意是防"压缩后短时抖动重复压缩"，而非
+		// 坐视 token 重新逼近溢出——故 effectiveTokens 已重新 ≥ thresholdTokens
+		// 时冷却失效，允许二次压缩。
 		if (this._lastCompressionTime > 0) {
 			const elapsed = Date.now() - this._lastCompressionTime;
-			if (!highPressure && force !== true && elapsed < ContextManager.COMPRESSION_COOLDOWN_MS) {
+			const reExceededThreshold = effectiveTokens >= thresholdTokens;
+			if (!highPressure && force !== true && !reExceededThreshold && elapsed < ContextManager.COMPRESSION_COOLDOWN_MS) {
 				return noop(`cooldown (${Math.round((ContextManager.COMPRESSION_COOLDOWN_MS - elapsed) / 1000)}s remaining)`);
+			}
+			if (reExceededThreshold && elapsed < ContextManager.COMPRESSION_COOLDOWN_MS) {
+				this._log('warn',
+					`[ContextManager][Compression] COOLDOWN bypassed: effectiveTokens=${effectiveTokens} re-exceeded ` +
+					`threshold=${thresholdTokens} within cooldown window (${Math.round(elapsed / 1000)}s of ${ContextManager.COMPRESSION_COOLDOWN_MS / 1000}s) — ` +
+					`re-compressing to avoid server maxInputTokens overflow`
+				);
 			}
 		}
 
@@ -2227,7 +2241,14 @@ ${conversationText}
 				`(projectedRealAfter=${Math.round(_projectedRealAfter)}, effectiveTokens=${effectiveTokens}) ` +
 				`rough=${(savingRatio * 100).toFixed(1)}%`
 			);
-			savingRatio = _realSaving;
+			// 投影公式异常防护（2026-08-17 日志 1786981850420）：R = effectiveTokens/estimatedTokens
+			// 包含了工具 schema + system prompt 的固定开销放大，套到压缩后的消息文本
+			// estimatedTokensAfter 上会把该放大重复计入，导致 projectedRealAfter 虚高、
+			// _realSaving 为负（-23.5%）。压缩物理上不可能让 token 变多，负节省即公式失效，
+			// 此时回退粗估口径（rough），避免有效压缩被误判为 LOW-EFFICIENCY 触发 anti-thrashing。
+			if (_realSaving >= 0) {
+				savingRatio = _realSaving;
+			}
 		}
 		// P1-3 深度模式（2026-08-11，日志 1786432061200）：常规压缩（LLM 摘要 + 保护头尾截断）
 		// 低效且 token 压力仍高时，对压缩产物再做一次「逐轮剪枝硬清除」兜底。
@@ -3130,6 +3151,12 @@ ${conversationText}
 	 *      （压缩保护头/尾切割、或历史回灌时常见）。若 assistant 剥离后既无
 	 *      文本也无有效 tool_calls，则整条丢弃。
 	 *   2. 丢弃引用不到任何存活 assistant.toolCalls 的孤立 tool 消息。
+	 *   3. **相邻性重排**（2026-08-17，日志 1786981850420）：把被其它 role 消息
+	 *      劈开的 tool 结果移回紧跟 assistant.tool_calls 之后，插入者顺移到 tool
+	 *      序列末尾之后。协议要求 assistant.tool_calls=N 后必须紧跟连续 N 条 tool；
+	 *      并行工具批次中若在结果之间注入护栏 reminder（role:'user'），即形成
+	 *      `[assistant tc=4][tool][tool][tool][user][tool]` 这种"配对齐全但顺序非法"
+	 *      的形态——步骤 1/2 都会放行（因为配对存在），却仍被网关 400 拒绝。
 	 *
 	 * OpenAI / IOA 网关强制「assistant.tool_calls 必须被对应 tool 结果应答」，
 	 * 二者任一失配都会触发 HTTP 400 (code 11133 invalid_parameter_value)，
@@ -3181,7 +3208,7 @@ ${conversationText}
 		}
 
 		// 3) 第二遍：丢弃 tool_call id 已不再存活的孤立 tool 消息
-		return interim.filter(m => {
+		const paired = interim.filter(m => {
 			if (m.role === 'tool') {
 				const refId = (m as unknown as { toolCallId?: string }).toolCallId;
 				if (refId && !keptToolCallIds.has(refId)) {
@@ -3190,6 +3217,56 @@ ${conversationText}
 			}
 			return true;
 		});
+
+		// 4) 第三遍：相邻性重排。协议要求 assistant.tool_calls=N 之后紧跟连续 N 条 tool，
+		//    中间不得插入其它 role。若被劈开，把属于该 assistant 的 tool 结果全部上提到
+		//    紧邻位置（保持它们彼此的相对顺序），插入者顺移到 tool 序列之后。
+		const out: T[] = [];
+		let i = 0;
+		while (i < paired.length) {
+			const m = paired[i];
+			const tcs = m.role === 'assistant'
+				? (m as unknown as { toolCalls?: Array<{ id?: string }> }).toolCalls
+				: undefined;
+			if (!Array.isArray(tcs) || tcs.length === 0) {
+				out.push(m);
+				i++;
+				continue;
+			}
+			// 该 assistant 期待应答的 tool_call id 集合
+			const expecting = new Set(tcs.map(tc => tc.id).filter((id): id is string => !!id));
+			out.push(m);
+			i++;
+			if (expecting.size === 0) { continue; }
+			// 向后扫描：收集属于本批的 tool 结果与被夹在其中的“插入者”，
+			// 直到本批 tool 结果全部收齐（或遇到下一条带 tool_calls 的 assistant / 扫描结束）。
+			const batchTools: T[] = [];
+			const interlopers: T[] = [];
+			let j = i;
+			while (j < paired.length && expecting.size > 0) {
+				const n = paired[j];
+				const nTcs = n.role === 'assistant'
+					? (n as unknown as { toolCalls?: Array<{ id?: string }> }).toolCalls
+					: undefined;
+				// 遇到下一个工具批次的 assistant → 停止（本批剩余 id 已在步骤 1/2 保证有应答，
+				// 理论上不会走到这里；防御性中断避免跨批次搬运）
+				if (Array.isArray(nTcs) && nTcs.length > 0) { break; }
+				const refId = n.role === 'tool'
+					? (n as unknown as { toolCallId?: string }).toolCallId
+					: undefined;
+				if (refId && expecting.has(refId)) {
+					batchTools.push(n);
+					expecting.delete(refId);
+				} else {
+					interlopers.push(n);
+				}
+				j++;
+			}
+			// 先放本批 tool 结果（连续紧邻 assistant），再放插入者
+			out.push(...batchTools, ...interlopers);
+			i = j;
+		}
+		return out;
 	}
 
 	/**

@@ -1936,15 +1936,29 @@ interface ITurnContext {
 					// 捕获后同步写入实例字段，跨 turn 持久化；下一轮 L1390 直接读取。
 					if (delta.type === 'usage' && delta.usage) {
 						const u = delta.usage;
-						const realPrompt = (u.inputTokens ?? 0) + (u.cachedTokens ?? 0) + (u.cacheWriteTokens ?? 0);
+						// 真实 prompt token 口径归一（2026-08-17，日志 1786981850420）：
+						// OpenAI / DeepSeek 语义下 `prompt_tokens` 已是**完整输入量**，
+						// `prompt_cache_hit_tokens` / `cached_tokens` 只是其中的子集
+						// （实证：total_tokens 31345 = prompt_tokens 30951 + completion 394），
+						// 此时再加 cached 会把输入量算成约两倍（30951+30592=61543），
+						// 导致压缩阈值被虚假触发、压力等级失真。
+						// Anthropic 语义相反：`input_tokens` **不含** cache_read/cache_creation，
+						// 必须相加才是完整输入量。
+						// 判定：inputTokens 已 ≥ cached+cacheWrite 视为「已包含」（OpenAI 系），
+						// 否则视为「不含」（Anthropic 系）再相加。
+						const _cacheSum = (u.cachedTokens ?? 0) + (u.cacheWriteTokens ?? 0);
+						const _input = u.inputTokens ?? 0;
+						const _inputAlreadyIncludesCache = _input >= _cacheSum;
+						const realPrompt = _inputAlreadyIncludesCache ? _input : _input + _cacheSum;
 						if (realPrompt > 0) {
 							runState = reduceRunState(runState, { type: 'SET_LAST_PROMPT_TOKENS', value: realPrompt });
 							host._lastRealPromptTokensByAgent.set(host._turnKey(request.agentId, request.sessionId), realPrompt);
 							// P1(cache-cold): 记录本次 assistant 响应时间，供下一轮剪枝的缓存冷热判定
 							host._lastAssistantAtByAgent.set(host._turnKey(request.agentId, request.sessionId), Date.now());
 							host._logService.info(
-								`[AgentOS][Compression] captured real prompt usage: inputTokens=${u.inputTokens ?? 0} ` +
-								`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} → lastRealPromptTokens=${runState.lastRealPromptTokens}`
+								`[AgentOS][Compression] captured real prompt usage: inputTokens=${_input} ` +
+								`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} ` +
+								`inputIncludesCache=${_inputAlreadyIncludesCache} → lastRealPromptTokens=${runState.lastRealPromptTokens}`
 							);
 						}
 						// ─── Dashboard 统计：累积 Token 用量 ──
@@ -2828,6 +2842,17 @@ interface ITurnContext {
 				}
 				// 进入工具执行前显式置 phase=tool_executing（对齐 UI 广播，phase 进 runState 供 checkpoint 读取）
 				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'tool_executing' });
+				// ⚠️ 并行 tool_calls 相邻性保护（2026-08-17，日志 1786981850420 HTTP 400 code 11133）：
+				// OpenAI 兼容协议硬性要求「assistant.tool_calls=N 之后必须紧跟连续 N 条 tool 消息」，
+				// 中间不得插入任何其它 role。此前 _processToolResult 在 append tool result **之前**
+				// 直接注入护栏 reminder（role:'user'），并行批次下会把 tool result 序列劈开：
+				//   [assistant tool_calls=4] [tool c0] [tool c1] [tool c2] [user reminder] [tool c3]
+				// → 服务端判定消息序列非法 → 400 invalid_parameter_value（与 token 用量无关，
+				//   实测仅占窗口 6%）。且 sanitizeToolPairs 只校验「配对存在性」不校验相邻性，
+				//   normalizeMessages 也只合并连续 user，两道守卫都放行了这种畸形。
+				// 修复：循环内只收集 reminder，待整批 tool result 全部 append 完成后统一 flush，
+				// 保证 tool 序列连续紧邻。声明在 try 外，供 catch 之后的 flush 点可见。
+				const _pendingBatchReminders: string[] = [];
 		try {
 			// P1: 审批路由上下文（MiMo decideAskRouting）。在工具执行循环所在闭包内派生，
 			// 因为 request.subAgent 在该作用域可见；若放在外层块声明则无法穿透到此处（TS2304）。
@@ -2844,7 +2869,8 @@ interface ITurnContext {
 						host._logService.debug(
 							`[AgentOS][Diag] Tool "${toolName}" failed ${MAX_CONSECUTIVE_TOOL_FAILURES}+ times consecutively — injecting system-reminder`,
 						);
-						messages = appendMessages(messages, { role: 'user', content: toolConsecutiveFailureReminder(toolName, MAX_CONSECUTIVE_TOOL_FAILURES) });
+						// 延迟注入（见上方 _pendingBatchReminders 声明处的相邻性保护说明）
+						_pendingBatchReminders.push(toolConsecutiveFailureReminder(toolName, MAX_CONSECUTIVE_TOOL_FAILURES));
 					}
 				} else {
 					_toolConsecutiveFailures.clear();
@@ -2860,7 +2886,8 @@ interface ITurnContext {
 								host._logService.debug(
 									`[AgentOS][Diag] Terminal returned (no output) ${_terminalEmptyOutputCount} times consecutively — injecting system-reminder`,
 								);
-								messages = appendMessages(messages, { role: 'user', content: terminalEmptyOutputReminder() });
+								// 延迟注入（保证 tool result 序列连续紧邻）
+								_pendingBatchReminders.push(terminalEmptyOutputReminder());
 							}
 						} else {
 							_terminalEmptyOutputCount = 0;
@@ -2880,7 +2907,9 @@ interface ITurnContext {
 								host._logService.debug(
 									`[AgentOS][Diag] text-search streak reached ${MAX_TEXT_SEARCH_STREAK} without structural tools — injecting search_graph guidance`,
 								);
-								messages = appendMessages(messages, { role: 'user', content: preferGraphSearchReminder(_textSearchStreak, _structuralAvailable.join(', ')) });
+								// 延迟注入（本次 400 的直接触发点：并行 4×search_files 时该 reminder
+								// 曾插在第 3、4 条 tool result 之间劈开序列）
+								_pendingBatchReminders.push(preferGraphSearchReminder(_textSearchStreak, _structuralAvailable.join(', ')));
 								_textSearchStreak = 0;
 							}
 						}
@@ -3043,6 +3072,18 @@ interface ITurnContext {
 						yield { type: 'tool_end', toolCallId: tc.id, success: false };
 						endedToolIds.add(tc.id);
 					}
+				}
+				// ── flush 本批延迟的护栏 reminder ────────────────────────────
+				// 此时本批所有 tool result（含 catch 兜底合成的失败结果）都已 append，
+				// tool 序列已连续紧邻 assistant.tool_calls，可安全追加 user reminder。
+				if (_pendingBatchReminders.length > 0) {
+					host._logService.debug(
+						`[AgentOS][Diag] flushing ${_pendingBatchReminders.length} deferred batch reminder(s) after tool results (adjacency-safe)`,
+					);
+					for (const _rem of _pendingBatchReminders) {
+						messages = appendMessages(messages, { role: 'user', content: _rem });
+					}
+					_pendingBatchReminders.length = 0;
 				}
 			} // end if (localExecutedCalls.length > 0)
 			const planResult = yield* _handlePlanModeTools(effectiveToolCalls, toolResults, endedToolIds);
