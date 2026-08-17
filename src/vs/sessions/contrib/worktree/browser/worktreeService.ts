@@ -699,6 +699,20 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		}
 	}
 
+	async resolveDebugPlan(worktreePath: string): Promise<{ success: boolean; strategy?: string; label?: string; buildCommand?: string; launchCommand?: string; env?: Record<string, string>; stderr?: string }> {
+		try {
+			this.logService.debug(`[WorktreeService] resolveDebugPlan: ${worktreePath}`);
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:resolveWorktreeDebugPlan', { worktreePath });
+			}
+			return { success: false, stderr: 'IPC bridge (vscode.ipcRenderer.invoke) not available in this context' };
+		} catch (err) {
+			this.logService.debug('[WorktreeService] resolveDebugPlan: error:', err);
+			return { success: false, stderr: (err as Error)?.message ?? String(err) };
+		}
+	}
+
 	private _execGitNodeFallback(cwd: string, args: string[]): Promise<string> {
 		return new Promise((resolve, reject) => {
 			try {

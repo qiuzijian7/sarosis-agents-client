@@ -15,6 +15,7 @@ export const enum AgentNetworkDomainSettingId {
 	SensitiveReadGuard = 'chat.agent.sensitiveReadGuard',
 	NetworkFilterMode = 'chat.agent.networkFilterMode',
 	WorktreeStrictIsolation = 'chat.agent.worktreeStrictIsolation',
+	ScmFilterByWorktree = 'chat.agent.scmFilterByWorktree',
 
 	// Deprecated: renamed from sandbox-scoped to agent-scoped
 	DeprecatedSandboxAllowedNetworkDomains = 'chat.agent.sandbox.allowedNetworkDomains',

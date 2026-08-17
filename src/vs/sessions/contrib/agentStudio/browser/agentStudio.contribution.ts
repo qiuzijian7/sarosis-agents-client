@@ -2550,7 +2550,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			//
 			// agentmemory server 由主进程 startAgentMemoryGateway() 启动，
 			// 监听 127.0.0.1:3111 (III_REST_PORT)。
-			id: 'agentmemory',
+			id: 'agentmemory-memory',
 			name: 'AgentMemory',
 			version: '1.0.0',
 			module: '../../../../extensions/agentmemory-memory/src/extension.js',
@@ -2611,7 +2611,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			`[AgentCapabilityPlugins][Diag] Final manifest size=${manifest.length}; about to activate each entry`,
 		);
 		for (const entry of manifest) {
-			if (this._activatedPlugins.has(entry.id)) {
+			if (this._activatedPlugins.has(this._normalizePluginId(entry.id))) {
 				this.logService.info(`[AgentCapabilityPlugins][Diag] ${entry.id} already activated -- skip`);
 				continue;
 			}
@@ -2722,7 +2722,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			// through `context.agentOSService` inside activate() instead.
 			const plugin = this.instantiationService.createInstance(PluginClass as any);
 			await plugin.activate(context);
-			this._activatedPlugins.set(entry.id, plugin);
+			this._activatedPlugins.set(this._normalizePluginId(entry.id), plugin);
 			this.logService.info(
 				'[AgentCapabilityPlugins] Built-in: ' + entry.name + ' (' + entry.id + '@' + entry.version + ') activated'
 				+ ' -- capabilities: ' + entry.capabilities.map(c => c.capability).join(', '),
@@ -2759,7 +2759,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 
 			// Activate newly discovered plugins
 			for (const plugin of added) {
-				if (this._activatedPlugins.has(plugin.extensionId)) {
+				if (this._activatedPlugins.has(this._normalizePluginId(plugin.extensionId))) {
 					this.logService.info(`[AgentCapabilityPlugins] ${plugin.extensionId} already active (built-in), skipping`);
 					continue;
 				}
@@ -2772,7 +2772,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 		if (existing.length > 0) {
 			this.logService.info(`[AgentCapabilityPlugins] Extension point: ${existing.length} plugin(s) already discovered`);
 			for (const plugin of existing) {
-				if (!this._activatedPlugins.has(plugin.extensionId)) {
+				if (!this._activatedPlugins.has(this._normalizePluginId(plugin.extensionId))) {
 					this._activateFromExtensionPoint(plugin);
 				}
 			}
@@ -2834,7 +2834,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			// Use createInstance so DI-constructor plugins resolve correctly.
 			const plugin = this.instantiationService.createInstance(PluginClass as any);
 			await plugin.activate(context);
-			this._activatedPlugins.set(resolved.extensionId, plugin);
+			this._activatedPlugins.set(this._normalizePluginId(resolved.extensionId), plugin);
 
 			this.logService.info(
 				`[AgentCapabilityPlugins] Third-party: ${resolved.displayName} `
@@ -2850,8 +2850,20 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 		}
 	}
 
+	/**
+	 * 归一化插件 ID 用于去重：builtin manifest 用 `name`（如 `agentmemory-memory`），
+	 * extension point 用 `publisher.name`（如 `saros.agentmemory-memory` 或
+	 * `undefined_publisher.execution-example`）。取最后一段 `name` 作为统一去重 key，
+	 * 避免同一插件因 publisher 前缀不同而被重复激活（曾导致 agentmemory 激活 3 次）。
+	 */
+	private _normalizePluginId(id: string): string {
+		const idx = id.lastIndexOf('.');
+		return idx >= 0 ? id.substring(idx + 1) : id;
+	}
+
 	private async _deactivatePlugin(pluginId: string): Promise<void> {
-		const plugin = this._activatedPlugins.get(pluginId);
+		const key = this._normalizePluginId(pluginId);
+		const plugin = this._activatedPlugins.get(key);
 		if (plugin) {
 			try {
 				await plugin.deactivate();
@@ -2859,7 +2871,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			} catch (err) {
 				this.logService.error(`[AgentCapabilityPlugins] Deactivation failed for ${pluginId}:`, err);
 			}
-			this._activatedPlugins.delete(pluginId);
+			this._activatedPlugins.delete(key);
 		}
 	}
 

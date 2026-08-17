@@ -16,6 +16,7 @@
  */
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { runWhenGlobalIdle } from '../../../../base/common/async.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -67,8 +68,14 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			}
 		}));
 
-		// Start bootstrap
-		this._bootstrap().catch(err => this._logService.error(LOG_TAG, 'Bootstrap failed:', err));
+		// 懒加载：不在 app 启动时立即加载图谱。
+		// 18w+ 节点的解压 + 反序列化 + BM25 重建是 CPU/内存密集的重活，
+		// 若在启动阶段与 getAgents（磁盘 IO）、插件激活、Codebuddy /v3/config
+		// 等任务并发执行，会把 CPU + 内存 + 磁盘同时打满 → 初次打开工作流"整个电脑卡"。
+		// 改为 runWhenGlobalIdle 延迟到 UI 空闲后再后台加载（时间切片已保证不冻结交互）。
+		this._register(runWhenGlobalIdle(() => {
+			this._bootstrap().catch(err => this._logService.error(LOG_TAG, 'Bootstrap failed:', err));
+		}));
 	}
 
 	private _normalize(p: string): string {

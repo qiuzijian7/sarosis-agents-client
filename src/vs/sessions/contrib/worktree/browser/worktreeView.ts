@@ -36,6 +36,7 @@ import { ISCMViewService, ISCMRepository } from '../../../../workbench/contrib/s
 import { IGitService } from '../../../../workbench/contrib/git/common/gitService.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 
 const $ = dom.$;
 
@@ -261,6 +262,7 @@ export class WorktreeViewPane extends ViewPane {
 		@IGitService private readonly _gitService: IGitService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IWorkspaceTrustManagementService private readonly _workspaceTrustManagementService: IWorkspaceTrustManagementService,
+		@ITerminalService private readonly _terminalService: ITerminalService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService, accessibleViewInformationService);
 		this.renderer = new WorktreeTreeRenderer(
@@ -614,22 +616,94 @@ export class WorktreeViewPane extends ViewPane {
 	}
 
 	/**
-	 * 触发该 worktree 的「调试」入口（编译 out/ 并启动独立 VsSaros 实例）。
+	 * 触发该 worktree 的「调试」入口：打开集成终端面板，在其中执行编译命令并启动
+	 * 独立 VsSaros 实例（或 dev server）。编译过程实时显示在终端里。
 	 * 2026-08-17: actions 栏图标按钮点击 → 直接调用本方法（之前右键菜单链路已删除）。
+	 * 同日: 改为 main 进程解析 build/launch 命令 → renderer 在集成终端执行。
 	 */
-	private _debugWorktree(item: WorktreeItem, _e: MouseEvent): void {
-		this.notificationService.info(localize('worktreeDebugStarting', '正在编译并启动 worktree [{0}] ...', item.label));
-		this._worktreeService.launchDebug(item.path)
-			.then(result => {
-				if (result.success) {
-					this.notificationService.info(localize('worktreeDebugStarted', '已启动 worktree [{0}] 的 VsSaros 实例', item.label));
-				} else {
-					this.notificationService.error(localize('worktreeDebugFailed', '启动 worktree 调试失败: {0}', result.stderr));
-				}
-			})
-			.catch(err => {
-				this.notificationService.error(localize('worktreeDebugFailed', '启动 worktree 调试失败: {0}', (err as Error).message));
+	private async _debugWorktree(item: WorktreeItem, _e: MouseEvent): Promise<void> {
+		console.log('[WT-DIAG][debug] _debugWorktree called for', item.path);
+		// 1. 解析调试计划（检测项目类型 + 生成编译/启动命令，不做实际执行）
+		let plan;
+		try {
+			plan = await this._worktreeService.resolveDebugPlan(item.path);
+			console.log('[WT-DIAG][debug] resolveDebugPlan ->', JSON.stringify(plan));
+		} catch (err) {
+			console.error('[WT-DIAG][debug] resolveDebugPlan threw:', err);
+			this.notificationService.error(localize('worktreeDebugFailed', '启动 worktree 调试失败: {0}', (err as Error).message));
+			return;
+		}
+		if (!plan.success) {
+			this.notificationService.error(localize('worktreeDebugFailed', '启动 worktree 调试失败: {0}', plan.stderr ?? 'unknown error'));
+			return;
+		}
+
+		const commands = [plan.buildCommand, plan.launchCommand].filter((c): c is string => !!c);
+		if (commands.length === 0) {
+			this.notificationService.warn(localize('worktreeDebugNoCommand', '未找到 worktree [{0}] 的编译/启动命令', item.label));
+			return;
+		}
+
+		// 2. 打开集成终端并执行命令（编译过程实时可见）
+		try {
+			console.log('[WT-DIAG][debug] creating terminal (cwd =', item.path + ')');
+			const terminal = await this._terminalService.createAndFocusTerminal({
+				cwd: item.path,
 			});
+			console.log('[WT-DIAG][debug] terminal created');
+			// createAndFocusTerminal 只 setActiveInstance + focusWhenReady，不会打开 panel；
+			// 必须显式 revealActiveTerminal() 才能打开 terminal panel（内部 showPanel → openView）。
+			await this._terminalService.revealActiveTerminal();
+			console.log('[WT-DIAG][debug] terminal panel revealed');
+			await terminal.rename(localize('worktreeDebugTerminalName', 'worktree: {0}', plan.label ?? item.label));
+
+			// 3. 按 shell 类型组装命令：PowerShell 5.1 不支持 `&&`（仅 PowerShell 7+），
+			// 需用 `; if ($?) { ... }` 保留短路语义；引号路径的 exe 需 `&` 调用操作符。
+			// 同时注入启动所需环境变量（如 vscode-fork 的 VSCODE_DEV=1）。
+			const shellExe = terminal.shellLaunchConfig?.executable;
+			const envPrefix = this._buildEnvPrefix(plan.env, shellExe);
+			const command = envPrefix + this._joinCommandsForShell(commands, shellExe);
+			console.log('[WT-DIAG][debug] shell =', shellExe, 'command =', command);
+			await terminal.sendText(command, true);
+			console.log('[WT-DIAG][debug] command sent to terminal');
+		} catch (err) {
+			console.error('[WT-DIAG][debug] terminal step threw:', err);
+			this.notificationService.error(localize('worktreeDebugFailed', '启动 worktree 调试失败: {0}', (err as Error).message));
+		}
+	}
+
+	/** 按 shell 类型把多条命令串成一条（PowerShell 5.1 不支持 &&，需 if($?) 短路）。 */
+	private _joinCommandsForShell(commands: string[], shellExecutable: string | undefined): string {
+		if (commands.length === 1) { return commands[0]; }
+		const isPowerShell = !!shellExecutable && /(powershell|pwsh)\.exe$/i.test(shellExecutable);
+		if (isPowerShell) {
+			const [build, ...rest] = commands;
+			const launch = rest.join(' && ');
+			// PowerShell 中引号包裹的 exe 路径是字符串字面量，需 `&` 调用操作符才能执行
+			const launchCmd = launch.startsWith('"') ? `& ${launch}` : launch;
+			return `${build}; if ($?) { ${launchCmd} }`;
+		}
+		return commands.join(' && ');
+	}
+
+	/**
+	 * 生成在终端里设置环境变量的前缀命令（按 shell 类型适配）。
+	 * - PowerShell: `$env:KEY='VAL'; $env:KEY2='VAL2'; `
+	 * - cmd:        `set "KEY=VAL" && set "KEY2=VAL2" && `
+	 * - bash/sh:    `export KEY='VAL'; export KEY2='VAL2'; `
+	 */
+	private _buildEnvPrefix(env: Record<string, string> | undefined, shellExecutable: string | undefined): string {
+		if (!env) { return ''; }
+		const entries = Object.entries(env);
+		if (entries.length === 0) { return ''; }
+		const lower = (shellExecutable ?? '').toLowerCase();
+		if (/(powershell|pwsh)\.exe$/.test(lower)) {
+			return entries.map(([k, v]) => `$env:${k}='${v}'`).join('; ') + '; ';
+		}
+		if (/cmd\.exe$/.test(lower)) {
+			return entries.map(([k, v]) => `set "${k}=${v}"`).join(' && ') + ' && ';
+		}
+		return entries.map(([k, v]) => `export ${k}='${v}'`).join('; ') + '; ';
 	}
 
 	/**

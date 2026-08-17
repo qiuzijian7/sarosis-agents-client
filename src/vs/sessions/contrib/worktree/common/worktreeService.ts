@@ -127,6 +127,13 @@ export interface IWorktreeService {
 	launchDebug(worktreePath: string): Promise<{ success: boolean; stderr: string }>;
 
 	/**
+	 * Resolve the "debug in terminal" plan for a worktree: detect the project type
+	 * and return the build + launch commands (without executing them). The caller
+	 * runs them in the integrated terminal so the user sees the compile output live.
+	 */
+	resolveDebugPlan(worktreePath: string): Promise<{ success: boolean; strategy?: string; label?: string; buildCommand?: string; launchCommand?: string; env?: Record<string, string>; stderr?: string }>;
+
+	/**
 	 * Get the repository root path for the current workspace.
 	 * Returns undefined if no git repo is found.
 	 */

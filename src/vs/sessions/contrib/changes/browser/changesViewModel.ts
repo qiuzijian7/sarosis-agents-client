@@ -15,6 +15,8 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { IAgentSessionsService } from '../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsService.js';
 import { IChatSessionFileChange2 } from '../../../../workbench/contrib/chat/common/chatSessionsService.js';
 import { GitDiffChange, IGitService } from '../../../../workbench/contrib/git/common/gitService.js';
+import { ISCMService, ISCMViewService } from '../../../../workbench/contrib/scm/common/scm.js';
+import { comparePaths } from '../../../../base/common/comparers.js';
 import { COPILOT_CLOUD_SESSION_TYPE, ISessionFileChange } from '../../../services/sessions/common/session.js';
 import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
 import { IAgentFeedbackService } from '../../agentFeedback/browser/agentFeedbackService.js';
@@ -23,6 +25,14 @@ import { IGitHubService } from '../../github/browser/githubService.js';
 import { toPRContentUri } from '../../github/common/utils.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { ChangesVersionMode, ChangesViewMode, IsolationMode } from '../common/changes.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { AgentNetworkDomainSettingId } from '../../../../platform/networkFilter/common/settings.js';
+
+/**
+ * 快关\uff1aSCM 视图随 selectedWorktree 自动过滤。
+ * 保存在 scope=PROFILE\uff08跨 workspace 统一\uff09\uff0c开关 state 持久化。
+ */
+const SCM_FILTER_BY_WORKTREE_STORAGE_KEY = 'changesView.scmFilterByWorktree';
 
 function toIChatSessionFileChange2(changes: GitDiffChange[], originalRef: string | undefined, modifiedRef: string | undefined): IChatSessionFileChange2[] {
 	return changes.map(change => ({
@@ -117,11 +127,15 @@ export class ChangesViewModel extends Disposable {
 		@ICodeReviewService private readonly codeReviewService: ICodeReviewService,
 		@IGitHubService private readonly gitHubService: IGitHubService,
 		@IGitService private readonly gitService: IGitService,
+		@ISCMService private readonly scmService: ISCMService,
+		@ISCMViewService private readonly scmViewService: ISCMViewService,
 		@ISessionsManagementService private readonly sessionManagementService: ISessionsManagementService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
-	) {
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		) {
 		super();
+		this._registerSCMFilterAutoSync();
 
 		console.log('[WT-DIAG][changes] ChangesViewModel constructed. worktreeService instanceId=', (this.worktreeService as any)._diagId ?? ((this.worktreeService as any)._diagId = 'cm-' + Math.random().toString(36).slice(2, 8)));
 
@@ -516,6 +530,44 @@ export class ChangesViewModel extends Disposable {
 			state: derivedOpts({ equalsFn: structuralEquals },
 				reader => activeSessionStateObs.read(reader))
 		};
+	}
+
+	public getSCMFilterByWorktreeEnabled(): boolean {
+		return this.storageService.getBoolean(SCM_FILTER_BY_WORKTREE_STORAGE_KEY, StorageScope.PROFILE, false) ?? false;
+	}
+
+	/** 果目前已开\uff0c立刻尝试同步 selectedWorktree 到 SCM 视图\uff1b关闭则不动\uff08保留用户手动 visible 配置\uff09。 */
+	public setSCMFilterByWorktreeEnabled(enabled: boolean): void {
+		this.storageService.store(SCM_FILTER_BY_WORKTREE_STORAGE_KEY, enabled, StorageScope.PROFILE, StorageTarget.USER);
+		if (!enabled) { return; }
+		const selected = this.worktreeService.selectedWorktree.get();
+		if (!selected?.path) { return; }
+		const repositories = [...this.scmService.repositories];
+		const matched = repositories.find(r => r.provider.rootUri && comparePaths(r.provider.rootUri.fsPath, selected.path) === 0);
+		if (matched) {
+			this.scmViewService.visibleRepositories = [matched];
+		}
+	}
+
+	private _registerSCMFilterAutoSync(): void {
+		// 2026-08-17: SCM 视图随 selectedWorktree 自动过滤\uff08隐藏非选中仓库\uff09\uff0c开关默认关\uff08保持截图三仓库都显示\uff09\uff0c开后只显到选中的 worktree 仓库\uff08四三仓库自动凌隐\uff09\uff1b
+		const enabled = this.configurationService.getValue<boolean>(AgentNetworkDomainSettingId.ScmFilterByWorktree) ?? true;
+		if (!enabled) { return; }
+
+		this._register(autorun(reader => {
+			const selectedWorktree = this.worktreeService.selectedWorktree.read(reader);
+			const selectedPath = selectedWorktree?.path;
+			if (!selectedPath) { return; }
+
+			const repositories = [...this.scmService.repositories];
+			const matched = repositories.find(r => r.provider.rootUri && comparePaths(r.provider.rootUri.fsPath, selectedPath) === 0);
+			if (!matched) { return; }
+
+			// 已经包含 matched 则不重复设置\uff08避免闪烁\uff09
+			const visible = this.scmViewService.visibleRepositories;
+			if (visible.length === 1 && visible[0] === matched) { return; }
+			this.scmViewService.visibleRepositories = [matched];
+		}));
 	}
 
 	private _getActiveSessionReviewComments(): IObservable<Map<string, number>> {

@@ -44,6 +44,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	declare readonly _serviceBrand: undefined;
 
 	private _agentsCache: { data: Agent[]; ts: number } | undefined;
+	/** in-flight 去重：并发 getAgents() 复用同一个加载 Promise（缓存击穿时避免重复全量扫描）。 */
+	private _agentsLoadPromise: Promise<Agent[]> | undefined;
 
 	private readonly _onDidChangeWorkspace = this._register(new Emitter<string>());
 	readonly onDidChangeWorkspace: Event<string> = this._onDidChangeWorkspace.event;
@@ -540,6 +542,18 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			this.logService.trace(`[AS-PERF][service] getAgents: cache HIT — ${this._agentsCache.data.length} agents (age=${(now - this._agentsCache.ts).toFixed(0)}ms)`);
 			return this._agentsCache.data;
 		}
+
+		// in-flight 去重：缓存击穿时，并发调用复用同一个加载 Promise，
+		// 避免 N 个并发调用各自做一次完整目录扫描 + 文件读取（磁盘 IO 密集）。
+		if (!this._agentsLoadPromise) {
+			this._agentsLoadPromise = this._loadAgentsInternal().finally(() => {
+				this._agentsLoadPromise = undefined;
+			});
+		}
+		return this._agentsLoadPromise;
+	}
+
+	private async _loadAgentsInternal(): Promise<Agent[]> {
 		const t0 = Date.now();
 		// 确保迁移和清理已完成（幂等）
 		await this._initPromise;

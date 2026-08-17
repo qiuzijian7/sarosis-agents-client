@@ -9,7 +9,7 @@ import { validatedIpcMain } from '../../base/parts/ipc/electron-main/ipcMain.js'
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import { hostname, release } from 'os';
 import { existsSync } from 'fs';
-import { dispatchWorktreeDebug } from './worktreeDebugStrategies.js';
+import { dispatchWorktreeDebug, resolveWorktreeDebugPlan } from './worktreeDebugStrategies.js';
 import { initWindowsVersionInfo } from '../../base/node/windowsVersion.js';
 import { VSBuffer } from '../../base/common/buffer.js';
 import { toErrorMessage } from '../../base/common/errorMessage.js';
@@ -687,6 +687,17 @@ export class CodeApplication extends Disposable {
 			return { success: false, stderr: `worktree path not found: ${worktreePath}` };
 		}
 		return dispatchWorktreeDebug(worktreePath, process.execPath);
+	});
+
+	// "Debug in terminal" flow: resolve the build + launch commands without
+	// executing them, so the renderer can run them in the integrated terminal
+	// and the user sees the compile output live.
+	validatedIpcMain.handle('vscode:resolveWorktreeDebugPlan', async (_event, payload: { worktreePath: string }) => {
+		const worktreePath = payload?.worktreePath?.trim();
+		if (!worktreePath || !existsSync(worktreePath)) {
+			return { success: false, stderr: `worktree path not found: ${worktreePath}` };
+		}
+		return resolveWorktreeDebugPlan(worktreePath, process.execPath);
 	});
 
 	// Renderer → main process HTTP fetch channel: bypasses CORS (the renderer's

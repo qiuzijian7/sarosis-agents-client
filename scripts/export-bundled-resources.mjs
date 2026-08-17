@@ -161,6 +161,23 @@ const mcpPresets = [
     "transportType": "stdio",
     "command": "npx",
     "args": ["-y", "@modelcontextprotocol/server-everything"]
+  },
+  {
+    "id": "figma",
+    "name": "Figma",
+    "description": "Figma 官方 Dev Mode MCP Server（远程托管，Streamable HTTP）。读取设计稿的布局、样式、变量、资源与 Code Connect 代码映射，用于设计转代码（design-to-code）。需通过 Figma OAuth 登录授权。",
+    "transportType": "http",
+    "url": "https://mcp.figma.com/mcp",
+    "icon": "🎨"
+  },
+  {
+    "id": "figma-developer-mcp",
+    "name": "Figma Developer (stdio)",
+    "description": "社区版 figma-developer-mcp（GLips/Figma-Context-MCP）。本地 stdio 运行，通过 FIGMA_API_KEY 读取 Figma 文件并输出简化后的布局/样式数据（get_figma_data、download_figma_images）。适合无法使用官方 OAuth 或需要本地自托管的场景。",
+    "transportType": "stdio",
+    "command": "npx",
+    "args": ["-y", "figma-developer-mcp", "--stdio"],
+    "envKeys": ["FIGMA_API_KEY"]
   }
 ];
 

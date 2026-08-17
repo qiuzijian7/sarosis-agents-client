@@ -220,8 +220,15 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 			return;
 		}
 
-		const childNames = rootStat.children.map(function(c) { return c.name; }).join(', ');
-		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: root has ' + rootStat.children.length + ' children: ' + childNames);
+		// 顶层文件列表可能极长（大工作区数百项），全量拼进 info 日志会膨胀日志体积、
+		// 拖慢序列化与落盘（曾出现 "root has 390 children: ..." 超长单行）。
+		// 仅 info 记总数，详细列表降级为 trace 并截断前 50 项。
+		const childNames = rootStat.children.map(function(c) { return c.name; });
+		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: root has ' + rootStat.children.length + ' children');
+		const MAX_SHOWN = 50;
+		const shown = childNames.slice(0, MAX_SHOWN).join(', ');
+		const suffix = childNames.length > MAX_SHOWN ? ' …(+' + (childNames.length - MAX_SHOWN) + ' more)' : '';
+		this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: children = ' + shown + suffix);
 
 		const wsFiles = rootStat.children.filter(function(c) {
 			return !c.isDirectory && c.name.toLowerCase().endsWith('.code-workspace');

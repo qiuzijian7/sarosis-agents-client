@@ -4,7 +4,7 @@
  *  Dispatch "debug" of a worktree by project type. Different project types have
  *  different build + launch requirements:
  *
- *    - vscode-fork : transpile-client + launch VsSaros.exe (dev mode)
+ *    - vscode-fork : transpile-client + launch the dev electron binary (dev mode)
  *    - web         : npm run dev (vite/next/webpack dev server)
  *    - node        : npm run start / npm run dev / node <entry>
  *    - python      : python main.py / manage.py runserver
@@ -40,6 +40,25 @@ interface IWorktreeDebugStrategy {
 	build(worktreePath: string, overrideCommand?: string): Promise<IWorktreeDebugResult>;
 	/** Launch the project (detached, "run and see the effect"). */
 	launch(worktreePath: string, exePath: string): Promise<IWorktreeDebugResult>;
+	/** 生成在终端里执行的编译命令（无需编译则返回 undefined）。 */
+	buildCommand?(worktreePath: string, overrideCommand?: string): string | undefined;
+	/** 生成在终端里执行的启动命令（无法启动则返回 undefined）。 */
+	launchCommand?(worktreePath: string, exePath: string): string | undefined;
+}
+
+/** 给 renderer 的"在终端中调试"流程使用的行动计划（编译 + 启动命令）。 */
+export interface IWorktreeDebugPlan {
+	success: boolean;
+	/** Strategy id ('open-folder' for fallback). */
+	strategy?: string;
+	label?: string;
+	/** 在终端中执行的编译命令；undefined = 无需编译。 */
+	buildCommand?: string;
+	/** 在终端中执行的启动命令；undefined = 无法自动启动。 */
+	launchCommand?: string;
+	/** 启动命令所需环境变量（如 vscode-fork 需 VSCODE_DEV=1 进入 dev 模式，否则加载生产版 html）。 */
+	env?: Record<string, string>;
+	stderr?: string;
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -160,6 +179,48 @@ function junctionExtensionOuts(worktreePath: string, repoRoot: string): void {
 	}
 }
 
+/**
+ * 解析 vscode-fork 策略实际使用的 electron 二进制。
+ *
+ * 必须优先用 dev 二进制（<repoRoot>/.build/electron/<productName>.exe），而不是
+ * process.execPath。原因：
+ *  - 生产安装版的 process.execPath 是生产 exe（安装目录下的同名 exe），
+ *    自带 resources/app（生产 bundle），Electron 会忽略目录参数、加载生产 bundle，
+ *    不加载 worktree 的 out/；且 VSCODE_DEV=1 让生产 exe 进入 dev 模式后
+ *    路径错乱 → 启动即崩溃（无窗口，连 userData 日志都没写）。
+ *  - dev 二进制没有 resources/app（只有 default_app.asar），Electron 会把
+ *    目录参数（worktreePath）当作 app 路径，加载 worktree/out/ 的源码
+ *    （与 scripts/code.bat 把 repo 根目录作为 app 参数同理）。
+ *
+ * exe 文件名不写死：从 product.json 的 nameShort 动态读取（如 "VsSaros" → "VsSaros.exe"）。
+ */
+function resolveVscodeForkExePath(worktreePath: string, exePath: string): string {
+	const repoRoot = dirname(dirname(worktreePath));
+	const product = readJson<{ nameShort?: string }>(join(repoRoot, 'product.json'));
+	if (product?.nameShort) {
+		const devExe = join(repoRoot, '.build', 'electron', `${product.nameShort}.exe`);
+		if (fileExists(devExe)) { return devExe; }
+	}
+	return exePath;
+}
+
+/**
+ * vscode-fork 启动必须注入的 dev 环境变量。
+ *
+ * 缺 VSCODE_DEV=1 时 `environmentMainService.isBuilt=true`，主进程会加载生产版
+ * sessions.html（引用不存在的 sessions.desktop.main.css 且无 dev import map），
+ * 叠加 transpile 产物里保留的裸 CSS import，连环报错：CSS 被当模块加载、以及
+ * "Failed to fetch dynamically imported module: .../sessions.desktop.main.js"。
+ * 与 scripts/code.bat 的环境变量对齐。
+ */
+const VSCODE_FORK_DEV_ENV: Record<string, string> = {
+	NODE_ENV: 'development',
+	VSCODE_DEV: '1',
+	VSCODE_CLI: '1',
+	ELECTRON_ENABLE_LOGGING: '1',
+	ELECTRON_ENABLE_STACK_DUMPING: '1',
+};
+
 const vscodeForkStrategy: IWorktreeDebugStrategy = {
 	id: 'vscode-fork',
 	label: 'VS Code fork (vssaros)',
@@ -188,16 +249,18 @@ const vscodeForkStrategy: IWorktreeDebugStrategy = {
 
 		return { success: true, stderr: '' };
 	},
+	buildCommand(worktreePath, overrideCommand) {
+		return overrideCommand ?? 'npm run transpile-client';
+	},
+	launchCommand(worktreePath, exePath) {
+		return `"${resolveVscodeForkExePath(worktreePath, exePath)}" "${worktreePath}" --skip-sessions-welcome`;
+	},
 	async launch(worktreePath, exePath) {
 		try {
-			const command = `"${exePath}" "${worktreePath}" --skip-sessions-welcome`;
+			const command = `"${resolveVscodeForkExePath(worktreePath, exePath)}" "${worktreePath}" --skip-sessions-welcome`;
 			spawnDetached(command, dirname(dirname(worktreePath)), {
 				...process.env,
-				NODE_ENV: 'development',
-				VSCODE_DEV: '1',
-				VSCODE_CLI: '1',
-				ELECTRON_ENABLE_LOGGING: '1',
-				ELECTRON_ENABLE_STACK_DUMPING: '1',
+				...VSCODE_FORK_DEV_ENV,
 			});
 			return { success: true, stderr: '' };
 		} catch (e) {
@@ -236,6 +299,20 @@ const webStrategy: IWorktreeDebugStrategy = {
 		}
 		return { success: true, stderr: '' };
 	},
+	buildCommand(worktreePath, overrideCommand) {
+		if (overrideCommand) { return overrideCommand; }
+		const pkg = readJson<{ scripts?: Record<string, string> }>(join(worktreePath, 'package.json'));
+		if (pkg?.scripts?.build) { return 'npm run build'; }
+		return undefined;
+	},
+	launchCommand(worktreePath) {
+		const pkg = readJson<{ scripts?: Record<string, string> }>(join(worktreePath, 'package.json'));
+		const devScript = pkg?.scripts?.dev ? 'dev'
+			: pkg?.scripts?.start ? 'start'
+				: pkg?.scripts?.serve ? 'serve'
+					: undefined;
+		return devScript ? `npm run ${devScript}` : undefined;
+	},
 	async launch(worktreePath) {
 		const pkg = readJson<{ scripts?: Record<string, string> }>(join(worktreePath, 'package.json'));
 		const devScript = pkg?.scripts?.dev ? 'dev'
@@ -271,6 +348,21 @@ const nodeStrategy: IWorktreeDebugStrategy = {
 			return runCommand('npm run build', worktreePath);
 		}
 		return { success: true, stderr: '' };
+	},
+	buildCommand(worktreePath, overrideCommand) {
+		if (overrideCommand) { return overrideCommand; }
+		const pkg = readJson<{ scripts?: Record<string, string> }>(join(worktreePath, 'package.json'));
+		if (pkg?.scripts?.build) { return 'npm run build'; }
+		return undefined;
+	},
+	launchCommand(worktreePath) {
+		const pkg = readJson<{ scripts?: Record<string, string> }>(join(worktreePath, 'package.json'));
+		if (pkg?.scripts?.start) { return 'npm run start'; }
+		if (pkg?.scripts?.dev) { return 'npm run dev'; }
+		if (pkg?.scripts?.serve) { return 'npm run serve'; }
+		if (fileExists(join(worktreePath, 'src', 'index.js'))) { return 'node src/index.js'; }
+		if (fileExists(join(worktreePath, 'index.js'))) { return 'node index.js'; }
+		return undefined;
 	},
 	async launch(worktreePath) {
 		const pkg = readJson<{ scripts?: Record<string, string> }>(join(worktreePath, 'package.json'));
@@ -313,6 +405,18 @@ const pythonStrategy: IWorktreeDebugStrategy = {
 			return runCommand('pip install -r requirements.txt', worktreePath, 300000);
 		}
 		return { success: true, stderr: '' };
+	},
+	buildCommand(worktreePath, overrideCommand) {
+		if (overrideCommand) { return overrideCommand; }
+		if (fileExists(join(worktreePath, 'requirements.txt'))) { return 'pip install -r requirements.txt'; }
+		return undefined;
+	},
+	launchCommand(worktreePath) {
+		if (fileExists(join(worktreePath, 'main.py'))) { return 'python main.py'; }
+		if (fileExists(join(worktreePath, 'manage.py'))) { return 'python manage.py runserver'; }
+		if (fileExists(join(worktreePath, 'app.py'))) { return 'python app.py'; }
+		if (fileExists(join(worktreePath, 'pyproject.toml'))) { return 'python -m uvicorn main:app --reload'; }
+		return 'python main.py';
 	},
 	async launch(worktreePath) {
 		let command: string;
@@ -443,4 +547,57 @@ export async function dispatchWorktreeDebug(worktreePath: string, exePath: strin
 	// Launch
 	const launchResult = await strategy.launch(worktreePath, exePath);
 	return { ...launchResult, strategy: strategy.id };
+}
+
+/**
+ * Resolve a "debug in terminal" plan for a worktree: detect the project type and
+ * produce the build + launch commands, WITHOUT executing them (the renderer runs
+ * them in the integrated terminal so the user sees the compile output live).
+ *
+ * For `vscode-fork`, also performs the prep steps (node_modules junction +
+ * extension-out junction) that must happen before `transpile-client`.
+ */
+export async function resolveWorktreeDebugPlan(worktreePath: string, exePath: string): Promise<IWorktreeDebugPlan> {
+	if (!fileExists(worktreePath)) {
+		return { success: false, stderr: `worktree path not found: ${worktreePath}` };
+	}
+
+	// 1. Explicit .vscode/launch.json (highest priority)
+	const explicit = resolveExplicitLaunchConfig(worktreePath);
+	let strategy: IWorktreeDebugStrategy | undefined;
+	let buildCommand: string | undefined;
+	if (explicit) {
+		strategy = STRATEGIES.find(s => s.id === explicit.strategyId);
+		buildCommand = explicit.buildCommand;
+	}
+
+	// 2. Marker auto-detection
+	if (!strategy) {
+		strategy = STRATEGIES.find(s => s.detect(worktreePath));
+	}
+
+	// 3. Fallback: no recognizable project type
+	if (!strategy) {
+		return { success: false, strategy: 'open-folder', stderr: '无法识别项目类型（无 .vscode/launch.json 也无项目标记文件）' };
+	}
+
+	// vscode-fork prep：junction node_modules + 内置扩展 out/（只读复用主仓库编译产物）
+	if (strategy.id === 'vscode-fork') {
+		const repoRoot = dirname(dirname(worktreePath));
+		const wtNodeModules = join(worktreePath, 'node_modules');
+		const mainNodeModules = join(repoRoot, 'node_modules');
+		if (!existsSync(wtNodeModules) && existsSync(mainNodeModules)) {
+			try { symlinkSync(mainNodeModules, wtNodeModules, 'junction'); } catch { /* non-fatal */ }
+		}
+		junctionExtensionOuts(worktreePath, repoRoot);
+	}
+
+	return {
+		success: true,
+		strategy: strategy.id,
+		label: strategy.label,
+		buildCommand: strategy.buildCommand?.(worktreePath, buildCommand) ?? undefined,
+		launchCommand: strategy.launchCommand?.(worktreePath, exePath) ?? undefined,
+		env: strategy.id === 'vscode-fork' ? VSCODE_FORK_DEV_ENV : undefined,
+	};
 }

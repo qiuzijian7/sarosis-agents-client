@@ -1618,6 +1618,15 @@ configurationRegistry.registerConfiguration({
 			default: "denyAll",
 			restricted: true,
 		},
+		[AgentNetworkDomainSettingId.ScmFilterByWorktree]: {
+			markdownDescription: nls.localize(
+				"chat.agent.scmFilterByWorktree",
+				"Controls whether the Source Control view automatically shows only the currently selected worktree\u2019s repository. When enabled (default), the visible repositories in the SCM view follow the worktree selected in the Worktree view. When disabled, the SCM view respects the user\u2019s manual visibility choices.",
+			),
+			type: "boolean",
+			default: true,
+			restricted: true,
+		},
 		[AgentNetworkDomainSettingId.WorktreeStrictIsolation]: {
 			markdownDescription: nls.localize(
 				"chat.agent.worktreeStrictIsolation",

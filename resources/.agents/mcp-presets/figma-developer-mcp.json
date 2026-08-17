@@ -1,0 +1,15 @@
+{
+  "id": "figma-developer-mcp",
+  "name": "Figma Developer (stdio)",
+  "description": "社区版 figma-developer-mcp（GLips/Figma-Context-MCP）。本地 stdio 运行，通过 FIGMA_API_KEY 读取 Figma 文件并输出简化后的布局/样式数据（get_figma_data、download_figma_images）。适合无法使用官方 OAuth 或需要本地自托管的场景。",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "figma-developer-mcp",
+    "--stdio"
+  ],
+  "envKeys": [
+    "FIGMA_API_KEY"
+  ]
+}
