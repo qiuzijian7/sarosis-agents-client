@@ -17,6 +17,8 @@ import { INotificationService, Severity } from '../../../../../platform/notifica
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import { IGitCommitService, IGitRemote, IGitStatus } from '../gitCommitService.js';
+import { IWorktreeService } from '../../../worktree/common/worktreeService.js';
+import { autorun } from '../../../../../base/common/observable.js';
 
 /**
  * Changes View - 变更管理面板
@@ -33,6 +35,8 @@ export class ChangesViewPane extends ViewPane {
 	private _logContainer!: HTMLElement;
 	private _commitBtn!: HTMLButtonElement;
 	private _commitMsgInput!: HTMLInputElement;
+	/** header 右侧的分支名 tag（worktree 选中态高亮） */
+	private _branchTag!: HTMLElement;
 
 	private _isOperating = false;
 
@@ -50,6 +54,7 @@ export class ChangesViewPane extends ViewPane {
 		@INotificationService private readonly _notificationService: INotificationService,
 		@ILogService private readonly _logService: ILogService,
 		@IGitCommitService private readonly _gitCommitService: IGitCommitService,
+		@IWorktreeService private readonly _worktreeService: IWorktreeService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
@@ -60,11 +65,29 @@ export class ChangesViewPane extends ViewPane {
 		this._container = container;
 
 		// --- Header section ---
+		// 左侧：📝 Source Control 标题；右侧：当前 worktree 分支名 tag。
+		// 分支名随 `IWorktreeService.selectedWorktree` 变化实时刷新（详见 _updateBranchTag）。
 		const header = $('div.changes-header');
 		const title = $('h3.changes-title');
 		title.textContent = '📝 Source Control';
 		header.appendChild(title);
+
+		this._branchTag = $('span.changes-header-branch');
+		// 初始空态：等 _updateBranchTag 首次渲染
+		header.appendChild(this._branchTag);
+
 		container.appendChild(header);
+
+		// 监听 selectedWorktree observable → 刷新 tag
+		this._register(autorun(reader => {
+			const sel = this._worktreeService.selectedWorktree.read(reader);
+			this._updateBranchTag(sel);
+		}));
+		// 兜底：onDidChangeWorktreeState 触发兜底刷新（selectedWorktree 没变但 worktree 状态变了）
+		this._register(this._worktreeService.onDidChangeWorktreeState(() => {
+			const sel = this._worktreeService.selectedWorktree.get();
+			this._updateBranchTag(sel);
+		}));
 
 		// --- Commit message input ---
 		const commitSection = $('div.changes-commit-section');
@@ -311,6 +334,39 @@ export class ChangesViewPane extends ViewPane {
 
 	private _clearLog(): void {
 		this._logContainer.innerHTML = '';
+	}
+
+	/**
+	 * 渲染 header 右侧的分支 tag。
+	 * - 未选 worktree：淡色 "main"（fall back 到 _gitCommitService 当前探测的分支）
+	 * - 选中 worktree：高亮 "feat-name" + worktree 路径提示
+	 *
+	 * 注意：分支名优先取 `selectedWorktree.branch`（用户在 Worktree 视图点选 → 驱动
+	 * ChangesViewModel 切到该 worktree 的 diff）。若 worktree 视图未选 / 未配置分支，
+	 * 回退到 `_gitCommitService.getStatus().branch`（当前 working tree 实际分支）。
+	 */
+	private _updateBranchTag(selection: { path: string; branch?: string } | undefined): void {
+		if (!this._branchTag) { return; }
+		this._branchTag.innerHTML = '';
+		const branch = selection?.branch;
+		if (branch) {
+			this._branchTag.classList.add('worktree');
+			this._branchTag.title = `Selected worktree:\n${selection!.path}`;
+			this._branchTag.textContent = `🌿 ${branch}`;
+		} else {
+			// 未选 worktree：从 git status 拿当前分支（异步，避免 renderBody 阻塞）
+			this._branchTag.classList.add('main');
+			this._branchTag.title = 'No worktree selected — showing main working tree';
+			this._branchTag.textContent = '📂 main…';
+			this._gitCommitService.getStatus()
+				.then(s => {
+					if (!this._branchTag || this._branchTag.classList.contains('worktree')) { return; }
+					const b = s.branch || 'main';
+					this._branchTag.textContent = `📂 ${b}`;
+					this._branchTag.title = `Main working tree branch: ${b}`;
+				})
+				.catch(() => { /* 静默 —— 留 "main…" 占位，下次刷新再试 */ });
+		}
 	}
 
 	protected override layoutBody(height: number, width: number): void {

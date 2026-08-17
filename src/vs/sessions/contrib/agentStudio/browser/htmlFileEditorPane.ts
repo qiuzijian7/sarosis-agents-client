@@ -585,6 +585,14 @@ export class HtmlFileEditorPane extends TextFileEditor {
 
 		this._editWebview.mountTo(this._editWebviewContainer, mainWindow);
 		this._editWebview.setHtml(wrapHtmlWithEditorRuntime(this._rawHtml ?? ''));
+
+		// 首次创建同样要触发 enterEditMode——与 refresh 分支保持一致。
+		// 否则 webview 只渲染 HTML 但不进入编辑态，编辑 bar 不显示。
+		// 延迟等待 webview 完成 setHtml 并执行 runtime init（注册 message 监听）。
+		setTimeout(() => {
+			this._logService.info('[HtmlFileEditorPane] _ensureEditWebview: posting enterEditMode after initial setHtml');
+			this._editWebview?.postMessage({ type: 'htmlEditor.enterEditMode' });
+		}, 200);
 	}
 
 	/**
