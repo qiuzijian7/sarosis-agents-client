@@ -678,7 +678,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 						yield { type: 'tool_progress', content: _tpStage };
 						continue; // 不传给 _toModelDelta（它不认识此 MIME）
 					}
-						const delta = this._toModelDelta(p);
+						const delta = this._toModelDelta(p, modelId);
 						if (delta) {
 							yieldedContent = true;
 							yield delta;
@@ -896,7 +896,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		return out;
 	}
 
-	private _toModelDelta(part: IChatResponsePart): IModelDelta | undefined {
+	private _toModelDelta(part: IChatResponsePart, modelId: string): IModelDelta | undefined {
 		// ── 防御性 string-coercion ────────────────────────────────────────
 		// IChatResponsePart 来自第三方 LM 扩展（Copilot / Knot / 自研 vendor 等），
 		// 协议未对 `value` 字段强制做 string 校验。实测中：
@@ -976,6 +976,10 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 							: undefined,
 						cacheWriteTokens: raw.prompt_tokens_details?.cache_write_tokens ?? undefined,
 						credit: typeof raw.credit === 'number' ? raw.credit : undefined,
+						// 真实使用的 provider/model（与面板「选择」可能不同——用户选 A 但实际用 B，
+						// 例如 defaultModel 兜底。Token 明细 UI 用此字段展示真实命中，避免误导）
+						providerId: this.vendor,
+						modelId: modelId,
 					};
 					// 诊断（2026-07-27）：积分 pill 排查——渡海到 renderer 侧后 credit 是否
 					// 仍在。若此处 usage.credit 为 undefined 但下方 keys 里有形似字段
@@ -1019,6 +1023,9 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 							? tu.prompt_tokens_details.cached_tokens
 							: undefined,
 						cacheWriteTokens: tu.prompt_tokens_details?.cache_write_tokens ?? undefined,
+						// 真实使用的 provider/model（与面板「选择」可能不同——用户选 A 但实际用 B）
+						providerId: this.vendor,
+						modelId: modelId,
 					};
 					// 仅当至少有一项指标时才 yield，避免发出全 undefined 的噪音 delta
 					if (

@@ -1603,10 +1603,18 @@ private readonly _sandboxGuard: SandboxGuard;
 		// it in the finally block, so all downstream code (tool listing,
 		// provider lookup, fallback) sees the overridden selection.
 		const savedSelection = this._activeSelection;
-		if (request.modelOverride?.providerId && request.modelOverride?.modelId) {
-			this._activeSelection = request.modelOverride;
+		if (request.modelOverride?.modelId) {
+			if (request.modelOverride.providerId) {
+				// 完整覆盖：provider + model 都指定（workflow 节点级 / 面板本地双选）
+				this._activeSelection = request.modelOverride;
+			} else if (this._activeSelection) {
+				// 只指定 model（聊天输入框常只选模型、providerId 为空）：
+				// 保留当前 provider，仅覆盖 modelId —— 修复 UI 选 deepseek-v4-pro
+				// 但实际用全局 defaultModel hy3-ioa 的脱节问题。
+				this._activeSelection = { ...this._activeSelection, modelId: request.modelOverride.modelId };
+			}
 			this._logService.info(
-				`[AgentOS] Model override active: ${request.modelOverride.providerId}/${request.modelOverride.modelId} ` +
+				`[AgentOS] Model override active: ${request.modelOverride.providerId || (this._activeSelection?.providerId ?? '(keep)')}/${request.modelOverride.modelId} ` +
 				`(was ${savedSelection?.providerId}/${savedSelection?.modelId})`,
 			);
 		}
@@ -1673,7 +1681,7 @@ private readonly _sandboxGuard: SandboxGuard;
 			}
 
 			// v39: restore the original selection after the turn completes.
-			if (request.modelOverride?.providerId && request.modelOverride?.modelId) {
+			if (request.modelOverride?.modelId) {
 				this._activeSelection = savedSelection;
 				this._logService.info(
 					`[AgentOS] Model override restored to: ${savedSelection?.providerId}/${savedSelection?.modelId}`,

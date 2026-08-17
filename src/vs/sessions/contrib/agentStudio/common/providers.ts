@@ -431,6 +431,10 @@ export interface IModelUsage {
 	readonly reasoning?: number;
 	/** 本次调用消耗的计费额度 / 积分（来自 CodeBuddy 网关末块 usage.credit 等字段） */
 	readonly credit?: number;
+	/** 真实使用的 provider vendor（由 LMBridge 在 chat() 内部填入，标识实际命中的 provider） */
+	readonly providerId?: string;
+	/** 真实使用的 modelId（由 LMBridge 在 chat() 内部填入，标识实际命中的模型；与面板「选择」可能不同——用户选了 A 但实际用 B） */
+	readonly modelId?: string;
 }
 
 // ─── Memory Provider Interface ────────────────────────────────────────────────

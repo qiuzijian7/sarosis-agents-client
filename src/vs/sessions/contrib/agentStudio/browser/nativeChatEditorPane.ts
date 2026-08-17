@@ -585,6 +585,15 @@ export class NativeChatEditorPane extends EditorPane {
 							// 透传附件：图片/文件真实内容经 agentDriverService 构建多模态
 							// contentParts，最终正确送达 LLM（修复此前仅发送占位文本的问题）。
 							attachments: attachments as IChatAttachmentSend[] | undefined,
+							// P0（2026-08-17 日志 1786957557603）：透传面板本地模型选择。
+							// 用户手动在聊天框选择模型只更新了面板本地 _localModelId/_localProviderId
+							// （不写共享 _modelSelector，避免跨面板污染），此前发送时未透传 →
+							// 后端 executeFromChatOptions 的 modelOverride 恒为 undefined，回退到
+							// 全局 _activeSelection（settings 里的 defaultModel = hy3-ioa），导致
+							// UI 显示 deepseek-v4-pro 但实际请求用 hy3-ioa。现把面板本地选择
+							// 透传为 per-request modelOverride，覆盖全局默认选择。
+							model: this._localModelId || undefined,
+							providerId: this._localProviderId || undefined,
 						},
 						(delta) => {
 							this._handleStreamDelta(delta);
@@ -2982,7 +2991,13 @@ private _handleStreamDelta(delta: any): void {
 			// reasoning 不再硬编码 0：usage delta 现已携带 reasoning_tokens（OpenAI 系），
 			// 与子代理 subagentTokenCollector.reasoningTokens 口径对齐
 			const reasoning = (prev?.reasoning ?? 0) + (delta.usage.reasoning ?? 0);
-			const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: reasoning || undefined, cacheHitRate, credit: creditSeen ? creditSum : undefined, providerId: this._localProviderId || undefined, model: this._localModelId || undefined };
+			// 2026-08-17 修复「UI 选 A 但实际用 B」：以本次 usage 真实命中的 provider/model 为准。
+			// delta.usage.providerId/modelId 由 LMBridge.chat() 内部填入（vendor + 实际请求的
+			// modelId），比面板本地 _localModelId 更可信（考虑了 defaultModel 兜底、modelOverride
+			// 全局覆盖等场景）。Token 明细 UI 用此字段展示真实命中。
+			const realProvider = delta.usage.providerId || this._localProviderId || undefined;
+			const realModel = delta.usage.modelId || this._localModelId || undefined;
+			const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: reasoning || undefined, cacheHitRate, credit: creditSeen ? creditSum : undefined, providerId: realProvider, model: realModel };
 				assistantMsg.tokenUsage = tokenUsage;
 				this._chatPanel?.updateMessage(assistantId, { tokenUsage });
 					const limit = this._currentMaxContextTokens ?? 0;

@@ -55,7 +55,11 @@ export abstract class AgentChatPanelToolCards extends AgentChatPanelBase {
 		const key = (tc.name || '').toLowerCase();
 		if (key !== 'clarify') { return null; }
 
-		// 解析 args
+		// 解析 args（首选）。clarify 工具的协议定义（coreTools.ts）输出
+		// `JSON.stringify({ __clarify__: true, question, options })` 到 tool result，
+		// 但部分 LLM 会把 __clarify__ JSON 直接写在 args 里或漏写 args 仅写在
+		// result text 中；这里三层兜底解析：args JSON → result JSON（当 result
+		// 本身就是 __clarify__ JSON）→ 直接显示 question 字段。
 		let parsed: {
 			question?: string;
 			options?: string[];
@@ -64,7 +68,24 @@ export abstract class AgentChatPanelToolCards extends AgentChatPanelBase {
 		try {
 			parsed = tc.args ? JSON.parse(tc.args) : {};
 		} catch {
-			return null;
+			parsed = {};
+		}
+		// 兜底：args 解析后无 question/questions 时，尝试从 tc.result 解析 __clarify__ JSON
+		if (!parsed.question && !Array.isArray(parsed.questions) && tc.result) {
+			try {
+				const resultParsed = JSON.parse(tc.result);
+				// result 可能是 `{"type":"text","text":"{\"__clarify__\":true,...}"}` 包裹，
+				// 也可能是直接的 `{"__clarify__":true,...}`。
+				const inner = (resultParsed && typeof resultParsed.text === 'string')
+					? JSON.parse(resultParsed.text) : resultParsed;
+				if (inner && inner.__clarify__ === true) {
+					parsed = {
+						question: inner.question,
+						options: Array.isArray(inner.options) ? inner.options : undefined,
+						questions: Array.isArray(inner.questions) ? inner.questions : undefined,
+					};
+				}
+			} catch { /* ignore — not a __clarify__ payload */ }
 		}
 
 		// 规范化问题列表：questions[] 优先 → 单 question 回退

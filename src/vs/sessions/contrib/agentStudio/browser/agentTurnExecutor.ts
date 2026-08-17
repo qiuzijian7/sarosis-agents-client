@@ -1636,13 +1636,19 @@ interface ITurnContext {
 		// 冻结前缀指纹统一基于 effectiveSystemPrompt（实际发送的第一条 system 消息，
 		// 含 model 相关 enforcement）——保证指纹、缓存断点、modelOptions 三者字节一致。
 		const currentFork = buildForkContext(effectiveSystemPrompt ?? '', enabledTools);
+		// 回填父级冻结前缀：优先 request.forkContext（turn 入口已回填 / 子 agent 从父级继承），
+		// 否则回退到「上一轮迭代」存下的同会话冻结前缀。这样首次 turn 内从第 2 轮工具迭代起
+		// 即与第 1 轮对齐 → 请求构造端注入 cache_control 断点 → 命中 prompt cache。
+		// 注意顺序：先读旧值（上一轮）再写新值，否则会自对齐（恒 true）。
+		const parentFork = request.forkContext
+			?? (request.sessionId ? host._lastForkContextBySession.get(request.sessionId) : undefined);
 		if (request.sessionId) {
 			host._lastForkContextBySession.set(request.sessionId, currentFork);
 		}
-		const forkAligned = prefixCacheAligned(request.forkContext, effectiveSystemPrompt ?? '', enabledTools);
+		const forkAligned = prefixCacheAligned(parentFork, effectiveSystemPrompt ?? '', enabledTools);
 		host._logService.info(
 			`[AgentOS] Fork prefix-cache: aligned=${forkAligned} ` +
-			`parentFp=${request.forkContext?.toolsFingerprint ?? '(none)'} ` +
+			`parentFp=${parentFork?.toolsFingerprint ?? '(none)'} ` +
 			`childFp=${currentFork.toolsFingerprint} session=${request.sessionId ?? '(none)'}`,
 		);
 
@@ -1666,8 +1672,8 @@ interface ITurnContext {
 				// 用户显式开启（enabled:true）仍原样透传、尊重用户。多轮工具迭代不依赖
 				// 每轮长 thinking，关闭后无行为损失，反而规避 high 的 fake-completion。
 				reasoning: request.options?.reasoning ?? { enabled: false },
-				// Fork 前缀缓存：透传父级 ForkContext 给请求构造端判对齐 + 打 cache 断点。
-				forkContext: request.forkContext,
+				// Fork 前缀缓存：透传父级 ForkContext（含迭代级回填）给请求构造端判对齐 + 打 cache 断点。
+				forkContext: parentFork,
 			};
 
 			// 调用模型

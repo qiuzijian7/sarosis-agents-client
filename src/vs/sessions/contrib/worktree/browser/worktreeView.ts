@@ -69,12 +69,6 @@ class WorktreeTreeRenderer implements ICompressibleTreeRenderer<WorktreeItem, vo
 		templateData.desc.textContent = item.description ?? '';
 
 		// 右键 worktree item → 「调试」菜单（oncontextmenu 赋值覆盖，避免重复注册）
-		templateData.element.oncontextmenu = (e) => {
-			e.preventDefault();
-			e.stopPropagation();
-			this._onDebug(item, e);
-		};
-
 		// Set icon
 		const iconClasses = ThemeIcon.asClassNameArray(item.iconPath);
 		templateData.icon.className = 'worktree-item-icon ' + iconClasses.join(' ');
@@ -101,11 +95,23 @@ class WorktreeTreeRenderer implements ICompressibleTreeRenderer<WorktreeItem, vo
 			openBtn.setAttribute('role', 'button');
 			openBtn.setAttribute('title', localize('worktreeOpenInVSCode', 'Open in VS Code'));
 			openBtn.classList.add(...ThemeIcon.asClassNameArray(Codicon.emptyWindow));
-			openBtn.onclick = (e) => {
-				e.stopPropagation();
-				this._onOpen(item);
-			};
-		}
+		openBtn.onclick = (e) => {
+			e.stopPropagation();
+			this._onOpen(item);
+		};
+
+		// "Debug" button (compile worktree out/ and launch a VsSaros instance).
+		// 2026-08-17: 调试入口从「右键菜单」改为「actions 栏图标按钮」（与打开/检查点/删除一致）；
+		// 与 Source Control 视图「调试按钮」入口一致，main 也可调。
+		const debugBtn = dom.append(templateData.actions, $('a.worktree-item-action'));
+		debugBtn.setAttribute('role', 'button');
+		debugBtn.setAttribute('title', localize('worktreeDebug', '调试 (compile worktree out/ and launch a VsSaros instance)'));
+		debugBtn.classList.add(...ThemeIcon.asClassNameArray(Codicon.debugStart));
+		debugBtn.onclick = (e) => {
+			e.stopPropagation();
+			this._onDebug(item, e);
+		};
+	}
 
 		if (!isDeleting && !item.worktree.isMain) {
 			// Checkpoint button
@@ -235,10 +241,6 @@ export class WorktreeViewPane extends ViewPane {
 	// Deleting state tracking
 	private readonly _deletingWorktrees = new Set<string>();
 
-	// Worktree item right-click "调试" menu
-	private _debugMenuEl: HTMLElement | null = null;
-	private _debugMenuOutsideClickCleanup: (() => void) | null = null;
-
 	constructor(
 		options: IViewPaneOptions,
 		@IKeybindingService keybindingService: IKeybindingService,
@@ -266,7 +268,7 @@ export class WorktreeViewPane extends ViewPane {
 			(item) => this.onDeleteWorktree(item),
 			(item) => this.openWorktreeInNewWindow(item),
 			(item) => this._onCreateCheckpoint(item),
-			(item, e) => this._openWorktreeDebugMenu(item, e),
+			(item, e) => this._debugWorktree(item, e),
 		);
 		this.groupRenderer = new WorktreeRepoGroupRenderer();
 	}
@@ -612,56 +614,22 @@ export class WorktreeViewPane extends ViewPane {
 	}
 
 	/**
-	 * Worktree item 右键 → 弹出自定义「调试」菜单（编译 worktree out/ 并启动其 VsSaros 实例）。
-	 * 复用主 repo 的 electron 二进制（与代码目录解耦），与聊天框下拉的「调试」入口一致。
+	 * 触发该 worktree 的「调试」入口（编译 out/ 并启动独立 VsSaros 实例）。
+	 * 2026-08-17: actions 栏图标按钮点击 → 直接调用本方法（之前右键菜单链路已删除）。
 	 */
-	private _openWorktreeDebugMenu(item: WorktreeItem, e: MouseEvent): void {
-		this._closeWorktreeDebugMenu();
-
-		const menu = dom.append(document.body, $('.worktree-debug-menu'));
-		this._debugMenuEl = menu;
-
-		const debugItem = dom.append(menu, $('.worktree-debug-menu-item'));
-		dom.append(debugItem, $('span.worktree-debug-menu-icon', undefined, '🔧'));
-		dom.append(debugItem, $('span.worktree-debug-menu-label', undefined, localize('worktreeDebug', '调试')));
-
-		menu.style.position = 'fixed';
-		menu.style.left = `${e.clientX}px`;
-		menu.style.top = `${e.clientY}px`;
-		menu.style.zIndex = '1000';
-
-		debugItem.onclick = () => {
-			this._closeWorktreeDebugMenu();
-			this._debugWorktree(item);
-		};
-
-		// Outside click 关闭
-		const onClickOutside = (ev: MouseEvent) => {
-			if (!menu.contains(ev.target as Node)) {
-				this._closeWorktreeDebugMenu();
-			}
-		};
-		setTimeout(() => document.addEventListener('mousedown', onClickOutside, true), 0);
-		this._debugMenuOutsideClickCleanup = () => document.removeEventListener('mousedown', onClickOutside, true);
-	}
-
-	private _closeWorktreeDebugMenu(): void {
-		this._debugMenuOutsideClickCleanup?.();
-		this._debugMenuOutsideClickCleanup = null;
-		if (this._debugMenuEl) {
-			this._debugMenuEl.remove();
-			this._debugMenuEl = null;
-		}
-	}
-
-	private async _debugWorktree(item: WorktreeItem): Promise<void> {
+	private _debugWorktree(item: WorktreeItem, _e: MouseEvent): void {
 		this.notificationService.info(localize('worktreeDebugStarting', '正在编译并启动 worktree [{0}] ...', item.label));
-		const result = await this._worktreeService.launchDebug(item.path);
-		if (result.success) {
-			this.notificationService.info(localize('worktreeDebugStarted', '已启动 worktree [{0}] 的 VsSaros 实例', item.label));
-		} else {
-			this.notificationService.error(localize('worktreeDebugFailed', '启动 worktree 调试失败: {0}', result.stderr));
-		}
+		this._worktreeService.launchDebug(item.path)
+			.then(result => {
+				if (result.success) {
+					this.notificationService.info(localize('worktreeDebugStarted', '已启动 worktree [{0}] 的 VsSaros 实例', item.label));
+				} else {
+					this.notificationService.error(localize('worktreeDebugFailed', '启动 worktree 调试失败: {0}', result.stderr));
+				}
+			})
+			.catch(err => {
+				this.notificationService.error(localize('worktreeDebugFailed', '启动 worktree 调试失败: {0}', (err as Error).message));
+			});
 	}
 
 	/**

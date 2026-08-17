@@ -648,6 +648,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			//（用户在工作区下拉中选定的 sarosis-agents-client），避免 multi-workspace folders
 			// 合并把已切换走的工作区如 S1Game/UE5EA 一起带回来。
 			studioService: this.studioService,
+			// 2026-08-17：注入 worktree 路径（每轮 turn 前由 agentOSService 设置），
+			// 让 search_code/search_files 在 agent 绑定的 worktree 分支内搜索。
+			getParentWorktreePath: () => this.getParentWorktreePath(),
 		});
 	}
 

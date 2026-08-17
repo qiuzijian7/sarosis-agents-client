@@ -44,6 +44,13 @@ export interface CodebaseToolContext {
 	 * 会把已切换走的工作区如 S1Game/UE5EA 一起带回来）。
 	 */
 	studioService?: IAgentStudioService;
+	/**
+	 * 2026-08-17：worktree 路径（最权威，含任务级覆盖）。agentOSService 每轮 turn
+	 * 前通过 setParentWorktreePath 设置，builtinToolProvider 转发。搜索根应优先
+	 * 指向它——否则 agent 绑定 worktree 分支时 search_code/search_files 仍在主仓
+	 * 搜索（日志 1786957557603：roots=[sarosis-agents-client] 而 agent 绑定 feat-chat）。
+	 */
+	getParentWorktreePath?: () => string | undefined;
 }
 
 export function registerCodebaseTools(ctx: CodebaseToolContext): void {
@@ -57,11 +64,35 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 	 * 会把已切换走的工作区如 S1Game/UE5EA 一起带回来）。无 active workspace 时回退到
 	 * VS Code 全部 folders。
 	 */
-	const getSearchFolders = async (): Promise<IWorkspaceFolder[]> => {
+	const getSearchFolders = async (agentId?: string): Promise<IWorkspaceFolder[]> => {
+		// 2026-08-17：worktree 感知。最权威来源是 getParentWorktreePath()（每轮 turn 前由
+		// agentOSService 通过 setParentWorktreePath 设置，含任务级 worktreePath 覆盖）。
+		// 其次回退 getAgentBinding(activeId, agentId).worktreePath；再回退主工作区根。
+		const parentWorktree = ctx.getParentWorktreePath?.();
 		const studioSvc = ctx.studioService;
 		if (studioSvc) {
 			const activeId = studioSvc.getActiveWorkspaceId();
 			if (activeId) {
+				let wtPath: string | undefined = parentWorktree;
+				if (!wtPath && agentId) {
+					try {
+						const binding = await studioSvc.getAgentBinding(activeId, agentId);
+						wtPath = binding?.worktreePath;
+					} catch (err) {
+						ctx.logService.warn('[BuiltinTools] getSearchFolders: failed to resolve worktree binding:', err);
+					}
+				}
+				if (wtPath) {
+					const clean = wtPath.replace(/[\\/]+$/, '');
+					const wtUri = URI.file(clean);
+					const ws = await studioSvc.getWorkspace(activeId);
+					return [{
+						uri: wtUri,
+						name: ws?.name ?? (clean.split(/[\\/]/).pop() || clean),
+						index: 0,
+						toResource: (relativePath: string) => URI.joinPath(wtUri, relativePath),
+					}];
+				}
 				const ws = await studioSvc.getWorkspace(activeId);
 				if (ws?.path) {
 					const uri = URI.file(ws.path);
@@ -738,7 +769,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			category: 'codebase',
 			source: 'saros.builtin-tools',
 		},
-		handler: async (args: Record<string, unknown>) => {
+		handler: async (args: Record<string, unknown>, _signal?: unknown, agentId?: string) => {
 			if (!await ensureGraph()) { return text('get_code_snippet: no graph loaded. Run index_repository first.'); }
 			// alias: qualified_name → qualifiedName (MCP compatibility)
 			if (!args['qualifiedName'] && args['qualified_name']) { args['qualifiedName'] = args['qualified_name']; }
@@ -751,9 +782,9 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			// 图谱未索引该符号（如 C++ 源码未纳入索引）→ 回退到全工作区 ripgrep 文本检索。
 			// 优先用完整限定名（命中 `GC::ProcessAsync(` 这类定义行），否则用末段叶子符号兜底。
 			const leaf = qualifiedName.split(/::/).pop() || qualifiedName;
-			let fb = await _fallbackGrepWorkspaceCached(qualifiedName, undefined, 30, Math.max(contextLines, 3));
+			let fb = await _fallbackGrepWorkspaceCached(qualifiedName, undefined, 30, Math.max(contextLines, 3), agentId);
 			if (!fb && leaf !== qualifiedName) {
-				fb = await _fallbackGrepWorkspaceCached(leaf, undefined, 30, Math.max(contextLines, 3));
+				fb = await _fallbackGrepWorkspaceCached(leaf, undefined, 30, Math.max(contextLines, 3), agentId);
 			}
 			if (fb) {
 				ctx.logService.info(`[BuiltinTools] get_code_snippet fallback (filesystem grep) for: ${qualifiedName}`);
@@ -910,9 +941,10 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		fileGlob: string | undefined,
 		limit: number,
 		contextLines: number,
+		agentId?: string,
 	): Promise<string | null> => {
 		const effectiveGlob = fileGlob || SOURCE_CODE_GLOB;
-		const folders = await getSearchFolders();
+		const folders = await getSearchFolders(agentId);
 		if (folders.length === 0) { return null; }
 		const parts: string[] = [];
 		let totalMatches = 0;
@@ -957,6 +989,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		fileGlob: string | undefined,
 		limit: number,
 		contextLines: number,
+		agentId?: string,
 	): Promise<string | null> => {
 		const key = `${pattern}${fileGlob ?? ''}${contextLines}`;
 		const negTs = _fallbackNegCache.get(key);
@@ -964,7 +997,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			ctx.logService.info(`[BuiltinTools] [CBSearch][trace] fallback skipped (negative cache): pattern="${pattern.slice(0, 60)}"`);
 			return null;
 		}
-		const out = await _fallbackGrepWorkspace(pattern, fileGlob, limit, contextLines);
+		const out = await _fallbackGrepWorkspace(pattern, fileGlob, limit, contextLines, agentId);
 		if (out === null) {
 			_fallbackNegCache.set(key, Date.now());
 			// 简单容量保护：超 200 条清空（TTL 短，正常不会累积）
@@ -1166,7 +1199,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		let includeGlob: string | undefined = normalizedFilePattern;
 		let explicitSearchRoot: string | undefined;
 		if (pathFilter && !normalizedFilePattern) {
-			const rootDirNames = (await getSearchFolders())
+			const rootDirNames = (await getSearchFolders(agentId))
 				.map(f => f.uri.fsPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '');
 			const pf = normalizeSearchPathFilter(pathFilter, rootDirNames);
 			if (pf.includes('*')) {
@@ -1174,7 +1207,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			} else if (pf) {
 				const candidates = searchRootCandidates(
 					pf,
-					(await getSearchFolders()).map(f => f.uri.fsPath),
+					(await getSearchFolders(agentId)).map(f => f.uri.fsPath),
 				);
 				if (candidates.length === 0) {
 					// 无 workspace folder 时的兜底解析（沙箱校验）；失败即"不存在"
@@ -1227,7 +1260,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				const resolvedPath = await ctx.resolveAndCheckWorkspacePath(agentId, root ?? '.', false);
 				searchRoots = [{ label: scopedProject, path: resolvedPath }];
 			} else {
-				const folders = await getSearchFolders();
+				const folders = await getSearchFolders(agentId);
 				if (folders.length > 0) {
 					// 使用目录名（fsPath 末段）作 label，与 _fallbackGrepWorkspace 的命名约定一致；
 					// 不用 f.name（workspace folder 显示名，可能为 "VsSaros_S1Game" 这样的自定义名称）。

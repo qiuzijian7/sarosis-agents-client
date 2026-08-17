@@ -1641,10 +1641,11 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			// Fork 前缀缓存：透传父级 ForkContext，使 (system+tools) 与父级冻结前缀对齐
 			// → 请求构造端注入 cache 断点、命中 provider prompt cache（零行为变更）。
 			forkContext: options.forkContext,
-			// v39: forward per-request model override from workflow node config.
-			// When both providerId and model are set, override the global selection.
-			modelOverride: (options.providerId && options.model)
-				? { providerId: options.providerId, modelId: options.model }
+			// v39: forward per-request model override from workflow node config / 面板本地选择。
+			// providerId 可选：聊天输入框常只选 model 不显式选 provider（_localProviderId 为空），
+			// 此时仍要以 model 覆盖全局 defaultModel，providerId 由消费端保留当前 provider。
+			modelOverride: options.model
+				? { providerId: options.providerId ?? '', modelId: options.model }
 				: undefined,
 			chatOnly: options.chatOnly,
 			chatMode: options.chatMode, // @deprecated — 保留兼容
