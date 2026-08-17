@@ -153,6 +153,7 @@ export class SandboxGuard {
 		}
 
 		const builtin = this._deps.getBuiltinProvider();
+		// AllowOnce 放行仅为「本次重执行」作用域：executeToolCalls 前 add，finally 内 remove（见下方 157-172）。re-exec 与 fresh 派发共用同一 builtinToolProvider.executeTool wrapper，因此本方法内严禁再次清空 _sandboxBypassRoots——否则会擦除进行中的 AllowOnce 放行、使重执行再次被沙箱拦截。跨批次若残留放行根，由 agentTurnExecutor 的 fresh-dispatch 入口（host._clearSandboxBypassRoots()）在进入下一批工具前清空。注意：AllowWorkspace 走 persistSandboxRoot（持久根），不进入 _sandboxBypassRoots，不受任何清空影响。
 
 		if (decision === SandboxConfirmationDecision.AllowOnce) {
 			builtin?.addSandboxBypassRoot?.(v.requestedPath);

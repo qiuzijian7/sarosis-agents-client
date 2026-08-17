@@ -11,6 +11,7 @@ import { INativeEnvironmentService } from '../../../../../../platform/environmen
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { IAgentStudioService } from '../../../../../common/agentStudioService.js';
 import { resolveWorkspacePath } from '../../../common/workspacePathResolver.js';
+import { AgentNetworkDomainSettingId } from '../../../../../../platform/networkFilter/common/settings.js';
 import { resolveKbRoot } from '../../knowledge/knowledgeStorage.js';
 import { LEGACY_SAROS_DIR } from '../../../common/sarosPaths.js';
 
@@ -104,26 +105,33 @@ export async function resolveAndCheckWorkspacePathImpl(
 		allowedRoots.push(worktreeRoot);
 		logService.info(`[BuiltinTools] Agent ${agentId} is worktree-sandboxed to: ${worktreeRoot}`);
 
-		// 同时放行 VS Code 工作区文件夹
-		const vscodeFolders = workspaceService.getWorkspace().folders;
-		for (const folder of vscodeFolders) {
-			allowedRoots.push(folder.uri.fsPath.replace(/[\\/]+$/, ''));
-		}
+		const worktreeStrictIsolation = configurationService.getValue<boolean>(
+			AgentNetworkDomainSettingId.WorktreeStrictIsolation,
+		) ?? true;
 
-		// 同时放行 Saros 工作区路径 + 关联文件夹
-		if (activeWsId) {
-			try {
-				const workspace = await studioService.getWorkspace(activeWsId);
-				if (workspace?.path) {
-					allowedRoots.push(workspace.path.replace(/[\\/]+$/, ''));
-				}
-				for (const rf of workspace?.relatedFolders ?? []) {
-					if (rf?.path) {
-						allowedRoots.push(rf.path.replace(/[\\/]+$/, ''));
+		// 严格隔离关闭（默认）时放行 VS Code 工作区文件夹 + Saros 主仓 + 关联文件夹，便于多根代码分析
+		if (!worktreeStrictIsolation) {
+			// 同时放行 VS Code 工作区文件夹
+			const vscodeFolders = workspaceService.getWorkspace().folders;
+			for (const folder of vscodeFolders) {
+				allowedRoots.push(folder.uri.fsPath.replace(/[\\/]+$/, ''));
+			}
+
+			// 同时放行 Saros 工作区路径 + 关联文件夹
+			if (activeWsId) {
+				try {
+					const workspace = await studioService.getWorkspace(activeWsId);
+					if (workspace?.path) {
+						allowedRoots.push(workspace.path.replace(/[\\/]+$/, ''));
 					}
+					for (const rf of workspace?.relatedFolders ?? []) {
+						if (rf?.path) {
+							allowedRoots.push(rf.path.replace(/[\\/]+$/, ''));
+						}
+					}
+				} catch (err) {
+					logService.warn(`[BuiltinTools] Failed to resolve workspace folders for worktree-sandboxed agent ${agentId}:`, err);
 				}
-			} catch (err) {
-				logService.warn(`[BuiltinTools] Failed to resolve workspace folders for worktree-sandboxed agent ${agentId}:`, err);
 			}
 		}
 	} else {
@@ -246,8 +254,8 @@ export async function resolveAndCheckWorkspacePathImpl(
 		const baseMessage = worktreeRoot
 			? `安全沙箱限制：该 Agent 实例已绑定 worktree。\n` +
 				`路径 "${requestedPath}" (解析后: "${resolvedPath}") 超出了允许范围。\n` +
-				`当前允许的目录（worktree + 工作区文件夹）：\n${allowedList}\n` +
-				`请在上述目录内操作。如需访问其它目录，请解除该 Agent 的 worktree 绑定或将其添加为工作区文件夹。`
+				`当前允许的目录：\n${allowedList}\n` +
+				`请在上述目录内操作。如需写入其它目录，可在确认卡片中选择「允许本次」/「允许此工作区」，或解除该 Agent 的 worktree 绑定。`
 			: `安全沙箱限制：路径 "${requestedPath}" (解析后: "${resolvedPath}") 不在允许的工作区目录内。\n` +
 				`当前允许的工作区目录：\n${allowedList}\n` +
 				`请在上述目录内操作，或在 Saros 工作区设置中配置正确的路径。`;

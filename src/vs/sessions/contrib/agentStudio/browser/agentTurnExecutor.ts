@@ -1655,7 +1655,17 @@ interface ITurnContext {
 				stop: request.options?.stop,
 				// 思考/推理配置：由聊天输入框 thinking UI 控件透传至此，
 				// 各 model provider 据此映射到原生 API 参数（thinking/thinkingConfig/reasoning_effort）。
-				reasoning: request.options?.reasoning,
+				// P0（2026-08-17，日志 1786937164284 对话半途停止）：Agent 内部循环中，用户
+				// 未在聊天框显式开 thinking 时 request.options?.reasoning === undefined。此前
+				// undefined 直接透传 → 扩展侧落回「模型能力字段」→ reasoning-capable 模型
+				// 默认开启且 effort 命中 server-default。若 catalog 推荐 effort=high（如
+				// hy3-ioa / 部分 reasoning 模型），会触发 fake-completion：模型把工具调用意图
+				// 完整"想"在 reasoning_content 里，visible content 只输出半句话就 finishReason=stop
+				// 且 toolCalls=0 → AgentOS 判「无工具调用」提前结束对话。
+				// 修复：Agent 循环场景 reasoning 未显式设置时强制关闭（enabled:false），
+				// 用户显式开启（enabled:true）仍原样透传、尊重用户。多轮工具迭代不依赖
+				// 每轮长 thinking，关闭后无行为损失，反而规避 high 的 fake-completion。
+				reasoning: request.options?.reasoning ?? { enabled: false },
 				// Fork 前缀缓存：透传父级 ForkContext 给请求构造端判对齐 + 打 cache 断点。
 				forkContext: request.forkContext,
 			};
@@ -2897,6 +2907,7 @@ interface ITurnContext {
 				const _delegateSubset = _delegateSplit.delegates;
 				host._logService.info(`[AgentOS] [parallel] delegate split: ${_headCalls.length} serial + ${_delegateSubset.length} delegate_task parallel`);
 				// 先行串行执行非 delegate 工具（复用串行路径的沙箱确认 + 结果后处理逻辑）。
+				host._clearSandboxBypassRoots(); // fresh-dispatch 边界：清空上一批次遗留的 AllowOnce 放行根，避免重执行放行泄漏到本批工具调用
 				const headSerial = await host._executeToolCalls(_headCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting, request.sessionId);
 				for (const toolResult of headSerial) {
 					const sr = toolResult as unknown as { toolCallId: string; content: any; success: boolean; metadata?: { sandboxViolation?: ISandboxViolationInfo } };
@@ -2938,6 +2949,7 @@ interface ITurnContext {
 						// 未完成的 tool 用 success=false 标记（对齐 OpenCode Deferred settle 模式）。
 						const _executedToolIds = new Set<string>();
 						try {
+					host._clearSandboxBypassRoots(); // fresh-dispatch 边界：清空上一批次遗留的 AllowOnce 放行根，避免重执行放行泄漏到本批工具调用
 					for await (const toolResult of host._executeToolCallsParallelStreaming(_parallelCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting, request.sessionId)) {
 					_executedToolIds.add(toolResult.toolCallId);
 					toolResults.push(toolResult);
@@ -2962,6 +2974,7 @@ interface ITurnContext {
 					} else {
 						// Serial path: keep old behavior (each tool naturally finishes
 						// sequentially so head-of-line blocking is not an issue here).
+						host._clearSandboxBypassRoots(); // fresh-dispatch 边界：清空上一批次遗留的 AllowOnce 放行根，避免重执行放行泄漏到本批工具调用
 						const serial = await host._executeToolCalls(localExecutedCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting, request.sessionId);
 						for (const toolResult of serial) {
 							// ─── 沙箱确认（完整暂停等待）──────────────────────────

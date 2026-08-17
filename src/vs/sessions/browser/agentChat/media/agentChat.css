@@ -5793,6 +5793,29 @@
 	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace);
 }
 
+/* Provider/Model 元信息行（标题下方，独立分组） */
+.tokens-popup-meta {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	margin-bottom: 10px;
+	padding-bottom: 8px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, #333);
+}
+.tokens-popup-meta .meta-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+	flex-shrink: 0;
+}
+.tokens-popup-meta .meta-value {
+	font-size: 11px;
+	color: var(--vscode-foreground, #d0d0d0);
+	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* 分组：输入 / 输出 */
 .tokens-popup-group {
 	margin-bottom: 8px;

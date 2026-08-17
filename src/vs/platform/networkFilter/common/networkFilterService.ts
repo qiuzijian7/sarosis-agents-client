@@ -15,30 +15,57 @@ import { ITerminalSandboxService } from '../../sandbox/common/terminalSandboxSer
 import { extractDomainFromUri, isDomainAllowed } from './domainMatcher.js';
 import { AgentNetworkDomainSettingId } from './settings.js';
 
+/**
+ * Operating mode for agent network filtering, configured via
+ * {@link AgentNetworkDomainSettingId.NetworkFilterMode}.
+ *
+ * - `off`:     Filtering is fully disabled; all URIs are allowed (except where the
+ *              terminal sandbox still restricts the fetch web tool).
+ * - `filter`:  Access is restricted to the configured allowed/denied domain lists.
+ * - `denyAll`: Every network URI is blocked; only `file:` URIs and URIs without an
+ *              authority (e.g. local or untitled documents) pass.
+ */
+export const enum AgentNetworkFilterMode {
+	Off = 'off',
+	Filter = 'filter',
+	DenyAll = 'denyAll',
+}
+
 export const IAgentNetworkFilterService = createDecorator<IAgentNetworkFilterService>('agentNetworkFilterService');
 
 export const AgentNetworkFilterFetchWebToolName = 'fetchWebTool';
 
 /**
  * Service that filters network requests made by agent tools (fetch tool,
- * integrated browser) based on the configured allowed/denied domain lists.
+ * integrated browser) based on the configured network filter mode and the
+ * allowed/denied domain lists.
  *
- * Filtering is active for all callers when the `chat.agent.networkFilter` setting
- * is enabled. When only sandboxing is enabled, filtering is active for fetch web
- * page tool requests. This has to be revisited for integrated browser requests.
- * When both domain lists are empty, all domains are denied.
- * When a domain appears on the denied list it is always blocked, even if it
- * also matches an entry on the allowed list.
+ * The mode is controlled by `chat.agent.networkFilterMode`:
+ * - `off`:     No filtering is applied (all URIs allowed, except the terminal
+ *              sandbox may still restrict the fetch web tool).
+ * - `filter`:  Access is restricted to the configured allowed/denied domain lists.
+ * - `denyAll`: Every network URI is blocked; only `file:` URIs and URIs without an
+ *              authority pass.
+ *
+ * The legacy boolean `chat.agent.networkFilter` is still honored as a fallback:
+ * `true` maps to `filter`, `false`/`undefined` to `off`. `denyAll` is the safe
+ * default (it is the schema default for the mode setting).
+ *
+ * For the `filter` mode: when both domain lists are empty, all domains are denied.
+ * A domain on the denied list is always blocked, even if it also matches the
+ * allowed list.
  */
 export interface IAgentNetworkFilterService {
 	readonly _serviceBrand: undefined;
 
 	/**
-	 * Extracts the domain from a URI and checks it against the configured
-	 * allowed/denied domain filter.
-	 * File URIs and URIs without an authority always pass.
+	 * Checks a URI against the current network filter mode and domain lists.
+	 * - `off`: always allowed (terminal sandbox may still gate the fetch web tool).
+	 * - `denyAll`: only `file:` URIs and URIs without an authority pass.
+	 * - `filter`: `file:` URIs and URIs without an authority always pass; other
+	 *   URIs are checked against the allowed/denied domain lists.
 	 * @param toolName Optional tool name for sandbox-only filtering.
-	 * @returns `true` if the URI's domain is allowed, `false` if blocked.
+	 * @returns `true` if the URI is allowed, `false` if blocked.
 	 */
 	isUriAllowed(uri: URI, toolName?: string): boolean;
 
@@ -58,7 +85,7 @@ export interface IAgentNetworkFilterService {
 export class AgentNetworkFilterService extends Disposable implements IAgentNetworkFilterService {
 	readonly _serviceBrand: undefined;
 
-	private networkFilterEnabled = false;
+	private networkFilterMode: AgentNetworkFilterMode = AgentNetworkFilterMode.DenyAll;
 	private terminalSandboxEnabled = false;
 	private allowedPatterns: string[] = [];
 	private deniedPatterns: string[] = [];
@@ -78,6 +105,7 @@ export class AgentNetworkFilterService extends Disposable implements IAgentNetwo
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (
 				e.affectsConfiguration(AgentNetworkDomainSettingId.NetworkFilter) ||
+				e.affectsConfiguration(AgentNetworkDomainSettingId.NetworkFilterMode) ||
 				e.affectsConfiguration(AgentNetworkDomainSettingId.AllowedNetworkDomains) ||
 				e.affectsConfiguration(AgentNetworkDomainSettingId.DeniedNetworkDomains)
 			) {
@@ -93,12 +121,32 @@ export class AgentNetworkFilterService extends Disposable implements IAgentNetwo
 	}
 
 	private readConfiguration(): void {
-		const networkFilterEnabled = this.configurationService.getValue<boolean>(AgentNetworkDomainSettingId.NetworkFilter) ?? false;
+		this.networkFilterMode = this.resolveMode(
+			this.configurationService.getValue<AgentNetworkFilterMode>(AgentNetworkDomainSettingId.NetworkFilterMode),
+		);
 
-		this.networkFilterEnabled = networkFilterEnabled;
 		this.allowedPatterns = this.configurationService.getValue<string[]>(AgentNetworkDomainSettingId.AllowedNetworkDomains) ?? [];
 		this.deniedPatterns = this.configurationService.getValue<string[]>(AgentNetworkDomainSettingId.DeniedNetworkDomains) ?? [];
 		this.domainCache.clear();
+	}
+
+	/**
+	 * Resolves the effective filter mode.
+	 * Prefers the explicit `chat.agent.networkFilterMode` setting; if it is unset or
+	 * invalid, falls back to the legacy boolean `chat.agent.networkFilter`
+	 * (`true` -> `filter`, `false`/`undefined` -> `off`).
+	 */
+	private resolveMode(mode: AgentNetworkFilterMode | undefined): AgentNetworkFilterMode {
+		switch (mode) {
+			case AgentNetworkFilterMode.Off:
+			case AgentNetworkFilterMode.Filter:
+			case AgentNetworkFilterMode.DenyAll:
+				return mode;
+			default: {
+				const legacyEnabled = this.configurationService.getValue<boolean>(AgentNetworkDomainSettingId.NetworkFilter) ?? false;
+				return legacyEnabled ? AgentNetworkFilterMode.Filter : AgentNetworkFilterMode.Off;
+			}
+		}
 	}
 
 	private async updateTerminalSandboxEnabled(): Promise<void> {
@@ -116,12 +164,37 @@ export class AgentNetworkFilterService extends Disposable implements IAgentNetwo
 	}
 
 	isUriAllowed(uri: URI, toolName?: string): boolean {
-		// When domain filtering is inactive, allow all requests.
-		if (!this.shouldFilter(toolName)) {
-			return true;
-		}
+		switch (this.networkFilterMode) {
+			case AgentNetworkFilterMode.Off:
+				// Filtering is fully disabled. The terminal sandbox may still gate the
+				// fetch web tool when non-sandboxed network access is disallowed.
+				if (this.terminalSandboxEnabled) {
+					if (toolName === AgentNetworkFilterFetchWebToolName) {
+						return this.isDomainAllowedByLists(uri);
+					}
+					return true;
+				}
+				return true;
 
-		// File URIs and URIs without authority always pass
+			case AgentNetworkFilterMode.DenyAll:
+				// Only local / authority-less resources pass; every network URI is blocked.
+				if (uri.scheme === 'file' || !uri.authority) {
+					return true;
+				}
+				return false;
+
+			case AgentNetworkFilterMode.Filter:
+			default:
+				return this.isDomainAllowedByLists(uri);
+		}
+	}
+
+	/**
+	 * `filter` mode logic: `file:` URIs and URIs without an authority always pass;
+	 * other URIs are checked against the configured allowed/denied domain lists.
+	 */
+	private isDomainAllowedByLists(uri: URI): boolean {
+		// File URIs and URIs without authority always pass.
 		if (uri.scheme === 'file' || !uri.authority) {
 			return true;
 		}
@@ -138,13 +211,6 @@ export class AgentNetworkFilterService extends Disposable implements IAgentNetwo
 		}
 
 		return result;
-	}
-	// Determines whether network filtering should be applied for a given request
-	// based on the global network filter setting, the terminal sandbox state, and the tool making the request.
-	// For sandbox mode, network filtering is applied only when the global network filter is disabled
-	// and the request is coming from the fetch web tool.
-	private shouldFilter(toolName: string | undefined): boolean {
-		return this.networkFilterEnabled || (this.terminalSandboxEnabled && toolName === AgentNetworkFilterFetchWebToolName);
 	}
 
 	formatError(uri: URI): string {

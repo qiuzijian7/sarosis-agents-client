@@ -79,6 +79,8 @@ export interface ArchitectureReport {
 	communities: Community[];
 	/** 大库跳过社区检测时的说明（2026-07-27：Leiden 同步跑 249k 节点是分钟级主线程阻塞） */
 	communitiesSkipped?: string;
+	/** 大库降级为 cheap pass 时跳过的 aspect 说明（2026-08-17 日志 1786941660317，UI 卡死 47s） */
+	aspectsSkipped?: string;
 	services?: any[];
 	fileTree?: any;
 	totalNodes: number;
@@ -100,14 +102,25 @@ export async function analyzeArchitecture(store: CodebaseGraphStore, project: st
 	const allNodes = project ? store.getAllNodes().filter(n => n.project === project) : store.getAllNodes();
 	const allEdges = project ? store.getAllEdges().filter(e => e.project === project) : store.getAllEdges();
 
+	// 2026-08-17（日志 1786941660317，subagent 调 get_architecture 时 vssaros.exe UI
+	// 卡死 ~47s）：packages/crossBoundaries/layers/services/fileTree 等 pass 在
+	// 12.7万节点 × 40万边上同步跑是主线程秒级阻塞（subagent 执行链在主线程同步 await）；
+	// 且 assignLayers/crossBoundaries 产物体量数万条，塞进 tool result 也会拖慢 LLM 上下文。
+	// 降级：大图（>30000 节点，与 Leiden 保护阈值一致）只保留 O(N) 且结果紧凑的
+	// cheap pass（languages/entryPoints/routes/hotspots），跳过重 pass 并记录说明。
+	const isLarge = allNodes.length > 30_000;
+	const aspectsSkipped = isLarge
+		? `large-graph degraded: skipped packages/crossBoundaries/layers/services/fileTree (${allNodes.length} nodes > 30000) — these aspects block the main thread for seconds on large graphs; use search_code / get_project_tree for structure instead`
+		: undefined;
+
 	return {
 		languages: analyzeLanguages(allNodes),
-		packages: await analyzePackages(allNodes, allEdges, project, store),
+		packages: isLarge ? [] : await analyzePackages(allNodes, allEdges, project, store),
 		entryPoints: findEntryPoints(allNodes),
-		routes: allNodes.filter(n => n.label === 'route'),
+		routes: isLarge ? [] : allNodes.filter(n => n.label === 'route'),
 		hotspots: findHotspots(allNodes),
-		crossBoundaries: findCrossBoundaries(allNodes, allEdges, store),
-		layers: assignLayers(allNodes),
+		crossBoundaries: isLarge ? [] : findCrossBoundaries(allNodes, allEdges, store),
+		layers: isLarge ? [] : assignLayers(allNodes),
 		// 2026-07-27（日志 1785084338635，app 卡死）：Leiden 社区检测在 249k 节点
 		// × ~50 万边上同步跑是分钟级主线程阻塞。规模保护：超阈值跳过（架构报告
 		// 的 packages/languages/hotspots/layers 仍有价值，communities 为加分项）。
@@ -115,9 +128,10 @@ export async function analyzeArchitecture(store: CodebaseGraphStore, project: st
 		...(allNodes.length > 30_000
 			? { communitiesSkipped: `community detection skipped: graph too large (${allNodes.length} nodes > 30000) — Leiden would block the main thread for minutes` }
 			: {}),
+		...(aspectsSkipped ? { aspectsSkipped } : {}),
 		// P1 additions: services + fileTree
-		services: analyzeServices(allNodes, allEdges, store, project),
-		fileTree: buildFileTree(allNodes),
+		services: isLarge ? [] : analyzeServices(allNodes, allEdges, store, project),
+		fileTree: isLarge ? undefined : buildFileTree(allNodes),
 		totalNodes: allNodes.length,
 		totalEdges: allEdges.length,
 	};

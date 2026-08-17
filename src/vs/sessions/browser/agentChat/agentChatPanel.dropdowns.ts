@@ -2,7 +2,7 @@ import { IDisposable } from '../../../base/common/lifecycle.js';
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { mainWindow } from '../../../base/browser/window.js';
 import { IAgentChatMessage, IWorkspaceItem, IWorktreeItem } from './agentChatTypes.js';
-import { positionDropdownAbove, disposeOutsideClick, registerOutsideClickClose } from './modules/dropdownHelpers.js';
+import { positionDropdownAbove, positionDropdownBelow, disposeOutsideClick, registerOutsideClickClose } from './modules/dropdownHelpers.js';
 import { renderHistoryOverlay } from './modules/historyOverlay.js';
 import { AgentChatPanelComposer } from './agentChatPanel.composer.js';
 
@@ -25,8 +25,8 @@ protected override _openWorktreeDropdown(): void {
 		if (this._worktreeTrigger) { this._worktreeTrigger.classList.add('open'); }
 
 		this._worktreeDropdownEl = append(this._dropdownBody(this._worktreeTrigger), $(".chat-worktree-dropdown"));
-		// 输入框中 worktree 选择器 → 弹出方向：向上（避免被输入框遮挡）
-		this._positionDropdownAbove(this._worktreeDropdownEl, this._worktreeTrigger);
+		// header 中 worktree 选择器 → 弹出方向：向下
+		positionDropdownBelow(this._worktreeDropdownEl, this._worktreeTrigger);
 
 		const head = append(this._worktreeDropdownEl, $(".chat-worktree-dropdown-header"));
 		head.textContent = 'Worktrees';
@@ -94,6 +94,108 @@ protected override _closeWorktreeContextMenu(): void {
 		}
 	}
 
+/**
+ * 打开 agent 页签栏右键菜单（当前 session 重命名）。
+ * 复用 worktree 右键菜单的样式类与 outside-click 机制。
+ */
+protected _openSessionContextMenu(e: MouseEvent): void {
+	e.preventDefault();
+	e.stopPropagation();
+
+	const sessionId = this._getSessionId();
+	const sessionName = this._getSessionName();
+	if (!sessionId) { return; }
+
+	this._closeSessionContextMenu();
+
+	const menuEl = $('div.chat-worktree-context-menu.session-context-menu');
+	const renameItem = $('div.chat-worktree-context-menu-item', undefined, '重命名');
+
+	const triggerDoc = (e.currentTarget as HTMLElement | null)?.ownerDocument ?? mainWindow.document;
+	menuEl.style.position = 'fixed';
+	menuEl.style.left = `${e.clientX}px`;
+	menuEl.style.top = `${e.clientY}px`;
+	menuEl.style.zIndex = '1000';
+
+	renameItem.addEventListener('click', (ev) => {
+		ev.stopPropagation();
+		this._closeSessionContextMenu();
+		this._openSessionRenameOverlay(sessionId, sessionName ?? undefined, renameItem);
+	});
+
+	menuEl.appendChild(renameItem);
+	triggerDoc.body.appendChild(menuEl);
+	this._sessionContextMenuEl = menuEl;
+
+	this._sessionContextMenuOutsideClick = this._registerOutsideClickClose(menuEl, null, () => this._closeSessionContextMenu());
+}
+
+/**
+ * 关闭 agent 页签栏右键菜单。
+ */
+protected _closeSessionContextMenu(): void {
+	this._disposeOutsideClick(this._sessionContextMenuOutsideClick);
+	this._sessionContextMenuOutsideClick = null;
+	if (this._sessionContextMenuEl) {
+		this._sessionContextMenuEl.remove();
+		this._sessionContextMenuEl = null;
+	}
+}
+
+/**
+ * 在「重命名」菜单项处就地展开 input 浮层，回车确认 / Esc 取消。
+ * 直接调用宿主注入的 onRenameSession 回调上报新名称。
+ */
+protected _openSessionRenameOverlay(sessionId: string, sessionName: string | undefined, anchor: HTMLElement): void {
+	const input = $('input.chat-session-rename-input') as HTMLInputElement;
+	input.type = 'text';
+	input.value = sessionName ?? '';
+	input.placeholder = '输入新的会话名称';
+	input.maxLength = 120;
+
+	const rect = anchor.getBoundingClientRect();
+	const doc = anchor.ownerDocument;
+	input.style.position = 'fixed';
+	input.style.left = `${rect.left}px`;
+	input.style.top = `${rect.bottom + 4}px`;
+	input.style.zIndex = '1001';
+	input.style.minWidth = '180px';
+
+	doc.body.appendChild(input);
+	input.focus();
+	input.select();
+
+	const commit = () => {
+		const newName = input.value.trim();
+		const disposables = this._sessionRenameOverlayDisposables;
+		this._sessionRenameOverlayDisposables = null;
+		disposables?.forEach(d => d.dispose());
+		input.remove();
+		if (newName && newName !== sessionName) {
+			this._onRenameSession?.(sessionId, newName);
+		}
+	};
+
+	const onKeyDown = (ev: KeyboardEvent) => {
+		if (ev.key === 'Enter') {
+			ev.preventDefault();
+			commit();
+		} else if (ev.key === 'Escape') {
+			ev.preventDefault();
+			const disposables = this._sessionRenameOverlayDisposables;
+			this._sessionRenameOverlayDisposables = null;
+			disposables?.forEach(d => d.dispose());
+			input.remove();
+		}
+	};
+
+	const onBlur = () => commit();
+
+	const d1 = addDisposableListener(input, EventType.KEY_DOWN, onKeyDown);
+	const d2 = addDisposableListener(input, EventType.BLUR, onBlur);
+	this._sessionRenameOverlayDisposables = [d1, d2];
+}
+
 protected override _getWorktreeLabel(): string {
 		if (!this._selectedWorktreePath) { return '主仓库'; }
 		const current = this._worktrees.find(w => w.path === this._selectedWorktreePath);
@@ -106,8 +208,8 @@ protected override _openWorkspaceDropdown(): void {
 		if (this._workspaceTrigger) { this._workspaceTrigger.classList.add('open'); }
 
 		this._workspaceDropdownEl = append(this._dropdownBody(this._workspaceTrigger), $(".workspace-dropdown"));
-		// 输入框中 workspace 选择器 → 弹出方向：向上（避免被输入框遮挡）
-		this._positionDropdownAbove(this._workspaceDropdownEl, this._workspaceTrigger);
+		// header 中 workspace 选择器 → 弹出方向：向下
+		positionDropdownBelow(this._workspaceDropdownEl, this._workspaceTrigger);
 
 		// 如果有外部提供的加载回调，先异步加载
 		const renderItems = (list: IWorkspaceItem[]) => {

@@ -23,11 +23,21 @@ import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { ITerminalService } from '../../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { ICheckpointService } from '../../../common/checkpointService.js';
-import { ToolSecurityLevel } from '../../../common/providers.js';
+import { NonRetryableToolError, ToolSecurityLevel } from '../../../common/providers.js';
 import type { IToolResultContent } from '../../../common/providers.js';
 import { SearchHelpers, redactSecrets } from './searchHelpers.js';
 import { detectTerminalSearchCommand, terminalSearchCommandHint } from './terminalCommandGuards.js';
 import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS } from './executeCodeGuards.js';
+import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
+import {
+	detectDevicePath,
+	detectSensitivePath,
+	devicePathBlockedMessage,
+	sensitiveReadBlockedMessage,
+	sensitiveWriteBlockedMessage,
+} from './sensitivePaths.js';
+import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
+import { AgentNetworkDomainSettingId } from '../../../../../../platform/networkFilter/common/settings.js';
 import { isWindows } from '../../../../../../base/common/platform.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 
@@ -41,6 +51,7 @@ export interface CoreToolContext {
 	checkpointService: ICheckpointService;
 	terminalService: ITerminalService;
 	workspaceService: IWorkspaceContextService;
+	configurationService: IConfigurationService;
 }
 
 // ── 静态常量（原 BuiltinToolProvider 静态成员）────────────────────────
@@ -51,12 +62,7 @@ const LARGE_FILE_HINT_BYTES = 512 * 1024;
 const LARGE_FILE_HINT_MIN_LIMIT = 200;
 /** 上下文窗口大小（2026-07-26 P2 动态上下文保护）：全读大文件时按占比警告 */
 const CONTEXT_WINDOW_TOKENS = 128_000;
-// P1: 写文件敏感路径拒绝列表（对齐 Hermes file_safety.py）
-const WRITE_DENIED_PREFIXES = ['.ssh/', '.aws/', '.kube/', '.config/gcloud/', '.git-credentials'];
-const WRITE_DENIED_EXACT = ['.env', '.env.local', '.env.production', '.env.development', 'auth.json', '.npmrc', '.pypirc'];
-// P2: 读文件设备/敏感路径拒绝（对齐 Hermes _is_blocked_device + get_read_block_error）
-const READ_BLOCKED_PREFIXES = ['/dev/', '/proc/', '/sys/'];
-const READ_BLOCKED_EXACT = ['auth.json', '.env', '.anthropic_oauth.json'];
+// 敏感路径表已迁移到 sensitivePaths.ts（单一真源，读写共享同一份表与匹配语义）
 const READ_REPEAT_WARN = 3;
 const READ_REPEAT_BLOCK = 4;
 const READ_DEDUP_BLOCK = 2;
@@ -504,17 +510,25 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				throw new Error(`Cannot read binary file '${requestedPath}'. Use a different tool for binary files.\nFor supported structured documents, consider converting to text first (e.g., .docx → pandoc, .xlsx → csv, .ipynb → python script).`);
 			}
 
-			// P2: 设备路径守卫（对齐 Hermes _is_blocked_device + get_read_block_error）
-			const normalizedReadPath = resolvedPath.replace(/\\/g, '/').toLowerCase();
-			for (const prefix of READ_BLOCKED_PREFIXES) {
-				if (normalizedReadPath.startsWith(prefix)) {
-					throw new Error(`Cannot read from ${prefix}... Device and system paths are blocked for security.`);
-				}
+			// ── 设备/内核伪文件系统：恒拦（读取会阻塞或泄露内核信息）──────
+			const readDeviceHit = detectDevicePath(resolvedPath);
+			if (readDeviceHit) {
+				throw new NonRetryableToolError(devicePathBlockedMessage(readDeviceHit, 'read'));
 			}
-			const readFileName = normalizedReadPath.split('/').pop() ?? '';
-			for (const exact of READ_BLOCKED_EXACT) {
-				if (readFileName === exact) {
-					throw new Error(`Reading "${exact}" files is not allowed. This file contains sensitive credentials.`);
+			// ── 凭据/密钥路径：受 chat.agent.sensitiveReadGuard 控制（默认开启）──
+			// 此前该配置已注册但【从未被任何代码消费】，且读表长期落后于写表，
+			// 导致 ~/.ssh/id_rsa、~/.aws/credentials、.env.local 等可被读取并
+			// 随对话历史上传。此处接线配置 + 共享表，消除该泄露面。
+			const sensitiveReadGuardEnabled = ctx.configurationService.getValue<boolean>(
+				AgentNetworkDomainSettingId.SensitiveReadGuard,
+			) ?? true;
+			if (sensitiveReadGuardEnabled) {
+				const sensitiveHit = detectSensitivePath(resolvedPath);
+				if (sensitiveHit) {
+					ctx.logService.warn(
+						`[coreTools] file_read BLOCKED: ${requestedPath} matches sensitive ${sensitiveHit.kind} "${sensitiveHit.matched}"`,
+					);
+					throw new NonRetryableToolError(sensitiveReadBlockedMessage(sensitiveHit));
 				}
 			}
 
@@ -657,20 +671,19 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			const normalizedUri = URI.file(resolvedPath);
 			let content = String(args['content'] ?? '');
 
-			// ── P1: 敏感路径拒绝（对齐 Hermes file_safety.py）──────────
-			const normalizedLower = resolvedPath.toLowerCase().replace(/\\/g, '/');
-			const fileName = normalizedLower.split('/').pop() ?? '';
-			for (const denied of WRITE_DENIED_EXACT) {
-				if (fileName === denied) {
-					ctx.logService.warn(`[coreTools] file_write BLOCKED: ${requestedPath} matches denied exact "${denied}"`);
-					throw new Error(`Cannot write to "${denied}" files. This path is protected for security reasons.`);
-				}
+			// ── 敏感路径拒绝（共享表 sensitivePaths.ts，与读同一真源）──────
+			// 写凭据/密钥文件无合理场景，恒拦（不受 sensitiveReadGuard 影响）。
+			const writeDeviceHit = detectDevicePath(resolvedPath);
+			if (writeDeviceHit) {
+				ctx.logService.warn(`[coreTools] file_write BLOCKED: ${requestedPath} is a device path`);
+				throw new NonRetryableToolError(devicePathBlockedMessage(writeDeviceHit, 'write'));
 			}
-			for (const prefix of WRITE_DENIED_PREFIXES) {
-				if (normalizedLower.includes('/' + prefix)) {
-					ctx.logService.warn(`[coreTools] file_write BLOCKED: ${requestedPath} matches denied prefix "${prefix}"`);
-					throw new Error(`Cannot write to files under "${prefix}". This path is protected for security reasons.`);
-				}
+			const writeSensitiveHit = detectSensitivePath(resolvedPath);
+			if (writeSensitiveHit) {
+				ctx.logService.warn(
+					`[coreTools] file_write BLOCKED: ${requestedPath} matches sensitive ${writeSensitiveHit.kind} "${writeSensitiveHit.matched}"`,
+				);
+				throw new NonRetryableToolError(sensitiveWriteBlockedMessage(writeSensitiveHit));
 			}
 
 			// ── P1: 行尾保持（对齐 Hermes）──────────────────────────
@@ -746,6 +759,11 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		handler: async (args, signal, agentId) => {
 		const command = String(args['command'] ?? '').trim();
 		if (!command) { throw new Error('command is required'); }
+		// HARDLINE 不可绕过地板（灾难性/不可逆命令，任何审批与自主模式都无法放行）
+		const hardline = detectHardlineViolation(command);
+		if (hardline) {
+			throw new NonRetryableToolError(hardlineViolationMessage(hardline, 'terminal'));
+		}
 		// Windows 护栏（日志 1786264843850）：与 execute_code 一致，拦截管道中的
 		// Unix-only 命令（head/tail/grep/sed/awk）——cmd.exe/PowerShell 下必败。
 		// 模型在 Windows 上写 `dir ... | head -50` 会直接失败，提前给可执行纠错反馈。

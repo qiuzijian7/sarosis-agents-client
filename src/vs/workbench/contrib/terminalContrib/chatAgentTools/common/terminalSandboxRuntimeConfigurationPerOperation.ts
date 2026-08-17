@@ -10,12 +10,25 @@ import { gitGlobalOptionsWithValue, type ITerminalSandboxCommandRule, matchesTer
 export const enum TerminalSandboxRuntimeConfigurationOperation {
 	GnuPG = 'gnupg',
 	Node = 'node',
+	Git = 'git',
 }
 
 const terminalSandboxRuntimeConfigurationCommandRules: readonly ITerminalSandboxCommandRule<TerminalSandboxRuntimeConfigurationOperation>[] = [
 	{
 		keywords: ['node', 'npm', 'npx', 'pnpm', 'yarn', 'corepack', 'bun', 'deno', 'nvm', 'volta', 'fnm', 'asdf', 'mise'],
 		value: TerminalSandboxRuntimeConfigurationOperation.Node,
+	},
+	{
+		// Git reaches its remotes via URLs declared in `.git/config`, never on the
+		// command line, so the command-line domain blocker (_getBlockedDomains) can
+		// not observe them. Without network egress a sandboxed `git pull/push/fetch/
+		// clone` can never reach the remote. Reuse the `enabled:false` primitive
+		// (identical to the global allowNetwork config) to grant this single command
+		// egress. The sandbox config is rebuilt per command (wrapCommand change
+		// detection), so non-git commands stay fully network-restricted.
+		keywords: ['git'],
+		value: TerminalSandboxRuntimeConfigurationOperation.Git,
+		condition: ({ os }) => os !== OperatingSystem.Windows,
 	},
 	{
 		keywords: ['git'],
@@ -63,6 +76,15 @@ function getTerminalSandboxRuntimeConfigurationForOperation(operation: TerminalS
 							]
 						}
 					};
+			}
+
+		case TerminalSandboxRuntimeConfigurationOperation.Git:
+			switch (os) {
+				case OperatingSystem.Macintosh:
+				case OperatingSystem.Linux:
+					return { network: { enabled: false } };
+				default:
+					return {};
 			}
 	}
 }

@@ -863,6 +863,25 @@ private readonly _sandboxGuard: SandboxGuard;
 		return this._sandboxGuard.reExecuteAfterSandbox(tc, agentId, worktreePath, signal, decision, v, this._currentWorkspaceId);
 	}
 
+	/**
+	 * 清空 builtin provider 的临时沙箱放行根集合（AllowOnce 的 _sandboxBypassRoots）。
+	 *
+	 * ⓵ 仅清内存中的临时放行集合，绝不触碰 persistSandboxRoot 持久放行的根；
+	 *    持久根由 StudioService 另行管理，跨调用保留，不在本方法作用范围内。
+	 * ⓶ 调用方（agentTurnExecutor 的 fresh-dispatch 入口）应在「每个工具批次派发前」
+	 *    调用，以清理上一批次遗留的 AllowOnce 放行根——防止一次用户确认被隐性携带到
+	 *    后续无关工具调用。
+	 * ⓷ 严禁在 reExecuteAfterSandbox 的共享派发路径内调用：re-exec 在 executeToolCalls
+	 *    前 add、finally 内 remove，本方法若在共享路径执行会擦除进行中的 AllowOnce 放行，
+	 *    导致重执行再次被沙箱拦截，破坏「允许一次」重执行卡片流程。
+	 */
+	_clearSandboxBypassRoots(): void {
+		const provider = this._slotRegistry.getToolProviders().find((p) => p.id === 'saros.builtin-tools') as any;
+		if (provider && typeof provider.clearSandboxBypassRoots === 'function') {
+			provider.clearSandboxBypassRoots();
+		}
+	}
+
 	getDashboardStats(): IAgentOSDashboardStats {
 		const selection = this._activeSelection;
 		return {

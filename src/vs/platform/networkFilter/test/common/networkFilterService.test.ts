@@ -9,7 +9,7 @@ import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { ConfigurationTarget } from '../../../configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../configuration/test/common/testConfigurationService.js';
-import { AgentNetworkFilterFetchWebToolName, AgentNetworkFilterService } from '../../common/networkFilterService.js';
+import { AgentNetworkFilterFetchWebToolName, AgentNetworkFilterMode, AgentNetworkFilterService } from '../../common/networkFilterService.js';
 import { AgentNetworkDomainSettingId } from '../../common/settings.js';
 import { AgentSandboxSettingId } from '../../../sandbox/common/settings.js';
 import { ITerminalSandboxService, NullTerminalSandboxService } from '../../../sandbox/common/terminalSandboxService.js';
@@ -137,6 +137,36 @@ suite('AgentNetworkFilterService', () => {
 			const service = await createService();
 			assert.strictEqual(service.isUriAllowed(URI.parse('https://example.com/page')), true);
 			assert.strictEqual(service.isUriAllowed(URI.parse('https://other.com/page')), false);
+		});
+	});
+
+	suite('isUriAllowed (networkFilterMode)', () => {
+
+		test('off mode allows all network URIs', async () => {
+			configService.setUserConfiguration(AgentNetworkDomainSettingId.NetworkFilterMode, AgentNetworkFilterMode.Off);
+			// Even a deny-all domain list must not affect the explicit off mode.
+			configService.setUserConfiguration(AgentNetworkDomainSettingId.DeniedNetworkDomains, ['*']);
+			const service = await createService();
+			assert.strictEqual(service.isUriAllowed(URI.parse('https://example.com')), true);
+			assert.strictEqual(service.isUriAllowed(URI.parse('https://anything.test/path')), true);
+			assert.strictEqual(service.isUriAllowed(URI.parse('http://localhost:8080')), true);
+		});
+
+		test('filter mode restricts access to the configured allowed domain lists', async () => {
+			configService.setUserConfiguration(AgentNetworkDomainSettingId.NetworkFilterMode, AgentNetworkFilterMode.Filter);
+			configService.setUserConfiguration(AgentNetworkDomainSettingId.AllowedNetworkDomains, ['example.com']);
+			const service = await createService();
+			assert.strictEqual(service.isUriAllowed(URI.parse('https://example.com')), true);
+			assert.strictEqual(service.isUriAllowed(URI.parse('https://other.com')), false);
+		});
+
+		test('denyAll mode blocks all network URIs but allows file and authority-less URIs', async () => {
+			configService.setUserConfiguration(AgentNetworkDomainSettingId.NetworkFilterMode, AgentNetworkFilterMode.DenyAll);
+			const service = await createService();
+			assert.strictEqual(service.isUriAllowed(URI.parse('https://example.com')), false);
+			assert.strictEqual(service.isUriAllowed(URI.parse('https://other.com/path')), false);
+			assert.strictEqual(service.isUriAllowed(URI.file('/tmp/test.txt')), true);
+			assert.strictEqual(service.isUriAllowed(URI.from({ scheme: 'untitled', path: 'Untitled-1' })), true);
 		});
 	});
 

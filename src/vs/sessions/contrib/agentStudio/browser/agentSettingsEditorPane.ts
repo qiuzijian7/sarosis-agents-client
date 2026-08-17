@@ -19,6 +19,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
@@ -139,6 +140,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@INotificationService private readonly notificationService: INotificationService,
+		@ILogService private readonly logService: ILogService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -1295,8 +1297,13 @@ export class AgentSettingsEditorPane extends EditorPane {
 				this._agent.providerId = providerId;
 				if (patch.model) { this._agent.model = patch.model; }
 			}
+			this.logService.info(
+				`[AgentSettingsEditorPane] _saveModelConfig: agentId=${this._agentId} ` +
+				`providerId=${providerId ?? '(default)'} model=${patch.model ?? '(unchanged)'} → .agent.md`
+			);
 			this._renderHeader();
 		} catch (err) {
+			this.logService.error('[AgentSettingsEditorPane] _saveModelConfig failed:', err);
 			this.notificationService.warn(`保存模型配置失败: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}

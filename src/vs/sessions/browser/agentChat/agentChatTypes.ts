@@ -51,6 +51,10 @@ export interface IAgentChatMessage {
 		cacheHitRate?: number;
 		/** Billing credits consumed by this turn (积分). */
 		credit?: number;
+		/** 本次 token 消耗对应的 provider（与本回合 LLM 调用一致；多轮时取最新一轮） */
+		providerId?: string;
+		/** 本次 token 消耗对应的 modelId（同上；用于 Token 消耗明细面板展示） */
+		model?: string;
 	};
 	metadata?: Record<string, unknown>;
 	attachments?: IChatAttachment[];

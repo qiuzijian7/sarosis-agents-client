@@ -379,6 +379,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			checkpointService: this.checkpointService,
 			terminalService: this.terminalService,
 			workspaceService: this.workspaceService,
+			configurationService: this.configurationService,
 		});
 		this._corePerTurnReset = coreControl.resetPerTurn;
 	}

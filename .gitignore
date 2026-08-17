@@ -252,3 +252,7 @@ dev/new-mcp-editor-mockup.html
 _removed_extensions/
 scripts/_run_*.bat
 *_mockup*.html
+
+# Scratch / generated artifacts (not for commit)
+scratch_*.py
+deepseek-*.html

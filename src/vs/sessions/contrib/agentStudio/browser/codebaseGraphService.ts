@@ -4464,14 +4464,24 @@ self.onmessage = async function(e) {
 		const projectName = project || this._projectName;
 		const report: any = await analyzeArchitecture(this._graph.store, projectName);
 
-		try {
-			report.deadCode = detectDeadCodeEnhanced(this._graph.store, this._projectName);
-		} catch { /* ignore */ }
+		// 2026-08-17（日志 1786941660317，UI 卡死 ~47s）：detectDeadCodeEnhanced（BFS 用
+		// Array.shift() 是 O(n²)）与 computeTwoLevelLOD 在 12.7万节点上同步跑是主线程
+		// 秒级阻塞。与 analyzeArchitecture 内部降级阈值一致（>30000 节点），大图跳过
+		// 这两个重型附加分析（它们是加分项，非核心架构字段）。
+		const isLarge = report.totalNodes > 30_000;
+		if (!isLarge) {
+			try {
+				report.deadCode = detectDeadCodeEnhanced(this._graph.store, this._projectName);
+			} catch { /* ignore */ }
 
-		try {
-			const layout = computeTwoLevelLOD(this._graph.store, this._projectName, 'overview');
-			report.layoutNodes = layout.size;
-		} catch { /* ignore */ }
+			try {
+				const layout = computeTwoLevelLOD(this._graph.store, this._projectName, 'overview');
+				report.layoutNodes = layout.size;
+			} catch { /* ignore */ }
+		} else if (report.aspectsSkipped === undefined) {
+			// 大图但 aspectsSkipped 未设置（理论上 analyzeArchitecture 已设置，此处兜底防漏）
+			report.aspectsSkipped = `large-graph degraded: skipped deadCode/layout (${report.totalNodes} nodes > 30000)`;
+		}
 
 		if (!dimensions || dimensions.length === 0) { return report; }
 		const filtered: any = {};

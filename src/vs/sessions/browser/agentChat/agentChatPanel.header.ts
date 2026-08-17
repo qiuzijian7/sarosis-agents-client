@@ -64,6 +64,13 @@ protected override _renderTabs(): void {
 					this._onSelectAgent(agent.id);
 				})
 			);
+
+			// 右键菜单：对当前 session 重命名（复用 Dropdowns 中的自定义菜单）
+			this._register(
+				addDisposableListener(tab, EventType.CONTEXT_MENU, (ev) => {
+					this._openSessionContextMenu(ev);
+				})
+			);
 		}
 	}
 
@@ -162,6 +169,44 @@ protected override _renderHeader(): void {
 		);
 
 		// Auto-orchestrate toggle (PM only) — REMOVED: task orchestration entry point closed
+
+		// ── 工作区 + Worktree 选择器（从输入框 toolbar 移到 header agent 选择器右侧） ──
+		const wsLabel = this._workspaces.find(w => w.id === this._selectedWorkspaceId)?.name ||
+			this._workspaces[0]?.name || '工作区';
+		this._workspaceTrigger = this._appendToolbarBtn(left, {
+			title: '切换工作区',
+			svgPath: 'M20.5 5.5H3.5a1 1 0 00-1 1v13a1 1 0 001 1h17a1 1 0 001-1v-13a1 1 0 00-1-1zM2 8.5h20M9 2.5v3M15 2.5v3',
+			hasLabel: true,
+			label: wsLabel,
+			showChevron: true,
+			cssClass: 'workspace-tag',
+		});
+		this._register(addDisposableListener(this._workspaceTrigger, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			if (this._workspaceDropdownEl) {
+				this._closeWorkspaceDropdown();
+			} else {
+				this._openWorkspaceDropdown();
+			}
+		}));
+
+		const wtLabel = this._getWorktreeLabel();
+		this._worktreeTrigger = this._appendToolbarBtn(left, {
+			title: '切换 Worktree',
+			svgPath: 'M6 3v12M18 9v12M6 21l12-12',
+			hasLabel: true,
+			label: wtLabel,
+			showChevron: true,
+			cssClass: 'worktree-tag',
+		});
+		this._register(addDisposableListener(this._worktreeTrigger, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			if (this._worktreeDropdownEl) {
+				this._closeWorktreeDropdown();
+			} else {
+				this._openWorktreeDropdown();
+			}
+		}));
 
 		// Spacer
 		append(left, $(".chat-header-spacer"));
@@ -272,6 +317,20 @@ protected override _renderHeader(): void {
 			this._render();
 		}),
 	);
+	}
+
+protected override _updateHeaderSelectors(): void {
+		// 切换工作区/worktree 后轻量刷新 header 里两个选择器的 label（不重建 header）
+		if (this._workspaceTrigger) {
+			const wsLabel = this._workspaces.find(w => w.id === this._selectedWorkspaceId)?.name ||
+				this._workspaces[0]?.name || '工作区';
+			const labelEl = this._workspaceTrigger.querySelector('.toolbar-btn-label');
+			if (labelEl) { labelEl.textContent = wsLabel; }
+		}
+		if (this._worktreeTrigger) {
+			const labelEl = this._worktreeTrigger.querySelector('.toolbar-btn-label');
+			if (labelEl) { labelEl.textContent = this._getWorktreeLabel(); }
+		}
 	}
 
 protected override _appendHeaderActionBtn(parent: HTMLElement, opts: { title: string; svgPath: string }): HTMLElement {

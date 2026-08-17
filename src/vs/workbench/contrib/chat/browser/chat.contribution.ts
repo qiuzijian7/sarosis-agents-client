@@ -1599,6 +1599,34 @@ configurationRegistry.registerConfiguration({
 				},
 			},
 		},
+		[AgentNetworkDomainSettingId.SensitiveReadGuard]: {
+			markdownDescription: nls.localize(
+				"chat.agent.sensitiveReadGuard",
+				"Guards agent tools against reading sensitive files (e.g. secrets, credentials, private keys) during agent sessions. When enabled, read operations that target sensitive paths are blocked or require confirmation.",
+			),
+			type: "boolean",
+			default: true,
+			restricted: true,
+		},
+		[AgentNetworkDomainSettingId.NetworkFilterMode]: {
+			markdownDescription: nls.localize(
+				"chat.agent.networkFilterMode",
+				"Controls how agent network access is filtered. `off` disables filtering, `filter` restricts access to allowed/denied domain lists, `denyAll` blocks all network access by agent tools.",
+			),
+			type: "string",
+			enum: ["off", "filter", "denyAll"],
+			default: "denyAll",
+			restricted: true,
+		},
+		[AgentNetworkDomainSettingId.WorktreeStrictIsolation]: {
+			markdownDescription: nls.localize(
+				"chat.agent.worktreeStrictIsolation",
+				"Enforces strict worktree isolation for agent sessions. When enabled, agent write operations are confined to the bound git worktree; writes outside the worktree (e.g. the main repository) require user confirmation. Reads remain unaffected and are governed by the sensitive-file guard.",
+			),
+			type: "boolean",
+			default: true,
+			restricted: true,
+		},
 		[AgentNetworkDomainSettingId.AllowedNetworkDomains]: {
 			markdownDescription: nls.localize(
 				"chat.agent.allowedNetworkDomains",

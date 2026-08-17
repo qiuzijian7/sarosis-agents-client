@@ -1400,6 +1400,14 @@ protected override _createFooter(msg: IAgentChatMessage): HTMLElement {
 			const totalEl = append(titleRow, $('span.tokens-popup-total-inline'));
 			append(totalEl, $('span.label', undefined, '总计'));
 			append(totalEl, $('span.value', undefined, tu.total.toLocaleString()));
+			// Provider/Model 行：在标题下方展示本次消耗对应的 provider + modelId，
+			// 便于用户跨模型对比时直接识别（多轮时取最近一轮；tokenUsage 上由累加点注入）
+			if (tu.providerId || tu.model) {
+				const metaRow = append(popup, $('div.tokens-popup-meta'));
+				const metaText = [tu.providerId, tu.model].filter(Boolean).join(' / ');
+				append(metaRow, $('span.meta-label', undefined, '模型'));
+				append(metaRow, $('span.meta-value', undefined, metaText));
+			}
 			// 输入分组
 			const inputGroup = append(popup, $('div.tokens-popup-group'));
 			const inputTitle = append(inputGroup, $('div.tokens-popup-group-title'));

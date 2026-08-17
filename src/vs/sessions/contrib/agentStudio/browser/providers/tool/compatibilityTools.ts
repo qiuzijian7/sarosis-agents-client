@@ -17,6 +17,7 @@ import { formatCurrentTaskReminder } from '../../../common/preLoopOrchestrator.j
 import type { AgentParadigm } from '../../../common/agentLoopStrategy.js';
 import { setParadigmOverride, getParadigmOverride, clearParadigmOverride, SWITCHABLE_PARADIGMS } from '../../../common/paradigmOverride.js';
 import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS } from './executeCodeGuards.js';
+import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
 
 export interface CompatToolContext {
 	register: (d: IBuiltinToolRegistration) => void;
@@ -284,6 +285,11 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 		handler: async (args) => {
 			const command = String(args['command'] ?? '').trim();
 			if (!command) { throw new Error('command is required'); }
+			// HARDLINE 不可绕过地板（灾难性/不可逆命令，任何审批与自主模式都无法放行）
+			const hardline = detectHardlineViolation(command);
+			if (hardline) {
+				throw new NonRetryableToolError(hardlineViolationMessage(hardline, 'execute_code'));
+			}
 			const timeoutSec = Math.min(Math.max(Number(args['timeout']) || 30, 1), 120);
 			// Windows 护栏：Unix-only 命令（head/grep/sed…）在 cmd.exe 下必败（exit 255），
 			// 提前抛出带 PowerShell 等价写法的不可重试错误，模型据此自行改写成正确命令。

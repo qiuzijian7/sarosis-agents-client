@@ -1043,21 +1043,13 @@ export class NativeChatEditorPane extends EditorPane {
 			/** 切换工作区 → 绑定沙箱到该工作区目录，仅允许在该目录内读写 */
 			onSelectWorkspace: async (workspaceId: string, _workspaceName: string) => {
 				this._currentWorkspaceId = workspaceId;
-				// 将沙箱绑定到选中工作区的目录（与 worktree 绑定机制一致，
-				// 通过 AgentBinding.worktreePath 限制文件操作范围）
-				if (this._currentAgentId) {
-					try {
-						const ws = await this._agentStudioService.getWorkspace(workspaceId);
-						if (ws?.path) {
-							await this._agentStudioService.upsertAgentBinding(workspaceId, this._currentAgentId, {
-								worktreePath: ws.path,
-							});
-							this._logService.info(`[NativeChatEditorPane] onSelectWorkspace: sandbox bound to ${ws.path}`);
-						}
-					} catch (err) {
-						this._logService.error('[NativeChatEditorPane] onSelectWorkspace: failed to bind sandbox:', err);
-					}
-				}
+				// 切换工作区后【不得】用 ws.path 覆盖 AgentBinding.worktreePath：
+				// 1) worktreePath 语义是「worktree 沙箱绑定」（agent 运行在 git worktree
+				//    分支内），不能用 workspace.path 污染；否则会清掉用户已选的 worktree，
+				//    导致 LLM 文件操作回落到主仓（main 分支）。
+				// 2) 常规沙箱模式（resolveAndCheckWorkspacePathImpl 未绑定 worktree 时）已
+				//    放行 workspace.path + relatedFolders，无需显式绑定。
+				// 3) 新 workspace 的 worktree 选择由下方 _loadWorktrees() 从 binding 恢复。
 				// 清空旧 worktree 并重新加载新 workspace 的 worktree 列表
 				this._chatPanel?.setWorktrees([]);
 				this._chatPanel?.setSelectedWorktree('');
@@ -1089,12 +1081,14 @@ export class NativeChatEditorPane extends EditorPane {
 			},
 			onSelectProvider: (providerId: string) => {
 				// 仅更新面板本地状态，不写入共享单例 _modelSelector（避免跨面板污染）
+				this._logService.info(`[NativeChatEditorPane#${this._paneId}] onSelectProvider: agentId=${this._currentAgentId ?? '(none)'} providerId=${providerId} (prev=${this._localProviderId ?? '(none)'})`);
 				this._localProviderId = providerId;
 				this._chatPanel?.setCurrentProvider(providerId);
 				this._saveInputAreaState();
 			},
 			onSelectModel: (modelId: string) => {
 				// 仅更新面板本地状态，不写入共享单例 _modelSelector
+				this._logService.info(`[NativeChatEditorPane#${this._paneId}] onSelectModel: agentId=${this._currentAgentId ?? '(none)'} modelId=${modelId} (prev=${this._localModelId ?? '(none)'})`);
 				this._localModelId = modelId;
 				this._chatPanel?.setCurrentModel(modelId);
 				this._saveInputAreaState();
@@ -1372,6 +1366,14 @@ export class NativeChatEditorPane extends EditorPane {
 				return;
 			}
 			await this._selectAndLoadAgent(agentId, { force: true });
+		}));
+
+		// 监听 agent 列表变化（新建/删除/更新）——即时刷新 header 的 agent 下拉框。
+		// _loadAvailableAgents 内有 _defaultAgentSelected 守卫：已选中 agent 的 pane
+		// 只更新下拉框候选列表，不会重置/切换当前选中的 agent。
+		this._register(this._agentStudioService.onDidChangeAgents(() => {
+			if (!this._chatPanel) { return; }
+			void this._loadAvailableAgents();
 		}));
 
 		// Orchestration plan listeners removed — task orchestration entry point is closed.
@@ -2073,13 +2075,23 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 	if (!this._currentAgentId) { return; }
 	try {
 		const agent = await this._agentStudioService.getAgent(this._currentAgentId);
-		if (agent?.providerId && agent?.model) {
-			this._localProviderId = agent.providerId;
+		// 只要 agent 配置了 model 就应用（不再强制要求 providerId 同时存在）。
+		// 历史 bug（2026-08-17 日志 1786937164284）：`agent?.providerId && agent?.model`
+		// 要求两者同时存在，但自定义 agent 的 .agent.md 往往只写 `model` 不写 `providerId`
+		// （如 saros-chatbox-agent），导致 agent 配置的模型从未生效，回退到全局默认模型。
+		// providerId 为空时只设置 model，provider 由下游按 model 反查/保持默认。
+		if (agent?.model) {
 			this._localModelId = agent.model;
-			this._chatPanel?.setCurrentProvider(agent.providerId);
 			this._chatPanel?.setCurrentModel(agent.model);
+			if (agent.providerId) {
+				this._localProviderId = agent.providerId;
+				this._chatPanel?.setCurrentProvider(agent.providerId);
+			}
+			this._logService.info(`[NativeChatEditorPane#${this._paneId}] _applyAgentDefaultModelSelection: agentId=${this._currentAgentId} providerId=${agent.providerId ?? '(none)'} model=${agent.model}`);
+		} else {
+			this._logService.debug(`[NativeChatEditorPane#${this._paneId}] _applyAgentDefaultModelSelection: agentId=${this._currentAgentId} has no model configured, keeping current provider/model`);
 		}
-	} catch { /* agent 加载失败时保持全局默认选择 */ }
+	} catch (err) { this._logService.warn('[NativeChatEditorPane] _applyAgentDefaultModelSelection failed:', err); }
 }
 
 	/** 从 localStorage 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）。
@@ -2970,7 +2982,7 @@ private _handleStreamDelta(delta: any): void {
 			// reasoning 不再硬编码 0：usage delta 现已携带 reasoning_tokens（OpenAI 系），
 			// 与子代理 subagentTokenCollector.reasoningTokens 口径对齐
 			const reasoning = (prev?.reasoning ?? 0) + (delta.usage.reasoning ?? 0);
-			const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: reasoning || undefined, cacheHitRate, credit: creditSeen ? creditSum : undefined };
+			const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: reasoning || undefined, cacheHitRate, credit: creditSeen ? creditSum : undefined, providerId: this._localProviderId || undefined, model: this._localModelId || undefined };
 				assistantMsg.tokenUsage = tokenUsage;
 				this._chatPanel?.updateMessage(assistantId, { tokenUsage });
 					const limit = this._currentMaxContextTokens ?? 0;
@@ -3747,20 +3759,12 @@ private _handleStreamDelta(delta: any): void {
 			if (emp && this._chatPanel) {
 				this._currentAgentId = agentId;
 				this._currentAgentSkills = emp.skills ?? [];
-				// 若已选中工作区，将新 agent 的沙箱绑定到同一工作区目录
-				if (this._currentWorkspaceId) {
-					try {
-						const ws = await this._agentStudioService.getWorkspace(this._currentWorkspaceId);
-						if (ws?.path) {
-							await this._agentStudioService.upsertAgentBinding(this._currentWorkspaceId, agentId, {
-								worktreePath: ws.path,
-							});
-							this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: sandbox bound to ${ws.path} for new agent ${agentId}`);
-						}
-					} catch (err) {
-						this._logService.error('[NativeChatEditorPane] _selectAndLoadAgent: failed to bind sandbox:', err);
-					}
-				}
+				// 注意：此处【不得】用 ws.path 覆盖 AgentBinding.worktreePath。
+				// worktreePath 语义是「worktree 沙箱绑定」（agent 运行在 git worktree
+				// 分支内），而「绑定到工作区目录」由常规沙箱模式自动覆盖
+				// （resolveAndCheckWorkspacePathImpl 未绑定 worktree 时已放行
+				// workspace.path + relatedFolders）。若在此覆盖，会把用户在聊天框里
+				// 选好的 worktree 绑定清掉，导致 LLM 文件操作回落到主仓（main）。
 				this._chatPanel.setAgent({
 					id: emp.id,
 					name: emp.name,

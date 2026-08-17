@@ -11,6 +11,11 @@ export const enum AgentNetworkDomainSettingId {
 	AllowedNetworkDomains = 'chat.agent.allowedNetworkDomains',
 	DeniedNetworkDomains = 'chat.agent.deniedNetworkDomains',
 
+	// Shared agent-loop safeguards (consume via configurationService.getValue)
+	SensitiveReadGuard = 'chat.agent.sensitiveReadGuard',
+	NetworkFilterMode = 'chat.agent.networkFilterMode',
+	WorktreeStrictIsolation = 'chat.agent.worktreeStrictIsolation',
+
 	// Deprecated: renamed from sandbox-scoped to agent-scoped
 	DeprecatedSandboxAllowedNetworkDomains = 'chat.agent.sandbox.allowedNetworkDomains',
 	DeprecatedSandboxDeniedNetworkDomains = 'chat.agent.sandbox.deniedNetworkDomains',

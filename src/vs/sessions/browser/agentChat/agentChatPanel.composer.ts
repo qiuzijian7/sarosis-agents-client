@@ -503,66 +503,12 @@ protected override _renderInputArea(): void {
 			this._fileInput?.click();
 		}));
 
-		// P1-3: 添加编辑器选中代码作为上下文
-		const selectionBtn = this._appendToolbarBtn(leftToolbar, {
-			title: "添加选中代码到聊天",
-			svgPath: "M9 2h6a1 1 0 011 1v6h6a1 1 0 011 1v6a1 1 0 01-1 1h-6v6a1 1 0 01-1 1H9a1 1 0 01-1-1v-6H2a1 1 0 01-1-1V10a1 1 0 011-1h6V3a1 1 0 011-1z",
-		});
-		this._register(addDisposableListener(selectionBtn, EventType.CLICK, (e) => {
-			e.stopPropagation();
-			this._onAddSelectionToChat?.();
-		}));
-
 		// Voice button
 		this._appendToolbarBtn(leftToolbar, {
 			title: "语音输入",
 			svgPath:
 				"M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8",
 		});
-
-		// Divider
-		append(leftToolbar, $(".chat-toolbar-divider"));
-
-		// ── 工作区选择器（左侧） ──
-		const wsLabel = this._workspaces.find(w => w.id === this._selectedWorkspaceId)?.name ||
-			this._workspaces[0]?.name || '工作区';
-		const workspaceBtn = this._appendToolbarBtn(leftToolbar, {
-			title: '切换工作区',
-			svgPath: 'M20.5 5.5H3.5a1 1 0 00-1 1v13a1 1 0 001 1h17a1 1 0 001-1v-13a1 1 0 00-1-1zM2 8.5h20M9 2.5v3M15 2.5v3',
-			hasLabel: true,
-			label: wsLabel,
-			showChevron: true,
-			cssClass: 'workspace-tag',
-		});
-		this._workspaceTrigger = workspaceBtn;
-		this._register(addDisposableListener(workspaceBtn, EventType.CLICK, (e) => {
-			e.stopPropagation();
-			if (this._workspaceDropdownEl) {
-				this._closeWorkspaceDropdown();
-			} else {
-				this._openWorkspaceDropdown();
-			}
-		}));
-
-		// ── Worktree 选择器（右侧） ──
-		const wtLabel = this._getWorktreeLabel();
-		const worktreeBtn = this._appendToolbarBtn(leftToolbar, {
-			title: '切换 Worktree',
-			svgPath: 'M6 3v12M18 9v12M6 21l12-12',
-			hasLabel: true,
-			label: wtLabel,
-			showChevron: true,
-			cssClass: 'worktree-tag',
-		});
-		this._worktreeTrigger = worktreeBtn;
-		this._register(addDisposableListener(worktreeBtn, EventType.CLICK, (e) => {
-			e.stopPropagation();
-			if (this._worktreeDropdownEl) {
-				this._closeWorktreeDropdown();
-			} else {
-				this._openWorktreeDropdown();
-			}
-		}));
 
 		// Divider
 		append(leftToolbar, $(".chat-toolbar-divider"));

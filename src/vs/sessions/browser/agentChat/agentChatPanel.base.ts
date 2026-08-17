@@ -289,7 +289,7 @@ protected readonly _conclusionExpanded = new Set<string>();
 
 protected _agent: IAgentInfo | null = null;
 
-/** 标记 setAgent 是否曾成功加载过有效 agent。仅用于判断是否真的“丢失了 agent”，
+/** 标记 setAgent 是否曾成功加载过有效 agent。仅用于判断是否真的"丢失了 agent"，
  * 避免构造期（_render 在 setAgent 之前被调用）误报 console.warn。 */
 private _agentLoadedOnce = false;
 
@@ -548,6 +548,13 @@ protected _worktreeTrigger: HTMLElement | null = null;
 protected _worktreeContextMenuEl: HTMLElement | null = null;
 protected _worktreeContextMenuOutsideClick: IDisposable | null = null;
 
+protected _sessionContextMenuEl: HTMLElement | null = null;
+protected _sessionContextMenuOutsideClick: IDisposable | null = null;
+protected _sessionRenameOverlayDisposables: IDisposable[] | null = null;
+
+protected _sessionId: string | null = null;
+protected _sessionName: string | null = null;
+
 protected _msgNavOverlayEl: HTMLElement | null = null;
 
 protected _msgNavTrigger: HTMLElement | null = null;
@@ -629,6 +636,14 @@ protected readonly _onNewSession?: () => void;
 protected readonly _onOpenSession?: (sessionId: string) => void;
 
 protected readonly _onRenameSession?: (sessionId: string, newName: string) => void;
+
+protected _getSessionId(): string | null {
+	return this._sessionId;
+}
+
+protected _getSessionName(): string | null {
+	return this._sessionName;
+}
 
 protected readonly _onDeleteSession?: (sessionId: string) => void;
 
@@ -1487,6 +1502,12 @@ protected _refreshInputArea(): void {
 		if (savedAttachments.length > 0) {
 			this._renderInlineAttachmentChips();
 		}
+		// 刷新 header 中的工作区/worktree 选择器 label（切换后轻量更新，不重建 header）
+		this._updateHeaderSelectors();
+	}
+
+	protected _updateHeaderSelectors(): void {
+		// 默认空实现，由 header 特性覆写（工作区/worktree 选择器已移至 header）
 	}
 
 setWorktrees(items: ReadonlyArray<IWorktreeItem>): void {
@@ -1521,9 +1542,22 @@ setSelectedWorkspace(id: string): void {
 	}
 
 setSessionInfo(info: ISessionInfo | null): void {
-		this._sessionInfo = info;
-		if (this._agent) { this._render(); }
+	this._sessionInfo = info;
+	if (this._agent) { this._render(); }
+}
+
+public setSessionId(sessionId: string | null, sessionName?: string | null): void {
+	this._sessionId = sessionId;
+	if (sessionName !== undefined) {
+		this._sessionName = sessionName;
 	}
+	this._render();
+}
+
+public setSessionName(sessionName: string | null): void {
+	this._sessionName = sessionName;
+	this._render();
+}
 
 setAgentSessions(sessions: ReadonlyArray<IAgentSessionMeta>): void {
 		// 按更新时间倒序排列（最新的在最前面）

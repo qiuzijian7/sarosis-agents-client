@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
-import { isLinux } from '../../../../../base/common/platform.js';
+import { isLinux, isMacintosh, isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { resolveWorkspacePath } from '../../common/workspacePathResolver.js';
 
@@ -147,6 +147,35 @@ suite('workspacePathResolver - resolveWorkspacePath', () => {
 	});
 
 	// ─── worktree 独占沙箱场景 ────────────────────────────────────
+
+	// 显式平台分支守卫（本次任务核心交付）：把「跨平台大小写语义」逐 OS 写明，
+	// 防止有人把 isEqualOrParent 回退为一刀切 toLowerCase() canonicalize ——
+	// 那会在 Linux 上抹平大小写差异、放行越界。
+	//
+	// 真实文件系统语义（base/common/resources.ts 的 extUriBiasedIgnorePathCase）：
+	//   Linux   大小写敏感   → 拒绝 /workspace/Repo 越界
+	//   macOS   大小写不敏感 → 允许
+	//   Windows 大小写不敏感 → 允许
+	// 注：早期任务描述曾写「macOS 区分大小写→deny」，但与 extUriBiasedIgnorePathCase
+	// 实际行为（及上方既有用例）冲突，故按真实语义断言，避免 macOS/Windows CI 失败。
+
+	test('Linux: case-sensitive "/workspace/Repo" is denied (guard against canonicalize)', () => {
+		if (!isLinux) { return; }
+		const r = resolveWorkspacePath('/workspace/Repo/x.ts', [ROOT]);
+		assert.strictEqual(r.isAllowed, false, 'Linux fs is case-sensitive; blanket toLowerCase() would wrongly allow');
+	});
+
+	test('macOS: case-insensitive "/workspace/Repo" is allowed', () => {
+		if (!isMacintosh) { return; }
+		const r = resolveWorkspacePath('/workspace/Repo/x.ts', [ROOT]);
+		assert.strictEqual(r.isAllowed, true, 'macOS fs is case-insensitive; must still allow');
+	});
+
+	test('Windows: case-insensitive "/workspace/Repo" is allowed', () => {
+		if (!isWindows) { return; }
+		const r = resolveWorkspacePath('/workspace/Repo/x.ts', [ROOT]);
+		assert.strictEqual(r.isAllowed, true, 'Windows fs is case-insensitive; must still allow');
+	});
 
 	test('worktree-sandboxed single root allows paths inside the worktree', () => {
 		const worktree = '/workspace/repo/.worktrees/feat-x';
