@@ -6,7 +6,7 @@
 /**
  * WorkflowInstaller —— workflow 资源的安装器实现。
  *
- * install: 解压目录的 workflow.json → 导入到 ~/.vssaros/saros/workflows/{id}/workflow.json
+ * install: 解压目录的 workflow.json → 导入到 ~/.vssaros/workflows/{id}/workflow.json
  *          （通过 IWorkflowStorageService.createWorkflow）
  * preparePack: 读工作区 workflow → 构造 manifest + 打包目录
  * getInstalledVersion: 从 installed-packages.json 读取（回退）
@@ -112,7 +112,7 @@ export class WorkflowInstaller extends Disposable implements IPackageInstaller {
 
 		this.logService.info(`[WorkflowInstaller] 安装完成: ${workflow.name} (${workflow.id})`);
 
-		// 5. 同时保存到 ~/.vssaros/saros/workflows/{id}/ 作为备份（供升级检查溯源）
+		// 5. 同时保存到 ~/.vssaros/workflows/{id}/ 作为备份（供升级检查溯源）
 		const backupDir = await this._resolveBackupDir(manifest.id);
 		await this.fileService.createFolder(backupDir);
 		const backupFile = URI.joinPath(backupDir, WORKFLOW_FILE);

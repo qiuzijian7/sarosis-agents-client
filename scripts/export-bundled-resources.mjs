@@ -168,7 +168,8 @@ const mcpPresets = [
     "description": "Figma 官方 Dev Mode MCP Server（远程托管，Streamable HTTP）。读取设计稿的布局、样式、变量、资源与 Code Connect 代码映射，用于设计转代码（design-to-code）。需通过 Figma OAuth 登录授权。",
     "transportType": "http",
     "url": "https://mcp.figma.com/mcp",
-    "icon": "🎨"
+    "icon": "🎨",
+    "builtin": true
   },
   {
     "id": "figma-developer-mcp",
@@ -177,7 +178,8 @@ const mcpPresets = [
     "transportType": "stdio",
     "command": "npx",
     "args": ["-y", "figma-developer-mcp", "--stdio"],
-    "envKeys": ["FIGMA_API_KEY"]
+    "envKeys": ["FIGMA_API_KEY"],
+    "builtin": true
   }
 ];
 

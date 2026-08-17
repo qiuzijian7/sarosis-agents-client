@@ -57,7 +57,7 @@ export const PLAN_FILE_GLOB = 'plans/*.md';
 export function isPlanFilePath(filePath: string): boolean {
 	if (!filePath) { return false; }
 	const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-	// Match: plans/foo.md, /plans/foo.md, ~/.vssaros/saros/plans/foo.md
+	// Match: plans/foo.md, /plans/foo.md, ~/.vssaros/plans/foo.md
 	return /(^|\/)plans\/[^/]+\.md$/.test(normalized);
 }
 
@@ -66,7 +66,7 @@ export function isPlanFilePath(filePath: string): boolean {
  * Prevents path traversal (../), symlink escape, and cross-device attacks.
  *
  * @param filePath The candidate plan file path
- * @param planRoot The expected plan root directory (~/.vssaros/saros/plans)
+ * @param planRoot The expected plan root directory (~/.vssaros/plans)
  * @returns true if the resolved path is within planRoot
  */
 export function isPlanFilePathInRoot(filePath: string, planRoot: string): boolean {

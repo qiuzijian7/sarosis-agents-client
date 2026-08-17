@@ -6,9 +6,9 @@
 /**
  * SkillInstaller —— skill 资源的安装器实现。
  *
- * install: 解压目录的 SKILL.md → 写入 ~/.vssaros/saros/skills/{id}/SKILL.md
+ * install: 解压目录的 SKILL.md → 写入 ~/.vssaros/skills/{id}/SKILL.md
  *          （回写 storeId/version 到 frontmatter）→ ISkillRegistry.reload()
- * preparePack: 读 ~/.vssaros/saros/skills/{id}/SKILL.md frontmatter → 构造 manifest
+ * preparePack: 读 ~/.vssaros/skills/{id}/SKILL.md frontmatter → 构造 manifest
  * getInstalledVersion: 从 ISkillRegistry.getSkill(id).version 读取
  */
 

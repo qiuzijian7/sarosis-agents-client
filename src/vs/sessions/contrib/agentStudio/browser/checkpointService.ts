@@ -199,7 +199,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 
 		if (!baseDir) {
 			// Fallback: user-data dir keeps the feature alive for virtual workspaces.
-			// Unified with other modules under ~/.vssaros/saros/.
+			// Unified with other modules under ~/.vssaros/.
 			const root = resolveSarosPath(URI.file(this.environmentService.userDataPath));
 			baseDir = joinPath(root, 'checkpoints');
 		}

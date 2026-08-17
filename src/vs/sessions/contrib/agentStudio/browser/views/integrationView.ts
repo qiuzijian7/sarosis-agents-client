@@ -196,7 +196,7 @@ export class IntegrationViewPane extends ViewPane {
 			}
 		}
 		// Fallback: return display name (or serverId) as marketId — detail pane will
-		// read from ~/.vssaros/saros/mcp/{marketId}/config.json
+		// read from ~/.vssaros/mcp/{marketId}/config.json
 		return displayName || serverId;
 	}
 
@@ -1248,7 +1248,7 @@ export class IntegrationViewPane extends ViewPane {
 
 	private async _reloadMcp(): Promise<void> {
 		try {
-			// 0. Build whitelist from ~/.vssaros/saros/mcp.json — only show servers configured there
+			// 0. Build whitelist from ~/.vssaros/mcp.json — only show servers configured there
 			const sarosConfig = await this._readSarosMcpConfig();
 			const sarosServerNames = new Set<string>();
 			if (sarosConfig?.servers) {
@@ -1287,7 +1287,7 @@ export class IntegrationViewPane extends ViewPane {
 				if (IntegrationViewPane._isNonMcpServer(serverId) || serverId === 'unknown') { continue; }
 				const descMatch = tool.description?.match(/\[via MCP server "([^"]+)"/);
 				const serverName = descMatch ? descMatch[1] : serverId;
-				// Only show servers configured in ~/.vssaros/saros/mcp.json
+				// Only show servers configured in ~/.vssaros/mcp.json
 				if (!sarosServerNames.has(serverName.toLowerCase()) && !sarosServerNames.has(serverId.toLowerCase())) { continue; }
 
 				if (!serverMap.has(serverId)) {
@@ -1313,7 +1313,7 @@ export class IntegrationViewPane extends ViewPane {
 					this.logService.info(`[MCP-Debug] mcpService server: defId=${defId} label=${label} inWhitelist=${sarosServerNames.has(label.toLowerCase())}`);
 					// Skip non-MCP server IDs (e.g. model providers)
 					if (IntegrationViewPane._isNonMcpServer(defId)) { continue; }
-					// Only show servers configured in ~/.vssaros/saros/mcp.json
+					// Only show servers configured in ~/.vssaros/mcp.json
 					if (!sarosServerNames.has(label.toLowerCase())) { continue; }
 						const normName = sanitize(label);
 						const normDefId = sanitize(defId);
@@ -1371,7 +1371,7 @@ export class IntegrationViewPane extends ViewPane {
 			for (const s of installed) {
 				const normId = sanitize(s.name);
 				if (IntegrationViewPane._isNonMcpServer(normId)) { continue; }
-				// Only show servers configured in ~/.vssaros/saros/mcp.json
+				// Only show servers configured in ~/.vssaros/mcp.json
 				if (!sarosServerNames.has(s.name.toLowerCase())) { continue; }
 					// Cross-check: if serverMap already has an entry under a different
 					// (definition-derived) key but with the same install name, skip.
@@ -1507,15 +1507,15 @@ export class IntegrationViewPane extends ViewPane {
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
-	//  ~/.vssaros/saros/mcp.json CONFIG MANAGEMENT (for preset toggle-on-install)
+	//  ~/.vssaros/mcp.json CONFIG MANAGEMENT (for preset toggle-on-install)
 	// ══════════════════════════════════════════════════════════════════════════
 
-	/** Get ~/.vssaros/saros/mcp.json URI. */
+	/** Get ~/.vssaros/mcp.json URI. */
 	private async _getSarosMcpConfigUri(): Promise<URI> {
 		return resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);
 	}
 
-	/** Read and parse ~/.vssaros/saros/mcp.json. Returns undefined on error. */
+	/** Read and parse ~/.vssaros/mcp.json. Returns undefined on error. */
 	private async _readSarosMcpConfig(): Promise<{ servers: Record<string, any> } | undefined> {
 		try {
 			const configUri = await this._getSarosMcpConfigUri();
@@ -1524,12 +1524,12 @@ export class IntegrationViewPane extends ViewPane {
 			const content = await this.fileService.readFile(configUri);
 			return JSON.parse(content.value.toString());
 		} catch (e) {
-			this.logService.warn('[IntegrationView] Failed to read ~/.vssaros/saros/mcp.json:', e);
+			this.logService.warn('[IntegrationView] Failed to read ~/.vssaros/mcp.json:', e);
 			return undefined;
 		}
 	}
 
-	/** Write full config object to ~/.vssaros/saros/mcp.json. */
+	/** Write full config object to ~/.vssaros/mcp.json. */
 	private async _writeSarosMcpConfig(data: { servers: Record<string, any> }): Promise<void> {
 		const configUri = await this._getSarosMcpConfigUri();
 		const dirUri = URI.joinPath(configUri, '..');
@@ -1537,14 +1537,14 @@ export class IntegrationViewPane extends ViewPane {
 		await this.fileService.writeFile(configUri, VSBuffer.fromString(JSON.stringify(data, null, 2)));
 	}
 
-	/** Ensure a server name exists in ~/.vssaros/saros/mcp.json whitelist (add if missing). */
+	/** Ensure a server name exists in ~/.vssaros/mcp.json whitelist (add if missing). */
 	private async _ensureServerInSarosConfig(name: string): Promise<void> {
 		const data = await this._readSarosMcpConfig() ?? { servers: {} };
 		if (data.servers && (name in data.servers)) { return; } // already present
 		data.servers = data.servers ?? Object.create(null);
 		data.servers[name] = {};
 		await this._writeSarosMcpConfig(data);
-		this.logService.info(`[IntegrationView] Ensured "${name}" in ~/.vssaros/saros/mcp.json.`);
+		this.logService.info(`[IntegrationView] Ensured "${name}" in ~/.vssaros/mcp.json.`);
 	}
 
 	/**
@@ -1827,7 +1827,7 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 						// ── Toggle ON ──
 						toggle.disabled = true;
 						this._setMcpServerEnabled(group.server.id, true);
-						// Ensure the server is in ~/.vssaros/saros/mcp.json whitelist
+						// Ensure the server is in ~/.vssaros/mcp.json whitelist
 						// (may have been removed by a previous toggle-OFF before we stopped doing that)
 						await this._ensureServerInSarosConfig(group.server.name);
 						this._startingMcpIds.add(group.server.id);

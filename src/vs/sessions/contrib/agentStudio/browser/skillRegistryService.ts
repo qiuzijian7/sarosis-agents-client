@@ -12,14 +12,14 @@
  *   1. 异步扫描内置技能目录 `.agents/skills/`（产品自带，文件形式）
  *      - 技能以 `SKILL.md` 文件形式存储在扩展目录下 `.agents/skills/<skill-name>/SKILL.md`
  *      - 参考 Hermes-Agent 的 `skills/` 项目目录模式
- *   2. `_scanFolder(userHome)`   —— 用户全局技能库 `~/.vssaros/saros/skills/`
+ *   2. `_scanFolder(userHome)`   —— 用户全局技能库 `~/.vssaros/skills/`
  *   3. `registerSkill(...)`     —— 运行时由扩展通过 IAgentOSService 注入
  *
  * 后注册的同名 skill 覆盖前者（运行时注入 > 用户 > 内置），
  * 这与 hermes 的 `optional-skills` < `skills` < `~/.hermes/skills` 优先级一致。
  *
  * 架构说明：
- *   - 技能统一存储于用户全局技能库（`~/.vssaros/saros/skills/`）和内置技能目录（`.agents/skills/`）
+ *   - 技能统一存储于用户全局技能库（`~/.vssaros/skills/`）和内置技能目录（`.agents/skills/`）
  *   - 内置技能从 `.agents/skills/` 目录文件加载（参考 Hermes-Agent 模式）
  *   - 好处：技能以文件形式管理，便于版本控制和升级
  *
@@ -441,7 +441,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			this.logService.error('[SkillRegistry] builtin skills scan failed', err);
 		}
 
-		// 用户全局技能库（统一使用 ~/.vssaros/saros/ 路径，不扫描工作区）
+		// 用户全局技能库（统一使用 ~/.vssaros/ 路径，不扫描工作区）
 		try {
 			const userDataRoot = userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 			const userDir = resolveSarosPath(userDataRoot, SarosPath.skills);
@@ -477,7 +477,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	 * This triggers external consumers (like knot-cli sync) to do a full
 	 * reconciliation of their skill mirror directories.
 	 *
-	 * Note: Skills are now stored only in user global directory (~/.vssaros/saros/skills/),
+	 * Note: Skills are now stored only in user global directory (~/.vssaros/skills/),
 	 * so we fire event with user skill IDs only.
 	 */
 	private _fireBatchSyncedEvent(): void {

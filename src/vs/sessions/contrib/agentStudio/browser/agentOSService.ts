@@ -1987,7 +1987,7 @@ private readonly _sandboxGuard: SandboxGuard;
 
 	/**
 	 * Get the saros root path (used for plan file generation).
-	 * Returns the absolute path to ~/.vssaros/saros/.
+	 * Returns the absolute path to ~/.vssaros/.
 	 */
 	public _getSarosRoot(): string {
 		return resolveSarosPath(

@@ -188,10 +188,10 @@ export class McpServerEditorPane extends EditorPane {
 		this._refreshBtn.onclick = () => { void this._loadPackages(); };
 		toolbar.appendChild(this._refreshBtn);
 
-		// + Add Server button → open ~/.vssaros/saros/mcp.json file
+		// + Add Server button → open ~/.vssaros/mcp.json file
 		const addBtn = $('button.mcp-editor-add-btn') as HTMLButtonElement;
 		addBtn.textContent = '+ Add Server';
-		addBtn.title = '打开 ~/.vssaros/saros/mcp.json 文件，手动编辑 MCP 服务器配置';
+		addBtn.title = '打开 ~/.vssaros/mcp.json 文件，手动编辑 MCP 服务器配置';
 		addBtn.style.padding = '6px 14px';
 		addBtn.style.fontSize = '13px';
 		addBtn.style.fontWeight = '500';
@@ -724,7 +724,7 @@ export class McpServerEditorPane extends EditorPane {
 		}
 	}
 
-	/** Sync a single MCP server config from ~/.vssaros/saros/mcp/{slug}/config.json to VS Code MCP config */
+	/** Sync a single MCP server config from ~/.vssaros/mcp/{slug}/config.json to VS Code MCP config */
 	private async _syncMcpToVsCode(slug: string): Promise<void> {
 		try {
 			const configUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, slug, 'config.json');
@@ -813,10 +813,10 @@ export class McpServerEditorPane extends EditorPane {
 		if (!confirmed.confirmed) { return; }
 
 		try {
-			// 1. Remove entry from ~/.vssaros/saros/mcp.json
+			// 1. Remove entry from ~/.vssaros/mcp.json
 			await this._removeMcpJsonEntry(pkg.slug);
 
-			// 2. Delete ~/.vssaros/saros/mcp/{slug}/ directory
+			// 2. Delete ~/.vssaros/mcp/{slug}/ directory
 			const mcpDirUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, pkg.slug);
 			if (await this.fileService.exists(mcpDirUri)) {
 				await this.fileService.del(mcpDirUri, { recursive: true });
@@ -847,7 +847,7 @@ export class McpServerEditorPane extends EditorPane {
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
-	//  + ADD SERVER → OPEN ~/.vssaros/saros/mcp.json FILE
+	//  + ADD SERVER → OPEN ~/.vssaros/mcp.json FILE
 	// ══════════════════════════════════════════════════════════════════════════
 
 	private async _openMcpJsonFile(): Promise<void> {
@@ -867,15 +867,15 @@ export class McpServerEditorPane extends EditorPane {
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
-	//  FILE HELPERS (~/.vssaros/saros/mcp.json + installed-packages.json)
+	//  FILE HELPERS (~/.vssaros/mcp.json + installed-packages.json)
 	// ══════════════════════════════════════════════════════════════════════════
 
-	/** Get ~/.vssaros/saros/mcp.json URI */
+	/** Get ~/.vssaros/mcp.json URI */
 	private async _getMcpJsonUri(): Promise<URI> {
 		return resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);
 	}
 
-	/** Get ~/.vssaros/saros/installed-packages.json URI */
+	/** Get ~/.vssaros/installed-packages.json URI */
 	private async _getInstalledPackagesUri(): Promise<URI> {
 		return resolveSarosPath(this._getSarosRoot(), SarosPath.installedPackages);
 	}
@@ -913,7 +913,7 @@ export class McpServerEditorPane extends EditorPane {
 		}
 	}
 
-	/** Remove a single server entry from ~/.vssaros/saros/mcp.json */
+	/** Remove a single server entry from ~/.vssaros/mcp.json */
 	private async _removeMcpJsonEntry(name: string): Promise<void> {
 		try {
 			const uri = await this._getMcpJsonUri();

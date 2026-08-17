@@ -8,7 +8,7 @@
  *
  * HTTP 通过 IRequestService（无 CORS）。tar 打包/解压需要 Node.js 环境。
  * 四类资源的差异化安装/打包委托给 IPackageInstallerRegistry（按 kind 分发）。
- * 已安装资源统一记录到 ~/.vssaros/saros/installed-packages.json，供升级检查。
+ * 已安装资源统一记录到 ~/.vssaros/installed-packages.json，供升级检查。
  *
  * 详见 doc/marketplace-integration-analysis.md（方案 A）。
  */
@@ -419,7 +419,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 				if (installer) {
 					result = await installer.install(manifest, URI.file(extractDir), { force: true });
 				} else {
-					// 回退：直接解压到 ~/.vssaros/saros/{subdir}/{id}/
+					// 回退：直接解压到 ~/.vssaros/{subdir}/{id}/
 					const targetDir = this.resolveInstallDir(kind, storeId);
 					await this.fileService.createFolder(targetDir);
 					result = { kind, storeId, version, targetDir: targetDir.fsPath };
@@ -467,7 +467,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		const mcpConfig = manifest.mcp || manifest; // manifest.mcp 或 manifest 本身
 		const actualVersion = version;
 
-		// 2. 写入 ~/.vssaros/saros/mcp/{storeId}/
+		// 2. 写入 ~/.vssaros/mcp/{storeId}/
 		const targetDir = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, storeId);
 		await this.fileService.createFolder(targetDir);
 
@@ -494,7 +494,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			VSBuffer.fromString(JSON.stringify(manifest, null, 2))
 		);
 
-		// 3. 注册到 ~/.vssaros/saros/mcp.json（IntegrationView 白名单）
+		// 3. 注册到 ~/.vssaros/mcp.json（IntegrationView 白名单）
 		await this._registerMcpToConfig(storeId, configJson);
 
 		// 4. 记录已安装
@@ -506,7 +506,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		return { kind: 'mcp', storeId, version: actualVersion, targetDir: targetDir.fsPath };
 	}
 
-	/** 将 MCP 配置注册到 ~/.vssaros/saros/mcp.json */
+	/** 将 MCP 配置注册到 ~/.vssaros/mcp.json */
 	private async _registerMcpToConfig(serverId: string, config: any): Promise<void> {
 		const mcpJsonUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);
 
@@ -782,7 +782,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			if (await this.fileService.exists(customDir)) {
 				await this.fileService.del(customDir, { recursive: true });
 			}
-			// Also clean up the unified agent directory ~/.vssaros/saros/agents/{agentId}/
+			// Also clean up the unified agent directory ~/.vssaros/agents/{agentId}/
 			const agentDir = resolveSarosPath(this._getSarosRoot(), SarosPath.agents, storeId);
 			if (await this.fileService.exists(agentDir)) {
 				await this.fileService.del(agentDir, { recursive: true });

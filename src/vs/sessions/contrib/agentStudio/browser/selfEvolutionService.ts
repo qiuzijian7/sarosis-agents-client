@@ -12,8 +12,8 @@
  * - 在达到阈值时触发后台进化审查
  * - 提供记录查询接口给 UI (EvolutionViewPane / EvolutionDetailEditorPane)
  *
- * 存储结构（统一使用 ~/.vssaros/saros/ 路径）：
- *   ~/.vssaros/saros/evolution/
+ * 存储结构（统一使用 ~/.vssaros/ 路径）：
+ *   ~/.vssaros/evolution/
  *     records.json          — 全局进化记录
  *     configs/
  *       <agentId>.json      — 每个 agent 的进化配置
@@ -67,7 +67,7 @@ export class SelfEvolutionService extends Disposable implements ISelfEvolutionSe
 	) {
 		super();
 
-		// Store under VS Code user data directory (~/.vssaros/saros/evolution/)
+		// Store under VS Code user data directory (~/.vssaros/evolution/)
 		this._evolutionDir = resolveSarosPath(URI.file(this.environmentService.userDataPath), SarosPath.evolution);
 		this._recordsFile = URI.joinPath(this._evolutionDir, 'records.json');
 

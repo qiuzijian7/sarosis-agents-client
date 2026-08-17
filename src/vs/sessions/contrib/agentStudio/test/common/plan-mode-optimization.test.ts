@@ -74,7 +74,7 @@ suite('planFile (plan file path generation)', () => {
 	test('isPlanFilePath matches plans/*.md', () => {
 		assert.strictEqual(isPlanFilePath('/home/.vssaros/plans/2026-07-19-refactor.md'), true);
 		assert.strictEqual(isPlanFilePath('plans/plan.md'), true);
-		assert.strictEqual(isPlanFilePath('~/.vssaros/saros/plans/test.md'), true);
+		assert.strictEqual(isPlanFilePath('~/.vssaros/plans/test.md'), true);
 	});
 
 	test('isPlanFilePath rejects non-plan paths', () => {
@@ -388,11 +388,11 @@ suite('planModeHardPermission expanded coverage', () => {
 suite('isPlanFilePathInRoot (path traversal defense)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const planRoot = 'users/test/.vssaros/saros/plans';
+	const planRoot = 'users/test/.vssaros/plans';
 
 	test('validates path within plan root', () => {
 		assert.strictEqual(
-			isPlanFilePathInRoot('users/test/.vssaros/saros/plans/2026-plan.md', 'users/test/.vssaros/saros/plans'),
+			isPlanFilePathInRoot('users/test/.vssaros/plans/2026-plan.md', 'users/test/.vssaros/plans'),
 			true
 		);
 	});
@@ -422,7 +422,7 @@ suite('isPlanFilePathInRoot (path traversal defense)', () => {
 
 	test('handles Windows backslash paths', () => {
 		assert.strictEqual(
-			isPlanFilePathInRoot('users\\test\\.vssaros\\saros\\plans\\plan.md', 'users/test/.vssaros/saros/plans'),
+			isPlanFilePathInRoot('users\\test\\.vssaros\\saros\\plans\\plan.md', 'users/test/.vssaros/plans'),
 			true
 		);
 	});

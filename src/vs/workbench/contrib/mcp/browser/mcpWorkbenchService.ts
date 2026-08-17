@@ -169,7 +169,7 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 	private _local: McpWorkbenchServer[] = [];
 	get local(): readonly McpWorkbenchServer[] { return [...this._local]; }
 
-	// VsSaros: 用户级 MCP 配置统一位于 ~/.vssaros/saros/mcp.json
+	// VsSaros: 用户级 MCP 配置统一位于 ~/.vssaros/mcp.json
 	private readonly sarosMcpResource: URI;
 
 	private readonly _onChange = this._register(new Emitter<IWorkbenchMcpServer | undefined>());
@@ -200,7 +200,7 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 		@IURLService urlService: IURLService,
 	) {
 		super();
-		// VsSaros: 用户级 MCP 配置统一位于 ~/.vssaros/saros/mcp.json
+		// VsSaros: 用户级 MCP 配置统一位于 ~/.vssaros/mcp.json
 		this.sarosMcpResource = resolveSarosPath(
 			userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome),
 			SarosPath.mcpConfig
@@ -570,7 +570,7 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 	getMcpConfigPath(arg: URI | IWorkbenchLocalMcpServer): Promise<IMcpConfigPath | undefined> | IMcpConfigPath | undefined {
 		if (arg instanceof URI) {
 			const mcpResource = arg;
-			// VsSaros: 用户级 MCP 配置统一位于 ~/.vssaros/saros/mcp.json
+			// VsSaros: 用户级 MCP 配置统一位于 ~/.vssaros/mcp.json
 			if (this.uriIdentityService.extUri.isEqual(mcpResource, this.sarosMcpResource)) {
 				return this.getSarosMcpConfigPath(mcpResource);
 			}
@@ -616,13 +616,13 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 		};
 	}
 
-	// VsSaros: ~/.vssaros/saros/mcp.json 作为用户级 MCP 配置路径
+	// VsSaros: ~/.vssaros/mcp.json 作为用户级 MCP 配置路径
 	private getSarosMcpConfigPath(mcpResource: URI): IMcpConfigPath {
 		return {
 			id: 'saros',
 			key: 'sarosValue',
 			target: ConfigurationTarget.USER_LOCAL,
-			label: '~/.vssaros/saros/mcp.json',
+			label: '~/.vssaros/mcp.json',
 			scope: StorageScope.PROFILE,
 			order: McpCollectionSortOrder.User,
 			uri: mcpResource,

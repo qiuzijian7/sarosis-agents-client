@@ -313,11 +313,11 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 				};
 				if (skillItems.length === 0) {
 					// 对齐 Hermes：空结果时给出存储路径和创建指引，避免 LLM 用 file_list 查错目录
-					result.message = 'No skills found. Skills directory is ~/.vssaros/saros/skills/. Use skill_manage with action="create" to create new skills.';
+					result.message = 'No skills found. Skills directory is ~/.vssaros/skills/. Use skill_manage with action="create" to create new skills.';
 					result.hint = 'Use skill_manage(action="create", name="<slug>", content="<SKILL.md>") to create a new skill.';
 				} else {
 					result.hint = 'Use read_skill to see full content';
-					result.storagePath = '~/.vssaros/saros/skills/';
+					result.storagePath = '~/.vssaros/skills/';
 				}
 				return text(JSON.stringify(result, null, 2));
 			},

@@ -148,7 +148,7 @@ export class McpDetailEditorPane extends EditorPane {
 
 		// 1. Try built-in presets (synchronous)
 		this._model = resolveMcpDetailModel(input.marketId);
-		// 2. Fallback: read from ~/.vssaros/saros/mcp/{marketId}/config.json
+		// 2. Fallback: read from ~/.vssaros/mcp/{marketId}/config.json
 		if (!this._model) {
 			this._model = await this._resolveMcpDetailModelFromDisk(input.marketId);
 		}
@@ -157,7 +157,7 @@ export class McpDetailEditorPane extends EditorPane {
 		this._render();
 	}
 
-	/** Read MCP config from ~/.vssaros/saros/mcp/{marketId}/config.json and build a detail model. */
+	/** Read MCP config from ~/.vssaros/mcp/{marketId}/config.json and build a detail model. */
 	private async _resolveMcpDetailModelFromDisk(marketId: string): Promise<IMcpDetailModel | undefined> {
 		try {
 			const configUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, marketId, 'config.json');
@@ -613,7 +613,7 @@ export class McpDetailEditorPane extends EditorPane {
 	 * 一键"自动安装并配置"（内置 pip 型 MCP，如 Comfy MCP）：
 	 *  1. checkCommands 任一在 PATH → 视为已安装，跳过安装步骤；
 	 *  2. 否则依次执行 install 命令（shell）；
-	 *  3. 成功后将 preset 配置写入 MCP 注册（~/.vssaros/saros/mcp.json）。
+	 *  3. 成功后将 preset 配置写入 MCP 注册（~/.vssaros/mcp.json）。
 	 */
 	private async _autoInstall(): Promise<void> {
 		const model = this._model;
@@ -639,7 +639,7 @@ export class McpDetailEditorPane extends EditorPane {
 				}
 			}
 
-			// 3. register to ~/.vssaros/saros/mcp.json via MCP management service
+			// 3. register to ~/.vssaros/mcp.json via MCP management service
 			await this._syncToVsCodeConfigDirect(this._marketSlug, model);
 			this.eventBridgeService.emit('mcp:servers-changed', { action: 'add', presetId: sanitize(this._marketSlug) });
 			log.push('✓ 已写入 MCP 服务器配置。重启应用后生效。');
@@ -771,7 +771,7 @@ export class McpDetailEditorPane extends EditorPane {
 	private async _uninstall(): Promise<void> {
 		if (!this._marketSlug) { return; }
 		// Built-in auto-install type (Comfy MCP): no marketplace package — only
-		// remove the MCP registration from ~/.vssaros/saros/mcp.json.
+		// remove the MCP registration from ~/.vssaros/mcp.json.
 		if (this._model?.autoInstall) {
 			try {
 				console.log('[McpDetail] Uninstalling built-in MCP:', this._marketSlug);
@@ -792,10 +792,10 @@ export class McpDetailEditorPane extends EditorPane {
 		}
 		try {
 			console.log('[McpDetail] Uninstalling MCP:', this._marketSlug);
-			// 1. Uninstall from marketplace (removes ~/.vssaros/saros/mcp/{slug}/ + installed-packages.json)
+			// 1. Uninstall from marketplace (removes ~/.vssaros/mcp/{slug}/ + installed-packages.json)
 			await this.marketplaceService.uninstall(this._marketSlug, 'mcp');
 
-			// 2. Remove from ~/.vssaros/saros/mcp.json
+			// 2. Remove from ~/.vssaros/mcp.json
 			await this._removeFromMcpJson(this._marketSlug);
 
 			// 3. Uninstall from VS Code MCP config
@@ -819,7 +819,7 @@ export class McpDetailEditorPane extends EditorPane {
 		}
 	}
 
-	/** Sync MCP config from ~/.vssaros/saros/mcp/{slug}/config.json to VS Code MCP config */
+	/** Sync MCP config from ~/.vssaros/mcp/{slug}/config.json to VS Code MCP config */
 	private async _syncToVsCodeConfig(slug: string): Promise<void> {
 		try {
 			const configUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, slug, 'config.json');
@@ -849,7 +849,7 @@ export class McpDetailEditorPane extends EditorPane {
 		}
 	}
 
-	/** Remove a server entry from ~/.vssaros/saros/mcp.json */
+	/** Remove a server entry from ~/.vssaros/mcp.json */
 	private async _removeFromMcpJson(slug: string): Promise<void> {
 		try {
 			const mcpJsonUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);

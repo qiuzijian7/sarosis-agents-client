@@ -804,7 +804,7 @@ export class MarketplaceEditorPane extends EditorPane {
 		installBar.appendChild(installBtn);
 		const hint = document.createElement('span');
 		hint.style.cssText = 'font-size:11px;color:var(--vscode-descriptionForeground,#9d9d9d);';
-		hint.textContent = '\u5B89\u88C5\u5230 ~/.vssaros/saros/ \u76EE\u5F55\uFF0C\u81EA\u52A8\u542F\u7528'; // 安装到 ~/.vssaros/saros/ 目录，自动启用
+		hint.textContent = '\u5B89\u88C5\u5230 ~/.vssaros/ \u76EE\u5F55\uFF0C\u81EA\u52A8\u542F\u7528'; // 安装到 ~/.vssaros/ 目录，自动启用
 		installBar.appendChild(hint);
 		this._detailContentEl.appendChild(installBar);
 
@@ -956,7 +956,7 @@ export class MarketplaceEditorPane extends EditorPane {
 			['\u540D\u79F0', `${pkg.icon ?? KIND_ICON[pkg.kind]} ${pkg.name}`], // 名称
 			['\u7248\u672C', `v${pkg.latestVersion}`], // 版本
 			['\u7C7B\u578B', KIND_LABEL[pkg.kind]], // 类型
-			['\u5B89\u88C5\u4F4D\u7F6E', `~/.vssaros/saros/${pkg.kind === 'knowledge' ? 'knowledge-base' : pkg.kind === 'mcp' ? 'mcp' : pkg.kind === 'agent' ? 'agents/custom' : 'skills'}/${pkg.slug}/`], // 安装位置
+			['\u5B89\u88C5\u4F4D\u7F6E', `~/.vssaros/${pkg.kind === 'knowledge' ? 'knowledge-base' : pkg.kind === 'mcp' ? 'mcp' : pkg.kind === 'agent' ? 'agents/custom' : 'skills'}/${pkg.slug}/`], // 安装位置
 		];
 		for (const [label, val] of rows) {
 			const row = document.createElement('div');
@@ -1190,7 +1190,7 @@ export class MarketplaceEditorPane extends EditorPane {
 				const preview = await this._crawlPreview(originalUrl, appendLog);
 				appendLog('抓取成功，正在自动保存到本地...', 'step');
 				crawlBtn.textContent = '\u{1F4BE} 保存中...';
-				// 直接自动保存到 ~/.vssaros/saros/skills/
+				// 直接自动保存到 ~/.vssaros/skills/
 				const crawlData = {
 					url: preview.url,
 					kind: preview.kind as PackageKind,
@@ -1349,7 +1349,7 @@ export class MarketplaceEditorPane extends EditorPane {
 				const preview = await this._crawlPreview(url, appendLog);
 				appendLog('抓取成功，正在自动保存到本地...', 'step');
 				crawlBtn.textContent = '\u{1F4BE} 保存中...';
-				// 直接自动保存到 ~/.vssaros/saros/skills/
+				// 直接自动保存到 ~/.vssaros/skills/
 				const crawlData = {
 					url: preview.url,
 					kind: preview.kind as PackageKind,
@@ -2110,7 +2110,7 @@ export class MarketplaceEditorPane extends EditorPane {
 		}
 	}
 
-	/** 将爬取的资源保存到本地 ~/.vssaros/saros/{subdir}/{slug}/ */
+	/** 将爬取的资源保存到本地 ~/.vssaros/{subdir}/{slug}/ */
 	private async _saveCrawlLocally(data: {
 		kind: PackageKind; slug: string; name: string; description: string;
 		version: string; tags: string[]; category?: string; icon?: string;

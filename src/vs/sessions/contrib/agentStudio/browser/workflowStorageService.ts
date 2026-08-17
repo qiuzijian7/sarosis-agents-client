@@ -49,7 +49,7 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 	// ─── Directory resolution ────────────────────────────────────────────
 
 	/**
-	 * 解析用户级的 `~/.vssaros/saros/workflows/` 目录 URI。
+	 * 解析用户级的 `~/.vssaros/workflows/` 目录 URI。
 	 * 所有工作流全局存储，不再按工作区隔离。
 	 */
 	private async _resolveWorkflowsDir(_workspaceId?: string): Promise<URI | undefined> {

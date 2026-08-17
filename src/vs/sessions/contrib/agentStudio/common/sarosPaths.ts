@@ -6,8 +6,8 @@
 /**
  * Centralized path resolution for Saros Agent Studio user data.
  *
- * All Agent Studio data now lives under the VS Code user data directory
- * (`.vssaros/` or `.vssaros-dev/` in dev mode) in a `saros/` subdirectory.
+ * All Agent Studio data lives directly under the VS Code user data directory
+ * (`.vssaros/` or `.vssaros-dev/` in dev mode) — no `saros/` subdirectory.
  *
  * Previously, data lived under `~/.saros/` (user home). This module provides
  * helpers to resolve both new and legacy paths for migration.
@@ -17,9 +17,6 @@ import { URI } from '../../../../base/common/uri.js';
 import { joinPath } from '../../../../base/common/resources.js';
 
 // ─── Directory name constants ────────────────────────────────────────────────
-
-/** Data directory name under the VS Code user data root (e.g., `.vssaros/saros/`). */
-export const SAROS_DATA_DIR = 'saros';
 
 /** Legacy data directory name (was `~/.saros/` before migration). */
 export const LEGACY_SAROS_DIR = '.saros';

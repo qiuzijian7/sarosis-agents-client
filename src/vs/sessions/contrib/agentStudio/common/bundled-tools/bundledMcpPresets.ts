@@ -9,10 +9,11 @@
  * 这些预置定义了常见的 MCP 服务器启动配置，用户在 Saros 中
  * 添加 MCP 服务器时可直接选择预置，简化配置流程。
  *
- * 资源文件化：
- *   - 预设定义已从硬编码迁移到 JSON 文件：resources/.agents/mcp-presets/*.json
- *   - 运行时通过 loadMcpPresetsFromResources() 从 JSON 文件加载
- *   - BUNDLED_MCP_PRESETS 作为 fallback，在 JSON 加载失败时使用
+ * 数据源（BundledResourceService 运行时装载，三级优先级）：
+ *   1. 用户覆盖：~/.vssaros/mcp-presets/*.json
+ *   2. 内置资源：resources/.agents/mcp-presets/*.json
+ *      （由 scripts/export-bundled-resources.mjs 从本文件导出，保持与硬编码一致）
+ *   3. FALLBACK_PRESETS 硬编码兜底（`getMcpPresets()` 的初始值）
  */
 
 /**
@@ -208,6 +209,7 @@ const FALLBACK_PRESETS: readonly IMcpServerPreset[] = [
 		transportType: "http",
 		url: "https://mcp.figma.com/mcp",
 		icon: "🎨",
+		builtin: true,
 	},
 	{
 		id: "figma-developer-mcp",
@@ -217,6 +219,7 @@ const FALLBACK_PRESETS: readonly IMcpServerPreset[] = [
 		command: "npx",
 		args: ["-y", "figma-developer-mcp", "--stdio"],
 		envKeys: ["FIGMA_API_KEY"],
+		builtin: true,
 	},
 ];
 

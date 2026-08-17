@@ -11,7 +11,7 @@
  * 让 Agent 把成功的经验固化为可复用的程序性技能。
  *
  * 技能创建路径：
- *   ~/.vssaros/saros/skills/<skill-slug>/SKILL.md
+ *   ~/.vssaros/skills/<skill-slug>/SKILL.md
  *
  * 关键约束：
  *   - skillname 必须满足 slug 格式（小写字母/数字/连字符，开头为字母或数字）
@@ -184,7 +184,7 @@ export class SkillManagerTool {
 	 * 流程：
 	 * 1. 校验 name（slug 格式）、category、content（frontmatter + size）
 	 * 2. 等待 SkillRegistry 加载完成，检查重名
-	 * 3. 在 ~/.vssaros/saros/skills/<name>/SKILL.md 路径下原子写入
+	 * 3. 在 ~/.vssaros/skills/<name>/SKILL.md 路径下原子写入
 	 * 4. 触发 SkillRegistry.reload() 让新技能立即可用
 	 *
 	 * @returns 结果对象
@@ -237,7 +237,7 @@ export class SkillManagerTool {
 			return { success: false, message: errMsg, error: errMsg };
 		}
 
-		// 6. 计算目标目录：~/.vssaros/saros/skills/<name>/
+		// 6. 计算目标目录：~/.vssaros/skills/<name>/
 		const skillsRoot = resolveSarosPath(this._getSarosRoot(), SarosPath.skills);
 		const skillDir = URI.joinPath(skillsRoot, name);
 		const skillMd = URI.joinPath(skillDir, 'SKILL.md');
