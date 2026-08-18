@@ -544,6 +544,23 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				`[LMBridge] sanitizeToolPairs: ${normalizedMessages.length} → ${sanitizedMessages.length} ` +
 				`(stripped ${normalizedMessages.length - sanitizedMessages.length} orphaned tool_call/tool_result pairs)`,
 			);
+			// ── 清理结果回写调用方历史（2026-08-18，日志 1787021037798 断崖1）──
+			// normalize/sanitize 若只改发送副本，本地历史中的孤儿消息每轮都会在
+			// 同一位置被重新裁剪 → prompt cache 前缀每轮断在固定点（61→58 连续
+			// 4 轮仅 ~4.7k 命中，~180k miss tokens）。这里原地回写调用方 messages，
+			// 使本地历史与已发送历史一致——孤儿只裁剪一次，对齐 Hermes「持久
+			// transcript 与请求视图 byte-stable」纪律。
+			if (Array.isArray(messages) && sanitizedMessages.length < messages.length) {
+				try {
+					messages.splice(0, messages.length, ...(sanitizedMessages as unknown as IAgentChatMessage[]));
+					this._logService.info(
+						`[LMBridge] sanitize write-back: caller history rewritten to ${sanitizedMessages.length} messages ` +
+						`(orphan fix persisted — no re-trim / no fixed cache breakpoint next turn)`
+					);
+				} catch (writeBackErr) {
+					this._logService.warn(`[LMBridge] sanitize write-back failed (non-fatal): ${writeBackErr}`);
+				}
+			}
 		}
 		const lmMessages = this._toLanguageModelMessages(sanitizedMessages as any, options);
 

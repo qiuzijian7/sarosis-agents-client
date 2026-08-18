@@ -256,6 +256,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	// 5 分钟
 	/** 压缩冷却期：上次压缩时间戳。跨用户消息持久化，避免频繁压缩。 */
 	public _lastCompressionTime: number = 0;
+	/** HardPrune 删头兜底的 rearm 基线（上次删头时的 prompt token）。
+	 *  对齐 Hermes rearm runway：删头后须等 token 增长一个 trigger 规模（20k）
+	 *  才允许再次删头，防止逐轮头部滑动反复打断 prompt cache 前缀
+	 *  （日志 1787021037798 断崖1/3）。 */
+	public _lastHardPruneBaselineTokens: number = 0;
 	/** 检索式压缩：已外置到记忆的 middle 消息内容哈希集合（按 sessionId），
 	 *  避免每次压缩重复写入同一批对话导致记忆无限膨胀。 */
 	private _storedMiddleHashes = new Map<string, Set<string>>();

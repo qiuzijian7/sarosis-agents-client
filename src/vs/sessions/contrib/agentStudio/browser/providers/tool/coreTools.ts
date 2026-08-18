@@ -28,6 +28,7 @@ import type { IToolResultContent } from '../../../common/providers.js';
 import { SearchHelpers, redactSecrets } from './searchHelpers.js';
 import { detectTerminalSearchCommand, terminalSearchCommandHint } from './terminalCommandGuards.js';
 import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS } from './executeCodeGuards.js';
+import { detectGitBash, gitBashShellEnvironment, type IGitBashInfo } from './gitBashProvider.js';
 import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
 import {
 	detectDevicePath,
@@ -101,6 +102,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		cwd: string | undefined,
 		timeoutSec: number,
 		signal?: AbortSignal,
+		gitBash?: IGitBashInfo,
 	): Promise<IToolResultContent[]> {
 		// 如果已被取消，直接返回
 		if (signal?.aborted) {
@@ -113,15 +115,27 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			const workspaceFolders = ctx.workspaceService.getWorkspace().folders;
 			const effectiveCwd = cwd ?? (workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : undefined);
 
-			// 创建临时终端实例
+			// 创建临时终端实例。
+			// Hermes 环境归一（2026-08-18）：Windows 上探测到 Git Bash 时直接以 bash.exe
+			// 作为终端 shell——login shell 自带 /usr/bin（head/tail/grep/sed/awk/cat/ls/find
+			// 全部真实可用），模型按 Unix 方言写命令从「必失败+护栏拦截」变「天然正确」。
+			// env 三件套：CHERE_INVOKING 保持 cwd（login 默认跳 HOME）；MSYS_NO_PATHCONV/
+			// MSYS2_ARG_CONV_EXCL 禁止 MSYS 参数级路径改写。未探测到 Git Bash 时回退
+			// VS Code 默认 profile（PowerShell/cmd），Unix 拦截护栏继续生效。
+			const launchConfig: any = {
+				type: 'Task',
+				name: `Agent: ${command.slice(0, 40)}`,
+				cwd: effectiveCwd,
+				isFeatureTerminal: true,
+				hideFromUser: false,
+			};
+			if (gitBash) {
+				launchConfig.executable = gitBash.bashPath;
+				launchConfig.args = ['--login'];
+				launchConfig.env = gitBashShellEnvironment();
+			}
 			const instance = await ctx.terminalService.createTerminal({
-				config: {
-					type: 'Task',
-					name: `Agent: ${command.slice(0, 40)}`,
-					cwd: effectiveCwd,
-					isFeatureTerminal: true,
-					hideFromUser: false,
-				},
+				config: launchConfig,
 			});
 
 			if (!instance) {
@@ -242,6 +256,9 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				.replace(/A new PowerShell stable release is available:.*\n?/gi, '')
 				.replace(/Upgrade now, or check out the release page at:.*\n?/gi, '')
 				.replace(/https:\/\/aka\.ms\/PowerShell-Release\?tag=.*\n?/gi, '')
+				// Git Bash 模式（2026-08-18）：login 横幅与 MINGW 提示符行
+				.replace(/Last login:.*\n?/gi, '')
+				.replace(/^[^\n]*@+[^\n]*MINGW[0-9]+[^\n]*\$\s*$/gm, '')
 				// 多余的空行压缩
 				.replace(/\n{3,}/g, '\n\n')
 				.trim();
@@ -730,13 +747,15 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 	});
 
 	// ── terminal ────────────────────────────────────────────────────
-	// 2026-08-09：平台感知描述——模型多次在 Windows 上写 Unix 语法
-	// （dir ... | head -50，日志 1786264843850）。把当前 OS/Shell 直接写进
-	// 工具描述，让模型在决策时即知环境，而非事后靠护栏纠错。
+	// 2026-08-18（Hermes 环境归一）：Windows 上优先 Git Bash（POSIX 方言天然正确）；
+	// 未安装 Git Bash 的机器回退 PowerShell/cmd，描述后半段覆盖该场景。
+	// 描述是注册期静态文本（探测是运行期异步），故用「主声明 POSIX + 回退提示」双段式：
+	// 有 Git Bash（常态，开发者机器基本都装 Git）模型第一选择写 Unix 即对；
+	// 无 Git Bash 时 Unix 拦截护栏（下方 handler 内）兜底纠错为 PowerShell 写法。
 	const terminalPlatformNote = isWindows
-		? ' Runs on Windows. The command is executed via PowerShell/cmd.exe — Unix-only commands (head/tail/grep/sed/awk/find/ls/cat) are NOT available. ' +
-		  'Use PowerShell equivalents: Select-Object -First <N> (head), Select-String (grep), Get-ChildItem (ls), Get-Content (cat), ' +
-		  'Sort-Object/Take (sort/head). For code search prefer search_code / search_files tools instead of shell pipelines.'
+		? ' Runs on Windows via Git Bash (POSIX) when installed — head/tail/grep/sed/awk/cat/ls/find are available; use forward-slash paths (C:/dir/file); PATH conversion is disabled so /flags pass through verbatim; wrap Windows-native commands as: cmd /c <command> or powershell -NoProfile -Command "...". ' +
+		  'If Git Bash is not installed the command falls back to PowerShell/cmd.exe — Unix-only commands (head/tail/grep/sed/awk) are then rejected with the PowerShell equivalent (e.g. Select-Object -First). ' +
+		  'For code search prefer search_code / search_files tools instead of shell pipelines.'
 		: ' Runs on a Unix-like OS (Linux/macOS) — bash/zsh commands are available.';
 	ctx.register({
 		definition: {
@@ -764,14 +783,18 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		if (hardline) {
 			throw new NonRetryableToolError(hardlineViolationMessage(hardline, 'terminal'));
 		}
-		// Windows 护栏（日志 1786264843850）：与 execute_code 一致，拦截管道中的
+		// Hermes 环境归一（2026-08-18）：探测 Git Bash（进程级缓存，首次后零开销）。
+		// 可用 → 终端直接跑 bash（Unix 方言天然正确，跳过拦截）；
+		// 不可用 → 保持 PowerShell/cmd + Unix 拦截护栏（报错附等价写法）。
+		const gitBash = isWindows ? await detectGitBash(ctx.fileService, ctx.logService) : undefined;
+		// Windows 护栏（日志 1786264843850）：仅在【无 Git Bash 回退模式】下拦截管道中的
 		// Unix-only 命令（head/tail/grep/sed/awk）——cmd.exe/PowerShell 下必败。
-		// 模型在 Windows 上写 `dir ... | head -50` 会直接失败，提前给可执行纠错反馈。
-		if (isWindows) {
+		// Git Bash 模式下这些命令真实可用，拦截反而误伤。
+		if (isWindows && !gitBash) {
 			const unixCmd = detectUnixOnlyCommand(command);
 			if (unixCmd) {
 				throw new Error(
-					`terminal: Unix-only command '${unixCmd}' is not available on Windows (cmd.exe/PowerShell). ` +
+					`terminal: Unix-only command '${unixCmd}' is not available on Windows (cmd.exe/PowerShell, Git Bash not installed). ` +
 					`Rewrite the pipeline with a PowerShell equivalent: ... | ${UNIX_ONLY_COMMAND_HINTS[unixCmd] ?? unixCmd} ` +
 					`(e.g. powershell -NoProfile -Command "<your cmd> | Select-Object -First 60"), then reissue terminal with the corrected command.`
 				);
@@ -783,7 +806,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		const resolvedCwd = await ctx.resolveAndCheckWorkspacePath(agentId, requestedCwd, false);
 		const timeoutSec = Math.min(Math.max(Number(args['timeout'] ?? 30), 1), 300);
 
-		const result = await executeTerminalCommand(command, resolvedCwd, timeoutSec, signal);
+		const result = await executeTerminalCommand(command, resolvedCwd, timeoutSec, signal, gitBash);
 			// ── 搜索类命令护栏（不阻断执行，仅提示）──────────────────────
 			// find/grep -r/Get-ChildItem -Recurse 等纯搜索命令是 search_files/
 			// search_code 的本职工作（索引快路径 + 结构化结果 + 无 shell 可移植性

@@ -12,6 +12,7 @@ import {
 } from '../../browser/providers/tool/terminalCommandGuards.js';
 import {
 	softBudgetWrapUpReminder,
+	hardLimitWrapUpReminder,
 	preferGraphSearchReminder,
 } from '../../common/loopReminders.js';
 import {
@@ -122,6 +123,18 @@ suite('ToolUsageGuards — terminal 搜索命令护栏 / 搜索引导提醒', ()
 		assert.ok(msg.includes('<system-reminder>') && msg.includes('</system-reminder>'));
 		assert.ok(msg.includes('310s') && msg.includes('300s'), 'should cite elapsed and budget');
 		assert.ok(msg.includes('STOP further exploration'), 'should demand stopping exploration');
+		assert.ok(!msg.includes('undefined'), 'should not leak undefined');
+	});
+
+	// ─── 硬上限总结轮提醒（log 1787019843599：50 轮硬停截断、无结论）──────
+
+	test('hardLimitWrapUpReminder declares tools disabled and demands final answer', () => {
+		const msg = hardLimitWrapUpReminder(50);
+		assert.ok(msg.includes('<system-reminder>') && msg.includes('</system-reminder>'));
+		assert.ok(msg.includes('50/50'), 'should cite the iteration limit');
+		assert.ok(msg.includes('DISABLED'), 'should declare tools disabled');
+		assert.ok(msg.includes('FINAL ANSWER'), 'should demand a final answer');
+		assert.ok(msg.includes('remains unverified'), 'should ask to list unverified items');
 		assert.ok(!msg.includes('undefined'), 'should not leak undefined');
 	});
 

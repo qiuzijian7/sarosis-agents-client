@@ -613,13 +613,24 @@ export class CodeApplication extends Disposable {
 	// Non-interactive, single-shot with a REAL exit code + timeout kill — distinct from
 	// the pty-based `terminal` tool (interactive shell, no reliable exit code, idle-detect).
 	// Backs the agentStudio `execute_code` tool (researcher subagent runs anysearch via it).
-	validatedIpcMain.handle('vscode:execCode', async (event, payload: { command?: string; script?: string; interpreter?: string; cwd?: string; timeoutMs?: number }) => {
+	validatedIpcMain.handle('vscode:execCode', async (event, payload: { command?: string; script?: string; interpreter?: string; cwd?: string; timeoutMs?: number; shell?: string; pathPrefix?: string }) => {
 		return new Promise<{ success: boolean; stdout: string; stderr: string; exitCode: number }>((resolve) => {
 		const timeoutMs = Math.min(Math.max(payload?.timeoutMs ?? 30000, 1000), 120000);
 		// PYTHONIOENCODING/PYTHONUTF8：Windows 终端默认 GBK 编码，Python print()
 		// 遇到 emoji 等非 GBK 字符会抛 UnicodeEncodeError（exit 1）。强制 UTF-8
 		// 模式让任何 Python 脚本都能安全输出 Unicode（其他平台无副作用）。
-		const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
+		const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } as NodeJS.ProcessEnv & Record<string, string>;
+		// Hermes 环境归一（2026-08-18）：可选 shell 路径（Git Bash）+ PATH 前缀
+		// （coreutils 目录）。非登录 bash -c 不 source /etc/profile，必须显式把
+		// usr\bin 前置到 PATH，head/tail/grep 等才可用；MSYS_NO_PATHCONV 禁路径改写。
+		const useShell = payload?.shell ?? true;
+		if (payload?.pathPrefix && env.PATH && !String(env.PATH).toLowerCase().startsWith(payload.pathPrefix.toLowerCase())) {
+			env.PATH = `${payload.pathPrefix};${env.PATH}`;
+		}
+		if (payload?.shell) {
+			env.MSYS_NO_PATHCONV = '1';
+			env.MSYS2_ARG_CONV_EXCL = '*';
+		}
 		let child: ReturnType<typeof spawn>;
 		if (payload?.script !== undefined && payload?.interpreter) {
 			// heredoc 脚本：spawn <interpreter>（无参数）并从 stdin 喂入脚本。
@@ -638,7 +649,7 @@ export class CodeApplication extends Disposable {
 				cwd: payload?.cwd,
 				env,
 				windowsHide: true,
-				shell: true,
+				shell: useShell,
 			});
 		}
 

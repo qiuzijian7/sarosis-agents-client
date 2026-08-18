@@ -719,13 +719,16 @@ interface ITurnContext {
 		// P1(cache-cold 门控，对齐 MiMo isCacheCold)：低/中压力(<2)时若距上次
 		// assistant 响应 < PRUNE_CACHE_TTL_MS（KV 缓存仍热），跳过剪枝——改写历史
 		// 前缀会使已付费的 prompt cache 失效；高压(>=2)防溢出优先，强制剪枝。
+		// ── P3/P4 共享的压力与 KV 缓存状态（提升到块外供 P4 门控复用）──
+		// _cacheCold：距上次 assistant 响应 > PRUNE_CACHE_TTL_MS(5min) 视为缓存已冷，
+		// 此后改写历史前缀不再浪费已付费的 prompt cache；_pressure>=2 防溢出优先。
+		const _estTok = host._estimateMessagesTokens(messages);
+		const _pressure = ContextManager.getPressureLevel(
+			runState.lastRealPromptTokens || _estTok, compressionWindow);
+		const _lastAssistantAt = host._lastAssistantAtByAgent.get(host._turnKey(request.agentId, request.sessionId)) ?? 0;
+		const _cacheCold = _lastAssistantAt === 0
+			|| (Date.now() - _lastAssistantAt) > ContextManager.PRUNE_CACHE_TTL_MS;
 		{
-			const _estTok = host._estimateMessagesTokens(messages);
-			const _pressure = ContextManager.getPressureLevel(
-				runState.lastRealPromptTokens || _estTok, compressionWindow);
-			const _lastAssistantAt = host._lastAssistantAtByAgent.get(host._turnKey(request.agentId, request.sessionId)) ?? 0;
-			const _cacheCold = _lastAssistantAt === 0
-				|| (Date.now() - _lastAssistantAt) > ContextManager.PRUNE_CACHE_TTL_MS;
 			if (_pressure >= 2 || _cacheCold) {
 				messages = ContextManager.pruneOldToolOutputs(
 					messages as unknown as ReadonlyArray<ChatMessage>,
@@ -735,11 +738,15 @@ interface ITurnContext {
 			}
 		}
 
-		// ── P4: 工具结果去重（Layer 4 修复）──────────────────────
+		// ── P4: 工具结果去重（Layer 4 修复；2026-08-18 缓存门控）──────────────────────
 		// ReAct 循环中同一文件/搜索常被多轮重复读取，相同 tool 结果
 		// 在对话历史中反复出现。此处对连续的相同 tool 结果做去重：
 		// 保留最近一次，更早的替换为简短引用标记。
-		{
+		// 门控（对齐 Hermes rearm 纪律；日志 1787021037798 断崖5：Dedup 原地改写
+		// 历史中间内容 → 前缀在该点断链，尾段连续 4 次去重对应 55% 命中）：缓存热
+		// 且压力低时跳过——去重省的 token 远不抵前缀失效损失；压力>=2（防溢出）
+		// 或缓存已冷（KV 缓存注定失效）时才执行。
+		if (_pressure >= 2 || _cacheCold) {
 			const MAX_TOOL_RESULT_SNIPPET = 200;
 			let dedupCount = 0;
 			for (let i = messages.length - 1; i >= 0; i--) {
@@ -770,35 +777,28 @@ interface ITurnContext {
 			}
 		}
 
-		// ── P5: 历史消息数量硬上限（Layer 3 修复）────────────────
-		// 即使 token 压缩未触发，消息数过多也会导致 context 膨胀。
-		// 保留 system 消息 + 最近 N 条消息，其余折叠为占位摘要。
+		// ── P5: 历史消息数量硬上限（Layer 3 修复；2026-08-18 缓存友好重构）────────────────
+		// 旧版：条数>60 即刻从头删——消息数上限先于 token 压缩阈值触发时（60 条仅
+		// 40-50k token，未到 60k 压缩线），每轮「长回 63 → 删到 61」头部滑动，前缀
+		// 反复断链（日志 1787021037798 断崖1/3：命中率 98%→6.7%，~280k miss tokens）。
+		// 新版（对齐 opencode/deepseek-harness「纯 token 驱动」+ Hermes「断点节流」）：
+		//  ① 超限只挂 pending，优先交给后面的三段式压缩——压缩是显式接受的一次性
+		//     断链，且带 cooldown/防抖，一个会话只做一次；
+		//  ② 压缩被 cooldown/阈值拒绝时，仅 token 压力>=1 时才删头兜底（低压力说明
+		//     条数多源于消息碎而非 token 大，删头得不偿失）；
+		//  ③ 删头兜底带 rearm runway（对齐 Hermes）：自上次删头以来 token 增量须
+		//     ≥ HARD_PRUNE_REARM_TOKENS，杜绝逐轮头部滑动。
+		let hardPrunePending = false;
 		{
 			// 先剥离 synthetic sidecar（技能/策略/控制流临时注入），避免其占用硬上限名额
 			// 或污染持久化 transcript（对齐 Hermes api_content / MiMo synthetic:true）。
 			messages = stripSyntheticSidecars(messages);
 			const HARD_MAX_MESSAGES = 60;
-			const beforePruneCount = messages.length;
-			if (beforePruneCount > HARD_MAX_MESSAGES) {
-				const systemMsgs = messages.filter((m: any) => m.role === 'system');
-				const nonSystem = messages.filter((m: any) => m.role !== 'system');
-				const keepCount = HARD_MAX_MESSAGES - systemMsgs.length;
-				if (nonSystem.length > keepCount && keepCount > 0) {
-					const dropped = nonSystem.slice(0, nonSystem.length - keepCount);
-					const kept = nonSystem.slice(nonSystem.length - keepCount);
-					const placeholder: any = {
-						role: 'system',
-						content: `[Context truncated: ${dropped.length} earlier messages removed to fit context window. ` +
-							`The conversation contained ${dropped.filter((m: any) => m.role === 'user').length} user messages, ` +
-							`${dropped.filter((m: any) => m.role === 'assistant').length} assistant responses, ` +
-							`${dropped.filter((m: any) => m.role === 'tool').length} tool results.]`,
-					};
-					messages = [...systemMsgs, placeholder, ...kept] as typeof messages;
-					host._logService.warn(
-						`[AgentOS][HardPrune] messages ${beforePruneCount} → ${messages.length} ` +
-						`(dropped ${dropped.length} oldest, hard cap=${HARD_MAX_MESSAGES})`
-					);
-				}
+			if (messages.length > HARD_MAX_MESSAGES) {
+				hardPrunePending = true;
+				host._logService.info(
+					`[AgentOS][HardPrune] pending: messages=${messages.length} > cap=${HARD_MAX_MESSAGES} — deferring to compression (cache prefix preserved this turn)`
+				);
 			}
 		}
 
@@ -891,6 +891,52 @@ interface ITurnContext {
 			const didCompress = compressionResult.compressedMessageCount < compressionResult.originalMessageCount;
 			const compressionDurationMs = Date.now() - compressionStartTime;
 			const cmpMeta = compressionResult.metadata ?? {};
+			// ── P5 兜底（2026-08-18）：条数超限但压缩未执行 → rearm 门控下的删头 ──
+			// 压缩成功时条数必然大幅下降，pending 自然消化；压缩被 cooldown/阈值/
+			// 防抖拒绝时，仅在 token 压力>=1 且通过 rearm runway（自上次删头以来
+			// token 增量 ≥ 20k，约为压缩阈值的 1/3，对齐 Hermes「等 prompt 长满一个
+			// trigger 规模增量才允许下次裁剪」）时才删头，杜绝逐轮头部滑动断链。
+			if (hardPrunePending && !didCompress) {
+				const HARD_MAX_MESSAGES = 60;
+				const HARD_PRUNE_REARM_TOKENS = 20_000;
+				const currentTokens = runState.lastRealPromptTokens || host._estimateMessagesTokens(messages);
+				const sinceLastPrune = currentTokens - host._lastHardPruneBaselineTokens;
+				const rearmOk = host._lastHardPruneBaselineTokens === 0 || sinceLastPrune >= HARD_PRUNE_REARM_TOKENS;
+				if (!rearmOk) {
+					host._logService.info(
+						`[AgentOS][HardPrune] rearm-gated: token delta ${sinceLastPrune} < ${HARD_PRUNE_REARM_TOKENS} ` +
+						`since last prune — skipping head drop (cache prefix preserved)`
+					);
+				} else if (_pressure >= 1) {
+					const systemMsgs = messages.filter((m: any) => m.role === 'system');
+					const nonSystem = messages.filter((m: any) => m.role !== 'system');
+					const keepCount = HARD_MAX_MESSAGES - systemMsgs.length;
+					if (nonSystem.length > keepCount && keepCount > 0) {
+						const beforePruneCount = messages.length;
+						const dropped = nonSystem.slice(0, nonSystem.length - keepCount);
+						const kept = nonSystem.slice(nonSystem.length - keepCount);
+						const placeholder: any = {
+							role: 'system',
+							content: `[Context truncated: ${dropped.length} earlier messages removed to fit context window. ` +
+								`The conversation contained ${dropped.filter((m: any) => m.role === 'user').length} user messages, ` +
+								`${dropped.filter((m: any) => m.role === 'assistant').length} assistant responses, ` +
+								`${dropped.filter((m: any) => m.role === 'tool').length} tool results.]`,
+						};
+						messages = [...systemMsgs, placeholder, ...kept] as typeof messages;
+						host._lastHardPruneBaselineTokens = currentTokens;
+						host._logService.warn(
+							`[AgentOS][HardPrune] messages ${beforePruneCount} → ${messages.length} ` +
+							`(dropped ${dropped.length} oldest, hard cap=${HARD_MAX_MESSAGES}, ` +
+							`pressure=${_pressure}, rearm baseline=${currentTokens})`
+						);
+					}
+				} else {
+					host._logService.info(
+						`[AgentOS][HardPrune] skipped: pressure=${_pressure} < 1 — token 远未到压缩线，` +
+						`条数超限源于消息碎，保留完整前缀（cache preserved）`
+					);
+				}
+			}
 			const logFn = didCompress
 				? host._logService.info.bind(host._logService)
 				: host._logService.warn.bind(host._logService);

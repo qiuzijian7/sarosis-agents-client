@@ -17,6 +17,7 @@ import { formatCurrentTaskReminder } from '../../../common/preLoopOrchestrator.j
 import type { AgentParadigm } from '../../../common/agentLoopStrategy.js';
 import { setParadigmOverride, getParadigmOverride, clearParadigmOverride, SWITCHABLE_PARADIGMS } from '../../../common/paradigmOverride.js';
 import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS } from './executeCodeGuards.js';
+import { detectGitBash, coreutilsDir } from './gitBashProvider.js';
 import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
 
 export interface CompatToolContext {
@@ -270,7 +271,8 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 	ctx.register({
 		definition: {
 			name: 'execute_code',
-			description: 'Execute a shell command or script (e.g. a python3/node CLI) and return stdout, stderr and the real exit code. Non-interactive single-shot execution with timeout kill — use THIS (not the interactive terminal) to run one-off CLI scripts such as the anysearch search service: `python3 scripts/anysearch_cli.py search "your query"`. Requires the interpreter (python3/node) to be installed on PATH.',
+			description: 'Execute a shell command or script (e.g. a python3/node CLI) and return stdout, stderr and the real exit code. Non-interactive single-shot execution with timeout kill — use THIS (not the interactive terminal) to run one-off CLI scripts such as the anysearch search service: `python3 scripts/anysearch_cli.py search "your query"`. Requires the interpreter (python3/node) to be installed on PATH.' +
+				(isWindows ? ' On Windows the command runs via Git Bash (POSIX) when installed — head/tail/grep/sed/awk available with forward-slash paths (C:/dir/file); otherwise cmd.exe where Unix-only commands are rejected with the PowerShell equivalent.' : ''),
 			inputSchema: {
 				type: 'object',
 				properties: {
@@ -291,13 +293,17 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				throw new NonRetryableToolError(hardlineViolationMessage(hardline, 'execute_code'));
 			}
 			const timeoutSec = Math.min(Math.max(Number(args['timeout']) || 30, 1), 120);
-			// Windows 护栏：Unix-only 命令（head/grep/sed…）在 cmd.exe 下必败（exit 255），
-			// 提前抛出带 PowerShell 等价写法的不可重试错误，模型据此自行改写成正确命令。
-			if (isWindows) {
+			// Hermes 环境归一（2026-08-18）：Git Bash 可用时经主进程以 bash -c 执行
+			// （PATH 前缀注入 <gitRoot>\usr\bin → coreutils 可用），跳过 Unix 拦截；
+			// 不可用回退 cmd.exe（shell:true）+ 拦截护栏。
+			const gitBash = isWindows ? await detectGitBash(ctx.fileService, ctx.logService) : undefined;
+			// Windows 护栏：仅【无 Git Bash 回退模式】下拦截 Unix-only 命令（head/grep/sed…
+			// 在 cmd.exe 下必败 exit 255），提前抛出带 PowerShell 等价写法的不可重试错误。
+			if (isWindows && !gitBash) {
 				const unixCmd = detectUnixOnlyCommand(command);
 				if (unixCmd) {
 					throw new NonRetryableToolError(
-						`execute_code: Unix-only command '${unixCmd}' is not available on Windows (cmd.exe) — it would fail with exit 255. ` +
+						`execute_code: Unix-only command '${unixCmd}' is not available on Windows (cmd.exe, Git Bash not installed) — it would fail with exit 255. ` +
 						`Rewrite the pipeline with a PowerShell equivalent: ... | ${UNIX_ONLY_COMMAND_HINTS[unixCmd] ?? unixCmd} ` +
 						`(e.g. powershell -NoProfile -Command "<your cmd> | Select-Object -First 60"), then reissue execute_code with the corrected command.`
 					);
@@ -316,7 +322,13 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 		if (heredoc) {
 			ctx.logService.info(`[CompatTools] execute_code: heredoc detected, running ${heredoc.interpreter} via stdin`);
 		}
-		const result = await _execCodeSandbox(command, cwd, timeoutSec * 1000, ctx.logService, heredoc);
+		// Git Bash 模式：传 shell 路径 + coreutils PATH 前缀给主进程（Hermes
+		// _prepend_git_bash_dirs 同款思路——非登录 bash 不 source /etc/profile，
+		// 必须显式把 usr\bin 前置到 PATH，head/tail/grep 等才可用）。
+		const result = await _execCodeSandbox(
+			command, cwd, timeoutSec * 1000, ctx.logService, heredoc,
+			gitBash ? { shell: gitBash.bashPath, pathPrefix: coreutilsDir(gitBash) } : undefined,
+		);
 			const out = _truncateExecOutput(result.stdout);
 			const err = _truncateExecOutput(result.stderr);
 			const parts = [`$ ${command}`, ''];
@@ -345,37 +357,42 @@ interface IExecCodeResult { success: boolean; stdout: string; stderr: string; ex
  * 调用 CLI——从根上避免相对路径 + cwd 解析问题。
  */
 
-async function _execCodeSandbox(command: string, cwd: string | undefined, timeoutMs: number, logService: ILogService, heredoc?: { interpreter: string; script: string }): Promise<IExecCodeResult> {
+async function _execCodeSandbox(command: string, cwd: string | undefined, timeoutMs: number, logService: ILogService, heredoc?: { interpreter: string; script: string }, shellExec?: { shell: string; pathPrefix: string }): Promise<IExecCodeResult> {
 	// 优先：主进程 vscode:execCode（Electron 桌面，主进程 child_process.spawn，见 app.ts）。
 	const vscodeBridge = (globalThis as any).vscode;
 	if (vscodeBridge?.ipcRenderer?.invoke) {
 		try {
-			logService.trace(`[CompatTools] execute_code via main-process vscode:execCode: ${command}`);
+			logService.trace(`[CompatTools] execute_code via main-process vscode:execCode: ${command}${shellExec ? ` (shell=${shellExec.shell})` : ''}`);
 			return await vscodeBridge.ipcRenderer.invoke('vscode:execCode', heredoc
 				? { script: heredoc.script, interpreter: heredoc.interpreter, cwd, timeoutMs }
-				: { command, cwd, timeoutMs }) as IExecCodeResult;
+				: { command, cwd, timeoutMs, shell: shellExec?.shell, pathPrefix: shellExec?.pathPrefix }) as IExecCodeResult;
 		} catch (invokeErr) {
 			logService.warn(`[CompatTools] execute_code: vscode:execCode invoke failed, trying child_process fallback: ${invokeErr}`);
 		}
 	}
 	// 回退：当前上下文可直接 require child_process（Electron renderer nodeIntegration）。
 	if (typeof process !== 'undefined' && (process as any).versions?.electron) {
-		return _execCodeNodeFallback(command, cwd, timeoutMs, heredoc);
+		return _execCodeNodeFallback(command, cwd, timeoutMs, heredoc, shellExec);
 	}
 	throw new Error('execute_code is not available in this context (no main-process channel, no child_process)');
 }
 
-function _execCodeNodeFallback(command: string, cwd: string | undefined, timeoutMs: number, heredoc?: { interpreter: string; script: string }): Promise<IExecCodeResult> {
+function _execCodeNodeFallback(command: string, cwd: string | undefined, timeoutMs: number, heredoc?: { interpreter: string; script: string }, shellExec?: { shell: string; pathPrefix: string }): Promise<IExecCodeResult> {
 	return new Promise((resolve) => {
 		try {
 			// eslint-disable-next-line local/code-import-patterns
 			const cp = require('child_process') as typeof import('child_process');
 			// 与主进程 vscode:execCode 一致：强制 Python UTF-8 输出（Windows 默认 GBK
 			// 遇 emoji 等抛 UnicodeEncodeError exit 1）。
-			const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
+			// Git Bash 模式（2026-08-18）：shell 指定 bash.exe，PATH 前置 coreutils。
+			const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } as Record<string, string>;
+			const shellOpt: boolean | string = shellExec?.shell ?? true;
+			if (shellExec && env.PATH && !env.PATH.toLowerCase().startsWith(shellExec.pathPrefix.toLowerCase())) {
+				env.PATH = `${shellExec.pathPrefix};${env.PATH}`;
+			}
 			const child = heredoc
 				? cp.spawn(heredoc.interpreter, [], { cwd, env, windowsHide: true })
-				: cp.spawn(command, [], { shell: true, cwd, env, windowsHide: true });
+				: cp.spawn(command, [], { shell: shellOpt, cwd, env, windowsHide: true });
 			if (heredoc) { child.stdin?.write(heredoc.script); child.stdin?.end(); }
 			let stdout = ''; let stderr = ''; let settled = false;
 			const t = setTimeout(() => {
