@@ -67,16 +67,16 @@ export class LoopbackPlatform implements IBridgePlatform {
 		this._onOutbound.fire(msg);
 	}
 
-	async send(ctx: BridgeReplyCtx, content: string): Promise<void> {
-		this._dispatch(ctx, content, "text");
+	async send(ctx: BridgeReplyCtx, content: string, type: OutboundMessage["type"] = "text"): Promise<void> {
+		this._dispatch(ctx, content, type);
 	}
 
-	async reply(ctx: BridgeReplyCtx, content: string): Promise<void> {
-		this._dispatch(ctx, content, "text");
+	async reply(ctx: BridgeReplyCtx, content: string, type: OutboundMessage["type"] = "text"): Promise<void> {
+		this._dispatch(ctx, content, type);
 	}
 
-	async update(ctx: BridgeReplyCtx, content: string): Promise<void> {
-		this._dispatch(ctx, content, "text");
+	async update(ctx: BridgeReplyCtx, content: string, type: OutboundMessage["type"] = "text"): Promise<void> {
+		this._dispatch(ctx, content, type);
 	}
 
 	async sendCard(ctx: BridgeReplyCtx, card: BridgeCard): Promise<void> {

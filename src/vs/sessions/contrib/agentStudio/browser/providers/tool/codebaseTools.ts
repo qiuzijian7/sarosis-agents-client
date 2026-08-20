@@ -23,6 +23,7 @@ import { prepareQueryForRipgrep, escapeLiteralForRegex } from './regexValidator.
 import { normalizeFileGlobForSearch, normalizeSearchPathFilter, searchRootCandidates, searchOutcomeHint } from './pathFilterNormalize.js';
 import type { IAgentStudioService } from '../../../common/agentStudio.js';
 import type { IWorkspaceFolder } from '../../../../../../platform/workspace/common/workspace.js';
+import { detectProjectTemplates, type IProjectIndexTemplate } from '../../../common/codebaseProjectTemplates.js';
 
 export interface CodebaseToolContext {
 	register(definition: { definition: any; handler: any }): void;
@@ -106,7 +107,77 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			}
 		}
 		return ctx.workspaceService.getWorkspace().folders;
-	};
+		};
+
+		/**
+		 * 超大项目检测（2026-08-19）—— 用于「从文件夹添加工作区」的多项目父目录：
+		 * 不自动索引时，codebase 工具遇到未索引的根要判断是否该让 LLM 询问用户。
+		 *
+		 * 判定口径（不递归深扫，仅顶层 + 一层子目录，开销毫秒级）：
+		 *  - 顶层条目数（文件+目录）超过阈值；
+		 *  - 或命中任一项目模板特征（UE / Unity / Node / Java / .NET / Python）。
+		 *
+		 * 父目录形态（顶层是 S1Game/、UE5EA/ 等子文件夹，*.uproject/Engine 藏在子目录里）
+		 * 需探测一层子目录的顶层名，否则漏判（与 searchHelpers._isUnrealRoot 的一层探测同法）。
+		 *
+		 * @returns 检测结果：超大与否 + 命中的模板 + 建议排除目录。
+		 */
+		const _detectLargeProject = async (
+			rootPath: string,
+		): Promise<{ large: boolean; templates: IProjectIndexTemplate[]; excludeDirs: string[]; topLevelCount: number }> => {
+			try {
+				const stat = await ctx.fileService.resolve(URI.file(rootPath));
+				const children = stat?.children ?? [];
+				const topLevelCount = children.length;
+				const names = new Set(children.map(c => c.name ?? '').filter(Boolean));
+				// 一层子目录探测：父目录形态下项目标记文件在子目录里
+				const dirs = children.filter(c => c.isDirectory).slice(0, 20);
+				for (const d of dirs) {
+					try {
+						const sub = await ctx.fileService.resolve(d.resource);
+						for (const c of (sub?.children ?? [])) {
+							if (c.name) { names.add(c.name); }
+						}
+					} catch { /* 单个子目录不可读，跳过 */ }
+				}
+				const templates = detectProjectTemplates([...names]);
+				const excludeSet = new Set<string>();
+				for (const t of templates) { for (const d of t.excludeDirs) { excludeSet.add(d.toLowerCase()); } }
+				// 超大判定：顶层条目 > 120，或命中 ≥1 个「重型/多项目」模板（UE/Unity/Java/.NET）
+				const heavyIds = new Set(['unreal', 'unity', 'java', 'dotnet']);
+				const large = topLevelCount > 120 || templates.some(t => heavyIds.has(t.id));
+				return { large, templates, excludeDirs: [...excludeSet], topLevelCount };
+			} catch {
+				return { large: false, templates: [], excludeDirs: [], topLevelCount: 0 };
+			}
+		};
+
+		/**
+		 * codebase 工具「无图」时的统一引导（2026-08-19）。
+		 * - 超大项目 → 返回让 LLM 停下来询问用户是否构建索引的文案（不再无条件 index_repository）。
+		 * - 非超大 → 保留原「Run index_repository first」轻提示。
+		 */
+		const noGraphGuidance = async (toolName: string): Promise<IToolResultContent[]> => {
+			const folders = await getSearchFolders();
+			const root = folders[0]?.uri?.fsPath;
+			if (!root) { return text(`${toolName}: no graph loaded. Run index_repository first.`); }
+			const det = await _detectLargeProject(root);
+			if (!det.large) { return text(`${toolName}: no graph loaded. Run index_repository first.`); }
+
+			let tpl = '';
+			if (det.templates.length > 0) {
+				const labels = det.templates.map(t => t.label).join(' / ');
+				const excl = det.excludeDirs.join(', ');
+				tpl = `检测到项目类型：${labels}。建议排除目录：${excl}（会自动并入通用排除集）。`;
+			}
+			return text(
+				`${toolName}: 当前工作区「${root}」尚未构建代码索引，且这是一个超大目录（顶层 ${det.topLevelCount} 个条目${det.templates.length ? '，疑似多项目/重型项目' : ''}）。\n` +
+				`为避免长时间卡顿，请在继续前先询问用户：是否需要在对应项目文件夹下构建索引？\n` +
+				`${tpl ? tpl + '\n' : ''}` +
+				`用户确认后，可调用 index_repository（推荐带上 exclude_dirs 缩小范围）；` +
+				`若用户拒绝，则改用 search_code / search_files 这类不依赖索引的文件系统搜索，并尽量带 path_filter 收敛到具体子目录。`,
+			);
+		};
 
 	/**
 	 * search_graph 0 结果时的近似名建议（2026-07-26，事故 1785053998262）：
@@ -262,9 +333,10 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			inputSchema: {
 				type: 'object',
 				properties: {
-					repo_path: { type: 'string', description: 'Repository path to index (optional, defaults to workspace root)' },
+					repo_path: { type: 'string', description: 'Repository path to index (optional, defaults to workspace root). For a multi-project parent directory, set this to a specific project subfolder to index only that project.' },
 					mode: { type: 'string', enum: ['fast', 'moderate', 'full'], description: 'Indexing depth (optional, default: fast)' },
 					force: { type: 'boolean', description: 'Force re-index even if graph already loaded (default: false)' },
+					exclude_dirs: { type: 'array', items: { type: 'string' }, description: 'Additional directory names to exclude (merged with common defaults). Use values suggested by the no-graph guidance (e.g. Binaries, Intermediate, Content) to avoid indexing build/asset directories.' },
 				},
 			},
 			category: 'codebase',
@@ -274,6 +346,9 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			const repoPath = args['repo_path'] as string | undefined;
 			const mode = (args['mode'] as 'fast' | 'moderate' | 'full' | undefined) || 'fast';
 			const force = (args['force'] as boolean | undefined) ?? false;
+			const excludeDirs = Array.isArray(args['exclude_dirs'])
+				? (args['exclude_dirs'] as unknown[]).map(String).filter(Boolean)
+				: [];
 			const folders = await getSearchFolders();
 			if (folders.length === 0) {
 				return text('index_repository error: no workspace folder open');
@@ -308,7 +383,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 					ctx.logService.info(`[BuiltinTools] [TRACE] index_repository tool → indexWorkspace: ${wsPath}`);
 					const result = await ctx.codebaseGraphService.indexWorkspace(wsPath, {
 						mode,
-						excludeDirs: [],
+						excludeDirs,
 					});
 					results.push(`${wsPath}: ${result.success ? 'OK' : 'FAILED'} — ${result.message}`);
 				} catch (err: any) {
@@ -337,7 +412,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		},
 		handler: async () => {
 			if (!await ensureGraph()) {
-				return json({ indexed: false, hint: 'Run index_repository first' });
+				return noGraphGuidance('index_status');
 			}
 			// 优先用异步版本：内存 store 为空时从 SQLite 后端获取真实计数
 			const status = await ctx.codebaseGraphService.getIndexStatusAsync();
@@ -364,7 +439,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		},
 		handler: async (args: Record<string, unknown>) => {
 			if (!await ensureGraph()) {
-				return text('check_index_coverage: no graph loaded. Run index_repository first.');
+				return noGraphGuidance('check_index_coverage');
 			}
 			const report = ctx.codebaseGraphService.getIndexCoverage();
 			const includeFiles = (args['includeFiles'] as boolean | undefined) ?? true;
@@ -457,7 +532,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		handler: async (args: Record<string, unknown>) => {
 			// SQLite 后端感知：启用时先查后端计数（避免 Phase 2f 把全图回载内存）；
 			// 未启用时 hasGraphDataAsync===hasGraphData，走原 ensureGraph 磁盘回载路径。
-			if (!await ctx.codebaseGraphService.hasGraphDataAsync() && !await ensureGraph()) { return text('search_graph: no graph loaded. Run index_repository first.'); }
+			if (!await ctx.codebaseGraphService.hasGraphDataAsync() && !await ensureGraph()) { return noGraphGuidance('search_graph'); }
 			// 旧 MCP 参数别名兼容：name_pattern → namePattern, file_pattern → filePattern, min_degree → minInDegree
 			const searchParams = {
 				project: args['project'] as string | undefined,
@@ -620,7 +695,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>) => {
-			if (!await ensureGraph()) { return text('query_graph: no graph loaded. Run index_repository first.'); }
+			if (!await ensureGraph()) { return noGraphGuidance('query_graph'); }
 			const graph = args['graph'] as string | undefined;
 			if (graph === 'missed') {
 				const missed = ctx.codebaseGraphService.getMissedGraph();
@@ -666,7 +741,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>) => {
-			if (!await ensureGraph()) { return text('get_architecture: no graph loaded. Run index_repository first.'); }
+			if (!await ensureGraph()) { return noGraphGuidance('get_architecture'); }
 			const rawAspects = args['aspects'] as string[] | undefined;
 			const scopePath = args['path'] as string | undefined;
 			// C 对齐的 aspect 别名 → 具体报告字段（token 高效）
@@ -770,7 +845,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>, _signal?: unknown, agentId?: string) => {
-			if (!await ensureGraph()) { return text('get_code_snippet: no graph loaded. Run index_repository first.'); }
+			if (!await ensureGraph()) { return noGraphGuidance('get_code_snippet'); }
 			// alias: qualified_name → qualifiedName (MCP compatibility)
 			if (!args['qualifiedName'] && args['qualified_name']) { args['qualifiedName'] = args['qualified_name']; }
 			const qualifiedName = String(args['qualifiedName'] ?? '');
@@ -811,7 +886,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		source: 'saros.builtin-tools',
 	},
 	handler: async () => {
-		if (!await ensureGraph()) { return text('get_graph_schema: no graph loaded. Run index_repository first.'); }
+		if (!await ensureGraph()) { return noGraphGuidance('get_graph_schema'); }
 		const schema = ctx.codebaseGraphService.getGraphSchema();
 		// ADR detection (aligns with C version's adr_present + adr_hint)
 		try {
@@ -858,7 +933,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>) => {
-			if (!await ensureGraph()) { return text('trace_path: no graph loaded. Run index_repository first.'); }
+			if (!await ensureGraph()) { return noGraphGuidance('trace_path'); }
 			// alias: function_name → sourceName (MCP compatibility)
 			if (!args['sourceName'] && args['function_name']) { args['sourceName'] = args['function_name']; }
 			const sourceName = String(args['sourceName'] ?? '');
@@ -1189,6 +1264,34 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		const repeat = ctx.searchHelpers.recordSearchRepeat(agentId, searchQuery, mode, normalizedFilePattern ?? pathFilter ?? '', undefined, limit, offset);
 		if (repeat.blocked) { return text(repeat.blocked); }
 
+		// ── P0 超大 roots 预检（2026-08-18，日志 1787038807642：60s×6 超时）──────
+		// 未带任何收窄参数时，对「UE 形态的巨型根」直接拒绝执行并返回引导：全库 rg 是
+		// 分钟级（UE 引擎源码数 GB）→ 60s 硬超时反复烧光预算。一次往返让模型带上
+		// path_filter/project 重发——优于超时失败。
+		//
+		// 2026-08-19：原门槛是 `folders.length >= 2`，但搜索根已收敛为「Agent Studio
+		// active workspace 单根」（getSearchFolders），多 folder 情形几乎不再出现 →
+		// 预检形同失效。且真实痛点已变成「单 root 指向多项目父目录」（如
+		// F:\GR_qiuzijian_main 内含 S1Game/UE5EA）——_isUnrealRoot 能识别该父目录形态。
+		// 故改为：只要搜索根本身是 UE 形态就拦，不再看 folder 数量。
+		if (!pathFilter && !normalizedFilePattern && !scopedProject) {
+			const allFolders = (await getSearchFolders(agentId)).map(f => f.uri.fsPath);
+			if (allFolders.length >= 1) {
+				const unrealFlags = await Promise.all(allFolders.map(f => ctx.searchHelpers.isUnrealRoot(f).catch(() => false)));
+				if (unrealFlags.some(Boolean)) {
+					return text(
+						'search_code: this call would scan the ENTIRE search root (' +
+						allFolders.join(', ') + ') — a large Unreal-engine / multi-project tree, ' +
+						'so it would hit the 60s timeout. ' +
+						'Re-send with ONE of: path_filter (a subdirectory, e.g. "S1Game/Source" or "Engine/Source/Runtime/CoreUObject"), ' +
+						'filePattern (a specific path-fragment glob, NOT a bare "*.cpp"), ' +
+						'or project=<folder-name> to pick a single indexed root. ' +
+						'For code-structure questions prefer search_graph (indexed, no filesystem scan).'
+					);
+				}
+			}
+		}
+
 		// ── P1（2026-07-29，对齐 kimi Grep / search_files 的搜索根模型）─────────
 		// path_filter = 搜索根（目录或文件路径），不再塞进 includePattern（glob 语义）。
 		// 旧 include-glob 路线须处理 相对/绝对 × 文件/目录 四象限，已致 4 起事故
@@ -1335,7 +1438,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>) => {
-			if (!await ensureGraph()) { return text('detect_changes: no graph loaded. Run index_repository first.'); }
+			if (!await ensureGraph()) { return noGraphGuidance('detect_changes'); }
 			try {
 				const result = await ctx.codebaseGraphService.detectChanges({
 					since: args['since'] as string | undefined,
@@ -1486,7 +1589,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		},
 		handler: async (args: Record<string, unknown>) => {
 			if (!await ensureGraph()) {
-				return text('export_artifact: no graph loaded. Run index_repository first.');
+				return noGraphGuidance('export_artifact');
 			}
 			const overridePath = args['target_path'] as string | undefined;
 			let targetPath = overridePath;

@@ -88,21 +88,56 @@ export const NodeContextMenu: React.FC<{
 	menu: NodeContextMenuState;
 	onPick: (type: string) => void;
 	onClose: () => void;
-}> = ({ menu, onPick, onClose }) => {
+	/**
+	 * FollowCursor（对齐 ComfyUI `Comfy.NodeSearchBoxImpl.FollowCursor`）：
+	 * true 时 pick 只回调 `onPick(type)`，由调用方进入 ghost 落位（节点跟随光标、
+	 * 点击画布才落位）；默认 false = 选节点即落位在 `menu.graphX/graphY`。
+	 */
+	ghostMode?: boolean;
+}> = ({ menu, onPick, onClose, ghostMode }) => {
 	const addNode = useWorkflowEditorStore(s => s.addNode);
 	const [query, setQuery] = React.useState('');
+	const [active, setActive] = React.useState(0);
+	const scrollRef = React.useRef<HTMLDivElement>(null);
 	// re-render when the registry gains nodes (runner loads)
 	React.useSyncExternalStore(subscribeNodeRegistry, getNodeRegistryVersion, getNodeRegistryVersion);
 
 	const groups = React.useMemo(buildMenuGroups, []);
 	const visible = React.useMemo(() => filterMenuGroups(groups, query), [groups, query]);
 
+	// ★ 键盘导航（对齐 ComfyUI NodeSearchBox + ConnectionDropMenu）：把跨分组
+	//   的节点扁平化，每个 item 带一个全局 flatIndex 供 ↑/↓/Enter 导航。
+	const { renderGroups, flat } = React.useMemo(() => {
+		let idx = 0;
+		const groups = visible.map(g => ({
+			...g,
+			items: g.items.map(item => ({ item, flatIndex: idx++ })),
+		}));
+		return { renderGroups: groups, flat: groups.flatMap(g => g.items) };
+	}, [visible]);
+
+	// 查询变化时把高亮重置到顶部（否则 active 越界停留在旧项）。
+	React.useEffect(() => { setActive(0); }, [query]);
+
+	// active 变化 → 滚动到可视区（键盘长列表导航必需）。
+	React.useEffect(() => {
+		const el = scrollRef.current?.querySelector<HTMLElement>(`[data-flat-index="${active}"]`);
+		el?.scrollIntoView({ block: 'nearest' });
+	}, [active]);
+
 	const top = Math.max(8, Math.min(menu.clientY, (window.innerHeight ?? 0) - MENU_MAX_H - 12));
 	const left = Math.max(8, Math.min(menu.clientX, (window.innerWidth ?? 0) - MENU_W - 12));
 
 	const pick = (type: string) => {
-		addNode(type, { x: menu.graphX, y: menu.graphY });
+		if (!ghostMode) {
+			addNode(type, { x: menu.graphX, y: menu.graphY });
+		}
 		onPick(type);
+	};
+
+	const pickFlat = (i: number) => {
+		const entry = flat[i];
+		if (entry) { pick(entry.item.type); }
 	};
 
 	return (
@@ -117,15 +152,33 @@ export const NodeContextMenu: React.FC<{
 				zIndex: 100, overflow: 'hidden',
 			}}
 			onContextMenu={(e) => e.preventDefault()}
+			// ★ 关键修复：右键点击会触发 Chromium 的 autoscroll 模式，但
+			//   `html, body, #root` 都是 `overflow:hidden`，主滚动容器不存在，
+			//   autoscroll 找不到目标后会**吞掉 wheel 事件**，导致菜单滚轮
+			//   滚动完全失效（"右键无法滚动"）。同时阻止右键 mousedown 默认
+			//   行为可以避免 wheel 在右键按下状态下被消费。
+			// 注意：只阻止右键 button=2 的默认行为，不影响左键/中键。
+			onMouseDown={(e) => { if (e.button === 2) { e.preventDefault(); } }}
 		>
 			{/* search */}
 			<div style={{ padding: 8, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
 				<input
-					autoFocus
+					// ★ 不再 autoFocus：input 获得焦点后，Chromium 会把 wheel 事件
+					//   派发给 input（type=text 时不做任何事但**会阻止 wheel 冒泡到
+					//   overflow:auto 父容器**），叠加右键 autoscroll 模式 → 菜单
+					//   滚动完全失效。改为打开时聚焦到菜单根容器，下方滚动容器显式
+					//   处理 wheel 事件 → 滚轮在右键状态下也能滚。
+					ref={(el) => { if (el) { el.focus({ preventScroll: true }); } }}
 					value={query}
 					onChange={(e) => setQuery(e.target.value)}
 					onKeyDown={(e) => {
-						if (e.key === 'Escape') { onClose(); }
+						// ★ 键盘导航：↑/↓ 移动高亮、Enter 确认、Esc 关闭（对齐
+						//   ComfyUI NodeSearchBox 与 ConnectionDropMenu 同款）。
+						if (e.key === 'Escape') { onClose(); return; }
+						const total = flat.length;
+						if (e.key === 'ArrowDown') { e.preventDefault(); setActive(i => Math.min(i + 1, total - 1)); return; }
+						if (e.key === 'ArrowUp') { e.preventDefault(); setActive(i => Math.max(i - 1, 0)); return; }
+						if (e.key === 'Enter') { e.preventDefault(); pickFlat(active); return; }
 					}}
 					placeholder="搜索节点 / Search nodes…"
 					style={{
@@ -136,13 +189,27 @@ export const NodeContextMenu: React.FC<{
 				/>
 			</div>
 			{/* groups */}
-			<div style={{ flex: 1, overflowY: 'auto', padding: '6px 8px 10px' }}>
+			<div
+				ref={scrollRef}
+				data-saros-scroll
+				tabIndex={-1}
+				style={{ flex: 1, overflowY: 'auto', padding: '6px 8px 10px' }}
+				// ★ 显式处理 wheel：嵌套 overflow:auto 容器在右键 autoscroll 模式
+				//   下可能被 Chromium 跳过 wheel 派发；这里强制 deltaY 累加到 scrollTop
+				//   → 滚轮在右键状态下也能滚动菜单。stopPropagation 阻止冒泡到祖先
+				//   节点（防止 LiteGraphCanvas 的 wheel panning 干扰）。
+				onWheel={(e) => {
+					const el = e.currentTarget;
+					el.scrollTop += e.deltaY;
+					e.stopPropagation();
+				}}
+			>
 				{visible.length === 0 && (
 					<div style={{ color: '#777', fontSize: 11, padding: '14px 6px', textAlign: 'center' }}>
 						没有匹配的节点
 					</div>
 				)}
-				{visible.map(g => (
+				{renderGroups.map(g => (
 					<div key={g.id} style={{ marginBottom: 10 }}>
 						<div style={{
 							fontSize: 10, fontWeight: 700, letterSpacing: '0.5px',
@@ -152,30 +219,36 @@ export const NodeContextMenu: React.FC<{
 						}}>
 							{g.label}
 						</div>
-						{g.items.map(it => (
-							<button
-								key={it.type}
-								onClick={() => pick(it.type)}
-								title={it.description}
-								style={{
-									display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-									textAlign: 'left', background: 'transparent', border: 'none',
-									borderRadius: 5, padding: '5px 8px', cursor: 'pointer',
-									color: '#e6e6e6',
-								}}
-								onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.08)'; }}
-								onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-							>
-								<span style={{ fontSize: 13, width: 18, textAlign: 'center', flexShrink: 0 }}>{it.icon}</span>
-								<span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{it.label}</span>
-								<span style={{
-									marginLeft: 'auto', fontSize: 10, color: '#8a8a8a',
-									whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150,
-								}}>
-									{it.type}
-								</span>
-							</button>
-						))}
+						{g.items.map(({ item: it, flatIndex }) => {
+							const isActive = flatIndex === active;
+							return (
+								<button
+									key={it.type}
+									data-flat-index={flatIndex}
+									onClick={() => pick(it.type)}
+									onMouseEnter={() => setActive(flatIndex)}
+									title={it.description}
+									style={{
+										display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+										textAlign: 'left', border: 'none',
+										borderRadius: 5, padding: '5px 8px', cursor: 'pointer',
+										color: '#e6e6e6',
+										// 键盘高亮 + 鼠标 hover 同一视觉（React 状态驱动，替代 DOM 手动改 style）。
+										background: isActive ? 'rgba(255,255,255,0.1)' : 'transparent',
+										outline: isActive ? '1px solid rgba(96,165,250,0.5)' : 'none',
+									}}
+								>
+									<span style={{ fontSize: 13, width: 18, textAlign: 'center', flexShrink: 0 }}>{it.icon}</span>
+									<span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{it.label}</span>
+									<span style={{
+										marginLeft: 'auto', fontSize: 10, color: '#8a8a8a',
+										whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150,
+									}}>
+										{it.type}
+									</span>
+								</button>
+							);
+						})}
 					</div>
 				))}
 			</div>

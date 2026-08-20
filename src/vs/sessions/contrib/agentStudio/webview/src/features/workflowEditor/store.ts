@@ -12,9 +12,13 @@
  *  node/edge model (position/data/style only — no ReactFlow types) that the
  *  LiteGraph canvas two-way syncs with the graph.
  *
- *  Node categories: Basic Nodes (prompt, agent, skill, tool, task),
- *  Control Flow (ifElse, switch, askUser),
- *  Layout (group).
+ *  Node categories: Basic Nodes (Saros.Prompt/Agent/Skill/Tool/Task),
+ *  Control Flow (Saros.IfElse/Switch/AskUser),
+ *  Layout (Saros.Group).
+ *
+ *  ★ P1：节点 type 统一为命名空间形态（`Saros.*`），与 registry.registerNodeSpec /
+ *  workflowRun.isXxxNodeType / canvasExport 同源。旧小写命名（'prompt'/'agent'/…）
+ *  仅在 loadWorkflow 与 addNode 入口经 normalizeNodeType 归一化迁移。
  *--------------------------------------------------------------------------------------------*/
 
 import { create } from 'zustand';
@@ -25,6 +29,7 @@ import type {
 	WorkflowGraphConnection,
 } from '../../types/workflowStorage';
 import type { WorkflowExecutionStatus, IWorkflowNodeExecutionState } from '../../types/workflowExecution';
+import { normalizeNodeType } from './nodeTypeAliases';
 
 // ─── Framework-agnostic node/edge model ────────────────────────────────────────
 
@@ -60,14 +65,14 @@ function uid(prefix: string): string {
 
 const DEFAULT_START: WorkflowEditorNode = {
 	id: 'start',
-	type: 'start',
+	type: 'Saros.Start',
 	position: { x: 80, y: 250 },
 	data: { label: 'Start' },
 };
 
 const DEFAULT_END: WorkflowEditorNode = {
 	id: 'end',
-	type: 'end',
+	type: 'Saros.End',
 	position: { x: 600, y: 250 },
 	data: { label: 'End' },
 };
@@ -83,39 +88,42 @@ export interface NodeTypeSelector {
 	icon: string;
 }
 
+// ★ P1：type 统一为命名空间形态（`Saros.*`，与 registry.registerNodeSpec 同源）。
+//   旧小写命名（'prompt'/'agent'/…）仅在 loadWorkflow 迁移旧持久化数据时归一化，
+//   见 nodeTypeAliases.ts。palette 从此只产出命名空间 type。
 export const nodeCategories: Array<{ category: NodeCategory; label: string; items: NodeTypeSelector[] }> = [
 	{
 		category: 'system',
 		label: 'System Nodes',
 		items: [
-			{ type: 'start',      label: 'Start',        description: 'Entry point of the workflow',          icon: '▶️' },
-			{ type: 'end',        label: 'End',          description: 'Exit point of the workflow',           icon: '⏹️' },
+			{ type: 'Saros.Start',   label: 'Start',        description: 'Entry point of the workflow',          icon: '▶️' },
+			{ type: 'Saros.End',     label: 'End',          description: 'Exit point of the workflow',           icon: '⏹️' },
 		],
 	},
 	{
 		category: 'basic',
 		label: 'Basic Nodes',
 		items: [
-			{ type: 'prompt',     label: 'Prompt',      description: 'Template with variable substitution',  icon: '💬' },
-			{ type: 'agent',      label: 'Agent',        description: 'Execute a specific agent',            icon: '🤖' },
-			{ type: 'skill',      label: 'Skill',        description: 'Execute a skill',                     icon: '⚡' },
-			{ type: 'tool',       label: 'Tool',         description: 'Execute a tool with parameters',      icon: '🔧' },
+			{ type: 'Saros.Prompt',  label: 'Prompt',      description: 'Template with variable substitution',  icon: '💬' },
+			{ type: 'Saros.Agent',   label: 'Agent',        description: 'Execute a specific agent',            icon: '🤖' },
+			{ type: 'Saros.Skill',   label: 'Skill',        description: 'Execute a skill',                     icon: '⚡' },
+			{ type: 'Saros.Tool',    label: 'Tool',         description: 'Execute a tool with parameters',      icon: '🔧' },
 		],
 	},
 	{
 		category: 'controlFlow',
 		label: 'Control Flow',
 		items: [
-			{ type: 'ifElse',     label: 'If/Else',      description: 'Binary conditional (True/False)',     icon: '↔️' },
-			{ type: 'switch',     label: 'Switch',        description: 'Multi-way branching (2-N cases)',     icon: '🔀' },
-			{ type: 'askUser',    label: 'Ask User',      description: 'Branch based on user selection',     icon: '❓' },
+			{ type: 'Saros.IfElse',  label: 'If/Else',      description: 'Binary conditional (True/False)',     icon: '↔️' },
+			{ type: 'Saros.Switch',  label: 'Switch',        description: 'Multi-way branching (2-N cases)',     icon: '🔀' },
+			{ type: 'Saros.AskUser', label: 'Ask User',      description: 'Branch based on user selection',     icon: '❓' },
 		],
 	},
 	{
 		category: 'layout',
 		label: 'Layout',
 		items: [
-			{ type: 'group',      label: 'Group',         description: 'Visual grouping container',          icon: '▦' },
+			{ type: 'Saros.Group',   label: 'Group',         description: 'Visual grouping container',          icon: '▦' },
 		],
 	},
 ];
@@ -200,21 +208,23 @@ interface WorkflowEditorState {
 
 // ─── Default data factories per node type ───────────────────────────────────
 
-function defaultDataForType(type: string): Record<string, unknown> {
+function defaultDataForType(rawType: string): Record<string, unknown> {
 	const base: Record<string, unknown> = { label: '' };
+	// 入口归一化：小写旧写法与命名空间写法都能拿到正确的默认 data
+	const type = normalizeNodeType(rawType);
 
 	switch (type) {
-		case 'prompt':
+		case 'Saros.Prompt':
 			return { ...base, label: '提示', prompt: '', variables: {} };
-		case 'agent':
+		case 'Saros.Agent':
 			return { ...base, label: 'Agent', agentId: '', agentConfig: { providerId: '', modelId: '' }, prompt: '{{input}}' };
-		case 'skill':
+		case 'Saros.Skill':
 			return { ...base, label: 'Skill', skillName: '', skillArgs: {} };
-		case 'tool':
+		case 'Saros.Tool':
 			return { ...base, label: 'Tool', toolName: '', toolParams: {} };
-		case 'task':
+		case 'Saros.Task':
 			return { ...base, label: '任务', executorId: '', taskId: '' };
-		case 'ifElse':
+		case 'Saros.IfElse':
 			return {
 				...base, label: 'If/Else', evaluationTarget: '',
 				branches: [
@@ -222,7 +232,7 @@ function defaultDataForType(type: string): Record<string, unknown> {
 					{ id: uid('branch'), label: 'False', condition: '' },
 				],
 			};
-		case 'switch':
+		case 'Saros.Switch':
 			return {
 				...base, label: 'Switch', evaluationTarget: '',
 				branches: [
@@ -231,19 +241,11 @@ function defaultDataForType(type: string): Record<string, unknown> {
 					{ id: uid('branch'), label: 'Default', condition: '' },
 				],
 			};
-		case 'condition':
-			return {
-				...base, label: 'Condition', condition: '',
-				branches: [
-					{ id: uid('branch'), label: 'True', condition: '' },
-					{ id: uid('branch'), label: 'False', condition: '' },
-				],
-			};
-		case 'loop':
+		case 'Saros.Loop':
 			return { ...base, label: 'Loop', loopConfig: { items: '', itemVariable: 'item', maxIterations: 10 } };
-		case 'parallel':
+		case 'Saros.Parallel':
 			return { ...base, label: 'Parallel', parallelSteps: [] };
-		case 'askUser':
+		case 'Saros.AskUser':
 			return {
 				...base, label: 'Ask User', questionText: 'Select an option',
 				options: [
@@ -252,7 +254,7 @@ function defaultDataForType(type: string): Record<string, unknown> {
 				],
 				multiSelect: false, useAiSuggestions: false,
 			};
-		case 'group':
+		case 'Saros.Group':
 			return { ...base, label: 'Group', isCollapsed: false };
 		default:
 			// Namespaced types (ComfyTV.ImageStage / Saros.ModelImageGen) must
@@ -295,12 +297,15 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 				set({ selectedNodeId: id, isPropertyPanelOpen: id !== null });
 			},
 
-			addNode: (type, position) => {
+			addNode: (rawType, position) => {
+				// ★ P1：入口归一化 —— 外部调用方（LiteGraphCanvas 拖拽、ConnectionDropMenu、
+				//   spawnPickerForStage 等）可能仍传小写旧 type，统一转命名空间形态。
+				const type = normalizeNodeType(rawType);
 				const id = uid(type);
 				const data = defaultDataForType(type);
 
 				// Inherit default agent config from the workflow's bound agent
-				if (type === 'agent') {
+				if (type === 'Saros.Agent') {
 					const defCfg = get().defaultAgentConfig;
 					if (defCfg.agentId) {
 						data.agentId = defCfg.agentId;
@@ -314,8 +319,8 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 				}
 
 				// Group nodes need a default size
-				const style = type === 'group' ? { width: 400, height: 300 } : undefined;
-				const zIndex = type === 'group' ? -1001 : undefined;
+				const style = type === 'Saros.Group' ? { width: 400, height: 300 } : undefined;
+				const zIndex = type === 'Saros.Group' ? -1001 : undefined;
 
 				const newNode: WorkflowEditorNode = { id, type, position, data, ...(style ? { style } : {}), ...(zIndex !== undefined ? { zIndex } : {}) };
 				set({
@@ -410,8 +415,8 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 				const { nodes, edges } = get();
 				const issues: WorkflowValidationIssue[] = [];
 
-				const hasStart = nodes.some(n => n.type === 'start');
-				const hasEnd = nodes.some(n => n.type === 'end');
+				const hasStart = nodes.some(n => n.type === 'Saros.Start');
+				const hasEnd = nodes.some(n => n.type === 'Saros.End');
 				if (!hasStart) { issues.push({ level: 'error', message: 'Workflow is missing a Start node.' }); }
 				if (!hasEnd) { issues.push({ level: 'error', message: 'Workflow is missing an End node.' }); }
 
@@ -426,12 +431,12 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 					const inCount = incoming.get(n.id) ?? 0;
 					const outCount = outgoing.get(n.id) ?? 0;
 					// Group nodes don't need connections
-					if (n.type === 'group') { continue; }
-					if (n.type === 'start') {
+					if (n.type === 'Saros.Group') { continue; }
+					if (n.type === 'Saros.Start') {
 						if (outCount === 0) { issues.push({ level: 'warning', nodeId: n.id, message: 'Start node has no outgoing connection.' }); }
 						continue;
 					}
-					if (n.type === 'end') {
+					if (n.type === 'Saros.End') {
 						if (inCount === 0) { issues.push({ level: 'warning', nodeId: n.id, message: 'End node has no incoming connection.' }); }
 						continue;
 					}
@@ -494,7 +499,9 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 					for (const gn of wf.nodes) {
 						nodes.push({
 							id: gn.id,
-							type: gn.type,
+							// ★ P1 迁移：旧持久化数据里的小写 type（'prompt'/'agent'/…）
+							//   归一化为命名空间形态，与 registry/workflowRun/canvasExport 对齐。
+							type: normalizeNodeType(gn.type),
 							position: gn.position,
 							data: {
 								...gn.data,
@@ -516,7 +523,8 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 							const stepId = step.id || uid('task');
 							nodes.push({
 								id: stepId,
-								type: step.type,
+								// steps 是旧格式（type 为小写），归一化后入 store
+								type: normalizeNodeType(step.type),
 								position: { x: 250 + i * 180, y: 250 },
 								data: {
 									label: step.name,

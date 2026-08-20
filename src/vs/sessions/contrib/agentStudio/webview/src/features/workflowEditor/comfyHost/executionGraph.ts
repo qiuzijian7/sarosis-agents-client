@@ -17,6 +17,10 @@ export interface ExecutionNodeLike {
 export interface ExecutionEdgeLike {
 	source: string;
 	target: string;
+	/** W2 端口感知路由：出边端口名（store 持久化 sourceHandle；缺省=always-active 兼容存量图） */
+	sourceHandle?: string;
+	/** W2 端口感知路由：入边端口名（当前路由判定只消费 sourceHandle，保留透传） */
+	targetHandle?: string;
 }
 
 export interface ExecutionOrder {
@@ -110,6 +114,56 @@ export function buildExecutionPlan(
 		}
 	}
 	return { steps, hasCycle, skipped };
+}
+
+// ─── W2: port-aware branch routing (n8n/Rivet style) ─────────────────────────
+//
+// 语义（对照设计文档 doc/workflow-hybrid-controlflow-analysis.md §3 W2）：
+//   * gate 节点（Saros.IfElse 双输出 true/false）执行后给出 branch 结果；
+//   * 出边带 sourceHandle 时，仅 handle === branch 的边"点火"；
+//   * 无 sourceHandle 的边 = always-active（存量图零迁移，行为不变）；
+//   * 非_gate_ 源节点的边 = always-active（数据流边不受路由影响）；
+//   * 节点 active 判定 = 存在至少一条「active 且 source 未被 skip」的入边；
+//     无入边节点恒 active。skip 沿拓扑序单遍传播。
+// 纯函数、DOM-free → 可单测。
+
+/**
+ * 单条边在当前 gate 路由状态下是否激活。
+ * @param branchOf gate 节点 id → 已判定的分支名（'true'/'false'/case 名）
+ * @param gateNodeIds 已知 gate 节点集合（仅对 gate 源消费 branch）
+ */
+export function isEdgeActive(
+	edge: ExecutionEdgeLike,
+	branchOf: ReadonlyMap<string, string>,
+	gateNodeIds: ReadonlySet<string>,
+): boolean {
+	if (!gateNodeIds.has(edge.source)) { return true; }
+	const branch = branchOf.get(edge.source);
+	if (branch === undefined) { return true; } // gate 尚未执行 → 视为 active（顺序到达时已执行）
+	if (edge.sourceHandle === undefined || edge.sourceHandle === '') { return true; } // 兼容存量
+	return edge.sourceHandle === branch;
+}
+
+/**
+ * 计算给定路由状态下的节点激活表（skip 传播）。
+ * 返回 inactive 节点集合 = 应被跳过的节点（含传导下游）。
+ * 仅传播，不执行；调用方（调度器）在每步执行前查询。
+ */
+export function computeInactiveNodes(
+	nodes: ExecutionNodeLike[],
+	edges: ExecutionEdgeLike[],
+	branchOf: ReadonlyMap<string, string>,
+	gateNodeIds: ReadonlySet<string>,
+): Set<string> {
+	const order = computeExecutionOrder(nodes, edges).order;
+	const inactive = new Set<string>();
+	for (const id of order) {
+		const inbound = edges.filter(e => e.target === id);
+		if (inbound.length === 0) { continue; } // 无入边 → 恒 active
+		const hasActive = inbound.some(e => isEdgeActive(e, branchOf, gateNodeIds) && !inactive.has(e.source));
+		if (!hasActive) { inactive.add(id); }
+	}
+	return inactive;
 }
 
 // ─── Parallel execution plan (docs/Agent-画布编排设计方案.md P1) ─────────────

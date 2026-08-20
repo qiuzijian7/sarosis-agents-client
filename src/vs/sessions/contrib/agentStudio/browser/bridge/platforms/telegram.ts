@@ -15,6 +15,7 @@ import {
 	IBridgePlatform,
 	InboundMessage,
 	InboundAttachment,
+	OutboundType,
 } from "../../../common/bridge/bridgeTypes.js";
 
 const TG_BASE = "https://api.telegram.org/bot";
@@ -219,7 +220,7 @@ export class TelegramPlatform implements IBridgePlatform {
 
 	// ─── 出站 ───────────────────────────────────────────────────────
 
-	async send(ctx: BridgeReplyCtx, content: string): Promise<void> {
+	async send(ctx: BridgeReplyCtx, content: string, _type?: OutboundType): Promise<void> {
 		const rc = ctx.replyCtx as TelegramReplyCtx | undefined;
 		if (rc?.chatId == null) {
 			throw new Error("[Telegram] send 缺少 chat_id");
@@ -227,7 +228,7 @@ export class TelegramPlatform implements IBridgePlatform {
 		await this._sendMessage(rc.chatId, content);
 	}
 
-	async reply(ctx: BridgeReplyCtx, content: string): Promise<void> {
+	async reply(ctx: BridgeReplyCtx, content: string, _type?: OutboundType): Promise<void> {
 		const rc = ctx.replyCtx as TelegramReplyCtx | undefined;
 		if (rc?.chatId == null) {
 			throw new Error("[Telegram] reply 缺少 chat_id");

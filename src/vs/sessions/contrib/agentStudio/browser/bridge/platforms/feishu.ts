@@ -14,6 +14,7 @@ import {
 	BridgeReplyCtx,
 	IBridgePlatform,
 	InboundMessage,
+	OutboundType,
 } from "../../../common/bridge/bridgeTypes.js";
 
 const FEISHU_BASE = "https://open.feishu.cn/open-apis";
@@ -168,7 +169,7 @@ export class FeishuPlatform implements IBridgePlatform {
 
 	// ─── 出站 ────────────────────────────────────────────────────────
 
-	async send(ctx: BridgeReplyCtx, content: string): Promise<void> {
+	async send(ctx: BridgeReplyCtx, content: string, _type?: OutboundType): Promise<void> {
 		const rc = ctx.replyCtx as FeishuReplyCtx | undefined;
 		const chatId = rc?.chatId;
 		if (!chatId) {
@@ -177,7 +178,7 @@ export class FeishuPlatform implements IBridgePlatform {
 		await this._postMessage("chat_id", chatId, "text", JSON.stringify({ text: content }));
 	}
 
-	async reply(ctx: BridgeReplyCtx, content: string): Promise<void> {
+	async reply(ctx: BridgeReplyCtx, content: string, _type?: OutboundType): Promise<void> {
 		const rc = ctx.replyCtx as FeishuReplyCtx | undefined;
 		const messageId = rc?.messageId;
 		if (!messageId) {

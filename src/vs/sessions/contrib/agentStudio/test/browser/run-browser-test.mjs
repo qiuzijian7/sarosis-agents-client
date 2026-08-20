@@ -68,6 +68,17 @@ await esbuild.build({
 });
 
 const mocha = new Mocha({ ui: 'tdd', timeout: 10000 });
+// 浏览器侧模块（nodeExecutor/comfyRunner/nodeCard/stageWorkflowExecutor 等）在
+// import 时读取 globalThis.__vssarosBridge（webview IIFE 副作用挂载）。node 测试
+// 环境无该副作用 → 注入 no-op stub（fetch 相关用例自带 fetchLike，不会走到）。
+(globalThis).__vssarosBridge = {
+	// node 测试无真实 ComfyUI：图片物化 fetch 返回 404（走 materializeComfyImageRefs
+	// 的容错路径——保留原 ref 不物化），保证 runSingleNode 等执行链可测。
+	createComfyFetch: () => async () => new Response('', { status: 404 }),
+	createProxiedFetch: () => async () => new Response('', { status: 404 }),
+	getComfyCorsMode: () => 'unknown',
+	...(globalThis).__vssarosBridge,
+};
 mocha.addFile(out);
 mocha.run((failures) => {
 	process.exit(failures ? 1 : 0);

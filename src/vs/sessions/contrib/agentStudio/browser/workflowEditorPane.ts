@@ -18,13 +18,9 @@ import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { WorkflowEditorInput } from './workflowEditorInput.js';
 import { AgentStudioWebviewController } from './agentStudioWebviewController.js';
 import { IWorkflowStorageService } from '../common/workflowStorage.js';
-import { WorkflowToolbar } from './workflowToolbar.js';
 import { WorkflowVersionPanel } from './workflowVersionPanel.js';
-import { IWorkflowVersionService } from '../common/workflowVersionTypes.js';
-import { IMarketplaceService } from '../common/marketplace.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { ITofAuthService } from '../common/tofAuth.js';
 
 /**
  * WorkflowEditorPane — WebView-based workflow editor using ReactFlow.
@@ -41,7 +37,7 @@ export class WorkflowEditorPane extends EditorPane {
 	private _container: HTMLElement | undefined;
 	private _webviewController: AgentStudioWebviewController | undefined;
 	private _currentWorkflowId: string | undefined;
-	private _toolbar: WorkflowToolbar | undefined;
+	/** v2 单行工具栏：webviewController 的宿主侧动作订阅（版本历史 / 删除） */
 	private _toolbarDisposables = new DisposableStore();
 	private _versionPanel: WorkflowVersionPanel | undefined;
 
@@ -52,11 +48,8 @@ export class WorkflowEditorPane extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
-		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IEditorService private readonly editorService: IEditorService,
-		@ITofAuthService private readonly tofAuthService: ITofAuthService,
-		@IWorkflowVersionService private readonly workflowVersionService: IWorkflowVersionService,
 	) {
 		super(WorkflowEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -130,39 +123,10 @@ export class WorkflowEditorPane extends EditorPane {
 			// Fall back to the input's snapshot
 		}
 
-		// ── 创建工具栏（版本号 + 删除 + 上传 + 升级按钮） ──
-		// 旧的工具栏会在 _disposeWebview() 中被清理
-		this._toolbar = new WorkflowToolbar(
-			this._container!,
-			workflowData,
-			this.marketplaceService,
-			this.notificationService,
-			this.workflowStorageService,
-			this.tofAuthService,
-			this.workflowVersionService,
-		);
-		this._toolbar.render();
-		// 删除后关闭编辑器标签页（订阅归入 _toolbarDisposables，每次 setInput 重建时先清理旧的）
-		this._toolbarDisposables.add(this._toolbar.onDidRequestDelete(async (wf) => {
-			try {
-				await this.workflowStorageService.deleteWorkflow(wf.id);
-				this.notificationService.info(`已删除工作流 "${wf.name}"`);
-			} catch (err) {
-				this.notificationService.error(
-					`删除工作流失败: ${err instanceof Error ? err.message : String(err)}`
-				);
-				return;
-			}
-			if (this.input) {
-				this.editorService.closeEditor({ editor: this.input, groupId: this.group.id });
-			}
-		}));
-		// 版本历史面板切换
-		this._toolbarDisposables.add(this._toolbar.onDidRequestVersionHistory(() => {
-			this._versionPanel?.toggle();
-		}));
-
 		// ── 横向分割布局：webview（左）+ 版本面板（右）──
+		// v2 单行工具栏：原生 WorkflowToolbar 顶栏已移除——发布状态/上传/升级/
+		// 版本历史/删除全部并入 webview 内的单行工具栏（经 RPC 触发，见
+		// agentStudioWebviewController 的 workflow.publishState/publish/versionHistory/deleteWorkflow）。
 		const splitContainer = DOM.$('div.workflow-split');
 		splitContainer.style.display = 'flex';
 		splitContainer.style.flex = '1';
@@ -192,6 +156,25 @@ export class WorkflowEditorPane extends EditorPane {
 			// Pass the workflow data as initialData — injected as __AGENT_STUDIO_INITIAL_DATA__
 			{ type: 'workflow', workflow: workflowData },
 		);
+		// v2 单行工具栏：webview 内「发布 ▾」菜单的宿主侧动作（原 WorkflowToolbar 订阅迁移）
+		this._toolbarDisposables.add(this._webviewController.onDidRequestWorkflowVersionHistory(() => {
+			this._versionPanel?.toggle();
+		}));
+		this._toolbarDisposables.add(this._webviewController.onDidRequestWorkflowDeleteWorkflow(async ({ workflowId }) => {
+			try {
+				const wf = await this.workflowStorageService.getWorkflow(workflowId);
+				await this.workflowStorageService.deleteWorkflow(workflowId);
+				this.notificationService.info(`已删除工作流 "${wf?.name ?? workflowId}"`);
+			} catch (err) {
+				this.notificationService.error(
+					`删除工作流失败: ${err instanceof Error ? err.message : String(err)}`
+				);
+				return;
+			}
+			if (this.input) {
+				this.editorService.closeEditor({ editor: this.input, groupId: this.group.id });
+			}
+		}));
 	}
 
 	override layout(dimension: DOM.Dimension): void {
@@ -219,10 +202,6 @@ export class WorkflowEditorPane extends EditorPane {
 	}
 
 	private _disposeWebview(): void {
-		if (this._toolbar) {
-			this._toolbar.dispose();
-			this._toolbar = undefined;
-		}
 		this._toolbarDisposables.clear();
 		this._disposeVersionPanel();
 		if (this._webviewController) {

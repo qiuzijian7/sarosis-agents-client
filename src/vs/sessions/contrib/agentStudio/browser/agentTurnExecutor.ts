@@ -6,14 +6,14 @@
 	ISandboxViolationInfo,
 } from '../common/providers.js';
 import { withStreamTimeout, computeAdaptiveFirstTokenTimeout } from '../common/resilience.js';
-import { buildBuildSwitchReminder } from '../common/chatModeConfig.js';
+import { buildBuildSwitchReminder, buildPlanSystemReminder } from '../common/chatModeConfig.js';
 import { isToolCallDeniedByHardPermission } from '../common/toolPermission.js';
 import { generatePlanPath, isPlanFilePath } from '../common/planFile.js';
 import {
 	createInitialWorkState,
 	parsePlanDocument,
-	planExitRequiresApproval,
 	reduceWorkState,
+	resolveRequestWorkMode,
 	type ParsedPlanTask,
 } from '../common/workMode.js';
 import {
@@ -407,7 +407,10 @@ interface ITurnContext {
 				`timeout(budget)=${request.softDeadlineMs ? Math.round(request.softDeadlineMs / 1000) + 's' : 'none'}`,
 			);
 		}
-		let workState = createInitialWorkState(request.workMode);
+		// 统一推导入口（resolveRequestWorkMode）：显式 workMode 优先（跨 turn 由
+	// agentDriverService 按 session 恢复），缺失时按 chatMode==='plan' fallback。
+	// 与 agentOSService._resolveHardPermission 共用 —— 权限层与状态机永不分裂。
+	let workState = createInitialWorkState(resolveRequestWorkMode(request.chatMode, request.workMode));
 
 		// Plan state is mirrored into AgentRunState for checkpoint compatibility.
 		let planFilePath: string | undefined = workState.planFilePath;
@@ -790,14 +793,25 @@ interface ITurnContext {
 		//     ≥ HARD_PRUNE_REARM_TOKENS，杜绝逐轮头部滑动。
 		let hardPrunePending = false;
 		{
-			// 先剥离 synthetic sidecar（技能/策略/控制流临时注入），避免其占用硬上限名额
-			// 或污染持久化 transcript（对齐 Hermes api_content / MiMo synthetic:true）。
-			messages = stripSyntheticSidecars(messages);
+			// ⚠ 发送副本纪律（2026-08-19 架构修正，对齐 Hermes
+			// agent_runtime_helpers.py:1372「Runs on the per-call api_messages copy only.
+			// The stored conversation history is never mutated」）：
+			// synthetic sidecar 的剥离**只用于计数**，绝不回写权威 messages。
+			//
+			// 此前这里写的是 `messages = stripSyntheticSidecars(messages)`，回写把
+			// 控制流分支（reflect / plan-queue / TaskGate nudge）刚 append 到末尾的
+			// synthetic user 边界在下一轮开头删除，导致 messages 以 assistant 结尾
+			// → IOA 网关 400 code 11133 invalid_parameter_value（param 为空）。
+			//
+			// 真正的剥离统一由发送线收口层完成（common/adapters/wireMessagePipeline.ts
+			// buildWireMessages，接入 MessageFormatConverter 三入口，覆盖全部 provider），
+			// 那里同时保护尾部 sidecar 并保证 user/tool 结尾。
+			const effectiveMessageCount = stripSyntheticSidecars(messages).length;
 			const HARD_MAX_MESSAGES = 60;
-			if (messages.length > HARD_MAX_MESSAGES) {
+			if (effectiveMessageCount > HARD_MAX_MESSAGES) {
 				hardPrunePending = true;
 				host._logService.info(
-					`[AgentOS][HardPrune] pending: messages=${messages.length} > cap=${HARD_MAX_MESSAGES} — deferring to compression (cache prefix preserved this turn)`
+					`[AgentOS][HardPrune] pending: messages=${effectiveMessageCount} (excl. synthetic sidecars; raw=${messages.length}) > cap=${HARD_MAX_MESSAGES} — deferring to compression (cache prefix preserved this turn)`
 				);
 			}
 		}
@@ -1146,24 +1160,26 @@ interface ITurnContext {
 			// P1: enforce that plan_explore only runs in plan workMode.
 			// If the LLM calls plan_explore without plan_enter, auto-enter.
 			if (workState.mode !== 'plan') {
-					host._logService.info(`[AgentOS] plan_explore auto-entering plan workMode (enforcement)`);
-					workState = reduceWorkState(workState, { type: 'ENTER_PLAN' });
-					runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'ENTER_PLAN' } });
-					yield { type: 'work_mode_changed', workMode: 'plan' };
-					// Generate plan file path if not set
-					if (!planFilePath) {
-						const sarosRoot = host._getSarosRoot?.() ?? '';
-						const allUserMsgs = (request.messages || []).filter((m: any) => m.role === 'user');
-						const lastUserMsg = allUserMsgs[allUserMsgs.length - 1];
-						const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : '';
-						planFilePath = generatePlanPath(sarosRoot, userText);
-						workState = reduceWorkState(workState, { type: 'SET_PLAN_FILE', planFilePath });
-						runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'SET_PLAN_FILE', planFilePath } });
-						try {
-							await host._writePlanFile(planFilePath, `# Plan\n*Auto-created by plan_explore enforcement*\n\n## Goal\n\n\n## Tasks\n\n`);
-						} catch { /* best-effort */ }
-					}
+				host._logService.info(`[AgentOS] plan_explore auto-entering plan workMode (enforcement)`);
+				workState = reduceWorkState(workState, { type: 'ENTER_PLAN' });
+				runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'ENTER_PLAN' } });
+				yield { type: 'work_mode_changed', workMode: 'plan' };
+				// Generate plan file path if not set
+				if (!planFilePath) {
+					const sarosRoot = host._getSarosRoot?.() ?? '';
+					const allUserMsgs = (request.messages || []).filter((m: any) => m.role === 'user');
+					const lastUserMsg = allUserMsgs[allUserMsgs.length - 1];
+					const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : '';
+					planFilePath = generatePlanPath(sarosRoot, userText);
+					workState = reduceWorkState(workState, { type: 'SET_PLAN_FILE', planFilePath });
+					runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'SET_PLAN_FILE', planFilePath } });
+					try {
+						await host._writePlanFile(planFilePath, `# Plan\n*Auto-created by plan_explore enforcement*\n\n## Goal\n\n\n## Tasks\n\n`);
+					} catch { /* best-effort */ }
 				}
+				// 阶段卡：auto-enter 完成（P1 done，P2 探索进行中）+ 计划文件路径
+				yield { type: 'work_mode_changed', workMode: 'plan', planPhase: { currentStep: 1, planFilePath } };
+			}
 			host._logService.info(`[AgentOS] plan_explore called — parallel exploration launched`);
 
 				// Extract subagent data from tool result for chat panel SubAgentCards
@@ -1183,6 +1199,8 @@ interface ITurnContext {
 						}
 					} catch { /* parse failure — subagent data not available */ }
 						}
+					// 阶段卡：探索结果已返回（P2 并行探索 done，P3 方案设计 current）
+					yield { type: 'work_mode_changed', workMode: 'plan', planPhase: { currentStep: 2 } };
 		}
 
 		// ─── plan_enter: enter the internal read-only WorkMode ─────────────
@@ -1202,6 +1220,9 @@ interface ITurnContext {
 			planFilePath = generatePlanPath(sarosRoot, userText);
 			workState = reduceWorkState(workState, { type: 'SET_PLAN_FILE', planFilePath });
 			runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'SET_PLAN_FILE', planFilePath } });
+
+			// 阶段卡：plan_enter 完成（P1 理解需求 done，P2 并行探索 current）+ 计划文件路径
+			yield { type: 'work_mode_changed', workMode: 'plan', planPhase: { currentStep: 1, planFilePath } };
 
 			try {
 				const initialContent = `# Plan: ${(userText || 'Untitled').slice(0, 80)}\n\n` +
@@ -1265,7 +1286,13 @@ interface ITurnContext {
 				return undefined;
 			}
 
-			const shouldAskUser = planExitRequiresApproval();
+			// 2026-08 决策：plan_exit 默认直通执行（审批走 orchestration 的 plan-approval
+			// 确认卡片，不随 ChatMode 开关）。原 planExitRequiresApproval() 恒 false 已删
+			// （workMode.ts 有恢复指引）；下方 REQUEST_APPROVAL 分支结构完整保留，
+			// 如需恢复「退出前弹用户审批」改为 true 即可。
+			const shouldAskUser: boolean = false;
+			// 阶段卡：计划文件解析出有效 tasks（P4 撰写计划 done，P5 提交执行 current）
+			yield { type: 'work_mode_changed', workMode: 'plan', planPhase: { currentStep: 4 } };
 			host._logService.info(`[AgentOS] plan_exit — approval=${shouldAskUser}, tasks=${executableTasks.length}`);
 			let approved = !shouldAskUser;
 			if (shouldAskUser) {
@@ -1321,7 +1348,8 @@ interface ITurnContext {
 				type: 'WORK_EVENT',
 				event: shouldAskUser ? { type: 'APPROVE_PLAN' } : { type: 'START_DISPATCH' },
 			});
-			yield { type: 'work_mode_changed', workMode: 'work' };
+			// 阶段卡：批准/直通 → 规划全流程完成（P5 done，阶段卡定格完成态）
+			yield { type: 'work_mode_changed', workMode: 'work', planPhase: { completedAt: Date.now() } };
 			messages = appendMessages(messages, { role: 'system', content: buildBuildSwitchReminder(planFilePath) });
 			messages = appendMessages(messages, {
 				role: 'tool',
@@ -1829,7 +1857,20 @@ interface ITurnContext {
 						`abortSignal=${host._loopAbortController?.signal?.aborted ? 'ABORTED' : 'active'}`
 					);
 				}
-				const rawStream = modelProvider.chat(selection.modelId, messages, modelOptions, context);
+				// ─── Plan 阶段 per-iteration reminder（P0 2026-08-18 接线）──────────
+			// buildPlanSystemReminder（5 阶段规划工作流指引）此前生产代码零调用——
+			// plan 阶段无任何工作流指引注入，只有 plan_exit 后的 buildBuildSwitchReminder
+			// 还活着。现按其设计意图（chatModeConfig 注释：per-iteration injection）
+			// 每轮 LLM 调用前注入到**发送副本**：
+			//   - 不写入 messages 本体 → 长循环不堆积重复 reminder（压缩/checkpoint 亦不受污染）
+			//   - 末尾追加 system 消息（与 buildBuildSwitchReminder 同 role），不破坏
+			//     system 前缀缓存（fork 指纹基于首条 system + tools，不受末尾消息影响）
+			// 仅主代理注入：plan 子代理（explore）继承的是只读权限天花板，
+			// 不应收到「写计划文件 + plan_exit」的 5 阶段指令。
+			const messagesForLlm = (workState.mode === 'plan' && !request.subAgent)
+				? appendMessages(messages, { role: 'system', content: buildPlanSystemReminder(planFilePath) })
+				: messages;
+			const rawStream = modelProvider.chat(selection.modelId, messagesForLlm, modelOptions, context);
 				// 流式 idle 超时：模型静默挂起（无 delta 心跳超过阈值）时抛 TimeoutError，
 				// 由下方 catch 重新抛出并触发 _executeWithFallback 的备用模型切换（对齐 LangGraph TimeoutPolicy）。
 				// ─── 自适应首 token 超时（方案 B）────────────────────────────

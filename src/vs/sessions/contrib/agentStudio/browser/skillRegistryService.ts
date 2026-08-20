@@ -197,6 +197,8 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	private readonly _readyPromise: Promise<void>;
 	/** In-flight reload promise — coalesces concurrent reload() calls (single-flight). */
 	private _reloadPromise: Promise<void> | undefined;
+	/** In-flight workflow-skill refresh promise — coalesces concurrent auto-save triggers (single-flight). */
+	private _workflowReloadPromise: Promise<void> | undefined;
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -212,11 +214,13 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		// 参考 Hermes-Agent 模式：技能从 skills/ 目录文件异步加载，不再同步硬编码
 		// 立即填充已移除 — UI 将在异步扫描完成后可显示
 		this.logService.info(`[SkillRegistry] no sync skills - will load async`);
-		// workflow → skill 双向打通（A 向）：工作流变更时重扫 workflow 来源 skill。
-		// 注意：这会触发一次全量 reload（含磁盘 skill 重扫），工作流数量通常有限，
-		// 可接受；后续如需优化可改为增量更新。
+		// workflow → skill 双向打通（A 向）：工作流变更时**增量**刷新 workflow 来源 skill。
+		// ★ 性能根因修复：此前这里直接 reload() —— 每次 workflow.save（auto-save 高频）
+		//   都全量递归扫描 139 个内置 skill + 13 个用户 skill 的磁盘文件。执行 ComfyUI
+		//   生成期间反复触发，磁盘 IO + 事件循环抢占，是「整个电脑卡」的性能根因之一。
+		//   workflow 变更只影响 source==='workflow' 的 skill，增量刷新即可。
 		this._register(this.workflowStorageService.onDidChangeWorkflows(() => {
-			this.reload().catch(err => this.logService.warn('[SkillRegistry] reload after workflow change failed', err));
+			this.reloadWorkflowSkills().catch(err => this.logService.warn('[SkillRegistry] workflow skill refresh failed', err));
 		}));
 
 		// 异步扫描磁盘 skill —— 失败不影响内置 skill 可用性。
@@ -339,8 +343,8 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	}
 
 	async reload(): Promise<void> {
-		// 单飞：若已有 reload 在途（初始加载 / workflow 变更 / runtime skill 注册释放
-		// 可能并发触发），直接复用同一 Promise，避免交错扫描导致同目录被扫多次。
+		// 单飞：若已有 reload 在途（初始加载 / runtime skill 注册释放可能并发触发），
+		// 直接复用同一 Promise，避免交错扫描导致同目录被扫多次。
 		if (this._reloadPromise) {
 			return this._reloadPromise;
 		}
@@ -348,6 +352,46 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			this._reloadPromise = undefined;
 		});
 		return this._reloadPromise;
+	}
+
+	/**
+	 * 增量刷新 workflow 来源 skill（workflow 创建/更新/删除时调用）。
+	 *
+	 * 与 reload() 的区别：**不重扫磁盘 builtin/user skill**（139 + 13 个文件的
+	 * 递归 stat/read），只移除旧的 `source==='workflow'` skill 并重新加载最新
+	 * workflow。auto-save 高频触发下，磁盘扫描是主要性能开销。
+	 *
+	 * 单飞：auto-save 可能连续触发多次，复用同一 Promise。
+	 * 与 reload() 并发的交错是安全的（workflow skill id 唯一 = workflow.id，
+	 * `_setSkillWithPriority` 幂等），最终一致。
+	 */
+	async reloadWorkflowSkills(): Promise<void> {
+		if (this._workflowReloadPromise) {
+			return this._workflowReloadPromise;
+		}
+		this._workflowReloadPromise = this._doReloadWorkflowSkills().finally(() => {
+			this._workflowReloadPromise = undefined;
+		});
+		return this._workflowReloadPromise;
+	}
+
+	private async _doReloadWorkflowSkills(): Promise<void> {
+		// 1. 移除旧 workflow 来源 skill（含「includeWorkflows 开关 true→false」场景）
+		for (const [id, skill] of this._skills) {
+			if (skill.source === 'workflow') {
+				this._skills.delete(id);
+			}
+		}
+		// 2. 重新加载最新 workflow skills（内部 listWorkflows + _setSkillWithPriority）
+		await this._loadWorkflowSkills();
+		// 3. runtime skill 永远胜出（可能覆盖同 id 的 workflow skill）
+		for (const [id, skill] of this._runtimeSkills) {
+			this._skills.set(id, skill);
+		}
+		this.logService.info(`[SkillRegistry] workflow skills refreshed: total ${this._skills.size} skills`);
+		this._onDidChangeSkills.fire();
+		// 注意：不 fire batch Synced —— workflow skill 不参与 user skill 镜像同步
+		// （_fireBatchSyncedEvent 只收集 source==='user'|'marketplace'）。
 	}
 
 	private async _doReload(): Promise<void> {
@@ -554,6 +598,14 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			this.logService.warn(`[SkillRegistry] _scanFolderRecursive: max depth reached at ${dir.toString()}`);
 			return 0;
 		}
+
+		// ★★ 目录级 INFO 进度日志（诊断磁盘 IO hang 用）：每进入一个目录打一行。
+		//   日志实证（vscode-app-1787159667152.log）：`reload() called` 后
+		//   `after builtin scan` 从未出现 —— 扫描在某个目录里挂死，但旧代码只有
+		//   debug 级日志（生产 INFO 级别下不可见），无从定位挂点。
+		//   builtin/user 根下的 skill 目录数量有限（~10-20），INFO 行数可控。
+		//   排障：最后一行 `[SkillRegistry] scan:` 显示的目录 = 挂死目录。
+		this.logService.info(`[SkillRegistry] scan: ${dir.fsPath} (depth=${depth}, src=${source})`);
 
 		let stat: IFileStat;
 		try {

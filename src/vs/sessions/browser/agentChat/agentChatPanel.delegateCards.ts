@@ -19,6 +19,48 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 	 * 使用 VS Code 原生 DOM 构建（$ / append / textContent），零 innerHTML。
 	 */
 	/**
+	 * P2-4 阶段卡：在 plan_enter/plan_explore 卡 body 内渲染 5 阶段进度行。
+	 * 数据源 tc.planPhase（work_mode_changed delta 合并进来，随 toolCalls/parts
+	 * 持久化 → 窗口刷新后 adaptPersistedToolCall 透传，卡片不丢失）。
+	 * 状态：done（青✓+划线）/ current（蓝●脉冲）/ pending（灰○）；
+	 * completedAt 存在 → 全部 done（plan_exit 定格完成态）。
+	 */
+	protected _appendPlanPhaseSteps(body: HTMLElement, tc: IToolCall): void {
+		const ph = tc.planPhase;
+		if (!ph) { return; }
+		const steps = ['理解需求', '并行探索', '方案设计', '撰写计划', '提交执行'];
+		const completed = typeof ph.completedAt === 'number';
+		const cur = typeof ph.currentStep === 'number' ? ph.currentStep : 1;
+		const container = append(body, $('.plan-phase-steps'));
+		for (let i = 0; i < steps.length; i++) {
+			const row = append(container, $('.plan-phase-step'));
+			const dot = append(row, $('span.plan-phase-dot'));
+			const num = append(row, $('span.plan-phase-num'));
+			const lbl = append(row, $('span.plan-phase-label'));
+			num.textContent = `P${i + 1}`;
+			lbl.textContent = steps[i];
+			if (completed || i < cur) {
+				row.classList.add('done');
+				dot.textContent = '✓';
+			} else if (i === cur) {
+				row.classList.add('current');
+				dot.textContent = '●';
+			} else {
+				dot.textContent = '○';
+			}
+		}
+		const meta = append(body, $('.plan-phase-meta'));
+		if (ph.planFilePath) {
+			const fileEl = append(meta, $('span.plan-phase-file'));
+			fileEl.textContent = ph.planFilePath;
+			fileEl.title = ph.planFilePath;
+		}
+		const lock = append(meta, $('span.plan-phase-lock'));
+		lock.textContent = completed ? '✓ 计划已批准' : '🔒 写操作被拦截';
+		if (completed) { lock.classList.add('approved'); }
+	}
+
+	/**
 	 * 计划/编排类工具卡片：plan_explore / plan_enter / plan_exit / update_plan。
 	 * 使用 Void 统一壳（.tool-header-wrapper，与 void-tool-card.css 对齐）+ 原生 DOM 构建。
 	 */
@@ -129,18 +171,26 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 			}
 			// 内嵌子代理执行详情（路径 A），与 delegate_task 一致。
 			this._renderSubAgentsInside(body, tc);
+			// 阶段卡（退化宿主：plan_explore auto-enter 无 plan_enter 时承载阶段进度）
+			this._appendPlanPhaseSteps(body, tc);
 			right.textContent = isRunning ? '分析中…' : '已分析';
-		} else if (key === 'plan_enter') {
-			// ── 进入计划模式 ──
-			if (isDone) {
+			} else if (key === 'plan_enter') {
+			// ── 进入计划模式（阶段卡主宿主：5 阶段进度随本卡持久化）──
+			if (isDone && !tc.planPhase) {
 				const info = append(body, $('.plan-mode-info'));
 				info.textContent = '已进入计划模式 — Agent 将先制定计划再执行';
-			} else if (isRunning) {
+			} else if (isRunning && !tc.planPhase) {
 				const progress = append(body, $('.plan-progress'));
 				progress.textContent = '⏳ 正在切换到计划模式...';
 			}
-			right.textContent = isRunning ? '切换中…' : (isDone ? '已进入' : '');
-		} else if (key === 'plan_exit') {
+			this._appendPlanPhaseSteps(body, tc);
+			if (tc.planPhase) {
+				const completed = typeof tc.planPhase.completedAt === 'number';
+				right.textContent = completed ? '已完成' : '规划中…';
+			} else {
+				right.textContent = isRunning ? '切换中…' : (isDone ? '已进入' : '');
+			}
+			} else if (key === 'plan_exit') {
 			// ── 退出计划模式：显示计划摘要 ──
 			if (isDone && args.plan) {
 				const planEl = append(body, $('.plan-exit-summary'));

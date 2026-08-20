@@ -25,6 +25,7 @@ import {
 	computeNextNode,
 } from '../common/agentGraph.js';
 import { planModeHardPermission, isToolHardDenied, type IHardPermissionPolicy } from '../common/toolPermission.js';
+import { resolveRequestWorkMode } from '../common/workMode.js';
 import type { IAskRoutingContext } from '../common/askRouting.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -56,6 +57,7 @@ import {
 	sanitizeToolError,
 	deduplicateToolCalls,
 	safeStringifyToolResult,
+	annotateCoerceWarnings,
 	formatToolErrorResult,
 	formatToolNotFoundResult,
 	classifyArgumentValidity,
@@ -146,6 +148,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * @deprecated 保留作单窗口兼容与"最近 turn"兜底；多窗口并发请用 _activeTurnControllers。
 	 */
 	private _loopAbortController: AbortController | undefined;
+	/**
+	 * 工具级「跳过」信号（per-turn 懒重建）：用户点 terminal 卡片「继续执行」时 abort，
+	 * 只中止当前正在执行的工具，turn 本身不被取消——agent 拿到中断结果后继续后续步骤。
+	 */
+	private _toolSkipController: AbortController | undefined;
 
 	/**
 	 * Per-turn AbortController 表 —— 支持多聊天窗口/多 Session 并发执行时的取消隔离。
@@ -1975,8 +1982,11 @@ private readonly _sandboxGuard: SandboxGuard;
 	 * denied tools from the LLM-visible list) AND at runtime (isToolCallDeniedByHardPermission
 	 * blocks denied tool calls in agentTurnExecutor). The runtime check is the primary
 	 * enforcement; schema-level stripping is a secondary optimization.
-	 */ public _resolveHardPermission(request: IAgentTurnRequest): IHardPermissionPolicy | undefined {
-		const workMode = request.workMode ?? (request.chatMode === 'plan' ? 'plan' : 'work');
+	 */ 	public _resolveHardPermission(request: IAgentTurnRequest): IHardPermissionPolicy | undefined {
+		// 统一推导入口（与 agentTurnExecutor 的 createInitialWorkState 共用）：
+		// 显式 workMode 优先，缺失时按 chatMode==='plan' fallback —— 保证权限层
+		// 与状态机层对同一 request 永不分裂。
+		const workMode = resolveRequestWorkMode(request.chatMode, request.workMode);
 		return this._resolveHardPermissionForWorkMode(workMode);
 	}
 
@@ -2197,7 +2207,7 @@ private readonly _sandboxGuard: SandboxGuard;
 				return await executeWithRetryAndTimeout(
 					knownProvider, agentId ?? '',
 					{ id: toolCallId, name: underlyingName, arguments: underlyingArgs, worktreePath, sessionId: agentSessionId },
-					{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
+					{ timeoutMs, parentSignal: this._composeParentSignal(abortSignal) },
 				);
 			} catch (err) {
 				this._logService.warn(`[AgentOS] Bridge tool_call: "${underlyingName}" via ${knownProvider.id}: ${sanitizeToolError(err)}`);
@@ -2212,7 +2222,7 @@ private readonly _sandboxGuard: SandboxGuard;
 					return await executeWithRetryAndTimeout(
 						p, agentId ?? '',
 						{ id: toolCallId, name: underlyingName, arguments: underlyingArgs, worktreePath, sessionId: agentSessionId },
-						{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
+						{ timeoutMs, parentSignal: this._composeParentSignal(abortSignal) },
 					);
 				}
 			} catch (err) {
@@ -2277,6 +2287,41 @@ private readonly _sandboxGuard: SandboxGuard;
 	 *  - **[P0] Approval flow** (securityLevel-based user confirmation)
 	 *  - **[P1] Execution metadata** (timing, truncation, timeout info)
 	 */
+	/**
+	 * 跳过当前正在执行的工具（terminal 长命令卡住时用户点「继续执行」）。
+	 * 只 abort 工具级信号——executeWithRetryAndTimeout 内层 controller 随之 abort，
+	 * terminal 返回中断结果回传 LLM；turn 的 abortSignal 不受影响，agent 继续后续步骤。
+	 */
+	skipCurrentTool(): void {
+		if (this._toolSkipController && !this._toolSkipController.signal.aborted) {
+			this._toolSkipController.abort();
+			this._logService.info('[AgentOS] skipCurrentTool: aborting current tool execution — turn continues');
+		} else {
+			this._logService.info('[AgentOS] skipCurrentTool: no active tool execution to skip (or already skipped)');
+		}
+	}
+
+	/** 取当前工具级 skip 信号；已 abort 则重建，保证「跳过」只影响当前这一个工具。 */
+	private _ensureToolSkipSignal(): AbortSignal {
+		if (!this._toolSkipController || this._toolSkipController.signal.aborted) {
+			this._toolSkipController = new AbortController();
+		}
+		return this._toolSkipController.signal;
+	}
+
+	/** 组合 turn 级 abort 与工具级 skip：任一触发即中止当前工具执行。 */
+	private _composeParentSignal(abortSignal?: AbortSignal | null): AbortSignal | undefined {
+		const base = abortSignal ?? this._loopAbortController?.signal;
+		const skip = this._ensureToolSkipSignal();
+		if (!base) { return skip; }
+		if (base.aborted) { return base; }
+		const ctrl = new AbortController();
+		const onAbort = () => ctrl.abort();
+		base.addEventListener('abort', onAbort, { once: true });
+		skip.addEventListener('abort', onAbort, { once: true });
+		return ctrl.signal;
+	}
+
 	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext, agentSessionId?: string): Promise<Array<{ toolCallId: string; content: any; success: boolean }>> {
 		const results: Array<{ toolCallId: string; content: any; success: boolean }> = [];
 
@@ -2494,6 +2539,7 @@ private readonly _sandboxGuard: SandboxGuard;
 			const toolSchema = schemaMap.get(targetToolName);
 			const coerceResult = coerceOrReject(args, toolSchema, targetToolName, this._logService);
 			args = coerceResult.args;
+			const coerceWarns = coerceResult.warnings;
 			if (coerceResult.reject) {
 				results.push({ toolCallId: toolCall.id, ...coerceResult.reject });
 				continue;
@@ -2537,13 +2583,13 @@ private readonly _sandboxGuard: SandboxGuard;
 					const result = await executeWithRetryAndTimeout(
 						_execKnown, agentId,
 						{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath, sessionId: agentSessionId },
-						{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
+						{ timeoutMs, parentSignal: this._composeParentSignal(abortSignal) },
 					);
 					this._executionTracker.complete(toolCall.id);
 					const limitedStr = safeStringifyToolResult(result.content);
 					let finalContent: unknown = result.content;
 					try { finalContent = JSON.parse(limitedStr); } catch { finalContent = { __truncated__: true, content: limitedStr }; }
-					results.push({ toolCallId: toolCall.id, content: finalContent, success: result.success });
+					results.push({ toolCallId: toolCall.id, content: annotateCoerceWarnings(finalContent, coerceWarns), success: result.success });
 					executed = true;
 					if (result.metadata?.timedOut) {
 						this._logService.warn(`[AgentOS] Tool ${targetToolName} timed out after ${timeoutMs}ms`);
@@ -2561,9 +2607,12 @@ private readonly _sandboxGuard: SandboxGuard;
 					executed = true;
 					results.push({
 						toolCallId: toolCall.id,
-						content: typeof error === 'object' && error !== null && 'message' in (error as any)
-							? (error as any).message
-							: sanitized,
+						content: annotateCoerceWarnings(
+							typeof error === 'object' && error !== null && 'message' in (error as any)
+								? (error as any).message
+								: sanitized,
+							coerceWarns,
+						),
 						success: false,
 					});
 				}
@@ -2581,7 +2630,7 @@ private readonly _sandboxGuard: SandboxGuard;
 								provider,
 								agentId,
 								{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath, sessionId: agentSessionId },
-								{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
+								{ timeoutMs, parentSignal: this._composeParentSignal(abortSignal) },
 							);
 
 							// Track execution
@@ -2606,7 +2655,7 @@ private readonly _sandboxGuard: SandboxGuard;
 
 							results.push({
 								toolCallId: toolCall.id,
-								content: finalContent,
+								content: annotateCoerceWarnings(finalContent, coerceWarns),
 								success: result.success,
 							});
 							executed = true;
@@ -2698,6 +2747,8 @@ private readonly _sandboxGuard: SandboxGuard;
 			toolCall: IToolCallInfo;
 			targetToolName: string;
 			args: Record<string, unknown>;
+			/** coerce 的 schema 违规警告（unknown argument），执行后附到结果回传模型 */
+			coerceWarnings?: string[];
 			skip: boolean;
 			skipResult?: { toolCallId: string; content: any; success: boolean };
 		}> = [];
@@ -2813,6 +2864,7 @@ private readonly _sandboxGuard: SandboxGuard;
 				targetToolName,
 				args,
 				skip: false,
+				...(coerceResult.warnings?.length ? { coerceWarnings: coerceResult.warnings } : {}),
 			});
 		}
 
@@ -2827,7 +2879,7 @@ private readonly _sandboxGuard: SandboxGuard;
 		// Build execution promises (with timeout protection)
 		const toolProviders = this._slotRegistry.getToolProviders();
 		const executionPromises = entriesToExecute.map(async (entry) => {
-			const { toolCall, targetToolName, args } = entry;
+			const { toolCall, targetToolName, args, coerceWarnings } = entry;
 
 			// ── Bridge tool: execute via _executeBridgeTool ──
 			// tool_search / tool_call / tool_describe 不在任何 provider 中注册，
@@ -2843,7 +2895,7 @@ private readonly _sandboxGuard: SandboxGuard;
 				return {
 					originalIndex: entry.originalIndex,
 					toolCallId: toolCall.id,
-					content: finalContentB,
+					content: annotateCoerceWarnings(finalContentB, coerceWarnings),
 					success: bridgeResult.success,
 				};
 			}
@@ -2889,7 +2941,7 @@ private readonly _sandboxGuard: SandboxGuard;
 						provider,
 						agentId,
 						{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath, sessionId: agentSessionId },
-						{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
+						{ timeoutMs, parentSignal: this._composeParentSignal(abortSignal) },
 					);
 					// safeStringifyToolResult: guards against pathological payloads
 					// (e.g. tool returning a 50MB blob) which would otherwise blow up
@@ -2902,7 +2954,9 @@ private readonly _sandboxGuard: SandboxGuard;
 						finalContent = { __truncated__: true, content: limitedStr };
 					}
 
-					if (result.success) {
+					if (result.metadata?.timedOut) {
+						this._logService.warn(`[AgentOS] [parallel] Tool ${targetToolName} timed out after ${timeoutMs}ms`);
+					} else if (result.success) {
 						this._logService.info(`[AgentOS] [parallel] Tool ${targetToolName} executed via ${provider.id} (${result.metadata?.executionTimeMs ?? '?'}ms)`);
 					} else {
 						this._logService.warn(`[AgentOS] [parallel] Tool ${targetToolName} returned error via ${provider.id}: ${result.error ?? 'unknown'}`);
@@ -2910,7 +2964,7 @@ private readonly _sandboxGuard: SandboxGuard;
 					return {
 						originalIndex: entry.originalIndex,
 						toolCallId: toolCall.id,
-						content: finalContent,
+						content: annotateCoerceWarnings(finalContent, coerceWarnings),
 						success: result.success,
 					};
 				} catch (error) {
@@ -2922,9 +2976,12 @@ private readonly _sandboxGuard: SandboxGuard;
 					return {
 						originalIndex: entry.originalIndex,
 						toolCallId: toolCall.id,
-						content: typeof error === 'object' && error !== null && 'message' in (error as any)
-							? (error as any).message
-							: sanitizedError,
+						content: annotateCoerceWarnings(
+							typeof error === 'object' && error !== null && 'message' in (error as any)
+								? (error as any).message
+								: sanitizedError,
+							coerceWarnings,
+						),
 						success: false,
 					};
 				}

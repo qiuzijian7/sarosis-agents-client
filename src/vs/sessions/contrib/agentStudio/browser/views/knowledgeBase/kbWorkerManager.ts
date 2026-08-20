@@ -276,6 +276,31 @@ export class KbWorkerManager {
 		}
 	}
 
+	/**
+	 * @deprecated 使用 buildMentionAndGraph(docs).mention。
+	 * 便捷解构保留：kbWorkerManager.test.ts 的主线程 fallback 算法用例（提及索引
+	 * O(N×K) 正确性）仍通过此入口验证。内部委托 buildMentionAndGraph 的**分批**
+	 * 逻辑，不重新引入旧版一次性全量克隆的 OOM 风险（与 kbWorker.ts 里旧函数
+	 * 直接 throw「已弃用」不同——那里才是真正的 OOM 源头）。
+	 */
+	async buildMentionIndex(
+		docs: { uri: URI; name: string; text: string; mtime: number; size: number }[],
+		token?: CancellationToken,
+	): Promise<IKbWorkerMentionEntry[]> {
+		return (await this.buildMentionAndGraph(docs, token)).mention;
+	}
+
+	/**
+	 * @deprecated 使用 buildMentionAndGraph(docs).graph。
+	 * 便捷解构保留（理由同 buildMentionIndex）。
+	 */
+	async buildGraph(
+		docs: { uri: URI; name: string; text: string; mtime: number; size: number }[],
+		token?: CancellationToken,
+	): Promise<IKbWorkerGraphData> {
+		return (await this.buildMentionAndGraph(docs, token)).graph;
+	}
+
 	/** 销毁 Worker 并清理所有 pending 请求。 */
 	dispose(): void {
 		for (const [, pending] of this._pending) {

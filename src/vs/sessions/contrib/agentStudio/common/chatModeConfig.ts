@@ -5,19 +5,26 @@
 
 /**
  * ChatMode configuration — unified constants, tool-filtering, system-prompt
- * templates, and permission-mode mappings for the three chat modes
- * (craft / ask / plan).
+ * templates, and permission-mode mappings for the four chat modes
+ * (craft / ask / plan / workflow).
  *
  * Reference: doc/CodeBuddy-IDE-模式分析.md
  *
  * ┌──────────┬──────────────────────────────────────────────────────────────────┐
- * │ Mode     │ Behaviour                                                       │
+ * │ Mode     │ Behaviour（2026-08-18 与实现对齐）                              │
  * ├──────────┼──────────────────────────────────────────────────────────────────┤
- * │ craft    │ Full access: all tools, acceptEdits permission, code-generation  │
- * │ ask      │ Read-only tools only, default permission, Q&A / explanation     │
- * │ plan     │ Read-only exploration + plan-specific tools, plan permission,   │
- * │          │ task decomposition only; exits to craft/ask on user approval     │
+ * │ craft    │ All tools, AcceptEdits permission, code-generation              │
+ * │ ask      │ Read-only tools only (schema-level filtering), Default perm     │
+ * │ plan     │ Schema NOT filtered (MiMo alignment: prefix-cache stable);      │
+ * │          │ write/execute tools blocked at RUNTIME by hardPermission.       │
+ * │          │ plan_enter/plan_exit drive the internal WorkMode state machine  │
+ * │          │ (plan phase ⇄ work phase); plan_exit 直通（审批走 orchestration │
+ * │          │ 确认卡片，不随模式开关）。                                      │
+ * │ workflow │ All tools, AcceptEdits permission, workflow orchestration       │
  * └──────────┴──────────────────────────────────────────────────────────────────┘
+ *
+ * ChatMode（稳定 UI 策略，单一真源 sessions/common/agentStudioService.ChatMode）
+ * 与 WorkMode（运行时阶段，common/workMode.ts）分离：详见 workMode.ts 头注释。
  */
 
 import type { ChatMode } from '../../../common/agentStudioService.js';

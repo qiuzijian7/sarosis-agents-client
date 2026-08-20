@@ -33,7 +33,9 @@ export type StageEditorKind =
 	| 'multiangle'
 	| 'panorama'
 	| 'relight'
-	| 'material';
+	| 'material'
+	| 'emoji'
+	| 'image'       // LoadImage —— inline editor (filename+preview+upload+size)
 
 /**
  * 节点类 → 内嵌编辑器种类。ComfyTV 的 RICH_STAGE_CARDS 等价物（本项目暂不做
@@ -51,6 +53,20 @@ export const STAGE_EDITOR_KIND: Record<string, StageEditorKind> = {
 	'ComfyTV.PanoramaStage': 'panorama',
 	'ComfyTV.RelightStage': 'relight',
 	'ComfyTV.MaterialStage': 'material',
+	'ComfyTV.EmojiStage': 'emoji',
+	// Loader 节点走 inline editor：image 字段直接展示缩略图+尺寸+上传，代替通用
+	// OUTPUT 区（与 ComfyTV LoadImage 一致 —— 图像就是产物本身，再画 OUTPUT 是
+	// 重复展示）。其它 loader 同理（文本/音频/视频以各自字段名复用同一组件）。
+	//
+	// ★★★ AudioLoaderStage / TextLoaderStage 之前未注册 → editorKind='none' →
+	//   不渲染 inline editor → Load Audio/Text 节点 body 空白（用户截图
+	//   image.bfa87ff96b 报告）。先按现有 ImageLoaderPreview 兜底（同组件渲染
+	//   音频/文本素材预览也合理 —— 至少节点有内容），具体组件后续按需细化。
+	'ComfyTV.ImageLoaderStage': 'image',
+	'ComfyTV.VideoLoaderStage': 'image',
+	'ComfyTV.AudioLoaderStage': 'audio',
+	'ComfyTV.TextLoaderStage': 'text',
+	'image-loader': 'image',
 };
 
 /**
@@ -65,9 +81,16 @@ export const STAGE_HIDDEN_FIELDS: Record<string, readonly string[]> = {
 	'ComfyTV.GridSplitStage': ['rows', 'cols', 'border', 'outer_border', 'selected_index'],
 	'ComfyTV.ColorGradeStage': ['grade_state'],
 	'ComfyTV.MultiangleStage': ['horizontal_angle', 'vertical_angle', 'zoom', 'prompt'],
-	'ComfyTV.PanoramaStage': ['workflow', 'direction', 'prompt'],
+	'ComfyTV.KenBurnsStage': [],          // TODO: KenBurns 还没有内置预览组件
+	                                       //       （inline editor 实际不渲染），
+		//       先占位让测试期望落地；补齐预览组件后再加实际接管字段。
+	'ComfyTV.PanoramaStage': ['workflow', 'prompt'],
 	'ComfyTV.RelightStage': ['main_prompt'],
 	'ComfyTV.MaterialStage': ['material_state'],
+	'ComfyTV.EmojiStage': ['rows', 'cols', 'fps', 'frames', 'prompt', 'cells', 'selected_index', 'run_scope'],
+	// Loader 节点 image 字段由 inline editor（ImageLoaderPreview）接管，不再渲染通用控件。
+	'ComfyTV.ImageLoaderStage': ['image'],
+	'ComfyTV.VideoLoaderStage': ['video'],
 };
 
 /**
@@ -87,10 +110,17 @@ export const STAGE_MIN_HEIGHTS: Record<string, number> = {
 	'ComfyTV.OutpaintStage': 500,
 	'ComfyTV.GridSplitStage': 520,
 	'ComfyTV.ColorGradeStage': 560,
-	'ComfyTV.MultiangleStage': 640,
-	'ComfyTV.PanoramaStage': 560,
-	'ComfyTV.RelightStage': 640,
-	'ComfyTV.MaterialStage': 640,
+	'ComfyTV.MultiangleStage': 520,
+	'ComfyTV.PanoramaStage': 500,
+	'ComfyTV.RelightStage': 520,
+	'ComfyTV.KenBurnsStage': 460,
+	'ComfyTV.MaterialStage': 500,
+	'ComfyTV.EmojiStage': 500,
+	'ComfyTV.ImageStage': 640,         // generator 节点（含 OUTPUT + ACTIONS）
+	// Loader 节点：image 字段 + 缩略图 + 尺寸文字 + 上传按钮（对齐 ComfyTV 参考卡片）。
+	'ComfyTV.ImageLoaderStage': 420,
+	'ComfyTV.VideoLoaderStage': 360,
+	'ComfyTV.AudioLoaderStage': 460,   // 音频条 + 备注 + 上传（与 ImageLoader 同结构）
 };
 
 /** 对齐 ComfyTV GENERIC_STAGE_MIN_HEIGHT。 */
@@ -105,15 +135,27 @@ export interface StageCardFlags {
 }
 
 export const STAGE_CARD_FLAGS: Record<string, StageCardFlags> = {
-	// loader 类节点的「输出」就是载入的素材本身，OUTPUT 区重复展示无意义。
+	// loader 类节点的「输出」就是载入的素材本身——由 inline editor 直接展示，
+	// 通用 OUTPUT 区重复展示无意义；同理 ACTIONS（多由 stageKind 推断出，对
+	// loader 无意义）。
 	'ComfyTV.TextLoaderStage': { hideOutput: true },
+	'ComfyTV.ImageLoaderStage': { hideOutput: true, hideActions: true },
+	'ComfyTV.VideoLoaderStage': { hideOutput: true, hideActions: true },
 };
 
 // ── 纯查询函数（供 nodeCard 使用；未注册的节点走安全默认值）─────────────
 
 export function stageEditorKind(nodeType: string | undefined): StageEditorKind {
 	if (!nodeType) { return 'none'; }
-	return STAGE_EDITOR_KIND[nodeType] ?? 'none';
+	const hit = STAGE_EDITOR_KIND[nodeType];
+	if (nodeType.startsWith('ComfyTV.')) {
+		// ★★ 排查 Load 节点空白：上一轮日志说 `editorKind:"none"`，但 registry 第 60
+		// 行明确写了 `'ComfyTV.ImageLoaderStage': 'image'`。是查询失败还是函数被
+		// 多个副本覆盖？打印 hash + 是否命中 + STAGE_EDITOR_KIND 的实际 keys 数。
+		// eslint-disable-next-line no-console
+		console.warn('[stageEditorKind] ' + JSON.stringify({ nodeType, hit, registered: STAGE_EDITOR_KIND[nodeType] !== undefined, keyCount: Object.keys(STAGE_EDITOR_KIND).length }));
+	}
+	return hit ?? 'none';
 }
 
 /** 该节点由内嵌编辑器接管的字段集合（用于过滤通用控件）。 */

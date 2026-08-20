@@ -36,6 +36,12 @@ const PORT_TYPE_COLOR: Record<string, string> = {
 	'COMFYTV_VIDEO': '#10b981',  // green
 	'COMFYTV_AUDIO': '#f59e0b',  // amber
 	'COMFYTV_MODEL': '#ef4444',  // red
+	'COMFYTV_PANORAMA': '#8b5cf6',   // violet
+	'COMFYTV_MATERIAL': '#f97316',   // orange
+	'COMFYTV_STORYBOARD': '#14b8a6', // teal
+	'COMFYTV_TIMELINE': '#e879f9',   // fuchsia
+	'COMFYTV_JSON': '#64748b',       // slate
+	'SAROS_JSON': '#64748b',         // slate（编排节点通用数据端口，对齐 COMFYTV_JSON）
 	// Generic fallbacks
 	'IMAGE': '#a855f7',
 	'TEXT': '#3b82f6',

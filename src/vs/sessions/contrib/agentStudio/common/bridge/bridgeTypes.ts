@@ -105,12 +105,18 @@ export interface IBridgePlatform {
 	start(handler: (msg: InboundMessage) => void): Promise<void> | void;
 	/** 停止平台并释放资源。 */
 	stop(): Promise<void> | void;
-	/** 主动发消息（不引用某条入站消息）。 */
-	send(ctx: BridgeReplyCtx, content: string): Promise<void>;
-	/** 回复某条入站消息（带引用/线程上下文）。 */
-	reply(ctx: BridgeReplyCtx, content: string): Promise<void>;
-	/** 可选：原地更新上一条消息（流式预览）。 */
-	update?(ctx: BridgeReplyCtx, content: string): Promise<void>;
+	/**
+	 * 主动发消息（不引用某条入站消息）。
+	 * `type` 为出站消息类型（result/error/tool_use/…），缺省 "text" 向后兼容。
+	 * ★ 平台适配器**必须透传**该 type —— 否则 result/error 的语义在边界丢失，
+	 *   下游（测试 loopback、UI、日志）只能看到 "text"。IM 层可据 type 做差异化
+	 *   渲染（如 tool_use 加 ⚙️ 前缀、error 加告警标记）。
+	 */
+	send(ctx: BridgeReplyCtx, content: string, type?: OutboundType): Promise<void>;
+	/** 回复某条入站消息（带引用/线程上下文）。type 语义同 send。 */
+	reply(ctx: BridgeReplyCtx, content: string, type?: OutboundType): Promise<void>;
+	/** 可选：原地更新上一条消息（流式预览）。type 语义同 send。 */
+	update?(ctx: BridgeReplyCtx, content: string, type?: OutboundType): Promise<void>;
 	/** 可选：发送富卡片。 */
 	sendCard?(ctx: BridgeReplyCtx, card: BridgeCard): Promise<void>;
 	replyCard?(ctx: BridgeReplyCtx, card: BridgeCard): Promise<void>;

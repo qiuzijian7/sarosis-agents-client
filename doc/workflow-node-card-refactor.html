@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工作流编排节点卡片重构 Mockup — Agent / Skill / Tool / IfElse / Switch</title>
+<style>
+:root {
+	--font: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+	--mono: "Cascadia Code", Consolas, "Courier New", monospace;
+	--bg: #1e1e1e; --canvas: #2a2a2a; --grid: rgba(255,255,255,0.04);
+	--card: #1f1f1f; --card-hdr: #2a2a2a; --card-bd: #3e3e42;
+	--fg: #e6e6e6; --fg-dim: #9d9d9d; --fg-faint: #6e6e6e;
+	--port-true: #2ecc71; --port-false: #e74c3c;
+	--port-case1: #3b82f6; --port-case2: #a855f7; --port-case3: #f97316; --port-case4: #06b6d4; --port-default: #6b7280;
+	--ans-ok: #2ecc71; --ans-warn: #d29922; --ans-err: #f85149;
+	--orange: #f97316; --yellow: #eab308; --green: #22c55e; --teal: #14b8a6; --red: #ef4444; --cyan: #06b6d4; --blue: #3b82f6; --purple: #a855f7; --gray: #888780;
+}
+html[data-theme="light"] {
+	--bg: #fafafa; --canvas: #f0f0f0; --grid: rgba(0,0,0,0.05);
+	--card: #ffffff; --card-hdr: #f3f3f3; --card-bd: #d0d0d0;
+	--fg: #3b3b3b; --fg-dim: #616161; --fg-faint: #8b8b8b;
+	--port-true: #1a7f37; --port-false: #cf222e;
+	--port-case1: #1d4ed8; --port-case2: #7e22ce; --port-case3: #c2410c; --port-case4: #0e7490; --port-default: #6b7280;
+	--orange: #c2410c; --yellow: #a16207; --green: #15803d; --teal: #0d9488; --red: #dc2626; --cyan: #0891b2; --blue: #1d4ed8; --purple: #7e22ce; --gray: #6b7280;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 13px; }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb { background: var(--fg-faint); border-radius: 4px; }
+.page { max-width: 1480px; margin: 0 auto; padding: 26px 32px 80px; }
+.page-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
+.page-header h1 { font-size: 21px; font-weight: 650; }
+.page-header .sub { color: var(--fg-dim); font-size: 12.5px; margin-top: 4px; }
+.hc-btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 5px; cursor: pointer; border: 1px solid var(--card-bd); background: var(--card); color: var(--fg); font-size: 12px; user-select: none; }
+.hc-btn:hover { background: var(--grid); }
+.hc-btn.on { border-color: var(--port-true); color: var(--port-true); }
+.section { margin-top: 32px; }
+.section > h2 { font-size: 15px; font-weight: 650; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+.section > h2 .num { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: var(--port-case1); color: #fff; font-size: 11px; font-weight: 700; }
+.section > .desc { color: var(--fg-dim); font-size: 12.5px; margin-bottom: 14px; line-height: 1.6; }
+.section > .desc b { color: var(--fg); }
+.section > .desc code { font-family: var(--mono); background: var(--card-hdr); padding: 1px 5px; border-radius: 3px; font-size: 11.5px; }
+
+/* ───── 画布背景 ───── */
+.canvas-stage {
+	background: var(--canvas);
+	background-image: radial-gradient(var(--grid) 1px, transparent 1px);
+	background-size: 22px 22px;
+	border: 1px solid var(--card-bd);
+	border-radius: 8px;
+	padding: 32px;
+	position: relative;
+	overflow: hidden;
+}
+.canvas-stage::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(135deg, transparent 0%, transparent 100%); }
+
+/* ───── 节点通用 ───── */
+.node {
+	position: relative;
+	display: inline-block;
+	vertical-align: top;
+	width: 240px;
+	margin: 8px;
+	background: var(--card);
+	border: 1px solid var(--card-bd);
+	border-radius: 8px;
+	box-shadow: 0 4px 16px rgba(0,0,0,0.32);
+	font-size: 11.5px;
+	color: var(--fg);
+	overflow: visible;
+}
+.node .head {
+	display: flex; align-items: center; gap: 6px;
+	padding: 6px 10px;
+	background: var(--card-hdr);
+	border-radius: 7px 7px 0 0;
+	font-weight: 600;
+	font-size: 12.5px;
+}
+.node .head .icon { font-size: 13px; }
+.node .head .kind { margin-left: auto; font-size: 9.5px; font-weight: 500; color: var(--fg-faint); padding: 1px 5px; border-radius: 3px; background: rgba(255,255,255,0.06); }
+.node .body { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.node .field { display: flex; align-items: center; gap: 6px; font-size: 11px; min-height: 18px; }
+.node .field .k { flex: 0 0 64px; color: var(--fg-dim); font-family: var(--mono); font-size: 10.5px; }
+.node .field .v { flex: 1; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node .field .v.empty { color: var(--fg-faint); font-style: italic; }
+.node .field .v.tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; background: rgba(255,255,255,0.08); }
+.node .chip-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.node .chip { font-size: 9.5px; padding: 1px 6px; border-radius: 3px; font-family: var(--mono); background: rgba(255,255,255,0.06); color: var(--fg-dim); }
+.node .chip.port { color: var(--port-default); background: rgba(107,114,128,0.18); }
+.node .summary { font-size: 10.5px; color: var(--fg-dim); line-height: 1.5; background: var(--card-hdr); padding: 5px 8px; border-radius: 4px; font-family: var(--mono); }
+
+/* 颜色带（与节点类型对应） */
+.node.s-agent .head { box-shadow: inset 3px 0 0 var(--orange); }
+.node.s-skill .head { box-shadow: inset 3px 0 0 var(--yellow); }
+.node.s-tool .head { box-shadow: inset 3px 0 0 var(--teal); }
+.node.s-prompt .head { box-shadow: inset 3px 0 0 var(--purple); }
+.node.s-ifelse .head { box-shadow: inset 3px 0 0 var(--red); }
+.node.s-switch .head { box-shadow: inset 3px 0 0 var(--purple); }
+.node.s-start .head { box-shadow: inset 3px 0 0 var(--green); }
+.node.s-end .head { box-shadow: inset 3px 0 0 var(--gray); }
+.node.s-loop .head { box-shadow: inset 3px 0 0 var(--orange); }
+.node.s-prompt .head { box-shadow: inset 3px 0 0 var(--purple); }
+
+/* ───── 端口（左右两侧） ───── */
+.port {
+	position: absolute;
+	top: 50%;
+	width: 12px; height: 12px;
+	border-radius: 50%;
+	background: var(--card);
+	border: 2px solid var(--port-default);
+	transform: translateY(-50%);
+}
+.port.in { left: -7px; }
+.port.out { right: -7px; }
+.port-label {
+	position: absolute;
+	font-size: 9.5px;
+	color: var(--fg-dim);
+	font-family: var(--mono);
+	white-space: nowrap;
+	pointer-events: none;
+}
+.port.in + .port-label { left: 8px; top: 50%; transform: translateY(-50%); }
+.port.out + .port-label { right: 8px; top: 50%; transform: translateY(-50%); }
+.port.t-true { border-color: var(--port-true); box-shadow: 0 0 6px rgba(46,204,113,0.5); }
+.port.t-false { border-color: var(--port-false); box-shadow: 0 0 6px rgba(231,76,60,0.5); }
+.port.t-case1 { border-color: var(--port-case1); box-shadow: 0 0 6px rgba(59,130,246,0.5); }
+.port.t-case2 { border-color: var(--port-case2); box-shadow: 0 0 6px rgba(168,85,247,0.5); }
+.port.t-case3 { border-color: var(--port-case3); box-shadow: 0 0 6px rgba(249,115,22,0.5); }
+.port.t-case4 { border-color: var(--port-case4); box-shadow: 0 0 6px rgba(6,182,212,0.5); }
+.port.t-default { border-color: var(--port-default); box-shadow: 0 0 6px rgba(107,114,128,0.5); }
+
+/* ───── 端口标签多色（Switch 多 case）── */
+.ports-multi-out { position: absolute; right: -7px; top: 28%; display: flex; flex-direction: column; gap: 10px; }
+.ports-multi-out .port { position: static; transform: none; }
+
+/* ───── 状态徽章 ───── */
+.badge {
+	display: inline-flex; align-items: center; gap: 4px;
+	padding: 1px 6px; border-radius: 99px;
+	font-size: 9.5px; font-weight: 600;
+}
+.badge.idle { background: rgba(156,163,175,0.18); color: var(--fg-dim); }
+.badge.running { background: rgba(210,153,34,0.18); color: var(--ans-warn); }
+.badge.success { background: rgba(46,204,113,0.18); color: var(--ans-ok); }
+.badge.error { background: rgba(248,81,73,0.20); color: var(--ans-err); }
+.badge.skipped { background: rgba(107,114,128,0.18); color: var(--fg-faint); border: 1px dashed var(--fg-faint); }
+
+/* 行选（演示「选中态」边框加粗） */
+.node.selected { border-color: var(--port-case1); box-shadow: 0 0 0 1.5px var(--port-case1), 0 4px 16px rgba(0,0,0,0.32); }
+
+/* ───── 渐变线（演示 Agent/Skill/Tool 端口） ───── */
+.wire {
+	position: absolute;
+	pointer-events: none;
+	opacity: 0.5;
+}
+
+/* ───── 表头「节点类型胶囊」── */
+.type-pill {
+	display: inline-flex; align-items: center; gap: 4px;
+	padding: 1px 6px; border-radius: 99px;
+	font-size: 9.5px; font-weight: 600;
+	background: rgba(255,255,255,0.08);
+	color: var(--fg-dim);
+}
+.type-pill.t-sys { color: var(--green); background: rgba(34,197,94,0.12); }
+.type-pill.t-orch { color: var(--purple); background: rgba(168,85,247,0.12); }
+.type-pill.t-cf { color: var(--cyan); background: rgba(6,182,212,0.12); }
+
+/* ───── 编号与排版辅助 ───── */
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; }
+.kv .k { color: var(--fg-dim); font-family: var(--mono); font-size: 10.5px; }
+.kv .v { color: var(--fg); font-size: 11px; }
+
+/* ───── 连线 (Switch 演示用) ───── */
+.wire-svg { position: absolute; inset: 0; pointer-events: none; }
+.wire-svg path { fill: none; stroke-width: 1.6; }
+.wire-svg .c1 { stroke: var(--port-case1); }
+.wire-svg .c2 { stroke: var(--port-case2); }
+.wire-svg .c3 { stroke: var(--port-case3); }
+.wire-svg .cd { stroke: var(--port-default); stroke-dasharray: 4 3; }
+.wire-svg .ct { stroke: var(--port-true); }
+.wire-svg .cf { stroke: var(--port-false); stroke-dasharray: 4 3; }
+
+/* ───── 注释 ───── */
+.anno { background: var(--card-hdr); border-left: 3px solid var(--ans-warn); padding: 10px 14px; border-radius: 4px; font-size: 12px; line-height: 1.7; color: var(--fg-dim); margin: 16px 0; }
+.anno b { color: var(--ans-warn); }
+
+/* ───── 节点网格 ───── */
+.grid { display: flex; flex-wrap: wrap; align-items: flex-start; }
+
+/* ───── mockup 对比 ───── */
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 1200px) { .compare { grid-template-columns: 1fr; } }
+.compare > div { min-width: 0; }
+.compare h3 { font-size: 13px; margin-bottom: 8px; color: var(--fg-dim); }
+.compare h3 .old { color: var(--ans-err); }
+.compare h3 .new { color: var(--ans-ok); }
+</style>
+</head>
+<body>
+<div class="page">
+
+	<div class="page-header">
+		<div>
+			<h1>工作流节点卡片重构 Mockup</h1>
+			<div class="sub">对比现行（截图）与重构后（Agent / Skill / Tool / IfElse / Switch / Start / End）—— 突出各节点<b>核心参数</b>与<b>端口结构</b>，消除空「value」占位</div>
+		</div>
+		<div style="display:flex;gap:8px">
+			<button class="hc-btn" id="btnTheme">🌓 主题</button>
+			<button class="hc-btn on" id="btnAnnotate">🏷 标注</button>
+		</div>
+	</div>
+
+	<!-- ═══════ 1. 现状对比 ═══════ -->
+	<div class="section">
+		<h2><span class="num">1</span>现状问题</h2>
+		<div class="desc">截图所示 Agent / Skill 节点<b>只显示名称 + 一个空白「value」占位</b>，核心信息全部丢失；start 节点同理。问题：① 用户双击才知道节点配了什么 ② Agent 的 provider/model 不可见 ③ Skill/Tool 的参数被隐藏 ④ IfElse/Switch 的分支逻辑没有视觉提示 ⑤ 所有节点外观高度同质化（颜色带也只是 inset 3px，远处看不清）。</div>
+
+		<div class="compare anno" id="annoOld">
+			<div>
+				<h3><span class="old">●</span> Before — 现状</h3>
+				<div class="canvas-stage" style="padding:60px 40px; min-height:280px; position:relative">
+					<div class="node selected" style="position:absolute; top:24px; left:40px; width:220px;">
+						<div class="head" style="box-shadow:inset 3px 0 0 var(--orange)"><span class="icon">∨</span> Agent <span class="kind">react</span></div>
+						<div class="body">
+							<div class="field"><span class="k">value</span><span class="v empty">·</span></div>
+							<div class="field"><span class="k">agentId</span><span class="v empty">·</span></div>
+						</div>
+						<div class="port in" style="top:40px"></div>
+						<div class="port out" style="top:40px"></div>
+					</div>
+					<div class="node" style="position:absolute; top:24px; left:300px; width:220px;">
+						<div class="head" style="box-shadow:inset 3px 0 0 var(--yellow)"><span class="icon">∨</span> Skill <span class="kind">react</span></div>
+						<div class="body">
+							<div class="field"><span class="k">value</span><span class="v empty">·</span></div>
+							<div class="field"><span class="k">skillName</span><span class="v empty">·</span></div>
+						</div>
+						<div class="port in" style="top:40px"></div>
+						<div class="port out" style="top:40px"></div>
+					</div>
+					<div class="node" style="position:absolute; top:160px; left:40px; width:220px;">
+						<div class="head" style="box-shadow:inset 3px 0 0 var(--green)"><span class="icon">∨</span> start <span class="kind">react</span></div>
+						<div class="body">
+							<div class="field"><span class="k">value</span><span class="v empty">·</span></div>
+						</div>
+						<div class="port out" style="top:30px"></div>
+					</div>
+				</div>
+			</div>
+			<div>
+				<h3><span class="new">●</span> After — 重构后</h3>
+				<div class="canvas-stage" style="padding:40px; min-height:280px; position:relative">
+					<!-- Agent -->
+					<div class="node s-agent selected" style="position:absolute; top:24px; left:40px;">
+						<div class="head"><span class="icon">🤖</span> Agent <span class="type-pill t-orch">LLM</span></div>
+						<div class="body">
+							<div class="field"><span class="k">agent</span><span class="v">前端代码探索</span></div>
+							<div class="field"><span class="k">provider</span><span class="v">openai-gpt5</span></div>
+							<div class="field"><span class="k">model</span><span class="v">gpt-5-codex</span></div>
+						</div>
+						<div class="summary">研究 → {{input.topic}}</div>
+						<div class="port in" style="top:55px"></div>
+						<div class="port out" style="top:55px"></div>
+					</div>
+					<!-- Skill -->
+					<div class="node s-skill" style="position:absolute; top:24px; left:300px;">
+						<div class="head"><span class="icon">⚡</span> Skill <span class="type-pill t-orch">EXEC</span></div>
+						<div class="body">
+							<div class="field"><span class="k">name</span><span class="v">frontend-slides</span></div>
+							<div class="field"><span class="k">task</span><span class="v">"用模板生成 PPT"</span></div>
+							<div class="chip-row"><span class="chip">topic</span><span class="chip">count=4</span></div>
+						</div>
+						<div class="port in" style="top:55px"></div>
+						<div class="port out" style="top:55px"></div>
+					</div>
+					<!-- Start -->
+					<div class="node s-start" style="position:absolute; top:160px; left:40px; width:200px;">
+						<div class="head"><span class="icon">▶</span> 开始 <span class="type-pill t-sys">INPUT</span></div>
+						<div class="body">
+							<div class="field"><span class="k">参数</span><span class="v">2</span></div>
+						</div>
+						<div class="summary">topic="…"  count=…</div>
+						<div class="port out" style="top:30px"></div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════ 2. 各节点详细设计 ═══════ -->
+	<div class="section">
+		<h2><span class="num">2</span>节点详细设计</h2>
+		<div class="desc">每个节点显示<b>关键参数</b>（3 行内）+ 类型胶囊 + 状态徽章 + 端口颜色编码。概要预览在底部（折叠 / hover 展开）。</div>
+
+		<div class="canvas-stage" id="stage">
+			<svg class="wire-svg" id="wires">
+				<defs>
+					<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+				</defs>
+				<!-- 占位：节点坐标先空，由 JS 渲染后定位 -->
+			</svg>
+
+			<!-- Start -->
+			<div class="node s-start" data-x="40" data-y="40" style="position:absolute; top:40px; left:40px; width:200px;">
+				<div class="head"><span class="icon">▶</span> 开始 <span class="type-pill t-sys">INPUT</span></div>
+				<div class="body">
+					<div class="field"><span class="k">args</span><span class="v">2 参数</span></div>
+					<div class="summary">topic, count</div>
+				</div>
+				<div class="port out" style="top:50px"></div>
+			</div>
+
+			<!-- Agent (从 Start 拉线) -->
+			<div class="node s-agent" data-x="290" data-y="40" style="position:absolute; top:40px; left:290px; width:240px;">
+				<div class="head"><span class="icon">🤖</span> Agent <span class="type-pill t-orch">LLM</span></div>
+				<div class="body">
+					<div class="field"><span class="k">agent</span><span class="v tag">代码探索</span></div>
+					<div class="field"><span class="k">provider</span><span class="v">openai · gpt-5</span></div>
+					<div class="field"><span class="k">prompt</span><span class="v">"分析 {{input.topic}}"</span></div>
+				</div>
+				<div class="port in" style="top:60px"></div>
+				<div class="port out" style="top:60px"></div>
+			</div>
+
+			<!-- Skill -->
+			<div class="node s-skill" data-x="590" data-y="40" style="position:absolute; top:40px; left:590px; width:220px;">
+				<div class="head"><span class="icon">⚡</span> Skill <span class="type-pill t-orch">EXEC</span></div>
+				<div class="body">
+					<div class="field"><span class="k">name</span><span class="v tag">frontend-slides</span></div>
+					<div class="field"><span class="k">task</span><span class="v">"PPT 生成"</span></div>
+					<div class="chip-row"><span class="chip">topic</span><span class="chip">count=4</span></div>
+				</div>
+				<div class="port in" style="top:60px"></div>
+				<div class="port out" style="top:60px"></div>
+			</div>
+
+			<!-- Tool -->
+			<div class="node s-tool" data-x="860" data-y="40" style="position:absolute; top:40px; left:860px; width:220px;">
+				<div class="head"><span class="icon">🔧</span> Tool <span class="type-pill t-orch">CALL</span></div>
+				<div class="body">
+					<div class="field"><span class="k">name</span><span class="v tag">web_search</span></div>
+					<div class="field"><span class="k">params</span><span class="v">{ q, depth }</span></div>
+					<div class="chip-row"><span class="chip port">q=…</span><span class="chip port">depth=3</span></div>
+				</div>
+				<div class="port in" style="top:60px"></div>
+				<div class="port out" style="top:60px"></div>
+			</div>
+
+			<!-- IfElse (Agent → IfElse) -->
+			<div class="node s-ifelse" data-x="290" data-y="200" style="position:absolute; top:200px; left:290px; width:230px;">
+				<div class="head"><span class="icon">⑂</span> If/Else <span class="type-pill t-cf">ROUTE</span></div>
+				<div class="body">
+					<div class="field"><span class="k">target</span><span class="v tag">{{input.score}} &gt; 8</span></div>
+					<div class="field" style="justify-content:space-between">
+						<span class="v tag" style="color:var(--port-true)">✓ 真分支</span>
+						<span class="v tag" style="color:var(--port-false)">✗ 假分支</span>
+					</div>
+				</div>
+				<div class="port in" style="top:50px"></div>
+				<div class="port out t-true" style="top:32px"></div>
+				<span class="port-label" style="right:8px; top:calc(32px - 6px)">true</span>
+				<div class="port out t-false" style="top:88px"></div>
+				<span class="port-label" style="right:8px; top:calc(88px - 6px)">false</span>
+			</div>
+
+			<!-- Switch (Skill → Switch) -->
+			<div class="node s-switch" data-x="590" data-y="200" style="position:absolute; top:200px; left:590px; width:240px;">
+				<div class="head"><span class="icon">⇆</span> Switch <span class="type-pill t-cf">ROUTE</span></div>
+				<div class="body">
+					<div class="field"><span class="k">target</span><span class="v tag">{{input.style}}</span></div>
+					<div class="field"><span class="k">cases</span><span class="v">"a", "b", "c"</span></div>
+				</div>
+				<div class="port in" style="top:50px"></div>
+				<div class="ports-multi-out" style="top:30px">
+					<div class="port t-case1" style="margin-right:0; width:12px; height:12px;"></div>
+					<span class="port-label" style="right:10px; top:0; color:var(--port-case1)">case-1</span>
+					<div class="port t-case2" style="margin-right:0; width:12px; height:12px;"></div>
+					<span class="port-label" style="right:10px; top:30px; color:var(--port-case2)">case-2</span>
+					<div class="port t-case3" style="margin-right:0; width:12px; height:12px;"></div>
+					<span class="port-label" style="right:10px; top:60px; color:var(--port-case3)">case-3</span>
+					<div class="port t-case4" style="margin-right:0; width:12px; height:12px;"></div>
+					<span class="port-label" style="right:10px; top:90px; color:var(--port-case4)">case-4</span>
+					<div class="port t-default" style="margin-right:0; width:12px; height:12px;"></div>
+					<span class="port-label" style="right:10px; top:120px; color:var(--port-default)">default</span>
+				</div>
+			</div>
+
+			<!-- End (所有最终汇聚) -->
+			<div class="node s-end" data-x="1130" data-y="40" style="position:absolute; top:40px; left:1130px; width:180px;">
+				<div class="head"><span class="icon">■</span> 结束 <span class="type-pill t-sys">OUTPUT</span></div>
+				<div class="body">
+					<div class="field"><span class="k">desc</span><span class="v">"最终图输出"</span></div>
+				</div>
+				<div class="port in" style="top:50px"></div>
+			</div>
+		</div>
+
+		<div class="anno">
+			<b>设计要点</b><br>
+			• <b>类型胶囊</b>：替换原空「kind」徽章——LLM / EXEC / CALL / INPUT / OUTPUT / ROUTE 等更直白（用户角度）。<br>
+			• <b>核心参数</b>：每个节点只展示 2-3 行关键配置（agent/provider/prompt、name/args、target/分支等），不堆 28 字 JSON 截断。<br>
+			• <b>JSON chip 化</b>：skillArgs / toolParams / options 等不再裸 `{...}`，拆成 chip 显示具体 key=value。<br>
+			• <b>端口颜色</b>：true=绿 / false=红 / case-1..4=蓝/紫/橙/青 / default=灰虚线——远距离可识别分支走向。<br>
+			• <b>概要预览</b>：最底部一行小字 mono（带 `{{input}}` 高亮），hover 展开全文，避免卡片过长。
+		</div>
+	</div>
+
+	<!-- ═══════ 3. 状态徽章 ═══════ -->
+	<div class="section">
+		<h2><span class="num">3</span>执行状态徽章</h2>
+		<div class="desc">右上一组胶囊（取代原红字「执行失败」挤在中段）：<b>idle</b> 灰 · <b>running</b> 橙 · <b>success</b> 绿 · <b>error</b> 红 · <b>skipped</b> 灰虚线（gate 未命中分支）。</div>
+		<div class="canvas-stage" style="min-height:140px; padding:30px 40px">
+			<div class="node s-agent" style="position:relative; display:inline-block; width:200px; margin:10px">
+				<div class="head"><span class="icon">🤖</span> Agent <span class="type-pill t-orch">LLM</span><span class="badge idle" style="margin-left:auto">idle</span></div>
+				<div class="body"><div class="field"><span class="k">prompt</span><span class="v">"分析中..."</span></div></div>
+			</div>
+			<div class="node s-agent" style="position:relative; display:inline-block; width:200px; margin:10px">
+				<div class="head"><span class="icon">🤖</span> Agent <span class="type-pill t-orch">LLM</span><span class="badge running" style="margin-left:auto">⚙ running</span></div>
+				<div class="body"><div class="field"><span class="k">step</span><span class="v">3/12</span></div></div>
+			</div>
+			<div class="node s-agent" style="position:relative; display:inline-block; width:200px; margin:10px">
+				<div class="head"><span class="icon">🤖</span> Agent <span class="type-pill t-orch">LLM</span><span class="badge success" style="margin-left:auto">✓ done</span></div>
+				<div class="body"><div class="field"><span class="k">out</span><span class="v">"分析完成"</span></div></div>
+			</div>
+			<div class="node s-agent" style="position:relative; display:inline-block; width:200px; margin:10px">
+				<div class="head"><span class="icon">🤖</span> Agent <span class="type-pill t-orch">LLM</span><span class="badge error" style="margin-left:auto">✕ error</span></div>
+				<div class="body"><div class="field"><span class="k">err</span><span class="v">"timeout"</span></div></div>
+			</div>
+			<div class="node s-ifelse" style="position:relative; display:inline-block; width:200px; margin:10px">
+				<div class="head"><span class="icon">⑂</span> If/Else <span class="type-pill t-cf">ROUTE</span><span class="badge skipped" style="margin-left:auto">⤼ skipped</span></div>
+				<div class="body"><div class="field"><span class="k">reason</span><span class="v">"分支未激活"</span></div></div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════ 4. 编辑弹窗（同前作 mockup） ═══════ -->
+	<div class="section">
+		<h2><span class="num">4</span>编辑弹窗（细节承接之前 P0/P1 落地）</h2>
+		<div class="desc">双击节点打开——字段顺序按"使用频率"重排，JSON 字段用 KV 结构化编辑器（+类型下拉、+语法校验），占位符 ⌁ 插入按钮覆盖所有文本域。</div>
+		<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px" class="anno">
+			<div>
+				<div style="font-size:13px;font-weight:600;margin-bottom:6px">Saros.Agent 编辑弹窗（mockup）</div>
+				<div class="node s-agent" style="position:relative; display:inline-block; width:380px; vertical-align:top">
+					<div class="head"><span class="icon">🤖</span> Agent · 编辑</div>
+					<div class="body" style="display:flex; flex-direction:column; gap:8px">
+						<div class="field"><span class="k">提示词</span></div>
+						<div class="summary" style="height:60px; padding:6px">分析 {{input.topic}} 的 {{input.count}} 个候选</div>
+						<div class="field"><span class="k">Agent</span><span class="v tag">code-explorer ▾</span></div>
+						<div class="field"><span class="k">Provider</span><span class="v tag">openai ▾</span></div>
+						<div class="field"><span class="k">Model</span><span class="v tag">gpt-5-codex · 工具 ▾</span></div>
+					</div>
+				</div>
+			</div>
+			<div>
+				<div style="font-size:13px;font-weight:600;margin-bottom:6px">Saros.Switch 编辑弹窗（cases KV 编辑）</div>
+				<div class="node s-switch" style="position:relative; display:inline-block; width:380px; vertical-align:top">
+					<div class="head"><span class="icon">⇆</span> Switch · 编辑</div>
+					<div class="body" style="display:flex; flex-direction:column; gap:6px">
+						<div class="field"><span class="k">target</span><span class="v tag">{{input.style}}</span></div>
+						<div class="field"><span class="k">cases</span><span class="v" style="font-family:var(--mono); font-size:10.5px">"a", "b", "c"</span></div>
+						<div class="chip-row" style="margin-top:4px">
+							<span class="chip port">case-1: a</span>
+							<span class="chip port">case-2: b</span>
+							<span class="chip port">case-3: c</span>
+							<span class="chip port">default: —</span>
+						</div>
+						<div style="font-size:10.5px;color:var(--fg-faint)">KV 编辑器 / 「+ 添加键」/ 语法错误红框 / 「切换为文本」</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+</div>
+
+<script>
+// 主题切换
+const btnTheme = document.getElementById('btnTheme');
+btnTheme.onclick = () => {
+	const h = document.documentElement;
+	h.dataset.theme = h.dataset.theme === 'light' ? '' : 'light';
+};
+// 标注
+const btnAnnotate = document.getElementById('btnAnnotate');
+btnAnnotate.onclick = () => {
+	document.body.classList.toggle('annotate');
+	btnAnnotate.classList.toggle('on');
+};
+// 连线（启动 → Agent / Skill → Tool → End；Agent → IfElse；Skill → Switch）
+const wires = document.getElementById('wires');
+const stage = document.getElementById('stage');
+const get = (id) => stage.querySelector(`[data-x][style*="left: ${id}px"]`);
+// 简化：根据各节点 top 估出端口 y 后画线
+const portX = (el, side) => {
+	const r = el.getBoundingClientRect();
+	const sr = stage.getBoundingClientRect();
+	return { x: side === 'in' ? r.left - sr.left : r.right - sr.left, y: r.top - sr.top + (r.height * 0.25) };
+};
+function drawWire(from, to, cls, fromSide='out', toSide='in') {
+	const a = portX(from, fromSide), b = portX(to, toSide);
+	const d = `M ${a.x} ${a.y} C ${a.x+40} ${a.y}, ${b.x-40} ${b.y}, ${b.x} ${b.y}`;
+	const p = document.createElementNS('http://www.w3.org/2000/svg','path');
+	p.setAttribute('d', d); p.setAttribute('class', cls); p.setAttribute('marker-end','url(#arr)');
+	wires.appendChild(p);
+}
+window.addEventListener('load', () => {
+	const n = (id) => document.querySelector(`[data-x="${id}"]`);
+	drawWire(n(40), n(290));          // start → agent
+	drawWire(n(290), n(590));         // agent → skill
+	drawWire(n(590), n(860));         // skill → tool
+	drawWire(n(860), n(1130));        // tool → end
+});
+</script>
+</body>
+</html>

@@ -103,6 +103,8 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		label: 'Workflow',
 		priority: ToolsetPriority.High,
 		prefixes: ['workflow_'],
+		// 'workflow'（无下划线）= 动态工作流编排工具（模型写 JS 脚本扇出子代理）
+		exactNames: ['workflow'],
 		deferrable: false,
 	},
 	{

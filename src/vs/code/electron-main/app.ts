@@ -660,8 +660,18 @@ export class CodeApplication extends Disposable {
 			const timeoutHandle = setTimeout(() => {
 				if (!settled) {
 					settled = true;
-					try { child.kill('SIGKILL'); } catch { /* ignore */ }
-					resolve({ success: false, stdout, stderr: stderr + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
+					// Windows：shell:true 时 child 是 cmd.exe/bash，child.kill() 只杀 shell
+					// 进程，不杀其 spawn 的子进程（如 node script.mjs 卡在 top-level await）。
+					// 孤儿 node 进程继续跑 → 即使超时返回，后台仍吃 CPU → "卡住"体感。
+					// 用 taskkill /T /F 杀整棵进程树；失败则回退 child.kill()。
+					if (process.platform === 'win32' && child.pid) {
+						execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {
+							resolve({ success: false, stdout, stderr: stderr + `\n[timeout: process tree killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
+						});
+					} else {
+						try { child.kill('SIGKILL'); } catch { /* ignore */ }
+						resolve({ success: false, stdout, stderr: stderr + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
+					}
 				}
 			}, timeoutMs);
 

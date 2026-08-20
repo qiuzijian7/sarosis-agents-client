@@ -10,8 +10,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as React from 'react';
+import { useWorkflowEditorStore } from './store';
 import { getNodeSpec } from './comfyHost/registry';
-import { buildEditorFields, coerceEditorValue, buildSarosEditorFields, sarosDataToValues, sarosValuesToData, type EditorField } from './comfyHost/nodeEditorForm';
+import { buildEditorFields, coerceEditorValue, buildSarosEditorFields, sarosDataToValues, sarosValuesToData, isSarosJsonField, type EditorField } from './comfyHost/nodeEditorForm';
 import { type SingleNodeRunResult } from './comfyHost/nodeExecutor';
 import { runNodeOrStage, runProviderImage, isPickerNode, isLoaderNode, collectUpstreamCandidates, resolveFirstImageGenDefaults } from './comfyHost/workflowRun';
 import { ComfyRunnerRegistry } from './comfyHost/comfyRunner';
@@ -93,6 +94,38 @@ function loaderMediaKind(type: string): MediaKind {
 }
 
 type RunState = 'idle' | 'running' | 'success' | 'error';
+
+/**
+ * W4b: 收集 prompt textarea 可插入的占位符令牌（点选菜单数据源）。
+ * 顺序：{{input}} → 上游节点 label → Start 节点 args key。
+ * 依赖 useWorkflowEditorStore.getState() 读取画布真源（nodes/edges）。
+ */
+function collectInsertTokens(nodeId: string): Array<{ label: string; token: string }> {
+	const tokens: Array<{ label: string; token: string }> = [{ label: '上游输出', token: '{{input}}' }];
+	try {
+		const s = useWorkflowEditorStore.getState();
+		const nodes = (s.nodes ?? []) as Array<{ id: string; type: string; data?: Record<string, unknown> }>;
+		const edges = (s.edges ?? []) as Array<{ source: string; target: string }>;
+		const upIds = new Set(edges.filter(e => e.target === nodeId).map(e => e.source));
+		for (const n of nodes) {
+			if (!upIds.has(n.id)) { continue; }
+			const label = (n.data?.label as string | undefined) ?? n.type;
+			if (!label) { continue; }
+			tokens.push({ label: `${label}（上游）`, token: `{{${label}}}` });
+		}
+		for (const n of nodes) {
+			if (n.type !== 'Saros.Start') { continue; }
+			const raw = n.data?.args;
+			let args: Record<string, unknown> = {};
+			if (typeof raw === 'string') { try { args = JSON.parse(raw) as Record<string, unknown>; } catch { /* 非法 JSON 忽略 */ } }
+			else if (raw && typeof raw === 'object') { args = raw as Record<string, unknown>; }
+			for (const k of Object.keys(args)) {
+				tokens.push({ label: `参数 ${k}`, token: `{{args.${k}}}` });
+			}
+		}
+	} catch { /* store 不可用时仅提供 {{input}} */ }
+	return tokens;
+}
 
 export function NodeEditorPopup({
 	nodeId,
@@ -845,7 +878,25 @@ export function NodeEditorPopup({
 								该节点没有可编辑参数（动态上游端口）。
 							</div>
 						)}
-						{fields.map(f => <FieldEditor key={f.key} field={f} value={values[f.key]} providerId={String(values.providerId ?? '')} onChange={v => setField(f.key, v)} />)}
+						{/* ★ Agent 节点主次分层：主选择区（agentId + prompt）+ 「高级：覆盖模型」
+						   折叠（providerId/modelId）。agentId 是主选择、provider/model 是可选
+						   覆盖配置（存 agentConfig 子对象），平铺会让用户分不清主次。 */}
+						{nodeType === 'Saros.Agent' ? (
+							<>
+								{fields.filter(f => f.key === 'agentId').map(f => <FieldEditor key={f.key} field={f} value={values[f.key]} providerId={String(values.providerId ?? '')} nodeId={nodeId} onChange={v => setField(f.key, v)} />)}
+								{fields.filter(f => f.key === 'prompt').map(f => <FieldEditor key={f.key} field={f} value={values[f.key]} providerId={String(values.providerId ?? '')} nodeId={nodeId} onChange={v => setField(f.key, v)} />)}
+								<details style={{ marginTop: 6, borderTop: '1px solid var(--vscode-panel-border)', paddingTop: 6 }}>
+									<summary style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', cursor: 'pointer', listStyle: 'none', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 4 }}>
+										<span style={{ transition: 'transform .15s', display: 'inline-block' }}>▸</span> 高级：覆盖模型配置
+									</summary>
+									<div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 8 }}>
+										{fields.filter(f => f.key === 'providerId' || f.key === 'modelId').map(f => <FieldEditor key={f.key} field={f} value={values[f.key]} providerId={String(values.providerId ?? '')} nodeId={nodeId} onChange={v => setField(f.key, v)} />)}
+									</div>
+								</details>
+							</>
+						) : (
+							fields.map(f => <FieldEditor key={f.key} field={f} value={values[f.key]} providerId={String(values.providerId ?? '')} nodeId={nodeId} onChange={v => setField(f.key, v)} />)
+						)}
 					</>
 				)}
 
@@ -913,13 +964,199 @@ export function NodeEditorPopup({
 	);
 }
 
-function FieldEditor({ field, value, onChange, providerId }: { field: EditorField; value: unknown; onChange: (v: unknown) => void; providerId?: string }): React.JSX.Element {
+/**
+ * 复刻 ComfyTV LoadImage 编辑器：文件名 input（短展示）+ 本地上传按钮 +
+ * 缩略图（按比例渲染）+ 尺寸文字 `W × H`（HTMLImageElement.naturalWidth）。
+ * value 存 data:image/... data URL 或 http URL（兼容剪贴板粘贴/Picker 选中）。
+ * 缩略图 + 尺寸由 useEffect 异步测量，依赖 URL 变化触发重算。
+ */
+function ImageFieldEditor({ label, value, onChange, inputStyle }: { label: string; value: string; onChange: (v: unknown) => void; inputStyle: React.CSSProperties }): React.JSX.Element {
+	const inputRef = React.useRef<HTMLInputElement | null>(null);
+	const [size, setSize] = React.useState<{ w: number; h: number } | null>(null);
+	const labelStyle: React.CSSProperties = { fontSize: 10, color: 'var(--vscode-descriptionForeground)', marginBottom: 2, display: 'block' };
+	React.useEffect(() => {
+		if (!value) { setSize(null); return; }
+		const img = new Image();
+		img.onload = () => setSize({ w: img.naturalWidth, h: img.naturalHeight });
+		img.onerror = () => setSize(null);
+		img.src = value;
+	}, [value]);
+	const fileName = value ? (() => {
+		try {
+			if (value.startsWith('data:')) { return 'pasted image'; }
+			const u = new URL(value);
+			return decodeURIComponent(u.pathname.split('/').pop() || value);
+		} catch { return value.slice(0, 32); }
+	})() : '';
+	return (
+		<div>
+			<label style={labelStyle}>{label}</label>
+			<div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+				<input
+					value={fileName}
+					readOnly
+					placeholder="（未选图）"
+					style={{ ...inputStyle, flex: 1, cursor: 'pointer', minWidth: 0 }}
+					onClick={() => inputRef.current?.click()}
+				/>
+				<button type="button" title="上传本地图片" onClick={() => inputRef.current?.click()}
+					style={{ height: 24, width: 26, border: '1px solid var(--vscode-input-border)', background: 'transparent', color: 'var(--vscode-foreground)', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+					<svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+						<path d="M2 11v2.5A1.5 1.5 0 0 0 3.5 15h9a1.5 1.5 0 0 0 1.5-1.5V11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+						<path d="M8 2v8.5m0 0L5 7.5M8 10.5l3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+					</svg>
+				</button>
+				<input ref={inputRef} type="file" accept="image/*" style={{ display: 'none' }}
+					onChange={e => {
+						const f = e.target.files && e.target.files.length > 0 ? e.target.files[0] : null;
+						if (!f) { return; }
+						const reader = new FileReader();
+						reader.onload = () => {
+							const s = typeof reader.result === 'string' ? reader.result : '';
+							if (s) { onChange(s); }
+						};
+						reader.readAsDataURL(f);
+						e.target.value = '';
+					}} />
+			</div>
+			{value && (
+				<div style={{ background: 'var(--vscode-input-background)', border: '1px solid var(--vscode-input-border)', borderRadius: 4, padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+					<img src={value} alt="" style={{ maxWidth: '100%', maxHeight: 240, objectFit: 'contain' }} />
+				</div>
+			)}
+			{size && (
+				<div style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', marginTop: 3, textAlign: 'center', fontFamily: 'var(--monospace, monospace)' }}>
+					{size.w} × {size.h}
+				</div>
+			)}
+		</div>
+	);
+}
+
+/**
+ * P1: JSON 对象字段的结构化 KV 编辑器（variables / skillArgs / toolParams / options）。
+ * 扁平对象 → 每行 key/value 输入 + 类型徽章 + 删除；「+ 添加键」追加；
+ * 语法错误 → 红框提示；非扁平对象（嵌套/数组）→ 回退文本编辑。
+ * 受控组件：值完全由 value 派生，编辑即 onChange(序列化 JSON)。
+ */
+function JsonKeyValueField({ field, value, onChange, labelStyle, inputStyle }: { field: EditorField; value: unknown; onChange: (v: unknown) => void; labelStyle: React.CSSProperties; inputStyle: React.CSSProperties }): React.JSX.Element {
+	const [textMode, setTextMode] = React.useState(false);
+	const raw = String(value ?? '');
+	let parsed: unknown;
+	let parseError: string | undefined;
+	try { parsed = JSON.parse(raw || '{}'); } catch (e) { parseError = e instanceof Error ? e.message : String(e); }
+	const isFlatObj = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+		&& Object.values(parsed as Record<string, unknown>).every(v => v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean');
+	const entries: Array<[string, unknown]> = isFlatObj ? Object.entries(parsed as Record<string, unknown>) : [];
+
+	const smallInput: React.CSSProperties = { ...inputStyle, padding: '3px 6px', fontSize: 11 };
+	const toggleBtn: React.CSSProperties = { fontSize: 10, cursor: 'pointer', border: '1px solid var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-descriptionForeground)', borderRadius: 4, padding: '1px 7px', marginLeft: 6, fontFamily: 'inherit' };
+
+	// P1: 显式类型下拉——输入框编辑时**保持当前类型**（不再自动推断），
+	// 类型由右侧 select 显式控制。
+	const coerceKeepType = (s: string, cur: unknown): unknown => {
+		if (cur === null) { return null; }
+		if (typeof cur === 'number') { const n = Number(s); return Number.isNaN(n) ? s : n; }
+		if (typeof cur === 'boolean') { return s === 'true'; }
+		return s;
+	};
+	const typeOf = (v: unknown): string => v === null ? 'null' : typeof v;
+	const setEntries = (next: Array<[string, unknown]>) => {
+		const obj: Record<string, unknown> = {};
+		for (const [k, v] of next) { if (k) { obj[k] = v; } }
+		onChange(JSON.stringify(obj, null, 2));
+	};
+	const setRowType = (i: number, t: string) => {
+		const next = entries.slice();
+		const [k, v] = next[i];
+		const s = v === null ? '' : String(v);
+		if (t === 'string') { next[i] = [k, s]; }
+		else if (t === 'number') { const n = Number(s); next[i] = [k, Number.isNaN(n) ? 0 : n]; }
+		else if (t === 'boolean') { next[i] = [k, s === 'true']; }
+		else if (t === 'null') { next[i] = [k, null]; }
+		setEntries(next);
+	};
+
+	if (parseError) {
+		return (
+			<div>
+				<label style={labelStyle}>{field.label}</label>
+				<div style={{ fontSize: 10, color: 'var(--vscode-errorForeground, #f48771)', marginBottom: 3 }}>JSON 语法错误：{parseError}</div>
+				<textarea rows={4} value={raw} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, resize: 'vertical', borderColor: 'var(--vscode-errorForeground)' }} />
+			</div>
+		);
+	}
+
+	if (textMode || !isFlatObj) {
+		return (
+			<div>
+				<label style={labelStyle}>{field.label}{isFlatObj && <button type="button" onClick={() => setTextMode(false)} style={toggleBtn}>切换到表单编辑</button>}</label>
+				<textarea rows={4} value={raw} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.4 }} />
+			</div>
+		);
+	}
+
+	return (
+		<div>
+			<label style={labelStyle}>{field.label}<button type="button" onClick={() => setTextMode(true)} style={toggleBtn}>切换为文本</button></label>
+			{entries.map(([k, v], i) => (
+				<div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 3 }}>
+					<input
+						value={k}
+						placeholder="key"
+						onChange={e => { const next = entries.slice(); next[i] = [e.target.value, v]; setEntries(next); }}
+						style={{ ...smallInput, flex: '0 0 38%' }}
+					/>
+					<input
+						value={v === null ? '' : String(v)}
+						placeholder={v === null ? 'null' : 'value（支持 {{input}}）'}
+						disabled={v === null}
+						onChange={e => { const next = entries.slice(); next[i] = [k, coerceKeepType(e.target.value, v)]; setEntries(next); }}
+						style={{ ...smallInput, flex: 1, opacity: v === null ? 0.5 : 1 }}
+					/>
+					<select
+						value={typeOf(v)}
+						title="值类型"
+						onChange={e => setRowType(i, e.target.value)}
+						style={{ fontSize: 9, fontFamily: 'var(--monospace, monospace)', color: 'var(--vscode-descriptionForeground)', background: 'var(--vscode-input-background)', border: '1px solid var(--vscode-input-border)', borderRadius: 3, padding: '1px 2px', flexShrink: 0, cursor: 'pointer' }}
+					>
+						<option value="string">string</option>
+						<option value="number">number</option>
+						<option value="boolean">boolean</option>
+						<option value="null">null</option>
+					</select>
+					<button type="button" title="删除此键" onClick={() => setEntries(entries.filter((_, idx) => idx !== i))} style={{ fontSize: 12, cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--vscode-descriptionForeground)', padding: '0 4px' }}>✕</button>
+				</div>
+			))}
+			<button type="button" onClick={() => setEntries([...entries, ['', '']])} style={{ fontSize: 10, cursor: 'pointer', border: '1px dashed var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-descriptionForeground)', borderRadius: 4, padding: '2px 10px', marginTop: 2, fontFamily: 'inherit' }}>+ 添加键</button>
+		</div>
+	);
+}
+
+function FieldEditor({ field, value, onChange, providerId, nodeId }: { field: EditorField; value: unknown; onChange: (v: unknown) => void; providerId?: string; nodeId?: string }): React.JSX.Element {
 	const labelStyle: React.CSSProperties = { fontSize: 10, color: 'var(--vscode-descriptionForeground)', marginBottom: 2, display: 'block' };
 	const inputStyle: React.CSSProperties = {
 		width: '100%', boxSizing: 'border-box', padding: '5px 8px', fontSize: 11,
 		background: 'var(--vscode-input-background)', color: 'var(--vscode-foreground)',
 		border: '1px solid var(--vscode-input-border)', borderRadius: 4,
 		fontFamily: 'inherit', outline: 'none',
+	};
+
+	// W4b: prompt textarea 的「插入占位符」点选——hooks 必须无条件调用，故提至顶层。
+	const [insertOpen, setInsertOpen] = React.useState(false);
+	const taRef = React.useRef<HTMLTextAreaElement | null>(null);
+	const insertTokens = (field.kind === 'textarea' && field.key === 'prompt' && nodeId)
+		? collectInsertTokens(nodeId)
+		: [];
+	const insertToken = (token: string) => {
+		const ta = taRef.current;
+		const cur = String(value ?? '');
+		if (!ta) { onChange(cur + token); setInsertOpen(false); return; }
+		const start = ta.selectionStart ?? cur.length;
+		const end = ta.selectionEnd ?? start;
+		onChange(cur.slice(0, start) + token + cur.slice(end));
+		setInsertOpen(false);
+		requestAnimationFrame(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = start + token.length; });
 	};
 
 	if (field.kind === 'provider') {
@@ -944,7 +1181,32 @@ function FieldEditor({ field, value, onChange, providerId }: { field: EditorFiel
 		/>;
 	}
 
-	if (field.kind === 'agent' || field.kind === 'skill') {
+	// P1: Agent 节点的 LLM provider/model 下拉——列出所有已认证 provider 的
+	// 全部聊天模型（不过滤 supportsImageGen，区别于 ProviderPicker 的文生图）。
+	if (field.kind === 'agentProvider') {
+		return <AgentProviderModelSelect
+			mode="provider"
+			label={field.label}
+			value={String(value ?? '')}
+			providerId={String(value ?? '')}
+			onChange={onChange}
+			labelStyle={labelStyle}
+			inputStyle={inputStyle}
+		/>;
+	}
+	if (field.kind === 'agentModel') {
+		return <AgentProviderModelSelect
+			mode="model"
+			label={field.label}
+			value={String(value ?? '')}
+			providerId={providerId ?? ''}
+			onChange={onChange}
+			labelStyle={labelStyle}
+			inputStyle={inputStyle}
+		/>;
+	}
+
+	if (field.kind === 'agent' || field.kind === 'skill' || field.kind === 'tool') {
 		return <SearchableSelect
 			field={field}
 			value={String(value ?? '')}
@@ -954,11 +1216,50 @@ function FieldEditor({ field, value, onChange, providerId }: { field: EditorFiel
 		/>;
 	}
 
+	if (field.kind === 'image') {
+		return <ImageFieldEditor label={field.label} value={String(value ?? '')} onChange={onChange} inputStyle={inputStyle} />;
+	}
+
 	if (field.kind === 'textarea') {
+		// P1: JSON 对象字段（variables/skillArgs/toolParams/options/args）用 KV 结构化
+		// 编辑器替代裸 textarea——语法错误即时红框提示、无需手写 JSON。嵌套/数组自动回退文本。
+		if (isSarosJsonField(field.key) || field.key === 'args') {
+			return <JsonKeyValueField field={field} value={value} onChange={onChange} labelStyle={labelStyle} inputStyle={inputStyle} />;
+		}
 		return (
 			<div>
 				<label style={labelStyle}>{field.label}</label>
+				{insertTokens.length > 0 && (
+					<div style={{ position: 'relative', display: 'inline-block', marginBottom: 3 }}>
+						<button
+							type="button"
+							title="插入变量占位符（{{input}} / 上游节点 / Start 参数）"
+							onClick={() => setInsertOpen(v => !v)}
+							style={{ fontSize: 10, cursor: 'pointer', border: '1px solid var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-descriptionForeground)', borderRadius: 4, padding: '1px 7px', fontFamily: 'inherit' }}
+						>
+							⌁ 插入
+						</button>
+						{insertOpen && (
+							<div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 20, minWidth: 200, background: 'var(--vscode-menu-background)', border: '1px solid var(--vscode-menu-border)', borderRadius: 6, boxShadow: '0 8px 24px rgba(0,0,0,.4)', padding: 4 }}>
+								{insertTokens.map(t => (
+									<button
+										key={t.token}
+										type="button"
+										onClick={() => insertToken(t.token)}
+										style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '5px 9px', fontSize: 11, background: 'none', border: 'none', color: 'var(--vscode-foreground)', cursor: 'pointer', borderRadius: 4, fontFamily: 'inherit' }}
+										onMouseEnter={e => { e.currentTarget.style.background = 'var(--vscode-menu-selectionBackground)'; }}
+										onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
+									>
+										<span style={{ opacity: 0.65, fontSize: 10 }}>{t.label}</span>
+										<span style={{ fontFamily: 'var(--monospace, monospace)', marginLeft: 'auto', fontSize: 10.5, opacity: 0.85 }}>{t.token}</span>
+									</button>
+								))}
+							</div>
+						)}
+					</div>
+				)}
 				<textarea
+					ref={taRef}
 					rows={3}
 					value={String(value ?? '')}
 					placeholder={field.placeholder}
@@ -1041,6 +1342,54 @@ function ProviderModelSelect({ mode, value, providerId, onChange, labelStyle, in
 	);
 }
 
+/* ── Agent 节点 LLM Provider / Model 下拉（P1）────────────────────────────
+ * 列出所有已认证 provider 的全部聊天模型（不做 supportsImageGen 过滤——
+ * Agent 需要的是 LLM chat 模型，而非 ProviderPicker 的文生图模型）。 */
+function AgentProviderModelSelect({ mode, label, value, providerId, onChange, labelStyle, inputStyle }: {
+	mode: 'provider' | 'model';
+	label: string;
+	value: string;
+	providerId: string;
+	onChange: (v: unknown) => void;
+	labelStyle: React.CSSProperties;
+	inputStyle: React.CSSProperties;
+}): React.JSX.Element {
+	const providers = useProviderStore(s => s.providers);
+	const loadProviders = useProviderStore(s => s.loadProviders);
+	React.useEffect(() => { if (providers.length === 0) { void loadProviders(); } }, [providers.length, loadProviders]);
+	const chatProviders = React.useMemo(
+		() => providers.filter(p => p.authStatus === 'authenticated'),
+		[providers],
+	);
+	const models = React.useMemo(() => {
+		const p = chatProviders.find(x => x.id === providerId);
+		return p?.models ?? [];
+	}, [chatProviders, providerId]);
+
+	if (mode === 'provider') {
+		const effective = value || chatProviders[0]?.id || '';
+		return (
+			<div>
+				<label style={labelStyle}>{label}</label>
+				<select value={effective} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+					{chatProviders.length === 0 && <option value="">（无已认证的 Provider）</option>}
+					{chatProviders.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+				</select>
+			</div>
+		);
+	}
+	const effective = value || models[0]?.id || '';
+	return (
+		<div>
+			<label style={labelStyle}>{label}</label>
+			<select value={effective} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+				{models.length === 0 && <option value="">（该 Provider 无模型）</option>}
+				{models.map(m => <option key={m.id} value={m.id}>{m.name}{m.supportsToolCall ? ' · 工具' : ''}</option>)}
+			</select>
+		</div>
+	);
+}
+
 /* ── Searchable dropdown (Agent / Skill fields) ────────────────────────────
  * Renders a filterable combobox populated with every current agent / skill.
  * The filter input appears when the list is open; click an item to pick.
@@ -1083,12 +1432,47 @@ function SearchableSelect({ field, value, onChange, labelStyle, inputStyle }: {
 }): React.JSX.Element {
 	const agents = useAgentStore(s => s.agents);
 	const skills = usePicklistStore(s => s.skills);
+	const tools = usePicklistStore(s => s.tools);
+	const loadSkills = usePicklistStore(s => s.loadSkills);
+	const loadTools = usePicklistStore(s => s.loadTools);
+	React.useEffect(() => {
+		if (field.kind === 'skill' && skills.length === 0) { void loadSkills(); }
+		if (field.kind === 'tool' && tools.length === 0) { void loadTools(); }
+	}, [field.kind, skills.length, tools.length, loadSkills, loadTools]);
+	// ★ 富选项：agent/skill/tool 不再只回显 `name (id)`，而是携带 icon /
+	//   description / 分类 / 技能·工具数徽章，选项渲染成富卡片（对齐 ComfyUI
+	//   节点搜索框的选项信息密度）。filtered/current 仍按 value+label 匹配。
 	const options = React.useMemo(() => {
 		if (field.kind === 'agent') {
-			return agents.map(a => ({ value: a.id, label: `${a.name ?? a.id} (${a.id})` }));
+			return agents.map(a => ({
+				value: a.id,
+				label: a.name ?? a.id,
+				id: a.id,
+				icon: a.icon || '🤖',
+				description: a.description || '',
+				category: a.category,
+				skills: a.skills?.length ?? 0,
+				tools: a.tools?.length ?? 0,
+			}));
 		}
-		return skills.map(s => ({ value: s.id, label: `${s.name ?? s.id} (${s.id})` }));
-	}, [field.kind, agents, skills]);
+		if (field.kind === 'tool') {
+			return tools.map(t => ({
+				value: t.id,
+				label: t.name,
+				id: t.id,
+				icon: '🔧',
+				description: t.description || '',
+			}));
+		}
+		return skills.map(s => ({
+			value: s.id,
+			label: s.name ?? s.id,
+			id: s.id,
+			icon: '⚡',
+			description: s.description || '',
+			category: s.category || s.activation,
+		}));
+	}, [field.kind, agents, skills, tools]);
 	const [open, setOpen] = React.useState(false);
 	const [query, setQuery] = React.useState('');
 	const wrapRef = React.useRef<HTMLDivElement | null>(null);
@@ -1127,8 +1511,11 @@ function SearchableSelect({ field, value, onChange, labelStyle, inputStyle }: {
 					gap: 6, cursor: 'pointer', textAlign: 'left',
 				}}
 			>
-				<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-					{current?.label ?? (value || field.placeholder || '请选择…')}
+				<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, display: 'flex', alignItems: 'center', gap: 5 }}>
+					{current?.icon && <span style={{ fontSize: 13, flexShrink: 0 }}>{current.icon}</span>}
+					<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+						{current?.label ?? (value || field.placeholder || '请选择…')}
+					</span>
 				</span>
 				<span style={{ opacity: .55, fontSize: 9 }}>▾</span>
 			</button>
@@ -1148,7 +1535,7 @@ function SearchableSelect({ field, value, onChange, labelStyle, inputStyle }: {
 						placeholder="过滤…"
 						style={{ ...inputStyle, border: 'none', borderBottom: '1px solid var(--vscode-input-border)', borderRadius: 0 }}
 					/>
-					<div style={{ maxHeight: 180, overflowY: 'auto' }}>
+					<div style={{ maxHeight: 240, overflowY: 'auto' }}>
 						{filtered.length === 0 && (
 							<div style={{ padding: '6px 8px', fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>无匹配项</div>
 						)}
@@ -1161,13 +1548,34 @@ function SearchableSelect({ field, value, onChange, labelStyle, inputStyle }: {
 									onMouseEnter={e => { e.currentTarget.style.background = 'var(--vscode-list-hoverBackground, rgba(255,255,255,.08))'; }}
 									onMouseLeave={e => { e.currentTarget.style.background = selected ? 'var(--vscode-list-hoverBackground, rgba(255,255,255,.08))' : 'transparent'; }}
 									style={{
-										padding: '5px 8px', fontSize: 11, cursor: 'pointer',
+										display: 'flex', gap: 8, alignItems: 'flex-start',
+										padding: '6px 8px', fontSize: 11, cursor: 'pointer',
 										background: selected ? 'var(--vscode-list-hoverBackground, rgba(255,255,255,.08))' : 'transparent',
 										color: 'var(--vscode-foreground)',
-										overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+										borderRadius: 3,
 									}}
 								>
-									{o.label}
+									<span style={{ fontSize: 15, width: 20, textAlign: 'center', flexShrink: 0, lineHeight: 1.3 }}>{o.icon}</span>
+									<div style={{ flex: 1, minWidth: 0 }}>
+										<div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+											<span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.label}</span>
+											{o.id && o.id !== o.label && (
+												<span style={{ fontSize: 9, color: 'var(--vscode-descriptionForeground)', fontFamily: 'Consolas, monospace', flexShrink: 0 }}>{o.id}</span>
+											)}
+										</div>
+										{o.description && (
+											<div style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', marginTop: 2, lineHeight: 1.35, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+												{o.description}
+											</div>
+										)}
+										{(o.category || o.skills != null || o.tools != null) && (
+											<div style={{ display: 'flex', gap: 4, marginTop: 3, flexWrap: 'wrap' }}>
+												{o.category && <span style={{ fontSize: 9, padding: '0 5px', borderRadius: 3, background: 'rgba(0,122,204,.18)', color: '#79b8ff' }}>{o.category}</span>}
+												{o.skills != null && o.skills > 0 && <span style={{ fontSize: 9, padding: '0 5px', borderRadius: 3, background: 'rgba(255,255,255,.07)', color: 'var(--vscode-descriptionForeground)' }}>{o.skills} 技能</span>}
+												{o.tools != null && o.tools > 0 && <span style={{ fontSize: 9, padding: '0 5px', borderRadius: 3, background: 'rgba(255,255,255,.07)', color: 'var(--vscode-descriptionForeground)' }}>{o.tools} 工具</span>}
+											</div>
+										)}
+									</div>
 								</div>
 							);
 						})}

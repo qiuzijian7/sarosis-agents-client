@@ -133,6 +133,20 @@ suite('WorkflowStorageService — version hooks', () => {
 		assert.strictEqual(version.autoCommitCalls[0], wf.id, 'autoCommit() should receive workflow id');
 	});
 
+	test('updateWorkflow() with opts.autoCommit=false skips autoCommit (auto-save)', async () => {
+		const version = new MockVersionService();
+		const { storage } = createService(version);
+
+		const wf = await storage.createWorkflow({ name: 'Test WF' });
+		await new Promise(r => setTimeout(r, 50));
+		// 清掉 createWorkflow 里的 init 计数（init 不算 autoCommit）
+		version.autoCommitCalls.length = 0;
+
+		await storage.updateWorkflow(wf.id, { name: 'auto-saved' }, undefined, { autoCommit: false });
+		await new Promise(r => setTimeout(r, 50));
+		assert.strictEqual(version.autoCommitCalls.length, 0, 'auto-save 不应触发 autoCommit（版本爆炸防护）');
+	});
+
 	test('versionService.init() failure does not crash createWorkflow()', async () => {
 		const version = new MockVersionService();
 		version.initShouldThrow = true;

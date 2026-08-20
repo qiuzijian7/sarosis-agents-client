@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>动态工作流兼容设计 · 优化方案报告</title>
+<style>
+:root{
+  --bg:#f6f7fb; --panel:#ffffff; --ink:#1e2433; --muted:#5b6478;
+  --accent:#5b5bd6; --accent-2:#7c5bd6; --accent-soft:#eeeefc;
+  --line:#e4e7f0; --ok:#0f9d6e; --warn:#d97706; --err:#dc2626;
+  --code-bg:#101426; --code-ink:#d7dced;
+  --shadow:0 1px 2px rgba(16,20,38,.05),0 8px 24px -12px rgba(16,20,38,.18);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:"Segoe UI",system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);line-height:1.7;font-size:15px}
+
+/* ── 布局 ─────────────────────────────── */
+.layout{display:flex;min-height:100vh}
+aside{width:250px;flex:0 0 250px;background:#141830;color:#c6cbe8;padding:26px 0;position:sticky;top:0;height:100vh;overflow-y:auto}
+aside h1{font-size:16px;color:#fff;padding:0 22px 14px;border-bottom:1px solid #272d52;margin-bottom:12px}
+aside a{display:block;color:#a6adde;text-decoration:none;padding:7px 22px;font-size:13px;border-left:3px solid transparent;transition:.15s}
+aside a:hover{color:#fff;background:#1b2044;border-left-color:var(--accent)}
+aside .sec{margin-top:14px;padding-left:22px;font-size:11px;letter-spacing:.12em;color:#6a71a3;text-transform:uppercase}
+main{flex:1;min-width:0;padding:44px 56px 90px;max-width:1080px}
+section{margin-bottom:56px}
+h2{font-size:24px;margin-bottom:6px;letter-spacing:-.01em}
+h2 .no{color:var(--accent);font-family:Consolas,monospace;margin-right:10px}
+h3{font-size:17px;margin:26px 0 10px}
+p.lead{color:var(--muted);margin-bottom:22px;max-width:820px}
+hr.sep{border:none;border-top:1px solid var(--line);margin:8px 0 24px}
+
+/* ── 组件 ─────────────────────────────── */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 24px;box-shadow:var(--shadow);margin:16px 0}
+.card>h4{font-size:14.5px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.chip{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:99px;vertical-align:2px}
+.chip.blue{background:var(--accent-soft);color:var(--accent)}
+.chip.green{background:#e5f7f0;color:var(--ok)}
+.chip.orange{background:#fdf1e0;color:var(--warn)}
+.chip.red{background:#fdeaea;color:var(--err)}
+.chip.gray{background:#eef0f5;color:#5b6478}
+
+table{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--panel);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+th{background:#f0f1f8;text-align:left;padding:10px 14px;font-size:12.5px;color:#3d4663;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:10px 14px;border-bottom:1px solid #eef0f6;vertical-align:top}
+tr:last-child td{border-bottom:none}
+td code,p code,li code{background:#eef0f8;color:#3b3f8f;border-radius:5px;padding:1px 6px;font-family:Consolas,"Cascadia Code",monospace;font-size:.9em}
+
+pre{background:var(--code-bg);color:var(--code-ink);border-radius:12px;padding:18px 20px;overflow-x:auto;font-size:13px;line-height:1.65;font-family:Consolas,"Cascadia Code",monospace;box-shadow:var(--shadow);margin:14px 0}
+pre .cm{color:#6b7699}      /* 注释 */
+pre .kw{color:#8ab4ff}      /* 关键字 */
+pre .st{color:#9ce0a8}      /* 字符串 */
+pre .fn{color:#ffd479}      /* 函数/hook */
+pre .num{color:#f0a6c0}
+pre .meta{color:#c39bff}
+
+.note{border-left:4px solid var(--accent);background:var(--accent-soft);border-radius:0 10px 10px 0;padding:12px 18px;margin:16px 0;font-size:13.5px}
+.note.warn{border-color:var(--warn);background:#fdf6ec}
+.note.danger{border-color:var(--err);background:#fdf2f2}
+.note b{display:block;margin-bottom:3px}
+
+ul.tight{padding-left:22px;color:#333a4d}
+ul.tight li{margin:5px 0}
+ol.steps{padding-left:22px}
+ol.steps li{margin:8px 0}
+
+/* ── 图 ─────────────────────────────── */
+figure{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px 22px 14px;box-shadow:var(--shadow);margin:20px 0}
+figure figcaption{text-align:center;color:var(--muted);font-size:12.5px;padding:12px 0 6px;border-top:1px dashed var(--line);margin-top:14px}
+svg text{font-family:"Segoe UI","Microsoft YaHei",sans-serif}
+
+/* 图例 */
+.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);padding:8px 6px 2px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block;border:1px solid rgba(0,0,0,.12)}
+
+/* M 里程碑时间线 */
+.timeline{display:flex;gap:16px;margin-top:8px;flex-wrap:wrap}
+.milestone{flex:1;min-width:240px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow);border-top:4px solid var(--accent)}
+.milestone.m2{border-top-color:var(--accent-2)}
+.milestone.m3{border-top-color:var(--ok)}
+.milestone .tag{font-family:Consolas,monospace;font-weight:700;font-size:15px;color:var(--accent)}
+.milestone.m2 .tag{color:var(--accent-2)} .milestone.m3 .tag{color:var(--ok)}
+.milestone h5{font-size:13.5px;margin:4px 0 8px}
+.milestone p{font-size:12.5px;color:var(--muted)}
+.milestone ul{padding-left:16px;font-size:12.5px;color:#3d4663;margin-top:6px}
+.milestone li{margin:4px 0}
+
+/* hook 卡片 */
+.hooks{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.hook{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:var(--shadow)}
+.hook code.sig{display:block;font-family:Consolas,monospace;font-size:12.5px;color:var(--accent);background:var(--accent-soft);border-radius:6px;padding:6px 10px;margin-bottom:8px;white-space:nowrap;overflow-x:auto}
+.hook p{font-size:12.5px;color:var(--muted)}
+
+.badge-row{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 14px}
+.kv{font-size:12px;color:var(--muted);background:#f0f1f8;border-radius:8px;padding:6px 12px}
+.kv b{color:var(--ink)}
+
+@media (max-width:1000px){aside{display:none}main{padding:30px 20px}}
+@media print{aside{display:none}main{padding:0}body{background:#fff}}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<aside>
+  <h1>动态工作流<br><span style="font-size:11px;font-weight:400;color:#8a90c0">兼容设计 · 优化方案报告</span></h1>
+  <div class="sec">分析</div>
+  <a href="#s1">1 背景与目标</a>
+  <a href="#s2">2 参照实现解析</a>
+  <a href="#s3">3 能力对比</a>
+  <div class="sec">方案</div>
+  <a href="#s4">4 总体框架图</a>
+  <a href="#s5">5 核心模块设计</a>
+  <a href="#s6">6 失败 / 取消 / 限额</a>
+  <div class="sec">串联</div>
+  <a href="#s7">7 节点串联三层设计</a>
+  <div class="sec">UI</div>
+  <a href="#s7b">8 工作流 UI 显示设计</a>
+  <div class="sec">使用</div>
+  <a href="#s8">9 使用说明</a>
+  <a href="#s9">10 脚本编写规范</a>
+  <a href="#s10">11 落地路线与风险</a>
+</aside>
+
+<main>
+
+<!-- ══════════ 1 背景与目标 ══════════ -->
+<section id="s1">
+  <h2><span class="no">01</span>背景与目标</h2>
+  <p class="lead">让 Agent 获得「模型自主编写 JavaScript 编排脚本 → 脚本内扇出子代理 → 结构化结果回传」的动态工作流能力（对齐 Claude Code / deepseek-harness 的 dynamic-workflows 范式），并与本项目现有的 LiteGraph 画布工作流、快照总线、子代理调度体系<b>统一串联</b>。</p>
+
+  <div class="card">
+    <h4>什么是「动态工作流」</h4>
+    <p style="font-size:13.5px;color:#3d4663">与画布上的可视化节点图（静态、用户手工搭建）相对：动态工作流的编排逻辑由<b>模型在对话中即时编写</b>——一段纯 JS 脚本，用 <code>agent()</code> 扇出多个子代理，用 <code>parallel()/pipeline()</code> 控制并发与流水线，最后 <code>return</code> 一个 JSON 值作为工具结果。脚本本身没有任何文件/网络能力，<b>子代理干活，脚本只做协调</b>。</p>
+  </div>
+
+  <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:14px">
+    <div class="kv"><b>参照项目</b>：G:\CustomWorkspaces\AIProjects\deepseek-harness（packages/workflow/*）</div>
+    <div class="kv"><b>设计文档</b>：doc/Dynamic-Workflow-Integration-Design.md</div>
+    <div class="kv"><b>日期</b>：2026-08-18</div>
+  </div>
+</section>
+
+<!-- ══════════ 2 dsh 解析 ══════════ -->
+<section id="s2">
+  <h2><span class="no">02</span>参照实现解析（deepseek-harness）</h2>
+  <hr class="sep">
+
+  <figure>
+    <div class="legend">
+      <span><i style="background:#eef0ff;border-color:#5b5bd6"></i>Service Definition（类型契约）</span>
+      <span><i style="background:#eafaf3;border-color:#0f9d6e"></i>Provider（可替换引擎）</span>
+      <span><i style="background:#fdf5e7;border-color:#d97706"></i>Consumer（模型工具）</span>
+      <span><i style="background:#f3ecfd;border-color:#7c5bd6"></i>UI</span>
+    </div>
+    <svg viewBox="0 0 920 330" width="100%" role="img" aria-label="dsh 四层架构">
+      <defs>
+        <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L8,4.5 L0,9 z" fill="#9aa2c0"/></marker>
+      </defs>
+      <!-- Service Definition -->
+      <rect x="20" y="30" width="270" height="120" rx="12" fill="#eef0ff" stroke="#5b5bd6" stroke-width="1.4"/>
+      <text x="155" y="58" text-anchor="middle" font-size="14" font-weight="700" fill="#3b3f8f">workflow/workflow</text>
+      <text x="155" y="80" text-anchor="middle" font-size="11.5" fill="#4d5390">Service Definition</text>
+      <text x="155" y="102" text-anchor="middle" font-size="11" fill="#6a71a3">WorkflowRunId / Meta / Result</text>
+      <text x="155" y="120" text-anchor="middle" font-size="11" fill="#6a71a3">WorkflowError + 6 生命周期事件</text>
+      <!-- Provider -->
+      <rect x="20" y="185" width="270" height="120" rx="12" fill="#eafaf3" stroke="#0f9d6e" stroke-width="1.4"/>
+      <text x="155" y="213" text-anchor="middle" font-size="14" font-weight="700" fill="#0b7a55">workflow-worker-thread</text>
+      <text x="155" y="235" text-anchor="middle" font-size="11.5" fill="#0f9d6e">Provider（可替换）</text>
+      <text x="155" y="257" text-anchor="middle" font-size="11" fill="#3f8a6f">host.ts  WorkerRun（child 注册表/grace）</text>
+      <text x="155" y="275" text-anchor="middle" font-size="11" fill="#3f8a6f">runtime.ts  vm realm + hooks</text>
+      <text x="155" y="293" text-anchor="middle" font-size="11" fill="#3f8a6f">protocol.ts  typed 消息协议</text>
+      <!-- Consumer -->
+      <rect x="345" y="185" width="270" height="120" rx="12" fill="#fdf5e7" stroke="#d97706" stroke-width="1.4"/>
+      <text x="480" y="213" text-anchor="middle" font-size="14" font-weight="700" fill="#a35a0a">tool-workflow</text>
+      <text x="480" y="235" text-anchor="middle" font-size="11.5" fill="#d97706">Consumer</text>
+      <text x="480" y="257" text-anchor="middle" font-size="11" fill="#8a6430">模型工具 workflow(script,meta,args)</text>
+      <text x="480" y="275" text-anchor="middle" font-size="11" fill="#8a6430">前台 await run.result</text>
+      <text x="480" y="293" text-anchor="middle" font-size="11" fill="#8a6430">事件 recorder → 会话流</text>
+      <!-- UI -->
+      <rect x="670" y="185" width="230" height="120" rx="12" fill="#f3ecfd" stroke="#7c5bd6" stroke-width="1.4"/>
+      <text x="785" y="213" text-anchor="middle" font-size="14" font-weight="700" fill="#5d3fa8">client/ui-workflow-run</text>
+      <text x="785" y="235" text-anchor="middle" font-size="11.5" fill="#7c5bd6">UI</text>
+      <text x="785" y="257" text-anchor="middle" font-size="11" fill="#6b5390">运行面板（React）</text>
+      <text x="785" y="275" text-anchor="middle" font-size="11" fill="#6b5390">phase 分组 / agent 行</text>
+      <!-- seams -->
+      <line x1="155" y1="150" x2="155" y2="183" stroke="#9aa2c0" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="166" y="170" font-size="10.5" fill="#6a71a3">实现契约</text>
+      <line x1="290" y1="150" x2="430" y2="183" stroke="#9aa2c0" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="330" y="158" font-size="10.5" fill="#6a71a3">只依赖类型，不依赖实现</text>
+      <line x1="615" y1="245" x2="668" y2="245" stroke="#9aa2c0" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="620" y="236" font-size="10.5" fill="#6a71a3">订阅事件</text>
+      <line x1="480" y1="183" x2="300" y2="150" stroke="#d0d4e6" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ar)"/>
+      <text x="360" y="180" font-size="10.5" fill="#6a71a3">ctx.workflowEngine</text>
+    </svg>
+    <figcaption>图 2-1 · dsh 四层架构：Provider 可整体替换（未来换 sandbox/进程引擎），模型接口不变</figcaption>
+  </figure>
+
+  <h3>脚本模型（hook 契约）</h3>
+  <p style="color:var(--muted);font-size:13.5px;margin-bottom:10px">脚本在 <code>node:vm</code> 中执行，注入的全部全局只有 6 个：</p>
+  <div class="hooks">
+    <div class="hook"><code class="sig">agent(prompt, opts?)</code><p>起一个子代理跑到完成。无 <code>schema</code> → 返回最终文本；有 → 返回校验后的对象。<b>子代理自身失败 → null</b>（脚本 <code>.filter(Boolean)</code>）。opts 仅 label / phase / schema / provider / model。</p></div>
+    <div class="hook"><code class="sig">pipeline(items, ...stages)</code><p>每个 item 独立串行流过所有 stage（<code>stage(prev,item,index)</code>），<b>无跨 stage barrier</b>。普通 stage 抛错 → 该 item 置 null。</p></div>
+    <div class="hook"><code class="sig">parallel(thunks)</code><p>并发执行零参函数并全部等待（barrier）。抛错的 thunk → null。</p></div>
+    <div class="hook"><code class="sig">phase(title)</code><p>进度分组叙事（纯观察，不施加执行结构），后续 agent() 归入该 phase。</p></div>
+    <div class="hook"><code class="sig">log(message)</code><p>进度日志，投给观察者/UI。</p></div>
+    <div class="hook"><code class="sig">args</code><p>工具调用传入的 args，structured clone 隔离，脚本改不动调用方数据。</p></div>
+  </div>
+
+  <div class="note">
+    <b>失败语义分级 —— 最值得移植的设计</b>
+    <span class="chip red">Fatal</span> 引擎/契约错误（SCRIPT_PARSE / INVALID_ARGUMENT / AGENT_CAP / CANCELLED / RESULT_UNSERIALIZABLE…）<b>穿透 parallel/pipeline 杀死整个脚本</b>，worker 侧用 <code>instanceof</code> 判定（realm 外构造，脚本无法伪造也无法误吞）；
+    <span class="chip green">普通失败</span> 子代理自身失败只把对应 item 置 <code>null</code>，脚本继续。
+  </div>
+
+  <h3>host ⇄ worker 闭合协议</h3>
+  <ul class="tight" style="font-size:13.5px">
+    <li><b>worker → host</b>：ready / phase / log / agent-start / agent-end / <code>child-start{callId,request}</code> / child-dispose / result（终态唯一）</li>
+    <li><b>host → worker</b>：go / cancel{reason} / child-started / child-start-error / child-settled / child-failed / child-disposed</li>
+    <li>payload map 单一真源 + 判别联合 + <code>assertNever</code>，全部 plain JSON 过线（structured clone）</li>
+    <li>host 收到 child-start 后调 <code>SubagentRuntime.start()</code> —— <b>引擎不实现子代理，只做桥</b></li>
+  </ul>
+</section>
+
+<!-- ══════════ 3 对比 ══════════ -->
+<section id="s3">
+  <h2><span class="no">03</span>能力对比与本项目的三个硬差异</h2>
+  <hr class="sep">
+  <table>
+    <tr><th style="width:130px">维度</th><th>deepseek-harness</th><th>本项目（现状）</th></tr>
+    <tr><td><b>工作流范式</b></td><td>动态脚本编排（模型写 JS）</td><td>静态节点图（LiteGraph）+ DAG 任务编排两条链路</td></tr>
+    <tr><td><b>脚本执行环境</b></td><td>Node worker_threads + node:vm</td><td>无。execute_code 是 shell 单发沙箱，不是编排环境</td></tr>
+    <tr><td><b>子代理 seam</b></td><td>SubagentRuntime（provider 化）</td><td><b>UnifiedSubAgentDispatch</b>：fiber / 迭代预算 / explore·general·scout 权限档 / 完成门 / 看门狗 / 卡片事件流（更丰富）</td></tr>
+    <tr><td><b>并发原语</b></td><td>parallel / pipeline（脚本内）</td><td>forEachPar（dispatch 内部）、dispatchParallelExplore、delegate_task batch</td></tr>
+    <tr><td><b>节点间数据传递</b></td><td>JS 值流动（脚本变量）</td><td><b>快照总线</b>（IndexedDB，按 stageUid 归档）+ resolveBinding + 波次分层执行</td></tr>
+    <tr><td><b>失败语义</b></td><td>fatal vs per-item null 分级</td><td>delegate_task 整体成败 + 完成门降级，无编排级组合子语义</td></tr>
+    <tr><td><b>画布编排节点</b></td><td>无画布</td><td>Saros.Agent/Task/IfElse/Switch 等仅为静态 spec，<b>执行时被跳过</b>（待激活）</td></tr>
+  </table>
+
+  <div class="note danger" style="margin-top:18px">
+    <b>三个硬差异（决定移植方式）</b>
+    ① 本项目 agent loop 在 <b>renderer 沙箱（无 Node API）</b> → 不能用 worker_threads / node:vm；<br>
+    ② 子代理生态（预算/fiber/卡片流）全在 renderer → <b>引擎必须与 dispatch 同进程</b>，否则卡片断链；<br>
+    ③ 已有媒体 DAG 与任务 DAG 两条链路 → 动态工作流是第三条，必须<b>共用「子代理原语 + 快照总线」底座</b>，而非另起炉灶。
+  </div>
+
+  <div class="note">
+    <b>可直接复用的资产</b>
+    createBlobWorker（browser/shared/workerPoolManager.ts，已处理 Electron CSP TrustedScriptURL）· UnifiedSubAgentDispatch · toolsetConfig 的 workflow toolset（已存在）· delegationLedger + 卡片 reducer · 快照总线 + stageIdentity · StructuredOutputParser · toolExecutionGuard 超时档
+  </div>
+</section>
+
+<!-- ══════════ 4 总体框架图 ══════════ -->
+<section id="s4">
+  <h2><span class="no">04</span>总体框架图（优化方案架构）</h2>
+  <p class="lead">引擎放在 <b>renderer</b>（与子代理调度同进程），脚本跑 <b>blob Web Worker</b>（worker 源码以字符串常量内联，规避打包注册铁律），子代理走 <b>UnifiedSubAgentDispatch 新增的轻量入口</b>。</p>
+
+  <figure>
+    <div class="legend">
+      <span><i style="background:#e8edff;border-color:#4a63d8"></i>对话层</span>
+      <span><i style="background:#eafaf3;border-color:#0f9d6e"></i>renderer · 引擎（新增）</span>
+      <span><i style="background:#fff8e6;border-color:#d97706"></i>worker · 脚本沙箱（新增）</span>
+      <span><i style="background:#f0f1f5;border-color:#7a8299"></i>既有设施（复用）</span>
+      <span><i style="background:#f3ecfd;border-color:#7c5bd6"></i>webview 画布</span>
+    </div>
+    <svg viewBox="0 0 960 700" width="100%" role="img" aria-label="总体架构图">
+      <defs>
+        <marker id="a2" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L8,4.5 L0,9 z" fill="#7a8299"/></marker>
+        <marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L8,4.5 L0,9 z" fill="#0f9d6e"/></marker>
+      </defs>
+
+      <!-- Chat 层 -->
+      <rect x="230" y="16" width="500" height="74" rx="12" fill="#e8edff" stroke="#4a63d8" stroke-width="1.5"/>
+      <text x="480" y="44" text-anchor="middle" font-size="14.5" font-weight="700" fill="#2f3f8f">Chat / Agent Turn（LLM）</text>
+      <text x="480" y="66" text-anchor="middle" font-size="11.5" fill="#4d5390">工具调用：workflow { meta, script, args }</text>
+
+      <!-- tool -->
+      <rect x="330" y="122" width="300" height="56" rx="10" fill="#eafaf3" stroke="#0f9d6e" stroke-width="1.5"/>
+      <text x="480" y="145" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0b7a55">workflowTool（Consumer，新增）</text>
+      <text x="480" y="164" text-anchor="middle" font-size="10.5" fill="#3f8a6f">toolset: workflow · 长超时档 · NEVER_PARALLEL</text>
+      <line x1="480" y1="90" x2="480" y2="120" stroke="#7a8299" stroke-width="1.8" marker-end="url(#a2)"/>
+
+      <!-- renderer 大容器 -->
+      <rect x="30" y="208" width="900" height="330" rx="16" fill="#fbfcff" stroke="#c9cfe6" stroke-width="1.4" stroke-dasharray="7 5"/>
+      <text x="52" y="236" font-size="12.5" font-weight="700" fill="#5b6478">renderer（workbench browser 层）</text>
+
+      <!-- engine -->
+      <rect x="60" y="256" width="380" height="256" rx="12" fill="#eafaf3" stroke="#0f9d6e" stroke-width="1.5"/>
+      <text x="250" y="283" text-anchor="middle" font-size="13.5" font-weight="700" fill="#0b7a55">WorkflowEngine（host 侧，新增）</text>
+      <text x="250" y="302" text-anchor="middle" font-size="10.5" fill="#3f8a6f">browser/workflow/workflowEngine.ts</text>
+      <g font-size="11" fill="#2f5e4c">
+        <rect x="82" y="316" width="336" height="30" rx="7" fill="#ffffff" stroke="#bfe3d4"/>
+        <text x="250" y="335" text-anchor="middle">spawn blob worker（createBlobWorker，CSP 安全）</text>
+        <rect x="82" y="352" width="336" height="30" rx="7" fill="#ffffff" stroke="#bfe3d4"/>
+        <text x="250" y="371" text-anchor="middle">child 桥：child-start RPC → dispatch</text>
+        <rect x="82" y="388" width="336" height="30" rx="7" fill="#ffffff" stroke="#bfe3d4"/>
+        <text x="250" y="407" text-anchor="middle">cancel / grace(5s) / quiescence / terminate</text>
+        <rect x="82" y="424" width="336" height="30" rx="7" fill="#ffffff" stroke="#bfe3d4"/>
+        <text x="250" y="443" text-anchor="middle">liveAgents 账本：agent-start/end 恰好配对</text>
+        <rect x="82" y="460" width="336" height="30" rx="7" fill="#ffffff" stroke="#bfe3d4"/>
+        <text x="250" y="479" text-anchor="middle">事件扇出 onWorkflowEvent（单一事件面）</text>
+      </g>
+
+      <!-- worker -->
+      <rect x="520" y="256" width="380" height="256" rx="12" fill="#fff8e6" stroke="#d97706" stroke-width="1.5"/>
+      <text x="710" y="283" text-anchor="middle" font-size="13.5" font-weight="700" fill="#a35a0a">WorkflowWorker（脚本沙箱，新增）</text>
+      <text x="710" y="302" text-anchor="middle" font-size="10.5" fill="#8a6430">workflowWorkerMain.source.ts（字符串内联 → blob）</text>
+      <g font-size="11" fill="#6b5222">
+        <rect x="542" y="316" width="336" height="30" rx="7" fill="#ffffff" stroke="#efd9ac"/>
+        <text x="710" y="335" text-anchor="middle">hooks realm：agent / parallel / pipeline / phase / log / args</text>
+        <rect x="542" y="352" width="336" height="30" rx="7" fill="#ffffff" stroke="#efd9ac"/>
+        <text x="710" y="371" text-anchor="middle">FIFO 并发 slot + caps（并发/总数/条目上限）</text>
+        <rect x="542" y="388" width="336" height="30" rx="7" fill="#ffffff" stroke="#efd9ac"/>
+        <text x="710" y="407" text-anchor="middle">取消边界：cancel 后 hook 入口即抛 CANCELLED</text>
+        <rect x="542" y="424" width="336" height="30" rx="7" fill="#ffffff" stroke="#efd9ac"/>
+        <text x="710" y="443" text-anchor="middle">contain()：dropped promise 不杀线程</text>
+        <rect x="542" y="460" width="336" height="30" rx="7" fill="#ffffff" stroke="#efd9ac"/>
+        <text x="710" y="479" text-anchor="middle">materializeFromRealm：结果只放行 plain JSON</text>
+      </g>
+
+      <!-- protocol between engine & worker -->
+      <line x1="440" y1="360" x2="520" y2="360" stroke="#0f9d6e" stroke-width="2" marker-end="url(#a3)"/>
+      <line x1="520" y1="408" x2="440" y2="408" stroke="#0f9d6e" stroke-width="2" marker-end="url(#a3)"/>
+      <text x="480" y="348" text-anchor="middle" font-size="10" fill="#3f8a6f">postMessage</text>
+      <text x="480" y="428" text-anchor="middle" font-size="10" fill="#3f8a6f">protocol.ts</text>
+      <text x="480" y="392" text-anchor="middle" font-size="9.5" fill="#7a8299">闭合 typed 协议</text>
+
+      <!-- dispatch（既有） -->
+      <rect x="60" y="558" width="520" height="102" rx="12" fill="#f0f1f5" stroke="#7a8299" stroke-width="1.4"/>
+      <text x="320" y="585" text-anchor="middle" font-size="13" font-weight="700" fill="#3d4663">UnifiedSubAgentDispatch（既有，新增 startWorkflowChild 入口）</text>
+      <g font-size="10.5" fill="#5b6478">
+        <text x="320" y="606" text-anchor="middle">fork + timeout + InterruptSignal（effectRuntime）· IterationBudget 预算</text>
+        <text x="320" y="624" text-anchor="middle">explore / general / scout 权限档 · stallWatchdog · batchGroup 并行卡片流</text>
+        <text x="320" y="642" text-anchor="middle">schema 输出 → StructuredOutputParser（绕过 completionGate，脚本自己是消费者）</text>
+      </g>
+      <line x1="250" y1="512" x2="250" y2="556" stroke="#0f9d6e" stroke-width="1.8" marker-end="url(#a3)"/>
+      <text x="262" y="540" font-size="10.5" fill="#3f8a6f">startWorkflowChild(prompt, schema, agentId, model)</text>
+
+      <!-- 子代理 -->
+      <rect x="620" y="558" width="140" height="44" rx="9" fill="#ffffff" stroke="#c9cfe6"/>
+      <text x="690" y="577" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0b7a55">explore 子代理</text>
+      <text x="690" y="593" text-anchor="middle" font-size="10" fill="#7a8299">只读检索</text>
+      <rect x="784" y="558" width="140" height="44" rx="9" fill="#ffffff" stroke="#c9cfe6"/>
+      <text x="854" y="577" text-anchor="middle" font-size="11.5" font-weight="700" fill="#2f3f8f">general 子代理</text>
+      <text x="854" y="593" text-anchor="middle" font-size="10" fill="#7a8299">读写执行</text>
+      <line x1="580" y1="598" x2="618" y2="580" stroke="#7a8299" stroke-width="1.5" marker-end="url(#a2)"/>
+      <line x1="580" y1="612" x2="782" y2="590" stroke="#7a8299" stroke-width="1.5" marker-end="url(#a2)"/>
+
+      <!-- 快照总线 + 画布（右侧竖排） -->
+      <rect x="700" y="472" width="0" height="0"/>
+      <g>
+        <rect x="700" y="560" width="240" height="0" fill="none"/>
+      </g>
+      <!-- 画布在 worker 下方右侧：通过引擎结果归档桥 -->
+      <rect x="700" y="640" width="240" height="0"/>
+      <!-- 改为右下角独立两个盒子 -->
+      <g>
+        <rect x="700" y="472" width="240" height="0"/>
+      </g>
+      <!-- 简化：快照总线 & 画布放在 dispatch 右侧已满，改为引擎右侧输出（画到最右列） -->
+      <g>
+        <rect x="770" y="122" width="180" height="56" rx="10" fill="#f3ecfd" stroke="#7c5bd6" stroke-width="1.4"/>
+        <text x="860" y="145" text-anchor="middle" font-size="11.5" font-weight="700" fill="#5d3fa8">Chat 卡片 / Recorder</text>
+        <text x="860" y="163" text-anchor="middle" font-size="10" fill="#6b5390">workflow 卡 + 子代理卡片</text>
+        <line x1="630" y1="150" x2="768" y2="150" stroke="#7a8299" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a2)"/>
+        <text x="660" y="140" font-size="10" fill="#7a8299">事件</text>
+      </g>
+      <g>
+        <rect x="770" y="16" width="180" height="74" rx="10" fill="#f3ecfd" stroke="#7c5bd6" stroke-width="1.4"/>
+        <text x="860" y="44" text-anchor="middle" font-size="11.5" font-weight="700" fill="#5d3fa8">快照总线 → 画布 OUTPUT</text>
+        <text x="860" y="62" text-anchor="middle" font-size="10" fill="#6b5390">SAROS_JSON 按 stageUid 归档</text>
+        <text x="860" y="77" text-anchor="middle" font-size="10" fill="#6b5390">nodeOutput(stageUid) 反向输入</text>
+        <line x1="860" y1="92" x2="860" y2="118" stroke="#7c5bd6" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a2)"/>
+        <line x1="770" y1="53" x2="732" y2="53" stroke="#7c5bd6" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <text x="742" y="40" font-size="10" fill="#7c5bd6">M2</text>
+      </g>
+    </svg>
+    <figcaption>图 4-1 · 总体架构：对话层（蓝）→ 引擎与沙箱（新增，绿/黄）→ 复用既有 dispatch 与子代理生态（灰）→ 快照总线/画布（紫，M2 桥接）</figcaption>
+  </figure>
+
+  <h3>关键决策与理由</h3>
+  <table>
+    <tr><th style="width:150px">决策</th><th style="width:220px">选择</th><th>理由</th></tr>
+    <tr><td>引擎位置</td><td>renderer（与 dispatch 同进程）</td><td>child 桥零 IPC；卡片事件流不断链；blob worker 已有 CSP 处理先例</td></tr>
+    <tr><td>脚本隔离</td><td>blob Web Worker（非 node:vm）</td><td>renderer 无 Node；<code>worker.terminate()</code> 防死循环。隔离口径与 dsh 一致：<b>可终止 + 结果边界，非安全边界</b></td></tr>
+    <tr><td>worker 源码形态</td><td>字符串常量内联</td><td>规避「URL worker 必须在 buildfile 注册」打包铁律，无独立产物文件</td></tr>
+    <tr><td>子代理 seam</td><td>dispatch 新增入口，不建私有池</td><td>预算/权限/看门狗/卡片全复用，与 delegate_task 行为一致</td></tr>
+  </table>
+</section>
+
+<!-- ══════════ 5 模块设计 ══════════ -->
+<section id="s5">
+  <h2><span class="no">05</span>核心模块设计</h2>
+  <hr class="sep">
+
+  <h3>5.1 文件布局（新增 4 组）</h3>
+  <pre><span class="cm">common/workflow/                 ← Service Definition（纯类型，零运行时）</span>
+  types.ts                        <span class="cm">// RunId/Meta/Result/事件/WorkflowError(fatal)/Limits</span>
+  protocol.ts                     <span class="cm">// 闭合 typed 协议（照搬 dsh payload-map 模式）</span>
+<span class="cm">browser/workflow/                ← Provider（引擎）</span>
+  workflowEngine.ts               <span class="cm">// host 侧：spawn/child桥/账本/cancel/grace/事件扇出</span>
+  workflowWorkerMain.source.ts    <span class="cm">// worker 源码字符串：realm hooks + slots + contain + 物化</span>
+<span class="cm">browser/providers/tool/</span>
+  workflowTool.ts                 <span class="cm">// Consumer：模型接口 + DESCRIPTION 契约 + 事件→卡片</span>
+<span class="cm">common/unifiedSubAgentDispatch.ts ← 新增 startWorkflowChild（不动 delegate_task 既有路径）</span></pre>
+
+  <h3>5.2 生命周期时序</h3>
+  <figure>
+    <svg viewBox="0 0 940 400" width="100%" role="img" aria-label="run 生命周期时序">
+      <defs><marker id="a4" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L8,4.5 L0,9 z" fill="#7a8299"/></marker></defs>
+      <!-- 泳道头 -->
+      <g font-size="12" font-weight="700">
+        <rect x="30"  y="14" width="160" height="34" rx="8" fill="#e8edff" stroke="#4a63d8"/><text x="110" y="35" text-anchor="middle" fill="#2f3f8f">模型 / 工具层</text>
+        <rect x="280" y="14" width="160" height="34" rx="8" fill="#eafaf3" stroke="#0f9d6e"/><text x="360" y="35" text-anchor="middle" fill="#0b7a55">WorkflowEngine</text>
+        <rect x="530" y="14" width="160" height="34" rx="8" fill="#fff8e6" stroke="#d97706"/><text x="610" y="35" text-anchor="middle" fill="#a35a0a">WorkflowWorker</text>
+        <rect x="780" y="14" width="140" height="34" rx="8" fill="#f0f1f5" stroke="#7a8299"/><text x="850" y="35" text-anchor="middle" fill="#3d4663">Dispatch/子代理</text>
+      </g>
+      <!-- 生命线 -->
+      <g stroke="#d5d9e8" stroke-dasharray="4 5" stroke-width="1.2">
+        <line x1="110" y1="48" x2="110" y2="380"/><line x1="360" y1="48" x2="360" y2="380"/>
+        <line x1="610" y1="48" x2="610" y2="380"/><line x1="850" y1="48" x2="850" y2="380"/>
+      </g>
+      <!-- 消息 -->
+      <g font-size="11" fill="#414a60">
+        <line x1="110" y1="75"  x2="358" y2="75"  stroke="#7a8299" stroke-width="1.6" marker-end="url(#a4)"/><text x="150" y="68">① workflow{meta,script,args}</text>
+        <line x1="360" y1="105" x2="608" y2="105" stroke="#7a8299" stroke-width="1.6" marker-end="url(#a4)"/><text x="398" y="98">② spawn worker → ready → go</text>
+        <line x1="610" y1="140" x2="358" y2="140" stroke="#7a8299" stroke-width="1.6" marker-end="url(#a4)"/><text x="392" y="133">③ child-start{callId,req}（agent 调用）</text>
+        <line x1="360" y1="170" x2="848" y2="170" stroke="#7a8299" stroke-width="1.6" marker-end="url(#a4)"/><text x="450" y="163">④ startWorkflowChild → 子代理运行</text>
+        <line x1="848" y1="200" x2="362" y2="200" stroke="#7a8299" stroke-width="1.6" marker-end="url(#a4)"/><text x="460" y="193">⑤ result（文本 / schema 校验对象 / null）</text>
+        <line x1="360" y1="228" x2="608" y2="228" stroke="#7a8299" stroke-width="1.6" marker-end="url(#a4)"/><text x="396" y="221">⑥ child-settled（agent-start/end 伴随）</text>
+        <line x1="610" y1="262" x2="358" y2="262" stroke="#7a8299" stroke-width="1.6" marker-end="url(#a4)"/><text x="410" y="255">⑦ result{value,stopReason,agentsStarted}</text>
+        <line x1="358" y1="296" x2="112" y2="296" stroke="#7a8299" stroke-width="1.6" marker-end="url(#a4)"/><text x="150" y="289">⑧ 工具结果（completed → JSON / 否则 isError）</text>
+        <!-- 取消路径 -->
+        <line x1="110" y1="336" x2="358" y2="336" stroke="#dc2626" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#a4)"/><text x="150" y="329" fill="#dc2626">⑨ turn 取消 → cancel(reason)</text>
+        <line x1="360" y1="362" x2="608" y2="362" stroke="#dc2626" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#a4)"/><text x="385" y="356" fill="#dc2626">⑩ hooks 抛 CANCELLED + interrupt children + grace 5s → terminate</text>
+      </g>
+    </svg>
+    <figcaption>图 5-1 · 一次 run 的生命周期：前台收集（⑧ 返回时整个脚本已结束）；取消在下一个 hook 边界生效，grace 兜底强收</figcaption>
+  </figure>
+
+  <h3>5.3 子代理桥：startWorkflowChild</h3>
+  <pre><span class="cm">// UnifiedSubAgentDispatch 新增最小入口（复用 fiber/预算/权限档，绕过 completionGate）</span>
+<span class="kw">export interface</span> <span class="fn">IWorkflowChildRequest</span> {
+    prompt: <span class="kw">string</span>;
+    schema?: JsonObjectSchema;   <span class="cm">// 受限子集：type/properties/required/items/enum/const/oneOf</span>
+    agentId?: <span class="kw">string</span>;          <span class="cm">// 内置/自定义 Agent 身份（缺省 general 档）</span>
+    model?: <span class="kw">string</span>;             <span class="cm">// 模型覆写</span>
+    phase?: <span class="kw">string</span>; label?: <span class="kw">string</span>;
+}
+<span class="kw">export interface</span> <span class="fn">IWorkflowChildHandle</span> {
+    id: <span class="kw">string</span>;
+    result: Promise&lt;{ output: <span class="kw">string</span>; structured?: unknown; stopReason: <span class="kw">string</span> }&gt;;
+    dispose(): Promise&lt;<span class="kw">void</span>&gt;;      <span class="cm">// 幂等，memoized</span>
+}</pre>
+  <ul class="tight" style="font-size:13.5px">
+    <li>schema 请求 → 子代理末步注入「输出 JSON」指令 → <code>StructuredOutputParser</code> 解析；失败 → <code>stopReason:'failed'</code> → 脚本见 <code>null</code>（符合 dsh 契约）</li>
+    <li>卡片流：以 <code>batchGroupId</code> 投 SubAgentEvent，UI 天然获得并行子代理卡片组</li>
+    <li>为何绕过 completionGate：脚本（schema + 自定重试）是比完成门更可靠的消费者</li>
+  </ul>
+</section>
+
+<!-- ══════════ 6 失败/取消/限额 ══════════ -->
+<section id="s6">
+  <h2><span class="no">06</span>失败 / 取消 / 限额（逐条对齐 dsh）</h2>
+  <hr class="sep">
+  <table>
+    <tr><th style="width:170px">机制</th><th>设计</th></tr>
+    <tr><td><b>fatal vs per-item null</b></td><td><code>WorkflowError</code> + <code>isFatalWorkflowError</code>；组合子（parallel/pipeline）捕获后判定。基建故障 fatal，子代理自身失败 → null</td></tr>
+    <tr><td><b>result 永不 reject</b></td><td>全路径映射 <code>{value, stopReason:'completed'|'cancelled'|'error', error?, agentsStarted}</code></td></tr>
+    <tr><td><b>取消</b></td><td>turn abort → <code>handle.cancel()</code> → worker hooks 抛 CANCELLED + slot waiter reject + children interrupt + grace 5s force-settle + terminate</td></tr>
+    <tr><td><b>恰好配对</b></td><td>host <code>liveAgents</code> 账本；worker 死亡/grace 时合成缺失的 <code>agent-end{cancelled}</code></td></tr>
+    <tr><td><b>caps</b></td><td>maxConcurrentAgents（默认=dispatch 并发）· maxTotalAgents=1000 · maxItemsPerCall=4096；设置键 <code>sessions.agentStudio.workflow.*</code></td></tr>
+    <tr><td><b>模型纠错回路</b></td><td>meta 校验/语法错同步抛 → isError 工具结果 → 模型改脚本重调</td></tr>
+    <tr><td><b>结果边界</b></td><td>materializeFromRealm 只放行 plain JSON（拒函数/symbol/循环/稀疏数组/非有限数），违规 → RESULT_UNSERIALIZABLE fatal</td></tr>
+  </table>
+
+  <div class="note warn">
+    <b>与 dsh 的已知差异（如实声明）</b>
+    无 node:vm 的同步切片 timeout → <b>纯同步死循环</b>（<code>while(true){}</code>）会卡死 worker 线程，只能靠 host terminate 兜底（丢脚本进度）。缓解：工具 description 约束「避免无界同步循环」+ 启动前 <code>new Function</code> 编译做语法检查。
+  </div>
+
+  <div class="note danger">
+    <b>安全边界（与 dsh 口径一致）</b>
+    worker 隔离目标是<b>可终止 + 结果物化 + 防误用遮蔽</b>（fetch/WebSocket/importScripts 置 undefined），<b>不是安全边界</b>。能力面没有扩大：脚本自身无任何工具，一切副作用都经有权限档的子代理发生（explore 只读等）。
+  </div>
+</section>
+
+<!-- ══════════ 7 节点串联 ══════════ -->
+<section id="s7">
+  <h2><span class="no">07</span>节点串联三层设计（保证 IO 正确）</h2>
+  <p class="lead">「节点正常串联、正常输入输出」在三层同时成立；串联正确性的根基全部复用既有设施，零新概念。</p>
+
+  <figure>
+    <div class="legend">
+      <span><i style="background:#eafaf3;border-color:#0f9d6e"></i>第一层：脚本内（JS 值流动）</span>
+      <span><i style="background:#f3ecfd;border-color:#7c5bd6"></i>第二层：脚本 ↔ 画布（快照总线桥）</span>
+      <span><i style="background:#fdf5e7;border-color:#d97706"></i>第三层：画布编排节点（波次执行）</span>
+    </div>
+    <svg viewBox="0 0 940 430" width="100%" role="img" aria-label="三层串联">
+      <defs><marker id="a5" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L8,4.5 L0,9 z" fill="#7a8299"/></marker></defs>
+
+      <!-- 第一层 -->
+      <rect x="20" y="20" width="900" height="118" rx="14" fill="#eafaf3" stroke="#0f9d6e" stroke-width="1.5"/>
+      <text x="44" y="48" font-size="13.5" font-weight="700" fill="#0b7a55">第一层 · 脚本内串联：节点 = 一次 agent()，边 = JS 值</text>
+      <g font-size="11.5" fill="#2f5e4c">
+        <rect x="44"  y="64" width="150" height="52" rx="9" fill="#fff" stroke="#bfe3d4"/><text x="119" y="86" text-anchor="middle" font-weight="700">agent(schema:A)</text><text x="119" y="104" text-anchor="middle" font-size="10">产出类型化对象 A</text>
+        <rect x="252" y="64" width="150" height="52" rx="9" fill="#fff" stroke="#bfe3d4"/><text x="327" y="86" text-anchor="middle" font-weight="700">pipeline stage</text><text x="327" y="104" text-anchor="middle" font-size="10">prev 传入 · 无 barrier</text>
+        <rect x="460" y="64" width="150" height="52" rx="9" fill="#fff" stroke="#bfe3d4"/><text x="535" y="86" text-anchor="middle" font-weight="700">agent(schema:B)</text><text x="535" y="104" text-anchor="middle" font-size="10">A 即 B 的输入契约</text>
+        <rect x="668" y="64" width="150" height="52" rx="9" fill="#fff" stroke="#bfe3d4"/><text x="743" y="86" text-anchor="middle" font-weight="700">return JSON</text><text x="743" y="104" text-anchor="middle" font-size="10">工具结果</text>
+        <line x1="194" y1="90" x2="250" y2="90" stroke="#0f9d6e" stroke-width="1.8" marker-end="url(#a5)"/>
+        <line x1="402" y1="90" x2="458" y2="90" stroke="#0f9d6e" stroke-width="1.8" marker-end="url(#a5)"/>
+        <line x1="610" y1="90" x2="666" y2="90" stroke="#0f9d6e" stroke-width="1.8" marker-end="url(#a5)"/>
+        <text x="840" y="86" font-size="10.5" fill="#0b7a55">失败 = null</text>
+        <text x="840" y="101" font-size="10.5" fill="#0b7a55">永不 undefined</text>
+        <text x="840" y="116" font-size="10.5" fill="#0b7a55">.filter(Boolean)</text>
+      </g>
+
+      <!-- 第二层 -->
+      <rect x="20" y="158" width="900" height="118" rx="14" fill="#f3ecfd" stroke="#7c5bd6" stroke-width="1.5"/>
+      <text x="44" y="186" font-size="13.5" font-weight="700" fill="#5d3fa8">第二层 · 脚本 ↔ 画布：nodeOutput() 读入 / stageUid 归档写出（M2）</text>
+      <g font-size="11.5" fill="#4b3a7e">
+        <rect x="44" y="202" width="200" height="52" rx="9" fill="#fff" stroke="#d8c8f4"/><text x="144" y="224" text-anchor="middle" font-weight="700">画布节点快照（stageUid）</text><text x="144" y="242" text-anchor="middle" font-size="10">IndexedDB · persistent</text>
+        <rect x="312" y="202" width="190" height="52" rx="9" fill="#fff" stroke="#d8c8f4"/><text x="407" y="224" text-anchor="middle" font-weight="700">nodeOutput(uid, slot?)</text><text x="407" y="242" text-anchor="middle" font-size="10">hook → RPC → 物化值</text>
+        <rect x="570" y="202" width="170" height="52" rx="9" fill="#fff" stroke="#d8c8f4"/><text x="655" y="224" text-anchor="middle" font-weight="700">脚本 / 子代理</text><text x="655" y="242" text-anchor="middle" font-size="10">media → {kind,url,mime}</text>
+        <rect x="788" y="202" width="110" height="52" rx="9" fill="#fff" stroke="#d8c8f4"/><text x="843" y="224" text-anchor="middle" font-weight="700">结果归档</text><text x="843" y="242" text-anchor="middle" font-size="10">SAROS_JSON</text>
+        <line x1="244" y1="228" x2="310" y2="228" stroke="#7c5bd6" stroke-width="1.8" marker-end="url(#a5)"/>
+        <line x1="502" y1="228" x2="568" y2="228" stroke="#7c5bd6" stroke-width="1.8" marker-end="url(#a5)"/>
+        <line x1="740" y1="228" x2="786" y2="228" stroke="#7c5bd6" stroke-width="1.8" marker-end="url(#a5)"/>
+      </g>
+      <text x="830" y="272" font-size="10" fill="#7c5bd6">查无 uid → fatal（fail-loud）</text>
+
+      <!-- 第三层 -->
+      <rect x="20" y="296" width="900" height="118" rx="14" fill="#fdf5e7" stroke="#d97706" stroke-width="1.5"/>
+      <text x="44" y="324" font-size="13.5" font-weight="700" fill="#a35a0a">第三层 · 画布编排节点激活：媒体节点与编排节点同波次混排（M3）</text>
+      <g font-size="11" fill="#6b5222">
+        <rect x="44" y="340" width="118" height="52" rx="9" fill="#fff" stroke="#efd9ac"/><text x="103" y="362" text-anchor="middle" font-weight="700">Saros.Prompt</text><text x="103" y="380" text-anchor="middle" font-size="10">@node 引用物化 TEXT</text>
+        <rect x="202" y="340" width="118" height="52" rx="9" fill="#fff" stroke="#efd9ac"/><text x="261" y="362" text-anchor="middle" font-weight="700">Saros.Agent</text><text x="261" y="380" text-anchor="middle" font-size="10">startWorkflowChild</text>
+        <rect x="360" y="340" width="118" height="52" rx="9" fill="#fff" stroke="#efd9ac"/><text x="419" y="362" text-anchor="middle" font-weight="700">Saros.IfElse</text><text x="419" y="380" text-anchor="middle" font-size="10">读上游 JSON 裁剪波次</text>
+        <rect x="518" y="340" width="118" height="52" rx="9" fill="#fff" stroke="#efd9ac"/><text x="577" y="362" text-anchor="middle" font-weight="700">ComfyTV 生成</text><text x="577" y="380" text-anchor="middle" font-size="10">既有 executor</text>
+        <rect x="676" y="340" width="118" height="52" rx="9" fill="#fff" stroke="#efd9ac"/><text x="735" y="362" text-anchor="middle" font-weight="700">OUTPUT 卡</text><text x="735" y="380" text-anchor="middle" font-size="10">快照按 stageUid</text>
+        <line x1="162" y1="366" x2="200" y2="366" stroke="#d97706" stroke-width="1.8" marker-end="url(#a5)"/>
+        <line x1="320" y1="366" x2="358" y2="366" stroke="#d97706" stroke-width="1.8" marker-end="url(#a5)"/>
+        <line x1="478" y1="366" x2="516" y2="366" stroke="#d97706" stroke-width="1.8" marker-end="url(#a5)"/>
+        <line x1="636" y1="366" x2="674" y2="366" stroke="#d97706" stroke-width="1.8" marker-end="url(#a5)"/>
+        <text x="812" y="348" font-size="10" fill="#a35a0a">波次不变量：</text>
+        <text x="812" y="362" font-size="10" fill="#a35a0a">上游快照可得</text>
+        <text x="812" y="376" font-size="10" fill="#a35a0a">才跑下游</text>
+      </g>
+    </svg>
+    <figcaption>图 7-1 · 三层串联：各层独立可用，层层复用同一底座（agent() 值语义 / stageUid 快照键 / resolveBinding）</figcaption>
+  </figure>
+
+  <h3>统一端口值模型（跨三层同一表示）</h3>
+  <pre><span class="kw">type</span> <span class="fn">PortValue</span> =
+  | { kind: <span class="st">'text'</span>;  value: <span class="kw">string</span> }
+  | { kind: <span class="st">'json'</span>;  value: unknown }
+  | { kind: <span class="st">'media'</span>; url: <span class="kw">string</span>; mime: <span class="kw">string</span>; stageUid?: <span class="kw">string</span> };</pre>
+  <ul class="tight" style="font-size:13.5px">
+    <li><b>编辑期</b>：连线按 PortSpec.type 亲和校验（SAROS_JSON↔json、TEXT↔text、IMAGE/VIDEO↔media、ANY 通配）——现有 spec 体系直接支持</li>
+    <li><b>运行期 fail-loud</b>：kind 与端口期望不符 → 节点 ErrorBanner；上游无快照 → 明确报「上游节点尚无输出」，<b>绝不传 undefined</b></li>
+    <li><b>归档键一致性</b>：继续走 <code>registerAlias(nodeId, stageUid)</code> 双前缀合并（run 写 uid、弹窗 savePayload 写 nodeId 的既有两路不变）</li>
+  </ul>
+</section>
+
+<!-- ══════════ 8 UI 显示设计 ══════════ -->
+<section id="s7b">
+  <h2><span class="no">08</span>工作流 UI 显示设计</h2>
+  <p class="lead">聊天框中 workflow 以<b>一张可折叠容器卡片</b>呈现整个 run：头部聚合进度、展开体是 phase / agent / log 流、完成态附结果 JSON 卡。设计语言与 <code>delegate_task</code> 卡片同族（同族不同色：委派紫 🤝 vs 编排蓝 🔀），agent 行与 batchGroup 并行子代理卡片同源。</p>
+
+  <h3>8.1 设计原则</h3>
+  <ul class="tight" style="font-size:13.5px">
+    <li><b>容器化聚合</b>：几十个 agent 不刷屏——默认折叠为一行 + 3px 分段进度条；详情按需展开</li>
+    <li><b>单一动画源</b>：运行态只有头部 chip pulse + 运行中进度段流动，两处动画；聊天滚动时视觉安静</li>
+    <li><b>事件驱动</b>：卡片是 <code>WorkflowEngineEvent</code> 的纯投影（start/phase/agent-start/agent-end/end → UI 状态），无独立状态机，与 recorder/画布桥共享同一事件面</li>
+    <li><b>失败可视化但不打扰</b>：失败的 agent 是红色段 + <code>failed → null</code> 徽标（脚本能处理），只有 fatal 才让整卡转红</li>
+    <li><b>toolDisplayRegistry 注册</b>：<code>workflow → { emoji:'🔀', title:'工作流', renderType:'WorkflowRun' }</code>，走既有工具卡片解析管线</li>
+  </ul>
+
+  <h3>8.2 卡片状态机与事件 → UI 映射</h3>
+  <table>
+    <tr><th style="width:130px">卡片状态</th><th style="width:260px">进入条件（引擎事件）</th><th>呈现</th></tr>
+    <tr><td><b>pending</b></td><td>工具调用解析成功，引擎 start() 前</td><td>头部骨架（meta.name + spinner chip），无进度条</td></tr>
+    <tr><td><b>running</b></td><td><code>start</code></td><td>蓝色 chip「运行中」pulse；分段进度条随 <code>agent-start/agent-end</code> 增段变色；头部计数 <code>n/m agents · phase「当前」</code> + 计时器</td></tr>
+    <tr><td><b>completed</b></td><td><code>end(stopReason:'completed')</code></td><td>绿 chip；phase 条全勾；结果卡 = return 值折叠 JSON + agentsStarted + 总耗时 + 复制按钮（超 50k 字符截断提示）</td></tr>
+    <tr><td><b>cancelled</b></td><td><code>end(stopReason:'cancelled')</code></td><td>中性灰 chip（非错误）；进度条保留现场；说明行「Stop → 5s 内收敛、子代理全中断」</td></tr>
+    <tr><td><b>error</b></td><td><code>end(stopReason:'error')</code></td><td>红边框 + 红 chip；等宽错误块（如 <code>AGENT_CAP</code> / <code>SCRIPT_PARSE</code> 原因）；isError 工具结果 → 模型下轮自我修正</td></tr>
+  </table>
+
+  <h3>8.3 卡片结构（展开态）</h3>
+  <pre><span class="cm">┌─ 🔀 workflow: audit-concurrency        [●运行中]  5/12 agents · phase「复核」  02:14  ▶ ┐  ← 头部：点击折叠
+│  ██████████████████▓▓▓▓░░░░░░░░  ← 进度条：每段一个 agent()（绿done/蓝run/灰queue/红fail）
+├─ phase 条：  [扫描 · 8 ✓]  [复核 · 3/4●]  [汇总]                                          ← phase() 切换即高亮迁移
+├─ agent 行：  #10 复核 lifecycle.ts — dispose 顺序   [复核] 12s  ◐running                   ← batchGroup 子代理卡片数据源
+│              #7  扫描 buffers — 大文件截断        [扫描] 51s  failed → null               ← 失败=红，不杀 run
+│              schema 摘要行：… ✓ { findings: 3, severity: "info" }                          ← 有 schema 的 agent 展示结构化输出
+├─ log 行：    ▸ phase('复核') — 4 项进入 stage 2                                            ← log() 原样投递，等宽小字
+└─ [完成态追加] Return value: { …折叠 JSON… }  12 agents · 4m37s  [复制 JSON]                ← M2 追加「→ 画布 OUTPUT」标记</pre>
+
+  <h3>8.4 聊天框显示 · Mockup 效果图（7 场景）</h3>
+  <p style="color:var(--muted);font-size:13.5px;margin-bottom:8px">源文件 <code>_dynamic_workflow_card_mockup.html</code>（仓库根目录，Catppuccin 暗色，与 _delegate_card_mockup.html 同族）。下方内嵌实时预览（7 个场景完整可交互——卡片可点击折叠）：</p>
+
+  <div style="border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow);margin:12px 0">
+    <iframe src="../_dynamic_workflow_card_mockup.html" style="width:100%;height:640px;border:0;display:block;background:#11111b" title="workflow 聊天卡片 mockup 预览"></iframe>
+  </div>
+
+  <table>
+    <tr><th style="width:60px">场景</th><th>展示内容</th></tr>
+    <tr><td>1</td><td><b>运行中 · 展开态</b>——头部聚合（5/12 + 当前 phase + 计时）、12 段进度条、phase 分组条、agent 行（含 schema 摘要行、failed → null）、log 流</td></tr>
+    <tr><td>2</td><td><b>运行中 · 折叠态</b>——默认形态：一行卡 + 3px 进度条，长 run 不淹没对话</td></tr>
+    <tr><td>3</td><td><b>完成态</b>——progress 全绿（1 段红=失败 agent 仍算 run 成功）、结果折叠 JSON 卡 + 复制按钮、助手总结气泡（模型消化 return 值后回复用户）</td></tr>
+    <tr><td>4</td><td><b>失败 / 取消态</b>——AGENT_CAP 红卡 + 等宽错误块（模型可读原因自纠）；Stop 取消 = 中性灰 + 收敛说明</td></tr>
+    <tr><td>5</td><td><b>画布联动（M2）</b>——头部画布链接徽标（🔗 canvas · SketchStage，点击定位节点）、<code>nodeOutput()</code> 显示为「输入」agent 行、log 提示 SAROS_JSON 已按 stageUid 归档</td></tr>
+    <tr><td>6</td><td><b>与 delegate_task 并排对比</b>——紫色单委派卡 vs 蓝色编排容器卡，用户一眼分辨</td></tr>
+    <tr><td>7</td><td><b>执行时间线面板增强（M3）</b>——复用 ExecutionTimelinePanel 行格式，新增 tl-run（run 起止，浅蓝底）/ tl-wf（phase 切换）/ tl-agent（agent 起止）三类行，与画布节点事件同列混排</td></tr>
+  </table>
+
+  <h3>8.5 画布侧显示（M2/M3 补充）</h3>
+  <ul class="tight" style="font-size:13.5px">
+    <li><b>OUTPUT 卡（M2）</b>：run 结果归档为 SAROS_JSON 后，锚点节点的 NodeCard OUTPUT 区渲染折叠 JSON 卡（与图片/视频缩略图同通道，类型 chip 标 SAROS_JSON）</li>
+    <li><b>锚点定位</b>：聊天卡片头部的画布徽标 → 触发 <code>sarosis.canvas.revealNode</code>（既有命令）定位锚点节点</li>
+    <li><b>Saros.Agent 节点运行态（M3）</b>：编排节点接入波次执行后，节点卡片显示 child 的 running / outcome 状态（复用 nodeStateMachine 的状态着色），时间线面板同步出现 tl-agent 行</li>
+    <li><b>AskUser 节点（M3）</b>：画布运行到 <code>Saros.AskUser</code> 时暂停，聊天中出现 clarify 卡片，用户答复后物化为 TEXT 快照继续下一波次</li>
+  </ul>
+
+  <div class="note">
+    <b>实现挂点（与既有 UI 管线的对接）</b>
+    renderType <code>WorkflowRun</code> 在 webview 工具卡片渲染器注册；agent 行数据来自 <code>SubAgentEventSink</code>（batchGroup 已有）；phase/log 行来自工具 execute 内订阅 <code>onWorkflowEvent</code> 后投递的 stream record。卡片折叠态/展开态持久化随消息 store（与既有工具卡一致），重载窗口不丢。
+  </div>
+</section>
+
+<!-- ══════════ 8 使用说明 ══════════ -->
+<section id="s8">
+  <h2><span class="no">09</span>使用说明</h2>
+  <hr class="sep">
+
+  <h3>9.1 何时使用（模型视角）</h3>
+  <div class="card">
+    <div class="badge-row">
+      <span class="chip blue">workflow 工具</span><span class="chip gray">delegate_task</span><span class="chip gray">plan_explore</span>
+    </div>
+    <table>
+      <tr><th>场景</th><th>用哪个</th></tr>
+      <tr><td>一两次独立委派（查一个模块、写一个文件）</td><td><code>delegate_task</code>（轻量、有卡片对话感）</td></tr>
+      <tr><td>开始编码前的多区域并行探索</td><td><code>plan_explore</code></td></tr>
+      <tr><td><b>大规模扇出</b>：几十个文件的审计/迁移/多角度研究/对抗性验证——需要编排逻辑（分组、流水线、汇总、重试）</td><td><b><code>workflow</code></b>：把编排写成脚本，一次工具调用完成整个编排</td></tr>
+    </table>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:10px">系统提示策略（随工具注册）：仅当用户明确要求 workflow / 大规模多代理编排时使用；日常委派仍走 delegate_task。</p>
+  </div>
+
+  <h3>9.2 调用方式</h3>
+  <p style="color:var(--muted);font-size:13.5px">对用户：在 Agent Chat 中直接说——</p>
+  <pre>&quot;<span class="st">用工作流把 src/vs/base 下所有 *.ts 文件审计一遍并发性注解（@ts-skip / lock 相关），汇总成报告</span>&quot;</pre>
+  <p style="color:var(--muted);font-size:13.5px;margin:10px 0">模型将发起工具调用（前台执行，返回即整个编排完成）：</p>
+  <pre>{
+  <span class="meta">"name"</span>: <span class="st">"workflow"</span>,
+  <span class="meta">"arguments"</span>: {
+    <span class="meta">"meta"</span>: {
+      <span class="meta">"name"</span>: <span class="st">"audit-concurrency"</span>,
+      <span class="meta">"description"</span>: <span class="st">"审计 base 层并发注解并汇总报告"</span>,
+      <span class="meta">"phases"</span>: [{ <span class="meta">"title"</span>: <span class="st">"扫描"</span> }, { <span class="meta">"title"</span>: <span class="st">"复核"</span> }, { <span class="meta">"title"</span>: <span class="st">"汇总"</span> }]
+    },
+    <span class="meta">"script"</span>: <span class="st">"…纯 JS 脚本体（见 8.3）…"</span>,
+    <span class="meta">"args"</span>: { <span class="meta">"files"</span>: [<span class="st">"src/vs/base/common/async.ts"</span>, <span class="st">"…"</span>] }
+  }
+}</pre>
+
+  <h3>9.3 Chat 中的观察与控制</h3>
+  <ul class="tight" style="font-size:13.5px">
+    <li><b>工具卡片</b>：标题 = meta.name，可展开查看脚本体与 phase / log 进度行</li>
+    <li><b>子代理卡片</b>：每次 <code>agent()</code> 一张卡（batchGroup 并行组），结束打 outcome 徽标（completed / failed / cancelled）</li>
+    <li><b>取消</b>：点 Stop 中断 turn → 引擎 cancel → 5s 内 run settled、子代理全部 interrupt、无残留</li>
+    <li><b>失败重试</b>：脚本语法错 / meta 缺字段 / 触发上限 → 工具返回 isError + 明确原因，模型自行修正后重调（不产生部分输出）</li>
+  </ul>
+
+  <h3>9.4 画布联动（M2 后）</h3>
+  <ol class="steps" style="font-size:13.5px">
+    <li>画布某节点已运行出结果（快照按 stageUid 归档）</li>
+    <li>Chat 中发起 workflow，脚本内 <code>const img = await nodeOutput('&lt;stageUid&gt;', 0)</code> 取上游输出（json 原值 / text 字符串 / media → {kind:'media',url,mime}）</li>
+    <li>run 完成 → 结果自动归档为 SAROS_JSON 快照 → 发起锚点节点的 OUTPUT 卡显示折叠 JSON（点开可复制）</li>
+    <li>也可把 media 结果接回画布生成链（作为下游 ComfyTV 节点输入）</li>
+  </ol>
+
+  <h3>9.5 设置项</h3>
+  <table>
+    <tr><th>设置键（sessions.agentStudio.workflow.*）</th><th>默认</th><th>说明</th></tr>
+    <tr><td><code>maxConcurrentAgents</code></td><td>= dispatch 并发（5）</td><td>单个 run 内并发 agent() 上限（FIFO 排队）</td></tr>
+    <tr><td><code>maxTotalAgents</code></td><td>1000</td><td>单 run 总数上限（runaway 兜底）</td></tr>
+    <tr><td><code>maxItemsPerCall</code></td><td>4096</td><td>parallel/pipeline 单次条目上限</td></tr>
+    <tr><td><code>disposeGraceMs</code></td><td>5000</td><td>取消后的强制收敛窗口</td></tr>
+  </table>
+</section>
+
+<!-- ══════════ 9 脚本规范 ══════════ -->
+<section id="s9">
+  <h2><span class="no">10</span>脚本编写规范</h2>
+  <hr class="sep">
+
+  <div class="note">
+    <b>五条铁律</b>
+    ① 纯 JavaScript（非 TS），顶层 await 可用，<b>禁止</b> <code>export const meta</code>（meta 是参数不是代码）；<br>
+    ② 必须以 <code>return &lt;JSON值&gt;</code> 结束，返回值必须可 JSON 序列化（函数/symbol/循环引用 → run 失败）；<br>
+    ③ 无 fs / 网络 / 定时器 / Node API——子代理干活，脚本只协调；<br>
+    ④ <code>agent()</code> 失败返回 <code>null</code>（不是 throw）：下游先判空；<br>
+    ⑤ 用错 hook / 未知选项 / 超 caps 会<b>立即杀死整个脚本</b>（不会静默变 null）。
+  </div>
+
+  <h3>hook 速查</h3>
+  <table>
+    <tr><th style="width:300px">签名</th><th>返回</th><th>失败语义</th></tr>
+    <tr><td><code>agent(prompt, {label?, phase?, schema?, agentId?, model?})</code></td><td>string（无 schema）/ 校验对象（有 schema）</td><td>子代理失败 → <code>null</code></td></tr>
+    <tr><td><code>pipeline(items, s1, s2, …)</code>，<code>stage(prev, item, index)</code></td><td>any[]（与 items 对齐）</td><td>stage 抛错 → 该 item → null，跳过其后续 stage</td></tr>
+    <tr><td><code>parallel([thunk, …])</code></td><td>any[]</td><td>thunk 抛错 → null（barrier：等全部）</td></tr>
+    <tr><td><code>phase(title)</code> / <code>log(msg)</code></td><td>void</td><td>—</td></tr>
+    <tr><td><code>args</code></td><td>调用方传入的对象</td><td>—</td></tr>
+    <tr><td><code>nodeOutput(stageUid, slot?)</code> <span class="chip gray">M2</span></td><td>json 原值 / string / {kind:'media',…}</td><td>查无 uid → <b>fatal</b></td></tr>
+  </table>
+
+  <h3>范式一：map-reduce 扇出（parallel + 汇总）</h3>
+  <pre><span class="fn">phase</span>(<span class="st">'研究'</span>)
+<span class="kw">const</span> angles = [<span class="st">'架构'</span>, <span class="st">'性能'</span>, <span class="st">'安全'</span>]
+<span class="kw">const</span> findings = <span class="kw">await</span> <span class="fn">parallel</span>(angles.map(a =&gt; () =&gt;
+  <span class="fn">agent</span>(<span class="st">`从 ${a} 角度评估本方案：${args.topic}`</span>, {
+    label: a, phase: <span class="st">'研究'</span>,
+    schema: { <span class="cm">/* 受限 JSON Schema：type/properties/required/items/enum/const/oneOf */</span> }
+  })
+))
+<span class="fn">phase</span>(<span class="st">'汇总'</span>)
+<span class="kw">const</span> ok = findings.<span class="fn">filter</span>(Boolean)              <span class="cm">// ★ 失败项是 null，先滤掉</span>
+<span class="kw">return</span> { count: ok.length, report: <span class="kw">await</span> <span class="fn">agent</span>(<span class="st">`合并以下发现写结论：${JSON.stringify(ok)}`</span>) }</pre>
+
+  <h3>范式二：流水线串联（pipeline 无 barrier）</h3>
+  <pre><span class="kw">const</span> topics = <span class="kw">await</span> <span class="fn">pipeline</span>(args.files,
+  <span class="cm">// stage 1：每文件一组发现（item A 在 stage2 时 item B 可仍在 stage1 —— 无整体等待）</span>
+  (prev, file) =&gt; <span class="fn">agent</span>(<span class="st">`分析 ${file}`</span>, { schema: FINDINGS }),
+  <span class="cm">// stage 2：上游 null 短路，保持数组索引对齐（★ 推荐 pattern）</span>
+  (prev) =&gt; prev === <span class="kw">null</span> ? <span class="kw">null</span> : <span class="fn">agent</span>(<span class="st">`复核：${prev.title}`</span>, { schema: REVIEW })
+)
+<span class="kw">return</span> topics.<span class="fn">filter</span>(Boolean)</pre>
+
+  <h3>范式三：取画布上游 + 结果回流（M2）</h3>
+  <pre><span class="kw">const</span> sketch = <span class="kw">await</span> <span class="fn">nodeOutput</span>(args.sketchUid, 0)   <span class="cm">// {kind:'media',url,mime}</span>
+<span class="kw">const</span> drafts = <span class="kw">await</span> <span class="fn">pipeline</span>(args.styles,
+  (prev, style) =&gt; <span class="fn">agent</span>(<span class="st">`以 ${style} 风格细化此草图：${JSON.stringify(sketch)}`</span>, { schema: DRAFT }))
+<span class="kw">return</span> { drafts: drafts.<span class="fn">filter</span>(Boolean) }               <span class="cm">// → 自动按 stageUid 归档 SAROS_JSON → 画布 OUTPUT</span></pre>
+
+  <div class="note warn">
+    <b>schema 受限子集</b>：仅 type / properties / required / additionalProperties / items / enum / const / oneOf —— 不支持 pattern / format / 数值边界。超集 → <code>UNSUPPORTED_SCHEMA</code> fatal。
+  </div>
+</section>
+
+<!-- ══════════ 10 落地路线 ══════════ -->
+<section id="s10">
+  <h2><span class="no">11</span>落地路线与风险</h2>
+  <hr class="sep">
+  <div class="timeline">
+    <div class="milestone">
+      <div class="tag">M1</div>
+      <h5>引擎 + 工具（本设计主体）</h5>
+      <p>Chat 内即可完整使用动态工作流</p>
+      <ul>
+        <li>common/workflow（types + protocol）</li>
+        <li>browser/workflow（engine + worker source）</li>
+        <li>startWorkflowChild 桥 + workflowTool 注册</li>
+        <li>toolset / 系统提示 / 长超时档 / NEVER_PARALLEL</li>
+      </ul>
+    </div>
+    <div class="milestone m2">
+      <div class="tag">M2</div>
+      <h5>画布数据桥</h5>
+      <p>脚本可读写画布快照</p>
+      <ul>
+        <li>nodeOutput(stageUid) hook + RPC 代理</li>
+        <li>结果归档 SAROS_JSON → OUTPUT 卡</li>
+        <li>验收：chat 发起带 nodeOutput 脚本 → 结果出现在画布节点</li>
+      </ul>
+    </div>
+    <div class="milestone m3">
+      <div class="tag">M3</div>
+      <h5>编排节点执行语义</h5>
+      <p>Saros.* 节点真正可运行</p>
+      <ul>
+        <li>Agent / Task / IfElse / Switch / AskUser 接入执行计划</li>
+        <li>媒体与编排节点同波次混排</li>
+        <li>验收：Prompt→Agent→IfElse→Agent 串联正确，类型不符 fail-loud</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>主要风险与对策</h3>
+  <table>
+    <tr><th style="width:230px">风险</th><th>对策</th></tr>
+    <tr><td>纯同步死循环无法软杀（无 vm timeout）</td><td>host terminate 兜底 + 工具 description 约束 + <code>new Function</code> 编译期语法检查</td></tr>
+    <tr><td>blob worker 被 CSP 拦截（kbWorkerManager 先例）</td><td>createBlobWorker 返回 null → <b>fail-loud 拒启工具</b>（不默认降级主线程——无法 terminate）</td></tr>
+    <tr><td>子代理 schema 输出不可靠</td><td>桥内可选「每 child 一次免费重试」（默认关）；脚本层自定重试策略</td></tr>
+    <tr><td>与主循环并行执行器冲突</td><td>workflow 加入 <code>NEVER_PARALLEL_TOOLS</code>（自管并发）</td></tr>
+    <tr><td>stageUid 查询跨进程延迟</td><td>大 JSON 走引用而非全量拷贝；M2 前压测 RPC 通道</td></tr>
+  </table>
+
+  <p style="margin-top:30px;color:var(--muted);font-size:12.5px">依据 <code>doc/Dynamic-Workflow-Integration-Design.md</code> 生成 · 2026-08-18</p>
+</section>
+
+</main>
+</div>
+</body>
+</html>

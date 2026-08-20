@@ -305,7 +305,7 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 			return;
 		}
 		const ctx: BridgeReplyCtx = { sessionKey, replyCtx };
-		const op = replyCtx !== undefined ? platform.reply(ctx, content) : platform.send(ctx, content);
+		const op = replyCtx !== undefined ? platform.reply(ctx, content, type) : platform.send(ctx, content, type);
 		Promise.resolve(op).catch(err => this._log.error(`[Bridge] outbound failed:`, err));
 	}
 

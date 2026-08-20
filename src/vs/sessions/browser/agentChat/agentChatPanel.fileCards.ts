@@ -533,10 +533,23 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				}
 			}));
 
-			// 右侧：状态图标 + 复制 + Run in Terminal
+			// 右侧：状态图标 + 继续执行 + 复制 + Run in Terminal
 			const right = append(row, $('.tool-header-right'));
 			if (isRunning) {
 				this._svgSpinner(right, 'tool-header-spinner-icon');
+				// 「继续执行」按钮（常驻 header，卡片折叠也可见）：中止当前长命令，
+				// 不取消整个 turn——agent 拿到中断结果后继续后续步骤，避免原地卡住。
+				if (this._onSkipCurrentTool) {
+					const skipBtn = append(right, $('button.terminal-continue-btn.terminal-continue-header')) as HTMLButtonElement;
+					skipBtn.textContent = '继续执行';
+					skipBtn.title = '不等待命令完成，跳过当前命令并继续后续步骤';
+					this._register(addDisposableListener(skipBtn, EventType.CLICK, (e) => {
+						e.stopPropagation();
+						skipBtn.disabled = true;
+						skipBtn.textContent = '已跳过';
+						this._onSkipCurrentTool?.();
+					}));
+				}
 			} else if (isError) {
 				this._svgAlert(right, 'tool-header-error-icon');
 			} else if (isSuccess) {
@@ -590,17 +603,17 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				// 左侧占位文本 + 右侧「继续下一步」按钮
 				const placeholder = append(running, $('span.terminal-placeholder'));
 				placeholder.textContent = '运行中，详情可在终端查看';
-				// 继续下一步按钮：点击后标记跳过 + 取消执行（用户可继续后续步骤）
-				if (this._onCancelExecution) {
+				// 继续下一步按钮：点击后仅中止当前工具执行（返回中断结果给 LLM），
+				// turn 继续——agent 拿到结果后跳过该命令继续后续步骤。
+				if (this._onSkipCurrentTool) {
 					const continueBtn = append(running, $('button.terminal-continue-btn')) as HTMLButtonElement;
-					continueBtn.textContent = '继续下一步';
-					continueBtn.title = '不等待命令完成，标记为已跳过并继续后续步骤';
+					continueBtn.textContent = '继续执行';
+					continueBtn.title = '不等待命令完成，跳过当前命令并继续后续步骤';
 					this._register(addDisposableListener(continueBtn, EventType.CLICK, (e) => {
 						e.stopPropagation();
 						continueBtn.disabled = true;
 						continueBtn.textContent = '已跳过';
-						// 取消当前执行（agent 端 abort → onCancelExecution → bubble 显示「用户已取消」）
-						this._onCancelExecution?.();
+						this._onSkipCurrentTool?.();
 					}));
 				}
 			} else if (tc.result) {

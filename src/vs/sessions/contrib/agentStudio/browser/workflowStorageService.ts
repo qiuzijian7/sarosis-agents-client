@@ -190,7 +190,7 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		return workflow;
 	}
 
-	async updateWorkflow(id: string, patch: Partial<IStoredWorkflow>, workspaceId?: string): Promise<IStoredWorkflow> {
+	async updateWorkflow(id: string, patch: Partial<IStoredWorkflow>, workspaceId?: string, opts?: { autoCommit?: boolean }): Promise<IStoredWorkflow> {
 		const dir = await this._resolveWorkflowsDir(workspaceId);
 		if (!dir) {
 			throw new Error('No active workspace — cannot update workflow.');
@@ -210,9 +210,13 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		await this._ensureDir(workflowDir);
 		const uri = URI.joinPath(workflowDir, WORKFLOW_FILE);
 		await this._fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(updated, null, 2)));
-		// 版本管理：每次保存后异步 auto-commit（fire-and-forget，不阻塞 UI 保存）
-		this._versionService.autoCommit(id).catch(err =>
-			this._logService.warn(`[WorkflowStorage] autoCommit failed for ${id}:`, err));
+		// 版本管理：每次保存后异步 auto-commit（fire-and-forget，不阻塞 UI 保存）。
+		// ★ auto-save 传 opts.autoCommit=false 跳过 —— 否则 updatedAt 时间戳 + 节点
+		// 微调导致内容每次变，git 版本爆炸（历史里全是无意义的浮点坐标 commit）。
+		if (opts?.autoCommit !== false) {
+			this._versionService.autoCommit(id).catch(err =>
+				this._logService.warn(`[WorkflowStorage] autoCommit failed for ${id}:`, err));
+		}
 		this._onDidChangeWorkflows.fire();
 		return updated;
 	}

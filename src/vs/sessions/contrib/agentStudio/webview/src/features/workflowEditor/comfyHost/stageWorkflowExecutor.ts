@@ -117,6 +117,38 @@ export interface StageWorkflowListResponse {
 /** Thrown when the runner / workflow DB cannot serve a stage workflow → degrade. */
 export class StageWorkflowUnavailableError extends Error { }
 
+/**
+ * 校验 prompt 的节点引用完整性（POST /prompt 前）。
+ *
+ * ComfyUI api_json 里节点 input 以 `[sourceNodeId, slotIndex]` 引用上游输出。
+ * 若 sourceNodeId 不在 prompt 里，ComfyUI 会在 validate_prompt 抛
+ * `KeyError`（HTTP 400 `prompt_outputs_failed_validation`），报错信息是
+ * 「Exception when validating node: '5'」这类**不可读**的错。
+ *
+ * ★ 根因场景（2026-08-19）：builtinWorkflows 由导出脚本从 ComfyTV DB 生成，
+ * 导出时会**跳过未安装插件的自定义节点**（如 LaMa Erase 的
+ * INPAINT_LoadInpaintModel / INPAINT_InpaintWithModel 依赖 comfyui-inpaint-nodes），
+ * 但下游 SaveImage 仍引用这些节点 → api_json 残缺。执行前校验，把 KeyError
+ * 换成可读的「workflow 残缺」错误，并让调用方降级单节点执行。
+ *
+ * 返回缺失的 sourceNodeId 列表（空 = 完整）。
+ */
+export function findMissingNodeRefs(prompt: StageWorkflowApiJson): string[] {
+	const nodeIds = new Set(Object.keys(prompt));
+	const missing = new Set<string>();
+	for (const node of Object.values(prompt)) {
+		const inputs = node?.inputs as Record<string, unknown> | undefined;
+		if (!inputs || typeof inputs !== 'object') { continue; }
+		for (const value of Object.values(inputs)) {
+			// ComfyUI 节点引用：['nodeId', slotIndex]（nodeId 是 string，slot 是 number）
+			if (Array.isArray(value) && value.length === 2 && typeof value[0] === 'string' && typeof value[1] === 'number') {
+				if (!nodeIds.has(value[0])) { missing.add(value[0]); }
+			}
+		}
+	}
+	return [...missing].sort((a, b) => Number(a) - Number(b));
+}
+
 /** Parsed result of a ComfyTV `upstream_<kind>[:variant][idx]` binding `from`. */
 export interface UpstreamFrom {
 	kind: MediaKind | 'model';
@@ -175,6 +207,47 @@ export function collectUpstreamRefs(
 		}
 	}
 	return out;
+}
+
+/**
+ * 把卡片上「钉住的资产引用」覆盖进 upstream 值表。
+ *
+ * 对齐 ComfyTV `injectAssetRefs` 的 **override** 语义：钉住的资产优先于同 slot
+ * 的上游连线。项目侧的 upstream 绑定按媒体 kind 取单一 ref（`upstream_image`
+ * 无 slot 维度），因此每种 kind 取 **slot 最小** 的那条引用。
+ *
+ * 数据来源 = `values[ASSET_REFS_PROP]`（node.properties.comfytv_image_refs，
+ * 由 AssetReferences 区块经 wf-node-control 写回，可能是 JSON 字符串或数组）。
+ * 纯函数（原地改 upstreamValues）。
+ */
+export function applyAssetRefOverrides(
+	upstreamValues: Record<string, string>,
+	values: Record<string, unknown>,
+): void {
+	const raw = values['comfytv_image_refs'];
+	let list: unknown;
+	if (typeof raw === 'string') {
+		if (!raw.trim()) { return; }
+		try { list = JSON.parse(raw); } catch { return; }
+	} else {
+		list = raw;
+	}
+	if (!Array.isArray(list) || list.length === 0) { return; }
+
+	// kind → slot 最小的 ref
+	const best = new Map<string, { slot: number; ref: string }>();
+	for (const item of list) {
+		const rec = item as { ref?: unknown; slot?: unknown; type?: unknown } | null;
+		const ref = typeof rec?.ref === 'string' ? rec.ref : '';
+		if (!ref) { continue; }
+		const slot = typeof rec?.slot === 'number' && Number.isInteger(rec.slot) ? rec.slot : 0;
+		const kind = rec?.type === 'video' ? 'video' : rec?.type === 'audio' ? 'audio' : 'image';
+		const prev = best.get(kind);
+		if (!prev || slot < prev.slot) { best.set(kind, { slot, ref }); }
+	}
+	for (const [kind, hit] of best) {
+		upstreamValues[kind] = hit.ref;
+	}
 }
 
 /**
@@ -444,6 +517,11 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 	// P2: inject upstream snapshots (first ref per media kind) so chained
 	// stages consume their predecessor's output.
 	const upstreamValues = collectUpstreamRefs(store, upstreams);
+	// 「资产引用」（asset references，对齐 ComfyTV ImageStage）：卡片上钉住的资产
+	// **覆盖**同媒体类型的上游连线（与 ComfyTV injectAssetRefs 的 override 语义
+	// 一致）。项目侧 upstream 绑定按 kind 取单一 ref（无 slot 维度），故取
+	// slot 最小的一条作为该 kind 的输入。见 assetRefs.ts。
+	applyAssetRefOverrides(upstreamValues, values);
 	// eslint-disable-next-line no-console
 	console.warn('[runStageWorkflow] upstreams=' + JSON.stringify(upstreams) + ' upstreamValues=' + JSON.stringify(upstreamValues));
 	const { prompt } = injectWorkflowValues(cfg.api_json, cfg.inputs, values, upstreamValues);
@@ -494,6 +572,15 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 		for (const [k, v] of Object.entries(RUNTIME_REQUIRED_INPUTS)) {
 			if (!(k in inputs)) { inputs[k] = v; }
 		}
+	}
+	// ★ 引用完整性校验（修 HTTP 400 KeyError 难懂错误）：api_json 若引用不存在的
+	// 节点（导出脚本跳过未安装插件的自定义节点导致），在 POST /prompt 前就失败，
+	// 报可读错误并让调用方降级，而不是让 ComfyUI 抛「Exception when validating node: '5'」。
+	const missingRefs = findMissingNodeRefs(prompt);
+	if (missingRefs.length > 0) {
+		throw new StageWorkflowUnavailableError(
+			`workflow「${label ?? wfKind}」的 api_json 残缺：节点 ${missingRefs.join(', ')} 被引用但不存在（导出时依赖的自定义插件未安装，节点被跳过）。请安装对应插件后重新导出，或改用其它 stage。`,
+		);
 	}
 	const started = Date.now();
 	// eslint-disable-next-line no-console

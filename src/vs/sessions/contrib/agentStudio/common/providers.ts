@@ -1081,7 +1081,13 @@ export interface IAgentTurnRequest {
 	};
 	/** Chat-only 模式开关（来自 UI 切换按钮）。开启时禁用所有写文件工具，React 范式下同时禁用 delegate_task。默认关闭。 */
 	readonly chatOnly?: boolean;
-	/** @deprecated 已移除 ChatMode（craft/plan/ask/workflow），由 AgentLoop 策略范式取代。保留字段仅为兼容旧调用方。 */
+	/**
+	 * 稳定 UI 策略（ChatMode: craft/ask/plan/workflow），随每 turn 由发送方传入。
+	 * 类型为 string 是序列化边界的兼容（值域见 sessions/common/agentStudioService.ChatMode）。
+	 * 与 chatOnly（只读开关）、workMode（运行时阶段）三者正交：chatMode 表达意图档位，
+	 * workMode 是 plan_enter/plan_exit 驱动的执行阶段（漏传时由 resolveRequestWorkMode
+	 * 按 chatMode==='plan' fallback 推导，见 common/workMode.ts）。
+	 */
 	readonly chatMode?: string;
 	/** Mutable AgentLoop phase: plan is read-only; work can edit/execute. */
 	readonly workMode?: 'plan' | 'work';
@@ -1322,6 +1328,21 @@ export interface IChatStreamDelta {
 	readonly mode?: string;
 	/** work_mode_changed delta — internal AgentLoop phase; does not change the UI ChatMode selector. */
 	readonly workMode?: 'plan' | 'work';
+	/**
+	 * work_mode_changed delta 附带的阶段进度（P2-4 阶段卡）。
+	 * 由 agentTurnExecutor 在 plan_enter/plan_explore/plan_exit 拦截器中推进；
+	 * 消费方（agentChatService 持久化版 + nativeChatEditorPane 显示版）将其
+	 * 合并到最近一个 plan_enter/plan_explore 工具卡的 planPhase 字段上，
+	 * 随 toolCalls/parts 持久化 → 窗口刷新后阶段卡不丢失。
+	 */
+	readonly planPhase?: {
+		/** 0-based 当前进行中的阶段（P1 理解需求 / P2 并行探索 / P3 方案设计 / P4 撰写计划 / P5 提交执行） */
+		readonly currentStep?: number;
+		/** 计划文件绝对路径 */
+		readonly planFilePath?: string;
+		/** 完成时间戳（plan_exit 后定格完成态） */
+		readonly completedAt?: number;
+	};
 	readonly subAgentGroupId?: string;
 	/** plan_tasks delta — structured plan tasks generated at plan_exit, for a dedicated chat card. */
 	readonly planTasksData?: {

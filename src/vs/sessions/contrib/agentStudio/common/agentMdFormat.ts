@@ -94,10 +94,15 @@ function yamlToPlain(node: YamlNode | undefined): unknown {
 	return undefined;
 }
 
-/** 将 YAML 字符串解析为纯 JS 对象 */
+/** 将 YAML 字符串解析为纯 JS 对象；语法错误（errors 非空）抛错。 */
 function parseYaml(yamlStr: string): unknown {
 	const errors: import('../../../../base/common/yaml.js').YamlParseError[] = [];
 	const node = parse(yamlStr, errors);
+	// ★ VS Code 内置 yaml parse 对语法错误**不抛异常**（尽力解析 + 收集到 errors），
+	//   必须显式检查 errors —— 否则「损坏 YAML」被静默解析成部分对象而非返回 null。
+	if (errors.length > 0) {
+		throw new Error(`YAML parse error: ${errors[0].message}`);
+	}
 	return yamlToPlain(node);
 }
 
@@ -108,10 +113,29 @@ function dumpYaml(obj: Record<string, unknown>, baseIndent = ''): string {
 		if (val === undefined || val === null) { continue; }
 		if (Array.isArray(val)) {
 			if (val.length === 0) { continue; }
-			// 字符串数组：每项一行 `- value`
+			// 对象数组（如 handOffs: [{ targetAgentId, description, condition }]）：
+			// 逐项递归序列化为 YAML 列表；标量元素回退 `- value`。
+			// ★ 旧实现对对象元素用 String(item) → '[object Object]'，导致 handOffs
+			//   序列化后结构丢失（parse 回来是字符串数组，targetAgentId 等字段全丢）。
+			const isObjectArray = val.every(item => item !== null && typeof item === 'object' && !Array.isArray(item));
 			lines.push(`${baseIndent}${key}:`);
-			for (const item of val) {
-				lines.push(`${baseIndent}  - ${escapeYamlScalar(String(item))}`);
+			if (isObjectArray) {
+				for (const item of val) {
+					const obj = item as Record<string, unknown>;
+					const entries = Object.entries(obj).filter(([, v]) => v !== undefined && v !== null);
+					if (entries.length === 0) { continue; }
+					// 首字段跟在 `- ` 后，其余字段对齐到首字段值列（4 空格缩进）。
+					const [fk, fv] = entries[0];
+					lines.push(`${baseIndent}  - ${fk}: ${formatYamlScalar(fv)}`);
+					for (let i = 1; i < entries.length; i++) {
+						const [k, v] = entries[i];
+						lines.push(`${baseIndent}    ${k}: ${formatYamlScalar(v)}`);
+					}
+				}
+			} else {
+				for (const item of val) {
+					lines.push(`${baseIndent}  - ${escapeYamlScalar(String(item))}`);
+				}
 			}
 		} else if (typeof val === 'object') {
 			lines.push(`${baseIndent}${key}:`);
@@ -125,6 +149,15 @@ function dumpYaml(obj: Record<string, unknown>, baseIndent = ''): string {
 		}
 	}
 	return lines.join('\n');
+}
+
+/** 对象数组元素内的值 → YAML 标量（标量走转义；嵌套对象/数组回退 JSON 内联）。 */
+function formatYamlScalar(value: unknown): string {
+	if (value === null || value === undefined) { return 'null'; }
+	if (typeof value === 'boolean' || typeof value === 'number') { return String(value); }
+	if (typeof value === 'string') { return escapeYamlScalar(value); }
+	// 嵌套对象/数组：内联 JSON（dumpYaml 不支持深层嵌套，此为已知限制的兜底）
+	return escapeYamlScalar(JSON.stringify(value));
 }
 
 /** 对 YAML 纯量值做最小引号转义（含冒号、井号、首尾空格时需要引号包裹） */

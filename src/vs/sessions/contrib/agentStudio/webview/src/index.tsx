@@ -29,6 +29,7 @@ import { useDiagnosticsStore } from './store/useDiagnosticsStore.js';
 import { useSwarmStore } from './store/useSwarmStore.js';
 import { useDebugTraceStore } from './store/useDebugTraceStore.js';
 import { dispatchConfigHtmlEvent } from './features/configmd/configHtmlBridge.js';
+import { handleSnapshotArchiveEvent, handleSnapshotQueryEvent, handleStageRunEvent } from './features/workflowEditor/comfyHost/workflowSnapshotBridgeWebview.js';
 import './styles/globals.css';
 import './styles/themes.css';
 import './styles/chat-enhanced.css';
@@ -36,6 +37,7 @@ import './styles/chat-cards.css';
 import './styles/configHtml.css';
 import './styles/agent-editor.css';
 import './styles/void-tool-card.css';
+import './styles/workflow-editor.css';
 
 // Initialize the message bridge (must happen before React mounts)
 perfTrace.mark('bundle-eval');
@@ -443,6 +445,22 @@ initMessageClient((type, data) => {
 		// applies them via applyCanvasOps and replies with canvasOpsResult.
 		console.log(`[AgentStudio] workflow.canvasOps → ops=${(data as { ops?: unknown[] } | undefined)?.ops?.length ?? 0}`);
 		window.dispatchEvent(new CustomEvent('agentStudio:workflow-canvas-ops', { detail: data }));
+		break;
+	}
+	case 'workflow.snapshotQuery': {
+		// M2 dynamic workflow: host asks to resolve nodeOutput(stageUid, slot).
+		void handleSnapshotQueryEvent(data);
+		break;
+	}
+	case 'workflow.snapshotArchive': {
+		// M2 dynamic workflow: host archives a workflow run result as SAROS_JSON.
+		handleSnapshotArchiveEvent(data);
+		break;
+	}
+	case 'workflow.stageRun': {
+		// P0 dynamic workflow: host asks the canvas to actually RUN a media node
+		// (stage(uid) hook) — this is what makes scripts able to generate images.
+		handleStageRunEvent(data);
 		break;
 	}
 	case 'workflow.executionUpdate': {

@@ -64,6 +64,40 @@ export interface IAgentInstallResult {
 
 // --- Agent Studio Service ---
 
+/** 画布「直接执行」开始时通知聊天框开合成 workflow 工具卡。 */
+export interface IWorkflowDirectRunStart {
+	/** 合成的工具调用 id（子代理卡片挂载到它）。 */
+	readonly toolCallId: string;
+	/** workflow name（meta.name，用于卡片标题）。 */
+	readonly name: string;
+	/** 导出脚本（用于卡片详情展示）。 */
+	readonly script: string;
+}
+
+/** 画布「直接执行」终态通知（成功/失败）。 */
+export interface IWorkflowDirectRunResult {
+	readonly toolCallId: string;
+	readonly ok: boolean;
+	readonly error?: string;
+	readonly value?: unknown;
+	readonly agentsStarted?: number;
+	readonly projectionText?: string;
+}
+
+/**
+ * 画布「直接执行」过程中的实时进度（解决「执行卡住但看不到进度」）。
+ * 由 ComfyUI 生成进度（runStageWorkflow.onProgress）透传到聊天框工具卡。
+ */
+export interface IWorkflowDirectRunProgress {
+	readonly toolCallId: string;
+	/** 0-100 进度（ComfyUI 轮询值；可能跳变/回落，UI 应做单调化）。 */
+	readonly progress: number;
+	/** 人类可读阶段描述（如「生成中…」「节点执行中」）。 */
+	readonly message?: string;
+	/** 当前正在执行的画布节点 stageUid（用于卡片定位）。 */
+	readonly stageUid?: string;
+}
+
 export const IAgentStudioService =
 	createDecorator<IAgentStudioService>("agentStudioService");
 
@@ -76,6 +110,16 @@ export interface IAgentStudioService {
 	readonly onDidSelectAgent: Event<string | null>;
 	/** Fired when the host needs the chat panel to inject a prompt into the active agent conversation. */
 	readonly onDidRequestInjectPrompt: Event<{ agentId: string; message: string }>;
+	/**
+	 * Fired when the canvas "直接执行" runs a workflow script WITHOUT an LLM turn.
+	 * The chat panel opens a synthetic `workflow` tool card (renderType WorkflowRun)
+	 * so subagent cards + progress render inside the chat as a tool card.
+	 */
+	readonly onDidRequestWorkflowDirectRun: Event<IWorkflowDirectRunStart>;
+	/** Fired when a canvas "直接执行" workflow run reaches a terminal state. */
+	readonly onDidWorkflowDirectRunResult: Event<IWorkflowDirectRunResult>;
+	/** Fired periodically while a canvas "直接执行" workflow run is executing (ComfyUI progress). */
+	readonly onDidWorkflowDirectRunProgress: Event<IWorkflowDirectRunProgress>;
 	/** Request the KB view to refresh its tree (e.g. after background KB agent import completes). */
 	requestKbRefresh(): void;
 	/** Fired when the KB view should refresh (e.g. after background KB agent import). */
@@ -94,6 +138,12 @@ export interface IAgentStudioService {
 	fireSelectAgent(agentId: string | null): void;
 	/** Request the chat panel to inject a prompt into the conversation for the given agent. */
 	requestInjectPrompt(agentId: string, message: string): void;
+	/** Request the chat panel to open a synthetic workflow tool card for a canvas "直接执行". */
+	requestWorkflowDirectRun(payload: IWorkflowDirectRunStart): void;
+	/** Notify the chat panel that a canvas "直接执行" workflow run finished. */
+	workflowDirectRunResult(payload: IWorkflowDirectRunResult): void;
+	/** Notify the chat panel of live progress during a canvas "直接执行" workflow run. */
+	workflowDirectRunProgress(payload: IWorkflowDirectRunProgress): void;
 
 	// Agents — chat-ready agent definitions (builtins + custom presets)
 	getAgents(): Promise<Agent[]>;
@@ -541,7 +591,12 @@ export interface IChatSendOptions {
 		/** 表单收集的自定义模板变量（{{topic}} 等）；合并进 execution context 供变量替换。 */
 		readonly variables?: Record<string, string>;
 	};
-	/** @deprecated 已移除 ChatMode（craft/plan/ask/workflow）。改为 chatOnly 开关。 */
+	/**
+	 * 聊天模式选择器（craft/ask/plan/workflow）—— 稳定的 UI 策略，随 sendMessage 传入。
+	 * 与 chatOnly（只读开关）正交：chatMode 表达用户意图档位，chatOnly 是额外的只读约束。
+	 * 下游消费：工具 schema 过滤（ask）、权限档映射（getPermissionMode）、默认范式选择、
+	 * 记忆注入、审批路由、WorkMode fallback 推导（resolveRequestWorkMode）。
+	 */
 	readonly chatMode?: ChatMode;
 	/** Chat-only 模式开关（开启时禁用写文件工具，React 范式下同时禁用 delegate_task）。默认关闭。 */
 	readonly chatOnly?: boolean;

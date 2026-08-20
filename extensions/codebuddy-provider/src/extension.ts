@@ -1184,7 +1184,15 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 
 		// Stateful multi-turn association (P2) — replay last response id for this
 		// session so the gateway can reuse server-side context / reasoning cache.
-		if (sessionId) {
+		// ⚠ 2026-08-19 复盘（日志 1787104763200）：曾误判此参数为 400 code 11133 的
+		// 根因并默认关闭。经 http-debug 请求体逐条比对后证伪——真因是**messages 以
+		// assistant 结尾**（IOA 网关要求最后一条为 user/tool），已在
+		// agentRunState.ensureTrailingUserBoundary + stripSyntheticSidecars 尾部保护
+		// 修复。证伪证据：provider 自身日志 "HTTP 400 persisted after dropping
+		// previous_response_id" —— 丢弃该参数后 400 依旧，故非其所致。
+		// 保留开关便于后续排查（默认启用，维持服务端上下文复用能力）。
+		const enablePrevRespId = config.get<boolean>('previousResponseId') ?? true;
+		if (sessionId && enablePrevRespId) {
 			const prevId = this._lastResponseIdBySession.get(sessionId);
 			if (prevId) {
 				bodyObj.previous_response_id = prevId;
@@ -1447,7 +1455,8 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			// OpenAI-style chunks carry a top-level `id`; some gateways also use
 			// `response_id`. We stash the latest non-empty id keyed by session so the
 			// next turn replays it as `previous_response_id`. Best-effort only.
-			if (sessionId) {
+			// （开关关闭时不写入——避免 Map 随会话数无限增长；见上方注入点说明）
+			if (sessionId && enablePrevRespId) {
 				const respId = (typeof event.response_id === 'string' && event.response_id)
 					|| (typeof event.id === 'string' && event.id);
 				if (respId) {

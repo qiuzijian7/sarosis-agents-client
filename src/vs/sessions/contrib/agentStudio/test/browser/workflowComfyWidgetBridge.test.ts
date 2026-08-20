@@ -189,14 +189,17 @@ suite('widgetBridge', () => {
 			assert.strictEqual(el.style.overflow, 'hidden', 'widgetRect mode must clip — card content can never spill past the node rect');
 		});
 
-		test('non-widgetRect mode keeps overflow:visible (port bars sit on the node edge)', () => {
+		test('card always clips to the node rect (overflow:hidden) — prevents spill over neighbors', () => {
+			// 语义（2026-08-19 澄清）：DOM overlay 整体压在 canvas 之上，卡片内容
+			// 必须裁剪到自己的 node rect，否则下层节点的 DOM 卡片会溢出盖到上层
+			// 节点（「右侧节点 DOM 溢出盖住左侧节点 widget」）。无条件 overflow:hidden。
 			const layer = new FakeElement() as unknown as HTMLElement;
 			const host = createWidgetBridgeHost(layer, fakeDocument);
 			host.sync([
 				{ id: 'n', node: { pos: [10, 20], size: [100, 300] } },
 			], { x: 0, y: 0, scale: 1 });
 			const el = (layer as unknown as FakeElement).children[0];
-			assert.strictEqual(el.style.overflow, 'visible');
+			assert.strictEqual(el.style.overflow, 'hidden');
 		});
 
 		test('widgetRect scales with zoom: position in screen px, size in design units', () => {
@@ -213,15 +216,18 @@ suite('widgetBridge', () => {
 			assert.strictEqual(el.style.transform, 'scale(2)');
 		});
 
-		test('fullCover wins over widgetRect (flush with the node rect)', () => {
+		test('fullCover keeps the top inset from widgetRect (ports stay visible)', () => {
+			// 语义（2026-08-19 澄清）：fullCover 的「顶部绝不能归零」——LiteGraph 0.17
+			// 坐标原点是 body 顶，端口行在 body 内 y=(i+0.7)*20，top=0 会把端口圆点
+			// 整行盖住。widgetRect.y 来自 arrange() 分配，必在端口行下方。
 			const layer = new FakeElement() as unknown as HTMLElement;
 			const host = createWidgetBridgeHost(layer, fakeDocument);
 			host.sync([
 				{ id: 'fc', node: { pos: [0, 0], size: [230, 320] }, fullCover: true, widgetRect: { y: 52, height: 204 } },
 			], { x: 0, y: 0, scale: 1 });
 			const el = (layer as unknown as FakeElement).children[0];
-			assert.strictEqual(el.style.top, '0px');
-			assert.strictEqual(el.style.height, '320px');
+			assert.strictEqual(el.style.top, '52px', 'top = widgetRect.y（端口行下方）');
+			assert.strictEqual(el.style.height, '204px', 'height = widgetRect.height（LiteGraph 布局值）');
 		});
 
 		test('explicit insets override the defaults', () => {
@@ -237,18 +243,18 @@ suite('widgetBridge', () => {
 			assert.strictEqual(el.style.height, '155px'); // 200 - 40 - 5
 		});
 
-		test('fullCover at non-1 scale: card is flush with the node rect (no inset)', () => {
+		test('fullCover at non-1 scale: sides flush, top inset reserved, design-unit zoom', () => {
 			const layer = new FakeElement() as unknown as HTMLElement;
 			const host = createWidgetBridgeHost(layer, fakeDocument);
 			host.sync([
 				{ id: 'fc', node: { pos: [0, 0], size: [230, 320] }, fullCover: true },
 			], { x: 0, y: 0, scale: 0.5 });
 			const el = (layer as unknown as FakeElement).children[0];
-			// fullCover nodes are one DOM layer — the card fills the whole node
-			// rect so canvas border and card border align at every zoom. Port
-			// clearance lives in the card's inner padding instead.
+			// fullCover：左右铺满（inset 0），顶部仍让开端口行（DEFAULT_TOP_INSET=50），
+			// 所以 height = 320 - 50 - 0(bottom) = 270。宽度/高度是 design 单位，
+			// 由 transform:scale(0.5) 缩放。
 			assert.strictEqual(el.style.width, '230px');
-			assert.strictEqual(el.style.height, '320px');
+			assert.strictEqual(el.style.height, '270px');
 			assert.strictEqual(el.style.transform, 'scale(0.5)');
 		});
 

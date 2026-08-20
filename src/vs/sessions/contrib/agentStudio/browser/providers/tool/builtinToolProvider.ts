@@ -75,6 +75,8 @@ import { registerSkillTools, type SkillToolContext } from './skillTools.js';
 import { registerCompatibilityTools, type CompatToolContext } from './compatibilityTools.js';
 import { registerDelegationTools, type DelegationToolContext } from './delegationTools.js';
 import { registerPlanExploreTool } from './planExploreTool.js';
+import { registerWorkflowTool } from './workflowTool.js';
+import type { UnifiedSubAgentDispatch } from '../../../common/unifiedSubAgentDispatch.js';
 import { registerPlanModeTools } from './planModeTools.js';
 import { createKnowledgeStorageRegistrar, type IKnowledgeStorageRegistrar } from './knowledgeStorageTools.js';
 import { resolveAndCheckWorkspacePathImpl } from './workspaceSecurity.js';
@@ -247,7 +249,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		);
 		this._skillUsageTracker = new SkillUsageTracker(this.fileService, this.logService);
 		this._adrManager = new AdrManager(this.fileService);
-		this._searchHelpers = new SearchHelpers(this.fileService, this.searchService, this.logService);
+		this._searchHelpers = new SearchHelpers(this.fileService, this.searchService, this.logService, this.configurationService);
 		// Phase 1: 注册内置 embedding provider（复用 BYOK API → /v1/embeddings）
 		// 使 kb_* 工具无需扩展即可工作
 		this._registerEmbeddingProvider();
@@ -262,6 +264,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerBundledTools();
 		this._registerDelegationTools();
 		this._registerPlanExploreTool(); // WorkBuddy-style plan mode: parallel exploration
+		this._registerDynamicWorkflowTool(); // dynamic workflows: 模型写 JS 脚本编排子代理
 		this._registerPlanModeTools(); // MiMo-style plan_enter/plan_exit tools
 		this._registerKanbanTools();
 		this._registerMindmapTools();
@@ -560,6 +563,20 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			orchestrationService: this.orchestrationService,
 			logService: this.logService,
 			getParentWorktreePath: () => this.getParentWorktreePath(),
+		});
+	}
+
+	/**
+	 * 动态工作流工具（dynamic workflows）：模型写 JS 编排脚本扇出子代理。
+	 * 区别于 _registerWorkflowTools()（画布工作流的 save/load 工具）。
+	 */
+	private _registerDynamicWorkflowTool(): void {
+		registerWorkflowTool({
+			register: (d) => this.register(d),
+			id: this.id,
+			agentOS: this.agentOS,
+			orchestrationService: { subAgentDispatch: this.orchestrationService.subAgentDispatch as unknown as UnifiedSubAgentDispatch | undefined },
+			logService: this.logService,
 		});
 	}
 

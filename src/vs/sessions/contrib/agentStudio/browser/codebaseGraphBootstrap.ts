@@ -93,6 +93,28 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		return folders.length > 0 ? folders[0].uri.fsPath : '';
 	}
 
+	/**
+	 * 判定工作区是否由 `.code-workspace` 文件打开（区别于「从文件夹添加」）。
+	 * 检查每个 folder 根目录是否直接存在 `.code-workspace` 文件（与
+	 * codebaseMemoryMcpService._initWorkspaceFileConfig 的根目录检测口径一致）。
+	 * 任何 folder 命中即视为 code-workspace 工作区。
+	 */
+	private async _hasCodeWorkspaceFile(): Promise<boolean> {
+		try {
+			const folders = this._workspaceService.getWorkspace().folders;
+			for (const f of folders) {
+				try {
+					const rootStat = await this._fileService.resolve(f.uri);
+					if (!rootStat?.children) { continue; }
+					const has = rootStat.children.some(c =>
+						!c.isDirectory && (c.name ?? '').toLowerCase().endsWith('.code-workspace'));
+					if (has) { return true; }
+				} catch { /* 单个 folder 不可读，跳过 */ }
+			}
+		} catch { /* ignore */ }
+		return false;
+	}
+
 	private async _bootstrap(): Promise<void> {
 		const folders = this._workspaceService.getWorkspace().folders;
 		if (folders.length === 0) {
@@ -101,6 +123,12 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		}
 
 		this._logService.info(LOG_TAG, `Bootstrapping ${folders.length} workspace folder(s): ${folders.map(f => f.uri.fsPath).join(', ')}`);
+
+		// 2026-08-19：从文件夹添加工作区（根目录无 .code-workspace 文件）时【禁用自动索引】。
+		// 已有图照常合并加载 + 启动 watcher（增量）；只有「无图」时才走 auto-index，且仅当
+		// 存在 .code-workspace 文件才允许。无 .code-workspace 的裸文件夹/多项目父目录，
+		// 索引改由 LLM 在 codebase 工具触发时询问用户后手动发起（见 codebaseTools.noGraphGuidance）。
+		const allowAutoIndex = await this._hasCodeWorkspaceFile();
 
 		// 收集需要合并加载的 folder（不含已 ready 的）
 		const toLoad = folders.filter(f => !this._readyFolders.has(this._normalize(f.uri.fsPath)));
@@ -148,6 +176,10 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 				await this._fileService.stat(URI.joinPath(folder.uri, '.codebase-memory'));
 				graphLost = true;
 			} catch { /* 目录也不存在 = 首次索引 */ }
+			if (!allowAutoIndex) {
+				this._logService.info(LOG_TAG, `No existing graph for folder "${project}", but auto-index is disabled (no .code-workspace file) — deferring to manual/LLM-triggered indexing.`);
+				continue;
+			}
 			if (graphLost) {
 				this._logService.warn(LOG_TAG, `Graph artifact missing but .codebase-memory dir exists for "${project}" (external deletion or interrupted save?), scheduling auto-index...`);
 			} else {

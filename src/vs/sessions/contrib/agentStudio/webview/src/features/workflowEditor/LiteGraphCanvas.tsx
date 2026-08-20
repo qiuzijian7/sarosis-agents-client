@@ -72,7 +72,7 @@ export function findLinkAt(graph: LGraph, x: number, y: number, threshold = 12):
 import { getDomFormWidget, setDomFormContentHeight, takeFormHeightDirty, clearFormHeightDirty, markFormHeightDirty, ensureDomFormWidget } from './comfyHost/domWidget';
 import { hasStageEditor, stageMinHeight } from './comfyHost/stageCardRegistry';
 import { claimStageUid, releaseStageUidByOwner, readStageUid } from './comfyHost/stageIdentity';
-import { getNodeCardMeta, createNodeCard } from './comfyHost/nodeCard';
+import { getNodeCardMeta, createNodeCard, ORCH_RICH_NODE_TYPES } from './comfyHost/nodeCard';
 import { patchInlineWidgetEditor } from './comfyHost/inlineWidgetEditor';
 import type { MediaSnapshotEntry } from './comfyHost/mediaSnapshot';
 import { buildMinimapScene, minimapToGraph, applyMinimapPan, renderMinimap } from './minimap';
@@ -80,6 +80,7 @@ import { applyComfyNodeStyle } from './comfyNodeStyle';
 import { spawnFollowUp, spawnAssetLoader, ASSET_DRAG_MIME } from './comfyHost/actionSpawn';
 import { parseGuiWorkflow, guiToApi, type ComfyGuiWorkflow } from './comfyHost/comfyApiAdapter';
 import { MediaSnapshotStore } from './comfyHost/mediaSnapshotStore';
+import { registerSnapshotSource, unregisterSnapshotSource } from './comfyHost/workflowSnapshotBridgeWebview';
 import { createIndexedDBBackend } from './comfyHost/indexedDBBackend';
 import { mediaImport } from './mediaAssets';
 import { shouldCollectMedia, parseDataUrl } from './comfyHost/mediaCollect';
@@ -295,6 +296,12 @@ export interface LiteGraphCanvasHandle {
 	 *   幂等：内部走 `claimStageUid`，节点尚无 uid 时就地生成并写入 properties。
 	 */
 	stageUidOf(nodeId: string): string | undefined;
+	/**
+	 * 选中并把某节点滚到视口中心（不改缩放）。
+	 * 用于「代码投影 → 画布」定位：点脚本行高亮对应画布节点。
+	 * 返回 false = 图上没有该 nodeId（画布未就绪或节点已删）。
+	 */
+	revealNode(nodeId: string): boolean;
 	/** Execution-state store driving card run button / progress / error / output. */
 	cardStateStore(): CardStateStore;
 	/** Remove a group from the graph (nodes keep their positions). */
@@ -310,12 +317,25 @@ export interface LiteGraphCanvasHandle {
 	removeLink(linkId: number): void;
 	/** Snap all selected nodes to the 8px grid (canvas menu "Align"). */
 	alignSelected(): void;
+	/**
+	 * W6: 执行路径可视化——两端都在 ran 的连线标绿（激活路径），target 在
+	 * skipped 的连线置灰（gate 分支未激活）；其余恢复默认色。传空数组清除。
+	 */
+	markRouteEdges(ranIds: string[], skippedIds: string[]): void;
 	/** Create an empty group at a graph position (canvas menu "Add Group"). */
 	addGroupAt(graphX: number, graphY: number): void;
 	/** Paste the internal clipboard at the mouse position (canvas menu "Paste"). */
 	pasteFromClipboard(): void;
 	/** Underlying LiteGraph canvas instance (for coordinate conversion, etc.). */
 	canvasInstance(): LGraphCanvas | null;
+	/**
+	 * FollowCursor ghost 落位：进入「待放置」模式，节点以半透明矩形跟随光标，
+	 * 点击画布才真正 `store.addNode`。graphX/graphY 为初始位置（缺省画布中心）。
+	 * 对齐 ComfyUI `Comfy.NodeSearchBoxImpl.FollowCursor`（默认开）。
+	 */
+	beginGhostPlace(type: string, graphX?: number, graphY?: number): void;
+	/** 取消 ghost 落位（Esc / 右键）。 */
+	cancelGhostPlace(): void;
 }
 
 interface LiteGraphCanvasProps {
@@ -342,6 +362,8 @@ interface LiteGraphCanvasProps {
 	onLinkContextMenu?: (link: LLink, graphX: number, graphY: number, clientX: number, clientY: number) => void;
 	/** Ctrl+Enter on the canvas → run the workflow (ComfyUI "Queue prompt"). */
 	onRequestRun?: () => void;
+	/** Double-click on empty canvas → open the node search box (ComfyUI-style). */
+	onCanvasDoubleClick?: (graphX: number, graphY: number, clientX: number, clientY: number) => void;
 }
 
 // ── Media auto-collect (P1) ─────────────────────────────────────────────
@@ -386,7 +408,7 @@ function collectAsset(workflowId: string, entry: MediaSnapshotEntry): void {
 }
 
 export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraphCanvasProps>(
-	function LiteGraphCanvas({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onNodeContextMenu, onRequestRun, workflowId }: LiteGraphCanvasProps, ref): React.JSX.Element {
+	function LiteGraphCanvas({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onNodeContextMenu, onRequestRun, onCanvasDoubleClick, workflowId }: LiteGraphCanvasProps, ref): React.JSX.Element {
 	const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
 	const graphRef = React.useRef<LGraph | null>(null);
 	const canvasInstanceRef = React.useRef<LGraphCanvas | null>(null);
@@ -405,6 +427,12 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			graphY: number;
 		};
 	} | null>(null);
+	/**
+	 * FollowCursor ghost 落位（对齐 ComfyUI `Comfy.NodeSearchBoxImpl.FollowCursor`）：
+	 * 搜索浮窗选中节点后**不立即落位**，节点以半透明 ghost 矩形跟随光标，点击画布才
+	 * 落位。x/y = graph 坐标（节点左上角），null = 不在 ghost 模式。
+	 */
+	const [ghost, setGhost] = React.useState<{ type: string; x: number; y: number } | null>(null);
 	const suppressStoreSync = React.useRef(false);
 	const snapshotStoreRef = React.useRef<MediaSnapshotStore | null>(null);
 	/** 已完成 nodeId → stageUid 快照迁移的 uid 集合（每节点只迁一次）。 */
@@ -437,7 +465,18 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			},
 		);
 		void snapshotStoreRef.current.hydrate();
+		// M2 dynamic workflow bridge: register this store as an answerable
+		// snapshot source for host-side nodeOutput() queries / SAROS_JSON archives.
+		registerSnapshotSource(workflowId ?? 'default', snapshotStoreRef.current);
 	}
+	// Store identity follows the workflow: re-register when workflowId changes
+	// (the store itself is recreated per dbName in that case by the block above).
+	React.useEffect(() => {
+		if (snapshotStoreRef.current) {
+			registerSnapshotSource(workflowId ?? 'default', snapshotStoreRef.current);
+		}
+		return () => unregisterSnapshotSource(workflowId ?? 'default');
+	}, [workflowId]);
 	const cardStateStoreRef = React.useRef<CardStateStore | null>(null);
 	if (!cardStateStoreRef.current) {
 		cardStateStoreRef.current = new CardStateStore();
@@ -464,6 +503,10 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		ensureSarosRegistration();
 		// Type-aware connection validation (image→image, text→text, ANY wildcard).
 		LiteGraph.isValidConnection = isValidLiteGraphConnection;
+		// ★ 交互约定对齐 ComfyUI 默认（legacy 模式，源自 ComfyUI 前端 settingStore：
+		//   `canvasNavigationMode='legacy'` + `leftMouseClickBehavior='panning'`）：
+		//   左键拖空白 = 平移；ctrl/meta+左键 = 框选；左键拖节点 = 移动；滚轮 = 缩放。
+		//   不设 canvasNavigationMode（保持 LiteGraph 默认 "legacy"）。
 		const graph = new LGraph();
 		const liteCanvas = new LGraphCanvas(canvas, graph);
 		// Suppress LiteGraph's native context menu ("Add Node" / "Add Group").
@@ -476,13 +519,18 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			/* no-op — handled by React onContextMenu */
 		};
 
-		// ctrl / meta + 鼠标左键 = 框选（rubber-band 多选）。
-		// 默认 legacy 模式下，空白处左键拖拽=平移画布，没有框选入口；节点上 LiteGraph
-		// 自身已（legacy）支持 ctrl 框选（processMouseDown 内 setupNodeSelectionDrag）。
-		// 这里只在「空白处（无节点）+ ctrl/meta + 左键」时，复用 LiteGraph 自己的
-		// dragging_rectangle 机制（公开属性：processMouseMove 更新其宽高、draw 渲染选区
-		// 矩形），并在拖拽结束时用公开的 select()/deselect() 复刻 handleMultiSelect。
-		// 拖动阈值（6px）与 LiteGraph 内部 #setDragStarted 一致，避免误触。
+		// ⚠️ 死代码（2026-08-19 确认）：下面这个 `liteCanvas.processMouseDown` override
+		// **从未生效** —— LGraphCanvas 构造函数（new LGraphCanvas → setCanvas →
+		// bindEvents）里 `this._mousedown_callback = this.processMouseDown.bind(this)`
+		// 已把「原始」processMouseDown 固定进 canvas 的 pointerdown listener，此处对
+		// `liteCanvas.processMouseDown` 的赋值不影响已 bind 的 callback（区别于
+		// processContextMenu，后者是运行时 `pointer.onClick ??= () => this.processContextMenu`
+		// 读取，override 才生效）。
+		// 框选（ctrl/meta+左键）实际由 LiteGraph **原生** `#processPrimaryButton →
+		// #setupNodeSelectionDrag` 处理（canvasNavigationMode 默认 "legacy"）。
+		// 此前「无法框选」的真因是下方 dragPointerDown 在 container capture 阶段
+		// stopPropagation 拦死了原生 pointerdown（已修：ctrl 框选意图不拦截）。
+		// 保留此段仅为兼容性兜底，勿据其注释理解框选实现。
 		const lc = liteCanvas as unknown as {
 			adjustMouseEvent(e: MouseEvent): void;
 			getNodeOnPos(x: number, y: number): unknown;
@@ -672,6 +720,19 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			graphBefore: boolean;
 		};
 		let dragRef: DragRef | null = null;
+		// ── ComfyUI legacy 平移状态（空白处左键拖拽 → pan）──
+		let panRef: { startClientX: number; startClientY: number; startOffsetX: number; startOffsetY: number } | null = null;
+		const panPointerMove = (e: PointerEvent) => {
+			if (!panRef) { return; }
+			const dx = (e.clientX - panRef.startClientX) / liteCanvas.ds.scale;
+			const dy = (e.clientY - panRef.startClientY) / liteCanvas.ds.scale;
+			liteCanvas.ds.offset[0] = panRef.startOffsetX + dx;
+			liteCanvas.ds.offset[1] = panRef.startOffsetY + dy;
+			liteCanvas.setDirty?.(true, true);
+		};
+		const panPointerUp = () => {
+			panRef = null;
+		};
 		// 挂到 container 的 capture phase 后，事件 target 可能是 DOM 卡片内的
 		// input/select/textarea/button —— 这些必须让用户正常交互，不能进入
 		// 节点拖拽逻辑（否则用户改 batch_size 时节点被拖走）。
@@ -691,12 +752,23 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			if (e.button !== 0) { return; }
 			// target 是可交互控件（input/select/textarea/button）→ 让控件处理，不抢拖拽
 			if (isInteractiveTarget(e.target)) { return; }
+			// ★ ctrl/meta + 左键 = 框选（ComfyUI legacy 原生 rubber-band 多选），
+			//   不是平移/节点拖拽。本 listener 挂在 container **capture** phase，
+			//   先于 LiteGraph 的 processMouseDown（canvas capture）触发。框选意图
+			//   一律**不拦截**，让事件继续传给 LiteGraph 原生
+			//   #processPrimaryButton → #setupNodeSelectionDrag（条件
+			//   ctrlOrMeta && !altKey && leftMouseClickBehavior==='panning'）。
+			if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+				dragRef = null;
+				return;
+			}
 			const rect = canvas.getBoundingClientRect();
 			const cx = (e.clientX - rect.left) / liteCanvas.ds.scale - liteCanvas.ds.offset[0];
 			const cy = (e.clientY - rect.top) / liteCanvas.ds.scale - liteCanvas.ds.offset[1];
 			const hit = graph.getNodeOnPos(cx, cy);
 
-			// ── Bug #1 fix: left-drag on empty space pans the canvas ────────
+			// ── ComfyUI legacy：左键拖空白 = 平移画布（自定义 panRef，绕过
+			//    LiteGraph 原生 dragging_canvas，因 DOM overlay 层挡 hit-test）──
 			if (!hit) {
 				dragRef = null;
 				e.stopPropagation();
@@ -708,7 +780,6 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 					startOffsetX: liteCanvas.ds.offset[0],
 					startOffsetY: liteCanvas.ds.offset[1],
 				};
-				console.warn('[dragDown] panRef SET (canvas panning)');
 				return;
 			}
 			if (hit.pinned) { dragRef = null; return; }
@@ -777,20 +848,6 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				graph.change();
 			}
 		};
-		// ── Canvas panning state (for Bug #1: empty-space left-drag) ──────────
-		let panRef: { startClientX: number; startClientY: number; startOffsetX: number; startOffsetY: number } | null = null;
-		const panPointerMove = (e: PointerEvent) => {
-			if (!panRef) { return; }
-			const dx = (e.clientX - panRef.startClientX) / liteCanvas.ds.scale;
-			const dy = (e.clientY - panRef.startClientY) / liteCanvas.ds.scale;
-			liteCanvas.ds.offset[0] = panRef.startOffsetX + dx;
-			liteCanvas.ds.offset[1] = panRef.startOffsetY + dy;
-			liteCanvas.setDirty?.(true, true);
-		};
-		const panPointerUp = () => {
-			panRef = null;
-		};
-
 		// 改挂到 container 的 capture phase：DOM 卡片层 (wf-comfy-overlay) 是 container
 		// 的子元素，且卡片内部 input/select 等子元素有 `pointer-events:auto`。如果
 		// 用户点击点正好落在这些元素之上（hit-test 命中 button 而非 canvas），挂在
@@ -812,7 +869,7 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		window.addEventListener('pointerup', dragPointerUp);
 		window.addEventListener('pointercancel', dragPointerUp);
 
-		// Canvas panning listeners (only active when panRef is set).
+		// ComfyUI legacy 平移 listeners（仅 panRef 激活时生效；跨 container 区域仍平移）。
 		window.addEventListener('pointermove', panPointerMove);
 		window.addEventListener('pointerup', panPointerUp);
 		window.addEventListener('pointercancel', panPointerUp);
@@ -1059,16 +1116,29 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				seen.add(nodeId);
 				const type = String(props['__liteType'] ?? n.type ?? '');
 				const spec = getNodeSpec(type);
-				// Only ComfyTV (schema) + ComfyUI-native nodes get an overlay card.
-				// Saros react/llm nodes already draw their widgets on the canvas —
-				// an opaque card on top would hide the widget fields (and the links
-				// passing under it), which reads as "params blocked by a UI".
-				if (!spec || spec.kind === 'react' || spec.kind === 'llm') {
+				// ★★ 编排富卡片（Saros.Start/Prompt/Agent/Skill/Tool/IfElse/…）：
+				//   这些节点是 `kind:'react'`，**原本会被下面的守卫直接 continue**，
+				//   于是完全没有 DOM overlay —— 这是「参数 UI 缺失」多轮未修好的**真因**：
+				//   NodeCard 的富卡逻辑、ORCH_RICH 的 formWidget/高度反馈全都写在
+				//   continue 之后，属于死代码区，永远执行不到。
+				//   现在把它们从守卫里排除，走与 schema 节点相同的 DOM 通路
+				//   （canvas widget 已在 sarosLiteGraphNodes 里全部标 hidden，
+				//   不会与 DOM 卡双绘）。
+				const isOrchRich = ORCH_RICH_NODE_TYPES.has(type);
+				// Only ComfyTV (schema) + ComfyUI-native + 编排富卡片节点得到 overlay。
+				// 其余 Saros react/llm 节点仍在 canvas 上自绘 widget —— 盖一张不透明
+				// 卡片会挡住参数字段与穿过节点的连线（表现为「参数被 UI 挡住」）。
+				if (!spec || ((spec.kind === 'react' || spec.kind === 'llm') && !isOrchRich)) {
 				// DOM-card "消失" 诊断：spec 未命中时卡片会被跳过（canvas 参数 widget
 				// 仍由 arrange() 绘制 → 表现为"参数还在、DOM 卡片消失"）。打点定位。
 				if (!spec) {
 						// eslint-disable-next-line no-console
 						console.warn('[syncOverlay] spec miss ' + JSON.stringify({ nodeId, type, liteType: props['__liteType'], nType: n.type }));
+					} else if (type.startsWith('Saros.')) {
+						// 编排节点被守卫跳过时打点：定位「某类节点参数 UI 缺失」。
+						// 若这里出现 Saros.Agent 等，说明该类型未登记进 ORCH_RICH_NODE_TYPES。
+						// eslint-disable-next-line no-console
+						console.warn('[syncOverlay] orch node skipped (no DOM card) ' + JSON.stringify({ nodeId, type, kind: spec.kind, isOrchRich }));
 					}
 				continue;
 				}
@@ -1100,6 +1170,14 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				canvas.setDirty?.(true, true);
 			}
 			const fullCover = hasStageEditor(nt);
+			// ★ 编排富卡片：卡片里有 DOM 参数控件（provider/model/agent 下拉 +
+			//   prompt textarea，复用 ImageStage 那套组件），必须和 schema 节点一样
+			//   挂 `__saros_form` widget 参与**高度反馈**，否则走 fallbackY 兜底
+			//   （≈100px）→ 控件被裁掉。
+			//   注意**不设 fullCover** —— 这些节点要保留端口行（insets 分支）。
+			//   ⚠ 复用上面守卫处算好的 `isOrchRich`（基于 `type`，含 `__liteType`
+			//   兜底），**不要**用 `nt = n.type` 重算 —— 两者对反序列化节点可能不等。
+			const orchRich = isOrchRich;
 			// NOTE: no min-height bump for schema nodes — the addDOMWidget
 			// form widget owns the node height (arrange/computeSize + the
 			// measure feedback below), so a fixed 320px floor would fight it.
@@ -1107,7 +1185,7 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			// Height feedback: the card marked itself dirty after a render →
 			// measure the true content height once and feed it into
 			// LiteGraph's layout (widget height + node size).
-			if ((spec.kind === 'schema' || fullCover) && takeFormHeightDirty(nodeId)) {
+			if ((spec.kind === 'schema' || fullCover || orchRich) && takeFormHeightDirty(nodeId)) {
 				const hostEl = container.firstElementChild as HTMLElement | null;
 				if (hostEl) {
 					// ── Critical fix for Bug #3 (height feedback deadlock) ──────
@@ -1244,7 +1322,7 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			// （=max(paramsCount*24 + maxPorts*20 + 6, 100)），卡片高度被压到 ~100px，
 			// 编辑器控件（ANGLE 滑块 / Horizontal flip / MATERIAL PBR 滑块 / Generate 按钮
 			// 等）被全部截断。
-			const formWidget = (spec.kind === 'schema' || fullCover)
+			const formWidget = (spec.kind === 'schema' || fullCover || orchRich)
 				? getDomFormWidget(n as unknown as Parameters<typeof getDomFormWidget>[0])
 				: undefined;
 			// Fallback y：构造时 LiteGraph arrange 还没跑（formWidget.y undefined），
@@ -1296,15 +1374,24 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			// （setDomFormContentHeight 依赖此 widget 调整节点尺寸）。
 			// schema 节点已在 registerSchemaLiteGraphNode 中通过 ensureDomFormWidget 附加，
 			// 但 ComfyTV.* 原生节点由 ComfyUI 自身注册，没有 form widget → 高度永远不增长。
-			if (fullCover && !getDomFormWidget(n as unknown as Parameters<typeof getDomFormWidget>[0])) {
+			if ((fullCover || orchRich) && !getDomFormWidget(n as unknown as Parameters<typeof getDomFormWidget>[0])) {
 				ensureDomFormWidget(n as unknown as Parameters<typeof ensureDomFormWidget>[0], {
 					// 按节点声明的最小高度做首帧估算（对齐 ComfyTV
 					// RICH_STAGE_MIN_HEIGHTS + getMinHeight）。固定 320 对
 					// Rotate(520) / Multiangle(640) 等严重偏小，首帧只能看到
 					// 图像顶部一条，要等反馈循环多轮才收敛。
-					estimateHeight: stageMinHeight(nt),
+					// 编排富卡片内容轻（身份卡 + 2 个下拉 + 1 个 textarea），
+					// 用 150 起步，反馈循环会立刻收敛到真实高度。
+					estimateHeight: orchRich && !fullCover ? 150 : stageMinHeight(nt),
 					estimateTop: (Math.max(n.inputs?.length ?? 0, n.outputs?.length ?? 0, 0)) * 20 + 6,
 				});
+				if (orchRich) {
+					// 编排富卡片挂上 form widget 时打点一次（每节点仅首次进入本分支）。
+					// 有这行说明 DOM 通路已生效；配合 [orchCard] 的 controls 数量即可
+					// 判断「没渲染」是通路问题还是数据源问题。
+					// eslint-disable-next-line no-console
+					console.warn('[orchForm] attached ' + JSON.stringify({ nodeId, type, fullCover }));
+				}
 			}
 			nodesForSync.push({
 				id: nodeId,
@@ -1503,6 +1590,63 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		window.addEventListener('dragover', handleAssetDragOver);
 		window.addEventListener('drop', handleAssetDrop);
 
+		// ── 剪贴板粘贴增强 ─────────────────────────────────────────────
+		// 粘贴图片 → 自动创建 ComfyTV.ImageLoaderStage 节点展示（data.image 存
+		// data URL + 写快照 store 立即展示）；粘贴文字 → 自动创建 Saros.Prompt
+		// 节点（data.prompt = 文字）。与 LiteGraph 节点粘贴（Ctrl+V 走内部
+		// localStorage 'litegrapheditor_clipboard'）互斥：有复制的节点时文字
+		// 粘贴不抢处理，让 processKey 粘贴节点；图片粘贴始终抢（节点粘贴不涉图）。
+		const handleCanvasPaste = (e: ClipboardEvent) => {
+			if (isEditableTarget(e.target)) { return; }
+			const cd = e.clipboardData;
+			if (!cd) { return; }
+			const state = useWorkflowEditorStore.getState();
+			const rect = canvas.getBoundingClientRect();
+			const ds = liteCanvas.ds;
+			const cx = typeof e.clientX === 'number' ? e.clientX : rect.left + rect.width / 2;
+			const cy = typeof e.clientY === 'number' ? e.clientY : rect.top + rect.height / 2;
+			const x = (cx - rect.left) / ds.scale - ds.offset[0];
+			const y = (cy - rect.top) / ds.scale - ds.offset[1];
+
+			// 1) 图片优先：剪贴板含 image 文件 → 创建 ImageLoaderStage 并展示
+			const imageItem = Array.from(cd.items ?? []).find(it => it.kind === 'file' && it.type.startsWith('image/'));
+			if (imageItem) {
+				const blob = imageItem.getAsFile();
+				if (blob) {
+					e.preventDefault();
+					const reader = new FileReader();
+					reader.onload = () => {
+						const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+						if (!dataUrl) { return; }
+						const newId = state.addNode('ComfyTV.ImageLoaderStage', { x, y });
+						if (newId) {
+							state.updateNodeData(newId, { image: dataUrl });
+							// 写快照 store → 卡片立即展示（下一帧 renameNode 迁移到 stageUid）。
+							snapshotStoreRef.current?.put({
+								nodeId: newId, port: 'output', key: `${newId}:output:0`,
+								media: { kind: 'image', ref: dataUrl }, index: 0,
+							});
+						}
+					};
+					reader.readAsDataURL(blob);
+					return;
+				}
+			}
+
+			// 2) 纯文本 → 创建 Saros.Prompt（节点内部粘贴冲突保护）
+			const text = cd.getData('text/plain');
+			if (text && text.trim()) {
+				const hasNodeClipboard = typeof window !== 'undefined' && !!window.localStorage?.getItem('litegrapheditor_clipboard');
+				if (hasNodeClipboard) { return; } // 让 LiteGraph 粘贴节点
+				e.preventDefault();
+				const newId = state.addNode('Saros.Prompt', { x, y });
+				if (newId) {
+					state.updateNodeData(newId, { prompt: text.trim() });
+				}
+			}
+		};
+		window.addEventListener('paste', handleCanvasPaste);
+
 		return () => {
 			window.removeEventListener('wf-node-run', handleNodeRun);
 			window.removeEventListener('wf-node-edit', handleNodeEdit);
@@ -1511,6 +1655,7 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			window.removeEventListener('wf-node-control', handleNodeControl);
 			window.removeEventListener('dragover', handleAssetDragOver);
 			window.removeEventListener('drop', handleAssetDrop);
+			window.removeEventListener('paste', handleCanvasPaste);
 			cancelAnimationFrame(overlayRaf);
 			for (const unmount of cardUnmounts.values()) { unmount(); }
 			cardUnmounts.clear();
@@ -1523,6 +1668,9 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			window.removeEventListener('pointermove', dragPointerMove);
 			window.removeEventListener('pointerup', dragPointerUp);
 			window.removeEventListener('pointercancel', dragPointerUp);
+			window.removeEventListener('pointermove', panPointerMove);
+			window.removeEventListener('pointerup', panPointerUp);
+			window.removeEventListener('pointercancel', panPointerUp);
 		container.removeEventListener('pointerup', resetLinkConnector);
 		container.removeEventListener('pointercancel', resetLinkConnector);
 		lcEvents.removeEventListener('dropped-on-canvas', onLinkDroppedOnCanvas);
@@ -1773,6 +1921,28 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			// （新建即运行），此处就地补齐 uid 并登记占用（幂等）。
 			return claimStageUid(node as unknown as Parameters<typeof claimStageUid>[0]);
 		},
+		revealNode(nodeId: string): boolean {
+			const g = graphRef.current;
+			const lc = canvasInstanceRef.current;
+			if (!g || !lc || !nodeId) { return false; }
+			const node = g.nodes.find(n => String((n.properties as Record<string, unknown> | undefined)?.['__sarosId'] ?? n.id) === nodeId);
+			if (!node) { return false; }
+			lc.selectNode(node, false);
+			// 视口居中（保持当前缩放）。坐标契约与 zoomToFit 一致：
+			// offset = 视口尺寸 / (2 * scale) - 节点中心。量测用 canvas 的**父容器**
+			// —— canvas 自身的 clientWidth 会滞后于 CSS 尺寸（见 zoomToFit 注释）。
+			const el = lc.canvas as HTMLCanvasElement | undefined;
+			const rect = el?.parentElement?.getBoundingClientRect?.() ?? el?.getBoundingClientRect?.();
+			const cw = rect?.width || el?.clientWidth || 800;
+			const ch = rect?.height || el?.clientHeight || 600;
+			const scale = lc.ds.scale || 1;
+			const cx = node.pos[0] + (node.size?.[0] ?? 0) / 2;
+			const cy = node.pos[1] + (node.size?.[1] ?? 0) / 2;
+			lc.ds.offset[0] = cw / (2 * scale) - cx;
+			lc.ds.offset[1] = ch / (2 * scale) - cy;
+			lc.setDirty?.(true, true);
+			return true;
+		},
 		cardStateStore(): CardStateStore {
 			return cardStateStoreRef.current!;
 		},
@@ -1826,6 +1996,33 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			g.change();
 			lc.setDirty(true, true);
 		},
+		markRouteEdges(ranIds: string[], skippedIds: string[]): void {
+			const g = graphRef.current;
+			const lc = canvasInstanceRef.current;
+			if (!g || !lc) { return; }
+			// sarosId（__sarosId）→ LiteGraph numeric id
+			const numOf = (sarosId: string): number | null => {
+				for (const n of g.nodes) {
+					const sid = (n as unknown as { properties?: Record<string, unknown> }).properties?.__sarosId;
+					if (sid === sarosId || String(n.id) === sarosId) { return n.id; }
+				}
+				return null;
+			};
+			const numRan = new Set(ranIds.map(numOf).filter((x): x is number => x !== null));
+			const numSkipped = new Set(skippedIds.map(numOf).filter((x): x is number => x !== null));
+			for (const link of g.links.values()) {
+				if (!link) { continue; }
+				if (numRan.has(link.origin_id) && numRan.has(link.target_id)) {
+					(link as unknown as { color?: string }).color = '#2ecc71';
+				} else if (numSkipped.has(link.target_id)) {
+					(link as unknown as { color?: string }).color = 'rgba(107,114,128,0.5)';
+				} else {
+					(link as unknown as { color?: string }).color = '';
+				}
+			}
+			g.change();
+			lc.setDirty(true, true);
+		},
 		addGroupAt(graphX: number, graphY: number): void {
 			const g = graphRef.current;
 			const lc = canvasInstanceRef.current;
@@ -1840,6 +2037,25 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		},
 		canvasInstance(): LGraphCanvas | null {
 			return canvasInstanceRef.current;
+		},
+		beginGhostPlace(type: string, graphX?: number, graphY?: number): void {
+			let x = graphX;
+			let y = graphY;
+			// 未给位置 → 画布中心（对齐 ComfyUI getNewNodeLocation 的 getCanvasCenter 分支）。
+			if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) {
+				const lc = canvasInstanceRef.current;
+				const rect = containerRef.current?.getBoundingClientRect?.() ?? (lc?.canvas as HTMLCanvasElement | undefined)?.getBoundingClientRect?.();
+				const cw = rect?.width || 800;
+				const ch = rect?.height || 600;
+				const scale = lc?.ds?.scale ?? 1;
+				const off = lc?.ds?.offset ?? [0, 0];
+				x = cw / (2 * scale) - (off[0] ?? 0);
+				y = ch / (2 * scale) - (off[1] ?? 0);
+			}
+			setGhost({ type, x, y });
+		},
+		cancelGhostPlace(): void {
+			setGhost(null);
 		},
 		pasteFromClipboard(): void {
 			const lc = canvasInstanceRef.current;
@@ -1866,6 +2082,17 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			return out;
 			},
 			}), [storeApi, ref]);
+
+			// ★ ghost 落位模式：Esc 取消（对齐 ComfyUI 搜索框 Esc 关闭）。
+			//   用 window 级监听而非捕获层 onKeyDown —— 捕获层可能拿不到键盘焦点。
+			React.useEffect(() => {
+				if (!ghost) { return; }
+				const onKey = (e: KeyboardEvent) => {
+					if (e.key === 'Escape') { setGhost(null); }
+				};
+				window.addEventListener('keydown', onKey);
+				return () => window.removeEventListener('keydown', onKey);
+			}, [ghost]);
 
 			/** 从连线松手菜单选中某节点：在落点创建节点并自动连线。 */
 			const handleConnDropSelect = React.useCallback((item: CompatibleNodeItem) => {
@@ -1925,6 +2152,22 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			}
 			onCanvasContextMenu?.(gx, gy, e.clientX, e.clientY);
 		}}
+		onDoubleClick={(e) => {
+			// ★ ComfyUI 交互：双击空白处打开节点搜索框。节点/分组/连线上的双击
+			//   不触发（节点双击由 LiteGraph 内部的 onNodeDblClicked → onNodeDoubleClick
+			//   处理，这里只是空白搜索入口，需排除命中的对象避免冲突）。
+			const liteCanvas = canvasInstanceRef.current;
+			const graph = graphRef.current;
+			if (!liteCanvas || !graph) { return; }
+			const rect = e.currentTarget.getBoundingClientRect();
+			const ds = liteCanvas.ds;
+			const gx = (e.clientX - rect.left) / ds.scale - ds.offset[0];
+			const gy = (e.clientY - rect.top) / ds.scale - ds.offset[1];
+			if (graph.getNodeOnPos(gx, gy)) { return; }
+			if (graph.getGroupOnPos(gx, gy)) { return; }
+			if (findLinkAt(graph, gx, gy)) { return; }
+			onCanvasDoubleClick?.(gx, gy, e.clientX, e.clientY);
+		}}
 	>
 		<canvas
 			ref={canvasRef}
@@ -1954,6 +2197,63 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 						}}
 					/>
 				)}
+				{/* ★ FollowCursor ghost 落位：全屏捕获层抢占指针事件（屏蔽 LiteGraph 的
+				    平移/框选/右键菜单），节点以半透明虚线矩形跟随光标，左键落位、
+				    右键或 Esc 取消。zIndex 远高于 widget overlay 与 minimap。 */}
+				{ghost && (() => {
+					const lc = canvasInstanceRef.current;
+					const ds = lc?.ds;
+					const scale = ds?.scale ?? 1;
+					const sx = (ghost.x + (ds?.offset?.[0] ?? 0)) * scale;
+					const sy = (ghost.y + (ds?.offset?.[1] ?? 0)) * scale;
+					const toGraph = (clientX: number, clientY: number) => {
+						const rect = containerRef.current?.getBoundingClientRect();
+						if (!rect || !ds) { return { x: ghost.x, y: ghost.y }; }
+						return {
+							x: (clientX - rect.left) / (ds.scale || 1) - (ds.offset?.[0] ?? 0),
+							y: (clientY - rect.top) / (ds.scale || 1) - (ds.offset?.[1] ?? 0),
+						};
+					};
+					return (
+						<div
+							style={{ position: 'absolute', inset: 0, zIndex: 10000, cursor: 'crosshair' }}
+							onPointerMove={(e) => {
+								const p = toGraph(e.clientX, e.clientY);
+								setGhost({ type: ghost.type, x: p.x, y: p.y });
+							}}
+							onClick={(e) => {
+								e.stopPropagation();
+								const p = toGraph(e.clientX, e.clientY);
+								// 节点左上角对齐点击处（与右键级联/连线松手落位语义一致）。
+								storeApi.getState().addNode(ghost.type, { x: p.x, y: p.y });
+								setGhost(null);
+							}}
+							onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setGhost(null); }}
+						>
+							<div
+								style={{
+									position: 'absolute', left: sx, top: sy, width: 180, height: 80,
+									border: '1.5px dashed rgba(140,190,255,0.95)',
+									background: 'rgba(60,120,220,0.16)',
+									borderRadius: 6, pointerEvents: 'none',
+									display: 'flex', alignItems: 'center', justifyContent: 'center',
+								}}
+							>
+								<span style={{ color: '#cfe4ff', fontSize: 12, fontFamily: 'var(--vscode-font-family, monospace)', padding: '0 8px', textAlign: 'center', overflow: 'hidden' }}>{ghost.type}</span>
+							</div>
+							<div
+								style={{
+									position: 'absolute', left: sx, top: sy + 80 + 8,
+									background: '#202020', border: '1px solid rgba(255,255,255,0.22)',
+									color: '#cfcfcf', fontSize: 11, padding: '3px 9px', borderRadius: 4,
+									pointerEvents: 'none', whiteSpace: 'nowrap',
+								}}
+							>
+								点击放置 · Esc / 右键取消
+							</div>
+						</div>
+					);
+				})()}
 				</div>
 				);
 				});

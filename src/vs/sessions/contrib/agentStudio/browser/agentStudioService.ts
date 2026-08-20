@@ -18,7 +18,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult } from '../../../common/agentStudioService.js';
+import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult, IWorkflowDirectRunStart, IWorkflowDirectRunResult, IWorkflowDirectRunProgress } from '../../../common/agentStudioService.js';
 import { classifyContentViaSchema, safeSchemaFallback, SchemaClassifyResult } from './knowledge/classifier.js';
 import { DEFAULT_KB_SCHEMA, IKBSchema, loadKbSchema } from './knowledge/kbSchema.js';
 import { resolveChatModel, isChatProviderConfigured, resolveConfiguredChatProviderId, createAgentOsChatModel, ResolveChatModelOpts } from './knowledge/knowledgeAdapters.js';
@@ -68,6 +68,15 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private readonly _onDidRequestInjectPrompt = this._register(new Emitter<{ agentId: string; message: string }>());
 	readonly onDidRequestInjectPrompt: Event<{ agentId: string; message: string }> = this._onDidRequestInjectPrompt.event;
 
+	private readonly _onDidRequestWorkflowDirectRun = this._register(new Emitter<IWorkflowDirectRunStart>());
+	readonly onDidRequestWorkflowDirectRun: Event<IWorkflowDirectRunStart> = this._onDidRequestWorkflowDirectRun.event;
+
+	private readonly _onDidWorkflowDirectRunResult = this._register(new Emitter<IWorkflowDirectRunResult>());
+	readonly onDidWorkflowDirectRunResult: Event<IWorkflowDirectRunResult> = this._onDidWorkflowDirectRunResult.event;
+
+	private readonly _onDidWorkflowDirectRunProgress = this._register(new Emitter<IWorkflowDirectRunProgress>());
+	readonly onDidWorkflowDirectRunProgress: Event<IWorkflowDirectRunProgress> = this._onDidWorkflowDirectRunProgress.event;
+
 	private readonly _onDidRequestKbRefresh = this._register(new Emitter<void>());
 	readonly onDidRequestKbRefresh: Event<void> = this._onDidRequestKbRefresh.event;
 
@@ -88,6 +97,23 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	requestInjectPrompt(agentId: string, message: string): void {
 		this.logService.info(`[AgentStudioService] requestInjectPrompt(agentId=${agentId}, len=${message.length})`);
 		this._onDidRequestInjectPrompt.fire({ agentId, message });
+	}
+
+	/** Request the chat panel to open a synthetic workflow tool card for a canvas "直接执行". */
+	requestWorkflowDirectRun(payload: IWorkflowDirectRunStart): void {
+		this.logService.info(`[AgentStudioService] requestWorkflowDirectRun(toolCallId=${payload.toolCallId}, name=${payload.name})`);
+		this._onDidRequestWorkflowDirectRun.fire(payload);
+	}
+
+	/** Notify the chat panel that a canvas "直接执行" workflow run finished. */
+	workflowDirectRunResult(payload: IWorkflowDirectRunResult): void {
+		this.logService.info(`[AgentStudioService] workflowDirectRunResult(toolCallId=${payload.toolCallId}, ok=${payload.ok})`);
+		this._onDidWorkflowDirectRunResult.fire(payload);
+	}
+
+	/** Notify the chat panel of live progress during a canvas "直接执行" workflow run. */
+	workflowDirectRunProgress(payload: IWorkflowDirectRunProgress): void {
+		this._onDidWorkflowDirectRunProgress.fire(payload);
 	}
 
 	/** Request the KB view to refresh (e.g. after background agent import completes). */

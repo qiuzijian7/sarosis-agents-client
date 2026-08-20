@@ -183,12 +183,29 @@ export interface IToolCall {
 	duration?: number;
 	/** Error message if the tool failed */
 	error?: string;
+	/** 实时进度 0-100（workflow 直接执行 / ComfyUI 生成等长耗时工具卡）。 */
+	progress?: number;
+	/** 实时进度的人类可读描述（如「生成中 42%」）。 */
+	progressText?: string;
 	/** Process exit code (for terminal tools) */
 	exitCode?: number;
 	/** Security level for approval UI */
 	securityLevel?: 'safe' | 'cautious' | 'dangerous';
 	/** Whether this tool was server-executed (no client confirmation needed) */
 	serverExecuted?: boolean;
+	/**
+	 * plan_enter / plan_explore 工具卡附带的规划阶段进度（WorkMode 阶段卡数据）。
+	 * 由 work_mode_changed delta 驱动更新，随 toolCalls/parts 持久化——
+	 * 窗口刷新后从历史恢复，阶段卡不丢失（adaptPersistedToolCall 白名单透传）。
+	 */
+	planPhase?: {
+		/** 0-based 当前进行中的阶段（P1 理解需求 / P2 并行探索 / P3 方案设计 / P4 撰写计划 / P5 提交执行） */
+		currentStep?: number;
+		/** 计划文件绝对路径 */
+		planFilePath?: string;
+		/** 完成时间戳（plan_exit 后定格完成态） */
+		completedAt?: number;
+	};
 	/** Sub-agent data spawned by this tool call (delegate_task / plan_explore).
 	 *  Attached directly to the tool call so the card renders sub-agent info inline.
 	 *  Replaces the old independent `{ kind: 'subagent' }` parts approach. */
@@ -310,6 +327,12 @@ export function adaptPersistedToolCall(c: any, i: number): IToolCall {
 		filePath: typeof c?.filePath === 'string' ? c.filePath : undefined,
 		duration: typeof c?.duration === 'number' ? c.duration : undefined,
 		exitCode: typeof c?.exitCode === 'number' ? c.exitCode : undefined,
+		// plan_enter/plan_explore 阶段卡进度（白名单透传——缺失会使刷新后阶段卡丢失）
+		planPhase: (c?.planPhase && typeof c.planPhase === 'object') ? {
+			currentStep: typeof c.planPhase.currentStep === 'number' ? c.planPhase.currentStep : undefined,
+			planFilePath: typeof c.planPhase.planFilePath === 'string' ? c.planPhase.planFilePath : undefined,
+			completedAt: typeof c.planPhase.completedAt === 'number' ? c.planPhase.completedAt : undefined,
+		} : undefined,
 	};
 }
 

@@ -10,6 +10,10 @@
  *                 or node.type 'comfy' with a workflowId) — routed to the Comfy runner.
  *
  *  Pure + unit-testable; no DI, no DOM.
+ *
+ *  ⚠️ 现状：本模块目前**没有生产调用方**（只被单测引用）。实际分派由
+ *  webview 侧 `comfyHost/nodeExecutor.ts` + `workflowRun.ts` 承担。保留它作为
+ *  路由判定的规范表述；接线前请先跑本文件的单测确认判定表仍符合预期。
  *--------------------------------------------------------------------------------------------*/
 
 import { WorkflowNodeType } from './workflowStorage.js';
@@ -40,15 +44,30 @@ const SAROS_TYPES = new Set<string>([
 ]);
 
 /**
+ * 归一化命名空间前缀：`Saros.Prompt` → `prompt`、`Saros.IfElse` → `ifElse`。
+ *
+ * ★ 必须有：`WorkflowNodeType` 的枚举值仍是裸小写（'prompt'/'ifElse'/…），而画布
+ * 节点 type 自 P1 起统一为 `Saros.*` 全名（palette 直接产出、loadWorkflow 迁移旧数据）。
+ * 不归一化则全名节点既不在 SAROS_TYPES、又因含 '.' 落不到 native 分支 → 一律
+ * 判为 'unknown'（编排节点被静默跳过执行）。
+ */
+function stripSarosPrefix(type: string): string {
+	if (!type.startsWith('Saros.')) { return type; }
+	const bare = type.slice('Saros.'.length);
+	return bare.charAt(0).toLowerCase() + bare.slice(1);
+}
+
+/**
  * Classify a node's execution route.
- *  - saros types → 'saros'
+ *  - saros types（裸小写或 `Saros.*` 全名）→ 'saros'
  *  - `ComfyTV.*` / type 'comfyStage' → 'comfyStage'
  *  - type 'comfy' with comfy.mode === 'stage' → 'comfyStage'
  *  - type 'comfy' (workflow mode) / any other registered native → 'comfyNative'
  *  - everything else → 'unknown'
  */
 export function routeNodeExecution(node: RouteNodeLike): ExecutionRoute {
-	if (SAROS_TYPES.has(node.type)) {
+	const bare = stripSarosPrefix(node.type);
+	if (SAROS_TYPES.has(bare)) {
 		return 'saros';
 	}
 	if (node.type.startsWith('ComfyTV.') || node.type === WorkflowNodeType.ComfyStage) {

@@ -13,6 +13,7 @@ import {
 	type BindingContext,
 	type UpstreamSource,
 } from '../../webview/src/features/workflowEditor/comfyHost/resolveBinding.js';
+import { resolveTemplateVars as resolveTemplateVarsWF } from '../../webview/src/features/workflowEditor/comfyHost/workflowRun.js';
 
 function imageSource(values: unknown[], hasMask = true): UpstreamSource {
 	return {
@@ -125,7 +126,50 @@ suite('resolveBinding', () => {
 		test('resolveTemplateVars is a no-op without braces', () => {
 			assert.strictEqual(resolveTemplateVars('plain', ctx()), 'plain');
 		});
-	});
+		});
+
+		suite('W4 resolveTemplateVars: {{label.field}} named references', () => {
+			const named = (label: string): string | undefined => {
+				if (label === '分析') { return JSON.stringify({ tags: ['cyberpunk', 'neon'], score: 8 }); }
+				if (label === '提示词') { return 'plain text snapshot'; }
+				return undefined;
+			};
+
+			test('named label resolves whole snapshot (JSON stringified object → String)', () => {
+				const r = resolveTemplateVarsWF('结果 {{分析}}', { named });
+				assert.strictEqual(r, '结果 {"tags":["cyberpunk","neon"],"score":8}');
+			});
+
+			test('named label + dot path extracts field', () => {
+				const r = resolveTemplateVarsWF('风格 {{分析.tags}}', { named });
+				assert.strictEqual(r, '风格 cyberpunk,neon');
+			});
+
+			test('named plain-text snapshot resolves without path', () => {
+				const r = resolveTemplateVarsWF('前置：{{提示词}}', { named });
+				assert.strictEqual(r, '前置：plain text snapshot');
+			});
+
+			test('unknown label keeps the placeholder verbatim', () => {
+				const r = resolveTemplateVarsWF('{{幽灵节点.x}}', { named });
+				assert.strictEqual(r, '{{幽灵节点.x}}');
+			});
+
+			test('deep path miss keeps the placeholder', () => {
+				const r = resolveTemplateVarsWF('{{分析.no.such}}', { named });
+				assert.strictEqual(r, '{{分析.no.such}}');
+			});
+
+			test('args/input placeholders are not hijacked by named pass', () => {
+				const r = resolveTemplateVarsWF('{{input}} {{args.topic}}', { input: 'IN', args: { topic: 'T' }, named });
+				assert.strictEqual(r, 'IN T');
+			});
+
+			test('mixed input + named + args in one template', () => {
+				const r = resolveTemplateVarsWF('{{分析.score}} 分 · {{input}} · {{args.topic}}', { input: '上游', args: { topic: '主题' }, named });
+				assert.strictEqual(r, '8 分 · 上游 · 主题');
+			});
+		});
 
 	suite('scalar passthrough / errors', () => {
 

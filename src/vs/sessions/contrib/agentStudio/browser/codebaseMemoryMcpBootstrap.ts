@@ -97,6 +97,13 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 			return;
 		}
 
+		// 2026-08-19：从文件夹添加工作区（根目录无 .code-workspace 文件）时禁用自动索引，
+		// 改由 LLM 在 codebase 工具触发时询问用户后手动发起（见 codebaseTools.noGraphGuidance）。
+		if (!await this._hasCodeWorkspaceFile()) {
+			this.logService.info(LOG_TAG, 'No .code-workspace file detected — skipping auto-index (defer to manual/LLM-triggered indexing).');
+			return;
+		}
+
 		// No existing graph — auto-index
 		this.logService.info(LOG_TAG, 'No existing graph found, starting auto-index via built-in tree-sitter...');
 		try {
@@ -175,6 +182,23 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 
 	private _getSarosRoot(): URI {
 		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
+	}
+
+	/** 判定工作区是否由 .code-workspace 文件打开（区别于「从文件夹添加」）。 */
+	private async _hasCodeWorkspaceFile(): Promise<boolean> {
+		try {
+			const folders = this.workspaceContextService.getWorkspace().folders;
+			for (const f of folders) {
+				try {
+					const rootStat = await this.fileService.resolve(f.uri);
+					if (!rootStat?.children) { continue; }
+					const has = rootStat.children.some(c =>
+						!c.isDirectory && (c.name ?? '').toLowerCase().endsWith('.code-workspace'));
+					if (has) { return true; }
+				} catch { /* 单个 folder 不可读，跳过 */ }
+			}
+		} catch { /* ignore */ }
+		return false;
 	}
 }
 

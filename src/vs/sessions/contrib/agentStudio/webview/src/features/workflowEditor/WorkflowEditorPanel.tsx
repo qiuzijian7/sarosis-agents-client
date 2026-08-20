@@ -14,7 +14,7 @@
  *   └────────────────────────────┴────────────┘
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import type { LGraphNode } from '@comfyorg/litegraph';
 import { LiteGraphCanvas, type LiteGraphCanvasHandle } from './LiteGraphCanvas';
 import { NodeContextMenu, type NodeContextMenuState, buildAddNodeSubmenu } from './NodeContextMenu';
@@ -31,8 +31,10 @@ import { guiToApi, stripSarosNodesForExport } from './comfyHost/comfyApiAdapter'
 import { registerDefaultComfyTVStages, getNodeSpec } from './comfyHost/registry';
 import { getRunnerStatusStore } from './comfyHost/runnerStatusStore';
 import { spawnPickerForStage, spawnFollowUp } from './comfyHost/actionSpawn';
-import { isComfyExecutableSpec, isExecutableSpec, isPickerNode, runGraphExecution, runNodeOrStage, resolveFirstImageGenDefaults, defaultResolveLoadImageRef } from './comfyHost/workflowRun';
+import { isComfyExecutableSpec, isExecutableSpec, isPickerNode, runGraphExecution, runNodeOrStage, resolveFirstImageGenDefaults, defaultResolveLoadImageRef, type AskUserSendFn, type AskUserPayload } from './comfyHost/workflowRun';
 import { buildExecutionPlan } from './comfyHost/executionGraph';
+import { exportCanvasToWorkflowScript } from './comfyHost/canvasExport';
+import { registerStageRunner, unregisterStageRunner, materializeSnapshotEntry } from './comfyHost/workflowSnapshotBridgeWebview';
 import { applyCanvasOps, type CanvasModel, type CanvasNode, type CanvasEdge, type CanvasOp } from './comfyHost/canvasOps';
 import { buildGenerateFlow } from './comfyHost/generateFlow';
 import { computeDagLayout } from './comfyHost/dagLayout';
@@ -49,6 +51,19 @@ import { useAgentStore } from '../../store/useAgentStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useProviderStore, type ProviderInfo } from '../../store/useProviderStore';
 import type { IStoredWorkflow } from '../../types/workflowStorage';
+
+/**
+ * ★ 编排节点集合（脚本域原生表达）。这些节点只有「直接执行」脚本路径才完整
+ * 支持——全图 Comfy Run（handleExecute）只跑 Comfy/Provider 节点，会**静默跳过**
+ * 它们（这就是「运行工作流没从 start 开始 / prompt 参数没生效」的根因）。
+ * 工具栏「▶ 运行」据此智能路由：含编排节点 → 脚本执行；纯 Comfy → 全图 Run。
+ * 不含 Saros.ModelImageGen/ProviderPicker（Provider 执行节点，全图 Run 能跑）。
+ */
+const ORCHESTRATION_NODE_TYPES = new Set<string>([
+	'Saros.Start', 'Saros.End', 'Saros.Task', 'Saros.Prompt', 'Saros.Agent',
+	'Saros.Skill', 'Saros.Tool', 'Saros.IfElse', 'Saros.Switch', 'Saros.AskUser',
+	'Saros.Group', 'Saros.Subflow',
+]);
 
 export const WorkflowEditorPanel: React.FC = () => {
 	// right-click "Add Node" menu (ComfyUI-style) — replaces the left Nodes panel
@@ -69,6 +84,8 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const [saving, setSaving] = useState(false);
 	const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 	const [validationMsg, setValidationMsg] = useState<string | null>(null);
+	// M4c 直接执行：绕过 LLM 决策，确定性触发 workflow 引擎（结果展示在代码视图结果区）
+	const [execScriptResult, setExecScriptResult] = useState<{ status: 'idle' | 'running' | 'done' | 'error'; value?: unknown; agentsStarted?: number; projectionText?: string; error?: string }>({ status: 'idle' });
 
 	// 方案A：webview 直连优先（ComfyUI 需 --enable-cors-header），失败自动降级
 	// 主进程代理——createComfyFetch 按 origin 探测 CORS 后路由，无需手工干预。
@@ -482,6 +499,9 @@ export const WorkflowEditorPanel: React.FC = () => {
 		try {
 			const { nodes: gnodes, connections } = state.toWorkflowData();
 			await sendRequest('workflow.save', {
+				// ★ auto-save 不产生 git 版本（版本历史 = 用户有意义的检查点）。
+				// 否则执行期间节点微调/updatedAt 时间戳每次变化 → autoCommit 版本爆炸。
+				autoSave: true,
 				workflow: {
 					id: state.workflowId,
 					nodes: gnodes,
@@ -503,7 +523,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 
 	// 卡片 ▶ 运行按钮（wf-node-run → onNodeRun）→ 单节点执行。
 	// values 来自 node.data（= 画布 properties，内嵌控件已写回）。
-	const runSingleSchemaNode = useCallback(async (nodeId: string, nodeType: string, stageUid?: string) => {
+	const runSingleSchemaNode = useCallback(async (nodeId: string, nodeType: string, stageUid?: string, onProgress?: (progress: number, message?: string) => void, failLoud = false) => {
 		// eslint-disable-next-line no-console
 		console.warn('[runSingleSchemaNode] start ' + JSON.stringify({ nodeId, nodeType, stageUid }));
 		const canvas = liteGraphRef.current;
@@ -515,14 +535,19 @@ export const WorkflowEditorPanel: React.FC = () => {
 		if (!canvas || (!isProviderNode && !runner)) {
 			// eslint-disable-next-line no-console
 			console.warn('[runSingleSchemaNode] no canvas/runner ' + JSON.stringify({ hasCanvas: !!canvas, isProviderNode, hasRunner: !!runner }));
+			const msg = isProviderNode ? '未连接可用的 Provider' : '未连接可用的 ComfyUI Runner';
 			setComfyRunState('failed');
-			setComfyRunMsg(isProviderNode ? '未连接可用的 Provider' : '未连接可用的 ComfyUI Runner');
+			setComfyRunMsg(msg);
+			// ★ failLoud：stage() 桥必须拿到明确错误快速失败（否则上游拿到 undefined
+			//   后走「无输出快照」的模糊错误）；卡片 ▶ 按钮保持静默（UI 状态已反映）。
+			if (failLoud) { throw new Error(`stage(): ${msg}`); }
 			return;
 		}
 		const store = canvas.snapshotStore();
 		if (!store) {
 			// eslint-disable-next-line no-console
 			console.warn('[runSingleSchemaNode] no snapshotStore');
+			if (failLoud) { throw new Error('stage(): 快照库不可用'); }
 			return;
 		}
 		// 引擎就绪实时探测：runnerStatus.ready 只在面板 mount 时探测一次，引擎后
@@ -544,6 +569,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 					runState: 'error', progress: 0,
 					errorMsg: `无法连接 ${runner.baseUrl}（${detail}）。请点击工具栏「🖥 Runner」→「▶ 启动 ComfyUI（--enable-cors-header）」，启动后回到本节点重新点击运行。`,
 				});
+				if (failLoud) { throw new Error(`stage(): 无法连接 ComfyUI 引擎（${detail}）`); }
 				return;
 			}
 			getRunnerStatusStore().setReady(true, runner.baseUrl);
@@ -597,6 +623,8 @@ export const WorkflowEditorPanel: React.FC = () => {
 				const prog = p.progress ?? p.value ?? 50;
 				canvas.cardStateStore().set(nodeId, { runState: 'running', progress: prog });
 				getTaskStore().update(taskId, { progress: prog, message: '生成中…' });
+				// ★ stage() 桥进度回推：ComfyUI 生成进度 → host 聊天工具卡。
+				onProgress?.(prog, `生成中 ${prog}%`);
 			},
 		});
 		if (r.status === 'success') {
@@ -641,8 +669,49 @@ export const WorkflowEditorPanel: React.FC = () => {
 				setComfyRunMsg(`节点失败（详细原因见卡片）`);
 				canvas.cardStateStore().set(nodeId, { runState: 'error', progress: 0, errorMsg: r.error ?? '执行失败' });
 				getTaskStore().finish(taskId, false, r.error ?? '执行失败');
+				// ★ failLoud：stage() 桥拿到真实执行失败立即回程（而非等「无输出快照」模糊错误）。
+				if (failLoud) { throw new Error(`stage(): 节点执行失败（${r.error ?? '未知错误'}）`); }
 			}
-	}, [runnerPreference]);
+			}, [runnerPreference]);
+
+	// ── P0 stage() 桥：脚本域驱动画布媒体节点执行 ─────────────────────────
+	// 动态工作流脚本里 `await stage("uid")` → host → 本 runner → runSingleSchemaNode
+	// （画布 Run 的同一执行器）→ ComfyUI 真正生成 → 读回快照物化返回。
+	// 这打通了「脚本域 ↔ 画布域」割裂：之前媒体节点在导出脚本里只能是 null 占位。
+	const runStageForScript = useCallback(async (stageUid: string, overrides?: Record<string, unknown>, onProgress?: (progress: number, message?: string) => void): Promise<unknown> => {
+		const canvas = liteGraphRef.current;
+		if (!canvas) { throw new Error('画布未就绪：stage() 无法执行'); }
+		const state = useWorkflowEditorStore.getState();
+		// stageUid → nodeId 反查（stageUid 即节点 __sarosId；回退按 nodeId 直配）
+		const target = state.nodes.find(n => canvas.stageUidOf(n.id) === stageUid)
+			?? state.nodes.find(n => n.id === stageUid);
+		if (!target) {
+			throw new Error(`stage(): 画布上找不到 uid="${stageUid}" 的节点（请确认脚本里的 uid 与画布一致）`);
+		}
+		// overrides → 写入节点 values（画布执行读 comfyRunValuesRef + node.data）
+		if (overrides && Object.keys(overrides).length > 0) {
+			comfyRunValuesRef.current[target.id] = {
+				...(comfyRunValuesRef.current[target.id] ?? {}),
+				...overrides,
+			};
+		}
+		await runSingleSchemaNode(target.id, target.type, stageUid, onProgress, true /* failLoud：脚本域必须拿到明确失败 */);
+		// 执行完读回快照并物化（与 nodeOutput 同构，脚本可统一消费）
+		const store = canvas.snapshotStore();
+		if (!store) { throw new Error('stage(): 快照库不可用'); }
+		const entries = store.byNode(stageUid);
+		if (entries.length === 0) {
+			throw new Error(`stage(): 节点 "${stageUid}" 执行后无输出快照（可能执行失败，详见画布卡片错误信息）`);
+		}
+		return materializeSnapshotEntry(entries[entries.length - 1].media);
+	}, [runSingleSchemaNode]);
+
+	// 注册 stage runner（与 registerSnapshotSource 同策略：后注册者=活跃画布）
+	useEffect(() => {
+		const key = workflowId ?? 'default';
+		registerStageRunner(key, runStageForScript);
+		return () => unregisterStageRunner(key);
+	}, [workflowId, runStageForScript]);
 
 	// Latest handleExecute — the canvas-ops listener (stable effect) calls this
 	// when canvas_generate is issued with run:true (P0 closure).
@@ -723,7 +792,129 @@ export const WorkflowEditorPanel: React.FC = () => {
 		}
 	}, []);
 
-	const handleExecute = useCallback(async () => {
+	// P1: Saros.AskUser 交互弹窗。askUserFn 返回一个 Promise，用户点击选项后
+	// resolve（单选=label 字符串，多选=label 数组）；取消/超时 → 弹窗关闭但
+	// 图执行因 AbortSignal 由 handleCancel 统一中止（或 executor 抛错）。
+	const [askUserDialog, setAskUserDialog] = useState<AskUserPayload | null>(null);
+	const askUserResolveRef = useRef<((v: string | string[]) => void) | null>(null);
+	const [askUserSelected, setAskUserSelected] = useState<Set<string>>(new Set());
+	const askUserFn: AskUserSendFn = useCallback((payload) => new Promise<string | string[]>((resolve) => {
+		askUserResolveRef.current = resolve;
+		setAskUserSelected(new Set());
+		setAskUserDialog(payload);
+	}), []);
+	const submitAskUser = useCallback(() => {
+		if (!askUserDialog) { return; }
+		const sel = [...askUserSelected];
+		const resolve = askUserResolveRef.current;
+		if (resolve) {
+			resolve(askUserDialog.multiSelect ? sel : (sel[0] ?? ''));
+		}
+		askUserResolveRef.current = null;
+		setAskUserDialog(null);
+	}, [askUserDialog, askUserSelected]);
+	const toggleAskUserOption = useCallback((label: string) => {
+		setAskUserSelected(prev => {
+			const next = new Set(prev);
+			if (askUserDialog?.multiSelect) {
+				if (next.has(label)) { next.delete(label); } else { next.add(label); }
+			} else {
+				next.clear();
+				next.add(label);
+			}
+			return next;
+		});
+	}, [askUserDialog]);
+
+	// W1b: Start 运行时参数面板——运行前若图含 Saros.Start 且 args 非空，弹窗
+	// 让用户覆盖默认值；确认返回覆盖对象、取消返回 null（中止本次运行）。
+	const [startArgsDialog, setStartArgsDialog] = useState<Array<{ key: string; value: string }> | null>(null);
+	const startArgsResolveRef = useRef<((v: Record<string, unknown> | null) => void) | null>(null);
+	const promptStartArgs = useCallback((nodes: CanvasNode[]): Promise<Record<string, unknown> | null> => {
+		const args: Record<string, unknown> = {};
+		for (const n of nodes) {
+			if (n.type !== 'Saros.Start') { continue; }
+			const raw = (n.data as Record<string, unknown> | undefined)?.args;
+			let obj: unknown = raw;
+			if (typeof raw === 'string') { try { obj = JSON.parse(raw); } catch { continue; } }
+			if (obj && typeof obj === 'object' && !Array.isArray(obj)) { Object.assign(args, obj as Record<string, unknown>); }
+		}
+		const keys = Object.keys(args);
+		if (keys.length === 0) { return Promise.resolve({}); }
+		return new Promise(resolve => {
+			startArgsResolveRef.current = resolve;
+			setStartArgsDialog(keys.map(k => {
+				const v = args[k];
+				return { key: k, value: typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '') };
+			}));
+		});
+	}, []);
+	const submitStartArgs = useCallback(() => {
+		const resolve = startArgsResolveRef.current;
+		if (!resolve || !startArgsDialog) { return; }
+		const out: Record<string, unknown> = {};
+		for (const row of startArgsDialog) {
+			const s = row.value;
+			if (s === 'true') { out[row.key] = true; }
+			else if (s === 'false') { out[row.key] = false; }
+			else if (s !== '' && !Number.isNaN(Number(s))) { out[row.key] = Number(s); }
+			else { out[row.key] = s; }
+		}
+		startArgsResolveRef.current = null;
+		setStartArgsDialog(null);
+		resolve(out);
+	}, [startArgsDialog]);
+	const cancelStartArgs = useCallback(() => {
+		const resolve = startArgsResolveRef.current;
+		startArgsResolveRef.current = null;
+		setStartArgsDialog(null);
+		resolve?.(null);
+	}, []);
+	const updateStartArgRow = useCallback((i: number, value: string) => {
+		setStartArgsDialog(prev => prev ? prev.map((r, idx) => idx === i ? { ...r, value } : r) : prev);
+	}, []);
+
+	// W5b: wrap the currently selected nodes into a Saros.Loop iteration body.
+	// 复用 buildSubflowFromGraph（SubflowDefinition 同构）→ data.loopBody；
+	// 执行时 runLoopNodeExecutor 逐项跑 body（见 workflowRun.ts）。
+	const handleWrapLoop = useCallback((loopType: 'Saros.Loop' | 'Saros.Parallel') => {
+		const canvas = liteGraphRef.current;
+		if (!canvas) { return; }
+		const selected = canvas.getSelectedNodes();
+		if (selected.length < 1) { return; }
+		const state = useWorkflowEditorStore.getState();
+		const loopBody = buildSubflowFromGraph(
+			`loop-${Date.now()}`,
+			loopType === 'Saros.Loop' ? '循环体' : '并发体',
+			selected.map(s => ({ id: s.id, type: s.type, data: s.data })),
+			state.edges.map(e => ({ source: e.source, target: e.target })),
+		);
+		const selectedIds = new Set(selected.map(s => s.id));
+		const anchorNode = state.nodes.find(n => n.id === selected[0].id);
+		const loopNode: CanvasNode = {
+			id: loopBody.id,
+			type: loopType,
+			position: anchorNode?.position ?? { x: 0, y: 0 },
+			data: { label: loopType === 'Saros.Loop' ? '循环' : '并发', loopBody },
+		};
+		const keptNodes = state.nodes.filter(n => !selectedIds.has(n.id));
+		const newEdges = state.edges
+			.filter(e => !(selectedIds.has(e.source) && selectedIds.has(e.target)))
+			.map(e => {
+				if (selectedIds.has(e.source)) { return { ...e, source: loopBody.id }; }
+				if (selectedIds.has(e.target)) { return { ...e, target: loopBody.id }; }
+				return e;
+			});
+		pauseTracking();
+		try {
+			state.setNodes([...keptNodes, loopNode] as never);
+			state.setEdges(newEdges as never);
+		} finally {
+			resumeTracking();
+		}
+	}, []);
+
+const handleExecute = useCallback(async () => {
 		if (!workflowId) { return; }
 		// ── P0: Comfy + Provider 全图执行（画布包含可执行节点时优先）──
 		// 可执行 = schema/native（ComfyUI runner）+ llm（imagegen.generate RPC）。
@@ -749,7 +940,15 @@ export const WorkflowEditorPanel: React.FC = () => {
 				getTaskStore().finish(taskStoreId, false, '检测到环路');
 				return;
 			}
+			// W1b: Start 运行时参数面板——图含 Start 且有参数 → 弹窗；取消则中止。
+			const startArgsOverride = await promptStartArgs(state.nodes);
+			if (startArgsOverride === null) {
+				setComfyRunState('idle');
+				getTaskStore().finish(taskStoreId, false, '已取消（参数面板）');
+				return;
+			}
 			const r = await runGraphExecution({
+				startArgsOverride,
 				nodes: state.nodes,
 				edges: state.edges,
 				getSpec: (t) => getNodeSpec(t),
@@ -765,6 +964,10 @@ export const WorkflowEditorPanel: React.FC = () => {
 					getTaskStore().update(taskStoreId, { message: `执行节点 ${id}…` });
 				},
 				sendImageGen: (payload) => sendRequest('imagegen.generate', payload, 180_000),
+			// M3: Saros.Agent 编排节点 → workflow.runAgentNode（browser 侧 startWorkflowChild 桥）
+			runAgentNode: (payload, timeoutMs) => sendRequest('workflow.runAgentNode', payload, timeoutMs ?? 600_000),
+			// P1: Saros.AskUser 交互节点 → renderer 侧模态弹窗（暂停图执行等用户选择）
+			askUser: askUserFn,
 				resolveImageGenDefaults: async () =>
 					resolveFirstImageGenDefaults(useProviderStore.getState().providers),
 				resolveLoadImageRef: defaultResolveLoadImageRef(runner, comfyFetchRef.current as never),
@@ -775,13 +978,16 @@ export const WorkflowEditorPanel: React.FC = () => {
 			});
 			if (r.success) {
 				setComfyRunState('done');
-				setComfyRunMsg(`全图执行完成 · ${r.ran.length} 个节点`);
+				setComfyRunMsg(`全图执行完成 · ${r.ran.length} 个节点${r.skippedIds.length > 0 ? ` · 跳过 ${r.skippedIds.length}` : ''}`);
 				getTaskStore().finish(taskStoreId, true, `完成 · ${r.ran.length} 个节点`);
+				// W6: 激活路径标绿 / gate 未命中分支置灰
+				canvas.markRouteEdges?.(r.ran, r.skippedIds);
 			} else if (r.failed) {
 				setComfyRunState('failed');
 				// Toolbar 仅显示简短摘要；完整错误（ComfyUI 后端 JSON body）已写入节点卡片 ErrorBanner。
 				setComfyRunMsg(`执行失败（节点 ${r.failed.nodeId}，详细原因见卡片）`);
 				getTaskStore().finish(taskStoreId, false, `节点 ${r.failed.nodeId} 失败`);
+				canvas.markRouteEdges?.(r.ran, r.skippedIds);
 			} else {
 				setComfyRunState('failed');
 				setComfyRunMsg('执行中止');
@@ -810,6 +1016,77 @@ export const WorkflowEditorPanel: React.FC = () => {
 			console.error('[WorkflowEditor] Failed to execute workflow:', err);
 		}
 	}, [workflowId, runnerPreference]);
+
+	// M4c: 画布「直接执行」—— 绕过 LLM 决策，确定性触发 workflow 引擎执行导出脚本。
+	// 运行过程（子代理卡片/进度/结果）在聊天框以合成 workflow 工具卡展示，由 host 侧
+	// fire requestWorkflowDirectRun / workflowDirectRunResult 事件驱动；本侧只发 RPC 并提示状态。
+	const handleExecuteScript = useCallback(async () => {
+		const state = useWorkflowEditorStore.getState();
+		// ★ 读 Start 节点 args（与全图 Run 一致）：图含 Saros.Start 且 args 非空时
+		// 弹参数面板让用户覆盖，确认后作为 workflow args 注入脚本（脚本内 args.key
+		// 引用）；取消则中止。此前 `args: {}` 硬编码 → Start 的 prompt 参数「没生效」。
+		const startArgs = await promptStartArgs(state.nodes as never);
+		if (startArgs === null) {
+			setValidationMsg('已取消（参数面板）');
+			return;
+		}
+		let gen;
+		try {
+			gen = exportCanvasToWorkflowScript({
+				nodes: state.nodes as never,
+				edges: state.edges as never,
+				getNodeValue: (id: string) => {
+					const node = state.nodes.find(n => n.id === id);
+					const data = (node?.data ?? {}) as Record<string, unknown>;
+					return { ...data, ...(comfyRunValuesRef.current[id] ?? {}) } as Record<string, unknown>;
+				},
+				// P0：媒体节点导出为 await stage("uid") —— 真正驱动 ComfyUI 生成
+				getStageUid: (id: string) => liteGraphRef.current?.stageUidOf(id),
+				workflowName: state.workflowName,
+			});
+		} catch (err) {
+			setValidationMsg(`脚本生成失败：${err instanceof Error ? err.message : String(err)}`);
+			return;
+		}
+		if (!gen.script) {
+			setValidationMsg('导出脚本为空（无可执行的编排节点）');
+			return;
+		}
+		setExecScriptResult({ status: 'running' });
+		setValidationMsg('⏳ 正在执行动态工作流（运行过程见聊天框工具卡片）…');
+		try {
+			const res = await sendRequest('workflow.executeScript', {
+				meta: gen.meta,
+				script: gen.script,
+				args: startArgs,
+			}, 0) as { ok: boolean; value?: unknown; agentsStarted?: number; projectionText?: string; error?: string };
+			if (res?.ok) {
+				setExecScriptResult({ status: 'done', value: res.value, agentsStarted: res.agentsStarted, projectionText: res.projectionText });
+				setValidationMsg(`✓ 执行完成（${res.agentsStarted ?? 0} agents）`);
+			} else {
+				setExecScriptResult({ status: 'error', error: res?.error });
+				setValidationMsg(`执行失败：${res?.error ?? '未知错误'}`);
+			}
+		} catch (err) {
+			setExecScriptResult({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+			setValidationMsg(`执行失败：${err instanceof Error ? err.message : String(err)}`);
+		}
+	}, [setValidationMsg, promptStartArgs]);
+
+	// ★ 智能路由（修「运行工作流没从 start 开始 / prompt 参数没生效」）：
+	// 工具栏「▶ 运行」此前固定走 handleExecute（全图 Comfy Run），遇到编排节点
+	// （Start/Prompt/Agent/IfElse…）会被静默跳过，Start 的 prompt 参数也不生效。
+	// 现在：含编排节点 → 走「直接执行」脚本路径（读 Start 参数 + 从 start 开始 +
+	// phase 进度 + 聊天框工具卡）；纯 Comfy/Provider 画布 → 全图 Run（保留并行）。
+	const handleRun = useCallback(() => {
+		const state = useWorkflowEditorStore.getState();
+		const hasOrchestration = state.nodes.some(n => ORCHESTRATION_NODE_TYPES.has(n.type));
+		if (hasOrchestration) {
+			void handleExecuteScript();
+		} else {
+			void handleExecute();
+		}
+	}, [handleExecuteScript, handleExecute]);
 
 	const handlePause = useCallback(async () => {
 		if (!executionId) { return; }
@@ -855,6 +1132,203 @@ export const WorkflowEditorPanel: React.FC = () => {
 		setTimeout(() => setValidationMsg(null), 5000);
 	}, []);
 
+	// ═══════════════════════════════════════════════════════════════
+	// v2 单行工具栏：发布状态（pill + 发布 ▾ 下拉），宿主侧 RPC 见
+	// agentStudioWebviewController 的 workflow.publishState/publish/upgrade。
+	// ═══════════════════════════════════════════════════════════════
+	type PublishState = { state: 'unpublished' | 'upToDate' | 'localModified' | 'serverNewer' | 'serverOnly'; localVersion?: string; serverVersion?: string };
+	const [publishState, setPublishState] = useState<PublishState | null>(null);
+	const [openMenu, setOpenMenu] = useState<'import' | 'export' | 'canvas' | 'publish' | null>(null);
+	const [deleteConfirm, setDeleteConfirm] = useState(false);
+	const [descCollapsed, setDescCollapsed] = useState(false);
+
+	const refreshPublishState = useCallback(async () => {
+		if (!workflowId) { return; }
+		try {
+			const r = await sendRequest('workflow.publishState', { workflowId }) as PublishState;
+			setPublishState(r ?? null);
+		} catch { setPublishState(null); }
+	}, [workflowId]);
+	useEffect(() => { void refreshPublishState(); }, [refreshPublishState, loaded]);
+
+	const handlePublish = useCallback(async () => {
+		if (!workflowId) { return; }
+		setOpenMenu(null);
+		try {
+			const r = await sendRequest('workflow.publish', { workflowId }, 600_000) as { ok: boolean; version?: string };
+			setValidationMsg(r?.ok ? `✓ 已发布 v${r.version ?? ''}` : '已取消发布');
+		} catch { setValidationMsg('发布失败'); }
+		void refreshPublishState();
+	}, [workflowId, refreshPublishState]);
+
+	const handleUpgrade = useCallback(async () => {
+		if (!workflowId || !publishState?.serverVersion) { return; }
+		const target = publishState.serverVersion;
+		setOpenMenu(null);
+		try {
+			const r = await sendRequest('workflow.upgrade', { workflowId, serverVersion: target }, 300_000) as { ok: boolean; error?: string };
+			setValidationMsg(r?.ok ? `✓ 已升级到 v${target}` : `升级失败：${r?.error ?? '未知错误'}`);
+		} catch { setValidationMsg('升级失败'); }
+		void refreshPublishState();
+	}, [workflowId, publishState]);
+
+	const handleVersionHistory = useCallback(() => {
+		setOpenMenu(null);
+		void sendRequest('workflow.versionHistory', {});
+	}, []);
+
+	const handleDeleteWorkflow = useCallback(() => {
+		if (!workflowId) { return; }
+		void sendRequest('workflow.deleteWorkflow', { workflowId });
+		setOpenMenu(null);
+		setDeleteConfirm(false);
+	}, [workflowId]);
+
+	// 发布 pill 文案 + 配色（v2 单行工具栏左段）
+	const pillText = !publishState ? '同步中'
+		: publishState.state === 'unpublished' ? (publishState.localVersion ? `未发布 v${publishState.localVersion}` : '未发布')
+		: publishState.state === 'upToDate' ? `v${publishState.localVersion ?? ''}`
+		: publishState.state === 'localModified' ? `v${publishState.localVersion} 已修改`
+		: publishState.state === 'serverNewer' ? `v${publishState.localVersion ?? ''} → v${publishState.serverVersion}`
+		: `商城 v${publishState.serverVersion ?? ''}`;
+	const pillCls = !publishState || publishState.state === 'unpublished' ? 'unpublished'
+		: publishState.state === 'upToDate' || publishState.state === 'serverOnly' ? 'ok'
+		: publishState.state === 'localModified' ? 'modified' : 'newer';
+	const saveText = saveStatus === 'saving' ? '保存中…' : saveStatus === 'saved' ? '已保存' : saveStatus === 'error' ? '保存失败' : '已自动保存';
+	const saveCls = saveStatus === 'saving' ? 'saving' : saveStatus === 'saved' ? 'saved' : saveStatus === 'error' ? 'error' : '';
+
+	// ═══════════════════════════════════════════════════════════════
+	// 图 ⇄ 脚本 切换（v3）：视图模式 + 代码只读投影。
+	// 脚本由 exportCanvasToWorkflowScript（M4a 同一生成器）从画布实时生成，
+	// 订阅 store nodes/edges → 500ms 防抖刷新；永不回写画布（模式 A 只读投影）。
+	// ═══════════════════════════════════════════════════════════════
+	const [viewMode, setViewMode] = useState<'canvas' | 'split' | 'code'>('canvas');
+	const [projectedScript, setProjectedScript] = useState<string>('');
+	const [scriptSynced, setScriptSynced] = useState(0);
+	// 行锚点：displayScript 行号(1-based) ↔ 画布 nodeId（带外通道，不写进脚本）。
+	const [scriptAnchors, setScriptAnchors] = useState<ReadonlyArray<{ line: number; nodeId: string; kind: 'decl' | 'ref' }>>([]);
+	// 行号 → nodeId 快查（渲染每行时判断是否可点击）
+	const anchorByLine = useMemo(() => {
+		const m = new Map<number, string>();
+		for (const a of scriptAnchors) { if (!m.has(a.line)) { m.set(a.line, a.nodeId); } }
+		return m;
+	}, [scriptAnchors]);
+	// 当前高亮的投影行（点击定位 / 画布选中反查）
+	const [activeScriptLine, setActiveScriptLine] = useState(0);
+	const scriptTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+	// 分栏比例（0.2–0.8）+ 拖动句柄
+	const [splitRatio, setSplitRatio] = useState(0.5);
+	const mainFlexRef = useRef<HTMLDivElement | null>(null);
+	const canvasHostRef = useRef<HTMLDivElement | null>(null);
+	const dragSplitter = useCallback((e: React.MouseEvent) => {
+		e.preventDefault();
+		const host = mainFlexRef.current;
+		if (!host) { return; }
+		const total = host.getBoundingClientRect().width;
+		const startX = e.clientX;
+		const startRatio = splitRatio;
+		const move = (ev: MouseEvent) => {
+			const r = Math.min(0.8, Math.max(0.2, startRatio + (ev.clientX - startX) / total));
+			setSplitRatio(r);
+		};
+		const up = () => {
+			document.removeEventListener('mousemove', move);
+			document.removeEventListener('mouseup', up);
+		};
+		document.addEventListener('mousemove', move);
+		document.addEventListener('mouseup', up);
+	}, [splitRatio]);
+
+	useEffect(() => {
+		if (viewMode === 'canvas') { return; }
+		clearTimeout(scriptTimerRef.current);
+		scriptTimerRef.current = setTimeout(() => {
+			try {
+				const state = useWorkflowEditorStore.getState();
+				const r = exportCanvasToWorkflowScript({
+					nodes: state.nodes as never,
+					edges: state.edges as never,
+					// node.data（默认/持久化值）打底，comfyRunValuesRef（属性面板实时值）优先
+					getNodeValue: (id: string) => {
+						const node = state.nodes.find(n => n.id === id);
+						const data = (node?.data ?? {}) as Record<string, unknown>;
+						return { ...data, ...(comfyRunValuesRef.current[id] ?? {}) } as Record<string, unknown>;
+					},
+					// P0：媒体节点导出为 await stage("uid") —— 真正驱动 ComfyUI 生成
+					getStageUid: (id: string) => liteGraphRef.current?.stageUidOf(id),
+					workflowName: state.workflowName,
+				});
+				setProjectedScript(r.displayScript);
+				setScriptAnchors(r.anchors);
+				setScriptSynced(Date.now());
+			} catch {
+				// 投影生成失败时保持上一次内容（只读视图，不阻塞编辑）
+			}
+		}, 500);
+		return () => clearTimeout(scriptTimerRef.current);
+	}, [nodes, edges, viewMode, workflowName]);
+
+	// 代码投影 → 画布定位：点击带锚点的行 → 选中并居中对应画布节点。
+	// split 模式下画布同屏可见，效果最好；code 单栏模式先切回 split 再定位。
+	const revealNodeFromLine = useCallback((line: number) => {
+		const nodeId = anchorByLine.get(line);
+		if (!nodeId) { return; }
+		setActiveScriptLine(line);
+		if (viewMode === 'code') { setViewMode('split'); }
+		// 切模式后画布需要一帧完成挂载/布局，再定位（否则量测到 0 尺寸）
+		requestAnimationFrame(() => {
+			const ok = liteGraphRef.current?.revealNode(nodeId);
+			if (!ok) { setActiveScriptLine(0); }
+		});
+	}, [anchorByLine, viewMode]);
+
+	// 画布 → 代码投影 反向定位：分栏同屏时，点选画布节点 → 高亮并滚到对应脚本行。
+	// 复用既有 getSelectedNodes()（不改画布事件体系）；pointerup 后选中态才稳定。
+	const codeBodyRef = useRef<HTMLDivElement | null>(null);
+	useEffect(() => {
+		if (viewMode !== 'split') { return; }
+		const host = canvasHostRef.current;
+		if (!host) { return; }
+		const onUp = () => {
+			requestAnimationFrame(() => {
+				const sel = liteGraphRef.current?.getSelectedNodes?.() ?? [];
+				if (sel.length !== 1) { return; }
+				const nodeId = sel[0].id;
+				// 优先跳「声明行」（UID 表条目 / gate 的 if-else 行只是引用）
+				const decl = scriptAnchors.find(a => a.nodeId === nodeId && a.kind === 'decl')
+					?? scriptAnchors.find(a => a.nodeId === nodeId);
+				if (!decl) { return; }
+				setActiveScriptLine(decl.line);
+				const rows = codeBodyRef.current?.children;
+				(rows?.[decl.line - 1] as HTMLElement | undefined)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+			});
+		};
+		host.addEventListener('pointerup', onUp);
+		return () => host.removeEventListener('pointerup', onUp);
+	}, [viewMode, scriptAnchors]);
+
+	// Ctrl+Shift+V：图 ⇄ 代码来回切换（分栏态回到上次的单栏）
+	useEffect(() => {
+		const handler = (e: KeyboardEvent) => {
+			if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'v') {
+				e.preventDefault();
+				setViewMode(m => (m === 'code' ? 'canvas' : 'code'));
+			}
+		};
+		window.addEventListener('keydown', handler);
+		return () => window.removeEventListener('keydown', handler);
+	}, []);
+
+	const handleCopyScript = useCallback(async () => {
+		try {
+			await navigator.clipboard.writeText(projectedScript);
+			setValidationMsg('✓ 脚本已复制到剪贴板');
+		} catch {
+			setValidationMsg('复制失败（剪贴板不可用）');
+		}
+		setTimeout(() => setValidationMsg(null), 3000);
+	}, [projectedScript]);
+
 	return (
 		<>
 		<div style={{
@@ -864,90 +1338,192 @@ export const WorkflowEditorPanel: React.FC = () => {
 			flexDirection: 'column',
 			overflow: 'hidden',
 		}}>
-				{/* Toolbar */}
-				<div style={{
-					display: 'flex',
-					alignItems: 'center',
-					justifyContent: 'space-between',
-					padding: '6px 12px',
-					borderBottom: '1px solid var(--vscode-panel-border)',
-					backgroundColor: 'var(--vscode-titleBar-activeBackground)',
-				}}>
-					<div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+				{/* v3 两行工具栏：单行塞 16+ 元素必然重叠，按「频率分层」拆两行。
+				    行1 = 身份(name/pill/stats/save) + 运行锚点(msg/Run)；
+				    行2 = 视图切换 + 编辑(undo/redo/校验 + 4 下拉) + 面板(并行 + 3 入口)。 */}
+				<div className="wft-bar">
+					{comfyRunState === 'running' && <div className="wft-progress" />}
+					{openMenu && (
+						<div style={{ position: 'fixed', inset: 0, zIndex: 299 }} onClick={() => { setOpenMenu(null); setDeleteConfirm(false); }}
+							onContextMenu={e => { e.preventDefault(); setOpenMenu(null); }} />
+					)}
+
+					{/* ── 行1 ── */}
+					<div className="wft-row">
+					{/* 左段：身份 + 发布状态 + 自动保存（marginRight:auto 推到行1 末端） */}
+					<div className="wft-seg" style={{ marginRight: 'auto' }}>
 						<input
+							className="wft-name"
 							type="text"
 							value={workflowName}
 							onChange={e => setWorkflowName(e.target.value)}
 							placeholder="Workflow Name"
-							style={{
-								fontWeight: 600,
-								fontSize: '13px',
-								border: '1px solid transparent',
-								borderRadius: '2px',
-								background: 'transparent',
-								color: 'var(--vscode-foreground)',
-								padding: '2px 4px',
-								width: '180px',
-								outline: 'none',
-							}}
-							onFocus={e => {
-								e.target.style.borderColor = 'var(--vscode-focusBorder)';
-								e.target.style.background = 'var(--vscode-input-background)';
-							}}
-							onBlur={e => {
-								e.target.style.borderColor = 'transparent';
-								e.target.style.background = 'transparent';
-							}}
+							spellCheck={false}
 						/>
-						<span style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)' }}>
-							{nodes.length} nodes · {edges.length} connections
-						</span>
+						<span className={`wft-pill ${pillCls}`} title="发布状态（与商城版本对比）"><span className="pd" />{pillText}</span>
+						<span className="wft-stats">{nodes.length} 节点 · {edges.length} 连接</span>
+						<span className={`wft-save ${saveCls}`}><span className="sd" />{saveText}</span>
+						{descCollapsed && (
+							<button className="wft-btn icon" title="展开任务描述" onClick={() => setDescCollapsed(false)}>📝</button>
+						)}
 					</div>
-					<div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-						<button
-							onClick={() => setShowRunners(prev => !prev)}
-							title="ComfyUI Runner 管理"
-							style={{
-								...iconBtnStyle,
-								borderColor: showRunners ? 'var(--vscode-focusBorder)' : 'var(--vscode-panel-border)',
-								backgroundColor: showRunners ? 'rgba(34,197,94,0.12)' : 'transparent',
-								fontSize: '10px',
-								width: 'auto',
-								padding: '0 8px',
-								fontFamily: 'inherit',
-							}}
-						>
-							🖥 Runner
-						</button>
-						<button
-							onClick={() => setShowMediaLibrary(true)}
-							title="媒体库（生成图片资产管理）"
-							style={{
-								...iconBtnStyle,
-								borderColor: showMediaLibrary ? 'var(--vscode-focusBorder)' : 'var(--vscode-panel-border)',
-								backgroundColor: showMediaLibrary ? 'rgba(99,102,241,0.12)' : 'transparent',
-								fontSize: '10px',
-								width: 'auto',
-								padding: '0 8px',
-								fontFamily: 'inherit',
-							}}
-						>
-							🖼 媒体库
-						</button>
-						<button
-							onClick={() => comfyFileInputRef.current?.click()}
-							title="导入 ComfyUI 工作流 JSON"
-							style={{ ...iconBtnStyle, borderColor: 'var(--vscode-panel-border)', fontSize: '10px', width: 'auto', padding: '0 8px', fontFamily: 'inherit' }}
-						>
-							⤵ 导入
-						</button>
-						<button
-							onClick={handleComfyExport}
-							title="导出为 ComfyUI api.json"
-							style={{ ...iconBtnStyle, borderColor: 'var(--vscode-panel-border)', fontSize: '10px', width: 'auto', padding: '0 8px', fontFamily: 'inherit' }}
-						>
-							⤴ 导出 API
-						</button>
+
+					{/* 行1 右段：运行消息 + Run 状态机（锚点，恒可见） */}
+					<div className="wft-seg">
+						{(validationMsg || comfyRunMsg) && (
+							<span
+								className={'wft-msg' + ((comfyRunState === 'done' || validationMsg?.startsWith('✓')) ? ' ok' : ' err')}
+								title={validationMsg ?? comfyRunMsg ?? ''}
+							>
+								{validationMsg || comfyRunMsg}
+							</span>
+						)}
+						{comfyRunState === 'running' ? (
+							<button className="wft-run running" disabled><span className="wft-spin" />运行中…</button>
+						) : executionStatus === 'running' ? (
+							<>
+								<button className="wft-btn icon" onClick={handlePause} title="暂停执行">⏸</button>
+								<button className="wft-run cancel" onClick={handleCancel} title="中止执行">✕ 中止</button>
+							</>
+						) : executionStatus === 'paused' ? (
+							<button className="wft-run" onClick={handleResume} title="继续执行">▶ 继续</button>
+						) : (
+							<button
+								className={'wft-run' + (comfyRunState === 'done' ? ' done' : comfyRunState === 'failed' ? ' failed' : '')}
+								onClick={handleRun}
+								disabled={!workflowId}
+								title="运行工作流：含编排节点（Start/Agent/IfElse 等）走脚本执行（读 Start 参数、聊天框工具卡展示进度）；纯 Comfy 节点走全图执行（并行）"
+							>
+								{comfyRunState === 'done' ? '✓ 完成' : comfyRunState === 'failed' ? '↻ 重试' : '▶ 运行'}
+							</button>
+						)}
+					</div>
+					</div>{/* /wft-row 行1 */}
+
+					{/* ── 行2：视图切换 + 编辑 + 面板 ── */}
+					<div className="wft-row">
+						{/* v3 图⇄脚本 分段控件 */}
+						<div className="wft-vswitch" role="tablist" aria-label="视图模式">
+							<button className={viewMode === 'canvas' ? 'on' : ''} title="画布视图（节点图编辑，唯一编辑真源）" onClick={() => setViewMode('canvas')}>⊞ 图</button>
+							<button className={viewMode === 'split' ? 'on' : ''} title="左右分栏：画布 + 脚本并排（可拖分隔条）" onClick={() => setViewMode('split')}>⫿ 分栏</button>
+							<button className={viewMode === 'code' ? 'on' : ''} title="脚本视图：画布的只读投影（Ctrl+Shift+V）" onClick={() => setViewMode('code')}>&lt;/&gt; 代码<span className="vs-kbd">⌃⇧V</span></button>
+						</div>
+						<span className="wft-divider" />
+
+					{/* ── 中段：编辑操作 ── */}
+					<div className="wft-seg">
+						<button className="wft-btn icon" onClick={() => doUndo()} title="撤销 (Ctrl+Z)">↶</button>
+						<button className="wft-btn icon" onClick={() => doRedo()} title="重做 (Ctrl+Shift+Z)">↷</button>
+						<span className="wft-divider" />
+						<button className="wft-btn icon" onClick={handleValidate} title="校验工作流">✓</button>
+						<span className="wft-divider" />
+
+						{/* 导入 ▾ */}
+						<div className="wft-dd">
+							<button className="wft-btn" title="导入外部工作流" onClick={() => setOpenMenu(m => m === 'import' ? null : 'import')}>
+								⤵ 导入 <span className="caret">▾</span>
+							</button>
+							{openMenu === 'import' && (
+								<div className="wft-menu">
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); comfyFileInputRef.current?.click(); }}>
+										<span className="mi-icon">📄</span><span className="mi-label">ComfyUI 工作流 JSON</span>
+									</button>
+								</div>
+							)}
+						</div>
+
+						{/* 导出 ▾（两个导出合一出口） */}
+						<div className="wft-dd">
+							<button className="wft-btn" title="导出工作流" onClick={() => setOpenMenu(m => m === 'export' ? null : 'export')}>
+								⤴ 导出 <span className="caret">▾</span>
+							</button>
+							{openMenu === 'export' && (
+								<div className="wft-menu">
+									<div className="wft-mi-head">导出</div>
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); setViewMode('code'); void handleExecuteScript(); }}>
+										<span className="mi-icon">▶</span>
+										<span className="mi-label">直接执行<span className="mi-hint">绕过 LLM 决策，运行过程在聊天框工具卡片展示</span></span>
+									</button>
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleComfyExport(); }}>
+										<span className="mi-icon">🧬</span>
+										<span className="mi-label">ComfyUI api.json<span className="mi-hint">仅 Comfy 节点 · 剔除编排节点</span></span>
+									</button>
+								</div>
+							)}
+						</div>
+
+						{/* 画布 ▾（原彩色描边按钮并入） */}
+						<div className="wft-dd">
+							<button className="wft-btn" title="画布整理操作" onClick={() => setOpenMenu(m => m === 'canvas' ? null : 'canvas')}>
+								⊞ 画布 <span className="caret">▾</span>
+							</button>
+							{openMenu === 'canvas' && (
+								<div className="wft-menu">
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleAutoLayout(); }} disabled={comfyRunState === 'running'}>
+										<span className="mi-icon">⊞</span><span className="mi-label">自动布局<span className="mi-hint">按依赖分层排列（可撤销）</span></span>
+									</button>
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleWrapSubflow(); }} disabled={comfyRunState === 'running'}>
+										<span className="mi-icon">⧉</span><span className="mi-label">封装为 Subflow<span className="mi-hint">选中 ≥2 节点组合为可复用子图</span></span>
+									</button>
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleWrapLoop('Saros.Loop'); }} disabled={comfyRunState === 'running'}>
+										<span className="mi-icon">🔁</span><span className="mi-label">封装为 Loop 循环<span className="mi-hint">选中节点逐项迭代执行</span></span>
+									</button>
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleWrapLoop('Saros.Parallel'); }} disabled={comfyRunState === 'running'}>
+										<span className="mi-icon">⚡</span><span className="mi-label">封装为 Parallel 并发<span className="mi-hint">选中节点并发执行（可调并发度）</span></span>
+									</button>
+									<div className="wft-mi-sep" />
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); liteGraphRef.current?.alignSelected(); }}>
+										<span className="mi-icon">↗</span><span className="mi-label">对齐选中节点</span>
+									</button>
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); liteGraphRef.current?.resetView(); }}>
+										<span className="mi-icon">⊙</span><span className="mi-label">重置视图</span>
+									</button>
+								</div>
+							)}
+						</div>
+
+						{/* 发布 ▾（原顶栏：上传/升级/版本历史/删除） */}
+						<div className="wft-dd">
+							<button className="wft-btn" title="发布 / 版本 / 删除" onClick={() => { setOpenMenu(m => m === 'publish' ? null : 'publish'); setDeleteConfirm(false); }}>
+								⬆ 发布 <span className="caret">▾</span>
+							</button>
+							{openMenu === 'publish' && (
+								<div className="wft-menu right">
+									<div className="wft-mi-head">发布</div>
+									{publishState?.state === 'unpublished' && (
+										<button className="wft-mi" onClick={() => void handlePublish()}>
+											<span className="mi-icon">📤</span><span className="mi-label">上传发布<span className="mi-hint">发布到商城</span></span>
+										</button>
+									)}
+									{publishState?.state === 'localModified' && (
+										<button className="wft-mi" onClick={() => void handlePublish()}>
+											<span className="mi-icon">📤</span><span className="mi-label">上传更新<span className="mi-hint">v{publishState.localVersion} → v{publishState.serverVersion}</span></span>
+										</button>
+									)}
+									{publishState?.state === 'serverNewer' && (
+										<button className="wft-mi" onClick={() => void handleUpgrade()}>
+											<span className="mi-icon">⬆</span><span className="mi-label">升级到 v{publishState.serverVersion}<span className="mi-hint">从商城下载最新版</span></span>
+										</button>
+									)}
+									<div className="wft-mi-sep" />
+									<button className="wft-mi" onClick={handleVersionHistory}>
+										<span className="mi-icon">🕐</span><span className="mi-label">版本历史</span>
+									</button>
+									{!deleteConfirm ? (
+										<button className="wft-mi danger" onClick={() => setDeleteConfirm(true)}>
+											<span className="mi-icon">🗑</span><span className="mi-label">删除工作流</span>
+										</button>
+									) : (
+										<div className="wft-del-confirm">
+											<span className="dc-text">确认删除？</span>
+											<button className="dc-btn dc-ok" onClick={handleDeleteWorkflow}>删除</button>
+											<button className="dc-btn dc-cancel" onClick={() => setDeleteConfirm(false)}>取消</button>
+										</div>
+									)}
+								</div>
+							)}
+						</div>
+
 						<input
 							ref={comfyFileInputRef}
 							type="file"
@@ -955,180 +1531,27 @@ export const WorkflowEditorPanel: React.FC = () => {
 							style={{ display: 'none' }}
 							onChange={handleComfyImportFile}
 						/>
-						<span style={{ fontSize: '11px', color: validationMsg?.startsWith('✓') ? '#22c55e' : validationMsg ? '#f59e0b' : saveStatus === 'saved' ? '#22c55e' : saveStatus === 'error' ? '#ef4444' : 'var(--vscode-descriptionForeground)' }}>
-							{validationMsg
-								? validationMsg
-								: saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved!' : saveStatus === 'error' ? 'Save failed' : ''}
-						</span>
-						<button onClick={() => doUndo()} title="Undo (Ctrl+Z)" style={iconBtnStyle}>↶</button>
-						<button onClick={() => doRedo()} title="Redo (Ctrl+Shift+Z)" style={iconBtnStyle}>↷</button>
-						<button onClick={handleValidate} title="Validate workflow" style={iconBtnStyle}>✓</button>
-						<button onClick={handleSave} disabled={saving}
-							style={{
-								padding: '4px 12px',
-								border: '1px solid var(--vscode-button-border)',
-								borderRadius: '4px',
-								backgroundColor: 'var(--vscode-button-background)',
-								color: 'var(--vscode-button-foreground)',
-								cursor: saving ? 'not-allowed' : 'pointer',
-								fontSize: '12px',
-								opacity: saving ? 0.5 : 1,
-							}}>
-							{saving ? 'Saving...' : 'Save'}
-						</button>
-						{/* P0 Comfy 全图执行结果提示（仅简短摘要；详细错误在节点卡片 ErrorBanner） */}
-						{comfyRunMsg && (
-							<span
-								title={comfyRunMsg}
-								style={{
-									fontSize: '11px',
-									color: comfyRunState === 'done' ? '#22c55e' : '#ef4444',
-									maxWidth: 220,
-									overflow: 'hidden',
-									textOverflow: 'ellipsis',
-									whiteSpace: 'nowrap',
-									flexShrink: 0,
-								}}
-							>
-								{comfyRunMsg}
-							</span>
-						)}
-						{/* P1: 并行执行开关（同层无依赖节点并发；Comfy 后端步骤仍串行） */}
-						<label title="并行执行：同层无依赖节点并发运行（provider/本地节点共用 4 并发；ComfyUI 后端步骤保持串行）"
-							style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#9ca3af', cursor: 'pointer', userSelect: 'none' }}>
-							<input
-								type="checkbox"
-								checked={comfyRunParallel}
-								onChange={e => setComfyRunParallel(e.target.checked)}
-								style={{ cursor: 'pointer' }}
-							/>
-							并行
-						</label>
-						{/* P2: 自动布局（Kahn 分层 → 列布局，一步 undo） */}
-						<button
-							onClick={handleAutoLayout}
-							disabled={comfyRunState === 'running'}
-							title="自动布局：按依赖分层排列节点（拓扑列布局，可撤销）"
-							style={{
-								padding: '4px 10px',
-								border: '1px solid #3b82f6',
-								borderRadius: '4px',
-								backgroundColor: 'transparent',
-								color: '#60a5fa',
-								cursor: 'pointer',
-								fontSize: '12px',
-							}}>
-							自动布局
-						</button>
-						{/* P2: 封装为 Subflow（选中 ≥2 节点 → 组合为可复用子图，执行时展平） */}
-						<button
-							onClick={handleWrapSubflow}
-							disabled={comfyRunState === 'running'}
-							title="封装为 Subflow：把当前选中的节点组合为可复用子图（执行时自动展平，可撤销）"
-							style={{
-								padding: '4px 10px',
-								border: '1px solid #8b5cf6',
-								borderRadius: '4px',
-								backgroundColor: 'transparent',
-								color: '#a78bfa',
-								cursor: 'pointer',
-								fontSize: '12px',
-							}}>
-							封装 Subflow
-						</button>
-						{/* P2: 插件管理（URL 安装/卸载/重载） */}
-						<button
-							onClick={() => setShowPluginManager(true)}
-							title="管理画布插件（URL 安装 / 卸载）"
-							style={{
-								padding: '4px 10px',
-								border: '1px solid #f59e0b',
-								borderRadius: '4px',
-								backgroundColor: 'transparent',
-								color: '#fbbf24',
-								cursor: 'pointer',
-								fontSize: '12px',
-							}}>
-							插件
-						</button>
-						{/* Execution control buttons (P3) */}
-						{!executionStatus || executionStatus === 'completed' || executionStatus === 'failed' || executionStatus === 'cancelled' ? (
-							<button
-								onClick={handleExecute}
-								disabled={comfyRunState === 'running'}
-								title="Run workflow（画布含 Comfy 节点时全图执行；勾选「并行」后同层节点并发）"
-								style={{
-									padding: '4px 12px',
-									border: '1px solid #22c55e',
-									borderRadius: '4px',
-									backgroundColor: '#22c55e',
-									color: 'white',
-									cursor: comfyRunState === 'running' ? 'wait' : 'pointer',
-									fontSize: '12px',
-									fontWeight: 600,
-									opacity: comfyRunState === 'running' ? 0.6 : 1,
-								}}>
-								{comfyRunState === 'running' ? '运行中…' : comfyRunState === 'done' ? '✓ 完成' : comfyRunState === 'failed' ? '✕ 重试' : '▶ Run'}
-							</button>
-						) : executionStatus === 'running' ? (
-							<>
-								<button onClick={handlePause} title="Pause execution" style={{
-									padding: '4px 12px',
-									border: '1px solid #f59e0b',
-									borderRadius: '4px',
-									backgroundColor: '#f59e0b',
-									color: 'white',
-									cursor: 'pointer',
-									fontSize: '12px',
-									fontWeight: 600,
-								}}>
-									⏸ Pause
-								</button>
-								<button onClick={handleCancel} title="Cancel execution" style={{
-									padding: '4px 12px',
-									border: '1px solid #ef4444',
-									borderRadius: '4px',
-									backgroundColor: '#ef4444',
-									color: 'white',
-									cursor: 'pointer',
-									fontSize: '12px',
-									fontWeight: 600,
-								}}>
-									✕ Cancel
-								</button>
-							</>
-						) : executionStatus === 'paused' ? (
-							<>
-								<button onClick={handleResume} title="Resume execution" style={{
-									padding: '4px 12px',
-									border: '1px solid #22c55e',
-									borderRadius: '4px',
-									backgroundColor: '#22c55e',
-									color: 'white',
-									cursor: 'pointer',
-									fontSize: '12px',
-									fontWeight: 600,
-								}}>
-									▶ Resume
-								</button>
-								<button onClick={handleCancel} title="Cancel execution" style={{
-									padding: '4px 12px',
-									border: '1px solid #ef4444',
-									borderRadius: '4px',
-									backgroundColor: '#ef4444',
-									color: 'white',
-									cursor: 'pointer',
-									fontSize: '12px',
-									fontWeight: 600,
-								}}>
-									✕ Cancel
-								</button>
-							</>
-						) : null}
 					</div>
+
+					{/* 行2 右段：并行 toggle + 面板入口（marginLeft:auto 推到行2 末端） */}
+					<div className="wft-seg" style={{ marginLeft: 'auto' }}>
+						<span
+							className={'wft-toggle' + (comfyRunParallel ? ' on' : '')}
+							title="并行执行：同层无依赖节点并发（provider/本地节点共用 4 并发；ComfyUI 后端步骤保持串行）"
+							onClick={() => setComfyRunParallel(v => !v)}
+						>
+							<span className="tk" />并行
+						</span>
+						<span className="wft-divider" />
+						<button className={'wft-btn icon' + (showRunners ? ' panel-on' : '')} title="ComfyUI Runner 管理" onClick={() => setShowRunners(v => !v)}>🖥</button>
+						<button className="wft-btn icon" title="媒体库（生成图片资产管理）" onClick={() => setShowMediaLibrary(true)}>🖼</button>
+						<button className="wft-btn icon" title="插件管理（URL 安装 / 卸载 / 重载）" onClick={() => setShowPluginManager(true)}>🧩</button>
+					</div>
+					</div>{/* /wft-row 行2 */}
 				</div>
 
-				{/* v41: Editable task description bar — single-line display, multi-line on click */}
+				{/* 任务描述栏（v2：可折叠副行；折叠后从单行工具栏的 📝 按钮展开） */}
+				{!descCollapsed && (
 				<div style={{
 					display: 'flex',
 					alignItems: editingDescription ? 'flex-start' : 'center',
@@ -1223,13 +1646,26 @@ export const WorkflowEditorPanel: React.FC = () => {
 							</div>
 						</div>
 					)}
+					{!editingDescription && (
+						<button className="wft-btn icon" title="折叠任务描述栏" onClick={() => setDescCollapsed(true)}>▴</button>
+					)}
 				</div>
+				)}
 
-				{/* Main area — canvas fills everything; nodes are added via right-click menu */}
-			<div style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
+				{/* Main area — v3: flex 容器 = 画布 │ 分隔条 │ 代码投影；nodes 经右键菜单添加 */}
+			<div className="wf-main-flex" ref={mainFlexRef}>
 
-				{/* Canvas — always fills the full area; engine is LiteGraph (ComfyUI) */}
-				<div style={{ width: '100%', height: '100%' }}>
+				{/* Canvas — LiteGraph 引擎（唯一编辑真源）。code 模式宽度收到 0 但保留
+				    DOM（引擎实例/撤销栈存活），切回时 ResizeObserver 自动恢复尺寸。 */}
+				<div
+					ref={canvasHostRef}
+					className="wf-canvas-host"
+					style={
+						viewMode === 'code' ? { flex: '0 0 0px' }
+						: viewMode === 'split' ? { flex: `0 0 ${splitRatio * 100}%` }
+						: { flex: '1 1 100%' }
+					}
+				>
 				<LiteGraphCanvas
 					ref={liteGraphRef}
 					className="wf-litegraph-host"
@@ -1257,13 +1693,23 @@ export const WorkflowEditorPanel: React.FC = () => {
 							const canPaste = typeof window !== 'undefined' && !!window.localStorage?.getItem('litegrapheditor_clipboard');
 							// 复刻 ComfyUI：Add Node 二级级联菜单（sampling/loaders/conditioning/...）。
 							// store.addNode 是真源（同时驱动 LiteGraph 与 reactive state）。
+							// ★ 节点落在右键点击处（graphX/graphY 是 graph 坐标），且
+							//   **创建后立即关闭菜单**（对齐 ComfyUI：pick 即 commit）。
+							//   否则级联叶子的 onPick 只 addNode、canvasMenu 不关，
+							//   而 overlay 的 role="menu" 保护又阻止点击菜单项关闭 →
+							//   菜单一直悬在画布上。
 							const addNodeSubmenu = buildAddNodeSubmenu(
-								(type) => addNode(type, { x: graphX, y: graphY })
+								(type) => {
+									addNode(type, { x: graphX, y: graphY });
+									setCanvasMenu(null);
+								}
 							);
 							const items = buildCanvasActions(
 								{ selectedCount: liteGraphRef.current?.getSelectedNodes().length ?? 0, canPaste, addNodeSubmenu },
 								{
-									openNodeSearch: () => setCtxMenu({ graphX, graphY, clientX, clientY }),
+									// 搜索浮窗（submenu 缺省时的退化路径）：先关 canvas
+									// 菜单再开搜索，避免两个菜单叠加。
+									openNodeSearch: () => { setCanvasMenu(null); setCtxMenu({ graphX, graphY, clientX, clientY }); },
 									paste: () => liteGraphRef.current?.pasteFromClipboard(),
 									addGroup: () => liteGraphRef.current?.addGroupAt(graphX, graphY),
 																	runWorkflow: handleExecute,
@@ -1392,6 +1838,15 @@ export const WorkflowEditorPanel: React.FC = () => {
 							setNodeMenu({ clientX, clientY, title: ctx.title, items });
 						}}
 						onRequestRun={handleExecute}
+						onCanvasDoubleClick={(graphX, graphY, clientX, clientY) => {
+							// ★ ComfyUI 交互：双击空白打开节点搜索框（NodeContextMenu）。
+							//   先关掉所有其它菜单，避免叠加。
+							setCanvasMenu(null);
+							setNodeMenu(null);
+							setGroupMenu(null);
+							setLinkMenu(null);
+							setCtxMenu({ graphX, graphY, clientX, clientY });
+						}}
 					/>
 					{/* ComfyUI-style right-click node menu */}
 					{ctxMenu && (
@@ -1411,7 +1866,13 @@ export const WorkflowEditorPanel: React.FC = () => {
 							/>
 						<NodeContextMenu
 							menu={ctxMenu}
-							onPick={() => setCtxMenu(null)}
+							ghostMode
+							onPick={(type) => {
+								// ★ FollowCursor：选节点后关闭搜索框，进入 ghost 落位模式
+								//   （节点跟随光标，点击画布落位，Esc/右键取消）。
+								setCtxMenu(null);
+								liteGraphRef.current?.beginGhostPlace(type, ctxMenu.graphX, ctxMenu.graphY);
+							}}
 							onClose={() => setCtxMenu(null)}
 						/>
 					</>
@@ -1535,6 +1996,66 @@ export const WorkflowEditorPanel: React.FC = () => {
 					)}
 				</div>
 
+					{/* v3 分栏分隔条（仅 split 模式） */}
+					{viewMode === 'split' && (
+						<div className="wf-splitter" onMouseDown={dragSplitter} title="拖动调整分栏比例" />
+					)}
+
+					{/* v3 代码只读投影面板（split / code 模式）。内容由画布经
+					    exportCanvasToWorkflowScript 防抖生成，永不回写。 */}
+					{viewMode !== 'canvas' && (
+						<div className="wf-code-pane" style={viewMode === 'split' ? { flex: '1 1 auto' } : { flex: '1 1 100%' }}>
+							<div className="wf-code-head">
+								<span className="ro-badge">🔒 只读投影</span>
+								<span className="file-name">{(workflowName || 'workflow').replace(/\s+/g, '-')}.workflow.mjs</span>
+								<span className="sync-note" title={scriptSynced ? `最近同步 ${new Date(scriptSynced).toLocaleTimeString()}` : ''}>
+									由画布生成 · 画布变更自动刷新{scriptAnchors.length > 0 ? ' · 点击带竖条的行定位节点' : ''}
+								</span>
+								<span className="spacer" />
+								<button className="act-btn" onClick={() => void handleCopyScript()} disabled={!projectedScript} title="复制脚本到剪贴板">⧉ 复制</button>
+								<button className="act-btn run" onClick={() => void handleExecuteScript()} disabled={execScriptResult.status === 'running' || !projectedScript} title="绕过 LLM 决策，运行过程在聊天框工具卡片展示">
+									{execScriptResult.status === 'running' ? '⏳ 执行中…' : '▶ 直接执行'}
+								</button>
+							</div>
+							<div className="wf-code-body" ref={codeBodyRef}>
+								{projectedScript
+									? projectedScript.split('\n').map((line, i) => {
+										const lineNo = i + 1;
+										const anchored = anchorByLine.get(lineNo);
+										const cls = ['wf-code-row'];
+										if (anchored) { cls.push('anchored'); }
+										if (activeScriptLine === lineNo) { cls.push('active'); }
+										return (
+											<div
+												className={cls.join(' ')}
+												key={i}
+												{...(anchored
+													? {
+														onClick: () => revealNodeFromLine(lineNo),
+														title: '点击定位到画布节点',
+														role: 'button',
+														tabIndex: 0,
+														onKeyDown: (e: React.KeyboardEvent) => {
+															if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); revealNodeFromLine(lineNo); }
+														},
+													}
+													: {})}
+											>
+												<span className="ln">{lineNo}</span>
+												<span className="cl" dangerouslySetInnerHTML={{ __html: highlightScriptLine(line) }} />
+											</div>
+										);
+									})
+									: (
+										<div className="wf-code-empty">
+											正在从画布生成脚本投影…<br />
+											<span style={{ opacity: 0.7 }}>画布为空时无内容。切换回「⊞ 图」添加节点。</span>
+										</div>
+									)}
+							</div>
+						</div>
+					)}
+
 				{/* Comfy Runner 管理面板浮层 */}
 				{showRunners && comfyRegistryRef.current && (
 					<div style={{
@@ -1568,23 +2089,109 @@ export const WorkflowEditorPanel: React.FC = () => {
 		{showPluginManager && (
 			<PluginManagerPanel onClose={() => setShowPluginManager(false)} />
 		)}
+		{/* W1b: Start 运行时参数面板 */}
+		{startArgsDialog && (
+			<div style={{
+				position: 'fixed', inset: 0, zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center',
+				background: 'rgba(0,0,0,0.45)',
+			}} onClick={cancelStartArgs}>
+				<div style={{
+					background: 'var(--vscode-menu-background, #252526)', border: '1px solid var(--vscode-menu-border, #454545)',
+					borderRadius: 8, boxShadow: '0 18px 60px rgba(0,0,0,0.5)', width: 440, maxWidth: '90vw', padding: '16px 18px',
+				}} onClick={e => e.stopPropagation()}>
+					<div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>⚙️ 工作流输入参数</div>
+					<div style={{ fontSize: 11.5, color: 'var(--vscode-descriptionForeground)', marginBottom: 12, lineHeight: 1.6 }}>
+						来自 Start 节点的输入契约。留空/默认值可直接运行，此处可覆盖本次运行参数（图内用 <code style={{ fontFamily: 'var(--monospace, monospace)' }}>{'{{args.key}}'}</code> 引用）。
+					</div>
+					<div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14, maxHeight: 320, overflowY: 'auto' }}>
+						{startArgsDialog.map((row, i) => (
+							<div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+								<label style={{ flex: '0 0 38%', fontSize: 11, color: 'var(--vscode-foreground)', fontFamily: 'var(--monospace, monospace)' }}>{row.key}</label>
+								<input
+									value={row.value}
+									onChange={e => updateStartArgRow(i, e.target.value)}
+									placeholder="值（支持数字/true/false/字符串）"
+									style={{
+										flex: 1, padding: '5px 8px', fontSize: 11, fontFamily: 'inherit',
+										background: 'var(--vscode-input-background)', color: 'var(--vscode-foreground)',
+										border: '1px solid var(--vscode-input-border)', borderRadius: 4, outline: 'none',
+									}}
+								/>
+							</div>
+						))}
+					</div>
+					<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+						<button onClick={cancelStartArgs} style={{ fontSize: 12, cursor: 'pointer', border: '1px solid var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-foreground)', borderRadius: 4, padding: '4px 12px', fontFamily: 'inherit' }}>
+							取消
+						</button>
+						<button onClick={submitStartArgs} style={{ fontSize: 12, cursor: 'pointer', border: '1px solid #22c55e', background: '#22c55e', color: '#fff', borderRadius: 4, padding: '4px 14px', fontFamily: 'inherit', fontWeight: 600 }}>
+							▶ 运行
+						</button>
+					</div>
+				</div>
+			</div>
+		)}
+		{/* P1: Saros.AskUser 交互弹窗（图执行暂停点） */}
+		{askUserDialog && (
+			<div style={{
+				position: 'fixed', inset: 0, zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center',
+				background: 'rgba(0,0,0,0.45)',
+			}} onClick={() => { /* 点击遮罩不关闭：AskUser 是阻塞执行点 */ }}>
+				<div style={{
+					background: 'var(--vscode-menu-background, #252526)', border: '1px solid var(--vscode-menu-border, #454545)',
+					borderRadius: 8, boxShadow: '0 18px 60px rgba(0,0,0,0.5)', width: 420, maxWidth: '90vw', padding: '16px 18px',
+				}} onClick={e => e.stopPropagation()}>
+					<div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>🙋 需要你的输入</div>
+					<div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)', marginBottom: 14, lineHeight: 1.6 }}>{askUserDialog.question}</div>
+					<div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+						{askUserDialog.options.map(o => {
+							const active = askUserSelected.has(o.label);
+							return (
+								<button key={o.label} onClick={() => toggleAskUserOption(o.label)} style={{
+									display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', width: '100%',
+									padding: '8px 11px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12,
+									background: active ? 'var(--vscode-menu-selectionBackground, #094771)' : 'transparent',
+									border: `1px solid ${active ? 'var(--vscode-focusBorder, #007fd4)' : 'var(--vscode-panel-border)'}`,
+									color: 'var(--vscode-foreground)',
+								}}>
+									<span style={{ width: 16, flexShrink: 0, color: active ? '#3fb950' : 'var(--vscode-descriptionForeground)' }}>
+										{askUserDialog.multiSelect ? (active ? '☑' : '☐') : (active ? '◉' : '○')}
+									</span>
+									<span style={{ flex: 1 }}>{o.label}</span>
+									{o.description && <span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)' }}>{o.description}</span>}
+								</button>
+							);
+						})}
+					</div>
+					<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+						<button onClick={() => { askUserResolveRef.current?.(''); askUserResolveRef.current = null; setAskUserDialog(null); }}
+							style={{ fontSize: 12, cursor: 'pointer', border: '1px solid var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-foreground)', borderRadius: 4, padding: '4px 12px', fontFamily: 'inherit' }}>
+							跳过
+						</button>
+						<button onClick={submitAskUser} disabled={askUserSelected.size === 0}
+							style={{ fontSize: 12, cursor: askUserSelected.size ? 'pointer' : 'not-allowed', border: '1px solid #22c55e', background: '#22c55e', color: '#fff', borderRadius: 4, padding: '4px 14px', fontFamily: 'inherit', fontWeight: 600, opacity: askUserSelected.size ? 1 : 0.5 }}>
+							{askUserDialog.multiSelect ? `确认选择 (${askUserSelected.size})` : '确认'}
+						</button>
+					</div>
+				</div>
+			</div>
+		)}
 	</>
-	);
+);
 };
 
-const iconBtnStyle: React.CSSProperties = {
-	width: '26px',
-	height: '26px',
-	display: 'flex',
-	alignItems: 'center',
-	justifyContent: 'center',
-	border: '1px solid var(--vscode-button-border)',
-	borderRadius: '4px',
-	backgroundColor: 'transparent',
-	color: 'var(--vscode-foreground)',
-	cursor: 'pointer',
-	fontSize: '14px',
-};
+/**
+ * v3 代码投影轻量语法高亮（单行、单遍 token 替换，只读展示足够）：
+ * 注释 / 字符串 / 关键字 三类着色，escape 后不再引入额外 HTML。
+ */
+function highlightScriptLine(line: string): string {
+	const esc = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+	const rx = /(\/\/[^\n]*)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(export|const|let|var|await|async|function|return|if|else|for|of|in|new|throw|try|catch|typeof)\b/g;
+	return esc.replace(rx, (m, cm, st, kw) =>
+		cm ? `<span class="wf-tk-cm">${cm}</span>`
+		: st ? `<span class="wf-tk-st">${st}</span>`
+		: `<span class="wf-tk-kw">${kw}</span>`);
+}
 
 /**
  * Apply an Agent-driven canvas ops batch to the workflow editor store.

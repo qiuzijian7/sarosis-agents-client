@@ -15,6 +15,7 @@ import {
 	type RunnerRow,
 } from './comfyHost/comfyRunner';
 import { loadObjectInfoNodes } from './comfyHost/comfyObjectInfoLoader';
+import { useRunnerStatus } from './comfyHost/runnerStatusStore';
 import { createComfyFetch, getComfyCorsMode, reprobeComfyCors, subscribeComfyCors, sendRequest } from '../../bridge/messageClient';
 
 interface RunnerManagerPanelProps {
@@ -78,6 +79,20 @@ export function RunnerManagerPanel({ registry, onRunnerResolved }: RunnerManager
 	}, [loadCapabilities]);
 
 	React.useEffect(() => { void refresh(); }, [refresh]);
+
+	// ★ 状态同步（修「Runner 面板在线 / 节点 UI 未连接」不一致）：
+	// 面板只在 mount 时探测一次，运行中 ComfyUI 掉线后 `runSingleSchemaNode` 探测
+	// 失败会 `getRunnerStatusStore().setReady(false)`，但面板不订阅这个 store →
+	// 绿点仍「在线」，误导用户。这里订阅全局 ready，ready true→false 时自动重新
+	// 检测，让「在线」立即变「离线」。
+	const runnerStatus = useRunnerStatus();
+	const prevReadyRef = React.useRef<boolean | undefined>(undefined);
+	React.useEffect(() => {
+		if (prevReadyRef.current === true && runnerStatus.ready === false) {
+			void refresh();
+		}
+		prevReadyRef.current = runnerStatus.ready;
+	}, [runnerStatus.ready, refresh]);
 
 	const addRemote = React.useCallback(() => {
 		if (!host.trim()) { setError('host 必填'); return; }

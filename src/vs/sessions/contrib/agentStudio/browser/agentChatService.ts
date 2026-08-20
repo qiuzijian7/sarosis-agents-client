@@ -1940,6 +1940,28 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						tc.status = 'done';
 					}
 				}
+				// P2-4 阶段卡：work_mode_changed 携带 planPhase 时合并到最近一个
+				// plan_enter（优先）/plan_explore 工具卡对象（共享引用，随 parts 落盘
+				// 于 line ~2192）——窗口刷新后 adaptPersistedToolCall 透传 planPhase，
+				// 阶段卡不丢失。合并语义：字段级（currentStep/planFilePath/completedAt
+				// 各自缺省保留旧值），支持 plan_exit 只带 completedAt 定格完成态。
+				if (delta.type === 'work_mode_changed' && (delta as any).planPhase && toolCalls) {
+					const phase = (delta as any).planPhase as { currentStep?: number; planFilePath?: string; completedAt?: number };
+					let planHostTc: any;
+					for (let i = toolCalls.length - 1; i >= 0; i--) {
+						const n = toolCalls[i]?.name;
+						if (n === 'plan_enter') { planHostTc = toolCalls[i]; break; }
+						if (n === 'plan_explore' && !planHostTc) { planHostTc = toolCalls[i]; }
+					}
+					if (planHostTc) {
+						planHostTc.planPhase = {
+							...(planHostTc.planPhase ?? {}),
+							...(phase.currentStep !== undefined ? { currentStep: phase.currentStep } : {}),
+							...(phase.planFilePath !== undefined ? { planFilePath: phase.planFilePath } : {}),
+							...(phase.completedAt !== undefined ? { completedAt: phase.completedAt } : {}),
+						};
+					}
+				}
 				// Handle new card data delta types (VS Code Copilot Chat pattern)
 				if (delta.type === 'references' && delta.references) {
 					references = delta.references as unknown as ChatMessage['references'];

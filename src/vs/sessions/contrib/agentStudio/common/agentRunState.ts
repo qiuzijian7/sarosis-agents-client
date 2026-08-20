@@ -235,22 +235,68 @@ export function compactMessages(_prev: AgentRunMessage[], compressed: AgentRunMe
  * 剥离 synthetic sidecar 消息（技能/策略/控制流临时注入），用于压缩与持久化前清理，
  * 避免污染干净 transcript（对齐 Hermes api_content / MiMo synthetic:true）。
  * 仅移除标记为 synthetic 的消息；memory/durable/retrieval 等未标记，不受影响。
+ *
+ * ⚠ 尾部保护（2026-08-19 修 HTTP 400 code 11133，日志 1787104763200）：
+ * **尾部连续的 synthetic 消息不剥离**。reflect / plan-queue / TaskGate nudge 等
+ * 控制流分支的模式是「append 一条 synthetic user 到末尾 → continue 下一轮」，
+ * 而 agentTurnExecutor 每轮迭代开头会调用本函数并**回写 messages**——若连尾部
+ * 一起剥离，刚注入的 user 边界当轮即被删除，messages 变成以 assistant 结尾，
+ * IOA 网关直接返回 400 invalid_parameter_value（param 为空）。实测证据：
+ * 同一会话中「以 assistant 结尾」的请求 400，safe-retry 追加非 synthetic 的
+ * retryInstruction 后（末尾变 user）立即 200。
+ *
+ * 尾部 sidecar 的语义正是「本轮要让模型回应的 user 边界」，理应保留；一旦模型
+ * 回应（其后出现 assistant 消息），它不再位于尾部，下一轮即被正常剥离——
+ * 因此不会累积，仍满足「不污染干净 transcript」的原始设计意图。
  */
 export function stripSyntheticSidecars(messages: AgentRunMessage[]): AgentRunMessage[] {
-	return messages.filter(m => !(m && (m as { synthetic?: boolean }).synthetic === true));
+	const isSynthetic = (m: AgentRunMessage): boolean =>
+		!!m && (m as { synthetic?: boolean }).synthetic === true;
+	// 尾部连续 synthetic 区间起点（保护区）
+	let tailStart = messages.length;
+	while (tailStart > 0 && isSynthetic(messages[tailStart - 1])) { tailStart--; }
+	return messages.filter((m, i) => i >= tailStart || !isSynthetic(m));
 }
 
 /**
  * 消息归一化（OpenAI 兼容网关收口层）。
  *
- * 修复两类非法 role 顺序，否则网关返回 HTTP 400 invalid_parameter：
+ * 修复三类非法 role 顺序，否则网关返回 HTTP 400 invalid_parameter：
  *   1. 连续两条 role:'user' → 合并为一条（拼接 content）
  *   2. assistant 带 tool_calls 后未紧跟 role:'tool' → 为每个 tool_call_id
  *      插入空 tool 结果占位，保证 tool_calls→tool 的配对约束
+ *   3. 消息数组以 assistant（无 tool_calls）结尾 → 追加 continuation user 边界
+ *      （2026-08-19 新增；IOA 网关要求最后一条必须是 user/tool，否则
+ *      400 invalid_parameter_value 且 param 为空，无从定位）
  *
  * 对齐 hermes-agent / mimo-code / CodeBuddy IDE 的 normalize/coalesce 逻辑。
  * 纯函数，无副作用。
  */
+/**
+ * 读取消息上的 tool_calls —— 统一 snake_case / camelCase 两种命名。
+ *
+ * LLM 线协议（LMBridge、OpenAI 请求体）用 `tool_calls`；
+ * IChatMessage 统一格式（MessageFormatConverter 入口、AgentOS transcript）用 `toolCalls`。
+ * 只判一种会在另一侧漏判 → 给「assistant + 工具调用」结尾的合法序列错误追加
+ * user 边界，破坏 tool_calls→tool 配对约束。
+ */
+function readToolCalls(m: AgentRunMessage | undefined): Array<{ id: string }> {
+	const src = m as { tool_calls?: unknown; toolCalls?: unknown } | undefined;
+	const snake = Array.isArray(src?.tool_calls) ? src.tool_calls : undefined;
+	const camel = Array.isArray(src?.toolCalls) ? src.toolCalls : undefined;
+	return ((snake ?? camel ?? []) as Array<{ id: string }>);
+}
+
+/** 中断时的 tool 结果占位（同时写入两种命名的 id 字段，兼容双侧下游） */
+function interruptedToolPlaceholder(id: string): AgentRunMessage {
+	return {
+		role: 'tool',
+		tool_call_id: id,
+		toolCallId: id,
+		content: '[Result omitted — turn was interrupted before tool execution]',
+	} as unknown as AgentRunMessage;
+}
+
 export function normalizeMessages(messages: AgentRunMessage[]): AgentRunMessage[] {
 	if (messages.length < 2) { return messages; }
 
@@ -273,19 +319,9 @@ export function normalizeMessages(messages: AgentRunMessage[]): AgentRunMessage[
 		}
 
 		// ── 规则 2：orphaned tool_calls 补 tool 占位 ──
-		if (
-			prev?.role === 'assistant' &&
-			Array.isArray((prev as any).tool_calls) &&
-			(prev as any).tool_calls.length > 0 &&
-			msg.role !== 'tool'
-		) {
-			const toolCalls = (prev as any).tool_calls as Array<{ id: string }>;
-			for (const tc of toolCalls) {
-				result.push({
-					role: 'tool',
-					tool_call_id: tc.id,
-					content: '[Result omitted — turn was interrupted before tool execution]',
-				} as any);
+		if (prev?.role === 'assistant' && msg.role !== 'tool') {
+			for (const tc of readToolCalls(prev)) {
+				result.push(interruptedToolPlaceholder(tc.id));
 			}
 		}
 
@@ -294,21 +330,52 @@ export function normalizeMessages(messages: AgentRunMessage[]): AgentRunMessage[
 
 	// 尾部 orphaned tool_calls（最后一条是 assistant+tool_calls）
 	const last = result[result.length - 1];
-	if (
-		last?.role === 'assistant' &&
-		Array.isArray((last as any).tool_calls) &&
-		(last as any).tool_calls.length > 0
-	) {
-		for (const tc of (last as any).tool_calls as Array<{ id: string }>) {
-			result.push({
-				role: 'tool',
-				tool_call_id: tc.id,
-				content: '[Result omitted — turn was interrupted before tool execution]',
-			} as any);
+	if (last?.role === 'assistant') {
+		for (const tc of readToolCalls(last)) {
+			result.push(interruptedToolPlaceholder(tc.id));
 		}
 	}
 
-	return result;
+	// ── 规则 3：末尾 assistant（无 tool_calls）→ 追加 continuation user 边界 ──
+	return ensureTrailingUserBoundary(result);
+}
+
+/**
+ * 末尾 user 边界守卫（OpenAI 兼容网关最后一道收口，2026-08-19 修 HTTP 400 code 11133）。
+ *
+ * IOA 网关（copilot.tencent.com /v2/chat/completions）要求 messages 最后一条为
+ * user 或 tool；以 assistant 结尾直接返回 400 invalid_parameter_value 且 param 为空
+ * （无从定位）。实测证据（日志 1787104763200 + http-debug）：同一会话中
+ * 「以 assistant 结尾」的请求 400，safe-retry 追加 retryInstruction 使末尾变 user 后
+ * 立即 200——同构请求仅此一处差异。
+ *
+ * 已知触发路径：
+ *   ① reflect / plan-queue / TaskGate nudge 注入的 synthetic user 被
+ *      stripSyntheticSidecars 连尾剥离（已在该函数加尾部保护，此处兜底）
+ *   ② turn 被中断 / 首字超时后残留的 assistant 消息
+ *   ③ discard_prior_text 清空文本后保留的 assistant 壳
+ *   ④ sanitizeToolPairs 移除失配 tool 消息后，末尾重新暴露出 assistant
+ *      （故本守卫必须在 sanitize **之后**再跑一次，见 languageModelsBridge）
+ *
+ * ⚠ 追加的 continuation 标记 synthetic:true，**只应作用于发送副本**，不得回写
+ * 干净 transcript（否则每轮累积并破坏 prompt cache 前缀稳定性）。
+ * 纯函数，无副作用。
+ */
+export function ensureTrailingUserBoundary(messages: AgentRunMessage[]): AgentRunMessage[] {
+	const tail = messages[messages.length - 1];
+	// readToolCalls 统一识别 snake_case / camelCase 两种命名（见其注释）
+	if (tail?.role !== 'assistant' || readToolCalls(tail).length > 0) {
+		return messages;
+	}
+	return [
+		...messages,
+		{
+			role: 'user',
+			content: 'Continue from where you left off. If the task is already complete, give your final answer directly — do not repeat your previous message.',
+			synthetic: true,
+			sidecar: 'reminder',
+		} as any,
+	];
 }
 
 /** 工具调用历史追加 + 窗口裁剪（对齐 loop 内 _toolCallHistory） */

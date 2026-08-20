@@ -3,7 +3,7 @@
  *  Pure layer computation — no async, no DOM.
  *--------------------------------------------------------------------------------------------*/
 import assert from 'assert';
-import { buildParallelExecutionPlan, type ExecutionNodeLike, type ExecutionEdgeLike } from '../../webview/src/features/workflowEditor/comfyHost/executionGraph.js';
+import { buildParallelExecutionPlan, isEdgeActive, computeInactiveNodes, type ExecutionNodeLike, type ExecutionEdgeLike } from '../../webview/src/features/workflowEditor/comfyHost/executionGraph.js';
 
 suite('buildParallelExecutionPlan', () => {
 
@@ -106,4 +106,62 @@ suite('buildParallelExecutionPlan', () => {
 		const c = plan.layers.flat().find(s => s.id === 'c');
 		assert.deepStrictEqual(c?.upstreams, ['a']);
 	});
-});
+	});
+
+	// ─── W2: port-aware branch routing ────────────────────────────────────────────
+
+	suite('W2 port-aware routing (isEdgeActive / computeInactiveNodes)', () => {
+		const gate = new Set(['gate']);
+
+		test('gate branch only activates the matching sourceHandle edge', () => {
+			const edges = [
+				{ source: 'gate', target: 't', sourceHandle: 'true' },
+				{ source: 'gate', target: 'f', sourceHandle: 'false' },
+			];
+			const branch = new Map([['gate', 'true']]);
+			assert.strictEqual(isEdgeActive(edges[0], branch, gate), true);
+			assert.strictEqual(isEdgeActive(edges[1], branch, gate), false);
+		});
+
+		test('edge without sourceHandle is always active (legacy graphs)', () => {
+			const edges = [{ source: 'gate', target: 'x' }];
+			assert.strictEqual(isEdgeActive(edges[0], new Map([['gate', 'false']]), gate), true);
+		});
+
+		test('edge from a non-gate source is always active', () => {
+			const edges = [{ source: 'data', target: 'x', sourceHandle: 'true' }];
+			assert.strictEqual(isEdgeActive(edges[0], new Map([['gate', 'false']]), gate), true);
+		});
+
+		test('gate not yet executed → edge stays active (serial reach order)', () => {
+			const edges = [{ source: 'gate', target: 'x', sourceHandle: 'false' }];
+			assert.strictEqual(isEdgeActive(edges[0], new Map(), gate), true);
+		});
+
+		test('inactive branch propagates skips to downstream, OR-join survives', () => {
+			// gate →(true) t1 → j ; gate →(false) f1 → j ; j = join node
+			const nodes = [{ id: 'gate' }, { id: 't1' }, { id: 'f1' }, { id: 'j' }];
+			const edges = [
+				{ source: 'gate', target: 't1', sourceHandle: 'true' },
+				{ source: 'gate', target: 'f1', sourceHandle: 'false' },
+				{ source: 't1', target: 'j' },
+				{ source: 'f1', target: 'j' },
+			];
+			const inactive = computeInactiveNodes(nodes, edges, new Map([['gate', 'true']]), gate);
+			assert.strictEqual(inactive.has('t1'), false);
+			assert.strictEqual(inactive.has('f1'), true);
+			assert.strictEqual(inactive.has('j'), false); // 还有一条 active 入边（t1→j）
+		});
+
+		test('whole branch subtree becomes inactive when join only fed by it', () => {
+			// gate →(false) f1 → f2（f2 唯一入边来自 f1）
+			const nodes = [{ id: 'gate' }, { id: 'f1' }, { id: 'f2' }];
+			const edges = [
+				{ source: 'gate', target: 'f1', sourceHandle: 'false' },
+				{ source: 'f1', target: 'f2' },
+			];
+			const inactive = computeInactiveNodes(nodes, edges, new Map([['gate', 'true']]), gate);
+			assert.strictEqual(inactive.has('f1'), true);
+			assert.strictEqual(inactive.has('f2'), true); // skip 传导
+		});
+	});

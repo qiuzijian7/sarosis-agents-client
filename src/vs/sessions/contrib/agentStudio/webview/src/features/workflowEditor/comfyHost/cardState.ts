@@ -12,7 +12,8 @@
 
 import * as React from 'react';
 
-export type NodeRunState = 'idle' | 'running' | 'success' | 'error';
+/** W2: 'skipped' = gate 分支路由未激活（连线端口未命中 / 上游 skip 传导），非错误 */
+export type NodeRunState = 'idle' | 'running' | 'success' | 'error' | 'skipped';
 
 export interface NodeCardState {
 	runState: NodeRunState;

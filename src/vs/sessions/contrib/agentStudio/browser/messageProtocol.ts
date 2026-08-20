@@ -146,6 +146,7 @@ export type RequestType =
 	| 'memory.deleteL0'         // hard-delete L0 record(s) by id
 	| 'memory.deleteL1'         // hard-delete L1 record(s) by id
 	| 'skills.list'
+	| 'tools.list'
 	| 'workflow.get'
 	| 'workflow.save'              // save workflow nodes+connections from webview editor
 	| 'workflow.execute'           // execute workflow (WebView → Host)
@@ -160,6 +161,16 @@ export type RequestType =
 	| 'workflow.open'            // v19: open a workflow in the editor (WebView → Host)
 	| 'workflow.submitVariables' // v6: submit pre-execution variable values (WebView → Host)
 	| 'workflow.canvasOpsResult' // Agent-driven canvas: webview replies with the result of applying canvas ops (P0)
+	| 'workflow.snapshotResult'  // M2 dynamic workflow: webview replies with a canvas snapshot query result
+	| 'workflow.runAgentNode'    // M3: webview asks to run one Saros.Agent orchestration node (subagent)
+	| 'workflow.executeScript'  // M4c: webview 直接执行脚本（绕过 LLM 决策，确定性触发）
+	| 'workflow.stageRunResult' // P0: webview 回程「画布节点执行结果」（stage() 写方向桥）
+	| 'workflow.stageRunProgress' // P0: webview 回程「画布节点执行进度」（ComfyUI 生成实时进度）
+	| 'workflow.publishState'    // 单行工具栏：查询发布状态（本地版本 vs 商城版本）
+	| 'workflow.publish'         // 单行工具栏：打开发布 modal（上传 / 更新到商城）
+	| 'workflow.versionHistory'  // 单行工具栏：切换版本历史侧边面板（由 EditorPane 处理）
+	| 'workflow.deleteWorkflow'  // 单行工具栏：删除工作流并关闭编辑器（由 EditorPane 处理）
+	| 'workflow.upgrade'         // 单行工具栏：从商城升级到服务器版本
 	| 'reversePrompt.generate'   // P2: describe an image via provider chat (WebView → Host)
 	| 'comfy.fetch'              // ComfyUI 跨源 403：主进程代理（node fetch 无 Origin 头）
 	| 'comfy.launch'             // ComfyUI 一键启动（--enable-cors-header，方案A 直连前置）
@@ -206,7 +217,9 @@ export type EventType =
 	| 'workflow.stateApplied'    // host pushes AI-generated workflow state to webview editor
 	| 'workflow.executionUpdate' // host pushes execution state updates to webview editor
 	| 'workflow.executionTrace'  // P4: host pushes subagent trace (start/delta/end) to owner agent's chat
-	| 'workflow.canvasOps';      // Agent-driven canvas: host pushes canvas ops batch to webview (P0)
+	| 'workflow.canvasOps'      // Agent-driven canvas: host pushes canvas ops batch to webview (P0)
+	| 'workflow.snapshotQuery'   // M2 dynamic workflow: host asks webview to resolve nodeOutput(stageUid,slot)
+	| 'workflow.snapshotArchive'; // M2 dynamic workflow: host archives a workflow run result as SAROS_JSON
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 

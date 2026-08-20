@@ -47,7 +47,7 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 60_000; // 60 seconds
 export const DELEGATION_TOOL_TIMEOUT_MS = 0;
 
 /** 编排类工具名（超时与禁重试共用）。 */
-const ORCHESTRATION_TOOLS = new Set(['delegate_task', 'plan_explore', 'subagent_batch']);
+const ORCHESTRATION_TOOLS = new Set(['delegate_task', 'plan_explore', 'subagent_batch', 'workflow']);
 
 /** MCP 工具的超时时间（MCP 服务器可能更慢） */
 export const MCP_TOOL_TIMEOUT_MS = 120_000; // 120 seconds

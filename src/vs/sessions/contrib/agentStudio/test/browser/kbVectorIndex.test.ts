@@ -61,6 +61,11 @@ suite('AgentStudio - KbVectorIndex 引擎', () => {
 		}
 
 		getActiveTag(): string | undefined { return this.tag; }
+		getTagForProvider(providerId?: string): string | undefined {
+			if (!providerId) { return this.tag; }
+			const prefix = providerId + '/';
+			return this.tag.startsWith(prefix) ? this.tag : undefined;
+		}
 		getActiveDimensions(): number | undefined { return this.dimensions; }
 		listProviders() { return []; }
 		getStatus() { return { activeProviderId: this.providerId, tag: this.tag, lastError: undefined }; }

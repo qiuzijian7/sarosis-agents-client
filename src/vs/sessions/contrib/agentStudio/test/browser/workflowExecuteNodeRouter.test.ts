@@ -13,9 +13,17 @@ suite('executeNodeRouter', () => {
 
 	suite('routeNodeExecution', () => {
 
-		test('sarosis types route to sarosis executor', () => {
+		test('saros types route to saros executor（裸小写）', () => {
 			for (const t of ['start', 'end', 'task', 'prompt', 'agent', 'skill', 'tool', 'ifElse', 'switch', 'askUser', 'group']) {
-				assert.strictEqual(routeNodeExecution({ type: t }), 'sarosis', `type ${t}`);
+				assert.strictEqual(routeNodeExecution({ type: t }), 'saros', `type ${t}`);
+			}
+		});
+
+		test('★ Saros.* 全名同样路由到 saros（P1 全名化后的画布真实形态）', () => {
+			// 不归一化前缀时全名节点会落到 'unknown' → 编排节点被静默跳过执行。
+			for (const t of ['Saros.Start', 'Saros.End', 'Saros.Task', 'Saros.Prompt', 'Saros.Agent',
+				'Saros.Skill', 'Saros.Tool', 'Saros.IfElse', 'Saros.Switch', 'Saros.AskUser', 'Saros.Group']) {
+				assert.strictEqual(routeNodeExecution({ type: t }), 'saros', `type ${t}`);
 			}
 		});
 
@@ -52,7 +60,7 @@ suite('executeNodeRouter', () => {
 	suite('routeLabel', () => {
 
 		test('labels all routes', () => {
-			assert.match(routeLabel('sarosis'), /Saros/);
+			assert.match(routeLabel('saros'), /Saros/);
 			assert.match(routeLabel('comfyStage'), /stage/);
 			assert.match(routeLabel('comfyNative'), /原生/);
 			assert.match(routeLabel('unknown'), /未注册/);

@@ -598,6 +598,8 @@ export interface CoerceOrRejectResult {
 	args: Record<string, unknown>;
 	/** 非空时调用方应跳过 handler 执行，直接返回此拒绝结果。 */
 	reject?: { content: { error: string }; success: false };
+	/** schema 违规类警告（unknown argument / 超长截断等），供调用方附到工具结果回传模型。 */
+	warnings?: string[];
 }
 
 export function coerceOrReject(
@@ -629,7 +631,28 @@ export function coerceOrReject(
 			},
 		};
 	}
-	return { args: coerced.args };
+	// P0（2026-08-18，日志 1787038807642）：schema 违规警告（unknown argument）此前仅打
+	// 日志——模型传错参数名（如 search_code 的 `path`，schema 实为 `path_filter`）被静默
+	// 忽略，本想缩小范围却退化为全库扫描（60s×6 超时）且反复犯错。回传给调用方，
+	// 由其附到工具结果（见 annotateCoerceWarnings）让模型一次纠对。
+	const schemaWarnings = coerced.warnings.filter(w => SCHEMA_ISSUE_RE.test(w));
+	return { args: coerced.args, ...(schemaWarnings.length > 0 ? { warnings: schemaWarnings } : {}) };
+}
+
+/**
+ * 把 coerce 的 schema 违规警告附到工具结果内容上（回传给模型自我纠正）。
+ * 注入形态：字符串前缀 / 普通对象加 `_argWarning` 字段——两种形态模型均可读。
+ */
+export function annotateCoerceWarnings(content: unknown, warnings: string[] | undefined): unknown {
+	if (!warnings || warnings.length === 0) { return content; }
+	const note = `[arg-warning] ${warnings.join('; ')}. ` +
+		`The tool ran with the remaining (valid) arguments — the ignored argument had no effect. ` +
+		`Check the tool schema and re-send with the correct argument name if you intended that behavior.`;
+	if (typeof content === 'string') { return `${note}\n${content}`; }
+	if (content && typeof content === 'object' && !Array.isArray(content)) {
+		return { ...(content as Record<string, unknown>), _argWarning: note };
+	}
+	return content;
 }
 
 /**
@@ -1116,6 +1139,8 @@ export const MAX_TOOL_WORKERS = 3;
 const NEVER_PARALLEL_TOOLS = new Set([
 	"clarify",
 	"delegate_task",
+	// 动态工作流：自管并发（脚本内 agent()/parallel()），主循环必须串行
+	"workflow",
 	"todo", "update_plan",
 	"memory_remember",
 	"skill_manage",

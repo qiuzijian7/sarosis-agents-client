@@ -69,6 +69,14 @@ const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
 		],
 	},
 	tools: {
+		// ── Dynamic Workflow（模型写 JS 脚本编排子代理）──
+		workflow: {
+			emoji: '🔀',
+			title: '工作流',
+			label: '工作流编排',
+			renderType: 'WorkflowRun',
+			detailKeys: ['script'],
+		},
 		// ── Terminal / Shell ──
 		terminal: {
 			emoji: '⌨️',

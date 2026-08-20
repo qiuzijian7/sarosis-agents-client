@@ -5,6 +5,7 @@
 import assert from 'assert';
 import { CardStateStore, useNodeCardState } from '../../webview/src/features/workflowEditor/comfyHost/cardState.js';
 import { getNodeCardMeta } from '../../webview/src/features/workflowEditor/comfyHost/nodeCard.js';
+import { buildSarosEditorFields } from '../../webview/src/features/workflowEditor/comfyHost/nodeEditorForm.js';
 
 suite('cardState (CardStateStore)', () => {
 
@@ -82,6 +83,9 @@ suite('nodeCard ComfyTV metadata (getNodeCardMeta)', () => {
 		const spec: any = {
 			type: 'ComfyTV.ImageStage', kind: 'schema', title: '文生图', category: 'c',
 			inputs: [], outputs: [],
+			// hasPrompt 要求 schema spec 在 widgets 里声明 prompt 域（ComfyTV
+			// MainPromptInput 语义；loader/picker 类无 prompt 不显示 textarea）
+			widgets: [{ name: 'prompt' }],
 			comfyTV: { stageKind: 'image', workflowKind: 'image-to-image' },
 		};
 		const meta = getNodeCardMeta(spec, {});
@@ -95,5 +99,37 @@ suite('nodeCard ComfyTV metadata (getNodeCardMeta)', () => {
 		assert.strictEqual(getNodeCardMeta(native, {}).stageKind, undefined);
 		const react: any = { type: 'Saros.Prompt', kind: 'react', category: 'c', inputs: [], outputs: [] };
 		assert.strictEqual(getNodeCardMeta(react, {}).hasPrompt, false);
+	});
+
+	test('P1: react node summary counts JSON object fields instead of dumping JSON', () => {
+		const spec: any = { type: 'Saros.Skill', kind: 'react', category: 'c', inputs: [], outputs: [] };
+		const meta = getNodeCardMeta(spec, { skillName: 'frontend-slides', skillArgs: { topic: 'AI', depth: 3 } });
+		assert.match(meta.widgetSummary ?? '', /Skill=frontend-slides/);
+		assert.match(meta.widgetSummary ?? '', /参数 \(JSON\)=2 参数/);
+		assert.doesNotMatch(meta.widgetSummary ?? '', /"topic"/); // 不再裸 JSON 截断
+	});
+
+	test('P1: long prompt shows a checkmark instead of truncated noise', () => {
+		const spec: any = { type: 'Saros.Agent', kind: 'react', category: 'c', inputs: [], outputs: [] };
+		const meta = getNodeCardMeta(spec, { prompt: '这是一个非常长的提示词内容，超过十六个字符就应该被折叠为已填标记'.repeat(2) });
+		assert.match(meta.widgetSummary ?? '', /提示词=✓ 已填/);
+	});
+
+	test('P1: Start node exposes an args field (input contract)', () => {
+		const fields = buildSarosEditorFields('Saros.Start');
+		assert.strictEqual(fields.length, 1);
+		assert.strictEqual(fields[0].key, 'args');
+		assert.strictEqual(fields[0].kind, 'textarea');
+	});
+
+	test('P1: End node exposes a description field', () => {
+		const fields = buildSarosEditorFields('Saros.End');
+		assert.strictEqual(fields[0].key, 'description');
+	});
+
+	test('P1: Start args summary counts parameters from JSON string', () => {
+		const spec: any = { type: 'Saros.Start', kind: 'react', category: 'c', inputs: [], outputs: [] };
+		const meta = getNodeCardMeta(spec, { args: '{"topic":"cyberpunk","count":4}' });
+		assert.match(meta.widgetSummary ?? '', /输入参数 \(JSON\)=2 参数/);
 	});
 });

@@ -181,13 +181,26 @@ suite('WorkflowExecutionService P4 session reuse', () => {
 			assert.strictEqual(start.sessionId, 'unknown');
 		});
 
-		test('workflow.agentId is preferred over options.agentId for the owner session', async () => {
+		test('★ v34: options.agentId（调用方指定的 agent）优先于 workflow.agentId', async () => {
+			// v34 语义：调用者指定的 agent（/workflow 传当前聊天 agent、画布 Run 传
+			// saros-claw）优先于 workflow.agentId 历史绑定，任何 agent 都能触发工作流。
 			const chat = makeAgentChatService();
 			const svc = buildService({ chat, storage: makeWorkflowStorage(SAMPLE_WORKFLOW) });
 
 			await svc.executeWorkflow('wf-abc123', { agentId: 'caller-agent-X' });
 
-			assert.strictEqual(chat.createCalls[0].agentId, 'owner-agent-1');
+			assert.strictEqual(chat.createCalls.length, 1);
+			assert.strictEqual(chat.createCalls[0].agentId, 'caller-agent-X', '调用方 agent 优先');
+		});
+
+		test('falls back to workflow.agentId when options.agentId is absent', async () => {
+			const chat = makeAgentChatService();
+			const svc = buildService({ chat, storage: makeWorkflowStorage(SAMPLE_WORKFLOW) });
+
+			await svc.executeWorkflow('wf-abc123', {});
+
+			assert.strictEqual(chat.createCalls.length, 1);
+			assert.strictEqual(chat.createCalls[0].agentId, 'owner-agent-1', '缺省时回退 workflow 历史绑定');
 		});
 	});
 });

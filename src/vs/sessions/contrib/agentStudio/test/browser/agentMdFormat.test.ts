@@ -71,7 +71,8 @@ suite('Agent Studio - Agent Markdown Format', () => {
 			// 必填字段
 			assert.ok(md.includes('id: agent-test-001'));
 			assert.ok(md.includes('name: Test Agent'));
-			assert.ok(md.includes('role: assistant'));
+			// ★ role 为默认值 'assistant' 时不写入（对齐 VS Code 标准：默认值省略）
+			assert.ok(!md.includes('role:'), 'default role should be omitted');
 			assert.ok(md.includes('source: custom'));
 			// 非默认值字段
 			assert.ok(md.includes('description:'), 'should have description');
@@ -113,9 +114,12 @@ suite('Agent Studio - Agent Markdown Format', () => {
 				],
 			});
 			const md = buildAgentMd(agent);
-			assert.ok(md.includes('handOffs:'));
+			// ★ VS Code 标准字段用 lowercase `handoffs`（PromptHeaderAttributes.handOffs = 'handoffs'）
+			assert.ok(md.includes('handoffs:'));
 			assert.ok(md.includes('agent-b'));
 			assert.ok(md.includes('Hand off to B'));
+			// ★ 对象数组元素必须序列化为字段，而非 '[object Object]'
+			assert.ok(!md.includes('[object Object]'), 'handOffs 对象不得退化为 [object Object]');
 		});
 
 		test('systemPrompt 作为 Markdown body 写入', () => {
@@ -125,10 +129,11 @@ suite('Agent Studio - Agent Markdown Format', () => {
 			const md = buildAgentMd(agent);
 			assert.ok(md.includes('## Rules'));
 			assert.ok(md.includes('Always be polite'));
-			// body 在第二个 --- 之后
+			// ★ 新格式无 trailing `---`：`---\n<yaml>\n---\n\n<body>`，仅 2 个分隔符
+			//   （frontmatter 起始 + 结束），split('---') 得 3 段。
 			const parts = md.split('---');
-			assert.strictEqual(parts.length, 4, 'should have 3 dashes separators (empty, body, trail)');
-		});
+			assert.strictEqual(parts.length, 3, 'should have 2 dashes separators (frontmatter open/close)');
+			});
 	});
 
 	suite('parseAgentMd', () => {
@@ -181,14 +186,18 @@ suite('Agent Studio - Agent Markdown Format', () => {
 			assert.deepStrictEqual(result!.agent.tools, ['read_file', 'web_search']);
 		});
 
-		test('缺失 id 返回 null', () => {
+		test('缺失 id → 回退 name slug 化（兼容纯 VS Code 格式 agent.md）', () => {
 			const md = [
 				'---',
 				'name: No ID Agent',
 				'source: custom',
 				'---',
 			].join('\n');
-			assert.strictEqual(parseAgentMd(md), null);
+			// ★ 实现已放宽 id 要求：无 id 时用 name slug 化回退（不再返回 null）
+			const result = parseAgentMd(md);
+			assert.ok(result, '无 id 时应回退 name slug 而非返回 null');
+			assert.strictEqual(result!.agent.id, 'no-id-agent');
+			assert.strictEqual(result!.agent.name, 'No ID Agent');
 		});
 
 		test('无 YAML frontmatter（不以 --- 开头）返回 null', () => {
@@ -197,10 +206,12 @@ suite('Agent Studio - Agent Markdown Format', () => {
 		});
 
 		test('损坏的 YAML 返回 null', () => {
+			// ★ VS Code 内置 yaml 解析器对 `bad:: double colon` 这类会容错（当成值以冒号
+			//   开头）；真正触发 parse error 的是未闭合结构（数组/对象/非法缩进）。
 			const md = [
 				'---',
 				'id: agent-ok',
-				'bad:: double colon',
+				'skills: [a, b',
 				'---',
 			].join('\n');
 			assert.strictEqual(parseAgentMd(md), null);

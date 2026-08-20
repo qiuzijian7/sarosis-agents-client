@@ -81,6 +81,10 @@ function makeCtx(serviceOverrides: Record<string, unknown> = {}, ctxOverrides: R
 		// searchOutcomeHint 降级提示依赖（codebaseTools 空命中 hint 参数）；
 		// 默认 ripgrep 正常（不降级）。
 		isContentSearchDegraded: () => false,
+		// search_code UE 形态 root 预检（codebaseTools P1 超大 roots 拦截）；
+		// 默认非 UE root（不拦截）。用例可用 isUnrealRootBehavior 覆盖。
+		isUnrealRoot: (ctxOverrides['isUnrealRootBehavior'] as undefined | ((...a: any[]) => Promise<boolean>))
+			?? (async () => false),
 	},
 		// search_code 重构后用 resolveAndCheckWorkspacePath 解析 searchPath（project→folder）
 		resolveAndCheckWorkspacePath: (ctxOverrides['resolvePathBehavior'] as undefined | ((...a: any[]) => Promise<string>))

@@ -39,6 +39,9 @@ export const COMMON_EXCLUDE_DIRS: readonly string[] = Object.freeze([
 	'.vscode', '.idea', '.vs', '.vscode-server', '.ugs',
 	// 非源码资产 / 文档 / 脚本（索引价值低、体量大）
 	'test', 'tests', 'resources', 'docs', 'doc', 'scripts', 'dev', 'extensions', 'cli',
+	// 构建/调试产物目录（esbuild bundle 的 .mjs 输出，如 webview/e2e/entry.mjs 196KB）
+	// 每次 esbuild 打包 mtime 变化会触发 CodebaseGraphWatcher 全项目增量索引。
+	'e2e', 'generated-images', '_removed_extensions',
 ]);
 
 /**

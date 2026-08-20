@@ -67,24 +67,27 @@ suite('BridgeEngine (P0 slice)', () => {
 	});
 
 	test('/new → 新建并切换会话', async () => {
-		const { studio, log, calls } = makeMocks();
+		// ★ 修复：此前 `const { calls } = makeMocks()` 拿到 calls 后，又写
+		//   `chat: makeMocks().chat` 调了**第二次** makeMocks() → 得到两套 mock，
+		//   calls.createAgentSession 引用旧 chat 的闭包，engine 用新 chat → 计数恒 0。
+		const mocks = makeMocks();
 		const lb = new LoopbackPlatform();
-		const engine = new BridgeEngine({ chat: makeMocks().chat, studio, logService: log });
+		const engine = new BridgeEngine({ chat: mocks.chat, studio: mocks.studio, logService: mocks.log });
 		engine.registerPlatform(lb);
 		await engine.start();
 
 		lb.postInbound('/new');
 		await flush();
 
-		assert.strictEqual(calls.createAgentSession, 1, '应新建一个会话');
+		assert.strictEqual(mocks.calls.createAgentSession, 1, '应新建一个会话');
 		const result = lb.outbounds.find(o => o.type === 'result');
 		assert.ok(result?.content.includes('已新建并切换到会话'), '应提示已切换');
 	});
 
 	test('/sessions → 列出会话', async () => {
-		const { studio, log } = makeMocks();
+		const mocks = makeMocks();
 		const lb = new LoopbackPlatform();
-		const engine = new BridgeEngine({ chat: makeMocks().chat, studio, logService: log });
+		const engine = new BridgeEngine({ chat: mocks.chat, studio: mocks.studio, logService: mocks.log });
 		engine.registerPlatform(lb);
 		await engine.start();
 

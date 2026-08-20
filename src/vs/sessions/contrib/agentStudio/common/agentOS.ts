@@ -179,6 +179,13 @@ export interface IAgentOSService {
 	 */
 	getSlotRegistry(): ISlotRegistry;
 
+	/**
+	 * 跳过当前正在执行的工具（terminal 等长命令卡住时用户点「继续执行」）：
+	 * 中止工具级信号 → 工具返回中断结果回传 LLM，turn 本身不被取消，
+	 * agent 拿到结果后继续后续步骤。
+	 */
+	skipCurrentTool(): void;
+
 	// ─── 统一执行入口（替代原 IAgentChatService.sendMessage）────────
 
 	/**

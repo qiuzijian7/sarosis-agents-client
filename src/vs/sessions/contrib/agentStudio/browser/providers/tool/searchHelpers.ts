@@ -12,12 +12,14 @@
  */
 
 import { URI } from '../../../../../../base/common/uri.js';
-import { IFileService } from '../../../../../../platform/files/common/files.js';
+import { IFileService, type IFileStat } from '../../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
+import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { ISearchService, QueryType, type ITextQuery, type IFileQuery, type ISearchComplete } from '../../../../../../workbench/services/search/common/search.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../../../base/common/errors.js';
 import { advanceSearchCodeEmptyStreak, globToRegexForSearch } from './pathFilterNormalize.js';
+import { extractExcludeDirNames } from '../../../common/codebaseIndexDefaults.js';
 
 export class SearchHelpers {
 	// 重复搜索熔断：连续相同搜索 ≥N 次直接拦截（P3 2026-07-29：只拦不警，
@@ -65,6 +67,35 @@ export class SearchHelpers {
 		'**/.aws', '**/.aws/**', '**/.gcp', '**/.gcp/**',
 	];
 
+	/**
+	 * UE 形态 root 的**额外**运行时排除（2026-08-18，日志 1787038807642：双仓库 root
+	 * 全量 rg 60s×6 超时）。仅当搜索 root 探测为 Unreal 形态（直下/一层子目录含
+	 * `Engine/` 目录或 `*.uproject` 文件）时叠加——普通项目零影响，避免 ASP.NET
+	 * `Content`、常规 `ThirdParty` 目录被误伤。
+	 *
+	 * 排除原则：**非源码的海量目录**（资产/第三方库/文档/模板），`Source` 与
+	 * `Plugins` 是真正的搜索目标（引擎原生代码、游戏插件源码），绝不排除。
+	 * 与 codebaseIndexDefaults.UNREAL_EXCLUDE_DIRS（索引建议清单）语义不同：
+	 * 此处服务于运行时 grep，ThirdParty/Content 里的东西 grep 永远不该翻。
+	 */
+	private static readonly UNREAL_EXTRA_EXCLUDE_GLOBS: readonly string[] = [
+		'**/Content/**',          // 资产目录（uasset/umap 二进制为主；rg 跳内容但目录遍历仍耗时）
+		'**/ThirdParty/**',       // UE 第三方库（GB 级：ICU/ffmpeg/PhysX 源码副本，非本项目代码）
+		'**/Documentation/**',    // 引擎文档
+		'**/Templates/**',        // 引擎模板工程
+		'**/FeaturePacks/**',     // 特性包（二进制 upack）
+		'**/Samples/**',          // 示例工程
+		'**/Automation/**',       // 构建自动化（UBT 生成脚本，噪声居多）
+	];
+
+	/** UE 形态 walk-fallback 的等价目录名集（与 UNREAL_EXTRA_EXCLUDE_GLOBS 目录段一致）。 */
+	private static readonly UNREAL_EXTRA_NOISE_DIRS: ReadonlySet<string> = new Set([
+		'Content', 'ThirdParty', 'Documentation', 'Templates', 'FeaturePacks', 'Samples', 'Automation',
+	]);
+
+	/** UE 形态探测缓存（root fsPath → 是否 UE）。进程级，探测一次复用。 */
+	private static readonly _unrealRootCache = new Map<string, boolean>();
+
 	/** IExpression 形态，惰性构造一次复用。 */
 	private static _defaultExcludeExprCache: Readonly<Record<string, boolean>> | undefined;
 	private static _defaultExcludeExpr(): Readonly<Record<string, boolean>> {
@@ -74,6 +105,116 @@ export class SearchHelpers {
 			SearchHelpers._defaultExcludeExprCache = expr;
 		}
 		return SearchHelpers._defaultExcludeExprCache;
+	}
+
+	/**
+	 * 用户工作区配置的排除项（`search.exclude` / `files.exclude`）—— 打通「索引口径」与
+	 * 「grep 口径」（2026-08-19）。
+	 *
+	 * 此前索引器会读 `.code-workspace` 的 search.exclude（extractExcludeDirNames），但
+	 * 运行时 grep 只用本类硬编码表 → 用户在 code-workspace 里排掉 Plugins/Config/Programs
+	 * 之类的巨型目录后，索引变小了但 search_code / search_files 照旧全扫（大工作区仍是
+	 * 分钟级）。现把用户配置一并并入 ripgrep excludePattern 与 walk-fallback 目录名集。
+	 *
+	 * 只取「干净目录段」（extractExcludeDirNames 语义），文件级 glob 交给 rg 自身与
+	 * DEFAULT_EXCLUDE_GLOBS 处理，避免把 `*.log` 这类误当目录名。
+	 */
+	private _userExcludeCache: { globs: Readonly<Record<string, boolean>>; dirs: ReadonlySet<string> } | undefined;
+	private _userExclude(): { globs: Readonly<Record<string, boolean>>; dirs: ReadonlySet<string> } {
+		if (this._userExcludeCache) { return this._userExcludeCache; }
+		const names: string[] = [];
+		try {
+			const cfg = this.configurationService;
+			if (cfg) {
+				names.push(...extractExcludeDirNames(cfg.getValue('search.exclude')));
+				names.push(...extractExcludeDirNames(cfg.getValue('files.exclude')));
+			}
+		} catch { /* 配置读取失败 → 视为无额外排除 */ }
+		const globs: Record<string, boolean> = {};
+		const dirs = new Set<string>();
+		for (const n of names) {
+			globs[`**/${n}/**`] = true;
+			dirs.add(n);
+		}
+		this._userExcludeCache = { globs, dirs };
+		if (dirs.size > 0) {
+			this.logService.info(`[BuiltinTools] search: merged ${dirs.size} user exclude dir(s) from search.exclude/files.exclude: ${[...dirs].join(', ')}`);
+		}
+		return this._userExcludeCache;
+	}
+
+	/** UE 形态叠加后的 IExpression（再叠加用户配置排除），惰性构造一次复用。 */
+	private _effectiveExcludeExprCache = new Map<boolean, Readonly<Record<string, boolean>>>();
+	private _effectiveExcludeExpr(isUnreal: boolean): Readonly<Record<string, boolean>> {
+		const cached = this._effectiveExcludeExprCache.get(isUnreal);
+		if (cached) { return cached; }
+		const expr: Record<string, boolean> = { ...SearchHelpers._defaultExcludeExpr() };
+		if (isUnreal) {
+			for (const g of SearchHelpers.UNREAL_EXTRA_EXCLUDE_GLOBS) { expr[g] = true; }
+		}
+		Object.assign(expr, this._userExclude().globs);
+		this._effectiveExcludeExprCache.set(isUnreal, expr);
+		return expr;
+	}
+
+	/**
+	 * 探测 root 是否 Unreal 形态：直下（或一层子目录中任一）存在 `Engine` 目录
+	 * 或 `*.uproject` 文件。覆盖三种真实形态：
+	 *   - root=UE5EA（引擎安装根，直下有 Engine/）
+	 *   - root=S1Game（游戏项目根，直下有 *.uproject）
+	 *   - root=GR_Release_New（多仓库父目录，S1Game/UE5EA 在一层子目录里）
+	 * 探测失败（权限/网络盘）保守返回 false（不叠加，走默认排除）。
+	 * 进程级缓存 per root，仅首次一次 resolve。
+	 */
+	private async _isUnrealRoot(root: string): Promise<boolean> {
+		const cached = SearchHelpers._unrealRootCache.get(root);
+		if (cached !== undefined) { return cached; }
+		let isUnreal = false;
+		try {
+			const top = await this.fileService.resolve(URI.file(root));
+			if (this._hasUnrealMarker(top.children)) {
+				isUnreal = true;
+			} else {
+				// 一层子目录探测（父目录形态）：只看目录项，最多探 ~20 个防病态展开
+				const dirs = (top.children ?? []).filter(c => c.isDirectory).slice(0, 20);
+				for (const d of dirs) {
+					try {
+						const sub = await this.fileService.resolve(d.resource);
+						if (this._hasUnrealMarker(sub.children)) { isUnreal = true; break; }
+					} catch { /* 单个子目录探测失败继续 */ }
+				}
+			}
+		} catch { /* resolve 失败 → 保守 false */ }
+		SearchHelpers._unrealRootCache.set(root, isUnreal);
+		return isUnreal;
+	}
+
+	private _hasUnrealMarker(children: readonly IFileStat[] | undefined): boolean {
+		if (!children) { return false; }
+		for (const c of children) {
+			const name = c.name ?? '';
+			if (c.isDirectory && name.toLowerCase() === 'engine') { return true; }
+			if (name.toLowerCase().endsWith('.uproject')) { return true; }
+		}
+		return false;
+	}
+
+	/**
+	 * walk-fallback 用的额外噪声目录名集 = UE 形态叠加 ∪ 用户 search.exclude/files.exclude。
+	 * 都为空时返回 undefined（调用方据此跳过额外判断）。
+	 */
+	private async _extraNoiseDirs(root: string): Promise<ReadonlySet<string> | undefined> {
+		const userDirs = this._userExclude().dirs;
+		const isUnreal = await this._isUnrealRoot(root);
+		if (!isUnreal && userDirs.size === 0) { return undefined; }
+		const merged = new Set<string>(userDirs);
+		if (isUnreal) { for (const d of SearchHelpers.UNREAL_EXTRA_NOISE_DIRS) { merged.add(d); } }
+		return merged;
+	}
+
+	/** 公开包装：供工具层做超大 roots 预检（见 codebaseTools search_code）。 */
+	public async isUnrealRoot(root: string): Promise<boolean> {
+		return this._isUnrealRoot(root);
 	}
 
 	/** Node-walk fallback 的目录名黑名单（等价 DEFAULT_EXCLUDE_GLOBS 里的目录名部分）。 */
@@ -114,6 +255,8 @@ export class SearchHelpers {
 		private readonly fileService: IFileService,
 		private readonly searchService: ISearchService,
 		private readonly logService: ILogService,
+		/** 可选：用于读取 `search.exclude` / `files.exclude`，把用户排除口径并入 grep。 */
+		private readonly configurationService?: IConfigurationService,
 	) { }
 
 	/**
@@ -212,8 +355,9 @@ export class SearchHelpers {
 				filePattern: pattern,
 				folderQueries: [{ folder: folderUri }],
 				sortByScore: true,
-				// 默认排除 node_modules / .git / build / UE Intermediate & Saved 等噪声目录
-				excludePattern: { ...SearchHelpers._defaultExcludeExpr() },
+				// 默认排除 node_modules / .git / build / UE Intermediate & Saved 等噪声目录；
+				// UE 形态 root 额外叠加 Content/ThirdParty/Documentation 等非源码海量目录
+				excludePattern: { ...this._effectiveExcludeExpr(await this._isUnrealRoot(resolvedPath)) },
 			};
 			const result: ISearchComplete = await this.searchService.fileSearch(query, CancellationToken.None);
 			return this._formatSearchComplete(result, 'files_only', limit, offset);
@@ -254,12 +398,13 @@ export class SearchHelpers {
 				folderQueries: [{ folder: folderUri }],
 				includePattern: fileGlob ? { [fileGlob]: true } : undefined,
 				// 默认排除 node_modules / .git / build / UE Intermediate & Saved 等噪声目录
-				// （事故 1785143114444：9220ms outlier 由 UE Intermediate/Build 贡献）
-				excludePattern: { ...SearchHelpers._defaultExcludeExpr() },
+				// （事故 1785143114444：9220ms outlier 由 UE Intermediate/Build 贡献）；
+				// UE 形态 root 额外叠加 Content/ThirdParty 等非源码海量目录（1787038807642）
+				excludePattern: { ...this._effectiveExcludeExpr(await this._isUnrealRoot(resolvedPath)) },
 				surroundingContext: contextLines,
 				maxResults: 5000,
-			};
-			// 2026-07-26（日志 1785078531442）：signal 接线到 textSearch——fallback
+				};
+				// 2026-07-26（日志 1785078531442）：signal 接线到 textSearch——fallback
 			// 全量扫描 UE5EA 级目录 30s+ 无中断手段；外部超时 AbortController 可取消。
 			const cts = new CancellationTokenSource();
 			const onAbort = () => cts.cancel();
@@ -286,11 +431,11 @@ export class SearchHelpers {
 						contentPattern: { pattern, isRegExp: false, isCaseSensitive: false, isWordMatch: false },
 						folderQueries: [{ folder: URI.file(resolvedPath) }],
 						includePattern: fileGlob ? { [fileGlob]: true } : undefined,
-						excludePattern: { ...SearchHelpers._defaultExcludeExpr() },
+						excludePattern: { ...this._effectiveExcludeExpr(await this._isUnrealRoot(resolvedPath)) },
 						surroundingContext: contextLines,
 						maxResults: 5000,
-					};
-					const plainResult = await this.searchService.textSearch(plainQuery, CancellationToken.None);
+						};
+						const plainResult = await this.searchService.textSearch(plainQuery, CancellationToken.None);
 					this.logService.info(`[BuiltinTools] searchContent: regex failed ("${reason}"), fell back to plain-text search`);
 					return this._formatSearchComplete(plainResult, outputMode, limit, offset);
 				} catch (e2) {
@@ -427,6 +572,9 @@ export class SearchHelpers {
 		const MAX_VISIT = 5_000;
 		let visited = 0;
 		const NOISE = SearchHelpers.NOISE_DIR_NAMES;
+		// UE 形态 root：追加 Content/ThirdParty 等非源码海量目录（进程级缓存探测）；
+		// 并叠加用户 search.exclude/files.exclude 的目录名
+		const unrealNoise = await this._extraNoiseDirs(resolvedPath);
 
 		// glob → regex（2026-08-05 换用共享转换器：原版不支持 {a,b} 花括号——
 		// SOURCE_CODE_GLOB 等花括号模式在 rg 不可用的 node 回退下恒不匹配）。
@@ -441,7 +589,7 @@ export class SearchHelpers {
 				if (visited >= MAX_VISIT || signal?.aborted) { return; }
 				const fullPath = `${dir}/${c.name}`.replace(/\\/g, '/');
 				if (c.isDirectory) {
-					if (NOISE.has(c.name) || c.name.startsWith('.')) { continue; }
+					if (NOISE.has(c.name) || unrealNoise?.has(c.name) || c.name.startsWith('.')) { continue; }
 					await walk(fullPath);
 				} else {
 					// 敏感文件跳过（P5，补齐 _nodeFileSearch 与 _walkAndGrep/ripgrep 一致）
@@ -544,10 +692,13 @@ export class SearchHelpers {
 		const seenDirs = new Set<string>();
 		const rootFs = fileGlobRe ? dir.fsPath.replace(/\\/g, '/') : '';
 		const NOISE_DIRS = SearchHelpers.NOISE_DIR_NAMES;
+		// UE 形态 root：追加 Content/ThirdParty 等非源码海量目录（进程级缓存探测）；
+		// 并叠加用户 search.exclude/files.exclude 的目录名
+		const unrealNoise = await this._extraNoiseDirs(dir.fsPath);
 		// Extension blacklist — we never grep into binary-shaped files. The toString()
 		// on a 500KB binary creates a large garbage string + thousands of split parts,
 		// which is a major contributor to OOM under parallel execution.
-		const BINARY_EXT_RE = /\.(?:exe|dll|so|dylib|node|pak|asar|wasm|bin|obj|lib|a|o|class|jar|pyc|pyo|whl|zip|tar|gz|tgz|bz2|7z|rar|xz|zst|png|jpe?g|gif|bmp|ico|webp|tif|tiff|svg|psd|mp3|wav|ogg|flac|mp4|mov|avi|mkv|webm|pdf|docx?|xlsx?|pptx?|sqlite|db|map|woff2?|ttf|eot|otf)$/i;
+		const BINARY_EXT_RE = /\.(?:exe|dll|so|dylib|node|pak|asar|wasm|bin|obj|lib|a|o|class|jar|pyc|pyo|whl|zip|tar|gz|tgz|bz2|7z|rar|xz|zst|png|jpe?g|gif|bmp|ico|webp|tif|tiff|svg|psd|mp3|wav|ogg|flac|mp4|mov|avi|mkv|webm|pdf|docx?|xlsx?|pptx?|sqlite|db|map|woff2?|ttf|eot|otf|uasset|umap|upk|ubulk|uexp)$/i;
 
 		// 预编译正则（对齐 Hermes rg regex 语义），无效正则回退为字面子串匹配
 		let regex: RegExp | null = null;
@@ -577,7 +728,7 @@ export class SearchHelpers {
 				if (dirsVisited.count >= MAX_DIRS_VISITED) { return; }
 
 				if (child.isDirectory) {
-					if (NOISE_DIRS.has(child.name) || child.name.startsWith('.')) { continue; }
+					if (NOISE_DIRS.has(child.name) || unrealNoise?.has(child.name) || child.name.startsWith('.')) { continue; }
 					await walk(child.resource);
 					continue;
 				}

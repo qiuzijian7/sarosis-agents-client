@@ -273,12 +273,13 @@ export function drawNodeErrorBanner(ctx: CanvasRenderingContext2D, w: number, h:
 	ctx.restore();
 }
 
-/** Execution-state border colors (ComfyUI-like). */
+/** Execution-state border colors (ComfyUI-like). W2: skipped = 灰虚线（分支未激活）。 */
 const STATE_BORDER: Record<string, string> = {
 	running: '#4a9eff',
 	success: '#2ecc71',
 	error: '#ff5b5b',
-};
+	skipped: '#6b7280',
+};;
 
 /**
  * Draw a node execution-state overlay: running → blue border, success → green
@@ -294,6 +295,8 @@ export function drawNodeStateOverlay(ctx: CanvasRenderingContext2D, w: number, h
 	ctx.save();
 	ctx.strokeStyle = STATE_BORDER[state];
 	ctx.lineWidth = 2;
+	// W2: skipped = 灰虚线（分支未激活，非错误），与实线执行态区分
+	if (state === 'skipped') { ctx.setLineDash([5, 4]); }
 	roundedRectPath(ctx, 1, 1, w - 2, h - 2, 8);
 	ctx.stroke();
 	ctx.restore();

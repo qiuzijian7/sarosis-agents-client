@@ -10,6 +10,7 @@ import {
 	extractResultOutputs,
 	pickDefaultWorkflowLabel,
 	collectUpstreamRefs,
+	findMissingNodeRefs,
 	RUNTIME_REQUIRED_INPUTS,
 } from '../../webview/src/features/workflowEditor/comfyHost/stageWorkflowExecutor.js';
 
@@ -173,7 +174,54 @@ suite('stageWorkflowExecutor 异常防御', () => {
 		});
 	});
 
-	suite('collectUpstreamRefs — store 为 undefined/null 不抛错', () => {
+	suite('findMissingNodeRefs — 引用完整性校验（HTTP 400 KeyError 前置拦截）', () => {
+
+	test('完整 workflow → 返回空数组', () => {
+		const apiJson = {
+			'1': { class_type: 'LoadImage', inputs: { image: 'x.png' } },
+			'2': { class_type: 'SaveImage', inputs: { images: ['1', 0] } },
+		};
+		assert.deepStrictEqual(findMissingNodeRefs(apiJson), []);
+	});
+
+	test('SaveImage 引用不存在的节点 → 返回缺失 id（LaMa Erase 场景）', () => {
+		// 导出脚本跳过未安装插件的自定义节点（INPAINT_*），但下游 SaveImage 仍引用它。
+		const apiJson = {
+			'1': { class_type: 'LoadImage', inputs: { image: 'example.png' } },
+			'2': { class_type: 'LoadImageMask', inputs: { image: 'example.png', channel: 'alpha' } },
+			'6': { class_type: 'SaveImage', inputs: { images: ['5', 0] } },
+		};
+		assert.deepStrictEqual(findMissingNodeRefs(apiJson), ['5']);
+	});
+
+	test('source_size 这类非数字「虚拟节点」引用 → 也判定为缺失', () => {
+		// multiview/multiangle/sequence 的 ImageScale.upscale_method 被导出脚本
+		// 错误转成 ["source_size", 0]，但 api_json 里没有 source_size 节点。
+		const apiJson = {
+			'1': { class_type: 'ImageScale', inputs: { image: ['2', 0], upscale_method: ['source_size', 0] } },
+			'2': { class_type: 'LoadImage', inputs: { image: 'x.png' } },
+		};
+		assert.deepStrictEqual(findMissingNodeRefs(apiJson), ['source_size']);
+	});
+
+	test('多个缺失节点按数字序排序', () => {
+		const apiJson = {
+			'1': { class_type: 'A', inputs: { a: ['7', 0], b: ['4', 0], c: ['10', 0] } },
+		};
+		assert.deepStrictEqual(findMissingNodeRefs(apiJson), ['4', '7', '10']);
+	});
+
+	test('非引用 input（字符串/数字/对象）不被误判', () => {
+		const apiJson = {
+			'1': { class_type: 'KSampler', inputs: { steps: 20, sampler_name: 'euler', seed: ['2', 0] } },
+			'2': { class_type: 'Checkpoint', inputs: {} },
+		};
+		// steps=20（number）、sampler_name="euler"（string）都不是引用；seed=["2",0] 引用存在。
+		assert.deepStrictEqual(findMissingNodeRefs(apiJson), []);
+	});
+});
+
+suite('collectUpstreamRefs — store 为 undefined/null 不抛错', () => {
 
 		test('upstreams 为空 → 返回空', () => {
 			const r = collectUpstreamRefs(undefined as unknown as never, undefined);

@@ -107,12 +107,14 @@ export class CodebaseIndexEditorPane extends EditorPane {
 		let savedMode: IndexMode = 'fast';
 		let savedExcl = COMMON_EXCLUDE_DIRS.join(',');
 		let savedKeep = '';
+		let savedSubPath = '';
 		try {
 			await this._cbmService.ensureConfigReady();
 			const cfg = this._cbmService.getIndexConfig();
 			if (cfg.mode) { savedMode = cfg.mode; }
 			if (cfg.excludeDirs?.length) { savedExcl = cfg.excludeDirs.join(','); }
 			if (cfg.keepDirs?.length) { savedKeep = cfg.keepDirs.join(','); }
+			if (cfg.subPath) { savedSubPath = cfg.subPath; }
 		} catch { /* 读取失败时回退到默认值 */ }
 
 		// ── Header ──
@@ -257,6 +259,24 @@ export class CodebaseIndexEditorPane extends EditorPane {
 		keepInput.style.cssText = 'flex:1;padding:4px 8px;font-size:12px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:4px;';
 		keepRow.appendChild(keepInput);
 
+		// 索引路径（subPath）——大工作区收敛索引范围的唯一 UI 入口。
+		// 此前只有 `.code-workspace` 的 codebase-memory.subPath 一条路（且解析处漏读），
+		// 「从文件夹添加工作区」（无 .code-workspace）的用户完全无从设置 → 只能全量索引。
+		const subRow = append(cfgWrap, $('div'));
+		subRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:8px;';
+		const subLabel = append(subRow, $('span'));
+		subLabel.textContent = '索引路径:';
+		subLabel.style.cssText = 'font-size:12px;color:var(--vscode-descriptionForeground);min-width:50px;';
+		const subInput = document.createElement('input') as HTMLInputElement;
+		subInput.type = 'text';
+		subInput.value = savedSubPath;
+		subInput.placeholder = '相对工作区根的子目录（留空=整个工作区），如 S1Game/Source';
+		subInput.style.cssText = 'flex:1;padding:4px 8px;font-size:12px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:4px;';
+		subRow.appendChild(subInput);
+		const subHint = append(cfgWrap, $('div'));
+		subHint.style.cssText = 'font-size:11px;color:var(--vscode-descriptionForeground);margin:6px 0 0 60px;line-height:1.5;';
+		subHint.textContent = '多项目父目录（如 F:\\GR_qiuzijian_main）建议填到具体项目的源码子目录，避免全量索引卡顿；图谱落在该子目录的 .codebase-memory 下。';
+
 		// ── Progress Log ──
 		const logWrap = append(this._container, $('div'));
 		logWrap.style.cssText = 'margin-top:12px;';
@@ -288,6 +308,7 @@ export class CodebaseIndexEditorPane extends EditorPane {
 		(this as any)._cfgModeEl = modeSelect;
 		(this as any)._cfgExclEl = exclInput;
 		(this as any)._cfgKeepEl = keepInput;
+		(this as any)._cfgSubEl = subInput;
 		(this as any)._indexBtnEl = indexBtn;
 		(this as any)._cancelBtnEl = cancelBtn;
 	}
@@ -298,16 +319,19 @@ export class CodebaseIndexEditorPane extends EditorPane {
 		const mode: IndexMode = ((this as any)._cfgModeEl?.value ?? 'fast') as IndexMode;
 		const exclRaw = ((this as any)._cfgExclEl?.value ?? '') as string;
 		const keepRaw = ((this as any)._cfgKeepEl?.value ?? '') as string;
+		const subRaw = ((this as any)._cfgSubEl?.value ?? '') as string;
 		const excludeDirs = exclRaw.split(',').map((s: string) => s.trim()).filter(Boolean);
 		const keepDirs = keepRaw.split(',').map((s: string) => s.trim()).filter(Boolean);
+		const subPath = subRaw.trim().replace(/[\\/]+$/, '') || undefined;
 
 		const config: IIndexConfig = {
 			mode,
 			excludeDirs: excludeDirs.length ? excludeDirs : COMMON_EXCLUDE_DIRS.slice(),
 			keepDirs: keepDirs.length ? keepDirs : undefined,
+			subPath,
 		};
 
-		// 持久化索引配置（排除目录 / 模式 / 保留目录），下次打开编辑器时回填
+		// 持久化索引配置（排除目录 / 模式 / 保留目录 / 索引路径），下次打开编辑器时回填
 		try {
 			this._cbmService.setIndexConfig(config);
 		} catch { /* 持久化失败不阻塞索引 */ }

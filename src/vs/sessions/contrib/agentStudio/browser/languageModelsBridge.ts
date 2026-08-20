@@ -36,7 +36,7 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILanguageModelsService, IChatMessage, IChatMessagePart, IChatMessageToolResultPart, IChatResponsePart, IChatResponseToolUsePart, IChatResponseStepPart, ChatMessageRole, ILanguageModelChatMetadata, ChatImageMimeType } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAgentOSService } from '../common/agentOS.js';
-import { normalizeMessages } from '../common/agentRunState.js';
+import { ensureTrailingUserBoundary, normalizeMessages } from '../common/agentRunState.js';
 import { ContextManager } from '../common/contextManager.js';
 import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING, AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING } from '../common/constants.js';
 import { join } from '../../../../base/common/path.js';
@@ -529,7 +529,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		if (normalizedMessages.length !== messages.length) {
 			this._logService.info(
 				`[LMBridge] normalizeMessages: ${messages.length} → ${normalizedMessages.length} ` +
-				`(merged ${messages.length - normalizedMessages.length} consecutive user/orphaned tool_calls)`,
+				`(merged consecutive user / added orphaned-tool or trailing-user-boundary placeholders)`,
 			);
 		}
 		// ── 发送前 tool 配对守卫（2026-08-11，日志 1786432061200 HTTP 400 code 11133）──
@@ -562,7 +562,20 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				}
 			}
 		}
-		const lmMessages = this._toLanguageModelMessages(sanitizedMessages as any, options);
+		// ── 末尾 user 边界守卫（2026-08-19，日志 1787104763200 HTTP 400 code 11133）──
+		// 必须在 sanitizeToolPairs + 回写**之后**：sanitize 移除失配 tool 消息后，
+		// 末尾可能重新暴露出 assistant，而 IOA 网关要求最后一条为 user/tool，
+		// 否则 400 invalid_parameter_value（param 为空）。
+		// continuation 标记 synthetic:true 且**只进发送副本**（不参与上面的回写），
+		// 避免污染干净 transcript / 每轮累积 / 破坏 prompt cache 前缀。
+		const guardedMessages = ensureTrailingUserBoundary(sanitizedMessages as any[]);
+		if (guardedMessages.length !== sanitizedMessages.length) {
+			this._logService.warn(
+				`[LMBridge] ensureTrailingUserBoundary: messages ended with assistant (no tool_calls) — ` +
+				`appended continuation user boundary for gateway compatibility (${sanitizedMessages.length} → ${guardedMessages.length}, send-copy only)`,
+			);
+		}
+		const lmMessages = this._toLanguageModelMessages(guardedMessages as any, options);
 
 		// Debug: write request payload to local file if switch is enabled
 		this._debugWriteRequest(modelId, messages, options, context);

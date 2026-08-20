@@ -13,6 +13,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { installBridgeMock, installNetworkGuard, fakeImageDataUrl } from './mocks';
+import { createRoot } from 'react-dom/client';
 
 // ① mock 先行 —— 在任何 nodeCard 相关模块被求值之前
 const bridge = installBridgeMock();
@@ -48,17 +49,33 @@ async function main(): Promise<void> {
 	const q = parseQuery();
 
 	// ② 动态导入真实模块（mock 已就位）
-	const [registry, nodeCardMod, snapMod, cardStateMod, stageCardMod] = await Promise.all([
+	const [registry, nodeCardMod, snapMod, cardStateMod, stageCardMod, agentStoreMod, picklistStoreMod, providerStoreMod, refMod] = await Promise.all([
 		import('../src/features/workflowEditor/comfyHost/registry'),
 		import('../src/features/workflowEditor/comfyHost/nodeCard'),
 		import('../src/features/workflowEditor/comfyHost/mediaSnapshotStore'),
 		import('../src/features/workflowEditor/comfyHost/cardState'),
 		import('../src/features/workflowEditor/comfyHost/stageCardRegistry'),
+		import('../src/store/useAgentStore'),
+		import('../src/features/workflowEditor/picklistStore'),
+		import('../src/store/useProviderStore'),
+		import('./comfyTvReference'),
 	]);
 
 	// 填充 registry（真实注册路径，与运行时一致）
 	registry.registerSarosNodes();
 	registry.registerDefaultComfyTVStages();
+
+	// ★ 编排节点（Saros.Agent/Skill/Tool …）的 COMBO 下拉与身份卡从三个全局
+	//   store 取实时选项（agentId/skillName/toolName → picks；providerId/modelId
+	//   → providers）。不喂数据时这些控件永远显示 "—"，截图基线固定为"空下拉"，
+	//   无法验证 resolveControlOptions 的双语义路由（LLM 不过滤 / 文生图过滤
+	//   supportsImageGen）。seed 必须与 seedProperties 的 ORCH_PROP_SEEDS 对齐
+	//   （下拉显示 label，属性值必须是选项 value = id）。
+	agentStoreMod.useAgentStore.setState({ agents: DEMO_AGENTS } as never);
+	picklistStoreMod.usePicklistStore.setState({
+		skills: DEMO_SKILLS, tools: DEMO_TOOLS, skillsLoaded: true, toolsLoaded: true,
+	} as never);
+	providerStoreMod.useProviderStore.setState({ providers: DEMO_PROVIDERS } as never);
 
 	const specs = registry.getAllSpecs();
 	const scenarios = buildScenarios(specs, {
@@ -99,10 +116,38 @@ async function main(): Promise<void> {
 		host.setAttribute('data-vt-card-host', sc.id);
 		cell.appendChild(host);
 
+		// ★ ComfyTV 参考卡（success 态并排渲染）：左参考（真源 token 直出）、
+		//   右本项目卡。__vs 对比快照的 DOM 载体 + R15 对参考卡自身的断言锚点。
+		if (sc.state === 'success') {
+			const refHost = document.createElement('div');
+			refHost.className = 'vt-ref-host';
+			refHost.setAttribute('data-vt-ref-host', sc.id);
+			cell.appendChild(refHost);
+		}
+
 		root.appendChild(cell);
 
 		try {
-			const meta = mountScenario(sc, host, nodeCardMod, snapMod, cardStateMod, registry);
+			const { meta, properties } = mountScenario(sc, host, nodeCardMod, snapMod, cardStateMod, registry);
+			// ★ 渲染 ComfyTV 参考卡（success 态）：参数行与本项目卡同一份种子数据
+			//   （唯一变量是样式），肉眼比对才有「只有样式差异」的语义。
+			if (sc.state === 'success') {
+				const refHost = cell.querySelector<HTMLElement>('[data-vt-ref-host]');
+				if (refHost) {
+					const controls = (meta.controls ?? []).map(c => ({
+						name: c.name,
+						type: String(c.type ?? ''),
+						value: String(properties[c.name] ?? ''),
+					}));
+					createRoot(refHost).render(refMod.ComfyTvReferenceCard({
+						nodeType: sc.nodeType,
+						title: sc.nodeType.replace(/^(ComfyTV|Saros)\./, ''),
+						controls,
+						hasPrompt: !!meta.hasPrompt,
+						width: 280,
+					}));
+				}
+			}
 			// ★ 契约期望值一律从 meta 派生（而非 spec）：meta 是卡片的真实渲染输入，
 			//   已经过 hidden-fields / 专用编辑器路由过滤。用 spec 会产生大量误报
 			//   （例如 material_state 被 MATERIAL_HIDDEN_FIELDS 故意隐藏）。
@@ -158,7 +203,7 @@ function mountScenario(
 	snapMod: SnapMod,
 	cardStateMod: CardStateMod,
 	_registry: RegistryMod,
-): ReturnType<NodeCardMod['getNodeCardMeta']> {
+): { meta: ReturnType<NodeCardMod['getNodeCardMeta']>; properties: Record<string, unknown> } {
 	// 每个场景独立 store，互不污染
 	const snapshotStore = new snapMod.MediaSnapshotStore(snapMod.createMemoryBackend(), { persistent: true });
 	const cardStateStore = new cardStateMod.CardStateStore();
@@ -198,7 +243,7 @@ function mountScenario(
 		nodeId: sc.nodeId,
 		upstreamNodeIds: sc.withUpstream ? sc.upstreamNodeIds : undefined,
 	});
-	return meta;
+	return { meta, properties };
 }
 
 /** 给每个 widget 一个确定性值：控件才会渲染出"有值"的样子，且截图稳定。 */
@@ -219,8 +264,63 @@ function seedProperties(sc: VisualScenario): Record<string, unknown> {
 	}
 	// picker 默认选中第 1 张，pool 高亮才有确定性
 	if (sc.spec.type.endsWith('PickerStage')) { props.selected_index = 1; }
+	// ★ 编排节点的动态 COMBO（agentId/providerId/modelId/skillName/toolName）
+	//   没有静态 options，seedProperties 的 `w.options?.[0] ?? ''` 会给空串 →
+	//   控件显示 "—"。这里用与 DEMO_* store 数据对齐的 id 覆盖，让下拉框
+	//   渲染出真实选中项（也是 R13 combo-empty 断言的渲染前提）。
+	const orchSeed = ORCH_PROP_SEEDS[sc.spec.type];
+	if (orchSeed) { Object.assign(props, orchSeed); }
 	return props;
 }
+
+/**
+ * 编排节点属性种子：值 = DEMO_* store 数据里的 id（COMBO 的 value 是 id，
+ * 显示的 label 才是 name）。两者错位时控件仍显示 "—"，R13 会拦下。
+ */
+const ORCH_PROP_SEEDS: Record<string, Record<string, unknown>> = {
+	'Saros.Agent': { agentId: 'vt-agent', providerId: 'vt-openai', modelId: 'vt-gpt-4o' },
+	'Saros.Skill': { skillName: 'vt-skill', task: '调研 ComfyTV 节点 UI 设计', skillArgs: '{"query":"comfytv"}' },
+	'Saros.Tool': { toolName: 'vt-tool', toolParams: '{"pattern":"wf-comfy-card"}' },
+};
+
+/** 演示 agent 列表（确定性，与 ORCH_PROP_SEEDS.agentId 对齐）。 */
+const DEMO_AGENTS = [{
+	id: 'vt-agent',
+	name: 'Visual Test Agent',
+	role: '通用助手',
+	description: 'visual harness 演示 agent（确定性数据）',
+	icon: '🤖',
+	category: 'builtin',
+	systemPrompt: '',
+	skills: [] as string[],
+	tools: [] as string[],
+}];
+
+/** 演示 skills / tools（确定性，id 与 ORCH_PROP_SEEDS.skillName / toolName 对齐）。 */
+const DEMO_SKILLS = [{
+	id: 'vt-skill', name: 'VT Research Skill', category: 'research',
+	activation: 'keyword', description: 'visual harness 演示技能',
+}];
+const DEMO_TOOLS = [{
+	id: 'vt-tool', name: 'vt_search_code', description: 'visual harness 演示工具',
+}];
+
+/**
+ * 演示 providers（确定性，id 与 ORCH_PROP_SEEDS.providerId/modelId 对齐）。
+ * - vt-openai：纯 LLM provider（模型不带 supportsImageGen）—— 验证 Agent 节点
+ *   的 LLM 语义「不过滤」（若误用文生图过滤，GPT-4o 会从 modelId 下拉消失）。
+ * - vt-imagen：文生图 provider —— 验证 provider/model（文生图语义）的过滤分支。
+ */
+const DEMO_PROVIDERS = [
+	{
+		id: 'vt-openai', name: 'VT OpenAI', authStatus: 'authenticated',
+		models: [{ id: 'vt-gpt-4o', name: 'VT GPT-4o' }],
+	},
+	{
+		id: 'vt-imagen', name: 'VT Imagen', authStatus: 'authenticated',
+		models: [{ id: 'vt-image-1', name: 'VT Image 1', supportsImageGen: true }],
+	},
+];
 
 /** 等所有 <img> 解码完成（截图前必须），带超时兜底。 */
 async function waitForImages(root: HTMLElement, timeoutMs = 8000): Promise<void> {

@@ -58,7 +58,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
-import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment } from '../../../browser/agentChat/agentChatTypes.js';
+import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment, IToolCall } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
 import { TaskBoardStatus } from '../../../common/agentStudioTypes.js';
@@ -110,6 +110,17 @@ export class NativeChatEditorPane extends EditorPane {
 	 * 发送开始 → add；done/error → delete。
 	 */
 	private static readonly _sharedLocalSendSessions = new Set<string>();
+
+	/**
+	 * 共享注入认领状态：防止多个 pane 同时响应同一次 requestInjectPrompt 导致
+	 * 重复发送（workflow 编辑器「⇗ 到 Chat 编辑」等场景）。
+	 * 首 pane 认领（指纹 = agentId+长度+前缀，10s 时间窗）→ 执行切换+发送；
+	 * 其余 pane 在同窗内见到相同指纹 → 跳过。
+	 */
+	private static _injectClaimFingerprint = '';
+	private static _injectClaimUntil = 0;
+	private static _directRunClaimFingerprint = '';
+	private static _directRunClaimUntil = 0;
 
 	private _isInitialized = false;
 	private _defaultAgentSelected = false;
@@ -621,6 +632,11 @@ export class NativeChatEditorPane extends EditorPane {
 			}),
 			onEditMessage: (messageId: string, newText: string) => {
 				void this._handleEditMessage(messageId, newText);
+			},
+			// 「继续执行」：只中止当前正在执行的工具（terminal 长命令等），
+			// 不取消整个 turn——agent 拿到中断结果后继续后续步骤，避免原地卡住。
+			onSkipCurrentTool: () => {
+				this._agentOSService.skipCurrentTool();
 			},
 			onCancelExecution: () => {
 				try {
@@ -1377,6 +1393,135 @@ export class NativeChatEditorPane extends EditorPane {
 			await this._selectAndLoadAgent(agentId, { force: true });
 		}));
 
+		// ── workflow 注入链（v3 修复）────────────────────────────────────
+		// requestInjectPrompt 的接收端。旧 webview chat controller 在 native 模式下
+		// early return 不注册监听，导致注入链整体断裂（"⇗ 到 Chat 编辑" 无声丢失）。
+		// 这里由 native pane 认领：切换到目标 agent（默认 saros-claw）并直接发送消息，
+		// 使 workflow 脚本始终在 saros-claw 中执行，不依赖用户先打开某个 chat。
+		// 多 pane 防重复：静态指纹 + 10s 时间窗，首个就绪的 pane 认领，其余跳过。
+		this._register(this._agentStudioService.onDidRequestInjectPrompt(async ({ agentId, message }) => {
+			if (!message || !agentId || !this._sendMessageInternal) {
+				return; // 未就绪的 pane 不认领，留给已就绪的 pane
+			}
+			const fp = `${agentId}:${message.length}:${message.slice(0, 64)}`;
+			const now = Date.now();
+			if (fp === NativeChatEditorPane._injectClaimFingerprint && now < NativeChatEditorPane._injectClaimUntil) {
+				return; // 另一 pane 已认领本次注入
+			}
+			NativeChatEditorPane._injectClaimFingerprint = fp;
+			NativeChatEditorPane._injectClaimUntil = now + 10_000;
+			this._logService.info(`[NativeChatEditorPane#${this._paneId}] injectPrompt: agent=${agentId} (${message.length} chars) — claiming & sending`);
+			try {
+				if (this._currentAgentId !== agentId) {
+					await this._selectAndLoadAgent(agentId, { force: true });
+				}
+				await this._sendMessageInternal(message);
+			} catch (err) {
+				this._logService.error(`[NativeChatEditorPane#${this._paneId}] injectPrompt failed`, err);
+			}
+		}));
+
+		// ── M4c 画布「直接执行」：开合成 workflow 工具卡（绕过 LLM，子代理卡片内嵌其中）──
+		this._register(this._agentStudioService.onDidRequestWorkflowDirectRun(({ toolCallId, name, script }) => {
+			if (!this._chatPanel || !this._currentAgentId) { return; } // 未就绪 pane 不认领
+			// 单一 pane 认领（toolCallId 做 fingerprint），避免多窗口重复开卡
+			const now = Date.now();
+			if (toolCallId === NativeChatEditorPane._directRunClaimFingerprint && now < NativeChatEditorPane._directRunClaimUntil) {
+				return;
+			}
+			NativeChatEditorPane._directRunClaimFingerprint = toolCallId;
+			NativeChatEditorPane._directRunClaimUntil = now + 60_000;
+			this._logService.info(`[NativeChatEditorPane#${this._paneId}] workflowDirectRun: opening synthetic tool card ${toolCallId} "${name}"`);
+
+			this._isSending = true;
+			this._chatPanel.setSending(true);
+			this._initStreamingMessage();
+			const assistantMsg = this._streamingAssistantMsg;
+			const assistantId = this._streamingAssistantId;
+			if (!assistantMsg || !assistantId) { return; }
+			if (!assistantMsg.toolCalls) { assistantMsg.toolCalls = []; }
+			assistantMsg.toolCalls.push({
+				id: toolCallId,
+				name: 'workflow',
+				args: JSON.stringify({ name, script }),
+				status: 'running',
+				displayName: name || '工作流',
+				renderType: 'WorkflowRun',
+				defaultShow: true,
+			});
+			this._lastDelegateToolCallId = toolCallId;
+			if (assistantMsg.parts) {
+				const tcRef = assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1];
+				assistantMsg.parts.push({ kind: 'tool', tool: tcRef } as any);
+			}
+			this._applyStreamPhase('tool_executing');
+			this._chatPanel.updateMessage(assistantId, {
+				toolCalls: assistantMsg.toolCalls.slice(),
+				parts: assistantMsg.parts?.slice(),
+				isStreaming: true,
+				isThinking: false,
+				streamPhase: 'tool_executing',
+			});
+		}));
+
+		this._register(this._agentStudioService.onDidWorkflowDirectRunResult((payload) => {
+			if (!this._chatPanel) { return; }
+			const assistantMsg = this._streamingAssistantMsg;
+			const assistantId = this._streamingAssistantId;
+			if (!assistantMsg || !assistantId) { return; }
+			const tc = (assistantMsg.toolCalls ?? []).find((t: any) => t.id === payload.toolCallId);
+			if (!tc) {
+				// ★ 本 pane 不持有该卡片（别的 pane 认领了）；认领的 pane 在开卡时就
+				// 持有 _streamingAssistantMsg 与该 toolCall，只有该 pane 会找到 tc。
+				return;
+			}
+			// 进入这里，说明本 pane 持有该卡，必须同步关闭，否则 UI 永远「执行中」。
+			this._logService.info(`[NativeChatEditorPane#${this._paneId}] workflowDirectRunResult: closing tool card ${payload.toolCallId} ok=${payload.ok}`);
+			if (payload.ok) {
+				tc.status = 'success';
+				tc.result = `workflow 执行完成（${payload.agentsStarted ?? 0} agents）。\n返回值：\n${JSON.stringify(payload.value, null, 2) ?? 'null'}`;
+			} else {
+				tc.status = 'error';
+				tc.error = payload.error;
+				tc.result = payload.error;
+			}
+			this._applyStreamPhase('idle');
+			// ★ 关键：updateMessage 是浅合并 + 整体替换字段。pane 本地改 tc.status
+			// 不会同步到 chatPanel 内部的 messages 数组（不同对象引用）。必须把
+			// 整个 toolCalls 数组传过去让 chatPanel 用新数组替换，UI 卡状态才会
+			// 从「执行中」变 success/error。
+			this._chatPanel.updateMessage(assistantId, {
+				toolCalls: assistantMsg.toolCalls!.slice(),
+				isStreaming: false,
+				isThinking: false,
+				streamPhase: 'idle',
+			});
+			this._chatPanel.setSending(false);
+			this._isSending = false;
+			this._resetStreamingMessage();
+		}));
+
+		// ── M4c 实时进度：ComfyUI 生成进度透传到工具卡（解决「卡住看不到进度」）──
+		this._register(this._agentStudioService.onDidWorkflowDirectRunProgress((payload) => {
+			if (!this._chatPanel) { return; }
+			const assistantMsg = this._streamingAssistantMsg;
+			const assistantId = this._streamingAssistantId;
+			if (!assistantMsg || !assistantId) { return; }
+			const tc = (assistantMsg.toolCalls ?? []).find((t: any) => t.id === payload.toolCallId);
+			if (!tc) { return; } // 本 pane 不持有该卡
+			// ★ 进度单调化：ComfyUI 轮询值可能跳变/回落（重排队等），UI 只前进不后退。
+			const prev = (tc as any).progress as number | undefined;
+			if (typeof prev === 'number' && payload.progress < prev) { return; }
+			(tc as any).progress = payload.progress;
+			(tc as any).progressText = payload.message ?? `生成中 ${payload.progress}%`;
+			// 节流：progress 事件高频（ComfyUI 轮询），避免每帧整体替换数组触发全量重渲染。
+			const now = Date.now();
+			const last = (this as any)._lastWfProgressFlush as number | undefined;
+			if (last !== undefined && now - last < 250) { return; }
+			(this as any)._lastWfProgressFlush = now;
+			this._chatPanel.updateMessage(assistantId, { toolCalls: assistantMsg.toolCalls!.slice() });
+		}));
+
 		// 监听 agent 列表变化（新建/删除/更新）——即时刷新 header 的 agent 下拉框。
 		// _loadAvailableAgents 内有 _defaultAgentSelected 守卫：已选中 agent 的 pane
 		// 只更新下拉框候选列表，不会重置/切换当前选中的 agent。
@@ -1949,9 +2094,32 @@ export class NativeChatEditorPane extends EditorPane {
 	 * （取代 textPosition 交织），独立 'tool' 角色消息被过滤。与 ChatBarPart 完全对齐。
 	 */
 	private _adaptHistoryMessages(history: ChatMessage[]): IAgentChatMessage[] {
-		return (history ?? [])
+		const adapted = (history ?? [])
 			.map(m => adaptPersistedChatMessage(m))
 			.filter((m): m is IAgentChatMessage => !!m);
+		this._backfillPlanPhase(adapted);
+		return adapted;
+	}
+
+	/**
+	 * 阶段卡兜底推导（P2-4）：老会话的 plan_enter/plan_explore 工具卡无 planPhase
+	 * （新链路上线前的数据），按消息时序向后找最近的 plan_exit(success) 推导：
+	 * - 找到 → 完成态（currentStep 4 + completedAt=消息时间戳）
+	 * - 未找到 → 进行中（currentStep 1，规划中；WorkMode 真值由 agentDriverService 恢复）
+	 * 保证刷新后老会话的阶段卡也不丢渲染依据。
+	 */
+	private _backfillPlanPhase(messages: IAgentChatMessage[]): void {
+		for (const m of messages) {
+			for (const tc of m.toolCalls ?? []) {
+				if ((tc.name === 'plan_enter' || tc.name === 'plan_explore') && !tc.planPhase) {
+					const hasExit = messages.some(mm => (mm.toolCalls ?? []).some(t =>
+						t.name === 'plan_exit' && (t.status === 'success' || t.status === 'running')));
+					tc.planPhase = hasExit
+						? { currentStep: 4, completedAt: m.timestamp }
+						: { currentStep: 1 };
+				}
+			}
+		}
 	}
 
 	/** 持久化压缩基线到 localStorage（key 按 agentId:sessionId 隔离）。 */
@@ -2436,7 +2604,7 @@ private _handleStreamDelta(delta: any): void {
 		const subAgents = (assistantMsg.subAgents ?? []) as any[];
 		if (subAgents.length === 0) { return; }
 		const delegateTcs = ((assistantMsg.toolCalls ?? []) as any[]).filter(
-			(tc: any) => tc?.name === 'delegate_task' || tc?.name === 'plan_explore');
+			(tc: any) => tc?.name === 'delegate_task' || tc?.name === 'plan_explore' || tc?.name === 'workflow');
 		if (delegateTcs.length === 0) { return; }
 
 		// 已占用的真实工具卡（subagent 已直接指向真实 callId 的）
@@ -2626,9 +2794,10 @@ private _handleStreamDelta(delta: any): void {
 					defaultShow: delta.defaultShow,
 					textPosition: typeof delta.textPosition === 'number' ? delta.textPosition : (assistantMsg.content?.length ?? 0),
 				});
-				// 记录 delegate_task / plan_explore 的真实 callId，供 onDidSubAgentTrace
+				// 记录 delegate_task / plan_explore / workflow 的真实 callId，供 onDidSubAgentTrace
 				// 将内部 parentToolCallId 重映射为真实 callId（内嵌 subagent 执行详情）。
-				if (delta.toolName === 'delegate_task' || delta.toolName === 'plan_explore') {
+				// workflow 是 NEVER_PARALLEL 工具 —— 同一时刻至多一个 run，映射无歧义。
+				if (delta.toolName === 'delegate_task' || delta.toolName === 'plan_explore' || delta.toolName === 'workflow') {
 					this._lastDelegateToolCallId = newToolCallId;
 				}
 			this._applyStreamPhase('tool_executing');
@@ -2802,6 +2971,40 @@ private _handleStreamDelta(delta: any): void {
 				});
 			}
 			break;
+			case 'work_mode_changed': {
+				// P2-4 阶段卡：planPhase 合并到显示版 plan_enter/plan_explore 工具卡并重渲染。
+				// 跨消息查找（plan_enter 可能在早前 turn 的 assistant 消息上）：
+				// getMessages 从后向前，优先 plan_enter、退化 plan_explore。
+				// 持久化由 agentChatService delta 管道独立完成（共享引用落盘），此处只管显示。
+				const phase = (delta as any).planPhase as { currentStep?: number; planFilePath?: string; completedAt?: number } | undefined;
+				if (phase) {
+					const messages = this._chatPanel?.getMessages() ?? [];
+					let hostMsg: IAgentChatMessage | undefined;
+					let hostTc: IToolCall | undefined;
+					for (let mi = messages.length - 1; mi >= 0; mi--) {
+						const tcs = messages[mi].toolCalls ?? [];
+						for (let ti = tcs.length - 1; ti >= 0; ti--) {
+							const n = tcs[ti].name;
+							if (n === 'plan_enter') { hostMsg = messages[mi]; hostTc = tcs[ti]; break; }
+							if (n === 'plan_explore' && !hostTc) { hostMsg = messages[mi]; hostTc = tcs[ti]; }
+						}
+						if (hostTc?.name === 'plan_enter') { break; }
+					}
+					if (hostMsg && hostTc) {
+						hostTc.planPhase = {
+							...(hostTc.planPhase ?? {}),
+							...(phase.currentStep !== undefined ? { currentStep: phase.currentStep } : {}),
+							...(phase.planFilePath !== undefined ? { planFilePath: phase.planFilePath } : {}),
+							...(phase.completedAt !== undefined ? { completedAt: phase.completedAt } : {}),
+						};
+						this._chatPanel?.updateMessage(hostMsg.id, {
+							toolCalls: hostMsg.toolCalls!.slice(),
+							isStreaming: hostMsg.id === assistantId,
+						} as any);
+					}
+				}
+				break;
+			}
 			case 'plan_tasks':
 				// plan_exit 生成的结构化任务 → 专用任务卡片
 				if (assistantMsg && assistantId && (delta as any).planTasksData) {

@@ -1035,6 +1035,24 @@ protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentC
 	oldCard.replaceWith(newCard);
 		this._applySubAgentRefreshFX(newCard, prevSa);
 		this._restoreScrollPositionsDeferred(newCard, savedScroll);
+		} else if (currentStatus === 'running' && newStatus === 'running' && typeof tc.progress === 'number') {
+			// ★ 进度增量更新（status 未变，只更新进度条/文本）——避免 100ms 级
+			// 进度刷新触发整卡重建（含 markdown 重渲染，渲染线程饱和）。
+			const progRow = oldCard.querySelector('.tool-progress-row') as HTMLElement | null;
+			if (progRow) {
+				const fill = progRow.querySelector('.tool-progress-fill') as HTMLElement | null;
+				if (fill) { fill.style.width = `${Math.min(100, Math.max(0, tc.progress))}%`; }
+				const label = progRow.querySelector('.tool-progress-text') as HTMLElement | null;
+				if (label) { label.textContent = tc.progressText ?? `${Math.round(tc.progress)}%`; }
+			} else {
+				// 卡片此前无进度条（progress 是后到的）→ 重建一次补上。
+				const savedScroll = this._captureScrollPositions(oldCard);
+				const newCard = this._createToolCallCard(tc);
+				const oldPartKey = oldCard.getAttribute('data-part-key');
+				if (oldPartKey) { newCard.setAttribute('data-part-key', oldPartKey); }
+				oldCard.replaceWith(newCard);
+				this._restoreScrollPositionsDeferred(newCard, savedScroll);
+			}
 		}
 	}
 }

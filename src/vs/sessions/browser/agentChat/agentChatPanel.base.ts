@@ -60,6 +60,7 @@ export const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string
 	list_skills: { done: '列出技能', running: '正在列出技能' },
 	skill_manage: { done: '管理技能', running: '正在管理技能' },
 	delegate_task: { done: '委派任务', running: '正在委派任务' },
+	workflow: { done: '执行工作流', running: '正在执行工作流' },
 
 	clarify: { done: '等待用户选择', running: '正在等待用户选择' },
 	memory_remember: { done: '保存记忆', running: '正在保存记忆' },
@@ -618,6 +619,11 @@ protected _nodeCollapsedState = new Map<string, boolean>();
 protected readonly _onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => void;
 
 protected readonly _onCancelExecution: () => void;
+	/**
+	 * 跳过当前工具（terminal 等长命令卡住时用户点击「继续执行」）：
+	 * 只中止正在执行的工具，不取消整个 turn——agent 拿到中断结果后继续后续步骤。
+	 */
+	protected readonly _onSkipCurrentTool?: () => void;
 
 protected readonly _onSelectAgent: (id: string) => void;
 
@@ -751,6 +757,7 @@ protected readonly _importedKbFileToolIds = new Set<string>();
 constructor(opts: {
 		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => void;
 		onCancelExecution: () => void;
+		onSkipCurrentTool?: () => void;
 		onToggleCollapse: () => void;
 		onSelectAgent: (id: string) => void;
 		onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
@@ -835,6 +842,7 @@ constructor(opts: {
 	this._scrollbar = this._register(new ScrollbarController(this));
 		this._onSendMessage = opts.onSendMessage;
 		this._onCancelExecution = opts.onCancelExecution;
+		this._onSkipCurrentTool = opts.onSkipCurrentTool;
 		this._onSelectAgent = opts.onSelectAgent;
 		this._onSelectWorktree = opts.onSelectWorktree;
 		this._onClearWorktree = opts.onClearWorktree;

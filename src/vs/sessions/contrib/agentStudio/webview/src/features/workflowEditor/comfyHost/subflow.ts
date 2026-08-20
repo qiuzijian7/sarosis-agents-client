@@ -30,6 +30,9 @@ export interface SubflowEdgeLike {
 	id?: string;
 	source: string;
 	target: string;
+	/** W2 端口感知路由：非 subflow 边原样保留（flattenSubflows plainEdges 保引用） */
+	sourceHandle?: string;
+	targetHandle?: string;
 }
 
 export interface SubflowDefinition {
@@ -182,13 +185,17 @@ export function substituteSubflow(
 		const entryId = e.source ?? ''; // source is external node id (port ignored)
 		const internalEntry = def.entryIds[0]; // first entry receives external inputs
 		if (!internalEntry) { continue; }
-		edges.push({ source: entryId, target: prefixed(internalEntry) });
+		// W2b: 外部 gate → subflow 的边保留 sourceHandle（gate 路由跨 subflow 边界
+		// 依然生效：分支未命中时整个 subflow 被 skip）。targetHandle 是 subflow
+		// 输入端口名（= entry id），展平后语义失效 → 丢弃。
+		edges.push({ source: entryId, target: prefixed(internalEntry), ...(e.sourceHandle !== undefined ? { sourceHandle: e.sourceHandle } : {}) });
 		remap.set(entryId, prefixed(internalEntry));
 	}
 
 	// Internal edges.
 	for (const e of def.edges) {
-		edges.push({ source: prefixed(e.source), target: prefixed(e.target) });
+		// W2b: 内部边透传端口（subflow 内部的 IfElse 路由在展平后正常工作）
+		edges.push({ source: prefixed(e.source), target: prefixed(e.target), ...(e.sourceHandle !== undefined ? { sourceHandle: e.sourceHandle } : {}), ...(e.targetHandle !== undefined ? { targetHandle: e.targetHandle } : {}) });
 	}
 
 	// Edges crossing OUT of the subflow: subflow-exit → external.
@@ -196,7 +203,9 @@ export function substituteSubflow(
 	for (const e of outgoing) {
 		const internalExit = def.exitIds[0];
 		if (!internalExit) { continue; }
-		edges.push({ source: prefixed(internalExit), target: e.target });
+		// W2: 外部边保留 targetHandle（subflow 内部出口的 sourceHandle 语义
+		// 在边界处丢弃 → always-active，见 W2b）
+		edges.push({ source: prefixed(internalExit), target: e.target, ...(e.targetHandle !== undefined ? { targetHandle: e.targetHandle } : {}) });
 	}
 
 	return { nodes, edges, remap };

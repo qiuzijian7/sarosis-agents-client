@@ -1,14 +1,18 @@
+// 触发 messageClient 的模块副作用：初始化 globalThis.__vssarosBridge，供
+// nodeExecutor / stageWorkflowExecutor / nodeCard / comfyRunner 的 fallback 读取。
+// 生产环境由 index.tsx 值 import 触发；e2e 直接 import 这些 executor，必须显式
+// 补上这条链，否则模块加载时 `__vssarosBridge ?? throw` 抛 "not initialised"。
+import '../src/bridge/messageClient';
 import { LGraph, LiteGraph } from '@comfyorg/litegraph';
 import { registerSarosLiteGraphNodes } from '../src/features/workflowEditor/comfyHost/sarosLiteGraphNodes';
 import {
-	registerSarosNodes, getNodeSpec, registerComfyTVNode, registerComfyUINativeNode,
+	registerSarosNodes, getNodeSpec, registerComfyUINativeNode,
 	buildComfyPaletteItems, isValidLiteGraphConnection, isPortTypeCompatible,
 	registerDefaultComfyTVStages, subscribeNodeRegistry, getNodeRegistryVersion,
 } from '../src/features/workflowEditor/comfyHost/registry';
 import { toLiteGraph, fromLiteGraph } from '../src/features/workflowEditor/comfyHost/ComfyGraphAdapter';
 import { useWorkflowEditorStore, undo, redo } from '../src/features/workflowEditor/store';
 import { buildEditorFields, coerceEditorValue } from '../src/features/workflowEditor/comfyHost/nodeEditorForm';
-import { buildStageOptionsFromCaps, setStageOptions, getStageOptions } from '../src/features/workflowEditor/comfyHost/registry';
 import { isInstantNode, cropRect, rotateDegrees, mirrorFlip, instantOutputSize, applyInstantDraw } from '../src/features/workflowEditor/comfyHost/instantNodes';
 import {
 	isRelightNode, createDefaultLight, normalizeLights, parseLightsData, orthographicProject,
@@ -44,7 +48,6 @@ import {
 	patchPrimitive, removePrimitive, parseSceneState, sceneStateToJson, cloneScene, isScene3DNode,
 } from '../src/features/workflowEditor/comfyHost/scene3dEditor';
 import { runScene3DNode } from '../src/features/workflowEditor/comfyHost/scene3dExecutor';
-import { loadComfyTVCaps } from '../src/features/workflowEditor/comfyHost/capsLoader';
 import { buildMinimapScene, minimapToGraph, applyMinimapPan, renderMinimap } from '../src/features/workflowEditor/minimap';
 import { comfyTitleText, comfyDrawWidgets, drawNodeErrorBanner, drawNodeStateOverlay, applyComfyNodeStyle } from '../src/features/workflowEditor/comfyNodeStyle';
 import { buildMenuGroups, filterMenuGroups, buildAddNodeSubmenu } from '../src/features/workflowEditor/NodeContextMenu';
@@ -105,10 +108,11 @@ expect(typeof getNodeSpec('Saros.Prompt') === 'object', 'getNodeSpec returns spe
   expect(!(mig.widgets ?? []).some(w => w && w.name === 'providerId'), 'ModelImageGen has NO legacy canvas widgets (providerId/modelId)');
   expect(mig.title === '模型文生图', 'ModelImageGen title is 模型文生图 (got: ' + JSON.stringify(mig.title) + ')');
 }
-// Pre-rename `Saros.*` nodes are dropped outright (no compat shim): the
-// registry resolves no spec for the legacy prefix, so canvasNodeFilter
-// drops them on load — old nodes get deleted, never migrated.
-expect(typeof getNodeSpec('Saros.Prompt') === 'undefined', 'legacy Saros.* prefix has NO spec (dropped on load)');
+// ★ P1 品牌改名后：`Saros.*` 是**官方命名空间**（registry 有 spec）；
+//   真正的「旧前缀」是**小写**（'prompt'/'agent'/…），它们在 loadWorkflow /
+//   addNode 入口被 normalizeNodeType 归一化，registry 对小写前缀无 spec。
+expect(typeof getNodeSpec('Saros.Prompt') !== 'undefined', 'Saros.* 是官方命名空间（有 spec）');
+expect(typeof getNodeSpec('prompt') === 'undefined', '小写旧前缀无 spec（loadWorkflow/addNode 入口归一化）');
 
 section('LGraph.configure applies node title (not TODO)');
 {
@@ -146,7 +150,7 @@ section('store addNode -> graph sync (e2e loop)');
   useWorkflowEditorStore.getState().addNode('prompt', { x: 300, y: 200 });
   const newStoreNodes = useWorkflowEditorStore.getState().nodes;
   expect(newStoreNodes.length === 3, 'store now has 3 nodes (added Prompt)');
-  const newPrompt = newStoreNodes.find(n => n.type === 'prompt');
+  const newPrompt = newStoreNodes.find(n => n.type === 'Saros.Prompt');
   expect(newPrompt != null && newPrompt.data?.label === '提示', 'Prompt node has default label 提示');
 
   const expected = newStoreNodes.length;
@@ -184,7 +188,7 @@ section('Connect Start->Prompt->End: graph links + fromLiteGraph round-trip');
   useWorkflowEditorStore.getState().clearWorkflow();
   useWorkflowEditorStore.getState().addNode('prompt', { x: 300, y: 200 });
   const startId = 'start', endId = 'end';
-  const promptId = useWorkflowEditorStore.getState().nodes.find(n => n.type === 'prompt')?.id;
+  const promptId = useWorkflowEditorStore.getState().nodes.find(n => n.type === 'Saros.Prompt')?.id;
   if (promptId) {
     useWorkflowEditorStore.setState({
       edges: [
@@ -233,8 +237,8 @@ section('store.removeNode -> graph sync (e2e)');
   graph.configure({ ...ser0, id: 'wf', groups: [] });
   expect(graph.nodes.length === 3, 'graph has 3 nodes before remove');
 
-  // Remove the Prompt node (the only one with type="prompt" — Start/End protected).
-  const promptId = useWorkflowEditorStore.getState().nodes.find(n => n.type === 'prompt')?.id;
+  // Remove the Prompt node (the only one with type="Saros.Prompt" — Start/End protected).
+  const promptId = useWorkflowEditorStore.getState().nodes.find(n => n.type === 'Saros.Prompt')?.id;
   useWorkflowEditorStore.getState().removeNode(promptId);
   const after = useWorkflowEditorStore.getState();
   expect(after.nodes.length === 2, 'store has 2 nodes after remove (Start + End)');
@@ -282,7 +286,7 @@ section('toWorkflowData -> loadWorkflow round-trip');
   });
   const reloaded = useWorkflowEditorStore.getState();
   expect(reloaded.nodes.length === 3, 'reload restores 3 nodes');
-  expect(reloaded.nodes.find(n => n.type === 'agent') != null, 'agent node restored');
+  expect(reloaded.nodes.find(n => n.type === 'Saros.Agent') != null, 'agent node restored');
   expect(reloaded.workflowName === 'round-trip', 'workflowName restored');
   // Clear temporal so subsequent edits don't merge into the old history
 }
@@ -387,14 +391,11 @@ section('FIX Bug-3: wheel zoom anchored at the mouse (ds.changeScale + [clientX,
 
 section('E2E: NodeEditorPopup full loop (fields → run → snapshot → preview)');
 {
-  // A ComfyTV image stage spec is registered (as RunnerManagerPanel does via
-  // loadComfyTVStages). Double-clicking it opens the popup which derives
-  // fields from the spec; typing a prompt + hitting generate runs the
+  // A ComfyTV image stage spec is registered (内置模板：registerDefaultComfyTVStages，
+  // 取代旧架构的 loadComfyTVStages 动态加载). Double-clicking it opens the popup
+  // which derives fields from the spec; typing a prompt + hitting generate runs the
   // single-node prompt and lands a snapshot the card subscribes to.
-  registerComfyTVNode({
-    type: 'ComfyTV.ImageStage', kind: 'image', workflowKind: 'image-to-image',
-    outputs: [{ name: 'images', type: 'IMAGE' }],
-  });
+  registerDefaultComfyTVStages();
   const spec = getNodeSpec('ComfyTV.ImageStage');
   expect(spec != null && spec.kind === 'schema', 'ComfyTV.ImageStage registered as schema node');
   const fields = buildEditorFields(spec);
@@ -918,11 +919,6 @@ section('FIX: ComfyTV node entry always present (default stages + registry subsc
   registerDefaultComfyTVStages();
   expect(buildComfyPaletteItems('schema').filter(i => i.type === 'ComfyTV.ImageStage').length === 1,
     're-registering default stages does not duplicate palette entries');
-  // live-runner schema refines the preset (same type overwrites, version bumps)
-  const v2 = getNodeRegistryVersion();
-  registerComfyTVNode({ type: 'ComfyTV.ImageStage', kind: 'image', title: '文生图(实时)', outputs: [{ name: 'images', type: 'IMAGE' }] });
-  expect(getNodeRegistryVersion() > v2, 'live stage refinement bumps registry version');
-  expect(getNodeSpec('ComfyTV.ImageStage')?.title === '文生图(实时)', 'live schema overwrites preset title');
 }
 
 section('ComfyTV: 列举全部 171 节点 + 执行冒烟测试');
@@ -1567,64 +1563,6 @@ section('workflowRun: chained stages inject upstream snapshots (P2)');
   const vidPrompt = invokeLog[1];
   expect(vidPrompt['2'].class_type === 'LoadImage', 'video workflow has LoadImage');
   expect(vidPrompt['2'].inputs.image === 'sub/img.png [output]', 'upstream image snapshot injected as annotated path');
-}
-
-section('capsLoader: buildStageOptionsFromCaps (P3)');
-{
-  const options = buildStageOptionsFromCaps(
-    ['option:seed', 'option:batch_size', 'option:negative', 'option:generate_audio', 'option:mystery'],
-    { 'option:seed': 'Stage seed', 'option:generate_audio': 'Generate audio' },
-  );
-  const byKey = Object.fromEntries(options.map(o => [o.key, o]));
-  expect(byKey.seed && byKey.seed.kind === 'number' && byKey.seed.label === 'Stage seed', 'seed → number with label');
-  expect(byKey.batch_size && byKey.batch_size.kind === 'number', 'batch_size → number');
-  expect(byKey.negative && byKey.negative.kind === 'textarea', 'negative → textarea');
-  expect(byKey.generate_audio && byKey.generate_audio.kind === 'select' && byKey.generate_audio.options.join(',') === 'yes,no',
-    'generate_audio → yes/no select');
-  expect(byKey.mystery && byKey.mystery.kind === 'text', 'unknown option → text');
-}
-
-section('nodeEditorForm: schema fields prefer caps options (P3)');
-{
-  const spec = getNodeSpec('ComfyTV.ImageStage');
-  const before = buildEditorFields(spec);
-  expect(before.some(f => f.key === 'width'), 'preset fallback offers width/height before caps');
-
-  setStageOptions('image', buildStageOptionsFromCaps(['option:seed', 'option:batch_size'], { 'option:batch_size': 'Stage batch size' }));
-  const after = buildEditorFields(spec);
-  expect(after.some(f => f.key === 'prompt'), 'prompt textarea still first');
-  expect(after.find(f => f.key === 'seed')?.kind === 'number', 'caps seed field used');
-  expect(after.find(f => f.key === 'batch_size')?.label === 'Stage batch size', 'caps label used');
-  expect(!after.some(f => f.key === 'width'), 'caps fields replace hardcoded presets');
-  setStageOptions('image', []); // restore fallback for any later scenario
-}
-
-section('capsLoader: loadComfyTVCaps fetches and registers options (P3)');
-{
-  const fakeFetch = async (url) => {
-    if (url.endsWith('/comfytv/caps')) {
-      return {
-        ok: true, status: 200,
-        json: async () => ({
-          caps_by_kind: { audio: { upstream_kinds: [], option_keys: ['option:seed', 'option:duration_s'], computed_keys: ['computed:length'] } },
-          fallback_caps: { upstream_kinds: [], option_keys: [], computed_keys: [] },
-          option_labels: { 'option:duration_s': 'Stage duration (s)' },
-        }),
-      };
-    }
-    return { ok: false, status: 404, json: async () => ({}), text: async () => '' };
-  };
-  const ok = await loadComfyTVCaps('http://fake.local', fakeFetch);
-  expect(ok, 'caps loaded');
-  const audioOpts = getStageOptions('audio');
-  expect(audioOpts && audioOpts.length === 2, 'audio options registered');
-  expect(audioOpts.find(o => o.key === 'duration_s')?.label === 'Stage duration (s)', 'option label mapped');
-  setStageOptions('audio', []);
-
-  const fail = await loadComfyTVCaps('http://fake.local', async () => ({ ok: false, status: 404, json: async () => ({}), text: async () => '' }));
-  expect(fail === false, '404 → graceful false');
-  const boom = await loadComfyTVCaps('http://fake.local', async () => { throw new Error('net'); });
-  expect(boom === false, 'network error → graceful false');
 }
 
 section('workflowRun: orchestration Prompt node feeds stage prompt (P2-tail)');

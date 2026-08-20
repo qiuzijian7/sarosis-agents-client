@@ -73,7 +73,11 @@ class StreamEventCapture {
 function makeOrchestrationService(): { service: TaskOrchestrationService; agentChat: MockAgentChatService; stream: StreamEventCapture } {
 	const fileService = new InMemoryFileService();
 	const logService = new MockLogService();
-	const configurationService = { getValue: () => undefined } as any;
+	// ★ 补 onDidChangeConfiguration：TaskOrchestrationService 构造器订阅语言设置变更。
+	const configurationService = {
+		getValue: () => undefined,
+		onDidChangeConfiguration: () => ({ dispose: () => { /* noop */ } }),
+	} as any;
 	const environmentService = { userHome: URI.file('/tmp') } as any;
 	const agentChat = new MockAgentChatService();
 	const stream = new StreamEventCapture();
@@ -84,7 +88,11 @@ function makeOrchestrationService(): { service: TaskOrchestrationService; agentC
 		getWorkspace: async () => undefined,
 		createAgent: async () => ({ id: 'agent-1', name: 'Agent One' }),
 	} as any;
-	const taskBoardService = {} as any;
+	// ★ 补 executeTaskForBoard 依赖：getTasks（ensureTaskAgent 回退）+ updateTaskStatus（执行结束标 Done/取消标 Cancelled）。
+	const taskBoardService = {
+		getTasks: async () => [],
+		updateTaskStatus: async () => { /* noop */ },
+	} as any;
 	const agentOSService = {} as any;
 	const workspaceContextService = {} as any;
 	const workflowStorage = { listWorkflows: async () => [] } as any;

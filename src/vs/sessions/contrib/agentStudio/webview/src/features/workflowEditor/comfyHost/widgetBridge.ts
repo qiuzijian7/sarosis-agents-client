@@ -341,17 +341,13 @@ export function createWidgetBridgeHost(layer: HTMLElement, doc: MinimalDocument 
 				el.style.boxSizing = 'border-box';
 				el.style.minWidth = '0';
 				el.style.maxWidth = '100%';
-				// addDOMWidget (widgetRect) mode: clip to the widget rectangle so
-				// card content can NEVER paint outside the node bounds — even in
-				// the one frame before the height-feedback loop grows the node.
-				// Schema-node ports/title are canvas-drawn, so DOM clipping is
-				// safe here. Non-schema nodes keep overflow:visible (their DOM
-				// port bars intentionally sit on/over the node edge).
-				// 即使 DOM overlay 与 canvas node 的层序会错（DOM overlay 整体在 canvas 之上），
-			// 卡片内容也必须在节点 rect 内裁剪，避免下层节点的 DOM 卡片溢出盖到上层
-			// 节点（曾导致「右侧节点 DOM 溢出盖住左侧节点 widget」）。卡内容视觉裁剪到
-			// 自己的 node 范围即可，让 canvas node 重叠时按 g._nodes 重排后的层序绘制。
-			el.style.overflow = 'hidden';
+				// 无条件 overflow:hidden：DOM overlay 整体压在 canvas 之上，卡片内容
+				// 必须在节点 rect 内裁剪，否则下层节点的 DOM 卡片会溢出盖到上层节点
+				// （曾导致「右侧节点 DOM 溢出盖住左侧节点 widget」）。卡内容视觉裁剪到
+				// 自己的 node 范围即可，让 canvas node 重叠时按 g._nodes 重排后的层序绘制。
+				// （历史注：早期非 widgetRect 节点保持 overflow:visible 以让 port bar
+				// 骑在节点边缘 —— 该路径已废弃，现在统一裁剪。）
+				el.style.overflow = 'hidden';
 				// Selection / execution-state ring in the DOM layer (fullCover
 				// nodes only — see OverlayNode.selected/state). boxShadow
 				// paints OUTSIDE the element and is not affected by the

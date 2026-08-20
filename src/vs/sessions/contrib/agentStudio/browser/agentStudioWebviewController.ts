@@ -30,6 +30,8 @@ import {
 import { ISkillRegistry } from "../common/skills.js";
 import { IWorkflowStorageService } from "../common/workflowStorage.js";
 import { IWorkflowExecutionService } from "../common/workflowExecutionService.js";
+import { IMarketplaceService } from "../common/marketplace.js";
+import { WorkflowPublishModal } from "./workflowPublishModal.js";
 import { SAROS_CLAW_AGENT_ID } from "../common/constants.js";
 import { IAgentStudioWebviewPool } from "./agentStudioWebviewPool.js";
 import type { IChatStreamDelta } from "../common/agentStudio.js";
@@ -54,8 +56,14 @@ import { IAgentOSService } from "../common/agentOS.js";
 import { IWorktreeService } from "../../worktree/common/worktreeService.js";
 import type { IToolApprovalHandler, IToolApprovalRequest } from "../common/providers.js";
 import { ToolApprovalDecision } from "../common/providers.js";
+import { Emitter } from '../../../../base/common/event.js';
 import { workflowAppliedEmitter } from './providers/tool/builtinToolProvider.js';
 import { canvasOpsRequestEmitter, resolveCanvasOps } from './providers/tool/canvasOpsBridge.js';
+import { snapshotArchiveEmitter, snapshotQueryEmitter, resolveSnapshotOutput, projectionArchiveEmitter, stageRunEmitter, resolveStageRun, onStageRunProgress, type SnapshotArchiveRequest, type SnapshotQueryRequest, type SnapshotResultPayload, type ProjectionArchiveRequest, type StageRunRequest, type StageRunResultPayload, type StageRunProgressPayload } from './workflow/workflowSnapshotBridge.js';
+import { executeWorkflowScript } from './workflow/workflowExecutor.js';
+import { createWorkflowChildPort } from './providers/tool/workflowChildPort.js';
+import { validateWorkflowMeta, type IWorkflowMeta } from '../common/workflow/types.js';
+import type { UnifiedSubAgentDispatch } from '../common/unifiedSubAgentDispatch.js';
 import { canvasContextStore } from './messageEnrichment/canvasContextStore.js';
 import { IWorkbenchThemeService } from "../../../../workbench/services/themes/common/workbenchThemeService.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
@@ -166,6 +174,20 @@ export class AgentStudioWebviewController extends Disposable {
 	private readonly _pendingToolApprovals = new Map<string, { resolve: (decision: ToolApprovalDecision) => void }>();
 
 	/**
+	 * 单行工具栏（v2）：webview 内「发布 ▾」菜单请求 toggle 版本历史侧边面板。
+	 * 由 WorkflowEditorPane 订阅处理（面板实例归它所有）。
+	 */
+	private readonly _onDidRequestWorkflowVersionHistory = this._register(new Emitter<void>());
+	readonly onDidRequestWorkflowVersionHistory: Emitter<void>['event'] = this._onDidRequestWorkflowVersionHistory.event;
+
+	/**
+	 * 单行工具栏（v2）：webview 内「发布 ▾」菜单确认删除工作流。
+	 * 由 WorkflowEditorPane 订阅处理（deleteWorkflow + closeEditor）。
+	 */
+	private readonly _onDidRequestWorkflowDeleteWorkflow = this._register(new Emitter<{ workflowId: string }>());
+	readonly onDidRequestWorkflowDeleteWorkflow: Emitter<{ workflowId: string }>['event'] = this._onDidRequestWorkflowDeleteWorkflow.event;
+
+	/**
 	 * Perf instrumentation: epoch ms when this controller was constructed
 	 * (i.e. when the host started opening this panel). Injected into the
 	 * webview HTML so the React app can measure program-start → first-paint.
@@ -223,6 +245,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@ICheckpointService private readonly checkpointService: ICheckpointService,
 		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
 		@IWorkflowExecutionService private readonly workflowExecutionService: IWorkflowExecutionService,
+		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@IAgentStudioWebviewPool private readonly webviewPool: IAgentStudioWebviewPool,
 		@IMainProcessService private readonly mainProcessService: IMainProcessService,
 	) {
@@ -1678,6 +1701,8 @@ export class AgentStudioWebviewController extends Disposable {
 			// ─── Skills ────────────────────────────────────────────
 			case "skills.list":
 				return this._handleSkillsList();
+			case "tools.list":
+				return this._handleToolsList(p as { agentId?: string });
 
 			// ─── Media assets (生成图片管理 P1) ───────────────────
 			case "media.import":
@@ -1755,6 +1780,64 @@ export class AgentStudioWebviewController extends Disposable {
 			case "workflow.submitVariables": {
 				const vp = p as unknown as { executionId: string; values: Record<string, string> };
 				return this._handleWorkflowSubmitVariables(vp);
+			}
+			case "workflow.snapshotResult": {
+				// M2 dynamic workflow: webview replies with a canvas snapshot query result.
+				const sr = p as unknown as SnapshotResultPayload;
+				if (sr?.queryId && !resolveSnapshotOutput(sr)) {
+					this.logService.warn(`[AgentStudioWebviewController] workflow.snapshotResult: unknown queryId=${sr.queryId} (already resolved/timed out)`);
+				}
+				return { ok: true };
+			}
+			case "workflow.stageRunResult": {
+				// P0: webview 回程「画布节点执行结果」（stage() 写方向桥）。
+				const srr = p as unknown as StageRunResultPayload;
+				if (srr?.runId && !resolveStageRun(srr)) {
+					this.logService.warn(`[AgentStudioWebviewController] workflow.stageRunResult: unknown runId=${srr.runId} (already resolved/timed out)`);
+				}
+				return { ok: true };
+			}
+			case "workflow.stageRunProgress": {
+				// P0 进度透传：webview 在 ComfyUI 生成期间回推实时进度。
+				const spr = p as unknown as StageRunProgressPayload;
+				if (spr?.runId) { onStageRunProgress(spr); }
+				return { ok: true };
+			}
+			case "workflow.runAgentNode": {
+				// M3: run one Saros.Agent canvas node through the dynamic-workflow
+				// child bridge (startWorkflowChild → UnifiedSubAgentDispatch).
+				return this._runWorkflowAgentNode(p as Record<string, unknown>);
+			}
+			case "workflow.executeScript": {
+				// M4c: 画布「直接执行」——绕过 LLM 决策，确定性触发 workflow 引擎执行脚本。
+				const ep = p as { meta?: Record<string, unknown>; script?: string; args?: unknown; canvasAnchorUid?: string };
+				return this._handleWorkflowExecuteScript(ep);
+			}
+			case "workflow.publishState": {
+				// 单行工具栏（v2）：查询发布状态（本地版本 vs 商城版本）。
+				const ps = p as { workflowId: string };
+				return this._handleWorkflowPublishState(ps);
+			}
+			case "workflow.publish": {
+				// 单行工具栏（v2）：打开发布 modal（上传 / 更新到商城）。
+				const pp = p as { workflowId: string };
+				return this._handleWorkflowPublish(pp);
+			}
+			case "workflow.versionHistory": {
+				// 单行工具栏（v2）：toggle 版本历史侧边面板（由 WorkflowEditorPane 处理）。
+				this._onDidRequestWorkflowVersionHistory.fire();
+				return { ok: true };
+			}
+			case "workflow.deleteWorkflow": {
+				// 单行工具栏（v2）：删除工作流 + 关闭编辑器（由 WorkflowEditorPane 处理）。
+				const dp = p as { workflowId: string };
+				this._onDidRequestWorkflowDeleteWorkflow.fire({ workflowId: dp.workflowId });
+				return { ok: true };
+			}
+			case "workflow.upgrade": {
+				// 单行工具栏（v2）：从商城下载升级到服务器版本。
+				const up = p as { workflowId: string; serverVersion: string };
+				return this._handleWorkflowUpgrade(up);
 			}
 			case "workflow.canvasOpsResult": {
 				// Agent-driven canvas (P0): webview replies with the applied result.
@@ -2299,6 +2382,106 @@ export class AgentStudioWebviewController extends Disposable {
 			error: { code: "ERROR", message },
 		};
 		this._postToWebview(response, `_sendError type=${type}.response`);
+	}
+
+	/**
+	 * M3 dynamic workflow: execute one Saros.Agent canvas node via the
+	 * startWorkflowChild bridge (UnifiedSubAgentDispatch). Canvas-originated
+	 * runs have no parent chat agent — `canvas-agent-node` is the attribution
+	 * key; the card stream lands in the workflow editor's run surface.
+	 */
+	private async _runWorkflowAgentNode(p: Record<string, unknown>): Promise<{ ok: boolean; output?: string; error?: string }> {
+		const prompt = typeof p['prompt'] === 'string' ? p['prompt'] : '';
+		if (!prompt.trim()) {
+			return { ok: false, error: 'Saros.Agent 节点缺少提示词' };
+		}
+		const dispatch = this.taskOrchestrationService.subAgentDispatch as UnifiedSubAgentDispatch;
+		const port = createWorkflowChildPort({
+			dispatch,
+			agentOS: this.agentOSService,
+			parentAgentId: 'canvas-agent-node',
+			groupId: `canvas-agent-${Date.now().toString(36)}`,
+		});
+		try {
+			const handle = await port.start({
+				prompt,
+				...(typeof p['agentId'] === 'string' && p['agentId'] ? { agentId: p['agentId'] } : {}),
+				...(typeof p['model'] === 'string' && p['model'] ? { model: p['model'] } : {}),
+			}, new AbortController().signal);
+			try {
+				const r = await handle.result;
+				if (r.success && r.stopReason === 'completed') {
+					return { ok: true, output: r.output ?? '' };
+				}
+				return { ok: false, error: `Agent 子代理${r.stopReason || 'failed'}` };
+			} finally {
+				void handle.dispose();
+			}
+		} catch (e) {
+			this.logService.warn(`[AgentStudioWebviewController] runAgentNode failed: ${e instanceof Error ? e.message : String(e)}`);
+			return { ok: false, error: e instanceof Error ? e.message : String(e) };
+		}
+	}
+
+	/**
+	 * M4c 画布「直接执行」：绕过 LLM 决策，确定性触发 workflow 引擎执行导出脚本。
+	 * 画布运行无父 chat agent —— 以 'canvas-agent-node' 为归属键，子代理卡片落画布
+	 * run 表面（与 _runWorkflowAgentNode 同源）。
+	 */
+	private async _handleWorkflowExecuteScript(p: { meta?: Record<string, unknown>; script?: string; args?: unknown; canvasAnchorUid?: string }): Promise<{ ok: boolean; value?: unknown; agentsStarted?: number; projectionText?: string; error?: string }> {
+		let meta: IWorkflowMeta;
+		try {
+			meta = validateWorkflowMeta(p.meta);
+		} catch (e) {
+			return { ok: false, error: `工作流 meta 非法：${(e as Error).message}` };
+		}
+		const script = typeof p.script === 'string' ? p.script : '';
+		if (!script) {
+			return { ok: false, error: '导出脚本为空（script 缺失）' };
+		}
+		const dispatch = this.taskOrchestrationService.subAgentDispatch as UnifiedSubAgentDispatch | undefined;
+		if (!dispatch) {
+			return { ok: false, error: '子代理编排服务不可用（subAgentDispatch 缺失）' };
+		}
+		const anchorUid = typeof p.canvasAnchorUid === 'string' ? p.canvasAnchorUid.trim() : '';
+		// M4c 聊天框卡片：开合成 workflow 工具卡（子代理卡片/进度内嵌其中），执行完再关闭。
+		const toolCallId = `wf_direct_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+		this.agentStudioService.requestWorkflowDirectRun({ toolCallId, name: meta.name, script });
+		const r = await executeWorkflowScript(
+			{
+				dispatch,
+				agentOS: this.agentOSService,
+				parentAgentId: 'canvas-agent-node',
+				logService: this.logService,
+			},
+			{
+				script, meta,
+				...(p.args !== undefined ? { args: p.args } : {}),
+				...(anchorUid ? { canvasAnchorUid: anchorUid } : {}),
+				parentToolCallId: toolCallId,
+				// 用户已持源画布 → 投影冗余且会污染 workflow 列表。
+				archiveProjection: false,
+				// ★ 实时进度：ComfyUI 生成进度 → 聊天框工具卡（解决「卡住看不到进度」）。
+				onProgress: (progress, message, stageUid) => {
+					this.agentStudioService.workflowDirectRunProgress({
+						toolCallId,
+						progress,
+						...(message !== undefined ? { message } : {}),
+						...(stageUid !== undefined ? { stageUid } : {}),
+					});
+				},
+			},
+		);
+		this.agentStudioService.workflowDirectRunResult({
+			toolCallId,
+			ok: r.ok,
+			...(r.error !== undefined ? { error: r.error } : {}),
+			...(r.ok ? { value: r.value, agentsStarted: r.agentsStarted, projectionText: r.projectionText } : {}),
+		});
+		if (!r.ok) {
+			return { ok: false, error: r.error };
+		}
+		return { ok: true, value: r.value, agentsStarted: r.agentsStarted, projectionText: r.projectionText };
 	}
 
 	private _sendEvent(type: string, data: unknown): void {
@@ -3346,6 +3529,86 @@ export class AgentStudioWebviewController extends Disposable {
 				this._sendEvent('workflow.canvasOps', req);
 			}),
 		);
+
+		// M2 dynamic workflow: forward canvas snapshot queries + result archives to the webview.
+		this._register(
+			snapshotQueryEmitter.event((req: SnapshotQueryRequest) => {
+				this._sendEvent('workflow.snapshotQuery', req);
+			}),
+		);
+		this._register(
+			snapshotArchiveEmitter.event((req: SnapshotArchiveRequest) => {
+				this._sendEvent('workflow.snapshotArchive', req);
+			}),
+		);
+		// M4b: persist the runtime projection as an openable read-only workflow.
+		this._register(
+			projectionArchiveEmitter.event((req: ProjectionArchiveRequest) => {
+				this._archiveWorkflowProjection(req).catch(err => {
+					this.logService.warn(`[AgentStudio] projection archive failed: ${err instanceof Error ? err.message : String(err)}`);
+				});
+			}),
+		);
+		// P0: stage() —— 让画布真正执行媒体节点（写方向桥；对称 snapshotQuery）。
+		this._register(
+			stageRunEmitter.event((req: StageRunRequest) => {
+				this._sendEvent('workflow.stageRun', req);
+			}),
+		);
+	}
+
+	/**
+	 * M4b: persist a dynamic-workflow run projection as a workflow document
+	 * (agent nodes in wave layers, projected marker in data). Openable from
+	 * the workflow list — a read-only record of the run's fan-out shape.
+	 */
+	private async _archiveWorkflowProjection(req: ProjectionArchiveRequest): Promise<void> {
+		const p = req.projection as {
+			layers?: Array<Array<{ seq: number; label: string; phase?: string; outcome: string; layer: number }>>;
+			phases?: string[];
+			agentsStarted?: number;
+			stopReason?: string;
+			edges?: Array<{ from: number; to: number }>;
+		};
+		if (!p?.layers?.length) { return; }
+		const WGN = await import('../common/workflowStorage.js');
+		const nodes: import('../common/workflowStorage.js').WorkflowGraphNode[] = [];
+		const connections: import('../common/workflowStorage.js').WorkflowGraphConnection[] = [];
+		const idOf = new Map<number, string>();
+		for (let li = 0; li < p.layers.length; li++) {
+			p.layers[li].forEach((a, ai) => {
+				const id = `wfproj-${req.meta.runId}-${a.seq}`;
+				idOf.set(a.seq, id);
+				nodes.push({
+					id,
+					type: WGN.WorkflowNodeType.Agent,
+					name: `#${a.seq} ${a.label}`.slice(0, 64),
+					position: { x: 80 + ai * 260, y: 80 + li * 170 },
+					data: {
+						label: `#${a.seq} ${a.label}`.slice(0, 64),
+						projected: '1',
+						runId: req.meta.runId,
+						phase: a.phase,
+						outcome: a.outcome,
+					},
+				});
+			});
+		}
+		for (const e of p.edges ?? []) {
+			const from = idOf.get(e.from); const to = idOf.get(e.to);
+			if (from && to) { connections.push({ id: `e-${e.from}-${e.to}`, from, to }); }
+		}
+		const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+		const created = await this.workflowStorageService.createWorkflow({
+			name: `⟨投影⟩ ${req.meta.name} ${ts}`,
+			description: `动态工作流「${req.meta.name}」运行投影：${p.layers.length} 波次 / ${p.agentsStarted ?? 0} agents / ${p.stopReason ?? 'completed'}${p.phases?.length ? `；phases: ${p.phases.join(' → ')}` : ''}（runId=${req.meta.runId}）`,
+		});
+		await this.workflowStorageService.updateWorkflow(created.id, {
+			nodes,
+			connections,
+			tags: ['workflow-projection', 'read-only'],
+		});
+		this.logService.info(`[AgentStudio] projection archived: ${created.id} (${nodes.length} nodes / ${connections.length} edges)`);
 	}
 
 	// ─── Provider Handlers ─────────────────────────────────────────────────────
@@ -3789,9 +4052,18 @@ export class AgentStudioWebviewController extends Disposable {
 	private async _handleSkillsList(): Promise<Array<{ id: string; name: string; category: string; activation: string; description?: string }>> {
 		const t0 = Date.now();
 		this.logService.info(`[AS-PERF][host] _handleSkillsList: waiting for skillRegistry.whenReady()...`);
-		await this.skillRegistry.whenReady();
+		// ★★ 超时降级（3s）：whenReady 可能因磁盘 IO hang 永久 pending。
+		//   日志实证（vscode-app-1787159667152.log）：`reload() called` 后
+		//   `after builtin scan` 从未出现，skills.list 请求之后 18000+ 行日志
+		//   的时间窗内扫描仍未完成 → webview 的 skillName 下拉拿不到任何响应。
+		//   降级策略：超时后返回当前已扫描的**部分**技能（部分结果远优于
+		//   永久挂起；builtin 扫描是渐进填充 _skills 的，部分结果可用）。
+		await Promise.race([
+			this.skillRegistry.whenReady(),
+			new Promise<void>(resolve => setTimeout(resolve, 3000)),
+		]);
 		const t1 = Date.now();
-		this.logService.info(`[AS-PERF][host] _handleSkillsList: whenReady resolved in ${t1 - t0}ms`);
+		this.logService.info(`[AS-PERF][host] _handleSkillsList: whenReady resolved (or timed out) in ${t1 - t0}ms`);
 		const skills = this.skillRegistry.getSkills();
 		const result = skills.map(skill => ({
 			id: skill.id,
@@ -3806,7 +4078,21 @@ export class AgentStudioWebviewController extends Disposable {
 		return result;
 	}
 
-	// ─── Media assets (生成图片管理 P1) ─────────────────────────────────
+		/**
+	 * Handle `tools.list` message from webview — populate the Saros.Tool 节点的
+	 * toolName 下拉。列出所有已注册 tool provider 的全部工具（去重）。
+	 */
+	private async _handleToolsList(payload: { agentId?: string }): Promise<Array<{ id: string; name: string; description?: string }>> {
+		try {
+			const tools = await this.agentOSService.listAllToolsWithState(payload?.agentId ?? '');
+			return tools.map(t => ({ id: t.name, name: t.name, description: t.description }));
+		} catch (err) {
+			this.logService.warn('[AgentStudio] tools.list failed', err);
+			return [];
+		}
+	}
+
+// ─── Media assets (生成图片管理 P1) ─────────────────────────────────
 
 	private async _handleMediaImport(req: MediaImportRequest) {
 		const backend = this._getMediaBackend();
@@ -4202,7 +4488,7 @@ export class AgentStudioWebviewController extends Disposable {
 	/**
 	 * Handle `workflow.save` — webview sends updated workflow data to persist.
 	 */
-	private async _handleWorkflowSave(payload: { workflow: Record<string, unknown>; workspaceId?: string }): Promise<{ success: boolean }> {
+	private async _handleWorkflowSave(payload: { workflow: Record<string, unknown>; workspaceId?: string; autoSave?: boolean }): Promise<{ success: boolean }> {
 		try {
 			const wf = payload.workflow as { id: string; name?: string };
 			if (!wf.id) {
@@ -4210,7 +4496,9 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 
 			// v34: 不再为工作流创建/同步专用 agent——工作流与 agent 解耦。
-			await this.workflowStorageService.updateWorkflow(wf.id, payload.workflow, payload.workspaceId);
+			// ★ auto-save 不 autoCommit：版本历史只留用户有意义的检查点，避免执行期间
+			// 节点微调 + updatedAt 时间戳导致 git 版本爆炸。
+			await this.workflowStorageService.updateWorkflow(wf.id, payload.workflow, payload.workspaceId, { autoCommit: !payload.autoSave });
 			// Also fire an event so the workflow list sidebar refreshes
 			this._sendEvent('workflow.saved', { id: wf.id });
 			return { success: true };
@@ -4220,6 +4508,102 @@ export class AgentStudioWebviewController extends Disposable {
 		}
 	}
 
+	/**
+	 * 单行工具栏（v2）：查询发布状态（本地版本 vs 商城版本）。
+	 *
+	 * 状态机（自原 WorkflowToolbar._checkServerVersion 迁移）：
+	 *   unpublished    未发布（商城无此工作流）→ 菜单显示「上传发布」
+	 *   upToDate       本地 = 商城 → 无发布操作
+	 *   localModified  本地 > 商城 → 菜单显示「上传更新」
+	 *   serverNewer    商城 > 本地 → 菜单显示「升级到 v…」
+	 *   serverOnly     商城有版本但本地无版本号 → 中性展示，无发布操作
+	 */
+	private async _handleWorkflowPublishState(payload: { workflowId: string }): Promise<{
+		state: 'unpublished' | 'upToDate' | 'localModified' | 'serverNewer' | 'serverOnly';
+		localVersion?: string;
+		serverVersion?: string;
+	}> {
+		const wf = await this.workflowStorageService.getWorkflow(payload.workflowId);
+		const localVersion = wf?.version;
+		let serverVersion: string | undefined;
+		try {
+			const pkg = await this.marketplaceService.getPackage(payload.workflowId);
+			serverVersion = pkg.latestVersion;
+		} catch {
+			// 商城中无此工作流（404 等）
+		}
+		if (!localVersion && !serverVersion) { return { state: 'unpublished' }; }
+		if (localVersion && serverVersion) {
+			if (this._isVersionHigher(serverVersion, localVersion)) { return { state: 'serverNewer', localVersion, serverVersion }; }
+			if (this._isVersionHigher(localVersion, serverVersion)) { return { state: 'localModified', localVersion, serverVersion }; }
+			return { state: 'upToDate', localVersion, serverVersion };
+		}
+		if (!localVersion && serverVersion) { return { state: 'serverOnly', serverVersion }; }
+		return { state: 'unpublished', localVersion };
+	}
+
+	/**
+	 * 单行工具栏（v2）：打开发布 modal。RPC 等待 modal 关闭（发布成功或取消）后返回，
+	 * webview 侧随后重新查询 publishState 刷新 pill。
+	 */
+	private _handleWorkflowPublish(payload: { workflowId: string }): Promise<{ ok: boolean; version?: string; cancelled?: boolean }> {
+		return (async () => {
+			const wf = await this.workflowStorageService.getWorkflow(payload.workflowId);
+			if (!wf) {
+				return { ok: false, cancelled: true } as const;
+			}
+			const modal = this.instantiationService.createInstance(WorkflowPublishModal, wf);
+			return new Promise<{ ok: boolean; version?: string; cancelled?: boolean }>(resolve => {
+				let settled = false;
+				const done = (r: { ok: boolean; version?: string; cancelled?: boolean }) => {
+					if (settled) { return; }
+					settled = true;
+					resolve(r);
+				};
+				const publishSub = modal.onDidPublish(published => {
+					done({ ok: true, version: published.version });
+				});
+				modal.onDidClose(() => {
+					publishSub.dispose();
+					modal.dispose();
+					done({ ok: false, cancelled: true });
+				});
+				modal.show();
+			});
+		})();
+	}
+
+	/** 比较 semver：a > b 时返回 true（自 WorkflowToolbar 迁移） */
+	private _isVersionHigher(a: string | undefined, b: string | undefined): boolean {
+		if (!a) { return false; }
+		if (!b) { return true; }
+		const parseVer = (v: string) => v.split('.').map(n => parseInt(n, 10) || 0);
+		const sa = parseVer(a);
+		const sb = parseVer(b);
+		for (let i = 0; i < Math.max(sa.length, sb.length); i++) {
+			const av = sa[i] ?? 0;
+			const bv = sb[i] ?? 0;
+			if (av > bv) { return true; }
+			if (av < bv) { return false; }
+		}
+		return false;
+	}
+
+	/**
+	 * 单行工具栏（v2）：从商城下载升级到服务器版本（自 WorkflowToolbar._handleUpgrade 迁移）。
+	 */
+	private async _handleWorkflowUpgrade(payload: { workflowId: string; serverVersion: string }): Promise<{ ok: boolean; version?: string; error?: string }> {
+		if (!payload?.serverVersion) { return { ok: false, error: '缺少服务器版本号' }; }
+		try {
+			this.logService.info(`[AgentStudioWebviewController] workflow.upgrade: ${payload.workflowId} → v${payload.serverVersion}`);
+			await this.marketplaceService.download(payload.workflowId, payload.serverVersion, 'workflow');
+			return { ok: true, version: payload.serverVersion };
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			this.logService.error('[AgentStudioWebviewController] workflow.upgrade failed', err);
+			return { ok: false, error: message };
+		}
+	}
 	/**
 	 * Handle `workflow.execute` — webview asks host to start executing a workflow.
 	 * Returns the execution ID; status updates are pushed via `workflow.executionUpdate` events.

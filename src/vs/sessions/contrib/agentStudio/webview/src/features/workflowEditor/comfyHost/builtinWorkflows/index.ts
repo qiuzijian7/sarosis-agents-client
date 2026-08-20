@@ -15,6 +15,7 @@
 import type { StageWorkflowConfig, StageWorkflowListResponse } from '../stageWorkflowExecutor.js';
 import { AUDIO_BUILTIN_WORKFLOWS } from './audioWorkflows.js';
 import { CUTOUT_BUILTIN_WORKFLOWS } from './cutoutWorkflows.js';
+import { EMOJI_BUILTIN_WORKFLOWS } from './emojiWorkflows.js';
 import { ERASE_BUILTIN_WORKFLOWS } from './eraseWorkflows.js';
 import { IMAGE_BUILTIN_WORKFLOWS } from './imageWorkflows.js';
 import { IMAGE_EDIT_BUILTIN_WORKFLOWS } from './imageEditWorkflows.js';
@@ -39,6 +40,7 @@ import { VIDEO_BUILTIN_WORKFLOWS } from './videoWorkflows.js';
 const BUILTIN_WORKFLOWS: Record<string, Record<string, StageWorkflowConfig>> = {
 	"audio": AUDIO_BUILTIN_WORKFLOWS,
 	"cutout": CUTOUT_BUILTIN_WORKFLOWS,
+	"emoji": EMOJI_BUILTIN_WORKFLOWS,
 	"erase": ERASE_BUILTIN_WORKFLOWS,
 	"image": IMAGE_BUILTIN_WORKFLOWS,
 	"image-edit": IMAGE_EDIT_BUILTIN_WORKFLOWS,

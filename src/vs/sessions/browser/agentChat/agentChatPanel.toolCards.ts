@@ -602,6 +602,19 @@ protected override _createToolCallCard(tc: IToolCall, confirmation?: IConfirmati
 			rejectedNotice.textContent = '用户已拒绝此工具调用';
 		}
 
+		// ── 实时进度条（workflow 直接执行 / ComfyUI 生成等长耗时工具卡）──
+		// 仅在 running 且 tc.progress 存在时渲染；由 _updateToolCardStatuses 增量更新
+		// （不重建整卡），避免 100ms 级进度刷新触发全量重渲染。
+		if (isRunning && typeof tc.progress === 'number') {
+			const progRow = append(wrapper, $('.tool-progress-row'));
+			progRow.setAttribute('data-progress', '1');
+			const bar = append(progRow, $('.tool-progress-bar'));
+			const fill = append(bar, $('.tool-progress-fill')) as HTMLElement;
+			fill.style.width = `${Math.min(100, Math.max(0, tc.progress))}%`;
+			const label = append(progRow, $('span.tool-progress-text'));
+			label.textContent = tc.progressText ?? `${Math.round(tc.progress)}%`;
+		}
+
 		// ── Body（可折叠 dropdown）──
 		const body = append(wrapper, $('.tool-header-children'));
 		const inner = append(body, $('.tool-children-wrapper'));
@@ -627,14 +640,24 @@ protected override _createToolCallCard(tc: IToolCall, confirmation?: IConfirmati
 
 		if (hasArgs) {
 			this._appendToolSection(innerBox, {
-				label: '请求参数',
+				// ★ workflow 卡片的 args 是 { name, script }：脚本单独用可读代码块展示，
+				//   而非整段 JSON 转储（\n 转义后不可读）；其余工具保持「请求参数」JSON。
+				label: key === 'workflow' ? '工作流脚本' : '请求参数',
 				icon: 'content',
 				collapsed: false,
 				buildContent: (container) => {
-					const parsed = JSON.stringify(JSON.parse(tc.args!), null, 2);
+					let text: string;
+					if (key === 'workflow') {
+						let p: Record<string, unknown> = {};
+						try { p = JSON.parse(tc.args!); } catch { p = {}; }
+						const script = typeof p.script === 'string' ? p.script : '';
+						text = script || JSON.stringify(p, null, 2);
+					} else {
+						text = JSON.stringify(JSON.parse(tc.args!), null, 2);
+					}
 					const code = append(container, $('.tool-code-children'));
 					const sel = append(code, $('.tool-code-children-selectable'));
-					append(sel, $('pre')).textContent = parsed;
+					append(sel, $('pre')).textContent = text;
 				},
 			});
 		}
@@ -1050,6 +1073,15 @@ protected override _getToolDesc1(key: string, args: string | undefined, filePath
 
 		if (TOOL_TERMINAL_TOOLS.has(key)) {
 			return command ? `"${clip(command)}"` : '';
+		}
+		if (key === 'workflow') {
+			// workflow 卡片：title 已显示「正在执行工作流」，desc 展示工作流名 + 脚本规模
+			//（不再是重复的 name，也避免把整段 script 塞进 60 字符 clip 造成噪音）。
+			const wfName = (p.name as string | undefined) || (p.workflowName as string | undefined) || '';
+			const script = (p.script as string | undefined) ?? '';
+			const lines = typeof script === 'string' ? script.split('\n').length : 0;
+			const stat = lines > 0 ? `${lines} 行脚本` : '';
+			return [wfName, stat].filter(Boolean).join(' · ') || '';
 		}
 		if (key.includes('search') || key === 'grep') {
 			return query ? `"${clip(query)}"` : '';

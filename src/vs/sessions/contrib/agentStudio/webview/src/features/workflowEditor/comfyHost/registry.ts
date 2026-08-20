@@ -20,7 +20,9 @@ export type PortType = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'TEXT' | 'SAROS_JSON' | 'AN
 import { INSTANT_WIDGETS } from './instantNodes.js';
 import { registerSchemaLiteGraphNode } from './schemaLiteGraphNodes.js';
 import { COMFYTV_STAGE_META } from './comfyTVStageMeta.generated.js';
+import { COMFYTV_FX_FIELDS } from './comfyTVFxFields.generated.js';
 import { listBuiltinLabels } from './builtinWorkflows/index.js';
+import { isFxBuildNode } from './fxChain.js';
 
 export type NodeKind = 'react' | 'schema' | 'native' | 'llm';
 
@@ -375,22 +377,115 @@ export const PALETTE_GROUPS = [
 ];
 
 /**
+ * ComfyTV 风格 Saros 节点色板（深色低饱和）—— **单一真源**。
+ *
+ * ★ 原配色是 Tailwind 500 系（#f97316 橙 / #eab308 黄 / #10b981 绿 / #ef4444 红），
+ *   高饱和高亮度，在深色画布上刺眼，且与 ComfyTV stage 节点的深紫色系
+ *   （ImageStage ≈ #6b3fa0）冲突 —— 同画布上编排节点像「贴纸」、ComfyTV 节点
+ *   像原生控件。统一降到亮度 ~0.45 / 中低饱和，保留**色相**做类别区分。
+ *
+ * `sarosLiteGraphNodes.NODE_CONFIGS` 从这里取色，保证 spec 与 LiteGraph class
+ * 两套定义同色（两处硬编码曾经漂移过）。
+ */
+export const SAROS_NODE_COLORS = {
+	start: '#3f7a52',      // 深绿 — 起点
+	end: '#7a4242',        // 深红 — 终点
+	task: '#3f5a8a',       // 深蓝 — 任务
+	prompt: '#5a4a8a',     // 深紫 — 内容（对齐 ComfyTV stage 紫）
+	agent: '#8a5a3f',      // 深棕橙 — 执行主体
+	skill: '#7a6a3f',      // 深金 — 技能
+	tool: '#3f7a6a',       // 深青绿 — 工具
+	ifElse: '#7a4a52',     // 深玫红 — 条件分支
+	switch: '#6a4a8a',     // 深紫罗兰 — 多路分支
+	merge: '#3f6a8a',      // 深天蓝 — 汇聚
+	loop: '#7a5f3f',       // 深琥珀 — 循环
+	parallel: '#3f7a72',   // 深青 — 并发
+	askUser: '#3f6a7a',    // 深青蓝 — 人工介入
+	group: '#55554f',      // 中灰 — 容器
+	subflow: '#4a5260',    // 灰蓝 — 子流程
+} as const;
+
+/**
+ * 编排节点中「参数用 **DOM 卡片**绘制」的类型 —— **单一真源**。
+ *
+ * 这些节点的参数复用 ImageStage 那套 DOM UI（MentionTextarea / ComboPopover /
+ * 宽 label 单列），而不是 LiteGraph canvas 原生 widget。三处消费：
+ *   1. `nodeCard.getNodeCardMeta` / NodeCard —— 放开原本 `kind==='schema'` 的
+ *      门控（showRun / hasPrompt / isProviderImageGen / 控件行样式）。
+ *   2. `LiteGraphCanvas.syncOverlay` —— 挂 `__saros_form` widget 参与**高度反馈**
+ *      （否则走 fallbackY ≈100px 兜底，textarea 与下拉被裁掉）。
+ *   3. `sarosLiteGraphNodes._initWidgets` —— canvas widget 全部标 `hidden`
+ *      （只保留 properties 持久化通道），避免 canvas / DOM 双绘同一参数。
+ *
+ * 放在 registry（底层、无 React 依赖）而非 nodeCard.tsx，让 sarosLiteGraphNodes
+ * 也能引用而不必把 React 组件拉进 LiteGraph 节点模块。
+ */
+export const ORCH_RICH_NODE_TYPES = new Set<string>([
+	'Saros.Start',
+	'Saros.Prompt',
+	'Saros.Task',
+	'Saros.Agent',
+	'Saros.Skill',
+	'Saros.Tool',
+	'Saros.IfElse',
+	'Saros.Switch',
+	'Saros.Merge',
+	'Saros.Loop',
+	'Saros.Parallel',
+	'Saros.AskUser',
+]);
+
+/**
  * Register all existing Saros node types.
  * This is the single migration point: ReactFlow's nodeTypes map is replaced by this.
  */
 export function registerSarosNodes(): void {
-	const json = (required: boolean = true): PortSpec => ({ name: 'value', type: 'SAROS_JSON', required });
-	registerNodeSpec({ type: 'Saros.Start', kind: 'react', title: '开始', category: 'system', inputs: [], outputs: [json(false)], color: '#22c55e' });
-	registerNodeSpec({ type: 'Saros.End', kind: 'react', title: '结束', category: 'system', inputs: [json(true)], outputs: [], color: '#ef4444' });
-	registerNodeSpec({ type: 'Saros.Task', kind: 'react', title: '任务', category: 'basic', inputs: [json()], outputs: [json(false)], color: '#3b82f6' });
-	registerNodeSpec({ type: 'Saros.Prompt', kind: 'react', title: '提示', category: 'basic', inputs: [json()], outputs: [{ name: 'output', type: 'TEXT' }], color: '#8b5cf6' });
-	registerNodeSpec({ type: 'Saros.Agent', kind: 'react', title: 'Agent', category: 'basic', inputs: [json()], outputs: [json(false)], color: '#f97316' });
-	registerNodeSpec({ type: 'Saros.Skill', kind: 'react', title: 'Skill', category: 'basic', inputs: [json()], outputs: [json(false)], color: '#eab308' });
-	registerNodeSpec({ type: 'Saros.Tool', kind: 'react', title: 'Tool', category: 'basic', inputs: [json()], outputs: [json(false)], color: '#10b981' });
+	// ★ 端口命名：通用数据端口 `in` / `out`（原来输入输出**都叫 value**，画布上
+	//   Agent 节点左右显示同一个 "value"，毫无语义）。
+	//   ⚠ 分支端口名（true/false/case-1..4/default）**不可改** ——
+	//   `executionGraph.isEdgeActive` 按 `edge.sourceHandle === branch` 路由。
+	//   ⚠ 这里的 spec 是端口名**权威**：`syncNodePortsToSpec` 每帧把节点实例的
+	//   端口名同步成 spec（槽位数相等时），所以必须与 sarosLiteGraphNodes 的
+	//   NODE_CONFIGS 保持**同名同数**，否则改了 class 也会被这里覆盖回去。
+	const jin = (required: boolean = true): PortSpec => ({ name: 'in', type: 'SAROS_JSON', required });
+	const jout = (required: boolean = false): PortSpec => ({ name: 'out', type: 'SAROS_JSON', required });
+	registerNodeSpec({ type: 'Saros.Start', kind: 'react', title: '开始', category: 'system', inputs: [], outputs: [
+		{ name: 'out', type: 'SAROS_JSON', required: false },
+		// COMFYTV_TEXT 桥：args.text 或 args.prompt 字段直连 ComfyTV stage 的 texts/prompt 输入
+		{ name: 'text', type: 'COMFYTV_TEXT', required: false },
+	], color: SAROS_NODE_COLORS.start, widgets: [{ name: 'args', type: 'TEXT', default: '{}' }] });
+	registerNodeSpec({ type: 'Saros.End', kind: 'react', title: '结束', category: 'system', inputs: [jin(true)], outputs: [], color: SAROS_NODE_COLORS.end });
+	registerNodeSpec({ type: 'Saros.Task', kind: 'react', title: '任务', category: 'basic', inputs: [jin()], outputs: [jout()], color: SAROS_NODE_COLORS.task, widgets: [{ name: 'prompt', type: 'TEXT' }] });
+	// ★ 编排节点的 widgets 是 **DOM 富卡的数据源**（`getNodeCardMeta` 从
+	//   `spec.widgets` 派生 `controls` 与 `hasPrompt`）—— 让参数复用 ImageStage
+	//   那套 DOM UI（MentionTextarea / ComboPopover / 宽 label 单列），而不是
+	//   LiteGraph canvas 原生 widget（窄、无 @ 提及、配色与 ComfyTV 不一致）。
+	//
+	//   ⚠ widget `name` 必须与 `nodeEditorForm.VSSAROS_FIELDS` 的 `key` **完全一致**：
+	//   `LiteGraphCanvas.handleNodeControl` 直接 `node.properties[name] = value`，
+	//   名字对不上就会写到一个执行层永远读不到的键（值静默丢失）。
+	//   故 Agent 用 `providerId`/`modelId`（**不是** provider/model —— 那是
+	//   ComfyTV ModelImageGen 的文生图键名，语义与过滤规则都不同）。
+	registerNodeSpec({ type: 'Saros.Prompt', kind: 'react', title: '提示', category: 'basic', inputs: [jin()], outputs: [{ name: 'output', type: 'TEXT' }], color: SAROS_NODE_COLORS.prompt, widgets: [{ name: 'prompt', type: 'TEXT' }] });
+	registerNodeSpec({ type: 'Saros.Agent', kind: 'react', title: 'Agent', category: 'basic', inputs: [jin()], outputs: [jout()], color: SAROS_NODE_COLORS.agent, widgets: [
+		{ name: 'agentId', type: 'COMBO' },
+		{ name: 'providerId', type: 'COMBO' },
+		{ name: 'modelId', type: 'COMBO' },
+		{ name: 'prompt', type: 'TEXT' },
+	] });
+	registerNodeSpec({ type: 'Saros.Skill', kind: 'react', title: 'Skill', category: 'basic', inputs: [jin()], outputs: [jout()], color: SAROS_NODE_COLORS.skill, widgets: [
+		{ name: 'skillName', type: 'COMBO' },
+		{ name: 'task', type: 'TEXT' },
+		{ name: 'skillArgs', type: 'TEXT', default: '{}' },
+	] });
+	registerNodeSpec({ type: 'Saros.Tool', kind: 'react', title: 'Tool', category: 'basic', inputs: [jin()], outputs: [jout()], color: SAROS_NODE_COLORS.tool, widgets: [
+		{ name: 'toolName', type: 'COMBO' },
+		{ name: 'toolParams', type: 'TEXT', default: '{}' },
+	] });
 	// Subflow（子流程）：编排层容器，data.subflow 承载内部图。展开（flattenSubflows）
 	// 在执行/导出前还原。静态 SAROS_JSON 端口作为编排容器主链路；内部图的
 	// entry/exit 端口在执行期由 substituteSubflow 重映射。
-	registerNodeSpec({ type: 'Saros.Subflow', kind: 'react', title: '子流程', category: 'basic', inputs: [json()], outputs: [json(false)], color: '#64748b' });
+	registerNodeSpec({ type: 'Saros.Subflow', kind: 'react', title: '子流程', category: 'basic', inputs: [jin()], outputs: [jout()], color: SAROS_NODE_COLORS.subflow });
 	// Provider 选择器：本地解析（无 RPC），输出 TEXT "provider:<providerId>:<modelId>"
 	// 供 ModelImageGen 消费。kind='react' → runNodeOrStage 走 runProviderPickerNode。
 	registerNodeSpec({
@@ -443,10 +538,30 @@ export function registerSarosNodes(): void {
 		color: '#06b6d4',
 		comfyTV: { stageKind: 'image', workflowKind: 'image-to-image' },
 	});
-	registerNodeSpec({ type: 'Saros.IfElse', kind: 'react', title: 'If/Else', category: 'controlFlow', inputs: [json()], outputs: [{ name: 'true', type: 'SAROS_JSON' }, { name: 'false', type: 'SAROS_JSON' }], color: '#ef4444' });
-	registerNodeSpec({ type: 'Saros.Switch', kind: 'react', title: 'Switch', category: 'controlFlow', inputs: [json()], outputs: [{ name: 'case', type: 'SAROS_JSON' }], color: '#a855f7' });
-	registerNodeSpec({ type: 'Saros.AskUser', kind: 'react', title: '询问', category: 'controlFlow', inputs: [json()], outputs: [{ name: 'answer', type: 'SAROS_JSON' }], color: '#06b6d4' });
-	registerNodeSpec({ type: 'Saros.Group', kind: 'react', title: '分组', category: 'layout', inputs: [], outputs: [], color: '#888780' });
+	registerNodeSpec({ type: 'Saros.IfElse', kind: 'react', title: 'If/Else', category: 'controlFlow', inputs: [jin()], outputs: [{ name: 'true', type: 'SAROS_JSON' }, { name: 'false', type: 'SAROS_JSON' }], color: SAROS_NODE_COLORS.ifElse, widgets: [{ name: 'evaluationTarget', type: 'TEXT' }] });
+	// W3: Merge 汇聚节点（双输入）—— 分支合流。widget `mode`：
+	//   all   = 等全部入边，输出 {inA, inB}（桶可为 null=分支未激活）
+	//   any   = 首个非空入边值直接透传（OR 语义）
+	//   order = 按端口序输出数组 [inA, inB]（保留 null 对齐下标）
+	registerNodeSpec({ type: 'Saros.Merge', kind: 'react', title: '汇聚', category: 'controlFlow', inputs: [{ name: 'inA', type: 'SAROS_JSON' }, { name: 'inB', type: 'SAROS_JSON' }], outputs: [jout()], color: SAROS_NODE_COLORS.merge, widgets: [{ name: 'mode', type: 'COMBO', default: 'all', options: ['all', 'any', 'order'] }] });
+	// W5: Loop/Parallel 迭代子图节点——body 存 data.loopBody（SubflowDefinition
+	// 同构；**不走 flattenSubflows**——执行时容器而非设计时组合，避免双跑）。
+	// widget `items`（JSON 数组或 {{input}} 引用上游数组快照）逐项跑 body，
+	// 当前项写入 Loop 自身快照（body 内 {{input}} = item）。
+	registerNodeSpec({ type: 'Saros.Loop', kind: 'react', title: '循环', category: 'controlFlow', inputs: [jin()], outputs: [jout()], color: SAROS_NODE_COLORS.loop, widgets: [{ name: 'items', type: 'TEXT', default: '[]' }, { name: 'concurrency', type: 'INT', default: 1 }] });
+	registerNodeSpec({ type: 'Saros.Parallel', kind: 'react', title: '并发', category: 'controlFlow', inputs: [jin()], outputs: [jout()], color: SAROS_NODE_COLORS.parallel, widgets: [{ name: 'items', type: 'TEXT', default: '[]' }, { name: 'concurrency', type: 'INT', default: 4 }] });
+	// W2b: Switch 多 case 输出（case-1..4 + default）。widget `cases` 定义每路
+	// 匹配值（JSON 数组或逗号分隔，长度 ≤4）；运行时 value 命中第 i 路 →
+	// branch='case-i'（端口路由），无命中 → 'default'。
+	registerNodeSpec({ type: 'Saros.Switch', kind: 'react', title: 'Switch', category: 'controlFlow', inputs: [jin()], outputs: [
+		{ name: 'case-1', type: 'SAROS_JSON' }, { name: 'case-2', type: 'SAROS_JSON' }, { name: 'case-3', type: 'SAROS_JSON' }, { name: 'case-4', type: 'SAROS_JSON' }, { name: 'default', type: 'SAROS_JSON' },
+	], color: SAROS_NODE_COLORS.switch, widgets: [{ name: 'evaluationTarget', type: 'TEXT' }, { name: 'cases', type: 'TEXT', default: '[]' }] });
+	registerNodeSpec({ type: 'Saros.AskUser', kind: 'react', title: '询问', category: 'controlFlow', inputs: [jin()], outputs: [{ name: 'answer', type: 'SAROS_JSON' }], color: SAROS_NODE_COLORS.askUser, widgets: [
+		{ name: 'questionText', type: 'TEXT', default: 'Select an option' },
+		{ name: 'options', type: 'TEXT', default: '[{"label":"Option 1"},{"label":"Option 2"}]' },
+		{ name: 'multiSelect', type: 'COMBO', default: 'no', options: ['yes', 'no'] },
+	] });
+	registerNodeSpec({ type: 'Saros.Group', kind: 'react', title: '分组', category: 'layout', inputs: [], outputs: [], color: SAROS_NODE_COLORS.group });
 }
 
 /**
@@ -559,31 +674,46 @@ export function registerDefaultComfyTVStages(): void {
 			{ name: 'prompt', type: 'TEXT', default: '' },
 		];
 	};
-	// UpscaleStage：ComfyTV model_edits.py 定义 workflow + scale["2x","4x"] 两个可见参数。
-	// genericStageWidgets 只生成 workflow，缺少 scale → 用户无法选择放大倍数。
+	// UpscaleStage：ComfyTV model_edits.py 定义 workflow + scale["2x","4x"] +
+	// main_prompt（可选扩散精修引导）+ image(COMFYTV_IMAGE)。genericStageWidgets 只生成
+	// workflow，缺少 scale → 用户无法选择放大倍数；此处补 prompt，image 输入由
+	// 循环后 refineStage 精确补上。
 	const upscaleWidgets = (): NodeSpec['widgets'] => {
 		const opts = workflowOptionsFor('upscale');
 		return [
 			{ name: 'workflow', type: 'COMBO', default: opts[0], options: opts },
 			{ name: 'scale', type: 'COMBO', default: '2x', options: ['2x', '4x'] },
+			{ name: 'prompt', type: 'TEXT', default: '' },
 		];
 	};
-	// PanoramaStage：ComfyTV panorama.py 定义 direction["left","right","up","down"]。
-	const panoramaWidgets = (): NodeSpec['widgets'] => {
-		const opts = workflowOptionsFor('panorama');
-		return [
-			{ name: 'workflow', type: 'COMBO', default: opts[0], options: opts },
-			{ name: 'direction', type: 'COMBO', default: 'right', options: ['left', 'right', 'up', 'down'] },
-		];
-	};
-	// MultiangleStage：ComfyTV multiangle.py 定义 angle_step(15-90) + num_views(4-24)。
-	const multiangleWidgets = (): NodeSpec['widgets'] => {
-		const opts = workflowOptionsFor('multiangle');
-		return [
-			{ name: 'workflow', type: 'COMBO', default: opts[0], options: opts },
-			{ name: 'angle_step', type: 'INT', default: 30, min: 15, max: 90 },
-			{ name: 'num_views', type: 'INT', default: 8, min: 4, max: 24 },
-		];
+	// PanoramaStage：ComfyTV panorama.py 的 define_schema 无 direction 参数
+	//   （direction 属于 LensDistort/STMapGen/Particles，见 preset_fields.py）。
+	//   此处不再特殊生成（由循环后 panoramaRefineWidgets 精确覆盖）。
+	const panoramaWidgets = (): NodeSpec['widgets'] => workflowOptionsFor('panorama').length
+		? [{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('panorama')[0], options: workflowOptionsFor('panorama') }]
+		: [];
+	// fx 节点（VideoColorStage/AudioEQStage/…）：ComfyTV 这些是 fx-chain builder，
+	// 走单节点执行（class_type = stage 本身），参数直接作为 socketless hidden 字段
+	// 由 StagePresetBar + CustomParamsSection 渲染。此处把 COMFYTV_FX_FIELDS 的字段
+	// 转成 DOM widgets（FLOAT/INT/COMBO/BOOLEAN），让 nodeCard 通用控件渲染参数面板，
+	// 替代原本对 fx 节点无意义的 workflow 下拉。TEXT 字段（lut_file/bands/curves 等
+	// 需专用 UI）不在表内，保留后端默认值。
+	const fxFieldWidgets = (nodeId: string): NodeSpec['widgets'] => {
+		const fields = COMFYTV_FX_FIELDS[nodeId];
+		if (!fields || fields.length === 0) { return undefined; }
+		const w: NonNullable<NodeSpec['widgets']> = [];
+		for (const f of fields) {
+			if (f.type === 'COMBO') {
+				w.push({ name: f.name, type: 'COMBO', default: String(f.default), options: f.options ?? [] });
+			} else if (f.type === 'BOOLEAN') {
+				w.push({ name: f.name, type: 'BOOLEAN', default: Boolean(f.default) });
+			} else if (f.type === 'INT') {
+				w.push({ name: f.name, type: 'INT', default: Number(f.default), min: f.min, max: f.max });
+			} else {
+				w.push({ name: f.name, type: 'FLOAT', default: Number(f.default), min: f.min, max: f.max, step: f.step });
+			}
+		}
+		return w;
 	};
 	for (const meta of COMFYTV_STAGE_META) {
 		const outType = comfyTVKindOutputType(meta.kind);
@@ -594,9 +724,13 @@ export function registerDefaultComfyTVStages(): void {
 			widgets = upscaleWidgets();
 		} else if (meta.nodeId === 'ComfyTV.PanoramaStage') {
 			widgets = panoramaWidgets();
-		} else if (meta.nodeId === 'ComfyTV.MultiangleStage') {
-			widgets = multiangleWidgets();
+		} else if (isFxBuildNode(meta.nodeId)) {
+			// fx 节点用参数字段替代 workflow 下拉（fx 不走 workflow）。
+			widgets = fxFieldWidgets(meta.nodeId);
 		}
+		// ★ MultiangleStage 不在此处特殊生成：旧 angle_step/num_views 参数已过时
+		//   （ComfyTV 现为 model_edits.py 的 horizontal_angle/vertical_angle/zoom），
+		//   由循环后的 multiangleRefineWidgets 精确覆盖。
 		registerNodeSpec({
 			type: meta.nodeId,
 			kind: 'schema',
@@ -634,20 +768,34 @@ export function registerDefaultComfyTVStages(): void {
 		{ name: 'generate_audio', type: 'BOOLEAN', default: false },
 		{ name: 'prompt', type: 'TEXT', default: '' },
 	];
+	// AudioStage 参数严格对齐 ComfyTV generators.py define_schema：
+	//   workflow + main_prompt(prompt) + lyrics(String multiline) +
+	//   duration_s(Float 30, 1~240) + bpm(Int 120, 10~300) +
+	//   timesignature(ACE_TIME_SIGNATURES) + keyscale(ACE_KEYSCALES 34 项) +
+	//   language(ACE_LANGUAGES 51 项)。
+	const COMFYTV_ACE_KEYSCALES = (() => {
+		const roots = ['C', 'C#', 'Db', 'D', 'D#', 'Eb', 'E', 'F', 'F#', 'Gb', 'G', 'G#', 'Ab', 'A', 'A#', 'Bb', 'B'];
+		return roots.flatMap(root => [`${root} major`, `${root} minor`]);
+	})();
+	const COMFYTV_ACE_LANGUAGES = ['ar', 'az', 'bg', 'bn', 'ca', 'cs', 'da', 'de', 'el', 'en', 'es', 'fa', 'fi', 'fr', 'he', 'hi', 'hr', 'ht', 'hu', 'id', 'is', 'it', 'ja', 'ko', 'la', 'lt', 'ms', 'ne', 'nl', 'no', 'pa', 'pl', 'pt', 'ro', 'ru', 'sa', 'sk', 'sr', 'sv', 'sw', 'ta', 'te', 'th', 'tl', 'tr', 'uk', 'ur', 'vi', 'yue', 'zh', 'unknown'];
+	const COMFYTV_SPEECH_LANGUAGES = ['Auto', 'English', 'English (British)', 'Mandarin Chinese', 'Japanese', 'Korean', 'French', 'German', 'Spanish', 'Brazilian Portuguese', 'Portuguese', 'Italian', 'Hindi', 'Russian', 'Arabic'];
 	const audioWidgets: NodeSpec['widgets'] = [
 		{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('audio')[0], options: workflowOptionsFor('audio') },
-		{ name: 'duration_s', type: 'FLOAT', default: 30, min: 1, max: 600 },
-		{ name: 'bpm', type: 'INT', default: 120, min: 40, max: 200 },
+		{ name: 'prompt', type: 'TEXT', default: '' },
+		{ name: 'lyrics', type: 'TEXT', default: '' },
+		{ name: 'duration_s', type: 'FLOAT', default: 30, min: 1, max: 240, step: 1 },
+		{ name: 'bpm', type: 'INT', default: 120, min: 10, max: 300 },
 		{ name: 'timesignature', type: 'COMBO', default: '4', options: ['2', '3', '4', '6'] },
-		{ name: 'keyscale', type: 'COMBO', default: 'C major', options: ['C major', 'C minor', 'G major', 'G minor', 'D major', 'D minor', 'A major', 'A minor', 'E major', 'E minor', 'B major', 'B minor', 'F major', 'F minor', 'F# major', 'F# minor', 'C# major', 'C# minor'] },
-		{ name: 'language', type: 'COMBO', default: 'en', options: ['en', 'zh', 'ja', 'ko', 'es', 'fr', 'de', 'it', 'pt', 'ru', 'ar', 'hi'] },
+		{ name: 'keyscale', type: 'COMBO', default: 'C major', options: COMFYTV_ACE_KEYSCALES },
+		{ name: 'language', type: 'COMBO', default: 'en', options: COMFYTV_ACE_LANGUAGES },
 	];
 	const speechWidgets: NodeSpec['widgets'] = [
 		{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('speech')[0], options: workflowOptionsFor('speech') },
-		{ name: 'voice', type: 'TEXT', default: '' },
-		{ name: 'language', type: 'COMBO', default: 'Auto', options: ['Auto', 'English', 'Mandarin Chinese', 'Japanese', 'Korean', 'French', 'German', 'Spanish'] },
-		{ name: 'speed', type: 'FLOAT', default: 1.0, min: 0.5, max: 2.0 },
 		{ name: 'prompt', type: 'TEXT', default: '' },
+		{ name: 'voice', type: 'TEXT', default: '' },
+		{ name: 'language', type: 'COMBO', default: 'Auto', options: COMFYTV_SPEECH_LANGUAGES },
+		{ name: 'speed', type: 'FLOAT', default: 1.0, min: 0.5, max: 2.0, step: 0.05 },
+		{ name: 'reference_text', type: 'TEXT', default: '' },
 	];
 	const textWidgets: NodeSpec['widgets'] = [
 		{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('text')[0], options: workflowOptionsFor('text') },
@@ -670,39 +818,49 @@ export function registerDefaultComfyTVStages(): void {
 	refineStage('ComfyTV.ImageStage', imageWidgets,
 		[{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'images', type: 'COMFYTV_IMAGE' }],
 		[{ name: 'images', type: 'COMFYTV_IMAGES' }, { name: 'image', type: 'COMFYTV_IMAGE' }]);
-	// MultiangleStage：ComfyTV model_edits.py 的 INPUT_TYPES 定义了
-	// horizontal_angle / vertical_angle / zoom 三个 FLOAT slider，与 ImageStage
-	// 的 workflow/resolution/aspect_ratio/batch_size 完全不同。必须单独 refine。
+	// MultiangleStage：ComfyTV model_edits.py 的 define_schema 定义
+	// horizontal_angle(Int 0-360 默认0) / vertical_angle(Int -30~60 默认0) /
+	// zoom(Float 0-10 默认5.0) 三个 slider + prompt。与 ImageStage 的
+	// workflow/resolution/aspect_ratio/batch_size 完全不同，必须单独 refine。
+	// ★ 数值严格对齐 model_edits.py（此前 FLOAT 0-180 默认30 / -90~90 / 0.5-2
+	//   默认1.0 全是错的——zoom 默认 1.0 会退化成原始大小，LoRA 相机控制失效）。
 	const multiangleRefineWidgets: NodeSpec['widgets'] = [
 		{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('multiangle')[0], options: workflowOptionsFor('multiangle') },
-		{ name: 'horizontal_angle', type: 'FLOAT', default: 30, min: 0, max: 180 },
-		{ name: 'vertical_angle', type: 'FLOAT', default: 0, min: -90, max: 90 },
-		{ name: 'zoom', type: 'FLOAT', default: 1.0, min: 0.5, max: 2.0 },
+		{ name: 'horizontal_angle', type: 'INT', default: 0, min: 0, max: 360 },
+		{ name: 'vertical_angle', type: 'INT', default: 0, min: -30, max: 60 },
+		{ name: 'zoom', type: 'FLOAT', default: 5.0, min: 0.0, max: 10.0, step: 0.1 },
 		{ name: 'prompt', type: 'TEXT', default: '' },
 	];
 	refineStage('ComfyTV.MultiangleStage', multiangleRefineWidgets,
 		[{ name: 'image', type: 'COMFYTV_IMAGE' }],
 		[{ name: 'image', type: 'COMFYTV_IMAGE' }]);
-	// PanoramaStage：ComfyTV panorama.py 定义 workflow/direction/prompt。
-	// 需要 image 输入（参考图）+ prompt（生成描述）。
+	// PanoramaStage：ComfyTV panorama.py 定义 workflow + main_prompt + image 输入，
+	// 输出为**单个** COMFYTV_PANORAMA.Output("panorama")（非 images/image 双输出）。
+	// ★ ComfyTV panorama.py 无 direction 参数（direction 属于 LensDistort/STMapGen/
+	//   Particles）。此处只保留 workflow + prompt，严格对齐 define_schema。
 	const panoramaRefineWidgets: NodeSpec['widgets'] = [
 		{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('panorama')[0], options: workflowOptionsFor('panorama') },
-		{ name: 'direction', type: 'COMBO', default: 'right', options: ['left', 'right', 'up', 'down'] },
 		{ name: 'prompt', type: 'TEXT', default: '' },
 	];
 	refineStage('ComfyTV.PanoramaStage', panoramaRefineWidgets,
 		[{ name: 'image', type: 'COMFYTV_IMAGE' }],
-		[{ name: 'images', type: 'COMFYTV_IMAGES' }, { name: 'image', type: 'COMFYTV_IMAGE' }]);
-	// EraseStage：需要 image 输入（涂抹参考）+ mask_data 隐藏输入
+		[{ name: 'panorama', type: 'COMFYTV_PANORAMA' }]);
+	// EraseStage：ComfyTV model_edits.py 定义 workflow + mask_data(hidden) + image。
+	// ★ 源码无 brush_size 参数（笔刷大小是 MaskPainter 编辑器的内部 UI 状态，非节点
+	//   参数）。此处只保留 workflow + image 输入，mask_data 由 MaskPainter 写入
+	//   节点 properties（见 nodeCard commitMaskField）。
 	refineStage('ComfyTV.EraseStage',
 		[
 			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('erase')[0], options: workflowOptionsFor('erase') },
-			{ name: 'brush_size', type: 'INT', default: 20, min: 1, max: 200 },
 		],
 		[{ name: 'image', type: 'COMFYTV_IMAGE' }],
 		[{ name: 'image', type: 'COMFYTV_IMAGE' }]);
+	// UpscaleStage：补 image 输入 + image 输出（对齐 model_edits.py）。
+	refineStage('ComfyTV.UpscaleStage', upscaleWidgets(),
+		[{ name: 'image', type: 'COMFYTV_IMAGE' }],
+		[{ name: 'image', type: 'COMFYTV_IMAGE' }]);
 	refineStage('ComfyTV.VideoStage', videoWidgets,
-		[{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'images', type: 'COMFYTV_IMAGE' }, { name: 'videos', type: 'COMFYTV_VIDEO' }],
+		[{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'images', type: 'COMFYTV_IMAGE' }, { name: 'videos', type: 'COMFYTV_VIDEO' }, { name: 'audio', type: 'COMFYTV_AUDIO' }],
 		[{ name: 'videos', type: 'COMFYTV_VIDEO' }]);
 	// KenBurnsStage：ComfyTV KenBurnsStageCard.vue 实际仅是滑块卡片
 	// （width/height/fps/duration/start·end zoom·x·y + interp），无 workflow 选择、
@@ -721,21 +879,101 @@ export function registerDefaultComfyTVStages(): void {
 		{ name: 'end_y', type: 'FLOAT', default: 0.5, min: 0.0, max: 1.0, step: 0.01 },
 		{ name: 'interp', type: 'COMBO', default: 'smooth', options: ['linear', 'smooth', 'ease_in', 'ease_out'] },
 	];
+	// KenBurnsStage：源码 video_generate.py 输入 image(COMFYTV_IMAGE)、输出
+	// video(COMFYTV_VIDEO)（非通用 input/output 端口名）。
 	refineStage('ComfyTV.KenBurnsStage', kenBurnsWidgets,
-		[{ name: 'input', type: 'ANY' }],
-		[{ name: 'output', type: 'COMFYTV_VIDEO' }]);
+		[{ name: 'image', type: 'COMFYTV_IMAGE' }],
+		[{ name: 'video', type: 'COMFYTV_VIDEO' }]);
+	// AudioStage：源码 generators.py 无媒体输入端口（纯 socketless 参数 + 输出 audio）。
 	refineStage('ComfyTV.AudioStage', audioWidgets,
-		[{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'audio', type: 'COMFYTV_AUDIO' }],
+		[],
 		[{ name: 'audio', type: 'COMFYTV_AUDIO' }]);
+	// SpeechStage：源码仅 reference_audio(COMFYTV_AUDIO) 一个输入端口（无 texts）。
 	refineStage('ComfyTV.SpeechStage', speechWidgets,
-		[{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'reference_audio', type: 'COMFYTV_AUDIO' }],
+		[{ name: 'reference_audio', type: 'COMFYTV_AUDIO' }],
 		[{ name: 'audio', type: 'COMFYTV_AUDIO' }]);
+	// TextStage：源码 texts(8) + images(8) + videos(4) 三个 autogrow 输入。
 	refineStage('ComfyTV.TextStage', textWidgets,
-		[{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'images', type: 'COMFYTV_IMAGE' }],
+		[{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'images', type: 'COMFYTV_IMAGE' }, { name: 'videos', type: 'COMFYTV_VIDEO' }],
 		[{ name: 'texts', type: 'COMFYTV_TEXT' }]);
+	// Model3DStage：源码 texts(4) + images(4) + models(4) 三个 autogrow 输入。
 	refineStage('ComfyTV.Model3DStage', modelWidgets,
-		[{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'images', type: 'COMFYTV_IMAGE' }],
+		[{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'images', type: 'COMFYTV_IMAGE' }, { name: 'models', type: 'COMFYTV_MODEL' }],
 		[{ name: 'models', type: 'COMFYTV_MODEL' }, { name: 'image', type: 'COMFYTV_IMAGE' }]);
+	// ── 补齐 meta.py 缺失节点的精确端口（对齐源码 define_schema）─────────────
+	// ShotImagesStage：storyboard(COMFYTV_STORYBOARD) + images 输入 → images/image 输出。
+	const shotImagesWidgets: NodeSpec['widgets'] = [
+		{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('shot-images')[0], options: workflowOptionsFor('shot-images') },
+		{ name: 'resolution', type: 'COMBO', default: '1K', options: COMFYTV_RESOLUTIONS },
+		{ name: 'aspect_ratio', type: 'COMBO', default: '1:1', options: COMFYTV_ASPECT_RATIOS },
+	];
+	refineStage('ComfyTV.ShotImagesStage', shotImagesWidgets,
+		[{ name: 'storyboard', type: 'COMFYTV_STORYBOARD' }, { name: 'images', type: 'COMFYTV_IMAGE' }],
+		[{ name: 'images', type: 'COMFYTV_IMAGES' }, { name: 'image', type: 'COMFYTV_IMAGE' }]);
+	// StoryboardStage：texts 输入 → storyboard 输出（含 total_duration_s/shot_count/
+	// characters 参数，对齐 generators.py）。
+	const storyboardWidgets: NodeSpec['widgets'] = [
+		{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('storyboard')[0], options: workflowOptionsFor('storyboard') },
+		{ name: 'prompt', type: 'TEXT', default: '' },
+		{ name: 'total_duration_s', type: 'INT', default: 30, min: 2, max: 600 },
+		{ name: 'shot_count', type: 'INT', default: 6, min: 1, max: 25 },
+		{ name: 'characters', type: 'TEXT', default: '' },
+	];
+	refineStage('ComfyTV.StoryboardStage', storyboardWidgets,
+		[{ name: 'texts', type: 'COMFYTV_TEXT' }],
+		[{ name: 'storyboard', type: 'COMFYTV_STORYBOARD' }]);
+	// DirectorTimelineStage：images + audio 输入 → timeline 输出（transform 变体）。
+	refineStage('ComfyTV.DirectorTimelineStage', undefined,
+		[{ name: 'images', type: 'COMFYTV_IMAGE' }, { name: 'audio', type: 'COMFYTV_AUDIO' }],
+		[{ name: 'timeline', type: 'COMFYTV_TIMELINE' }]);
+	// TimelineVideoStage：timeline 输入 → video 输出（源码含 timeline workflow 下拉）。
+	// 注意：builtinWorkflows 暂无 'timeline' 模板，故用 listBuiltinLabels 直取（空则不
+	// 兜底成 Local SD1.5，避免误导）；后端补模板后自动出现。
+	const timelineLabels = listBuiltinLabels('timeline');
+	const timelineVideoWidgets: NodeSpec['widgets'] = timelineLabels.length
+		? [{ name: 'workflow', type: 'COMBO', default: timelineLabels[0], options: timelineLabels }]
+		: [];
+	refineStage('ComfyTV.TimelineVideoStage', timelineVideoWidgets,
+		[{ name: 'timeline', type: 'COMFYTV_TIMELINE' }],
+		[{ name: 'video', type: 'COMFYTV_VIDEO' }]);
+	// VideoUpscaleStage：video 输入 → video 输出 + scale 下拉。
+	const videoUpscaleWidgets: NodeSpec['widgets'] = [
+		{ name: 'scale', type: 'COMBO', default: '2x', options: ['2x', '4x'] },
+	];
+	refineStage('ComfyTV.VideoUpscaleStage', videoUpscaleWidgets,
+		[{ name: 'video', type: 'COMFYTV_VIDEO' }],
+		[{ name: 'video', type: 'COMFYTV_VIDEO' }]);
+	// 字幕擦除系列：video 输入 → video 输出。
+	refineStage('ComfyTV.VideoSubtitleSmartEraseStage', undefined,
+		[{ name: 'video', type: 'COMFYTV_VIDEO' }],
+		[{ name: 'video', type: 'COMFYTV_VIDEO' }]);
+	refineStage('ComfyTV.VideoSubtitleSelectEraseStage', undefined,
+		[{ name: 'video', type: 'COMFYTV_VIDEO' }],
+		[{ name: 'video', type: 'COMFYTV_VIDEO' }]);
+	// 人声/背景提取：video 输入 → audio 输出 + workflow 下拉（源码 labels_for('audio-vocal'/'audio-bg')）。
+	// builtinWorkflows 暂无这两个 kind，用 listBuiltinLabels 直取避免兜底误导。
+	const audioVocalLabels = listBuiltinLabels('audio-vocal');
+	const audioBgLabels = listBuiltinLabels('audio-bg');
+	const audioExtractVocalWidgets: NodeSpec['widgets'] = audioVocalLabels.length
+		? [{ name: 'workflow', type: 'COMBO', default: audioVocalLabels[0], options: audioVocalLabels }]
+		: [];
+	const audioExtractBgWidgets: NodeSpec['widgets'] = audioBgLabels.length
+		? [{ name: 'workflow', type: 'COMBO', default: audioBgLabels[0], options: audioBgLabels }]
+		: [];
+	refineStage('ComfyTV.AudioExtractVocalStage', audioExtractVocalWidgets,
+		[{ name: 'video', type: 'COMFYTV_VIDEO' }],
+		[{ name: 'audio', type: 'COMFYTV_AUDIO' }]);
+	refineStage('ComfyTV.AudioExtractBgStage', audioExtractBgWidgets,
+		[{ name: 'video', type: 'COMFYTV_VIDEO' }],
+		[{ name: 'audio', type: 'COMFYTV_AUDIO' }]);
+	// AudioClipStage（Audio Trim）：audio + video 输入 → audio 输出。
+	refineStage('ComfyTV.AudioClipStage', undefined,
+		[{ name: 'audio', type: 'COMFYTV_AUDIO' }, { name: 'video', type: 'COMFYTV_VIDEO' }],
+		[{ name: 'audio', type: 'COMFYTV_AUDIO' }]);
+	// AudioSplitStage：audio + video 输入 → audio_a + audio_b 双输出。
+	refineStage('ComfyTV.AudioSplitStage', undefined,
+		[{ name: 'audio', type: 'COMFYTV_AUDIO' }, { name: 'video', type: 'COMFYTV_VIDEO' }],
+		[{ name: 'audio_a', type: 'COMFYTV_AUDIO' }, { name: 'audio_b', type: 'COMFYTV_AUDIO' }]);
 	// Picker 家族：媒体批量 → 单选快照。
 	refineStage('ComfyTV.ImagePickerStage', undefined,
 		[{ name: 'batch', type: 'COMFYTV_IMAGES' }],
@@ -747,19 +985,57 @@ export function registerDefaultComfyTVStages(): void {
 		[{ name: 'batch', type: 'COMFYTV_AUDIO' }],
 		[{ name: 'audio', type: 'COMFYTV_AUDIO' }]);
 	// Loader 家族（ComfyTV loaders.py 语义：media 输入 / 上传 → 快照输出）。
-	const loader = (type: string, outType: string, inType?: string): void => {
+	// ★ 输出端口名对齐 ComfyTV `define_schema` 的 Output 名（loaders.py）：
+	//   ImageLoaderStage → `image`、VideoLoaderStage → `video`、AudioLoaderStage →
+	//   `audio`、TextLoaderStage → `text`（非通用的 `output`）。此前写死 `output`
+	//   导致连线端口标签与 ComfyTV 参考 UI 不一致（「loadimage/loadvideo 参数错误」）。
+	//   端口**类型**仍用 COMFYTV_* 族（与其它 ComfyTV stage 同族，连线语义一致）。
+	const loader = (type: string, outType: string, outName: string, widgets: NodeWidgetSpec[] = []): void => {
 		const existing = registry.get(type)?.spec;
 		if (!existing) { return; }
 		registerNodeSpec({
 			...existing,
-			inputs: inType ? [{ name: 'input', type: inType }] : [],
-			outputs: [{ name: 'output', type: outType }],
+			inputs: [],
+			outputs: [{ name: outName, type: outType }],
+			widgets,
 		});
 	};
-	loader('ComfyTV.ImageLoaderStage', 'COMFYTV_IMAGE');
-	loader('ComfyTV.VideoLoaderStage', 'COMFYTV_VIDEO');
-	loader('ComfyTV.AudioLoaderStage', 'COMFYTV_AUDIO');
-	loader('ComfyTV.TextLoaderStage', 'COMFYTV_TEXT');
+	// LoadImage 复刻 ComfyTV LoadImage 编辑器：文件名 input + 本地上传按钮 + 缩略图
+	// + 尺寸文字（image widget 类型见 NodeEditorPopup ImageFieldEditor）。
+	loader('ComfyTV.ImageLoaderStage', 'COMFYTV_IMAGE', 'image', [
+		{ name: 'image', type: 'IMAGE', default: '' },
+	]);
+	loader('ComfyTV.VideoLoaderStage', 'COMFYTV_VIDEO', 'video', [
+		{ name: 'video', type: 'TEXT', default: '' },
+	]);
+	loader('ComfyTV.AudioLoaderStage', 'COMFYTV_AUDIO', 'audio', [
+		{ name: 'audio', type: 'TEXT', default: '' },
+	]);
+	loader('ComfyTV.TextLoaderStage', 'COMFYTV_TEXT', 'text', [
+		{ name: 'text', type: 'TEXT', default: '' },
+	]);
+	// Asset 系列（loaders.py Asset*LoaderStage，输出名同基础 loader）：
+	//   本项目未走 ComfyTV 的文件上传 Combo，改由拖拽媒体库资产（mediaAssetId）
+	//   注入；但**输出端口名**仍须对齐 ComfyTV（image/video/audio）。
+	loader('ComfyTV.AssetImageLoaderStage', 'COMFYTV_IMAGE', 'image');
+	loader('ComfyTV.AssetVideoLoaderStage', 'COMFYTV_VIDEO', 'video');
+	loader('ComfyTV.AssetAudioLoaderStage', 'COMFYTV_AUDIO', 'audio');
+	// Model loader 双输出（loaders.py ModelLoaderStage/AssetModelLoaderStage：
+	//   outputs=[COMFYTV_MODEL.Output("model"), COMFYTV_IMAGE.Output("image")]）。
+	const modelLoader = (type: string): void => {
+		const existing = registry.get(type)?.spec;
+		if (!existing) { return; }
+		registerNodeSpec({
+			...existing,
+			inputs: [],
+			outputs: [
+				{ name: 'model', type: 'COMFYTV_MODEL' },
+				{ name: 'image', type: 'COMFYTV_IMAGE' },
+			],
+		});
+	};
+	modelLoader('ComfyTV.ModelLoaderStage');
+	modelLoader('ComfyTV.AssetModelLoaderStage');
 	// P4 — ComfyTV ↔ native bridge nodes (single-node prompts; full tensor
 	// wiring lands with native-graph execution).
 	const bridge = (type: string, title: string, inType: string, outType: string): void => {
@@ -808,44 +1084,52 @@ export function registerDefaultComfyTVStages(): void {
 	// 见 syncNodePortsToSpec：已存在于画布/存档里的节点端口名是**序列化数据**，
 	// 改这里的 spec 只影响新建节点；老节点靠画布层的同步函数就地纠正。
 	// P3 — Relight embedded light-ball editor (browser-local, two outputs).
+	// ★ 对齐 ComfyTV model_edits.py：RelightStage 无 image 输入（纯灯光球编辑器，
+	//   灯光数据由内嵌编辑器持久化为 lights_data/light_render_url hidden 字段）；
+	//   输出类型 = COMFYTV_IMAGE("3d light") + COMFYTV_TEXT。
 	registerNodeSpec({
 		type: 'ComfyTV.RelightStage',
 		kind: 'native',
 		title: '打光',
 		category: 'comfyRelight',
-		inputs: [
-			{ name: 'image', type: 'COMFYTV_IMAGE' },
-		],
+		inputs: [],
 		outputs: [
-			{ name: 'light_render', type: 'IMAGE' },
-			{ name: 'light_prompt', type: 'TEXT' },
+			{ name: 'light_render', type: 'COMFYTV_IMAGE' },
+			{ name: 'light_prompt', type: 'COMFYTV_TEXT' },
 		],
 		widgets: [
 			{ name: 'main_prompt', type: 'STRING', default: 'soft studio lighting, gentle shadows' },
 		],
 	});
 	// P3 — Poster embedded layout editor (browser-local, template + layout blob).
+	// ★ 对齐 ComfyTV poster.py：images(Autogrow 12) 输入 + image 输出均为 COMFYTV_*
+	//   类型；补 layout 隐藏字段（画布布局+配色+字体 blob）。
 	registerNodeSpec({
 		type: 'ComfyTV.PosterStage',
 		kind: 'native',
 		title: '海报',
 		category: 'comfyPoster',
-		inputs: [{ name: 'images', type: 'IMAGE' }],
-		outputs: [{ name: 'image', type: 'IMAGE' }],
+		inputs: [{ name: 'images', type: 'COMFYTV_IMAGE' }],
+		outputs: [{ name: 'image', type: 'COMFYTV_IMAGE' }],
 		widgets: [
 			{ name: 'template', type: 'COMBO', options: ['hero'], default: 'hero' },
 			{ name: 'width', type: 'INT', default: 1240 },
 			{ name: 'height', type: 'INT', default: 1754 },
+			{ name: 'layout', type: 'TEXT', default: '{}' },
 		],
 	});
 	// P3 — Layer Editor artboard (browser-local compositing + upload).
+	// ★ 对齐 ComfyTV layer_editor.py：双输出 image(COMFYTV_IMAGE) + images(COMFYTV_IMAGES)。
 	registerNodeSpec({
 		type: 'ComfyTV.LayerEditorStage',
 		kind: 'native',
 		title: '图层画板',
 		category: 'comfyLayer',
 		inputs: [],
-		outputs: [{ name: 'image', type: 'IMAGE' }],
+		outputs: [
+			{ name: 'image', type: 'COMFYTV_IMAGE' },
+			{ name: 'images', type: 'COMFYTV_IMAGES' },
+		],
 		widgets: [
 			{ name: 'width', type: 'INT', default: 1024 },
 			{ name: 'height', type: 'INT', default: 1024 },
@@ -865,7 +1149,8 @@ export function registerDefaultComfyTVStages(): void {
 		],
 	});
 	// P3 — Material PBR ball editor (browser-local, dual output).
-	// 对齐 ComfyTV 截图：有 image 输入端口（接收上游图像做材质估算）+ workflow 下拉。
+	// 对齐 ComfyTV material.py：image 输入 + 双输出 material(COMFYTV_MATERIAL) +
+	// image(COMFYTV_IMAGE)（此前 material 误用 TEXT、image 误用 IMAGE）。
 	registerNodeSpec({
 		type: 'ComfyTV.MaterialStage',
 		kind: 'native',
@@ -875,8 +1160,8 @@ export function registerDefaultComfyTVStages(): void {
 			{ name: 'image', type: 'COMFYTV_IMAGE' },
 		],
 		outputs: [
-			{ name: 'material', type: 'TEXT' },
-			{ name: 'image', type: 'IMAGE' },
+			{ name: 'material', type: 'COMFYTV_MATERIAL' },
+			{ name: 'image', type: 'COMFYTV_IMAGE' },
 		],
 		widgets: [
 			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('material-estimate')[0], options: workflowOptionsFor('material-estimate') },
@@ -884,17 +1169,61 @@ export function registerDefaultComfyTVStages(): void {
 		],
 	});
 	// P3 — 3D Scene (2.5D isometric MVP, browser-local capture).
+	// ★ 对齐 ComfyTV scene3d.py：三输出 image + video + images（均为 COMFYTV_*）。
 	registerNodeSpec({
 		type: 'ComfyTV.Scene3DStage',
 		kind: 'native',
 		title: '3D 摆场',
 		category: 'comfyScene3D',
 		inputs: [],
-		outputs: [{ name: 'image', type: 'IMAGE' }],
+		outputs: [
+			{ name: 'image', type: 'COMFYTV_IMAGE' },
+			{ name: 'video', type: 'COMFYTV_VIDEO' },
+			{ name: 'images', type: 'COMFYTV_IMAGES' },
+		],
 		widgets: [
 			{ name: 'width', type: 'INT', default: 1024 },
 			{ name: 'height', type: 'INT', default: 1024 },
 		],
+	});
+	// EmojiStage — 生成 m×n 个动态表情包（透明背景循环贴纸）。
+	// 每个格子可独立编辑 prompt/seed 并单独重生成；内嵌编辑器 = EmojiStageEditor。
+	// variant='generator' → 有运行按钮；workflowKind='emoji' → 出图读 builtinWorkflows/emojiWorkflows。
+	// 注意：EmojiStage 不在 comfyTVStageMeta.generated.ts（后端无此 stage），故 comfyTV
+	// 元数据显式声明，不能靠 registerNodeSpec 的 meta 补全（comfyTVMetaFor 查不到）。
+	registerNodeSpec({
+		type: 'ComfyTV.EmojiStage',
+		kind: 'schema',
+		title: '表情包',
+		category: 'comfyTV',
+		inputs: [
+			// text = 单条文本输入（对齐 ComfyTV 后端 `COMFYTV_TEXT.Input("text")`，
+			// 接 TextStage 输出作为表情描述）；texts = 批量文本（项目惯例，
+			// 逐格分配）；images = 参考图（配合「资产引用」的 slot 注入）。
+			{ name: 'text', type: 'COMFYTV_TEXT' },
+			{ name: 'texts', type: 'COMFYTV_TEXT' },
+			{ name: 'images', type: 'COMFYTV_IMAGE' },
+		],
+		outputs: [
+			// images = m×n 表情批次；image = 当前选中格（selected_index）。
+			{ name: 'images', type: 'COMFYTV_IMAGES' },
+			{ name: 'image', type: 'COMFYTV_IMAGE' },
+		],
+		widgets: [
+			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('emoji')[0], options: workflowOptionsFor('emoji') },
+			{ name: 'rows', type: 'INT', default: 3, min: 1, max: 6 },
+			{ name: 'cols', type: 'INT', default: 3, min: 1, max: 6 },
+			{ name: 'fps', type: 'INT', default: 8, min: 1, max: 30 },
+			{ name: 'frames', type: 'INT', default: 16, min: 1, max: 32 },
+			{ name: 'prompt', type: 'TEXT', default: '' },
+			{ name: 'cells', type: 'TEXT', default: '[]' },
+			{ name: 'selected_index', type: 'INT', default: 0, min: 0, max: 35 },
+			// run_scope：'all'（生成全部）| 'cell'（只跑 selected_index 一格）。
+			// 由 EmojiStageEditor 在点击运行前写回，workflowRun.runEmojiStageGrid 消费。
+			{ name: 'run_scope', type: 'TEXT', default: 'all' },
+		],
+		color: '#e879f9',
+		comfyTV: { stageKind: 'emoji', workflowKind: 'emoji', variant: 'generator' },
 	});
 }
 

@@ -34,6 +34,8 @@ import {
 	GeminiLLMChatMessage, GeminiPart,
 } from '../llmMessageTypes.js';
 import { evaluateForkPrefixCache, type IForkContext } from '../forkContext.js';
+import type { AgentRunMessage } from '../agentRunState.js';
+import { WIRE_DIALECTS, buildWireMessages, pickDialect } from './wireMessagePipeline.js';
 
 // ─── OpenAI 格式转换 ──────────────────────────────────────────────────────
 
@@ -73,6 +75,17 @@ export class MessageFormatConverter {
 	 * @returns OpenAI 格式的消息列表
 	 */
 	static toOpenAI(messages: IChatMessage[], options?: OpenAIConvertOptions): OpenAILLMChatMessage[] {
+		// ── Wire 收口（2026-08-19，全 provider 统一守卫）──────────────────
+		// 强制接入点：所有 provider 都必须经过格式转换才能发请求，收口层下沉到
+		// 这条必经之路后，BYOK / Gemini / LMBridge / MainProcess 四个 provider
+		// 全部自动获得保护，未来新增 provider 亦天然受保护。
+		// 修复的事故：messages 以 assistant 结尾 → IOA 网关 400 code 11133
+		// invalid_parameter_value（param 为空）。详见 wireMessagePipeline.ts 头注释。
+		messages = buildWireMessages(
+			messages as unknown as AgentRunMessage[],
+			pickDialect(undefined, options?.isAnthropic),
+		).wire as unknown as IChatMessage[];
+
 		const result: OpenAILLMChatMessage[] = [];
 		const config = options?.capabilityConfig;
 
@@ -241,6 +254,15 @@ export class MessageFormatConverter {
 		messages: IChatMessage[],
 		options?: { systemPrompt?: string; tools?: IToolDefinition[] },
 	): { messages: AnthropicLLMChatMessage[]; systemPrompt: string | undefined } {
+		// ── Wire 收口（anthropic 方言：约束最严）──────────────────────────
+		// Anthropic 拒绝 ① 以 assistant 结尾（被当作 prefill，no-prefill 模型报
+		// 400 must end with a user message）② 空 content blocks 数组
+		// ③ 未闭合的 tool 序列（会把后续 user 幻觉成工具结果延续）。
+		messages = buildWireMessages(
+			messages as unknown as AgentRunMessage[],
+			WIRE_DIALECTS.anthropic,
+		).wire as unknown as IChatMessage[];
+
 		const result: AnthropicLLMChatMessage[] = [];
 		let systemPrompt: string | undefined;
 
@@ -389,6 +411,15 @@ export class MessageFormatConverter {
 		messages: IChatMessage[],
 		options?: { systemPrompt?: string; tools?: IToolDefinition[] },
 	): { contents: GeminiLLMChatMessage[]; systemInstruction: string | undefined } {
+		// ── Wire 收口（gemini 方言）────────────────────────────────────────
+		// Gemini contents 要求首条为 user、且不得以 model 结尾。注意本方法会把
+		// tool 角色转成 user(functionResponse)，因此"以 tool 结尾"在 Gemini 侧
+		// 是合法的 user 结尾；但"以 assistant 结尾"会变成 model 结尾 → 报错。
+		messages = buildWireMessages(
+			messages as unknown as AgentRunMessage[],
+			WIRE_DIALECTS.gemini,
+		).wire as unknown as IChatMessage[];
+
 		const result: GeminiLLMChatMessage[] = [];
 		let systemInstruction: string | undefined;
 

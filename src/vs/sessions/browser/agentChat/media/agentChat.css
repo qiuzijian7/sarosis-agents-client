@@ -4625,6 +4625,35 @@
 	opacity: 1;
 	padding: 4px 0;
 }
+
+/* ── 实时进度条（workflow 直接执行 / ComfyUI 生成等长耗时工具卡）── */
+.tool-progress-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 2px 10px 6px 10px;
+}
+.tool-progress-bar {
+	flex: 1;
+	height: 4px;
+	border-radius: 2px;
+	background: var(--void-fg-4, rgba(255, 255, 255, 0.12));
+	overflow: hidden;
+}
+.tool-progress-fill {
+	height: 100%;
+	border-radius: 2px;
+	background: var(--void-warn, var(--vscode-charts-yellow, #cca700));
+	transition: width 0.25s ease;
+}
+.tool-progress-text {
+	font-size: 11px;
+	color: var(--void-fg-4, var(--vscode-descriptionForeground));
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	min-width: 64px;
+	text-align: right;
+}
 .tool-children-wrapper { cursor: default; user-select: none; max-width: 100%; box-sizing: border-box; }
 .tool-children-wrapper-inner { padding: 0 8px; min-width: 100%; overflow: hidden; max-width: 100%; box-sizing: border-box; }
 .tool-children-wrapper.tool-children-bg { background: rgba(0,0,0,0.06); border-radius: 3px; }
@@ -9873,6 +9902,64 @@
 .tool-card-plan .tool-header-right { font-size: 11px; color: var(--void-fg-4, var(--vscode-descriptionForeground)); font-variant-numeric: tabular-nums; }
 .tool-card-plan .tool-header-duration { font-size: 11px; color: var(--void-fg-4, var(--vscode-descriptionForeground)); margin-left: 8px; font-variant-numeric: tabular-nums; }
 
+/* ── P2-4 阶段卡（plan_enter/plan_explore · 5 阶段进度，壳中性 + 内部主题色）──
+   数据源 IToolCall.planPhase（work_mode_changed delta 合并，随 toolCalls/parts 持久化）。
+   状态语义：done=青✓+划线 / current=蓝●脉冲 / pending=灰○；completedAt → 全 done。 */
+.tool-card-plan .plan-phase-steps { display: flex; flex-direction: column; gap: 3px; padding: 2px 0; }
+.tool-card-plan .plan-phase-step {
+	display: flex; align-items: center; gap: 8px;
+	font-size: 11.5px; padding: 1px 4px;
+	color: var(--vscode-descriptionForeground);
+}
+.tool-card-plan .plan-phase-dot {
+	width: 14px; height: 14px; border-radius: 50%;
+	display: inline-flex; align-items: center; justify-content: center;
+	font-size: 9px; flex-shrink: 0;
+	border: 1px solid var(--vscode-widgetBorder, rgba(128,128,128,.35));
+	color: var(--vscode-descriptionForeground);
+}
+.tool-card-plan .plan-phase-num {
+	font-size: 10px; font-family: var(--vscode-editor-font-family, monospace);
+	width: 20px; flex-shrink: 0; opacity: .8;
+}
+.tool-card-plan .plan-phase-label { flex: 1; }
+.tool-card-plan .plan-phase-step.done .plan-phase-dot {
+	background: color-mix(in srgb, var(--vscode-charts-green, #4ec9b0) 18%, transparent);
+	border-color: var(--vscode-charts-green, #4ec9b0);
+	color: var(--vscode-charts-green, #4ec9b0);
+}
+.tool-card-plan .plan-phase-step.done .plan-phase-label {
+	text-decoration: line-through;
+	text-decoration-color: var(--vscode-widgetBorder, rgba(128,128,128,.35));
+}
+.tool-card-plan .plan-phase-step.current .plan-phase-dot {
+	background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 20%, transparent);
+	border-color: var(--vscode-charts-blue, #3794ff);
+	color: var(--vscode-charts-blue, #3794ff);
+	animation: saros-plan-phase-pulse 1.6s infinite;
+}
+.tool-card-plan .plan-phase-step.current .plan-phase-label {
+	color: var(--vscode-foreground); font-weight: 500;
+}
+@keyframes saros-plan-phase-pulse {
+	50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 18%, transparent); }
+}
+.tool-card-plan .plan-phase-meta {
+	display: flex; align-items: center; gap: 8px;
+	margin-top: 6px; padding-top: 6px;
+	border-top: 1px dashed var(--vscode-widgetBorder, rgba(128,128,128,.25));
+	font-size: 11px; flex-wrap: wrap;
+}
+.tool-card-plan .plan-phase-file {
+	color: var(--vscode-textLink-foreground);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 10.5px;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	max-width: 60%;
+}
+.tool-card-plan .plan-phase-lock { color: var(--vscode-charts-yellow, #cca700); font-size: 11px; }
+.tool-card-plan .plan-phase-lock.approved { color: var(--vscode-charts-green, #4ec9b0); }
+
 /* update_plan：进度条占位（running 无步骤时） */
 .tool-card-plan .plan-card-progress-placeholder {
 	font-size: 11.5px; color: var(--vscode-descriptionForeground);
@@ -11337,6 +11424,18 @@
 .terminal-continue-btn:disabled {
 	opacity: 0.5;
 	cursor: default;
+}
+/* 「继续执行」按钮（terminal header 常驻版，卡片折叠也可见） */
+.terminal-continue-btn.terminal-continue-header {
+	margin-left: 8px;
+	padding: 2px 8px;
+	font-size: 11px;
+	background: var(--vscode-button-background, #0e639c);
+	border-color: var(--vscode-button-border, transparent);
+	color: var(--vscode-button-foreground, #fff);
+}
+.terminal-continue-btn.terminal-continue-header:hover {
+	background: var(--vscode-button-hoverBackground, #1177bb);
 }
 
 

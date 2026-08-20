@@ -227,7 +227,9 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 
 			const abortPromise = signal
 				? new Promise<string>((resolve) => {
-					const onAbort = () => resolve('[CANCELLED] Command execution was cancelled by user.\n');
+					// 中性文案：无论整轮取消还是「继续执行」跳过当前命令，LLM 都应理解
+				// 命令被中断，但可继续处理后续步骤（避免误读为「用户取消了整个请求」）。
+				const onAbort = () => resolve('[INTERRUPTED] Command execution was interrupted by the user to continue with other steps. The command may have partially completed.\n');
 					signal.addEventListener('abort', onAbort, { once: true });
 				})
 				: new Promise<string>(() => { /* never resolves */ });

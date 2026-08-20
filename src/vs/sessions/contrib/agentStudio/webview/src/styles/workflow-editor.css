@@ -50,3 +50,317 @@
 	color: var(--vscode-charts-red, #f48771);
 	font-size: 10px;
 }
+
+/* ══════════════════════════════════════════════════════════════════
+ * v3 两行工具栏（two-row toolbar）
+ * 单行塞 16+ 元素（name + pill + stats + save + undo/redo + 校验 + 4 下拉
+ * + 视图 + 并行 + 3 面板 + msg + Run）必然重叠，按「频率分层」拆两行：
+ *   行1 = 身份（name/pill/stats/save）+ 运行锚点（msg/Run）；
+ *   行2 = 视图切换 + 编辑（undo/redo/校验 + 4 下拉）+ 面板（并行 + 3 入口）。
+ * ══════════════════════════════════════════════════════════════════ */
+
+.wft-bar {
+	display: flex;
+	flex-direction: column;
+	background: var(--vscode-titleBar-activeBackground, #333);
+	border-bottom: 1px solid var(--vscode-panel-border);
+	position: relative;
+	flex-shrink: 0;
+	overflow: visible;
+}
+.wft-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 34px;
+	padding: 0 10px;
+}
+.wft-row + .wft-row { border-top: 1px solid var(--vscode-panel-border); }
+.wft-row > .wft-spacer { flex: 1; }
+.wft-seg { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.wft-divider { width: 1px; height: 18px; background: var(--vscode-panel-border); margin: 0 3px; flex-shrink: 0; }
+
+/* 运行进度条（工具栏顶边，indeterminate，覆盖两行顶部） */
+.wft-progress {
+	position: absolute; left: 0; right: 0; top: 0; height: 2px;
+	overflow: hidden; pointer-events: none;
+}
+.wft-progress::after {
+	content: ''; position: absolute; top: 0; bottom: 0; width: 30%;
+	background: var(--vscode-charts-yellow, #cca700);
+	animation: wft-slide 1.1s ease-in-out infinite;
+}
+@keyframes wft-slide {
+	0% { left: -30%; }
+	100% { left: 100%; }
+}
+
+/* 左段：身份 */
+.wft-name {
+	font-weight: 600; font-size: 12.5px; min-width: 90px; max-width: 200px;
+	border: 1px solid transparent; border-radius: 4px; background: transparent;
+	color: var(--vscode-foreground); padding: 3px 7px; outline: none; flex-shrink: 1;
+}
+.wft-name:hover { background: var(--vscode-input-background, rgba(128,128,128,0.12)); }
+.wft-name:focus { border-color: var(--vscode-focusBorder); background: var(--vscode-input-background); }
+
+.wft-pill {
+	display: inline-flex; align-items: center; gap: 5px;
+	padding: 1px 9px; border-radius: 99px; font-size: 10.5px; flex-shrink: 0;
+	white-space: nowrap; user-select: none;
+}
+.wft-pill .pd { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.wft-pill.unpublished { background: rgba(128,128,128,0.14); color: var(--vscode-descriptionForeground); }
+.wft-pill.ok { background: rgba(63,185,80,0.13); color: #3fb950; }
+.wft-pill.modified { background: rgba(55,148,255,0.13); color: #3794ff; }
+.wft-pill.newer { background: rgba(210,153,34,0.13); color: #d29922; }
+
+.wft-stats { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; flex-shrink: 0; }
+
+.wft-save { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; flex-shrink: 0; white-space: nowrap; }
+.wft-save .sd { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.wft-save.saving { color: #d29922; }
+.wft-save.saving .sd { animation: wft-pulse 1s infinite; }
+.wft-save.saved { color: #3fb950; }
+.wft-save.error { color: var(--vscode-errorForeground, #f48771); }
+@keyframes wft-pulse { 50% { opacity: 0.35; } }
+
+/* 通用按钮 */
+.wft-btn {
+	display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+	height: 24px; min-width: 24px; padding: 0 6px;
+	border: 1px solid transparent; border-radius: 4px;
+	background: transparent; color: var(--vscode-foreground);
+	cursor: pointer; font-size: 11.5px; font-family: inherit; white-space: nowrap; flex-shrink: 0;
+}
+.wft-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.12)); }
+.wft-btn:active { background: var(--vscode-toolbar-activeBackground, rgba(128,128,128,0.2)); }
+.wft-btn.icon { width: 24px; padding: 0; }
+.wft-btn.panel-on {
+	background: rgba(63,185,80,0.12);
+	border-color: rgba(63,185,80,0.45);
+}
+.wft-btn .caret { font-size: 8.5px; color: var(--vscode-descriptionForeground); margin-left: -2px; }
+
+/* 并行 toggle */
+.wft-toggle {
+	display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none;
+	font-size: 11px; color: var(--vscode-descriptionForeground); padding: 0 3px; flex-shrink: 0;
+}
+.wft-toggle .tk {
+	width: 22px; height: 13px; border-radius: 99px;
+	background: var(--vscode-inputValidation-infoBorder, #3c3c3c);
+	position: relative; transition: background 0.15s; flex-shrink: 0;
+}
+.wft-toggle .tk::after {
+	content: ''; position: absolute; top: 2px; left: 2px; width: 9px; height: 9px;
+	border-radius: 50%; background: var(--vscode-foreground); transition: transform 0.15s;
+}
+.wft-toggle.on { color: var(--vscode-foreground); }
+.wft-toggle.on .tk { background: #3fb950; }
+.wft-toggle.on .tk::after { transform: translateX(9px); background: #fff; }
+
+/* Run 主按钮（状态机） */
+.wft-run {
+	display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+	height: 26px; padding: 0 14px; border-radius: 4px;
+	border: 1px solid #22c55e; background: #22c55e; color: #fff;
+	font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+	white-space: nowrap; flex-shrink: 0; transition: filter 0.12s;
+}
+.wft-run:hover { filter: brightness(1.1); }
+.wft-run.running { border-color: #d29922; background: transparent; color: #d29922; cursor: default; }
+.wft-run.running:hover { filter: none; }
+.wft-run.done { border-color: #3fb950; background: transparent; color: #3fb950; }
+.wft-run.failed { border-color: var(--vscode-errorForeground, #f85149); background: var(--vscode-errorForeground, #f85149); color: #fff; }
+.wft-run.cancel { border-color: var(--vscode-errorForeground, #f85149); background: var(--vscode-errorForeground, #f85149); color: #fff; }
+.wft-run .wft-spin {
+	width: 10px; height: 10px; border: 1.8px solid rgba(210,153,34,0.35);
+	border-top-color: #d29922; border-radius: 50%; animation: wft-spin 0.7s linear infinite;
+}
+@keyframes wft-spin { to { transform: rotate(360deg); } }
+
+/* 运行/校验消息（Run 按钮左侧） */
+.wft-msg { font-size: 11px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
+.wft-msg.ok { color: #3fb950; }
+.wft-msg.err { color: var(--vscode-errorForeground, #f48771); }
+
+/* 下拉 */
+.wft-dd { position: relative; display: inline-flex; }
+.wft-menu {
+	position: absolute; top: calc(100% + 5px); left: 0; min-width: 212px;
+	background: var(--vscode-menu-background, #252526);
+	border: 1px solid var(--vscode-menu-border, #454545);
+	border-radius: 6px; box-shadow: 0 10px 32px rgba(0,0,0,0.45);
+	padding: 4px; z-index: 300; display: none;
+}
+.wft-menu.right { left: auto; right: 0; }
+.wft-menu.open { display: block; }
+.wft-mi {
+	display: flex; align-items: center; gap: 8px; width: 100%;
+	padding: 5px 10px; border-radius: 4px; cursor: pointer;
+	background: none; border: none; color: var(--vscode-menu-foreground, #cccccc);
+	font-size: 12px; font-family: inherit; text-align: left;
+}
+.wft-mi:hover { background: var(--vscode-menu-selectionBackground, #094771); }
+.wft-mi .mi-icon { width: 16px; display: inline-flex; justify-content: center; flex-shrink: 0; }
+.wft-mi .mi-label { flex: 1; min-width: 0; }
+.wft-mi .mi-hint { font-size: 10px; color: var(--vscode-descriptionForeground); display: block; font-weight: 400; }
+.wft-mi.danger { color: var(--vscode-errorForeground, #f48771); }
+.wft-mi-sep { height: 1px; background: var(--vscode-panel-border); margin: 4px 6px; }
+.wft-mi-head {
+	font-size: 10px; color: var(--vscode-descriptionForeground);
+	text-transform: uppercase; letter-spacing: 0.8px; padding: 5px 10px 3px;
+}
+
+/* 下拉内删除二次确认 */
+.wft-del-confirm { display: flex; align-items: center; gap: 6px; padding: 6px 8px; }
+.wft-del-confirm .dc-text { font-size: 11px; color: var(--vscode-errorForeground, #f48771); flex: 1; }
+.wft-del-confirm .dc-btn {
+	border-radius: 3px; cursor: pointer; font-size: 11px; padding: 3px 9px; font-family: inherit;
+}
+.wft-del-confirm .dc-ok {
+	background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+	border: 1px solid var(--vscode-inputValidation-errorBorder, #be1100);
+	color: var(--vscode-inputValidation-errorForeground, #f48771);
+}
+.wft-del-confirm .dc-cancel {
+	background: transparent; border: 1px solid var(--vscode-panel-border); color: var(--vscode-foreground);
+}
+
+/* 描述栏折叠 */
+.wft-desc { display: flex; align-items: center; gap: 8px; padding: 3px 10px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-editor-background); font-size: 11.5px; color: var(--vscode-descriptionForeground); min-height: 26px; flex-shrink: 0; }
+.wft-desc .desc-text { flex: 1; color: var(--vscode-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: text; padding: 2px 6px; border-radius: 3px; }
+.wft-desc .desc-text:hover { background: var(--vscode-input-background, rgba(128,128,128,0.12)); }
+
+/* ══════════════════════════════════════════════════════════════════
+ * 图 ⇄ 脚本 切换（view-switch）+ 代码只读投影面板
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* 分段控件（⊞ 图 │ ⫿ 分栏 │ </> 代码） */
+.wft-vswitch {
+	display: inline-flex; align-items: center; height: 24px;
+	border: 1px solid var(--vscode-panel-border); border-radius: 5px;
+	overflow: hidden; flex-shrink: 0;
+}
+.wft-vswitch button {
+	display: inline-flex; align-items: center; gap: 4px; height: 100%;
+	padding: 0 9px; border: none; background: transparent;
+	color: var(--vscode-descriptionForeground); font-size: 11px;
+	font-family: inherit; cursor: pointer; white-space: nowrap;
+	transition: background 0.12s, color 0.12s;
+}
+.wft-vswitch button:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.12)); color: var(--vscode-foreground); }
+.wft-vswitch button.on {
+	background: var(--vscode-toolbar-activeBackground, rgba(128,128,128,0.2));
+	color: var(--vscode-foreground); font-weight: 600;
+	box-shadow: inset 0 -2px 0 var(--vscode-focusBorder, #007fd4);
+}
+.wft-vswitch .vs-kbd {
+	font-size: 9px; color: var(--vscode-descriptionForeground);
+	border: 1px solid var(--vscode-panel-border); border-radius: 3px;
+	padding: 0 3px; margin-left: 2px;
+}
+
+/* 主区域 flex 容器（画布 | 分隔条 | 代码） */
+.wf-main-flex { position: relative; flex: 1; overflow: hidden; display: flex; }
+.wf-canvas-host { height: 100%; min-width: 0; overflow: hidden; }
+
+/* 分栏分隔条 */
+.wf-splitter {
+	width: 5px; cursor: col-resize; flex-shrink: 0;
+	background: var(--vscode-panel-border); position: relative; z-index: 10;
+}
+.wf-splitter::after {
+	content: '⋮'; position: absolute; top: 50%; left: 50%;
+	transform: translate(-50%, -50%);
+	color: var(--vscode-descriptionForeground); font-size: 10px;
+}
+.wf-splitter:hover { background: var(--vscode-focusBorder, #007fd4); }
+
+/* 代码只读投影面板 */
+.wf-code-pane {
+	display: flex; flex-direction: column; min-width: 240px;
+	background: var(--vscode-editor-background, #1e1e1e); overflow: hidden;
+}
+.wf-code-head {
+	display: flex; align-items: center; gap: 8px; padding: 4px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-sideBar-background, #181818);
+	font-size: 11px; color: var(--vscode-descriptionForeground); flex-shrink: 0;
+}
+.wf-code-head .ro-badge {
+	display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px;
+	border-radius: 99px; font-size: 10px; font-weight: 600;
+	background: rgba(210,153,34,0.13); color: var(--vscode-charts-yellow, #cca700);
+}
+.wf-code-head .file-name { font-family: var(--monospace, monospace); font-size: 11px; color: var(--vscode-foreground); }
+.wf-code-head .sync-note { font-size: 10.5px; color: var(--vscode-descriptionForeground); }
+.wf-code-head .spacer { flex: 1; }
+.wf-code-head .act-btn {
+	border: 1px solid var(--vscode-panel-border); background: transparent;
+	color: var(--vscode-foreground); border-radius: 4px; padding: 2px 8px;
+	font-size: 10.5px; cursor: pointer; font-family: inherit;
+}
+.wf-code-head .act-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.12)); }
+.wf-code-head .act-btn.primary {
+	background: #22c55e; border-color: #22c55e; color: #fff; font-weight: 600;
+}
+.wf-code-head .act-btn.run {
+	background: #3b82f6; border-color: #3b82f6; color: #fff; font-weight: 600;
+}
+.wf-code-head .act-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* M4c 直接执行结果区 */
+.wf-exec-result {
+	flex-shrink: 0; max-height: 40%;
+	overflow: auto; padding: 8px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-editor-background, #1e1e1e);
+	font-size: 11px;
+}
+.wf-exec-result .wf-exec-running { color: var(--vscode-charts-blue, #3b82f6); }
+.wf-exec-result .wf-exec-done { color: #22c55e; font-weight: 600; }
+.wf-exec-result .wf-exec-error { color: var(--vscode-errorForeground, #f14c4c); white-space: pre-wrap; }
+.wf-exec-result .wf-exec-value {
+	margin: 6px 0 0; padding: 8px; border-radius: 4px;
+	background: rgba(0,0,0,0.25); font-family: var(--monospace, Consolas, monospace);
+	font-size: 11px; line-height: 1.5; color: var(--vscode-foreground);
+	white-space: pre-wrap; word-break: break-all;
+}
+.wf-exec-result .wf-exec-projection {
+	margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--vscode-panel-border);
+	color: var(--vscode-descriptionForeground); white-space: pre-wrap;
+}
+
+/* 代码体：行号 + 内容（轻量高亮） */
+.wf-code-body {
+	flex: 1; overflow: auto; font-family: var(--monospace, Consolas, monospace);
+	font-size: 12px; line-height: 1.65; padding: 6px 0;
+}
+.wf-code-row { display: flex; min-height: 20px; }
+.wf-code-row .ln {
+	width: 46px; flex-shrink: 0; text-align: right; padding-right: 14px;
+	color: var(--vscode-descriptionForeground); user-select: none;
+	font-size: 11px; opacity: 0.7;
+}
+.wf-code-row .cl { white-space: pre; color: var(--vscode-editor-foreground, #d4d4d4); padding-right: 20px; }
+/* 行锚点：该行由某个画布节点生成 → 可点击定位（左侧竖条提示可交互） */
+.wf-code-row.anchored { cursor: pointer; position: relative; }
+.wf-code-row.anchored::before {
+	content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+	background: var(--vscode-textLink-foreground, #3794ff); opacity: 0.25;
+}
+.wf-code-row.anchored:hover { background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.06)); }
+.wf-code-row.anchored:hover::before { opacity: 0.9; }
+.wf-code-row.anchored:hover .ln { opacity: 1; color: var(--vscode-textLink-foreground, #3794ff); }
+.wf-code-row.anchored:focus-visible { outline: 1px solid var(--vscode-focusBorder, #3794ff); outline-offset: -1px; }
+.wf-code-row.active { background: var(--vscode-list-activeSelectionBackground, rgba(55, 148, 255, 0.18)); }
+.wf-code-row.active::before { opacity: 1; }
+.wf-tk-kw { color: var(--vscode-terminal-ansiMagenta, #c586c0); }
+.wf-tk-st { color: var(--vscode-terminal-ansiRed, #ce9178); }
+.wf-tk-cm { color: var(--vscode-terminal-ansiGreen, #6a9955); font-style: italic; }
+.wf-code-empty {
+	padding: 40px 20px; text-align: center; color: var(--vscode-descriptionForeground);
+	font-size: 12px; line-height: 2;
+}

@@ -111,8 +111,8 @@ export const WorkflowCanvas: React.FC = () => {
 		// Start has no inputs, End has no outputs
 		const targetNode = nodes.find(n => n.id === target);
 		const sourceNode = nodes.find(n => n.id === source);
-		if (targetNode?.type === 'start') { return false; }
-		if (sourceNode?.type === 'end') { return false; }
+		if (targetNode?.type === 'Saros.Start') { return false; }
+		if (sourceNode?.type === 'Saros.End') { return false; }
 		// No duplicate edges
 		const exists = edges.some(e => e.source === source && e.target === target);
 		if (exists) { return false; }

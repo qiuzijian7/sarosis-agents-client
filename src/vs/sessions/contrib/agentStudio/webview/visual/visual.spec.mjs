@@ -43,6 +43,24 @@ const DUMP_RAW = (process.argv.find(a => a.startsWith('--dump=')) ?? '').split('
 const DUMP_NODE = DUMP_RAW.split(':')[0] || '';
 const DUMP_STATE = DUMP_RAW.split(':')[1] || 'success';
 
+/**
+ * ★ ComfyTV 样式真源期望值（R15 用）。
+ * 与 visual/comfyTvTruth.ts 保持同步（mjs 无法 import ts，此处内联）。
+ * 参考卡本身由 comfyTvTruth 的 token 渲染 —— R15a 断言参考卡与这里的字面量
+ * 一致，等于同时守护了「truth ↔ spec」两侧同步：任何一边漂移都会 FAIL。
+ * 提取出处：ComfyTV src/tailwind.css @theme + src/components/stages/StageCard.vue。
+ */
+const CTV = {
+	background: 'rgb(30, 30, 30)',        // #1e1e1e base-background
+	foreground: 'rgb(224, 224, 224)',     // #e0e0e0 base-foreground
+	fontCard: '12px',                     // text-xs（卡根字号）
+	runBtnHeight: '40px',                 // h-10
+	runBtnRadius: '8px',                  // rounded-lg
+	runBtnBg: 'rgba(78, 168, 255, 0.6)',  // primary-background
+	pad8: '8px',                          // p-2
+	gap8: '8px',                          // gap-2
+};
+
 /** 卡片宿主宽度（与 index.html 的 .vt-card-host 一致）——溢出断言的基准 */
 const HOST_WIDTH = 280;
 /** 卡片高度合理区间：太小=塌陷，太大=无限增高 */
@@ -107,6 +125,25 @@ try {
 const page = await browser.newPage({ viewport: { width: 1400, height: 1000 }, deviceScaleFactor: 1 });
 page.on('pageerror', e => notes.push(`pageerror: ${e.message}`));
 page.on('console', m => { if (m.type() === 'error') { notes.push(`console.error: ${m.text()}`); } });
+
+// ── WebGL 环境探测 ──────────────────────────────────────────────────────────
+// Multiangle/Relight/Material 等节点的内嵌编辑器依赖 Three.js WebGL。无 GPU/被
+// 策略禁用（如 iOA）时 context 创建失败 → 编辑器崩溃 → 高度塌陷。这是**环境性
+// 失败**而非代码回归：检测到无 WebGL 时跳过这些节点的布局断言并显式提示，
+// 避免把环境问题误报成 UI 回归（2026-08-20 实测 swiftshader 被禁后 12 条假 FAIL）。
+let webglAvailable = true;
+{
+	await page.goto('about:blank');
+	webglAvailable = await page.evaluate(() => {
+		try {
+			const c = document.createElement('canvas');
+			return !!(c.getContext('webgl2') ?? c.getContext('webgl'));
+		} catch { return false; }
+	});
+	if (!webglAvailable) {
+		notes.push('环境无 WebGL（Three.js 编辑器无法渲染）—— Multiangle/Relight 等 WebGL 节点的布局断言本轮跳过');
+	}
+}
 
 // ── 4. 单节点诊断模式（--dump）──────────────────────────────────────────────
 if (DUMP_NODE) {
@@ -209,6 +246,12 @@ for (const sc of scenarios) {
 		fail(sc.id, 'mount', `挂载失败：${await cell.getAttribute('data-vt-error')}`);
 		continue;
 	}
+	// WebGL 节点在无 WebGL 的环境整体跳过 —— Three.js 编辑器崩溃导致的高度塌陷
+	// 是环境性失败而非代码回归（布局/断言/截图都无意义）。
+	if (sc.webgl && !webglAvailable) {
+		notes.push(`${sc.id}: 跳过（环境无 WebGL，Three.js 编辑器无法渲染）`);
+		continue;
+	}
 	// 布局未收敛 ⇒ 截图不可信（会导致基线假 diff），显式暴露而非静默
 	const settle = await page.getAttribute('body', 'data-vt-settle');
 	if (settle && settle.startsWith('timeout')) {
@@ -242,6 +285,35 @@ for (const sc of scenarios) {
 		const comboIds = Array.from(host.querySelectorAll('[id^="nc-"][id$="-combo"]'))
 			.map(e => (e.id.match(/^nc-(.+)-combo$/) ?? [])[1])
 			.filter(Boolean);
+		// ★ COMBO 当前显示值（去掉下拉箭头 ▾ 后的文本）。空值渲染为 "—"，
+		//   R13 靠这个探测捕捉「下拉框回归为空」（2026-08-20 用户报告的 bug 类别）。
+		const comboValues = Array.from(host.querySelectorAll('[id^="nc-"][id$="-combo"]')).map(e => ({
+			name: (e.id.match(/^nc-(.+)-combo$/) ?? [])[1] ?? '',
+			value: (e.textContent ?? '').replace(/[▾▼]/g, '').trim(),
+		}));
+		// ★ 端口条胶囊（.wf-comfy-ports 直接子 span 带 title 的是 in/out 胶囊，
+		//   中间的 flex spacer 无 title）。R14 捕捉「DOM 卡缺端口」。
+		const portChips = Array.from(host.querySelectorAll('.wf-comfy-ports > span'))
+			.filter(s => s.hasAttribute('title')).length;
+		// ★ R15 token 契约：本项目卡（wf-comfy-card 内层面板）与 ComfyTV 真源的
+		//   computed style 快照 + 参考卡（data-vt-ref=card）自身保真快照。
+		const cs = getComputedStyle;
+		const panel = host.querySelector('.wf-comfy-card > div');
+		const refCard = cellEl?.querySelector('[data-vt-ref-host] [data-vt-ref="card"]');
+		const refRun = cellEl?.querySelector('[data-vt-ref-host] [data-vt-ref="run-btn"]');
+		const ownStyle = panel ? {
+			bg: cs(panel).backgroundImage === 'none' ? cs(panel).backgroundColor : cs(panel).backgroundImage,
+			fontSize: cs(panel).fontSize,
+			padding: cs(panel).padding,
+			gap: cs(panel).rowGap,
+		} : null;
+		const refStyle = refCard ? {
+			bg: cs(refCard).backgroundColor,
+			fontSize: cs(refCard).fontSize,
+			padding: cs(refCard).padding,
+			gap: cs(refCard).rowGap,
+			run: refRun ? { h: cs(refRun).height, radius: cs(refRun).borderRadius, bg: cs(refRun).backgroundColor } : null,
+		} : null;
 		const labelNames = Array.from(host.querySelectorAll('label'))
 			.map(l => l.querySelector('span')?.textContent?.trim() ?? '')
 			.filter(Boolean);
@@ -255,9 +327,13 @@ for (const sc of scenarios) {
 			text: host.innerText ?? '',
 			labels: labelNames,
 			comboNames: comboIds,
+			comboValues,
+			portChips,
 			textareas: host.querySelectorAll('textarea').length,
 			numbers: host.querySelectorAll('input[type="number"]').length,
 			ranges: host.querySelectorAll('input[type="range"]').length,
+			ownStyle,
+			refStyle,
 			checkboxes: host.querySelectorAll('input[type="checkbox"]').length,
 			buttons: host.querySelectorAll('button').length,
 			canvases: host.querySelectorAll('canvas').length,
@@ -313,12 +389,73 @@ for (const sc of scenarios) {
 		}
 	}
 
+	// R13 ★ 编排节点（Saros.*）的关键 COMBO 必须有值 —— 2026-08-20 用户报告
+	//    「agent/skill/tool 节点 provider/agent/model 参数下拉为空」。空值渲染为
+	//    "—"（resolveControlOptions 找不到选项时的 fallback）。store seeding 断链
+	//    或双语义路由（providerId=LLM 不过滤 / provider=文生图过滤）回归都会让
+	//    这些控件退回 "—"，这条断言直接捕捉。
+	const ORCH_COMBO_FIELDS = ['agentId', 'providerId', 'modelId', 'skillName', 'toolName'];
+	if (sc.nodeType.startsWith('Saros.')) {
+		const emptyCombos = (probe.comboValues ?? []).filter(cv =>
+			ORCH_COMBO_FIELDS.includes(cv.name) && (!cv.value || /^[\u2014\u2013-]+$/.test(cv.value)));
+		if (emptyCombos.length > 0) {
+			fail(sc.id, 'combo-empty', `COMBO 空值：${emptyCombos.map(c => `${c.name}="${c.value || '(空)'}"`).join(', ')}（store seeding / resolveControlOptions 路由回归）`);
+		}
+	}
+
+	// R14 ★ 端口语义：端口由 LiteGraph canvas 独占渲染（上方端口行的圆点+
+	//    标签，连线锚点）。DOM 卡**不得**再绘端口条 —— 2026-08-20 用户在真实
+	//    画布发现 canvas 端口 + DOM 胶囊双显（重复 UI），已删除 DOM PortBar。
+	//    visual 纯 DOM 截图无端口是已知限制（无 canvas 层），非 bug。
+	if (probe.portChips > 0) {
+		fail(sc.id, 'port-bar-duplicate', `DOM 卡渲染了 ${probe.portChips} 个端口胶囊 —— 端口应仅由 canvas 渲染（双显回归）`);
+	}
+
+	// R15 ★ ComfyTV 完全复刻 token 契约（成功态：参考卡与本项目卡并排存在时）。
+	//    a) 参考卡保真（ref-fidelity）：参考卡由 comfyTvTruth token 渲染，其
+	//       computed style 必须与本文件内联的 CTV 字面量一致 —— 参考失真 = 比对
+	//       基准失真，也守护 truth ↔ spec 两侧同步。
+	//    b) 本项目卡对齐（style-drift）：wf-comfy-card 内层面板的 token 必须与
+	//       ComfyTV 真源一致（背景/字号/内边距/间距）。漂移即 FAIL 并给出
+	//       实际 vs 期望 —— 这是「完全复刻」的可执行落地清单。
+	if (probe.refStyle) {
+		const r = probe.refStyle;
+		const refProblems = [];
+		if (r.bg !== CTV.background) { refProblems.push(`bg ${r.bg} ≠ ${CTV.background}`); }
+		if (r.fontSize !== CTV.fontCard) { refProblems.push(`font ${r.fontSize} ≠ ${CTV.fontCard}`); }
+		if (r.padding !== CTV.pad8) { refProblems.push(`padding ${r.padding} ≠ ${CTV.pad8}`); }
+		if (r.gap !== CTV.gap8) { refProblems.push(`gap ${r.gap} ≠ ${CTV.gap8}`); }
+		if (r.run) {
+			if (r.run.h !== CTV.runBtnHeight) { refProblems.push(`run.h ${r.run.h} ≠ ${CTV.runBtnHeight}`); }
+			if (r.run.radius !== CTV.runBtnRadius) { refProblems.push(`run.radius ${r.run.radius} ≠ ${CTV.runBtnRadius}`); }
+			if (r.run.bg !== CTV.runBtnBg) { refProblems.push(`run.bg ${r.run.bg} ≠ ${CTV.runBtnBg}`); }
+		} else { refProblems.push('run-btn 缺失'); }
+		if (refProblems.length > 0) {
+			fail(sc.id, 'ref-fidelity', `参考卡失真：${refProblems.join('; ')}（comfyTvTruth ↔ spec 漂移）`);
+		}
+		// b) 本项目卡 token 对齐（DOM 富卡才有内层面板；native 简卡豁免）
+		if (probe.ownStyle) {
+			const o = probe.ownStyle;
+			const drift = [];
+			if (o.bg !== CTV.background) { drift.push(`背景 ${o.bg} ≠ ${CTV.background}`); }
+			if (o.fontSize !== CTV.fontCard) { drift.push(`字号 ${o.fontSize} ≠ ${CTV.fontCard}`); }
+			if (o.padding !== CTV.pad8) { drift.push(`内边距 ${o.padding} ≠ ${CTV.pad8}`); }
+			if (o.gap !== CTV.gap8) { drift.push(`区块间距 ${o.gap} ≠ ${CTV.gap8}`); }
+			if (drift.length > 0) {
+				fail(sc.id, 'style-drift', `未复刻 ComfyTV token：${drift.join('; ')}（真源 comfyTvTruth.ts）`);
+			}
+		}
+	}
+
 	// R5 hasPrompt ⇒ 有且仅有一个 textarea（捕捉专用编辑器与通用 prompt 双渲染）
 	//    prompt 被登记进 hiddenFields 时豁免（由编辑器自动生成，如 Multiangle）
 	if (sc.metaHasPrompt && probe.textareas === 0 && !sc.hiddenFields.includes('prompt') && sc.editorKind === 'none') {
 		fail(sc.id, 'prompt-missing', 'meta.hasPrompt=true 但无 textarea');
 	}
-	if (probe.textareas > 1) { fail(sc.id, 'duplicate-prompt', `${probe.textareas} 个 textarea（应 ≤1）`); }
+	//    多 textarea 豁免：专用编辑器（editorKind!=='none'）自带多个输入区
+	//    （如 EmojiStage：每格独立 prompt + 配文 + 全局 prompt）是有意设计，
+	//    只有通用卡片（editorKind==='none'）的重复 prompt 才是双渲染 bug。
+	if (probe.textareas > 1 && sc.editorKind === 'none') { fail(sc.id, 'duplicate-prompt', `${probe.textareas} 个 textarea（应 ≤1）`); }
 
 	// R6 !hasPrompt ⇒ 不应出现 prompt textarea（捕捉 hidden fields 漏配）
 	if (!sc.metaHasPrompt && probe.textareas > 0) {

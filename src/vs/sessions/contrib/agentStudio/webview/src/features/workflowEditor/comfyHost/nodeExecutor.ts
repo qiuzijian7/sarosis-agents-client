@@ -206,6 +206,11 @@ export interface SingleNodeRunResult {
 	durationMs?: number;
 	/** snapshot entries written to the store (empty on failure) */
 	entries: MediaSnapshotEntry[];
+	/**
+	 * W2 端口感知路由：gate 节点（IfElse）执行后给出的分支名（'true'/'false'）。
+	 * 调度器据此只激活匹配 sourceHandle 的出边；其他节点不产出该字段。
+	 */
+	branch?: string;
 }
 
 export interface SingleNodeRunOptions {

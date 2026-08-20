@@ -17,7 +17,7 @@
 
 import { type NodeSpec } from './registry.js';
 
-export type EditorFieldKind = 'textarea' | 'text' | 'number' | 'select' | 'agent' | 'skill' | 'provider' | 'providerModel';
+export type EditorFieldKind = 'textarea' | 'text' | 'number' | 'select' | 'agent' | 'skill' | 'tool' | 'provider' | 'providerModel' | 'agentProvider' | 'agentModel' | 'image';
 
 export interface EditorField {
 	key: string;
@@ -74,25 +74,29 @@ const VSSAROS_FIELDS: Record<string, EditorField[]> = {
 	],
 	'Saros.Agent': [
 		{ key: 'agentId', label: 'Agent', kind: 'agent', defaultValue: '', placeholder: '选择 Agent' },
-		{ key: 'providerId', label: 'Provider ID', kind: 'text', defaultValue: '' },
-		{ key: 'modelId', label: 'Model ID', kind: 'text', defaultValue: '' },
+		{ key: 'providerId', label: 'Provider', kind: 'agentProvider', defaultValue: '', placeholder: 'LLM Provider（聊天模型）' },
+		{ key: 'modelId', label: 'Model', kind: 'agentModel', defaultValue: '', placeholder: 'LLM 模型' },
 		{ key: 'prompt', label: '提示词', kind: 'textarea', defaultValue: '', placeholder: '发给 Agent 的任务模板，{{input}} = 上游输出' },
+	],
+	'Saros.Task': [
+		{ key: 'prompt', label: '任务描述', kind: 'textarea', defaultValue: '', placeholder: '原子子任务描述，{{input}} = 上游输出' },
+		{ key: 'agentId', label: 'Agent', kind: 'agent', defaultValue: '', placeholder: '留空 = 默认 saros-claw' },
 	],
 	'Saros.Skill': [
 		{ key: 'skillName', label: 'Skill', kind: 'skill', defaultValue: '', placeholder: '选择 Skill' },
-		{ key: 'skillArgs', label: '参数 (JSON)', kind: 'textarea', defaultValue: '{}' },
+		{ key: 'task', label: '任务说明 (可选)', kind: 'text', defaultValue: '', placeholder: '告诉子代理要用这个技能完成什么（{{input}} = 上游输出）' },
+		{ key: 'skillArgs', label: '参数 (JSON)', kind: 'textarea', defaultValue: '{}', placeholder: '技能参数，{{input}} = 上游输出' },
 	],
 	'Saros.Tool': [
-		{ key: 'toolName', label: 'Tool 名称', kind: 'text', defaultValue: '' },
+		{ key: 'toolName', label: 'Tool', kind: 'tool', defaultValue: '', placeholder: '选择工具' },
 		{ key: 'toolParams', label: '参数 (JSON)', kind: 'textarea', defaultValue: '{}' },
 	],
 	'Saros.IfElse': [
-		{ key: 'evaluationTarget', label: '评估目标', kind: 'text', defaultValue: '', placeholder: '例如 {{input.value}}' },
-		{ key: 'branches', label: '分支 (JSON)', kind: 'textarea', defaultValue: '[{"label":"True","condition":""},{"label":"False","condition":""}]' },
+		{ key: 'evaluationTarget', label: '评估目标', kind: 'text', defaultValue: '', placeholder: '对上游 JSON 取点路径，例如 value 或 a.b.c；也支持 {{input.value}} 写法。留空 = 对上游整体做真值判定。true/false 两个输出端口' },
 	],
 	'Saros.Switch': [
-		{ key: 'evaluationTarget', label: '评估目标', kind: 'text', defaultValue: '', placeholder: '例如 {{input.value}}' },
-		{ key: 'branches', label: '分支 (JSON)', kind: 'textarea', defaultValue: '[{"label":"Case 1","condition":""},{"label":"Default","condition":""}]' },
+		{ key: 'evaluationTarget', label: '评估目标', kind: 'text', defaultValue: '', placeholder: '对上游 JSON 取点路径，例如 value 或 a.b.c；也支持 {{input.value}} 写法。留空 = 对上游整体取值' },
+		{ key: 'cases', label: '匹配值 (cases)', kind: 'textarea', defaultValue: '[]', placeholder: 'JSON 数组 ["a","b"] 或逗号分隔 a,b。前 4 项依次对应 case-1..4 端口，未命中走 default 端口' },
 	],
 	'Saros.AskUser': [
 		{ key: 'questionText', label: '问题文本', kind: 'text', defaultValue: 'Select an option' },
@@ -103,10 +107,25 @@ const VSSAROS_FIELDS: Record<string, EditorField[]> = {
 		{ key: 'providerId', label: 'Provider', kind: 'provider', defaultValue: '' },
 		{ key: 'modelId', label: 'Model', kind: 'providerModel', defaultValue: '' },
 	],
+	// W1/P1: Start 工作流输入契约——args 定义全图可引用的 {{args.key}} 参数。
+	// 保持字符串存储（不加入 SAROS_JSON_KEYS）：registry 的 args widget 与
+	// 本表单双入口都写字符串，collectStartArgs 统一 JSON.parse。
+	'Saros.Start': [
+		{ key: 'args', label: '输入参数 (JSON)', kind: 'textarea', defaultValue: '{}', placeholder: '工作流输入契约，图内用 {{args.key}} 引用。例如 {"topic":"cyberpunk","count":4}' },
+	],
+	// End 输出契约：description 纯记录用途（执行器仍透传上游快照）。
+	'Saros.End': [
+		{ key: 'description', label: '输出说明 (可选)', kind: 'text', defaultValue: '', placeholder: '描述这个工作流的最终输出（记录用途，不影响执行）' },
+	],
 };
 
 /** JSON-typed field keys whose value is stored as a structured object/array. */
-const SAROS_JSON_KEYS = new Set(['variables', 'skillArgs', 'toolParams', 'branches', 'options']);
+const SAROS_JSON_KEYS = new Set(['variables', 'skillArgs', 'toolParams', 'options']);
+
+/** P1: whether a field key is a JSON 对象/数组字段（表单用 KV 结构化编辑器渲染）。 */
+export function isSarosJsonField(key: string): boolean {
+	return SAROS_JSON_KEYS.has(key);
+}
 
 /** Editor fields for a Saros (react) node type. */
 export function buildSarosEditorFields(type: string): EditorField[] {

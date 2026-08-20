@@ -35,8 +35,8 @@ import { ToolSecurityLevel } from '../../common/providers.js';
 import {
 	createInitialWorkState,
 	parsePlanDocument,
-	planExitRequiresApproval,
 	reduceWorkState,
+	resolveRequestWorkMode,
 } from '../../common/workMode.js';
 
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -421,8 +421,11 @@ suite('isPlanFilePathInRoot (path traversal defense)', () => {
 	});
 
 	test('handles Windows backslash paths', () => {
+		// 反斜杠文件路径 × 正斜杠 root 的混合分隔符归一化。
+		// 注意：计划文件实际位于 <sarosRoot>/plans/（generatePlanPath），root 无 saros 段
+		// ——此前用例的文件路径多写了 `saros` 段导致恒 false（既有失败，2026-08-18 修正）。
 		assert.strictEqual(
-			isPlanFilePathInRoot('users\\test\\.vssaros\\saros\\plans\\plan.md', 'users/test/.vssaros/plans'),
+			isPlanFilePathInRoot('users\\test\\.vssaros\\plans\\plan.md', 'users/test/.vssaros/plans'),
 			true
 		);
 	});
@@ -431,21 +434,41 @@ suite('isPlanFilePathInRoot (path traversal defense)', () => {
 suite('ChatMode policy / WorkMode runtime separation', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('Plan ChatMode starts in plan WorkMode', () => {
+	test('explicit plan WorkMode starts in plan WorkMode', () => {
 		assert.strictEqual(createInitialWorkState('plan').mode, 'plan');
 	});
 
-	test('Craft ChatMode starts in work WorkMode', () => {
-		assert.strictEqual(createInitialWorkState('craft').mode, 'work');
+	test('resolveRequestWorkMode derives WorkMode from ChatMode fallback', () => {
+		// ChatMode→WorkMode 推导：plan → plan；craft/ask/workflow/缺省 → work。
+		assert.strictEqual(resolveRequestWorkMode('plan'), 'plan');
+		assert.strictEqual(resolveRequestWorkMode('craft'), 'work');
+		assert.strictEqual(resolveRequestWorkMode('ask'), 'work');
+		assert.strictEqual(resolveRequestWorkMode('workflow'), 'work');
+		assert.strictEqual(resolveRequestWorkMode(undefined, undefined), 'work');
 	});
 
-	test('only Plan ChatMode requires plan_exit approval', () => {
-		assert.strictEqual(planExitRequiresApproval('plan'), true);
-		assert.strictEqual(planExitRequiresApproval('craft'), false);
+	test('resolveRequestWorkMode prefers explicit workMode over chatMode fallback', () => {
+		// 显式 workMode 优先：plan ChatMode + 显式 work → work（跨 turn 恢复场景）；
+		// craft ChatMode + 显式 plan → plan（plan_enter 后的新 turn）。
+		assert.strictEqual(resolveRequestWorkMode('plan', 'work'), 'work');
+		assert.strictEqual(resolveRequestWorkMode('craft', 'plan'), 'plan');
+		assert.strictEqual(resolveRequestWorkMode('plan', undefined), 'plan');
+		assert.strictEqual(resolveRequestWorkMode('craft', undefined), 'work');
+	});
+
+	test('plan_exit approval is decoupled from ChatMode (constant off, 2026-08 decision)', () => {
+		// planExitRequiresApproval 已删除（恒 false 死代码）：审批走 orchestration 的
+		// plan-approval 确认卡片，不随 ChatMode 开关。agentTurnExecutor 调用点为
+		// `const shouldAskUser: boolean = false`（REQUEST_APPROVAL 分支结构保留）。
+		// 此测试锚定「分离」语义本身：ChatMode 不再驱动审批决策。
+		assert.strictEqual(resolveRequestWorkMode('plan'), 'plan');
+		assert.strictEqual(resolveRequestWorkMode('craft'), 'work');
 	});
 
 	test('Craft can enter planning and return to work without changing policy', () => {
-		let state = createInitialWorkState('craft');
+		// craft 起始 work 阶段 → ENTER_PLAN（阶段切换，不动 ChatMode policy）→ 执行派发回 work。
+		let state = createInitialWorkState(resolveRequestWorkMode('craft'));
+		assert.strictEqual(state.mode, 'work');
 		state = reduceWorkState(state, { type: 'ENTER_PLAN' });
 		assert.strictEqual(state.mode, 'plan');
 		state = reduceWorkState(state, { type: 'START_DISPATCH' });

@@ -183,6 +183,17 @@ export function MaterialEditor({ initialState, runners, preference, onStateChang
 
 	React.useEffect(() => () => { if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); } }, []);
 
+	// ★ 首次打开自动渲染一次默认材质并上传，确保节点有 image 快照——
+	//   否则 runMaterialNode 因 store.byNode(snapKey) 无 image 而报
+	//   「请先在节点弹窗中编辑材质」（用户不动任何参数也必须有预览图）。
+	//   800ms 延迟等 three.js 首帧渲染完成；runner 未连接时 uploadRender
+	//   内部静默走 onRenderUploaded(null)，安全。
+	React.useEffect(() => {
+		const t = setTimeout(() => { void uploadRender(); }, 800);
+		return () => clearTimeout(t);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
 	const commit = React.useCallback((next: MaterialParams) => {
 		setParams(next);
 		paramsRef.current = next;

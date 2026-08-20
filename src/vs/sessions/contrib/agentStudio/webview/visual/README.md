@@ -57,17 +57,52 @@ hidden fields / 专用编辑器接管的字段）。用 `spec` 做期望值会�
 | # | 规则 | 捕捉的 bug 类别 | 历史案例 |
 |---|---|---|---|
 | R1 | 卡片高度 ∈ [24, 2000]px | 塌陷 / 无限增高 | ★ 本轮抓到 MaterialStage 白屏 |
-| R2 | 无子元素横向溢出宿主 | 宽度写死 | 第 81 轮 `VIEW_W=360` |
+| R2 | 无子元素横向溢出宿主 | 宽度写死 | 第 81 轮 `VIEW_W=360`；2026-08-20 EmojiStage stepper 双列横排溢出 22~33px |
 | R3 | 图片 `naturalWidth > 0` | 图裂 | 第 73 轮 localResourceRoots |
 | R4 | `meta.controls` 每项都在 DOM 中<br>（豁免 `stageHiddenFields`） | 参数漏渲染 | 第 82 轮 Upscale 缺 scale |
-| R5 | `hasPrompt` ⇒ textarea 存在 | prompt 漏渲染 | 第 84/85 轮 |
-| R6 | textarea ≤ 1 | 专用编辑器与通用 prompt 双渲染 | 第 87 轮 |
+| R5 | `hasPrompt` ⇒ textarea 存在<br>（多 textarea 仅对 editorKind=none 判 FAIL——专用编辑器多输入区是有意设计） | prompt 漏渲染 | 第 84/85 轮 |
+| R6 | textarea ≤ 1（同上豁免） | 专用编辑器与通用 prompt 双渲染 | 第 87 轮 |
 | R7 | `error` 态 ⇒ 显示 errorMsg | 错误静默 | — |
 | R8 | `success` 态 ⇒ 有 OUTPUT 区<br>（豁免 `flags.hideOutput`） | 输出区不显示 | 第 69 轮 runState 门控 |
 | R9 | picker pool 计数 == 注入的上游图数 | 去重/累积语义 | 第 76/79 轮 |
 | R10 | `actions` ⇒ 渲染成可点按钮 | actions 门控回归 | 第 80 轮 |
 | R11 | 无「有子元素但高度 0」的容器 | 塌陷征兆 | — |
 | R12 | 宿主宽度 == 280px | 溢出断言基准被 CSS 改坏 | — |
+| R13 | 编排节点（Saros.*）的 agentId/providerId/<br>modelId/skillName/toolName COMBO 显示值非 "—" | 下拉框回归为空 | ★ 2026-08-20 用户报告的 bug 类别 |
+| R14 | DOM 卡**不得**渲染端口胶囊（`.wf-comfy-ports` 计数 = 0）<br>—— 端口由 LiteGraph canvas 独占渲染 | canvas 端口 + DOM 胶囊双显 | ★ 2026-08-20 用户删 PortBar 后反转（双显 = 重复 UI） |
+| R15 | ComfyTV 完全复刻 token 契约：<br>a) 参考卡保真（truth ↔ spec 同步）<br>b) 本项目卡（`.wf-comfy-card` 内层面板）背景 #1e1e1e /<br>字号 12px / padding 8px / gap 8px | 样式漂移离 ComfyTV 真源 | ★ 2026-08-20 用户要求完全复刻 |
+
+**R13 的渲染前提 —— harness store seeding**：编排节点的动态 COMBO 选项来自
+`useAgentStore` / `usePicklistStore` / `useProviderStore` 三个全局 store（不喂数据
+时控件永远显示 "—"，截图基线固定为"空下拉"，测不出 resolveControlOptions 的双语义
+路由）。`harness.tsx` 里的 `DEMO_AGENTS/SKILLS/TOOLS/PROVIDERS` 与
+`ORCH_PROP_SEEDS`（属性种子值 = 选项 value = id）**必须成对维护**：新增一个要从
+store 取选项的字段，两边都要登记，否则 R13 直接 FAIL（这就是设计意图——断链即刻暴露）。
+
+**WebGL 环境豁免**：Multiangle/Relight/Material 等 Three.js 编辑器节点在无 GPU/被
+策略禁用（iOA）的环境会 context 创建失败 → 塌陷。runner 启动时先探测 WebGL，
+不可用则**整体跳过**这些场景（报告里 note），避免把环境性失败误报成 UI 回归
+（2026-08-20 实测 swiftshader 被禁后 12 条假 FAIL）。
+
+**ComfyTV 参考卡比对体系（2026-08-20，R15）**：用户要求节点 UI「根据 ComfyTV 源码
+绘制、与本项目节点 UI 比对、完全复刻」。落地为三层：
+
+1. `comfyTvTruth.ts` —— **样式真源**。token（色板/字号/布局）逐字提取自 ComfyTV
+   源码（`src/tailwind.css` @theme + `src/components/stages/StageCard.vue` cardClass），
+   每项注明出处。是 R15 断言与参考卡的唯一依据。
+2. `comfyTvReference.tsx` —— **参考卡渲染器**。用真源 token 直出 ComfyTV 标准卡
+   骨架（MainPrompt → preset bar → params → run-btn → progress → OUTPUT，对齐
+   StageCard 模板顺序）。harness 在每个 success 态场景**并排渲染**参考卡（左）
+   与本项目卡（右），同一份种子数据 —— 唯一变量是样式，肉眼比对
+   「只有样式差异」。基线 PNG 自带双卡对比。
+3. `visual.spec.mjs` **R15 双向断言**：a) 参考卡保真（computed style 与 spec 内联
+   CTV 字面量一致 —— 守护 truth↔spec 同步，参考失真 = 比对基准失真）；b) 本项目
+   卡 token 对齐（背景/字号/padding/gap 与真源一致，漂移即 FAIL 并给出实际 vs
+   期望的可执行复刻清单）。
+
+复刻落地记录（2026-08-20 首轮）：nodeCard 内层面板 `linear-gradient(38,38,46→24,24,28)`
+→ `#1e1e1e`；根字号 11→12px（text-xs）；SectionLabel 9→10px（text-2xs）；
+padding `4px 4px 6px`→`8px`（p-2）；gap 3→8px（gap-2）。
 
 **极简卡片豁免**：`metaControls==0 && metaActions==0 && !hasPrompt && !isPicker`
 的节点（`Bridge*` 等纯路由节点）天生只有一条标题栏，R1/R7/R8 对其豁免。

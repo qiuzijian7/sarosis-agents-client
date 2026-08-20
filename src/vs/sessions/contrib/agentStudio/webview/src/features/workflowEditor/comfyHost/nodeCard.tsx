@@ -21,7 +21,8 @@
 import * as React from 'react';
 import { useSyncExternalStore } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { NodeSpec, PortSpec, StageVariant } from './registry';
+import type { NodeSpec, StageVariant } from './registry';
+import { ORCH_RICH_NODE_TYPES } from './registry.js';
 import type { MediaSnapshotStore } from './mediaSnapshotStore';
 import type { MediaSnapshotEntry } from './mediaSnapshot';
 import { mergeImagePool, mediaDedupeKey } from './mediaSnapshot';
@@ -48,7 +49,10 @@ import { useRunnerStatus } from './runnerStatusStore';
 import { markFormHeightDirty } from './domWidget';
 import { buildSarosEditorFields } from './nodeEditorForm';
 import { ComboPopover } from './ComboPopover';
+import { resolveMediaAssetUrl } from './workflowRun.js';
 import { useProviderStore } from '../../../store/useProviderStore';
+import { useAgentStore } from '../../../store/useAgentStore';
+import { usePicklistStore } from '../picklistStore';
 import { ACTIONS_BY_KIND, actionKeyFor, type StageAction, type ImagePreset } from './actionSpawn';
 import { MaskPainter } from '../MaskPainter';
 import { CropEditor } from '../CropEditor';
@@ -56,7 +60,11 @@ import { OutpaintEditor } from '../OutpaintEditor';
 import { GridSplitEditor } from '../GridSplitEditor';
 import { ColorGradeEditor } from '../ColorGradeEditor';
 import { TransformEditor } from '../TransformEditor';
+import { EmojiStageEditor } from '../EmojiStageEditor';
 import { MultiangleEditor } from './MultiangleEditor';
+import { AssetReferences, type AssetCandidate } from './AssetReferences';
+import { MentionTextarea, type MentionCandidate } from './MentionTextarea';
+import { ASSET_REFS_PROP, type AssetRef } from './assetRefs';
 import type { CameraState } from './cameraWidget';
 import { PanoramaEditor } from './PanoramaEditor';
 import { RelightEditor } from '../RelightEditor';
@@ -119,6 +127,52 @@ export interface NodeCardMeta {
 	/** ComfyTV stage variant（generator/loader/transform）——驱动运行按钮、prompt、
 	 *  server select 的显隐。transform/loader 无运行按钮（对齐 ComfyTV StageCard.vue）。 */
 	variant?: StageVariant;
+	/**
+	 * 「资产引用」原始 JSON（node.properties.comfytv_image_refs）。
+	 *
+	 * 对齐 ComfyTV ImageStage 的 asset references：stage 除了连线拿上游图，还能
+	 * **钉住**任意已生成资产作为参考图，每条占一个 slot（`images.image{N}` 等），
+	 * 执行时覆盖同 slot 的连线输入。见 assetRefs.ts / AssetReferences.tsx。
+	 */
+	assetRefsJson?: string;
+	/**
+	 * Agent / Skill / Tool 节点的身份标识（画布卡片富身份显示用）。
+	 *
+	 * ★ 这是「选了 agent/skill/tool 后丰富元信息丢失」的修复入口：卡片不再只显示
+	 *   `agentId=xxx` 碎片，而是 icon + name + role + description 身份卡。原始 id
+	 *   从 properties 提取（agentId / skillName / toolName），渲染层据此查
+	 *   useAgentStore / usePicklistStore 拿到完整元信息（纯函数无法访问 store）。
+	 */
+	identity?: { type: 'agent' | 'skill' | 'tool'; id: string };
+	/**
+	 * 节点类型身份（无论是否已选中）。`identity` 只在已选时存在；`identityType`
+	 * 始终存在，用于区分「这是 agent/skill/tool 节点但未配置」→ 卡片显示虚线
+	 * 占位「＋选择」引导，而非空白。
+	 */
+	identityType?: 'agent' | 'skill' | 'tool';
+	/**
+	 * 媒体库资产 id（拖拽资产到画布时注入 node.properties.mediaAssetId）。
+	 *
+	 * ★★ Load 节点空白的**真凶修复**：原来 NodeCard 的 ImageLoader IIFE 里直接写
+	 *   `properties['mediaAssetId']` —— 但 NodeCard 的 props 解构**没有 properties**
+	 *   （getNodeCardMeta 才接收它）。自由变量被 esbuild 当全局保留原名 →
+	 *   运行时 `ReferenceError: properties is not defined` → 整卡 React 渲染崩溃
+	 *   → Load 节点 body 空白（editorKind/inline editor 分支其实都正常）。
+	 *   日志实证（vscode-app-1787159667152.log）：
+	 *   `[AS-EARLY] ReferenceError: properties is not defined 3874` ×4 = 画布上
+	 *   4 个 Load 节点各崩一次。
+	 */
+	mediaAssetId?: string;
+	/**
+	 * LoadImage 节点选中的图片值（node.properties.image，data URL 或媒体 ref）。
+	 *
+	 * ★ ImageLoaderStage 的 image widget 类型是 IMAGE，而 toControls 对 ComfyTV
+	 *   只收集 COMBO/INT/FLOAT/BOOLEAN → 该字段不进 controls。用户通过弹窗
+	 *   ImageFieldEditor 选图后值落到 properties.image，但卡片内嵌预览 storedImg
+	 *   的三个来源（ownSnapshots / assetUrl / controlDrafts['image']）都读不到它，
+	 *   导致「选了图但卡片空白」。这里显式透传，作为 storedImg 的第 4 个来源。
+	 */
+	image?: string;
 }
 
 /** A COMBO option — plain string or { label, value } pair. */
@@ -148,7 +202,14 @@ function toControls(spec: NodeSpec | undefined, properties: Record<string, unkno
 			continue;
 		}
 		if (w.name === 'prompt') { continue; } // prompt has its own textarea
-		if (w.type !== 'COMBO' && w.type !== 'INT' && w.type !== 'FLOAT' && w.type !== 'BOOLEAN') { continue; }
+		// ★ TEXT 只对**编排节点**放行（Start 的 args、IfElse 的 evaluationTarget、
+		//   Skill 的 task/skillArgs、Tool 的 toolParams…）—— 它们的参数要用 DOM 绘制。
+		//   ⚠ 不能全局放行：ComfyTV loader（Video/Audio/TextLoaderStage）的 widget
+		//   就是 TEXT 类型，全局放行会把它们的上传区替换成一个裸 input。
+		//   （当前 comfyTV 分支已在上面 return，这里是二重保险 + 意图声明。）
+		const orchRich = ORCH_RICH_NODE_TYPES.has(spec.type ?? '');
+		if (w.type === 'TEXT' && !orchRich) { continue; }
+		if (w.type !== 'COMBO' && w.type !== 'INT' && w.type !== 'FLOAT' && w.type !== 'BOOLEAN' && w.type !== 'TEXT') { continue; }
 		// provider/model 兼容旧命名 providerId/modelId（canvas_generate 等写入）。
 		const legacy = w.name === 'provider' ? properties.providerId : w.name === 'model' ? properties.modelId : undefined;
 		const current = properties[w.name] ?? legacy ?? w.default;
@@ -167,26 +228,58 @@ function toControls(spec: NodeSpec | undefined, properties: Record<string, unkno
 /** Resolve a control's COMBO options at render time.
  *
  *  Static widgets (workflow/seed/…) keep their registered options. Provider
- *  backend nodes (Saros.ModelImageGen) get LIVE options from the provider
- *  store: `provider` lists authenticated image-gen providers, `model` lists
- *  the selected provider's image-gen models. Falls back to the current value
- *  when nothing is available (empty select would otherwise be unusable). */
+ *  backend nodes get LIVE options from the provider store:
+ *   * `provider` / `model`     → 文生图语义（ComfyTV ModelImageGen）：模型列表
+ *                                过滤 `supportsImageGen`。
+ *   * `providerId` / `modelId` → **LLM 语义**（Saros.Agent）：列全部聊天模型，
+ *                                **不做** supportsImageGen 过滤（对齐
+ *                                NodeEditorPopup.AgentProviderModelSelect）。
+ *                                键名也必须是 providerId/modelId —— 与
+ *                                VSSAROS_FIELDS 一致，否则值写到读不到的键。
+ *   * `agentId` / `skillName` / `toolName` → 从 agent / picklist store 取**实时**
+ *                                选项（用户要求这三个参数用下拉框而非文本框）。
+ *  Falls back to the current value when nothing is available (empty select
+ *  would otherwise be unusable). */
 export function resolveControlOptions(
 	c: { name: string; type: string; options?: ComboOption[] },
 	drafts: Record<string, unknown>,
 	providers: Array<{ id: string; name: string; models: Array<{ id: string; name: string; supportsImageGen?: boolean }> }>,
+	picks?: {
+		agents?: Array<{ id: string; name?: string; icon?: string; role?: string }>;
+		skills?: Array<{ id: string; name?: string }>;
+		tools?: Array<{ id: string; name: string }>;
+	},
 ): ComboOption[] | undefined {
 	if (c.type !== 'COMBO') { return c.options; }
-	if (c.name === 'provider') {
+	if (c.name === 'provider' || c.name === 'providerId') {
 		const opts = providers.map(p => ({ label: p.name, value: p.id }));
 		return opts.length > 0 ? opts : undefined;
 	}
-	if (c.name === 'model') {
-		const pid = typeof drafts['provider'] === 'string' ? drafts['provider'] : '';
-		const p = providers.find(x => x.id === pid);
+	if (c.name === 'model' || c.name === 'modelId') {
+		// providerId ⇒ LLM（不过滤）；provider ⇒ 文生图（过滤 supportsImageGen）
+		const llm = c.name === 'modelId';
+		const key = llm ? 'providerId' : 'provider';
+		const pid = typeof drafts[key] === 'string' ? drafts[key] as string : '';
+		const p = providers.find(x => x.id === pid) ?? (pid ? undefined : providers[0]);
 		const opts = (p?.models ?? [])
-			.filter(m => m.supportsImageGen)
+			.filter(m => llm || m.supportsImageGen)
 			.map(m => ({ label: m.name ?? m.id, value: m.id }));
+		return opts.length > 0 ? opts : undefined;
+	}
+	// agent / skill / tool 选择器：实时列出可用项（label 带 icon 便于辨识）。
+	if (c.name === 'agentId') {
+		const opts = (picks?.agents ?? []).map(a => ({
+			label: `${a.icon ? a.icon + ' ' : ''}${a.name ?? a.id}`,
+			value: a.id,
+		}));
+		return opts.length > 0 ? opts : undefined;
+	}
+	if (c.name === 'skillName') {
+		const opts = (picks?.skills ?? []).map(s => ({ label: s.name ?? s.id, value: s.id }));
+		return opts.length > 0 ? opts : undefined;
+	}
+	if (c.name === 'toolName') {
+		const opts = (picks?.tools ?? []).map(t => ({ label: t.name, value: t.id }));
 		return opts.length > 0 ? opts : undefined;
 	}
 	return c.options;
@@ -218,6 +311,61 @@ function kindBadgeColor(stageKind: string | undefined): string {
 	}
 }
 
+/**
+ * ★ 端口条（ComfyUI/litegraph 视觉对齐）：DOM 富卡（schema / fullEditor /
+ * orchRich）首行渲染 in/out 胶囊 —— 色点复用 canvas slot 的 `portTypeColor`
+ * （DOM 与 canvas 连线圆点同色，视觉融合为一套端口语义）。
+ *
+ * 为什么需要：画布上连线锚点是 canvas slot（圆点画在节点边缘，本条不承担
+ * 交互），但**纯 DOM 渲染场景**（visual 截图 / 用户肉眼核对基线 PNG）没有
+ * canvas 层 → 端口完全不可见。此条让卡片自带端口语义展示，两处受益：
+ *   1. visual 截图含端口（R14 断言锚点）；
+ *   2. 画布上参数卡与端口的关系一目了然（in 左 / out 右，类型配色）。
+ */
+/** 端口仅由 LiteGraph canvas 渲染（在上方「端口行」里带可连线的圆点），
+ *  DOM 不再重复绘制端口胶囊——避免 schema 节点上方 canvas 端口和下方 DOM
+ *  端口 chip 同时显示。CONTEXT 折叠面板（语义摘要 "N images"）仍独立
+ *  显示在卡片底部，与连线锚点无关。 */
+
+
+/**
+ * P1: 单个 Saros 字段的卡片摘要文案。Pure。
+ *   * JSON 对象字段 → 「N 个变量/参数/选项」
+ *   * prompt/questionText 长文本 → 「✓ 已填」（不显示无意义碎片）
+ *   * cases（Switch）→ 「N 分支」
+ *   * 其余短字段 → 截断 28 字
+ */function sarosFieldSummary(label: string, key: string, value: unknown): string | undefined {
+	if (value === undefined || value === null || value === '') { return undefined; }
+	if (key === 'variables' || key === 'skillArgs' || key === 'toolParams' || key === 'options' || key === 'args') {
+		let n = 0;
+		if (Array.isArray(value)) { n = value.length; }
+		else if (typeof value === 'object') { n = Object.keys(value as Record<string, unknown>).length; }
+		else if (typeof value === 'string' && value.trim()) {
+			try { const a: unknown = JSON.parse(value); n = Array.isArray(a) ? a.length : (a && typeof a === 'object' ? Object.keys(a as Record<string, unknown>).length : 0); } catch { /* 非法 JSON → 不显示计数 */ }
+		}
+		const unit = key === 'variables' ? '变量' : key === 'options' ? '选项' : '参数';
+		return n > 0 ? `${label}=${n} ${unit}` : undefined;
+	}
+	if (key === 'cases') {
+		let n = 0;
+		if (typeof value === 'string') {
+			const s = value.trim();
+			if (s) {
+				try { const a: unknown = JSON.parse(s); n = Array.isArray(a) ? a.length : 1; }
+				catch { n = s.split(',').filter(x => x.trim()).length; }
+			}
+		} else if (Array.isArray(value)) { n = value.length; }
+		return n > 0 ? `${label}=${n} 分支` : undefined;
+	}
+	if (key === 'prompt' || key === 'questionText') {
+		const text = String(value);
+		return text.length > 16 ? `${label}=✓ 已填` : `${label}=${text}`;
+	}
+	const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+	const short = text.length > 28 ? `${text.slice(0, 26)}…` : text;
+	return `${label}=${short}`;
+}
+
 /** Derive card display metadata from a spec + node properties. Pure, unit-testable. */
 export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<string, unknown>): NodeCardMeta {
 	const isSchema = spec?.kind === 'schema';
@@ -243,13 +391,13 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
 	// Saros (react) nodes: show a compact parameter summary from the form
 	// fields (e.g. agentId / skillName / questionText) so the canvas card is
 	// informative without opening the editor.
+	// P1: JSON 对象字段显示「N 个变量/参数/选项」而非裸 JSON 截断；prompt 类
+	// 长文本显示「✓ 已填」而非无意义的 28 字碎片。
 	if (!widgetSummary && kind === 'react') {
 		const summary = buildSarosEditorFields(spec?.type ?? '').map(f => {
 			const v = properties[f.key];
 			if (v === undefined || v === null || v === '') { return undefined; }
-			const text = typeof v === 'object' ? JSON.stringify(v) : String(v);
-			const short = text.length > 28 ? `${text.slice(0, 26)}…` : text;
-			return `${f.label}=${short}`;
+			return sarosFieldSummary(f.label, f.key, v);
 		}).filter((s): s is string => !!s);
 		if (summary.length > 0) { widgetSummary = summary.slice(0, 4).join(' · '); }
 	}
@@ -258,6 +406,25 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
 		? `stage: ${spec.comfyTV.stageKind ?? '?'} · wf: ${spec.comfyTV.workflowKind ?? '?'}`
 		: undefined;
 
+	// ★ Agent / Skill / Tool 节点身份（富身份卡片）。原始 id 从 properties 提取，
+	//   渲染层据此查 store 拿 icon/role/description（纯函数不访问 store）。
+	let identity: NodeCardMeta['identity'];
+	let identityType: NodeCardMeta['identityType'];
+	const nodeType = spec?.type ?? '';
+	if (nodeType === 'Saros.Agent' || nodeType === 'Saros.Task') {
+		identityType = 'agent';
+		const id = typeof properties.agentId === 'string' ? properties.agentId : '';
+		if (id) { identity = { type: 'agent', id }; }
+	} else if (nodeType === 'Saros.Skill') {
+		identityType = 'skill';
+		const id = typeof properties.skillName === 'string' ? properties.skillName : '';
+		if (id) { identity = { type: 'skill', id }; }
+	} else if (nodeType === 'Saros.Tool') {
+		identityType = 'tool';
+		const id = typeof properties.toolName === 'string' ? properties.toolName : '';
+		if (id) { identity = { type: 'tool', id }; }
+	}
+
 	return {
 		title,
 		kind,
@@ -265,13 +432,33 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
 		inputs: spec?.inputs ?? [],
 		outputs: spec?.outputs ?? [],
 		widgetSummary,
+		identity,
+		identityType,
+		// ★ Load 节点拖入资产预览：经 meta 传递（NodeCard 无 properties props，
+		//   见 NodeCardMeta.mediaAssetId 注释 —— 旧代码的自由变量 bug 修复通道）。
+		mediaAssetId: typeof properties.mediaAssetId === 'string' ? properties.mediaAssetId : undefined,
+		// ★ LoadImage 选图值透传（见 NodeCardMeta.image 注释）。
+		image: typeof properties.image === 'string' ? properties.image : undefined,
 		schemaDetail,
 		stageKind: spec?.comfyTV?.stageKind,
 		workflowKind: spec?.comfyTV?.workflowKind ?? spec?.comfyTV?.stageKind,
-		// hasPrompt = schema 节点且 spec 声明了 prompt 文本域（ComfyTV 的 MainPromptInput
-		// 语义）；ComfyTV 节点若 widgets 无 prompt（如 picker/loader）则不显示 textarea。
-		hasPrompt: kind === 'schema' && (spec?.widgets?.some(w => w.name === 'prompt') ?? false),
-		prompt: kind === 'schema' && typeof properties.prompt === 'string' ? properties.prompt : undefined,
+		// hasPrompt = spec 声明了 prompt 文本域（ComfyTV 的 MainPromptInput 语义）。
+		// ★ 不再限定 schema：编排节点（Saros.Prompt/Agent，见 ORCH_RICH_NODE_TYPES）
+		//   也要复用同一个 MentionTextarea。ComfyTV 节点若 widgets 无 prompt
+		//   （如 picker/loader）则仍不显示 textarea。
+		hasPrompt: (kind === 'schema' || ORCH_RICH_NODE_TYPES.has(spec?.type ?? ''))
+			&& (spec?.widgets?.some(w => w.name === 'prompt') ?? false),
+		prompt: (kind === 'schema' || ORCH_RICH_NODE_TYPES.has(spec?.type ?? ''))
+			&& typeof properties.prompt === 'string' ? properties.prompt : undefined,
+		// 资产引用（asset references）原始 JSON —— 存在 node.properties 上，
+		// 由 AssetReferences 区块消费。ComfyTV 存的是数组，这里统一序列化成
+		// 字符串传给 React（避免每次 build 产生新数组引用触发无谓重渲染）。
+		assetRefsJson: (() => {
+			const raw = properties[ASSET_REFS_PROP];
+			if (typeof raw === 'string') { return raw; }
+			if (Array.isArray(raw)) { try { return JSON.stringify(raw); } catch { return undefined; } }
+			return undefined;
+		})(),
 		// ★ 不能限定 kind==='schema'：Crop/Rotate/Mirror/Relight/Material 等是
 		//   手写 `kind:'native'` 注册，但 registerNodeSpec 已统一从 STAGE_META
 		//   补全 comfyTV.stageKind（Rotate/Mirror → 'image'），
@@ -304,6 +491,21 @@ const KIND_COLOR: Record<string, string> = {
 	native: '#f59e0b',
 	llm: '#06b6d4',
 };
+
+/**
+ * 编排节点中使用 **ComfyTV 风格 DOM 富卡片**的类型。
+ *
+ * ★ 定义在 `registry.ts`（底层、无 React 依赖）作单一真源 —— `sarosLiteGraphNodes`
+ *   也要用它把 canvas widget 标 hidden，避免 canvas / DOM 双绘同一参数。
+ *   这里 re-export 供本模块与 `LiteGraphCanvas` 使用。
+ *
+ * 为什么需要这个集合：ImageStage 那套 DOM UI 的所有门控（`showRun`、
+ * `hasPrompt`、`isProviderImageGen`、控件行样式）原本都硬编码
+ * `kind === 'schema'`，而编排节点是 `kind:'react'` —— 于是 prompt 输入框与
+ * provider/model 下拉根本不渲染，只能退回 LiteGraph canvas 原生 widget
+ * （窄、无 @ 提及、配色与 ComfyTV 不一致）。
+ */
+export { ORCH_RICH_NODE_TYPES };
 
 /**
  * 注册为 `kind:'native'`（浏览器本地执行，非 ComfyTV schema stage）但**卡片里要渲染
@@ -340,6 +542,7 @@ const RUN_LABEL: Record<string, { label: string; icon: string }> = {
 	'text-batch': { label: '生成文本批', icon: '▶' },
 	panorama: { label: 'Generate Panorama', icon: '▶' },
 	material: { label: 'Generate Material', icon: '▶' },
+	emoji: { label: '生成表情包', icon: '▶' },
 };
 
 /** Thin ComfyTV-style progress bar (h-1.5, gradient fill + mono caption). */
@@ -708,7 +911,8 @@ function PickerPoolGrid({ entries, selectedIndex, directRef, poolScope, onPick, 
 function SectionLabel({ children, color }: { children: React.ReactNode; color?: string }): React.JSX.Element {
 	return (
 		<div style={{
-			fontSize: 9, letterSpacing: 1, textTransform: 'uppercase', opacity: .6,
+			// ComfyTV sectionLabel 类：text-2xs(10px) uppercase tracking-wide opacity-60 mb-[3px]
+			fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', opacity: .6,
 			marginBottom: 3, color: color ?? 'var(--vscode-descriptionForeground, #858585)',
 			whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
 		}}>
@@ -785,6 +989,28 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const kindColor = KIND_COLOR[meta.kind] ?? '#888';
 	const run = useNodeCardState(cardStateStore, nodeId);
 	const runLabel = RUN_LABEL[meta.stageKind ?? ''] ?? { label: '运行', icon: '▶' };
+	// ★ Agent/Skill/Tool 富身份卡：从 store 查元信息（icon/role/description/徽章）。
+	//   `meta.identity` 只带原始 id（纯函数提取），此处 resolve 成完整身份对象。
+	const agents = useAgentStore(s => s.agents);
+	const skills = usePicklistStore(s => s.skills);
+	const tools = usePicklistStore(s => s.tools);
+	const identityInfo = React.useMemo(() => {
+		const idn = meta.identity;
+		if (!idn) { return undefined; }
+		if (idn.type === 'agent') {
+			const a = agents.find(x => x.id === idn.id);
+			if (!a) { return { icon: '🤖', name: idn.id, role: '', description: '' }; }
+			return { icon: a.icon || '🤖', name: a.name || a.id, role: a.role || '', description: a.description || '', category: a.category, skills: a.skills?.length ?? 0, tools: a.tools?.length ?? 0 };
+		}
+		if (idn.type === 'skill') {
+			const s = skills.find(x => x.id === idn.id);
+			if (!s) { return { icon: '⚡', name: idn.id, role: '', description: '' }; }
+			return { icon: '⚡', name: s.name || s.id, role: s.category || s.activation || '', description: s.description || '' };
+		}
+		const t = tools.find(x => x.id === idn.id);
+		if (!t) { return { icon: '🔧', name: idn.id, role: '', description: '' }; }
+		return { icon: '🔧', name: t.name, role: '', description: t.description || '' };
+	}, [meta.identity, agents, skills, tools]);
 	// 选择器节点（*PickerStage）是 no-Run 本地节点：不渲染「生成」按钮，改为
 	// Pool 状态栏 + 已选缩略图 + Clear（对齐 ComfyTV 的 usePickerStage）。
 	// instant 节点（Crop/Rotate/Mirror）也是可运行节点：卡片内嵌编辑器 + 运行
@@ -798,7 +1024,12 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const showRun = (
 		meta.kind === 'schema'
 		|| LOCAL_EDITOR_NODE_TYPES.has(meta.nodeType ?? '')
+		// ★ 编排富卡片（Saros.Prompt/Agent）：复用 ImageStage 的 prompt textarea
+		//   与 provider/model 下拉，必须让总门控为 true，否则三块全被跳过。
+		|| ORCH_RICH_NODE_TYPES.has(meta.nodeType ?? '')
 	) && !meta.isPicker;
+	/** 是否走「编排富卡片」（DOM 控件 + 宽 label 单列，与 ImageStage 同款）。 */
+	const isOrchRich = ORCH_RICH_NODE_TYPES.has(meta.nodeType ?? '');
 	// 运行按钮的显隐**完全由 ComfyTV variant 驱动**（对齐 ComfyTV
 	// StageCard.vue:144 的 `variant!=='loader' && variant!=='transform' && !isPicker`）：
 	//   - transform（Crop/Rotate/Mirror/ColorGrade/Compare/GridSplit/Panorama*View）
@@ -808,7 +1039,9 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	// generator（ImageStage/VideoStage/…）保留运行按钮。
 	// 注意：不要硬编码为 false —— 那会连生成节点的运行入口一起移除。
 	const stageVariant: StageVariant = meta.variant ?? 'generator';
-	const showRunButton = stageVariant === 'generator' && !meta.isPicker;
+	// ★ 编排富卡片不显示 ▶ 运行按钮：Prompt 只是提示词容器，Agent 的执行由整图
+	//   Run / 右键菜单驱动（showRun 为 true 仅为放开控件+prompt 渲染，见上）。
+	const showRunButton = stageVariant === 'generator' && !meta.isPicker && !isOrchRich;
 	// P2 engine-ready gate: schema/native nodes need a live ComfyUI runner.
 	// When none is connected, show a "disconnected" placeholder + disable the
 	// run button instead of an executable (but doomed) control.
@@ -822,6 +1055,58 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		() => providers.filter(p => p.authStatus === 'authenticated' && p.models.some(m => m.supportsImageGen)),
 		[providers],
 	);
+	// ★ Agent(LLM) 用**全部**已认证 provider（不过滤 supportsImageGen）——
+	//   对齐 NodeEditorPopup.AgentProviderModelSelect 的语义。若沿用
+	//   imageGenProviders，纯 LLM provider（无文生图模型）会整个消失。
+	const chatProviders = React.useMemo(
+		() => providers.filter(p => p.authStatus === 'authenticated'),
+		[providers],
+	);
+	/** 该卡片控件应使用的 provider 列表（Agent=LLM，其余=文生图）。 */
+	const controlProviders = isOrchRich ? chatProviders : imageGenProviders;
+	// ★ 编排富卡片诊断打点：只在关键判定变化时输出（不刷屏）。
+	//   ⚠ 必须放在 providers/agents/skills/tools **全部声明之后** —— 依赖数组在
+	//   渲染时求值，提前引用 `const` 会触发 TDZ ReferenceError 把整张卡打崩。
+	//   排障顺序：
+	//     1. 有 `[syncOverlay] orch node skipped` → 该类型没登记进 ORCH_RICH_NODE_TYPES；
+	//     2. 无 `[orchForm] attached`            → DOM 通路/form widget 没建立；
+	//     3. 这里 controls=[] → registry spec 缺 widgets 声明；
+	//     4. controls 有但下拉空 → 对应 store 数据源为空（未登录 provider / 无 agent）。
+	React.useEffect(() => {
+		if (!isOrchRich) { return; }
+		// eslint-disable-next-line no-console
+		console.warn('[orchCard] ' + JSON.stringify({
+			nodeType: meta.nodeType,
+			kind: meta.kind,
+			controls: (meta.controls ?? []).map(c => `${c.name}:${c.type}`),
+			hasPrompt: meta.hasPrompt,
+			providersAll: providers.length,
+			providersUsed: controlProviders.length,
+			agents: agents.length,
+			skills: skills.length,
+			tools: tools.length,
+		}));
+	}, [isOrchRich, meta.nodeType, meta.kind, meta.controls, meta.hasPrompt,
+		providers.length, controlProviders.length, agents.length, skills.length, tools.length]);
+	// ★★ 下拉框为空的**真因修复**：这三个 store 都是**懒加载**（`loadXxx()`
+	//   幂等、需显式调用）。原先只有 `NodeEditorPopup`（双击弹窗）会触发加载，
+	//   画布卡片直接读 store → 永远是空数组 → 所有下拉显示 `—`。
+	//   日志实证：`[orchCard] {...,"providersAll":0,"agents":0,"skills":0,"tools":0}`
+	//   而 controls 与 orchForm 都正常 —— 通路没问题，纯粹是数据源没拉。
+	//   这里按需触发（每个 store 各自 idempotent，不会重复请求）。
+	const loadAgents = useAgentStore(s => s.loadAgents);
+	const loadSkills = usePicklistStore(s => s.loadSkills);
+	const loadTools = usePicklistStore(s => s.loadTools);
+	const loadProviders = useProviderStore(s => s.loadProviders);
+	React.useEffect(() => {
+		if (!isOrchRich) { return; }
+		const names = new Set((meta.controls ?? []).map(c => c.name));
+		if (names.has('agentId') && agents.length === 0) { void loadAgents(); }
+		if (names.has('skillName') && skills.length === 0) { void loadSkills(); }
+		if (names.has('toolName') && tools.length === 0) { void loadTools(); }
+		if ((names.has('providerId') || names.has('modelId')) && providers.length === 0) { void loadProviders(); }
+	}, [isOrchRich, meta.controls, agents.length, skills.length, tools.length, providers.length,
+		loadAgents, loadSkills, loadTools, loadProviders]);
 	const duration = run.durationMs != null && run.durationMs > 0
 		? run.durationMs < 60000 ? `${(run.durationMs / 1000).toFixed(1)}s` : `${Math.floor(run.durationMs / 60000)}m ${Math.round((run.durationMs % 60000) / 1000)}s`
 		: '';
@@ -918,6 +1203,57 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	// 引用）：整个 workflow 所有节点产出的 image entry。仅 picker 使用，惰性
 	// 但订阅式（useAllSnapshots），store 变更时同样重渲染。
 	const allImageOutputs = useAllSnapshots(snapshotStore, 'image');
+	/* ── 资产引用（Asset References，对齐 ComfyTV ImageStage）─────────────────
+	 * 数据存在 node.properties.comfytv_image_refs（JSON 字符串），经 wf-node-control
+	 * 写回（与其它 DOM 控件同一通道）。候选 = 工作流内所有已生成媒体快照。 */
+	const [assetRefsDraft, setAssetRefsDraft] = React.useState<AssetRef[] | null>(null);
+	const assetRefs = React.useMemo<AssetRef[]>(() => {
+		if (assetRefsDraft) { return assetRefsDraft; }
+		if (!meta.assetRefsJson) { return []; }
+		try {
+			const arr = JSON.parse(meta.assetRefsJson) as unknown;
+			return Array.isArray(arr) ? (arr as AssetRef[]).filter(r => typeof r?.ref === 'string' && Number.isInteger(r?.slot)) : [];
+		} catch { return []; }
+	}, [assetRefsDraft, meta.assetRefsJson]);
+	const setAssetRefs = React.useCallback((next: AssetRef[]) => {
+		setAssetRefsDraft(next);
+		if (nodeId) {
+			window.dispatchEvent(new CustomEvent('wf-node-control', {
+				detail: { nodeId, name: ASSET_REFS_PROP, value: JSON.stringify(next) },
+			}));
+		}
+	}, [nodeId]);
+	/** 可钉/可 @ 的媒体候选（去重，最多 40 条，新图在前）。 */
+	const assetCandidates = React.useMemo<AssetCandidate[]>(() => {
+		const seen = new Set<string>();
+		const out: AssetCandidate[] = [];
+		for (const e of [...allImageOutputs].reverse()) {
+			const ref = e.media.ref;
+			if (!ref || seen.has(ref)) { continue; }
+			seen.add(ref);
+			out.push({ ref, kind: e.media.kind, label: `${e.port || e.media.kind} · ${ref.slice(-12)}` });
+			if (out.length >= 40) { break; }
+		}
+		return out;
+	}, [allImageOutputs]);
+	/** @ 提及候选：节点（插 @[node:label]）+ 文件（钉成资产引用）。 */
+	const mentionCandidates = React.useMemo<MentionCandidate[]>(() => [
+		...(meta.inputs ?? []).map(p => ({ group: 'node' as const, label: p.name })),
+		...assetCandidates.map(c => ({ group: 'file' as const, label: c.label, kind: c.kind, ref: c.ref })),
+	], [meta.inputs, assetCandidates]);
+	/** @ 选中文件 → 钉成资产引用（分配下一个空闲 slot）。 */
+	const pinMentionAsset = React.useCallback((c: MentionCandidate) => {
+		if (!c.ref) { return; }
+		const type = c.kind === 'video' ? 'video' as const : c.kind === 'audio' ? 'audio' as const : 'image' as const;
+		if (assetRefs.some(r => r.ref === c.ref)) { return; }
+		const taken = new Set(assetRefs.filter(r => (r.type ?? 'image') === type).map(r => r.slot));
+		let slot = 0;
+		while (taken.has(slot)) { slot++; }
+		setAssetRefs([...assetRefs, { ref: c.ref, slot, label: c.label, ...(type !== 'image' ? { type } : {}) }]);
+	}, [assetRefs, setAssetRefs]);
+	/** 资产引用区块的显示条件：ComfyTV stage 且接受图像/参考输入。 */
+	const showAssetRefs = !!meta.stageKind && !meta.isPicker
+		&& (meta.inputs ?? []).some(p => /IMAGE|VIDEO|AUDIO/i.test(p.type ?? ''));
 	// Erase / Inpaint 内嵌 mask 编辑器 + Crop 内嵌拖拽裁剪（对齐 ComfyTV
 	// StageCard 把画布渲染在卡片里，而非双击弹窗）。上游 image ref 作为
 	// 涂抹/裁剪参考背景。
@@ -934,6 +1270,24 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const hiddenFields = React.useMemo(() => stageHiddenFields(meta.nodeType), [meta.nodeType]);
 	/** 是否存在内嵌编辑器（决定通用控件网格整体是否渲染）。 */
 	const hasInlineEditor = editorKind !== 'none';
+	// ★ Load 节点空白诊断打点（依赖只用 `hasInlineEditor`/`meta`/`editorKind`，
+	//   全部已在 effect 前声明 —— 不踩 TDZ）。
+	//   截图里 Load body 是空矩形：可能是 editorKind 错（不是 'image'）、
+	//   isImageLoader 错、或是其他分支覆盖了卡片（picker/actions）。
+	React.useEffect(() => {
+		if (!meta.nodeType?.startsWith('ComfyTV.')) { return; }
+		const flags = stageCardFlags(meta.nodeType, meta.isPicker);
+		// eslint-disable-next-line no-console
+		console.warn('[stageEditor] ' + JSON.stringify({
+			nodeType: meta.nodeType,
+			editorKind,
+			hasInlineEditor,
+			isPicker: meta.isPicker,
+			hideOutput: flags.hideOutput,
+			hideActions: flags.hideActions,
+			hiddenFields: stageHiddenFields(meta.nodeType),
+		}));
+	}, [meta.nodeType, meta.isPicker, editorKind, hasInlineEditor]);
 	const isOutpaint = editorKind === 'outpaint';
 	const isCrop = editorKind === 'crop';
 	const isGridSplit = editorKind === 'gridSplit';
@@ -948,6 +1302,10 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const isKenBurns = editorKind === 'kenBurns';
 	const isRelight = editorKind === 'relight';
 	const isMaterial = editorKind === 'material';
+	const isEmoji = editorKind === 'emoji';
+	// W: Loader 内嵌预览（对齐 ComfyTV LoadImage：filename + 上传 + 缩略图 + W×H），
+	//   替代通用 OUTPUT 区。
+	const isImageLoader = editorKind === 'image';
 	// browser-local 独立编辑器节点（native，inputs=[]）：双击打开对应编辑器。
 	// 卡片上补「打开编辑器」入口（否则仅 brand + widgetSummary，用户不知道可双击）。
 	// 注意：MaterialStage 现在有内联编辑器，不再在此列表中。
@@ -1320,14 +1678,29 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	//  - provider 值为空或已失效（被移除/未认证）→ 回退第一个激活（authenticated）provider；
 	//  - model 值为空或不属于当前 provider → 回退该 provider 第一个支持文生图的模型；
 	//  - 两者都写回 node.properties（wf-node-control）→ 执行时 runProviderImage 可读、保存持久化。
-	const isProviderImageGen = meta.kind === 'schema' && imageGenProviders.length > 0;
+	// ★ 不再限定 schema：编排富卡片（Saros.Agent）的 provider/model 也要动态选项
+	//   + 联动（与 ImageStage 的 provider 后端完全同一套逻辑）。
+	const isProviderImageGen = (meta.kind === 'schema' || isOrchRich) && controlProviders.length > 0;
+	/**
+	 * 文生图 provider/model 的**自动回退**是否适用。
+	 *
+	 * ★ 必须与 `isProviderImageGen` 分开：后者含 orchRich（用 chatProviders 判定），
+	 *   而下面的回退逻辑硬用 `imageGenProviders[0].id` —— orchRich 节点若所处环境
+	 *   只有纯 LLM provider（无文生图模型），`imageGenProviders` 为空数组，
+	 *   `[0].id` 直接抛 `TypeError: Cannot read properties of undefined`，
+	 *   整张卡片崩成空白（正是「UI 缺失」的一种表现）。
+	 *   且这套回退用的是 `provider`/`model` 键名（ComfyTV 文生图语义），
+	 *   对 orchRich 的 `providerId`/`modelId` 本就不适用 —— 后者的联动在
+	 *   ComboPopover 的 onChange 里处理。
+	 */
+	const isImageGenAutoFix = meta.kind === 'schema' && imageGenProviders.length > 0;
 	const effectiveProviderId = React.useMemo(() => {
-		if (!isProviderImageGen) { return ''; }
+		if (!isImageGenAutoFix) { return ''; }
 		const pid = typeof controlDrafts['provider'] === 'string' ? controlDrafts['provider'] : '';
 		return imageGenProviders.some(p => p.id === pid) ? pid : imageGenProviders[0].id;
-	}, [isProviderImageGen, imageGenProviders, controlDrafts]);
+	}, [isImageGenAutoFix, imageGenProviders, controlDrafts]);
 	React.useEffect(() => {
-		if (!isProviderImageGen) { return; }
+		if (!isImageGenAutoFix) { return; }
 		const pid = typeof controlDrafts['provider'] === 'string' ? controlDrafts['provider'] : '';
 		const mid = typeof controlDrafts['model'] === 'string' ? controlDrafts['model'] : '';
 		const validPid = imageGenProviders.some(p => p.id === pid) ? pid : imageGenProviders[0].id;
@@ -1338,7 +1711,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		if (validPid !== pid) { commitControl('provider', validPid); }
 		if (validMid && validMid !== mid) { commitControl('model', validMid); }
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [isProviderImageGen, imageGenProviders, controlDrafts, commitControl]);
+	}, [isImageGenAutoFix, imageGenProviders, controlDrafts, commitControl]);
 
 	// addDOMWidget height feedback: any render can change the content height
 	// (progress bar / error banner / output preview appear, prompt grows).
@@ -1347,7 +1720,10 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	// No dep array → runs after every commit; renders only happen on store
 	// changes, so this stays cheap.
 	React.useEffect(() => {
-		if (nodeId && (meta.kind === 'schema' || isFullEditor)) { markFormHeightDirty(nodeId); }
+		// ★ orchRich 也要参与高度反馈：它挂了 `__saros_form` widget（见
+		//   LiteGraphCanvas 的 orchRich 分支），漏掉会让卡片停在 150px 估算值，
+		//   下拉/textarea 被容器 overflow:hidden 截断。
+		if (nodeId && (meta.kind === 'schema' || isFullEditor || isOrchRich)) { markFormHeightDirty(nodeId); }
 	});
 
 	// addDOMWidget: schema cards wrap their content exactly (max-content) —
@@ -1372,6 +1748,26 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		<>
 			{run.runState === 'running' && <RunProgress progress={run.progress} />}
 			{run.runState === 'error' && <ErrorBanner message={run.errorMsg ?? '执行失败'} cancel={false} />}
+			{run.runState === 'skipped' && (
+				<div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 10px', fontSize: 11, color: 'var(--vscode-descriptionForeground, #8b8b8b)', background: 'rgba(128,128,128,0.08)', borderRadius: 4 }}>
+					<span>⤼</span><span>分支未激活——本次运行已跳过</span>
+				</div>
+			)}
+			{(meta.nodeType === 'Saros.Loop' || meta.nodeType === 'Saros.Parallel') && (run.runState === 'success' || run.runState === 'idle') && (() => {
+				// W5b: Loop/Parallel 迭代徽章——从最新快照解析 {iterations, failed}
+				const snap = ownSnapshots[ownSnapshots.length - 1];
+				if (!snap || snap.media.meta?.loopNode !== '1') { return null; }
+				try {
+					const out = JSON.parse(snap.media.ref) as { iterations?: unknown[]; failed?: number };
+					const n = Array.isArray(out.iterations) ? out.iterations.length : 0;
+					return (
+						<div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 10px', fontSize: 11, color: n > 0 && (out.failed ?? 0) === 0 ? '#3fb950' : '#d29922', background: 'rgba(63,185,80,0.08)', borderRadius: 4 }}>
+							<span>{meta.nodeType === 'Saros.Loop' ? '🔁' : '⚡'}</span>
+							<span>迭代 {n} 项{(out.failed ?? 0) > 0 ? ` · 失败 ${out.failed}` : ''}</span>
+						</div>
+					);
+				} catch { return null; }
+			})()}
 		</>
 	);
 	return (
@@ -1380,7 +1776,10 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			style={{
 				position: 'relative',
 				width: '100%',
-				height: (isSchema || isFullEditor) ? 'max-content' : '100%',
+				// ★ orchRich 同样要 max-content：它挂了 form widget 参与高度反馈，
+				//   用 100% 会被容器（150px 估算值）拉伸并 overflow:hidden 截断，
+				//   表现为「最后一个下拉只露一半」。
+				height: (isSchema || isFullEditor || isOrchRich) ? 'max-content' : '100%',
 				boxSizing: 'border-box',
 				// Defensive: native <select>/<input> have an implicit
 				// `min-width: max-content` that can blow the card out past the
@@ -1398,33 +1797,45 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 				boxShadow: `inset 0 0 0 1.5px ${kindColor}55`,
 				color: 'var(--vscode-foreground, #ccc)',
 				fontFamily: 'inherit',
-				fontSize: 11,
+				// ComfyTV StageCard cardClass：text-xs（12px）—— 真源 visual/comfyTvTruth.ts
+				fontSize: 12,
 				display: 'flex',
 				flexDirection: 'column',
-			}}
-		>
-			{/* Inner content wrapper — opaque background + boxShadow. The
-			    container is already inset to LiteGraph's widget area by
-			    widgetBridge (left/right = BaseWidget.margin 15, top = title bar
-			    + port rows), so the port dots and labels are OUTSIDE the card
-			    and stay visible. Padding here is minimal so the parameter rows
-			    fill the widget area edge-to-edge like ComfyTV's reference UI. */}
-			<div style={{
-				background: 'linear-gradient(180deg, rgb(38,38,46), rgb(24,24,28))',
-				boxShadow: '0 4px 18px rgba(0,0,0,.45)',
-				padding: '4px 4px 6px',
+				}}
+				>
+				{/* Inner content wrapper — opaque background. The container is
+				already inset to LiteGraph's widget area by widgetBridge (left/
+				right = BaseWidget.margin 15, top = title bar + port rows), so
+				the port dots and labels are OUTSIDE the card and stay visible.
+				★ token 对齐 ComfyTV StageCard cardClass（完全复刻，真源
+				visual/comfyTvTruth.ts · ComfyTV src/components/stages/StageCard.vue）：
+				background #1e1e1e（base-background，弃旧渐变 38,38,46→24,24,28）
+				padding 8px（p-2，旧 4px 4px 6px）
+				gap 8px（gap-2，旧 3px）
+				★ boxShadow 改为 **inset**：原 `0 4px 18px rgba(0,0,0,.45)` 是
+				外凸阴影，DOM 卡的视觉外缘（含 boxShadow）会凸出节点边界
+				6-18 px，盖住 LiteGraph canvas 绘制的节点选中绿框（边缘高亮）。
+				inset 阴影画在元素内部，不影响外缘 → 绿框完整显示。 */}
+				<div style={{
+				background: '#1e1e1e',
+				boxShadow: 'none',
+				padding: '8px',
 				display: 'flex',
 				flexDirection: 'column',
 				minWidth: 0,
 				maxWidth: '100%',
 				boxSizing: 'border-box',
-				gap: 3,
+				gap: 8,
 				flex: 1,
 				overflow: 'hidden',
-			}}>
+				}}>
 			{/* Schema nodes: LiteGraph draws the title bar on the canvas, so
 			    we DON'T render the title here. The card only covers the
 			    widget content area. */}
+			{/* 端口仅由 LiteGraph canvas 渲染（在上方「端口行」里带可连线的圆点），
+			    DOM 不再重复绘制端口胶囊——避免 ImageStage 上方 canvas 端口和下方
+			    DOM 端口 chip 同时显示。CONTEXT 折叠面板（语义摘要 "N images"）
+			    仍独立显示在卡片底部，与连线锚点无关。 */}
 			{/* Non-schema cards keep the legacy layout (they don't render ComfyTV-style).
 			    Full-editor nodes (Crop/Rotate/Mirror/Panorama/Relight/Material) have
 			    their own inline editor UI that replaces these metadata labels. */}
@@ -1445,9 +1856,53 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 					{meta.schemaDetail}
 				</div>
 			)}
-			{meta.kind !== 'schema' && !isFullEditor && meta.widgetSummary && (
+			{/* ★ isOrchRich 时不渲染 widgetSummary：DOM 控件已把每个参数按行画出，
+			    再叠一行 `toolName= · toolParams=[object Object]` 就是重复噪声
+			    （截图里参数上方那行青色小字）。 */}
+			{meta.kind !== 'schema' && !isFullEditor && !isOrchRich && meta.widgetSummary && !identityInfo && (
 				<div style={{ fontSize: 9, color: '#9cdcfe', fontFamily: 'Consolas, monospace' }}>
 					{meta.widgetSummary}
+				</div>
+			)}
+			{/* ★ Agent/Skill/Tool 未配置引导：虚线占位「＋选择」，替代空白。
+			    isOrchRich 时不渲染 —— agentId/skillName/toolName 下拉框已经承担
+			    选择功能，再画一个「＋ 选择 Agent」虚线框是重复入口（且点它无反应）。 */}
+			{meta.kind !== 'schema' && !isFullEditor && !isOrchRich && meta.identityType && !identityInfo && (
+				<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '10px 8px', border: '1.5px dashed var(--vscode-panel-border)', borderRadius: 5, color: 'var(--vscode-descriptionForeground, #858585)', fontSize: 10 }}>
+					<span style={{ color: '#79b8ff', fontWeight: 700 }}>＋</span>
+					选择{meta.identityType === 'agent' ? 'Agent' : meta.identityType === 'skill' ? 'Skill' : 'Tool'}
+				</div>
+			)}
+			{/* ★ Agent/Skill/Tool 富身份卡片：替代 `agentId=xxx` 碎片，展示
+			    icon + name + role + description + 分类/技能/工具徽章（对齐
+			    ComfyUI 节点信息密度）。未选中的节点不渲染（保持空白简洁）。 */}
+			{meta.kind !== 'schema' && !isFullEditor && identityInfo && (
+				<div style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 1 }}>
+					<span style={{ fontSize: 16, width: 22, height: 22, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, background: 'rgba(0,122,204,.16)', border: '1px solid rgba(0,122,204,.3)' }}>
+						{identityInfo.icon}
+					</span>
+					<div style={{ flex: 1, minWidth: 0 }}>
+						<div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--vscode-foreground)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+							{identityInfo.name}
+						</div>
+						{identityInfo.role && (
+							<div style={{ fontSize: 9, color: '#79b8ff', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+								{identityInfo.role}
+							</div>
+						)}
+						{identityInfo.description && (
+							<div style={{ fontSize: 9, color: 'var(--vscode-descriptionForeground, #858585)', marginTop: 2, lineHeight: 1.35, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+								{identityInfo.description}
+							</div>
+						)}
+						{(identityInfo.category || identityInfo.skills != null || identityInfo.tools != null) && (
+							<div style={{ display: 'flex', gap: 4, marginTop: 3, flexWrap: 'wrap' }}>
+								{identityInfo.category && <span style={{ fontSize: 8, padding: '0 5px', borderRadius: 3, background: 'rgba(0,122,204,.18)', color: '#79b8ff' }}>{identityInfo.category}</span>}
+								{identityInfo.skills != null && identityInfo.skills > 0 && <span style={{ fontSize: 8, padding: '0 5px', borderRadius: 3, background: 'rgba(255,255,255,.07)', color: 'var(--vscode-descriptionForeground, #858585)' }}>{identityInfo.skills} 技能</span>}
+								{identityInfo.tools != null && identityInfo.tools > 0 && <span style={{ fontSize: 8, padding: '0 5px', borderRadius: 3, background: 'rgba(255,255,255,.07)', color: 'var(--vscode-descriptionForeground, #858585)' }}>{identityInfo.tools} 工具</span>}
+							</div>
+						)}
+					</div>
 				</div>
 			)}
 
@@ -1475,7 +1930,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 				 always readable; we follow that for schema nodes. Non-schema
 				 cards keep the compact 2-column grid. */}
 			{showRun && meta.controls && meta.controls.length > 0 && !hasInlineEditor && (
-				<div style={{ display: 'grid', gridTemplateColumns: meta.kind === 'schema' ? '1fr' : '1fr 1fr', gap: meta.kind === 'schema' ? 6 : 3, width: '100%', boxSizing: 'border-box' }}>
+				<div style={{ display: 'grid', gridTemplateColumns: (meta.kind === 'schema' || isOrchRich) ? '1fr' : '1fr 1fr', gap: (meta.kind === 'schema' || isOrchRich) ? 6 : 3, width: '100%', boxSizing: 'border-box' }}>
 					{meta.controls.map(c => {
 						// 由内嵌编辑器接管的字段不再渲染通用控件（否则同一参数两套 UI）。
 						// 单一数据源：stageCardRegistry.STAGE_HIDDEN_FIELDS，替代此前
@@ -1487,7 +1942,9 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 						// label for the legacy 2-column grid on non-schema nodes.
 						// ComfyTV CustomParamsSection: label `shrink-0 w-20 truncate`
 						// (=80px fixed) + control `flex-1 min-w-0`.
-						const isSchema = meta.kind === 'schema';
+						// ★ isOrchRich（Saros.Prompt/Agent）与 schema 共用宽 label 单列
+						//   布局，保证 provider/model 行与 ImageStage 视觉一致。
+						const isSchema = meta.kind === 'schema' || isOrchRich;
 						const labelStyle = {
 							color: 'var(--vscode-descriptionForeground, #858585)',
 							width: isSchema ? 92 : 38,
@@ -1512,7 +1969,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							const effectiveDrafts = (isProviderImageGen && (c.name === 'provider' || c.name === 'model'))
 								? { ...controlDrafts, provider: effectiveProviderId }
 								: controlDrafts;
-							const options = resolveControlOptions(c, effectiveDrafts, imageGenProviders);
+							const options = resolveControlOptions(c, effectiveDrafts, controlProviders, { agents, skills, tools });
 							// Combos with options get a full row, otherwise they
 							// would crowd the grid label.
 							const wide = !options || options.length === 0;
@@ -1538,10 +1995,13 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 										onChange={(v) => {
 											commitControl(c.name, v);
 											// provider 变更 → model 联动到该 provider 第一个可用模型。
-											if (isProviderImageGen && c.name === 'provider') {
-												const p = imageGenProviders.find(x => x.id === v);
-												const firstModel = p?.models.find(m => m.supportsImageGen)?.id;
-												if (firstModel) { commitControl('model', firstModel); }
+											// 两套键名：文生图 provider→model（过滤 supportsImageGen）、
+											// LLM providerId→modelId（不过滤，见 resolveControlOptions）。
+											if (isProviderImageGen && (c.name === 'provider' || c.name === 'providerId')) {
+												const llm = c.name === 'providerId';
+												const p = controlProviders.find(x => x.id === v);
+												const firstModel = (p?.models ?? []).find(m => llm || m.supportsImageGen)?.id;
+												if (firstModel) { commitControl(llm ? 'modelId' : 'model', firstModel); }
 											}
 										}}
 									/>
@@ -1635,6 +2095,57 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 								</label>
 							);
 						}
+						if (c.type === 'TEXT') {
+							// ★ 编排节点参数的 DOM 渲染（Start 的 args、IfElse 的
+							//   evaluationTarget、Skill 的 task/skillArgs、Tool 的
+							//   toolParams、Switch 的 cases、Loop/Parallel 的 items…）。
+							//   样式沿用同一套 labelStyle/inputStyle（= ComfyTV 深色
+							//   输入框），与 ImageStage 的参数行完全一致。
+							//   JSON / 多值类字段用 textarea（可换行、等宽字体），
+							//   其余用单行 input。
+							const isJsonish = c.name === 'args' || c.name === 'skillArgs'
+								|| c.name === 'toolParams' || c.name === 'cases'
+								|| c.name === 'items' || c.name === 'options';
+							// ★ 对象值必须 JSON 序列化：`String({})` 得到 "[object Object]"
+							//   （截图里 toolParams / skillArgs 显示的就是它）。
+							//   properties 里这些字段可能已被上游反序列化成对象。
+							const textVal = typeof val === 'string'
+								? val
+								: val == null
+									? ''
+									: typeof val === 'object'
+										? (() => { try { return JSON.stringify(val, null, isJsonish ? 2 : 0); } catch { return ''; } })()
+										: String(val);
+							return (
+								<label key={c.name} style={{ gridColumn: '1 / -1', display: 'flex', alignItems: isJsonish ? 'flex-start' : 'center', gap: 6, fontSize: isSchema ? 11 : 9, minWidth: 0, width: '100%', boxSizing: 'border-box', pointerEvents: 'auto' }}>
+									<span style={{ ...labelStyle, paddingTop: isJsonish ? 4 : 0 }}>{c.name}</span>
+									{isJsonish ? (
+										<textarea
+											value={textVal}
+											spellCheck={false}
+											onChange={e => commitControl(c.name, e.target.value)}
+											// 阻止冒泡：否则空格/方向键会被画布的快捷键吞掉
+											onKeyDown={e => e.stopPropagation()}
+											style={{
+												...inputStyle,
+												minHeight: 46, resize: 'vertical', lineHeight: 1.45,
+												fontFamily: 'var(--vscode-editor-font-family, Consolas, monospace)',
+												padding: '4px 6px',
+											}}
+										/>
+									) : (
+										<input
+											type="text"
+											value={textVal}
+											spellCheck={false}
+											onChange={e => commitControl(c.name, e.target.value)}
+											onKeyDown={e => e.stopPropagation()}
+											style={inputStyle}
+										/>
+									)}
+								</label>
+							);
+						}
 						return null;
 					})}
 				</div>
@@ -1721,7 +2232,22 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 						runners={registry ?? undefined}
 						preference={getActiveRunnerPreference()}
 						onStateChange={(json) => commitControl('material_state', json)}
-						onRenderUploaded={() => { /* 材质球渲染图上传由 MaterialEditor 内部处理 */ }}
+						onRenderUploaded={(url) => {
+							// ★ 修复：此前是空实现——MaterialEditor 内部 uploadRender 已把
+							// 渲染图上传到 runner 拿到 url，但这里丢弃了 url，从未写入
+							// MediaSnapshotStore → runMaterialNode 里 store.byNode(snapKey)
+							// 永远找不到 image 快照 → 执行必报「请先在节点弹窗中编辑材质」。
+							// 现在把预览图 url 归档为 image 快照，runMaterialNode 可正常
+							// re-emit（runMaterialNode 取第一张 image + 材质 JSON）。
+							if (!url || !snapshotStore) { return; }
+							snapshotStore.put({
+								nodeId: snapKey,
+								port: 'output',
+								key: `${snapKey}:output:0`,
+								media: { kind: 'image', ref: url },
+								index: 0,
+							});
+						}}
 					/>
 				);
 			})()}
@@ -1731,20 +2257,23 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			    transform/loader 没有 prompt。Multiangle/Panorama/Relight/Material 的
 			    prompt 由各自编辑器自动生成，不显示手动输入框。 */}
 			{showRun && stageVariant === 'generator' && meta.hasPrompt && !isMultiangle && !isPanorama && !isRelight && !isMaterial && (
-				<textarea
+				<MentionTextarea
 					value={promptValue}
-					onChange={e => commitPrompt(e.target.value)}
-					placeholder="提示词…"
+					onChange={commitPrompt}
+					candidates={mentionCandidates}
+					onPinAsset={pinMentionAsset}
+					placeholder="提示词…（输入 @ 引用节点或选择文件）"
 					rows={1}
-					spellCheck={false}
-					style={{
-						pointerEvents: 'auto', resize: 'none', boxSizing: 'border-box',
-						width: '100%', padding: '3px 5px', borderRadius: 3,
-						background: 'var(--vscode-input-background, rgba(255,255,255,.06))',
-						color: 'var(--vscode-foreground, #e8e8e8)', border: '1px solid var(--vscode-input-border, rgba(255,255,255,.14))',
-						fontSize: 10, lineHeight: 1.4, fontFamily: 'inherit', minHeight: 28, maxHeight: 80,
-						overflowY: 'auto',
-					}}
+				/>
+			)}
+
+			{/* 资产引用（Asset References，对齐 ComfyTV ImageStage）：钉住任意已生成
+			    资产作为参考图，每条占一个 slot，执行时覆盖同 slot 的连线输入。 */}
+			{showAssetRefs && (
+				<AssetReferences
+					refs={assetRefs}
+					candidates={assetCandidates}
+					onChange={setAssetRefs}
 				/>
 			)}
 
@@ -1892,6 +2421,131 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 				</div>
 			)}
 
+			{/* LoadImage 内嵌预览（对齐 ComfyTV LoadImage：文件名 + 上传按钮 + 缩略图 + W×H）。
+			    替代通用 OUTPUT 区（hideOutput+hideActions 已配置）。缩略图数据源（三选一）：
+			    ① ownSnapshots 的 image entry（运行后 / 粘贴后写入）
+			    ② controlDrafts['image']（上传按钮暂存的 data URL）
+			    ③ properties['mediaAssetId']（素材库拖入/选中，渲染时 lazy 解析为 URL）——
+			    否则只是 mediaAssetId 配置时（未运行）卡片仍空白。 */}
+			{isImageLoader && (() => {
+				const [assetUrl, setAssetUrl] = React.useState<string | null>(null);
+				React.useEffect(() => {
+					// ★★ 修复 `ReferenceError: properties is not defined`：
+					//   NodeCard 的 props 没有 properties（ getNodeCardMeta 才有），
+					//   这里改用 meta.mediaAssetId（ getNodeCardMeta 从 properties
+					//   提取的正规通道）。旧代码 `properties['mediaAssetId']` 是
+					//   自由变量 → Load 节点整卡渲染崩溃 → body 空白。
+					const aid = meta.mediaAssetId ?? '';
+					if (!aid) { setAssetUrl(null); return; }
+					if (ownSnapshots.find(s => s.media?.kind === 'image')) { return; }
+					// ★ 复用 workflowRun 的解析（host mediaGet）+ renderer fallback
+					resolveMediaAssetUrl(aid).then(url => setAssetUrl(url));
+				}, [meta.mediaAssetId, ownSnapshots]);
+				const storedImg = (() => {
+					// ★★ MediaSnapshotEntry 的引用在 entry.media.ref（无顶层 ref），
+					//   此前误写 first.ref → 恒 undefined → 选图后缩略图不显示。
+					const first = ownSnapshots.find(s => s.media?.kind === 'image');
+					if (first) { return first.media.ref; }
+					if (assetUrl) { return assetUrl; }
+					// ★ LoadImage 弹窗选图值（properties.image）优先于内嵌上传草稿。
+					if (meta.image) { return meta.image; }
+					return (controlDrafts['image'] ?? '') as string;
+				})();
+				const inputRef = React.useRef<HTMLInputElement | null>(null);
+				const [size, setSize] = React.useState<{ w: number; h: number } | null>(null);
+				React.useEffect(() => {
+					if (!storedImg) { setSize(null); return; }
+					const img = new Image();
+					img.onload = () => setSize({ w: img.naturalWidth, h: img.naturalHeight });
+					img.onerror = () => setSize(null);
+					img.src = storedImg;
+				}, [storedImg]);
+				const fileName = storedImg ? (() => {
+					try {
+						if (storedImg.startsWith('data:')) { return 'pasted image'; }
+						const u = new URL(storedImg);
+						return decodeURIComponent(u.pathname.split('/').pop() || storedImg);
+					} catch { return storedImg.slice(0, 32); }
+				})() : '';
+				return (
+					<div style={{ pointerEvents: 'auto', userSelect: 'none', marginTop: 4, display: 'flex', flexDirection: 'column', gap: 6 }}>
+						<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+							<input
+								value={fileName}
+								readOnly
+								placeholder="（未选图）"
+								style={{ flex: 1, minWidth: 0, padding: '4px 7px', fontSize: 11, background: 'var(--vscode-input-background)', color: 'var(--vscode-foreground)', border: '1px solid var(--vscode-input-border)', borderRadius: 4, outline: 'none', cursor: 'pointer' }}
+								onClick={() => inputRef.current?.click()}
+							/>
+							<button type="button" title="上传本地图片" onClick={() => inputRef.current?.click()}
+								style={{ height: 24, width: 26, border: '1px solid var(--vscode-input-border)', background: 'transparent', color: 'var(--vscode-foreground)', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+								<svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+									<path d="M2 11v2.5A1.5 1.5 0 0 0 3.5 15h9a1.5 1.5 0 0 0 1.5-1.5V11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+									<path d="M8 2v8.5m0 0L5 7.5M8 10.5l3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+								</svg>
+							</button>
+							<input ref={inputRef} type="file" accept="image/*" style={{ display: 'none' }}
+								onChange={e => {
+									const f = e.target.files && e.target.files.length > 0 ? e.target.files[0] : null;
+									if (!f) { return; }
+									const reader = new FileReader();
+									reader.onload = () => {
+										const s = typeof reader.result === 'string' ? reader.result : '';
+										if (s) { commitControl('image', s); }
+									};
+									reader.readAsDataURL(f);
+									e.target.value = '';
+								}} />
+						</div>
+						{storedImg && (
+							<div style={{ background: 'var(--vscode-input-background)', border: '1px solid var(--vscode-input-border)', borderRadius: 4, padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+								<img src={storedImg} alt="" style={{ maxWidth: '100%', maxHeight: 240, objectFit: 'contain' }} />
+							</div>
+						)}
+						{size && (
+							<div style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', textAlign: 'center', fontFamily: 'var(--monospace, monospace)' }}>{size.w} × {size.h}</div>
+						)}
+					</div>
+				);
+			})()}
+
+			{/* EmojiStage 内嵌编辑器（对齐 ComfyTV 表情包网格：m×n 网格 + 棋盘格透明底 +
+			    每格独立 prompt/seed + 单格重生成 + 全局生成）。写回通过 wf-node-control
+			    （commitControls，字段名已对齐控件）。cellRefs 用本节点快照按 index 映射。 */}
+			{isEmoji && (
+				<div style={{ pointerEvents: 'auto', userSelect: 'none', marginTop: 4 }}>
+					<EmojiStageEditor
+						initial={{
+							rows: Number(ctl('rows', 3)),
+							cols: Number(ctl('cols', 3)),
+							fps: Number(ctl('fps', 8)),
+							frames: Number(ctl('frames', 16)),
+							prompt: String(ctl('prompt', '')),
+							cells: String(ctl('cells', '[]')),
+							selectedIndex: Number(ctl('selected_index', 0)),
+						}}
+						cellRefs={ownSnapshots.map(e => e.media.ref)}
+						onCommit={commitControls}
+						mentionCandidates={mentionCandidates}
+						onPinAsset={pinMentionAsset}
+						onRunRequest={(cellIndex) => {
+							// run_scope 决定执行范围（workflowRun.runEmojiStageGrid 消费）：
+							//   cellIndex 有值 → 'cell'（只重生成该格，并同步 selected_index）
+							//   cellIndex 缺省 → 'all'（生成全部格）
+							// 必须先写回再 dispatch：两者同为同步事件，控件值先落到 node.properties。
+							if (cellIndex !== undefined) {
+								commitControls({ selected_index: cellIndex, run_scope: 'cell' });
+							} else {
+								commitControls({ run_scope: 'all' });
+							}
+							if (nodeId) {
+								window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
+							}
+						}}
+					/>
+				</div>
+			)}
+
 			{/* ColorGrade 内嵌调色编辑器（对齐 ComfyTV ColorGradeStageCard：效果下拉 + 标量/整型/
 			    布尔参数 + 曲线编辑器 + 重置）。写回通过 wf-node-control（commitColorGrade → grade_state JSON）。 */}
 			{isColorGrade && (
@@ -1993,6 +2647,9 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							if (nodeId) {
 								// eslint-disable-next-line no-console
 								console.warn('[nodeCard] run clicked ' + JSON.stringify({ nodeId, engineDisconnected, runnerReady: runnerStatus.ready, runState: run.runState }));
+								// EmojiStage：卡片 RUN 按钮语义固定为「生成全部」，必须重置
+								// run_scope，否则会沿用上次「生成此表情」留下的 'cell' 只跑一格。
+								if (isEmoji) { commitControls({ run_scope: 'all' }); }
 								// Bridge back to the canvas: opens the editor popup
 								// (which owns the actual runner call). No longer
 								// short-circuited by engineDisconnected — clicking
@@ -2185,7 +2842,11 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 						★ gate 用 hasOutputContent 而非 showOutput —— 后者含
 						  hideOutput 这个纯**版式**开关，混用会让 picker /
 						  TextLoader 这类隐藏 OUTPUT 区的节点连 ACTIONS 一起消失。 */}
-					{meta.actions && meta.actions.length > 0 && hasOutputContent && (
+					{/* hideActions：loader 节点的产物已在 inline editor（ImageLoaderPreview）
+					    完整展示，ACTIONS 完全冗余——与 hideOutput 同语义（版式开关），
+					    仅 loader 家族开启（picker/TextLoader 的 meta.actions 本就空，无影响）。 */}
+					{meta.actions && meta.actions.length > 0 && hasOutputContent
+						&& !stageCardFlags(meta.nodeType, meta.isPicker).hideActions && (
 						<>
 							<button
 								type="button"
@@ -2326,7 +2987,13 @@ export function createNodeCard(
 	//（Crop/Rotate/Mirror/Material/…）因 host 撑满容器 → scrollHeight 永远 ≤
 	// widgetRect.height（fallbackY 100px） → 高度反馈循环被锁死，编辑器控件
 	//（滑块 / 翻转 / Material PBR / Generate 按钮）全部被截断。
-	const hostIsContentHeight = meta.kind === 'schema' || (!!meta.nodeType && hasStageEditor(meta.nodeType));
+	//
+	// ★★★ 编排富卡片（orchRich）也必须 content-height：截图里 Start 的 `args` 输入框
+	//   被压在卡片底部（卡片固定 150px，args 框在内部错位）—— 同样原因，scrollHeight
+	//   被容器高度锁死，反馈循环只能收敛到估算值。三类并列即可彻底覆盖。
+	const hostIsContentHeight = meta.kind === 'schema'
+		|| (!!meta.nodeType && hasStageEditor(meta.nodeType))
+		|| ORCH_RICH_NODE_TYPES.has(meta.nodeType ?? '');
 	host.style.cssText = hostIsContentHeight ? 'width:100%;' : 'width:100%;height:100%;';
 	container.appendChild(host);
 	try {
@@ -2443,3 +3110,9 @@ export function useCollapsed(
 	}, [group, id]);
 	return [collapsed, set];
 }
+
+/**
+ * LoadImage 内嵌预览专属：把 mediaAssetId 解析为可加载 URL（已统一在 workflowRun.resolveMediaAssetUrl 导出，
+ * 这里作为薄包装仅在卡片渲染阶段 lazy 解析；执行阶段 runLoaderNode 自己解析）。
+ */
+const resolveMediaAssetUrlForCard = resolveMediaAssetUrl;

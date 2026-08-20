@@ -36,8 +36,9 @@ export type AgentAskRole =
 /** 子 agent 权限档（对齐 SubAgentType 的字符串值，避免跨模块枚举耦合）。 */
 export type SubAgentPermissionType = 'explore' | 'general' | 'scout';
 
-/** 聊天模式（对齐 IAgentTurnRequest.chatMode）。 */
-export type AskChatMode = 'craft' | 'ask' | 'plan' | 'workflow';
+/** 聊天模式（对齐 IAgentTurnRequest.chatMode）。单一真源：sessions/common/agentStudioService.ChatMode。 */
+import type { ChatMode } from '../../../common/agentStudioService.js';
+export type AskChatMode = ChatMode;
 
 /** 审批路由上下文。 */
 export interface IAskRoutingContext {

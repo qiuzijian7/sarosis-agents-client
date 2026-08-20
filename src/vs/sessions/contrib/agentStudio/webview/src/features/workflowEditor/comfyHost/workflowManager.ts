@@ -13,8 +13,6 @@
  *      已存在节点的 widget.options（对齐 addOptionEverywhere）。
  *--------------------------------------------------------------------------------------------*/
 
-import { patchComfyTVWorkflowOptions } from './registry.js';
-
 export interface ImportWorkflowResult {
 	ok: boolean;
 	kind: string;
@@ -105,17 +103,7 @@ export async function linkWorkflow(
 			return { ok: false, error: `HTTP ${res.status}${body.error ? `: ${body.error}` : ''}` };
 		}
 		return body;
-	} catch (err) {
+		} catch (err) {
 		return { ok: false, error: err instanceof Error ? err.message : String(err) };
-	}
-}
-
-/**
- * 上传/链接成功后：把新 label 写进 registry（新节点创建时可见）+ 广播全局事件，
- * 由 LiteGraphCanvas 落地到已存在节点的 workflow widget.options（对齐 ComfyTV
- * addOptionEverywhere + setDirtyCanvas）。
- */
-export function addWorkflowOptionEverywhere(kind: string, label: string): void {
-	patchComfyTVWorkflowOptions([label]);
-	window.dispatchEvent(new CustomEvent('wf-workflow-option-add', { detail: { kind, label } }));
-}
+		}
+		}

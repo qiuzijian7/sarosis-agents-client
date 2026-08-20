@@ -289,10 +289,13 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 						mode: cbmConfig.mode || 'fast',
 						excludeDirs: Array.isArray(cbmConfig.excludeDirs) ? cbmConfig.excludeDirs : undefined,
 						keepDirs: Array.isArray(cbmConfig.keepDirs) ? cbmConfig.keepDirs : undefined,
+						// subPath 此前漏读：getIndexConfig() 的 .code-workspace 回退分支读 wsCfg.subPath，
+						// 但这里从不赋值 → 在 .code-workspace 里配「索引路径」永远无效（只能走索引面板）。
+						subPath: typeof cbmConfig.subPath === 'string' ? cbmConfig.subPath : undefined,
 					};
 					const excl = (this._workspaceFileConfig.excludeDirs || []).join(', ');
 					const keep = (this._workspaceFileConfig.keepDirs || []).join(', ');
-					this.logService.info('[CodebaseMemory] Loaded codebase-memory config from ' + wsFile.name + ': mode=' + this._workspaceFileConfig.mode + ', excludeDirs=[' + excl + '], keepDirs=[' + keep + ']');
+					this.logService.info('[CodebaseMemory] Loaded codebase-memory config from ' + wsFile.name + ': mode=' + this._workspaceFileConfig.mode + ', excludeDirs=[' + excl + '], keepDirs=[' + keep + '], subPath=' + (this._workspaceFileConfig.subPath || '(none)'));
 					return;
 				} else {
 					this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: ' + wsFile.name + ' has no codebase-memory key (checked top-level and settings.codebase-memory)');

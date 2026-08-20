@@ -146,16 +146,6 @@ class MockWorkflowStorage {
 	}
 }
 
-// ─── Mock PathService ─────────────────────────────────────────────────────────
-
-class MockPathService {
-	constructor(private readonly _userHome: URI) { }
-
-	async userHome(): Promise<URI> {
-		return this._userHome;
-	}
-}
-
 // ─── Mock EnvironmentService ──────────────────────────────────────────────────
 
 class MockEnvironmentService {
@@ -228,29 +218,26 @@ suite('WorkflowMarketOperations', () => {
 	let fileService: MockFileService;
 	let logService: MockLogService;
 	let workflowStorage: MockWorkflowStorage;
-	let pathService: MockPathService;
 	let workspaceService: MockWorkspaceContextService;
 	let environmentService: MockEnvironmentService;
 	let installer: WorkflowInstaller;
 
-	const USER_HOME = URI.file('/test-home/user');
 	const DATA_ROOT = URI.file('/test-data/.vssaros');
 
 	setup(() => {
 		fileService = new MockFileService();
 		logService = new MockLogService();
 		workflowStorage = new MockWorkflowStorage();
-		pathService = new MockPathService(USER_HOME);
 		workspaceService = new MockWorkspaceContextService();
 		environmentService = new MockEnvironmentService(URI.joinPath(DATA_ROOT, 'User'));
 
-		// WorkflowInstaller constructor: environmentService, fileService, logService, workflowStorage, pathService, workspaceService
+		// WorkflowInstaller constructor（已从 6 参改为 5 参，移除了 pathService）:
+		//   environmentService, fileService, logService, workflowStorage, workspaceService
 		installer = new WorkflowInstaller(
 			environmentService as any,
 			fileService as any,
 			logService as any,
 			workflowStorage as any,
-			pathService as any,
 			workspaceService as any,
 		);
 	});

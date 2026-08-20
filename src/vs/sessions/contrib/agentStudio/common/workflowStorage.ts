@@ -219,8 +219,12 @@ export interface IWorkflowStorageService {
 		slug?: string;
 	}, workspaceId?: string): Promise<IStoredWorkflow>;
 
-	/** 更新工作流（合并字段）并写回文件。 */
-	updateWorkflow(id: string, patch: Partial<IStoredWorkflow>, workspaceId?: string): Promise<IStoredWorkflow>;
+	/**
+	 * 更新工作流（合并字段）并写回文件。
+	 * `opts.autoCommit`（缺省 true）控制是否触发 git 版本提交：auto-save 传 false
+	 * 以抑制版本爆炸（版本历史应只含用户有意义的检查点，而非高频自动持久化）。
+	 */
+	updateWorkflow(id: string, patch: Partial<IStoredWorkflow>, workspaceId?: string, opts?: { autoCommit?: boolean }): Promise<IStoredWorkflow>;
 
 	/** v19: 重排工作流顺序并持久化。 */
 	reorderWorkflows(orderedIds: string[], workspaceId?: string): Promise<void>;
