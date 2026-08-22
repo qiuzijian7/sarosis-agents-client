@@ -697,65 +697,9 @@ private _createToolCallCardCore(tc: IToolCall, confirmation?: IConfirmationData)
 			append(right, $('span.tool-header-desc2')).textContent = this._formatDuration(tc.duration);
 		}
 
-		// ── 审批按钮（approval_required 状态）──
-		if (isApproval) {
-			const approvalRow = append(wrapper, $('.tool-approval-row'));
-			const securityLabel = tc.securityLevel === 'dangerous'
-				? '危险操作'
-				: tc.securityLevel === 'cautious'
-					? '需谨慎'
-					: '需确认';
-			const labelEl = append(approvalRow, $('span.tool-approval-label'));
-			// 添加盾牌图标
-			const shieldSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-			shieldSvg.setAttribute('width', '13');
-			shieldSvg.setAttribute('height', '13');
-			shieldSvg.setAttribute('viewBox', '0 0 24 24');
-			shieldSvg.setAttribute('fill', 'none');
-			shieldSvg.setAttribute('stroke', 'currentColor');
-			shieldSvg.setAttribute('stroke-width', '2');
-			const shieldPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-			shieldPath.setAttribute('d', 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z');
-			shieldSvg.appendChild(shieldPath);
-			labelEl.appendChild(shieldSvg);
-			labelEl.appendChild(document.createTextNode(securityLabel));
-
-			// 允许一次按钮
-			const allowOnceBtn = append(approvalRow, $('button.tool-approval-btn.tool-approval-btn-primary'));
-			allowOnceBtn.textContent = '允许一次';
-			allowOnceBtn.title = '仅允许此次执行';
-			this._register(addDisposableListener(allowOnceBtn, EventType.CLICK, (e) => {
-				e.stopPropagation();
-				this._onToolApprove?.(tc.id, 'allow_once');
-			}));
-
-			// 会话中允许按钮
-			const allowSessionBtn = append(approvalRow, $('button.tool-approval-btn.tool-approval-btn-secondary'));
-			allowSessionBtn.textContent = '会话中允许';
-			allowSessionBtn.title = '在当前会话中自动允许';
-			this._register(addDisposableListener(allowSessionBtn, EventType.CLICK, (e) => {
-				e.stopPropagation();
-				this._onToolApprove?.(tc.id, 'allow_session');
-			}));
-
-			// 始终允许按钮
-			const allowAlwaysBtn = append(approvalRow, $('button.tool-approval-btn.tool-approval-btn-secondary'));
-			allowAlwaysBtn.textContent = '始终允许';
-			allowAlwaysBtn.title = '始终自动允许此工具';
-			this._register(addDisposableListener(allowAlwaysBtn, EventType.CLICK, (e) => {
-				e.stopPropagation();
-				this._onToolApprove?.(tc.id, 'allow_always');
-			}));
-
-			// 拒绝按钮
-			const denyBtn = append(approvalRow, $('button.tool-approval-btn.tool-approval-btn-reject'));
-			denyBtn.textContent = '拒绝';
-			denyBtn.title = '拒绝此工具调用';
-			this._register(addDisposableListener(denyBtn, EventType.CLICK, (e) => {
-				e.stopPropagation();
-				this._onToolApprove?.(tc.id, 'deny');
-			}));
-		}
+		// 注意：approval_required 状态的审批按钮由 _appendToolApprovalSection 统一渲染
+		//（_createToolCallCard → _createToolCallCardCore + _appendToolApprovalSection 两步组合）。
+		// 此处不再内联渲染，避免与 _appendToolApprovalSection 出现重复按钮（2026-08-22 修复）。
 
 		// ── 拒绝通知（rejected 状态）──
 		if (isRejected) {

@@ -51,6 +51,8 @@ interface IMcpDetailModel {
 	tags: string[];
 	/** 一键"自动安装并配置"流程（内置 pip 型 MCP，如 Comfy MCP）。 */
 	autoInstall?: IMcpAutoInstall;
+	/** 「环境变量名 → 命令名」映射，自动安装时解析绝对路径注入 env。 */
+	resolveEnv?: Record<string, string>;
 }
 
 const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
@@ -76,13 +78,17 @@ export function resolveMcpDetailModel(marketId: string): IMcpDetailModel | undef
 			headers: preset.headers ? { ...preset.headers } : undefined,
 			tags: preset.envKeys ? preset.envKeys.map(k => k) : [],
 			autoInstall: preset.autoInstall ? { ...preset.autoInstall } : undefined,
+			resolveEnv: preset.autoInstall?.resolveEnv ? { ...preset.autoInstall.resolveEnv } : undefined,
 		};
 	}
 	return undefined;
 }
 
 /** Build an installable config from a detail model. */
-export function buildInstallableConfig(model: IMcpDetailModel): IMcpServerConfiguration {
+export function buildInstallableConfig(
+	model: IMcpDetailModel,
+	extra?: { commandPath?: string; env?: Record<string, string> },
+): IMcpServerConfiguration {
 	const isRemote = model.transportType !== 'stdio' && (model.url?.length > 0);
 	if (isRemote) {
 		return {
@@ -91,10 +97,14 @@ export function buildInstallableConfig(model: IMcpDetailModel): IMcpServerConfig
 			...(model.headers ? { headers: { ...model.headers } } : {}),
 		};
 	}
+	// ★ LOCAL：优先用解析出的绝对路径（Windows 下 pip Scripts 目录常不在 PATH，
+	//   用 `where.exe` 解析可避免 spawn ENOENT）；env 注入 resolveEnv 解析的
+	//   COMFY_BIN 等（MCP host 环境不含 shell PATH）。
 	return {
 		type: McpServerType.LOCAL,
-		command: model.command,
+		command: extra?.commandPath || model.command,
 		...(model.args ? { args: [...model.args] } : {}),
+		...(extra?.env && Object.keys(extra.env).length > 0 ? { env: { ...extra.env } } : {}),
 	};
 }
 
@@ -639,8 +649,28 @@ export class McpDetailEditorPane extends EditorPane {
 				}
 			}
 
+			// 2.5 ★ 解析 command / resolveEnv 的绝对路径（Windows pip Scripts 目录
+			//   常不在 PATH → 相对命令名 spawn 会 ENOENT；MCP host 环境也不含 shell
+			//   PATH → 需把 comfy 等依赖命令绝对路径注入 env）。
+			const commandPath = await this._resolveCommandPath(model.command);
+			if (commandPath && commandPath !== model.command) {
+				log.push(`✓ 已解析命令路径: ${commandPath}`);
+			}
+			const env: Record<string, string> = {};
+			if (model.resolveEnv) {
+				for (const [envVar, cmdName] of Object.entries(model.resolveEnv)) {
+					const p = await this._resolveCommandPath(cmdName);
+					if (p) {
+						env[envVar] = p;
+						log.push(`✓ 已解析 ${envVar}=${p}`);
+					} else {
+						log.push(`⚠ 未找到 ${cmdName} 绝对路径（${envVar} 未设置，依赖 PATH）`);
+					}
+				}
+			}
+
 			// 3. register to ~/.vssaros/mcp.json via MCP management service
-			await this._syncToVsCodeConfigDirect(this._marketSlug, model);
+			await this._syncToVsCodeConfigDirect(this._marketSlug, model, { commandPath, env });
 			this.eventBridgeService.emit('mcp:servers-changed', { action: 'add', presetId: sanitize(this._marketSlug) });
 			log.push('✓ 已写入 MCP 服务器配置。重启应用后生效。');
 		} catch (err) {
@@ -653,17 +683,47 @@ export class McpDetailEditorPane extends EditorPane {
 		}
 	}
 
-	/** 任一命令存在即返回 true（win 用 where，其余用 which）。 */
+	/** 任一命令存在即返回 true（win 用 where.exe，其余用 which）。 */
 	private async _checkCommands(commands: readonly string[]): Promise<boolean> {
-		const isWin = typeof process !== 'undefined' && process.platform === 'win32';
-		const finder = isWin ? 'where' : 'which';
 		for (const cmd of commands) {
-			try {
-				const res = await this._runShell(`${finder} ${cmd}`);
-				if (res.code === 0 && res.output.trim().length > 0) { return true; }
-			} catch { /* 尝试下一个 */ }
+			const p = await this._resolveCommandPath(cmd);
+			if (p) { return true; }
 		}
 		return false;
+	}
+
+	/**
+	 * 解析命令的绝对路径。Windows 用 `where.exe`（注意：不能用 `where`——那是
+	 * PowerShell 的 Where-Object 别名），其余平台用 `which`。
+	 * 返回绝对路径；找不到返回 undefined（调用方降级为原命令名 / 跳过 env）。
+	 */
+	private async _resolveCommandPath(command: string): Promise<string | undefined> {
+		const isWin = typeof process !== 'undefined' && process.platform === 'win32';
+		// where.exe / which 查找 PATH 中的可执行文件
+		const finder = isWin ? 'where.exe' : 'which';
+		try {
+			const res = await this._runShell(`${finder} ${command}`);
+			if (res.code === 0) {
+				const firstLine = res.output.split('\n').map(s => s.trim()).find(Boolean);
+				if (firstLine && !firstLine.toLowerCase().includes('could not find') && !firstLine.toLowerCase().includes('not found')) {
+					return firstLine;
+				}
+			}
+		} catch { /* 降级 */ }
+		// ★ 兜底：pip 安装的 CLI 在 Python Scripts 目录，`where.exe` 找不到时
+		//   用 python 探测 Scripts 目录拼 `<command>.exe`（Windows）。
+		if (isWin) {
+			try {
+				const py = await this._runShell(
+					`python -c "import sysconfig, os; print(os.path.join(sysconfig.get_path('scripts'), '${command}.exe'))"`,
+				);
+				if (py.code === 0) {
+					const p = py.output.split('\n').map(s => s.trim()).find(Boolean);
+					if (p && p.endsWith('.exe')) { return p; }
+				}
+			} catch { /* 降级 */ }
+		}
+		return undefined;
 	}
 
 	/**
@@ -749,8 +809,12 @@ export class McpDetailEditorPane extends EditorPane {
 	}
 
 	/** 将内置 preset 的服务器配置直接写入 MCP 注册（不走 marketplace 下载）。 */
-	private async _syncToVsCodeConfigDirect(slug: string, model: IMcpDetailModel): Promise<void> {
-		const config = buildInstallableConfig(model);
+	private async _syncToVsCodeConfigDirect(
+		slug: string,
+		model: IMcpDetailModel,
+		extra?: { commandPath?: string; env?: Record<string, string> },
+	): Promise<void> {
+		const config = buildInstallableConfig(model, extra);
 		const installable: IInstallableMcpServer = { name: slug, config };
 		await this.mcpManagementService.install(installable);
 	}

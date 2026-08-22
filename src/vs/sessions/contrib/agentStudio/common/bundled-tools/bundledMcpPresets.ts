@@ -30,6 +30,13 @@ export type McpTransportType = 'stdio' | 'http';
 export interface IMcpAutoInstall {
 	readonly checkCommands: readonly string[];
 	readonly install: readonly string[];
+	/**
+	 * 「环境变量名 → 命令名」映射：自动安装时把命令的**绝对路径**注入到对应
+	 * 环境变量（写入 MCP 配置的 env）。解决「MCP 客户端启动服务器的环境通常
+	 * 不含 shell PATH」的问题（如 comfy-mcp 需要 COMFY_BIN 指向 comfy 绝对路径）。
+	 * 例如 `{ COMFY_BIN: "comfy" }` → 解析 `comfy` 绝对路径 → env.COMPY_BIN。
+	 */
+	readonly resolveEnv?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -197,9 +204,13 @@ const FALLBACK_PRESETS: readonly IMcpServerPreset[] = [
 		command: "comfy-mcp",
 		icon: "🎨",
 		builtin: true,
+		envKeys: ["COMFY_BIN"],
 		autoInstall: {
 			checkCommands: ["comfy-mcp", "comfy"],
 			install: ['pip install "comfy-cli>=1.14.0"', "pip install comfy-mcp"],
+			// ★ comfy-mcp 内部封装调用 comfy-cli 的 `comfy` 二进制。MCP host 启动
+			//   环境不含 shell PATH → 必须把 comfy 的绝对路径注入 COMFY_BIN。
+			resolveEnv: { COMFY_BIN: "comfy" },
 		},
 	},
 	{
