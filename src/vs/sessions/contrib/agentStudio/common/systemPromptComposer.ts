@@ -26,6 +26,8 @@
  * 纯函数、无依赖 → 可单测。
  */
 
+import { buildToolCallFormatDirective, buildOutputFormatRule, type ModelFamily } from './modelFamilyPrompt.js';
+
 /** 三层系统提示词。 */
 export interface ISystemPromptTiers {
 	/** 字节稳定前缀（persona + 全局边界 + 行为规则）。 */
@@ -73,9 +75,11 @@ export function composeVolatileMessage(tiers: ISystemPromptTiers): string | unde
  *   - 行为规则（反幻觉 / 调用格式 / MCP 走 tool_search 桥接）
  *
  * @param toolNames 内置（非 MCP）工具名数组（顺序无关，函数内会排序保证确定性）
+ * @param family 模型族（决定工具调用格式指令的措辞）。省略 → `generic`，
+ *               字节与按族分发之前**完全一致**，保证未知模型/旧调用点不回归。
  * @returns 完整段落文本（含前后空行），可直接 push 到 stableParts
  */
-export function buildCompactToolSection(toolNames: ReadonlyArray<string>): string {
+export function buildCompactToolSection(toolNames: ReadonlyArray<string>, family: ModelFamily = 'generic'): string {
 	const compactNames = [...toolNames].sort((a, b) => a.localeCompare(b)).join(', ');
 	return [
 		'',
@@ -90,7 +94,10 @@ export function buildCompactToolSection(toolNames: ReadonlyArray<string>): strin
 		'',
 		'When a specialized tool exists, use it directly. Do not simulate or manually reimplement what a tool does by chaining basic operations.',
 		'Review each tool\'s description (via the function-calling schema or tool_describe) to understand its capabilities and use the most efficient one.',
-	'When you need to use a tool, respond with a function call using the exact tool name and required arguments. If your model supports function calling, use the native function_call format; if NOT, output a JSON object in this exact format: {"name": "<tool_name>", "arguments": {<args>}}. DO NOT use XML tags like <tool_call> or <function_call>. Never output tool calls as plain-text explanations or code blocks.',
+	// 工具调用格式按模型族分发（真源 modelFamilyPrompt.ts）：原生 FC 可靠的族不再
+	// 下发「不支持就打印 JSON」的退路 —— 那句对在用模型都不成立，且与下面反幻觉
+	// 第 1 条自相矛盾（授权模型把 tool call 打印出来，而打印出来的不会被执行）。
+	buildToolCallFormatDirective(family),
 	'',
 	'## Web Search Strategy',
 	'',
@@ -101,7 +108,7 @@ export function buildCompactToolSection(toolNames: ReadonlyArray<string>): strin
 		'1. **NEVER claim you have done something without actually calling a tool.** If the user asks you to create/modify/delete a file, run a command, or perform any side-effect, you MUST emit an actual tool call. Phrases like "文件已创建成功", "已完成", "I have created the file", "Done!" are STRICTLY FORBIDDEN unless they appear AFTER a real tool call returned a successful result.',
 		'2. **NEVER fabricate tool execution.** Do not write narrative descriptions like "让我使用 file_write 工具" or "I will use the file_write tool" as a substitute for an actual tool call. Either emit the structured tool call, or do not claim the action was taken.',
 		'3. **For ANY filesystem write / command execution / external side-effect: a tool call is MANDATORY.** No exceptions. If you cannot determine the correct tool or arguments, ask the user — do not pretend the action succeeded.',
-		'4. **Output format priority**: PREFERRED is the native OpenAI function-call format via the `tools` parameter; FALLBACK (only if unavailable) is a JSON object in a fenced code block.',
+		buildOutputFormatRule(family, 4),
 		'5. **Do not narrate the tool call.** Do not write "I am calling file_write now" before emitting it. Just emit the tool call directly.',
 		'6. **After a tool returns:** you may then summarize what happened in natural language, citing the actual tool result.',
 		'',

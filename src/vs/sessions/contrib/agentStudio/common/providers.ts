@@ -18,6 +18,69 @@ export enum ModelAuthStatus {
 	Failed = 'failed',
 }
 
+// ─── Per-Model Item Config (codebuddy-style detail UI) ──────────────────────────
+
+/**
+ * 单个模型的详细配置项（用于 settings provider 页签的 model item UI）。
+ * 对齐 codebuddy-provider 的 IModelConfig，支持从 models.dev 补全参数。
+ */
+export interface IModelItemConfig {
+	/** 模型 ID（唯一标识，如 'hy3-ioa'） */
+	readonly id: string;
+	/** 显示名称（如 'Hy3'） */
+	readonly name?: string;
+	/** 供应商（如 'j'） */
+	readonly vendor?: string;
+	/** 最大输出 Token */
+	readonly maxOutputTokens?: number;
+	/** 最大输入 Token */
+	readonly maxInputTokens?: number;
+	/** 最大上下文大小 */
+	readonly maxContextSize?: number;
+	/** 是否支持工具调用 */
+	readonly supportsToolCall?: boolean;
+	/** 是否支持图片 */
+	readonly supportsImages?: boolean;
+	/** 温度参数 */
+	readonly temperature?: number;
+	/** 是否支持推理/思考模式 */
+	readonly supportsReasoning?: boolean;
+	/** 是否为优先模型 */
+	readonly priority?: boolean;
+	/** 推理强度（low/medium/high） */
+	readonly reasoningEffort?: string;
+	/** 推理需要 */
+	readonly reasoningRequired?: string;
+	/** 轻量模型 ID */
+	readonly lightweightModelId?: string;
+	/** 关联的轻量模型 ID */
+	readonly associatedLightweightModelId?: string;
+	/** 推理模型 ID */
+	readonly reasoningModelId?: string;
+	/** 关联的推理模型 ID */
+	readonly associatedReasoningModelId?: string;
+	/** 使用多态 */
+	readonly usePolymorphic?: string;
+	/** 英文描述 */
+	readonly descriptionEn?: string;
+	/** 中文描述 */
+	readonly descriptionZh?: string;
+	/** Credits 信息 */
+	readonly credits?: string;
+	/** 标签（逗号分隔） */
+	readonly tags?: string;
+	/** Top P */
+	readonly topP?: number;
+	/** Top K */
+	readonly topK?: number;
+	/** 重复惩罚 */
+	readonly repeatPenalty?: number;
+	/** 是否为默认模型 */
+	readonly isDefault?: boolean;
+	/** 是否支持图片参数 */
+	readonly supportsImageParams?: boolean;
+}
+
 // ─── Model Info ──────────────────────────────────────────────────────────────────
 
 export interface IModelInfo {
@@ -748,6 +811,22 @@ export interface IToolAvailability {
 // ─── Tool Approval (OpenClaw-inspired) ──────────────────────────────────────
 
 /**
+ * 交互审批的等待上限（UI 倒计时用的权威值）。
+ *
+ * 单一真源：
+ *  - agentOSService 的内置 approval handler 按此值设 deadline 并起定时器；
+ *    超时 → 判 Deny **并终止当前 agent loop**（cancelAgentLoop）。
+ *  - UI（工具卡片审批区）按 `deadline` 渲染倒计时。
+ *  - ToolApprovalService.checkAndApprove 的 Promise.race 只作**兜底**，
+ *    因此必须用比本值更大的 BACKSTOP（否则兜底先触发，
+ *    handler 的「终止 LLM」分支永远走不到）。
+ */
+export const TOOL_APPROVAL_TIMEOUT_MS = 120_000;
+
+/** 审批兜底上限（必须 > TOOL_APPROVAL_TIMEOUT_MS，见上）。 */
+export const TOOL_APPROVAL_BACKSTOP_MS = TOOL_APPROVAL_TIMEOUT_MS + 15_000;
+
+/**
  * 工具审批请求 — 发送给 UI 层，等待用户决策。
  */
 export interface IToolApprovalRequest {
@@ -756,6 +835,24 @@ export interface IToolApprovalRequest {
 	readonly arguments: Record<string, unknown>;
 	readonly securityLevel: ToolSecurityLevel;
 	readonly reason?: string; // 说明为什么需要审批
+	/** 发起该工具调用的 agent（超时终止 loop 时按 turnKey 精确取消）。 */
+	readonly agentId?: string;
+	/** 发起该工具调用的 session（同上）。 */
+	readonly sessionId?: string;
+	/** 审批等待上限（毫秒）。由 agentOSService 填充。 */
+	readonly timeoutMs?: number;
+	/** 审批截止时间戳（epoch ms）。UI 按此渲染倒计时。 */
+	readonly deadline?: number;
+}
+
+/** 审批终局状态 —— 区分「用户主动决策」与「超时自动拒绝 + 终止 LLM」。 */
+export type ToolApprovalOutcome = 'approved' | 'rejected' | 'timeout' | 'cancelled';
+
+/** 审批已终结事件（UI 据此定格卡片并停掉倒计时）。 */
+export interface IToolApprovalResolution {
+	readonly toolCallId: string;
+	readonly decision: ToolApprovalDecision;
+	readonly outcome: ToolApprovalOutcome;
 }
 
 /**
@@ -1068,6 +1165,13 @@ export interface IAgentTurnRequest {
 	 * 由 agentDriverService 分层组装产生；直发 / 子 agent 路径省略 → undefined。
 	 */
 	readonly systemPromptVolatile?: string;
+	/**
+	 * 冻结前缀的**命名分段明细**，仅用于诊断（`[PromptBudget]` 预算表按段归因）。
+	 * 由 agentDriverService 分层组装时逐段登记；直发 / 子 agent 路径省略 → undefined
+	 * （此时预算表把整条前缀记为一行 `system:frozen`，不影响总量）。
+	 * ⚠ 不参与任何行为判定，也不进前缀指纹 —— 只读诊断数据。
+	 */
+	readonly promptSegments?: ReadonlyArray<{ readonly name: string; readonly text: string }>;
 	readonly options?: IModelOptions;
 	/** 用户通过 /skill 命令显式激活的技能 ID 列表 */
 	readonly explicitSkillIds?: readonly string[];
@@ -1225,6 +1329,7 @@ export type StreamPhase =
 	| 'llm_streaming'     // LLM 正在流式输出
 	| 'tool_executing'    // 工具正在执行
 	| 'awaiting_approval' // 等待用户审批
+	| 'retrieving'        // 正在检索历史上下文（turn 开始前的记忆外置 + 召回）
 	| 'compressing'       // 正在压缩上下文
 	| 'error';            // 错误状态
 

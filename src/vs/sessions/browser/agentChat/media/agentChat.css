@@ -4502,6 +4502,92 @@
 	background: color-mix(in srgb, var(--void-warning) 6%, transparent);
 }
 
+/* ── 卡内工具审批区（terminal 等危险工具等待用户授权 + 倒计时）────────── */
+.tool-approval-section {
+	margin: 6px 0 2px;
+	padding: 8px 10px;
+	border: 1px solid color-mix(in srgb, var(--void-warning) 45%, var(--void-border-3));
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--void-warning) 7%, transparent);
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.tool-approval-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.tool-approval-badge {
+	font-size: 11px;
+	font-weight: 600;
+	padding: 1px 6px;
+	border-radius: 4px;
+	color: var(--void-warning);
+	border: 1px solid color-mix(in srgb, var(--void-warning) 55%, transparent);
+	background: color-mix(in srgb, var(--void-warning) 12%, transparent);
+	white-space: nowrap;
+}
+.tool-approval-tool {
+	font-size: 11px;
+	font-family: var(--monaco-monospace-font);
+	opacity: 0.8;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.tool-approval-message {
+	margin: 0;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--ec-text-secondary, inherit);
+	word-break: break-all;
+	white-space: pre-wrap;
+	max-height: 96px;
+	overflow: auto;
+}
+.tool-approval-countdown {
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+	opacity: 0.75;
+}
+.tool-approval-countdown-urgent {
+	color: var(--void-warning);
+	opacity: 1;
+	font-weight: 600;
+}
+.tool-approval-countdown-expired {
+	color: #e94560;
+	opacity: 1;
+}
+.tool-approval-actions {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+.tool-approval-btn {
+	padding: 3px 12px;
+	border-radius: 4px;
+	border: 1px solid var(--void-border-3);
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+	font-size: 12px;
+}
+.tool-approval-btn:hover:not(:disabled) { opacity: 0.85; }
+.tool-approval-btn:disabled { opacity: 0.5; cursor: default; }
+.tool-approval-btn.primary {
+	border-color: color-mix(in srgb, var(--void-warning) 70%, transparent);
+	background: color-mix(in srgb, var(--void-warning) 18%, transparent);
+	font-weight: 600;
+}
+.tool-approval-btn.danger { border-color: #e94560; color: #e94560; }
+.tool-approval-result {
+	font-size: 12px;
+	opacity: 0.85;
+}
+.tool-approval-result-deny { color: #e94560; opacity: 1; }
+
 .tool-header-row {
 	user-select: none;
 	display: flex;
@@ -5530,6 +5616,32 @@
 	color: var(--vscode-charts-orange, #d18900);
 	background: rgba(210, 153, 34, 0.08);
 	border: 1px solid rgba(210, 153, 34, 0.2);
+}
+/* 检索历史上下文（2026-08-21）：turn 开始前的记忆外置 + 召回可长达数十秒，
+   用独立蓝色态告知用户系统在检索，而非静默卡死。 */
+.phase-activity-indicator.phase-retrieving {
+	color: #60a5fa;
+	background: rgba(96, 165, 250, 0.10);
+	border: 1px solid rgba(96, 165, 250, 0.28);
+}
+.phase-activity-indicator.phase-retrieving .phase-icon {
+	animation: phase-compress-pulse 1.6s ease-in-out infinite;
+}
+
+/* 上下文压缩（2026-08-21）：与「执行中」区分开的琥珀色，明确告知用户
+   当前不是在等模型思考，而是在压缩历史（可能持续数十秒）。 */
+.phase-activity-indicator.phase-compressing {
+	color: #f59e0b;
+	background: rgba(245, 158, 11, 0.10);
+	border: 1px solid rgba(245, 158, 11, 0.28);
+}
+/* 压缩图标不旋转（🗜️ 旋转观感怪），改用呼吸脉冲表达“进行中” */
+.phase-activity-indicator.phase-compressing .phase-icon {
+	animation: phase-compress-pulse 1.6s ease-in-out infinite;
+}
+@keyframes phase-compress-pulse {
+	0%, 100% { opacity: 1; transform: scale(1); }
+	50%      { opacity: 0.55; transform: scale(0.88); }
 }
 .phase-activity-indicator .phase-icon {
 	display: inline-block;
@@ -7715,6 +7827,40 @@
 .chat-toolbar-btn.model-tag:hover {
 	background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.08));
 	border-color: var(--as-border-focus, rgba(124, 185, 255, 0.4));
+}
+
+/* ── ChatMode 芯片配色（2026-08-21，Craft/Ask/Plan 三档）───────────────
+   替代旧的 mode-tag-chatonly-on 单一开启态。用左侧色条 + 文字色区分档位，
+   保持与 provider/model 芯片同一形状语言（不加背景块，避免抢视觉重心）。 */
+.chat-toolbar-btn.mode-tag-craft {
+	color: var(--vscode-charts-yellow, #d7ba7d);
+	border-color: color-mix(in srgb, #d7ba7d 40%, transparent);
+}
+.chat-toolbar-btn.mode-tag-ask {
+	color: var(--vscode-charts-blue, #60a5fa);
+	border-color: color-mix(in srgb, #60a5fa 40%, transparent);
+}
+.chat-toolbar-btn.mode-tag-plan {
+	color: #4ec9b0;
+	border-color: color-mix(in srgb, #4ec9b0 45%, transparent);
+	background: color-mix(in srgb, #4ec9b0 8%, transparent);
+}
+/* 编辑气泡里的模式芯片是只读指示（切换统一在底部主输入框），去掉 hover 交互暗示 */
+.chat-user-edit-tb-btn.mode-tag-readonly {
+	cursor: default;
+	opacity: 0.75;
+}
+.chat-user-edit-tb-btn.mode-tag-readonly:hover {
+	background: var(--as-bg-tertiary, rgba(255,255,255,0.04));
+	border-color: var(--as-border, rgba(128, 128, 128, 0.2));
+}
+/* 下拉框当前项的勾选标记 */
+.mode-item-check {
+	margin-left: auto;
+	padding-left: 8px;
+	color: #4ec9b0;
+	font-size: 12px;
+	flex: none;
 }
 
 .chat-toolbar-btn .toolbar-btn-label {
@@ -11378,6 +11524,35 @@
 	border: none;
 	border-top: 1px solid var(--void-border-2, #3a3a52);
 	max-height: 400px;
+	overflow-y: auto;
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 12px;
+	line-height: 1.55;
+	padding: 6px 12px 8px;
+}
+
+/* 2026-08-21：每行 stdout/stderr 单独 div，> 前缀对齐截图样式 */
+.terminal-output-line {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	min-height: 1.55em;
+}
+.terminal-output-prefix {
+	flex-shrink: 0;
+	color: var(--void-fg-3, #8b8b9a);
+	user-select: none;
+	width: 1ch;
+	text-align: center;
+}
+.terminal-output-line.stderr .terminal-output-prefix { color: var(--void-warning, #e94560); }
+.terminal-output-line.stderr .terminal-output-text { color: var(--void-warning, #e94560); opacity: 0.92; }
+.terminal-output-text {
+	flex: 1;
+	min-width: 0;
+	white-space: pre-wrap;
+	word-break: break-all;
+	color: var(--void-fg-2, #d4d4d8);
 }
 
 
@@ -11436,6 +11611,196 @@
 }
 .terminal-continue-btn.terminal-continue-header:hover {
 	background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+
+/* ── Terminal 卡片单行 Header（2026-08-21 重构：去除状态行 + pill，命令为主）──── */
+.terminal-header-row {
+	align-items: center;
+}
+.terminal-left {
+	min-width: 0;
+	flex: 1;
+}
+.terminal-title-container {
+	align-items: center;
+	gap: 6px;
+	flex: 1;
+	min-width: 0;
+}
+/* header 内的终端 logo 略缩 */
+.terminal-title-container .terminal-logo {
+	flex-shrink: 0;
+}
+
+/* ① 状态行 */
+.terminal-status-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+.terminal-status-row .terminal-logo {
+	margin-right: 0;
+	flex-shrink: 0;
+}
+.terminal-label {
+	font-size: 11.5px;
+	font-weight: 500;
+	color: var(--void-fg-2, #b8b8c2);
+	flex-shrink: 0;
+}
+.terminal-status-pill {
+	font-size: 10.5px;
+	line-height: 1.4;
+	padding: 0 6px;
+	border-radius: 3px;
+	border: 1px solid transparent;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+.terminal-status-pill.ok {
+	color: #4ec9b0;
+	border-color: rgba(78, 201, 176, 0.40);
+}
+.terminal-status-pill.fail {
+	color: #e94560;
+	border-color: rgba(233, 69, 96, 0.45);
+	background: rgba(233, 69, 96, 0.08);
+}
+.terminal-status-pill.run {
+	color: #f0b95d;
+	border-color: rgba(240, 185, 93, 0.35);
+	background: rgba(240, 185, 93, 0.10);
+}
+.terminal-status-pill.need {
+	color: #f0b95d;
+	border-color: rgba(240, 185, 93, 0.35);
+	background: rgba(240, 185, 93, 0.10);
+}
+.terminal-status-pill.rej {
+	color: var(--void-fg-3, #8b8b9a);
+	border-color: var(--void-border-2, #3a3a52);
+}
+
+/* 单行命令：状态前缀 + 提示符 + 命令体（折叠态单行省略） */
+.terminal-cmd-line {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	flex: 1;
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--void-fg-2, #d4d4d8);
+	overflow: hidden;
+}
+.terminal-cmd-status {
+	flex-shrink: 0;
+	color: var(--void-fg-3, #8b8b9a);
+	font-weight: 600;
+}
+.terminal-cmd-prompt {
+	color: var(--vscode-textLink-foreground, #60a5fa);
+	user-select: none;
+	flex-shrink: 0;
+}
+.terminal-cmd-body {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	word-break: break-all;
+}
+.terminal-cmd-empty {
+	color: var(--void-fg-3, #8b8b9a);
+	font-style: italic;
+	opacity: 0.7;
+}
+
+/* 右侧时长（替代 tool-header-desc2 的泛化选择器） */
+.terminal-right { gap: 6px; }
+.terminal-duration {
+	font-size: 11px;
+	color: var(--void-fg-3, #8b8b9a);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+/* 运行中解释行：脉冲点 + 文案 */
+.terminal-explain-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 12px;
+	font-size: 11.5px;
+	color: var(--void-fg-3, #8b8b9a);
+	border-top: 1px solid var(--void-border-2, #3a3a52);
+}
+.terminal-explain-row.running {
+	background: rgba(240, 185, 93, 0.08);
+	color: #f0b95d;
+}
+.terminal-live-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+	flex-shrink: 0;
+	box-shadow: 0 0 0 0 currentColor;
+	animation: terminal-live-pulse 1.4s infinite;
+}
+@keyframes terminal-live-pulse {
+	0%   { box-shadow: 0 0 0 0 currentColor; }
+	70%  { box-shadow: 0 0 0 6px transparent; }
+	100% { box-shadow: 0 0 0 0 transparent; }
+}
+.terminal-explain-text { flex: 1; min-width: 0; }
+
+/* 展开后的完整命令块（反引号换行不丢） */
+.terminal-cmd-block {
+	padding: 6px 12px;
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 11.5px;
+	line-height: 1.5;
+	color: var(--void-fg-2, #d4d4d8);
+	white-space: pre-wrap;
+	word-break: break-all;
+	background: rgba(255, 255, 255, 0.02);
+	border-top: 1px solid var(--void-border-2, #3a3a52);
+}
+
+/* exit bar：exit code + 输出统计 */
+.terminal-exit-bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 12px;
+	border-top: 1px solid var(--void-border-2, #3a3a52);
+	font-size: 11px;
+	color: var(--void-fg-3, #8b8b9a);
+	background: rgba(0, 0, 0, 0.18);
+}
+.terminal-exit-tag {
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 10.5px;
+	padding: 1px 6px;
+	border-radius: 3px;
+	border: 1px solid;
+}
+.terminal-exit-tag.zero {
+	color: #4ec9b0;
+	border-color: rgba(78, 201, 176, 0.45);
+}
+.terminal-exit-tag.nonzero {
+	color: #e94560;
+	border-color: rgba(233, 69, 96, 0.45);
+	background: rgba(233, 69, 96, 0.06);
+}
+.terminal-exit-meta {
+	font-variant-numeric: tabular-nums;
 }
 
 

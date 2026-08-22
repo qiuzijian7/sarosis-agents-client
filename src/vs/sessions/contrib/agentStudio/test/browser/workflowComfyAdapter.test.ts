@@ -8,7 +8,7 @@ import {
 	fromLiteGraph,
 	stableSerializeGraph,
 	toLiteGraphType,
-	toSarosisType,
+	toSarosType,
 } from '../../webview/src/features/workflowEditor/comfyHost/ComfyGraphAdapter.js';
 
 const SAMPLE_NODES = [
@@ -24,17 +24,17 @@ const SAMPLE_CONNECTIONS = [
 
 suite('ComfyGraphAdapter', () => {
 
-	suite('toLiteGraphType / toSarosisType', () => {
+	suite('toLiteGraphType / toSarosType', () => {
 
 		test('namespaced round trip', () => {
 			assert.strictEqual(toLiteGraphType('prompt'), 'Saros.Prompt');
-			assert.strictEqual(toSarosisType('Saros.Prompt'), 'prompt');
+			assert.strictEqual(toSarosType('Saros.Prompt'), 'prompt');
 		});
 
 		test('already-namespaced passes through', () => {
 			assert.strictEqual(toLiteGraphType('Saros.Prompt'), 'Saros.Prompt');
 			assert.strictEqual(toLiteGraphType('ComfyTV.ImageStage'), 'ComfyTV.ImageStage');
-			assert.strictEqual(toSarosisType('KSampler'), 'KSampler');
+			assert.strictEqual(toSarosType('KSampler'), 'KSampler');
 		});
 	});
 
@@ -48,8 +48,8 @@ suite('ComfyGraphAdapter', () => {
 			const prompt = graph.nodes.find(n => n.id === 2)!;
 			assert.strictEqual(prompt.pos[0], 320.35);
 			assert.strictEqual(prompt.pos[1], 180.68);
-			// sarosis id preserved in properties
-			assert.strictEqual(prompt.properties?.__sarosisId, 'prompt1');
+			// saros id preserved in properties
+			assert.strictEqual(prompt.properties?.__sarosId, 'prompt1');
 			// map
 			assert.strictEqual(nodeIdMap.get(2), 'prompt1');
 		});

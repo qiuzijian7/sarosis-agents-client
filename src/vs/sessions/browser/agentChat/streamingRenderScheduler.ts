@@ -27,6 +27,17 @@ export interface IStreamingRenderHooks {
 	renderIncremental(container: HTMLElement, text: string): boolean;
 	/** 重置容器对应的增量渲染状态（全量替换前调用）。 */
 	resetIncremental(container: HTMLElement): void;
+	/**
+	 * 可选：增量渲染失败、即将做全量替换时通知调用方（2026-08-22 加入）。
+	 *
+	 * 这条路径是「markdown 内容整段闪烁」的直接原因 —— `replaceChildren` 会丢弃并
+	 * 重建整个 markdown 子树。此前它**完全没有日志**，抖动排查时只能靠推演。
+	 * 通过 hook 上报而非在此处直接打日志，是为了让 scheduler 保持与日志设施解耦
+	 * （它不持有 msgId 等上下文，调用方才有）。
+	 *
+	 * @param charCount 本次全量渲染的内容长度，用于估算重建成本。
+	 */
+	onFullReplace?(container: HTMLElement, charCount: number): void;
 }
 
 export class StreamingRenderScheduler {
@@ -104,6 +115,9 @@ export class StreamingRenderScheduler {
 			return;
 		}
 		// 全量重建 — 离屏渲染后原子替换，避免空白帧闪烁
+		// 上报给调用方记录（见 IStreamingRenderHooks.onFullReplace）：这是抖动的
+		// 直接来源之一，必须可观测。
+		this._hooks.onFullReplace?.(target.container, this._lastContent.length);
 		this._hooks.resetIncremental(target.container);
 		const tempDiv = document.createElement('div');
 		this._hooks.renderFull(tempDiv, this._lastContent);

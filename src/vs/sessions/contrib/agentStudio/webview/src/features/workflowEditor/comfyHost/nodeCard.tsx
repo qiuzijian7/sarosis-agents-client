@@ -25,7 +25,7 @@ import type { NodeSpec, StageVariant } from './registry';
 import { ORCH_RICH_NODE_TYPES } from './registry.js';
 import type { MediaSnapshotStore } from './mediaSnapshotStore';
 import type { MediaSnapshotEntry } from './mediaSnapshot';
-import { mergeImagePool, mediaDedupeKey } from './mediaSnapshot';
+import { mergeImagePool, mediaDedupeKey, comfyViewUrl } from './mediaSnapshot';
 import { useNodeSnapshots, usePickerSnapshots, useAllSnapshots, mediaSnapshotHooks as mshHooks } from './useMediaSnapshot';
 // 通过命名空间对象访问 hook，避免 esbuild IIFE 下命名 hook 导出丢失
 // （实测 `import { useStoreVersion }` 在 IIFE bundle 里拿到 undefined，
@@ -68,6 +68,7 @@ import { ASSET_REFS_PROP, type AssetRef } from './assetRefs';
 import type { CameraState } from './cameraWidget';
 import { PanoramaEditor } from './PanoramaEditor';
 import { RelightEditor } from '../RelightEditor';
+import { parseLightsData } from './relightEditor';
 import { MaterialEditor } from '../MaterialEditor';
 import { getActiveRunnerRegistry, getActiveRunnerPreference } from './runnerContext';
 import { useTransformPipeline, transformPhaseLabel } from './useTransformPipeline';
@@ -111,6 +112,27 @@ export interface NodeCardMeta {
 	hasPrompt?: boolean;
 	/** current prompt text (schema stages) — bound to node.properties.prompt */
 	prompt?: string;
+	/**
+	 * RelightStage 灯光数据原始 JSON（node.properties.lights_data）。
+	 * ★ RelightEditor 重构后 props 改为 initialLights（LightInfoEntry[]），
+	 *   但 lights_data 是 hidden 字段不进 meta.controls → 与 cells 同理显式透传，
+	 *   否则 nodeCard 拿不到灯光数据（RelightEditor 崩溃/丢失）。
+	 */
+	lightsData?: string;
+	/**
+	 * RelightStage 主提示词（node.properties.main_prompt，STRING widget 不进
+	 * controls，见 lightsData 注释）。RelightEditor 的 initialPrompt 用。
+	 */
+	mainPrompt?: string;
+	/**
+	 * EmojiStage 每格状态原始 JSON（node.properties.cells，数组 [{prompt,seed,text}]）。
+	 *
+	 * ★ EmojiStage 的 cells 是 TEXT 类型 widget，而 toControls 对 ComfyTV 节点只收
+	 *   COMBO/INT/FLOAT/BOOLEAN → 不进 controls。EmojiStageEditor 的 initial 若走
+	 *   ctl('cells','[]') 会永远拿到 fallback '[]'，导致「重启后每格 prompt/seed 丢失」。
+	 *   这里与 prompt 一样显式透传（见 NodeCardMeta.image 的同类先例）。
+	 */
+	cells?: string;
 	/** quick actions row (ComfyTV ACTIONS): icon+label, click opens editor */
 	actions?: StageAction[];
 	/** brand tag (ComfyTV / ComfyUI) shown at the top of the card */
@@ -450,6 +472,11 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
 			&& (spec?.widgets?.some(w => w.name === 'prompt') ?? false),
 		prompt: (kind === 'schema' || ORCH_RICH_NODE_TYPES.has(spec?.type ?? ''))
 			&& typeof properties.prompt === 'string' ? properties.prompt : undefined,
+		// ★ EmojiStage cells 透传（TEXT 不进 controls，见 NodeCardMeta.cells 注释）
+		cells: typeof properties.cells === 'string' ? properties.cells : undefined,
+		// ★ RelightStage lights_data 透传（hidden 字段，见 NodeCardMeta.lightsData 注释）
+		lightsData: typeof properties.lights_data === 'string' ? properties.lights_data : undefined,
+		mainPrompt: typeof properties.main_prompt === 'string' ? properties.main_prompt : undefined,
 		// 资产引用（asset references）原始 JSON —— 存在 node.properties 上，
 		// 由 AssetReferences 区块消费。ComfyTV 存的是数组，这里统一序列化成
 		// 字符串传给 React（避免每次 build 产生新数组引用触发无谓重渲染）。
@@ -483,6 +510,36 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
 		// 手写 native 注册，限定后会回退成 generator 而错误显示运行按钮。
 		variant: spec?.comfyTV?.variant ?? 'generator',
 	};
+}
+
+/**
+ * ★ 诊断：暂存最最近一次 meta 计算的「首字段」，便于排查 UI 消失时该节点真实数据。
+ *
+ * 症状："表情包节点 UI 中的内容消失" —— 节点卡容器还画着蓝边框，但内嵌编辑器、
+ *      预设、网格、帧率、动态开关全没了。已知在 syncOverlay 处有"DOM 容器空 → 重挂载"
+ *      的自我修复（LiteGraphCanvas.tsx:1371），但重挂载依然空白 ⇒ 怀疑 meta 计算
+ *      异常或 React child 渲染抛错被 React 静默吞掉。
+ *
+ * 输出节制：仅当 spec.type 是已知可疑 stage 类（emoji/material/panorama…）时才打，
+ *      避免普通节点也刷屏。
+ */
+const _diagnoseSample = { nodeId: '', nodeType: '', t: 0 };
+export function diagnoseCardMeta(nodeId: string, meta: NodeCardMeta, controlsCount: number): void {
+	const interesting = ['ComfyTV.EmojiStage', 'ComfyTV.PanoramaStage', 'ComfyTV.RotateStage', 'ComfyTV.MaterialStage', 'ComfyTV.RelightStage'];
+	if (!interesting.includes(meta.nodeType ?? '')) { return; }
+	const now = Date.now();
+	if (now - _diagnoseSample.t < 1500) { return; } // 节流 1.5s
+	_diagnoseSample.t = now;
+	if (_diagnoseSample.nodeId === nodeId && _diagnoseSample.nodeType === meta.nodeType) { return; }
+	_diagnoseSample.nodeId = nodeId;
+	_diagnoseSample.nodeType = meta.nodeType ?? '';
+	// eslint-disable-next-line no-console
+	console.warn('[cardMeta] ' + JSON.stringify({
+		nodeId, nodeType: meta.nodeType, kind: meta.kind, variant: meta.variant,
+		hasInlineEditor: hasStageEditor(meta.nodeType),
+		controls: controlsCount,
+		keys: Object.keys(meta).slice(0, 8),
+	}));
 }
 
 const KIND_COLOR: Record<string, string> = {
@@ -690,6 +747,14 @@ function SnapshotPreview({ store, nodeId, entries: entriesProp, batch }: { store
 	// producer 节点 ID 下，picker 自身快照为空 → 必须用上游 entries 才能渲染缩略图）。
 	const subscribed = useNodeSnapshots(store, nodeId);
 	const entries = entriesProp ?? subscribed;
+	// ★★ 必须在组件**顶层**调用一次 storeVersion hook，再在下方 `.map()` 里复用。
+	//   曾经在 batch-grid 的 `images.map(...)` 里直接写 `useStoreVersionLocal(store)`
+	//   （bustedSrc 的 cache-bust 参数），违反 hooks 规则：运行前网格 0 张图 = 0 次
+	//   hook 调用、运行后 m×n 张 = N 次调用 → React error #310「Rendered more hooks
+	//   than during the previous render」→ 整棵卡片树崩溃卸载 → **节点 UI 被清空**。
+	//   日志实证：vscode-app-1787377582459.log:7584/7607 `Uncaught Error: Minified
+	//   React error #310`，stack 指向 `.map()` 里的 useCallback（useStoreVersion 内部）。
+	const storeVersion = useStoreVersionLocal(store);
 	if (entries.length === 0) { return null; }
 	const images = entries.filter(e => e.media.kind === 'image');
 	const others = entries.filter(e => e.media.kind !== 'image');
@@ -718,7 +783,7 @@ function SnapshotPreview({ store, nodeId, entries: entriesProp, batch }: { store
 					// 元素**只改 src，浏览器在新图解码完成前继续显示旧位图 ——
 					// 表现就是"重新生成后 OUTPUT 没更新"。带 key 则新图挂载新元素。
 					key={e.key}
-					src={bustedSrc(e.media.ref, e.index, useStoreVersionLocal(store))}
+					src={bustedSrc(e.media.ref, e.index, storeVersion)}
 					alt="output"
 					// 图片是异步解码的：加载完成前 scrollHeight 不含它的真实高度。
 					// 不在 onLoad 重新标脏，节点会停在「大图出现之前」的尺寸上把图裁掉。
@@ -780,7 +845,7 @@ function SnapshotPreview({ store, nodeId, entries: entriesProp, batch }: { store
 					}}>
 						<img
 							key={e.key}
-							src={bustedSrc(e.media.ref, e.index, useStoreVersionLocal(store))}
+							src={bustedSrc(e.media.ref, e.index, storeVersion)}
 							alt="preview"
 							onLoad={() => { markFormHeightDirty(nodeId); }}
 							style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
@@ -1270,24 +1335,6 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const hiddenFields = React.useMemo(() => stageHiddenFields(meta.nodeType), [meta.nodeType]);
 	/** 是否存在内嵌编辑器（决定通用控件网格整体是否渲染）。 */
 	const hasInlineEditor = editorKind !== 'none';
-	// ★ Load 节点空白诊断打点（依赖只用 `hasInlineEditor`/`meta`/`editorKind`，
-	//   全部已在 effect 前声明 —— 不踩 TDZ）。
-	//   截图里 Load body 是空矩形：可能是 editorKind 错（不是 'image'）、
-	//   isImageLoader 错、或是其他分支覆盖了卡片（picker/actions）。
-	React.useEffect(() => {
-		if (!meta.nodeType?.startsWith('ComfyTV.')) { return; }
-		const flags = stageCardFlags(meta.nodeType, meta.isPicker);
-		// eslint-disable-next-line no-console
-		console.warn('[stageEditor] ' + JSON.stringify({
-			nodeType: meta.nodeType,
-			editorKind,
-			hasInlineEditor,
-			isPicker: meta.isPicker,
-			hideOutput: flags.hideOutput,
-			hideActions: flags.hideActions,
-			hiddenFields: stageHiddenFields(meta.nodeType),
-		}));
-	}, [meta.nodeType, meta.isPicker, editorKind, hasInlineEditor]);
 	const isOutpaint = editorKind === 'outpaint';
 	const isCrop = editorKind === 'crop';
 	const isGridSplit = editorKind === 'gridSplit';
@@ -1549,7 +1596,30 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	// 张），而非全部累积历史。ownSnapshots 累积了所有历史（每次 run 追加、index 递增），
 	// 若直接渲染会「batch_size=1 却显示 5 张」（多次点击的历史累积，被误认为 batch_size
 	// 失效）。picker pool 才累积显示全部历史，两者语义不同。取最后 batchSize 张。
-	const batchSize = Math.max(1, Number(controlDrafts['batch_size'] ?? 1) || 1);
+	//
+	// ★ EmojiStage 例外：它没有 `batch_size` widget（网格由 runEmojiStageGrid 循环
+	//   驱动、每格 batch_size 固定 1），一次「生成全部」产出 rows×cols 张。若沿用
+	//   `batch_size ?? 1` 会让 OUTPUT 只显示最后 1 张（用户实测 2×2 只见 1 图）。
+	const batchSize = React.useMemo(() => {
+		if (isEmoji) {
+			const r = Math.max(1, Number(controlDrafts['rows'] ?? 3) || 3);
+			const c = Math.max(1, Number(controlDrafts['cols'] ?? 3) || 3);
+			return Math.max(1, r * c);
+		}
+		return Math.max(1, Number(controlDrafts['batch_size'] ?? 1) || 1);
+	}, [isEmoji, controlDrafts]);
+	/**
+	 * EmojiStage 的 workflow 模板名列表，透传给 EmojiStageEditor 自行渲染下拉。
+	 * 直接复用 registry 已声明的 COMBO options（`workflowOptionsFor('emoji')`），
+	 * 无需在此再 import 一次模板表。
+	 */
+	const emojiWorkflowOptions = React.useMemo(() => {
+		if (!isEmoji) { return undefined; }
+		const c = (meta.controls ?? []).find(x => x.name === 'workflow');
+		const opts = (c?.options ?? []).map(o => (typeof o === 'string' ? o : String(o?.value ?? o?.label ?? '')))
+			.filter(s => s.length > 0);
+		return opts.length > 0 ? opts : undefined;
+	}, [isEmoji, meta.controls]);
 	/**
 	 * 输出是否为**批次**类型（决定 OUTPUT 用网格还是大图，见 SnapshotPreview）。
 	 * 判据取第一个输出端口的类型是否为复数（`COMFYTV_IMAGES` / `*S`），
@@ -2206,16 +2276,25 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			    Three.js 灯光球 + 预设芯片 + prompt 自动生成 + light_render 输出） */}
 			{showRun && isRelight && (
 				<RelightEditor
-					initialState={{
-						prompt: (controlDrafts['main_prompt'] ?? 'soft studio lighting, gentle shadows') as string,
-						lights: [],
-						selectedLightId: null,
+					initialLights={parseLightsData(meta.lightsData)}
+					initialPrompt={(controlDrafts['main_prompt'] ?? meta.mainPrompt ?? 'soft studio lighting, gentle shadows') as string}
+					runners={getActiveRunnerRegistry() ?? undefined}
+					preference={getActiveRunnerPreference()}
+					onLightsChange={(lightsJson, prompt) => {
+						commitControls({ lights_data: lightsJson, main_prompt: prompt });
 					}}
-					upstreamImageUrl={upstreamImageRef ?? null}
-					onStateChange={(state) => {
-						commitControl('main_prompt', state.prompt);
+					onRenderUploaded={(url) => {
+						if (url && snapshotStore) {
+							snapshotStore.put({
+								nodeId: snapKey,
+								port: 'output',
+								key: `${snapKey}:output:0`,
+								media: { kind: 'image', ref: url },
+								index: 0,
+							});
+						}
+						commitControl('light_render_url', url);
 					}}
-					height={320}
 				/>
 			)}
 
@@ -2458,7 +2537,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 					const img = new Image();
 					img.onload = () => setSize({ w: img.naturalWidth, h: img.naturalHeight });
 					img.onerror = () => setSize(null);
-					img.src = storedImg;
+					img.src = comfyViewUrl(activeRunnerBase, storedImg);
 				}, [storedImg]);
 				const fileName = storedImg ? (() => {
 					try {
@@ -2520,11 +2599,21 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							cols: Number(ctl('cols', 3)),
 							fps: Number(ctl('fps', 8)),
 							frames: Number(ctl('frames', 16)),
-							prompt: String(ctl('prompt', '')),
-							cells: String(ctl('cells', '[]')),
+							// ★ prompt/cells 是 TEXT widget，不进 meta.controls（toControls
+							//   对 ComfyTV 只收 COMBO/INT/FLOAT/BOOLEAN）→ ctl 永远 fallback
+							//   空值，重启后 EmojiStageEditor 重新挂载会丢失已填内容。
+							//   改用 meta.prompt / meta.cells 直接透传（见 NodeCardMeta）。
+							prompt: String(meta.prompt ?? ctl('prompt', '')),
+							cells: String(meta.cells ?? ctl('cells', '[]')),
 							selectedIndex: Number(ctl('selected_index', 0)),
+							workflow: String(ctl('workflow', '') ?? ''),
 						}}
-						cellRefs={ownSnapshots.map(e => e.media.ref)}
+						cellRefs={ownSnapshots.map(e => ({ ref: e.media.ref, caption: typeof e.media.meta?.caption === 'string' ? e.media.meta.caption : undefined }))}
+						// ★ workflow 下拉必须由编辑器自己渲染：通用控件网格有
+						//   `!hasInlineEditor` 门禁，EmojiStage 有内嵌编辑器 ⇒ 所有
+						//   widget 控件都不渲染，此前 workflow 完全不可见，用户无法
+						//   切到「动态表情」，一直在跑默认静态贴纸。
+						workflowOptions={emojiWorkflowOptions}
 						onCommit={commitControls}
 						mentionCandidates={mentionCandidates}
 						onPinAsset={pinMentionAsset}
@@ -2996,6 +3085,12 @@ export function createNodeCard(
 		|| ORCH_RICH_NODE_TYPES.has(meta.nodeType ?? '');
 	host.style.cssText = hostIsContentHeight ? 'width:100%;' : 'width:100%;height:100%;';
 	container.appendChild(host);
+	// ★ 诊断：暂时挂在创建瞬间打印 emoji/panorama 等常见消失节点的 meta 概要。
+	//   用户报告"表情包节点 UI 中的内容消失"——已知 syncOverlay 有 DOM-card self-heal
+	//   （LiteGraphCanvas.tsx:1371），但重挂载仍空 ⇒ 怀疑渲染抛错被 React 静默吞掉。
+	//   配合上方 diagnoseCardMeta 输出与 LiteGraphCanvas 的 [cardSelfHeal] 日志，
+	//   下次复现时即可定位。
+	diagnoseCardMeta(options?.nodeId ?? '', meta, (meta as { controls?: unknown[] }).controls instanceof Array ? ((meta as unknown as { controls: unknown[] }).controls.length) : -1);
 	try {
 		root = createRoot(host);
 		root.render(
@@ -3010,7 +3105,7 @@ export function createNodeCard(
 		);
 	} catch (err) {
 		// eslint-disable-next-line no-console
-		console.warn('[nodeCard] mount failed ' + JSON.stringify({ error: String(err), metaKind: meta.kind, metaTitle: meta.title }));
+		console.warn('[nodeCard] mount failed ' + JSON.stringify({ error: String(err), nodeId: options?.nodeId, metaKind: meta.kind, metaTitle: meta.title, nodeType: meta.nodeType }));
 		container.textContent = meta.title;
 	}
 	const nodeIdForLog = options?.nodeId ?? '';

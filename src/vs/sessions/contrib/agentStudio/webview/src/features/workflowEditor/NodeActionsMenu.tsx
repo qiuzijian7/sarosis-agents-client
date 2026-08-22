@@ -31,6 +31,24 @@ const menuBg = '#202020';
 const menuBorder = 'rgba(255,255,255,0.12)';
 const menuShadow = '0 8px 28px rgba(0,0,0,0.6)';
 
+// 一次性注入：根菜单入场动画（fade + scale 0.96→1, 120ms ease-out）。
+// 内联 style 无法表达 @keyframes，故用唯一 class + 单次 <style> 标签。
+const ROOT_ANIM_CLASS = 'node-actions-menu-root';
+const menuAnimStyleId = 'node-actions-menu-anim-style';
+const menuAnimCss = `
+@keyframes nodeActionsMenuIn {
+	from { opacity: 0; transform: scale(0.96); }
+	to   { opacity: 1; transform: scale(1); }
+}
+.${ROOT_ANIM_CLASS} {
+	animation: nodeActionsMenuIn 120ms ease-out;
+	transform-origin: top left;
+}
+.${ROOT_ANIM_CLASS} [role="menuitem"]:active {
+	transform: scale(0.97);
+}
+`;
+
 /** 递归菜单列表——支持任意层级 submenu。每层维护自己的 active/openSub。 */
 const MenuList: React.FC<{ items: MenuItem[]; depth: number }> = ({ items, depth }) => {
 	const rootRef = React.useRef<HTMLDivElement | null>(null);

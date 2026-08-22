@@ -3,6 +3,7 @@ import { IToolCall } from './agentChatTypes.js';
 import { parseSearchResultItems, parseToonGraphData, parseToonTraceData, type SearchResultItem, type ToonGraphData, type ToonTraceData } from './agentChatPanel.searchResultParse.js';
 import { AgentChatPanelConfirmCards } from './agentChatPanel.confirmCards.js';
 import { createSvgIcon, SEARCH_ICON_D } from './agentChatPanel.toolCards.js';
+import { parseToolArgsLoose } from './toolArgsJson.js';
 
 /**
  * 搜索/查询专用工具卡片（search_code / search_files / search_graph / query_graph / trace_path）+ TOON 渲染。
@@ -25,7 +26,7 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 		let project = '';
 		try {
 			if (tc.args) {
-			const args = JSON.parse(tc.args);
+			const args = parseToolArgsLoose(tc.args) as any;
 			query = args.query || args.pattern || args.q || args.keyword || args.name || '';
 			// 多根工作区：LLM 可指定 project 限定搜索根，标题展示以区分同 query 不同根的卡片
 			project = (args.project || args.projects || '') || '';

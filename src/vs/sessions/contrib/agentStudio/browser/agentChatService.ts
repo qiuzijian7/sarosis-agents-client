@@ -25,6 +25,7 @@ import { sliceAtCompactionBoundary, truncateToolResultContent, COMPACTION_METADA
 import { IFileService, FileSystemProviderCapabilities } from "../../../../platform/files/common/files.js";
 import { IEnvironmentService } from "../../../../platform/environment/common/environment.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
+import { ILifecycleService } from "../../../../workbench/services/lifecycle/common/lifecycle.js";
 import { URI } from "../../../../base/common/uri.js";
 import { VSBuffer } from "../../../../base/common/buffer.js";
 import {
@@ -210,6 +211,24 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	private _sessionIndexCache: Map<string, { meta: AgentSessionMeta; ts: number }> | undefined;
 	/** Per-agentId promise chain serialising session-index read-modify-write (prevents interleaved writes truncating the JSON). */
 	private readonly _sessionIndexWriteQueue = new Map<string, Promise<void>>();
+
+	// ─── Session index in-memory authority + coalesced flush (2026-08-20) ─────
+	// 此前 _doUpdateSessionIndex 每条消息都「读盘 + JSON.parse + 原子写盘」一次：
+	// 单个 turn 51 条 assistant 消息 → 51 次读 + 51 次写（日志 1787214724132 尾部
+	// `_readSessionIndex(saros-claw): 20 sessions found` 连刷 50+ 次）。
+	// 现改为：完整 index 常驻内存作为写路径权威，messageCount/updatedAt 这类高频更新
+	// 只改内存并防抖落盘；createAgentSession/rename/delete/fork 等语义性变更仍立即落盘。
+	/** agentId → 完整 index 内存副本（写路径权威）。 */
+	private readonly _sessionIndexData = new Map<string, { index: AgentSessionMeta[]; loadedAt: number }>();
+	/** agentId → 尚未落盘（dirty）。dirty 期间禁止按 TTL 重读磁盘，否则丢失内存修改。 */
+	private readonly _sessionIndexDirty = new Set<string>();
+	/** agentId → 防抖落盘定时器句柄。 */
+	private readonly _sessionIndexFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	/** 防抖窗口：turn 内连续 append 合并为一次写；崩溃最多丢这段时间的 messageCount。 */
+	private static readonly SESSION_INDEX_FLUSH_DELAY_MS = 800;
+	/** 内存副本存活时间（无 dirty 时）。多实例场景下过期后重读，感知外部修改。 */
+	private static readonly SESSION_INDEX_DATA_TTL_MS = 10_000;
+
 	private _historyLoaded = false;
 	private _globalDataUri: URI | undefined;
 
@@ -241,6 +260,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		@IEnvironmentService environmentService: IEnvironmentService,
 		@IConfigurationService configurationService: IConfigurationService,
 		@IAgentStudioService studioService: IAgentStudioService,
+		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super();
 		this.logService = logService;
@@ -249,6 +269,25 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		this.environmentService = environmentService;
 		this.configurationService = configurationService;
 		this.studioService = studioService;
+		// 关窗前把防抖窗口内未落盘的 session index 写出（dispose 不能 await，
+		// onWillShutdown 的 join 才能真正等待写完成，否则最后几条消息的
+		// messageCount/updatedAt 会丢失）。
+		this._register(lifecycleService.onWillShutdown(e => {
+			if (this._sessionIndexDirty.size === 0) { return; }
+			e.join(this._flushAllSessionIndexes(), {
+				id: 'agentChatService.sessionIndex',
+				label: 'Saving agent session index',
+			});
+		}));
+	}
+
+	/** 落盘所有 dirty 的 session index（关窗兜底）。 */
+	private async _flushAllSessionIndexes(): Promise<void> {
+		for (const timer of this._sessionIndexFlushTimers.values()) { clearTimeout(timer); }
+		this._sessionIndexFlushTimers.clear();
+		await Promise.all(
+			[...this._sessionIndexDirty].map(agentId => this.flushSessionIndex(agentId).catch(() => { })),
+		);
 	}
 
 	// ─── Path helpers ────────────────────────────────────────────────────────
@@ -1064,7 +1103,14 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				return [];
 			}
 			const parsed = JSON.parse(text) as AgentSessionMeta[];
-			this.logService.info(`[AgentChatService] _readSessionIndex(${agentId}): ${parsed.length} sessions found`);
+			// 2026-08-20：原先每次读盘都 info 一行，turn 内连刷 50+ 次（日志
+			// 1787214724132）。写路径已改为内存权威 + 防抖落盘，此处读盘应变得罕见；
+			// 仅在索引异常庞大时告警，正常情况保持静默（trace 级留给排障）。
+			if (parsed.length > 200) {
+				this.logService.warn(`[AgentChatService] _readSessionIndex(${agentId}): ${parsed.length} sessions — index is large, consider pruning`);
+			} else {
+				this.logService.trace(`[AgentChatService] _readSessionIndex(${agentId}): ${parsed.length} sessions found`);
+			}
 			return parsed;
 		} catch (err) {
 			this.logService.warn(`[AgentChatService] _readSessionIndex(${agentId}) error:`, err);
@@ -1097,23 +1143,67 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 		// Invalidate stale cache so getOrCreateActiveSession sees the latest index
 		this._sessionIndexCache?.delete(agentId);
+		// 刚写盘 → 内存副本与磁盘一致，刷新 loadedAt 让 TTL 从此刻重新计时，
+		// 避免「写完立刻被判过期 → 又读一次盘」的无谓 IO。
+		const held = this._sessionIndexData.get(agentId);
+		if (held) { held.loadedAt = Date.now(); }
 	}
 
 	/**
-	 * Ensure a session exists in the index; update messageCount + updatedAt.
-	 * If the session doesn't exist yet, auto-create it (supports first-message auto-create).
+	 * 取得 index 的内存权威副本（不存在/过期则读盘一次）。
+	 *
+	 * dirty（有未落盘修改）时**绝不**重读磁盘：磁盘上是旧内容，重读会覆盖内存里
+	 * 尚未 flush 的 messageCount/updatedAt。
 	 */
-	private async _updateSessionIndex(
-		agentId: string,
-		sessionId: string,
-		messageCount: number,
-	): Promise<void> {
-		// Serialise read-modify-write per agentId: concurrent appendMessage calls
-		// would otherwise interleave read→write of sessions.json, letting one writer
-		// observe (and persist) a half-updated index. Chaining on the previous
-		// promise keeps each mutation strictly ordered.
+	private async _getSessionIndexForWrite(agentId: string): Promise<AgentSessionMeta[]> {
+		const held = this._sessionIndexData.get(agentId);
+		const fresh = held && (Date.now() - held.loadedAt) < AgentChatService.SESSION_INDEX_DATA_TTL_MS;
+		if (held && (this._sessionIndexDirty.has(agentId) || fresh)) {
+			return held.index;
+		}
+		const index = await this._readSessionIndex(agentId);
+		this._sessionIndexData.set(agentId, { index, loadedAt: Date.now() });
+		return index;
+	}
+
+	/** 安排一次防抖落盘（同一 agent 在窗口内的多次更新合并为一次写）。 */
+	private _scheduleSessionIndexFlush(agentId: string): void {
+		this._sessionIndexDirty.add(agentId);
+		const existing = this._sessionIndexFlushTimers.get(agentId);
+		if (existing) { clearTimeout(existing); }
+		const timer = setTimeout(() => {
+			this._sessionIndexFlushTimers.delete(agentId);
+			void this.flushSessionIndex(agentId);
+		}, AgentChatService.SESSION_INDEX_FLUSH_DELAY_MS);
+		this._sessionIndexFlushTimers.set(agentId, timer);
+	}
+
+	/**
+	 * 立即把内存 index 落盘（若 dirty）。turn 结束、窗口关闭、以及任何需要磁盘
+	 * 与内存强一致的读取路径（listAgentSessions 等）之前调用。
+	 */
+	async flushSessionIndex(agentId: string): Promise<void> {
+		const timer = this._sessionIndexFlushTimers.get(agentId);
+		if (timer) {
+			clearTimeout(timer);
+			this._sessionIndexFlushTimers.delete(agentId);
+		}
+		if (!this._sessionIndexDirty.has(agentId)) { return; }
+		const held = this._sessionIndexData.get(agentId);
+		if (!held) { this._sessionIndexDirty.delete(agentId); return; }
+		// 先清 dirty 再写：写期间到来的新更新会重新置 dirty 并再排一次 flush，
+		// 不会被本次写「吞掉」。
+		this._sessionIndexDirty.delete(agentId);
+		await this._writeSessionIndexQueued(agentId, held.index);
+	}
+
+	/** 把 index 写盘，复用 per-agentId 串行队列（防止交错写截断 JSON）。 */
+	private async _writeSessionIndexQueued(agentId: string, index: AgentSessionMeta[]): Promise<void> {
 		const prev = this._sessionIndexWriteQueue.get(agentId) ?? Promise.resolve();
-		const run = prev.catch(() => { }).then(() => this._doUpdateSessionIndex(agentId, sessionId, messageCount));
+		// 写盘用快照：await 期间内存数组可能被后续 append 继续修改（JSON.stringify
+		// 不是原子的），拷一份保证本次写出的是自洽状态。
+		const snapshot = index.map(e => ({ ...e }));
+		const run = prev.catch(() => { }).then(() => this._writeSessionIndex(agentId, snapshot));
 		this._sessionIndexWriteQueue.set(agentId, run);
 		try {
 			await run;
@@ -1124,28 +1214,41 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 	}
 
-	private async _doUpdateSessionIndex(
+	/**
+	 * Ensure a session exists in the index; update messageCount + updatedAt.
+	 * If the session doesn't exist yet, auto-create it (supports first-message auto-create).
+	 *
+	 * 2026-08-20：高频路径（每条消息都会调用）不再每次读写磁盘 —— 只更新内存权威副本
+	 * 并安排防抖落盘。新建 session 这类结构性变更立即落盘（不能丢）。
+	 */
+	private async _updateSessionIndex(
 		agentId: string,
 		sessionId: string,
 		messageCount: number,
 	): Promise<void> {
-		const index = await this._readSessionIndex(agentId);
+		const index = await this._getSessionIndexForWrite(agentId);
 		const now = new Date().toISOString();
-		let entry = index.find((s) => s.id === sessionId);
+		const entry = index.find((s) => s.id === sessionId);
 		if (!entry) {
-			entry = {
+			// 新 session 首次入索引：结构性变更，立即落盘，避免崩溃后会话「消失」。
+			index.push({
 				id: sessionId,
 				name: `新对话`,
 				createdAt: now,
 				updatedAt: now,
 				messageCount,
-			};
-			index.push(entry);
-		} else {
-			entry.messageCount = messageCount;
-			entry.updatedAt = now;
+			});
+			this._sessionIndexDirty.add(agentId);
+			await this.flushSessionIndex(agentId);
+			this._onDidChangeAgentSessionsEmitter.fire({ agentId });
+			return;
 		}
-		await this._writeSessionIndex(agentId, index);
+		// 已存在：仅 messageCount/updatedAt 变化 → 内存改动 + 防抖落盘。
+		// 值未变则连事件都不用发（避免 UI 无谓刷新）。
+		if (entry.messageCount === messageCount) { return; }
+		entry.messageCount = messageCount;
+		entry.updatedAt = now;
+		this._scheduleSessionIndexFlush(agentId);
 		this._onDidChangeAgentSessionsEmitter.fire({ agentId });
 	}
 
@@ -1766,7 +1869,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			let sessionForkContext: IForkContext | undefined;
 			if (options.agentSessionId) {
 				try {
-					const idx = await this._readSessionIndex(agentId);
+					// forkContext 只在 create/fork 时写入（立即落盘），不受防抖影响 →
+					// 可直接用内存权威副本，省掉一次读盘。
+					const idx = await this._getSessionIndexForWrite(agentId);
 					sessionForkContext = idx.find((s) => s.id === options.agentSessionId)?.forkContext;
 				} catch {
 					// 读取会话索引失败不阻塞主流程
@@ -2266,6 +2371,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	override dispose(): void {
 		this._memoryEventUnsub?.();
 		this._memoryEventUnsub = null;
+		// 兜底落盘：清掉待触发的防抖定时器，把仍 dirty 的 index 同步写出。
+		// dispose 不能 await，故 fire-and-forget（写队列自身串行，不会撕裂 JSON）。
+		for (const timer of this._sessionIndexFlushTimers.values()) { clearTimeout(timer); }
+		this._sessionIndexFlushTimers.clear();
+		for (const agentId of [...this._sessionIndexDirty]) {
+			void this.flushSessionIndex(agentId).catch(() => { });
+		}
 		super.dispose();
 	}
 
@@ -2458,6 +2570,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * Reads from sessions.json index (fast, no file scanning).
 	 */
 	async listAgentSessions(agentId: string): Promise<AgentSessionMeta[]> {
+		// 内存中可能有未落盘的 messageCount/updatedAt（防抖窗口内）→ 先 flush，
+		// 否则列表显示的消息数/排序会滞后一个窗口。
+		await this.flushSessionIndex(agentId);
 		const index = await this._readSessionIndex(agentId);
 		index.sort(
 			(a, b) =>
@@ -2496,9 +2611,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			VSBuffer.fromString("[]"),
 		);
 
-		const index = await this._readSessionIndex(agentId);
+		const index = await this._getSessionIndexForWrite(agentId);
 		index.push(meta);
-		await this._writeSessionIndex(agentId, index);
+		this._sessionIndexDirty.add(agentId);
+		await this.flushSessionIndex(agentId);
 
 		this.logService.info(
 			`[AgentChatService] createAgentSession: DONE sessionId=${sessionId}, agentId=${agentId}, indexSize=${index.length}`,
@@ -2515,14 +2631,15 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		sessionId: string,
 		newName: string,
 	): Promise<void> {
-		const index = await this._readSessionIndex(agentId);
+		const index = await this._getSessionIndexForWrite(agentId);
 		const entry = index.find((s) => s.id === sessionId);
 		if (!entry) {
 			throw new Error(`Session ${sessionId} not found`);
 		}
 		entry.name = newName;
 		entry.updatedAt = new Date().toISOString();
-		await this._writeSessionIndex(agentId, index);
+		this._sessionIndexDirty.add(agentId);
+		await this.flushSessionIndex(agentId);
 		this._onDidChangeAgentSessionsEmitter.fire({ agentId });
 	}
 
@@ -2544,9 +2661,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// P1: clean up sidecar directory
 		await this._deleteSidecarDir(agentId, sessionId);
 
-		const index = await this._readSessionIndex(agentId);
+		const index = await this._getSessionIndexForWrite(agentId);
 		const filtered = index.filter((s) => s.id !== sessionId);
-		await this._writeSessionIndex(agentId, filtered);
+		// 删除后内存权威副本必须替换为过滤后的数组（不能只写盘），否则后续
+		// _updateSessionIndex 仍看到已删条目并把它写回。
+		this._sessionIndexData.set(agentId, { index: filtered, loadedAt: Date.now() });
+		this._sessionIndexDirty.add(agentId);
+		await this.flushSessionIndex(agentId);
 
 		// Remove from memory cache
 		const key = this._cacheKey(agentId, sessionId);
@@ -2581,7 +2702,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		newName?: string,
 		parentForkContext?: IForkContext,
 	): Promise<AgentSessionMeta> {
-		const index = await this._readSessionIndex(agentId);
+		// fork 要读 src.messageCount，且随后 push 新条目 → 走内存权威副本，
+		// 否则会用磁盘旧内容覆盖掉防抖窗口内未落盘的 messageCount。
+		const index = await this._getSessionIndexForWrite(agentId);
 		const src = index.find((s) => s.id === sessionId);
 		if (!src) {
 			throw new Error(`Session ${sessionId} not found`);
@@ -2635,7 +2758,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			forkContext: parentForkContext,
 		};
 		index.push(meta);
-		await this._writeSessionIndex(agentId, index);
+		this._sessionIndexDirty.add(agentId);
+		await this.flushSessionIndex(agentId);
 
 		// 4) Drop any stale cache bucket so the next getHistory lazy-loads fresh.
 		const newKey = this._cacheKey(agentId, newId);
@@ -2668,15 +2792,16 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		if (cached && (now - cached.ts) < CACHE_TTL) {
 			return cached.meta;
 		}
-		const index = await this._readSessionIndex(agentId);
+		const index = await this._getSessionIndexForWrite(agentId);
 		this.logService.info(`[AgentChatService] getOrCreateActiveSession(${agentId}): index has ${index.length} sessions`);
 		let meta: AgentSessionMeta;
 		if (index.length > 0) {
-			index.sort(
+			// 内存副本是写路径权威，不要原地 sort（会打乱 _updateSessionIndex 持有的
+			// 引用顺序语义；虽不致错但易误导）→ 拷贝后排序。
+			meta = index.slice().sort(
 				(a, b) =>
 					new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-			);
-			meta = index[0];
+			)[0];
 			this.logService.info(`[AgentChatService] getOrCreateActiveSession(${agentId}): latest session=${meta.id} updatedAt=${meta.updatedAt} name=${meta.name}`);
 		} else {
 			this.logService.info(`[AgentChatService] getOrCreateActiveSession(${agentId}): NO sessions, creating new`);
@@ -2697,7 +2822,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		sessionId: string,
 		providerSessionId: string,
 	): Promise<void> {
-		const index = await this._readSessionIndex(agentId);
+		// 走内存权威副本：若用 _readSessionIndex + _writeSessionIndex，会把防抖窗口内
+		// 未落盘的 messageCount/updatedAt 用磁盘旧值覆盖掉。
+		const index = await this._getSessionIndexForWrite(agentId);
 		const entry = index.find((s) => s.id === sessionId);
 		if (!entry) {
 			return;
@@ -2707,7 +2834,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 		entry.providerSessionId = providerSessionId;
 		entry.updatedAt = new Date().toISOString();
-		await this._writeSessionIndex(agentId, index);
+		this._sessionIndexDirty.add(agentId);
+		await this.flushSessionIndex(agentId);
 		this.logService.info(
 			`[AgentChatService] Stored providerSessionId=${providerSessionId} for session ${sessionId}`,
 		);

@@ -593,6 +593,14 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			this._logService.trace(`[LMBridge] Passing ${options.tools.length} tools to extension via modelOptions.tools`);
 		}
 
+		// 透传 tool_choice（2026-08-20）。此前完全未透传 —— agent loop 的收尾轮
+		// （toolChoice:'none'，对齐 MiMo-Code）与续跑兜底（'required'）在扩展 provider
+		// 路径上全部失效，只有 BYOK provider 生效。扩展若不认识该字段会忽略，无副作用。
+		if (options.toolChoice) {
+			requestOptions.modelOptions.toolChoice = options.toolChoice;
+			this._logService.info(`[LMBridge] Passing toolChoice='${options.toolChoice}' to extension (tools=${options.tools?.length ?? 0})`);
+		}
+
 		// 传递其他 modelOptions（如 temperature, maxTokens）
 		if (options.temperature !== undefined) {
 			requestOptions.modelOptions.temperature = options.temperature;
@@ -604,10 +612,31 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		// 透传推理/思考配置给扩展（通过 modelOptions.reasoning）。
 		// 聊天输入框的 thinking 开关 → IModelOptions.reasoning → 这里 → provider 扩展
 		// 映射为 OpenAI 风格 body 的 reasoning_effort / reasoning_summary。
-		// 仅在开启时透传，关闭/缺失时不注入，让 provider 走非推理路径。
-		if (options.reasoning?.enabled) {
+		//
+		// ★ 2026-08-21 修复三态透传断裂（事故 1787282838177：LLM 永久「正在思考中」）
+		// reasoning.enabled 是**三态**语义，必须原样透传：
+		//   true      → 强制开思考
+		//   false     → **显式关闭**（如 contextManager 的上下文压缩摘要请求）
+		//   undefined → 不表态，由 provider 按模型能力字段决定
+		// 旧代码 `if (options.reasoning?.enabled)` 把三态压成两态：`false` 是 falsy →
+		// 整个 reasoning 对象被丢弃 → codebuddy-provider 收到 undefined → 落进
+		// 「按模型能力自动开」分支（hy3-ioa 判定为 reasoning 模型）→ effort=high。
+		// 后果：contextManager.ts:1028 明明写了 `reasoning: { enabled: false }`，
+		// 压缩摘要请求仍以 effort=high 发出，耗时从 48s 涨到 167s 直至永久挂起，
+		// 主 agent loop 阻塞在 await 上，UI 永久显示「正在思考中」。
+		// 与 MEMORY.md 记录的 toolChoice 三处断裂是同一 bug 模式（显式关闭值被 falsy 吞掉）。
+		//
+		// 各 provider 对「显式 false」的处理（已逐一核对，本改动对它们都是正确的）：
+		//   codebuddy-provider → uiReasoningEnabled===false 强制关（本次受害者，修复目标）
+		//   geminiNative       → else 分支显式 thinkingConfig.thinkingBudget=0（正确关闭）
+		//   builtInBYOK        → `if (reasoning?.enabled)` 仍为 false → 不注入参数（行为不变）
+		if (options.reasoning && (
+			options.reasoning.enabled !== undefined ||
+			options.reasoning.effort !== undefined ||
+			options.reasoning.budget !== undefined
+		)) {
 			requestOptions.modelOptions.reasoning = options.reasoning;
-			this._logService.trace(`[LMBridge] Passing reasoning to extension: effort=${options.reasoning.effort ?? '(none)'} budget=${options.reasoning.budget ?? '(none)'}`);
+			this._logService.trace(`[LMBridge] Passing reasoning to extension: enabled=${options.reasoning.enabled} effort=${options.reasoning.effort ?? '(none)'} budget=${options.reasoning.budget ?? '(none)'}`);
 		}
 
 		// ── 透传抓包对齐的三个独立会话 id 给扩展（通过 modelOptions）──────────

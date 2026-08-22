@@ -8,7 +8,10 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILoggerService } from '../../../../platform/log/common/log.js';
 import { type IModelDelta } from '../common/providers.js';
-import { VSSAROS_LLM_CHANNEL, discoverModels, generateImage, httpRequest, streamChatCompletions, type IHttpRequestParams, type IImageGenBridgeParams, type ISarosisLlmChatRequest, type LogFn, type LogLevel } from '../common/llmBridge.js';
+// 契约（常量/类型）来自 common/，网络实现来自 node/ —— 见 node/llmBridgeNode.ts
+// 顶部注释：common/ 被 renderer 引用，禁止任何 Node 依赖，故实现独立成 node/ 层。
+import { VSSAROS_LLM_CHANNEL, type IHttpRequestParams, type IImageGenBridgeParams, type ISarosisLlmChatRequest, type LogFn, type LogLevel } from '../common/llmBridge.js';
+import { discoverModels, generateImage, httpRequest, streamChatCompletions } from '../node/llmBridgeNode.js';
 import type { IBYOKProviderDefinition } from '../browser/builtInBYOKModelProvider.js';
 
 /**

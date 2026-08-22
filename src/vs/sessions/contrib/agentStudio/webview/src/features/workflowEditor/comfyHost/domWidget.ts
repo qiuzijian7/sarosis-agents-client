@@ -63,6 +63,10 @@ export interface DomFormWidget {
 	computedHeight: number;
 	/** Desired CONTENT height in graph units (feedback from the React card). */
 	userHeight: number;
+	/** Last content height fed back (graph units). Used by the convergence
+	 *  guard in `setDomFormContentHeight` to break the per-frame measure→
+	 *  setSize→commit→mark-dirty loop on stable-height cards (e.g. EmojiStage). */
+	lastFedHeight?: number;
 	/** Never persisted — the widget is re-created from the spec on load. */
 	serialize: false;
 	options: Record<string, unknown>;
@@ -152,6 +156,19 @@ export function setDomFormContentHeight(node: DomWidgetNode, contentHeight: numb
 	const widget = getDomFormWidget(node);
 	if (!widget) { return false; }
 	const h = Math.max(40, Math.ceil(contentHeight));
+	// ── Convergence guard (fixes per-frame height-feedback jitter) ──────────
+	// The canvas rAF loop marks a node dirty after every React commit, then
+	// re-measures scrollHeight here. For cards whose content is stable (e.g.
+	// EmojiStage's fixed grid + editor panel) this creates a closed loop:
+	// measure → setSize (+1px) → React commit → mark dirty → measure again,
+	// forever oscillating the node size (977↔1093 in logs) and spamming the
+	// height-feedback warning. Once the measured height equals the last value
+	// we applied, skip the write so the loop converges. First growth still
+	// passes because widget.lastFedHeight starts undefined.
+	if (widget.lastFedHeight === h) {
+		return false;
+	}
+	widget.lastFedHeight = h;
 	widget.userHeight = h;
 	widget.computedHeight = h + DOM_WIDGET_VPAD;
 	// Re-arrange so widget.y reflects the current slots. arrange() throws when

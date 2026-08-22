@@ -1239,6 +1239,13 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			if (tc !== 'auto') {
 				console.log(`[CodeBuddy] tool_choice=${tc} (forced by upstream)`);
 			}
+		} else if (toolChoice === 'none') {
+			// 无 tools 但上游显式要求 'none'：agent loop 的收尾轮（预算耗尽后跑一轮
+			// 「禁工具、纯文本」让模型输出结论）。tools 已被上游置空，这里再补一层
+			// 协议级声明，双保险防止模型仍尝试调用（对齐 MiMo-Code toolChoice:"none"）。
+			// 仅对 'none' 放行：'required' 在无 tools 时会被网关判为非法。
+			bodyObj.tool_choice = 'none';
+			console.log('[CodeBuddy] tool_choice=none with NO tools (final wrap-up round)');
 		}
 
 		const bodyJson = JSON.stringify(bodyObj);

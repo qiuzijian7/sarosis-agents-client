@@ -160,6 +160,37 @@ export function collectStartArgs(nodes: RunNode[]): Record<string, unknown> {
  *     （ctx.named 由调度器提供：label → 归档键 → store 快照文本；label
  *     重名取首个；未解析到的占位符原样保留）。
  */
+/**
+ * P2a: 类型安全物化 —— 点路径取值的最终结果是对象/数组时，用 JSON.stringify
+ * 而非 String()（String(obj) 会得到 `[object Object]`，String([1,2]) 得到 `1,2`）。
+ * 标量（string/number/boolean）仍走 String；undefined/null 返回空串（调用方
+ * 通常已在 probe 阶段拦截 undefined/null 返回原占位符）。
+ */
+export function stringifyResolvedValue(v: unknown): string {
+	if (v === undefined || v === null) { return ''; }
+	if (typeof v === 'object') { return JSON.stringify(v); }
+	return String(v);
+}
+
+/**
+ * P2b: 提取解析后仍残留的 `{{...}}` 占位符（未解析到 = 引用了不存在的
+ * label / args 路径 / input 路径 / 变量）。返回去重后的占位符内容列表
+ * （不含花括号），空数组表示全部解析成功。
+ *
+ * 供执行器在物化后检测并告警（而非静默产出带 `{{xxx}}` 的文本）。
+ */
+export function findUnresolvedPlaceholders(text: string): string[] {
+	if (!text || !text.includes('{{')) { return []; }
+	const seen = new Set<string>();
+	const re = /\{\{([^{}]+)\}\}/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(text)) !== null) {
+		const name = m[1].trim();
+		if (name) { seen.add(name); }
+	}
+	return Array.from(seen);
+}
+
 export function resolveTemplateVars(
 	template: string,
 	ctx: { input?: string; args?: Record<string, unknown>; named?: (label: string) => string | undefined },
@@ -178,7 +209,7 @@ export function resolveTemplateVars(
 				if (typeof probe !== 'object' || probe === null) { return whole; }
 				probe = (probe as Record<string, unknown>)[seg];
 			}
-			return probe === undefined || probe === null ? whole : String(probe);
+			return probe === undefined || probe === null ? whole : stringifyResolvedValue(probe);
 		});
 	}
 	if (ctx.args && Object.keys(ctx.args).length > 0 && out.includes('{{args.')) {
@@ -188,7 +219,7 @@ export function resolveTemplateVars(
 				if (typeof probe !== 'object' || probe === null) { return whole; }
 				probe = (probe as Record<string, unknown>)[seg];
 			}
-			return probe === undefined || probe === null ? whole : String(probe);
+			return probe === undefined || probe === null ? whole : stringifyResolvedValue(probe);
 		});
 	}
 	// W4: 一般占位符 {{label}} / {{label.a.b}}（排除 input / args.* 前缀）
@@ -208,13 +239,79 @@ export function resolveTemplateVars(
 					if (typeof probe !== 'object' || probe === null) { return whole; }
 					probe = (probe as Record<string, unknown>)[seg];
 				}
-				return probe === undefined || probe === null ? whole : String(probe);
+				return probe === undefined || probe === null ? whole : stringifyResolvedValue(probe);
 			}
 			// 无路径：对象快照透传原文（String(obj) 会得到 [object Object]）
 			return probe !== null && typeof probe === 'object' ? text : String(probe);
 		});
 	}
 	return out;
+}
+
+/**
+ * P0: 解析 `Saros.Prompt` 节点的 `variables` 字段（JSON）为「局部具名变量」映射。
+ *
+ * `variables` 顶层键 = 变量名，值 = 模板字符串（可含 `{{input}}` / `{{args.x}}` /
+ * 引用其他变量 `{{其他变量}}`）。解析后这些变量合并进 `resolveTemplateVars` 的
+ * `named` 命名空间，`prompt` 里 `{{变量名}}` 即可引用 —— 这是 Prompt 节点此前
+ * 「声明了 variables 字段但执行器从不读取」的死代码接线（对齐 Dify/Coze 的
+ * 「显式变量声明 + 点选引用」体验）。
+ *
+ * 特性：
+ *   - 变量值递归解析（支持变量间引用，最多 8 层，循环引用返回原文防自锁）；
+ *   - 非字符串值 JSON.stringify（数组/对象/数字安全物化）；
+ *   - 非法 JSON / 空值 → 空映射（静默降级，不报错）。
+ */
+export function resolvePromptVariables(
+	rawVariables: unknown,
+	ctx: { input?: string; args?: Record<string, unknown>; named?: (label: string) => string | undefined },
+): Record<string, string> {
+	let obj: Record<string, unknown> = {};
+	if (typeof rawVariables === 'string' && rawVariables.trim()) {
+		try {
+			const p = JSON.parse(rawVariables) as unknown;
+			if (p && typeof p === 'object' && !Array.isArray(p)) { obj = p as Record<string, unknown>; }
+		} catch { /* 非法 JSON → 空映射 */ }
+	} else if (rawVariables && typeof rawVariables === 'object' && !Array.isArray(rawVariables)) {
+		obj = rawVariables as Record<string, unknown>;
+	}
+	const raw: Record<string, string> = {};
+	for (const [k, v] of Object.entries(obj)) {
+		raw[k] = typeof v === 'string' ? v : (v === undefined || v === null ? '' : JSON.stringify(v));
+	}
+	const resolved: Record<string, string> = {};
+	const resolveOne = (name: string, depth: number): string => {
+		if (depth > 8) { return raw[name] ?? ''; } // 循环引用保护：返回原文（占位符原样）
+		const done = resolved[name];
+		if (done !== undefined) { return done; }
+		const val = raw[name];
+		if (val === undefined) { return ''; }
+		// 命名空间：优先局部变量（递归解析），否则委托外部 named（节点 label 引用）
+		const merged = (label: string): string | undefined => {
+			if (label === name) { return raw[name]; } // 自引用 → 原文（避免空替换）
+			if (raw[label] !== undefined) { return resolveOne(label, depth + 1); }
+			return ctx.named?.(label);
+		};
+		resolved[name] = resolveTemplateVars(val, { input: ctx.input, args: ctx.args, named: merged });
+		return resolved[name];
+	};
+	for (const k of Object.keys(raw)) { resolveOne(k, 0); }
+	return resolved;
+}
+
+/**
+ * 把局部变量映射包装成 `resolveTemplateVars` 的 `named` 解析器（局部变量优先，
+ * 回退外部 `resolveNamed`）。供 Prompt 节点把 variables 注入模板命名空间。
+ */
+export function makeNamedWithVariables(
+	variables: Record<string, string>,
+	fallback?: (label: string) => string | undefined,
+): (label: string) => string | undefined {
+	return (label: string): string | undefined => {
+		const v = variables[label];
+		if (v !== undefined) { return v; }
+		return fallback?.(label);
+	};
 }
 
 /** Provider image-gen node (e.g. Saros.ModelImageGen).
@@ -1078,17 +1175,33 @@ async function runPromptNodeExecutor(input: NodeExecutionInput): Promise<SingleN
 		return { ...empty, error: 'Saros.Prompt 节点缺少文本（编辑节点填写 prompt）' };
 	}
 	const upstreamText = resolveUpstreamSnapshotText(store, upstreams);
-	// W1/W4: {{input}} + {{args.*}} + {{label.field}}；无占位符时原样（纯静态文本）
+	// P0: 解析 variables 局部变量，合并进命名空间（{{变量名}} 可引用）。
+	//   W1/W4: {{input}} + {{args.*}} + {{label.field}}；无占位符时原样（纯静态文本）
+	const variables = resolvePromptVariables(values.variables, { input: upstreamText, args: input.args, named: input.resolveNamed });
+	const named = makeNamedWithVariables(variables, input.resolveNamed);
 	const text = template.includes('{{')
-		? resolveTemplateVars(template, { input: upstreamText, args: input.args, named: input.resolveNamed })
+		? resolveTemplateVars(template, { input: upstreamText, args: input.args, named })
 		: template;
+	// P2b: 检测未解析占位符（引用不存在的 label / args 路径 / input 路径 / 变量）。
+	//   非阻断：物化文本原样保留（兼容「延迟解析」给下游 Agent 的语义），但
+	//   ① console.warn 供 devtools 排查；② meta.unresolvedPlaceholders 标记供卡片
+	//   展示 warning（区别于「一切正常」的纯 promptNode 快照）。
+	const unresolved = findUnresolvedPlaceholders(text);
+	if (unresolved.length > 0) {
+		// eslint-disable-next-line no-console
+		console.warn(`[Saros.Prompt] nodeId=${nodeId} 未解析占位符: ${unresolved.map(u => `{{${u}}}`).join(', ')}`);
+	}
 	const snapKey = input.snapshotKey ?? nodeId;
 	const entry: MediaSnapshotEntry = {
 		nodeId: snapKey,
 		port: 'output',
 		key: `${snapKey}:output:0`,
 		index: 0,
-		media: { kind: 'text', ref: text, meta: { promptNode: '1' } },
+		media: {
+			kind: 'text',
+			ref: text,
+			meta: { promptNode: '1', ...(unresolved.length > 0 ? { unresolvedPlaceholders: unresolved } : {}) },
+		},
 	};
 	store.put(entry, true);
 	return { promptId: '', status: 'success', entries: [entry] };
@@ -1390,6 +1503,187 @@ function clampInt(v: unknown, lo: number, hi: number, dflt: number): number {
 	return Math.max(lo, Math.min(hi, Math.trunc(n)));
 }
 
+/** 长字符串截断：单行日志用（避免 prompt 内的换行/超长把控制台刷爆）。 */
+function truncateForLog(s: string, max: number): string {
+	const oneLine = s.replace(/[\r\n]+/g, ' ');
+	if (oneLine.length <= max) { return oneLine; }
+	return oneLine.slice(0, max) + '…';
+}
+
+/**
+ * 收集上游节点的所有文本快照（`text` 端口接入的 TextStage / Agent / Prompt /
+ * Start 等输出，`media.kind === 'text'`）。按 upstreams 顺序 + 条目顺序返回，
+ * 供 EmojiStage 把文本拆分成 m×n 个格子的 prompt。
+ */
+function collectUpstreamTexts(store: MediaSnapshotStore, upstreams: string[] | undefined): string[] {
+	const out: string[] = [];
+	for (const up of upstreams ?? []) {
+		for (const entry of store.byNode(up)) {
+			if (entry.media.kind === 'text' && typeof entry.media.ref === 'string') {
+				const t = entry.media.ref.trim();
+				if (t) { out.push(t); }
+			}
+		}
+	}
+	return out;
+}
+
+/**
+ * 剥离 markdown 代码块包裹（```` ```json ... ``` ```` 或裸 ` ``` `）。
+ * 无代码块时原样返回（trim 后）。
+ */
+export function stripMarkdownCodeFence(text: string): string {
+	const t = text.trim();
+	if (!t) { return t; }
+	// ```json ... ``` / ``` ... ```（语言标识可选，内容非贪婪）
+	const m = t.match(/^```[a-zA-Z]*\s*([\s\S]*?)\s*```$/);
+	if (m) { return m[1].trim(); }
+	return t;
+}
+
+/**
+ * 从任意文本中稳健提取**第一个** JSON 数组。
+ *
+ * LLM 生成的文本往往不是干净 JSON：带 markdown 代码块（` ```json [...] ``` `）、
+ * 前后缀说明（`好的，结果是：[...]`）、或夹杂解释文字。本函数逐级容错：
+ *   1. 先剥离 markdown 代码块；
+ *   2. 整段 JSON.parse（若已是干净数组）；
+ *   3. 括号配平扫描：从第一个 `[` 起找配平 `]`（跳过字符串字面量与转义），
+ *      取平衡段 JSON.parse；失败则继续找下一个 `[`。
+ *
+ * 返回提取出的数组（`unknown[]`），或 null（无合法 JSON 数组）。
+ * 调用方据此决定「严格数组命中」还是「回退启发式拆分」。
+ */
+export function extractJsonArray(text: string): unknown[] | null {
+	if (!text) { return null; }
+	const t = stripMarkdownCodeFence(text);
+	if (!t) { return null; }
+	// 1. 整段即数组（最快的干净路径）
+	if (t.startsWith('[')) {
+		try {
+			const v = JSON.parse(t) as unknown;
+			if (Array.isArray(v)) { return v as unknown[]; }
+		} catch { /* 继续配平扫描 */ }
+	}
+	// 2. 括号配平扫描：逐个候选平衡段尝试解析
+	let i = t.indexOf('[');
+	while (i >= 0) {
+		let depth = 0;
+		let inStr = false;
+		let esc = false;
+		let end = -1;
+		for (let j = i; j < t.length; j++) {
+			const c = t[j];
+			if (esc) { esc = false; continue; }
+			if (c === '\\' && inStr) { esc = true; continue; }
+			if (c === '"') { inStr = !inStr; continue; }
+			if (inStr) { continue; }
+			if (c === '[') { depth++; }
+			else if (c === ']') {
+				depth--;
+				if (depth === 0) { end = j; break; }
+			}
+		}
+		if (end >= 0) {
+			const slice = t.slice(i, end + 1);
+			try {
+				const v = JSON.parse(slice) as unknown;
+				if (Array.isArray(v)) { return v as unknown[]; }
+			} catch { /* 该段非法 JSON → 找下一个候选 */ }
+		}
+		i = t.indexOf('[', i + 1);
+	}
+	return null;
+}
+
+/**
+ * 严格解析上游文本为 EmojiCellState 数组 —— JSON 数组是**权威划分依据**。
+ *
+ * 支持两种元素形态：
+ *   - 字符串：`"猫"` → `{ prompt: '猫', seed: 0, text: '' }`
+ *   - 对象：`{"prompt":"猫","seed":123,"text":"喵"}` → 完整 cell（三字段均可选）
+ *
+ * ## 严格性保证（与 splitEmojiPrompts 的关键区别）
+ *   1. 只有 `extractJsonArray` **成功命中**（含 markdown/前后缀容错）才算数；
+ *   2. 一旦命中，**绝不 fallthrough 到启发式拆分**（多行/逗号）—— 这是
+ *      「严格按 JSON 数组划分」的核心：`["猫, 狗"]` 是**一个** prompt，不会被逗号误拆；
+ *   3. 无合法 JSON 数组 → 返回 null（不产出半截结果），由调用方回退；
+ *   4. 对象元素可携带 `seed` / `text`，让上游完整控制每格的种子与配文。
+ *
+ * 返回 null 表示「上游无合法 JSON 数组」（调用方回退启发式 / 手填 / 全局）。
+ */
+export function parseEmojiCellArray(texts: string[]): EmojiCellState[] | null {
+	for (const raw of texts) {
+		const arr = extractJsonArray(raw);
+		if (!arr) { continue; }
+		const cells: EmojiCellState[] = [];
+		for (const a of arr) {
+			if (typeof a === 'string') {
+				const p = a.trim();
+				if (p) { cells.push({ prompt: p, seed: 0, text: '' }); }
+			} else if (a && typeof a === 'object') {
+				const o = a as { prompt?: unknown; seed?: unknown; text?: unknown };
+				const prompt = typeof o.prompt === 'string' ? o.prompt.trim() : '';
+				const seed = typeof o.seed === 'number' && Number.isFinite(o.seed) ? Math.trunc(o.seed) : 0;
+				const text = typeof o.text === 'string' ? o.text : '';
+				if (prompt || seed || text) { cells.push({ prompt, seed, text }); }
+			}
+		}
+		return cells.length > 0 ? cells : null;
+	}
+	return null;
+}
+
+/**
+ * 把上游文本拆分成「最多 total 条」的表情 prompt 列表（**启发式兜底路径**）。
+ *
+ * 拆分优先级（逐条尝试，命中即用）：
+ *  1. JSON 数组：`["猫","狗",{"prompt":"鸟"}]` —— 解析后取字符串项 / `{prompt}` 项；
+ *     解析失败则**作为单条保留**（不 fallthrough，避免 `[猫,狗` 被逗号误拆）；
+ *  2. 多行文本：每行一个表情描述（`猫\n狗\n鸟`）；
+ *  3. 分隔符列表：逗号/顿号/分号/竖线（`猫,狗,鸟` 或 `猫、狗、鸟`）；
+ *  4. 单条文本：原样作为唯一 prompt。
+ *
+ * 返回空数组表示「无上游文本」（调用方回退到全局 prompt / 手填 cells）。
+ * 长度可能 > total，调用方按需截断或循环复用。
+ *
+ * ⚠ 需携带 seed/text 的完整 cell 请走 `parseEmojiCellArray`（本函数只产 prompt）。
+ */
+export function splitEmojiPrompts(texts: string[]): string[] {
+	const items: string[] = [];
+	for (const raw of texts) {
+		const t = raw.trim();
+		if (!t) { continue; }
+		// 1. JSON 数组（含 markdown 代码块/前后缀容错提取）
+		const arr = extractJsonArray(t);
+		if (arr) {
+			for (const a of arr) {
+				if (typeof a === 'string' && a.trim()) { items.push(a.trim()); }
+				else if (a && typeof a === 'object') {
+					const p = (a as { prompt?: unknown }).prompt;
+					if (typeof p === 'string' && p.trim()) { items.push(p.trim()); }
+				}
+			}
+			continue;
+		}
+		// 2. ★ 严格：剥 markdown 后仍以 `[` 开头但提取失败 → 单条保留，绝不
+		//    fallthrough 到逗号/换行（避免 `[猫,狗` 被误拆成 `['[猫','狗']`）。
+		if (stripMarkdownCodeFence(t).startsWith('[')) {
+			items.push(t);
+			continue;
+		}
+		// 3. 多行
+		const lines = t.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+		if (lines.length > 1) { items.push(...lines); continue; }
+		// 4. 分隔符列表
+		const parts = t.split(/[,，、;；|｜]/).map(s => s.trim()).filter(Boolean);
+		if (parts.length > 1) { items.push(...parts); continue; }
+		// 5. 单条
+		items.push(t);
+	}
+	return items;
+}
+
 /**
  * EmojiStage 执行器 —— 把 m×n 网格展开成 **m×n 次单图 workflow**。
  *
@@ -1415,6 +1709,14 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 	const snapshotKey = input.snapshotKey ?? nodeId;
 	const spec = getSpec(type);
 
+	// ★ 整轮开始：汇总输入（rows/cols/upstreams/上游文本数/默认 workflow）。
+	const initialWorkflow = typeof values.workflow === 'string' ? values.workflow : '(default)';
+	// eslint-disable-next-line no-console
+	console.log(
+		`[EmojiStage] run start nodeId=${nodeId} rows=${values.rows} cols=${values.cols} ` +
+		`workflow="${initialWorkflow}" upstreams=${upstreams?.length ?? 0}`,
+	);
+
 	const rows = clampInt(values.rows, 1, 6, 3);
 	const cols = clampInt(values.cols, 1, 6, 3);
 	const total = rows * cols;
@@ -1423,12 +1725,40 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 	const scope = values.run_scope === 'cell' ? 'cell' : 'all';
 	const selIdx = clampInt(values.selected_index, 0, total - 1, 0);
 
+	// ★ 上游文本 → m×n 逐格数据。两条路径（严格优先）：
+	//   1. `parseEmojiCellArray`：JSON 数组 → 完整 cell（prompt/seed/text 全字段），
+	//      是「严格按 JSON 数组划分」的权威来源，覆盖手填 cells 的对应格子；
+	//   2. `splitEmojiPrompts`：非 JSON 文本 → 只产 prompt（多行/分隔符/单条），
+	//      作为 cell.prompt 的兜底。
+	//   最终每格 prompt 优先级：严格 cell.prompt > 手填 cell.prompt > 启发式 prompt > globalPrompt。
+	const upstreamTexts = collectUpstreamTexts(store, upstreams);
+	const strictCells = parseEmojiCellArray(upstreamTexts);
+	const splitPrompts = strictCells ? [] : splitEmojiPrompts(upstreamTexts);
+	const splitCount = splitPrompts.length;
+	// 单条上游文本 → 所有格子共用（配合不同 seed 生成变体）；多条 → 按格序分配，
+	// 不足时循环复用。零条 → 无上游文本，回退 cell.prompt / globalPrompt。
+	const cellPromptFromText = (i: number): string => {
+		if (splitCount === 0) { return ''; }
+		return splitPrompts[i % splitCount];
+	};
+
+	// ★ 诊断：上游文本拆分结果（为空时用户可能误以为「接了但没生效」）。
+	// eslint-disable-next-line no-console
+	console.log(
+		`[EmojiStage] upstream text texts=${upstreamTexts.length} strictCells=${strictCells?.length ?? 0} ` +
+		`splitPrompts=${splitCount} globalPrompt=${truncateForLog(globalPrompt, 60) || '(empty)'}`,
+	);
+
 	const targets = scope === 'cell' ? [selIdx] : Array.from({ length: total }, (_, i) => i);
 
 	// 单格模式：记录现有图列表（按 index 序）用于跑完重排回原位。
 	const imagesOf = (): MediaRef[] => store.byNode(snapshotKey)
 		.filter(e => e.media.kind === 'image')
 		.map(e => e.media);
+	/** 当前节点名下全部归档 key 的集合 —— 用于「跑完后按 key 差集精确定位本格新图」。 */
+	const imageKeysOf = (): Set<string> => new Set(
+		store.byNode(snapshotKey).filter(e => e.media.kind === 'image').map(e => e.key),
+	);
 	const before: MediaRef[] = scope === 'cell' ? imagesOf() : [];
 
 	if (scope === 'all') { store.clearNode(snapshotKey); }
@@ -1443,9 +1773,15 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 			return { promptId: lastPromptId, status: 'canceled', error: '已取消', entries: collected };
 		}
 		const i = targets[n];
-		const cell = cells[i] ?? { prompt: '', seed: 0, text: '' };
-		// 该格 prompt 为空 → 回退全局 prompt（对齐编辑器「↩ 用全局」语义）。
-		const cellPrompt = cell.prompt.trim() || globalPrompt;
+		const manual = cells[i] ?? { prompt: '', seed: 0, text: '' };
+		// ★ 严格 JSON cell 数组优先：上游 `[{prompt,seed,text},...]` 覆盖手填 cells
+		//   的对应格子（三字段全量替换）。该格无严格 cell 时回退手填。
+		const strict = strictCells?.[i];
+		const cell: EmojiCellState = strict ?? manual;
+		// ★ prompt 四级优先级：严格 cell.prompt > 手填 cell.prompt > 启发式 prompt[i] > 全局。
+		//   （编辑器「↩ 用全局」清空 cell.prompt 后，若接入了上游文本则优先用文本，
+		//   否则回退 globalPrompt —— 保留原「留空回退全局」语义。）
+		const cellPrompt = cell.prompt.trim() || cellPromptFromText(i) || globalPrompt;
 		// seed=0 视为「未指定」→ 随机，保证每格图不同。
 		const cellSeed = cell.seed || Math.floor(Math.random() * 0x7fffffff);
 		const cellValues: Record<string, unknown> = {
@@ -1456,82 +1792,182 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 			// batch_size 固定 1：网格由本循环驱动，模板不再自行出多图。
 			batch_size: 1,
 		};
-		const r = await runStageWorkflow({
-			runner,
-			nodeId,
-			snapshotKey,
-			type,
-			kind: spec?.comfyTV?.kind ?? 'emoji',
-			workflowKind: spec?.comfyTV?.workflowKind ?? 'emoji',
-			values: cellValues,
-			upstreams,
-			store,
-			onProgress: (p) => {
-				// 单格进度折算成整体进度：已完成格数 + 当前格内部进度。
-				const inner = typeof p.progress === 'number' ? p.progress : 0;
-				onProgress?.({ progress: (n + inner) / targets.length });
-			},
-			signal,
-		}).catch((err: unknown) => ({
-			promptId: '',
-			status: 'error' as const,
-			error: err instanceof Error ? err.message : String(err),
-			entries: [] as MediaSnapshotEntry[],
-		}));
+		// ★ 诊断：每格详细 prompt 来源（用户报告「表情包图像混乱」期间加强）。
+		//   三级优先级的实际命中，便于区分「cell.prompt 是错」「全局 prompt 是错」
+		//   还是「prompt 没错、产物渲染就错」。
+		// ⚠ 必须放在 cellValues 声明**之后**：之前引用 cellValues.fps/frames 会触发
+		//   TDZ（`Cannot access 'cellValues' before initialization`）——生产构建
+		//   esbuild 的 `pure:['console.log']` 删除 console.log 时仍保留有副作用参数
+		//   求值，导致「生成表情包卡住」（日志 Uncaught (in promise) ReferenceError）。
+		// eslint-disable-next-line no-console
+		console.log(
+			`[EmojiStage] cell #${i}/${total} cellPromptSource=${cellPrompt === cell.prompt.trim() ? 'cell' : cellPrompt === cellPromptFromText(i) ? 'split' : 'global'} ` +
+			`prompt="${cellPrompt.slice(0, 80)}" seed=${cellSeed} fps=${cellValues.fps} frames=${cellValues.frames}`,
+		);
+		// ★ 本格执行前的图 key 快照 —— 跑完后用差集精确定位「本格产出的图」。
+		//   不能用 `imagesOf().at(-1)`：store 里可能并存多个 port 前缀
+		//   （`output:*` 由 comfyOutputsToSnapshots 写入、`output:*` 由收尾重放写入），
+		//   `byNode` 按 index 排序后不同前缀会交错，末项未必是本格新图。
+		const keysBeforeCell = imageKeysOf();
+		// ★ Emoji 自动 fallback：先试默认模板（透明贴纸，需 LayeredDiffusion LoRA），
+		//   失败时降级到「普通贴纸（无需 LoRA）」—— 覆盖 LoRA 缺失/版本不兼容/
+		//   sub_batch_size 不匹配等环境问题导致的图像混乱或执行报错。
+		const EMOJI_FALLBACK_LABEL = '普通贴纸 (SDXL, 无需 LoRA)';
+		const tryRunCell = async (fallback?: string): Promise<SingleNodeRunResult> => {
+			const v = fallback ? { ...cellValues, workflow: fallback } : cellValues;
+			const label = fallback ?? (typeof v.workflow === 'string' ? v.workflow : '(default)');
+			// eslint-disable-next-line no-console
+			console.log(`[EmojiStage] cell #${i} tryRunCell label="${label}" prompt=${truncateForLog(cellPrompt, 80)} seed=${cellSeed}`);
+			return runStageWorkflow({
+				runner,
+				nodeId,
+				snapshotKey,
+				type,
+				kind: spec?.comfyTV?.kind ?? 'emoji',
+				workflowKind: spec?.comfyTV?.workflowKind ?? 'emoji',
+				values: v,
+				upstreams,
+				store,
+				onProgress: (p) => {
+					const inner = typeof p.progress === 'number' ? p.progress : 0;
+					onProgress?.({ progress: (n + inner) / targets.length });
+				},
+				signal,
+			}).catch((err: unknown) => {
+				const msg = err instanceof Error ? err.message : String(err);
+				// eslint-disable-next-line no-console
+				console.error(`[EmojiStage] cell #${i} tryRunCell label="${label}" threw: ${msg}`);
+				return {
+					promptId: '',
+					status: 'error' as const,
+					error: msg,
+					entries: [] as MediaSnapshotEntry[],
+				};
+			});
+		};
+		let r = await tryRunCell();
+		// ★ 透明模板失败时记录诊断信息（fallback 触发原因 + 执行结果）
+		if (r.status !== 'success') {
+			// eslint-disable-next-line no-console
+			console.warn(
+				`[EmojiStage] cell #${i} primary template FAILED, falling back to "${EMOJI_FALLBACK_LABEL}". ` +
+				`reason=${r.error ?? 'unknown'}`,
+			);
+		}
+		// 首次执行失败 → 自动 fallback（仅一次，避免无限重试）
+		if (r.status !== 'success') {
+			r = await tryRunCell(EMOJI_FALLBACK_LABEL);
+		}
+		// ★ 诊断：每格最终结果（成功用哪个 workflow 出的图）。
+		// eslint-disable-next-line no-console
+		console.log(
+			`[EmojiStage] cell #${i} result status=${r.status} entries=${r.entries.length} ` +
+			`error=${r.error ? truncateForLog(r.error, 120) : 'none'}`,
+		);
 		lastPromptId = r.promptId || lastPromptId;
 		if (r.status !== 'success') {
+			// ★ 透明模板常见失败原因 → LoRA 缺失 / ComfyUI_LayeredDiffusion 未装
+			//   / sub_batch_size 不匹配。给一条诊断提示（console + error 文本），
+			//   用户可直接对照查环境。
+			const err = r.error ?? '未知错误';
+			const isLayeredDiffusionIssue = /layer_xl_transparent|vae's transparent|decoder.*transparent|LoRA|lora/i.test(err);
+			const hint = isLayeredDiffusionIssue
+				? '。可能原因：① models/loras/ 下缺少 layer_xl_transparent_conv.safetensors；② ComfyUI_LayeredDiffusion 自定义节点未装/版本不匹配；③ 当前已自动 fallback 到「普通贴纸」，无透明通道'
+				: '';
+			// eslint-disable-next-line no-console
+			console.error(`[EmojiStage] cell #${i} all attempts FAILED: ${err}${hint}`);
 			return {
 				promptId: lastPromptId,
 				status: r.status === 'canceled' ? 'canceled' : 'error',
-				error: `表情 #${i} 生成失败：${r.error ?? '未知错误'}`,
+				error: `表情 #${i} 生成失败：${err}${hint}`,
 				entries: collected,
 			};
 		}
 		collected.push(...r.entries);
 
-		// 配文烘焙：runStageWorkflow 已把本格图 put 进 store（物化为 data URL），
-		// 取最后一个 image 即为本格产物；非动画 webp 且有配文时叠字并记录。
-		const imgs = imagesOf();
-		const latest = imgs[imgs.length - 1];
-		if (latest) {
-			let media = latest;
-			const caption = cell.text.trim();
-			if (caption && !isAnimatedWebpRef(latest.ref)) {
-				try {
-					media = { ...latest, ref: await overlayTextOnImage(latest.ref, caption) };
-				} catch { /* 烘焙失败保留原图，绝不中断网格 */ }
+		// ★ 本格产物 = 执行前后 key 差集里的图（fallback 可能产出多张）。
+		//   用 store 里的 entry（已被 materializeComfyImageRefs 物化成 data: URL），
+		//   **不能**用 `r.entries` —— runStageWorkflow 返回的是物化**前**的副本，
+		//   ref 还是 ComfyUI `/view` URL，重启后失效。
+		//
+		//   EmojiStage 每格同时产出两个槽：`images`（静态贴纸）+ `animated`（动画 webp）。
+		//   之前用 `producedNow.at(-1)` 取最后一张，而 comfyOutputsToSnapshots 按
+		//   Object.keys 顺序遍历 → at(-1) 永远是 `animated`。动画 webp 因
+		//   isAnimatedWebpRef 跳过文字烘焙（Canvas 无法无损重编码带 alpha 的动画
+		//   webp），导致「动态图与描述不一致」：描述只活在编辑器 preview 层的 CSS
+		//   叠字里，图本体（尤其导出/分享时）拿不到文字。
+		//
+		//   修复：显式取动画图作为本格主产物（不再依赖顺序 at(-1)），并把配文 caption
+		//   作为结构化 meta 写入动画图 —— 描述随动画图一起归档，导出/引用时跟着图走。
+		const producedNow = store.byNode(snapshotKey)
+			.filter(e => e.media.kind === 'image' && !keysBeforeCell.has(e.key));
+		const caption = cell.text.trim();
+		// 优先取动画 webp 作为本格主产物（与 comfyOutputsToSnapshots 的产出顺序无关）。
+		const primaryEntry = producedNow.find(e => isAnimatedWebpRef(e.media.ref))
+			?? producedNow[producedNow.length - 1];
+		const latest = primaryEntry?.media;
+		if (!latest) {
+			// 不该发生（status=success 却没新增图）：记一条诊断，跳过该格避免用
+			// 别的格子的图冒充本格产物（历史上正是这里错位造成「表情两两重复」）。
+			// eslint-disable-next-line no-console
+			console.warn(`[EmojiStage] cell #${i} success but no new image entry — skip baking`);
+		} else {
+			let media: typeof latest = latest;
+			// 动画图不做 Canvas 烘焙（会丢动画）；改为把 caption 写进 meta，
+			// 让描述随图归档。预览层/导出层优先读 meta.caption。
+			if (caption) {
+				media = { ...latest, meta: { ...(latest.meta ?? {}), caption } };
 			}
 			bakedByTarget.set(i, media);
 		}
 		onProgress?.({ progress: (n + 1) / targets.length });
 	}
 
-	// 收尾重排：把（烘焙后的）media 按格序写回 store。
-	// 'all'：clearNode 后按 index 顺序重放；'cell'：替换 selIdx 原位，其余不动。
+	// 收尾重排：把（烘焙后的）media 按格序写回 store，让归档 index == 格 index，
+	// 与卡片 `cellRefs`（ownSnapshots 顺序）对齐。
+	//
+	// ★ port 必须是 `'output'` —— 与 `comfyOutputsToSnapshots` 写入的 port 一致。
+	//   曾误写成 `'images'`，导致 store 里并存 `uid:output:*` 与 `uid:images:*`
+	//   两组前缀、各自从 0 独立编号；`byNode` 按 index 排序后两组交错，
+	//   前 total 项变成 [A, A', B, B', …]（A' = A 的烘焙副本，无配文时 ref 相同）
+	//   → 表情**两两重复**，且真正的后几格图被挤出可见范围。
+	const REPLAY_PORT = 'output';
 	if (scope === 'all') {
 		store.clearNode(snapshotKey);
 		for (let i = 0; i < total; i++) {
 			const media = bakedByTarget.get(i);
 			if (media) {
 				// skipImport=true：重放的是已入库资产，避免重复导入媒体库。
-				store.put({ nodeId: snapshotKey, port: 'images', key: '', media }, true);
+				store.put({ nodeId: snapshotKey, port: REPLAY_PORT, key: '', media }, true);
 			}
 		}
-	} else if (scope === 'cell' && before.length > selIdx) {
-		const after = imagesOf();
+	} else if (scope === 'cell') {
+		// 单格模式：新图被追加到末尾，需挪回 selIdx 原位。
+		// 用 before（本轮开始前的列表）打底再替换第 selIdx 项。
+		//
+		// ⚠ 已知限制：`store.put` 只能「顺序追加」分配 index，**无法表达空洞**。
+		//   因此当 before 比 selIdx 短（例如从未「生成全部」就直接点某格的
+		//   「生成此表情」），该格图只能落在紧邻已有图之后的 index，而非 selIdx。
+		//   要真正修好需给 MediaSnapshotStore 加稀疏写入 API；当前保持顺序语义，
+		//   正常流程（先生成全部再单格重生成）不受影响。
 		const baked = bakedByTarget.get(selIdx);
-		const added = baked ?? after[after.length - 1];
-		if (added) {
+		if (baked) {
 			const arranged = [...before];
-			arranged[selIdx] = added;
+			arranged[selIdx] = baked;   // 越界赋值 → 稀疏数组，下面 put 时跳过空洞
 			store.clearNode(snapshotKey);
 			// skipImport=true：重排搬运的是已入库资产，避免重复导入媒体库。
 			for (const media of arranged) {
-				store.put({ nodeId: snapshotKey, port: 'images', key: '', media }, true);
+				if (media) { store.put({ nodeId: snapshotKey, port: REPLAY_PORT, key: '', media }, true); }
 			}
 		}
 	}
 
+	// ★ 整轮结束：汇总结果（成功/取消/error）
+	// eslint-disable-next-line no-console
+	console.log(
+		`[EmojiStage] run done collected=${collected.length}/${targets.length} ` +
+		`baked=${bakedByTarget.size}/${total} promptId=${lastPromptId || '(none)'}`,
+	);
 	return { promptId: lastPromptId, status: 'success', entries: collected };
 }
 

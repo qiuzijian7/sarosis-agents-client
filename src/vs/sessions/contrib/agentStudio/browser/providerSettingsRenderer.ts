@@ -13,7 +13,11 @@
 import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import { $ } from '../../../../base/browser/dom.js';
 import type { ProviderDefinition, CustomProviderData } from './views/providerView.js';
-import { PROVIDER_DEFINITIONS } from './views/providerView.js';
+import { PROVIDER_DEFINITIONS, buildModelsUrl } from './views/providerView.js';
+import type { IModelItemConfig } from '../common/providers.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { VSSAROS_LLM_CHANNEL, type IHttpRequestResult } from '../common/llmBridge.js';
+import { fetchModelsDevCatalog, lookupModelsDev, mapModelsDevToConfig } from './modelsDevCatalog.js';
 import {
 	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
 	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
@@ -51,6 +55,49 @@ function getAllProviders(configurationService: IConfigurationService): ProviderD
 
 // ─── Helper: patch a single custom provider entry ─────────────
 
+/**
+ * 从 Provider 自带的 /models 端点拉取模型列表（仿 opencode 模型发现思路）。
+ * - 模型端点统一 `{base}/v1/models`（base 已含 /vN 则 `{base}/models`，见 buildModelsUrl）
+ * - OpenAI 兼容：`Authorization: Bearer {apiKey}`
+ * - Anthropic 网关：`x-api-key + anthropic-version`
+ * - 返回格式兼容 OpenAI `{data:[{id:"..."}]}` 与裸数组 `[{id:"..."}]`
+ */
+async function fetchModelsList(
+	baseUrl: string,
+	apiKey: string,
+	apiType: 'openai' | 'anthropic',
+	mainProcessService: IMainProcessService,
+): Promise<string[]> {
+	const url = buildModelsUrl(baseUrl);
+	const headers: Record<string, string> = { 'Accept': 'application/json' };
+	if (apiType === 'anthropic') {
+		if (apiKey) { headers['x-api-key'] = apiKey; }
+		headers['anthropic-version'] = '2023-06-01';
+	} else {
+		if (apiKey) { headers['Authorization'] = `Bearer ${apiKey}`; }
+	}
+	// 经主进程 IPC 执行，绕过 renderer 的 CORS preflight 限制
+	const channel = mainProcessService.getChannel(VSSAROS_LLM_CHANNEL);
+	const result = await channel.call<IHttpRequestResult>('httpRequest', { url, method: 'GET', headers });
+	if (!result.ok) {
+		throw new Error(`HTTP ${result.status} ${result.statusText}`);
+	}
+	const data = JSON.parse(result.body);
+	// OpenAI 标准格式
+	if (Array.isArray(data?.data)) {
+		return data.data.map((m: any) => m.id || m.name).filter((s: unknown): s is string => typeof s === 'string' && !!s);
+	}
+	// 裸数组
+	if (Array.isArray(data)) {
+		return data.map((m: any) => typeof m === 'string' ? m : (m.id || m.name)).filter((s: unknown): s is string => typeof s === 'string' && !!s);
+	}
+	// 单个模型
+	if (data?.id || data?.name) {
+		return [data.id || data.name];
+	}
+	throw new Error('未识别的响应格式（期望 {data:[...]} 或 [...]）');
+}
+
 function patchCustomProvider(
 	configurationService: IConfigurationService,
 	id: string,
@@ -72,6 +119,7 @@ interface RendererState {
 	statusMessageEl: HTMLElement | null;
 	defaultProviderSelect: HTMLSelectElement | null;
 	defaultModelInput: HTMLInputElement | null;
+	mainProcessService: IMainProcessService;
 }
 
 // ─── Main Render Function ───────────────────────────────────────
@@ -83,6 +131,7 @@ interface RendererState {
 export function renderProviderSettings(
 	container: HTMLElement,
 	configurationService: IConfigurationService,
+	mainProcessService: IMainProcessService,
 ): () => void {
 	const state: RendererState = {
 		expandedProviderId: null,
@@ -91,6 +140,7 @@ export function renderProviderSettings(
 		statusMessageEl: null,
 		defaultProviderSelect: null,
 		defaultModelInput: null,
+		mainProcessService,
 	};
 
 	// Clear container
@@ -449,6 +499,9 @@ function renderProviderList(
 					mRow.appendChild(mInput);
 					cardBody.appendChild(mRow);
 				}
+
+				// 模型清单（不弹窗，inline 在 cardBody）
+				renderCardModelList(cardBody, provider, cpEntry, state, configurationService);
 			}
 		}
 
@@ -562,6 +615,119 @@ function showAddProviderForm(
 		row.appendChild(input);
 		formCard.appendChild(row);
 	}
+
+	// ── 获取模型列表 ──
+	const fetchRow = $('div.provider-field.provider-fetch-row');
+	const fetchBtn = document.createElement('button');
+	fetchBtn.type = 'button';
+	fetchBtn.id = 'add-provider-fetch-models';
+	fetchBtn.className = 'provider-fetch-btn';
+	fetchBtn.textContent = '🔄 获取模型列表';
+	const fetchHint = $('span.provider-fetch-hint');
+	fetchHint.textContent = '自动探测模型端点（{baseUrl}/v1/models）';
+	fetchRow.appendChild(fetchBtn);
+	fetchRow.appendChild(fetchHint);
+	formCard.appendChild(fetchRow);
+
+	const fetchResults = $('div.provider-fetch-results');
+	fetchResults.id = 'add-provider-fetch-results';
+	fetchResults.style.display = 'none';
+	formCard.appendChild(fetchResults);
+
+	fetchBtn.onclick = async () => {
+		const baseUrlEl = document.getElementById('add-provider-baseurl') as HTMLInputElement;
+		const apiKeyEl = document.getElementById('add-provider-apikey') as HTMLInputElement;
+		const apiTypeEl = document.getElementById('add-provider-apitype') as HTMLSelectElement;
+		const baseUrl = baseUrlEl.value.trim().replace(/\/+$/, '');
+		const apiKey = apiKeyEl.value.trim();
+		const apiType = apiTypeEl.value as 'openai' | 'anthropic';
+
+		if (!baseUrl) {
+			state.statusMessage = '⚠️ 请先填写 Base URL';
+			updateStatusMessage(state);
+			return;
+		}
+
+		fetchBtn.disabled = true;
+		fetchBtn.textContent = '⏳ 拉取中...';
+		fetchResults.style.display = 'block';
+		fetchResults.replaceChildren();
+		const loadingMsg = $('div');
+		loadingMsg.textContent = '正在请求模型列表...';
+		fetchResults.appendChild(loadingMsg);
+
+		try {
+			const models = await fetchModelsList(baseUrl, apiKey, apiType, state.mainProcessService);
+			fetchResults.replaceChildren();
+			if (models.length === 0) {
+				const empty = $('div');
+				empty.textContent = '未发现任何模型';
+				empty.className = 'provider-fetch-empty';
+				fetchResults.appendChild(empty);
+				return;
+			}
+
+			const header = $('div.provider-fetch-header');
+			header.textContent = `发现 ${models.length} 个模型（勾选要启用的）`;
+			fetchResults.appendChild(header);
+
+			const selectAll = document.createElement('input');
+			selectAll.type = 'checkbox';
+			selectAll.id = 'fetch-select-all';
+			selectAll.checked = true;
+			const selectAllLabel = $('label.provider-fetch-select-all');
+			selectAllLabel.appendChild(selectAll);
+			selectAllLabel.appendChild(document.createTextNode(' 全选 / 反选'));
+			fetchResults.appendChild(selectAllLabel);
+
+			const list = $('div.provider-fetch-list');
+			const checkboxes: HTMLInputElement[] = [];
+			for (const m of models) {
+				const item = $('label.provider-fetch-item');
+				const cb = document.createElement('input');
+				cb.type = 'checkbox';
+				cb.value = m;
+				cb.checked = true;
+				cb.id = `fetch-cb-${m.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+				const text = $('span');
+				text.textContent = m;
+				item.appendChild(cb);
+				item.appendChild(text);
+				list.appendChild(item);
+				checkboxes.push(cb);
+			}
+			fetchResults.appendChild(list);
+
+			selectAll.onchange = () => {
+				const checked = selectAll.checked;
+				checkboxes.forEach(cb => { cb.checked = checked; });
+			};
+
+			const applyBtn = document.createElement('button');
+			applyBtn.type = 'button';
+			applyBtn.className = 'provider-fetch-apply-btn';
+			applyBtn.textContent = '✅ 应用选择';
+			applyBtn.onclick = () => {
+				const selected = checkboxes.filter(cb => cb.checked).map(cb => cb.value);
+				// 同步到"模型列表" textarea（id=add-provider-models）
+				const modelsTa = document.getElementById('add-provider-models') as HTMLTextAreaElement;
+				if (modelsTa) {
+					modelsTa.value = selected.join('\n');
+				}
+				state.statusMessage = `✅ 已应用 ${selected.length} 个模型到表单`;
+				updateStatusMessage(state);
+			};
+			fetchResults.appendChild(applyBtn);
+		} catch (err: any) {
+			fetchResults.replaceChildren();
+			const errMsg = $('div.provider-fetch-error');
+			errMsg.textContent = `❌ 拉取失败：${err.message || String(err)}（可能是 CORS 拦截，请联系网关管理员或直接手动填写模型列表）`;
+			fetchResults.appendChild(errMsg);
+		} finally {
+			fetchBtn.disabled = false;
+			fetchBtn.textContent = '🔄 获取模型列表';
+		}
+	};
 
 	// ── API 类型选择 ──
 	const typeRow = $('div.provider-field');
@@ -798,6 +964,539 @@ function refreshDefaultProviderSelect(state: RendererState, configurationService
 
 // ─── Test Connection ─────────────────────────────────────
 
+/**
+ * 卡片内嵌模型清单（不弹窗）。在 cardBody 中追加：
+ * 标题 + 「重新拉取/全选/保存」按钮 + 复选框网格 + 提示。
+ * 初始化用 cpEntry.models；点击「重新拉取」走主进程 IPC 拉取并合并已勾选；「保存」批量写回 cp.models。
+ */
+/**
+ * 渲染模型清单区域（codebuddy-style 详情 UI）
+ *
+ * 每个模型展示为可展开的详情卡片，包含：
+ * - 基本信息：模型 ID、显示名称、供应商
+ * - Token 限制：最大输出/输入/上下文
+ * - 能力开关：工具调用、图片、推理、优先级、默认模型
+ * - 参数：温度、Top P/K、重复惩罚
+ * - 推理配置：强度、轻量/推理模型 ID 关联
+ * - 描述：中英文描述、标签、Credits
+ * - "从 models.dev 补全" 按钮（自动填充已知模型参数）
+ */
+function renderCardModelList(
+	cardBody: HTMLElement,
+	provider: ProviderDefinition,
+	cpEntry: CustomProviderData,
+	state: RendererState,
+	configurationService: IConfigurationService,
+): void {
+	const section = $('div.provider-card-model-section');
+
+	// ── 描述文字（仿截图） ──
+	const desc = $('div.provider-card-model-desc');
+	desc.textContent = '可用模型列表。每个模型包含完整的配置信息：\'id\': 模型 ID（如 \'gpt-5.5\'） - \'name\': 显示名称（如 \'GPT-5.5\'） - \'Vendor\': 供应商（如 \'OpenAI\'） - \'maxOutputTokens\': 最大输出 Token 数 - \'maxInputTokens\': 最大输入 Token 数 - supportsToolCall: 是否支持工具调用 - supportsImages: 是否支持图片 - maxAllowedSize: 最大上下文大小（input + output） - temperature: 温度参数 - supportsReasoning: 是否支持推理 - reasoning: 推理配置（包含 effort 字段） - onlyReasoning: 是否仅推理 - descriptionEn: 英文描述 - descriptionZh: 中文描述 - credits: 点击 [添加模型] 按钮添加新模型。';
+	section.appendChild(desc);
+
+	const header = $('div.provider-card-model-header');
+	const title = $('span.provider-card-model-title');
+	title.textContent = `Models`;
+	header.appendChild(title);
+
+	const actions = $('div.provider-card-model-actions');
+
+	// 批量从 models.dev 补全按钮
+	const devBatchBtn = document.createElement('button');
+	devBatchBtn.className = 'provider-card-btn provider-card-btn-secondary';
+	devBatchBtn.textContent = '🔍 从 models.dev 刷新';
+	devBatchBtn.title = '批量查询 models.dev 目录，自动填充所有模型的已知参数';
+	actions.appendChild(devBatchBtn);
+
+	const fetchBtn = document.createElement('button');
+	fetchBtn.className = 'provider-card-btn provider-card-btn-secondary';
+	fetchBtn.textContent = '🔄 重新拉取';
+	actions.appendChild(fetchBtn);
+
+	const saveBtn = document.createElement('button');
+	saveBtn.className = 'provider-card-btn provider-card-btn-primary';
+	saveBtn.textContent = '✅ 保存配置';
+	saveBtn.disabled = true;
+	actions.appendChild(saveBtn);
+
+	header.appendChild(actions);
+	section.appendChild(header);
+
+	// 模型列表容器（每个模型一个可展开的详情卡片）
+	const listEl = $('div.provider-card-model-list');
+
+	/** 当前所有模型的脏标记 */
+	const dirtyFlags = new Map<string, boolean>();
+	/** 收集所有模型配置 */
+	const collectModelConfigs = (): Record<string, IModelItemConfig> => {
+		const configs: Record<string, IModelItemConfig> = {};
+		listEl.querySelectorAll<HTMLElement>(':scope > .model-detail-card').forEach(cardEl => {
+			const mid = cardEl.getAttribute('data-model-id');
+			if (!mid) return;
+			configs[mid] = readModelConfigFromCard(cardEl, mid);
+		});
+		return configs;
+	};
+
+	/** 标记脏 */
+	const markDirty = (modelId?: string) => {
+		if (modelId) dirtyFlags.set(modelId, true);
+		saveBtn.disabled = false;
+	};
+
+	/** 渲染单个模型详情卡片 */
+	const renderModelCard = (modelId: string, config?: IModelItemConfig) => {
+		const card = $('div.model-detail-card');
+		card.setAttribute('data-model-id', modelId);
+
+		// ── 卡片头部（模型 ID + 展开/折叠） ──
+		const cardHeader = $('div.model-detail-header');
+		const modelName = $('span.model-detail-name');
+		modelName.textContent = config?.name || modelId;
+
+		const toggleBtn = document.createElement('button');
+		toggleBtn.className = 'model-detail-toggle';
+		toggleBtn.textContent = '▶';
+		toggleBtn.title = '展开/收起详情';
+
+		const removeBtn = document.createElement('button');
+		removeBtn.className = 'model-detail-remove';
+		removeBtn.textContent = '✕';
+		removeBtn.title = '移除此模型';
+
+		cardHeader.appendChild(toggleBtn);
+		cardHeader.appendChild(modelName);
+		cardHeader.appendChild(removeBtn);
+		card.appendChild(cardHeader);
+
+		// ── 可展开的详情体 ──
+		const cardBodyInner = $('div.model-detail-body');
+		cardBodyInner.style.display = 'none';
+
+		// 基本信息区
+		const basicGroup = createFieldGroup('基本信息');
+		basicGroup.appendChild(createTextField('模型 ID', 'model-id', modelId, true));
+		basicGroup.appendChild(createTextField('显示名称', 'model-name', config?.name || ''));
+		basicGroup.appendChild(createTextField('供应商', 'model-vendor', config?.vendor || ''));
+		cardBodyInner.appendChild(basicGroup);
+
+		// Token 区
+		const tokenGroup = createFieldGroup('Token 限制');
+		tokenGroup.appendChild(createNumberField('最大输出 Token', 'max-output-tokens', config?.maxOutputTokens));
+		tokenGroup.appendChild(createNumberField('最大输入 Token', 'max-input-tokens', config?.maxInputTokens));
+		tokenGroup.appendChild(createNumberField('最大上下文大小', 'max-context-size', config?.maxContextSize));
+		cardBodyInner.appendChild(tokenGroup);
+
+		// 能力开关区
+		const capGroup = createFieldGroup('能力开关');
+		capGroup.appendChild(createToggleField('支持工具调用', 'supports-tool-call', config?.supportsToolCall ?? true));
+		capGroup.appendChild(createToggleField('支持图片', 'supports-images', config?.supportsImages ?? false));
+		capGroup.appendChild(createToggleField('支持推理', 'supports-reasoning', config?.supportsReasoning ?? false));
+		capGroup.appendChild(createToggleField('优先模型', 'priority', config?.priority ?? false));
+		capGroup.appendChild(createToggleField('默认模型', 'is-default', config?.isDefault ?? false));
+		capGroup.appendChild(createToggleField('支持图片参数', 'supports-image-params', config?.supportsImageParams ?? false));
+		cardBodyInner.appendChild(capGroup);
+
+		// 参数区
+		const paramGroup = createFieldGroup('参数');
+		paramGroup.appendChild(createNumberField('温度参数', 'temperature', config?.temperature, undefined, undefined, 3));
+		paramGroup.appendChild(createNumberField('Top P', 'top-p', config?.topP, undefined, undefined, 2));
+		paramGroup.appendChild(createNumberField('Top K', 'top-k', config?.topK));
+		paramGroup.appendChild(createNumberField('重复惩罚', 'repeat-penalty', config?.repeatPenalty, undefined, undefined, 2));
+		cardBodyInner.appendChild(paramGroup);
+
+		// 推理配置区
+		const reasonGroup = createFieldGroup('推理配置');
+		reasonGroup.appendChild(createSelectField('推理强度', 'reasoning-effort', config?.reasoningEffort || '', ['auto', 'low', 'medium', 'high']));
+		reasonGroup.appendChild(createTextField('推理需要', 'reasoning-required', config?.reasoningRequired || ''));
+		reasonGroup.appendChild(createTextField('轻量模型 ID', 'lightweight-model-id', config?.lightweightModelId || ''));
+		reasonGroup.appendChild(createTextField('关联的轻量模型 ID', 'associated-lightweight-model-id', config?.associatedLightweightModelId || ''));
+		reasonGroup.appendChild(createTextField('推理模型 ID', 'reasoning-model-id', config?.reasoningModelId || ''));
+		reasonGroup.appendChild(createTextField('关联的推理模型 ID', 'associated-reasoning-model-id', config?.associatedReasoningModelId || ''));
+		reasonGroup.appendChild(createTextField('使用多态', 'use-polymorphic', config?.usePolymorphic || ''));
+		cardBodyInner.appendChild(reasonGroup);
+
+		// 描述区
+		const descGroup = createFieldGroup('描述与元数据');
+		descGroup.appendChild(createTextField('英文描述', 'description-en', config?.descriptionEn || '', true));
+		descGroup.appendChild(createTextField('中文描述', 'description-zh', config?.descriptionZh || '', true));
+		descGroup.appendChild(createTextField('Credits', 'credits', config?.credits || ''));
+		descGroup.appendChild(createTextField('标签（逗号分隔）', 'tags', config?.tags || ''));
+		cardBodyInner.appendChild(descGroup);
+
+		// ── models.dev 补全按钮 ──
+		const devRow = $('div.model-detail-row.model-dev-row');
+		const devLabel = $('span.model-detail-label');
+		devLabel.textContent = 'models.dev';
+		const devBtn = document.createElement('button');
+		devBtn.className = 'provider-card-btn provider-card-btn-secondary model-dev-fetch-btn';
+		devBtn.textContent = '🔍 从 models.dev 补全参数';
+		devBtn.title = '通过 models.dev API 自动填充该模型的已知参数';
+		devRow.appendChild(devLabel);
+		devRow.appendChild(devBtn);
+		cardBodyInner.appendChild(devRow);
+
+		// 绑定事件
+		let expanded = false;
+		toggleBtn.onclick = () => {
+			expanded = !expanded;
+			cardBodyInner.style.display = expanded ? '' : 'none';
+			toggleBtn.textContent = expanded ? '▼' : '▶';
+		};
+
+		removeBtn.onclick = () => {
+			if (confirm(`确认移除模型 "${modelId}"？`)) {
+				card.remove();
+				markDirty(modelId);
+				title.textContent = `模型清单（${listEl.querySelectorAll(':scope > .model-detail-card').length} 个）`;
+			}
+		};
+
+		// 所有 input 变更时标记脏
+		cardBodyInner.querySelectorAll('input, textarea, select').forEach(el => {
+			el.addEventListener('input', () => markDirty(modelId));
+			el.addEventListener('change', () => markDirty(modelId));
+		});
+
+		// models.dev 补全
+		devBtn.onclick = async () => {
+			devBtn.disabled = true;
+			const oldText = devBtn.textContent;
+			devBtn.textContent = '⏳ 查询中...';
+			try {
+				const devConfig = await fetchFromModelsDev(modelId, state.mainProcessService);
+				if (devConfig) {
+					populateCardFromConfig(cardBodyInner, devConfig);
+					markDirty(modelId);
+					state.statusMessage = `✅ 已从 models.dev 补全 ${modelId}`;
+				} else {
+					state.statusMessage = `⚠️ models.dev 未找到 ${modelId}，请手动填写`;
+				}
+				updateStatusMessage(state);
+				setTimeout(() => { state.statusMessage = ''; updateStatusMessage(state); }, 4000);
+			} catch (err: any) {
+				state.statusMessage = `❌ models.dev 查询失败：${err.message || String(err)}`;
+				updateStatusMessage(state);
+				setTimeout(() => { state.statusMessage = ''; updateStatusMessage(state); }, 6000);
+			} finally {
+				devBtn.disabled = false;
+				devBtn.textContent = oldText;
+			}
+		};
+
+		card.appendChild(cardBodyInner);
+		return card;
+	};
+
+	// 初始渲染所有模型
+	const renderList = (modelIds: string[]) => {
+		listEl.replaceChildren();
+		dirtyFlags.clear();
+		const existingConfigs = cpEntry.modelConfigs || {};
+		for (const m of modelIds) {
+			listEl.appendChild(renderModelCard(m, existingConfigs[m]));
+		}
+		title.textContent = `模型清单（${modelIds.length} 个）`;
+	};
+	renderList(cpEntry.models || []);
+	section.appendChild(listEl);
+
+	// 提示
+	const hint = $('div.provider-card-model-hint');
+	hint.textContent = '💡 点击 ▶ 展开模型详情；点击 "从 models.dev 补全" 自动填充已知参数';
+	section.appendChild(hint);
+
+	cardBody.appendChild(section);
+
+	// ── 批量从 models.dev 补全 ──
+	devBatchBtn.onclick = async () => {
+		devBatchBtn.disabled = true;
+		const oldLabel = devBatchBtn.textContent;
+		devBatchBtn.textContent = '⏳ 查询 models.dev...';
+		try {
+			const catalog = await fetchModelsDevCatalog(state.mainProcessService);
+			let filled = 0;
+			listEl.querySelectorAll<HTMLElement>(':scope > .model-detail-card').forEach(cardEl => {
+				const mid = cardEl.getAttribute('data-model-id');
+				if (!mid) return;
+				const hit = lookupModelsDev(catalog, mid);
+				if (!hit) return;
+				const bodyInner = cardEl.querySelector<HTMLElement>(':scope > .model-detail-body');
+				if (bodyInner) {
+					populateCardFromConfig(bodyInner, mapModelsDevToConfig(hit.model, hit.providerName, mid));
+					filled++;
+				}
+			});
+			markDirty();
+			state.statusMessage = `✅ 从 models.dev 批量补全了 ${filled} / ${listEl.querySelectorAll(':scope > .model-detail-card').length} 个模型`;
+			updateStatusMessage(state);
+			setTimeout(() => { state.statusMessage = ''; updateStatusMessage(state); }, 4000);
+		} catch (err: any) {
+			state.statusMessage = `❌ models.dev 批量查询失败：${err.message || String(err)}`;
+			updateStatusMessage(state);
+			setTimeout(() => { state.statusMessage = ''; updateStatusMessage(state); }, 6000);
+		} finally {
+			devBatchBtn.disabled = false;
+			devBatchBtn.textContent = oldLabel;
+		}
+	};
+
+	// ── 重新拉取 ──
+	fetchBtn.onclick = async () => {
+		const apiKey = configurationService.getValue<string>(provider.apiKeySetting);
+		const baseUrl = configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl;
+		const apiType = cpEntry.apiType || 'openai';
+		if (!baseUrl) {
+			state.statusMessage = '❌ 请先配置 Base URL';
+			updateStatusMessage(state);
+			return;
+		}
+		fetchBtn.disabled = true;
+		const oldLabel = fetchBtn.textContent;
+		fetchBtn.textContent = '⏳ 拉取中...';
+		try {
+			const fetched = await fetchModelsList(baseUrl, apiKey, apiType, state.mainProcessService);
+			const existingIds = new Set(cpEntry.models || []);
+			const added = fetched.filter(m => !existingIds.has(m));
+			const merged = [...(cpEntry.models || []), ...added];
+			renderList(merged);
+			markDirty();
+			state.statusMessage = `✅ 拉到 ${fetched.length} 个模型（新增 ${added.length}）`;
+			updateStatusMessage(state);
+			setTimeout(() => { state.statusMessage = ''; updateStatusMessage(state); }, 4000);
+		} catch (err: any) {
+			state.statusMessage = `❌ 拉取失败：${err.message || String(err)}`;
+			updateStatusMessage(state);
+			setTimeout(() => { state.statusMessage = ''; updateStatusMessage(state); }, 6000);
+		} finally {
+			fetchBtn.disabled = false;
+			fetchBtn.textContent = oldLabel;
+		}
+	};
+
+	// ── 保存 ──
+	saveBtn.onclick = () => {
+		const modelIds: string[] = [];
+		listEl.querySelectorAll(':scope > .model-detail-card').forEach(cardEl => {
+			const mid = cardEl.getAttribute('data-model-id');
+			if (mid) modelIds.push(mid);
+		});
+		const configs = collectModelConfigs();
+		patchCustomProvider(configurationService, provider.id, { models: modelIds, modelConfigs: configs });
+		saveBtn.disabled = true;
+		dirtyFlags.clear();
+		state.statusMessage = `✅ 已保存 ${modelIds.length} 个模型配置`;
+		updateStatusMessage(state);
+		setTimeout(() => { state.statusMessage = ''; updateStatusMessage(state); }, 4000);
+	};
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  Model Detail Card 辅助函数（codebuddy-style 表单字段工厂）
+// ════════════════════════════════════════════════════════════════════════
+
+/** 创建字段分组标题 */
+function createFieldGroup(label: string): HTMLElement {
+	const group = $('div.model-field-group');
+	const title = $('div.model-field-group-title');
+	title.textContent = label;
+	group.appendChild(title);
+	return group;
+}
+
+/** 创建文本输入行 */
+function createTextField(label: string, id: string, value: string, multiLine?: boolean): HTMLElement {
+	const row = $('div.model-detail-row');
+	const lbl = $('span.model-detail-label');
+	lbl.textContent = label;
+	row.appendChild(lbl);
+	if (multiLine) {
+		const ta = document.createElement('textarea');
+		ta.className = 'model-detail-input model-detail-textarea';
+		ta.id = id;
+		ta.value = value;
+		ta.rows = 2;
+		row.appendChild(ta);
+	} else {
+		const inp = document.createElement('input');
+		inp.type = 'text';
+		inp.className = 'model-detail-input';
+		inp.id = id;
+		inp.value = value;
+		row.appendChild(inp);
+	}
+	return row;
+}
+
+/** 创建数字输入行 */
+function createNumberField(label: string, id: string, value?: number, min?: number, max?: number, step?: number): HTMLElement {
+	const row = $('div.model-detail-row');
+	const lbl = $('span.model-detail-label');
+	lbl.textContent = label;
+	row.appendChild(lbl);
+	const inp = document.createElement('input');
+	inp.type = 'number';
+	inp.className = 'model-detail-input model-detail-number';
+	inp.id = id;
+	if (value !== undefined && value !== null) inp.value = String(value);
+	if (min !== undefined) inp.min = String(min);
+	if (max !== undefined) inp.max = String(max);
+	if (step !== undefined) inp.step = String(step);
+	row.appendChild(inp);
+	return row;
+}
+
+/** 创建 Toggle 开关行 */
+function createToggleField(label: string, id: string, checked?: boolean): HTMLElement {
+	const row = $('div.model-detail-row');
+	const lbl = $('span.model-detail-label');
+	lbl.textContent = label;
+	row.appendChild(lbl);
+	const wrap = $('span.model-toggle-wrap');
+	const cb = document.createElement('input');
+	cb.type = 'checkbox';
+	cb.className = 'model-toggle-input';
+	cb.id = id;
+	cb.checked = !!checked;
+	wrap.appendChild(cb);
+	const slider = $('span.model-toggle-slider');
+	wrap.appendChild(slider);
+	row.appendChild(wrap);
+	return row;
+}
+
+/** 创建 Select 下拉行 */
+function createSelectField(label: string, id: string, value: string, options: string[]): HTMLElement {
+	const row = $('div.model-detail-row');
+	const lbl = $('span.model-detail-label');
+	lbl.textContent = label;
+	row.appendChild(lbl);
+	const sel = document.createElement('select');
+	sel.className = 'model-detail-input model-detail-select';
+	sel.id = id;
+	// 空选项
+	const optEmpty = document.createElement('option');
+	optEmpty.value = '';
+	optEmpty.textContent = '—';
+	sel.appendChild(optEmpty);
+	for (const o of options) {
+		const opt = document.createElement('option');
+		opt.value = o;
+		opt.textContent = o;
+		if (o === value) opt.selected = true;
+		sel.appendChild(opt);
+	}
+	row.appendChild(sel);
+	return row;
+}
+
+/** 从卡片 DOM 读取模型配置 */
+function readModelConfigFromCard(cardEl: HTMLElement, modelId: string): IModelItemConfig {
+	const getVal = (id: string) => {
+		const el = cardEl.querySelector(`#${id}`) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
+		if (!el) return undefined;
+		if (el.type === 'checkbox') return (el as HTMLInputElement).checked;
+		if (el.type === 'number') {
+			const v = el.value;
+			return v === '' ? undefined : Number(v);
+		}
+		return el.value || undefined;
+	};
+	return {
+		id: modelId,
+		name: getVal('model-name') as string | undefined,
+		vendor: getVal('model-vendor') as string | undefined,
+		maxOutputTokens: getVal('max-output-tokens') as number | undefined,
+		maxInputTokens: getVal('max-input-tokens') as number | undefined,
+		maxContextSize: getVal('max-context-size') as number | undefined,
+		supportsToolCall: getVal('supports-tool-call') as boolean | undefined,
+		supportsImages: getVal('supports-images') as boolean | undefined,
+		temperature: getVal('temperature') as number | undefined,
+		supportsReasoning: getVal('supports-reasoning') as boolean | undefined,
+		priority: getVal('priority') as boolean | undefined,
+		reasoningEffort: getVal('reasoning-effort') as string | undefined,
+		reasoningRequired: getVal('reasoning-required') as string | undefined,
+		lightweightModelId: getVal('lightweight-model-id') as string | undefined,
+		associatedLightweightModelId: getVal('associated-lightweight-model-id') as string | undefined,
+		reasoningModelId: getVal('reasoning-model-id') as string | undefined,
+		associatedReasoningModelId: getVal('associated-reasoning-model-id') as string | undefined,
+		usePolymorphic: getVal('use-polymorphic') as string | undefined,
+		descriptionEn: getVal('description-en') as string | undefined,
+		descriptionZh: getVal('description-zh') as string | undefined,
+		credits: getVal('credits') as string | undefined,
+		tags: getVal('tags') as string | undefined,
+		topP: getVal('top-p') as number | undefined,
+		topK: getVal('top-k') as number | undefined,
+		repeatPenalty: getVal('repeat-penalty') as number | undefined,
+		isDefault: getVal('is-default') as boolean | undefined,
+		supportsImageParams: getVal('supports-image-params') as boolean | undefined,
+	};
+}
+
+/** 用 models.dev 返回的数据填充卡片表单 */
+function populateCardFromConfig(cardBody: HTMLElement, config: IModelItemConfig): void {
+	const setVal = (id: string, val: any) => {
+		const el = cardBody.querySelector(`#${id}`) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
+		if (!el) return;
+		if (el.type === 'checkbox') {
+			(el as HTMLInputElement).checked = !!val;
+		} else if (el.type === 'number') {
+			el.value = (val === undefined || val === null) ? '' : String(val);
+		} else {
+			el.value = val || '';
+		}
+	};
+	setVal('model-name', config.name);
+	setVal('model-vendor', config.vendor);
+	setVal('max-output-tokens', config.maxOutputTokens);
+	setVal('max-input-tokens', config.maxInputTokens);
+	setVal('max-context-size', config.maxContextSize);
+	setVal('supports-tool-call', config.supportsToolCall);
+	setVal('supports-images', config.supportsImages);
+	setVal('temperature', config.temperature);
+	setVal('supports-reasoning', config.supportsReasoning);
+	setVal('priority', config.priority);
+	setVal('is-default', config.isDefault);
+	setVal('supports-image-params', config.supportsImageParams);
+	setVal('reasoning-effort', config.reasoningEffort);
+	setVal('reasoning-required', config.reasoningRequired);
+	setVal('lightweight-model-id', config.lightweightModelId);
+	setVal('associated-lightweight-model-id', config.associatedLightweightModelId);
+	setVal('reasoning-model-id', config.reasoningModelId);
+	setVal('associated-reasoning-model-id', config.associatedReasoningModelId);
+	setVal('use-polymorphic', config.usePolymorphic);
+	setVal('description-en', config.descriptionEn);
+	setVal('description-zh', config.descriptionZh);
+	setVal('credits', config.credits);
+	setVal('tags', config.tags);
+	setVal('top-p', config.topP);
+	setVal('top-k', config.topK);
+	setVal('repeat-penalty', config.repeatPenalty);
+}
+
+/**
+ * 从 models.dev 获取模型信息
+ *
+ * 使用方式（仿 opencode）：
+ * 1. 通过 mainProcess IPC 拉取整份目录 https://models.opencode.ai/api.json（内存缓存 1h TTL）
+ * 2. 本地按模型 id / name 查表，映射到 IModelItemConfig
+ *
+ * 数据源参考 opencode 实现（models.dev 自托管镜像）。
+ */
+async function fetchFromModelsDev(modelId: string, mainProcessService: IMainProcessService): Promise<IModelItemConfig | null> {
+	try {
+		const catalog = await fetchModelsDevCatalog(mainProcessService);
+		const hit = lookupModelsDev(catalog, modelId);
+		if (!hit) {
+			return null;
+		}
+		return mapModelsDevToConfig(hit.model, hit.providerName, modelId);
+	} catch {
+		return null;
+	}
+}
+
 async function testConnection(
 	provider: ProviderDefinition,
 	state: RendererState,
@@ -828,19 +1527,22 @@ async function testConnection(
 
 	try {
 		const isOllama = provider.id === 'ollama';
-		const testPath = isOllama ? '/api/tags' : '/models';
-		const testUrl = `${baseUrl.replace(/\/$/, '')}${testPath}`;
+		// Ollama 走 /api/tags；其他（OpenAI 兼容）走 buildModelsUrl 智能补 /v1
+		const testUrl = isOllama
+			? `${baseUrl.replace(/\/+$/, '')}/api/tags`
+			: buildModelsUrl(baseUrl);
 		const headers: Record<string, string> = {};
 		if (apiKey) {
 			headers['Authorization'] = `Bearer ${apiKey}`;
 		}
 
-		const response = await fetch(testUrl, { method: 'GET', headers });
-		if (response.ok) {
+		// 经主进程 IPC 执行，绕过 renderer 的 CORS preflight 限制
+		const channel = state.mainProcessService.getChannel(VSSAROS_LLM_CHANNEL);
+		const result = await channel.call<IHttpRequestResult>('httpRequest', { url: testUrl, method: 'GET', headers });
+		if (result.ok) {
 			state.statusMessage = `✅ ${provider.name} 连接成功！`;
 		} else {
-			const errorText = await response.text().catch(() => '');
-			state.statusMessage = `❌ ${provider.name} 连接失败 (${response.status}): ${errorText.slice(0, 100)}`;
+			state.statusMessage = `❌ ${provider.name} 连接失败 (${result.status})：${result.statusText || ''}`;
 		}
 	} catch (error) {
 		state.statusMessage = `❌ ${provider.name} 连接失败: ${error}`;

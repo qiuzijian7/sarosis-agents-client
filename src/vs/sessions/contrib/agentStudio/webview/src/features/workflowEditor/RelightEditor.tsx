@@ -232,12 +232,6 @@ export function RelightEditor({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	const scheduleUpload = React.useCallback(() => {
-		if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); }
-		uploadTimerRef.current = setTimeout(() => { void uploadRender(); }, UPLOAD_DEBOUNCE_MS);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [uploadRender]);
-
 	const uploadRender = React.useCallback(async () => {
 		const t = threeRef.current;
 		if (!t) { return; }
@@ -256,6 +250,15 @@ export function RelightEditor({
 			onRenderUploaded(null);
 		}
 	}, [onRenderUploaded]);
+
+	// ★ uploadRender 必须声明在 scheduleUpload **之前**：scheduleUpload 的依赖数组
+	//   `[uploadRender]` 在渲染时立即求值，若 uploadRender 后声明会触发 TDZ
+	//   （Cannot access 'uploadRender' before initialization）→ 整卡崩溃。
+	const scheduleUpload = React.useCallback(() => {
+		if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); }
+		uploadTimerRef.current = setTimeout(() => { void uploadRender(); }, UPLOAD_DEBOUNCE_MS);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [uploadRender]);
 
 	React.useEffect(() => () => { if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); } }, []);
 

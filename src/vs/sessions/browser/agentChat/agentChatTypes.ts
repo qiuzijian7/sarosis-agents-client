@@ -162,6 +162,67 @@ export interface IConfirmationData {
 	toolCallId?: string;
 }
 
+/**
+ * 工具审批卡片数据（2026-08-21）。
+ *
+ * 挂在 **IToolCall 上**（而不是 message.confirmation）——工具卡片的所有重建路径
+ * （parts 渲染 / _ruleToolStatusSync / progress 补建 / 历史恢复）都会带上 tc，
+ * 而 `msg.confirmation` 在多条重建路径上根本没被传入 `_createToolCallCard`，
+ * 挂在 message 上会导致审批按钮在任意一次重绘后消失。
+ *
+ * 不参与持久化（adaptPersistedToolCall 白名单不含 approval）：窗口刷新后
+ * 宿主进程里的 pending promise 已随 turn 结束，恢复出一个「可点击但点了没人接」
+ * 的审批区反而是坑。
+ */
+export interface IToolApprovalCardData {
+	/** = 工具调用 ID（命令 agentStudio.confirmationAction 按此 id 路由决策） */
+	id: string;
+	toolName: string;
+	reason?: string;
+	securityLevel?: 'safe' | 'cautious' | 'dangerous';
+	/** 审批截止时间戳（epoch ms）——UI 按此渲染倒计时 */
+	deadline?: number;
+	/** 审批等待上限（毫秒） */
+	timeoutMs?: number;
+	/** pending 时渲染按钮；其余状态定格为结果文案 */
+	status: 'pending' | 'approved' | 'rejected' | 'timeout' | 'cancelled';
+}
+
+/**
+ * 输入框 ChatMode 下拉框的 UI 元数据（2026-08-21）。
+ *
+ * 与 `contrib/agentStudio/common/chatModeConfig.ts` 的 `CHAT_MODE_INFO` 内容对齐，
+ * 但**刻意在此重新声明**：`src/vs/sessions/browser/agentChat/` 是通用聊天 UI 目录，
+ * 不应反向依赖 `contrib/agentStudio/**` 内部模块（会造成分层倒置）。
+ *
+ * ⚠ 只含输入框可选的 3 档。`workflow` 档不在此列 —— 它由工作流编辑器上下文
+ * 自行驱动，不作为用户在聊天输入框里的手选项。
+ */
+export const CHAT_MODE_UI: Readonly<Record<'craft' | 'ask' | 'plan', {
+	readonly label: string;
+	readonly description: string;
+	readonly svgPath: string;
+}>> = {
+	craft: {
+		label: 'Craft',
+		description: '完整工具访问，可直接修改代码和执行命令',
+		svgPath: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z', // lightning bolt
+	},
+	ask: {
+		label: 'Ask',
+		description: '只读工具访问，提供技术解答和建议',
+		svgPath: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm1 5.5v5h-2v-5h2z', // info circle
+	},
+	plan: {
+		label: 'Plan',
+		description: '只读探索 + 任务拆解，可使用 Plan 工具（其他模式不可用）',
+		svgPath: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4', // clipboard list
+	},
+};
+
+/** 输入框可选的 ChatMode 顺序（下拉框渲染顺序）。 */
+export const CHAT_MODE_ORDER: ReadonlyArray<'craft' | 'ask' | 'plan'> = ['craft', 'ask', 'plan'];
+
 /** Tool call within a message */
 export interface IToolCall {
 	id: string;
@@ -191,6 +252,11 @@ export interface IToolCall {
 	exitCode?: number;
 	/** Security level for approval UI */
 	securityLevel?: 'safe' | 'cautious' | 'dangerous';
+	/**
+	 * 等待用户审批时的卡内审批区数据（含倒计时截止时间）。
+	 * 由 nativeChatEditorPane 订阅 IAgentOSService.onDidRequestToolApproval 写入。
+	 */
+	approval?: IToolApprovalCardData;
 	/** Whether this tool was server-executed (no client confirmation needed) */
 	serverExecuted?: boolean;
 	/**
@@ -520,7 +586,7 @@ export interface IModelInfo {
  *    idle → llm_streaming → compressing → llm_streaming → ... → idle
  *    * → error → idle
  */
-export type StreamPhase = 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'compressing' | 'error' | 'canceled';
+export type StreamPhase = 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'retrieving' | 'compressing' | 'error' | 'canceled';
 
 /** Chat mode — mirrors webview ChatMode */
 export type ChatMode = 'craft' | 'ask' | 'plan' | 'workflow';

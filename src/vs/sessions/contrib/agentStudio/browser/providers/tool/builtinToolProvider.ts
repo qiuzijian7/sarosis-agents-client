@@ -51,6 +51,7 @@ import { ISwarmService } from '../../../common/swarmService.js';
 import { ICheckpointService } from '../../../common/checkpointService.js';
 import { IAgentOSService } from '../../../common/agentOS.js';
 import { IWorkflowStorageService } from '../../../common/workflowStorage.js';
+import { resolveEffectiveWorktreeRoot } from '../../../common/worktreeBinding.js';
 import { SkillManagerTool } from '../../skillManagerTool.js';
 import { SkillUsageTracker } from '../../skillUsageTracker.js';
 import { ICodebaseGraphService } from '../../codebaseGraphService.js';
@@ -383,8 +384,32 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			terminalService: this.terminalService,
 			workspaceService: this.workspaceService,
 			configurationService: this.configurationService,
+			getBoundWorktreeRoot: agentId => this._resolveBoundWorktreeRoot(agentId),
 		});
 		this._corePerTurnReset = coreControl.resetPerTurn;
+	}
+
+	/**
+	 * 解析该 agent **实际绑定**的 worktree 根（与 workspaceSecurity 同口径：
+	 * 经 `resolveEffectiveWorktreeRoot` 过滤掉「绑定目标就是主仓」的伪隔离）。
+	 *
+	 * 优先用本轮 turn 下推的 `_parentWorktreePath`（含任务级覆盖），再回退
+	 * `AgentBinding.worktreePath`。供 file_read 判定越界读取 worktree 副本
+	 * （2026-08-20，日志 1787217670299）。
+	 */
+	private async _resolveBoundWorktreeRoot(agentId: string | undefined): Promise<string | undefined> {
+		try {
+			const activeWsId = this.studioService.getActiveWorkspaceId();
+			if (!activeWsId) { return this._parentWorktreePath; }
+			const workspacePath = (await this.studioService.getWorkspace(activeWsId))?.path;
+			let candidate = this._parentWorktreePath;
+			if (!candidate && agentId) {
+				candidate = (await this.studioService.getAgentBinding(activeWsId, agentId))?.worktreePath;
+			}
+			return resolveEffectiveWorktreeRoot(candidate, workspacePath);
+		} catch {
+			return this._parentWorktreePath;
+		}
 	}
 
 
@@ -439,6 +464,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			id: this.id,
 			workspaceRoot,
 			resolveAndCheckWorkspacePath: (agentId, p, req) => this._resolveAndCheckWorkspacePath(agentId, p, req),
+			checkpointService: this.checkpointService,
+			environmentService: this.environmentService,
 		};
 		registerCompatibilityTools(ctx);
 	}

@@ -666,11 +666,87 @@ export function annotateCoerceWarnings(content: unknown, warnings: string[] | un
  */
 export type TypedToolHandler<T extends Record<string, unknown>> = (args: T) => Promise<unknown>;
 
+/** Escape characters that are legal after a backslash inside a JSON string (RFC 8259 §7). */
+const VALID_JSON_ESCAPE_CHARS = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
+
+/** Raw control characters that must be escaped inside a JSON string. */
+const JSON_CONTROL_ESCAPES: Record<number, string> = {
+	0x08: "\\b",
+	0x09: "\\t",
+	0x0a: "\\n",
+	0x0c: "\\f",
+	0x0d: "\\r",
+};
+
+/**
+ * Repair illegal escape sequences and raw control characters inside JSON string
+ * literals (single pass; only active while inside a string literal).
+ *
+ * Motivation (2026-08-21): models routinely emit `\x09` instead of `\t` (also
+ * `\d`, `\p`, `\uZZ` …). `JSON.parse` rejects the WHOLE payload with
+ * "Bad escaped character", and none of the existing repair steps below touch
+ * escapes — so a single stray `\x` used to make the entire argument object
+ * unrecoverable (it degraded to `{}` via {@link coerceToolCallArguments}).
+ *
+ * Illegal escapes are made literal (`\x09` → `\\x09`) rather than guessed at,
+ * which is the least-surprise reading of the model's intent.
+ *
+ * NOTE: a parallel implementation lives in
+ * `src/vs/sessions/browser/agentChat/toolArgsJson.ts` for the rendering layer.
+ * It cannot be shared because `browser/agentChat/**` must not depend on
+ * `contrib/agentStudio/**` (layer rule). Keep the two in sync when editing.
+ */
+export function sanitizeJsonEscapes(raw: string): string {
+	let out = "";
+	let inString = false;
+	for (let i = 0; i < raw.length; i++) {
+		const ch = raw[i];
+		if (!inString) {
+			out += ch;
+			if (ch === '"') {
+				inString = true;
+			}
+			continue;
+		}
+		if (ch === '"') {
+			out += ch;
+			inString = false;
+			continue;
+		}
+		if (ch === "\\") {
+			const next = raw[i + 1];
+			// Dangling backslash at EOF, or an illegal escape → literalise the backslash
+			if (next === undefined || !VALID_JSON_ESCAPE_CHARS.has(next)) {
+				out += "\\\\";
+				continue;
+			}
+			if (next === "u") {
+				const hex = raw.slice(i + 2, i + 6);
+				if (hex.length < 4 || !/^[0-9a-fA-F]{4}$/.test(hex)) {
+					out += "\\\\";
+					continue;
+				}
+			}
+			out += ch + next;
+			i++;
+			continue;
+		}
+		const code = ch.charCodeAt(0);
+		if (code < 0x20) {
+			out += JSON_CONTROL_ESCAPES[code] ?? `\\u${code.toString(16).padStart(4, "0")}`;
+			continue;
+		}
+		out += ch;
+	}
+	return out;
+}
+
 /**
  * Try to repair malformed JSON arguments from model output.
  *
  * Handles common issues:
  *  - Empty/whitespace → `{}`
+ *  - Illegal escape sequences (`\x09`) and raw control chars inside strings
  *  - Trailing commas
  *  - Single quotes instead of double quotes
  *  - Python None → null
@@ -700,13 +776,45 @@ export function repairToolArguments(
 		// Continue to repair attempts
 	}
 
+	// Escape repair — must run before every other step: the remaining repairs
+	// (truncation auto-close / Python-style fixes) all re-parse the payload and
+	// would still trip over the illegal escape. When there is nothing to fix
+	// `escaped === trimmed`, so behaviour is unchanged for well-formed input.
+	const escaped = sanitizeJsonEscapes(trimmed);
+	if (escaped !== trimmed) {
+		try {
+			const parsed = JSON.parse(escaped);
+			if (typeof parsed === "object" && parsed !== null) {
+				return parsed;
+			}
+		} catch {
+			// Continue with the escaped form as the basis for further repairs
+		}
+	}
+
 	// Truncation detection: if the string doesn't end with } or ], it's likely truncated
-	if (!trimmed.endsWith("}") && !trimmed.endsWith("]")) {
-		// Try to auto-close — simple heuristic: count open/close brackets
+	if (!escaped.endsWith("}") && !escaped.endsWith("]")) {
+		// Auto-close. Two fixes over the original naive version (2026-08-21):
+		//  a) brackets *inside* string literals no longer count (a `content`
+		//     value containing `{` used to skew the balance);
+		//  b) when the payload is cut in the middle of a string literal we close
+		//     the quote first — otherwise the appended `}` lands INSIDE the
+		//     string, the parse still fails and the function bails out with
+		//     `undefined` (losing every already-complete argument). Truncation
+		//     mid-string is the most common streaming shape.
 		let openBraces = 0;
 		let openBrackets = 0;
-		for (const ch of trimmed) {
-			if (ch === "{") {
+		let inString = false;
+		for (let i = 0; i < escaped.length; i++) {
+			const ch = escaped[i];
+			if (inString) {
+				if (ch === "\\") { i++; continue; }
+				if (ch === '"') { inString = false; }
+				continue;
+			}
+			if (ch === '"') {
+				inString = true;
+			} else if (ch === "{") {
 				openBraces++;
 			} else if (ch === "}") {
 				openBraces--;
@@ -716,7 +824,7 @@ export function repairToolArguments(
 				openBrackets--;
 			}
 		}
-		let repaired = trimmed;
+		let repaired = inString ? escaped + '"' : escaped;
 		while (openBrackets > 0) {
 			repaired += "]";
 			openBrackets--;
@@ -738,7 +846,7 @@ export function repairToolArguments(
 	}
 
 	// Python-style fixes
-	let fixed = trimmed
+	const fixed = escaped
 		.replace(/,\s*([}\]])/g, "$1") // trailing commas
 		.replace(/'/g, '"') // single → double quotes
 		.replace(/\bNone\b/g, "null") // Python None
@@ -1178,6 +1286,16 @@ const PARALLEL_SAFE_TOOLS = new Set([
 const PATH_SCOPED_TOOLS = new Set([
 	"file_read", "file_write", "patch",
 ]);
+
+/**
+ * 是否为「只读且可安全并行」的工具（PARALLEL_SAFE_TOOLS 的对外只读视图）。
+ *
+ * 供 agent loop 的「单工具串行」检测使用（日志 1787302409958：连续 17 轮每轮只调
+ * 1 个只读工具 → 浪费约 11 轮 LLM 往返）。复用同一集合而非另建副本，避免口径漂移。
+ */
+export function isParallelSafeReadOnlyTool(toolName: string): boolean {
+	return PARALLEL_SAFE_TOOLS.has(toolName);
+}
 
 /**
  * Patterns that indicate a terminal command may modify/delete files.

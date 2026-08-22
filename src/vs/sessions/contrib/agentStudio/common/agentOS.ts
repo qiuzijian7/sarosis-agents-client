@@ -20,6 +20,8 @@ import {
 	ISlotRegistry,
 	IToolDefinition,
 	IToolApprovalHandler,
+	IToolApprovalRequest,
+	IToolApprovalResolution,
 } from "./providers.js";
 import type { IForkContext } from "./forkContext.js";
 import type { AgentGraph } from "./agentGraph.js";
@@ -301,6 +303,31 @@ export interface IAgentOSService {
 	 * @param handler 工具审批处理器
 	 */
 	setToolApprovalHandler(handler: IToolApprovalHandler): void;
+
+	// ─── 工具审批 UI 广播（2026-08-21）─────────────────────────────────
+	//
+	// 背景（事故 1787276571583）：审批 handler 是**覆盖式单例**，只有
+	// agentStudioWebviewController 注册过，事件只发 webview；用户在 native
+	// chat pane 工作时 terminal 首次调用需审批 → 卡片永不出现 → agent loop
+	// 永久「处理中」。
+	//
+	// 现在 agentOSService 自己是唯一 handler，通过下面这对事件**广播**给所有
+	// UI（native pane / webview 各自订阅），任一 UI 决策都能 resolve 同一 promise。
+	// 超时（IToolApprovalRequest.deadline）→ 判 Deny 并 cancelAgentLoop 终止 LLM。
+
+	/** 有工具在等待用户审批（UI 应在对应工具卡片内渲染按钮 + 倒计时）。 */
+	readonly onDidRequestToolApproval: Event<IToolApprovalRequest>;
+
+	/** 审批已终结（用户决策 / 超时 / 取消）——UI 据此定格卡片并停倒计时。 */
+	readonly onDidResolveToolApproval: Event<IToolApprovalResolution>;
+
+	/**
+	 * UI 上报审批决策。
+	 * @param toolCallId 待审批的工具调用 ID
+	 * @param buttonId `allow_once` | `allow_always` | `deny`（同义词见实现）
+	 * @returns 是否命中一个进行中的审批
+	 */
+	resolveToolApproval(toolCallId: string, buttonId: string): boolean;
 
 	// ─── Dashboard 统计 ───────────────────────────────────────────────
 

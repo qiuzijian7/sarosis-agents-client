@@ -123,8 +123,55 @@ try {
 }
 
 const page = await browser.newPage({ viewport: { width: 1400, height: 1000 }, deviceScaleFactor: 1 });
-page.on('pageerror', e => notes.push(`pageerror: ${e.message}`));
+page.on('pageerror', e => notes.push(`pageerror: ${e.message}\n  ${(e.stack ?? '').split('\n').slice(0, 3).join('\n  ')}`));
 page.on('console', m => { if (m.type() === 'error') { notes.push(`console.error: ${m.text()}`); } });
+
+// ── ComfyTV 真实源码快照注入（「同页对比」的真源）──────────────────────────
+// 读 ComfyTV 侧 stageCardRender.test.ts 导出的真实 StageCard DOM（ctv: tailwind
+// 类）+ @tailwindcss/cli 生成的 ctv CSS，注入 window.__comfytvSnapshots。
+// harness 参考卡用它渲染 iframe（真实 ComfyTV 源码 UI）与本项目 NodeCard 并排。
+// 缺失（ComfyTV 未跑导出 / 路径不同）→ 降级手绘 token 参考卡，不影响断言。
+const COMFYTV_DIR = process.env.COMFTV_DIR || 'G:\\CustomWorkspaces\\AIProjects\\ComfyTV';
+const COMFYTV_SNAP_DIR = path.join(COMFYTV_DIR, 'src', 'components', 'stages', '__snapshots__', 'nodeUI');
+/** 本项目 nodeType → ComfyTV 快照名（transform/generator 大类共用一个骨架快照） */
+const COMFTV_SNAPSHOT_MAP = {
+	'ComfyTV.ImageLoaderStage': 'ImageLoaderStage',
+	'ComfyTV.AudioLoaderStage': 'AudioLoaderStage',
+	'ComfyTV.VideoLoaderStage': 'VideoLoaderStage',
+	'ComfyTV.TextLoaderStage': 'TextLoaderStage',
+	'ComfyTV.ImageStage': 'ImageStage',
+	'ComfyTV.MaterialStage': 'MaterialStage',
+	'ComfyTV.PanoramaStage': 'PanoramaStage',
+	'ComfyTV.CropStage': 'CropStage',
+	'ComfyTV.RotateStage': 'CropStage',
+	'ComfyTV.MirrorStage': 'CropStage',
+	'ComfyTV.OutpaintStage': 'CropStage',
+	'ComfyTV.KenBurnsStage': 'CropStage',
+	'ComfyTV.ColorGradeStage': 'CropStage',
+	'ComfyTV.GridSplitStage': 'CropStage',
+	'ComfyTV.RelightStage': 'ImageStage',
+	'ComfyTV.MultiangleStage': 'ImageStage',
+	'ComfyTV.EmojiStage': 'ImageStage',
+};
+{
+	const comfytvSnapshots = {};
+	const cssPath = path.join(COMFYTV_SNAP_DIR, 'comfytv-node-ui.css');
+	if (fs.existsSync(cssPath)) {
+		const css = fs.readFileSync(cssPath, 'utf8');
+		for (const [nodeType, snapName] of Object.entries(COMFTV_SNAPSHOT_MAP)) {
+			const htmlPath = path.join(COMFYTV_SNAP_DIR, `${snapName}.html`);
+			if (fs.existsSync(htmlPath)) {
+				comfytvSnapshots[nodeType] = { html: fs.readFileSync(htmlPath, 'utf8'), css };
+			}
+		}
+	}
+	if (Object.keys(comfytvSnapshots).length > 0) {
+		console.log(`[visual] 注入 ComfyTV 真实源码快照 ${Object.keys(comfytvSnapshots).length} 个节点`);
+	} else {
+		console.log('[visual] 未找到 ComfyTV 快照（先跑 ComfyTV 侧导出），参考卡降级为手绘 token 卡');
+	}
+	await page.addInitScript(snaps => { window.__comfytvSnapshots = snaps; }, comfytvSnapshots);
+}
 
 // ── WebGL 环境探测 ──────────────────────────────────────────────────────────
 // Multiangle/Relight/Material 等节点的内嵌编辑器依赖 Three.js WebGL。无 GPU/被
@@ -137,11 +184,21 @@ let webglAvailable = true;
 	webglAvailable = await page.evaluate(() => {
 		try {
 			const c = document.createElement('canvas');
-			return !!(c.getContext('webgl2') ?? c.getContext('webgl'));
+			const gl = c.getContext('webgl2') ?? c.getContext('webgl');
+			if (!gl) { return false; }
+			// ★ swiftshader 半可用陷阱：iOA/驱动策略下 getContext 会返回**非 null**
+			//   的假 context，但 shader 编译/渲染管线实际失败（Three.js 节点
+			//   Relight 渲染崩溃 `.map` undefined）。只测 getContext 会把这种
+			//   环境误判为「WebGL 可用」→ 不豁免 → 8 条假 FAIL。这里实际编译一个
+			//   最小 shader 验证管线可用。
+			const vs = gl.createShader(gl.VERTEX_SHADER);
+			gl.shaderSource(vs, 'void main(){gl_Position=vec4(0.0,0.0,0.0,1.0);}');
+			gl.compileShader(vs);
+			return !!gl.getShaderParameter(vs, gl.COMPILE_STATUS);
 		} catch { return false; }
 	});
 	if (!webglAvailable) {
-		notes.push('环境无 WebGL（Three.js 编辑器无法渲染）—— Multiangle/Relight 等 WebGL 节点的布局断言本轮跳过');
+		notes.push('环境无可用 WebGL（Three.js 编辑器无法渲染）—— Multiangle/Relight 等 WebGL 节点的布局断言本轮跳过');
 	}
 }
 
@@ -152,6 +209,15 @@ if (DUMP_NODE) {
 	const info = await page.evaluate(() => {
 		const cell = document.querySelector('[data-vt-scenario]');
 		const host = cell?.querySelector('[data-vt-card-host]');
+		const refHost = cell?.querySelector('[data-vt-ref-host]');
+		const iframe = refHost?.querySelector('iframe');
+		let iframeSummary = '(no refHost)';
+		if (iframe) {
+			try {
+				const body = iframe.contentDocument?.body;
+				iframeSummary = body ? `${Math.round(body.scrollHeight)}px  "${body.innerText.slice(0, 160).replace(/\n/g, ' ↵ ')}"` : '(iframe 无 body)';
+			} catch { iframeSummary = '(iframe 内容跨域不可读)'; }
+		}
 		/** 递归打印带尺寸的 DOM 树 —— 白屏/塌陷一眼可辨 */
 		const dump = (el, depth = 0) => {
 			if (!el || depth > 5) { return ''; }
@@ -174,6 +240,13 @@ if (DUMP_NODE) {
 			canvases: host?.querySelectorAll('canvas').length ?? 0,
 			text: host?.innerText ?? '',
 			tree: host ? dump(host) : '(no host)',
+			refHost: !!refHost,
+			iframe: iframeSummary,
+			// ★ textarea/input 的 value 是 DOM property，textContent 看不到（受控组件
+			//   dump 会漏掉 EmojiStage 独立 prompt / 配文等真实值）。这里显式收集。
+			fieldValues: host ? Array.from(host.querySelectorAll('textarea, input')).map(e =>
+				`${e.tagName.toLowerCase()}[${e.getAttribute('placeholder')?.slice(0, 12) ?? ''}]="${(e).value?.slice(0, 28)}"`
+			).filter(s => s.includes('"')) : [],
 		};
 	});
 	console.log(`=== ${DUMP_NODE} / ${DUMP_STATE}`);
@@ -182,8 +255,10 @@ if (DUMP_NODE) {
 	console.log(`meta.controls: ${info.controls}`);
 	console.log(`hiddenFields: ${info.hidden}`);
 	console.log(`height      : ${info.height}px   canvases: ${info.canvases}`);
+	console.log(`--- ComfyTV 真源快照 iframe ---\nrefHost=${info.refHost}  ${info.iframe}`);
 	console.log(`--- innerText ---\n${info.text}`);
 	console.log(`--- DOM tree ---\n${info.tree}`);
+	console.log(`--- 表单值 (textarea/input value) ---\n${info.fieldValues.join('\n') || '(none)'}`);
 	console.log(`--- browser logs ---\n${notes.join('\n') || '(none)'}`);
 	await browser.close();
 	server.close();
@@ -222,6 +297,7 @@ const scenarios = await page.$$eval('[data-vt-scenario]', cells => cells.map(c =
 	hiddenFields: (c.getAttribute('data-vt-hidden-fields') ?? '').split(',').filter(Boolean),
 	editorKind: c.getAttribute('data-vt-editor-kind') ?? 'none',
 	hideOutput: c.getAttribute('data-vt-hide-output') === 'true',
+	hideActions: c.getAttribute('data-vt-hide-actions') === 'true',
 })));
 console.log(`[visual] ${scenarios.length} 个场景`);
 
@@ -275,7 +351,12 @@ for (const sc of scenarios) {
 			if (r.width === 0 && r.height === 0) { continue; }
 			const over = Math.round(r.right - hostRect.right);
 			if (over > 2) {
-				overflow.push({ tag: el.tagName.toLowerCase(), over, w: Math.round(r.width) });
+				overflow.push({
+					tag: el.tagName.toLowerCase(),
+					cls: typeof el.className === 'string' ? el.className.slice(0, 24) : '',
+					over, w: Math.round(r.width),
+					html: el.outerHTML.slice(0, 140).replace(/\s+/g, ' '),
+				});
 			}
 		}
 
@@ -318,6 +399,19 @@ for (const sc of scenarios) {
 			.map(l => l.querySelector('span')?.textContent?.trim() ?? '')
 			.filter(Boolean);
 
+		// ★ R16：ComfyTV 真实源码快照 iframe（spec 注入的 window.__comfytvSnapshots
+		//   → harness 渲染 iframe srcdoc）。探测 iframe 是否渲染 + 内容非空。
+		const refIframe = cellEl?.querySelector('[data-vt-ref-host] iframe[data-vt-ref="iframe"]');
+		let refIframeOk = false;
+		let refIframeLen = 0;
+		if (refIframe) {
+			try {
+				const body = refIframe.contentDocument?.body;
+				refIframeLen = body ? (body.innerText ?? '').trim().length : 0;
+				refIframeOk = refIframeLen > 10;
+			} catch { refIframeOk = false; }
+		}
+
 		return {
 			cardH: Math.round(cardRect.height),
 			cardW: Math.round(cardRect.width),
@@ -334,6 +428,8 @@ for (const sc of scenarios) {
 			ranges: host.querySelectorAll('input[type="range"]').length,
 			ownStyle,
 			refStyle,
+			refIframeOk,
+			refIframeLen,
 			checkboxes: host.querySelectorAll('input[type="checkbox"]').length,
 			buttons: host.querySelectorAll('button').length,
 			canvases: host.querySelectorAll('canvas').length,
@@ -362,7 +458,7 @@ for (const sc of scenarios) {
 
 	// R2 无横向溢出（捕捉宽度写死，如 TransformEditor VIEW_W=360）
 	if (probe.overflowCount > 0) {
-		const d = probe.overflow.map(o => `${o.tag} 超出 ${o.over}px (w=${o.w})`).join('; ');
+		const d = probe.overflow.map(o => `${o.tag}${o.cls ? '.' + o.cls : ''} 超出 ${o.over}px (w=${o.w}) [${o.html}]`).join('; ');
 		fail(sc.id, 'horizontal-overflow', `${probe.overflowCount} 个元素溢出：${d}`);
 	}
 
@@ -447,6 +543,17 @@ for (const sc of scenarios) {
 		}
 	}
 
+	// R16 ★ 同页对比真源：success 态的 ComfyTV 节点必须有参考卡 —— iframe 真实
+	//    源码快照（ComfyTV 侧 stageCardRender.test.ts 导出的真实 StageCard DOM）
+	//    优先，ComfyTV 快照缺失时降级手绘 token 卡。两者都缺 = 参考卡链路断裂
+	//    （用户要求「绘制 ComfyTV 源码 UI + 同页对比」，这是核心可执行校验）。
+	if (sc.state === 'success' && sc.nodeType.startsWith('ComfyTV.')) {
+		const hasRef = probe.refIframeOk || probe.refStyle !== null;
+		if (!hasRef) {
+			fail(sc.id, 'ref-missing', `ComfyTV 节点 success 态缺少参考卡（iframe 快照未渲染 + 手绘卡也不存在）——「同页对比」链路断裂`);
+		}
+	}
+
 	// R5 hasPrompt ⇒ 有且仅有一个 textarea（捕捉专用编辑器与通用 prompt 双渲染）
 	//    prompt 被登记进 hiddenFields 时豁免（由编辑器自动生成，如 Multiangle）
 	if (sc.metaHasPrompt && probe.textareas === 0 && !sc.hiddenFields.includes('prompt') && sc.editorKind === 'none') {
@@ -485,7 +592,9 @@ for (const sc of scenarios) {
 	}
 
 	// R10 actions 必须渲染成可点按钮（捕捉第 80 轮 actions 门控回归）
-	if (sc.metaActions > 0 && sc.state === 'success' && probe.buttons === 0) {
+	// R10 actions 必须渲染成可点按钮（豁免 STAGE_FLAGS.hideActions —— loader 等
+	//   节点由 stageCardRegistry 声明隐藏 actions 区块，是有意设计非缺陷）。
+	if (sc.metaActions > 0 && sc.state === 'success' && probe.buttons === 0 && !sc.hideActions) {
 		fail(sc.id, 'actions-missing', `meta 声明 ${sc.metaActions} 个 action 但无按钮`);
 	}
 

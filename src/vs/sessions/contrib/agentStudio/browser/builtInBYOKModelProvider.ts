@@ -97,9 +97,9 @@ export interface IBYOKProviderDefinition {
 export function customProviderDataToDefinition(cp: CustomProviderData): IBYOKProviderDefinition {
 	const isAnthropic = cp.apiType === 'anthropic';
 	const responseFormat: 'openai' | 'anthropic' = isAnthropic ? 'anthropic' : 'openai';
-	const chatEndpointPath = cp.chatEndpointPath || (isAnthropic ? 'v1/messages' : 'chat/completions');
+	const chatEndpointPath = cp.chatEndpointPath || (isAnthropic ? 'v1/messages' : 'v1/chat/completions');
 	const apiKeyHeader: 'bearer' | 'x-api-key' = cp.apiKeyHeader || (isAnthropic ? 'x-api-key' : 'bearer');
-	const staticModels = isAnthropic
+	const staticModels = (cp.models && cp.models.length > 0)
 		? (cp.models || []).map((mid: string) => ({
 			id: mid,
 			name: mid,
@@ -107,9 +107,9 @@ export function customProviderDataToDefinition(cp: CustomProviderData): IBYOKPro
 			supportsToolCall: true,
 			capabilityConfig: {
 				supportsSystemMessage: 'separated',
-				specialToolFormat: 'anthropic-style',
+				specialToolFormat: isAnthropic ? 'anthropic-style' : 'openai-style',
 				reasoningType: 'budget-slider',
-				supportsCaching: 'anthropic',
+				supportsCaching: isAnthropic ? 'anthropic' : false,
 				supportsFIM: false,
 				reservedOutputTokenSpace: null,
 			} as IModelCapabilityConfig,
@@ -702,7 +702,16 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 				`  tool names: [${options.tools.map(t => t.name).join(', ')}]`
 			);
 		} else {
-			this._logService.warn(`[BYOK:${this.id}] _streamChat: NO tools in request (options.tools is empty or undefined)`);
+			// 无工具面：正常路径不设 tool_choice（'auto'/'required' 在没有 tools 时
+			// 无意义，部分网关还会校验报错）。唯一例外是收尾轮的 'none' ——
+			// 它是「禁止调用工具」的协议级声明，与空工具面构成双保险
+			// （对齐 MiMo-Code 的 toolChoice:"none"）。
+			if (options.toolChoice === 'none') {
+				body.tool_choice = 'none';
+				this._logService.info(`[BYOK:${this.id}] _streamChat: NO tools + tool_choice='none' (final wrap-up round — model must answer from gathered context)`);
+			} else {
+				this._logService.warn(`[BYOK:${this.id}] _streamChat: NO tools in request (options.tools is empty or undefined)`);
+			}
 		}
 
 		// ── Thinking / Reasoning 参数注入 ─────────────────────────────

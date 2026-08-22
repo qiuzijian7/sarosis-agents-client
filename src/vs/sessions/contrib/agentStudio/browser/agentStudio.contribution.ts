@@ -163,6 +163,7 @@ import { AgentStudioProvider } from './agentStudioProvider.js';
 import { BuiltInBYOKModelProvider, BUILTIN_BYOK_PROVIDERS, customProviderDataToDefinition } from './builtInBYOKModelProvider.js';
 import type { CustomProviderData } from './views/providerView.js';
 import { MainProcessModelProvider } from './mainProcessModelProvider.js';
+import { IModelsAutoUpdateService, ModelsAutoUpdateService, type IProviderHint } from '../common/modelsAutoUpdate.js';
 import { VSSAROS_LLM_CHANNEL } from '../common/llmBridge.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { AgentStudioActiveContext } from '../../../common/contextkeys.js';
@@ -335,6 +336,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			description: localize('agentStudio.codebaseGraph.sqliteBackend', "Codebase 图谱查询/搜索默认走主进程 SQLite（FTS5）后端，避免内存全量扫描。默认开启；设为 false 关闭后回退内存 store。"),
+		},
+		'sessions.agentStudio.tools.autoApproveReadOnlyCommands': {
+			type: 'boolean',
+			default: false,
+			description: localize('agentStudio.tools.autoApproveReadOnlyCommands', "终端命令中，已确认只读的命令免交互确认（如 Get-ChildItem / git status / cat，含只读管道）。命令一旦包含重定向、命令替换、`;`/`&&` 串联、变量展开或任何未知命令，仍会弹出确认。默认关闭；关闭时所有终端命令都需确认。"),
 		},
 		[AGENT_STUDIO_ENABLED_SETTING]: {
 			type: 'boolean',
@@ -712,6 +718,7 @@ registerWorkbenchContribution2(BuiltinAgentMdSyncContribution.ID, BuiltinAgentMd
 
 registerSingleton(IAgentStudioLogService, AgentStudioLogService, InstantiationType.Delayed);
 registerSingleton(IFeedbackService, FeedbackService, InstantiationType.Delayed);
+registerSingleton(IModelsAutoUpdateService, ModelsAutoUpdateService, InstantiationType.Delayed);
 registerSingleton(IAgentStudioService, AgentStudioService, InstantiationType.Delayed);
 registerSingleton(IAgentChatService, AgentChatService, InstantiationType.Delayed);
 registerSingleton(IAgentOSService, AgentOSService, InstantiationType.Delayed);
@@ -2185,12 +2192,19 @@ class BYOKProviderContribution extends Disposable implements IWorkbenchContribut
 		@ILogService private readonly logService: ILogService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IMainProcessService private readonly mainProcessService: IMainProcessService,
+		@IModelsAutoUpdateService private readonly modelsAutoUpdate: IModelsAutoUpdateService,
 	) {
 		super();
 
 		if (!this.configurationService.getValue<boolean>(AGENT_STUDIO_ENABLED_SETTING)) {
 			return;
 		}
+
+		// 仿 opencode models.dev：启动时自动拉取 provider 模型清单并合并到 cp.models。
+		// 提供 resolver 给 service，便于拉取时遍历已注册 provider（包括内置 + 自定义）。
+		this.modelsAutoUpdate.registerProviderResolver(() => this._collectProviderHints());
+		// 不阻塞启动：用 setTimeout 推到事件循环尾部
+		setTimeout(() => { this.modelsAutoUpdate.triggerNow().catch(() => { /* 静默 */ }); }, 5_000);
 
 		// 阶段 1：若主进程 LLM channel 可用，则把网络调用委派到 electron-main，
 		// 否则回退到 renderer 直连的原 BuiltInBYOKModelProvider（web/remote 等）。
@@ -2262,6 +2276,41 @@ class BYOKProviderContribution extends Disposable implements IWorkbenchContribut
 		const disposable = this.agentOSService.registerModelProvider(provider);
 		this._customProviderDisposables.set(cp.id, disposable);
 		this.logService.info(`[BYOK] Registered custom provider: ${cp.id} (${cp.apiType || 'openai'})${useMainProcess ? ' (main-process)' : ''}`);
+	}
+
+	/**
+	 * 收集当前已注册的 provider 列表，供 ModelsAutoUpdateService 启动扫描用。
+	 * - 内置 provider：从 BUILTIN_BYOK_PROVIDERS 读 baseUrl/apiKey 配置
+	 * - 自定义 provider：从 AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING 读全部
+	 */
+	private _collectProviderHints(): IProviderHint[] {
+		const hints: IProviderHint[] = [];
+		// 内置 provider
+		for (const def of BUILTIN_BYOK_PROVIDERS) {
+			const baseUrl = (this.configurationService.getValue<string>(def.baseUrlConfigKey) || def.defaultBaseUrl || '').trim();
+			const apiKey = (this.configurationService.getValue<string>(def.apiKeyConfigKey) || '').trim();
+			hints.push({
+				id: def.id,
+				name: def.name,
+				baseUrl,
+				apiKey,
+				apiType: def.isAnthropic ? 'anthropic' : 'openai',
+				isBuiltin: true,
+			});
+		}
+		// 自定义 provider
+		const customProviders = this.configurationService.getValue<CustomProviderData[]>(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING) || [];
+		for (const cp of customProviders) {
+			hints.push({
+				id: cp.id,
+				name: cp.name,
+				baseUrl: (cp.baseUrl || '').trim(),
+				apiKey: (this.configurationService.getValue<string>(`sessions.agentStudio.provider.${cp.id}.apiKey`) || '').trim(),
+				apiType: cp.apiType || 'openai',
+				isBuiltin: false,
+			});
+		}
+		return hints;
 	}
 }
 
@@ -2947,6 +2996,13 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			plugin.deactivate().catch(err => {
 				this.logService.error(`[AgentCapabilityPlugins] Plugin ${id} deactivation failed:`, err);
 			});
+			// Plugins are `Disposable` subclasses (all `*-example` plugins `extends Disposable`).
+			// `deactivate()` only does business-level cleanup and never disposes the plugin
+			// instance itself. Since these instances were created via `createInstance` here,
+			// this contribution owns them — dispose them explicitly, otherwise
+			// `GCBasedDisposableTracker` logs "[LEAKED DISPOSABLE]" when the instance is
+			// GC'd without ever being disposed (most visible on window reload).
+			(plugin as unknown as { dispose?: () => void }).dispose?.();
 		}
 		this._activatedPlugins.clear();
 		super.dispose();

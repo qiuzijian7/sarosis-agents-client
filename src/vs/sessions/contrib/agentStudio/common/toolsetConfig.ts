@@ -56,7 +56,14 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		id: 'core',
 		label: 'Core',
 		priority: ToolsetPriority.Always,
-		prefixes: ['file_', 'search_files', 'terminal', 'memory_'],
+		// ⚠ 不含 `memory_` 前缀（2026-08-22 修，日志 1787363991734）：
+		// `getToolsetForTool` 按定义顺序「第一个匹配胜出」，而 core 排最前；
+		// 早前 core 的 prefixes 含 `memory_`，会把全部 16 个 memory_* 工具抢先
+		// 归入 core（Always + 不可折叠）→ 后面的 `memory` toolset（Medium + deferrable）
+		// 形同虚设。后果：58 个 direct-sent 工具里塞满 memory_*，schema 直接发送
+		// 浪费 ~3–4k token 却几乎不被调用。移除后 memory_* 归入独立 memory toolset，
+		// 可折叠进 tool_search 桥接；`memory_list` 仍由 CORE_TOOLS 白名单兜底不可折叠。
+		prefixes: ['file_', 'search_files', 'terminal'],
 		exactNames: [
 			'update_plan', 'plan_explore', 'plan_enter', 'plan_exit', 'plan_register',
 			'switch_paradigm',

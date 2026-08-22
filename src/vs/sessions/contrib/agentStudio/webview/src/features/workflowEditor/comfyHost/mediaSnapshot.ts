@@ -62,6 +62,7 @@ export interface MediaSnapshotEntry {
 
 const KIND_BY_SLOT: Record<string, MediaKind> = {
 	images: 'image',
+	animated: 'image', // SaveAnimatedWEBP 往 history 写 `animated` 槽（透明循环 webp）；按 image 处理 → 走 /view 物化 + <img> 自动播动画。
 	gifs: 'video',
 	videos: 'video',
 	audio: 'audio',

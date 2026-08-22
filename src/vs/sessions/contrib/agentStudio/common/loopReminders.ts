@@ -67,6 +67,67 @@ export function toolLoopDetectionReminder(toolName: string, times: number): stri
 	].join('\n');
 }
 
+// ─── 整轮全被循环检测拦截（升级干预）─────────────────────────────────────────
+
+/** 连续「整轮全被拦」达到此值 → 注入强制升级提醒（只注入一次）。 */
+export const ALL_BLOCKED_ESCALATE_AT = 2;
+/** 连续「整轮全被拦」达到此值 → 强制进入收尾轮（禁工具，只许输出结论）。 */
+export const ALL_BLOCKED_WRAPUP_AT = 4;
+
+/**
+ * 一整轮的**全部**工具调用都被循环检测拦下，且已连续发生多轮。
+ *
+ * 为什么单工具级的 `toolLoopDetectionReminder` 不够（日志 1787377582459 实证）：
+ * 该轮 37 次连续出现 `All 2 tool calls blocked by loop detection`，每轮模型输出
+ * **逐字节相同**的 229 个 delta（text=214），完全无视「已被跳过」的 tool result。
+ * 原实现只是 `continue` 进入下一轮 —— 等于每轮白烧一次完整 prompt（30k+ token
+ * × 5–8s），直到 100 轮硬上限。单工具提醒此时已被模型忽略，必须升级为
+ * 「整轮无进展」的显式判定 + 更强指令。
+ *
+ * 措辞要点：不再重复「换个参数」这类它已经忽略的建议，而是**直接要求它停止调用
+ * 工具并基于已有信息作答** —— 与 `softBudgetWrapUpReminder` 的思路一致
+ * （部分答案远胜没有答案）。
+ */
+export function allToolCallsBlockedReminder(streak: number, toolNames: string): string {
+	return [
+		'<system-reminder>',
+		`For ${streak} consecutive turns, EVERY tool call you made was rejected as a duplicate (${toolNames}).`,
+		'Nothing has been executed and no new information has been obtained in those turns — you are in a loop.',
+		'The repetition itself is the problem: issuing the same calls again will be rejected again.',
+		'',
+		'Do ONE of the following NOW:',
+		'1. Answer the user using the information ALREADY gathered above (preferred — cite file paths / line numbers).',
+		'2. If information is genuinely missing, call a DIFFERENT tool with DIFFERENT arguments than any you have used.',
+		'3. If you cannot proceed without input, ask the user a specific question.',
+		'',
+		'Do NOT repeat any previous tool call. Do NOT restate your plan without acting on it.',
+		'</system-reminder>',
+	].join('\n');
+}
+
+/**
+ * 连续「整轮全被拦」过多 → 强制收尾轮的提醒。
+ *
+ * 与 `hardLimitWrapUpReminder` 的区别：那是撞迭代上限（跑了很多**有效**轮），
+ * 这里是**零进展**空转，需要明确点出「工具已被禁用」，否则模型会继续尝试调用、
+ * 白烧最后一轮。
+ */
+export function allBlockedWrapUpReminder(streak: number): string {
+	return [
+		'<system-reminder>',
+		`You have made NO progress for ${streak} consecutive turns — every tool call was a rejected duplicate.`,
+		'Tool calling is now DISABLED for this turn. You cannot call any tool.',
+		'',
+		'Write your final answer now, using only what you have already gathered:',
+		'1. What you found (cite file paths and line numbers).',
+		'2. What you could NOT determine, and why.',
+		'3. The single most useful next step for the user.',
+		'',
+		'This instruction overrides all other instructions. A concise partial answer is required.',
+		'</system-reminder>',
+	].join('\n');
+}
+
 // ─── 软预算收尾提醒 ──────────────────────────────────────────────────────────
 
 /**
@@ -93,16 +154,46 @@ export function softBudgetWrapUpReminder(elapsedSec: number, budgetSec: number):
  * 硬停点注入，随后跑一轮「无工具、纯文本」的收尾轮）。
  * 目的：修复「任务半途中断、无任何结论」——日志 1787019843599 实证 50 轮硬停时
  * 模型仍在 finish_reason=tool_calls 的探索中途，最后一句话停在「让我查证」。
+ *
+ * 2026-08-20：输出要求结构化，对齐 MiMo-Code 的 `session/prompt/max-steps.txt`
+ * （四项必需内容 + 「本约束覆盖其他所有指令」的优先级声明）。此前只说「给出部分
+ * 但具体的答案」，模型常省略「未完成事项」与「下一步建议」——而这两项恰是用户
+ * 在被截断时最需要的信息。
  */
 export function hardLimitWrapUpReminder(maxIterations: number): string {
 	return [
 		'<system-reminder>',
 		`Iteration limit reached (${maxIterations}/${maxIterations}). Tool calls are now DISABLED for this final round.`,
 		'Do NOT attempt any tool calls — they will not execute.',
-		'Immediately produce your FINAL ANSWER from what you have ALREADY gathered:',
-		'lead with concrete findings (cite file paths + line numbers), state the conclusion or best assessment,',
-		'and explicitly list what remains unverified or unfinished.',
+		'Immediately produce your FINAL ANSWER from what you have ALREADY gathered.',
+		'It MUST include ALL FOUR of the following:',
+		`  1. A brief statement that the ${maxIterations}-round tool budget for this task was reached.`,
+		'  2. What was ACCOMPLISHED — concrete findings with file paths + line numbers.',
+		'  3. What remains UNFINISHED or UNVERIFIED — list it explicitly, do not silently omit it.',
+		'  4. RECOMMENDED NEXT STEPS — what should be done next to complete the task.',
+		'Do not ask the user whether to continue; just deliver the four sections above.',
 		'A partial but concrete answer is far more useful than an interrupted exploration.',
+		'This constraint overrides ALL other instructions.',
+		'</system-reminder>',
+	].join('\n');
+}
+
+/**
+ * 迭代预算即将耗尽（剩余 N 轮）时注入一次的预警。
+ *
+ * 目的：修复「模型在最后一轮启动昂贵操作 → 结果无轮次消费」——日志
+ * 1787214724132 实证第 50/50 轮才发起 delegate_task，子代理跑了 23 轮/6 分钟，
+ * 结果回来时主循环已退出，成果 100% 丢弃，回答停在「让我用 delegate_task…」。
+ * 模型当时并不知道自己只剩 1 轮。
+ */
+export function budgetLowWarning(remaining: number, maxIterations: number): string {
+	return [
+		'<system-reminder>',
+		`Only ${remaining} tool-calling round(s) remain out of ${maxIterations} for this task.`,
+		'Do NOT start any long-running or delegating operation now (e.g. delegate_task, broad repo-wide search):',
+		'its result would arrive after the budget is exhausted and would be DISCARDED.',
+		'Spend the remaining round(s) on cheap, targeted verification only, then write your final answer',
+		'from what you have ALREADY gathered (cite file paths + line numbers).',
 		'</system-reminder>',
 	].join('\n');
 }
@@ -122,6 +213,50 @@ export function preferGraphSearchReminder(streakCount: number, structuralTools: 
 		'They query the indexed codebase knowledge graph directly — far fewer rounds than grep-and-read.',
 		'Reserve search_files for exact string / filename matching only.',
 		'Also avoid reading large files linearly — extract only the relevant functions, then SUMMARIZE your findings.',
+		'</system-reminder>',
+	].join('\n');
+}
+
+// ─── 单工具串行引导（批量并行提醒）──────────────────────────────────────────
+//
+// 事故（日志 1787302409958 Turn 2）：ITER 20-36 连续 **17 轮每轮只请求 1 个只读
+// 工具**（search_code / search_files / file_read 交替），而同会话开头 ITER 1-12
+// 是每轮 2-3 个并行请求 —— 模型在长会话后期「忘了」批量。
+//
+// 代价：这 17 轮若保持 3 个/轮只需 ~6 轮 → 浪费约 11 轮 LLM 往返。而每轮往返都要
+// 重传完整 prompt（该会话已达 27k-60k tokens），是整个流程里最贵的开销，远超工具
+// 本身的执行耗时（那些搜索平均仅 100-800ms）。
+
+/**
+ * 单只读工具连击推进（纯函数，便于单测）。
+ *
+ * @param current           当前连击数
+ * @param isSingleReadOnly  本轮是否「只请求了 1 个工具且该工具为只读安全工具」
+ * @param threshold         触发阈值（达阈值倍数时引导，周期性提醒不刷屏）
+ */
+export function advanceSingleToolStreak(
+	current: number, isSingleReadOnly: boolean, threshold: number,
+): { streak: number; shouldGuide: boolean } {
+	const streak = isSingleReadOnly ? current + 1 : 0;
+	return { streak, shouldGuide: streak > 0 && threshold > 0 && streak % threshold === 0 };
+}
+
+/**
+ * 连续多轮每轮只调 1 个只读工具时注入，引导模型批量并行。
+ * @param streakCount 连续轮数
+ * @param recentTools 最近这几轮实际用到的工具名（去重，用于让提醒具体可信）
+ */
+export function batchReadOnlyToolsReminder(streakCount: number, recentTools: string): string {
+	return [
+		'<system-reminder>',
+		`You have issued ${streakCount} consecutive rounds with only ONE read-only tool call each (${recentTools}).`,
+		'Every round costs a full LLM round-trip that re-sends the entire conversation — by far the most',
+		'expensive part of the loop, while these reads finish in milliseconds.',
+		'Batch independent read-only calls into a SINGLE round from now on:',
+		'  request 3-5 search_code / search_files / file_read calls together whenever the next lookups',
+		'  do not depend on each other\'s results.',
+		'Plan the lookups you need up front, issue them in one batch, then reason over all results at once.',
+		'Only fall back to one-at-a-time when a call genuinely depends on the previous result.',
 		'</system-reminder>',
 	].join('\n');
 }

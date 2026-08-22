@@ -2,6 +2,30 @@ import { $, append, addDisposableListener, EventType } from '../../../base/brows
 import { IToolCall, IAgentChatMessage, IConfirmationData } from './agentChatTypes.js';
 import { AgentChatPanelCodebaseCards } from './agentChatPanel.codebaseCards.js';
 import { createSvgIcon, FILE_ICON_D, ERROR_ICON_D } from './agentChatPanel.toolCards.js';
+import { parseToolArgsLoose } from './toolArgsJson.js';
+
+/**
+ * 拆分 shell 命令的提示符前缀，用于终端卡片的命令行高亮显示。
+ * 复制按钮仍复制完整命令（不经过本函数），仅显示层拆分。
+ *
+ * - `PS G:\path>` → prompt=`PS G:\path>`，body=其余（Windows PowerShell）
+ * - `$ cmd` / `> cmd` → prompt=`$` / `>`，body=命令（Unix shell / 重定向）
+ * - 无前缀 → prompt=''，body=原命令
+ */
+export function splitTerminalPrompt(commandText: string): { prompt: string; body: string } {
+	if (!commandText) { return { prompt: '', body: '' }; }
+	const psMatch = commandText.match(/^(PS\s+[A-Za-z]:[^>]*>)/);
+	if (psMatch) {
+		const prompt = psMatch[1];
+		return { prompt, body: commandText.slice(prompt.length).replace(/^\s+/, '') };
+	}
+	const symMatch = commandText.match(/^([$>])\s+/);
+	if (symMatch) {
+		const prompt = symMatch[1];
+		return { prompt, body: commandText.slice(prompt.length).replace(/^\s+/, '') };
+	}
+	return { prompt: '', body: commandText };
+}
 
 /** 自 agentChatPanel.toolCards.ts 抽离（上帝对象拆分）。继承链见继承父类。 */
 export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCards {
@@ -50,6 +74,16 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 
 				const modEl = append(titleContainer, $('span.write-file-modified'));
 				modEl.textContent = isRunning ? '(运行中)' : key === 'patch' ? '(修改)' : '(新建)';
+			} else {
+				// P0（2026-08-21，日志 1787311601345 + 用户截图）：路径提取失败时原实现
+				// 整段跳过 → 标题区一个元素都不渲染，卡片视觉上完全空白（连工具名和状态
+				// 都看不到）。任何提取失败都必须有兜底展示，否则缺陷只能靠截图发现。
+				const fallbackEl = append(titleContainer, $('span.write-file-name'));
+				fallbackEl.textContent = this._getToolTitle(key, tc.displayName, tc.name, isRunning);
+				// `.write-file-path-unresolved` 是给 `_needsArgsDrivenRebuild` 的占位标记：
+				// filePath 常在 tool_args delta 后到，届时需要补齐重建一次（2026-08-22）。
+				const modEl = append(titleContainer, $('span.write-file-modified.write-file-path-unresolved'));
+				modEl.textContent = isRunning ? '(运行中)' : '(路径未解析)';
 			}
 
 			// diff 行数统计（绿色 +N / 红色 -N）
@@ -198,7 +232,7 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				} else {
 					// 退化为纯文本预览
 					const pre = append(diffBlock, $('.write-file-diff-content'));
-					pre.textContent = tc.result;
+					pre.textContent = this._normalizeToolResultText(tc.result);
 				}
 			}
 
@@ -209,7 +243,7 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				const bchevron = this._svgChevron(bh, 'tool-bottom-children-chevron', 12);
 				append(bh, $('span.tool-bottom-children-title')).textContent = '错误详情';
 				const bbody = append(bottom, $('.tool-bottom-children-body'));
-				append(bbody, $('.tool-bottom-children-content')).textContent = tc.error;
+				append(bbody, $('.tool-bottom-children-content')).textContent = this._normalizeToolResultText(tc.error);
 				this._register(addDisposableListener(bh, EventType.CLICK, (e) => {
 					e.stopPropagation();
 					const open = bbody.classList.toggle('tool-bottom-children-body-open');
@@ -481,45 +515,73 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 	}
 
 	protected override _createTerminalToolCard(tc: IToolCall, key: string): HTMLElement {
-			const isRunning = tc.status === 'running';
-			const isError = tc.status === 'error';
-			const isSuccess = tc.status === 'success' || (!isRunning && !isError && tc.status !== 'approval_required' && tc.status !== 'rejected' && tc.status !== 'canceled');
+		const isRunning = tc.status === 'running';
+		const isError = tc.status === 'error';
+		const isApproval = tc.status === 'approval_required';
+		const isRejected = tc.status === 'rejected';
+		const isCanceled = tc.status === 'canceled';
 
-			// 提取命令字符串
-			let commandText = '';
-			try {
-				if (tc.args) {
-					const args = JSON.parse(tc.args);
-					commandText = typeof args['command'] === 'string' ? args['command']
-						: typeof args['cmd'] === 'string' ? args['cmd']
-						: typeof args['code'] === 'string' ? args['code'] : '';
-				}
-			} catch { /* ignore */ }
+			// 提取命令字符串（宽松修复链：命令里含 `\x` 等非法转义时原裸 parse
+			// 会失败 → 终端卡片只显示状态前缀、命令行空白）
+			// args 提到 if 外：命令未到时还要读 description 做占位展示（2026-08-22）
+			const args = tc.args ? parseToolArgsLoose(tc.args) : {};
+			const commandText = typeof args['command'] === 'string' ? args['command']
+				: typeof args['cmd'] === 'string' ? args['cmd']
+				: typeof args['code'] === 'string' ? args['code'] : '';
+
+			// 拆分 shell 提示符前缀（PS <path>> / $ / >）做高亮；复制仍用完整 commandText。
+			const split = splitTerminalPrompt(commandText);
+			const promptText = split.prompt;
+			const cmdBody = split.body;
 
 			// ── 状态驱动外壳 ──
 			let statusClass = 'tool-card-success';
 			if (isError) { statusClass = 'tool-card-error'; }
 			else if (isRunning) { statusClass = 'tool-card-running'; }
-			else if (tc.status === 'skipped' || tc.status === 'canceled') { statusClass = 'tool-card-rejected'; }
+			// 等待用户授权：黄色审批外壳（卡内审批区由 dispatcher 统一挂载）
+			else if (isApproval) { statusClass = 'tool-card-approval'; }
+			else if (isRejected || isCanceled) { statusClass = 'tool-card-rejected'; }
 			const wrapper = $(`.tool-header-wrapper.${statusClass}.terminal-tool-card`);
 			if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
 
-			// ── Header（单行命令 + 按钮）──
+			// ── Header：单行（终端图标 + 命令 + 右侧按钮 + 展开 chevron）──
+			// 2026-08-21 重构：去掉「状态行 + pill」双行布局，改为单行命令展示，
+			// 状态通过命令行前缀（⟳/✕/✓/⊘）隐式表达，与截图样式对齐。
 			const headerEl = append(wrapper, $('.tool-header.terminal-header'));
-			const row = append(headerEl, $('.tool-header-row'));
+			const row = append(headerEl, $('.tool-header-row.terminal-header-row'));
 
-			// 左侧：终端 logo + 命令
 			const left = append(row, $('.tool-header-left.terminal-left'));
-			const titleContainer = append(left, $('.tool-header-title-container.tool-header-title-clickable'));
+			const titleContainer = append(left, $('.tool-header-title-container.tool-header-title-clickable.terminal-title-container'));
 			const chevron = this._svgChevron(titleContainer, 'tool-header-chevron', 14);
 
-			// 终端 logo（`>_` prompt 风格 SVG）
+			// 终端 logo（单行左侧图标）
 			this._svgTerminalLogo(titleContainer, 'terminal-logo');
-			// 命令文本（去掉前缀"$ "，使用等宽字体）
-			const cmdEl = append(titleContainer, $('span.terminal-cmd-text'));
-			cmdEl.textContent = commandText || (isRunning ? '执行中…' : '(空命令)');
 
-			// 点击标题区域（chevron + logo + 命令文本）展开/折叠，但不拦截内部按钮点击
+			// 命令行：状态前缀 + 提示符 + 命令体（单行省略）
+			const cmdLine = append(titleContainer, $('.terminal-cmd-line'));
+			const statusPrefix = isRunning ? '⟳ '
+				: isError ? '✕ '
+				: isApproval ? '⚠ '
+				: isRejected || isCanceled ? '⊘ '
+				: '✓ ';
+			append(cmdLine, $('span.terminal-cmd-status')).textContent = statusPrefix;
+			if (commandText) {
+				if (promptText) { append(cmdLine, $('span.terminal-cmd-prompt')).textContent = promptText; }
+				append(cmdLine, $('span.terminal-cmd-body')).textContent = cmdBody;
+			} else {
+				// 命令文本尚未到达（tool_start 与 tool_args 是两个独立 delta）。
+				// 2026-08-22：优先展示模型提供的 5-10 词 description —— 否则这里在整个
+				// 命令执行期间都只有「执行中…」（实测一次 execute_code 跑了 30.5s）。
+				// 仍保留 `.terminal-cmd-empty` 标记：args 到达后要靠它触发补齐重建
+				// （见 toolCardArgsRefresh）。
+				const intent = typeof args['description'] === 'string' ? args['description'].trim() : '';
+				const el = append(cmdLine, $('span.terminal-cmd-body.terminal-cmd-empty'));
+				el.textContent = intent
+					? (isRunning ? `${intent}…` : intent)
+					: (isRunning ? '执行中…' : '（无命令）');
+			}
+
+			// 点击标题区域（chevron + 两行文本）展开/折叠，但不拦截内部按钮点击
 			this._register(addDisposableListener(titleContainer, EventType.CLICK, (e) => {
 				if ((e.target as HTMLElement)?.closest?.('button')) { return; }
 				e.stopPropagation();
@@ -533,30 +595,23 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				}
 			}));
 
-			// 右侧：状态图标 + 继续执行 + 复制 + Run in Terminal
-			const right = append(row, $('.tool-header-right'));
-			if (isRunning) {
-				this._svgSpinner(right, 'tool-header-spinner-icon');
-				// 「继续执行」按钮（常驻 header，卡片折叠也可见）：中止当前长命令，
-				// 不取消整个 turn——agent 拿到中断结果后继续后续步骤，避免原地卡住。
-				if (this._onSkipCurrentTool) {
-					const skipBtn = append(right, $('button.terminal-continue-btn.terminal-continue-header')) as HTMLButtonElement;
-					skipBtn.textContent = '继续执行';
-					skipBtn.title = '不等待命令完成，跳过当前命令并继续后续步骤';
-					this._register(addDisposableListener(skipBtn, EventType.CLICK, (e) => {
-						e.stopPropagation();
-						skipBtn.disabled = true;
-						skipBtn.textContent = '已跳过';
-						this._onSkipCurrentTool?.();
-					}));
-				}
-			} else if (isError) {
-				this._svgAlert(right, 'tool-header-error-icon');
-			} else if (isSuccess) {
-				this._svgCheck(right, 'tool-header-success-icon');
+			// 右侧：继续执行（running）+ 复制 + 时长
+			const right = append(row, $('.tool-header-right.terminal-right'));
+			// 「继续执行」按钮：仅 running 态显示——中止当前长命令、不取消整个 turn。
+			// 折叠态也常驻可见（避免用户折叠后找不到「跳过」入口）。
+			if (isRunning && this._onSkipCurrentTool) {
+				const skipBtn = append(right, $('button.terminal-continue-btn.terminal-continue-header')) as HTMLButtonElement;
+				skipBtn.textContent = '继续执行';
+				skipBtn.title = '不等待命令完成，跳过当前命令并继续后续步骤';
+				this._register(addDisposableListener(skipBtn, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					skipBtn.disabled = true;
+					skipBtn.textContent = '已跳过';
+					this._onSkipCurrentTool?.();
+				}));
 			}
 			if (typeof tc.duration === 'number' && tc.duration >= 0 && !isRunning) {
-				append(right, $('span.tool-header-desc2')).textContent = this._formatDuration(tc.duration);
+				append(right, $('span.terminal-duration')).textContent = this._formatDuration(tc.duration);
 			}
 			// 复制按钮
 			if (commandText) {
@@ -571,10 +626,10 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 					setTimeout(() => copyBtn.classList.remove('terminal-copy-done'), 1200);
 				}));
 			}
-			// 独立终端按钮（绿色框图标）
+			// 独立终端按钮（「在终端中显示」：绿色框图标，非 running 态可点）
 			if (this._onRunInTerminal && commandText && !isRunning) {
 				const termBtn = append(right, $('button.terminal-open-btn'));
-				termBtn.title = '在独立终端窗口中运行';
+				termBtn.title = '在终端中显示';
 				this._svgTerminalOpenIcon(termBtn, 'terminal-open-icon');
 				this._register(addDisposableListener(termBtn, EventType.CLICK, (e) => {
 					e.stopPropagation();
@@ -597,47 +652,62 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				chevron.classList.add('tool-header-chevron-expanded');
 			}
 
-			// ── Body 内容：直接放命令结果（无 section 标签）──
+			// ── Body 内容 ──
 			if (isRunning && !tc.result) {
-				const running = append(innerBox, $('.terminal-running-row'));
-				// 左侧占位文本 + 右侧「继续下一步」按钮
-				const placeholder = append(running, $('span.terminal-placeholder'));
-				placeholder.textContent = '运行中，详情可在终端查看';
-				// 继续下一步按钮：点击后仅中止当前工具执行（返回中断结果给 LLM），
-				// turn 继续——agent 拿到结果后跳过该命令继续后续步骤。
-				if (this._onSkipCurrentTool) {
-					const continueBtn = append(running, $('button.terminal-continue-btn')) as HTMLButtonElement;
-					continueBtn.textContent = '继续执行';
-					continueBtn.title = '不等待命令完成，跳过当前命令并继续后续步骤';
-					this._register(addDisposableListener(continueBtn, EventType.CLICK, (e) => {
-						e.stopPropagation();
-						continueBtn.disabled = true;
-						continueBtn.textContent = '已跳过';
-						this._onSkipCurrentTool?.();
-					}));
+				// 运行中：等宽命令块 + 简短文案（无脉冲点——保持简洁；「继续执行」在 header）
+				if (commandText) {
+					const cmdBlock = append(innerBox, $('.terminal-cmd-block'));
+					cmdBlock.textContent = commandText;
 				}
+				const explain = append(innerBox, $('.terminal-explain-row.running'));
+				append(explain, $('span.terminal-explain-text')).textContent = '正在运行，详情可在终端查看';
 			} else if (tc.result) {
+				// 完整命令块（展开后可见，反引号换行不丢）
+				if (commandText) {
+					const cmdBlock = append(innerBox, $('.terminal-cmd-block'));
+					cmdBlock.textContent = commandText;
+				}
+				// ★ 2026-08-21 重构：每行加 `> ` 前缀（等宽字体 + 缩进），对齐截图样式。
+				// tc.result 是 agentOS 层包出来的 [{type:"text",text:"..."}] 协议外壳，
+				// 先剥掉再渲染。stderr 行用 `! ` 前缀 + warning 色。
 				const output = append(innerBox, $('.terminal-output-block'));
 				if (isError) { output.classList.add('terminal-output-error'); }
-				const pre = append(output, $('.terminal-output-content'));
-				pre.textContent = tc.result;
-				// exit code 徽标
-				if (typeof tc.exitCode === 'number') {
-					const ec = append(output, $(
-						`.tool-exit-code.${tc.exitCode === 0 ? 'tool-exit-code-zero' : 'tool-exit-code-nonzero'}`
-					));
-					ec.textContent = `exit code ${tc.exitCode}`;
+				const resultText = this._normalizeToolResultText(tc.result);
+				const stderrText = tc.error ? this._normalizeToolResultText(tc.error) : '';
+				const stdoutLines = resultText.split('\n');
+				const stderrLines = stderrText ? stderrText.split('\n') : [];
+				// 空结果时仍渲染一个空行占位
+				if (stdoutLines.length === 1 && stdoutLines[0] === '' && stderrLines.length === 0) {
+					stdoutLines.push('（无输出）');
 				}
+				const renderLines = (lines: string[], prefix: string, klass: string) => {
+					for (const line of lines) {
+						const row = append(output, $('div.terminal-output-line.' + klass));
+						append(row, $('span.terminal-output-prefix')).textContent = prefix;
+						append(row, $('span.terminal-output-text')).textContent = line.length > 0 ? line : '\u00A0';
+					}
+				};
+				renderLines(stdoutLines, '> ', 'stdout');
+				if (stderrLines.length) { renderLines(stderrLines, '! ', 'stderr'); }
+				// exit bar：exit code + 输出统计
+				const exitBar = append(innerBox, $('.terminal-exit-bar'));
+				if (typeof tc.exitCode === 'number') {
+					const ec = append(exitBar, $('span.terminal-exit-tag'));
+					ec.textContent = `exit code ${tc.exitCode}`;
+					ec.classList.add(tc.exitCode === 0 ? 'zero' : 'nonzero');
+				}
+				const lineCount = stdoutLines.length + stderrLines.length;
+				append(exitBar, $('span.terminal-exit-meta')).textContent = `${lineCount} 行输出`;
 			}
 
-			// 错误详情
+			// 错误详情（无 result 时的折叠错误面板，保留旧逻辑）
 			if (isError && tc.error && !tc.result) {
 				const bottom = append(wrapper, $('.tool-bottom-children'));
 				const bh = append(bottom, $('.tool-bottom-children-header'));
 				const bchevron = this._svgChevron(bh, 'tool-bottom-children-chevron', 12);
 				append(bh, $('span.tool-bottom-children-title')).textContent = '错误详情';
 				const bbody = append(bottom, $('.tool-bottom-children-body'));
-				append(bbody, $('.tool-bottom-children-content')).textContent = tc.error;
+				append(bbody, $('.tool-bottom-children-content')).textContent = this._normalizeToolResultText(tc.error);
 				this._register(addDisposableListener(bh, EventType.CLICK, (e) => {
 					e.stopPropagation();
 					const open = bbody.classList.toggle('tool-bottom-children-body-open');
@@ -671,9 +741,8 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 		verb.textContent = isError ? '读取' : '读取';
 		verb.style.cssText = 'color:var(--void-fg-3);font-size:12px;flex-shrink:0;';
 
-		// 提取文件路径和行号
-		let p: Record<string, unknown> = {};
-		try { p = tc.args ? JSON.parse(tc.args) : {}; } catch { p = {}; }
+		// 提取文件路径和行号（宽松修复链，避免 (未知文件) 误显示）
+		const p = parseToolArgsLoose(tc.args);
 		const fp = (tc.filePath || p.file_path || p.filePath || p.path || p.uri) as string | undefined;
 		const startLine = (p.start_line ?? p.startLine ?? p.offset) as number | undefined;
 		const endLine = (p.end_line ?? p.endLine) as number | undefined;

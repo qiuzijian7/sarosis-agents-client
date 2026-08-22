@@ -69,6 +69,46 @@ export function findLinkAt(graph: LGraph, x: number, y: number, threshold = 12):
 	}
 	return undefined;
 }
+
+/**
+ * Hit-test a link's **centre handle** (the small dot litegraph draws at the
+ * middle of each connection) using litegraph's OWN computed centre coordinates.
+ *
+ * Why this exists: `findLinkAt` samples a *quadratic* Bézier with horizontal
+ * control points, but litegraph 0.17.2 actually draws links as a *cubic* Bézier
+ * (`renderLink` → `findPointOnCurve(..., 0.5)`) and stores the resulting centre
+ * in each link's `_pos` (then hit-tests it with `#getLinkCentreOnPos` in a
+ * ±4px canvas-space rectangle). For any non-horizontal link the two curves'
+ * t=0.5 points diverge by 50–75 graph units — far beyond `findLinkAt`'s
+ * 12-unit threshold — so clicking the visible dot silently missed and the
+ * link menu never opened. We reuse litegraph's already-computed `_pos` so the
+ * hit-test is pixel-identical to what the user sees.
+ *
+ * `canvasX`/`canvasY` are pixel coordinates relative to the canvas element
+ * (same space litegraph's `e.canvasX/e.canvasY` use). `radius` is the hit
+ * half-extent in pixels (litegraph uses 4; we default a touch larger so the
+ * dot is comfortably clickable). Returns the hit link, or `undefined`.
+ */
+export function findLinkCentreAt(
+	liteCanvas: LGraphCanvas,
+	canvasX: number,
+	canvasY: number,
+	radius = 6,
+): LLink | undefined {
+	for (const segment of liteCanvas.renderedPaths) {
+		const centre = (segment as { _pos?: [number, number] })._pos;
+		if (!centre) { continue; }
+		if (
+			canvasX >= centre[0] - radius &&
+			canvasX <= centre[0] + radius &&
+			canvasY >= centre[1] - radius &&
+			canvasY <= centre[1] + radius
+		) {
+			return segment as unknown as LLink;
+		}
+	}
+	return undefined;
+}
 import { getDomFormWidget, setDomFormContentHeight, takeFormHeightDirty, clearFormHeightDirty, markFormHeightDirty, ensureDomFormWidget } from './comfyHost/domWidget';
 import { hasStageEditor, stageMinHeight } from './comfyHost/stageCardRegistry';
 import { claimStageUid, releaseStageUidByOwner, readStageUid } from './comfyHost/stageIdentity';
@@ -315,6 +355,14 @@ export interface LiteGraphCanvasHandle {
 	cloneNode(nodeId: number): void;
 	/** Remove a connection by its LiteGraph link id (link menu "Disconnect"). */
 	removeLink(linkId: number): void;
+	/** Fully delete a connection (link menu "Delete"). In this editor there are
+	 *  no reroutes, so this is equivalent to removeLink — kept separate to
+	 *  mirror ComfyUI's Disconnect vs Delete menu separation. */
+	deleteLink(linkId: number): void;
+	/** Rename a typed connection (link menu "Rename"). No-op for untyped links. */
+	renameLink(linkId: number, name: string): void;
+	/** Recolor a connection (link menu "Colors" submenu). */
+	setLinkColor(linkId: number, color: string): void;
 	/** Snap all selected nodes to the 8px grid (canvas menu "Align"). */
 	alignSelected(): void;
 	/**
@@ -360,6 +408,9 @@ interface LiteGraphCanvasProps {
 	onNodeContextMenu?: (node: LGraphNode, graphX: number, graphY: number, clientX: number, clientY: number) => void;
 	/** Right-click on a connection link → open the link menu (disconnect). */
 	onLinkContextMenu?: (link: LLink, graphX: number, graphY: number, clientX: number, clientY: number) => void;
+	/** Left-click on a connection's center handle (the dot shown on hover,
+	 *  ComfyUI-style) → open the link handle menu (Add Node / Add Reroute / Delete). */
+	onLinkHandleClick?: (link: LLink, graphX: number, graphY: number, clientX: number, clientY: number) => void;
 	/** Ctrl+Enter on the canvas → run the workflow (ComfyUI "Queue prompt"). */
 	onRequestRun?: () => void;
 	/** Double-click on empty canvas → open the node search box (ComfyUI-style). */
@@ -408,7 +459,7 @@ function collectAsset(workflowId: string, entry: MediaSnapshotEntry): void {
 }
 
 export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraphCanvasProps>(
-	function LiteGraphCanvas({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onNodeContextMenu, onRequestRun, onCanvasDoubleClick, workflowId }: LiteGraphCanvasProps, ref): React.JSX.Element {
+	function LiteGraphCanvas({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onNodeContextMenu, onLinkHandleClick, onRequestRun, onCanvasDoubleClick, workflowId }: LiteGraphCanvasProps, ref): React.JSX.Element {
 	const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
 	const graphRef = React.useRef<LGraph | null>(null);
 	const canvasInstanceRef = React.useRef<LGraphCanvas | null>(null);
@@ -770,6 +821,35 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			// ── ComfyUI legacy：左键拖空白 = 平移画布（自定义 panRef，绕过
 			//    LiteGraph 原生 dragging_canvas，因 DOM overlay 层挡 hit-test）──
 			if (!hit) {
+				// ★ ComfyUI 交互：左键点击连线中点圆点 → 弹出连线菜单
+				//   （Add Node / Add Reroute / Disconnect / Delete / Rename / Set Color）。
+				//   必须在此先于平移逻辑短路返回，否则 stopPropagation + setPointerCapture
+				//   会吞掉 React onClick，导致左键中点菜单永不弹出（右键正常）。
+				//   命中判定复用 findLinkAt 的曲线采样逻辑：连线在画布上绘制的是
+				//   二次贝塞尔曲线（控制点在水平轴），其真实中点与两节点直线中点
+				//   偏差很大；用直线中点判定会导致点击视觉圆点时距离超阈值而不弹菜单。
+				//   这里直接复用 findLinkAt（threshold 与 onClick 分支统一为 12）做命中，
+				//   保证两处判定一致。
+				const link = findLinkAt(graph, cx, cy, 12);
+				if (link) {
+					// 拦截平移并直接触发菜单，避免事件继续冒泡到 React onClick
+					// 造成重复弹出。注意：本分支不设置 dragRef，因此 dragPointerUp
+					// 不会释放 pointer capture —— 必须在此手动释放，否则后续 click
+					// 被 container 捕获吞掉，菜单只在极少数情况下弹出。
+					e.stopPropagation();
+					e.preventDefault();
+					try { container.releasePointerCapture(e.pointerId); } catch { /* no capture */ }
+					// ★ 关键修复：左键点击会紧跟一个 click 事件，该事件冒泡到
+					//   WorkflowEditorPanel 的背板 div（position:fixed; inset:0;
+					//   zIndex:99）的 onClick，被误判为「点击空白处」而把刚弹出的
+					//   linkMenu 立刻清空 → 菜单闪一下就消失（右击走 contextmenu，
+					//   不触发 onClick，所以右键正常）。此处用一次性 capture 监听
+					//   拦掉紧随其后的那个 click，不影响后续正常点击。
+					const suppressClick = (ev: Event) => { ev.stopPropagation(); };
+					container.addEventListener('click', suppressClick, { capture: true, once: true });
+					onLinkHandleClick?.(link, cx, cy, e.clientX, e.clientY);
+					return;
+				}
 				dragRef = null;
 				e.stopPropagation();
 				e.preventDefault();
@@ -868,6 +948,40 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		window.addEventListener('pointermove', dragPointerMove);
 		window.addEventListener('pointerup', dragPointerUp);
 		window.addEventListener('pointercancel', dragPointerUp);
+
+		// ── ComfyUI-style hover cursor ─────────────────────────────────────
+		// crosshair over a port (signals "drag a new link"), grab over a node
+		// body, grabbing while a node is being dragged, default on empty canvas.
+		// rAF-coalesced so we only hit-test once per frame during fast moves.
+		let hoverCursorRaf = 0;
+		let pendingHoverX = 0;
+		let pendingHoverY = 0;
+		const applyHoverCursor = () => {
+			hoverCursorRaf = 0;
+			if (dragRef) { canvas.style.cursor = 'grabbing'; return; }
+			const rect = canvas.getBoundingClientRect();
+			const gx = (pendingHoverX - rect.left) / liteCanvas.ds.scale - liteCanvas.ds.offset[0];
+			const gy = (pendingHoverY - rect.top) / liteCanvas.ds.scale - liteCanvas.ds.offset[1];
+			const node = graph.getNodeOnPos(gx, gy);
+			if (!node) { canvas.style.cursor = 'default'; return; }
+			if (node.getInputOnPos?.([gx, gy]) || node.getOutputOnPos?.([gx, gy])) {
+				canvas.style.cursor = 'crosshair';
+			} else {
+				canvas.style.cursor = 'grab';
+			}
+		};
+		const hoverPointerMove = (e: PointerEvent) => {
+			pendingHoverX = e.clientX;
+			pendingHoverY = e.clientY;
+			if (hoverCursorRaf) { return; }
+			hoverCursorRaf = requestAnimationFrame(applyHoverCursor);
+		};
+		const hoverPointerLeave = () => {
+			if (hoverCursorRaf) { cancelAnimationFrame(hoverCursorRaf); hoverCursorRaf = 0; }
+			if (!dragRef) { canvas.style.cursor = 'default'; }
+		};
+		container.addEventListener('pointermove', hoverPointerMove);
+		container.addEventListener('pointerleave', hoverPointerLeave);
 
 		// ComfyUI legacy 平移 listeners（仅 panRef 激活时生效；跨 container 区域仍平移）。
 		window.addEventListener('pointermove', panPointerMove);
@@ -1054,6 +1168,23 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		// DOM 顺序只在 canvasIdx 序列真正变化时同步一次（纯兜底，避免每帧 reflow）。
 		let lastOrderSignature = '';
 		const containerOrder: Array<{ id: string; container: HTMLElement; canvasIdx: number }> = [];
+		// ── 每帧循环内的诊断日志必须去重（2026-08-20 修「整个 UI 卡死」事故）──────
+		// syncOverlay 是 rAF 回调（每帧执行）。此前下面三处 console.warn 直接写在
+		// 循环里，只要图上存在一个命中条件的节点（如 Saros.End 走 "orch node skipped"），
+		// 就会**每帧打一条**。实测日志 1787236461058：`[syncOverlay]` 共 **20773 条**，
+		// 占全部 console 消息的 98.6%；而 DevTools 对 console.warn 会**捕获并附带完整
+		// 调用栈**（每条 ~30 行），最终 28MB / 139 万行日志，其中 67 万行是
+		// `requestAnimationFrame / Ye @ VM14:3874` 栈帧。
+		// 后果不只是日志脏：console 序列化 + 每帧栈捕获把 renderer 主线程吃满 →
+		// 整个窗口（**包括 Agent Chat**）无响应，用户表现为「LLM 被卡住」。
+		// 诊断价值只需「首次出现」即可定位，故一律 warnOnce。
+		const warnedOnceKeys = new Set<string>();
+		const warnOnce = (key: string, message: string): void => {
+			if (warnedOnceKeys.has(key)) { return; }
+			warnedOnceKeys.add(key);
+			// eslint-disable-next-line no-console
+			console.warn(message + ' [logged once per key]');
+		};
 		const syncOverlay = () => {
 			overlayRaf = requestAnimationFrame(syncOverlay);
 			const g = graphRef.current;
@@ -1132,13 +1263,13 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				// DOM-card "消失" 诊断：spec 未命中时卡片会被跳过（canvas 参数 widget
 				// 仍由 arrange() 绘制 → 表现为"参数还在、DOM 卡片消失"）。打点定位。
 				if (!spec) {
-						// eslint-disable-next-line no-console
-						console.warn('[syncOverlay] spec miss ' + JSON.stringify({ nodeId, type, liteType: props['__liteType'], nType: n.type }));
+						warnOnce(`spec-miss:${nodeId}:${type}`,
+							'[syncOverlay] spec miss ' + JSON.stringify({ nodeId, type, liteType: props['__liteType'], nType: n.type }));
 					} else if (type.startsWith('Saros.')) {
 						// 编排节点被守卫跳过时打点：定位「某类节点参数 UI 缺失」。
 						// 若这里出现 Saros.Agent 等，说明该类型未登记进 ORCH_RICH_NODE_TYPES。
-						// eslint-disable-next-line no-console
-						console.warn('[syncOverlay] orch node skipped (no DOM card) ' + JSON.stringify({ nodeId, type, kind: spec.kind, isOrchRich }));
+						warnOnce(`orch-skip:${nodeId}:${type}`,
+							'[syncOverlay] orch node skipped (no DOM card) ' + JSON.stringify({ nodeId, type, kind: spec.kind, isOrchRich }));
 					}
 				continue;
 				}
@@ -1215,11 +1346,13 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 					const prevHNum = parseFloat(prevHeight) || 0;
 					if (contentH > 0 && (!prevHNum || contentH >= prevHNum * 0.6)) {
 						deferredHeightFixes.push({ node: n as unknown as Parameters<typeof setDomFormContentHeight>[0], h: contentH });
-						// eslint-disable-next-line no-console
-						console.warn('[heightFb]', { nodeId: nodeId.slice(0, 12), contentH, prevH: prevHeight.slice(0, -2) });
+						// 高度反馈循环每帧可能触发多次；key 含目标高度，使「收敛过程」
+						// 仍能看到每个不同高度各一条，收敛后不再刷屏（见 warnOnce 注释）。
+						warnOnce(`heightFb:${nodeId}:${contentH}`,
+							'[heightFb] ' + JSON.stringify({ nodeId: nodeId.slice(0, 12), contentH, prevH: prevHeight.slice(0, -2) }));
 					} else {
-						// eslint-disable-next-line no-console
-						console.warn('[heightFb SKIP] bogus', { nodeId: nodeId.slice(0, 12), contentH, prevH: prevHeight.slice(0, -2), ratio: prevHNum ? (contentH / prevHNum).toFixed(2) : '?' });
+						warnOnce(`heightFb-skip:${nodeId}:${contentH}`,
+							'[heightFb SKIP] bogus ' + JSON.stringify({ nodeId: nodeId.slice(0, 12), contentH, prevH: prevHeight.slice(0, -2), ratio: prevHNum ? (contentH / prevHNum).toFixed(2) : '?' }));
 					}
 				}
 			}
@@ -1239,6 +1372,8 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				const lastRetry = cardRemountAt.get(nodeId) ?? 0;
 				const now = Date.now();
 				if (now - lastRetry > 1000) {
+					// eslint-disable-next-line no-console
+					console.warn('[cardSelfHeal] remount empty container', { nodeId, nodeType: spec?.type, ageMs: now - lastRetry });
 					cardRemountAt.set(nodeId, now);
 					cardUnmounts.get(nodeId)?.();
 					cardUnmounts.delete(nodeId);
@@ -1455,8 +1590,9 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			// 或整个图被重建（syncStoreToGraph → graph.clear）→ 与 React effect 重建
 			// / store 改动 / SpecRegistry 刷新 时序相关。
 			if (unmountedCount > 1) {
-				// eslint-disable-next-line no-console
-				console.warn('[syncOverlay] bulk card unmount ' + JSON.stringify({ unmountedCount, seen: [...seen], totalTracked: cardUnmounts.size + unmountedCount, emptySeenStreak }));
+				// key 含规模：不同批量规模各记一次，仍可定位问题而不刷屏
+				warnOnce(`bulk-unmount:${unmountedCount}`,
+					'[syncOverlay] bulk card unmount ' + JSON.stringify({ unmountedCount, seen: [...seen], totalTracked: cardUnmounts.size + unmountedCount, emptySeenStreak }));
 			}
 			bridge.sync(nodesForSync, { x: ds.offset[0], y: ds.offset[1], scale: ds.scale }, occluders);
 			// ── Apply deferred height fixes AFTER bridge.sync() ───────────
@@ -1983,6 +2119,37 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				lc.setDirty(true, true);
 			}
 		},
+		deleteLink(linkId: number): void {
+			// No reroutes in this editor, so delete == disconnect at the link level.
+			const g = graphRef.current;
+			const lc = canvasInstanceRef.current;
+			if (!g || !lc) { return; }
+			if (g.links.has(linkId)) {
+				g.removeLink(linkId);
+				g.change();
+				lc.setDirty(true, true);
+			}
+		},
+		renameLink(linkId: number, name: string): void {
+			const g = graphRef.current;
+			const lc = canvasInstanceRef.current;
+			if (!g || !lc) { return; }
+			const link = g.links.get(linkId) as { name?: string; isTyped?: boolean } | undefined;
+			if (!link || !link.isTyped) { return; }
+			link.name = name;
+			g.change();
+			lc.setDirty(true, true);
+		},
+		setLinkColor(linkId: number, color: string): void {
+			const g = graphRef.current;
+			const lc = canvasInstanceRef.current;
+			if (!g || !lc) { return; }
+			const link = g.links.get(linkId) as { color?: string } | undefined;
+			if (!link) { return; }
+			link.color = color;
+			g.change();
+			lc.setDirty(true, true);
+		},
 		alignSelected(): void {
 			const g = graphRef.current;
 			const lc = canvasInstanceRef.current;
@@ -2167,6 +2334,27 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			if (graph.getGroupOnPos(gx, gy)) { return; }
 			if (findLinkAt(graph, gx, gy)) { return; }
 			onCanvasDoubleClick?.(gx, gy, e.clientX, e.clientY);
+		}}
+		onClick={(e) => {
+			// ★ ComfyUI 交互：左键点击连线中点圆点(hover 时显示) → 弹出
+			//   连线手柄菜单(Add Node / Add Reroute / Delete)。
+			//   只有当点击位置接近连线中点(在 handleThreshold 内)才触发，
+			//   避免误触整条连线。
+			const liteCanvas = canvasInstanceRef.current;
+			const graph = graphRef.current;
+			if (!liteCanvas || !graph) { return; }
+			// 仅左键
+			if (e.button !== 0) { return; }
+			const rect = e.currentTarget.getBoundingClientRect();
+			const ds = liteCanvas.ds;
+			const gx = (e.clientX - rect.left) / ds.scale - ds.offset[0];
+			const gy = (e.clientY - rect.top) / ds.scale - ds.offset[1];
+			// 与 dragPointerDown 共用 findLinkAt 的曲线采样命中判定（threshold
+			// 统一为 12，避免两处阈值/中点算法不一致导致行为分裂）。若 pointerdown
+			// 已触发过菜单，这里因已被 stopPropagation 不会重复进入；作为兜底守卫。
+			const link = findLinkAt(graph, gx, gy, 12);
+			if (!link) { return; }
+			onLinkHandleClick?.(link, gx, gy, e.clientX, e.clientY);
 		}}
 	>
 		<canvas
@@ -2488,6 +2676,12 @@ function syncGraphToStore(
 		id: c.id,
 		source: c.from,
 		target: c.to,
+		// ★ 必须保留端口名（fromPort/toPort → sourceHandle/targetHandle），否则
+		//   下次 syncStoreToGraph 时 fromPort/toPort 丢失、linkType 退化为 'ANY'，
+		//   下游 picker 等消费节点无法按真实类型校验/路由（见 ComfyGraphAdapter
+		//   fromLiteGraph 的同款修复）。
+		sourceHandle: c.fromPort,
+		targetHandle: c.toPort,
 	})) as never);
 }
 

@@ -30,6 +30,10 @@ export interface MenuItem {
 	disabled?: boolean;
 	separator?: boolean;
 	submenu?: MenuItem[];
+	/** Render a small color swatch before the label (used by link color submenu). */
+	color?: string;
+	/** Show a check mark (used to mark the active link color). */
+	checked?: boolean;
 	onPick: () => void;
 }
 
@@ -64,7 +68,13 @@ export const MENU_TEXT = {
 	disconnectInput: '断开此输入端口连线',
 	disconnectOutput: '断开此输出端口连线',
 	disconnectLink: '断开连线',
+	deleteLink: '删除连线',
+	renameLink: '重命名连线…',
+	linkColor: '连线颜色',
+	linkColorDefault: '默认',
 	link: '连线',
+	linkHandle: '连线手柄',
+	addReroute: '添加路由点',
 	canvas: '画布',
 	convertToGroupNode: '转换为组节点（已弃用）',
 	manageGroupNodes: '管理组节点',
@@ -305,4 +315,114 @@ export function buildPortDisconnectAction(port: PortDisconnectAction, onPick: ()
 		danger: true,
 		onPick,
 	};
+}
+
+// ── Link menu (right-click on a link / connection) ────────────────────────
+
+/** What the menu needs to know about the right-clicked link. */
+export interface LinkActionsContext {
+	/** The LiteGraph link id being right-clicked. */
+	linkId: number;
+	/** Whether the link has a named type (typed links can be renamed). */
+	isTyped: boolean;
+	/** Current link color (hex) or undefined for default. */
+	color?: string;
+	/** "Add Node" cascading submenu (ComfyUI-style: sampling/loaders/…). */
+	addNodeSubmenu?: MenuItem[];
+}
+
+/** Handlers the panel wires to the link menu items. */
+export interface LinkActionsHandlers {
+	/** Disconnect the link but keep its reroute node in the graph (ComfyUI "Disconnect"). */
+	disconnect(): void;
+	/** Fully delete the link (and its reroute nodes) from the graph (ComfyUI "Delete"). */
+	delete(): void;
+	/** Rename the typed link's connection (ComfyUI "Rename link" — typed links only). */
+	rename(): void;
+	/** Set the link color (ComfyUI link "Colors" submenu). */
+	setColor(color: string): void;
+	/** Open the node-search box to insert a node (ComfyUI "Add Node"). */
+	openNodeSearch(): void;
+	/** Insert a reroute node on the link (ComfyUI "Add Reroute"). Optional. */
+	addReroute?(): void;
+}
+
+/**
+ * Build the link right-click menu, mirroring ComfyUI's link context menu:
+ *   - Disconnect  (keep the reroute node, just drop the connection)
+ *   - Delete      (remove the link and any reroute nodes entirely)
+ *   - Rename link (only for typed links — ctx.isTyped)
+ *   - Colors ▸    (submenu of preset link colors)
+ * Pure so it is unit-testable without a canvas — the panel only injects the
+ * side-effects via `LinkActionsHandlers`.
+ */
+export function buildLinkActions(ctx: LinkActionsContext, h: LinkActionsHandlers): MenuItem[] {
+	const colors: { id: string; label: string; value: string }[] = [
+		{ id: 'link-red', label: MENU_TEXT.linkColorDefault === '默认' ? '红色' : 'Red', value: '#ff4d4f' },
+		{ id: 'link-orange', label: '橙色', value: '#fa8c16' },
+		{ id: 'link-yellow', label: '黄色', value: '#fadb14' },
+		{ id: 'link-green', label: '绿色', value: '#52c41a' },
+		{ id: 'link-cyan', label: '青色', value: '#13c2c2' },
+		{ id: 'link-blue', label: '蓝色', value: '#1890ff' },
+		{ id: 'link-purple', label: '紫色', value: '#722ed1' },
+		{ id: 'link-pink', label: '粉色', value: '#eb2f96' },
+		{ id: 'link-default', label: MENU_TEXT.linkColorDefault, value: '' },
+	];
+
+	const colorSubmenu: MenuItem[] = colors.map((c) => ({
+		id: c.id,
+		label: c.label,
+		color: c.value || undefined,
+		checked: (ctx.color ?? '') === c.value,
+		onPick: () => h.setColor(c.value),
+	}));
+
+	const items: MenuItem[] = [
+		// ComfyUI link-handle menu order: Add Node ▸ → Add Reroute → Disconnect → Delete → Rename → Colors ▸
+		{
+			id: 'addNode',
+			label: MENU_TEXT.addNode,
+			icon: '⊕',
+			submenu: ctx.addNodeSubmenu,
+			onPick: h.openNodeSearch,
+		},
+		{
+			id: 'addReroute',
+			label: MENU_TEXT.addReroute,
+			icon: '⟲',
+			disabled: !h.addReroute,
+			onPick: () => h.addReroute?.(),
+		},
+		{
+			id: 'disconnectLink',
+			label: MENU_TEXT.disconnectLink,
+			icon: '✂',
+			onPick: h.disconnect,
+		},
+		{
+			id: 'deleteLink',
+			label: MENU_TEXT.deleteLink,
+			icon: '🗑',
+			danger: true,
+			onPick: h.delete,
+		},
+	];
+
+	if (ctx.isTyped) {
+		items.push({
+			id: 'renameLink',
+			label: MENU_TEXT.renameLink,
+			icon: '✎',
+			onPick: h.rename,
+		});
+	}
+
+	items.push({
+		id: 'linkColor',
+		label: MENU_TEXT.linkColor,
+		icon: '🎨',
+		submenu: colorSubmenu,
+	});
+
+	return items;
 }

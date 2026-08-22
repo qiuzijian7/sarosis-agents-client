@@ -636,6 +636,18 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				} else if (semanticQuery) {
 					hint += ` Semantic search for ${semanticQuery.length} keyword(s) returned 0 results. Try broader single-word queries, or ensure index was built with moderate/full mode.`;
 				}
+			// 命中全部落在其它已索引项目（2026-08-20，日志 1787221348803）：
+			// 此前 sqlite `searchNodes` 不按 project 过滤，UE5EA 的 `LoadImage` 函数节点
+			// 被当作本仓结果返回，模型据此判定图不可用并弃用 search_graph 达 65 次。
+			// 收敛到当前项目后必须把「其它项目有、本项目没有」如实说明，否则模型会把
+			// 0 命中误读为「符号不存在」。
+			const _cross = (result as { crossProjectOnly?: { project: string; count: number }[] }).crossProjectOnly;
+			if (_cross && _cross.length > 0) {
+				hint += ` NOTE: ${_cross.map(c => `${c.count} match(es) in project "${c.project}"`).join(', ')}` +
+					` — none in the current project. Those belong to a DIFFERENT indexed repository;` +
+					` pass project="<name>" explicitly if you really meant to search it. For symbols in the current` +
+					` project that are string literals / node-type names (not declarations), use search_code instead.`;
+			}
 			ctx.logService.warn(`[BuiltinTools] search_graph: 0 results (total=${totalNodes})`);
 			const fmt0 = (args['format'] as string) || 'toon';
 			if (fmt0 === 'toon') {
@@ -1120,7 +1132,9 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			const outputMode = mode === 'files_with_matches' ? 'files_only' : mode === 'count' ? 'count' : 'content';
 
 			const searchPath = String(args['path'] || '.');
-			const fileGlob = args['file_glob'] ? String(args['file_glob']) : undefined;
+			// file_glob 同样走归一化：LLM 可能用 `|` 分隔多个文件名（ripgrep glob 的
+			// alternation 是 `{a,b}`，`|` 是字面字符 → 0 命中，日志 1787209228496）。
+			const fileGlob = args['file_glob'] ? normalizeFileGlobForSearch(String(args['file_glob'])) : undefined;
 			const limit = Math.min(Math.max(Number(args['limit'] ?? 50), 1), 200);
 			const offset = Math.max(Number(args['offset'] ?? 0), 0);
 			const contextLines = Math.min(Math.max(Number(args['context'] ?? 0), 0), 10);
@@ -1194,6 +1208,13 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			description: 'Regular-expression (regex) text search over the codebase, backed by ripgrep (streams the filesystem — fast even on huge repos). ' +
 				'Use it for raw string/pattern matching inside file bodies. For code STRUCTURE questions (callers, definitions, dependencies, call chains, class hierarchy) prefer search_graph / query_graph / trace_path — they understand code relationships, not just text. ' +
 				'Query tips: multi-word "foo bar" auto-becomes foo.*bar; pipe alternation "SymA|SymB|SymC" matches any of them — use it to probe several candidates in ONE call instead of repeating searches. ' +
+				// 2026-08-22（日志 1787363991734）：模型 7 次 search_code 想在
+				// @comfyorg/litegraph bundle 里找符号全部 0 命中（node_modules 被
+				// .gitignore + 默认 exclude 两层挡住），最后退化为 execute_code 跑 python
+				// 手工扫文件。放行已实现（searchScopeOverride），但必须在 description 里
+				// 说出来，否则模型不知道这条路可走。
+				'Dependency sources ARE searchable: set path_filter to the package directory (e.g. node_modules/@scope/pkg/dist) and ' +
+				'default ignore rules for that directory are lifted automatically — never hand-roll a script to read a bundle. ' +
 				'Output may be truncated, so use targeted queries. Modes: compact (default, matching lines, token-efficient), full (with surrounding source), files (paths only).',
 			inputSchema: {
 				type: 'object',
@@ -1201,7 +1222,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				query: { type: 'string', description: 'Regex search pattern. Multi-word queries auto-convert to regex (foo bar → foo.*bar); pipe alternation SymA|SymB matches either.' },
 				mode: { type: 'string', enum: ['compact', 'full', 'files'], default: 'compact', description: 'compact: matching lines with line numbers (default). full: with surrounding source. files: just file paths.' },
 				filePattern: { type: 'string', description: 'File glob to RESTRICT which files are searched, passed straight to ripgrep (e.g. **/CoreUObject/**/*.cpp, src/**/*.ts). MUST be a specific path fragment — a bare extension wildcard like "*.cpp" does NOT narrow anything in a large multi-project repo (it matches tens of thousands of files).' },
-				path_filter: { type: 'string', description: 'Directory or file to search in — a search ROOT (like `rg <path>`), resolved against each workspace folder when relative (e.g. Engine/Source/Runtime/CoreUObject, f:/.../CoreUObject, GarbageCollection.cpp). May also be a glob containing * (e.g. **/CoreUObject/**). A non-existent path returns an explicit error, NOT "no matches". To filter by file name/type instead, use filePattern.' },
+				path_filter: { type: 'string', description: 'Directory or file to search in — a search ROOT (like `rg <path>`), resolved against each workspace folder when relative (e.g. Engine/Source/Runtime/CoreUObject, f:/.../CoreUObject, GarbageCollection.cpp). May also be a glob containing * (e.g. **/CoreUObject/**). A non-existent path returns an explicit error, NOT "no matches". To filter by file name/type instead, use filePattern. Accepts `path` as an alias (same meaning as search_files\' `path`). ALWAYS set this on a large multi-project repo — an unscoped search streams the entire tree.' },
 					context: { type: 'number', description: 'Lines of context before and after each match (like grep -C). Compact/full modes.' },
 					regex: { type: 'boolean', default: false, description: 'Treat query as a raw regex. When false (default), a plain literal is escaped and matched literally. Multi-word / pipe-alternation queries auto-enable regex.' },
 				project: { type: 'string', description: 'Project name to scope the search to a single indexed folder (optional, defaults to ALL workspace folders). Use list_projects to discover names — e.g. "UE5EA" to search only engine sources in a multi-folder workspace.' },
@@ -1223,6 +1244,12 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			// regex 失败回退纯文本 + signal 取消），彻底移除图谱 deadline grep 与 fallback。
 		// P2（2026-07-29，kimi zod-only）：别名恢复已移除——schema 是唯一契约，
 		// 发错参数名在 coerce 层即被拒（missing required 带正确参数名）。
+		//
+		// ★ 2026-08-20 修正上述判断：coerce 层只拒「缺 required」，对【多余的未知参数】
+		// 不报错也不告警 → 静默丢弃。而 search_files 的搜索根参数叫 `path`、search_code
+		// 叫 `path_filter`，模型极易混用：日志 1787214724132 实证 44 次 search_code 里
+		// 40 次 root=- （零收窄、全库 rg），模型 thinking 中三次抱怨「path 参数仍被忽略」
+		// 却无法自救（没有任何错误回传）。故为 `path` 恢复别名映射，与 search_files 对齐。
 
 		const rawQuery = String(args['query'] ?? '');
 		if (!rawQuery) { return text('search_code requires "query" (the search term). Example: search_code({query:"FooBar"}) or search_code({query:"SymA|SymB", mode:"files"}).'); }
@@ -1233,7 +1260,13 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		// glob（*.cpp、GarbageCollection.cpp）无 `/` 时补 `**/`，否则引擎 _globToRegex
 		// 中 `*` 不跨目录，只匹配各搜索根直属文件→嵌套恒 0 命中（log 中 8 次空）。
 		const normalizedFilePattern = filePattern ? normalizeFileGlobForSearch(filePattern) : undefined;
-		const pathFilter = args['path_filter'] as string | undefined;
+		// `path` 别名：与 search_files 参数名统一，避免混用导致静默全库扫（见上方注释）。
+		const _pathAliasRaw = typeof args['path'] === 'string' ? (args['path'] as string) : undefined;
+		const _pathFilterRaw = typeof args['path_filter'] === 'string' ? (args['path_filter'] as string) : undefined;
+		const pathFilter = _pathFilterRaw ?? _pathAliasRaw;
+		if (!_pathFilterRaw && _pathAliasRaw) {
+			ctx.logService.info(`[BuiltinTools][CBSearch] search_code: accepted "path" as alias for "path_filter" (value="${_pathAliasRaw}") — model used search_files' parameter name.`);
+		}
 			const contextLines = Math.min(Math.max((args['context'] as number | undefined) ?? 0, 0), 10);
 		const limit = Math.min(Math.max((args['limit'] as number | undefined) ?? 30, 1), 100);
 		const offset = Math.min(Math.max((args['offset'] as number | undefined) ?? 0, 0), 1000);
@@ -1260,8 +1293,12 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				regexWarning = prepared.warning;
 			}
 
-		// 重复搜索熔断（对齐 search_files）：连续相同参数 ≥4 次直接拦截
-		const repeat = ctx.searchHelpers.recordSearchRepeat(agentId, searchQuery, mode, normalizedFilePattern ?? pathFilter ?? '', undefined, limit, offset);
+		// 重复搜索熔断（对齐 search_files）：相同参数累计 ≥3 次直接拦截。
+		// target 传固定值而非 mode（2026-08-20，日志 1787214724132）：search_code 的
+		// mode（compact/full/files）只改【输出格式】、不改 rg 结果集，旧实现把它塞进
+		// 签名 → 模型对 "LoadImage" 先 mode=files 搜 2 次、再 mode=compact 搜 2 次，
+		// 4 次全部放行（每次换 mode 都算新签名）。
+		const repeat = ctx.searchHelpers.recordSearchRepeat(agentId, searchQuery, 'search_code', normalizedFilePattern ?? pathFilter ?? '', undefined, limit, offset);
 		if (repeat.blocked) { return text(repeat.blocked); }
 
 		// ── P0 超大 roots 预检（2026-08-18，日志 1787038807642：60s×6 超时）──────
@@ -1404,8 +1441,27 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		// 434s 烧光预算）。单次 searchOutcomeHint 调用覆盖三分支。
 		const _emptyStreak = ctx.searchHelpers.recordSearchCodeEmptyStreak(agentId, !anyMatches);
 		if (!anyMatches) {
-			// 降级态（ripgrep 不可用）如实提示：不得让模型以为 include 过滤以 rg 语义生效
-			result += searchOutcomeHint(includeGlob, _emptyStreak.streak, _emptyStreak.shouldGuide, ctx.searchHelpers.isContentSearchDegraded());
+			// 降级态（ripgrep 不可用）如实提示：不得让模型以为 include 过滤以 rg 语义生效。
+			// 末参回显实际搜索根 + `.worktrees` 排除声明（2026-08-20，日志 1787217670299）。
+			result += searchOutcomeHint(
+				includeGlob, _emptyStreak.streak, _emptyStreak.shouldGuide,
+				ctx.searchHelpers.isContentSearchDegraded(),
+				searchRoots.map(r => r.label),
+			);
+		}
+
+		// 同一「搜索意图」换参重搜引导（2026-08-20，日志 1787211923566）：
+		// exact-repeat 熔断只拦相同参数、empty-streak 只拦连续 0 命中，而实测模型对
+		// 同一符号换 root/换正则搜 6 次且次次有命中，两道闸门全部绕过 → 跑满 50/50
+		// 迭代上限、输出大量近似重复文字。此处按归一化意图指纹计数并回传引导，
+		// 促其改用 search_graph（结构关系）或直接读已定位的文件。
+		const _intentRepeat = ctx.searchHelpers.recordSearchIntentRepeat(agentId, rawQuery);
+		if (_intentRepeat.shouldGuide) {
+			result += `\n\n[search-loop] You have searched for this same target ${_intentRepeat.count} times with different parameters. ` +
+				`Repeating the search is unlikely to reveal anything new — change approach instead:\n` +
+				`- Use \`search_graph\` to follow structural relations (callers/callees/definitions) rather than text matching.\n` +
+				`- If the symbol was already located above, open that file with \`file_read\` and reason from its contents.\n` +
+				`- If it genuinely does not exist in this workspace, state that conclusion and move on.`;
 		}
 
 		// 结果后处理：大小截断兜底（densify/redact 已按 root 分别做过）

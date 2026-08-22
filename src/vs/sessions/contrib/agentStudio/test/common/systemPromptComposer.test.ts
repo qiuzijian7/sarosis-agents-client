@@ -134,4 +134,44 @@ suite('systemPromptComposer', () => {
 			assert.ok(!s.includes('undefined'));
 		});
 	});
+
+	suite('buildCompactToolSection × 模型族分发（P2）', () => {
+		const names = ['file_read', 'patch'];
+
+		test('省略 family ≡ generic（向后兼容基线，字节必须相同）', () => {
+			assert.strictEqual(buildCompactToolSection(names), buildCompactToolSection(names, 'generic'));
+		});
+
+		test('generic 保留「不支持 FC 就打印 JSON」退路', () => {
+			const s = buildCompactToolSection(names, 'generic');
+			assert.ok(s.includes('{"name": "<tool_name>", "arguments": {<args>}}'));
+			assert.ok(s.includes('FALLBACK'));
+		});
+
+		test('原生族去掉 JSON 退路，且反幻觉第 4 条同步改写', () => {
+			const s = buildCompactToolSection(names, 'anthropic');
+			assert.ok(!s.includes('{"name": "<tool_name>", "arguments": {<args>}}'), '原生族不得保留 JSON 退路');
+			assert.ok(!s.includes('fenced code block'), '第 4 条不得再把代码块说成 fallback');
+			assert.ok(s.includes('NATIVE function call'));
+			// 规则表编号必须保持连续（4 由调用方给定）
+			assert.ok(/^4\. \*\*Output format\*\*/m.test(s), '第 4 条编号应保持为 4');
+		});
+
+		test('反幻觉规则表其余条目与工具名清单不受族影响', () => {
+			for (const family of ['generic', 'anthropic', 'openai'] as const) {
+				const s = buildCompactToolSection(names, family);
+				assert.ok(s.includes('Built-in tools: file_read, patch'), family);
+				assert.ok(s.includes('CRITICAL ANTI-HALLUCINATION RULES'), family);
+				assert.ok(s.includes('1. **NEVER claim you have done something'), family);
+				assert.ok(s.includes('tool_search → tool_describe → tool_call'), family);
+			}
+		});
+
+		test('同族确定性 / 跨族有差异（前缀缓存按模型分是预期行为）', () => {
+			assert.strictEqual(buildCompactToolSection(names, 'openai'), buildCompactToolSection(names, 'openai'));
+			assert.notStrictEqual(buildCompactToolSection(names, 'openai'), buildCompactToolSection(names, 'generic'));
+			// 同为原生族则字节一致（避免无谓地按族拆散缓存）
+			assert.strictEqual(buildCompactToolSection(names, 'openai'), buildCompactToolSection(names, 'anthropic'));
+		});
+	});
 });

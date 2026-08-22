@@ -18,7 +18,13 @@ import { IConfigurationService } from '../../../../../../platform/configuration/
 import { ISearchService, QueryType, type ITextQuery, type IFileQuery, type ISearchComplete } from '../../../../../../workbench/services/search/common/search.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../../../base/common/errors.js';
-import { advanceSearchCodeEmptyStreak, globToRegexForSearch } from './pathFilterNormalize.js';
+import { advanceSearchCodeEmptyStreak, advanceSearchIntentRepeat, globToRegexForSearch, searchQueryFingerprint } from './pathFilterNormalize.js';
+import { computeSearchScopeOverride, applyExcludeOverride, applyNoiseDirsOverride, type ISearchScopeOverride } from './searchScopeOverride.js';
+import {
+	terminalSearchFingerprintTokens,
+	terminalSearchRepeatBlockedMessage,
+	type ITerminalSearchPattern,
+} from './terminalCommandGuards.js';
 import { extractExcludeDirNames } from '../../../common/codebaseIndexDefaults.js';
 
 export class SearchHelpers {
@@ -37,8 +43,9 @@ export class SearchHelpers {
 	/**
 	 * 搜索工具默认排除目录（`search_files` / `search_code` 两路统一）。
 	 *
-	 * 覆盖三类噪声：
+	 * 覆盖四类噪声：
 	 *  - 通用构建/依赖产物：node_modules / .git / build / dist / out / .next 等
+	 *  - **git worktree 副本**：.worktrees / .worktree（事故 1787211509467，见下）
 	 *  - UE (Unreal Engine) 项目产物：Intermediate / Saved / Binaries / Build / DerivedDataCache
 	 *    事故 1785143114444：code-explorer 子代理 search_files 9220ms outlier 全部由 UE 构建产物贡献
 	 *  - 缓存/临时：.cache / .parcel-cache / .turbo 等
@@ -56,6 +63,17 @@ export class SearchHelpers {
 		'**/.pnpm-store/**', '**/.yarn/**', '**/.parcel-cache/**', '**/.turbo/**',
 		'**/.nuxt/**', '**/.svelte-kit/**', '**/.angular/**',
 		'**/venv/**', '**/.venv/**',
+		// ★ git worktree 副本（事故 1787211509467，2026-08-20）
+		// worktree 是主仓库的**完整源码副本**（每个分支一份），既不是构建产物也不在
+		// .gitignore 里，因此此前完全不被排除。本仓实测：主仓 src 9112 个 .ts，
+		// 而 .worktrees（feat-agentloop / feat-chat / feat-workflow 三份）合计 33480 个
+		// —— 搜索空间膨胀 4.7 倍，且全是其他分支的**过期代码**。
+		// 危害不止于慢：日志实证模型把 root 指向
+		// `.worktrees/feat-chat/src/.../workflowRun.ts` 并据此分析，等于**基于过期分支
+		// 代码下结论**；同名文件多份还会让模型反复搜索验证「到底改哪个」，
+		// 直接推高 delegate_task 时长（该次 423107ms=7min，占总时长 77%，用户遂手动中断）。
+		// 需要跨 worktree 检索时显式传 path_filter 指向具体 worktree 即可绕过本排除。
+		'**/.worktrees/**', '**/.worktree/**',
 		// UE (Unreal) 构建产物：事故 1785143114444
 		'**/Intermediate/**', '**/Saved/**', '**/Binaries/**', '**/DerivedDataCache/**',
 		// out-build/out-test/out-vscode（Saros 自身仓库）
@@ -158,6 +176,34 @@ export class SearchHelpers {
 	}
 
 	/**
+	 * 「搜索根显式指向被默认排除的目录」时的放行决策（2026-08-22，日志 1787363991734）。
+	 *
+	 * 背景与实测证据见 `searchScopeOverride.ts` 头注释。要点：模型 7 次 search_code 想
+	 * 在 `@comfyorg/litegraph` bundle 里找符号全部 0 命中，最后退化为用 execute_code
+	 * 跑 python 手工扫文件 —— 因为 `node_modules` 同时被 `.gitignore`（第一层）与
+	 * `DEFAULT_EXCLUDE_GLOBS`（第二层）挡住，且**两层都无法通过任何参数绕过**。
+	 *
+	 * 决策原则：显式把根指到被排除目录里，本身就是最强的意图表达，此时继续排除必然
+	 * 0 结果且不给解释。只放行路径中实际出现的那些目录名，其余排除项保持不变。
+	 *
+	 * 结果按 resolvedPath 缓存 —— 同一次搜索里 `searchContent` 的正则失败回退路径会
+	 * 再算一次，且相同根在一个 turn 内常被反复搜索。
+	 */
+	private _scopeOverrideCache = new Map<string, ISearchScopeOverride>();
+	private _scopeOverride(resolvedPath: string): ISearchScopeOverride {
+		const cached = this._scopeOverrideCache.get(resolvedPath);
+		if (cached) { return cached; }
+		const scope = computeSearchScopeOverride(resolvedPath, SearchHelpers.NOISE_DIR_NAMES);
+		// 上限保护：长 turn 里根路径可能很多，超限清空重算（决策是纯函数，重算无副作用）
+		if (this._scopeOverrideCache.size > 200) { this._scopeOverrideCache.clear(); }
+		this._scopeOverrideCache.set(resolvedPath, scope);
+		if (scope.hasOverride) {
+			this.logService.info(`[BuiltinTools] search scope override: ${scope.reason}`);
+		}
+		return scope;
+	}
+
+	/**
 	 * 探测 root 是否 Unreal 形态：直下（或一层子目录中任一）存在 `Engine` 目录
 	 * 或 `*.uproject` 文件。覆盖三种真实形态：
 	 *   - root=UE5EA（引擎安装根，直下有 Engine/）
@@ -225,16 +271,39 @@ export class SearchHelpers {
 		'target', '.gradle', '.idea', 'bin', 'obj', '.pnpm-store',
 		'.yarn', '.parcel-cache', '.turbo', '.nuxt', '.svelte-kit',
 		'.angular', 'venv', '.venv', 'env', '.env',
+		// ★ git worktree 副本（事故 1787211509467）——与 DEFAULT_EXCLUDE_GLOBS 保持一致
+		'.worktrees', '.worktree',
 		// UE (Unreal) 构建产物
 		'Intermediate', 'Saved', 'Binaries', 'DerivedDataCache',
 		// Saros 自身仓库
 		'out-build', 'out-test', 'out-vscode',
 	]);
 
-	// 每个 agent 的重复搜索状态：{ 上次搜索签名, 连续次数 }
-	private _searchRepeatMap = new Map<string, { key: string | null; count: number }>();
+	// 每个 agent 的重复搜索计数：签名 → 累计次数（非「连续」）。
+	// 2026-08-20 由 `{ key, count }`（只记上一次签名）改为 per-bucket Map：
+	// 旧实现 `prev.key === key ? count+1 : 1` 只认【连续】相同，中间隔一次别的搜索
+	// 即重置 —— 日志 1787214724132 实证 `wf-node-control` 在 3 个不相邻的轮次各搜一次
+	// （line 7863/8303/8768），熔断计数每次都归零，3 次全部放行。
+	private _searchRepeatMap = new Map<string, Map<string, number>>();
+	/** 单个 bucket 内保留的签名上限（防长 turn 无界增长；超限清空该桶重新计数）。 */
+	private static readonly SEARCH_REPEAT_KEYS_PER_BUCKET = 200;
 	/** search_code 连续空结果（0 matches）连击计数，按 agentId 分桶。 */
 	private _searchCodeEmptyStreakMap = new Map<string, number>();
+	/**
+	 * 同一「搜索意图指纹」的累计次数，按 `agentId::fingerprint` 分桶
+	 * （2026-08-20，日志 1787211923566：换参重搜绕过前两道闸门）。
+	 */
+	private _searchIntentRepeatMap = new Map<string, number>();
+	/**
+	 * terminal **搜索类命令**的意图指纹累计次数，按 `agentId::fingerprint` 分桶
+	 * （2026-08-21，事故 1787282838177：模型绕开 search_* 工具改用 shell grep，
+	 * 前三道闸门全程零拦截 → 47 轮 78 工具 → 上下文 4.4 万 token → 压缩挂死）。
+	 * 与 `_searchIntentRepeatMap` **分开存**：两者阈值语义相同但来源不同，
+	 * 混用会让「search_code 搜 2 次 + terminal grep 1 次」被算成 3 次而误拦。
+	 */
+	private _terminalSearchRepeatMap = new Map<string, number>();
+	/** 指纹桶上限（与 SEARCH_REPEAT_KEYS_PER_BUCKET 同义，防长 turn 无界增长）。 */
+	private static readonly TERMINAL_SEARCH_KEYS_LIMIT = 200;
 
 	/**
 	 * ripgrep 可用性门控。VS Code 内置 `searchService` 内部 spawn ripgrep，
@@ -260,9 +329,16 @@ export class SearchHelpers {
 	) { }
 
 	/**
-	 * 跟踪连续相同搜索，对齐 Hermes-Agent 的 repeated-search guard（P3：只拦不警）。
+	 * 跟踪重复搜索，对齐 Hermes-Agent 的 repeated-search guard（P3：只拦不警）。
 	 * 签名包含分页参数（limit/offset），因此合法翻页不会触发熔断。
-	 * 连续 ≥3 次返回 blocked（直接拦截，不执行 rg）。
+	 * 累计 ≥3 次返回 blocked（直接拦截，不执行 rg）。
+	 *
+	 * 2026-08-20：计数口径由「连续相同」改为「累计相同」——非相邻的重复搜索
+	 * 同样是纯浪费（结果不会变），旧的连续口径被「隔一次别的搜索」轻易绕过。
+	 *
+	 * @param target 影响搜索【结果集】的维度（如 search_files 的 files/content）。
+	 *   注意：不要传入仅影响【输出格式】的参数（如 search_code 的 compact/full/files），
+	 *   否则模型换个 mode 重搜同一 pattern 就会被算作新签名而放行。
 	 */
 	recordSearchRepeat(
 		agentId: string | undefined, pattern: string, target: string, searchPath: string,
@@ -270,15 +346,23 @@ export class SearchHelpers {
 	): { count: number; blocked?: string } {
 		const bucket = agentId ?? '';
 		const key = JSON.stringify([pattern, target, searchPath, fileGlob ?? null, limit, offset]);
-		const prev = this._searchRepeatMap.get(bucket) ?? { key: null, count: 0 };
-		const count = prev.key === key ? prev.count + 1 : 1;
-		this._searchRepeatMap.set(bucket, { key, count });
+		let keyMap = this._searchRepeatMap.get(bucket);
+		if (!keyMap) {
+			keyMap = new Map<string, number>();
+			this._searchRepeatMap.set(bucket, keyMap);
+		} else if (keyMap.size > SearchHelpers.SEARCH_REPEAT_KEYS_PER_BUCKET && !keyMap.has(key)) {
+			// 长 turn 防无界增长：签名数超限且本次是全新签名 → 清空重新计数
+			// （宁可漏拦，不可泄漏内存；正在累计中的热点签名会一并清掉，可接受）。
+			keyMap.clear();
+		}
+		const count = (keyMap.get(key) ?? 0) + 1;
+		keyMap.set(key, count);
 
 		if (count >= SearchHelpers.SEARCH_REPEAT_BLOCK) {
 			return {
 				count,
 				blocked:
-					`BLOCKED: 你已连续 ${count} 次发起完全相同的搜索（pattern=${pattern}, target=${target}），结果没有任何变化。` +
+					`BLOCKED: 你已发起 ${count} 次完全相同的搜索（pattern=${pattern}, target=${target}），结果不会有任何变化。` +
 					`你已掌握这些信息，请停止重复搜索，转而推进任务（可调整 pattern/路径，或用 offset 翻页查看被截断的结果）。`,
 			};
 		}
@@ -305,6 +389,83 @@ export class SearchHelpers {
 		);
 		this._searchCodeEmptyStreakMap.set(bucket, result.streak);
 		return result;
+	}
+
+	/**
+	 * 同一「搜索意图」重复次数跟踪（2026-08-20，日志 1787211923566）。
+	 *
+	 * 补上前两道闸门之间的盲区：
+	 *   - `recordSearchRepeat`：只拦**参数完全相同**的调用；
+	 *   - `recordSearchCodeEmptyStreak`：只在**连续 0 命中**时引导；
+	 *   - 本方法：按**归一化后的搜索意图指纹**计数，无论换 root、换正则写法、
+	 *     有无命中都累计 —— 实测事故里模型对 `LoadImage` 搜了 6 次（次次有命中、
+	 *     参数各不相同），前两道闸门全部绕过，最终跑满 50/50 迭代上限。
+	 *
+	 * @returns count 该意图累计次数；shouldGuide 达阈值后为 true（此后每次均为 true）
+	 */
+	recordSearchIntentRepeat(
+		agentId: string | undefined, query: string | undefined,
+	): { count: number; shouldGuide: boolean; fingerprint: string | undefined } {
+		const fingerprint = searchQueryFingerprint(query);
+		if (!fingerprint) { return { count: 0, shouldGuide: false, fingerprint: undefined }; }
+		const bucket = `${agentId ?? ''}::${fingerprint}`;
+		// 阈值：子代理 2 / 主 agent 3（2026-08-20 各下调 1）。原为 3/4，而日志
+		// 1787214724132 中 `loadimage`、`ownsnapshots` 恰好各搜 4 次 —— 卡在主 agent
+		// 阈值边界上，前 3 次全部白跑、只在最后一次才给引导，等于没拦住。
+		const threshold = (agentId ?? '').startsWith('subagent-') ? 2 : 3;
+		const result = advanceSearchIntentRepeat(this._searchIntentRepeatMap.get(bucket) ?? 0, threshold);
+		this._searchIntentRepeatMap.set(bucket, result.count);
+		return { ...result, fingerprint };
+	}
+
+	/**
+	 * terminal **搜索类命令**的重复意图跟踪（2026-08-21，事故 1787282838177）。
+	 *
+	 * 补上第四道闸门 —— 前三道（recordSearchRepeat / EmptyStreak / IntentRepeat）
+	 * **只覆盖 search_code / search_files 工具**，模型改用 `terminal` 跑 shell grep
+	 * 即可全部绕过。事故实证：47 轮迭代、78 个工具调用，大量 Select-String /
+	 * Get-ChildItem 反复搜同一批文件，零拦截，上下文涨到 4.4 万 token 触发压缩。
+	 *
+	 * 与 `recordSearchIntentRepeat` 的差异：
+	 *  - 只对 `TERMINAL_SEARCH_COMMAND_PATTERNS` 命中的命令调用（build/run/test 不计数）；
+	 *  - 指纹先由 `terminalSearchFingerprintTokens` 做 shell 感知的 token 提取
+	 *    （拆管道、剥 flag、按 kind 决定路径是否进指纹），再复用
+	 *    `searchQueryFingerprint` 做最终归一 —— 两者共用归一器，因此
+	 *    `grep -r "LoadImage"` 与 `search_code query="\bLoadImage\b"` 指纹一致（`loadimage`）；
+	 *  - **独立计数桶**：不与 search_* 的意图计数混用，避免「search_code 2 次 +
+	 *    terminal 1 次」被算成 3 次而误拦。
+	 *
+	 * 阈值与 `recordSearchIntentRepeat` 一致（子代理 2 / 主 agent 3）：terminal 搜索
+	 * 比 search_code 更贵（无索引、全树扫描、输出更冗长），没有放宽的理由。
+	 *
+	 * @returns count 累计次数；blocked 达阈值时为拦截原因（调用方应直接返回、不执行命令）
+	 */
+	recordTerminalSearchRepeat(
+		agentId: string | undefined, command: string, hit: ITerminalSearchPattern,
+	): { count: number; fingerprint?: string; blocked?: string } {
+		const tokens = terminalSearchFingerprintTokens(command, hit.kind);
+		const fingerprint = searchQueryFingerprint(tokens);
+		// 指纹过短/为空（如 `dir /s` 无任何搜索词）→ 不计数，避免误伤宽泛枚举
+		if (!fingerprint) { return { count: 0 }; }
+
+		const bucket = `${agentId ?? ''}::${fingerprint}`;
+		// 防长 turn 无界增长（对齐 recordSearchRepeat 的桶上限策略：宁可漏拦不可泄漏）
+		if (this._terminalSearchRepeatMap.size > SearchHelpers.TERMINAL_SEARCH_KEYS_LIMIT
+			&& !this._terminalSearchRepeatMap.has(bucket)) {
+			this._terminalSearchRepeatMap.clear();
+		}
+		const threshold = (agentId ?? '').startsWith('subagent-') ? 2 : 3;
+		const result = advanceSearchIntentRepeat(this._terminalSearchRepeatMap.get(bucket) ?? 0, threshold);
+		this._terminalSearchRepeatMap.set(bucket, result.count);
+
+		if (result.shouldGuide) {
+			return {
+				count: result.count,
+				fingerprint,
+				blocked: terminalSearchRepeatBlockedMessage(result.count, fingerprint, hit),
+			};
+		}
+		return { count: result.count, fingerprint };
 	}
 
 	/** 文件搜索裸名 glob 包裹（对齐 Hermes：不含 '/' 且不以 '*' 开头的 pattern 包成 '*pattern'）。 */
@@ -350,14 +511,17 @@ export class SearchHelpers {
 		}
 		try {
 			const folderUri = URI.file(resolvedPath);
+			const scope = this._scopeOverride(resolvedPath);
 			const query: IFileQuery = {
 				type: QueryType.File,
 				filePattern: pattern,
-				folderQueries: [{ folder: folderUri }],
+				folderQueries: [{ folder: folderUri, disregardIgnoreFiles: scope.disregardIgnoreFiles || undefined }],
 				sortByScore: true,
 				// 默认排除 node_modules / .git / build / UE Intermediate & Saved 等噪声目录；
-				// UE 形态 root 额外叠加 Content/ThirdParty/Documentation 等非源码海量目录
-				excludePattern: { ...this._effectiveExcludeExpr(await this._isUnrealRoot(resolvedPath)) },
+				// UE 形态 root 额外叠加 Content/ThirdParty/Documentation 等非源码海量目录。
+				// 搜索根显式指向被排除目录时放行该目录（见 searchScopeOverride）。
+				excludePattern: applyExcludeOverride(
+					this._effectiveExcludeExpr(await this._isUnrealRoot(resolvedPath)), scope),
 			};
 			const result: ISearchComplete = await this.searchService.fileSearch(query, CancellationToken.None);
 			return this._formatSearchComplete(result, 'files_only', limit, offset);
@@ -392,15 +556,18 @@ export class SearchHelpers {
 		}
 		try {
 			const folderUri = URI.file(resolvedPath);
+			const scope = this._scopeOverride(resolvedPath);
 			const query: ITextQuery = {
 				type: QueryType.Text,
 				contentPattern: { pattern, isRegExp: true, isCaseSensitive: false, isWordMatch: false },
-				folderQueries: [{ folder: folderUri }],
+				folderQueries: [{ folder: folderUri, disregardIgnoreFiles: scope.disregardIgnoreFiles || undefined }],
 				includePattern: fileGlob ? { [fileGlob]: true } : undefined,
 				// 默认排除 node_modules / .git / build / UE Intermediate & Saved 等噪声目录
 				// （事故 1785143114444：9220ms outlier 由 UE Intermediate/Build 贡献）；
-				// UE 形态 root 额外叠加 Content/ThirdParty 等非源码海量目录（1787038807642）
-				excludePattern: { ...this._effectiveExcludeExpr(await this._isUnrealRoot(resolvedPath)) },
+				// UE 形态 root 额外叠加 Content/ThirdParty 等非源码海量目录（1787038807642）。
+				// 搜索根显式指向被排除目录时放行该目录（见 searchScopeOverride）。
+				excludePattern: applyExcludeOverride(
+					this._effectiveExcludeExpr(await this._isUnrealRoot(resolvedPath)), scope),
 				surroundingContext: contextLines,
 				maxResults: 5000,
 				};
@@ -426,12 +593,14 @@ export class SearchHelpers {
 			// 若错误是 regex 语法问题（如 LLM 传了非法正则），回退为纯文本搜索
 			if (/regex|quantifier|invalid.*pattern|unterminated|bad.*escape/i.test(reason)) {
 				try {
+					const plainScope = this._scopeOverride(resolvedPath);
 					const plainQuery: ITextQuery = {
 						type: QueryType.Text,
 						contentPattern: { pattern, isRegExp: false, isCaseSensitive: false, isWordMatch: false },
-						folderQueries: [{ folder: URI.file(resolvedPath) }],
+						folderQueries: [{ folder: URI.file(resolvedPath), disregardIgnoreFiles: plainScope.disregardIgnoreFiles || undefined }],
 						includePattern: fileGlob ? { [fileGlob]: true } : undefined,
-						excludePattern: { ...this._effectiveExcludeExpr(await this._isUnrealRoot(resolvedPath)) },
+						excludePattern: applyExcludeOverride(
+							this._effectiveExcludeExpr(await this._isUnrealRoot(resolvedPath)), plainScope),
 						surroundingContext: contextLines,
 						maxResults: 5000,
 						};
@@ -571,7 +740,8 @@ export class SearchHelpers {
 		const results: { path: string; mtime: number }[] = [];
 		const MAX_VISIT = 5_000;
 		let visited = 0;
-		const NOISE = SearchHelpers.NOISE_DIR_NAMES;
+		// 搜索根显式指向被排除目录时放行该目录（与 ripgrep 路径保持等价语义）
+		const NOISE = applyNoiseDirsOverride(SearchHelpers.NOISE_DIR_NAMES, this._scopeOverride(resolvedPath));
 		// UE 形态 root：追加 Content/ThirdParty 等非源码海量目录（进程级缓存探测）；
 		// 并叠加用户 search.exclude/files.exclude 的目录名
 		const unrealNoise = await this._extraNoiseDirs(resolvedPath);
@@ -691,7 +861,8 @@ export class SearchHelpers {
 		const dirsVisited = { count: 0 };
 		const seenDirs = new Set<string>();
 		const rootFs = fileGlobRe ? dir.fsPath.replace(/\\/g, '/') : '';
-		const NOISE_DIRS = SearchHelpers.NOISE_DIR_NAMES;
+		// 搜索根显式指向被排除目录时放行该目录（与 ripgrep 路径保持等价语义）
+		const NOISE_DIRS = applyNoiseDirsOverride(SearchHelpers.NOISE_DIR_NAMES, this._scopeOverride(dir.fsPath));
 		// UE 形态 root：追加 Content/ThirdParty 等非源码海量目录（进程级缓存探测）；
 		// 并叠加用户 search.exclude/files.exclude 的目录名
 		const unrealNoise = await this._extraNoiseDirs(dir.fsPath);

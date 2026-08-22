@@ -1,9 +1,12 @@
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { mainWindow } from '../../../base/browser/window.js';
-import { IAgentChatMessage, IToolCall, ITextMessagePart, IThinkingMessagePart, IMessagePart } from './agentChatTypes.js';
-import { buildKeyedParts, lastTextPartKey, IKeyedPart } from './agentChatPanel.keyedParts.js';
+import { IAgentChatMessage, IToolCall, ITextMessagePart, IThinkingMessagePart, IMessagePart, CHAT_MODE_UI } from './agentChatTypes.js';
+import { buildKeyedParts, lastTextPartKey, queryPartElements, PART_KEY_ATTR, IKeyedPart } from './agentChatPanel.keyedParts.js';
 import { AgentChatPanelDropdowns } from './agentChatPanel.dropdowns.js';
 import { filterChildSubAgents } from './subAgentCardUtils.js';
+import { parseToolArgsWithDiagnostics, parseToolArgsLoose, warnToolArgsRepair } from './toolArgsJson.js';
+import { needsArgsDrivenRebuild } from './toolCardArgsRefresh.js';
+import type { FullRefreshSource } from './agentChatPanel.refreshLog.js';
 
 /** P5b：_updateMessageDom 责任链上下文（预计算的结构标志，供各 rule 共享）。 */
 interface IMsgUpdateCtx {
@@ -382,6 +385,26 @@ protected override _updateMessageDom(idx: number, msg: IAgentChatMessage): void 
 	}
 
 	// 兜底：全量重建。清理旧元素关联的 markdown disposables 防泄漏。
+	// 注意这里不走 _rebuildMessageElement（它会额外做工具卡滚动位置的保存/恢复），
+	// 故来源需单独上报 —— 这条路径意味着「责任链没有任何规则认领这次更新」，
+	// 频繁出现说明缺少对应的就地更新规则，是最值得关注的一类全量刷新。
+	//
+	// note 携带「为何最后一条 slow rule（tool-status-sync）不认领」的判据实参
+	// （2026-08-22，日志 1787368358120 里该来源 ×59，每轮迭代一次，但当时的 metrics
+	// 不足以定位原因）：该 rule 要求 DOM 卡片数与 toolCalls 数**相等且顺序一致**，
+	// 故把两个数一并记下，下次可直接判断是数量不符还是顺序不符。
+	const domToolCards = existingEl.querySelectorAll('.tool-header-wrapper[data-tool-id]').length;
+	// 与 keyed diff / 一致性校验同源（queryPartElements：只取直接子元素）——
+	// 否则这条诊断报出的 domParts 会和另两处对不上，排查时反而误导。
+	const domParts = queryPartElements(existingEl).length;
+	this.refreshLogger.record('msg:slowpath-fallback', {
+		msgId: msg.id,
+		isStreaming: msg.isStreaming,
+		partsLen: msg.parts?.length,
+		toolCalls: msg.toolCalls?.length,
+		contentLen: (msg.content || '').length,
+		note: `domToolCards=${domToolCards} domParts=${domParts} wasStreamingMark=${existingEl.querySelector('.streaming-container, .streaming-cursor') !== null}`,
+	});
 	this._cleanupMarkdownDisposables(existingEl);
 	const newEl = this._createMessageElement(msg);
 	this._messagesContainer.replaceChild(newEl, existingEl);
@@ -433,7 +456,7 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 	if ((window as any).__SAROSIS_PARTS_DIAG) {
 		console.info(`[PartsDiag] _updateMessageDom idx=${ctx.idx} msgId=${ctx.msg.id} → REBUILD (thinking state changed)`);
 	}
-	this._rebuildMessageElement(ctx.el, ctx.msg);
+	this._rebuildMessageElement(ctx.el, ctx.msg, 'msg:thinking-state-change');
 	return true;
 }
 
@@ -454,10 +477,13 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 	private _reconcileParts(bubble: HTMLElement, msg: IAgentChatMessage): void {
 		const keyedParts = this._buildKeyedParts(msg);
 
-		// 收集已有 keyed 元素
+		// 收集已有 keyed 元素。
+		// ⚠ 必须走 queryPartElements（只取直接子元素）—— 用后代查询会把卡片内部
+		// 的同名属性也收进来，且同 key 时内层会**覆盖**外层 wrapper，使 wrapper
+		// 既不在 map 里、也不会被下面的「删除残留」清掉 → 元素持续堆积。
 		const existingMap = new Map<string, HTMLElement>();
-		for (const el of bubble.querySelectorAll('[data-part-key]')) {
-			existingMap.set(el.getAttribute('data-part-key')!, el as HTMLElement);
+		for (const el of queryPartElements(bubble)) {
+			existingMap.set(el.getAttribute(PART_KEY_ATTR)!, el);
 		}
 
 		// 三路 diff
@@ -496,9 +522,29 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 		this._pinAllScrollableBodiesToBottom(bubble);
 	}
 
+	/**
+	 * 已调度过的 part 文本快照（key = part 元素）。
+	 *
+	 * ★ 2026-08-21（日志 1787323320262）：`_updatePartInPlace` 对**每个** text part 都调
+	 * `mdScheduler.schedule()`，而 `StreamingRenderScheduler` 是**单 target** 设计
+	 * （`_target`/`_lastContent`/`_lastRendered` 各一份）。后期一条消息有数十个 text
+	 * part 时，每帧 N 次 schedule 里只有最后一次的 target 存活，前面全被覆盖 —— 既是纯
+	 * 浪费，更糟的是 `_lastRendered` 这个**跨容器共享**的基线会在 target 切换时错位，
+	 * 使 `renderIncremental` 拿着别的容器的基线做增量 → 失败 → 回退 `replaceChildren`
+	 * 全量替换整段 DOM，正是可见的「抖动/闪烁」。
+	 *
+	 * 用文本快照去重后，稳态下每帧只有真正在增长的那一个 part 会 schedule，target 不再
+	 * 被覆盖，基线也就不会错位。比「只调度最后一个 text part」更稳妥：不依赖「历史 part
+	 * 一定不再变化」这一假设，任何 part 真的变了依然会被正确调度。
+	 */
+	private readonly _scheduledPartText = new WeakMap<HTMLElement, string>();
+
 	/** 就地更新已有 part 元素（text → mdScheduler 节流；thinking → header + body）。 */
 	private _updatePartInPlace(el: HTMLElement, part: IMessagePart, msg: IAgentChatMessage): void {
 		if (part.kind === 'text') {
+			// 文本未变化 → 跳过（见 _scheduledPartText 注释：避免单 target 调度器被覆盖）
+			if (this._scheduledPartText.get(el) === part.text) { return; }
+			this._scheduledPartText.set(el, part.text);
 			this.mdScheduler.schedule(el, part.text, 'markdown');
 		} else if (part.kind === 'thinking') {
 			// P-T1 修正：逐卡片判定是否处于「正在思考」活跃态——仅当该 episode 是
@@ -509,8 +555,12 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 			this._updateThinkingCardHeader(el, cardIsThinking);
 			const body = el.querySelector('.thinking-card-body') as HTMLElement | null;
 			if (body && body.dataset.rendered === '1') {
+				const thinkingText = (part as IThinkingMessagePart).text;
+				// 同上：thinkingMdScheduler 亦为单 target，多思考卡时同样需要去重
+				if (this._scheduledPartText.get(body) === thinkingText) { return; }
+				this._scheduledPartText.set(body, thinkingText);
 				this._attachStreamCardPin(body);
-				this.thinkingMdScheduler.schedule(body, (part as IThinkingMessagePart).text, 'markdown');
+				this.thinkingMdScheduler.schedule(body, thinkingText, 'markdown');
 			}
 		}
 		// tool / subagent：状态由 _updateToolCardStatuses 统一处理
@@ -547,12 +597,82 @@ private _ruleStreamEndTransition(ctx: IMsgUpdateCtx): boolean {
 	if (!ctx.hasStructuralChange) {
 		// 无结构性变化：轻量转换——移除光标 + 渲染 markdown + 追加 footer。
 		this._transitionStreamingToComplete(ctx.el, ctx.msg);
+	} else if (this._isSending && ctx.hasParts && this._finalizeTurnPartsInPlace(ctx)) {
+		// ★ P0（2026-08-22，日志 1787368358120）：**agent loop 的每一轮迭代都会发一次
+		// `done` delta**（实测 STREAM_END 与 PartsDiag DONE 各 59 次），而 done 分支设
+		// `isStreaming:false` + `streamPhase:'idle'` —— 与「turn 真结束」完全同形。
+		// 于是本规则此前把每一轮间歇都判为流式结束，做一次整条全量重建：一个 turn 内
+		// 58 次，末期每次要重建 124 个 parts + 73 张工具卡 + 重解析 32KB markdown。
+		// 这是「后期抖动严重」的绝对主因（远大于此前修的 layout thrashing 与 args 后到）。
+		//
+		// `this._isSending` 是项目既有的「agent loop 是否还在跑」真源 —— per-turn done
+		// 时它仍为 true，只有 `sendMessage` 整体返回后才置 false（`nativeChatEditorPane`
+		// 那句注释即 "Agent loop fully completed (not per-turn)"）。既有先例：
+		// `_ruleToolStatusSync` 与 `_createMessageElement` 都用 `!this._isSending` 判断
+		// 「loop 已结束」来决定是否补 footer。
+		//
+		// 故：per-turn 间歇只做就地收尾；`_isSending` 为 false（loop 真结束）时才走
+		// 下面的干净重建。`_finalizeTurnPartsInPlace` 返回 false 表示就地收尾不可行
+		// （bubble 缺失 / keyed diff 结果不一致），此时同样落到重建。
 	} else {
 		// 结构性消息流式结束：以最终完整 parts/content 做一次干净全量重建
 		// （与历史恢复路径完全一致），彻底消除流式增量渲染累积的错位。
-		// 重建仅在流式结束时发生一次，开销可接受。
 		this.mdScheduler.reset();
-		this._rebuildMessageElement(ctx.el, ctx.msg);
+		this._rebuildMessageElement(ctx.el, ctx.msg, 'msg:stream-end-structural');
+	}
+	// 流式结束 → 输出本轮全量刷新的按来源汇总。这是排查抖动最有价值的一条日志：
+	// 一眼看出哪个来源触发最多。放在 return 前，两个分支都覆盖（轻量转换分支之前
+	// 也可能已发生过全量刷新）。
+	this.refreshLogger.flushSummary(`msgId=${ctx.msg.id}`);
+	return true;
+}
+
+/**
+ * per-turn `done` 的**就地**收尾：keyed diff 同步 parts + 清流式残留标记，不重建 DOM。
+ *
+ * 刻意**不复用 `_transitionStreamingToComplete`** —— 它第 2 步会把整个 `msg.content`
+ * 渲染进 `.streaming-container`，而 parts 模式下该标记只挂在**最后一个 text part** 上
+ * （见 `_updateStreamingContainerMark`），复用会让那一个 part 显示整条消息的全部文本
+ * （内容重复）。这正是原实现在结构性消息时宁可全量重建的原因。
+ *
+ * footer **不在此处补** —— 由 loop 真结束时的 `setSending(false)` →
+ * `_revealFootersAfterLoop()` 统一补齐（与既有约定一致，避免 footer 在轮次间歇提前
+ * 出现、后续内容又追加到它之后）。
+ *
+ * @returns 是否成功就地收尾；false 表示调用方应回退全量重建。
+ */
+private _finalizeTurnPartsInPlace(ctx: IMsgUpdateCtx): boolean {
+	const bubble = ctx.el.querySelector('.chat-bubble') as HTMLElement | null;
+	if (!bubble) { return false; }
+
+	// parts 同步：与流式期间完全同一条 keyed diff 路径（O(delta)）
+	this._reconcileParts(bubble, ctx.msg);
+
+	// 一致性校验：keyed diff 后 DOM 里的 part 元素数必须与期望一致。
+	// 不一致说明 diff 真有 bug —— 此时回退全量重建（保证正确性），并让该来源出现在
+	// 日志里，从而把「keyed diff 缺陷」从不可见变为可定位。
+	//
+	// ⚠ `actual` 必须与 `_reconcileParts` 的 existingMap 用**同一个**枚举函数
+	// （queryPartElements）。2026-08-22 日志 1787373914386 实测 domParts 恒大于
+	// expected（66/64、73/66、69/67）→ 每次 finalize 都回退整条消息全量重建，
+	// 正是用户看到的闪烁；根因就是这里用后代查询、而卡片内部也设了同名属性。
+	const expected = this._buildKeyedParts(ctx.msg).length;
+	const actual = queryPartElements(bubble).length;
+	if (actual !== expected) {
+		this.refreshLogger.record('msg:keyed-inconsistent', {
+			msgId: ctx.msg.id,
+			partsLen: ctx.msg.parts?.length,
+			toolCalls: ctx.msg.toolCalls?.length,
+			note: `domParts=${actual} expected=${expected}`,
+		});
+		return false;
+	}
+
+	// 清流式残留：光标 + streaming-container 标记（非流式时 _updateStreamingContainerMark
+	// 直接 early-return，不会主动摘掉旧标记，故这里显式清理）
+	bubble.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
+	for (const sc of bubble.querySelectorAll('.streaming-container')) {
+		sc.classList.remove('streaming-container');
 	}
 	return true;
 }
@@ -605,12 +725,12 @@ protected override _updateStreamingContentInPlace(existingEl: HTMLElement, msg: 
 	// 拆为 ①结构 diff（_hasStreamingStructureChanged）②工具卡状态刷新
 	//（_updateToolCardStatuses）③文本节流渲染（mdScheduler.schedule）。
 	if (this._hasStreamingStructureChanged(existingEl, msg)) {
-		this._rebuildMessageElement(existingEl, msg);
+		this._rebuildMessageElement(existingEl, msg, 'msg:streaming-structure-changed');
 		return;
 	}
 	const streamingContainer = existingEl.querySelector('.streaming-container') as HTMLElement | null;
 	if (!streamingContainer) {
-		this._rebuildMessageElement(existingEl, msg);
+		this._rebuildMessageElement(existingEl, msg, 'msg:streaming-container-missing');
 		return;
 	}
 	// P2+: 增量更新工具卡状态（running → success/error 等），不重建整条消息
@@ -664,9 +784,19 @@ private _lastStreamTextOf(msg: IAgentChatMessage): string {
 	return msg.content;
 }
 
-protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentChatMessage): void {
+protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentChatMessage, source: FullRefreshSource): void {
 		// Clean up markdown disposables before replacing the old element
 		this._cleanupMarkdownDisposables(existingEl);
+		// 全量重建来源上报（2026-08-22）：source 是**必填**参数 —— 本方法有 7 个调用点，
+		// 此前它们共用一条不含来源的日志，日志里只能看到「重建了」，看不到「为什么」。
+		// 设为必填后 TS 会强制新增调用点显式声明来源，不可能漏。
+		this.refreshLogger.record(source, {
+			msgId: msg.id,
+			isStreaming: msg.isStreaming,
+			partsLen: msg.parts?.length,
+			toolCalls: msg.toolCalls?.length,
+			contentLen: (msg.content || '').length,
+		});
 		if ((window as any).__SAROSIS_PARTS_DIAG) {
 			const partsInfo = msg.parts ? `partsLen=${msg.parts.length} kinds=[${msg.parts.map(p => p.kind).join(',')}]` : 'parts=none';
 			console.info(`[PartsDiag] _rebuildMessageElement msgId=${msg.id} isStreaming=${msg.isStreaming} contentLen=${(msg.content||'').length} toolCalls=${msg.toolCalls?.length ?? 0} ${partsInfo}`);
@@ -976,17 +1106,44 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 		// 子代理已到达但对应工具卡尚未渲染（极少见：subagent 先于 delegate tool call 出现）：
 		// 做一次全量重建，由 _createMessageElement 在正确位置创建内嵌子代理卡片。
 		if (!rebuiltAny && msg.subAgents && msg.subAgents.length > 0) {
-			this._rebuildMessageElement(messageEl, msg);
+			this._rebuildMessageElement(messageEl, msg, 'msg:subagent-card-missing');
 		}
 	}
+
+/**
+ * 探测工具卡是否处于「占位态且 args 现已可填」，需要补齐重建一次。
+ *
+ * DOM 探测放在这里、判据放在 `toolCardArgsRefresh`（纯函数、可单测）。占位标记直接
+ * 复用卡片构建器已经写出的 class（`.terminal-cmd-empty` / `.write-file-path-unresolved`），
+ * 不额外引入状态，避免「DOM 与状态两套真相」。
+ */
+private _needsArgsDrivenRebuild(card: HTMLElement, tc: IToolCall): boolean {
+	const hasEmptyCommandPlaceholder = !!card.querySelector('.terminal-cmd-empty');
+	const hasUnresolvedPathPlaceholder = !!card.querySelector('.write-file-path-unresolved');
+	if (!hasEmptyCommandPlaceholder && !hasUnresolvedPathPlaceholder) { return false; }
+	// 用宽松解析：args 此刻可能仍是流式截断的 JSON（见 toolArgsJson.ts）
+	const args = parseToolArgsLoose(tc.args);
+	return needsArgsDrivenRebuild({ hasEmptyCommandPlaceholder, hasUnresolvedPathPlaceholder }, args);
+}
 
 protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentChatMessage): void {
 	if (!msg.toolCalls || msg.toolCalls.length === 0) { return; }
 		// 工具卡可能位于 .tool-calls-section（旧整段渲染）或气泡直接子节点（parts 交错渲染）。
 		// 统一按 data-tool-id 在整个消息元素内查找，两种模式都命中。
+		//
+		// ★ 2026-08-21（日志 1787323320262）：原实现在循环内对每个 toolCall 各做一次
+		// `existingEl.querySelector('[data-tool-id="..."]')` —— 每帧 N 次全子树扫描
+		// （实测后期 N=81，消息内 137 个 part），纯属重复遍历。改为**一次** querySelectorAll
+		// 建索引，N×O(subtree) 降为 O(subtree)。行为完全不变。
+		const cardById = new Map<string, HTMLElement>();
+		for (const el of existingEl.querySelectorAll('[data-tool-id]')) {
+			const id = el.getAttribute('data-tool-id');
+			// 同 id 只取首个，与原 querySelector「文档序第一个」语义一致
+			if (id && !cardById.has(id)) { cardById.set(id, el as HTMLElement); }
+		}
 		for (const tc of msg.toolCalls) {
 			if (!tc.id) { continue; }
-			const oldCard = existingEl.querySelector(`[data-tool-id="${tc.id}"]`) as HTMLElement | null;
+			const oldCard = cardById.get(tc.id);
 			if (!oldCard) { continue; }
 
 			// 比较状态类名——只有状态变化才重建卡片
@@ -999,6 +1156,12 @@ protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentC
 				: 'success';
 
 		if (currentStatus !== newStatus) {
+			// 整卡重建上报：这是流式期间最高频的全量刷新来源（每个工具
+			// running→success 都触发一次，含卡内 markdown 重渲染）。
+			this.refreshLogger.record('card:status-change', {
+				msgId: msg.id, toolId: tc.id, isStreaming: msg.isStreaming,
+				note: `${currentStatus || 'none'}->${newStatus}`,
+			});
 			// 重建前保留展开态（如委派卡片运行中自动展开/用户手动展开）+ 卡内滚动位置，
 			// 重建后恢复，避免实时刷新时折叠导致看不到执行内容。
 			// 展开态用 :scope 直属查找（防内嵌 subagent 卡同名 class 误读）。
@@ -1035,6 +1198,30 @@ protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentC
 	oldCard.replaceWith(newCard);
 		this._applySubAgentRefreshFX(newCard, prevSa);
 		this._restoreScrollPositionsDeferred(newCard, savedScroll);
+		} else if (this._needsArgsDrivenRebuild(oldCard, tc)) {
+			// ★ args 后到补齐（2026-08-22，日志 1787363991734）：`tool_start` 与
+			// `tool_args` 是两个独立 delta —— 建卡时 tc.args 还是空，终端族卡片渲染
+			// 「执行中…」占位符；args 随后到达时 status 仍是 running，原实现唯一的刷新
+			// 条件 `currentStatus !== newStatus` 不成立 → 卡片整个执行期间都是空的
+			// （本日志有一次 execute_code 跑了 30.5s，用户看了 30 秒空卡）。
+			//
+			// 且这与「后期抖动」同源：命令文本推迟到 tool_end 整卡重建时才出现，
+			// 卡片高度在消息已很长时突然增长、顶动下方内容。提前补齐让布局早稳定。
+			//
+			// 判据自限（见 toolCardArgsRefresh.needsArgsDrivenRebuild）：刷新后占位符
+			// 消失，下一帧不再命中，故每张卡最多因此多重建一次。
+			// ★ 上报正是为了验证这条自限性 —— 若日志里同一 toolId 反复出现该来源，
+			// 说明自限失效（占位符没被消掉），那会退化成每帧重建。
+			this.refreshLogger.record('card:args-arrived', {
+				msgId: msg.id, toolId: tc.id, isStreaming: msg.isStreaming,
+			});
+			const savedScroll = this._captureScrollPositions(oldCard);
+			const newCard = this._createToolCallCard(tc);
+			const oldPartKey = oldCard.getAttribute('data-part-key');
+			if (oldPartKey) { newCard.setAttribute('data-part-key', oldPartKey); }
+			// 展开态沿用既有 Map（_createToolCallCard 内部已按 _toolCallExpandState 应用）
+			oldCard.replaceWith(newCard);
+			this._restoreScrollPositionsDeferred(newCard, savedScroll);
 		} else if (currentStatus === 'running' && newStatus === 'running' && typeof tc.progress === 'number') {
 			// ★ 进度增量更新（status 未变，只更新进度条/文本）——避免 100ms 级
 			// 进度刷新触发整卡重建（含 markdown 重渲染，渲染线程饱和）。
@@ -1046,6 +1233,9 @@ protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentC
 				if (label) { label.textContent = tc.progressText ?? `${Math.round(tc.progress)}%`; }
 			} else {
 				// 卡片此前无进度条（progress 是后到的）→ 重建一次补上。
+				this.refreshLogger.record('card:progress-row-missing', {
+					msgId: msg.id, toolId: tc.id, isStreaming: msg.isStreaming,
+				});
 				const savedScroll = this._captureScrollPositions(oldCard);
 				const newCard = this._createToolCallCard(tc);
 				const oldPartKey = oldCard.getAttribute('data-part-key');
@@ -1515,7 +1705,7 @@ protected override _transitionStreamingToComplete(existingEl: HTMLElement, msg: 
 		const bubble = existingEl.querySelector('.chat-bubble') as HTMLElement | null;
 		if (!bubble) {
 			// 找不到 bubble，回退到全量重建
-			this._rebuildMessageElement(existingEl, msg);
+			this._rebuildMessageElement(existingEl, msg, 'msg:bubble-missing');
 			return;
 		}
 
@@ -1605,6 +1795,26 @@ protected override _createThinkingIndicator(): HTMLElement {
 			icon.textContent = '⏳';
 			const label = append(el, $('span.phase-label'));
 			label.textContent = msg.activityText;
+		} else if (phase === 'retrieving') {
+			// ★ 检索历史上下文（2026-08-21，日志 1787289570191）——同样排在 isThinking 之前。
+			// 该日志首包耗时 31966ms 全花在 turn 开始的记忆外置 + 召回上，期间界面完全
+			// 静默，用户体感等同卡死。与 compressing 同构处理。
+			el = $('.phase-activity-indicator.phase-retrieving');
+			const icon = append(el, $('span.phase-icon'));
+			icon.textContent = '🔎';
+			const label = append(el, $('span.phase-label'));
+			label.textContent = '正在检索历史上下文...';
+		} else if (phase === 'compressing') {
+			// ★ 上下文压缩（2026-08-21，事故 1787282838177）——必须排在 isThinking **之前**。
+			// 压缩发生在 turn 中间（工具执行完、下一轮 LLM 前），此时 isThinking 往往仍为
+			// true；旧的判定顺序让「正在思考」把压缩态整个盖住，用户看到的是「正在思考中」
+			// 而实际卡在摘要 LLM 上（可长达数分钟），完全无法判断该等还是该停。
+			// 压缩是比「思考」更具体的状态，因此优先级更高。
+			el = $('.phase-activity-indicator.phase-compressing');
+			const icon = append(el, $('span.phase-icon'));
+			icon.textContent = '🗜️';
+			const label = append(el, $('span.phase-label'));
+			label.textContent = '正在压缩上下文...';
 		} else if (msg.isThinking) {
 			// 思考阶段（2026-07-26 修正：不再要求 !thinking——thinking 卡片
 			// 置顶后跨轮累积，turn 间等待 LLM 时同样需要「正在思考...」指示，
@@ -1637,18 +1847,23 @@ protected override _createThinkingIndicator(): HTMLElement {
 		}
 	}
 
+/**
+ * 提取工具调用涉及的文件路径。
+ *
+ * 2026-08-21 修复「空白工具卡片」：原实现是裸 `JSON.parse(tc.args)` + 静默
+ * `catch` —— 参数含 JSON 非法转义（模型把制表符写成 `\x09`）时直接返回 `''`，
+ * 上游 `fileCards._createWriteFileToolCard` 的 `if (filePath)` 整段跳过 →
+ * 卡片标题区空白。现走宽松修复链，并在真的走了修复/失败时留 warn。
+ */
 protected override _extractFilePath(tc: IToolCall): string {
 		if (tc.filePath) { return tc.filePath; }
-		try {
-			if (tc.args) {
-				const args = JSON.parse(tc.args);
-				for (const key of ['filePath', 'path', 'file', 'filepath']) {
-					if (typeof args[key] === 'string' && args[key].length > 0) {
-						return args[key];
-					}
-				}
-			}
-		} catch { /* ignore */ }
+		if (!tc.args) { return ''; }
+		const parsed = parseToolArgsWithDiagnostics(tc.args);
+		warnToolArgsRepair(parsed, `${tc.name || 'tool'}:${tc.id || 'anon'}`, tc.args);
+		for (const key of ['filePath', 'path', 'file', 'filepath', 'file_path', 'target_file', 'uri']) {
+			const v = parsed.args[key];
+			if (typeof v === 'string' && v.length > 0) { return v; }
+		}
 		return '';
 	}
 
@@ -1669,7 +1884,9 @@ protected override _getLanguageTag(filePath: string): string {
 protected override _computeDiffStats(tc: IToolCall): { added: number; removed: number; lines: Array<{ type: 'add' | 'rem' | 'ctx'; text: string }> } {
 		try {
 			if (!tc.args) { return { added: 0, removed: 0, lines: [] }; }
-			const args = JSON.parse(tc.args);
+			// 走宽松修复链：diff 行数统计此前与 _extractFilePath 同因失效
+			// （非法转义 → parse 抛错 → 卡片既无文件名也无 +N/-N）。
+			const args = parseToolArgsLoose(tc.args);
 			// patch 模式：search + replace
 			if (typeof args['search'] === 'string' && typeof args['replace'] === 'string') {
 				const searchLines = args['search'].split('\n');
@@ -1987,25 +2204,18 @@ protected override _openUserEditOverlay(msg: IAgentChatMessage): void {
 		this._register(addDisposableListener(attachBtn, EventType.CLICK, (e) => { e.stopPropagation(); this._fileInput?.click(); }));
 		this._register(addDisposableListener(this._appendEditToolbarBtn(leftTools, { title: "语音输入", svgPath: "M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8" }), EventType.CLICK, (e) => e.stopPropagation()));
 		append(leftTools, $(".chat-user-edit-toolbar-divider"));
-		// ChatOnly toggle — replaces legacy mode selector (MODE_OPTIONS + _chatMode)
-		const chatOnlySvgPath = this._chatOnly
-			? 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z'
-			: 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z';
-		const chatOnlyLabel = this._chatOnly ? '纯聊' : '干活';
-		const chatOnlyTitle = this._chatOnly ? '纯聊模式：已开启（禁止工具执行）' : '干活模式：点击切换至纯聊';
-		const modeBtn = this._appendEditToolbarBtn(leftTools, {
-			title: chatOnlyTitle,
-			svgPath: chatOnlySvgPath,
+		// ChatMode 指示（2026-08-21）：编辑气泡内只**显示**当前模式，不提供切换
+		// —— 模式是会话级意图档位，应在底部主输入框统一切换；在编辑气泡里再放一个
+		// 可点开关会造成"改了这里以为只影响这条消息"的误解。
+		const editModeMeta = CHAT_MODE_UI[this._chatMode];
+		this._appendEditToolbarBtn(leftTools, {
+			title: `当前模式：${editModeMeta.label} — ${editModeMeta.description}（在下方输入框切换）`,
+			svgPath: editModeMeta.svgPath,
 			hasLabel: true,
-			label: chatOnlyLabel,
+			label: editModeMeta.label,
 			showChevron: false,
-			cssClass: this._chatOnly ? 'mode-tag mode-tag-chatonly-on' : 'mode-tag',
+			cssClass: `mode-tag mode-tag-${this._chatMode} mode-tag-readonly`,
 		});
-		this._register(addDisposableListener(modeBtn, EventType.CLICK, (e) => {
-			e.stopPropagation();
-			this._chatOnly = !this._chatOnly;
-			this._refreshInputArea();
-		}));
 		const curProvider = this._providers.find(p => p.id === this._currentProvider)?.label || this._currentProvider || 'Provider';
 		const providerBtn = this._appendEditToolbarBtn(leftTools, { title: '切换 Provider', svgPath: 'M2 3h20v14H2zM8 21h8M12 17v4', hasLabel: true, label: curProvider, showChevron: true, cssClass: 'provider-tag' });
 		this._register(addDisposableListener(providerBtn, EventType.CLICK, (e) => {

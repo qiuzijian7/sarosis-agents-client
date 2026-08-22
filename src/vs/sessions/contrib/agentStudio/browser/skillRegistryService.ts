@@ -60,6 +60,26 @@ import { ensureNonEmptySkillId, resolveSkillId } from '../common/skillId.js';
 import { skillScriptAbsolutePaths } from './providers/tool/executeCodeGuards.js';
 
 /**
+ * 判定异常是否为「文件/目录不存在」。
+ *
+ * 为什么不能只用 `instanceof FileOperationError`：`fileService.stat` 对缺失路径
+ * 实际抛出的是 `EntryNotFound (FileSystemError): ... ENOENT`（provider 层错误未被
+ * 包装成 FileOperationError），instanceof 判定落空 → 候选路径探测未命中被当成真错误
+ * 记 INFO「builtin dir scan failed」，误导排查（日志 1787319805992）。
+ *
+ * 故三重判据取并集：FileOperationError 结果码、错误名、错误消息关键字。
+ */
+function _isFileNotFoundError(e: unknown): boolean {
+	if (e instanceof FileOperationError && e.fileOperationResult === FileOperationResult.FILE_NOT_FOUND) {
+		return true;
+	}
+	const name = (e as { name?: unknown } | undefined)?.name;
+	if (typeof name === 'string' && /EntryNotFound|FileNotFound|ENOENT/i.test(name)) { return true; }
+	const msg = e instanceof Error ? e.message : String(e ?? '');
+	return /ENOENT|EntryNotFound|FileNotFound|no such file or directory/i.test(msg);
+}
+
+/**
  * 计算 skill 内容指纹：基于 prompt 正文生成 8 位十六进制哈希。
  * 用于判断不同目录下同名 skill 是否内容完全一致。
  */
@@ -471,7 +491,13 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			} catch (e) {
 				// 目录不存在（如 dev 模式下 candidate3 = dirname(appRoot)/resources 必然
 				// 缺失）是正常探测结果，降级为 debug 避免误导性 INFO；真正的扫描错误保留 INFO。
-				if (e instanceof FileOperationError && e.fileOperationResult === FileOperationResult.FILE_NOT_FOUND) {
+				//
+				// 2026-08-21（日志 1787319805992）：原判据只认 FileOperationError +
+				// FILE_NOT_FOUND，但 fileService.stat 在此实际抛的是
+				// `EntryNotFound (FileSystemError): ... ENOENT`，instanceof 不成立 →
+				// 每次启动都以 INFO 打出「builtin dir scan failed」，看起来像内置技能
+				// 加载坏了（实为候选路径探测未命中）。改为兼容多种「不存在」形态。
+				if (_isFileNotFoundError(e)) {
 					this.logService.debug(`[SkillRegistry] builtin candidate dir does not exist (skipped): ${builtinDir.toString()}`);
 				} else {
 					this.logService.info(`[SkillRegistry] builtin dir scan failed: ${builtinDir.toString()}, error: ${e}`);

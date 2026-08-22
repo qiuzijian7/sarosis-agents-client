@@ -9,6 +9,10 @@ import {
 	IAgentTurnRequest, IChatStreamDelta, ISlotRegistry,
 	IToolDefinition, IToolCallInfo, IToolResult,
 	IToolApprovalHandler,
+	IToolApprovalRequest,
+	IToolApprovalResolution,
+	ToolApprovalDecision,
+	TOOL_APPROVAL_TIMEOUT_MS,
 	SandboxConfirmationDecision, ISandboxViolationInfo,
 } from '../common/providers.js';
 import type { IConfirmationData } from '../../../browser/agentChat/agentChatTypes.js';
@@ -32,9 +36,11 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { URI } from '../../../../base/common/uri.js';
+import { join as pathJoin } from '../../../../base/common/path.js';
 import {
 	isBridgeTool,
 } from '../common/toolsetConfig.js';
@@ -130,6 +136,20 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	// ─── 沙箱确认（安全沙箱受限→暂停等待用户决策）──────────────
 	// 存放进行中的沙箱确认：confirmationId → resolve 回调。
 	private readonly _pendingSandboxConfirmations = new Map<string, (decision: SandboxConfirmationDecision) => void>();
+
+	// ─── 工具审批广播（2026-08-21，修「审批卡片不出现 → LLM 永久处理中」）───
+	//
+	// agentOSService 自己是 ToolApprovalService 的**唯一** handler：
+	//  1. 把请求广播给所有 UI（native pane / webview 各自订阅事件）；
+	//  2. 起权威定时器，超时 → Deny + cancelAgentLoop（终止 LLM）；
+	//  3. 任一 UI 通过 resolveToolApproval / agentStudio.confirmationAction
+	//     上报决策即 resolve 同一 promise（先到先得）。
+	// setToolApprovalHandler 注册的 handler 退化为「附加通道」（见该方法注释）。
+	private readonly _pendingToolApprovals = new Map<string, {
+		readonly request: IToolApprovalRequest;
+		readonly settle: (decision: ToolApprovalDecision, outcome: IToolApprovalResolution['outcome']) => void;
+	}>();
+	private _delegateApprovalHandler: IToolApprovalHandler | undefined;
 
 	// ─── Plan 模式审批（plan_exit → 弹出卡片 → 等待用户）──────────
 	// 存放进行中的 plan 审批：confirmationId → resolve 回调。
@@ -289,9 +309,19 @@ private readonly _sandboxGuard: SandboxGuard;
 
 	// ─── Tool-Use Enforcement（对齐 Hermes TOOL_USE_ENFORCEMENT_GUIDANCE）──────────
 	// 对 DeepSeek / GPT / Gemini 等需要显式引导的模型族，自动在 system prompt 末尾
-	// 注入工具使用强制指令。模型名包含列表中子串即触发。ID 匹配幂等（检测 TOOL_USE_ENFORCEMENT 标记）。
+	// 注入工具使用强制指令。ID 匹配幂等（检测 TOOL_USE_ENFORCEMENT 标记）。
+	//
+	// ⚠⚠ 2026-08-22 起本数组**不再是判据**，仅作历史参考保留。真源已统一为
+	// `common/modelFamilyPrompt.ts` 的 `needsToolUseEnforcement()`（族识别 +
+	// FAMILY_PROFILES 两张表）—— 改这个数组**不会改变任何行为**（与「给
+	// dangerousPatterns 加词」同类的惰性操作）。要调整哪些族需要强制指令，
+	// 请改 `FAMILY_PROFILES` 里对应族的 `needsToolUseEnforcement`。
+	// 与旧判据的一处有意差异：旧的 `'gpt-'` 带连字符会漏判 `gpt4o`，新实现已覆盖。
 	static readonly TOOL_USE_ENFORCEMENT_MODELS = ['deepseek', 'gpt-', 'gemini', 'gemma', 'grok', 'glm', 'qwen'];
-	static readonly MAX_TOOL_ITERATIONS = 50;
+	// 主 agent 单 turn 的工具调用轮次上限（2026-08-20 由 50 提升到 100）。
+	// 撞上限后不再直接硬停，而是额外跑一轮「禁工具收尾轮」（见 agentTurnExecutor
+	// 的 HARD_STOP_ITERATIONS / _isWrapUpRound），故实际上限为 100 + 1。
+	static readonly MAX_TOOL_ITERATIONS = 100;
 	static readonly MAX_CONSECUTIVE_TOOL_FAILURES = 3;
 	// 文本搜索连击阈值（2026-07-28）：连续 N 次 search_files（grep 类）成功且
 	// 未触及结构搜索工具（search_graph 等）时，注入一次「结构搜索优先」引导。
@@ -389,6 +419,13 @@ private readonly _sandboxGuard: SandboxGuard;
 		this._onDidSubAgentTrace.fire(snapshot);
 	}
 
+	// ─── 工具审批广播事件（native pane / webview 共同订阅）─────────────
+	private readonly _onDidRequestToolApproval = this._register(new Emitter<IToolApprovalRequest>());
+	readonly onDidRequestToolApproval: Event<IToolApprovalRequest> = this._onDidRequestToolApproval.event;
+
+	private readonly _onDidResolveToolApproval = this._register(new Emitter<IToolApprovalResolution>());
+	readonly onDidResolveToolApproval: Event<IToolApprovalResolution> = this._onDidResolveToolApproval.event;
+
 	constructor(
 		@ILogService logService: ILogService,
 		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
@@ -433,6 +470,42 @@ private readonly _sandboxGuard: SandboxGuard;
 			},
 		});
 
+		// 工具审批：agentOSService 自己是唯一 handler（广播 + 权威超时 + 超时终止 LLM）。
+		// 必须在 SandboxGuard 建好之后立刻注册，否则第一次危险工具调用会因
+		// 「handler 未注册」被静默放行（历史降级行为）。
+		this._sandboxGuard.setToolApprovalHandler({
+			requestApproval: (req) => this._requestToolApprovalFromUI(req),
+		});
+
+		// 计划文件写入豁免（2026-08-21，修 plan 模式死锁，日志 1787294819356）：
+		// 让审批层能识别「写 <sarosRoot>/plans/*.md」并免审批。
+		// 用 provider 惰性求值而非直接传值 —— _getSarosRoot() 依赖
+		// _environmentService，构造期取值虽可行，但惰性更稳且便于测试替换。
+		// 用 base/common/path 的 join（与 generatePlanPath 同源，保证两处拼出的
+		// 目录形态一致，否则 isPlanFilePathInRoot 的前缀比较可能不匹配）。
+		this._approvalService.setPlanRootProvider(
+			() => pathJoin(this._getSarosRoot(), 'plans'),
+		);
+
+		// 终端只读命令免确认开关（2026-08-21，用户决策"方案 B"）：
+		// ⚠ 必须用 IConfigurationService，**不能用 this._configService** ——
+		// 后者是「外部注入的窄接口」，全文只有声明与读取、**从无任何赋值**
+		// （163 声明 / 3351、3375、3401 读），永远是 undefined；用它会让本开关
+		// 永久为 false，即典型的「接口齐全 ≠ 已接线」。
+		// 惰性 invokeFunction 取服务 + 每次求值读配置：用户可随时开/关，
+		// 且不改构造函数签名。取不到服务时一律视为未开启（行为与以往一致）。
+		this._approvalService.setTerminalAutoApproveProvider(() => {
+			try {
+				return this._instantiationService.invokeFunction(accessor =>
+					accessor.get(IConfigurationService).getValue<boolean>(
+						'sessions.agentStudio.tools.autoApproveReadOnlyCommands',
+					) === true,
+				);
+			} catch {
+				return false;
+			}
+		});
+
 		// P1: scan for orphaned approval files left from a previous session crash.
 		this._restoreOrphanedApprovals().catch(err =>
 			this._logService.warn('[AgentOS] Failed to restore orphaned approvals:', err),
@@ -463,7 +536,11 @@ private readonly _sandboxGuard: SandboxGuard;
 					planResolve(normalized);
 					return;
 				}
-				this._logService.warn(`[AgentOS] No pending confirmation for id=${confirmationId} (checked sandbox + plan)`);
+				// 再查工具审批（terminal 等危险工具的卡片内嵌按钮复用同一命令）
+				if (this.resolveToolApproval(confirmationId, decision)) {
+					return;
+				}
+				this._logService.warn(`[AgentOS] No pending confirmation for id=${confirmationId} (checked sandbox + plan + tool approval)`);
 			},
 		));
 
@@ -497,11 +574,107 @@ private readonly _sandboxGuard: SandboxGuard;
 	// ─── Tool Execution Guard API (P0) ────────────────────────────────
 
 	/**
-	 * 注册工具审批 UI Handler。
-	 * 由 WebView 或 Chat UI 层调用，提供用户确认能力。
+	 * 注册**附加**工具审批 UI Handler（向后兼容 agentStudioWebviewController）。
+	 *
+	 * ⚠ 2026-08-21 语义变更：本方法**不再**覆盖 ToolApprovalService 的 handler。
+	 * 唯一 handler 恒为 `_requestToolApprovalFromUI`（构造时注册），它把请求
+	 * 广播给所有订阅方并附带转发给这里登记的 handler。原因见事故
+	 * 1787276571583：覆盖式单例导致「只有 webview 能收到审批请求」，用户在
+	 * native chat pane 工作时审批卡片永不出现 → agent loop 永久挂死。
 	 */
 	setToolApprovalHandler(handler: IToolApprovalHandler): void {
-		return this._sandboxGuard.setToolApprovalHandler(handler);
+		this._delegateApprovalHandler = handler;
+		this._logService.info('[AgentOS] Tool approval delegate handler registered (broadcast handler stays authoritative)');
+	}
+
+	/**
+	 * ToolApprovalService 的唯一 handler：广播 + 权威超时 + 超时终止 LLM。
+	 */
+	private _requestToolApprovalFromUI(request: IToolApprovalRequest): Promise<ToolApprovalDecision> {
+		const timeoutMs = TOOL_APPROVAL_TIMEOUT_MS;
+		const full: IToolApprovalRequest = { ...request, timeoutMs, deadline: Date.now() + timeoutMs };
+
+		// 无任何 UI 订阅且无附加 handler → 退化为「无审批模式」（headless / 测试），
+		// 与历史行为一致（handler 未注册时 checkAndApprove 直接放行）。
+		if (!this._onDidRequestToolApproval.hasListeners() && !this._delegateApprovalHandler) {
+			this._logService.warn(
+				`[AgentOS] Tool approval for "${request.toolName}" auto-allowed — no approval UI is listening`,
+			);
+			return Promise.resolve(ToolApprovalDecision.AllowOnce);
+		}
+
+		return new Promise<ToolApprovalDecision>((resolve) => {
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const settle = (decision: ToolApprovalDecision, outcome: IToolApprovalResolution['outcome']) => {
+				if (settled) { return; }
+				settled = true;
+				if (timer !== undefined) { clearTimeout(timer); }
+				this._pendingToolApprovals.delete(request.toolCallId);
+				this._onDidResolveToolApproval.fire({ toolCallId: request.toolCallId, decision, outcome });
+				resolve(decision);
+			};
+
+			timer = setTimeout(() => {
+				this._logService.warn(
+					`[AgentOS] Tool approval TIMEOUT after ${timeoutMs}ms for "${request.toolName}" ` +
+					`(callId=${request.toolCallId}) — denying and terminating the agent loop`,
+				);
+				settle(ToolApprovalDecision.Deny, 'timeout');
+				// 用户完全没交互 → 终止 LLM（而不是让 loop 拿着一条 denied 结果继续跑）。
+				this.cancelAgentLoop(request.agentId, request.sessionId);
+			}, timeoutMs);
+
+			this._pendingToolApprovals.set(request.toolCallId, { request: full, settle });
+
+			this._logService.info(
+				`[AgentOS] Tool approval requested: "${request.toolName}" callId=${request.toolCallId} ` +
+				`level=${request.securityLevel} timeoutMs=${timeoutMs}`,
+			);
+			this._onDidRequestToolApproval.fire(full);
+
+			// 附加通道（webview）：其决策同样能 resolve 本 promise（先到先得）。
+			this._delegateApprovalHandler?.requestApproval(full).then(
+				(d) => settle(d, d === ToolApprovalDecision.Deny ? 'rejected' : 'approved'),
+				() => { /* 附加通道失败不影响主流程，等广播或超时 */ },
+			);
+		});
+	}
+
+	/** buttonId → ToolApprovalDecision（容纳 native / webview 两套按钮命名）。 */
+	private static _mapApprovalButton(buttonId: string): ToolApprovalDecision {
+		switch (buttonId) {
+			case 'allow_once':
+			case 'allow':
+			case 'approve':
+			case 'approved':
+				return ToolApprovalDecision.AllowOnce;
+			case 'allow_always':
+			case 'always':
+			case 'allow_session':
+			case 'allow_workspace':
+				return ToolApprovalDecision.AllowAlways;
+			default:
+				return ToolApprovalDecision.Deny;
+		}
+	}
+
+	resolveToolApproval(toolCallId: string, buttonId: string): boolean {
+		const pending = this._pendingToolApprovals.get(toolCallId);
+		if (!pending) { return false; }
+		const decision = AgentOSService._mapApprovalButton(buttonId);
+		this._logService.info(`[AgentOS] Tool approval ${toolCallId} → ${buttonId} (${decision})`);
+		pending.settle(decision, decision === ToolApprovalDecision.Deny ? 'rejected' : 'approved');
+		return true;
+	}
+
+	/** 取消所有进行中的工具审批（turn 被取消 / 切换 agent 时清理，避免悬挂 promise）。 */
+	private _cancelAllToolApprovals(): void {
+		if (this._pendingToolApprovals.size === 0) { return; }
+		this._logService.info(`[AgentOS] Cancelling ${this._pendingToolApprovals.size} pending tool approval(s)`);
+		for (const pending of Array.from(this._pendingToolApprovals.values())) {
+			pending.settle(ToolApprovalDecision.Deny, 'cancelled');
+		}
 	}
 
 	// ─── 沙箱确认（安全沙箱受限→暂停等待用户决策）──────────────
@@ -1098,6 +1271,25 @@ private readonly _sandboxGuard: SandboxGuard;
 	}
 
 	/**
+	 * 把「父 agent 的 worktree」下推给支持继承的 tool provider（当前是
+	 * BuiltinToolProvider —— 它据此设置搜索根，并经 delegate_task 传给子代理）。
+	 *
+	 * **必须无条件调用，包括 `undefined`**（2026-08-20，日志 1787217670299）：
+	 * 原实现外面包着 `if (worktreePath)`，导致这个值只会被设置、从不被清空。
+	 * 一旦某个 turn 带过 worktreePath，后续未绑定 worktree 的 turn 仍会沿用它
+	 * —— 而 `codebaseTools.getSearchFolders()` 把它当**最高优先级**搜索根，
+	 * 于是出现「用户选了 main，搜索却落在某个 worktree 分支」的反向错位。
+	 */
+	private _propagateParentWorktree(worktreePath: string | undefined): void {
+		for (const provider of this._slotRegistry.getToolProviders()) {
+			const candidate = provider as unknown as { setParentWorktreePath?: (p: string | undefined) => void };
+			if (typeof candidate.setParentWorktreePath === 'function') {
+				try { candidate.setParentWorktreePath(worktreePath); } catch { /* ignore */ }
+			}
+		}
+	}
+
+	/**
 	 * 暂存文件路径到 session stash。
 	 * 下一轮 loadContext 时会消费这些路径做批量 enrich。
 	 */
@@ -1177,6 +1369,10 @@ private readonly _sandboxGuard: SandboxGuard;
 	 * 所有活跃的工具执行将随对应 AbortController abort 而被取消。
 	 */
 	cancelAgentLoop(agentId?: string, sessionId?: string): void {
+		// 先解挂所有等待中的工具审批 —— 审批 promise 位于 executeWithRetryAndTimeout
+		// 的硬超时闸门**之外**，abort 信号救不了它；不主动 settle 会留下悬挂 promise
+		// （turn 已取消，UI 却仍显示倒计时按钮）。
+		this._cancelAllToolApprovals();
 		if (agentId !== undefined || sessionId !== undefined) {
 			const key = this._turnKey(agentId, sessionId);
 			const ctrl = this._activeTurnControllers.get(key);
@@ -2191,6 +2387,7 @@ private readonly _sandboxGuard: SandboxGuard;
 		// Approval（真实工具的安全级别）
 		if (!await this._approvalService.checkAndApprove(
 			{ id: toolCallId, name: underlyingName, arguments: underlyingArgs, worktreePath }, targetTool, askRouting,
+			{ agentId, sessionId: agentSessionId },
 		)) {
 			this._logService.info(`[AgentOS] Bridge tool_call: "${underlyingName}" denied`);
 			return {
@@ -2322,8 +2519,8 @@ private readonly _sandboxGuard: SandboxGuard;
 		return ctrl.signal;
 	}
 
-	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext, agentSessionId?: string): Promise<Array<{ toolCallId: string; content: any; success: boolean }>> {
-		const results: Array<{ toolCallId: string; content: any; success: boolean }> = [];
+	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext, agentSessionId?: string): Promise<Array<{ toolCallId: string; content: any; success: boolean; metadata?: Record<string, unknown> }>> {
+		const results: Array<{ toolCallId: string; content: any; success: boolean; metadata?: Record<string, unknown> }> = [];
 
 		// ─── Dashboard 统计：工具调用计数 ──
 		// P8: 同时收集文件路径用于下一轮 enrich
@@ -2347,14 +2544,13 @@ private readonly _sandboxGuard: SandboxGuard;
 		// v17: propagate the parent agent's worktree to tool providers that
 		// support inheriting it. Today this is BuiltinToolProvider, which
 		// passes the path down to sub-agents via `delegate_task`.
-		if (worktreePath) {
-			for (const provider of this._slotRegistry.getToolProviders()) {
-				const candidate = provider as unknown as { setParentWorktreePath?: (p: string | undefined) => void };
-				if (typeof candidate.setParentWorktreePath === 'function') {
-					try { candidate.setParentWorktreePath(worktreePath); } catch { /* ignore */ }
-				}
-			}
-		}
+		//
+		// 2026-08-20（日志 1787217670299）：原实现包在 `if (worktreePath)` 里，
+		// 于是 **从不清空** —— 一旦某轮带过 worktreePath，后续未绑定 worktree 的
+		// turn 会继续沿用它（`getSearchFolders` 的最高优先级来源就是它），造成
+		// 「选 main 却在 worktree 里搜」的反向错位。改为无条件调用，让 undefined
+		// 也能真正复位。
+		this._propagateParentWorktree(worktreePath);
 
 		// Pre-collect all available tools and build lookup structures
 		const allAvailableTools: IToolDefinition[] = [];
@@ -2551,6 +2747,7 @@ private readonly _sandboxGuard: SandboxGuard;
 				{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath },
 				toolDef,
 				askRouting,
+				{ agentId, sessionId: agentSessionId },
 			);
 			if (!approved) {
 				this._logService.info(`[AgentOS] Tool "${targetToolName}" execution denied by user`);
@@ -2589,7 +2786,7 @@ private readonly _sandboxGuard: SandboxGuard;
 					const limitedStr = safeStringifyToolResult(result.content);
 					let finalContent: unknown = result.content;
 					try { finalContent = JSON.parse(limitedStr); } catch { finalContent = { __truncated__: true, content: limitedStr }; }
-					results.push({ toolCallId: toolCall.id, content: annotateCoerceWarnings(finalContent, coerceWarns), success: result.success });
+					results.push({ toolCallId: toolCall.id, content: annotateCoerceWarnings(finalContent, coerceWarns), success: result.success, metadata: result.metadata as Record<string, unknown> | undefined });
 					executed = true;
 					if (result.metadata?.timedOut) {
 						this._logService.warn(`[AgentOS] Tool ${targetToolName} timed out after ${timeoutMs}ms`);
@@ -2711,17 +2908,11 @@ private readonly _sandboxGuard: SandboxGuard;
 	 *
 	 * Skipped entries (validation failures) are yielded synchronously up
 	 * front so the UI can mark them done immediately.
-	 */ public async *_executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext, agentSessionId?: string): AsyncGenerator<{ toolCallId: string; content: any; success: boolean }, void, unknown> {
+	 */ public async *_executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext, agentSessionId?: string): AsyncGenerator<{ toolCallId: string; content: any; success: boolean; metadata?: Record<string, unknown> }, void, unknown> {
 		// v17: same as the serial path — push the worktree down to tool providers
 		// (e.g. BuiltinToolProvider) so sub-agents inherit it.
-		if (worktreePath) {
-			for (const provider of this._slotRegistry.getToolProviders()) {
-				const candidate = provider as unknown as { setParentWorktreePath?: (p: string | undefined) => void };
-				if (typeof candidate.setParentWorktreePath === 'function') {
-					try { candidate.setParentWorktreePath(worktreePath); } catch { /* ignore */ }
-				}
-			}
-		}
+		// 无条件调用（含 undefined 复位），理由同串行路径，见 _propagateParentWorktree。
+		this._propagateParentWorktree(worktreePath);
 
 		// Pre-collect all available tools and build lookup structures
 		const allAvailableTools: IToolDefinition[] = [];
@@ -2906,6 +3097,7 @@ private readonly _sandboxGuard: SandboxGuard;
 				{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath },
 				toolDef,
 				askRouting,
+				{ agentId, sessionId: agentSessionId },
 			);
 			if (!approved) {
 				this._logService.info(`[AgentOS] [parallel] Tool "${targetToolName}" denied by user`);
@@ -3009,7 +3201,11 @@ private readonly _sandboxGuard: SandboxGuard;
 		// fastest *every iteration*, repeatedly returning the same already-resolved
 		// promise. Instead we attach an index to each promise, and as each settles
 		// we remove it from the pending pool.
-		type Settled = { type: 'fulfilled'; value: { originalIndex: number; toolCallId: string; content: any; success: boolean } }
+		// ⚠ 2026-08-22：`metadata` 必须一路透传到消费方。原先这条链路只保留
+		// `{toolCallId, content, success}`，把 toolExecutor 算好的
+		// `metadata.executionTimeMs`（含 timedOut/retryable）默默丢掉 ——
+		// 直接后果是 `[ToolAudit] SUMMARY` 的 toolTime 恒为 0.0s（成本归因全失效）。
+		type Settled = { type: 'fulfilled'; value: { originalIndex: number; toolCallId: string; content: any; success: boolean; metadata?: Record<string, unknown> } }
 			| { type: 'rejected'; reason: unknown };
 
 		// Wrap each promise so `race` returns the index of the one that settled.
@@ -3030,8 +3226,8 @@ private readonly _sandboxGuard: SandboxGuard;
 			remaining--;
 
 			if (settled.type === 'fulfilled' && settled.value) {
-				const { toolCallId, content, success } = settled.value;
-				yield { toolCallId, content, success };
+				const { toolCallId, content, success, metadata } = settled.value;
+				yield { toolCallId, content, success, metadata };
 			} else if (settled.type === 'rejected') {
 				this._logService.error('[AgentOS] [parallel] Tool execution promise rejected:', settled.reason);
 				// Even on rejection, we must produce a tool result for the

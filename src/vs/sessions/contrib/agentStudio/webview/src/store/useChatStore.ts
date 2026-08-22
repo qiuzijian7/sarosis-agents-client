@@ -674,8 +674,15 @@ export const useChatStore = create<ChatState>((set, get) => {
 				case 'awaiting_approval':
 					syncAgentStatus('thinking'); // "waiting for input" → thinking indicator
 					break;
+				case 'retrieving':
+					// 检索历史上下文同样是"在干活"，不是等模型思考（与 compressing 同构）。
+					syncAgentStatus('working');
+					break;
 				case 'compressing':
-					syncAgentStatus('thinking');
+					// 压缩是本地/摘要 LLM 在“干活”，不是在等模型思考。
+					// 归为 thinking 会与「正在思考」混同 —— 事故 1787282838177 里
+					// 压缩挂起数分钟，用户只看到「思考中」无法判断该等还是该停。
+					syncAgentStatus('working');
 					break;
 				case 'error':
 					syncAgentStatus('idle');

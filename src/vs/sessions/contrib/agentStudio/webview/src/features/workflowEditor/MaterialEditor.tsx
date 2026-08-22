@@ -46,6 +46,10 @@ const BALL_R_2D = 110;
 const inputStyle: React.CSSProperties = {
 	background: '#111', color: '#e6e6e6', border: '1px solid rgba(255,255,255,.14)',
 	borderRadius: 5, padding: '4px 7px', fontSize: 12, outline: 'none',
+	// ★ flex/grid 收缩：input 默认 min-width（浏览器 UA ~170px）会撑破窄列
+	//   （COLOR 行 flex:1 的 hex 输入在 80px 标签列的 1fr 里溢出 4px，visual
+	//   R2 实测）。minWidth:0 让 flex:1 的 input 能收缩到列宽。
+	minWidth: 0,
 };
 
 function applyMaterialParams(mat: THREE.MeshPhysicalMaterial, p: MaterialParams): void {
@@ -233,20 +237,23 @@ export function MaterialEditor({ initialState, runners, preference, onStateChang
 				))}
 			</div>
 
-			{/* ③ COLOR 颜色选择器（对齐截图：COLOR + #hex 输入） */}
-			<div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: 6, alignItems: 'center' }}>
+			{/* ③ COLOR 颜色选择器（对齐截图：COLOR + #hex 输入）。
+			    ★ minmax(0,1fr) 而非 1fr：grid 1fr 的 min 是 auto（内容 min-content），
+			    内部 flex div 的 min-content（36+5+hex 输入固有宽 ≈182px）会撑破窄列
+			    （visual R2 实测溢出 4px）。minmax(0,1fr) 让列可收缩到 0。 */}
+			<div style={{ display: 'grid', gridTemplateColumns: '80px minmax(0, 1fr)', gap: 6, alignItems: 'center' }}>
 				<span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.8, color: '#aaa' }}>COLOR</span>
-				<div style={{ display: 'flex', gap: 5 }}>
+				<div style={{ display: 'flex', gap: 5, minWidth: 0 }}>
 					<input type="color" value={params.color} onChange={e => patch({ color: e.target.value })}
-						style={{ width: 36, height: 26, padding: 0, border: '1px solid rgba(255,255,255,.2)', borderRadius: 5, background: 'transparent', cursor: 'pointer' }} />
+						style={{ width: 36, height: 26, padding: 0, border: '1px solid rgba(255,255,255,.2)', borderRadius: 5, background: 'transparent', cursor: 'pointer', flexShrink: 0 }} />
 					<input value={params.color} onChange={e => patch({ color: e.target.value })}
 						style={{ ...inputStyle, flex: 1, fontFamily: 'monospace', fontSize: 11 }} />
 				</div>
 			</div>
 
 			{/* ④ PBR 滑块（METALNESS / ROUGHNESS / TRANSMISSION / OPACITY / CLEARCOAT / IOR）
-			    对齐截图：两列网格，每行 label + 滑块 + 数值 */}
-			<div style={{ display: 'grid', gridTemplateColumns: '80px 1fr auto', gap: '4px 6px', alignItems: 'center' }}>
+			    对齐截图：两列网格，每行 label + 滑块 + 数值（minmax(0,1fr) 防滑块撑破） */}
+			<div style={{ display: 'grid', gridTemplateColumns: '80px minmax(0, 1fr) auto', gap: '4px 6px', alignItems: 'center' }}>
 				{MATERIAL_SLIDERS.filter(s => s.key !== 'clearcoatRoughness' && s.key !== 'emissiveIntensity').map(s => (
 					<React.Fragment key={s.key}>
 						<span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.8, color: '#aaa' }}>{s.label}</span>

@@ -123,6 +123,17 @@ function collectInsertTokens(nodeId: string): Array<{ label: string; token: stri
 				tokens.push({ label: `参数 ${k}`, token: `{{args.${k}}}` });
 			}
 		}
+		// P0: 本节点 variables 局部变量 → {{变量名}} 可点选插入。
+		//   variables 在 node.data 里可能是对象（sarosValuesToData 已 JSON.parse）
+		//   或字符串（非法 JSON 回退），两种都兼容。
+		const self = nodes.find(n => n.id === nodeId);
+		const rawVars = self?.data?.variables;
+		let vars: Record<string, unknown> = {};
+		if (typeof rawVars === 'string') { try { vars = JSON.parse(rawVars) as Record<string, unknown>; } catch { /* 非法 JSON 忽略 */ } }
+		else if (rawVars && typeof rawVars === 'object') { vars = rawVars as Record<string, unknown>; }
+		for (const k of Object.keys(vars)) {
+			tokens.push({ label: `变量 ${k}`, token: `{{${k}}}` });
+		}
 	} catch { /* store 不可用时仅提供 {{input}} */ }
 	return tokens;
 }
@@ -978,7 +989,10 @@ function ImageFieldEditor({ label, value, onChange, inputStyle }: { label: strin
 		if (!value) { setSize(null); return; }
 		const img = new Image();
 		img.onload = () => setSize({ w: img.naturalWidth, h: img.naturalHeight });
-		img.onerror = () => setSize(null);
+		img.onerror = () => {
+			console.warn('[ImageFieldEditor] thumbnail measure failed to load, value=', value?.slice(0, 120));
+			setSize(null);
+		};
 		img.src = value;
 	}, [value]);
 	const fileName = value ? (() => {
@@ -1021,7 +1035,12 @@ function ImageFieldEditor({ label, value, onChange, inputStyle }: { label: strin
 			</div>
 			{value && (
 				<div style={{ background: 'var(--vscode-input-background)', border: '1px solid var(--vscode-input-border)', borderRadius: 4, padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-					<img src={value} alt="" style={{ maxWidth: '100%', maxHeight: 240, objectFit: 'contain' }} />
+					<img
+						src={value}
+						alt=""
+						style={{ maxWidth: '100%', maxHeight: 240, objectFit: 'contain' }}
+						onError={() => console.warn('[ImageFieldEditor] thumbnail <img> failed to render, value=', value?.slice(0, 120))}
+					/>
 				</div>
 			)}
 			{size && (
@@ -1233,7 +1252,7 @@ function FieldEditor({ field, value, onChange, providerId, nodeId }: { field: Ed
 					<div style={{ position: 'relative', display: 'inline-block', marginBottom: 3 }}>
 						<button
 							type="button"
-							title="插入变量占位符（{{input}} / 上游节点 / Start 参数）"
+							title="插入变量占位符（{{input}} / 上游节点 / Start 参数 / 本节点变量）"
 							onClick={() => setInsertOpen(v => !v)}
 							style={{ fontSize: 10, cursor: 'pointer', border: '1px solid var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-descriptionForeground)', borderRadius: 4, padding: '1px 7px', fontFamily: 'inherit' }}
 						>

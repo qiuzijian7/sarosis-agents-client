@@ -7,6 +7,8 @@ import { app, Details, GPUFeatureStatus, net, powerMonitor, protocol, session, S
 import { addUNCHostToAllowlist, disableUNCAccessRestrictions } from '../../base/node/unc.js';
 import { validatedIpcMain } from '../../base/parts/ipc/electron-main/ipcMain.js';
 import { execFile, spawn, type ChildProcess } from 'child_process';
+import { resolveTerminalEncoding } from '../../base/node/terminalEncoding.js';
+import { ProcessOutputCollector } from '../../sessions/contrib/agentStudio/common/processOutputDecoder.js';
 import { hostname, release } from 'os';
 import { existsSync } from 'fs';
 import { dispatchWorktreeDebug, resolveWorktreeDebugPlan } from './worktreeDebugStrategies.js';
@@ -414,6 +416,22 @@ export class CodeApplication extends Disposable {
 		//#endregion
 	}
 
+	/**
+	 * 本地控制台编码，供 `vscode:execCode` 解码子进程输出用（2026-08-22）。
+	 *
+	 * `resolveTerminalEncoding()` 在 Windows 上要 spawn 一次 `chcp`，而 execute_code
+	 * 是高频工具 —— 故按进程缓存 Promise（并发调用共享同一次探测）。
+	 * 探测失败不阻塞执行：返回 undefined，解码器会用 gbk 作为回退候选。
+	 */
+	private _execCodeEncodingPromise: Promise<string | undefined> | undefined;
+	private _resolveExecCodeEncoding(): Promise<string | undefined> {
+		if (!this._execCodeEncodingPromise) {
+			this._execCodeEncodingPromise = resolveTerminalEncoding()
+				.catch(() => undefined);
+		}
+		return this._execCodeEncodingPromise;
+	}
+
 	private registerListeners(): void {
 
 		// Dispose on shutdown
@@ -614,6 +632,10 @@ export class CodeApplication extends Disposable {
 	// the pty-based `terminal` tool (interactive shell, no reliable exit code, idle-detect).
 	// Backs the agentStudio `execute_code` tool (researcher subagent runs anysearch via it).
 	validatedIpcMain.handle('vscode:execCode', async (event, payload: { command?: string; script?: string; interpreter?: string; cwd?: string; timeoutMs?: number; shell?: string; pathPrefix?: string }) => {
+		// 本地控制台编码：Windows 下探测 chcp（简中通常 cp936）。用于把 shell 自身的
+		// 非 UTF-8 错误信息正确解码（见 processOutputDecoder 头注释）。
+		// 探测走一次 `chcp` 子进程，故按进程缓存 —— execute_code 是高频工具。
+		const localEncoding = await this._resolveExecCodeEncoding();
 		return new Promise<{ success: boolean; stdout: string; stderr: string; exitCode: number }>((resolve) => {
 		const timeoutMs = Math.min(Math.max(payload?.timeoutMs ?? 30000, 1000), 120000);
 		// PYTHONIOENCODING/PYTHONUTF8：Windows 终端默认 GBK 编码，Python print()
@@ -653,36 +675,45 @@ export class CodeApplication extends Disposable {
 			});
 		}
 
-			let stdout = '';
-			let stderr = '';
+			// ── 输出解码（2026-08-22，日志 1787363991734）─────────────────────
+			// 原实现 `stdout += data.toString()` 有两个独立缺陷：
+			//  ① toString() 无参数按 UTF-8 解码，而 Windows 控制台默认 CP936 ——
+			//     PowerShell/cmd 自身的中文错误变 mojibake（`�Ҳ���·��`），
+			//     模型读到乱码无法自纠；
+			//  ② 逐 chunk 解码会把跨 chunk 边界的多字节字符切断，编码猜对也乱码。
+			// 现改为收集字节 + 结束时整体解码（见 processOutputDecoder）。
+			const stdoutCollector = new ProcessOutputCollector();
+			const stderrCollector = new ProcessOutputCollector();
+			child.stdout?.on('data', (data: Buffer) => stdoutCollector.push(data));
+			child.stderr?.on('data', (data: Buffer) => stderrCollector.push(data));
 			let settled = false;
 
 			const timeoutHandle = setTimeout(() => {
 				if (!settled) {
 					settled = true;
+					// 超时路径同样要走整体解码 —— 被 kill 的进程往往已经产出了关键错误信息
+					const partialOut = stdoutCollector.decode(localEncoding);
+					const partialErr = stderrCollector.decode(localEncoding);
 					// Windows：shell:true 时 child 是 cmd.exe/bash，child.kill() 只杀 shell
 					// 进程，不杀其 spawn 的子进程（如 node script.mjs 卡在 top-level await）。
 					// 孤儿 node 进程继续跑 → 即使超时返回，后台仍吃 CPU → "卡住"体感。
 					// 用 taskkill /T /F 杀整棵进程树；失败则回退 child.kill()。
 					if (process.platform === 'win32' && child.pid) {
 						execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {
-							resolve({ success: false, stdout, stderr: stderr + `\n[timeout: process tree killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
+							resolve({ success: false, stdout: partialOut, stderr: partialErr + `\n[timeout: process tree killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
 						});
 					} else {
 						try { child.kill('SIGKILL'); } catch { /* ignore */ }
-						resolve({ success: false, stdout, stderr: stderr + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
+						resolve({ success: false, stdout: partialOut, stderr: partialErr + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
 					}
 				}
 			}, timeoutMs);
-
-			child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
-			child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
 
 			child.on('error', (err) => {
 				if (!settled) {
 					settled = true;
 					clearTimeout(timeoutHandle);
-					resolve({ success: false, stdout, stderr: err.message, exitCode: -1 });
+					resolve({ success: false, stdout: stdoutCollector.decode(localEncoding), stderr: err.message, exitCode: -1 });
 				}
 			});
 
@@ -690,7 +721,12 @@ export class CodeApplication extends Disposable {
 				if (!settled) {
 					settled = true;
 					clearTimeout(timeoutHandle);
-					resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 });
+					resolve({
+						success: code === 0,
+						stdout: stdoutCollector.decode(localEncoding),
+						stderr: stderrCollector.decode(localEncoding),
+						exitCode: code ?? -1,
+					});
 				}
 			});
 		});

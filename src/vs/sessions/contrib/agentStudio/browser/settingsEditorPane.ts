@@ -265,7 +265,7 @@ const TOC_ENTRIES: TocEntry[] = [
 		icon: '🔌',
 		sections: [],
 		renderContent: (container: HTMLElement, parent: SettingsEditorPane) => {
-			renderProviderSettings(container, parent.configurationService);
+			renderProviderSettings(container, parent.configurationService, parent.mainProcessService);
 		},
 	},
 ];

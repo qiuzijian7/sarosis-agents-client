@@ -44,6 +44,12 @@ export interface IChatPanelCallbacks {
 	onOpenSettings?: () => void;
 	// onChangeMode removed — replaced by onToggleChatOnly
 	onToggleChatOnly?: (chatOnly: boolean) => void;
+	/**
+	 * 输入框 ChatMode 下拉框选择回调（2026-08-21）。
+	 * 与 onToggleChatOnly 正交：chatMode 是意图档位（craft/ask/plan），
+	 * chatOnly 是额外的只读约束。宿主需把它随每 turn 传给 agent（request.chatMode）。
+	 */
+	onChangeChatMode?: (chatMode: 'craft' | 'ask' | 'plan') => void;
 	onSelectProvider?: (providerId: string) => void;
 	onSelectModel?: (modelId: string) => void;
 	onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => void;
@@ -176,6 +182,8 @@ export interface IChatPanel extends IDisposable {
 
 	// ── Session / worktree / mode ──
 	setChatOnly(chatOnly: boolean): void;
+	/** 恢复输入框选定的 ChatMode（窗口重载 / 切换 agent 时用）。 */
+	setChatMode?(chatMode: 'craft' | 'ask' | 'plan'): void;
 	setSessionInfo(info: ISessionInfo | null): void;
 	setAgentSessions(sessions: ReadonlyArray<IAgentSessionMeta>): void;
 	setWorktrees(items: ReadonlyArray<IWorktreeItem>): void;

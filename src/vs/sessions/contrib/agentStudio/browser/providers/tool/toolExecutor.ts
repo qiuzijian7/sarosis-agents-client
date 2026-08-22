@@ -123,7 +123,13 @@ export async function executeToolImpl(
 		return {
 			toolCallId: toolCall.id,
 			success: false,
-			content: [],
+			// ⚠ 错误文本必须同时进 content（2026-08-21 修，日志 1787311348450）：
+			// agentOSService 的三条结果映射路径（顺序/provider/并行）都只把
+			// `result.content` 塞进 tool message，**从不读 `result.error`**，
+			// 所以此处若留 `content: []`，模型看到的就是空结果 —— 抛错工具的
+			// 诊断信息全部丢失，它既不知道失败也不知道原因。
+			// 上方 sandboxViolation 分支本来就是这么做的，此处属对齐疏漏。
+			content: [{ type: 'text', text: msg }],
 			error: msg,
 			metadata: { executionTimeMs: Date.now() - startTime, retryable },
 		};

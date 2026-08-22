@@ -3,10 +3,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import {
-	generateImage,
-	inferImageGen,
-} from '../../common/llmBridge.js';
+// 2026-08-21 拆分：纯函数留在 common/，网络实现迁到 node/（common 禁止 Node 依赖）
+import { inferImageGen } from '../../common/llmBridge.js';
+import { generateImage } from '../../node/llmBridgeNode.js';
 
 suite('llmBridge — inferImageGen', () => {
 

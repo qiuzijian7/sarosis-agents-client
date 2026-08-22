@@ -41,7 +41,7 @@ import type { ICodebaseGraphSqliteBackend } from '../common/codebaseGraphStoreCh
 import { LspCrossResolver } from './codebaseGraphLsp.js';
 import { extractInherits } from './codebaseGraphQueries.js';
 import { INDEX_LOCK_FILENAME, INDEX_LOCK_HEARTBEAT_MS, createIndexLockToken, isIndexLockStale, parseIndexLock, serializeIndexLock } from './codebaseIndexLock.js';
-import { buildSemanticEdges, detectSimilarCode, MinHash, MINHASH_PERM } from './codebaseGraphExtendedPasses.js';
+import { buildSemanticEdges, detectSimilarCode, detectSimilarCodeIncremental, MinHash, MINHASH_PERM } from './codebaseGraphExtendedPasses.js';
 import { runMultiLevelLeiden, detectDeadCodeEnhanced, computeTwoLevelLOD, executeExtendedCypher, computeAllSignals } from './codebaseGraphAdvancedAnalysis.js';
 import { CrossRepoDiscovery } from './codebaseGraphCrossRepoDiscovery.js';
 import { wrapWorkerUrl } from './shared/workerPoolManager.js';
@@ -296,7 +296,11 @@ export interface ICodebaseGraphService {
 		minOutDegree?: number;
 		maxOutDegree?: number;
 		relType?: string;
-	}): Promise<{ nodes: GraphNode[]; total: number; scores?: Record<number, number>; hasMore?: boolean }>;
+	}): Promise<{
+		nodes: GraphNode[]; total: number; scores?: Record<number, number>; hasMore?: boolean;
+		/** 命中全部落在其它已索引项目时的分布（当前项目 0 命中才置位）。 */
+		crossProjectOnly?: { project: string; count: number }[];
+	}>;
 
 	tracePathAdvanced(sourceName: string, targetName: string | undefined, opts?: {
 		mode?: 'calls' | 'data_flow' | 'cross_service';
@@ -444,7 +448,7 @@ class GraphStore {
 
 	// ── Node operations ──
 
-	addNode(node: GraphNode): void {
+	addNode(node: GraphNode): number {
 		const numericId = this._toNumId(node.id);
 		this._store.upsertNode({
 			project: this._activeProject,
@@ -462,6 +466,7 @@ class GraphStore {
 			fileNodes.push(node.id);
 			this._nodesByFile.set(node.filePath, fileNodes);
 		}
+		return numericId;
 	}
 
 	getNode(id: string): GraphNode | undefined {
@@ -761,6 +766,14 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		return this._configurationService.getValue<boolean | undefined>('saros.codebaseGraph.sqliteBackend') !== false;
 	}
 
+	/**
+	 * 已确认「sqlite 库为空」的 project 集合（2026-08-20）。
+	 * 图从 gzip artifact 加载但本会话未做 sqlite 同步时，sqlite 恒为空；命中一次后
+	 * 记入本集合，searchGraphAsync 后续直接走内存图，省掉每次查询的无效 IPC 往返。
+	 * _syncGraphToSqlite / _syncIncrementalToSqlite 成功后清除对应标记。
+	 */
+	private readonly _sqliteEmptyProjects = new Set<string>();
+
 	/** 把内存 store 的文件哈希同步到主进程 SQLite（fire-and-forget，失败静默）。 */
 	private _syncFileHashToSqlite(project: string, relPath: string, sha256: string, mtimeNs: number, size: number): void {
 		if (!this._sqliteBackendEnabled) { return; }
@@ -858,6 +871,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		const dur = Date.now() - tStart;
 		this._logService.info('[CodebaseGraph]', `SQLite sync done: ${nodes.length} nodes + ${edges.length} edges in ${dur}ms`);
+		// sqlite 已填充 → 清除「空库」标记，让 searchGraphAsync 恢复走 FTS5 快路径。
+		this._sqliteEmptyProjects.delete(project);
 
 		// 注意：SQLite 默认开启后【不】自动释放内存 store——
 		// GotoImpl/ListMethods 等同步路径依赖 hasGraphData()/searchGraph() 的内存数据，
@@ -922,6 +937,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			await this._sqliteBackend.upsertEdgesBatch(edges as (GraphEdge & { sourceId?: number; targetId?: number })[]);
 			const dur = Date.now() - tStart;
 			this._logService.info('[CodebaseGraph]', `SQLite incremental patch done: ${nodes.length} nodes + ${edges.length} edges (${changedRels.length} files, ${dur}ms)`);
+			// 增量补丁写入成功 → 清除「空库」标记（见 _sqliteEmptyProjects）。
+			if (nodes.length > 0) { this._sqliteEmptyProjects.delete(project); }
 		} catch (err) {
 			this._logService.warn('[CodebaseGraph]', 'SQLite incremental patch failed (sqlite may lag until next full sync):', err);
 		}
@@ -2059,7 +2076,14 @@ self.onmessage = async function(e) {
 		} else if (e.type === 'files' && (e.added?.length || e.modified?.length || e.deleted?.length)) {
 			this._logService.info('[CodebaseGraph]', `[TRACE] watcher files changed → incremental index: ${rootPath}`);
 			this._logService.info('[CodebaseGraph]', 'Files changed, running incremental index...');
-			await this._runIncrementalIndex(rootPath);
+			// 把 watcher 已精确算好的变更集传下去，让增量走快路径（跳过全量 _scanFiles +
+			// classifyFiles 逐文件 stat）。旧实现只传 rootPath，变更集被丢弃 → 单文件
+			// 保存也全量扫 6351 文件耗时 23s（日志 1787282021811）。
+			await this._runIncrementalIndex(rootPath, undefined, {
+				added: e.added ?? [],
+				modified: e.modified ?? [],
+				deleted: e.deleted ?? [],
+			});
 		}
 	}
 
@@ -2073,8 +2097,16 @@ self.onmessage = async function(e) {
 	/**
 	 * 增量重索引：仅解析新增/修改/删除的文件，通过 GraphStore 包装层写入（保持 string↔numeric id 映射一致）。
 	 * 复用 CodebaseGraphIncrementalIndexer 做 mtime+size 快速分类。
+	 *
+	 * @param changeSet watcher 已算好的变更集（root-relative 相对路径）。提供且非空时走
+	 *        快路径（跳过全量 `_scanFiles` 遍历 + `classifyFiles` 逐文件 stat）；未提供时
+	 *        走全量扫描兜底（watcher 漏报 / 进程重启后首次 / 变更集为空等场景）。
 	 */
-	private async _runIncrementalIndex(rootPath: string, token?: CancellationToken): Promise<IIndexResult> {
+	private async _runIncrementalIndex(
+		rootPath: string,
+		token?: CancellationToken,
+		changeSet?: { added: string[]; modified: string[]; deleted: string[] },
+	): Promise<IIndexResult> {
 		if (!rootPath) { return { success: false, message: '未指定监听根路径' }; }
 		if (this._isIndexing) {
 			return { success: false, message: '索引正在进行中，跳过增量索引' };
@@ -2098,20 +2130,46 @@ self.onmessage = async function(e) {
 			const project = this._rootProjectMap.get(this._normalizeRoot(rootPath)) || this._projectName;
 			// P0 修复：增量重解析的节点/边同样按真实项目名写入
 			this._graph.setActiveProject(project);
-			this._onDidIndexProgress.fire('⚡ 增量索引：扫描变更文件...');
 
 			// 复用 watcher/全量索引已生效的索引范围（用户 excludeDirs + keepDirs）——
 			// 旧实现空调用 _resolveExcludeDirs(rootPath)（零 extra、无 keepDirs），与全量索引口径不一致，
 			// 导致基线 fileHashes 与增量扫描集错配：watcher 报幻影 deleted → 增量又报 added（翻烧饼循环）。
 			const cachedScope = this._watchScopeCache.get(this._normalizeRoot(rootPath));
 			const incExcludeDirs = cachedScope?.excludeDirs ?? await this._resolveExcludeDirs(rootPath);
-			const absFiles = await this._scanFiles(rootPath, incExcludeDirs, undefined, cts.token, cachedScope?.keepDirs);
-			const relToAbs = new Map<string, string>();
-			for (const abs of absFiles) { relToAbs.set(this._getRelativePath(abs), abs); }
 
-			const classification = await this._getIncrementalIndexer().classifyFiles(
-				project, absFiles, (abs) => this._getRelativePath(abs));
-			this._onDidIndexProgress.fire(`⚡ 增量分类: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} =${classification.unchanged.length}`);
+			// ─── 增量快路径（2026-08-21，日志 1787282021811）────────────────────────
+			// watcher 已算出变更集（root-relative '/' 分隔，与 _getRelativePath 口径一致），
+			// 旧实现却把它丢弃、无条件 _scanFiles 全量遍历 + classifyFiles 逐文件 stat：
+			// 单文件保存也要全量扫 6351 文件耗时 23s（日志 7023→9337）。
+			// 快路径直接用变更集构造 relToAbs + 分类；全量路径保留作兜底。
+			let absFiles: string[];
+			let relToAbs: Map<string, string>;
+			let classification: { added: string[]; modified: string[]; deleted: string[]; unchanged: string[] };
+			const hasChangeSet = !!(changeSet && (changeSet.added.length || changeSet.modified.length || changeSet.deleted.length));
+			if (hasChangeSet) {
+				const added = changeSet!.added;
+				const modified = changeSet!.modified;
+				const deleted = changeSet!.deleted;
+				relToAbs = new Map<string, string>();
+				absFiles = [];
+				// 仅 added/modified 需重新解析（deleted 只需 rel 做 deleteByFile）
+				for (const rel of [...added, ...modified]) {
+					const abs = this._relToAbs(rootPath, rel);
+					relToAbs.set(rel, abs);
+					absFiles.push(abs);
+				}
+				classification = { added, modified, deleted, unchanged: [] };
+				this._onDidIndexProgress.fire(`⚡ 增量索引：watcher 变更集 +${added.length} ~${modified.length} -${deleted.length}（跳过全量扫描）`);
+			} else {
+				this._onDidIndexProgress.fire('⚡ 增量索引：扫描变更文件...');
+				const absFilesScan = await this._scanFiles(rootPath, incExcludeDirs, undefined, cts.token, cachedScope?.keepDirs);
+				relToAbs = new Map<string, string>();
+				for (const abs of absFilesScan) { relToAbs.set(this._getRelativePath(abs), abs); }
+				absFiles = absFilesScan;
+				classification = await this._getIncrementalIndexer().classifyFiles(
+					project, absFilesScan, (abs) => this._getRelativePath(abs));
+				this._onDidIndexProgress.fire(`⚡ 增量分类: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} =${classification.unchanged.length}`);
+			}
 
 			// 零变更短路：跳过后续全部重活（BM25 重建/249k 节点相似度 pass/全量图谱保存）。
 			// 旧实现零变更也每轮全跑（30s+），配合 watcher 误报形成"扫描→空增量→保存→再扫描"卡顿循环
@@ -2138,6 +2196,9 @@ self.onmessage = async function(e) {
 			// 2. 重新解析新增/被改文件
 			let nodesExtracted = 0;
 			let edgesExtracted = 0;
+			// 收集本次重解析节点的数字 id（供增量克隆检测：只对新节点做 LSH 配对，
+			// 避免每次 1 文件保存都全量 MinHash 扫描 12.4w 节点 → 同步卡死 renderer）。
+			const newOrChangedNodeIds = new Set<number>();
 			this._graph.store.setDeferBM25(true);
 			const toParseRel = [...classification.added, ...classification.modified];
 			for (let i = 0; i < toParseRel.length; i++) {
@@ -2147,7 +2208,7 @@ self.onmessage = async function(e) {
 				if (!abs) { continue; }
 				try {
 					const result = await this._parseFile(abs, cts.token);
-					for (const n of result.nodes) { this._graph.addNode(n); nodesExtracted++; }
+					for (const n of result.nodes) { newOrChangedNodeIds.add(this._graph.addNode(n)); nodesExtracted++; }
 					for (const e of result.edges) {
 						// call:/inherits:/implements:/usage: 虚拟边暂存（与全量索引同一分流逻辑）
 						if (e.target && typeof e.target === 'string' && e.target.startsWith('call:')) {
@@ -2186,8 +2247,10 @@ self.onmessage = async function(e) {
 			await this._graph.store.rebuildBM25();
 			this._graph.store.checkpoint();
 
-			// 增量克隆检测（基于重解析节点的预计算签名，insertEdge 按端点去重，天然幂等）
-			const similarEdges = this._runSimilarityPass();
+			// 增量克隆检测：只对本次重解析的新节点做「新节点 vs 全量」配对（insertEdge
+			// 按端点去重，天然幂等）。旧实现 `_runSimilarityPass()` 无参全量扫 12.4w 节点
+			// 做 MinHash/LSH，是同步无 yield 的重活——单文件保存也卡死 renderer 数秒。
+			const similarEdges = this._runSimilarityPass(newOrChangedNodeIds);
 
 			// 增量继承边匹配（暂存的 inherits:/implements: 虚拟边 → 真实 INHERITS/IMPLEMENTS 边）
 			const matchedInherits = await this._matchInheritsToDefinitions();
@@ -3293,15 +3356,21 @@ self.onmessage = async function(e) {
 	/**
 	 * MinHash 代码克隆检测 pass（P2-#7）。基于解析期预计算的函数体签名，
 	 * 经 LSH 候选生成 + MinHash 校验，写入 SIMILAR_TO 边。始终运行（非 fast 专属）。
+	 *
+	 * @param onlyNodeIds 增量模式：仅检测这些节点的克隆关系（新节点 vs 全量），跳过
+	 *       全量自配对。不传时走全量检测（首次/手动重建）。旧实现增量时也无参全量
+	 *       重扫 12.4w 节点，是单文件保存卡死 renderer 的主因（日志 1787282021811）。
 	 */
-	private _runSimilarityPass(): number {
+	private _runSimilarityPass(onlyNodeIds?: Set<number>): number {
 		let edgesAdded = 0;
 		const store = this._graph.store;
 		const project = this._projectName;
 
 		try {
 			const allNodes = store.getAllNodes().filter(n => n.project === project);
-			const similarEdges = detectSimilarCode(allNodes, store, 0.7);
+			const similarEdges = onlyNodeIds && onlyNodeIds.size > 0
+				? detectSimilarCodeIncremental(onlyNodeIds, allNodes, store, 0.7)
+				: detectSimilarCode(allNodes, store, 0.7);
 			for (const edge of similarEdges) {
 				const srcNode = store.findNodeByQN(project, edge.sourceQN);
 				const tgtNode = store.findNodeByQN(project, edge.targetQN);
@@ -3647,10 +3716,13 @@ self.onmessage = async function(e) {
 	async hasGraphDataAsync(): Promise<boolean> {
 		await this.whenGraphLoaded();
 		if (this._sqliteBackendEnabled) {
+			// 已确认本 project sqlite 为空 → 直接走内存 store（见 _sqliteEmptyProjects）
+			if (this._sqliteEmptyProjects.has(this._projectName)) { return this.hasGraphData(); }
 			try {
 				const count = await this._sqliteBackend.getTotalNodeCount(this._projectName);
 				if (count > 0) { return true; }
 				// sqlite 库为空（图从 gzip artifact 加载、本会话未索引同步）→ 回退内存 store
+				this._sqliteEmptyProjects.add(this._projectName);
 				this._logService.warn('[CodebaseGraph] hasGraphDataAsync: sqlite empty, falling back to in-memory store');
 				return this.hasGraphData();
 			} catch (err) {
@@ -4353,7 +4425,14 @@ self.onmessage = async function(e) {
 		minOutDegree?: number;
 		maxOutDegree?: number;
 		relType?: string;
-	}): Promise<{ nodes: GraphNode[]; total: number; scores?: Record<number, number>; hasMore?: boolean }> {
+	}): Promise<{
+		nodes: GraphNode[]; total: number; scores?: Record<number, number>; hasMore?: boolean;
+		/**
+		 * 「命中全部落在其它项目」时的分布（当前项目 0 命中才置位）。上层据此提示模型
+		 * 「该符号只存在于已索引的其它项目 X」，避免收敛后被误读为「符号不存在」。
+		 */
+		crossProjectOnly?: { project: string; count: number }[];
+	}> {
 		const _tTotal = Date.now();
 		if (!this._sqliteBackendEnabled) {
 			// diag：内存同步路径在 renderer 主线程跑全量扫描，是 UI 卡死的嫌疑点，单独计时
@@ -4362,6 +4441,17 @@ self.onmessage = async function(e) {
 			const _ms = Date.now() - _t;
 			if (_ms > 200) { this._logService.warn(`[CodebaseGraph] [searchGraphAsync][diag] IN-MEMORY sync path slow: ${_ms}ms needle="${(params.query || params.namePattern || '').slice(0, 40)}" total=${_r.total}`); }
 			return _r;
+		}
+		// ─── sqlite 空库门控（2026-08-20，对齐 searchHelpers._ripgrepBroken 模式）──
+		// 图从 gzip artifact 加载但本会话未做 sqlite 同步时，sqlite 恒为空 → 旧实现
+		// 每次 search_graph 都「查一次空 sqlite + 回退内存图」两步走（日志
+		// 1787214724132 每次都打 `sqlite empty — falling back`）。既然本 project 已确认
+		// 空，后续直接走内存图，省掉每次的无效 IPC 往返。索引/同步成功后会清除标记。
+		{
+			const _proj = params.project ?? this._projectName;
+			if (this._sqliteEmptyProjects.has(_proj) && this.hasGraphData()) {
+				return this.searchGraph(params);
+			}
 		}
 		const limit = params.limit ?? 200;
 		const offset = params.offset ?? 0;
@@ -4386,8 +4476,13 @@ self.onmessage = async function(e) {
 			return this.searchGraph(params);
 		}
 		if (candidates.length === 0 && this.hasGraphData()) {
-			// sqlite 库为空（图从 gzip 加载、本会话未同步）→ 回退内存图
-			this._logService.info('[CodebaseGraph] [searchGraphAsync] sqlite empty — falling back to in-memory graph');
+			// sqlite 库为空（图从 gzip 加载、本会话未同步）→ 回退内存图，并记住本 project
+			// 已空，后续查询直接走内存（见方法开头的空库门控），避免每次多一次无效 IPC。
+			const _proj = params.project ?? this._projectName;
+			if (!this._sqliteEmptyProjects.has(_proj)) {
+				this._sqliteEmptyProjects.add(_proj);
+				this._logService.info(`[CodebaseGraph] [searchGraphAsync] sqlite empty for project "${_proj}" — falling back to in-memory graph and short-circuiting subsequent queries (run index_repository to populate sqlite)`);
+			}
 			return this.searchGraph(params);
 		}
 		const _tFetchMs = Date.now() - _tFetch;
@@ -4395,6 +4490,48 @@ self.onmessage = async function(e) {
 
 		let nodes = candidates;
 		const _candCount = candidates.length;
+
+		// ─── project 收敛（2026-08-20，日志 1787221348803）────────────────────────
+		// **本方法两条取候选路径此前口径不一致**：
+		//   - `getAllNodes(params.project ?? this._projectName, …)` —— 按 project 过滤；
+		//   - `searchNodes(needle, nodeType, cap)` —— **签名里根本没有 project**，
+		//     于是有 query/namePattern 时（即绝大多数 search_graph 调用）跨【全部已索引
+		//     项目】搜索。
+		// 实测后果：active workspace 是 sarosis-agents-client，但 sqlite 里还留着
+		// S1Game / UE5EA 的节点；模型第 1 轮 `search_graph query="LoadImage"` 拿回
+		// candidates=3，**全是 `Engine/Plugins/...` 的 UE 函数**（UE 里 LoadImage 是真
+		// 函数所以被索引；本仓的 LoadImage 是 ComfyUI 节点类型【字符串字面量】，代码图
+		// 不索引字面量）。模型据此判定图不可用 → 该 turn 之后 65 次全部退回 grep
+		// （search_code 66 : search_graph 1）。
+		//
+		// 修底层 `searchNodes` 需要动 electron-main channel + sqlite store（跨进程，改完
+		// 必须完全重启），这里先在 renderer 侧做后置过滤，与 getAllNodes 路径对齐。
+		// 保留 `_crossProjectOnly` 供上层给出「该符号只存在于其它项目」的提示——否则
+		// 收敛后模型只看到 0 命中，反而更难判断是「不存在」还是「不在本项目」。
+		let _crossProjectOnly: { project: string; count: number }[] | undefined;
+		if (needle) {
+			const wantProject = params.project ?? this._projectName;
+			if (wantProject) {
+				const inProject = nodes.filter(n => !n.project || n.project === wantProject);
+				if (inProject.length !== nodes.length) {
+					const others = new Map<string, number>();
+					for (const n of nodes) {
+						if (n.project && n.project !== wantProject) {
+							others.set(n.project, (others.get(n.project) ?? 0) + 1);
+						}
+					}
+					_crossProjectOnly = inProject.length === 0
+						? [...others].map(([project, count]) => ({ project, count }))
+						: undefined;
+					this._logService.info(
+						`[CodebaseGraph] [searchGraphAsync] project scope: ${nodes.length} → ${inProject.length} ` +
+						`(project="${wantProject}"; dropped from ${[...others].map(([p, c]) => `${p}:${c}`).join(', ')})`,
+					);
+				}
+				nodes = inProject;
+			}
+		}
+
 		// label 过滤（getAllNodes 路径未按类型过滤时补）
 		if (params.label && params.label !== 'file' && !needle) {
 			nodes = nodes.filter(n => n.type === params.label);
@@ -4439,7 +4576,7 @@ self.onmessage = async function(e) {
 		// [CBSearch] 召回漏斗追踪：候选 → label 过滤 → filePattern 过滤 → 度数过滤 → total（排查"找不到内容"）
 		this._logService.info(`[CodebaseGraph] [CBSearch][trace] searchGraphAsync needle="${needle.slice(0, 60)}" label=${params.label ?? '-'} filePattern=${effectiveFilePattern ?? '-'} path=${_fetchPath} cap=${candidateCap} candidates=${_candCount} →label=${_afterLabel} →filePattern=${_afterFilePattern} →total=${total} page=${nodes.slice(offset, offset + limit).length} ${_totalMs}ms`);
 		if (_totalMs > 1000) { this._logService.warn(`[CodebaseGraph] [searchGraphAsync][diag] TOTAL slow: ${_totalMs}ms needle="${needle.slice(0, 40)}" total=${total} backend=sqlite`); }
-		return { nodes: nodes.slice(offset, offset + limit), total, hasMore: offset + limit < total };
+		return { nodes: nodes.slice(offset, offset + limit), total, hasMore: offset + limit < total, crossProjectOnly: _crossProjectOnly };
 	}
 
 	tracePathAdvanced(sourceName: string, targetName: string | undefined, opts?: {
@@ -5061,6 +5198,17 @@ self.onmessage = async function(e) {
 			}
 		}
 		return normAbs;
+	}
+
+	/**
+	 * watcher 变更集的 root-relative 相对路径 → 绝对路径（增量快路径用）。
+	 * 防御：rel 本身已是绝对路径（带盘符 / 或 `/` 开头）时原样返回 —— watcher 的
+	 * `_getRelPath` 在 rootPath 前缀剥离失败时会退回绝对路径，这里不能二次拼接。
+	 */
+	private _relToAbs(rootPath: string, rel: string): string {
+		const r = rel.replace(/\\/g, '/');
+		if (/^[a-zA-Z]:\//.test(r) || r.startsWith('/')) { return r; }
+		return URI.joinPath(URI.file(rootPath), r).fsPath;
 	}
 
 	override dispose(): void {

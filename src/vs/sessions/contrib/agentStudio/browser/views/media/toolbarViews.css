@@ -4147,6 +4147,276 @@ h3.integration-section-title {
 	border-top: 1px dashed var(--vscode-panel-border);
 }
 
+/* 获取模型列表 */
+.provider-fetch-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.provider-fetch-btn {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	border: none;
+	padding: 6px 12px;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 12px;
+}
+.provider-fetch-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+.provider-fetch-btn:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+.provider-fetch-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+.provider-fetch-results {
+	margin: 6px 0 10px;
+	padding: 8px 10px;
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 4px;
+	max-height: 280px;
+	overflow-y: auto;
+}
+.provider-fetch-header {
+	font-weight: 600;
+	margin-bottom: 6px;
+	color: var(--vscode-foreground);
+}
+.provider-fetch-select-all {
+	display: block;
+	margin-bottom: 4px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+.provider-fetch-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin: 4px 0 6px;
+}
+.provider-fetch-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 4px;
+	font-size: 12px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	cursor: pointer;
+}
+.provider-fetch-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+.provider-fetch-apply-btn {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border: none;
+	padding: 5px 10px;
+	border-radius: 3px;
+	cursor: pointer;
+	font-size: 12px;
+	margin-top: 4px;
+}
+.provider-fetch-apply-btn:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+.provider-fetch-empty {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+.provider-fetch-error {
+	font-size: 12px;
+	color: var(--vscode-errorForeground);
+}
+
+/* 模型选择弹窗（卡片内） */
+.provider-picker-overlay {
+	position: fixed;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.4);
+	z-index: 9999;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.provider-picker-dialog {
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 6px;
+	padding: 14px 16px;
+	min-width: 420px;
+	max-width: 560px;
+	max-height: 70vh;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+.provider-picker-header {
+	font-weight: 600;
+	font-size: 13px;
+	color: var(--vscode-foreground);
+}
+.provider-picker-select-all {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+.provider-picker-list {
+	flex: 1;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 3px;
+	padding: 4px;
+	background: var(--vscode-editor-background);
+	max-height: 400px;
+}
+.provider-picker-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 6px;
+	font-size: 12px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	cursor: pointer;
+	border-radius: 2px;
+}
+.provider-picker-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+.provider-picker-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding-top: 4px;
+}
+.provider-picker-ok,
+.provider-picker-cancel {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border: none;
+	padding: 5px 14px;
+	border-radius: 3px;
+	cursor: pointer;
+	font-size: 12px;
+}
+.provider-picker-cancel {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+.provider-picker-ok:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+.provider-picker-cancel:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* 卡片内嵌模型清单 */
+.provider-card-model-section {
+	margin: 10px 0 4px;
+	padding-top: 8px;
+	border-top: 1px dashed var(--vscode-panel-border);
+}
+.provider-card-model-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+.provider-card-model-title {
+	font-size: 11px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--vscode-descriptionForeground);
+}
+.provider-card-model-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+.provider-card-model-selectall {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: 3px;
+}
+.provider-card-model-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0; /* 列表项之间无间隙，用 border 分隔 */
+	height: 400px; /* 固定高度，确保滚动条始终可见 */
+	max-height: 50vh; /* 不超过视口一半，避免长卡片场景下页面滚动过多 */
+	overflow-y: auto; /* 内容溢出时显示滚动条 */
+	overflow-x: hidden; /* 防止水平溢出 */
+	scrollbar-gutter: stable; /* 始终预留滚动条槽位，避免内容跳动 */
+	background: var(--vscode-editor-background);
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 3px;
+}
+
+/* Webkit 滚动条美化（细滚动条） */
+.provider-card-model-list::-webkit-scrollbar {
+	width: 10px;
+}
+.provider-card-model-list::-webkit-scrollbar-track {
+	background: var(--vscode-scrollbarSlider-background, rgba(128, 128, 128, 0.08));
+	border-radius: 5px;
+}
+.provider-card-model-list::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background, rgba(128, 128, 128, 0.45));
+	border-radius: 5px;
+	min-height: 24px;
+}
+.provider-card-model-list::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground, rgba(128, 128, 128, 0.7));
+}
+
+/* Firefox 滚动条样式 */
+.provider-card-model-list {
+	scrollbar-width: thin;
+	scrollbar-color: rgba(128, 128, 128, 0.45) rgba(128, 128, 128, 0.08);
+}
+.provider-card-model-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 4px;
+	font-size: 11px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	cursor: pointer;
+	border-radius: 2px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.provider-card-model-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+.provider-card-model-item span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.provider-card-model-hint {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 4px;
+	opacity: 0.75;
+}
+
 /* 高级配置区块（providerCardRenderer.ts renderProviderCardBody） */
 .provider-advanced-section {
 	margin-top: 10px;
@@ -4394,4 +4664,256 @@ h3.integration-section-title {
 	font-size: 12px;
 	color: var(--vscode-editor-foreground);
 	margin-bottom: 8px;
+}
+
+/* ─── Model Detail Card (codebuddy-style) ─────────────────────────────── */
+
+/** 模型列表描述文字（仿截图） */
+.provider-card-model-desc {
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 8px;
+	padding: 6px 8px;
+	border-radius: 3px;
+	background: rgba(128, 128, 128, 0.06);
+	border-left: 2px solid var(--vscode-focusBorder);
+	word-break: break-word;
+}
+
+/** 模型详情卡片容器（单列列表项样式） */
+.model-detail-card {
+	border-bottom: 1px solid rgba(128, 128, 128, 0.2); /* 仅底部分隔线，无全边框 */
+	border-radius: 0; /* 列表项无圆角 */
+	margin-bottom: 0;
+	background: var(--vscode-editor-background);
+	overflow: visible; /* 防止文字被裁剪 */
+	flex-shrink: 0; /* flex 子项不被压缩 */
+}
+
+.model-detail-card:last-child {
+	border-bottom: none; /* 最后一项无分隔线 */
+}
+
+/** 卡片头部（可点击展开） */
+.model-detail-header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	min-height: 32px; /* 确保即使无内容也有足够高度 */
+	cursor: pointer;
+	user-select: none;
+	background: var(--vscode-editor-background);
+	box-sizing: border-box;
+	width: 100%;
+}
+
+.model-detail-header:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+/** 模型名称 */
+.model-detail-name {
+	flex: 1;
+	min-width: 0;
+	font-size: 13px;
+	font-weight: 600;
+	font-family: var(--vscode-editor-font-family, monospace);
+	color: var(--vscode-editor-foreground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	line-height: 1.4;
+	padding: 0 4px;
+}
+
+/** 展开/折叠按钮 */
+.model-detail-toggle {
+	flex-shrink: 0;
+	width: 18px;
+	height: 18px;
+	font-size: 11px;
+	font-weight: 700;
+	background: none;
+	border: none;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	padding: 0;
+	text-align: center;
+	line-height: 18px;
+}
+
+/** 移除按钮 */
+.model-detail-remove {
+	flex-shrink: 0;
+	width: 18px;
+	height: 18px;
+	font-size: 11px;
+	background: none;
+	border: none;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	border-radius: 3px;
+	opacity: 0;
+	transition: opacity 0.15s, background 0.15s;
+	padding: 0;
+	line-height: 18px;
+}
+
+.model-detail-header:hover .model-detail-remove {
+	opacity: 0.6;
+}
+
+.model-detail-remove:hover {
+	opacity: 1 !important;
+	background: var(--vscode-errorBackground, rgba(255 0 0 / 0.1));
+	color: var(--vscode-errorForeground);
+}
+
+/** 详情体（默认折叠） */
+.model-detail-body {
+	padding: 8px 14px 12px;
+	border-top: 1px solid rgba(128, 128, 128, 0.2); /* 与列表项分隔线一致 */
+}
+
+/** 字段分组 */
+.model-field-group {
+	margin-bottom: 8px;
+}
+
+.model-field-group:last-child {
+	margin-bottom: 0;
+}
+
+.model-field-group-title {
+	font-size: 9px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 4px;
+	padding-bottom: 2px;
+	border-bottom: 1px dashed rgba(128, 128, 128, 0.25);
+}
+
+/** 单行字段（label + input） */
+.model-detail-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 3px;
+	min-height: 26px;
+}
+
+.model-detail-row:last-child {
+	margin-bottom: 0;
+}
+
+/** 标签列 */
+.model-detail-label {
+	flex-shrink: 0;
+	width: 110px;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/** 输入框通用样式 */
+.model-detail-input {
+	flex: 1;
+	min-width: 0;
+	padding: 2px 6px;
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 3px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 11px;
+	box-sizing: border-box;
+	font-family: inherit;
+}
+
+.model-detail-input:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+}
+
+/** 数字输入 */
+.model-detail-number {
+	width: 100px;
+}
+
+/** 文本域 */
+.model-detail-textarea {
+	resize: vertical;
+	min-height: 32px;
+	line-height: 1.35;
+}
+
+/** 下拉选择 */
+.model-detail-select {
+	width: auto;
+	min-width: 80px;
+}
+
+/** Toggle 开关容器 */
+.model-toggle-wrap {
+	position: relative;
+	display: inline-block;
+	width: 28px;
+	height: 16px;
+	flex-shrink: 0;
+}
+
+.model-toggle-input {
+	opacity: 0;
+	width: 0;
+	height: 0;
+	position: absolute;
+}
+
+.model-toggle-slider {
+	position: absolute;
+	cursor: pointer;
+	top: 0; left: 0; right: 0; bottom: 0;
+	background-color: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 16px;
+	transition: 0.2s;
+}
+
+.model-toggle-slider::before {
+	content: "";
+	position: absolute;
+	height: 10px;
+	width: 10px;
+	left: 2px;
+	bottom: 2px;
+	background-color: var(--vscode-descriptionForeground);
+	border-radius: 50%;
+	transition: 0.2s;
+}
+
+.model-toggle-input:checked + .model-toggle-slider {
+	background-color: var(--vscode-checkbox-background, #007acc);
+	border-color: var(--vscode-checkbox-background, #007acc);
+}
+
+.model-toggle-input:checked + .model-toggle-slider::before {
+	transform: translateX(11px);
+	background-color: #fff;
+}
+
+/** models.dev 补全按钮行 */
+.model-dev-row {
+	margin-top: 6px;
+	padding-top: 6px;
+	border-top: 1px dashed rgba(128, 128, 128, 0.2);
+}
+
+.model-dev-fetch-btn {
+	font-size: 10px;
+	padding: 3px 8px;
 }

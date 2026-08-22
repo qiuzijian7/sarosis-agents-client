@@ -135,11 +135,11 @@ export interface IComfyRunner {
 	 * 本项目不依赖 ComfyTV 后端 API（/comfytv/* 已移除）；此通道仅用于
 	 * ComfyUI 标准 REST 端点。Optional：runner 不可用时调用方需降级。
 	 */
-	fetchApi?(path: string, init?: { method?: string; body?: string; signal?: AbortSignal }): Promise<ComfyApiResponse>;
+	fetchApi?(path: string, init?: { method?: string; body?: string | FormData; signal?: AbortSignal }): Promise<ComfyApiResponse>;
 }
 
 export interface FetchLike {
-	(input: string, init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal }): Promise<{ ok: boolean; status: number; json(): Promise<unknown>; text(): Promise<string> }>;
+	(input: string, init?: { method?: string; headers?: Record<string, string>; body?: string | FormData; signal?: AbortSignal }): Promise<{ ok: boolean; status: number; json(): Promise<unknown>; text(): Promise<string> }>;
 }
 
 const DEFAULT_POLL_MS = 800;
@@ -179,11 +179,19 @@ class HttpComfyRunner implements IComfyRunner {
 	}
 
 	/** ComfyTV extension endpoints over the same fetch/headers as invoke(). */
-	async fetchApi(path: string, init?: { method?: string; body?: string; signal?: AbortSignal }): Promise<ComfyApiResponse> {
+	async fetchApi(path: string, init?: { method?: string; body?: string | FormData; signal?: AbortSignal }): Promise<ComfyApiResponse> {
 		const url = path.startsWith('http') ? path : `${this.baseUrl}${path}`;
+		const headers = this.headers();
+		// ★ FormData 上传（/upload/image 等）不能手动设置 Content-Type：浏览器需
+		//   自动生成 `multipart/form-data; boundary=...`。若保留 `application/json`，
+		//   浏览器会把 FormData 当 JSON 发送（body 损坏/为空），ComfyUI 解析失败
+		//   → HTTP 400。仅对非 FormData body 保留 JSON Content-Type。
+		if (typeof FormData !== 'undefined' && init?.body instanceof FormData) {
+			delete headers['Content-Type'];
+		}
 		return this.fetchImpl(url, {
 			method: init?.method ?? 'GET',
-			headers: this.headers(),
+			headers,
 			body: init?.body,
 			signal: init?.signal,
 		});

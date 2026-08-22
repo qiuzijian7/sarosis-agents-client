@@ -2,6 +2,7 @@
 import { IToolCall, ISubAgentData } from './agentChatTypes.js';
 import { formatSubAgentTask, cleanTracePreview, filterChildSubAgents } from './subAgentCardUtils.js';
 import { AgentChatPanelFileCards } from './agentChatPanel.fileCards.js';
+import { parseToolArgsLoose } from './toolArgsJson.js';
 
 /** 自 agentChatPanel.toolCards.ts 抽离（上帝对象拆分）。继承链见继承父类。 */
 export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCards {
@@ -109,9 +110,8 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		// ── 右侧：状态 pill / 进度计数 ──
 		const right = append(row, $('span.tool-header-right'));
 
-		// ── 参数 + 结果解析 ──
-		let args: any = {};
-		try { if (tc.args) { args = JSON.parse(tc.args); } } catch { /* ignore */ }
+		// ── 参数 + 结果解析（宽松修复链，见 toolArgsJson.ts）──
+		const args: any = parseToolArgsLoose(tc.args);
 
 		// ── body（dropdown）──
 		const body = append(header, $('.tool-header-children'));
@@ -290,9 +290,8 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		}
 	}
 
-		// 解析参数：子Agent名 / 任务指令 / 任务名
-		let args: any = {};
-		try { if (tc.args) { args = JSON.parse(tc.args); } } catch { /* ignore */ }
+		// 解析参数：子Agent名 / 任务指令 / 任务名（宽松修复链）
+		const args: any = parseToolArgsLoose(tc.args);
 
 		const subAgentName = args.role || args.agent || args.agent_name || args.type || '';
 		const instruction = args.task || args.instruction || args.goal || args.description || args.prompt || args.message || '';
@@ -554,17 +553,15 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 						: tc.status === 'canceled' ? 'tool-card-canceled'
 							: 'tool-card-success';
 
-			// 解析读取的技能名（兼容多种字段命名）
+			// 解析读取的技能名（兼容多种字段命名；宽松修复链）
 			let skillName = '';
-			try {
-				if (tc.args) {
-					const args = JSON.parse(tc.args);
-					skillName = args.skill || args.name || args.skill_name || args.skillName
-						|| args.skillId || args.skill_id || args.id
-						|| args.skill_path || args.path
-						|| '';
-				}
-			} catch { /* ignore */ }
+			if (tc.args) {
+				const args = parseToolArgsLoose(tc.args) as any;
+				skillName = args.skill || args.name || args.skill_name || args.skillName
+					|| args.skillId || args.skill_id || args.id
+					|| args.skill_path || args.path
+					|| '';
+			}
 
 			const wrapper = $(`.tool-header-wrapper.${statusClass}.tool-card-skill`);
 			if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }

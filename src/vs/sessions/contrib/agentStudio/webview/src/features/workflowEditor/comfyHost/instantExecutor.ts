@@ -130,7 +130,8 @@ export async function runInstantNode(input: InstantNodeInput): Promise<SingleNod
 			//   → 浏览器命中磁盘缓存显示旧位图 → 「点了旋转但 OUTPUT 没变」。
 			form.append('image', outBlob, `instant-${Date.now()}-${Math.floor(Math.random() * 1e6)}.png`);
 			// fetchApi 是可选能力（IComfyRunner.fetchApi?），缺失时直接走兜底。
-			const resp = await runner.fetchApi?.('/upload/image', { method: 'POST', body: form as unknown as string });
+			// body 类型已放宽为 `string | FormData`（comfyRunner.ts），无需强转。
+			const resp = await runner.fetchApi?.('/upload/image', { method: 'POST', body: form });
 			const data = await resp?.json() as { name?: string; subfolder?: string; type?: string } | undefined;
 			const name = String(data?.name ?? '');
 			if (name) {

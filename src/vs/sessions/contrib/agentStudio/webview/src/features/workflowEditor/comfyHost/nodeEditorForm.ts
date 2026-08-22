@@ -69,8 +69,8 @@ const STAGE_KIND_FIELDS: Record<string, Omit<EditorField, 'key'>[]> = {
 
 const VSSAROS_FIELDS: Record<string, EditorField[]> = {
 	'Saros.Prompt': [
-		{ key: 'prompt', label: '提示词', kind: 'textarea', defaultValue: '', placeholder: '提示词模板，支持 {{input}} 等变量替换' },
-		{ key: 'variables', label: '变量 (JSON)', kind: 'textarea', defaultValue: '{}' },
+		{ key: 'prompt', label: '提示词', kind: 'textarea', defaultValue: '', placeholder: '提示词模板。可用占位符：{{input}}（上游）、{{args.x}}（Start 参数）、{{变量名}}（下方 variables 定义的局部变量）、{{节点名}}（上游节点）' },
+		{ key: 'variables', label: '变量 (JSON)', kind: 'textarea', defaultValue: '{}', placeholder: '局部变量：{"角色":"翻译助手","目标语言":"中文"}。值可为模板（支持 {{input}}/{{args.x}}），在提示词里用 {{变量名}} 引用' },
 	],
 	'Saros.Agent': [
 		{ key: 'agentId', label: 'Agent', kind: 'agent', defaultValue: '', placeholder: '选择 Agent' },

@@ -8,7 +8,10 @@
 import { withStreamTimeout, computeAdaptiveFirstTokenTimeout } from '../common/resilience.js';
 import { buildBuildSwitchReminder, buildPlanSystemReminder } from '../common/chatModeConfig.js';
 import { isToolCallDeniedByHardPermission } from '../common/toolPermission.js';
-import { generatePlanPath, isPlanFilePath } from '../common/planFile.js';
+import { findClarifySignal } from '../common/turnSignals.js';
+import { generatePlanPath, isPlanFileWriteCall } from '../common/planFile.js';
+import { filterPlanExclusiveTools } from '../common/chatModeConfig.js';
+import { join as pathJoin } from '../../../../base/common/path.js';
 import {
 	createInitialWorkState,
 	parsePlanDocument,
@@ -46,7 +49,19 @@ import {
 } from '../common/agentGraph.js';
 import { buildForkContext, prefixCacheAligned } from '../common/forkContext.js';
 import { deriveAskRoutingContext } from '../common/askRouting.js';
-import { isBridgeTool } from '../common/toolsetConfig.js';
+import { isBridgeTool, getToolsetForTool } from '../common/toolsetConfig.js';
+import { buildPromptBudgetReport, formatPromptBudgetLog, shouldEmitBudgetReport } from '../common/promptBudget.js';
+import { needsToolUseEnforcement, detectModelFamily } from '../common/modelFamilyPrompt.js';
+import { formatEnrichmentLog, probeToolGuidance, formatToolSchemaDiagLog } from '../common/promptDiagnostics.js';
+import {
+	isShellToolWithCommandArg,
+	detectAntiGuidanceCommand,
+	formatAntiGuidanceLog,
+} from '../common/shellCommandSafety.js';
+import {
+	buildToolAuditReport, formatToolAuditLog, formatGuardrailFiredLog,
+	type IToolCallRecord,
+} from '../common/toolAuditReport.js';
 import {
 	formatCurrentTaskReminder,
 	formatExplorationFindings,
@@ -58,7 +73,15 @@ import {
 	terminalEmptyOutputReminder,
 	textWithoutToolsReminder,
 	softBudgetWrapUpReminder,
+	hardLimitWrapUpReminder,
+	allToolCallsBlockedReminder,
+	allBlockedWrapUpReminder,
+	ALL_BLOCKED_ESCALATE_AT,
+	ALL_BLOCKED_WRAPUP_AT,
+	budgetLowWarning,
 	preferGraphSearchReminder,
+	advanceSingleToolStreak,
+	batchReadOnlyToolsReminder,
 } from '../common/loopReminders.js';
 import {
 	STRUCTURAL_SEARCH_TOOL_NAMES,
@@ -76,6 +99,7 @@ import {
 	repairToolName,
 	MAX_INVALID_TOOL_RETRIES,
 	MAX_TOOL_CALL_ARGUMENT_BUFFER_BYTES,
+	isParallelSafeReadOnlyTool,
 } from './toolCallUtils.js';
 import {
 	sanitizeAssistantVisibleText,
@@ -236,13 +260,19 @@ interface ITurnContext {
 		// 对齐 Hermes TOOL_USE_ENFORCEMENT_GUIDANCE + MiMo beast.txt：
 		// 对 DeepSeek 等需要显式引导的模型族，自动在 system prompt 末尾注入
 		// 工具使用强制指令——"说了要做就必须在同一轮发出 tool_call，否则不要停"。
+		//
+		// ⚠ 判据真源 = `common/modelFamilyPrompt.needsToolUseEnforcement()`（2026-08-22）。
+		// 改前这里内联 `TOOL_USE_ENFORCEMENT_MODELS.some(m => modelId.includes(m))`，
+		// 与 driver 侧「按族分发工具调用格式指令」构成**两套独立的模型族判断** ——
+		// 本项目已多次因两份判据漂移而踩坑，故统一到同一函数。
+		// （`TOOL_USE_ENFORCEMENT_MODELS` 常量仍保留在 agentOSService 供参考/回溯，
+		//   但**不再是判据** —— 不要改它来调整行为，改 FAMILY_PROFILES。）
 		let effectiveSystemPrompt = request.systemPrompt;
 		if (effectiveSystemPrompt) {
-			const modelId = (selection?.modelId ?? '').toLowerCase();
-			const needsEnforcement = host.constructor.TOOL_USE_ENFORCEMENT_MODELS.some((m: string) => modelId.includes(m));
+			const needsEnforcement = needsToolUseEnforcement(selection?.modelId);
 			if (needsEnforcement && !effectiveSystemPrompt.includes('TOOL_USE_ENFORCEMENT')) {
 				effectiveSystemPrompt = `${effectiveSystemPrompt}\n\n${host.constructor.TOOL_USE_ENFORCEMENT_GUIDANCE}`;
-				host._logService.info(`[AgentOS] Appended tool-use enforcement guidance for model ${selection.modelId}`);
+				host._logService.info(`[AgentOS] Appended tool-use enforcement guidance for model ${selection.modelId} (family=${detectModelFamily(selection?.modelId)})`);
 			}
 			// Plan 模式强制指令已移至 per-iteration <system-reminder> 注入（下方 agent loop 内）。
 			// 旧的 PLAN_MODE_TOOL_ENFORCEMENT 常量已被移除（与 system-reminder 语义重叠）。
@@ -371,10 +401,20 @@ interface ITurnContext {
 					// 只读注入 working_memory_content 标签（数据源为 MemoryProvider，
 					// 非 .codebuddy/memory/ 文件）
 					await host._refreshWorkingMemoryContent?.(request.agentId, request.sessionId);
-					const enriched = await host._userMessageEnricher.enrich(
+					// ⚠ 必须在替换**之前**取原长度（2026-08-22 修，日志 1787368358120）：
+					// 早前在替换后才读 `messages[lastUserIdx].content`，那时它已经是 enriched
+					// 本身，`enriched.length - origLen` 恒为 0 → 日志永远打印
+					// "(0 chars added)"，让人误判「8 个标签全空、富化系统空转」。
+					// 富化本身一直是正常的，坏的只是这行统计。
+					const origLen = (messages[lastUserIdx].content as string).length;
+					// enrichWithStats：拿逐标签统计（2026-08-22）。改前 provider 抛错走
+					// `catch {}` 静默吞掉 → 某标签没出现时无法区分「本轮真无内容」与
+					// 「provider 坏了」，8 个标签任一失效都是无声的。
+					const enrichResult = await host._userMessageEnricher.enrichWithStats(
 						messages[lastUserIdx].content as string,
 						{ request, agent: host._currentAgent },
 					);
+					const enriched = enrichResult.enriched;
 					messages = messages.slice(); // shallow copy 后修改，避免污染 request.messages 引用
 					const enrichedMsg = { ...messages[lastUserIdx], content: enriched };
 					if (lastUserIdx === messages.length - 1) {
@@ -382,10 +422,14 @@ interface ITurnContext {
 					} else {
 						messages = [...messages.slice(0, lastUserIdx), enrichedMsg, ...messages.slice(lastUserIdx + 1)];
 					}
-					const origLen = (messages[lastUserIdx].content as string).length;
-					host._logService.info(
-						`[AgentOS] Enriched user message with XML tags (${enriched.length - origLen} chars added)`,
-					);
+					// 逐标签明细：emitted（含各标签字符数，降序）/ empty（合法留白）/
+					// FAILED（每条单独一行，失败是缺陷信号不做折叠）。
+					const enrichLog = formatEnrichmentLog(enrichResult.stats, origLen, enriched.length);
+					if (enrichLog.level === 'warn') {
+						host._logService.warn(enrichLog.text);
+					} else {
+						host._logService.info(enrichLog.text);
+					}
 				} catch (err) {
 					host._logService.warn(`[AgentOS] User message enrichment failed: ${err}`);
 				}
@@ -395,10 +439,76 @@ interface ITurnContext {
 	return { modelProvider, selection, enabledTools, messages, memoryProvider, effectiveSystemPrompt };
 }
 
+/**
+ * 工具 schema 的固定 token 开销粗估（纯函数，无副作用）。
+ *
+ * 压缩触发判定（无真实 usage 时计入 effectiveTokens）与 promptOverhead 诊断
+ * **必须共用此函数** —— 早前这段逻辑内联在 `_compressContextIfNeeded` 的闭包里，
+ * 请求发出点拿不到，若在那里另写一份就会出现两套口径互相漂移。
+ */
+function estimateToolsSchemaTokens(tools: ReadonlyArray<any>): number {
+	let total = 0;
+	try {
+		for (const t of tools) {
+			const schemaStr = JSON.stringify({ name: t.name, description: t.description, parameters: (t as any).inputSchema ?? (t as any).schema ?? undefined });
+			if (schemaStr) { total += Math.ceil(schemaStr.length / 4); }
+		}
+	} catch (e) {
+		return 0; // 序列化失败不阻断压缩
+	}
+	return total;
+}
+
+/**
+ * 把 tools schema 开销按 toolset 归因（供 [PromptBudget] 预算表）。
+ *
+ * ⚠ 逐工具调用 `estimateToolsSchemaTokens([t])` 而非另写公式：该函数本身就是
+ * 「逐工具累加」，故分组求和**恰好等于**整体调用结果，预算表里 tools 各行之和
+ * 与压缩判定用的 `toolsSchemaTokens` 严格一致，不会出现两套口径。
+ *
+ * 归因价值实证：core toolset 的 prefixes 曾误含 `memory_`，把 16 个 memory_* 工具
+ * 抢进不可折叠层、白烧 ~4k schema token —— 有了 `tools:core` 这一行的异常占比，
+ * 这类事故不必再靠人工读源码发现。
+ */
+function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
+	groups: Array<{ name: string; tokens: number; count: number }>;
+	costs: Array<{ name: string; tokens: number }>;
+} {
+	const groups = new Map<string, { tokens: number; count: number }>();
+	const costs: Array<{ name: string; tokens: number }> = [];
+	for (const t of tools) {
+		const name = typeof t?.name === 'string' ? t.name : '(unnamed)';
+		const tokens = estimateToolsSchemaTokens([t]);
+		costs.push({ name, tokens });
+		// MCP 工具的 category 形如 `mcp:<server>`，与内置 toolset 分开统计更有诊断价值。
+		const category = typeof t?.category === 'string' ? t.category : '';
+		const key = category.startsWith('mcp:') ? category : (t?.toolset || getToolsetForTool(name));
+		const g = groups.get(key) ?? { tokens: 0, count: 0 };
+		g.tokens += tokens;
+		g.count += 1;
+		groups.set(key, g);
+	}
+	return {
+		groups: [...groups].map(([name, g]) => ({ name, tokens: g.tokens, count: g.count })),
+		costs,
+	};
+}
+
 
 	export async function* executeAgentTurnDirect(host: any, request: IAgentTurnRequest): AsyncGenerator<IChatStreamDelta, AgentCommand | undefined> {
 		// chatOnly 开关：开启时禁用写文件工具，React 范式下额外禁用 delegate_task
 		const chatOnly = !!request.chatOnly;
+		// ── 本 turn 缓存命中率基线（2026-08-21，日志 1787315962316）──────────────
+		// `host._totalInputTokens` / `_totalCachedTokens` 是 Dashboard 的**持久化**
+		// 累计计数器（跨会话，`_scheduleSave`）。要打「本次会话命中率」必须在 turn
+		// 起点取基线后相减，否则打出来的是账号生命周期数字（实测 4.69 亿/5.82 亿，
+		// 多轮采样恒为 80.6%，毫无诊断价值）。
+		const _turnCacheBaselineInput = host._totalInputTokens ?? 0;
+		const _turnCacheBaselineCached = host._totalCachedTokens ?? 0;
+		// ── [PromptBudget] 上报节流基线（turn 局部）────────────────────────────
+		// 声明在 turn 函数体内而非 host 字段：天然实现「每 turn 首次必打」，
+		// 无需额外的重置逻辑，也不会跨 turn 泄漏状态。
+		let _lastPromptBudgetTotal = 0;
 		// 诊断：软预算收尾提醒是否送达（日志 1785325929739 子代理 404s 超时未触发）
 		if (request.subAgent?.background) {
 			host._logService.info(
@@ -423,6 +533,23 @@ interface ITurnContext {
 	// 实际发送的冻结前缀（含 model 相关 enforcement）——fork 指纹与 modelOptions 统一基于本值
 	const effectiveSystemPrompt = ctx.effectiveSystemPrompt;
 	let enabledTools = ctx.enabledTools;
+		// ─── Plan 专属工具门控（2026-08-21）：仅 Plan 模式可用 ──────────────
+		// plan_enter/plan_exit/plan_explore 原挂在 core toolset（Always 优先级）→
+		// 所有模式都可见 → 模型会在用户没要求时自行 plan_enter 转入规划
+		// （日志 1787294819356：iteration 24 自主进 plan）。
+		// 判据用 request.chatMode（用户在输入框下拉框选定的稳定 UI 策略），
+		// **不用** workMode —— workMode 是 plan_enter 之后的运行时阶段，
+		// 用它判断会形成「只有已经进了 plan 才能调 plan_enter」的死循环。
+		{
+			const beforeCount = enabledTools.length;
+			enabledTools = filterPlanExclusiveTools(enabledTools as ReadonlyArray<{ name: string }>, request.chatMode) as typeof enabledTools;
+			if (enabledTools.length !== beforeCount) {
+				host._logService.info(
+					`[AgentOS] plan-exclusive tools filtered (chatMode=${request.chatMode ?? 'unset'}): ` +
+					`${beforeCount} → ${enabledTools.length}`
+				);
+			}
+		}
 		// chatOnly 模式：禁用写文件工具（只保留只读 + 查询类工具）
 		if (chatOnly) {
 			const WRITE_TOOLS = new Set([
@@ -502,6 +629,59 @@ interface ITurnContext {
 		},
 		getPlan: () => ({ tasks: planTasks, currentIndex: currentTaskIdx }),
 	});
+
+	// ─── [ToolAudit] 工具调用合理性审计容器（2026-08-22）────────────────────────
+	// ⚠ **必须声明在下面这个 `try` 之前**：SUMMARY 在配对的 `finally` 里输出，而
+	// `try` 块内的 `const/let` 对 `finally` 块**不可见**（两者是兄弟作用域，不是
+	// 父子）。放进 try 内会得到一串 TS2304 —— 本次就是这么踩到的。
+	//
+	// 为什么用单一容器对象而非多个散变量：finally 只需依赖 `_audit` 一个名字，
+	// 阈值随水位一起记（`threshold` 进 watermark），避免把 MAX_* 常量也全部上提。
+	const _audit = {
+		records: [] as IToolCallRecord[],
+		/** 各闸门本 turn 达到过的**最高**计数（计数器会清零，最终值恒为 0）。 */
+		watermarks: new Map<string, { max: number; fired: number; threshold: number; hot?: string }>(),
+		maxSingleToolStreak: 0,
+		streakNames: new Set<string>(),
+		/** toolCallId → 入参指纹（仅只读工具登记），供「同参数重复调用」统计。 */
+		argsKeyById: new Map<string, string>(),
+		startedAt: Date.now(),
+		iterations: 0,
+		singleToolStreakThreshold: 0,
+	};
+	/** 记录闸门水位。threshold 一并存入，供 finally 直接出报告。 */
+	const _auditMark = (name: string, count: number, threshold: number, hot?: string): void => {
+		const w = _audit.watermarks.get(name) ?? { max: 0, fired: 0, threshold };
+		w.threshold = threshold;
+		if (count > w.max) { w.max = count; if (hot) { w.hot = hot; } }
+		_audit.watermarks.set(name, w);
+	};
+	const _auditFired = (name: string, threshold: number): void => {
+		const w = _audit.watermarks.get(name) ?? { max: 0, fired: 0, threshold };
+		w.fired++;
+		_audit.watermarks.set(name, w);
+	};
+	/**
+	 * 登记本批次入参指纹。**只对只读工具**做 dup 判定 —— patch 反复改同一文件是
+	 * 合法迭代，计入 dup 会大量误报（判据复用 isParallelSafeReadOnlyTool）。
+	 */
+	const _auditRegisterArgs = (calls: ReadonlyArray<{ id: string; name: string; arguments?: unknown }>): void => {
+		for (const c of calls) {
+			if (!c?.id || !isParallelSafeReadOnlyTool(c.name)) { continue; }
+			try {
+				let key = typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {});
+				// 规范化键序：键顺序不同但语义相同的入参应视为同一次重复。
+				try {
+					const parsed = typeof c.arguments === 'string' ? JSON.parse(c.arguments) : c.arguments;
+					if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+						const obj = parsed as Record<string, unknown>;
+						key = JSON.stringify(Object.keys(obj).sort().map(k => [k, obj[k]]));
+					}
+				} catch { /* 解析失败则保持原始串 */ }
+				_audit.argsKeyById.set(c.id, key);
+			} catch { /* 指纹取不到就不参与 dup 统计（宁可漏报不误报） */ }
+		}
+	};
 
 	try {
 
@@ -605,6 +785,24 @@ interface ITurnContext {
 		let _textSearchStreak = 0;
 		const MAX_TEXT_SEARCH_STREAK = host.constructor.MAX_TEXT_SEARCH_STREAK;
 
+		// ─── 单只读工具连击（批量并行引导，2026-08-21 日志 1787302409958）──────
+		// 连续多轮「每轮只请求 1 个只读工具」→ 注入批量并行提醒。实测该会话
+		// ITER 20-36 连续 17 轮单工具串行，浪费约 11 轮 LLM 往返（每轮重传
+		// 27k-60k tokens prompt，是最贵的开销，而这些搜索仅需 100-800ms）。
+		let _singleToolStreak = 0;
+		// 最近连击轮次实际用到的工具名（去重，保序），让提醒具体可信。
+		const _singleToolStreakNames: string[] = [];
+		const MAX_SINGLE_TOOL_STREAK = 4;
+		// [ToolAudit] 阈值登记（容器声明在外层 try 之前，见其注释）。
+		_audit.singleToolStreakThreshold = MAX_SINGLE_TOOL_STREAK;
+
+		// ── 零进展空转治理（2026-08-22，日志 1787377582459）────────────────────
+		// 「整轮工具调用全部被循环检测拦下」的连续轮数。达阈值后升级干预：
+		// 先注入强提醒，再强制收尾轮。见 loopReminders.ALL_BLOCKED_* 常量。
+		let _allBlockedStreak = 0;
+		/** 强提醒只发一次 —— 反复注入会污染前缀缓存且被模型进一步忽略。 */
+		let _allBlockedReminderSent = false;
+
 		// ─── AgentRunState（reducer 化 Step 3）────────────────────────────────
 		// 跨 iteration 的业务状态（非法工具名计数 / 续跑计数 / 反思计数 / 文件修改标记 /
 		// 强制 tool_choice 标志 / 工具调用历史 等）统一收口进不可变 reducer，
@@ -666,6 +864,14 @@ interface ITurnContext {
 		if (RETRIEVAL_COMPACTION_ENABLED) {
 			const rp = host.getActiveMemoryProvider();
 			if (rp && (rp as any).recallFormatted) {
+				// ★ P2（2026-08-21，日志 1787289570191）：先把 UI 切到「正在检索历史上下文」。
+				// 该日志 `sendMessage FIRST_DELTA elapsed=31966ms type=memory_injected`
+				// —— 用户点发送后 **32 秒**才看到任何反应，全花在下面的外置 + 检索上，
+				// 期间界面完全静默，体感等同卡死。
+				// 与 'compressing' 完全同构：phase 进 runState 供 checkpoint/UI 读取。
+				const _phaseBeforeRetrieval = runState.phase;
+				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'retrieving' });
+				yield { type: 'phase_change', phase: runState.phase };
 				try {
 					// 1) 增量外置：先把当前 messages（含本 turn 新到的 user 消息 + 历史）
 					//    写进记忆（await 保证落盘），保证本 turn 内触发压缩时 recallFormatted
@@ -694,6 +900,13 @@ interface ITurnContext {
 						`[AgentOS][Retrieval] turn-start retrieval failed: ` +
 						`${reErr instanceof Error ? reErr.message : String(reErr)}`
 					);
+				} finally {
+					// 恢复检索前的 phase（无论成功/失败/无结果都必须复位，
+					// 否则 UI 会一直停在「正在检索历史上下文」）。
+					// 用 finally 而非在 try 末尾：上面的 catch 是"失败开放"的，
+					// 复位逻辑必须覆盖所有出口。
+					runState = reduceRunState(runState, { type: 'SET_PHASE', phase: _phaseBeforeRetrieval });
+					yield { type: 'phase_change', phase: runState.phase };
 				}
 			}
 		}
@@ -829,6 +1042,17 @@ interface ITurnContext {
 
 			// 跨消息冷却期检查（ContextManager 每次新建，冷却期需在 AgentOSService 层持久化）
 			let compressionResult;
+			// 本轮是否真的把 UI 切进过 'compressing'（决定末尾是否需要切回 llm_streaming）
+			let enteredCompressingPhase = false;
+			// P1-2（对齐 Hermes est_tools_tokens_rough）：估算工具 schema 的固定 token 开销，
+			// 无真实 usage 时计入触发判定，避免 60+ 工具定义导致请求规模被严重低估而压缩
+			// 滞后（日志 1786432061200 HTTP 400 code 11133）。
+			// ⚠ 提到冷却分支**之前**声明：willAttemptCompression（UI 门控）与
+			// compressContext 都要用它，且两处必须传同一值，否则门控与实际判定漂移。
+			// 纯计算无副作用，提前算不改变任何行为。
+			// 实现已抽为模块级 estimateToolsSchemaTokens（请求发出点的 promptOverhead
+			// 诊断共用同一函数，避免两套口径）。
+			const toolsSchemaTokens = estimateToolsSchemaTokens(enabledTools as ReadonlyArray<any>);
 			const cooldownElapsed = host._lastCompressionTime > 0
 				? Date.now() - host._lastCompressionTime
 				: Infinity;
@@ -844,6 +1068,34 @@ interface ITurnContext {
 					metadata: { compressionRatio: 1.0, skipped: 'cooldown' },
 				};
 			} else {
+				// ★ P3（2026-08-21，事故 1787282838177）：在 **await compressContext 之前**
+				// 就把 UI 切到「正在压缩上下文」——摘要 LLM 挂起恰好发生在 compressContext
+				// 内部，若把 phase 发在压缩完成后（原实现在 `if (didCompress)` 里），
+				// 那行永远执行不到，用户看到的仍是「正在思考中」，无法判断该等还是该停。
+				//
+				// ⚠ 但**必须先确认本轮真会压缩**（2026-08-21 二次修正，日志 1787286581849）：
+				// 冷却期只是众多前置条件之一。首版把 phase 发在「冷却期已过」的 else 分支里，
+				// 而该日志 12 轮全部 `skipped=below_token_threshold`
+				// （effectiveTokens 25959→29422，阈值 38400 从未达标），却每轮都发了
+				// compressing → UI 每轮闪一次「正在压缩上下文...」→ 用户误以为频繁压缩。
+				// （首版注释里"25ms delta 缓冲会合并、用户无感"的假设是错的：
+				//  _ensurePhaseIndicator 是立即 DOM 操作，不经缓冲。）
+				//
+				// willAttemptCompression 与 compressContext 共用 _evaluateTrigger 判据
+				// （唯一真源），杜绝 UI 门控与实际行为漂移。
+				const willCompress = contextManager.willAttemptCompression(
+					messages as unknown as ReadonlyArray<ChatMessage>,
+					undefined,
+					compressionWindow,
+					runState.lastRealPromptTokens,
+					toolsSchemaTokens > 0 ? toolsSchemaTokens : undefined,
+					force === true ? true : undefined,
+				);
+				if (willCompress) {
+					enteredCompressingPhase = true;
+					runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'compressing' });
+					yield { type: 'phase_change', phase: runState.phase };
+				}
 				try {
 					// Pre-compact injection callback — passed into compressContext
 					// so injected memories are part of the compressed result.
@@ -865,18 +1117,7 @@ interface ITurnContext {
 					const retrieveContext = (memProviderForRetrieve && (memProviderForRetrieve as any).recallFormatted)
 						? (r: any) => host._retrieveCompactionContext(memProviderForRetrieve as any, r)
 						: undefined;
-					// P1-2（对齐 Hermes est_tools_tokens_rough）：估算工具 schema 的固定 token 开销
-					// 传给 compressContext，无真实 usage 时计入触发判定，避免 60+ 工具定义导致
-					// 请求规模被严重低估而压缩滞后（日志 1786432061200 HTTP 400 code 11133）。
-					let toolsSchemaTokens = 0;
-					try {
-						for (const t of enabledTools as ReadonlyArray<any>) {
-							const schemaStr = JSON.stringify({ name: t.name, description: t.description, parameters: (t as any).inputSchema ?? (t as any).schema ?? undefined });
-							if (schemaStr) { toolsSchemaTokens += Math.ceil(schemaStr.length / 4); }
-						}
-					} catch (e) {
-						toolsSchemaTokens = 0; // 序列化失败不阻断压缩
-					}
+					// toolsSchemaTokens 已在冷却分支之前算好（UI 门控与本次调用共用同一值）
 					compressionResult = await contextManager.compressContext(
 						messages as unknown as ReadonlyArray<ChatMessage>,
 						undefined,
@@ -961,6 +1202,7 @@ interface ITurnContext {
 				`effectiveTokens=${cmpMeta.effectiveTokens ?? 'n/a'} ` +
 				`realPromptTokens=${cmpMeta.realPromptTokens ?? 'n/a'} ` +
 				`estimatedTokens=${cmpMeta.estimatedTokens ?? 'n/a'} ` +
+				`toolsSchemaTokens=${cmpMeta.toolsSchemaTokens ?? 'n/a'} ` +
 				`thresholdTokens=${cmpMeta.thresholdTokens ?? 'n/a'} ` +
 				`effectiveWindow=${cmpMeta.effectiveWindow ?? 'n/a'} ` +
 				`compressionWindow=${compressionWindow} ` +
@@ -984,9 +1226,8 @@ interface ITurnContext {
 			}
 			if (didCompress) {
 				host._lastCompressionTime = Date.now();
-				// 显式置 phase 后再广播，确保 loop 内部 phase 与 UI 同源（设计 §3.4）
-				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'compressing' });
-				yield { type: 'phase_change', phase: runState.phase };
+				// phase='compressing' 已在 await compressContext **之前**发出（见上方 P3 注释），
+				// 此处不再重复 yield —— 压缩块末尾会无条件切回 'llm_streaming'。
 				// 捕获压缩前后文本（用于详情编辑器对比显示）
 				// 消息级别截断：只在消息边界截断，避免在消息块中间切断导致公共后缀匹配失败
 				const fmtBlock = (m: any) => `[${m.role ?? 'unknown'}] ${(typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')).slice(0, 300)}`;
@@ -1137,9 +1378,14 @@ interface ITurnContext {
 					compressionAfterText: afterText,
 					compressionSummary: compressionResult.summary || '',
 				} as IChatStreamDelta;
-				// 压缩恢复后显式置 phase 再广播，与 SET_PHASE('compressing') 同源
-			runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'llm_streaming' });
-			yield { type: 'phase_change', phase: runState.phase };
+				// 压缩恢复后显式置 phase 再广播，与 SET_PHASE('compressing') 同源。
+			// ⚠ 只在**确实进入过** compressing 时才切回：未压缩的轮次根本没改过 phase，
+			// 无条件切回会把当前 phase 强写成 llm_streaming（隐性耦合，且在
+			// 「本轮跳过压缩」的常见路径上每轮多发一条无意义 delta）。
+			if (enteredCompressingPhase) {
+				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'llm_streaming' });
+				yield { type: 'phase_change', phase: runState.phase };
+			}
 		}
 	}
 }
@@ -1499,6 +1745,40 @@ interface ITurnContext {
 			return 'done';
 		}
 
+		// ─── clarify 信号：问题已抛给用户，必须结束 turn 等回答 ──────────
+		// P0（2026-08-21，日志 1787289570191）：`clarify` 的闭环此前**只有两端**——
+		// 工具注册（coreTools.ts）+ UI 澄清卡片（agentChatPanel.toolCards.ts，
+		// 提交后经 onClarifySubmit → _sendMessageInternal 作为新消息开启下一 turn），
+		// 而 agent loop 对 clarify 零引用 → 模型提问后 loop 继续跑，但用户回答
+		// 尚未到达，模型只能空转：该日志 14 轮里 5 轮（36%）纯浪费，最后模型
+		// 自救 "I'll stop here rather than loop on..."。
+		//
+		// ⚠ 用 `some`（findClarifySignal 命中即终止）而非上面 terminate 的 `every`：
+		// 问题一旦渲染，本 turn 已失去继续意义 —— 同批次其他工具结果模型也用不上。
+		// 要求"全部工具都 terminate"会让 `clarify + file_read` 混合批次继续空转，
+		// 正是本次事故形态。
+		//
+		// 终止方式与「无工具调用」路径一致（yield done + return 'done'）：turn 正常
+		// 收尾，用户看到澄清卡片，回答后自然开启新 turn。不用 abort/error ——
+		// 这是**预期内**的协作暂停，不是异常。
+		if (toolResults.length > 0) {
+			const clarifySignal = findClarifySignal(
+				toolResults,
+				(id) => localExecutedCalls.find((c: any) => c.id === id)?.name,
+			);
+			if (clarifySignal) {
+				host._logService.info(
+					`[AgentOS] clarify signal detected (toolCallId=${clarifySignal.toolCallId}, ` +
+					`questions=${clarifySignal.questionCount}) — ending turn to await the user's answer`
+				);
+				// 与结束路径对齐：显式置 idle，供 checkpoint / UI 读取正确终态
+				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'idle' });
+				yield { type: 'phase_change', phase: runState.phase };
+				yield { type: 'done' };
+				return 'done';
+			}
+		}
+
 		// ─── codebase memory 工具调用检测 ──────────────────────────────────
 		// 当 LLM 调用 codebase-memory MCP 工具时，yield codebase_operation 事件
 		// 供前端系统消息面板显示
@@ -1597,7 +1877,30 @@ interface ITurnContext {
 	// 「强制压缩 + 自动重试」；重试后仍失败则走原有 error 路径结束（防死循环）。
 	let overflowCompressionDone = false;
 
-	while (iteration < MAX_TOOL_ITERATIONS) {
+	// ─── 迭代硬上限 / 预算耗尽的「收尾轮」（2026-08-20）────────────────────────
+	// 此前撞上限只 `yield done` 就结束，导致：末轮发起的工具调用（尤其 delegate_task）
+	// 结果 append 进 messages 后再无轮次消费 → 成果 100% 丢弃、回答停在承诺句
+	// （日志 1787214724132：第 50/50 轮起 delegate_task，子代理跑 23 轮/6min 后主循环已退出）。
+	// 现额外允许跑一轮「禁用工具、仅输出结论」的收尾轮：循环上限 +1，该轮把
+	// _iterationToolDefs 置空并注入 hardLimitWrapUpReminder（该 reminder 早已写好但
+	// 一直无生产引用，仅测试在用）。预算耗尽路径同样先转收尾轮再硬停。
+	const HARD_STOP_ITERATIONS = MAX_TOOL_ITERATIONS + 1;
+	/** 收尾轮是否已执行（防止重复收尾 / 收尾后仍继续循环）。 */
+	let _wrapUpRoundDone = false;
+	/** 预算耗尽等非「撞上限」原因请求提前收尾。 */
+	let _forceWrapUpRound = false;
+	/**
+	 * 收尾提醒是否已由「触发原因方」注入过（如零进展空转注入了
+	 * allBlockedWrapUpReminder）。置位后收尾轮不再叠加 hardLimitWrapUpReminder，
+	 * 避免出现「你已用满 100 轮」这类与事实矛盾的措辞。
+	 */
+	let _wrapUpReminderAlreadyInjected = false;
+	/** 临近预算预警是否已注入（只提醒一次，避免每轮刷屏）。 */
+	let _budgetLowWarned = false;
+	/** 剩余轮次 <= 该值时注入临近预算预警（够模型收一次尾，又不至于过早悲观）。 */
+	const BUDGET_LOW_REMAINING_THRESHOLD = 3;
+
+	while (iteration < HARD_STOP_ITERATIONS) {
 		iteration++;
 		// ─── V3: 显式 abort 检查点（每轮顶检查，不在迭代间隙期等待）──
 		if (turnAbortSignal.aborted) {
@@ -1605,10 +1908,46 @@ interface ITurnContext {
 			break;
 		}
 		// ─── 预算门控（Hermes 范式核心：IterationBudget）──
-		// 预算耗尽且无 grace 余量 → 终止主循环（对齐 Hermes 末次宽限后的硬停）。
+		// 预算耗尽且无 grace 余量 → 请求收尾轮；收尾轮已跑过则硬停。
 		if (!budget.hasRemaining() && !budget.isGraceArmed()) {
-			host._logService.warn(`[AgentOS] Iteration budget exhausted (${budget.getSummary()}) — stopping loop`);
-			break;
+			if (_wrapUpRoundDone) {
+				host._logService.warn(`[AgentOS] Iteration budget exhausted (${budget.getSummary()}) — stopping loop (wrap-up round already done)`);
+				break;
+			}
+			host._logService.warn(`[AgentOS] Iteration budget exhausted (${budget.getSummary()}) — entering final wrap-up round (tools disabled)`);
+			_forceWrapUpRound = true;
+		}
+
+		// ─── 收尾轮判定：撞硬上限（iteration 超出 MAX）或预算耗尽请求 ──
+		const _isWrapUpRound = _forceWrapUpRound || iteration > MAX_TOOL_ITERATIONS;
+		if (_isWrapUpRound) {
+			_wrapUpRoundDone = true;
+			host._logService.warn(
+				`[AgentOS] FINAL WRAP-UP ROUND (iteration ${iteration}, max ${MAX_TOOL_ITERATIONS}) — ` +
+				`tools DISABLED, model must produce final answer from gathered context` +
+				(_wrapUpReminderAlreadyInjected ? ' (reason-specific reminder already injected)' : '')
+			);
+			// ⚠ 2026-08-22：零进展空转路径已注入过 `allBlockedWrapUpReminder`，此处不可
+			// 再叠加 `hardLimitWrapUpReminder(MAX_TOOL_ITERATIONS)` —— 后者会告诉模型
+			// 「你已用满 100 轮」，而实际只跑了 5 轮（零进展提前收尾），**措辞与事实
+			// 矛盾会让模型困惑**（它可能据此判断上下文已被截断而放弃作答）。
+			// 收尾的三重保障（工具置空 / toolChoice:'none' / 提醒）仍完整，只是提醒
+			// 换成了贴合真实原因的那一条。
+			if (!_wrapUpReminderAlreadyInjected) {
+				messages.push({ role: 'user', content: hardLimitWrapUpReminder(MAX_TOOL_ITERATIONS) });
+			}
+			// 空数组（非 undefined）：下方 `if (_iterationToolDefs)` 判定为 truthy，
+			// 从而把 enabledTools 覆盖为空 → provider 收不到任何工具，模型无法再调用。
+			_iterationToolDefs = [];
+		} else if (!_budgetLowWarned) {
+			// ─── 临近预算预警（只注入一次）──
+			// 让模型知道剩余轮次，避免在末轮启动 delegate_task 这类结果无人消费的昂贵操作。
+			const _remaining = MAX_TOOL_ITERATIONS - iteration + 1;
+			if (_remaining <= BUDGET_LOW_REMAINING_THRESHOLD) {
+				_budgetLowWarned = true;
+				host._logService.warn(`[AgentOS] Iteration budget low (${_remaining}/${MAX_TOOL_ITERATIONS} remaining) — injecting warning`);
+				messages.push({ role: 'user', content: budgetLowWarning(_remaining, MAX_TOOL_ITERATIONS) });
+			}
 		}
 		// ─── 软预算收尾提醒（超阈值首次注入；之后每 REFIRE 周期重复，不打断执行）──
 		if (request.softDeadlineMs && request.softDeadlineMs > 0) {
@@ -1642,7 +1981,9 @@ interface ITurnContext {
 				_strategyReminder = sp.reminderMessage;
 				// 捕获策略对本轮工具面的覆盖（如 delegation 范式限制 supervisor 工具）。
 				// 仅当策略显式返回 toolDefs 时才覆盖；其余范式返回 undefined → 沿用全工具。
-				if (sp.toolDefs) { _iterationToolDefs = sp.toolDefs; }
+				// 收尾轮例外：工具面必须保持为空，否则策略（如 delegation 返回 supervisor
+				// 工具集）会把 `_iterationToolDefs = []` 冲掉，模型又能调 delegate_task。
+				if (sp.toolDefs && !_isWrapUpRound) { _iterationToolDefs = sp.toolDefs; }
 			}
 			// MiMo-Code 处理方式：策略级 reminder 统一作为 user 消息注入
 			// （synthetic user part），而非 system 角色 —— 避免破坏 system 前缀缓存，
@@ -1720,10 +2061,37 @@ interface ITurnContext {
 			host._lastForkContextBySession.set(request.sessionId, currentFork);
 		}
 		const forkAligned = prefixCacheAligned(parentFork, effectiveSystemPrompt ?? '', enabledTools);
+		// ── 归因：aligned=false 时区分「system 变了」还是「tools 变了」（2026-08-22）──
+		// 原日志只有 aligned + 两个指纹值 —— 缓存断了完全不知道该去查提示词还是查工具集。
+		// 这里在**不对齐时**额外拆两维：system 单独取指纹、tools 单独取指纹（工具名 diff
+		// 直接给出增删项）。刻意只在 !aligned 时计算，对齐路径零额外开销。
+		let forkReason = '';
+		if (!forkAligned && parentFork) {
+			const sysSame = parentFork.systemPrompt === (effectiveSystemPrompt ?? '');
+			const parentNames = parentFork.tools.map((t: { name: string }) => t.name).sort();
+			const childNames = [...enabledTools].map((t: any) => t.name).sort();
+			const added = childNames.filter((n: string) => !parentNames.includes(n));
+			const removed = parentNames.filter((n: string) => !childNames.includes(n));
+			const toolsSetSame = added.length === 0 && removed.length === 0;
+			const parts: string[] = [];
+			parts.push(sysSame ? 'system=same' : `system=CHANGED(${parentFork.systemPrompt.length}→${(effectiveSystemPrompt ?? '').length} chars)`);
+			if (!toolsSetSame) {
+				parts.push(`tools=SET_CHANGED(${parentNames.length}→${childNames.length}` +
+					`${added.length ? ` +[${added.slice(0, 8).join(',')}]` : ''}` +
+					`${removed.length ? ` -[${removed.slice(0, 8).join(',')}]` : ''})`);
+			} else if (sysSame) {
+				// 两边工具名集合相同、system 也相同，指纹却不同 → 只能是某个工具的
+				// description / inputSchema 变了（指纹含这两项）。这类漂移最隐蔽。
+				parts.push('tools=SCHEMA_CHANGED(same names, different description/inputSchema)');
+			} else {
+				parts.push('tools=same');
+			}
+			forkReason = ` reason=[${parts.join(' ')}]`;
+		}
 		host._logService.info(
 			`[AgentOS] Fork prefix-cache: aligned=${forkAligned} ` +
 			`parentFp=${parentFork?.toolsFingerprint ?? '(none)'} ` +
-			`childFp=${currentFork.toolsFingerprint} session=${request.sessionId ?? '(none)'}`,
+			`childFp=${currentFork.toolsFingerprint} session=${request.sessionId ?? '(none)'}${forkReason}`,
 		);
 
 		// 构建模型选项（注入工具 + ForkContext）
@@ -1732,6 +2100,15 @@ interface ITurnContext {
 			maxTokens: request.options?.maxTokens ?? 4096,
 			systemPrompt: effectiveSystemPrompt,
 				tools: enabledTools.length > 0 ? enabledTools : undefined,
+				// 收尾轮双保险（2026-08-20，对齐 MiMo-Code prompt.ts:4090 的
+				// `toolChoice: isLastStep ? "none" : ...`）：
+				//   ① tools 已被置空（上方 _iterationToolDefs=[] → enabledTools=[] →
+				//      这里传 undefined）——物理上没有可调用的工具；
+				//   ② 再显式 toolChoice:'none' ——协议层禁止调用。
+				// 只靠 ① 的隐患：provider 对「tools 字段缺失」的行为未定义（有的忽略、
+				// 有的仍按上一轮缓存的工具面推理）；'none' 是 OpenAI/Anthropic 都明确
+				// 支持的语义，模型侧收到的是「禁止调用」而非「没有可调用的」。
+				toolChoice: _isWrapUpRound ? 'none' : undefined,
 				stop: request.options?.stop,
 				// 思考/推理配置：由聊天输入框 thinking UI 控件透传至此，
 				// 各 model provider 据此映射到原生 API 参数（thinking/thinkingConfig/reasoning_effort）。
@@ -1757,6 +2134,16 @@ interface ITurnContext {
 			//   previousResponseId  上一轮响应流的 id（链式衔接）        → 请求体 previous_response_id
 			// 历史串台 bug：仅用单一 sessionId 当所有 id，服务端 KV 缓存按 conversation-id
 			// 跨会话碰撞 → 命中旧上下文、忽略本地 priorMessages。此处分离三 id 杜绝碰撞。
+			//
+			// ⚠ prevRespId 读不到值是**预期的**，不是缺陷（2026-08-21 排查日志
+			// 1787301913662 时曾据此误判为「链式衔接失效」，特此记录避免重复踩坑）：
+			//   · 本 Map 只由 `delta.responseId` 喂（见下方 usage 捕获处），而 responseId
+			//     仅在 **BYOK / llmBridgeNode** 路径可得（它们直接解析原始 SSE 的 `parsed.id`）；
+			//   · **扩展 provider 路径（codebuddy-provider）自己维护 session→id 映射并直接
+			//     注入请求体 `previous_response_id`**（含 400 stale-id 回退重试），根本不读
+			//     这里传下去的 `context.previousResponseId` —— 链式衔接一直是生效的
+			//     （该次日志实测 31/32 次请求都带上了 previous_response_id）。
+			// 故此处显示 `(none/provider-managed)` 表示「由 provider 自行链式衔接」。
 			const conversationId = host._getOrCreateConversationId(request.sessionId);
 			const requestId = host._generateHexId();
 			const previousResponseId = request.sessionId
@@ -1775,7 +2162,65 @@ interface ITurnContext {
 				context.previousResponseId = previousResponseId;
 			}
 
-			host._logService.info(`[AgentOS] Calling modelProvider.chat(modelId=${selection.modelId}, messages=${messages.length}, tools=${enabledTools.length}) convId=${conversationId} reqId=${requestId} prevRespId=${previousResponseId ?? '(none)'}`);
+			// ── promptOverhead 快照（2026-08-21 修，日志 1787315962316）────────────
+			// 在**请求发出的这一刻**记录粗估，供该请求自己的 usage 回来后配对相减：
+			//     promptOverhead = realPrompt − estAtRequest − toolsSchemaAtRequest
+			// ⚠ 口径澄清（2026-08-22 修正原注释的错误结论）：`messages` **已包含**
+			// 冻结前缀等全部 system 消息（见本文件上方「Prepended frozen system prefix」），
+			// 因此 promptOverhead **不是** system prompt 的体量，而是
+			// 「真实 tokenizer 与 CJK 加权粗估的偏差 + 请求体固定结构开销」。
+			// 结论不变的是它的用法：**突然抬高即表示有内容进了请求体却没进
+			// `_estimateTokens` 口径**（压缩阈值与收益投影全建在粗估上）。
+			// 想知道「谁在吃 context」请看下方 [PromptBudget] 预算表，别用这个残差猜。
+			// ⚠ 绝不能改回「用下一轮的 est 减上一轮的 real」：那样会被轮间消息增长
+			// 淹没，实测出现 -9166 这类大负值（est 11204→21985 增长 10781，real=28649：
+			// 用本轮 est 得 -9166，用同一请求的 est 得 +1615 才是真实开销）。
+			const _estAtRequest = contextManager.estimateMessagesTokens(messages as any);
+			const _toolsSchemaAtRequest = estimateToolsSchemaTokens(enabledTools as ReadonlyArray<any>);
+
+			// ── [PromptBudget] 提示词预算表（P1，对齐 Hermes `prompt-size`）──────────
+			// promptOverhead 只回答「一共多大」；预算表回答「**谁**在吃 context」：
+			// 冻结前缀按 driver 登记的命名段归因、注入型 system 消息按来源分类、
+			// tools schema 按 toolset 聚合 + 列出最贵的几个工具。
+			// 节流：每 turn 首次必打 + 之后仅总量漂移 ≥15% 再打（见 shouldEmitBudgetReport），
+			// 避免每个 iteration 刷 10 行；刻意不挂配置开关。
+			try {
+				const _toolCost = groupToolSchemaCosts(enabledTools as ReadonlyArray<any>);
+				const _budget = buildPromptBudgetReport({
+					messages: messages as any,
+					messagesTokens: _estAtRequest,
+					frozenPrefixSegments: request.promptSegments,
+					toolGroups: _toolCost.groups,
+					toolCosts: _toolCost.costs,
+					contextWindow: compressionWindow,
+				});
+				if (shouldEmitBudgetReport(_budget.totalTokens, _lastPromptBudgetTotal)) {
+					const _note = _lastPromptBudgetTotal > 0
+						? `drift from ${_lastPromptBudgetTotal}`
+						: `turn baseline`;
+					host._logService.info(formatPromptBudgetLog(_budget, _note));
+					_lastPromptBudgetTotal = _budget.totalTokens;
+
+					// ── [ToolSchemaDiag] 关键引导文案是否真的送达模型（2026-08-22）──────
+					// 与预算表同频（每 turn 首次 + 显著漂移时），避免每轮刷屏。
+					// 用途：模型不遵守 description 时，先用这条排除「文案没进 schema /
+					// 被截断 / 工具被折叠成桥接」三种情形，再判定是「模型不听」。
+					// 此前只能靠 toolsSchemaTokens 差值间接推断（13509→13912），
+					// 既要人工换算、也定位不到具体哪个工具。
+					const _probes = probeToolGuidance(enabledTools as ReadonlyArray<{ name?: string; description?: string }>);
+					const _schemaDiag = formatToolSchemaDiagLog(_probes, (enabledTools as unknown[]).length, _toolsSchemaAtRequest);
+					if (_schemaDiag.level === 'warn') {
+						host._logService.warn(_schemaDiag.text);
+					} else {
+						host._logService.info(_schemaDiag.text);
+					}
+				}
+			} catch (budgetError) {
+				// 诊断失败绝不阻断请求
+				host._logService.warn('[PromptBudget] failed to build report:', budgetError);
+			}
+
+			host._logService.info(`[AgentOS] Calling modelProvider.chat(modelId=${selection.modelId}, messages=${messages.length}, tools=${enabledTools.length}) convId=${conversationId} reqId=${requestId} prevRespId=${previousResponseId ?? '(none/provider-managed)'}`);
 
 			// ─── 诊断：列出实际发送给 LLM 的所有工具名 ──────────────────
 			if (enabledTools.length > 0) {
@@ -1853,7 +2298,7 @@ interface ITurnContext {
 						`estTokens=${_est} realPromptTokens=${_real} compressionWindow=${compressionWindow} | ` +
 						`pressure=${_pressure}/3 (${compressionWindow > 0 ? Math.round((_real || _est) / compressionWindow * 100) : 0}%) | ` +
 						`lastCompressionAt=${_sinceCompress >= 0 ? _sinceCompress + 's ago' : 'never'} | ` +
-						`prevRespId=${previousResponseId ?? '(none)'} | ` +
+						`prevRespId=${previousResponseId ?? '(none/provider-managed)'} | ` +
 						`abortSignal=${host._loopAbortController?.signal?.aborted ? 'ABORTED' : 'active'}`
 					);
 				}
@@ -2042,9 +2487,30 @@ interface ITurnContext {
 							host._lastRealPromptTokensByAgent.set(host._turnKey(request.agentId, request.sessionId), realPrompt);
 							// P1(cache-cold): 记录本次 assistant 响应时间，供下一轮剪枝的缓存冷热判定
 							host._lastAssistantAtByAgent.set(host._turnKey(request.agentId, request.sessionId), Date.now());
+							// ── 前缀缓存命中率（2026-08-21，日志 1787301913662 / 1787315962316）──
+							// 单轮 hit% 很好用（实测 98.2/99.0/29.9/98.7，29.9% 那次正是压缩后）。
+							// ⚠ 累计值必须用**本 turn 基线**相减：`host._totalInputTokens` /
+							// `_totalCachedTokens` 是 Dashboard 计数器，会 `_scheduleSave` 持久化，
+							// 是**账号生命周期累计**。早前直接拿它算 cumHit，实测打出
+							// `cumHit=80.6% (469006984/581977168)`（4.69 亿/5.82 亿），多轮采样
+							// 一动不动，完全无法反映本次会话 —— 故改为 turn 内累计。
+							// 分母用归一后的 realPrompt（OpenAI 系 == inputTokens，Anthropic 系
+							// == input+cache），两种语义下口径一致。
+							const _cachedTokens = u.cachedTokens ?? 0;
+							const _hitPct = realPrompt > 0 ? (_cachedTokens / realPrompt) * 100 : 0;
+							// Dashboard 计数器在本 if 之后才累加，故这里手动加上本轮再减基线。
+							const _turnInput = (host._totalInputTokens + (u.inputTokens ?? 0)) - _turnCacheBaselineInput;
+							const _turnCached = (host._totalCachedTokens + _cachedTokens) - _turnCacheBaselineCached;
+							const _turnHitPct = _turnInput > 0 ? (_turnCached / _turnInput) * 100 : 0;
+							// 请求体开销残差：与**发出该请求时**快照的 est 配对（不是与下一轮的 est）
+							const _promptOverhead = realPrompt - _estAtRequest - _toolsSchemaAtRequest;
 							host._logService.info(
 								`[AgentOS][Compression] captured real prompt usage: inputTokens=${_input} ` +
-								`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} ` +
+								`cached=${_cachedTokens} cacheWrite=${u.cacheWriteTokens ?? 0} ` +
+								`hit=${_hitPct.toFixed(1)}% miss=${Math.max(0, realPrompt - _cachedTokens)} | ` +
+								`turnHit=${_turnHitPct.toFixed(1)}% (${_turnCached}/${_turnInput}) | ` +
+								`estAtRequest=${_estAtRequest} toolsSchema=${_toolsSchemaAtRequest} ` +
+								`promptOverhead=${_promptOverhead} | ` +
 								`inputIncludesCache=${_inputAlreadyIncludesCache} → lastRealPromptTokens=${runState.lastRealPromptTokens}`
 							);
 						}
@@ -2132,19 +2598,41 @@ interface ITurnContext {
 						// no file name / command. Detect this case and emit the matching
 						// `tool_args` right after the `tool_start` so the card can render
 						// the italic description (e.g. "读取文件 README.md").
+						//
+						// ⚠⚠ 2026-08-22（日志 1787373914386，实测 58 次调用几乎全部中招）：
+						// 原条件只认 `typeof arguments === 'string'`，而 codebuddy-provider
+						// 在 extension.ts:1630 报的是
+						//     new vscode.LanguageModelToolCallPart(id, name, params)
+						// 其中 `params = JSON.parse(acc.arguments)` —— **是对象**。
+						// 于是本补救分支恒不成立 → tool_args 从不发出 → 渲染层 `tc.args`
+						// 恒为 ''，终端族卡片显示「（无命令）」、文件卡显示「(路径未解析)」，
+						// 而**执行层完全正常**（它读的是已解析对象，日志 args=[query,...]）。
+						// 这正是本项目铁律的又一次实证：渲染层拿的是 tool_args 累加的
+						// 原始字符串，执行层拿的是 provider 已解析对象，**两条独立链路** ——
+						// 工具执行成功 ≠ 卡片能渲染。
+						// 故这里必须同时接受字符串与对象（对象则序列化后下发）。
 						if (
 							(adapted as any).type === 'tool_start' &&
 							delta.type === 'tool_call' &&
 							delta.toolCall &&
-							delta.toolCall.name &&
-							typeof delta.toolCall.arguments === 'string' &&
-							delta.toolCall.arguments.length > 0
+							delta.toolCall.name
 						) {
-							yield {
-								type: 'tool_args' as any,
-								content: delta.toolCall.arguments,
-								toolCallId: delta.toolCall.id,
-							};
+							const _rawArgs = delta.toolCall.arguments;
+							let _argsStr = '';
+							if (typeof _rawArgs === 'string') {
+								_argsStr = _rawArgs;
+							} else if (_rawArgs && typeof _rawArgs === 'object') {
+								// 对象形态（本项目默认 provider 的实际形态）：序列化下发。
+								// 失败不阻断工具执行 —— 仅退化为卡片无参数展示。
+								try { _argsStr = JSON.stringify(_rawArgs); } catch { _argsStr = ''; }
+							}
+							if (_argsStr.length > 0 && _argsStr !== '{}') {
+								yield {
+									type: 'tool_args' as any,
+									content: _argsStr,
+									toolCallId: delta.toolCall.id,
+								};
+							}
 						}
 					}
 				}
@@ -2837,15 +3325,19 @@ interface ITurnContext {
 			for (const tc of localExecutedCalls) {
 				const denial = isToolCallDeniedByHardPermission(tc.name, hardPerm);
 				if (denial.denied) {
-					// Check plan file exception: file_write/file_edit to plan files is allowed
+					// 计划文件豁免：写 <sarosRoot>/plans/*.md 是 plan 模式的本职动作。
+					// ⚠ 2026-08-21（日志 1787294819356）此处原先手写工具名列表
+					// （file_write/file_edit/write/edit）**漏了 `patch`**，而模型在
+					// file_write 走不通时的自然退路正是 patch → 两条路都断 → 计划写不进
+					// 文件 → plan_exit 恒因 tasks=0 被拒 → 死锁（模型最终 clarify 求助）。
+					// 现统一走 isPlanFileWriteCall（含 patch + planRoot 三重安全校验），
+					// 与审批层共用同一判据，避免两处各写一份必然漂移。
 					let isPlanFileWrite = false;
-					if (tc.name === 'file_write' || tc.name === 'file_edit' || tc.name === 'write' || tc.name === 'edit') {
-						try {
-							const args = typeof tc.arguments === 'string' ? JSON.parse(tc.arguments) : tc.arguments;
-							const filePath = args?.file_path || args?.path || args?.filePath || '';
-							isPlanFileWrite = isPlanFilePath(filePath);
-						} catch { /* parse failure → not a plan file */ }
-					}
+					try {
+						const args = typeof tc.arguments === 'string' ? JSON.parse(tc.arguments) : tc.arguments;
+						const planRoot = pathJoin(host._getSarosRoot?.() ?? '', 'plans');
+						isPlanFileWrite = isPlanFileWriteCall(tc.name, args, planRoot);
+					} catch { /* parse failure → not a plan file */ }
 					if (isPlanFileWrite) {
 						allowedCalls.push(tc);
 					} else {
@@ -2903,19 +3395,70 @@ interface ITurnContext {
 							content: [{ type: 'text', text: `Error: Tool "${tc.name}" was called too many times with the same arguments. This looks like a loop — try a different approach or provide more specific arguments.` }],
 							success: false,
 						});
-						yield { type: 'tool_start', content: '', toolCallId: tc.id, toolName: tc.name };
+						// ⚠⚠ 2026-08-22（日志 1787377582459，实测 37 次）：**只在该 id 从未
+						// 发过 tool_start 时才补发**。这些调用是模型正常发出的，adapter 早已
+						// 在 delta 阶段 yield 过 tool_start（并登记进 startedToolIds）——
+						// 无条件再补一次会让 renderer **重复建卡**（`case 'tool_start'` 是裸
+						// `toolCalls.push()`，对同 id 无去重），且这张重复卡：
+						//   · `content: ''` 无参数；
+						//   · 后到的 `tool_args` 用 `find(tc => tc.id === ...)` 只命中**第一张**，
+						//     所以它永远拿不到参数 → 显示「读取未知文件」/ execute_code 空白卡。
+						// 实测每轮 `tool_start=4` 而 `tool_result=2 tool_end=2 tool_args=2`，
+						// 多出的 2 个就是这里补的；37 轮累计 74 张幽灵卡，同时把 parts 从 48
+						// 推到 223（每轮 +5 而真实只需 +3），是 UI 抖动的主要放大器。
+						// 判据复用既有的 startedToolIds（本文件 2543 / 2776 登记），不新建状态。
+						if (!startedToolIds.has(tc.id)) {
+							startedToolIds.add(tc.id);
+							yield { type: 'tool_start', content: '', toolCallId: tc.id, toolName: tc.name };
+						}
 						yield { type: 'tool_result', content: `工具 "${tc.name}" 因重复调用已被跳过（疑似循环）`, toolCallId: tc.id };
 						yield { type: 'tool_end', toolCallId: tc.id, success: false };
 						endedToolIds.add(tc.id);
 					}
 					if (filteredCalls.length === 0) {
-						// 全部被阻止 → 跳过执行，直接进入下一轮
-						host._logService.warn(`[AgentOS] All ${localExecutedCalls.length} tool calls blocked by loop detection`);
+						// ── 全部被阻止 → 零进展空转，必须升级干预（2026-08-22）────────
+						// 原实现直接 `continue`，等于每轮白烧一次完整 prompt。日志
+						// 1787377582459 实测连续 37 轮 `All 2 tool calls blocked`，模型每轮
+						// 输出**逐字节相同**的 229 个 delta，完全无视「已被跳过」的 tool
+						// result，一路空转到迭代上限（30k+ token × 5–8s × 37）。
+						// 分三档升级（阈值集中在 loopReminders.ts，便于据日志调参）：
+						//   ① 首次/第 1 次   —— 仅回填 tool result（保持原行为，给模型自纠机会）
+						//   ② 连续 ≥2 次     —— 注入「整轮无进展」强提醒（单工具级提醒此时已被忽略）
+						//   ③ 连续 ≥4 次     —— 禁用工具 + 强制收尾轮，避免烧到 100 轮
+						_allBlockedStreak++;
+						host._logService.warn(
+							`[AgentOS] All ${localExecutedCalls.length} tool calls blocked by loop detection ` +
+							`(consecutive zero-progress turns: ${_allBlockedStreak})`,
+						);
+						_auditMark('allToolCallsBlocked', _allBlockedStreak, ALL_BLOCKED_WRAPUP_AT,
+							localExecutedCalls[0]?.name);
 						for (const tr of toolResults) {
 							messages = appendMessages(messages, { role: 'tool', content: (tr.content[0] as any)?.text ?? '', toolCallId: tr.toolCallId });
 						}
+						const _blockedNames = [...new Set(localExecutedCalls.map(tc => tc.name))].join(', ');
+						if (_allBlockedStreak >= ALL_BLOCKED_WRAPUP_AT) {
+							// ③ 强制收尾：**复用既有的 `_forceWrapUpRound` 机制**（本文件 1905
+							// 行同一开关），它已经做齐三重保障：`_iterationToolDefs = []` →
+							// enabledTools 置空 → 再叠加 `toolChoice: 'none'`。
+							// ⚠ 不要另造一个「禁工具」标志 —— 那必然与这套漂移。
+							// 文案单列（allBlockedWrapUpReminder）：撞迭代上限是「跑了很多**有效**
+							// 轮」，这里是零进展空转，必须明确点出「工具已被禁用」，否则模型会
+							// 继续尝试调用、白烧最后一轮。
+							host._logService.warn(`[AgentOS] Zero-progress streak hit ${_allBlockedStreak} — forcing wrap-up round (tools disabled)`);
+							_auditFired('allToolCallsBlocked', ALL_BLOCKED_WRAPUP_AT);
+							messages = appendMessages(messages, { role: 'system', content: allBlockedWrapUpReminder(_allBlockedStreak) });
+							_wrapUpReminderAlreadyInjected = true;
+							_forceWrapUpRound = true;
+						} else if (_allBlockedStreak >= ALL_BLOCKED_ESCALATE_AT && !_allBlockedReminderSent) {
+							// ② 强提醒只注入一次 —— 反复注入会污染前缀缓存且被模型进一步忽略。
+							_allBlockedReminderSent = true;
+							messages = appendMessages(messages, { role: 'system', content: allToolCallsBlockedReminder(_allBlockedStreak, _blockedNames) });
+						}
 						continue;
 					}
+					// 有工具真正执行 → 零进展连击清零（与其它 streak 计数器同姿态）。
+					_allBlockedStreak = 0;
+					_allBlockedReminderSent = false;
 					localExecutedCalls = filteredCalls;
 				}
 				// ── Hook: pre_tool_use ────────────────────────────────────────
@@ -2940,6 +3483,69 @@ interface ITurnContext {
 				// 修复：循环内只收集 reminder，待整批 tool result 全部 append 完成后统一 flush，
 				// 保证 tool 序列连续紧邻。声明在 try 外，供 catch 之后的 flush 点可见。
 				const _pendingBatchReminders: string[] = [];
+
+				// [ToolAudit] 登记本批次入参指纹（供 dup 统计）。放在连击检测之前，
+				// 保证串行/并行/delegate-split 三条执行路径都已覆盖。
+				_auditRegisterArgs(effectiveToolCalls as ReadonlyArray<{ id: string; name: string; arguments?: unknown }>);
+
+				// ─── [AntiGuidance] 违反自身 description 明确指引的调用（2026-08-22）──
+				// 背景（日志 1787384463685）：已把「哪些形态会触发审批 / 查行数该用
+				// file_read」写进 execute_code + terminal 的 description，实测
+				// toolsSchemaTokens 13509→13912 证明确已送达且未被截断，但模型仍发出
+				// `powershell -NoProfile -Command "(Get-Content x).Count"` —— 同时违反
+				// 「别包解释器」与「查行数用 file_read」两条。
+				// 此前无法区分：① 没送达 ② 被截断 ③ 送达且完整、模型不听。
+				// 这条日志把 ③ 变成可计量事实（命中哪条规则 + description 原话 + 正确做法），
+				// 据此才能决定下一步是改文案还是升级为硬拦截。
+				// **只记录不拦截** —— 先观察频率；计入 ToolAudit 水位便于跨 turn 统计。
+				for (const _tc of effectiveToolCalls as ReadonlyArray<{ name: string; arguments?: unknown }>) {
+					if (!isShellToolWithCommandArg(_tc.name)) { continue; }
+					try {
+						const _a = typeof _tc.arguments === 'string' ? JSON.parse(_tc.arguments) : _tc.arguments;
+						const _cmd = typeof (_a as any)?.command === 'string' ? (_a as any).command : '';
+						if (!_cmd) { continue; }
+						const _findings = detectAntiGuidanceCommand(_cmd);
+						if (_findings.length > 0) {
+							host._logService.warn(formatAntiGuidanceLog(_tc.name, _cmd, _findings));
+							_auditMark('antiGuidanceCall', (_audit.watermarks.get('antiGuidanceCall')?.max ?? 0) + 1, 0, _tc.name);
+						}
+					} catch { /* 参数解析失败不影响执行 */ }
+				}
+
+				// ─── 单只读工具连击检测（批量并行引导）────────────────────────
+				// 在批次执行前判定：本轮是否「只请求 1 个工具且该工具只读安全」。
+				// 达阈值时把提醒交给 _pendingBatchReminders 延迟注入（保证 tool
+				// result 序列与 assistant.tool_calls 相邻，见上方 400 事故说明）。
+				{
+					const _onlyOne = effectiveToolCalls.length === 1;
+					const _soleName = _onlyOne ? effectiveToolCalls[0]?.name : undefined;
+					const _isSingleReadOnly = !!_soleName && isParallelSafeReadOnlyTool(_soleName);
+					const _adv = advanceSingleToolStreak(_singleToolStreak, _isSingleReadOnly, MAX_SINGLE_TOOL_STREAK);
+					_singleToolStreak = _adv.streak;
+					if (_isSingleReadOnly && _soleName) {
+						if (!_singleToolStreakNames.includes(_soleName)) { _singleToolStreakNames.push(_soleName); }
+					} else {
+						_singleToolStreakNames.length = 0;
+					}
+					if (_adv.shouldGuide) {
+						// ⚠ 2026-08-22：原为 `debug` 级 → 生产日志默认看不见。而「17 轮
+						// 单工具串行浪费 11 轮 LLM 往返」是明确缺陷（每轮重传 27k–60k
+						// token，却只为一次 100–800ms 的搜索），必须 warn 级可见。
+						host._logService.warn(
+							`[AgentOS][Diag] single read-only tool streak reached ${_singleToolStreak} — injecting batch-parallel guidance (tools: ${_singleToolStreakNames.join(', ')})`,
+						);
+						_auditFired('singleToolStreak', MAX_SINGLE_TOOL_STREAK);
+						_pendingBatchReminders.push(
+							batchReadOnlyToolsReminder(_singleToolStreak, _singleToolStreakNames.join(', ')),
+						);
+					}
+					// 审计水位：连击变量达阈值后会清零，故最高值需单独留痕。
+					if (_singleToolStreak > _audit.maxSingleToolStreak) {
+						_audit.maxSingleToolStreak = _singleToolStreak;
+					}
+					if (_isSingleReadOnly && _soleName) { _audit.streakNames.add(_soleName); }
+					_auditMark('singleToolStreak', _singleToolStreak, MAX_SINGLE_TOOL_STREAK, _soleName);
+				}
 		try {
 			// P1: 审批路由上下文（MiMo decideAskRouting）。在工具执行循环所在闭包内派生，
 			// 因为 request.subAgent 在该作用域可见；若放在外层块声明则无法穿透到此处（TS2304）。
@@ -2949,13 +3555,15 @@ interface ITurnContext {
 			// 从 toolResult 提取公共逻辑：连续失败追踪、terminal 空输出检测、
 			// 消息追加、tool_result/tool_end yield。闭包捕获 messages / _toolConsecutiveFailures /
 			// _terminalEmptyOutputCount / endedToolIds，返回更新后的 messages。
-			function* _processToolResult(toolResult: { toolCallId: string; content: any; success: boolean }, toolName: string): Generator<IChatStreamDelta> {
+			function* _processToolResult(toolResult: { toolCallId: string; content: any; success: boolean; metadata?: { executionTimeMs?: number } }, toolName: string): Generator<IChatStreamDelta> {
 				if (!toolResult.success) {
 					_toolConsecutiveFailures.set(toolName, (_toolConsecutiveFailures.get(toolName) ?? 0) + 1);
+					_auditMark('consecutiveFail', _toolConsecutiveFailures.get(toolName) ?? 0, MAX_CONSECUTIVE_TOOL_FAILURES, toolName);
 					if ((_toolConsecutiveFailures.get(toolName) ?? 0) >= MAX_CONSECUTIVE_TOOL_FAILURES) {
-						host._logService.debug(
-							`[AgentOS][Diag] Tool "${toolName}" failed ${MAX_CONSECUTIVE_TOOL_FAILURES}+ times consecutively — injecting system-reminder`,
+						host._logService.warn(
+							formatGuardrailFiredLog('consecutiveFail', _toolConsecutiveFailures.get(toolName) ?? 0, MAX_CONSECUTIVE_TOOL_FAILURES, `tool=${toolName}`),
 						);
+						_auditFired('consecutiveFail', MAX_CONSECUTIVE_TOOL_FAILURES);
 						// 延迟注入（见上方 _pendingBatchReminders 声明处的相邻性保护说明）
 						_pendingBatchReminders.push(toolConsecutiveFailureReminder(toolName, MAX_CONSECUTIVE_TOOL_FAILURES));
 					}
@@ -2969,10 +3577,12 @@ interface ITurnContext {
 							: safeStringifyToolResult(toolResult.content);
 						if (rawText === '(no output)' || rawText.trim() === '') {
 							_terminalEmptyOutputCount++;
+							_auditMark('terminalEmptyOutput', _terminalEmptyOutputCount, MAX_TERMINAL_EMPTY_OUTPUT, 'terminal');
 							if (_terminalEmptyOutputCount >= MAX_TERMINAL_EMPTY_OUTPUT) {
-								host._logService.debug(
-									`[AgentOS][Diag] Terminal returned (no output) ${_terminalEmptyOutputCount} times consecutively — injecting system-reminder`,
+								host._logService.warn(
+									formatGuardrailFiredLog('terminalEmptyOutput', _terminalEmptyOutputCount, MAX_TERMINAL_EMPTY_OUTPUT, 'terminal returned (no output) consecutively'),
 								);
+								_auditFired('terminalEmptyOutput', MAX_TERMINAL_EMPTY_OUTPUT);
 								// 延迟注入（保证 tool result 序列连续紧邻）
 								_pendingBatchReminders.push(terminalEmptyOutputReminder());
 							}
@@ -2986,14 +3596,16 @@ interface ITurnContext {
 						_textSearchStreak = 0;
 					} else if (TEXT_SEARCH_TOOL_NAMES.has(toolName)) {
 						_textSearchStreak++;
+						_auditMark('textSearchStreak', _textSearchStreak, MAX_TEXT_SEARCH_STREAK, toolName);
 						if (_textSearchStreak >= MAX_TEXT_SEARCH_STREAK) {
 							const _structuralAvailable = enabledTools
 								.filter(t => STRUCTURAL_SEARCH_TOOL_NAMES.has(t.name))
 								.map(t => t.name);
 							if (_structuralAvailable.length > 0) {
-								host._logService.debug(
-									`[AgentOS][Diag] text-search streak reached ${MAX_TEXT_SEARCH_STREAK} without structural tools — injecting search_graph guidance`,
+								host._logService.warn(
+									formatGuardrailFiredLog('textSearchStreak', _textSearchStreak, MAX_TEXT_SEARCH_STREAK, `structural tools available: ${_structuralAvailable.join(', ')}`),
 								);
+								_auditFired('textSearchStreak', MAX_TEXT_SEARCH_STREAK);
 								// 延迟注入（本次 400 的直接触发点：并行 4×search_files 时该 reminder
 								// 曾插在第 3、4 条 tool result 之间劈开序列）
 								_pendingBatchReminders.push(preferGraphSearchReminder(_textSearchStreak, _structuralAvailable.join(', ')));
@@ -3001,6 +3613,31 @@ interface ITurnContext {
 							}
 						}
 					}
+				}
+				// ── [ToolAudit] 逐次记账（只读已有数据，不新增采集）──────────────
+				// 空结果判定与上面 terminal / search 的既有口径一致：文本为空、
+				// `(no output)`、或搜索类工具返回「无匹配」提示。
+				{
+					const _auditText = typeof toolResult.content === 'string'
+						? toolResult.content
+						: safeStringifyToolResult(toolResult.content);
+					const _trimmed = _auditText.trim();
+					const _isEmpty = toolResult.success && (
+						_trimmed === '' ||
+						_trimmed === '(no output)' ||
+						_trimmed === '[]' ||
+						/^(?:no matches found|found 0 match|no results)/i.test(_trimmed)
+					);
+					_audit.records.push({
+						name: toolName,
+						iteration,
+						ok: toolResult.success,
+						ms: toolResult.metadata?.executionTimeMs ?? 0,
+						outputBytes: _auditText.length,
+						empty: _isEmpty,
+						argsKey: _audit.argsKeyById.get(toolResult.toolCallId),
+					});
+					_audit.iterations = iteration;
 				}
 				const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
 				const resultStr = !toolResult.success
@@ -3196,12 +3833,73 @@ interface ITurnContext {
 		}
 
 		if (iteration >= MAX_TOOL_ITERATIONS) {
-			host._logService.warn(`[AgentOS] Reached max tool iterations (${MAX_TOOL_ITERATIONS})`);
+			host._logService.warn(
+				`[AgentOS] Reached max tool iterations (${MAX_TOOL_ITERATIONS})` +
+				`${_wrapUpRoundDone ? ' — final wrap-up round was executed (model had a tool-free round to conclude)' : ' — WITHOUT a wrap-up round (aborted or errored out early)'}`
+			);
 			yield { type: 'done' };
 		}
 	} finally {
 		// 注销计划队列句柄（覆盖正常结束/异常/generator return 全部退出路径）。
 		_unregisterPlanQueue();
+
+		// ── [ToolAudit] SUMMARY（2026-08-22）──────────────────────────────────
+		// 放在 finally：**必须覆盖 abort / 异常 / generator return 全部退出路径** ——
+		// 「工具用得不合理」的 turn 恰恰最常以中断收尾（撞硬超时、用户取消），
+		// 只在正常结束处打就会漏掉最该看的那些。
+		// 与 [FullRefresh] SUMMARY 同姿态：默认输出、不挂开关；只有存在告警
+		// （空结果率高 / 重复读 / 形态异常）才 warn，纯成本分布用 info。
+		try {
+			if (_audit.records.length > 0) {
+				const _auditReport = buildToolAuditReport({
+					records: _audit.records,
+					iterations: _audit.iterations,
+					wallMs: Date.now() - _audit.startedAt,
+					turnId: request.sessionId,
+					maxSingleToolStreak: _audit.maxSingleToolStreak,
+					singleToolStreakThreshold: _audit.singleToolStreakThreshold,
+					parallelizableInStreak: [..._audit.streakNames],
+					// 判据复用：探索类 = searchToolGroups 的两类**纯粹搜索**集合
+					// （TEXT ∪ STRUCTURAL，其文件头注释即「本表决定探索策略引导」）。
+					// 只读判定复用 isParallelSafeReadOnlyTool。绝不在审计模块另建工具分类表。
+					//
+					// ⚠⚠ 2026-08-22 两轮实证修正「探索」的边界（先后各犯一次方向相反的错误）：
+					//   · 初版含 `isParallelSafeReadOnlyTool` —— 它把 `file_read` 也算了进来，
+					//     而「改完读文件确认」是收敛的**表现**，不是「探索不收敛」；
+					//   · 中版再叠 `execute_code` / `terminal`（为抓 1787373914386 里
+					//     「python3 逐行试探」的绕过）—— 却把「npx tsc / git diff」这类
+					//     验证也算成探索。
+					// 实测（日志 1787381220642）「修改 webview 代码」任务后期是
+					//   patch×7 + file_read(确认) + execute_code(tsc 验证)，被误报为
+					//   `late-phase-exploration: 74% (14/19)` —— 该 turn 其实是健康的。
+					//
+					// 结论：`file_read` / `execute_code` / `terminal` 有**双重语义**
+					// （探索 vs 验证），按工具名无法区分，硬算必误伤。故「探索不收敛」
+					// 只统计语义纯粹的搜索工具：
+					//   - 搜索工具 = 只搜新信息，不存在「验证」语义 → 不会误报；
+					//   - 「python 试探」的空转危害已由 `allBlocked` 零进展治理覆盖
+					//     （1787377582459 修），不必再靠 late-phase 去抓；
+					//   - 「python 试探」的串行浪费本就不适合「并行提醒」缓解（验证命令
+					//     常有依赖顺序），late-phase 对它的价值本就有限。
+					// 注意 isReadOnlyTool 保持 isParallelSafeReadOnlyTool 不变（写类重复
+					// 是合法迭代，计入 dup 会误报）。
+					isExplorationTool: (n) => TEXT_SEARCH_TOOL_NAMES.has(n) || STRUCTURAL_SEARCH_TOOL_NAMES.has(n),
+					isReadOnlyTool: (n) => isParallelSafeReadOnlyTool(n),
+					guardrails: [..._audit.watermarks].map(([name, w]) => ({
+						name, max: w.max, threshold: w.threshold, fired: w.fired, hot: w.hot,
+					})),
+				});
+				const _auditLog = formatToolAuditLog(_auditReport);
+				if (_auditLog.level === 'warn') {
+					host._logService.warn(_auditLog.text);
+				} else {
+					host._logService.info(_auditLog.text);
+				}
+			}
+		} catch (auditError) {
+			// 诊断绝不阻断 turn 收尾
+			host._logService.warn('[ToolAudit] failed to build summary:', auditError);
+		}
 	}
 		// 显式 return undefined：generator TReturn = AgentCommand | undefined，
 		// 覆盖函数末尾自然结束路径（对齐 TS7030 要求所有路径返回值）。

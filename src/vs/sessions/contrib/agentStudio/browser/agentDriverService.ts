@@ -8,6 +8,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IAgentDriverService, AgentTurnStatus } from '../common/agentDriver.js';
 import { IAgentTurnRequest, IMemoryProvider, ChatImageMimeType, IChatContentPart } from '../common/providers.js';
 import { wrapUserQuery } from '../common/userQuery.js';
+import { resolveEffectiveWorktreeRoot } from '../common/worktreeBinding.js';
 import type { IChatStreamDelta } from '../common/providers.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import type { IChatSendOptions } from '../common/agentStudio.js';
@@ -25,6 +26,8 @@ import { buildEnvironmentDirective } from '../common/environmentDirective.js';
 import { GLOBAL_SYSTEM_SUFFIX, GLOBAL_SYSTEM_PREFIX, getStrategyGuidance } from '../common/chatModeConfig.js';
 import { getParadigmOverride } from '../common/paradigmOverride.js';
 import { joinSections, composeFrozenPrefix, composeVolatileMessage, buildCompactToolSection, type ISystemPromptTiers } from '../common/systemPromptComposer.js';
+import { detectModelFamily } from '../common/modelFamilyPrompt.js';
+import { snapshotPromptPrefix, diffPromptPrefix, formatPromptPrefixLog, type IPromptPrefixSnapshot } from '../common/promptDiagnostics.js';
 import { isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
@@ -162,6 +165,13 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	/** System prompt 分层缓存 — stable 层 session 内不变，免重复计算 */
 	/** 工具清单缓存（按 chatMode+agentId 分流） */
 	private readonly _toolInventoryCache = new Map<string, string>();
+
+	/**
+	 * 上一轮的提示词前缀指纹快照（按 sessionId，缺失时按 agentId）。
+	 * 仅供 `[PromptFingerprint]` 漂移归因日志使用 —— 纯诊断状态，
+	 * 不参与任何行为判定；LRU 上限 64 防长进程无限增长。
+	 */
+	private readonly _lastPrefixSnapshot = new Map<string, IPromptPrefixSnapshot>();
 
 	private _getBindingLock(workspaceId: string, agentId: string): TurnConcurrencySemaphore {
 		const key = `${workspaceId}::${agentId}`;
@@ -591,19 +601,35 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			const contextParts: string[] = [];
 			const volatileParts: string[] = [];
 
+			// ── 冻结前缀的命名段清单（仅供 [PromptBudget] 预算表按段归因）──────────
+			// 只登记 stable + context（= 冻结前缀）的段；volatile 是独立 system 消息，
+			// 由 promptBudget.classifySystemSegment 按内容分类，**不得**登记到这里，
+			// 否则前缀残差行会被算成负数。
+			const promptSegments: Array<{ name: string; text: string }> = [];
+			/**
+			 * 登记一段系统提示词：同时进入实际拼接桶与诊断用命名段清单。
+			 * ⚠ 新增前缀内容请用它而不是裸 `push` —— 裸 push 的内容仍会计入总量，
+			 * 但在预算表里落到 `system:frozen/(unattributed)` 残差行、失去归因。
+			 */
+			const pushSeg = (bucket: string[], name: string, text: string): void => {
+				if (!text) { return; }
+				bucket.push(text);
+				promptSegments.push({ name, text });
+			};
+
 			// stable 基底：Agent persona + caller systemPrompt
 			const callerSystemPrompt = (request.systemPrompt || '').trim();
 			const agentSelfPrompt = typeof agent?.systemPrompt === 'string' ? agent.systemPrompt.trim() : '';
 			if (agentSelfPrompt) {
-				stableParts.push(agentSelfPrompt);
+				pushSeg(stableParts, 'agent-persona', agentSelfPrompt);
 			}
 			if (callerSystemPrompt) {
-				stableParts.push(callerSystemPrompt);
+				pushSeg(stableParts, 'caller-prompt', callerSystemPrompt);
 			}
 
 			// GLOBAL_SYSTEM_PREFIX（并行走 subagent + 行号剥离 + code_explorer + search_graph_priority）
 			if (GLOBAL_SYSTEM_PREFIX) {
-				stableParts.push(GLOBAL_SYSTEM_PREFIX);
+				pushSeg(stableParts, 'global-prefix', GLOBAL_SYSTEM_PREFIX);
 			}
 
 			// 策略提示词（按 paradigm 注入：执行模型 + 推荐工具链）
@@ -611,12 +637,12 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			// 必须同步切换，否则提示词说范式 A 而策略行为是范式 B（错配风险 R4）。
 			const strategyGuidance = getStrategyGuidance(getParadigmOverride(request.agentId) ?? agent?.paradigm);
 			if (strategyGuidance.length > 0) {
-				stableParts.push(strategyGuidance.join('\n'));
+				pushSeg(stableParts, 'strategy-guidance', strategyGuidance.join('\n'));
 			}
 
 		// GLOBAL_SYSTEM_SUFFIX（保密 / 安全 / 身份边界）
 		if (GLOBAL_SYSTEM_SUFFIX) {
-			stableParts.push(GLOBAL_SYSTEM_SUFFIX);
+			pushSeg(stableParts, 'global-suffix', GLOBAL_SYSTEM_SUFFIX);
 		}
 
 		// ── 回答语言限制（全局边界规则，stable 层）──
@@ -631,7 +657,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			const langSetting = this._configurationService.getValue<string>(AGENT_STUDIO_LANGUAGE_SETTING) || 'zh-CN';
 			const langDirective = buildResponseLanguageDirective(responseLang, langSetting);
 			if (langDirective) {
-				stableParts.push(langDirective);
+				pushSeg(stableParts, 'response-language', langDirective);
 			}
 		} catch (error) {
 			this._logService.warn('[AgentDriver] Failed to inject response language directive:', error);
@@ -645,7 +671,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		try {
 			const envDirective = buildEnvironmentDirective();
 			if (envDirective) {
-				stableParts.push(envDirective);
+				pushSeg(stableParts, 'environment', envDirective);
 			}
 		} catch (error) {
 			this._logService.warn('[AgentDriver] Failed to inject environment directive:', error);
@@ -714,7 +740,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			// 注入工作区上下文，让模型始终知晓当前工作区信息（context 层，会话内稳定）
 			const workspaceContext = await this._buildWorkspaceContext(request.agentId, request.sessionId, request.worktreePath);
 			if (workspaceContext) {
-				contextParts.push(workspaceContext);
+				pushSeg(contextParts, 'workspace', workspaceContext);
 			}
 
 				// ── 临时覆盖 AgentBinding.worktreePath（per-task 优先）──
@@ -772,7 +798,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					'One skill at a time max. Never guess/fabricate skill content.',
 					'',
 				].join('\n');
-				contextParts.push(skillsInstruction);
+				pushSeg(contextParts, 'skills', skillsInstruction);
 			}
 
 				// 3a-1b. 注入 MCP 服务器摘要（让 LLM 知道有哪些 MCP 能力可用，通过桥接工具访问）
@@ -804,28 +830,35 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						...serverLines,
 						'',
 					].join('\n');
-					contextParts.push(mcpSection);
+					pushSeg(contextParts, 'mcp', mcpSection);
 				}
 			}
 
 				// 3a-2. 注入已启用工具的使用指引（Knot provider 跳过：服务端处理工具）
 				const activeModelSelection = this._agentOS.getActiveModelSelection();
 				const isKnotProvider = activeModelSelection?.providerId.includes('knot');
+				// 模型族：决定工具调用格式指令的措辞（真源 common/modelFamilyPrompt.ts）。
+				// 沿用与 isKnotProvider 相同的前提（都基于 activeModelSelection）。
+				const promptModelFamily = detectModelFamily(activeModelSelection?.modelId);
 
 			// 缓存 key 必须纳入 focus/toolset/hardPermission 等过滤条件的签名——否则同一 agent
 			// 在不同 workMode（plan/work）、不同 toolsetsOverride、不同 excludedTools/allowedTools
 			// 下会复用错误的旧文字清单，与本轮真实下发的工具 schema 脱节。
+			// ⚠ 2026-08-22 起**必须**再纳入 promptModelFamily：工具段的格式指令按族分发，
+			// 不纳入会让「切换模型」命中上一个模型族的缓存段（例如从 claude 切到 generic
+			// 模型后仍拿不到 JSON 退路说明），且因前缀字节不变而完全无从察觉。
 			const toolFilterSignature = JSON.stringify({
 				g: request.agentGraph ? Object.keys(request.agentGraph.nodes).length : 0,
 				t: request.toolsetsOverride ?? null,
 				h: request.workMode ?? request.chatMode ?? null,
 				e: request.excludedTools ?? null,
 				a: request.allowedTools ?? null,
+				f: promptModelFamily,
 			});
 			const toolCacheKey = `tools:${request.agentId}:${toolFilterSignature}`;
 		const cachedToolSection = this._toolInventoryCache.get(toolCacheKey);
 		if (cachedToolSection !== undefined) {
-			stableParts.push(cachedToolSection);
+			pushSeg(stableParts, 'tool-section', cachedToolSection);
 			this._logService.info(`[AgentDriver] Tool inventory CACHE HIT (key=${toolCacheKey})`);
 			} else if (!isKnotProvider) {
 				try {
@@ -845,10 +878,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 			if (nonMcpToolNames.length > 0) {
 				// P0：工具清单只保留压缩后的「名称清单」（结构化 schema 已随请求下发）
-				const toolSectionStr = buildCompactToolSection(nonMcpToolNames);
-				stableParts.push(toolSectionStr);
+				const toolSectionStr = buildCompactToolSection(nonMcpToolNames, promptModelFamily);
+				pushSeg(stableParts, 'tool-section', toolSectionStr);
 				this._toolInventoryCache.set(toolCacheKey, toolSectionStr);
-				this._logService.info(`[AgentDriver] Injected compact tool section (${nonMcpToolNames.length} enabled, names-only) into stable tier`);
+				this._logService.info(`[AgentDriver] Injected compact tool section (${nonMcpToolNames.length} enabled, names-only, family=${promptModelFamily}) into stable tier`);
 			}
 				} catch (error) {
 					this._logService.warn('[AgentDriver] Failed to inject tool inventory:', error);
@@ -980,6 +1013,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				...request,
 				systemPrompt: frozenPrefix,
 				systemPromptVolatile: volatileMessage,
+				// 命名段明细随请求下发，供 executor 在请求发出点打 [PromptBudget] 预算表。
+				// 纯诊断数据：不进前缀指纹、不参与任何行为判定。
+				promptSegments,
 				messages: mergedMessages,
 				memoryStrategy,
 				memoryMaxEntries,
@@ -993,6 +1029,41 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			`context=${promptTiers.context.length} chars, volatile=${promptTiers.volatile.length} chars, ` +
 			`frozenPrefix=${frozenPrefix.length} chars (${allSkills.length} skills catalog)`
 		);
+
+			// ── [PromptFingerprint] 前缀漂移归因（2026-08-22）─────────────────────
+			// 上面那条只有 chars —— 前缀缓存断裂时无法回答「断在 stable 还是 context、
+			// 哪一段变的」。这里按层 + 按命名段取指纹并与**上一轮同会话**对比：
+			//   · frozenChanged=true → 本轮 provider 前缀缓存必然 MISS（warn 级）；
+			//   · volatile 变化单独说明（不进前缀指纹，属预期，不该被当故障排查）；
+			//   · unexplained → 冻结前缀变了但所有登记段全等 = 变化来自未登记内容
+			//     （裸 *Parts.push、层拼接顺序、driver 之外的追加），最需要警惕。
+			// 会话级基线：按 sessionId 存快照，key 缺失时退化为「只打基线不比对」。
+			try {
+				const snap = snapshotPromptPrefix({
+					stable: promptTiers.stable,
+					context: promptTiers.context,
+					volatile: promptTiers.volatile,
+					segments: promptSegments,
+				});
+				const fpKey = request.sessionId || `agent:${request.agentId}`;
+				const prevSnap = this._lastPrefixSnapshot.get(fpKey);
+				const delta = diffPromptPrefix(prevSnap, snap);
+				const fpLog = formatPromptPrefixLog(snap, delta, prevSnap ? `session=${fpKey}` : `session=${fpKey} (baseline)`);
+				if (fpLog.level === 'warn') {
+					this._logService.warn(fpLog.text);
+				} else {
+					this._logService.info(fpLog.text);
+				}
+				// LRU 上限防长进程无限增长（与 _injectedSessions 同一姿态）。
+				if (this._lastPrefixSnapshot.size > 64 && !this._lastPrefixSnapshot.has(fpKey)) {
+					const oldest = this._lastPrefixSnapshot.keys().next().value;
+					if (oldest !== undefined) { this._lastPrefixSnapshot.delete(oldest); }
+				}
+				this._lastPrefixSnapshot.set(fpKey, snap);
+			} catch (fpError) {
+				// 诊断失败绝不阻断 turn
+				this._logService.warn('[PromptFingerprint] snapshot failed:', fpError);
+			}
 			this._logService.info(`[AgentDriver] frozenPrefix preview: ${frozenPrefix.substring(0, 300)}...`);
 			this._logService.info(`[AgentDriver] Memory injection policy: strategy=${memoryStrategy}, maxEntries=${memoryMaxEntries ?? 'unlimited'}, scope=${resolvedMemoryScope} (raw=${rawStrategy ?? 'undefined'})`);
 			} catch (error) {
@@ -1477,10 +1548,26 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			// 与主仓 checkout 隔离。此时工作根 = worktreePath，且【跳过】下面的
 			// auto-sync（否则会被 VS Code 当前打开文件夹覆盖回去），与工具沙箱
 			// (_resolveAndCheckWorkspacePath) 的判定口径保持一致。
-			const worktreeRoot = binding?.worktreePath?.replace(/[\\/]+$/, '');
+			//
+			// ⚠ 经 resolveEffectiveWorktreeRoot 判定（2026-08-20，日志 1787211923566）：
+			// worktreePath 等于 workspace 主路径时（用户把 agent 绑回主仓/选 "main"）
+			// **不算 worktree 隔离** —— 否则会 ① 用 isWorktree:true 让提示词谎称
+			// 「运行在与主仓隔离的 worktree 分支内」② 跳过下面的 auto-sync 使工作根
+			// 不再跟随 VS Code 当前打开文件夹。此时应落到常规逻辑。
+			const worktreeRoot = resolveEffectiveWorktreeRoot(binding?.worktreePath, workspace.path);
 			if (worktreeRoot) {
-				this._logService.info(`[AgentDriver] Agent ${agentId} bound to worktree, working dir = "${worktreeRoot}"`);
+				this._logService.info(
+					`[AgentDriver] Agent ${agentId} bound to worktree, working dir = "${worktreeRoot}" ` +
+					`(mainRepo="${workspace.path}") — searches/edits default to this worktree, NOT the main checkout`
+				);
 				return this._composeWorkspaceContextText(workspace.name, worktreeRoot, /* isWorktree */ true);
+			}
+			if (binding?.worktreePath) {
+				// 绑定存在但指向主仓：记一条可诊断日志，避免"看起来绑了却没生效"的困惑
+				this._logService.info(
+					`[AgentDriver] Agent ${agentId} worktree binding points at the main repo ` +
+					`("${binding.worktreePath}") — treating as NOT worktree-bound (regular multi-root mode)`
+				);
 			}
 
 			let workspaceRoot = workspace.path;
@@ -1534,9 +1621,12 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		];
 
 		if (isWorktree) {
+			// 措辞同样须对齐运行时：worktree 绑定只硬约束**写**（写进未绑定的
+			// worktree 副本会被 detectStaleWorktreeAccess 拦下），读仍不拦（运行时
+			// 注释：「读 → 不拦，用户可能确实要求排查某个 worktree，仅 warn 留痕」）。
 			lines.push(
 				`This agent is bound to a dedicated git worktree. Your working directory is: ${rootDir}`,
-				`You operate on this worktree's own branch, isolated from the main checkout. All file reads/writes, searches and commands run inside this worktree.`,
+				`You operate on this worktree's own branch, isolated from the main checkout. Default all relative paths, searches and commands to this worktree, and keep your edits here — writing into a different worktree copy is rejected because it is a stale checkout.`,
 			);
 		} else {
 			lines.push(`The workspace root directory is: ${rootDir}`);
@@ -1580,6 +1670,33 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 
 
+		// ── 安全沙箱说明（2026-08-21 重写，日志 1787308143123）──────────────────
+		// ⚠ 这段文案必须与运行时真实行为一致。真源：
+		//    `providers/tool/workspaceSecurity.ts`（判定）+ 各工具传入的 checkSandbox。
+		//
+		// 旧文案声称「read / write / search / execute 全部限制在工作区内，越界一律
+		// refuse」，与运行时**三处**不符，导致模型拒绝用户明确要求的合法操作：
+		//   ① 读与搜索**根本不做**沙箱判定 —— `checkSandbox=false`：
+		//      file_read(coreTools:551)、terminal cwd(coreTools:862)、
+		//      search_files/search_code/search_graph(codebaseTools:1149/1348/1393/1405)。
+		//      只有 file_write(coreTools:731) 与 patch(compatibilityTools:239) 走默认 true。
+		//      运行时注释原文：「沙箱仅限制【写】操作……允许按用户要求自由访问任意目录」。
+		//   ② 允许根远不止 rootDir：还含关联仓库、Agent 自身数据目录（技能/记忆/
+		//      agent 定义/会话/知识库），plan 模式更是**必须**写 `<数据目录>/plans/*.md`
+		//      —— 旧文案等于叫模型别碰自己的数据目录，与 plan 文件豁免直接冲突。
+		//   ③ 写越界不是「拒绝」，而是**弹确认卡片交用户决定**（允许本次／允许此工作区／
+		//      改用建议路径，见 agentSandboxGuard.buildConfirmationCard）。模型提前 refuse
+		//      会把用户的授权机会一并吞掉，用户根本看不到那张卡片。
+		//
+		// 收紧或放宽真实权限请改 workspaceSecurity.ts；此处只负责**如实描述**，
+		// 不要再写成「一律禁止 + refuse」。
+		//
+		// ⚠ 2026-08-22 增补「硬拒」段：写黑名单（common/writeDenyList.ts）对凭据 /
+		// 应用状态 / 扩展代码是**硬拒、不弹卡片、不可授权**，与上面「越界会征求同意」
+		// 的语义相反。必须显式区分这两类，否则模型会以为所有拒绝都能靠用户点「允许」
+		// 解决，从而反复重试同一路径（或改用 terminal 绕过）。
+		// 真源对应：APP_DATA_DENY / HOME_DENY_DIRS / DENY_ENV_BASENAMES。
+		const sandboxWriteRoots = [rootDir, ...dirs.map(f => f.path)];
 		lines.push(
 			'',
 			'When the user refers to "workspace", "project", "current directory", or asks to print/list the workspace,',
@@ -1587,9 +1704,26 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			'',
 			'### Security Sandbox',
 			'',
-			`You are ONLY permitted to read, write, search, and execute commands within the working directory and its subdirectories.`,
-			`You MUST NOT access, modify, or reference any files or directories outside of: ${rootDir}`,
-			'If a user asks you to operate on a path outside this directory, refuse and explain that you are sandboxed to the current working directory.',
+			'Reading, searching and running commands are NOT path-restricted. If the user explicitly points you at a',
+			'path outside the workspace (a log file, a config elsewhere on disk, another checkout), just read it.',
+			'Never refuse such a request on sandbox grounds and never claim you are confined to the working directory.',
+			'',
+			'Writes and deletions ARE restricted. They are allowed inside:',
+			...sandboxWriteRoots.map(r => `  - ${r}`),
+			'  - your own agent data directory (skills, memories, agent definitions, sessions, knowledge base, plan files)',
+			'',
+			'If a write would land outside those roots, still issue the tool call normally. The runtime intercepts it and',
+			'asks the user to approve ("allow once" / "allow for this workspace" / "use suggested path"), so do not',
+			'pre-emptively refuse, and do not silently redirect the path to somewhere else without saying so.',
+			'',
+			'A SMALL set of paths is hard-denied for writing and CANNOT be approved by the user — do not retry them and',
+			'do not try to work around them with terminal/execute_code:',
+			'  - credential and settings files: your app data `User/` directory (contains provider API keys), `auth.json`,',
+			'    `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.azure`, `~/.config/gh`, `~/.config/gcloud`,',
+			'    `.netrc`, `.npmrc`, `.git-credentials`, and any `.env` / `.env.*` secret file (`.env.example` is fine)',
+			'  - application state: chat history, agent memory database, backups, context storage, browser/runtime state',
+			'  - the installed `extensions/` directory (writing there would inject auto-loaded code)',
+			'Everything else under your agent data directory (skills, plans, memories, tmp, knowledge base) stays writable.',
 		);
 
 		// 把 AGENT.md 的规则放在工作区上下文最前面（最高优先级）

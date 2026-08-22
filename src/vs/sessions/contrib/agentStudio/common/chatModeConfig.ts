@@ -332,9 +332,10 @@ const _PARALLEL_WORK_SECTION = [
 '',
 '## ⚡ PARALLEL WORK GOES THROUGH SUB-AGENTS',
 '',
-'Direct tool calls in your main loop ALWAYS execute sequentially, one at a time —',
-'even when you emit several in one message. (Still batch independent calls in a',
-'single block: all results return together in one turn, saving round-trips.)',
+'Direct tool calls in your main loop run inside a SINGLE round-trip when you emit',
+'several at once — so batching (see "Batch independent tool calls" below) genuinely',
+'saves round-trips. They execute in order within that round-trip, not concurrently;',
+'for true parallelism delegate to sub-agents (they run concurrently):',
 '',
 'For genuinely parallel execution, delegate to sub-agents — they run concurrently:',
 '- `delegate_task` with batch `tasks: [...]` — up to 5 independent subtasks (do not over-delegate).',
@@ -343,6 +344,42 @@ const _PARALLEL_WORK_SECTION = [
 'Rule of thumb: use direct sequential calls when you need the RAW results in your',
 'own context for synthesis; use sub-agents when each subtask can independently',
 'produce a conclusion (their findings return summarized to you).',
+'',
+];
+
+/**
+ * 批量工具调用引导（主代理 + 子代理共享）。
+ *
+ * 移植自 cline/cline#11514（Hermes-Agent `prompt_builder.py` 亦采用同款措辞），
+ * 刻意写短 —— 该段常驻 system prompt，走 prefix cache 一次付费长期摊薄。
+ *
+ * 为什么需要常驻段而非只靠运行时提醒（2026-08-21，日志 1787302409958）：
+ * 实测该会话开头 ITER 1-12 尚能每轮 2-3 个并行调用，到 Turn 2 的 ITER 20-36 却
+ * **连续 17 轮每轮只请求 1 个只读工具** —— 长会话后期模型会淡忘一次性的指令。
+ * 浪费约 11 轮 LLM 往返（每轮重传 27k-60k tokens prompt，是循环里最贵的开销，
+ * 而那些搜索仅需 100-800ms）。
+ *
+ * 因此采用双层：本段负责**预防**（常驻、每轮可见），
+ * `batchReadOnlyToolsReminder`（loopReminders.ts，连续 4 轮单只读工具触发）
+ * 负责**兜底**（按实际行为纠偏）。
+ */
+const _BATCH_TOOL_CALLS_SECTION = [
+'',
+'## Batch independent tool calls',
+'',
+'When you need several pieces of information that do NOT depend on each other,',
+'request them together in ONE response instead of one tool call per turn.',
+'Every extra round-trip re-sends the whole conversation to the model — by far the',
+'most expensive part of the loop, while these reads finish in milliseconds.',
+'',
+'- Plan the lookups you need up front, issue 3–5 of them together, then reason',
+'  over all results at once.',
+'- Applies to read-only calls: `search_code`, `search_files`, `search_graph`,',
+'  `file_read`, `file_list`, `get_architecture`.',
+'- Only serialize when a later call genuinely depends on an earlier result',
+'  (e.g. read a file before patching it).',
+'',
+'When in doubt and the calls are independent, batch them.',
 '',
 ];
 
@@ -465,23 +502,28 @@ const _SHARED_GUIDANCE_SECTION = [
 'The number is right-aligned and padded with spaces to 6 characters.',
 ];
 
-/** 主代理全局前缀（含委派导向段落）。字节内容与原单数组版本完全一致。 */
+/** 主代理全局前缀（含委派导向段落）。 */
 export const GLOBAL_SYSTEM_PREFIX = [
-..._PARALLEL_WORK_SECTION,
-..._PROGRESS_UPDATES_SECTION,
-..._DELEGATE_USAGE_SECTION,
-..._SHARED_GUIDANCE_SECTION,
+	..._PARALLEL_WORK_SECTION,
+	..._BATCH_TOOL_CALLS_SECTION,
+	..._PROGRESS_UPDATES_SECTION,
+	..._DELEGATE_USAGE_SECTION,
+	..._SHARED_GUIDANCE_SECTION,
 ].join('\n');
 
 /**
  * 子代理全局前缀：去除委派导向段落（PARALLEL WORK + code_explorer_subagent_usage），
- * 保留 Progress Updates / search_graph_priority / Code Style / Code Line Numbers。
+ * 保留 Batch tool calls / Progress Updates / search_graph_priority / Code Style / Code Line Numbers。
  * 子代理不应被诱导嵌套委派（委派是主代理专属能力，见
  * unifiedSubAgentDispatch._effectiveExcludedTools 的工具面隐藏）。
+ *
+ * 注意：`_BATCH_TOOL_CALLS_SECTION` 对子代理同样适用 —— 子代理是探索/研究的主力，
+ * 单工具串行的浪费在子代理里同样成立（且子代理有软预算，往返浪费更致命）。
  */
 export const GLOBAL_SYSTEM_PREFIX_SUBAGENT = [
-..._PROGRESS_UPDATES_SECTION,
-..._SHARED_GUIDANCE_SECTION,
+	..._BATCH_TOOL_CALLS_SECTION,
+	..._PROGRESS_UPDATES_SECTION,
+	..._SHARED_GUIDANCE_SECTION,
 ].join('\n');
 
 /**
@@ -739,6 +781,55 @@ export const GLOBAL_SYSTEM_SUFFIX = [
 	'  as Saros Agent Studio\'s assistant.',
 ].join('\n');
 
+
+// ─── Plan 专属工具门控（2026-08-21）──────────────────────────────────────
+//
+// 需求：「仅 Plan 模式可以使用 Plan 工具」。
+//
+// 此前 `plan_enter` / `plan_exit` / `plan_explore` 都挂在 `toolsetConfig.ts` 的
+// core toolset（ToolsetPriority.Always）→ **所有模式下都对 LLM 可见**。
+// 后果（日志 1787294819356 实证）：用户在普通模式下提问，模型探索 23 轮后
+// 自行调用 `plan_enter` 转入规划，用户完全没要求过 —— 模式选择形同虚设。
+//
+// 现改为：只有 chatMode==='plan' 时这三个工具才进入 schema。
+//
+// ⚠ 名单只收「plan 模式专属」的工具，**不含通用工具**：
+//   - `update_plan`   → 任何模式都可用的短期工作计划跟踪（Track short work plan）
+//   - `plan_register` → 任何模式都可用的顺序任务队列注册
+// 误收这两个会削弱 craft/ask 模式的正常能力。
+
+/**
+ * 仅在 Plan 模式下暴露给 LLM 的工具名（小写精确匹配）。
+ *
+ * - `plan_enter`   进入 plan WorkMode（原先任何模式可调 → 模型自主进 plan）
+ * - `plan_exit`    提交计划并退出（脱离 plan 模式无意义）
+ * - `plan_explore` plan 模式专用的并行只读探索（displaySummary 已标注 "(Plan mode)"）
+ */
+export const PLAN_EXCLUSIVE_TOOLS: ReadonlySet<string> = new Set([
+	'plan_enter', 'plan_exit', 'plan_explore',
+]);
+
+/** 该工具是否为 Plan 模式专属。 */
+export function isPlanExclusiveTool(toolName: string): boolean {
+	return !!toolName && PLAN_EXCLUSIVE_TOOLS.has(toolName.toLowerCase());
+}
+
+/**
+ * 按 ChatMode 过滤 Plan 专属工具（纯函数，两侧共用）。
+ *
+ * 非 plan 模式下移除 `PLAN_EXCLUSIVE_TOOLS`，其余工具原样保留
+ * （不做写工具过滤 —— 那由 hardPermission 在运行时兜底，见
+ * `filterToolsByChatMode` 的 MiMo alignment 注释）。
+ *
+ * @returns 过滤后的新数组（不修改入参）
+ */
+export function filterPlanExclusiveTools<T extends { readonly name: string }>(
+	tools: readonly T[],
+	chatMode: string | undefined,
+): T[] {
+	if (chatMode === 'plan') { return [...tools]; }
+	return tools.filter(t => !isPlanExclusiveTool(t.name));
+}
 
 // ─── Mode info (for UI) ─────────────────────────────────────────────────
 

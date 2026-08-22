@@ -112,6 +112,34 @@ export class NativeChatEditorPane extends EditorPane {
 	private static readonly _sharedLocalSendSessions = new Set<string>();
 
 	/**
+	 * 本 pane 正在进行本地发送的 sessionId（`''` 表示无 session 的本地发送）。
+	 *
+	 * ★ 唯一可靠的「本地 onDelta 回调仍在接收 delta」判据（2026-08-20，修
+	 * 「聊天框 LLM 返回文字逐 token 重叠」事故，日志 1787211923566 + 用户截图）。
+	 *
+	 * ## 为什么不能用 `_isSending && !_isExternalSend`（旧守卫）
+	 * 那两个标志会被 **delta 处理逻辑自身改写**，形成自毁循环：
+	 *  1. 本地发送开始：`_isSending=true`、`_isExternalSend=false` → 旧守卫正确跳过；
+	 *  2. 中途 `_isSending` 被置 false（error delta 收尾、turn 级 done、取消等，
+	 *     见 line 166 注释已知行为）→ 旧守卫失效；
+	 *  3. 全局 onDidStreamDelta 落入「外部接管」else 分支，line 1671-1672 设
+	 *     `_isSending=true` **且 `_isExternalSend=true`**；
+	 *  4. 此后旧守卫 `_isSending(true) && !_isExternalSend(false)` **恒为 false**
+	 *     → 永不跳过；而本地回调（line 610）仍在跑；
+	 *  5. 两条路径对**同一个 delta** 各调一次 `_handleStreamDelta`，都 push 进同一个
+	 *     `_deltaBuffer`（line ~2465）→ flush 后序列变成 `d1 d1 d2 d2 …`
+	 *     → 渲染出「LoadLoadImageImage」「现在现在」这种**逐 token 交错重复**。
+	 *
+	 * 日志铁证：`STREAM_END types={tool_start=2,tool_end=2,tool_result=2,usage=2,
+	 * phase_change=2,…}` —— 单工具单次 LLM 的量精确 ×2，而 `done=1`（turn done
+	 * 不广播给外部监听器，故只走一条路径）。
+	 *
+	 * 本字段只在 `_sendMessageInternal` 的发送区设置、`finally` 清除，
+	 * **任何 delta 处理逻辑都不得修改它**，因此不会被上述自毁循环破坏。
+	 */
+	private _localSendActiveSessionId: string | null = null;
+
+	/**
 	 * 共享注入认领状态：防止多个 pane 同时响应同一次 requestInjectPrompt 导致
 	 * 重复发送（workflow 编辑器「⇗ 到 Chat 编辑」等场景）。
 	 * 首 pane 认领（指纹 = agentId+长度+前缀，10s 时间窗）→ 执行切换+发送；
@@ -128,6 +156,12 @@ export class NativeChatEditorPane extends EditorPane {
 	private _currentAgentSkills: string[] = [];
 	private _currentSessionId: string | null = null;
 	private _currentChatOnly: boolean = false;
+	/**
+	 * 输入框选定的 ChatMode（2026-08-21）。随每 turn 传给 agent（request.chatMode），
+	 * 决定权限档位与 plan_* 工具是否入 schema（仅 'plan' 档暴露）。
+	 * 与 _currentChatOnly 正交：前者是意图档位，后者是额外只读约束。
+	 */
+	private _currentChatMode: 'craft' | 'ask' | 'plan' = 'craft';
 	private _currentWorkspaceId: string | null = null;
 	/** 工作流缓存（composer `/` 菜单「工作流」分组，同步返回；异步刷新）。 */
 	private _workflowCache: ReadonlyArray<{ id: string; name: string; description?: string; variables?: ReadonlyArray<{ name: string; defaultValue: string }> }> = [];
@@ -147,6 +181,7 @@ export class NativeChatEditorPane extends EditorPane {
 	// Store chatMode / provider / model / composerText per agent so switching
 	// agents or restarting the client restores the full input area state.
 	private static readonly _STORAGE_CHAT_ONLY = 'saros:chatOnly';
+	private static readonly _STORAGE_CHAT_MODE = 'saros:chatMode';
 	private static readonly _STORAGE_PROVIDER = 'saros:lastProvider';
 	private static readonly _STORAGE_MODEL = 'saros:lastModel';
 	private static readonly _STORAGE_COMPOSER_TEXT = 'saros:composerText';
@@ -583,12 +618,20 @@ export class NativeChatEditorPane extends EditorPane {
 					// onDidStreamDelta 监听器里忽略其流式 delta（防止多开聊天框串台）。
 					sentSessionId = sessionId;
 					NativeChatEditorPane._sharedLocalSendSessions.add(sessionId);
+					// ★ 本地回调活跃标记（见字段注释）：全局 onDidStreamDelta 监听器据此
+					// 无条件跳过本 session 的 delta，避免与下方 onDelta 回调双重处理。
+					this._localSendActiveSessionId = sessionId ?? '';
 
 					await this._chatService.sendMessage(
 						agentId,
 						fullText,
 						{
 							chatOnly: this._currentChatOnly,
+							// 输入框 ChatMode 下拉框选定的档位（2026-08-21）。
+							// 决定权限档位（getPermissionMode）与 plan_* 工具是否入 schema
+							// （filterPlanExclusiveTools —— 仅 'plan' 档暴露），
+							// 并作为 WorkMode 的 fallback（resolveRequestWorkMode）。
+							chatMode: this._currentChatMode,
 							agentSessionId: sessionId,
 							explicitSkillIds: explicitSkillIds,
 							// 工作流触发：chip 选中工作流后，后端走 _executeWorkflowTurn 而非普通 LLM 回合。
@@ -628,6 +671,9 @@ export class NativeChatEditorPane extends EditorPane {
 					if (sentSessionId) {
 						NativeChatEditorPane._sharedLocalSendSessions.delete(sentSessionId);
 					}
+					// ★ 解除本地回调活跃标记：此后本 session 的广播 delta 由全局
+					// onDidStreamDelta 接管（后续 turn / 看板续跑等），不再有双重处理风险。
+					this._localSendActiveSessionId = null;
 				}
 			}),
 			onEditMessage: (messageId: string, newText: string) => {
@@ -709,6 +755,11 @@ export class NativeChatEditorPane extends EditorPane {
 			},
 			onToggleChatOnly: (chatOnly: boolean) => {
 				this._currentChatOnly = chatOnly;
+				this._saveInputAreaState();
+			},
+			onChangeChatMode: (chatMode: 'craft' | 'ask' | 'plan') => {
+				this._currentChatMode = chatMode;
+				this._logService.info(`[NativeChatEditorPane#${this._paneId}] chatMode → ${chatMode}`);
 				this._saveInputAreaState();
 			},
 			onOpenSettings: async () => {
@@ -1545,6 +1596,23 @@ export class NativeChatEditorPane extends EditorPane {
 		//   - error → finalize + setSending(false) + reset
 		this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }) => {
 			if (agentId !== this._currentAgentId) { return; }
+
+			// ★★★ 本地回调独占守卫（2026-08-20，修「文字逐 token 重叠」）★★★
+			// 本 pane 正在本地发送该 session 时，其 delta 已由 _sendMessageInternal 的
+			// onDelta 回调（line ~610）处理，此处必须**无条件**跳过。
+			//
+			// 必须放在监听器最前面（早于下方任何 session 切换 / 外部接管逻辑）：
+			// 旧守卫在 line ~1594（`_isSending && !_isExternalSend`）位置太靠后且判据
+			// 会被 delta 处理逻辑自身改写——一旦 `_isSending` 中途被置 false，delta 就会
+			// 落入「外部接管」else 分支并设 `_isExternalSend=true`，使旧守卫**永久失效**，
+			// 于是本地回调与本监听器对同一 delta 各处理一次、双双 push 进同一个
+			// `_deltaBuffer` → 渲染出「LoadLoadImageImage」式逐 token 交错重复。
+			// 详见 `_localSendActiveSessionId` 字段注释（含日志铁证）。
+			if (this._localSendActiveSessionId !== null &&
+				this._localSendActiveSessionId === (sessionId ?? '')) {
+				return;
+			}
+
 			// 串台防护：本地发送（用户在某个聊天框点击发送）的流式 delta 由发起
 			// pane 自身的 onDelta 处理；其它 pane 必须忽略——但仅限【不同 session】。
 			// 同一 agent + 同一 session 的其它 pane（如 popout 独立窗口）需要【同步渲染】：
@@ -1590,7 +1658,10 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 			}
 
-			// 面板自身发送时，回调已处理，跳过（避免 race condition 和双重处理）
+			// 兜底守卫（主守卫已前移到监听器开头的 _localSendActiveSessionId 检查）：
+			// 保留此条以覆盖「本地发送标记已清除、但本 pane 仍处于自身发送态」的窄窗口。
+			// ⚠ 不可作为唯一防线——其判据 _isSending/_isExternalSend 会被 delta 处理逻辑
+			// 自身改写而失效（2026-08-20「文字逐 token 重叠」根因，见字段注释）。
 			if (this._isSending && !this._isExternalSend) { return; }
 
 			if (delta.type === 'done') {
@@ -1723,6 +1794,40 @@ export class NativeChatEditorPane extends EditorPane {
 				subAgents: asstMsg.subAgents,
 			});
 			}, 50);
+		}));
+
+		// ─── 工具审批广播（2026-08-21）────────────────────────────────────
+		// 事故 1787276571583：审批 handler 是覆盖式单例，只有 webview 注册；
+		// 用户在 native chat pane 工作时 terminal 首次调用需审批 → 卡片里没有
+		// 任何按钮 → agent loop 永久「处理中」。现在 agentOSService 广播请求，
+		// 本 pane 把审批区挂到对应工具卡（含倒计时），点击经
+		// _handleConfirmationAction → agentStudio.confirmationAction 回传决策。
+		this._register(this._agentOSService.onDidRequestToolApproval((req) => {
+			this._applyToolApproval(req.toolCallId, {
+				id: req.toolCallId,
+				toolName: req.toolName,
+				reason: this._formatApprovalReason(req.toolName, req.arguments, req.reason),
+				securityLevel: req.securityLevel as 'safe' | 'cautious' | 'dangerous',
+				deadline: req.deadline,
+				timeoutMs: req.timeoutMs,
+				status: 'pending',
+			}, 'approval_required');
+		}));
+		this._register(this._agentOSService.onDidResolveToolApproval((res) => {
+			const status = res.outcome;
+			// approved → 卡片回到 running（工具真正开始执行）；
+			// 其余 → rejected/canceled 定格（超时另有 tool result 说明）。
+			const hadCard = this._streamingAssistantMsg?.toolCalls?.some(
+				(c: any) => c.id === res.toolCallId && c.approval);
+			this._applyToolApproval(res.toolCallId, undefined, status === 'approved' ? 'running' : 'rejected', status);
+			// 超时：agentOSService 已 cancelAgentLoop 终止本轮 LLM。turn 会在下一个
+			// 迭代顶部 break 并发出 done delta 自动收尾 UI，这里只补一条显式提示，
+			// 避免用户离开一段时间回来看到「回答莫名中断」而不知原因。
+			if (status === 'timeout' && hadCard) {
+				this._notificationService.warn(
+					'工具授权等待超时，已拒绝该工具并终止本次回答。可重新发送消息并及时点击「允许本次」。',
+				);
+			}
 		}));
 
 		// Reload chat history when the task board changes and the current agent
@@ -2207,6 +2312,7 @@ private _saveInputAreaState(): void {
 	if (!this._currentAgentId) { return; }
 	try {
 		localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_CHAT_ONLY), String(this._currentChatOnly));
+		localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_CHAT_MODE), this._currentChatMode);
 		// 使用面板本地状态（不读共享 _modelSelector）
 		if (this._localProviderId) {
 			localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_PROVIDER), this._localProviderId);
@@ -2228,6 +2334,13 @@ private _saveInputAreaState(): void {
 			const chatOnly = savedChatOnly === 'true';
 			this._currentChatOnly = chatOnly;
 			this._chatPanel.setChatOnly(chatOnly);
+
+			// Restore chatMode（默认 craft）。只接受 3 个合法值，
+			// 防历史遗留/手改 localStorage 写入 'workflow' 等非法档位。
+			const savedChatMode = localStorage.getItem(this._storageKey(NativeChatEditorPane._STORAGE_CHAT_MODE));
+			const chatMode = (savedChatMode === 'ask' || savedChatMode === 'plan') ? savedChatMode : 'craft';
+			this._currentChatMode = chatMode;
+			this._chatPanel.setChatMode?.(chatMode);
 
 			// Restore provider + model to 面板本地状态（不写共享 _modelSelector）
 			const savedProvider = localStorage.getItem(this._storageKey(NativeChatEditorPane._STORAGE_PROVIDER));
@@ -2693,7 +2806,14 @@ private _handleStreamDelta(delta: any): void {
 		// （如错误、取消、或 done 之后），当新一轮 agent loop 真正有
 		// 交互性 delta 到来时，重新激活 sending 状态，确保按钮显示
 		// stop 图标、输入框禁用、流式滚动路径生效。
-		if (!this._isSending) {
+		//
+		// ⚠ 2026-08-20：本 safety net 曾是「文字逐 token 重叠」的诱因之一——
+		// 它只恢复 `_isSending` 而不管 `_isExternalSend`，使旧守卫
+		// （`_isSending && !_isExternalSend`）的两个判据可能处于矛盾状态。
+		// 现在双重处理已由 `_localSendActiveSessionId` 独占守卫从源头阻断
+		// （见该字段注释），此处额外保证：**本地发送仍活跃时不得改写发送态标志**，
+		// 避免本 safety net 与本地发送流程互相覆盖。
+		if (!this._isSending && this._localSendActiveSessionId === null) {
 			const reActivateTypes = ['text', 'thinking', 'tool_start', 'tool_args', 'tool_end', 'tool_result', 'tool_progress', 'phase_change'];
 			if (reActivateTypes.includes(delta.type)) {
 				this._chatPanel?.setSending(true);
@@ -2784,6 +2904,31 @@ private _handleStreamDelta(delta: any): void {
 				}
 
 				const newToolCallId = delta.toolCallId ?? `tool_${Date.now()}`;
+				// ── 同 id 去重（2026-08-22，日志 1787377582459）────────────────────
+				// 纵深防御：本层**不能假设上游永不重复发 tool_start**。实测循环检测的
+				// 补发路径（agentTurnExecutor 的 loop-detection 分支）会对 adapter 已
+				// 发过 tool_start 的同一 id 再补一次，而这里原本是裸 `push()`：
+				//   → 同一工具建出 2 张卡 + 2 个 part；
+				//   → 后到的 `tool_args` 用 `find()` 只命中**第一张**，第二张永远无参数
+				//     → 显示「读取未知文件」/ execute_code 空白卡；
+				//   → parts 每轮多涨，domParts 堆积（实测 826 vs 期望 178）→ UI 抖动。
+				// 上游已修（只在未发过时补发），此处再兜一道：同 id 视为**同一次调用的
+				// 重复 start**，只补齐元数据，绝不新增卡片与 part。
+				// ⚠ 仅当 `delta.toolCallId` 存在时去重 —— 缺 id 时上面会生成时间戳兜底
+				// id，那本就是「无法关联」的调用，不能按 id 合并。
+				if (delta.toolCallId) {
+					const existing = assistantMsg.toolCalls.find((tc: any) => tc.id === delta.toolCallId);
+					if (existing) {
+						// 只补元数据（后到的 delta 可能才带上 displayName/renderType）。
+						// 不动 args / status —— 那是 tool_args / tool_end 的职责。
+						if (delta.toolName && !existing.name) { existing.name = delta.toolName; }
+						if (delta.displayName !== undefined && existing.displayName === undefined) { existing.displayName = delta.displayName; }
+						if (delta.renderType !== undefined && existing.renderType === undefined) { existing.renderType = delta.renderType; }
+						if (delta.defaultShow !== undefined && existing.defaultShow === undefined) { existing.defaultShow = delta.defaultShow; }
+						this._logService.info(`[AgentOS] Ignored duplicate tool_start for callId=${delta.toolCallId} (name=${delta.toolName ?? '?'}) — metadata merged, no new card`);
+						break;
+					}
+				}
 				assistantMsg.toolCalls.push({
 					id: newToolCallId,
 					name: delta.toolName ?? '',
@@ -4104,6 +4249,92 @@ private _handleStreamDelta(delta: any): void {
 			// Command may not be registered in all configurations — that's OK,
 			// the confirmation card is still dismissed in the UI.
 		}
+	}
+
+	/**
+	 * 把审批状态写到当前流式消息里对应的 tool call 上并刷新卡片。
+	 *
+	 * 关键设计：审批数据挂在 **tool call** 而非 message.confirmation ——
+	 * 工具卡的多条重建路径（parts 渲染 / _ruleToolStatusSync / progress 补建）
+	 * 并不会传 msg.confirmation，挂 message 上会导致按钮在任意重绘后消失。
+	 *
+	 * 只有「当前流式消息里确实存在该 toolCallId」的 pane 才处理 —— 天然过滤掉
+	 * 多聊天窗口并发时的非归属 pane（广播是全局的）。
+	 *
+	 * @param patch      pending 请求时的完整审批数据；resolve 时传 undefined（只改 status）
+	 * @param toolStatus 同步给工具卡的 status
+	 * @param outcome    resolve 时的终局状态
+	 */
+	private _applyToolApproval(
+		toolCallId: string,
+		patch: NonNullable<IToolCall['approval']> | undefined,
+		toolStatus: 'approval_required' | 'running' | 'rejected',
+		outcome?: 'approved' | 'rejected' | 'timeout' | 'cancelled',
+		attempt: number = 0,
+	): void {
+		const assistantId = this._streamingAssistantId;
+		const assistantMsg = this._streamingAssistantMsg;
+		if (!assistantId || !assistantMsg || !this._chatPanel) { return; }
+		let tc = (assistantMsg.toolCalls ?? []).find((c: any) => c.id === toolCallId);
+		if (!tc && patch && attempt === 0) {
+			// 竞态：delta 有 25ms 缓冲层，而审批广播是即时的 —— tool_start 可能
+			// 还在 _deltaBuffer 里没落到 toolCalls。先强制 flush 再找一次。
+			this._flushDeltaBuffer();
+			tc = (assistantMsg.toolCalls ?? []).find((c: any) => c.id === toolCallId);
+		}
+		if (!tc) {
+			// 仍找不到：可能卡片确实还没到（再等一拍），也可能本 pane 非归属方（放弃）。
+			if (patch && attempt < 3) {
+				setTimeout(() => this._applyToolApproval(toolCallId, patch, toolStatus, outcome, attempt + 1), 200);
+			} else if (patch) {
+				this._logService.warn(
+					`[NativeChatEditorPane#${this._paneId}] tool approval ${toolCallId} has no matching tool card — ` +
+					`approval UI not rendered here`,
+				);
+			}
+			return;
+		}
+
+		if (patch) {
+			tc.approval = patch;
+		} else if (tc.approval) {
+			// 已批准 → 直接摘掉审批区，卡片回到普通「运行中」形态（不留残余提示）。
+			// 拒绝 / 超时 / 取消 → 保留审批区并定格文案，让用户知道为什么没执行。
+			tc.approval = outcome === 'approved' ? undefined : { ...tc.approval, status: outcome ?? 'rejected' };
+		} else {
+			return; // 本 pane 没渲染过该审批（非归属），不越权改状态
+		}
+		tc.status = toolStatus;
+		this._logService.info(
+			`[NativeChatEditorPane#${this._paneId}] tool approval ${toolCallId} → ` +
+			`${tc.approval?.status ?? outcome ?? 'pending'} (toolStatus=${toolStatus})`,
+		);
+		this._chatPanel.updateMessage(assistantId, {
+			toolCalls: (assistantMsg.toolCalls ?? []).slice(),
+			parts: assistantMsg.parts?.slice(),
+		});
+	}
+
+	/** 审批说明文案：附上关键参数（terminal 的命令等），让用户不展开也能判断。 */
+	private _formatApprovalReason(
+		toolName: string,
+		args: Record<string, unknown> | undefined,
+		fallback: string | undefined,
+	): string {
+		const raw = args ?? {};
+		const cmd = typeof raw['command'] === 'string' ? raw['command']
+			: typeof raw['cmd'] === 'string' ? raw['cmd']
+				: typeof raw['code'] === 'string' ? raw['code'] : '';
+		if (cmd) {
+			const preview = cmd.length > 300 ? `${cmd.slice(0, 300)}…` : cmd;
+			return `即将执行命令：${preview}`;
+		}
+		const path = typeof raw['path'] === 'string' ? raw['path']
+			: typeof raw['file_path'] === 'string' ? raw['file_path'] : '';
+		if (path) {
+			return `工具「${toolName}」将操作：${path}`;
+		}
+		return fallback ?? `工具「${toolName}」需要你的授权才能执行。`;
 	}
 
 	override clearInput(): void {

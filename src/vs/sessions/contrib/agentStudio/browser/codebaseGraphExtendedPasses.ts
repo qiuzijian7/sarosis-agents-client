@@ -270,6 +270,99 @@ export function detectSimilarCode(nodes: GraphNode[], store: CodebaseGraphStore,
 	return edges;
 }
 
+/**
+ * 增量克隆检测：只检测 `newNodeIds` 与全量节点之间的相似关系（新节点 vs 全量），
+ * 跳过全量自配对。
+ *
+ * 为什么需要（2026-08-21，日志 1787282021811）：
+ * `detectSimilarCode` 对传入的 nodes 做「nodes vs nodes」全配对——LSH 候选生成阶段
+ * 每个 bucket 内部 O(n²) 配对 + 后续 MinHash 校验，对 12.4w 节点是同步无 yield 的重活。
+ * 增量索引只改了 1 个文件，却调用无参全量版 → 每次保存都同步卡死 renderer 数秒。
+ *
+ * 语义正确性：SIMILAR_TO 是无向边且「旧↔旧」的克隆关系早在**全量索引**时已生成并
+ * 落盘（insertEdge 按端点去重，幂等）。增量阶段只需补齐「新节点 ↔ 已有节点」的
+ * 新克隆关系；新节点之间的克隆也由本函数覆盖（newNodeIds 内两两也会命中同一 bucket）。
+ *
+ * 实现与全量版同构：复用同一套 LSH bucket（全量签名索引），但候选生成只从
+ * `newNodeIds` 出发查 bucket，复杂度从 O(全量²) 降到 O(新节点数 × bucket 平均大小)。
+ */
+export function detectSimilarCodeIncremental(
+	newNodeIds: Set<number>,
+	allNodes: GraphNode[],
+	store: CodebaseGraphStore,
+	threshold: number = 0.7,
+): SimilarityEdge[] {
+	const edges: SimilarityEdge[] = [];
+	const minHash = new MinHash(MINHASH_PERM);
+
+	// 全量函数签名（LSH 索引的底座）
+	const signatures = new Map<number, number[]>();
+	const functions = allNodes.filter(n =>
+		(n.label === 'function' || n.label === 'method') &&
+		Array.isArray((n.properties as any)?.minHash) &&
+		((n.properties as any).minHash as number[]).length === MINHASH_PERM);
+	for (const func of functions) {
+		signatures.set(func.id, (func.properties as any).minHash as number[]);
+	}
+
+	// 本次新增/变更节点里，有签名的函数节点才参与配对
+	const newFunctions = functions.filter(f => newNodeIds.has(f.id));
+	if (newFunctions.length === 0) { return edges; }
+
+	const numBands = 12;
+	const rowsPerBand = 4;  // MINHASH_PERM(48) / 12 = 4
+	const buckets: Map<string, number[]>[] = Array.from({ length: numBands }, () => new Map());
+	for (const [nodeId, sig] of signatures) {
+		for (let b = 0; b < numBands; b++) {
+			const bandStart = b * rowsPerBand;
+			const bandEnd = bandStart + rowsPerBand;
+			const bandKey = sig.slice(bandStart, bandEnd).join(',');
+			const bucket = buckets[b].get(bandKey) || [];
+			bucket.push(nodeId);
+			buckets[b].set(bandKey, bucket);
+		}
+	}
+
+	// 只从新节点出发生成候选（与全量版相反的方向，语义等价且无向）
+	const candidates = new Set<string>();
+	for (const newFn of newFunctions) {
+		const sig = signatures.get(newFn.id)!;
+		for (let b = 0; b < numBands; b++) {
+			const bandStart = b * rowsPerBand;
+			const bandEnd = bandStart + rowsPerBand;
+			const bandKey = sig.slice(bandStart, bandEnd).join(',');
+			const bucket = buckets[b].get(bandKey) || [];
+			for (const otherId of bucket) {
+				if (otherId === newFn.id) { continue; }
+				const a = Math.min(newFn.id, otherId);
+				const b2 = Math.max(newFn.id, otherId);
+				candidates.add(`${a}:${b2}`);
+			}
+		}
+	}
+
+	for (const candidate of candidates) {
+		const [idA, idB] = candidate.split(':').map(Number);
+		const sigA = signatures.get(idA)!;
+		const sigB = signatures.get(idB)!;
+		const sim = minHash.estimateSimilarity(sigA, sigB);
+		if (sim >= threshold) {
+			const nodeA = store.getNode(idA);
+			const nodeB = store.getNode(idB);
+			if (nodeA && nodeB) {
+				edges.push({
+					sourceQN: nodeA.qualifiedName,
+					targetQN: nodeB.qualifiedName,
+					type: 'SIMILAR_TO',
+					jaccardEstimate: sim,
+				});
+			}
+		}
+	}
+
+	return edges;
+}
+
 // ─── P1-13: pass_tests — 测试文件/函数检测 ──────────────────────────────
 
 export interface TestDetection {

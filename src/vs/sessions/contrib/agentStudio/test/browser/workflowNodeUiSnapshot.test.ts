@@ -56,14 +56,24 @@ interface UiExpectation {
 }
 
 const STAGE_NODES: UiExpectation[] = [
-	// ★★★ 关键回归点 ★★★
-	// 之前 AudioLoaderStage 空白就是 STAGE_EDITOR_KIND 未注册 + AudioLoaderPreview
-	// 组件缺失。下方断言保证以后「组件没注册」就立刻 FAIL。
+	// ★★★ 关键回归点：Loader 四件套 ★★★
+	//
+	// 2026-08-20 更正期望（日志 1787224386976）。此前这里锁定的是**错误状态**：
+	// Audio/Text 期望 'audio'/'text'、Video 期望 'image'。但 nodeCard 的 loader
+	// 渲染分支只有 `editorKind === 'image'` 一支且只读 properties.image，所以：
+	//   - 'audio' / 'text' 没有任何分支渲染，却让 hasInlineEditor=true 从而
+	//     **抑制通用控件网格** → 卡片比不注册时更空；
+	//   - VideoLoader 走 image 分支但字段是 video（且被 STAGE_HIDDEN_FIELDS 藏掉）
+	//     → 编辑器取不到值 + 控件也没了 → 同样空白。
+	// 「注册了 editorKind」不等于「有编辑器」。真正的不变量是三处成对：
+	//   STAGE_EDITOR_KIND 的 kind ⟺ nodeCard 有该 kind 的渲染分支 ⟺
+	//   STAGE_HIDDEN_FIELDS 才可以接管字段。
+	// 故只有 image 家族保留 inline editor；audio/text/video 回到 'none'，让通用
+	// 控件网格渲染各自字段（卡片可用）。补齐专用组件时三处同时改，并回来改期望。
 	{
 		type: 'ComfyTV.AudioLoaderStage',
-		editorKind: 'audio',                // 期望有 audio inline editor
-		mustHave: { inlineEditor: true, controls: ['audio'] },
-		forbidden: { noInlineEditor: true },
+		editorKind: 'none',                 // 尚无 AudioLoaderPreview 组件
+		mustHave: { inlineEditor: false, controls: ['audio'] },
 		minHeight: 460,
 	},
 	{
@@ -75,18 +85,14 @@ const STAGE_NODES: UiExpectation[] = [
 	},
 	{
 		type: 'ComfyTV.VideoLoaderStage',
-		// 现状：复用 image loader 预览（registry 用 'image' editorKind）。
-		// 期望值与真源对齐 —— 视频专用预览组件待补。
-		editorKind: 'image',
-		mustHave: { inlineEditor: true, controls: ['video'], hideOutput: true, output: false },
-		forbidden: { noInlineEditor: true },
+		editorKind: 'none',                 // 尚无 VideoLoaderPreview 组件
+		mustHave: { inlineEditor: false, controls: ['video'] },
 		minHeight: 360,
 	},
 	{
 		type: 'ComfyTV.TextLoaderStage',
-		editorKind: 'text',
-		mustHave: { inlineEditor: true, controls: ['text'] },
-		forbidden: { noInlineEditor: true },
+		editorKind: 'none',                 // 尚无 TextLoaderPreview 组件
+		mustHave: { inlineEditor: false, controls: ['text'] },
 		minHeight: 380,
 	},
 
@@ -246,17 +252,35 @@ suite('node UI structural snapshot (controls/prompt/inlineEditor/flags)', () => 
 
 	// ━━━━━━━━━━ STAGE 节点（ComfyTV schema）━━━━━━━━━━
 
-	test('STAGE_EDITOR_KIND 覆盖所有 stage 类型（含 Loader 四件套）', () => {
-		// ★ AudioLoaderStage / TextLoaderStage 之前未注册 → 整卡空白。强制断言：
-		//   每种 loader 都必须有 editorKind（不能 none）。
-		for (const t of [
-			'ComfyTV.AudioLoaderStage',
-			'ComfyTV.ImageLoaderStage',
-			'ComfyTV.VideoLoaderStage',
-			'ComfyTV.TextLoaderStage',
-		]) {
-			assert.notStrictEqual(stageEditorKind(t), 'none',
-				`${t} must have a StageEditorKind entry — fix stageCardRegistry.STAGE_EDITOR_KIND`);
+	test('STAGE_EDITOR_KIND 的每个 kind 都有 nodeCard 渲染分支（注册 ⟺ 有编辑器）', () => {
+		// ★ 2026-08-20 取代原「每种 loader 都必须有 editorKind（不能 none）」断言。
+		//   原断言的前提是错的：它把「在 map 里登记」当成「有编辑器」，于是鼓励了
+		//   「随便填个 kind 让它看起来被支持」——实际后果是 hasInlineEditor=true
+		//   抑制了通用控件网格，卡片比不登记时更空（日志 1787224386976）。
+		//
+		//   真正该守的不变量：STAGE_EDITOR_KIND 的每个值都必须是 nodeCard 真的会
+		//   渲染的 kind。这里以 StageEditorKind 联合类型为白名单——把 kind 加进
+		//   联合类型时必然会看到本注释，从而记得同步 nodeCard 分支。
+		const RENDERABLE: readonly StageEditorKind[] = [
+			'mask', 'crop', 'transform', 'outpaint', 'gridSplit', 'colorGrade',
+			'kenBurns', 'multiangle', 'panorama', 'relight', 'material', 'emoji', 'image',
+		];
+		for (const [type, kind] of Object.entries(STAGE_EDITOR_KIND)) {
+			assert.ok(RENDERABLE.includes(kind),
+				`${type} maps to editorKind '${kind}' which nodeCard cannot render — ` +
+				`either add the render branch or set it to 'none' (a bogus kind BLANKS the card ` +
+				`because hasInlineEditor suppresses the generic control grid)`);
+		}
+	});
+
+	test('STAGE_HIDDEN_FIELDS 只能出现在真有内嵌编辑器的节点上', () => {
+		// 字段被「接管」的前提是**真有组件渲染它**。VideoLoaderStage 曾隐藏 'video'
+		// 却没有 video 编辑器 → 字段没了、编辑器也取不到值 → 空白卡。
+		for (const type of Object.keys(STAGE_HIDDEN_FIELDS)) {
+			if (STAGE_HIDDEN_FIELDS[type].length === 0) { continue; }   // 占位项（如 KenBurns）
+			assert.notStrictEqual(stageEditorKind(type), 'none',
+				`${type} hides fields [${STAGE_HIDDEN_FIELDS[type].join(', ')}] but has no inline editor — ` +
+				`those fields would simply disappear from the card`);
 		}
 	});
 

@@ -208,21 +208,56 @@ suite('AgentOS Retrieval Context (per-turn injection & observation)', () => {
 		const svc = createAgentOSService();
 		const provider = new RecordingMemoryProvider();
 		provider.compactContext = [{
-			title: 'Session A',
-			narrative: 'did some work',
+			title: 'Session A parser work',
+			narrative: 'refactored the parser module',
 			keyDecisions: ['used X'],
 			filesModified: ['a.ts'],
 		}];
 		provider.recallResult = 'recalled from episodic'; // 即便 recall 有结果也应被忽略
 		try {
-			const r = await svc._retrieveContextOnly(provider, 'agent-1', 'sess-1', [{ role: 'user', content: 'do something' }], 100);
+			// ⚠ query 必须与摘要有词汇重叠（'parser'）：2026-08-21 起
+			// retrieveContextOnly 会按相关性过滤 compactContext（见
+			// filterRelevantSessionSummaries）。原用例的 query 'do something' 与摘要
+			// 'did some work' 零重叠，会被正确过滤掉并回退 recall —— 那考察的是过滤
+			// 行为，而非本用例要验证的「compact_context 优先级」。
+			const r = await svc._retrieveContextOnly(provider, 'agent-1', 'sess-1', [{ role: 'user', content: 'continue the parser refactor' }], 100);
 			assert.ok(r, 'should return context');
 			assert.strictEqual(r.source, 'compact_context');
-			assert.ok(r.context.includes('## Session A'));
+			assert.ok(r.context.includes('## Session A parser work'));
 			assert.ok(r.context.includes('used X'));
 			assert.ok(r.context.includes('a.ts'));
 			// recall 不应被调用（compact_context 优先）
 			assert.strictEqual(provider.recallQuery, undefined);
+		} finally {
+			svc.dispose();
+		}
+	});
+
+	test('_retrieveContextOnly filters irrelevant session summaries and falls back to recall', async () => {
+		// 2026-08-21（日志 1787289570191）：getCompactContext 只按「最近」取，不看 query，
+		// 无关跨域会话（如 kanban 任务摘要）会被无条件注入 —— 模型被迫花 2 整轮辨识排除
+		// （"This appears to be an unrelated kanban task..."），既浪费预算又可能误导。
+		// 现按词汇重叠过滤；全部无关时留空并回退到带 query 的语义检索 recallFormatted。
+		const svc = createAgentOSService();
+		const provider = new RecordingMemoryProvider();
+		provider.compactContext = [{
+			title: '共享设置脚手架',
+			narrative: '创建看板任务用于跟踪进度',
+			keyDecisions: ['拆分子任务'],
+			filesModified: ['kanban.json'],
+		}];
+		provider.recallResult = 'recalled episodic context about link menus';
+		try {
+			const r = await svc._retrieveContextOnly(
+				provider, 'agent-1', 'sess-1',
+				[{ role: 'user', content: '工作流中点击连线时，弹出的菜单没有删除选项' }],
+				100,
+			);
+			assert.ok(r, 'should fall back rather than return null');
+			// 无关摘要被过滤 → 不再是 compact_context
+			assert.strictEqual(r.source, 'recall');
+			assert.ok(!r.context.includes('共享设置脚手架'), 'irrelevant kanban summary must not be injected');
+			assert.strictEqual(r.context, 'recalled episodic context about link menus');
 		} finally {
 			svc.dispose();
 		}

@@ -39,7 +39,10 @@ export function dataUrlToBlob(dataUrl: string): { blob: Blob; mime: string } | u
 	} else {
 		bytes = new TextEncoder().encode(decodeURIComponent(raw));
 	}
-	return { blob: new Blob([bytes], { type: mime }), mime };
+	// `bytes.buffer` 而非 `bytes`：DOM lib 的 BlobPart 不接受
+	// `Uint8Array<ArrayBufferLike>`（TS 5.7+ 起 TypedArray 带 buffer 泛型参数）→ TS2322。
+	// 运行时两种写法等价（Blob 构造器都按字节读），这里取类型上合法的一种。
+	return { blob: new Blob([bytes.buffer as ArrayBuffer], { type: mime }), mime };
 }
 
 /** 从 ref 推导上传文件名（纯逻辑）。 */
@@ -67,7 +70,20 @@ export interface BridgeFetchLike {
 		headers?: Record<string, string>;
 		body?: FormData | string;
 		signal?: AbortSignal;
-	}): Promise<{ ok: boolean; json(): Promise<unknown>; text(): Promise<string> }>;
+	}): Promise<{
+		ok: boolean;
+		status?: number;
+		json(): Promise<unknown>;
+		text(): Promise<string>;
+		/**
+		 * 二进制读取（2026-08-20 新增）。下载图片**必须**走这两个之一 ——
+		 * `text()` 会按 UTF-8 解码，非法字节被替换成 U+FFFD，再编码回 Blob 时
+		 * 二进制彻底损坏（见 uploadRefToComfy 的注释与 400 事故）。
+		 * 可选：真实 `fetch` Response 两者都有；测试 fake 至少实现其一。
+		 */
+		blob?(): Promise<Blob>;
+		arrayBuffer?(): Promise<ArrayBuffer>;
+	}>;
 }
 
 /**
@@ -96,9 +112,24 @@ export async function uploadRefToComfy(opts: {
 	} else if (cls.kind === 'http' && cls.url) {
 		try {
 			const resp = await fetchImpl(cls.url, { signal });
-			if (!resp.ok) { return { ok: false, error: `下载图片失败：HTTP ${resp.status}` }; }
-			const buf = await resp.text();
-			blob = new Blob([buf], { type: mime });
+			if (!resp.ok) { return { ok: false, error: `下载图片失败：HTTP ${resp.status ?? '?'}` }; }
+			// ★★ 400 Bad Request 根因（2026-08-20，日志 1787224386976 line 13/14）：
+			//   原实现是 `const buf = await resp.text(); blob = new Blob([buf], …)`。
+			//   `text()` 按 UTF-8 解码响应体 —— PNG/JPEG 的字节流几乎必然包含非法
+			//   UTF-8 序列，被逐个替换成 U+FFFD（\uFFFD 再编码为 3 字节 EF BF BD），
+			//   于是 Blob 里是一份**既损坏又膨胀**的垃圾数据。ComfyUI /upload/image
+			//   用 PIL 打开必然失败 → HTTP 400，且错误信息完全看不出是编码问题。
+			//   二进制只能走 blob()/arrayBuffer()，且**不允许回退到 text()**
+			//   （回退等于继续上传损坏数据，比明确报错更难排查）。
+			if (typeof resp.blob === 'function') {
+				blob = await resp.blob();
+				if (blob.type) { mime = blob.type; }
+			} else if (typeof resp.arrayBuffer === 'function') {
+				const ab = await resp.arrayBuffer();
+				blob = new Blob([ab], { type: mime });
+			} else {
+				return { ok: false, error: '下载图片失败：fetch 实现不支持二进制读取（需 blob() 或 arrayBuffer()）' };
+			}
 		} catch (err) {
 			return { ok: false, error: err instanceof Error ? err.message : String(err) };
 		}
@@ -117,7 +148,7 @@ export async function uploadRefToComfy(opts: {
 		});
 		if (!resp.ok) {
 			const t = await Promise.resolve(resp.text()).catch(() => '');
-			return { ok: false, error: `上传图片失败：HTTP ${resp.status}${t ? ` ${t}` : ''}` };
+			return { ok: false, error: `上传图片失败：HTTP ${resp.status ?? '?'}${t ? ` ${t}` : ''}` };
 		}
 		const data = await resp.json() as UploadImageResponse;
 		const name = String(data?.name ?? '');
@@ -142,7 +173,9 @@ export async function resolveLoadImageImageRef(opts: {
 	signal?: AbortSignal;
 }): Promise<{ ok: boolean; image?: string; error?: string }> {
 	if (!opts.ref) { return { ok: false, error: '上游没有可用的图片输出' }; }
-	const up = await uploadRefToComfy(opts);
+	// 显式解构出已收窄的 ref：直接传 `opts` 时 TS 仍按声明类型（string | undefined）
+	// 检查，上面的 guard 不参与推断 → TS2345。
+	const up = await uploadRefToComfy({ ...opts, ref: opts.ref });
 	return up.ok
 		? { ok: true, image: up.ref }
 		: { ok: false, error: up.error };

@@ -14,6 +14,8 @@ import { resolveWorkspacePath } from '../../../common/workspacePathResolver.js';
 import { AgentNetworkDomainSettingId } from '../../../../../../platform/networkFilter/common/settings.js';
 import { resolveKbRoot } from '../../knowledge/knowledgeStorage.js';
 import { LEGACY_SAROS_DIR } from '../../../common/sarosPaths.js';
+import { checkWriteDenied, WriteDeniedError } from '../../../common/writeDenyList.js';
+import { resolveEffectiveWorktreeRoot, detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 
 /**
  * 安全沙箱违规错误。executeTool / agentOSService 会检测 isSandboxViolation
@@ -83,13 +85,24 @@ export async function resolveAndCheckWorkspacePathImpl(
 	// 当前运行 workspace。
 	let worktreeRoot: string | undefined;
 	let activeWsId: string | undefined;
+	let activeWorkspacePath: string | undefined;
 	if (agentId) {
 		try {
 			activeWsId = studioService.getActiveWorkspaceId();
 			if (activeWsId) {
 				const binding = await studioService.getAgentBinding(activeWsId, agentId);
 				if (binding?.worktreePath) {
-					worktreeRoot = binding.worktreePath.replace(/[\\/]+$/, '');
+					// 先取 workspace 主路径，用于「绑定目标是否就是主仓」的等价判定。
+					// ⚠ 2026-08-20（日志 1787211923566）：worktreePath 可以等于主仓路径
+					// （用户把 agent 绑回主仓 / 选 "main"），此时**不是** worktree 隔离；
+					// 若仍走下面的独占沙箱分支，`worktreeStrictIsolation=true` 会少放行
+					// VS Code 工作区文件夹与 relatedFolders，多根工程（引擎 + 项目）读
+					// 引擎源码会被误拦。判定口径与 agentDriverService 共用
+					// resolveEffectiveWorktreeRoot，确保沙箱边界与提示词工作根一致。
+					try {
+						activeWorkspacePath = (await studioService.getWorkspace(activeWsId))?.path;
+					} catch { /* 主路径拿不到时退化为按原样处理 */ }
+					worktreeRoot = resolveEffectiveWorktreeRoot(binding.worktreePath, activeWorkspacePath);
 				}
 			}
 		} catch (err) {
@@ -268,6 +281,58 @@ export async function resolveAndCheckWorkspacePathImpl(
 			suggestedPath,
 			!!worktreeRoot,
 			baseMessage,
+		);
+	}
+
+	// ─── 写黑名单（2026-08-22，闭合 MEMORY 记录的 ★★ 安全缺口）──────────────
+	// 位置至关重要：**必须排在允许根判定之后** —— 黑名单是「硬拒」而非「征求同意」，
+	// 放在前面会被 `sandboxBypassRoots`（用户「允许本次」）与 `~/.vssaros` 允许根
+	// 一并绕过，而后者恰恰是本护栏要防的目标（provider apiKey 就在
+	// `~/.vssaros/User/settings.json`，它**在**允许根内、且写操作已免审批）。
+	//
+	// 只在写/删路径（checkSandbox=true）生效；读/搜索不受影响（本项目 file_read
+	// 一律不过沙箱，且 terminal 以同一 OS 用户运行、cat 随时可绕 —— 读侧拦截
+	// 只是 defense-in-depth 而非边界，见 writeDenyList 模块注释）。
+	if (checkSandbox) {
+		const denied = checkWriteDenied(resolvedPath, {
+			userHome: (environmentService as INativeEnvironmentService).userHome?.fsPath,
+			appDataRoot: (environmentService as INativeEnvironmentService).userDataPath,
+		});
+		if (denied) {
+			// 日志只记规则标识与原因，不回显完整路径以外的内容（路径本身已在 message 里）。
+			logService.warn(`[BuiltinTools] write denied by denylist: rule=${denied.rule} reason=${denied.reason} path=${resolvedPath}`);
+			throw new WriteDeniedError(resolvedPath, denied.reason, denied.rule, denied.message);
+		}
+	}
+
+	// ─── 越界访问未绑定 worktree 副本（2026-08-20，日志 1787217670299）──────────
+	// `.worktrees/**` 对搜索/索引硬排除，但对 file_read/file_write/patch 完全可达
+	// （读操作不做沙箱判定；写操作因主仓根是 allowedRoot 而放行其子目录）。这种
+	// 不对称让模型在过期分支副本里工作而搜索永远无法印证（详见 detectStaleWorktreeAccess）。
+	//
+	// 处置分级：
+	//   - 写/删（checkSandbox=true）→ 直接拦下。写进过期副本是明确错误，且会被
+	//     下一次 worktree 重建/合并悄悄丢弃；错误信息给出主仓等价路径供其重试。
+	//   - 读 → 不拦（用户可能确实要求排查某个 worktree），仅 warn 日志留痕。
+	const staleWorktree = detectStaleWorktreeAccess(resolvedPath, worktreeRoot);
+	if (staleWorktree) {
+		if (checkSandbox) {
+			throw new SandboxViolationError(
+				requestedPath,
+				resolvedPath,
+				[...normalizedRoots],
+				staleWorktree.mainRepoEquivalent,
+				!!worktreeRoot,
+				`拒绝写入未绑定的 git worktree 副本。\n` +
+				`路径 "${requestedPath}" (解析后: "${resolvedPath}") 位于 worktree "${staleWorktree.branchName}"，` +
+				`而该 Agent 未绑定此 worktree${worktreeRoot ? `（当前绑定：${worktreeRoot}）` : '（当前工作在主仓）'}。\n` +
+				`该目录是另一个分支的独立检出，通常是过期代码，且已从 search_code / search_files / 代码图中排除。\n` +
+				`请改写主仓对应路径：${staleWorktree.mainRepoEquivalent}`,
+			);
+		}
+		logService.warn(
+			`[BuiltinTools] ${staleWorktreeWarning(staleWorktree, 'read')} ` +
+			`(agent=${agentId ?? '<none>'}, requested="${requestedPath}")`,
 		);
 	}
 

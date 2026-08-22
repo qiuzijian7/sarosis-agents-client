@@ -15,11 +15,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import type { LGraphNode } from '@comfyorg/litegraph';
+import type { LGraphNode, LLink } from '@comfyorg/litegraph';
 import { LiteGraphCanvas, type LiteGraphCanvasHandle } from './LiteGraphCanvas';
 import { NodeContextMenu, type NodeContextMenuState, buildAddNodeSubmenu } from './NodeContextMenu';
 import { NodeActionsMenu, type NodeActionsMenuState } from './NodeActionsMenu';
-import { buildNodeActions, buildCanvasActions, buildGroupActions, buildPortDisconnectAction, MENU_TEXT, type NodeActionsContext } from './menuItems';
+import { buildNodeActions, buildCanvasActions, buildGroupActions, buildPortDisconnectAction, buildLinkActions, MENU_TEXT, type NodeActionsContext } from './menuItems';
 import { GroupEditPopup, applyGroupEdit } from './groupMenu';
 import { RunnerManagerPanel } from './RunnerManagerPanel';
 import { NodeEditorPopup } from './NodeEditorPopup';
@@ -914,6 +914,50 @@ export const WorkflowEditorPanel: React.FC = () => {
 		}
 	}, []);
 
+// 共享：把一条连线渲染成 linkMenu（复用 buildLinkActions + NodeActionsMenu）。
+// 右键（onLinkContextMenu）与左键点连线中点圆点（onLinkHandleClick，
+// 对齐 ComfyUI：hover 连线中点显示圆点 → 左键弹出菜单）都走这里，
+// 避免两处各自内联导致 buildLinkActions 漂移成死代码。
+const openLinkMenu = useCallback(
+	(link: LLink, graphX: number, graphY: number, clientX: number, clientY: number) => {
+		setCtxMenu(null);
+		setNodeMenu(null);
+		setGroupMenu(null);
+		setLinkMenu({
+			clientX, clientY, title: MENU_TEXT.link,
+			items: buildLinkActions(
+				{
+					linkId: link.id,
+					isTyped: !!(link as unknown as { isTyped?: boolean }).isTyped,
+					color: (link as unknown as { color?: string }).color || undefined,
+					addNodeSubmenu: buildAddNodeSubmenu((type) => addNode(type, { x: graphX, y: graphY })),
+				},
+				{
+					disconnect: () => { liteGraphRef.current?.removeLink(link.id); setLinkMenu(null); },
+					delete: () => { liteGraphRef.current?.deleteLink(link.id); setLinkMenu(null); },
+					rename: () => {
+						const current = (link as unknown as { name?: string; type?: string }).name
+							|| (link as unknown as { type?: string }).type || '';
+						const next = window.prompt(MENU_TEXT.renameLink, current);
+						if (next != null && next !== current) {
+							liteGraphRef.current?.renameLink(link.id, next);
+						}
+						setLinkMenu(null);
+					},
+					setColor: (color: string) => {
+						liteGraphRef.current?.setLinkColor(link.id, color);
+						setLinkMenu(null);
+					},
+					// 本项目连线中点支持 Add Node（搜索式插入）；Add Reroute 暂无图编辑能力 → 菜单项禁用占位。
+					openNodeSearch: () => { setLinkMenu(null); setCtxMenu({ graphX, graphY, clientX, clientY }); },
+					addReroute: undefined,
+				},
+			),
+		});
+	},
+	[liteGraphRef, setCtxMenu, setNodeMenu, setGroupMenu, setLinkMenu, buildAddNodeSubmenu, addNode],
+);
+
 const handleExecute = useCallback(async () => {
 		if (!workflowId) { return; }
 		// ── P0: Comfy + Provider 全图执行（画布包含可执行节点时优先）──
@@ -1745,18 +1789,8 @@ const handleExecute = useCallback(async () => {
 								),
 							});
 						}}
-						onLinkContextMenu={(link, graphX, graphY, clientX, clientY) => {
-							setCtxMenu(null);
-							setNodeMenu(null);
-							setGroupMenu(null);
-							setLinkMenu({
-								clientX, clientY, title: MENU_TEXT.link,
-								items: [{
-									id: 'disconnectLink', label: MENU_TEXT.disconnectLink, icon: '✂', danger: true,
-									onPick: () => { liteGraphRef.current?.removeLink(link.id); setLinkMenu(null); },
-								}],
-							});
-						}}
+						onLinkContextMenu={(link, graphX, graphY, clientX, clientY) => openLinkMenu(link, graphX, graphY, clientX, clientY)}
+						onLinkHandleClick={(link, graphX, graphY, clientX, clientY) => openLinkMenu(link, graphX, graphY, clientX, clientY)}
 						onNodeContextMenu={(node, graphX, graphY, clientX, clientY) => {
 							setCtxMenu(null);
 							setGroupMenu(null);

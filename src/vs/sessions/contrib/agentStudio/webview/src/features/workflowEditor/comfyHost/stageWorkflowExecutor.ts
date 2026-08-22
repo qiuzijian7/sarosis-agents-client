@@ -534,6 +534,39 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 		.map(([id, n]) => `${id}:${JSON.stringify(n.inputs?.text)}`);
 	// eslint-disable-next-line no-console
 	console.warn('[runStageWorkflow] injected CLIPTextEncode=' + clipNodes.join(' | ') + ' from values.prompt=' + JSON.stringify(values.prompt ?? values.main_prompt));
+	// 诊断：打印 KSampler / KSamplerAdvanced 的真实种子与 batch 维度，定位「图像混乱」
+	// （动画模板 batch_size=N 作为时间轴，seed 必须是单一固定值才能驱动连贯帧；
+	// 若 seed 缺失/每帧派生，帧会发散成杂乱图）。
+	for (const [id, node] of Object.entries(prompt as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>)) {
+		if (node.class_type === 'KSampler' || node.class_type === 'KSamplerAdvanced') {
+			const ins = node.inputs ?? {};
+			// eslint-disable-next-line no-console
+			console.warn(
+				`[runStageWorkflow] KSampler ${id} class=${node.class_type} ` +
+				`seed=${JSON.stringify(ins.seed ?? ins.noise_seed)} batch_size=${JSON.stringify(ins.batch_size)} ` +
+				`sub_batch_size=${JSON.stringify(ins.sub_batch_size)} steps=${JSON.stringify(ins.steps)} ` +
+				`sampler=${JSON.stringify(ins.sampler_name)}`,
+			);
+		}
+	}
+	// ★ 诊断：动画表情模板的多帧/时间轴关键参数。彩色噪声常因这里不一致：
+	//   - EmptyLatentImage.batch_size 与 DecodeRGBA.sub_batch_size 必须相等
+	//     （否则 LayeredDiffusionDecodeRGBA 按错误分批数解码 → 越界读 → 彩色噪声）
+	//   - SaveAnimatedWEBP.fps 实际值（fps 越大产物越短，越像噪声）
+	//   - ADE_AnimateDiffLoaderGen1.beta_schedule 必须是 SDXL 专用
+	for (const [id, node] of Object.entries(prompt as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>)) {
+		const ins = (node.inputs ?? {}) as Record<string, unknown>;
+		const ct = node.class_type;
+		if (ct === 'EmptyLatentImage' || ct === 'LayeredDiffusionDecodeRGBA' || ct === 'SaveAnimatedWEBP' || ct === 'ADE_AnimateDiffLoaderGen1') {
+			// eslint-disable-next-line no-console
+			console.warn(`[runStageWorkflow] ${ct} ${id} inputs=${JSON.stringify({
+				...(ct === 'EmptyLatentImage' ? { batch_size: ins.batch_size } : {}),
+				...(ct === 'LayeredDiffusionDecodeRGBA' ? { sub_batch_size: ins.sub_batch_size, sd_version: ins.sd_version } : {}),
+				...(ct === 'SaveAnimatedWEBP' ? { fps: ins.fps, lossless: ins.lossless } : {}),
+				...(ct === 'ADE_AnimateDiffLoaderGen1' ? { model_name: ins.model_name, beta_schedule: ins.beta_schedule } : {}),
+			})}`);
+		}
+	}
 	// 诊断：打印后端/内置 cfg.inputs bindings 全貌，确认 prompt 绑定是否命中
 	// eslint-disable-next-line no-console
 	console.warn('[runStageWorkflow] cfg.inputs=' + JSON.stringify(cfg.inputs), 'api_json nodeIds=' + Object.keys(cfg.api_json ?? {}).join(','));
@@ -584,7 +617,7 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 	}
 	const started = Date.now();
 	// eslint-disable-next-line no-console
-	console.warn('[runStageWorkflow] invoking runner.invoke, prompt keys=' + Object.keys(prompt).join(','));
+	console.warn(`[runStageWorkflow] invoking runner.invoke label="${label ?? wfKind}" kind=${wfKind} prompt keys=` + Object.keys(prompt).join(','));
 	const run = await runner.invoke({
 		prompt,
 		onProgress: (p) => {
@@ -620,9 +653,18 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 		: [];
 	// 物化 ComfyUI /view 引用为自包含 data: URL，app 重启后仍可显示。
 	const persisted = await materializeComfyImageRefs(entries, runner.baseUrl, createComfyFetch(runner.baseUrl));
-	// 诊断：打印生成的 snapshot entries
+	// 诊断：打印生成的 snapshot entries（含 port/动画标识），定位「混乱图」来自哪个槽
 	// eslint-disable-next-line no-console
 	console.warn('[runStageWorkflow] entries count=', persisted.length, 'firstKey=', persisted[0]?.key ?? 'none');
+	for (const e of persisted) {
+		const ref = typeof e.media?.ref === 'string' ? e.media.ref : '';
+		const isAnim = /anim/i.test(ref) || /\.webp/i.test(ref);
+		// eslint-disable-next-line no-console
+		console.warn(
+			`[runStageWorkflow] entry key=${e.key} port=${e.port} index=${e.index ?? '?'} kind=${e.media?.kind} ` +
+			`ref=${ref.length > 90 ? ref.slice(0, 90) + '…' : ref} animated=${isAnim}`,
+		);
+	}
 	for (const e of persisted) { store.put(e); }
 	return { promptId: run.promptId, status: 'success', durationMs, entries };
 }

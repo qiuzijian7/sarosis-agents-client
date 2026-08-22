@@ -12,6 +12,7 @@ import {
 	DELEGATION_TOOL_TIMEOUT_MS,
 	DEFAULT_TOOL_TIMEOUT_MS,
 	MCP_TOOL_TIMEOUT_MS,
+	DEFAULT_TOOL_RETRY_POLICY,
 	executeWithRetryAndTimeout,
 	getTimeoutForTool,
 } from '../../browser/toolExecutionGuard.js';
@@ -111,24 +112,65 @@ suite('toolExecutionGuard', () => {
 			assert.strictEqual(calls.length, 1);
 		});
 
-		test('普通工具保留默认重试（3 次）', async () => {
+		test('普通工具保留默认重试（3 次）', () => {
+			// 语义说明（2026-08-21 起）：默认策略 maxAttempts=1（工具级重试已禁用），
+			// 但显式注入 retryPolicy 仍可 opt-in 重试 —— 本用例验证 opt-in 通道未被破坏。
+			return (async () => {
+				const calls: string[] = [];
+				const provider = makeFailingProvider(calls);
+				let threw = false;
+				try {
+					await executeWithRetryAndTimeout(provider, 'agent-1',
+						{ id: 'tc-3', name: 'file_read', arguments: '{}' } as any,
+						{
+							timeoutMs: 1000,
+							retryPolicy: { initialInterval: 1, backoffFactor: 1, maxInterval: 2, maxAttempts: 3, jitter: false, retryOn: () => true },
+						});
+				} catch {
+					threw = true;
+				}
+				assert.ok(threw, '耗尽后应以 ToolRetryableError 抛出');
+				assert.strictEqual(calls.length, 3, `显式 opt-in 应重试到 maxAttempts，实际 ${calls.length} 次`);
+			})();
+		});
+
+		// ─── 工具级重试默认禁用（2026-08-21 数据裁决：460 份日志 0/216 成功）──────
+
+		test('DEFAULT_TOOL_RETRY_POLICY.maxAttempts === 1（锁定：禁止改回 3）', () => {
+			assert.strictEqual(DEFAULT_TOOL_RETRY_POLICY.maxAttempts, 1,
+				'工具级重试须保持禁用 —— 460 份日志实测 216 次重试 0 次成功、432 次浪费执行、' +
+				'且重试会污染重复行为护栏计数器（4→5→6 递增）');
+		});
+
+		test('默认策略下普通工具失败仅执行 1 次', async () => {
 			const calls: string[] = [];
 			const provider = makeFailingProvider(calls);
-			// 缩短退避等待：注入快速 retryPolicy（保持 maxAttempts=3 语义）。
-			// 注意 runWithRetry 耗尽后以 ToolRetryableError 抛出（生产侧由调用方捕获）。
+			const result = await executeWithRetryAndTimeout(provider, 'agent-1',
+				{ id: 'tc-5', name: 'file_read', arguments: '{}' } as any,
+				{ timeoutMs: 1000 });
+			assert.strictEqual(calls.length, 1, `默认不得重试，实际执行 ${calls.length} 次`);
+			assert.strictEqual(result.success, false);
+		});
+
+		test('默认策略下失败原样返回结果（不经异常通道，保留 content/metadata）', async () => {
+			// 关键回归点：maxAttempts=1 若仍走 runWithRetry，失败会被抛成异常，
+			// 调用方只能拿到 error.message，丢失 metadata.timedOut / content 等结构化字段。
+			const calls: string[] = [];
+			const provider = makeFailingProvider(calls);
 			let threw = false;
+			let result: any;
 			try {
-				await executeWithRetryAndTimeout(provider, 'agent-1',
-					{ id: 'tc-3', name: 'file_read', arguments: '{}' } as any,
-					{
-						timeoutMs: 1000,
-						retryPolicy: { initialInterval: 1, backoffFactor: 1, maxInterval: 2, maxAttempts: 3, jitter: false, retryOn: () => true },
-					});
+				result = await executeWithRetryAndTimeout(provider, 'agent-1',
+					{ id: 'tc-6', name: 'file_read', arguments: '{}' } as any,
+					{ timeoutMs: 1000 });
 			} catch {
 				threw = true;
 			}
-			assert.ok(threw, '耗尽后应以 ToolRetryableError 抛出');
-			assert.strictEqual(calls.length, 3, `普通工具应重试到 maxAttempts，实际 ${calls.length} 次`);
+			assert.ok(!threw, '默认路径失败不应抛异常');
+			assert.strictEqual(result.success, false);
+			assert.ok(result.content, '应保留 content');
+			assert.strictEqual(result.metadata?.timedOut, true, '应保留 metadata.timedOut');
+			assert.ok(result.error, '应保留 error 文案');
 		});
 
 		test('成功路径不受影响', async () => {

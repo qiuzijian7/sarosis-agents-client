@@ -2,6 +2,7 @@ import { $, append, addDisposableListener, EventType } from '../../../base/brows
 import { createTrustedTypesPolicy } from '../../../base/browser/trustedTypes.js';
 import { IToolCall } from './agentChatTypes.js';
 import { AgentChatPanelWebCard } from './agentChatPanel.webCard.js';
+import { parseToolArgsLoose } from './toolArgsJson.js';
 
 // 工作台启用了 Trusted Types：把渲染好的 SVG 字符串转成 TrustedHTML 才能赋给
 // innerHTML（DOMParser 在打包版同样会被 TrustedHTML 拦截，见 _parseMermaidSvgToNode）。
@@ -112,8 +113,8 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 		const isRunning = tc.status === 'running';
 		const isErr = tc.status === 'error';
 
-		let args: Record<string, unknown> = {};
-		if (tc.args) { try { args = JSON.parse(tc.args); } catch { /* ignore */ } }
+		// 宽松修复链：mermaid markup 里常含 `\n` 之外的转义，裸 parse 失败会让整张图空白
+		const args: Record<string, unknown> = parseToolArgsLoose(tc.args);
 		const diagramMarkup = (args?.markup || args?.diagram || '').toString();
 		let diagramTitle: string | undefined = args?.title?.toString() || undefined;
 		if (!diagramTitle && tc.result && typeof tc.result === 'string') {

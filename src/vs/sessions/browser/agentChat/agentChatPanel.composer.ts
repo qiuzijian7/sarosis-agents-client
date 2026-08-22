@@ -1,5 +1,5 @@
 import { $, append, clearNode, addDisposableListener, addStandardDisposableListener, EventType } from '../../../base/browser/dom.js';
-import { IChatAttachment, IContextUsage } from './agentChatTypes.js';
+import { IChatAttachment, IContextUsage, CHAT_MODE_UI } from './agentChatTypes.js';
 import { renderContextUsageRing } from './modules/contextRing.js';
 import { AgentChatPanelMarkdown } from './agentChatPanel.markdown.js';
 import {
@@ -513,22 +513,25 @@ protected override _renderInputArea(): void {
 		// Divider
 		append(leftToolbar, $(".chat-toolbar-divider"));
 
-		// ChatOnly toggle (替代旧 chatMode 选择器，默认关闭)
+		// ChatMode 下拉框（2026-08-21，替代旧的「干活/纯聊」布尔开关）：
+		// Craft / Ask / Plan 三档，仅 Plan 档位向 LLM 暴露 plan_* 工具。
+		const modeMeta = CHAT_MODE_UI[this._chatMode];
 		this._modeTrigger = this._appendToolbarBtn(leftToolbar, {
-			title: this._chatOnly ? '纯聊模式：已开启（禁止工具执行）' : '干活模式：点击切换至纯聊',
-			svgPath: this._chatOnly
-				? 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z'
-				: 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z',
+			title: `${modeMeta.label} — ${modeMeta.description}（点击切换模式）`,
+			svgPath: modeMeta.svgPath,
 			hasLabel: true,
-			label: this._chatOnly ? '纯聊' : '干活',
-			showChevron: false,
-			cssClass: this._chatOnly ? 'mode-tag mode-tag-chatonly-on' : 'mode-tag',
+			label: modeMeta.label,
+			showChevron: true,
+			cssClass: `mode-tag mode-tag-${this._chatMode}`,
 		});
 		this._register(
 			addDisposableListener(this._modeTrigger, EventType.CLICK, (e) => {
 				e.stopPropagation();
-				this._chatOnly = !this._chatOnly;
-				this._refreshInputArea();
+				if (this._modeDropdownEl) {
+					this._closeModeDropdown();
+				} else {
+					this._openModeDropdown();
+				}
 			}),
 		);
 

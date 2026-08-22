@@ -434,7 +434,13 @@ export function spawnPickerForStage(srcNodeId: string, srcType: string): void {
 		return;
 	}
 
-	const pickerClass = srcType === 'ComfyTV.ImageStage' ? 'ComfyTV.ImagePickerStage'
+	// ★ EmojiStage 与 ImageStage 同路径：表情包输出的 images 批次（slot 0，
+	//   COMFYTV_IMAGES）接到 ImagePickerStage.batch，让 picker 立即显示 m×n 缩略图。
+	//   此前 EmojiStage 不在映射里 → 点运行后 auto-picker 落空（日志
+	//   「no picker class for srcType=ComfyTV.EmojiStage」），用户只能手动拖 picker
+	//   连线，而手动连线又受端口类型 / 保存链路影响容易失效 → picker 空。
+	const pickerClass = (srcType === 'ComfyTV.ImageStage' || srcType === 'ComfyTV.EmojiStage')
+		? 'ComfyTV.ImagePickerStage'
 		: srcType === 'ComfyTV.VideoStage' ? 'ComfyTV.VideoPickerStage'
 			: undefined;
 	if (!pickerClass) {
@@ -455,10 +461,10 @@ export function spawnPickerForStage(srcNodeId: string, srcType: string): void {
 		return;
 	}
 
-	// ImageStage 输出端口：slot 0 = images(COMFYTV_IMAGES)、slot 1 = image(COMFYTV_IMAGE)。
-	// picker 的 batch 输入类型为 COMFYTV_IMAGES，故必须连 slot0(images) 才能类型匹配
-	// （slot1 的 COMFYTV_IMAGE 与 batch 不匹配，会被 LiteGraph 类型检查拒绝，导致
-	// 连线不可见且 picker 经图遍历取不到上游图像）。
+	// ImageStage / EmojiStage 输出端口：slot 0 = images(COMFYTV_IMAGES)、slot 1 =
+	// image(COMFYTV_IMAGE)。picker 的 batch 输入类型为 COMFYTV_IMAGES，故必须连
+	// slot0(images) 才能类型匹配（slot1 的 COMFYTV_IMAGE 与 batch 不匹配，会被
+	// LiteGraph 类型检查拒绝，导致连线不可见且 picker 经图遍历取不到上游图像）。
 	// 注意：上面「slot 0 = texts」是 INPUTS 布局，OUTPUTS 布局为 slot0=images。
 	const imageOutputSlot = 0;
 	const newId = spawnConsumingNode(srcNodeId, srcType, pickerClass, 'batch', imageOutputSlot);

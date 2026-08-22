@@ -35,7 +35,7 @@ export type StageEditorKind =
 	| 'relight'
 	| 'material'
 	| 'emoji'
-	| 'image'       // LoadImage —— inline editor (filename+preview+upload+size)
+	| 'image';      // LoadImage / ImageLoaderStage —— inline loader editor（读 properties.image）
 
 /**
  * 节点类 → 内嵌编辑器种类。ComfyTV 的 RICH_STAGE_CARDS 等价物（本项目暂不做
@@ -56,16 +56,31 @@ export const STAGE_EDITOR_KIND: Record<string, StageEditorKind> = {
 	'ComfyTV.EmojiStage': 'emoji',
 	// Loader 节点走 inline editor：image 字段直接展示缩略图+尺寸+上传，代替通用
 	// OUTPUT 区（与 ComfyTV LoadImage 一致 —— 图像就是产物本身，再画 OUTPUT 是
-	// 重复展示）。其它 loader 同理（文本/音频/视频以各自字段名复用同一组件）。
+	// 重复展示）。
 	//
-	// ★★★ AudioLoaderStage / TextLoaderStage 之前未注册 → editorKind='none' →
-	//   不渲染 inline editor → Load Audio/Text 节点 body 空白（用户截图
-	//   image.bfa87ff96b 报告）。先按现有 ImageLoaderPreview 兜底（同组件渲染
-	//   音频/文本素材预览也合理 —— 至少节点有内容），具体组件后续按需细化。
+	// ★★★ 2026-08-20 更正一轮「越修越空」的错误（日志 1787224386976）：
+	//   此前为解决「Load Audio/Text 卡片空白」，把它们注册成 'audio' / 'text'，
+	//   意图是「复用 ImageLoaderPreview 兜底」。但两处都没做到：
+	//     ① 'audio' / 'text' **没加进 StageEditorKind 联合类型** → webview tsc
+	//        TS2322 两条（tsgo 不覆盖 webview，所以一直没暴露）；
+	//     ② nodeCard 的 loader 分支只判 `editorKind === 'image'` → 这两种 kind
+	//        没有任何分支渲染，却因 `hasInlineEditor = editorKind !== 'none'`
+	//        为 true 而**抑制了通用控件网格** → 卡片比修之前更空。
+	//   同类问题还有 VideoLoaderStage：注册成 'image' 且 STAGE_HIDDEN_FIELDS 把
+	//   `video` 藏了，而 image 编辑器只认 properties.image / kind==='image' 的
+	//   快照 → 永远取不到值 → 同样空白。
+	//
+	//   结论：inline editor 只保留【确实有组件】的 image 家族（读 properties.image）。
+	//   audio / text / video loader 一律 'none'，让通用控件网格渲染它们各自的字段
+	//   （audio / text / video），卡片至少可用。等真正写出对应预览组件时，再把
+	//   kind 加进联合类型 + 在 nodeCard 加分支 + 在 STAGE_HIDDEN_FIELDS 接管字段
+	//   —— 三处必须同时做，缺一处就是空白卡。
+	//
+	// 原生 ComfyUI LoadImage：内置工作流（imageWorkflows）用它，class_type 是
+	// "LoadImage"，properties.image 是裸文件名（如 "example.png"）。走 image
+	// 编辑器，预览时把裸文件名经 comfyViewUrl 转成 /view?… URL 显示。
+	'LoadImage': 'image',
 	'ComfyTV.ImageLoaderStage': 'image',
-	'ComfyTV.VideoLoaderStage': 'image',
-	'ComfyTV.AudioLoaderStage': 'audio',
-	'ComfyTV.TextLoaderStage': 'text',
 	'image-loader': 'image',
 };
 
@@ -89,8 +104,11 @@ export const STAGE_HIDDEN_FIELDS: Record<string, readonly string[]> = {
 	'ComfyTV.MaterialStage': ['material_state'],
 	'ComfyTV.EmojiStage': ['rows', 'cols', 'fps', 'frames', 'prompt', 'cells', 'selected_index', 'run_scope'],
 	// Loader 节点 image 字段由 inline editor（ImageLoaderPreview）接管，不再渲染通用控件。
+	// ⚠ 只有 image 家族能列在这里：接管字段的前提是**真有组件渲染它**。
+	//   VideoLoaderStage 曾列 ['video'] 却没有 video 编辑器（它被误注册成 'image'，
+	//   而 image 编辑器只读 properties.image）→ 字段被藏、编辑器又取不到值 → 卡片
+	//   空白。已一并移除（见 STAGE_EDITOR_KIND 的 loader 段注释）。
 	'ComfyTV.ImageLoaderStage': ['image'],
-	'ComfyTV.VideoLoaderStage': ['video'],
 };
 
 /**
@@ -147,15 +165,7 @@ export const STAGE_CARD_FLAGS: Record<string, StageCardFlags> = {
 
 export function stageEditorKind(nodeType: string | undefined): StageEditorKind {
 	if (!nodeType) { return 'none'; }
-	const hit = STAGE_EDITOR_KIND[nodeType];
-	if (nodeType.startsWith('ComfyTV.')) {
-		// ★★ 排查 Load 节点空白：上一轮日志说 `editorKind:"none"`，但 registry 第 60
-		// 行明确写了 `'ComfyTV.ImageLoaderStage': 'image'`。是查询失败还是函数被
-		// 多个副本覆盖？打印 hash + 是否命中 + STAGE_EDITOR_KIND 的实际 keys 数。
-		// eslint-disable-next-line no-console
-		console.warn('[stageEditorKind] ' + JSON.stringify({ nodeType, hit, registered: STAGE_EDITOR_KIND[nodeType] !== undefined, keyCount: Object.keys(STAGE_EDITOR_KIND).length }));
-	}
-	return hit ?? 'none';
+	return STAGE_EDITOR_KIND[nodeType] ?? 'none';
 }
 
 /** 该节点由内嵌编辑器接管的字段集合（用于过滤通用控件）。 */

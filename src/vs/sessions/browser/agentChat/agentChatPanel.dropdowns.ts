@@ -1,7 +1,7 @@
 import { IDisposable } from '../../../base/common/lifecycle.js';
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { mainWindow } from '../../../base/browser/window.js';
-import { IAgentChatMessage, IWorkspaceItem, IWorktreeItem } from './agentChatTypes.js';
+import { IAgentChatMessage, IWorkspaceItem, IWorktreeItem, CHAT_MODE_UI, CHAT_MODE_ORDER } from './agentChatTypes.js';
 import { positionDropdownAbove, positionDropdownBelow, disposeOutsideClick, registerOutsideClickClose } from './modules/dropdownHelpers.js';
 import { renderHistoryOverlay } from './modules/historyOverlay.js';
 import { AgentChatPanelComposer } from './agentChatPanel.composer.js';
@@ -954,35 +954,43 @@ protected override _forceRenderAllMessages(): void {
 		this._modeDropdownEl = append(this._dropdownBody(this._modeDropdownTrigger), $(".mode-dropdown-composer"));
 		this._positionDropdownAbove(this._modeDropdownEl, this._modeDropdownTrigger);
 
-		// ChatOnly toggle dropdown — legacy mode selector replaced by simple chatOnly on/off
-		const chatOnlyItem = append(this._modeDropdownEl, $(`.mode-item${this._chatOnly ? '.active' : ''}`));
-		const ic = append(chatOnlyItem, $(".mode-item-icon"));
-		const sv = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-		sv.setAttribute('width', '14');
-		sv.setAttribute('height', '14');
-		sv.setAttribute('viewBox', '0 0 24 24');
-		sv.setAttribute('fill', 'none');
-		sv.setAttribute('stroke', 'currentColor');
-		sv.setAttribute('stroke-width', '2');
-		sv.setAttribute('stroke-linecap', 'round');
-		sv.setAttribute('stroke-linejoin', 'round');
-		const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-		// Eye icon
-		p.setAttribute('d', 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z');
-		sv.appendChild(p);
-		ic.appendChild(sv);
+		// ChatMode 下拉框（2026-08-21）：Craft / Ask / Plan 三档单选。
+		// 替代旧的 chatOnly 布尔开关项。仅 Plan 档位向 LLM 暴露
+		// plan_enter/plan_exit/plan_explore（见 chatModeConfig.PLAN_EXCLUSIVE_TOOLS）。
+		for (const modeId of CHAT_MODE_ORDER) {
+			const meta = CHAT_MODE_UI[modeId];
+			const isActive = this._chatMode === modeId;
+			const item = append(this._modeDropdownEl, $(`.mode-item${isActive ? '.active' : ''}`));
+			const ic = append(item, $(".mode-item-icon"));
+			const sv = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+			sv.setAttribute('width', '14');
+			sv.setAttribute('height', '14');
+			sv.setAttribute('viewBox', '0 0 24 24');
+			sv.setAttribute('fill', 'none');
+			sv.setAttribute('stroke', 'currentColor');
+			sv.setAttribute('stroke-width', '2');
+			sv.setAttribute('stroke-linecap', 'round');
+			sv.setAttribute('stroke-linejoin', 'round');
+			const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			p.setAttribute('d', meta.svgPath);
+			sv.appendChild(p);
+			ic.appendChild(sv);
 
-		const text = append(chatOnlyItem, $(".mode-item-text"));
-		append(text, $("span.mode-item-label", undefined, '纯聊模式'));
-		append(text, $("span.mode-item-tooltip", undefined, this._chatOnly ? '纯聊：已开启（禁止工具执行）' : '纯聊：关闭中（允许工具执行）'));
+			const text = append(item, $(".mode-item-text"));
+			append(text, $("span.mode-item-label", undefined, meta.label));
+			append(text, $("span.mode-item-tooltip", undefined, meta.description));
+			if (isActive) { append(item, $("span.mode-item-check", undefined, '✓')); }
 
-		this._register(
-			addDisposableListener(chatOnlyItem, EventType.CLICK, () => {
-				this._closeModeDropdown();
-				this._chatOnly = !this._chatOnly;
-				this._refreshInputArea();
-			}),
-		);
+			this._register(
+				addDisposableListener(item, EventType.CLICK, () => {
+					this._closeModeDropdown();
+					if (this._chatMode === modeId) { return; }
+					this._chatMode = modeId;
+					this._onChangeChatMode?.(modeId);
+					this._refreshInputArea();
+				}),
+			);
+		}
 
 		this._disposeOutsideClick(this._modeDropdownOutsideClick);
 		this._modeDropdownOutsideClick = this._registerOutsideClickClose(this._modeDropdownEl, this._modeDropdownTrigger, () => this._closeModeDropdown());

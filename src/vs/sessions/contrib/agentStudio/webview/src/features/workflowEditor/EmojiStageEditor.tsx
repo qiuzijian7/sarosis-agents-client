@@ -37,12 +37,31 @@ export interface EmojiStageInit {
   /** 每格独立状态，JSON 字符串（数组 [{prompt, seed}]） */
   cells: string;
   selectedIndex: number;
+  /** 当前 workflow 模板名（静态贴纸 / 动态表情 / fallback）。 */
+  workflow?: string;
 }
 
 export interface EmojiStageEditorProps {
   initial: EmojiStageInit;
   /** 每格已生成图 ref（可选，按 cell index 对齐；空则显示占位）。 */
-  cellRefs?: (string | undefined)[];
+  /**
+   * 每格已生成图的引用 + 配文。
+   * - `ref`：图 URL（动画 webp 或静态贴纸）。
+   * - `caption`：归档时写进 `media.meta.caption` 的配文（见 workflowRun.ts）。
+   *   动画图不做 Canvas 烘焙（保动画），配文只存在于 meta；预览层优先读
+   *   `caption` 以保证「图与描述一致」——即使重启后 `cells` 内存态丢失也能显示。
+   * 兼容旧 `string[]` 传法（无 caption 时回退到编辑器 `c.text`）。
+   */
+  cellRefs?: Array<string | { ref: string; caption?: string } | undefined>;
+  /**
+   * 可选 workflow 模板名列表（`workflowOptionsFor('emoji')`）。
+   *
+   * ★ 必须由本编辑器自己渲染：nodeCard 的通用控件网格有 `!hasInlineEditor` 门禁
+   *   （第 ~1941 行），只要 stage 有内嵌编辑器，**所有** widget 通用控件都不渲染。
+   *   曾因此导致 workflow 下拉完全不可见 → 用户无法切到「动态表情」，
+   *   一直在跑默认的静态贴纸却以为是动态的。
+   */
+  workflowOptions?: string[];
   onCommit: (patch: Record<string, unknown>) => void;
   /** 触发运行（cellIndex 传入 = 只重生成该格；不传 = 生成全部）。 */
   onRunRequest?: (cellIndex?: number) => void;
@@ -51,6 +70,17 @@ export interface EmojiStageEditorProps {
   /** @ 选中文件时钉成资产引用。 */
   onPinAsset?: (c: MentionCandidate) => void;
   }
+
+/**
+ * 模板名是否为动态（AnimateDiff）。
+ *
+ * 用名字判定而非维护一张映射表：模板名来自 `EMOJI_BUILTIN_WORKFLOWS` 的键
+ * （见 `builtinWorkflows/emojiWorkflows.ts`），新增动态模板时只要名字带「动态」
+ * 或 AnimateDiff 就会被自动识别，不需要改这里。
+ */
+function isAnimatedWorkflow(label: string | undefined): boolean {
+  return !!label && (label.includes('动态') || /animatediff/i.test(label));
+}
 
 const PRESETS: Array<{ label: string; rows: number; cols: number }> = [
   { label: '2×2', rows: 2, cols: 2 },
@@ -105,13 +135,43 @@ function parseCells(raw: string, count: number): EmojiStageCell[] {
   }
 }
 
-export function EmojiStageEditor({ initial, cellRefs, onCommit, onRunRequest, mentionCandidates, onPinAsset }: EmojiStageEditorProps): React.ReactElement {
+export function EmojiStageEditor({ initial, cellRefs, workflowOptions, onCommit, onRunRequest, mentionCandidates, onPinAsset }: EmojiStageEditorProps): React.ReactElement {
   const [rows, setRows] = React.useState<number>(Math.max(1, Math.min(6, initial.rows || 3)));
   const [cols, setCols] = React.useState<number>(Math.max(1, Math.min(6, initial.cols || 3)));
   const [fps, setFps] = React.useState<number>(initial.fps || 8);
   const [frames, setFrames] = React.useState<number>(initial.frames || 16);
   const [globalPrompt, setGlobalPrompt] = React.useState<string>(initial.prompt || '');
   const [selectedIndex, setSelectedIndex] = React.useState<number>(initial.selectedIndex ?? 0);
+
+  // ── 动态开关 ──────────────────────────────────────────────────────────────
+  // 交互模型：**开关是主控**，`workflow` 是派生值。
+  // 若让开关与模板下拉各持一份 state，两者会互相覆盖（切开关重置下拉、
+  // 选下拉又与开关不符）。故这里只存「开关状态」+「静态模式下选的模板」，
+  // 生效的 workflow 由二者算出，天然不会打架。
+  const animatedOption = React.useMemo(
+    () => (workflowOptions ?? []).find(isAnimatedWorkflow), [workflowOptions]);
+  const staticOptions = React.useMemo(
+    () => (workflowOptions ?? []).filter(o => !isAnimatedWorkflow(o)), [workflowOptions]);
+
+  const [animated, setAnimated] = React.useState<boolean>(() => isAnimatedWorkflow(initial.workflow));
+  // 记住静态模式下选的是哪个模板，这样「关→开→关」能回到原来的选择
+  const [staticWorkflow, setStaticWorkflow] = React.useState<string>(() =>
+    (initial.workflow && !isAnimatedWorkflow(initial.workflow)) ? initial.workflow : (staticOptions[0] ?? ''));
+
+  // 开关 ON 但没有可用的动态模板（理论上不该发生）→ 退回静态，避免写出空 workflow
+  const canAnimate = !!animatedOption;
+  const workflow = (animated && animatedOption) ? animatedOption : staticWorkflow;
+
+  // staticOptions 晚到（首帧 workflowOptions 可能为 undefined）或模板表变更时，
+  // 把失效的 staticWorkflow 纠正到第一个可用值 —— 否则会一直是空串，
+  // commit 时被 `&& workflow` 跳过、静默落回执行器默认模板。
+  React.useEffect(() => {
+    if (staticOptions.length === 0) { return; }
+    if (!staticWorkflow || !staticOptions.includes(staticWorkflow)) {
+      setStaticWorkflow(staticOptions[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staticOptions]);
 
   const cellCount = rows * cols;
   const [cells, setCells] = React.useState<EmojiStageCell[]>(() => parseCells(initial.cells, cellCount));
@@ -129,14 +189,18 @@ export function EmojiStageEditor({ initial, cellRefs, onCommit, onRunRequest, me
 
   // 任何参数变化 → 序列化 cells 写回（保持 node.properties 与 UI 同步）。
   React.useEffect(() => {
-    onCommit({
+    const patch: Record<string, unknown> = {
       rows, cols, fps, frames,
       prompt: globalPrompt,
       selected_index: selectedIndex,
       cells: JSON.stringify(cells),
-    });
+    };
+    // workflow 仅在本编辑器真的提供了选项时才写回，避免在无选项场景把
+    // node.properties.workflow 覆写成空串（会让 runStageWorkflow 落回默认模板）。
+    if (workflowOptions && workflowOptions.length > 0 && workflow) { patch.workflow = workflow; }
+    onCommit(patch);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, cols, fps, frames, globalPrompt, selectedIndex, cells]);
+  }, [rows, cols, fps, frames, globalPrompt, selectedIndex, cells, workflow]);
 
   const setCell = (i: number, patch: Partial<EmojiStageCell>): void => {
     setCells(prev => prev.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
@@ -165,6 +229,72 @@ export function EmojiStageEditor({ initial, cellRefs, onCommit, onRunRequest, me
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {/* 动态开关 + 静态模板下拉。
+          必须画在这里 —— nodeCard 通用控件网格对有内嵌编辑器的 stage 整体不渲染
+          （`!hasInlineEditor` 门禁），widget 里的 workflow 下拉永远不可见。 */}
+      {workflowOptions && workflowOptions.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div
+            onClick={() => { if (canAnimate) { setAnimated(v => !v); } }}
+            title={canAnimate
+              ? (animated
+                ? `动态表情：AnimateDiff 生成 ${frames} 帧透明循环 webp（较慢，约 2 分钟/格）`
+                : '静态贴纸：单张透明 PNG（约 45 秒/格）')
+              : '当前没有可用的动态模板'}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '5px 8px', borderRadius: 6,
+              cursor: canAnimate ? 'pointer' : 'not-allowed',
+              opacity: canAnimate ? 1 : 0.5,
+              userSelect: 'none',
+              background: animated ? 'rgba(168,85,247,.13)' : 'rgba(255,255,255,.04)',
+              border: `1px solid ${animated ? 'rgba(168,85,247,.4)' : 'rgba(255,255,255,.1)'}`,
+            }}
+          >
+            {/* 轨道 + 滑块 */}
+            <span style={{
+              position: 'relative', width: 30, height: 16, borderRadius: 8, flexShrink: 0,
+              background: animated ? '#a855f7' : 'rgba(255,255,255,.18)',
+              transition: 'background .15s ease',
+            }}>
+              <span style={{
+                position: 'absolute', top: 2, left: animated ? 16 : 2,
+                width: 12, height: 12, borderRadius: '50%', background: '#fff',
+                transition: 'left .15s ease',
+              }} />
+            </span>
+            <span style={{
+              fontSize: 11, fontWeight: 600,
+              color: animated ? '#c084fc' : 'var(--vscode-foreground, #e8e8e8)',
+            }}>
+              动态表情
+            </span>
+            <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--vscode-descriptionForeground, #9a9a9a)' }}>
+              {animated ? `${frames} 帧 · ${fps} fps` : '单张 PNG'}
+            </span>
+          </div>
+
+          {/* 静态模式下才需要选具体静态模板（透明贴纸 / 无 LoRA 回退）；
+              动态模式只有一个模板，无需下拉。仅在有 2 个以上静态模板时显示。 */}
+          {!animated && staticOptions.length > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground, #9a9a9a)', whiteSpace: 'nowrap' }}>模板</span>
+              <select
+                value={staticWorkflow}
+                onChange={(e) => setStaticWorkflow(e.target.value)}
+                style={{
+                  flex: 1, minWidth: 0, fontSize: 10, padding: '3px 6px', borderRadius: 5,
+                  background: '#17181c', color: 'var(--vscode-foreground, #e8e8e8)',
+                  border: '1px solid rgba(255,255,255,.14)', fontFamily: 'inherit',
+                }}
+              >
+                {staticOptions.map(o => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 预设 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground, #9a9a9a)', marginRight: 2 }}>预设</span>
@@ -197,7 +327,9 @@ export function EmojiStageEditor({ initial, cellRefs, onCommit, onRunRequest, me
         }}
       >
         {cells.map((c, i) => {
-          const ref = cellRefs?.[i];
+          const cellRef = cellRefs?.[i];
+          const ref = typeof cellRef === 'string' ? cellRef : cellRef?.ref;
+          const caption = typeof cellRef === 'string' ? undefined : cellRef?.caption;
           const isSel = i === selectedIndex;
           return (
             <div
@@ -221,8 +353,9 @@ export function EmojiStageEditor({ initial, cellRefs, onCommit, onRunRequest, me
               ) : (
                 <span style={{ color: '#6b6b6b', fontSize: 18 }}>＋</span>
               )}
-              {/* 配文预览层：动画贴纸不烘焙（保动画），用 CSS 叠字；静态贴纸烘焙进图，此处一致显示 */}
-              {c.text ? (
+              {/* 配文预览层：动画贴纸不烘焙（保动画），用 CSS 叠字；静态贴纸烘焙进图，此处一致显示。
+                  优先读归档 caption（meta.caption，重启不丢且与导出/分享一致），回退编辑器内存态 c.text。 */}
+              {(caption ?? c.text) ? (
                 <span style={{
                   position: 'absolute', left: 5, right: 5, bottom: 6,
                   textAlign: 'center', fontSize: 11, fontWeight: 700,
@@ -290,7 +423,7 @@ export function EmojiStageEditor({ initial, cellRefs, onCommit, onRunRequest, me
           <span style={{ flex: 1 }} />
           {onRunRequest && (
             <button
-              onClick={() => onRunRequest(selectedIndex)}
+              onClick={() => { /* eslint-disable-next-line no-console */ console.warn(`[EmojiStage] click ⟳ 生成此表情 selectedIndex=${selectedIndex}`); onRunRequest(selectedIndex); }}
               style={{ ...btn(false), background: 'linear-gradient(180deg,#d05ee0,#b44cc4)', borderColor: 'transparent', color: '#fff', fontWeight: 600 }}
             >
               ⟳ 生成此表情
@@ -307,20 +440,31 @@ export function EmojiStageEditor({ initial, cellRefs, onCommit, onRunRequest, me
           onChange={setGlobalPrompt}
           candidates={mentionCandidates ?? []}
           onPinAsset={onPinAsset}
-          placeholder="卡通表情包贴纸，透明背景，循环动画（输入 @ 引用节点或选择文件）"
+          placeholder={animated
+            ? '卡通表情包贴纸，透明背景，循环动画（输入 @ 引用节点或选择文件）'
+            : '卡通表情包贴纸，透明背景（输入 @ 引用节点或选择文件）'}
           style={{
             minHeight: 40, background: '#17181c', border: '1px solid rgba(255,255,255,.1)',
             borderRadius: 6, fontSize: 11, padding: 6, lineHeight: 1.5, maxHeight: 120,
           }}
         />
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          {stepper('帧率', fps, 1, 30, setFps)}
-          {stepper('帧数', frames, 1, 32, setFrames)}
-        </div>
+        {/* 帧率/帧数**仅动态模板消费**（绑定到 SaveAnimatedWEBP.fps 与
+            EmptyLatentImage.batch_size，见 emojiWorkflows.ts 的 inputs 声明）。
+            静态模式下直接不渲染 —— 摆着不可用的控件本身就是误导来源：
+            此前 workflow 下拉不可见 + 帧率/帧数常驻，用户一直以为在跑动态。 */}
+        {animated && (
+          <div
+            title="帧率 → webp 播放速度；帧数 → 动画总帧数（帧数越大越慢）"
+            style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}
+          >
+            {stepper('帧率', fps, 1, 30, setFps)}
+            {stepper('帧数', frames, 1, 32, setFrames)}
+          </div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {onRunRequest && (
             <button
-              onClick={() => onRunRequest()}
+              onClick={() => { /* eslint-disable-next-line no-console */ console.warn(`[EmojiStage] click ▶ 生成全部 cellCount=${cellCount}`); onRunRequest(); }}
               style={{ ...btn(false), background: 'linear-gradient(180deg,#3b82f6,#2563eb)', borderColor: 'transparent', color: '#fff', fontWeight: 600, padding: '5px 12px' }}
             >
               ▶ 生成全部（{cellCount} 个）
@@ -330,6 +474,13 @@ export function EmojiStageEditor({ initial, cellRefs, onCommit, onRunRequest, me
             {MAX_CELLS >= cellCount ? `${cellCount} 格 · 选中 #${selectedIndex}` : '格数超限'}
           </span>
         </div>
+        {/* 动态生成代价高（768² × frames，实测 ~140s/格），点之前先给出预估，
+            避免用户以为卡死。系数取自 RTX 4070 实测：静态 ~45s、动态 ~140s。 */}
+        {animated && cellCount > 1 && (
+          <div style={{ fontSize: 9, color: 'var(--vscode-descriptionForeground, #9a9a9a)' }}>
+            预计约 {Math.round(cellCount * 140 / 60)} 分钟（{cellCount} 格 × ~140 秒），可先用「⟳ 生成此表情」试单格
+          </div>
+        )}
       </div>
     </div>
   );

@@ -35,6 +35,13 @@ interface HarnessQuery {
 	withUpstream: boolean;
 }
 
+/** spec 通过 addInitScript 注入的 ComfyTV 真实源码快照（nodeType → {html, css}）。 */
+declare global {
+	interface Window {
+		__comfytvSnapshots?: Record<string, { html: string; css: string }>;
+	}
+}
+
 function parseQuery(): HarnessQuery {
 	const p = new URLSearchParams(location.search);
 	const stateRaw = p.get('state');
@@ -129,23 +136,29 @@ async function main(): Promise<void> {
 
 		try {
 			const { meta, properties } = mountScenario(sc, host, nodeCardMod, snapMod, cardStateMod, registry);
-			// ★ 渲染 ComfyTV 参考卡（success 态）：参数行与本项目卡同一份种子数据
-			//   （唯一变量是样式），肉眼比对才有「只有样式差异」的语义。
+			// ★ 渲染 ComfyTV 参考卡（success 态）：优先用 ComfyTV 真实源码渲染的
+			//   HTML 快照（iframe，由 spec 注入 window.__comfytvSnapshots），缺失时
+			//   fallback 到手绘 token 参考卡。真实快照 = 「绘制 ComfyTV 源码节点 UI」。
 			if (sc.state === 'success') {
 				const refHost = cell.querySelector<HTMLElement>('[data-vt-ref-host]');
 				if (refHost) {
-					const controls = (meta.controls ?? []).map(c => ({
-						name: c.name,
-						type: String(c.type ?? ''),
-						value: String(properties[c.name] ?? ''),
-					}));
-					createRoot(refHost).render(refMod.ComfyTvReferenceCard({
-						nodeType: sc.nodeType,
-						title: sc.nodeType.replace(/^(ComfyTV|Saros)\./, ''),
-						controls,
-						hasPrompt: !!meta.hasPrompt,
-						width: 280,
-					}));
+					const snap = window.__comfytvSnapshots?.[sc.nodeType];
+					if (snap) {
+						renderComfytvSnapshot(refHost, sc.nodeType, snap);
+					} else {
+						const controls = (meta.controls ?? []).map(c => ({
+							name: c.name,
+							type: String(c.type ?? ''),
+							value: String(properties[c.name] ?? ''),
+						}));
+						createRoot(refHost).render(refMod.ComfyTvReferenceCard({
+							nodeType: sc.nodeType,
+							title: sc.nodeType.replace(/^(ComfyTV|Saros)\./, ''),
+							controls,
+							hasPrompt: !!meta.hasPrompt,
+							width: 280,
+						}));
+					}
 				}
 			}
 			// ★ 契约期望值一律从 meta 派生（而非 spec）：meta 是卡片的真实渲染输入，
@@ -164,6 +177,7 @@ async function main(): Promise<void> {
 			cell.setAttribute('data-vt-editor-kind', stageCardMod.stageEditorKind(sc.nodeType));
 			// 卡片区块开关（hideOutput / hideActions …）—— 同为 stageCardRegistry 声明
 			cell.setAttribute('data-vt-hide-output', String(!!stageCardMod.stageCardFlags(sc.nodeType).hideOutput));
+			cell.setAttribute('data-vt-hide-actions', String(!!stageCardMod.stageCardFlags(sc.nodeType).hideActions));
 			cell.setAttribute('data-vt-mounted', 'ok');
 		} catch (err) {
 			cell.setAttribute('data-vt-mounted', 'error');
@@ -189,6 +203,40 @@ async function main(): Promise<void> {
 	document.body.setAttribute('data-vt-scenarios', String(scenarios.length));
 	document.body.setAttribute('data-vt-blocked-requests', String(netGuard.blocked.length));
 	document.body.setAttribute('data-vt-bridge-calls', String(bridge.calls.length));
+}
+
+/**
+ * 渲染 ComfyTV 真实源码节点 UI 快照（iframe srcdoc）。
+ * html/css 来自 ComfyTV 侧 `stageCardRender.test.ts` 导出的真实 StageCard DOM
+ * （含 ctv: 前缀 tailwind 类）+ `@tailwindcss/cli` 生成的 ctv CSS。
+ * 由 spec 在页面加载前通过 addInitScript 注入 window.__comfytvSnapshots。
+ */
+function renderComfytvSnapshot(
+	refHost: HTMLElement,
+	nodeType: string,
+	snap: { html: string; css: string },
+): void {
+	const iframe = document.createElement('iframe');
+	iframe.className = 'vt-comfytv-frame';
+	iframe.setAttribute('data-vt-ref', 'iframe');
+	iframe.setAttribute('title', `ComfyTV ${nodeType} 真源快照`);
+	iframe.style.cssText = 'width:280px;border:none;display:block;background:#1e1e1e;';
+	// 内容高度自适应：doc.write 完成后读 body.scrollHeight 设 iframe 高度
+	iframe.addEventListener('load', () => {
+		const body = iframe.contentDocument?.body;
+		if (body) { iframe.style.height = `${Math.max(body.scrollHeight, 80)}px`; }
+	});
+	refHost.appendChild(iframe);
+	const doc = iframe.contentDocument!;
+	doc.open();
+	doc.write(`<!doctype html><html><head><meta charset="utf-8">
+<style>${snap.css}</style>
+<style>
+  html,body{margin:0;padding:0;background:#1e1e1e;color:#e0e0e0;
+    font-family:'Segoe UI',system-ui,sans-serif;width:280px;}
+  .vt-snap-root{width:280px;}
+</style></head><body><div class="vt-snap-root">${snap.html}</div></body></html>`);
+	doc.close();
 }
 
 type NodeCardMod = typeof import('../src/features/workflowEditor/comfyHost/nodeCard');
@@ -264,6 +312,16 @@ function seedProperties(sc: VisualScenario): Record<string, unknown> {
 	}
 	// picker 默认选中第 1 张，pool 高亮才有确定性
 	if (sc.spec.type.endsWith('PickerStage')) { props.selected_index = 1; }
+	// ★ EmojiStage 每格状态种子（cells 是 TEXT 不进 controls，见 NodeCardMeta.cells
+	//   注释）—— 覆盖「重启后 cells 透传」的读回路径。给前 3 格填独立 prompt/seed，
+	//   其余格留空，dump 里「编辑 #0」应显示「格子 0 的独立描述」。
+	if (sc.spec.type === 'ComfyTV.EmojiStage') {
+		props.cells = JSON.stringify([
+			{ prompt: '格子 0 的独立描述', seed: 42, text: '格0配文' },
+			{ prompt: '格子 1 的独立描述', seed: 7, text: '' },
+			{ prompt: '', seed: 0, text: '' },
+		]);
+	}
 	// ★ 编排节点的动态 COMBO（agentId/providerId/modelId/skillName/toolName）
 	//   没有静态 options，seedProperties 的 `w.options?.[0] ?? ''` 会给空串 →
 	//   控件显示 "—"。这里用与 DEMO_* store 数据对齐的 id 覆盖，让下拉框

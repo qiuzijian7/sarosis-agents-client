@@ -112,7 +112,19 @@ export function adaptModelDelta(deps: ModelAccessDeps, delta: any): IChatStreamD
 			deps.logService.info(`[AgentOS] _adaptModelDelta tool_start: name=${delta.toolCall.name}, defaultShow=${delta.toolCall.defaultShow}, displayName=${delta.toolCall.displayName}, renderType=${delta.toolCall.renderType}`);
 			return result;
 		}
-		return { type: 'tool_args' as any, content: delta.toolCall.arguments || '', toolCallId: delta.toolCall.id };
+		// 纯参数 delta（无 name）→ tool_args。
+		// ⚠ arguments 可能是**对象**（codebuddy-provider 报的是 JSON.parse 后的
+		// params，见 extension.ts:1630）。此处若直接透传对象，渲染层
+		// `argCall.args += delta.content` 会拼出 "[object Object]" —— 比空字符串
+		// 更糟（parseToolArgsLoose 也救不回来）。故统一序列化为字符串。
+		const _rawArgs = delta.toolCall.arguments;
+		let _argsStr = '';
+		if (typeof _rawArgs === 'string') {
+			_argsStr = _rawArgs;
+		} else if (_rawArgs && typeof _rawArgs === 'object') {
+			try { _argsStr = JSON.stringify(_rawArgs); } catch { _argsStr = ''; }
+		}
+		return { type: 'tool_args' as any, content: _argsStr, toolCallId: delta.toolCall.id };
 	}
 	// tool_progress（2026-07-26 治本）：工具参数生成进度透传——
 	// resilience/subagent 看门狗据此续命；UI 仅作轻量提示，不进正文/装配。

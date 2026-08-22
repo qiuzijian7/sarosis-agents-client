@@ -26,8 +26,14 @@ export interface IForkContext {
 	readonly toolsFingerprint: string;
 }
 
-/** FNV-1a 32-bit hash — stable across runs, no crypto dependency (browser-safe). */
-function fnv1a(str: string): string {
+/**
+ * FNV-1a 32-bit hash — stable across runs, no crypto dependency (browser-safe).
+ *
+ * ⚠ 这是**全仓唯一的提示词 hash 真源**。`promptDiagnostics.ts` 的前缀指纹快照
+ * 复用本函数，绝不另写一份 —— 否则会出现「指纹日志报前缀没变」与「fork 判定报
+ * 变了」同时成立，两份 hash 必漂移。
+ */
+export function fnv1a(str: string): string {
 	let h = 0x811c9dc5;
 	for (let i = 0; i < str.length; i++) {
 		h ^= str.charCodeAt(i);

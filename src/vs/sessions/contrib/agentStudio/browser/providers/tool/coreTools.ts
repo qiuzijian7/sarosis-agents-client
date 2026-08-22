@@ -27,9 +27,18 @@ import { NonRetryableToolError, ToolSecurityLevel } from '../../../common/provid
 import type { IToolResultContent } from '../../../common/providers.js';
 import { SearchHelpers, redactSecrets } from './searchHelpers.js';
 import { detectTerminalSearchCommand, terminalSearchCommandHint } from './terminalCommandGuards.js';
-import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS } from './executeCodeGuards.js';
+import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, detectScriptSourceWrite, scriptSourceWriteGuardMessage } from './executeCodeGuards.js';
+import { stripShellNoise, isSlowStartCommand, emptyTerminalOutputMessage, createShellNoiseStripper } from './terminalOutputDiagnosis.js';
+import { pickTerminalStrategy, decideIdleWaitAction } from './terminalCompletionStrategy.js';
+import { runExecOutputPipeline } from './execOutputPipeline.js';
+import { TerminalCapability } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
+import type { ICommandDetectionCapability, ITerminalCommand } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
+import { shellPlatformGuidance, windowsDualShellGuidance } from './shellPlatformPrompt.js';
+import { annotateCommandFailure, renderFailureHint } from './commandFailureHints.js';
 import { detectGitBash, gitBashShellEnvironment, type IGitBashInfo } from './gitBashProvider.js';
 import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
+import { SHELL_APPROVAL_SHAPE_GUIDANCE } from '../../../common/shellCommandSafety.js';
+import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 import {
 	detectDevicePath,
 	detectSensitivePath,
@@ -53,6 +62,12 @@ export interface CoreToolContext {
 	terminalService: ITerminalService;
 	workspaceService: IWorkspaceContextService;
 	configurationService: IConfigurationService;
+	/**
+	 * 该 agent **实际绑定**的 worktree 根（`resolveEffectiveWorktreeRoot` 结果，未绑定为
+	 * undefined）。用于 file_read 判定「读到的是未绑定的 worktree 过期副本」
+	 * （2026-08-20，日志 1787217670299）。可选：未注入时退化为不告警。
+	 */
+	getBoundWorktreeRoot?: (agentId: string | undefined) => Promise<string | undefined>;
 }
 
 // ── 静态常量（原 BuiltinToolProvider 静态成员）────────────────────────
@@ -61,6 +76,12 @@ const READ_LINE_MAX_CHARS = 2000;
 const READ_MAX_CHARS = 100_000;
 const LARGE_FILE_HINT_BYTES = 512 * 1024;
 const LARGE_FILE_HINT_MIN_LIMIT = 200;
+/**
+ * limit ≤ 此值视为「规模探查读取」，输出额外的 `[File info: N 行, XKB]` 元信息行。
+ * 目的：让 `file_read(path, limit:1)` 成为「查文件多少行」的正规做法，替代
+ * 会触发审批的 shell 命令（`(Get-Content x).Count` / `wc -l`）。
+ */
+const PROBE_LIMIT_MAX = 5;
 /** 上下文窗口大小（2026-07-26 P2 动态上下文保护）：全读大文件时按占比警告 */
 const CONTEXT_WINDOW_TOKENS = 128_000;
 // 敏感路径表已迁移到 sensitivePaths.ts（单一真源，读写共享同一份表与匹配语义）
@@ -147,7 +168,27 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			let dataListener: IDisposable | undefined;
 			let exitListener: IDisposable | undefined;
 
-			const IDLE_TIMEOUT_MS = 1500; // 1.5s 无新输出视为命令完成
+			const IDLE_TIMEOUT_MS = 1500; // 基础 idle 轮询间隔（none 档专用）
+
+			// ── 完成判定：三档策略（2026-08-22，横向对标五家开源实现后重构）──────
+			//
+			// 对标结论（详见 terminalCompletionStrategy.ts 头注释）：continue / opencode /
+			// MiMo 都不用 PTY（`spawn` + 等 `close`/`exitCode`，没有猜的余地）；Cline 与
+			// VS Code 官方同样用 VS Code Terminal，但完成判定**由 shell integration 事件
+			// 驱动**，不是计时器。**只有本项目在用固定 idle 超时猜完成** —— 日志
+			// 1787324352413 里 8 次调用全部只拿到提示符、`npx tsc` 输出全丢，根因正是它。
+			//
+			// 本项目其实一直具备 `TerminalCapability.CommandDetection`（全仓 52 处在用，
+			// 提供 `onCommandFinished` + 真实 `exitCode` + 按 marker 取的 `getOutput()`），
+			// 只是 terminal 工具从未使用 —— 记忆里长期记录的「terminal 走 PTY 拿不到
+			// 结构化 exit code」这一前提是错的。
+			//
+			// 慢启动形态仅用于 none 档的等待预算（rich/basic 档由事件驱动，与快慢无关）。
+			const slowStart = isSlowStartCommand(command);
+			/** none 档允许的最长等待：慢启动给足 timeout 预算，其余给保守下限。 */
+			const noneMaxWaitMs = slowStart
+				? Math.min(Math.max(timeoutSec * 1000, 15_000), 60_000)
+				: 6_000;
 
 			// ── 等待 shell 就绪（processReady + 首次输出）──
 			// PowerShell profile 加载需 1.5-3s，若在 shell 未就绪时 sendText，
@@ -169,12 +210,87 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				firstDataListener?.dispose();
 			} catch { /* 就绪检测失败不影响后续执行 */ }
 
+			// ── 能力探测（必须在 shell 就绪之后）──────────────────────────────
+			// shell integration 是**随 shell 启动执行注入脚本**才注册能力的，在
+			// processReady 之前探测必然为空 → 会把所有终端都误判成 none 档。
+			// 就绪后再给一个短窗口等待；等不到就落 none 档（自定义 executable 的
+			// Git Bash 通常不被注入，常落此档）。
+			const COMMAND_DETECTION_WAIT_MS = 3000;
+			const commandDetection = await (async () => {
+				const existing = instance.capabilities.get(TerminalCapability.CommandDetection);
+				if (existing) { return existing; }
+				return await new Promise<ICommandDetectionCapability | undefined>((resolve) => {
+					let settled = false;
+					const listener = instance.capabilities.onDidAddCommandDetectionCapability((cap) => {
+						if (settled) { return; }
+						settled = true;
+						listener.dispose();
+						resolve(cap);
+					});
+					setTimeout(() => {
+						if (settled) { return; }
+						settled = true;
+						listener.dispose();
+						resolve(undefined);
+					}, COMMAND_DETECTION_WAIT_MS);
+				});
+			})();
+
+			const strategy = pickTerminalStrategy({
+				hasCommandDetection: !!commandDetection,
+				hasRichCommandDetection: !!commandDetection?.hasRichCommandDetection,
+			});
+
+			// 有状态流式剥离器：用于「命令是否已产出真实输出」判定（见
+			// terminalOutputDiagnosis.createShellNoiseStripper —— 一旦见到真输出就永久
+			// 停止剥回显，结构性避免误吞后续真实输出）。
+			const streamStripper = createShellNoiseStripper({ command });
+			const waitStartedAt = Date.now();
+
 			const outputPromise = new Promise<string>((resolve) => {
 				let idleTimer: ReturnType<typeof setTimeout>;
+				/** idle 延长次数 —— 用于抑制日志刷屏（慢启动命令可能连续延长多次）。 */
+				let extendCount = 0;
+				/**
+				 * idle 到点后的处置。
+				 *
+				 * ★ 2026-08-22：原实现 idle 一到就 `resolve('')` 收工，慢启动命令必然被
+				 * 提前收走。现对齐官方 `waitForIdleWithPromptHeuristics` —— **先看最后一行
+				 * 像不像 shell 提示符**：像 → shell 已回到提示符、命令确实结束；不像 →
+				 * 命令还在跑，继续等（上限 noneMaxWaitMs，再由外层 timeout 兜底）。
+				 *
+				 * 这比上一轮「按命令名猜是否慢启动」更普适，且不需要维护命令名单。
+				 * 注意判据必须用**原始输出**（含提示符），不能用剥离后的文本。
+				 */
+				const onIdle = () => {
+					const action = decideIdleWaitAction({
+						collectedOutput: outputChunks.join(''),
+						elapsedMs: Date.now() - waitStartedAt,
+						maxWaitMs: noneMaxWaitMs,
+					});
+					// ★ 2026-08-22：原为 `logService.trace`，默认日志级别不输出 —— 日志
+					// 1787368358120 里 0 条，导致「提示符启发式到底怎么判的」完全不可见
+					// （只能从耗时间接推断）。这两条是 none 档唯一的判定过程记录，且每次
+					// 命令最多产生 ~N/1.5s 条，升为 info 的体积代价可接受。
+					if (action.kind === 'done') {
+						ctx.logService.info(
+							`[BuiltinTools] terminal idle → done after ${Date.now() - waitStartedAt}ms: ${action.reason}`);
+						resolve('');
+						return;
+					}
+					extendCount++;
+					// extend 可能连续多次（慢启动命令），只在首次与每第 5 次记录，避免刷屏
+					if (extendCount === 1 || extendCount % 5 === 0) {
+						ctx.logService.info(
+							`[BuiltinTools] terminal idle → extend ×${extendCount} ` +
+							`(waited ${Date.now() - waitStartedAt}ms / max ${noneMaxWaitMs}ms): ${action.reason}`);
+					}
+					idleTimer = setTimeout(onIdle, IDLE_TIMEOUT_MS);
+				};
 
 				const markIdle = () => {
 					clearTimeout(idleTimer);
-					idleTimer = setTimeout(() => resolve(''), IDLE_TIMEOUT_MS);
+					idleTimer = setTimeout(onIdle, IDLE_TIMEOUT_MS);
 				};
 
 				// 监听数据输出
@@ -191,6 +307,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 						.replace(/\r\n/g, '\n')
 						.replace(/\r/g, '\n');
 					outputChunks.push(clean);
+					streamStripper.push(clean);
 					markIdle();
 				});
 
@@ -201,8 +318,8 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 					resolve(`Exit code: ${code}\n`);
 				});
 
-				// 初始 idle 计时器（处理无输出命令）
-				idleTimer = setTimeout(() => resolve(''), IDLE_TIMEOUT_MS);
+				// 初始计时器：此刻尚无任何命令输出，走同一套「提示符启发式」判定
+				idleTimer = setTimeout(onIdle, IDLE_TIMEOUT_MS);
 			});
 
 			// v27: hard cap timeout at 60s regardless of user input.
@@ -212,8 +329,11 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			// v27: log the actual command at the start of execution.
 			ctx.logService.info(
 				`[BuiltinTools] terminal: command="${redactSecrets(command).slice(0, 200)}" cwd=${effectiveCwd ?? '(none)'} ` +
-				`timeout=${timeoutSec}s hardCap=${hardCapMs}ms`,
+				`timeout=${timeoutSec}s hardCap=${hardCapMs}ms strategy=${strategy} slowStart=${slowStart}`,
 			);
+
+			// 快照：用于覆盖「命令在监听器注册前就已完成」的竞态（见下方注释）
+			const commandCountBeforeSend = commandDetection?.commands.length ?? 0;
 
 			// v27: defensive `await instance.sendText(command, true)`.
 			const sendTextTimeoutMs = hardCapMs + 5_000;
@@ -221,6 +341,30 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				setTimeout(() => resolve(), sendTextTimeoutMs);
 			});
 			await Promise.race([instance.sendText(command, true), sendTextTimeout]);
+
+			// ── rich / basic 档：事件驱动完成判定 ────────────────────────────────
+			// 这是本次重构的核心收益：完成与否由 shell integration 报告，**与命令启动
+			// 快慢完全无关** —— 日志 1787324352413 里 `npx tsc` 输出全丢的场景在此档下
+			// 结构上不会发生。同时能拿到真实 exitCode 与按 marker 取的干净输出。
+			let finishedCommand: ITerminalCommand | undefined;
+			let commandFinishedListener: IDisposable | undefined;
+			const commandFinishedPromise = commandDetection
+				? new Promise<string>((resolve) => {
+					commandFinishedListener = commandDetection.onCommandFinished((cmd) => {
+						if (finishedCommand) { return; }
+						finishedCommand = cmd;
+						resolve('');
+					});
+					// 竞态兜底：极快的命令（`echo hi`）可能在 await sendText 返回后、
+					// 监听器注册前就已完成 —— 此时事件已经错过，只能靠 commands 数组
+					// 的增量发现。不做这层检查会退化成等满 idle/timeout。
+					const cmds = commandDetection.commands;
+					if (cmds.length > commandCountBeforeSend) {
+						finishedCommand = cmds[cmds.length - 1];
+						resolve('');
+					}
+				})
+				: undefined;
 
 			// 等待输出或超时
 			let result = '';
@@ -238,7 +382,12 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				setTimeout(() => resolve(`[TIMEOUT] Command timed out after ${timeoutMs / 1000}s\n`), timeoutMs);
 			});
 
-			result = await Promise.race([outputPromise, timeoutPromise, abortPromise]);
+			// rich/basic 档把 commandFinished 一并纳入竞速：谁先到用谁。
+			// 仍保留 outputPromise（idle + 提示符启发式）作为「shell integration 没报
+			// 完成」的兜底 —— 能力存在但脚本中途失效是真实存在的情况，不能只依赖事件。
+			const raceTargets: Promise<string>[] = [outputPromise, timeoutPromise, abortPromise];
+			if (commandFinishedPromise) { raceTargets.push(commandFinishedPromise); }
+			result = await Promise.race(raceTargets);
 
 			// 等待一小段时间让剩余数据到达
 			await new Promise<void>(resolve => setTimeout(resolve, 300));
@@ -246,24 +395,28 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			// 清理监听器
 			dataListener?.dispose();
 			exitListener?.dispose();
+			commandFinishedListener?.dispose();
 
-			// 合并输出
-			let fullOutput = outputChunks.join('') + result;
+			// ── 输出取值：优先 shell integration 的 marker 区间 ─────────────────
+			// `ITerminalCommand.getOutput()` 按命令的 start/end marker 从 buffer 取，
+			// 天然不含提示符与命令回显，比 onData 抓取干净得多（Cline 与官方都用它）。
+			// 取不到（marker 失效 / 输出被 buffer 滚掉）时回退到 onData 累积。
+			const markerOutput = finishedCommand?.getOutput();
+			const rawMerged = markerOutput !== undefined && markerOutput.length > 0
+				? markerOutput
+				: outputChunks.join('') + result;
 
-			// 后处理：去除 PowerShell 欢迎信息、提示符重复等多余内容
-			fullOutput = fullOutput
-				// PowerShell 版本提示行
-				.replace(/PowerShell\s+\d+\.\d+\.\d+.*\n?/gi, '')
-				// 升级通知
-				.replace(/A new PowerShell stable release is available:.*\n?/gi, '')
-				.replace(/Upgrade now, or check out the release page at:.*\n?/gi, '')
-				.replace(/https:\/\/aka\.ms\/PowerShell-Release\?tag=.*\n?/gi, '')
-				// Git Bash 模式（2026-08-18）：login 横幅与 MINGW 提示符行
-				.replace(/Last login:.*\n?/gi, '')
-				.replace(/^[^\n]*@+[^\n]*MINGW[0-9]+[^\n]*\$\s*$/gm, '')
-				// 多余的空行压缩
-				.replace(/\n{3,}/g, '\n\n')
-				.trim();
+			// 后处理：去除 shell 提示符 / 命令回显 / 登录横幅 / 版本与升级通知。
+			//
+			// ★ 2026-08-21（日志 1787324352413）：原实现用一条大正则清 Git Bash 提示符
+			// （`/^[^\n]*@+[^\n]*MINGW[0-9]+[^\n]*\$\s*$/gm`），要求**同一行内**既含 `@`、
+			// `MINGW<数字>` 又以 `$` 结尾。真实提示符是**两行**：
+			//   `user@host MINGW64 /path(branch)`  ← 以 `)` 结尾，不匹配
+			//   `$ <命令回显>`                     ← 无 `@`/`MINGW`，不匹配
+			// 两行全漏 → 提示符与回显原样进 LLM 上下文，且「输出是否为空」无法判断
+			// （提示符本身非空 → 永远走成功路径）。现改为逐行判定，见
+			// terminalOutputDiagnosis.stripShellNoise。
+			const fullOutput = stripShellNoise(rawMerged, { command });
 
 			// 尝试销毁终端实例
 			try {
@@ -273,7 +426,20 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			} catch { /* ignore */ }
 
 			// 密钥脱敏 — 防止命令回显的密钥泄露到 LLM 上下文（对齐 Hermes/Claude Code）
-			const sanitizedOutput = redactSecrets(fullOutput);
+			const sanitizedRaw = redactSecrets(fullOutput);
+
+			// token 效率管道（2026-08-22，与 execute_code 共用同一份实现）：
+			// 折叠 \r 进度帧、剥 ANSI、折叠超长行，并按命令形态做结构化聚合
+			// （tsc 按错误码/文件聚合、依赖栈帧折叠、npm deprecation 折叠）。
+			// 内部有 never-worse 契约，最坏情况不劣于原先的裸截断。
+			const piped = runExecOutputPipeline(sanitizedRaw, command);
+			if (piped.appliedStages.length > 0) {
+				ctx.logService.trace(
+					`[BuiltinTools] terminal output pipeline: ${piped.appliedStages.join(',')} ` +
+					`(${sanitizedRaw.length} → ${piped.text.length} chars)`,
+				);
+			}
+			const sanitizedOutput = piped.text;
 
 			// 截断过长输出 — head-tail 策略（对齐 Hermes）
 			const maxLen = 65536;
@@ -284,7 +450,73 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 					+ sanitizedOutput.slice(sanitizedOutput.length - maxLen / 2)
 				: sanitizedOutput;
 
-			return [{ type: 'text', text: finalOutput || '(no output)' }];
+			// ── exit code：优先真实值，回退正则 ─────────────────────────────────
+			// ★ 2026-08-22：`ITerminalCommand.exitCode` 是 shell integration 报告的**真实
+			// 退出码**。此前只能从输出里正则抠 shell 偶尔打出的 `Exit code: N`（日志里
+			// 全是 `exit unknown`），导致 annotateCommandFailure 只能靠错误文本猜，
+			// 还误判过 `no-such-file`（真实原因是 shell 方言不匹配）。
+			const regexExit = /(?:^|\n)Exit code:\s*(\d+)/.exec(finalOutput);
+			const parsedExit = finishedCommand?.exitCode ?? (regexExit ? Number(regexExit[1]) : undefined);
+			const exitSource = finishedCommand?.exitCode !== undefined ? 'shellIntegration'
+				: regexExit ? 'regex' : 'unknown';
+
+			// ── 空产出处理（2026-08-21 引入，2026-08-22 按档细分）────────────────
+			// 清理后没有任何实质内容有**两种截然不同**的含义，必须区分，否则要么误导
+			// 模型、要么白烧迭代：
+			//   a) 有真实 exitCode（rich/basic）→ 命令确实结束且**确实没有输出**，
+			//      这是合法事实（`cd`/`mkdir`/`git add` 都如此）。据实报告即可，
+			//      切不可让模型以为「结果丢了」而重跑。
+			//   b) 无 exitCode（none 档）→ 只拿到提示符/回显，结果**可能真的丢了**。
+			//      这正是日志 1787324352413 的形态：原实现此时 hintedOutput 仍非空
+			//      （提示符是非空串）→ 永远报成功，模型只能自创「重定向到 /tmp 再
+			//      cat」「加 sleep」等无效规避（连烧 8 轮 37s）。
+			// 两者都**刻意不抛错**：命令很可能真的在跑（副作用已发生），抛错会让模型
+			// 以为没执行而重跑一遍构建。
+			if (!finalOutput) {
+				const interrupted = /^\[(?:INTERRUPTED|TIMEOUT)\]/.test(result.trim());
+				if (interrupted) {
+					// 中断/超时有自己的明确文案，按原样返回（模型能正确理解）
+					return [{ type: 'text', text: result.trim() }];
+				}
+				if (parsedExit !== undefined) {
+					ctx.logService.info(
+						`[BuiltinTools] terminal: command produced no output (exit=${parsedExit} ` +
+						`strategy=${strategy} exitSource=${exitSource})`,
+					);
+					return [{
+						type: 'text',
+						text: `Command completed with exit code ${parsedExit}. The command produced no output.`,
+					}];
+				}
+				ctx.logService.warn(
+					`[BuiltinTools] terminal: NO OUTPUT CAPTURED after ${timeoutMs}ms ` +
+					`(strategy=${strategy} slowStart=${slowStart}) — command="${redactSecrets(command).slice(0, 120)}"`,
+				);
+				return [{ type: 'text', text: emptyTerminalOutputMessage(command, timeoutMs) }];
+			}
+
+			// ── 失败下一步提示（Hermes terminal_hints 式，2026-08-21）───────────
+			// 工具级重试已移除（决策交给模型），提示会明确表态「别重试」还是「稍后重试」。
+			let hintedOutput = finalOutput;
+			// 有真实 exitCode 时把它显式告知模型 —— 否则「命令失败了但输出看不出来」
+			// （例如只打 warning 却 exit 1）会被误读成成功。
+			if (parsedExit !== undefined && parsedExit !== 0) {
+				hintedOutput = `${finalOutput}\n\nExit code: ${parsedExit}`;
+			}
+			// 仅在「非 0 退出码」或「未知退出码但输出含错误特征」时才尝试提示，
+			// 避免给成功命令加噪音。
+			if (parsedExit === undefined || parsedExit !== 0) {
+				const hint = annotateCommandFailure(parsedExit, finalOutput);
+				if (hint) {
+					hintedOutput = `${hintedOutput}\n\n${renderFailureHint(hint)}`;
+					ctx.logService.info(
+						`[BuiltinTools] terminal failure hint: ${hint.id} ` +
+						`(exit=${parsedExit ?? 'unknown'} source=${exitSource} strategy=${strategy})`,
+					);
+				}
+			}
+
+			return [{ type: 'text', text: hintedOutput }];
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			return [{ type: 'text', text: `Error executing command: ${msg}` }];
@@ -499,13 +731,24 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 	ctx.register({
 		definition: {
 			name: 'file_read',
-			description: 'Read a UTF-8 text file with line numbers and pagination. Output format: LINE_NUM|CONTENT (e.g. 34|foo). Use offset/limit for large files. Binary files are rejected by extension.',
+			// ⚠ description 必须声明「输出带总行数」与「limit:1 探查规模」这两点
+			// （2026-08-22）：这是**已实现但模型不知道**的能力，缺了它模型会去跑
+			// `(Get-Content x).Count` / `wc -l` —— shell 工具是 Dangerous 级、必然弹
+			// 审批打断执行。防线 `_verify_tool_description_coverage.mjs` 会断言此处
+			// 提到 totalLines / File info，删掉会报错。
+			description: 'Read a UTF-8 text file with line numbers and pagination. Output format: LINE_NUM|CONTENT (e.g. 34|foo). '
+				+ 'Every response ends with the file\'s TOTAL line count. '
+				+ 'To check how large a file is (line count + size in KB) without reading it, call this with limit:1 — '
+				+ 'the response includes a "[File info: N 行, X KB]" line. '
+				+ 'NEVER use shell commands to count lines or measure files (e.g. (Get-Content x).Count, wc -l): '
+				+ 'shell tools require user approval and will interrupt you, while this tool does not. '
+				+ 'Use offset/limit for large files. Binary files are rejected by extension.',
 			inputSchema: {
 				type: 'object',
 				properties: {
 					path: { type: 'string', description: 'Absolute path or workspace-relative path' },
 					offset: { type: 'integer', description: 'Line number to start reading from (1-indexed, default: 1)', default: 1, minimum: 1 },
-					limit: { type: 'integer', description: 'Maximum number of lines to read (default: 500, max: 2000)', default: 500, maximum: 2000 },
+					limit: { type: 'integer', description: 'Maximum number of lines to read (default: 500, max: 2000). Use limit:1 to probe a file\'s total line count and size without reading its content.', default: 500, maximum: 2000 },
 				},
 				required: ['path'],
 			},
@@ -576,15 +819,18 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 			if (msg.includes('FILE_NOT_FOUND') || msg.includes('ENOENT') || msg.includes('not found') || msg.includes('not exist')) {
+				// NonRetryableToolError（2026-08-21）：文件不存在是**确定性失败** ——
+				// 3 秒退避内文件不会自己出现。日志 1787292837471 实测 3 个不存在的临时
+				// 文件各被重试 3 次（9 次调用 + ~6s 退避），模型只拿到同一条错误重复 3 遍。
 				const suggestions = await suggestSimilarFiles(resolvedPath);
 				if (suggestions.length > 0) {
-					throw new Error(`File not found: ${requestedPath}\nDid you mean one of these?\n${suggestions.map(s => `  - ${s}`).join('\n')}`);
+					throw new NonRetryableToolError(`File not found: ${requestedPath}\nDid you mean one of these?\n${suggestions.map(s => `  - ${s}`).join('\n')}`);
 				}
 				// 事故（日志 1786172213634）：LLM 凭记忆/推断拼路径（如
 				// Engine\Source\\UObject\GarbageCollection.cpp 少了一级 Runtime\CoreUObject\Private），
 				// 父目录也不存在 → suggestSimilarFiles 必然空 → 原始错误无引导，模型盲试 3 次。
 				// 此处给可执行的纠错反馈：引导用 search_files 拿真实绝对路径（对齐范式"可执行的纠错反馈"）。
-				throw new Error(
+				throw new NonRetryableToolError(
 					`File not found: ${requestedPath}\n` +
 					`The parent directory does not exist either. This is usually caused by manually guessing or assembling a path ` +
 					`instead of copying the exact absolute path from a search result.\n` +
@@ -638,6 +884,24 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			tailParts.push(`[Hint: 这是一个大文件 (${(fileSize / 1024).toFixed(0)}KB)。考虑用更小的 limit 值分段读以加快速度。]`);
 		}
 
+		// ── 探查性读取的规模元信息（2026-08-22）─────────────────────────────
+		// 背景：模型想知道「某文件有多少行/多大」时会去跑 shell
+		// （`(Get-Content x).Count` / `wc -l`），而 shell 工具是 Dangerous 级、
+		// 必然弹审批打断执行 —— 实测日志里就出现过 `cd X && (Get-Content ...).Count`
+		// 与 `powershell -NoProfile -Command "..."` 两种写法，两者都过不了只读白名单。
+		//
+		// 而本工具**早就**在返回值里带了 totalLines（上面的分页提示），只差 fileSize：
+		// 原大文件提示要求 `limit > 200`，恰好把「limit=1 探查规模」这种最省 token 的
+		// 用法排除在外。这里为探查性读取补一条元信息行，使
+		//     file_read(path, limit: 1)
+		// 成为「零审批、~30 token 拿到 行数 + 字节数」的正规做法（description 已声明）。
+		//
+		// 仅在 limit 很小且确实还有后续内容时输出：正常分段阅读（limit 数百）不受影响，
+		// 读完整小文件时也不输出（那种情况规模已一目了然），避免给常规路径加噪音。
+		if (limit <= PROBE_LIMIT_MAX && hasMore) {
+			tailParts.push(`[File info: ${totalLines} 行, ${(fileSize / 1024).toFixed(1)}KB。此为规模探查读取；不要用 shell 命令数行数。]`);
+		}
+
 		// 2026-07-26（P2，Continue FileTooLarge 思路）：动态上下文保护——
 		// 一次性吞下整个文件时，按估算 token 与上下文窗口占比警告。
 		// Continue 超上下文 50% 直接抛错；我们选择「警告不阻止」：
@@ -653,6 +917,19 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		// 重复读取警告
 		if (repeatResult.warning) {
 			tailParts.push(`[Warning: 你已连续 ${repeatResult.count} 次读取完全相同的文件区域。]`);
+		}
+
+		// ── 越界读取未绑定 worktree 副本（2026-08-20，日志 1787217670299）────────
+		// 读操作不做沙箱判定，`.worktrees/**` 对 file_read 完全可达；但它对
+		// search_code / search_files / 代码图是硬排除的 → 模型在过期分支副本里
+		// 工作而搜索永远无法印证（实测连续 10+ 轮在 feat-chat 副本里找主仓才有的
+		// 符号）。warn 日志模型看不到，故必须把警告写进工具结果。
+		if (ctx.getBoundWorktreeRoot) {
+			try {
+				const bound = await ctx.getBoundWorktreeRoot(agentId);
+				const hit = detectStaleWorktreeAccess(resolvedPath, bound);
+				if (hit) { tailParts.push(staleWorktreeWarning(hit, 'read')); }
+			} catch { /* 绑定解析失败不影响读取 */ }
 		}
 
 			const tail = tailParts.length > 0 ? '\n\n' + tailParts.join('\n') : '';
@@ -754,15 +1031,31 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 	// 描述是注册期静态文本（探测是运行期异步），故用「主声明 POSIX + 回退提示」双段式：
 	// 有 Git Bash（常态，开发者机器基本都装 Git）模型第一选择写 Unix 即对；
 	// 无 Git Bash 时 Unix 拦截护栏（下方 handler 内）兜底纠错为 PowerShell 写法。
+	// 2026-08-21：改用 shellPlatformPrompt 统一生成（借鉴 opencode per-platform prompt），
+	// 内含「别用 shell 做这件事、用这个工具」映射表 —— 事前掐掉方言/工具选择错误的
+	// 动机，与运行时护栏（Unix 拦截 + PowerShell cmdlet 反向拦截）形成预防+兜底双层。
 	const terminalPlatformNote = isWindows
-		? ' Runs on Windows via Git Bash (POSIX) when installed — head/tail/grep/sed/awk/cat/ls/find are available; use forward-slash paths (C:/dir/file); PATH conversion is disabled so /flags pass through verbatim; wrap Windows-native commands as: cmd /c <command> or powershell -NoProfile -Command "...". ' +
-		  'If Git Bash is not installed the command falls back to PowerShell/cmd.exe — Unix-only commands (head/tail/grep/sed/awk) are then rejected with the PowerShell equivalent (e.g. Select-Object -First). ' +
-		  'For code search prefer search_code / search_files tools instead of shell pipelines.'
-		: ' Runs on a Unix-like OS (Linux/macOS) — bash/zsh commands are available.';
+		? windowsDualShellGuidance('terminal')
+		: shellPlatformGuidance('posix', 'terminal');
 	ctx.register({
 		definition: {
 			name: 'terminal',
-			description: 'Execute a shell command and return the output. Works on desktop only. Returns stdout, stderr, and exit code.' + terminalPlatformNote,
+			// 分工说明（2026-08-22，对齐 MiMo-Code 把交互式需求单独抽成 bash-interactive
+			// 的做法）：terminal 走**交互式 PTY**，在 UI 中可见、可被用户接管、复用同一
+			// 个 shell 会话；代价是完成判定依赖 shell integration，未注入时只能靠提示符
+			// 启发式推断，且拿不到退出码。日志 1787324352413 中模型用 terminal 跑
+			// `npx tsc --noEmit`（纯粹要一个确定结果）本身就是次优选择 —— 8 次全部没
+			// 拿到输出。把边界写进 description，让模型在选工具时就分流。
+			description: 'Execute a shell command in an interactive terminal and return the output. Works on desktop only.'
+				+ ' Use this for commands where you want the terminal visible and reusable (interactive sessions, long-running dev servers,'
+				+ ' commands the user may want to take over).'
+				+ ' For commands where you mainly need a deterministic result — builds, type checks, test runs, linters, anything whose'
+				+ ' exit code or full output you intend to act on — prefer execute_code, which runs the command once, waits for real'
+				+ ' completion and returns stdout, stderr and the real exit code.'
+				+ terminalPlatformNote
+				// 审批形态提示与 execute_code 共用同一份真源（shellCommandSafety），
+				// 两个工具都是 Dangerous 级、都吃 command 参数，规则完全一致。
+				+ SHELL_APPROVAL_SHAPE_GUIDANCE,
 			inputSchema: {
 				type: 'object',
 				properties: {
@@ -785,6 +1078,18 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		if (hardline) {
 			throw new NonRetryableToolError(hardlineViolationMessage(hardline, 'terminal'));
 		}
+		// 源码写入护栏（2026-08-21，日志 1787319805992）：terminal 与 execute_code 同为
+		// shell 路径 —— 脚本里 open(p,"w") / sed -i / Set-Content 改源码不会创建
+		// checkpoint、不过文件编辑审批。file_write/patch 的免审批豁免所依赖的三道闸门
+		// 对任意 shell 命令全不成立，故这里必须硬拦并引导回编辑工具。
+		const sourceWrite = detectScriptSourceWrite(command);
+		if (sourceWrite) {
+			ctx.logService.warn(
+				`[coreTools] terminal BLOCKED: command writes source file directly ` +
+				`(${sourceWrite.api}, target=${sourceWrite.target})`,
+			);
+			throw new NonRetryableToolError(scriptSourceWriteGuardMessage(sourceWrite, 'terminal'));
+		}
 		// Hermes 环境归一（2026-08-18）：探测 Git Bash（进程级缓存，首次后零开销）。
 		// 可用 → 终端直接跑 bash（Unix 方言天然正确，跳过拦截）；
 		// 不可用 → 保持 PowerShell/cmd + Unix 拦截护栏（报错附等价写法）。
@@ -795,11 +1100,22 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		if (isWindows && !gitBash) {
 			const unixCmd = detectUnixOnlyCommand(command);
 			if (unixCmd) {
-				throw new Error(
+				// NonRetryableToolError（2026-08-21 修不对称）：这是**纯静态字符串校验**，
+				// 命令名不会在重试间隙变对。旧版抛普通 Error → toolExecutor 判为可重试
+				// → 退避重试 3 次（日志 1787292837471 L4632/4646/4673 实证：同一条护栏
+				// 错误重复 3 遍 + ~3s 无谓退避），而 execute_code 同类护栏
+				// （compatibilityTools.ts）早已用 NonRetryableToolError。此处对齐。
+				throw new NonRetryableToolError(
 					`terminal: Unix-only command '${unixCmd}' is not available on Windows (cmd.exe/PowerShell, Git Bash not installed). ` +
 					`Rewrite the pipeline with a PowerShell equivalent: ... | ${UNIX_ONLY_COMMAND_HINTS[unixCmd] ?? unixCmd} ` +
 					`(e.g. powershell -NoProfile -Command "<your cmd> | Select-Object -First 60"), then reissue terminal with the corrected command.`
 				);
+			}
+			// 反向护栏（2026-08-21）：PowerShell cmdlet 裸用在 cmd.exe 同样必败
+			// （`... | Out-String` → exit 255）。与 Unix 方言对称，执行前拦下。
+			const psCmdlet = detectPowerShellOnlyCmdlet(command);
+			if (psCmdlet) {
+				throw new NonRetryableToolError(powerShellCmdletGuardMessage(psCmdlet, 'terminal'));
 			}
 		}
 		const requestedCwd = args['cwd'] ? String(args['cwd']) : '.';
@@ -808,13 +1124,41 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		const resolvedCwd = await ctx.resolveAndCheckWorkspacePath(agentId, requestedCwd, false);
 		const timeoutSec = Math.min(Math.max(Number(args['timeout'] ?? 30), 1), 300);
 
+		// ── 搜索类命令识别（一次检测，供熔断 + hint 复用）────────────────
+		const searchGuardHit = detectTerminalSearchCommand(command);
+
+		// ── 第四道搜索熔断：terminal 重复搜索（2026-08-21，事故 1787282838177）──
+		// 前三道闸门（recordSearchRepeat / EmptyStreak / IntentRepeat）只覆盖
+		// search_code / search_files，模型改用 shell grep 即可全部绕过：事故日志中
+		// 47 轮迭代 78 个工具调用反复 Select-String / Get-ChildItem 同一批文件，
+		// 零拦截 → 上下文 4.4 万 token → 触发压缩 → 摘要挂死。
+		//
+		// ★ 必须拦在 executeTerminalCommand **之前** —— 拦在之后命令已经全树扫完，
+		// 时间与上下文都已消耗，熔断就失去意义（只省了模型读结果的那点 token）。
+		// 只对搜索类命令计数；build/run/test/git 等一律放行。
+		if (searchGuardHit) {
+			const repeat = ctx.searchHelpers.recordTerminalSearchRepeat(agentId, command, searchGuardHit);
+			if (repeat.blocked) {
+				ctx.logService.warn(
+					`[coreTools] terminal search BLOCKED (repeat=${repeat.count} fingerprint=${repeat.fingerprint} ` +
+					`pattern=${searchGuardHit.id}): ${command.slice(0, 200)}`
+				);
+				// NonRetryableToolError：熔断是确定性判定，重试无意义（对齐 hardline 的用法）
+				throw new NonRetryableToolError(repeat.blocked);
+			}
+			if (repeat.count > 1) {
+				ctx.logService.info(
+					`[coreTools] terminal search repeat=${repeat.count} fingerprint=${repeat.fingerprint} (below threshold)`
+				);
+			}
+		}
+
 		const result = await executeTerminalCommand(command, resolvedCwd, timeoutSec, signal, gitBash);
 			// ── 搜索类命令护栏（不阻断执行，仅提示）──────────────────────
 			// find/grep -r/Get-ChildItem -Recurse 等纯搜索命令是 search_files/
 			// search_code 的本职工作（索引快路径 + 结构化结果 + 无 shell 可移植性
 			// 问题）。命中模式时在输出末尾追加 tool-hint 引导下次改用专用工具。
 			// 模式表数据驱动，见 terminalCommandGuards.ts。
-			const searchGuardHit = detectTerminalSearchCommand(command);
 			if (searchGuardHit) {
 				ctx.logService.info(`[coreTools] terminal search-like command detected (${searchGuardHit.id}) — appending tool hint`);
 				result.push({ type: 'text', text: terminalSearchCommandHint(searchGuardHit) });

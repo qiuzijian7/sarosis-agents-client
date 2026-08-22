@@ -71,6 +71,7 @@ hidden fields / 专用编辑器接管的字段）。用 `spec` 做期望值会�
 | R13 | 编排节点（Saros.*）的 agentId/providerId/<br>modelId/skillName/toolName COMBO 显示值非 "—" | 下拉框回归为空 | ★ 2026-08-20 用户报告的 bug 类别 |
 | R14 | DOM 卡**不得**渲染端口胶囊（`.wf-comfy-ports` 计数 = 0）<br>—— 端口由 LiteGraph canvas 独占渲染 | canvas 端口 + DOM 胶囊双显 | ★ 2026-08-20 用户删 PortBar 后反转（双显 = 重复 UI） |
 | R15 | ComfyTV 完全复刻 token 契约：<br>a) 参考卡保真（truth ↔ spec 同步）<br>b) 本项目卡（`.wf-comfy-card` 内层面板）背景 #1e1e1e /<br>字号 12px / padding 8px / gap 8px | 样式漂移离 ComfyTV 真源 | ★ 2026-08-20 用户要求完全复刻 |
+| R16 | ComfyTV 节点 success 态必须有参考卡：iframe 真实源码快照（优先）或手绘 token 卡（降级） | 「绘制 ComfyTV 源码 UI + 同页对比」链路断裂 | ★ 2026-08-20 用户要求 |
 
 **R13 的渲染前提 —— harness store seeding**：编排节点的动态 COMBO 选项来自
 `useAgentStore` / `usePicklistStore` / `useProviderStore` 三个全局 store（不喂数据
@@ -103,6 +104,37 @@ store 取选项的字段，两边都要登记，否则 R13 直接 FAIL（这就�
 复刻落地记录（2026-08-20 首轮）：nodeCard 内层面板 `linear-gradient(38,38,46→24,24,28)`
 → `#1e1e1e`；根字号 11→12px（text-xs）；SectionLabel 9→10px（text-2xs）；
 padding `4px 4px 6px`→`8px`（p-2）；gap 3→8px（gap-2）。
+
+### ★ 真实源码快照（iframe）——「绘制 ComfyTV 源码节点 UI」的正解（2026-08-20）
+
+手绘 token 卡（`comfyTvReference.tsx`）是「按 token 复刻的近似」，用户进一步要求
+**真正渲染 ComfyTV 源码的节点 UI**。落地为**真实 StageCard 渲染 → HTML 快照 → iframe 同页对比**：
+
+**ComfyTV 侧**（`G:\CustomWorkspaces\AIProjects\ComfyTV`，独立仓库）：
+1. `src/components/stages/__tests__/stageCardRender.test.ts` —— 用 vitest +
+   `renderWithPlugins`（已 mock `@/lib/comfyApp` 的 app + pinia + i18n）渲染**真实
+   `StageCard.vue`**（含 MainPromptInput / CustomParamsSection / StagePresetBar /
+   ValuePreview / run-btn / progress / OUTPUT 全部真实子组件），导出
+   `container.innerHTML` 到 `src/components/stages/__snapshots__/nodeUI/<name>.html`
+   （9 个节点形态：4 loader + 3 generator + 1 transform + 1 picker）。
+   运行：`npx vitest run src/components/stages/__tests__/stageCardRender.test.ts`
+2. `npx @tailwindcss/cli@4.3.2 -i src/tailwind.css -o .../nodeUI/comfytv-node-ui.css`
+   —— 生成 ctv 前缀 tailwind CSS（108KB），让快照 HTML 有视觉。
+
+**本项目侧**（visual）：
+3. `visual.spec.mjs` —— Node 侧读 ComfyTV 快照（HTML + CSS），`addInitScript` 注入
+   `window.__comfytvSnapshots`；`COMFTV_SNAPSHOT_MAP` 把本项目 nodeType 映射到快照名
+   （transform/generator 大类共用一个骨架快照）。
+4. `harness.tsx` —— 参考卡优先渲染 iframe srcdoc（真实快照 + ctv CSS），缺失降级
+   手绘卡。R16 断言 success 态必有参考卡。
+
+**关键事实**：① ComfyTV 依赖未装（node_modules 缺失），需 `npm ci --legacy-peer-deps`
+（zod v4/v3 peer 冲突）；② 静态 `import StageCard` 在 vitest 收集时**挂起**（vue
+plugin transform 卡住），必须**动态 `await import`** 绕过；③ run-btn 显示规则
+（StageCard.vue 真源）`v-if="variant !== 'loader' && variant !== 'transform' && !isPicker"`
+—— 只有 generator（非 picker）显示 run 按钮；④ loader 无 run-btn 是正确行为（选文件
+而非运行），断言须按变体区分；⑤ `COMFTV_DIR` 环境变量可覆盖 ComfyTV 路径（默认
+`G:\CustomWorkspaces\AIProjects\ComfyTV`）。
 
 **极简卡片豁免**：`metaControls==0 && metaActions==0 && !hasPrompt && !isPicker`
 的节点（`Bridge*` 等纯路由节点）天生只有一条标题栏，R1/R7/R8 对其豁免。

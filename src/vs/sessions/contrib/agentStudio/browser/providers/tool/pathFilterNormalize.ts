@@ -68,8 +68,20 @@ export function searchRootCandidates(cleanedPath: string, workspaceRoots: readon
  * @param shouldGuide 连击是否达阈值（达则追加"换 search_graph"强引导）
  * @param walkDegraded 本次是否处于 ripgrep 不可用降级（2026-08-05，日志 1785894964584：
  *        降级时不得声称 include 过滤已生效——walk 回退的过滤语义不同且大目录可能未扫全）
+ * @param searchRoots 本次实际使用的搜索根（label 或路径）。**必须回显**（2026-08-20，
+ *        日志 1787217670299）：该次事故中模型在 `.worktrees/feat-chat/**` 里用 shell
+ *        grep 分析过期分支代码，而 search_code 的根是主仓且 `.worktrees` 被硬排除
+ *        （searchHelpers.DEFAULT_EXCLUDE_GLOBS）→ 搜索永远看不到它正在读的文件。
+ *        旧文案只说「path filter 可能太严」，既不暴露根、也不提排除规则，模型
+ *        因此完全无法自我纠正（28 次 execute_code vs 3 次 search_code）。
  */
-export function searchOutcomeHint(includeGlob: string | undefined, streak: number, shouldGuide: boolean, walkDegraded = false): string {
+export function searchOutcomeHint(
+	includeGlob: string | undefined,
+	streak: number,
+	shouldGuide: boolean,
+	walkDegraded = false,
+	searchRoots?: readonly string[],
+): string {
 	const parts: string[] = [];
 	if (walkDegraded) {
 		parts.push(
@@ -97,6 +109,18 @@ export function searchOutcomeHint(includeGlob: string | undefined, streak: numbe
 			'or (2) run search_files to confirm the exact symbol/file name first, or (3) drop path_filter and search wider.'
 		);
 	}
+	// ★ 搜索范围透明化（2026-08-20，日志 1787217670299）——必须始终回显，让模型能
+	// 自己发现「我读的文件不在搜索范围内」。见函数注释的事故说明。
+	if (searchRoots && searchRoots.length > 0) {
+		parts.push(
+			`Search roots actually used: [${searchRoots.join(', ')}]. ` +
+			'NOTE: git worktree copies (.worktrees/**, .worktree/**) plus node_modules / out / dist / build ' +
+			'are ALWAYS excluded from search_code and search_files, even when they live under a search root. ' +
+			'If you are reading or editing a file under .worktrees/** (e.g. via file_read / execute_code), ' +
+			'content search can NEVER see it — that copy is a different, usually STALE branch. ' +
+			'Use the equivalent path in the main repository instead.'
+		);
+	}
 	return '\n[tool-hint] ' + parts.join('\n[tool-hint] ');
 }
 
@@ -108,8 +132,31 @@ export function searchOutcomeHint(includeGlob: string | undefined, streak: numbe
  * （与 _globFromPathFilter 的相对文件处理一致）。已含 `/` 的模式原样返回。
  */
 export function normalizeFileGlobForSearch(glob: string): string {
-	const g = String(glob ?? '').trim();
+	let g = String(glob ?? '').replace(/\\/g, '/').trim();
 	if (!g) { return g; }
+
+	// `|` 分隔的多文件名（LLM 常把 "a.ts|b.ts|c.ts" 当 filePattern 传入，日志
+	// 1787209228496：include=**/comfyNodeStyle.ts|schemaLiteGraphNodes.ts|... → 0 matches）。
+	// ripgrep / VS Code glob 的 alternation 是 `{a,b}`，`|` 会被当成【字面字符】→
+	// 没有任何文件路径含 `|`，include 恒 0 命中。故拆分为 `{a,b,c}`（globToRegexForSearch
+	// 的 walk 回退路径也已支持 `{a,b}` → `(a|b)`，两条路统一）。
+	if (g.includes('|')) {
+		const parts = g.split('|').map(p => p.trim()).filter(Boolean);
+		if (parts.length > 1) {
+			// 公共 globstar 前缀提升到组前，使每个分支都获得「任意深度」语义
+			// （`**/a.ts|b.ts` 里 `**/` 只属于第一段，拆开后 b.ts 会丢前缀）
+			const hasGs = g.startsWith('**/');
+			const bodies = parts
+				.map(p => { while (p.startsWith('**/')) { p = p.slice(3); } return p; })
+				.filter(Boolean);
+			if (bodies.length > 0) {
+				const body = `{${bodies.join(',')}}`;
+				// 原串无 globstar 且所有分支都是裸文件名（无 `/`）→ 补 `**/`（对齐单 glob 规则）
+				const needsGs = !hasGs && bodies.every(b => !b.includes('/'));
+				return (hasGs || needsGs ? '**/' : '') + body;
+			}
+		}
+	}
 	return g.includes('/') ? g : `**/${g}`;
 }
 
@@ -123,6 +170,50 @@ export function advanceSearchCodeEmptyStreak(
 ): { streak: number; shouldGuide: boolean } {
 	const streak = isEmpty ? current + 1 : 0;
 	return { streak, shouldGuide: streak > 0 && threshold > 0 && streak % threshold === 0 };
+}
+
+/**
+ * 把 search_code 的 query 归一化成「搜索意图指纹」（纯函数，便于单测）。
+ *
+ * 用于识别「同一目标换参重搜」——这是 exact-repeat 熔断与 empty-streak 引导之间的
+ * **盲区**（2026-08-20，日志 1787211923566）：
+ *   - `SEARCH_REPEAT_BLOCK` 只拦**参数完全相同**的重复调用；
+ *   - `advanceSearchCodeEmptyStreak` 只在**连续 0 命中**时引导；
+ *   - 而实测事故里模型对同一符号 `LoadImage` 搜了 **6 次**，每次换 root / 换正则
+ *     写法、且**次次都有命中**，两道闸门全部绕过 → 跑满 50/50 迭代上限、
+ *     输出大量近似重复的文字。
+ *
+ * 归一化策略（有意做「宽」，只求同意图聚类，不求语义精确）：
+ *   - 去掉正则语法噪声：`\b`、`\s*`、`.*`、`[]`、`()`、`|`、量词、锚点、转义反斜杠
+ *   - 大小写不敏感（多数代码搜索意图与大小写无关，且模型常在两者间摇摆）
+ *   - 仅保留标识符字符，按出现顺序拼接（`\bLoadImage\b` 与 `LoadImage\s*=` 同指纹）
+ *   - 结果长度 < 3 视为过短/无意义 → 返回 undefined（不参与计数，避免误伤宽泛搜索）
+ */
+export function searchQueryFingerprint(query: string | undefined): string | undefined {
+	if (!query) { return undefined; }
+	const idents = query
+		.replace(/\\[bBdDwWsSAZzn]/g, ' ')   // \b \s \d \w \n 等转义类
+		.replace(/[\\^$.*+?()[\]{}|/]/g, ' ') // 正则元字符
+		.toLowerCase()
+		.split(/[^a-z0-9_]+/)
+		.filter(Boolean);
+	if (idents.length === 0) { return undefined; }
+	const fp = idents.join('_');
+	return fp.length >= 3 ? fp : undefined;
+}
+
+/**
+ * 同一「搜索意图指纹」的重复次数推进（纯函数，便于单测）。
+ *
+ * @param current 该指纹此前已出现次数
+ * @param threshold 触发引导的阈值（含）
+ * @returns 新次数与是否应引导；命中阈值及其后每次都引导（模型可能继续硬撑）
+ */
+export function advanceSearchIntentRepeat(
+	current: number, threshold: number,
+): { count: number; shouldGuide: boolean } {
+	const count = current + 1;
+	return { count, shouldGuide: threshold > 0 && count >= threshold };
 }
 
 /**

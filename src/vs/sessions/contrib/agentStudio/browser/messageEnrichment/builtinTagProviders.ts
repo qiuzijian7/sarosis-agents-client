@@ -46,19 +46,33 @@ function nowISO(): string {
 }
 
 function osName(): string {
-	return process.platform === 'win32' ? 'win32'
-		: process.platform === 'darwin' ? 'darwin'
-		: process.platform === 'linux' ? 'linux'
-		: process.platform;
+	// browser-safe：renderer 层无 Node 全局 `process`，需运行时探测
+	const nodePlatform = (typeof process !== 'undefined') ? process.platform : undefined;
+	if (nodePlatform) {
+		return nodePlatform === 'win32' ? 'win32'
+			: nodePlatform === 'darwin' ? 'darwin'
+			: nodePlatform === 'linux' ? 'linux'
+			: String(nodePlatform);
+	}
+	// 回退：从 userAgent 推断（Electron renderer 可用 navigator）
+	const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+	if (/windows nt/i.test(ua)) { return 'win32'; }
+	if (/mac os x|macintosh/i.test(ua)) { return 'darwin'; }
+	if (/linux/i.test(ua)) { return 'linux'; }
+	return 'unknown';
 }
 
 function shellName(): string {
-	const s = process.env.SHELL || process.env.COMSPEC || '';
-	if (s.includes('powershell') || s.includes('pwsh')) { return 'PowerShell (Core)'; }
-	if (s.includes('cmd.exe')) { return 'cmd'; }
-	if (s.includes('bash')) { return 'bash'; }
-	if (s.includes('zsh')) { return 'zsh'; }
-	return s || 'unknown';
+	// browser-safe：renderer 层无 `process`，无法探知 shell，降级为 unknown 而非抛错
+	if (typeof process !== 'undefined') {
+		const s = process.env.SHELL || process.env.COMSPEC || '';
+		if (s.includes('powershell') || s.includes('pwsh')) { return 'PowerShell (Core)'; }
+		if (s.includes('cmd.exe')) { return 'cmd'; }
+		if (s.includes('bash')) { return 'bash'; }
+		if (s.includes('zsh')) { return 'zsh'; }
+		return s || 'unknown';
+	}
+	return 'unknown';
 }
 
 /** 给 XML 子标签拼 `<tagName description="...">content</tagName>`。扩展 Provider 时可用此辅助。 */

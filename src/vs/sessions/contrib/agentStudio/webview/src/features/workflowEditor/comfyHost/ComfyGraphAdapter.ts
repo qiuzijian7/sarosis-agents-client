@@ -189,12 +189,15 @@ export function fromLiteGraph(
 ): { nodes: WorkflowGraphNode[]; connections: WorkflowGraphConnection[] } {
 	const nodes: WorkflowGraphNode[] = [];
 	const liteToSaros = new Map<number, string>();
+	// liteId → liteNode，用于从 link 的 slot 还原真实端口名。
+	const liteNodeById = new Map<number, LiteGraphSerialisedNode>();
 
 	for (const liteNode of graph.nodes ?? []) {
 		const props = liteNode.properties ?? {};
 		// Prefer the preserved saros id; otherwise generate one from LiteGraph id.
 		const sarosId = (props.__sarosId as string | undefined) ?? `node-${liteNode.id}`;
 		liteToSaros.set(liteNode.id, sarosId);
+		liteNodeById.set(liteNode.id, liteNode);
 		const { __sarosId, ...data } = props as Record<string, unknown>;
 		nodes.push({
 			id: sarosId,
@@ -208,16 +211,26 @@ export function fromLiteGraph(
 
 	const connections: WorkflowGraphConnection[] = [];
 	for (const link of graph.links ?? []) {
-		const [id, fromLite, , toLite, , linkType] = link;
+		// LiteGraph link 布局：[id, originNode, originSlot, targetNode, targetSlot, type]。
+		// ★ fromPort/toPort 必须还原成**端口名**（如 'images'/'batch'），而不是 linkType
+		//   （如 'COMFYTV_IMAGES'）。旧版 `fromPort: linkType === 'ANY' ? undefined : linkType`
+		//   把类型字符串塞进端口名字段、toPort 恒 undefined —— 与 toWorkflowData /
+		//   syncStoreToGraph 的「fromPort/toPort = 端口名」语义冲突。一次
+		//   graph.serialize()→fromLiteGraph 往返后端口名丢失，下次 toLiteGraph 里
+		//   `outputs.find(o => o.name === 'COMFYTV_IMAGES')` 匹配不到 → linkType 退化为
+		//   'ANY'，LiteGraph 无法按真实类型校验/路由（下游 picker 等消费节点失效）。
+		const [id, fromLite, fromSlot, toLite, toSlot] = link;
 		const from = liteToSaros.get(fromLite);
 		const to = liteToSaros.get(toLite);
 		if (!from || !to) { continue; }
+		const fromPort = liteNodeById.get(fromLite)?.outputs?.[fromSlot]?.name;
+		const toPort = liteNodeById.get(toLite)?.inputs?.[toSlot]?.name;
 		connections.push({
 			id: `edge-${id}`,
 			from,
 			to,
-			fromPort: linkType === 'ANY' ? undefined : linkType,
-			toPort: undefined,
+			fromPort,
+			toPort,
 		});
 	}
 

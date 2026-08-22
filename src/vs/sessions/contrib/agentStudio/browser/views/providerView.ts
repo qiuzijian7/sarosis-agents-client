@@ -8,6 +8,9 @@ import { IViewDescriptorService } from '../../../../../workbench/common/views.js
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IConfigurationService, ConfigurationTarget } from '../../../../../platform/configuration/common/configuration.js';
+import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
+import { VSSAROS_LLM_CHANNEL, type IHttpRequestResult } from '../../common/llmBridge.js';
+import type { IModelItemConfig } from '../../common/providers.js';
 import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
@@ -130,6 +133,8 @@ export interface CustomProviderData {
 	modelsEndpointPath?: string;
 	/** 静态模型列表（anthropic 网关通常无 /models 发现，需在此声明模型 id，逗号/换行分隔） */
 	models?: string[];
+	/** Per-model 详细配置（codebuddy-style model item UI，key = model ID） */
+	modelConfigs?: Record<string, IModelItemConfig>;
 	/** API Key 认证头：'bearer'（默认）或 'x-api-key'（原生 Anthropic 网关） */
 	apiKeyHeader?: 'bearer' | 'x-api-key';
 	/** Anthropic 版本头（默认 '2023-06-01'） */
@@ -137,6 +142,17 @@ export interface CustomProviderData {
 }
 
 // ─── Provider View ───────────────────────────────────────────────────────────
+
+/**
+ * 构建模型发现端点 URL。
+ * grnexus 等网关的 API 挂在 `/v1/` 下（`GET {base}/v1/models`），
+ * 而 base URL 常填根域名（不带 /v1）。若 base 已含 `/vN` 版本段则直接拼 `/models`，
+ * 否则补 `/v1/models`。避免出现 `.../v1/v1/models` 或 `.../models`（缺版本段）。
+ */
+export function buildModelsUrl(baseUrl: string): string {
+	const base = baseUrl.replace(/\/+$/, '');
+	return /\/v\d+(\.\d+)*$/i.test(base) ? `${base}/models` : `${base}/v1/models`;
+}
 
 /**
  * Provider View - Provider 配置面板
@@ -164,6 +180,7 @@ export class ProviderViewPane extends ViewPane {
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
+		@IMainProcessService private readonly mainProcessService: IMainProcessService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
@@ -538,6 +555,9 @@ export class ProviderViewPane extends ViewPane {
 					mRow.appendChild(mInput);
 					cardBody.appendChild(mRow);
 				}
+
+				// 模型清单（Path B 增强：不弹窗，直接在卡片内勾选）
+				this._renderCardModelList(cardBody, provider, cpEntry);
 			}
 		}
 
@@ -601,6 +621,44 @@ export class ProviderViewPane extends ViewPane {
 		this.configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders);
 	}
 
+	/**
+	 * 从 Provider 自带的 /models 端点拉取模型列表（仿 opencode 模型发现思路）。
+	 * 模型端点统一 `{base}/v1/models`（base 已含 /vN 则 `{base}/models`，见 buildModelsUrl）。
+	 * - OpenAI 兼容：`Authorization: Bearer {apiKey}`
+	 * - Anthropic 网关：`x-api-key + anthropic-version`
+	 */
+	private async _fetchModelsList(
+		baseUrl: string,
+		apiKey: string,
+		apiType: 'openai' | 'anthropic',
+	): Promise<string[]> {
+		const url = buildModelsUrl(baseUrl);
+		const headers: Record<string, string> = { 'Accept': 'application/json' };
+		if (apiType === 'anthropic') {
+			if (apiKey) { headers['x-api-key'] = apiKey; }
+			headers['anthropic-version'] = '2023-06-01';
+		} else {
+			if (apiKey) { headers['Authorization'] = `Bearer ${apiKey}`; }
+		}
+		// 经主进程 IPC 执行，绕过 renderer 的 CORS preflight 限制
+		const channel = this.mainProcessService.getChannel(VSSAROS_LLM_CHANNEL);
+		const result = await channel.call<IHttpRequestResult>('httpRequest', { url, method: 'GET', headers });
+		if (!result.ok) {
+			throw new Error(`HTTP ${result.status} ${result.statusText}`);
+		}
+		const data = JSON.parse(result.body);
+		if (Array.isArray(data?.data)) {
+			return data.data.map((m: any) => m.id || m.name).filter((s: unknown): s is string => typeof s === 'string' && !!s);
+		}
+		if (Array.isArray(data)) {
+			return data.map((m: any) => typeof m === 'string' ? m : (m.id || m.name)).filter((s: unknown): s is string => typeof s === 'string' && !!s);
+		}
+		if (data?.id || data?.name) {
+			return [data.id || data.name];
+		}
+		throw new Error('未识别的响应格式（期望 {data:[...]} 或 [...]）');
+	}
+
 	private _showAddProviderForm(): void {
 		// Remove existing form if any
 		const existingForm = this.listContainer.querySelector('.provider-add-form');
@@ -655,6 +713,118 @@ export class ProviderViewPane extends ViewPane {
 			row.appendChild(input);
 			formCard.appendChild(row);
 		}
+
+		// ── 获取模型列表 ──
+		const fetchRow = $('div.provider-field.provider-fetch-row');
+		const fetchBtn = document.createElement('button');
+		fetchBtn.type = 'button';
+		fetchBtn.id = 'add-provider-fetch-models';
+		fetchBtn.className = 'provider-fetch-btn';
+		fetchBtn.textContent = '🔄 获取模型列表';
+		const fetchHint = $('span.provider-fetch-hint');
+		fetchHint.textContent = '自动探测模型端点（{baseUrl}/v1/models）';
+		fetchRow.appendChild(fetchBtn);
+		fetchRow.appendChild(fetchHint);
+		formCard.appendChild(fetchRow);
+
+		const fetchResults = $('div.provider-fetch-results');
+		fetchResults.id = 'add-provider-fetch-results';
+		fetchResults.style.display = 'none';
+		formCard.appendChild(fetchResults);
+
+		fetchBtn.onclick = async () => {
+			const baseUrlEl = document.getElementById('add-provider-baseurl') as HTMLInputElement;
+			const apiKeyEl = document.getElementById('add-provider-apikey') as HTMLInputElement;
+			const apiTypeEl = document.getElementById('add-provider-apitype') as HTMLSelectElement;
+			const baseUrl = baseUrlEl.value.trim().replace(/\/+$/, '');
+			const apiKey = apiKeyEl.value.trim();
+			const apiType = apiTypeEl.value as 'openai' | 'anthropic';
+
+			if (!baseUrl) {
+				this.statusMessage = '⚠️ 请先填写 Base URL';
+				this._updateStatusMessage();
+				return;
+			}
+
+			fetchBtn.disabled = true;
+			fetchBtn.textContent = '⏳ 拉取中...';
+			fetchResults.style.display = 'block';
+			fetchResults.replaceChildren();
+			const loadingMsg = $('div');
+			loadingMsg.textContent = '正在请求模型列表...';
+			fetchResults.appendChild(loadingMsg);
+
+			try {
+				const models = await this._fetchModelsList(baseUrl, apiKey, apiType);
+				fetchResults.replaceChildren();
+				if (models.length === 0) {
+					const empty = $('div');
+					empty.textContent = '未发现任何模型';
+					empty.className = 'provider-fetch-empty';
+					fetchResults.appendChild(empty);
+					return;
+				}
+
+				const header = $('div.provider-fetch-header');
+				header.textContent = `发现 ${models.length} 个模型（勾选要启用的）`;
+				fetchResults.appendChild(header);
+
+				const selectAll = document.createElement('input');
+				selectAll.type = 'checkbox';
+				selectAll.id = 'fetch-select-all';
+				selectAll.checked = true;
+				const selectAllLabel = $('label.provider-fetch-select-all');
+				selectAllLabel.appendChild(selectAll);
+				selectAllLabel.appendChild(document.createTextNode(' 全选 / 反选'));
+				fetchResults.appendChild(selectAllLabel);
+
+				const list = $('div.provider-fetch-list');
+				const checkboxes: HTMLInputElement[] = [];
+				for (const m of models) {
+					const item = $('label.provider-fetch-item');
+					const cb = document.createElement('input');
+					cb.type = 'checkbox';
+					cb.value = m;
+					cb.checked = true;
+					cb.id = `fetch-cb-${m.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+					const text = $('span');
+					text.textContent = m;
+					item.appendChild(cb);
+					item.appendChild(text);
+					list.appendChild(item);
+					checkboxes.push(cb);
+				}
+				fetchResults.appendChild(list);
+
+				selectAll.onchange = () => {
+					const checked = selectAll.checked;
+					checkboxes.forEach(cb => { cb.checked = checked; });
+				};
+
+				const applyBtn = document.createElement('button');
+				applyBtn.type = 'button';
+				applyBtn.className = 'provider-fetch-apply-btn';
+				applyBtn.textContent = '✅ 应用选择';
+				applyBtn.onclick = () => {
+					const selected = checkboxes.filter(cb => cb.checked).map(cb => cb.value);
+					const modelsTa = document.getElementById('add-provider-models') as HTMLTextAreaElement;
+					if (modelsTa) {
+						modelsTa.value = selected.join('\n');
+					}
+					this.statusMessage = `✅ 已应用 ${selected.length} 个模型到表单`;
+					this._updateStatusMessage();
+				};
+				fetchResults.appendChild(applyBtn);
+			} catch (err: any) {
+				fetchResults.replaceChildren();
+				const errMsg = $('div.provider-fetch-error');
+				errMsg.textContent = `❌ 拉取失败：${err.message || String(err)}（可能是 CORS 拦截，请联系网关管理员或直接手动填写模型列表）`;
+				fetchResults.appendChild(errMsg);
+			} finally {
+				fetchBtn.disabled = false;
+				fetchBtn.textContent = '🔄 获取模型列表';
+			}
+		};
 
 		// ── API 类型选择 ──
 		const typeRow = $('div.provider-field');
@@ -879,7 +1049,142 @@ export class ProviderViewPane extends ViewPane {
 		}
 	}
 
-	private async _testConnection(provider: ProviderDefinition): Promise<void> {
+	/**
+	 * 渲染卡片内嵌模型清单区块（不弹窗，直接在 cardBody 内展示）。
+	 * 首次渲染用 cpEntry.models 作为初始勾选；点击"重新拉取"从 {baseUrl}/v1/models 拉取，
+	 * 拉到的模型与已勾选合并展示。点"保存"批量写回 cp.models（patch 模式保留其他字段）。
+	 */
+	private _renderCardModelList(
+		cardBody: HTMLElement,
+		provider: ProviderDefinition,
+		cpEntry: CustomProviderData,
+	): void {
+		const section = $('div.provider-card-model-section');
+		const header = $('div.provider-card-model-header');
+		const title = $('span.provider-card-model-title');
+		title.textContent = `模型清单（${cpEntry.models?.length ?? 0} 个）`;
+		header.appendChild(title);
+
+		const actions = $('div.provider-card-model-actions');
+
+		const fetchBtn = document.createElement('button');
+		fetchBtn.className = 'provider-card-btn provider-card-btn-secondary';
+		fetchBtn.textContent = '🔄 重新拉取';
+		actions.appendChild(fetchBtn);
+
+		const selectAllCb = document.createElement('input');
+		selectAllCb.type = 'checkbox';
+		selectAllCb.checked = true;
+		const selectAllLabel = $('label.provider-card-model-selectall');
+		selectAllLabel.appendChild(selectAllCb);
+		selectAllLabel.appendChild(document.createTextNode(' 全选'));
+		actions.appendChild(selectAllLabel);
+
+		const saveBtn = document.createElement('button');
+		saveBtn.className = 'provider-card-btn provider-card-btn-primary';
+		saveBtn.textContent = '✅ 保存';
+		saveBtn.disabled = true;
+		saveBtn.title = '勾选变更后启用';
+		actions.appendChild(saveBtn);
+
+		header.appendChild(actions);
+		section.appendChild(header);
+
+		const listEl = $('div.provider-card-model-list');
+		const cbs: HTMLInputElement[] = [];
+		const renderList = (modelIds: string[]) => {
+			listEl.replaceChildren();
+			cbs.length = 0;
+			const selectedSet = new Set(cpEntry.models || []);
+			for (const m of modelIds) {
+				const item = $('label.provider-card-model-item');
+				const cb = document.createElement('input');
+				cb.type = 'checkbox';
+				cb.value = m;
+				cb.checked = selectedSet.has(m);
+				cb.id = `cb-model-${provider.id}-${m.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+				const text = $('span');
+				text.textContent = m;
+				item.appendChild(cb);
+				item.appendChild(text);
+				listEl.appendChild(item);
+				cbs.push(cb);
+			}
+			title.textContent = `模型清单（${modelIds.length} 个）`;
+		};
+		renderList(cpEntry.models || []);
+		section.appendChild(listEl);
+
+		const hint = $('div.provider-card-model-hint');
+		hint.textContent = '💡 启动 app 时自动维护当前模型清单（仿 opencode models.dev）';
+		section.appendChild(hint);
+
+		cardBody.appendChild(section);
+
+		const markDirty = () => {
+			saveBtn.disabled = false;
+			saveBtn.title = '';
+		};
+		for (const cb of cbs) {
+			cb.onchange = markDirty;
+		}
+		selectAllCb.onchange = () => {
+			const checked = selectAllCb.checked;
+			cbs.forEach(cb => { cb.checked = checked; cb.dispatchEvent(new Event('change')); });
+			if (cbs.length > 0) { markDirty(); }
+		};
+
+		fetchBtn.onclick = async () => {
+			const apiKey = this.configurationService.getValue<string>(provider.apiKeySetting);
+			const baseUrl = this.configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl;
+			const apiType = cpEntry.apiType || 'openai';
+			if (!baseUrl) {
+				this.statusMessage = '❌ 请先配置 Base URL';
+				this._updateStatusMessage();
+				return;
+			}
+			fetchBtn.disabled = true;
+			const oldLabel = fetchBtn.textContent;
+			fetchBtn.textContent = '⏳ 拉取中...';
+			try {
+				const fetched = await this._fetchModelsList(baseUrl, apiKey, apiType);
+				// 合并：fetched 在前，已勾选但不在 fetched 中的追加在最后
+				const fetchedSet = new Set(fetched);
+				const merged = [...fetched, ...(cpEntry.models || []).filter(m => !fetchedSet.has(m))];
+				renderList(merged);
+				// 全选回填
+				for (const cb of cbs) { cb.checked = true; }
+				markDirty();
+				this.statusMessage = `✅ 拉到 ${fetched.length} 个模型`;
+				this._updateStatusMessage();
+				setTimeout(() => { this.statusMessage = ''; this._updateStatusMessage(); }, 4000);
+			} catch (err: any) {
+				this.statusMessage = `❌ 拉取失败：${err.message || String(err)}`;
+				this._updateStatusMessage();
+				setTimeout(() => { this.statusMessage = ''; this._updateStatusMessage(); }, 6000);
+			} finally {
+				fetchBtn.disabled = false;
+				fetchBtn.textContent = oldLabel;
+			}
+		};
+
+		saveBtn.onclick = () => {
+			const selected = cbs.filter(cb => cb.checked).map(cb => cb.value);
+			this._patchCustomProvider(provider.id, { models: selected });
+			saveBtn.disabled = true;
+			saveBtn.title = '已保存';
+			this.statusMessage = `✅ 已保存 ${selected.length} 个模型`;
+			this._updateStatusMessage();
+			setTimeout(() => { this.statusMessage = ''; this._updateStatusMessage(); }, 4000);
+		};
+	}
+
+/**
+	 * 卡片内嵌模型清单区块（不弹窗）。渲染逻辑见 _renderCardModelList。
+	 * 旧的 _refreshCardModels + _showModelPickerDialog 已替换为内嵌版本。
+	 */
+
+private async _testConnection(provider: ProviderDefinition): Promise<void> {
 		const apiKey = this.configurationService.getValue<string>(provider.apiKeySetting);
 		const baseUrl = this.configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl;
 
@@ -903,22 +1208,38 @@ export class ProviderViewPane extends ViewPane {
 			}
 		}
 
+		this.statusMessage = `🔄 正在测试 ${provider.name} 连接...`;
+		this._updateStatusMessage();
+
+		// Anthropic 原生网关无 /models 端点，跳过 HTTP 测试
+		if (!provider.isBuiltin) {
+			const cp = (this.configurationService.getValue<CustomProviderData[]>(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING) || []).find(c => c.id === provider.id);
+			if (cp?.apiType === 'anthropic') {
+				this.statusMessage = `✅ ${provider.name}：Anthropic 网关（静态模型列表，无需 /models 发现）`;
+				this._updateStatusMessage();
+				setTimeout(() => { this.statusMessage = ''; this._updateStatusMessage(); }, 5000);
+				return;
+			}
+		}
+
 		try {
-			// Ollama uses /api/tags instead of /models
+			// Ollama 走 /api/tags；其他（OpenAI 兼容）走 buildModelsUrl 智能补 /v1
 			const isOllama = provider.id === 'ollama';
-			const testPath = isOllama ? '/api/tags' : '/models';
-			const testUrl = `${baseUrl.replace(/\/$/, '')}${testPath}`;
+			const testUrl = isOllama
+				? `${baseUrl.replace(/\/+$/, '')}/api/tags`
+				: buildModelsUrl(baseUrl);
 			const headers: Record<string, string> = {};
 			if (apiKey) {
 				headers['Authorization'] = `Bearer ${apiKey}`;
 			}
 
-			const response = await fetch(testUrl, { method: 'GET', headers });
-			if (response.ok) {
+			// 经主进程 IPC 执行，绕过 renderer 的 CORS preflight 限制
+			const channel = this.mainProcessService.getChannel(VSSAROS_LLM_CHANNEL);
+			const result = await channel.call<IHttpRequestResult>('httpRequest', { url: testUrl, method: 'GET', headers });
+			if (result.ok) {
 				this.statusMessage = `✅ ${provider.name} 连接成功！`;
 			} else {
-				const errorText = await response.text().catch(() => '');
-				this.statusMessage = `❌ ${provider.name} 连接失败 (${response.status}): ${errorText.slice(0, 100)}`;
+				this.statusMessage = `❌ ${provider.name} 连接失败 (${result.status})：${result.statusText || ''}`;
 			}
 		} catch (error) {
 			this.statusMessage = `❌ ${provider.name} 连接失败: ${error}`;

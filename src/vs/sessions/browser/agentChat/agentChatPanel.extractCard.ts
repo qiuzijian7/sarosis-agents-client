@@ -86,8 +86,16 @@ export function createExtractToolCard(tc: IToolCall, key: string): HTMLElement {
 	const charCount = content.length || fullResultLen;
 
 	// ── Header ──
+	// ⚠ 这里**刻意不设** data-part-key（2026-08-22 修，日志 1787373914386）：
+	// header 是 wrapper 的子元素，而 part key 只属于 part 的**根**元素（由
+	// _reconcileParts / _renderPartsContent 统一设在 wrapper 上）。曾在此重复设
+	// 同一个 `tool:${tc.id}`，造成两处后果：
+	//   ① keyed diff 的 existingMap 里内层 header 覆盖外层 wrapper → wrapper 既不
+	//      参与就地更新、也不被「删除残留」清掉 → 元素堆积；
+	//   ② 一致性校验 actual 恒大于 expected → 每次 finalize 全量重建整条消息 = 闪烁。
+	// 现枚举函数已改为只取直接子元素（queryPartElements），此处即使误设也不会再污染
+	// 计数，但**仍然不应该设** —— 语义上它不是 part 元素。
 	const header = append(wrapper, $('.tool-header'));
-	header.setAttribute('data-part-key', `tool:${tc.id ?? 'auto'}`);
 
 	append(header, $('.tool-card-icon')).textContent = '🌐';
 	append(header, $('span.tool-title')).textContent = '抓取';

@@ -91,7 +91,9 @@ export const EMOJI_TRANSPARENT_STICKER: StageWorkflowConfig = {
 				"samples": ["6", 0],
 				"images": ["7", 0],
 				"sd_version": "SDXL",
-				"sub_batch_size": 16,
+				// ★ batch_size=1 时 sub_batch_size 必须一致（否则节点内部按 16
+				//   分批处理，其余 15 份读未初始化内存 → RGBA 输出混乱/彩色噪声）。
+				"sub_batch_size": 1,
 			},
 		},
 		"9": {
@@ -155,20 +157,26 @@ export const EMOJI_ANIMATED_TRANSPARENT: StageWorkflowConfig = {
 		"4": {
 			"class_type": "CLIPTextEncode",
 			"inputs": {
-				"text": "a cute cartoon sticker, thick outlines, vibrant colors, isolated on transparent background, bouncing animation, smooth loop",
+				"text": "a cute cartoon sticker, thick outlines, vibrant colors, isolated on transparent background, bouncing animation, smooth loop, small centered subject, wide empty margin around subject",
 				"clip": ["1", 1],
 			},
 		},
 		"5": {
 			"class_type": "CLIPTextEncode",
 			"inputs": {
-				"text": "text, watermark, blurry, low quality, deformed, static",
+				"text": "text, watermark, blurry, low quality, deformed, static, cropped, close-up",
 				"clip": ["1", 1],
 			},
 		},
 		"6": {
 			"class_type": "EmptyLatentImage",
-			"inputs": { "width": 512, "height": 512, "batch_size": 16 },
+			// ★ 768² 而非 512²：SDXL 原生训练分辨率是 1024，512 下构图会失控 ——
+			//   主体涨满全幅、四周没有留白，透明贴纸的边缘 alpha 被主体压住变不
+			//   透明（实测 512²：外框 alpha 均值 ~75、16/16 帧脏；768²：均值 6.2、
+			//   1/16 脏；768² + 留白引导 prompt：均值 2.0、0/16 脏）。
+			//   代价是耗时约翻倍（16 帧 512²≈62s → 768²≈131s，RTX 4070）。
+			//   验收脚本：scripts/test-emoji-e2e.mjs（外框 alpha 均值须 ≤32）。
+			"inputs": { "width": 768, "height": 768, "batch_size": 16 },
 		},
 		"7": {
 			"class_type": "KSampler",
@@ -198,6 +206,8 @@ export const EMOJI_ANIMATED_TRANSPARENT: StageWorkflowConfig = {
 				"samples": ["7", 0],
 				"images": ["8", 0],
 				"sd_version": "SDXL",
+				// ★ 动态模板 batch_size=16（EmptyLatentImage 一次出 16 帧），
+				//   sub_batch_size 必须匹配，否则 RGBA 解码越界 → 彩色噪声。
 				"sub_batch_size": 16,
 			},
 		},
@@ -219,12 +229,30 @@ export const EMOJI_ANIMATED_TRANSPARENT: StageWorkflowConfig = {
 			"text": {
 				"from": "main_prompt",
 				"default": "a cute cartoon sticker",
-				"suffix": ", thick outlines, vibrant colors, isolated on transparent background, bouncing animation, smooth loop, die-cut sticker",
+				// 「small centered subject / wide empty margin」是必需的构图约束，不是修辞：
+				// 缺它时主体会涨满画框、压掉四周透明留白（见节点 6 的注释与实测数据）。
+				"suffix": ", thick outlines, vibrant colors, isolated on transparent background, bouncing animation, smooth loop, die-cut sticker, small centered subject, wide empty margin around subject, full body visible",
 				"required": false,
 			},
 		},
+		// ★ 帧数 = EmptyLatentImage.batch_size（AnimateDiff 用 batch 维度承载时间轴）。
+		//   卡片上的「帧数」控件必须绑到这里，否则是假控件（曾硬编码 16，用户改无效）。
+		//   注意 `values.batch_size` 被 runEmojiStageGrid 固定为 1（网格由循环驱动），
+		//   所以这里必须绑 `option:frames` 而不是 `option:batch_size`。
+		"6": {
+			"batch_size": { "from": "option:frames", "default": 16, "required": false, "cast": "int" },
+		},
 		"7": {
 			"seed": { "from": "option:seed", "default": "random_int31", "required": false, "cast": "int" },
+		},
+		// ★ sub_batch_size 必须与 batch_size 同值，否则 LayeredDiffusionDecodeRGBA
+		//   按错误的分批数解码 → 越界读未初始化内存 → 彩色噪声（见节点 9 注释）。
+		//   因此这两个字段绑同一个 option:frames。
+		"9": {
+			"sub_batch_size": { "from": "option:frames", "default": 16, "required": false, "cast": "int" },
+		},
+		"10": {
+			"fps": { "from": "option:fps", "default": 8, "required": false, "cast": "int" },
 		},
 	},
 };
@@ -232,4 +260,84 @@ export const EMOJI_ANIMATED_TRANSPARENT: StageWorkflowConfig = {
 export const EMOJI_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
 	"透明贴纸 (SDXL)": EMOJI_TRANSPARENT_STICKER,
 	"动态表情 (AnimateDiff)": EMOJI_ANIMATED_TRANSPARENT,
+	/**
+	 * Fallback：纯 SDXL 生成（不依赖 LayeredDiffusion LoRA）。
+	 *
+	 * 当用户环境未安装 ComfyUI_LayeredDiffusion 或 layer_xl_transparent_conv.safetensors
+	 * 缺失时，透明模板的 LayeredDiffusionApply/DecodeRGBA 会静默输出混乱数据
+	 * （彩色噪声/扭曲笔画）。此 fallback 用 SDXL 原生 VAE 解码，保证出图质量，
+	 * 唯一代价是无 alpha 通道（背景不透明 —— 可用 ComfyUI 后处理或 PS 抠图）。
+	 *
+	 * 执行路径：runStageWorkflow → runner.invoke(prompt) → SaveImage → /history。
+	 * 与透明模板完全相同的 bindings 接口（main_prompt + seed）。
+	 */
+	"普通贴纸 (SDXL, 无需 LoRA)": {
+		api_json: {
+			"1": {
+				"class_type": "CheckpointLoaderSimple",
+				"inputs": { "ckpt_name": "sd_xl_base_1.0.safetensors" },
+			},
+			"2": {
+				"class_type": "CLIPTextEncode",
+				"inputs": {
+					"text": "a cute cartoon sticker, thick outlines, vibrant colors, solid white background, die-cut sticker style, high quality",
+					"clip": ["1", 1],
+				},
+			},
+			"3": {
+				"class_type": "CLIPTextEncode",
+				"inputs": {
+					"text": "text, watermark, blurry, low quality, deformed, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, extra arms, extra legs, fused fingers, too many fingers, long neck",
+					"clip": ["1", 1],
+				},
+			},
+			"4": {
+				"class_type": "EmptyLatentImage",
+				"inputs": { "width": 1024, "height": 1024, "batch_size": 1 },
+			},
+			"5": {
+				"class_type": "KSampler",
+				"inputs": {
+					"model": ["1", 0],
+					"positive": ["2", 0],
+					"negative": ["3", 0],
+					"latent_image": ["4", 0],
+					"seed": 0,
+					"steps": 30,
+					"cfg": 7.0,
+					"sampler_name": "euler_ancestral",
+					"scheduler": "normal",
+					"denoise": 1.0,
+				},
+			},
+			"6": {
+				"class_type": "VAEDecode",
+				"inputs": {
+					"samples": ["5", 0],
+					"vae": ["1", 2],
+				},
+			},
+			"7": {
+				"class_type": "SaveImage",
+				"inputs": {
+					"images": ["6", 0],
+					"filename_prefix": "ComfyTV/emoji_fallback",
+				},
+			},
+		},
+		result: { "type": "ui_save", "node": "7" },
+		inputs: {
+			"2": {
+				"text": {
+					"from": "main_prompt",
+					"default": "a cute cartoon sticker",
+					"suffix": ", thick outlines, vibrant colors, solid white background, die-cut sticker style, high quality, centered composition",
+					"required": false,
+				},
+			},
+			"5": {
+				"seed": { "from": "option:seed", "default": "random_int31", "required": false, "cast": "int" },
+			},
+		},
+	},
 };

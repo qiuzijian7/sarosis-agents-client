@@ -13,6 +13,8 @@ import type { IChatPanel } from './iChatPanel.js';
 import { TabbedPanelManager } from './modules/tabbedPanel.js';
 import { ScrollbarController, type IScrollbarHost } from './scrollbarController.js';
 import { StreamingRenderScheduler } from './streamingRenderScheduler.js';
+import { decidePinScrollTop, needsPinPass } from './streamPinDecision.js';
+import { FullRefreshLogger, type FullRefreshSource } from './agentChatPanel.refreshLog.js';
 
 
 
@@ -315,6 +317,14 @@ protected _streamJustEndedTimer: number | null = null;
 
 
 /**
+ * 全量刷新记录器（2026-08-22）：整条消息重建 / 整卡重建 / markdown 全量替换
+ * 都必须经它上报来源。全量刷新是聊天框抖动的唯一直接来源，而此前
+ * `_rebuildMessageElement` 的 7 个调用点共用一条无来源日志、工具卡重建与
+ * markdown 全量替换完全无日志 —— 抖动只能靠用户截图反馈。详见 refreshLog 模块。
+ */
+protected readonly refreshLogger = new FullRefreshLogger();
+
+/**
  * 流式 markdown 渲染调度器（P5a）：统一持有节流定时器与内容基线四元组，
  * 替代原 _streamingMdTimer/_streamingMdTarget/_streamingMdLastContent/_streamingMdLastRendered
  * 散字段。hooks 运行时 dispatch 到 markdown 层的 override 实现（base 为 throw stub）。
@@ -327,6 +337,8 @@ protected get mdScheduler(): StreamingRenderScheduler {
 			renderFull: (c, t) => this._renderMarkdownContent(c, t, true),
 			renderIncremental: (c, t) => this._tryIncrementalMarkdownRender(c, t),
 			resetIncremental: (c) => this._resetIncrementalMd(c),
+			// 增量渲染失败 → 整个 markdown 子树被 replaceChildren 替换（内容闪烁）
+			onFullReplace: (_c, n) => this.refreshLogger.record('md:incremental-failed', { contentLen: n, note: 'content-md' }),
 		}, AgentChatPanelBase.STREAMING_MD_INTERVAL);
 	}
 	return this._mdScheduler;
@@ -344,6 +356,8 @@ protected get thinkingMdScheduler(): StreamingRenderScheduler {
 			renderFull: (c, t) => this._renderMarkdownContent(c, t, true),
 			renderIncremental: (c, t) => this._tryIncrementalMarkdownRender(c, t),
 			resetIncremental: (c) => this._resetIncrementalMd(c),
+			// note 区分两个 scheduler —— 定位「是正文还是思考卡在闪」
+			onFullReplace: (_c, n) => this.refreshLogger.record('md:incremental-failed', { contentLen: n, note: 'thinking-md' }),
 		}, AgentChatPanelBase.STREAMING_MD_INTERVAL,
 			// thinking 流式增长时 body 滚动条保持吸底；用户上滚则解除（_attachStreamCardPin）
 			(c) => this._pinStreamCardToBottom(c));
@@ -390,7 +404,10 @@ protected _attachStreamCardPin(container: HTMLElement): void {
 
 /** 渲染后回调（thinkingMdScheduler 的 afterRender）：pinned → 滚到底跟随；
  *  非 pinned → 尊重用户滚动位置（自由拖拽），仅在「全量替换导致 scrollTop 大幅归零」
- *  （>50px 跳变，区别于正常拖拽的小步增量）时恢复到 lastUserTop，避免失位。 */
+ *  （>50px 跳变，区别于正常拖拽的小步增量）时恢复到 lastUserTop，避免失位。
+ *
+ *  阈值判据统一委托 `streamPinDecision.decidePinScrollTop`（与批量钉底同一真源，
+ *  避免两处各写一套 8px/200ms/50px 而后续改动只改一处）。 */
 protected _pinStreamCardToBottom(container: HTMLElement): void {
 	// 兜底自动挂载（2026-07-28 修复思考卡片滚动条不置底）：
 	// _pinAllScrollableBodiesToBottom 对「未溢出」的容器跳过 attach（continue），
@@ -403,36 +420,63 @@ protected _pinStreamCardToBottom(container: HTMLElement): void {
 	}
 	const state = this._streamCardPinState.get(container);
 	if (!state) { return; }
-	if (state.pinned) {
-		// 用户近期在向上滚动（拖拽中）则暂缓强制置底，把滚动位置交还给用户；
-		// 200ms 宽限足以覆盖一次拖拽手势，且不依赖不可靠的滚动条指针事件。
-		if (Date.now() - state.lastUserScrollAt < 200) { return; }
-		// 仅在确实未贴底时强制置底跟随流式增长
-		const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-		if (distFromBottom > 8) {
-			container.scrollTop = container.scrollHeight;
-		}
-	} else if (container.scrollTop < state.lastUserTop - 50) {
-		// 仅 replaceChildren 物理归零（跳变 >50px）时恢复用户位置；正常拖拽增量 <50px 不干扰
-		container.scrollTop = state.lastUserTop;
-	}
+	const top = decidePinScrollTop(
+		{ scrollHeight: container.scrollHeight, clientHeight: container.clientHeight, scrollTop: container.scrollTop },
+		state,
+		Date.now(),
+	);
+	if (top !== undefined) { container.scrollTop = top; }
 }
+
+/**
+ * 批量钉底的「上帧 scrollHeight」缓存。
+ *
+ * 用途见 {@link needsPinPass}：内容高度没变说明本帧该卡没有新增内容，连 scrollTop
+ * 都不必写 —— 不写就不会使布局失效，也就不会让后续元素的度量读取触发强制重排。
+ * WeakMap：元素被移除后自动回收。
+ */
+private readonly _pinLastScrollHeight = new WeakMap<HTMLElement, number>();
 
 /**
  * 统一钉底：找到容器内所有可滚动卡片体，对已钉底的执行置底跟随。
  * 覆盖 thinking body / tool body / sub-agent trace-list / sa-body / write-file-stream 等。
  * 在 _reconcileParts 后处理、_updateToolCardStatuses 等路径调用，
  * 确保所有卡片内容流式增长时内部滚动条自动贴底。
+ *
+ * ★ 2026-08-21（日志 1787323320262「后期输出抖动严重」）：原实现是
+ * 「读 scrollHeight → 写 scrollTop → 读下一个」的交错循环，即 **layout thrashing** ——
+ * 每次写都使布局失效，下一次读就强制同步重排。元素数 = 工具卡数，实测单条消息涨到
+ * 81 个工具卡 → 每帧约 81 次强制重排，且开销随消息增长线性上升（= 后期越来越抖）。
+ *
+ * 现改为**读写分相**：
+ *   相①（只读）遍历采集度量 + 算出待写值，全程不碰任何写操作；
+ *   相②（只写）统一提交 scrollTop。
+ * N 次强制重排降为最多 1 次。叠加「未增长即跳过」，干净帧的写入数为 0。
  */
 protected _pinAllScrollableBodiesToBottom(container: HTMLElement): void {
 	const scrollables = container.querySelectorAll(
 		'.thinking-card-body, .tool-header-children, .trace-list, .sa-body, .write-file-stream, .conclusion-box, .done-stats, .delegate-scroll'
 	) as NodeListOf<HTMLElement>;
+	if (scrollables.length === 0) { return; }
+
+	// ── 相①：只读。绝不在此写入任何布局相关属性，否则下一次读会强制重排。 ──
+	const now = Date.now();
+	const pendingWrites: { el: HTMLElement; top: number }[] = [];
 	for (const el of scrollables) {
-		if (el.scrollHeight <= el.clientHeight) { continue; } // 不可滚动无需钉底
+		const scrollHeight = el.scrollHeight;
+		const clientHeight = el.clientHeight;
+		if (!needsPinPass({ scrollHeight, clientHeight }, this._pinLastScrollHeight.get(el))) { continue; }
+		this._pinLastScrollHeight.set(el, scrollHeight);
+		// attach 只读 scrollTop + 注册监听，不写布局属性
 		this._attachStreamCardPin(el);
-		this._pinStreamCardToBottom(el);
+		const state = this._streamCardPinState.get(el);
+		if (!state) { continue; }
+		const top = decidePinScrollTop({ scrollHeight, clientHeight, scrollTop: el.scrollTop }, state, now);
+		if (top !== undefined) { pendingWrites.push({ el, top }); }
 	}
+
+	// ── 相②：只写。此时已无后续读取，写入不会再引发强制重排。 ──
+	for (const w of pendingWrites) { w.el.scrollTop = w.top; }
 }
 
 protected static readonly STREAMING_MD_INTERVAL = 100;
@@ -503,6 +547,24 @@ protected readonly _onLoadWorkspaces?: () => Promise<ReadonlyArray<IWorkspaceIte
 protected readonly _onSelectWorkspace?: (workspaceId: string, workspaceName: string) => void;
 
 protected _chatOnly: boolean = false;
+
+/**
+ * 输入框选定的 ChatMode（2026-08-21，替代「干活/纯聊」布尔开关）。
+ *
+ * 真源是 `sessions/common/agentStudioService.ChatMode`，此处用字面量联合
+ * 避免 browser/agentChat 反向依赖 contrib 层（该目录是通用聊天 UI，
+ * 不应耦合 agentStudio 内部模块）。
+ *
+ * 语义（见 chatModeConfig.ts 的 getPermissionMode）：
+ *  - craft → AcceptEdits，完整工具
+ *  - ask   → Default 权限，只读工具
+ *  - plan  → Plan 权限，只读 + **独占 plan_enter/plan_exit/plan_explore**
+ *
+ * ⚠ 与 `_chatOnly` 并存（正交）：chatMode 是意图档位，chatOnly 是额外只读约束。
+ * 保留 `_chatOnly` 是为了不破坏 xtermCliPanel / cliChatEditorPanel 两个 CLI 面板
+ * 和 `setChatOnly` 公开 API 的既有行为。
+ */
+protected _chatMode: 'craft' | 'ask' | 'plan' = 'craft';
 
 protected _sessionInfo: ISessionInfo | null = null;
 
@@ -690,6 +752,9 @@ protected readonly _onAskUserSubmit?: (askUserId: string, executionId: string, n
 
 protected readonly _onClarifySubmit?: (toolCallId: string, selection: string) => void;
 
+/** ChatMode 下拉框选择回调（2026-08-21）——宿主据此更新 per-turn 的 request.chatMode。 */
+protected readonly _onChangeChatMode?: (chatMode: 'craft' | 'ask' | 'plan') => void;
+
 protected readonly _onQuestionClick?: (question: ISuggestedQuestion) => void;
 
 protected readonly _onReferenceClick?: (ref: IReferenceItem) => void;
@@ -791,6 +856,7 @@ constructor(opts: {
 		// New callbacks for missing features
 		onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
 		onClarifySubmit?: (toolCallId: string, selection: string) => void;
+		onChangeChatMode?: (chatMode: 'craft' | 'ask' | 'plan') => void;
 		onQuestionClick?: (question: ISuggestedQuestion) => void;
 		onReferenceClick?: (ref: IReferenceItem) => void;
 		onTipAction?: (tipId: string, actionId: string) => void;
@@ -874,6 +940,7 @@ constructor(opts: {
 		// New callbacks
 		this._onAskUserSubmit = opts.onAskUserSubmit;
 		this._onClarifySubmit = opts.onClarifySubmit;
+		this._onChangeChatMode = opts.onChangeChatMode;
 		this._onQuestionClick = opts.onQuestionClick;
 		this._onReferenceClick = opts.onReferenceClick;
 		this._onTipAction = opts.onTipAction;
@@ -1547,7 +1614,17 @@ setSelectedWorkspace(id: string): void {
 	setChatOnly(chatOnly: boolean): void {
 		this._chatOnly = chatOnly;
 		if (this._agent) { this._refreshInputArea(); }
-	}
+		}
+
+		/**
+		 * 恢复输入框选定的 ChatMode（2026-08-21）。
+		 * 由宿主在窗口重载 / 切换 agent 时调用（持久化在宿主侧，见
+		 * nativeChatEditorPane 的 _STORAGE_CHAT_MODE）。
+		 */
+		setChatMode(chatMode: 'craft' | 'ask' | 'plan'): void {
+			this._chatMode = chatMode;
+			if (this._agent) { this._refreshInputArea(); }
+		}
 
 setSessionInfo(info: ISessionInfo | null): void {
 	this._sessionInfo = info;
@@ -1740,7 +1817,7 @@ protected _updateMessageDom(idx: number, msg: IAgentChatMessage): void  { throw 
 
 protected _updateStreamingContentInPlace(existingEl: HTMLElement, msg: IAgentChatMessage): void  { throw new Error('[moved-to-feature] _updateStreamingContentInPlace'); }
 
-protected _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentChatMessage): void  { throw new Error('[moved-to-feature] _rebuildMessageElement'); }
+protected _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentChatMessage, source: FullRefreshSource): void  { throw new Error('[moved-to-feature] _rebuildMessageElement'); }
 
 protected _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentChatMessage): void  { throw new Error('[moved-to-feature] _updateToolCardStatuses'); }
 

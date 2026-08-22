@@ -13,8 +13,24 @@ import {
 import {
 	softBudgetWrapUpReminder,
 	hardLimitWrapUpReminder,
+	budgetLowWarning,
 	preferGraphSearchReminder,
+	advanceSingleToolStreak,
+	batchReadOnlyToolsReminder,
 } from '../../common/loopReminders.js';
+import {
+	normalizeFileGlobForSearch,
+	searchQueryFingerprint,
+	searchOutcomeHint,
+} from '../../browser/providers/tool/pathFilterNormalize.js';
+import {
+	detectStaleWorktreeAccess,
+	staleWorktreeWarning,
+} from '../../common/worktreeBinding.js';
+import {
+	rewriteUnixPipelineToPowerShell,
+	powerShellEncodedCommand,
+} from '../../browser/providers/tool/executeCodeGuards.js';
 import {
 	STRUCTURAL_SEARCH_TOOL_NAMES,
 	TEXT_SEARCH_TOOL_NAMES,
@@ -127,14 +143,65 @@ suite('ToolUsageGuards — terminal 搜索命令护栏 / 搜索引导提醒', ()
 	});
 
 	// ─── 硬上限总结轮提醒（log 1787019843599：50 轮硬停截断、无结论）──────
+	// 输出要求对齐 MiMo-Code session/prompt/max-steps.txt 的四项必需内容。
 
 	test('hardLimitWrapUpReminder declares tools disabled and demands final answer', () => {
-		const msg = hardLimitWrapUpReminder(50);
+		const msg = hardLimitWrapUpReminder(100);
 		assert.ok(msg.includes('<system-reminder>') && msg.includes('</system-reminder>'));
-		assert.ok(msg.includes('50/50'), 'should cite the iteration limit');
+		assert.ok(msg.includes('100/100'), 'should cite the iteration limit');
 		assert.ok(msg.includes('DISABLED'), 'should declare tools disabled');
 		assert.ok(msg.includes('FINAL ANSWER'), 'should demand a final answer');
-		assert.ok(msg.includes('remains unverified'), 'should ask to list unverified items');
+		assert.ok(!msg.includes('undefined'), 'should not leak undefined');
+	});
+
+	test('hardLimitWrapUpReminder enumerates all four required sections', () => {
+		const msg = hardLimitWrapUpReminder(100);
+		// ① 预算已达上限的声明 ② 已完成 ③ 未完成/未验证 ④ 下一步建议
+		assert.ok(msg.includes('ALL FOUR'), 'should state that four sections are mandatory');
+		assert.ok(msg.includes('ACCOMPLISHED'), 'should require what was accomplished');
+		assert.ok(msg.includes('UNFINISHED') || msg.includes('UNVERIFIED'), 'should require unfinished items');
+		assert.ok(msg.includes('RECOMMENDED NEXT STEPS'), 'should require next-step recommendations');
+		assert.ok(msg.includes('overrides ALL other instructions'), 'should assert priority over other instructions');
+		// 不能反过来把控制权交回用户（收尾轮之后没有下一轮可用）
+		assert.ok(msg.includes('Do not ask the user whether to continue'), 'should forbid asking to continue');
+	});
+
+	// ─── 单只读工具连击 → 批量并行引导（log 1787302409958：17 轮单工具串行）──
+
+	test('advanceSingleToolStreak: 单只读工具递增；非单只读重置为 0', () => {
+		let cur = 0;
+		cur = advanceSingleToolStreak(cur, true, 4).streak;   // 1
+		cur = advanceSingleToolStreak(cur, true, 4).streak;   // 2
+		cur = advanceSingleToolStreak(cur, true, 4).streak;   // 3
+		assert.strictEqual(cur, 3);
+		cur = advanceSingleToolStreak(cur, false, 4).streak;  // 批量/写工具 → 重置
+		assert.strictEqual(cur, 0);
+	});
+
+	test('advanceSingleToolStreak: shouldGuide 仅在阈值倍数（4/8…）为 true', () => {
+		let cur = 0;
+		const seen: boolean[] = [];
+		for (let i = 0; i < 8; i++) {
+			const r = advanceSingleToolStreak(cur, true, 4);
+			cur = r.streak; seen.push(r.shouldGuide);
+		}
+		assert.deepStrictEqual(seen, [false, false, false, true, false, false, false, true]);
+	});
+
+	test('advanceSingleToolStreak: threshold<=0 永不引导（防御）', () => {
+		const r = advanceSingleToolStreak(3, true, 0);
+		assert.strictEqual(r.streak, 4);
+		assert.strictEqual(r.shouldGuide, false);
+	});
+
+	test('batchReadOnlyToolsReminder cites streak/tools and demands batching', () => {
+		const msg = batchReadOnlyToolsReminder(4, 'search_code, file_read');
+		assert.ok(msg.includes('<system-reminder>') && msg.includes('</system-reminder>'));
+		assert.ok(msg.includes('4 consecutive rounds'), 'should cite the streak');
+		assert.ok(msg.includes('search_code, file_read'), 'should cite the tools actually used');
+		assert.ok(msg.includes('round-trip'), 'should explain the real cost');
+		assert.ok(msg.includes('SINGLE round'), 'should demand batching');
+		assert.ok(msg.includes('depend'), 'should keep the sequential escape hatch');
 		assert.ok(!msg.includes('undefined'), 'should not leak undefined');
 	});
 
@@ -146,6 +213,203 @@ suite('ToolUsageGuards — terminal 搜索命令护栏 / 搜索引导提醒', ()
 		assert.ok(msg.includes('4 times'), 'should cite the streak count');
 		assert.ok(msg.includes('search_graph, query_graph, get_architecture'), 'should list available structural tools');
 		assert.ok(msg.includes('exact string / filename matching'), 'should scope search_files usage');
+	});
+
+	// ─── 临近预算预警（log 1787214724132：第 50/50 轮起 delegate_task，成果丢弃）──
+
+	test('budgetLowWarning cites remaining rounds and forbids delegating work', () => {
+		const msg = budgetLowWarning(1, 50);
+		assert.ok(msg.includes('<system-reminder>') && msg.includes('</system-reminder>'));
+		assert.ok(msg.includes('1 tool-calling round(s) remain'), 'should cite remaining rounds');
+		assert.ok(msg.includes('50'), 'should cite the total budget');
+		assert.ok(msg.includes('delegate_task'), 'should name the expensive operation to avoid');
+		assert.ok(msg.includes('DISCARDED'), 'should explain why: the result would be discarded');
+		assert.ok(!msg.includes('undefined'), 'should not leak undefined');
+	});
+
+	// ─── filePattern `|` → `{a,b}` 归一化（log 1787209228496：include 恒 0 命中）──
+	// ripgrep / VS Code glob 的 alternation 是 `{a,b}`，`|` 是字面字符 → 不拆则永不命中。
+
+	test('normalizeFileGlobForSearch converts pipe alternation to brace alternation', () => {
+		// 公共 **/ 前缀须提升到组前，否则 b.ts / c.ts 丢掉「任意深度」语义
+		assert.strictEqual(
+			normalizeFileGlobForSearch('**/comfyNodeStyle.ts|schemaLiteGraphNodes.ts|registry.ts'),
+			'**/{comfyNodeStyle.ts,schemaLiteGraphNodes.ts,registry.ts}',
+		);
+		// 裸文件名（无 globstar、无 '/'）整体补 **/
+		assert.strictEqual(normalizeFileGlobForSearch('a.ts|b.ts'), '**/{a.ts,b.ts}');
+		// 含 '/' 的分支保留相对路径，不补 **/
+		assert.strictEqual(normalizeFileGlobForSearch('src/a.ts|src/b.ts'), '{src/a.ts,src/b.ts}');
+	});
+
+	test('normalizeFileGlobForSearch keeps single globs unchanged (bare name gets **/)', () => {
+		assert.strictEqual(normalizeFileGlobForSearch('*.cpp'), '**/*.cpp');
+		assert.strictEqual(normalizeFileGlobForSearch('src/**/*.ts'), 'src/**/*.ts');
+		assert.strictEqual(normalizeFileGlobForSearch(''), '');
+	});
+
+	// ─── 搜索意图指纹（log 1787211923566 / 1787214724132：换写法重搜绕过熔断）──
+
+	test('searchQueryFingerprint collapses semantically equivalent regex variants', () => {
+		const variants = [
+			'LoadImage', '\\bLoadImage\\b', 'LoadImage\\s*=',
+			'loadimage', '.*LoadImage.*', '(LoadImage)',
+		];
+		const fps = variants.map(v => searchQueryFingerprint(v));
+		for (const fp of fps) {
+			assert.strictEqual(fp, fps[0], `all variants must share one fingerprint, got "${fp}" vs "${fps[0]}"`);
+		}
+		assert.strictEqual(fps[0], 'loadimage');
+	});
+
+	test('searchQueryFingerprint keeps distinct targets distinct', () => {
+		assert.notStrictEqual(searchQueryFingerprint('LoadImage'), searchQueryFingerprint('SaveImage'));
+	});
+
+	// ─── 搜索范围透明化（log 1787217670299：搜主仓 / 读 worktree，模型无从察觉）──
+
+	test('searchOutcomeHint discloses the actual search roots and the .worktrees exclusion', () => {
+		const msg = searchOutcomeHint('**/nodeCard.tsx', 1, false, false, ['sarosis-agents-client']);
+		assert.ok(msg.includes('Search roots actually used: [sarosis-agents-client]'), 'must echo the roots');
+		assert.ok(msg.includes('.worktrees/**'), 'must name the excluded worktree glob');
+		assert.ok(msg.includes('STALE'), 'must warn that the worktree copy is stale');
+		assert.ok(!msg.includes('undefined'));
+	});
+
+	test('searchOutcomeHint omits the roots block when no roots are supplied', () => {
+		const msg = searchOutcomeHint('**/x.ts', 1, false);
+		assert.ok(!msg.includes('Search roots actually used'), 'no roots → no roots block');
+		assert.ok(msg.includes('0 matches with include filter'), 'original guidance preserved');
+	});
+
+	// ─── 越界访问未绑定 worktree 副本（log 1787217670299）─────────────────────
+
+	test('detectStaleWorktreeAccess flags an unbound worktree path and maps it back to the main repo', () => {
+		const hit = detectStaleWorktreeAccess(
+			'g:/repo/.worktrees/feat-chat/src/vs/sessions/a.ts', undefined,
+		);
+		assert.ok(hit, 'unbound worktree access must be detected');
+		assert.strictEqual(hit.branchName, 'feat-chat');
+		assert.strictEqual(hit.worktreeRoot, 'g:/repo/.worktrees/feat-chat');
+		assert.strictEqual(hit.mainRepoEquivalent, 'g:/repo/src/vs/sessions/a.ts');
+	});
+
+	test('detectStaleWorktreeAccess stays silent when the agent IS bound to that worktree', () => {
+		assert.strictEqual(
+			detectStaleWorktreeAccess(
+				'g:/repo/.worktrees/feat-chat/src/a.ts',
+				'g:\\repo\\.worktrees\\feat-chat',   // 反斜杠 + 不同大小写也必须视为同一根
+			),
+			undefined,
+		);
+		assert.strictEqual(
+			detectStaleWorktreeAccess('G:/REPO/.worktrees/Feat-Chat/src/a.ts', 'g:/repo/.worktrees/feat-chat'),
+			undefined,
+		);
+	});
+
+	test('detectStaleWorktreeAccess flags a DIFFERENT worktree than the bound one', () => {
+		const hit = detectStaleWorktreeAccess(
+			'g:/repo/.worktrees/feat-workflow/src/a.ts', 'g:/repo/.worktrees/feat-chat',
+		);
+		assert.ok(hit, 'a different worktree is still out of bounds');
+		assert.strictEqual(hit.branchName, 'feat-workflow');
+	});
+
+	test('detectStaleWorktreeAccess ignores non-worktree paths and the bare container dir', () => {
+		assert.strictEqual(detectStaleWorktreeAccess('g:/repo/src/vs/a.ts', undefined), undefined);
+		// `.worktrees` 本身（无分支段）不算访问某个 worktree
+		assert.strictEqual(detectStaleWorktreeAccess('g:/repo/.worktrees', undefined), undefined);
+		assert.strictEqual(detectStaleWorktreeAccess('', undefined), undefined);
+		assert.strictEqual(detectStaleWorktreeAccess(undefined, undefined), undefined);
+	});
+
+	test('staleWorktreeWarning names the action, the branch and the main-repo path', () => {
+		const hit = detectStaleWorktreeAccess('g:/repo/.worktrees/feat-chat/src/a.ts', undefined)!;
+		const msg = staleWorktreeWarning(hit, 'shell command');
+		assert.ok(msg.includes('shell command'));
+		assert.ok(msg.includes('feat-chat'));
+		assert.ok(msg.includes('g:/repo/src/a.ts'), 'must offer the main-repo equivalent');
+		assert.ok(msg.includes('search_code'), 'must explain search cannot see it');
+	});
+
+	// ─── Unix 管道 → PowerShell 自动改写（log 1787217670299：模型连发 3 次 grep）──
+
+	test('rewriteUnixPipelineToPowerShell maps head/tail to Select-Object', () => {
+		assert.strictEqual(
+			rewriteUnixPipelineToPowerShell('git log --oneline | head -20')?.script,
+			'git log --oneline | Select-Object -First 20',
+		);
+		assert.strictEqual(
+			rewriteUnixPipelineToPowerShell('git log | head -n 5')?.script,
+			'git log | Select-Object -First 5',
+		);
+		// 裸 head 默认 10 行（与 coreutils 一致）
+		assert.strictEqual(
+			rewriteUnixPipelineToPowerShell('git log | head')?.script,
+			'git log | Select-Object -First 10',
+		);
+		assert.strictEqual(
+			rewriteUnixPipelineToPowerShell('git log | tail -3')?.script,
+			'git log | Select-Object -Last 3',
+		);
+	});
+
+	test('rewriteUnixPipelineToPowerShell maps grep to Select-String with correct case semantics', () => {
+		// grep 默认区分大小写，Select-String 默认不区分 → 必须补 -CaseSensitive
+		const plain = rewriteUnixPipelineToPowerShell('type a.ts | grep LoadImage');
+		assert.strictEqual(plain?.script, "type a.ts | Select-String -CaseSensitive -Pattern 'LoadImage'");
+		// -i 则相反：不加 -CaseSensitive
+		const ci = rewriteUnixPipelineToPowerShell('type a.ts | grep -i loadimage');
+		assert.strictEqual(ci?.script, "type a.ts | Select-String -Pattern 'loadimage'");
+		// -v → -NotMatch；-n 被忽略（Select-String 自带行号）
+		const inv = rewriteUnixPipelineToPowerShell('type a.ts | grep -vn foo');
+		assert.strictEqual(inv?.script, "type a.ts | Select-String -CaseSensitive -NotMatch -Pattern 'foo'");
+		// -F → -SimpleMatch
+		assert.ok(rewriteUnixPipelineToPowerShell('type a.ts | grep -F "a.b"')?.script.includes('-SimpleMatch'));
+	});
+
+	test('rewriteUnixPipelineToPowerShell escapes single quotes inside the pattern', () => {
+		const r = rewriteUnixPipelineToPowerShell("type a.ts | grep \"it's\"");
+		assert.strictEqual(r?.script, "type a.ts | Select-String -CaseSensitive -Pattern 'it''s'");
+	});
+
+	test('rewriteUnixPipelineToPowerShell chains multiple unix stages', () => {
+		const r = rewriteUnixPipelineToPowerShell('git log | grep fix | head -5');
+		assert.strictEqual(r?.script, "git log | Select-String -CaseSensitive -Pattern 'fix' | Select-Object -First 5");
+		assert.strictEqual(r?.notes.length, 2, 'both rewritten stages must be reported');
+	});
+
+	test('rewriteUnixPipelineToPowerShell refuses anything it cannot map safely', () => {
+		// sed / awk 语义无法一一对应
+		assert.strictEqual(rewriteUnixPipelineToPowerShell("type a | sed 's/x/y/'"), undefined);
+		assert.strictEqual(rewriteUnixPipelineToPowerShell('type a | awk \'{print $1}\''), undefined);
+		// grep -r（递归 + 目录操作数）应交给 search_code，不猜
+		assert.strictEqual(rewriteUnixPipelineToPowerShell('grep -r LoadImage src/'), undefined);
+		// 未知短选项 / 长选项
+		assert.strictEqual(rewriteUnixPipelineToPowerShell('type a | grep -A3 foo'), undefined);
+		assert.strictEqual(rewriteUnixPipelineToPowerShell('type a | grep --color foo'), undefined);
+		// head -c 字节模式
+		assert.strictEqual(rewriteUnixPipelineToPowerShell('type a | head -c 100'), undefined);
+		// 串联（&&/;）不改写：PowerShell 5 不支持 &&
+		assert.strictEqual(rewriteUnixPipelineToPowerShell('cd x && type a | head -5'), undefined);
+		// 无 Unix 段
+		assert.strictEqual(rewriteUnixPipelineToPowerShell('git status'), undefined);
+	});
+
+	test('rewriteUnixPipelineToPowerShell does not split a pipe inside quotes', () => {
+		const r = rewriteUnixPipelineToPowerShell('type a.ts | grep "foo|bar"');
+		assert.strictEqual(r?.script, "type a.ts | Select-String -CaseSensitive -Pattern 'foo|bar'");
+	});
+
+	test('powerShellEncodedCommand emits UTF-16LE base64 with no shell metacharacters', () => {
+		// 用可预测的编码器验证字节序（真实调用注入 encodeBase64(VSBuffer)）
+		const captured: number[][] = [];
+		const cmd = powerShellEncodedCommand('AB', bytes => { captured.push([...bytes]); return 'BASE64'; });
+		assert.deepStrictEqual(captured[0], [0x41, 0x00, 0x42, 0x00], 'UTF-16LE little-endian');
+		assert.strictEqual(cmd, 'powershell -NoProfile -NonInteractive -EncodedCommand BASE64');
+		// 载荷位置不得含 cmd.exe / PowerShell 会解释的字符
+		assert.ok(!/["'|&^%<>]/.test(cmd), 'encoded form must be shell-metacharacter free');
 	});
 
 	test('search tool groups are disjoint and cover the expected tools', () => {

@@ -2,15 +2,17 @@ import { $, append, addDisposableListener, EventType } from '../../../base/brows
 import { IAgentChatMessage, IToolCall, IChatAttachment, IPlanTaskCard, IConfirmationData } from './agentChatTypes.js';
 import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST_TOOLS, TOOL_CODEBASE_TOOLS, READ_FILE_KEYS, TOOL_PLAN_TOOLS, TOOL_DELEGATE_TOOLS, TOOL_SEARCH_TOOLS, TOOL_WEB_TOOLS, TOOL_SKILL_TOOLS, TOOL_MERMAID_TOOLS } from './agentChatPanel.base.js';
 import { parseInlineWorkflowArgs } from './agentChatPanel.workflowChip.js';
+import { parseToolArgsLoose } from './toolArgsJson.js';
 
-/** 解析 tc.args —— 兼容 string(JSON) / object / undefined 三种形态。 */
+/**
+ * 解析 tc.args —— 兼容 string(JSON) / object / undefined 三种形态。
+ *
+ * 2026-08-21：原实现是裸 `JSON.parse` + `catch → {}`，任何 JSON 非法转义
+ * （实测模型把制表符写成 `\x09`）都会让整个参数对象退化成 `{}` → 卡片渲染
+ * 空白（详见 `toolArgsJson.ts` 头部注释）。现委托到宽松修复链。
+ */
 export function parseToolArgs(raw: unknown): Record<string, unknown> {
-	if (!raw) { return {}; }
-	if (typeof raw === 'object') { return raw as Record<string, unknown>; }
-	if (typeof raw === 'string') {
-		try { return JSON.parse(raw) as Record<string, unknown>; } catch { return {}; }
-	}
-	return {};
+	return parseToolArgsLoose(raw);
 }
 
 /** 判断 execute_code 的 args 是否为 anysearch CLI 调用（command 含 anysearch_cli.py）。 */
@@ -65,27 +67,53 @@ export abstract class AgentChatPanelToolCards extends AgentChatPanelBase {
 			options?: string[];
 			questions?: Array<{ id: string; question: string; options?: string[] }>;
 		} = {};
-		try {
-			parsed = tc.args ? JSON.parse(tc.args) : {};
-		} catch {
-			parsed = {};
-		}
-		// 兜底：args 解析后无 question/questions 时，尝试从 tc.result 解析 __clarify__ JSON
-		if (!parsed.question && !Array.isArray(parsed.questions) && tc.result) {
-			try {
-				const resultParsed = JSON.parse(tc.result);
-				// result 可能是 `{"type":"text","text":"{\"__clarify__\":true,...}"}` 包裹，
-				// 也可能是直接的 `{"__clarify__":true,...}`。
-				const inner = (resultParsed && typeof resultParsed.text === 'string')
-					? JSON.parse(resultParsed.text) : resultParsed;
-				if (inner && inner.__clarify__ === true) {
-					parsed = {
-						question: inner.question,
-						options: Array.isArray(inner.options) ? inner.options : undefined,
-						questions: Array.isArray(inner.questions) ? inner.questions : undefined,
+		parsed = parseToolArgs(tc.args) as typeof parsed;
+		// ── __clarify__ payload 提取器（2026-08-21 修复数组形态）──────────────
+		// tc.result 在 UI 层的实际形态是 agentOS 协议外壳的 JSON 字符串：
+		//   `[{"type":"text","text":"{\"__clarify__\":true,\"questions\":[...]}"}]`
+		// 上一版只处理了「单对象 {type:'text',text:...}」和「裸对象」，**漏了数组**
+		// → `parsed.text` 为 undefined、`inner` 退化成数组、`inner.__clarify__`
+		// 恒为 undefined → 检测失效（日志 1787299339336 + 用户截图：卡片仍显示
+		// 整段 JSON 字面量且带绿色对勾=误判 answered）。
+		// 现改为先用 `_normalizeToolResultText` 剥掉协议外壳（它已覆盖
+		// string / [{type:'text'}] / {content:[...]} / {__truncated__} 全部形态，
+		// 见 agentChatPanel.messages.ts:1740），再解析内层 JSON。
+		const extractClarifyPayload = (raw: unknown): {
+			question?: string;
+			options?: string[];
+			questions?: Array<{ id: string; question: string; options?: string[] }>;
+		} | null => {
+			if (raw === undefined || raw === null || raw === '') { return null; }
+			// 逐层剥壳：normalize 后可能仍是 JSON 字符串（双重 stringify），最多两轮
+			let text = this._normalizeToolResultText(raw);
+			for (let depth = 0; depth < 3; depth++) {
+				let obj: any;
+				try { obj = JSON.parse(text); } catch { return null; }
+				if (obj && obj.__clarify__ === true) {
+					return {
+						question: typeof obj.question === 'string' ? obj.question : undefined,
+						options: Array.isArray(obj.options) ? obj.options : undefined,
+						questions: Array.isArray(obj.questions) ? obj.questions : undefined,
 					};
 				}
-			} catch { /* ignore — not a __clarify__ payload */ }
+				// 单对象外壳 {type:'text', text:'...'}：_normalizeToolResultText 对它会走
+				// JSON.stringify 分支（不解包），这里直接取 .text 再剥一层。
+				if (obj && obj.type === 'text' && typeof obj.text === 'string') {
+					if (obj.text === text) { return null; }
+					text = obj.text;
+					continue;
+				}
+				// 仍是外壳（数组 / {content:[...]} / {__truncated__}）→ 再剥一层
+				const next = this._normalizeToolResultText(obj);
+				if (next === text) { return null; }
+				text = next;
+			}
+			return null;
+		};
+		// 兜底：args 解析后无 question/questions 时，从 tc.result 提取 __clarify__ payload
+		if (!parsed.question && !Array.isArray(parsed.questions) && tc.result) {
+			const fromResult = extractClarifyPayload(tc.result);
+			if (fromResult) { parsed = fromResult; }
 		}
 
 		// 规范化问题列表：questions[] 优先 → 单 question 回退
@@ -103,7 +131,17 @@ export abstract class AgentChatPanelToolCards extends AgentChatPanelBase {
 		}
 		if (fields.length === 0) { return null; }
 
-		const isAnswered = tc.status === 'success' && tc.result && tc.result.length > 0;
+		// ── 关键修复（2026-08-21）：识别「clarify 工具自身输出」不算已回答 ──
+		// `clarify` 工具 handler（coreTools.ts:472-502）返回
+		// `[{type:"text", text: JSON.stringify({__clarify__:true, questions:[...]})}]`，
+		// 经普通工具流水线写入 narrative 后 tc.status 也会被设为 'success'。
+		// 但语义上这是「问题已渲染、等用户回答」，不是「已回答」。若按
+		// `isAnswered = status==='success' && result.length>0` 判定，会走 answered
+		// 分支把整段 __clarify__ JSON 当文本塞进卡片（用户截图现象）。
+		// 修复：result 若能提取出 __clarify__ payload → 强制走 pending 分支渲染表单。
+		// 真正「已回答」由用户提交后 _onClarifySubmit 写回的答案文本触发（不含 __clarify__）。
+		const hasClarifyPayload = extractClarifyPayload(tc.result) !== null;
+		const isAnswered = tc.status === 'success' && tc.result && tc.result.length > 0 && !hasClarifyPayload;
 		const isPending = !isAnswered;
 
 		const card = $('.clarify-card');
@@ -262,7 +300,8 @@ export abstract class AgentChatPanelToolCards extends AgentChatPanelBase {
 			const answerDiv = append(card, $('.clarify-answer'));
 			append(answerDiv, $('span.codicon.codicon-check'));
 			const textEl = append(answerDiv, $('span.clarify-answer-text'));
-			textEl.textContent = tc.result!;
+			// 剥掉 agentOS 协议外壳，避免答案区显示 [{"type":"text",...}] 字面量
+			textEl.textContent = this._normalizeToolResultText(tc.result!);
 			textEl.style.whiteSpace = 'pre-wrap';
 		}
 
@@ -410,7 +449,129 @@ protected _createWebToolCard(tc: IToolCall, key: string): HTMLElement {
 	throw new Error('[moved-to-feature] _createWebToolCard');
 }
 
+/**
+ * 工具卡片 dispatcher（对外唯一入口）。
+ *
+ * 在各专用卡片之上统一挂载「审批区」：任何工具（terminal / write_file / 通用…）
+ * 处于 `tc.approval.status === 'pending'` 时，都在卡片底部渲染
+ * 「允许本次 / 始终允许 / 拒绝」+ 倒计时。
+ * 之前审批 UI 只存在于 message.confirmation 路径且只覆盖写文件卡，
+ * 于是 terminal 审批时卡片里什么按钮都没有（本次修复的直接现象）。
+ */
 protected override _createToolCallCard(tc: IToolCall, confirmation?: IConfirmationData): HTMLElement {
+	const card = this._createToolCallCardCore(tc, confirmation);
+	this._appendToolApprovalSection(card, tc);
+	return card;
+}
+
+/**
+ * 卡内审批区：说明 + 倒计时 + 决策按钮。
+ * 决策经 `_onConfirmationAction(tc.approval.id, buttonId)` →
+ * `agentStudio.confirmationAction` 命令 → agentOSService.resolveToolApproval。
+ */
+protected _appendToolApprovalSection(wrapper: HTMLElement, tc: IToolCall): void {
+	const approval = tc.approval;
+	if (!approval) { return; }
+
+	const section = append(wrapper, $('.tool-approval-section'));
+	const head = append(section, $('.tool-approval-head'));
+	append(head, $('span.tool-approval-badge')).textContent =
+		approval.securityLevel === 'dangerous' ? '需要授权' : '需要确认';
+	append(head, $('span.tool-approval-tool')).textContent = approval.toolName || tc.name || '';
+
+	if (approval.status !== 'pending') {
+		const doneText =
+			approval.status === 'approved' ? '已允许执行'
+				: approval.status === 'timeout' ? '等待超时 — 已拒绝并终止本次回答'
+					: approval.status === 'cancelled' ? '已取消（本轮已结束）'
+						: '已拒绝执行';
+		const doneEl = append(section, $('.tool-approval-result'));
+		doneEl.textContent = doneText;
+		if (approval.status !== 'approved') { doneEl.classList.add('tool-approval-result-deny'); }
+		return;
+	}
+
+	append(section, $('p.tool-approval-message')).textContent =
+		approval.reason || `工具「${approval.toolName}」需要你的授权才能执行。`;
+
+	// ── 倒计时（由面板级单一 ticker 统一刷新，避免每卡一个 interval 泄漏）──
+	if (typeof approval.deadline === 'number') {
+		const cd = append(section, $('span.tool-approval-countdown'));
+		cd.setAttribute('data-approval-deadline', String(approval.deadline));
+		this._renderApprovalCountdownText(cd, approval.deadline);
+		this._ensureApprovalCountdownTicker();
+	}
+
+	const actions = append(section, $('.tool-approval-actions'));
+	const buttons: Array<{ id: string; label: string; cls: string; title: string }> = [
+		{ id: 'allow_once', label: '允许本次', cls: '.primary', title: '仅允许这一次执行' },
+		{ id: 'allow_always', label: '始终允许', cls: '', title: '本次会话内不再询问该工具' },
+		{ id: 'deny', label: '拒绝', cls: '.danger', title: '拒绝执行（工具将返回被拒结果）' },
+	];
+	for (const b of buttons) {
+		const el = append(actions, $(`button.tool-approval-btn${b.cls}`, undefined, b.label)) as HTMLButtonElement;
+		el.title = b.title;
+		this._register(addDisposableListener(el, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			// 本地立即锁定，防重复点击（真实状态由 onDidResolveToolApproval 回写）
+			for (const sibling of Array.from(actions.querySelectorAll('button'))) {
+				(sibling as HTMLButtonElement).disabled = true;
+			}
+			el.textContent = `${b.label} ✓`;
+			this._onConfirmationAction?.(approval.id, b.id);
+		}));
+	}
+}
+
+/** 倒计时文本（剩余秒数 / 已超时）。 */
+private _renderApprovalCountdownText(el: HTMLElement, deadline: number): boolean {
+	const remainMs = deadline - Date.now();
+	if (remainMs <= 0) {
+		el.textContent = '等待超时';
+		el.classList.add('tool-approval-countdown-expired');
+		return false;
+	}
+	const total = Math.ceil(remainMs / 1000);
+	const mm = Math.floor(total / 60);
+	const ss = total % 60;
+	el.textContent = mm > 0 ? `剩余 ${mm}:${String(ss).padStart(2, '0')}` : `剩余 ${ss} 秒`;
+	el.classList.toggle('tool-approval-countdown-urgent', total <= 20);
+	return true;
+}
+
+/**
+ * 面板级唯一倒计时 ticker：每秒扫描 DOM 中所有
+ * `[data-approval-deadline]` 节点刷新文本；没有待审批节点时自动停表。
+ * （不用每卡 setInterval —— 工具卡在流式期间会被反复重建，per-card 定时器必漏。）
+ */
+private _approvalCountdownTimer: ReturnType<typeof setInterval> | undefined;
+
+private _ensureApprovalCountdownTicker(): void {
+	if (this._approvalCountdownTimer !== undefined) { return; }
+	this._approvalCountdownTimer = setInterval(() => {
+		const nodes = this._messagesContainer?.querySelectorAll('[data-approval-deadline]');
+		if (!nodes || nodes.length === 0) {
+			this._stopApprovalCountdownTicker();
+			return;
+		}
+		for (const node of Array.from(nodes)) {
+			const deadline = Number(node.getAttribute('data-approval-deadline'));
+			if (!Number.isFinite(deadline)) { continue; }
+			this._renderApprovalCountdownText(node as HTMLElement, deadline);
+		}
+	}, 1000);
+	// 面板销毁时必须停表（renderer 不会自己回收 interval）
+	this._register({ dispose: () => this._stopApprovalCountdownTicker() });
+}
+
+private _stopApprovalCountdownTicker(): void {
+	if (this._approvalCountdownTimer !== undefined) {
+		clearInterval(this._approvalCountdownTimer);
+		this._approvalCountdownTimer = undefined;
+	}
+}
+
+private _createToolCallCardCore(tc: IToolCall, confirmation?: IConfirmationData): HTMLElement {
 		const key = (tc.name || '').toLowerCase();
 
 		// ── update_plan: 专用计划卡片 ──
@@ -633,10 +794,14 @@ protected override _createToolCallCard(tc: IToolCall, confirmation?: IConfirmati
 		}
 
 		// ── Content Section：请求参数（可折叠）──
-		const hasArgs = tc.args && (() => {
-			try { return JSON.stringify(JSON.parse(tc.args), null, 2) !== '{}'; }
-			catch { return false; }
-		})();
+		// 2026-08-21：原实现两处裸 `JSON.parse(tc.args!)` —— 参数含非法转义时
+		// ① hasArgs 判定为 false（整个「请求参数」区块消失）② buildContent 内直接
+		// 抛异常（可能中断整张卡片渲染）。现统一走宽松修复链，且彻底解析失败时
+		// 回退展示原始字符串（保留可排查性）。
+		const parsedArgsForDisplay = parseToolArgs(tc.args);
+		const hasParsedArgs = Object.keys(parsedArgsForDisplay).length > 0;
+		const rawArgsText = typeof tc.args === 'string' ? tc.args.trim() : '';
+		const hasArgs = hasParsedArgs || (!!rawArgsText && rawArgsText !== '{}');
 
 		if (hasArgs) {
 			this._appendToolSection(innerBox, {
@@ -646,14 +811,13 @@ protected override _createToolCallCard(tc: IToolCall, confirmation?: IConfirmati
 				icon: 'content',
 				collapsed: false,
 				buildContent: (container) => {
+					const fallbackText = hasParsedArgs ? JSON.stringify(parsedArgsForDisplay, null, 2) : rawArgsText;
 					let text: string;
 					if (key === 'workflow') {
-						let p: Record<string, unknown> = {};
-						try { p = JSON.parse(tc.args!); } catch { p = {}; }
-						const script = typeof p.script === 'string' ? p.script : '';
-						text = script || JSON.stringify(p, null, 2);
+						const script = typeof parsedArgsForDisplay.script === 'string' ? parsedArgsForDisplay.script : '';
+						text = script || fallbackText;
 					} else {
-						text = JSON.stringify(JSON.parse(tc.args!), null, 2);
+						text = fallbackText;
 					}
 					const code = append(container, $('.tool-code-children'));
 					const sel = append(code, $('.tool-code-children-selectable'));
@@ -1060,8 +1224,7 @@ protected override _getToolTitle(key: string, displayName: string | undefined, n
 	}
 
 protected override _getToolDesc1(key: string, args: string | undefined, filePath: string | undefined): string {
-		let p: Record<string, unknown> = {};
-		try { p = args ? JSON.parse(args) : {}; } catch { p = {}; }
+		const p = parseToolArgs(args);
 		const basename = (s: string) => {
 			const parts = s.replace(/\\/g, '/').split('/').filter(Boolean);
 			return parts[parts.length - 1] || s;

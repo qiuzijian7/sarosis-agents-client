@@ -101,8 +101,9 @@ function createWebExtractCard(tc: IToolCall): HTMLElement {
 	const charCount = content.length || fullResultLen;
 
 	// ── Header ──
+	// ⚠ 刻意不设 data-part-key —— part key 只属于 part 根元素（wrapper）。
+	// 详见 agentChatPanel.keyedParts.ts::queryPartElements 的事故说明。
 	const header = append(wrapper, $('.tool-header'));
-	header.setAttribute('data-part-key', `tool:${tc.id ?? 'auto'}`);
 
 	append(header, $('.tool-card-icon')).textContent = '🌐';
 	append(header, $('span.tool-title')).textContent = '抓取';
@@ -221,14 +222,12 @@ export abstract class AgentChatPanelWebCard extends AgentChatPanelSearchCard {
 		const isRunning = tc.status === 'running';
 		const isErr = tc.status === 'error';
 
-		// ── 解析查询参数 ──
+		// ── 解析查询参数（宽松修复链，见 toolArgsJson.ts）──
 		let query = '';
-		try {
-			if (tc.args) {
-				const args = JSON.parse(tc.args);
-				query = args.query || args.q || args.keyword || '';
-			}
-		} catch { /* ignore */ }
+		if (tc.args) {
+			const args = parseToolArgs(tc.args) as any;
+			query = args.query || args.q || args.keyword || '';
+		}
 
 		// ── 标题行（整行可点击展开/折叠）──
 		const header = append(wrapper, $('.tool-header'));
@@ -306,8 +305,8 @@ export abstract class AgentChatPanelWebCard extends AgentChatPanelSearchCard {
 		const output = raw ? this._toolResultText(raw) : '';
 
 		// ── Header ──
+		// ⚠ 刻意不设 data-part-key —— 见 keyedParts.ts::queryPartElements 事故说明。
 		const header = append(wrapper, $('.tool-header'));
-		header.setAttribute('data-part-key', `tool:${tc.id ?? 'auto'}`);
 
 		append(header, $('.tool-card-icon')).textContent = '🔍';
 		append(header, $('span.tool-title')).textContent = 'Anysearch 搜索';

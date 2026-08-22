@@ -234,4 +234,53 @@ suite('comfyRunner', () => {
 			assert.strictEqual(sentAuth, 'Bearer tok123');
 		});
 	});
+
+	suite('fetchApi FormData upload（/upload/image 400 修复）', () => {
+
+		test('FormData body → 去掉 Content-Type（浏览器自动 multipart）', async () => {
+			let captured: { headers?: Record<string, string>; body?: unknown } | undefined;
+			const runner = createLocalComfyRunner(fakeFetch(async (url, init) => {
+				captured = init as { headers?: Record<string, string>; body?: unknown };
+				return jsonResponse({ name: 'up.png', subfolder: '', type: 'input' });
+			}));
+			const form = new FormData();
+			form.append('image', new Blob(['x']), 'a.png');
+			await runner.fetchApi?.('/upload/image', { method: 'POST', body: form });
+			assert.ok(captured, 'fetch 应被调用');
+			// ★ 核心断言：FormData 上传时绝不能手动设置 Content-Type（否则浏览器
+			//   不生成 multipart boundary → ComfyUI 400）。
+			assert.strictEqual(captured!.headers?.['Content-Type'], undefined);
+			// body 原样透传（FormData 实例，不被 string 化）。
+			assert.ok(captured!.body instanceof FormData);
+		});
+
+		test('string body → 保留 Content-Type: application/json', async () => {
+			let captured: { headers?: Record<string, string> } | undefined;
+			const runner = createLocalComfyRunner(fakeFetch(async (url, init) => {
+				captured = init as { headers?: Record<string, string> };
+				return jsonResponse({});
+			}));
+			await runner.fetchApi?.('/some/json', { method: 'POST', body: '{"a":1}' });
+			assert.strictEqual(captured!.headers?.['Content-Type'], 'application/json');
+		});
+
+		test('无 body（GET）→ 不抛异常，保留默认 headers', async () => {
+			const runner = createLocalComfyRunner(fakeFetch(async () => jsonResponse({})));
+			const resp = await runner.fetchApi?.('/object_info');
+			assert.strictEqual(resp?.ok, true);
+		});
+
+		test('带 token 的 FormData 上传 → 保留 Authorization、去掉 Content-Type', async () => {
+			let captured: { headers?: Record<string, string> } | undefined;
+			const runner = createRemoteComfyRunner('rem1', 'https://cf.example', fakeFetch(async (url, init) => {
+				captured = init as { headers?: Record<string, string> };
+				return jsonResponse({ name: 'up.png', subfolder: '', type: 'input' });
+			}), { token: 'tok123' });
+			const form = new FormData();
+			form.append('image', new Blob(['x']), 'a.png');
+			await runner.fetchApi?.('/upload/image', { method: 'POST', body: form });
+			assert.strictEqual(captured!.headers?.['Content-Type'], undefined);
+			assert.strictEqual(captured!.headers?.['Authorization'], 'Bearer tok123');
+		});
+	});
 });

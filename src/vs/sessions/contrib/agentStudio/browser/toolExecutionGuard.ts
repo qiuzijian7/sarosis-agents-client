@@ -20,7 +20,10 @@ import type {
 	IToolProvider, IToolCall, IToolResult, IToolDefinition,
 	IToolApprovalRequest, IToolApprovalHandler,
 } from '../common/providers.js';
-import { ToolSecurityLevel, ToolApprovalDecision } from '../common/providers.js';
+import { ToolSecurityLevel, ToolApprovalDecision, TOOL_APPROVAL_BACKSTOP_MS } from '../common/providers.js';
+import { isPlanFileWriteCall } from '../common/planFile.js';
+import { isSandboxFileWriteAutoApproved, isDestructiveToolCall } from '../common/toolApprovalPolicy.js';
+import { evaluateToolCallShellSafety, isShellToolWithCommandArg, ShellCommandSafety } from '../common/shellCommandSafety.js';
 import {
 	runWithRetry,
 	type RetryPolicy,
@@ -31,6 +34,16 @@ import { decideAskRouting, type IAskRoutingContext } from '../common/askRouting.
 
 /** 默认工具执行超时时间（毫秒） */
 export const DEFAULT_TOOL_TIMEOUT_MS = 60_000; // 60 seconds
+
+/**
+ * 硬超时闸门的额外宽限（2026-08-20）。
+ *
+ * `executeWithTimeout` 先在 timeoutMs 时刻 abort（协作式，给 handler 自行清理并
+ * 返回结构化结果的机会），再在 timeoutMs + 本宽限时刻由 Promise.race 硬闸门
+ * 无条件返回超时结果。宽限的意义：让「配合 signal 的 handler」有机会正常收尾
+ * 并保留自己的错误信息，只有真正卡死的 handler 才落到硬闸门。
+ */
+export const HARD_TIMEOUT_GRACE_MS = 5_000; // 5 seconds
 
 /**
  * 编排类工具超时：delegate_task / plan_explore / subagent_batch。
@@ -79,8 +92,7 @@ export async function executeWithTimeout(
 	toolCall: IToolCall,
 	timeoutMs: number = DEFAULT_TOOL_TIMEOUT_MS,
 	parentSignal?: AbortSignal,
-): Promise<IToolResult> {
-	const controller = new AbortController();
+): Promise<IToolResult> {	const controller = new AbortController();
 	const startTime = Date.now();
 
 	// 链接父级 signal
@@ -97,11 +109,46 @@ export async function executeWithTimeout(
 	// 计时器——子代理活性由自身停滞看门狗判定；仅保留父级 signal 取消链路。
 	const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
 
+	// ── 硬超时闸门（2026-08-20，修「LLM 卡住、聊天框一直处理中」事故）──────────
+	// 此前超时是**协作式**的：只调 controller.abort()，然后仍
+	// `await provider.executeTool(...)`。若 handler 内部有不响应 signal 的悬挂
+	// await（实测事故：execute_code 调用链上某个 await 永不 resolve），abort
+	// 无人响应 → 这个 await 永远不返回 → 整个 agent loop 挂死、UI 永久「处理中」，
+	// 且日志里连一条 timed out 都不会打（因为代码根本没走到 catch）。
+	// 内置工具 provider 完全不检查 signal（builtinToolProvider 中 signal 零消费），
+	// 所以协作式超时对绝大多数工具形同虚设。
+	//
+	// 改为 Promise.race 硬闸门：到点无条件返回超时结果，让 agent loop 得以继续
+	// （模型收到 [Timeout] 反馈后可换策略）。abort 仍然发出，配合的 handler
+	// 可借此提前清理；不配合的 handler 会在后台被遗弃（JS 无法强杀 Promise，
+	// 但至少不再阻塞主循环——这是可接受的取舍，进程级资源由 handler 自身的
+	// spawn 超时/主进程侧 kill 回收）。
+	let hardTimer: ReturnType<typeof setTimeout> | undefined;
+	const hardTimeoutGate = timeoutMs > 0
+		? new Promise<IToolResult>((resolve) => {
+			hardTimer = setTimeout(() => {
+				resolve(_makeTimeoutResult(
+					toolCall,
+					`Tool execution timed out after ${timeoutMs}ms (hard gate — handler did not honour the abort signal)`,
+					Date.now() - startTime,
+				));
+			}, timeoutMs + HARD_TIMEOUT_GRACE_MS);
+		})
+		: undefined;
+
 	try {
 		// 串台防护：把 toolCall 上携带的 sessionId 透传给 provider.executeTool → 工具
 		// handler，使记忆写入事件能按 agentId::sessionId 精确路由到对应会话。
-		const result = await provider.executeTool(agentId, toolCall, controller.signal, toolCall.sessionId);
+		const execPromise = provider.executeTool(agentId, toolCall, controller.signal, toolCall.sessionId);
+		const result = hardTimeoutGate
+			? await Promise.race([execPromise, hardTimeoutGate])
+			: await execPromise;
 		const executionTimeMs = Date.now() - startTime;
+
+		// 硬闸门胜出：结果已是超时结果，原样返回（不覆盖 timedOut 标记）
+		if (result.metadata?.timedOut) {
+			return result;
+		}
 
 		// 补充 metadata
 		return {
@@ -136,6 +183,7 @@ export async function executeWithTimeout(
 		};
 	} finally {
 		if (timer !== undefined) { clearTimeout(timer); }
+		if (hardTimer !== undefined) { clearTimeout(hardTimer); }
 		if (parentAbortHandler && parentSignal) {
 			parentSignal.removeEventListener('abort', parentAbortHandler);
 		}
@@ -174,12 +222,41 @@ class ToolRetryableError extends Error {
 	}
 }
 
-/** 工具执行的默认重试策略：3 次、指数退避、仅重试标记 retryable 的失败 */
+/**
+ * 工具执行的默认重试策略。
+ *
+ * ⚠ **maxAttempts=1 = 工具级重试已默认禁用**（2026-08-21 数据裁决）。
+ *
+ * 移除依据（460 份生产日志全量统计，按 callId 配对识别真实重试）：
+ *  - 发生真实工具重试的 callId：**216**
+ *  - 其中被重试救回（最终成功）：**0**
+ *  - 额外（纯浪费）工具执行：**432 次**；纯退避等待累计 **约 648 秒**
+ *  - 抽样验证的失败性质：3/3 全为确定性失败（ENOENT ×2、重复读护栏 BLOCKED ×1）
+ *
+ * 三个额外理由：
+ *  1. **重试污染护栏计数器**：实测重复读护栏计数随重试 4→5→6 递增 —— 工具级重试
+ *     会把自己的重试计入「模型重复行为」统计，虚增计数、可能误触发其他行为护栏。
+ *     这是重试机制与护栏机制的架构性冲突，加豁免无法解决。
+ *  2. **黑名单模式追不上**：原策略为「默认可重试 + 显式豁免」，已积累 29 处
+ *     NonRetryableToolError，每加一道护栏都要记得同时加豁免。
+ *  3. **内部先例**：ORCHESTRATION_TOOLS（delegate_task 等）早在 2026-07-25 事故后
+ *     就已完全禁用重试 —— 最该容错的长任务场景自己证明了重试有害。
+ *  4. **外部一致**：Continue（callTool.ts 单次 try/catch）、opencode（Effect.orDie）、
+ *     Hermes-Agent（tool_executor.py 无 retry）三家均无工具级重试，重试只在 LLM 层。
+ *
+ * 保留策略结构（而非删除整条链路）的理由：个别确有瞬态特性的场景仍可显式
+ * 传入 `options.retryPolicy` opt-in（如 MCP 远端、web 429/5xx）。
+ * 29 处 NonRetryableToolError 亦全部保留 —— 它们不再影响重试，但其错误文案
+ * 是有价值的模型引导（「别重试，改用 X」）。
+ *
+ * 真瞬态失败改由**模型自行重发**（多一轮往返），这正是三家开源项目的做法：
+ * 见 _makeTimeoutResult 面向模型的 "You may retry or try a different approach"。
+ */
 export const DEFAULT_TOOL_RETRY_POLICY: RetryPolicy = {
 	initialInterval: 1000,
 	backoffFactor: 2.0,
 	maxInterval: 30_000,
-	maxAttempts: 3,
+	maxAttempts: 1,
 	jitter: true,
 	retryOn: (err: unknown) => (err as ToolRetryableError)?.isRetryableToolError === true,
 };
@@ -196,15 +273,17 @@ export interface RetryableToolOptions {
 }
 
 /**
- * 带「超时 + 指数退避重试」的工具执行。
+ * 带「超时（+ 可选重试）」的工具执行。
  *
- * - 内层仍用 executeWithTimeout 提供单次超时保护（每次重试都是独立计时）。
- * - 当某次执行返回 success=false 且 metadata.retryable=true（超时 / 可重试异常）
- *   时，按 retryPolicy 退避后重试；其他情况立即上抛结果（不再重试）。
- * - 受 AbortSignal 控制：取消时立即终止，不再重试。
+ * - 始终用 executeWithTimeout 提供单次超时保护（若重试开启，每次都是独立计时）。
+ * - **默认不重试**（DEFAULT_TOOL_RETRY_POLICY.maxAttempts=1，见该常量注释的
+ *   460 份日志数据裁决）：失败结果原样返回给调用方，由模型决定是否换做法重发。
+ * - 显式传入 `options.retryPolicy`（maxAttempts>1）才启用退避重试；此时仅当某次
+ *   执行返回 success=false 且 metadata.retryable=true 时重试，其他情况立即上抛。
+ * - 受 AbortSignal 控制：取消时立即终止。
  *
- * 这是 P0 容错增强：对齐 LangGraph RetryPolicy，解决限流 / 瞬时故障下的
- * 「一次失败即放弃」问题。
+ * 三条不重试路径的语义一致（均原样返回结果，不经异常通道）：
+ * ORCHESTRATION_TOOLS（2026-07-25 事故）/ maxAttempts≤1（默认）/ 单次成功。
  */
 export async function executeWithRetryAndTimeout(
 	provider: IToolProvider,
@@ -222,6 +301,16 @@ export async function executeWithRetryAndTimeout(
 	}
 	const policy = options.retryPolicy ?? DEFAULT_TOOL_RETRY_POLICY;
 	const signal = options.signal ?? options.parentSignal;
+
+	// 单次尝试（默认情况，见 DEFAULT_TOOL_RETRY_POLICY 的移除依据）：直接执行并
+	// 原样返回结果，**不经 ToolRetryableError 异常通道**。
+	// 这一分支很重要：runWithRetry 在尝试耗尽时以异常抛出，maxAttempts=1 若仍走
+	// runWithRetry，则每个失败都会变成异常 —— 调用方 catch 只能拿到 error.message，
+	// 丢失 result.content / metadata（timedOut、sandboxViolation、suggestedPath 等
+	// 结构化字段，UI 与模型引导都依赖它们）。与 ORCHESTRATION_TOOLS 保持同一语义。
+	if ((policy.maxAttempts ?? 1) <= 1) {
+		return executeWithTimeout(provider, agentId, toolCall, timeoutMs, options.parentSignal);
+	}
 
 	return runWithRetry(
 		async () => {
@@ -297,6 +386,35 @@ export function getTimeoutForTool(toolName: string, toolDef?: IToolDefinition, s
 export class ToolApprovalService {
 	private _handler: IToolApprovalHandler | undefined;
 
+	/**
+	 * 计划目录解析器（`<sarosRoot>/plans`）。
+	 *
+	 * 由 agentOSService 注入 —— 用于「写计划文件免审批」的豁免判定
+	 * （2026-08-21 修 plan 模式死锁，日志 1787294819356）。
+	 * 未注入时豁免整体失效（`isPlanFileWriteCall` 收到空 planRoot 返回 false），
+	 * 退化为原有的正常审批流程，不会误放行。
+	 */
+	private _planRootProvider: (() => string) | undefined;
+
+	/** 注入计划目录解析器（延迟求值：sarosRoot 依赖 environmentService，构造期可能未就绪）。 */
+	setPlanRootProvider(provider: () => string): void {
+		this._planRootProvider = provider;
+	}
+
+	/**
+	 * 「终端只读命令免确认」开关读取器（用户设置 `sessions.agentStudio.tools.autoApproveReadOnlyCommands`）。
+	 *
+	 * 未注入 / 返回 false 时，终端命令**行为与以往完全一致**（一律弹审批）——
+	 * 这是刻意的"只能升级不能降级"设计（抄 continue 的 getMostRestrictive 思路）：
+	 * 命令内容分析只在用户主动选择"少打扰"后才生效，且危险命令仍会被拦。
+	 */
+	private _terminalAutoApproveProvider: (() => boolean) | undefined;
+
+	/** 注入开关读取器（惰性求值：配置可随时被用户改动，不能构造期取一次就固化）。 */
+	setTerminalAutoApproveProvider(provider: () => boolean): void {
+		this._terminalAutoApproveProvider = provider;
+	}
+
 	/** 本会话内已"永久允许"的工具名集合 */
 	private readonly _alwaysAllowed = new Set<string>();
 
@@ -311,19 +429,120 @@ export class ToolApprovalService {
 	}
 
 	/**
+	 * 交互审批的兜底等待上限（2026-08-21，修「LLM 被卡住、聊天框永久处理中」事故）。
+	 *
+	 * ⚠ 这里只是**兜底**：权威超时在 agentOSService 的内置 handler 内
+	 * （TOOL_APPROVAL_TIMEOUT_MS，超时会额外 cancelAgentLoop 终止 LLM）。
+	 * 因此本值必须**大于** TOOL_APPROVAL_TIMEOUT_MS，否则兜底先触发，
+	 * handler 的「终止 LLM」分支永远走不到。
+	 *
+	 * 同时必须**小于** DANGEROUS_TOOL_TIMEOUT_MS(300s)：审批发生在
+	 * executeWithRetryAndTimeout（含硬超时闸门）**之外**，闸门管不到它，
+	 * 所以这里必须自带上限，否则一次无人响应的审批就永久挂死 agent loop。
+	 */
+	private static readonly APPROVAL_WAIT_TIMEOUT_MS = TOOL_APPROVAL_BACKSTOP_MS;
+
+	/**
 	 * 检查工具是否需要审批，并执行审批流程。
 	 *
+	 * @param ctx 发起 turn 的 agent/session（超时终止 loop 时需按 turnKey 精确取消）
 	 * @returns true 表示允许执行，false 表示被拒绝
 	 */
 	async checkAndApprove(
 		toolCall: IToolCall,
 		toolDef: IToolDefinition | undefined,
 		routing?: IAskRoutingContext,
+		ctx?: { readonly agentId?: string; readonly sessionId?: string },
 	): Promise<boolean> {
 		const securityLevel = toolDef?.securityLevel ?? ToolSecurityLevel.Safe;
 
+		// ─── 破坏性操作强制审批（2026-08-21，用户决策）─────────────────────
+		// 必须排在下面的 `Safe` 早返回**之前**，否则毫无作用：
+		// `checkAndApprove` 读的是 `toolDef?.securityLevel ?? Safe`，而
+		// `inferSecurityLevel` 是**死代码（零生产调用）** → 内置工具不声明
+		// securityLevel 就等于 Safe、直接放行。审计实测 85 个工具里只有 4 个声明了
+		// Dangerous，导致 delete_project / memory_delete / memory_forget /
+		// web_recipe_remove / skill_manage(action=delete) /
+		// memory_governance(action=bulk_delete) **全部无审批直接执行**。
+		//
+		// 判定真源 = `common/toolApprovalPolicy.isDestructiveToolCall`（纯函数），
+		// 那里说明了为何只按**工具名**匹配（按描述匹配会误伤 kanban_unblock 这类
+		// 状态流转工具）、以及为何多操作工具要按**操作参数**而非整体标级
+		// （否则 skill_manage(create) / memory_governance(audit) 也会弹窗）。
+		//
+		// ⚠ 只覆盖 `Safe` 早返回，**不覆盖** `_alwaysAllowed`：后者是用户对该工具的
+		// 显式长期授权，继续尊重它，与系统其余部分语义一致。
+		const forceApproval = isDestructiveToolCall(toolCall.name, toolCall.arguments);
+		// 强制审批时按 Dangerous 呈现（影响卡片文案与 reason），让用户看清风险
+		const effectiveSecurityLevel = forceApproval ? ToolSecurityLevel.Dangerous : securityLevel;
+
 		// Safe 工具不需要审批
-		if (securityLevel === ToolSecurityLevel.Safe) {
+		if (securityLevel === ToolSecurityLevel.Safe && !forceApproval) {
+			return true;
+		}
+
+		// ─── 计划文件写入豁免（2026-08-21，修 plan 模式死锁）──────────────
+		// 事故日志 1787294819356：plan 模式下 hardPermission **已**豁免写计划文件，
+		// 但审批层没有 → file_write 仍按 dangerous 级别要求审批 → 审批 UI 未渲染
+		// → 120s 超时被自动拒 → 计划永远写不进去 → plan_exit 恒因 tasks=0 被拒 → 死锁。
+		//
+		// 写计划文件是 plan 模式的本职动作（且路径被严格限定在 planRoot 内，
+		// 见 isPlanFileWriteCall 的三重校验），不应触发面向"改用户代码"的审批。
+		// 放在 _alwaysDenied 检查**之前**：即使用户曾对 file_write 选过"总是拒绝"，
+		// 也不该把 plan 模式自身的记录能力一起锁死。
+		const planRoot = this._planRootProvider?.();
+		if (planRoot && isPlanFileWriteCall(toolCall.name, toolCall.arguments, planRoot)) {
+			return true;
+		}
+
+		// ─── 沙箱内非删除类文件操作免交互审批（2026-08-21，用户决策）──────────
+		// 用户策略：**操作沙箱内的文件，非删除类的操作，都可以直接放行。**
+		//
+		// 判定真源 = `common/toolApprovalPolicy.isSandboxFileWriteAutoApproved`
+		// （纯函数、可单测），那里详述了「为什么用规则而非硬编码工具名清单」
+		// 以及 shell / delete / move 为何一律排除。
+		//
+		// 之所以安全，靠的是**三道仍然生效的闸门**，而不是"降低了要求"：
+		//   ① 越界写仍被拦：文件类工具的 resolveAndCheckWorkspacePath 走
+		//      checkSandbox=true，路径不在允许根内会抛 SandboxViolationError →
+		//      agentOSService 弹「安全沙箱限制」卡片交用户裁决（允许本次／允许此
+		//      工作区／改用建议路径）。**所以放行的实质只有"沙箱内"，与用户要求一致。**
+		//   ② hardPermission 不受影响：ask / plan 等只读档位仍在 executor 层禁写，
+		//      本豁免只去掉交互确认，不触碰权限档判定。
+		//   ③ 有回滚点：handler 在写盘前调 captureBeforeToolEdit 生成 tool_edit
+		//      checkpoint，用户可在检查点条上撤销。（patch 那条是 2026-08-21 补的，
+		//      此前只有 file_write 有 —— 否则会变成"既不问也撤不了"。）
+		//
+		// 仍保留定义里的 securityLevel=Dangerous：它另有用途（300s 的
+		// DANGEROUS_TOOL_TIMEOUT_MS、UI 标识、hardPermission 语义），不能改成 Safe。
+		// 放在 _alwaysDenied 之前，语义与上面的计划文件豁免一致（即使用户曾对某个
+		// 写工具选过"总是拒绝"，也不该把编辑能力永久锁死）。
+		// `!forceApproval` 是**纵深防御**：本判定是规则式（动词匹配），若日后有人
+		// 放宽 FILE_WRITE_VERBS 或加入某个破坏性 category，破坏性调用可能从这里溜过。
+		// 当前 isSandboxFileWriteAutoApproved 已排除 delete/remove 等动词，此处属冗余保险。
+		if (!forceApproval && isSandboxFileWriteAutoApproved(toolDef)) {
+			return true;
+		}
+
+		// ─── 终端只读命令免确认（2026-08-21，用户决策"方案 B"）──────────────
+		// 判定真源 = `common/shellCommandSafety.evaluateToolCallShellSafety`（纯函数）。
+		//
+		// 三重前提，缺一不放行：
+		//   ① 用户**显式开启**了设置（provider 未注入或返回 false → 行为与以往完全一致）；
+		//   ② 该工具确实是带 command 参数的 shell 工具（terminal / execute_code）；
+		//   ③ 命令通过白名单分析（无危险元字符、每个管道段都是已知只读命令）。
+		//
+		// 这是「只能升级不能降级」模型（抄 continue `getMostRestrictive` 的思路）：
+		// 默认配置下本分支永不触发；开启后也只放行**已知只读**，未知一律 fail-closed。
+		// 且 handler 层的 HARDLINE 地板与源码写入护栏独立生效，本分支放行不绕过它们。
+		//
+		// `!forceApproval` 同样作纵深防御（破坏性判定优先）。
+		if (
+			!forceApproval
+			&& isShellToolWithCommandArg(toolCall.name)
+			&& this._terminalAutoApproveProvider?.() === true
+			&& evaluateToolCallShellSafety(toolCall.name, toolCall.arguments) === ShellCommandSafety.Safe
+		) {
 			return true;
 		}
 
@@ -363,13 +582,43 @@ export class ToolApprovalService {
 			toolCallId: toolCall.id,
 			toolName: toolCall.name,
 			arguments: toolCall.arguments,
-			securityLevel,
-			reason: securityLevel === ToolSecurityLevel.Dangerous
-				? `Tool "${toolCall.name}" can modify files or execute system commands.`
-				: `Tool "${toolCall.name}" may have side effects.`,
+			securityLevel: effectiveSecurityLevel,
+			reason: forceApproval
+				? `Tool "${toolCall.name}" performs a destructive operation (delete/remove) that cannot be undone by a checkpoint.`
+				: effectiveSecurityLevel === ToolSecurityLevel.Dangerous
+					? `Tool "${toolCall.name}" can modify files or execute system commands.`
+					: `Tool "${toolCall.name}" may have side effects.`,
+			agentId: ctx?.agentId,
+			sessionId: ctx?.sessionId,
 		};
 
-		const decision = await this._handler.requestApproval(request);
+		// ── 交互审批（带超时闸门，2026-08-21 修永久挂死）──────────────────
+		// requestApproval 的实现（agentStudioWebviewController:291）是
+		// `new Promise(resolve => { pendingMap.set(id, resolve); sendEvent(webview) })`
+		// —— **无超时、无 reject**，只能由 webview 里的用户点击来 resolve。
+		// 因此任何「事件到不了 UI / UI 不显示审批卡片」的情况都会让它永不 settle：
+		//   ★ 实测事故（日志 1787276571583）：用户在 **native chat pane** 里工作，
+		//     而审批 handler 只由 agentStudioWebviewController 注册、事件只发给
+		//     webview（nativeChatEditorPane 对 toolApprovalRequest 零处理）→
+		//     terminal 首次调用需审批 → 卡片永远不出现 → `Executing tool: terminal`
+		//     之后 15.5 分钟零日志，UI 永久「处理中」。
+		//   其它同类：webview 已销毁/未就绪、消息丢失、用户滚开没看到卡片。
+		// 关键：审批位于 executeWithRetryAndTimeout（含硬超时闸门）**之外**，
+		// 闸门救不了它，必须在此自带上限。
+		// 超时按 **拒绝** 处理（安全优先，绝不默认放行危险工具），但日志与返回给
+		// 模型的文案要能区分「超时」与「用户主动拒绝」，避免模型误判用户意图。
+		const decision = await Promise.race([
+			this._handler.requestApproval(request),
+			new Promise<ToolApprovalDecision>((resolve) => {
+				setTimeout(
+					() => resolve(ToolApprovalDecision.Deny),
+					ToolApprovalService.APPROVAL_WAIT_TIMEOUT_MS,
+				);
+			}),
+		]);
+		// 注：超时后 handler 内部的 pending entry 仍留在其 map 中（本服务无从清理）；
+		// 用户事后点击只会 resolve 一个已无人 await 的 Promise，无副作用。
+		// 后续可给 IToolApprovalHandler 增设 cancelApproval(toolCallId) 做彻底清理。
 
 		switch (decision) {
 			case ToolApprovalDecision.AllowOnce:
@@ -378,7 +627,10 @@ export class ToolApprovalService {
 				this._alwaysAllowed.add(toolCall.name);
 				return true;
 			case ToolApprovalDecision.Deny:
-				this._alwaysDenied.add(toolCall.name);
+				// ⚠ 超时也会走到这里。**不写入 _alwaysDenied**——否则一次「UI 没显示
+				// 审批卡片」的超时会把该工具在整个会话内永久拉黑，模型此后每次调用
+				// 都被静默拒绝，表现为「这个工具坏了」。只有用户**主动**拒绝才该记忆，
+				// 而当前 handler 协议无法区分二者，故一律不记忆（宁可多问一次）。
 				return false;
 			default:
 				return false;
@@ -422,8 +674,14 @@ export class ToolApprovalService {
 		// 基于工具名推断
 		const name = toolDef.name.toLowerCase();
 		const dangerousPatterns = [
+			// 'patch' / 'edit' 必须在此（2026-08-21 补，日志 1787311348450）：
+			// 它们本来只在 category==='filesystem' 分支里被识别，一旦某个工具把
+			// category 写成 'file' 之类的近似值（曾真实发生），就会一路落到这里
+			// 并被判 Safe → 写文件却无审批、无 checkpoint。名称兜底与 category
+			// 判定互为双保险。
 			'write', 'delete', 'remove', 'exec', 'shell', 'terminal',
 			'run_command', 'execute_command', 'bash', 'deploy', 'push',
+			'patch', 'edit',
 		];
 		const cautiousPatterns = [
 			'http', 'fetch', 'browser', 'navigate', 'download', 'upload',

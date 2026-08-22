@@ -42,8 +42,11 @@ export type AgentRunMessage = {
 // ─── 可复用阈值（对齐 agentOSService.ts loop 内现有本地常量）─────────
 // 集中导出，避免 Step 2/3 接入时与 loop 内字面量漂移。
 export const RUN_STATE_LIMITS = {
-	/** 单 turn 最大工具迭代次数（loop 内 MAX_TOOL_ITERATIONS） */
-	MAX_TOOL_ITERATIONS: 50,
+	/**
+	 * 单 turn 最大工具迭代次数（须与 agentOSService.MAX_TOOL_ITERATIONS 保持一致）。
+	 * 2026-08-20：50 → 100，同时那边撞上限后会额外跑一轮禁工具收尾轮（实际 100+1）。
+	 */
+	MAX_TOOL_ITERATIONS: 100,
 	/** 工具循环检测窗口（loop 内 TOOL_LOOP_WINDOW） */
 	TOOL_LOOP_WINDOW: 10,
 	/** 工具循环检测阈值（loop 内 TOOL_LOOP_THRESHOLD） */
@@ -798,7 +801,7 @@ export function restoreRunState(input: unknown): AgentRunState {
 }
 
 const VALID_PHASES: ReadonlyArray<StreamPhase> = [
-	'idle', 'llm_streaming', 'tool_executing', 'awaiting_approval', 'compressing', 'error',
+	'idle', 'llm_streaming', 'tool_executing', 'awaiting_approval', 'retrieving', 'compressing', 'error',
 ];
 
 function normalizeGraphRunState(raw: Partial<AgentGraphRunState>): AgentGraphRunState {
