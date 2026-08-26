@@ -34,6 +34,13 @@ export interface IComfyExecutionDelegate {
 	/**
 	 * Execute a Comfy/ComfyStage node with already-resolved binding values.
 	 * Throws on failure (retry loop / cascadeFailure handles it).
+	 *
+	 * `ctx.onProgress`：ComfyUI 生成进度（0-100），用于把 m×n 表情包等长耗时
+	 * 节点的逐格进度透传到聊天卡（可选，未提供时静默忽略）。
 	 */
-	execute(node: WorkflowGraphNode, input: ComfyExecutionInput, ctx: { executionId: string }): Promise<ComfyExecutionResult>;
+	execute(
+		node: WorkflowGraphNode,
+		input: ComfyExecutionInput,
+		ctx: { executionId: string; onProgress?: (progress: number, message?: string) => void },
+	): Promise<ComfyExecutionResult>;
 }

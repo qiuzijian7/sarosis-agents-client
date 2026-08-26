@@ -41,6 +41,28 @@ protected override _renderMessagesArea(): void {
 			$(".chat-messages"),
 		);
 
+		// 集中式资源释放：监听 _messagesContainer 子树节点移除。
+		// 任何消息/part 子树被移除（全量重建、keyed-reconcile 删残留、setMessages 清空、
+		// 未来消息裁剪）时，立即释放其 _markdownDisposables，避免 detached 子树被 map
+		// 引用而无法 GC —— 这是 detached DOM 累积导致 7G 内存泄漏的根因。
+		this._domDisposalObserver?.disconnect();
+		this._domDisposalObserver = new MutationObserver((mutations) => {
+			let hasRemoval = false;
+			for (const m of mutations) {
+				if (m.removedNodes.length > 0) { hasRemoval = true; break; }
+			}
+			if (!hasRemoval) { return; }
+			const toRemove: HTMLElement[] = [];
+			for (const [el, disposable] of this._markdownDisposables) {
+				if (!el.isConnected) {
+					disposable.dispose();
+					toRemove.push(el);
+				}
+			}
+			for (const el of toRemove) { this._markdownDisposables.delete(el); }
+		});
+		this._domDisposalObserver.observe(this._messagesContainer, { childList: true, subtree: true });
+
 		const SCROLL_THRESHOLD = 80; // 匹配 React 80px 阈值
 
 		// ── 辅助：检测是否在底部 ──
@@ -289,6 +311,9 @@ protected override _renderMessages(): void {
 	}
 
 protected override _setupLazyLoad(firstEl: HTMLElement, remainingCount: number): void {
+		// 重锚定时断开旧的懒加载观察器，避免泄漏
+		this._lazyLoadObserver?.disconnect();
+		this._lazyLoadRemaining = remainingCount;
 		const CHUNK = 20;
 		let nextEnd = remainingCount;
 
@@ -312,6 +337,7 @@ protected override _setupLazyLoad(firstEl: HTMLElement, remainingCount: number):
 				container.scrollTop = prevScrollTop + scrollDiff;
 			}
 			nextEnd = nextStart;
+			this._lazyLoadRemaining = nextEnd;
 			// 刷新滚动条标记——消息插入后 offsetTop 全部偏移，旧标记位置失效
 			this._scrollbar.refreshScrollMarkers();
 		};
@@ -344,6 +370,30 @@ protected override _appendMessageDom(msg: IAgentChatMessage): void {
 		}
 		const el = this._createMessageElement(msg);
 		this._messagesContainer.appendChild(el);
+		// 内存护栏：长会话实时 append 时裁剪最旧消息，避免全部堆积进 DOM（7G 根因之一）
+		this._trimRenderedMessages();
+	}
+
+	/** 内存护栏：渲染消息数超过上限且用户停在底部时，移除最旧消息并释放其资源。
+	 *  仅在底部（未查看历史）时裁剪；裁剪到懒加载锚点时重锚定，保持向上翻历史能力。 */
+	private _trimRenderedMessages(): void {
+		const MAX_RENDERED = 120;
+		const container = this._messagesContainer;
+		if (!container) { return; }
+		// 用户正在查看历史（不在底部）时不裁剪，避免破坏向上翻页
+		if (!this._isAtBottom) { return; }
+		while (container.children.length > MAX_RENDERED) {
+			const oldest = container.firstElementChild as HTMLElement | null;
+			if (!oldest) { break; }
+			const wasAnchor = !!this._lazyLoadObserver;
+			this._cleanupMarkdownDisposables(oldest);
+			oldest.remove();
+			// 若裁剪的是懒加载锚点且仍有历史可加载，重锚定到新的首条消息
+			if (wasAnchor && this._lazyLoadRemaining > 0) {
+				const newFirst = container.firstElementChild as HTMLElement | null;
+				if (newFirst) { this._setupLazyLoad(newFirst, this._lazyLoadRemaining); }
+			}
+		}
 	}
 
 protected override _updateMessageDom(idx: number, msg: IAgentChatMessage): void {
@@ -511,8 +561,11 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 			prevEl = el;
 		}
 
-		// 删除残留元素
-		for (const [, el] of existingMap) { el.remove(); }
+		// 删除残留元素——先释放其 markdown disposable，避免 detached 子树泄漏
+		for (const [, el] of existingMap) {
+			this._cleanupMarkdownDisposables(el);
+			el.remove();
+		}
 
 		// 后处理
 		this._updateStreamingContainerMark(bubble, msg);

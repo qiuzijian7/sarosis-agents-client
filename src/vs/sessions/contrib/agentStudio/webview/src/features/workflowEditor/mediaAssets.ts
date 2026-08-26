@@ -66,16 +66,22 @@ export async function mediaGet(id: string): Promise<MediaAsset | null> {
 	return sendRequest<{ id: string }, MediaAsset | null>('media.get', { id });
 }
 
-/** 把资产解析成 webview 可加载的 URL（本地镜像走 host 转换；http/data 原样）。 */
+/** 把资产解析成 webview 可加载的 URL（http/data 原样；本地镜像经主进程读成 data URL）。 */
 export async function resolveAssetUrl(a: MediaAsset): Promise<string | null> {
 	if (/^(https?|data):/i.test(a.ref)) { return a.ref; }
-	if (a.filePath) { return mediaGetUrl(a.id); }
+	if (a.filePath) { return mediaGetAsDataUrl(a.id); }
 	return null;
 }
 
-/** 本地镜像经 host 转 vscode-webview:// URL；URL 引用原样返回。 */
-export async function mediaGetUrl(id: string): Promise<string | null> {
-	return sendRequest<{ id: string }, string | null>('media.getUrl', { id });
+/** 主进程返回本地文件绝对路径（无文件/被删 → null）。webview 沙箱不能直接用本地路径——改用 mediaGetAsDataUrl。 */
+export async function mediaGetFilePath(id: string): Promise<string | null> {
+	return sendRequest<{ id: string }, string | null>('media.getFilePath', { id });
+}
+
+/** 主进程读文件并返回 data URL（base64）—— webview 沙箱唯一可用的「本地媒体」加载方式。
+ *  体积 ~33% 开销，但缩略图（96×96）通常 < 10KB，列表场景完全可接受。 */
+export async function mediaGetAsDataUrl(id: string): Promise<string | null> {
+	return sendRequest<{ id: string }, string | null>('media.getAsDataUrl', { id });
 }
 
 export async function mediaRemove(id: string): Promise<void> {
@@ -117,6 +123,18 @@ export async function mediaStats(): Promise<MediaStats | null> {
 
 export async function mediaPurgeDeleted(): Promise<MediaPurgeResult> {
 	return sendRequest<undefined, MediaPurgeResult>('media.purgeDeleted', undefined);
+}
+
+export async function mediaCleanOrphaned(): Promise<MediaPurgeResult> {
+	return sendRequest<undefined, MediaPurgeResult>('media.cleanOrphaned', undefined);
+}
+
+export async function mediaGetRootDir(): Promise<string> {
+	return sendRequest<undefined, string>('media.getRootDir', undefined);
+}
+
+export async function mediaSetRootDir(path: string): Promise<{ rootDir: string }> {
+	return sendRequest<{ path: string }, { rootDir: string }>('media.setRootDir', { path });
 }
 
 export async function mediaEnforceQuota(opts?: { maxDays?: number; maxTotalBytes?: number }): Promise<MediaQuotaResult> {

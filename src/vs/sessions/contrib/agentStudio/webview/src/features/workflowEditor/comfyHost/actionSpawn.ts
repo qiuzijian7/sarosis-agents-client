@@ -22,6 +22,7 @@
 
 import { useWorkflowEditorStore, pauseTracking, resumeTracking } from '../store';
 import { getNodeSpec } from './registry';
+import { VIDEO_TO_GIF_TYPE } from './videoToGif';
 
 // ─── Preset model (mirrors ComfyTV ImagePreset) ─────────────────────────────
 
@@ -113,6 +114,9 @@ const VIDEO_CHANGE_PRESETS: ImagePreset[] = [
 	{ id: 'scopes',        icon: '▤', label: 'Scopes',         category: 'videoChange', targetClass: 'ComfyTV.VideoScopesStage',     inputSocket: 'input' },
 	{ id: 'transform',     icon: '⤢', label: 'Transform',      category: 'videoChange', targetClass: 'ComfyTV.VideoTransformStage',  inputSocket: 'input' },
 	{ id: 'composite',     icon: '⧉', label: 'Composite',      category: 'videoChange', targetClass: 'ComfyTV.VideoCompositeStage',  inputSocket: 'input' },
+	// ★ 视频转 GIF —— 浏览器本地执行（ComfyTV 无 gif stage、本机 ComfyUI 只有
+	//   SaveAnimatedWEBP/PNG），实现见 videoToGif.ts / videoToGifExecutor.ts。
+	{ id: 'to-gif',        icon: '🎞', label: '转 GIF',         category: 'videoChange', targetClass: VIDEO_TO_GIF_TYPE,             inputSocket: 'input' },
 ];
 
 const imageActions: StageAction[] = [
@@ -125,7 +129,10 @@ const imageActions: StageAction[] = [
 ];
 
 export const ACTIONS_BY_KIND: Record<string, StageAction[]> = {
-	text: [{ id: 'refine', icon: '✎', label: '精修' }],
+	text: [
+		{ id: 'refine', icon: '✎', label: '精修' },
+		{ id: 'multi-panel', icon: '▦', label: '多宫格故事板' },
+	],
 	image: imageActions,
 	'image-picker': imageActions,
 	'image-batch': imageActions,
@@ -357,6 +364,9 @@ const PRODUCT_SHOT_WIDGETS: Record<string, unknown> = {
 const SPAWN_HANDLERS: Partial<Record<string, Record<string, SpawnHandler>>> = {
 	text: {
 		'refine': (id, t) => spawnConsumingNode(id, t, 'ComfyTV.TextStage', 'texts'),
+		// 故事提示词 → 多宫格故事板（text 输出连线到 MultiPanelStoryboardStage.text 输入，
+		// run 时自动把故事文本启发式拆分成 N 宫格）。
+		'multi-panel': (id, t) => spawnConsumingNode(id, t, 'ComfyTV.MultiPanelStoryboardStage', 'text'),
 	},
 	image: imageHandlers,
 	'image-picker': imageHandlers,

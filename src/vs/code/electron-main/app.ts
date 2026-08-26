@@ -152,6 +152,7 @@ import { KbSqliteStoreChannel } from '../../sessions/contrib/agentStudio/electro
 import { KB_SQLITE_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/kbSqliteStoreChannel.js';
 import { GitVersionChannel } from '../../sessions/contrib/agentStudio/electron-main/gitVersionChannel.js';
 import { ComfyLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/comfyLaunchChannel.js';
+import { VoxLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/voxLaunchChannel.js';
 import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
 import { MediaStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/mediaStoreChannel.js';
 import { MEDIA_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/mediaStoreChannel.js';
@@ -805,6 +806,10 @@ export class CodeApplication extends Disposable {
 	// （sessions/contrib/agentStudio/electron-main/comfyLaunchChannel.ts），
 	// 此处仅负责注册其生命周期。
 	this._register(new ComfyLaunchChannel(this.logService, this.configurationService));
+
+	// Vox 口播视频节点（Vox.DirectorStage）本地 pipeline 执行：
+	// 逻辑在 sessions/contrib/agentStudio/electron-main/voxLaunchChannel.ts。
+	this._register(new VoxLaunchChannel(this.logService, this.configurationService));
 
 	//#endregion
 }
@@ -1655,6 +1660,7 @@ export class CodeApplication extends Disposable {
 		// ${userDataPath}/media/（dev 为 ~/.vssaros-dev/media）。
 		const mediaStoreChannel = new MediaStoreChannel(
 			join(this.environmentMainService.userDataPath, 'media'),
+			join(this.environmentMainService.userDataPath, 'media-store-config.json'),
 			accessor.get(ILoggerService),
 		);
 		mainProcessElectronServer.registerChannel(MEDIA_STORE_CHANNEL, mediaStoreChannel);

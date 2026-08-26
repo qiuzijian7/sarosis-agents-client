@@ -1642,12 +1642,42 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			values['label'] = data.label ?? node.name ?? node.id;
 		}
 
+		// 参考图：工作流执行 context.images（聊天附件 data URL）注入 `images` 端口。
+		// EmojiStage 等媒体节点经它消费参考图（若无显式 binding 引用 {{images}}）。
+		const ctxImages = executionState.context?.['images'];
+		if (values['images'] === undefined && Array.isArray(ctxImages) && ctxImages.length > 0) {
+			values['images'] = ctxImages;
+		}
+
 		const input: ComfyExecutionInput = { values, defaults };
-		const result = await this._comfyDelegate.execute(node, input, { executionId: executionState.executionId });
+		const ownerSession = this._executionSession.get(executionState.executionId);
+		const nodeName = (typeof data.label === 'string' && data.label) || node.name || node.id;
+		const result = await this._comfyDelegate.execute(node, input, {
+			executionId: executionState.executionId,
+			// 逐格/逐帧进度透传：更新 nodeState.progress + 发 node_progress trace（聊天卡进度条）。
+			onProgress: (progress, message) => {
+				const ns = executionState.nodeStates.get(node.id);
+				if (ns) { ns.progress = progress; }
+				this._onDidExecutionTrace.fire({
+					kind: 'node_progress',
+					executionId: executionState.executionId,
+					sessionId: ownerSession?.sessionId ?? 'unknown',
+					nodeId: node.id,
+					nodeName,
+					progress,
+					...(message !== undefined ? { message } : {}),
+				});
+			},
+		});
 
 		const nodeState = executionState.nodeStates.get(node.id);
 		if (nodeState) {
 			nodeState.output = result.summary ?? JSON.stringify(result.outputs);
+			nodeState.progress = 100;
+			// 媒体快照（image/video/audio 引用）随节点状态透传，供聊天卡渲染输出。
+			if (result.snapshot) {
+				nodeState.snapshot = result.snapshot;
+			}
 		}
 		this.logService.info(
 			`[WorkflowExecution] Comfy node ${node.id} completed (mode=${comfy.mode ?? 'workflow'}, outputs=${Object.keys(result.outputs).length})`,

@@ -83,7 +83,10 @@ export type RequestType =
 	| 'media.setBoard'
 	| 'media.stats'
 	| 'media.purgeDeleted'
+	| 'media.cleanOrphaned'
 	| 'media.enforceQuota'
+	| 'media.getRootDir'
+	| 'media.setRootDir'
 	| 'workspaceSession.list'
 	| 'workspaceSession.get'
 	| 'workspaceSession.create'
@@ -166,14 +169,26 @@ export type RequestType =
 	| 'workflow.executeScript'  // M4c: webview 直接执行脚本（绕过 LLM 决策，确定性触发）
 	| 'workflow.stageRunResult' // P0: webview 回程「画布节点执行结果」（stage() 写方向桥）
 	| 'workflow.stageRunProgress' // P0: webview 回程「画布节点执行进度」（ComfyUI 生成实时进度）
+	| 'workflow.stageDirectRunResult' // 存储工作流 ComfyStage 直跑回程（direct stage run 桥）
+	| 'workflow.stageDirectRunProgress' // 存储工作流 ComfyStage 直跑进度回程
 	| 'workflow.publishState'    // 单行工具栏：查询发布状态（本地版本 vs 商城版本）
 	| 'workflow.publish'         // 单行工具栏：打开发布 modal（上传 / 更新到商城）
 	| 'workflow.versionHistory'  // 单行工具栏：切换版本历史侧边面板（由 EditorPane 处理）
 	| 'workflow.deleteWorkflow'  // 单行工具栏：删除工作流并关闭编辑器（由 EditorPane 处理）
 	| 'workflow.upgrade'         // 单行工具栏：从商城升级到服务器版本
+	| 'workflow.files.list'      // 列举工作流资源子目录（scripts/bin）文件
+	| 'workflow.files.read'      // 读取工作流资源子目录单个文件
+	| 'workflow.files.write'     // 写入工作流资源子目录单个文件
+	| 'workflow.files.delete'    // 删除工作流资源子目录单个文件
+	| 'workflow.files.dir'       // 解析工作流资源子目录路径（供本地执行节点定位脚本）
+	| 'vox.run'                  // 启动 Vox 口播视频本地 pipeline（异步 spawn，返回 projectId）
+	| 'vox.getProgress'          // 查询 vox pipeline 运行进度/阶段
+	| 'vox.cancel'               // 取消 vox pipeline 运行（kill 子进程）
+	| 'vox.checkDeps'            // 检测 vox 依赖（python/项目/入口脚本/ffmpeg/APIKey）
 	| 'reversePrompt.generate'   // P2: describe an image via provider chat (WebView → Host)
 	| 'comfy.fetch'              // ComfyUI 跨源 403：主进程代理（node fetch 无 Origin 头）
 	| 'comfy.launch'             // ComfyUI 一键启动（--enable-cors-header，方案A 直连前置）
+	| 'comfy.restart'            // 重启为跨域直连（杀占端口进程 + 重启带 --enable-cors-header）
 	| 'comfy.getLaunchPaths'     // 查询主进程解析的启动路径（含来源：env/auto/override）
 	| 'comfy.setLaunchPaths'     // 写入 sarosis.comfyui.pythonPath/mainPath（持久化）
 	| 'comfy.checkDeps'          // 依赖检测：ComfyUI 安装/运行状态 + 本地模型文件列表
@@ -1053,6 +1068,45 @@ export interface IWorkflowBreakpointClearPayload {
  */
 export interface IWorkflowBreakpointGetPayload {
 	readonly workflowId: string;
+}
+
+// ─── Workflow Resource Files (scripts / bin) Payloads ─────────────────────────
+
+/** 工作流资源子目录类型（scripts / bin）。 */
+export type WorkflowResourceSection = 'scripts' | 'bin';
+
+/** 工作流资源子目录文件条目（与 common/workflowStorage.ts 对齐）。 */
+export interface IWorkflowFileEntry {
+	readonly name: string;
+	readonly size: number;
+	readonly mtime: number;
+	readonly isDirectory: boolean;
+}
+
+/** 通用 payload：workflowId + section。 */
+export interface IWorkflowFilesSectionPayload {
+	readonly workflowId: string;
+	readonly section: WorkflowResourceSection;
+}
+
+/** 列举资源子目录文件。 */
+export interface IWorkflowFilesListPayload extends IWorkflowFilesSectionPayload {}
+
+/** 读/写/删单个资源文件（relPath 为相对子目录路径）。 */
+export interface IWorkflowFilesReadPayload extends IWorkflowFilesSectionPayload {
+	readonly relPath: string;
+}
+export interface IWorkflowFilesWritePayload extends IWorkflowFilesSectionPayload {
+	readonly relPath: string;
+	readonly content: string;
+}
+export interface IWorkflowFilesDeletePayload extends IWorkflowFilesSectionPayload {
+	readonly relPath: string;
+}
+
+/** 资源子目录路径解析结果。 */
+export interface IWorkflowFilesDirResult {
+	readonly path: string;
 }
 
 /**

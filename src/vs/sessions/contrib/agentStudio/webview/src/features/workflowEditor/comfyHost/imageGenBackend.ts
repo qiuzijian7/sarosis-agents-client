@@ -80,6 +80,7 @@ export interface IImageGenProviderLike {
 		width?: number;
 		height?: number;
 		numImages?: number;
+		quality?: string;
 	}): Promise<{ images: Array<{ url?: string; b64?: string }> }>;
 }
 

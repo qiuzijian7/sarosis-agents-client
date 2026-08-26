@@ -269,6 +269,11 @@ export interface IImageGenParams {
 	/** 生成数量（默认 1） */
 	readonly numImages?: number;
 	/**
+	 * 质量提示（GPT Image 等 provider 特有：standard/high）。
+	 * 不支持此参数的 provider 会忽略。
+	 */
+	readonly quality?: string;
+	/**
 	 * img2img：上游输入图片引用（URL / data URL / 画布快照 ref）。
 	 * 透传到 OpenAI 兼容请求体的 `input_image` 字段（部分端点用
 	 * `image` 或 `init_image`，由 provider 端点适配）。
@@ -1182,6 +1187,10 @@ export interface IAgentTurnRequest {
 	readonly workflowTrigger?: {
 		readonly workflowId: string;
 		readonly input?: string;
+		/** 表单收集的自定义模板变量（{{topic}} 等）。 */
+		readonly variables?: Record<string, string>;
+		/** 参考图引用（data URL / http ref）。 */
+		readonly images?: string[];
 	};
 	/** Chat-only 模式开关（来自 UI 切换按钮）。开启时禁用所有写文件工具，React 范式下同时禁用 delegate_task。默认关闭。 */
 	readonly chatOnly?: boolean;

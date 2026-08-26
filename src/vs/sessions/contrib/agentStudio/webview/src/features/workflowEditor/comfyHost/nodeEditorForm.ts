@@ -222,6 +222,22 @@ export function buildEditorFields(spec: NodeSpec | undefined, excludePrompt = fa
 	}
 
 	if (spec.kind === 'schema') {
+		// ★ Vox 口播视频导演：参数来自 registry widgets（含大量 COMBO 下拉），
+		//   直接渲染 widgets（不走 STAGE_KIND_FIELDS 预设，因其无 options 表达）。
+		if (spec.comfyTV?.stageKind === 'vox-director') {
+			for (const w of spec.widgets ?? []) {
+				if (w.type === 'COMBO') {
+					fields.push({ key: w.name, label: w.name, kind: 'select', defaultValue: w.default ?? w.options?.[0] ?? '', options: w.options });
+				} else if (w.type === 'INT' || w.type === 'FLOAT') {
+					fields.push({ key: w.name, label: w.name, kind: 'number', defaultValue: w.default ?? 0 });
+				} else if (w.name === 'topic' || w.name === 'music') {
+					fields.push({ key: w.name, label: w.name, kind: 'textarea', defaultValue: w.default ?? '' });
+				} else {
+					fields.push({ key: w.name, label: w.name, kind: 'text', defaultValue: w.default ?? '' });
+				}
+			}
+			return fields;
+		}
 		// ComfyTV stage → prompt textarea + params.
 		// 完全不依赖 /comfytv/caps：表单字段走静态内置 STAGE_KIND_FIELDS（按 stageKind 预设）。
 		if (!excludePrompt) {

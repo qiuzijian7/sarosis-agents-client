@@ -20,6 +20,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
+import { URI } from '../../../../base/common/uri.js';
 import type { IWorkflow } from './crewTeam.js';
 
 // ------------------------------------------------------------------------------------------------
@@ -185,6 +186,39 @@ export interface WorkflowGraphConnection {
 }
 
 // ------------------------------------------------------------------------------------------------
+// 工作流资源子目录（scripts / bin）
+// ------------------------------------------------------------------------------------------------
+//
+// 每个工作流目录 `~/.vssaros/workflows/{id}/` 除 `workflow.json` 外，支持两个
+// 约定子目录，存放工作流自带的依赖脚本与配置：
+//   - scripts/  → 依赖脚本（Python / Shell / JS 等，供 vox 等本地执行节点调用）
+//   - bin/      → 配置文件 / 二进制 / 模型权重等
+//
+// 这样工作流成为「自包含项目」：节点图 + 依赖脚本 + 配置可随工作流一起
+// 分发 / 版本化，而非依赖全局路径。
+
+/** 工作流资源子目录类型。 */
+export type WorkflowResourceSection = 'scripts' | 'bin';
+
+/** 工作流资源子目录名常量。 */
+export const WorkflowResourceDir: Record<WorkflowResourceSection, string> = {
+	scripts: 'scripts',
+	bin: 'bin',
+};
+
+/** 工作流资源子目录里单个文件的元信息。 */
+export interface IWorkflowFileEntry {
+	/** 文件名（不含目录前缀）。 */
+	name: string;
+	/** 文件大小（字节），目录为 0。 */
+	size: number;
+	/** 最后修改时间（epoch ms），目录为 0。 */
+	mtime: number;
+	/** 是否为目录。 */
+	isDirectory: boolean;
+}
+
+// ------------------------------------------------------------------------------------------------
 // 服务接口
 // ------------------------------------------------------------------------------------------------
 
@@ -231,4 +265,34 @@ export interface IWorkflowStorageService {
 
 	/** 删除工作流文件。 */
 	deleteWorkflow(id: string, workspaceId?: string): Promise<void>;
+
+	// ─── 工作流资源子目录（scripts / bin）─────────────────────────────────────
+
+	/**
+	 * 解析工作流资源子目录的 URI（`~/.vssaros/workflows/{id}/{section}/`）。
+	 * 目录不存在时返回 undefined（调用方可据此决定是否先 createWorkflow）。
+	 */
+	getWorkflowResourceDir(id: string, section: WorkflowResourceSection): Promise<URI | undefined>;
+
+	/**
+	 * 列举资源子目录下的所有文件（浅层，不递归）。
+	 * 目录不存在或为空时返回空数组。
+	 */
+	listWorkflowFiles(id: string, section: WorkflowResourceSection): Promise<IWorkflowFileEntry[]>;
+
+	/**
+	 * 读取资源子目录下单个文件的文本内容。
+	 * `relPath` 为相对子目录的路径（如 `vox_pipeline.py`）。文件不存在返回 undefined。
+	 * 路径穿越（`..`/绝对路径）会被拒绝并抛错。
+	 */
+	readWorkflowFile(id: string, section: WorkflowResourceSection, relPath: string): Promise<string | undefined>;
+
+	/**
+	 * 写入资源子目录下单个文件（文本/二进制统一按 UTF-8 文本写）。
+	 * 自动创建父目录；路径穿越会被拒绝并抛错。
+	 */
+	writeWorkflowFile(id: string, section: WorkflowResourceSection, relPath: string, content: string): Promise<void>;
+
+	/** 删除资源子目录下单个文件。路径穿越会被拒绝并抛错。 */
+	deleteWorkflowFile(id: string, section: WorkflowResourceSection, relPath: string): Promise<void>;
 }

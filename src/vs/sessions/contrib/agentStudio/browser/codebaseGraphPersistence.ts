@@ -50,6 +50,155 @@ interface ArtifactMeta {
 	created_at: string;         // ISO 8601 timestamp
 }
 
+// ---------------------------------------------------------------------------
+// 流式加载：把「解压后的整段 JSON 一次性 JSON.parse」改为
+// 「按顶层数组元素逐个 JSON.parse 并分批让出主线程」，消除启动加载图谱时
+// 因单次同步解析几十万节点/边而卡死 UI 的问题。
+// 各元素仍用原生 JSON.parse 保证正确性；仅把「整段 parse」拆成小块并 yield。
+// ---------------------------------------------------------------------------
+const PARSE_YIELD_EVERY = 2000;
+
+function _isWs(code: number): boolean {
+	return code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d;
+}
+
+/** 跳过一个 JSON 值（字符串/对象/数组/原始值），返回该值之后的索引。字符串与嵌套结构均正确识别转义。 */
+function _skipJsonValue(json: string, start: number): number {
+	const n = json.length;
+	let i = start;
+	while (i < n && _isWs(json.charCodeAt(i))) { i++; }
+	if (i >= n) { return i; }
+	const c = json.charCodeAt(i);
+	if (c === 0x22 /* " */) {
+		i++;
+		while (i < n) {
+			const ch = json.charCodeAt(i);
+			// 必须先判转义符，否则 \"（转义引号）会被误判为字符串结束
+			if (ch === 0x5c /* \ */) { i += 2; continue; }
+			if (ch === 0x22 /* " */) { return i + 1; }
+			i++;
+		}
+		return i;
+	}
+	if (c === 0x7b /* { */ || c === 0x5b /* [ */) {
+		const close = c === 0x7b ? 0x7d : 0x5d;
+		let depth = 0;
+		let inStr = false;
+		let esc = false;
+		for (; i < n; i++) {
+			const ch = json.charCodeAt(i);
+			if (inStr) {
+				if (esc) { esc = false; }
+				else if (ch === 0x5c /* \ */) { esc = true; }
+				else if (ch === 0x22 /* " */) { inStr = false; }
+				continue;
+			}
+			if (ch === 0x22 /* " */) { inStr = true; }
+			else if (ch === c) { depth++; }
+			else if (ch === close) { depth--; if (depth === 0) { return i + 1; } }
+		}
+		return i;
+	}
+	// 原始值（数字/布尔/null）：遇到 , } ] 或空白即结束
+	while (i < n) {
+		const ch = json.charCodeAt(i);
+		if (ch === 0x2c /* , */ || ch === 0x7d /* } */ || ch === 0x5d /* ] */ || _isWs(ch)) { break; }
+		i++;
+	}
+	return i;
+}
+
+/** 遍历数组内的每个顶层元素，元素子串回调 cb。逗号分隔符即切分，嵌套结构由 _skipJsonValue 处理；每 PARSE_YIELD_EVERY 个元素让出主线程。 */
+async function _forEachArrayElement(
+	json: string, openIdx: number, closeIdx: number,
+	cb: (elem: string) => (Promise<void> | void),
+): Promise<void> {
+	let i = openIdx + 1;
+	let count = 0;
+	while (i < closeIdx) {
+		while (i < closeIdx && (_isWs(json.charCodeAt(i)) || json.charCodeAt(i) === 0x2c /* , */)) { i++; }
+		if (i >= closeIdx) { break; }
+		if (json.charCodeAt(i) === 0x5d /* ] */) { break; }
+		const eEnd = _skipJsonValue(json, i);
+		await cb(json.slice(i, eEnd));
+		i = eEnd;
+		if (++count % PARSE_YIELD_EVERY === 0) {
+			await new Promise<void>(r => setTimeout(r, 0));
+		}
+	}
+}
+
+/**
+ * 增量解析图谱 JSON，返回与旧 _readData 同形的 data 对象，但在解析 nodes/edges/fileHashes
+ * 时逐个元素解析并分批让出主线程，避免单次同步 JSON.parse 卡死 UI。
+ */
+async function _parseGraphStreaming(json: string): Promise<any> {
+	const data: any = {
+		nodes: [], edges: [], fileHashes: [],
+		bm25: undefined, layout: [], nextNodeId: 1, nextEdgeId: 1,
+	};
+	const n = json.length;
+	let i = 0;
+	while (i < n && json.charCodeAt(i) !== 0x7b /* { */) { i++; }
+	if (i >= n) {
+		throw new Error('[GraphPersistence] invalid graph artifact: missing root object');
+	}
+	i++; // 跳过 {
+	while (i < n) {
+		while (i < n && (_isWs(json.charCodeAt(i)) || json.charCodeAt(i) === 0x2c /* , */)) { i++; }
+		if (i >= n) { break; }
+		const ch = json.charCodeAt(i);
+		if (ch === 0x7d /* } */) { i++; break; }
+		if (ch !== 0x22 /* " */) { i++; continue; }
+		const keyEnd = _skipJsonValue(json, i);
+		const key = JSON.parse(json.slice(i, keyEnd));
+		i = keyEnd;
+		while (i < n && (_isWs(json.charCodeAt(i)) || json.charCodeAt(i) === 0x3a /* : */)) { i++; }
+		const vStart = i;
+		const vEnd = _skipJsonValue(json, i);
+		const raw = json.slice(vStart, vEnd);
+		switch (key) {
+			case 'nodes':
+				if (json.charCodeAt(vStart) === 0x5b /* [ */) {
+					await _forEachArrayElement(json, vStart, vEnd, (e) => { data.nodes.push(JSON.parse(e)); });
+				} else {
+					data.nodes = undefined; // 非数组 → 交给 _validateGraphData 拒绝
+				}
+				break;
+			case 'edges':
+				if (json.charCodeAt(vStart) === 0x5b /* [ */) {
+					await _forEachArrayElement(json, vStart, vEnd, (e) => { data.edges.push(JSON.parse(e)); });
+				} else {
+					data.edges = undefined;
+				}
+				break;
+			case 'fileHashes':
+				if (json.charCodeAt(vStart) === 0x5b /* [ */) {
+					await _forEachArrayElement(json, vStart, vEnd, (e) => { data.fileHashes.push(JSON.parse(e)); });
+				} else {
+					data.fileHashes = undefined;
+				}
+				break;
+			case 'bm25':
+				data.bm25 = JSON.parse(raw);
+				break;
+			case 'layout':
+				data.layout = JSON.parse(raw);
+				break;
+			case 'nextNodeId':
+				data.nextNodeId = JSON.parse(raw);
+				break;
+			case 'nextEdgeId':
+				data.nextEdgeId = JSON.parse(raw);
+				break;
+			default:
+				break;
+		}
+		i = vEnd;
+	}
+	return data;
+}
+
 export class GraphPersistence {
 	constructor(
 		@IFileService private readonly _fileService: IFileService,
@@ -143,8 +292,9 @@ export class GraphPersistence {
 	 * Uses async chunked loading to avoid UI freeze.
 	 */
 	async load(store: CodebaseGraphStore, sourcePath: string): Promise<boolean> {
-		const data = await this._readData(sourcePath);
-		if (!data) { return false; }
+		const json = await this._readJsonText(sourcePath);
+		if (!json) { return false; }
+		const data = await _parseGraphStreaming(json);
 		this._normalizeLoadedPaths(data, sourcePath);
 		// 导入前完整性校验（对齐 C 版 cbm_store_check_integrity_deep 的导入门）
 		if (!await this._validateGraphData(data, sourcePath)) { return false; }
@@ -162,8 +312,9 @@ export class GraphPersistence {
 	 * @param projectOverride 覆盖合并进来的所有节点/边的项目名（确保各 folder 项目名唯一）。
 	 */
 	async loadMerge(store: CodebaseGraphStore, sourcePath: string, projectOverride?: string): Promise<boolean> {
-		const data = await this._readData(sourcePath);
-		if (!data) { return false; }
+		const json = await this._readJsonText(sourcePath);
+		if (!json) { return false; }
+		const data = await _parseGraphStreaming(json);
 		// 路径格式迁移：旧版本多 folder 下非 folders[0] 的文件路径/QN/哈希键被存成绝对路径
 		this._normalizeLoadedPaths(data, sourcePath);
 		// 导入前完整性校验（合并路径同样适用）
@@ -218,8 +369,9 @@ export class GraphPersistence {
 	 */
 	private async _validateGraphData(data: any, sourcePath: string): Promise<boolean> {
 		if (!data || typeof data !== 'object') { return false; }
-		if (data.nodes !== undefined && !Array.isArray(data.nodes)) { return false; }
-		if (data.edges !== undefined && !Array.isArray(data.edges)) { return false; }
+		// 节点/边必须为数组：缺失或非数组均视为结构损坏，拒绝导入
+		if (!Array.isArray(data.nodes)) { return false; }
+		if (!Array.isArray(data.edges)) { return false; }
 		const nodeArr = (data.nodes ?? []) as any[];
 		const edgeArr = (data.edges ?? []) as any[];
 
@@ -263,15 +415,20 @@ export class GraphPersistence {
 	}
 
 	/**
-	 * 读取并解析图谱文件为原始 data 对象（不写入任何 store）。
+	 * 读取图谱文件为解压后的 JSON 文本（不解析、不写入任何 store）。
+	 * 仅负责「读文件 + 探测格式 + 异步解压」，解析交给 _parseGraphStreaming 以分批让出主线程，
+	 * 避免一次性 JSON.parse 几十万节点卡死 UI。
 	 * 支持：纯 gzip 流（新）/ CBMG header（旧）/ 纯 JSON（回退）。
 	 */
-	private async _readData(sourcePath: string): Promise<any | null> {
+	private async _readJsonText(sourcePath: string): Promise<string | null> {
 		try {
 			const content = await this._fileService.readFile(URI.file(sourcePath));
-			const allBytes = content.value.buffer;
+			const allBytes = content.value.buffer as Uint8Array;
 
-			if (allBytes.length === 0) { return null; }
+			if (allBytes.length === 0) {
+				this._logService?.debug('[GraphPersistence]', `empty graph file: ${sourcePath}`);
+				return null;
+			}
 
 			// Detect format
 			const dv = new DataView(allBytes.buffer, allBytes.byteOffset, allBytes.byteLength);
@@ -289,13 +446,14 @@ export class GraphPersistence {
 				jsonBytes = await this._gzipDecompress(allBytes, 0);
 			} else {
 				// Try plain JSON (uncompressed fallback)
-				const text = new TextDecoder().decode(allBytes);
-				return JSON.parse(text);
+				return new TextDecoder().decode(allBytes);
 			}
 
-			const json = new TextDecoder().decode(jsonBytes);
-			return JSON.parse(json);
-		} catch { return null; }
+			return new TextDecoder().decode(jsonBytes);
+		} catch (e) {
+			this._logService?.error('[GraphPersistence]', `failed to read graph artifact: ${sourcePath}`, e);
+			return null;
+		}
 	}
 
 	/** Export artifact for team sharing (Git branch)。默认 slim 档（剔除可重建的 bm25/layout，对齐 C 手动导出 drop indexes）。 */

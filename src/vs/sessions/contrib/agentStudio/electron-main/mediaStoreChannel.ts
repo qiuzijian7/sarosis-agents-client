@@ -7,6 +7,7 @@
  *  - renderer 侧经 ProxyChannel.toService 透明代理（browser/mediaStoreProxy.ts）
  *--------------------------------------------------------------------------------------------*/
 
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Event } from '../../../../base/common/event.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -20,16 +21,19 @@ type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 export class MediaStoreChannel<TContext> extends Disposable implements IServerChannel<TContext> {
 
 	// 避免与 Disposable._store 字段名碰撞（TS2416 + TS4114）——与 CodebaseGraphStoreChannel._sqliteStore 对齐
-	private readonly _mediaStore: MediaStore | null;
+	private _mediaStore: MediaStore | null;
+	private _rootDir: string;
 
 	constructor(
-		rootDir: string,
+		defaultRootDir: string,
+		private readonly configPath: string,
 		private readonly _loggerService: ILoggerService,
 	) {
 		super();
+		this._rootDir = this._loadPersistedRootDir(defaultRootDir);
 		let store: MediaStore | null = null;
 		try {
-			store = new MediaStore({ rootDir });
+			store = new MediaStore({ rootDir: this._rootDir });
 		} catch (err: any) {
 			this._log('error', `MediaStore init failed: ${err?.message || String(err)}`);
 		}
@@ -43,6 +47,43 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 		else if (level === 'warn') { logger.warn(msg, ...args); }
 		else if (level === 'info') { logger.info(msg, ...args); }
 		else { logger.debug(msg, ...args); }
+	}
+
+	/** 读取持久化的自定义根目录（configPath JSON `{ rootDir }`），无效则回退默认。 */
+	private _loadPersistedRootDir(defaultRootDir: string): string {
+		try {
+			if (existsSync(this.configPath)) {
+				const parsed = JSON.parse(readFileSync(this.configPath, 'utf8')) as { rootDir?: unknown };
+				if (typeof parsed?.rootDir === 'string' && parsed.rootDir.trim()) {
+					return parsed.rootDir.trim();
+				}
+			}
+		} catch { /* 损坏配置忽略，回退默认 */ }
+		return defaultRootDir;
+	}
+
+	private _persistRootDir(rootDir: string): void {
+		try {
+			writeFileSync(this.configPath, JSON.stringify({ rootDir }, null, 2), 'utf8');
+		} catch (err) {
+			this._log('warn', `persist media rootDir failed: ${(err as Error).message}`);
+		}
+	}
+
+	getRootDir(): string {
+		return this._rootDir;
+	}
+
+	/** 修改媒体库根目录：先试新目录能否打开（失败抛错、不破坏现有 store），成功后持久化。 */
+	setRootDir(newDir: string): { rootDir: string } {
+		const resolved = newDir.trim();
+		if (!resolved) { throw new Error('媒体库路径不能为空'); }
+		const store = new MediaStore({ rootDir: resolved });
+		this._mediaStore = store;
+		this._rootDir = resolved;
+		this._persistRootDir(resolved);
+		this._log('info', `media rootDir changed to: ${resolved}`);
+		return { rootDir: resolved };
 	}
 
 	listen<T>(_: TContext, event: string): Event<any> { return Event.None; }
@@ -61,6 +102,8 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 					return this._mediaStore.get(String(args?.[0] ?? ''));
 				case 'getFilePath':
 					return this._mediaStore.getFilePath(String(args?.[0] ?? ''));
+				case 'getAsDataUrl':
+					return this._mediaStore.getAsDataUrl(String(args?.[0] ?? ''));
 				case 'remove':
 					await this._mediaStore.remove(String(args?.[0] ?? ''));
 					return undefined;
@@ -77,6 +120,12 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 					return this._mediaStore.stats();
 				case 'purgeDeleted':
 					return this._mediaStore.purgeDeleted();
+				case 'cleanOrphaned':
+					return this._mediaStore.cleanOrphaned();
+				case 'getRootDir':
+					return this.getRootDir();
+				case 'setRootDir':
+					return this.setRootDir(String(args?.[0] ?? ''));
 				case 'enforceQuota':
 					return this._mediaStore.enforceQuota((args?.[0] ?? {}) as { maxDays?: number; maxTotalBytes?: number });
 				default:

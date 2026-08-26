@@ -28,6 +28,24 @@ const _bridge = (globalThis as { __vssarosBridge?: { createComfyFetch: typeof im
 const { createComfyFetch } = _bridge;
 import type { MediaKind } from './mediaSnapshot.js';
 import { getBuiltinWorkflowConfig, listBuiltinWorkflows } from './builtinWorkflows/index.js';
+import { isComfyViewRef, resolveLoadImageImageRef } from './imageGenToComfyBridge.js';
+import type { BridgeFetchLike } from './imageGenToComfyBridge.js';
+
+/**
+ * ★ 硬超时包裹（2026-08-26 修复「生成卡死」）：不依赖底层 fetch 是否 Honor
+ *   AbortSignal（proxiedComfyFetch 的 sendRequest 会忽略 signal），直接用一个
+ *   独立 setTimeout + Promise.race 强制在 ms 后 reject。无论 fetch 实现如何，
+ *   调用方都不会永久挂起。
+ */
+function withHardTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(`${label} 硬超时（${ms}ms）— 底层请求无响应`)), ms);
+		p.then(
+			(v) => { clearTimeout(timer); resolve(v); },
+			(e) => { clearTimeout(timer); reject(e); },
+		);
+	});
+}
 
 /** One bound input inside a workflow config (ComfyTV WorkflowInputBinding). */
 export interface WorkflowInputBindingSpec {
@@ -290,6 +308,23 @@ export function resolveBindingValue(
 }
 
 /**
+ * Replace `{{key}}` placeholders in a prefix/suffix template with the matching
+ * form value (String()). Unknown/empty keys are left verbatim so an untouched
+ * template stays readable and a missing optional widget doesn't inject garbage.
+ * Pure.
+ */
+export function interpolateBindingTemplate(
+	template: string,
+	values: Record<string, unknown>,
+): string {
+	return template.replace(/\{\{([^}]+)\}\}/g, (_m, key: string) => {
+		const k = key.trim();
+		const v = values[k];
+		return v === undefined || v === null || v === '' ? `{{${key}}}` : String(v);
+	});
+}
+
+/**
  * Pick the workflow label to use for a kind: prefer the default flag, else the
  * first entry. Pure.
  */
@@ -345,7 +380,9 @@ export function injectWorkflowValues(
 					case 'boolean': v = raw === true || raw === 'true' || raw === 1 || raw === '1'; break;
 				}
 				if (spec.prefix || spec.suffix) {
-					v = `${spec.prefix ?? ''}${v}${spec.suffix ?? ''}`;
+					const pre = interpolateBindingTemplate(spec.prefix ?? '', values);
+					const suf = interpolateBindingTemplate(spec.suffix ?? '', values);
+					v = `${pre}${v}${suf}`;
 				}
 				inputs[inputName] = v;
 				applied++;
@@ -471,6 +508,24 @@ export interface StageWorkflowRunOptions {
 	store: MediaSnapshotStore;
 	onProgress?: (p: { progress?: number }) => void;
 	signal?: AbortSignal;
+	/**
+	 * Provider→Comfy LoadImage bridge：把上游图片快照 ref（http/data URL，非
+	 * Comfy /view 引用）上传到 ComfyUI，返回可被原生 LoadImage 消费的 /view
+	 * 引用。三阶段串联（阶段1 透明 PNG 物化成 data: URL → 阶段2 内嵌 LoadImage
+	 * 作 first_frame）必须经此桥接，否则原生 LoadImage 把 data: URL 当文件路径
+	 * 报 `Invalid image file`。缺省时不做桥接（单阶段/已传 /view 引用场景）。
+	 *
+	 * ★ 第二个参数为可选 AbortSignal（2026-08-26 修复卡死）：必须透传到内部
+	 *   fetch 调用，否则 ComfyUI /upload/image 无响应时整个流程永远不返回。
+	 */
+	resolveImageRef?: (ref: string, signal?: AbortSignal) => Promise<{ ok: boolean; image?: string; error?: string }>;
+	/**
+	 * 可选的 prompt 后处理钩子：在所有值注入（applyInputs + applyStageOptionValues +
+	 * uploadLoadImageRefs）完成后、runner.invoke 前调用。用于调用方对已解析的 prompt
+	 * JSON 做条件性修改（如 fallback 模式下根据上游是否有参考图切换 img2img/text2img）。
+	 * 纯函数，接收深拷贝后的 prompt 引用，原地修改即可。
+	 */
+	promptPostProcess?: (prompt: StageWorkflowApiJson) => void;
 }
 
 export interface StageWorkflowRunResult {
@@ -486,8 +541,49 @@ export interface StageWorkflowRunResult {
  * the runner has no ComfyTV extension or the workflow can't be resolved —
  * callers should then degrade to single-node execution.
  */
+/**
+ * 把模板内原生 LoadImage 节点注入的 data:/http URL 参考图上传到 ComfyUI，得到
+ * input 目录文件名。原生 LoadImage.image 只接受文件名（COMBO），不接受 data:/http
+ * URL —— 否则报 `image - Invalid image file: data:...`（R2V/LTX 图生视频模板的
+ * 参考图经 upstream_image 注入时踩到）。resolveImageRef 缺省时用默认桥
+ * （resolveLoadImageImageRef + createComfyFetch 代理，能绕过 data: CSP 与 403）。
+ */
+async function uploadLoadImageRefsForPrompt(
+	prompt: StageWorkflowApiJson,
+	runner: IComfyRunner,
+	resolveImageRef?: (ref: string) => Promise<{ ok: boolean; image?: string; error?: string }>,
+): Promise<void> {
+	for (const node of Object.values(prompt)) {
+		if (!node || node.class_type !== 'LoadImage') { continue; }
+		const inputs = node.inputs as Record<string, unknown> | undefined;
+		const img = typeof inputs?.image === 'string' ? inputs.image : '';
+		if (!/^(data:|https?:)/i.test(img)) { continue; } // 已是文件名 / 其他，跳过
+		const resolve = resolveImageRef ?? ((r: string) => resolveLoadImageImageRef({
+			ref: r,
+			baseUrl: runner.baseUrl,
+			// ★ createComfyFetch 是**工厂函数**，必须传 baseUrl 调用才能返回真正的 fetch
+			//   实现（之前直接传函数本身 → "fetchImpl" 不是 fetch，跑不通、r.ok 静默 false）。
+			fetchImpl: createComfyFetch(runner.baseUrl) as unknown as BridgeFetchLike,
+		}));
+		const r = await resolve(img);
+		if (r.ok && r.image) {
+			// resolveLoadImageImageRef 返回 /view?filename=xxx 引用，LoadImage 只要文件名
+			const m = /[?&]filename=([^&]+)/.exec(r.image);
+			inputs.image = m ? decodeURIComponent(m[1]) : r.image;
+			// eslint-disable-next-line no-console
+			console.warn(`[runStageWorkflow] LoadImage ref uploaded → image=${inputs.image}`);
+		} else {
+			// ★ 上传失败的诊断：之前静默返回（没日志），debug 时找不到原因
+			// eslint-disable-next-line no-console
+			console.warn(`[runStageWorkflow] LoadImage upload FAILED (skip): ref_prefix=${img.slice(0, 30)}... error=${r.error ?? '(no error msg)'}`);
+		}
+	}
+}
+
 export async function runStageWorkflow(options: StageWorkflowRunOptions): Promise<StageWorkflowRunResult> {
-	const { runner, nodeId, type, kind, workflowKind, values, upstreams, store, onProgress, signal } = options;
+	// eslint-disable-next-line no-console
+	console.warn(`[runStageWorkflow] ▶ START nodeId=${options.nodeId} type=${options.type} hasResolveImageRef=${Boolean(options.resolveImageRef)} signal=${options.signal ? 'present' : 'none'}`);
+	const { runner, nodeId, type, kind, workflowKind, values, upstreams, store, onProgress, signal, resolveImageRef } = options;
 	// 快照归档键：优先 stageUid（与 nodeCard 读侧一致），缺省 nodeId。
 	const snapshotKey = options.snapshotKey ?? nodeId;
 	const wfKind = workflowKind || kind;
@@ -522,12 +618,39 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 	// 一致）。项目侧 upstream 绑定按 kind 取单一 ref（无 slot 维度），故取
 	// slot 最小的一条作为该 kind 的输入。见 assetRefs.ts。
 	applyAssetRefOverrides(upstreamValues, values);
+	// ★ 三阶段串联桥接：上游图片快照 ref 可能是 data:/http URL（阶段产物经
+	//   materializeComfyImageRefs 物化），而 stage 内嵌的原生 LoadImage 只认
+	//   Comfy /view 引用或服务端文件名。这里在注入前把非 /view 引用上传到
+	//   ComfyUI，换成 /view 引用（后续 upstream_image:annotated 会再转 annotated
+	//   path 供 LoadImage 消费）。视频（kind=video）保持 /view 引用不物化，无需桥接。
+	if (resolveImageRef && typeof upstreamValues.image === 'string' && upstreamValues.image && !isComfyViewRef(upstreamValues.image)) {
+		// eslint-disable-next-line no-console
+		console.warn(`[runStageWorkflow] ⏳ before resolveImageRef (ref=${upstreamValues.image.slice(0, 80)})`);
+		const bridged = await withHardTimeout(resolveImageRef(upstreamValues.image, options.signal), 35_000, 'resolveImageRef');
+		// eslint-disable-next-line no-console
+		console.warn(`[runStageWorkflow] ✅ after resolveImageRef ok=${bridged.ok}`);
+		if (bridged.ok && bridged.image) {
+			upstreamValues.image = bridged.image;
+		} else {
+			// 桥接失败：保留原 ref（让 LoadImage 报 Invalid image file），
+			// 比静默替换成错误值更好排查。记录一条诊断日志。
+			// eslint-disable-next-line no-console
+			console.warn(`[runStageWorkflow] upstream image bridge failed: ${bridged.error ?? 'unknown'} (ref=${upstreamValues.image.slice(0, 60)})`);
+		}
+	}
 	// eslint-disable-next-line no-console
 	console.warn('[runStageWorkflow] upstreams=' + JSON.stringify(upstreams) + ' upstreamValues=' + JSON.stringify(upstreamValues));
 	const { prompt } = injectWorkflowValues(cfg.api_json, cfg.inputs, values, upstreamValues);
 	// 把画布/表单里改过的 stage option（batch_size/resolution/aspect_ratio/workflow…）
 	// 直接覆写到 stage 节点的 inputs（后端 bindings 多数不覆盖这些 option，否则永远用模板默认值）。
 	applyStageOptionValues(prompt, type, values);
+	// ★ 上传桥：模板内原生 LoadImage 的 data:/http URL 参考图 → 上传取文件名
+	//   （否则 LoadImage 报 Invalid image file，见 uploadLoadImageRefsForPrompt）。
+	// eslint-disable-next-line no-console
+	console.warn('[runStageWorkflow] ⏳ before uploadLoadImageRefsForPrompt');
+	await withHardTimeout(uploadLoadImageRefsForPrompt(prompt, runner, resolveImageRef), 35_000, 'uploadLoadImageRefsForPrompt');
+	// eslint-disable-next-line no-console
+	console.warn('[runStageWorkflow] ✅ after uploadLoadImageRefsForPrompt');
 	// 诊断：遍历所有 CLIPTextEncode 节点，打印注入后的 text 值，确认用户输入是否生效
 	const clipNodes = Object.entries(prompt as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>)
 		.filter(([, n]) => n.class_type === 'CLIPTextEncode')
@@ -616,9 +739,11 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 		);
 	}
 	const started = Date.now();
+	// ★ 调用方后处理钩子（如 fallback 模式下根据上游参考图切换 img2img/text2img）
+	options.promptPostProcess?.(prompt);
 	// eslint-disable-next-line no-console
 	console.warn(`[runStageWorkflow] invoking runner.invoke label="${label ?? wfKind}" kind=${wfKind} prompt keys=` + Object.keys(prompt).join(','));
-	const run = await runner.invoke({
+	const run = await withHardTimeout(runner.invoke({
 		prompt,
 		onProgress: (p) => {
 			// eslint-disable-next-line no-console
@@ -626,7 +751,7 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 			onProgress?.({ progress: p.value });
 		},
 		signal,
-	});
+	}), 600_000, 'runner.invoke');
 	// eslint-disable-next-line no-console
 	console.warn('[runStageWorkflow] invoke done status=' + run.status + ' outputs=' + Object.keys(run.outputs ?? {}).join(','));
 	const durationMs = run.durationMs ?? Date.now() - started;
@@ -664,6 +789,57 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 			`[runStageWorkflow] entry key=${e.key} port=${e.port} index=${e.index ?? '?'} kind=${e.media?.kind} ` +
 			`ref=${ref.length > 90 ? ref.slice(0, 90) + '…' : ref} animated=${isAnim}`,
 		);
+	}
+	// ★ 诊断（用户报告「图像错乱」后加入）：解码产物 base64 拿第一帧像素摘要，
+	//   区分「产物空（opaque_pct≈0）」vs「花屏（base64_len 异常小或大 + 极端均值）」vs「正常」。
+	//   仅 webview 环境跑（Node 单测跳过，避免 Image/document undefined）。
+	if (typeof Image !== 'undefined' && typeof document !== 'undefined') {
+		void (async () => {
+			for (const e of persisted) {
+				const ref = typeof e.media?.ref === 'string' ? e.media.ref : '';
+				if (!ref.startsWith('data:image/')) { continue; }
+				try {
+					const img = new Image();
+					await new Promise<void>((resolve, reject) => {
+						img.onload = () => resolve();
+						img.onerror = () => reject(new Error('load failed'));
+						img.src = ref;
+					});
+					const w = img.naturalWidth;
+					const h = img.naturalHeight;
+					if (w === 0 || h === 0) {
+						// eslint-disable-next-line no-console
+						console.warn(`[runStageWorkflow] DIAGNOSE ${e.key}: empty (0x0) base64_len=${ref.length}`);
+						continue;
+					}
+					const canvas = document.createElement('canvas');
+					canvas.width = w;
+					canvas.height = h;
+					const ctx = canvas.getContext('2d');
+					if (!ctx) { continue; }
+					ctx.drawImage(img, 0, 0);
+					const data = ctx.getImageData(0, 0, w, h).data;
+					const total = w * h;
+					let opaque = 0, sumR = 0, sumG = 0, sumB = 0;
+					for (let i = 0; i < data.length; i += 4) {
+						const a = data[i + 3];
+						if (a > 16) {
+							opaque++;
+							sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2];
+						}
+					}
+					const opaquePct = (opaque / total * 100).toFixed(1);
+					const meanR = opaque > 0 ? (sumR / opaque).toFixed(1) : 'n/a';
+					const meanG = opaque > 0 ? (sumG / opaque).toFixed(1) : 'n/a';
+					const meanB = opaque > 0 ? (sumB / opaque).toFixed(1) : 'n/a';
+					// eslint-disable-next-line no-console
+					console.warn(`[runStageWorkflow] DIAGNOSE ${e.key}: ${w}x${h} base64_len=${ref.length} opaque_pct=${opaquePct}% meanRGB=(${meanR},${meanG},${meanB})`);
+				} catch (err) {
+					// eslint-disable-next-line no-console
+					console.warn(`[runStageWorkflow] DIAGNOSE ${e.key} failed: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
+		})();
 	}
 	for (const e of persisted) { store.put(e); }
 	return { promptId: run.promptId, status: 'success', durationMs, entries };

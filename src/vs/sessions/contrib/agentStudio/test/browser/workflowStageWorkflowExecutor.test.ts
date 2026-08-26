@@ -7,6 +7,7 @@
 import assert from 'assert';
 import {
 	injectWorkflowValues,
+	interpolateBindingTemplate,
 	extractResultOutputs,
 	pickDefaultWorkflowLabel,
 	collectUpstreamRefs,
@@ -51,8 +52,38 @@ suite('stageWorkflowExecutor 异常防御', () => {
 			const r = injectWorkflowValues(apiJson, bindings, { prompt: 'hello world' });
 			assert.strictEqual(r.applied, 1);
 			assert.strictEqual(r.prompt['1']?.inputs?.['prompt'], 'hello world');
-		});
-	});
+			});
+
+			test('prefix/suffix 含 {{key}} 占位符 → 用表单值替换拼接（多宫格 grid_count 注入）', () => {
+				const apiJson = { '1': { class_type: 'Test', inputs: { prompt: '' } } };
+				const bindings = {
+					'1': { prompt: { from: 'main_prompt', prefix: '{{grid_count}}宫格漫画，', suffix: '，同一角色' } },
+				};
+				const r = injectWorkflowValues(apiJson, bindings, { prompt: '角色：小明', grid_count: '6' });
+				assert.strictEqual(r.prompt['1'].inputs['prompt'], '6宫格漫画，角色：小明，同一角色');
+			});
+
+			test('prefix/suffix 未知 {{key}} → 保留原文不注入垃圾', () => {
+				const apiJson = { '1': { class_type: 'Test', inputs: { prompt: '' } } };
+				const bindings = {
+					'1': { prompt: { from: 'main_prompt', prefix: '{{ghost}}：' } },
+				};
+				const r = injectWorkflowValues(apiJson, bindings, { prompt: 'hi' });
+				assert.strictEqual(r.prompt['1'].inputs['prompt'], '{{ghost}}：hi');
+			});
+			});
+
+			suite('interpolateBindingTemplate — {{key}} 占位符替换', () => {
+			test('替换存在的 key，未知 key 保留原文', () => {
+				assert.strictEqual(interpolateBindingTemplate('{{a}}-{{b}}-{{missing}}', { a: '1', b: 2 }), '1-2-{{missing}}');
+			});
+			test('空值 key 保留原文', () => {
+				assert.strictEqual(interpolateBindingTemplate('{{empty}}', { empty: '' }), '{{empty}}');
+			});
+			test('无占位符原样返回', () => {
+				assert.strictEqual(interpolateBindingTemplate('plain text', {}), 'plain text');
+			});
+			});
 
 	suite('extractResultOutputs', () => {
 

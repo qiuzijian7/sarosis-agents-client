@@ -87,6 +87,47 @@ export function parseComfyErrorHint(body: string): string {
 	return `${rejections.join('；')}${choicesHint}`;
 }
 
+/**
+ * 从 ComfyUI /history/{prompt_id} 的 error entry 中提取可读的执行错误详情。
+ *
+ * ComfyUI 执行失败时，/history 返回的 entry 结构大致为：
+ *   { status: { status_str: 'error', completed: false },
+ *     outputs: { ... },
+ *     (可能含) status_messages: [...] }
+ * 本函数尝试从多种已知字段提取人类可读的错误信息。
+ */
+export function extractComfyExecutionError(
+	entry: { status?: { status_str?: string; completed?: boolean }; outputs?: Record<string, unknown>; [key: string]: unknown },
+): string {
+	if (!entry) return '';
+	// 1) ComfyUI 原生异常消息（常见于自定义节点报错）
+	const messages = (entry as Record<string, unknown>)['status_messages'];
+	if (Array.isArray(messages) && messages.length > 0) {
+		const last = String(messages[messages.length - 1]).trim();
+		if (last && last !== 'undefined') return last.slice(0, 500);
+	}
+	// 2) outputs 里节点级异常（部分版本把错误嵌入 outputs）
+	if (entry.outputs && typeof entry.outputs === 'object') {
+		for (const [, val] of Object.entries(entry.outputs)) {
+			if (val && typeof val === 'object' && !Array.isArray(val)) {
+				const obj = val as Record<string, unknown>;
+				const err = obj['error'] ?? obj['err'] ?? obj['exception'] ?? obj['message'];
+				if (typeof err === 'string' && err.trim()) return err.trim().slice(0, 500);
+			}
+		}
+	}
+	// 3) 透传整个 entry 的关键子集（脱敏后用于日志）
+	try {
+		const subset = JSON.stringify({
+			status_str: entry.status?.status_str,
+			completed: entry.status?.completed,
+			keys: Object.keys(entry).filter(k => k !== 'outputs'),
+		});
+		if (subset !== '{}') return `[exec-error] ${subset}`;
+	} catch { /* ignore */ }
+	return '';
+}
+
 export interface ComfyRunnerStatus {
 	ok: boolean;
 	version?: string;
@@ -275,7 +316,11 @@ class HttpComfyRunner implements IComfyRunner {
 					break;
 				}
 				if (st === 'error') {
-					result = { promptId, outputs: {}, status: 'error', error: 'ComfyUI execution error', durationMs: Date.now() - started };
+					// ★ 提取 ComfyUI 实际报错详情（节点级异常 / 执行异常消息），
+					//   替代原来的通用 "ComfyUI execution error"，便于定位根因
+					//   （如：MiniMax H3 自定义节点未装 / 模型缺失 / API key 过期）。
+					const detail = extractComfyExecutionError(entry);
+					result = { promptId, outputs: {}, status: 'error', error: detail || 'ComfyUI execution error', durationMs: Date.now() - started };
 					break;
 				}
 				// 排队/运行中：用轮询次数做平滑递增（WebSocket 不可用时的兜底动画）

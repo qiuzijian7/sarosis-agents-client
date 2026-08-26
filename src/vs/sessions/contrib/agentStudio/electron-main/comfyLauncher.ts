@@ -129,4 +129,6 @@ export interface ComfyLaunchResult {
 	pythonPath?: string;
 	mainPyPath?: string;
 	baseUrl?: string;
+	/** restart 专用：杀掉以释放端口的进程列表（含 ok/error）。 */
+	killed?: { pid: number; ok: boolean; error?: string }[];
 }

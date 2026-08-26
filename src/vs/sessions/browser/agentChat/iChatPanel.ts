@@ -27,7 +27,7 @@ import type {
  * one without changing its wiring code.
  */
 export interface IChatPanelCallbacks {
-	onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => void;
+	onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => void;
 	onCancelExecution: () => void;
 	onToggleCollapse: () => void;
 	onSelectAgent: (id: string) => void;

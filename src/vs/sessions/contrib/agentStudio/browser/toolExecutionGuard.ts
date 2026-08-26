@@ -402,11 +402,11 @@ export class ToolApprovalService {
 	}
 
 	/**
-	 * 「终端只读命令免确认」开关读取器（用户设置 `sessions.agentStudio.tools.autoApproveReadOnlyCommands`）。
+	 * 「终端只读/验证构建命令免确认」开关读取器（用户设置 `sessions.agentStudio.tools.autoApproveReadOnlyCommands`）。
 	 *
-	 * 未注入 / 返回 false 时，终端命令**行为与以往完全一致**（一律弹审批）——
+	 * 未注入 / 返回 false 时，终端命令**一律弹审批**（设置默认 true，用户可关闭）——
 	 * 这是刻意的"只能升级不能降级"设计（抄 continue 的 getMostRestrictive 思路）：
-	 * 命令内容分析只在用户主动选择"少打扰"后才生效，且危险命令仍会被拦。
+	 * 命令内容分析只放行「已知只读或验证/构建」命令，且危险命令仍会被拦。
 	 */
 	private _terminalAutoApproveProvider: (() => boolean) | undefined;
 
@@ -524,16 +524,17 @@ export class ToolApprovalService {
 			return true;
 		}
 
-		// ─── 终端只读命令免确认（2026-08-21，用户决策"方案 B"）──────────────
+		// ─── 终端只读/验证构建命令免确认（2026-08-21 方案 B + 2026-08-22 扩展）────
 		// 判定真源 = `common/shellCommandSafety.evaluateToolCallShellSafety`（纯函数）。
 		//
 		// 三重前提，缺一不放行：
-		//   ① 用户**显式开启**了设置（provider 未注入或返回 false → 行为与以往完全一致）；
+		//   ① 设置开启（默认 true，用户可关闭；provider 未注入或返回 false → 一律弹审批）；
 		//   ② 该工具确实是带 command 参数的 shell 工具（terminal / execute_code）；
-		//   ③ 命令通过白名单分析（无危险元字符、每个管道段都是已知只读命令）。
+		//   ③ 命令通过白名单分析（无危险元字符、每个管道段都是已知只读或验证/构建命令）。
 		//
 		// 这是「只能升级不能降级」模型（抄 continue `getMostRestrictive` 的思路）：
-		// 默认配置下本分支永不触发；开启后也只放行**已知只读**，未知一律 fail-closed。
+		// 开启后只放行**已知只读 + 验证/构建**（tsc/esbuild/vite、npm/yarn/pnpm run
+		// build/test/lint 等），未知与裸解释器（python3 -c / node -e）一律 fail-closed。
 		// 且 handler 层的 HARDLINE 地板与源码写入护栏独立生效，本分支放行不绕过它们。
 		//
 		// `!forceApproval` 同样作纵深防御（破坏性判定优先）。

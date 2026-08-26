@@ -18,6 +18,8 @@ export interface IWorkflowTriggerShape {
 	readonly workflowId: string;
 	readonly input?: string;
 	readonly variables?: Record<string, string>;
+	/** 参考图引用（data URL / http ref），供 ComfyStage/EmojiStage 等媒体节点消费。 */
+	readonly images?: string[];
 }
 
 /** slash 菜单中展示的工作流条目（来自 IWorkflowStorageService.listWorkflows 的投影）。 */
@@ -78,6 +80,7 @@ export function buildWorkflowTrigger(
 	workflowId: string | undefined,
 	textAfterChip: string,
 	variables?: Record<string, string>,
+	images?: string[],
 ): IWorkflowTriggerShape | undefined {
 	if (!workflowId) {
 		return undefined;
@@ -87,6 +90,7 @@ export function buildWorkflowTrigger(
 		workflowId,
 		...(input ? { input } : {}),
 		...(variables && Object.keys(variables).length > 0 ? { variables } : {}),
+		...(images && images.length > 0 ? { images } : {}),
 	};
 	return trigger;
 }

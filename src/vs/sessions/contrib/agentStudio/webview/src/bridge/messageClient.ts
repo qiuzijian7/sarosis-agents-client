@@ -57,6 +57,7 @@ export type RequestType =
 	| 'reversePrompt.generate'
 	| 'comfy.fetch'
 	| 'comfy.launch'
+	| 'comfy.restart'
 	| 'comfy.getLaunchPaths'
 	| 'comfy.setLaunchPaths'
 	| 'comfy.checkDeps'
@@ -65,6 +66,8 @@ export type RequestType =
 	| 'media.import'
 	| 'media.list'
 	| 'media.get'
+	| 'media.getFilePath'
+	| 'media.getAsDataUrl'
 	| 'media.getUrl'
 	| 'media.remove'
 	| 'media.restore'
@@ -72,7 +75,10 @@ export type RequestType =
 	| 'media.setBoard'
 	| 'media.stats'
 	| 'media.purgeDeleted'
+	| 'media.cleanOrphaned'
 	| 'media.enforceQuota'
+	| 'media.getRootDir'
+	| 'media.setRootDir'
 	| 'workspaceSession.list'
 	| 'workspaceSession.get'
 	| 'workspaceSession.create'
@@ -147,12 +153,25 @@ export type RequestType =
 	| 'workflow.canvasOpsResult'
 	| 'workflow.snapshotResult'
 	| 'workflow.runAgentNode'
+	| 'workflow.stageRunResult'
+	| 'workflow.stageRunProgress'
+	| 'workflow.stageDirectRunResult'
+	| 'workflow.stageDirectRunProgress'
 
 	| 'workflow.publishState'
 	| 'workflow.publish'
 	| 'workflow.versionHistory'
 	| 'workflow.deleteWorkflow'
 	| 'workflow.upgrade'
+	| 'workflow.files.list'
+	| 'workflow.files.read'
+	| 'workflow.files.write'
+	| 'workflow.files.delete'
+	| 'workflow.files.dir'
+	| 'vox.run'
+	| 'vox.getProgress'
+	| 'vox.cancel'
+	| 'vox.checkDeps'
 	| 'agents.list'
 	| 'agents.presets'
 	| 'agents.create'
@@ -463,12 +482,22 @@ async function proxiedComfyBinary(url: string, init?: RequestInit): Promise<{ by
 }
 
 async function proxiedComfyFetch(url: string, init?: RequestInit): Promise<Response> {
-	const r = await sendRequest('comfy.fetch', {
+	// ★ Honor AbortSignal（2026-08-26）：sendRequest 本身忽略 signal，这里用
+	//   Promise.race 让 signal 触发时立即 reject —— 既避免「生成卡死」，又让
+	//   取消按钮（controller.abort）在代理模式下也能立即中止底层请求。
+	const fetchPromise = sendRequest('comfy.fetch', {
 		url,
 		method: init?.method as string | undefined,
 		headers: init?.headers as Record<string, string> | undefined,
 		body: typeof init?.body === 'string' ? init.body : undefined,
-	}, 120_000) as { ok: boolean; status: number; json?: unknown; text?: string; error?: string };
+	}, 120_000) as Promise<{ ok: boolean; status: number; json?: unknown; text?: string; error?: string }>;
+	const signalPromise = new Promise<never>((_, reject) => {
+		if (init?.signal) {
+			if (init.signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+			init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+		}
+	});
+	const r = await Promise.race([fetchPromise, signalPromise]);
 	if (r.error) { throw new Error(r.error); }
 	return {
 		ok: r.ok,
@@ -649,4 +678,32 @@ export function setState<T>(state: T): void {
 	probeDirectCors,
 	reprobeComfyCors,
 	subscribeComfyCors,
+	pickFolderDialog,
 };
+
+/**
+ * 弹出 vscode 文件夹选择对话框（仅 webview 环境可用）。
+ * Node/SSR/单测环境（无 vscode API）返回 undefined，不抛错。
+ *
+ * 用途：媒体库 rootDir、ComfyUI 主目录等需要用户选目录但**不允许手敲绝对路径**
+ * 的场景——避免拼写错误、路径越权、跨盘符等手输风险。
+ */
+export async function pickFolderDialog(opts: { title?: string; openLabel?: string } = {}): Promise<string | undefined> {
+	const api = vscode as unknown as {
+		window?: { showOpenDialog(o: unknown): Thenable<Array<{ fsPath: string }> | undefined> };
+	};
+	const show = api.window?.showOpenDialog;
+	if (!show) { return undefined; }
+	try {
+		const result = await show({
+			canSelectFolders: true,
+			canSelectFiles: false,
+			canSelectMany: false,
+			openLabel: opts.openLabel ?? '选择此目录',
+			title: opts.title,
+		});
+		return result?.[0]?.fsPath;
+	} catch {
+		return undefined;
+	}
+}

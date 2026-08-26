@@ -316,7 +316,7 @@ export const VIDEO_LOCAL_MINIMAX_H3_R2V: StageWorkflowConfig = {
                     "132",
                     0,
                 ],
-                "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
+                "expression": "max(5, min(362, round(a * 24))) + (5 - (max(5, min(362, round(a * 24))) % 17)) % 17",
             },
         },
         "132": {
@@ -431,6 +431,98 @@ export const VIDEO_LOCAL_MINIMAX_H3_R2V: StageWorkflowConfig = {
             "class_type": "LoadAudio",
             "inputs": {
                 "audio": "example.mp3",
+            },
+        },
+        "136": {
+            "class_type": "MiniMaxH3ReferenceToVideo",
+            "inputs": {
+                "clip": [
+                    "128",
+                    0,
+                ],
+                "vae": [
+                    "119",
+                    0,
+                ],
+                "audio_vae": [
+                    "120",
+                    0,
+                ],
+                "prompt": [
+                    "138",
+                    0,
+                ],
+                "width": 1344,
+                "height": 768,
+                "length": [
+                    "131",
+                    1,
+                ],
+                "ref_image_size": "match",
+                "ref_images.ref_image_0": [
+                    "137",
+                    0,
+                ],
+                "ref_images.ref_image_1": [
+                    "139",
+                    0,
+                ],
+                "ref_images.ref_image_2": [
+                    "201",
+                    0,
+                ],
+                "ref_images.ref_image_3": [
+                    "202",
+                    0,
+                ],
+                "ref_images.ref_image_4": [
+                    "203",
+                    0,
+                ],
+                "ref_images.ref_image_5": [
+                    "204",
+                    0,
+                ],
+                "ref_images.ref_image_6": [
+                    "205",
+                    0,
+                ],
+                "ref_images.ref_image_7": [
+                    "206",
+                    0,
+                ],
+                "ref_images.ref_image_8": [
+                    "207",
+                    0,
+                ],
+                "ref_videos.ref_video_0": [
+                    "302",
+                    0,
+                ],
+                "ref_video_audios.ref_video_audio_0": [
+                    "302",
+                    1,
+                ],
+                "ref_videos.ref_video_1": [
+                    "304",
+                    0,
+                ],
+                "ref_video_audios.ref_video_audio_1": [
+                    "304",
+                    1,
+                ],
+                "ref_audios.ref_audio_0": [
+                    "401",
+                    0,
+                ],
+                "ref_audios.ref_audio_1": [
+                    "402",
+                    0,
+                ],
+                "ref_audios.ref_audio_2": [
+                    "403",
+                    0,
+                ],
             },
         },
     },
@@ -697,13 +789,33 @@ export const VIDEO_LOCAL_MINIMAX_H3_T2V: StageWorkflowConfig = {
                     "133",
                     0,
                 ],
-                "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
+                "expression": "max(5, min(362, round(a * 24))) + (5 - (max(5, min(362, round(a * 24))) % 17)) % 17",
             },
         },
         "133": {
             "class_type": "PrimitiveFloat",
             "inputs": {
                 "value": 2,
+            },
+        },
+        "131": {
+            "class_type": "MiniMaxH3ImageToVideo",
+            "inputs": {
+                "clip": [
+                    "128",
+                    0,
+                ],
+                "vae": [
+                    "119",
+                    0,
+                ],
+                "prompt": "",
+                "width": 1344,
+                "height": 768,
+                "length": [
+                    "132",
+                    1,
+                ],
             },
         },
     },
@@ -727,6 +839,13 @@ export const VIDEO_LOCAL_MINIMAX_H3_T2V: StageWorkflowConfig = {
                 "cast": "float",
             },
         },
+        "131": {
+            "prompt": {
+                "from": "main_prompt",
+                "required": true,
+                "error": "MiniMax H3 T2V needs a prompt.",
+            },
+        },
     },
 };
 
@@ -735,11 +854,183 @@ export const VIDEO_LOCAL_MINIMAX_H3_FLF2V: StageWorkflowConfig = {
         "92": {
             "class_type": "SaveVideo",
             "inputs": {
-                "filename_prefix": "video/MiniMax_H3",
+                "video": [
+                    "130",
+                    0,
+                ],
+                "filename_prefix": "video/MiniMax_H3_flf2v",
                 "format": "auto",
                 "codec": "auto",
-                "video": [
+            },
+        },
+        "119": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "minimax_h3_video_vae_fp16.safetensors",
+            },
+        },
+        "120": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "minimax_h3_audio_vae_fp32.safetensors",
+            },
+        },
+        "121": {
+            "class_type": "VAEDecodeAudio",
+            "inputs": {
+                "samples": [
+                    "125",
+                    0,
+                ],
+                "vae": [
+                    "120",
+                    0,
+                ],
+            },
+        },
+        "122": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": [
+                    "125",
+                    0,
+                ],
+                "vae": [
+                    "119",
+                    0,
+                ],
+            },
+        },
+        "123": {
+            "class_type": "KSamplerSelect",
+            "inputs": {
+                "sampler_name": "res_multistep",
+            },
+        },
+        "124": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": [
+                    "127",
+                    0,
+                ],
+                "scheduler": "simple",
+                "steps": 20,
+                "denoise": 1,
+            },
+        },
+        "125": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": [
+                    "129",
+                    0,
+                ],
+                "guider": [
+                    "126",
+                    0,
+                ],
+                "sampler": [
+                    "123",
+                    0,
+                ],
+                "sigmas": [
+                    "124",
+                    0,
+                ],
+                "latent_image": [
                     "105",
+                    1,
+                ],
+            },
+        },
+        "126": {
+            "class_type": "BasicGuider",
+            "inputs": {
+                "model": [
+                    "127",
+                    0,
+                ],
+                "conditioning": [
+                    "105",
+                    0,
+                ],
+            },
+        },
+        "127": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                "weight_dtype": "default",
+            },
+        },
+        "128": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+                "type": "minimax",
+            },
+        },
+        "129": {
+            "class_type": "RandomNoise",
+            "inputs": {
+                "noise_seed": 12345,
+            },
+        },
+        "130": {
+            "class_type": "CreateVideo",
+            "inputs": {
+                "images": [
+                    "122",
+                    0,
+                ],
+                "audio": [
+                    "121",
+                    0,
+                ],
+                "fps": 24,
+            },
+        },
+        "131": {
+            "class_type": "ComfyMathExpression",
+            "inputs": {
+                "values.a": [
+                    "132",
+                    0,
+                ],
+                "expression": "max(5, min(362, round(a * 24))) + (5 - (max(5, min(362, round(a * 24))) % 17)) % 17",
+            },
+        },
+        "132": {
+            "class_type": "PrimitiveFloat",
+            "inputs": {
+                "value": 5,
+            },
+        },
+        "105": {
+            "class_type": "MiniMaxH3ImageToVideo",
+            "inputs": {
+                "clip": [
+                    "128",
+                    0,
+                ],
+                "vae": [
+                    "119",
+                    0,
+                ],
+                "prompt": "",
+                "width": 1344,
+                "height": 768,
+                "length": [
+                    "131",
+                    1,
+                ],
+                "first_frame": [
+                    "114",
+                    0,
+                ],
+                "last_frame": [
+                    "200",
                     0,
                 ],
             },
@@ -747,24 +1038,7 @@ export const VIDEO_LOCAL_MINIMAX_H3_FLF2V: StageWorkflowConfig = {
         "114": {
             "class_type": "LoadImage",
             "inputs": {
-                "image": "transparent_rgb_gaming_mouse.png",
-            },
-        },
-        "119": {
-            "class_type": "ImageScaleToTotalPixels",
-            "inputs": {
-                "upscale_method": "nearest-exact",
-                "megapixels": 1,
-                "resolution_steps": 32,
-            },
-        },
-        "120": {
-            "class_type": "GetImageSize",
-            "inputs": {
-                "image": [
-                    "119",
-                    0,
-                ],
+                "image": "example.png",
             },
         },
         "200": {
@@ -779,17 +1053,619 @@ export const VIDEO_LOCAL_MINIMAX_H3_FLF2V: StageWorkflowConfig = {
         "node": "92",
     },
     inputs: {
+        "129": {
+            "noise_seed": {
+                "from": "option:seed",
+                "default": "random_int31",
+                "required": false,
+                "cast": "int",
+            },
+        },
+        "132": {
+            "value": {
+                "from": "option:duration_s",
+                "required": false,
+                "cast": "float",
+            },
+        },
         "114": {
             "image": {
                 "from": "upstream_image:annotated[0]",
                 "required": true,
-                "error": "MiniMax H3 FLF2V needs at least a first-frame image — wire one into the stage's first image slot.",
+                "error": "MiniMax H3 FLF2V needs a first-frame image — wire one into the stage's first image slot.",
             },
         },
         "200": {
             "image": {
                 "from": "upstream_image:annotated[1]",
                 "required": false,
+            },
+        },
+        "105": {
+            "prompt": {
+                "from": "main_prompt",
+                "required": true,
+                "error": "MiniMax H3 FLF2V needs a prompt.",
+            },
+        },
+    },
+};
+
+export const VIDEO_LOCAL_MINIMAX_H3_I2V: StageWorkflowConfig = {
+    api_json: {
+        "92": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["130", 0],
+                "filename_prefix": "video/MiniMax_H3_i2v",
+                "format": "auto",
+                "codec": "auto",
+            },
+        },
+        "119": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "minimax_h3_video_vae_fp16.safetensors",
+            },
+        },
+        "120": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "minimax_h3_audio_vae_fp32.safetensors",
+            },
+        },
+        "121": {
+            "class_type": "VAEDecodeAudio",
+            "inputs": {
+                "samples": ["125", 0],
+                "vae": ["120", 0],
+            },
+        },
+        "122": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["125", 0],
+                "vae": ["119", 0],
+            },
+        },
+        "123": {
+            "class_type": "KSamplerSelect",
+            "inputs": {
+                "sampler_name": "res_multistep",
+            },
+        },
+        "124": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": ["127", 0],
+                "scheduler": "simple",
+                "steps": 20,
+                "denoise": 1,
+            },
+        },
+        "125": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["129", 0],
+                "guider": ["126", 0],
+                "sampler": ["123", 0],
+                "sigmas": ["124", 0],
+                "latent_image": ["131", 1],
+            },
+        },
+        "126": {
+            "class_type": "BasicGuider",
+            "inputs": {
+                "model": ["127", 0],
+                "conditioning": ["131", 0],
+            },
+        },
+        "127": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                "weight_dtype": "default",
+            },
+        },
+        "128": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+                "type": "minimax",
+            },
+        },
+        "129": {
+            "class_type": "RandomNoise",
+            "inputs": {
+                "noise_seed": 12345,
+            },
+        },
+        "130": {
+            "class_type": "CreateVideo",
+            "inputs": {
+                "images": ["122", 0],
+                "audio": ["121", 0],
+                "fps": 24,
+            },
+        },
+        "131": {
+            "class_type": "MiniMaxH3ImageToVideo",
+            "inputs": {
+                "clip": ["128", 0],
+                "vae": ["119", 0],
+                "first_frame": ["135", 0],
+                "prompt": "",
+                "width": 768,
+                "height": 1024,
+                "length": ["132", 1],
+            },
+        },
+        "132": {
+            "class_type": "ComfyMathExpression",
+            "inputs": {
+                "values.a": ["133", 0],
+                "expression": "max(5, min(362, round(a * 24))) + (5 - (max(5, min(362, round(a * 24))) % 17)) % 17",
+            },
+        },
+        "133": {
+            "class_type": "PrimitiveFloat",
+            "inputs": {
+                "value": 5,
+            },
+        },
+        "135": {
+            "class_type": "LoadImage",
+            "inputs": {
+                "image": "example.png",
+            },
+        },
+    },
+    result: {
+        "type": "ui_save_url",
+        "node": "92",
+    },
+    inputs: {
+        "129": {
+            "noise_seed": {
+                "from": "option:seed",
+                "default": "random_int31",
+                "required": false,
+                "cast": "int",
+            },
+        },
+        "133": {
+            "value": {
+                "from": "option:duration_s",
+                "required": false,
+                "cast": "float",
+            },
+        },
+        "135": {
+            "image": {
+                "from": "upstream_image:annotated[0]",
+                "required": true,
+                "error": "MiniMax H3 I2V needs a first-frame image — wire one into the stage's first image slot.",
+            },
+        },
+        "131": {
+            "prompt": {
+                "from": "main_prompt",
+                "required": true,
+                "error": "MiniMax H3 I2V needs a prompt.",
+            },
+        },
+    },
+};
+
+export const VIDEO_LOCAL_MINIMAX_H3_I2V_TURBO: StageWorkflowConfig = {
+    api_json: {
+        "92": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["130", 0],
+                "filename_prefix": "video/MiniMax_H3_i2v_turbo",
+                "format": "auto",
+                "codec": "auto",
+            },
+        },
+        "119": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "minimax_h3_video_vae_fp16.safetensors",
+            },
+        },
+        "120": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "minimax_h3_audio_vae_fp32.safetensors",
+            },
+        },
+        "121": {
+            "class_type": "VAEDecodeAudio",
+            "inputs": {
+                "samples": ["125", 0],
+                "vae": ["120", 0],
+            },
+        },
+        "122": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["125", 0],
+                "vae": ["119", 0],
+            },
+        },
+        "123": {
+            "class_type": "KSamplerSelect",
+            "inputs": {
+                "sampler_name": "res_multistep",
+            },
+        },
+        "124": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": ["136", 0],
+                "scheduler": "simple",
+                "steps": 4,
+                "denoise": 1,
+            },
+        },
+        "125": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["129", 0],
+                "guider": ["126", 0],
+                "sampler": ["123", 0],
+                "sigmas": ["124", 0],
+                "latent_image": ["131", 1],
+            },
+        },
+        "126": {
+            "class_type": "BasicGuider",
+            "inputs": {
+                "model": ["136", 0],
+                "conditioning": ["131", 0],
+            },
+        },
+        "127": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                "weight_dtype": "default",
+            },
+        },
+        "128": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+                "type": "minimax",
+            },
+        },
+        "129": {
+            "class_type": "RandomNoise",
+            "inputs": {
+                "noise_seed": 12345,
+            },
+        },
+        "130": {
+            "class_type": "CreateVideo",
+            "inputs": {
+                "images": ["122", 0],
+                "audio": ["121", 0],
+                "fps": 24,
+            },
+        },
+        "131": {
+            "class_type": "MiniMaxH3ImageToVideo",
+            "inputs": {
+                "clip": ["128", 0],
+                "vae": ["119", 0],
+                "first_frame": ["135", 0],
+                "prompt": "",
+                "width": 768,
+                "height": 1024,
+                "length": ["132", 1],
+            },
+        },
+        "132": {
+            "class_type": "ComfyMathExpression",
+            "inputs": {
+                "values.a": ["133", 0],
+                "expression": "max(5, min(362, round(a * 24))) + (5 - (max(5, min(362, round(a * 24))) % 17)) % 17",
+            },
+        },
+        "133": {
+            "class_type": "PrimitiveFloat",
+            "inputs": {
+                "value": 5,
+            },
+        },
+        "135": {
+            "class_type": "LoadImage",
+            "inputs": {
+                "image": "example.png",
+            },
+        },
+        "136": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["127", 0],
+                "lora_name": "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
+                "strength_model": 1.0,
+            },
+        },
+    },
+    result: {
+        "type": "ui_save_url",
+        "node": "92",
+    },
+    inputs: {
+        "129": {
+            "noise_seed": {
+                "from": "option:seed",
+                "default": "random_int31",
+                "required": false,
+                "cast": "int",
+            },
+        },
+        "133": {
+            "value": {
+                "from": "option:duration_s",
+                "required": false,
+                "cast": "float",
+            },
+        },
+        "135": {
+            "image": {
+                "from": "upstream_image:annotated[0]",
+                "required": true,
+                "error": "MiniMax H3 I2V Turbo needs a first-frame image — wire one into the stage's first image slot.",
+            },
+        },
+        "131": {
+            "prompt": {
+                "from": "main_prompt",
+                "required": true,
+                "error": "MiniMax H3 I2V Turbo needs a prompt.",
+            },
+        },
+    },
+};
+
+export const VIDEO_LOCAL_MINIMAX_H3_I2V_TURBO_SQUARE: StageWorkflowConfig = {
+    // ★ qwen 方图（768×768）→ 表情包视频变体。与 VIDEO_LOCAL_MINIMAX_H3_I2V_TURBO
+    //   唯一差异是 width/height 改 768×768，匹配 qwen 文生图的方图比例，避免首帧拉伸。
+    //   已本机验证：qwen 白底图作首帧，Turbo 4 步出片（150s，qwen_emoji_anim_00001_.mp4）。
+    api_json: {
+        "92": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["130", 0],
+                "filename_prefix": "video/qwen_emoji_anim",
+                "format": "auto",
+                "codec": "auto",
+            },
+        },
+        "119": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "minimax_h3_video_vae_fp16.safetensors",
+            },
+        },
+        "120": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "minimax_h3_audio_vae_fp32.safetensors",
+            },
+        },
+        "121": {
+            "class_type": "VAEDecodeAudio",
+            "inputs": {
+                "samples": ["125", 0],
+                "vae": ["120", 0],
+            },
+        },
+        "122": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["125", 0],
+                "vae": ["119", 0],
+            },
+        },
+        "123": {
+            "class_type": "KSamplerSelect",
+            "inputs": {
+                "sampler_name": "res_multistep",
+            },
+        },
+        "124": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": ["136", 0],
+                "scheduler": "simple",
+                "steps": 4,
+                "denoise": 1,
+            },
+        },
+        "125": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["129", 0],
+                "guider": ["126", 0],
+                "sampler": ["123", 0],
+                "sigmas": ["124", 0],
+                "latent_image": ["131", 1],
+            },
+        },
+        "126": {
+            "class_type": "BasicGuider",
+            "inputs": {
+                "model": ["136", 0],
+                "conditioning": ["131", 0],
+            },
+        },
+        "127": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                "weight_dtype": "default",
+            },
+        },
+        "128": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+                "type": "minimax",
+            },
+        },
+        "129": {
+            "class_type": "RandomNoise",
+            "inputs": {
+                "noise_seed": 12345,
+            },
+        },
+        "130": {
+            "class_type": "CreateVideo",
+            "inputs": {
+                "images": ["122", 0],
+                "audio": ["121", 0],
+                "fps": 24,
+            },
+        },
+        "131": {
+            "class_type": "MiniMaxH3ImageToVideo",
+            "inputs": {
+                "clip": ["128", 0],
+                "vae": ["119", 0],
+                "first_frame": ["135", 0],
+                "prompt": "",
+                "width": 768,
+                "height": 768,
+                "length": ["132", 1],
+            },
+        },
+        "132": {
+            "class_type": "ComfyMathExpression",
+            "inputs": {
+                "values.a": ["133", 0],
+                "expression": "max(5, min(362, round(a * 24))) + (5 - (max(5, min(362, round(a * 24))) % 17)) % 17",
+            },
+        },
+        "133": {
+            "class_type": "PrimitiveFloat",
+            "inputs": {
+                "value": 5,
+            },
+        },
+        "135": {
+            "class_type": "LoadImage",
+            "inputs": {
+                "image": "example.png",
+            },
+        },
+        "136": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["127", 0],
+                "lora_name": "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
+                "strength_model": 1.0,
+            },
+        },
+    },
+    result: {
+        "type": "ui_save_url",
+        "node": "92",
+    },
+    inputs: {
+        "129": {
+            "noise_seed": {
+                "from": "option:seed",
+                "default": "random_int31",
+                "required": false,
+                "cast": "int",
+            },
+        },
+        "133": {
+            "value": {
+                "from": "option:duration_s",
+                "required": false,
+                "cast": "float",
+            },
+        },
+        "135": {
+            "image": {
+                "from": "upstream_image:annotated[0]",
+                "required": true,
+                "error": "Qwen emoji video needs a first-frame image — wire one into the stage's image slot.",
+            },
+        },
+        "131": {
+            "prompt": {
+                "from": "main_prompt",
+                "required": true,
+                "error": "Qwen emoji video needs a prompt.",
+            },
+        },
+    },
+};
+
+export const VIDEO_LOCAL_TRANSPARENT_COMPOSITE: StageWorkflowConfig = {
+    // ★ 阶段3「透明合成」：把上游动态视频（RGB，不透明）+ 上游透明 PNG 的 alpha
+    //   合成为透明动态 webp。三阶段链路（路线B）的最后一环：
+    //     表情包节点出透明 PNG → MiniMax H3 I2V 出动态视频 → 本 stage 抠透明。
+    //
+    //   连线要点（已本机验证，输出 emoji_transparent_anim_*.webp 56 帧 RGBA）：
+    //   - 视频帧：LoadVideo → GetVideoComponents(slot 0 = IMAGE)
+    //   - alpha：LoadImage 的 MASK 输出（slot 1 = 1-alpha），**不是** IMAGE 输出
+    //     （LoadImage 的 IMAGE 槽是纯 RGB，不含 alpha，抠 alpha 会走全 1 分支 → 全不透明）
+    //   - JoinImageWithAlpha 自动广播：batch_size=max(len(image),len(alpha))，
+    //     单帧 alpha 自动 repeat 到全部视频帧
+    //   - 输出 SaveAnimatedWEBP（透明动图进 history 的 images slot）
+    api_json: {
+        "1": {
+            "class_type": "LoadImage",
+            "inputs": { "image": "example.png" },
+        },
+        "2": {
+            "class_type": "LoadVideo",
+            "inputs": { "file": "example.mp4" },
+        },
+        "3": {
+            "class_type": "GetVideoComponents",
+            "inputs": { "video": ["2", 0] },
+        },
+        "4": {
+            "class_type": "JoinImageWithAlpha",
+            "inputs": {
+                "image": ["3", 0],
+                "alpha": ["1", 1],
+            },
+        },
+        "5": {
+            "class_type": "SaveAnimatedWEBP",
+            "inputs": {
+                "images": ["4", 0],
+                "filename_prefix": "ComfyTV/emoji_transparent_anim",
+                "fps": 12.0,
+                "lossless": true,
+                "quality": 90,
+                "method": "default",
+            },
+        },
+    },
+    result: { "type": "ui_save", "node": "5" },
+    inputs: {
+        "1": {
+            "image": {
+                "from": "upstream_image:annotated[0]",
+                "required": true,
+                "error": "Transparent composite needs an upstream transparent PNG (for its alpha) — wire one into the stage's image slot.",
+            },
+        },
+        "2": {
+            "file": {
+                "from": "upstream_video:annotated[0]",
+                "required": true,
+                "error": "Transparent composite needs an upstream video — wire one into the stage's video slot.",
             },
         },
     },
@@ -803,4 +1679,8 @@ export const VIDEO_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
     "Local MiniMax H3 R2V": VIDEO_LOCAL_MINIMAX_H3_R2V,
     "Local MiniMax H3 T2V": VIDEO_LOCAL_MINIMAX_H3_T2V,
     "Local MiniMax H3 FLF2V": VIDEO_LOCAL_MINIMAX_H3_FLF2V,
+    "Local MiniMax H3 I2V": VIDEO_LOCAL_MINIMAX_H3_I2V,
+    "Local MiniMax H3 I2V Turbo": VIDEO_LOCAL_MINIMAX_H3_I2V_TURBO,
+    "Qwen Emoji Video (Square)": VIDEO_LOCAL_MINIMAX_H3_I2V_TURBO_SQUARE,
+    "Local Transparent Sticker Video": VIDEO_LOCAL_TRANSPARENT_COMPOSITE,
 };

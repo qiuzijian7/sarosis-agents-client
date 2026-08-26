@@ -486,6 +486,12 @@ protected _streamingUpdateRaf: number | null = null;
 
 
 protected _lazyLoadObserver: IntersectionObserver | null = null;
+	// 懒加载剩余可加载的历史消息数（供裁剪时重锚定懒加载）
+	protected _lazyLoadRemaining = 0;
+	// 集中式 detached-DOM 资源释放观察器（在 _renderMessagesArea 中 setup）。
+	// 任何消息/part 子树被移除时，释放其 _markdownDisposables，避免 detached 子树被
+	// map 引用而无法 GC（7G 内存泄漏的根因：keyed-reconcile 删残留、全量重建、setMessages 清空）。
+	protected _domDisposalObserver: MutationObserver | null = null;
 
 	// ── ScrollbarController host contract (IScrollbarHost) ──
 	protected readonly _scrollbar: ScrollbarController;
@@ -678,7 +684,7 @@ protected _markdownDisposables = new Map<HTMLElement, IDisposable>();
 
 protected _nodeCollapsedState = new Map<string, boolean>();
 
-protected readonly _onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => void;
+protected readonly _onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => void;
 
 protected readonly _onCancelExecution: () => void;
 	/**
@@ -820,7 +826,7 @@ protected readonly _importedKbFileToolIds = new Set<string>();
 	protected readonly _onSetFeishuDefaultAgent?: (agentId: string | undefined) => void;
 
 constructor(opts: {
-		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => void;
+		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => void;
 		onCancelExecution: () => void;
 		onSkipCurrentTool?: () => void;
 		onToggleCollapse: () => void;
@@ -2212,6 +2218,7 @@ override dispose(): void {
 	this._thinkingCardState.clear();
 	if (this._streamingUpdateRaf !== null) { cancelAnimationFrame(this._streamingUpdateRaf); }
 		if (this._lazyLoadObserver) { this._lazyLoadObserver.disconnect(); }
+		if (this._domDisposalObserver) { this._domDisposalObserver.disconnect(); this._domDisposalObserver = null; }
 		if (this._contextRingTimer !== null) { clearTimeout(this._contextRingTimer); }
 
 		// Dispose all markdown disposables to avoid leakage

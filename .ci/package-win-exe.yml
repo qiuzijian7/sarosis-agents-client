@@ -75,6 +75,11 @@ stages:
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/package-vscode.ps1'
         shell: powershell
 
+      # ---------- 6.4 下载并内置 ffmpeg（vox 口播视频可选依赖，失败不阻断） ----------
+      - name: 下载并内置 ffmpeg (bundle-ffmpeg)
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/bundle-ffmpeg.ps1'
+        shell: powershell
+
       # ---------- 6.5 打包产物关键构件验证 ----------
       - name: 验证打包关键构件
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/verify-staging.ps1'

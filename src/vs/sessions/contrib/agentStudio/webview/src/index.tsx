@@ -29,7 +29,7 @@ import { useDiagnosticsStore } from './store/useDiagnosticsStore.js';
 import { useSwarmStore } from './store/useSwarmStore.js';
 import { useDebugTraceStore } from './store/useDebugTraceStore.js';
 import { dispatchConfigHtmlEvent } from './features/configmd/configHtmlBridge.js';
-import { handleSnapshotArchiveEvent, handleSnapshotQueryEvent, handleStageRunEvent } from './features/workflowEditor/comfyHost/workflowSnapshotBridgeWebview.js';
+import { handleSnapshotArchiveEvent, handleSnapshotQueryEvent, handleStageRunEvent, handleDirectStageRunEvent } from './features/workflowEditor/comfyHost/workflowSnapshotBridgeWebview.js';
 import './styles/globals.css';
 import './styles/themes.css';
 import './styles/chat-enhanced.css';
@@ -461,6 +461,12 @@ initMessageClient((type, data) => {
 		// P0 dynamic workflow: host asks the canvas to actually RUN a media node
 		// (stage(uid) hook) — this is what makes scripts able to generate images.
 		handleStageRunEvent(data);
+		break;
+	}
+	case 'workflow.stageDirectRun': {
+		// 存储工作流 ComfyStage 直跑：host 按 stageClass + values 请求画布执行媒体节点
+		//（如 ComfyTV.EmojiStage 的 m×n 表情包），不依赖画布 stageUid。
+		handleDirectStageRunEvent(data);
 		break;
 	}
 	case 'workflow.executionUpdate': {

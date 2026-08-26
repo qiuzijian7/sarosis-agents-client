@@ -10,6 +10,11 @@
  *   - 透明模板失败 → 自动 fallback「普通贴纸」→ 成功
  *   - 全部失败 → 含 LayeredDiffusion 诊断提示
  *   - 取消
+ *   - 默认模板 = Qwen 贴纸（独立 suite 覆盖）
+ *
+ *  ⚠ 节点编号约定：除「默认 Qwen」suite 外，用例经 baseInput 显式锁定
+ *     「透明贴纸 (SDXL)」（3=CLIPTextEncode / 6=KSampler / 9=SaveImage）。
+ *     产品真实默认已改为 Qwen，硬编码编号断言必须锁模板防漂移。
  *--------------------------------------------------------------------------------------------*/
 import assert from 'assert';
 import { runNodeOrStage } from '../../webview/src/features/workflowEditor/comfyHost/workflowRun.js';
@@ -43,14 +48,15 @@ function makeRunner(responder?: InvokeResponder): { runner: IComfyRunner; invoca
 				const r = responder(i, opts.prompt);
 				if (r) { return r; }
 			}
-			// 同时提供透明模板（resultNode=9）和 fallback（resultNode=7）的输出，
-			// 两种模板都能从 /history 提取到 image。
+			// 同时提供透明模板（resultNode=11）、fallback（resultNode=7）、Qwen 默认
+			// （resultNode=13）的输出，三种模板都能从 /history 提取到 image。
 			return {
 				promptId: `prompt-${i}`,
 				status: 'success' as const,
 				outputs: {
-					'9': { images: [{ filename: `emoji_${i}.png`, subfolder: '', type: 'output' }] },
+					'11': { images: [{ filename: `emoji_${i}.png`, subfolder: '', type: 'output' }] },
 					'7': { images: [{ filename: `emoji_fb_${i}.png`, subfolder: '', type: 'output' }] },
+					'13': { images: [{ filename: `emoji_qwen_${i}.png`, subfolder: '', type: 'output' }] },
 				},
 			};
 		},
@@ -61,14 +67,19 @@ function makeRunner(responder?: InvokeResponder): { runner: IComfyRunner; invoca
 const emojiSpec = () => ({ kind: 'schema', comfyTV: { stageKind: 'emoji', workflowKind: 'emoji' } });
 
 function baseInput(store: MediaSnapshotStore, runner: IComfyRunner, overrides: Record<string, unknown> = {}) {
+	const { values, ...rest } = overrides;
 	return {
 		runner,
 		nodeId: 'emoji-1',
 		type: 'ComfyTV.EmojiStage',
 		getSpec: emojiSpec,
-		values: {},
+		// ★ 本文件除「默认 Qwen」suite 外，一律显式锁定「透明贴纸 (SDXL)」模板 ——
+		//   下方断言硬编码了它的节点编号（3=CLIPTextEncode / 6=KSampler / 9=SaveImage）。
+		//   产品真实默认已改为「Qwen 贴纸 (默认)」（resultNode=13），若不锁定模板，
+		//   默认变更会让这些编号断言全部漂移。
+		values: { workflow: '透明贴纸 (SDXL)', ...((values as Record<string, unknown>) ?? {}) },
 		store,
-		...overrides,
+		...rest,
 	};
 }
 
@@ -290,6 +301,27 @@ suite('EmojiStage 自动 fallback', () => {
 	});
 });
 
+suite('EmojiStage 默认模板（Qwen）', () => {
+	test('不选 workflow → 默认 Qwen 贴纸（无 LayeredDiffusionApply，resultNode=13 可归档）', async () => {
+		const store = makeStore();
+		const { runner, invocations } = makeRunner();
+		await runNodeOrStage(baseInput(store, runner, {
+			values: { rows: 1, cols: 1, run_scope: 'all', prompt: '猫', workflow: undefined },
+		}));
+		const first = invocations[0] as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>;
+		const hasLayered = Object.values(first).some(n => n?.class_type === 'LayeredDiffusionApply');
+		assert.strictEqual(hasLayered, false, '默认 Qwen 不应含 LayeredDiffusionApply');
+		const hasQwenUnet = Object.values(first).some(n =>
+			n?.class_type === 'UNETLoader' && String(n?.inputs?.unet_name).includes('qwen_image_2512'),
+		);
+		assert.strictEqual(hasQwenUnet, true, '默认应加载 qwen_image_2512 UNet');
+		// resultNode=13（Qwen SaveImage）能从 mock outputs 归档出图
+		const imgs = store.byNode('emoji-1').filter(e => e.media.kind === 'image');
+		assert.strictEqual(imgs.length, 1, `默认 Qwen 应归档 1 张图，实际 ${imgs.length}`);
+		assert.ok(imgs[0]?.media.ref.includes('emoji_qwen_1.png'), `应归档 qwen 产物，实际=${imgs[0]?.media.ref}`);
+	});
+});
+
 suite('EmojiStage 取消', () => {
 	test('signal.aborted → 返回 canceled', async () => {
 		const store = makeStore();
@@ -409,14 +441,17 @@ suite('EmojiStage 归档顺序与去重', () => {
 		assert.strictEqual(invocations.length, 5, '单格模式应只多跑 1 次');
 
 		const after = imageRefs(store);
-		assert.strictEqual(after.length, 4, `总数应仍为 4，实际 ${after.length}`);
+		// 前 4 个 = 每格最新（网格 cellRefs），末尾多 1 个 = 被替换的第 1 格旧图（历史保留）。
+		assert.strictEqual(after.length, 5, `总数应为 5（4 格最新 + 1 历史），实际 ${after.length}`);
 		// 目标格 = 第 5 次 invoke 的新图
 		assert.ok(after[1].includes('emoji_5.png'), `第 1 格应更新为 emoji_5.png，实际=${after[1]}`);
 		// 其余格保持原样（这里曾被别格图覆盖 → 两两重复）
 		assert.strictEqual(after[0], before[0], '第 0 格不应变化');
 		assert.strictEqual(after[2], before[2], '第 2 格不应变化');
 		assert.strictEqual(after[3], before[3], '第 3 格不应变化');
-		assert.strictEqual(new Set(after).size, 4, `更新后出现重复图：${JSON.stringify(after)}`);
+		// 前 4 格（每格最新）不重复；末尾第 5 个 = 被替换的第 1 格旧图（历史保留）
+		assert.strictEqual(new Set(after.slice(0, 4)).size, 4, `前 4 格出现重复图：${JSON.stringify(after.slice(0, 4))}`);
+		assert.strictEqual(after[4], before[1], `末尾应保留第 1 格旧产物，实际=${after[4]}`);
 	});
 
 	test('连续单格生成 3 次（不同格）→ 各格互不串号', async () => {
@@ -437,8 +472,10 @@ suite('EmojiStage 归档顺序与去重', () => {
 			);
 		}
 		const final = imageRefs(store);
-		assert.strictEqual(final.length, 4, `总数应仍为 4，实际 ${final.length}`);
-		assert.strictEqual(new Set(final).size, 4, `出现重复图：${JSON.stringify(final)}`);
+		// 3 次单格重生成 → 前 4 个 = 每格最新，末尾多 3 个历史（被替换的旧图）。
+		assert.strictEqual(final.length, 7, `总数应为 7（4 格最新 + 3 历史），实际 ${final.length}`);
+		// 前 4 格（每格最新）不重复
+		assert.strictEqual(new Set(final.slice(0, 4)).size, 4, `前 4 格出现重复图：${JSON.stringify(final.slice(0, 4))}`);
 		// #1 未重生成，应保持第 1 轮的 emoji_2.png
 		assert.ok(final[1].includes('emoji_2.png'), `第 1 格不应变化，实际=${final[1]}`);
 	});

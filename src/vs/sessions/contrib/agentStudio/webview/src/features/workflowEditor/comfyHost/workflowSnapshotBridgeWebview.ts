@@ -164,3 +164,81 @@ export function handleSnapshotArchiveEvent(data: unknown): void {
 		},
 	}, true);
 }
+
+// ─── Direct stage run 桥（存储工作流 ComfyStage → 画布，按 stageClass + values 直跑）───
+
+/** host 下发的「直接执行 stage」事件载荷（与 browser 侧 directStageRunEmitter 对齐）。 */
+export interface IDirectStageRunEvent {
+	runId: string;
+	stageClass: string;
+	values: Record<string, unknown>;
+	images?: string[];
+}
+
+/** 直接 stage 执行结果（与 browser/comfyStageBridge.ts::DirectStageRunResult 同构）。 */
+export interface DirectStageRunResult {
+	status: 'success' | 'error';
+	error?: string;
+	outputs: Record<string, unknown>;
+	snapshot?: Array<{
+		port: string;
+		kind: 'image' | 'video' | 'audio' | 'text' | 'unknown';
+		ref: string;
+		meta?: Record<string, unknown>;
+	}>;
+	summary?: string;
+}
+
+/**
+ * 直接 stage 执行器（由 WorkflowEditorPanel 注册）。
+ * stageClass（如 `ComfyTV.EmojiStage`）+ 已解析 values + 参考图 → 跑对应 stage，
+ * 返回结构化结果（outputs + snapshot 媒体引用）。抛错 = 执行失败（fail-loud 回程）。
+ */
+export type DirectStageRunner = (
+	stageClass: string,
+	values: Record<string, unknown>,
+	images: string[] | undefined,
+	onProgress: (progress: number, message?: string) => void,
+) => Promise<DirectStageRunResult>;
+
+const directRunners = new Map<string, DirectStageRunner>();
+
+export function registerDirectStageRunner(workflowId: string, runner: DirectStageRunner): void {
+	directRunners.set(workflowId || 'default', runner);
+}
+
+export function unregisterDirectStageRunner(workflowId: string): void {
+	directRunners.delete(workflowId || 'default');
+}
+
+function activeDirectRunner(): DirectStageRunner | undefined {
+	let last: DirectStageRunner | undefined;
+	for (const r of directRunners.values()) { last = r; }
+	return last;
+}
+
+/** host → webview：workflow.stageDirectRun 事件处理（存储工作流 ComfyStage 真正执行）。 */
+export function handleDirectStageRunEvent(data: unknown): void {
+	const d = data as IDirectStageRunEvent;
+	if (!d || typeof d.runId !== 'string' || typeof d.stageClass !== 'string') { return; }
+	const runner = activeDirectRunner();
+	if (!runner) {
+		void sendRequest('workflow.stageDirectRunResult', { runId: d.runId, ok: false, error: '画布未打开：无法执行 ComfyStage（请先打开工作流画布）' });
+		return;
+	}
+	// 执行可能耗时数分钟（ComfyUI 采样）；host 侧 requestDirectStageRun 有 10min 兜底。
+	const onProgress = (progress: number, message?: string): void => {
+		void sendRequest('workflow.stageDirectRunProgress', { runId: d.runId, progress, ...(message !== undefined ? { message } : {}) });
+	};
+	runner(d.stageClass, d.values ?? {}, d.images, onProgress)
+		.then(value => {
+			void sendRequest('workflow.stageDirectRunResult', { runId: d.runId, ok: true, value });
+		})
+		.catch((err: unknown) => {
+			void sendRequest('workflow.stageDirectRunResult', {
+				runId: d.runId,
+				ok: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		});
+}

@@ -285,7 +285,7 @@ export class NativeChatEditorPane extends EditorPane {
 	private readonly _chatPanelImportedIds = new Set<string>();
 	private _isTabActive = false;
 	/** Reusable streaming-send function, captured from the panel's onSendMessage. */
-	private _sendMessageInternal!: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => Promise<void>;
+	private _sendMessageInternal!: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => Promise<void>;
 	/**
 	 * Async race guard: incremented before each `_selectAndLoadAgent` call.
 	 * Only the latest generation's result is applied — stale loads are silently discarded.
@@ -527,7 +527,7 @@ export class NativeChatEditorPane extends EditorPane {
 		const useCliPanel = this.input instanceof NativeChatEditorInput && this.input.cliMode;
 		const PanelCtor = useCliPanel ? XtermCliPanel : AgentChatPanel;
 		this._chatPanel = this._register(new PanelCtor({
-			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string> }) => {
+			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => {
 			// 注：防重入逻辑已下移到 AgentChatPanel._handleSendMessage（流式时入队，非流式时直接发送）
 			// 此处不再拦截，让 Panel 的队列机制处理并发发送。
 			// 跨 pane 串台防护用的 sessionId（在 finally 中统一释放，避免本地发送异常时泄漏标记）。

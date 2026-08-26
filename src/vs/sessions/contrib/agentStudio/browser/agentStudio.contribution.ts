@@ -339,8 +339,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		'sessions.agentStudio.tools.autoApproveReadOnlyCommands': {
 			type: 'boolean',
-			default: false,
-			description: localize('agentStudio.tools.autoApproveReadOnlyCommands', "终端命令中，已确认只读的命令免交互确认（如 Get-ChildItem / git status / cat，含只读管道）。命令一旦包含重定向、命令替换、`;`/`&&` 串联、变量展开或任何未知命令，仍会弹出确认。默认关闭；关闭时所有终端命令都需确认。"),
+			default: true,
+			description: localize('agentStudio.tools.autoApproveReadOnlyCommands', "终端命令中，已确认只读的命令（如 Get-ChildItem / git status / cat，含只读管道）与验证/构建命令（如 tsc / esbuild / vite / npm run build / npm test / npm run lint）免交互确认。命令一旦包含重定向、命令替换、`;`/`&&` 串联、变量展开、裸解释器（python3 -c / node -e）或任何未知命令，仍会弹出确认。默认开启；关闭后所有终端命令都需确认。"),
 		},
 		[AGENT_STUDIO_ENABLED_SETTING]: {
 			type: 'boolean',

@@ -74,6 +74,26 @@ function kindOfListName(name: string): MediaKind {
 }
 
 /**
+ * ComfyUI 官方 `PreviewVideo.as_dict()` 把视频文件写进 `images` 槽（见
+ * `comfy_api/latest/_ui.py`：`return {"images": self.values, "animated": (True,)}`），
+ * 而非独立的 `videos` 槽。因此槽名 `images` 无法区分「图片」和「视频」——
+ * 必须按文件扩展名二次判定，否则 SaveVideo 产物会被误归为 image，卡片走
+ * `<img>` 渲染 mp4（黑屏/不播放）。
+ *
+ * 判定依据：filename 的扩展名命中视频容器集合时，把 kind 修正为 `video`。
+ * 仅对「当前 kind 是 image 且 filename 是视频扩展名」的条目生效，不影响
+ * `gifs`/`videos`/`audio`（已正确）以及真正的图片（png/jpg/webp 等）。
+ */
+const VIDEO_EXT_RE = /\.(mp4|webm|mov|mkv|avi|m4v|ogv|ogm|3gp|3g2|mpeg|mpg|flv|wmv|ts|mts|m2ts)$/i;
+
+function kindForFile(kind: MediaKind, filename: string | undefined): MediaKind {
+	if (kind === 'image' && filename && VIDEO_EXT_RE.test(filename)) {
+		return 'video';
+	}
+	return kind;
+}
+
+/**
  * 从 ComfyUI 输出描述符推导结构化 locator（filename/subfolder/type）。
  * 两种形态都能解析：
  *   - 标准描述符 `{ filename, subfolder, type }`；
@@ -155,7 +175,7 @@ export function normalizeOutputSlot(name: string, value: unknown): MediaRef[] {
 				?? (rec.name as string | undefined);
 			if (!ref) { return []; }
 			return [{
-				kind,
+				kind: kindForFile(kind, rec.filename as string | undefined),
 				ref,
 				meta: { subfolder: rec.subfolder, type: rec.type },
 				locator: locatorFromDescriptor(rec, ref),

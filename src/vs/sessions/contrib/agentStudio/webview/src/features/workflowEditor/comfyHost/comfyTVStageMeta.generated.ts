@@ -183,7 +183,7 @@ export const COMFYTV_STAGE_META: ComfyTVStageMeta[] = [
 	{ nodeId: 'ComfyTV.Scene3DStage', kind: 'image', variant: 'loader', title: "3D Scene", category: "ComfyTV/Input" },
 	{ nodeId: 'ComfyTV.LayerEditorStage', kind: 'image', variant: 'loader', title: "Layer Editor", category: "ComfyTV/Input" },
 	{ nodeId: 'ComfyTV.PosterStage', kind: 'image', variant: '', title: "Poster", category: "ComfyTV/Image" },
-	{ nodeId: 'ComfyTV.StoryboardEditorStage', kind: 'image', variant: 'loader', title: "Storyboard Editor", category: "ComfyTV/Input" },
+	{ nodeId: 'ComfyTV.StoryboardEditorStage', kind: 'image', variant: 'loader', title: "导演台", category: "ComfyTV/Input" },
 	{ nodeId: 'ComfyTV.MaterialStage', kind: 'material', workflowKind: 'material-estimate', variant: '', title: "Material", category: "ComfyTV/Input" },
 	{ nodeId: 'ComfyTV.SplitPartStage', kind: 'image-batch', workflowKind: 'split-part', variant: '', title: "Split Parts", category: "ComfyTV/Image" },
 	// ── 补齐 meta.py 有、此前 generated 缺失的 11 个 stage（顺序对齐 get_node_list()）──

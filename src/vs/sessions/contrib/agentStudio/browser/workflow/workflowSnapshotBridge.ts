@@ -197,3 +197,81 @@ export function onStageRunProgress(payload: StageRunProgressPayload): boolean {
 export function createBridgeStagePort(onProgress?: (progress: number, message?: string) => void): IWorkflowStagePort {
 	return { run: (request, progress) => requestStageRun(request, DEFAULT_STAGE_TIMEOUT_MS, progress ?? onProgress) };
 }
+
+// ─── Direct stage run 桥（存储工作流 ComfyStage → 画布，按 stageClass + values 直跑）───
+//
+// 与上面 stage() 桥（按 stageUid 定位画布节点）互补：存储工作流 DAG 的 ComfyStage 节点
+// 没有画布 stageUid，只有 `data.comfy.stageClass`（如 `ComfyTV.EmojiStage`）。本桥把
+// 「stageClass + 已解析 values + 参考图」发给画布 webview，由 webview 直接调
+// runNodeOrStage 跑对应 stage（不经 stageUid 反查），解决「聊天触发存储工作流时
+// 表情包节点被跳过」的缺口。
+
+/** 直接 stage 执行请求（调用方入参）。 */
+export interface DirectStageRunRequest {
+	readonly stageClass: string;
+	readonly values: Record<string, unknown>;
+	/** 参考图引用（data URL / http / 纯文件名），webview 注入 upstream_image。 */
+	readonly images?: string[];
+}
+
+/** controller 转发给 webview 的事件载荷（workflow.stageDirectRun）。 */
+export interface DirectStageRunPayload {
+	readonly runId: string;
+	readonly stageClass: string;
+	readonly values: Record<string, unknown>;
+	readonly images?: string[];
+}
+
+const pendingDirectStageRuns = new Map<string, PendingQuery>();
+
+/** 工具层 → controller：请把「直接 stage 执行」转发给画布 webview。 */
+export const directStageRunEmitter = new Emitter<DirectStageRunPayload>();
+
+/**
+ * 按 stageClass + values 直接执行画布媒体节点（EmojiStage / TTSStage / …）。
+ * 复用 stage() 桥的 pending/emitter 范式与 10 分钟超时；进度经 onProgress 透传。
+ */
+export function requestDirectStageRun(
+	request: DirectStageRunRequest,
+	timeoutMs: number = DEFAULT_STAGE_TIMEOUT_MS,
+	onProgress?: (progress: number, message?: string) => void,
+): Promise<unknown> {
+	const runId = `wfsd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+	return new Promise<unknown>((resolve, reject) => {
+		const timer = timeoutMs > 0
+			? setTimeout(() => {
+				pendingDirectStageRuns.delete(runId);
+				reject(new Error(`stage 执行超时（${Math.round(timeoutMs / 1000)}s）：${request.stageClass}；请确认已打开工作流画布且 ComfyUI 可达`));
+			}, timeoutMs)
+			: undefined;
+		pendingDirectStageRuns.set(runId, { resolve, reject, timer, onProgress });
+		directStageRunEmitter.fire({
+			runId,
+			stageClass: request.stageClass,
+			values: request.values,
+			...(request.images !== undefined ? { images: request.images } : {}),
+		});
+	});
+}
+
+/** controller 收到 webview 回程时调用。返回 false = 未知 runId（已超时/已解决）。 */
+export function resolveDirectStageRun(payload: StageRunResultPayload): boolean {
+	const pending = pendingDirectStageRuns.get(payload.runId);
+	if (!pending) { return false; }
+	pendingDirectStageRuns.delete(payload.runId);
+	if (pending.timer) { clearTimeout(pending.timer); }
+	if (payload.ok) {
+		pending.resolve(payload.value);
+	} else {
+		pending.reject(new Error(payload.error ?? 'direct stage run failed'));
+	}
+	return true;
+}
+
+/** controller 收到 webview 进度回程时调用。返回 false = 未知 runId。 */
+export function onDirectStageRunProgress(payload: StageRunProgressPayload): boolean {
+	const pending = pendingDirectStageRuns.get(payload.runId);
+	if (!pending) { return false; }
+	pending.onProgress?.(payload.progress, payload.message);
+	return true;
+}

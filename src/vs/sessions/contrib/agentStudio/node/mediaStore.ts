@@ -105,6 +105,11 @@ export class MediaStore {
 		this.db.exec(CREATE_TABLE);
 	}
 
+	/** 当前媒体库根目录（绝对路径，供 UI 展示/编辑）。 */
+	getRootDir(): string {
+		return this.opts.rootDir;
+	}
+
 	/** 写入资产：base64 落盘 + URL 引用。至少提供 ref 或 base64 之一。 */
 	async importAsset(entry: {
 		ref?: string;
@@ -198,6 +203,38 @@ export class MediaStore {
 		return fs.existsSync(row.file_path) ? row.file_path : null;
 	}
 
+	/**
+	 * 把本地文件读成 data URL 字符串（webview 沙箱不能直接用本地路径，data URL 是唯一安全方式）。
+	 * webview 拿到后直接 <img src=...> 显示，体积 ~33% 开销可接受（缩略图 96×96 通常 < 10KB）。
+	 * mime 按扩展名推断（不读 magic bytes，开销最低，列表场景已够）。
+	 */
+	async getAsDataUrl(id: string): Promise<string | null> {
+		const fp = await this.getFilePath(id);
+		if (!fp) { return null; }
+		const buf = await fs.promises.readFile(fp);
+		const mime = this._extToMime(fp);
+		return `data:${mime};base64,${buf.toString('base64')}`;
+	}
+
+	private _extToMime(p: string): string {
+		const e = path.extname(p).toLowerCase();
+		switch (e) {
+			case '.png': return 'image/png';
+			case '.jpg': case '.jpeg': return 'image/jpeg';
+			case '.gif': return 'image/gif';
+			case '.webp': return 'image/webp';
+			case '.svg': return 'image/svg+xml';
+			case '.bmp': return 'image/bmp';
+			case '.mp4': return 'video/mp4';
+			case '.webm': return 'video/webm';
+			case '.mov': return 'video/quicktime';
+			case '.mp3': return 'audio/mpeg';
+			case '.wav': return 'audio/wav';
+			case '.ogg': return 'audio/ogg';
+			default: return 'application/octet-stream';
+		}
+	}
+
 	async remove(id: string): Promise<void> {
 		this.db.prepare('UPDATE media_asset SET is_deleted = 1 WHERE id = ?').run(id);
 	}
@@ -243,6 +280,29 @@ export class MediaStore {
 			}
 			this.db.prepare('DELETE FROM media_asset WHERE id = ?').run(r.id);
 			count++;
+		}
+		return { count, freedBytes };
+	}
+
+	/**
+	 * ★ 清理孤儿项：DB 有 file_path 但磁盘文件已不存在（app 重装 / rootDir 变化
+	 * / 外部删除等残留）。直接硬删（文件已无，无需 unlink），返回清理数 + 释放的
+	 * 记录字节。UI 表现为"不可用"（getAsDataUrl 返回 null）。
+	 * 与 purgeDeleted 差别：purgeDeleted 只清 is_deleted=1 回收站；本方法清
+	 * is_deleted=0 但磁盘文件缺失的「活」行。
+	 */
+	async cleanOrphaned(): Promise<{ count: number; freedBytes: number }> {
+		const rows = this.db.prepare(
+			'SELECT id, file_path, size_bytes FROM media_asset WHERE is_deleted = 0 AND file_path IS NOT NULL AND file_path != \'\''
+		).all() as Array<{ id: string; file_path: string; size_bytes: number | null }>;
+		let count = 0;
+		let freedBytes = 0;
+		for (const r of rows) {
+			if (!fs.existsSync(r.file_path)) {
+				this.db.prepare('DELETE FROM media_asset WHERE id = ?').run(r.id);
+				count++;
+				freedBytes += r.size_bytes ?? 0;
+			}
 		}
 		return { count, freedBytes };
 	}

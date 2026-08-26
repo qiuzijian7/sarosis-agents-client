@@ -844,11 +844,268 @@ export const IMAGE_FLUX2_KLEIN_RELIGHT: StageWorkflowConfig = {
     },
 };
 
+export const IMAGE_QWEN_2512_T2I: StageWorkflowConfig = {
+    // ★ 本地 qwen-image-2512 文生图（白底贴纸风格），用于「qwen 图 → 表情包视频」链路的第一环。
+    //   已本机验证：qwen_image_2512_fp8_e4m3fn + EmptySD3LatentImage 出 1 张清晰图（30s）。
+    //   ⚠ 关键：qwen_image_2512 是【非分层】模型（model_detection.py:936-939 只有 2511 才是
+    //     Layered），必须用 EmptySD3LatentImage（16 通道单层）；若误用
+    //     EmptyQwenImageLayeredLatentImage（layers=3）会通道数不匹配 → 模型把多层当多张图
+    //     输出（13 张混乱图）。其余接线与 Flux 类似（ModelSamplingAuraFlow shift=1.73）。
+    api_json: {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "qwen_image_2512_fp8_e4m3fn.safetensors",
+                "weight_dtype": "default",
+            },
+        },
+        "2": {
+            "class_type": "ModelSamplingAuraFlow",
+            "inputs": {
+                "model": ["1", 0],
+                "shift": 1.73,
+            },
+        },
+        "3": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+                "type": "qwen_image",
+            },
+        },
+        "4": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "qwen_image_vae.safetensors",
+            },
+        },
+        "5": {
+            "class_type": "TextEncodeQwenImageEdit",
+            "inputs": {
+                "clip": ["3", 0],
+                "prompt": "a cute round cartoon bird, sticker style",
+            },
+        },
+        "6": {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {
+                "width": 768,
+                "height": 768,
+                "batch_size": 1,
+            },
+        },
+        "7": {
+            "class_type": "RandomNoise",
+            "inputs": {
+                "noise_seed": 12345,
+            },
+        },
+        "8": {
+            "class_type": "KSamplerSelect",
+            "inputs": {
+                "sampler_name": "euler",
+            },
+        },
+        "9": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": ["2", 0],
+                "scheduler": "simple",
+                "steps": 20,
+                "denoise": 1,
+            },
+        },
+        "10": {
+            "class_type": "BasicGuider",
+            "inputs": {
+                "model": ["2", 0],
+                "conditioning": ["5", 0],
+            },
+        },
+        "11": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["7", 0],
+                "guider": ["10", 0],
+                "sampler": ["8", 0],
+                "sigmas": ["9", 0],
+                "latent_image": ["6", 0],
+            },
+        },
+        "12": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["11", 0],
+                "vae": ["4", 0],
+            },
+        },
+        "13": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "images": ["12", 0],
+                "filename_prefix": "Qwen-Image-2512",
+            },
+        },
+    },
+    result: {
+        "type": "ui_save_batch",
+        "node": "13",
+    },
+    inputs: {
+        "5": {
+            "prompt": {
+                "from": "main_prompt",
+                "required": true,
+                "error": "Qwen 2512 T2I needs a prompt.",
+            },
+        },
+        "7": {
+            "noise_seed": {
+                "from": "option:seed",
+                "default": "random_int31",
+                "required": false,
+                "cast": "int",
+            },
+        },
+    },
+};
+
+export const IMAGE_QWEN_2512_MULTI_PANEL: StageWorkflowConfig = {
+    // ★ 本地 qwen-image-2512 多宫格漫画（单图直出 N 宫格，纯 prompt 驱动）。
+    //   Qwen-Image 经多图一致性训练，靠 prompt 描述宫格布局即可单张直出。
+    //   宫格数由 grid_count widget 动态注入（prefix 的 {{grid_count}} 占位符，
+    //   见 stageWorkflowExecutor.interpolateBindingTemplate）。分辨率用官方推荐
+    //   1328²（1:1），比默认 768² 高、单格细节更足。其余接线与 IMAGE_QWEN_2512_T2I
+    //   完全一致（qwen_image_2512 非分层模型 → EmptySD3LatentImage 16 通道单层）。
+    api_json: {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "qwen_image_2512_fp8_e4m3fn.safetensors",
+                "weight_dtype": "default",
+            },
+        },
+        "2": {
+            "class_type": "ModelSamplingAuraFlow",
+            "inputs": {
+                "model": ["1", 0],
+                "shift": 1.73,
+            },
+        },
+        "3": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+                "type": "qwen_image",
+            },
+        },
+        "4": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "qwen_image_vae.safetensors",
+            },
+        },
+        "5": {
+            "class_type": "TextEncodeQwenImageEdit",
+            "inputs": {
+                "clip": ["3", 0],
+                "prompt": "4宫格漫画，2×2排列，等宽白色边框，不要文字",
+            },
+        },
+        "6": {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {
+                "width": 1328,
+                "height": 1328,
+                "batch_size": 1,
+            },
+        },
+        "7": {
+            "class_type": "RandomNoise",
+            "inputs": {
+                "noise_seed": 12345,
+            },
+        },
+        "8": {
+            "class_type": "KSamplerSelect",
+            "inputs": {
+                "sampler_name": "euler",
+            },
+        },
+        "9": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": ["2", 0],
+                "scheduler": "simple",
+                "steps": 20,
+                "denoise": 1,
+            },
+        },
+        "10": {
+            "class_type": "BasicGuider",
+            "inputs": {
+                "model": ["2", 0],
+                "conditioning": ["5", 0],
+            },
+        },
+        "11": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["7", 0],
+                "guider": ["10", 0],
+                "sampler": ["8", 0],
+                "sigmas": ["9", 0],
+                "latent_image": ["6", 0],
+            },
+        },
+        "12": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["11", 0],
+                "vae": ["4", 0],
+            },
+        },
+        "13": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "images": ["12", 0],
+                "filename_prefix": "Qwen-Image-2512-multipanel",
+            },
+        },
+    },
+    result: {
+        "type": "ui_save_batch",
+        "node": "13",
+    },
+    inputs: {
+        "5": {
+            "prompt": {
+                "from": "main_prompt",
+                "required": true,
+                "prefix": "{{grid_count}}宫格漫画，等宽白色边框，不要文字。\n\n",
+                "default": "角色：年轻男性，黑色短发，圆脸，戴银色圆框眼镜，穿深蓝色夹克、白色T恤，暖色室内光。\n第1格：正面站立，微笑。\n第2格：侧面转头，惊讶。\n第3格：坐在地上，低头思考。\n第4格：背对镜头，看向窗外。",
+                "suffix": "\n\n一致性要求：所有宫格为同一角色、同一服装、同一光线，统一画面风格。",
+                "error": "Qwen 2512 多宫格 needs a prompt (role + per-panel content).",
+            },
+        },
+        "7": {
+            "noise_seed": {
+                "from": "option:seed",
+                "default": "random_int31",
+                "required": false,
+                "cast": "int",
+            },
+        },
+    },
+};
+
 export const IMAGE_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
     "Local SD1.5": IMAGE_LOCAL_SD1_5,
     "Local SD1.5 I2I": IMAGE_LOCAL_SD1_5_I2I,
     "Image Ideogram4 T2I": IMAGE_IMAGE_IDEOGRAM4_T2I,
     "Qwen Product Shot (Canny)": IMAGE_QWEN_PRODUCT_SHOT_CANNY,
+    "Qwen 2512 T2I": IMAGE_QWEN_2512_T2I,
+    "Qwen 2512 多宫格": IMAGE_QWEN_2512_MULTI_PANEL,
     "Pose Transfer (SD1.5 IPAdapter + OpenPose)": IMAGE_POSE_TRANSFER_SD1_5_IPADAPTER_OPENPOSE,
     "Flux2 Klein Relight": IMAGE_FLUX2_KLEIN_RELIGHT,
 };

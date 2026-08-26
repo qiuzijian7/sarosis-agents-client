@@ -2294,6 +2294,8 @@ self.onmessage = async function(e) {
 	/**
 	 * 持久化图谱到 {rootPath}/.codebase-memory/graph.db.zst（全量与增量共用）。
 	 * 多 folder：project 提供时仅保存该 folder 的子图，避免把其它 folder 的节点写进本 folder 的制品。
+	 * 注：自动保存/增量路径统一写 slim 档（剔除可重建的 bm25/layout），既能缩小制品体积，
+	 * 也避免下次启动 loadMerge 时对整段倒排索引做一次同步 JSON.parse 卡死 UI（bm25 在合并后统一 rebuildBM25）。
 	 */
 	private async _saveGraph(rootPath: string, project?: string): Promise<void> {
 		const graphDir = URI.joinPath(URI.file(rootPath), '.codebase-memory');
@@ -2303,7 +2305,7 @@ self.onmessage = async function(e) {
 			try {
 			const persistence = new GraphPersistence(this._fileService, this._logService);
 			let lastLoggedMB = 0;
-			await persistence.save(this._graph.store, artifactFile.fsPath, project, undefined, (writtenMB) => {
+			await persistence.save(this._graph.store, artifactFile.fsPath, project, { slim: true }, (writtenMB) => {
 				// 每 32MB 报一次保存进度（避免大图谱保存期间 UI 看似假死）
 				if (writtenMB - lastLoggedMB >= 32) {
 					lastLoggedMB = writtenMB;

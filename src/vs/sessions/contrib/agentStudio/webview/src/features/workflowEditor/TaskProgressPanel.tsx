@@ -84,12 +84,28 @@ export function TaskProgressPanel(): React.JSX.Element | null {
 	const tasks = useTasks();
 	const activeCount = useActiveTaskCount();
 	const [open, setOpen] = React.useState(false);
+	// 根容器同时包含悬浮按钮 + 展开列表，点击 rootRef 外即关闭（按钮本身在 rootRef 内，不受影响）
+	const rootRef = React.useRef<HTMLDivElement>(null);
+
+	// ★ 点击任务进度面板外部 → 自动关闭（对齐下拉菜单/浮层交互惯例）。
+	React.useEffect(() => {
+		if (!open) { return; }
+		const onPointerDown = (ev: PointerEvent) => {
+			const target = ev.target as Node | null;
+			if (target && rootRef.current?.contains(target)) { return; }
+			setOpen(false);
+		};
+		// ★ capture 阶段：画布/节点层的 pointerdown 会被 stopPropagation，bubble 阶段
+		//   收不到 → 点击画布空白/节点不关闭。capture 阶段先于 LiteGraph 触发，必能收到。
+		document.addEventListener('pointerdown', onPointerDown, true);
+		return () => document.removeEventListener('pointerdown', onPointerDown, true);
+	}, [open]);
 
 	// 无任何任务时隐藏整个面板（不打扰）。
 	if (tasks.length === 0) { return null; }
 
 	return (
-		<div style={{ position: 'relative', pointerEvents: 'auto' }}>
+		<div ref={rootRef} style={{ position: 'relative', pointerEvents: 'auto' }}>
 			{/* 悬浮按钮 */}
 			<button
 				type="button"

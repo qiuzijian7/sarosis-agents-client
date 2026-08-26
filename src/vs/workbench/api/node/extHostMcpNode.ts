@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
-import { readFile } from 'fs/promises';
+import { readdir, readFile } from 'fs/promises';
 import { homedir } from 'os';
 import type { RequestInit as UndiciRequestInit } from 'undici';
 import { parseEnvFile } from '../../../base/common/envfile.js';
@@ -190,6 +190,35 @@ class McpHTTPHandleNode extends McpHTTPHandle {
 const windowsShellScriptRe = /\.(bat|cmd)$/i;
 
 /**
+ * 枚举 Windows 下 pip 安装 CLI 的常见 Scripts 目录（用户 site-packages）。
+ * pip 装到用户级时，`comfy-mcp.exe` / `comfy.exe` 等 console script 落在
+ * `%APPDATA%\Python\Python<ver>\Scripts`（或 Windows Store Python 的
+ * `%LOCALAPPDATA%\Programs\Python\Python<ver>\Scripts`），这些目录通常不在 PATH
+ * → 裸命令 spawn 会 ENOENT。此处枚举出来供 findExecutable 兜底搜索。
+ */
+async function findPythonScriptsDirs(): Promise<string[]> {
+	const home = homedir();
+	const roots = [
+		path.join(home, 'AppData', 'Roaming', 'Python'),
+		path.join(home, 'AppData', 'Local', 'Programs', 'Python'),
+	];
+	const dirs: string[] = [];
+	for (const root of roots) {
+		try {
+			const entries = await readdir(root, { withFileTypes: true });
+			for (const entry of entries) {
+				if (entry.isDirectory() && entry.name.toLowerCase().startsWith('python')) {
+					dirs.push(path.join(root, entry.name, 'Scripts'));
+				}
+			}
+		} catch {
+			// 目录不存在或不可读，跳过。
+		}
+	}
+	return dirs;
+}
+
+/**
  * Formats arguments to avoid issues on Windows for CVE-2024-27980.
  */
 export const formatSubprocessArguments = async (
@@ -202,7 +231,18 @@ export const formatSubprocessArguments = async (
 		return { executable, args, shell: false };
 	}
 
-	const found = await findExecutable(executable, cwd, undefined, env);
+	let found = await findExecutable(executable, cwd, undefined, env);
+
+	// ★ 根因修复：Windows 下 pip 安装的 CLI（如 comfy-mcp / comfy）位于 Python
+	// Scripts 目录（用户 site-packages，不在 PATH）→ findExecutable 找不到 → 裸命令
+	// spawn ENOENT。兜底搜 Python Scripts 目录，把裸命令解析成绝对路径。
+	if (!found && !path.isAbsolute(executable) && path.dirname(executable) === '.') {
+		const pyScriptDirs = await findPythonScriptsDirs();
+		if (pyScriptDirs.length > 0) {
+			found = await findExecutable(executable, cwd, pyScriptDirs, env);
+		}
+	}
+
 	if (found && windowsShellScriptRe.test(found)) {
 		const quote = (s: string) => s.includes(' ') ? `"${s}"` : s;
 		return {
@@ -212,5 +252,6 @@ export const formatSubprocessArguments = async (
 		};
 	}
 
-	return { executable, args, shell: false };
+	// 优先用解析出的绝对路径（若找到）；否则回退原命令名（保持旧行为）。
+	return { executable: found ?? executable, args, shell: false };
 };

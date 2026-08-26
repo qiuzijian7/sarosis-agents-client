@@ -8,7 +8,7 @@
  *  coordinates) rendered on a 2D canvas in the webview.
  *--------------------------------------------------------------------------------------------*/
 
-export type LayerOpType = 'stroke' | 'rect' | 'circle' | 'text' | 'eraser';
+export type LayerOpType = 'stroke' | 'rect' | 'circle' | 'text' | 'eraser' | 'image';
 
 export interface LayerOp {
 	type: LayerOpType;
@@ -24,6 +24,8 @@ export interface LayerOp {
 	/** text */
 	text?: string;
 	fontSize?: number;
+	/** image 图层：参考图 / 贴图（normalized box 内绘制） */
+	imageUrl?: string;
 }
 
 export interface LayerInfo {
@@ -38,6 +40,9 @@ export interface LayerDoc {
 	width: number;
 	height: number;
 	layers: LayerInfo[];
+	/** 画布级镜像（DirectorConsoleEditor flipBoard / LayerEditorController.flipImage） */
+	flipH?: boolean;
+	flipV?: boolean;
 }
 
 let layerSeq = 0;
@@ -70,7 +75,13 @@ export function parseLayerDoc(value: unknown, width = 1024, height = 1024): Laye
 				opacity: Math.max(0, Math.min(1, Number(l.opacity) || 1)),
 				ops: Array.isArray(l.ops) ? l.ops.filter(op => op && typeof op.type === 'string') : [],
 			}));
-		return { width: Number(data.width) || width, height: Number(data.height) || height, layers: layers.length ? layers : defaultLayerDoc(width, height).layers };
+		return {
+			width: Number(data.width) || width,
+			height: Number(data.height) || height,
+			...(data.flipH !== undefined ? { flipH: data.flipH === true } : {}),
+			...(data.flipV !== undefined ? { flipV: data.flipV === true } : {}),
+			layers: layers.length ? layers : defaultLayerDoc(width, height).layers,
+		};
 	} catch {
 		return defaultLayerDoc(width, height);
 	}
@@ -80,6 +91,8 @@ export function layerDocToJson(doc: LayerDoc): string {
 	return JSON.stringify({
 		width: doc.width,
 		height: doc.height,
+		...(doc.flipH !== undefined ? { flipH: doc.flipH } : {}),
+		...(doc.flipV !== undefined ? { flipV: doc.flipV } : {}),
 		layers: doc.layers.map(l => ({
 			id: l.id,
 			name: l.name,
@@ -123,6 +136,10 @@ export interface LayerCtxLike {
 	fill?: () => void;
 	save?: () => void;
 	restore?: () => void;
+	translate?: (x: number, y: number) => void;
+	scale?: (x: number, y: number) => void;
+	/** image 图层：drawImage(htmlImage, dx, dy, dw, dh) */
+	drawImage?: (img: CanvasImageSource, dx: number, dy: number, dw: number, dh: number) => void;
 }
 
 function px(p: [number, number], W: number, H: number): [number, number] {
@@ -131,6 +148,16 @@ function px(p: [number, number], W: number, H: number): [number, number] {
 
 /** Composite every visible layer onto the context (normalized → pixels). Pure. */
 export function drawLayerDoc(ctx: LayerCtxLike, doc: LayerDoc): void {
+	// 画布级镜像：flipH 沿中轴左右翻转，flipV 沿中轴上下翻转
+	ctx.save?.();
+	if (doc.flipH) {
+		ctx.translate?.(doc.width, 0);
+		ctx.scale?.(-1, 1);
+	}
+	if (doc.flipV) {
+		ctx.translate?.(0, doc.height);
+		ctx.scale?.(1, -1);
+	}
 	for (const layer of doc.layers) {
 		if (!layer.visible) { continue; }
 		ctx.save?.();
@@ -168,9 +195,41 @@ export function drawLayerDoc(ctx: LayerCtxLike, doc: LayerDoc): void {
 				ctx.fillStyle = op.color;
 				ctx.textBaseline = 'top';
 				ctx.fillText?.(op.text ?? '', (op.x ?? 0) * doc.width, (op.y ?? 0) * doc.height);
+			} else if (op.type === 'image') {
+				// image 图层：需要真实 <img> 已加载（LayerEditor 侧缓存 imageEls map）
+				const img = imageElsCache.get(op.imageUrl ?? '');
+				if (img && ctx.drawImage) {
+					const x = (op.x ?? 0) * doc.width; const y = (op.y ?? 0) * doc.height;
+					const w = (op.w ?? 1) * doc.width; const h = (op.h ?? 1) * doc.height;
+					ctx.drawImage(img, x, y, w, h);
+				}
 			}
 			ctx.restore?.();
 		}
 		ctx.restore?.();
 	}
+	ctx.restore?.();
+}
+
+/** image 图层 `<img>` 元素缓存（url → HTMLImageElement）。LayerEditor 组件负责
+ * addImageFromUrl 时预加载 + 缓存；drawLayerDoc 据此取 img。 */
+const imageElsCache = new Map<string, HTMLImageElement>();
+
+/** 预加载 image 图层 URL（addImageFromUrl 时调用），加载完成后触发重绘。 */
+export function preloadLayerImage(url: string): Promise<HTMLImageElement> {
+	const existing = imageElsCache.get(url);
+	if (existing) { return Promise.resolve(existing);
+	}
+	return new Promise((resolve, reject) => {
+		const img = new Image();
+		img.crossOrigin = 'anonymous';
+		img.onload = () => { imageElsCache.set(url, img); resolve(img); };
+		img.onerror = () => reject(new Error(`图片加载失败: ${url.slice(0, 64)}`));
+		img.src = url;
+	});
+}
+
+/** 构造 image 图层 op（占满整幅画布，归一化 box 0,0,1,1）。 */
+export function makeImageOp(url: string): LayerOp {
+	return { type: 'image', color: '#ffffff', size: 0, imageUrl: url, x: 0, y: 0, w: 1, h: 1 };
 }

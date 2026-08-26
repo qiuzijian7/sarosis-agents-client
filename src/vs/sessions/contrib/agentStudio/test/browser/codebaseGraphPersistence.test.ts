@@ -212,4 +212,49 @@ suite('GraphPersistence slim artifact → BM25 auto-rebuild on load', () => {
 	});
 });
 
+suite('GraphPersistence streaming loader (special chars inside strings)', () => {
+
+	test('streaming parse preserves braces/commas/quotes/backslashes inside node fields', async () => {
+		const fs = new MemFS();
+		const artifact = {
+			nodes: [{
+				id: 1, project: 'x', label: 'Function',
+				// name 含反斜杠：扫描器须正确保留（路径归一化只作用于 filePath/qualifiedName，不动 name）
+				name: 'a}b]c,d"e\\f', qualifiedName: 'a}b]c,d"e',
+				filePath: 'src/a{b}c.ts', inDegree: 0, outDegree: 0,
+				symbols: [{ name: 'sym"1', kind: 'fn' }],
+			}],
+			edges: [{ id: 1, project: 'x', sourceId: 1, targetId: 1, type: 'CALLS' }],
+			fileHashes: [{ relPath: 'src/a{b}c.ts', hash: 'h', mtime: 1 }],
+			bm25: null, layout: [], nextNodeId: 2, nextEdgeId: 2,
+		};
+		fs.set(TARGET, await gzipText(JSON.stringify(artifact)));
+		const p = new GraphPersistence(fs as any, makeLog().log as any);
+		const store = new CodebaseGraphStore();
+		const ok = await p.load(store, TARGET);
+		assert.strictEqual(ok, true, 'artifact with special chars in strings must load');
+		const node = store.getNode(1);
+		assert.ok(node, 'node 1 should be loaded');
+		// name 含 { } , [ ] " 与反斜杠，扫描器须原样保留
+		assert.strictEqual(node!.name, 'a}b]c,d"e\\f');
+		assert.strictEqual(node!.qualifiedName, 'a}b]c,d"e');
+		assert.strictEqual(node!.filePath, 'src/a{b}c.ts');
+		assert.strictEqual(store.getEdgeCount(), 1);
+	});
+
+	test('streaming parse handles many nodes without blocking (round-trip count)', async () => {
+		const fs = new MemFS();
+		const nodes: any[] = [];
+		for (let i = 1; i <= 5000; i++) {
+			nodes.push({ id: i, project: 'x', label: 'Function', name: `fn${i}`, qualifiedName: `fn${i}`, inDegree: 0, outDegree: 0 });
+		}
+		fs.set(TARGET, await gzipText(JSON.stringify({ nodes, edges: [], fileHashes: [], bm25: null, layout: [], nextNodeId: 5001, nextEdgeId: 1 })));
+		const p = new GraphPersistence(fs as any, makeLog().log as any);
+		const store = new CodebaseGraphStore();
+		const ok = await p.load(store, TARGET);
+		assert.strictEqual(ok, true);
+		assert.strictEqual(store.getNodeCount(), 5000, 'all 5000 nodes should stream-parse');
+	});
+});
+
 export {};

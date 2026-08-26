@@ -7,12 +7,13 @@
 
 import React from 'react';
 import {
-	mediaList, mediaGetUrl, mediaImport, mediaRemove, mediaRestore, mediaSetFavorite, mediaSetBoard,
-	mediaStats, mediaPurgeDeleted, mediaEnforceQuota, type MediaStats,
+	mediaList, mediaGetAsDataUrl, mediaImport, mediaRemove, mediaRestore, mediaSetFavorite, mediaSetBoard,
+	mediaStats, mediaPurgeDeleted, mediaCleanOrphaned, mediaEnforceQuota, mediaGetRootDir, mediaSetRootDir, type MediaStats,
 	type MediaAsset,
 } from './mediaAssets';
 import { formatBytes, assetFileName } from './mediaGalleryUtils';
 import { ASSET_DRAG_MIME } from './comfyHost/actionSpawn';
+import { pickFolderDialog } from '../../bridge/messageClient';
 
 function readFileAsBase64(file: File): Promise<string> {
 	return new Promise((resolve, reject) => {
@@ -69,7 +70,10 @@ export function MediaGallery({ workflowId, onClose }: { workflowId: string; onCl
 	// 破坏性操作两段确认 + 提示（沙箱 webview 的 alert/confirm 可能被拦截）
 	const [confirmPurge, setConfirmPurge] = React.useState(false);
 	const [confirmCleanup, setConfirmCleanup] = React.useState(false);
+	const [confirmCleanOrphan, setConfirmCleanOrphan] = React.useState(false);
 	const [notice, setNotice] = React.useState('');
+	// 媒体库存储路径（仅显示；修改走系统文件夹选择器，不允许手敲）
+	const [rootDir, setRootDir] = React.useState('');
 	const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
 	const load = React.useCallback(async () => {
@@ -182,6 +186,51 @@ export function MediaGallery({ workflowId, onClose }: { workflowId: string; onCl
 		}
 	};
 
+	const runCleanOrphan = async () => {
+		if (!confirmCleanOrphan) { setConfirmCleanOrphan(true); setTimeout(() => setConfirmCleanOrphan(false), 2500); return; }
+		setConfirmCleanOrphan(false);
+		setLoading(true);
+		try {
+			const r = await mediaCleanOrphaned();
+			await load();
+			await refreshStats();
+			setNotice(`已清理 ${r.count} 项不可用资产（磁盘文件缺失），释放 ${formatBytes(r.freedBytes)}`);
+		} catch {
+			setNotice('清理不可用失败');
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	React.useEffect(() => {
+		mediaGetRootDir().then(d => setRootDir(d)).catch(() => {});
+	}, []);
+
+	const saveRootDir = async (path: string) => {
+		if (!path) { setNotice('路径不能为空'); return; }
+		setLoading(true);
+		try {
+			const r = await mediaSetRootDir(path);
+			setRootDir(r.rootDir);
+			setNotice(`媒体库路径已改为 ${r.rootDir}`);
+			await load();
+			await refreshStats();
+		} catch (e) {
+			setNotice(`修改失败：${(e as Error).message}`);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	// ★ 弹系统文件夹选择器（vscode.window.showOpenDialog）→ 选中后写入 mediaSetRootDir。
+	// 不允许手敲路径：避免拼写错误、跨盘符引用、越权访问；并阻止在 webview 文本框里
+	// 输入任意绝对路径绕过沙箱审查。
+	const pickAndSetRootDir = async () => {
+		const picked = await pickFolderDialog({ title: '选择媒体库存储目录', openLabel: '选择此目录' });
+		if (!picked) { return; }
+		await saveRootDir(picked);
+	};
+
 	// 懒解析本地镜像的 webview URL（http/data URL 直接可用）
 	React.useEffect(() => {
 		let cancelled = false;
@@ -192,7 +241,7 @@ export function MediaGallery({ workflowId, onClose }: { workflowId: string; onCl
 				if (/^(https?|data):/i.test(a.ref)) { pending.push([a, a.ref]); continue; }
 				if (a.filePath) {
 					try {
-						const u = await mediaGetUrl(a.id);
+						const u = await mediaGetAsDataUrl(a.id);
 						pending.push([a, u]);
 					} catch {
 						pending.push([a, null]);
@@ -278,6 +327,9 @@ export function MediaGallery({ workflowId, onClose }: { workflowId: string; onCl
 					<button onClick={runCleanup} title="删除超过 90 天且未收藏/未分组的资产（进回收站可恢复）" style={{ ...inputStyle, cursor: 'pointer', fontSize: 11 }}>
 						{confirmCleanup ? '确认清理？' : '🧹 清理'}
 					</button>
+					<button onClick={runCleanOrphan} title="清理「不可用」项：硬删 DB 有 file_path 但磁盘文件已缺失的行（app 重装/rootDir 变化残留）" style={{ ...inputStyle, cursor: 'pointer', fontSize: 11 }}>
+						{confirmCleanOrphan ? '再次点击确认' : '🧽 清理不可用'}
+					</button>
 					{showDeleted && (
 						<button onClick={purgeAll} title="物理删除回收站资产（不可恢复）" style={{ ...inputStyle, cursor: 'pointer', fontSize: 11, color: '#ff5b5b' }}>
 							{confirmPurge ? '再次点击确认' : '🗑 永久删除'}
@@ -286,6 +338,11 @@ export function MediaGallery({ workflowId, onClose }: { workflowId: string; onCl
 					<button onClick={() => fileInputRef.current?.click()} title="导入本地图片/视频/音频到媒体库" style={{ ...inputStyle, cursor: 'pointer', fontSize: 11 }}>
 						⬆ 导入文件
 					</button>
+					<span style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)', display: 'flex', alignItems: 'center', gap: 4 }}>
+						<span>📁 路径</span>
+												<span style={{ fontFamily: 'monospace', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rootDir || '点击右侧按钮选择目录'}>{rootDir || '（加载中…）'}</span>
+												<button onClick={() => void pickAndSetRootDir()} title="选择媒体库存储目录（弹系统文件夹选择器，不允许手敲路径）" style={{ ...inputStyle, cursor: 'pointer', fontSize: 11 }}>📂 选择…</button>
+											</span>
 					<input
 						ref={fileInputRef}
 						type="file"
@@ -338,7 +395,24 @@ export function MediaGallery({ workflowId, onClose }: { workflowId: string; onCl
 										}}>
 										<div style={{ position: 'relative', width: THUMB, height: THUMB, borderRadius: 4, overflow: 'hidden', background: 'rgba(255,255,255,.04)' }}>
 											{url ? (
-												<img src={url} alt={assetFileName(a)} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+												a.kind === 'video' ? (
+													// ★ 视频缩略图：<img> 对视频 URL 不会解码（显示破损图标）。
+													// 用 <video preload="metadata" muted playsInline> 让浏览器解码首帧；
+													// onLoadedMetadata 后 currentTime=0.1 强制 seek 到非黑帧（部分视频首帧是黑帧）。
+													<video
+														src={url}
+														muted
+														playsInline
+														preload="metadata"
+														onLoadedMetadata={(e) => { try { e.currentTarget.currentTime = 0.1; } catch { /* 某些 codec 不支持 seek，no-op */ } }}
+														style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', background: '#000' }}
+													/>
+												) : a.kind === 'audio' ? (
+													// ★ 音频无视觉缩略图，显示图标占位（保持网格视觉一致）
+													<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', fontSize: 32, color: 'var(--vscode-descriptionForeground)' }}>🎵</div>
+												) : (
+													<img src={url} alt={assetFileName(a)} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+												)
 											) : (
 												<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', fontSize: 10, color: 'var(--vscode-descriptionForeground)' }}>不可用</div>
 											)}

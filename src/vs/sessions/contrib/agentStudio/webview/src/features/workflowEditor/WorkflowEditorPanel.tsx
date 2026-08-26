@@ -34,7 +34,7 @@ import { spawnPickerForStage, spawnFollowUp } from './comfyHost/actionSpawn';
 import { isComfyExecutableSpec, isExecutableSpec, isPickerNode, runGraphExecution, runNodeOrStage, resolveFirstImageGenDefaults, defaultResolveLoadImageRef, type AskUserSendFn, type AskUserPayload } from './comfyHost/workflowRun';
 import { buildExecutionPlan } from './comfyHost/executionGraph';
 import { exportCanvasToWorkflowScript } from './comfyHost/canvasExport';
-import { registerStageRunner, unregisterStageRunner, materializeSnapshotEntry } from './comfyHost/workflowSnapshotBridgeWebview';
+import { registerStageRunner, unregisterStageRunner, registerDirectStageRunner, unregisterDirectStageRunner, materializeSnapshotEntry, type DirectStageRunResult } from './comfyHost/workflowSnapshotBridgeWebview';
 import { applyCanvasOps, type CanvasModel, type CanvasNode, type CanvasEdge, type CanvasOp } from './comfyHost/canvasOps';
 import { buildGenerateFlow } from './comfyHost/generateFlow';
 import { computeDagLayout } from './comfyHost/dagLayout';
@@ -64,6 +64,23 @@ const ORCHESTRATION_NODE_TYPES = new Set<string>([
 	'Saros.Skill', 'Saros.Tool', 'Saros.IfElse', 'Saros.Switch', 'Saros.AskUser',
 	'Saros.Group', 'Saros.Subflow',
 ]);
+
+/**
+ * 模块级节点运行 AbortController 映射。
+ *
+ * runSingleSchemaNode 启动时存入（nodeId → controller），完成/失败/取消时清除。
+ * nodeCard 的「取消」按钮 dispatch `wf-node-abort` 事件 → LiteGraphCanvas 调用
+ * abortNodeRun(nodeId) → controller.abort() → ComfyUI 轮询检测 signal.aborted 停止。
+ */
+const _nodeAbortMap = new Map<string, AbortController>();
+/** 中止指定节点的当前运行（由 LiteGraphCanvas 的 wf-node-abort 监听器调用）。 */
+export function abortNodeRun(nodeId: string): boolean {
+	const ctrl = _nodeAbortMap.get(nodeId);
+	if (!ctrl) { return false; }
+	ctrl.abort();
+	_nodeAbortMap.delete(nodeId);
+	return true;
+}
 
 export const WorkflowEditorPanel: React.FC = () => {
 	// right-click "Add Node" menu (ComfyUI-style) — replaces the left Nodes panel
@@ -97,10 +114,31 @@ export const WorkflowEditorPanel: React.FC = () => {
 	// Canvas engine: LiteGraph (ComfyUI 底层框架) — ReactFlow 已移除，唯一引擎
 	const [showRunners, setShowRunners] = useState(false);
 	const [showMediaLibrary, setShowMediaLibrary] = useState(false);
+	// 点击 Runner 面板外部 → 自动关闭（面板容器 + 开关按钮两个 ref，点击开关按钮本身不触发关闭）
+	const runnerPanelRef = useRef<HTMLDivElement>(null);
+	const runnerBtnRef = useRef<HTMLButtonElement>(null);
 	const comfyRegistryRef = useRef<InstanceType<typeof ComfyRunnerRegistry> | null>(null);
 	if (!comfyRegistryRef.current) {
 		comfyRegistryRef.current = new ComfyRunnerRegistry();
 	}
+	// ★ 点击 ComfyUI Runners 面板外部 → 自动关闭（对齐下拉菜单/浮层交互惯例）。
+	// 用 pointerdown（比 click 更早触发，也覆盖触屏）；面板内或开关按钮内点击不关闭。
+	React.useEffect(() => {
+		if (!showRunners) { return; }
+		const onPointerDown = (ev: PointerEvent) => {
+			const target = ev.target as Node | null;
+			if (!target) { return; }
+			if (runnerPanelRef.current?.contains(target)) { return; }
+			if (runnerBtnRef.current?.contains(target)) { return; }
+			setShowRunners(false);
+		};
+		// ★ capture 阶段：LiteGraph 画布/节点 DOM 层的 pointerdown 会被
+		//   stopPropagation（dragPointerDown 平移/中点菜单分支），bubble 阶段
+		//   监听收不到 → 点击画布空白/节点 UI 不关闭。capture 阶段在事件到达
+		//   LiteGraph 之前先触发，必定能收到。
+		document.addEventListener('pointerdown', onPointerDown, true);
+		return () => document.removeEventListener('pointerdown', onPointerDown, true);
+	}, [showRunners]);
 	// 节点编辑器浮层：双击画布节点 → 打开（输入提示词 → 生成出图）
 	// snapshotKey = stageUid（快照归档键）；upstreams 也是归档键（弹窗只用它们
 	// 做 store.byNode 查询），二者都由画布层的 stageUidOf 解析。
@@ -605,6 +643,9 @@ export const WorkflowEditorPanel: React.FC = () => {
 		// cardState 保持 'idle' → 按钮一直「生成批图」、OUTPUT 永不显示（因为
 		// showOutput=runState==='success'）、用户感觉「点了没反应」。先设 running 兜底。
 		canvas.cardStateStore().set(nodeId, { runState: 'running', progress: 0 });
+		// ★ 创建 AbortController：支持 nodeCard「取消」按钮中止运行
+		const abortCtrl = new AbortController();
+		_nodeAbortMap.set(nodeId, abortCtrl);
 		// eslint-disable-next-line no-console
 		console.warn('[runSingleSchemaNode] invoking runNodeOrStage ' + JSON.stringify({ nodeId, nodeType, specKind: spec?.kind, backendKind: spec?.backendKind }));
 		const r = await runNodeOrStage({
@@ -619,6 +660,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 			values,
 			upstreams,
 			store,
+			signal: abortCtrl.signal,
 			onProgress: (p) => {
 				const prog = p.progress ?? p.value ?? 50;
 				canvas.cardStateStore().set(nodeId, { runState: 'running', progress: prog });
@@ -626,7 +668,11 @@ export const WorkflowEditorPanel: React.FC = () => {
 				// ★ stage() 桥进度回推：ComfyUI 生成进度 → host 聊天工具卡。
 				onProgress?.(prog, `生成中 ${prog}%`);
 			},
+			// ★ 单节点执行也需注入 imagegen RPC 通道（ModelImageGen 等 provider 后端节点依赖）。
+			sendImageGen: (payload) => sendRequest('imagegen.generate', payload, 180_000),
 		});
+		// ★ 运行结束（成功/失败/取消）→ 清理 abort 控制器
+		_nodeAbortMap.delete(nodeId);
 		if (r.status === 'success') {
 				setComfyRunState('done');
 				setComfyRunMsg('节点执行完成');
@@ -712,6 +758,83 @@ export const WorkflowEditorPanel: React.FC = () => {
 		registerStageRunner(key, runStageForScript);
 		return () => unregisterStageRunner(key);
 	}, [workflowId, runStageForScript]);
+
+	// ── Direct stage run 桥（存储工作流 ComfyStage → 画布，按 stageClass + values 直跑）──
+	// 存储工作流 DAG（browser 侧）的 ComfyStage 节点没有画布 stageUid，只有 stageClass
+	// （如 `ComfyTV.EmojiStage`）。此 runner 按 stageClass 直接调 runNodeOrStage（与
+	// runSingleSchemaNode 同一执行器），把 m×n 表情包等媒体节点真正跑起来，并回传
+	// outputs + snapshot 媒体引用给 browser → 聊天卡渲染。
+	const runStageByClass = useCallback(async (
+		stageClass: string,
+		values: Record<string, unknown>,
+		images: string[] | undefined,
+		onProgress: (progress: number, message?: string) => void,
+	): Promise<DirectStageRunResult> => {
+		const canvas = liteGraphRef.current;
+		if (!canvas) { throw new Error('画布未就绪：ComfyStage 无法执行'); }
+		const store = canvas.snapshotStore();
+		if (!store) { throw new Error('ComfyStage：快照库不可用'); }
+		const spec = getNodeSpec(stageClass);
+		const isProviderNode = spec?.backendKind === 'provider' || spec?.kind === 'llm';
+		const runner = isProviderNode ? undefined : comfyRegistryRef.current?.resolve(runnerPreference);
+		if (!isProviderNode && !runner) {
+			throw new Error('未连接可用的 ComfyUI Runner（请先启动 ComfyUI）');
+		}
+		if (runner) {
+			const probe = await runner.testConnection();
+			if (!probe.ok) {
+				getRunnerStatusStore().setReady(false);
+				throw new Error(`无法连接 ComfyUI 引擎（${probe.error ?? '连接失败'}）`);
+			}
+			getRunnerStatusStore().setReady(true, runner.baseUrl);
+		}
+		const nodeId = `direct-${stageClass}-${Date.now().toString(36)}`;
+		// 参考图：images[0] 注入 `image` 端口（EmojiStage 参考图绑定消费）。
+		const mergedValues: Record<string, unknown> = { ...values };
+		if (images && images.length > 0 && !mergedValues['image']) {
+			mergedValues['image'] = images[0];
+		}
+		const r = await runNodeOrStage({
+			runner: runner as unknown as Parameters<typeof runNodeOrStage>[0]['runner'],
+			nodeId,
+			snapshotKey: nodeId,
+			type: stageClass,
+			getSpec: (t) => getNodeSpec(t),
+			values: mergedValues,
+			upstreams: [],
+			store,
+			onProgress: (p) => {
+				const prog = p.progress ?? p.value ?? 50;
+				onProgress(prog, `生成中 ${prog}%`);
+			},
+		});
+		if (r.status !== 'success') {
+			return { status: 'error', error: r.error ?? 'stage 执行失败', outputs: {} };
+		}
+		const entries = store.byNode(nodeId);
+		const snapshot: DirectStageRunResult['snapshot'] = entries.map((e) => ({
+			port: e.port,
+			kind: e.media.kind,
+			ref: e.media.ref,
+			...(e.media.meta ? { meta: e.media.meta } : {}),
+		}));
+		const outputs: Record<string, unknown> = {
+			images: entries.filter(e => e.media.kind === 'image').map(e => e.media.ref),
+			videos: entries.filter(e => e.media.kind === 'video').map(e => e.media.ref),
+		};
+		return {
+			status: 'success',
+			outputs,
+			snapshot,
+			summary: `已完成 ${entries.length} 个输出`,
+		};
+	}, [runnerPreference]);
+
+	useEffect(() => {
+		const key = workflowId ?? 'default';
+		registerDirectStageRunner(key, runStageByClass);
+		return () => unregisterDirectStageRunner(key);
+	}, [workflowId, runStageByClass]);
 
 	// Latest handleExecute — the canvas-ops listener (stable effect) calls this
 	// when canvas_generate is issued with run:true (P0 closure).
@@ -1015,6 +1138,34 @@ const handleExecute = useCallback(async () => {
 				resolveImageGenDefaults: async () =>
 					resolveFirstImageGenDefaults(useProviderStore.getState().providers),
 				resolveLoadImageRef: defaultResolveLoadImageRef(runner, comfyFetchRef.current as never),
+				// Vox 口播视频导演节点：vox.run 启动 + vox.getProgress 轮询 + vox.cancel。
+				runVoxPipeline: async ({ projectId, beats, onStage, signal }) => {
+					const start = await sendRequest('vox.run', { projectId, beats }, 30_000) as { ok: boolean; projectId?: string; error?: string };
+					if (!start.ok) { return { ok: false, error: start.error ?? 'vox.run 启动失败' }; }
+					const pollStart = Date.now();
+					for (;;) {
+						if (signal?.aborted) {
+							await sendRequest('vox.cancel', { projectId }, 5000);
+							return { ok: false, error: '已取消' };
+						}
+						const p = await sendRequest('vox.getProgress', { projectId }, 10_000) as {
+							ok: boolean;
+							state?: { status: string; stage: string; progress: number; finalMp4Path?: string; finalMp4Url?: string; error?: string };
+						};
+						const s = p.state;
+						if (s) {
+							onStage?.(s.stage, s.progress);
+							if (s.status === 'success') { return { ok: true, finalMp4Path: s.finalMp4Path, finalMp4Url: s.finalMp4Url }; }
+							if (s.status === 'error') { return { ok: false, error: s.error ?? 'vox pipeline 失败' }; }
+							if (s.status === 'canceled') { return { ok: false, error: '已取消' }; }
+						}
+						if (Date.now() - pollStart > 600_000) {
+							await sendRequest('vox.cancel', { projectId }, 5000);
+							return { ok: false, error: 'vox pipeline 超时（10 分钟）' };
+						}
+						await new Promise(r => setTimeout(r, 1500));
+					}
+				},
 				fetchImpl: comfyFetchRef.current as never,
 				mode: comfyRunParallel ? 'parallel' : 'serial',
 				parallelConcurrency: 4,
@@ -1496,35 +1647,13 @@ const handleExecute = useCallback(async () => {
 							)}
 						</div>
 
-						{/* 画布 ▾（原彩色描边按钮并入） */}
-						<div className="wft-dd">
-							<button className="wft-btn" title="画布整理操作" onClick={() => setOpenMenu(m => m === 'canvas' ? null : 'canvas')}>
-								⊞ 画布 <span className="caret">▾</span>
-							</button>
-							{openMenu === 'canvas' && (
-								<div className="wft-menu">
-									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleAutoLayout(); }} disabled={comfyRunState === 'running'}>
-										<span className="mi-icon">⊞</span><span className="mi-label">自动布局<span className="mi-hint">按依赖分层排列（可撤销）</span></span>
-									</button>
-									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleWrapSubflow(); }} disabled={comfyRunState === 'running'}>
-										<span className="mi-icon">⧉</span><span className="mi-label">封装为 Subflow<span className="mi-hint">选中 ≥2 节点组合为可复用子图</span></span>
-									</button>
-									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleWrapLoop('Saros.Loop'); }} disabled={comfyRunState === 'running'}>
-										<span className="mi-icon">🔁</span><span className="mi-label">封装为 Loop 循环<span className="mi-hint">选中节点逐项迭代执行</span></span>
-									</button>
-									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleWrapLoop('Saros.Parallel'); }} disabled={comfyRunState === 'running'}>
-										<span className="mi-icon">⚡</span><span className="mi-label">封装为 Parallel 并发<span className="mi-hint">选中节点并发执行（可调并发度）</span></span>
-									</button>
-									<div className="wft-mi-sep" />
-									<button className="wft-mi" onClick={() => { setOpenMenu(null); liteGraphRef.current?.alignSelected(); }}>
-										<span className="mi-icon">↗</span><span className="mi-label">对齐选中节点</span>
-									</button>
-									<button className="wft-mi" onClick={() => { setOpenMenu(null); liteGraphRef.current?.resetView(); }}>
-										<span className="mi-icon">⊙</span><span className="mi-label">重置视图</span>
-									</button>
-								</div>
-							)}
-						</div>
+						{/* 媒体库（原「⊞ 画布 ▾」位置：移除画布整理下拉，直接接入媒体库，是工具栏唯一入口）。
+						    注：原下拉里的「对齐选中节点」「重置视图」已在右键菜单里有等价入口
+						    （menuItems.ts: align / resetView）；「自动布局」「封装 Subflow/Loop/Parallel」
+						    仅此一处入口，本改动会一并丢失，后续需要时请找回。 */}
+						<button className="wft-btn" title="媒体库（生成图片资产管理）" onClick={() => setShowMediaLibrary(true)}>
+							🖼 媒体库
+						</button>
 
 						{/* 发布 ▾（原顶栏：上传/升级/版本历史/删除） */}
 						<div className="wft-dd">
@@ -1587,8 +1716,7 @@ const handleExecute = useCallback(async () => {
 							<span className="tk" />并行
 						</span>
 						<span className="wft-divider" />
-						<button className={'wft-btn icon' + (showRunners ? ' panel-on' : '')} title="ComfyUI Runner 管理" onClick={() => setShowRunners(v => !v)}>🖥</button>
-						<button className="wft-btn icon" title="媒体库（生成图片资产管理）" onClick={() => setShowMediaLibrary(true)}>🖼</button>
+						<button ref={runnerBtnRef} className={'wft-btn icon' + (showRunners ? ' panel-on' : '')} title="ComfyUI Runner 管理" onClick={() => setShowRunners(v => !v)}>🖥</button>
 						<button className="wft-btn icon" title="插件管理（URL 安装 / 卸载 / 重载）" onClick={() => setShowPluginManager(true)}>🧩</button>
 					</div>
 					</div>{/* /wft-row 行2 */}
@@ -2092,7 +2220,7 @@ const handleExecute = useCallback(async () => {
 
 				{/* Comfy Runner 管理面板浮层 */}
 				{showRunners && comfyRegistryRef.current && (
-					<div style={{
+					<div ref={runnerPanelRef} style={{
 						position: 'absolute',
 						top: 40,
 						right: 12,

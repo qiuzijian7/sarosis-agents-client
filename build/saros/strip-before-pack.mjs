@@ -262,6 +262,28 @@ ensureFile(
 	['build/saros/bin/sqlite/better_sqlite3.node'],
 );
 
+// === 5.5 ffmpeg/ffprobe（vox 口播视频节点可选依赖）===
+// 内置到 resources/saros/bin/，让安装包「默认自带 ffmpeg」。缺失仅警告（不阻断
+// 核心出包，vox 功能会回退提示用户），与 rg.exe 等核心构件区分。
+console.log('\n🎬 [可选依赖] ffmpeg/ffprobe（vox 口播视频）:');
+function ensureOptionalBin(label, stagingRel, repoRel) {
+	const stagingAbs = path.join(buildDir, stagingRel);
+	if (existsSync(stagingAbs)) {
+		console.log(`  ✅ ${label}`);
+		return;
+	}
+	const repoAbs = path.join(repoRoot, repoRel);
+	if (existsSync(repoAbs)) {
+		mkdirSync(path.dirname(stagingAbs), { recursive: true });
+		cpSync(repoAbs, stagingAbs);
+		console.log(`  ♻️  ${label} —— 已从 ${repoRel} 复制到安装包`);
+	} else {
+		console.log(`  ⚠️  ${label} 缺失（vox 口播视频不可用）。获取: node build/saros/fetch-ffmpeg.mjs`);
+	}
+}
+ensureOptionalBin('ffmpeg.exe', 'resources/saros/bin/ffmpeg.exe', 'build/saros/bin/ffmpeg.exe');
+ensureOptionalBin('ffprobe.exe', 'resources/saros/bin/ffprobe.exe', 'build/saros/bin/ffprobe.exe');
+
 if (criticalMissing > 0) {
 	console.error(`\n💥 ${criticalMissing} 项关键构件缺失且无法自愈——禁止带病出包！`);
 	console.error('   请先执行：node build/next/index.ts transpile-plugins && npm run transpile-client，重建打包目录后重试。');

@@ -140,9 +140,10 @@ suite('resolveBinding', () => {
 				assert.strictEqual(r, '结果 {"tags":["cyberpunk","neon"],"score":8}');
 			});
 
-			test('named label + dot path extracts field', () => {
+			test('named label + dot path extracts field（数组/对象字段用 JSON.stringify，标量用 String）', () => {
 				const r = resolveTemplateVarsWF('风格 {{分析.tags}}', { named });
-				assert.strictEqual(r, '风格 cyberpunk,neon');
+				// tags 是数组 → stringifyResolvedValue 走 JSON.stringify（对齐 [object Object] 修复语义）
+				assert.strictEqual(r, '风格 ["cyberpunk","neon"]');
 			});
 
 			test('named plain-text snapshot resolves without path', () => {

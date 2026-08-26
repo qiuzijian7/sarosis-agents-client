@@ -35,7 +35,8 @@ export type StageEditorKind =
 	| 'relight'
 	| 'material'
 	| 'emoji'
-	| 'image';      // LoadImage / ImageLoaderStage —— inline loader editor（读 properties.image）
+	| 'image'      // LoadImage / ImageLoaderStage —— inline loader editor（读 properties.image）
+	| 'directorConsole';  // StoryboardEditorStage —— DirectorConsoleEditor（NodeCard 内嵌富编辑器，对齐 ComfyTV）
 
 /**
  * 节点类 → 内嵌编辑器种类。ComfyTV 的 RICH_STAGE_CARDS 等价物（本项目暂不做
@@ -54,6 +55,7 @@ export const STAGE_EDITOR_KIND: Record<string, StageEditorKind> = {
 	'ComfyTV.RelightStage': 'relight',
 	'ComfyTV.MaterialStage': 'material',
 	'ComfyTV.EmojiStage': 'emoji',
+	'ComfyTV.StoryboardEditorStage': 'directorConsole',
 	// Loader 节点走 inline editor：image 字段直接展示缩略图+尺寸+上传，代替通用
 	// OUTPUT 区（与 ComfyTV LoadImage 一致 —— 图像就是产物本身，再画 OUTPUT 是
 	// 重复展示）。
@@ -103,6 +105,7 @@ export const STAGE_HIDDEN_FIELDS: Record<string, readonly string[]> = {
 	'ComfyTV.RelightStage': ['main_prompt'],
 	'ComfyTV.MaterialStage': ['material_state'],
 	'ComfyTV.EmojiStage': ['rows', 'cols', 'fps', 'frames', 'prompt', 'cells', 'selected_index', 'run_scope'],
+	'ComfyTV.StoryboardEditorStage': ['board_state'],
 	// Loader 节点 image 字段由 inline editor（ImageLoaderPreview）接管，不再渲染通用控件。
 	// ⚠ 只有 image 家族能列在这里：接管字段的前提是**真有组件渲染它**。
 	//   VideoLoaderStage 曾列 ['video'] 却没有 video 编辑器（它被误注册成 'image'，
@@ -133,8 +136,12 @@ export const STAGE_MIN_HEIGHTS: Record<string, number> = {
 	'ComfyTV.RelightStage': 520,
 	'ComfyTV.KenBurnsStage': 460,
 	'ComfyTV.MaterialStage': 500,
+	'ComfyTV.StoryboardEditorStage': 560,
 	'ComfyTV.EmojiStage': 500,
 	'ComfyTV.ImageStage': 640,         // generator 节点（含 OUTPUT + ACTIONS）
+	// Vox 口播视频节点：导演节点含大量参数 + OUTPUT 视频预览区，脚本节点较矮。
+	'Vox.DirectorStage': 560,
+	'Vox.ScriptStage': 320,
 	// Loader 节点：image 字段 + 缩略图 + 尺寸文字 + 上传按钮（对齐 ComfyTV 参考卡片）。
 	'ComfyTV.ImageLoaderStage': 420,
 	'ComfyTV.VideoLoaderStage': 360,

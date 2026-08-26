@@ -35,6 +35,7 @@ export function RunnerManagerPanel({ registry, onRunnerResolved }: RunnerManager
 	const [, setCorsTick] = React.useState(0);
 	const [launching, setLaunching] = React.useState(false);
 	const [launchMsg, setLaunchMsg] = React.useState<string | null>(null);
+	const [restarting, setRestarting] = React.useState(false);
 	const [showPathConfig, setShowPathConfig] = React.useState(false);
 	const [resolvedPaths, setResolvedPaths] = React.useState<{ pythonPath?: string; mainPyPath?: string; source?: string } | null>(null);
 	const [editPy, setEditPy] = React.useState('');
@@ -176,6 +177,43 @@ export function RunnerManagerPanel({ registry, onRunnerResolved }: RunnerManager
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [refresh]);
 
+	// 一键重启 ComfyUI 为跨域直连模式：探测占端口的 PID → 杀进程 → --enable-cors-header 重启。
+	// 用于「代理」模式（Comfy Desktop 已开但未带 --enable-cors-header）的一键切换，无需手动开命令行杀进程。
+	const restartComfy = React.useCallback(async (baseUrl: string) => {
+		setRestarting(true);
+		setLaunchMsg(null);
+		try {
+			const r = await sendRequest('comfy.restart', { baseUrl }, 180_000) as {
+				ok: boolean;
+				killed?: { pid: number; ok: boolean; error?: string }[];
+				alreadyRunning?: boolean;
+				starting?: boolean;
+				pid?: number;
+				version?: string;
+				error?: string;
+			};
+			if (r.ok) {
+				const killed = r.killed ?? [];
+				const killedStr = killed.length ? `已停止 PID ${killed.map(k => k.pid).join(', ')}` : '端口无占用';
+				if (r.alreadyRunning) {
+					setLaunchMsg(`重启未完成：ComfyUI 仍在运行（${killedStr}）。`);
+				} else if (r.starting) {
+					setLaunchMsg(`${killedStr}，正在后台启动（PID ${r.pid ?? '-'}）。首次加载 torch+模型 1-3 分钟，就绪后点击「重新检测」。`);
+				} else {
+					setLaunchMsg(`${killedStr}，已用 --enable-cors-header 重启${r.version ? ` · ${r.version}` : ''}，正在探测直连…`);
+				}
+				void refresh();
+			} else {
+				setLaunchMsg(`重启失败：${r.error ?? '未知错误'}`);
+			}
+		} catch (err) {
+			setLaunchMsg(`重启失败：${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			setRestarting(false);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [refresh]);
+
 	// 获取主进程解析的当前路径（含 overrides 来源）。用于 UI 显示与编辑入口。
 	const fetchResolvedPaths = React.useCallback(async () => {
 		try {
@@ -265,6 +303,9 @@ export function RunnerManagerPanel({ registry, onRunnerResolved }: RunnerManager
 									</code>
 									<button onClick={() => void copyCorsCommand()} style={smallBtnStyle} title="复制启动命令">复制</button>
 									<button onClick={() => void reProbe(r.baseUrl)} style={smallBtnStyle} title="重新探测直连">重新探测</button>
+									<button onClick={() => void restartComfy(r.baseUrl)} style={{ ...smallBtnStyle, borderColor: 'rgba(239,68,68,.45)', color: '#f87171' }} disabled={restarting} title="杀掉当前 ComfyUI 进程，并用 --enable-cors-header 重启">
+										{restarting ? '重启中…' : '⟲ 重启为跨域直连'}
+									</button>
 								</div>
 							</div>
 						)}

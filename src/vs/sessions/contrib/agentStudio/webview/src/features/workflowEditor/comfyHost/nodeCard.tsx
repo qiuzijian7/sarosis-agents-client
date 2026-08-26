@@ -49,7 +49,7 @@ import { useRunnerStatus } from './runnerStatusStore';
 import { markFormHeightDirty } from './domWidget';
 import { buildSarosEditorFields } from './nodeEditorForm';
 import { ComboPopover } from './ComboPopover';
-import { resolveMediaAssetUrl } from './workflowRun.js';
+import { resolveMediaAssetUrl, collectUpstreamTexts } from './workflowRun.js';
 import { useProviderStore } from '../../../store/useProviderStore';
 import { useAgentStore } from '../../../store/useAgentStore';
 import { usePicklistStore } from '../picklistStore';
@@ -70,6 +70,58 @@ import { PanoramaEditor } from './PanoramaEditor';
 import { RelightEditor } from '../RelightEditor';
 import { parseLightsData } from './relightEditor';
 import { MaterialEditor } from '../MaterialEditor';
+// ★ DirectorConsoleEditor 延迟加载包装器（解决 esbuild IIFE bundle 的 TDZ 错误）。
+//   该组件依赖链较深（LayerEditor → layerEditor → …），在 IIFE 同步初始化时
+//   某个中间变量被访问时尚未完成声明，报 "Cannot access 'O' before initialization"。
+//   由于 esbuild 配置 splitting:false（单文件 IIFE），React.lazy 的动态 import()
+//   无法拆分 chunk，故改用 useState + useEffect 在组件挂载后动态 require，
+//   将模块求值从 IIFE 初始化推迟到首次渲染之后。
+// ★ 错误边界：捕获 DirectorConsoleEditor 渲染期 TDZ，输出完整堆栈定位根因
+class DCEErrorBoundary extends React.Component<{ children: React.ReactNode }, { err: Error | null }> {
+	state = { err: null as Error | null };
+	static getDerivedStateFromError(err: Error) { return { err }; }
+	componentDidCatch(err: Error) {
+		// eslint-disable-next-line no-console
+		console.warn('[DC-DEBUG] render error:', err && (err.stack || String(err)));
+	}
+	render() {
+		if (this.state.err) {
+			return <div style={{ minHeight: 560, padding: 12, color: '#f66', fontSize: 12, whiteSpace: 'pre-wrap', overflow: 'auto' }}>
+				{String(this.state.err && this.state.err.stack || this.state.err)}
+			</div>;
+		}
+		return this.props.children as React.ReactElement;
+	}
+}
+
+/** 校验画布尺寸：NaN/非正数/超范围 → fallback 默认值。对齐字段定义 min=64 max=4096 */
+function clampDim(v: number, fallback: number): number {
+	if (!Number.isFinite(v) || v < 64 || v > 4096) { return fallback; }
+	return Math.round(v / 8) * 8; // 对齐 step=8
+}
+
+function LazyDirectorConsole(props: React.ComponentProps<typeof import('../DirectorConsoleEditor').DirectorConsoleEditor>) {
+	// eslint-disable-next-line no-console
+	console.warn('[DC-DEBUG] LazyDirectorConsole mounted');
+	const [Comp, setComp] = React.useState<React.ComponentType<typeof props> | null>(null);
+	React.useEffect(() => {
+		import('../DirectorConsoleEditor')
+			.then(m => {
+				try {
+					const C = m.DirectorConsoleEditor;
+					// eslint-disable-next-line no-console
+					console.warn('[DC-DEBUG] component ref OK');
+					setComp(() => C);
+				} catch (e) {
+					// eslint-disable-next-line no-console
+					console.warn('[DC-DEBUG] access FAIL', e && (e.stack || String(e)));
+				}
+			})
+			.catch(e => { console.warn('[DC-DEBUG] import FAIL', String(e)); });
+	}, []);
+	if (!Comp) return <div style={{ minHeight: 560, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888' }}>加载导演台…</div>;
+	return <DCEErrorBoundary><Comp {...props} /></DCEErrorBoundary>;
+}
 import { getActiveRunnerRegistry, getActiveRunnerPreference } from './runnerContext';
 import { useTransformPipeline, transformPhaseLabel } from './useTransformPipeline';
 import { isInstantNode } from './instantNodes';
@@ -211,10 +263,13 @@ function toControls(spec: NodeSpec | undefined, properties: Record<string, unkno
 		// prompt（TEXT）由专门的 textarea 渲染，不进 controls。
 		if (spec.comfyTV) {
 			if (w.type === 'COMBO' || w.type === 'INT' || w.type === 'FLOAT' || w.type === 'BOOLEAN') {
+				const propVal = properties[w.name];
+				const widgetDefault = w.default;
+				const resolvedVal = propVal ?? widgetDefault;
 				list.push({
 					name: w.name,
 					type: w.type,
-					value: properties[w.name] ?? w.default,
+					value: resolvedVal,
 					options: w.options,
 					min: w.min,
 					max: w.max,
@@ -587,7 +642,7 @@ const LOCAL_EDITOR_NODE_TYPES = new Set<string>([
 	'ComfyTV.Scene3DStage',         // 3D 场景
 	'ComfyTV.LayerEditorStage',     // 图层编辑
 	'ComfyTV.PosterStage',          // 海报排版
-	'ComfyTV.StoryboardEditorStage',// 分镜画板
+	'ComfyTV.StoryboardEditorStage',// 导演台编辑器
 ]);
 
 const RUN_LABEL: Record<string, { label: string; icon: string }> = {
@@ -875,14 +930,54 @@ function SnapshotPreview({ store, nodeId, entries: entriesProp, batch }: { store
 			</div>
 		);
 	}
+	// ★ 视频/音频输出：渲染真正的 <video>/<audio> 播放器（vox 口播视频 final.mp4、
+	//   音频 stage 的 mp3 等）。此前仅显示 emoji + ref 文本，无法播放。
+	const videos = others.filter(e => e.media.kind === 'video');
+	const audios = others.filter(e => e.media.kind === 'audio');
+	const rest = others.filter(e => e.media.kind !== 'video' && e.media.kind !== 'audio');
 	return (
-		<div style={{
-			fontSize: 9, color: 'var(--vscode-descriptionForeground, #858585)', marginTop: 3,
-			fontFamily: 'Consolas, monospace', display: 'flex', flexDirection: 'column', gap: 2,
-		}}>
-			{others.map((e, i) => (
-				<div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-					<span>{e.media.kind === 'video' ? '🎞' : e.media.kind === 'audio' ? '🔊' : '📄'}</span>
+		<div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+			{videos.map((e, i) => (
+				<div key={`v${i}`} style={{
+					borderRadius: 6, overflow: 'hidden', background: '#000',
+					border: '1px solid rgba(255,255,255,.12)', pointerEvents: 'auto',
+				}}>
+					<video
+						key={e.key}
+						controls
+						preload="metadata"
+						src={bustedSrc(e.media.ref, e.index, storeVersion)}
+						onLoadedMetadata={() => { markFormHeightDirty(nodeId); }}
+						style={{ display: 'block', width: '100%', maxHeight: 300, objectFit: 'contain' }}
+					/>
+					<div style={{
+						display: 'flex', alignItems: 'center', gap: 4, padding: '2px 6px',
+						fontSize: 8.5, fontFamily: 'Consolas, monospace',
+						color: 'var(--vscode-descriptionForeground, #9a9a9a)',
+						background: 'rgba(255,255,255,.04)',
+					}}>
+						<span>🎞</span>
+						<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{e.media.ref}</span>
+						<button
+							title="下载"
+							onClick={(ev) => { ev.stopPropagation(); void downloadSnapshot(store, e); }}
+							style={{
+								width: 16, height: 16, display: 'flex', alignItems: 'center', justifyContent: 'center',
+								fontSize: 9, lineHeight: 1, cursor: 'pointer', flexShrink: 0,
+								background: 'rgba(0,0,0,.55)', color: '#fff', border: 'none', borderRadius: 3,
+							}}
+						>⤓</button>
+					</div>
+				</div>
+			))}
+			{audios.map((e, i) => (
+				<div key={`a${i}`} style={{ border: '1px solid rgba(255,255,255,.12)', borderRadius: 6, padding: '4px 6px', background: 'rgba(255,255,255,.03)' }}>
+					<audio controls preload="metadata" src={bustedSrc(e.media.ref, e.index, storeVersion)} style={{ display: 'block', width: '100%' }} />
+				</div>
+			))}
+			{rest.map((e, i) => (
+				<div key={`r${i}`} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, color: 'var(--vscode-descriptionForeground, #858585)', fontFamily: 'Consolas, monospace' }}>
+					<span>📄</span>
 					<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.media.ref}</span>
 				</div>
 			))}
@@ -1349,6 +1444,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const isKenBurns = editorKind === 'kenBurns';
 	const isRelight = editorKind === 'relight';
 	const isMaterial = editorKind === 'material';
+	const isDirectorConsole = editorKind === 'directorConsole';
 	const isEmoji = editorKind === 'emoji';
 	// W: Loader 内嵌预览（对齐 ComfyTV LoadImage：filename + 上传 + 缩略图 + W×H），
 	//   替代通用 OUTPUT 区。
@@ -1359,7 +1455,6 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const isEditorNode = (() => {
 		switch (meta.nodeType) {
 			// MaterialStage 现在有内联 PBR 编辑器（MaterialEditor），不再显示「打开编辑器」按钮
-			case 'ComfyTV.StoryboardEditorStage':
 			case 'ComfyTV.PosterStage':
 			case 'ComfyTV.LayerEditorStage':
 			case 'ComfyTV.CornerPinStage':
@@ -1367,8 +1462,14 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			case 'ComfyTV.Scene3DStage':
 				return true;
 			default: return false;
-		}
-	})();
+			}
+			})();
+
+			// 导演台内嵌时，从上游节点收集分镜（Fountain）文本，传给 DirectorConsoleEditor 自动解析成 boards。
+			const storyboardFountainText = React.useMemo(
+			() => (snapshotStore && upstreamNodeIds?.length ? collectUpstreamTexts(snapshotStore, upstreamNodeIds).join('\n').trim() : ''),
+			[snapshotStore, upstreamNodeIds],
+			);
 	// 生成节点（Image/VideoStage）显示「引用」缩略图区（对齐 ComfyTV Asset
 	// references：显示该节点将使用的上游参考图）。
 	const isGeneratorStage = meta.nodeType === 'ComfyTV.ImageStage' || meta.nodeType === 'ComfyTV.VideoStage';
@@ -1977,8 +2078,11 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			)}
 
 			{/* browser-local 编辑器节点：补「打开编辑器」入口（双击也能打开，但卡片
-			    按钮让交互显式可见，对齐 ComfyTV 内嵌编辑器语义）。 */}
-			{isEditorNode && !showRun && (
+			    按钮让交互显式可见，对齐 ComfyTV 内嵌编辑器语义）。
+			    ★ 不依赖 !showRun：纯弹窗式编辑器（StoryboardEditor/LayerEditor/
+			    Poster/CornerPin/RotoMask/Scene3D）需按钮可见，即便被 LOCAL_EDITOR_NODE_TYPES
+			    收录（showRun=true 放行控件渲染），否则 NodeCard 上没有任何编辑器入口。 */}
+			{isEditorNode && (
 				<button
 					type="button"
 					onClick={() => window.dispatchEvent(new CustomEvent('wf-node-edit', { detail: { nodeId } }))}
@@ -2331,6 +2435,51 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 				);
 			})()}
 
+			{/* ★ DirectorConsoleEditor 内嵌（对齐 ComfyTV：storyboard workbench embed in node）。
+			    替代原先「打开编辑器」弹窗（NodeEditorPopup）。数据走 controlDrafts/commitControl，
+			    上游 Fountain 文本走 collectUpstreamTexts 自动解析成 boards。
+			    用 LazyDirectorConsole 包装器延迟加载，避免 esbuild IIFE 的 TDZ 错误。 */}
+			{showRun && isDirectorConsole && (() => {
+				const registry = getActiveRunnerRegistry();
+				const snapStore = snapshotStore;
+				return (
+					<div
+						style={{
+							width: '100%',
+							height: '100%',
+							minWidth: 0,
+							minHeight: 0,
+							/* ★ 突破 NodeCard 三层 pointer-events:none，恢复编辑器内按钮/input 可点击 */
+							pointerEvents: 'auto',
+							display: 'flex',
+							flexDirection: 'column',
+						}}
+						/* ★ 阻止内部点击冒泡到 LiteGraphCanvas 的拖拽逻辑 */
+						onPointerDown={e => e.stopPropagation()}
+					>
+						<LazyDirectorConsole
+							initialState={(controlDrafts['board_state'] ?? '') as string}
+							initialFountainText={storyboardFountainText || undefined}
+							width={clampDim(Number(controlDrafts['width']), 1280)}
+							height={clampDim(Number(controlDrafts['height']), 720)}
+							runners={registry ?? undefined}
+							preference={getActiveRunnerPreference()}
+							onStateChange={(json) => commitControl('board_state', json)}
+							onRenderUploaded={(url) => {
+								if (!url || !snapStore) { return; }
+								snapStore.put({
+									nodeId: snapKey,
+									port: 'output',
+									key: `${snapKey}:output:0`,
+									media: { kind: 'image', ref: url },
+									index: 0,
+								});
+							}}
+						/>
+					</div>
+				);
+			})()}
+
 			{/* Inline prompt editor (ComfyTV MainPromptInput equivalent).
 			    ComfyTV 只在 generator variant 挂 main_prompt（useStageNode.ts:114），
 			    transform/loader 没有 prompt。Multiangle/Panorama/Relight/Material 的
@@ -2597,8 +2746,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 						initial={{
 							rows: Number(ctl('rows', 3)),
 							cols: Number(ctl('cols', 3)),
-							fps: Number(ctl('fps', 8)),
-							frames: Number(ctl('frames', 16)),
+							duration_s: Number(ctl('duration_s', 3)),
 							// ★ prompt/cells 是 TEXT widget，不进 meta.controls（toControls
 							//   对 ComfyTV 只收 COMBO/INT/FLOAT/BOOLEAN）→ ctl 永远 fallback
 							//   空值，重启后 EmojiStageEditor 重新挂载会丢失已填内容。
@@ -2608,7 +2756,12 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							selectedIndex: Number(ctl('selected_index', 0)),
 							workflow: String(ctl('workflow', '') ?? ''),
 						}}
-						cellRefs={ownSnapshots.map(e => ({ ref: e.media.ref, caption: typeof e.media.meta?.caption === 'string' ? e.media.meta.caption : undefined }))}
+						cellRefs={ownSnapshots.map(e => ({
+  ref: e.media.ref,
+  // ★ 视频产物（MiniMax H3 mp4 / AnimateDiff webp）必须传 kind='video'，否则 EmojiStageEditor 用 <img> 渲染会显示 broken image（棋盘格）。
+  kind: e.media.kind === 'video' ? 'video' : 'image',
+  caption: typeof e.media.meta?.caption === 'string' ? e.media.meta.caption : undefined,
+}))}
 						// ★ workflow 下拉必须由编辑器自己渲染：通用控件网格有
 						//   `!hasInlineEditor` 门禁，EmojiStage 有内嵌编辑器 ⇒ 所有
 						//   widget 控件都不渲染，此前 workflow 完全不可见，用户无法
@@ -2730,27 +2883,37 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 					{showRunButton && (
 					<button
 						type="button"
-						disabled={run.runState === 'running'}
-						title={engineDisconnected ? '未连接 ComfyUI 引擎' : '运行此节点（双击也可打开编辑器）'}
+						disabled={engineDisconnected}
+						title={
+							engineDisconnected ? '未连接 ComfyUI 引擎'
+							: run.runState === 'running' ? '中止当前执行'
+							: '运行此节点（双击也可打开编辑器）'
+						}
 						onClick={() => {
-							if (nodeId) {
+							if (!nodeId) { return; }
+							// ★ 运行中 → 取消（dispatch abort 事件）；否则 → 触发运行
+							if (run.runState === 'running') {
 								// eslint-disable-next-line no-console
-								console.warn('[nodeCard] run clicked ' + JSON.stringify({ nodeId, engineDisconnected, runnerReady: runnerStatus.ready, runState: run.runState }));
-								// EmojiStage：卡片 RUN 按钮语义固定为「生成全部」，必须重置
-								// run_scope，否则会沿用上次「生成此表情」留下的 'cell' 只跑一格。
-								if (isEmoji) { commitControls({ run_scope: 'all' }); }
-								// Bridge back to the canvas: opens the editor popup
-								// (which owns the actual runner call). No longer
-								// short-circuited by engineDisconnected — clicking
-								// always yields feedback (run or explicit error).
-								window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
+								console.warn('[nodeCard] abort clicked nodeId=' + nodeId);
+								window.dispatchEvent(new CustomEvent('wf-node-abort', { detail: { nodeId } }));
+								return;
 							}
+							// eslint-disable-next-line no-console
+							console.warn('[nodeCard] run clicked ' + JSON.stringify({ nodeId, engineDisconnected, runnerReady: runnerStatus.ready, runState: run.runState }));
+							// EmojiStage：卡片 RUN 按钮语义固定为「生成全部」，必须重置
+							// run_scope，否则会沿用上次「生成此表情」留下的 'cell' 只跑一格。
+							if (isEmoji) { commitControls({ run_scope: 'all' }); }
+							// Bridge back to the canvas: opens the editor popup
+							// (which owns the actual runner call). No longer
+							// short-circuited by engineDisconnected — clicking
+							// always yields feedback (run or explicit error).
+							window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
 						}}
 						style={{
 							display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
 							marginTop: 4, padding: '6px 10px', borderRadius: 6,
 							border: 'none',
-							cursor: run.runState === 'running' || engineDisconnected ? 'default' : 'pointer',
+							cursor: engineDisconnected ? 'default' : 'pointer',
 							pointerEvents: 'auto',
 							background: engineDisconnected
 								? 'rgba(255,255,255,.08)'

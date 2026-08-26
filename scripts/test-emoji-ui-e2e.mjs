@@ -153,7 +153,11 @@ async function runCase(label, workflow, expectAnimated, mod) {
 		rows: 1, cols: 1,
 		fps: FPS, frames: FRAMES,
 		prompt: PROMPT,
-		cells: '[]',
+		// ★ seed 只来自 cells JSON 每格的 `seed` 字段（workflowRun.ts:1958
+		//   `cell.seed || random`），顶层 values 无 seed widget。传 `{seed}` 固定
+		//   seed（prompt 留空 → 回退 globalPrompt），否则随机种子会让「主体居中」
+		//   像素判据 flaky（曾 Δ=13.4 < 15 误报）。
+		cells: JSON.stringify([{ seed: SEED }]),
 		workflow,
 		run_scope: 'all',
 		selected_index: 0,
@@ -182,7 +186,9 @@ async function runCase(label, workflow, expectAnimated, mod) {
 		const byType = (ct) => nodes.find(n => n.class_type === ct)?.inputs;
 		if (expectAnimated) {
 			const latent = byType('EmptyLatentImage');
-			const dec = byType('LayeredDiffusionDecodeRGBA');
+			// ★ 动态模板已改为「方案1」解码（标准 VAE + LayeredDiffusionDecode +
+			//   InvertMask + JoinImageWithAlpha），不再是 LayeredDiffusionDecodeRGBA。
+			const dec = byType('LayeredDiffusionDecode');
 			const save = byType('SaveAnimatedWEBP');
 			const ade = byType('ADE_AnimateDiffLoaderGen1');
 			check(latent?.batch_size === FRAMES, `参数: EmptyLatentImage.batch_size == frames（${FRAMES}，实际 ${latent?.batch_size}）`);

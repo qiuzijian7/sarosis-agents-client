@@ -32,6 +32,7 @@ import { STORYBOARD_BUILTIN_WORKFLOWS } from './storyboardWorkflows.js';
 import { TEXT_BUILTIN_WORKFLOWS } from './textWorkflows.js';
 import { UPSCALE_BUILTIN_WORKFLOWS } from './upscaleWorkflows.js';
 import { VIDEO_BUILTIN_WORKFLOWS } from './videoWorkflows.js';
+import { VOX_BUILTIN_WORKFLOWS } from './voxWorkflows.js';
 
 /**
  * 模板注册表：kind → label → config。
@@ -57,6 +58,9 @@ const BUILTIN_WORKFLOWS: Record<string, Record<string, StageWorkflowConfig>> = {
 	"text": TEXT_BUILTIN_WORKFLOWS,
 	"upscale": UPSCALE_BUILTIN_WORKFLOWS,
 	"video": VIDEO_BUILTIN_WORKFLOWS,
+	"vox-script": { "Local Qwen3 4B Script": VOX_BUILTIN_WORKFLOWS["Local Qwen3 4B Script"] },
+	"vox-image": { "Local Flux Dev Keyframe": VOX_BUILTIN_WORKFLOWS["Local Flux Dev Keyframe"] },
+	"vox-video": { "Local LTX 2.3 FLF2V": VOX_BUILTIN_WORKFLOWS["Local LTX 2.3 FLF2V"] },
 };
 
 /** 列出某 kind 的内置 workflow（结构对齐 StageWorkflowListResponse）。 */

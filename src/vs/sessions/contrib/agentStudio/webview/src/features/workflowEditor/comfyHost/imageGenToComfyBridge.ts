@@ -86,10 +86,42 @@ export interface BridgeFetchLike {
 	}>;
 }
 
+/** ComfyUI HTTP 请求默认超时（毫秒）。防止 /upload/image 无响应时永远卡死。 */
+const COMFY_HTTP_TIMEOUT_MS = 30_000;
+
+/**
+ * 合并用户 signal + 超时 signal：任一触发即中止。
+ *
+ * 实现采用最兼容的方式（不依赖 Node18+ 的 `new AbortController({ signal })` 或
+ * `AbortSignal.any`，旧版 Electron/Chrome 也可能不支持），手动桥接两个 signal：
+ * 始终返回 timeoutCtrl.signal，并监听用户 signal 的 abort 事件。
+ */
+function withTimeout(signal?: AbortSignal, timeoutMs = COMFY_HTTP_TIMEOUT_MS): AbortSignal {
+	const timeoutCtrl = new AbortController();
+	const timer = setTimeout(() => timeoutCtrl.abort(), timeoutMs);
+	if (!signal) {
+		// 无用户 signal → 超时到点即 abort（自动清理 timer 在 fetch 完成后无关紧要）
+		return timeoutCtrl.signal;
+	}
+	if (signal.aborted) {
+		clearTimeout(timer);
+		return signal;
+	}
+	signal.addEventListener('abort', () => {
+		clearTimeout(timer);
+		timeoutCtrl.abort();
+	}, { once: true });
+	return timeoutCtrl.signal;
+}
+
 /**
  * 把 provider 快照 ref 上传到 ComfyUI /upload/image，返回可被 LoadImage 消费的
  * Comfy /view 引用。comfy-view 直接透传（无需上传）；http 走 fetch→blob→FormData；
  * dataURL 本地解码→FormData。
+ *
+ * ★ 超时保护（2026-08-26 修复卡死）：所有 fetch 均通过 withTimeout() 注入
+ *   AbortSignal，即使调用方未传 signal 也会在 30s 后自动超时，避免 ComfyUI
+ *   /upload/image 无响应时整个流程永远不返回。
  */
 export async function uploadRefToComfy(opts: {
 	ref: string;
@@ -97,7 +129,7 @@ export async function uploadRefToComfy(opts: {
 	fetchImpl: BridgeFetchLike;
 	signal?: AbortSignal;
 }): Promise<{ ok: boolean; ref?: string; error?: string }> {
-	const { ref, baseUrl, fetchImpl, signal } = opts;
+	const { ref, baseUrl, fetchImpl, signal: userSignal } = opts;
 	const cls = classifyImageRef(ref);
 	if (cls.kind === 'comfy-view') {
 		return { ok: true, ref };
@@ -111,7 +143,7 @@ export async function uploadRefToComfy(opts: {
 		mime = parsed.mime;
 	} else if (cls.kind === 'http' && cls.url) {
 		try {
-			const resp = await fetchImpl(cls.url, { signal });
+			const resp = await fetchImpl(cls.url, { signal: withTimeout(userSignal, 60_000) });
 			if (!resp.ok) { return { ok: false, error: `下载图片失败：HTTP ${resp.status ?? '?'}` }; }
 			// ★★ 400 Bad Request 根因（2026-08-20，日志 1787224386976 line 13/14）：
 			//   原实现是 `const buf = await resp.text(); blob = new Blob([buf], …)`。
@@ -144,7 +176,7 @@ export async function uploadRefToComfy(opts: {
 		const resp = await fetchImpl(`${baseUrl}/upload/image`, {
 			method: 'POST',
 			body: form,
-			signal,
+			signal: withTimeout(userSignal),
 		});
 		if (!resp.ok) {
 			const t = await Promise.resolve(resp.text()).catch(() => '');

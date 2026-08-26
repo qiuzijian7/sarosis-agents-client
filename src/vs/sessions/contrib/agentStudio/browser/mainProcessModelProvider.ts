@@ -88,6 +88,9 @@ export class MainProcessModelProvider extends BuiltInBYOKModelProvider {
 		if (params.negativePrompt) {
 			body['negative_prompt'] = params.negativePrompt;
 		}
+		if (params.quality) {
+			body['quality'] = params.quality;
+		}
 		this._logService.info(`[BYOK:${this.id}] MainProcessModelProvider: generateImage → ${url} (model=${params.modelId})`);
 		try {
 			return await this._channel.call<IImageGenResult>('imageGenerate', {

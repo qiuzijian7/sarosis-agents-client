@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>表情包生成 · 使用说明</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-2: #161923;
+    --card: #1b1f2b;
+    --card-2: #202634;
+    --border: #2a3040;
+    --border-2: #343b4e;
+    --text: #e6e9f0;
+    --text-dim: #9aa3b5;
+    --text-faint: #6b7488;
+    --accent: #7c5cff;
+    --accent-2: #5cc8ff;
+    --accent-3: #ff7ab8;
+    --green: #3ddc84;
+    --amber: #ffb454;
+    --red: #ff5c7a;
+    --mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 28px 80px; }
+
+  /* Header */
+  header { margin-bottom: 36px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--accent-2);
+    background: rgba(92,200,255,.08); border: 1px solid rgba(92,200,255,.25);
+    padding: 4px 12px; border-radius: 999px; margin-bottom: 18px;
+  }
+  .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); }
+  h1 { font-size: 34px; margin: 0 0 12px; letter-spacing: -.5px; }
+  h1 .grad {
+    background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .sub { color: var(--text-dim); font-size: 15px; max-width: 680px; margin: 0; }
+
+  /* Section */
+  section { margin-top: 44px; }
+  h2 {
+    font-size: 21px; margin: 0 0 18px; display: flex; align-items: center; gap: 12px;
+  }
+  h2 .num {
+    width: 28px; height: 28px; border-radius: 8px; flex: none;
+    display: grid; place-items: center; font-size: 14px; font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff;
+  }
+  h3 { font-size: 15px; margin: 0 0 10px; }
+
+  /* Cards */
+  .grid { display: grid; gap: 16px; }
+  .grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 760px) { .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 20px;
+  }
+  .card .k { font-size: 13px; color: var(--text-faint); margin-bottom: 6px; letter-spacing: .3px; }
+  .card .v { font-size: 15px; }
+  .card .v b { color: var(--text); }
+
+  .step-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 22px; position: relative; overflow: hidden;
+  }
+  .step-card .tag {
+    position: absolute; top: 0; right: 0; font-size: 11px; font-weight: 700;
+    padding: 5px 12px; border-bottom-left-radius: 12px; color: #fff;
+  }
+  .step-card .tag.s1 { background: var(--accent); }
+  .step-card .tag.s2 { background: var(--accent-2); }
+  .step-card .tag.s3 { background: var(--accent-3); }
+  .step-card .title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+  .step-card .desc { font-size: 13.5px; color: var(--text-dim); }
+  .step-card .mono {
+    display: inline-block; font-family: var(--mono); font-size: 12px;
+    color: var(--accent-2); background: rgba(92,200,255,.07);
+    border: 1px solid rgba(92,200,255,.2); padding: 2px 8px; border-radius: 6px;
+    margin-top: 10px;
+  }
+  .arrow {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-faint); font-size: 20px; height: 20px;
+  }
+
+  /* Mockup: chat */
+  .phone {
+    width: 320px; margin: 0 auto; background: #edeff2; border-radius: 22px;
+    padding: 14px; box-shadow: 0 20px 50px rgba(0,0,0,.5);
+    border: 1px solid var(--border-2);
+  }
+  .phone .bar {
+    display: flex; align-items: center; gap: 6px; padding: 4px 6px 10px;
+    font-size: 12px; color: #555;
+  }
+  .phone .bar .dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; }
+  .chat { display: flex; flex-direction: column; gap: 10px; }
+  .bubble {
+    max-width: 78%; padding: 10px 13px; border-radius: 16px; font-size: 13.5px;
+    position: relative; animation: pop .35s ease;
+  }
+  .bubble.me { align-self: flex-end; background: #95ec69; color: #1a1a1a; border-bottom-right-radius: 5px; }
+  .bubble.other { align-self: flex-start; background: #fff; color: #333; border-bottom-left-radius: 5px; }
+  .bubble.sticker {
+    background: transparent; padding: 0; max-width: 72%; align-self: flex-start;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .bubble.sticker .cap { font-size: 11px; color: #999; padding-left: 4px; }
+  .sticker-img {
+    width: 180px; height: 180px; border-radius: 14px; background: #fff;
+    display: grid; place-items: center; box-shadow: 0 4px 14px rgba(0,0,0,.08);
+    overflow: hidden; position: relative;
+  }
+  @keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+  .sticker-img .bird { animation: bob 1.4s ease-in-out infinite; }
+  @keyframes pop { from { transform: scale(.9); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+  /* SVG bird */
+  .bird svg { display: block; }
+
+  /* Mockup: param panel */
+  .panel {
+    background: var(--card-2); border: 1px solid var(--border-2); border-radius: 14px;
+    overflow: hidden; font-family: var(--mono);
+  }
+  .panel .head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-dim);
+  }
+  .panel .head .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .panel .head .dot.r { background: #ff5f57; } .panel .head .dot.y { background: #febc2e; } .panel .head .dot.g { background: #28c840; }
+  .panel .body { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .field label { display: block; font-size: 11px; color: var(--text-faint); margin-bottom: 6px; }
+  .field .input {
+    background: var(--bg); border: 1px solid var(--border-2); border-radius: 8px;
+    padding: 8px 12px; font-size: 13px; color: var(--text);
+  }
+  .field .slider-row { display: flex; align-items: center; gap: 12px; }
+  .field input[type=range] { flex: 1; accent-color: var(--accent); }
+  .field .val {
+    font-size: 13px; color: var(--accent-2); min-width: 44px; text-align: right; font-weight: 700;
+  }
+  .field .seg { display: flex; gap: 6px; }
+  .field .seg span {
+    flex: 1; text-align: center; font-size: 12px; padding: 7px 4px; border-radius: 7px;
+    background: var(--bg); border: 1px solid var(--border-2); color: var(--text-dim);
+  }
+  .field .seg span.on { background: rgba(124,92,255,.18); border-color: var(--accent); color: #cbbaff; }
+  .run-btn {
+    margin-top: 4px; text-align: center; font-size: 13px; font-weight: 700; color: #fff;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    padding: 10px; border-radius: 9px; letter-spacing: 2px;
+  }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-faint); font-weight: 600; font-size: 12px; letter-spacing: .3px; }
+  td .mono { font-family: var(--mono); font-size: 12.5px; color: var(--accent-2); }
+  .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .pill.ok { background: rgba(61,220,132,.14); color: var(--green); }
+  .pill.warn { background: rgba(255,180,84,.14); color: var(--amber); }
+  .pill.req { background: rgba(255,92,122,.14); color: var(--red); }
+
+  .note {
+    background: rgba(255,180,84,.07); border: 1px solid rgba(255,180,84,.28);
+    border-radius: 12px; padding: 16px 18px; font-size: 13.5px; color: #ffd9a8;
+    margin-top: 18px;
+  }
+  .note b { color: #ffb454; }
+
+  footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-faint); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="badge">ComfyTV · Emoji Sticker Pipeline</div>
+    <h1>表情包生成 <span class="grad">使用说明</span></h1>
+    <p class="sub">
+      从「一句话 / 一张图」到「会动的表情包」，一条链路自动完成：文生图（Qwen / SDXL）→ 图生视频（MiniMax H3）→ 透明合成。本说明涵盖操作步骤、参数含义与效果预览。
+    </p>
+  </header>
+
+  <!-- ── 一、三种生成模式 ── -->
+  <section>
+    <h2><span class="num">1</span>生成模式</h2>
+    <div class="grid cols-3">
+      <div class="card">
+        <div class="k">模式</div>
+        <div class="v"><b>文生表情包</b></div>
+        <div class="k" style="margin-top:12px">输入</div>
+        <div class="v">一段文字描述</div>
+        <div class="k" style="margin-top:12px">产出</div>
+        <div class="v">透明 PNG 贴纸</div>
+      </div>
+      <div class="card">
+        <div class="k">模式</div>
+        <div class="v"><b>图生动态表情</b></div>
+        <div class="k" style="margin-top:12px">输入</div>
+        <div class="v">一张图片作首帧</div>
+        <div class="k" style="margin-top:12px">产出</div>
+        <div class="v">会动的表情包视频</div>
+      </div>
+      <div class="card">
+        <div class="k">模式</div>
+        <div class="v"><b>透明动态表情</b></div>
+        <div class="k" style="margin-top:12px">输入</div>
+        <div class="v">图 + 透明 PNG</div>
+        <div class="k" style="margin-top:12px">产出</div>
+        <div class="v">透明背景动图（webp）</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 二、操作步骤 ── -->
+  <section>
+    <h2><span class="num">2</span>三步操作</h2>
+    <div class="grid">
+      <div class="step-card">
+        <span class="tag s1">STEP 1</span>
+        <div class="title">🎨 生成底图</div>
+        <div class="desc">
+          在工作流画布拖入「图片」节点，选择 <b>Qwen 2512 T2I</b> 或 <b>透明贴纸 (SDXL)</b> 模板，填写主体描述与提示词。
+        </div>
+        <span class="mono">ImageStage · Qwen 2512 T2I</span>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="step-card">
+        <span class="tag s2">STEP 2</span>
+        <div class="title">🎬 让它动起来</div>
+        <div class="desc">
+          拖入「视频」节点，选择 <b>Qwen Emoji Video (Square)</b> 或 <b>Local MiniMax H3 I2V Turbo</b>，把底图连到 <code>first_frame</code> 输入，调节时长与动作描述。
+        </div>
+        <span class="mono">VideoStage · MiniMax H3 I2V Turbo</span>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="step-card">
+        <span class="tag s3">STEP 3</span>
+        <div class="title">✨ 合成透明动图（可选）</div>
+        <div class="desc">
+          如需透明背景，再拖入「视频」节点选 <b>Local Transparent Sticker Video</b>，把视频 + 透明 PNG 连入，自动合成带 alpha 的循环动图。
+        </div>
+        <span class="mono">VideoStage · Transparent Sticker Video</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 三、效果 mockup ── -->
+  <section>
+    <h2><span class="num">3</span>效果预览（Mockup）</h2>
+    <div class="grid cols-2">
+      <!-- 聊天界面 mockup -->
+      <div class="card" style="display:flex; flex-direction:column; align-items:center;">
+        <h3 style="align-self:flex-start">聊天场景中的表情包</h3>
+        <div class="phone">
+          <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span> 表情包</div>
+          <div class="chat">
+            <div class="bubble other">周末去哪玩呀？</div>
+            <div class="bubble me">嘿嘿，去看漫展～</div>
+            <div class="bubble sticker">
+              <span class="cap">对方发来一个表情包</span>
+              <div class="sticker-img">
+                <span class="bird" id="birdSmall"></span>
+              </div>
+            </div>
+            <div class="bubble other">太可爱了吧！</div>
+          </div>
+        </div>
+        <div class="k" style="margin-top:16px; align-self:flex-start">提示</div>
+        <div class="v" style="align-self:flex-start; font-size:13px; color:var(--text-dim)">
+          透明背景动图在深色/浅色聊天气泡上都能自然显示，不会出现白色方框。
+        </div>
+      </div>
+
+      <!-- 参数面板 mockup -->
+      <div class="card">
+        <h3>视频节点参数面板</h3>
+        <div class="panel">
+          <div class="head"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span> VideoStage · Qwen Emoji Video</div>
+          <div class="body">
+            <div class="field">
+              <label>工作流模板</label>
+              <div class="input">Qwen Emoji Video (Square)</div>
+            </div>
+            <div class="field">
+              <label>动作描述（prompt）</label>
+              <div class="input" style="min-height:44px; line-height:1.5">小鸟眨眨眼，扇动水晶翅膀，上下轻轻跳动</div>
+            </div>
+            <div class="field">
+              <label>时长 duration_s（2 ~ 15 秒）</label>
+              <div class="slider-row">
+                <input type="range" min="1" max="15" value="3">
+                <span class="val">3 s</span>
+              </div>
+            </div>
+            <div class="field">
+              <label>随机种子 seed</label>
+              <div class="input">42</div>
+            </div>
+            <div class="field">
+              <label>采样模式</label>
+              <div class="seg"><span class="on">Turbo 4 步</span><span>标准 20 步</span></div>
+            </div>
+            <div class="run-btn">▶ 运行</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 四、参数说明 ── -->
+  <section>
+    <h2><span class="num">4</span>参数说明</h2>
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr><th>参数</th><th>含义</th><th>范围</th><th>默认</th><th>备注</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="mono">duration_s</span></td>
+            <td>视频时长（秒）</td>
+            <td>2 ~ 15 秒</td>
+            <td>5</td>
+            <td><span class="pill ok">可调</span> 超过 15s 自动限制到 15s</td>
+          </tr>
+          <tr>
+            <td><span class="mono">seed</span></td>
+            <td>随机种子</td>
+            <td>任意整数</td>
+            <td>随机</td>
+            <td><span class="pill ok">可调</span> 固定 seed 可复现结果</td>
+          </tr>
+          <tr>
+            <td><span class="mono">prompt</span></td>
+            <td>主体 / 动作描述</td>
+            <td>文本</td>
+            <td>—</td>
+            <td><span class="pill req">必填</span></td>
+          </tr>
+          <tr>
+            <td><span class="mono">first_frame</span></td>
+            <td>首帧图片输入</td>
+            <td>图片连线</td>
+            <td>—</td>
+            <td><span class="pill req">图生视频必填</span></td>
+          </tr>
+          <tr>
+            <td><span class="mono">fps</span></td>
+            <td>输出帧率</td>
+            <td>8 / 12 / 24</td>
+            <td>24</td>
+            <td><span class="pill warn">动图建议 12</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <b>⚠ 时长与速度说明</b><br>
+      MiniMax H3 训练范围约 5~15 秒，超出会自动截断。Turbo 4 步出片约 <b>3 分钟</b>（5 秒片段），
+      标准 20 步约 <b>12 分钟</b> 但质量更优。12GB 显存机器上依赖 DynamicVRAM 自动 offload，内存建议 64GB+。
+    </div>
+  </section>
+
+  <footer>
+    表情包生成流水线 · Qwen 2512 T2I → MiniMax H3 I2V Turbo → Transparent Sticker Video　|　此页面为使用说明 mockup，小鸟形象由 SVG 内联绘制
+  </footer>
+</div>
+
+<script>
+  // 内联 SVG 紫色水晶小鸟（呼应实际生成的表情包形象）
+  const birdSVG = `
+  <svg width="150" height="150" viewBox="0 0 150 150" xmlns="http://www.w3.org/2000/svg">
+    <!-- 水晶翅膀（左） -->
+    <g transform="translate(18,62)">
+      <path d="M8 40 C -2 18, 14 4, 34 0 C 40 14, 38 30, 24 44 Z" fill="#b39dff" opacity="0.9"/>
+      <path d="M14 38 C 10 24, 18 12, 30 8" stroke="#e4ddff" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+    </g>
+    <!-- 水晶翅膀（右） -->
+    <g transform="translate(132,62) scale(-1,1)">
+      <path d="M8 40 C -2 18, 14 4, 34 0 C 40 14, 38 30, 24 44 Z" fill="#b39dff" opacity="0.9"/>
+      <path d="M14 38 C 10 24, 18 12, 30 8" stroke="#e4ddff" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+    </g>
+    <!-- 身体 -->
+    <ellipse cx="75" cy="82" rx="46" ry="44" fill="#8a63e8"/>
+    <ellipse cx="75" cy="82" rx="46" ry="44" fill="url(#g1)"/>
+    <!-- 白肚皮 -->
+    <ellipse cx="75" cy="98" rx="28" ry="22" fill="#efeaff"/>
+    <!-- 眼睛 -->
+    <circle cx="58" cy="70" r="13" fill="#1b1530"/>
+    <circle cx="92" cy="70" r="13" fill="#1b1530"/>
+    <circle cx="62" cy="66" r="5" fill="#fff"/>
+    <circle cx="96" cy="66" r="5" fill="#fff"/>
+    <circle cx="54" cy="74" r="2.4" fill="#fff" opacity=".85"/>
+    <circle cx="88" cy="74" r="2.4" fill="#fff" opacity=".85"/>
+    <!-- 嘴 -->
+    <path d="M75 80 L75 88 L64 84 Z" fill="#ff9d3c" stroke="#e07b1a" stroke-width="1"/>
+    <!-- 腮红 -->
+    <ellipse cx="48" cy="88" rx="8" ry="5" fill="#ff8ab8" opacity=".55"/>
+    <ellipse cx="102" cy="88" rx="8" ry="5" fill="#ff8ab8" opacity=".55"/>
+    <!-- 爪子 -->
+    <ellipse cx="62" cy="126" rx="9" ry="5" fill="#ff9d3c"/>
+    <ellipse cx="88" cy="126" rx="9" ry="5" fill="#ff9d3c"/>
+    <defs>
+      <radialGradient id="g1" cx="35%" cy="30%" r="80%">
+        <stop offset="0%" stop-color="#a98bff"/>
+        <stop offset="100%" stop-color="#6a44d6"/>
+      </radialGradient>
+    </defs>
+  </svg>`;
+  document.getElementById('birdSmall').innerHTML = birdSVG;
+</script>
+</body>
+</html>

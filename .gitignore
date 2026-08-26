@@ -120,6 +120,8 @@ generated-images/UI_mockup_showing_TWO_side_by__2026-06-25T08-34-52.png
 generated-images/chat-history-mockup.html
 generated-images/message-list-mockup.html
 generated-images/*_e2e_*.png
+generated-images/video-to-gif-*.gif
+_*_compare.html
 *graph.db.zst
 *.codebase-memory
 *.worktrees

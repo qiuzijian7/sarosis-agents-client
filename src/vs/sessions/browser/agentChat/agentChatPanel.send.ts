@@ -49,7 +49,11 @@ protected override _handleSendMessage(): void {
 		const variables = (params && Object.keys(params).length > 0)
 			? params
 			: (Object.keys(parsed.variables).length > 0 ? parsed.variables : undefined);
-		workflowTrigger = buildWorkflowTrigger(workflowId, parsed.input, variables);
+		// 参考图：image 类型附件 → data URL（供工作流 ComfyStage/EmojiStage 的参考图入口消费）。
+		const imageRefs = this._attachments
+			.filter(a => a.type === 'image' && !!a.data)
+			.map(a => `data:${a.mimeType || 'image/png'};base64,${a.data}`);
+		workflowTrigger = buildWorkflowTrigger(workflowId, parsed.input, variables, imageRefs.length > 0 ? imageRefs : undefined);
 	}
 
 	// Snapshot attachments before clearing

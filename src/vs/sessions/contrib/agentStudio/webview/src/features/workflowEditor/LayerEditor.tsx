@@ -8,7 +8,7 @@
 import * as React from 'react';
 import type { ComfyRunnerRegistry } from './comfyHost/comfyRunner';
 import {
-	addLayerOp, clampN, defaultLayerDoc, drawLayerDoc, layerDocToJson, newLayerId, parseLayerDoc,
+	addLayerOp, clampN, drawLayerDoc, layerDocToJson, makeImageOp, newLayerId, parseLayerDoc, preloadLayerImage,
 	type LayerDoc, type LayerInfo, type LayerOp, type LayerOpType,
 } from './comfyHost/layerEditor';
 
@@ -20,6 +20,16 @@ export interface LayerEditorProps {
 	preference: string;
 	onDocChange: (json: string) => void;
 	onRenderUploaded: (url: string | null) => void;
+}
+
+/** 命令式操作句柄（对齐 ComfyTV useLayerEditorStage 的 editor 对象）。 */
+export interface LayerEditorHandle {
+	flipImage(axis: 'h' | 'v'): void;
+	flushCapture(): void;
+	reload(): void;
+	documentIsEmpty(): boolean;
+	addImageFromUrl(url: string, kind: 'reference'): Promise<void>;
+	cancelPendingCapture(): void;
 }
 
 const UPLOAD_DEBOUNCE_MS = 1200;
@@ -36,7 +46,7 @@ const inputStyle: React.CSSProperties = {
 	borderRadius: 5, padding: '4px 7px', fontSize: 12, outline: 'none',
 };
 
-export function LayerEditor({ initialDoc, width, height, runners, preference, onDocChange, onRenderUploaded }: LayerEditorProps): React.JSX.Element {
+export const LayerEditor = React.forwardRef<LayerEditorHandle, LayerEditorProps>(function LayerEditor({ initialDoc, width, height, runners, preference, onDocChange, onRenderUploaded }, ref): React.JSX.Element {
 	const [doc, setDoc] = React.useState<LayerDoc>(() => parseLayerDoc(initialDoc, width, height));
 	const [activeLayerId, setActiveLayerId] = React.useState<string | null>(doc.layers[0]?.id ?? null);
 	const [tool, setTool] = React.useState<LayerOpType>('brush');
@@ -48,18 +58,14 @@ export function LayerEditor({ initialDoc, width, height, runners, preference, on
 	const uploadTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 	const runnersRef = React.useRef(runners); runnersRef.current = runners;
 	const preferenceRef = React.useRef(preference); preferenceRef.current = preference;
+	const initialDocRef = React.useRef(initialDoc); initialDocRef.current = initialDoc;
+	const docRef = React.useRef(doc); docRef.current = doc;
 
 	const VIEW_W = 360;
 	const scale = VIEW_W / doc.width;
 	const VIEW_H = Math.round(doc.height * scale);
 
 	const activeLayer = doc.layers.find(l => l.id === activeLayerId) ?? null;
-
-	const scheduleUpload = React.useCallback(() => {
-		if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); }
-		uploadTimerRef.current = setTimeout(() => { void uploadRender(); }, UPLOAD_DEBOUNCE_MS);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [uploadRender]);
 
 	const uploadRender = React.useCallback(async () => {
 		const canvas = canvasRef.current;
@@ -80,14 +86,52 @@ export function LayerEditor({ initialDoc, width, height, runners, preference, on
 		}
 	}, [onRenderUploaded]);
 
+	const scheduleUpload = React.useCallback(() => {
+		if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); }
+		uploadTimerRef.current = setTimeout(() => { void uploadRender(); }, UPLOAD_DEBOUNCE_MS);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [uploadRender]);
+
 	React.useEffect(() => () => { if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); } }, []);
 
 	const commit = React.useCallback((next: LayerDoc) => {
 		setDoc(next);
+		docRef.current = next;
 		onDocChange(layerDocToJson(next));
 		scheduleUpload();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [onDocChange]);
+
+	// ── 命令式 API（对齐 ComfyTV editor 对象） ────────────────────────────
+	React.useImperativeHandle(ref, () => ({
+		flipImage(axis: 'h' | 'v') {
+			const cur = docRef.current;
+			const next: LayerDoc = axis === 'h' ? { ...cur, flipH: !cur.flipH } : { ...cur, flipV: !cur.flipV };
+			commit(next);
+		},
+		flushCapture() {
+			if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); uploadTimerRef.current = null; }
+			void uploadRender();
+		},
+		reload() {
+			const next = parseLayerDoc(initialDocRef.current, width, height);
+			docRef.current = next;
+			setDoc(next);
+			setActiveLayerId(next.layers[0]?.id ?? null);
+		},
+		documentIsEmpty() {
+			return docRef.current.layers.every(l => l.ops.length === 0);
+		},
+		async addImageFromUrl(url: string, _kind: 'reference') {
+			await preloadLayerImage(url);
+			const cur = docRef.current;
+			const target = cur.layers[0] ?? cur.layers[0];
+			commit(addLayerOp(cur, target.id, makeImageOp(url)));
+		},
+		cancelPendingCapture() {
+			if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); uploadTimerRef.current = null; }
+		},
+	}), [commit, uploadRender, width, height]);
 
 	// ── draw ───────────────────────────────────────────────────────────────
 	React.useEffect(() => {
@@ -281,7 +325,7 @@ export function LayerEditor({ initialDoc, width, height, runners, preference, on
 			</div>
 		</div>
 	);
-}
+});
 
 const smallBtn: React.CSSProperties = {
 	width: 26, height: 24, padding: 0, borderRadius: 5, cursor: 'pointer', fontSize: 12,

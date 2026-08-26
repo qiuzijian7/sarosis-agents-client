@@ -5,6 +5,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
+import type { IComfyExecutionDelegate, ComfyExecutionResult } from './comfyBridge.js';
 
 export const IWorkflowExecutionService = createDecorator<IWorkflowExecutionService>('workflowExecutionService');
 
@@ -41,6 +42,10 @@ export interface IWorkflowNodeExecutionState {
 	endTime?: string;
 	error?: string;
 	output?: string;
+	/** Comfy/ComfyStage 节点的媒体快照（image/video/audio 引用），供聊天卡渲染。 */
+	snapshot?: ComfyExecutionResult['snapshot'];
+	/** Comfy/ComfyStage 节点执行进度（0-100），供聊天卡进度条。 */
+	progress?: number;
 }
 
 export interface IWorkflowExecutionState {
@@ -155,6 +160,12 @@ export interface IWorkflowExecutionService {
 	 * Called by the webview after the user fills in the variable collection card.
 	 */
 	submitWorkflowVariables(executionId: string, values: Record<string, string>): Promise<void>;
+
+	/**
+	 * 注入 Comfy/ComfyStage 节点的执行委托（懒注入，避免构造期 DI 环）。
+	 * 未设置时 Comfy 节点跳过。生产实现见 comfyStageBridge.ts。
+	 */
+	setComfyExecutionDelegate(delegate: IComfyExecutionDelegate | undefined): void;
 }
 
 export interface IWorkflowExecutionOptions {
@@ -242,7 +253,9 @@ export type IWorkflowTraceEvent =
 	| { kind: 'collect_variables_end'; executionId: string; sessionId: string;
 		status: 'submitted' | 'skipped' }
 	/** Whole execution finished — owner chat should commit final assistant message. */
-	| { kind: 'execution_end'; executionId: string; sessionId: string; status: 'completed' | 'failed' | 'cancelled' };
+	| { kind: 'execution_end'; executionId: string; sessionId: string; status: 'completed' | 'failed' | 'cancelled' }
+	/** Comfy/ComfyStage 节点执行进度（逐格/逐帧），供聊天卡进度条。 */
+	| { kind: 'node_progress'; executionId: string; sessionId: string; nodeId: string; nodeName: string; progress: number; message?: string };
 
 /** Information about the new chat session created for a workflow run. */
 export interface IWorkflowSessionInfo {

@@ -16,13 +16,15 @@ import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
 import type { CardStateStore } from './cardState.js';
 import type { SingleNodeRunResult } from './nodeExecutor.js';
 import { runSingleNode, comfyOutputsToFxSnapshots } from './nodeExecutor.js';
-import { runStageWorkflow, StageWorkflowUnavailableError } from './stageWorkflowExecutor.js';
+import { runStageWorkflow, StageWorkflowUnavailableError, collectUpstreamRefs } from './stageWorkflowExecutor.js';
 import { getPluginNodeRunner } from './pluginLoader.js';
 import { isFxNode, isFxChainNode } from './fxChain.js';
 import type { MediaSnapshotEntry, MediaKind, MediaRef } from './mediaSnapshot.js';
 import { mediaGet, resolveAssetUrl } from '../mediaAssets.js';
 import { isInstantNode } from './instantNodes.js';
 import { runInstantNode } from './instantExecutor.js';
+import { isVideoToGifNode, EMOJI_GIF_PARAMS } from './videoToGif.js';
+import { runVideoToGifNode, convertVideoToGif, blobToDataUrl } from './videoToGifExecutor.js';
 import { isRelightNode } from './relightEditor.js';
 import { runRelightNode } from './relightExecutor.js';
 import { isPosterNode } from './posterEditor.js';
@@ -31,6 +33,7 @@ import { isLayerEditorNode } from './layerEditor.js';
 import { runLayerEditorNode } from './layerExecutor.js';
 import { isStoryboardEditorNode } from './storyboardEditor.js';
 import { runStoryboardEditorNode } from './storyboardExecutor.js';
+import { isMultiPanelStoryboardNode, parsePanelsState, buildMultiPanelPrompt, isPanelsEmpty, splitStoryToPanels } from './multiPanelStoryboard.js';
 import { isMaterialNode } from './materialEditor.js';
 import { runMaterialNode } from './materialExecutor.js';
 import { isScene3DNode } from './scene3dEditor.js';
@@ -41,7 +44,7 @@ import { buildExecutionPlan, buildParallelExecutionPlan, computeExecutionOrder, 
 import type { SubflowDefinition } from './subflow.js';
 import { resolveNodeMentions, createStoreLookup } from './nodeMentions.js';
 import { flattenSubflows } from './subflow.js';
-import { overlayTextOnImage, isAnimatedWebpRef } from './emojiTextOverlay.js';
+import { isAnimatedWebpRef } from './emojiTextOverlay.js';
 
 /** A registered ComfyTV stage's extra metadata. */
 export interface ComfyTVSpecMeta {
@@ -439,6 +442,8 @@ export interface GraphRunOptions {
 	resolveImageGenDefaults?: () => Promise<{ providerId: string; modelId: string } | undefined>;
 	/** provider→Comfy LoadImage bridge (optional; defaults to global fetch + runner) */
 	resolveLoadImageRef?: (ref: string) => Promise<{ ok: boolean; image?: string; error?: string }>;
+	/** Vox 口播视频节点 RPC（vox.run + 轮询）。 */
+	runVoxPipeline?: VoxPipelineSendFn;
 	/**
 	 * Execution mode (docs/Agent-画布编排设计方案.md P1):
 	 *  - 'serial'  (default) — current behavior, stop on first failure.
@@ -578,6 +583,8 @@ export interface NodeExecutionInput {
 	 * absent, the default bridge (global fetch + runner baseUrl) is used.
 	 */
 	resolveLoadImageRef?: (ref: string) => Promise<{ ok: boolean; image?: string; error?: string }>;
+	/** Vox 口播视频节点 RPC（vox.run + 轮询）。Injected for testability. */
+	runVoxPipeline?: VoxPipelineSendFn;
 }
 
 /** LoadImage 原生节点（ComfyUI class_type 'LoadImage'）。 */
@@ -611,11 +618,12 @@ export async function resolveLoadImageInputForNode(input: NodeExecutionInput): P
 }
 
 /** 默认上传实现：全局 fetch + runner baseUrl → Comfy /upload/image。 */
-export function defaultResolveLoadImageRef(runner: IComfyRunner, fetchImpl?: BridgeFetchLike): (ref: string) => Promise<{ ok: boolean; image?: string; error?: string }> {
-	return (ref) => resolveLoadImageImageRef({
+export function defaultResolveLoadImageRef(runner: IComfyRunner, fetchImpl?: BridgeFetchLike): (ref: string, signal?: AbortSignal) => Promise<{ ok: boolean; image?: string; error?: string }> {
+	return (ref, signal) => resolveLoadImageImageRef({
 		ref,
 		baseUrl: runner.baseUrl,
 		fetchImpl: (fetchImpl ?? globalThis.fetch as unknown as BridgeFetchLike),
+		signal,
 	});
 }
 
@@ -628,6 +636,8 @@ export type ImageGenSendFn = (payload: {
 	width?: number;
 	height?: number;
 	numImages?: number;
+	/** quality hint for providers that support it (e.g. GPT Image "high"/"standard"). */
+	quality?: string;
 	/** img2img: upstream image ref (URL / data URL / snapshot ref). */
 	imageInput?: string;
 }) => Promise<{ images: Array<{ url?: string; b64?: string }> }>;
@@ -894,8 +904,10 @@ export async function runProviderImage(input: NodeExecutionInput): Promise<Singl
 	const mentionImageRef = mentioned.images[0];
 	const { width, height } = parseSize(
 		typeof values.size === 'string' ? values.size : undefined,
-		Number(values.width) || undefined,
-		Number(values.height) || undefined,
+		// 兼容新旧 widget 命名：新 spec 用 custom_width/custom_height，
+		// 旧值 width/height 仍可读（向后兼容已有节点数据）。
+		Number(values.custom_width ?? values.width) || undefined,
+		Number(values.custom_height ?? values.height) || undefined,
 	);
 	onProgress?.({ progress: 10 });
 	// img2img: explicit value → @[node:...] image mention → upstream IMAGE snapshot.
@@ -913,6 +925,8 @@ export async function runProviderImage(input: NodeExecutionInput): Promise<Singl
 			width,
 			height,
 			numImages: Number(values.numImages) > 0 ? Math.floor(Number(values.numImages)) : 1,
+			// quality: GPT Image 等 provider 特有（standard/high），其他 provider 忽略
+			quality: typeof values.quality === 'string' && values.quality ? values.quality : undefined,
 			imageInput,
 		});
 		onProgress?.({ progress: 90 });
@@ -1478,6 +1492,213 @@ export function isEmojiStageNode(type: string): boolean {
 	return type === 'ComfyTV.EmojiStage';
 }
 
+// ─── 多宫格故事板（ComfyTV.MultiPanelStoryboardStage）本地执行 ─────────────────
+//   panels_state（网格宫格内容）→ buildMultiPanelPrompt → runStageWorkflow
+//   （复用 qwen 多宫格内置模板 IMAGE_QWEN_2512_MULTI_PANEL，单图直出整张 N 宫格）。
+//   宫格数存 panels_state.gridCount，注入 values.grid_count 让模板 prefix 的
+//   {{grid_count}} 动态替换（见 stageWorkflowExecutor.interpolateBindingTemplate）。
+async function runMultiPanelStoryboardNode(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
+	const { runner, nodeId, type, values, upstreams, store, getSpec, onProgress, signal } = input;
+	const snapshotKey = input.snapshotKey ?? nodeId;
+	const spec = getSpec(type);
+	let panelsState = parsePanelsState(typeof values.panels_state === 'string' ? values.panels_state : '');
+	// ★ 宫格内容全空 + 有上游故事文本 → 启发式拆分成宫格（否则用用户手动填的）。
+	const upstreamStory = collectUpstreamTexts(store, upstreams).join('\n').trim();
+	if (isPanelsEmpty(panelsState) && upstreamStory) {
+		panelsState = splitStoryToPanels(upstreamStory, panelsState.gridCount);
+		// eslint-disable-next-line no-console
+		console.log(`[MultiPanelStoryboard] auto-split upstream story into ${panelsState.gridCount} panels`);
+	}
+	const prompt = buildMultiPanelPrompt(panelsState);
+	const runValues: Record<string, unknown> = {
+		...values,
+		workflow: 'Qwen 2512 多宫格',
+		prompt,
+		grid_count: String(panelsState.gridCount),
+	};
+	// eslint-disable-next-line no-console
+	console.log(`[MultiPanelStoryboard] run nodeId=${nodeId} gridCount=${panelsState.gridCount} prompt=${prompt.slice(0, 120)}`);
+	return runStageWorkflow({
+		runner,
+		nodeId,
+		snapshotKey,
+		type,
+		kind: spec?.comfyTV?.kind ?? 'image',
+		workflowKind: spec?.comfyTV?.workflowKind ?? 'image',
+		values: runValues,
+		upstreams,
+		store,
+		onProgress: (p) => onProgress?.({ progress: p.progress }),
+		signal,
+	});
+}
+
+// ─── Vox 口播视频节点（Vox.DirectorStage）本地 pipeline 执行 ─────────────────
+//
+// 与 ComfyUI 后端不同，vox 走「本地 Python pipeline」：webview 组装 beats.json →
+// 注入的 runVoxPipeline RPC（WorkflowEditorPanel 注入，内部 sendRequest vox.run +
+// 轮询 vox.getProgress）→ 主进程 spawn `python vox_pipeline.py` → 产出 final.mp4。
+
+/** vox pipeline 启动/轮询 RPC（注入，webview 保持 UI-free）。 */
+export type VoxPipelineSendFn = (req: {
+	projectId: string;
+	beats: unknown;
+	onStage?: (stage: string, progress: number) => void;
+	signal?: AbortSignal;
+}) => Promise<{ ok: boolean; finalMp4Path?: string; finalMp4Url?: string; error?: string }>;
+
+/** Vox 口播视频导演节点类型判定。 */
+export function isVoxDirectorNode(type: string): boolean {
+	return type === 'Vox.DirectorStage';
+}
+
+/** Vox 口播脚本节点类型判定（阶段3：生成本地 beats.json 文本）。 */
+export function isVoxScriptNode(type: string): boolean {
+	return type === 'Vox.ScriptStage';
+}
+
+/**
+ * 组装 beats.json。
+ *
+ * 优先级：
+ *  1. 上游 `texts` 端口若含合法 JSON（含 `beats` 数组或数组本身）→ 透传
+ *     （阶段3：上游 Saros.Prompt/TextStage 结构化输出 beats JSON）；
+ *  2. 否则用 topic 模板化生成 beats_count 个 beat（占位，narration/scene= topic）。
+ */
+export function buildVoxBeats(values: Record<string, unknown>, upstreamTexts: string[]): unknown {
+	// 1. 上游 beats JSON 透传
+	for (const t of upstreamTexts) {
+		const arr = extractJsonArray(t);
+		if (!arr) { continue; }
+		// 数组里找第一个含 beats 字段的对象（完整 beats.json 文档）
+		for (const item of arr) {
+			if (item && typeof item === 'object' && Array.isArray((item as { beats?: unknown }).beats)) {
+				return item;
+			}
+		}
+		// 整个数组也可能是 beats 数组（[ {id,narration,scene}, ... ]）
+		if (arr.length > 0 && arr.every(x => x && typeof x === 'object' && typeof (x as { narration?: unknown }).narration === 'string')) {
+			return {
+				beats: arr,
+				aspect: values.aspect ?? '9:16',
+				theme: values.theme ?? 'american-retro',
+				language: values.language ?? 'zh',
+				video_model: values.video_model ?? 'local-ltx',
+				provider: 'local',
+				voice: { voice_id: values.voice_id ?? '', speed: Number(values.speed ?? 1) },
+				music: values.music ?? '',
+				caption_style: values.caption_style ?? 'white',
+			};
+		}
+	}
+	// 2. topic 模板化（占位）
+	const topic = typeof values.topic === 'string' ? values.topic.trim() : '';
+	const beatsCount = clampInt(values.beats_count, 1, 12, 5);
+	const cameraMove = typeof values.camera_move === 'string' ? values.camera_move : 'push_in';
+	const motionStyle = typeof values.motion_style === 'string' ? values.motion_style : 'calm';
+	const duration = clampInt(values.duration, 1, 12, 4);
+	// ★ scene 必须给 SDXL 可用的英文：CLIP 文本编码器只认英文，中文 scene 会被直接忽略，
+	//   导致画面只剩英文风格描述随机生成（跟文章内容完全脱钩）。
+	//   但纯前端 TS 无法做中文→英文视觉场景翻译，所以这里只能给英文通用占位。
+	//   真正的"文章内容→视觉素材对应"需要上游 Saros.Prompt + VOX_LOCAL_QWEN3_4B_SCRIPT
+	//   节点用 Qwen3 LLM 把文章拆成 {narration(中文), scene(英文视觉), title_en, title_cn}
+	//   的结构化 beats JSON 透传下来，而非走 topic 模板化占位分支。
+	const theme = typeof values.theme === 'string' && values.theme ? values.theme : 'american-retro';
+	const scenePlaceholder = `thematic visual composition in ${theme} style, evoking the mood of the narration`;
+	const beats = Array.from({ length: beatsCount }, (_, i) => ({
+		id: i + 1,
+		narration: topic || `第 ${i + 1} 段`,   // ★ 中文给 TTS（edge-tts zh-CN-XiaoxiaoNeural）
+		scene: scenePlaceholder,                // ★ 英文给 SDXL（CLIP 拒中文）
+		// ★ shot 必须自带 scene：python keyframes.py 的 shots_of() 遍历 beat["shots"]
+		//   并访问 shot["scene"]（KeyError 若无）。beat 级 scene 不会下探到 shot。
+		shots: [{ camera_move: cameraMove, motion_style: motionStyle, duration, scene: scenePlaceholder }],
+	}));
+	return {
+		beats,
+		aspect: values.aspect ?? '9:16',
+		theme: values.theme ?? 'american-retro',
+		language: values.language ?? 'zh',
+		image_model: 'flux-dev',
+		image_resolution: '1k',
+		style: 'collage',
+		// ★ 免费方案 video_model='local-ltx'：clips.py 据此走 duration（4s 而非
+		//   veo3 特判的 8s），LocalProvider 用 LTX 2.3 图生视频 + zoompan 兜底。
+		video_model: values.video_model ?? 'local-ltx',
+		// ★ 免费方案：provider 默认 'local'（本地 ComfyUI SDXL + LTX 2.3 +
+		//   edge-tts），零 API Key。如需 MuAPI 付费后端，改 'muapi' 并配 key。
+		provider: 'local',
+		// voice_id 留空 → LocalProvider 按 language 映射 edge-tts 免费音色；
+		// 填 edge-tts 音色名（如 zh-CN-YunxiNeural）可自定义。
+		voice: { voice_id: values.voice_id ?? '', speed: Number(values.speed ?? 1) },
+		music: values.music ?? '',
+		caption_style: values.caption_style ?? 'white',
+	};
+}
+
+/** Vox.DirectorStage 执行器：组装 beats → 调 runVoxPipeline → 归档 video 快照。 */
+async function runVoxDirectorNode(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
+	const { nodeId, values, upstreams, store, onProgress, signal, runVoxPipeline } = input;
+	const empty: SingleNodeRunResult = { promptId: '', status: 'error', entries: [] };
+	const snapshotKey = input.snapshotKey ?? nodeId;
+
+	if (!runVoxPipeline) {
+		return { ...empty, error: 'Vox 口播视频节点缺少 vox.run IPC 通道（runVoxPipeline 未注入）' };
+	}
+	if (signal?.aborted) { return { promptId: '', status: 'canceled', entries: [] }; }
+
+	const upstreamTexts = collectUpstreamTexts(store, upstreams);
+	const beats = buildVoxBeats(values, upstreamTexts);
+	const projectId = `vox-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+	onProgress?.({ value: 5 });
+	const resp = await runVoxPipeline({
+		projectId,
+		beats,
+		onStage: (_stage, progress) => onProgress?.({ progress }),
+		signal,
+	});
+
+	if (signal?.aborted) { return { promptId: projectId, status: 'canceled', entries: [] }; }
+	if (!resp.ok || !resp.finalMp4Url) {
+		return { promptId: projectId, status: 'error', error: `口播视频生成失败：${resp.error ?? '未知错误'}`, entries: [] };
+	}
+
+	// ★ ref 用主进程静态服务返回的 http URL（webview <video> 可直接播放；
+	//   file:// 被 CSP 拦截，asWebviewUri 在 pooled webview 有 DNS 问题）。
+	const entry: MediaSnapshotEntry = {
+		nodeId: snapshotKey,
+		port: 'video',
+		key: `${snapshotKey}:video:0`,
+		index: 0,
+		media: {
+			kind: 'video',
+			ref: resp.finalMp4Url,
+			meta: resp.finalMp4Path ? { localPath: resp.finalMp4Path } : undefined,
+		},
+	};
+	store.put(entry, true);
+	onProgress?.({ value: 100 });
+	return { promptId: projectId, status: 'success', entries: [entry] };
+}
+
+/** Vox.ScriptStage 执行器：生成本地 beats.json 文本（上游透传 > topic 模板）。 */
+async function runVoxScriptNode(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
+	const { nodeId, values, upstreams, store } = input;
+	const snapshotKey = input.snapshotKey ?? nodeId;
+	const upstreamTexts = collectUpstreamTexts(store, upstreams);
+	const beats = buildVoxBeats(values, upstreamTexts);
+	const text = JSON.stringify(beats, null, 2);
+	const entry: MediaSnapshotEntry = {
+		nodeId: snapshotKey,
+		port: 'texts',
+		key: `${snapshotKey}:texts:0`,
+		index: 0,
+		media: { kind: 'text', ref: text },
+	};
+	store.put(entry, true);
+	return { promptId: '', status: 'success', entries: [entry] };
+}
+
 interface EmojiCellState { prompt: string; seed: number; text: string }
 
 /** 解析 `cells` widget（JSON 数组），长度对齐 rows*cols。 */
@@ -1515,7 +1736,7 @@ function truncateForLog(s: string, max: number): string {
  * Start 等输出，`media.kind === 'text'`）。按 upstreams 顺序 + 条目顺序返回，
  * 供 EmojiStage 把文本拆分成 m×n 个格子的 prompt。
  */
-function collectUpstreamTexts(store: MediaSnapshotStore, upstreams: string[] | undefined): string[] {
+export function collectUpstreamTexts(store: MediaSnapshotStore, upstreams: string[] | undefined): string[] {
 	const out: string[] = [];
 	for (const up of upstreams ?? []) {
 		for (const entry of store.byNode(up)) {
@@ -1697,10 +1918,11 @@ export function splitEmojiPrompts(texts: string[]): string[] {
  * （`ownSnapshots.map(e => e.media.ref)`）天然对齐。
  *
  * ## 两种运行范围（`run_scope`，由 EmojiStageEditor 写回）
- *  - `'all'`（默认，「生成全部」）：先 `clearNode` 清空旧归档（否则 put 持续
- *    追加，cellRefs 会错位到后半段），再逐格执行；
- *  - `'cell'`（「生成此表情」/ tile ⟳）：只跑 `selected_index` 一格；因 put 只能
- *    追加到末尾，跑完后按「旧列表 + 替换第 selIdx 项」重排回原位，避免其它格错位。
+ *  - `'all'`（「生成全部」已移除，改为「生成选中表情」）：先 `clearNode` 清空
+ *    旧归档（否则 put 持续追加，cellRefs 会错位到后半段），再逐格执行；
+ *  - `'cell'`（「生成选中表情」/「生成此表情」/ tile ⟳）：只跑 `selected_index`
+ *    一格；跑完后按「旧列表 + 替换第 selIdx 项」重排回原位（网格每格最新），
+ *    被替换的旧产物追加到末尾保留历史（重新生成后历史不删除，仍在 OUTPUT 显示）。
  *
  * 单格失败即返回 error，但**已成功的格保留归档**（部分成功可见）。
  */
@@ -1751,13 +1973,16 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 
 	const targets = scope === 'cell' ? [selIdx] : Array.from({ length: total }, (_, i) => i);
 
-	// 单格模式：记录现有图列表（按 index 序）用于跑完重排回原位。
+	// 单格模式：记录现有图/视频列表（按 index 序）用于跑完重排回原位。
+	// ★ 同时统计 image 与 video：动态表情现在是 MiniMax H3 视频（mp4，kind='video'），
+	//   runEmojiStageGrid 必须按 media 粒度感知，否则单格产物归档不到 cellRef（曾因
+	//   kind==='image' 过滤导致 `[EmojiStage] cell #0 success but no new image entry`）。
 	const imagesOf = (): MediaRef[] => store.byNode(snapshotKey)
-		.filter(e => e.media.kind === 'image')
+		.filter(e => e.media.kind === 'image' || e.media.kind === 'video')
 		.map(e => e.media);
-	/** 当前节点名下全部归档 key 的集合 —— 用于「跑完后按 key 差集精确定位本格新图」。 */
+	/** 当前节点名下全部归档 key 的集合 —— 用于「跑完后按 key 差集精确定位本格新产物」。 */
 	const imageKeysOf = (): Set<string> => new Set(
-		store.byNode(snapshotKey).filter(e => e.media.kind === 'image').map(e => e.key),
+		store.byNode(snapshotKey).filter(e => e.media.kind === 'image' || e.media.kind === 'video').map(e => e.key),
 	);
 	const before: MediaRef[] = scope === 'cell' ? imagesOf() : [];
 
@@ -1795,14 +2020,14 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 		// ★ 诊断：每格详细 prompt 来源（用户报告「表情包图像混乱」期间加强）。
 		//   三级优先级的实际命中，便于区分「cell.prompt 是错」「全局 prompt 是错」
 		//   还是「prompt 没错、产物渲染就错」。
-		// ⚠ 必须放在 cellValues 声明**之后**：之前引用 cellValues.fps/frames 会触发
+		// ⚠ 必须放在 cellValues 声明**之后**：之前引用 cellValues.duration_s 会触发
 		//   TDZ（`Cannot access 'cellValues' before initialization`）——生产构建
 		//   esbuild 的 `pure:['console.log']` 删除 console.log 时仍保留有副作用参数
 		//   求值，导致「生成表情包卡住」（日志 Uncaught (in promise) ReferenceError）。
 		// eslint-disable-next-line no-console
 		console.log(
 			`[EmojiStage] cell #${i}/${total} cellPromptSource=${cellPrompt === cell.prompt.trim() ? 'cell' : cellPrompt === cellPromptFromText(i) ? 'split' : 'global'} ` +
-			`prompt="${cellPrompt.slice(0, 80)}" seed=${cellSeed} fps=${cellValues.fps} frames=${cellValues.frames}`,
+			`prompt="${cellPrompt.slice(0, 80)}" seed=${cellSeed} duration_s=${cellValues.duration_s}`,
 		);
 		// ★ 本格执行前的图 key 快照 —— 跑完后用差集精确定位「本格产出的图」。
 		//   不能用 `imagesOf().at(-1)`：store 里可能并存多个 port 前缀
@@ -1813,6 +2038,18 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 		//   失败时降级到「普通贴纸（无需 LoRA）」—— 覆盖 LoRA 缺失/版本不兼容/
 		//   sub_batch_size 不匹配等环境问题导致的图像混乱或执行报错。
 		const EMOJI_FALLBACK_LABEL = '普通贴纸 (SDXL, 无需 LoRA)';
+		// ★ 检测上游是否有参考图（用于 fallback 时决定是否切换 img2img 模式）
+		const upstreamImageRef = collectUpstreamRefs(store, upstreams)['image'] ?? '';
+		const hasRefImg = Boolean(upstreamImageRef);
+		/** Fallback SDXL 模板的 img2img 切换：有参考图时 KSampler 接 VAEEncode + denoise=0.75 */
+		const patchFallbackToImg2Img: StageWorkflowRunOptions['promptPostProcess'] = hasRefImg ? (prompt) => {
+			const ks = (prompt as Record<string, unknown>)['5'] as { inputs?: Record<string, unknown> } | undefined;
+			if (!ks?.inputs) return;
+			ks.inputs.latent_image = ['11', 0];
+			ks.inputs.denoise = 0.75;
+			console.log('[EmojiStage] fallback → img2img mode (denoise=0.75)');
+		} : undefined;
+
 		const tryRunCell = async (fallback?: string): Promise<SingleNodeRunResult> => {
 			const v = fallback ? { ...cellValues, workflow: fallback } : cellValues;
 			const label = fallback ?? (typeof v.workflow === 'string' ? v.workflow : '(default)');
@@ -1833,6 +2070,7 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 					onProgress?.({ progress: (n + inner) / targets.length });
 				},
 				signal,
+				promptPostProcess: fallback === EMOJI_FALLBACK_LABEL ? patchFallbackToImg2Img : undefined,
 			}).catch((err: unknown) => {
 				const msg = err instanceof Error ? err.message : String(err);
 				// eslint-disable-next-line no-console
@@ -1899,24 +2137,45 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 		//
 		//   修复：显式取动画图作为本格主产物（不再依赖顺序 at(-1)），并把配文 caption
 		//   作为结构化 meta 写入动画图 —— 描述随动画图一起归档，导出/引用时跟着图走。
+		// ★ 同时识别 image + video（MiniMax H3 视频走 video 分支）
 		const producedNow = store.byNode(snapshotKey)
-			.filter(e => e.media.kind === 'image' && !keysBeforeCell.has(e.key));
-		const caption = cell.text.trim();
-		// 优先取动画 webp 作为本格主产物（与 comfyOutputsToSnapshots 的产出顺序无关）。
-		const primaryEntry = producedNow.find(e => isAnimatedWebpRef(e.media.ref))
+			.filter(e => (e.media.kind === 'image' || e.media.kind === 'video') && !keysBeforeCell.has(e.key));
+		// 优先取动画产物作为本格主产物：webp（AnimateDiff 动态贴纸）或 video（MiniMax H3）。
+		const primaryEntry = producedNow.find(e => isAnimatedWebpRef(e.media.ref) || e.media.kind === 'video')
 			?? producedNow[producedNow.length - 1];
 		const latest = primaryEntry?.media;
 		if (!latest) {
-			// 不该发生（status=success 却没新增图）：记一条诊断，跳过该格避免用
+			// 不该发生（status=success 却没新增产物）：记一条诊断，跳过该格避免用
 			// 别的格子的图冒充本格产物（历史上正是这里错位造成「表情两两重复」）。
 			// eslint-disable-next-line no-console
-			console.warn(`[EmojiStage] cell #${i} success but no new image entry — skip baking`);
+			console.warn(`[EmojiStage] cell #${i} success but no new image/video entry — skip baking`);
 		} else {
 			let media: typeof latest = latest;
-			// 动画图不做 Canvas 烘焙（会丢动画）；改为把 caption 写进 meta，
-			// 让描述随图归档。预览层/导出层优先读 meta.caption。
-			if (caption) {
-				media = { ...latest, meta: { ...(latest.meta ?? {}), caption } };
+			// ★ 视频产物（MiniMax H3 动态表情 mp4）自动转 GIF（微信表情包格式）：
+			//   GIF 作为本格主产物（网格显示 GIF，kind='image'），mp4 保留在 OUTPUT 历史。
+			//   转 GIF 失败不致命：回退用 mp4（网格用 <video> 渲染）。
+			if (latest.kind === 'video') {
+				try {
+					const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+					const gif = await convertVideoToGif(latest.ref, EMOJI_GIF_PARAMS, fetchImpl, (p) => onProgress?.({ progress: (n + (p.value ?? 0) / 100) / targets.length }));
+					const gifDataUrl = await blobToDataUrl(gif.gifBlob);
+					media = {
+						...latest,
+						kind: 'image',
+						ref: gifDataUrl,
+						meta: {
+							...(latest.meta ?? {}),
+							mime: 'image/gif',
+							gifFrames: String(gif.frames),
+							gifSize: `${gif.width}x${gif.height}`,
+						},
+					};
+					// eslint-disable-next-line no-console
+					console.warn(`[EmojiStage] cell #${i} video→gif done ${gif.width}x${gif.height} ${gif.frames}帧`);
+				} catch (e) {
+					// eslint-disable-next-line no-console
+					console.warn(`[EmojiStage] cell #${i} video→gif failed, fallback to mp4: ${e instanceof Error ? e.message : String(e)}`);
+				}
 			}
 			bakedByTarget.set(i, media);
 		}
@@ -1932,15 +2191,23 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 	//   前 total 项变成 [A, A', B, B', …]（A' = A 的烘焙副本，无配文时 ref 相同）
 	//   → 表情**两两重复**，且真正的后几格图被挤出可见范围。
 	const REPLAY_PORT = 'output';
+	// eslint-disable-next-line no-console
+	console.warn(`[EmojiStage] 收尾重排 scope=${scope} total=${total} bakedCount=${bakedByTarget.size}`);
 	if (scope === 'all') {
+		// eslint-disable-next-line no-console
+		console.warn(`[EmojiStage] clearNode before: ${store.byNode(snapshotKey).length} entries`);
 		store.clearNode(snapshotKey);
+		let replayed = 0;
 		for (let i = 0; i < total; i++) {
 			const media = bakedByTarget.get(i);
 			if (media) {
 				// skipImport=true：重放的是已入库资产，避免重复导入媒体库。
 				store.put({ nodeId: snapshotKey, port: REPLAY_PORT, key: '', media }, true);
+				replayed++;
 			}
 		}
+		// eslint-disable-next-line no-console
+		console.warn(`[EmojiStage] replay done: ${replayed}/${total} entries, store now=${store.byNode(snapshotKey).length}`);
 	} else if (scope === 'cell') {
 		// 单格模式：新图被追加到末尾，需挪回 selIdx 原位。
 		// 用 before（本轮开始前的列表）打底再替换第 selIdx 项。
@@ -1953,11 +2220,18 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 		const baked = bakedByTarget.get(selIdx);
 		if (baked) {
 			const arranged = [...before];
+			const replaced = arranged[selIdx]; // 被替换的旧产物（历史保留）
 			arranged[selIdx] = baked;   // 越界赋值 → 稀疏数组，下面 put 时跳过空洞
 			store.clearNode(snapshotKey);
 			// skipImport=true：重排搬运的是已入库资产，避免重复导入媒体库。
 			for (const media of arranged) {
 				if (media) { store.put({ nodeId: snapshotKey, port: REPLAY_PORT, key: '', media }, true); }
+			}
+			// ★ 历史保留：被替换的旧产物追加到末尾（用户要求「重新生成后历史表情
+			//   不要删除，仍在 outputs 显示」）。网格 cellRefs 取前 total 个 = 每格
+			//   最新；末尾多出的旧产物只在 OUTPUT 预览条展示，不影响网格对齐。
+			if (replaced && replaced.ref !== baked.ref) {
+				store.put({ nodeId: snapshotKey, port: REPLAY_PORT, key: '', media: replaced }, true);
 			}
 		}
 	}
@@ -1997,10 +2271,13 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 	if (isAskUserNodeType(type)) { return runAskUserNodeExecutor(input); }
 	if (isLLMImageNode(getSpec(type))) { return runProviderImage(input); }
 	if (isInstantNode(type)) { return runInstantNode(input); }
+	// 视频转 GIF —— 浏览器本地抽帧 + GIF89a 编码（ComfyUI 无 gif 输出节点）
+	if (isVideoToGifNode(type)) { return runVideoToGifNode(input); }
 	if (isRelightNode(type)) { return runRelightNode(input); }
 	if (isPosterNode(type)) { return runPosterNode(input); }
 	if (isLayerEditorNode(type)) { return runLayerEditorNode(input); }
 	if (isStoryboardEditorNode(type)) { return runStoryboardEditorNode(input); }
+	if (isMultiPanelStoryboardNode(type)) { return runMultiPanelStoryboardNode(input); }
 	if (isMaterialNode(type)) { return runMaterialNode(input); }
 	if (isScene3DNode(type)) { return runScene3DNode(input); }
 	if (isPickerNode(type)) { return runPickerNode(input); }
@@ -2016,6 +2293,11 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 			signal,
 		});
 	}
+	// Vox 口播视频导演节点：本地 Python pipeline（非 ComfyUI 后端），必须在
+	// 通用 schema 分支之前拦截（否则会走 runStageWorkflow 的占位 api_json）。
+	if (isVoxDirectorNode(type)) { return runVoxDirectorNode(input); }
+	// Vox 口播脚本节点：本地生成 beats.json 文本（供 DirectorStage texts 端口透传）。
+	if (isVoxScriptNode(type)) { return runVoxScriptNode(input); }
 	// EmojiStage 必须在通用 schema 分支之前拦截：m×n 网格要展开成多次单图执行
 	// （每格独立 prompt/seed），而 schema 分支只跑一次 workflow。
 	if (isEmojiStageNode(type)) { return runEmojiStageGrid({ ...input, values }); }
@@ -2034,6 +2316,7 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 			store,
 			onProgress: (p) => onProgress?.({ progress: p.progress }),
 			signal,
+			resolveImageRef: input.resolveLoadImageRef ?? defaultResolveLoadImageRef(input.runner),
 		}).catch(async (err: unknown): Promise<SingleNodeRunResult> => {
 			if (err instanceof StageWorkflowUnavailableError) {
 				// ComfyTV 扩展不可用（纯 ComfyUI / workflow 未准备）→ 按设计契约降级单节点执行。
@@ -2188,6 +2471,7 @@ export async function runGraphExecution(options: GraphRunOptions): Promise<Graph
 			askUser: options.askUser,
 			resolveImageGenDefaults,
 			resolveLoadImageRef,
+			runVoxPipeline: options.runVoxPipeline,
 		});
 		if (r.status === 'success') {
 			cardState.set(step.id, { runState: 'success', progress: 100, durationMs: r.durationMs });
@@ -2295,6 +2579,7 @@ async function runGraphExecutionParallel(options: GraphRunOptions, result: Graph
 				askUser: options.askUser,
 				resolveImageGenDefaults,
 				resolveLoadImageRef,
+				runVoxPipeline: options.runVoxPipeline,
 			});
 				if (r.status === 'success') {
 				cardState.set(step.id, { runState: 'success', progress: 100, durationMs: r.durationMs });

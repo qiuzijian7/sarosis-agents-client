@@ -23,6 +23,7 @@ import { COMFYTV_STAGE_META } from './comfyTVStageMeta.generated.js';
 import { COMFYTV_FX_FIELDS } from './comfyTVFxFields.generated.js';
 import { listBuiltinLabels } from './builtinWorkflows/index.js';
 import { isFxBuildNode } from './fxChain.js';
+import { VIDEO_TO_GIF_TYPE, VIDEO_TO_GIF_WIDGETS } from './videoToGif.js';
 
 export type NodeKind = 'react' | 'schema' | 'native' | 'llm';
 
@@ -505,6 +506,14 @@ export function registerSarosNodes(): void {
 	// provider 的 /images/generations 端点（OpenAI 兼容）。纯 provider 后端，
 	// 不依赖 ComfyUI runner；输出 IMAGE 快照可与 Comfy 节点接力（P1+）。
 	//
+	// 参数设计对齐 OpenAI GPT Image / DALL-E 等主流 provider（2026-08-26）：
+	//   - size 预设尺寸（优先于 width/height，provider 按预设映射）
+	//   - quality 标准/高质量（GPT Image 特有）
+	//   - numImages 批量出图数
+	//   - negativePrompt 负面提示词（部分 provider 支持）
+	//   - seed 可复现种子
+	//   - custom_width/custom_height 自定义尺寸（size 为空时生效）
+	//
 	// UI 与 ComfyTV.ImageStage 对齐（2026-08-12 重构）：schema 风格卡片、
 	// 同款端口（texts/images 入、images/image 出）、同款参数面板——仅把
 	// Image Stage 的 `workflow` 换成 provider 后端的 `model`，并新增
@@ -523,20 +532,144 @@ export function registerSarosNodes(): void {
 			{ name: 'image', type: 'COMFYTV_IMAGE' },
 		],
 		widgets: [
+			// ── Provider & Model ──────────────────────────────────────
 			// provider 选择（COMBO，nodeCard 动态填充已认证文生图 provider）
 			{ name: 'provider', type: 'COMBO', default: '', options: [] },
 			// model 选择（COMBO，随 provider 联动）
 			{ name: 'model', type: 'COMBO', default: '', options: [] },
+			// ── 图像规格 ─────────────────────────────────────────────
+			// 预设尺寸（优先级高于 custom_width/height；空串=使用自定义尺寸）
+			{ name: 'size', type: 'COMBO', default: '', options: [
+				{ value: '', label: '自定义' },
+				{ value: '1024x1024', label: '1024×1024 (方形)' },
+				{ value: '1792x1024', label: '1792×1024 (横版)' },
+				{ value: '1024x1792', label: '1024×1792 (竖版)' },
+				{ value: '2048x1152', label: '2048×1152 (宽屏)' },
+				{ value: '1152x2048', label: '1152×2048 (长屏)' },
+			]},
+			// 自定义宽度（size 为空时生效）
+			{ name: 'custom_width', type: 'INT', default: 1024 },
+			// 自定义高度（size 为空时生效）
+			{ name: 'custom_height', type: 'INT', default: 1024 },
+			// ── 生成控制 ─────────────────────────────────────────────
+			// 质量（GPT Image 等 provider 特有：standard/high）
+			{ name: 'quality', type: 'COMBO', default: 'standard', options: [
+				{ value: 'standard', label: '标准' },
+				{ value: 'high', label: '高质量' },
+			]},
+			// 批量出图数量
+			{ name: 'numImages', type: 'INT', default: 1, min: 1, max: 10 },
+			// 可复现种子（-1 = 随机）
 			{ name: 'seed', type: 'INT', default: -1 },
-			{ name: 'width', type: 'INT', default: 1024 },
-			{ name: 'height', type: 'INT', default: 1024 },
-			{ name: 'steps', type: 'INT', default: 20 },
+			// ── 提示词 ───────────────────────────────────────────────
+			// 正面提示词
 			{ name: 'prompt', type: 'TEXT', default: '' },
+			// 负面提示词（部分 provider 支持，如 ComfyUI 后端 / SDXL）
+			{ name: 'negativePrompt', type: 'TEXT', default: '' },
 		],
 		backendKind: 'provider',
 		providerCaps: 'imageGen',
 		color: '#06b6d4',
 		comfyTV: { stageKind: 'image', workflowKind: 'image-to-image' },
+	});
+	// ── Vox 口播视频节点（kind=schema，走 runStageWorkflow 内置模板）────────────
+	// 三节点串联：口播脚本(TEXT) → vox 图像(COMFYTV_IMAGES) → vox 视频(COMFYTV_VIDEO)。
+	// 端口/控件对齐 vox 管道（keyframes.py / clips.py / audio.py / styles.py）。
+	registerNodeSpec({
+		type: 'Vox.ScriptStage',
+		kind: 'schema',
+		title: '口播脚本',
+		category: 'vox',
+		inputs: [],
+		outputs: [{ name: 'texts', type: 'COMFYTV_TEXT' }],
+		widgets: [
+			{ name: 'title_cn', type: 'TEXT', default: '' },
+			{ name: 'title_en', type: 'TEXT', default: '' },
+			{ name: 'aspect', type: 'COMBO', default: '9:16', options: ['9:16', '16:9', '1:1', '4:3', '3:4'] },
+			{ name: 'language', type: 'COMBO', default: 'zh', options: ['zh', 'en'] },
+			{ name: 'theme', type: 'COMBO', default: 'american-retro', options: ['american-retro', 'tang', 'song', 'wpa-propaganda', '70s-groovy'] },
+			{ name: 'beats_count', type: 'INT', default: 5, min: 1, max: 12 },
+			{ name: 'prompt', type: 'TEXT', default: '为「{{topic}}」写一段口播脚本：标题中英、3-6 个镜头 beats，每个 beats 含 narration 与 scene，输出 JSON。' },
+		],
+		color: '#f97316',
+		comfyTV: { stageKind: 'vox-script', workflowKind: 'vox-script' },
+	});
+	registerNodeSpec({
+		type: 'Vox.ImageStage',
+		kind: 'schema',
+		title: 'vox 图像生成',
+		category: 'vox',
+		inputs: [{ name: 'texts', type: 'COMFYTV_TEXT' }],
+		outputs: [{ name: 'images', type: 'COMFYTV_IMAGES' }],
+		widgets: [
+			{ name: 'workflow', type: 'COMBO', default: 'Local Flux Dev Keyframe', options: ['Local Flux Dev Keyframe'] },
+			{ name: 'image_model', type: 'COMBO', default: 'flux-dev', options: ['flux-dev', 'sdxl'] },
+			{ name: 'style', type: 'COMBO', default: 'collage', options: ['collage', 'keyframe'] },
+			{ name: 'collage_style', type: 'COMBO', default: 'american-retro', options: ['american-retro', 'wpa-propaganda', '70s-groovy', 'bauhaus'] },
+			{ name: 'palette', type: 'COMBO', default: 'auto', options: ['auto', 'muted', 'vibrant', 'mono'] },
+			{ name: 'theme', type: 'COMBO', default: 'american-retro', options: ['american-retro', 'tang', 'song'] },
+			{ name: 'era', type: 'COMBO', default: 'auto', options: ['auto', '1920s', '1950s', '1980s'] },
+			{ name: 'aspect', type: 'COMBO', default: '9:16', options: ['9:16', '16:9', '1:1', '4:3', '3:4'] },
+			{ name: 'image_resolution', type: 'COMBO', default: '1k', options: ['1k', '2k'] },
+			{ name: 'steps', type: 'INT', default: 20, min: 1, max: 50 },
+			{ name: 'cfg', type: 'FLOAT', default: 7.0, min: 0, max: 20 },
+			{ name: 'seed', type: 'INT', default: -1 },
+		],
+		color: '#f97316',
+		comfyTV: { stageKind: 'vox-image', workflowKind: 'vox-image' },
+	});
+	registerNodeSpec({
+		type: 'Vox.VideoStage',
+		kind: 'schema',
+		title: 'vox 视频生成',
+		category: 'vox',
+		inputs: [{ name: 'images', type: 'COMFYTV_IMAGES' }],
+		outputs: [{ name: 'video', type: 'COMFYTV_VIDEO' }],
+		widgets: [
+			{ name: 'workflow', type: 'COMBO', default: 'Local LTX 2.3 FLF2V', options: ['Local LTX 2.3 FLF2V'] },
+			{ name: 'video_model', type: 'COMBO', default: 'ltx-2.3-flf2v', options: ['ltx-2.3-flf2v', 'wan-2.1', 'cogvideox-5b'] },
+			{ name: 'camera_move', type: 'COMBO', default: 'static', options: ['static', 'pan-left', 'pan-right', 'zoom-in', 'zoom-out', 'tilt-up', 'tilt-down'] },
+			{ name: 'motion_style', type: 'COMBO', default: 'calm', options: ['calm', 'punchy', 'slow', 'dynamic'] },
+			{ name: 'duration', type: 'INT', default: 4, min: 1, max: 12 },
+			{ name: 'element_motion', type: 'COMBO', default: 'auto', options: ['auto', 'foreground', 'background', 'none'] },
+			{ name: 'seed', type: 'INT', default: -1 },
+		],
+		color: '#f97316',
+		comfyTV: { stageKind: 'vox-video', workflowKind: 'vox-video' },
+	});
+	// ── Vox 口播视频导演（单节点 = 完整 pipeline，走本地 Python 执行）──────────
+	// kind=schema 复用卡片渲染，但执行走 runNodeOrStage 的 isVoxDirectorNode 分支
+	// （非 ComfyUI 后端）。参数对齐 vox 管道（keyframes/clips/audio/styles）。
+	registerNodeSpec({
+		type: 'Vox.DirectorStage',
+		kind: 'schema',
+		title: '口播视频导演',
+		category: 'vox',
+		inputs: [{ name: 'texts', type: 'COMFYTV_TEXT' }],
+		outputs: [{ name: 'video', type: 'COMFYTV_VIDEO' }],
+		widgets: [
+			{ name: 'topic', type: 'TEXT', default: '' },
+			{ name: 'beats_count', type: 'INT', default: 5, min: 1, max: 12 },
+			{ name: 'aspect', type: 'COMBO', default: '9:16', options: ['9:16', '16:9', '1:1', '4:3', '3:4'] },
+			{ name: 'language', type: 'COMBO', default: 'zh', options: ['zh', 'en', 'ja', 'ko', 'es', 'fr', 'de'] },
+			{ name: 'theme', type: 'COMBO', default: 'american-retro', options: ['american-retro', 'swiss-modern', 'punk-zine', 'soviet-constructivist', 'wpa-propaganda', '70s-groovy', 'chinese-ink', 'atomic-age', 'newsprint-editorial', 'gilded-deco'] },
+			// ★ 免费方案：voice_id 留空 → 按 language 映射 edge-tts 免费音色；
+			//   填 edge-tts 音色名（如 zh-CN-YunxiNeural）可自定义音色。
+			{ name: 'voice_id', type: 'TEXT', default: '' },
+			{ name: 'speed', type: 'FLOAT', default: 1.0, min: 0.5, max: 2.0 },
+			{ name: 'music', type: 'TEXT', default: '' },
+			// ★ 免费方案默认 local-ltx（LTX 2.3 本地图生视频 + zoompan 兜底）；
+			//   veo3 等是 MuAPI 付费模型，仅 provider='muapi' 时用。
+			{ name: 'video_model', type: 'COMBO', default: 'local-ltx', options: ['local-ltx', 'veo3.1-image-to-video', 'veo31-image-to-video', 'gemini-omni-flash/image-to-video', 'runway-image-to-video', 'kling-video'] },
+			{ name: 'camera_move', type: 'COMBO', default: 'push_in', options: ['push_in', 'push_out', 'pan_left', 'pan_right', 'zoom_in', 'zoom_out', 'tilt_up', 'tilt_down', 'static'] },
+			{ name: 'motion_style', type: 'COMBO', default: 'calm', options: ['calm', 'punchy', 'max', 'slow', 'dynamic'] },
+			{ name: 'duration', type: 'INT', default: 4, min: 1, max: 12 },
+			{ name: 'caption_style', type: 'COMBO', default: 'white', options: ['white', 'black', 'yellow', 'none'] },
+			// 免费方案（默认）无需 api_key；仅切换 provider='muapi' 付费后端时填写。
+			{ name: 'api_key', type: 'TEXT', default: '' },
+		],
+		color: '#f97316',
+		comfyTV: { stageKind: 'vox-director', workflowKind: 'vox-director' },
 	});
 	registerNodeSpec({ type: 'Saros.IfElse', kind: 'react', title: 'If/Else', category: 'controlFlow', inputs: [jin()], outputs: [{ name: 'true', type: 'SAROS_JSON' }, { name: 'false', type: 'SAROS_JSON' }], color: SAROS_NODE_COLORS.ifElse, widgets: [{ name: 'evaluationTarget', type: 'TEXT' }] });
 	// W3: Merge 汇聚节点（双输入）—— 分支合流。widget `mode`：
@@ -757,6 +890,7 @@ export function registerDefaultComfyTVStages(): void {
 		{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('image')[0], options: workflowOptionsFor('image') },
 		{ name: 'resolution', type: 'COMBO', default: '1K', options: COMFYTV_RESOLUTIONS },
 		{ name: 'aspect_ratio', type: 'COMBO', default: '1:1', options: COMFYTV_ASPECT_RATIOS },
+		{ name: 'grid_count', type: 'COMBO', default: '4', options: ['2', '4', '6', '9'] },
 		{ name: 'batch_size', type: 'INT', default: 1, min: 1, max: 8 },
 		{ name: 'prompt', type: 'TEXT', default: '' },
 	];
@@ -1135,14 +1269,22 @@ export function registerDefaultComfyTVStages(): void {
 			{ name: 'height', type: 'INT', default: 1024 },
 		],
 	});
-	// P3 — Storyboard Editor (reuses the Layer Editor artboard per board).
+	// P3 — 导演台编辑器（Storyboard Editor，复用 Layer Editor 画板 per board）。
 	registerNodeSpec({
 		type: 'ComfyTV.StoryboardEditorStage',
 		kind: 'native',
-		title: '分镜画板',
+		title: '导演台',
 		category: 'comfyStoryboard',
-		inputs: [],
-		outputs: [{ name: 'image', type: 'IMAGE' }],
+		inputs: [
+			// text = 上游分镜文本（Fountain 剧本）→ 打开编辑器时自动解析成 boards
+			{ name: 'text', type: 'COMFYTV_TEXT' },
+		],
+		// 对齐 ComfyTV storyboard_editor.py 三输出：image（封面）/ images（批次）/ video（animatic）
+		outputs: [
+			{ name: 'image', type: 'COMFYTV_IMAGE' },
+			{ name: 'images', type: 'COMFYTV_IMAGES' },
+			{ name: 'video', type: 'COMFYTV_VIDEO' },
+		],
 		widgets: [
 			{ name: 'width', type: 'INT', default: 1280 },
 			{ name: 'height', type: 'INT', default: 720 },
@@ -1186,6 +1328,27 @@ export function registerDefaultComfyTVStages(): void {
 			{ name: 'height', type: 'INT', default: 1024 },
 		],
 	});
+	// 多宫格故事板 — 网格宫格（2/4/6/9）漫画分格编辑器（browser-local）。
+	// 每格独立描述（角色/动作/对白/图像提示），run 时拼 qwen 多宫格 prompt 单图直出
+	// 整张多宫格合成图（workflowRun.runMultiPanelStoryboardNode → IMAGE_QWEN_2512_MULTI_PANEL）。
+	// 内嵌编辑器 = MultiPanelStoryboardEditor；inputs 接上游故事提示词（text，可选）。
+	registerNodeSpec({
+		type: 'ComfyTV.MultiPanelStoryboardStage',
+		kind: 'native',
+		title: '多宫格故事板',
+		category: 'comfyMultiPanel',
+		inputs: [
+			{ name: 'text', type: 'COMFYTV_TEXT' },
+		],
+		outputs: [
+			{ name: 'image', type: 'COMFYTV_IMAGE' },
+		],
+		widgets: [
+			{ name: 'panels_state', type: 'TEXT', default: '' },
+			{ name: 'width', type: 'INT', default: 1328 },
+			{ name: 'height', type: 'INT', default: 1328 },
+		],
+	});
 	// EmojiStage — 生成 m×n 个动态表情包（透明背景循环贴纸）。
 	// 每个格子可独立编辑 prompt/seed 并单独重生成；内嵌编辑器 = EmojiStageEditor。
 	// variant='generator' → 有运行按钮；workflowKind='emoji' → 出图读 builtinWorkflows/emojiWorkflows。
@@ -1213,8 +1376,9 @@ export function registerDefaultComfyTVStages(): void {
 			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('emoji')[0], options: workflowOptionsFor('emoji') },
 			{ name: 'rows', type: 'INT', default: 3, min: 1, max: 6 },
 			{ name: 'cols', type: 'INT', default: 3, min: 1, max: 6 },
-			{ name: 'fps', type: 'INT', default: 8, min: 1, max: 30 },
-			{ name: 'frames', type: 'INT', default: 16, min: 1, max: 32 },
+			// ★ 动态表情用 MiniMax H3 文生视频：时长（秒）驱动帧数（24fps 固定），
+			//   替代原 AnimateDiff 的 fps/frames（见 EMOJI_ANIMATED_MINIMAX）。
+			{ name: 'duration_s', type: 'FLOAT', default: 3, min: 2, max: 15 },
 			{ name: 'prompt', type: 'TEXT', default: '' },
 			{ name: 'cells', type: 'TEXT', default: '[]' },
 			{ name: 'selected_index', type: 'INT', default: 0, min: 0, max: 35 },
@@ -1224,6 +1388,26 @@ export function registerDefaultComfyTVStages(): void {
 		],
 		color: '#e879f9',
 		comfyTV: { stageKind: 'emoji', workflowKind: 'emoji', variant: 'generator' },
+	});
+	// VideoToGifStage — 视频转 GIF（浏览器本地执行，见 videoToGif.ts 顶部注释：
+	// ComfyTV 无 gif stage，本机 ComfyUI 也只有 SaveAnimatedWEBP/PNG）。
+	// variant='transform' → 无「生成」语义的运行按钮，改由 ACTIONS/参数变更驱动；
+	// 输出 kind='image' → GIF 用 <img> 播放动图（标 video 会被 <video> 播成黑框）。
+	// 同 EmojiStage：不在 comfyTVStageMeta.generated.ts，comfyTV 元数据显式声明。
+	registerNodeSpec({
+		type: VIDEO_TO_GIF_TYPE,
+		kind: 'schema',
+		title: '视频转 GIF',
+		category: 'comfyTV',
+		inputs: [
+			{ name: 'input', type: 'COMFYTV_VIDEO' },
+		],
+		outputs: [
+			{ name: 'output', type: 'COMFYTV_IMAGE' },
+		],
+		widgets: VIDEO_TO_GIF_WIDGETS,
+		color: '#22d3ee',
+		comfyTV: { stageKind: 'video', workflowKind: 'video', variant: 'transform' },
 	});
 }
 

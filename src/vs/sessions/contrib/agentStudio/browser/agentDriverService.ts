@@ -301,7 +301,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	 */
 	private async *_executeWorkflowTurn(
 		request: IAgentTurnRequest,
-		trigger: { workflowId: string; input?: string; variables?: Record<string, string> },
+		trigger: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] },
 		controller: AbortController,
 	): AsyncIterable<IChatStreamDelta> {
 		const wfService = this._instantiationService.invokeFunction((accessor) =>
@@ -318,7 +318,11 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			executionId = await wfService.executeWorkflow(trigger.workflowId, {
 				agentId: request.agentId,
 				sessionId: request.sessionId,
-				context: { input: trigger.input ?? '', ...(trigger.variables ?? {}) },
+				context: {
+					input: trigger.input ?? '',
+					...(trigger.variables ?? {}),
+					...(trigger.images && trigger.images.length > 0 ? { images: trigger.images } : {}),
+				},
 				skipVariableCollection: true,
 			});
 		} catch (err) {
@@ -333,34 +337,92 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		controller.signal.addEventListener('abort', abortListener);
 
 		try {
-			// 等待终态（Completed / Failed / Cancelled），收集最终输出
-			const finalOutput = await new Promise<{ output: string; failed: boolean; cancelled: boolean }>((resolve) => {
-				const sub = wfService.onDidExecutionStatusChange(state => {
-					if (state.executionId !== executionId) { return; }
-					const s = state.status as string;
-					if (s === 'completed' || s === 'failed' || s === 'cancelled') {
-						sub.dispose();
-						let last = '';
-						for (const ns of state.nodeStates.values()) {
-							if ((ns.status as string) === 'completed' && ns.output) {
-								last = ns.output;
+			// 收集终态结果（输出文本 + 媒体快照）。
+			const collectFinal = (state: { status: unknown; nodeStates: Map<string, { status: unknown; output?: string; snapshot?: Array<{ kind: string; ref: string }> }> }) => {
+				let last = '';
+				const images: string[] = [];
+				for (const ns of state.nodeStates.values()) {
+					if ((ns.status as string) === 'completed' && ns.output) {
+						last = ns.output;
+					}
+					// ComfyStage 媒体快照（image/video）→ 聊天卡渲染输出
+					if (ns.snapshot) {
+						for (const snap of ns.snapshot) {
+							if (snap.kind === 'image' || snap.kind === 'video') {
+								images.push(snap.ref);
 							}
 						}
-						resolve({ output: last, failed: s === 'failed', cancelled: s === 'cancelled' });
 					}
-				});
+				}
+				return { output: last, images };
+			};
+
+			// ComfyStage 节点逐格进度（node_progress trace）→ 队列 + 唤醒器。
+			const progressQueue: Array<{ nodeName: string; progress: number; message?: string }> = [];
+			let progressWake: (() => void) | null = null;
+			const progressSub = wfService.onDidExecutionTrace(ev => {
+				if (ev.executionId !== executionId || ev.kind !== 'node_progress') { return; }
+				progressQueue.push({ nodeName: ev.nodeName, progress: ev.progress, ...(ev.message !== undefined ? { message: ev.message } : {}) });
+				progressWake?.();
 			});
+
+			// 等待终态，期间透传进度：每次被进度唤醒就 yield 一条 progress delta，直到终态。
+			let finalOutput: { output: string; failed: boolean; cancelled: boolean; images: string[] };
+			for (;;) {
+				const terminal = await new Promise<{ output: string; failed: boolean; cancelled: boolean; images: string[] } | null>((resolve) => {
+					const sub = wfService.onDidExecutionStatusChange(state => {
+						if (state.executionId !== executionId) { return; }
+						const s = state.status as string;
+						if (s === 'completed' || s === 'failed' || s === 'cancelled') {
+							sub.dispose();
+							const collected = collectFinal(state);
+							resolve({ output: collected.output, failed: s === 'failed', cancelled: s === 'cancelled', images: collected.images });
+						}
+					});
+					progressWake = () => {
+						progressWake = null;
+						resolve(null);
+					};
+					// 竞态兜底：等待期间已有进度到达则立即唤醒。
+					if (progressQueue.length > 0) { progressWake(); }
+				});
+
+				if (terminal !== null) {
+					finalOutput = terminal;
+					break;
+				}
+
+				// 透传进度（取队列中最新一条，其余合并丢弃）。
+				const items = progressQueue.splice(0);
+				if (items.length > 0) {
+					const latest = items[items.length - 1];
+					yield {
+						type: 'progress',
+						progress: latest.progress,
+						...(latest.message !== undefined ? { stage: latest.message } : {}),
+						progressData: [{
+							id: `wf-${executionId}-progress`,
+							content: latest.message ?? `${latest.nodeName}：生成中 ${latest.progress}%`,
+							status: latest.progress >= 100 ? 'completed' as const : 'in-progress' as const,
+						}],
+					};
+				}
+			}
+			progressSub.dispose();
 
 			if (finalOutput.cancelled) {
 				yield { type: 'text', content: `⏹ 工作流已取消。` };
 			} else if (finalOutput.failed) {
 				yield { type: 'text', content: `❌ 工作流执行失败。${finalOutput.output ? `\n\n${finalOutput.output}` : ''}` };
 			} else {
+				const mediaMd = finalOutput.images.length > 0
+					? `\n\n${finalOutput.images.map((ref, i) => `![输出 ${i + 1}](${ref})`).join('\n')}`
+					: '';
 				yield {
 					type: 'text',
-					content: finalOutput.output
+					content: `${finalOutput.output
 						? finalOutput.output
-						: `✅ 工作流 **${trigger.workflowId}** 执行完成（无最终输出）。`,
+						: `✅ 工作流 **${trigger.workflowId}** 执行完成。`}${mediaMd}`,
 				};
 			}
 		} finally {

@@ -59,7 +59,8 @@ import { ToolApprovalDecision } from "../common/providers.js";
 import { Emitter } from '../../../../base/common/event.js';
 import { workflowAppliedEmitter } from './providers/tool/builtinToolProvider.js';
 import { canvasOpsRequestEmitter, resolveCanvasOps } from './providers/tool/canvasOpsBridge.js';
-import { snapshotArchiveEmitter, snapshotQueryEmitter, resolveSnapshotOutput, projectionArchiveEmitter, stageRunEmitter, resolveStageRun, onStageRunProgress, type SnapshotArchiveRequest, type SnapshotQueryRequest, type SnapshotResultPayload, type ProjectionArchiveRequest, type StageRunRequest, type StageRunResultPayload, type StageRunProgressPayload } from './workflow/workflowSnapshotBridge.js';
+import { snapshotArchiveEmitter, snapshotQueryEmitter, resolveSnapshotOutput, projectionArchiveEmitter, stageRunEmitter, resolveStageRun, onStageRunProgress, directStageRunEmitter, resolveDirectStageRun, onDirectStageRunProgress, type SnapshotArchiveRequest, type SnapshotQueryRequest, type SnapshotResultPayload, type ProjectionArchiveRequest, type StageRunRequest, type StageRunResultPayload, type StageRunProgressPayload, type DirectStageRunPayload } from './workflow/workflowSnapshotBridge.js';
+import { createComfyStageDelegate } from './workflow/comfyStageBridge.js';
 import { executeWorkflowScript } from './workflow/workflowExecutor.js';
 import { createWorkflowChildPort } from './providers/tool/workflowChildPort.js';
 import { validateWorkflowMeta, type IWorkflowMeta } from '../common/workflow/types.js';
@@ -781,7 +782,7 @@ export class AgentStudioWebviewController extends Disposable {
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: blob: https: http://127.0.0.1:* http://localhost:* vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:; connect-src data: blob: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: blob: https: http://127.0.0.1:* http://localhost:* vscode-webview: vscode-resource:; media-src data: blob: http://127.0.0.1:* http://localhost:* vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:; connect-src data: blob: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*;">
 	<title>Agent Studio</title>
 	${styleTag}
 	<style nonce="${nonce}">
@@ -1328,6 +1329,7 @@ export class AgentStudioWebviewController extends Disposable {
 						width?: number;
 						height?: number;
 						numImages?: number;
+						quality?: string;
 					},
 				);
 			case "reversePrompt.generate":
@@ -1355,6 +1357,11 @@ export class AgentStudioWebviewController extends Disposable {
 			case "comfy.launch":
 				// ComfyUI 一键启动（--enable-cors-header）。主进程 comfy:launch handler。
 				return this._handleComfyLaunch(p as unknown as { baseUrl?: string; port?: number } | undefined);
+			case "comfy.restart":
+				// ComfyUI 重启为跨域直连模式：杀占端口进程 → 等端口释放 → 用
+				// --enable-cors-header 重新启动（主进程 vscode:comfyRestart handler）。
+				// 用于「代理」模式下「重启为跨域直连」一键切换。
+				return this._handleComfyRestart(p as unknown as { baseUrl?: string; port?: number } | undefined);
 			case "comfy.getLaunchPaths":
 				// 查询主进程解析的启动路径（含 overrides 来源 env/override/auto）。
 				return this._handleComfyGetLaunchPaths();
@@ -1711,6 +1718,10 @@ export class AgentStudioWebviewController extends Disposable {
 				return this._handleMediaList(payload as MediaListFilter);
 			case "media.get":
 				return this._handleMediaGet(payload as { id: string });
+			case "media.getRootDir":
+				return this._handleMediaGetRootDir();
+			case "media.setRootDir":
+				return this._handleMediaSetRootDir(payload as { path: string });
 			case "media.getUrl":
 				return this._handleMediaGetUrl(payload as { id: string });
 			case "media.remove":
@@ -1803,6 +1814,20 @@ export class AgentStudioWebviewController extends Disposable {
 				if (spr?.runId) { onStageRunProgress(spr); }
 				return { ok: true };
 			}
+			case "workflow.stageDirectRunResult": {
+				// 存储工作流 ComfyStage 直跑回程（direct stage run 桥）。
+				const srr = p as unknown as StageRunResultPayload;
+				if (srr?.runId && !resolveDirectStageRun(srr)) {
+					this.logService.warn(`[AgentStudioWebviewController] workflow.stageDirectRunResult: unknown runId=${srr.runId} (already resolved/timed out)`);
+				}
+				return { ok: true };
+			}
+			case "workflow.stageDirectRunProgress": {
+				// 存储工作流 ComfyStage 直跑进度透传。
+				const spr = p as unknown as StageRunProgressPayload;
+				if (spr?.runId) { onDirectStageRunProgress(spr); }
+				return { ok: true };
+			}
 			case "workflow.runAgentNode": {
 				// M3: run one Saros.Agent canvas node through the dynamic-workflow
 				// child bridge (startWorkflowChild → UnifiedSubAgentDispatch).
@@ -1812,6 +1837,33 @@ export class AgentStudioWebviewController extends Disposable {
 				// M4c: 画布「直接执行」——绕过 LLM 决策，确定性触发 workflow 引擎执行脚本。
 				const ep = p as { meta?: Record<string, unknown>; script?: string; args?: unknown; canvasAnchorUid?: string };
 				return this._handleWorkflowExecuteScript(ep);
+			}
+			case "workflow.files.list": {
+				return this._handleWorkflowFilesList(p as { workflowId: string; section: 'scripts' | 'bin' });
+			}
+			case "workflow.files.read": {
+				return this._handleWorkflowFilesRead(p as { workflowId: string; section: 'scripts' | 'bin'; relPath: string });
+			}
+			case "workflow.files.write": {
+				return this._handleWorkflowFilesWrite(p as { workflowId: string; section: 'scripts' | 'bin'; relPath: string; content: string });
+			}
+			case "workflow.files.delete": {
+				return this._handleWorkflowFilesDelete(p as { workflowId: string; section: 'scripts' | 'bin'; relPath: string });
+			}
+			case "workflow.files.dir": {
+				return this._handleWorkflowFilesDir(p as { workflowId: string; section: 'scripts' | 'bin' });
+			}
+			case "vox.run": {
+				return this._handleVoxRun(p as { projectId: string; beats: unknown });
+			}
+			case "vox.getProgress": {
+				return this._handleVoxGetProgress(p as { projectId: string });
+			}
+			case "vox.cancel": {
+				return this._handleVoxCancel(p as { projectId: string });
+			}
+			case "vox.checkDeps": {
+				return this._handleVoxCheckDeps();
 			}
 			case "workflow.publishState": {
 				// 单行工具栏（v2）：查询发布状态（本地版本 vs 商城版本）。
@@ -2482,6 +2534,103 @@ export class AgentStudioWebviewController extends Disposable {
 			return { ok: false, error: r.error };
 		}
 		return { ok: true, value: r.value, agentsStarted: r.agentsStarted, projectionText: r.projectionText };
+	}
+
+	// ─── 工作流资源子目录（scripts / bin）文件操作 ─────────────────────────────
+
+	private async _handleWorkflowFilesList(p: { workflowId: string; section: 'scripts' | 'bin' }): Promise<{ ok: boolean; files?: Array<{ name: string; size: number; mtime: number; isDirectory: boolean }>; error?: string }> {
+		try {
+			const files = await this.workflowStorageService.listWorkflowFiles(p.workflowId, p.section);
+			return { ok: true, files };
+		} catch (e) {
+			return { ok: false, error: (e as Error).message };
+		}
+	}
+
+	private async _handleWorkflowFilesRead(p: { workflowId: string; section: 'scripts' | 'bin'; relPath: string }): Promise<{ ok: boolean; content?: string; error?: string }> {
+		try {
+			const content = await this.workflowStorageService.readWorkflowFile(p.workflowId, p.section, p.relPath);
+			return { ok: true, content };
+		} catch (e) {
+			return { ok: false, error: (e as Error).message };
+		}
+	}
+
+	private async _handleWorkflowFilesWrite(p: { workflowId: string; section: 'scripts' | 'bin'; relPath: string; content: string }): Promise<{ ok: boolean; error?: string }> {
+		try {
+			await this.workflowStorageService.writeWorkflowFile(p.workflowId, p.section, p.relPath, p.content);
+			return { ok: true };
+		} catch (e) {
+			return { ok: false, error: (e as Error).message };
+		}
+	}
+
+	private async _handleWorkflowFilesDelete(p: { workflowId: string; section: 'scripts' | 'bin'; relPath: string }): Promise<{ ok: boolean; error?: string }> {
+		try {
+			await this.workflowStorageService.deleteWorkflowFile(p.workflowId, p.section, p.relPath);
+			return { ok: true };
+		} catch (e) {
+			return { ok: false, error: (e as Error).message };
+		}
+	}
+
+	private async _handleWorkflowFilesDir(p: { workflowId: string; section: 'scripts' | 'bin' }): Promise<{ ok: boolean; path?: string; error?: string }> {
+		try {
+			const dir = await this.workflowStorageService.getWorkflowResourceDir(p.workflowId, p.section);
+			return { ok: true, path: dir?.fsPath };
+		} catch (e) {
+			return { ok: false, error: (e as Error).message };
+		}
+	}
+
+	// ─── Vox 口播视频节点（透传到主进程 vscode:voxRun / voxGetProgress / voxCancel / voxCheckDeps）──
+
+	private async _handleVoxRun(p: { projectId: string; beats: unknown }): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:voxRun', p);
+			}
+			return { ok: false, error: 'vox:run: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `vox:run 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	private async _handleVoxGetProgress(p: { projectId: string }): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:voxGetProgress', p);
+			}
+			return { ok: false, error: 'vox:getProgress: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `vox:getProgress 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	private async _handleVoxCancel(p: { projectId: string }): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:voxCancel', p);
+			}
+			return { ok: false, error: 'vox:cancel: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `vox:cancel 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	private async _handleVoxCheckDeps(): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:voxCheckDeps', {});
+			}
+			return { ok: false, error: 'vox:checkDeps: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `vox:checkDeps 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
 	}
 
 	private _sendEvent(type: string, data: unknown): void {
@@ -3555,6 +3704,15 @@ export class AgentStudioWebviewController extends Disposable {
 				this._sendEvent('workflow.stageRun', req);
 			}),
 		);
+		// Direct stage run：存储工作流 ComfyStage 节点直跑（按 stageClass + values，不依赖画布 stageUid）。
+		this._register(
+			directStageRunEmitter.event((req: DirectStageRunPayload) => {
+				this._sendEvent('workflow.stageDirectRun', req);
+			}),
+		);
+		// 注入生产 Comfy 执行委托：把存储工作流 ComfyStage 节点转发给画布 webview 真正执行
+		// （否则 /workflow <id> 触发含表情包节点的存储工作流时，该节点被静默跳过）。
+		this.workflowExecutionService.setComfyExecutionDelegate(createComfyStageDelegate());
 	}
 
 	/**
@@ -3757,6 +3915,7 @@ export class AgentStudioWebviewController extends Disposable {
 		width?: number;
 		height?: number;
 		numImages?: number;
+		quality?: string;
 		imageInput?: string;
 	}): Promise<{ images: Array<{ url?: string; b64?: string }> }> {
 		const provider = this.agentOSService.getModelProviders().find(p => p.id === payload.providerId);
@@ -3774,6 +3933,7 @@ export class AgentStudioWebviewController extends Disposable {
 				width: payload.width,
 				height: payload.height,
 				numImages: payload.numImages,
+				quality: payload.quality,
 				imageInput: payload.imageInput,
 			},
 			{ agentId: this.modelSelectorService.getSelectedAgentId?.() ?? undefined },
@@ -3969,6 +4129,45 @@ export class AgentStudioWebviewController extends Disposable {
 			return { ok: false, error: 'comfy:launch: 主进程 IPC 不可用' };
 		} catch (err) {
 			return { ok: false, error: `comfy:launch 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	/**
+	 * ComfyUI 重启为跨域直连模式（--enable-cors-header）。走主进程 `comfy:restart` IPC：
+	 * 探测占 baseUrl 端口的 PID → 杀进程（含子进程）→ 等端口释放 → 复用 doLaunch
+	 * 重新启动。返回中 `killed` 字段由前端用来给用户反馈「已停止 PID xxxx」。
+	 */
+	private async _handleComfyRestart(payload?: { baseUrl?: string; port?: number }): Promise<{
+		ok: boolean;
+		killed?: { pid: number; ok: boolean; error?: string }[];
+		alreadyRunning?: boolean;
+		starting?: boolean;
+		pid?: number;
+		version?: string;
+		error?: string;
+		pythonPath?: string;
+		mainPyPath?: string;
+		baseUrl?: string;
+	}> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:comfyRestart', payload ?? {}) as {
+					ok: boolean;
+					killed?: { pid: number; ok: boolean; error?: string }[];
+					alreadyRunning?: boolean;
+					starting?: boolean;
+					pid?: number;
+					version?: string;
+					error?: string;
+					pythonPath?: string;
+					mainPyPath?: string;
+					baseUrl?: string;
+				};
+			}
+			return { ok: false, error: 'comfy:restart: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `comfy:restart 失败：${err instanceof Error ? err.message : String(err)}` };
 		}
 	}
 
@@ -4190,6 +4389,18 @@ export class AgentStudioWebviewController extends Disposable {
 		const backend = this._getMediaBackend();
 		if (!backend) { return { removed: 0, freedBytes: 0 }; }
 		return backend.enforceQuota(opts);
+	}
+
+	private async _handleMediaGetRootDir(): Promise<string> {
+		const backend = this._getMediaBackend();
+		if (!backend) { return ''; }
+		return backend.getRootDir();
+	}
+
+	private async _handleMediaSetRootDir(payload: { path: string }): Promise<{ rootDir: string }> {
+		const backend = this._getMediaBackend();
+		if (!backend) { throw new Error('media store unavailable'); }
+		return backend.setRootDir(payload.path);
 	}
 
 	// ─── Memory inspection helpers (AgentMemoryProvider) ──────────────────────

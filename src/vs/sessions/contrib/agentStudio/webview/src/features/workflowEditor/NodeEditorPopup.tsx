@@ -34,7 +34,8 @@ import { RotoMaskEditor } from './RotoMaskEditor';
 import { isLayerEditorNode } from './comfyHost/layerEditor';
 import { LayerEditor } from './LayerEditor';
 import { isStoryboardEditorNode } from './comfyHost/storyboardEditor';
-import { StoryboardEditor } from './StoryboardEditor';
+import { isMultiPanelStoryboardNode } from './comfyHost/multiPanelStoryboard';
+import { MultiPanelStoryboardEditor } from './MultiPanelStoryboardEditor';
 import { isMaterialNode } from './comfyHost/materialEditor';
 import { MaterialEditor } from './MaterialEditor';
 import { isScene3DNode } from './comfyHost/scene3dEditor';
@@ -179,6 +180,7 @@ export function NodeEditorPopup({
 	const isRotoMask = isRotoMaskNode(nodeType);
 	const isLayerEditor = isLayerEditorNode(nodeType);
 	const isStoryboard = isStoryboardEditorNode(nodeType);
+	const isMultiPanel = isMultiPanelStoryboardNode(nodeType);
 	const isMaterial = isMaterialNode(nodeType);
 	const isScene3D = isScene3DNode(nodeType);
 	const isCrop = nodeType === 'ComfyTV.CropStage';
@@ -189,6 +191,7 @@ export function NodeEditorPopup({
 		() => (isPicker ? collectUpstreamCandidates(store, upstreams) : []),
 		[isPicker, store, upstreams],
 	);
+
 	// 媒体库历史资产（生成图片管理 P2 复用入口）：按 picker 节点类型过滤
 	const pickerKind = isPicker
 		? (nodeType.includes('Video') ? 'video' : nodeType.includes('Audio') ? 'audio' : 'image')
@@ -294,9 +297,11 @@ export function NodeEditorPopup({
 		cardStateStore?.set(nodeId, { runState: 'success', progress: 100 });
 	}, [nodeId, snapKey, store, cardStateStore]);
 
-	// P3 Storyboard Editor: persist board_state + register the cover render.
-	const handleStoryboardState = React.useCallback((json: string) => {
-		onValuesCommit?.(nodeId, { board_state: json });
+
+
+	// 多宫格故事板：persist panels_state（网格宫格内容）。
+	const handleMultiPanelState = React.useCallback((json: string) => {
+		onValuesCommit?.(nodeId, { panels_state: json });
 	}, [nodeId, onValuesCommit]);
 
 	// P3 Material: persist the PBR state + register the ball preview.
@@ -734,16 +739,13 @@ export function NodeEditorPopup({
 					/>
 				)}
 
-				{/* P3 Storyboard Editor: multi-board artboard */}
-				{isStoryboard && (
-					<StoryboardEditor
-						initialState={typeof values.board_state === 'string' ? values.board_state : ''}
-						width={Number(values.width) || 1280}
-						height={Number(values.height) || 720}
-						runners={runners}
-						preference={preference}
-						onStateChange={handleStoryboardState}
-						onRenderUploaded={handleLayerRender}
+
+
+				{/* 多宫格故事板：网格宫格编辑器（2/4/6/9 宫格，每格独立描述） */}
+				{isMultiPanel && (
+					<MultiPanelStoryboardEditor
+						initialState={typeof values.panels_state === 'string' ? values.panels_state : ''}
+						onStateChange={handleMultiPanelState}
 					/>
 				)}
 
@@ -882,7 +884,7 @@ export function NodeEditorPopup({
 				)}
 
 				{/* Generic form (non picker/loader/relight/poster/cornerpin/roto/layereditor/storyboard/material/scene3d/crop/mask) */}
-				{!isPicker && !isLoader && !isRelight && !isPoster && !isCornerPin && !isRotoMask && !isLayerEditor && !isStoryboard && !isMaterial && !isScene3D && !isCrop && !isMaskEdit && (
+				{!isPicker && !isLoader && !isRelight && !isPoster && !isCornerPin && !isRotoMask && !isLayerEditor && !isStoryboard && !isMultiPanel && !isMaterial && !isScene3D && !isCrop && !isMaskEdit && (
 					<>
 						{fields.length === 0 && !isReactNode && (
 							<div style={{ color: 'var(--vscode-descriptionForeground)', fontSize: 11 }}>
@@ -912,7 +914,7 @@ export function NodeEditorPopup({
 				)}
 
 				{/* Runner status / action */}
-				{!isPicker && !isLoader && !isRelight && !isPoster && !isCornerPin && !isRotoMask && !isLayerEditor && !isStoryboard && !isMaterial && !isScene3D && (
+				{!isPicker && !isLoader && !isRelight && !isPoster && !isCornerPin && !isRotoMask && !isLayerEditor && !isStoryboard && !isMultiPanel && !isMaterial && !isScene3D && (
 					<div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
 						{isReactNode ? (
 							<button
@@ -965,7 +967,7 @@ export function NodeEditorPopup({
 				)}
 
 				{/* Preview (non picker/loader/relight/poster/cornerpin/roto/layereditor/storyboard/material/scene3d — those embed their own) */}
-				{state !== 'idle' && !isPicker && !isLoader && !isRelight && !isPoster && !isCornerPin && !isRotoMask && !isLayerEditor && !isStoryboard && !isMaterial && !isScene3D && preview && preview.kind === 'image' && (
+				{state !== 'idle' && !isPicker && !isLoader && !isRelight && !isPoster && !isCornerPin && !isRotoMask && !isLayerEditor && !isStoryboard && !isMultiPanel && !isMaterial && !isScene3D && preview && preview.kind === 'image' && (
 					<div style={{ borderRadius: 6, overflow: 'hidden', border: '1px solid rgba(255,255,255,.15)', background: 'rgba(0,0,0,.4)' }}>
 						<img src={preview.ref} alt="生成结果" style={{ width: '100%', display: 'block', objectFit: 'contain' }} />
 					</div>

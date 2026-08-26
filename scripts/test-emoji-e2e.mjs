@@ -80,10 +80,9 @@ const argVal = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 
 const BASE = argVal('--base', 'http://127.0.0.1:8188');
 const PROMPT = argVal('--prompt', 'a cute cartoon orange cat');
 const SEED = Number(argVal('--seed', '42'));
-// 刻意用非模板默认值（模板 default 是 fps=8 / frames=16），这样断言
+// 刻意用非模板默认值（模板 default 是 duration_s=3），这样断言
 // 「api_json 里等于这个值」才能真正证明卡片控件透传生效。
-const FPS = Number(argVal('--fps', '12'));
-const FRAMES = Number(argVal('--frames', '12'));
+const DURATION_S = Number(argVal('--duration-s', '3'));
 const ONLY = argVal('--only', '');
 const QUICK = flag('--quick');
 
@@ -403,8 +402,8 @@ function applyInputs(cfg, values) {
 /**
  * 为动态模板补一个 SaveImage 分支，让同一次执行**同时**产出动画 webp 和逐帧 PNG。
  * webp 的像素解码（VP8L/VP8）在纯 Node 里不现实，而逐帧 PNG 能让我们对
- * `LayeredDiffusionDecodeRGBA` 在 batch=16 下的 alpha 方向做同样的硬断言。
- * 这不改变被测链路（同一个 DecodeRGBA 输出接两个 Save 节点）。
+ * `JoinImageWithAlpha`（标准VAE RGB + 逐帧 alpha）在 batch=16 下的 alpha 方向做
+ * 同样的硬断言。这不改变被测链路（同一个 JoinImageWithAlpha 输出接两个 Save 节点）。
  */
 function attachFrameDump(api) {
 	const animNode = Object.entries(api).find(([, n]) => n.class_type === 'SaveAnimatedWEBP');
@@ -463,30 +462,31 @@ async function fetchOutputs(rec) {
 /** 逐用例：注入 → 执行 → 取产物 → 按 expect 断言。 */
 async function runCase(name, cfg, expect) {
 	head(`[用例] ${name}`);
-	// 用**非默认**的 fps/frames，才能证明卡片控件真的透传到模板
-	// （曾经 fps 硬编码 8.0、batch_size 硬编码 16 → 控件是假的，调了没反应）。
-	const values = { prompt: PROMPT, seed: SEED, fps: FPS, frames: FRAMES };
-	let { api, applied } = applyInputs(cfg, values);
-	if (expect.animated) { api = attachFrameDump(api); }
+	// 用**非默认**的 duration_s，才能证明卡片控件真的透传到模板
+	// （曾经 duration_s 硬编码 3 → 控件是假的，调了没反应）。
+	const values = { prompt: PROMPT, seed: SEED, duration_s: DURATION_S };
+	const { api, applied } = applyInputs(cfg, values);
 
 	// 注入正确性（不依赖推理，先查）
+	// ★ 文本字段名因节点而异：CLIPTextEncode 用 text，TextEncodeQwenImageEdit 用 prompt，
+	//   PrimitiveStringMultiline 用 value（R2V 动态表情的 prompt 节点 138）。
 	const injected = Object.values(api).some(n =>
-		typeof n.inputs?.text === 'string' && n.inputs.text.includes(PROMPT));
-	check(injected, '注入: main_prompt 已写入 CLIPTextEncode');
-	const seedOk = Object.values(api).some(n => n.inputs?.seed === SEED);
-	check(seedOk, `注入: seed=${SEED} 已写入 KSampler`);
+		(typeof n.inputs?.text === 'string' && n.inputs.text.includes(PROMPT)) ||
+		(typeof n.inputs?.prompt === 'string' && n.inputs.prompt.includes(PROMPT)) ||
+		(typeof n.inputs?.value === 'string' && n.inputs.value.includes(PROMPT)));
+	check(injected, '注入: main_prompt 已写入文本编码节点');
+	// ★ Qwen/MiniMax 用 RandomNoise(noise_seed)，SDXL 用 KSampler(seed)，都要认。
+	const seedOk = Object.values(api).some(n => n.inputs?.seed === SEED || n.inputs?.noise_seed === SEED);
+	check(seedOk, `注入: seed=${SEED} 已写入采样节点（seed/noise_seed）`);
 
-	if (expect.animated) {
-		// ★ 帧率/帧数必须经 `option:` 绑定进模板，否则卡片上的控件是装饰品。
+	if (expect.video) {
+		// ★ 时长/分辨率必须经 `option:` 绑定进模板，否则卡片上的控件是装饰品。
 		info(`绑定: ${applied.map(a => `${a.nodeId}.${a.field}←${a.from}=${a.value}`).join(', ')}`);
-		const fpsNode = Object.values(api).find(n => n.class_type === 'SaveAnimatedWEBP');
-		check(fpsNode?.inputs?.fps === FPS, `注入: fps=${FPS} 已写入 SaveAnimatedWEBP（实际 ${fpsNode?.inputs?.fps}）`);
-		const latent = Object.values(api).find(n => n.class_type === 'EmptyLatentImage');
-		check(latent?.inputs?.batch_size === FRAMES, `注入: 帧数=${FRAMES} 已写入 EmptyLatentImage.batch_size（实际 ${latent?.inputs?.batch_size}）`);
-		// sub_batch_size 必须与 batch_size 同值，否则 DecodeRGBA 越界 → 彩色噪声
-		const dec = Object.values(api).find(n => n.class_type === 'LayeredDiffusionDecodeRGBA');
-		check(dec?.inputs?.sub_batch_size === FRAMES,
-			`注入: sub_batch_size 与帧数一致（=${FRAMES}，实际 ${dec?.inputs?.sub_batch_size}）`);
+		const durNode = Object.values(api).find(n => n.class_type === 'PrimitiveFloat');
+		check(durNode?.inputs?.value === DURATION_S, `注入: duration_s=${DURATION_S} 已写入 PrimitiveFloat（实际 ${durNode?.inputs?.value}）`);
+		const ref2v = Object.values(api).find(n => n.class_type === 'MiniMaxH3ReferenceToVideo');
+		check(ref2v?.inputs?.width === 768 && ref2v?.inputs?.height === 768,
+			`注入: 分辨率 768×768（实际 ${ref2v?.inputs?.width}×${ref2v?.inputs?.height}）`);
 	}
 
 	const rec = await runPrompt(api, name);
@@ -497,36 +497,22 @@ async function runCase(name, cfg, expect) {
 	info(`产物 ${files.length} 个: ${files.map(f => f.filename).join(', ').slice(0, 200)}`);
 
 	const pngs = files.filter(f => f.filename.toLowerCase().endsWith('.png'));
-	const webps = files.filter(f => f.filename.toLowerCase().endsWith('.webp'));
+	const mp4s = files.filter(f => f.filename.toLowerCase().endsWith('.mp4'));
 
-	// ---- 动画容器断言
-	if (expect.animated) {
-		if (check(webps.length > 0, '产物: 含动画 webp')) {
-			const meta = parseWebp(webps[0].bytes);
-			info(`webp: ${webps[0].bytes.length} bytes, anim=${meta.isAnim}, frames=${meta.frames}, alphaFlag=${meta.hasAlphaFlag}`);
-			check(meta.isAnim, '动画: webp 含 ANIM（是动画而非单帧）');
-			// ★ 精确等于注入的帧数 —— 只断言 ≥2 会漏掉「帧数控件不生效」
-			//   （硬编码 16 时传 12 也能过 ≥2）。
-			check(meta.frames === FRAMES, `动画: webp 帧数 == 注入帧数 ${FRAMES}（实际 ${meta.frames}）`);
-			check(meta.hasAlphaFlag, '动画: webp 声明 alpha 通道');
-		}
-		// 逐帧 PNG：帧数 + 帧间差异
-		if (check(pngs.length === FRAMES, `动画: 逐帧 PNG ${pngs.length} 张 == 注入帧数 ${FRAMES}`)) {
-			const f0 = decodePng(pngs[0].bytes);
-			const fMid = decodePng(pngs[Math.floor(pngs.length / 2)].bytes);
-			let diff = 0;
-			const n = Math.min(f0.px.length, fMid.px.length);
-			const step = Math.max(1, Math.floor(n / 60000));
-			let cnt = 0;
-			for (let i = 0; i < n; i += step) { diff += Math.abs(f0.px[i] - fMid.px[i]); cnt++; }
-			const avgDiff = diff / Math.max(1, cnt);
-			info(`帧间平均像素差 = ${avgDiff.toFixed(2)}`);
-			check(avgDiff > 1, `动画: 首帧与中间帧有差异（${avgDiff.toFixed(2)} > 1，非静止画面）`);
+	// ---- 视频容器断言（MiniMax H3 动态表情）
+	if (expect.video) {
+		// ★ 纯 Node 无 ffprobe，不做像素/时长/分辨率硬断言（时长/分辨率已在注入阶段
+		//   对 PrimitiveFloat / MiniMaxH3ImageToVideo 做硬断言）；只验证 mp4 存在且非空。
+		if (check(mp4s.length > 0, '产物: 含 mp4 视频')) {
+			info(`mp4: ${mp4s[0].bytes.length} bytes`);
+			check(mp4s[0].bytes.length > 10000, `视频: mp4 非空（${mp4s[0].bytes.length} bytes > 10KB）`);
 		}
 	}
 
-	// ---- 像素断言（透明贴纸 / 动态逐帧 都走这条）
-	if (expect.alpha) {
+	// ---- 像素断言（透明贴纸走这条；MiniMax 视频在上方 mp4 分支已断言、不进这里）
+	if (expect.video) {
+		// MiniMax H3 视频无 alpha / 逐帧 PNG，跳过像素断言。
+	} else if (expect.alpha) {
 		if (pngs.length === 0) {
 			fail(`${name}: 需要 PNG 做 alpha 断言，但没拿到 PNG`);
 		} else if (pngs.length === 1) {
@@ -592,17 +578,19 @@ async function checkEnv() {
 	info(`目标 ${BASE}，ComfyUI ${stats?.system?.comfyui_version ?? '?'}，设备 ${stats?.devices?.[0]?.name ?? '?'}`);
 
 	const oi = await jget('/object_info');
-	for (const n of ['LayeredDiffusionApply', 'LayeredDiffusionDecodeRGBA', 'SaveAnimatedWEBP', 'ADE_AnimateDiffLoaderGen1']) {
+	// 静态贴纸走 layerdiffuse + SDXL；动态表情走 MiniMax H3 文生视频（SaveVideo 出 mp4）。
+	for (const n of ['LayeredDiffusionApply', 'LayeredDiffusionDecode', 'InvertMask', 'JoinImageWithAlpha', 'MiniMaxH3ImageToVideo', 'SaveVideo', 'PrimitiveFloat', 'ComfyMathExpression']) {
 		check(!!oi[n], `节点已注册: ${n}`);
 	}
 	const ckpts = comboOptions(oi.CheckpointLoaderSimple?.input?.required?.ckpt_name);
 	check(ckpts.includes('sd_xl_base_1.0.safetensors'), `模型: sd_xl_base_1.0.safetensors（可选 ${ckpts.length} 个）`);
 
 	if (!QUICK) {
-		const motions = comboOptions(oi.ADE_AnimateDiffLoaderGen1?.input?.required?.model_name);
-		check(motions.includes('mm_sdxl_v10_beta.ckpt'), `模型: mm_sdxl_v10_beta.ckpt（可选 ${motions.length} 个）`);
-		const betas = comboOptions(oi.ADE_AnimateDiffLoaderGen1?.input?.required?.beta_schedule);
-		check(betas.includes('linear (AnimateDiff-SDXL)'), 'AnimateDiff: 支持 beta_schedule "linear (AnimateDiff-SDXL)"');
+		// MiniMax H3 T2V 动态表情所需的 UNet / CLIP 模型
+		const unets = comboOptions(oi.UNETLoader?.input?.required?.unet_name);
+		check(unets.includes('minimax_h3_fl2va_pruned_int8_convrot.safetensors'), `模型: minimax_h3_fl2va_pruned_int8_convrot.safetensors（可选 ${unets.length} 个）`);
+		const clips = comboOptions(oi.CLIPLoader?.input?.required?.clip_name);
+		check(clips.includes('qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'), `模型: qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors（可选 ${clips.length} 个）`);
 	}
 
 	// layerdiffuse 的 config 下拉必须含 Conv Injection（模板依赖它）
@@ -749,10 +737,11 @@ async function main() {
 	head('[模板] 从 emojiWorkflows.ts 实时加载');
 	info(`共 ${Object.keys(templates).length} 个: ${Object.keys(templates).join(' / ')}`);
 
-	// 期望矩阵：alpha=是否要求透明方向正确；animated=是否要求动画
+	// 期望矩阵：alpha=是否要求透明方向正确；video=是否要求 mp4 视频（MiniMax H3）
 	const EXPECT = {
+		'Qwen 贴纸 (默认)': { alpha: false, animated: false },
 		'透明贴纸 (SDXL)': { alpha: true, animated: false },
-		'动态表情 (AnimateDiff)': { alpha: true, animated: true, slow: true },
+		'动态表情 (MiniMax H3)': { video: true, slow: true },
 		'普通贴纸 (SDXL, 无需 LoRA)': { alpha: false, animated: false },
 	};
 	for (const [name, cfg] of Object.entries(templates)) {

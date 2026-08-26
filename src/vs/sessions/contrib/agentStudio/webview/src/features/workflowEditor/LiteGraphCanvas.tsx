@@ -84,10 +84,12 @@ export function findLinkAt(graph: LGraph, x: number, y: number, threshold = 12):
  * link menu never opened. We reuse litegraph's already-computed `_pos` so the
  * hit-test is pixel-identical to what the user sees.
  *
- * `canvasX`/`canvasY` are pixel coordinates relative to the canvas element
- * (same space litegraph's `e.canvasX/e.canvasY` use). `radius` is the hit
- * half-extent in pixels (litegraph uses 4; we default a touch larger so the
- * dot is comfortably clickable). Returns the hit link, or `undefined`.
+ * `canvasX`/`canvasY` are **graph coordinates** — NOT canvas pixels. litegraph's
+ * own `e.canvasX/e.canvasY` are computed as `clientX/scale - offset` (graph
+ * space), and `_pos` is derived from `getOutputPos`/`getInputPos` which also
+ * return graph coords — so both live in the same graph space. `radius` is the
+ * hit half-extent in graph units (litegraph uses 4; we default a touch larger
+ * so the dot is comfortably clickable). Returns the hit link, or `undefined`.
  */
 export function findLinkCentreAt(
 	liteCanvas: LGraphCanvas,
@@ -96,6 +98,11 @@ export function findLinkCentreAt(
 	radius = 6,
 ): LLink | undefined {
 	for (const segment of liteCanvas.renderedPaths) {
+		// `renderedPaths` 同时包含 link 与 reroute（LiteGraph drawConnections 都会
+		// add 进去）。本项目连线中点菜单只针对 link（buildLinkActions 依赖
+		// origin_id/target_id），reroute 无 origin_id → 跳过，避免把 reroute 误当
+		// link 传给 openLinkMenu 导致 removeLink(reroute.id) 之类错乱。
+		if ((segment as { origin_id?: number }).origin_id === undefined) { continue; }
 		const centre = (segment as { _pos?: [number, number] })._pos;
 		if (!centre) { continue; }
 		if (
@@ -484,6 +491,11 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 	 * 落位。x/y = graph 坐标（节点左上角），null = 不在 ghost 模式。
 	 */
 	const [ghost, setGhost] = React.useState<{ type: string; x: number; y: number } | null>(null);
+	// ★ dragPointerDown 注册在容器 capture phase 的 pointerdown 闭包里，需要读最新 ghost
+	//   决定是否抢平移。useEffect 依赖不包含 ghost（避免重注册整个拖拽事件栈），
+	//   所以用 ref 镜像 ghost，dragPointerDown 通过 ghostRef.current 读到最新值。
+	const ghostRef = React.useRef(ghost);
+	React.useEffect(() => { ghostRef.current = ghost; }, [ghost]);
 	const suppressStoreSync = React.useRef(false);
 	const snapshotStoreRef = React.useRef<MediaSnapshotStore | null>(null);
 	/** 已完成 nodeId → stageUid 快照迁移的 uid 集合（每节点只迁一次）。 */
@@ -510,7 +522,9 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				// the host media library (media.db), so the gallery shows the
 				// workflow's generated images even before a manual "save".
 				onAsset: (entry) => {
-					if (entry.media.kind !== 'image') { return; }
+					// ★ 之前只收 image，video 产物（MiniMax H3 mp4 / vox 视频）被过滤、
+					//   不进媒体库。改为 image + video 都收录（audio 暂不收录）。
+					if (entry.media.kind !== 'image' && entry.media.kind !== 'video') { return; }
 					collectAsset(workflowIdRef.current ?? '', entry);
 				},
 			},
@@ -803,6 +817,15 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			if (e.button !== 0) { return; }
 			// target 是可交互控件（input/select/textarea/button）→ 让控件处理，不抢拖拽
 			if (isInteractiveTarget(e.target)) { return; }
+			// ★ FollowCursor ghost 落位模式：不要抢 pointerdown、不要 stopPropagation、
+			//   不要 setPointerCapture，否则 e.stopPropagation() 阻断 ghost 层收 click，
+			//   setPointerCapture 把后续 pointerup 路由到容器而非 ghost 层 → ghost 层
+			//   onClick 永远收不到事件，「点击放置」无法触发。修复前 !hit 路径一律进
+			//   平移分支吞掉 click，导致节点落位失效。
+			if (ghostRef.current) {
+				dragRef = null;
+				return;
+			}
 			// ★ ctrl/meta + 左键 = 框选（ComfyUI legacy 原生 rubber-band 多选），
 			//   不是平移/节点拖拽。本 listener 挂在 container **capture** phase，
 			//   先于 LiteGraph 的 processMouseDown（canvas capture）触发。框选意图
@@ -825,12 +848,12 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				//   （Add Node / Add Reroute / Disconnect / Delete / Rename / Set Color）。
 				//   必须在此先于平移逻辑短路返回，否则 stopPropagation + setPointerCapture
 				//   会吞掉 React onClick，导致左键中点菜单永不弹出（右键正常）。
-				//   命中判定复用 findLinkAt 的曲线采样逻辑：连线在画布上绘制的是
-				//   二次贝塞尔曲线（控制点在水平轴），其真实中点与两节点直线中点
-				//   偏差很大；用直线中点判定会导致点击视觉圆点时距离超阈值而不弹菜单。
-				//   这里直接复用 findLinkAt（threshold 与 onClick 分支统一为 12）做命中，
-				//   保证两处判定一致。
-				const link = findLinkAt(graph, cx, cy, 12);
+				//   命中判定用 findLinkCentreAt：直接复用 LiteGraph 自己按**三次贝塞尔**
+				//   计算并存进 link._pos 的真实中点坐标（与用户看到的视觉圆点像素级一致）。
+				//   旧的 findLinkAt 用二次贝塞尔（水平控制点）采样，非水平连线时其中点
+				//   与真实中点偏差 50–75 graph units，远超阈值 → 点击圆点静默 miss、
+				//   菜单不弹。此处与 onClick 兜底分支统一用 findLinkCentreAt 保证一致。
+				const link = findLinkCentreAt(liteCanvas, cx, cy, 6);
 				if (link) {
 					// 拦截平移并直接触发菜单，避免事件继续冒泡到 React onClick
 					// 造成重复弹出。注意：本分支不设置 dragRef，因此 dragPointerUp
@@ -1640,6 +1663,21 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		};
 		window.addEventListener('wf-node-run', handleNodeRun);
 
+		// ★ 节点中止：nodeCard「取消」按钮 dispatch → 调用 WorkflowEditorPanel.abortNodeRun
+		const handleNodeAbort = (e: Event) => {
+			const detail = (e as CustomEvent<{ nodeId: string }>).detail;
+			if (!detail?.nodeId) { return; }
+			// 动态 import 避免循环依赖（WorkflowEditorPanel ↔ LiteGraphCanvas）
+			import('./WorkflowEditorPanel').then(({ abortNodeRun }) => {
+				const ok = abortNodeRun(detail.nodeId);
+				if (ok) {
+					cardStateStore.set(detail.nodeId, { runState: 'idle', progress: 0 });
+					getTaskStore().finish(detail.nodeId, false, '已取消');
+				}
+			}).catch(() => { /* ignore */ });
+		};
+		window.addEventListener('wf-node-abort', handleNodeAbort);
+
 		// Card ACTIONS（Edit Image / Relight / Presets…，ComfyTV 语义）→ 打开编辑器，
 		// 与 ▶ 运行按钮（wf-node-run）区分：actions 从不执行生成。
 		const handleNodeEdit = (e: Event) => {
@@ -2349,10 +2387,11 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			const ds = liteCanvas.ds;
 			const gx = (e.clientX - rect.left) / ds.scale - ds.offset[0];
 			const gy = (e.clientY - rect.top) / ds.scale - ds.offset[1];
-			// 与 dragPointerDown 共用 findLinkAt 的曲线采样命中判定（threshold
-			// 统一为 12，避免两处阈值/中点算法不一致导致行为分裂）。若 pointerdown
-			// 已触发过菜单，这里因已被 stopPropagation 不会重复进入；作为兜底守卫。
-			const link = findLinkAt(graph, gx, gy, 12);
+			// 与 dragPointerDown 共用 findLinkCentreAt 命中判定（复用 LiteGraph 的
+			// 三次贝塞尔真实中点 _pos，radius 统一 6，避免两处阈值/中点算法不一致）。
+			// 若 pointerdown 已触发过菜单，这里因已被 stopPropagation 不会重复进入；
+			// 作为兜底守卫。
+			const link = findLinkCentreAt(liteCanvas, gx, gy, 6);
 			if (!link) { return; }
 			onLinkHandleClick?.(link, gx, gy, e.clientX, e.clientY);
 		}}

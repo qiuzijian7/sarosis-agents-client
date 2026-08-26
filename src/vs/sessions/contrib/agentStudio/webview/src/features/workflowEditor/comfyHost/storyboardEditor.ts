@@ -13,8 +13,8 @@
  *  （ComfyTV 无 name，后端忽略未知字段）。
  *--------------------------------------------------------------------------------------------*/
 
-import type { LayerDoc } from './layerEditor.js';
-import { defaultLayerDoc, layerDocToJson, parseLayerDoc } from './layerEditor.js';
+import type { LayerDoc } from './layerEditor';
+import { defaultLayerDoc, layerDocToJson, parseLayerDoc } from './layerEditor';
 
 export interface StoryBoardData {
 	uid: string;
@@ -53,17 +53,16 @@ export function generateBoardUid(): string {
 	return s;
 }
 
-let boardSeq = 0;
-function nextBoardName(): string {
-	boardSeq += 1;
-	return `镜头 ${boardSeq}`;
-}
-
-export function defaultBoardData(width: number, height: number, name?: string): StoryBoardData {
+/**
+ * 纯数据创建 board（对齐 ComfyTV createBoard：newShot 默认 false，layerState
+ * 默认 null——pentrado/自研 LayerEditor 在渲染时用 defaultLayerDoc 兜底）。
+ * 用于 boardsFromImagesJson / boardsFromShotsJson / fountainToBoards 等纯数据
+ * 导入场景。
+ */
+export function createBoard(partial?: Partial<StoryBoardData>): StoryBoardData {
 	return {
 		uid: generateBoardUid(),
-		name: name ?? nextBoardName(),
-		newShot: true,
+		newShot: false,
 		durationMs: null,
 		dialogue: '',
 		action: '',
@@ -74,8 +73,21 @@ export function defaultBoardData(width: number, height: number, name?: string): 
 		imagePrompt: '',
 		motionPrompt: '',
 		refUrl: null,
-		layerState: defaultLayerDoc(width, height),
+		layerState: null,
 		compositeUrl: null,
+		...partial,
+	};
+}
+
+/**
+ * 画板内「新增镜头」用的默认数据：带 name + 初始化 layerState。
+ * ★ newShot 语义对齐 ComfyTV（默认 false = 延续上一镜头标签，而非每板都是
+ *   新镜头）——否则 shotLabels 的 "1A/1B" 语义失效。
+ */
+export function defaultBoardData(width: number, height: number, name?: string): StoryBoardData {
+	return {
+		...createBoard({ name: name }),
+		layerState: defaultLayerDoc(width, height),
 	};
 }
 
@@ -118,7 +130,7 @@ export function parseBoardState(value: unknown, width = 1280, height = 720): Sto
 				return {
 					uid: str(b.uid) || generateBoardUid(),
 					name: str(b.name, undefined as unknown as string) || undefined,
-					newShot: b.newShot !== false,
+					newShot: b.newShot === true,
 					durationMs: typeof b.durationMs === 'number' && b.durationMs >= 100 ? b.durationMs : null,
 					dialogue: str(b.dialogue),
 					action: str(b.action),
@@ -195,4 +207,117 @@ export function patchBoard(state: StoryboardDoc, uid: string, patch: Partial<Omi
 
 export function isStoryboardEditorNode(type: string): boolean {
 	return type === 'ComfyTV.StoryboardEditorStage';
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * P0 移植：对齐 ComfyTV boardDoc.ts 的纯函数（totalDurationMs / shotLabels /
+ * coverImageUrl / boardsToImagesJson / duplicateBoardData / boardsFromImagesJson
+ * / suggestedDurationMs / boardsFromShotsJson）。
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** 全片总时长（每板有效时长之和）。 */
+export function totalDurationMs(doc: StoryboardDoc): number {
+	return doc.boards.reduce((sum, b) => sum + boardDurationMs(doc, b), 0);
+}
+
+/** 26 进制字母列（0→A, 25→Z, 26→AA...），对齐 ComfyTV shotLetters。 */
+function shotLetters(n: number): string {
+	let out = '';
+	let v = n;
+	do {
+		out = String.fromCharCode(65 + (v % 26)) + out;
+		v = Math.floor(v / 26) - 1;
+	} while (v >= 0);
+	return out;
+}
+
+/**
+ * Storyboarder 式镜头标签：boards 共享 "1A" 标签直到下一个 newShot 板。
+ * 首板恒为 "1A"（i===0 时 shotIndex 从 -1 递增到 0）。
+ */
+export function shotLabels(doc: StoryboardDoc): string[] {
+	let shotIndex = -1;
+	return doc.boards.map((b, i) => {
+		if (i === 0 || b.newShot) { shotIndex += 1; }
+		return `1${shotLetters(Math.max(0, shotIndex))}`;
+	});
+}
+
+/** 封面图（首个有图像的板）。 */
+export function coverImageUrl(doc: StoryboardDoc): string {
+	for (const b of doc.boards) {
+		const url = boardImageUrl(b);
+		if (url) { return url; }
+	}
+	return '';
+}
+
+/** 图片批次 JSON（对齐 LayerEditor/ImagePool 约定：{images:[{index,label,image_url}]}）。 */
+export function boardsToImagesJson(doc: StoryboardDoc): string {
+	const labels = shotLabels(doc);
+	const images: Array<{ index: number; label: string; image_url: string }> = [];
+	doc.boards.forEach((b, i) => {
+		const url = boardImageUrl(b);
+		if (!url) { return; }
+		images.push({ index: images.length + 1, label: labels[i], image_url: url });
+	});
+	return JSON.stringify({ images });
+}
+
+/** 深拷贝 board（新 uid），对齐 Storyboarder 的 Duplicate Board。 */
+export function duplicateBoardData(board: StoryBoardData): StoryBoardData {
+	return {
+		...board,
+		uid: generateBoardUid(),
+		layerState: board.layerState ? (JSON.parse(JSON.stringify(board.layerState)) as LayerDoc) : null,
+	};
+}
+
+/** 图片批次 {images:[{image_url,label}]} → 参考板（对齐 ComfyTV boardsFromImagesJson）。 */
+export function boardsFromImagesJson(raw: string): StoryBoardData[] {
+	let obj: unknown;
+	try { obj = JSON.parse(raw || ''); } catch { return []; }
+	const images = (obj as { images?: unknown })?.images;
+	if (!Array.isArray(images)) { return []; }
+	return (images as Array<Record<string, unknown>>)
+		.filter(im => typeof im?.image_url === 'string' && im.image_url)
+		.map(im => createBoard({
+			newShot: true,
+			refUrl: String(im.image_url),
+			notes: typeof im.label === 'string' && im.label !== 'composite' ? im.label : '',
+		}));
+}
+
+const CJK_RE = /[぀-ヿ㐀-䶿一-鿿豈-﫿]/g;
+
+/** Storyboarder 式阅读速度估算：CJK 150ms/字 + 拉丁 300ms/词，下限 1000ms。 */
+export function suggestedDurationMs(board: StoryBoardData): number | null {
+	const text = (board.dialogue || '').trim();
+	if (!text) { return null; }
+	const cjk = (text.match(CJK_RE) || []).length;
+	const latinWords = text.replace(CJK_RE, ' ').split(/\s+/).filter(Boolean).length;
+	return Math.max(1000, 500 + cjk * 150 + latinWords * 300);
+}
+
+/** StoryboardStage LLM shots {shots:[...]} → 新板（对齐 ComfyTV boardsFromShotsJson）。 */
+export function boardsFromShotsJson(raw: string): StoryBoardData[] {
+	let obj: unknown;
+	try { obj = JSON.parse(raw || ''); } catch { return []; }
+	const shots = (obj as { shots?: unknown })?.shots;
+	if (!Array.isArray(shots)) { return []; }
+	return (shots as Array<Record<string, unknown>>).map(s => {
+		const durS = Number(s.duration);
+		return createBoard({
+			newShot: true,
+			durationMs: Number.isFinite(durS) && durS > 0 ? Math.round(durS * 1000) : null,
+			dialogue: String(s.dialogue ?? ''),
+			action: String(s.action ?? ''),
+			scenePurpose: String(s.scene_purpose ?? ''),
+			character: String(s.character ?? ''),
+			shotSize: String(s.shot_size ?? ''),
+			imagePrompt: String(s.image_prompt ?? s.prompt ?? ''),
+			motionPrompt: String(s.motion_prompt ?? ''),
+			refUrl: typeof s.image_url === 'string' && s.image_url ? s.image_url : null,
+		});
+	});
 }

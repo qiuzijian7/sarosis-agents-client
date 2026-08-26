@@ -16,9 +16,10 @@
  * （`packages/terminal-security/src/evaluateTerminalCommandSecurity.ts`，1241 行）：
  *   · 工具自身声明 basePolicy（我们 = `Dangerous`，即默认要确认）；
  *   · 命令分析的结果与 basePolicy 取**更严者**（`getMostRestrictive`）。
- *   · 因此默认配置下**行为完全不变**；只有用户显式开启「终端命令免确认」后，
- *     本模块的 `Safe` 判定才生效，而危险命令仍会被**升级**回需确认。
- *   这保证了「放宽」这件事永远是用户主动选择 + 安全层兜底，而非静默降级。
+ *   · 本模块的 `Safe` 判定只对「已知只读」命令放行（设置
+ *     `autoApproveReadOnlyCommands` 默认开启，用户可关闭），而危险命令仍会被
+ *     **升级**回需确认。
+ *   这保证了「放宽」这件事永远只落在已知只读命令上 + 安全层兜底，而非静默降级。
  *
  * **抄 Hermes 的「操作符短路」**（`tools/approval.py` 的 `_ALLOWLIST_SHELL_OPERATOR_RE`）：
  *   命令一旦含 shell 操作符，Hermes 直接让 allowlist 快捷通道失效 —— **不试图解析
@@ -41,15 +42,19 @@
  *     **审批流程根本不介入**，任何路由都无法放行。
  *  ② `providers/tool/executeCodeGuards.ts` — 源码写入护栏（`detectScriptSourceWrite`）
  *     与 Unix-only 命令探测，同样在 handler 内硬拦。
- *  ③ **本模块** — 只回答一个问题：「这条命令是否**已知只读**，可以跳过交互审批？」
- *     它**只会让审批变宽**，因此必须由用户显式开启设置才生效（见 toolExecutionGuard
- *     的 `_terminalAutoApproveProvider`）；且①②在 handler 层独立生效，
+ *  ③ **本模块** — 只回答一个问题：「这条命令是否**已知只读或验证/构建**，可以跳过
+ *     交互审批？」它**只会让审批变宽**（危险命令仍会被升级回需确认），由设置
+ *     `autoApproveReadOnlyCommands` 门控（见 toolExecutionGuard 的
+ *     `_terminalAutoApproveProvider`）；且①②在 handler 层独立生效，
  *     本模块放行也不会绕过它们。
  */
 
 /** 命令安全评估结果。 */
 export const enum ShellCommandSafety {
-	/** 已知只读、无副作用 —— 用户开启免确认后可直接执行。 */
+	/**
+	 * 已知只读（无副作用）或「验证/构建」（执行项目自己的编译/测试/脚本）——
+	 * 用户开启免确认后可直接执行。
+	 */
 	Safe = 'safe',
 	/** 未知或有副作用 —— 必须弹审批。 */
 	NeedsApproval = 'needs-approval',
@@ -127,6 +132,37 @@ const SAFE_COMMANDS: ReadonlySet<string> = new Set([
 	// ── 包管理器只读脚本（带子命令限制）──
 	'npm', 'yarn', 'pnpm',
 ]);
+
+/**
+ * 验证 / 构建型命令白名单（2026-08-22，用户决策「验证/构建也免审批」）。
+ *
+ * 与 `SAFE_COMMANDS`（纯只读）的差异：这些命令**会执行**（编译、跑测试、执行
+ * package.json 脚本），因此有副作用。放行的前提是「执行的是**项目自己**的编译 /
+ * 打包 / 测试」，信任度与「沙箱内 file_write 免审批」同级 —— 都在用户 workspace
+ * 内，且产物落在构建目录（out/dist/build）而非直接改写源码。
+ *
+ * 明确**不放行**（保持 fail-closed）：
+ *   · `python3` / `node` / `sh` / `bash` 裸解释器 —— 可执行任意代码、内容对审批层
+ *     不可见，远超「验证/构建」语义（`-c`/`-e` 已在 GLOBAL_DANGEROUS_ARGS）。
+ *   · `make` / `cmake` / `cargo` / `go` —— 任意构建脚本执行器，本项目生态未用到。
+ *   · 危险参数（-Command / -EncodedCommand / --eval / --exec）仍被
+ *     GLOBAL_DANGEROUS_ARGS 拦。
+ */
+const BUILD_VERIFY_COMMANDS: ReadonlySet<string> = new Set([
+	// 编译器 / 打包器（产物 = 构建目录，不直接改写源码）
+	'tsc', 'esbuild', 'vite', 'rollup', 'webpack',
+	// 测试框架（执行项目自己的测试套件）
+	'jest', 'vitest', 'mocha', 'pytest',
+]);
+
+/** 包管理器 run 子命令允许的 script 名（验证/构建语义；支持 `build:prod` 复合名）。 */
+const BUILD_VERIFY_SCRIPT_NAMES: ReadonlySet<string> = new Set([
+	'build', 'compile', 'lint', 'test', 'typecheck', 'type-check',
+	'check', 'verify', 'format', 'fmt', 'coverage',
+]);
+
+/** 允许「run <script>」免审批的包管理器。 */
+const BUILD_VERIFY_PACKAGE_MANAGERS: ReadonlySet<string> = new Set(['npm', 'yarn', 'pnpm']);
 
 /**
  * 子命令白名单 —— 这些命令只有特定子命令才算只读。
@@ -214,7 +250,10 @@ function isSafeSegment(segment: string): boolean {
 	if (!tokens || tokens.length === 0) { return false; }
 
 	const name = canonicalizeCommandName(tokens[0]);
-	if (!SAFE_COMMANDS.has(name)) { return false; }
+	if (!SAFE_COMMANDS.has(name)) {
+		// 非只读命令 → 尝试「验证/构建」判定（2026-08-22 用户决策）
+		return isBuildVerifySegment(segment);
+	}
 
 	const args = tokens.slice(1);
 	const lowerArgs = args.map(a => a.toLowerCase());
@@ -237,17 +276,103 @@ function isSafeSegment(segment: string): boolean {
 	if (allowedSubs) {
 		// 第一个非选项参数即子命令
 		const sub = lowerArgs.find(a => !a.startsWith('-'));
-		if (!sub || !allowedSubs.has(sub)) { return false; }
+		if (!sub || !allowedSubs.has(sub)) {
+			// 包管理器的 run/test 子命令 → 尝试「验证/构建脚本」判定
+			// （npm run build / npm test / yarn build 等；git 等非包管理器不在此列）
+			if (BUILD_VERIFY_PACKAGE_MANAGERS.has(name)) {
+				return isBuildVerifyPackageManagerCall(name, lowerArgs);
+			}
+			return false;
+		}
 	}
 
 	return true;
 }
 
 /**
- * 评估终端命令是否只读安全。
+ * 判断脚本名是否属于「验证/构建」语义（精确命中，或 `build:prod` 复合名前缀命中）。
+ */
+function isBuildVerifyScriptName(script: string): boolean {
+	for (const base of BUILD_VERIFY_SCRIPT_NAMES) {
+		if (script === base || script.startsWith(base + ':')) { return true; }
+	}
+	return false;
+}
+
+/**
+ * 判定包管理器调用（npm / yarn / pnpm）是否为「验证/构建」脚本执行。
+ *
+ * 三种形态：
+ *   · `npm run <script>` / `yarn run <script>` / `pnpm run <script>`
+ *   · `npm test` / `yarn test` / `pnpm test`（≡ run test）
+ *   · `yarn <script>` / `pnpm <script>`（省略 run；npm **不能**省略 ——
+ *     `npm build` 是 npm 内置命令而非 script）
+ *
+ * 只放行 script 名命中 {@link BUILD_VERIFY_SCRIPT_NAMES} 的；`npm run deploy` /
+ * `npm run clean` 等不在表内 → fail-closed 回审批。
+ */
+function isBuildVerifyPackageManagerCall(name: string, lowerArgs: readonly string[]): boolean {
+	const positional = lowerArgs.filter(a => !a.startsWith('-'));
+	if (positional.length === 0) { return false; }
+
+	if (positional[0] === 'test') { return true; }
+
+	let script: string | undefined;
+	if (positional[0] === 'run') {
+		script = positional[1];
+	} else if (name === 'yarn' || name === 'pnpm') {
+		script = positional[0];   // 省略 run
+	} else {
+		return false;             // npm 不能省略 run
+	}
+
+	return script ? isBuildVerifyScriptName(script) : false;
+}
+
+/**
+ * 判定单个管道段是否为「验证/构建」命令（在只读白名单未命中后调用）。
+ *
+ * 覆盖：
+ *   1. 编译器 / 打包器 / 测试框架（{@link BUILD_VERIFY_COMMANDS}）；
+ *   2. `npx <已知只读/构建命令>`（npx 本身可下载执行任意包，故必须限定目标）；
+ *   3. 包管理器 run <验证/构建脚本>（{@link isBuildVerifyPackageManagerCall}）。
+ *
+ * 危险参数（-Command / -EncodedCommand / --eval / --exec）一律先排除，与只读侧同源。
+ */
+function isBuildVerifySegment(segment: string): boolean {
+	const tokens = tokenize(segment);
+	if (!tokens || tokens.length === 0) { return false; }
+
+	const name = canonicalizeCommandName(tokens[0]);
+	const lowerArgs = tokens.slice(1).map(a => a.toLowerCase());
+
+	// 全局危险参数：对构建命令同样禁止
+	for (const a of lowerArgs) {
+		if (GLOBAL_DANGEROUS_ARGS.includes(a)) { return false; }
+	}
+
+	// 编译器 / 打包器 / 测试框架
+	if (BUILD_VERIFY_COMMANDS.has(name)) { return true; }
+
+	// npx：只放行「后跟已知只读/构建命令」
+	if (name === 'npx') {
+		const target = canonicalizeCommandName(lowerArgs[0] ?? '');
+		return target ? (BUILD_VERIFY_COMMANDS.has(target) || SAFE_COMMANDS.has(target)) : false;
+	}
+
+	// 包管理器 run <验证/构建脚本>
+	if (BUILD_VERIFY_PACKAGE_MANAGERS.has(name)) {
+		return isBuildVerifyPackageManagerCall(name, lowerArgs);
+	}
+
+	return false;
+}
+
+/**
+ * 评估终端命令是否可免审批（只读，或验证/构建）。
  *
  * @param command 原始命令字符串
- * @returns `Safe` 仅当：无危险元字符、且每个管道段都命中只读白名单。
+ * @returns `Safe` 仅当：无危险元字符、且每个管道段都命中只读或验证/构建白名单。
  */
 export function evaluateShellCommandSafety(command: string | undefined): ShellCommandSafety {
 	const cmd = (command ?? '').trim();
@@ -315,7 +440,8 @@ export function isShellToolWithCommandArg(toolName: string): boolean {
 export const SHELL_APPROVAL_SHAPE_GUIDANCE =
 	'\n\nCOMMAND SHAPE DECIDES WHETHER THE USER IS INTERRUPTED. These force an approval prompt that blocks'
 	+ ' your execution: `&&` `;` `||` `&` `>` `<` backticks `$(` `@(` `${` `{}` `%` `::` `[` `$` newlines, and interpreter'
-	+ ' wrappers (powershell -Command, bash -c, python -c). A single known read-only command may run without asking.'
+	+ ' wrappers (powershell -Command, bash -c, python -c). A single known read-only command, or a build/verify command'
+	+ ' (tsc, esbuild, vite, npm/yarn/pnpm run build/test/lint/typecheck), may run without asking.'
 	+ ' So: pass "cwd" rather than `cd X && Y`; never wrap in `powershell -Command` (you are ALREADY in a shell);'
 	+ ' and to inspect a file use file_read (with limit:1 for line count + size) instead of shell counting.';
 

@@ -77,6 +77,45 @@ suite('shellCommandSafety', () => {
 		});
 	});
 
+	suite('★ 放行：验证/构建命令（2026-08-22 用户决策）', () => {
+		test('编译器 / 打包器', () => {
+			safe('npx tsc --noEmit');
+			safe('tsc --noEmit -p tsconfig.json');
+			safe('esbuild src/index.ts --bundle');
+			safe('vite build');
+		});
+		test('测试框架', () => {
+			safe('jest');
+			safe('vitest run');
+			safe('pytest -q');
+			safe('mocha');
+		});
+		test('包管理器 run <验证/构建脚本>', () => {
+			for (const c of ['npm run build', 'npm test', 'npm run lint', 'npm run typecheck',
+				'npm run test:unit', 'npm run build:prod', 'yarn build', 'pnpm test', 'pnpm run compile']) { safe(c); }
+		});
+		test('npx 后跟已知构建命令', () => {
+			safe('npx tsc --noEmit');
+			safe('npx vite build');
+			safe('npx esbuild a.ts --bundle');
+		});
+		test('★ 控制组：非验证/构建 script 仍审批（fail-closed）', () => {
+			for (const c of ['npm run deploy', 'npm run clean', 'npm run start', 'npm run publish',
+				'npm run preinstall', 'npm run postinstall', 'yarn deploy', 'pnpm run x']) { needs(c); }
+		});
+		test('★ 控制组：裸解释器仍审批（可执行任意代码）', () => {
+			for (const c of ['python3 -c "print(1)"', 'python3 script.py', 'node -e "x"',
+				'node script.js', 'bash -c "ls"', 'sh ./run.sh']) { needs(c); }
+		});
+		test('★ 控制组：任意构建脚本执行器仍审批', () => {
+			for (const c of ['make', 'cmake .', 'cargo build', 'go build', 'gradle build']) { needs(c); }
+		});
+		test('★ 控制组：构建命令带危险参数仍审批', () => {
+			needs('tsc --eval x');
+			needs('npx tsc -EncodedCommand abc');
+		});
+	});
+
 	suite('★ 审批：重定向（能把只读命令变成写文件）', () => {
 		test('> / >> / <', () => {
 			needs('Get-ChildItem > out.txt');
@@ -155,10 +194,11 @@ suite('shellCommandSafety', () => {
 			needs('git');
 			needs('git -C /tmp');
 		});
-		test('★ npm run/test/build 刻意不放行（脚本内容对审批层不可见）', () => {
-			needs('npm run build');
-			needs('npm test');
-			needs('yarn build');
+		test('★ npm run <验证/构建脚本> 放行、其余 run script 仍审批', () => {
+			safe('npm run build');
+			safe('npm test');
+			safe('yarn build');
+			needs('npm run deploy');
 			needs('pnpm run x');
 		});
 		test('npm 纯查询子命令放行', () => {

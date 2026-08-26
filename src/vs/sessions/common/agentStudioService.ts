@@ -590,6 +590,8 @@ export interface IChatSendOptions {
 		readonly input?: string;
 		/** 表单收集的自定义模板变量（{{topic}} 等）；合并进 execution context 供变量替换。 */
 		readonly variables?: Record<string, string>;
+		/** 参考图引用（data URL / http ref）；合并进 execution context 供 ComfyStage/EmojiStage 消费。 */
+		readonly images?: string[];
 	};
 	/**
 	 * 聊天模式选择器（craft/ask/plan/workflow）—— 稳定的 UI 策略，随 sendMessage 传入。

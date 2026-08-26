@@ -19,13 +19,16 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { validatedIpcMain } from '../../../../base/parts/ipc/electron-main/ipcMain.js';
 import { net } from 'electron';
-import { spawn } from 'child_process';
+import { spawn, exec } from 'child_process';
+import { promisify } from 'util';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { existsSync, readFileSync, createWriteStream, mkdirSync, readdirSync } from 'fs';
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
-import { parseComfyDesktopConfig, pickComfyLaunchPaths } from './comfyLauncher.js';
+import { parseComfyDesktopConfig, pickComfyLaunchPaths, type ComfyLaunchResult } from './comfyLauncher.js';
+
+const execAsync = promisify(exec);
 
 interface DownloadState {
 	taskId: string;
@@ -52,6 +55,7 @@ export class ComfyLaunchChannel extends Disposable {
 
 	override dispose(): void {
 		validatedIpcMain.removeHandler('vscode:comfyLaunch');
+		validatedIpcMain.removeHandler('vscode:comfyRestart');
 		validatedIpcMain.removeHandler('vscode:comfyGetLaunchPaths');
 		validatedIpcMain.removeHandler('vscode:comfySetLaunchPaths');
 		validatedIpcMain.removeHandler('vscode:comfyCheckDeps');
@@ -150,6 +154,192 @@ export class ComfyLaunchChannel extends Disposable {
 		attempt(url, 5);
 	}
 
+	/**
+	 * 查找占 baseUrl 端口的 LISTENING 进程 PID（跨平台）。
+	 * Windows: `netstat -ano` 解析；Unix: `lsof -t -iTCP:PORT -sTCP:LISTEN`。
+	 * 失败（命令不存在 / 超时 / 权限）返回空数组 → 上层 fallback 走 doLaunch。
+	 * 排除自身 PID（杀自己 = 进程自杀）。
+	 */
+	private async findListeningPidsOnPort(port: number): Promise<number[]> {
+		const cmd = process.platform === 'win32'
+			? `netstat -ano -p TCP`
+			: `lsof -nP -iTCP:${port} -sTCP:LISTEN -t`;
+		try {
+			const { stdout } = await execAsync(cmd, { timeout: 5000, windowsHide: true });
+			const pids = new Set<number>();
+			const portStr = `:${port}`;
+			for (const line of stdout.split(/\r?\n/)) {
+				const trimmed = line.trim();
+				if (!trimmed) { continue; }
+				if (process.platform === 'win32') {
+					// 形如 `TCP    0.0.0.0:8188    0.0.0.0:0    LISTENING    12345` —— 限定 LISTENING + 端口列匹配
+					if (!trimmed.includes('LISTENING') || !trimmed.includes(portStr)) { continue; }
+					const m = /\sLISTENING\s+(\d+)\s*$/.exec(trimmed);
+					if (m?.[1]) { pids.add(Number(m[1])); }
+				} else {
+					// Unix: lsof -t 每行一个 PID
+					const pid = Number(trimmed);
+					if (Number.isFinite(pid) && pid > 0) { pids.add(pid); }
+				}
+			}
+			pids.delete(process.pid);  // 不杀自己
+			return Array.from(pids);
+		} catch (err) {
+			this.logService.info(`[AgentStudio] comfy:restart findPids ${cmd} 失败: ${err instanceof Error ? err.message : String(err)}`);
+			return [];
+		}
+	}
+
+	/**
+	 * 杀一组 PID（含子进程）。跨平台：
+	 * - Windows: `taskkill /pid <pid> /T /F`（/T 杀进程树）
+	 * - Unix: SIGTERM → 3s 后检查存活 → 仍活则 SIGKILL
+	 * 返回每个 PID 的结果（成功/失败 + 错误），不抛。
+	 */
+	private async killPids(pids: number[]): Promise<{ pid: number; ok: boolean; error?: string }[]> {
+		const results: { pid: number; ok: boolean; error?: string }[] = [];
+		for (const pid of pids) {
+			try {
+				if (process.platform === 'win32') {
+					await execAsync(`taskkill /pid ${pid} /T /F`, { timeout: 5000, windowsHide: true });
+				} else {
+					// Unix: 先 SIGTERM，3s 后还活就 SIGKILL。
+					try {
+						process.kill(pid, 'SIGTERM');
+					} catch (e) {
+						// ESRCH = 进程已不存在，视为成功（其他错误继续抛）
+						if ((e as NodeJS.ErrnoException).code === 'ESRCH') { results.push({ pid, ok: true }); continue; }
+						throw e;
+					}
+					await new Promise<void>(r => setTimeout(r, 3000));
+					try {
+						process.kill(pid, 0);  // signal 0 = 仅检查存活
+						// 还活着 → SIGKILL
+						process.kill(pid, 'SIGKILL');
+					} catch (e) {
+						// ESRCH = 3s 内已自然退出；其他错误抛
+						if ((e as NodeJS.ErrnoException).code !== 'ESRCH') { throw e; }
+					}
+				}
+				results.push({ pid, ok: true });
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.logService.info(`[AgentStudio] comfy:restart kill PID ${pid} 失败: ${msg}`);
+				results.push({ pid, ok: false, error: msg });
+			}
+		}
+		return results;
+	}
+
+	/**
+	 * 等 baseUrl 端口释放（net.fetch 失败 = 端口空）。timeoutMs 超时返回 false。
+	 */
+	private async waitPortFree(baseUrl: string, timeoutMs = 10_000): Promise<boolean> {
+		const start = Date.now();
+		while (Date.now() - start < timeoutMs) {
+			try {
+				const r = await net.fetch(`${baseUrl}/system_stats`, { signal: AbortSignal.timeout(800) });
+				if (!r.ok) { /* 非 2xx = 端口开了但服务异常，仍占着 → 继续等 */ }
+			} catch {
+				// fetch 失败（ECONNREFUSED 等）= 端口已空
+				return true;
+			}
+			await new Promise<void>(r => setTimeout(r, 200));
+		}
+		return false;
+	}
+
+	/**
+	 * 共享启动逻辑（vscode:comfyLaunch 与 vscode:comfyRestart 都调用）。
+	 * 流程：探测是否已在运行 → 解析路径 → spawn → 轮询等待可连。
+	 * 已被占用的端口（alreadyRunning）由调用方先杀进程后调用本方法。
+	 */
+	private async doLaunch(baseUrl: string, payload?: { port?: number }): Promise<ComfyLaunchResult> {
+		const result: ComfyLaunchResult = { ok: false, baseUrl };
+		this.logService.info(`[AgentStudio] comfy:doLaunch baseUrl=${baseUrl}, payload=${JSON.stringify(payload ?? {})}`);
+
+		// 1) 已在运行？→ 直接返回（不重复启动）。
+		try {
+			const probe = await net.fetch(`${baseUrl}/system_stats`, { signal: AbortSignal.timeout(1500) });
+			if (probe.ok) {
+				const body = await probe.json().catch(() => undefined) as { system?: { comfyui_version?: string } } | undefined;
+				result.ok = true;
+				result.alreadyRunning = true;
+				result.version = body?.system?.comfyui_version;
+				this.logService.info(`[AgentStudio] comfy:doLaunch 已在运行, version=${result.version}`);
+				return result;
+			}
+		} catch { /* 未运行 → 继续启动 */ }
+
+		try {
+			// 2) 解析 Comfy Desktop 安装路径。
+			const appData = process.env['APPDATA'] ?? join(homedir(), 'AppData', 'Roaming');
+			const configPath = join(appData, 'ComfyUI', 'config.json');
+			const extraYamlPath = join(appData, 'ComfyUI', 'extra_models_config.yaml');
+			const cfg = parseComfyDesktopConfig(
+				existsSync(configPath) ? readFileSync(configPath, 'utf8') : undefined,
+				existsSync(extraYamlPath) ? readFileSync(extraYamlPath, 'utf8') : undefined,
+			);
+			// 优先级：环境变量 > 用户设置 > 自动解析
+			const configPython = (this.configurationService.getValue('sarosis.comfyui.pythonPath') as string | undefined)?.trim();
+			const configMain = (this.configurationService.getValue('sarosis.comfyui.mainPath') as string | undefined)?.trim();
+			const paths = pickComfyLaunchPaths(cfg, existsSync, {
+				pythonPath: process.env['SAROS_COMFYUI_PYTHON'] || configPython || undefined,
+				mainPyPath: process.env['SAROS_COMFYUI_MAIN'] || configMain || undefined,
+			});
+			if (!paths.pythonPath || !paths.mainPyPath) {
+				result.error = `未找到 ComfyUI 启动文件（python: ${paths.pythonPath ?? '无'}；main.py: ${paths.mainPyPath ?? '无'}）。已解析 ${configPath} 与 ${extraYamlPath}；也可用环境变量 SAROS_COMFYUI_PYTHON / SAROS_COMFYUI_MAIN 指定。`;
+				this.logService.info(`[AgentStudio] comfy:doLaunch 路径缺失: ${result.error}`);
+				return result;
+			}
+			result.pythonPath = paths.pythonPath;
+			result.mainPyPath = paths.mainPyPath;
+
+			// 3) spawn 独立子进程（detached：VsSaros 退出后 ComfyUI 仍运行）。
+			const port = payload?.port ?? (Number(new URL(baseUrl).port) || 8188);
+			// Comfy Desktop 的模型/自定义节点在用户根（basePath），而非 main.py 同目录（只读应用根）。
+			// 缺了 --base-directory，ComfyUI 会找不到 checkpoints（/object_info 的 ckpt_name 列表为空），
+			// 导致 /prompt 提交时报 value_not_in_list。basePath 从 Comfy Desktop config.json 解析。
+			const spawnArgs = ['main.py', '--enable-cors-header', '--listen', '127.0.0.1', '--port', String(port)];
+			if (cfg.basePath) { spawnArgs.push('--base-directory', cfg.basePath); }
+			this.logService.info(`[AgentStudio] comfy:doLaunch spawn: python=${paths.pythonPath}, main=${paths.mainPyPath}, port=${port}, baseDir=${cfg.basePath ?? '(default)'}`);
+			const child = spawn(paths.pythonPath, spawnArgs, {
+				cwd: dirname(paths.mainPyPath),
+				detached: true,
+				env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+				stdio: 'ignore',
+				windowsHide: true,
+			});
+			child.unref();
+			result.pid = child.pid;
+
+			// 4) 轮询等待可连（最长 ~120s；ComfyUI 首次加载 torch+模型可能 >60s）。
+			const started = Date.now();
+			while (Date.now() - started < 120_000) {
+				await new Promise(r => setTimeout(r, 800));
+				try {
+					const probe = await net.fetch(`${baseUrl}/system_stats`, { signal: AbortSignal.timeout(1500) });
+					if (probe.ok) {
+						const body = await probe.json().catch(() => undefined) as { system?: { comfyui_version?: string } } | undefined;
+						result.ok = true;
+						result.version = body?.system?.comfyui_version;
+						return result;
+					}
+				} catch { /* 继续等待 */ }
+			}
+			// 轮询超时但进程已 spawn（.venv 的 python 是 uv 引导器）。标记 starting，前端继续探测。
+			result.ok = true;
+			result.starting = true;
+			result.error = `ComfyUI 仍在后台启动中（PID ${result.pid ?? '-'}），尚未监听 ${baseUrl}。首次加载模型可能需要 1-3 分钟，请稍后点击「重新检测」。`;
+			this.logService.info(`[AgentStudio] comfy:doLaunch 仍在后台启动: ${result.error}`);
+			return result;
+		} catch (err) {
+			result.error = `启动失败：${err instanceof Error ? err.message : String(err)}`;
+			this.logService.info(`[AgentStudio] comfy:doLaunch ${result.error}`);
+			return result;
+		}
+	}
+
 	private registerChannels(): void {
 		// ComfyUI 一键启动（方案A 前置：--enable-cors-header 允许 webview 直连）。
 		// 注意：validatedIpcMain 要求 channel 以 `vscode:` 开头（见 ipcMain.ts validateEvent），
@@ -160,95 +350,50 @@ export class ComfyLaunchChannel extends Disposable {
 		//      → 挑选存在的 python 与 main.py（环境变量 SAROS_COMFYUI_PYTHON / SAROS_COMFYUI_MAIN 可覆盖）；
 		//   3) spawn `python main.py --enable-cors-header --listen 127.0.0.1 --port <port>`（detached）；
 		//   4) 轮询等待 /system_stats 可连。
-		validatedIpcMain.handle('vscode:comfyLaunch', async (_event, payload: { baseUrl?: string; port?: number } | undefined) => {
+				validatedIpcMain.handle('vscode:comfyLaunch', async (_event, payload: { baseUrl?: string; port?: number } | undefined) => {
 			const baseUrl = (payload?.baseUrl ?? 'http://127.0.0.1:8188').replace(/\/+$/, '');
-			const result: { ok: boolean; alreadyRunning?: boolean; starting?: boolean; pid?: number; version?: string; error?: string; pythonPath?: string; mainPyPath?: string; baseUrl: string } = { ok: false, baseUrl };
-			this.logService.info(`[AgentStudio] comfy:launch 收到, baseUrl=${baseUrl}, payload=${JSON.stringify(payload ?? {})}`);
-
-			// 1) 已在运行？→ 直接返回（不重复启动）。
-			try {
-				const probe = await net.fetch(`${baseUrl}/system_stats`, { signal: AbortSignal.timeout(1500) });
-				if (probe.ok) {
-					const body = await probe.json().catch(() => undefined) as { system?: { comfyui_version?: string } } | undefined;
-					result.ok = true;
-					result.alreadyRunning = true;
-					result.version = body?.system?.comfyui_version;
-					this.logService.info(`[AgentStudio] comfy:launch 已在运行, version=${result.version}`);
-					return result;
-				}
-			} catch { /* 未运行 → 继续启动 */ }
-
-			try {
-				// 2) 解析 Comfy Desktop 安装路径。
-				const appData = process.env['APPDATA'] ?? join(homedir(), 'AppData', 'Roaming');
-				const configPath = join(appData, 'ComfyUI', 'config.json');
-				const extraYamlPath = join(appData, 'ComfyUI', 'extra_models_config.yaml');
-				const cfg = parseComfyDesktopConfig(
-					existsSync(configPath) ? readFileSync(configPath, 'utf8') : undefined,
-					existsSync(extraYamlPath) ? readFileSync(extraYamlPath, 'utf8') : undefined,
-				);
-				// 优先级：环境变量 > 用户设置 > 自动解析
-				const configPython = (this.configurationService.getValue('sarosis.comfyui.pythonPath') as string | undefined)?.trim();
-				const configMain = (this.configurationService.getValue('sarosis.comfyui.mainPath') as string | undefined)?.trim();
-				const paths = pickComfyLaunchPaths(cfg, existsSync, {
-					pythonPath: process.env['SAROS_COMFYUI_PYTHON'] || configPython || undefined,
-					mainPyPath: process.env['SAROS_COMFYUI_MAIN'] || configMain || undefined,
-				});
-				if (!paths.pythonPath || !paths.mainPyPath) {
-					result.error = `未找到 ComfyUI 启动文件（python: ${paths.pythonPath ?? '无'}；main.py: ${paths.mainPyPath ?? '无'}）。已解析 ${configPath} 与 ${extraYamlPath}；也可用环境变量 SAROS_COMFYUI_PYTHON / SAROS_COMFYUI_MAIN 指定。`;
-					this.logService.info(`[AgentStudio] comfy:launch 路径缺失: ${result.error}`);
-					return result;
-				}
-				result.pythonPath = paths.pythonPath;
-				result.mainPyPath = paths.mainPyPath;
-
-				// 3) spawn 独立子进程（detached：VsSaros 退出后 ComfyUI 仍运行）。
-				const port = payload?.port ?? (Number(new URL(baseUrl).port) || 8188);
-				// Comfy Desktop 的模型/自定义节点在用户根（basePath，如 D:\ComfyUI），而非
-				// main.py 同目录（只读应用根）。缺了 --base-directory，ComfyUI 会找不到
-				// checkpoints（/object_info 的 ckpt_name 列表为空），导致 /prompt 提交时
-				// 报 `value_not_in_list`（模型不在可用列表）。basePath 从 Comfy Desktop
-				// config.json 的 basePath 解析而来（见 comfyLauncher.parseComfyDesktopConfig）。
-				const spawnArgs = ['main.py', '--enable-cors-header', '--listen', '127.0.0.1', '--port', String(port)];
-				if (cfg.basePath) { spawnArgs.push('--base-directory', cfg.basePath); }
-				this.logService.info(`[AgentStudio] comfy:launch spawn: python=${paths.pythonPath}, main=${paths.mainPyPath}, port=${port}, baseDir=${cfg.basePath ?? '(default)'}`);
-				const child = spawn(paths.pythonPath, spawnArgs, {
-					cwd: dirname(paths.mainPyPath),
-					detached: true,
-					env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-					stdio: 'ignore',
-					windowsHide: true,
-				});
-				child.unref();
-				result.pid = child.pid;
-
-				// 4) 轮询等待可连（最长 ~120s；ComfyUI 首次加载 torch+模型可能 >60s）。
-				const started = Date.now();
-				while (Date.now() - started < 120_000) {
-					await new Promise(r => setTimeout(r, 800));
-					try {
-						const probe = await net.fetch(`${baseUrl}/system_stats`, { signal: AbortSignal.timeout(1500) });
-						if (probe.ok) {
-							const body = await probe.json().catch(() => undefined) as { system?: { comfyui_version?: string } } | undefined;
-							result.ok = true;
-							result.version = body?.system?.comfyui_version;
-							return result;
-						}
-					} catch { /* 继续等待 */ }
-				}
-				// 轮询超时但进程已 spawn（.venv 的 python 是 uv 引导器，会再拉起真正的
-				// uv python 并加载模型）。不判失败——标记 starting，前端继续探测而非误报「启动失败」。
-				result.ok = true;
-				result.starting = true;
-				result.error = `ComfyUI 仍在后台启动中（PID ${result.pid ?? '-'}），尚未监听 ${baseUrl}。首次加载模型可能需要 1-3 分钟，请稍后点击「重新检测」。`;
-				this.logService.info(`[AgentStudio] comfy:launch 仍在后台启动: ${result.error}`);
-				return result;
-			} catch (err) {
-				result.error = `启动失败：${err instanceof Error ? err.message : String(err)}`;
-				this.logService.info(`[AgentStudio] comfy:launch ${result.error}`);
-				return result;
-			}
+			return await this.doLaunch(baseUrl, payload);
 		});
+
+		// ComfyUI 重启为跨域直连模式：探测占 baseUrl 端口的 PID → 杀进程（含子进程）→
+		// 等端口释放 → 用 --enable-cors-header 重新启动（共享 doLaunch）。
+		// 用于 Comfy Desktop 已开但未带 --enable-cors-header 的场景：「代理」模式下
+		// 「重启为跨域直连」一键触发，无需手动开命令行 + 杀进程 + 启动。
+		validatedIpcMain.handle('vscode:comfyRestart', async (_event, payload: { baseUrl?: string; port?: number } | undefined) => {
+			const baseUrl = (payload?.baseUrl ?? 'http://127.0.0.1:8188').replace(/\/+$/, '');
+			const port = payload?.port ?? (Number(new URL(baseUrl).port) || 8188);
+			this.logService.info(`[AgentStudio] comfy:restart 收到 baseUrl=${baseUrl} port=${port}`);
+			const result: ComfyLaunchResult = { ok: false, baseUrl };
+
+			// 1) 探测占端口的 PID（跨平台 netstat / lsof）。无占用 → 跳过杀进程。
+			const pids = await this.findListeningPidsOnPort(port);
+			if (pids.length === 0) {
+				this.logService.info(`[AgentStudio] comfy:restart 端口 ${port} 无占用进程，跳过杀进程`);
+			} else {
+				this.logService.info(`[AgentStudio] comfy:restart 杀掉占 ${port} 的 PID ${pids.join(',')}`);
+				result.killed = await this.killPids(pids);
+				const killedOk = result.killed.every(k => k.ok);
+				if (!killedOk) {
+					const failed = result.killed.filter(k => !k.ok).map(k => `${k.pid}(${k.error})`).join(', ');
+					result.error = `杀掉 PID 失败：${failed}。请手动 taskkill 后重试。`;
+					this.logService.info(`[AgentStudio] comfy:restart ${result.error}`);
+					return result;
+				}
+				// 2) 等端口释放（杀完到 TCP TIME_WAIT 完结可能 ~10s）。
+				const freed = await this.waitPortFree(baseUrl, 10_000);
+				if (!freed) {
+					result.error = `杀掉 PID ${pids.join(',')} 后端口 ${port} 仍未释放（10s 超时）`;
+					this.logService.info(`[AgentStudio] comfy:restart ${result.error}`);
+					return result;
+				}
+			}
+
+			// 3) 复用 doLaunch 启动（带 --enable-cors-header）。
+			const launched = await this.doLaunch(baseUrl, { port });
+			return { ...launched, killed: result.killed };
+		});
+
+		;
 
 		// 查询主进程解析的当前 ComfyUI 启动路径（含 overrides 来源），
 		// 用于 Runner 面板「EXE 路径」区域显示与编辑。
