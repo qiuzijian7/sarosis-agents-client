@@ -889,7 +889,8 @@ suite('multi-folder graph index (store merge + cross-project, 2026-07-19)', () =
 		const merged = new CodebaseGraphStore();
 		await merged.mergeFromJSONAsync(s1data, 'S1Game');
 		await merged.mergeFromJSONAsync(uedata, 'UE5EA');
-		await merged.rebuildBM25();
+		// force=true：合并加载无脏集，增量模式（默认）会空转 → BM25 为空
+		await merged.rebuildBM25(undefined, true);
 
 		// 两个项目共存
 		const projects = merged.listProjects().map(p => p.name).sort();
@@ -931,6 +932,7 @@ suite('multi-folder graph index (store merge + cross-project, 2026-07-19)', () =
 		const merged = new CodebaseGraphStore();
 		await merged.mergeFromJSONAsync(buildProjectStore('S1Game', 's1').toJSON('S1Game'), 'S1Game');
 		await merged.mergeFromJSONAsync(buildProjectStore('UE5EA', 'ue').toJSON('UE5EA'), 'UE5EA');
+		await merged.rebuildBM25(undefined, true);
 
 		// 当前项目查不到 → 跨项目回退命中
 		assert.strictEqual(merged.findNodeByQN('S1Game', 'ue::ueFunc'), undefined);
@@ -962,5 +964,84 @@ suite('multi-folder graph index (store merge + cross-project, 2026-07-19)', () =
 		const onlyFiles = new Set(only.results.map(r => r.filePath));
 		assert.ok(onlyFiles.has('ue.cpp'));
 		assert.ok(!onlyFiles.has('s1.cpp'));
+	});
+});
+
+suite('BM25 incremental rebuild (2026-08-27)', () => {
+
+	/**
+	 * 背景：增量索引只改少数文件，旧实现 rebuildBM25() 却 clear() + 遍历**全图**
+	 * （12.4w 节点）重建倒排，是 renderer 冻结的主因之一。
+	 * 新语义：rebuildBM25(onProgress?, force?)
+	 *   - force=false（默认，增量模式）：只处理 defer 期间累积的脏集；脏集为空则直接返回。
+	 *   - force=true（全量模式）：clear() + 遍历全图重建，用于加载/合并/全量索引。
+	 */
+	function buildIndexed(): CodebaseGraphStore {
+		const store = new CodebaseGraphStore();
+		store.upsertNode({ project: PROJECT, label: 'Function', name: 'alpha', qualifiedName: 'alpha', filePath: 'a.cpp' });
+		store.upsertNode({ project: PROJECT, label: 'Function', name: 'beta', qualifiedName: 'beta', filePath: 'b.cpp' });
+		return store;
+	}
+
+	test('incremental mode: node added during defer is searchable', async () => {
+		const store = buildIndexed();
+		await store.rebuildBM25(undefined, true); // 基线全量
+		assert.ok(store.search({ project: PROJECT, query: 'alpha', limit: 10 }).total >= 1);
+
+		store.setDeferBM25(true);
+		store.upsertNode({ project: PROJECT, label: 'Function', name: 'gamma', qualifiedName: 'gamma', filePath: 'g.cpp' });
+		store.setDeferBM25(false);
+		await store.rebuildBM25(); // 增量模式
+
+		assert.ok(store.search({ project: PROJECT, query: 'gamma', limit: 10 }).total >= 1, 'new node must be indexed incrementally');
+		assert.ok(store.search({ project: PROJECT, query: 'alpha', limit: 10 }).total >= 1, 'existing node must survive');
+	});
+
+	test('incremental mode: removed node is no longer searchable', async () => {
+		const store = buildIndexed();
+		await store.rebuildBM25(undefined, true);
+		assert.ok(store.search({ project: PROJECT, query: 'beta', limit: 10 }).total >= 1);
+
+		store.setDeferBM25(true);
+		store.deleteNodesByFile(PROJECT, 'b.cpp');
+		store.setDeferBM25(false);
+		await store.rebuildBM25();
+
+		assert.strictEqual(store.search({ project: PROJECT, query: 'beta', limit: 10 }).total, 0, 'deleted node must leave BM25');
+		assert.ok(store.search({ project: PROJECT, query: 'alpha', limit: 10 }).total >= 1, 'unrelated node must remain');
+	});
+
+	test('incremental mode with empty dirty set is a no-op (does not wipe index)', async () => {
+		const store = buildIndexed();
+		await store.rebuildBM25(undefined, true);
+
+		store.setDeferBM25(true);
+		store.setDeferBM25(false);
+		await store.rebuildBM25();
+
+		// 关键回归点：不得因"增量无脏集"而清空索引
+		assert.ok(store.search({ project: PROJECT, query: 'alpha', limit: 10 }).total >= 1, 'empty dirty set must NOT clear index');
+	});
+
+	test('force=true rebuilds from scratch', async () => {
+		const store = buildIndexed();
+		await store.rebuildBM25(undefined, true);
+		assert.ok(store.search({ project: PROJECT, query: 'alpha', limit: 10 }).total >= 1);
+		assert.ok(store.search({ project: PROJECT, query: 'beta', limit: 10 }).total >= 1);
+	});
+
+	test('setDeferBM25(true) clears stale dirty set across rounds', async () => {
+		const store = buildIndexed();
+		await store.rebuildBM25(undefined, true);
+
+		store.setDeferBM25(true);
+		store.deleteNodesByFile(PROJECT, 'b.cpp');
+		store.setDeferBM25(true); // 第二轮开启，应清空上轮残留脏集
+		store.setDeferBM25(false);
+		await store.rebuildBM25();
+
+		assert.strictEqual(store.getNodeCount(), 1);
+		// 脏集已跨轮清空 → beta 的 BM25 文档未被移除（索引仍在，但节点已删，检索无结果即可）
+		assert.ok(store.search({ project: PROJECT, query: 'alpha', limit: 10 }).total >= 1);
 	});
 });

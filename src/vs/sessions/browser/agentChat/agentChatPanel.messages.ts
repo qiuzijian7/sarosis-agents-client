@@ -647,10 +647,17 @@ private _ruleStreamEndTransition(ctx: IMsgUpdateCtx): boolean {
 	// 条件：之前在流式（有 streaming-container 或 streaming-cursor），现在不流式。
 	const wasStreaming = ctx.el.querySelector('.streaming-container, .streaming-cursor') !== null;
 	if (!wasStreaming || ctx.msg.isStreaming) { return false; }
-	if (!ctx.hasStructuralChange) {
-		// 无结构性变化：轻量转换——移除光标 + 渲染 markdown + 追加 footer。
+	// ★ P0 修复（2026-08-27）：parts 模式下禁止走 _transitionStreamingToComplete。
+	// 该方法第 2 步把「完整 msg.content」渲染进 .streaming-container（= 最后一个 text part），
+	// 但 parts[0] 等前段 text part 仍保留各自 segment 文本 → 同一段文字出现两次
+	// （"这 8 条命中全部在 e 8 条命中全部在 e2e/..." 式逐词重叠重复）。
+	// 故：有 parts 时统一走 _finalizeTurnPartsInPlace（keyed diff 就地收尾），无论是否有结构变化。
+	if (this._isSending && ctx.hasParts && this._finalizeTurnPartsInPlace(ctx)) {
+		// per-turn done + parts 模式 →就地收尾（keyed diff 同步 parts + 清流式残留）
+	} else if (!ctx.hasStructuralChange) {
+		// 无 parts / 非 loop 期间的无结构变化 → 走 legacy 轻量转换路径
 		this._transitionStreamingToComplete(ctx.el, ctx.msg);
-	} else if (this._isSending && ctx.hasParts && this._finalizeTurnPartsInPlace(ctx)) {
+	} else if (ctx.hasParts && this._finalizeTurnPartsInPlace(ctx)) {
 		// ★ P0（2026-08-22，日志 1787368358120）：**agent loop 的每一轮迭代都会发一次
 		// `done` delta**（实测 STREAM_END 与 PartsDiag DONE 各 59 次），而 done 分支设
 		// `isStreaming:false` + `streamPhase:'idle'` —— 与「turn 真结束」完全同形。

@@ -285,24 +285,30 @@ export function detectSimilarCode(nodes: GraphNode[], store: CodebaseGraphStore,
  *
  * 实现与全量版同构：复用同一套 LSH bucket（全量签名索引），但候选生成只从
  * `newNodeIds` 出发查 bucket，复杂度从 O(全量²) 降到 O(新节点数 × bucket 平均大小)。
+ *
+ * 时间切片（2026-08-27）：即便降到了 O(新 × bucket)，**桶构建阶段仍是 O(全量函数数)**
+ * 的 `slice().join(',')` 字符串操作，此前完全同步无 yield——12.4w 函数节点的建桶会
+ * 独占主线程。现改为 async，桶构建与候选校验每 YIELD_EVERY 项让出一次主线程。
+ *
+ * 签名缓存：全量签名 Map 在同一图未大改时可跨轮复用，见 _signatureCache。
+ * 由 store 的节点数变化驱动失效（保守：节点数变化即重建）。
  */
-export function detectSimilarCodeIncremental(
+export async function detectSimilarCodeIncremental(
 	newNodeIds: Set<number>,
 	allNodes: GraphNode[],
 	store: CodebaseGraphStore,
 	threshold: number = 0.7,
-): SimilarityEdge[] {
+): Promise<SimilarityEdge[]> {
 	const edges: SimilarityEdge[] = [];
 	const minHash = new MinHash(MINHASH_PERM);
+	const YIELD_EVERY = 2000;
 
-	// 全量函数签名（LSH 索引的底座）
-	const signatures = new Map<number, number[]>();
-	const functions = allNodes.filter(n =>
-		(n.label === 'function' || n.label === 'method') &&
-		Array.isArray((n.properties as any)?.minHash) &&
-		((n.properties as any).minHash as number[]).length === MINHASH_PERM);
-	for (const func of functions) {
-		signatures.set(func.id, (func.properties as any).minHash as number[]);
+	// 全量函数签名（LSH 索引的底座）。跨轮可复用缓存，避免每轮重建 12.4w 项 Map。
+	const signatures = getSignaturesCached(allNodes, store);
+	const functions: GraphNode[] = [];
+	for (const [id] of signatures) {
+		const n = store.getNode(id);
+		if (n) { functions.push(n); }
 	}
 
 	// 本次新增/变更节点里，有签名的函数节点才参与配对
@@ -312,6 +318,7 @@ export function detectSimilarCodeIncremental(
 	const numBands = 12;
 	const rowsPerBand = 4;  // MINHASH_PERM(48) / 12 = 4
 	const buckets: Map<string, number[]>[] = Array.from({ length: numBands }, () => new Map());
+	let processed = 0;
 	for (const [nodeId, sig] of signatures) {
 		for (let b = 0; b < numBands; b++) {
 			const bandStart = b * rowsPerBand;
@@ -320,6 +327,9 @@ export function detectSimilarCodeIncremental(
 			const bucket = buckets[b].get(bandKey) || [];
 			bucket.push(nodeId);
 			buckets[b].set(bandKey, bucket);
+		}
+		if (++processed % YIELD_EVERY === 0) {
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
 		}
 	}
 
@@ -341,6 +351,8 @@ export function detectSimilarCodeIncremental(
 		}
 	}
 
+	// 候选校验同样切片：哈希桶大的仓库（大量相似样板代码）候选可达数十万条
+	let verified = 0;
 	for (const candidate of candidates) {
 		const [idA, idB] = candidate.split(':').map(Number);
 		const sigA = signatures.get(idA)!;
@@ -358,9 +370,41 @@ export function detectSimilarCodeIncremental(
 				});
 			}
 		}
+		if (++verified % YIELD_EVERY === 0) {
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+		}
 	}
 
 	return edges;
+}
+
+/**
+ * 全量函数签名缓存：nodeId → MinHash 签名。
+ *
+ * 增量索引每轮都要为 LSH 建桶而重建这张 12.4w 项的 Map（filter + 属性访问），
+ * 属纯 CPU 且结果在「图未大改」时不变。按 store 节点总数做保守失效判据：
+ * 节点数变化（增删节点）即重建。即便未命中，也只多付一次 Map 构建，语义不变。
+ *
+ * 缓存为模块级 WeakMap（键为 store 实例），避免多 project 互相污染与内存泄漏。
+ */
+const _signatureCache = new WeakMap<CodebaseGraphStore, { nodeCount: number; signatures: Map<number, number[]> }>();
+
+function getSignaturesCached(allNodes: GraphNode[], store: CodebaseGraphStore): Map<number, number[]> {
+	const nodeCount = store.getNodeCount();
+	const cached = _signatureCache.get(store);
+	if (cached && cached.nodeCount === nodeCount) {
+		return cached.signatures;
+	}
+	const signatures = new Map<number, number[]>();
+	for (const n of allNodes) {
+		if ((n.label === 'function' || n.label === 'method') &&
+			Array.isArray((n.properties as any)?.minHash) &&
+			((n.properties as any).minHash as number[]).length === MINHASH_PERM) {
+			signatures.set(n.id, (n.properties as any).minHash as number[]);
+		}
+	}
+	_signatureCache.set(store, { nodeCount, signatures });
+	return signatures;
 }
 
 // ─── P1-13: pass_tests — 测试文件/函数检测 ──────────────────────────────

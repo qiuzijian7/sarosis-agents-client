@@ -444,12 +444,12 @@ export function spawnPickerForStage(srcNodeId: string, srcType: string): void {
 		return;
 	}
 
-	// ★ EmojiStage 与 ImageStage 同路径：表情包输出的 images 批次（slot 0，
-	//   COMFYTV_IMAGES）接到 ImagePickerStage.batch，让 picker 立即显示 m×n 缩略图。
-	//   此前 EmojiStage 不在映射里 → 点运行后 auto-picker 落空（日志
+	// ★ 表情包节点（Stat/Dyn EmojiStage）与 ImageStage 同路径：输出的 images 批次
+	//   （slot 0，COMFYTV_IMAGES）接到 ImagePickerStage.batch，让 picker 立即显示
+	//   缩略图。此前 EmojiStage 不在映射里 → 点运行后 auto-picker 落空（日志
 	//   「no picker class for srcType=ComfyTV.EmojiStage」），用户只能手动拖 picker
 	//   连线，而手动连线又受端口类型 / 保存链路影响容易失效 → picker 空。
-	const pickerClass = (srcType === 'ComfyTV.ImageStage' || srcType === 'ComfyTV.EmojiStage')
+	const pickerClass = (srcType === 'ComfyTV.ImageStage' || srcType === 'ComfyTV.StatEmojiStage' || srcType === 'ComfyTV.DynEmojiStage')
 		? 'ComfyTV.ImagePickerStage'
 		: srcType === 'ComfyTV.VideoStage' ? 'ComfyTV.VideoPickerStage'
 			: undefined;

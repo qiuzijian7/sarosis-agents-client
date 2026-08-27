@@ -28,6 +28,7 @@ const _bridge = (globalThis as { __vssarosBridge?: { createComfyFetch: typeof im
 const { createComfyFetch } = _bridge;
 import type { MediaKind } from './mediaSnapshot.js';
 import { getBuiltinWorkflowConfig, listBuiltinWorkflows } from './builtinWorkflows/index.js';
+import { ASSET_REFS_PROP, parseAssetRefs, refType } from './assetRefs.js';
 import { isComfyViewRef, resolveLoadImageImageRef } from './imageGenToComfyBridge.js';
 import type { BridgeFetchLike } from './imageGenToComfyBridge.js';
 
@@ -242,26 +243,15 @@ export function applyAssetRefOverrides(
 	upstreamValues: Record<string, string>,
 	values: Record<string, unknown>,
 ): void {
-	const raw = values['comfytv_image_refs'];
-	let list: unknown;
-	if (typeof raw === 'string') {
-		if (!raw.trim()) { return; }
-		try { list = JSON.parse(raw); } catch { return; }
-	} else {
-		list = raw;
-	}
-	if (!Array.isArray(list) || list.length === 0) { return; }
+	const refs = parseAssetRefs(values[ASSET_REFS_PROP]);
+	if (refs.length === 0) { return; }
 
 	// kind → slot 最小的 ref
 	const best = new Map<string, { slot: number; ref: string }>();
-	for (const item of list) {
-		const rec = item as { ref?: unknown; slot?: unknown; type?: unknown } | null;
-		const ref = typeof rec?.ref === 'string' ? rec.ref : '';
-		if (!ref) { continue; }
-		const slot = typeof rec?.slot === 'number' && Number.isInteger(rec.slot) ? rec.slot : 0;
-		const kind = rec?.type === 'video' ? 'video' : rec?.type === 'audio' ? 'audio' : 'image';
+	for (const r of refs) {
+		const kind = refType(r);
 		const prev = best.get(kind);
-		if (!prev || slot < prev.slot) { best.set(kind, { slot, ref }); }
+		if (!prev || r.slot < prev.slot) { best.set(kind, { slot: r.slot, ref: r.ref }); }
 	}
 	for (const [kind, hit] of best) {
 		upstreamValues[kind] = hit.ref;

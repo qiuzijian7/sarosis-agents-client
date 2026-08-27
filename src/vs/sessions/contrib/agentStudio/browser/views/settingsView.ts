@@ -46,7 +46,11 @@ const SETTINGS: SettingItem[] = [
 	{ id: 'chat.historyLimit', label: 'History limit', description: 'Maximum messages to keep in chat history', type: 'number', value: 100, category: 'Chat' },
 	{ id: 'tools.confirmDestructive', label: 'Confirm destructive actions', description: 'Ask before file deletion or system commands', type: 'boolean', value: true, category: 'Tools' },
 	{ id: 'tools.sandboxMode', label: 'Sandbox mode', description: 'Run tools in a sandboxed environment', type: 'boolean', value: false, category: 'Tools' },
+	{ id: 'tools.confirmToolCalls', label: 'Confirm tool calls', description: 'Ask for confirmation before any tool execution. When off, tools run without prompting (a desktop notification still offers a global off switch).', type: 'boolean', value: true, category: 'Tools' },
 ];
+
+/** 需要跨会话持久化到 configurationService 的通用设置键（默认仅内存态，逐项补持久化） */
+const PERSISTED_GENERAL_KEYS: readonly string[] = ['tools.confirmToolCalls'];
 
 // ─── Settings View ────────────────────────────────────────────────────────────
 
@@ -202,6 +206,15 @@ export class SettingsViewPane extends ViewPane {
 	// ─── General Settings ─────────────────────────────────────────────────────
 
 	private _renderSettings(settings: SettingItem[]): void {
+		// 从 configurationService 回填需要持久化的开关（保证重启后显示用户偏好）
+		for (const setting of settings) {
+			if (PERSISTED_GENERAL_KEYS.includes(setting.id)) {
+				// getValue 第二参是 IConfigurationOverrides（作用域/资源限定），不是默认值；
+				// 配置未设置时返回 undefined，用 ?? 回退到 setting.value（默认开关）。
+				setting.value = this.configurationService.getValue<boolean>(setting.id) ?? setting.value;
+			}
+		}
+
 		const categories = new Map<string, SettingItem[]>();
 		for (const setting of settings) {
 			if (!categories.has(setting.category)) {
@@ -245,7 +258,17 @@ export class SettingsViewPane extends ViewPane {
 				const checkbox = document.createElement('input');
 				checkbox.type = 'checkbox';
 				checkbox.checked = item.value;
-				checkbox.onchange = () => { item.value = checkbox.checked; };
+				checkbox.onchange = () => {
+					item.value = checkbox.checked;
+					// 持久化需要跨会话保留的通用设置开关
+					if (PERSISTED_GENERAL_KEYS.includes(item.id)) {
+						try {
+							this.configurationService.updateValue(item.id, checkbox.checked);
+						} catch {
+							/* 持久化失败不影响本次 UI 状态 */
+						}
+					}
+				};
 				toggle.appendChild(checkbox);
 				const slider = $('span.toggle-slider');
 				toggle.appendChild(slider);

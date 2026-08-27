@@ -1981,15 +1981,21 @@ ${conversationText}
 		const effectiveWindow = Math.min(effectiveWindowRaw, ContextManager.MAXIMUM_COMPRESSION_WINDOW);
 		const thresholdTokens = effectiveWindow * compressionConfig.compressionThreshold;
 
-		// ── 阈值判定用「消息部分」而非含固定开销的总 prompt（2026-08-22 修，日志 1787363991734）──
-		// 压缩对象是 messages（summary 只重写消息），而 `effectiveTokens`（real 或
-		// est+toolsSchema）是**总 prompt**，含 system+tools 固定开销（实测 11k→22k，
-		// 占一半）。早前用 effectiveTokens 对比 threshold 导致固定开销一涨就逼着
-		// 压缩还没长大的消息（实测 messages=14 就触发）。
-		// 修复：阈值判断改用 `estimatedTokens`（纯消息粗估，与压缩对象同口径），
-		// 真实总 prompt 仅用于 highPressure 兜底（防 provider 超限 400）。
+		// ── 阈值判定用「真实总 prompt」（effectiveTokens）对比阈值 ──
+		// effectiveTokens = 真实 usage（若有）否则 est+toolsSchema 粗估，即**发送给模型
+		// 的真实 token 量**（含 system+tools 固定开销，实测 11k→22k）。压缩的根本目的是
+		// 控制真实 prompt 体积与上下文窗口压力，而非只看消息正文。
+		// 2026-08-22 曾改用 estimatedTokens（仅消息正文）作判据，以避免「固定开销一涨就
+		// 压缩还没长大的消息」（messages=14 就触发）。但那导致反向 bug：真实 prompt 已超
+		// 阈值、消息正文却未达标时长期 skip（日志 1787814000828：effectiveTokens=49606 >
+		// thresholdTokens=38400 仍 below_token_threshold），长对话上下文持续膨胀。
+		// 现统一回「真实总 prompt」作判据：真实 usage 路径直接用 provider 返回的真实
+		// token；无真实 usage 时 effectiveTokens 已含 tools schema 估算（P1-2，避免 60+
+		// 工具定义使请求规模被低估），与判据同源。消息数下限（belowMessageMin）仍保留作
+		// 硬地板，防止极少数消息被无意义压缩。小窗口（固定开销占比高）可能略早触发压缩，
+		// 但压缩本就有益，且由 minMessagesToCompress + anti-thrashing 兜底防抖。
 		const highPressure = effectiveTokens >= effectiveWindow * ContextManager.HIGH_PRESSURE_COMPRESSION_RATIO;
-		const belowTokenThreshold = estimatedTokens < thresholdTokens;
+		const belowTokenThreshold = effectiveTokens < thresholdTokens;
 		const belowMessageMin = messages.length < compressionConfig.minMessagesToCompress;
 		const skipTriggerGate = (force === true && messages.length >= 2);
 

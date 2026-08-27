@@ -1,6 +1,10 @@
 import { Emitter, type Event } from '../../../../base/common/event.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { localize } from '../../../../nls.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
+import { type IAction } from '../../../../base/common/actions.js';
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+import { INotificationService, Severity, type INotificationActions } from '../../../../platform/notification/common/notification.js';
 import { IAgentOSService, IAgentOSDashboardStats, IDashboardMetricsSnapshot, IDailyBucket, ISubAgentTraceSnapshot } from '../common/agentOS.js';
 import {
 	IModelProvider, IModelSelection, ModelAuthStatus,
@@ -36,7 +40,14 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
+import { MenuRegistry, MenuId } from '../../../../platform/actions/common/actions.js';
+
+/** 持久化工具授权的设置键（与 ToolApprovalService 的 IToolAllowStore 实现共用） */
+const TOOL_ALLOW_WORKSPACE_KEY = 'sessions.agentStudio.tools.allowedToolsWorkspace';
+const TOOL_ALLOW_USER_KEY = 'sessions.agentStudio.tools.allowedToolsUser';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -74,8 +85,11 @@ import {
 import {
 	executeWithRetryAndTimeout,
 	getTimeoutForTool,
+	IToolAllowStore,
 	ToolApprovalService,
 	ToolExecutionTracker,
+	entryMatches,
+	CMD_KEY_SEP,
 } from './toolExecutionGuard.js';
 import {
 	DelegationLedgerManager,
@@ -94,6 +108,7 @@ import {
 } from '../common/subagentTokenCollector.js';
 
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import type { IForkContext } from '../common/forkContext.js';
 import { ITaskOrchestrationService } from '../common/agentStudio.js';
 import { extractToolCallsFromText } from './agentToolExtractor.js';
@@ -132,6 +147,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	// ─── Tool Execution Guard (P0 优化) ───────────────────────
 	private readonly _approvalService = new ToolApprovalService();
 	private readonly _executionTracker = new ToolExecutionTracker();
+	/** 持久化授权存储器引用（用于命令面板撤销入口） */
+	private _toolAllowStore: IToolAllowStore | undefined;
 
 	// ─── 沙箱确认（安全沙箱受限→暂停等待用户决策）──────────────
 	// 存放进行中的沙箱确认：confirmationId → resolve 回调。
@@ -433,6 +450,8 @@ private readonly _sandboxGuard: SandboxGuard;
 		@IPathService readonly _pathService: IPathService,
 		@IFileService private readonly _fileService: IFileService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@INotificationService private readonly _notificationService: INotificationService,
+		@IHostService private readonly _hostService: IHostService,
 	) {
 		super();
 		this._logService = logService;
@@ -506,6 +525,54 @@ private readonly _sandboxGuard: SandboxGuard;
 			}
 		});
 
+		// 工具"始终允许 / 在工作区允许"持久化（P0 优化）。
+		// 让 workspace/global 作用域的授权跨会话生效，修复"始终允许后仍反复弹窗"。
+		// 读/写经 IConfigurationService；取不到服务时降级为不持久化（仅本会话生效）。
+		const toolAllowStore: IToolAllowStore = {
+			isAllowed: (toolName: string, command?: string): boolean => {
+				try {
+					const cfg = this._instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService));
+					const ws = cfg.getValue<string[]>(TOOL_ALLOW_WORKSPACE_KEY) ?? [];
+					const user = cfg.getValue<string[]>(TOOL_ALLOW_USER_KEY) ?? [];
+					return [...ws, ...user].some(e => entryMatches(e, toolName, command));
+				} catch {
+					return false;
+				}
+			},
+			remember: (toolName: string, scope: 'workspace' | 'global', command?: string): void => {
+				try {
+					const cfg = this._instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService));
+					const key = scope === 'workspace' ? TOOL_ALLOW_WORKSPACE_KEY : TOOL_ALLOW_USER_KEY;
+					const target = scope === 'workspace' ? ConfigurationTarget.WORKSPACE : ConfigurationTarget.USER;
+					const cur = cfg.getValue<string[]>(key) ?? [];
+					const newKey = command ? `${toolName}${CMD_KEY_SEP}${command}` : toolName;
+					if (!cur.includes(newKey)) {
+						void cfg.updateValue(key, [...cur, newKey], target);
+					}
+				} catch {
+					/* 持久化失败不影响本次放行 */
+				}
+			},
+			revoke: (key: string): void => {
+				try {
+					const cfg = this._instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService));
+					for (const [k, target] of [
+						[TOOL_ALLOW_WORKSPACE_KEY, ConfigurationTarget.WORKSPACE],
+						[TOOL_ALLOW_USER_KEY, ConfigurationTarget.USER],
+					] as const) {
+						const cur = cfg.getValue<string[]>(k) ?? [];
+						if (cur.includes(key)) {
+							void cfg.updateValue(k, cur.filter(t => t !== key), target);
+						}
+					}
+				} catch {
+					/* 撤销失败不影响本次调用 */
+				}
+			},
+		};
+		this._toolAllowStore = toolAllowStore;
+		this._approvalService.setToolAllowStore(toolAllowStore);
+
 		// P1: scan for orphaned approval files left from a previous session crash.
 		this._restoreOrphanedApprovals().catch(err =>
 			this._logService.warn('[AgentOS] Failed to restore orphaned approvals:', err),
@@ -543,6 +610,53 @@ private readonly _sandboxGuard: SandboxGuard;
 				this._logService.warn(`[AgentOS] No pending confirmation for id=${confirmationId} (checked sandbox + plan + tool approval)`);
 			},
 		));
+
+		// P1-b：撤销持久化工具授权（命令面板入口，补全 P0 持久化后的"撤销"卫生缺口）。
+		// P0 让「始终允许 / 在工作区允许」落进 settings 跨会话生效，但若不提供撤销入口，
+		// 用户只能手改 settings.json。这里用 QuickPick 列出当前所有持久授权并一键撤销。
+		this._register(CommandsRegistry.registerCommand('agentStudio.tools.revokeAllow', async () => {
+			try {
+				const cfg = this._instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService));
+				const quickInput = this._instantiationService.invokeFunction(accessor => accessor.get(IQuickInputService));
+				const ws = cfg.getValue<string[]>(TOOL_ALLOW_WORKSPACE_KEY) ?? [];
+				const user = cfg.getValue<string[]>(TOOL_ALLOW_USER_KEY) ?? [];
+				type RevokeItem = IQuickPickItem & { tool: string };
+				// 命令级 key 形如 toolName::command，展示时拆分为「工具: 命令」更易读；
+				// pick.tool 仍保留完整 key 供精确撤销。
+				const fmt = (t: string): string => {
+					const idx = t.indexOf(CMD_KEY_SEP);
+					return idx >= 0 ? `${t.slice(0, idx)}: ${t.slice(idx + CMD_KEY_SEP.length)}` : t;
+				};
+				const items: RevokeItem[] = [
+					...ws.map((t): RevokeItem => ({ label: `$(workspace) ${fmt(t)}  · 工作区允许`, tool: t })),
+					...user.map((t): RevokeItem => ({ label: `$(globe) ${fmt(t)}  · 始终允许`, tool: t })),
+				];
+				if (items.length === 0) {
+					await quickInput.pick(
+						[{ label: '$(info) 当前没有任何持久化的工具授权' }],
+						{ placeHolder: '撤销工具自动授权' },
+					);
+					return;
+				}
+				const pick = await quickInput.pick(items, {
+					placeHolder: '选择要撤销的持久授权（撤销后该工具下次调用将重新弹窗）',
+				});
+				if (!pick) { return; }
+				this.revokeToolAllow(pick.tool);
+				await quickInput.pick(
+					[{ label: `$(check) 已撤销：${pick.tool}` }],
+					{ placeHolder: '撤销工具自动授权' },
+				);
+			} catch (err) {
+				this._logService.warn('[AgentOS] Failed to revoke tool allow:', err);
+			}
+		}));
+		MenuRegistry.appendMenuItem(MenuId.CommandPalette, {
+			command: {
+				id: 'agentStudio.tools.revokeAllow',
+				title: '撤销工具自动授权（始终允许 / 工作区允许）',
+			},
+		});
 
 		// Bridge the OS-level ModelProvider list and active selection
 		// into the SlotRegistry so that ExecutionProviders can access them
@@ -603,6 +717,14 @@ private readonly _sandboxGuard: SandboxGuard;
 			return Promise.resolve(ToolApprovalDecision.AllowOnce);
 		}
 
+		// 全局「确认工具调用」开关关闭 → 不询问，直接执行（不广播、不弹通知）。
+		if (!this._isToolCallConfirmationEnabled()) {
+			this._logService.info(
+				`[AgentOS] Tool approval for "${request.toolName}" auto-allowed — confirmation disabled by "tools.confirmToolCalls"`,
+			);
+			return Promise.resolve(ToolApprovalDecision.AllowOnce);
+		}
+
 		return new Promise<ToolApprovalDecision>((resolve) => {
 			let settled = false;
 			let timer: ReturnType<typeof setTimeout> | undefined;
@@ -633,12 +755,158 @@ private readonly _sandboxGuard: SandboxGuard;
 			);
 			this._onDidRequestToolApproval.fire(full);
 
-			// 附加通道（webview）：其决策同样能 resolve 本 promise（先到先得）。
-			this._delegateApprovalHandler?.requestApproval(full).then(
-				(d) => settle(d, d === ToolApprovalDecision.Deny ? 'rejected' : 'approved'),
-				() => { /* 附加通道失败不影响主流程，等广播或超时 */ },
-			);
+		// 桌面级兜底提醒：聊天框卡片在 webview 内，用户切换窗口时可能看不到。
+		// 弹系统通知（右下角）+ 提示音，按钮可直接在宿主侧决策（先到先得，
+		// 与聊天框卡片 / webview 附加通道共用同一 resolve 入口）。
+		this._showDesktopApprovalToast(full);
+
+		// 附加通道（webview）：其决策同样能 resolve 本 promise（先到先得）。
+		this._delegateApprovalHandler?.requestApproval(full).then(
+			(d) => settle(d, d === ToolApprovalDecision.Deny ? 'rejected' : 'approved'),
+			() => { /* 附加通道失败不影响主流程，等广播或超时 */ },
+		);
+	});
+	}
+
+	/**
+	 * 桌面级审批兜底：右下角系统通知 + 提示音。
+	 * 仅作「看得见」的提醒，决策仍走 resolveToolApproval（与聊天卡片共用 settle）。
+	 */
+	private _showDesktopApprovalToast(request: IToolApprovalRequest): void {
+		const toolLabel = request.toolName;
+		const message = localize(
+			'agentOS.toolApproval.toast',
+			'工具 "{0}" 请求执行授权。',
+			toolLabel,
+		);
+
+		const actions: INotificationActions = {
+			primary: [
+				{
+					id: 'agentOS.toolApproval.allow',
+					label: localize('agentOS.toolApproval.allow', '同意'),
+					enabled: true,
+					class: undefined,
+					tooltip: '',
+					dispose: () => { /* no-op */ },
+					run: () => { this.resolveToolApproval(request.toolCallId, 'allow_once'); },
+				} as IAction,
+				{
+					id: 'agentOS.toolApproval.deny',
+					label: localize('agentOS.toolApproval.deny', '拒绝'),
+					enabled: true,
+					class: undefined,
+					tooltip: '',
+					dispose: () => { /* no-op */ },
+					run: () => { this.resolveToolApproval(request.toolCallId, 'deny'); },
+				} as IAction,
+				{
+					id: 'agentOS.toolApproval.disableGlobal',
+					label: localize('agentOS.toolApproval.disableGlobal', '全局关闭询问'),
+					enabled: true,
+					class: undefined,
+					tooltip: localize('agentOS.toolApproval.disableGlobal.tip', '关闭「确认工具调用」并在设置页中打开该开关'),
+					dispose: () => { /* no-op */ },
+					run: () => {
+						// 关闭全局确认开关（持久化到配置），并跳转到设置页通用设置。
+						try {
+							this._instantiationService.invokeFunction(accessor =>
+								accessor.get(IConfigurationService).updateValue('tools.confirmToolCalls', false),
+							);
+						} catch {
+							/* 持久化失败不影响跳转 */
+						}
+						this._instantiationService.invokeFunction(accessor =>
+							accessor.get(ICommandService).executeCommand('agentStudio.openSettings'),
+						).catch(() => { /* 命令不存在时静默 */ });
+					},
+				} as IAction,
+			],
+		};
+
+		this._notificationService.notify({
+			severity: Severity.Info,
+			message,
+			actions,
+			// 不自动隐藏：等用户决策或超时（超时由 _requestToolApprovalFromUI 的 timer 处理）。
+			sticky: true,
 		});
+
+		this._playApprovalChime();
+	}
+
+	/**
+	 * 任务完成通知：优先发操作系统级 Toast（Windows 通知中心 / macOS 通知中心），
+	 * 使通知在「多任务视图 / 虚拟桌面 / 应用失焦」等场景下仍可见；
+	 * 若 OS Toast 不被支持（如纯浏览器环境），降级为 IDE 内通知。
+	 */
+	private async _notifyTaskCompleted(taskSummary: string): Promise<void> {
+		const message = `✅ 任务执行完毕：${taskSummary}`;
+
+		// IDE 内通知始终保留（聚焦工作时的主要提示，含 source 便于过滤）。
+		this._notificationService.notify({
+			severity: Severity.Info,
+			message,
+			source: 'agent-studio',
+		});
+
+		// OS 级 Toast：跨虚拟桌面 / 多任务视图可见。best-effort，失败不影响主流程。
+		try {
+			const result = await this._hostService.showToast({
+				title: 'Agent 任务执行完毕',
+				body: taskSummary,
+			}, CancellationToken.None);
+
+			if (!result.supported) {
+				this._logService.trace('[AgentOS] OS toast unsupported, IDE notification is the fallback');
+			}
+		} catch (err) {
+			this._logService.warn('[AgentOS] OS toast failed:', err);
+		}
+	}
+
+	/**
+	 * 读取全局「确认工具调用」开关（tools.confirmToolCalls，默认 true）。
+	 * false → 触发询问时不再询问、直接执行（见 _requestToolApprovalFromUI）。
+	 * 经 IConfigurationService 读取，拿不到服务时降级为 true（保守：仍询问）。
+	 */
+	private _isToolCallConfirmationEnabled(): boolean {
+		try {
+			return this._instantiationService.invokeFunction(accessor =>
+				accessor.get(IConfigurationService)
+					.getValue<boolean>('tools.confirmToolCalls') !== false,
+			);
+		} catch {
+			return true;
+		}
+	}
+
+	/** WebAudio 合成双音提示（无需音频资源文件，离线可用）。 */
+	private _playApprovalChime(): void {
+		try {
+			const Ctor = (window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
+			if (!Ctor) { return; }
+			const ctx: AudioContext = new Ctor();
+			const beep = (freq: number, startAt: number, duration: number) => {
+				const osc = ctx.createOscillator();
+				const gain = ctx.createGain();
+				osc.type = 'sine';
+				osc.frequency.value = freq;
+				gain.gain.setValueAtTime(0.0001, startAt);
+				gain.gain.exponentialRampToValueAtTime(0.18, startAt + 0.02);
+				gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+				osc.connect(gain).connect(ctx.destination);
+				osc.start(startAt);
+				osc.stop(startAt + duration);
+			};
+			const now = ctx.currentTime;
+			beep(880, now, 0.16);          // A5
+			beep(1174.66, now + 0.18, 0.20); // D6
+			// 播完自动回收，避免泄漏 AudioContext。
+			window.setTimeout(() => ctx.close().catch(() => { /* ignore */ }), 600);
+		} catch {
+			/* 音频不可用时静默降级，不影响审批主流程 */
+		}
 	}
 
 	/** buttonId → ToolApprovalDecision（容纳 native / webview 两套按钮命名）。 */
@@ -649,11 +917,15 @@ private readonly _sandboxGuard: SandboxGuard;
 			case 'approve':
 			case 'approved':
 				return ToolApprovalDecision.AllowOnce;
+			case 'allow_session':
+				return ToolApprovalDecision.AllowSession;
+			case 'allow_workspace':
+				return ToolApprovalDecision.AllowWorkspace;
 			case 'allow_always':
 			case 'always':
-			case 'allow_session':
-			case 'allow_workspace':
 				return ToolApprovalDecision.AllowAlways;
+			case 'deny_always':
+				return ToolApprovalDecision.DenyAlways;
 			default:
 				return ToolApprovalDecision.Deny;
 		}
@@ -664,7 +936,7 @@ private readonly _sandboxGuard: SandboxGuard;
 		if (!pending) { return false; }
 		const decision = AgentOSService._mapApprovalButton(buttonId);
 		this._logService.info(`[AgentOS] Tool approval ${toolCallId} → ${buttonId} (${decision})`);
-		pending.settle(decision, decision === ToolApprovalDecision.Deny ? 'rejected' : 'approved');
+		pending.settle(decision, (decision === ToolApprovalDecision.Deny || decision === ToolApprovalDecision.DenyAlways) ? 'rejected' : 'approved');
 		return true;
 	}
 
@@ -752,6 +1024,16 @@ private readonly _sandboxGuard: SandboxGuard;
 				this._logService.warn(`[AgentOS] Found ${files.length} orphaned approval file(s) from a previous session — they will be cleaned up on next resolution.`);
 			}
 		} catch { /* dir may not exist yet */ }
+	}
+
+	/**
+	 * 撤销某工具的持久授权（命令面板"撤销工具自动授权"入口调用）。
+	 * 同时清掉本次会话的内存缓存（经 ToolApprovalService.revoke）与设置项持久化。
+	 */
+	revokeToolAllow(toolName: string): void {
+		this._toolAllowStore?.revoke(toolName);
+		this._approvalService.revoke(toolName);
+		this._logService.info(`[AgentOS] Revoked persistent tool allow: ${toolName}`);
 	}
 
 	/**
@@ -1908,6 +2190,11 @@ private readonly _sandboxGuard: SandboxGuard;
 					agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
 				}).catch(() => { });
 			}
+
+		// 系统级通知：任务执行完毕（OS Toast 优先，跨多任务视图/虚拟桌面可见）
+		const taskSummary = [...(request.messages as Array<{ role?: string; content?: string }>)]
+			.reverse().find(m => m?.role === 'user')?.content?.slice(0, 60) ?? 'Agent 任务';
+		this._notifyTaskCompleted(taskSummary);
 
 		if (memProvider?.onTaskCompleted) {
 			try {

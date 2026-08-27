@@ -286,6 +286,18 @@ export class CodebaseGraphStore {
 	private _bm25: BM25Index = new BM25Index();
 	// 延迟 BM25 索引：批量写入时跳过逐条 addDocument，最后一次性重建
 	private _deferBM25 = false;
+	/**
+	 * Defer 期间累积的 BM25 脏集：需（重新）建索引的节点 id + 需移除的节点 id。
+	 *
+	 * 存在意义：增量索引只改了少数文件，旧实现却在 defer 结束后 `clear()` + 遍历
+	 * **全图**（12.4w 节点）重建倒排——O(全图) 且是 renderer 冻结的主因之一。
+	 * 有了脏集就能只对真正变动的节点做增删改，把 O(全图) 降为 O(变更集)。
+	 *
+	 * 仅在 _deferBM25===true 期间累积；setDeferBM25(false) 前由 rebuildBM25 消费并清空。
+	 * 保守设计：任一环节不确定时调用方可走 rebuildBM25(true) 强制全量。
+	 */
+	private _bm25DirtyAdded = new Set<number>();
+	private _bm25DirtyRemoved = new Set<number>();
 
 	/**
 	 * 构建 BM25 索引文本（对齐 C 版 FTS5 索引范围：name + qn + filePath + signature + docstring + ...）
@@ -327,10 +339,13 @@ export class CodebaseGraphStore {
 				outDegree: existing.outDegree,
 			};
 			this._nodes.set(existingId, updated);
-			// Update BM25 index (skip if deferred)
+			// Update BM25 index (skip if deferred — defer 期间只记脏集，结束由 rebuildBM25 增量处理)
 			if (!this._deferBM25) {
 				this._bm25.removeDocument(existingId);
 				this._bm25.addDocument(existingId, this._buildBM25Text(updated));
+			} else {
+				this._bm25DirtyAdded.add(existingId);
+				this._bm25DirtyRemoved.delete(existingId);
 			}
 			return updated;
 		}
@@ -363,6 +378,9 @@ export class CodebaseGraphStore {
 		// Add to BM25 index (skip if deferred — will be rebuilt in batch later)
 		if (!this._deferBM25) {
 			this._bm25.addDocument(id, this._buildBM25Text(newNode));
+		} else {
+			this._bm25DirtyAdded.add(id);
+			this._bm25DirtyRemoved.delete(id);
 		}
 
 		return newNode;
@@ -372,21 +390,83 @@ export class CodebaseGraphStore {
 		return nodes.map(n => this.upsertNode(n));
 	}
 
-	/** 开启/关闭 BM25 延迟模式：批量写入时跳过逐条索引更新，最后 rebuildBM25() 一次性构建 */
+	/**
+	 * 开启/关闭 BM25 延迟模式：批量写入时跳过逐条索引更新，最后 rebuildBM25() 一次性构建。
+	 *
+	 * 开启时清空脏集，确保本轮只累积「开启之后」的变更——defer 开启前的写入已直接落到
+	 * BM25（未记脏），若不清空会把上一轮残留的脏 id 混入本轮，导致重复/错误处理。
+	 */
 	setDeferBM25(defer: boolean): void {
+		if (defer && !this._deferBM25) {
+			this._bm25DirtyAdded.clear();
+			this._bm25DirtyRemoved.clear();
+		}
 		this._deferBM25 = defer;
 	}
 
 	/**
-	 * 批量重建 BM25 索引（在 setDeferBM25(true) ... 写入 ... 之后调用）。
-	 * 改为 async + 时间切片：大图(百万节点)遍历全量建索引是最大单点同步重活，
-	 * 原先纯同步无 yield → 主线程冻结数秒~数十秒（对齐 Phase 1 重路径防卡）。
-	 * 直接迭代 Map.values() 而非 Array.from 全量副本，降低大图内存峰值。
+	 * 批量重建 / 增量刷新 BM25 索引（在 setDeferBM25(true) ... 写入 ... 之后调用）。
+	 *
+	 * **增量模式（默认，force=false）**：只处理 defer 期间累积的脏集（_bm25DirtyAdded /
+	 * _bm25DirtyRemoved），复杂度 O(变更集) 而非 O(全图)。
+	 * 背景：增量索引只改了少数文件，旧实现却 `clear()` + 遍历全图（12.4w 节点）重建，
+	 * 是 renderer 冻结的主因之一（2026-08-27）。
+	 *
+	 * **全量模式（force=true）**：清空后遍历全图重建。用于加载制品（fromJSON）等
+	 * 本就没有脏集、或索引可能整体失效的场景。
+	 *
+	 * 两种模式都带时间切片（YIELD_EVERY）。直接迭代 Map.values() 而非 Array.from
+	 * 全量副本，降低大图内存峰值。
 	 */
-	async rebuildBM25(onProgress?: (done: number, total: number) => void): Promise<void> {
+	async rebuildBM25(onProgress?: (done: number, total: number) => void, force: boolean = false): Promise<void> {
+		// 每 1000 节点让出主线程一次（旧值 5000：12.4w 节点只让出 25 次，
+		// 单次连续占用仍足以造成可感知冻结）。1000 是「让出开销 vs 响应性」的折中：
+		// 单节点建索引为微秒级，让出一次的宏任务开销相对可控。
+		const YIELD_EVERY = 1000;
+
+		// ── 增量模式：只处理脏集 ──
+		if (!force) {
+			const added = [...this._bm25DirtyAdded];
+			const removed = [...this._bm25DirtyRemoved];
+			this._bm25DirtyAdded.clear();
+			this._bm25DirtyRemoved.clear();
+
+			if (added.length === 0 && removed.length === 0) {
+				// 无变更：直接返回，避免无谓的全图遍历（零变更增量索引会走到这里）
+				if (onProgress) { onProgress(0, 0); }
+				return;
+			}
+
+			// 先删后加：同一 id 既在 removed 又在 added 时，保证最终状态为「已加」
+			// （脏集累积时已做互斥清理，此处为双保险）
+			let done = 0;
+			for (const id of removed) {
+				if (this._bm25DirtyAdded.has(id)) { continue; }
+				this._bm25.removeDocument(id);
+				if (++done % YIELD_EVERY === 0) {
+					if (onProgress) { onProgress(done, removed.length + added.length); }
+					await new Promise<void>(resolve => setTimeout(resolve, 0));
+				}
+			}
+			for (const id of added) {
+				const n = this._nodes.get(id);
+				if (!n) { continue; } // 节点在 defer 期间又被删掉了
+				this._bm25.removeDocument(id); // 幂等：先清旧文档再重新加入（更新场景）
+				this._bm25.addDocument(id, this._buildBM25Text(n));
+				if (++done % YIELD_EVERY === 0) {
+					if (onProgress) { onProgress(done, removed.length + added.length); }
+					await new Promise<void>(resolve => setTimeout(resolve, 0));
+				}
+			}
+			if (onProgress) { onProgress(done, removed.length + added.length); }
+			return;
+		}
+
+		// ── 全量模式 ──
+		this._bm25DirtyAdded.clear();
+		this._bm25DirtyRemoved.clear();
 		this._bm25.clear();
 		const total = this._nodes.size;
-		const YIELD_EVERY = 5000; // 每 5000 节点让出主线程一次，保持 UI 响应
 		let done = 0;
 		for (const n of this._nodes.values()) {
 			this._bm25.addDocument(n.id, this._buildBM25Text(n));
@@ -505,8 +585,13 @@ export class CodebaseGraphStore {
 			if (!node) { continue; }
 			// Remove from QN index
 			this._nodesByQN.delete(`${project}:${node.qualifiedName}`);
-			// Remove from BM25
-			this._bm25.removeDocument(id);
+			// Remove from BM25（defer 期间只记脏集，避免全量重建时漏删）
+			if (!this._deferBM25) {
+				this._bm25.removeDocument(id);
+			} else {
+				this._bm25DirtyRemoved.add(id);
+				this._bm25DirtyAdded.delete(id);
+			}
 			// Remove edges
 			this._deleteEdgesOfNode(id);
 			// Remove node
@@ -993,6 +1078,10 @@ export class CodebaseGraphStore {
 		this._inEdges.clear();
 		this._fileHashes.clear();
 		this._bm25.clear();
+		// 必须一并清空 BM25 脏集：节点 id 从 1 重新分配，残留的旧 id 会在后续
+		// 增量 rebuild 时命中「同 id 但已是另一个节点」的文档，造成索引错乱。
+		this._bm25DirtyAdded.clear();
+		this._bm25DirtyRemoved.clear();
 		this._layout.clear();
 		this._nextNodeId = 1;
 		this._nextEdgeId = 1;

@@ -11772,6 +11772,45 @@
 	border-top: 1px solid var(--void-border-2, #3a3a52);
 }
 
+/* 运行中实时输出（方案1：旁路通道直播 PTY 清洗后增量输出） */
+.terminal-live-output {
+	margin: 0;
+	padding: 8px 12px;
+	max-height: 320px;
+	overflow: auto;
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 11.5px;
+	line-height: 1.5;
+	color: var(--void-fg-2, #d4d4d8);
+	white-space: pre-wrap;
+	word-break: break-all;
+	background: rgba(0, 0, 0, 0.28);
+	border-top: 1px solid var(--void-border-2, #3a3a52);
+}
+
+.terminal-running-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin: 8px 12px 0;
+	padding: 3px 10px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-weight: 600;
+	color: #f0b95d;
+	background: rgba(240, 185, 93, 0.12);
+	border: 1px solid rgba(240, 185, 93, 0.3);
+}
+.terminal-running-badge::before {
+	content: '';
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+	box-shadow: 0 0 0 0 currentColor;
+	animation: terminal-live-pulse 1.4s infinite;
+}
+
 /* exit bar：exit code + 输出统计 */
 .terminal-exit-bar {
 	display: flex;

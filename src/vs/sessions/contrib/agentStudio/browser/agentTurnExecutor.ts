@@ -80,6 +80,8 @@ import {
 	ALL_BLOCKED_WRAPUP_AT,
 	budgetLowWarning,
 	preferGraphSearchReminder,
+	stopSearchingReportReminder,
+	textSearchLoopWrapUpReminder,
 	advanceSingleToolStreak,
 	batchReadOnlyToolsReminder,
 } from '../common/loopReminders.js';
@@ -90,6 +92,7 @@ import {
 
 import {
 	deduplicateToolCalls,
+	buildLoopBlockFeedback,
 	limitToolResultSize,
 	safeStringifyToolResult,
 	shouldParallelizeToolBatch,
@@ -752,6 +755,10 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		let lengthTruncatedRetryAttempts = 0;
 		// 维度 3：瞬态错误（SSE 超时/网络/429/5xx）重试计数器，单次 turn 内累计
 		let transientErrorRetries = 0;
+		// 维度 4：首 token 超时（冷启动）有界重试计数器，单次 turn 内累计（预热优化，见下方 catch 分支）
+		let firstTokenTimeoutRetries = 0;
+		const FIRST_TOKEN_TIMEOUT_MAX_RETRIES = 1;
+		const FIRST_TOKEN_TIMEOUT_RETRY_DELAY_MS = 500;
 		// 本轮 provider 结束原因（finish_reason / stop_reason），每轮迭代重置。
 		let lastFinishReason: string | undefined;
 
@@ -784,6 +791,14 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// 引导；结构工具一用即清零，注入后也清零避免每轮刷屏。
 		let _textSearchStreak = 0;
 		const MAX_TEXT_SEARCH_STREAK = host.constructor.MAX_TEXT_SEARCH_STREAK;
+		// 硬上限：纯文本搜索连击失控时强制收尾轮（打断死循环）。默认 2× 软上限，可由
+		// host.constructor.MAX_TEXT_SEARCH_STREAK_HARD 覆盖调参。
+		const MAX_TEXT_SEARCH_STREAK_HARD =
+			(typeof (host.constructor as any).MAX_TEXT_SEARCH_STREAK_HARD === 'number')
+				? (host.constructor as any).MAX_TEXT_SEARCH_STREAK_HARD
+				: MAX_TEXT_SEARCH_STREAK * 2;
+		// 软上限提醒只注入一次（避免每轮刷屏）；streak 不在此清零，以便硬上限仍可达。
+		let _textSearchSoftReminderSent = false;
 
 		// ─── 单只读工具连击（批量并行引导，2026-08-21 日志 1787302409958）──────
 		// 连续多轮「每轮只请求 1 个只读工具」→ 注入批量并行提醒。实测该会话
@@ -2727,6 +2742,23 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					continue;
 				}
 				host._logService.error(`[AgentOS] Model call failed on iteration ${iteration}:`, error);
+				// ── 首 token 超时（冷启动）有界重试（预热优化）──────────────
+				// 网关/模型实例冷启动时 TTFT 可远超预期 prefill（实测 hy3-ioa 冷启动 TTFT≈86s
+				// 被首 token 预算误杀，但流最终会在 86s 正常返回）。第一次请求本身就把网关
+				// "预热"，重试通常立即恢复（见 agentModelAccess 恢复提示「网关预热后通常立即恢复」）。
+				// 仅对「首 token 前」超时重试（idle 超时=中途静默挂起，重试无意义），有界 1 次，
+				// 用尽后仍向上抛触发 _executeWithFallback 切换备用模型（保持既有 fallback 行为）。
+				const isFirstTokenTimeout = isTimeout && /first-token/.test(error.message ?? '');
+				if (isFirstTokenTimeout && firstTokenTimeoutRetries < FIRST_TOKEN_TIMEOUT_MAX_RETRIES) {
+					firstTokenTimeoutRetries++;
+					host._logService.warn(
+						`[AgentOS] First-token timeout (cold-start?) on iteration ${iteration}, ` +
+						`retrying same model (attempt ${firstTokenTimeoutRetries}/${FIRST_TOKEN_TIMEOUT_MAX_RETRIES}) — ` +
+						`gateway usually warms up after first request: ${error instanceof Error ? error.message : String(error)}`
+					);
+					await new Promise(r => setTimeout(r, FIRST_TOKEN_TIMEOUT_RETRY_DELAY_MS));
+					continue;
+				}
 				// 流式 idle 超时（模型静默挂起）：作为硬失败向上抛出，
 				// 经由 runAgentLoop → _executeWithFallback 切换到备用模型（对齐 LangGraph TimeoutPolicy）。
 				if (isTimeout) {
@@ -2865,9 +2897,11 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				if (validCalls.length < effectiveToolCalls.length) {
 					host._logService.info(`[AgentOS] Whitelist filtered native tool calls: ${effectiveToolCalls.length} → ${validCalls.length}`);
 					// 为被过滤的幻觉调用补 tool_result + tool_end，防止卡片永远转圈
+					// 同时回写可用工具示例，让模型知道该用什么工具名（而非凭空猜测）。
+					const availableToolSample = Array.from(host._lastAllEnabledToolNames).slice(0, 10).join(', ');
 					for (const tc of effectiveToolCalls) {
 						if (validCalls.includes(tc)) { continue; }
-						yield { type: 'tool_result', content: `工具 "${tc.name}" 不在可用列表中（可能为幻觉调用）`, toolCallId: tc.id };
+						yield { type: 'tool_result', content: `工具 "${tc.name}" 不在可用列表中（可能为幻觉调用）。可用工具示例：[${availableToolSample}]。请只使用列表中真实存在的工具名重发。`, toolCallId: tc.id };
 						yield { type: 'tool_end', toolCallId: tc.id, success: false };
 						endedToolIds.add(tc.id);
 					}
@@ -3392,7 +3426,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					for (const tc of blockedCalls) {
 						toolResults.push({
 							toolCallId: tc.id,
-							content: [{ type: 'text', text: `Error: Tool "${tc.name}" was called too many times with the same arguments. This looks like a loop — try a different approach or provide more specific arguments.` }],
+							content: [{ type: 'text', text: buildLoopBlockFeedback(tc.name, tc.arguments) }],
 							success: false,
 						});
 						// ⚠⚠ 2026-08-22（日志 1787377582459，实测 37 次）：**只在该 id 从未
@@ -3411,7 +3445,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							startedToolIds.add(tc.id);
 							yield { type: 'tool_start', content: '', toolCallId: tc.id, toolName: tc.name };
 						}
-						yield { type: 'tool_result', content: `工具 "${tc.name}" 因重复调用已被跳过（疑似循环）`, toolCallId: tc.id };
+						yield { type: 'tool_result', content: buildLoopBlockFeedback(tc.name, tc.arguments), toolCallId: tc.id };
 						yield { type: 'tool_end', toolCallId: tc.id, success: false };
 						endedToolIds.add(tc.id);
 					}
@@ -3590,27 +3624,45 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							_terminalEmptyOutputCount = 0;
 						}
 					}
-					// search_graph 引导：结构搜索工具一用即清零；文本搜索连击达到
-					// 阈值且结构工具在当前工具面可用时注入一次引导（注入后清零）。
+					// 文本/文件名搜索连击护栏：
+					//  • 结构搜索工具一用即清零（表明已切换到有效路径），并复位软提醒标记。
+					//  • 纯文本搜索连击累计。软上限（MAX_TEXT_SEARCH_STREAK）注入一次强引导
+					//    （停止搜索 / 改用结构工具 / 直接汇报），**不在此清零**以便硬上限可达。
+					//  • 硬上限（MAX_TEXT_SEARCH_STREAK_HARD）连击失控：强制收尾轮
+					//    （复用 _forceWrapUpRound：禁用工具，模型必须基于已收集信息产出结论）。
 					if (STRUCTURAL_SEARCH_TOOL_NAMES.has(toolName)) {
 						_textSearchStreak = 0;
+						_textSearchSoftReminderSent = false;
 					} else if (TEXT_SEARCH_TOOL_NAMES.has(toolName)) {
 						_textSearchStreak++;
 						_auditMark('textSearchStreak', _textSearchStreak, MAX_TEXT_SEARCH_STREAK, toolName);
-						if (_textSearchStreak >= MAX_TEXT_SEARCH_STREAK) {
+						if (_textSearchStreak >= MAX_TEXT_SEARCH_STREAK_HARD) {
+							// ③ 硬上限：打断纯搜索死循环，强制收尾轮。
+							host._logService.warn(
+								formatGuardrailFiredLog('textSearchStreak', _textSearchStreak, MAX_TEXT_SEARCH_STREAK_HARD, 'hard cap reached — forcing wrap-up round (stop searching)'),
+							);
+							_auditFired('textSearchStreak', MAX_TEXT_SEARCH_STREAK_HARD);
+							messages = appendMessages(messages, { role: 'system', content: textSearchLoopWrapUpReminder(_textSearchStreak) });
+							_wrapUpReminderAlreadyInjected = true;
+							_forceWrapUpRound = true;
+							_textSearchStreak = 0;
+						} else if (_textSearchStreak >= MAX_TEXT_SEARCH_STREAK && !_textSearchSoftReminderSent) {
+							// ① 软上限：注入一次强引导。结构工具可用则推结构工具，否则要求直接停搜汇报。
 							const _structuralAvailable = enabledTools
 								.filter(t => STRUCTURAL_SEARCH_TOOL_NAMES.has(t.name))
 								.map(t => t.name);
-							if (_structuralAvailable.length > 0) {
-								host._logService.warn(
-									formatGuardrailFiredLog('textSearchStreak', _textSearchStreak, MAX_TEXT_SEARCH_STREAK, `structural tools available: ${_structuralAvailable.join(', ')}`),
-								);
-								_auditFired('textSearchStreak', MAX_TEXT_SEARCH_STREAK);
-								// 延迟注入（本次 400 的直接触发点：并行 4×search_files 时该 reminder
-								// 曾插在第 3、4 条 tool result 之间劈开序列）
-								_pendingBatchReminders.push(preferGraphSearchReminder(_textSearchStreak, _structuralAvailable.join(', ')));
-								_textSearchStreak = 0;
-							}
+							host._logService.warn(
+								formatGuardrailFiredLog('textSearchStreak', _textSearchStreak, MAX_TEXT_SEARCH_STREAK, `structural tools available: ${_structuralAvailable.join(', ') || '(none)'}`),
+							);
+							_auditFired('textSearchStreak', MAX_TEXT_SEARCH_STREAK);
+							// 延迟注入（本次 400 的直接触发点：并行 4×search_files 时该 reminder
+							// 曾插在第 3、4 条 tool result 之间劈开序列）
+							_pendingBatchReminders.push(
+								_structuralAvailable.length > 0
+									? preferGraphSearchReminder(_textSearchStreak, _structuralAvailable.join(', '))
+									: stopSearchingReportReminder(_textSearchStreak),
+							);
+							_textSearchSoftReminderSent = true;
 						}
 					}
 				}

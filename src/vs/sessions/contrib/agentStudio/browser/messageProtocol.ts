@@ -839,8 +839,8 @@ export interface IChatToolApprovalRequestPayload {
 export interface IChatToolApprovePayload {
 	/** The tool call ID to approve or reject. */
 	readonly toolCallId: string;
-	/** The decision: 'allow_once' | 'allow_session' | 'allow_workspace' | 'allow_always' | 'deny'. */
-	readonly decision: 'allow_once' | 'allow_session' | 'allow_workspace' | 'allow_always' | 'deny';
+	/** The decision: 'allow_once' | 'allow_session' | 'allow_workspace' | 'allow_always' | 'deny' | 'deny_always' | 'reject'. */
+	readonly decision: 'allow_once' | 'allow_session' | 'allow_workspace' | 'allow_always' | 'deny' | 'deny_always' | 'reject';
 }
 
 /**

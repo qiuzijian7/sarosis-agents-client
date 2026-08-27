@@ -10,14 +10,9 @@
  *  `layer_xl_transparent_conv`）+ `LayeredDiffusionDecodeRGBA`（`vae_transparent_decoder`），
  *  输出带 alpha 的 PNG/webp。网格预览用棋盘格底纹实时展示透明通道（见 EmojiStageEditor）。
  *
- *  ## 动态（动画）—— 已落地（SDXL motion 路线）
- *  AnimateDiff motion 模型只匹配单一 SD 版本：`mm_sd_v15_v2` = SD1.5、`mm_sdxl_v10_beta` = SDXL。
- *  而 layerdiffuse 的透明注入也分版本：SDXL 有 `layer_xl_transparent_conv`（普通 LoRA patch，
- *  不抢 batch）；SD1.5 只有 `layer_sd15_transparent_attn`（**attn_sharing，抢 batch 做前/背景两帧**，
- *  与 AnimateDiff 的多帧 batch 语义冲突）。故动态表情包走 **SDXL + mm_sdxl_v10_beta** 路线：
- *  `CheckpointLoaderSimple(sd_xl_base)` → `LayeredDiffusionApply(Conv)` → `ADE_AnimateDiffLoaderGen1`
- *  （beta_schedule="linear (AnimateDiff-SDXL)"）→ KSampler(16 帧) → VAEDecode →
- *  `LayeredDiffusionDecodeRGBA` → `SaveAnimatedWEBP`（透明循环 webp）。
+ *  ## 动态（动画）—— 已落地（MiniMax H3 图生视频路线）
+ *  动态表情包改用 MiniMax H3 Reference-to-Video（图生视频），产物稳定、无需
+ *  layerdiffuse、**能用上游参考图让静态贴纸"动起来"**。
  *
  *  数据来源：手写（api_json 连线引用必须为字符串 ["4",0]，见 stageWorkflowExecutor）。
  *--------------------------------------------------------------------------------------------*/
@@ -141,168 +136,6 @@ export const EMOJI_TRANSPARENT_STICKER: StageWorkflowConfig = {
 		},
 		"6": {
 			"seed": { "from": "option:seed", "default": "random_int31", "required": false, "cast": "int" },
-		},
-	},
-};
-
-/**
- * 单格「动态透明表情包」模板（SDXL + AnimateDiff motion + layerdiffuse 透明）。
- * 16 帧循环 webp（透明背景），fps=8。执行时注入 main_prompt（该格 prompt）与
- * option:seed（该格 seed），其余与静态贴纸一致。
- *
- * 连线要点（已本机验证通过，输出 emoji_anim_*.webp 16 帧 RGBA）：
- *   - 透明用 `LayeredDiffusionApply`（"SDXL, Conv Injection"，layer_xl_transparent_conv）
- *   - motion 用 `ADE_AnimateDiffLoaderGen1`（mm_sdxl_v10_beta.ckpt，beta_schedule
- *     "linear (AnimateDiff-SDXL)"），model 接 LayeredDiffusionApply 的输出（两者叠加）
- *   - ★ 解码方案（方案1，绕开 transparent decoder 花屏）：
- *     · RGB 用标准 VAE（节点 8，清晰不花屏，saturation≈0.45）
- *     · alpha 用 `LayeredDiffusionDecode` 只取 MASK slot（transparent decoder 只出
- *       前景 matte，16 帧逐帧正确，四角 border=0、主体 mean≈0.4）
- *     · `InvertMask`（前景 matte→透明程度）+ `JoinImageWithAlpha` 合成 RGBA
- *     · 旧方案 `LayeredDiffusionDecodeRGBA` 的 RGB 是 transparent decoder 重建的
- *       多帧花屏（UNet1024 静态训练，多帧 latent 解 RGB 失败），已弃用
- *   - 输出用 `SaveAnimatedWEBP`（支持透明动画，进 history 的 images slot）
- */
-export const EMOJI_ANIMATED_TRANSPARENT: StageWorkflowConfig = {
-	api_json: {
-		"1": {
-			"class_type": "CheckpointLoaderSimple",
-			"inputs": { "ckpt_name": "sd_xl_base_1.0.safetensors" },
-		},
-		"2": {
-			"class_type": "LayeredDiffusionApply",
-			"inputs": {
-				"model": ["1", 0],
-				"config": "SDXL, Conv Injection",
-				"weight": 1.0,
-			},
-		},
-		"3": {
-			"class_type": "ADE_AnimateDiffLoaderGen1",
-			"inputs": {
-				"model": ["2", 0],
-				"model_name": "mm_sdxl_v10_beta.ckpt",
-				"beta_schedule": "linear (AnimateDiff-SDXL)",
-			},
-		},
-		"4": {
-			"class_type": "CLIPTextEncode",
-			"inputs": {
-				"text": "a cute cartoon sticker, thick outlines, vibrant colors, isolated on transparent background, bouncing animation, smooth loop, small centered subject, wide empty margin around subject",
-				"clip": ["1", 1],
-			},
-		},
-		"5": {
-			"class_type": "CLIPTextEncode",
-			"inputs": {
-				"text": "text, watermark, blurry, low quality, deformed, static, cropped, close-up",
-				"clip": ["1", 1],
-			},
-		},
-		"6": {
-			"class_type": "EmptyLatentImage",
-			// ★ 768² 而非 512²：SDXL 原生训练分辨率是 1024，512 下构图会失控 ——
-			//   主体涨满全幅、四周没有留白，透明贴纸的边缘 alpha 被主体压住变不
-			//   透明（实测 512²：外框 alpha 均值 ~75、16/16 帧脏；768²：均值 6.2、
-			//   1/16 脏；768² + 留白引导 prompt：均值 2.0、0/16 脏）。
-			//   代价是耗时约翻倍（16 帧 512²≈62s → 768²≈131s，RTX 4070）。
-			//   验收脚本：scripts/test-emoji-e2e.mjs（外框 alpha 均值须 ≤32）。
-			"inputs": { "width": 768, "height": 768, "batch_size": 16 },
-		},
-		"7": {
-			"class_type": "KSampler",
-			"inputs": {
-				"model": ["3", 0],
-				"positive": ["4", 0],
-				"negative": ["5", 0],
-				"latent_image": ["6", 0],
-				"seed": 0,
-				"steps": 25,
-				"cfg": 7.0,
-				"sampler_name": "euler",
-				"scheduler": "normal",
-				"denoise": 1.0,
-			},
-		},
-		"8": {
-			"class_type": "VAEDecode",
-			"inputs": {
-				"samples": ["7", 0],
-				"vae": ["1", 2],
-			},
-		},
-		"9": {
-			"class_type": "LayeredDiffusionDecode",
-			"inputs": {
-				"samples": ["7", 0],
-				"images": ["8", 0],
-				"sd_version": "SDXL",
-				// ★ 动态模板 batch_size=16（EmptyLatentImage 一次出 16 帧），
-				//   sub_batch_size 必须匹配，否则解码越界 → 彩色噪声。
-				// ★ 只取 slot 1 = MASK（前景 matte，逐帧正确），slot 0 的 RGB 是
-				//   transparent decoder 重建的花屏，丢弃不用。
-				"sub_batch_size": 16,
-			},
-		},
-		"10": {
-			"class_type": "InvertMask",
-			"inputs": {
-				// ★ LayeredDiffusionDecode 的 MASK 是「前景 matte」（1=主体），
-				//   JoinImageWithAlpha 期望「透明程度」（1=透明），需反转。
-				"mask": ["9", 1],
-			},
-		},
-		"11": {
-			"class_type": "JoinImageWithAlpha",
-			"inputs": {
-				// ★ RGB 用标准 VAE（节点 8，清晰不花屏），alpha 用逐帧前景 matte
-				//   （transparent decoder 只出 alpha，绕开其花屏 RGB）。
-				"image": ["8", 0],
-				"alpha": ["10", 0],
-			},
-		},
-		"12": {
-			"class_type": "SaveAnimatedWEBP",
-			"inputs": {
-				"images": ["11", 0],
-				"filename_prefix": "ComfyTV/emoji_anim",
-				"fps": 8.0,
-				"lossless": false,
-				"quality": 90,
-				"method": "default",
-			},
-		},
-	},
-	result: { "type": "ui_save", "node": "12" },
-	inputs: {
-		"4": {
-			"text": {
-				"from": "main_prompt",
-				"default": "a cute cartoon sticker",
-				// 「small centered subject / wide empty margin」是必需的构图约束，不是修辞：
-				// 缺它时主体会涨满画框、压掉四周透明留白（见节点 6 的注释与实测数据）。
-				"suffix": ", thick outlines, vibrant colors, isolated on transparent background, bouncing animation, smooth loop, die-cut sticker, small centered subject, wide empty margin around subject, full body visible",
-				"required": false,
-			},
-		},
-		// ★ 帧数 = EmptyLatentImage.batch_size（AnimateDiff 用 batch 维度承载时间轴）。
-		//   卡片上的「帧数」控件必须绑到这里，否则是假控件（曾硬编码 16，用户改无效）。
-		//   注意 `values.batch_size` 被 runEmojiStageGrid 固定为 1（网格由循环驱动），
-		//   所以这里必须绑 `option:frames` 而不是 `option:batch_size`。
-		"6": {
-			"batch_size": { "from": "option:frames", "default": 16, "required": false, "cast": "int" },
-		},
-		"7": {
-			"seed": { "from": "option:seed", "default": "random_int31", "required": false, "cast": "int" },
-		},
-		// ★ sub_batch_size 必须与 batch_size 同值，否则 LayeredDiffusionDecode
-		//   按错误的分批数解码 → 越界读未初始化内存 → 彩色噪声（见节点 9 注释）。
-		//   因此这两个字段绑同一个 option:frames。
-		"9": {
-			"sub_batch_size": { "from": "option:frames", "default": 16, "required": false, "cast": "int" },
-		},
-		"12": {
-			"fps": { "from": "option:fps", "default": 8, "required": false, "cast": "int" },
 		},
 	},
 };
@@ -493,7 +326,6 @@ export const EMOJI_ANIMATED_MINIMAX: StageWorkflowConfig = (() => {
 export const EMOJI_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
 	"Qwen 贴纸 (默认)": EMOJI_QWEN_STICKER,
 	"透明贴纸 (SDXL)": EMOJI_TRANSPARENT_STICKER,
-	"动态表情 (MiniMax H3)": EMOJI_ANIMATED_MINIMAX,
 	/**
 	 * Fallback：纯 SDXL 生成（不依赖 LayeredDiffusion LoRA）。
 	 *
@@ -613,4 +445,47 @@ export const EMOJI_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
 			},
 		},
 	},
+};
+
+/**
+ * 动态表情包（ComfyTV.DynEmojiStage）专用内置 workflow 模板集。
+ *
+ * 与静态 `EMOJI_BUILTIN_WORKFLOWS` 分离：动态节点走 image(参考图) + text(动作/风格)
+ * 输入，绿幕便于 chroma-key，输出 mp4（MiniMax H3 图生视频）。静态节点不应显示动画模板。
+ * 当前仅保留 MiniMax H3 一种动态方案，AnimateDiff 透明贴纸路线已移除。
+ */
+/**
+ * 主题预设 → 完整主 prompt 模板映射。
+ *
+ * 每个中文主题对应一段**完整的主 prompt**（含主体描述 + 风格词 + 透明贴纸要求），
+ * 运行时**直接作为每格 prompt 使用**（替代原"全局 prompt 兜底 + 主题后缀追加"机制）。
+ *
+ * 拼装优先级（runEmojiStageGrid）：
+ *   严格 cell.prompt > 手填 cell.prompt > 上游文本 prompt[i] > 主题模板
+ *
+ * 用户若在某格单独写了 prompt，则**该格**以手填为准，不再套用主题模板；
+ * 仅当一格无手填、无上游文本时，才回退到所选主题的完整模板。
+ *
+ * 键必须与 `STYLE_PRESETS`（StatEmojiStageEditor.tsx）及 registry.ts 的
+ * `style_preset` COMBO options 完全一致；新增主题需三处同步。
+ */
+export const STYLE_PROMPT_TEMPLATE: Record<string, string> = {
+	'Q版': 'a chibi style cartoon sticker, super deformed proportions, big head small body, cute mascot, thick outlines, vibrant colors, isolated on transparent background',
+	'3D': 'a 3d rendered cartoon sticker, smooth claymation look, soft studio lighting, rounded forms, blender render, vibrant, isolated on transparent background',
+	'手绘': 'a hand-drawn sketch cartoon sticker, ink lineart, slightly imperfect strokes, painterly, analog doodle, isolated on transparent background',
+	'Meme': 'a bold impact-font meme sticker, high contrast, exaggerated facial expression, internet meme aesthetic, thick white outline, isolated on transparent background',
+	'漫画封': 'a comic cover illustration sticker, cel shading, dramatic ink outlines, graphic novel panel art, isolated on transparent background',
+	'粘土': 'a claymation cartoon sticker, fuzzy felt texture, stop-motion puppet look, matte clay surface, isolated on transparent background',
+	'像素艺术': 'a pixel art game sprite sticker, limited color palette, visible square pixels, retro 8-bit style, isolated on transparent background',
+	'可爱风': 'a kawaii style sticker, pastel colors, soft rounded shapes, sparkles, adorable sanrio-like character, isolated on transparent background',
+};
+
+/** 取主题对应的完整主 prompt 模板（未知主题回退空串）。 */
+export function styleTemplateOf(preset: string | undefined): string {
+	if (!preset) { return ''; }
+	return STYLE_PROMPT_TEMPLATE[preset] ?? '';
+}
+
+export const EMOJI_DYN_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
+	"动态表情 (MiniMax H3)": EMOJI_ANIMATED_MINIMAX,
 };

@@ -183,8 +183,14 @@ suite('GraphPersistence slim artifact → BM25 auto-rebuild on load', () => {
 
 		const store = new CodebaseGraphStore();
 		let rebuilds = 0;
+		// 必须透传参数：rebuildBM25(onProgress?, force?)，force=true 才是全量重建。
+		// 早期 stub 写成 `async () => orig()` 丢掉了 force，slim 加载会走增量（脏集为空→空转），
+		// BM25 索引为空，下方 search 断言失败。
 		const orig = store.rebuildBM25.bind(store);
-		store.rebuildBM25 = async () => { rebuilds++; return orig(); };
+		store.rebuildBM25 = async (onProgress?: (done: number, total: number) => void, force?: boolean) => {
+			rebuilds++;
+			return orig(onProgress, force);
+		};
 
 		const ok = await p.load(store, TARGET);
 		assert.strictEqual(ok, true);
@@ -204,7 +210,10 @@ suite('GraphPersistence slim artifact → BM25 auto-rebuild on load', () => {
 		const store = new CodebaseGraphStore();
 		let rebuilds = 0;
 		const orig = store.rebuildBM25.bind(store);
-		store.rebuildBM25 = async () => { rebuilds++; return orig(); };
+		store.rebuildBM25 = async (onProgress?: (done: number, total: number) => void, force?: boolean) => {
+			rebuilds++;
+			return orig(onProgress, force);
+		};
 
 		const ok = await p.load(store, TARGET);
 		assert.strictEqual(ok, true);

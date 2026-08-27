@@ -535,7 +535,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => anchor,
 			menuId: MenuId.EditorTitleContext,
-			menuActionOptions: { shouldForwardArgs: true, arg: this.resourceContext.get() },
+			menuActionOptions: { shouldForwardArgs: true, arg: editor },
 			contextKeyService: this.contextMenuContextKeyService,
 			getActionsContext: () => ({ groupId: this.groupView.id, editorIndex: this.groupView.getIndexOfEditor(editor) }),
 			getKeyBinding: action => this.keybindingService.lookupKeybinding(action.id, this.contextMenuContextKeyService),

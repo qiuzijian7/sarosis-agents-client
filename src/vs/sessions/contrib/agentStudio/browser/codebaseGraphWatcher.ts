@@ -53,6 +53,15 @@ const LOG_TAG = '[CodebaseGraphWatcher]';
 const BASE_POLL_MS = 5000;
 const MAX_POLL_MS = 60000;
 const FILES_PER_EXTRA_SEC = 500;
+/**
+ * 变更事件去抖静默期（ms）。
+ *
+ * 背景：保存风暴（批量格式化 / git checkout / 生成代码）会在数秒内产生多轮脏集，
+ * 每轮都触发一次增量索引 → 全图 rebuildBM25 + 全图序列化落盘，renderer 连续冻结。
+ * 静默期内到达的变更集与待发集合并（按 relPath 去重），静默期结束后只发一次。
+ * 与 lastDirtySig 去重互补：sig 拦"完全相同的重复轮"，本去抖拦"不同但在时间上连续的多轮"。
+ */
+const CHANGE_DEBOUNCE_MS = 2000;
 
 export class CodebaseGraphWatcher extends Disposable {
 	declare readonly _serviceBrand: undefined;
@@ -64,6 +73,11 @@ export class CodebaseGraphWatcher extends Disposable {
 	/** 多 folder：同时监听多个根目录（每个 folder 一个），互不覆盖。 */
 	private _roots: IWatcherRoot[] = [];
 	private _started = false;
+	/**
+	 * 去抖待发的变更集：归一化 rootPath → 待发事件。
+	 * 静默期内新到的变更与本集合并，静默期结束只 fire 一次（见 _fireChangeDebounced）。
+	 */
+	private readonly _pendingChanges = new Map<string, { event: CodebaseGraphChangeEvent; timer: any }>();
 
 	private readonly _onDidChange = this._register(new Emitter<CodebaseGraphChangeEvent>());
 	readonly onDidChange: Event<CodebaseGraphChangeEvent> = this._onDidChange.event;
@@ -104,6 +118,12 @@ export class CodebaseGraphWatcher extends Disposable {
 			clearTimeout(this._pollTimer);
 			this._pollTimer = null;
 		}
+		// 丢弃所有去抖待发变更：否则 stop 之后仍会 fire 一次，
+		// 让已停止/已销毁的 graphService 再跑一轮全图重建。
+		for (const pending of this._pendingChanges.values()) {
+			clearTimeout(pending.timer);
+		}
+		this._pendingChanges.clear();
 		this._isPolling = false;
 		this._roots = [];
 		this._started = false;
@@ -238,10 +258,67 @@ export class CodebaseGraphWatcher extends Disposable {
 			}
 			const sample = (rels: string[]) => rels.slice(0, 5).join(', ');
 			this._logService.info(LOG_TAG, `Changes: +${added.length} ~${modified.length} -${deleted.length}${modDetail} | added≈[${sample(added)}] modified≈[${sample(modified)}] deleted≈[${sample(deleted)}]`);
-			this._onDidChange.fire({ type: 'files', rootPath: root.rootPath, added, modified, deleted });
+			this._fireChangeDebounced({ type: 'files', rootPath: root.rootPath, added, modified, deleted });
 		} else {
 			root.lastDirtySig = undefined;
 		}
+	}
+
+	/**
+	 * 去抖后发出文件变更事件（CHANGE_DEBOUNCE_MS 静默期）。
+	 *
+	 * 保存风暴（批量格式化 / git checkout / 代码生成）会在数秒内产生多轮不同的脏集；
+	 * 每轮都会触发一次增量索引，而增量索引的 rebuildBM25 + _saveGraph 是**全图**工作量，
+	 * 连续多轮即 renderer 持续冻结。此处把静默期内的多轮变更合并为一次事件。
+	 *
+	 * 按 root 独立去抖（多 folder 各自的变更不互相拖延）。合并规则见 _mergeChangeSets。
+	 */
+	private _fireChangeDebounced(event: CodebaseGraphChangeEvent): void {
+		const key = this._normalizeRoot(event.rootPath ?? '');
+		const pending = this._pendingChanges.get(key);
+		if (pending) {
+			clearTimeout(pending.timer);
+			pending.event = this._mergeChangeSets(pending.event, event);
+		} else {
+			this._pendingChanges.set(key, { event, timer: undefined });
+		}
+		const entry = this._pendingChanges.get(key)!;
+		entry.timer = setTimeout(() => {
+			this._pendingChanges.delete(key);
+			if (this._disposed) { return; }
+			this._onDidChange.fire(entry.event);
+		}, CHANGE_DEBOUNCE_MS);
+	}
+
+	/**
+	 * 合并两个变更集（后者为较新的一轮），按 relPath 去重并保持语义正确：
+	 * - 同文件重复出现在任意两轮 → 归入最新一轮的那个分类
+	 * - 先 added 后 modified/deleted → 取后者（一轮内多次写入也只需重解析一次）
+	 * - 先 modified 后 deleted → deleted（文件已不存在，重解析会失败）
+	 * - 先 deleted 后 added → added（删后重建，需重新解析）
+	 */
+	private _mergeChangeSets(prev: CodebaseGraphChangeEvent, next: CodebaseGraphChangeEvent): CodebaseGraphChangeEvent {
+		const added = new Set<string>();
+		const modified = new Set<string>();
+		const deleted = new Set<string>();
+
+		// 按时间顺序应用，后者覆盖前者（先从前一轮的各集合移除被后一轮重新归类的文件）
+		const apply = (sets: { a: string[]; m: string[]; d: string[] }) => {
+			for (const rel of sets.a) { modified.delete(rel); deleted.delete(rel); added.add(rel); }
+			for (const rel of sets.m) { added.delete(rel); deleted.delete(rel); modified.add(rel); }
+			for (const rel of sets.d) { added.delete(rel); modified.delete(rel); deleted.add(rel); }
+		};
+		apply({ a: prev.added ?? [], m: prev.modified ?? [], d: prev.deleted ?? [] });
+		apply({ a: next.added ?? [], m: next.modified ?? [], d: next.deleted ?? [] });
+
+		return {
+			type: next.type,
+			rootPath: next.rootPath ?? prev.rootPath,
+			head: next.head ?? prev.head,
+			added: [...added],
+			modified: [...modified],
+			deleted: [...deleted],
+		};
 	}
 
 	private async _scanFiles(dirUri: URI, exts: Set<string>, excludeDirs: Set<string>, depth: number, rootPath: string, keepDirs: Set<string>): Promise<{ path: string; mtimeNs: number; size: number }[]> {

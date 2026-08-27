@@ -23,7 +23,7 @@ import type {
 import { ToolSecurityLevel, ToolApprovalDecision, TOOL_APPROVAL_BACKSTOP_MS } from '../common/providers.js';
 import { isPlanFileWriteCall } from '../common/planFile.js';
 import { isSandboxFileWriteAutoApproved, isDestructiveToolCall } from '../common/toolApprovalPolicy.js';
-import { evaluateToolCallShellSafety, isShellToolWithCommandArg, ShellCommandSafety } from '../common/shellCommandSafety.js';
+import { evaluateToolCallShellSafety, isShellToolWithCommandArg, getToolCallCommandArg, ShellCommandSafety } from '../common/shellCommandSafety.js';
 import {
 	runWithRetry,
 	type RetryPolicy,
@@ -376,11 +376,121 @@ export function getTimeoutForTool(toolName: string, toolDef?: IToolDefinition, s
 // ─── Tool Approval Service ──────────────────────────────────────────
 
 /**
+ * 工具"始终允许"类决策的持久化存储器。
+ *
+ * 由 agentOSService 注入（其内部持有 IConfigurationService），把 workspace /
+ * global 作用域的授权落到用户/工作区设置，从而跨会话生效。未注入时
+ * ToolApprovalService 退化为仅本会话内存记忆（与旧行为一致）。
+ */
+export interface IToolAllowStore {
+	/** 该工具（可按命令模式）是否已被持久授权。command 为 shell 工具的命令签名。 */
+	isAllowed(toolName: string, command?: string): boolean;
+	/** 持久记录授权。command 提供时 key = toolName::command（命令级细粒度）。 */
+	remember(toolName: string, scope: 'workspace' | 'global', command?: string): void;
+	/** 按完整 key（含可选 command 后缀）撤销持久授权。 */
+	revoke(key: string): void;
+}
+
+/**
+ * 受保护路径（fail-closed，对齐 Claude Code protected paths）。
+ *
+ * 即便用户对某工具选过「始终允许 / 在工作区允许」，对这类路径的写入仍**一律
+ * 重新弹审批**，避免「一键放行」把仓库元数据（.git）或密钥/凭据改写权也交出去。
+ * 仅做「命中即拦截」的保守匹配；路径无法判定时不误伤正常放行。
+ */
+const PROTECTED_EXACT_NAMES = new Set<string>([
+	'.git', '.env', '.npmrc', '.git-credentials', '.netrc',
+	'id_rsa', 'id_ed25519', 'id_dsa', 'id_ecdsa', 'id_ecdsa_sk',
+	'known_hosts', 'secrets', 'credentials',
+]);
+const PROTECTED_SUFFIXES = ['.pem', '.key', '.p12', '.keystore', '.jks', '.crt', '.cer'];
+
+// ─── 命令级细粒度授权 key（P1-d）─────────────────────────────────────────
+/** key 分隔符：toolName 或 toolName::commandPattern（pattern 可含 `*` 通配）。 */
+export const CMD_KEY_SEP = '::';
+
+/** 简易 glob：`*` 匹配任意字符序列，其余按字面。 */
+function globMatch(pattern: string, value: string): boolean {
+	if (pattern === '*') { return true; }
+	const re = new RegExp('^' + pattern.split('*').map(escapeRegExp).join('.*') + '$');
+	return re.test(value);
+}
+function escapeRegExp(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** 规范化命令：去首尾空白、合并连续空白，作为稳定 key。 */
+function normalizeCommand(cmd: string): string {
+	return cmd.trim().replace(/\s+/g, ' ');
+}
+
+/** stored entry（toolName 或 toolName::pattern）是否作用于 (toolName, command)。 */
+export function entryMatches(entry: string, toolName: string, command: string | undefined): boolean {
+	if (!entry.includes(CMD_KEY_SEP)) {
+		return entry === toolName; // 工具级 blanket（旧数据 / 非 shell 工具）
+	}
+	const sepIdx = entry.indexOf(CMD_KEY_SEP);
+	const t = entry.slice(0, sepIdx);
+	const pattern = entry.slice(sepIdx + CMD_KEY_SEP.length);
+	if (t !== toolName && t !== '*') { return false; }
+	if (command === undefined) { return false; }
+	return globMatch(pattern, command);
+}
+
+/** 从工具调用的参数中提取文件路径（兼容已解析对象与 JSON 字符串两种形态）。 */
+function getToolCallPathArg(toolCall: { arguments?: unknown }): string | undefined {
+	const args = toolCall.arguments;
+	let obj: Record<string, unknown> | undefined;
+	if (args && typeof args === 'object') {
+		obj = args as Record<string, unknown>;
+	} else if (typeof args === 'string') {
+		try {
+			obj = JSON.parse(args) as Record<string, unknown>;
+		} catch {
+			return undefined;
+		}
+	}
+	if (!obj) {
+		return undefined;
+	}
+	for (const key of ['path', 'file_path', 'filePath', 'file', 'target', 'destination']) {
+		const v = obj[key];
+		if (typeof v === 'string' && v.trim()) {
+			return v;
+		}
+	}
+	return undefined;
+}
+
+/** 该路径是否命中受保护集合（按路径段精确匹配，规避 `.github` 误伤 `.git` 之类）。 */
+function isProtectedPath(p: string | undefined): boolean {
+	if (!p) {
+		return false;
+	}
+	const lower = p.toLowerCase().replace(/\\/g, '/');
+	const segs = lower.split('/').filter(Boolean);
+	for (const seg of segs) {
+		if (PROTECTED_EXACT_NAMES.has(seg)) {
+			return true;
+		}
+		if (PROTECTED_SUFFIXES.some(s => seg.endsWith(s))) {
+			return true;
+		}
+		// .env.local / .env.production 等环境文件变体
+		if (seg.startsWith('.env.') || seg === '.env') {
+			return true;
+		}
+	}
+	// 兜底：路径中任意处出现的 .git 目录（如 repo/.git/config）
+	return lower.includes('/.git/') || lower.endsWith('/.git') || lower === '.git';
+}
+
+/**
  * 工具审批服务 — 管理工具执行前的用户确认流程。
  *
  * 提供：
  *  - 安全等级评估
- *  - "always allow" 记忆（本会话内不再重复询问）
+ *  - "always allow" 记忆（本会话内不再重复询问；workspace/global 还可持久化）
  *  - 异步审批流（UI handler 注入）
  */
 export class ToolApprovalService {
@@ -421,11 +531,53 @@ export class ToolApprovalService {
 	/** 本会话内已"永久拒绝"的工具名集合 */
 	private readonly _alwaysDenied = new Set<string>();
 
+	/** 持久化授权存储器（可选，由 agentOSService 注入） */
+	private _allowStore: IToolAllowStore | undefined;
+
 	/**
 	 * 注册 UI 审批处理器
 	 */
 	setApprovalHandler(handler: IToolApprovalHandler): void {
 		this._handler = handler;
+	}
+
+	/**
+	 * 注入持久化授权存储器（workspace / global 作用域）。
+	 * 未注入时退化为仅本会话内存记忆（旧行为）。
+	 */
+	setToolAllowStore(store: IToolAllowStore): void {
+		this._allowStore = store;
+	}
+
+	/**
+	 * 撤销某工具的"始终允许 / 在工作区允许"记忆：清掉会话内缓存，
+	 * 并委托持久化存储器移除对应设置项。撤销后该工具下次调用将重新弹窗。
+	 */
+	revoke(key: string): void {
+		this._alwaysAllowed.delete(key);
+		this._alwaysDenied.delete(key);
+		this._allowStore?.revoke(key);
+	}
+
+	/** 构造授权 key：命令级时带 normalize 后的 command，否则仅工具名。 */
+	private _buildKey(toolName: string, command?: string): string {
+		return command ? `${toolName}${CMD_KEY_SEP}${command}` : toolName;
+	}
+
+	/** 命令级（含 glob）命中检测：内存集合 + 持久化存储器。 */
+	private _isAllowed(toolName: string, command?: string): boolean {
+		for (const e of this._alwaysAllowed) {
+			if (entryMatches(e, toolName, command)) { return true; }
+		}
+		return this._allowStore?.isAllowed(toolName, command) ?? false;
+	}
+
+	/** 命令级（含 glob）拒绝命中检测（仅内存集合）。 */
+	private _isDenied(toolName: string, command?: string): boolean {
+		for (const e of this._alwaysDenied) {
+			if (entryMatches(e, toolName, command)) { return true; }
+		}
+		return false;
 	}
 
 	/**
@@ -547,11 +699,25 @@ export class ToolApprovalService {
 			return true;
 		}
 
-		// 检查 always-allow / always-deny 缓存
-		if (this._alwaysAllowed.has(toolCall.name)) {
+		// 受保护路径 fail-closed（P1，对齐 Claude Code protected paths）：
+		// 即便用户对该工具选过「始终允许 / 在工作区允许」，对 .git / .env / SSH 私钥 /
+		// 凭据 / 证书等敏感路径的写入仍一律重新弹审批，避免「一键放行」误交密钥改写权。
+		// 仅做命中即拦截的保守匹配；路径无法判定时不误伤正常放行。终端命令无 path 参数，
+		// getToolCallPathArg 返回 undefined → 此处恒为 false，故不影响终端「始终允许」免打扰。
+		const isProtected = isProtectedPath(getToolCallPathArg(toolCall));
+
+		// 命令级细粒度 key：shell 工具的命令内容作为 key 的一部分，
+		// 使「始终允许 terminal」只放行具体命令而非整个终端工具。
+		const rawCmd = isShellToolWithCommandArg(toolCall.name)
+			? getToolCallCommandArg(toolCall.name, toolCall.arguments)
+			: undefined;
+		const command = rawCmd ? normalizeCommand(rawCmd) : undefined;
+
+		// 检查 always-allow 缓存（含持久化授权，跨会话生效；命令级 glob 匹配）
+		if (!isProtected && this._isAllowed(toolCall.name, command)) {
 			return true;
 		}
-		if (this._alwaysDenied.has(toolCall.name)) {
+		if (this._isDenied(toolCall.name, command)) {
 			return false;
 		}
 
@@ -624,14 +790,29 @@ export class ToolApprovalService {
 		switch (decision) {
 			case ToolApprovalDecision.AllowOnce:
 				return true;
+			case ToolApprovalDecision.AllowSession:
+				// 仅本会话内记忆（旧 "allow_always" 的会话级行为）
+				this._alwaysAllowed.add(this._buildKey(toolCall.name, command));
+				return true;
+			case ToolApprovalDecision.AllowWorkspace:
+				// 会话内 + 持久化到工作区设置（跨会话生效）
+				this._alwaysAllowed.add(this._buildKey(toolCall.name, command));
+				this._allowStore?.remember(toolCall.name, 'workspace', command);
+				return true;
 			case ToolApprovalDecision.AllowAlways:
-				this._alwaysAllowed.add(toolCall.name);
+				// "始终允许"：会话内 + 持久化到用户设置（跨会话生效）
+				this._alwaysAllowed.add(this._buildKey(toolCall.name, command));
+				this._allowStore?.remember(toolCall.name, 'global', command);
 				return true;
 			case ToolApprovalDecision.Deny:
 				// ⚠ 超时也会走到这里。**不写入 _alwaysDenied**——否则一次「UI 没显示
 				// 审批卡片」的超时会把该工具在整个会话内永久拉黑，模型此后每次调用
 				// 都被静默拒绝，表现为「这个工具坏了」。只有用户**主动**拒绝才该记忆，
 				// 而当前 handler 协议无法区分二者，故一律不记忆（宁可多问一次）。
+				return false;
+			case ToolApprovalDecision.DenyAlways:
+				// 用户显式「始终拒绝」：本会话内该工具（命令级）一律拒绝，不再弹窗
+				this._alwaysDenied.add(this._buildKey(toolCall.name, command));
 				return false;
 			default:
 				return false;

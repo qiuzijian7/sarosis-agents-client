@@ -145,20 +145,17 @@ export function extractToolCallsFromText(
 		}
 	}
 
-	// ─── 统一白名单过滤 ──────────────────────────────────────────
-	// 所有提取路径（JSON/XML/Bracket/ReAct/Python）的最终结果都需要通过白名单。
+	// ─── 统一白名单过滤（仅记录，不下发拦截）─────────────────────────────
+	// 幻觉工具名的「拦截 + 回写反馈」统一由 executor 的白名单过滤负责
+	// （agentTurnExecutor.ts 2841-2874：为被过滤调用补 tool_result 反馈并列出可用工具），
+	// 这里**不再静默丢弃**，否则文本/Python 语法提取出的幻觉调用（如 setIsFullscreen）
+	// 会凭空消失、模型收不到任何反馈（日志 1787759962668 实证：模型发了 Python 语法的
+	// setIsFullscreen，被丢弃后完全无回写，加剧混乱重试）。仅记录以保留可观测性。
 	if (enabledToolNames && enabledToolNames.size > 0 && results.length > 0) {
-		const before = results.length;
-		const filtered = results.filter(tc => {
-			if (enabledToolNames!.has(tc.name)) { return true; }
-			deps.logService.info(`[AgentOS] _tryExtractToolCallsFromText: filtered out "${tc.name}" (not in enabled tools)`);
-			return false;
-		});
-		if (filtered.length < before) {
-			deps.logService.info(`[AgentOS] _tryExtractToolCallsFromText: whitelist filtered ${before} → ${filtered.length} tool calls`);
+		const hallucinated = results.filter(tc => !enabledToolNames!.has(tc.name));
+		if (hallucinated.length > 0) {
+			deps.logService.warn(`[AgentOS] _tryExtractToolCallsFromText: ${hallucinated.length} non-whitelisted tool name(s) will be surfaced to executor for feedback: [${hallucinated.map(tc => tc.name).join(', ')}]`);
 		}
-		results.length = 0;
-		results.push(...filtered);
 	}
 
 	if (results.length > 0) {

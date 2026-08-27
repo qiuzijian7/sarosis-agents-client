@@ -60,7 +60,8 @@ import { OutpaintEditor } from '../OutpaintEditor';
 import { GridSplitEditor } from '../GridSplitEditor';
 import { ColorGradeEditor } from '../ColorGradeEditor';
 import { TransformEditor } from '../TransformEditor';
-import { EmojiStageEditor } from '../EmojiStageEditor';
+import { StatEmojiStageEditor } from '../StatEmojiStageEditor';
+import { DynEmojiStageEditor } from '../DynEmojiStageEditor';
 import { MultiangleEditor } from './MultiangleEditor';
 import { AssetReferences, type AssetCandidate } from './AssetReferences';
 import { MentionTextarea, type MentionCandidate } from './MentionTextarea';
@@ -580,7 +581,7 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
  */
 const _diagnoseSample = { nodeId: '', nodeType: '', t: 0 };
 export function diagnoseCardMeta(nodeId: string, meta: NodeCardMeta, controlsCount: number): void {
-	const interesting = ['ComfyTV.EmojiStage', 'ComfyTV.PanoramaStage', 'ComfyTV.RotateStage', 'ComfyTV.MaterialStage', 'ComfyTV.RelightStage'];
+	const interesting = ['ComfyTV.StatEmojiStage', 'ComfyTV.DynEmojiStage', 'ComfyTV.PanoramaStage', 'ComfyTV.RotateStage', 'ComfyTV.MaterialStage', 'ComfyTV.RelightStage'];
 	if (!interesting.includes(meta.nodeType ?? '')) { return; }
 	const now = Date.now();
 	if (now - _diagnoseSample.t < 1500) { return; } // 节流 1.5s
@@ -1445,7 +1446,9 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const isRelight = editorKind === 'relight';
 	const isMaterial = editorKind === 'material';
 	const isDirectorConsole = editorKind === 'directorConsole';
-	const isEmoji = editorKind === 'emoji';
+	const isEmojiStatic = editorKind === 'emoji-static';
+	const isEmojiDynamic = editorKind === 'emoji-dynamic';
+	const isEmoji = isEmojiStatic || isEmojiDynamic;
 	// W: Loader 内嵌预览（对齐 ComfyTV LoadImage：filename + 上传 + 缩略图 + W×H），
 	//   替代通用 OUTPUT 区。
 	const isImageLoader = editorKind === 'image';
@@ -1702,20 +1705,21 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	//   驱动、每格 batch_size 固定 1），一次「生成全部」产出 rows×cols 张。若沿用
 	//   `batch_size ?? 1` 会让 OUTPUT 只显示最后 1 张（用户实测 2×2 只见 1 图）。
 	const batchSize = React.useMemo(() => {
-		if (isEmoji) {
+		// 静态网格：batch = rows*cols；动态节点单产出，batch = 1。
+		if (isEmojiStatic) {
 			const r = Math.max(1, Number(controlDrafts['rows'] ?? 3) || 3);
 			const c = Math.max(1, Number(controlDrafts['cols'] ?? 3) || 3);
 			return Math.max(1, r * c);
 		}
 		return Math.max(1, Number(controlDrafts['batch_size'] ?? 1) || 1);
-	}, [isEmoji, controlDrafts]);
+	}, [isEmojiStatic, controlDrafts]);
 	/**
-	 * EmojiStage 的 workflow 模板名列表，透传给 EmojiStageEditor 自行渲染下拉。
+	 * StatEmojiStage 的 workflow 模板名列表，透传给 StatEmojiStageEditor 自行渲染下拉。
 	 * 直接复用 registry 已声明的 COMBO options（`workflowOptionsFor('emoji')`），
-	 * 无需在此再 import 一次模板表。
+	 * 无需在此再 import 一次模板表。动态节点不使用模板下拉（单一绿幕流水线）。
 	 */
 	const emojiWorkflowOptions = React.useMemo(() => {
-		if (!isEmoji) { return undefined; }
+		if (!isEmojiStatic) { return undefined; }
 		const c = (meta.controls ?? []).find(x => x.name === 'workflow');
 		const opts = (c?.options ?? []).map(o => (typeof o === 'string' ? o : String(o?.value ?? o?.label ?? '')))
 			.filter(s => s.length > 0);
@@ -2737,35 +2741,31 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 				);
 			})()}
 
-			{/* EmojiStage 内嵌编辑器（对齐 ComfyTV 表情包网格：m×n 网格 + 棋盘格透明底 +
-			    每格独立 prompt/seed + 单格重生成 + 全局生成）。写回通过 wf-node-control
-			    （commitControls，字段名已对齐控件）。cellRefs 用本节点快照按 index 映射。 */}
-			{isEmoji && (
+			{/* StatEmojiStage 静态网格编辑器（m×n 透明贴纸 + 主题预设 + 全局 prompt）。
+			    写回通过 wf-node-control（commitControls）。cellRefs 用本节点快照按 index 映射。 */}
+			{isEmojiStatic && (
 				<div style={{ pointerEvents: 'auto', userSelect: 'none', marginTop: 4 }}>
-					<EmojiStageEditor
+					<StatEmojiStageEditor
 						initial={{
 							rows: Number(ctl('rows', 3)),
 							cols: Number(ctl('cols', 3)),
-							duration_s: Number(ctl('duration_s', 3)),
 							// ★ prompt/cells 是 TEXT widget，不进 meta.controls（toControls
 							//   对 ComfyTV 只收 COMBO/INT/FLOAT/BOOLEAN）→ ctl 永远 fallback
-							//   空值，重启后 EmojiStageEditor 重新挂载会丢失已填内容。
+							//   空值，重启后编辑器重新挂载会丢失已填内容。
 							//   改用 meta.prompt / meta.cells 直接透传（见 NodeCardMeta）。
 							prompt: String(meta.prompt ?? ctl('prompt', '')),
 							cells: String(meta.cells ?? ctl('cells', '[]')),
 							selectedIndex: Number(ctl('selected_index', 0)),
-							workflow: String(ctl('workflow', '') ?? ''),
+							stylePreset: String(ctl('style_preset', 'none') ?? 'none'),
 						}}
 						cellRefs={ownSnapshots.map(e => ({
   ref: e.media.ref,
-  // ★ 视频产物（MiniMax H3 mp4 / AnimateDiff webp）必须传 kind='video'，否则 EmojiStageEditor 用 <img> 渲染会显示 broken image（棋盘格）。
   kind: e.media.kind === 'video' ? 'video' : 'image',
   caption: typeof e.media.meta?.caption === 'string' ? e.media.meta.caption : undefined,
 }))}
-						// ★ workflow 下拉必须由编辑器自己渲染：通用控件网格有
-						//   `!hasInlineEditor` 门禁，EmojiStage 有内嵌编辑器 ⇒ 所有
-						//   widget 控件都不渲染，此前 workflow 完全不可见，用户无法
-						//   切到「动态表情」，一直在跑默认静态贴纸。
+						// ★ workflow 下拉由编辑器自己渲染：通用控件网格有 `!hasInlineEditor`
+						//   门禁，静态节点有内嵌编辑器 ⇒ 所有 widget 控件都不渲染，
+						//   workflow 必须在此透传（见 registry 的 static workflow options）。
 						workflowOptions={emojiWorkflowOptions}
 						onCommit={commitControls}
 						mentionCandidates={mentionCandidates}
@@ -2774,12 +2774,44 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							// run_scope 决定执行范围（workflowRun.runEmojiStageGrid 消费）：
 							//   cellIndex 有值 → 'cell'（只重生成该格，并同步 selected_index）
 							//   cellIndex 缺省 → 'all'（生成全部格）
-							// 必须先写回再 dispatch：两者同为同步事件，控件值先落到 node.properties。
 							if (cellIndex !== undefined) {
 								commitControls({ selected_index: cellIndex, run_scope: 'cell' });
 							} else {
 								commitControls({ run_scope: 'all' });
 							}
+							if (nodeId) {
+								window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
+							}
+						}}
+					/>
+				</div>
+			)}
+
+			{/* DynEmojiStage 动态编辑器（参考图 → 绿幕视频 → 前端抠图 → GIF）。
+			    写回通过 wf-node-control（commitControls）。参考图走上游 image 端口，
+			    编辑器只管 prompt / 时长 / 绿幕抠图参数。 */}
+			{isEmojiDynamic && (
+				<div style={{ pointerEvents: 'auto', userSelect: 'none', marginTop: 4 }}>
+					<DynEmojiStageEditor
+						initial={{
+							// ★ prompt 是 TEXT widget，不进 meta.controls → 改用 meta.prompt 透传。
+							prompt: String(meta.prompt ?? ctl('prompt', '')),
+							duration_s: Number(ctl('duration_s', 3)),
+							chromaColor: String(ctl('chroma_color', '#00FF00') ?? '#00FF00'),
+							chromaSimilarity: Number(ctl('chroma_similarity', 10)),
+							chromaSmoothness: Number(ctl('chroma_smoothness', 10)),
+						}}
+						cellRefs={ownSnapshots.map(e => ({
+	  ref: e.media.ref,
+	  kind: e.media.kind === 'video' ? 'video' : 'image',
+	  caption: typeof e.media.meta?.caption === 'string' ? e.media.meta.caption : undefined,
+	}))}
+						onCommit={commitControls}
+						mentionCandidates={mentionCandidates}
+						onPinAsset={pinMentionAsset}
+						onRunRequest={() => {
+							// 动态节点无网格：卡片 RUN 固定「整段生成」。
+							commitControls({ run_scope: 'all' });
 							if (nodeId) {
 								window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
 							}

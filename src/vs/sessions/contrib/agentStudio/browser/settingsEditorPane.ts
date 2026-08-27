@@ -136,6 +136,16 @@ const PREFERENCES_SECTIONS: SettingSection[] = [
 			{ key: AGENT_STUDIO_CHECK_UPDATES_SETTING, label: '检查更新', description: '有新版本可用时显示更新提示横幅', type: 'boolean', default: true },
 		],
 	},
+	{
+		id: 'preferences-tools',
+		label: '工具',
+		icon: '🛠️',
+		description: '工具调用审批与执行行为',
+		defaultCollapsed: false,
+		fields: [
+			{ key: 'tools.confirmToolCalls', label: '确认工具调用', description: '关闭后，触发工具审批时不再弹出询问，直接执行工具调用', type: 'boolean', default: true },
+		],
+	},
 ];
 
 const AUX_PROVIDER_OPTIONS = [

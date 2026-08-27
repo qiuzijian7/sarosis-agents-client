@@ -1728,7 +1728,16 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		const streamKey = options.agentSessionId
 			? `${agentId}::${options.agentSessionId}`
 			: agentId;
-		this.cancelStream(streamKey);
+		// ⚠️ 2026-08-27 修复参数形态 bug：`cancelStream(agentId, agentSessionId?)`
+		// 期望【两个独立参数】并在内部自行拼 `${agentId}::${agentSessionId}`。
+		// 旧代码把已拼好的复合 streamKey 当作 agentId 传入 → 内部又拼成
+		// `saros-claw::sess_xxx::undefined`，与实际登记的 key 不匹配，
+		// 导致这句取消**从未真正生效**（查不到 controller，静默 no-op）。
+		// 后果：同一 session 上的重入发送无法掐掉上一个流，两个流并发跑，
+		// 后注册的 onDelta 覆盖先注册的（_activeOnDeltas.set），先发者的
+		// delta 回调被摘除 → 先发 pane 的 UI 再也不刷新（用户报告现象）。
+		// 现改为传正确参数，使同 session 重入时旧流被真正取消、状态干净。
+		this.cancelStream(agentId, options.agentSessionId);
 
 		const controller = new AbortController();
 		this._activeStreams.set(streamKey, controller);

@@ -300,9 +300,10 @@ export class GraphPersistence {
 		if (!await this._validateGraphData(data, sourcePath)) { return false; }
 		// Async chunked loading to avoid UI freeze
 		await store.fromJSONAsync(data);
-		// slim 档制品（无 bm25）→ 加载后重建倒排，否则 search_graph query 静默无结果
+		// slim 档制品（无 bm25）→ 加载后重建倒排，否则 search_graph query 静默无结果。
+		// force=true：加载路径无脏集，增量模式（默认）会空转导致索引仍为空。
 		if (!data.bm25 && (data.nodes?.length ?? 0) > 0) {
-			await store.rebuildBM25();
+			await store.rebuildBM25(undefined, true);
 		}
 		return true;
 	}

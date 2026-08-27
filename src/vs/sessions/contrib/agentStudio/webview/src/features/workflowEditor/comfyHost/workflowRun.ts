@@ -16,7 +16,8 @@ import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
 import type { CardStateStore } from './cardState.js';
 import type { SingleNodeRunResult } from './nodeExecutor.js';
 import { runSingleNode, comfyOutputsToFxSnapshots } from './nodeExecutor.js';
-import { runStageWorkflow, StageWorkflowUnavailableError, collectUpstreamRefs } from './stageWorkflowExecutor.js';
+import { runStageWorkflow, StageWorkflowUnavailableError, collectUpstreamRefs, applyAssetRefOverrides } from './stageWorkflowExecutor.js';
+import { styleTemplateOf } from './builtinWorkflows/emojiWorkflows.js';
 import { getPluginNodeRunner } from './pluginLoader.js';
 import { isFxNode, isFxChainNode } from './fxChain.js';
 import type { MediaSnapshotEntry, MediaKind, MediaRef } from './mediaSnapshot.js';
@@ -1488,8 +1489,19 @@ async function runLoopNodeExecutor(input: NodeExecutionInput): Promise<SingleNod
  * EmojiStage —— m×n 表情包网格循环调度
  * ==================================================================== */
 
+/** 静态网格表情节点（透明贴纸 m×n）：原 EmojiStage 的静态能力继承者。 */
+export function isStatEmojiStageNode(type: string): boolean {
+	return type === 'ComfyTV.StatEmojiStage';
+}
+
+/** 动态表情节点：参考图 → MiniMax 绿幕视频 → 前端抠像 → GIF。 */
+export function isDynEmojiStageNode(type: string): boolean {
+	return type === 'ComfyTV.DynEmojiStage';
+}
+
+/** 兼容旧类型名，统一拦截两个表情节点。 */
 export function isEmojiStageNode(type: string): boolean {
-	return type === 'ComfyTV.EmojiStage';
+	return isStatEmojiStageNode(type) || isDynEmojiStageNode(type);
 }
 
 // ─── 多宫格故事板（ComfyTV.MultiPanelStoryboardStage）本地执行 ─────────────────
@@ -1943,7 +1955,9 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 	const cols = clampInt(values.cols, 1, 6, 3);
 	const total = rows * cols;
 	const cells = parseEmojiCells(values.cells, total);
-	const globalPrompt = typeof values.prompt === 'string' ? values.prompt : '';
+	// 主题专属完整 prompt 模板：作为每格 prompt 的兜底主体（取代原顶部全局 prompt）。
+	// 选了主题但某格手填/上游文本都空时，用该模板直接当主 prompt，而非"后缀叠加"。
+	const themeTemplate = styleTemplateOf(typeof values.style_preset === 'string' ? values.style_preset : undefined);
 	const scope = values.run_scope === 'cell' ? 'cell' : 'all';
 	const selIdx = clampInt(values.selected_index, 0, total - 1, 0);
 
@@ -1952,13 +1966,13 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 	//      是「严格按 JSON 数组划分」的权威来源，覆盖手填 cells 的对应格子；
 	//   2. `splitEmojiPrompts`：非 JSON 文本 → 只产 prompt（多行/分隔符/单条），
 	//      作为 cell.prompt 的兜底。
-	//   最终每格 prompt 优先级：严格 cell.prompt > 手填 cell.prompt > 启发式 prompt > globalPrompt。
+	//   最终每格 prompt 优先级：严格 cell.prompt > 手填 cell.prompt > 启发式 prompt > 主题模板。
 	const upstreamTexts = collectUpstreamTexts(store, upstreams);
 	const strictCells = parseEmojiCellArray(upstreamTexts);
 	const splitPrompts = strictCells ? [] : splitEmojiPrompts(upstreamTexts);
 	const splitCount = splitPrompts.length;
 	// 单条上游文本 → 所有格子共用（配合不同 seed 生成变体）；多条 → 按格序分配，
-	// 不足时循环复用。零条 → 无上游文本，回退 cell.prompt / globalPrompt。
+	// 不足时循环复用。零条 → 无上游文本，回退 cell.prompt / 主题模板。
 	const cellPromptFromText = (i: number): string => {
 		if (splitCount === 0) { return ''; }
 		return splitPrompts[i % splitCount];
@@ -1968,7 +1982,7 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 	// eslint-disable-next-line no-console
 	console.log(
 		`[EmojiStage] upstream text texts=${upstreamTexts.length} strictCells=${strictCells?.length ?? 0} ` +
-		`splitPrompts=${splitCount} globalPrompt=${truncateForLog(globalPrompt, 60) || '(empty)'}`,
+		`splitPrompts=${splitCount} themeTemplate=${truncateForLog(themeTemplate, 60) || '(empty)'}`,
 	);
 
 	const targets = scope === 'cell' ? [selIdx] : Array.from({ length: total }, (_, i) => i);
@@ -2003,10 +2017,10 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 		//   的对应格子（三字段全量替换）。该格无严格 cell 时回退手填。
 		const strict = strictCells?.[i];
 		const cell: EmojiCellState = strict ?? manual;
-		// ★ prompt 四级优先级：严格 cell.prompt > 手填 cell.prompt > 启发式 prompt[i] > 全局。
-		//   （编辑器「↩ 用全局」清空 cell.prompt 后，若接入了上游文本则优先用文本，
-		//   否则回退 globalPrompt —— 保留原「留空回退全局」语义。）
-		const cellPrompt = cell.prompt.trim() || cellPromptFromText(i) || globalPrompt;
+		// ★ prompt 优先级：严格 cell.prompt > 手填 cell.prompt > 启发式 prompt[i] > 主题模板。
+		//   （编辑器「↩ 用模板」清空 cell.prompt 后，若接入了上游文本则优先用文本，
+		//   否则回退主题模板 —— 模板即完整主 prompt，直接当本格 prompt 使用。）
+		const cellPrompt = cell.prompt.trim() || cellPromptFromText(i) || themeTemplate;
 		// seed=0 视为「未指定」→ 随机，保证每格图不同。
 		const cellSeed = cell.seed || Math.floor(Math.random() * 0x7fffffff);
 		const cellValues: Record<string, unknown> = {
@@ -2018,7 +2032,7 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 			batch_size: 1,
 		};
 		// ★ 诊断：每格详细 prompt 来源（用户报告「表情包图像混乱」期间加强）。
-		//   三级优先级的实际命中，便于区分「cell.prompt 是错」「全局 prompt 是错」
+		//   三级优先级的实际命中，便于区分「cell.prompt 是错」「strictCells 是错」
 		//   还是「prompt 没错、产物渲染就错」。
 		// ⚠ 必须放在 cellValues 声明**之后**：之前引用 cellValues.duration_s 会触发
 		//   TDZ（`Cannot access 'cellValues' before initialization`）——生产构建
@@ -2026,7 +2040,7 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 		//   求值，导致「生成表情包卡住」（日志 Uncaught (in promise) ReferenceError）。
 		// eslint-disable-next-line no-console
 		console.log(
-			`[EmojiStage] cell #${i}/${total} cellPromptSource=${cellPrompt === cell.prompt.trim() ? 'cell' : cellPrompt === cellPromptFromText(i) ? 'split' : 'global'} ` +
+			`[EmojiStage] cell #${i}/${total} cellPromptSource=${cellPrompt === cell.prompt.trim() ? 'cell' : cellPrompt === cellPromptFromText(i) ? 'split' : 'theme'} ` +
 			`prompt="${cellPrompt.slice(0, 80)}" seed=${cellSeed} duration_s=${cellValues.duration_s}`,
 		);
 		// ★ 本格执行前的图 key 快照 —— 跑完后用差集精确定位「本格产出的图」。
@@ -2038,8 +2052,13 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 		//   失败时降级到「普通贴纸（无需 LoRA）」—— 覆盖 LoRA 缺失/版本不兼容/
 		//   sub_batch_size 不匹配等环境问题导致的图像混乱或执行报错。
 		const EMOJI_FALLBACK_LABEL = '普通贴纸 (SDXL, 无需 LoRA)';
-		// ★ 检测上游是否有参考图（用于 fallback 时决定是否切换 img2img 模式）
-		const upstreamImageRef = collectUpstreamRefs(store, upstreams)['image'] ?? '';
+		// ★ 检测参考图（用于 fallback 时决定是否切换 img2img 模式）。
+		//   参考图有两大来源：① 上游连线快照；② 卡片上「钉住」的资产引用
+		//   （values.comfytv_image_refs）。此前只取 ①，钉住的资产被完全忽略
+		//   → hasRefImg=false → fallback 走 text2img，生成结果与参考资产无关。
+		const upstreamRefMap = collectUpstreamRefs(store, upstreams);
+		applyAssetRefOverrides(upstreamRefMap, values);
+		const upstreamImageRef = upstreamRefMap['image'] ?? '';
 		const hasRefImg = Boolean(upstreamImageRef);
 		/** Fallback SDXL 模板的 img2img 切换：有参考图时 KSampler 接 VAEEncode + denoise=0.75 */
 		const patchFallbackToImg2Img: StageWorkflowRunOptions['promptPostProcess'] = hasRefImg ? (prompt) => {
@@ -2070,6 +2089,9 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 					onProgress?.({ progress: (n + inner) / targets.length });
 				},
 				signal,
+				// 钉住资产的 ref 多为 http/data URL（非 Comfy /view），必须经
+				// resolveImageRef 上传给 ComfyUI，否则 LoadImage 拿不到图。
+				resolveImageRef: input.resolveLoadImageRef ?? defaultResolveLoadImageRef(input.runner),
 				promptPostProcess: fallback === EMOJI_FALLBACK_LABEL ? patchFallbackToImg2Img : undefined,
 			}).catch((err: unknown) => {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -2084,6 +2106,13 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 			});
 		};
 		let r = await tryRunCell();
+		// ★ 取消检查（关键修复）：当前格刚结束就立即响应 abort，避免在 fallback
+		//   重试 / 下一格开始前才停。否则用户点「取消」后，正在跑的格仍会跑完，
+		//   视觉上像「取消没反应」。注意不能依赖 tryRunCell 内部的 throwIfAborted——
+		//   它的 .catch 会把 AbortError 吞成 status:'error'，abort 信号就丢了。
+		if (signal?.aborted) {
+			return { promptId: lastPromptId, status: 'canceled', error: '已取消', entries: collected };
+		}
 		// ★ 透明模板失败时记录诊断信息（fallback 触发原因 + 执行结果）
 		if (r.status !== 'success') {
 			// eslint-disable-next-line no-console
@@ -2095,6 +2124,10 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 		// 首次执行失败 → 自动 fallback（仅一次，避免无限重试）
 		if (r.status !== 'success') {
 			r = await tryRunCell(EMOJI_FALLBACK_LABEL);
+			// ★ 取消检查：fallback 跑完后同样立即响应 abort（不重跑、不进下一格）
+			if (signal?.aborted) {
+				return { promptId: lastPromptId, status: 'canceled', error: '已取消', entries: collected };
+			}
 		}
 		// ★ 诊断：每格最终结果（成功用哪个 workflow 出的图）。
 		// eslint-disable-next-line no-console
@@ -2246,6 +2279,103 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 }
 
 /**
+ * 动态表情节点（ComfyTV.DynEmojiStage）本地执行器。
+ *
+ * 链路（与静态网格节点彻底解耦，单一参考图 → 单条动图）：
+ *   1. 取上游参考图（首张 image）作为 MiniMax 绿幕视频的种子；
+ *   2. 调用 greenscreen 工作流生成绿幕 mp4（kind='video'）；
+ *   3. 前端 chroma-key 抠像（EMOJI_DYN_CHROMA），把绿幕变成透明；
+ *   4. convertVideoToGif 抽帧编码成透明 GIF（kind='animation'），归档。
+ *
+ * 与 runEmojiStageGrid 的差异：
+ *   - 不再有 m×n 网格 / selected_index / cells JSON；
+ *   - 视频是「绿幕」而非「透明直出」，前端负责最后一步抠像；
+ *   - 产物是单条 GIF（而非多张透明贴纸）。
+ */
+async function runDynEmojiStage(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
+	const { runner, nodeId, type, values, upstreams, store, getSpec, onProgress, signal } = input;
+	const snapshotKey = input.snapshotKey ?? nodeId;
+	const empty: SingleNodeRunResult = { promptId: '', status: 'error', entries: [] };
+
+	// 取上游首张图像（index 最大 = 最新一次输出），与 instantExecutor.firstUpstreamImage 同策略。
+	// 来源 ①：上游连线快照。
+	let refImage: string | undefined;
+	for (const id of upstreams ?? []) {
+		for (const entry of store.byNode(id)) {
+			if (entry.media.kind !== 'image' || !entry.media.ref) { continue; }
+			if (!refImage) { refImage = entry.media.ref; break; }
+		}
+		if (refImage) { break; }
+	}
+	// 来源 ②：卡片上「钉住」的资产引用（覆盖上游连线，与 ComfyTV injectAssetRefs
+	// 的 override 语义一致）。此前缺失 → 钉住资产对动态表情完全无效。
+	const dynRefMap: Record<string, string> = refImage ? { image: refImage } : {};
+	applyAssetRefOverrides(dynRefMap, values);
+	refImage = dynRefMap['image'] || refImage;
+	if (!refImage) {
+		return { ...empty, error: '动态表情需要上游参考图输入（请先连接并运行一个图像节点）。' };
+	}
+
+	const prompt = typeof values.prompt === 'string' ? values.prompt : '';
+	if (!prompt.trim()) {
+		return { ...empty, error: '请填写动态表情的动作 / 风格提示词（prompt）。' };
+	}
+
+	const spec = getSpec(type);
+	const wf = spec?.comfy?.workflow;
+	if (!wf) {
+		return { ...empty, error: '动态表情节点缺少 greenscreen 工作流模板（spec.comfy.workflow 为空）。' };
+	}
+
+	// eslint-disable-next-line no-console
+	console.log(`[DynEmojiStage] run start nodeId=${nodeId} prompt="${truncateForLog(prompt, 80)}" ref=${refImage}`);
+
+	try {
+		const single = await runStageWorkflow({
+			runner, nodeId, type, values: { ...values, image: refImage }, upstreams, store, getSpec, onProgress, signal,
+			// 钉住资产的 ref 多为 http/data URL，需上传给 ComfyUI 才能被 LoadImage 使用。
+			resolveImageRef: input.resolveLoadImageRef ?? defaultResolveLoadImageRef(input.runner),
+		});
+		if (single.status !== 'success') {
+			return { promptId: single.promptId, status: 'error', error: single.error ?? '绿幕视频生成失败', entries: [] };
+		}
+		// 取本轮新产的视频（绿幕 mp4）。
+		const videoEntry = [...single.entries].reverse().find(e => e.media.kind === 'video');
+		if (!videoEntry) {
+			return { ...empty, error: '绿幕视频已生成但未找到 video 产物，无法转 GIF。' };
+		}
+		const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+		const gifParams: Record<string, unknown> = { ...EMOJI_GIF_PARAMS, fps: values.fps ?? 12 };
+		const gif = await convertVideoToGif(
+			videoEntry.media.ref,
+			gifParams,
+			fetchImpl,
+			(p) => onProgress?.({ progress: 0.9 + (p.value ?? 0) / 1000 }),
+		);
+		const gifDataUrl = await blobToDataUrl(gif.gifBlob);
+		const media: MediaRef = {
+			ref: gifDataUrl,
+			kind: 'animation',
+			w: gif.width,
+			h: gif.height,
+			mime: 'image/gif',
+			durationMs: gif.durationMs,
+			fps: gif.fps,
+		};
+		// port 与静态节点一致用 'output'，卡片 ownSnapshots 不区分 port。
+		store.put({ nodeId: snapshotKey, port: 'output', key: '', media });
+		// eslint-disable-next-line no-console
+		console.log(`[DynEmojiStage] run done gif ${media.w}x${media.h} ${media.durationMs}ms`);
+		return { promptId: single.promptId, status: 'success', entries: [{ media, nodeId: snapshotKey, port: 'output', key: '' }] };
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		// eslint-disable-next-line no-console
+		console.error(`[DynEmojiStage] run threw: ${msg}`);
+		return { ...empty, error: msg };
+	}
+}
+
+/**
  * Unified node executor shared by the single-node editor popup and the
  * workflow Run: schema nodes execute as their FULL ComfyTV workflow (degrading
  * to single-node when the runner has no ComfyTV extension), everything else
@@ -2298,9 +2428,11 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 	if (isVoxDirectorNode(type)) { return runVoxDirectorNode(input); }
 	// Vox 口播脚本节点：本地生成 beats.json 文本（供 DirectorStage texts 端口透传）。
 	if (isVoxScriptNode(type)) { return runVoxScriptNode(input); }
-	// EmojiStage 必须在通用 schema 分支之前拦截：m×n 网格要展开成多次单图执行
-	// （每格独立 prompt/seed），而 schema 分支只跑一次 workflow。
-	if (isEmojiStageNode(type)) { return runEmojiStageGrid({ ...input, values }); }
+	// EmojiStage 必须在通用 schema 分支之前拦截。
+	//  - 静态 StatEmojiStage：m×n 网格展开成多次单图执行（每格独立 prompt/seed）。
+	//  - 动态 DynEmojiStage：参考图 → 绿幕视频 → 前端抠像 → GIF（单一产物）。
+	if (isDynEmojiStageNode(type)) { return runDynEmojiStage({ ...input, values }); }
+	if (isStatEmojiStageNode(type)) { return runEmojiStageGrid({ ...input, values }); }
 	const spec = getSpec(type);
 	if (spec?.kind === 'schema') {
 		return runStageWorkflow({

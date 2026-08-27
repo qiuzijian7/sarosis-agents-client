@@ -35,6 +35,10 @@ import './codebaseMemoryMcpBootstrap.js';
 // Platform Bridge Layer (cc-connect 复刻) — registers IBridgeService + auto-starts.
 import './bridge/bridge.contribution.js';
 
+// Chat tab "Rename" command + editor title context menu entry.
+// Side-effect import: the module self-registers the command and menu item.
+import './chatTabRename.js';
+
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';

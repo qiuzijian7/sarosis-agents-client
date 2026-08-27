@@ -528,6 +528,30 @@ export function coerceArgsToSchema(
 		return { args, warnings };
 	}
 
+	// P0（2026-08-27，日志 1787842234483）：模型 codebuddy/hy4-dev 偶发把工具参数裹进
+	// 非标准 `raw_arguments` 字符串字段（而非扁平 JSON），例如
+	//   {"raw_arguments":"{\"path\":\"g:\\...\\x.ts\",\"offset\":580,\"limit\":110}"}
+	// 或破损混合形态 {"raw_arguments":"{\"path\":\"...\"}", "offset":580, "limit":110}。
+	// 必填参数（如 file_read 的 path）因此沉到字符串内 → 顶层缺失 → 被 coerceOrReject 拒掉，
+	// 模型反复重试同一错误工具（见迭代 1/2 的 "missing required args [path]"）。
+	// 兜底：若 args.raw_arguments 是 JSON 字符串，解析其内联参数并合并到顶层（仅补缺失键，
+	// 不覆盖已正确的顶层字段），随后删除该非标准键，交回正常 schema 校验流程。
+	const RAW_ARGS_KEY = 'raw_arguments';
+	if (typeof (args as Record<string, unknown>)[RAW_ARGS_KEY] === 'string') {
+		try {
+			const inner = JSON.parse((args as Record<string, unknown>)[RAW_ARGS_KEY] as string);
+			if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+				for (const k of Object.keys(inner)) {
+					if (!(k in args)) { (args as Record<string, unknown>)[k] = inner[k]; }
+				}
+			}
+			delete (args as Record<string, unknown>)[RAW_ARGS_KEY];
+			warnings.push(`unwrapped non-standard "raw_arguments" wrapper into top-level args`);
+		} catch {
+			// 解析失败则原样保留，交给后续校验报缺失（避免吞掉真实错误）
+		}
+	}
+
 	// Snapshot before coercion
 	const beforeKeys = Object.keys(args);
 	const beforeSnap: Record<string, { type: string; json: string }> = {};
@@ -936,6 +960,42 @@ export function deduplicateToolCalls(calls: IToolCallInfo[]): IToolCallInfo[] {
 		seen.add(key);
 		return true;
 	});
+}
+
+// ─── Loop-Block Feedback ────────────────────────────────────────────
+
+/**
+ * 生成「工具调用被循环检测拦截」时回写给模型的 tool result 文本。
+ *
+ * 关键改进（据日志 1787759962668 实证）：模型用空参/同参反复调用 `patch`，
+ * 原本只收到笼统的「called too many times ... try a different approach」，
+ * 完全不知道 patch 需要 path/search/replace，于是空转到工具被禁用、任务放弃。
+ * 这里对空参/缺参类拦截给出**可执行**的纠正信号，让模型首次被拦就能自检自愈，
+ * 不必升级到「禁用工具」的硬停止档。
+ */
+export function buildLoopBlockFeedback(toolName: string, rawArgs: unknown): string {
+	let parsedArgs: Record<string, unknown> = {};
+	if (rawArgs != null) {
+		try {
+			const s = typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs);
+			parsedArgs = JSON.parse(s) as Record<string, unknown>;
+		} catch {
+			// 非 JSON：保留空对象，仅用于判断空参
+		}
+	}
+	const argKeys = Object.keys(parsedArgs);
+	const emptyArgs = argKeys.length === 0 || argKeys.every(k => parsedArgs[k] === '' || parsedArgs[k] == null);
+
+	if (toolName === 'patch') {
+		if (emptyArgs) {
+			return `Error: Tool "patch" was blocked — its arguments were EMPTY or missing. To apply an edit you MUST supply: path (file to edit), search (exact existing text to replace), replace (new text). Do NOT repeat empty patch calls — re-issue EXACTLY ONE corrected patch with real arguments.`;
+		}
+		return `Error: Tool "patch" was blocked — it was called repeatedly with the SAME arguments (loop). Your patch targeted path="${String(parsedArgs['path'] ?? '')}". If the edit did not apply, file_read the file first, then re-issue ONE patch with a corrected search/replace. Do NOT retry unchanged.`;
+	}
+	if (emptyArgs) {
+		return `Error: Tool "${toolName}" was blocked — its arguments were EMPTY or missing. Provide the required arguments (or a different valid approach) before calling it again.`;
+	}
+	return `Error: Tool "${toolName}" was called too many times with the same arguments. This looks like a loop — try a different approach or provide more specific arguments.`;
 }
 
 // ─── Result Size Limiting ───────────────────────────────────────────

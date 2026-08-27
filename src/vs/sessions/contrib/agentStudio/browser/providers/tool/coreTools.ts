@@ -38,6 +38,7 @@ import { annotateCommandFailure, renderFailureHint } from './commandFailureHints
 import { detectGitBash, gitBashShellEnvironment, type IGitBashInfo } from './gitBashProvider.js';
 import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
 import { SHELL_APPROVAL_SHAPE_GUIDANCE } from '../../../common/shellCommandSafety.js';
+import { appendTerminalLiveOutput, clearTerminalLiveOutput } from '../../../../../browser/agentChat/terminalLiveOutput.js';
 import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 import {
 	detectDevicePath,
@@ -124,11 +125,14 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		timeoutSec: number,
 		signal?: AbortSignal,
 		gitBash?: IGitBashInfo,
+		toolCallId?: string,
 	): Promise<IToolResultContent[]> {
 		// 如果已被取消，直接返回
 		if (signal?.aborted) {
 			return [{ type: 'text', text: 'Command execution was cancelled before it started.' }];
 		}
+		// 运行期直播：每次执行前清空该 toolCallId 的缓存（同一轮不会重入，保底重置）
+		clearTerminalLiveOutput(toolCallId);
 
 		try {
 			// 工作目录：调用方已通过 resolveAndCheckWorkspacePath 校验为允许根内的绝对路径。
@@ -308,6 +312,8 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 						.replace(/\r/g, '\n');
 					outputChunks.push(clean);
 					streamStripper.push(clean);
+					// 运行期直播：把清洗后的增量输出直接推给 DOM 卡片（旁路通道）
+					appendTerminalLiveOutput(toolCallId, clean);
 					markIdle();
 				});
 
@@ -1070,7 +1076,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			securityLevel: ToolSecurityLevel.Dangerous,
 		},
 		available: () => typeof process !== 'undefined' || typeof navigator !== 'undefined',
-		handler: async (args, signal, agentId) => {
+		handler: async (args, signal, agentId, sessionId, toolCallId) => {
 		const command = String(args['command'] ?? '').trim();
 		if (!command) { throw new Error('command is required'); }
 		// HARDLINE 不可绕过地板（灾难性/不可逆命令，任何审批与自主模式都无法放行）
@@ -1153,7 +1159,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			}
 		}
 
-		const result = await executeTerminalCommand(command, resolvedCwd, timeoutSec, signal, gitBash);
+		const result = await executeTerminalCommand(command, resolvedCwd, timeoutSec, signal, gitBash, toolCallId);
 			// ── 搜索类命令护栏（不阻断执行，仅提示）──────────────────────
 			// find/grep -r/Get-ChildItem -Recurse 等纯搜索命令是 search_files/
 			// search_code 的本职工作（索引快路径 + 结构化结果 + 无 shell 可移植性

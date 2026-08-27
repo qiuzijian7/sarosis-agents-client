@@ -11,7 +11,7 @@ import { SandboxViolationError } from './workspaceSecurity.js';
 type ToolHandlerResult = IToolResultContent[] | { content: IToolResultContent[]; details?: Record<string, unknown> };
 
 export interface IExecutableTool {
-	readonly handler: (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string, sessionId?: string) => Promise<ToolHandlerResult>;
+	readonly handler: (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string, sessionId?: string, toolCallId?: string) => Promise<ToolHandlerResult>;
 	/** 标记 stub — 只有 schema 没有真实 handler（理论上不应到达 executeTool）。 */
 	readonly isStub?: boolean;
 	/** 返回 false 表示当前环境不可用。 */
@@ -78,7 +78,7 @@ export async function executeToolImpl(
 	try {
 		// 串台防护：把 toolCall 上携带的 sessionId 透传给 handler，使 memory_remember
 		// 等写入类工具能把 sessionId 写入 entry.metadata，供记忆事件按会话精确路由。
-		const raw = await t.handler(toolCall.arguments ?? {}, signal, agentId, toolCall.sessionId);
+		const raw = await t.handler(toolCall.arguments ?? {}, signal, agentId, toolCall.sessionId, toolCall.id);
 		const content = Array.isArray(raw) ? raw : raw.content;
 		const details = Array.isArray(raw) ? undefined : raw.details;
 		const result: IToolResult = {

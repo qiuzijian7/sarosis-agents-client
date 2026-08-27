@@ -89,7 +89,7 @@ export const ALL_BLOCKED_WRAPUP_AT = 4;
  * （部分答案远胜没有答案）。
  */
 export function allToolCallsBlockedReminder(streak: number, toolNames: string): string {
-	return [
+	const lines = [
 		'<system-reminder>',
 		`For ${streak} consecutive turns, EVERY tool call you made was rejected as a duplicate (${toolNames}).`,
 		'Nothing has been executed and no new information has been obtained in those turns — you are in a loop.',
@@ -101,8 +101,16 @@ export function allToolCallsBlockedReminder(streak: number, toolNames: string): 
 		'3. If you cannot proceed without input, ask the user a specific question.',
 		'',
 		'Do NOT repeat any previous tool call. Do NOT restate your plan without acting on it.',
-		'</system-reminder>',
-	].join('\n');
+	];
+	// patch 空参/同参循环：明确允许「重发一次带正确参数的 patch」，而非只让模型放弃
+	// （日志 1787759962668 实证：patch 空参被拦后模型无任何可执行信号，空转到工具禁用）。
+	if (toolNames.includes('patch')) {
+		lines.push(
+			'If you were trying to EDIT a file with "patch": re-issue EXACTLY ONE patch with real arguments — path (file), search (exact existing text), replace (new text) — after reading the file. That is allowed and is the correct fix; only empty/identical patch calls are rejected.',
+		);
+	}
+	lines.push('</system-reminder>');
+	return lines.join('\n');
 }
 
 /**
@@ -213,6 +221,40 @@ export function preferGraphSearchReminder(streakCount: number, structuralTools: 
 		'They query the indexed codebase knowledge graph directly — far fewer rounds than grep-and-read.',
 		'Reserve search_files for exact string / filename matching only.',
 		'Also avoid reading large files linearly — extract only the relevant functions, then SUMMARIZE your findings.',
+		'If these searches are not surfacing the answer, STOP issuing more searches and either report what you have',
+		'already found (cite concrete file paths + line numbers) or ask a clarifying question. Do NOT keep grepping.',
+		'</system-reminder>',
+	].join('\n');
+}
+
+/**
+ * 纯文本搜索连击、但当前工具面**没有任何结构搜索工具可用**时的引导。
+ * 此时无法引导「改用结构工具」，只能明确要求模型停搜并直接基于已有信息汇报。
+ */
+export function stopSearchingReportReminder(streakCount: number): string {
+	return [
+		'<system-reminder>',
+		`You have used text/grep-style search (search_files) ${streakCount} times in a row without making progress.`,
+		'Repeated searching is not surfacing the answer — STOP issuing more searches.',
+		'Switch strategy now: if any STRUCTURAL tool is available (graph / architecture / code-snippet queries),',
+		'use it; otherwise write up your findings so far (cite concrete file paths + line numbers) and either',
+		'propose the next concrete step or ask a clarifying question. Do NOT keep grepping.',
+		'</system-reminder>',
+	].join('\n');
+}
+
+/**
+ * 纯文本搜索连击**硬上限**触发时的强制收尾提醒。配合 `_forceWrapUpRound`
+ * （工具已禁用）使用：要求模型基于已收集信息产出最终结论，不得再请求搜索/工具。
+ */
+export function textSearchLoopWrapUpReminder(streakCount: number): string {
+	return [
+		'<system-reminder>',
+		`Search-loop guardrail: you have issued ${streakCount} consecutive text/grep searches without resolution.`,
+		'This turn is being forced to wrap up. Tools are now DISABLED for this final round.',
+		'Produce your final answer from what you have ALREADY gathered: summarize findings with concrete',
+		'file paths + line numbers, state what remains uncertain, and either propose the next step or ask',
+		'a clarifying question. Do NOT request more searches or tools.',
 		'</system-reminder>',
 	].join('\n');
 }

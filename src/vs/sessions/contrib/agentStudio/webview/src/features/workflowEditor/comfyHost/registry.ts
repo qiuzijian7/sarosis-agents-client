@@ -1349,20 +1349,22 @@ export function registerDefaultComfyTVStages(): void {
 			{ name: 'height', type: 'INT', default: 1328 },
 		],
 	});
-	// EmojiStage — 生成 m×n 个动态表情包（透明背景循环贴纸）。
-	// 每个格子可独立编辑 prompt/seed 并单独重生成；内嵌编辑器 = EmojiStageEditor。
-	// variant='generator' → 有运行按钮；workflowKind='emoji' → 出图读 builtinWorkflows/emojiWorkflows。
-	// 注意：EmojiStage 不在 comfyTVStageMeta.generated.ts（后端无此 stage），故 comfyTV
-	// 元数据显式声明，不能靠 registerNodeSpec 的 meta 补全（comfyTVMetaFor 查不到）。
+	// ── 表情包拆分为两个独立节点（2026-08-26）────────────────────────────────
+	// 静态表情包：m×n 透明背景贴纸网格，主题预设作为 prompt 后缀（单一透明贴纸模板 + 风格）。
+	// 动态表情包：参考图 → MiniMax H3 绿幕视频 → 前端抠图 → GIF 输出。
+	// 两者均不在 comfyTVStageMeta.generated.ts（后端无此 stage），comfyTV 元数据显式声明。
+
+	// StatEmojiStage — 静态表情包（m×n 透明背景贴纸网格）。
+	// 主题预设（3D/Q版/手绘/Meme/漫画封/粘土/像素艺术/可爱风）作为 prompt 后缀注入。
+	// variant='generator' → 有运行按钮；workflowKind='emoji' → 读 builtinWorkflows/emojiWorkflows。
 	registerNodeSpec({
-		type: 'ComfyTV.EmojiStage',
+		type: 'ComfyTV.StatEmojiStage',
 		kind: 'schema',
-		title: '表情包',
+		title: '静态表情包',
 		category: 'comfyTV',
 		inputs: [
-			// text = 单条文本输入（对齐 ComfyTV 后端 `COMFYTV_TEXT.Input("text")`，
-			// 接 TextStage 输出作为表情描述）；texts = 批量文本（项目惯例，
-			// 逐格分配）；images = 参考图（配合「资产引用」的 slot 注入）。
+			// text = 单条文本输入（接 TextStage 输出作为表情描述）；
+			// texts = 批量文本（逐格分配）；images = 参考图（slot 注入）。
 			{ name: 'text', type: 'COMFYTV_TEXT' },
 			{ name: 'texts', type: 'COMFYTV_TEXT' },
 			{ name: 'images', type: 'COMFYTV_IMAGE' },
@@ -1374,20 +1376,52 @@ export function registerDefaultComfyTVStages(): void {
 		],
 		widgets: [
 			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('emoji')[0], options: workflowOptionsFor('emoji') },
+			// 主题预设：作为 prompt 后缀的风格关键词（见 emojiWorkflows 的 SUFFIX 映射）。
+			{ name: 'style_preset', type: 'COMBO', default: 'Q版', options: ['Q版', '3D', '手绘', 'Meme', '漫画封', '粘土', '像素艺术', '可爱风'] },
 			{ name: 'rows', type: 'INT', default: 3, min: 1, max: 6 },
 			{ name: 'cols', type: 'INT', default: 3, min: 1, max: 6 },
-			// ★ 动态表情用 MiniMax H3 文生视频：时长（秒）驱动帧数（24fps 固定），
-			//   替代原 AnimateDiff 的 fps/frames（见 EMOJI_ANIMATED_MINIMAX）。
-			{ name: 'duration_s', type: 'FLOAT', default: 3, min: 2, max: 15 },
 			{ name: 'prompt', type: 'TEXT', default: '' },
 			{ name: 'cells', type: 'TEXT', default: '[]' },
 			{ name: 'selected_index', type: 'INT', default: 0, min: 0, max: 35 },
 			// run_scope：'all'（生成全部）| 'cell'（只跑 selected_index 一格）。
-			// 由 EmojiStageEditor 在点击运行前写回，workflowRun.runEmojiStageGrid 消费。
+			// 由 StatEmojiStageEditor 在点击运行前写回，workflowRun.runEmojiStageGrid 消费。
 			{ name: 'run_scope', type: 'TEXT', default: 'all' },
 		],
 		color: '#e879f9',
 		comfyTV: { stageKind: 'emoji', workflowKind: 'emoji', variant: 'generator' },
+	});
+
+	// DynEmojiStage — 动态表情包（参考图 → MiniMax H3 绿幕视频 → 前端抠图 → GIF）。
+	// 通用提示词 + 基于图片生成视频；绿幕背景便于前端 chroma-key 抠图成透明 GIF。
+	registerNodeSpec({
+		type: 'ComfyTV.DynEmojiStage',
+		kind: 'schema',
+		title: '动态表情包',
+		category: 'comfyTV',
+		inputs: [
+			// image = 参考图（必填，驱动视频生成与抠图 mask）；text = 动作/风格提示词。
+			{ name: 'image', type: 'COMFYTV_IMAGE' },
+			{ name: 'text', type: 'COMFYTV_TEXT' },
+		],
+		outputs: [
+			// gif = 抠图后的透明 GIF；video = 绿幕原始视频（历史保留）。
+			{ name: 'gif', type: 'COMFYTV_IMAGE' },
+			{ name: 'video', type: 'COMFYTV_VIDEO' },
+		],
+		widgets: [
+			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('emoji-dyn')[0] ?? '动态表情 (MiniMax H3)', options: workflowOptionsFor('emoji-dyn') },
+			{ name: 'prompt', type: 'TEXT', default: '' },
+			{ name: 'duration_s', type: 'FLOAT', default: 3, min: 2, max: 15 },
+			// 绿幕色（chroma-key 抠图用），默认纯绿 #00FF00。
+			{ name: 'chroma_color', type: 'TEXT', default: '#00FF00' },
+			// 相似度/平滑度（前端抠图容差）。
+			{ name: 'chroma_similarity', type: 'FLOAT', default: 0.4, min: 0, max: 1 },
+			{ name: 'chroma_smoothness', type: 'FLOAT', default: 0.1, min: 0, max: 1 },
+			{ name: 'selected_index', type: 'INT', default: 0, min: 0, max: 35 },
+			{ name: 'run_scope', type: 'TEXT', default: 'all' },
+		],
+		color: '#c084fc',
+		comfyTV: { stageKind: 'emoji-dyn', workflowKind: 'emoji-dyn', variant: 'generator' },
 	});
 	// VideoToGifStage — 视频转 GIF（浏览器本地执行，见 videoToGif.ts 顶部注释：
 	// ComfyTV 无 gif stage，本机 ComfyUI 也只有 SaveAnimatedWEBP/PNG）。

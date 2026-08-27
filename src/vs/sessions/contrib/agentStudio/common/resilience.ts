@@ -357,6 +357,17 @@ export interface StreamTimeoutOptions {
 	/** 超时回调（被超时打断时调用，用于日志 / 上报） */
 	onTimeout?: (kind: 'run' | 'idle') => void;
 	log?: (level: 'info' | 'warn' | 'error', message: string) => void;
+	/**
+	 * 传输层存活心跳源（可选）。在「首 token 之前」阶段，每当该源产出一次 tick，
+	 * 即视为底层连接仍在传输（如 SSE 注释/心跳包、原始字节到达），刷新首 token
+	 * 计时而非直接 abort——用于容忍网关冷启动：连接健康但首 token 迟到时延长宽限，
+	 * 避免误杀一个本将成功的请求。首次真实 delta 到达后本钩子不再生效（改由严格
+	 * idle 检测中途静默挂起）。
+	 * 当前 agentStudio 的流来自外部 provider（codebuddy-provider），暂无原始 SSE
+	 * 字节钩子，故默认不传——机制就绪，待 provider 暴露 transport-progress 事件后
+	 * 在 agentTurnExecutor 调用处零改动接入。
+	 */
+	livenessSource?: AsyncIterable<unknown>;
 }
 
 /**
@@ -372,22 +383,36 @@ export interface StreamTimeoutOptions {
  * 上限 {@link ADAPTIVE_FIRST_TOKEN_CAP_MS}（不得 ≥ HTTP 层 120s 请求超时，否则
  * resilience 会在 HTTP 层之前误杀慢流）。
  *
- * 示例（base=45s）：16k→45s，24k→60s，32k→75s，40k→90s，≥72k→120s（封顶）。
+ * 示例（base=45s，地板 90s）：16k→90s(地板)，24k→90s，32k→90s，40k→90s，56k→105s，
+ * ≥72k→115s(封顶)；任意 prompt 不低于冷启动地板 90s（覆盖与 prompt 大小无关的
+ * 网关/模型实例冷启动）。
  */
 export const ADAPTIVE_FIRST_TOKEN_THRESHOLD = 16_000;
 export const ADAPTIVE_FIRST_TOKEN_STEP_TOKENS = 8_000;
 export const ADAPTIVE_FIRST_TOKEN_STEP_MS = 15_000;
 export const ADAPTIVE_FIRST_TOKEN_CAP_MS = 115_000;
+/**
+ * 冷启动地板：任何 prompt 都至少等满该宽限。网关/模型实例冷启动的 TTFT 与
+ * prompt 大小**无关**（仅取决于实例是否预热），可远超预期 prefill 耗时。实测
+ * hy3-ioa 小 prompt(≈20k) 冷启动 TTFT=86s 被 60s 自适应预算误杀，而流最终在 86s
+ * 正常返回 tool_call。地板保证「连接健康但首 token 迟到」的冷启动不被误杀。
+ * 必须 < HTTP 层 120s 请求超时，否则 resilience 会在 HTTP 层之前误杀慢流。
+ */
+export const ADAPTIVE_FIRST_TOKEN_FLOOR_MS = 90_000;
 
 export function computeAdaptiveFirstTokenTimeout(
 	estPromptTokens: number,
 	baseMs: number,
 ): number {
+	// 地板优先于 base：即使 base 很小，也至少等满冷启动宽限。
+	const floor = Math.max(baseMs, ADAPTIVE_FIRST_TOKEN_FLOOR_MS);
 	if (!Number.isFinite(estPromptTokens) || estPromptTokens <= ADAPTIVE_FIRST_TOKEN_THRESHOLD) {
-		return baseMs;
+		return floor;
 	}
 	const steps = Math.ceil((estPromptTokens - ADAPTIVE_FIRST_TOKEN_THRESHOLD) / ADAPTIVE_FIRST_TOKEN_STEP_TOKENS);
-	return Math.min(baseMs + steps * ADAPTIVE_FIRST_TOKEN_STEP_MS, ADAPTIVE_FIRST_TOKEN_CAP_MS);
+	const computed = baseMs + steps * ADAPTIVE_FIRST_TOKEN_STEP_MS;
+	// 先抬到冷启动地板，再封顶到 HTTP 层之下。
+	return Math.min(Math.max(computed, ADAPTIVE_FIRST_TOKEN_FLOOR_MS), ADAPTIVE_FIRST_TOKEN_CAP_MS);
 }
 
 /**
@@ -431,10 +456,12 @@ export async function* withStreamTimeout<T>(
 
 	// 当前 in-flight next() 的 reject 句柄：让定时器能在 pending 期间注入超时错误。
 	let nextReject: ((e: unknown) => void) | undefined;
+	let livenessIter: AsyncIterator<unknown> | undefined;
 
 	const cleanup = () => {
 		timers.forEach(clearTimeout);
 		signal?.removeEventListener('abort', onAbort);
+		livenessIter?.return?.();
 	};
 	const finish = (err?: unknown) => {
 		if (settled) { return; }
@@ -481,6 +508,26 @@ export async function* withStreamTimeout<T>(
 			}
 		}, tick);
 		timers.push(idleChecker as unknown as ReturnType<typeof setTimeout>);
+	}
+
+	// 传输层存活钩子：首 token 前，若底层连接仍有活动（livenessSource tick），
+	// 刷新首 token 计时，避免「连接健康但首 token 迟到」的冷启动误杀。首次真实
+	// delta 到达（firstItemReceived）后本钩子自动退出，改由严格 idle 检测挂起。
+	if (opts.livenessSource) {
+		livenessIter = opts.livenessSource[Symbol.asyncIterator]();
+		void (async () => {
+			try {
+				while (true) {
+					if (settled || firstItemReceived) { break; }
+					const r = await livenessIter!.next();
+					if (r.done || settled || firstItemReceived) { break; }
+					// 传输层有活动 → 视作连接存活，刷新首 token 宽限计时。
+					lastItem = Date.now();
+				}
+			} catch {
+				// liveness 源异常不影响主超时逻辑
+			}
+		})();
 	}
 
 	try {

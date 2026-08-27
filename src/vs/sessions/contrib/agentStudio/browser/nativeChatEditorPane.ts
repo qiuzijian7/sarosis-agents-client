@@ -552,6 +552,14 @@ export class NativeChatEditorPane extends EditorPane {
 			}
 			const agentId = ensured.agentId;
 			const sessionId: string = ensured.sessionId;
+			// ★ 2026-08-27 诊断（多聊天框 UI 不刷新）：记录本次发送归属的 pane/session/chat，
+			// 与 _initStreamingMessage 的 SKIPPED 警告、AgentChatService.sendMessage 的
+			// CoderTrace 行对照，即可判定是否存在「多 pane 共用同一 session」的寄生问题
+			// （streamKey 冲突 → 后发者 cancel 掉先发者的流 / onDelta 被覆盖）。
+			this._logService.info(
+				`[NativeChatEditorPane#${this._paneId}] onSendMessage: agent=${agentId} session=${sessionId} ` +
+				`chatId=${this._currentInputChatId} staleStreaming=${this._streamingAssistantId ?? 'none'} isSending=${this._isSending}`
+			);
 
 			// 发送后清空该 session 的输入框草稿（panel 已在 _onSendMessage 前清空 composer）
 			this._saveComposerDraft(agentId, sessionId);
@@ -899,7 +907,7 @@ export class NativeChatEditorPane extends EditorPane {
 				this._currentSessionId = session.id;
 				void this._updateSessionLock();
 					this._logService.debug(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
-					// 持久化 session 到 input（拖拽到新 group 时恢复用），标题格式: agentName (sessionName)
+					// 持久化 session 到 input（拖拽到新 group 时恢复用），页签显示 session 名
 					if (this.input instanceof NativeChatEditorInput && this._currentAgentId) {
 						this.input.setAgentInfo(this.input.name, this._currentAgentId, session.id, session.name);
 					}
@@ -931,7 +939,7 @@ export class NativeChatEditorPane extends EditorPane {
 				this._currentSessionId = sessionId;
 				void this._updateSessionLock();
 				this._logService.debug(`[NativeChatEditorPane] onOpenSession: switched to session ${sessionId}`);
-					// 查找 session name 以正确格式化 Tab 标题: agentName (sessionName)
+					// 查找 session name 作为页签标题
 					let sessionName: string | undefined;
 					try {
 						const sessions = await this._chatService.listAgentSessions(agentId);
@@ -962,6 +970,10 @@ export class NativeChatEditorPane extends EditorPane {
 				try {
 					await this._chatService.renameAgentSession(this._currentAgentId, sessionId, newName);
 					this._logService.debug(`[NativeChatEditorPane] onRenameSession: renamed session ${sessionId} to "${newName}"`);
+					// 双向同步：session 改名后，同步刷新编辑器页签名（仅 session 名）
+					if (this.input instanceof NativeChatEditorInput) {
+						this.input.setAgentInfo(this.input.name, this._currentAgentId, sessionId, newName);
+					}
 				} catch (err) {
 					this._logService.error('[NativeChatEditorPane] onRenameSession failed:', err);
 				}
@@ -2054,6 +2066,32 @@ export class NativeChatEditorPane extends EditorPane {
 	}
 
 	/**
+	 * 本页签是否为「用户新建的聊天页签」（而非 default 单例页签 / 窗口重载恢复的页签）。
+	 *
+	 * 判定依据（两者同时成立才算新建）：
+	 *  1. input 尚未绑定 sessionId —— 已绑定的走「重载恢复」或「已初始化」语义；
+	 *  2. chatId 不是 `'default'` —— default 是 NativeChatEditorInput.getInstance()
+	 *     的遗留单例页签（nativeChatEditorInput.ts:91），承载「重启后回到上次会话」的
+	 *     预期，不能每次都开新 session。
+	 *
+	 * 用户点「+」新建的页签由 create() 生成 `chat-<ts>-<rand>` 形态的 chatId
+	 * （nativeChatEditorInput.ts:105），且 presetAgentView.ts:776 /
+	 * taskOverviewEditorPane.ts:931 传 sessionId=undefined → 命中本判定。
+	 *
+	 * 用途：_selectAndLoadAgent 据此为新页签创建独立 session，避免多页签共用同一
+	 * session 导致 streamKey 冲突、后发者 cancel 掉先发者的流（详见该方法内注释）。
+	 */
+	private _isFreshChatTab(): boolean {
+		if (!(this.input instanceof NativeChatEditorInput)) {
+			return false;
+		}
+		if (this.input.sessionId) {
+			return false; // 已绑定 session → 重载恢复或已初始化，不新建
+		}
+		return this.input.chatId !== 'default';
+	}
+
+	/**
 	 * 加载/切换 agent 并刷新聊天历史。
 	 *
 	 * @param agentId 要加载的 agent ID
@@ -2125,6 +2163,22 @@ export class NativeChatEditorPane extends EditorPane {
 						} else {
 							session = await this._chatService.getOrCreateActiveSession(agentId);
 						}
+					} else if (this._isFreshChatTab()) {
+						// ★ 新建聊天页签（用户点「+」新建，chatId 为 chat-<ts> 且 input 未
+						// 绑定 session）→ 必须创建【独立新 session】。
+						//
+						// 旧行为走 getOrCreateActiveSession(agentId)，而它是**全局单例语义**
+						// （agentChatService.ts:2781 按 agentId 取「最近更新」的 session，
+						// 且带 10s 缓存）→ 新页签会寄生到其它页签正在用的 session。
+						// 后果链（日志 20260827T173319/window1）：
+						//   pane#1(default) 与 pane#2(chat-…) 共用 session sess_mtabb578
+						//   → 两者 streamKey 相同（`saros-claw::sess_mtabb578`）
+						//   → sendMessage 开头 `cancelStream(streamKey)`(agentChatService.ts:1731)
+						//     abort 掉先发者的流并 delete 其 onDelta 回调
+						//   → 先发 pane 再也收不到 delta → **UI 不刷新 LLM 返回**（用户报告现象）
+						// 新建一个 session 即可让两页签 streamKey 天然隔离，根除互掐。
+						this._logService.info(`[NativeChatEditorPane#${this._paneId}] fresh chat tab — creating isolated session for agent ${agentId}`);
+						session = await this._chatService.createAgentSession(agentId, `Session ${new Date().toLocaleString()}`);
 					} else {
 						this._logService.debug(`[NativeChatEditorPane][Init] calling getOrCreateActiveSession t=${(performance.now() - t0).toFixed(1)}ms`);
 						session = await this._chatService.getOrCreateActiveSession(agentId);
@@ -2468,7 +2522,19 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 	 * 由 _sendMessageInternal（本地发送）开始时和 onDidStreamDelta（外部发送）首个 delta 到达时调用。
 	 */
 	private _initStreamingMessage(): void {
-		if (this._streamingAssistantId) { return; } // 已初始化
+		if (this._streamingAssistantId) {
+			// ★ 2026-08-27 诊断（多聊天框 UI 不刷新，日志 20260827T173319/window1）：
+			// 上一次发送的流尚未收尾（_streamingAssistantId 未清空）就又发起新发送时，
+			// 新流无法创建自己的气泡，其 delta 会被 _processDelta 追加到【旧消息】上
+			// （或直接因 assistantMsg 被 reset 而丢弃）→ 表现为「发了消息但 UI 不刷新」。
+			// 此处打点，便于下次复现时确认该路径是否被触发。
+			this._logService.warn(
+				`[NativeChatEditorPane#${this._paneId}] _initStreamingMessage SKIPPED — stale streaming msg ` +
+				`${this._streamingAssistantId} (session=${this._currentSessionId}, isSending=${this._isSending}, ` +
+				`isExternalSend=${this._isExternalSend}). New turn content may not render.`
+			);
+			return;
+		}
 		const id = `msg_${Date.now()}_assistant`;
 		const msg: IAgentChatMessage = {
 			id,

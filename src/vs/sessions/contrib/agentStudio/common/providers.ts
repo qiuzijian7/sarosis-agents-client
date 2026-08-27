@@ -864,12 +864,21 @@ export interface IToolApprovalResolution {
  * 工具审批决策
  */
 export const enum ToolApprovalDecision {
-	/** 允许本次执行 */
+	/** 允许本次执行（不记忆） */
 	AllowOnce = 'allow-once',
-	/** 允许本次执行，且后续同名工具不再询问（本次会话内） */
+	/** 允许本次执行，且本次会话内不再询问同名工具（仅内存，新会话失效） */
+	AllowSession = 'allow-session',
+	/** 允许本次执行，并把该工具加入工作区持久授权（跨会话生效） */
+	AllowWorkspace = 'allow-workspace',
+	/**
+	 * 允许本次执行，并把该工具加入全局持久授权（"始终允许"，跨会话生效）。
+	 * 兼容别名：旧 UI 与 config.html 写入路径仍使用 `allow_always` → 本值。
+	 */
 	AllowAlways = 'allow-always',
 	/** 拒绝执行 */
 	Deny = 'deny',
+	/** 本次会话内一律拒绝该工具（"始终拒绝"，不跨会话） */
+	DenyAlways = 'deny-always',
 }
 
 /**

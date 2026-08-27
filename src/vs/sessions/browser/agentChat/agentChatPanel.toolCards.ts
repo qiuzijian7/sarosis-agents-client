@@ -454,7 +454,7 @@ protected _createWebToolCard(tc: IToolCall, key: string): HTMLElement {
  *
  * 在各专用卡片之上统一挂载「审批区」：任何工具（terminal / write_file / 通用…）
  * 处于 `tc.approval.status === 'pending'` 时，都在卡片底部渲染
- * 「允许本次 / 始终允许 / 拒绝」+ 倒计时。
+ * 「允许本次 / 始终允许 / 拒绝 / 始终拒绝」+ 倒计时。
  * 之前审批 UI 只存在于 message.confirmation 路径且只覆盖写文件卡，
  * 于是 terminal 审批时卡片里什么按钮都没有（本次修复的直接现象）。
  */
@@ -507,6 +507,7 @@ protected _appendToolApprovalSection(wrapper: HTMLElement, tc: IToolCall): void 
 		{ id: 'allow_once', label: '允许本次', cls: '.primary', title: '仅允许这一次执行' },
 		{ id: 'allow_always', label: '始终允许', cls: '', title: '本次会话内不再询问该工具' },
 		{ id: 'deny', label: '拒绝', cls: '.danger', title: '拒绝执行（工具将返回被拒结果）' },
+		{ id: 'deny_always', label: '始终拒绝', cls: '.danger', title: '本次会话内不再询问该工具，且一律拒绝' },
 	];
 	for (const b of buttons) {
 		const el = append(actions, $(`button.tool-approval-btn${b.cls}`, undefined, b.label)) as HTMLButtonElement;

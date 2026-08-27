@@ -191,7 +191,7 @@ export interface DirectStageRunResult {
 
 /**
  * 直接 stage 执行器（由 WorkflowEditorPanel 注册）。
- * stageClass（如 `ComfyTV.EmojiStage`）+ 已解析 values + 参考图 → 跑对应 stage，
+ * stageClass（如 `ComfyTV.StatEmojiStage` / `ComfyTV.DynEmojiStage`）+ 已解析 values + 参考图 → 跑对应 stage，
  * 返回结构化结果（outputs + snapshot 媒体引用）。抛错 = 执行失败（fail-loud 回程）。
  */
 export type DirectStageRunner = (

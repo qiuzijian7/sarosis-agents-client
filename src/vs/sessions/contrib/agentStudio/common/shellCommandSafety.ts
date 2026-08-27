@@ -417,6 +417,18 @@ export function evaluateToolCallShellSafety(toolName: string, args: unknown): Sh
 	return evaluateShellCommandSafety(raw);
 }
 
+/**
+ * 从工具调用参数中取出 shell 命令字符串（用于「命令级细粒度」授权 key）。
+ * 非 shell 工具或无命令参数时返回 undefined。
+ */
+export function getToolCallCommandArg(toolName: string, args: unknown): string | undefined {
+	const argKey = SHELL_TOOLS_WITH_COMMAND_ARG.get((toolName ?? '').toLowerCase());
+	if (!argKey) { return undefined; }
+	if (!args || typeof args !== 'object') { return undefined; }
+	const raw = (args as Record<string, unknown>)[argKey];
+	return typeof raw === 'string' ? raw : undefined;
+}
+
 /** 该工具是否属于「命令内容可被分析」的 shell 工具。 */
 export function isShellToolWithCommandArg(toolName: string): boolean {
 	return SHELL_TOOLS_WITH_COMMAND_ARG.has((toolName ?? '').toLowerCase());

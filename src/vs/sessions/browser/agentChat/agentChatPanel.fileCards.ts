@@ -3,6 +3,8 @@ import { IToolCall, IAgentChatMessage, IConfirmationData } from './agentChatType
 import { AgentChatPanelCodebaseCards } from './agentChatPanel.codebaseCards.js';
 import { createSvgIcon, FILE_ICON_D, ERROR_ICON_D } from './agentChatPanel.toolCards.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
+import { IDisposable } from '../../../base/common/lifecycle.js';
+import { onTerminalLiveOutput, getTerminalLiveOutput, clearTerminalLiveOutput } from './terminalLiveOutput.js';
 
 /**
  * 拆分 shell 命令的提示符前缀，用于终端卡片的命令行高亮显示。
@@ -25,6 +27,14 @@ export function splitTerminalPrompt(commandText: string): { prompt: string; body
 		return { prompt, body: commandText.slice(prompt.length).replace(/^\s+/, '') };
 	}
 	return { prompt: '', body: commandText };
+}
+
+/** 终端运行期直播输出订阅生命周期管理（方案1：旁路通道，绕开生成器阻塞）。 */
+const _liveTerminalSubs = new Map<string, IDisposable>();
+function _disposeLiveTerminalSub(toolCallId: string | undefined): void {
+	if (!toolCallId) { return; }
+	const d = _liveTerminalSubs.get(toolCallId);
+	if (d) { d.dispose(); _liveTerminalSubs.delete(toolCallId); }
 }
 
 /** 自 agentChatPanel.toolCards.ts 抽离（上帝对象拆分）。继承链见继承父类。 */
@@ -653,15 +663,37 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 			}
 
 			// ── Body 内容 ──
+			// 先清理上一次同 tc.id 的直播订阅（防重建泄漏），running 分支会重新登记
+			_disposeLiveTerminalSub(tc.id);
 			if (isRunning && !tc.result) {
-				// 运行中：等宽命令块 + 简短文案（无脉冲点——保持简洁；「继续执行」在 header）
+				// 运行中：等宽命令块 + 实时输出（方案1：旁路通道直播 PTY 清洗后的增量输出）
 				if (commandText) {
 					const cmdBlock = append(innerBox, $('.terminal-cmd-block'));
 					cmdBlock.textContent = commandText;
 				}
-				const explain = append(innerBox, $('.terminal-explain-row.running'));
-				append(explain, $('span.terminal-explain-text')).textContent = '正在运行，详情可在终端查看';
+				// 运行中徽标（置于输出区上方）
+				const badge = append(innerBox, $('.terminal-running-badge'));
+				badge.textContent = '运行中 · 实时输出';
+				// 实时输出区：先渲染已累计缓存（卡片可能因 tool_args 到达而重建），
+				// 再订阅增量 chunk 就地追加并自动滚底。
+				const liveOut = getTerminalLiveOutput(tc.id);
+				const livePre = append(innerBox, $('pre.terminal-live-output')) as HTMLPreElement;
+				livePre.textContent = liveOut;
+				const sub = onTerminalLiveOutput((e) => {
+					if (e.toolCallId !== tc.id) { return; }
+					livePre.textContent = (livePre.textContent ?? '') + e.chunk;
+					livePre.scrollTop = livePre.scrollHeight;
+				});
+				_liveTerminalSubs.set(tc.id, sub);
+				// 尚无任何输出时仅保留加载动画（不显示占位文本，避免误导）
+				if (!liveOut) {
+					const explain = append(innerBox, $('.terminal-explain-row.running'));
+					append(explain, $('span.codicon.codicon-loading', { style: 'animation:spin 1s linear infinite' }));
+				}
 			} else if (tc.result) {
+				// 运行结束：清理直播订阅与缓存
+				_disposeLiveTerminalSub(tc.id);
+				clearTerminalLiveOutput(tc.id);
 				// 完整命令块（展开后可见，反引号换行不丢）
 				if (commandText) {
 					const cmdBlock = append(innerBox, $('.terminal-cmd-block'));

@@ -12,6 +12,7 @@ import {
 } from "../../../../workbench/contrib/webview/browser/webview.js";
 import { asWebviewUri } from "../../../../workbench/contrib/webview/common/webview.js";
 import { IMainProcessService } from "../../../../platform/ipc/common/mainProcessService.js";
+import { IQuickInputService } from "../../../../platform/quickinput/common/quickInput.js";
 import { MEDIA_STORE_CHANNEL, type IMediaBackend, type MediaImportRequest, type MediaListFilter } from "../common/mediaStoreChannel.js";
 import { createMediaStoreProxy } from "./mediaStoreProxy.js";
 import { IInstantiationService } from "../../../../platform/instantiation/common/instantiation.js";
@@ -171,6 +172,15 @@ export class AgentStudioWebviewController extends Disposable {
 	/** Layout-sync callback — set only when the pool hot path is used. */
 	private _poolSyncLayout: (() => void) | undefined;
 
+	/**
+	 * The absolutely-positioned pool container holding this controller's webview
+	 * iframe. Kept on `document.body` so the iframe is never re-parented (which
+	 * would destroy its state). We set `inert` on it while a host QuickInput
+	 * (command palette) is open so keyboard/focus cannot be trapped inside the
+	 * cross-document iframe and the palette stays usable.
+	 */
+	private _poolContainer: HTMLElement | undefined;
+
 	/** Pending tool approval requests: toolCallId → resolve function */
 	private readonly _pendingToolApprovals = new Map<string, { resolve: (decision: ToolApprovalDecision) => void }>();
 
@@ -249,6 +259,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@IAgentStudioWebviewPool private readonly webviewPool: IAgentStudioWebviewPool,
 		@IMainProcessService private readonly mainProcessService: IMainProcessService,
+		@IQuickInputService private readonly quickInputService: IQuickInputService,
 	) {
 		super();
 
@@ -512,6 +523,12 @@ export class AgentStudioWebviewController extends Disposable {
 			this._webview = pooled.webview;
 			this._register(this._webview);
 
+			// Keep keyboard focus out of the cross-document webview iframe while a
+			// host QuickInput (command palette / Ctrl+Shift+P) is open. Without this
+			// the iframe keeps focus and the palette appears "blocked" by the canvas.
+			this._register(this.quickInputService.onShow(() => this._poolContainer?.setAttribute('inert', '')));
+			this._register(this.quickInputService.onHide(() => this._poolContainer?.removeAttribute('inert')));
+
 			// ── DIAGNOSTIC LOG: hot path initialData ──
 			this.logService.info(`[AS-DIAG] HOT PATH — panelType=${this.panelType}, initialData type=${typeof this.initialData}, value=${JSON.stringify(this.initialData)?.substring(0, 500)}`);
 
@@ -523,6 +540,7 @@ export class AgentStudioWebviewController extends Disposable {
 			// parts like the sidebar/panel which use higher z-indexes) and clip
 			// the iframe so it can never bleed outside its mirrored rect.
 			const poolContainer = pooled.container;
+			this._poolContainer = poolContainer;
 			poolContainer.style.position = 'absolute';
 			poolContainer.style.overflow = 'hidden';
 			poolContainer.style.zIndex = '1';
@@ -3059,16 +3077,21 @@ export class AgentStudioWebviewController extends Disposable {
 				case 'allow_once':
 					decision = ToolApprovalDecision.AllowOnce;
 					break;
+				case 'allow_session':
+					decision = ToolApprovalDecision.AllowSession;
+					break;
+				case 'allow_workspace':
+					decision = ToolApprovalDecision.AllowWorkspace;
+					break;
 				case 'allow_always':
 					decision = ToolApprovalDecision.AllowAlways;
 					break;
-				case 'deny':
-					decision = ToolApprovalDecision.Deny;
+				case 'deny_always':
+					decision = ToolApprovalDecision.DenyAlways;
 					break;
-				case 'allow_session':
-				case 'allow_workspace':
-					// Treat as AllowOnce for now (frontend concepts)
-					decision = ToolApprovalDecision.AllowOnce;
+				case 'deny':
+				case 'reject':
+					decision = ToolApprovalDecision.Deny;
 					break;
 				default:
 					decision = ToolApprovalDecision.Deny;

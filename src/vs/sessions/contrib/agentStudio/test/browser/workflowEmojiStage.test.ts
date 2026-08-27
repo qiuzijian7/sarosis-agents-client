@@ -26,7 +26,7 @@ function makeStore(): MediaSnapshotStore {
 	const map = new Map<string, unknown>();
 	return new MediaSnapshotStore({
 		async save(key, data) { map.set(key, data); return key; },
-		async load(key) { return map.get(key) ?? null; },
+		async load(key): Promise<string | Blob | null> { return (map.get(key) as string | Blob | undefined) ?? null; },
 		async remove(key) { map.delete(key); },
 	});
 }
@@ -81,12 +81,6 @@ function baseInput(store: MediaSnapshotStore, runner: IComfyRunner, overrides: R
 		store,
 		...rest,
 	};
-}
-
-/** 从 mock 捕获的 prompt 里取某节点的 class_type。 */
-function classTypeOf(prompt: unknown, nodeId: string): string | undefined {
-	const n = (prompt as Record<string, { class_type?: string }>)?.[nodeId];
-	return n?.class_type;
 }
 
 /** 从 mock 捕获的 prompt 里取某节点的 input。 */

@@ -189,6 +189,11 @@ export interface ICodebaseGraphService {
 	saveGraph(targetPath: string): Promise<void>;
 	loadGraph(sourcePath: string): Promise<boolean>;
 	/**
+	 * 强制落盘所有待发的延迟保存（增量索引的落盘是延迟合并的，见 SAVE_DEBOUNCE_MS）。
+	 * 供窗口关闭前 / 显式"保存图谱"等场景调用，避免延迟窗口内的索引结果丢失。
+	 */
+	flushPendingSave(): Promise<void>;
+	/**
 	 * 合并加载：把 sourcePath 的图【追加】到当前内存 store（不清空），用于多 folder 工作区。
 	 * @param projectOverride 覆盖加载数据的项目名（每 folder 唯一，如 "UE5EA"）
 	 * @param rebuildBM25 合并完成后是否重建 BM25（多 folder 建议全部合并后仅最后一次重建）
@@ -414,6 +419,28 @@ const DEFAULT_EXCLUDE_DIRS = COMMON_EXCLUDE_DIRS;
 const MAX_FILE_SIZE = 1024 * 1024; // 1 MB
 const MAX_LINE_LENGTH = 10000;   // 超过此行长的文件跳过（minified/生成代码会导致 tree-sitter 挂起）
 
+/**
+ * 增量索引落盘的延迟合并窗口（ms）。
+ *
+ * 落盘是**全图**序列化 + gzip（12.4w 节点），与变更集大小无关。增量索引每轮都落盘的话，
+ * 连续保存 N 个文件就是 N 次全量压缩（配合 watcher 5~60s 轮询会持续触发）。
+ * 延迟窗口内的多次索引结果合并为一次落盘。
+ *
+ * 取值权衡：太小（<5s）合并不充分；太大则崩溃时丢失的索引进度更多（图可重建，
+ * 仅是重索引耗时）。30s 对齐 watcher 平均轮询间隔量级，且制品写的是 slim 档，
+ * 丢失的最坏后果是下次启动重新索引，不丢用户数据。
+ */
+const SAVE_DEBOUNCE_MS = 30000;
+
+/**
+ * 延迟落盘的**最长等待**上限（ms）。
+ *
+ * 纯 debounce 有饥饿问题：持续保存文件时每次都重置窗口，落盘被无限推迟，
+ * 制品长期停在旧版本（崩溃即丢失全部近期索引结果）。
+ * 首个待发请求超过本上限时，不再等待，立即落盘。
+ */
+const SAVE_MAX_DEFER_MS = 120000;
+
 // ─── GraphStore (legacy compatibility wrapper) ─────────────────────────────
 
 class GraphStore {
@@ -587,9 +614,11 @@ class GraphStore {
 			await new Promise<void>(resolve => setTimeout(resolve, 0));
 		}
 
-		// 批量重建 BM25 索引
+		// 批量重建 BM25 索引。
+		// force=true：本路径是加载/合并且 defer 期间无脏集累积，增量模式会因脏集为空
+		// 直接返回，导致 BM25 静默为空（search_graph 无结果）。
 		this._store.setDeferBM25(false);
-		await this._store.rebuildBM25();
+		await this._store.rebuildBM25(undefined, true);
 	}
 
 	// 合并加载（loadGraphMerge）后，节点按真实项目名（如 S1Game/UE5EA）存储，
@@ -710,6 +739,23 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	// ─── Watcher / Incremental Indexing (P2-#8) ───────────────────────────
 	private _incrementalIndexer: CodebaseGraphIncrementalIndexer | undefined;
 	private _watchRootPath = '';
+
+	// ─── 延迟合并落盘（2026-08-27）────────────────────────────────────────
+	/**
+	 * 待落盘的保存请求：归一化 rootPath → { project, timer }。
+	 *
+	 * 背景：`_saveGraph` 是**全图**序列化 + gzip（12.4w 节点），与改了几个文件无关，
+	 * 是增量索引卡顿的最大单点。增量索引每轮都调用它 → 每次保存文件都全量压缩一次。
+	 * 此处把落盘延迟 SAVE_DEBOUNCE_MS，期间到达的新请求合并（覆盖同 root 的待发请求），
+	 * 静默期结束只落盘一次。全量索引用 `_saveGraph` 立即落盘（不走延迟）。
+	 *
+	 * 数据安全：`dispose()` 与 `flushPendingSave()` 会强制落盘未完成的请求。
+	 */
+	// 注意：key 是归一化 rootPath（用于同 root 去重），value 里必须保留**原始** rootPath——
+	// 归一化会转小写并把 \ 换成 /，直接拿 key 去落盘在 Windows 上会写到错误路径。
+	private _pendingSaves = new Map<string, { rootPath: string; project?: string; timer: any; firstRequestedAt: number }>();
+	/** 正在执行的落盘 Promise（防止并发落盘同一制品）。 */
+	private _savingGraph: Promise<void> = Promise.resolve();
 
 	// ─── MinHash Clone Detection (P2-#7) ──────────────────────────────────
 	private _minHasher: MinHash | undefined;
@@ -1017,7 +1063,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		}
 
 		store.setDeferBM25(false);
-		await store.rebuildBM25();
+		// force=true：加载路径无脏集，增量模式会空转使 BM25 为空
+		await store.rebuildBM25(undefined, true);
 
 		const dur = Date.now() - tStart;
 		this._logService.info('[CodebaseGraph]', `_loadGraphFromSqlite: ${nodes.length} nodes + edges loaded (${projectsToLoad.length} projects) in ${dur}ms`);
@@ -1882,12 +1929,13 @@ self.onmessage = async function(e) {
 		this._graph.store.setDeferBM25(false);
 		this._onDidIndexProgress.fire(`📝 构建 BM25 索引 (${nodesExtracted} 节点)...`);
 		await new Promise<void>(resolve => setTimeout(resolve, 0));
-		// 时间切片重建（async，内部每 5000 节点 yield，避免大图冻结 UI）
+		// 时间切片重建（async，内部每 1000 节点 yield，避免大图冻结 UI）。
+		// force=true：全量索引是整图从零构建，按全图口径重建（进度分母也才是全图节点数）
 		await this._graph.store.rebuildBM25((done, total) => {
 			if (done % 50000 === 0 || done === total) {
 				this._onDidIndexProgress.fire(`📝 BM25 索引: ${done}/${total}...`);
 			}
-		});
+		}, true);
 
 			// 3. Match calls to definitions
 			this._onDidIndexProgress.fire('🔗 匹配调用关系...');
@@ -1907,7 +1955,7 @@ self.onmessage = async function(e) {
 
 			// 4. Similarity (MinHash 代码克隆检测) — 始终运行（签名已预计算，成本低）
 			this._onDidIndexProgress.fire('🔁 代码克隆检测 (MinHash)...');
-			const similarEdges = this._runSimilarityPass();
+			const similarEdges = await this._runSimilarityPass();
 			edgesExtracted += similarEdges;
 
 			// 5. Extended passes (skip in fast mode to save time)
@@ -1986,7 +2034,15 @@ self.onmessage = async function(e) {
 			}
 
 			// 8. Save graph to {rootPath}/.codebase-memory/graph.db.zst（仅本 folder 子图）
-			await this._saveGraph(rootPath, this._projectName);
+			// 先取消该 root 的待发延迟落盘：全量索引即将写一份完整快照，
+			// 若延迟任务稍后 firing 会重复写同一制品（且内容更旧或更新，竞态）。
+			this._cancelPendingSave(rootPath);
+			// 串行化：等待任何正在跑的落盘结束，避免两个 save 同时写同一个 .tmp 制品
+			this._savingGraph = this._savingGraph.then(
+				() => this._saveGraph(rootPath, this._projectName),
+				() => this._saveGraph(rootPath, this._projectName),
+			);
+			await this._savingGraph;
 
 			// Phase 2b：将完整图数据同步到主进程 SQLite（默认开启；仅显式 false 关闭）。
 			// 所有模式（含 fast）都全量同步——保证 sqlite 库始终有最新完整图数据，搜索走 FTS5；
@@ -2241,16 +2297,21 @@ self.onmessage = async function(e) {
 				} catch (err: any) {
 					this._logService.debug('[CodebaseGraph]', `Incremental parse failed ${abs}: ${err?.message || err}`);
 				}
-				if (i > 0 && i % 50 === 0) { await new Promise<void>(r => setTimeout(r, 0)); }
-			}
+				// 每个文件后让出主线程（旧值 i%50：改动 <50 个文件时**一次都不让出**，
+				// tree-sitter 解析 + 节点写入整段独占主线程，是"改 1 个文件也卡"的直接原因）。
+				// setTimeout(0) 单次开销极小（微秒级），相对每文件毫秒级的 tree-sitter 解析可忽略。
+				await new Promise<void>(r => setTimeout(r, 0));
+				}
 			this._graph.store.setDeferBM25(false);
+			// 增量模式（force=false）：只刷新 defer 期间累积的脏集（本次变更的节点），
+			// 而非 clear() + 遍历全图 12.4w 节点——这是增量索引卡顿的最大单点之一。
 			await this._graph.store.rebuildBM25();
 			this._graph.store.checkpoint();
 
 			// 增量克隆检测：只对本次重解析的新节点做「新节点 vs 全量」配对（insertEdge
 			// 按端点去重，天然幂等）。旧实现 `_runSimilarityPass()` 无参全量扫 12.4w 节点
 			// 做 MinHash/LSH，是同步无 yield 的重活——单文件保存也卡死 renderer 数秒。
-			const similarEdges = this._runSimilarityPass(newOrChangedNodeIds);
+			const similarEdges = await this._runSimilarityPass(newOrChangedNodeIds);
 
 			// 增量继承边匹配（暂存的 inherits:/implements: 虚拟边 → 真实 INHERITS/IMPLEMENTS 边）
 			const matchedInherits = await this._matchInheritsToDefinitions();
@@ -2260,7 +2321,9 @@ self.onmessage = async function(e) {
 			const matchedUsage = await this._matchUsageEdgesToDefinitions();
 			edgesExtracted += matchedUsage;
 
-			await this._saveGraph(rootPath, project);
+			// 延迟合并落盘：全图序列化 + gzip 是本流程最大单点（与变更集大小无关）。
+			// 连续保存时多次索引结果合并为一次落盘；dispose/显式刷新会强制落盘。
+			this._scheduleSaveGraph(rootPath, project);
 
 			// Phase 2b 增量补丁：仅同步变更文件到 sqlite（不触发全量重建）
 			if (this._sqliteBackendEnabled) {
@@ -2269,7 +2332,7 @@ self.onmessage = async function(e) {
 			}
 
 			const duration = Math.round((Date.now() - startTime) / 1000);
-			const message = `增量索引完成: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} (${nodesExtracted} 节点, ${edgesExtracted} 边, ${similarEdges} 克隆边, ${duration}s)`;
+			const message = `增量索引完成: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} (${nodesExtracted} 节点, ${edgesExtracted} 边, ${similarEdges} 克隆边, ${duration}s, 落盘已排队)`;
 			this._onDidIndexProgress.fire(`✓ ${message}`);
 			const result: IIndexResult = {
 				success: true,
@@ -2289,6 +2352,86 @@ self.onmessage = async function(e) {
 			this._indexCts = undefined;
 			releaseLock();
 		}
+	}
+
+	/**
+	 * 延迟合并落盘（增量索引用）。
+	 *
+	 * 与 watcher 去抖（CHANGE_DEBOUNCE_MS）分处两层、互补：
+	 *   - watcher 去抖：合并「变更事件」→ 减少增量索引**次数**
+	 *   - 本方法：合并「索引结果」→ 减少全图落盘**次数**
+	 * 连续保存文件时，即便索引只跑一次，其后若又触发新索引，落盘仍可再合并。
+	 *
+	 * 全量索引不走这里（用 _saveGraph 立即落盘）：全量是用户显式触发的重活，
+	 * 且结果必须尽快持久化。
+	 */
+	private _scheduleSaveGraph(rootPath: string, project?: string): void {
+		const key = this._normalizeRoot(rootPath);
+		const pending = this._pendingSaves.get(key);
+		const now = Date.now();
+
+		// 饥饿保护：持续有变更时每次都重置窗口会让落盘无限推迟。
+		// 距首次请求已超过 SAVE_MAX_DEFER_MS → 不再等待，立即落盘。
+		if (pending && (now - pending.firstRequestedAt) >= SAVE_MAX_DEFER_MS) {
+			clearTimeout(pending.timer);
+			this._pendingSaves.delete(key);
+			this._savingGraph = this._savingGraph.then(
+				() => this._saveGraph(rootPath, project),
+				() => this._saveGraph(rootPath, project),
+			);
+			return;
+		}
+
+		if (pending) {
+			clearTimeout(pending.timer);
+		}
+		// 同 root 的后到请求覆盖先到（保存的是 store 当前快照，参数以最新为准）；
+		// 首次请求时间沿用最早的，保证饥饿保护基于「第一个待发请求」计时。
+		const firstRequestedAt = pending?.firstRequestedAt ?? now;
+		// 剩余窗口：不超过上限
+		const remaining = Math.max(0, SAVE_MAX_DEFER_MS - (now - firstRequestedAt));
+		const delay = Math.min(SAVE_DEBOUNCE_MS, remaining);
+		const timer = setTimeout(() => {
+			this._pendingSaves.delete(key);
+			this._savingGraph = this._savingGraph.then(
+				() => this._saveGraph(rootPath, project),
+				() => this._saveGraph(rootPath, project),
+			);
+		}, delay);
+		this._pendingSaves.set(key, { rootPath, project, timer, firstRequestedAt });
+	}
+
+	/** 取消某个 root 的待发延迟落盘（全量索引即将写完整快照时用）。 */
+	private _cancelPendingSave(rootPath: string): void {
+		const key = this._normalizeRoot(rootPath);
+		const pending = this._pendingSaves.get(key);
+		if (pending) {
+			clearTimeout(pending.timer);
+			this._pendingSaves.delete(key);
+		}
+	}
+
+	/**
+	 * 强制落盘所有待发的延迟保存（dispose / 显式刷新 / 关键路径前调用）。
+	 * 并发安全：串行等待正在执行的落盘，避免两个 save 同时写同一个 .tmp 制品。
+	 */
+	async flushPendingSave(): Promise<void> {
+		const pendingList = [...this._pendingSaves.values()];
+		if (pendingList.length === 0) {
+			await this._savingGraph; // 仍要等已在跑的落盘完成
+			return;
+		}
+		// 清 timer 时用归一化 key；落盘时用 value.rootPath（原始路径，Windows 盘符/大小写安全）
+		for (const [key, pending] of [...this._pendingSaves.entries()]) {
+			clearTimeout(pending.timer);
+			this._pendingSaves.delete(key);
+			const rootPath = pending.rootPath;
+			this._savingGraph = this._savingGraph.then(
+				() => this._saveGraph(rootPath, pending.project),
+				() => this._saveGraph(rootPath, pending.project),
+			);
+		}
+		await this._savingGraph;
 	}
 
 	/**
@@ -3363,15 +3506,16 @@ self.onmessage = async function(e) {
 	 *       全量自配对。不传时走全量检测（首次/手动重建）。旧实现增量时也无参全量
 	 *       重扫 12.4w 节点，是单文件保存卡死 renderer 的主因（日志 1787282021811）。
 	 */
-	private _runSimilarityPass(onlyNodeIds?: Set<number>): number {
+	private async _runSimilarityPass(onlyNodeIds?: Set<number>): Promise<number> {
 		let edgesAdded = 0;
 		const store = this._graph.store;
 		const project = this._projectName;
 
 		try {
 			const allNodes = store.getAllNodes().filter(n => n.project === project);
+			// 增量版为 async（内部对全量 LSH 建桶做时间切片，避免独占主线程）
 			const similarEdges = onlyNodeIds && onlyNodeIds.size > 0
-				? detectSimilarCodeIncremental(onlyNodeIds, allNodes, store, 0.7)
+				? await detectSimilarCodeIncremental(onlyNodeIds, allNodes, store, 0.7)
 				: detectSimilarCode(allNodes, store, 0.7);
 			for (const edge of similarEdges) {
 				const srcNode = store.findNodeByQN(project, edge.sourceQN);
@@ -5128,7 +5272,8 @@ self.onmessage = async function(e) {
 			try {
 				const loaded = await persistence.loadMerge(this._graph.store, p, projectOverride);
 				if (loaded) {
-					if (rebuildBM25) { await this._graph.store.rebuildBM25(); }
+					// force=true：合并加载无脏集，增量模式会空转
+				if (rebuildBM25) { await this._graph.store.rebuildBM25(undefined, true); }
 					// 从文件路径推导 rootPath 并注册到 _rootProjectMap（多 folder 项目名解析）
 					const graphDirIdx = p.lastIndexOf('/.codebase-memory/') >= 0 ? p.lastIndexOf('/.codebase-memory/')
 						: p.lastIndexOf('\\.codebase-memory\\');
@@ -5215,6 +5360,12 @@ self.onmessage = async function(e) {
 
 	override dispose(): void {
 		this._disposeWorkers();
+		// 强制落盘延迟窗口内未完成的保存：否则窗口内的索引结果丢失，
+		// 下次启动会加载旧制品（最坏后果是重新索引，但能避免就避免）。
+		// dispose 是同步的，落盘是异步——fire-and-forget（进程退出前尽量完成）。
+		void this.flushPendingSave().catch(err => {
+			this._logService.warn('[CodebaseGraph]', `Flush pending graph save on dispose failed: ${err?.message || err}`);
+		});
 		super.dispose();
 	}
 }

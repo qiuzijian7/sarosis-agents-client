@@ -11,6 +11,7 @@ import {
 	ADAPTIVE_FIRST_TOKEN_STEP_TOKENS,
 	ADAPTIVE_FIRST_TOKEN_STEP_MS,
 	ADAPTIVE_FIRST_TOKEN_CAP_MS,
+	ADAPTIVE_FIRST_TOKEN_FLOOR_MS,
 } from '../../common/resilience.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
@@ -135,17 +136,28 @@ suite('Resilience - withStreamTimeout (P0b)', () => {
 
 suite('computeAdaptiveFirstTokenTimeout', () => {
 	const BASE = 45_000;
+	const FLOOR = Math.max(BASE, ADAPTIVE_FIRST_TOKEN_FLOOR_MS);
 
-	test('at or below threshold returns base unchanged', () => {
-		assert.strictEqual(computeAdaptiveFirstTokenTimeout(0, BASE), BASE);
-		assert.strictEqual(computeAdaptiveFirstTokenTimeout(8_000, BASE), BASE);
-		assert.strictEqual(computeAdaptiveFirstTokenTimeout(ADAPTIVE_FIRST_TOKEN_THRESHOLD, BASE), BASE);
+	test('at or below threshold returns cold-start floor (not base)', () => {
+		// 冷启动地板优先于 base：即使小 prompt 也至少等满地板宽限，
+		// 避免网关实例冷启动（TTFT 与 prompt 大小无关）被误杀。
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(0, BASE), FLOOR);
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(8_000, BASE), FLOOR);
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(ADAPTIVE_FIRST_TOKEN_THRESHOLD, BASE), FLOOR);
 	});
 
-	test('non-finite / negative input returns base unchanged', () => {
-		assert.strictEqual(computeAdaptiveFirstTokenTimeout(NaN, BASE), BASE);
-		assert.strictEqual(computeAdaptiveFirstTokenTimeout(-1, BASE), BASE);
-		assert.strictEqual(computeAdaptiveFirstTokenTimeout(Infinity, BASE), BASE);
+	test('non-finite / negative input returns cold-start floor', () => {
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(NaN, BASE), FLOOR);
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(-1, BASE), FLOOR);
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(Infinity, BASE), FLOOR);
+	});
+
+	test('cold-start floor covers gateway-instance cold start (incident 1787759336456)', () => {
+		// 实测 hy3-ioa 小 prompt(≈20k) 网关实例冷启动 TTFT=86s 被 60s 预算误杀，
+		// 流最终在 86s 正常返回 tool_call。地板 90s 必须 > 86s。
+		const budget = computeAdaptiveFirstTokenTimeout(19_891, BASE);
+		assert.ok(budget >= ADAPTIVE_FIRST_TOKEN_FLOOR_MS, `预算 ${budget} 应不低于地板 ${ADAPTIVE_FIRST_TOKEN_FLOOR_MS}`);
+		assert.ok(budget > 86_000, `预算 ${budget}ms 应大于事故 TTFT 86s`);
 	});
 
 	test('grows in steps above threshold', () => {

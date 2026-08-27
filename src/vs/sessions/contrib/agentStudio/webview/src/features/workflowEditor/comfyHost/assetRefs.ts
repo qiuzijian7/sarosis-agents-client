@@ -67,15 +67,32 @@ interface NodeLike { properties?: Record<string, unknown> }
 
 /** 从 node.properties 读回引用列表（脏数据静默丢弃）。 */
 export function readAssetRefs(node: unknown): AssetRef[] {
-	const raw = (node as NodeLike | null)?.properties?.[ASSET_REFS_PROP];
-	if (!Array.isArray(raw)) { return []; }
+	return parseAssetRefs((node as NodeLike | null)?.properties?.[ASSET_REFS_PROP]);
+}
+
+/**
+ * 从任意「可能是 JSON 字符串 / 数组 / 其他」的存储值解析出引用列表。
+ *
+ * 三个调用方都需要同一套脏数据清洗（AssetReferences UI、`applyAssetRefOverrides`
+ * 覆盖注入、`injectAssetRefs` workflow 注入），此前各自内联一份导致规则漂移。
+ * 非法条目静默丢弃；`slot` 非法时回退 0（与覆盖注入的历史行为一致）。
+ *
+ * @param raw `values[ASSET_REFS_PROP]` 或 `node.properties[ASSET_REFS_PROP]` 的原始值。
+ */
+export function parseAssetRefs(raw: unknown): AssetRef[] {
+	let list: unknown = raw;
+	if (typeof raw === 'string') {
+		if (!raw.trim()) { return []; }
+		try { list = JSON.parse(raw); } catch { return []; }
+	}
+	if (!Array.isArray(list)) { return []; }
+
 	const out: AssetRef[] = [];
-	for (const item of raw) {
+	for (const item of list) {
 		const rec = item as Partial<AssetRef> | null;
 		const ref = typeof rec?.ref === 'string' ? rec.ref : '';
 		if (!ref) { continue; }
-		const slot = typeof rec?.slot === 'number' && Number.isInteger(rec.slot) ? rec.slot : NaN;
-		if (!Number.isInteger(slot) || slot < 0) { continue; }
+		const slot = typeof rec?.slot === 'number' && Number.isInteger(rec?.slot) && rec.slot >= 0 ? rec.slot : 0;
 		const type = rec?.type === 'video' || rec?.type === 'audio' ? rec.type : undefined;
 		const label = typeof rec?.label === 'string' && rec.label ? rec.label : undefined;
 		out.push({ ref, slot, ...(type ? { type } : {}), ...(label ? { label } : {}) });
@@ -179,52 +196,10 @@ export function warningText(w: RefSlotWarning): string {
 }
 
 /* ------------------------------------------------------------------ *
- * 注入执行入参（对齐 ComfyTV injectAssetRefs）
+ * 注入执行入参
+ * ------------------------------------------------------------------ *
+ * 注：原 `injectAssetRefs()`（写 `images.image{N}` 等 slot 键）已删除：
+ * 零调用点，且与活跃路径（applyAssetRefOverrides）规则已漂移。本项目的执行侧
+ * 不按 slot 维度注入，而是按媒体 kind 覆盖到 upstreamValues。
+ * 如需恢复 slot 注入，请基于统一的 `parseAssetRefs()` 重新实现。
  * ------------------------------------------------------------------ */
-
-/**
- * 把引用写进 workflow 执行入参（`images.image{N}` 等），返回警告文案。
- * 同 slot 后者覆盖前者；已有连线的 slot 被 pin 覆盖（与 ComfyTV 一致）。
- */
-export function injectAssetRefs(inputs: Record<string, unknown>, refs: AssetRef[]): string[] {
-	if (refs.length === 0) { return []; }
-
-	const wiredOf = (re: RegExp): Set<number> => {
-		const out = new Set<number>();
-		for (const key of Object.keys(inputs)) {
-			const m = re.exec(key);
-			if (m) { out.add(Number(m[1])); }
-		}
-		return out;
-	};
-	const wired: Record<AssetRefType, Set<number>> = {
-		image: wiredOf(AUTOGROW_IMAGE_KEY_RE),
-		video: wiredOf(AUTOGROW_VIDEO_KEY_RE),
-		audio: new Set<number>([...wiredOf(AUTOGROW_AUDIO_KEY_RE), ...('audio' in inputs ? [0] : [])]),
-	};
-
-	const warnings: string[] = [];
-	const seen: Record<AssetRefType, Set<number>> = { image: new Set(), video: new Set(), audio: new Set() };
-	for (const r of refs) {
-		const t = refType(r);
-		if (seen[t].has(r.slot)) {
-			warnings.push(warningText({ kind: 'duplicate', slot: r.slot }));
-		} else if (wired[t].has(r.slot)) {
-			warnings.push(warningText({ kind: 'override', slot: r.slot }));
-		}
-		seen[t].add(r.slot);
-	}
-
-	for (const r of refs) {
-		const t = refType(r);
-		if (t === 'video') {
-			inputs[`videos.video${r.slot}`] = r.ref;
-		} else if (t === 'audio') {
-			if ('audio' in inputs) { inputs['audio'] = r.ref; }
-			else { inputs[`audio.audio${r.slot}`] = r.ref; }
-		} else {
-			inputs[`images.image${r.slot}`] = r.ref;
-		}
-	}
-	return warnings;
-}

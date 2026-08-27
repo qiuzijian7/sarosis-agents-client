@@ -172,15 +172,15 @@ export class NativeChatEditorInput extends EditorInput {
 	 * new group (creating a new EditorPane), setInput can restore the agent
 	 * from the input's persisted state.
 	 *
-	 * @param agentName Agent display name (becomes tab label)
+	 * @param agentName Agent display name (used as fallback when no session name)
 	 * @param agentId Agent ID
 	 * @param sessionId Optional session ID to persist (for drag-to-new-group restore)
+	 * @param sessionName When present, becomes the tab label verbatim (no concatenation)
 	 */
 	setAgentInfo(agentName: string, agentId: string, sessionId?: string | null, sessionName?: string): void {
 		let changed = false;
-		const displayName = (sessionId && sessionName)
-			? `${agentName} (${sessionName})`
-			: agentName;
+		// 页签只显示 session 名，不做任何拼接。
+		const displayName = sessionName ?? agentName;
 		if (this._name !== displayName) {
 			this._name = displayName;
 			changed = true;

@@ -761,8 +761,9 @@ export const WorkflowEditorPanel: React.FC = () => {
 
 	// ── Direct stage run 桥（存储工作流 ComfyStage → 画布，按 stageClass + values 直跑）──
 	// 存储工作流 DAG（browser 侧）的 ComfyStage 节点没有画布 stageUid，只有 stageClass
-	// （如 `ComfyTV.EmojiStage`）。此 runner 按 stageClass 直接调 runNodeOrStage（与
-	// runSingleSchemaNode 同一执行器），把 m×n 表情包等媒体节点真正跑起来，并回传
+	// （如 `ComfyTV.StatEmojiStage` / `ComfyTV.DynEmojiStage`）。此 runner 按 stageClass
+	// 直接调 runNodeOrStage（与 runSingleSchemaNode 同一执行器），把表情包等媒体节点
+	// 真正跑起来，并回传
 	// outputs + snapshot 媒体引用给 browser → 聊天卡渲染。
 	const runStageByClass = useCallback(async (
 		stageClass: string,
