@@ -551,6 +551,8 @@ export const DEFAULT_REASONING_ONLY_RETRY_LIMIT = 2;
 export const DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT = 2;
 /** 输出被截断（length）续跑次数上限 */
 export const DEFAULT_LENGTH_TRUNCATED_RETRY_LIMIT = 2;
+/** 工具调用在协议层丢失（finish_reason=tool_calls 但 0 tool call）续跑次数上限 */
+export const DEFAULT_TOOL_CALL_LOST_RETRY_LIMIT = 2;
 
 /**
  * 恢复阶梯：根据 kind + attempt 返回第1次(soft remind)或第2次(final chance)的注入文本。
@@ -676,8 +678,13 @@ export function isContextOverflowError(error: unknown): boolean {
 	return false;
 }
 
-/** 未完成轮分类结果。对齐 MiMo StepClassification + classifyAssistantStep。 */
-export type IncompleteTurnKind = 'complete' | 'length' | 'reasoning-only' | 'empty' | 'filtered' | 'failed';
+/** 未完成轮分类结果。对齐 MiMo StepClassification + classifyAssistantStep。
+ *
+ * `tool-call-lost`（2026-08-28 新增）：协议异常——provider 上报 finish_reason=
+ * 'tool_calls'（模型声明已发出工具调用），但本轮实际未收到任何 tool call。
+ * 典型成因见 extensions/codebuddy-provider 的 delta.content 提前 return 遮蔽同帧
+ * tool_calls（日志 1787882646767）。此时模型意图未完成，必须续跑而非判 complete。 */
+export type IncompleteTurnKind = 'complete' | 'length' | 'tool-call-lost' | 'reasoning-only' | 'empty' | 'filtered' | 'failed';
 
 export interface ClassifyIncompleteTurnParams {
 	/** provider 本轮结束原因（finish_reason / stop_reason），可能缺省 */
@@ -697,6 +704,15 @@ export interface ClassifyIncompleteTurnParams {
  */
 export function classifyIncompleteTurn(params: ClassifyIncompleteTurnParams): IncompleteTurnKind {
 	if (params.hasToolCalls) { return 'complete'; }
+	// ── 协议一致性检查（2026-08-28，日志 1787882646767）──────────────────
+	// finish_reason='tool_calls' 是模型「已发出工具调用」的权威声明。若此时
+	// 一个 tool call 都没收到，说明工具调用在 provider→renderer 映射中丢失
+	// （而非模型真的只想说话）。必须**先于** hasVisibleText 判定：此类轮次
+	// 恰恰伴随「我来看一下/让我确认」这类意图文本（模型边说边发），若被
+	// hasVisibleText 短路成 complete，agent loop 就会在任务中途静默结束。
+	if (params.finishReason === 'tool_calls' && !params.hasToolCalls) {
+		return 'tool-call-lost';
+	}
 	if (params.hasVisibleText) { return 'complete'; }
 	const fr = params.finishReason;
 	if (fr === 'content_filter' || fr === 'content-filter') { return 'filtered'; }
@@ -717,6 +733,9 @@ export function resolveIncompleteTurnRetryInstruction(kind: IncompleteTurnKind, 
 		case 'length': return resolveRecoveryInstruction('length', attempt ?? 1);
 		case 'reasoning-only': return resolveRecoveryInstruction('reasoning-only', attempt ?? 1);
 		case 'empty': return resolveRecoveryInstruction('empty', attempt ?? 1);
+		// 工具调用丢失：模型声明要调工具但一个都没送达 → 语义等同「未推进」，
+		// 复用 empty 阶梯（要求立刻给出工具调用或可见结论）。
+		case 'tool-call-lost': return resolveRecoveryInstruction('empty', attempt ?? 1);
 		case 'filtered': case 'failed': return null;
 		default: return null;
 	}
@@ -736,6 +755,7 @@ export function incompleteTurnRetryLimit(kind: IncompleteTurnKind): number {
 		case 'reasoning-only': return DEFAULT_REASONING_ONLY_RETRY_LIMIT;
 		case 'empty': return DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT;
 		case 'length': return DEFAULT_LENGTH_TRUNCATED_RETRY_LIMIT;
+		case 'tool-call-lost': return DEFAULT_TOOL_CALL_LOST_RETRY_LIMIT;
 		default: return 0;
 	}
 }

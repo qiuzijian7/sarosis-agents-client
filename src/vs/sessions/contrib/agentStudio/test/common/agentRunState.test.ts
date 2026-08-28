@@ -26,6 +26,7 @@ import {
 	incompleteTurnRetryLimit,
 	incompleteTurnDiscardReason,
 	resolveRecoveryInstruction,
+	DEFAULT_TOOL_CALL_LOST_RETRY_LIMIT,
 	isTransientStreamError,
 	snapshotRunState,
 	restoreRunState,
@@ -283,6 +284,33 @@ suite('AgentRunState - reducer (reducer 化 Step 1)', () => {
 				classifyIncompleteTurn({ finishReason: 'error', hasVisibleText: false, hasThinking: false, hasToolCalls: false }),
 				'failed',
 			);
+		});
+
+			// ─── 2026-08-28：finish_reason=tool_calls 但 0 tool call（协议层丢失）──
+		test('tool-call-lost when finish_reason=tool_calls but no tool calls arrived', () => {
+			// 日志 1787882646767：SSE 层 toolCallAccs=1，renderer 侧 toolCalls=0，
+			// 模型停在「我来看一下…」的意图句后中断。此前被 hasVisibleText 短路成
+			// 'complete'，导致 agent loop 静默结束。
+			assert.strictEqual(
+				classifyIncompleteTurn({ finishReason: 'tool_calls', hasVisibleText: true, hasThinking: false, hasToolCalls: false }),
+				'tool-call-lost',
+			);
+			// 即使无可见文本也应判 tool-call-lost（而非 empty）——finish_reason 是权威信号
+			assert.strictEqual(
+				classifyIncompleteTurn({ finishReason: 'tool_calls', hasVisibleText: false, hasThinking: false, hasToolCalls: false }),
+				'tool-call-lost',
+			);
+			// 有思考块同样优先判 tool-call-lost
+			assert.strictEqual(
+				classifyIncompleteTurn({ finishReason: 'tool_calls', hasVisibleText: false, hasThinking: true, hasToolCalls: false }),
+				'tool-call-lost',
+			);
+		});
+
+		test('tool-call-lost produces retry instruction and respects its own limit', () => {
+			assert.ok(resolveIncompleteTurnRetryInstruction('tool-call-lost', 1));
+			assert.strictEqual(incompleteTurnRetryLimit('tool-call-lost'), DEFAULT_TOOL_CALL_LOST_RETRY_LIMIT);
+			assert.strictEqual(incompleteTurnDiscardReason('tool-call-lost'), 'unfinished-intent');
 		});
 
 		test('		filtered and failed do NOT produce retry instructions', () => {

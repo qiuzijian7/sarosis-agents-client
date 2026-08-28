@@ -753,6 +753,8 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		let reasoningOnlyRetryAttempts = 0;
 		let emptyResponseRetryAttempts = 0;
 		let lengthTruncatedRetryAttempts = 0;
+		// 工具调用在协议层丢失（finish_reason=tool_calls 但 0 tool call）续跑计数器
+		let toolCallLostRetryAttempts = 0;
 		// 维度 3：瞬态错误（SSE 超时/网络/429/5xx）重试计数器，单次 turn 内累计
 		let transientErrorRetries = 0;
 		// 维度 4：首 token 超时（冷启动）有界重试计数器，单次 turn 内累计（预热优化，见下方 catch 分支）
@@ -3065,18 +3067,29 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				const used =
 					incompleteKind === 'reasoning-only' ? reasoningOnlyRetryAttempts
 						: incompleteKind === 'length' ? lengthTruncatedRetryAttempts
-							: emptyResponseRetryAttempts;
+							: incompleteKind === 'tool-call-lost' ? toolCallLostRetryAttempts
+								: emptyResponseRetryAttempts;
 				// 维度 2+4：按 attempt 获取升级阶梯指令（L1 soft remind / L2 final chance）
 				const retryInstruction = resolveIncompleteTurnRetryInstruction(incompleteKind, used + 1);
 				if (retryInstruction && incompleteKind !== 'complete') {
 					const limit = incompleteTurnRetryLimit(incompleteKind);
 					if (used < limit) {
-						if (incompleteKind === 'reasoning-only') { reasoningOnlyRetryAttempts++; }
+							if (incompleteKind === 'reasoning-only') { reasoningOnlyRetryAttempts++; }
 						else if (incompleteKind === 'length') { lengthTruncatedRetryAttempts++; }
+						else if (incompleteKind === 'tool-call-lost') { toolCallLostRetryAttempts++; }
 						else { emptyResponseRetryAttempts++; }
 						host._logService.warn(
 							`[AgentOS] Incomplete turn detected (kind=${incompleteKind}, finishReason=${lastFinishReason ?? 'n/a'}, attempt=${used + 1}/${limit}) — safe retry`,
 						);
+						if (incompleteKind === 'tool-call-lost') {
+							// 协议层缺陷信号：模型声明发了工具调用但一个都没送达。
+							// 单独打点便于统计发生率与定位 provider 映射问题。
+							host._logService.warn(
+								`[AgentOS] ⚠ TOOL-CALL-LOST: finish_reason=tool_calls but 0 tool calls received ` +
+								`(assistantTextLen=${trimmedAssistantContent.length}). The tool call was dropped ` +
+								`in the provider→renderer mapping — check codebuddy-provider SSE delta handling.`,
+							);
+						}
 						// 丢弃本轮空/幻觉文本，避免污染历史（对齐 discard_prior_text 基础设施）
 						yield { type: 'discard_prior_text', metadata: { reason: incompleteTurnDiscardReason(incompleteKind) } };
 						// ─── 上下文压力 >90% 时空回复 → 冷却旁路，强制下轮压缩 ───

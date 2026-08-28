@@ -1558,7 +1558,14 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 				}
 
 				// Handle text content
-				if (choice.delta && choice.delta.content) {
+				// ── P0（2026-08-28，日志 1787882646767）：此处原为 `return { text: ... }`，
+				// 一旦 delta 同时携带 content 与 tool_calls（模型「边说边发」的常见形态），
+				// 本帧会提前 return，下方 tool_calls 分支永远执行不到 → 携带 id/name 的
+				// 首个 tool_call 片段被永久丢弃 → accumulator 里只剩空 id/空 name 的残壳
+				// → 发射时被跳过并 clear()，最终 toolCalls=0 让 agent loop 误判结束。
+				// 修复：先处理 tool_calls，再处理 content，且 content 不再无条件 return，
+				// 使同帧的两种 payload 都被消费。
+				if (choice.delta && choice.delta.content && !choice.delta.tool_calls) {
 					return { text: choice.delta.content };
 				}
 
@@ -1617,25 +1624,54 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 					// 至少让 renderer 知道模型尝试了工具调用，可触发 length 重试。
 					if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop' || choice.finish_reason === 'length') {
 						// Emit all accumulated tool calls
-						for (const [, acc] of toolCallAccumulators) {
-							if (acc.id && acc.name) {
-								let params: object;
-								try {
-									params = JSON.parse(acc.arguments || '{}');
-								} catch {
-									params = { raw_arguments: acc.arguments };
-								}
-								// This will be reported as LanguageModelToolCallPart
-								// but we can only return one result per event — emit inline
-								progress.report(new vscode.LanguageModelToolCallPart(acc.id, acc.name, params));
+						for (const [idx, acc] of toolCallAccumulators) {
+							// ── P0（2026-08-28，日志 1787882646767）：此前 `if (acc.id && acc.name)`
+							// 是静默丢弃源——模型「边说边发」时，携带 id/name 的首个 tool_call
+							// chunk 常与 delta.content 同帧到达，而上方 `if (delta.content)
+							// return {text}` 会提前 return，使该帧的 tool_calls 分支永远执行不到
+							// → acc.id/acc.name 保持空串。此处便静默跳过发射，再被下方无条件
+							// clear() 抹除，导致 renderer 侧 toolCalls=0 而 SSE 层 toolCallAccs=1
+							// 的矛盾：模型明明发了工具调用，agent loop 却判定「无工具调用」而结束。
+							// 修复：id/name 缺失时合成占位值兜底发射，绝不静默丢弃。
+							const callId = acc.id || `call_${idx}_${Date.now()}`;
+							const fnName = acc.name || '';
+							if (!fnName) {
+								console.warn(
+									`[CodeBuddy] ⚠ dropping tool call idx=${idx}: no name accumulated ` +
+									`(argsLen=${acc.arguments.length}). This indicates the id/name chunk ` +
+									`was shadowed by a delta.content early-return. Emitting with empty name ` +
+									`would fail downstream; see finish_reason=${choice.finish_reason}.`
+								);
+								continue;
 							}
+							let params: object;
+							try {
+								params = JSON.parse(acc.arguments || '{}');
+							} catch {
+								params = { raw_arguments: acc.arguments };
+							}
+							// This will be reported as LanguageModelToolCallPart
+							// but we can only return one result per event — emit inline
+							progress.report(new vscode.LanguageModelToolCallPart(callId, fnName, params));
 						}
 						toolCallAccumulators.clear();
+					}
+
+					// ── 同帧 content 补发（配合上方 content 分支的 `!delta.tool_calls` 守卫）──
+					// 若本帧同时有 content 与 tool_calls，content 分支因守卫被跳过，
+					// 需在此补发，否则该段文本会永久丢失（消息缺字）。
+					if (choice.delta && choice.delta.content) {
+						return { text: choice.delta.content };
 					}
 
 					// Return null — we already reported tool calls directly via progress.report()
 					// because parseSSEStream's callback can only return one result per event.
 					return null;
+				}
+
+				// 仅有 content（无 tool_calls）的帧已在上方 return；此处兜底防御。
+				if (choice.delta && choice.delta.content) {
+					return { text: choice.delta.content };
 				}
 			}
 			return null;
