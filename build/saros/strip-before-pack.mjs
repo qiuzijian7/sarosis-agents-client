@@ -220,11 +220,47 @@ function ensureFile(label, stagingRel, repoRelCandidates) {
 	criticalMissing++;
 }
 
+// 与 ensureFile 类似，但自愈“整个目录”（如扩展编译产物 out/、node_modules 依赖）。
+// sentinel 用于判定目标目录是否已健全（默认 extension.js；node_modules 包用 package.json）。
+function ensureDir(label, stagingRel, repoRel, sentinel = 'extension.js') {
+	const stagingAbs = path.join(buildDir, stagingRel);
+	const sentinelAbs = path.join(stagingAbs, sentinel);
+	if (existsSync(sentinelAbs)) { console.log(`  ✅ ${label}`); return; }
+	const repoAbs = path.join(repoRoot, repoRel);
+	if (existsSync(repoAbs)) {
+		mkdirSync(stagingAbs, { recursive: true });
+		cpSync(repoAbs, stagingAbs, { recursive: true });
+		console.log(`  ♻️  ${label} —— 已从 ${repoRel} 恢复`);
+		return;
+	}
+	console.log(`  ❌ ${label} 缺失且无法自愈（${stagingRel}）`);
+	criticalMissing++;
+}
+
 // 1) agentmemory 能力插件 dist（AgentCapability 回退路径硬编码加载）
 ensureFile(
 	'agentmemory-memory/dist/extension.js',
 	'resources/app/extensions/agentmemory-memory/dist/extension.js',
 	['extensions/agentmemory-memory/dist/extension.js'],
+);
+
+// 2) 自定义扩展编译产物 out/ 缺失自愈（2026-08-29 生产事故：agent-studio 缺失 out/extension.js
+//    → 扩展宿主激活失败 → 工作区崩溃 “An unknown error occurred”）。
+//    这些扩展的 src/ 随 git 进入构建目录，但 out/ 被 .gitignore 排除，且 gulp 扩展编译管线
+//    不认识它们，导致 out/ 不进包。sentinel 用 extension.js 判定目录是否健全。
+ensureDir(
+	'agent-studio/out',
+	'resources/app/extensions/agent-studio/out',
+	'extensions/agent-studio/out',
+);
+
+// 2.5) typescript 运行时依赖（html/css/json 语言服务器 import 'typescript'）。
+//    缺失 → 这些内置语言服务器激活失败。自愈整包（sentinel=package.json）。
+ensureDir(
+	'node_modules/typescript',
+	'resources/app/node_modules/typescript',
+	'node_modules/typescript',
+	'package.json',
 );
 
 // 3) kbWorker.js（KB 内核 Worker 按 URL 加载；bundle 不产出 per-file 时需独立入口）

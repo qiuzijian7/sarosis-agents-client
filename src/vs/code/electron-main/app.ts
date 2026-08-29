@@ -825,6 +825,58 @@ export class CodeApplication extends Disposable {
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/voxLaunchChannel.ts。
 	this._register(new VoxLaunchChannel(this.logService, this.configurationService));
 
+	// ──────────────────────────────────────────────────────────
+	// 内存诊断: 定期采样 + 超阈值自动 dump heap snapshot
+	// 用法:
+	//   启动时加 --memory-diag          → 开启(默认关闭)
+	//   加 --memory-diag-threshold=4096 → 超过 4GB 时 dump(默认 6GB)
+	//   输出到 %TEMP%\sarosis-heap-*.heapsnapshot
+	//
+	// 不影响正常使用;不传参 = 完全无开销。
+	// ──────────────────────────────────────────────────────────
+	if (this.environmentMainService.args['memory-diag']) {
+		const _MB = (bytes: number) => Math.round(bytes / 1024 / 1024);
+		const _thresholdMB = Number(this.environmentMainService.args['memory-diag-threshold']) || 6144; // default 6 GB
+		const _log = this.logService;
+		const _tmpDir = process.env.TEMP || process.env.TMP || '/tmp';
+		let _dumpCount = 0;
+
+		_log.info(`[MemoryDiag] ENABLED — sampling every 60s, auto-dump at >${_thresholdMB} MB`);
+
+		const _interval = setInterval(() => {
+			const mem = process.memoryUsage();
+			const rssMB = _MB(mem.rss);
+			const heapMB = _MB(mem.heapUsed);
+			const externalMB = _MB(mem.external);
+
+			_log.info(
+				`[MemoryDiag] rss=${rssMB}MB heap=${heapMB}MB external=${externalMB}MB ` +
+				`(heapTotal=${_MB(mem.heapTotal)}MB)`
+			);
+
+			if (rssMB > _thresholdMB) {
+				_dumpCount++;
+				const ts = new Date().toISOString().replace(/[:.]/g, '-');
+				const path = `${_tmpDir}\\sarosis-heap-${ts}-${_dumpCount}.heapsnapshot`;
+
+				try {
+					// eslint-disable-next-line @typescript-eslint/no-var-requires
+					const v8 = require('v8') as typeof import('v8');
+					v8.writeHeapSnapshot(path);
+					_log.error(
+						`[MemoryDiag] ⚠ RSS ${rssMB}MB > ${_thresholdMB}MB threshold — ` +
+						`heap snapshot #${_dumpCount} written to ${path}`
+					);
+				} catch (e) {
+					_log.error(`[MemoryDiag] failed to write heap snapshot: ${e}`);
+				}
+			}
+		}, 60_000); // 每 60 秒采样一次
+
+		// 进程退出时清理
+		app.on('before-quit', () => clearInterval(_interval));
+	}
+
 	//#endregion
 }
 

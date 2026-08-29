@@ -767,6 +767,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	// ─── Worker Pool (parallel tree-sitter parsing) ────────────────────
 	private _parserWorkers: Worker[] = [];
 	private _workerInitPromise: Promise<boolean> | undefined;
+	// 增量解析复用的请求 id 计数器（与 _parserWorkers 轮询配对，保证并发请求 id 唯一）
+	private _parseReqId = 0;
 	// Worker 崩溃自愈：保存池创建参数，崩溃时重建替补（对齐 C 版监督子进程语义——
 	// browser Worker 有独立堆，崩溃仅影响自身，主线程重建即可）。
 	private _workerUrl: string | undefined;
@@ -2731,6 +2733,41 @@ self.onmessage = async function(e) {
 		const wasmLang = EXTENSION_TO_WASM_LANG[ext];
 		if (!wasmLang) { return { nodes: [], edges: [], status: 'skipped', reason: `unsupported extension .${ext}` }; }
 
+		// 优先走 Worker 池解析（与全量索引同一机制，打包 app 中可用）。
+		// 背景（2026-08-29）：增量索引若走主线程 TreeSitterLibraryService.getLanguagePromise，
+		// 其内部 importAMDNodeModule 会把 @vscode/tree-sitter-wasm/wasm/tree-sitter.js 以
+		// vscode-file:// 网络 GET 加载，在打包 app 中 ERR_FILE_NOT_FOUND（该 scheme 下不可加载）。
+		// 全量索引之所以不报错，是因为 Worker 内部改用 fileService(asFileUri) 读取同一文件，
+		// file:// 由磁盘 FS provider 处理、路径可用。故增量解析必须复用 Worker 池，避开主线程加载路径。
+		const workerReady = await this._ensureWorkerPool();
+		if (workerReady && this._parserWorkers.length > 0) {
+			const content = await this._fileService.readFile(URI.file(filePath));
+			const source = content.value.toString();
+
+			if (source.length > MAX_FILE_SIZE) {
+				return { nodes: [], edges: [], status: 'skipped', reason: `file too large (${source.length} > ${MAX_FILE_SIZE})` };
+			}
+			// 跳过超长行文件（minified/生成代码会导致 tree-sitter 挂起）
+			if (source.indexOf('\n', 0) === -1 && source.length > 50000) {
+				return { nodes: [], edges: [], status: 'skipped', reason: 'single-line file > 50KB (minified?)' };
+			}
+			{
+				let maxLineLen = 0;
+				const lines = source.split('\n');
+				const checkLines = Math.min(lines.length, 100);
+				for (let li = 0; li < checkLines; li++) { if (lines[li].length > maxLineLen) { maxLineLen = lines[li].length; } }
+				if (maxLineLen > MAX_LINE_LENGTH) {
+					return { nodes: [], edges: [], status: 'skipped', reason: `line too long (${maxLineLen} > ${MAX_LINE_LENGTH})` };
+				}
+			}
+			const id = ++this._parseReqId;
+			const worker = this._parserWorkers[id % this._parserWorkers.length];
+			return await this._parseViaWorker(worker, id, source, wasmLang, filePath);
+		}
+
+		// Fallback（dev/非打包环境）：主线程解析（依赖 importAMDNodeModule 加载 tree-sitter）。
+		// 仅当 Worker 池不可用（极少见）时回退——此时打包 app 同样可能因文件缺失而失败，
+		// 但路径与全量索引一致，不会因 scheme 差异凭空报错。
 		const parserResult = await this._getParser(wasmLang);
 		if (!parserResult) { return { nodes: [], edges: [], status: 'skipped', reason: `no parser for .${ext}` }; }
 
