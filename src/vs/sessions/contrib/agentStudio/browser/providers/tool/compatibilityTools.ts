@@ -405,7 +405,24 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				);
 				throw new NonRetryableToolError(scriptSourceWriteGuardMessage(sourceWrite, 'execute_code'));
 			}
-			const timeoutSec = Math.min(Math.max(Number(args['timeout']) || 30, 1), 120);
+			// 2026-08-29（日志 1787974178941）：移除 `timeout` 的 120s 封顶。
+		//
+		// 事故：本项目 `npm run compile` 全量编译必然 >120s，被主进程 process tree
+		// killed 强杀（exit -1）。模型拿不到编译结果只能反复重试，单轮 140s+，
+		// 表现为「LLM 卡住」——真正卡的是这个工具超时上限。
+		//
+		// 新语义（与 app.ts 的 vscode:execCode 保持一致）：
+		//   · 未传      → 沿用默认 30s（保留安全兜底）
+		//   · 正数      → 按该值（不再封顶，可任意大）
+		//   · 0/负数/非法 → 0，表示**不限时**，跑完为止
+		const _rawTimeout = args['timeout'];
+		let timeoutSec: number;
+		if (_rawTimeout === undefined || _rawTimeout === null || _rawTimeout === '') {
+			timeoutSec = 30;
+		} else {
+			const _n = Number(_rawTimeout);
+			timeoutSec = Number.isFinite(_n) && _n > 0 ? _n : 0;
+		}
 			// Hermes 环境归一（2026-08-18）：Git Bash 可用时经主进程以 bash -c 执行
 			// （PATH 前缀注入 <gitRoot>\usr\bin → coreutils 可用），跳过 Unix 拦截；
 			// 不可用回退 cmd.exe（shell:true）+ 拦截护栏。
@@ -617,9 +634,13 @@ function _execCodeNodeFallback(command: string, cwd: string | undefined, timeout
 			const stdoutCollector = new ProcessOutputCollector();
 			const stderrCollector = new ProcessOutputCollector();
 			let settled = false;
-			const t = setTimeout(() => {
+			// 与主进程 app.ts 保持一致：timeoutMs=0 表示**不限时**，不安装 kill timer。
+			// ⚠ 直接 setTimeout(fn, 0) 会被理解成"下一轮事件循环立即执行" → 命令刚 spawn
+			// 就被判超时杀掉，与"不限时"的语义完全相反。clearTimeout(undefined) 是安全的
+			// no-op，下方 error/close 回收不受影响。
+			const t = timeoutMs > 0 ? setTimeout(() => {
 				if (!settled) { settled = true; try { child.kill('SIGKILL'); } catch { /* ignore */ } resolve({ success: false, stdout: stdoutCollector.decode(), stderr: stderrCollector.decode() + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 }); }
-			}, timeoutMs);
+			}, timeoutMs) : undefined;
 			child.stdout?.on('data', (d: Buffer) => stdoutCollector.push(d));
 			child.stderr?.on('data', (d: Buffer) => stderrCollector.push(d));
 			child.on('error', (err) => { if (!settled) { settled = true; clearTimeout(t); resolve({ success: false, stdout: stdoutCollector.decode(), stderr: err.message, exitCode: -1 }); } });

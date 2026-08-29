@@ -31,6 +31,9 @@ interface IMsgUpdateRule {
 // Feature: messages. Extracted from AgentChatPanelBase.
 export class AgentChatPanelMessages extends AgentChatPanelDropdowns {
 
+/** 「处理中」已耗时的刷新间隔（ms）——秒级即可，避免每秒多次无谓重排。 */
+protected static readonly _PROCESSING_TICK_MS = 1000;
+
 protected override _renderMessagesArea(): void {
 		this._messagesWrapper = append(
 			this._container,
@@ -275,6 +278,8 @@ protected override _renderMessages(): void {
 		if (this._messages.length === 0) {
 			const empty = append(this._messagesContainer, $(".chat-messages-empty"));
 			append(empty, $("p", undefined, "还没有消息，开始对话吧"));
+			// clearNode 会连带移除药丸，空态下也要把它挂回去
+			this._repositionLoadingPill();
 			return;
 		}
 
@@ -289,6 +294,8 @@ protected override _renderMessages(): void {
 			for (const msg of this._messages) {
 				this._appendMessageDom(msg);
 			}
+			// clearNode 已移除药丸，渲染完消息后重新挂回末尾
+			this._repositionLoadingPill();
 			return;
 		}
 
@@ -301,10 +308,14 @@ protected override _renderMessages(): void {
 		}
 
 		// 设置懒加载——观察第一个消息元素，进入视口时加载更多
-		const firstEl = this._messagesContainer.firstElementChild as HTMLElement | null;
+		// 药丸可能已被重新挂到末尾，取首元素时需跳过它
+		const firstEl = this._firstMessageElement() ?? this._messagesContainer.firstElementChild as HTMLElement | null;
 		if (firstEl && firstBatchStart > 0) {
 			this._setupLazyLoad(firstEl, firstBatchStart);
 		}
+
+		// clearNode 已移除药丸，渲染完消息后重新挂回末尾
+		this._repositionLoadingPill();
 
 		// 刷新滚动条用户消息标记
 		this._scrollbar.refreshScrollMarkers();
@@ -369,9 +380,28 @@ protected override _appendMessageDom(msg: IAgentChatMessage): void {
 			emptyEl.remove();
 		}
 		const el = this._createMessageElement(msg);
-		this._messagesContainer.appendChild(el);
+		// 药丸可见时插入到它前面，保持药丸始终位于消息流末尾
+		const pill = this._loadingPillEl;
+		if (pill && pill.parentNode === this._messagesContainer) {
+			this._messagesContainer.insertBefore(el, pill);
+		} else {
+			this._messagesContainer.appendChild(el);
+		}
 		// 内存护栏：长会话实时 append 时裁剪最旧消息，避免全部堆积进 DOM（7G 根因之一）
 		this._trimRenderedMessages();
+	}
+
+	/** 取容器中第一个真正的消息元素，跳过加载药丸。
+	 *  药丸常驻末尾，但重渲染顺序不保证，锚点定位不应选中它。 */
+	private _firstMessageElement(): HTMLElement | null {
+		const container = this._messagesContainer;
+		if (!container) { return null; }
+		const first = container.firstElementChild as HTMLElement | null;
+		if (!first) { return null; }
+		if (first === this._loadingPillEl) {
+			return first.nextElementSibling as HTMLElement | null;
+		}
+		return first;
 	}
 
 	/** 内存护栏：渲染消息数超过上限且用户停在底部时，移除最旧消息并释放其资源。
@@ -385,12 +415,20 @@ protected override _appendMessageDom(msg: IAgentChatMessage): void {
 		while (container.children.length > MAX_RENDERED) {
 			const oldest = container.firstElementChild as HTMLElement | null;
 			if (!oldest) { break; }
+			// 药丸不是消息，不参与计数也不应被裁剪掉
+			if (oldest === this._loadingPillEl) {
+				const next = oldest.nextElementSibling as HTMLElement | null;
+				if (!next) { break; }
+				this._cleanupMarkdownDisposables(next);
+				next.remove();
+				continue;
+			}
 			const wasAnchor = !!this._lazyLoadObserver;
 			this._cleanupMarkdownDisposables(oldest);
 			oldest.remove();
 			// 若裁剪的是懒加载锚点且仍有历史可加载，重锚定到新的首条消息
 			if (wasAnchor && this._lazyLoadRemaining > 0) {
-				const newFirst = container.firstElementChild as HTMLElement | null;
+				const newFirst = this._firstMessageElement();
 				if (newFirst) { this._setupLazyLoad(newFirst, this._lazyLoadRemaining); }
 			}
 		}
@@ -796,6 +834,10 @@ protected override _updateStreamingContentInPlace(existingEl: HTMLElement, msg: 
 	// P2+: 增量更新工具卡状态（running → success/error 等），不重建整条消息
 	this._updateToolCardStatuses(existingEl, msg);
 	this.mdScheduler.schedule(streamingContainer, this._lastStreamTextOf(msg), 'markdown');
+	// 2026-08-29：自愈同步「处理中」指示——占位可能在 _isSending 置位前创建，
+	// 或中途被移除重建（thinking 指示器路径会 remove + 重新 append 占位），
+	// 这里每次增量更新补一次，保证指示始终存在（内部幂等，无 DOM 写入则不重排）。
+	this._syncProcessingIndicator(existingEl, msg);
 	// 2026-07-26：thinking episode 就地更新——最后 part 是 thinking 时，其卡片
 	// body 随 episode 文本增长就地重渲染（折叠态懒渲染 body 未建则跳过，
 	// 展开时由卡片自身的懒渲染补全）。
@@ -1494,9 +1536,14 @@ protected override _createMessageElement(msg: IAgentChatMessage): HTMLElement {
 		// 流式期间预留 footer 占位：loop 结束时 footer 淡入替换占位，
 		// 避免整段会话因 footer 突然出现而位移（对齐 Hermes footer 常驻占位）。
 		// 仅作用于最后一条 assistant 消息，避免中间消息残留空占位。
+		// 2026-08-29：占位内同时承载「处理中」指示（替代原全局 chat-loading-pill 药丸）——
+		// 占位本来就是为 footer 预留的等高空间，空着浪费；且它是流式期间唯一稳定的
+		// footer 区域，loop 结束时被真实 footer（含「耗时」）整体替换，语义自然衔接。
 		if (!isUser && msg.isStreaming && this._isLastAssistantMessage(msg) &&
 			!bubble.querySelector('.chat-bubble-footer-placeholder')) {
-			bubble.appendChild($('.chat-bubble-footer-placeholder'));
+			const ph = append(bubble, $('.chat-bubble-footer-placeholder'));
+			const indicator = this._createProcessingIndicator(msg);
+			if (indicator) { append(ph, indicator); }
 		}
 
 		// Footer: copy | score | tokens | duration — 仅在 LLM 流式输出结束后显示
@@ -1757,6 +1804,12 @@ protected override _createFooter(msg: IAgentChatMessage): HTMLElement {
 			append(durWrap, $('span.chat-footer-pill-label', undefined, '耗时'));
 			append(durWrap, $('span.chat-footer-pill-value', undefined, `: ${this._formatDuration(durMs)}`));
 		}
+
+		// ── 「处理中」状态（footer 版，见 _createProcessingIndicator）──
+		// 正常路径下 _createFooter 只在 loop 结束后调用（此时 _isSending=false，helper 返回 null），
+		// 这里仍保留调用：若因时序问题在 loop 中被重建，也不会漏掉指示。
+		const processing = this._createProcessingIndicator(msg);
+		if (processing) { append(footer, processing); }
 
 		return footer;
 	}
@@ -2039,6 +2092,75 @@ protected override _formatDuration(ms: number): string {
 		const remainSec = Math.round(seconds % 60);
 		return `${minutes}m ${remainSec}s`;
 	}
+
+/** 构建「处理中」指示元素（spinner + 「处理中」+ 已耗时）。
+ *  2026-08-29：替代原全局 chat-loading-pill 药丸，内嵌到 LLM 气泡 footer 区域右侧。
+ *  —— 流式期间挂载在 .chat-bubble-footer-placeholder 内；loop 结束后占位连同本元素
+ *     一起被真实 footer（含「耗时」pill）替换，语义自然衔接。
+ *  返回 null 的条件（即不该显示）：非流式、loop 已结束、或非最后一条 assistant。
+ *  已耗时文本带 .chat-footer-processing-elapsed，由 _tickProcessingElapsed 每秒刷新。 */
+protected _createProcessingIndicator(msg: IAgentChatMessage): HTMLElement | null {
+	if (!msg.isStreaming || !this._isSending || !this._isLastAssistantMessage(msg)) {
+		return null;
+	}
+	const wrap = $('span.chat-bubble-footer-item.chat-footer-processing');
+	// 推到 footer 区域最右侧（footer 与 placeholder 均为 flex 行布局）
+	wrap.style.marginLeft = 'auto';
+	append(wrap, $('span.chat-footer-processing-spinner.loading-spinner'));
+	append(wrap, $('span.chat-footer-processing-label', undefined, '处理中'));
+	append(wrap, $('span.chat-footer-processing-elapsed',
+		undefined, this._formatProcessingElapsed(msg)));
+	return wrap;
+}
+
+/** 幂等同步「处理中」指示到占位区：存在则跳过（零 DOM 写入），缺失则补建。
+ *  用于覆盖两类时序问题：①占位在 _isSending 置位前创建；②占位中途被移除重建
+ *  （_ensurePhaseIndicator 会 remove + 重新 append 占位以保序）。 */
+protected _syncProcessingIndicator(msgEl: HTMLElement, msg: IAgentChatMessage): void {
+	if (!this._isSending || !msg.isStreaming) { return; }
+	const bubble = msgEl.querySelector('.chat-bubble') as HTMLElement | null;
+	if (!bubble) { return; }
+	const ph = bubble.querySelector('.chat-bubble-footer-placeholder') as HTMLElement | null;
+	if (!ph) { return; }
+	if (ph.querySelector('.chat-footer-processing')) { return; } // 已存在
+	const indicator = this._createProcessingIndicator(msg);
+	if (indicator) { append(ph, indicator); }
+}
+
+/** 格式化「处理中」已耗时文本。从消息 timestamp 到当前时间的差值。 */
+protected _formatProcessingElapsed(msg: IAgentChatMessage): string {
+	const start = typeof msg.timestamp === 'number' ? msg.timestamp : 0;
+	const elapsed = Math.max(0, Date.now() - start);
+	return this._formatDuration(elapsed);
+}
+
+/** 启动「处理中」已耗时秒级刷新（footer 内联版，替代原 chat-loading-pill 药丸）。 */
+protected override _startProcessingElapsedTicker(): void {
+	this._stopProcessingElapsedTicker();
+	this._processingElapsedTimer = setInterval(
+		() => this._tickProcessingElapsed(),
+		AgentChatPanelMessages._PROCESSING_TICK_MS,
+	) as unknown as number;
+}
+
+protected override _stopProcessingElapsedTicker(): void {
+	if (this._processingElapsedTimer !== null) {
+		clearInterval(this._processingElapsedTimer);
+		this._processingElapsedTimer = null;
+	}
+}
+
+/** 流式期间每秒刷新一次最后一条 assistant 气泡 footer 里的「处理中」已耗时文本。
+ *  纯文本替换，不重建 footer（避免打断复制/导入等按钮的交互与动画）。 */
+protected _tickProcessingElapsed(): void {
+	// 指示元素流式期间挂在 .chat-bubble-footer-placeholder 内，故不限定 footer 前缀
+	const el = this._messagesContainer
+		?.querySelector('.chat-footer-processing-elapsed') as HTMLElement | null;
+	if (!el) { return; }
+	const last = [...this._messages].reverse().find(m => m.role === 'assistant');
+	if (!last) { return; }
+	el.textContent = this._formatProcessingElapsed(last);
+}
 
 protected override _toggleNodeCollapse(
 		nodeId: string,
@@ -2346,20 +2468,51 @@ protected override _openUserEditOverlay(msg: IAgentChatMessage): void {
 			// content 理论上为 string，但多模态/工具消息可能携带非字符串 content——
 			// 直接 .trim() 会抛 TypeError，导致点击发送静默失败（无任何反应）。
 			const origText = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
-			if (!newText || newText === origText.trim()) {
+			const unchanged = newText === origText.trim();
+
+			// ── 诊断日志（2026-08-29）：用户气泡 send 按钮「点了没反应」定位 ──
+			// 旧逻辑：`!newText || unchanged` 一律 restore() 后 return —— 即
+			// 【未修改文本时点 send ≡ 点取消】：编辑框关闭、不重发、UI 不变，
+			// 用户观感就是「按钮没反应」。日志先记录各分支命中情况与回调可用性。
+			console.info(
+				`[EditSendDiag] commit() msgId=${msg.id} newTextLen=${newText.length} ` +
+				`origTextLen=${origText.trim().length} unchanged=${unchanged} ` +
+				`hasOnEditMessage=${!!this._onEditMessage} msgCount=${this._messages.length} ` +
+				`isSending=${this._isSending}`
+			);
+
+			if (!newText) {
+				console.warn(`[EditSendDiag] commit() ABORT — empty text (treated as cancel)`);
 				restore();
 				return;
 			}
+			if (!this._onEditMessage) {
+				console.error(`[EditSendDiag] commit() ABORT — _onEditMessage is NOT registered (pane 未传入回调)`);
+				restore();
+				return;
+			}
+			// ★ 修复：文本未修改时也应【重新发送 / 重新生成】，而非静默关闭。
+			// 用户点 send（title=「重新生成」）的意图是重跑该消息，与是否改字无关。
+			if (unchanged) {
+				console.info(`[EditSendDiag] commit() RESEND-UNCHANGED — 文本未修改，仍执行重新生成`);
+			}
+
 			const idx = this._messages.findIndex(m => m.id === msg.id);
 			if (idx >= 0) {
 				this._messages = this._messages.slice(0, idx);
 				this._renderMessages();
+			} else {
+				console.warn(`[EditSendDiag] commit() msgId=${msg.id} NOT FOUND in _messages — 未截断历史，直接重发`);
 			}
 			restore();
 			this._onEditMessage?.(msg.id, newText);
 		};
 
-		this._register(addDisposableListener(sendBtn, EventType.CLICK, (e) => { e.stopPropagation(); commit(); }));
+		this._register(addDisposableListener(sendBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			console.info(`[EditSendDiag] sendBtn CLICKED msgId=${msg.id} disabled=${sendBtn.disabled} isSending=${this._isSending}`);
+			commit();
+		}));
 		this._register(addDisposableListener(textarea, EventType.KEY_DOWN, (e: KeyboardEvent) => {
 			if (e.key === "Escape") { e.preventDefault(); restore(); }
 			else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commit(); }

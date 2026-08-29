@@ -32,6 +32,7 @@ import {
 	resolveIncompleteTurnRetryInstruction,
 	incompleteTurnDiscardReason,
 	incompleteTurnRetryLimit,
+	incompleteTurnUserNotice,
 	isTransientStreamError,
 	isContextOverflowError,
 	TRANSIENT_ERROR_MAX_RETRIES,
@@ -2403,6 +2404,24 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							`[AgentOS] modelProvider.chat: first delta received in ${Date.now() - t0_modelCall}ms ` +
 							`(type=${_lastDeltaType})`
 						);
+						// 2026-08-29（日志 1787969405928）：首个 delta 若就是 error，意味着请求被
+						// 本地/网关**即时拒绝**（实测 0-1ms 返回，根本没走网络往返）。
+						// 事故实例：模型 `hy4-dev` 不在网关 allow-list → 连败 3 轮、每轮
+						// `textLen=0, toolCalls=0`，用户侧只看到"发消息完全没反应"，而日志里
+						// 只有一个光秃秃的 `type=error`，没有任何原因，排查只能靠模型 A/B 对比。
+						// 故此处必须把 error 内容完整落盘（截断以防超大 payload）。
+						if (delta.type === 'error') {
+							let _errDump = '';
+							try {
+								_errDump = JSON.stringify(delta).slice(0, 1000);
+							} catch {
+								_errDump = String(delta);
+							}
+							host._logService.error(
+								`[AgentOS] modelProvider.chat: FIRST delta is ERROR (after ${Date.now() - t0_modelCall}ms) — ` +
+								`request rejected before any content; raw=${_errDump}`
+							);
+						}
 					}
 					// ── 诊断：per-delta 时间线条目 ──
 					{
@@ -3117,9 +3136,25 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					}
 					host._logService.warn(
 						`[AgentOS] Incomplete turn retries exhausted (kind=${incompleteKind}, finishReason=${lastFinishReason ?? 'n/a'}) — ending conversation`,
-					);
-					// 超限：丢弃空/幻觉文本后正常结束，避免把污染内容喂回模型
+						);
+						// 2026-08-29（日志 1787985475999）：标记本轮为「空/失败结束」，
+						// 透传给 executeAgentTurn 的 finally —— 抑制「✅ 任务执行完毕」成功通知，
+						// 避免对无有效产出的 turn 误报完成。
+						if (request.turnOutcome) { request.turnOutcome.incompleteExhausted = true; }
+						// 超限：丢弃空/幻觉文本后正常结束，避免把污染内容喂回模型
 					yield { type: 'discard_prior_text', metadata: { reason: incompleteTurnDiscardReason(incompleteKind) } };
+					// 2026-08-29（日志 1787969405928）：重试用尽后此前是**完全静默**地结束 ——
+					// UI 只剩一个空的 assistant 气泡，用户主观感受就是「发消息没反应 / 卡住」。
+					// 实测事故：模型 hy4-dev 不在网关 allow-list，首个 delta 即 type=error，
+					// 连败 3 轮、每轮 textLen=0，而界面与日志都没有任何可读原因。
+					// 这里补一条可见说明（必须在 discard_prior_text 之后 yield，才不会被清掉），
+					// 让用户能立刻判断是模型/网络问题，而不是以为应用卡死。
+					{
+						const notice = incompleteTurnUserNotice(incompleteKind, lastFinishReason);
+						if (notice) {
+							yield { type: 'text', content: notice };
+						}
+					}
 				}
 
 				// ─── Text-without-tools in retry context（结构化信号，非文本意图识别）──

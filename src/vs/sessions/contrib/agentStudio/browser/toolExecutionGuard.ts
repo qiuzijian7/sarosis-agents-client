@@ -339,6 +339,18 @@ export function getTimeoutForTool(toolName: string, toolDef?: IToolDefinition, s
 	if (ORCHESTRATION_TOOLS.has(toolName)) {
 		return DELEGATION_TOOL_TIMEOUT_MS;
 	}
+	// execute_code：同样禁用守卫超时（2026-08-29，日志 1787974178941）。
+	//
+	// 它不在下面 slowTools 里，原本会落到 DEFAULT_TOOL_TIMEOUT_MS(60s)。守卫 abort
+	// 是协作式的、handler 不响应，实际靠主进程 app.ts 的 kill timer 收尾（原 120s），
+	// 于是出现「60s 发了 abort 却没人理，硬撑到 120s 才被杀」的错位。
+	//
+	// 该工具有**自带的 timeout 参数**并由主进程强制 kill 收尾（terminate 语义明确、
+	// 会杀整棵进程树），不需要外层 wall-clock 再叠一层。交由 handler 自行管控，
+	// 避免 `npm run compile` 这类长命令被外层提前掐断。
+	if (toolName === 'execute_code') {
+		return DELEGATION_TOOL_TIMEOUT_MS;
+	}
 	// MCP 工具给更多时间
 	if (source?.includes('mcp') || toolName.includes('__')) {
 		return MCP_TOOL_TIMEOUT_MS;

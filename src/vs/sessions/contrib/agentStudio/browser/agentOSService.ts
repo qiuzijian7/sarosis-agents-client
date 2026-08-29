@@ -35,6 +35,7 @@ import {
 import { planModeHardPermission, isToolHardDenied, type IHardPermissionPolicy } from '../common/toolPermission.js';
 import { resolveRequestWorkMode } from '../common/workMode.js';
 import type { IAskRoutingContext } from '../common/askRouting.js';
+import { unwrapUserQuery } from '../common/userQuery.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -2070,6 +2071,12 @@ private readonly _sandboxGuard: SandboxGuard;
 			}
 		}
 
+		// ── 2026-08-29：per-turn 结果标记，随 request 透传给 executor（详见 IAgentTurnRequest.turnOutcome）──
+		// executor 在「重试耗尽、对话结束」(incomplete exhausted) 时写入 incompleteExhausted=true，
+		// 供下方 finally 决定是否弹「✅ 任务执行完毕」——避免空/失败 turn 误报完成（日志 1787985475999）。
+		const turnOutcome = { incompleteExhausted: false };
+		request = { ...request, turnOutcome };
+
 		// ─── Per-turn 状态重置：告知所有 Tool Provider 清空累积状态 ───
 		// 如 coreTools 的 _readDedupMap / _readRepeatMap，防止跨 turn 误报 BLOCKED。
 		for (const provider of this._slotRegistry.getToolProviders()) {
@@ -2118,6 +2125,9 @@ private readonly _sandboxGuard: SandboxGuard;
 		this._activeTurnControllers.set(turnKey, turnController);
 		this._loopAbortController = turnController;
 
+		// 2026-08-29：turn 是否以异常失败（用于 finally 决定是否弹成功通知）
+		let turnFailed = false;
+
 		try {
 			// ─── Path 1: 用户明确选择了 Model → 直通模式 ───────────────
 			// 当用户在聊天框中显式选择了 Provider/Model 时，应直接使用该 Provider
@@ -2162,6 +2172,10 @@ private readonly _sandboxGuard: SandboxGuard;
 				() => this._executeWithFallbackDirectly(request),
 				request,
 			);
+		} catch (e) {
+			// 2026-08-29：记录异常失败，供 finally 抑制成功通知；保持原异常冒泡。
+			turnFailed = true;
+			throw e;
 		} 	finally {
 			// Per-turn 取消隔离清理：移除本次 turn 的 controller。
 			// 若 this._loopAbortController 恰为本 turn（无并发覆盖）则一并清空。
@@ -2191,15 +2205,37 @@ private readonly _sandboxGuard: SandboxGuard;
 				}).catch(() => { });
 			}
 
-		// 系统级通知：任务执行完毕（OS Toast 优先，跨多任务视图/虚拟桌面可见）
-		const taskSummary = [...(request.messages as Array<{ role?: string; content?: string }>)]
-			.reverse().find(m => m?.role === 'user')?.content?.slice(0, 60) ?? 'Agent 任务';
-		this._notifyTaskCompleted(taskSummary);
+			// ── 2026-08-29：仅在「真正成功完成」时弹「✅ 任务执行完毕」──
+		// 以下情况抑制成功通知，避免误导（日志 1787985475999：空结果 turn 也弹"任务执行完毕"）：
+		//   - wasAborted：用户主动取消/中断（for-await 提前 return 或 signal.aborted）
+		//   - turnFailed：turn 抛异常（模型/网络/工具执行失败等，被上方 catch 捕获）
+		//   - incompleteExhausted：LLM 重试耗尽、无有效产出而结束对话（非真正完成，见 executor）
+		const wasAborted = turnController.signal.aborted;
+		const shouldNotifyCompleted = !wasAborted && !turnFailed && !turnOutcome.incompleteExhausted;
+		if (shouldNotifyCompleted) {
+			// 系统级通知：任务执行完毕（OS Toast 优先，跨多任务视图/虚拟桌面可见）
+			// 先 unwrap 再截断：request.messages 里的用户消息已被 wrapUserQuery 包成
+			// `<user_query>...`，直接展示会把标签泄漏到通知栏。顺序不可颠倒——
+			// 先 slice(0, 60) 会切掉结尾的 `</user_query>`，导致解包判断失败。
+			const taskSummary = unwrapUserQuery(
+				[...(request.messages as Array<{ role?: string; content?: string }>)]
+					.reverse().find(m => m?.role === 'user')?.content ?? '',
+			).slice(0, 60) || 'Agent 任务';
+			this._notifyTaskCompleted(taskSummary);
+		} else {
+			this._logService.info(
+				`[AgentOS] executeAgentTurn: skipped "任务执行完毕" notification ` +
+				`(turnKey=${turnKey}::${request.agentId}, aborted=${wasAborted}, failed=${turnFailed}, ` +
+				`incompleteExhausted=${turnOutcome.incompleteExhausted})`,
+			);
+		}
 
 		if (memProvider?.onTaskCompleted) {
 			try {
-				const userMsg = [...(request.messages as Array<{ role?: string; content?: string }>)]
-					.reverse().find(m => m?.role === 'user')?.content?.slice(0, 200) ?? 'Agent turn completed';
+				const userMsg = unwrapUserQuery(
+					[...(request.messages as Array<{ role?: string; content?: string }>)]
+						.reverse().find(m => m?.role === 'user')?.content ?? '',
+				).slice(0, 200) || 'Agent turn completed';
 				memProvider.onTaskCompleted(request.agentId, request.sessionId || '', userMsg);
 			} catch { /* best effort */ }
 		}

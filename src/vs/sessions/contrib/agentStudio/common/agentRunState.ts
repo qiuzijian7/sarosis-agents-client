@@ -760,6 +760,43 @@ export function incompleteTurnRetryLimit(kind: IncompleteTurnKind): number {
 	}
 }
 
+/**
+ * 重试用尽后展示给用户的可见说明（2026-08-29，日志 1787969405928）。
+ *
+ * 背景：续跑次数耗尽时，执行器只 `discard_prior_text` 后**静默结束** —— 界面上
+ * 只剩一个空的 assistant 气泡，用户完全不知道发生了什么，主观感受就是「发消息
+ * 没反应 / 卡住了」，而真实原因常常是模型侧不可用（实测事故：模型 `hy4-dev` 不在
+ * 网关 allow-list，首个 delta 即 `type=error`，连败 3 轮、每轮 `textLen=0`）。
+ *
+ * 返回 null 表示无需打扰用户（例如内容被安全策略过滤这类预期内情况）。
+ */
+export function incompleteTurnUserNotice(
+	kind: IncompleteTurnKind,
+	finishReason?: string | null,
+): string | null {
+	switch (kind) {
+		case 'empty':
+			return '⚠️ 本次请求未获得模型返回内容（已自动重试至上限）。\n\n' +
+				'常见原因：当前模型暂时不可用或不被网关允许、网络/网关异常。\n\n' +
+				'建议：切换到其他模型后重试；详情见输出面板日志（搜索 `FIRST delta is ERROR`）。' +
+				(finishReason ? `\n\n（finishReason=${finishReason}）` : '');
+		case 'tool-call-lost':
+			return '⚠️ 模型声明要调用工具，但工具调用在传输过程中丢失（已自动重试至上限）。\n\n' +
+				'这通常是 provider 协议映射问题，建议切换模型或稍后重试。' +
+				(finishReason ? `\n\n（finishReason=${finishReason}）` : '');
+		case 'length':
+			return '⚠️ 回复被长度上限截断，且续写至上限后仍不完整。\n\n建议：精简问题或拆分任务后重试。' +
+				(finishReason ? `\n\n（finishReason=${finishReason}）` : '');
+		case 'reasoning-only':
+			return '⚠️ 模型只产出了思考过程、未给出可见答复（已自动重试至上限）。\n\n建议：换个说法重试，或切换模型。' +
+				(finishReason ? `\n\n（finishReason=${finishReason}）` : '');
+		case 'filtered':
+		case 'failed':
+		default:
+			return null;
+	}
+}
+
 // ─── Snapshot / Restore（Step 5：checkpoint 地基）─────────────────
 // AgentRunState 是纯 JSON 对象（无函数 / 类实例），故可直接序列化。
 // 这里提供带版本的快照封装 + 恢复时的安全校验 / 缺省填充，使 Step D 的

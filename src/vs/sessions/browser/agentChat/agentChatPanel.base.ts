@@ -299,9 +299,16 @@ private _agentLoadedOnce = false;
 protected _isSending = false;
 
 /** 全局加载提示药丸（去抖显示 + 不挡交互）。详见 _scheduleLoadingPill / _clearLoadingPill。 */
-private _loadingPillEl: HTMLElement | null = null;
+protected _loadingPillEl: HTMLElement | null = null;
 private _loadingPillTimer: number | null = null;
+private _loadingPillRemoveTimer: number | null = null;
 private static readonly _LOADING_PILL_DEBOUNCE_MS = 300;
+
+/** 「处理中」已耗时秒级刷新定时器（footer 内联版，见 _startProcessingElapsedTicker）。
+ *  实际实现在 AgentChatPanelMessages；此处仅持有字段以便在 dispose 时统一清理。 */
+protected _processingElapsedTimer: number | null = null;
+/** 与 CSS 折叠过渡时长保持一致，动画结束后才把药丸移出 DOM */
+private static readonly _LOADING_PILL_COLLAPSE_MS = 200;
 
 protected _showScrollBtn = false;
 
@@ -1401,13 +1408,20 @@ setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): vo
 		// P0: 重置增量渲染状态——新流式会话从头开始
 		this._mdScheduler?.reset();
 		this._thinkingMdScheduler?.reset();
-			// 加载态去抖：瞬时回复（< 300ms）不闪烁加载提示；持续处理才显示。
-			this._scheduleLoadingPill();
+			// ── 2026-08-29 移除独立「处理中…」药丸 UI ──
+			// 旧行为：_scheduleLoadingPill() 在消息列表底部显示一个独立的
+			// 「处理中…」spinner 药丸（chat-loading-pill），与 LLM 气泡分离。
+			// 新行为：「处理中」信息内嵌到 LLM 气泡 footer 右侧（见 _createFooter），
+			// 不再需要独立的悬浮药丸。此处保留注释以便日后恢复。
+			// this._scheduleLoadingPill();
+			// 启动「处理中」已耗时秒级刷新（footer 内联版）
+			this._startProcessingElapsedTicker();
 		} else {
 			this._streamPhase = 'idle';
 			this._scrollbar.stopStreamScroll();
 			// 加载结束：立即隐藏加载提示（与去抖对应）
-			this._clearLoadingPill();
+			// this._clearLoadingPill(); // 同上，已移除独立药丸
+			this._stopProcessingElapsedTicker();
 		// 清理流式渲染节流定时器和 rAF 批处理
 		this._mdScheduler?.reset();
 		this._thinkingMdScheduler?.reset();
@@ -1460,27 +1474,64 @@ setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): vo
 	 * 加载态去抖：仅在 _isSending 持续超过 _LOADING_PILL_DEBOUNCE_MS 时才显示
 	 * 全局加载提示药丸，避免瞬时回复闪烁。
 	 * 药丸为 pointer-events:none，绝不拦截滚动 / 点击（对齐 Hermes 加载态不挡交互）。
+	 *
+	 * 药丸作为消息列表的最后一个流内子元素插入（而非绝对定位悬浮层）：
+	 * 绝对定位会脱离滚动流，导致它要么一直钉在顶部、要么被 scroll-marker /
+	 * 自定义滚动条遮罩盖住。流内元素天然跟随最新内容，滚动到底即可见。
 	 */
 	protected _scheduleLoadingPill(): void {
 		this._clearLoadingPillTimerOnly();
+		// 会话是否从空开始——决定药丸左对齐（跟随消息流）还是居中（首条等待）
+		const isFirstMessage = this._messages.length <= 1;
 		this._loadingPillTimer = setTimeout(() => {
 			this._loadingPillTimer = null;
-			if (!this._loadingPillEl) {
+			if (!this._messagesContainer) { return; }
+			// 取消上一次隐藏的延迟移除，避免刚显示就被移除
+			if (this._loadingPillRemoveTimer !== null) {
+				clearTimeout(this._loadingPillRemoveTimer);
+				this._loadingPillRemoveTimer = null;
+			}
+			if (!this._loadingPillEl || !this._loadingPillEl.isConnected) {
 				const pill = $('.chat-loading-pill');
 				pill.appendChild($('.loading-spinner'));
 				pill.appendChild($('span.chat-loading-pill-label', undefined, '处理中…'));
-				this._container.appendChild(pill);
 				this._loadingPillEl = pill;
 			}
+			// 每次显示前校正对齐方式（同一次会话可能在两种场景间切换）
+			this._loadingPillEl.classList.toggle('is-first-message', isFirstMessage);
+			// 先入 DOM 并置于末尾，再强制回流，确保随后加 visible 能触发展开过渡
+			this._repositionLoadingPill();
+			void this._loadingPillEl.offsetHeight;
 			this._loadingPillEl.classList.add('visible');
 		}, AgentChatPanelBase._LOADING_PILL_DEBOUNCE_MS) as unknown as number;
 	}
 
+	/** 把加载药丸保持为消息容器的最后一个子元素。
+	 *  消息 / 工具卡片是 appendChild 进来的，若不重新定位，药丸会被挤到内容中间。 */
+	protected _repositionLoadingPill(): void {
+		const pill = this._loadingPillEl;
+		if (!pill || !this._messagesContainer) { return; }
+		if (this._messagesContainer.lastElementChild === pill) { return; }
+		this._messagesContainer.appendChild(pill);
+	}
+
 	protected _clearLoadingPill(): void {
 		this._clearLoadingPillTimerOnly();
-		if (this._loadingPillEl) {
-			this._loadingPillEl.classList.remove('visible');
+		const pill = this._loadingPillEl;
+		if (!pill) { return; }
+		pill.classList.remove('visible');
+		// 折叠动画结束后移出 DOM：药丸不是消息，不应常驻参与
+		// children 计数（懒加载锚点 / 内存裁剪都以子元素索引为基准）。
+		if (this._loadingPillRemoveTimer !== null) {
+			clearTimeout(this._loadingPillRemoveTimer);
 		}
+		this._loadingPillRemoveTimer = setTimeout(() => {
+			this._loadingPillRemoveTimer = null;
+			// 期间若重新进入加载态，保留新显示的药丸
+			if (pill.classList.contains('visible')) { return; }
+			pill.remove();
+			if (this._loadingPillEl === pill) { this._loadingPillEl = null; }
+		}, AgentChatPanelBase._LOADING_PILL_COLLAPSE_MS) as unknown as number;
 	}
 
 	private _clearLoadingPillTimerOnly(): void {
@@ -1880,6 +1931,13 @@ protected _normalizeToolResultText(result: unknown): string  { throw new Error('
 
 protected _formatDuration(ms: number): string  { throw new Error('[moved-to-feature] _formatDuration'); }
 
+/** 「处理中」已耗时秒级刷新定时器启停。实现在 agentChatPanel.messages.ts
+ *  （_startProcessingElapsedTicker / _stopProcessingElapsedTicker / _tickProcessingElapsed）。
+ *  基类留空实现（非 throw）：setSending 在任何子类实例上都会调用，
+ *  未实现该特性的子类（如 CLI 面板）静默跳过即可，不应抛错中断发送流程。 */
+protected _startProcessingElapsedTicker(): void { /* implemented in messages feature */ }
+protected _stopProcessingElapsedTicker(): void { /* implemented in messages feature */ }
+
 protected _toggleNodeCollapse(
 		nodeId: string,
 		card: HTMLElement,
@@ -2220,6 +2278,13 @@ override dispose(): void {
 		if (this._lazyLoadObserver) { this._lazyLoadObserver.disconnect(); }
 		if (this._domDisposalObserver) { this._domDisposalObserver.disconnect(); this._domDisposalObserver = null; }
 		if (this._contextRingTimer !== null) { clearTimeout(this._contextRingTimer); }
+		// 清理加载药丸的两个定时器，避免面板销毁后回调仍操作已移除的 DOM
+		if (this._loadingPillTimer !== null) { clearTimeout(this._loadingPillTimer); this._loadingPillTimer = null; }
+		if (this._loadingPillRemoveTimer !== null) { clearTimeout(this._loadingPillRemoveTimer); this._loadingPillRemoveTimer = null; }
+		this._loadingPillEl?.remove();
+		this._loadingPillEl = null;
+		// 清理「处理中」已耗时刷新定时器，避免面板销毁后回调仍操作已移除的 DOM
+		if (this._processingElapsedTimer !== null) { clearInterval(this._processingElapsedTimer); this._processingElapsedTimer = null; }
 
 		// Dispose all markdown disposables to avoid leakage
 		for (const disposable of this._markdownDisposables.values()) {

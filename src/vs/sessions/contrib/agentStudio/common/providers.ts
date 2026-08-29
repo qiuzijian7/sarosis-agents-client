@@ -1328,6 +1328,17 @@ export interface IAgentTurnRequest {
 		readonly type: 'explore' | 'general' | 'scout';
 		readonly background: boolean;
 	};
+	/**
+	 * Per-turn 结果标记（side-channel，2026-08-29）。由 executeAgentTurn 创建并随
+	 * request 透传给 agentTurnExecutor；executor 在「重试耗尽、对话被迫结束」
+	 * (incomplete exhausted) 时写入 `incompleteExhausted=true`，供 executeAgentTurn
+	 * 的 finally 判断是否弹「✅ 任务执行完毕」成功通知——避免空/失败 turn 误报完成。
+	 * 内部对象可变（executor 写入），但字段本身 readonly 不可整体替换。可选，向后兼容。
+	 */
+	readonly turnOutcome?: {
+		/** 本轮 LLM 重试耗尽、无有效产出而结束对话（非真正任务完成） */
+		incompleteExhausted?: boolean;
+	};
 }
 
 // ─── Stream Phase (Void-inspired: IsRunningType 5-state model) ──────────

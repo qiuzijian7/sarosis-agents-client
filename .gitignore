@@ -126,6 +126,7 @@ _*_compare.html
 *.codebase-memory
 *.worktrees
 .worktrees/
+nul
 
 # Transpile outputs — tsgo/esbuild generates旁路 .js files next to .ts sources.
 # Already-tracked .js source files (third-party libs, test fixtures) are

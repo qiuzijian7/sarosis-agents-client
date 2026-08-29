@@ -2232,14 +2232,25 @@ export class NativeChatEditorPane extends EditorPane {
 				} catch (err) {
 					this._logService.info('[NativeChatEditorPane] getOrCreateActiveSession failed:', err);
 				}
-				// Load worktrees for the selected agent
-				await this._loadWorkspaces();
-				await this._loadWorktrees();
+				// ⚠️ 2026-08-29 修复「重启后 provider/model 丢失，需重新选择」：
+				// 旧实现把下面 4 个 await 与末尾的 _restoreInputAreaState() 放在同一个
+				// try 块里，**任一 await 抛错就直接跳到 catch，恢复逻辑永不执行**。
+				// _loadWorktrees() 走 git 操作（重启/仓库未就绪时极易失败），
+				// _refreshSessionList()/_refreshModelSelector() 也各有失败路径，
+				// 于是表现为「每次重启都要重新选一遍 provider + model」。
+				// 修复：各 await 独立 try/catch（它们都不是恢复的前置条件），
+				// 保证 _restoreInputAreaState() 无论前面成败都必然执行。
+				try { await this._loadWorkspaces(); }
+				catch (e) { this._logService.info(`[NativeChatEditorPane#${this._paneId}] _loadWorkspaces failed (non-fatal):`, e); }
+				try { await this._loadWorktrees(); }
+				catch (e) { this._logService.info(`[NativeChatEditorPane#${this._paneId}] _loadWorktrees failed (non-fatal):`, e); }
 				// Refresh chat-history panel
-				await this._refreshSessionList();
+				try { await this._refreshSessionList(); }
+				catch (e) { this._logService.info(`[NativeChatEditorPane#${this._paneId}] _refreshSessionList failed (non-fatal):`, e); }
 				// Restore per-agent input area state (chatMode / provider / model / composer text)
 				// Called after setAgent + _refreshModelSelector so the panel DOM is ready.
-				await this._refreshModelSelector();
+				try { await this._refreshModelSelector(); }
+				catch (e) { this._logService.info(`[NativeChatEditorPane#${this._paneId}] _refreshModelSelector failed (non-fatal):`, e); }
 				this._restoreInputAreaState();
 			}
 		} catch (err) {
@@ -2397,15 +2408,27 @@ private _saveInputAreaState(): void {
 			this._chatPanel.setChatMode?.(chatMode);
 
 			// Restore provider + model to 面板本地状态（不写共享 _modelSelector）
-			const savedProvider = localStorage.getItem(this._storageKey(NativeChatEditorPane._STORAGE_PROVIDER));
-			const savedModel = localStorage.getItem(this._storageKey(NativeChatEditorPane._STORAGE_MODEL));
+			const providerKey = this._storageKey(NativeChatEditorPane._STORAGE_PROVIDER);
+			const modelKey = this._storageKey(NativeChatEditorPane._STORAGE_MODEL);
+			const savedProvider = localStorage.getItem(providerKey);
+			const savedModel = localStorage.getItem(modelKey);
+			// ── 诊断日志（2026-08-29）：重启后 provider/model 丢失定位 ──
+			// 打印实际读取的 key 与值，便于确认是「没存」还是「key 不匹配」还是「没恢复」。
+			this._logService.info(
+				`[ModelSelRestore] pane#${this._paneId} agent=${this._currentAgentId} ` +
+				`providerKey=${providerKey}=${savedProvider ?? '(none)'} ` +
+				`modelKey=${modelKey}=${savedModel ?? '(none)'} ` +
+				`currentLocal=${this._localProviderId ?? ''}/${this._localModelId ?? ''}`
+			);
 			if (savedProvider && savedModel) {
 				this._localProviderId = savedProvider;
 				this._localModelId = savedModel;
 				this._chatPanel.setCurrentProvider(savedProvider);
 				this._chatPanel.setCurrentModel(savedModel);
+				this._logService.info(`[ModelSelRestore] restored → ${savedProvider}/${savedModel}`);
 			} else {
 				// 无本地覆盖时，使用 Agent 配置的默认 provider/model
+				this._logService.info(`[ModelSelRestore] no saved selection — falling back to agent default`);
 				void this._applyAgentDefaultModelSelection();
 			}
 
@@ -3092,6 +3115,14 @@ private _handleStreamDelta(delta: any): void {
 						isStreaming: true,
 						streamPhase: 'tool_executing',
 					});
+				} else {
+					// 2026-08-29（日志 1787932864271）：tool_args 到达却匹配不到卡片即被静默丢弃
+					// → 卡片永远停在占位态（「（无命令）」/「执行中…」），且因
+					// parseToolArgsLoose('') = {} 使 `card:args-arrived` 补齐也永不触发，故障自锁。
+					// 已知成因：tool_start 缺 toolCallId 时建卡用的是 `tool_${Date.now()}`
+					// 时间戳兜底 id（见上文 case 'tool_start'），后续 tool_args 带真实 id 匹配不上。
+					// 该失败此前完全不可观测，必须留痕。
+					this._logService.warn(`[AgentOS] tool_args dropped — no card for toolCallId=${delta.toolCallId} (contentLen=${(delta.content ?? '').length}, existingIds=[${(assistantMsg.toolCalls ?? []).map((t: any) => t.id).join(',')}])`);
 				}
 				break;
 			}
@@ -3601,6 +3632,15 @@ private _handleStreamDelta(delta: any): void {
 	 * through the normal streaming flow.
 	 */
 	private async _handleEditMessage(messageId: string, newText: string): Promise<void> {
+		// ── 诊断日志（2026-08-29）：用户气泡 send 按钮「点了没反应」定位 ──
+		// 与面板侧 [EditSendDiag] commit() 日志配对：commit 打印 → 本行打印，
+		// 说明回调链路通畅；只有 commit 没有本行，说明回调未注册或被吞。
+		this._logService.info(
+			`[EditSendDiag] _handleEditMessage ENTER pane#${this._paneId} msgId=${messageId} ` +
+			`newTextLen=${newText.length} agent=${this._currentAgentId} session=${this._currentSessionId} ` +
+			`isSending=${this._isSending} isExternalSend=${this._isExternalSend} ` +
+			`staleStreaming=${this._streamingAssistantId ?? 'none'} hasChatPanel=${!!this._chatPanel}`
+		);
 		// 解析实际会话（与 _sendMessageInternal 一致，含 claw 兜底）。避免
 		// `if (!this._currentAgentId) return;` 静默 no-op——面板已在 commit() 里
 		// 截断了视图，若此处直接 return，会表现为「点了发送没反应」（无回复）。
@@ -3652,6 +3692,10 @@ private _handleStreamDelta(delta: any): void {
 			this._resetStreamingMessage();
 		}
 
+		this._logService.info(
+			`[EditSendDiag] _handleEditMessage → dispatching _sendMessageInternal ` +
+			`(msgId=${messageId}, agent=${agentId}, session=${sessionId})`
+		);
 		await this._sendMessageInternal(newText);
 	}
 
@@ -3989,11 +4033,20 @@ private _handleStreamDelta(delta: any): void {
 
 			// 恢复此 tab 保存的 model selection（每个 tab 独立切换 model）
 			// 使用面板本地状态，不写共享 IModelSelectorService 单例
+			//
+			// ⚠️ 2026-08-29：旧实现用 `?? ''` 兜底——当 runtime state 里的
+			// modelSelection 对象存在但字段为空时，会把面板上已有的有效选择
+			// **覆盖成空字符串**，导致 provider/model 显示为空（须重新选择）。
+			// 现改为「仅当字段非空时才覆盖」，缺失字段保持原值不动。
 			if (saved.modelSelection) {
-				this._localProviderId = saved.modelSelection.providerId ?? '';
-				this._localModelId = saved.modelSelection.modelId ?? '';
-				this._chatPanel?.setCurrentProvider(this._localProviderId);
-				this._chatPanel?.setCurrentModel(this._localModelId);
+				if (saved.modelSelection.providerId) {
+					this._localProviderId = saved.modelSelection.providerId;
+					this._chatPanel?.setCurrentProvider(this._localProviderId);
+				}
+				if (saved.modelSelection.modelId) {
+					this._localModelId = saved.modelSelection.modelId;
+					this._chatPanel?.setCurrentModel(this._localModelId);
+				}
 			}
 
 			// ── 流式接管（同步，赶在任何 delta 到达之前）──

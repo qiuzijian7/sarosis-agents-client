@@ -5675,35 +5675,55 @@
 .chat-bubble-footer-placeholder {
 	margin-top: 6px;
 	min-height: 22px;
+	/* 2026-08-29：占位内承载「处理中」指示，需与真实 footer 同样的 flex 行布局，
+	   指示元素上的 margin-left:auto 才能把它推到最右侧 */
+	display: flex;
+	align-items: center;
 }
 
 /* 全局加载提示药丸：加载态去抖 + 不挡交互（pointer-events:none）。
-   仅在 _isSending 持续超过 300ms 时才出现，瞬时回复不闪。 */
+   仅在 _isSending 持续超过 300ms 时才出现，瞬时回复不闪。
+   作为消息列表的最后一个流内子元素存在（非绝对定位），
+   因此始终紧随最新内容，不会被 scroll-marker 等悬浮层遮挡。 */
 .chat-loading-pill {
-	position: absolute;
-	top: 10px;
-	left: 50%;
-	transform: translateX(-50%) translateY(-6px);
-	display: inline-flex;
+	position: relative;
+	/* 药丸是 block 容器的流内子元素（非 flex 布局，align-self 无效），
+	   用 width:fit-content + 自动外边距实现左对齐 / 居中 */
+	display: flex;
+	width: fit-content;
+	/* 折叠态：margin / padding 全部归零，仅 .visible 恢复，
+	   否则 max-height:0 之外仍残留约 22px 空隙 */
+	margin: 0 auto 0 0;
+	padding: 0 12px;
 	align-items: center;
 	gap: 6px;
-	padding: 4px 12px;
 	border-radius: 999px;
 	background: var(--vscode-badge-background, rgba(60, 130, 246, 0.9));
 	color: var(--vscode-badge-foreground, #fff);
 	font-size: 12px;
 	line-height: 1.4;
 	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
-	z-index: 25;
+	z-index: 1;
 	opacity: 0;
+	max-height: 0;
+	overflow: hidden;
 	pointer-events: none;
-	transition: opacity 0.2s ease, transform 0.2s ease;
+	transition: opacity 0.2s ease, max-height 0.2s ease, margin 0.2s ease, padding 0.2s ease;
+}
+/* 首条消息场景（会话从空开始）：居中显示，视觉上更像"等待首次响应" */
+.chat-loading-pill.is-first-message {
+	margin-left: auto;
 }
 .chat-loading-pill.visible {
 	opacity: 1;
-	transform: translateX(-50%) translateY(0);
+	max-height: 40px;
+	margin-top: 8px;
+	margin-bottom: 4px;
+	padding-top: 5px;
+	padding-bottom: 5px;
 }
 .chat-loading-pill .loading-spinner {
+	flex: 0 0 auto;
 	width: 12px;
 	height: 12px;
 	border: 2px solid rgba(255, 255, 255, 0.4);
@@ -5776,6 +5796,45 @@
 	font-weight: 500;
 	color: var(--vscode-foreground, #ddd);
 	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
+}
+
+/* ── 「处理中」状态（2026-08-29）──
+   替代原全局 chat-loading-pill 药丸：内嵌到 LLM 气泡 footer 最右侧
+   （JS 侧设 margin-left:auto 推到右侧），显示 spinner + 「处理中」+ 已耗时。 */
+.chat-bubble-footer-item.chat-footer-processing {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 4px 9px;
+	border: 1px solid var(--vscode-progressBar-background, rgba(60, 130, 246, 0.5));
+	border-radius: 14px;
+	background: var(--vscode-editorWidget-background, rgba(255,255,255,0.03));
+	color: var(--vscode-foreground, #ccc);
+	font-size: 11px;
+	line-height: 1.2;
+	white-space: nowrap;
+	flex-shrink: 0;
+	opacity: 0.95;
+}
+.chat-footer-processing-label {
+	color: var(--vscode-progressBar-background, #4a9eff);
+	font-weight: 500;
+}
+.chat-footer-processing-elapsed {
+	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
+	color: var(--vscode-descriptionForeground, #aaa);
+	/* 等宽 + 固定最小宽度：秒数从 9s→10s 时不会引起 footer 抖动 */
+	min-width: 34px;
+	text-align: right;
+}
+/* spinner 跟随前景色（原药丸里的 .loading-spinner 硬编码白边，此处需深色主题可读） */
+.chat-footer-processing-spinner.loading-spinner {
+	width: 10px;
+	height: 10px;
+	border: 2px solid var(--vscode-progressBar-background, rgba(60, 130, 246, 0.35));
+	border-top-color: var(--vscode-progressBar-background, #4a9eff);
+	border-radius: 50%;
+	animation: phase-spin 0.8s linear infinite;
 }
 .chat-footer-pill-info {
 	font-size: 11px;
@@ -7580,7 +7639,7 @@
    ═══════════════════════════════════════════════════════════════════ */
 .chat-toolbar-btn.workspace-tag,
 .chat-toolbar-btn.worktree-tag {
-	max-width: 90px;
+	max-width: 160px;
 }
 .chat-toolbar-btn.workspace-tag .chat-toolbar-btn-label,
 .chat-toolbar-btn.worktree-tag .chat-toolbar-btn-label {
@@ -7867,7 +7926,7 @@
 	font-size: 11px;
 	font-weight: 500;
 	white-space: nowrap;
-	max-width: 120px;
+	max-width: 150px;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }

@@ -921,6 +921,22 @@ export interface ToolCall {
 	readonly id: string;
 	name: string;
 	arguments: string;
+	/**
+	 * 渲染层同义字段（2026-08-29，日志 1787932864271）。
+	 *
+	 * 执行层（`agentTurnExecutor` / `agentChatService` 的 finalization）一律写
+	 * `arguments`；而 UI 侧 `IToolCall`（`browser/agentChat/agentChatTypes.ts`）
+	 * 只声明 `args`，两者是**独立链路**——工具执行成功 ≠ 卡片能渲染出参数。
+	 *
+	 * 流式期间 UI 靠 `tool_args` delta 累加 `args`（`nativeChatEditorPane`），
+	 * 一旦该 delta 未到达或未匹配到卡片（见该处 `tool_args dropped` 告警），
+	 * `args` 恒为 ''，卡片退化为无参数占位空卡，且因 `parseToolArgsLoose('')={}`
+	 * 使 `card:args-arrived` 补齐也永不触发——故障自锁。
+	 *
+	 * 故落盘时同步写入本字段，保证持久化对象两个字段名都带，
+	 * 渲染层任一路径都能取到参数。可选、向后兼容。
+	 */
+	args?: string;
 	result?: string;
 	status?: 'running' | 'done' | 'error';
 	/** UI 显示名称（来自模型的 display_name 字段） */

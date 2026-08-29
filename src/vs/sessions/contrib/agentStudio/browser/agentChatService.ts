@@ -1737,7 +1737,24 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// 后注册的 onDelta 覆盖先注册的（_activeOnDeltas.set），先发者的
 		// delta 回调被摘除 → 先发 pane 的 UI 再也不刷新（用户报告现象）。
 		// 现改为传正确参数，使同 session 重入时旧流被真正取消、状态干净。
-		this.cancelStream(agentId, options.agentSessionId);
+		//
+		// ── 2026-08-29 升级为「条件式 + 可观测」（对齐 void 双保险设计）──
+		// void 在 chatThreadService._addUserMessageAndStreamResponse:1239 用
+		// `if (this.streamState[threadId]?.isRunning) await this.abortRunning(threadId)`
+		// ——在 service 层再兜一次，而不是无条件 abort。好处：
+		//  ① 只有确实存在遗留流时才取消，避免对「干净状态」做无意义的 abort
+		//     （无条件 abort 会误伤外部发送路径：看板任务 / workflow / webview
+		//      直接调 sendMessage 的场景，它们的 controller 也可能登记在同一 key）；
+		//  ② 打日志，使「编辑重发时是否真的掐掉了旧流」可观测——这正是
+		//     「点了发送没反应」类问题最难排查的一环（残留流吞掉新请求）。
+		if (this._isBucketOpen(streamKey)) {
+			this.logService.warn(
+				`[AgentChatService] sendMessage: STALE stream on key=${streamKey} — aborting before new send ` +
+				`(hasStream=${this._activeStreams.has(streamKey)}, hasOnDelta=${this._activeOnDeltas.has(streamKey)}). ` +
+				`This is the service-layer safety net for edit-resend / reentrant sends.`
+			);
+			this.cancelStream(agentId, options.agentSessionId);
+		}
 
 		const controller = new AbortController();
 		this._activeStreams.set(streamKey, controller);
@@ -2168,6 +2185,19 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					const chunks = _toolArgChunks.get(tc.id);
 					if (chunks && chunks.length > 0) {
 						tc.arguments = chunks.join('');
+						// 2026-08-29（日志 1787932864271）：同步写回渲染层同义字段 `args`。
+						// UI 侧 IToolCall 只声明 `args`，与执行侧的 `arguments` 是两条独立
+						// 链路。流式期间 UI 靠 `tool_args` delta 累加 `args`，但该 delta 若
+						// 未到达 / 未匹配到卡片（见 nativeChatEditorPane 的
+						// `tool_args dropped` 告警），`args` 就恒为 '' → 卡片退化为无参数
+						// 占位空卡，且因 parseToolArgsLoose('') = {} 使 card:args-arrived
+						// 补齐也永不触发——故障自锁。
+						// 此处补齐第二条链路：落盘对象同时携带两个字段名，渲染层任一取数
+						// 路径（adaptPersistedToolCall 映射 / 卡片直接读 arguments）都能拿到
+						// 参数。仅在 args 尚无值时写入，不覆盖流式期间已累加的内容。
+						if (!tc.args) {
+							tc.args = tc.arguments;
+						}
 					}
 					if (!tc.status) {
 						tc.status = 'done';

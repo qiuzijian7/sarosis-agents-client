@@ -534,7 +534,17 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 			// 提取命令字符串（宽松修复链：命令里含 `\x` 等非法转义时原裸 parse
 			// 会失败 → 终端卡片只显示状态前缀、命令行空白）
 			// args 提到 if 外：命令未到时还要读 description 做占位展示（2026-08-22）
-			const args = tc.args ? parseToolArgsLoose(tc.args) : {};
+			//
+			// 2026-08-29（日志 1787932864271）：兼容执行层字段名 `arguments`。
+			// 渲染层 IToolCall 只声明 `args`（agentChatTypes.ts:230），而执行侧
+			// （agentTurnExecutor 的 tc.arguments、agentChatService finalization 的
+			// `tc.arguments = chunks.join('')`）写的是 `arguments` —— **两条独立链路**，
+			// 工具执行成功 ≠ 卡片能渲染。当 tool_args delta 未到达或未匹配到卡片时
+			// `tc.args` 恒为 ''，而持久化/同步过来的对象上可能已带 `arguments`。
+			// 此处兼容读取，让「args 空但 arguments 有值」时仍能渲染出命令行，
+			// 而不是退化成无参数的占位空卡。
+			const rawArgs = tc.args || (tc as any).arguments;
+			const args = rawArgs ? parseToolArgsLoose(rawArgs) : {};
 			const commandText = typeof args['command'] === 'string' ? args['command']
 				: typeof args['cmd'] === 'string' ? args['cmd']
 				: typeof args['code'] === 'string' ? args['code'] : '';

@@ -638,7 +638,19 @@ export class CodeApplication extends Disposable {
 		// 探测走一次 `chcp` 子进程，故按进程缓存 —— execute_code 是高频工具。
 		const localEncoding = await this._resolveExecCodeEncoding();
 		return new Promise<{ success: boolean; stdout: string; stderr: string; exitCode: number }>((resolve) => {
-		const timeoutMs = Math.min(Math.max(payload?.timeoutMs ?? 30000, 1000), 120000);
+		// 2026-08-29（日志 1787974178941）：execute_code **不再被强制封顶 120s**。
+	//
+	// 事故：本项目 `npm run compile` 全量编译必然超过 120s，每次都被下面的
+	// `process tree killed` 强杀（exit -1）。模型看不到编译结果就反复重试，
+	// 单轮耗时 140s+，用户观感是「LLM 卡住」——实际卡的是工具超时。
+	//
+	// 现在完全尊重调用方传入的 timeoutMs：
+	//   · > 0  → 按该值计时（不再 clamp 上限，想跑多久跑多久）
+	//   · <= 0 / 非数字 → 0，表示**不限时**（不安装 kill timer，跑完为止）
+	const _reqTimeoutMs = Number(payload?.timeoutMs);
+	const timeoutMs = Number.isFinite(_reqTimeoutMs) && _reqTimeoutMs > 0
+		? Math.max(_reqTimeoutMs, 1000)
+		: 0;
 		// PYTHONIOENCODING/PYTHONUTF8：Windows 终端默认 GBK 编码，Python print()
 		// 遇到 emoji 等非 GBK 字符会抛 UnicodeEncodeError（exit 1）。强制 UTF-8
 		// 模式让任何 Python 脚本都能安全输出 Unicode（其他平台无副作用）。
@@ -689,7 +701,9 @@ export class CodeApplication extends Disposable {
 			child.stderr?.on('data', (data: Buffer) => stderrCollector.push(data));
 			let settled = false;
 
-			const timeoutHandle = setTimeout(() => {
+			// timeoutMs=0 表示不限时：不安装 kill timer，进程跑到自己结束为止。
+			// （clearTimeout(undefined) 是安全的 no-op，下方 close/error 回收不受影响）
+			const timeoutHandle = timeoutMs > 0 ? setTimeout(() => {
 				if (!settled) {
 					settled = true;
 					// 超时路径同样要走整体解码 —— 被 kill 的进程往往已经产出了关键错误信息
@@ -707,8 +721,8 @@ export class CodeApplication extends Disposable {
 						try { child.kill('SIGKILL'); } catch { /* ignore */ }
 						resolve({ success: false, stdout: partialOut, stderr: partialErr + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
 					}
-				}
-			}, timeoutMs);
+					}
+					}, timeoutMs) : undefined;
 
 			child.on('error', (err) => {
 				if (!settled) {
