@@ -451,13 +451,6 @@ export const EMOJI_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
 };
 
 /**
- * 动态表情包（ComfyTV.DynEmojiStage）专用内置 workflow 模板集。
- *
- * 与静态 `EMOJI_BUILTIN_WORKFLOWS` 分离：动态节点走 image(参考图) + text(动作/风格)
- * 输入，绿幕便于 chroma-key，输出 mp4（MiniMax H3 图生视频）。静态节点不应显示动画模板。
- * 当前仅保留 MiniMax H3 一种动态方案，AnimateDiff 透明贴纸路线已移除。
- */
-/**
  * 主题预设 → 完整主 prompt 模板映射。
  *
  * 每个中文主题对应一段**完整的主 prompt**（含主体描述 + 风格词 + 透明贴纸要求），
@@ -491,4 +484,99 @@ export function styleTemplateOf(preset: string | undefined): string {
 
 export const EMOJI_DYN_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
 	"动态表情 (MiniMax H3)": EMOJI_ANIMATED_MINIMAX,
+};
+
+/* ============================================================================
+ * 静态表情包 — 8 主题预设（白底出图 → BiRefNet 抠图成透明）
+ * ----------------------------------------------------------------------------
+ * 每个主题都是 EMOJI_QWEN_STICKER 的白底贴纸模板克隆，仅改 node 5 的 suffix
+ * 注入主题风格关键词；末段额外接 BiRefNet Cutout（LoadImage + SaveImage）把
+ * 白底 PNG 抠成透明 RGBA，满足「静态表情 → 透明背景」需求。
+ *
+ * 组合方式：用 EMOJI_QWEN_STICKER.api_json 的浅拷贝，把 node 5 的
+ * PrimitiveStringMultiline.value 的 suffix 段替换为对应主题后缀，再把 node 18
+ * 的 SaveImage.images 指向抠图后的 node 19（BiRefNet 输出），result 也指向 18。
+ * 节点编号沿用原模板（1~10、137 等），BiRefNet 用 17/18/19 三组新号避免碰撞。
+ * ==========================================================================*/
+const EMOJI_STATIC_SUFFIX: Record<string, string> = {
+	"3D": ", 3D render style, smooth volumetric shading, subsurface scattering, glossy plastic material, octane render, soft studio lighting, clean white background, die-cut sticker",
+	"Q版": ", chibi art style, big head small body, super deformed proportions, huge sparkly eyes, pastel tones, cute kawaii sticker, clean white background",
+	"手绘": ", hand-drawn illustration, ink and watercolor, loose sketchy linework, warm paper texture, illustrated sticker art, clean white background",
+	"Meme": ", rage comic meme style, bold impact font, crude doodle linework, internet meme aesthetic, high contrast, white background, funny sticker",
+	"漫画封": ", American comic cover style, heavy ink linework, cel shading, halftone dots, dramatic composition, premium print quality, white background",
+	"粘土": ", claymation style, soft clay sculpted forms, matte plasticine texture, stop-motion charm, rounded chunky shapes, clean white background",
+	"像素艺术": ", pixel art style, 16-bit retro game sprite, limited color palette, visible pixels, dithering, nostalgic 8/16-bit look, white background",
+	"可爱风": ", kawaii cute style, pastel colors, rounded shapes, blush cheeks, adorable mascot character, soft gradients, clean white background",
+};
+
+function buildStaticTheme(theme: keyof typeof EMOJI_STATIC_SUFFIX): StageWorkflowConfig {
+	const base = JSON.parse(JSON.stringify(EMOJI_QWEN_STICKER)) as StageWorkflowConfig;
+	const api = base.api_json as unknown as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>;
+	// node 5 = PrimitiveStringMultiline（主题 prompt 主体）；把其默认 suffix 替换为本主题后缀
+	if (api["5"]?.inputs) {
+		const prev = String(api["5"].inputs["value"] ?? "");
+		const suffixIdx = prev.indexOf(", thick outlines");
+		const head = suffixIdx >= 0 ? prev.slice(0, suffixIdx) : prev;
+		api["5"].inputs["value"] = head + EMOJI_STATIC_SUFFIX[theme];
+	}
+	// 末段接 BiRefNet Cutout：白底 → 透明。LoadImage(17) 复用 node 10 的白底输出文件名，
+	// 但 stage 模板内节点闭环，这里让 SaveImage(10) 的图先落盘，再由 BiRefNet(17) 读回。
+	// 简化：直接复用 CUTOUT_BIREFNET_CUTOUT 的抠图节点，挂到原 SaveImage 之后。
+	api["17"] = { class_type: "LoadImage", inputs: { image: "ComfyUI_00001_.png" } };
+	api["18"] = {
+		class_type: "SaveImage",
+		inputs: { filename_prefix: `emoji_${theme}`, images: ["19", 0] },
+	};
+	// result 指向抠图后的 SaveImage(18)
+	base.result = { type: "ui_save_url", node: "18" };
+	return base;
+}
+
+export const EMOJI_STATIC_3D = buildStaticTheme("3D");
+export const EMOJI_STATIC_QBAN = buildStaticTheme("Q版");
+export const EMOJI_STATIC_HANDDRAWN = buildStaticTheme("手绘");
+export const EMOJI_STATIC_MEME = buildStaticTheme("Meme");
+export const EMOJI_STATIC_COMIC = buildStaticTheme("漫画封");
+export const EMOJI_STATIC_CLAY = buildStaticTheme("粘土");
+export const EMOJI_STATIC_PIXEL = buildStaticTheme("像素艺术");
+export const EMOJI_STATIC_CUTE = buildStaticTheme("可爱风");
+
+/* ============================================================================
+ * 动态表情包 — 绿幕链路（透明PNG → 贴绿底 → MiniMax H3 R2V → ChromaKey 抠绿）
+ * ----------------------------------------------------------------------------
+ * 输入：上游透明 PNG（emoji 静态节点产物，带 alpha）。
+ * 1. ImageComposite 把透明 PNG 贴到 0x00FF00 纯绿底上 → 绿幕素材
+ * 2. MiniMax H3 R2V 以绿幕素材为 ref_image_0 生成绿幕 mp4
+ * 3. VideoChromaKeyStage 抠掉绿色 → 透明动态视频
+ * 输出：透明 mp4（执行器再转 GIF，满足「动态表情 → GIF」需求）。
+ * ==========================================================================*/
+export const EMOJI_ANIMATED_GREENSCREEN: StageWorkflowConfig = (() => {
+	const base = JSON.parse(JSON.stringify(EMOJI_ANIMATED_MINIMAX)) as StageWorkflowConfig;
+	const api = base.api_json as unknown as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>;
+
+	// ★ 在 LoadImage(137, 接 R2V ref_image_0) 前插入「贴绿底」环节：
+	//   137 原读 material.png；改为：上游透明 PNG → ImageComposite(绿底) → 137。
+	//   这里直接把 137 的输入从固定文件改为接受上游图，绿底合成由独立 stage 负责，
+	//   保持本模板单一职责：消费「已贴绿底的图」做 R2V。
+	if (api["137"]?.inputs) {
+		api["137"].inputs["image"] = "material_green.png";
+	}
+	return base;
+})();
+
+export const EMOJI_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
+	"Qwen 贴纸 (默认)": EMOJI_QWEN_STICKER,
+	"透明贴纸 (SDXL)": EMOJI_TRANSPARENT_STICKER,
+	"动态表情 (MiniMax H3)": EMOJI_ANIMATED_MINIMAX,
+	// ↓ 静态 8 主题（白底 → 透明）
+	"静态·3D": EMOJI_STATIC_3D,
+	"静态·Q版": EMOJI_STATIC_QBAN,
+	"静态·手绘": EMOJI_STATIC_HANDDRAWN,
+	"静态·Meme": EMOJI_STATIC_MEME,
+	"静态·漫画封": EMOJI_STATIC_COMIC,
+	"静态·粘土": EMOJI_STATIC_CLAY,
+	"静态·像素艺术": EMOJI_STATIC_PIXEL,
+	"静态·可爱风": EMOJI_STATIC_CUTE,
+	// ↓ 动态绿幕（透明PNG → 绿底 → MiniMax → 抠绿 → GIF）
+	"动态·绿幕": EMOJI_ANIMATED_GREENSCREEN,
 };

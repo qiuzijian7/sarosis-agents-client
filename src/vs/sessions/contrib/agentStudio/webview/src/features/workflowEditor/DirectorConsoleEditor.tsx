@@ -148,6 +148,7 @@ function BoardPanel({ ctrl }: BoardPanelProps): React.JSX.Element {
 export function DirectorConsoleEditor({ initialState, initialFountainText, width, height, runners, preference, onStateChange, onRenderUploaded }: DirectorConsoleEditorProps): React.JSX.Element {
 	const [editor, setEditor] = React.useState<LayerEditorHandle | null>(null);
 	const [overall, setOverall] = React.useState(false);
+	const [isFullscreen, setIsFullscreen] = React.useState(false);
 
 	const ctrl: DirectorConsoleEditorController = useDirectorConsoleEditor({
 		initialState,
@@ -218,7 +219,14 @@ export function DirectorConsoleEditor({ initialState, initialFountainText, width
 	}, [ctrl.boards, ctrl.doc]);
 
 	return (
-		<div style={{ display: 'flex', flexDirection: 'column', gap: 6, height: '100%', width: '100%', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+		<div style={{
+			position: isFullscreen ? 'fixed' : 'relative',
+			inset: isFullscreen ? 0 : undefined,
+			zIndex: isFullscreen ? 9999 : undefined,
+			background: isFullscreen ? '#0e0e0e' : undefined,
+			display: 'flex', flexDirection: 'column', gap: 6,
+			height: '100%', width: '100%', minWidth: 0, minHeight: 0, overflow: 'hidden',
+		}}>
 
 			{/* ═══ 标题栏 ═══ */}
 			<div style={{

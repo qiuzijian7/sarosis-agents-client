@@ -581,7 +581,7 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
  */
 const _diagnoseSample = { nodeId: '', nodeType: '', t: 0 };
 export function diagnoseCardMeta(nodeId: string, meta: NodeCardMeta, controlsCount: number): void {
-	const interesting = ['ComfyTV.StatEmojiStage', 'ComfyTV.DynEmojiStage', 'ComfyTV.PanoramaStage', 'ComfyTV.RotateStage', 'ComfyTV.MaterialStage', 'ComfyTV.RelightStage'];
+	const interesting = ['ComfyTV.EmojiStaticStage', 'ComfyTV.EmojiAnimatedStage', 'ComfyTV.PanoramaStage', 'ComfyTV.RotateStage', 'ComfyTV.MaterialStage', 'ComfyTV.RelightStage'];
 	if (!interesting.includes(meta.nodeType ?? '')) { return; }
 	const now = Date.now();
 	if (now - _diagnoseSample.t < 1500) { return; } // 节流 1.5s

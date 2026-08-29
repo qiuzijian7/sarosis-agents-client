@@ -1501,7 +1501,10 @@ export function isDynEmojiStageNode(type: string): boolean {
 
 /** 兼容旧类型名，统一拦截两个表情节点。 */
 export function isEmojiStageNode(type: string): boolean {
-	return isStatEmojiStageNode(type) || isDynEmojiStageNode(type);
+	// 拆分出的静态/动态两节点，共用 runEmojiStageGrid 调度器
+	// （静态按 workflow 前缀『静态·』选 8 主题模板，动态走绿幕链路 + video→gif 烘焙）。
+	return type === 'ComfyTV.EmojiStaticStage'
+		|| type === 'ComfyTV.EmojiAnimatedStage';
 }
 
 // ─── 多宫格故事板（ComfyTV.MultiPanelStoryboardStage）本地执行 ─────────────────

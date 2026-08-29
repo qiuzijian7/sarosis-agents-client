@@ -238,6 +238,32 @@ export function comfyDrawWidgets(
 			ctx.fillText(String(cur), fieldX + fieldW - 22, y + wH / 2);
 			ctx.fillStyle = TEXT_MUTED;
 			ctx.fillText('▾', fieldX + fieldW - 10, y + wH / 2);
+		} else if (type === 'image') {
+			// 图片预览（ComfyUI 原生 LoadImage 等）：位图挂在 widget.img（HTMLImageElement /
+			// ImageBitmap），文件名在 widget.value。在 field backdrop 上等比缩小（contain）居中
+			// 绘制；尚未加载出位图时回退为显示文件名，避免整个字段空白。
+			const img = (widget as unknown as { img?: CanvasImageSource }).img;
+			if (img) {
+				const pad = 4;
+				const availW = fieldW - pad * 2;
+				const availH = wH - pad * 2;
+				if (availW > 4 && availH > 4) {
+					const iw = (img as unknown as { naturalWidth?: number; width?: number }).naturalWidth
+						|| (img as unknown as { width?: number }).width || 0;
+					const ih = (img as unknown as { naturalHeight?: number; height?: number }).naturalHeight
+						|| (img as unknown as { height?: number }).height || 0;
+					const scale = iw && ih ? Math.min(availW / iw, availH / ih) : 1;
+					const dw = iw ? iw * scale : availW;
+					const dh = ih ? ih * scale : availH;
+					const dx = fieldX + (fieldW - dw) / 2;
+					const dy = y + (wH - dh) / 2;
+					ctx.drawImage(img, dx, dy, dw, dh);
+				}
+			} else {
+				ctx.textAlign = 'left';
+				const v = String(widget.value ?? '');
+				ctx.fillText(v.length > 18 ? `${v.slice(0, 18)}…` : v, fieldX + 8, y + wH / 2);
+			}
 		} else {
 			// text / textarea / string / fallback
 			ctx.textAlign = 'left';

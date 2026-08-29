@@ -34,6 +34,7 @@ import { RotoMaskEditor } from './RotoMaskEditor';
 import { isLayerEditorNode } from './comfyHost/layerEditor';
 import { LayerEditor } from './LayerEditor';
 import { isStoryboardEditorNode } from './comfyHost/storyboardEditor';
+import { DirectorConsoleEditor } from './DirectorConsoleEditor';
 import { isMultiPanelStoryboardNode } from './comfyHost/multiPanelStoryboard';
 import { MultiPanelStoryboardEditor } from './MultiPanelStoryboardEditor';
 import { isMaterialNode } from './comfyHost/materialEditor';
@@ -296,6 +297,11 @@ export function NodeEditorPopup({
 		});
 		cardStateStore?.set(nodeId, { runState: 'success', progress: 100 });
 	}, [nodeId, snapKey, store, cardStateStore]);
+
+	// 导演台：persist the storyboard board_state JSON（镜头分镜状态）。
+	const handleBoardState = React.useCallback((json: string) => {
+		onValuesCommit?.(nodeId, { board_state: json });
+	}, [nodeId, onValuesCommit]);
 
 
 
@@ -746,6 +752,20 @@ export function NodeEditorPopup({
 					<MultiPanelStoryboardEditor
 						initialState={typeof values.panels_state === 'string' ? values.panels_state : ''}
 						onStateChange={handleMultiPanelState}
+					/>
+				)}
+
+				{/* 导演台：Storyboard editor（左右分栏）。默认 1280×720，从 widget 宽高驱动。 */}
+				{isStoryboard && (
+					<DirectorConsoleEditor
+						initialState={typeof values.board_state === 'string' ? values.board_state : ''}
+						initialFountainText={typeof values.text === 'string' ? values.text : ''}
+						width={Number(values.width) || 1280}
+						height={Number(values.height) || 720}
+						runners={runners}
+						preference={preference}
+						onStateChange={handleBoardState}
+						onRenderUploaded={handleLayerRender}
 					/>
 				)}
 

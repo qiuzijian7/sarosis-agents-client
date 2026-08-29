@@ -1391,37 +1391,68 @@ export function registerDefaultComfyTVStages(): void {
 		comfyTV: { stageKind: 'emoji', workflowKind: 'emoji', variant: 'generator' },
 	});
 
-	// DynEmojiStage — 动态表情包（参考图 → MiniMax H3 绿幕视频 → 前端抠图 → GIF）。
-	// 通用提示词 + 基于图片生成视频；绿幕背景便于前端 chroma-key 抠图成透明 GIF。
+	// EmojiStaticStage — 静态表情包（8 主题预设，白底出图 → 抠图透明）。
+	// 拆分自原 EmojiStage：静态分支独立成节点，widget.theme 选 8 主题之一，
+	// workflow COMBO 限定为 EMOJI_BUILTIN_WORKFLOWS 里「静态·」前缀的模板。
+	// 复用 runEmojiStageGrid 执行器（按 workflow 前缀分派静态链路）。
 	registerNodeSpec({
-		type: 'ComfyTV.DynEmojiStage',
+		type: 'ComfyTV.EmojiStaticStage',
+		kind: 'schema',
+		title: '静态表情包',
+		category: 'comfyTV',
+		inputs: [
+			{ name: 'text', type: 'COMFYTV_TEXT' },
+			{ name: 'texts', type: 'COMFYTV_TEXT' },
+			{ name: 'images', type: 'COMFYTV_IMAGE' },
+		],
+		outputs: [
+			{ name: 'images', type: 'COMFYTV_IMAGES' },
+			{ name: 'image', type: 'COMFYTV_IMAGE' },
+		],
+		widgets: [
+			// theme：8 主题预设（与 emojiWorkflows.EMOJI_STATIC_* 的 label 前缀对齐）。
+			{ name: 'theme', type: 'COMBO', default: '3D', options: ['3D', 'Q版', '手绘', 'Meme', '漫画封', '粘土', '像素艺术', '可爱风'] },
+			// workflow：限定静态模板（前端 EmojiStageEditor 会按 theme 选中对应 label）。
+			{ name: 'workflow', type: 'COMBO', default: '静态·3D', options: workflowOptionsFor('emoji').filter((l: string) => l.startsWith('静态·')) },
+			{ name: 'rows', type: 'INT', default: 3, min: 1, max: 6 },
+			{ name: 'cols', type: 'INT', default: 3, min: 1, max: 6 },
+			{ name: 'prompt', type: 'TEXT', default: '' },
+			{ name: 'cells', type: 'TEXT', default: '[]' },
+			{ name: 'selected_index', type: 'INT', default: 0, min: 0, max: 35 },
+			{ name: 'run_scope', type: 'TEXT', default: 'all' },
+		],
+		color: '#f0abfc',
+		comfyTV: { stageKind: 'emoji', workflowKind: 'emoji-static', variant: 'generator' },
+	});
+	// EmojiAnimatedStage — 动态表情包（绿幕链路：透明PNG → 贴绿底 → MiniMax H3 → 抠绿 → GIF）。
+	// 拆分自原 EmojiStage：动态分支独立成节点，强制上游透明 PNG 参考图（贴绿底用 alpha），
+	// 输出透明动态视频 + GIF（执行器末段 videoToGif 转 GIF）。
+	registerNodeSpec({
+		type: 'ComfyTV.EmojiAnimatedStage',
 		kind: 'schema',
 		title: '动态表情包',
 		category: 'comfyTV',
 		inputs: [
-			// image = 参考图（必填，驱动视频生成与抠图 mask）；text = 动作/风格提示词。
-			{ name: 'image', type: 'COMFYTV_IMAGE' },
+			// images = 上游透明 PNG（静态节点产物，必需，绿底合成依赖其 alpha）。
+			{ name: 'images', type: 'COMFYTV_IMAGE' },
 			{ name: 'text', type: 'COMFYTV_TEXT' },
+			{ name: 'texts', type: 'COMFYTV_TEXT' },
 		],
 		outputs: [
-			// gif = 抠图后的透明 GIF；video = 绿幕原始视频（历史保留）。
-			{ name: 'gif', type: 'COMFYTV_IMAGE' },
+			// video = 透明动态 mp4；image = 转码后的 GIF（供 <img> 播放）。
 			{ name: 'video', type: 'COMFYTV_VIDEO' },
+			{ name: 'image', type: 'COMFYTV_IMAGE' },
 		],
 		widgets: [
-			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('emoji-dyn')[0] ?? '动态表情 (MiniMax H3)', options: workflowOptionsFor('emoji-dyn') },
-			{ name: 'prompt', type: 'TEXT', default: '' },
+			{ name: 'workflow', type: 'COMBO', default: '动态·绿幕', options: workflowOptionsFor('emoji').filter((l: string) => l.startsWith('动态·')) },
 			{ name: 'duration_s', type: 'FLOAT', default: 3, min: 2, max: 15 },
-			// 绿幕色（chroma-key 抠图用），默认纯绿 #00FF00。
-			{ name: 'chroma_color', type: 'TEXT', default: '#00FF00' },
-			// 相似度/平滑度（前端抠图容差）。
-			{ name: 'chroma_similarity', type: 'FLOAT', default: 0.4, min: 0, max: 1 },
-			{ name: 'chroma_smoothness', type: 'FLOAT', default: 0.1, min: 0, max: 1 },
+			{ name: 'fps', type: 'INT', default: 24, min: 12, max: 30 },
+			{ name: 'prompt', type: 'TEXT', default: '' },
 			{ name: 'selected_index', type: 'INT', default: 0, min: 0, max: 35 },
 			{ name: 'run_scope', type: 'TEXT', default: 'all' },
 		],
 		color: '#c084fc',
-		comfyTV: { stageKind: 'emoji-dyn', workflowKind: 'emoji-dyn', variant: 'generator' },
+		comfyTV: { stageKind: 'emoji', workflowKind: 'emoji-animated', variant: 'generator' },
 	});
 	// VideoToGifStage — 视频转 GIF（浏览器本地执行，见 videoToGif.ts 顶部注释：
 	// ComfyTV 无 gif stage，本机 ComfyUI 也只有 SaveAnimatedWEBP/PNG）。
