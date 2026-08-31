@@ -19,6 +19,13 @@ import {
 	compactMessages,
 	appendToolHistory,
 	detectToolCallLoop,
+	canonicalToolArgsHash,
+	detectXmlToolCallLeak,
+	locateTaggedIdXmlTags,
+	stripTaggedIdXmlTags,
+	hashToolResult,
+	detectToolCallPingPong,
+	type IToolCallHistoryEntry,
 	reachedReflectLimit,
 	RUN_STATE_LIMITS,
 	classifyIncompleteTurn,
@@ -175,9 +182,10 @@ suite('AgentRunState - reducer (reducer 化 Step 1)', () => {
 
 	// ─── 控制逻辑纯函数 ───────────────────────────────────────────
 	test('detectToolCallLoop counts repeated signatures and flags loop at threshold', () => {
-		// 历史条目的 argsHash 须与查询时由 args 重算的 hash 一致，才能被计入（对齐函数语义）
+		// 历史条目的 argsHash 须与查询时由 args 重算的 hash 一致，才能被计入（对齐函数语义）。
+		// 用 canonicalToolArgsHash 而非裸 JSON.stringify，避免与实现算法耦合。
 		const args = { x: 1 };
-		const hash = JSON.stringify(args).slice(0, 200);
+		const hash = canonicalToolArgsHash(args);
 		let hist = appendToolHistory([], { name: 'read', argsHash: hash });
 		let r = detectToolCallLoop(hist, 'read', args); // 1 历史匹配 → 返回 count=2（含当前）
 		assert.strictEqual(r.loop, false);
@@ -197,6 +205,234 @@ suite('AgentRunState - reducer (reducer 化 Step 1)', () => {
 		const r2 = detectToolCallLoop(hist, 'read', { x: 2 });
 		assert.strictEqual(r2.loop, false);
 		assert.strictEqual(r2.count, 1);
+	});
+
+	test('canonicalToolArgsHash is key-order independent (loop detection must not miss reordered args)', () => {
+		// 语义相同、key 顺序不同 → 必须同一签名，否则模型抖动一下参数顺序就漏检循环
+		assert.strictEqual(
+			canonicalToolArgsHash({ path: '/tmp/a.ts', maxLines: 50 }),
+			canonicalToolArgsHash({ maxLines: 50, path: '/tmp/a.ts' }),
+		);
+		// 嵌套对象也要递归排序
+		assert.strictEqual(
+			canonicalToolArgsHash({ opt: { z: 1, a: 2 }, n: 3 }),
+			canonicalToolArgsHash({ n: 3, opt: { a: 2, z: 1 } }),
+		);
+		// 数组必须保序：[1,2] 与 [2,1] 是不同调用，不能被当作相同
+		assert.notStrictEqual(
+			canonicalToolArgsHash({ xs: [1, 2] }),
+			canonicalToolArgsHash({ xs: [2, 1] }),
+		);
+		// 不同值 → 不同签名
+		assert.notStrictEqual(canonicalToolArgsHash({ x: 1 }), canonicalToolArgsHash({ x: 2 }));
+	});
+
+	test('detectToolCallLoop matches history regardless of arg key order', () => {
+		const hash = canonicalToolArgsHash({ a: 1, b: 2 });
+		const hist = appendToolHistory([], { name: 'read', argsHash: hash });
+		// 查询时传 key 顺序不同的同一语义参数 —— 仍须匹配（否则循环检测形同虚设）
+		const r = detectToolCallLoop(hist, 'read', { b: 2, a: 1 });
+		assert.strictEqual(r.loop, false);
+		assert.strictEqual(r.count, 2, 'reordered args must still count as the same call');
+	});
+
+	// ─── XML 文本工具调用泄漏检测 ───────────────────────────────────────────
+	test('detectXmlToolCallLeak detects colon-ID pseudo XML tool tags', () => {
+		// 泄漏特征：冒号 + ID 的伪 XML 标签（模型把结构化调用写成文本）
+		assert.strictEqual(detectXmlToolCallLeak('<tool_calls:abc123>\n<arg_key:1>path\n<arg_value:1>/tmp/a.ts\n'), true);
+		assert.strictEqual(detectXmlToolCallLeak('<arg_key:1>query</arg_key:1>'), true);
+		// 成对的标准工具标签
+		assert.strictEqual(detectXmlToolCallLeak('<tool_call>{"name":"x"}</tool_call>'), true);
+		assert.strictEqual(detectXmlToolCallLeak('<function_call>{"name":"y"}</function_call>'), true);
+	});
+
+	test('detectXmlToolCallLeak does NOT false-positive on ordinary text or code', () => {
+		assert.strictEqual(detectXmlToolCallLeak(undefined), false);
+		assert.strictEqual(detectXmlToolCallLeak(''), false);
+		assert.strictEqual(detectXmlToolCallLeak('calling tool now, please wait'), false);
+		// 散文里提到 tool_calls 字段
+		assert.strictEqual(detectXmlToolCallLeak('Use the tool_calls field to invoke tools.'), false);
+		// 普通代码（含 < > 与 tool_calls_list 标识符）
+		assert.strictEqual(detectXmlToolCallLeak('if (a < b && c > d) { return tool_calls_list; }'), false);
+		// 单独的未闭合标签 —— 不足以判定为泄漏（避免误伤文档/讨论）
+		assert.strictEqual(detectXmlToolCallLeak('We discussed the <tool_call> tag in the docs.'), false);
+		});
+
+		// ─── `<tag:id>` 溯源扫描 + 剥离（日志 1788011997897 实证产物）────────────
+
+		test('locateTaggedIdXmlTags 捕获已知变体，且能发现未知变体（溯源不漏）', () => {
+		// 溯源阶段若只认已知标签名，就无法发现新形态，等于白扫。
+		const leak = '<tool_calls:6124c78e>\n<tool_call:6124c78e>file_read<tool_sep:6124c78e>\n';
+		const hits = locateTaggedIdXmlTags(leak, 9);
+		assert.ok(hits.length >= 3, 'should find all three known tags');
+		assert.ok(hits.some(h => h.tag === 'tool_calls'), 'should find tool_calls');
+		assert.ok(hits.some(h => h.tag === 'tool_sep'), 'should find tool_sep');
+
+		// ★ 核心价值：未知变体同样要能捕获
+		assert.strictEqual(locateTaggedIdXmlTags('<foo:123456>').length, 1, 'unknown tag must be caught');
+		assert.strictEqual(locateTaggedIdXmlTags('<my_tag:deadbeef>').length, 1, 'underscore variant');
+		assert.strictEqual(locateTaggedIdXmlTags('<ns.tag:abc123>').length, 1, 'dotted variant');
+
+		// 命中信息可用于人工判读
+		const one = locateTaggedIdXmlTags('prefix text <tool_calls:6124c78e> suffix', 1)[0];
+		assert.strictEqual(one.tag, 'tool_calls');
+		assert.strictEqual(one.id, '6124c78e');
+		assert.strictEqual(one.index, 12);
+		assert.ok(one.snippet.includes('prefix') && one.snippet.includes('suffix'), 'snippet should include context');
+		});
+
+		test('locateTaggedIdXmlTags 不误伤正常内容（溯源不可误报）', () => {
+		for (const t of [
+			'visit <http://example.com:8080> now',
+			'<a href="x">link</a>',
+			'meeting at 12:30 sharp',
+			'const x = List<String>();',
+			'The tool calls: 3 functions were invoked.',
+		]) {
+			assert.strictEqual(locateTaggedIdXmlTags(t).length, 0, `should not match: ${t}`);
+		}
+		});
+
+		test('locateTaggedIdXmlTags 尊重 maxHits 上限，且不接受空值', () => {
+		const many = '<a:111111> <b:222222> <c:333333> <d:444444>';
+		assert.strictEqual(locateTaggedIdXmlTags(many, 2).length, 2);
+		assert.strictEqual(locateTaggedIdXmlTags(many).length, 3, 'default maxHits is 3');
+		assert.deepStrictEqual(locateTaggedIdXmlTags(undefined), []);
+		assert.deepStrictEqual(locateTaggedIdXmlTags(''), []);
+		});
+
+		test('stripTaggedIdXmlTags 彻底剥离且占位符不含标签名（切断 priming）', () => {
+		// 复刻日志 1788011997897 中 SubAgent 通过 delegate_task 回灌的片段：
+		// 它进入主会话 msg[7](role=tool) 后，会在后续**每一轮**重新发给模型。
+		const real = 'op exit and Hermes\'s `tool` role replay.' +
+			'<tool_calls:6124c78e>\n' +
+			'<tool_call:6124c78e>file_read<tool_sep:6124c78e>\n' +
+			'path G:\\CustomWorkspaces\\AIProjects\\opencode';
+
+		const stripped = stripTaggedIdXmlTags(real);
+		assert.strictEqual(locateTaggedIdXmlTags(stripped, 9).length, 0, 'no tag may survive');
+
+		// ★ 占位符若仍写着 `tool_calls:6124c78e`，等于把格式原样再喂一遍，
+		//   priming 风险并未消除 —— 故必须不含标签名与 ID。
+		assert.ok(!/tool_calls|6124c78e/i.test(stripped), 'placeholder must not leak the tag name or id');
+
+		// 但正常内容必须原样保留
+		assert.ok(stripped.includes('path G:\\CustomWorkspaces\\AIProjects\\opencode'), 'normal content must survive');
+		assert.ok(stripped.includes('Hermes'), 'surrounding prose must survive');
+		});
+
+		test('stripTaggedIdXmlTags 幂等且不改动正常内容', () => {
+		const real = '<tool_calls:6124c78e>file_read<tool_sep:6124c78e>';
+		const once = stripTaggedIdXmlTags(real);
+		assert.strictEqual(stripTaggedIdXmlTags(once), once, 'stripping twice must be a no-op');
+
+		for (const t of [
+			'visit <http://example.com:8080> now',
+			'<a href="x">link</a>',
+			'meeting at 12:30 sharp',
+			'The tool calls: 3 functions were invoked.',
+		]) {
+			assert.strictEqual(stripTaggedIdXmlTags(t), t, `must not alter: ${t}`);
+		}
+
+		// 边界
+		assert.strictEqual(stripTaggedIdXmlTags(undefined), '');
+		assert.strictEqual(stripTaggedIdXmlTags(null), '');
+		assert.strictEqual(stripTaggedIdXmlTags(''), '');
+		});
+
+	// ─── 易失字段剥离 + 结果哈希 ───────────────────────────────────────────
+	test('hashToolResult strips volatile fields so repeated sends are detectable', () => {
+		// 核心场景：发消息类工具每次返回新 messageId/ts，若参与哈希则重复发送永远检测不到
+		const a = JSON.stringify({ ok: true, messageId: 'm1', ts: 111, text: 'sent' });
+		const b = JSON.stringify({ ok: true, messageId: 'm2', ts: 222, text: 'sent' });
+		assert.strictEqual(hashToolResult(a), hashToolResult(b));
+
+		// 嵌套 / 数组内的易失字段同样剥离
+		assert.strictEqual(
+			hashToolResult(JSON.stringify({ data: { id: 7, messageId: 'x', ts: 1 } })),
+			hashToolResult(JSON.stringify({ data: { id: 7, messageId: 'y', ts: 2 } })),
+		);
+		assert.strictEqual(
+			hashToolResult(JSON.stringify({ items: [{ ts: 1, v: 'a' }] })),
+			hashToolResult(JSON.stringify({ items: [{ ts: 9, v: 'a' }] })),
+		);
+	});
+
+	test('hashToolResult does NOT strip bare id (it is usually meaningful)', () => {
+		// id 常是有意义的值（文件 id / 任务 id），剥离会把不同文件误判为同一结果
+		assert.notStrictEqual(
+			hashToolResult(JSON.stringify({ id: 'file-1', name: 'a.ts' })),
+			hashToolResult(JSON.stringify({ id: 'file-2', name: 'a.ts' })),
+		);
+	});
+
+	test('hashToolResult falls back to raw hashing for non-JSON', () => {
+		assert.strictEqual(hashToolResult('plain text'), hashToolResult('plain text'));
+		assert.notStrictEqual(hashToolResult('plain text'), hashToolResult('other text'));
+		assert.strictEqual(hashToolResult(null), hashToolResult(undefined));
+	});
+
+	// ─── Ping-pong 检测（A→B→A→B 交替）────────────────────────────────────
+	const pe = (name: string, argsHash: string, resultHash?: string): IToolCallHistoryEntry =>
+		({ name, argsHash, resultHash });
+
+	test('detectToolCallPingPong flags A-B-A-B with stable results on both sides', () => {
+		const h = [
+			pe('search', 'a1', 'rA'), pe('file_read', 'b1', 'rB'),
+			pe('search', 'a1', 'rA'), pe('file_read', 'b1', 'rB'),
+		];
+		const r = detectToolCallPingPong(h);
+		assert.strictEqual(r.pingPong, true);
+		assert.strictEqual(r.noProgressEvidence, true, '两侧结果各自稳定 → 证据充分');
+		assert.strictEqual(r.length, 4);
+	});
+
+	test('detectToolCallPingPong does NOT escalate when results still change', () => {
+		// 结果在变说明仍在推进 —— 只检出，不升级为拦截
+		const h = [
+			pe('search', 'a1', 'rA1'), pe('file_read', 'b1', 'rB1'),
+			pe('search', 'a1', 'rA2'), pe('file_read', 'b1', 'rB2'),
+		];
+		const r = detectToolCallPingPong(h);
+		assert.strictEqual(r.pingPong, true);
+		assert.strictEqual(r.noProgressEvidence, false);
+	});
+
+	test('detectToolCallPingPong does NOT escalate when result hashes missing', () => {
+		const h = [
+			pe('search', 'a1'), pe('file_read', 'b1'),
+			pe('search', 'a1'), pe('file_read', 'b1'),
+		];
+		const r = detectToolCallPingPong(h);
+		assert.strictEqual(r.pingPong, true);
+		assert.strictEqual(r.noProgressEvidence, false, '证据不足时不得升级为拦截');
+	});
+
+	test('detectToolCallPingPong ignores non-alternating repeats and short history', () => {
+		// 同一签名重复 → 属 detectToolCallLoop 职责，ping-pong 不应越俎代庖
+		assert.strictEqual(detectToolCallPingPong([
+			pe('search', 'a1', 'r'), pe('search', 'a1', 'r'),
+			pe('search', 'a1', 'r'), pe('search', 'a1', 'r'),
+		]).pingPong, false);
+		// 不足 4 条
+		assert.strictEqual(detectToolCallPingPong([
+			pe('search', 'a1', 'r'), pe('file_read', 'b1', 'r'), pe('search', 'a1', 'r'),
+		]).pingPong, false);
+	});
+
+	test('detectToolCallPingPong handles longer alternations and reports both tools', () => {
+		const h = [
+			pe('search', 'a1', 'rA'), pe('file_read', 'b1', 'rB'),
+			pe('search', 'a1', 'rA'), pe('file_read', 'b1', 'rB'),
+			pe('search', 'a1', 'rA'), pe('file_read', 'b1', 'rB'),
+		];
+		const r = detectToolCallPingPong(h);
+		assert.strictEqual(r.pingPong, true);
+		assert.strictEqual(r.noProgressEvidence, true);
+		assert.strictEqual(r.length, 6);
+		assert.strictEqual(r.toolA, 'file_read', 'toolA 为末条工具');
+		assert.strictEqual(r.toolB, 'search');
 	});
 
 	test('reachedReflectLimit respects MAX_REFLECT_ITERATIONS', () => {

@@ -758,6 +758,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		const { messages: anthropicMsgs, systemPrompt } = MessageFormatConverter.toAnthropic(messages, {
 			systemPrompt: options.systemPrompt,
 			tools: options.tools,
+			forkContext: options.forkContext,
 		});
 
 		const body: Record<string, unknown> = {

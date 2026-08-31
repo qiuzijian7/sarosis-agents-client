@@ -123,6 +123,26 @@ export function stripAnsiSequences(input: string): string {
 	return out.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 }
 
+/**
+ * 终端注入序列清洗（P1-2，对齐 openclaw `stripDsrRequests`）。
+ * 命令输出可能夹带 CSI 控制序列（设备状态报告 DSR、光标位置报告 CPR、OSC 转义、
+ * 8-bit CSI）对宿主终端做 prompt injection。`ansi` 阶段已剥大部分，但只认 `ESC [`
+ * 表单，这里显式兜底 8-bit CSI（0x9B）与裸 ESC 字母序列，并作为**独立、必定执行**
+ * 的阶段（不依赖命令形态），确保任何命令输出都不会把注入序列透传给模型。
+ */
+export function stripTerminalInjectionSequences(input: string): string {
+	if (!input) { return ''; }
+	return input
+		// 8-bit CSI（0x9B）表单
+		.replace(/\x9b[0-9;:<>=?]*[ -/]*[@-~]/g, '')
+		// 设备状态报告 / 光标位置报告：ESC [ ( ? | > | = )? <digits> ; <digits> ( c | R )
+		.replace(/\x1b\[[?>=]?[0-9;]*(?:c|R)/gi, '')
+		// OSC（ESC ] ... ST/BEL）兜底
+		.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, '')
+		// 裸 ESC 后跟大小写字母（字符集 / 模式切换等）
+		.replace(/\x1b[=>A-Za-z]/g, '');
+}
+
 /** 需要脱敏的凭据形态。顺序无关（各自独立匹配）。 */
 const SECRET_PATTERNS: readonly { readonly re: RegExp; readonly label: string }[] = [
 	{ re: /\bBearer\s+[A-Za-z0-9\-._~+/]{16,}=*/gi, label: 'Bearer' },
@@ -290,6 +310,7 @@ export function foldNpmNoise(input: string): string {
 const COMMON_STAGES: readonly IPipelineStage[] = [
 	{ name: 'progress', run: collapseProgressFrames },
 	{ name: 'ansi', run: stripAnsiSequences },
+	{ name: 'inject', run: stripTerminalInjectionSequences },
 	{ name: 'redact', run: redactSecretsInOutput },
 	{ name: 'longline', run: input => foldLongLines(input) },
 ];

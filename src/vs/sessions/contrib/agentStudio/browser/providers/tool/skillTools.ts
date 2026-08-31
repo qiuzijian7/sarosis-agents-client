@@ -55,6 +55,7 @@ import type { IToolResultContent } from '../../../common/providers.js';
 import type { URI } from '../../../../../../base/common/uri.js';
 import { SkillManagerTool } from '../../skillManagerTool.js';
 import type { ISkillRegistry } from '../../../common/skills.js';
+import { renderSkillBody } from '../../../common/skills.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../../common/sarosPaths.js';
@@ -161,7 +162,7 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 		description: skill.description ?? '',
 		category: skill.category ?? '',
 		activation: skill.activation,
-			content: (skill.prompt ?? '').slice(0, MAX_SKILL_BYTES),
+			content: renderSkillBody(skill).slice(0, MAX_SKILL_BYTES),
 			match: skill.match ?? [],
 			recommendedTools: skill.recommendedTools ?? [],
 			source: skill.source ?? '',

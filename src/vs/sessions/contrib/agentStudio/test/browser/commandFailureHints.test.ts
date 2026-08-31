@@ -6,6 +6,7 @@
 import assert from 'assert';
 import {
 	annotateCommandFailure,
+	annotateMaskedSuccess,
 	renderFailureHint,
 } from '../../browser/providers/tool/commandFailureHints.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -137,5 +138,120 @@ suite('commandFailureHints — 渲染', () => {
 		assert.ok(rendered.startsWith('[next-step] '), '应有统一前缀便于模型识别');
 		assert.ok(rendered.includes('out-of-memory'));
 		assert.ok(!rendered.includes('undefined'));
+	});
+});
+
+// ── ★ 点名缺失的具体命令（2026-08-30，日志 20260829T232635 事故）────────────
+//
+// 事故：模型写 `... | Select-Object -Last 30; Write-Host "EXIT:$LASTEXITCODE"`，
+// 在 Git Bash 里得到 `Select-Object: command not found`。原提示只有通用文案
+// 「verify the executable name…try `which <cmd>`」，模型要多花一轮才能自己
+// 认出是哪个命令不存在。点名后一轮即懂。
+
+suite('commandFailureHints — command-not-found 点名', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('★ 事故原样：bash 的 `X: command not found` 点名 X', () => {
+		const h = annotateCommandFailure(127, 'Select-Object: command not found; Write-Host: command not found');
+		assert.ok(h);
+		assert.strictEqual(h.id, 'command-not-found');
+		assert.ok(h.text.includes('`Select-Object`'), '应点名缺失的命令');
+		assert.ok(h.text.includes('do not retry unchanged'));
+		assert.ok(!h.text.includes('undefined'));
+	});
+
+	test('bash 带 `line N:` 前缀也能抓到', () => {
+		const h = annotateCommandFailure(127, 'bash: line 1: foo: command not found');
+		assert.ok(h);
+		assert.ok(h!.text.includes('`foo`'), `实际: ${h!.text}`);
+	});
+
+	test('zsh 语序相反（`command not found: X`）也能抓到', () => {
+		const h = annotateCommandFailure(127, 'zsh: command not found: rg');
+		assert.ok(h);
+		assert.ok(h!.text.includes('`rg`'), `实际: ${h!.text}`);
+	});
+
+	test('cmd.exe / PowerShell / 中文三种措辞都能抓到', () => {
+		assert.ok(annotateCommandFailure(255, "'Out-String' is not recognized as an internal or external command")
+			?.text.includes('`Out-String`'));
+		assert.ok(annotateCommandFailure(1, "The term 'Get-Content' is not recognized as a name of a cmdlet")
+			?.text.includes('`Get-Content`'));
+		assert.ok(annotateCommandFailure(255, "'foo' 不是内部或外部命令，也不是可运行的程序")
+			?.text.includes('`foo`'));
+	});
+
+	test('★ 控制组：`python` 缺失仍归更精准的 bare-python-windows', () => {
+		// 排序很重要：通用 command-not-found 若排在前面，会把 python 的特化建议
+		// 「用 python3 / 虚拟环境」挤掉。
+		const h = annotateCommandFailure(255, "'python' is not recognized as an internal or external command");
+		assert.ok(h);
+		assert.strictEqual(h!.id, 'bare-python-windows');
+		assert.ok(h!.text.includes('python3'));
+	});
+});
+
+// ── ★ 假成功检测（exit 0 但其实是失败）─────────────────────────────────────
+//
+// `cargo build 2>&1 | tail -20` 退出码是 tail 的、不是 cargo 的（bash 无 pipefail）。
+// Hermes 注释里点名了这件事：opencode 只有描述侧禁令（"do NOT pipe through
+// head/tail"），Hermes 额外加了结果侧兜底。我们此前正是缺这一环。
+
+suite('commandFailureHints — annotateMaskedSuccess', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('★ `cmd | tail` 掩盖了上游失败', () => {
+		const h = annotateMaskedSuccess('cargo build 2>&1 | tail -20', 'error[E0308]: mismatched types\n  expected i32');
+		assert.ok(h, '应识别出假成功');
+		assert.strictEqual(h!.id, 'masked-success-pipe');
+		assert.ok(h!.text.includes('LAST pipeline command'));
+		assert.ok(h!.text.includes('Treat this run as FAILED'), '必须让模型改判为失败');
+		assert.ok(!h!.text.includes('undefined'));
+	});
+
+	test('★ `cmd || echo fallback` 掩盖了上游失败', () => {
+		const h = annotateMaskedSuccess('npm run build || echo "BUILD FAILED"', 'npm ERR! missing script: build');
+		assert.ok(h);
+		assert.strictEqual(h!.id, 'masked-success-or');
+		assert.ok(h!.text.includes('`||` fallback'));
+	});
+
+	test('pytest 汇总行（`3 failed`）也算强失败特征', () => {
+		const h = annotateMaskedSuccess('pytest 2>&1 | tail -30', '===== 3 failed, 12 passed in 4.02s =====');
+		assert.ok(h);
+		assert.strictEqual(h!.id, 'masked-success-pipe');
+	});
+
+	test('env 赋值前缀不影响首个 token 判定', () => {
+		// firstToken 必须跳过 `FOO=bar`，否则整个函数会因误判成只读头而漏报
+		const h = annotateMaskedSuccess('CI=1 cargo build | tail -5', 'error: could not compile `foo`');
+		assert.ok(h, '`CI=1` 应被跳过，首个真实 token 是 cargo');
+		assert.strictEqual(h!.id, 'masked-success-pipe');
+	});
+
+	test('★★ 控制组 1：只读管道不误报（输出合法地含 error 文本）', () => {
+		assert.strictEqual(
+			annotateMaskedSuccess('grep -rn "npm ERR" logs/ | head -20', 'npm ERR! whatever'),
+			undefined,
+			'`grep | head` 上游谈不上失败，不得报假成功',
+		);
+	});
+
+	test('★★ 控制组 2：输出无强失败特征 → 不报', () => {
+		assert.strictEqual(
+			annotateMaskedSuccess('cargo build | tail -20', '   Compiling foo v0.1.0\n    Finished dev [unoptimized]'),
+			undefined,
+			'光有掩盖形态、没有失败特征，不得报假成功',
+		);
+	});
+
+	test('★★ 控制组 3：没有掩盖形态（裸命令）→ 不报', () => {
+		assert.strictEqual(
+			annotateMaskedSuccess('cargo build', 'npm ERR! something'),
+			undefined,
+			'裸命令的 exit 0 就是真实退出码，不能无端怀疑',
+		);
 	});
 });

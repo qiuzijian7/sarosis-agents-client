@@ -140,6 +140,8 @@ src/vs/**/*.d.ts
 src/vs/**/*.js.map
 # Agent Studio webview esbuild bundles (debug/prod) — build artifacts
 src/vs/sessions/contrib/agentStudio/webview/media-*/
+# esbuild 打包产物（测试用 CJS bundle，由 build-serializer.mjs 生成）
+src/vs/**/*.cjs
 .sarosisworkspace
 .claude
 萨罗斯平台研发效能汇报.html

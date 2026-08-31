@@ -15,6 +15,8 @@
  * 这两个 helper 在工具实现层解决——不改系统提示词、不针对个案硬编码。
  */
 
+import type { ShellDialect } from './shellPlatformPrompt.js';
+
 /** Unix-only 命令 → PowerShell 等价写法（用于护栏错误消息）。 */
 export const UNIX_ONLY_COMMAND_HINTS: Record<string, string> = {
 	head: 'Select-Object -First <N>',
@@ -72,8 +74,45 @@ export function detectPowerShellOnlyCmdlet(command: string): string | undefined 
 	return undefined;
 }
 
-/** 反向护栏的错误消息（给出正确的 powershell 包裹写法）。 */
-export function powerShellCmdletGuardMessage(cmdlet: string, toolName: string): string {
+/**
+ * 由 PowerShell cmdlet 反查等价的 POSIX 命令（{@link UNIX_ONLY_COMMAND_HINTS} 的逆映射）。
+ *
+ * 刻意**不另建一张映射表** —— 两张表必然漂移（本项目已多次因「两份判据/文案漂移」
+ * 踩坑）。逆查不到（如 Get-Content / Get-ChildItem 在上表里没有 POSIX 对应项）返回
+ * undefined，由调用方退化为不带等价写法的通用文案。
+ */
+function posixEquivalentFor(cmdlet: string): string | undefined {
+	for (const [unix, ps] of Object.entries(UNIX_ONLY_COMMAND_HINTS)) {
+		// 'Select-Object -First <N>' → 'Select-Object'
+		if (ps.split(/[\s<]/)[0].toLowerCase() === cmdlet.toLowerCase()) { return unix; }
+	}
+	return undefined;
+}
+
+/**
+ * 反向护栏的错误消息：PowerShell cmdlet 裸用在**非 PowerShell** 的 shell 里。
+ *
+ * @param dialect 当前 shell 方言（由 Git Bash 探测 + 平台决定）。缺省 'cmd' 保持
+ *   既有行为，避免波及其它调用点。
+ */
+export function powerShellCmdletGuardMessage(cmdlet: string, toolName: string, dialect: ShellDialect = 'cmd'): string {
+	// ★ 按方言分派（2026-08-30）：posix（Git Bash）下 cmdlet 同样不存在，但**失败码是
+	// 127**、正确做法是改用 POSIX 命令，而不是包一层 powershell。2026-08-30 前本函数
+	// 写死 cmd.exe 语境，且调用方把护栏整体门控在「无 Git Bash」分支内，导致 Git Bash
+	// 下这类必败命令完全不拦（日志 20260829T232635：`Select-Object: command not found`）。
+	if (dialect === 'posix') {
+		const equiv = posixEquivalentFor(cmdlet);
+		return (
+			`${toolName}: '${cmdlet}' is a PowerShell cmdlet, but this command runs in a POSIX shell ` +
+			`(Git Bash) where PowerShell cmdlets do not exist — running this would fail with ` +
+			`"${cmdlet}: command not found" (exit 127).\n` +
+			(equiv
+				? `Use the POSIX equivalent instead: \`${equiv}\` (${cmdlet} → ${equiv}).\n`
+				: `Use the POSIX equivalent instead (head / tail / grep / sed / awk — NOT PowerShell cmdlets).\n`) +
+			`Do NOT wrap it in powershell -Command: you are already in a POSIX shell.\n` +
+			`Then reissue ${toolName} with the corrected command.`
+		);
+	}
 	return (
 		`${toolName}: '${cmdlet}' is a PowerShell cmdlet and does not exist in cmd.exe — running this would fail with ` +
 		`"'${cmdlet}' is not recognized as an internal or external command" (exit 255).\n` +

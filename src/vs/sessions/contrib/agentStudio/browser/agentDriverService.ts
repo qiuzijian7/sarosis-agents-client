@@ -32,6 +32,9 @@ import { isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { detectGitBash } from './providers/tool/gitBashProvider.js';
+import { resolveShellDialect } from '../common/shellDialect.js';
 import { restoreRunState } from '../common/agentRunState.js';
 import type { AgentRunState, AgentRunStateSnapshot } from '../common/agentRunState.js';
 
@@ -731,7 +734,21 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		// （dir ... | head -50，日志 1786264843850）。这里注入 system prompt 层，
 		// 模型每轮决策时都可见。子代理经继承自动获得。
 		try {
-			const envDirective = buildEnvironmentDirective();
+			// ★ 2026-08-30（日志 20260829T232635）：方言必须由**运行时探测**决定，不能由
+			// 平台常量推断。此前 buildEnvironmentDirective() 在 Windows 上静态写死
+			// 「via PowerShell/cmd.exe + 用 Select-Object / Get-Content」，而
+			// execute_code / terminal 实际经 Git Bash 以 bash 执行（Hermes 环境归一）→
+			// 模型照本段写 PowerShell cmdlet → `Select-Object: command not found`（exit 127）。
+			//
+			// detectGitBash 结果**进程级缓存**且带超时保护（见 gitBashProvider.ts），
+			// 首次后零开销、值恒定 → 放进 stable 层不会造成前缀漂移。
+			// fileService 经 invokeFunction 懒取：不在构造函数里加依赖，避免影响既有
+			// DI 装配与单测（本文件已有同款「懒获取打破循环依赖」用法，见 _triggerWorkflowSkill）。
+			const fileService = this._instantiationService.invokeFunction((accessor) => accessor.get(IFileService));
+			const gitBash = await detectGitBash(fileService, this._logService);
+			// 方言由 common/shellDialect.ts 的统一真源解析，与 execute_code / terminal
+			// 的运行时护栏**同源**，杜绝「描述说 PowerShell、执行走 Git Bash」。
+			const envDirective = buildEnvironmentDirective({ dialect: resolveShellDialect(!!gitBash) });
 			if (envDirective) {
 				pushSeg(stableParts, 'environment', envDirective);
 			}

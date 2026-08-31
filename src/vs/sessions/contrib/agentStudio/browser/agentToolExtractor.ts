@@ -84,12 +84,37 @@ export function extractToolCallsFromText(
 
 	// 3. XML 格式: <tool_call>...</tool_call> 或 <function_call>...</function_call>
 	if (results.length === 0) {
-		const hasXmlTags = /<(?:tool_call|function_call|tool_use|invoke|tool)[\s>]/i.test(text);
+		// ─── 兼容「标签名+冒号+ID」的伪 XML（模型泄漏格式）─────────────────
+		// 旧正则 `/<(?:tool_call|...|tool)[\s>]/` 要求标签名后紧跟空白或 `>`，
+		// 但模型实际吐的是 `` / `<arg_key:6124c78e>`：
+		//   · `tool_call` 后接 `s` → 不匹配；退到 `tool` 后接 `_` → 也不匹配。
+		// 结果 hasXmlTags 恒为 false，日志显示"文本里没有 XML"，严重误导排查
+		// （日志 1788006127437 第 12259 行实证：3230c 文本明明全是伪标签却报 false）。
+		// 此处放宽为：允许可选属性段 + 可选 `:id` 后缀 + 可选 `>`。
+		const hasXmlTags = /<\s*(?:tool_calls?|function_calls?|tool_use|invoke|tool|arg_key|arg_value|parameter|tool_sep)\b[^>]*>/i.test(text);
 		deps.logService.info(`[AgentOS] _tryExtractToolCallsFromText: XML extraction attempt, hasXmlTags=${hasXmlTags}, textLen=${text.length}`);
-		const xmlResults = extractToolCallsFromXml(deps, text);
-		if (xmlResults.length > 0) {
-			deps.logService.info(`[AgentOS] _tryExtractToolCallsFromText: found ${xmlResults.length} tool call(s) in XML format`);
-			results.push(...xmlResults);
+
+		// ─── 白名单为空时**不得**从文本提取（与下方 Python 分支同一原则）────
+		// 若本轮根本没给模型下发任何工具（enabledTools 为空），模型写出的任何
+		// 「工具调用」都不可能是真实调用意图 —— 它没见过工具 schema，写出来的
+		// 要么是凭训练记忆**编造**的工具名，要么是在**举例/引用**。
+		// 日志 1788011997897 实证：SubAgent 轮 toolsSent=0，模型在讨论
+		// "Hermes's `tool` role replay" 时**举例**写下伪 XML，被此处提取成
+		// [file_read, search_files] 并**实际执行** —— 举例被当成了指令执行。
+		// 判定用 `size === 0` 而非 `!enabledToolNames`：后者表示「调用方未传」，
+		// 那种情况保持原有行为，避免波及其它调用点。
+		if (enabledToolNames && enabledToolNames.size === 0) {
+			deps.logService.warn(
+				`[AgentOS] _tryExtractToolCallsFromText: no tools were offered to the model this round, ` +
+				`so any XML-shaped call in its text is fabricated or illustrative — skipping extraction ` +
+				`(textLen=${text.length}, hasXmlTags=${hasXmlTags})`,
+			);
+		} else {
+			const xmlResults = extractToolCallsFromXml(deps, text);
+			if (xmlResults.length > 0) {
+				deps.logService.info(`[AgentOS] _tryExtractToolCallsFromText: found ${xmlResults.length} tool call(s) in XML format`);
+				results.push(...xmlResults);
+			}
 		}
 	}
 
@@ -277,7 +302,9 @@ function processXmlTagContent(deps: ToolExtractorDeps, content: string, results:
 		const cleanContent = content.split(/\s*<\//)[0].trim();
 
 		const argsFromNested: Record<string, string> = {};
-		const nestedArgRegex = /<arg_key>\s*([^<]+?)\s*<\/arg_key>\s*<arg_value>\s*([^<]*?)\s*<\/arg_value>/gi;
+		// 兼容模型泄漏的「标签名+冒号+ID」变体：<arg_key:6124c78e>...</arg_key:6124c78e>。
+		// 旧正则只认裸 `<arg_key>`，导致整批参数解析不到（日志 1788006127437 实证）。
+		const nestedArgRegex = /<arg_key(?::[\w-]+)?>\s*([^<]+?)\s*<\/arg_key(?::[\w-]+)?>\s*<arg_value(?::[\w-]+)?>\s*([^<]*?)\s*<\/arg_value(?::[\w-]+)?>/gi;
 		let nMatch: RegExpExecArray | null;
 		while ((nMatch = nestedArgRegex.exec(content)) !== null) {
 			argsFromNested[nMatch[1].trim()] = nMatch[2].trim();
@@ -412,7 +439,17 @@ function extractToolCallsFromPythonSyntax(
 			if (enabledTools && enabledTools.size > 0) {
 				if (!enabledTools.has(funcName)) { continue; }
 			} else {
-				deps.logService.warn(`[AgentOS] _extractToolCallsFromPythonSyntax: enabledTools is empty, cannot filter "${funcName}"`);
+				// ─── enabledTools 为空时**必须跳过**，而非放行 ──────────────────
+				// 旧逻辑在白名单缺失时直接放行，把正文里的普通词当工具名入库：
+				// 日志 1788006127437 实证 —— wrap-up 轮 tools=0，模型正文只是提到
+				// "SET_CHANGED" / "chat" / "tools"，就被逐个 warn 并当作调用候选，
+				// 只因恰好后面跟了括号才侥幸未生成 toolCall。这是纯幻觉来源：
+				// 无白名单即无验证依据，放行等于凭空造工具调用去打扰模型。
+				deps.logService.warn(
+					`[AgentOS] _extractToolCallsFromPythonSyntax: enabledTools is empty, ` +
+					`skipping unverifiable candidate "${funcName}" (would be a hallucinated call)`,
+				);
+				continue;
 			}
 
 			const args = parsePythonKwargs(argsStr);

@@ -1,6 +1,6 @@
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { mainWindow } from '../../../base/browser/window.js';
-import { IAgentChatMessage, IToolCall, ITextMessagePart, IThinkingMessagePart, IMessagePart, CHAT_MODE_UI } from './agentChatTypes.js';
+import { IAgentChatMessage, IToolCall, ITextMessagePart, IThinkingMessagePart, IMessagePart, IConfirmationData, CHAT_MODE_UI } from './agentChatTypes.js';
 import { buildKeyedParts, lastTextPartKey, queryPartElements, PART_KEY_ATTR, IKeyedPart } from './agentChatPanel.keyedParts.js';
 import { AgentChatPanelDropdowns } from './agentChatPanel.dropdowns.js';
 import { filterChildSubAgents } from './subAgentCardUtils.js';
@@ -521,9 +521,13 @@ private _buildMsgUpdateCtx(idx: number, msg: IAgentChatMessage, el: HTMLElement)
 
 // Fast rules：keyed-reconcile 统一处理所有 part 变化（替代原 6 条手写规则）
 private readonly _msgUpdateFastRules: IMsgUpdateRule[] = [
+	// ★ 必须排在 keyed-reconcile **之前**：后者在「流式 + 有 parts」时一律认领并
+	// 短路责任链，而沙箱确认恰恰发生在流式期间（agent loop 暂停等待用户决策，
+	// isStreaming 仍为 true）。若被它拦截，确认卡片/内嵌询问按钮永远不会渲染。
+	{ name: 'confirmation-change', handle: (c) => this._ruleConfirmationChange(c) },
 	{ name: 'thinking-state-change', handle: (c) => this._ruleThinkingStateChange(c) },
 	{ name: 'keyed-reconcile', handle: (c) => this._ruleKeyedReconcile(c) },
-	];
+];
 
 // Slow rules：顺序即原分支顺序（流式结束转换 → 首个 tool_start 追加 → 工具状态同步）
 private readonly _msgUpdateSlowRules: IMsgUpdateRule[] = [
@@ -532,19 +536,88 @@ private readonly _msgUpdateSlowRules: IMsgUpdateRule[] = [
 	{ name: 'tool-status-sync', handle: (c) => this._ruleToolStatusSync(c) },
 ];
 
-/** thinking 状态变化 → 强制重建（phase activity indicator 增删改 fast path 处理不全）。 */
-private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
-	// 仅查 .thinking-indicator（thking 指示器自身带 .phase-activity-indicator.phase-thinking）。
-	// 工具参数流式期间 _ensurePhaseIndicator 会插入 .phase-activity-indicator.phase-executing
-	// 显示「正在生成工具调用参数…」，若误纳进此查询会与 shouldShowThinking 失配，
-	// 触发整条消息 _rebuildMessageElement → 所有 thinking/delegate/tool 卡片整体重渲染闪烁。
-	const existingIndicator = ctx.el.querySelector('.thinking-indicator');
-	const shouldShowThinking = !!(ctx.msg.isStreaming && ctx.msg.isThinking && !ctx.msg.thinking);
-	if (!!existingIndicator === shouldShowThinking) { return false; }
+/**
+ * 确认卡片（安全沙箱受限→询问用户）出现或状态变化 → 全量重建一次。
+ *
+ * ★★ 2026-08-31：修复「工具卡片里没有询问按钮」。
+ *
+ * 现象：工具因安全沙箱限制失败（路径不在允许的工作区目录内）时，设计上应当
+ * 让用户裁决（允许本次 / 允许此工作区 / 改用建议路径 / 取消）——
+ *   · 写文件类工具（file_write/patch/file_edit/create_file）→ 按钮**内嵌在工具卡片**里
+ *     （见 WRITE_FILE_TOOL_KEYS 与 _createWriteFileToolCard 的 confirmation 参数）
+ *   · 其它工具（如 terminal）→ 追加**独立确认卡片**
+ * 但实测两者都不显示。
+ *
+ * 根因是责任链短路：`_ruleKeyedReconcile` 在「流式 + 有 parts」时**一律认领**并
+ * `return`，而它只同步 parts、**完全不处理 confirmation**。沙箱确认又恰恰发生在
+ * 流式期间（agent loop 暂停等待用户决策，isStreaming 仍为 true）——于是每次都被
+ * keyed-reconcile 拦截，confirmation 永远走不到渲染。
+ *
+ * 为什么必须全量重建而不能就地追加：内嵌按钮是 `_createToolCallCard(tc, confirmation)`
+ **在创建卡片时**传入的，卡片已存在时无法就地补按钮，只能重建。
+ *
+ * 重建代价可接受：confirmation 只在沙箱违规时产生（低频），且一次裁决最多两次
+ * （pending → approved/cancelled）。用签名去重，避免同状态重复重建。
+ */
+private _ruleConfirmationChange(ctx: IMsgUpdateCtx): boolean {
+	const cf = ctx.msg.confirmation as IConfirmationData | undefined;
+	// 签名含 id + status：pending→resolved 的状态翻转也需要重建（移除按钮/置灰）
+	const sig = cf ? `${cf.id}:${cf.status ?? 'pending'}` : '';
+	const prev = this._confirmationSig.get(ctx.msg.id);
+	if (prev === sig) { return false; }
+	this._confirmationSig.set(ctx.msg.id, sig);
 	if ((window as any).__SAROSIS_PARTS_DIAG) {
-		console.info(`[PartsDiag] _updateMessageDom idx=${ctx.idx} msgId=${ctx.msg.id} → REBUILD (thinking state changed)`);
+		console.info(`[PartsDiag] _updateMessageDom idx=${ctx.idx} msgId=${ctx.msg.id} → REBUILD (confirmation ${sig || 'cleared'})`);
 	}
-	this._rebuildMessageElement(ctx.el, ctx.msg, 'msg:thinking-state-change');
+	this._rebuildMessageElement(ctx.el, ctx.msg, 'msg:confirmation-change');
+	return true;
+}
+
+/**
+ * thinking 指示器显隐变化 → **就地**增删指示器，不重建整条消息。
+ *
+ * ★★ 2026-08-31 优化（并顺带修掉一个死循环重建）：
+ *
+ * 原实现在此处做 `_rebuildMessageElement` 整条全量重建。实测单条消息因此重建
+ * **27 次**（该消息 72 个 parts），一次 turn 内 FullRefresh 达 40 次——每次都要
+ * 重建所有 part 元素并重解析 markdown，是后期卡顿/闪烁的主因。
+ *
+ * 而指示器本就是由 `_ensurePhaseIndicator` **就地**维护的（先 remove 旧的
+ * `.phase-activity-indicator`、再 append 新的），且它在 `_reconcileParts` 末尾
+ * 每次都会被调用 —— 根本没有重建整条消息的必要。
+ *
+ * 更要紧的是原判据与 `_ensurePhaseIndicator` **互相矛盾**：
+ *   本规则（旧）  shouldShowThinking = isStreaming && isThinking && **!thinking**
+ *   _ensurePhaseIndicator            = isThinking
+ *   （后者 2026-07-26 刻意去掉了 !thinking，见其注释：thinking 卡片跨轮累积后，
+ *     turn 间等待 LLM 时同样需要「正在思考…」指示）
+ * 于是「isThinking 为真且已有 thinking 文本」时：后者建出指示器 → 前者判定
+ * 「不该有」→ 不一致 → 重建；重建后指示器又被建出 → **每一次 updateMessage
+ * 都全量重建一次**，直到 thinking 结束。40 次 FullRefresh 即由此而来。
+ *
+ * 另有正确性风险：本规则是 **fast rule**，返回 true 会短路后面的 slow rules，
+ * 其中就包含 `_ruleStreamEndTransition`（流式结束转换，负责渲染正文）。若在
+ * turn 结束、指示器待移除的那一刻命中，就会把结束转换整个挡掉 → 正文不渲染。
+ * 故非流式时本规则一律**不认领**，把收尾交给 slow rules。
+ */
+private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
+	// 非流式（turn 结束/已结束）→ 不认领：需要让 slow rules 里的流式结束转换
+	// 有机会执行，否则会被本 fast rule 短路掉（责任链 `return` 直退）。
+	if (!ctx.msg.isStreaming) { return false; }
+	// 仅查 .thinking-indicator（thinking 指示器自身带 .phase-activity-indicator.phase-thinking）。
+	// 工具参数流式期间 _ensurePhaseIndicator 会插入 .phase-activity-indicator.phase-executing
+	// 显示「正在生成工具调用参数…」，若误纳进此查询会与 shouldShowThinking 失配。
+	const existingIndicator = ctx.el.querySelector('.thinking-indicator');
+	// 判据与 _ensurePhaseIndicator 保持一致（不再要求 !thinking）
+	const shouldShowThinking = !!(ctx.msg.isStreaming && ctx.msg.isThinking);
+	if (!!existingIndicator === shouldShowThinking) { return false; }
+	const bubble = ctx.el.querySelector('.chat-bubble') as HTMLElement | null;
+	if (!bubble) { return false; }
+	if ((window as any).__SAROSIS_PARTS_DIAG) {
+		console.info(`[PartsDiag] _updateMessageDom idx=${ctx.idx} msgId=${ctx.msg.id} → thinking indicator ${shouldShowThinking ? 'INSERT' : 'REMOVE'} (in place)`);
+	}
+	// 就地同步：内部会先移除旧指示器再按需 append，O(1)，不触碰任何 part。
+	this._ensurePhaseIndicator(bubble, ctx.msg);
 	return true;
 }
 
@@ -617,22 +690,79 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 	 * 已调度过的 part 文本快照（key = part 元素）。
 	 *
 	 * ★ 2026-08-21（日志 1787323320262）：`_updatePartInPlace` 对**每个** text part 都调
-	 * `mdScheduler.schedule()`，而 `StreamingRenderScheduler` 是**单 target** 设计
-	 * （`_target`/`_lastContent`/`_lastRendered` 各一份）。后期一条消息有数十个 text
-	 * part 时，每帧 N 次 schedule 里只有最后一次的 target 存活，前面全被覆盖 —— 既是纯
-	 * 浪费，更糟的是 `_lastRendered` 这个**跨容器共享**的基线会在 target 切换时错位，
-	 * 使 `renderIncremental` 拿着别的容器的基线做增量 → 失败 → 回退 `replaceChildren`
-	 * 全量替换整段 DOM，正是可见的「抖动/闪烁」。
+	 * `mdScheduler.schedule()`。彼时 `StreamingRenderScheduler` 是**单 target** 设计
+	 * （`_target`/`_lastContent`/`_lastRendered` 各一份），每帧 N 次 schedule 里只有最后
+	 * 一次的 target 存活，前面全被覆盖、永不渲染 —— 这是「消息在某个 text part 处截断」
+	 * 的直接来源；且 `_lastRendered` 跨容器共享，target 切换时基线错位，使
+	 * `renderIncremental` 拿着别的容器的基线做增量 → 失败 → 回退 `replaceChildren`
+	 * 全量替换整段 DOM，正是可见的「抖动/闪烁」。文本快照去重是对该设计的**缓解**。
 	 *
-	 * 用文本快照去重后，稳态下每帧只有真正在增长的那一个 part 会 schedule，target 不再
-	 * 被覆盖，基线也就不会错位。比「只调度最后一个 text part」更稳妥：不依赖「历史 part
-	 * 一定不再变化」这一假设，任何 part 真的变了依然会被正确调度。
+	 * ★ 2026-08-31：调度器已改为**多 target**（`_targets` Map + 各容器独立的
+	 * `_lastRendered` 基线），覆盖与错位从根上消除。快照去重保留，作用退化为纯粹的
+	 * 「避免无谓 schedule/渲染」：稳态下每帧只有真正在增长的那一个 part 会入队。
+	 * 比「只调度最后一个 text part」更稳妥：不依赖「历史 part 一定不再变化」这一假设，
+	 * 任何 part 真的变了依然会被正确调度。
 	 */
 	private readonly _scheduledPartText = new WeakMap<HTMLElement, string>();
 
-	/** 就地更新已有 part 元素（text → mdScheduler 节流；thinking → header + body）。 */
+/**
+ * 每条消息已渲染的确认卡片签名（`${id}:${status}`，无确认时为空串）。
+ * key 用 **msg.id**（逻辑标识），**不能**用 DOM 元素。
+ *
+ * 原因：`_ruleConfirmationChange` 命中后会调 `_rebuildMessageElement`，后者用
+ * `replaceChild(newEl, existingEl)` 把旧节点整体换掉。若以 DOM 元素为 key，旧元素
+ * 离 DOM 后 WeakMap 查新元素必为 undefined → 永远判定为「又变了」→ 每帧重建 →
+ * 重建风暴（日志表现为 `[FullRefresh] msg:confirmation-change ×21/×41/×61`）。
+ * 改用 msg.id 即与元素替换无关，状态稳定后才不会重复重建。
+ *
+ * 用于 `_ruleConfirmationChange` 去重：confirmation 的 pending→resolved 翻转也要
+ * 触发一次重建（否则按钮不消失），故签名必须包含 status。
+ */
+private readonly _confirmationSig = new Map<string, string>();
+
+/**
+ * finalize 阶段已渲染的 part 文本快照（key = part 元素）。
+ *
+ * 与 `_scheduledPartText` **刻意分开**：后者在流式 `schedule()` 之前就写入，无法
+ * 表达「DOM 是否真的渲染过」；而 finalize 需要的是「本次收尾是否已把该文本渲染进
+ * DOM」。二者混用会让流式期间的丢失无法自愈（见 _updatePartInPlace 注释）。
+ */
+private readonly _finalizedPartText = new WeakMap<HTMLElement, string>();
+
+	/** 就地更新已有 part 元素（text → mdScheduler 节流；thinking → header + body）。
+	 *
+	 * ★ 2026-08-30 修复（二）：非流式时（finalize / 全量重建后收尾），直接同步 renderFull
+	 * 而不走节流调度器——收尾是终态，没有继续节流的必要，且能兜住流式期间的任何遗漏。
+	 *
+	 * ★★ 2026-08-30 修复（三）：上面这条修复此前**被快照守卫架空**——守卫写在最前面，
+	 * 而流式期间丢失渲染的 part 恰恰已经写好了快照（_scheduledPartText 在 schedule
+	 * 前就 set 了）。于是 finalize 时 `snapshot === part.text` 命中 → 直接 return →
+	 * 丢失永久化，表现为「消息在某个 text part 处截断，且不会恢复」。
+	 * 因此非流式分支必须**先于**守卫执行。
+	 *
+	 * 去重改用**独立**的 `_finalizedPartText`：语义是「该文本是否已渲染进 DOM」，
+	 * 而非 `_scheduledPartText` 的「是否已入队调度」，二者不可混用（混用即本 bug）。
+	 * 首次 finalize 必渲（补齐流式丢失），之后文本未变则跳过——agent loop 每轮迭代
+	 * 都会发一次 `done`，无条件重渲会重复 renderMarkdown 数十次。
+	 */
 	private _updatePartInPlace(el: HTMLElement, part: IMessagePart, msg: IAgentChatMessage): void {
 		if (part.kind === 'text') {
+			// 非流式（finalize 收尾）：直接同步渲染，修复流式期间被单 target 调度器
+			// 覆盖丢失的中间 part。必须在快照守卫之前，否则丢失无法自愈。
+			if (!msg.isStreaming) {
+				// 用**独立**的 finalize 快照去重：首次 finalize 必渲（补齐流式丢失），
+				// 之后文本未变则跳过——agent loop 每一轮迭代都会发一次 `done`，若此处
+				// 无条件重渲，一个 turn 内会对同一批 part 重复 renderMarkdown 数十次。
+				if (this._finalizedPartText.get(el) !== part.text) {
+					this._renderMarkdownContent(el, part.text, false);
+					this._finalizedPartText.set(el, part.text);
+				}
+				// 同步流式快照，使下一轮流式开始时去重基线正确
+				this._scheduledPartText.set(el, part.text);
+				return;
+			}
+			// 新一轮流式开始：清掉上一轮的 finalize 快照，确保流式结束时会再兜底一次
+			this._finalizedPartText.delete(el);
 			// 文本未变化 → 跳过（见 _scheduledPartText 注释：避免单 target 调度器被覆盖）
 			if (this._scheduledPartText.get(el) === part.text) { return; }
 			this._scheduledPartText.set(el, part.text);
@@ -682,39 +812,49 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 
 	/** 原 P1：流式结束转换（isStreaming true→false）。 */
 private _ruleStreamEndTransition(ctx: IMsgUpdateCtx): boolean {
-	// 条件：之前在流式（有 streaming-container 或 streaming-cursor），现在不流式。
+	if (ctx.msg.isStreaming) { return false; }
+	// 条件：之前在流式（有 streaming-container 或 streaming-cursor）。
+	//
+	// ★★ 2026-08-31 修复（消息丢失）：DOM 标记缺失**不得**阻断流式结束处理。
+	// parts 模式下若 text part 从未渲染成 `.parts-text-segment`（例如某次 updateMessage
+	// 未下发 parts、或首帧就落到 legacy 路径），DOM 里就没有 `.streaming-container`；
+	// 此时原判据 `!wasStreaming → return false` 会让**整个结束转换不执行**，
+	// 正文永远不会渲染 —— 日志实证：FullRefresh 报 `parts=34 domParts=0
+	// wasStreamingMark=false`，用户侧即「LLM 消息只剩工具卡、正文整段消失」。
+	// 故：有 parts 时以 msg 状态为准（parts 本身就是权威数据），
+	// 无 parts 时才要求 DOM 标记（legacy 路径确实依赖它定位容器）。
 	const wasStreaming = ctx.el.querySelector('.streaming-container, .streaming-cursor') !== null;
-	if (!wasStreaming || ctx.msg.isStreaming) { return false; }
+	if (!wasStreaming && !ctx.hasParts) { return false; }
 	// ★ P0 修复（2026-08-27）：parts 模式下禁止走 _transitionStreamingToComplete。
 	// 该方法第 2 步把「完整 msg.content」渲染进 .streaming-container（= 最后一个 text part），
 	// 但 parts[0] 等前段 text part 仍保留各自 segment 文本 → 同一段文字出现两次
 	// （"这 8 条命中全部在 e 8 条命中全部在 e2e/..." 式逐词重叠重复）。
-	// 故：有 parts 时统一走 _finalizeTurnPartsInPlace（keyed diff 就地收尾），无论是否有结构变化。
-	if (this._isSending && ctx.hasParts && this._finalizeTurnPartsInPlace(ctx)) {
-		// per-turn done + parts 模式 →就地收尾（keyed diff 同步 parts + 清流式残留）
+	// 且它只在 `.streaming-container` 存在时才渲染文本，标记缺失时**什么都不做**——
+	// 这正是上面消息丢失的另一半成因。
+	if (ctx.hasParts) {
+		// 有 parts → 一律经 keyed diff 处理，绝不走 legacy（它依赖
+		// .streaming-container，标记缺失时会静默不渲染 → 正文丢失）。
+		//
+		// `_isSending` 区分两种结束（agent loop 每轮迭代都会发一次 `done`，
+		// 与「turn 真结束」同形 —— 见 P0 修复 2026-08-22）：
+		// - loop 真结束（!_isSending）→ 干净全量重建，彻底消除流式增量累积的错位；
+		// - per-turn 间歇 → 只做就地收尾，失败（bubble 缺失 / keyed diff 不一致）才重建。
+		if (!this._isSending || !this._finalizeTurnPartsInPlace(ctx)) {
+			this.mdScheduler.reset();
+			this._rebuildMessageElement(ctx.el, ctx.msg, 'msg:stream-end-structural');
+		}
 	} else if (!ctx.hasStructuralChange) {
 		// 无 parts / 非 loop 期间的无结构变化 → 走 legacy 轻量转换路径
 		this._transitionStreamingToComplete(ctx.el, ctx.msg);
-	} else if (ctx.hasParts && this._finalizeTurnPartsInPlace(ctx)) {
-		// ★ P0（2026-08-22，日志 1787368358120）：**agent loop 的每一轮迭代都会发一次
-		// `done` delta**（实测 STREAM_END 与 PartsDiag DONE 各 59 次），而 done 分支设
-		// `isStreaming:false` + `streamPhase:'idle'` —— 与「turn 真结束」完全同形。
-		// 于是本规则此前把每一轮间歇都判为流式结束，做一次整条全量重建：一个 turn 内
-		// 58 次，末期每次要重建 124 个 parts + 73 张工具卡 + 重解析 32KB markdown。
-		// 这是「后期抖动严重」的绝对主因（远大于此前修的 layout thrashing 与 args 后到）。
-		//
-		// `this._isSending` 是项目既有的「agent loop 是否还在跑」真源 —— per-turn done
-		// 时它仍为 true，只有 `sendMessage` 整体返回后才置 false（`nativeChatEditorPane`
-		// 那句注释即 "Agent loop fully completed (not per-turn)"）。既有先例：
-		// `_ruleToolStatusSync` 与 `_createMessageElement` 都用 `!this._isSending` 判断
-		// 「loop 已结束」来决定是否补 footer。
-		//
-		// 故：per-turn 间歇只做就地收尾；`_isSending` 为 false（loop 真结束）时才走
-		// 下面的干净重建。`_finalizeTurnPartsInPlace` 返回 false 表示就地收尾不可行
-		// （bubble 缺失 / keyed diff 结果不一致），此时同样落到重建。
 	} else {
-		// 结构性消息流式结束：以最终完整 parts/content 做一次干净全量重建
+		// 无 parts 且有结构变化：以最终完整 content 做一次干净全量重建
 		// （与历史恢复路径完全一致），彻底消除流式增量渲染累积的错位。
+		//
+		// 注：此处原本还需要区分「per-turn done 间歇」与「loop 真结束」（靠
+		// `this._isSending`），那是为了避免 agent loop 每轮迭代都整条重建造成的抖动
+		// （日志 1787368358120 实测 58 次/turn）。2026-08-31 起有 parts 的消息统一走
+		// 上面的 `ctx.hasParts` 分支（keyed 就地收尾，不做全量重建），该顾虑随之消失；
+		// 本分支只剩「无 parts 的 legacy 消息」这一种情形。
 		this.mdScheduler.reset();
 		this._rebuildMessageElement(ctx.el, ctx.msg, 'msg:stream-end-structural');
 	}
@@ -1539,7 +1679,12 @@ protected override _createMessageElement(msg: IAgentChatMessage): HTMLElement {
 		// 2026-08-29：占位内同时承载「处理中」指示（替代原全局 chat-loading-pill 药丸）——
 		// 占位本来就是为 footer 预留的等高空间，空着浪费；且它是流式期间唯一稳定的
 		// footer 区域，loop 结束时被真实 footer（含「耗时」）整体替换，语义自然衔接。
-		if (!isUser && msg.isStreaming && this._isLastAssistantMessage(msg) &&
+		// 2026-08-31：判据由 `msg.isStreaming`（是否在吐字）放宽为整个 loop 未结束。
+		// agent loop 中一轮 LLM 输出结束后会进入工具执行 / 等待下一轮 LLM 的间隙，
+		// 此时 isStreaming=false 但 loop 仍在跑；若要求 isStreaming，该间隙重建消息
+		// （_rebuildMessageElement）时占位不再创建 → 「处理中」消失再也不回来，
+		// 用户会误以为卡死。现按 loop 状态（_isSending）维持占位。
+		if (!isUser && this._isSending && this._isLastAssistantMessage(msg) &&
 			!bubble.querySelector('.chat-bubble-footer-placeholder')) {
 			const ph = append(bubble, $('.chat-bubble-footer-placeholder'));
 			const indicator = this._createProcessingIndicator(msg);
@@ -1843,15 +1988,19 @@ protected override _transitionStreamingToComplete(existingEl: HTMLElement, msg: 
 		}
 	}
 
-		// 2. 将 streaming-container 的 textContent 替换为完整 markdown 渲染
+		// 2. 将 streaming-container 的 textContent 替换为【最后文本段】的 markdown 渲染
+		//    （parts 模式下 streamingContainer 只是最后一个 text part 的 segment，前面各
+		//    text part 已在各自 segment 中渲染；渲染全量 msg.content 会与之重复 → 故只渲染
+		//    最后一段，与流式期间一致，避免结尾重复）。
 		const streamingContainer = bubble.querySelector('.streaming-container') as HTMLElement | null;
 		if (streamingContainer && msg.content) {
 			streamingContainer.classList.remove('streaming-container');
 			// 清理旧的 markdown disposable
 			this._cleanupMarkdownDisposables(streamingContainer);
 			streamingContainer.textContent = '';
-		this._renderMarkdownContent(streamingContainer, msg.content, true);
-		this.mdScheduler.markRendered(msg.content);
+			const lastText = this._lastStreamTextOf(msg);
+			this._renderMarkdownContent(streamingContainer, lastText, true);
+			this.mdScheduler.markRendered(streamingContainer, lastText);
 		}
 
 		// 3. 追加 footer（如果尚不存在）
@@ -2097,10 +2246,13 @@ protected override _formatDuration(ms: number): string {
  *  2026-08-29：替代原全局 chat-loading-pill 药丸，内嵌到 LLM 气泡 footer 区域右侧。
  *  —— 流式期间挂载在 .chat-bubble-footer-placeholder 内；loop 结束后占位连同本元素
  *     一起被真实 footer（含「耗时」pill）替换，语义自然衔接。
- *  返回 null 的条件（即不该显示）：非流式、loop 已结束、或非最后一条 assistant。
+ *  返回 null 的条件（即不该显示）：loop 已结束（含正常完成与异常中断），或非最后一条 assistant。
+ *  2026-08-31：不再要求 `msg.isStreaming` —— 只要 loop 未结束（_isSending）就一直显示，
+ *  覆盖「一轮 LLM 输出完毕 → 工具执行 / 等待下一轮」的间隙；此时 isStreaming 为 false
+ *  但任务远未结束，隐藏指示会让用户误判为卡死。
  *  已耗时文本带 .chat-footer-processing-elapsed，由 _tickProcessingElapsed 每秒刷新。 */
 protected _createProcessingIndicator(msg: IAgentChatMessage): HTMLElement | null {
-	if (!msg.isStreaming || !this._isSending || !this._isLastAssistantMessage(msg)) {
+	if (!this._isSending || !this._isLastAssistantMessage(msg)) {
 		return null;
 	}
 	const wrap = $('span.chat-bubble-footer-item.chat-footer-processing');
@@ -2117,7 +2269,8 @@ protected _createProcessingIndicator(msg: IAgentChatMessage): HTMLElement | null
  *  用于覆盖两类时序问题：①占位在 _isSending 置位前创建；②占位中途被移除重建
  *  （_ensurePhaseIndicator 会 remove + 重新 append 占位以保序）。 */
 protected _syncProcessingIndicator(msgEl: HTMLElement, msg: IAgentChatMessage): void {
-	if (!this._isSending || !msg.isStreaming) { return; }
+	// 与 _createProcessingIndicator 判据一致：只看 loop 是否结束，不看是否在吐字。
+	if (!this._isSending) { return; }
 	const bubble = msgEl.querySelector('.chat-bubble') as HTMLElement | null;
 	if (!bubble) { return; }
 	const ph = bubble.querySelector('.chat-bubble-footer-placeholder') as HTMLElement | null;
@@ -2125,6 +2278,30 @@ protected _syncProcessingIndicator(msgEl: HTMLElement, msg: IAgentChatMessage): 
 	if (ph.querySelector('.chat-footer-processing')) { return; } // 已存在
 	const indicator = this._createProcessingIndicator(msg);
 	if (indicator) { append(ph, indicator); }
+}
+
+/**
+ * 按「最后一条 assistant 消息」自愈同步「处理中」指示。
+ *
+ * 2026-08-31 修复「处理中」文本丢失：占位（.chat-bubble-footer-placeholder）可能在
+ * `_isSending` 置位**之前**就已随占位消息创建，此时 `_createProcessingIndicator`
+ * 因 `!this._isSending` 返回 null，占位被留空；而补建入口此前只有
+ * `_updateStreamingContentInPlace`（只在有流式内容增量时触发）。
+ * 于是首包延迟期间（记忆召回 / 上下文压缩 / 长工具参数流式等，可达数十秒）
+ * 整段时间右下角都没有「处理中」——正是用户观察到的现象。
+ *
+ * 本方法按 data-msg-id 定位元素后复用幂等的 _syncProcessingIndicator，
+ * 由 setSending(true) 与已耗时 ticker 两处调用，覆盖「置位时机」与「占位被
+ * _ensurePhaseIndicator 移除重建」两类时序问题。
+ */
+protected override _syncLastProcessingIndicator(): void {
+	if (!this._isSending || !this._messagesContainer) { return; }
+	const last = [...this._messages].reverse().find(m => m.role === 'assistant');
+	// 不要求 last.isStreaming：loop 间隙（工具执行 / 等待下一轮 LLM）消息已非流式，
+	// 但「处理中」必须仍在（见 _createProcessingIndicator 说明）。
+	if (!last) { return; }
+	const msgEl = this._findMessageElementById(last.id);
+	if (msgEl) { this._syncProcessingIndicator(msgEl, last); }
 }
 
 /** 格式化「处理中」已耗时文本。从消息 timestamp 到当前时间的差值。 */
@@ -2153,6 +2330,9 @@ protected override _stopProcessingElapsedTicker(): void {
 /** 流式期间每秒刷新一次最后一条 assistant 气泡 footer 里的「处理中」已耗时文本。
  *  纯文本替换，不重建 footer（避免打断复制/导入等按钮的交互与动画）。 */
 protected _tickProcessingElapsed(): void {
+	// 先自愈：占位可能在 _isSending 置位前创建、或被 _ensurePhaseIndicator 移除重建，
+	// 导致「处理中」指示缺失。每秒兜底补建一次（内部幂等）。
+	this._syncLastProcessingIndicator();
 	// 指示元素流式期间挂在 .chat-bubble-footer-placeholder 内，故不限定 footer 前缀
 	const el = this._messagesContainer
 		?.querySelector('.chat-footer-processing-elapsed') as HTMLElement | null;

@@ -15,7 +15,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import type { LGraphNode, LLink } from '@comfyorg/litegraph';
+import type { LGraphNode, LLink, LGraphGroup, Point } from '@comfyorg/litegraph';
 import { LiteGraphCanvas, type LiteGraphCanvasHandle } from './LiteGraphCanvas';
 import { NodeContextMenu, type NodeContextMenuState, buildAddNodeSubmenu } from './NodeContextMenu';
 import { NodeActionsMenu, type NodeActionsMenuState } from './NodeActionsMenu';
@@ -23,6 +23,7 @@ import { buildNodeActions, buildCanvasActions, buildGroupActions, buildPortDisco
 import { GroupEditPopup, applyGroupEdit } from './groupMenu';
 import { RunnerManagerPanel } from './RunnerManagerPanel';
 import { NodeEditorPopup } from './NodeEditorPopup';
+import { MindMapPanel } from '../mindmap/MindMapPanel';
 
 import { setActiveRunnerRegistry, setActiveRunnerPreference } from './comfyHost/runnerContext';
 import { MediaGallery } from './MediaGallery';
@@ -1138,7 +1139,7 @@ const handleExecute = useCallback(async () => {
 			askUser: askUserFn,
 				resolveImageGenDefaults: async () =>
 					resolveFirstImageGenDefaults(useProviderStore.getState().providers),
-				resolveLoadImageRef: defaultResolveLoadImageRef(runner, comfyFetchRef.current as never),
+				resolveLoadImageRef: defaultResolveLoadImageRef(runner!, comfyFetchRef.current as never),
 				// Vox 口播视频导演节点：vox.run 启动 + vox.getProgress 轮询 + vox.cancel。
 				runVoxPipeline: async ({ projectId, beats, onStage, signal }) => {
 					const start = await sendRequest('vox.run', { projectId, beats }, 30_000) as { ok: boolean; projectId?: string; error?: string };
@@ -1398,7 +1399,7 @@ const handleExecute = useCallback(async () => {
 	// 脚本由 exportCanvasToWorkflowScript（M4a 同一生成器）从画布实时生成，
 	// 订阅 store nodes/edges → 500ms 防抖刷新；永不回写画布（模式 A 只读投影）。
 	// ═══════════════════════════════════════════════════════════════
-	const [viewMode, setViewMode] = useState<'canvas' | 'split' | 'code'>('canvas');
+	const [viewMode, setViewMode] = useState<'canvas' | 'split' | 'code' | 'mindmap'>('canvas');
 	const [projectedScript, setProjectedScript] = useState<string>('');
 	const [scriptSynced, setScriptSynced] = useState(0);
 	// 行锚点：displayScript 行号(1-based) ↔ 画布 nodeId（带外通道，不写进脚本）。
@@ -1603,6 +1604,7 @@ const handleExecute = useCallback(async () => {
 							<button className={viewMode === 'canvas' ? 'on' : ''} title="画布视图（节点图编辑，唯一编辑真源）" onClick={() => setViewMode('canvas')}>⊞ 图</button>
 							<button className={viewMode === 'split' ? 'on' : ''} title="左右分栏：画布 + 脚本并排（可拖分隔条）" onClick={() => setViewMode('split')}>⫿ 分栏</button>
 							<button className={viewMode === 'code' ? 'on' : ''} title="脚本视图：画布的只读投影（Ctrl+Shift+V）" onClick={() => setViewMode('code')}>&lt;/&gt; 代码<span className="vs-kbd">⌃⇧V</span></button>
+							<button className={viewMode === 'mindmap' ? 'on' : ''} title="思维导图视图：从画布 Saros.MindMap* 节点派生（可导出 drawio）" onClick={() => setViewMode('mindmap')}>🧠 脑图</button>
 						</div>
 						<span className="wft-divider" />
 
@@ -1931,7 +1933,7 @@ const handleExecute = useCallback(async () => {
 								type: node.type,
 								title: node.title || node.type,
 								kind,
-								pinned: !!node.flags?.pin,
+								pinned: !!node.flags?.pinned,
 								collapsed: !!node.collapsed,
 								canRun: kind === 'schema',
 							};
@@ -1949,15 +1951,15 @@ const handleExecute = useCallback(async () => {
 								const canvas = liteGraphRef.current?.canvasInstance();
 								if (!canvas) return;
 								// 标题栏在 node.pos[1] 上方（LiteGraph 0.17 坐标系），convertOffsetToCanvas → 画布内像素坐标
-								const [sx, sy] = canvas.convertOffsetToCanvas?.(node.pos) ?? [0, 0];
+								const [sx, sy] = canvas.convertOffsetToCanvas?.(node.pos, [0, 0]) ?? [0, 0];
 								setRenamingNode({ node, screenX: sx, screenY: sy });
 							};
 							const items = buildNodeActions(ctx, {
 								run: () => { void runSingleSchemaNode(sarosId, nodeType); },
 								editTitle: startInlineRename,
-								toggleCollapse: () => { if (node.collapsed) { node.expand(); } else { node.collapse(); } },
-								togglePin: () => { if (node.flags?.pin) { node.unpin(); } else { node.pin(); } },
-								clone: () => { liteGraphRef.current?.cloneNode(node.id); },
+								toggleCollapse: () => { if (node.collapsed) { node.collapse(false); } else { node.collapse(true); } },
+								togglePin: () => { if (node.flags?.pinned) { node.unpin(); } else { node.pin(); } },
+								clone: () => { node.clone(); },
 								setColor: (color, bgcolor) => {
 							// 对齐 LiteGraph LGraphNode.setColorOption：同时设置前景色和背景色
 							if (!color) {
@@ -1970,7 +1972,7 @@ const handleExecute = useCallback(async () => {
 							node.setDirtyCanvas?.(true, true);
 						},
 								openProperties: openEditor,
-								remove: () => { node.remove(); },
+								remove: () => { liteGraphRef.current?.canvasInstance()?.graph?.remove(node); },
 							});
 							// Right-click on a connected port → prepend "disconnect".
 							const slotHit = node.getSlotInPosition?.(graphX, graphY) as { input?: boolean; slot?: number } | undefined;
@@ -2216,6 +2218,14 @@ const handleExecute = useCallback(async () => {
 										</div>
 									)}
 							</div>
+						</div>
+					)}
+
+					{/* 思维导图视图：从画布 Saros.MindMap* 节点派生（与 store 同源）。
+					    仅在 viewMode==='mindmap' 时挂载；其余模式不渲染，避免空跑布局。 */}
+					{viewMode === 'mindmap' && (
+						<div className="wf-mindmap-pane" style={{ flex: '1 1 100%' }}>
+							<MindMapPanel active={viewMode === 'mindmap'} />
 						</div>
 					)}
 

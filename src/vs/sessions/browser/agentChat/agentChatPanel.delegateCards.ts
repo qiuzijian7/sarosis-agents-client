@@ -753,6 +753,18 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 			if (errCount > 0) { append(stats, $('span.sa-stat.error')).textContent = `✗ ${errCount} 失败`; }
 		}
 
+		// ── 「处理中」指示（subagent 卡片版）──
+		// 普通 LLM 气泡的处理中挂在 .chat-bubble-footer-placeholder 内，但 subagent
+		// enhanced 卡片有独立的 .sa-footer 结构，不会走那条路径。
+		// 此处复用同款样式（.chat-footer-processing），挂到 footer 最右侧。
+		if (this._isSending && sa.status === 'running') {
+			const procWrap = append(saFooter, $('span.chat-footer-processing.sa-processing-indicator'));
+			append(procWrap, $('span.chat-footer-processing-spinner.loading-spinner'));
+			append(procWrap, $('span.chat-footer-processing-label', undefined, '处理中'));
+			procWrap.style.marginLeft = 'auto';
+			procWrap.dataset.saId = sa.id;
+		}
+
 		// ── Interactions ──
 		this._register(addDisposableListener(saHeader, EventType.CLICK, () => {
 			saCard.classList.toggle('expanded');

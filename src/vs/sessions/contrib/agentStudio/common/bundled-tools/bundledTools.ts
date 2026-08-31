@@ -551,6 +551,15 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 		category: "clarity",
 		source: 'sarosis-builtin',
 	},
+
+	// ── drawio diagram rendering ──────────────────────────
+	{
+		name: "renderDrawioDiagram",
+		description: "IMPORTANT: Call this whenever the user provides a Draw.io / diagrams.net (mxGraphModel XML) diagram and wants it rendered as a read-only SVG preview inside the chat. Use for architecture diagrams, flowcharts, network topologies, and any drawio-format source. When the user says 'drawio'/'mxGraph'/'diagrams.net'/'架构图(drawio)' and supplies raw XML, call this tool with the mxGraphModel XML. Parameters: `source` (required) - raw Draw.io mxGraphModel XML string (starts with '<mxGraphModel>'), no wrapping code fence. `title` (optional) - Short title shown in the card header.",
+		inputSchema: {"type":"object","properties":{"source":{"type":"string","description":"Raw Draw.io mxGraphModel XML string. Must start with '<mxGraphModel' (the root element of a diagrams.net diagram export). No wrapping code fence."},"title":{"type":"string","description":"Optional short title for the diagram, shown in the card header (e.g., 'System Architecture', 'Network Topology')."}},"required":["source"]},
+		category: "clarity",
+		source: 'sarosis-builtin',
+	},
 ];
 
 /**
@@ -630,7 +639,7 @@ export const BUNDLED_TOOLSETS: Readonly<Record<string, IToolsetDefinition>> = {
 	},
 	"clarity": {
 		description: "Clarifying questions and diagram rendering",
-		tools: ["clarify", "rendermermaiddiagram"],
+		tools: ["clarify", "rendermermaiddiagram", "renderDrawioDiagram"],
 		includes: [],
 	},
 	"code_execution": {

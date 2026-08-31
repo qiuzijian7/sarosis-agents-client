@@ -30,6 +30,32 @@ if (-not (Test-Path (Join-Path $buildTsw $tswKey))) {
 }
 Write-Host "[OK] @vscode/tree-sitter-wasm 已确认进包 ($buildTsw)"
 
+# ===== 自愈 agent-studio/out 与 node_modules/typescript（2026-08-29 生产事故）=====
+# agent-studio 的 out/ 被 .gitignore 排除且 gulp 扩展管线不认识它；typescript 是
+# html/css/json 语言服务器运行时依赖。两者若缺失会导致扩展激活失败 / 语言服务器 -32097。
+# Inno 打包前兜底自愈：从仓库复制到 VSCode-win32-x64 产物目录。即使前面的 gulp/strip
+# 被绕过或构建机复用残留暂存目录，这里也能保证进包。
+$appStaging = Join-Path $vsOutRoot "resources\app"
+function Copy-ExtIfMissing($rel, $sentinel) {
+  $dst = Join-Path $appStaging $rel
+  if (Test-Path (Join-Path $dst $sentinel)) { return }
+  $src = Join-Path $repoRoot $rel
+  if (Test-Path (Join-Path $src $sentinel)) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+    Copy-Item -Recurse -Force $src $dst
+    Write-Host ("[FIX] " + $rel + " 缺失于打包产物，已从仓库复制")
+  } else {
+    Write-Host ("[WARN] " + $rel + " 在仓库也缺失（检查 transpile / install-deps）")
+  }
+}
+Copy-ExtIfMissing "extensions\agent-studio\out" "extension.js"
+Copy-ExtIfMissing "node_modules\typescript" "package.json"
+if (-not (Test-Path (Join-Path $appStaging "extensions\agent-studio\out\extension.js"))) {
+  Write-Error "FATAL: extensions\agent-studio\out\extension.js 未进打包产物且无法自愈 - 禁止出包"
+  exit 1
+}
+Write-Host "[OK] agent-studio/out 与 node_modules/typescript 已确认进包 ($appStaging)"
+
 function Invoke-InnoTask {
   param([string]$Task)
   $max = 3

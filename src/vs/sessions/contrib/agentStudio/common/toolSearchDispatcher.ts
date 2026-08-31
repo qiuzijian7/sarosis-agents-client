@@ -226,6 +226,16 @@ export function dispatchToolSearch(
 export function dispatchToolDescribe(
 	args: Record<string, unknown>,
 	catalog: ICatalogEntry[],
+	/**
+	 * 已直接下发给 LLM 的工具（assembly.toolDefs）。
+	 *
+	 * catalog 只含 deferred（被折叠）工具；而 core / Always 优先级的工具（如
+	 * renderMermaidDiagram）是**直发**的，不进 deferredDefs。若只在 catalog 中查找，
+	 * 这类工具明明就在 LLM 的工具列表里，describe 却报 "not found" 并误导模型去
+	 * tool_search —— 而 tool_search 同样搜不到它，形成死循环。
+	 * 故这里对直发工具做兜底查找。
+	 */
+	visibleDefs?: readonly IToolDefinition[],
 ): IDispatchResult {
 	const name = String(args.name ?? '').trim();
 	if (!name) {
@@ -233,6 +243,14 @@ export function dispatchToolDescribe(
 	}
 	const entry = catalog.find(e => e.name === name);
 	if (!entry) {
+		const visible = visibleDefs?.find(t => t.name === name);
+		if (visible) {
+			return {
+				text: `Tool: ${visible.name}\nDescription: ${visible.description || ''}\n` +
+					`Parameters:\n${JSON.stringify(visible.inputSchema || {}, null, 2)}`,
+				success: true,
+			};
+		}
 		return {
 			text: `Error: Tool "${name}" not found. Use tool_search to find available tools.`,
 			success: false,
@@ -442,7 +460,7 @@ export function dispatchBridgeTool(
 	}
 
 	if (bridgeToolName === TOOL_SEARCH_BRIDGE_TOOLS.describe) {
-		const r = dispatchToolDescribe(args, catalog);
+		const r = dispatchToolDescribe(args, catalog, ctx.assembly.toolDefs);
 		return { type: 'describe', text: r.text, success: r.success };
 	}
 
@@ -455,8 +473,12 @@ export function dispatchBridgeTool(
 				success: false,
 			};
 		}
-		// Scope 门控
-		if (!isToolInScope(resolved.underlyingName, ctx.scopedNames)) {
+		// Scope 门控：deferred 工具 ∪ 已直发给 LLM 的工具。
+		// ctx.scopedNames 只含 deferred；core/Always 工具是直发的（如 renderMermaidDiagram），
+		// 若只按 scopedNames 门控，LLM 经 tool_call 调用直发工具会被误拒。
+		const inDeferredScope = isToolInScope(resolved.underlyingName, ctx.scopedNames);
+		const inVisible = ctx.assembly.toolDefs.some(t => t.name === resolved.underlyingName);
+		if (!inDeferredScope && !inVisible) {
 			return {
 				type: 'call_error',
 				text: `'${resolved.underlyingName}' is not available in this session. Use tool_search to find tools you can call.`,

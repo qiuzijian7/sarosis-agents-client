@@ -31,9 +31,33 @@ import { IChatMessage, IModelOptions, IToolDefinition, IModelCapabilityConfig } 
 import {
 	OpenAILLMChatMessage, OpenAIToolCall,
 	AnthropicLLMChatMessage, AnthropicContentBlock, AnthropicUserContentBlock,
+	AnthropicSystemParam,
 	GeminiLLMChatMessage, GeminiPart,
 } from '../llmMessageTypes.js';
 import { evaluateForkPrefixCache, type IForkContext } from '../forkContext.js';
+
+/** Anthropic 单次请求允许的 cache_control 断点上限（官方限制 = 4）。
+ * 超过会被 provider 拒绝（400 invalid_request_error）。所有断点注入必须受此配额门控。 */
+const ANTHROPIC_CACHE_CONTROL_LIMIT = 4;
+
+/** 统计任意消息结构中已存在的 cache_control 断点数量（递归 content 数组）。 */
+function countCacheControlMarkers(value: unknown): number {
+	if (!value || typeof value !== 'object') { return 0; }
+	if ('cache_control' in value && (value as Record<string, unknown>).cache_control) {
+		return 1;
+	}
+	const content = (value as Record<string, unknown>).content;
+	if (Array.isArray(content)) {
+		return content.reduce<number>((sum, block) => sum + countCacheControlMarkers(block), 0);
+	}
+	return 0;
+}
+
+/** 按工具名排序，保证 tools 前缀逐字节稳定（动态增删工具时顺序不再漂移）。
+ * 返回排序后的副本，不修改入参。 */
+function sortToolsByNameStable(tools: IToolDefinition[]): IToolDefinition[] {
+	return [...tools].sort((a, b) => a.name.localeCompare(b.name));
+}
 import type { AgentRunMessage } from '../agentRunState.js';
 import { WIRE_DIALECTS, buildWireMessages, pickDialect } from './wireMessagePipeline.js';
 
@@ -252,8 +276,18 @@ export class MessageFormatConverter {
 	 */
 	static toAnthropic(
 		messages: IChatMessage[],
-		options?: { systemPrompt?: string; tools?: IToolDefinition[] },
-	): { messages: AnthropicLLMChatMessage[]; systemPrompt: string | undefined } {
+		options?: {
+			systemPrompt?: string;
+			tools?: IToolDefinition[];
+			forkContext?: IForkContext;
+			/**
+			 * 是否 Anthropic 兼容 provider。本方法生成的即为 Anthropic 方言，
+			 * 故默认（undefined）视为 true。仅当显式传 false（非 Anthropic 风格但复用
+			 * 了本转换路径）时，跳过 cache_control 断点（其他 provider 原生不识别该字段）。
+			 */
+			isAnthropic?: boolean;
+		},
+	): { messages: AnthropicLLMChatMessage[]; systemPrompt: AnthropicSystemParam | undefined } {
 		// ── Wire 收口（anthropic 方言：约束最严）──────────────────────────
 		// Anthropic 拒绝 ① 以 assistant 结尾（被当作 prefill，no-prefill 模型报
 		// 400 must end with a user message）② 空 content blocks 数组
@@ -264,7 +298,7 @@ export class MessageFormatConverter {
 		).wire as unknown as IChatMessage[];
 
 		const result: AnthropicLLMChatMessage[] = [];
-		let systemPrompt: string | undefined;
+		let systemPrompt: AnthropicSystemParam | undefined;
 
 		// 提取系统消息（Anthropic 格式中系统消息是单独的参数）
 		for (const m of messages) {
@@ -276,6 +310,38 @@ export class MessageFormatConverter {
 		// 如果 options 中有 systemPrompt，合并
 		if (options?.systemPrompt) {
 			systemPrompt = systemPrompt ? `${options.systemPrompt}\n\n${systemPrompt}` : options.systemPrompt;
+		}
+
+		// P0 修复（2026-08-30）：把 system 转为带 cache_control 断点的数组形态。
+		// Anthropic 的 system 顶层参数只有写成 [{type:'text', text, cache_control}]
+		// 才会作为可缓存前缀断点；裸 string 形态无法命中 prompt cache，导致每轮全量重计费。
+		// 该断点与 toAnthropicToolDefinitions 中工具数组末尾的 cache_control 共同构成
+		// 一个稳定前缀。
+		//
+		// cache 策略与 toOpenAI 对称：只要 isAnthropic（默认 true）就无条件注入断点——
+		// 主会话的 system+tools 前缀逐轮稳定，本就该命中 prompt cache；forkContext 仅用于
+		// 额外保证字节一致性（aligned 校验），不再作为注入断点的前置门槛（否则无 fork 的
+		// 主会话命中率恒为 0%）。forkContext 存在且未对齐时，跳过断点以避免缓存脏前缀。
+		const isAnthropic = options?.isAnthropic !== false;
+		if (systemPrompt && isAnthropic) {
+			const aligned = options?.forkContext
+				? evaluateForkPrefixCache(
+					options.forkContext,
+					options.systemPrompt ?? '',
+					options.tools ?? [],
+				).aligned
+				: true;
+			// 配额门控：tools 段在 toAnthropicToolDefinitions 中恒占 1 个断点，
+			// 预留后确认 system 断点不会使总量超 ANTHROPIC_CACHE_CONTROL_LIMIT。
+			const toolsWillMark = 1;
+			const remaining = ANTHROPIC_CACHE_CONTROL_LIMIT - toolsWillMark;
+			if (aligned && remaining >= 1) {
+				systemPrompt = [{
+					type: 'text',
+					text: systemPrompt,
+					cache_control: { type: 'ephemeral' },
+				}] as AnthropicSystemParam;
+			}
 		}
 
 		// 转换非系统消息
@@ -371,10 +437,20 @@ export class MessageFormatConverter {
 		input_schema: Record<string, unknown>;
 		cache_control?: { type: 'ephemeral' };
 	}> {
-		const cacheTools = isAnthropic === true &&
-			!!forkContext &&
-			evaluateForkPrefixCache(forkContext, systemPrompt ?? '', tools).aligned;
-		return tools.map((t, idx) => {
+		// 与 toAnthropic system 断点对称：Anthropic 兼容 provider 无条件注入 tools 末尾
+		// 断点（主会话稳定前缀即可命中）；有 forkContext 时额外校验对齐，未对齐则跳过。
+		const cacheTools = isAnthropic === true && (
+			!forkContext || evaluateForkPrefixCache(forkContext, systemPrompt ?? '', tools).aligned
+		);
+		// P1（2026-08-30）：按工具名排序，保证 tools 前缀逐字节稳定。
+		// 动态增删工具时注册顺序会漂移，导致 system+tools 整段前缀哈希变化、缓存失效。
+		// 排序后整体返回，与 openclaw sortPromptCacheToolsByName 同策略。
+		const orderedTools = sortToolsByNameStable(tools);
+		// P0 对称：tools 段断点计入全局配额（system 已预留 1）。
+		const withinQuota = countCacheControlMarkers(orderedTools) < ANTHROPIC_CACHE_CONTROL_LIMIT - 1;
+		const markTools = cacheTools && withinQuota;
+		const lastIdx = orderedTools.length - 1;
+		return orderedTools.map((t, idx) => {
 			const def: {
 				name: string;
 				description: string;
@@ -385,7 +461,7 @@ export class MessageFormatConverter {
 				description: t.description,
 				input_schema: t.inputSchema,
 			};
-			if (cacheTools && idx === tools.length - 1) {
+			if (markTools && idx === lastIdx) {
 				def.cache_control = { type: 'ephemeral' };
 			}
 			return def;
@@ -525,7 +601,7 @@ export class MessageFormatConverter {
 		capabilityConfig?: IModelCapabilityConfig,
 	): {
 		messages: OpenAILLMChatMessage[] | AnthropicLLMChatMessage[] | GeminiLLMChatMessage[];
-		separateSystemMessage?: string;
+		separateSystemMessage?: AnthropicSystemParam;
 		systemInstruction?: string;
 	} {
 		const toolFormat = capabilityConfig?.specialToolFormat;
@@ -534,7 +610,7 @@ export class MessageFormatConverter {
 		if (toolFormat === 'anthropic-style') {
 			const { messages: anthropicMsgs, systemPrompt } = this.toAnthropic(
 				messages,
-				{ systemPrompt: options.systemPrompt, tools: options.tools },
+				{ systemPrompt: options.systemPrompt, tools: options.tools, isAnthropic: true },
 			);
 			return { messages: anthropicMsgs, separateSystemMessage: systemPrompt };
 		}

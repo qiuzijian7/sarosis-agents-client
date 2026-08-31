@@ -24,8 +24,48 @@
  */
 
 import assert from 'assert';
+import { extractToolCallsFromText } from '../../browser/agentToolExtractor.js';
+
+// 真实函数的依赖只需 logService；静音实现，避免测试输出噪声。
+const silentDeps = {
+	logService: { info() { }, warn() { }, error() { }, trace() { }, debug() { } },
+} as any;
 
 suite('Agent Studio - Tool Call Extraction', () => {
+
+	// ─── 白名单守卫：未下发工具时不得从文本提取（日志 1788011997897 实证）────
+	// 若本轮根本没给模型下发任何工具，它写出的「工具调用」只可能是**编造**或
+	// **举例/引用**。实证：SubAgent 轮 toolsSent=0，模型在讨论
+	// "Hermes's `tool` role replay" 时举例写下伪 XML，被提取成
+	// [file_read, search_files] 并**实际执行** —— 举例被当成了指令执行。
+
+	// 三个用例共用同一段文本，只变更 enabledTools —— 控制变量，
+	// 以确保差异**纯粹**来自守卫，而不是文本格式不同。
+	//
+	// 用 `function_call` 而非 `tool_call`：后者存在**前缀重复匹配**问题 ——
+	// `<tool_call>x</tool_call>` 会先被 `tool_call` 匹配一次，再被 `tool`
+	// 标签的 unclosed 正则抢匹配一次（`<tool_call>` 同样以 `<tool` 开头），
+	// 导致同一个调用被提取 2 次（日志 1788011997897 实证：4 个 → 去重 2 个）。
+	// 该重复目前靠下游去重兜住，未影响最终结果，但会污染本用例的计数断言。
+	// `function_call` 无此歧义，适合做精确断言。
+	const guardText = '<function_call>file_read</function_call>';
+
+	test('未下发工具时：不得从 XML 文本提取（否则举例会被当成调用执行）', () => {
+		const out = extractToolCallsFromText(silentDeps, guardText, undefined, []);
+		assert.strictEqual(out.length, 0, 'no tools offered → nothing may be extracted');
+	});
+
+	test('下发了工具时：XML 提取正常工作（守卫不误伤）', () => {
+		const out = extractToolCallsFromText(silentDeps, guardText, undefined, [{ name: 'file_read' } as any]);
+		assert.strictEqual(out.length, 1, 'with a whitelist, XML extraction must still work');
+		assert.strictEqual(out[0].name, 'file_read');
+	});
+
+	test('调用方未传 enabledTools 时：保持原有行为（不因守卫而退化）', () => {
+		const out = extractToolCallsFromText(silentDeps, guardText, undefined, undefined);
+		assert.strictEqual(out.length, 1, 'undefined whitelist means "not provided" → keep extracting');
+		assert.strictEqual(out[0].name, 'file_read');
+	});
 
 	// ─── Tests start ────────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { IAgentChatMessage, IToolCall, IChatAttachment, IPlanTaskCard, IConfirmationData } from './agentChatTypes.js';
-import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST_TOOLS, TOOL_CODEBASE_TOOLS, READ_FILE_KEYS, TOOL_PLAN_TOOLS, TOOL_DELEGATE_TOOLS, TOOL_SEARCH_TOOLS, TOOL_WEB_TOOLS, TOOL_SKILL_TOOLS, TOOL_MERMAID_TOOLS } from './agentChatPanel.base.js';
+import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST_TOOLS, TOOL_CODEBASE_TOOLS, READ_FILE_KEYS, TOOL_PLAN_TOOLS, TOOL_DELEGATE_TOOLS, TOOL_SEARCH_TOOLS, TOOL_WEB_TOOLS, TOOL_SKILL_TOOLS, TOOL_MERMAID_TOOLS, TOOL_DRAWIO_TOOLS } from './agentChatPanel.base.js';
 import { parseInlineWorkflowArgs } from './agentChatPanel.workflowChip.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
 
@@ -629,6 +629,11 @@ private _createToolCallCardCore(tc: IToolCall, confirmation?: IConfirmationData)
 			return this._createMermaidCard(tc, key);
 		}
 
+		// ── Draw.io 图示（renderDrawioDiagram）──
+		if (TOOL_DRAWIO_TOOLS.has(key)) {
+			return this._createDrawioCard(tc, key);
+		}
+
 		// fallback - 通用工具卡片
 
 		const isRunning = tc.status === 'running';
@@ -1148,6 +1153,14 @@ protected override _maybeCreateEnhancedResult(key: string, resultText: string): 
  */
 protected _createMermaidCard(tc: IToolCall, key: string): HTMLElement {
 	throw new Error('[moved-to-feature] _createMermaidCard');
+}
+
+/**
+ * Draw.io 图示工具卡片 — 已抽取到 agentChatPanel.drawioCard.ts（AgentChatPanelDrawioCard）。
+ * 保留 stub 供 dispatcher `_createToolCallCard` 调用；运行时由子类 override 提供实现。
+ */
+protected _createDrawioCard(tc: IToolCall, key: string): HTMLElement {
+	throw new Error('[moved-to-feature] _createDrawioCard');
 }
 
 

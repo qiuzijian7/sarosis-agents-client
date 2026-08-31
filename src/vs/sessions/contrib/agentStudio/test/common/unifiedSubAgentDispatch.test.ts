@@ -223,7 +223,18 @@ suite('UnifiedSubAgentDispatch — delegate_task propagation', () => {
 		assert.strictEqual(requests.length, 2, '应有主轮+总结轮两次执行');
 		assert.deepStrictEqual(requests[1].excludedTools, ['*'], '总结轮必须禁工具');
 		const lastMsg = requests[1].messages[requests[1].messages.length - 1];
-		assert.ok(String((lastMsg as any).content).includes('禁止调用任何工具'), '总结提示词应随消息注入');
+		const prompt = String((lastMsg as any).content);
+		assert.ok(prompt.includes('禁止调用任何工具'), '总结提示词应随消息注入');
+
+		// ─── 封死「把调用写成文本」这条退路（日志 1788011997897 实证）────────
+		// 总结轮 excludedTools:['*'] → tools=0，但 stable 层系统提示词每轮仍在说
+		// 「需要工具时 emit a NATIVE function call」。两者夹击下模型会把调用**写成
+		// 文本**当作唯一可行解（实证：模型在讨论 "Hermes's `tool` role replay" 时
+		// 举例写下 `tool_calls:6124c78e` 等伪 XML，并被提取器当成真实调用执行）。
+		// 只说"禁止调用工具"不够 —— 模型会理解成"不能真调，但可以先把调用记下来"。
+		assert.ok(/XML 标签/.test(prompt), '应点名 XML 标签形式无效');
+		assert.ok(/任何语法都不行/.test(prompt), '应声明任何语法都不执行');
+		assert.ok(/占位|备忘/.test(prompt), '应禁止把调用写下来当占位或备忘');
 	});
 
 	test('停滞后总结轮也停滞 → 回退原始片段（best effort）', async () => {

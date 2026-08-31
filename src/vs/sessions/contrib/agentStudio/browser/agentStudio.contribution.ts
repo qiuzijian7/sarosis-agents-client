@@ -35,6 +35,9 @@ import './codebaseMemoryMcpBootstrap.js';
 // Platform Bridge Layer (cc-connect 复刻) — registers IBridgeService + auto-starts.
 import './bridge/bridge.contribution.js';
 
+// 单向同步适配器：llm_wiki 文章 → Sarosis WikiTag library（自包含注册）。
+import './services/llmWikiAdapter.contribution.js';
+
 // Chat tab "Rename" command + editor title context menu entry.
 // Side-effect import: the module self-registers the command and menu item.
 import './chatTabRename.js';
@@ -283,6 +286,8 @@ import { SelfEvolutionService } from './selfEvolutionService.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService, IEditorGroup, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IUntitledTextEditorService } from '../../../../workbench/services/untitled/common/untitledTextEditorService.js';
+import { UntitledTextEditorInput } from '../../../../workbench/services/untitled/common/untitledTextEditorInput.js';
 
 /**
  * Type-safe accessor for the agent editor part (AGENT_EDITOR_PART).
@@ -345,6 +350,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			description: localize('agentStudio.tools.autoApproveReadOnlyCommands', "终端命令中，已确认只读的命令（如 Get-ChildItem / git status / cat，含只读管道）与验证/构建命令（如 tsc / esbuild / vite / npm run build / npm test / npm run lint）免交互确认。命令一旦包含重定向、命令替换、`;`/`&&` 串联、变量展开、裸解释器（python3 -c / node -e）或任何未知命令，仍会弹出确认。默认开启；关闭后所有终端命令都需确认。"),
+		},
+		'sessions.agentStudio.tools.execAutoReview': {
+			type: 'boolean',
+			default: false,
+			description: localize('agentStudio.tools.execAutoReview', "exec 自动审阅（P2-1，默认关闭 → fail-closed）：开启后，只读/验证构建命令交由执行策略免确认，进一步降低审批卡片疲劳。当前为配置驱动的启发式审阅；请确保你信任运行环境后再开启。"),
 		},
 		[AGENT_STUDIO_ENABLED_SETTING]: {
 			type: 'boolean',
@@ -2359,6 +2369,7 @@ import { MarketplaceService } from './marketplaceService.js';
 import { IPackageInstallerRegistry } from '../common/packageInstaller.js';
 import { PackageInstallerRegistry } from './packageInstallerRegistry.js';
 import { IMermaidInlineRenderer, MermaidInlineRenderer } from './mermaidInlineRenderer.js';
+import { IDrawioInlineRenderer, DrawioInlineRenderer } from './drawioInlineRenderer.js';
 
 registerSingleton(ISkillRegistry, SkillRegistry, InstantiationType.Delayed);
 registerSingleton(ISkillInstallService, SkillInstallService, InstantiationType.Delayed);
@@ -2379,6 +2390,127 @@ CommandsRegistry.registerCommand(
 		return accessor.get(IMermaidInlineRenderer).renderToSvg(markup, theme);
 	},
 );
+// DrawioInlineRenderer: renderer 进程内的隐藏 webview，把 drawio mxGraphModel XML 渲染为 SVG
+// 字符串（供 agent 工具卡片内联只读展示，无需扩展进程往返，复用 @maxgraph/core + drawioSerializer）
+registerSingleton(IDrawioInlineRenderer, DrawioInlineRenderer, InstantiationType.Delayed);
+CommandsRegistry.registerCommand(
+	'_agentStudio.renderDrawioSvg',
+	(accessor, source: string, theme?: 'dark' | 'default') => {
+		return accessor.get(IDrawioInlineRenderer).renderToSvg(source, theme);
+	},
+);
+
+// 图表预览：在编辑器区域打开新标签，渲染 SVG 图表。
+// Mermaid 卡片调用 _mermaid-chat.openPreview（mermaidCard.ts:198），
+// Draw.io 卡片调用 _drawio-chat.openPreview（drawioCard.ts）——两者共用同一页面外壳，
+// 仅渲染器不同（drawio 源码是 mxGraphModel XML，不是 mermaid 语法，不能混用）。
+async function openDiagramPreview(
+	accessor: ServicesAccessor,
+	render: (theme: 'dark' | 'default') => Promise<string>,
+	title: string | undefined,
+	logTag: string,
+): Promise<void> {
+	const editorService = accessor.get(IEditorService);
+	const logService = accessor.get(ILogService);
+
+	try {
+		const bodyCls = mainWindow.document.body.classList;
+		const isDark = bodyCls.contains('vs-dark') || bodyCls.contains('hc-black')
+			|| bodyCls.contains('vscode-dark') || bodyCls.contains('vscode-high-contrast');
+		const svg = await render(isDark ? 'dark' : 'default');
+
+		if (!svg || svg.indexOf('<svg') === -1) {
+			logService.error('[' + logTag + '] renderToSvg returned empty/invalid SVG');
+			return;
+		}
+
+			// 构建完整 HTML 页面（含 SVG + 暗色主题适配 + 缩放控制）
+			const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>${escapeHtml(title || '图表预览')}</title>
+<style>
+html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: auto; background: ${isDark ? '#1e1e1e' : '#ffffff'}; color: ${isDark ? '#cccccc' : '#333333'}; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.header { position: sticky; top: 0; z-index: 10; padding: 6px 16px; background: ${isDark ? '#252525' : '#f3f3f3'}; border-bottom: 1px solid ${isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'}; display: flex; align-items: center; gap: 12px; }
+.header h1 { font-size: 13px; font-weight: 600; margin: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zoom-controls { display: flex; align-items: center; gap: 4px; font-size: 11px; color: ${isDark ? '#999' : '#666'}; }
+.zoom-btn { cursor: pointer; padding: 2px 8px; border-radius: 4px; border: 1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)'}; background: transparent; color: inherit; font-size: 12px; line-height: 18px; }
+.zoom-btn:hover { background: ${isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)'}; }
+.svg-container { display: flex; justify-content: center; padding: 20px; min-height: calc(100vh - 40px); transition: transform 0.15s ease; }
+.svg-container svg { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<div class="header">
+<h1>${escapeHtml(title || '图表预览')}</h1>
+<div class="zoom-controls">
+<button class="zoom-btn" onclick="document.querySelector('.svg-container').style.transform = 'scale(' + (parseFloat(document.querySelector('.svg-container').style.transform.replace(/[^0-9.]/g,'') || 1) * 1.25).toFixed(2) + ')'">+</button>
+<span id="zoom-level">100%</span>
+<button class="zoom-btn" onclick="document.querySelector('.svg-container').style.transform = 'scale(' + (parseFloat(document.querySelector('.svg-container').style.transform.replace(/[^0-9.]/g,'') || 1) / 1.25).toFixed(2) + ')'">-</button>
+<button class="zoom-btn" onclick="document.querySelector('.svg-container').style.transform = 'scale(1)'">重置</button>
+</div>
+</div>
+<div class="svg-container">${svg}</div>
+<script>
+const container = document.querySelector('.svg-container');
+const zoomLevel = document.getElementById('zoom-level');
+function updateZoom() { const m = container.style.transform.match(/scale\\(([^)]+)\\)/); zoomLevel.textContent = m ? Math.round(parseFloat(m[1]) * 100) + '%' : '100%'; }
+container.addEventListener('wheel', (e) => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); const current = parseFloat(container.style.transform.replace(/[^0-9.]/g,'') || 1); const delta = e.deltaY > 0 ? 0.9 : 1.111; const next = Math.max(0.1, Math.min(10, current * delta)); container.style.transform = 'scale(' + next.toFixed(3) + ')'; updateZoom(); }, { passive: false });
+</script>
+</body>
+</html>`;
+
+			// 用 UntitledTextEditorInput 打开 HTML 内容（编辑器区域标签页）
+			const untitledTextEditorService = accessor.get(IUntitledTextEditorService);
+			const model = untitledTextEditorService.create({ initialValue: html, languageId: 'html' });
+			const input = accessor.get(IInstantiationService).createInstance(UntitledTextEditorInput, model);
+
+			await editorService.openEditor(input, { pinned: true });
+			logService.info('[' + logTag + '] opened in editor tab:', title || '(untitled)');
+		} catch (err) {
+			logService.error('[' + logTag + '] failed:', err instanceof Error ? err.message : String(err));
+		}
+}
+
+CommandsRegistry.registerCommand(
+	'_mermaid-chat.openPreview',
+	async (accessor: ServicesAccessor, markup: string, title?: string) => {
+		if (!markup || !markup.trim()) {
+			accessor.get(ILogService).warn('[MermaidOpenPreview] markup is empty, skipping');
+			return;
+		}
+		const renderer = accessor.get(IMermaidInlineRenderer);
+		await openDiagramPreview(
+			accessor,
+			theme => renderer.renderToSvg(markup.replace(/\\n/g, '\n'), theme),
+			title,
+			'MermaidOpenPreview',
+		);
+	},
+);
+
+CommandsRegistry.registerCommand(
+	'_drawio-chat.openPreview',
+	async (accessor: ServicesAccessor, source: string, title?: string) => {
+		if (!source || !source.trim()) {
+			accessor.get(ILogService).warn('[DrawioOpenPreview] source is empty, skipping');
+			return;
+		}
+		const renderer = accessor.get(IDrawioInlineRenderer);
+		await openDiagramPreview(
+			accessor,
+			theme => renderer.renderToSvg(source, theme),
+			title,
+			'DrawioOpenPreview',
+		);
+	},
+);
+
+/** 转义 HTML 特殊字符，防止 XSS */
+function escapeHtml(s: string): string {
+	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 class BuiltinCapabilityContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.builtinCapabilities';

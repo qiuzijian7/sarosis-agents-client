@@ -13,6 +13,8 @@ import {
 import {
 	softBudgetWrapUpReminder,
 	hardLimitWrapUpReminder,
+	allBlockedWrapUpReminder,
+	textSearchLoopWrapUpReminder,
 	budgetLowWarning,
 	preferGraphSearchReminder,
 	advanceSingleToolStreak,
@@ -164,7 +166,57 @@ suite('ToolUsageGuards — terminal 搜索命令护栏 / 搜索引导提醒', ()
 		assert.ok(msg.includes('overrides ALL other instructions'), 'should assert priority over other instructions');
 		// 不能反过来把控制权交回用户（收尾轮之后没有下一轮可用）
 		assert.ok(msg.includes('Do not ask the user whether to continue'), 'should forbid asking to continue');
-	});
+		});
+
+		test('hardLimitWrapUpReminder 封死「把调用写成文本」的退路（XML 泄漏根因）', () => {
+		// 成因链（日志 1788006127437 实证）：stable 层每轮下发「需要工具时 emit a NATIVE
+		// function call」，而收尾轮 tools 已被置空 + toolChoice='none' → 结构化通道关闭，
+		// 模型两难之下**把调用写成文本**当作唯一可行解（iteration 7–9 输出 3230c 伪 XML
+		// 标签 `tool_calls:` / `arg_key:` / `tool_sep:`）。
+		// 若提醒只说"不要调用工具"，模型会理解成"不能真调，但可以先把调用记下来"——
+		// 故必须逐一点名各种文本形式，并声明**任何语法都不执行**。
+		const msg = hardLimitWrapUpReminder(100);
+		assert.ok(/XML-style tags/.test(msg), 'should explicitly reject XML-style tags');
+		assert.ok(/JSON/.test(msg), 'should explicitly reject JSON');
+		assert.ok(/code block/.test(msg), 'should explicitly reject markdown code blocks');
+		assert.ok(/prose description/.test(msg), 'should explicitly reject prose descriptions');
+		assert.ok(/NOT execute either|no syntax works/i.test(msg), 'should state that no textual syntax executes');
+		// 同时必须点明「不要当作占位符/备忘写下来」——这正是模型当时的实际行为
+		assert.ok(/placeholder|note-to-self/i.test(msg), 'should forbid writing a call as a placeholder');
+		});
+
+	// ─── 每一条收尾提醒都必须封死文本退路（日志 1788016519843 实证）────────
+	//
+	// 收尾轮有**多条**触发路径（迭代上限 / 预算耗尽 / 零进展空转 / 文本搜索连击），
+	// 每条注入的 reminder 不同，但都会关掉工具通道。只要有一条漏掉「任何语法都
+	// 不执行」这句，模型就会在那条路径上把调用写成文本。
+	//
+	// 实证：1788016519843 由 `textSearchStreak 8/8` 护栏触发，走的是
+	// textSearchLoopWrapUpReminder（当时缺这段）；而 hardLimitWrapUpReminder
+	// 因「reason-specific reminder already injected」不再叠加 → 缺口无人补，
+	// 模型随即写下 712c 伪 XML。
+	//
+	// 故此处**逐条枚举**所有收尾提醒，用同一组断言卡住 —— 以后新增收尾路径时，
+	// 忘记带上这段会直接测试失败，而不是等到线上泄漏才被发现。
+
+	const ALL_WRAPUP_REMINDERS: ReadonlyArray<readonly [string, string]> = [
+		['hardLimitWrapUpReminder', hardLimitWrapUpReminder(100)],
+		['allBlockedWrapUpReminder', allBlockedWrapUpReminder(5)],
+		['textSearchLoopWrapUpReminder', textSearchLoopWrapUpReminder(8)],
+	];
+
+	for (const [name, msg] of ALL_WRAPUP_REMINDERS) {
+		test(`★ ${name} 必须封死「把调用写成文本」的退路`, () => {
+			assert.ok(/XML-style tags/.test(msg), `${name}: must reject XML-style tags`);
+			assert.ok(/JSON/.test(msg), `${name}: must reject JSON`);
+			assert.ok(/code block/.test(msg), `${name}: must reject markdown code blocks`);
+			assert.ok(/prose description/.test(msg), `${name}: must reject prose descriptions`);
+			assert.ok(/NOT execute either|no syntax works/i.test(msg), `${name}: must state no syntax works`);
+			assert.ok(/placeholder|note-to-self/i.test(msg), `${name}: must forbid placeholder calls`);
+			// 前提：这些提醒确实关掉了工具通道，否则无需封死退路
+			assert.ok(/DISABLED|disabled|cannot call/i.test(msg), `${name}: must declare tools disabled`);
+		});
+	}
 
 	// ─── 单只读工具连击 → 批量并行引导（log 1787302409958：17 轮单工具串行）──
 

@@ -325,11 +325,17 @@ export function formatToolAuditLog(report: IToolAuditReport): { readonly text: s
 	if (report.guardrails.length > 0) {
 		lines.push('  ── guardrails (watermark: max reached / threshold) ──');
 		for (const g of report.guardrails) {
-			const nearMiss = g.fired === 0 && g.threshold - g.max <= GUARDRAIL_NEAR_MISS_GAP && g.max > 0;
+			// 2026-08-30（日志 20260829T232635）：原判据允许负 gap —— threshold=0
+			// 的「只记录不触发」闸门会算出 `-5 away from firing` 这种无意义标注
+			// （实测 antiGuidanceCall max=5/0 → "near-miss (-5 away from firing)"）。
+			// near-miss 的语义是「还差一点就触发」，故 gap 必须 >= 0：
+			//   gap < 0 → 水位已越过阈值，不是临界，而是已超（或被刻意设为不触发）。
+			const gap = g.threshold - g.max;
+			const nearMiss = g.fired === 0 && g.max > 0 && gap >= 0 && gap <= GUARDRAIL_NEAR_MISS_GAP;
 			lines.push(
 				`    ${pad(g.name, 22)}max=${g.max}/${g.threshold}  fired=${g.fired}` +
 				(g.hot ? `  hot=${g.hot}` : '') +
-				(nearMiss ? `  ← near-miss (${g.threshold - g.max} away from firing)` : '')
+				(nearMiss ? `  ← near-miss (${gap} away from firing)` : '')
 			);
 		}
 	}

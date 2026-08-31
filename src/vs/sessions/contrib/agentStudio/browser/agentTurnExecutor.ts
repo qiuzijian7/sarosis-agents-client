@@ -41,6 +41,12 @@ import {
 	TRANSIENT_ERROR_MAX_DELAY_MS,
 	type AgentRunMessage,
 	type AgentRunState,
+	detectXmlToolCallLeak,
+	canonicalToolArgsHash,
+	hashToolResult,
+	detectToolCallPingPong,
+	locateTaggedIdXmlTags,
+	stripTaggedIdXmlTags,
 } from '../common/agentRunState.js';
 import {
 	AgentCommand,
@@ -85,7 +91,13 @@ import {
 	textSearchLoopWrapUpReminder,
 	advanceSingleToolStreak,
 	batchReadOnlyToolsReminder,
+	xmlToolCallLeakReminder,
 } from '../common/loopReminders.js';
+import {
+	ToolGuardrailController,
+	appendToolGuardGuidance,
+	type IToolGuardrailDecision,
+} from './toolGuardrailController.js';
 import {
 	STRUCTURAL_SEARCH_TOOL_NAMES,
 	TEXT_SEARCH_TOOL_NAMES,
@@ -109,7 +121,33 @@ import {
 	sanitizeAssistantVisibleText,
 	sanitizeToolResultText,
 	isEntirelyToolCallContent,
+	addSanitizeTraceSink,
 } from '../common/assistantVisibleText.js';
+
+/**
+ * 带 trace 的 sanitize：把「哪个剥离阶段删了什么」打到 host 日志。
+ *
+ * 多个剥离阶段用了锚定文本末尾的正则（`$` 无 `m` flag），一旦误命中正文里的
+ * 常见词（`Action:` / `[TOOL_CALL]` / `<function>` 等），会删除「从这里到文本
+ * 末尾」的全部内容 —— 即用户看到的「消息尾部被截断」。此处在调用期间临时安装
+ * sink（用完即卸），既拿到分阶段 trace，又不长期占用全局接收器。
+ */
+function sanitizeWithTrace(text: string, host: { _logService: { warn(msg: string): void } }): string {
+	const log = host._logService;
+	const dispose = addSanitizeTraceSink(e => {
+		log.warn(
+			`[SanitizeTrace] stage=${e.stage} profile=${e.profile} ` +
+			`len ${e.beforeLen}→${e.afterLen} (removed=${e.removedLen}) atOffset=${e.atOffset}\n` +
+			`  removedSnippet="${e.removedSnippet.replace(/\n/g, '\\n')}"\n` +
+			`  afterTail="${e.afterTail.replace(/\n/g, '\\n')}"`
+		);
+	});
+	try {
+		return sanitizeAssistantVisibleText(text, 'streaming');
+	} finally {
+		dispose();
+	}
+}
 import { buildDurableContextSystemMessage } from '../common/durableContextMiddleware.js';
 import { AGUIChatMessageBuilder } from '../common/adapters/aguiAdapter.js';
 import { ContextManager, RETRIEVAL_COMPACTION_ENABLED, RETRIEVAL_BUDGET_RATIO } from '../common/contextManager.js';
@@ -443,6 +481,70 @@ interface ITurnContext {
 	return { modelProvider, selection, enabledTools, messages, memoryProvider, effectiveSystemPrompt };
 }
 
+// ─── [TagTrace] `<tag:id>` 伪标签溯源 ──────────────────────────────
+// 为什么要有这套日志：这类标签**理论上不该出现** —— 全仓无生成代码、系统提示词
+// 反而禁止 XML 工具标签、横向对比 openclaw / Hermes-Agent / opencode 三家也都**没有**
+// 处理该格式的逻辑（它们的正则都不认 `:id` 后缀）。既然不是通用模型行为，就必然有
+// 特定来源。此前一直在「处理症状」（剥离/检测/提醒），却从未定位源头，故补三处切面，
+// 用**二分法**把成因收敛到两种之一：
+//   · 请求侧有、响应侧有 → PRIMING：模型看见了才模仿，源头是工具结果/历史/记忆/skill；
+//   · 请求侧无、响应侧有 → 模型自发（训练格式残留），只能靠提醒+剥离兜底。
+// 两种成因治理方式完全不同，不分清就会一直治标。
+
+/**
+ * 切面 1：扫描**即将发给 LLM 的请求**，报告标签首次出现在第几条消息、什么角色。
+ * 命中即强烈提示 priming（模型在下轮看到后就会模仿）。
+ */
+function _tagTraceScanRequest(messages: ReadonlyArray<any>, iteration: number, host: any): void {
+	try {
+		let firstIdx = -1;
+		let firstRole = '';
+		let firstSnippet = '';
+		const allHits: string[] = [];
+		for (let i = 0; i < messages.length; i++) {
+			const c = messages[i]?.content;
+			if (typeof c !== 'string' || !c) { continue; }
+			const hits = locateTaggedIdXmlTags(c, 2);
+			if (hits.length === 0) { continue; }
+			if (firstIdx < 0) {
+				firstIdx = i;
+				firstRole = String(messages[i]?.role ?? '?');
+				firstSnippet = hits[0].snippet;
+			}
+			for (const h of hits) { allHits.push(`m${i}/${h.tag}:${h.id}@${h.index}`); }
+		}
+		if (allHits.length === 0) { return; }
+		host._logService.warn(
+			`[AgentOS][TagTrace] REQUEST-SIDE tags iter=${iteration} ` +
+			`firstAt=msg[${firstIdx}](role=${firstRole}) total=${allHits.length} ` +
+			`hits=[${allHits.slice(0, 6).join(', ')}] → PRIMING suspected ` +
+			`snippet=${JSON.stringify(firstSnippet).slice(0, 220)}`
+		);
+	} catch {
+		// 诊断日志绝不阻断请求
+	}
+}
+
+/**
+ * 切面 3：扫描**工具回灌结果**。工具输出是 priming 最常见的载体 —— 模型读到
+ * 文件/日志里含此类标签后会在下一轮模仿（Hermes 亦记录过同类现象，见
+ * `conversation_loop.py::_invalid_tool_name_error_content`）。
+ */
+function _tagTraceScanToolResult(resultText: string, toolName: string, iteration: number, host: any): void {
+	try {
+		if (!resultText) { return; }
+		const hits = locateTaggedIdXmlTags(resultText, 2);
+		if (hits.length === 0) { return; }
+		host._logService.warn(
+			`[AgentOS][TagTrace] TOOL-RESULT tags iter=${iteration} tool=${toolName} ` +
+			`len=${resultText.length} hits=[${hits.map(h => `${h.tag}:${h.id}@${h.index}`).join(', ')}] ` +
+			`snippet=${JSON.stringify(hits[0].snippet).slice(0, 220)}`
+		);
+	} catch {
+		// 诊断日志绝不阻断请求
+	}
+}
+
 /**
  * 工具 schema 的固定 token 开销粗估（纯函数，无副作用）。
  *
@@ -754,7 +856,10 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		let reasoningOnlyRetryAttempts = 0;
 		let emptyResponseRetryAttempts = 0;
 		let lengthTruncatedRetryAttempts = 0;
-		// 工具调用在协议层丢失（finish_reason=tool_calls 但 0 tool call）续跑计数器
+		// 工具调用在协议层丢失（finish_reason=tool_calls 但 0 tool call）续跑计数器。
+		// ⚠ 语义：只增不减，**重试成功后不重置** —— 上限是「单次 turn 内总额度」，
+		// 而非「连续失败次数」。例：丢失→重试成功→再丢失，第二次的 attempt 是 2 而非 1。
+		// （上限值见 DEFAULT_TOOL_CALL_LOST_RETRY_LIMIT。）
 		let toolCallLostRetryAttempts = 0;
 		// 维度 3：瞬态错误（SSE 超时/网络/429/5xx）重试计数器，单次 turn 内累计
 		let transientErrorRetries = 0;
@@ -820,6 +925,52 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		let _allBlockedStreak = 0;
 		/** 强提醒只发一次 —— 反复注入会污染前缀缓存且被模型进一步忽略。 */
 		let _allBlockedReminderSent = false;
+
+		// ─── XML 文本工具调用泄漏（模型未走 native function call）──────────────
+		// 模型把工具调用写成 XML 纯文本（<tool_calls:xxx> / <arg_key:xxx>）时，本系统
+		// 按设计不执行它；而 `classifyIncompleteTurn` 会因「有可见文本」判为 complete
+		// ——既不续跑也不报错，模型便以为调用没生效而反复输出同样的 XML 试探，
+		// 实测表现为聊天框堆满工具解析错误 UI。
+		// 对策：上限内丢弃泄漏文本 + 注入「该格式不执行」指令并续跑，让模型改用
+		// native function call；超限则交回常规 incomplete-turn 流程收尾，避免无限重试。
+		let _xmlToolLeakAttempts = 0;
+		/** 与其他 incomplete-turn 重试上限对齐（见 agentRunState 的 DEFAULT_*_RETRY_LIMIT）。 */
+		const XML_TOOL_LEAK_RETRY_LIMIT = 2;
+
+		// ─── Hermes 工具循环护栏（接入主循环；此前该类是死代码）────────────────
+		// 直译自 Hermes-Agent `agent/tool_guardrails.py`。本循环此前只有两把粗粒度
+		// 尺子：`detectToolCallLoop`（同签名重复即阻止，不分成败）与
+		// `MAX_CONSECUTIVE_TOOL_FAILURES`（连续失败计数）。缺的是**结果维度的无进展**判断。
+		//
+		// 阈值刻意让 block/halt **只由 no_progress 触发**，理由（避免双重拦截）：
+		//   · exact_failure block  → 交给 detectToolCallLoop（它已在同签名重复时阻止）
+		//   · same_tool_failure halt → 交给 MAX_CONSECUTIVE_TOOL_FAILURES + 收尾轮机制
+		// 若两者叠加，同一次调用会被两套独立规则判定，行为不可预测且难调参。
+		// 于是 exact/same_tool 在此**只提供 warn 信号**（追加到 tool result 让模型自纠），
+		// 而 block 这一硬手段留给主循环缺失的 no_progress。
+		//
+		// ⚠ noProgressBlockAfter = 2（而非默认 3）是与 detectToolCallLoop 的**分工**设计：
+		// detectToolCallLoop 只看签名、**不分成败也不看结果**，第 3 次同签名即阻止；
+		// 若 no_progress 也设 3，它要到第 4 次才触发，会被 detectToolCallLoop 完全遮蔽
+		// （永远轮不到，等于没接）。设 2 后两者同在第 3 次触发，而 beforeCall 代码在
+		// detectToolCallLoop 之前执行，于是形成清晰分工：
+		//   · 同签名 **且** 同结果 → 护栏先拦（文案点明「结果无变化」，误伤更小）
+		//   · 同签名 但 结果不同 → 放行给 detectToolCallLoop 拦（文案点明「参数重复」）
+		//
+		// 生命周期：本 controller 在 executeAgentTurnDirect 内 new，天然 per-turn 重置
+		// （while 迭代间**跨轮累积**——这正是检测跨轮循环所需要的）。
+		const _toolGuardrail = new ToolGuardrailController({
+			warningsEnabled: true,
+			hardStopEnabled: true,
+			exactFailureWarnAfter: 2,
+			exactFailureBlockAfter: Number.MAX_SAFE_INTEGER,   // 交给 detectToolCallLoop
+			sameToolFailureWarnAfter: 3,
+			sameToolFailureHaltAfter: Number.MAX_SAFE_INTEGER, // 交给 MAX_CONSECUTIVE_TOOL_FAILURES
+			noProgressWarnAfter: 2,
+			noProgressBlockAfter: 2,                            // 与 detectToolCallLoop(3) 分工，见上
+		});
+		/** beforeCall 判定为 block 的调用，记录其 decision 文案以便回填合成结果。 */
+		const _guardrailBlocked = new Map<string, IToolGuardrailDecision>();
 
 		// ─── AgentRunState（reducer 化 Step 3）────────────────────────────────
 		// 跨 iteration 的业务状态（非法工具名计数 / 续跑计数 / 反思计数 / 文件修改标记 /
@@ -1913,6 +2064,19 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 	 * 避免出现「你已用满 100 轮」这类与事实矛盾的措辞。
 	 */
 	let _wrapUpReminderAlreadyInjected = false;
+	/**
+	 * 硬上限收尾提醒是否已注入（**本开关负责**的那一条）。
+	 *
+	 * ⚠ 与 `_wrapUpReminderAlreadyInjected` 语义不同，不可合并：后者表示「触发原因方
+	 * （零进展空转 / 文本搜索超限）**已注入过**贴合真实原因的提醒」，置位后本开关的
+	 * 提醒**不再叠加**；前者表示「本开关自己的提醒已注入过」。
+	 *
+	 * 缺了它会重复注入：wrap-up **可能连续多轮**（日志 1788006127437 实证 iteration
+	 * 7/8/9 连跑 3 轮），而 `_wrapUpReminderAlreadyInjected` 仅在零进展 / 文本搜索
+	 * 路径置位 —— 硬上限路径下它恒为 false，导致每轮 wrap-up 都再塞一条同样的提醒，
+	 * 既污染上下文又打断前缀缓存。
+	 */
+	let _hardLimitReminderInjected = false;
 	/** 临近预算预警是否已注入（只提醒一次，避免每轮刷屏）。 */
 	let _budgetLowWarned = false;
 	/** 剩余轮次 <= 该值时注入临近预算预警（够模型收一次尾，又不至于过早悲观）。 */
@@ -1939,6 +2103,11 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// ─── 收尾轮判定：撞硬上限（iteration 超出 MAX）或预算耗尽请求 ──
 		const _isWrapUpRound = _forceWrapUpRound || iteration > MAX_TOOL_ITERATIONS;
 		if (_isWrapUpRound) {
+			host._logService.info(
+				`[AgentOS][Diag] wrap-up trigger: iter=${iteration} force=${_forceWrapUpRound} ` +
+				`overMax=${iteration > MAX_TOOL_ITERATIONS} budget=${budget.getSummary()} ` +
+				`grace=${budget.isGraceArmed()}`,
+			);
 			_wrapUpRoundDone = true;
 			host._logService.warn(
 				`[AgentOS] FINAL WRAP-UP ROUND (iteration ${iteration}, max ${MAX_TOOL_ITERATIONS}) — ` +
@@ -1951,8 +2120,29 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			// 矛盾会让模型困惑**（它可能据此判断上下文已被截断而放弃作答）。
 			// 收尾的三重保障（工具置空 / toolChoice:'none' / 提醒）仍完整，只是提醒
 			// 换成了贴合真实原因的那一条。
-			if (!_wrapUpReminderAlreadyInjected) {
-				messages.push({ role: 'user', content: hardLimitWrapUpReminder(MAX_TOOL_ITERATIONS) });
+			if (!_wrapUpReminderAlreadyInjected && !_hardLimitReminderInjected) {
+				// ─── 收尾提醒的注入方式：system 消息 + 紧贴冻结前缀 ────────────
+				// 改前是 `messages.push({ role: 'user', ... })` —— 两个问题：
+				//   ① **角色错配**：冲突指令（stable 层「需要工具时 emit a NATIVE
+				//      function call」）在 **system** 里，而纠正它的提醒却是 **user**
+				//      消息。模型对 system 的遵循权重高于 user，靠 user 消息末尾那句
+				//      "overrides ALL other instructions" 去压 system 指令，胜算很低。
+				//   ② **位置太远**：push 到末尾 = 淹没在全部对话历史之后；而冲突指令在
+				//      开头。两者相隔整段历史，模型很难把它们关联成"后者覆盖前者"。
+				// 改为：system 角色 + 插入在所有前置 system 消息之后（复用 330 行
+				// volatile 层的同款插入模式），使其**紧贴**冻结前缀中的冲突指令。
+				// 这不打断前缀缓存 —— 冻结前缀仍是最长公共前缀，本条只是其后的增量。
+				const _wrapUpContent = hardLimitWrapUpReminder(MAX_TOOL_ITERATIONS);
+				let _wrapUpInsertIdx = 0;
+				for (let i = 0; i < messages.length; i++) {
+					if (messages[i]?.role === 'system') { _wrapUpInsertIdx = i + 1; } else { break; }
+				}
+				messages = insertMessages(messages, _wrapUpInsertIdx, { role: 'system', content: _wrapUpContent });
+				_hardLimitReminderInjected = true;
+				host._logService.info(
+					`[AgentOS] Wrap-up reminder injected as SYSTEM tier at idx=${_wrapUpInsertIdx} ` +
+					`(adjacent to frozen prefix, ${_wrapUpContent.length} chars)`,
+				);
 			}
 			// 空数组（非 undefined）：下方 `if (_iterationToolDefs)` 判定为 truthy，
 			// 从而把 enabledTools 覆盖为空 → provider 收不到任何工具，模型无法再调用。
@@ -2237,6 +2427,16 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				// 诊断失败绝不阻断请求
 				host._logService.warn('[PromptBudget] failed to build report:', budgetError);
 			}
+
+			// ─── [TagTrace] `<tag:id>` 伪标签溯源 · 请求侧扫描 ──────────────
+			// 二分定位的决定性切面：发给模型的请求里**是否已经存在**这类标签。
+			//   · 请求侧**有** → PRIMING：模型看见了才模仿，源头在工具结果 / 历史
+			//     消息 / 记忆注入 / skill 内容，应去治理那个内容源；
+			//   · 请求侧**无**、响应侧才有 → 模型自发输出（训练格式残留），
+			//     只能靠提醒 + 剥离兜底。
+			// 两种成因治理方式完全不同，不分清就会一直治标。故此处逐条消息扫描并
+			// 报出**首次出现的位置与角色**，直接指向源头。
+			_tagTraceScanRequest(messages, iteration, host);
 
 			host._logService.info(`[AgentOS] Calling modelProvider.chat(modelId=${selection.modelId}, messages=${messages.length}, tools=${enabledTools.length}) convId=${conversationId} reqId=${requestId} prevRespId=${previousResponseId ?? '(none/provider-managed)'}`);
 
@@ -2819,6 +3019,22 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				`[AgentOS] Model response: textLen=${assistantContent.length}, toolCalls=${assistantToolCalls.length}` +
 				`, finishReason=${lastFinishReason ?? 'n/a'}, outputTokens=${_lastUsageDelta?.outputTokens ?? 'n/a'}`
 			);
+
+			// ─── [TagTrace] `<tag:id>` 伪标签溯源 · 响应侧扫描 ──────────────
+			// 与请求侧配对判读：请求侧无 + 响应侧有 = 模型自发；两侧都有 = priming。
+			// 额外记录 `toolsSent`：收尾轮 tools=0 是已知高发场景，需要它在日志里可见。
+			{
+				const _respHits = locateTaggedIdXmlTags(assistantContent, 3);
+				if (_respHits.length > 0) {
+					host._logService.warn(
+						`[AgentOS][TagTrace] RESPONSE-SIDE tags iter=${iteration} textLen=${assistantContent.length} ` +
+						`toolsSent=${enabledTools.length} finishReason=${lastFinishReason ?? 'n/a'} ` +
+						`hits=[${_respHits.map(h => `${h.tag}:${h.id}@${h.index}`).join(', ')}] ` +
+						`snippet=${JSON.stringify(_respHits[0].snippet).slice(0, 240)}`
+					);
+				}
+			}
+
 			if (assistantContent.length === 0 && assistantToolCalls.length === 0) {
 				// 诊断：空响应时刻的完整上下文快照（关键定位信息）
 				const _est = host._estimateMessagesTokens(messages);
@@ -2849,6 +3065,27 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				// 尝试从纯文本中解析工具调用（兼容不严格遵循 OpenAI 格式的模型）
 				// 传入 enabledTools 以支持从纯参数 JSON 推断工具名
 				const extracted = host._tryExtractToolCallsFromText(assistantContent, thinkingContent, enabledTools);
+
+				// ─── 无论提取是否成功，都必须 sanitize ──────────────────────
+				// 日志 1788016519843 实证：白名单守卫（待办 2）阻止了提取（extracted=[]），
+				// 但也**连带跳过了整个 sanitize 分支**（3043-3057），导致含伪 XML 标签的
+				// 文本原封不动进入 UI 显示路径 —— 用户在聊天框中直接看到 `<tool_calls:6124c78e>` 等。
+				// 故 sanitize 必须无条件执行，与提取结果解耦。
+				const hasXmlShape = /<\s*(?:tool_calls?|function_calls?|tool_use|invoke|tool|arg_key|arg_value|parameter|tool_sep)\b[^>]*>/i.test(assistantContent)
+					|| locateTaggedIdXmlTags(assistantContent, 1).length > 0;
+				if (hasXmlShape) {
+					if (isEntirelyToolCallContent(assistantContent)) {
+						assistantContent = '';
+						host._logService.info(`[AgentOS] Cleared assistantContent (was entirely tool-call content, extraction skipped)`);
+					} else {
+						const beforeLen = assistantContent.length;
+						const cleaned = sanitizeWithTrace(assistantContent, host);
+						assistantContent = cleaned.length < 5 ? '' : cleaned;
+						host._logService.info(`[AgentOS] Sanitized assistantContent (extraction skipped), remaining: ${assistantContent.length} chars (was ${beforeLen})`);
+					}
+					yield { type: 'content_replace', content: assistantContent };
+				}
+
 				if (extracted.length > 0) {
 					host._logService.info(`[AgentOS] Extracted ${extracted.length} tool calls from text output: [${extracted.map((tc: any) => tc.name).join(', ')}]`);
 					effectiveToolCalls = extracted;
@@ -2859,9 +3096,10 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						assistantContent = '';
 						host._logService.info(`[AgentOS] Cleared assistantContent (was entirely tool-call content)`);
 					} else {
-						const cleaned = sanitizeAssistantVisibleText(assistantContent, 'streaming');
+						const beforeLen = assistantContent.length;
+						const cleaned = sanitizeWithTrace(assistantContent, host);
 						assistantContent = cleaned.length < 5 ? '' : cleaned;
-						host._logService.info(`[AgentOS] Sanitized assistantContent, remaining: ${assistantContent.length} chars`);
+						host._logService.info(`[AgentOS] Sanitized assistantContent, remaining: ${assistantContent.length} chars (was ${beforeLen})`);
 					}
 
 					// Notify downstream (agentChatService + webview) to replace accumulated text
@@ -2978,7 +3216,21 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				effectiveToolCalls = realToolCalls;
 			}
 
-			// ─── Supervisor handoff: 拦截 transfer_to_agent（来源 A, 设计 §3.3）────
+			// ─── [DIAG] 工具调用来源诊断 ────────────────────────────────────────
+		// 区分三种情况：① native tool_calls(API 层返回) ② 文本提取(extracted) ③ 零(纯文本/泄漏)
+		// 截图 iteration 12 的 XML 泄漏属于情况 ③ —— 模型输出伪 XML 但提取器不认。
+		const _toolSource = assistantToolCalls.length > 0
+			? `native(${assistantToolCalls.length})`
+			: effectiveToolCalls.length > 0
+				? `extracted(${effectiveToolCalls.length})`
+				: 'none';
+		host._logService.info(
+			`[AgentOS][Diag] iter=${iteration} toolSource=${_toolSource} ` +
+			`native=${assistantToolCalls.length} extracted=${effectiveToolCalls.length - (assistantToolCalls.length > 0 ? 0 : effectiveToolCalls.length)} ` +
+			`final=${effectiveToolCalls.length} names=[${effectiveToolCalls.map((tc: any) => tc.name).join(',')}]`,
+		);
+
+		// ─── Supervisor handoff: 拦截 transfer_to_agent（来源 A, 设计 §3.3）────
 			// 多 agent 图模式下节点借 builtin 交接工具发出路由指令；此处拦截、不真正
 			// 执行，生成 AgentCommand 让 runAgentGraph（Step C）路由到下一节点。
 			// 单 agent 模式该工具已被 _getEnabledTools 过滤（不会到达此处）→ 零行为变更。
@@ -3034,7 +3286,31 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			// 若原样 push 进历史，下一轮会把这条"空白 assistant 消息"再喂回 LLM
 			// （即用户看到的"发送空消息给 llm"）。纯空白且无工具调用时不入历史。
 			const trimmedAssistantContent = assistantContent.trim();
-			if (trimmedAssistantContent || effectiveToolCalls.length > 0) {
+			// ─── [DIAG] assistant 文本诊断（定位 XML 泄漏 / 纯文本无工具调用 / 提取失败）──
+			// 截图显示 iteration 12 出现 <tool_calls:6124c78e> 等伪 XML 标签但日志中完全无痕迹，
+			// 说明此前日志粒度不够：没有记录 assistant 原始文本、XML 检测结果、提取器输出。
+			const _diagTextPreview = trimmedAssistantContent.length > 120
+				? trimmedAssistantContent.slice(0, 60) + '…[' + trimmedAssistantContent.length + 'c]…' + trimmedAssistantContent.slice(-40)
+				: trimmedAssistantContent;
+			host._logService.info(
+				`[AgentOS][Diag] iter=${iteration} assistant textLen=${trimmedAssistantContent.length} ` +
+				`toolCalls=${effectiveToolCalls.length} preview=${JSON.stringify(_diagTextPreview).slice(0, 200)}`,
+			);
+			// ─── XML 文本工具调用泄漏判定 ──────────────────────────────────────
+			// 模型把工具调用写成 XML 纯文本（<tool_calls:xxx> / <arg_key:xxx>）而非
+			// native function call。此时本轮文本是「未被执行的调用意图」而非有效产出：
+			// 若原样入历史，下一轮模型会看到自己刚输出的 XML 并继续模仿，形成自我强化
+			// （这正是聊天框反复堆出同类解析错误 UI 的成因）。
+			// 故判定为泄漏时**不入库**，交由下方分支注入纠正指令后重试。
+			const xmlToolLeak = effectiveToolCalls.length === 0 && detectXmlToolCallLeak(trimmedAssistantContent);
+			if (xmlToolLeak) {
+				host._logService.warn(
+					`[AgentOS][Diag] ⚠ XML-TOOL-LEAK detected iter=${iteration} ` +
+					`textLen=${trimmedAssistantContent.length} attempt=${_xmlToolLeakAttempts}/${XML_TOOL_LEAK_RETRY_LIMIT} ` +
+					`preview=${JSON.stringify(_diagTextPreview).slice(0, 200)}`,
+				);
+			}
+			if ((trimmedAssistantContent || effectiveToolCalls.length > 0) && !xmlToolLeak) {
 				const assistantMessage: any = {
 					role: 'assistant',
 					// 落库用 trim 后的内容，杜绝纯空白污染历史
@@ -3068,6 +3344,36 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			}
 
 			if (effectiveToolCalls.length === 0) {
+				// ─── XML 文本工具调用泄漏 → 显式告知模型「该格式不执行」并续跑 ─────
+				// 必须抢在 classifyIncompleteTurn 之前判定：该函数对「有可见文本」一律判
+				// 'complete'，而 XML 泄漏恰恰表现为有可见文本 —— 若放其后则永远漏判，
+				// 模型得不到任何反馈，只会反复输出同样的 XML 试探。
+				// 处置（对齐 openclaw「显式告知不执行」而非静默丢弃）：
+				//   上限内 —— 丢弃泄漏文本（已在上方跳过入库）+ 注入纠正指令 + 续跑纠正；
+				//   超限   —— 说明该模型不会用 native function call，交回常规 incomplete-turn 收尾。
+				if (xmlToolLeak) {
+					if (_xmlToolLeakAttempts < XML_TOOL_LEAK_RETRY_LIMIT) {
+						_xmlToolLeakAttempts++;
+						host._logService.warn(
+							`[AgentOS] ⚠ XML-TOOL-LEAK: model emitted tool call as XML text, which is NOT executed ` +
+							`(attempt=${_xmlToolLeakAttempts}/${XML_TOOL_LEAK_RETRY_LIMIT}, textLen=${trimmedAssistantContent.length}) — ` +
+							`discarding leaked text and instructing native function call`,
+						);
+						// 通知 UI 清掉已流式渲染出的泄漏文本（webview 收到后清空 buffer）
+						yield { type: 'discard_prior_text', metadata: { reason: 'xml-tool-call-leak' } };
+						// 注入纠正指令作为下一轮 user 边界
+						messages = appendMessages(messages, { role: 'user', content: xmlToolCallLeakReminder() });
+						continue;
+					}
+					host._logService.warn(
+						`[AgentOS] ⚠ XML-TOOL-LEAK: retries exhausted (${XML_TOOL_LEAK_RETRY_LIMIT}) — ` +
+						`model does not emit native function calls; ending turn`,
+					);
+					// 重试用尽：这段文本既不能执行也无参考价值，丢弃后走常规结束路径，
+					// 避免把泄漏 XML 留在 UI 上冒充"回答"。
+					yield { type: 'discard_prior_text', metadata: { reason: 'xml-tool-call-leak-exhausted' } };
+				}
+
 				// ─── 未完成轮安全续跑（对齐 OpenClaw stopReason 结构判定，无文本意图识别）──
 				// 仅当本轮"无可见文本 + 无工具调用"才可能是未完成轮：
 				//   - 'reasoning-only'：只有思考块、无可见答案（模型想做但没落地）
@@ -3103,9 +3409,22 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						if (incompleteKind === 'tool-call-lost') {
 							// 协议层缺陷信号：模型声明发了工具调用但一个都没送达。
 							// 单独打点便于统计发生率与定位 provider 映射问题。
+							//
+							// ★ 2026-08-31：补上 outputTokens 判据（对齐 L2637 usage delta 注释
+							// 的既有诊断意图）。这是区分「真丢失」与「模型误报」的关键：
+							//   outputTokens 远高于文本量 → 模型确实生成了内容却没被捕获
+							//                              （provider→renderer 映射丢失，日志实证
+							//                               outputTokens=5503 / textLen=306 / 63 个
+							//                               tool_progress delta / thinking 0 字符）
+							//   outputTokens 与文本量相当 → 模型只是说了句「我接下来要…」就结束，
+							//                              finish_reason 报 tool_calls 属模型侧误报
+							// 两者对策不同：前者该换 provider/模型，后者重试即可。
+							const _outTok = _lastUsageDelta?.outputTokens;
 							host._logService.warn(
 								`[AgentOS] ⚠ TOOL-CALL-LOST: finish_reason=tool_calls but 0 tool calls received ` +
-								`(assistantTextLen=${trimmedAssistantContent.length}). The tool call was dropped ` +
+								`(assistantTextLen=${trimmedAssistantContent.length}, outputTokens=${_outTok ?? 'n/a'}). ` +
+								`outputTokens 远高于文本量 ⇒ 真丢失（provider→renderer 映射）；两者相当 ⇒ ` +
+								`模型侧误报（只说了句意图就结束）。The tool call was dropped ` +
 								`in the provider→renderer mapping — check codebuddy-provider SSE delta handling.`,
 							);
 						}
@@ -3135,7 +3454,8 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						continue;
 					}
 					host._logService.warn(
-						`[AgentOS] Incomplete turn retries exhausted (kind=${incompleteKind}, finishReason=${lastFinishReason ?? 'n/a'}) — ending conversation`,
+						`[AgentOS] Incomplete turn retries exhausted (kind=${incompleteKind}, finishReason=${lastFinishReason ?? 'n/a'}` +
+						`, outputTokens=${_lastUsageDelta?.outputTokens ?? 'n/a'}, textLen=${trimmedAssistantContent.length}) — ending conversation`,
 						);
 						// 2026-08-29（日志 1787985475999）：标记本轮为「空/失败结束」，
 						// 透传给 executeAgentTurn 的 finally —— 抑制「✅ 任务执行完毕」成功通知，
@@ -3454,11 +3774,55 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			if (localExecutedCalls.length > 0) {
 				// ── Tool Call Loop Detection（借鉴 OpenClaw `detectToolCallLoop`）──────
 				// 在执行前检测同一工具+相同参数的重复调用
+				// ─── Ping-pong 检测（A→B→A→B 交替，对齐 openclaw）────────────────
+				// detectToolCallLoop 只看「同一签名重复」；ping-pong 是两个不同调用来回切换，
+				// 单看每个签名都不重复 → 被完全漏检。故在此对本批**整批判定一次**。
+				// 仅当 noProgressEvidence（两侧结果各自稳定）才拦截；结果在变说明仍在推进。
+				let _pingPongMsg: string | undefined;
+				const _pingPong = detectToolCallPingPong(runState.toolCallHistory);
+				if (_pingPong.pingPong && _pingPong.noProgressEvidence) {
+					_pingPongMsg =
+						`Blocked: ping-pong loop between "${_pingPong.toolA}" and "${_pingPong.toolB}" ` +
+						`(${_pingPong.length} alternating calls) with identical results on both sides. ` +
+						`Switching between these two calls is making no progress — the information you need is not here. ` +
+						`Use a different tool or a different approach, or proceed with the results you already have.`;
+					host._logService.warn(
+						`[AgentOS] Ping-pong loop: ${_pingPong.toolA} <-> ${_pingPong.toolB} ` +
+						`(${_pingPong.length} alternating calls, stable results both sides) — blocking entire batch`,
+					);
+				} else if (_pingPong.pingPong) {
+					host._logService.warn(
+						`[AgentOS] Ping-pong pattern: ${_pingPong.toolA} <-> ${_pingPong.toolB} ` +
+						`(${_pingPong.length} calls) but results still changing — allowing`,
+					);
+				}
+
 				const filteredCalls = localExecutedCalls.filter(tc => {
+					// ping-pong 是**整批**的模式而非单个调用的属性，命中则本批全部拦截
+					if (_pingPongMsg) { return false; }
 					const rawArgs = typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments ?? {});
 					let args: Record<string, unknown>;
 					try { args = JSON.parse(rawArgs) as Record<string, unknown>; } catch { args = {}; }
-					const argsHash = JSON.stringify(args ?? {}).slice(0, 200);
+					// 必须与 detectToolCallLoop 内部共用同一规范化函数，否则存入 history 的
+					// 签名与比对时的签名算法不一致 → 永远匹配不上 → 循环检测静默失效。
+					const argsHash = canonicalToolArgsHash(args);
+
+					// Hermes 护栏 before_call：只读工具「同签名 + 同结果」反复返回 → 判定无进展。
+					// 只采纳 no_progress_block（exact/same_tool 的 block 已由配置关闭，见护栏声明处）。
+					const _before = _toolGuardrail.beforeCall(tc.name, args);
+					if (_before.action === 'block') {
+						if (_before.code === 'idempotent_no_progress_block') {
+							_guardrailBlocked.set(tc.id, _before);
+							host._logService.warn(
+								`[AgentOS] Guardrail no-progress block: "${tc.name}" returned identical result ` +
+								`${_before.count} times with identical args — blocking`,
+							);
+							return false;
+						}
+						// 其余 block 类型理论上不可达（配置已关闭）。记录后放行，宁可放过也不误伤。
+						host._logService.warn(`[AgentOS] Guardrail unexpected block code=${_before.code} — allowing`);
+					}
+
 					const { loop, count } = detectToolCallLoop(runState.toolCallHistory, tc.name, args);
 					// 无论是否 loop，都记录到历史（对齐原内联函数无条件 push）
 					runState = reduceRunState(runState, { type: 'RECORD_TOOL_CALL', name: tc.name, argsHash });
@@ -3471,10 +3835,23 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				if (filteredCalls.length < localExecutedCalls.length) {
 					// 为被阻止的工具生成错误结果
 					const blockedCalls = localExecutedCalls.filter(tc => !filteredCalls.includes(tc));
+					host._logService.info(
+						`[AgentOS][Diag] iter=${iteration} blockSummary: total=${localExecutedCalls.length} ` +
+						`allowed=${filteredCalls.length} blocked=${blockedCalls.length} ` +
+						`reasons={pingPong=${!!_pingPongMsg},loop=${blockedCalls.length - (!!_pingPongMsg ? 0 : (blockedCalls.length > 0 ? 1 : 0))},guardrail=${_guardrailBlocked.size}} ` +
+						`blockedNames=[${blockedCalls.map((tc: any) => tc.name).join(',')}]`,
+					);
 					for (const tc of blockedCalls) {
+						// 护栏（no-progress）拦截的调用用其专属文案，否则沿用循环检测文案。
+						// 取后即删：decision 一次性，避免跨轮误用与 Map 无限增长。
+						const _guardDecision = _guardrailBlocked.get(tc.id);
+						_guardrailBlocked.delete(tc.id);
+						const _blockMsg = _pingPongMsg
+						?? _guardDecision?.message
+						?? buildLoopBlockFeedback(tc.name, tc.arguments);
 						toolResults.push({
 							toolCallId: tc.id,
-							content: [{ type: 'text', text: buildLoopBlockFeedback(tc.name, tc.arguments) }],
+							content: [{ type: 'text', text: _blockMsg }],
 							success: false,
 						});
 						// ⚠⚠ 2026-08-22（日志 1787377582459，实测 37 次）：**只在该 id 从未
@@ -3493,7 +3870,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							startedToolIds.add(tc.id);
 							yield { type: 'tool_start', content: '', toolCallId: tc.id, toolName: tc.name };
 						}
-						yield { type: 'tool_result', content: buildLoopBlockFeedback(tc.name, tc.arguments), toolCallId: tc.id };
+						yield { type: 'tool_result', content: _blockMsg, toolCallId: tc.id };
 						yield { type: 'tool_end', toolCallId: tc.id, success: false };
 						endedToolIds.add(tc.id);
 					}
@@ -3638,6 +4015,32 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			// 消息追加、tool_result/tool_end yield。闭包捕获 messages / _toolConsecutiveFailures /
 			// _terminalEmptyOutputCount / endedToolIds，返回更新后的 messages。
 			function* _processToolResult(toolResult: { toolCallId: string; content: any; success: boolean; metadata?: { executionTimeMs?: number } }, toolName: string): Generator<IChatStreamDelta> {
+				// ─── [TagTrace] 切面 3：工具结果扫描 ──────────────────────────
+				// 工具输出是 priming 最常见的载体：模型读到文件/日志里含 `<tag:id>`
+				// 后会在下一轮模仿。必须先于 success 分支处理 —— 失败结果同样会回灌
+				// 给模型，同样是潜在的 priming 源。
+				{
+					const _trRaw = toolResult.content && typeof toolResult.content === 'string'
+						? toolResult.content
+						: safeStringifyToolResult(toolResult.content);
+					_tagTraceScanToolResult(_trRaw, toolName, iteration, host);
+				}
+				// ─── 切断跨会话传播：剥离伪标签后再回灌 ──────────────────────
+				// 工具结果是这类标签**跨会话扩散的载体**（日志 1788011997897 实证）：
+				// SubAgent 的 delegate_task 结果带着 `tool_calls:6124c78e` 回灌主会话后，
+				// 会驻留在 `msg[7](role=tool)` 里，此后**每一轮**都随请求重新发给模型
+				// （iter=2..7 次次命中 PRIMING suspected），污染持续放大。
+				// 故必须在此处（回灌前）剥离 —— 放在扫描之后，保证 TagTrace 仍能记录原始情况。
+				if (typeof toolResult.content === 'string' && toolResult.content) {
+					const _stripped = stripTaggedIdXmlTags(toolResult.content);
+					if (_stripped !== toolResult.content) {
+						host._logService.info(
+							`[AgentOS][TagTrace] stripped tagged-id XML from tool result ` +
+							`(tool=${toolName}, iter=${iteration}) before feeding it back to the model`,
+						);
+						toolResult.content = _stripped;
+					}
+				}
 				if (!toolResult.success) {
 					_toolConsecutiveFailures.set(toolName, (_toolConsecutiveFailures.get(toolName) ?? 0) + 1);
 					_auditMark('consecutiveFail', _toolConsecutiveFailures.get(toolName) ?? 0, MAX_CONSECUTIVE_TOOL_FAILURES, toolName);
@@ -3740,9 +4143,39 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					_audit.iterations = iteration;
 				}
 				const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
-				const resultStr = !toolResult.success
-					? appendRecoveryHint(rawStr, toolResult.toolCallId)
-					: rawStr;
+
+				// Hermes 护栏 after_call：用本轮结果推进计数并取回决策（warn / halt）。
+				// args 经 toolCallId 反查 —— 本函数是闭包，可直接访问 localExecutedCalls；
+				// 三个调用点都只拿得到 toolResult + toolName，改签名成本高且易漏改。
+				const _guardTc = localExecutedCalls.find((c: any) => c.id === toolResult.toolCallId);
+				let _guardArgs: Record<string, unknown> = {};
+				if (_guardTc) {
+					const _guardRawArgs = typeof _guardTc.arguments === 'string'
+						? _guardTc.arguments
+						: JSON.stringify(_guardTc.arguments ?? {});
+					try { _guardArgs = JSON.parse(_guardRawArgs) as Record<string, unknown>; } catch { _guardArgs = {}; }
+				}
+				const _after = _toolGuardrail.afterCall(toolName, _guardArgs, rawStr, { failed: !toolResult.success });
+				if (_after.action === 'warn' || _after.action === 'halt') {
+					host._logService.warn(
+						`[AgentOS] Guardrail ${_after.action}: ${_after.code} (tool=${toolName}, count=${_after.count})`,
+					);
+				}
+
+				// 回填结果哈希（易失字段已剥离）供 ping-pong 等跨调用检测使用。
+				// RECORD_TOOL_CALL 是执行前派发的（那时无结果），故结果只能在此时回填。
+				runState = reduceRunState(runState, {
+					type: 'RECORD_TOOL_RESULT',
+					name: toolName,
+					argsHash: canonicalToolArgsHash(_guardArgs),
+					resultHash: hashToolResult(rawStr),
+				});
+
+				// 顺序：先套失败恢复提示，再套护栏引导 —— 护栏引导放末尾，对模型更醒目。
+				const resultStr = appendToolGuardGuidance(
+					!toolResult.success ? appendRecoveryHint(rawStr, toolResult.toolCallId) : rawStr,
+					_after,
+				);
 				messages = appendMessages(messages, {
 					role: 'tool',
 					content: resultStr,

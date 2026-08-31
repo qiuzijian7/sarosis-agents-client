@@ -10,6 +10,9 @@ export abstract class AgentChatPanelStatusCards extends AgentChatPanelWorkflowCa
 		// 滚动吸底），完成后默认折叠但卡片保留（不移除）；用户手动切换优先。
 		const collapsed = this._thinkingCardState.get(msg.id) ?? !msg.isThinking;
 			const card = $(`.thinking-card${msg.isThinking ? ".active" : ""}`);
+			// 记录 episode id（形如 `<msgId>#tk<idx>`），供思考结束时按 id 查
+			// 用户是否手动切换过折叠状态（见 _autoCollapseThinkingCard）。
+			card.dataset.thinkId = msg.id;
 
 			// Header
 			const header = $(".thinking-card-header");
@@ -41,7 +44,12 @@ export abstract class AgentChatPanelStatusCards extends AgentChatPanelWorkflowCa
 			// Toggle click
 			this._register(
 				addDisposableListener(header, EventType.CLICK, () => {
-					const nowCollapsed = !(this._thinkingCardState.get(msg.id) ?? true);
+					// 以 body 的**实际可见性**取反，而非 Map 默认值：
+					// 思考中的卡片按设计默认展开，但 Map 里并无记录，旧的
+					// `_thinkingCardState.get(msg.id) ?? true` 会算出 nowCollapsed=false
+					// ——首次点击折不起来，还会把「展开」误写进 _thinkingCardState，
+					// 使 _autoCollapseThinkingCard 误判"用户已选择"而跳过自动折叠。
+					const nowCollapsed = body.style.display !== 'none';
 					this._thinkingCardState.set(msg.id, nowCollapsed);
 					body.style.display = nowCollapsed ? "none" : "block";
 					toggle.classList.toggle("collapsed", nowCollapsed);
@@ -89,7 +97,7 @@ export abstract class AgentChatPanelStatusCards extends AgentChatPanelWorkflowCa
 		body.dataset.rendered = '1';
 		// 同步调度器基线：body 已是当前文本的渲染态——后续 schedule 跳过首次
 		// renderFull（append 语义，直接调会让内容翻倍），flush 走增量路径。
-		this.thinkingMdScheduler.markRendered(msg.thinking ?? '');
+		this.thinkingMdScheduler.markRendered(body, msg.thinking ?? '');
 		// 2026-07-26 用户要求：thinking 过程中 body 滚动条保持吸底
 		body.scrollTop = body.scrollHeight;
 	}
@@ -104,6 +112,29 @@ export abstract class AgentChatPanelStatusCards extends AgentChatPanelWorkflowCa
 		if (icon) { this._renderThinkingCardIcon(icon, isThinking); }
 		const title = card.querySelector('.thinking-card-title');
 		if (title) { title.textContent = isThinking ? '思考中...' : '思考过程'; }
+		// 思考结束（isThinking: true → false）时自动折叠，见 _autoCollapseThinkingCard。
+		if (!isThinking) { this._autoCollapseThinkingCard(card); }
+	}
+
+	/**
+	 * 思考结束时自动折叠卡片。
+	 *
+	 * 卡片创建于流式期间（isThinking=true）按设计是**默认展开**的（便于滚动吸底看
+	 * 实时思维链）；此前思考结束后只改 header（标题→「思考过程」、icon→...），
+	 * body 仍摊开 —— 长思维链会把后续内容整体挤到视口外。
+	 *
+	 * 仅在用户**未手动切换过**该卡片时才自动折叠：一旦 _thinkingCardState 有记录
+	 * 说明用户做过明确选择，必须尊重，否则自动折叠会覆盖用户刚展开的操作。
+	 * 已渲染的 body 内容保留（仅 display:none），用户再展开无需重渲染。
+	 */
+	protected _autoCollapseThinkingCard(card: HTMLElement): void {
+		const cardId = card.dataset.thinkId;
+		if (!cardId || this._thinkingCardState.has(cardId)) { return; } // 用户已手动选择
+		const body = card.querySelector('.thinking-card-body') as HTMLElement | null;
+		if (!body || body.style.display === 'none') { return; } // 已经折叠
+		const toggle = card.querySelector('.thinking-card-toggle') as HTMLElement | null;
+		body.style.display = 'none';
+		toggle?.classList.add('collapsed');
 	}
 
 	protected override _createKanbanListCard(resultText: string): HTMLElement | null {

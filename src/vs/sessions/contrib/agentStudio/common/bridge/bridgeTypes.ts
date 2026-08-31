@@ -185,6 +185,8 @@ export interface IBridgeUsageStats {
 	readonly completionTokens: number;
 	readonly cachedTokens: number;
 	readonly cacheWriteTokens: number;
+	/** 缓存命中率（cachedTokens / promptTokens，取值范围 0~1）。 */
+	readonly cacheHitRate: number;
 	readonly totalTokens: number;
 	readonly credit: number;
 	readonly calls: number;

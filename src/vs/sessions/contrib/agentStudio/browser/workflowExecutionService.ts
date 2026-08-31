@@ -18,6 +18,38 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceRegistry } from '../common/agentWorkspace.js';
 import { substituteHostVariables, buildRuntimeValueMap, collectWorkflowVariables } from './utils/templateUtils.js';
 
+/**
+ * 节点类型别名 → 引擎运行时枚举（小写形态，与 WorkflowNodeType 一致）。
+ *
+ * 背景：workflow_apply 等 LLM 工具对外宣称的节点类型集合与引擎实际支持的枚举
+ * 并不完全一致（例如工具文档里的 `branch`），画布侧又会持久化成命名空间形态
+ * （`Saros.IfElse`）。若不做归一化，这类 type 会落进 _executeNodeRecursive 的
+ * `default` 分支：只打一条 warn 日志，然后走**所有**下游边——条件节点退化成
+ * 顺序执行，分支判断静默失效，且没有任何用户可见的错误。
+ */
+const NODE_TYPE_ALIASES: Readonly<Record<string, WorkflowNodeType>> = Object.freeze({
+	branch: WorkflowNodeType.IfElse,
+	condition: WorkflowNodeType.IfElse,
+	ifelse: WorkflowNodeType.IfElse,
+});
+
+/**
+ * 把任意形态的 node.type 归一化成引擎枚举（小写驼峰）。
+ * 幂等：已是合法枚举值则原样返回。未知类型原样返回（Comfy.* 等第三方类型走这条）。
+ */
+function normalizeRuntimeNodeType(type: string | undefined): string {
+	if (!type) { return ''; }
+	const direct = NODE_TYPE_ALIASES[type];
+	if (direct) { return direct; }
+	// 命名空间形态（Saros.IfElse）→ 去前缀并还原驼峰首字母小写。
+	if (type.startsWith('Saros.')) {
+		const bare = type.slice('Saros.'.length);
+		const decap = bare.charAt(0).toLowerCase() + bare.slice(1);
+		return NODE_TYPE_ALIASES[decap] ?? NODE_TYPE_ALIASES[bare.toLowerCase()] ?? decap;
+	}
+	return type;
+}
+
 export class WorkflowExecutionService extends Disposable implements IWorkflowExecutionService {
 	declare readonly _serviceBrand: undefined;
 
@@ -522,7 +554,14 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	): Promise<void> {
 		this.logService.info(`[WorkflowExecution] Starting execution ${executionState.executionId}`);
 
-		const nodes = workflow.nodes ?? [];
+		// 归一化节点 type：LLM 工具产出的 'branch'、画布持久化的 'Saros.IfElse'
+		// 在此统一成引擎枚举的小写形态，避免落进 default 分支导致条件判断失效。
+		const nodes = (workflow.nodes ?? []).map(n => {
+			const normalized = normalizeRuntimeNodeType(n.type);
+			if (normalized === n.type) { return n; }
+			this.logService.info(`[WorkflowExecution] Normalized node "${n.id}" type "${n.type}" → "${normalized}"`);
+			return { ...n, type: normalized } as WorkflowGraphNode;
+		});
 		const connections = workflow.connections ?? [];
 
 		// Build adjacency list

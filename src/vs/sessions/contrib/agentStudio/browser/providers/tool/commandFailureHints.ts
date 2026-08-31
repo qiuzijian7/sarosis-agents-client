@@ -75,7 +75,20 @@ interface IFailurePattern {
 	readonly id: string;
 	readonly test: RegExp;
 	readonly text: string;
+	/**
+	 * 可选：按命中详情生成**定制**文案（首个参数是 `test.exec()` 的结果）。
+	 *
+	 * 用途：把命中里抓到的具体对象（如缺失的命令名）写进提示。静态 text 只能说
+	 * 「verify the executable name」，而模型需要的是「`Select-Object` 不存在」。
+	 * 缺省时回落到静态 text。
+	 */
+	readonly render?: (match: RegExpExecArray) => string;
 }
+
+/** `command-not-found` 的兜底文案：抓不到具体命令名时使用（text 与 render 共用）。 */
+const COMMAND_NOT_FOUND_GENERIC =
+	'The command was not found — do not retry unchanged: verify the executable name and that it is installed ' +
+	'(`which <cmd>` on POSIX / `where <cmd>` on Windows), or invoke it via an absolute path.';
 
 const FAILURE_PATTERNS: readonly IFailurePattern[] = [
 	// ── 确定性失败：明确告知「别重试」 ──
@@ -132,6 +145,41 @@ const FAILURE_PATTERNS: readonly IFailurePattern[] = [
 			'use `python3`, or the project virtualenv interpreter, or an absolute path to python.exe.',
 	},
 	{
+		// ★ 2026-08-30（日志 20260829T232635）：**点名**缺失的具体命令。
+		//
+		// `text` 与 `render` 共用同一份兜底文案：`text` 是默认值，`render` 在抓到
+		// 命令名时覆盖它（抓不到时退回默认）。两者必须同一份常量，否则又会漂移。
+		// 原先只有退出码表里的通用文案「verify the executable name…try `which <cmd>`」——
+		// 模型得自己从 stderr 里认出是哪个命令不存在。实测事故就是 `Select-Object`：
+		// 通用文案让模型多花一轮才反应过来「我写的是 PowerShell cmdlet，而这是 bash」。
+		// Hermes `terminal_hints._hint_command_not_found` 同款：点名 + 给特化建议。
+		//
+		// 排在 bare-python-windows **之后**：`python` 缺失有更精准的特化文案
+		// （直接指向 python3 / 虚拟环境），不能被通用文案抢先命中。
+		//
+		// ⚠ 刻意**不**在这里给「改用哪个命令」的方言建议 —— 方言由
+		// environmentDirective（描述侧）与执行前护栏（拦截侧）两处负责，这里再写一份
+		// 就成了第三份、必然与另两份漂移（本项目已多次踩此坑）。点名即止。
+		id: 'command-not-found',
+		text: COMMAND_NOT_FOUND_GENERIC,
+		// 捕获组 1..6 依次对应下面六种措辞里提取到的命令名。
+		// 注意：中文措辞两侧非 word char，`\b` 对中文不成立（见 no-such-file 的注释）。
+		//
+		// ⚠ 分支 1 末尾的 `(?!\s*:)` 是**测试逼出来的**：zsh 的语序相反，报的是
+		// `zsh: command not found: rg`。若不加该断言，分支 1 会在位置 0 把 **shell 名
+		// `zsh`** 当成缺失的命令（"There is no `zsh` in this shell"）—— 而正则一旦在
+		// 某位置分支成功就不再后移，调到分支 2 也无用。断言使分支 1 在 zsh 形态下
+		// 失败、引擎后移到 `command not found: rg` 处命中分支 2。
+		test: /([\w][\w.+-]*):\s*command not found(?!\s*:)|command not found:\s*([\w][\w.+-]*)|([\w][\w.+-]*):\s*not found|The term '([\w][\w.+-]*)' is not recognized|'([\w][\w.+-]*)' is not recognized as an internal|'([\w][\w.+-]*)'[^'\n]{0,24}?不是内部或外部命令/i,
+		render: (m) => {
+			const cmd = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? m[6];
+			if (!cmd) { return COMMAND_NOT_FOUND_GENERIC; }
+			return `There is no \`${cmd}\` in this shell — do not retry unchanged. ` +
+				`Verify the name and that it is installed (\`which ${cmd}\` on POSIX / \`where ${cmd}\` on Windows), ` +
+				`or invoke it via an absolute path.`;
+		},
+	},
+	{
 		id: 'npm-missing-script',
 		test: /\b(Missing script:|npm ERR! missing script)\b/i,
 		text: 'That npm script does not exist — retrying unchanged will keep failing. ' +
@@ -181,7 +229,8 @@ export function annotateCommandFailure(
 	const text = output ?? '';
 	if (text) {
 		for (const p of FAILURE_PATTERNS) {
-			if (p.test.test(text)) { return { id: p.id, text: p.text }; }
+			const m = p.test.exec(text);
+			if (m) { return { id: p.id, text: p.render ? p.render(m) : p.text }; }
 		}
 	}
 	if (typeof exitCode === 'number') {
@@ -194,4 +243,100 @@ export function annotateCommandFailure(
 /** 把提示渲染为追加到失败体末尾的一行（统一 `[next-step]` 前缀，便于模型识别）。 */
 export function renderFailureHint(hint: ICommandFailureHint): string {
 	return `[next-step] ${hint.text}`;
+}
+
+// ─── 假成功检测（exit 0 但其实失败了）──────────────────────────────────────
+//
+// `cargo build 2>&1 | tail -20` 的退出码是 **tail** 的、不是 cargo 的（bash 未开
+// pipefail 时报管道最后一条的状态）；`cargo build || echo "BUILD FAILED"` 同理，
+// 退出码是 echo 的。模型把 exit 0 当强成功信号 → 得出「构建通过」的错误结论。
+//
+// Hermes `terminal_hints.py` 的注释直接点名了这件事：
+//   "OpenCode's answer is prompt-side only ('do NOT pipe through head/tail');
+//    this adds a cheap result-side backstop for when the model pipes anyway."
+// 我们此前正是「只有描述侧禁令」那一侧：description 里写了「别用 head/tail，输出
+// 会自动截断并落盘」，但模型照旧管道 —— 结果侧零兜底。这条补上那一环。
+//
+// 刻意保守，**两个条件必须同时成立**：
+//   1. 命令形态能吞掉上游状态（顶层管道进了 passthrough 消费者，或 `|| <廉价兜底>`）；
+//   2. 输出里有**强失败特征**（rustc / pytest / gcc / npm / traceback 的具体形态），
+//      而非泛泛的 "error" 子串。
+// 搜索/只读管道（`grep ... | head`）排除：其输出本来就合法地包含 error 文本。
+//
+// ⚠ 只返回**建议性**提示，**绝不修改 exitCode** —— 退出码的语义由执行层负责。
+
+/** 输出扫描上限（与 Hermes `_SCAN_CHARS` 同款）：避免超长输出上反复跑整表正则。 */
+const MASKED_SCAN_CHARS = 4000;
+
+/** 退出状态说明不了上游命令成败的管道消费者。 */
+const PASSTHROUGH_CONSUMERS = '(?:tail|head|cat|tee|less|more|wc|sort|uniq)';
+
+/** 顶层 `... | tail -20`（不是 `||`），且消费者必须是最后一段。 */
+const MASKING_PIPE_RE = new RegExp(`(?<!\\|)\\|(?!\\|)\\s*${PASSTHROUGH_CONSUMERS}\\b[^|]*$`);
+
+/** `cmd || echo ...` / `cmd || true` —— 兜底吞掉失败状态。 */
+const MASKING_OR_RE = /\|\|\s*(?:echo\b|printf\b|true\b|:\s|:$)/;
+
+/**
+ * 只读 / 内容产出类管道头：其输出合法地含失败文本（搜索结果、被读的日志），
+ * 上游谈不上「失败」，故排除。
+ */
+const READONLY_HEADS: ReadonlySet<string> = new Set([
+	'grep', 'rg', 'ag', 'find', 'ls', 'cat', 'head', 'tail', 'jq', 'awk',
+	'sed', 'strings', 'zcat', 'journalctl', 'dmesg', 'echo', 'printf',
+]);
+
+/**
+ * 强失败特征。绑定到**具体工具**的形态，避免「正在读的日志 / diff 内容里出现了
+ * error」被误判。
+ *
+ * ⚠ JS 正则没有 Python 的 `(?m:...)` 内联修饰符 —— 改用整条 `m` flag + `^`
+ * （其余分支不含 `^`/`$`，加 `m` 无副作用）。
+ */
+const FAILURE_SHAPES_RE = /(?:error\[E\d+\]|error: could not compile|error: aborting due to|Traceback \(most recent call last\)|^(?:=+ )?\d+ failed|^FAILED (?:\S+::|\S+\.py)|compilation terminated\.|npm ERR!|BUILD FAILED|Build FAILED|FAILED: |^make(?:\[\d+\])?: \*\*\*)/m;
+
+/** 取命令的首个真实 token（跳过 env 赋值与路径前缀）。 */
+function firstToken(command: string): string {
+	for (const tok of (command ?? '').trim().split(/\s+/)) {
+		if (!tok) { continue; }
+		// 跳过 `FOO=bar` 形式的 env 赋值（但不跳过 `./x` `/x` 这类路径）
+		if (tok.includes('=') && !tok.startsWith('=') && !tok.startsWith('./') && !tok.startsWith('/')) { continue; }
+		return tok.split('/').pop() ?? '';
+	}
+	return '';
+}
+
+/**
+ * 检测「假成功」—— exit code 为 0，但很可能其实失败了。
+ *
+ * **仅在 exitCode === 0 时调用**（调用方负责门控）。
+ *
+ * @returns 建议性提示；无需提示时返回 undefined。**不修改任何退出码。**
+ */
+export function annotateMaskedSuccess(command: string, output: string): ICommandFailureHint | undefined {
+	const cmd = command ?? '';
+	const scan = (output ?? '').slice(0, MASKED_SCAN_CHARS);
+	if (!cmd || !scan) { return undefined; }
+	if (READONLY_HEADS.has(firstToken(cmd))) { return undefined; }
+	if (!FAILURE_SHAPES_RE.test(scan)) { return undefined; }
+
+	if (MASKING_PIPE_RE.test(cmd)) {
+		return {
+			id: 'masked-success-pipe',
+			text: 'exit code 0 here is the status of the LAST pipeline command (tail/head/cat/...), ' +
+				'NOT of the command before the pipe — and the output contains failure indicators. ' +
+				'Treat this run as FAILED until proven otherwise: re-run it WITHOUT the pipe ' +
+				'(output is auto-truncated and the full text is saved to a file, so piping through tail/head is never needed) ' +
+				'to get the real exit code.',
+		};
+	}
+	if (MASKING_OR_RE.test(cmd)) {
+		return {
+			id: 'masked-success-or',
+			text: 'exit code 0 here is the status of the `||` fallback (echo/true), ' +
+				'NOT of the command before it — and the output contains failure indicators. ' +
+				'Treat this run as FAILED until proven otherwise: re-run the command bare to get its real exit code.',
+		};
+	}
+	return undefined;
 }

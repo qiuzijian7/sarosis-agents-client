@@ -1173,7 +1173,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		if (existing) { clearTimeout(existing); }
 		const timer = setTimeout(() => {
 			this._sessionIndexFlushTimers.delete(agentId);
-			void this.flushSessionIndex(agentId);
+			// 防抖落盘失败绝不能变成 unhandled rejection —— 否则 VS Code 会在
+			// LLM 流式输出期间弹出右下角系统通知（错误堆栈），用户感知为
+			// 「llm没结束就弹系统消息框」。吞掉错误，dirty 标记保留，
+			// 下次 append 会重新调度落盘。与 dispose 路径 L2418 保持一致。
+			void this.flushSessionIndex(agentId).catch(() => { });
 		}, AgentChatService.SESSION_INDEX_FLUSH_DELAY_MS);
 		this._sessionIndexFlushTimers.set(agentId, timer);
 	}

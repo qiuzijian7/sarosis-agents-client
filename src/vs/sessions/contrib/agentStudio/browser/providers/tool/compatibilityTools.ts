@@ -24,12 +24,15 @@ import { ProcessOutputCollector } from '../../../common/processOutputDecoder.js'
 import { decideOutputSpill, spillFileName, spillNoticeMessage, selectSpillFilesToDelete } from './execOutputSpill.js';
 import { resolveSarosPath, userDataRootFromPath, SarosPath } from '../../../common/sarosPaths.js';
 import { shellPlatformGuidance, windowsDualShellGuidance } from './shellPlatformPrompt.js';
-import { annotateCommandFailure, renderFailureHint } from './commandFailureHints.js';
+import { resolveShellDialect } from '../../../common/shellDialect.js';
+import { annotateCommandFailure, annotateMaskedSuccess, renderFailureHint } from './commandFailureHints.js';
 import { detectGitBash, coreutilsDir } from './gitBashProvider.js';
 import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
 import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 import { computePatch } from '../../../common/patchMatcher.js';
-import { SHELL_APPROVAL_SHAPE_GUIDANCE } from '../../../common/shellCommandSafety.js';
+import { shellApprovalGuidance } from '../../../common/shellCommandSafety.js';
+import { detectCommandObfuscation } from '../../../common/shellStaticAnalysis.js';
+import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { ICheckpointService } from '../../../common/checkpointService.js';
 import { encodeBase64 } from '../../../../../../base/common/buffer.js';
 
@@ -46,6 +49,11 @@ export interface CompatToolContext {
 	checkpointService: ICheckpointService;
 	/** 用于定位 `~/.vssaros/tmp/`（execute_code 超限输出落盘目标）。 */
 	environmentService: INativeEnvironmentService;
+	/**
+	 * 可选：读取审批开关以**按策略生成描述**（P2-12，2026-08-30）。缺失时退化为
+	 * `true`（审批启用），保证不依赖 DI 的旧调用方 / 测试桩行为不变。
+	 */
+	configurationService?: IConfigurationService;
 }
 
 /**
@@ -298,7 +306,7 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 	// ── process / session_search ─────────────────
 	// 平台不适用 — 返回友好提示（web_search/web_extract 已有真实 handler，不在此注册 stub）
 	for (const [name, desc, msg] of [
-		['process', 'Manage background processes.', 'Process management is not natively available. Use the terminal tool to launch commands. For long-running processes, use the timeout parameter to control execution duration.'],
+		['process', 'Manage background processes.', "Process management is not natively available. To run a long-running command without blocking the turn, use execute_code with background:true (returns a taskId), then poll via execute_code({ action:'poll', taskId }) or terminate via execute_code({ action:'kill', taskId })."],
 		['session_search', 'Search past conversation sessions.', 'Session search is not yet available. Past conversations are stored in ~/.saros/sessions/.'],
 	] as const) {
 		ctx.register({
@@ -352,36 +360,58 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				+ ' script) or for generated/binary data patch cannot represent. Do NOT use redirection, sed -i or an inline script'
 				+ ' merely to bypass patch: those create no checkpoint, skip edit approval, are not reviewable as a diff, and are blocked.'
 				// ③ 调用形态：cwd 是本工具独有参数，必须在此说明
+				// 2026-08-30（日志 20260829T232635）：删掉原「If you must chain dependent
+				// commands, use `;` or `&&` on a SINGLE line, never newlines」—— 它与紧随
+				// 其后的 SHELL_APPROVAL_SHAPE_GUIDANCE **直接冲突**（后者把 `&&` `;` 列为
+				// 「会强制弹审批、打断你的执行」）。同一份 description 既教又禁，模型照做
+				// 后还被 [AntiGuidance] 记一笔违规。串联形态交给审批文案一处讲即可。
 				+ '\n\nUse "cwd" instead of `cd <dir> && <cmd>` (good: {command:"npm run compile", cwd:"src/webview"}).'
-				+ ' If you must chain dependent commands, use `;` or `&&` on a SINGLE line, never newlines.'
 				// ③b 审批形态（2026-08-22）：说明**对模型有意义的后果**，而非实现细节。
 				// 背景：原 description 已写「用 cwd 而非 cd && 」，理由却是「worktree/sandbox
 				// 检查要重新解析」——对模型无感，实测它照旧写 `cd X && (Get-Content y).Count`。
 				// 更糟的是上一行原本主动建议用 `&&`，而 `&&` 恰恰强制触发审批（自相矛盾）。
 				// ⚠ 文案真源在 `shellCommandSafety.SHELL_APPROVAL_SHAPE_GUIDANCE`（与
 				// BLOCKING_SHELL_TOKENS 同模块），terminal 工具共用同一份 —— 不要在此内联复制。
-				+ SHELL_APPROVAL_SHAPE_GUIDANCE
+				// ★ 描述由审批策略生成（P2-12，2026-08-30）：审批关闭时「shape 强制打断
+				// 执行」的后果不发生，整段 `SHELL_APPROVAL_SHAPE_GUIDANCE` 不下发。
+				// ctx.configurationService 缺失（旧调用方 / 测试桩）时按启用处理，行为不变。
+				+ shellApprovalGuidance(ctx.configurationService ? (ctx.configurationService.getValue<boolean>('tools.confirmToolCalls') ?? true) : true)
 				// ④ description 字段（本工具独有的必填约定）
 				+ ' Always pass a short "description" (5-10 words) — it is all the user sees while the command runs.'
 				+ (isWindows ? windowsDualShellGuidance('execute_code') : shellPlatformGuidance('posix', 'execute_code')),
 			inputSchema: {
 				type: 'object',
 				properties: {
-					command: { type: 'string', description: 'Shell command to execute, e.g. "python3 scripts/anysearch_cli.py search \\"your query\\""' },
+					command: { type: 'string', description: 'Shell command to execute, e.g. "python3 scripts/anysearch_cli.py search \\"your query\\""". Required unless action=poll/kill is used.' },
 					// 2026-08-22（对齐 MiMo bash.txt）：5-10 词说明。除 UI/审批卡片展示外，
 					// 还解决「args 后到时工具卡空白」—— tool_start 只带工具名，有了
 					// description 卡片在命令文本到达前就能显示意图（见 toolCardArgsRefresh）。
 					description: { type: 'string', description: 'Clear, concise description of what this command does in 5-10 words, e.g. "Type-check the webview package". Shown in the UI while the command runs.' },
 					cwd: { type: 'string', description: 'Working directory the command runs in (default: workspace root). ALWAYS prefer this over `cd <dir> && <cmd>`: the `&&` forces a user-approval prompt that interrupts you, a leading cd has to be re-parsed out of the command string for worktree/sandbox checks, and it silently breaks when the command is later edited.' },
-					timeout: { type: 'number', description: 'Timeout in seconds (default 30, max 120). Raise it for builds/test suites; a killed command returns exit -1 and its output is lost.' },
+					timeout: { type: 'number', description: 'Timeout in seconds (default 30; 0 = no limit; a killed command returns exit -1 and its output is lost).' },
+					background: { type: 'boolean', description: 'Run the command in the background WITHOUT blocking the current turn (P0-2, like openclaw yield + Hermes background). Returns immediately with a taskId; poll the output later via action:"poll", or terminate via action:"kill". Use for long-running servers/builds.' },
+					taskId: { type: 'string', description: 'Task handle returned by a previous background:true call. Required together with action:"poll"|"kill".' },
+					action: { type: 'string', enum: ['poll', 'kill'], description: 'Background control operation: "poll" returns the current accumulated output + done status; "kill" terminates the background task. Requires taskId.' },
 				},
-				required: ['command'],
+				required: [],
 			},
 			category: 'terminal', source: ctx.id, securityLevel: ToolSecurityLevel.Dangerous,
 		},
 		handler: async (args) => {
+			// 后台执行控制面（P0-2）：poll / kill 已启动的后台任务，无需 command。
+			const action = typeof args['action'] === 'string' ? args['action'] : undefined;
+			const taskId = typeof args['taskId'] === 'string' ? args['taskId'] : undefined;
+			const background = args['background'] === true;
+			if (action === 'poll' || action === 'kill') {
+				if (!taskId) { throw new NonRetryableToolError(`execute_code ${action} requires "taskId"`); }
+				const ctrl = await _execCodeControl(taskId, action);
+				const status = ctrl.done ? 'finished' : 'still running';
+				const out = ctrl.stdout ? `\n${ctrl.stdout}` : '';
+				const err = ctrl.stderr ? `\n[stderr]${ctrl.stderr}` : '';
+				return text(`[execute_code ${action}] task ${taskId} — ${status} (exit ${ctrl.exitCode ?? -1})${out}${err}`);
+			}
 			const command = String(args['command'] ?? '').trim();
-			if (!command) { throw new Error('command is required'); }
+			if (!command) { throw new NonRetryableToolError('execute_code requires "command" (or action=poll/kill with taskId)'); }
 			// HARDLINE 不可绕过地板（灾难性/不可逆命令，任何审批与自主模式都无法放行）
 			const hardline = detectHardlineViolation(command);
 			if (hardline) {
@@ -405,6 +435,19 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				);
 				throw new NonRetryableToolError(scriptSourceWriteGuardMessage(sourceWrite, 'execute_code'));
 			}
+			// 混淆 / 下载即执行检测（P0-1，对齐 openclaw rejectUnsafeExec*）：
+			// curl|sh / base64 -d|bash / iex (iwr ...) 等明确恶意形态直接阻断，
+			// 避免远程代码执行 / prompt injection 向量。其余（eval / 命令替换）仅提示。
+			const obfuscation = detectCommandObfuscation(command);
+			const blockedObf = obfuscation.find((f) => f.block);
+			if (blockedObf) {
+				throw new NonRetryableToolError(
+					`execute_code blocked: command uses a download-and-execute / decode-and-execute pattern ` +
+					`(${blockedObf.kind} matched \`${blockedObf.matched}\`)\n` +
+					`This is a common remote-code-execution / prompt-injection vector. Download the script separately ` +
+					`(file_write to save, file_read to inspect it), then execute_code the saved file.`,
+				);
+			}
 			// 2026-08-29（日志 1787974178941）：移除 `timeout` 的 120s 封顶。
 		//
 		// 事故：本项目 `npm run compile` 全量编译必然 >120s，被主进程 process tree
@@ -424,11 +467,27 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			timeoutSec = Number.isFinite(_n) && _n > 0 ? _n : 0;
 		}
 			// Hermes 环境归一（2026-08-18）：Git Bash 可用时经主进程以 bash -c 执行
-			// （PATH 前缀注入 <gitRoot>\usr\bin → coreutils 可用），跳过 Unix 拦截；
-			// 不可用回退 cmd.exe（shell:true）+ 拦截护栏。
+			// （PATH 前缀注入 <gitRoot>\usr\bin → coreutils 可用）；不可用回退 cmd.exe。
+			// 注意（2026-08-30）：「Git Bash 可用」**不等于**跳过拦截 —— 见下方 dialect
+			// 注释，两套护栏按方言各开一套，而非有 Git Bash 就全关。
 			const gitBash = isWindows ? await detectGitBash(ctx.fileService, ctx.logService) : undefined;
-			// Windows 护栏：仅【无 Git Bash 回退模式】下处理 Unix-only 命令（head/grep/sed…
-			// 在 cmd.exe 下必败 exit 255）。
+			// ★ 方言真源（2026-08-30，日志 20260829T232635）
+			// 此前两套护栏共用一个 `isWindows && !gitBash` 布尔门，语义是
+			// 「Git Bash 在 → 两套全关」。正确语义应是**按方言各开一套**：
+			//   · dialect='cmd'   → 拦 Unix-only 命令（head/grep…）+ 拦 PowerShell cmdlet
+			//   · dialect='posix' → 只拦 PowerShell cmdlet（head/grep 在 bash 里可用）
+			// 漏掉的那一格正是本次事故：本机 Git Bash 可用 → 整个护栏块被跳过 →
+			// `Select-Object` 裸用无任何拦截 → exit 127（`command not found`）。
+			// 而 detectPowerShellOnlyCmdlet 名单里第一个就是 Select-Object，它只是
+			// 从未获得执行机会。
+			// ★ 方言真源（2026-08-30）：判定已下沉到 common/shellDialect.ts 的
+			// resolveShellDialect()，此处只消费结果，不再自行推导。
+			// 此前本文件与 coreTools.ts **各内联了同一行表达式** —— 两份判据必然漂移
+			// （本项目已多次因此踩坑：沙箱提示词、模型族判断、keyed diff）。
+			// 返回值类型是完整 ShellDialect（含 'powershell' 分支），故下面的
+			// `dialect !== 'powershell'` 不会被 TS 窄化成 TS2367「无重叠」。
+			const dialect = resolveShellDialect(!!gitBash);
+			// Unix-only 命令护栏：仅 cmd.exe 方言（head/grep/sed 在 cmd.exe 下必败 exit 255）。
 			//
 			// 2026-08-20（日志 1787217670299）：此前一律抛 NonRetryableToolError 让模型
 			// 自行改写，但实测同一会话里它连续 3 次照旧发 `grep` —— 提示给的是「模式」
@@ -437,7 +496,7 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			// 仅 sed/awk 等语义不可一一对应的形态才保留抛错。
 			let effectiveCommand = command;
 			const rewriteNotes: string[] = [];
-			if (isWindows && !gitBash) {
+			if (dialect === 'cmd') {
 				const unixCmd = detectUnixOnlyCommand(command);
 				if (unixCmd) {
 					const rewrite = rewriteUnixPipelineToPowerShell(command);
@@ -460,17 +519,30 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 						);
 					}
 				}
-				// 反向护栏（2026-08-21，日志 1787292837471）：模型「过度纠正」——读了上面
-				// 的 PowerShell 提示却漏掉 `powershell -Command` 外壳，把 cmdlet 直接塞进
-				// cmd.exe 管道（`... | Out-String -Width 500`）→ exit 255 必败。
-				// 与 Unix 方言完全对称，同样在执行前拦下并给出正确包裹写法。
+				}
+				// 反向护栏（2026-08-21，日志 1787292837471）：模型「过度纠正」——读了上面的
+				// PowerShell 提示却漏掉 `powershell -Command` 外壳，把 cmdlet 直接塞进非
+				// PowerShell 的 shell 管道 → 必败（cmd.exe exit 255 / POSIX shell exit 127）。
+				//
+				// ★ 2026-08-30（日志 20260829T232635）：本块原在 `isWindows && !gitBash` 内，
+				// 即只在 cmd.exe 方言下生效。但 Git Bash 里 PowerShell cmdlet **同样不存在** ——
+				// 实测 `Select-Object: command not found`（exit 127），被判为「命令不存在」的
+				// 确定性失败后才纠错，白烧一轮 LLM 往返。现移出方言门控：cmd 与 posix 都要
+				// 拦，只是**正确做法不同**（包 powershell 外壳 vs 改用 POSIX 命令），由
+				// powerShellCmdletGuardMessage 按方言给出。
+				//
 				// 放在 Unix 改写之后：自动改写产出的是 -EncodedCommand（含 powershell），
 				// 天然被 detectPowerShellOnlyCmdlet 的「已包裹」判定放行。
-				const psCmdlet = detectPowerShellOnlyCmdlet(effectiveCommand);
-				if (psCmdlet) {
-					throw new NonRetryableToolError(powerShellCmdletGuardMessage(psCmdlet, 'execute_code'));
+				if (dialect !== 'powershell') {
+					const psCmdlet = detectPowerShellOnlyCmdlet(effectiveCommand);
+					if (psCmdlet) {
+						ctx.logService.warn(
+							`[CompatTools] execute_code BLOCKED: PowerShell cmdlet '${psCmdlet}' used in ${dialect} shell ` +
+							`— it does not exist there (deterministic failure)`,
+						);
+						throw new NonRetryableToolError(powerShellCmdletGuardMessage(psCmdlet, 'execute_code', dialect));
+					}
 				}
-			}
 			const rawCwd = typeof args['cwd'] === 'string' && args['cwd'].trim() ? args['cwd'].trim() : undefined;
 			// cwd 不为空时走沙箱校验；否则默认使用工作区根目录（不传 cwd 时
 			// Node.js spawn 默认 process.cwd() = Electron app dir，不是 workspace root）。
@@ -506,7 +578,17 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 		const result = await _execCodeSandbox(
 			effectiveCommand, cwd, timeoutSec * 1000, ctx.logService, heredoc,
 			gitBash ? { shell: gitBash.bashPath, pathPrefix: coreutilsDir(gitBash) } : undefined,
+			background,
 		);
+		// 后台执行：spawn 即返回，不阻塞当前轮（P0-2）
+		if (result.background && result.taskId) {
+			return text(
+				`[execute_code] launched in BACKGROUND — taskId=${result.taskId}\n` +
+				`Poll output: execute_code({ action: "poll", taskId: "${result.taskId}" })\n` +
+				`Kill:       execute_code({ action: "kill", taskId: "${result.taskId}" })\n` +
+				`(command is still running; this turn is not blocked)`,
+			);
+		}
 			// 传入模型的原始命令（非 base64 改写后的）—— Shape 选择与 passthrough
 			// 判定都要看模型的真实意图（`--json` 等标志在改写后仍在，但 heredoc 包装
 			// 会掩盖 `tsc` 之类的形态特征）。
@@ -538,12 +620,19 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			// 工具级重试已移除（重试决策交给模型），因此必须由提示明确告知「别重试」
 			// 还是「稍后重试」，否则模型只会盲目重发同一条必败命令。
 			// 至多一条、只说下一步动作；命中不了就不产出（宁缺毋滥）。
+			// exit 0 也可能是「假成功」：`cmd | tail` 报的是 **tail** 的状态（bash 未开
+			// pipefail），而输出里可能有 rustc / pytest / npm 的失败特征。此前只有失败侧
+			// 有提示、成功侧零兜底，模型会把这类 exit 0 当成「构建通过」。
+			const combinedOut = `${result.stdout}\n${result.stderr}`;
 			const failureHint = result.success
-				? undefined
-				: annotateCommandFailure(result.exitCode, `${result.stdout}\n${result.stderr}`);
+				? annotateMaskedSuccess(effectiveCommand, combinedOut)
+				: annotateCommandFailure(result.exitCode, combinedOut);
 			if (failureHint) {
 				parts.push('', renderFailureHint(failureHint));
-				ctx.logService.info(`[CompatTools] execute_code failure hint: ${failureHint.id} (exit ${result.exitCode})`);
+				const hintLog = `[CompatTools] execute_code ${result.success ? 'masked-success' : 'failure'} hint: ` +
+					`${failureHint.id} (exit ${result.exitCode})`;
+				// 假成功是**结论性错误风险**（模型会据此判断任务完成），用 warn 便于统计
+				if (result.success) { ctx.logService.warn(hintLog); } else { ctx.logService.info(hintLog); }
 			}
 			const body = parts.join('\n');
 			// 失败（非 0 exit / 启动失败 / 超时）→ 抛错触发失败熔断，避免子代理对失败命令反复重试
@@ -558,8 +647,17 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				if (isCommandNotFoundFailure(combined)) {
 					throw new NonRetryableToolError(
 						`execute_code failed (exit ${result.exitCode}) — command or program not found; retrying will not help.\n${body}\n` +
-						`Fix the command itself: verify the executable name exists on this platform ` +
-						`(Windows shell here), or wrap PowerShell cmdlets in powershell -NoProfile -Command "...". ` +
+						// 2026-08-30（日志 20260829T232635）：原文案有两处硬伤 ——
+						// ① 写死 `(Windows shell here)`，而本机实际是 Git Bash（POSIX），
+						//    模型据此判断方言，直接被带偏；
+						// ② 建议 `wrap PowerShell cmdlets in powershell -NoProfile -Command "..."`，
+						//    与 SHELL_APPROVAL_SHAPE_GUIDANCE「never wrap in powershell -Command」
+						//    **直接冲突**，且此时命令已经在 shell 里了，包一层救不了
+						//    `Select-Object` 在 bash 里不存在的问题。
+						// 现改为：报真实方言 + 给该方言下的验证命令。
+						`Fix the command itself: verify the executable name exists in this shell ` +
+						`(${dialect === 'cmd' ? 'cmd.exe / PowerShell' : 'POSIX — Git Bash'}), ` +
+						`e.g. \`${dialect === 'cmd' ? 'where' : 'which'} <cmd>\`, or invoke it via an absolute path. ` +
 						`If you meant to run inline source code, pass it to an interpreter (e.g. python3 -c "...") ` +
 						`instead of issuing the source as a shell command.`
 					);
@@ -580,7 +678,7 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 }
 
 // ── execute_code 沙箱执行 helpers ────────────────────────────────────────────
-interface IExecCodeResult { success: boolean; stdout: string; stderr: string; exitCode: number; }
+interface IExecCodeResult { success: boolean; stdout: string; stderr: string; exitCode: number; background?: boolean; taskId?: string; pid?: number; done?: boolean; killed?: boolean; }
 
 /**
  * 技能 CLI 路径策略（用户拍板 2026-08-03）：execute_code **不**自动到 skillRegistry
@@ -589,15 +687,15 @@ interface IExecCodeResult { success: boolean; stdout: string; stderr: string; ex
  * 调用 CLI——从根上避免相对路径 + cwd 解析问题。
  */
 
-async function _execCodeSandbox(command: string, cwd: string | undefined, timeoutMs: number, logService: ILogService, heredoc?: { interpreter: string; script: string }, shellExec?: { shell: string; pathPrefix: string }): Promise<IExecCodeResult> {
+async function _execCodeSandbox(command: string, cwd: string | undefined, timeoutMs: number, logService: ILogService, heredoc?: { interpreter: string; script: string }, shellExec?: { shell: string; pathPrefix: string }, background?: boolean): Promise<IExecCodeResult> {
 	// 优先：主进程 vscode:execCode（Electron 桌面，主进程 child_process.spawn，见 app.ts）。
 	const vscodeBridge = (globalThis as any).vscode;
 	if (vscodeBridge?.ipcRenderer?.invoke) {
 		try {
-			logService.trace(`[CompatTools] execute_code via main-process vscode:execCode: ${command}${shellExec ? ` (shell=${shellExec.shell})` : ''}`);
+			logService.trace(`[CompatTools] execute_code via main-process vscode:execCode: ${command}${shellExec ? ` (shell=${shellExec.shell})` : ''}${background ? ' [background]' : ''}`);
 			return await vscodeBridge.ipcRenderer.invoke('vscode:execCode', heredoc
 				? { script: heredoc.script, interpreter: heredoc.interpreter, cwd, timeoutMs }
-				: { command, cwd, timeoutMs, shell: shellExec?.shell, pathPrefix: shellExec?.pathPrefix }) as IExecCodeResult;
+				: { command, cwd, timeoutMs, shell: shellExec?.shell, pathPrefix: shellExec?.pathPrefix, background }) as IExecCodeResult;
 		} catch (invokeErr) {
 			logService.warn(`[CompatTools] execute_code: vscode:execCode invoke failed, trying child_process fallback: ${invokeErr}`);
 		}
@@ -607,6 +705,19 @@ async function _execCodeSandbox(command: string, cwd: string | undefined, timeou
 		return _execCodeNodeFallback(command, cwd, timeoutMs, heredoc, shellExec);
 	}
 	throw new Error('execute_code is not available in this context (no main-process channel, no child_process)');
+}
+
+/** 后台执行控制面（P0-2）：向主进程 vscode:execCode 发 poll/kill 请求。 */
+async function _execCodeControl(taskId: string, action: 'poll' | 'kill'): Promise<IExecCodeResult> {
+	const vscodeBridge = (globalThis as any).vscode;
+	if (vscodeBridge?.ipcRenderer?.invoke) {
+		try {
+			return await vscodeBridge.ipcRenderer.invoke('vscode:execCode', { action, taskId }) as IExecCodeResult;
+		} catch (invokeErr) {
+			return { success: false, stdout: '', stderr: String(invokeErr), exitCode: -1 };
+		}
+	}
+	return { success: false, stdout: '', stderr: 'execute_code control requires main-process channel', exitCode: -1 };
 }
 
 function _execCodeNodeFallback(command: string, cwd: string | undefined, timeoutMs: number, heredoc?: { interpreter: string; script: string }, shellExec?: { shell: string; pathPrefix: string }): Promise<IExecCodeResult> {

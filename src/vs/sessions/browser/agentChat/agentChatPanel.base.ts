@@ -6,6 +6,7 @@
 import "./media/agentChat.css";
 import { Disposable, IDisposable } from '../../../base/common/lifecycle.js';
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
+import { ILogService } from '../../../platform/log/common/log.js';
 import { MarkdownRenderOptions } from '../../../base/browser/markdownRenderer.js';
 import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, HeaderPanelType, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, IPlanTaskCard, OrchestrationPlan, PlanTask } from './agentChatTypes.js';
 // ChatMode removed — replaced by chatOnly boolean toggle
@@ -169,6 +170,9 @@ export const TOOL_SKILL_TOOLS = new Set(['read_skill', 'list_skills', 'skill_man
 /** Mermaid 图示族（renderMermaidDiagram 等，需专用渲染卡片） */
 export const TOOL_MERMAID_TOOLS = new Set(['rendermermaiddiagram', 'mermaid_render', 'render_diagram']);
 
+/** Draw.io 图示族（renderDrawioDiagram 等，需专用渲染卡片；mxGraphModel 只读预览） */
+export const TOOL_DRAWIO_TOOLS = new Set(['renderDrawioDiagram', 'renderdrawiodiagram', 'drawio_render', 'render_diagram']);
+
 export function _patchNestedMarkdown(source: string): string {
 	if (!source.match(/```(\w*|.*)(md|markdown|gfm|github-markdown)/)) {
 		return source;
@@ -207,7 +211,10 @@ export function _patchNestedMarkdown(source: string): string {
 
 export abstract class AgentChatPanelBase extends Disposable implements IChatPanel, IScrollbarHost {
 	// -- DOM refs --
-	
+
+/** host 注入的 logService（渲染层诊断日志需落 renderer.log） */
+protected readonly _logService: ILogService;
+
 protected readonly _container: HTMLElement;
 
 protected _messagesContainer!: HTMLElement;
@@ -916,9 +923,12 @@ constructor(opts: {
 	onRemoveFeishuBinding?: (chatId: string) => void;
 	onGetFeishuDefaultAgent?: () => string | undefined;
 	onSetFeishuDefaultAgent?: (agentId: string | undefined) => void;
+	/** 渲染层诊断日志需要落到 renderer.log，故注入 host 的 logService */
+	logService: ILogService;
 	}) {
 		super();
-	this._scrollbar = this._register(new ScrollbarController(this));
+		this._logService = opts.logService;
+		this._scrollbar = this._register(new ScrollbarController(this));
 		this._onSendMessage = opts.onSendMessage;
 		this._onCancelExecution = opts.onCancelExecution;
 		this._onSkipCurrentTool = opts.onSkipCurrentTool;
@@ -1416,6 +1426,10 @@ setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): vo
 			// this._scheduleLoadingPill();
 			// 启动「处理中」已耗时秒级刷新（footer 内联版）
 			this._startProcessingElapsedTicker();
+			// 2026-08-31：此刻补建「处理中」指示。占位消息往往在 _isSending 置位前
+			// 就已创建（其时 helper 因 !_isSending 返回 null，占位被留空），若不在此
+			// 补建，首包延迟期间（记忆召回/压缩/长工具参数）右下角将一直空白。
+			this._syncLastProcessingIndicator();
 		} else {
 			this._streamPhase = 'idle';
 			this._scrollbar.stopStreamScroll();
@@ -1937,6 +1951,13 @@ protected _formatDuration(ms: number): string  { throw new Error('[moved-to-feat
  *  未实现该特性的子类（如 CLI 面板）静默跳过即可，不应抛错中断发送流程。 */
 protected _startProcessingElapsedTicker(): void { /* implemented in messages feature */ }
 protected _stopProcessingElapsedTicker(): void { /* implemented in messages feature */ }
+/**
+ * 自愈补建最后一条 assistant 气泡里的「处理中」指示。实现在 messages feature。
+ * 同样留空实现（非 throw），未实现该特性的子类静默跳过。
+ * 2026-08-31：占位可能在 _isSending 置位前创建，需在此刻补建，否则首包延迟期间
+ * 右下角不显示「处理中」（setSending(true) 时调用）。
+ */
+protected _syncLastProcessingIndicator(): void { /* implemented in messages feature */ }
 
 protected _toggleNodeCollapse(
 		nodeId: string,

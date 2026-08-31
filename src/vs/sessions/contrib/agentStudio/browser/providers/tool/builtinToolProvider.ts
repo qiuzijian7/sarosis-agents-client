@@ -466,6 +466,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			resolveAndCheckWorkspacePath: (agentId, p, req) => this._resolveAndCheckWorkspacePath(agentId, p, req),
 			checkpointService: this.checkpointService,
 			environmentService: this.environmentService,
+			configurationService: this.configurationService,
 		};
 		registerCompatibilityTools(ctx);
 	}

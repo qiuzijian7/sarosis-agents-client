@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 
+import { classifyCommandEffects, buildShellSafetyReason, type IEffectClassification } from './shellStaticAnalysis.js';
+
 /**
  * shellCommandSafety — 终端命令安全判定（纯函数，无 IO / 无 Node 依赖，可单测）。
  *
@@ -79,6 +81,45 @@ const BLOCKING_SHELL_TOKENS = [
 	';', '&&', '||', '&', '>', '<', '`', '$(', '@(', '${',
 	'\n', '\r', '{', '}', '%', '::', '[',
 ];
+
+/**
+ * 抠掉引号段（`'...'` 与 `"..."`）后的命令，仅用于 `%` 的判定。
+ *
+ * ## 为什么只有 `%` 需要这个（2026-08-30）
+ *
+ * 本模块的 `Safe` 判定是**免审批快捷通道**，所以判据一律 fail-closed：含任一
+ * `BLOCKING_SHELL_TOKENS` 即回退审批，不做解析。这把 `git log --format="%h %s"`
+ * 也一起拦了 —— 而这是最常见的只读 git 用法之一，且 `%` 出现在**引号内部**时
+ * 纯属字面量，不可能是 PowerShell 的 ForEach-Object 别名（别名要求 `%` 作为独立
+ * 命令 token 出现，引号内做不到）。
+ *
+ * ## 为什么**不**把整套判据改成引号感知（对 Hermes 的取舍）
+ *
+ * Hermes `approval.py` 的 `_has_allowlist_shell_operator` 是引号感知的，但它只服务
+ * 于「这条命令是否仍是单一 allowlist 命令」。照搬到这里**没有收益**：
+ *   · 唯一被高频误伤的 `python3 -c "import os; print(...)"`，其 `python3` **根本不在**
+ *     白名单里（见 BUILD_VERIFY_COMMANDS 上方注释：裸解释器可执行任意代码，刻意
+ *     不放行）—— 即使引号内的 `;` 不再短路，`isSafeSegment` 依旧判 NeedsApproval。
+ *   · 而引号规则**三方言不一致**（bash 转义 `\`、cmd `^`、PowerShell `` ` `` 且
+ *     单双引号语义不同）。用一套字符级 parser 覆盖三种方言，一旦判错就是
+ *     **静默放行危险命令** —— 直接违背本模块「宁可多问、不可放过」的第一原则。
+ * 故只对 `%` 这一个不会造成串联/执行的字符开窄口。
+ *
+ * ⚠ 纯字符级抠除，不做任何解析：引号未闭合 → 返回原文，fail-closed 不变。
+ */
+function stripQuotedSegments(cmd: string): string {
+	const out: string[] = [];
+	let quote: '"' | "'" | undefined;
+	for (const ch of cmd) {
+		if (quote) {
+			if (ch === quote) { quote = undefined; }
+			continue; // 引号内字符一律丢弃
+		}
+		if (ch === '"' || ch === "'") { quote = ch; continue; }
+		out.push(ch);
+	}
+	return quote ? cmd : out.join(''); // 未闭合 → 保守返回原文
+}
 
 /**
  * PowerShell / cmd 别名 → 规范命令名。
@@ -379,8 +420,11 @@ export function evaluateShellCommandSafety(command: string | undefined): ShellCo
 	if (!cmd) { return ShellCommandSafety.NeedsApproval; }
 
 	// ── Hermes 式操作符短路：含危险元字符一律不走白名单 ──
+	// `%` 例外：先抠掉引号段再查（`git log --format="%h %s"` 的 `%` 是字面量）。
+	// 详见 stripQuotedSegments 的注释 —— 只开这一个窄口，其余字符照旧 fail-closed。
+	const unquoted = cmd.includes('%') ? stripQuotedSegments(cmd) : cmd;
 	for (const tok of BLOCKING_SHELL_TOKENS) {
-		if (cmd.includes(tok)) { return ShellCommandSafety.NeedsApproval; }
+		if ((tok === '%' ? unquoted : cmd).includes(tok)) { return ShellCommandSafety.NeedsApproval; }
 	}
 	// `$` 变量展开：值不可知（`$env:X`、`$path`），可能被展开成任意内容 → 保守拒绝
 	if (cmd.includes('$')) { return ShellCommandSafety.NeedsApproval; }
@@ -452,10 +496,39 @@ export function isShellToolWithCommandArg(toolName: string): boolean {
 export const SHELL_APPROVAL_SHAPE_GUIDANCE =
 	'\n\nCOMMAND SHAPE DECIDES WHETHER THE USER IS INTERRUPTED. These force an approval prompt that blocks'
 	+ ' your execution: `&&` `;` `||` `&` `>` `<` backticks `$(` `@(` `${` `{}` `%` `::` `[` `$` newlines, and interpreter'
-	+ ' wrappers (powershell -Command, bash -c, python -c). A single known read-only command, or a build/verify command'
+	// 2026-08-30（日志 20260829T232635）：原文案列了 `python -c`，但 execute_code /
+	// terminal 的 description 明确**教**模型用 `python3 -c "..." / node -e "..."` 跑内联
+	// 代码（compatibilityTools.ts description 段）。同一份描述既教又禁 → 模型照做却被
+	// [AntiGuidance] 判「违反自身描述」（本次 5 次告警里 3 次是它）。
+	// `python3 -c` 之所以会弹审批，是因为内联代码常含 `;`/`&&`，属 BLOCKING_SHELL_TOKENS
+	// 的既有覆盖，无需在此单列；单列只会与描述打架。
+	+ ' wrappers (powershell -Command, bash -c). A single known read-only command, or a build/verify command'
 	+ ' (tsc, esbuild, vite, npm/yarn/pnpm run build/test/lint/typecheck), may run without asking.'
-	+ ' So: pass "cwd" rather than `cd X && Y`; never wrap in `powershell -Command` (you are ALREADY in a shell);'
+	// ⚠ 本句必须与 GUIDANCE_QUOTES['interpreter-wrapper'].guidance **逐字一致** ——
+	// test/common/shellCommandSafety.test.ts 有守卫用例断言「guidance 原话必须真的
+	// 出现在 SHELL_APPROVAL_SHAPE_GUIDANCE 里」。补 `bash -c` 是因为下方正则同样命中
+	// `bash -c`，文案窄于判据就会重演「模型照描述做却被判违规」。
+	+ ' So: pass "cwd" rather than `cd X && Y`; never wrap in `powershell -Command` / `bash -c` (you are ALREADY in a shell);'
 	+ ' and to inspect a file use file_read (with limit:1 for line count + size) instead of shell counting.';
+
+/**
+ * 由**审批策略**决定要不要下发 `SHELL_APPROVAL_SHAPE_GUIDANCE`（2026-08-30，P2-12）。
+ *
+ * 该段文案全文都在讲「命令形态会强制弹审批、打断你的执行」。当 `tools.confirmToolCalls`
+ * 关闭时，这个后果**不会发生** —— 照发就成了「描述一个永不发生的后果」，标题党，
+ * 模型学不到真实代价（本次分析里已确认：关审批时这段对模型零增量、纯属 ~400 token
+ * 负担，且不说还容易与运行时行为产生认知错位）。
+ *
+ * 对齐 openclaw `describeExecTool` 读 `loadExecApprovals()` 的同一思路：**描述由同一份
+ * 审批策略生成**，关了就别下发。调用方在读到配置后把布尔传进来（common 层不直接依赖
+ * `IConfigurationService`，避免把 platform 层拉进 agentStudio/common）。
+ *
+ * ⚠ 方言相关的指引（`shellPlatformGuidance` 里点名的「PowerShell cmdlet 在 posix 下
+ * 不存在」）**不**走本函数 —— 它与审批开关无关，永远下发。本函数只管「审批打断」这一条。
+ */
+export function shellApprovalGuidance(approvalEnabled: boolean): string {
+	return approvalEnabled ? SHELL_APPROVAL_SHAPE_GUIDANCE : '';
+}
 
 // ─── 反引导调用检测（[AntiGuidance] 诊断）────────────────────────────────
 
@@ -467,7 +540,7 @@ export const SHELL_APPROVAL_SHAPE_GUIDANCE =
  * 「文案改了检测没改」（本项目已多次因两份判据漂移踩坑）。
  */
 export type AntiGuidanceRule =
-	/** 对应「never wrap in `powershell -Command` (you are ALREADY in a shell)」。 */
+	/** 对应「never wrap in `powershell -Command` / `bash -c` (you are ALREADY in a shell)」。 */
 	| 'interpreter-wrapper'
 	/** 对应「to inspect a file use file_read (with limit:1) instead of shell counting」。 */
 	| 'shell-line-counting'
@@ -484,9 +557,17 @@ export interface IAntiGuidanceFinding {
 	readonly suggestion: string;
 }
 
-/** 解释器包装：命令把自己再套一层 shell/解释器。 */
+/**
+ * 解释器包装：命令把自己再套一层 **shell**（powershell / bash / sh / zsh -c）。
+ *
+ * ⚠ 2026-08-30：刻意**不含** `python3 -c` / `node -e`。判据必须与文案同域 ——
+ * description 教模型用 `python3 -c "..."` 跑内联代码，检测它等于判模型「违反了
+ * 我刚教它的做法」。这里只保留「再套一层 shell」这一真正冗余的形态。
+ * 本模块的纪律是「文案说了什么，就检测什么」（见 AntiGuidanceRule 注释），
+ * 检测面宽于文案面就是误报。
+ */
 const INTERPRETER_WRAPPER_RE =
-	/\b(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\b[^\n]*?\s-(?:c|command)\b|\b(?:bash|sh|zsh)\b\s+-c\b|\b(?:python3?|node)\b\s+-(?:c|e)\b/i;
+	/\b(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\b[^\n]*?\s-(?:c|command)\b|\b(?:bash|sh|zsh)\b\s+-c\b/i;
 
 /**
  * 纯粹为「数行数 / 量文件大小」而跑的 shell 命令。
@@ -508,7 +589,7 @@ const LEADING_CD_RE = /^\s*cd\s+[^\n&;|]+(?:&&|;)/i;
 
 const GUIDANCE_QUOTES: Readonly<Record<AntiGuidanceRule, { guidance: string; suggestion: string }>> = {
 	'interpreter-wrapper': {
-		guidance: 'never wrap in `powershell -Command` (you are ALREADY in a shell)',
+		guidance: 'never wrap in `powershell -Command` / `bash -c` (you are ALREADY in a shell)',
 		suggestion: 'run the command directly without the interpreter wrapper',
 	},
 	'shell-line-counting': {
@@ -588,4 +669,61 @@ export function formatAntiGuidanceLog(
 		lines.push(`      should instead:   ${f.suggestion}`);
 	}
 	return lines.join('\n');
+}
+
+// ─── 详细判定 + 安全二进制画像（P1-1 / P2-2）──────────────────────────────
+
+export interface IShellSafetyDetail {
+	result: ShellCommandSafety;
+	reason: string;
+	effects: IEffectClassification;
+}
+
+/**
+ * 在 `evaluateShellCommandSafety` 基础上附带人类可读的 `reason` 与副作用分类，
+ * 供审批卡片文案使用（P2-2）。`reason` 描述命令「会做什么」，不重复「是否危险」。
+ */
+export function evaluateShellCommandSafetyDetailed(command: string): IShellSafetyDetail {
+	const result = evaluateShellCommandSafety(command);
+	const effects = classifyCommandEffects(command);
+	let reason: string;
+	if (result === ShellCommandSafety.Safe) {
+		reason = '只读/验证构建命令（免交互确认）';
+	} else if (result === ShellCommandSafety.NeedsApproval) {
+		reason = '命令含重定向/串联/变量展开/裸解释器，需确认';
+	} else {
+		reason = '命令无法识别，需确认';
+	}
+	if (result !== ShellCommandSafety.Safe) {
+		reason += `；${buildShellSafetyReason(effects)}`;
+	}
+	return { result, reason, effects };
+}
+
+/** 工具调用维度的详细判定（从 args 抽 command）。 */
+export function evaluateToolCallShellSafetyDetailed(toolName: string, args: unknown): IShellSafetyDetail {
+	return evaluateShellCommandSafetyDetailed(getToolCallCommandArg(toolName, args) ?? '');
+}
+
+/** openclaw 风格的安全二进制画像：区分「只读」与「验证/构建」免审画像（P1-1）。 */
+export type SafeBinProfile = 'readonly' | 'build' | 'unknown';
+
+export const SAFE_BIN_PROFILES: Readonly<Record<string, SafeBinProfile>> = {
+	// 只读
+	cat: 'readonly', head: 'readonly', tail: 'readonly', less: 'readonly', more: 'readonly',
+	get: 'readonly', grep: 'readonly', rg: 'readonly', find: 'readonly', ls: 'readonly',
+	dir: 'readonly', gci: 'readonly', 'get-childitem': 'readonly', git: 'readonly',
+	read: 'readonly', 'get-content': 'readonly', type: 'readonly', which: 'readonly',
+	where: 'readonly', file: 'readonly', stat: 'readonly', pwd: 'readonly',
+	// 验证/构建
+	tsc: 'build', esbuild: 'build', vite: 'build', rollup: 'build', webpack: 'build',
+	eslint: 'build', npm: 'build', pnpm: 'build', yarn: 'build', npx: 'build',
+	node: 'build', python3: 'build', python: 'build', pytest: 'build', go: 'build',
+	make: 'build', cargo: 'build', dotnet: 'build', javac: 'build',
+};
+
+/** 取命令首 token 的安全画像；未列入画像的解释器/未知命令返回 'unknown'（应走审批）。 */
+export function classifySafeBin(command: string): SafeBinProfile {
+	const head = command.trim().split(/\s+/)[0]?.toLowerCase().replace(/^["'`]|["'`]$/g, '') ?? '';
+	return SAFE_BIN_PROFILES[head] ?? 'unknown';
 }

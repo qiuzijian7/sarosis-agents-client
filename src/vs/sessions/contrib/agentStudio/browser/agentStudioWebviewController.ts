@@ -2332,10 +2332,14 @@ export class AgentStudioWebviewController extends Disposable {
 					let chunksToSend: IChatStreamDelta[] = [safeChunk];
 					if (safeChunk.type === 'text' && typeof safeChunk.content === 'string') {
 						streamingTextBuffer += safeChunk.content;
+						// 剥离模型泄漏的冒号ID伪XML工具标签（<tool_calls:xxx>, <arg_key:xxx> 等）。
+						// 这些标签不是我们系统的合法工具调用格式，若不剥离会直接泄露到聊天UI显示为原始文本。
+						streamingTextBuffer = streamingTextBuffer.replace(/<\/?(?:tool_calls|arg_key|arg_value|tool_call|function_call|function_response|tool_result|tool_use|invoke)[:\w]*>/gi, '');
 						// 附加全量文本快照
 						safeChunk.fullText = streamingTextBuffer;
 						// 使用正则检测工具标签（简化版，仅检测完整标签）
-						const toolTagRegex = /<(tool_call|function_call|tool_use|invoke)[\s\S]*?>[\s\S]*?<\/\1>/gi;
+						// 兼容标准格式 <tool_call...> 以及模型偶发的冒号ID格式 <tool_calls:xxx>
+						const toolTagRegex = /<(tool_call|function_call|tool_use|invoke)(:\w+)?[\s\S]*?>[\s\S]*?<\/\1(?:\2)?>/gi;
 						const toolMatches: { index: number; toolName: string; fullMatch: string }[] = [];
 						let regexMatch: RegExpExecArray | null;
 						toolTagRegex.lastIndex = 0;

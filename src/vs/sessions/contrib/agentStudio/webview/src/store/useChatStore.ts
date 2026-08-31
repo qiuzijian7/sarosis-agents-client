@@ -364,7 +364,11 @@ export interface ChatMessage {
 		cacheMiss?: number;
 		/** Reasoning/thinking tokens (思考过程). */
 		reasoning?: number;
-		/** Cache hit rate as percentage, e.g. 51.6 for 51.6% (缓存命中率). */
+		/**
+		 * Cache hit rate as percentage, e.g. 51.6 for 51.6% (缓存命中率).
+		 * NOTE: 后端 IBridgeUsageStats.cacheHitRate 以小数比率（0~1）上报，
+		 * 消费此字段渲染时需 ×100 转为百分比。
+		 */
 		cacheHitRate?: number;
 		/** Billing credits consumed by this turn (积分). */
 		credit?: number;

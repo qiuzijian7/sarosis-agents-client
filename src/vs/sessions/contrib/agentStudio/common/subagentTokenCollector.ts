@@ -50,6 +50,8 @@ export interface SubagentTokenUsage {
 	totalCacheWriteTokens: number;
 	/** Total reasoning tokens. */
 	totalReasoningTokens: number;
+	/** 缓存命中率（totalCacheHitTokens / totalInputTokens，取值范围 0~1）。 */
+	readonly cacheHitRate: number;
 	/** Number of LLM turns. */
 	turnCount: number;
 	/** Per-turn breakdown (for detailed analysis). */
@@ -130,6 +132,9 @@ export class SubagentTokenCollector {
 			totalCacheHitTokens: this._totalCacheHitTokens,
 			totalCacheWriteTokens: this._totalCacheWriteTokens,
 			totalReasoningTokens: this._totalReasoningTokens,
+			cacheHitRate: this._totalInputTokens > 0
+				? this._totalCacheHitTokens / this._totalInputTokens
+				: 0,
 			turnCount: this._turnCount,
 			perTurnUsage: [...this._perTurnUsage],
 		};

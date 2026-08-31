@@ -12,6 +12,58 @@
  *    - Frontend (ChatMessage.tsx) for display-time sanitization
  *--------------------------------------------------------------------------------------------*/
 
+import { stripTaggedIdXmlTags, locateTaggedIdXmlTags, findCodeRegions } from './agentRunState.js';
+
+// ════════════════════════════════════════════════════════════════════════════════
+//  代码区暂存（stash）：让各道剥离**跳过** Markdown 代码区
+//
+//  成因：模型在回答里**举例讨论**工具调用语法（例如横向对比几个项目的提示词
+//  格式）是正当的技术讨论，用户要看的正是这段内容。若连代码块里的示例一起
+//  抹掉，等于把用户想看的答案删了 —— 而这类场景恰恰是伪 XML 泄漏的高发场景
+//  （模型讨论格式时最容易顺手写出示例）。
+//
+//  参照 openclaw `src/shared/text/code-regions.ts` 的同名机制，其测试明确断言
+//  "preserves ... inside inline and fenced code"。
+//
+//  实现方式：剥离前把代码区替换为哨兵，剥离后原样回填。这样**所有**剥离阶段
+//  （形态剥离 / 按名剥离 / 配对内容删除）统一受保护，无需逐个阶段加判断。
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** 哨兵用私有区字符，正常文本不会出现，避免与正文冲突。 */
+const CODE_STASH_MARK = '\uE000';
+const CODE_STASH_RE = new RegExp(`${CODE_STASH_MARK}(\\d+)${CODE_STASH_MARK}`, 'g');
+
+interface ICodeStash {
+	/** 代码区被替换为哨兵后的文本。 */
+	readonly template: string;
+	/** 被暂存的代码区原文，按哨兵序号索引。 */
+	readonly parts: string[];
+}
+
+/** 把代码区从文本中抠出，替换为哨兵。区间重叠时后者跳过。 */
+function stashCodeRegions(text: string, regions: readonly { start: number; end: number }[]): ICodeStash {
+	if (regions.length === 0) { return { template: text, parts: [] }; }
+	const parts: string[] = [];
+	let template = '';
+	let cursor = 0;
+	for (const r of regions) {
+		if (r.start < cursor || r.end > text.length) { continue; }
+		template += text.slice(cursor, r.start);
+		template += `${CODE_STASH_MARK}${parts.length}${CODE_STASH_MARK}`;
+		parts.push(text.slice(r.start, r.end));
+		cursor = r.end;
+	}
+	template += text.slice(cursor);
+	return { template, parts };
+}
+
+/** 把哨兵替换为原代码区内容。 */
+function restoreCodeRegions(template: string, parts: readonly string[]): string {
+	if (parts.length === 0) { return template; }
+	CODE_STASH_RE.lastIndex = 0;
+	return template.replace(CODE_STASH_RE, (_m, idx: string) => parts[Number(idx)] ?? '');
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // § Types
 // ════════════════════════════════════════════════════════════════════════════════
@@ -54,7 +106,7 @@ const TOOL_TEXT_PREFILTER_RE =
 
 /** Quick-check regex for XML tool call tags */
 const TOOL_CALL_XML_QUICK_RE =
-	/<\s*\/?\s*(?:tool_call|tool_result|function_calls?|function_response|function|tool_calls)\b/i;
+	/<\s*\/?\s*(?:tool_call|tool_result|function_calls?|function_response|function|tool_calls|arg_key|arg_value|tool_use|invoke)\b/i;
 
 /** Quick-check for legacy bracket blocks */
 const LEGACY_BRACKET_QUICK_RE = /\[\s*\/?\s*TOOL_(?:CALL|RESULT)\s*\]/i;
@@ -421,10 +473,38 @@ export function stripJsonCodeBlocks(text: string): string {
  *          <function_response>, <function>, <tool_calls>
  */
 export function stripXmlToolCallTags(text: string): string {
-	if (!text || !TOOL_CALL_XML_QUICK_RE.test(text)) { return text; }
+	if (!text) { return text; }
+	// ─── 早退守卫必须同时覆盖「已知标签名」与「<tag:id> 形态」──────────────
+	// 原守卫只看 TOOL_CALL_XML_QUICK_RE（标签名白名单），而该白名单**漏了
+	// `tool_sep`** —— 日志 1788011997897 实证：`tool_sep:6124c78e` 从未能被剥离，
+	// 一路残留进历史并**逐轮累积**（L8944 两条 → L9282 四条），
+	// 导致 sanitize 后仍有 600c 残留（原 973c）。
+	// 只补 `tool_sep` 仍不解决未知变体，故追加形态判定作为兜底。
+	if (!TOOL_CALL_XML_QUICK_RE.test(text) && locateTaggedIdXmlTags(text, 1).length === 0) {
+		return text;
+	}
 
 	const tagNames = ['tool_call', 'tool_result', 'function_call', 'function_calls', 'function_response', 'function', 'tool_calls', 'tool'];
-	let result = text;
+
+	// ─── 前置：抠出代码区，使下方**所有**剥离阶段都跳过它 ────────────────
+	// 只保护第一道是不够的：下面的按名剥离会连标签**内容**一起删（pairRe 整体
+	// 删除 `<tag>...内容...</tag>`），代码块里的示例同样会被抹掉。
+	const stash = stashCodeRegions(text, findCodeRegions(text));
+	let result = stash.template;
+
+	// ─── 第一道：宽剥离所有 `<tag:id>` 形态（含 tool_sep 与未知变体）────────
+	// 逐个枚举标签名永远追不上模型的新变体（`tool_sep` 就是漏掉的那个），
+	// 故先按**形态**整体剥离，再走下面的按名剥离处理标准配对标签。
+	// replacement 传空串：此处产出的是**展示给用户**的可见文本，
+	// 不适合留下 `[已移除]` 之类占位符。
+	result = stripTaggedIdXmlTags(result, '');
+
+	// 防御：剥离模型泄漏的冒号ID伪XML标签（<tool_calls:xxx>, <arg_key:xxx>, <arg_value:xxx>）。
+	// 这些标签往往不配对（开标签带 :hex 后缀、闭标签不带），普通配对正则无法覆盖，会泄露到UI。
+	result = result.replace(/<\/?(?:tool_calls|arg_key|arg_value|tool_call|function_call|function_response|tool_result|tool_use|invoke)[:\w]*>/gi, '');
+	// 模型「伪造」工具调用时常写一排方块字符作为分隔(fence)，正常回答几乎不可能
+	// 出现整行纯方块字符，剥离之（否则这些 fence 会原样显示在聊天里）。
+	result = result.replace(/^[ \t]*(?:[\u2580-\u259F\u25A0])+[ \t]*$/gm, '');
 
 	for (const tagName of tagNames) {
 		// Match opening + closing tag pairs
@@ -440,7 +520,7 @@ export function stripXmlToolCallTags(text: string): string {
 		result = result.replace(unclosedRe, '');
 	}
 
-	return result;
+	return restoreCodeRegions(result, stash.parts);
 }
 
 /**
@@ -517,6 +597,10 @@ export function stripReasoningTags(text: string): string {
 	let result = text;
 	result = result.replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, '');
 	result = result.replace(/<\s*thinking\s*>[\s\S]*?<\s*\/\s*thinking\s*>/gi, '');
+	// 带冒号ID伪标签形态（<think:6124c78e>...</think:6124c78e>）—— 模型把思考块也写成
+	// `:hexid` 形态时，上面两条标准正则匹配不到，必须单独处理，否则原样泄露到 UI。
+	result = result.replace(/<\s*think\s*:\s*[\w-]+\s*>[\s\S]*?<\s*\/\s*think\s*:\s*[\w-]+\s*>/gi, '');
+	result = result.replace(/<\s*\/?\s*think\s*:\s*[\w-]+\s*>/gi, '');
 	return result;
 }
 
@@ -524,35 +608,132 @@ export function stripReasoningTags(text: string): string {
 // § Pipeline — Unified sanitization pipeline
 // ════════════════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════════════════
+// § Sanitizer Trace —— 定位「哪个阶段误删了正文」
+//
+// 背景：多个剥离阶段用了锚定文本末尾的正则（`$` 且无 `m` flag），一旦正则
+// 误命中正文里的常见词（如 `Action:`、`[TOOL_CALL]`、`<function>`），就会把
+// **从这里到文本末尾的所有内容**删掉 —— 表现即用户看到的「消息尾部被截断」。
+// 这些误删在 sanitize 前后只表现为总长度变化，无法归因到具体阶段，故加 trace。
+//
+// 用法：宿主在启动时调 `setSanitizeTraceSink(...)` 把条目转发到 logService；
+// 不设置则全程零开销（每个 `_traceStage` 首行即 return）。
+// ════════════════════════════════════════════════════════════════════════════════
+
+export interface ISanitizeTraceEntry {
+	/** 剥离阶段名（如 'stripReactActions'）。 */
+	readonly stage: string;
+	/** 使用的 profile。 */
+	readonly profile: string;
+	/** 阶段前长度。 */
+	readonly beforeLen: number;
+	/** 阶段后长度。 */
+	readonly afterLen: number;
+	/** 被删除的字符数（正数=删除，负数=增长）。 */
+	readonly removedLen: number;
+	/** 首个差异处在本阶段输入中的偏移。 */
+	readonly atOffset: number;
+	/** 从首个差异处起、本阶段输入的一段原文（用于看出删的是什么）。 */
+	readonly removedSnippet: string;
+	/** 本阶段输出的尾部（用于判断是否被「删到末尾」）。 */
+	readonly afterTail: string;
+}
+
+/**
+ * 接收器集合（而非单 sink）：`agentTurnExecutor`（host 侧，决定 content_replace 内容）
+ * 与 `nativeChatEditorPane`（UI 侧二次清洗）都会调 sanitize，二者都需要 trace。
+ * 用数组避免后者覆盖前者。
+ */
+const _traceSinks: Array<(e: ISanitizeTraceEntry) => void> = [];
+
+/** 安装 trace 接收器（宿主转发到 logService）。返回反安装函数。 */
+export function addSanitizeTraceSink(sink: (e: ISanitizeTraceEntry) => void): () => void {
+	_traceSinks.push(sink);
+	return () => {
+		const i = _traceSinks.indexOf(sink);
+		if (i >= 0) { _traceSinks.splice(i, 1); }
+	};
+}
+
+/** 若某阶段删除量超过该占比，视为可疑并额外标记（便于日志筛选）。 */
+const SUSPICIOUS_REMOVE_RATIO = 0.3;
+
+function _traceStage(stage: string, profile: string, before: string, after: string): void {
+	if (_traceSinks.length === 0 || before === after) { return; }
+
+	// 找首个差异位置
+	let i = 0;
+	const minLen = Math.min(before.length, after.length);
+	while (i < minLen && before[i] === after[i]) { i++; }
+
+	const removedLen = before.length - after.length;
+	const removedSnippet = before.slice(i, i + Math.min(Math.max(removedLen, 0) + 60, 240));
+	const afterTail = after.length > 80 ? after.slice(-80) : after;
+
+	const entry: ISanitizeTraceEntry = {
+		stage,
+		profile,
+		beforeLen: before.length,
+		afterLen: after.length,
+		removedLen,
+		atOffset: i,
+		removedSnippet,
+		afterTail,
+	};
+
+	// 只上报「删得多」或「从文本前半段就开始删」的阶段，避免正常剥离刷屏。
+	if (removedLen > 0 && (removedLen / Math.max(before.length, 1) >= SUSPICIOUS_REMOVE_RATIO || i < before.length * 0.5)) {
+		for (const sink of _traceSinks) {
+			try { sink(entry); } catch { /* 日志不应影响业务逻辑 */ }
+		}
+	}
+}
+
 /**
  * Apply the full sanitization pipeline with given options.
  */
-function applySanitizationPipeline(text: string, options: SanitizerOptions): string {
+function applySanitizationPipeline(text: string, options: SanitizerOptions, profile: string = 'delivery'): string {
 	if (!text) { return ''; }
 
 	let cleaned = text;
 
 	if (options.stripJsonCodeBlocks) {
+		const before = cleaned;
 		cleaned = stripJsonCodeBlocks(cleaned);
+		_traceStage('stripJsonCodeBlocks', profile, before, cleaned);
 	}
 	if (options.stripJsonToolCalls) {
+		const before = cleaned;
 		cleaned = stripJsonToolCalls(cleaned);
+		_traceStage('stripJsonToolCalls', profile, before, cleaned);
 	}
 	if (options.stripXmlToolCallTags) {
+		const before = cleaned;
 		cleaned = stripXmlToolCallTags(cleaned);
+		_traceStage('stripXmlToolCallTags', profile, before, cleaned);
 	}
 	if (options.stripBracketToolCallBlocks) {
+		const before = cleaned;
 		cleaned = stripLegacyBracketToolCallBlocks(cleaned);
+		_traceStage('stripBracketToolCallBlocks', profile, before, cleaned);
 	}
 	if (options.stripDowngradedToolCallText) {
+		const before = cleaned;
 		cleaned = stripDowngradedToolCallText(cleaned);
+		_traceStage('stripDowngradedToolCallText', profile, before, cleaned);
 	}
 	if (options.stripReactActions) {
+		const before = cleaned;
 		cleaned = stripReactActions(cleaned);
+		_traceStage('stripReactActions', profile, before, cleaned);
 	}
 
 	// Always strip reasoning tags (not profile-dependent — these should never be visible)
-	cleaned = stripReasoningTags(cleaned);
+	{
+		const before = cleaned;
+		cleaned = stripReasoningTags(cleaned);
+		_traceStage('stripReasoningTags', profile, before, cleaned);
+	}
 
 	// Apply final trim
 	if (options.trim === 'both') {
@@ -573,7 +754,7 @@ function applySanitizationPipeline(text: string, options: SanitizerOptions): str
  *  - "history": Full sanitization, no trim. Use when saving to history.
  */
 export function sanitizeAssistantVisibleText(text: string, profile: SanitizerProfile = 'delivery'): string {
-	return applySanitizationPipeline(text, PROFILE_OPTIONS[profile]);
+	return applySanitizationPipeline(text, PROFILE_OPTIONS[profile], profile);
 }
 
 /**

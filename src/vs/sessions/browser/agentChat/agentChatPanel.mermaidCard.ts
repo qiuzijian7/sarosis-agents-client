@@ -43,7 +43,7 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 	 * @param size   Icon pixel size (default 14).
 	 * @param color  Stroke/fill color (default 'currentColor', inherits from parent).
 	 */
-	private _svgIcon(d: string, size = 14, color = 'currentColor'): SVGElement {
+	protected _svgIcon(d: string, size = 14, color = 'currentColor'): SVGElement {
 		const ns = 'http://www.w3.org/2000/svg';
 		const svg = document.createElementNS(ns, 'svg');
 		svg.setAttribute('width', String(size));
@@ -61,7 +61,7 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 	}
 
 	/** Creates a toolbar button with SVG icon + label. */
-	private _mcBtn(
+	protected _mcBtn(
 		iconD: string, label: string, primary: boolean,
 		onClick: (e: MouseEvent) => void
 	): HTMLButtonElement {
@@ -94,7 +94,7 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 	}
 
 	/** Creates animated loading dots + text for the preview panel. */
-	private _mcLoadingDots(text: string): HTMLElement {
+	protected _mcLoadingDots(text: string): HTMLElement {
 		const el = $('.mc-preview-loading');
 		el.style.cssText = 'color:var(--void-fg-4,#6e7681);font-size:11.5px;display:flex;align-items:center;gap:6px;';
 		for (let i = 0; i < 3; i++) {
@@ -203,7 +203,7 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 
 			// Copy SVG
 			const svgCopyBtn = this._mcBtn(
-				'M4 4h3v1H5v7h7v-2h1v3H4V4zm3 0h5v5h-1V5.7L6.35 10.35l-.7-.7L10.3 5H7V4z',
+				'M4 4h3v1H5v7h7v-2h1v3H4V4zm3 0h5v5h-1V5.7l-6.35 10.35l-.7-.7L10.3 5H7V4z',
 				'复制 SVG', false,
 				(e) => {
 					e.stopPropagation();
@@ -372,7 +372,7 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 	 * - mermaid strict 模式已消毒输出，这里再剥掉可能的 <script> 与 on* 事件属性（防御纵深）。
 	 * - 返回清洗后的 SVG 字符串；不含 <svg> 根元素时返回 null（由调用方回退到 <img> 方案）。
 	 */
-	private _sanitizeMermaidSvg(svg: string): string | null {
+	protected _sanitizeMermaidSvg(svg: string): string | null {
 		if (!svg || svg.indexOf('<svg') === -1) { return null; }
 		return svg
 			.replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -380,7 +380,7 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 	}
 
 	/** Replaces the loading content in the preview panel with an error display. */
-	private _mcShowError(previewPanel: HTMLElement, loadingEl: HTMLElement, message: string): void {
+	protected _mcShowError(previewPanel: HTMLElement, loadingEl: HTMLElement, message: string): void {
 		loadingEl.remove();
 		const errEl = $('.mc-preview-error');
 		errEl.style.cssText = 'color:#f87171;font-size:11.5px;display:flex;align-items:center;gap:6px;';

@@ -10,6 +10,7 @@ import {
 	evaluateShellCommandSafety, evaluateToolCallShellSafety,
 	isShellToolWithCommandArg, ShellCommandSafety,
 	detectAntiGuidanceCommand, formatAntiGuidanceLog, SHELL_APPROVAL_SHAPE_GUIDANCE,
+	shellApprovalGuidance,
 } from '../../common/shellCommandSafety.js';
 
 /**
@@ -269,14 +270,28 @@ suite('shellCommandSafety', () => {
 			assert.deepStrictEqual(rules(cmd), ['interpreter-wrapper', 'shell-line-counting']);
 		});
 
-		test('解释器包装：powershell / pwsh / bash / sh / python / node', () => {
+		test('解释器包装：powershell / pwsh / bash / sh / zsh', () => {
 			assert.ok(rules('powershell -Command "ls"').includes('interpreter-wrapper'));
 			assert.ok(rules('powershell.exe -c "ls"').includes('interpreter-wrapper'));
 			assert.ok(rules('pwsh -c "ls"').includes('interpreter-wrapper'));
 			assert.ok(rules('bash -c "ls"').includes('interpreter-wrapper'));
 			assert.ok(rules('sh -c "ls"').includes('interpreter-wrapper'));
-			assert.ok(rules('python3 -c "print(1)"').includes('interpreter-wrapper'));
-			assert.ok(rules('node -e "console.log(1)"').includes('interpreter-wrapper'));
+			assert.ok(rules('zsh -c "ls"').includes('interpreter-wrapper'));
+		});
+
+		test('★ 内联解释器（python3 -c / node -e）**不**算违规 —— 描述里教的就是它', () => {
+			// 2026-08-30（日志 20260829T232635）：execute_code / terminal 的 description
+			// 明确写「to run inline code pass it to an interpreter (python3 -c "..." /
+			// node -e "...")」。判它违规 = 判模型「违反了我刚教它的做法」，本次 5 条
+			// [AntiGuidance] 告警里 3 条是这个误报。判据必须与文案同域。
+			assert.ok(!rules('python3 -c "print(1)"').includes('interpreter-wrapper'));
+			assert.ok(!rules('python -c "print(1)"').includes('interpreter-wrapper'));
+			assert.ok(!rules('node -e "console.log(1)"').includes('interpreter-wrapper'));
+			// 真实形态（本次日志里被误报的那条）整体不应产生任何命中
+			assert.deepStrictEqual(
+				rules(`python3 -c "import os; print(os.getcwd())"`),
+				[],
+			);
 		});
 
 		test('shell 数行数 / 量大小的各种写法', () => {
@@ -368,5 +383,78 @@ suite('shellCommandSafety', () => {
 			assert.ok(out.includes('…'));
 			assert.ok(out.split('\n')[1].length < 260);
 		});
+	});
+});
+
+// ── ★ 引号内的 `%`（2026-08-30）：只开一个窄口，其余照旧 fail-closed ──────
+//
+// `%` 在 PowerShell 里是 ForEach-Object 别名、可执行任意脚本块，必须拦；但
+// `git log --format="%h %s"` 的 `%` 在引号内是纯字面量，整体拦掉会误伤最常见的
+// 只读 git 用法。故只对 `%` 抠除引号段后再判。
+//
+// ⚠ 刻意**不**把整套 BLOCKING_SHELL_TOKENS 改成引号感知：详见 stripQuotedSegments
+// 的注释（python3 本就不在白名单，改了零收益；三方言引号规则不同，判错即静默放行）。
+
+suite('shellCommandSafety — 引号内的 % 豁免（窄口）', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const safe = (cmd: string) => assert.strictEqual(
+		evaluateShellCommandSafety(cmd), ShellCommandSafety.Safe, `应放行: ${cmd}`);
+	const needs = (cmd: string) => assert.strictEqual(
+		evaluateShellCommandSafety(cmd), ShellCommandSafety.NeedsApproval, `应审批: ${cmd}`);
+
+	test('双引号内的 % → 放行（git 格式化输出）', () => {
+		safe('git log --format="%h %s"');
+		safe('git log --pretty=format:"%ad %s"');
+	});
+
+	test('单引号内的 % → 放行', () => {
+		safe("git log --pretty=format:'%ad %s'");
+	});
+
+	test('★★ 控制组 1：引号**外**的 % 仍必须审批（ForEach-Object 别名）', () => {
+		needs('Get-ChildItem | % { $_.Name }');
+		needs('git status %');
+	});
+
+	test('★★ 控制组 2：引号未闭合 → fail-closed，仍审批', () => {
+		needs('git log --format="%h %s');
+	});
+
+	test('★★★ 控制组 3：除 % 以外的 token 不受影响（窄口只开了一个）', () => {
+		// 引号内的 `;` 依旧要拦 —— 这是最容易「顺手放宽过头」的地方
+		needs('git log --format="a;b"');
+		needs('git log --format="a && b"');
+		needs('git log --format="$(whoami)"');
+	});
+
+	test('★★ 控制组 4：裸解释器即使引号内也仍不放行', () => {
+		// 这项是「不照搬 Hermes 引号感知」的直接依据：python3 本就不在白名单
+		needs('python3 -c "print(1)"');
+		needs('node -e "console.log(1)"');
+	});
+});
+
+// ── ★ 描述由审批策略生成（P2-12，2026-08-30）─────────────────────────────
+//
+// `SHELL_APPROVAL_SHAPE_GUIDANCE` 全文都在讲「命令形态会强制弹审批、打断执行」。
+// 当 `tools.confirmToolCalls` 关闭时这个后果不发生，整段指引必须**不下发**，否则
+// 就成了「描述一个永不发生的后果」（标题党 + ~400 token 浪费）。本测试守卫这个
+// 策略点：调用方把审批开关读出来传进来，纯函数据此决定发不发。
+
+suite('shellCommandSafety — shellApprovalGuidance 按审批开关生成', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('★ 审批开启 → 下发整段 SHELL_APPROVAL_SHAPE_GUIDANCE', () => {
+		const out = shellApprovalGuidance(true);
+		assert.ok(out.includes('COMMAND SHAPE DECIDES WHETHER THE USER IS INTERRUPTED'), '必须含原话');
+		// 守卫：原话与常量逐字一致 —— 若有人改文案忘了同步这里，测试会红
+		assert.strictEqual(out, SHELL_APPROVAL_SHAPE_GUIDANCE);
+	});
+
+	test('★ 审批关闭 → 返回空串（整段不下发）', () => {
+		assert.strictEqual(shellApprovalGuidance(false), '', '关闭审批时不得下发「打断执行」的后果指引');
 	});
 });

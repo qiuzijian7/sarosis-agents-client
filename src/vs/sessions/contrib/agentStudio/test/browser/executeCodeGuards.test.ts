@@ -140,12 +140,56 @@ suite('executeCodeGuards — PowerShell cmdlet 反向护栏', () => {
 		assert.strictEqual(detectPowerShellOnlyCmdlet('python3 app.py --mode Select-Object'), undefined);
 	});
 
-	test('guard message gives the correct powershell wrapping', () => {
+	test('guard message gives the correct powershell wrapping (cmd dialect)', () => {
 		const msg = powerShellCmdletGuardMessage('Out-String', 'execute_code');
 		assert.ok(msg.includes('Out-String'));
 		assert.ok(msg.includes('powershell -NoProfile -Command'), 'should show the wrapper');
 		assert.ok(msg.includes('exit 255'));
 		assert.ok(!msg.includes('undefined'));
+	});
+});
+
+// ── ★ posix 方言下的 cmdlet 护栏（日志 20260829T232635 事故缺口）──────────
+//
+// 事故：本机 Git Bash 可用 → 护栏整体门控在 `isWindows && !gitBash` 内被跳过 →
+// 模型照 environmentDirective 的静态 PowerShell 提示写 `... | Select-Object -Last 30`
+// → bash 里 `Select-Object: command not found`（exit 127），白烧一轮 LLM 往返。
+// detectPowerShellOnlyCmdlet 名单里第一个就是 Select-Object，它只是从未获得执行机会。
+
+suite('executeCodeGuards — PowerShell cmdlet 护栏（posix 方言 / Git Bash）', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('posix 方言仍要拦 —— 这正是 2026-08-30 前漏掉的那一格', () => {
+		// 检测本身与方言无关（cmdlet 在 bash 里同样不存在）
+		assert.strictEqual(detectPowerShellOnlyCmdlet('ls -la | Select-Object -Last 30'), 'Select-Object');
+		assert.strictEqual(detectPowerShellOnlyCmdlet('Write-Host "EXIT:0"'), 'Write-Host');
+	});
+
+	test('posix 下的提示改用 POSIX 命令，且**不**建议包 powershell 外壳', () => {
+		const msg = powerShellCmdletGuardMessage('Select-Object', 'execute_code', 'posix');
+		assert.ok(msg.includes('Select-Object'));
+		assert.ok(msg.includes('exit 127'), 'posix 下失败码是 127 而非 255');
+		assert.ok(msg.includes('POSIX shell'));
+		// 逆映射：Select-Object → head（UNIX_ONLY_COMMAND_HINTS 的反向查表，不另建映射）
+		assert.ok(msg.includes('head'), 'should suggest the POSIX equivalent');
+		// ★ 关键：不能再建议包 powershell —— 与 SHELL_APPROVAL_SHAPE_GUIDANCE 冲突，
+		// 且命令已经在 shell 里，包一层救不了「bash 里没有 Select-Object」。
+		assert.ok(msg.includes('Do NOT wrap it in powershell -Command'));
+		assert.ok(!msg.includes('-NoProfile -Command "<your command>'));
+	});
+
+	test('posix 下的提示对 Select-String → grep', () => {
+		const msg = powerShellCmdletGuardMessage('Select-String', 'terminal', 'posix');
+		assert.ok(msg.includes('grep'), 'Select-String → grep');
+		assert.ok(msg.includes('terminal'), 'tool name is echoed');
+	});
+
+	test('无 POSIX 等价写法的 cmdlet（Get-Content）退化为通用文案，不输出 undefined', () => {
+		// UNIX_ONLY_COMMAND_HINTS 里没有 Get-Content 的 POSIX 对应项
+		const msg = powerShellCmdletGuardMessage('Get-Content', 'execute_code', 'posix');
+		assert.ok(!msg.includes('undefined'));
+		assert.ok(msg.includes('head / tail / grep / sed / awk'));
 	});
 });
 

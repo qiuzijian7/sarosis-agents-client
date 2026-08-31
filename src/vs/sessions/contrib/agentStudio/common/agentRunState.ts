@@ -86,6 +86,23 @@ export interface AgentGraphRunState {
 	nodeStatus: Record<string, AgentGraphNodeExecutionStatus>;
 }
 
+// ─── 工具调用历史条目 ────────────────────────────────────────────────
+/**
+ * 一次工具调用的历史记录。
+ *
+ * `resultHash` 在**工具执行后**由 `RECORD_TOOL_RESULT` 回填，执行前为 undefined
+ * —— 因为 `RECORD_TOOL_CALL` 是在调度执行**之前**派发的，那一刻还没有结果。
+ *
+ * 可选字段保证向后兼容：旧的 checkpoint / 序列化数据只有 name+argsHash，
+ * 反序列化后 resultHash 为 undefined，ping-pong 检测会自动降级（无进展证据不足时不升级）。
+ */
+export interface IToolCallHistoryEntry {
+	readonly name: string;
+	readonly argsHash: string;
+	/** 结果哈希（易失字段已剥离）。执行后回填。 */
+	readonly resultHash?: string;
+}
+
 // ─── State schema ──────────────────────────────────────────────────
 export interface AgentRunState {
 	/** 主对话线程（reducer: append / compact） */
@@ -100,8 +117,8 @@ export interface AgentRunState {
 	reflectCount: number;
 	/** 是否执行过文件修改类工具（触发反思的前提） */
 	hasModifiedFiles: boolean;
-	/** 工具调用签名历史（带窗口裁剪，用于循环检测） */
-	toolCallHistory: ReadonlyArray<{ name: string; argsHash: string }>;
+	/** 工具调用签名历史（带窗口裁剪，用于循环检测 / ping-pong 检测） */
+	toolCallHistory: ReadonlyArray<IToolCallHistoryEntry>;
 	/** 已发起但未结束的工具调用 id（孤儿对账） */
 	startedToolIds: string[];
 	/** 已结束的工具调用 id（孤儿对账） */
@@ -134,6 +151,8 @@ export type AgentAction =
 	| { type: 'BUMP_ITERATION'; by?: number }
 	| { type: 'SET_PHASE'; phase: StreamPhase }
 	| { type: 'RECORD_TOOL_CALL'; name: string; argsHash: string }
+	/** 工具执行后回填结果哈希（供 ping-pong / no-progress 等跨调用检测使用） */
+	| { type: 'RECORD_TOOL_RESULT'; name: string; argsHash: string; resultHash: string }
 	| { type: 'RECONCILE_ORPHANS'; endedIds: string[] }
 	| { type: 'INVALID_TOOL_NAME' }
 	| { type: 'REFLECT' }
@@ -383,10 +402,10 @@ export function ensureTrailingUserBoundary(messages: AgentRunMessage[]): AgentRu
 
 /** 工具调用历史追加 + 窗口裁剪（对齐 loop 内 _toolCallHistory） */
 export function appendToolHistory(
-	prev: ReadonlyArray<{ name: string; argsHash: string }>,
-	entry: { name: string; argsHash: string },
+	prev: ReadonlyArray<IToolCallHistoryEntry>,
+	entry: IToolCallHistoryEntry,
 	window: number = RUN_STATE_LIMITS.TOOL_LOOP_WINDOW,
-): Array<{ name: string; argsHash: string }> {
+): Array<IToolCallHistoryEntry> {
 	const next = [...prev, entry];
 	if (next.length > window) {
 		next.shift();
@@ -414,6 +433,24 @@ export function reduceRunState(state: AgentRunState, action: AgentAction): Agent
 				...state,
 				toolCallHistory: appendToolHistory(state.toolCallHistory, { name: action.name, argsHash: action.argsHash }),
 			};
+
+		case 'RECORD_TOOL_RESULT': {
+			// 回填**最近一条**「同 name + 同 argsHash 且尚无 resultHash」的条目。
+			// 并行执行时同一签名可能有多条在飞，取最近的未填条目；同签名并发本就罕见，
+			// 万一错位也只是让某条结果的哈希归属相邻调用，不影响聚合判定的整体趋势。
+			let idx = -1;
+			for (let i = state.toolCallHistory.length - 1; i >= 0; i--) {
+				const h = state.toolCallHistory[i];
+				if (h.name === action.name && h.argsHash === action.argsHash && h.resultHash === undefined) {
+					idx = i;
+					break;
+				}
+			}
+			if (idx === -1) { return state; }
+			const nextHistory = state.toolCallHistory.slice();
+			nextHistory[idx] = { ...nextHistory[idx], resultHash: action.resultHash };
+			return { ...state, toolCallHistory: nextHistory };
+		}
 
 		case 'RECONCILE_ORPHANS':
 			return { ...state, endedToolIds: [...state.endedToolIds, ...action.endedIds] };
@@ -509,18 +546,41 @@ export function reduceRunState(state: AgentRunState, action: AgentAction): Agent
 
 // ─── 控制逻辑纯函数（可单测，Step 3 接入 loop）──────────────────────
 
+/** 稳定序列化：object key 递归排序，数组保序。 */
+function stableStringifyArgs(value: unknown): string {
+	if (value === null || value === undefined) { return 'null'; }
+	if (typeof value !== 'object') { return JSON.stringify(value) ?? 'null'; }
+	if (Array.isArray(value)) { return '[' + value.map(stableStringifyArgs).join(',') + ']'; }
+	const obj = value as Record<string, unknown>;
+	const keys = Object.keys(obj).sort();
+	return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringifyArgs(obj[k])).join(',') + '}';
+}
+
+/**
+ * 工具调用参数的规范化哈希 —— 循环检测签名的**唯一**来源。
+ *
+ * ⚠ 必须由「签名比对」与「写入 toolCallHistory」**两处共用**。若调用方各自用
+ * `JSON.stringify` 计算，两边算法不一致会导致签名永远匹配不上，循环检测静默失效。
+ *
+ * 相比裸 `JSON.stringify`：对 object key 排序，使 `{a:1,b:2}` 与 `{b:2,a:1}`
+ * 得到同一签名 —— 模型输出参数的 key 顺序抖动不应被误判为不同调用（否则漏检循环）。
+ */
+export function canonicalToolArgsHash(args: unknown, maxLen: number = 200): string {
+	return stableStringifyArgs(args ?? {}).slice(0, maxLen);
+}
+
 /**
  * 工具循环检测（对齐 loop 内 detectToolCallLoop）：
  * 基于 state.toolCallHistory 判断 (name, argsHash) 是否构成重复循环。
  * 纯函数：不修改 state，只读取并返回判定结果；调用方据此派发 RECORD_TOOL_CALL。
  */
 export function detectToolCallLoop(
-	history: ReadonlyArray<{ name: string; argsHash: string }>,
+	history: ReadonlyArray<IToolCallHistoryEntry>,
 	name: string,
 	args: Record<string, unknown>,
 	threshold: number = RUN_STATE_LIMITS.TOOL_LOOP_THRESHOLD,
 ): { loop: boolean; count: number } {
-	const argsHash = JSON.stringify(args ?? {}).slice(0, 200);
+	const argsHash = canonicalToolArgsHash(args);
 	const signature = `${name}:${argsHash}`;
 	let count = 0;
 	for (const h of history) {
@@ -529,6 +589,299 @@ export function detectToolCallLoop(
 		}
 	}
 	return { loop: count >= threshold, count: count + 1 };
+}
+
+// ─── 易失字段剥离（对齐 openclaw VOLATILE_SEND_RESULT_KEYS）──────────────────
+/**
+ * 工具结果中**每次调用都不同**的字段。若参与结果哈希，「重复调用」将永远检测不到 ——
+ * 例如发消息类工具每次返回新的 messageId/ts，即便发送内容与实质结果完全相同，
+ * 哈希也不同 → 无进展类检测全部失效（openclaw issue #89090 正是此问题）。
+ *
+ * 刻意**不含**裸 `id`：它常是有意义的值（文件 id / 任务 id），移除会造成误判。
+ * 只收录明确的「时间戳 / 消息回执 / 请求标识 / 耗时」类字段。
+ */
+const VOLATILE_RESULT_KEYS: ReadonlySet<string> = new Set([
+	// 时间戳类
+	'ts', 'timestamp', 'createdAt', 'created_at', 'updatedAt', 'updated_at',
+	'date', 'time', 'startTime', 'endTime', 'finishedAt',
+	// 消息 / 请求标识类
+	'messageId', 'message_id', 'msgId', 'msg_id',
+	'receipt', 'receiptId', 'receipt_id',
+	'requestId', 'request_id', 'traceId', 'trace_id',
+	'uuid', 'nonce', 'sessionId',
+	// 耗时类
+	'elapsed', 'elapsedMs', 'duration', 'durationMs', 'executionTimeMs', 'tookMs',
+]);
+
+/** 递归剥离易失字段（对象按 key 剔除，数组逐元素处理）。深度上限防病态嵌套。 */
+function stripVolatileFields(value: unknown, depth: number = 0): unknown {
+	if (depth > 6 || value === null || typeof value !== 'object') { return value; }
+	if (Array.isArray(value)) {
+		return value.map(v => stripVolatileFields(v, depth + 1));
+	}
+	const out: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+		if (VOLATILE_RESULT_KEYS.has(k)) { continue; }
+		out[k] = stripVolatileFields(v, depth + 1);
+	}
+	return out;
+}
+
+/**
+ * 结果哈希 —— 先剥离易失字段再哈希，使「实质相同、仅时间戳/ID 不同」的两次调用
+ * 得到同一哈希，从而能被 no-progress / ping-pong 等无进展类检测识别。
+ */
+export function hashToolResult(result: string | null | undefined, maxLen: number = 200): string {
+	if (!result) { return stableStringifyArgs(null); }
+	try {
+		const parsed = JSON.parse(result);
+		return stableStringifyArgs(stripVolatileFields(parsed)).slice(0, maxLen);
+	} catch {
+		// 非 JSON：直接对原文哈希（无法剥离，退化为精确匹配）
+		return stableStringifyArgs(result).slice(0, maxLen);
+	}
+}
+
+// ─── Ping-pong 检测（A→B→A→B 交替，对齐 openclaw）───────────────────────────
+export interface IPingPongDetection {
+	/** 尾部是否存在严格的两签名交替序列 */
+	readonly pingPong: boolean;
+	/**
+	 * 两侧**结果各自稳定**（同一侧所有调用的 resultHash 相同且均已回填）。
+	 * openclaw 要求此为真才升级为 critical —— 只有「来回换工具但结果都不变」
+	 * 才是真的无进展；若结果在变，说明仍在推进，不应拦截。
+	 */
+	readonly noProgressEvidence: boolean;
+	/** 交替序列长度（条数） */
+	readonly length: number;
+	/** 交替的两个工具名，便于日志与提示文案具体化 */
+	readonly toolA?: string;
+	readonly toolB?: string;
+}
+
+/**
+ * 检测 A→B→A→B 式交替调用。
+ *
+ * 与 `detectToolCallLoop` 的区别：后者只看「同一签名重复」，而 ping-pong 是
+ * **两个不同调用来回切换** —— 单独看每个签名都不重复，因此会被完全漏检。
+ */
+export function detectToolCallPingPong(
+	history: ReadonlyArray<IToolCallHistoryEntry>,
+	minLength: number = 4,
+): IPingPongDetection {
+	const n = history.length;
+	if (n < minLength) { return { pingPong: false, noProgressEvidence: false, length: 0 }; }
+
+	const sigAt = (i: number): string => `${history[i].name}:${history[i].argsHash}`;
+	const lastSig = sigAt(n - 1);
+
+	// 自倒数第二条往前找第一个不同于末条的签名，作为交替的另一侧
+	let otherSig = '';
+	for (let i = n - 2; i >= 0; i--) {
+		const s = sigAt(i);
+		if (s !== lastSig) { otherSig = s; break; }
+	}
+	if (!otherSig) { return { pingPong: false, noProgressEvidence: false, length: 0 }; }
+
+	// 自尾部向前收集严格交替序列：末条为 lastSig，往前依次 other / last / other ...
+	const seq: number[] = [n - 1];
+	let expectOther = true;
+	for (let i = n - 2; i >= 0; i--) {
+		const want = expectOther ? otherSig : lastSig;
+		if (sigAt(i) !== want) { break; }
+		seq.push(i);
+		expectOther = !expectOther;
+	}
+	if (seq.length < minLength) {
+		return { pingPong: false, noProgressEvidence: false, length: seq.length };
+	}
+
+	// 两侧结果各自是否稳定（同侧 resultHash 唯一且都已回填）
+	const sideStable = (sig: string): boolean => {
+		let hash: string | undefined;
+		for (const i of seq) {
+			if (sigAt(i) !== sig) { continue; }
+			const rh = history[i].resultHash;
+			if (rh === undefined) { return false; }  // 结果未回填 → 证据不足，不升级
+			if (hash === undefined) { hash = rh; }
+			else if (hash !== rh) { return false; }
+		}
+		return hash !== undefined;
+	};
+	const noProgressEvidence = sideStable(lastSig) && sideStable(otherSig);
+
+	return {
+		pingPong: true,
+		noProgressEvidence,
+		length: seq.length,
+		toolA: history[n - 1].name,
+		toolB: history[seq[1]].name,
+	};
+}
+
+// ─── XML 文本工具调用泄漏检测 ────────────────────────────────────────────────
+// 部分模型会把结构化工具调用写成 XML 纯文本（<tool_calls:xxx> / <arg_key:xxx>）
+// 而非 native function call。本系统按设计不执行 XML 工具调用，且此时
+// `classifyIncompleteTurn` 会因「有可见文本」判为 complete —— 既不续跑也不报错，
+// 模型以为调用没生效而反复输出同样的 XML，最终聊天框堆满解析错误 UI。
+// 只认**强特征**，避免把用户正常讨论代码的文本误判为泄漏。
+
+/** 带冒号ID的伪XML标签（模型泄漏的标志性特征，正常代码几乎不可能出现） */
+const XML_LEAK_TAGGED_ID_RE =
+	/<\s*(?:tool_calls?|arg_key|arg_value|function_calls?|function_response|tool_use|invoke)\s*:\s*[\w-]+\s*>/i;
+/** 成对的标准工具标签（要求开闭标签齐备，避免只出现单个 `<tool_call>` 字样即误判） */
+const XML_LEAK_PAIRED_RE =
+	/<\s*(tool_calls?|function_calls?|tool_use|invoke)\b[^>]*>[\s\S]{0,4000}?<\s*\/\s*\1\s*>/i;
+
+/**
+ * 检测 assistant 文本是否为「模型用 XML 纯文本写工具调用」的泄漏。
+ * 纯函数：只读判定，无副作用。
+ */
+export function detectXmlToolCallLeak(text: string | undefined | null): boolean {
+	if (!text) { return false; }
+	return XML_LEAK_TAGGED_ID_RE.test(text) || XML_LEAK_PAIRED_RE.test(text);
+}
+
+/**
+ * `<tag:id>` 形状伪标签的一次命中（**溯源诊断用**）。
+ */
+export interface ITaggedIdXmlHit {
+	/** 标签名，如 `tool_calls` / `arg_key` / `tool_sep`。 */
+	readonly tag: string;
+	/** 冒号后的 ID，如 `6124c78e`。 */
+	readonly id: string;
+	/** 命中在原文本中的字符偏移。 */
+	readonly index: number;
+	/** 命中处前后各 40 字符的上下文（空白已折叠），用于人工判读来源。 */
+	readonly snippet: string;
+}
+
+/**
+ * 扫描 `<tag:id>` 形状的伪标签，**不限定标签名**。
+ *
+ * 与 `XML_LEAK_TAGGED_ID_RE` 的区别（刻意不同，别合并）：
+ *   · 后者是**判定**用的白名单（只认已知的几个标签名），求**不误判**；
+ *   · 本函数是**溯源**用的宽扫描（认任何 `<名称:ID>` 形状），求**不漏**——
+ *     已知变体只有 tool_calls/arg_key/arg_value/tool_sep，但不能假设只有这些，
+ *     溯源阶段漏掉未知变体等于白扫。
+ * 二者用途相反，宽扫描的结果**不可**用于拦截/改写，仅供日志。
+ *
+ * ID 限定为「6+ 位十六进制」或「纯数字」——这是模型序列化调用时生成的调用 ID
+ * 特征，可滤掉 `<http:8080>` 之类正常文本。
+ */
+const TAGGED_ID_SCAN_RE = /<\s*\/?\s*([A-Za-z_][\w.-]*)\s*:\s*([0-9a-fA-F]{6,}|\d+)\s*>/g;
+
+/**
+ * 把文本中所有 `<tag:id>` 形状伪标签替换为一句**不含标签名**的说明。
+ *
+ * 用于切断跨会话传播：日志 1788011997897 实证，SubAgent 通过 `delegate_task`
+ * 回灌的 6772c 结果里带着 `tool_calls:6124c78e`，进入主会话 `msg[7](role=tool)`
+ * 后，**后续每一轮**都被重新发给模型（iter=2..7 次次命中 PRIMING suspected），
+ * 形成持续污染。故工具结果在回灌前必须先剥离。
+ *
+ * 替换文本刻意**不保留标签名与 ID** —— 占位符里若仍写着 `tool_calls:6124c78e`，
+ * 等于把格式原样再喂一遍，priming 风险并未消除；但也不直接删空，否则模型看到
+ * 内容无故缺失会困惑。故统一替换为一句中性说明。
+ *
+ * 纯函数，不改动入参。
+ */
+/** 一段 Markdown 代码区（围栏块或行内代码）的字符区间。 */
+export interface ICodeRegion {
+	readonly start: number;
+	readonly end: number;
+}
+
+/** 围栏代码块的起始行：行首至多 3 空格 + 3 个以上反引号或波浪号。 */
+const FENCE_LINE_RE = /^[ \t]{0,3}(`{3,}|~{3,})[^\n]*/gm;
+/** 行内代码：N 个反引号开始，直到同样 N 个反引号结束。 */
+const INLINE_CODE_RE = /(`+)(?!`)[\s\S]*?\1/g;
+
+/**
+ * 找出文本中所有 Markdown 代码区（围栏块 + 行内代码）。
+ *
+ * 用途：sanitize 时**跳过**代码区内的命中。模型在回答里**举例讨论**工具调用
+ * 语法（例如对比几个项目的提示词格式）是正当的技术讨论，用户要看的就是这段
+ * 内容；若连代码块里的示例一起抹掉，等于把用户想看的答案删了。
+ * 参照 openclaw `src/shared/text/code-regions.ts` 的同名机制
+ * （其测试明确验证 "preserves ... inside inline and fenced code"）。
+ *
+ * 纯函数、不改动入参。返回的区间按 start 升序且不重叠（围栏优先，行内补漏）。
+ */
+export function findCodeRegions(text: string): ICodeRegion[] {
+	if (!text) { return []; }
+	const regions: ICodeRegion[] = [];
+
+	// ─── 1. 围栏代码块：成对配对，未闭合的算到文本末尾 ──────────────────
+	// CommonMark 规定结束围栏需同字符且长度 ≥ 开始围栏。逐个扫描标记行再配对，
+	// 比一个正则惰性匹配更可靠（惰性 + `$` 会提前匹配空串，导致区间失效）。
+	const open: { start: number; char: string; len: number }[] = [];
+	FENCE_LINE_RE.lastIndex = 0;
+	let m: RegExpExecArray | null;
+	while ((m = FENCE_LINE_RE.exec(text)) !== null) {
+		const char = m[1].charAt(0);
+		const len = m[1].length;
+		const last = open[open.length - 1];
+		if (last && last.char === char && len >= last.len) {
+			open.pop();
+			regions.push({ start: last.start, end: m.index + m[0].length });
+		} else {
+			open.push({ start: m.index, char, len });
+		}
+	}
+	for (const o of open) {
+		regions.push({ start: o.start, end: text.length });
+	}
+
+	// ─── 2. 行内代码：仅补在未被围栏覆盖的位置 ──────────────────────────
+	INLINE_CODE_RE.lastIndex = 0;
+	while ((m = INLINE_CODE_RE.exec(text)) !== null) {
+		if (m[0].length === 0) { INLINE_CODE_RE.lastIndex++; continue; }
+		const start = m.index;
+		if (isInsideCode(start, regions)) { continue; }
+		regions.push({ start, end: start + m[0].length });
+	}
+
+	regions.sort((a, b) => a.start - b.start);
+	return regions;
+}
+
+/** 判断字符偏移是否落在任一代码区内。 */
+export function isInsideCode(pos: number, regions: readonly ICodeRegion[]): boolean {
+	return regions.some(r => pos >= r.start && pos < r.end);
+}
+
+export function stripTaggedIdXmlTags(
+	text: string | undefined | null,
+	replacement: string = '[此处有一段 XML 形式的工具调用写法，已移除]',
+): string {
+	if (!text) { return text ?? ''; }
+	TAGGED_ID_SCAN_RE.lastIndex = 0;
+	return text.replace(TAGGED_ID_SCAN_RE, replacement);
+}
+
+/**
+ * 定位文本中所有 `<tag:id>` 形状伪标签，返回前 `maxHits` 个命中。
+ * 纯函数、无副作用；注意内部正则带 `g` 标志，每次调用会重置 lastIndex。
+ */
+export function locateTaggedIdXmlTags(
+	text: string | undefined | null,
+	maxHits: number = 3,
+): ITaggedIdXmlHit[] {
+	if (!text) { return []; }
+	const hits: ITaggedIdXmlHit[] = [];
+	TAGGED_ID_SCAN_RE.lastIndex = 0;
+	let m: RegExpExecArray | null;
+	while ((m = TAGGED_ID_SCAN_RE.exec(text)) !== null) {
+		const start = Math.max(0, m.index - 40);
+		hits.push({
+			tag: m[1],
+			id: m[2],
+			index: m.index,
+			snippet: text.slice(start, m.index + m[0].length + 40).replace(/\s+/g, ' '),
+		});
+		if (hits.length >= maxHits) { break; }
+	}
+	return hits;
 }
 
 /** 是否达到反思上限 */
@@ -551,8 +904,27 @@ export const DEFAULT_REASONING_ONLY_RETRY_LIMIT = 2;
 export const DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT = 2;
 /** 输出被截断（length）续跑次数上限 */
 export const DEFAULT_LENGTH_TRUNCATED_RETRY_LIMIT = 2;
-/** 工具调用在协议层丢失（finish_reason=tool_calls 但 0 tool call）续跑次数上限 */
-export const DEFAULT_TOOL_CALL_LOST_RETRY_LIMIT = 2;
+/**
+ * 工具调用在协议层丢失（finish_reason=tool_calls 但 0 tool call）续跑次数上限。
+ *
+ * ★ 2026-08-31：2 → 3。
+ * 依据（日志 1788153924357）：本类是**传输层瞬时故障**（provider→renderer 映射丢包），
+ * 重试成功率高 —— 实测 3 次丢失中重试救回 2 次（67%）。而 reasoning-only / empty /
+ * length 属于模型行为问题，重试价值低，故保持 2 不动。
+ *
+ * ⚠ 语义（重要）：本上限是**单次 turn 内跨 iteration 累计**，重试成功后**不重置**
+ * —— 见 agentTurnExecutor.ts 计数器声明处注释（「单次 turn 内跨 iteration 累计，
+ * 达到上限即放弃续跑」，刻意设计）。即：一个 turn 内总共最多续跑 3 次，而**不是**
+ * 「连续失败 3 次才放弃」。日志佐证：第一次 `attempt=1/2` 重试成功后，第二次丢失
+ * 直接就是 `attempt=2/2`，而非回到 `1/2`。
+ *
+ * ⚠ 阶梯复用：resolveRecoveryInstruction 只有两级（attempt<2 → L1 soft remind，
+ * attempt>=2 → L2 final chance）。故 attempt=2 与 attempt=3 **共用 L2 文案**，
+ * 而 L2 写着「LAST CHANCE … will end this turn immediately」。换言之第 2 次就会
+ * 告知模型「最后机会」，但实际还剩 1 次。副作用可接受（更早施加压力，且不会
+ * 让模型以为可以无限空转）；若要严格对齐需把 limit 传进阶梯函数并拆出 L3。
+ */
+export const DEFAULT_TOOL_CALL_LOST_RETRY_LIMIT = 3;
 
 /**
  * 恢复阶梯：根据 kind + attempt 返回第1次(soft remind)或第2次(final chance)的注入文本。

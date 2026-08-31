@@ -197,8 +197,13 @@ export function getToolsetForTool(toolName: string): string {
 		return cached;
 	}
 
+	// exactNames 统一以小写登记（如 `rendermermaiddiagram`），而工具注册名可能是
+	// 驼峰（如 `renderMermaidDiagram`）。此处做大小写不敏感比较，避免驼峰名
+	// 匹配失败后落入默认 `utility` toolset —— utility 不在 focus 模式白名单内，
+	// 会导致该工具被整条过滤出工具集，LLM 与 tool_search 均不可见。
+	const lowerName = toolName.toLowerCase();
 	for (const ts of TOOLSET_DEFINITIONS) {
-		if (ts.exactNames?.includes(toolName)) {
+		if (ts.exactNames?.some(n => n.toLowerCase() === lowerName)) {
 			_toolsetCache.set(toolName, ts.id);
 			return ts.id;
 		}
@@ -324,7 +329,12 @@ export const CORE_TOOLSET_IDS: ReadonlySet<string> = new Set([
  * 即使 toolset 标记为 deferrable=true，核心工具也强制返回 true。
  */
 export function isCoreTool(toolName: string): boolean {
-	return CORE_TOOLS.has(toolName);
+	// 大小写不敏感匹配：CORE_TOOLS 白名单统一以小写存储，而工具的实际注册名
+	// 可能是驼峰（如 `renderMermaidDiagram`）。若严格精确匹配，驼峰名会漏掉
+	// 保护，进而在 focus 模式下被整条过滤出工具集。
+	if (CORE_TOOLS.has(toolName)) { return true; }
+	const lower = toolName.toLowerCase();
+	return lower !== toolName && CORE_TOOLS.has(lower);
 }
 
 /**

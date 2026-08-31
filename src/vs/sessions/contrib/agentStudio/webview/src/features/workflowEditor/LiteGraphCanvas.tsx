@@ -25,6 +25,7 @@ import {
 import { registerSarosNodes, registerDefaultComfyTVStages, getNodeSpec, isPortTypeCompatible, isValidLiteGraphConnection, canConnectLayers, registerComfyUINativeNode, syncNodePortsToSpec, getAllSpecs } from './comfyHost/registry';
 import { ConnectionDropMenu, type CompatibleNodeItem } from './comfyHost/ConnectionDropMenu';
 import { registerSarosLiteGraphNodes } from './comfyHost/sarosLiteGraphNodes';
+import { registerMindMapNodes } from '../mindmap/MindMapNode';
 import { toLiteGraph, fromLiteGraph } from './comfyHost/ComfyGraphAdapter';
 import { filterNodesForLiteGraph, findUnsupportedNodes } from './comfyHost/canvasNodeFilter';
 import { CardStateStore } from './comfyHost/cardState';
@@ -287,6 +288,7 @@ export function drawCanvasGrid(
 function ensureSarosRegistration(): void {
 	if (sarosRegistered) { return; }
 	registerSarosNodes();
+	registerMindMapNodes();
 	registerSarosLiteGraphNodes();
 	// ComfyTV schema stages MUST be registered before the first
 	// `syncStoreToGraph()` runs (same effect, a few lines below). React runs

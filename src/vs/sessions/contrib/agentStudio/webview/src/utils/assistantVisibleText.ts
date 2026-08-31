@@ -199,12 +199,27 @@ function stripJsonCodeBlocks(text: string): string {
  * Strip XML-style tool call tags.
  */
 function stripXmlToolCallTags(text: string): string {
-	if (!text || !/<\s*\/?\s*(?:tool_call|tool_result|function_calls?|function_response|function|tool_calls)\b/i.test(text)) {
+	if (!text) { return text; }
+	// 早退守卫：既认「已知标签名」也认「<tag:hexid> 形态」—— 与 common 版一致。
+	// 仅当既无标准工具标签、也无冒号ID伪标签时才早退，否则会漏掉
+	// `think:6124c78e` / `tool_calls:6124c78e` 这类模型泄漏（它们常不带标准标签名）。
+	const hasStandardTag = /<\s*\/?\s*(?:tool_call|tool_result|function_calls?|function_response|function|tool_calls|arg_key|arg_value|tool_use|invoke|think)\b/i.test(text);
+	const hasTaggedId = /<\s*[A-Za-z_][\w.-]*\s*:\s*(?:[0-9a-fA-F]{6,}|\d+)\s*>/i.test(text);
+	if (!hasStandardTag && !hasTaggedId) {
 		return text;
 	}
 
 	const tagNames = ['tool_call', 'tool_result', 'function_call', 'function_calls', 'function_response', 'function', 'tool_calls', 'tool'];
 	let result = text;
+
+	// 防御：剥离模型泄漏的冒号ID伪XML标签（<tool_calls:xxx>, <arg_key:xxx>, <arg_value:xxx>）
+	result = result.replace(/<\/?(?:tool_calls|arg_key|arg_value|tool_call|function_call|function_response|tool_result|tool_use|invoke)[:\w]*>/gi, '');
+	// 兜底：形态扫描剥离所有 `<tag:hexid>` 伪标签（含 think:hexid 等白名单之外的变体）。
+	// 与 common/assistantVisibleText.ts 的 stripXmlToolCallTags 保持一致——
+	// 否则 webview 渲染会残留 tool_calls:6124c78e / think:6124c78e 等标签。
+	// webview 为独立打包、不跨 bundle 引用 common，故此处内联等价正则
+	// （即 common 的 TAGGED_ID_SCAN_RE，剥离 `<名称:6+位十六进制|纯数字>` 形态）。
+	result = result.replace(/<\s*\/?\s*[A-Za-z_][\w.-]*\s*:\s*(?:[0-9a-fA-F]{6,}|\d+)\s*>/g, '');
 
 	for (const tagName of tagNames) {
 		const pairRe = new RegExp(`<\\s*${tagName}\\b[^>]*>[\\s\\S]*?<\\s*\\/\\s*${tagName}\\s*>`, 'gi');
@@ -214,6 +229,10 @@ function stripXmlToolCallTags(text: string): string {
 		const unclosedRe = new RegExp(`<\\s*${tagName}\\b[^>]*>\\s*(?:\\{[\\s\\S]*)?$`, 'gi');
 		result = result.replace(unclosedRe, '');
 	}
+
+	// 模型「伪造」工具调用时常写一排方块字符作为分隔(fence)，正常回答几乎不可能
+	// 出现整行纯方块字符，剥离之（否则这些 fence 会原样显示在聊天里）。
+	result = result.replace(/^[ \t]*(?:[\u2580-\u259F\u25A0])+[ \t]*$/gm, '');
 
 	return result;
 }
@@ -258,6 +277,10 @@ function stripReasoningTags(text: string): string {
 	result = result.replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, '');
 	// <thinking>...</thinking>
 	result = result.replace(/<\s*thinking\s*>[\s\S]*?<\s*\/\s*thinking\s*>/gi, '');
+	// 带冒号ID伪标签形态（<think:6124c78e>...</think:6124c78e>）—— 模型把思考块也写成
+	// `:hexid` 形态时，上面两条标准正则匹配不到，必须单独处理，否则原样泄露到 UI。
+	result = result.replace(/<\s*think\s*:\s*[\w-]+\s*>[\s\S]*?<\s*\/\s*think\s*:\s*[\w-]+\s*>/gi, '');
+	result = result.replace(/<\s*\/?\s*think\s*:\s*[\w-]+\s*>/gi, '');
 	return result;
 }
 

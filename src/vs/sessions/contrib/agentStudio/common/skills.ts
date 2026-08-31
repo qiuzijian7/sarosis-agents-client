@@ -199,3 +199,28 @@ export interface ISkillRegistry {
 	/** 触发一次重扫（用户安装/卸载 skill 后或文件改动）。 */
 	reload(): Promise<void>;
 }
+
+/**
+ * 渲染 skill 注入正文：把 `skill.prompt` 中的 `${SKILL_DIR}` 占位符替换为
+ * 技能根目录的绝对路径（统一为正斜杠，跨平台可直接用于命令行）。
+ *
+ * 用途（对齐 Agent Skills 规范的 `${CLAUDE_SKILL_DIR}`）：
+ * 让 SKILL.md 作者可写与安装位置 / cwd 无关的跨位置路径，
+ * 例如 `python3 "${SKILL_DIR}/scripts/anysearch_cli.py" doc`，
+ * 避免模型照抄相对路径 `scripts/anysearch_cli.py` 而因子代理 cwd 错 → exit 2
+ * （详见 executeCodeGuards.ts:skillScriptAbsolutePaths 注释）。
+ *
+ * 注：
+ * - 仅替换 SKILL.md 正文；注入前置说明（Skill directory / scriptPaths）
+ *   由 `_renderInjection` / `read_skill` 另行注入，二者互补（前置说明 + 正文变量双保险）。
+ * - 不影响 contentHash（基于原始 `skill.prompt` 计算，见 skillRegistryService）。
+ * - 无 resource（如 workflow 型可执行 skill）时原样返回，无副作用。
+ */
+export function renderSkillBody(skill: ISkillDefinition): string {
+	const dir = skill.resource?.fsPath;
+	if (!dir) {
+		return skill.prompt;
+	}
+	const skillDir = dir.replace(/[\\/]+$/, '').replace(/\\/g, '/');
+	return skill.prompt.replace(/\$\{SKILL_DIR\}/g, skillDir);
+}

@@ -4,10 +4,10 @@ import { IDisposable } from '../../../base/common/lifecycle.js';
 import type { IMarkdownString } from '../../../base/common/htmlContent.js';
 import { IAgentChatMessage, IMessagePart, IThinkingMessagePart } from './agentChatTypes.js';
 import { _patchNestedMarkdown, AgentChatPanelBase } from './agentChatPanel.base.js';
-import { AgentChatPanelMermaidCard } from './agentChatPanel.mermaidCard.js';
+import { AgentChatPanelDrawioCard } from './agentChatPanel.drawioCard.js';
 
 // Feature: markdown. Extracted from AgentChatPanelBase.
-export class AgentChatPanelMarkdown extends AgentChatPanelMermaidCard {
+export class AgentChatPanelMarkdown extends AgentChatPanelDrawioCard {
 
 protected override _cleanupMarkdownDisposables(root: HTMLElement): void {
 		const toRemove: HTMLElement[] = [];
@@ -23,9 +23,14 @@ protected override _cleanupMarkdownDisposables(root: HTMLElement): void {
 	}
 
 protected override _renderMarkdownContent(parent: HTMLElement, content: string, isStreaming: boolean = false): void {
-		// 预处理：嵌套 markdown 代码块围栏冲突（移植自 Continue patchNestedMarkdown）。
+	// 预处理：嵌套 markdown 代码块围栏冲突（移植自 Continue patchNestedMarkdown）。
 		// 模型返回 ```markdown 代码块内含 ``` 时，VS Code renderMarkdown 的围栏解析
 		// 会错位 → 内层代码块泄漏为正文。把外层 ```markdown``` 的围栏转成 ~~~ 避免冲突。
+		// 注：此处曾有两个启发式补丁（_ensureFencedCodeBlock 自动包裹裸代码、
+		// _mergeAdjacentCodeBlocks 合并相邻代码块），已于 2026-08-30 移除。
+		// 二者本质是用渲染层正则去补数据层的坑，且 _ensureFencedCodeBlock 会
+		// 把含路径/代码特征的中文分析文本误包成 code 卡片。若个别历史消息确实
+		// 因缩进丢失而渲染为纯文本，应修数据层（持久化/读取期迁移），而非渲染层猜测。
 		const processed = _patchNestedMarkdown(content);
 		const md: IMarkdownString = { value: processed, isTrusted: true };
 		const options = this._getMarkdownOptions(isStreaming);
@@ -213,13 +218,42 @@ protected override _resetIncrementalMd(container: HTMLElement): void {
 	}
 }
 
-protected override _tryIncrementalMarkdownRender(container: HTMLElement, newContent: string): boolean {
+	protected override _tryIncrementalMarkdownRender(container: HTMLElement, newContent: string): boolean {
 	let state = this._incMdState.get(container);
 
-	// 内容被改写 / 新流（非追加）→ 交给全量重建
-	if (state && !newContent.startsWith(state.lastRendered)) {
-		this._resetIncrementalMd(container);
-		return false;
+	// 内容被改写（非严格追加）→ 按**分歧点位置**决定「重渲 tail」还是「全量重建」。
+	//
+	// ★ 2026-08-31 优化：原实现只要 `!newContent.startsWith(lastRendered)` 就全量重建。
+	// 但 `content_replace` 会用 host 的「当前轮文本」覆盖最后一段（sanitize 后与流式
+	// 累积的文本常有出入），**并非严格追加** —— 于是几乎每次都落到全量替换
+	// （`md:incremental-failed`，实测 34~46 次/日志，直接表现为流式闪烁）。
+	//
+	// 而冻结块只在「空行 + 围栏闭合」处推进（见 _advanceStableBoundary），本身是完整
+	// 块。所以只要分歧点**不早于 frozenLen**，已冻结的 DOM 就依然有效 —— 重渲 tail
+	// 即可，完全不必全量重建。仅当分歧侵入冻结区时才真的需要推倒重来。
+	if (state) {
+		const prev = state.lastRendered;
+		if (newContent !== prev) {
+			// 最长公共前缀（分歧点）。纯追加是流式的绝对主路径，
+			// 用原生 startsWith 短路，省掉逐字符扫描。
+			let cpl: number;
+			if (newContent.startsWith(prev)) {
+				cpl = prev.length;
+			} else {
+				cpl = 0;
+				const max = Math.min(prev.length, newContent.length);
+				while (cpl < max && prev.charCodeAt(cpl) === newContent.charCodeAt(cpl)) { cpl++; }
+			}
+			if (cpl < state.frozenLen) {
+				// 分歧落在已冻结区 → 冻结内容已失效，只能全量重建
+				this._resetIncrementalMd(container);
+				state = undefined;
+			}
+			// 否则分歧在 tail 区间：冻结块有效，下面照常重渲 tail
+		} else {
+			// 内容完全相同（scheduler 通常已拦截），无需任何 DOM 操作
+			return true;
+		}
 	}
 
 	// 首次：清掉旧的 markdown disposable / 链接拦截监听，搭建 frozen + tail 骨架。

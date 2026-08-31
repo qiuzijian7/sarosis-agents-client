@@ -14,6 +14,7 @@ import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/servic
 import { IEditorGroupView } from '../../../../workbench/browser/parts/editor/editor.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { addDisposableListener } from '../../../../base/browser/dom.js';
+import { toDisposable } from '../../../../base/common/lifecycle.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -26,6 +27,7 @@ import { INativeEnvironmentService } from '../../../../platform/environment/comm
 import { IRequestService } from '../../../../platform/request/common/request.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ISkillRegistry } from '../common/skills.js';
+import { sanitizeAssistantVisibleText, addSanitizeTraceSink } from '../common/assistantVisibleText.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { filterUserFacingAgents } from '../common/builtinAgents.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -333,6 +335,27 @@ export class NativeChatEditorPane extends EditorPane {
 		@IWorktreeService private readonly _worktreeService: IWorktreeService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, _storageService);
+		this._installSanitizeTraceSink();
+	}
+
+	/**
+	 * 安装 sanitizer trace 接收器 —— 把「哪个剥离阶段删了什么」落到 renderer.log。
+	 *
+	 * 用途：多个剥离阶段用了锚定文本末尾的正则（`$` 无 `m` flag）。一旦误命中正文
+	 * 里的常见词（`Action:` / `[TOOL_CALL]` / `<function>` 等），会删除「从这里到
+	 * 文本末尾」的全部内容 —— 这正是「消息尾部被截断」的表现。未装 trace 时
+	 * sanitize 前后只表现为总长度变化，无法归因到具体阶段。
+	 */
+	private _installSanitizeTraceSink(): void {
+		const paneId = this._paneId;
+		this._register(toDisposable(addSanitizeTraceSink(e => {
+			this._logService.warn(
+				`[SanitizeTrace] p${paneId} stage=${e.stage} profile=${e.profile} ` +
+				`len ${e.beforeLen}→${e.afterLen} (removed=${e.removedLen}) atOffset=${e.atOffset}\n` +
+				`  removedSnippet="${e.removedSnippet.replace(/\n/g, '\\n')}"\n` +
+				`  afterTail="${e.afterTail.replace(/\n/g, '\\n')}"`
+			);
+		})));
 	}
 
 	// ─── 外部 http(s) 链接：系统浏览器打开 ─────────────────────────────
@@ -527,6 +550,7 @@ export class NativeChatEditorPane extends EditorPane {
 		const useCliPanel = this.input instanceof NativeChatEditorInput && this.input.cliMode;
 		const PanelCtor = useCliPanel ? XtermCliPanel : AgentChatPanel;
 		this._chatPanel = this._register(new PanelCtor({
+			logService: this._logService,
 			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => {
 			// 注：防重入逻辑已下移到 AgentChatPanel._handleSendMessage（流式时入队，非流式时直接发送）
 			// 此处不再拦截，让 Panel 的队列机制处理并发发送。
@@ -2575,7 +2599,7 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 	this._chatPanel?.addMessage(msg);
 	this._streamingAssistantId = id;
 	this._streamingAssistantMsg = msg;
-	// 新流式消息：重置当前 text 段起点
+	// 新流式消息：重置当前 text 段起点 + content_replace 追加式缓存
 	this._streamTextSegmentBase = 0;
 	// 流式记录：会话开始（未启用时零开销）
 	this._streamRecorder?.begin({
@@ -2657,7 +2681,9 @@ private _handleStreamDelta(delta: any): void {
 				const typeBreakdown = Object.entries(pf.totalTypes).sort((a, b) => b[1] - a[1]).slice(0, 8)
 					.map(([t, c]) => `${t}=${c}`).join(',');
 				const slowCount = pf.slowOps.length;
-				this._logService.info(`[StreamPerf] STREAM_END total=${totalElapsed}ms deltas=${pf.deltaCount} types={${typeBreakdown}} slowFlushes=${slowCount}`);
+				// 2026-08-30：加 paneId/sessionId —— 多窗口并发时两个 pane 的 STREAM_END
+				// 混在同一份日志里且无标识，只能靠计数反推归属（排查 20260829T232635 的痛点）。
+				this._logService.info(`[StreamPerf] STREAM_END p${this._paneId} session=${this._currentSessionId} total=${totalElapsed}ms deltas=${pf.deltaCount} types={${typeBreakdown}} slowFlushes=${slowCount}`);
 				delete this._streamPerf;
 			}
 			return;
@@ -2888,8 +2914,9 @@ private _handleStreamDelta(delta: any): void {
 	 * 从原 _handleStreamDelta 的 switch-case 体提取。
 	 */
 	private _processDelta(delta: any): void {
-		const assistantId = this._streamingAssistantId;
-		const assistantMsg = this._streamingAssistantMsg;
+		// let（非 const）：下方自愈分支重建流式消息后需重新绑定，否则各 case 仍读到 null
+		let assistantId = this._streamingAssistantId;
+		let assistantMsg = this._streamingAssistantMsg;
 
 		// Inter-turn safety net: 如果 _isSending 因某种原因被置 false
 		// （如错误、取消、或 done 之后），当新一轮 agent loop 真正有
@@ -2910,6 +2937,37 @@ private _handleStreamDelta(delta: any): void {
 			}
 		}
 
+		// ── 2026-08-30：流式消息缺失的可观测 + 自愈 ──────────────────────────
+		// 事故（日志 20260829T232635/window1）：新建聊天窗口（Pane#2）发消息后，
+		// LLM 侧完全正常（ToolAudit iters=10、末段 STREAM_END text=229、历史追加
+		// 12 条 assistant），但 UI 一条都不显示。
+		// 根因机制：_streamingAssistantMsg/_streamingAssistantId 在流式途中被提前
+		// 清空（_resetStreamingMessage 共 7 处调用），此后下方**每个** case 首行的
+		// `if (!assistantMsg || !assistantId) return;` 把所有 delta 静默丢弃 —— 且
+		// 零日志，事后只能靠「STREAM_END 有 / PartsDiag 无」的计数差反推，无法归因。
+		// 这里统一打点；并在「本 pane 仍处于发送态」时自愈重建，避免整轮内容全丢。
+		if (!assistantId || !assistantMsg) {
+			// done/error 是终态：即便缺失也只记录，不重建（否则流真正结束时凭空多出空气泡）
+			const isTerminal = delta.type === 'done' || delta.type === 'error';
+			this._logService.warn(
+				`[NativeChatEditorPane#${this._paneId}] _processDelta: streaming msg MISSING on type=${delta.type} ` +
+				`(id=${assistantId ?? 'null'}, msg=${assistantMsg ? 'set' : 'null'}) | session=${this._currentSessionId} ` +
+				`chatId=${this._currentInputChatId} isSending=${this._isSending} isExternalSend=${this._isExternalSend} ` +
+				`localSendActive=${this._localSendActiveSessionId ?? 'null'}`
+			);
+			// 自愈：仍在发送态 + 非终态 delta + 确实没有流式消息 → 重建，让后续 delta 有归宿。
+			// 三重条件缺一不可：发送态保证不该丢内容；非终态避免空气泡；!_streamingAssistantId 防重建覆盖。
+			if (this._isSending && !isTerminal && !this._streamingAssistantId) {
+				this._initStreamingMessage();
+				assistantId = this._streamingAssistantId;
+				assistantMsg = this._streamingAssistantMsg;
+				this._logService.warn(
+					`[NativeChatEditorPane#${this._paneId}] _processDelta: SELF-HEALED streaming msg ` +
+					`(newId=${assistantId ?? 'null'}, session=${this._currentSessionId}, type=${delta.type})`
+				);
+			}
+		}
+
 		switch (delta.type) {
 			case 'text':
 				if (!assistantMsg || !assistantId) { return; }
@@ -2917,9 +2975,15 @@ private _handleStreamDelta(delta: any): void {
 					// fullText 比 content 短时回退到 append 模式
 					// （agentStudioWebviewController 检测到 tool XML 后会重置 streamingTextBuffer，
 					// 导致后续 fullText 只含工具标签后的文本，无脑替换会清空冒泡内容）
-					const textContent = (delta.fullText !== undefined && delta.fullText.length >= assistantMsg.content.length)
+					let textContent = (delta.fullText !== undefined && delta.fullText.length >= assistantMsg.content.length)
 						? delta.fullText
 						: (assistantMsg.content + (delta.content ?? ''));
+					// ★ 流式 sanitize：模型可能在  think 块内「伪造」工具调用形状
+					//   （<tool_calls:hexid> <tool_call:hexid>tool_name 等），这些标签会随
+					//   text delta 原样流入 UI。此处对每次增量做轻量 sanitize（幂等），
+					//   确保 panel 实时渲染不含伪标签。content_replace 阶段再做全量 sanitize
+					//   作为兜底（见下方 case 'content_replace'）。
+					textContent = sanitizeAssistantVisibleText(textContent, 'streaming');
 				assistantMsg.content = textContent;
 				this._applyStreamPhase('llm_streaming');
 				this._chatPanel?.setStreamTextBuffer(textContent);
@@ -2937,16 +3001,92 @@ private _handleStreamDelta(delta: any): void {
 					// 而非全量 content——否则工具后的新 text part 会重复包含工具前的文本，
 					// 导致同一段文本在工具卡前后渲染两次。
 					if (assistantMsg.parts) {
-						const segText = textContent.slice(this._streamTextSegmentBase);
+						// ★ 2026-08-31 修复：`_streamTextSegmentBase` 可能因时序（tool_start
+						// 记的是当时的 content 长度、content_replace 会按 parts 重算 content、
+						// 会话恢复续接）跑到 `textContent` 长度之外，此时 slice 得到空串。
+						// 原逻辑把这个空串**无条件写回**最后一个 text part → 已渲染的末段
+						// 被清空（日志实证：上一段还是 text(34c)，下一条 delta 后变 text(0c)）。
+						// 若此后没有 content_replace 兜底，丢失即永久化 → 消息尾部截断。
+						// 故：base 跑过头时回退为整段，而非算出空串。
+						const base = this._streamTextSegmentBase;
+						let segText = base > 0 && base <= textContent.length
+							? textContent.slice(base)
+							: textContent;
+						// 防御：segText 来自已 sanitize 的全量文本，但再做一次幂等 sanitize 无害
+						segText = sanitizeAssistantVisibleText(segText, 'streaming');
 						const last = assistantMsg.parts[assistantMsg.parts.length - 1];
 						if (last && last.kind === 'text') {
-							// 最后一个 part 是 text → 就地更新当前段
-							(last as any).text = segText;
+							// 最后一个 part 是 text → 就地更新当前段。
+							// 空段只在 last 本身尚为空时才允许写入，绝不覆盖已有内容。
+							if (segText.length > 0 || !((last as any).text ?? '')) {
+								(last as any).text = segText;
+							}
 						} else if (segText.length > 0) {
 							// 最后一个 part 是 tool（或空）→ 开启新 text 段
 							assistantMsg.parts.push({ kind: 'text', text: segText } as any);
 						}
+						if (base > textContent.length) {
+							this._logService.warn(
+								`[NativeChatEditorPane#${this._paneId}] text seg base overshoot: ` +
+								`base=${base} contentLen=${textContent.length} segText.len=${segText.length}`
+							);
+						}
 					}
+				}
+				break;
+			case 'content_replace':
+				if (!assistantMsg || !assistantId) { return; }
+				{
+					const replaced = typeof delta.content === 'string' ? delta.content : '';
+					// host 端 content_replace 携带的是【当前轮】sanitize 后的文本
+					// （agentTurnExecutor L3056/L3077 的 assistantContent），并非跨轮累积全文。
+					// 因此必须【只替换最后一个文本段】，保留前面各轮已流式建立的文本段与
+					// 工具卡穿插顺序——否则前面各轮的文本会被整体重切片覆盖丢失 → 消息中间截断。
+					// 流式 text delta 可能残留 <tag:hexid> 伪标签等泄漏（见 sanitizeAssistantVisibleText），
+					// 此处用 host 已 sanitize 的 replaced 覆盖最后一段即可。
+					if (assistantMsg.parts) {
+						const oldParts = assistantMsg.parts as any[];
+						const dumpOf = (arr: any[]) => JSON.stringify(arr.map((p: any) =>
+							p.kind === 'tool' ? `tool:${((p?.tool?.name) ?? (p?.tool?.toolName) ?? '?')}`
+								: `text(${(p?.text ?? '').length}c)`));
+						this._logService.info(`[NativeChatEditorPane#${this._paneId}] content_replace IN content.len=${replaced.length} parts=${dumpOf(oldParts)}`);
+
+						const newParts: any[] = oldParts.map((p: any) => ({ ...p }));
+						// 找到最后一个文本段，用 replaced 覆盖它；保留其余 parts 不变。
+						let lastTextIdx = -1;
+						for (let i = newParts.length - 1; i >= 0; i--) {
+							if (newParts[i].kind === 'text') { lastTextIdx = i; break; }
+						}
+						if (lastTextIdx >= 0) {
+							newParts[lastTextIdx] = { ...newParts[lastTextIdx], text: replaced };
+						} else {
+							newParts.push({ kind: 'text', text: replaced });
+						}
+						assistantMsg.parts = newParts;
+						// content = 所有文本段拼接（完整消息文本，含前面各轮），避免 content 被截断。
+						assistantMsg.content = newParts
+							.filter((p: any) => p.kind === 'text')
+							.map((p: any) => p.text ?? '')
+							.join('');
+						// ★ 2026-08-31：content 已被按 parts 重算，同步当前段起点。
+						// replaced 是「当前轮」文本，故当前段起点 = 新 content 长度 - replaced 长度。
+						// 不改的话 base 停留在旧值（上一轮 tool_start 记的长度），下一个 text
+						// delta 的 slice 会算出重复文本或空串（配合上面 base 越界回退才不至于清空，
+						// 但会重复包含前面各段的文字）。
+						this._streamTextSegmentBase = Math.max(0, assistantMsg.content.length - replaced.length);
+						this._logService.info(`[NativeChatEditorPane#${this._paneId}] content_replace OUT content.len=${assistantMsg.content.length} base=${this._streamTextSegmentBase} parts=${dumpOf(newParts)}`);
+					} else {
+						assistantMsg.content = replaced;
+					}
+					this._chatPanel?.setStreamTextBuffer(assistantMsg.content);
+					this._chatPanel?.updateMessage(assistantId, {
+						content: assistantMsg.content,
+						parts: assistantMsg.parts?.slice(),
+						activityText: assistantMsg.activityText,
+						isStreaming: true,
+						isThinking: false,
+						streamPhase: 'llm_streaming',
+					});
 				}
 				break;
 			case 'thinking':
@@ -3043,6 +3183,7 @@ private _handleStreamDelta(delta: any): void {
 			if (assistantMsg.parts) {
 				const tcRef = assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1];
 				assistantMsg.parts.push({ kind: 'tool', tool: tcRef } as any);
+				this._logService.info(`[NativeChatEditorPane#${this._paneId}] tool_start push parts=${JSON.stringify((assistantMsg.parts as any[]).map((p: any) => p.kind + (p.kind === 'tool' ? `:${((p?.tool?.name) ?? (p?.tool?.toolName) ?? '?')}` : '')))}`);
 				// 记录当前 content 长度作为下一个 text 段的起点——
 				// 后续 text delta 生成的 text part 只含工具之后的增量文本。
 				this._streamTextSegmentBase = assistantMsg.content?.length ?? 0;
@@ -3178,12 +3319,33 @@ private _handleStreamDelta(delta: any): void {
 				// 出现 "Re  ReachabilityReachability" 这类重复渲染。
 				// 同时清空聊天面板内部的 streamTextBuffer / streamThinkingBuffer 以保持一致。
 				if (assistantMsg) {
-					assistantMsg.content = '';
+					// ★ 2026-08-31：此前只清 content/thinking，既没同步 parts 也没重置
+					// `_streamTextSegmentBase`，造成两处不一致：
+					// ① parts 里残留被 host 丢弃的半截 text 段 → parts 文本和 > content
+					//    （日志实证：最后一组 contentLen=390 / partsTextSum=438，差 48 恰是残留段）；
+					// ② base 仍指向旧 content 长度 → 后续 text delta 的 slice 全部错位，
+					//    表现为消息尾部截断/重复。
+					// 故：移除「正在生成」的最后一个 text part，把 content 重算为剩余段拼接，
+					// 并让 base 重新对齐到该长度（新段从这里开始）。
+					let keptContent = '';
+					if (assistantMsg.parts) {
+						const parts = assistantMsg.parts as any[];
+						const last = parts[parts.length - 1];
+						if (last && last.kind === 'text') { parts.pop(); }
+						keptContent = parts
+							.filter((p: any) => p.kind === 'text')
+							.map((p: any) => p.text ?? '')
+							.join('');
+					}
+					assistantMsg.content = keptContent;
 					assistantMsg.thinking = '';
+					this._streamTextSegmentBase = keptContent.length;
 					if (assistantId) {
 						this._chatPanel?.updateMessage(assistantId, {
-							content: '',
+							content: keptContent,
 							thinking: '',
+							// parts 已被裁剪，必须显式下发，否则 panel 侧仍按旧 parts 渲染
+							parts: assistantMsg.parts ? assistantMsg.parts.slice() : undefined,
 							isStreaming: true,
 							isThinking: true,
 							streamPhase: 'llm_streaming',
@@ -3326,7 +3488,8 @@ private _handleStreamDelta(delta: any): void {
 							p.kind === 'text' ? `text(${p.text?.length ?? 0}c)` :
 							p.kind === 'tool' ? `tool:${p.tool?.name}(${p.tool?.status})` : p.kind
 						).join(' → ');
-						this._logService.info(`[PartsDiag] DONE partsLen=${(assistantMsg.parts || []).length} isCanceled=${isCanceled} parts=[${partsSummary}] contentLen=${(assistantMsg.content||'').length} toolCalls=${(assistantMsg.toolCalls || []).length}`);
+						// 2026-08-30：加 paneId/sessionId（同 STREAM_END，便于多窗口归因）
+					this._logService.info(`[PartsDiag] DONE p${this._paneId} session=${this._currentSessionId} partsLen=${(assistantMsg.parts || []).length} isCanceled=${isCanceled} parts=[${partsSummary}] contentLen=${(assistantMsg.content||'').length} toolCalls=${(assistantMsg.toolCalls || []).length}`);
 					}
 					// 显式发送最终 content，确保全量重建时读到的不是流式过程中最后一次
 					// delta 的残留（可能因增量渲染产生碎片 DOM）。

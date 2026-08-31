@@ -253,6 +253,7 @@
     "istanbul-lib-report": "^3.0.0",
     "istanbul-lib-source-maps": "^4.0.1",
     "istanbul-reports": "^3.1.5",
+    "jsdom": "^29.1.1",
     "lazy.js": "^0.4.2",
     "merge-options": "^1.0.1",
     "mermaid": "^11.16.0",

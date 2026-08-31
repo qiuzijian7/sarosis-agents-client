@@ -297,7 +297,7 @@
 	flex: 1;
 	overflow-y: auto;
 	overflow-x: hidden;
-	padding: 12px 14px 12px 0;
+	padding: 12px 14px 24px 0;
 	scroll-behavior: auto;
 	/* Hide native scrollbar — custom overlay handles scrolling */
 	scrollbar-width: none;
@@ -2309,7 +2309,7 @@
 	border: none; background: transparent; color: var(--ec-text-muted, #888); cursor: pointer; border-radius: 4px;
 }
 .subagent-card.enhanced .subagent-card-close-btn:hover { background: rgba(248, 113, 113, 0.12); color: #f87171; }
-.subagent-card.enhanced .subagent-card-body { padding: 10px 14px; overflow: hidden; }
+.subagent-card.enhanced .subagent-card-body { padding: 10px 14px; overflow: visible; }
 .subagent-card.enhanced .subagent-card-body-content {
 	font-size: 13px; line-height: 1.65; color: var(--ec-text-primary, #e6edf3);
 	word-wrap: break-word; overflow-wrap: break-word;

@@ -23,11 +23,18 @@ import type {
 import { ToolSecurityLevel, ToolApprovalDecision, TOOL_APPROVAL_BACKSTOP_MS } from '../common/providers.js';
 import { isPlanFileWriteCall } from '../common/planFile.js';
 import { isSandboxFileWriteAutoApproved, isDestructiveToolCall } from '../common/toolApprovalPolicy.js';
-import { evaluateToolCallShellSafety, isShellToolWithCommandArg, getToolCallCommandArg, ShellCommandSafety } from '../common/shellCommandSafety.js';
+import { evaluateToolCallShellSafety, evaluateToolCallShellSafetyDetailed, isShellToolWithCommandArg, getToolCallCommandArg, ShellCommandSafety } from '../common/shellCommandSafety.js';
 import {
 	runWithRetry,
 	type RetryPolicy,
 } from '../common/resilience.js';
+
+/** 取 execute_code 的后台控制动作（poll/kill）；非后台控制调用返回 undefined（P0-2）。 */
+function getExecCodeControlAction(args: unknown): 'poll' | 'kill' | undefined {
+	const o = typeof args === 'object' && args ? (args as Record<string, unknown>) : undefined;
+	const a = o?.['action'];
+	return (a === 'poll' || a === 'kill') ? a : undefined;
+}
 import { decideAskRouting, type IAskRoutingContext } from '../common/askRouting.js';
 
 // ─── Constants ──────────────────────────────────────────────────────
@@ -537,6 +544,13 @@ export class ToolApprovalService {
 		this._terminalAutoApproveProvider = provider;
 	}
 
+	private _execAutoReviewProvider: (() => boolean) | undefined;
+
+	/** 注入 exec 自动审阅开关（P2-1，默认不开启 → fail-closed）。开启后，只读/验证构建命令交由该策略免确认。 */
+	setExecAutoReviewProvider(provider: () => boolean): void {
+		this._execAutoReviewProvider = provider;
+	}
+
 	/** 本会话内已"永久允许"的工具名集合 */
 	private readonly _alwaysAllowed = new Set<string>();
 
@@ -640,6 +654,10 @@ export class ToolApprovalService {
 		// 强制审批时按 Dangerous 呈现（影响卡片文案与 reason），让用户看清风险
 		const effectiveSecurityLevel = forceApproval ? ToolSecurityLevel.Dangerous : securityLevel;
 
+		// 后台执行控制面（P0-2）：execute_code 的 poll/kill 是内部控制调用，非交互、不弹审批
+		const execControlAction = getExecCodeControlAction(toolCall.arguments);
+		if (toolCall.name === 'execute_code' && execControlAction) { return true; }
+
 		// Safe 工具不需要审批
 		if (securityLevel === ToolSecurityLevel.Safe && !forceApproval) {
 			return true;
@@ -705,7 +723,7 @@ export class ToolApprovalService {
 		if (
 			!forceApproval
 			&& isShellToolWithCommandArg(toolCall.name)
-			&& this._terminalAutoApproveProvider?.() === true
+			&& (this._terminalAutoApproveProvider?.() === true || this._execAutoReviewProvider?.() === true)
 			&& evaluateToolCallShellSafety(toolCall.name, toolCall.arguments) === ShellCommandSafety.Safe
 		) {
 			return true;
@@ -757,6 +775,17 @@ export class ToolApprovalService {
 			return true;
 		}
 
+		// P2-2：shell 工具非只读命令，把副作用分类（读/写/删/网络）写进确认卡片 reason，
+		// 让用户在审批前看清命令"会做什么"，而非只有泛化的"可能修改文件"。
+		let approvalReason: string | undefined;
+		if (
+			!forceApproval
+			&& isShellToolWithCommandArg(toolCall.name)
+			&& evaluateToolCallShellSafety(toolCall.name, toolCall.arguments) !== ShellCommandSafety.Safe
+		) {
+			approvalReason = evaluateToolCallShellSafetyDetailed(toolCall.name, toolCall.arguments).reason;
+		}
+
 		const request: IToolApprovalRequest = {
 			toolCallId: toolCall.id,
 			toolName: toolCall.name,
@@ -765,7 +794,7 @@ export class ToolApprovalService {
 			reason: forceApproval
 				? `Tool "${toolCall.name}" performs a destructive operation (delete/remove) that cannot be undone by a checkpoint.`
 				: effectiveSecurityLevel === ToolSecurityLevel.Dangerous
-					? `Tool "${toolCall.name}" can modify files or execute system commands.`
+					? (approvalReason ?? `Tool "${toolCall.name}" can modify files or execute system commands.`)
 					: `Tool "${toolCall.name}" may have side effects.`,
 			agentId: ctx?.agentId,
 			sessionId: ctx?.sessionId,

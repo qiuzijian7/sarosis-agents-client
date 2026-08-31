@@ -22,6 +22,7 @@ import {
 	sanitizeAssistantVisibleText,
 	isEntirelyToolCallContent,
 } from '../../common/assistantVisibleText.js';
+import { locateTaggedIdXmlTags } from '../../common/agentRunState.js';
 
 // ════════════════════════════════════════════════════════════════════════════════
 // § Replicated placeholder replacement logic (mirrors AgentOSService._replaceToolBlocksWithPlaceholders)
@@ -484,5 +485,120 @@ Here are the results.`;
 		const afterSanitize = sanitizeAssistantVisibleText(afterReplace, 'streaming');
 		assert.ok(afterSanitize.includes('<!--TOOL_CARD:doc-tool-->'));
 		assert.ok(afterSanitize.includes('Here are the results'));
+	});
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// § `<tag:id>` 伪标签剥离
+//   日志 1788011997897 实证：`tool_sep` 不在剥离名单里，从未能被剥离，
+//   一路残留进历史并**逐轮累积**（L8944 两条 → L9282 四条），
+//   导致 sanitize 后仍有大量残留（原 973c → 600c）。
+// ════════════════════════════════════════════════════════════════════════════════
+
+suite('Tagged-id pseudo XML stripping', () => {
+
+	const ID = '6124c78e';
+
+	test('剥离全部已知变体，残留标签必须为 0', () => {
+		// 依据日志 snippet 重建：模型讨论 "Hermes's `tool` role replay" 时举例写下伪 XML
+		const text =
+			'op exit and Hermes\'s `tool` role replay.' +
+			`<tool_calls:${ID}>\n` +
+			`<tool_call:${ID}>file_read<tool_sep:${ID}>\n` +
+			'path G:\\CustomWorkspaces\\AIProjects\\opencode\n' +
+			`<tool_call:${ID}>search_files<tool_sep:${ID}>\n` +
+			`<tool_sep:${ID}>\n` +
+			'Then Hermes replays it via the `tool` role.';
+		const out = sanitizeAssistantVisibleText(text, 'streaming');
+		assert.strictEqual(locateTaggedIdXmlTags(out, 20).length, 0, 'no tag may survive sanitize');
+		// 只剥标签，不删内容 —— 删除标签间内容会误伤正常讨论
+		assert.ok(out.includes('file_read'), 'content between tags must survive');
+		assert.ok(out.includes('Hermes'), 'surrounding prose must survive');
+	});
+
+	test('仅有 tool_sep 时也不得早退（原守卫漏检场景）', () => {
+		// 原早退守卫 TOOL_CALL_XML_QUICK_RE 是标签名**白名单**，其中**不含 tool_sep**，
+		// 纯 tool_sep 文本会命中早退直接返回，一个都剥不掉。
+		const out = sanitizeAssistantVisibleText('some prose <tool_sep:' + ID + '> and more', 'streaming');
+		assert.strictEqual(locateTaggedIdXmlTags(out, 5).length, 0, 'lone tool_sep must be stripped');
+		assert.ok(out.includes('some prose'), 'prose must survive');
+	});
+
+	test('未知变体也能剥离（按形态而非名单）', () => {
+		// 逐个枚举标签名永远追不上模型的新变体（tool_sep 就是漏掉的那个），
+		// 故必须按 `<tag:id>` **形态**整体剥离。
+		for (const t of ['<foo:123456>', '<my_tag:deadbeef>', '<ns.tag:abc123>']) {
+			const out = sanitizeAssistantVisibleText('a ' + t + ' b', 'streaming');
+			assert.strictEqual(locateTaggedIdXmlTags(out, 5).length, 0, `${t} must be stripped`);
+		}
+	});
+
+	test('正常内容不得被改动（展示文本，误删代价高）', () => {
+		for (const t of [
+			'visit <http://example.com:8080> now',
+			'<a href="x">link</a>',
+			'meeting at 12:30 sharp',
+			'const x = List<String>();',
+			'The tool calls: 3 functions were invoked.',
+			'使用 tool_calls 字段发起调用',
+		]) {
+			assert.strictEqual(sanitizeAssistantVisibleText(t, 'streaming'), t, `must not alter: ${t}`);
+		}
+	});
+
+	test('讨论性散文应完整保留（避免误伤正常讨论）', () => {
+		const prose = 'Hermes replays tool results via the `tool` role, while openclaw uses `tool_result`.';
+		assert.strictEqual(sanitizeAssistantVisibleText(prose, 'streaming'), prose);
+	});
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// 代码区保护：模型**举例讨论**调用格式是正当内容，不得抹掉
+	// 参照 openclaw `src/shared/text/code-regions.ts`（其测试明确断言
+	// "preserves ... inside inline and fenced code"）。
+	// 本项目的伪 XML 泄漏恰恰高发于「模型在对比几个项目的提示词格式」这类
+	// 讨论场景 —— 此时用户想看的就是那段示例，抹掉等于删答案。
+	// ══════════════════════════════════════════════════════════════════════════
+
+	test('围栏代码块内的伪 XML 示例必须保留（那是用户要看的答案）', () => {
+		const fenced = [
+			'Hermes 用的是这种写法：',
+			'```xml',
+			`<tool_calls:${ID}>`,
+			`<tool_call:${ID}>file_read<tool_sep:${ID}>`,
+			'</tool_calls>',
+			'```',
+			'以上是它的格式。',
+		].join('\n');
+		const out = sanitizeAssistantVisibleText(fenced, 'streaming');
+		assert.ok(out.includes(`<tool_calls:${ID}>`), 'fenced example must survive');
+		assert.ok(out.includes(`<tool_sep:${ID}>`), 'fenced tool_sep must survive');
+		assert.ok(out.includes('以上是它的格式。'), 'prose after fence must survive');
+	});
+
+	test('行内代码内的伪 XML 示例必须保留', () => {
+		const inline = 'openclaw 用 `' + `<arg_key:${ID}>` + '` 标记参数名。';
+		const out = sanitizeAssistantVisibleText(inline, 'streaming');
+		assert.ok(out.includes(`<arg_key:${ID}>`), 'inline example must survive');
+	});
+
+	test('★ 代码区保护不得削弱正文剥离（回归防线）', () => {
+		// 加保护最容易犯的错是「保护过头」—— 连正文里的真泄漏一起放过。
+		// 本例同时有「正文泄漏」与「代码块示例」，二者必须被区别对待：
+		// 前者要剥、后者要留。此用例是该机制的生死线。
+		const mixed =
+			'我打算读取文件 <tool_calls:' + ID + '>\n' +
+			'```\n<tool_call:' + ID + '>example</tool_call>\n```\n' +
+			'结束。';
+		const out = sanitizeAssistantVisibleText(mixed, 'streaming');
+		assert.ok(!out.includes('<tool_calls:' + ID + '>'), 'leak in prose must still be stripped');
+		assert.ok(out.includes('<tool_call:' + ID + '>example</tool_call>'), 'fenced example must still survive');
+	});
+
+	test('未闭合围栏：自围栏起至文末均视为代码区', () => {
+		// 流式场景常见：围栏尚未闭合就已被截断层，此时尾部内容应受保护，
+		// 否则会出现「代码块内容被拦腰截断」的残缺展示。
+		const text = '例如：\n```xml\n' + `<tool_sep:${ID}>`;
+		const out = sanitizeAssistantVisibleText(text, 'streaming');
+		assert.ok(out.includes(`<tool_sep:${ID}>`), 'unclosed fence must protect to EOF');
 	});
 });

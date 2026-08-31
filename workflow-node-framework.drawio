@@ -1,0 +1,73 @@
+<mxfile host="saros-claw" type="device">
+  <diagram id="workflow-node-framework" name="工作流节点框架图">
+    <mxGraphModel dx="1100" dy="720" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="start" value="Start&#10;入口节点" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d4f7d4;strokeColor=#2d8a2d;fontStyle=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="440" y="40" width="160" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="agent" value="Agent&#10;agentId + agentConfig" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dbe8ff;strokeColor=#2d5fa0;fontStyle=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="410" y="200" width="220" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="branch" value="Branch&#10;条件分支" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffe8cc;strokeColor=#b36b1f;fontStyle=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="180" y="360" width="180" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="askUser" value="Ask User&#10;人工输入" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e8d9ff;strokeColor=#6b3fb3;fontStyle=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="670" y="360" width="180" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="end" value="End&#10;终止节点" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f7d4d4;strokeColor=#a02d2d;fontStyle=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="440" y="530" width="160" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cfg" value="agentConfig&#10;modelId? / tools? / memory?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f0d0;strokeColor=#8a7a2d;dashed=1;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="700" y="195" width="230" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pool" value="agentId 白名单&#10;21 个内置 agent" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f0d0;strokeColor=#8a7a2d;dashed=1;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="115" y="205" width="200" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="legend" value="图例&#10;Start / End 唯一端点&#10;Branch 输出 branch-0、branch-1 两路&#10;Agent 可回环、Ask User 可回退" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="780" y="520" width="230" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=blockThin;endFill=1;" edge="1" parent="1" source="start" target="agent">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=blockThin;endFill=1;" edge="1" parent="1" source="agent" target="branch">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=blockThin;endFill=1;" edge="1" parent="1" source="agent" target="askUser">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=blockThin;endFill=1;" edge="1" parent="1" source="agent" target="end">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="branch-0 真" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=blockThin;endFill=1;fontSize=11;" edge="1" parent="1" source="branch" target="agent">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="branch-1 假" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=blockThin;endFill=1;fontSize=11;" edge="1" parent="1" source="branch" target="end">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="回退" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=blockThin;endFill=1;dashed=1;fontSize=11;" edge="1" parent="1" source="askUser" target="agent">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=blockThin;endFill=1;" edge="1" parent="1" source="askUser" target="end">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=none;dashed=1;strokeColor=#8a7a2d;" edge="1" parent="1" source="agent" target="cfg">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=none;dashed=1;strokeColor=#8a7a2d;" edge="1" parent="1" source="agent" target="pool">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,5 +1,4 @@
 import { Emitter, type Event } from '../../../../base/common/event.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { localize } from '../../../../nls.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { type IAction } from '../../../../base/common/actions.js';
@@ -109,7 +108,6 @@ import {
 } from '../common/subagentTokenCollector.js';
 
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import type { IForkContext } from '../common/forkContext.js';
 import { ITaskOrchestrationService } from '../common/agentStudio.js';
 import { extractToolCallsFromText } from './agentToolExtractor.js';
@@ -452,7 +450,6 @@ private readonly _sandboxGuard: SandboxGuard;
 		@IFileService private readonly _fileService: IFileService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@INotificationService private readonly _notificationService: INotificationService,
-		@IHostService private readonly _hostService: IHostService,
 	) {
 		super();
 		this._logService = logService;
@@ -519,6 +516,21 @@ private readonly _sandboxGuard: SandboxGuard;
 				return this._instantiationService.invokeFunction(accessor =>
 					accessor.get(IConfigurationService).getValue<boolean>(
 						'sessions.agentStudio.tools.autoApproveReadOnlyCommands',
+					) === true,
+				);
+			} catch {
+				return false;
+			}
+		});
+
+		// exec 自动审阅（P2-1，默认关闭 → fail-closed）：开启后，只读/验证构建命令
+		// 交由执行策略免确认。当前为配置驱动的启发式审阅（非独立模型调用）；日后可
+		// 在此接廉价模型做 Unsafe 命令的细粒度自动放行。
+		this._approvalService.setExecAutoReviewProvider(() => {
+			try {
+				return this._instantiationService.invokeFunction(accessor =>
+					accessor.get(IConfigurationService).getValue<boolean>(
+						'sessions.agentStudio.tools.execAutoReview',
 					) === true,
 				);
 			} catch {
@@ -834,36 +846,6 @@ private readonly _sandboxGuard: SandboxGuard;
 		});
 
 		this._playApprovalChime();
-	}
-
-	/**
-	 * 任务完成通知：优先发操作系统级 Toast（Windows 通知中心 / macOS 通知中心），
-	 * 使通知在「多任务视图 / 虚拟桌面 / 应用失焦」等场景下仍可见；
-	 * 若 OS Toast 不被支持（如纯浏览器环境），降级为 IDE 内通知。
-	 */
-	private async _notifyTaskCompleted(taskSummary: string): Promise<void> {
-		const message = `✅ 任务执行完毕：${taskSummary}`;
-
-		// IDE 内通知始终保留（聚焦工作时的主要提示，含 source 便于过滤）。
-		this._notificationService.notify({
-			severity: Severity.Info,
-			message,
-			source: 'agent-studio',
-		});
-
-		// OS 级 Toast：跨虚拟桌面 / 多任务视图可见。best-effort，失败不影响主流程。
-		try {
-			const result = await this._hostService.showToast({
-				title: 'Agent 任务执行完毕',
-				body: taskSummary,
-			}, CancellationToken.None);
-
-			if (!result.supported) {
-				this._logService.trace('[AgentOS] OS toast unsupported, IDE notification is the fallback');
-			}
-		} catch (err) {
-			this._logService.warn('[AgentOS] OS toast failed:', err);
-		}
 	}
 
 	/**
@@ -2205,30 +2187,13 @@ private readonly _sandboxGuard: SandboxGuard;
 				}).catch(() => { });
 			}
 
-			// ── 2026-08-29：仅在「真正成功完成」时弹「✅ 任务执行完毕」──
-		// 以下情况抑制成功通知，避免误导（日志 1787985475999：空结果 turn 也弹"任务执行完毕"）：
-		//   - wasAborted：用户主动取消/中断（for-await 提前 return 或 signal.aborted）
-		//   - turnFailed：turn 抛异常（模型/网络/工具执行失败等，被上方 catch 捕获）
-		//   - incompleteExhausted：LLM 重试耗尽、无有效产出而结束对话（非真正完成，见 executor）
-		const wasAborted = turnController.signal.aborted;
-		const shouldNotifyCompleted = !wasAborted && !turnFailed && !turnOutcome.incompleteExhausted;
-		if (shouldNotifyCompleted) {
-			// 系统级通知：任务执行完毕（OS Toast 优先，跨多任务视图/虚拟桌面可见）
-			// 先 unwrap 再截断：request.messages 里的用户消息已被 wrapUserQuery 包成
-			// `<user_query>...`，直接展示会把标签泄漏到通知栏。顺序不可颠倒——
-			// 先 slice(0, 60) 会切掉结尾的 `</user_query>`，导致解包判断失败。
-			const taskSummary = unwrapUserQuery(
-				[...(request.messages as Array<{ role?: string; content?: string }>)]
-					.reverse().find(m => m?.role === 'user')?.content ?? '',
-			).slice(0, 60) || 'Agent 任务';
-			this._notifyTaskCompleted(taskSummary);
-		} else {
-			this._logService.info(
-				`[AgentOS] executeAgentTurn: skipped "任务执行完毕" notification ` +
-				`(turnKey=${turnKey}::${request.agentId}, aborted=${wasAborted}, failed=${turnFailed}, ` +
+			// ── 2026-08-30：完成通知 UI 已全面禁用（IDE 内通知 + OS Toast）──
+			// agent/subagent 执行完毕不再弹出任何通知 UI，仅留 trace 便于排查。
+			this._logService.trace(
+				`[AgentOS] executeAgentTurn completed (turnKey=${turnKey}::${request.agentId}, ` +
+				`aborted=${turnController.signal.aborted}, failed=${turnFailed}, ` +
 				`incompleteExhausted=${turnOutcome.incompleteExhausted})`,
 			);
-		}
 
 		if (memProvider?.onTaskCompleted) {
 			try {
@@ -2967,6 +2932,20 @@ private readonly _sandboxGuard: SandboxGuard;
 				const bridgeResult = await this._executeBridgeTool(
 					toolCall.name, bridgeArgs, agentId, toolCall.id, abortSignal, worktreePath, askRouting, agentSessionId,
 				);
+				// 诊断日志：bridge 工具（tool_search / tool_describe / tool_call）的查询目标与结果。
+				// 此前日志不记录 bridge 结果，describe 失败时只能看到 success->error，无法定位
+				// 模型究竟查的是哪个工具（典型：renderMermaidDiagram 被 core 直发、不在 deferred
+				// catalog 内，describe 报 not found 却无迹可寻）。
+				{
+					const _a = bridgeArgs as Record<string, unknown>;
+					const _query = String(_a?.name ?? _a?.query ?? _a?.search ?? '').slice(0, 120);
+					const _lvl = bridgeResult.success ? 'info' : 'warn';
+					this._logService[_lvl](
+						`[AgentOS] Bridge ${toolCall.name} query="${_query}" success=${bridgeResult.success}` +
+						` type=${(bridgeResult as { type?: string }).type ?? 'n/a'}` +
+						(bridgeResult.success ? '' : ` result=${safeStringifyToolResult(bridgeResult.content).slice(0, 300)}`),
+					);
+				}
 				const limitedStr0 = safeStringifyToolResult(bridgeResult.content);
 				let finalContent0: unknown = bridgeResult.content;
 				try { finalContent0 = JSON.parse(limitedStr0); } catch { finalContent0 = { __truncated__: true, content: limitedStr0 }; }

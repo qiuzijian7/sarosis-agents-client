@@ -34,10 +34,11 @@ import { runExecOutputPipeline } from './execOutputPipeline.js';
 import { TerminalCapability } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
 import type { ICommandDetectionCapability, ITerminalCommand } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
 import { shellPlatformGuidance, windowsDualShellGuidance } from './shellPlatformPrompt.js';
-import { annotateCommandFailure, renderFailureHint } from './commandFailureHints.js';
+import { resolveShellDialect } from '../../../common/shellDialect.js';
+import { annotateCommandFailure, annotateMaskedSuccess, renderFailureHint } from './commandFailureHints.js';
 import { detectGitBash, gitBashShellEnvironment, type IGitBashInfo } from './gitBashProvider.js';
 import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
-import { SHELL_APPROVAL_SHAPE_GUIDANCE } from '../../../common/shellCommandSafety.js';
+import { shellApprovalGuidance } from '../../../common/shellCommandSafety.js';
 import { appendTerminalLiveOutput, clearTerminalLiveOutput } from '../../../../../browser/agentChat/terminalLiveOutput.js';
 import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 import {
@@ -518,6 +519,18 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 					ctx.logService.info(
 						`[BuiltinTools] terminal failure hint: ${hint.id} ` +
 						`(exit=${parsedExit ?? 'unknown'} source=${exitSource} strategy=${strategy})`,
+					);
+				}
+			} else {
+				// exit 0 也可能是「假成功」：`cmd | tail` 报的是 **tail** 的状态（bash
+				// 未开 pipefail），而输出里可能有强失败特征。与 execute_code 对齐：
+				// 成功侧也要有兜底，否则模型会把这类 exit 0 当成「构建通过」。
+				const masked = annotateMaskedSuccess(command, finalOutput);
+				if (masked) {
+					hintedOutput = `${hintedOutput}\n\n${renderFailureHint(masked)}`;
+					ctx.logService.warn(
+						`[BuiltinTools] terminal masked-success hint: ${masked.id} ` +
+						`(exit=0 source=${exitSource} strategy=${strategy})`,
 					);
 				}
 			}
@@ -1043,6 +1056,9 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 	const terminalPlatformNote = isWindows
 		? windowsDualShellGuidance('terminal')
 		: shellPlatformGuidance('posix', 'terminal');
+	// ★ 描述由审批策略生成（P2-12，2026-08-30）：审批关闭时「shape 强制打断执行」的
+	// 后果不发生，整段指引不下发（见 shellApprovalGuidance）。
+	const approvalEnabled = ctx.configurationService.getValue<boolean>('tools.confirmToolCalls') ?? true;
 	ctx.register({
 		definition: {
 			name: 'terminal',
@@ -1061,7 +1077,8 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				+ terminalPlatformNote
 				// 审批形态提示与 execute_code 共用同一份真源（shellCommandSafety），
 				// 两个工具都是 Dangerous 级、都吃 command 参数，规则完全一致。
-				+ SHELL_APPROVAL_SHAPE_GUIDANCE,
+				// ★ 按审批开关条件下发（P2-12）。
+				+ shellApprovalGuidance(approvalEnabled),
 			inputSchema: {
 				type: 'object',
 				properties: {
@@ -1097,13 +1114,21 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			throw new NonRetryableToolError(scriptSourceWriteGuardMessage(sourceWrite, 'terminal'));
 		}
 		// Hermes 环境归一（2026-08-18）：探测 Git Bash（进程级缓存，首次后零开销）。
-		// 可用 → 终端直接跑 bash（Unix 方言天然正确，跳过拦截）；
-		// 不可用 → 保持 PowerShell/cmd + Unix 拦截护栏（报错附等价写法）。
+		// 可用 → 终端直接跑 bash（POSIX 方言）；不可用 → 回退 PowerShell/cmd。
+		// 注意（2026-08-30）：「跑 bash」不等于「跳过拦截」—— 见下方 dialect 注释，
+		// 两套护栏按方言各开一套，而不是有 Git Bash 就全关。
 		const gitBash = isWindows ? await detectGitBash(ctx.fileService, ctx.logService) : undefined;
-		// Windows 护栏（日志 1786264843850）：仅在【无 Git Bash 回退模式】下拦截管道中的
-		// Unix-only 命令（head/tail/grep/sed/awk）——cmd.exe/PowerShell 下必败。
-		// Git Bash 模式下这些命令真实可用，拦截反而误伤。
-		if (isWindows && !gitBash) {
+		// ★ 方言真源（2026-08-30，日志 20260829T232635）：与 execute_code 对齐。
+		// 此前两套护栏共用一个 `isWindows && !gitBash` 布尔门（Git Bash 在 → 两套全关），
+		// 而正确语义是按方言各开一套：
+		//   · dialect='cmd'   → 拦 Unix-only 命令 + 拦 PowerShell cmdlet
+		//   · dialect='posix' → 只拦 PowerShell cmdlet（head/grep 在 bash 里真实可用）
+		// ★ 方言真源（2026-08-30）：与 execute_code 共用 common/shellDialect.ts 的
+		// resolveShellDialect()，不再各自内联同一行表达式。
+		const dialect = resolveShellDialect(!!gitBash);
+		// Unix-only 命令护栏（日志 1786264843850）：仅 cmd.exe 方言 —— cmd.exe/PowerShell
+		// 下 head/tail/grep/sed/awk 必败。Git Bash 模式下这些命令真实可用，拦截反而误伤。
+		if (dialect === 'cmd') {
 			const unixCmd = detectUnixOnlyCommand(command);
 			if (unixCmd) {
 				// NonRetryableToolError（2026-08-21 修不对称）：这是**纯静态字符串校验**，
@@ -1117,11 +1142,18 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 					`(e.g. powershell -NoProfile -Command "<your cmd> | Select-Object -First 60"), then reissue terminal with the corrected command.`
 				);
 			}
-			// 反向护栏（2026-08-21）：PowerShell cmdlet 裸用在 cmd.exe 同样必败
-			// （`... | Out-String` → exit 255）。与 Unix 方言对称，执行前拦下。
+			}
+		// 反向护栏（2026-08-21）：PowerShell cmdlet 裸用在 cmd.exe 必败
+		// （`... | Out-String` → exit 255）。
+		//
+		// ★ 2026-08-30（日志 20260829T232635）：与 execute_code 同款缺陷 —— 本块原在
+		// `isWindows && !gitBash` 内，Git Bash 方言下完全不拦，而 PowerShell cmdlet 在
+		// bash 里同样不存在（exit 127 `command not found`）。现移出方言门控：cmd 与
+		// posix 都拦，正确做法按方言区分（包 powershell 外壳 vs 改用 POSIX 命令）。
+		if (dialect !== 'powershell') {
 			const psCmdlet = detectPowerShellOnlyCmdlet(command);
 			if (psCmdlet) {
-				throw new NonRetryableToolError(powerShellCmdletGuardMessage(psCmdlet, 'terminal'));
+				throw new NonRetryableToolError(powerShellCmdletGuardMessage(psCmdlet, 'terminal', dialect));
 			}
 		}
 		const requestedCwd = args['cwd'] ? String(args['cwd']) : '.';

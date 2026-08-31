@@ -32,6 +32,20 @@ export type AnthropicUserContentBlock =
 	| { readonly type: 'text'; readonly text: string }
 	| { readonly type: 'tool_result'; readonly tool_use_id: string; readonly content: string };
 
+/**
+ * Anthropic `system` 顶层参数支持的形态。
+ * - string：简写形态（无前缀缓存断点）
+ * - AnthropicSystemBlock[]：可携带 `cache_control` 断点以命中 prompt cache
+ *   （fork 前缀对齐时由 MessageFormatConverter.toAnthropic 构造）
+ */
+export type AnthropicSystemBlock = {
+	readonly type: 'text';
+	readonly text: string;
+	readonly cache_control?: { readonly type: 'ephemeral' };
+};
+
+export type AnthropicSystemParam = string | readonly AnthropicSystemBlock[];
+
 // ============================================================================
 // OpenAI 格式
 // ============================================================================

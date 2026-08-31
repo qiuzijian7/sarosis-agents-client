@@ -34,6 +34,7 @@ import { CreateAndRunTaskTool, CreateAndRunTaskToolData } from './tools/task/cre
 import { GetTaskOutputTool, GetTaskOutputToolData } from './tools/task/getTaskOutputTool.js';
 import { RunTaskTool, RunTaskToolData } from './tools/task/runTaskTool.js';
 import { registerTerminalCompressors } from './tools/terminalOutputCompressor.js';
+import { registerToolResultTruncationFilters } from '../../../chat/browser/tools/toolResultTruncationFilter.js';
 import { InstantiationType, registerSingleton } from '../../../../../platform/instantiation/common/extensions.js';
 import { ITerminalSandboxService, TerminalSandboxService } from '../common/terminalSandboxService.js';
 import { isNumber } from '../../../../../base/common/types.js';
@@ -95,6 +96,7 @@ export class ChatAgentToolsContribution extends Disposable implements IWorkbench
 		super();
 
 		registerTerminalCompressors(toolResultCompressor);
+		registerToolResultTruncationFilters(toolResultCompressor);
 
 		// #region Terminal
 

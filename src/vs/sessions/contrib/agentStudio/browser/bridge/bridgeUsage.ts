@@ -20,6 +20,8 @@ export interface UsageStats {
 	cachedTokens: number;
 	/** 写入缓存输入 token */
 	cacheWriteTokens: number;
+	/** 缓存命中率（cachedTokens / promptTokens，取值范围 0~1）。 */
+	cacheHitRate: number;
 	/** 总 token（缺省时由 prompt+completion 推导） */
 	totalTokens: number;
 	/** 计费额度 / 积分 */
@@ -36,6 +38,7 @@ function zeroStats(agentId: string, sessionKey?: string): UsageStats {
 		completionTokens: 0,
 		cachedTokens: 0,
 		cacheWriteTokens: 0,
+		cacheHitRate: 0,
 		totalTokens: 0,
 		credit: 0,
 		calls: 0,
@@ -51,6 +54,9 @@ function accumulate(target: UsageStats, usage: IModelUsage): void {
 	target.completionTokens += output;
 	target.cachedTokens += cached;
 	target.cacheWriteTokens += cacheWrite;
+	target.cacheHitRate = target.promptTokens > 0
+		? target.cachedTokens / target.promptTokens
+		: 0;
 	target.totalTokens += usage.totalTokens ?? input + output;
 	target.credit += usage.credit ?? 0;
 		target.calls += 1;

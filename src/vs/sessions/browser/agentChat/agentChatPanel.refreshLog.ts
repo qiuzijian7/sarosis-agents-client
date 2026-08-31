@@ -48,6 +48,12 @@ export type FullRefreshSource =
 	| 'msg:slowpath-fallback'
 	/** thinking 活跃态翻转（`_ruleThinkingStateChange`）。 */
 	| 'msg:thinking-state-change'
+	/**
+	 * 确认卡片（安全沙箱受限→询问用户）出现或状态翻转（`_ruleConfirmationChange`）。
+	 * 需全量重建才能把「允许本次」等按钮挂到 write 工具卡片上（内嵌按钮是创建卡片时
+	 * 由 `confirmation` 参数决定的，无法就地补）。低频：一次裁决最多两次。
+	 */
+	| 'msg:confirmation-change'
 	/** 流式结束且消息含结构性内容（工具卡/子代理/确认卡等），做一次干净重建（`_ruleStreamEndTransition`）。 */
 	| 'msg:stream-end-structural'
 	/** 流式期间检测到结构性变化（`_updateStreamingContentInPlace` → `_hasStreamingStructureChanged`）。 */

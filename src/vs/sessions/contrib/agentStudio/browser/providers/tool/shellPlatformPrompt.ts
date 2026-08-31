@@ -20,8 +20,16 @@
  * 纯字符串模块：无 I/O、无 VS Code 依赖，便于单测。
  */
 
-/** 当前生效的 shell 方言（由 Git Bash 探测结果 + 平台共同决定）。 */
-export type ShellDialect = 'posix' | 'powershell' | 'cmd';
+/**
+ * 当前生效的 shell 方言。
+ *
+ * ⚠ 真源已下沉到 `common/shellDialect.ts`（2026-08-30）—— 此前定义在本文件，
+ * 而 `environmentDirective.ts`（common 层）无法反向依赖 browser 层，只能退化成布尔
+ * 参数，于是又多一份「布尔 ↔ 方言」转换。这里仅作 re-export，保持本文件既有
+ * 消费者的 import 路径不变。新代码请直接从 `common/shellDialect.js` import。
+ */
+import type { ShellDialect } from '../../../common/shellDialect.js';
+export type { ShellDialect };
 
 /**
  * 「别用 shell 做这件事，用这个工具」映射表 —— 三种方言共用的语义，
@@ -97,7 +105,15 @@ export function shellPlatformGuidance(dialect: ShellDialect, toolName: string): 
 
 	switch (dialect) {
 		case 'posix':
-			return ' Runs on a POSIX shell — bash/zsh commands (head/tail/grep/sed/awk/cat/ls/find) are available.' + preferred;
+			// ★ 2026-08-30（日志 20260829T232635）：原 posix 段只说「head/tail/grep 可用」，
+			// 却没说**反向**那条 —— PowerShell cmdlet 在这里**不存在**。模型从
+			// environmentDirective 读到「用 Select-Object / Get-Content」（该段当时静态
+			// 写死 PowerShell），照做 → `Select-Object: command not found`（exit 127）。
+			// 描述侧必须与护栏侧讲同一件事：两侧同源于「该方言下什么命令不存在」。
+			return ' Runs on a POSIX shell — bash/zsh commands (head/tail/grep/sed/awk/cat/ls/find) are available.' +
+				' PowerShell cmdlets (Select-Object, Select-String, Get-Content, Get-ChildItem, Write-Host, Out-String, ...) do NOT exist here' +
+				' and are rejected before execution — use the POSIX equivalents instead, and never wrap a command in `powershell -Command`.' +
+				preferred;
 
 		case 'powershell':
 			return ' Runs on Windows PowerShell — Unix-only commands (head/tail/grep/sed/awk) are NOT available and are rejected before execution;' +
@@ -127,6 +143,12 @@ export function shellPlatformGuidance(dialect: ShellDialect, toolName: string): 
  */
 export function windowsDualShellGuidance(toolName: string): string {
 	return ' On Windows the command runs via Git Bash (POSIX) when installed — head/tail/grep/sed/awk/cat/ls/find are available;' +
+		// ★ 2026-08-30（日志 20260829T232635）：同上，补上反向那条。本段是 Windows
+		// 注册期用的双段式，而 Windows + Git Bash 正是本次事故场景 —— 恰恰是这段
+		// 漏了「PowerShell cmdlet 在 Git Bash 里不存在」，模型才照着 system prompt 的
+		// Select-Object 写法发命令。
+		' PowerShell cmdlets (Select-Object, Select-String, Get-Content, Get-ChildItem, Write-Host, Out-String, ...) do NOT exist in that shell' +
+		' and are rejected before execution — use the POSIX equivalents instead;' +
 		' use forward-slash paths (C:/dir/file); wrap Windows-native commands as cmd /c <command> or powershell -NoProfile -Command "...".' +
 		' If Git Bash is NOT installed the command falls back to PowerShell/cmd.exe, where Unix-only commands are rejected before execution' +
 		' with the PowerShell equivalent, and PowerShell cmdlets must be wrapped as powershell -NoProfile -Command "<pipeline>"' +

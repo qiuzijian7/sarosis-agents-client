@@ -112,8 +112,14 @@ export interface IToolCallGuardrailConfig {
 
 /**
  * 默认配置 —— 推荐收紧值（适合 IDE 嵌入式 Agent）。
- * 与 saros-agents-client 主循环 MAX_TOOL_ITERATIONS=30 对齐；
+ * 主循环 MAX_TOOL_ITERATIONS 现为 100（见 agentOSService.ts / agentRunState.ts
+ * 的 RUN_STATE_LIMITS，2026-08-20 由 50 上调），撞上限后另跑一轮禁工具收尾轮。
  * 主动叫停优先于继续尝试，避免上下文越跑越偏。
+ *
+ * ⚠ 接入主循环时（agentTurnExecutor.ts）**未**直接使用本默认配置，而是显式传了
+ * 一套「只让 no_progress 触发 block」的阈值 —— 避免与主循环既有的
+ * detectToolCallLoop / MAX_CONSECUTIVE_TOOL_FAILURES 双重拦截。改动默认配置
+ * 不会影响生产行为，需同步修改主循环的显式传参。
  */
 export const DEFAULT_GUARDRAIL_CONFIG: IToolCallGuardrailConfig = {
 	warningsEnabled: true,

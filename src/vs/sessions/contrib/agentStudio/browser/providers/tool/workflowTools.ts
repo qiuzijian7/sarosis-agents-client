@@ -274,6 +274,17 @@ export function registerWorkflowTools(ctx: WorkflowToolContext): void {
 				return [{ type: 'text', text: 'workflow_apply error: connections must be an array.' }];
 			}
 
+			// 归一化节点 type：本工具对外 schema 宣称的 'branch' 在引擎运行时并不存在，
+			// 落库前统一改成 'ifElse'，避免执行时退化成「走所有下游边」。
+			const APPLY_NODE_TYPE_ALIASES: Record<string, string> = { branch: 'ifElse', condition: 'ifElse' };
+			for (const node of nodes) {
+				const rawType = node['type'] as string | undefined;
+				const mapped = rawType ? APPLY_NODE_TYPE_ALIASES[rawType] : undefined;
+				if (mapped) {
+					node['type'] = mapped;
+				}
+			}
+
 			try {
 				// Validate: must have Start and End nodes
 				const hasStart = nodes.some(n => n.type === 'start' || n.id === 'start');

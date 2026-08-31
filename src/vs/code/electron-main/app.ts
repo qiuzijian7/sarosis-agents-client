@@ -25,6 +25,19 @@ import { INodeProcess, IProcessEnvironment, isLinux, isLinuxSnap, isMacintosh, i
 import { assertType } from '../../base/common/types.js';
 import { URI } from '../../base/common/uri.js';
 import { generateUuid } from '../../base/common/uuid.js';
+
+// 后台 execute_code 任务注册表（P0-2）：spawn 后常驻，供 poll/kill 控制面访问。
+// 模块级单例：app 主进程全程唯一，足以在多次 IPC 调用间持有子进程句柄。
+interface IBgExecHandle {
+	child: ChildProcess;
+	stdoutCollector: ProcessOutputCollector;
+	stderrCollector: ProcessOutputCollector;
+	localEncoding: string;
+	settled: boolean;
+	exitCode: number;
+	timeoutHandle?: ReturnType<typeof setTimeout>;
+}
+const _bgExecs = new Map<string, IBgExecHandle>();
 import { registerContextMenuListener } from '../../base/parts/contextmenu/electron-main/contextmenu.js';
 import { getDelayedChannel, ProxyChannel, StaticRouter } from '../../base/parts/ipc/common/ipc.js';
 import { Server as ElectronIPCServer } from '../../base/parts/ipc/electron-main/ipc.electron.js';
@@ -632,118 +645,131 @@ export class CodeApplication extends Disposable {
 	// Non-interactive, single-shot with a REAL exit code + timeout kill — distinct from
 	// the pty-based `terminal` tool (interactive shell, no reliable exit code, idle-detect).
 	// Backs the agentStudio `execute_code` tool (researcher subagent runs anysearch via it).
-	validatedIpcMain.handle('vscode:execCode', async (event, payload: { command?: string; script?: string; interpreter?: string; cwd?: string; timeoutMs?: number; shell?: string; pathPrefix?: string }) => {
+	validatedIpcMain.handle('vscode:execCode', async (event, payload: { command?: string; script?: string; interpreter?: string; cwd?: string; timeoutMs?: number; shell?: string; pathPrefix?: string; background?: boolean; taskId?: string; action?: 'poll' | 'kill' }) => {
 		// 本地控制台编码：Windows 下探测 chcp（简中通常 cp936）。用于把 shell 自身的
 		// 非 UTF-8 错误信息正确解码（见 processOutputDecoder 头注释）。
 		// 探测走一次 `chcp` 子进程，故按进程缓存 —— execute_code 是高频工具。
-		const localEncoding = await this._resolveExecCodeEncoding();
-		return new Promise<{ success: boolean; stdout: string; stderr: string; exitCode: number }>((resolve) => {
-		// 2026-08-29（日志 1787974178941）：execute_code **不再被强制封顶 120s**。
-	//
-	// 事故：本项目 `npm run compile` 全量编译必然超过 120s，每次都被下面的
-	// `process tree killed` 强杀（exit -1）。模型看不到编译结果就反复重试，
-	// 单轮耗时 140s+，用户观感是「LLM 卡住」——实际卡的是工具超时。
-	//
-	// 现在完全尊重调用方传入的 timeoutMs：
-	//   · > 0  → 按该值计时（不再 clamp 上限，想跑多久跑多久）
-	//   · <= 0 / 非数字 → 0，表示**不限时**（不安装 kill timer，跑完为止）
-	const _reqTimeoutMs = Number(payload?.timeoutMs);
-	const timeoutMs = Number.isFinite(_reqTimeoutMs) && _reqTimeoutMs > 0
-		? Math.max(_reqTimeoutMs, 1000)
-		: 0;
-		// PYTHONIOENCODING/PYTHONUTF8：Windows 终端默认 GBK 编码，Python print()
-		// 遇到 emoji 等非 GBK 字符会抛 UnicodeEncodeError（exit 1）。强制 UTF-8
-		// 模式让任何 Python 脚本都能安全输出 Unicode（其他平台无副作用）。
-		const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } as NodeJS.ProcessEnv & Record<string, string>;
-		// Hermes 环境归一（2026-08-18）：可选 shell 路径（Git Bash）+ PATH 前缀
-		// （coreutils 目录）。非登录 bash -c 不 source /etc/profile，必须显式把
-		// usr\bin 前置到 PATH，head/tail/grep 等才可用；MSYS_NO_PATHCONV 禁路径改写。
-		const useShell = payload?.shell ?? true;
-		if (payload?.pathPrefix && env.PATH && !String(env.PATH).toLowerCase().startsWith(payload.pathPrefix.toLowerCase())) {
-			env.PATH = `${payload.pathPrefix};${env.PATH}`;
-		}
-		if (payload?.shell) {
-			env.MSYS_NO_PATHCONV = '1';
-			env.MSYS2_ARG_CONV_EXCL = '*';
-		}
-		let child: ReturnType<typeof spawn>;
-		if (payload?.script !== undefined && payload?.interpreter) {
-			// heredoc 脚本：spawn <interpreter>（无参数）并从 stdin 喂入脚本。
-			// python3/node 无参数时从 stdin 读取并执行脚本 —— 跨平台（Windows cmd
-			// 不支持 `python3 << 'EOF'` heredoc，会报 "此时不应有 <<"，exit 1）。
-			child = spawn(payload.interpreter, [], {
-				cwd: payload?.cwd,
-				env,
-				windowsHide: true,
-			});
-			child.stdin?.write(payload.script);
-			child.stdin?.end();
-		} else {
-			const command = payload?.command ?? '';
-			child = spawn(command, [], {
-				cwd: payload?.cwd,
-				env,
-				windowsHide: true,
-				shell: useShell,
-			});
+		const localEncoding = (await this._resolveExecCodeEncoding()) ?? 'utf-8';
+
+		// ── 后台执行控制面（P0-2）：poll / kill 已注册的后台任务 ──
+		if (payload?.action === 'poll' || payload?.action === 'kill') {
+			const handle = _bgExecs.get(payload.taskId ?? '');
+			if (!handle) {
+				return { success: false, stdout: '', stderr: `unknown exec task: ${payload.taskId ?? '(empty)'}`, exitCode: -1 };
+			}
+			if (payload.action === 'kill') {
+				handle.settled = true;
+				if (handle.timeoutHandle) { clearTimeout(handle.timeoutHandle); }
+				if (process.platform === 'win32' && handle.child.pid) {
+					await new Promise<void>((res) => execFile('taskkill', ['/pid', String(handle.child.pid), '/T', '/F'], () => res()));
+				} else {
+					try { handle.child.kill('SIGKILL'); } catch { /* ignore */ }
+				}
+				_bgExecs.delete(payload.taskId!);
+				return { success: true, stdout: handle.stdoutCollector.decode(handle.localEncoding), stderr: handle.stderrCollector.decode(handle.localEncoding), exitCode: handle.exitCode, killed: true };
+			}
+			// poll：返回当前累积输出 + 完成状态（不阻塞等待结束）
+			return { success: !handle.settled, stdout: handle.stdoutCollector.decode(handle.localEncoding), stderr: handle.stderrCollector.decode(handle.localEncoding), exitCode: handle.exitCode, done: handle.settled };
 		}
 
+		// startExec：spawn 子进程并收集输出。foreground 通过 onDone 解析结果；
+		// background 不传 onDone，仅把句柄写入 _bgExecs 供 poll 读取（P0-2）。
+		const startExec = (onDone?: (r: { success: boolean; stdout: string; stderr: string; exitCode: number }) => void): IBgExecHandle => {
+			// 2026-08-29（日志 1787974178941）：execute_code **不再被强制封顶 120s**。
+			// 完全尊重调用方传入的 timeoutMs：> 0 计时；<= 0 / 非数字 → 不限时。
+			const _reqTimeoutMs = Number(payload?.timeoutMs);
+			const timeoutMs = Number.isFinite(_reqTimeoutMs) && _reqTimeoutMs > 0 ? Math.max(_reqTimeoutMs, 1000) : 0;
+			// PYTHONIOENCODING/PYTHONUTF8：Windows 终端默认 GBK 编码，Python print()
+			// 遇到 emoji 等非 GBK 字符会抛 UnicodeEncodeError（exit 1）。强制 UTF-8
+			// 模式让任何 Python 脚本都能安全输出 Unicode（其他平台无副作用）。
+			const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } as NodeJS.ProcessEnv & Record<string, string>;
+			// Hermes 环境归一（2026-08-18）：可选 shell 路径（Git Bash）+ PATH 前缀
+			// （coreutils 目录）。非登录 bash -c 不 source /etc/profile，必须显式把
+			// usr\bin 前置到 PATH，head/tail/grep 等才可用；MSYS_NO_PATHCONV 禁路径改写。
+			const useShell = payload?.shell ?? true;
+			if (payload?.pathPrefix && env.PATH && !String(env.PATH).toLowerCase().startsWith(payload.pathPrefix.toLowerCase())) {
+				env.PATH = `${payload.pathPrefix};${env.PATH}`;
+			}
+			if (payload?.shell) {
+				env.MSYS_NO_PATHCONV = '1';
+				env.MSYS2_ARG_CONV_EXCL = '*';
+			}
+			let child: ChildProcess;
+			if (payload?.script !== undefined && payload?.interpreter) {
+				// heredoc 脚本：spawn <interpreter>（无参数）并从 stdin 喂入脚本。
+				// python3/node 无参数时从 stdin 读取并执行脚本 —— 跨平台（Windows cmd
+				// 不支持 `python3 << 'EOF'` heredoc，会报 "此时不应有 <<"，exit 1）。
+				child = spawn(payload.interpreter, [], {
+					cwd: payload?.cwd,
+					env,
+					windowsHide: true,
+				});
+				child.stdin?.write(payload.script);
+				child.stdin?.end();
+			} else {
+				const command = payload?.command ?? '';
+				child = spawn(command, [], {
+					cwd: payload?.cwd,
+					env,
+					windowsHide: true,
+					shell: useShell,
+				});
+			}
+
 			// ── 输出解码（2026-08-22，日志 1787363991734）─────────────────────
-			// 原实现 `stdout += data.toString()` 有两个独立缺陷：
-			//  ① toString() 无参数按 UTF-8 解码，而 Windows 控制台默认 CP936 ——
-			//     PowerShell/cmd 自身的中文错误变 mojibake（`�Ҳ���·��`），
-			//     模型读到乱码无法自纠；
-			//  ② 逐 chunk 解码会把跨 chunk 边界的多字节字符切断，编码猜对也乱码。
-			// 现改为收集字节 + 结束时整体解码（见 processOutputDecoder）。
+			// 收集字节 + 结束时整体解码，避免 CP936 mojibake 与跨 chunk 多字节切断。
 			const stdoutCollector = new ProcessOutputCollector();
 			const stderrCollector = new ProcessOutputCollector();
 			child.stdout?.on('data', (data: Buffer) => stdoutCollector.push(data));
 			child.stderr?.on('data', (data: Buffer) => stderrCollector.push(data));
-			let settled = false;
-
+			const handle: IBgExecHandle = { child, stdoutCollector, stderrCollector, localEncoding, settled: false, exitCode: -1, timeoutHandle: undefined };
+			const finish = (r: { success: boolean; stdout: string; stderr: string; exitCode: number }) => {
+				if (handle.settled) { return; }
+				handle.settled = true;
+				handle.exitCode = r.exitCode;
+				if (handle.timeoutHandle) { clearTimeout(handle.timeoutHandle); }
+				onDone?.(r);
+			};
 			// timeoutMs=0 表示不限时：不安装 kill timer，进程跑到自己结束为止。
-			// （clearTimeout(undefined) 是安全的 no-op，下方 close/error 回收不受影响）
-			const timeoutHandle = timeoutMs > 0 ? setTimeout(() => {
-				if (!settled) {
-					settled = true;
-					// 超时路径同样要走整体解码 —— 被 kill 的进程往往已经产出了关键错误信息
+			handle.timeoutHandle = timeoutMs > 0 ? setTimeout(() => {
+				if (!handle.settled) {
 					const partialOut = stdoutCollector.decode(localEncoding);
 					const partialErr = stderrCollector.decode(localEncoding);
 					// Windows：shell:true 时 child 是 cmd.exe/bash，child.kill() 只杀 shell
 					// 进程，不杀其 spawn 的子进程（如 node script.mjs 卡在 top-level await）。
-					// 孤儿 node 进程继续跑 → 即使超时返回，后台仍吃 CPU → "卡住"体感。
 					// 用 taskkill /T /F 杀整棵进程树；失败则回退 child.kill()。
 					if (process.platform === 'win32' && child.pid) {
 						execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {
-							resolve({ success: false, stdout: partialOut, stderr: partialErr + `\n[timeout: process tree killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
+							finish({ success: false, stdout: partialOut, stderr: partialErr + `\n[timeout: process tree killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
 						});
 					} else {
 						try { child.kill('SIGKILL'); } catch { /* ignore */ }
-						resolve({ success: false, stdout: partialOut, stderr: partialErr + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
+						finish({ success: false, stdout: partialOut, stderr: partialErr + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
 					}
-					}
-					}, timeoutMs) : undefined;
+				}
+			}, timeoutMs) : undefined;
 
 			child.on('error', (err) => {
-				if (!settled) {
-					settled = true;
-					clearTimeout(timeoutHandle);
-					resolve({ success: false, stdout: stdoutCollector.decode(localEncoding), stderr: err.message, exitCode: -1 });
-				}
+				finish({ success: false, stdout: stdoutCollector.decode(localEncoding), stderr: err.message, exitCode: -1 });
 			});
 
 			child.on('close', (code) => {
-				if (!settled) {
-					settled = true;
-					clearTimeout(timeoutHandle);
-					resolve({
-						success: code === 0,
-						stdout: stdoutCollector.decode(localEncoding),
-						stderr: stderrCollector.decode(localEncoding),
-						exitCode: code ?? -1,
-					});
-				}
+				finish({ success: code === 0, stdout: stdoutCollector.decode(localEncoding), stderr: stderrCollector.decode(localEncoding), exitCode: code ?? -1 });
 			});
+			return handle;
+		};
+
+		// ── 后台执行：spawn 后即返回 taskId，不阻塞当前轮（P0-2）──
+		if (payload?.background) {
+			const taskId = (payload.taskId && !_bgExecs.has(payload.taskId)) ? payload.taskId : generateUuid();
+			const handle = startExec();
+			_bgExecs.set(taskId, handle);
+			return { success: true, stdout: '', stderr: '', exitCode: 0, background: true, taskId, pid: handle.child.pid ?? -1 };
+		}
+
+		// ── 前台执行：等待进程结束 ──
+		return new Promise<{ success: boolean; stdout: string; stderr: string; exitCode: number }>((resolve) => {
+			startExec(resolve);
 		});
 	});
 

@@ -192,7 +192,8 @@ export type RequestType =
 	| 'orchestration.updateTask'
 	| 'orchestration.decomposeTask'
 	| 'workspace.getActive'
-	| 'workspace.setActive';
+	| 'workspace.setActive'
+	| 'workflow.executeScript';
 
 interface PendingRequest {
 	resolve: (data: unknown) => void;
@@ -690,7 +691,7 @@ export function setState<T>(state: T): void {
  */
 export async function pickFolderDialog(opts: { title?: string; openLabel?: string } = {}): Promise<string | undefined> {
 	const api = vscode as unknown as {
-		window?: { showOpenDialog(o: unknown): Thenable<Array<{ fsPath: string }> | undefined> };
+		window?: { showOpenDialog(o: unknown): PromiseLike<Array<{ fsPath: string }> | undefined> };
 	};
 	const show = api.window?.showOpenDialog;
 	if (!show) { return undefined; }

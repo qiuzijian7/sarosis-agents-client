@@ -99,4 +99,28 @@ suite('BridgeUsageReporter (P3)', () => {
 		r.record('s1', 'coder', { inputTokens: 10, outputTokens: 5 });
 		assert.strictEqual(r.getAgentStats('coder')!.promptTokens, 10);
 	});
+
+	test('cacheHitRate = cachedTokens / promptTokens（跨多次累加）', () => {
+		const r = new BridgeUsageReporter(makeLog());
+		// 第 1 次：命中 3 / 10
+		r.record('s1', 'coder', { inputTokens: 10, outputTokens: 5, cachedTokens: 3, cacheWriteTokens: 7 });
+		// 第 2 次：命中 12 / 20
+		r.record('s2', 'coder', { inputTokens: 20, outputTokens: 8, cachedTokens: 12, cacheWriteTokens: 8 });
+		const a = r.getAgentStats('coder')!;
+		assert.strictEqual(a.cachedTokens, 15);
+		assert.strictEqual(a.promptTokens, 30);
+		assert.strictEqual(a.cacheHitRate, 0.5); // 15 / 30
+		assert.strictEqual(a.cacheWriteTokens, 15);
+		// summarize 返回结构含 cacheHitRate 字段
+		const byAgent = r.summarize({ agentId: 'coder' });
+		assert.strictEqual(byAgent[0].cacheHitRate, 0.5);
+	});
+
+	test('cacheHitRate：promptTokens=0 时非 NaN（归零）', () => {
+		const r = new BridgeUsageReporter(makeLog());
+		// 仅输出、无输入时不应产生 NaN
+		r.record('s1', 'coder', { inputTokens: 0, outputTokens: 5, cachedTokens: 0 });
+		assert.strictEqual(r.getAgentStats('coder')!.cacheHitRate, 0);
+		assert.ok(Number.isFinite(r.getAgentStats('coder')!.cacheHitRate));
+	});
 });

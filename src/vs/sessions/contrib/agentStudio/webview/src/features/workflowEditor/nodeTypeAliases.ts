@@ -35,6 +35,10 @@ export const LEGACY_NODE_TYPE_MAP: Readonly<Record<string, string>> = Object.fre
 	merge: 'Saros.Merge',
 	// 'condition' 是更早的 ifElse 别名（steps fallback 路径仍可能出现）
 	condition: 'Saros.IfElse',
+	// 'branch' 由 workflow_apply / workflowTools 的对外 schema 宣称，但引擎运行时
+	// 并无此枚举值。若不归一化，execution 的 switch 会落进 default 分支，把
+	// 条件节点当成普通节点执行 **所有** 下游边，条件判断静默失效。
+	branch: 'Saros.IfElse',
 });
 
 /**

@@ -114,6 +114,29 @@ export function allToolCallsBlockedReminder(streak: number, toolNames: string): 
 }
 
 /**
+ * 封死「把调用写成文本」这条退路的共用文案。
+ *
+ * 成因链：stable 层系统提示词**每轮**都下发「需要工具时 emit a NATIVE function
+ * call」，而收尾轮 tools 已置空 + toolChoice='none' → 结构化通道关闭。模型处在
+ * 「被告知必须发 native call」与「根本拿不到通道」的两难中，会把调用**写成文本**
+ * 当成唯一可行解（日志 1788006127437 实证 3230c 伪 XML；1788016519843 实证 712c）。
+ *
+ * 只说「不要调用工具」不够 —— 模型会理解成「不能真调，但可以先把调用记下来」，
+ * 于是照样写出 XML/JSON/代码块。故必须逐一点名各种文本形式，并声明
+ * **任何语法都不执行**。
+ *
+ * ⚠ 每一条会进收尾轮的提醒都必须带上本片段。日志 1788016519843 实证：
+ * 该轮由 `textSearchStreak 8/8` 护栏触发，注入的是 `textSearchLoopWrapUpReminder`
+ * （当时缺这段），而 `hardLimitWrapUpReminder` 又因「reason-specific reminder
+ * already injected」不再叠加 —— 缺口无人补，模型随即写下 712c 伪 XML。
+ * 分散复制必然再漏，故提取为共用常量。
+ */
+export const NO_TEXTUAL_TOOL_CALL_ESCAPE: readonly string[] = [
+	'This also means writing a call out as TEXT is pointless: XML-style tags, JSON, a markdown code block, or a prose description of a call will NOT execute either — no syntax works this round.',
+	'Do not write a call in any format as a placeholder or note-to-self; it will not run and will only waste your final answer.',
+];
+
+/**
  * 连续「整轮全被拦」过多 → 强制收尾轮的提醒。
  *
  * 与 `hardLimitWrapUpReminder` 的区别：那是撞迭代上限（跑了很多**有效**轮），
@@ -125,6 +148,7 @@ export function allBlockedWrapUpReminder(streak: number): string {
 		'<system-reminder>',
 		`You have made NO progress for ${streak} consecutive turns — every tool call was a rejected duplicate.`,
 		'Tool calling is now DISABLED for this turn. You cannot call any tool.',
+		...NO_TEXTUAL_TOOL_CALL_ESCAPE,
 		'',
 		'Write your final answer now, using only what you have already gathered:',
 		'1. What you found (cite file paths and line numbers).',
@@ -173,6 +197,8 @@ export function hardLimitWrapUpReminder(maxIterations: number): string {
 		'<system-reminder>',
 		`Iteration limit reached (${maxIterations}/${maxIterations}). Tool calls are now DISABLED for this final round.`,
 		'Do NOT attempt any tool calls — they will not execute.',
+		// 封死「把调用写成文本」这条退路，详见 NO_TEXTUAL_TOOL_CALL_ESCAPE 的注释。
+		...NO_TEXTUAL_TOOL_CALL_ESCAPE,
 		'Immediately produce your FINAL ANSWER from what you have ALREADY gathered.',
 		'It MUST include ALL FOUR of the following:',
 		`  1. A brief statement that the ${maxIterations}-round tool budget for this task was reached.`,
@@ -252,6 +278,12 @@ export function textSearchLoopWrapUpReminder(streakCount: number): string {
 		'<system-reminder>',
 		`Search-loop guardrail: you have issued ${streakCount} consecutive text/grep searches without resolution.`,
 		'This turn is being forced to wrap up. Tools are now DISABLED for this final round.',
+		// ─── 本次泄漏的直接缺口（日志 1788016519843）─────────────────────────
+		// 此前本条只说 "Do NOT request more searches or tools"，缺少封死文本退路的
+		// 声明 → 模型理解成「不能再搜，但可以先把想搜的记下来」，随即写出 712c
+		// 伪 XML。且此时 hardLimitWrapUpReminder 因「reason-specific reminder
+		// already injected」不再叠加，缺口无人补。
+		...NO_TEXTUAL_TOOL_CALL_ESCAPE,
 		'Produce your final answer from what you have ALREADY gathered: summarize findings with concrete',
 		'file paths + line numbers, state what remains uncertain, and either propose the next step or ask',
 		'a clarifying question. Do NOT request more searches or tools.',
@@ -299,6 +331,29 @@ export function batchReadOnlyToolsReminder(streakCount: number, recentTools: str
 		'  do not depend on each other\'s results.',
 		'Plan the lookups you need up front, issue them in one batch, then reason over all results at once.',
 		'Only fall back to one-at-a-time when a call genuinely depends on the previous result.',
+		'</system-reminder>',
+	].join('\n');
+}
+
+// ─── XML 文本工具调用泄漏（模型未走 native function call）──────────────────────
+// 对齐 openclaw「显式告知模型其格式不被执行」的处置思路：
+// 与其静默丢弃（模型以为调用没生效 → 反复重写同样的 XML），不如明确回一句
+// "这个格式不会被执行"，让模型立刻改用 native function call 或直接放弃工具。
+
+/**
+ * 模型把工具调用写成 XML 文本（<tool_calls:xxx> / <arg_key:xxx> 等）而非
+ * native function call。该格式本系统不执行，必须显式告知模型，否则它会
+ * 反复输出同样的 XML 试探（实测表现为聊天框堆满工具解析错误 UI）。
+ */
+export function xmlToolCallLeakReminder(): string {
+	return [
+		'<system-reminder>',
+		'Your previous response wrote a tool call as XML text (e.g. <tool_calls:...>, <arg_key:...>).',
+		'That format is NOT executed — the tool did NOT run and no result was produced.',
+		'To call a tool you MUST emit a NATIVE function call (the structured tool_calls field).',
+		'Not XML tags, not a markdown code block, not a prose description — only native function calls run.',
+		'Do NOT repeat the same XML text: repeating it will never execute.',
+		'Re-issue the call using the native function-call format, or proceed without that tool.',
 		'</system-reminder>',
 	].join('\n');
 }

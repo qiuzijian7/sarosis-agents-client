@@ -47,7 +47,7 @@ import { IAgentStudioLogService } from './agentStudioLogService.js';
 import { stringHash } from '../../../../base/common/hash.js';
 import {
 	ISkillRegistry, ISkillDefinition, ISkillActivationContext, ISkillInjection,
-	ISkillExecutor, SkillActivation,
+	ISkillExecutor, SkillActivation, renderSkillBody,
 } from '../common/skills.js';
 import { ISkillLifecycleService, ISkillBatchLifecyclePayload } from '../common/skillLifecycle.js';
 import * as path from '../../../../base/common/path.js';
@@ -865,7 +865,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 				})()
 				: '',
 			'',
-			skill.prompt,
+			renderSkillBody(skill),
 			// allowed-tools（Agent Skills 规范）：prompt 级工具面约束
 			skill.allowedTools && skill.allowedTools.length > 0
 				? `\n**Tool restriction**: while following this skill, only use these tools: ${skill.allowedTools.join(', ')}. Do not use any other tools.`

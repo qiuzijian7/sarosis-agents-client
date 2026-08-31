@@ -42,9 +42,24 @@ export interface IStreamingRenderHooks {
 
 export class StreamingRenderScheduler {
 	private _timer: number | null = null;
-	private _target: { container: HTMLElement } | null = null;
-	private _lastContent: string = '';
-	private _lastRendered: string = '';
+	/**
+	 * 待渲染目标：container → 最新文本。
+	 *
+	 * ★ 2026-08-31：由「单 target」改为**多 target 并存**。原设计只有一份
+	 * `_target/_lastContent/_lastRendered`，而 `_reconcileParts` 每帧会对**每个**
+	 * 发生变化的 text part 各调一次 `schedule()`。同一帧内多次调用只有最后一个
+	 * 存活，前面全部被覆盖、永不渲染 —— 这正是「消息在某个 text part 处截断」
+	 * 的直接来源（多 text 段的 agent loop 消息必现）。
+	 */
+	private readonly _targets = new Map<HTMLElement, string>();
+	/**
+	 * 各容器**各自独立**的已渲染基线。
+	 *
+	 * 原来是跨容器共享的一个字符串：target 切换时基线会错位，`renderIncremental`
+	 * 拿着别的容器的基线做增量 → 失败 → 回退 `replaceChildren` 全量替换整段 DOM，
+	 * 正是可见的「抖动/闪烁」。改为按容器独立后该问题一并消除。
+	 */
+	private _lastRendered = new WeakMap<HTMLElement, string>();
 
 	constructor(
 		private readonly _hooks: IStreamingRenderHooks,
@@ -59,18 +74,17 @@ export class StreamingRenderScheduler {
 	 * @param firstRender 首次渲染策略：'text' 纯文本占位 | 'markdown' 立即完整渲染
 	 */
 	schedule(container: HTMLElement, text: string, firstRender: 'text' | 'markdown'): void {
-		if (!this._lastRendered) {
+		if (!this._lastRendered.has(container)) {
 			if (firstRender === 'text') {
 				// 让用户立即看到输出；首次 markdown 渲染后不再覆盖，由增量更新追加
 				container.textContent = text;
 			} else {
 				this._hooks.renderFull(container, text);
-				this._lastRendered = text;
+				this._lastRendered.set(container, text);
 				this._afterRender?.(container);
 			}
 		}
-		this._target = { container };
-		this._lastContent = text;
+		this._targets.set(container, text);
 		if (this._timer === null) {
 			this._timer = window.setTimeout(() => this._flush(), this._intervalMs);
 		}
@@ -78,51 +92,57 @@ export class StreamingRenderScheduler {
 
 	/**
 	 * 外部已完成全量渲染（如 _transitionStreamingToComplete 的流式结束转换），
-	 * 同步基线使 pending 的 flush 因内容相等而跳过（复刻原
+	 * 同步该容器的基线，使 pending 的 flush 因内容相等而跳过（复刻原
 	 * `this._streamingMdLastRendered = msg.content` 语义）。
+	 *
+	 * 改为多 target 后必须带容器——否则无法知道同步的是哪一个的基线。
 	 */
-	markRendered(text: string): void {
-		this._lastContent = text;
-		this._lastRendered = text;
+	markRendered(container: HTMLElement, text: string): void {
+		this._lastRendered.set(container, text);
+		this._targets.delete(container);
 	}
 
-	/** 取消 pending 的节流渲染（保留内容基线）。 */
+	/** 取消 pending 的节流渲染（保留各容器已渲染基线）。 */
 	cancel(): void {
 		if (this._timer !== null) {
 			clearTimeout(this._timer);
 			this._timer = null;
 		}
-		this._target = null;
+		this._targets.clear();
 	}
 
-	/** 完整复位：cancel + 清空内容与已渲染基线（新流式会话 / 流式结束 / dispose 前）。 */
+	/** 完整复位：cancel + 清空已渲染基线（新流式会话 / 流式结束 / dispose 前）。 */
 	reset(): void {
 		this.cancel();
-		this._lastContent = '';
-		this._lastRendered = '';
+		// WeakMap 无 clear()，只能重建（旧的随容器 GC 一起回收）
+		this._lastRendered = new WeakMap<HTMLElement, string>();
 	}
 
 	private _flush(): void {
 		this._timer = null;
-		const target = this._target;
-		if (!target || !target.container.isConnected || !this._lastContent) { return; }
-		// 内容未变 → 跳过渲染
-		if (this._lastContent === this._lastRendered) { return; }
-		// 尝试增量更新——只渲染追加部分，避免全量 re-parse
-		if (this._hooks.renderIncremental(target.container, this._lastContent)) {
-			this._lastRendered = this._lastContent;
-			this._afterRender?.(target.container);
-			return;
+		// 先摘出待渲染集合再遍历：渲染回调里可能再次 schedule（_afterRender 触发吸底等）
+		const pending = Array.from(this._targets.entries());
+		this._targets.clear();
+		for (const [container, text] of pending) {
+			if (!container.isConnected || !text) { continue; }
+			// 内容未变 → 跳过渲染
+			if (this._lastRendered.get(container) === text) { continue; }
+			// 尝试增量更新——只渲染追加部分，避免全量 re-parse
+			if (this._hooks.renderIncremental(container, text)) {
+				this._lastRendered.set(container, text);
+				this._afterRender?.(container);
+				continue;
+			}
+			// 全量重建 — 离屏渲染后原子替换，避免空白帧闪烁
+			// 上报给调用方记录（见 IStreamingRenderHooks.onFullReplace）：这是抖动的
+			// 直接来源之一，必须可观测。
+			this._hooks.onFullReplace?.(container, text.length);
+			this._hooks.resetIncremental(container);
+			const tempDiv = document.createElement('div');
+			this._hooks.renderFull(tempDiv, text);
+			container.replaceChildren(...Array.from(tempDiv.childNodes));
+			this._lastRendered.set(container, text);
+			this._afterRender?.(container);
 		}
-		// 全量重建 — 离屏渲染后原子替换，避免空白帧闪烁
-		// 上报给调用方记录（见 IStreamingRenderHooks.onFullReplace）：这是抖动的
-		// 直接来源之一，必须可观测。
-		this._hooks.onFullReplace?.(target.container, this._lastContent.length);
-		this._hooks.resetIncremental(target.container);
-		const tempDiv = document.createElement('div');
-		this._hooks.renderFull(tempDiv, this._lastContent);
-		target.container.replaceChildren(...Array.from(tempDiv.childNodes));
-		this._lastRendered = this._lastContent;
-		this._afterRender?.(target.container);
 	}
 }

@@ -1,0 +1,342 @@
+<mxfile host="CodeBuddy" agent="CodeBuddy" type="device">
+  <diagram id="agent-creation-flow" name="创建 Agent 流程">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1300" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="laneA" value="创建链路（写）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;verticalAlign=top;fontSize=12;fontStyle=1;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="20" y="10" width="710" height="1180" as="geometry" />
+        </mxCell>
+        <mxCell id="laneB" value="读取 / 合并 / 覆写链路" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;verticalAlign=top;fontSize=12;fontStyle=1;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="745" y="10" width="500" height="1570" as="geometry" />
+        </mxCell>
+
+        <mxCell id="entry1" value="① UI 创建&#10;CreateAgentModal.tsx" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="50" y="40" width="170" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="entry2" value="② LLM 工具&#10;new_agent" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="260" y="40" width="170" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="entry3" value="③ 文件夹导入&#10;installAgentFromFolder" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="470" y="40" width="170" height="46" as="geometry" />
+        </mxCell>
+
+        <mxCell id="v1" value="校验 name / role 非空&#10;组装 Partial Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="50" y="120" width="170" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="v2" value="校验必填&#10;name / role / description" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="260" y="120" width="170" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="v3" value="过滤垃圾文件（.git / node_modules）&#10;根目录须含 .agent.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="470" y="120" width="170" height="44" as="geometry" />
+        </mxCell>
+
+        <mxCell id="d_id" value="显式传入 id ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="275" y="195" width="150" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="d_valid" value="isValidSkillId ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="70" y="280" width="160" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="e_inv" value="报错：非法 id，终止&#10;(小写字母开头，仅字母/数字/-/_)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="15" y="365" width="180" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="d_ascii" value="名称为纯 ASCII ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="300" y="280" width="160" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="n_slug" value="slugifyAgentName()&#10;由名称派生 id" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="300" y="365" width="160" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="e_ascii" value="报错：非 ASCII 名必须显式提供 id&#10;（中文名 slug 会剥离中文导致互相覆盖）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="500" y="355" width="210" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="n_prompt" value="systemPrompt 缺省则自动生成&#10;You are a {role}. {description}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="215" y="440" width="210" height="44" as="geometry" />
+        </mxCell>
+
+        <mxCell id="d_dup" value="agent id 已存在 ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="470" y="195" width="170" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="e_dup" value="拒绝：ID 重复导入" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="690" y="280" width="170" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="n_copy" value="整体复制到&#10;~/.vssaros/agents/{id}/" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="440" width="190" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="n_copy2" value="清 _agentsCache&#10;_onDidChangeAgents.fire()&#10;agentVersionService.init(id)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="510" width="190" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="end2" value="导入完成" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="590" width="190" height="44" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_create" value="AgentStudioService.createAgent()&#10;agentStudioService.ts : 811" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="200" y="510" width="300" height="56" as="geometry" />
+        </mxCell>
+
+        <mxCell id="c1" value="① 剥离 runtime 字段（workspaceId / worktree / agentDir）&#10;② id = data.id 或 _generateId(name)&#10;③ 构造 Agent：默认值 + source=custom + owner + 时间戳" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="200" y="595" width="300" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="c2" value="④ ensure 目录 ~/.vssaros/agents/{id}/" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="680" width="300" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="c3" value="⑤ _writeAgentMd() → .agent.md&#10;（YAML frontmatter + Markdown body）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="740" width="300" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="d_boot" value="⑥ bootstrapTemplates&#10;.agentsMd 有内容 ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="805" width="300" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="c4" value="追加到 systemPrompt&#10;并重写 .agent.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="530" y="815" width="185" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="d_ws" value="⑦ 传入了 workspaceId ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="885" width="300" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="c5" value="upsertAgentBinding()&#10;写 agent-bindings.json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="530" y="895" width="185" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="c6" value="⑧ 清 _agentsCache&#10;⑨ _onDidChangeAgents.fire()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="965" width="300" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="c7" value="⑩ agentVersionService.init(id)（异步，不阻塞）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="1025" width="300" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="c8" value="⑪ 返回 Agent 定义&#10;工具 → JSON 结果 / UI → 关闭弹窗" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="1080" width="300" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="end1" value="创建完成&#10;getAgents() 即可读到" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="1145" width="300" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_clean" value="启动时 ensureBuiltinAgentMdFiles()&#10;持续删除用户目录内所有「内置同名」目录&#10;（内置直读产品源，不播种、只读）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="40" width="280" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="g_get" value="getAgents() 读取 / 三级合并&#10;agentStudioService.ts : 559" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="760" y="510" width="280" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="d_cache" value="30s 缓存命中 ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="590" width="280" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="g_hit" value="直接返回缓存数据" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="600" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="g_inf" value="in-flight 去重：复用 _agentsLoadPromise" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="670" width="280" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="g_load" value="_loadAgentsInternal()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="725" width="280" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="g_bi" value="① 内置：_loadBuiltinAgentsFromSource()&#10;resources/.agents/agents/{id}/.agent.md&#10;全部失败 → 回退 getBuiltinAgents()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="785" width="280" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="g_scan" value="② 扫描用户目录 ~/.vssaros/agents/*/.agent.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="860" width="280" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="d_cls" value="id 属于内置 ID 集合 ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="920" width="280" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="g_ovr" value="userOverrides&#10;（用户覆写，优先）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="930" width="150" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="g_cus" value="customAgents（自定义）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1000" width="280" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="g_merge" value="③ 合并：builtin.map(a → override ?? a)&#10;再追加 customAgents" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1060" width="280" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="g_cache" value="写回 _agentsCache（TTL 30s）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1125" width="280" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_edit" value="编辑 / 覆写已存在 agent" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1205" width="280" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="g_upd" value="updateAgent(id, patch)&#10;agentStudioService.ts : 1205" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1275" width="280" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="g_split" value="剥离 runtime 字段 → upsertAgentBinding&#10;（纯 runtime 则到此返回，不写定义）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1345" width="280" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="d_bi2" value="id 是内置 agent ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1410" width="280" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="e_bi" value="拒绝：内置只读，不允许编辑" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1420" width="150" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="d_md" value=".agent.md 已存在 ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1485" width="280" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="g_fb" value="回退内置定义&#10;（首次覆写路径）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1495" width="150" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="g_w" value="合并 patch + configHtml 自动加 confightml skill&#10;_writeAgentMd() + autoCommit() + 清缓存 + fire" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1560" width="280" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="note1" value="存储与真相源&#10;&#10;【内置 · 只读】resources/.agents/agents/{id}/.agent.md&#10;　· 产品源，随版本升级；updateAgent / deleteAgent 均拒绝&#10;　· 用户目录中任何内置同名目录，启动时被持续清理&#10;&#10;【用户 · 唯一可写】~/.vssaros/agents/{id}/.agent.md&#10;　· 自定义 agent 定义 + 配套文件（config.html 等）&#10;　· 内置 agent 的用户覆写也落在同路径，且优先于产品源&#10;&#10;【工作区运行时】agent-bindings.json（不进全局定义）&#10;　· workspaceId / worktreePath / worktreeBranch / agentDir / memoryConfig&#10;&#10;【版本管理】每个 agent 目录独立 git 仓库（agentVersionService）&#10;&#10;【new_agent 安全等级】Cautious → 需用户审批后才会落盘" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;verticalAlign=top;fontSize=11;spacingLeft=8;spacingTop=4;" vertex="1" parent="1">
+          <mxGeometry x="45" y="1230" width="660" height="320" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eg1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="entry1" target="v1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="entry2" target="v2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="entry3" target="v3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="v2" target="d_id">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg5" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_id" target="d_valid">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg6" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_id" target="d_ascii">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg7" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_valid" target="e_inv">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg8" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_valid" target="n_prompt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg9" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_ascii" target="n_slug">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg10" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_ascii" target="e_ascii">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n_slug" target="n_prompt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n_prompt" target="n_create">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="v1" target="n_create">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="v3" target="d_dup">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg15" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_dup" target="e_dup">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg16" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_dup" target="n_copy">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n_copy" target="n_copy2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n_copy2" target="end2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eg19" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n_create" target="c1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg20" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c1" target="c2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg21" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c2" target="c3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg22" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c3" target="d_boot">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg23" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_boot" target="c4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg24" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="c4" target="d_ws">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg25" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_boot" target="d_ws">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg26" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_ws" target="c5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg27" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="c5" target="c6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg28" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_ws" target="c6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg29" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c6" target="c7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg30" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c7" target="c8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg31" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c8" target="end1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eg40" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_clean" target="g_get">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg41" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_get" target="d_cache">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg42" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_cache" target="g_hit">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg43" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_cache" target="g_inf">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg44" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_inf" target="g_load">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg45" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_load" target="g_bi">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg46" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_bi" target="g_scan">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg47" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_scan" target="d_cls">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg48" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_cls" target="g_ovr">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg49" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_cls" target="g_cus">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg50" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_ovr" target="g_merge">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg51" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_cus" target="g_merge">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg52" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_merge" target="g_cache">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eg60" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_edit" target="g_upd">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg61" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_upd" target="g_split">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg62" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_split" target="d_bi2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg63" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_bi2" target="e_bi">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg64" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_bi2" target="d_md">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg65" value="否（首次覆写）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_md" target="g_fb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg66" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="g_fb" target="g_w">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eg67" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d_md" target="g_w">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
