@@ -22,13 +22,14 @@
  *   proposals.json / staging.json / library 的 domain-registry.json / entity-registry.json / tags。
  */
 
-import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { ILogService } from '../../../../platform/log/common/log.js';
+import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import type { IWikiTagService } from './wikiTagService.js';
-import type { IEmbeddingService, IEmbeddingResult } from '../../common/embeddingProvider.js';
+import { IWikiTagService } from './wikiTagService.js';
+import { IEmbeddingService } from '../../common/embeddingProvider.js';
+import type { IEmbeddingResult } from '../../common/embeddingProvider.js';
 import type { TagLevel } from '../../common/wikiTagTypes.js';
 import type { ILlmWikiFrontmatter, ILlmWikiArticle, ILlmWikiSyncResult } from './llmWikiAdapterTypes.js';
 
@@ -137,7 +138,7 @@ export class LLMWikiAdapterService implements ILLMWikiAdapterService {
 
 			this.logService.info(
 				`[LLMWikiAdapter] synced "${article.frontmatter.title}" ` +
-				`(tags=${article.frontmatter.tags.length}, embedding=${embedding ? 'ok' : 'n/a'})`
+				`(tags=${article.frontmatter.tags?.length ?? 0}, embedding=${embedding ? 'ok' : 'n/a'})`
 			);
 			return { ...empty, synced: 1 };
 		} catch (err) {
@@ -191,7 +192,7 @@ export class LLMWikiAdapterService implements ILLMWikiAdapterService {
 
 	/** 把 llm_wiki 文章映射为 Sarosis domain/entity/L1 提议并写入 proposals.json。 */
 	private async _toProposals(article: ILlmWikiArticle): Promise<Array<{ id: string; level: TagLevel; name: string; domain?: string }>> {
-		const { type, title, tags } = article.frontmatter;
+		const { type = 'note', title = '', tags = [] } = article.frontmatter;
 		const out: Array<{ id: string; level: TagLevel; name: string; domain?: string }> = [];
 
 		// type 作为 domain 维度（如 concept/people/event）
@@ -212,12 +213,14 @@ export class LLMWikiAdapterService implements ILLMWikiAdapterService {
 		const set = new Set<string>();
 		try {
 			const domains = await this.wikiTagService.listDomains();
-			Object.values(domains).forEach(d => set.add(this._entryKey('domain', d.name)));
+			// listXxx 返回 Record<名称, 条目>：key 即名称，值类型（IDomainEntry 等）本身无 .name 字段，
+			// 故用 Object.keys 取名称而非 Object.values(x).name（后者在类型上不存在）。
+			Object.keys(domains).forEach(d => set.add(this._entryKey('domain', d)));
 			const entities = await this.wikiTagService.listEntities();
-			Object.values(entities).forEach(e => set.add(this._entryKey('entity', e.name)));
+			Object.keys(entities).forEach(e => set.add(this._entryKey('entity', e)));
 			for (const d of Object.keys(domains)) {
 				const tags = await this.wikiTagService.listTags(d);
-				Object.values(tags).forEach(t => set.add(this._entryKey('L1', t.name, d)));
+				Object.keys(tags).forEach(t => set.add(this._entryKey('L1', t, d)));
 			}
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -231,10 +234,10 @@ export class LLMWikiAdapterService implements ILLMWikiAdapterService {
 		return level === 'L1' ? `L1:${domain ?? ''}:${name}` : `${level}:${name}`;
 	}
 
-	/** 写入 proposals.json（IWikiTagService 未暴露 propose，走文件层以保证不改动既有接口）。 */
+	/** 写入 proposals.json（IWikiTagService 未暴露 propose，走文件层以保证不改动既有接口）。返回完整 proposal 对象供调用方收集。 */
 	private async _upsertProposal(
 		id: string, level: TagLevel, name: string, description: string, domain?: string
-	): Promise<string> {
+	): Promise<{ id: string; level: TagLevel; name: string; domain?: string }> {
 		const proposalsPath = await this._proposalsJsonPath();
 		let file = this._readJson<{ proposals: Array<Record<string, unknown>> }>(proposalsPath);
 		if (!file) { file = { proposals: [] }; }
@@ -247,7 +250,7 @@ export class LLMWikiAdapterService implements ILLMWikiAdapterService {
 			});
 			this._writeJson(proposalsPath, file);
 		}
-		return id;
+		return { id, level, name, ...(domain ? { domain } : {}) };
 	}
 
 	/** 解析 WIKI_ROOT 下的 proposals.json（通过 IWikiTagService.getSettings 获取真实根目录，不外泄私有字段）。 */
