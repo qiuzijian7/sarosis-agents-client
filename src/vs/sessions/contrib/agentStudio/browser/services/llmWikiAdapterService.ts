@@ -24,8 +24,15 @@
 
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import * as fs from 'fs';
-import * as path from 'path';
+// 桌面客户端渲染进程以 Chromium 沙箱运行（sandbox: true），没有 Node `require`，
+// 裸 `import 'fs'` 会触发 "Failed to resolve module specifier 'fs'"。这里改用
+// nodeRequire 延迟获取（同 browser/bridge/* 的做法）。注意：桌面端 nodeRequire('fs')
+// 必然返回 undefined（rendererNodeRequire.ts），本服务在渲染进程**无法直接读写文件**。
+// 若要在桌面端真正工作，需把 fs 逻辑移到 node/ 层并经 IPC channel 暴露
+// （参照 gitVersionCore.ts ↔ node/gitVersionEngine.ts ↔ electron-main/gitVersionChannel.ts）。
+import { nodeRequire } from "../rendererNodeRequire.js";
+const fs = nodeRequire('fs');
+const path = nodeRequire('path');
 
 import { IWikiTagService } from './wikiTagService.js';
 import { IEmbeddingService } from '../../common/embeddingProvider.js';
@@ -60,6 +67,11 @@ export class LLMWikiAdapterService implements ILLMWikiAdapterService {
 
 	/** 同步整个 llm_wiki 项目：遍历 `wiki/` 下所有 type 子目录的 *.md。 */
 	async syncProject(projectPath: string): Promise<ILlmWikiSyncResult> {
+		// 渲染进程沙箱无 fs（nodeRequire 返回 undefined）→ 优雅降级，避免调用即崩。
+		if (!fs || !path) {
+			this.logService.warn('[LLMWikiAdapter] fs/path unavailable in renderer sandbox; llm_wiki sync disabled');
+			return { synced: 0, skipped: 0, failed: 0, errors: ['llm_wiki sync unavailable (renderer has no fs)'] };
+		}
 		const wikiRoot = path.join(projectPath, 'wiki');
 		if (!fs.existsSync(wikiRoot)) {
 			this.logService.warn(`[LLMWikiAdapter] wiki root not found: ${wikiRoot}`);
@@ -81,6 +93,11 @@ export class LLMWikiAdapterService implements ILLMWikiAdapterService {
 
 	/** 同步单篇文章，按路径去重防并发重复处理。 */
 	async syncArticle(articlePath: string): Promise<ILlmWikiSyncResult> {
+		// 渲染进程沙箱无 fs → 优雅降级（见 syncProject 注释）。
+		if (!fs || !path) {
+			this.logService.warn('[LLMWikiAdapter] fs unavailable in renderer sandbox; llm_wiki sync disabled');
+			return { synced: 0, skipped: 0, failed: 0, errors: ['llm_wiki sync unavailable (renderer has no fs)'] };
+		}
 		const existing = this._queue.get(articlePath);
 		if (existing) { return existing; }
 		const task = this._syncOne(articlePath).finally(() => this._queue.delete(articlePath));
