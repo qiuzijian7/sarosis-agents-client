@@ -34,6 +34,44 @@
 			"type": "object",
 			"title": "CodeBuddy Provider",
 			"properties": {
+			"codebuddy.loginAction": {
+				"type": "boolean",
+				"default": false,
+				"description": "通过 iOA SSO 登录 CodeBuddy（点击即执行，无需保存）。",
+				"scope": "application",
+				"x-action": "codebuddy.login",
+				"x-actionLabel": "登录 (iOA SSO)"
+			},
+			"codebuddy.logoutAction": {
+				"type": "boolean",
+				"default": false,
+				"description": "登出 CodeBuddy（点击即执行，无需保存）。",
+				"scope": "application",
+				"x-action": "codebuddy.logout",
+				"x-actionLabel": "登出"
+			},
+			"codebuddy.refreshModelsAction": {
+				"type": "boolean",
+				"default": false,
+				"description": "从服务端重新拉取可用模型列表（点击即执行，无需保存）。",
+				"scope": "application",
+				"x-action": "codebuddy.refreshModels",
+				"x-actionLabel": "刷新模型列表"
+			},
+			"codebuddy.status": {
+				"type": "string",
+				"default": "未登录",
+				"description": "登录状态（由登录流程自动写入）。",
+				"scope": "application",
+				"x-readonly": true
+			},
+			"codebuddy.user": {
+				"type": "string",
+				"default": "",
+				"description": "当前登录用户（由登录流程自动写入）。",
+				"scope": "application",
+				"x-readonly": true
+			},
 			"codebuddy.endpoint": {
 				"type": "string",
 				"default": "https://copilot.tencent.com",

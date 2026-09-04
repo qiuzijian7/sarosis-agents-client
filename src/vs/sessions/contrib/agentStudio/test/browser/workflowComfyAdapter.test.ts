@@ -10,6 +10,7 @@ import {
 	toLiteGraphType,
 	toSarosType,
 } from '../../webview/src/features/workflowEditor/comfyHost/ComfyGraphAdapter.js';
+import { registerSarosNodes } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
 
 const SAMPLE_NODES = [
 	{ id: 'start', type: 'start', name: 'Start', position: { x: 80, y: 250 } },
@@ -24,17 +25,37 @@ const SAMPLE_CONNECTIONS = [
 
 suite('ComfyGraphAdapter', () => {
 
+	// camelCase Saros 类型需在注册表中存在，toSarosType 的「精确匹配保留」分支才会命中。
+	registerSarosNodes();
+
 	suite('toLiteGraphType / toSarosType', () => {
 
 		test('namespaced round trip', () => {
 			assert.strictEqual(toLiteGraphType('prompt'), 'Saros.Prompt');
-			assert.strictEqual(toSarosType('Saros.Prompt'), 'prompt');
+			// 2026-08-31 修复：camelCase 命名空间类型不再整段小写（曾把
+			// Saros.ModelImageGen 变成 Saros.modelimagegen → 画布过滤丢弃 → 保存丢失）。
+			// 旧断言期望 'Saros.Prompt' → 'prompt'（去前缀小写），现精确匹配注册表
+			// 时原样返回；未注册的旧小写仍走 normalizeNodeType 迁移。
+			assert.strictEqual(toSarosType('Saros.Prompt'), 'Saros.Prompt');
 		});
 
 		test('already-namespaced passes through', () => {
 			assert.strictEqual(toLiteGraphType('Saros.Prompt'), 'Saros.Prompt');
 			assert.strictEqual(toLiteGraphType('ComfyTV.ImageStage'), 'ComfyTV.ImageStage');
 			assert.strictEqual(toSarosType('KSampler'), 'KSampler');
+		});
+
+		test('camelCase Saros type preserved verbatim (ModelImageGen bug)', () => {
+			// ★ 根因回归：Saros.ModelImageGen 被旧 toSarosType 小写成
+			// Saros.modelimagegen → filterNodesForLiteGraph 丢弃 → 保存后节点消失。
+			assert.strictEqual(toSarosType('Saros.ModelImageGen'), 'Saros.ModelImageGen');
+			assert.strictEqual(toSarosType('Saros.IfElse'), 'Saros.IfElse');
+			assert.strictEqual(toSarosType('Saros.AskUser'), 'Saros.AskUser');
+		});
+
+		test('unregistered Saros type falls back to legacy lowercase migration', () => {
+			// 注册表未注册的 Saros.* 类型仍走旧小写路径（ReactFlow 时代兼容）。
+			assert.strictEqual(toSarosType('Saros.UnknownThing'), 'unknownthing');
 		});
 	});
 
@@ -82,11 +103,47 @@ suite('ComfyGraphAdapter', () => {
 			assert.strictEqual(connections.length, 2);
 
 			const prompt = nodes.find(n => n.id === 'prompt1')!;
-			assert.strictEqual(prompt.type, 'prompt');
+			// 2026-08-31：注册表内的命名空间类型原样保留（不再去前缀小写）。
+			assert.strictEqual(prompt.type, 'Saros.Prompt');
 			assert.strictEqual(prompt.data?.prompt, 'hello {{x}}');
 			assert.strictEqual(prompt.position.x, 320.35);
 			// de-namespaced type
-			assert.strictEqual(nodes.find(n => n.id === 'start')!.type, 'start');
+			assert.strictEqual(nodes.find(n => n.id === 'start')!.type, 'Saros.Start');
+		});
+
+		test('camelCase schema node survives graph→store round-trip (ModelImageGen bug)', () => {
+			// ★ 复现用户报告：连线创建 ModelImageGen → syncGraphToStore 小写化 →
+			//   autoSave 丢节点。修复后 type 原样往返。
+			const { graph } = toLiteGraph([
+				{ id: 'mig-1', type: 'Saros.ModelImageGen', name: '模型文生图', position: { x: 100, y: 100 } },
+			], []);
+			const { nodes } = fromLiteGraph(graph);
+			assert.strictEqual(nodes.length, 1);
+			assert.strictEqual(nodes[0].type, 'Saros.ModelImageGen');
+		});
+
+		test('duplicate __sarosId (LiteGraph clone) gets deduped at serialization boundary', () => {
+			// ★ 2026-09-02：LiteGraph 原生 duplicate/paste 整份复制 properties
+			//   （含 __sarosId）→ 两个节点同 id → 卡片/快照/控制事件全部串线
+			//   （实测：原 LoadImage 卡片被顶掉、图像消失）。fromLiteGraph 必须
+			//   给撞车者生成唯一 id（--dup<liteId> 后缀）。
+			const graph = {
+				last_node_id: 2,
+				last_link_id: 0,
+				nodes: [
+					{ id: 30, type: 'ComfyTV.ImageLoaderStage', pos: [0, 0], size: [300, 200], properties: { __sarosId: 'loadimage-stage-3', __sarosStageUid: 'uid-a', image: 'data:image/png;base64,AAA' } },
+					{ id: 34, type: 'ComfyTV.ImageLoaderStage', pos: [400, 0], size: [300, 200], properties: { __sarosId: 'loadimage-stage-3', __sarosStageUid: 'uid-b', image: 'data:image/png;base64,AAA' } },
+				],
+				links: [],
+			} as unknown as Parameters<typeof fromLiteGraph>[0];
+			const { nodes } = fromLiteGraph(graph);
+			assert.strictEqual(nodes.length, 2);
+			const ids = nodes.map(n => n.id);
+			assert.notStrictEqual(ids[0], ids[1], '两个节点的 id 不得相同');
+			assert.strictEqual(ids[0], 'loadimage-stage-3');
+			assert.strictEqual(ids[1], 'loadimage-stage-3--dup34');
+			// properties.image（粘贴的数据 URL）原样保留在 data 里
+			assert.strictEqual((nodes[0].data as Record<string, unknown>)['image'], 'data:image/png;base64,AAA');
 		});
 
 		test('restores connections in order', () => {

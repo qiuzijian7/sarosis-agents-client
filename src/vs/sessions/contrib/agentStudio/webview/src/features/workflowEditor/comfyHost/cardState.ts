@@ -23,6 +23,8 @@ export interface NodeCardState {
 	durationMs?: number;
 	/** ISO time the run finished (for "rerun" affordance) */
 	finishedAt?: number;
+	/** 运行中的状态文本（如「AI 抠图模型下载中 12/176MB」），跑进度条 caption。 */
+	message?: string;
 }
 
 const IDLE: NodeCardState = { runState: 'idle', progress: 0 };

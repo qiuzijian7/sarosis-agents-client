@@ -169,17 +169,4 @@ export class OpenAIEmbeddingProvider extends Disposable implements IEmbeddingPro
 	}
 }
 
-/**
- * Knot 内部 API embedding provider（方案A 的内部变体）。
- * 继承 OpenAI 兼容协议，叠加内部鉴权头；密钥走专属 embedding.knot.* 配置键。
- */
-export class KnotEmbeddingProvider extends OpenAIEmbeddingProvider {
 
-	constructor(
-		definition: IEmbeddingProviderDefinition,
-		@IConfigurationService configurationService: IConfigurationService,
-		@ILogService logService: ILogService,
-	) {
-		super(definition, configurationService, logService);
-	}
-}

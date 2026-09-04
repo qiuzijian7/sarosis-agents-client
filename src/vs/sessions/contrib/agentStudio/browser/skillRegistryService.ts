@@ -536,7 +536,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		this.logService.info(`[SkillRegistry] reload() complete: total ${this._skills.size} skills`);
 		this._onDidChangeSkills.fire();
 
-		// Fire a batch Synced event so external consumers (e.g. knot-agui) can
+		// Fire a batch Synced event so external consumers (e.g. demo-agui) can
 		// re-sync their local skill mirrors after any reload (install, uninstall,
 		// filesystem changes, etc.).
 		this._fireBatchSyncedEvent();

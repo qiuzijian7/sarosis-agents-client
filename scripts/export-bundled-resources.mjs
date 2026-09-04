@@ -180,6 +180,16 @@ const mcpPresets = [
     "args": ["-y", "figma-developer-mcp", "--stdio"],
     "envKeys": ["FIGMA_API_KEY"],
     "builtin": true
+  },
+  {
+    "id": "chrome-devtools",
+    "name": "Chrome DevTools",
+    "description": "Chrome DevTools MCP（官方 GoogleChrome）。让 AI 驱动真实 Chrome 做页面调试：查看控制台日志、捕获网络请求、性能追踪（Lighthouse/trace）、DOM/CSS 检查与截图、表单自动化与点击/输入等浏览器交互。用于前端联调、报错排查与性能优化。",
+    "transportType": "stdio",
+    "command": "npx",
+    "args": ["-y", "chrome-devtools-mcp@latest"],
+    "icon": "🧭",
+    "builtin": true
   }
 ];
 

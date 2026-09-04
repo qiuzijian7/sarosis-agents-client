@@ -913,11 +913,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 			}
 
-				// 3a-2. 注入已启用工具的使用指引（Knot provider 跳过：服务端处理工具）
+				// 3a-2. 注入已启用工具的使用指引
 				const activeModelSelection = this._agentOS.getActiveModelSelection();
-				const isKnotProvider = activeModelSelection?.providerId.includes('knot');
 				// 模型族：决定工具调用格式指令的措辞（真源 common/modelFamilyPrompt.ts）。
-				// 沿用与 isKnotProvider 相同的前提（都基于 activeModelSelection）。
 				const promptModelFamily = detectModelFamily(activeModelSelection?.modelId);
 
 			// 缓存 key 必须纳入 focus/toolset/hardPermission 等过滤条件的签名——否则同一 agent
@@ -939,7 +937,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		if (cachedToolSection !== undefined) {
 			pushSeg(stableParts, 'tool-section', cachedToolSection);
 			this._logService.info(`[AgentDriver] Tool inventory CACHE HIT (key=${toolCacheKey})`);
-			} else if (!isKnotProvider) {
+			} else {
 				try {
 					// P0 修复：改用 getEnabledToolNamesForPrompt（focus 模式 + toolset 白名单 +
 					// hardPermission 过滤后的结果），而非 listAllToolsWithState 的全量 enabled 工具。
@@ -965,9 +963,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				} catch (error) {
 					this._logService.warn('[AgentDriver] Failed to inject tool inventory:', error);
 				}
-			} else if (cachedToolSection === undefined) {
-				this._logService.info(`[AgentDriver] Skipped Available Tools injection (Knot provider detected: ${activeModelSelection?.providerId})`);
-			}
+				}
 
 				// 3b. 解析本轮激活的技能内容并注入
 				let mergedMessages = [...request.messages];

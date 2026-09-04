@@ -379,6 +379,20 @@ protected override _appendMessageDom(msg: IAgentChatMessage): void {
 		if (emptyEl) {
 			emptyEl.remove();
 		}
+		// 2026-09-02 修复「气泡被错误拆成两段」：上一条 assistant 的 footer-placeholder
+		//（22px 高的占位行 + 右下角「处理中」pill）在它「仍是最后一条」时被创建；
+		// 但当新一条 assistant 消息 append 后，旧消息不再「是最后一条」，而代码里
+		// 占位的清理（messages.ts 2014-2017）只在**当前消息**的 bubble 上执行——
+		// 新消息的 updateMessage 永远不会回溯清理旧消息的占位，导致旧气泡末尾残留
+		// 22px 空行 + 「处理中」pill 夹在两条气泡之间（视觉上一条气泡被截断）。
+		// 在 append 新消息之前，主动清掉容器里所有旧 assistant 气泡的占位：
+		// 新消息自己的占位由 _createMessageElement 内部 1687-1692 行按
+		// _isLastAssistantMessage 重新创建（仅作用于最后一条）。
+		// 非 assistant / 非流式（历史消息加载走 setMessages 不调 addMessage）的场景
+		// 本来就不会有 footer-placeholder，清除是空操作，安全。
+		this._messagesContainer
+			.querySelectorAll('.chat-message.assistant .chat-bubble .chat-bubble-footer-placeholder')
+			.forEach(ph => ph.remove());
 		const el = this._createMessageElement(msg);
 		// 药丸可见时插入到它前面，保持药丸始终位于消息流末尾
 		const pill = this._loadingPillEl;
@@ -2242,7 +2256,7 @@ protected override _formatDuration(ms: number): string {
 		return `${minutes}m ${remainSec}s`;
 	}
 
-/** 构建「处理中」指示元素（spinner + 「处理中」+ 已耗时）。
+/** 构建「处理中」指示元素（spinner + 「处理中」+ 已耗时 + 流式光标）。
  *  2026-08-29：替代原全局 chat-loading-pill 药丸，内嵌到 LLM 气泡 footer 区域右侧。
  *  —— 流式期间挂载在 .chat-bubble-footer-placeholder 内；loop 结束后占位连同本元素
  *     一起被真实 footer（含「耗时」pill）替换，语义自然衔接。
@@ -2250,7 +2264,11 @@ protected override _formatDuration(ms: number): string {
  *  2026-08-31：不再要求 `msg.isStreaming` —— 只要 loop 未结束（_isSending）就一直显示，
  *  覆盖「一轮 LLM 输出完毕 → 工具执行 / 等待下一轮」的间隙；此时 isStreaming 为 false
  *  但任务远未结束，隐藏指示会让用户误判为卡死。
- *  已耗时文本带 .chat-footer-processing-elapsed，由 _tickProcessingElapsed 每秒刷新。 */
+ *  已耗时文本带 .chat-footer-processing-elapsed，由 _tickProcessingElapsed 每秒刷新。
+ *  2026-09-03：追加 .streaming-cursor 到 wrap 左侧，与 pill 同一行渲染——
+ *  取代原 .streaming-container::after 文本末尾光标（CSS 已统一改为 footer 行底部光标，
+ *  实现「光标在气泡尾部」的设计意图）。仅当 msg.isStreaming 时显示——非流式间隙
+ *  （_isSending 但 isStreaming=false）只有 pill 不带光标，避免误导。 */
 protected _createProcessingIndicator(msg: IAgentChatMessage): HTMLElement | null {
 	if (!this._isSending || !this._isLastAssistantMessage(msg)) {
 		return null;
@@ -2258,6 +2276,9 @@ protected _createProcessingIndicator(msg: IAgentChatMessage): HTMLElement | null
 	const wrap = $('span.chat-bubble-footer-item.chat-footer-processing');
 	// 推到 footer 区域最右侧（footer 与 placeholder 均为 flex 行布局）
 	wrap.style.marginLeft = 'auto';
+	if (msg.isStreaming) {
+		append(wrap, $('span.streaming-cursor'));
+	}
 	append(wrap, $('span.chat-footer-processing-spinner.loading-spinner'));
 	append(wrap, $('span.chat-footer-processing-label', undefined, '处理中'));
 	append(wrap, $('span.chat-footer-processing-elapsed',
@@ -2333,12 +2354,17 @@ protected _tickProcessingElapsed(): void {
 	// 先自愈：占位可能在 _isSending 置位前创建、或被 _ensurePhaseIndicator 移除重建，
 	// 导致「处理中」指示缺失。每秒兜底补建一次（内部幂等）。
 	this._syncLastProcessingIndicator();
-	// 指示元素流式期间挂在 .chat-bubble-footer-placeholder 内，故不限定 footer 前缀
-	const el = this._messagesContainer
-		?.querySelector('.chat-footer-processing-elapsed') as HTMLElement | null;
-	if (!el) { return; }
 	const last = [...this._messages].reverse().find(m => m.role === 'assistant');
 	if (!last) { return; }
+	// 2026-09-02 加固：必须【先取最后一条消息，再在其元素内】查找 pill。
+	// 原实现是 querySelector 取容器里 DOM 第一个 .chat-footer-processing-elapsed，
+	// 再用 last 的时间戳刷新——两者可能不属于同一条消息（如旧消息占位残留时，
+	// 残留 pill 排在 DOM 前面），会把【旧 pill 刷成新消息的耗时】（日志 1788354663563
+	// 中残留 pill 显示「8ms」正是该错配）。限定在 last 自己的消息元素内查询后，
+	// 即使出现残留 pill 也不会被错误刷新（显示陈旧值反而便于发现问题）。
+	const el = this._findMessageElementById(last.id)
+		?.querySelector('.chat-footer-processing-elapsed') as HTMLElement | null;
+	if (!el) { return; }
 	el.textContent = this._formatProcessingElapsed(last);
 }
 

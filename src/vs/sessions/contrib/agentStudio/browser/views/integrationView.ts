@@ -138,16 +138,17 @@ export class IntegrationViewPane extends ViewPane {
 	private mcpSearchQuery = '';
 	private mcpSearchInput!: HTMLInputElement;
 	private static readonly MCP_DISABLED_STORAGE_KEY = 'agentStudio.mcpDisabledServers';
-	/** Server definition IDs that are NOT MCP servers (e.g. model providers, built-in collections) */
-	private static readonly NON_MCP_SERVER_IDS = new Set(['knot-agui', 'knot_agui']);
+	/**
+	 * Server definition IDs that are NOT MCP servers (e.g. model providers, built-in collections).
+	 * 需要排除新的非 MCP 条目时往这里加；当前为空（原 knot-agui 条目已随插件移除）。
+	 */
+	private static readonly NON_MCP_SERVER_IDS = new Set<string>();
 	/** Check whether a server ID (raw or sanitized) should be excluded */
 	private static _isNonMcpServer(id: string): boolean {
 		if (IntegrationViewPane.NON_MCP_SERVER_IDS.has(id)) { return true; }
 		// Also check sanitized form
 		const norm = id.replace(/[^A-Za-z0-9_]/g, '_');
 		if (IntegrationViewPane.NON_MCP_SERVER_IDS.has(norm)) { return true; }
-		// Pattern match: IDs containing 'knot' are model providers, not MCP servers
-		if (id.toLowerCase().includes('knot')) { return true; }
 		return false;
 	}
 

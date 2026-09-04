@@ -64,11 +64,11 @@ suite('Agent OS - Interface Definitions (Phase 1)', () => {
 
 	test('IModelSelection interface', () => {
 		const selection = {
-			providerId: 'knot-agui',
+			providerId: 'demo-agui',
 			modelId: 'agent-1',
 		};
 
-		assert.strictEqual(selection.providerId, 'knot-agui');
+		assert.strictEqual(selection.providerId, 'demo-agui');
 		assert.strictEqual(selection.modelId, 'agent-1');
 	});
 

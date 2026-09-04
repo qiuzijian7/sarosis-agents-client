@@ -230,7 +230,7 @@ export class AgentInstanceService extends Disposable implements IAgentInstanceSe
 				templateId: instance.templateId,
 				workspaceId: instance.workspaceId,
 				model: {
-					providerId: 'knot-agui',
+					providerId: 'demo-agui',
 					modelId: 'gpt-4o',
 					temperature: 0.7,
 					maxTokens: 4096,

@@ -46,6 +46,9 @@ export interface ProviderModelInfo {
 	supportsToolCall?: boolean; // 是否支持工具调用
 	supportsImages?: boolean;  // 是否支持图片
 	supportsImageGen?: boolean; // 是否支持文生图（text → image）
+	supportsVideoGen?: boolean; // 是否支持文生视频（text/image → video）
+	supportsModelGen?: boolean; // 是否支持 3D 模型生成（text/image → 3D asset）
+	supportsAudioGen?: boolean; // 是否支持音频生成（text → audio/music/tts）
 	supportsReasoning?: boolean; // 是否支持推理/思考模式
 	onlyReasoning?: boolean;   // 是否仅推理模式
 	reasoningType?: 'budget-slider' | 'effort-slider' | false; // 推理 UI 形态（预算滑块 / 努力滑块）

@@ -155,6 +155,27 @@ export class MediaSnapshotStore {
 		return this.refs.get(key);
 	}
 
+	/**
+	 * 按 key **原地覆盖**媒体内容（不新增 index、不触发媒体库导入）。
+	 * 用途：EmojiCellEditor 橡皮擦/涂改——直接更新整图（port 'sheet'）或
+	 * 单格产物（port 'output'）的像素，保持快照序列稳定。
+	 *
+	 * @returns 是否成功（key 不存在 → false。**此前静默 return**，调用方无从
+	 *   得知「替换没生效」，用户看到的就是「编辑后 output 没更新」。改为显式
+	 *   返回 + warn，由调用方兜底提示。）
+	 */
+	replaceByKey(key: string, media: MediaRef): boolean {
+		if (!this.refs.has(key)) {
+			// eslint-disable-next-line no-console
+			console.warn(`[MediaSnapshotStore] replaceByKey: key not found → ${key}（快照可能在编辑期间被重排/清除）`);
+			return false;
+		}
+		this.refs.set(key, media);
+		void this.backend.saveMeta?.(key, media);
+		this.notify();
+		return true;
+	}
+
 	has(key: string): boolean {
 		return this.refs.has(key);
 	}
@@ -301,6 +322,62 @@ export class MediaSnapshotStore {
 			}
 		}
 		return out.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+	}
+
+	/**
+	 * 某节点「最新一轮」的格子快照 + 最新图集（image，格排除 sheet 类）。
+	 *
+	 * ★ 为什么需要：`put` 恒追加新 key（不覆盖历史），EmojiStage **多次执行**的
+	 *   格子快照会全部堆在 `byNode` 里 —— 下游「转动态表情包」收集时把历史轮
+	 *   也混进来（9 张旧格 + 16 张新格 → 计数膨胀），预览/拼贴与上游实际不符。
+	 *
+	 * 「最新一轮」格数 = 最新 sheet（meta.sheetFull/sheet='1'）的 rows×cols：
+	 *   从尾部反向取 K 个非 sheet 格（每轮格子在该轮 sheet 之前归档、index 连续
+	 *   递增，尾部 K 个即最新轮）。无 sheet meta 时回退全部格子（单图/无图集上游）。
+	 */
+	latestRoundOf(nodeId: string): {
+		cells: MediaSnapshotEntry[];
+		sheet?: { entry: MediaSnapshotEntry; rows: number; cols: number; margin: number };
+	} {
+		const all = this.byNode(nodeId);
+		const isSheetEntry = (e: MediaSnapshotEntry): boolean => {
+			const meta = e.media.meta as Record<string, string> | undefined;
+			return e.media.kind === 'image' && (meta?.sheet === '1' || meta?.sheetFull === '1');
+		};
+		const cells = all.filter(e => e.media.kind === 'image' && !isSheetEntry(e));
+		// ★ sheet 选取优先级（2026-09-03 根因修复）：
+		//   byNode 按 key 字典序排序（`…:image:0` < `…:output:*` < `…:sheet:0`）——
+		//   **原生整图（port 'sheet'，meta.sheetFull='1'）恒排尾部**。此前「反向找
+		//   第一个 sheet」会永久命中原生整图，而单格编辑/裁剪的最终产物在**合并
+		//   图集**（port 'image'，meta.sheet='1'，key 排最前）→ 下游（转动态）拿到
+		//   的永远是未经编辑的原生整图等分切（「单格调对了、传下去又被错误裁剪」）。
+		//   现分别取两者各自最新，**merged（合并图集）优先**、full（原生整图）兜底：
+		//   merged 承载编辑/裁剪结果且几何与下游切分契约（无缝等分）一致。
+		let merged: { entry: MediaSnapshotEntry; rows: number; cols: number; margin: number } | undefined;
+		let full: { entry: MediaSnapshotEntry; rows: number; cols: number; margin: number } | undefined;
+		for (let i = all.length - 1; i >= 0; i--) {
+			const e = all[i];
+			if (e.media.kind !== 'image') { continue; }
+			const meta = e.media.meta as Record<string, string> | undefined;
+			const isMerged = meta?.sheet === '1';
+			const isFull = meta?.sheetFull === '1';
+			if (!isMerged && !isFull) { continue; }
+			const r = Number(meta?.rows);
+			const c = Number(meta?.cols);
+			const m = Number(meta?.margin);
+			const shape = {
+				entry: e,
+				rows: Number.isFinite(r) && r >= 1 ? Math.min(6, r) : 0,
+				cols: Number.isFinite(c) && c >= 1 ? Math.min(6, c) : 0,
+				margin: Number.isFinite(m) && m >= 0 ? Math.min(0.2, m) : 0,
+			};
+			if (isMerged && !merged) { merged = shape; }
+			if (isFull && !full) { full = shape; }
+			if (merged && full) { break; }
+		}
+		const sheet = merged ?? full;
+		const k = sheet && sheet.rows * sheet.cols > 0 ? Math.min(36, sheet.rows * sheet.cols) : 0;
+		return { cells: k > 0 && cells.length > k ? cells.slice(cells.length - k) : cells, sheet };
 	}
 
 	/** 所有节点（跨节点）的 entry，可选按 kind 过滤。用于 picker 的「全部生成图」

@@ -1,0 +1,295 @@
+{
+	"name": "saros-lightai-provider",
+	"displayName": "LightAI Provider",
+	"description": "LightAI（腾讯光子内部）图像生成模型提供者，通过 vscode.lm 标准接口接入 VsSaros（供「模型文生图」节点使用）。",
+	"version": "1.0.0",
+	"publisher": "saros",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.95.0"
+	},
+	"capabilities": {
+		"virtualWorkspaces": true,
+		"untrustedWorkspaces": {
+			"supported": true
+		}
+	},
+	"activationEvents": [
+		"*"
+	],
+	"main": "./dist/extension.cjs.js",
+	"contributes": {
+		"chatPlugins": [
+			{
+				"path": "./plugin"
+			}
+		],
+		"languageModelChatProviders": [
+			{
+				"vendor": "lightai",
+				"displayName": "LightAI"
+			}
+		],
+		"commands": [
+			{
+				"command": "lightai.openSettings",
+				"title": "LightAI: 打开设置"
+			},
+			{
+				"command": "lightai.login",
+				"title": "LightAI: 登录（自动获取 Cookie 与 User ID）",
+				"icon": "$(sign-in)"
+			},
+			{
+				"command": "lightai.logout",
+				"title": "LightAI: 登出",
+				"icon": "$(sign-out)"
+			},
+			{
+				"command": "lightai.showPanel",
+				"title": "LightAI: 打开状态面板",
+				"icon": "$(plug)"
+			},
+			{
+				"command": 			"lightai.refreshModels",
+				"title": "LightAI: 获取模型信息",
+				"icon": "$(sync)"
+			},
+			{
+				"command": "lightai.testConnection",
+				"title": "LightAI: 测试连接"
+			},
+			{
+				"command": "lightai.generateImage",
+				"title": "LightAI: 生成图片（供「模型文生图」节点内部调用）"
+			},
+			{
+				"command": "lightai.generateVideo",
+				"title": "LightAI: 生成视频（供「模型文生视频」能力内部调用）"
+			},
+			{
+				"command": "lightai.generateModel3D",
+				"title": "LightAI: 生成 3D 模型（混元 3.5 图生/文生）"
+			},
+			{
+				"command": "lightai.generateAudio",
+				"title": "LightAI: 生成音频（TTS 文生语音）"
+			}
+		],
+		"views": {
+			"explorer": [
+				{
+					"id": "lightaiStatus",
+					"name": "LightAI",
+					"when": "true"
+				}
+			]
+		},
+		"configuration": {
+			"type": "object",
+			"title": "LightAI Provider",
+			"properties": {
+				"lightai.loginAction": {
+					"type": "boolean",
+					"default": false,
+					"description": "触发浏览器登录，自动抓取 Cookie / User ID 及应用与项目参数（点击即执行，无需保存）。",
+					"scope": "application",
+					"x-action": "lightai.login",
+					"x-actionLabel": "登录（自动获取 Cookie / User ID）"
+				},
+				"lightai.logoutAction": {
+					"type": "boolean",
+					"default": false,
+					"description": "清除已保存的 Cookie 与 User ID（点击即执行，无需保存）。",
+					"scope": "application",
+					"x-action": "lightai.logout",
+					"x-actionLabel": "登出"
+				},
+				"lightai.fetchModelsAction": {
+					"type": "boolean",
+					"default": false,
+					"description": "重新拉取可用模型清单（图片 / 视频 / 3D 三类），不重新登录。LightAI 上线新模型后点此即可更新。",
+					"scope": "application",
+					"x-action": "lightai.refreshModels",
+					"x-actionLabel": "获取模型信息"
+				},
+				"lightai.floodApiBase": {
+					"type": "string",
+					"default": "https://lightai-lightflood-v1-sd.aigclsp.com",
+					"description": "LightAI 智能编排服务 base URL（图片 / 视频 / 3D 生成全部走此域）",
+					"scope": "application"
+				},
+				"lightai.cookie": {
+					"type": "string",
+					"default": "",
+					"description": "登录会话 Cookie（形如 sessionid=xxx; uid=xxx）。从浏览器 F12 → Network → 任意 aigclsp 请求的 Request Headers 复制。过期后需重新填写。",
+					"scope": "application",
+					"x-readonly": true
+				},
+				"lightai.userId": {
+					"type": "string",
+					"default": "",
+					"description": "用户 ID（企微邮箱，如 zijianqiu@tencent.com），对应请求头 x-user-id",
+					"scope": "application",
+					"x-readonly": true
+				},
+				"lightai.appId": {
+					"type": "string",
+					"default": "137",
+					"description": "应用 ID（请求头 app_id）",
+					"scope": "application",
+					"x-readonly": true
+				},
+				"lightai.bizId": {
+					"type": "string",
+					"default": "73",
+					"description": "项目 ID（请求头 biz_id，同时作为 billing_info.project_id）",
+					"scope": "application",
+					"x-readonly": true
+				},
+				"lightai.appName": {
+					"type": "string",
+					"default": "智能对话",
+					"description": "应用名称（billing_info.app_name）",
+					"scope": "application",
+					"x-readonly": true
+				},
+				"lightai.projectName": {
+					"type": "string",
+					"default": "萨罗斯GR项目",
+					"description": "项目名称（请求头 project_name 与 billing_info.project_name）",
+					"scope": "application",
+					"x-readonly": true
+				},
+				"lightai.userType": {
+					"type": "string",
+					"default": "内部用户",
+					"description": "用户类型（billing_info.user_type）",
+					"scope": "application"
+				},
+				"lightai.company": {
+					"type": "string",
+					"default": "腾讯-二方公司",
+					"description": "公司（billing_info.company）",
+					"scope": "application"
+				},
+				"lightai.imageModels": {
+					"type": "array",
+					"default": [
+						"picture_banana_2",
+						"picture_gpt_image_2",
+						"picture_seedream_50",
+						"picture_midjourney_8_2"
+					],
+					"description": "图片生成模型列表（lightflood appValue，自动发现，供「模型文生图」节点使用）",
+					"scope": "application",
+					"items": {
+						"type": "string"
+					}
+				},
+				"lightai.videoModels": {
+					"type": "array",
+					"default": [
+						"video_minimax_h3",
+						"video_hunyuan"
+					],
+					"description": "视频生成模型列表（lightflood appValue，自动发现，供「模型文生视频」节点使用）",
+					"scope": "application",
+					"items": {
+						"type": "string"
+					}
+				},
+				"lightai.model3dModels": {
+					"type": "array",
+					"default": [
+						"model_hunyuan_3_5"
+					],
+					"description": "3D 模型生成列表（lightflood appValue，自动发现，供「3D 模型生成」节点使用）",
+					"scope": "application",
+					"items": {
+						"type": "string"
+					}
+				},
+				"lightai.audioModels": {
+					"type": "array",
+					"default": [
+						"audio_speech_28",
+						"seed_audio_1"
+					],
+					"description": "音频生成模型列表（lightflood appValue，自动发现，供「模型文生音频」节点使用）",
+					"scope": "application",
+					"items": {
+						"type": "string"
+					}
+				},
+				"lightai.timeout": {
+					"type": "number",
+					"default": 120000,
+					"description": "请求超时时间（毫秒）",
+					"scope": "application"
+				},
+				"lightai.k": {
+					"type": "string",
+					"default": "YXBwX2lkPTEzNyZhcHBfbmFtZT3mmbrog73lr7nor50mcHJvZHVjdF9pZD03MyZwcm9kdWN0X25hbWU96JCo572X5pavR1Lpobnnm64=&lang=zh_CN",
+					"description": "URL 中的 k 参数（用于构造 referer，与浏览器保持一致）",
+					"scope": "application"
+				},
+				"lightai.autoLoginOnActivate": {
+					"type": "boolean",
+					"default": false,
+					"description": "未配置凭据时，激活插件自动拉起浏览器登录。默认关闭——仅当点击「登录」按钮时才触发浏览器获取。",
+					"scope": "application"
+				},
+				"lightai.browserChannel": {
+					"type": "string",
+					"default": "chrome",
+					"description": "用于自动登录的浏览器通道（chrome / msedge / chromium）。留空则使用 browserPath。",
+					"scope": "application"
+				},
+				"lightai.browserPath": {
+					"type": "string",
+					"default": "",
+					"description": "浏览器可执行文件绝对路径（可选）。填写后优先于 browserChannel。",
+					"scope": "application"
+				},
+				"lightai.loginTimeout": {
+					"type": "number",
+					"default": 300,
+					"description": "等待手动登录的超时时间（秒）",
+					"scope": "application"
+				},
+				"lightai.apiBase": {
+					"type": "string",
+					"default": "https://aigclsp.com",
+					"description": "用户信息接口所在域名（用于 /api/user/check 自动解析 userId）",
+					"scope": "application"
+				},
+				"lightai.cookieDomain": {
+					"type": "string",
+					"default": ".aigclsp.com",
+					"description": "会话 Cookie 的作用域（写入持久化 profile 时使用）",
+					"scope": "application"
+				},
+				"lightai.cookiePersistDays": {
+					"type": "number",
+					"default": 30,
+					"description": "会话 Cookie 在浏览器 profile 中保留的天数（仅本地保留，不延长服务端有效期）",
+					"scope": "application"
+				}
+			}
+		}
+	},
+	"scripts": {
+		"compile": "node ../../node_modules/typescript/bin/tsc -p ./ && node ../../node_modules/esbuild/bin/esbuild src/extension.ts --bundle --format=cjs --platform=node --external:vscode --external:playwright-core --outfile=dist/extension.cjs.js --sourcemap",
+		"watch": "node ../../node_modules/typescript/bin/tsc -watch -p ./"
+	},
+	"dependencies": {
+		"saros-shared": "file:../shared",
+		"playwright-core": "^1.62.1"
+	},
+	"devDependencies": {
+		"@types/node": "22.x",
+		"@types/vscode": "^1.95.0",
+		"typescript": "^6.0.3"
+	}
+}

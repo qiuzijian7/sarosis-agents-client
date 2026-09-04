@@ -620,7 +620,7 @@ suite('UnifiedSubAgentDispatch — delegate_task propagation', () => {
 				worktreePath: '/worktrees/feature-x',
 				context: 'Prior steps: we ruled out the OAuth path.',
 				toolsets: ['core'],
-				model: { providerId: 'knot-agui', modelId: 'gpt-4o-mini' },
+				model: { providerId: 'demo-agui', modelId: 'gpt-4o-mini' },
 				parentChatMode: 'craft',
 				parentWorkMode: 'plan',
 			},
@@ -633,7 +633,7 @@ suite('UnifiedSubAgentDispatch — delegate_task propagation', () => {
 		// toolset scope override reaches the request
 		assert.deepStrictEqual(req.toolsetsOverride, ['core'], 'toolsetsOverride must equal the requested toolset');
 		// model override reaches the request
-		assert.deepStrictEqual(req.modelOverride, { providerId: 'knot-agui', modelId: 'gpt-4o-mini' }, 'modelOverride must equal the resolved model');
+		assert.deepStrictEqual(req.modelOverride, { providerId: 'demo-agui', modelId: 'gpt-4o-mini' }, 'modelOverride must equal the resolved model');
 		// worktree + policy/phase inheritance reach the request
 		assert.strictEqual(req.worktreePath, '/worktrees/feature-x', 'worktreePath must be inherited from the parent');
 		assert.strictEqual(req.chatMode, 'craft', 'stable ChatMode policy must be inherited');
@@ -675,8 +675,8 @@ suite('UnifiedSubAgentDispatch — delegate_task propagation', () => {
 			execFn,
 			'shared context for fan-out',
 			[
-				{ type: SubAgentType.Explore, toolsets: ['core'], model: { providerId: 'knot-agui', modelId: 'mini-a' }, worktreePath: '/wt/a', parentWorkMode: 'plan' },
-				{ type: SubAgentType.General, toolsets: ['utility'], model: { providerId: 'knot-agui', modelId: 'mini-b' }, worktreePath: '/wt/b', parentWorkMode: 'work' },
+				{ type: SubAgentType.Explore, toolsets: ['core'], model: { providerId: 'demo-agui', modelId: 'mini-a' }, worktreePath: '/wt/a', parentWorkMode: 'plan' },
+				{ type: SubAgentType.General, toolsets: ['utility'], model: { providerId: 'demo-agui', modelId: 'mini-b' }, worktreePath: '/wt/b', parentWorkMode: 'work' },
 			],
 		);
 
@@ -693,8 +693,8 @@ suite('UnifiedSubAgentDispatch — delegate_task propagation', () => {
 		assert.deepStrictEqual(reqBeta.toolsetsOverride, ['utility'], 'beta scoped to utility');
 
 		// Per-task model override
-		assert.deepStrictEqual(reqAlpha.modelOverride, { providerId: 'knot-agui', modelId: 'mini-a' });
-		assert.deepStrictEqual(reqBeta.modelOverride, { providerId: 'knot-agui', modelId: 'mini-b' });
+		assert.deepStrictEqual(reqAlpha.modelOverride, { providerId: 'demo-agui', modelId: 'mini-a' });
+		assert.deepStrictEqual(reqBeta.modelOverride, { providerId: 'demo-agui', modelId: 'mini-b' });
 
 		// Per-task worktree + WorkMode
 		assert.strictEqual(reqAlpha.worktreePath, '/wt/a');

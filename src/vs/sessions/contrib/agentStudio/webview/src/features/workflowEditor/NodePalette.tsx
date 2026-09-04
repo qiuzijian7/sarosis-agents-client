@@ -18,23 +18,47 @@ const CATEGORY_COLORS: Record<NodeCategory, string> = {
 };
 
 /** Dynamic Comfy groups: ComfyTV stages + ComfyUI native nodes from the registry. */
-interface ComfyPaletteGroup {
+export interface ComfyPaletteGroup {
 	key: string;
 	label: string;
 	color: string;
 	items: PaletteItem[];
 }
 
-function comfyGroups(): ComfyPaletteGroup[] {
+/**
+ * 动态分组（单一事实源）：节点面板（NodePalette）与双击画布搜索菜单
+ * （NodeContextMenu.buildMenuGroups）共用——第 71 轮教训「两份白名单手工
+ * 同步必漂移」，分组逻辑只能有一份。
+ *
+ * ★ Provider 组：Saros 系列 provider 节点（**不依赖 ComfyUI runner**，直连
+ *   provider API）：图片生成 / 文本生成 / 视频生成 / 3D 模型生成 / 音频生成。
+ *   ComfyTV.* 节点要求连接 ComfyUI 才能执行，**不属于 Provider 组**，留在
+ *   ComfyTV Stages。全部从 schema 组里挑出，避免同一节点出现在两个组。
+ */
+export function comfyGroups(): ComfyPaletteGroup[] {
 	const llm = buildComfyPaletteItems('llm');
 	const tv = buildComfyPaletteItems('schema');
 	const native = buildComfyPaletteItems('native');
 	const groups: ComfyPaletteGroup[] = [];
+	const PROVIDER_NODE_TYPES = new Set([
+		'Saros.ModelImageGen',
+		'Saros.TextGen',
+		'Saros.ModelVideoGen',
+		'Saros.AnimatedEmoji',
+		'Saros.Model3DGen',
+		'Saros.AudioGen',
+		'Saros.WeixinStickerCover',
+	]);
+	const providerItems = tv.filter(i => PROVIDER_NODE_TYPES.has(i.type));
+	const restTv = tv.filter(i => !PROVIDER_NODE_TYPES.has(i.type));
+	if (providerItems.length) {
+		groups.push({ key: 'provider', label: `Provider (${providerItems.length})`, color: '#10b981', items: providerItems });
+	}
 	if (llm.length) {
 		groups.push({ key: 'llm', label: `Provider 文生图 (${llm.length})`, color: '#06b6d4', items: llm });
 	}
-	if (tv.length) {
-		groups.push({ key: 'comfyTV', label: `ComfyTV Stages (${tv.length})`, color: '#e879f9', items: tv });
+	if (restTv.length) {
+		groups.push({ key: 'comfyTV', label: `ComfyTV Stages (${restTv.length})`, color: '#e879f9', items: restTv });
 	}
 	if (native.length) {
 		groups.push({ key: 'comfyUI', label: `ComfyUI Native (${native.length})`, color: '#f59e0b', items: native });

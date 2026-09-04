@@ -22,6 +22,7 @@ import * as React from 'react';
 import { useSyncExternalStore } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { NodeSpec, StageVariant } from './registry';
+import { WEIXIN_EXPORT_TARGETS } from './registry';
 import { ORCH_RICH_NODE_TYPES } from './registry.js';
 import type { MediaSnapshotStore } from './mediaSnapshotStore';
 import type { MediaSnapshotEntry } from './mediaSnapshot';
@@ -49,7 +50,7 @@ import { useRunnerStatus } from './runnerStatusStore';
 import { markFormHeightDirty } from './domWidget';
 import { buildSarosEditorFields } from './nodeEditorForm';
 import { ComboPopover } from './ComboPopover';
-import { resolveMediaAssetUrl, collectUpstreamTexts } from './workflowRun.js';
+import { resolveMediaAssetUrl, collectUpstreamTexts, composeImageGridOnChroma, splitStickerSheet } from './workflowRun.js';
 import { useProviderStore } from '../../../store/useProviderStore';
 import { useAgentStore } from '../../../store/useAgentStore';
 import { usePicklistStore } from '../picklistStore';
@@ -61,7 +62,10 @@ import { GridSplitEditor } from '../GridSplitEditor';
 import { ColorGradeEditor } from '../ColorGradeEditor';
 import { TransformEditor } from '../TransformEditor';
 import { StatEmojiStageEditor } from '../StatEmojiStageEditor';
-import { DynEmojiStageEditor } from '../DynEmojiStageEditor';
+import { MiniImageEditor, type CellCropRect } from '../MiniImageEditor';
+import { refToPngDataUrl, rembgRemoveDataUrl } from '../miniEditorAi.js';
+import { createPortal } from 'react-dom';
+import { AnimatedEmojiEditor } from '../AnimatedEmojiEditor';
 import { MultiangleEditor } from './MultiangleEditor';
 import { AssetReferences, type AssetCandidate } from './AssetReferences';
 import { MentionTextarea, type MentionCandidate } from './MentionTextarea';
@@ -83,7 +87,7 @@ class DCEErrorBoundary extends React.Component<{ children: React.ReactNode }, { 
 	static getDerivedStateFromError(err: Error) { return { err }; }
 	componentDidCatch(err: Error) {
 		// eslint-disable-next-line no-console
-		console.warn('[DC-DEBUG] render error:', err && (err.stack || String(err)));
+		console.error('[DirectorConsole] 渲染失败：', err);
 	}
 	render() {
 		if (this.state.err) {
@@ -102,23 +106,14 @@ function clampDim(v: number, fallback: number): number {
 }
 
 function LazyDirectorConsole(props: React.ComponentProps<typeof import('../DirectorConsoleEditor').DirectorConsoleEditor>) {
-	// eslint-disable-next-line no-console
-	console.warn('[DC-DEBUG] LazyDirectorConsole mounted');
 	const [Comp, setComp] = React.useState<React.ComponentType<typeof props> | null>(null);
 	React.useEffect(() => {
 		import('../DirectorConsoleEditor')
-			.then(m => {
-				try {
-					const C = m.DirectorConsoleEditor;
-					// eslint-disable-next-line no-console
-					console.warn('[DC-DEBUG] component ref OK');
-					setComp(() => C);
-				} catch (e) {
-					// eslint-disable-next-line no-console
-					console.warn('[DC-DEBUG] access FAIL', e && (e.stack || String(e)));
-				}
-			})
-			.catch(e => { console.warn('[DC-DEBUG] import FAIL', String(e)); });
+			.then(m => { setComp(() => m.DirectorConsoleEditor); })
+			.catch(err => {
+				// eslint-disable-next-line no-console
+				console.error('[DirectorConsole] 懒加载失败：', err);
+			});
 	}, []);
 	if (!Comp) return <div style={{ minHeight: 560, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888' }}>加载导演台…</div>;
 	return <DCEErrorBoundary><Comp {...props} /></DCEErrorBoundary>;
@@ -186,6 +181,15 @@ export interface NodeCardMeta {
 	 *   这里与 prompt 一样显式透传（见 NodeCardMeta.image 的同类先例）。
 	 */
 	cells?: string;
+	/**
+	 * EmojiStage 每格**裁剪框**原始 JSON（node.properties.cell_crops，
+	 * 数组 [{x,y,w,h}]——MiniImageEditor「调整裁剪」的持久化）。
+	 *
+	 * ★ cell_crops 是**隐藏数据**（不在 widgets，toControls 不收）→ 不进
+	 *   meta.controls。与 cells 同理显式透传，否则「重启后裁剪框回默认等分、
+	 *   下游转动态图集裁剪与上游不一致」。
+	 */
+	cellCrops?: string;
 	/** quick actions row (ComfyTV ACTIONS): icon+label, click opens editor */
 	actions?: StageAction[];
 	/** brand tag (ComfyTV / ComfyUI) shown at the top of the card */
@@ -321,7 +325,7 @@ function toControls(spec: NodeSpec | undefined, properties: Record<string, unkno
 export function resolveControlOptions(
 	c: { name: string; type: string; options?: ComboOption[] },
 	drafts: Record<string, unknown>,
-	providers: Array<{ id: string; name: string; models: Array<{ id: string; name: string; supportsImageGen?: boolean }> }>,
+	providers: Array<{ id: string; name: string; models: Array<{ id: string; name: string; supportsImageGen?: boolean; supportsVideoGen?: boolean; supportsModelGen?: boolean; supportsAudioGen?: boolean }> }>,
 	picks?: {
 		agents?: Array<{ id: string; name?: string; icon?: string; role?: string }>;
 		skills?: Array<{ id: string; name?: string }>;
@@ -342,6 +346,49 @@ export function resolveControlOptions(
 		const opts = (p?.models ?? [])
 			.filter(m => llm || m.supportsImageGen)
 			.map(m => ({ label: m.name ?? m.id, value: m.id }));
+		return opts.length > 0 ? opts : undefined;
+	}
+	// 视频 / 3D 模型生成节点（Saros.ModelVideoGen / Saros.Model3DGen）：
+	// provider 下拉列全部已认证 provider（与文生图同语义），model 下拉按
+	// supportsVideoGen / supportsModelGen 过滤（模型按能力标志区分品类）。
+	if (c.name === 'videoProvider' || c.name === 'm3dProvider') {
+		const opts = providers.map(p => ({ label: p.name, value: p.id }));
+		return opts.length > 0 ? opts : undefined;
+	}
+	if (c.name === 'videoModel' || c.name === 'm3dModel') {
+		const key = c.name === 'videoModel' ? 'videoProvider' : 'm3dProvider';
+		const flag = c.name === 'videoModel' ? 'supportsVideoGen' : 'supportsModelGen';
+		const pid = typeof drafts[key] === 'string' ? drafts[key] as string : '';
+		const p = providers.find(x => x.id === pid) ?? (pid ? undefined : providers[0]);
+		const opts = (p?.models ?? [])
+			.filter(m => (flag === 'supportsVideoGen' ? m.supportsVideoGen : m.supportsModelGen))
+			.map(m => ({ label: m.name ?? m.id, value: m.id }));
+		return opts.length > 0 ? opts : undefined;
+	}
+	// 音频生成节点（Saros.AudioGen）：provider 列全部已认证 provider，model 按
+	// supportsAudioGen 过滤（音乐/音效模型按能力标志区分品类）。
+	if (c.name === 'audioProvider') {
+		const opts = providers.map(p => ({ label: p.name, value: p.id }));
+		return opts.length > 0 ? opts : undefined;
+	}
+	if (c.name === 'audioModel') {
+		const pid = typeof drafts.audioProvider === 'string' ? drafts.audioProvider as string : '';
+		const p = providers.find(x => x.id === pid) ?? (pid ? undefined : providers[0]);
+		const opts = (p?.models ?? [])
+			.filter(m => m.supportsAudioGen)
+			.map(m => ({ label: m.name ?? m.id, value: m.id }));
+		return opts.length > 0 ? opts : undefined;
+	}
+	// 文本生成节点（Saros.TextGen）：chat 是模型通用能力，model 下拉不按
+	// 能力标志过滤（与 llm 分支的 `m.supportsImageGen` 过滤相反，全模型可选）。
+	if (c.name === 'textProvider') {
+		const opts = providers.map(p => ({ label: p.name, value: p.id }));
+		return opts.length > 0 ? opts : undefined;
+	}
+	if (c.name === 'textModel') {
+		const pid = typeof drafts.textProvider === 'string' ? drafts.textProvider as string : '';
+		const p = providers.find(x => x.id === pid) ?? (pid ? undefined : providers[0]);
+		const opts = (p?.models ?? []).map(m => ({ label: m.name ?? m.id, value: m.id }));
 		return opts.length > 0 ? opts : undefined;
 	}
 	// agent / skill / tool 选择器：实时列出可用项（label 带 icon 便于辨识）。
@@ -557,6 +604,8 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
 			? 'ComfyTV'
 			: kind === 'schema' ? 'ComfyTV' : kind === 'native' ? 'ComfyUI' : undefined,
 		controls: toControls(spec, properties),
+		// ★ cell_crops 显式透传（隐藏数据，toControls 不收——见 NodeCardMeta.cellCrops）
+		cellCrops: typeof properties.cell_crops === 'string' ? properties.cell_crops : undefined,
 		// ComfyTV 选择器节点（*PickerStage）是 no-Run 本地节点：卡片显示 Pool
 		// 状态栏而非「生成」按钮。
 		isPicker: kind === 'schema' && (spec?.type ?? '').endsWith('PickerStage'),
@@ -581,7 +630,7 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
  */
 const _diagnoseSample = { nodeId: '', nodeType: '', t: 0 };
 export function diagnoseCardMeta(nodeId: string, meta: NodeCardMeta, controlsCount: number): void {
-	const interesting = ['ComfyTV.StatEmojiStage', 'ComfyTV.DynEmojiStage', 'ComfyTV.PanoramaStage', 'ComfyTV.RotateStage', 'ComfyTV.MaterialStage', 'ComfyTV.RelightStage'];
+	const interesting = ['ComfyTV.StatEmojiStage', 'ComfyTV.PanoramaStage', 'ComfyTV.RotateStage', 'ComfyTV.MaterialStage', 'ComfyTV.RelightStage'];
 	if (!interesting.includes(meta.nodeType ?? '')) { return; }
 	const now = Date.now();
 	if (now - _diagnoseSample.t < 1500) { return; } // 节流 1.5s
@@ -658,8 +707,8 @@ const RUN_LABEL: Record<string, { label: string; icon: string }> = {
 	emoji: { label: '生成表情包', icon: '▶' },
 };
 
-/** Thin ComfyTV-style progress bar (h-1.5, gradient fill + mono caption). */
-function RunProgress({ progress }: { progress: number }): React.JSX.Element {
+/** Thin ComfyTV-style progress bar (h-1.5, gradient fill + mono caption + status message). */
+function RunProgress({ progress, message }: { progress: number; message?: string }): React.JSX.Element {
 	// NaN 必须显式拦：`Math.min(100, NaN)` 仍是 NaN，会让 width 变成 "NaN%"
 	// （CSS 视为非法 → 进度条整条不渲染）。上游 value/max 的除零已在
 	// comfyRunner / taskStatus 处防住，这里是纵深防御（对齐 ComfyTV
@@ -667,20 +716,27 @@ function RunProgress({ progress }: { progress: number }): React.JSX.Element {
 	const safe = Number.isFinite(progress) ? progress : 0;
 	const clamped = Math.max(0, Math.min(100, safe));
 	return (
-		<div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
-			<div style={{ flex: 1, height: 5, borderRadius: 2, overflow: 'hidden', background: 'rgba(255,255,255,.10)' }}>
-				<div
-					style={{
-						height: '100%', width: `${clamped}%`,
-						borderRadius: 2,
-						background: 'linear-gradient(90deg, rgba(59,130,246,.85), rgba(59,130,246,.6))',
-						transition: 'width .15s ease-out',
-					}}
-				/>
+		<div style={{ marginTop: 6 }}>
+			<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+				<div style={{ flex: 1, height: 5, borderRadius: 2, overflow: 'hidden', background: 'rgba(255,255,255,.10)' }}>
+					<div
+						style={{
+							height: '100%', width: `${clamped}%`,
+							borderRadius: 2,
+							background: 'linear-gradient(90deg, rgba(59,130,246,.85), rgba(59,130,246,.6))',
+							transition: 'width .15s ease-out',
+						}}
+					/>
+				</div>
+				<span style={{ flexShrink: 0, minWidth: 34, fontSize: 9, textAlign: 'right', fontFamily: 'Consolas, monospace', color: 'var(--vscode-descriptionForeground, #858585)' }}>
+					{Math.round(clamped)}%
+				</span>
 			</div>
-			<span style={{ flexShrink: 0, minWidth: 34, fontSize: 9, textAlign: 'right', fontFamily: 'Consolas, monospace', color: 'var(--vscode-descriptionForeground, #858585)' }}>
-				{Math.round(clamped)}%
-			</span>
+			{message ? (
+				<div style={{ marginTop: 3, fontSize: 10, lineHeight: 1.4, color: 'var(--vscode-descriptionForeground, #9a9a9a)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={message}>
+					{message}
+				</div>
+			) : null}
 		</div>
 	);
 }
@@ -722,13 +778,39 @@ function ErrorBanner({ message, cancel }: { message: string; cancel: boolean }):
 	);
 }
 
+/** MIME → 下载扩展名（image/gif→.gif 等；未知返回空串）。 */
+const MIME_EXT: Record<string, string> = {
+	'image/png': '.png', 'image/gif': '.gif', 'image/jpeg': '.jpg', 'image/webp': '.webp',
+	'image/apng': '.apng', 'image/svg+xml': '.svg',
+	'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
+	'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/ogg': '.ogg',
+};
+function extFromMime(mime: string | undefined | null): string {
+	if (!mime) { return ''; }
+	return MIME_EXT[mime.split(';')[0].trim().toLowerCase()] ?? '';
+}
+
 /** Derive a friendly download filename from a snapshot ref (URL or key). */
 function snapshotFileName(entry: MediaSnapshotEntry): string {
-	const m = /[^/?#]+\.[A-Za-z0-9]{2,5}(?:[?#]|$)/.exec(entry.media.ref);
+	const ref = entry.media.ref;
+	// ★ data URL：MIME 前缀就是真实类型（转动态表情包产物 = data:image/gif）。
+	//   旧逻辑对 data URL 匹配不到文件名 → 兜底猜 .png → GIF 存成 PNG（打不开/丢动画）。
+	if (ref.startsWith('data:')) {
+		const comma = ref.indexOf(',');
+		const mime = comma >= 5 ? ref.slice(5, comma) : '';
+		const safe = entry.key.replace(/[^A-Za-z0-9_.-]/g, '_').replace(/\.(png|jpe?g|gif|webp|mp4|bin)$/i, '');
+		return `${safe}${extFromMime(mime) || '.bin'}`;
+	}
+	const m = /[^/?#]+\.[A-Za-z0-9]{2,5}(?:[?#]|$)/.exec(ref);
 	if (m) { return m[0].replace(/[?#].*$/, ''); }
 	const safe = entry.key.replace(/[^A-Za-z0-9_.-]/g, '_');
 	const ext = entry.media.kind === 'image' ? '.png' : entry.media.kind === 'video' ? '.mp4' : '.bin';
 	return `${safe}${ext}`;
+}
+
+/** Strip a known media extension from a filename (for ext correction). */
+function stripMediaExt(name: string): string {
+	return name.replace(/\.(png|jpe?g|gif|webp|apng|svg|mp4|webm|mov|mp3|wav|ogg|bin)$/i, '');
 }
 
 /** Download a snapshot: fetch URL refs, or read locally-saved payloads. */
@@ -749,7 +831,11 @@ async function downloadSnapshot(store: MediaSnapshotStore, entry: MediaSnapshotE
 	const url = URL.createObjectURL(blob);
 	const a = document.createElement('a');
 	a.href = url;
-	a.download = snapshotFileName(entry);
+	// ★ 扩展名按**实际内容**（blob.type = 响应 content-type / data URL MIME）校正：
+	//   显示为 GIF 的动图下载必须是 .gif —— 文件名兜底猜的 .png 会让浏览器/看图
+	//   软件按 PNG 解码 GIF 字节（静图丢动画，部分查看器直接报错）。
+	const realExt = extFromMime(blob.type);
+	a.download = realExt ? `${stripMediaExt(snapshotFileName(entry))}${realExt}` : snapshotFileName(entry);
 	a.click();
 	setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -1223,37 +1309,41 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		() => providers.filter(p => p.authStatus === 'authenticated'),
 		[providers],
 	);
-	/** 该卡片控件应使用的 provider 列表（Agent=LLM，其余=文生图）。 */
-	const controlProviders = isOrchRich ? chatProviders : imageGenProviders;
-	// ★ 编排富卡片诊断打点：只在关键判定变化时输出（不刷屏）。
-	//   ⚠ 必须放在 providers/agents/skills/tools **全部声明之后** —— 依赖数组在
-	//   渲染时求值，提前引用 `const` 会触发 TDZ ReferenceError 把整张卡打崩。
-	//   排障顺序：
-	//     1. 有 `[syncOverlay] orch node skipped` → 该类型没登记进 ORCH_RICH_NODE_TYPES；
-	//     2. 无 `[orchForm] attached`            → DOM 通路/form widget 没建立；
-	//     3. 这里 controls=[] → registry spec 缺 widgets 声明；
+	// 视频 / 3D 模型生成节点（Saros.ModelVideoGen / Saros.Model3DGen）：provider
+	// 下拉只列**拥有对应能力模型**的已认证 provider（模型级过滤在
+	// resolveControlOptions 里按 supportsVideoGen / supportsModelGen 做）。
+	const videoGenProviders = React.useMemo(
+		() => providers.filter(p => p.authStatus === 'authenticated' && p.models.some(m => m.supportsVideoGen)),
+		[providers],
+	);
+	const modelGenProviders = React.useMemo(
+		() => providers.filter(p => p.authStatus === 'authenticated' && p.models.some(m => m.supportsModelGen)),
+		[providers],
+	);
+	const audioGenProviders = React.useMemo(
+		() => providers.filter(p => p.authStatus === 'authenticated' && p.models.some(m => m.supportsAudioGen)),
+		[providers],
+	);
+	/** 该卡片控件应使用的 provider 列表（Agent=LLM，文生视频/3D/音频按能力，其余=文生图）。 */
+	const controlProviders = isOrchRich
+		? chatProviders
+		: (meta.nodeType === 'Saros.ModelVideoGen' || meta.nodeType === 'Saros.AnimatedEmoji')
+			? videoGenProviders
+			: meta.nodeType === 'Saros.Model3DGen'
+				? modelGenProviders
+				: meta.nodeType === 'Saros.AudioGen'
+					? audioGenProviders
+					: imageGenProviders;
+	// ★ 编排富卡片「内容消失」排障顺序（需要时临时加回诊断日志）：
+	//     1. `[syncOverlay] orch node skipped` → 该类型没登记进 ORCH_RICH_NODE_TYPES；
+	//     2. DOM 通路/form widget 没建立 → 卡片从未挂载；
+	//     3. controls=[] → registry spec 缺 widgets 声明；
 	//     4. controls 有但下拉空 → 对应 store 数据源为空（未登录 provider / 无 agent）。
-	React.useEffect(() => {
-		if (!isOrchRich) { return; }
-		// eslint-disable-next-line no-console
-		console.warn('[orchCard] ' + JSON.stringify({
-			nodeType: meta.nodeType,
-			kind: meta.kind,
-			controls: (meta.controls ?? []).map(c => `${c.name}:${c.type}`),
-			hasPrompt: meta.hasPrompt,
-			providersAll: providers.length,
-			providersUsed: controlProviders.length,
-			agents: agents.length,
-			skills: skills.length,
-			tools: tools.length,
-		}));
-	}, [isOrchRich, meta.nodeType, meta.kind, meta.controls, meta.hasPrompt,
-		providers.length, controlProviders.length, agents.length, skills.length, tools.length]);
 	// ★★ 下拉框为空的**真因修复**：这三个 store 都是**懒加载**（`loadXxx()`
 	//   幂等、需显式调用）。原先只有 `NodeEditorPopup`（双击弹窗）会触发加载，
 	//   画布卡片直接读 store → 永远是空数组 → 所有下拉显示 `—`。
-	//   日志实证：`[orchCard] {...,"providersAll":0,"agents":0,"skills":0,"tools":0}`
-	//   而 controls 与 orchForm 都正常 —— 通路没问题，纯粹是数据源没拉。
+	//   日志实证（当时的诊断打点，现已移除）：providersAll/agents/skills/tools 全为 0，
+	//   而 controls 与 DOM 通路都正常 —— 通路没问题，纯粹是数据源没拉。
 	//   这里按需触发（每个 store 各自 idempotent，不会重复请求）。
 	const loadAgents = useAgentStore(s => s.loadAgents);
 	const loadSkills = usePicklistStore(s => s.loadSkills);
@@ -1289,6 +1379,81 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	// 出历史图像 ref。若仅用 runState 判定就会把已恢复的图像整块隐藏，因此这里
 	// 把「已有快照」也作为显示 OUTPUT 的依据。
 	const ownSnapshots = useNodeSnapshots(snapshotStore, snapKey);
+	// ★ output 口快照（2026-09-02）：sheet 模式新增 port 'sheet'（整图归档）——
+	//   cellRefs / OUTPUT / assetUrl 等消费处只应看到最终产物（port 'output'），
+	//   否则整图会混进网格/输出区。sheetRef 单独从全量快照取。
+	// ★ 只消费「最新一轮」（2026-09-03）：快照按次**追加**不清理（clearNode 只在
+	//   收尾重排内做，且 hydrate 会把 IndexedDB 的历史轮全部恢复）——ownOutputs 若
+	//   取全部条目，多轮执行后**旧轮格子按 key 字典序排在前面** → 网格显示上一轮
+	//   的编辑产物（「重新生成后单格没初始化」）。latestRoundOf 以最新 sheet 的
+	//   rows×cols 从尾部截取本轮格子，与下游转动态节点的取数规则一致。
+	const latestRound = React.useMemo(
+		() => (snapshotStore && snapKey ? snapshotStore.latestRoundOf(snapKey) : undefined),
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[snapshotStore, snapKey, ownSnapshots],
+	);
+	const ownOutputs = (latestRound?.cells ?? ownSnapshots).filter(e => e.port === 'output');
+	// ★ cell_crops 读取走 **meta.cellCrops 显式透传**（properties.cell_crops 每次
+	//   wf-node-control 写入后 meta 重算，即时 + 重启恢复）。不能走 ctl()——
+	//   cell_crops 是隐藏数据不进 meta.controls，重启后 ctl 永远回退默认等分
+	//   （「重启后裁剪框回默认、下游转动态裁剪与上游不一致」根因）。
+	//   也不能在此处引用 controlDrafts（其 useState 在 1740 行，此处为 TDZ）。
+	const cellCropsJson = meta.cellCrops ?? '';
+	// 对账日志（诊断「显示旧一轮」类问题）：条目数/轮次/sheetFull 指纹。
+	React.useEffect(() => {
+		if (ownSnapshots.length === 0 || !(meta.nodeType ?? '').includes('Emoji')) { return; }
+		// eslint-disable-next-line no-console
+		console.log(
+			`[EmojiCard] snapshots=${ownSnapshots.length} round=${latestRound?.cells.length ?? 0} ` +
+			`sheetFull=${(sheetFullEntry?.media.ref ?? '').slice(0, 36) || '—'} ` +
+			`snapKey=${snapKey ?? '—'}`,
+		);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [ownSnapshots.length]);
+	// ★ 双击表情格 → 单格编辑（拖拽/缩放裁剪框 + 橡皮擦），以 portal 独立窗口呈现
+	const [editingEmojiCell, setEditingEmojiCell] = React.useState<number | null>(null);
+	// 单格编辑的裁剪基底整版图 = **LLM / ComfyUI 返回的原生整图**（meta.sheetFull='1'）。
+	// ★ 2026-09-03 需求变更：**不再回退**到切分后的单格图 / 合并图集（sheet='1'）——
+	//   用单格图当整图会让裁剪框坐标系完全错位。无原生整图（旧版产物）→ 禁止编辑，
+	//   提示用户重新生成，而不是拿错误基底凑合。
+	// ★ sheetFull 取**尾部最新**（2026-09-03）：find 从头取第一个——多轮生成后
+	//   旧轮的原生整图（尺寸/内容都可能不同）会永久抢占缩略图与编辑基底。
+	const sheetFullEntry = (() => {
+		for (let i = ownSnapshots.length - 1; i >= 0; i--) {
+			const e = ownSnapshots[i];
+			if (e.media?.kind === 'image' && e.media?.meta?.sheetFull === '1') { return e; }
+		}
+		return undefined;
+	})();
+	// ★ LLM 原图一键去背景（2026-09-03）：本地 rembg 抠图 → 透明 PNG **替换 sheetFull 归档**
+	//（meta 原样保留 → 仍是合法裁剪基底；缩略图棋盘底直显透明）。失败 alert 说明
+	//（服务未启动等），当前归档不动。与整图编辑 Save 同一替换语义。
+	const [sheetRemovingBg, setSheetRemovingBg] = React.useState(false);
+	const handleSheetRemoveBg = async () => {
+		const entry = sheetFullEntry;
+		if (!entry || !snapshotStore || sheetRemovingBg) { return; }
+		setSheetRemovingBg(true);
+		try {
+			const dataUrl = await refToPngDataUrl(entry.media.ref);
+			const out = await rembgRemoveDataUrl(dataUrl);
+			const ok = snapshotStore.replaceByKey(entry.key, { ...entry.media, ref: out });
+			if (!ok) {
+				// key 失效兜底：追加新条目并保留 sheetFull 身份（meta 原样）
+				snapshotStore.put({ nodeId: snapKey ?? nodeId ?? entry.nodeId, port: entry.port, key: '', media: { ...entry.media, ref: out } }, true);
+			}
+		} catch (err) {
+			window.alert(err instanceof Error ? err.message : String(err));
+		} finally {
+			setSheetRemovingBg(false);
+		}
+	};
+	// Esc 关闭独立编辑窗口
+	React.useEffect(() => {
+		if (editingEmojiCell === null) { return; }
+		const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setEditingEmojiCell(null); } };
+		window.addEventListener('keydown', onKey);
+		return () => { window.removeEventListener('keydown', onKey); };
+	}, [editingEmojiCell]);
 	/**
 	 * CONTEXT 区块的数据源：已连线的输入 slot 名。
 	 *
@@ -1349,7 +1514,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	 *   产物其实来自上游 pool → 这里把 pool 也算作有输出，ACTIONS 才会出现。
 	 */
 	const hasOutputContent = run.runState === 'success' || run.runState === 'error'
-		|| ownSnapshots.length > 0
+		|| ownOutputs.length > 0
 		|| (!!meta.isPicker && pickerOutputs.length > 0);
 	/**
 	 * picker 家族统一 hideOutput：pool 网格本身就是 picker 的「OUTPUT」展示
@@ -1447,8 +1612,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const isMaterial = editorKind === 'material';
 	const isDirectorConsole = editorKind === 'directorConsole';
 	const isEmojiStatic = editorKind === 'emoji-static';
-	const isEmojiDynamic = editorKind === 'emoji-dynamic';
-	const isEmoji = isEmojiStatic || isEmojiDynamic;
+	const isEmoji = isEmojiStatic;
 	// W: Loader 内嵌预览（对齐 ComfyTV LoadImage：filename + 上传 + 缩略图 + W×H），
 	//   替代通用 OUTPUT 区。
 	const isImageLoader = editorKind === 'image';
@@ -1476,7 +1640,13 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	// 生成节点（Image/VideoStage）显示「引用」缩略图区（对齐 ComfyTV Asset
 	// references：显示该节点将使用的上游参考图）。
 	const isGeneratorStage = meta.nodeType === 'ComfyTV.ImageStage' || meta.nodeType === 'ComfyTV.VideoStage';
-	const needUpstreamImage = isMaskEdit || isCrop || isGeneratorStage || isEraseStage || isOutpaint || isGridSplit || isColorGrade || isKenBurns || isRotate || isMirror || isMultiangle || isPanorama || isRelight || isMaterial;
+	// ★ 表情包三节点（静态/动态/转动态）都消费 images 端口参考图 —— 对齐 ComfyTV
+	//   「连线 → 卡片 reference 显示上游图」的设计逻辑（此前漏在白名单外，用户
+	//   连线后无法确认参考图是否生效）。用 nodeType 直判：isEmojiStatic 等定义
+	//   在本行之后（TDZ）。
+	const isEmojiRefConsumer = meta.nodeType === 'ComfyTV.StatEmojiStage'
+		|| meta.nodeType === 'Saros.AnimatedEmoji';
+	const needUpstreamImage = isMaskEdit || isCrop || isGeneratorStage || isEraseStage || isOutpaint || isGridSplit || isColorGrade || isKenBurns || isRotate || isMirror || isMultiangle || isPanorama || isRelight || isMaterial || isEmojiRefConsumer;
 	// 下游编辑节点的背景图取**最新**一张（byNode 按 index 升序 = 旧的在前，
 	// 最新在末尾）。重新生成 ImageStage 后，下游（Erase/Rotate/Mirror/Outpaint
 	// 等）编辑器应同步刷新为最新图，而非停留在最旧的那张。订阅式
@@ -1506,12 +1676,33 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	);
 	void upstreamRefsVersion;
 	const upstreamImageRefs: string[] = [];
+	// 上游图集 meta（静态表情包 image 口合并图集 meta.sheet='1' / recrop 归档
+	// 整版 meta.sheetFull='1'，均带 rows/cols）：供转动态表情包预览网格与
+	// 执行器自动行列对齐。
+	//
+	// ★ 与 runAnimatedEmoji 执行收集同规则（2026-09-02）：快照不按 port 过滤，
+	//   静态表情包节点 byNode 里同时有独立格（images 口）与图集（image 口）——
+	//   「引用」区若全量显示，图集（=各格拼合版）与独立格**内容重复**。
+	//   规则：独立格优先进列表；无独立格时才回退图集整图（sheet 兜底）。
+	const upstreamSheetMeta = { rows: 0, cols: 0, margin: 0, ref: '' };
 	if (snapshotStore && upstreamNodeIds?.length) {
+		const cellRefs: string[] = [];
 		for (const uid of upstreamNodeIds) {
-			for (const e of snapshotStore.byNode(uid)) {
-				if (e.media.kind === 'image' && !upstreamImageRefs.includes(e.media.ref)) { upstreamImageRefs.push(e.media.ref); }
+			// ★ latestRoundOf：只取「最新一轮」格子（快照按次追加不清理，byNode
+			//   会把历史轮全混进来 → 9 张旧格 + 新格 → 计数膨胀为 16/25）。
+			const round = snapshotStore.latestRoundOf(uid);
+			if (round.sheet && !upstreamSheetMeta.ref) {
+				upstreamSheetMeta.ref = round.sheet.entry.media.ref;
+				upstreamSheetMeta.rows = round.sheet.rows;
+				upstreamSheetMeta.margin = round.sheet.margin;
+				upstreamSheetMeta.cols = round.sheet.cols;
+			}
+			for (const e of round.cells) {
+				if (!cellRefs.includes(e.media.ref)) { cellRefs.push(e.media.ref); }
 			}
 		}
+		if (cellRefs.length > 0) { upstreamImageRefs.push(...cellRefs); }
+		else if (upstreamSheetMeta.ref) { upstreamImageRefs.push(upstreamSheetMeta.ref); }
 	}
 	const commitMaskField = React.useCallback((name: string, value: string) => {
 		if (!nodeId) { return; }
@@ -1552,11 +1743,32 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		return init;
 	});
 	const commitControl = React.useCallback((name: string, value: unknown) => {
+		// ★ WeixinStickerCover：切换 exportTarget → 联动同步 size/custom_width/
+		//   custom_height（微信素材规格预设）。用 commitControls 语义（一次 setState
+		//   合并 + 逐字段 wf-node-control），避免 N 次渲染。
+		if (meta.nodeType === 'Saros.WeixinStickerCover' && name === 'exportTarget') {
+			const target = WEIXIN_EXPORT_TARGETS[value as string];
+			if (target) {
+				const patch: Record<string, unknown> = {
+					exportTarget: value,
+					size: `${target.w}x${target.h}`,
+					custom_width: target.w,
+					custom_height: target.h,
+				};
+				setControlDrafts(d => ({ ...d, ...patch }));
+				if (nodeId) {
+					for (const [n, v] of Object.entries(patch)) {
+						window.dispatchEvent(new CustomEvent('wf-node-control', { detail: { nodeId, name: n, value: v } }));
+					}
+				}
+				return;
+			}
+		}
 		setControlDrafts(d => ({ ...d, [name]: value }));
 		if (nodeId) {
 			window.dispatchEvent(new CustomEvent('wf-node-control', { detail: { nodeId, name, value } }));
 		}
-	}, [nodeId]);
+	}, [nodeId, meta.nodeType]);
 	// 批量提交（多字段编辑器：Crop 的 x/y/w/h、Mirror 的 h/v、Outpaint 的四边…）。
 	// 必须一次 setState 合并，逐个调 commitControl 会产生多次渲染且 transform
 	// 管线被触发多轮。语义 = commitControl 的 N 元版本。
@@ -1711,6 +1923,13 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			const c = Math.max(1, Number(controlDrafts['cols'] ?? 3) || 3);
 			return Math.max(1, r * c);
 		}
+		// ★ 转动态表情包：batch = grid_rows×grid_cols（逐格 GIF 数与网格一致，
+		//   沿用 batch_size??1 会让 OUTPUT 只显示最后 1 张 GIF）。
+		if (meta.nodeType === 'Saros.AnimatedEmoji') {
+			const r = Math.max(1, Number(controlDrafts['grid_rows'] ?? 1) || 1);
+			const c = Math.max(1, Number(controlDrafts['grid_cols'] ?? 1) || 1);
+			return Math.max(1, r * c);
+		}
 		return Math.max(1, Number(controlDrafts['batch_size'] ?? 1) || 1);
 	}, [isEmojiStatic, controlDrafts]);
 	/**
@@ -1743,9 +1962,11 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		//   去重键用 mediaDedupeKey（locator 优先）：同一张图一次物化成 data:、
 		//   另一次保留 /view URL 时 ref 不同但 locator 相同，仍应视为一张。
 		const seen = new Map<string, MediaSnapshotEntry>();
-		for (const e of ownSnapshots) { seen.set(mediaDedupeKey(e.media), e); }
+		// ★ 只统计 port 'output'——sheet 模式的整图归档在 port 'sheet'，混进来
+		//   会让 OUTPUT 区出现整图 + BATCH 计数翻倍。
+		for (const e of ownOutputs) { seen.set(mediaDedupeKey(e.media), e); }
 		return Array.from(seen.values()).slice(-batchSize);
-	}, [ownSnapshots, batchSize]);
+	}, [ownOutputs, batchSize]);
 
 	// ── Picker Pool（对齐 ComfyTV usePickerStage + mergeImagePool）──
 	// pool 有两个来源：'upstream'（直接上游，默认，selected_index 相对上游
@@ -1921,7 +2142,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	 *  保证 picker/loader 等 no-Run 节点的错误同样可见（见下方两处引用）。 */
 	const runFeedback = (
 		<>
-			{run.runState === 'running' && <RunProgress progress={run.progress} />}
+			{run.runState === 'running' && <RunProgress progress={run.progress} message={run.message} />}
 			{run.runState === 'error' && <ErrorBanner message={run.errorMsg ?? '执行失败'} cancel={false} />}
 			{run.runState === 'skipped' && (
 				<div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 10px', fontSize: 11, color: 'var(--vscode-descriptionForeground, #8b8b8b)', background: 'rgba(128,128,128,0.08)', borderRadius: 4 }}>
@@ -1992,6 +2213,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 				6-18 px，盖住 LiteGraph canvas 绘制的节点选中绿框（边缘高亮）。
 				inset 阴影画在元素内部，不影响外缘 → 绿框完整显示。 */}
 				<div style={{
+				position: 'relative',
 				background: '#1e1e1e',
 				boxShadow: 'none',
 				padding: '8px',
@@ -2004,6 +2226,21 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 				flex: 1,
 				overflow: 'hidden',
 				}}>
+				{/* 缩放 Thumb 档（k<0.35）：纯图缩略（4:3 in-flow，见 zoomTier.ts CSS）。
+				    ★ 不能用 absolute inset:0——兄弟全隐藏后包装层塌缩成 padding 高，
+				    图会被压成细条（2026-09-02 实测）。in-flow + aspect-ratio 让高度
+				    反馈把节点缩成真正的缩略卡。 */}
+				<div data-zone="thumb" style={{ display: 'none', background: '#0b0c0e', overflow: 'hidden' }}>
+					{(() => {
+						for (let i = ownSnapshots.length - 1; i >= 0; i--) {
+							const entry = ownSnapshots[i];
+							if (entry.media.kind === 'image') {
+								return <img key={entry.key} src={entry.media.ref} alt="" className="saros-zoom-thumb-img" draggable={false} />;
+							}
+						}
+						return null;
+					})()}
+				</div>
 			{/* Schema nodes: LiteGraph draws the title bar on the canvas, so
 			    we DON'T render the title here. The card only covers the
 			    widget content area. */}
@@ -2330,8 +2567,11 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			)}
 
 			{/* 上游图片引用缩略图区（对齐 ComfyTV Asset references：显示该节点
-			    将使用的参考图，即上游连线传入的图片）。仅当有上游图片时显示。 */}
-			{showRun && (isGeneratorStage || isKenBurns) && upstreamImageRefs.length > 0 && (
+			    将使用的参考图，即上游连线传入的图片）。仅当有上游图片时显示。
+			    ★ 表情包三节点纳入（isEmojiRefConsumer → needUpstreamImage）——
+			    连线后用户可即时确认参考图已生效（此前连了线无任何可视化反馈，
+			    正是「参考图丢失」 bug 的体验盲区）。 */}
+			{showRun && (isGeneratorStage || isKenBurns || isEmojiRefConsumer) && upstreamImageRefs.length > 0 && (
 				<div style={{ display: 'flex', gap: 5, alignItems: 'center', width: '100%', boxSizing: 'border-box', marginTop: 2 }}>
 					<span style={{ flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: 'var(--vscode-descriptionForeground, #858585)' }}>引用</span>
 					<div style={{ display: 'flex', gap: 4, overflowX: 'auto', flex: 1, minWidth: 0 }}>
@@ -2486,9 +2726,10 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 
 			{/* Inline prompt editor (ComfyTV MainPromptInput equivalent).
 			    ComfyTV 只在 generator variant 挂 main_prompt（useStageNode.ts:114），
-			    transform/loader 没有 prompt。Multiangle/Panorama/Relight/Material 的
-			    prompt 由各自编辑器自动生成，不显示手动输入框。 */}
-			{showRun && stageVariant === 'generator' && meta.hasPrompt && !isMultiangle && !isPanorama && !isRelight && !isMaterial && (
+			    transform/loader 没有 prompt。Multiangle/Panorama/Relight/Material/AnimatedEmoji 的
+			    prompt 由各自编辑器自绘（hasInlineEditor 已抑制通用控件网格，但本
+			    prompt 区独立门禁，须单独排除），不显示手动输入框。 */}
+			{showRun && stageVariant === 'generator' && meta.hasPrompt && !isMultiangle && !isPanorama && !isRelight && !isMaterial && editorKind !== 'animated-emoji' && (
 				<MentionTextarea
 					value={promptValue}
 					onChange={commitPrompt}
@@ -2669,14 +2910,14 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 					//   自由变量 → Load 节点整卡渲染崩溃 → body 空白。
 					const aid = meta.mediaAssetId ?? '';
 					if (!aid) { setAssetUrl(null); return; }
-					if (ownSnapshots.find(s => s.media?.kind === 'image')) { return; }
+					if (ownOutputs.find(s => s.media?.kind === 'image')) { return; }
 					// ★ 复用 workflowRun 的解析（host mediaGet）+ renderer fallback
 					resolveMediaAssetUrl(aid).then(url => setAssetUrl(url));
 				}, [meta.mediaAssetId, ownSnapshots]);
 				const storedImg = (() => {
 					// ★★ MediaSnapshotEntry 的引用在 entry.media.ref（无顶层 ref），
 					//   此前误写 first.ref → 恒 undefined → 选图后缩略图不显示。
-					const first = ownSnapshots.find(s => s.media?.kind === 'image');
+					const first = ownOutputs.find(s => s.media?.kind === 'image');
 					if (first) { return first.media.ref; }
 					if (assetUrl) { return assetUrl; }
 					// ★ LoadImage 弹窗选图值（properties.image）优先于内嵌上传草稿。
@@ -2757,8 +2998,47 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							cells: String(meta.cells ?? ctl('cells', '[]')),
 							selectedIndex: Number(ctl('selected_index', 0)),
 							stylePreset: String(ctl('style_preset', 'none') ?? 'none'),
+							// 每格裁剪框（归一化 JSON）——「调整裁剪」拖拽/缩放写回
+							cellCrops: cellCropsJson,
+							// 生成渠道（2026-09-02）：ComfyUI / Provider 选项卡状态
+							backend: ctl('backend', 'comfyui') === 'provider' ? 'provider' : 'comfyui',
+							comfyModel: String(ctl('comfy_model', 'sd_xl_base_1.0.safetensors') ?? ''),
+							providerId: String(ctl('provider', '') ?? ''),
+							modelId: String(ctl('model', '') ?? ''),
+							// 整版背景策略（auto|transparent|white，默认 auto = 跟随提示词）
+							sheetBackground: String(ctl('sheet_background', 'auto') ?? 'auto') as 'white' | 'transparent' | 'auto',
+							// 生成图像大小（2026-09-02）：整版图集分辨率 'WxH'
+							size: String(ctl('size', '1024x1024') ?? '1024x1024'),
 						}}
-						cellRefs={ownSnapshots.map(e => ({
+						// ★ LLM 原图缩略图（2026-09-03）：整图 ref + 归档时的 rows/cols（网格叠加）
+						sheetRef={sheetFullEntry?.media.ref}
+						sheetGrid={(() => {
+							const r = Number(sheetFullEntry?.media.meta?.rows ?? 0);
+							const c = Number(sheetFullEntry?.media.meta?.cols ?? 0);
+							return r > 0 && c > 0 ? { rows: r, cols: c } : undefined;
+						})()}
+						// ★ 调整后图集（2026-09-03）：单格编辑/裁剪保存后重拼的 image 口
+						//   图集（meta.sheet='1'）——下游转动态节点实际读取的就是它。
+						//   注意 latestRoundOf 优先 merged，此处独立反向扫描避免混入 sheetFull。
+						rebuiltSheetRef={(() => {
+							for (let i = ownSnapshots.length - 1; i >= 0; i--) {
+								const e = ownSnapshots[i];
+								if (e.media?.kind === 'image' && e.media?.meta?.sheet === '1') { return e.media.ref; }
+							}
+							return undefined;
+						})()}
+						rebuiltGrid={(() => {
+							for (let i = ownSnapshots.length - 1; i >= 0; i--) {
+								const e = ownSnapshots[i];
+								if (e.media?.kind === 'image' && e.media?.meta?.sheet === '1') {
+									const r = Number(e.media.meta?.rows ?? 0);
+									const c = Number(e.media.meta?.cols ?? 0);
+									return r > 0 && c > 0 ? { rows: r, cols: c } : undefined;
+								}
+							}
+							return undefined;
+						})()}
+						cellRefs={ownOutputs.map(e => ({
   ref: e.media.ref,
   kind: e.media.kind === 'video' ? 'video' : 'image',
   caption: typeof e.media.meta?.caption === 'string' ? e.media.meta.caption : undefined,
@@ -2768,8 +3048,21 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 						//   workflow 必须在此透传（见 registry 的 static workflow options）。
 						workflowOptions={emojiWorkflowOptions}
 						onCommit={commitControls}
+						running={run.runState === 'running'}
+						onCancelRequest={() => {
+							if (nodeId) {
+								window.dispatchEvent(new CustomEvent('wf-node-abort', { detail: { nodeId } }));
+							}
+						}}
 						mentionCandidates={mentionCandidates}
 						onPinAsset={pinMentionAsset}
+						onCellEdit={(i) => setEditingEmojiCell(i)}
+						// 双击 LLM 原图 → 整图编辑。-1 = 哨兵「整图模式」（cellIndex 恒 ≥0，无歧义）：
+						// 复用同一 portal 弹窗与 MiniImageEditor，仅 onApply 目标不同（见弹窗内 EmojiSheetEditor 分支）。
+						onSheetEdit={() => setEditingEmojiCell(-1)}
+						// 🪄 一键去背景：本地 rembg → 透明 PNG 替换 sheetFull 归档（见 handleSheetRemoveBg）
+						onSheetRemoveBg={handleSheetRemoveBg}
+						sheetRemovingBg={sheetRemovingBg}
 						onRunRequest={(cellIndex) => {
 							// run_scope 决定执行范围（workflowRun.runEmojiStageGrid 消费）：
 							//   cellIndex 有值 → 'cell'（只重生成该格，并同步 selected_index）
@@ -2784,34 +3077,373 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							}
 						}}
 					/>
+					{/* ★ 双击格进入的单格编辑器（v7）：拖拽/缩放裁剪框 + 橡皮擦。
+					    应用 = cell_crops 写回 + recrop（跳过生成）；擦除 = 整图像素
+					    replaceByKey 原地更新（port 'sheet'）。 */}
+					{/* ★ 独立窗口（portal 到 body）：画布节点有 transform/缩放，内嵌或
+					    普通 fixed 都会受 containing block 影响；用 createPortal 挂到
+					    document.body 才是真正的居中模态窗口。 */}
+					{editingEmojiCell !== null && createPortal(
+						<div
+							onClick={() => setEditingEmojiCell(null)}
+							style={{
+								position: 'fixed', inset: 0, zIndex: 3000,
+								background: 'rgba(0,0,0,.55)',
+								display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+							}}
+						>
+						<div
+							onClick={(e) => e.stopPropagation()}
+							style={{
+								width: 'min(560px, 94vw)', maxHeight: '88vh', overflow: 'auto',
+								borderRadius: 10, padding: 12, background: 'var(--vscode-editor-background, #1f1f23)',
+								border: '1px solid rgba(255,255,255,.12)',
+								boxShadow: '0 12px 48px rgba(0,0,0,.55)',
+							}}
+						>
+							{/* ★ 无 LLM 原生整图（旧版产物）→ 降级为「只编辑本格」：
+							    直接以该格切分图为基底（此时整图=这一格，不存在坐标系错位），
+							    但隐藏整图裁剪类功能；顶部给一键重新生成入口补齐原图归档。 */}
+							{(() => {
+								// editingEmojiCell === -1 → 双击 LLM 原图进入的「整图编辑」模式：
+								// 基底只能是原生整图（无单格回退），Save 替换 sheetFull 条目本身。
+								const isSheetEdit = editingEmojiCell === -1;
+								const cellFallbackRef = isSheetEdit ? '' : (ownOutputs[editingEmojiCell]?.media.ref ?? '');
+								const baseRef = sheetFullEntry?.media.ref ?? cellFallbackRef;
+								if (!baseRef) {
+									return (
+										<div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 2px' }}>
+											<div style={{ fontSize: 11, color: '#fbbf24' }}>{isSheetEdit ? '⚠ 没有可编辑的 LLM 原图' : '⚠ 本格还没有可编辑的图片'}</div>
+											<div style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground, #9a9a9a)', lineHeight: 1.6 }}>
+												{isSheetEdit
+													? '整图编辑需要生成时归档的原生整图（旧版产物没有归档）。请重新生成一次表情包后，再双击原图编辑。'
+													: '请先生成表情包，再双击格子编辑。'}
+											</div>
+											<button
+												onClick={() => setEditingEmojiCell(null)}
+												style={{ padding: '5px 10px', borderRadius: 5, cursor: 'pointer', fontSize: 10, border: '1px solid rgba(255,255,255,.14)', background: 'rgba(255,255,255,.05)', color: 'var(--vscode-foreground, #e8e8e8)' }}
+											>知道了</button>
+										</div>
+									);
+								}
+								return (
+								<>
+								{!isSheetEdit && !sheetFullEntry?.media.ref && (
+									<div style={{
+										fontSize: 10, lineHeight: 1.6, marginBottom: 6, padding: '6px 8px', borderRadius: 6,
+										background: 'rgba(251,191,36,.12)', border: '1px solid rgba(251,191,36,.35)', color: '#fbbf24',
+									}}>
+										<div>⚠ 旧版产物：未找到 LLM 返回的原生整图，已按「本格图片」打开。</div>
+										<div style={{ color: 'var(--vscode-descriptionForeground, #9a9a9a)' }}>
+											可正常擦除/绘制/文字；**整图自定义裁剪**需要原图——重新生成一次表情包后即可使用。
+										</div>
+										<button
+											onClick={() => {
+												if (nodeId) {
+													window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
+												}
+												setEditingEmojiCell(null);
+											}}
+											style={{ marginTop: 6, padding: '4px 9px', borderRadius: 5, cursor: 'pointer', fontSize: 10, border: '1px solid rgba(251,191,36,.5)', background: 'rgba(251,191,36,.18)', color: '#fbbf24' }}
+										>↻ 重新生成表情包（补齐原图）</button>
+									</div>
+								)}
+							<MiniImageEditor
+								sheetOnly={!sheetFullEntry?.media.ref}
+								sheetDataUrl={baseRef}
+								cellKey={editingEmojiCell}
+								// ★ AI 工具（消除/重绘/扩图）与节点同源：透传节点上配置的
+								// provider/model，并**锁定**（preferred 不可用时报错而非回落
+								// 其它 provider——「节点用 A、编辑器用 B」的出图差异极难排查）。
+								preferredProviderId={String(ctl('provider', '') ?? '') || undefined}
+								preferredModelId={String(ctl('model', '') ?? '') || undefined}
+								lockProvider
+								heading={editingEmojiCell === -1 ? '编辑原图（LLM 原生整图）' : undefined}
+								crop={(() => {
+									if (editingEmojiCell === -1) { return { x: 0, y: 0, w: 1, h: 1 }; }   // 整图编辑：裁剪框=全图
+									const rows = Math.max(1, Number(ctl('rows', 3)) || 3);
+									const cols = Math.max(1, Number(ctl('cols', 3)) || 3);
+									let crops: CellCropRect[] | null = null;
+									try {
+										const arr = JSON.parse(cellCropsJson || 'null') as unknown;
+										if (Array.isArray(arr) && arr.length === rows * cols
+											&& arr.every(o => o && typeof o === 'object'
+												&& typeof (o as CellCropRect).x === 'number' && typeof (o as CellCropRect).w === 'number')) {
+											crops = arr as CellCropRect[];
+										}
+									} catch { /* fallthrough → 等分默认 */ }
+									const cw = 1 / cols, chh = 1 / rows, ix = cw * 0.012, iy = chh * 0.012;
+									const dflt: CellCropRect[] = [];
+									for (let r = 0; r < rows; r++) { for (let cc = 0; cc < cols; cc++) { dflt.push({ x: cc * cw + ix, y: r * chh + iy, w: cw - ix * 2, h: chh - iy * 2 }); } }
+									if (!sheetFullEntry?.media.ref) { return { x: 0, y: 0, w: 1, h: 1 }; }
+								return (crops ?? dflt)[editingEmojiCell] ?? dflt[editingEmojiCell];
+								})()}
+								onApply={(crop, croppedDataUrl) => {
+									// ── 整图编辑模式（editingEmojiCell === -1，双击 LLM 原图进入）──
+									// Save = 用编辑后的图**替换 sheetFull 条目本身**
+									//（meta.sheetFull='1' 原样保留 → 仍是后续单格编辑/重裁的合法基底）。
+									// 格子产物不联动重裁——需要时双击格子按新原图重新裁剪即可。
+									if (editingEmojiCell === -1) {
+										if (!croppedDataUrl) {
+											// eslint-disable-next-line no-console
+											console.warn('[EmojiSheetEditor] apply skipped: croppedDataUrl 为空（buildCropped 失败）');
+										} else if (!snapshotStore) {
+											// eslint-disable-next-line no-console
+											console.warn('[EmojiSheetEditor] apply skipped: snapshotStore 未注入');
+										} else if (!sheetFullEntry) {
+											// eslint-disable-next-line no-console
+											console.warn('[EmojiSheetEditor] apply skipped: sheetFull 条目不存在');
+										} else {
+											const ok = snapshotStore.replaceByKey(sheetFullEntry.key, { ...sheetFullEntry.media, ref: croppedDataUrl });
+											if (!ok) {
+												// key 失效兜底：追加新条目并保留 sheetFull 身份（meta 原样）
+												snapshotStore.put({ nodeId: snapKey ?? nodeId ?? sheetFullEntry.nodeId, port: sheetFullEntry.port, key: '', media: { ...sheetFullEntry.media, ref: croppedDataUrl } }, true);
+												// eslint-disable-next-line no-console
+												console.warn('[EmojiSheetEditor] replaceByKey 失败（key 失效）→ 已追加为新条目');
+											} else {
+												// eslint-disable-next-line no-console
+												console.log(`[EmojiSheetEditor] apply sheet replaced key=${sheetFullEntry.key} len=${croppedDataUrl.length}`);
+											}
+										}
+										// ★ 联动重切（2026-09-03 用户需求）：整图被 AI 处理（消除/重绘/
+										//   扩图/去背景）或手动编辑后，**单格产物必须按新整图重新切分**
+										//   —— 否则格子里还是旧内容，用户以为编辑没生效。每格继承
+										//   既有 meta（cellPrompt 等随格保留），裁剪框沿用 cell_crops。
+										if (snapshotStore && sheetFullEntry && croppedDataUrl) {
+											const key0 = snapKey ?? nodeId ?? sheetFullEntry.nodeId;
+											void (async () => {
+												setSheetRemovingBg(true);
+												try {
+													const rowsR = Math.max(1, Number(ctl('rows', 3)) || 3);
+													const colsR = Math.max(1, Number(ctl('cols', 3)) || 3);
+													let cropsR: CellCropRect[] = [];
+													try {
+														const arr = JSON.parse(cellCropsJson || 'null') as unknown;
+														if (Array.isArray(arr) && arr.length === rowsR * colsR) { cropsR = arr as CellCropRect[]; }
+													} catch { /* 等分默认 */ }
+													if (cropsR.length !== rowsR * colsR) {
+														const cw = 1 / colsR, chh = 1 / rowsR, ix = cw * 0.012, iy = chh * 0.012;
+														cropsR = [];
+														for (let rr = 0; rr < rowsR; rr++) { for (let c2 = 0; c2 < colsR; c2++) { cropsR.push({ x: c2 * cw + ix, y: rr * chh + iy, w: cw - ix * 2, h: chh - iy * 2 }); } }
+													}
+													// 编辑产物是 data: URL → 裸 fetch（proxiedFetch 语义绑远程图）。
+													const cellsOut = await splitStickerSheet(croppedDataUrl, rowsR, colsR, { marginRatio: 0.012, cutoutBg: false, cellCrops: cropsR }, globalThis.fetch);
+													// 旧格 meta 继承表（cellIndex 精确匹配，不信下标）
+													const oldByCell = new Map<number, typeof sheetFullEntry.media>();
+													for (const e of snapshotStore.byNode(key0)) {
+														const ci = e.media.meta?.cellIndex;
+														if (typeof ci === 'number') { oldByCell.set(ci, e.media); }
+													}
+													const sheetMedia = { ...sheetFullEntry.media, ref: croppedDataUrl };
+													snapshotStore.clearNode(key0);
+													for (let i = 0; i < cellsOut.length; i++) {
+														const old = oldByCell.get(i);
+														snapshotStore.put({
+															nodeId: key0, port: 'output', key: '',
+															media: {
+																kind: 'image' as const,
+																ref: cellsOut[i].dataUrl,
+																meta: {
+																	mime: 'image/png',
+																	...(old?.meta?.cellPrompt ? { cellPrompt: old.meta.cellPrompt } : {}),
+																	sheetMode: '1',
+																	cellIndex: i,
+																	cellSize: `${cellsOut[i].w}x${cellsOut[i].h}`,
+																	cellRect: JSON.stringify(cropsR[i]),
+																},
+															},
+														}, true);
+													}
+													snapshotStore.put({ nodeId: key0, port: 'sheet', key: '', media: sheetMedia }, true);
+													// eslint-disable-next-line no-console
+													console.log(`[EmojiSheetEditor] 整图已更新，联动重切 ${cellsOut.length} 格完成`);
+												} catch (err) {
+													// eslint-disable-next-line no-console
+													console.error('[EmojiSheetEditor] 联动重切失败（整图已更新，可双击格子手动重裁）：', err);
+												} finally {
+													setSheetRemovingBg(false);
+												}
+											})();
+										}
+										setEditingEmojiCell(null);
+										return;
+									}
+									const rows = Math.max(1, Number(ctl('rows', 3)) || 3);
+									const cols = Math.max(1, Number(ctl('cols', 3)) || 3);
+									let crops: CellCropRect[] = [];
+									try {
+										const arr = JSON.parse(cellCropsJson || 'null') as unknown;
+										if (Array.isArray(arr) && arr.length === rows * cols) { crops = arr as CellCropRect[]; }
+									} catch { /* keep empty → 全量等分重建 */ }
+									if (crops.length !== rows * cols) {
+										const cw = 1 / cols, chh = 1 / rows, ix = cw * 0.012, iy = chh * 0.012;
+										crops = [];
+										for (let rr = 0; rr < rows; rr++) { for (let ccc = 0; ccc < cols; ccc++) { crops.push({ x: ccc * cw + ix, y: rr * chh + iy, w: cw - ix * 2, h: chh - iy * 2 }); } }
+									}
+									crops[editingEmojiCell] = crop;
+									// ★ 只记录裁剪框坐标（供下次打开对齐 / 生成时取景）。
+									//   run_scope 显式重置 'all'：旧逻辑这里写的是 'recrop'，残留会让
+									//   下次点「生成表情包」被判为重裁 → 跳过生成、直接切旧图。
+									commitControls({ cell_crops: JSON.stringify(crops), run_scope: 'all' });
+									// ★ 裁剪出的新图**直接替换本格产物**（ownOutputs）。
+									//   原图（sheetFull）保持只读不变 → 其他格仍从原生整图裁剪。
+									//   目标匹配：**优先 meta.cellIndex**（切分重放时写入）——部分格
+									//   生成失败时 ownOutputs 会缺条目、数组下标与格号错位，用下标
+									//   会替换到**错误的格子**（表现即「编辑后 output 没更新」）。
+									const tgt = ownOutputs.find(e => Number(e.media?.meta?.cellIndex ?? -1) === editingEmojiCell)
+										?? ownOutputs[editingEmojiCell];
+									if (!croppedDataUrl) {
+										// eslint-disable-next-line no-console
+										console.warn('[EmojiCellEditor] apply skipped: croppedDataUrl 为空（buildCropped 失败）');
+									} else if (!snapshotStore) {
+										// eslint-disable-next-line no-console
+										console.warn('[EmojiCellEditor] apply skipped: snapshotStore 未注入');
+									} else if (!tgt) {
+										// eslint-disable-next-line no-console
+										console.warn(`[EmojiCellEditor] apply skipped: 找不到格 ${editingEmojiCell} 的产物条目（ownOutputs.length=${ownOutputs.length}）`);
+									} else {
+										const ok = snapshotStore.replaceByKey(tgt.key, { ...tgt.media, ref: croppedDataUrl });
+										// eslint-disable-next-line no-console
+										console.log(`[EmojiCellEditor] apply cell=${editingEmojiCell} key=${tgt.key} crop=${JSON.stringify(crop)} replaced=${ok ? 'yes' : 'NO'} len=${croppedDataUrl.length}`);
+										if (!ok) {
+											// 兜底：key 失效（编辑期间快照被重排）→ 以新条目补回该格，
+											// 保证编辑结果不丢（代价是追加到序列尾）。
+											snapshotStore.put({ nodeId: snapKey ?? nodeId ?? tgt.nodeId, port: 'output', key: '', media: { ...tgt.media, ref: croppedDataUrl } }, true);
+											// eslint-disable-next-line no-console
+											console.warn('[EmojiCellEditor] replaceByKey 失败（key 失效）→ 已追加为新条目');
+										}
+									}
+									// ── 保存后自动重建 image 口合并图集（2026-09-03）────────────
+									// 下游「转动态表情包」消费的是 port 'image'（meta.sheet='1'）的
+									// 整版图集，而非单格条目——只替换单格的话下游永远拿旧图集。
+									// 拼装算法与生成时完全同源（composeImageGridOnChroma：正方形
+									// cell=max(各格max(w,h))、等比缩放居中 fit、透明底），单格尺寸
+									// 不一由其标准化消化；重拼后下游等分切割契约不变。
+									{
+										const total = rows * cols;
+										// 1) 收集各格最新 ref：cellIndex → ref（只信 cellIndex，宁缺毋错——
+										//    旧数据无 cellIndex 时放弃重建并提示重新生成）
+										const idxRefs = new Map<number, string>();
+										for (const e of ownOutputs) {
+											const ci = Number(e.media?.meta?.cellIndex ?? -1);
+											if (ci >= 0 && ci < total && !idxRefs.has(ci)) { idxRefs.set(ci, e.media.ref); }
+										}
+										// 2) 刚保存的这张替位（onApply 闭包里的 ownOutputs 是旧值）
+										idxRefs.set(editingEmojiCell, croppedDataUrl);
+										// 3) 完整性检查：0..total-1 必须全有——composeImageGridOnChroma
+										//    按输入顺序填格，中间缺格会让后续格**前移错位**（宁缺毋错）
+										const missing: number[] = [];
+										const refs: string[] = [];
+										for (let i = 0; i < total; i++) {
+											const r = idxRefs.get(i);
+											if (r) { refs.push(r); } else { missing.push(i); }
+										}
+										if (missing.length > 0) {
+											// eslint-disable-next-line no-console
+											console.warn(`[EmojiCellEditor] sheet rebuild skipped: 缺格 ${missing.join(',')}（部分格未生成或旧数据无 cellIndex）→ image 口图集保持旧版，下游如需最新请重新生成`);
+										} else {
+											void (async () => {
+												try {
+													const sheetDataUrl = await composeImageGridOnChroma(refs, rows, cols, 0, null, fetch);
+													const gKey = `${snapKey ?? nodeId ?? ''}:image:0`;
+													const gMedia = {
+														kind: 'image' as const,
+														ref: sheetDataUrl,
+														meta: { mime: 'image/png', sheet: '1', rows: String(rows), cols: String(cols), rebuilt: '1' },
+													};
+													if (snapshotStore.get(gKey)) {
+														snapshotStore.replaceByKey(gKey, gMedia);
+													} else {
+														snapshotStore.put({ nodeId: snapKey ?? nodeId ?? '', port: 'image', key: gKey, media: gMedia, index: 0 }, true);
+													}
+													// eslint-disable-next-line no-console
+													console.log(`[EmojiCellEditor] sheet rebuilt: ${sheetDataUrl.length}B → ${gKey}（下游转动态将取到编辑后图集）`);
+												} catch (err) {
+													// 重建失败不影响单格替换结果；下游仍可用旧图集或重新生成
+													// eslint-disable-next-line no-console
+													console.warn(`[EmojiCellEditor] sheet rebuild failed（不影响单格替换）: ${err instanceof Error ? err.message : String(err)}`);
+												}
+											})();
+										}
+									}
+									setEditingEmojiCell(null);
+								}}
+								onClose={() => setEditingEmojiCell(null)}
+							/>
+								</>
+								);
+							})()}
+						</div>
+						</div>,
+						document.body,
+					)}
 				</div>
 			)}
 
-			{/* DynEmojiStage 动态编辑器（参考图 → 绿幕视频 → 前端抠图 → GIF）。
-			    写回通过 wf-node-control（commitControls）。参考图走上游 image 端口，
-			    编辑器只管 prompt / 时长 / 绿幕抠图参数。 */}
-			{isEmojiDynamic && (
+
+			{/* AnimatedEmoji 转动态表情包（provider 图生视频 → 前端抠像 → 透明 GIF）。
+			    纯 provider 后端（无需 ComfyUI runner）；editorKind='animated-emoji'
+			    （stageCardRegistry 注册）→ hasInlineEditor=true 抑制通用控件网格，
+			    全部参数由编辑器自绘，写回 commitControls → runAnimatedEmoji values。
+			    ★ 2026-09-03：支持 comfyui/provider 双渠道——comfyui 渠道走本地视频
+			    工作流（workflowOptionsFor('video')，I2V），产出视频后复用同一
+			    抠像切分管线。 */}
+			{editorKind === 'animated-emoji' && (
 				<div style={{ pointerEvents: 'auto', userSelect: 'none', marginTop: 4 }}>
-					<DynEmojiStageEditor
+					<AnimatedEmojiEditor
 						initial={{
-							// ★ prompt 是 TEXT widget，不进 meta.controls → 改用 meta.prompt 透传。
-							prompt: String(meta.prompt ?? ctl('prompt', '')),
-							duration_s: Number(ctl('duration_s', 3)),
+							// ★ 生成渠道（2026-09-03）：comfyui / provider 双渠道
+							// （ctl 返回字面量收窄类型 → String 化后再比较）
+							backend: String(ctl('backend', 'provider')) === 'comfyui' ? 'comfyui' : 'provider',
+							workflow: String(ctl('workflow', '') ?? ''),
+							seed: Number(ctl('seed', 0)) || 0,
+							videoProvider: String(ctl('videoProvider', '') ?? ''),
+							videoModel: String(ctl('videoModel', '') ?? ''),
+							duration_s: Number(ctl('duration_s', 3)) || 3,
+							fps: Number(ctl('fps', 12)) || 12,
+							max_kb: Number(ctl('max_kb', 100)) || 100,
+							gridRows: Number(ctl('grid_rows', 1)) || 1,
+							gridCols: Number(ctl('grid_cols', 1)) || 1,
+							gridMargin: Number.isFinite(Number(ctl('grid_margin', 0.03))) ? Number(ctl('grid_margin', 0.03)) : 0.03,
 							chromaColor: String(ctl('chroma_color', '#00FF00') ?? '#00FF00'),
-							chromaSimilarity: Number(ctl('chroma_similarity', 10)),
-							chromaSmoothness: Number(ctl('chroma_smoothness', 10)),
-						}}
-						cellRefs={ownSnapshots.map(e => ({
-	  ref: e.media.ref,
-	  kind: e.media.kind === 'video' ? 'video' : 'image',
-	  caption: typeof e.media.meta?.caption === 'string' ? e.media.meta.caption : undefined,
-	}))}
+							chromaSimilarity: Number(ctl('chroma_similarity', 0.4)) || 0.4,
+							chromaSmoothness: Number(ctl('chroma_smoothness', 0.1)) || 0.1,
+							// ★ 绿幕抠像开关（2026-09-03）：非透明背景图像可关闭
+							// （ctl 字面量收窄 → 一律 String 化比较）
+							chromaEnable: String(ctl('chroma_enable', true)) !== 'false',
+							}}
+							// ComfyUI 渠道可选视频工作流（registry workflowOptionsFor('video')，
+							// 存于 meta.controls 的 workflow COMBO options——同 emojiWorkflowOptions 模式）
+							workflowOptions={(() => {
+							const c = (meta.controls ?? []).find(x => x.name === 'workflow');
+							const opts = (c?.options ?? []).map(o => (typeof o === 'string' ? o : String(o?.value ?? o?.label ?? ''))).filter(s => s.length > 0);
+							return opts.length > 0 ? opts : undefined;
+							})()}
+							cellRefs={ownOutputs.map(e => ({
+							ref: e.media.ref,
+							kind: e.media.kind === 'video' ? 'video' : 'image',
+							}))}
+						// ★ 图集预览输入：**图集优先**（静态表情包 image 口整版图，网格叠加
+						//   与 meta 行列精确对齐）；无图集时回退首张独立格。
+						inputSheetRef={upstreamSheetMeta.ref || upstreamImageRefs[0]}
+						sheetGrid={upstreamSheetMeta.rows ? { rows: upstreamSheetMeta.rows, cols: upstreamSheetMeta.cols, margin: upstreamSheetMeta.margin } : undefined}
+						upstreamCount={upstreamImageRefs.length}
 						onCommit={commitControls}
-						mentionCandidates={mentionCandidates}
-						onPinAsset={pinMentionAsset}
+						running={run.runState === 'running'}
+						onCancelRequest={() => {
+							if (nodeId) {
+								window.dispatchEvent(new CustomEvent('wf-node-abort', { detail: { nodeId } }));
+							}
+						}}
+						// ★ 整图 ref（meta.sheetFull='1'）→「调整裁剪」画布来源
+						sheetRef={sheetFullEntry?.media.ref}
+						onApplyRecrop={() => {
+							if (nodeId) {
+								commitControls({ run_scope: 'recrop' });
+								window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
+							}
+						}}
 						onRunRequest={() => {
-							// 动态节点无网格：卡片 RUN 固定「整段生成」。
-							commitControls({ run_scope: 'all' });
 							if (nodeId) {
 								window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
 							}
@@ -3100,9 +3732,9 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 						</>
 					)}
 					{showOutput && (
-						<>
-							{/* ComfyTV-style "OUTPUT (TYPE)" header: All-caps TYPE chip
-							    following the Output label, matching the upstream UI. */}
+					<div data-zone="keep">
+						{/* ComfyTV-style "OUTPUT (TYPE)" header: All-caps TYPE chip
+						    following the Output label, matching the upstream UI. */}
 							<div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 4 }}>
 								<span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: 'var(--vscode-descriptionForeground, #858585)' }}>Output</span>
 								{primaryOutputType && (
@@ -3118,8 +3750,38 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 								</span>
 							</div>
 							{snapshotStore && snapKey && <SnapshotPreview store={snapshotStore} nodeId={snapKey} entries={latestOutputs} batch={isBatchOutput} />}
-						</>
-					)}
+							</div>
+							)}
+							{/* GridSplit 空态：对齐 ComfyTV GridSplitStageCard——OUTPUT (TYPE) 头 +
+							BATCH 药丸 + "no output yet" 斜体占位（参考截图样式，2026-09-01）。 */}
+							{isGridSplit && !showOutput && (
+							<div data-zone="keep">
+							<div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 4 }}>
+								<span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: 'var(--vscode-descriptionForeground, #858585)' }}>Output</span>
+								{primaryOutputType && (
+									<span style={{
+										fontSize: 8, fontWeight: 700, letterSpacing: 1, padding: '1px 5px', borderRadius: 3,
+										background: 'rgba(168, 85, 247, .18)', color: '#a855f7',
+									}}>
+										({primaryOutputType})
+									</span>
+								)}
+							</div>
+							<div style={{ display: 'flex', marginTop: 5 }}>
+								<span style={{
+									marginLeft: 'auto', fontSize: 8, fontWeight: 700, letterSpacing: .6,
+									padding: '1px 6px', borderRadius: 3,
+									background: 'rgba(255,140,200,.25)', color: '#ffb0d8',
+								}}>BATCH</span>
+							</div>
+							<div style={{
+								marginTop: 10, marginBottom: 6, textAlign: 'center',
+								fontSize: 10.5, fontStyle: 'italic', color: 'var(--vscode-descriptionForeground, #858585)',
+							}}>
+								no output yet
+							</div>
+							</div>
+							)}
 					{/* 对齐 ComfyTV StageCard：actions 仅在节点**有输出**后显示
 						（ComfyTV 的 gate 是 `state.output`）；标题栏可折叠
 						（actionsCollapsed）；preset 子面板用虚线边框 + 背景。

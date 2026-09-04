@@ -16,6 +16,7 @@ import type {
 } from '../../../types/workflowStorage';
 import { isUsableNodeTitle } from './schemaLiteGraphNodes';
 import { getNodeSpec } from './registry';
+import { normalizeNodeType } from '../nodeTypeAliases';
 
 /** LiteGraph serialised node (subset we read/write). */
 export interface LiteGraphSerialisedNode {
@@ -53,10 +54,26 @@ export function toLiteGraphType(nodeType: string): string {
 	return `Saros.${capitalize(nodeType)}`;
 }
 
-/** Map a LiteGraph node type → saros node type (de-namespaced). */
+/** Map a LiteGraph node type → saros node type (de-namespaced).
+ *
+ * ⚠ 历史坑（2026-08-31 修复）：旧版对 `Saros.` 前缀一律 `.toLowerCase()`
+ * 整段小写（'Saros.ModelImageGen' → 'Saros.modelimagegen'）。camelCase 类型
+ * 名（ModelImageGen/IfElse/AskUser）被破坏后：
+ *   1) store 里的节点 type 变成 `Saros.modelimagegen`；
+ *   2) 下次 syncStoreToGraph → filterNodesForLiteGraph 的 SAROS_NODE_TYPES
+ *      白名单（大小写敏感）不认识 → 节点被 dropped → 画布上消失（
+ *      日志 `[syncStoreToGraph] dropped nodes ["Saros.Modelimagegen"]`）；
+ *   3) autoSave 把丢节点的图写回工作流 JSON → 保存后节点消失。
+ * 修复：只对「注册表里不存在精确匹配」的旧数据做小写兜底；凡精确匹配
+ * （含 camelCase）原样保留。 */
 export function toSarosType(liteType: string): string {
 	if (liteType.startsWith('Saros.')) {
-		return liteType.slice('Saros.'.length).toLowerCase();
+		const bare = liteType.slice('Saros.'.length);
+		// 已是注册表认可的命名空间类型（含 camelCase）→ 原样返回。
+		if (getNodeSpec(liteType)) { return liteType; }
+		// 旧 ReactFlow 时代的小写类型（Saros.Prompt → prompt）→ 去前缀小写，
+		// 再经 normalizeNodeType 迁移回命名空间形态。
+		return normalizeNodeType(bare.toLowerCase());
 	}
 	return liteType;
 }
@@ -160,14 +177,7 @@ export function toLiteGraph(
 			}
 		}
 		liteLinks.push([nextLinkId++, from, srcSlot, to, tgtSlot, linkType]);
-		// 诊断：记录每条 liteLink 的解析结果
-		// eslint-disable-next-line no-console
-		console.warn('[toLiteGraph] LINK', JSON.stringify({
-			linkId: nextLinkId - 1, from, to, srcSlot, tgtSlot, linkType,
-			fromPort: conn.fromPort, toPort: conn.toPort,
-			fromFound: from !== undefined, toFound: to !== undefined,
-		}));
-	}
+		}
 
 	return {
 		graph: {
@@ -191,11 +201,22 @@ export function fromLiteGraph(
 	const liteToSaros = new Map<number, string>();
 	// liteId → liteNode，用于从 link 的 slot 还原真实端口名。
 	const liteNodeById = new Map<number, LiteGraphSerialisedNode>();
+	// ★ sarosId 去重：LiteGraph 原生 duplicate/paste 会整份复制 properties
+	//（含 __sarosId）→ 序列化里出现两个同 id 节点 → store/卡片/控制事件全部
+	// 串线（2026-09-02 复制 LoadImage 实测：原节点卡片被顶掉、图像消失）。
+	// 这里是**序列化边界**的兜底：撞车时给后来者生成唯一 id（后缀带 LiteGraph
+	// numeric id，会话内唯一）。LiteGraphCanvas.syncOverlay 已在源头去重，此层
+	// 防御直接读 serialize 的其他消费方（导出 / store 同步竞态）。
+	const seenSarosIds = new Set<string>();
 
 	for (const liteNode of graph.nodes ?? []) {
 		const props = liteNode.properties ?? {};
 		// Prefer the preserved saros id; otherwise generate one from LiteGraph id.
-		const sarosId = (props.__sarosId as string | undefined) ?? `node-${liteNode.id}`;
+		let sarosId = (props.__sarosId as string | undefined) ?? `node-${liteNode.id}`;
+		if (seenSarosIds.has(sarosId)) {
+			sarosId = `${sarosId}--dup${liteNode.id}`;
+		}
+		seenSarosIds.add(sarosId);
 		liteToSaros.set(liteNode.id, sarosId);
 		liteNodeById.set(liteNode.id, liteNode);
 		const { __sarosId, ...data } = props as Record<string, unknown>;

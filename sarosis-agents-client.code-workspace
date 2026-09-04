@@ -37,6 +37,13 @@
 			"**/target": true,
 			"**/deploy-package": true,
 			"**/coverage": true,
+			// webview 构建产物（esbuild 输出）：webview/media/webview.js 约 2.6MB，
+			// 每次 npm run build 都会改变其 mtime → 触发 CodebaseGraphWatcher 全项目
+			// 增量索引（实测单次 13-16s，且产出 0 节点 0 边）。
+			// 索引器按「目录名」精确匹配（extractExcludeDirNames 只取 glob 最后一段），
+			// 无法写路径级排除，故此处写 **/media —— 影响面：全仓 media/ 目录均为
+			// CSS/SVG/PNG 资源，不含 EXTENSION_TO_WASM_LANG 可索引源码。
+			"**/media": true,
 			// 缓存 / 临时目录
 			"**/.next": true,
 			"**/.nuxt": true,

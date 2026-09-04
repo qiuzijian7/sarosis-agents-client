@@ -14,7 +14,7 @@ import { useWorkflowEditorStore } from './store';
 import { getNodeSpec } from './comfyHost/registry';
 import { buildEditorFields, coerceEditorValue, buildSarosEditorFields, sarosDataToValues, sarosValuesToData, isSarosJsonField, type EditorField } from './comfyHost/nodeEditorForm';
 import { type SingleNodeRunResult } from './comfyHost/nodeExecutor';
-import { runNodeOrStage, runProviderImage, isPickerNode, isLoaderNode, collectUpstreamCandidates, resolveFirstImageGenDefaults } from './comfyHost/workflowRun';
+import { runNodeOrStage, runProviderImage, runProviderVideo, runProviderModel3D, runProviderAudio, runAnimatedEmoji, isPickerNode, isLoaderNode, collectUpstreamCandidates, resolveFirstImageGenDefaults } from './comfyHost/workflowRun';
 import { ComfyRunnerRegistry } from './comfyHost/comfyRunner';
 import type { MediaSnapshotStore } from './comfyHost/mediaSnapshotStore';
 import { mediaList, resolveAssetUrl, type MediaAsset } from './mediaAssets';
@@ -54,6 +54,9 @@ export const COMFY_IMAGE_PROVIDER_ID = 'comfyui';
 export function isImageGenStage(spec: { kind?: string; backendKind?: string; comfyTV?: { stageKind?: string } } | undefined, nodeType: string): boolean {
 	// Provider 文生图节点（kind='llm' 或 schema+backendKind='provider'，
 	// 如 Saros.ModelImageGen）固定走 imagegen RPC。
+	// ★ 视频 / 3D / 音频生成节点也是 schema+backendKind='provider'，但走各自的
+	//   videogen / modelgen / audiogen RPC，**必须先排除**，否则误入文生图通道。
+	if (nodeType === 'Saros.ModelVideoGen' || nodeType === 'Saros.Model3DGen' || nodeType === 'Saros.AudioGen' || nodeType === 'Saros.AnimatedEmoji') { return false; }
 	if (spec?.kind === 'llm' || (spec?.kind === 'schema' && spec?.backendKind === 'provider')) { return true; }
 	if (spec?.kind !== 'schema') { return false; }
 	const kind = spec.comfyTV?.stageKind ?? nodeType;
@@ -414,6 +417,79 @@ export function NodeEditorPopup({
 		}
 	}, [isImageGen, imageGenProviderId, imageGenModelId, imageGenProviders]);
 
+	// ── 视频 / 3D 生成节点（Saros.ModelVideoGen / Saros.Model3DGen）──────────
+	// 与文生图同款 provider/model 双下拉，模型按 supportsVideoGen /
+	// supportsModelGen 过滤；handleRun 走 videogen / modelgen RPC 执行器。
+	const isVideoGenNode = nodeType === 'Saros.ModelVideoGen';
+	// 转动态表情包：provider/model 下拉在卡片内嵌编辑器自绘（不走 popup 的
+	// videoGenProviderId 选择 UI），双击弹窗运行直接调 runAnimatedEmoji。
+	const isAnimatedEmojiNode = nodeType === 'Saros.AnimatedEmoji';
+	const isM3dGenNode = nodeType === 'Saros.Model3DGen';
+	const videoGenProviders = React.useMemo(() => {
+		return (providers ?? []).filter(p => p.authStatus === 'authenticated' && (p.models ?? []).some(m => m.supportsVideoGen));
+	}, [providers]);
+	const m3dGenProviders = React.useMemo(() => {
+		return (providers ?? []).filter(p => p.authStatus === 'authenticated' && (p.models ?? []).some(m => m.supportsModelGen));
+	}, [providers]);
+	const [videoGenProviderId, setVideoGenProviderId] = React.useState<string>('');
+	const [videoGenModelId, setVideoGenModelId] = React.useState<string>('');
+	const [m3dGenProviderId, setM3dGenProviderId] = React.useState<string>('');
+	const [m3dGenModelId, setM3dGenModelId] = React.useState<string>('');
+
+	const videoGenProviderModels = React.useMemo(() => {
+		const p = videoGenProviders.find(x => x.id === videoGenProviderId);
+		return p?.models?.filter(m => m.supportsVideoGen) ?? [];
+	}, [videoGenProviders, videoGenProviderId]);
+	const m3dGenProviderModels = React.useMemo(() => {
+		const p = m3dGenProviders.find(x => x.id === m3dGenProviderId);
+		return p?.models?.filter(m => m.supportsModelGen) ?? [];
+	}, [m3dGenProviders, m3dGenProviderId]);
+
+	const handleVideoGenProviderChange = React.useCallback((pid: string) => {
+		setVideoGenProviderId(pid);
+		const p = videoGenProviders.find(x => x.id === pid);
+		setVideoGenModelId(p?.models?.find(m => m.supportsVideoGen)?.id ?? '');
+	}, [videoGenProviders]);
+	const handleM3dGenProviderChange = React.useCallback((pid: string) => {
+		setM3dGenProviderId(pid);
+		const p = m3dGenProviders.find(x => x.id === pid);
+		setM3dGenModelId(p?.models?.find(m => m.supportsModelGen)?.id ?? '');
+	}, [m3dGenProviders]);
+
+	// 弹窗打开时自动选中第一个可用 provider/model（与文生图 provider 节点同款）
+	React.useEffect(() => {
+		if (isVideoGenNode && !videoGenProviderId && videoGenProviders.length > 0) {
+			handleVideoGenProviderChange(videoGenProviders[0].id);
+		}
+	}, [isVideoGenNode, videoGenProviderId, videoGenProviders, handleVideoGenProviderChange]);
+	React.useEffect(() => {
+		if (isM3dGenNode && !m3dGenProviderId && m3dGenProviders.length > 0) {
+			handleM3dGenProviderChange(m3dGenProviders[0].id);
+		}
+	}, [isM3dGenNode, m3dGenProviderId, m3dGenProviders, handleM3dGenProviderChange]);
+
+	// ── 音频生成节点（Saros.AudioGen，TTS/音乐）──────────────────────────────
+	const isAudioGenNode = nodeType === 'Saros.AudioGen';
+	const audioGenProviders = React.useMemo(() => {
+		return (providers ?? []).filter(p => p.authStatus === 'authenticated' && (p.models ?? []).some(m => m.supportsAudioGen));
+	}, [providers]);
+	const [audioGenProviderId, setAudioGenProviderId] = React.useState<string>('');
+	const [audioGenModelId, setAudioGenModelId] = React.useState<string>('');
+	const audioGenProviderModels = React.useMemo(() => {
+		const p = audioGenProviders.find(x => x.id === audioGenProviderId);
+		return p?.models?.filter(m => m.supportsAudioGen) ?? [];
+	}, [audioGenProviders, audioGenProviderId]);
+	const handleAudioGenProviderChange = React.useCallback((pid: string) => {
+		setAudioGenProviderId(pid);
+		const p = audioGenProviders.find(x => x.id === pid);
+		setAudioGenModelId(p?.models?.find(m => m.supportsAudioGen)?.id ?? '');
+	}, [audioGenProviders]);
+	React.useEffect(() => {
+		if (isAudioGenNode && !audioGenProviderId && audioGenProviders.length > 0) {
+			handleAudioGenProviderChange(audioGenProviders[0].id);
+		}
+	}, [isAudioGenNode, audioGenProviderId, audioGenProviders, handleAudioGenProviderChange]);
+
 	const handleRun = React.useCallback(async () => {
 		const coerced: Record<string, unknown> = {};
 		for (const f of fields) { coerced[f.key] = coerceEditorValue(values[f.key], f); }
@@ -426,6 +502,121 @@ export function NodeEditorPopup({
 		setState('running');
 		setResult(null);
 		cardStateStore?.set(nodeId, { runState: 'running', progress: 5 });
+
+		// ── 视频 / 3D / 音频生成节点：走各自的 provider RPC 执行器（在文生图分支之前，
+		//    三者同为 schema+backendKind='provider'，isImageGenStage 已排除）。
+		if (isAudioGenNode) {
+			const r = await runProviderAudio({
+				runner: runners.resolve(preference)!,
+				nodeId,
+				snapshotKey: snapKey,
+				type: nodeType,
+				getSpec: (t) => getNodeSpec(t),
+				values: {
+					...coerced,
+					audioProvider: audioGenProviderId,
+					audioModel: audioGenModelId,
+				},
+				upstreams,
+				store,
+				onProgress: (p) => {
+					cardStateStore?.set(nodeId, { runState: 'running', progress: p.progress ?? p.value ?? 50 });
+				},
+				sendAudioGen: (payload) => sendRequest<Record<string, unknown>, { audios: Array<{ url?: string }> }>('audiogen.generate', payload, 600_000),
+			});
+			setResult(r);
+			if (r.status === 'success') {
+				setState('success');
+				cardStateStore?.set(nodeId, { runState: 'success', progress: 100 });
+			} else {
+				setState('error');
+				cardStateStore?.set(nodeId, { runState: 'error', progress: 0, errorMsg: r.error ?? '音频生成失败' });
+			}
+			return;
+		}
+		if (isVideoGenNode) {
+			const r = await runProviderVideo({
+				runner: runners.resolve(preference)!,
+				nodeId,
+				snapshotKey: snapKey,
+				type: nodeType,
+				getSpec: (t) => getNodeSpec(t),
+				values: {
+					...coerced,
+					videoProvider: videoGenProviderId,
+					videoModel: videoGenModelId,
+				},
+				upstreams,
+				store,
+				onProgress: (p) => {
+					cardStateStore?.set(nodeId, { runState: 'running', progress: p.progress ?? p.value ?? 50 });
+				},
+				sendVideoGen: (payload) => sendRequest<Record<string, unknown>, { videos: Array<{ url?: string; posterUrl?: string }> }>('videogen.generate', payload, 600_000),
+			});
+			setResult(r);
+			if (r.status === 'success') {
+				setState('success');
+				cardStateStore?.set(nodeId, { runState: 'success', progress: 100 });
+			} else {
+				setState('error');
+				cardStateStore?.set(nodeId, { runState: 'error', progress: 0, errorMsg: r.error ?? '视频生成失败' });
+			}
+			return;
+		}
+		if (isAnimatedEmojiNode) {
+			const r = await runAnimatedEmoji({
+				runner: runners.resolve(preference)!,
+				nodeId,
+				snapshotKey: snapKey,
+				type: nodeType,
+				getSpec: (t) => getNodeSpec(t),
+				values: coerced,
+				upstreams,
+				store,
+				onProgress: (p) => {
+					cardStateStore?.set(nodeId, { runState: 'running', progress: p.progress ?? p.value ?? 50 });
+				},
+				sendVideoGen: (payload) => sendRequest<Record<string, unknown>, { videos: Array<{ url?: string; posterUrl?: string }> }>('videogen.generate', payload, 600_000),
+			});
+			setResult(r);
+			if (r.status === 'success') {
+				setState('success');
+				cardStateStore?.set(nodeId, { runState: 'success', progress: 100 });
+			} else {
+				setState('error');
+				cardStateStore?.set(nodeId, { runState: 'error', progress: 0, errorMsg: r.error ?? '动态表情生成失败' });
+			}
+			return;
+		}
+		if (isM3dGenNode) {
+			const r = await runProviderModel3D({
+				runner: runners.resolve(preference)!,
+				nodeId,
+				snapshotKey: snapKey,
+				type: nodeType,
+				getSpec: (t) => getNodeSpec(t),
+				values: {
+					...coerced,
+					m3dProvider: m3dGenProviderId,
+					m3dModel: m3dGenModelId,
+				},
+				upstreams,
+				store,
+				onProgress: (p) => {
+					cardStateStore?.set(nodeId, { runState: 'running', progress: p.progress ?? p.value ?? 50 });
+				},
+				sendModel3DGen: (payload) => sendRequest<Record<string, unknown>, { models: Array<{ url?: string; previewUrl?: string; sources?: Array<{ type: string; url: string }> }> }>('modelgen.generate', payload, 600_000),
+			});
+			setResult(r);
+			if (r.status === 'success') {
+				setState('success');
+				cardStateStore?.set(nodeId, { runState: 'success', progress: 100 });
+			} else {
+				setState('error');
+				cardStateStore?.set(nodeId, { runState: 'error', progress: 0, errorMsg: r.error ?? '3D 模型生成失败' });
+			}
+			return;
+		}
 
 		// 文生图节点选择非 ComfyUI provider → 走统一的 Provider 文生图执行器
 		// （runProviderImage：自动路由 provider/model + img2img 上游 IMAGE 注入）。
@@ -502,7 +693,10 @@ export function NodeEditorPopup({
 			});
 		}
 	}, [runners, preference, fields, values, nodeId, nodeType, store, cardStateStore, onValuesCommit,
-		isImageGen, imageGenProviderId, imageGenModelId]);
+		isImageGen, imageGenProviderId, imageGenModelId,
+		isVideoGenNode, videoGenProviderId, videoGenModelId,
+		isM3dGenNode, m3dGenProviderId, m3dGenModelId,
+		isAudioGenNode, audioGenProviderId, audioGenModelId]);
 
 	// P2 picker: choose one candidate upstream snapshot → emit it locally.
 	const handlePick = React.useCallback(async (idx: number) => {
@@ -880,6 +1074,118 @@ export function NodeEditorPopup({
 								</select>
 							</div>
 						)}
+					</div>
+				)}
+
+				{/* 视频 / 3D 生成节点：Provider/Model 双下拉（按能力过滤） */}
+				{isVideoGenNode && (
+					<div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+						<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+							<label style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', width: 52, flexShrink: 0 }}>Provider</label>
+							<select
+								value={videoGenProviderId}
+								onChange={e => handleVideoGenProviderChange(e.target.value)}
+								style={{
+									flex: 1, padding: '4px 6px', borderRadius: 4, background: 'var(--vscode-input-background)',
+									color: 'var(--vscode-foreground)', border: '1px solid var(--vscode-input-border)', fontSize: 11, fontFamily: 'inherit',
+								}}
+							>
+								{videoGenProviders.length === 0 && <option value="">（无已认证的视频生成 Provider）</option>}
+								{videoGenProviders.map(p => (
+									<option key={p.id} value={p.id}>{p.name}</option>
+								))}
+							</select>
+						</div>
+						<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+							<label style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', width: 52, flexShrink: 0 }}>Model</label>
+							<select
+								value={videoGenModelId}
+								onChange={e => setVideoGenModelId(e.target.value)}
+								style={{
+									flex: 1, padding: '4px 6px', borderRadius: 4, background: 'var(--vscode-input-background)',
+									color: 'var(--vscode-foreground)', border: '1px solid var(--vscode-input-border)', fontSize: 11, fontFamily: 'inherit',
+								}}
+							>
+								{videoGenProviderModels.length === 0 && <option value="">（该 Provider 无视频生成模型）</option>}
+								{videoGenProviderModels.map(m => (
+									<option key={m.id} value={m.id}>{m.name}</option>
+								))}
+							</select>
+						</div>
+					</div>
+				)}
+				{isM3dGenNode && (
+					<div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+						<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+							<label style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', width: 52, flexShrink: 0 }}>Provider</label>
+							<select
+								value={m3dGenProviderId}
+								onChange={e => handleM3dGenProviderChange(e.target.value)}
+								style={{
+									flex: 1, padding: '4px 6px', borderRadius: 4, background: 'var(--vscode-input-background)',
+									color: 'var(--vscode-foreground)', border: '1px solid var(--vscode-input-border)', fontSize: 11, fontFamily: 'inherit',
+								}}
+							>
+								{m3dGenProviders.length === 0 && <option value="">（无已认证的 3D 生成 Provider）</option>}
+								{m3dGenProviders.map(p => (
+									<option key={p.id} value={p.id}>{p.name}</option>
+								))}
+							</select>
+						</div>
+						<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+							<label style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', width: 52, flexShrink: 0 }}>Model</label>
+							<select
+								value={m3dGenModelId}
+								onChange={e => setM3dGenModelId(e.target.value)}
+								style={{
+									flex: 1, padding: '4px 6px', borderRadius: 4, background: 'var(--vscode-input-background)',
+									color: 'var(--vscode-foreground)', border: '1px solid var(--vscode-input-border)', fontSize: 11, fontFamily: 'inherit',
+								}}
+							>
+								{m3dGenProviderModels.length === 0 && <option value="">（该 Provider 无 3D 生成模型）</option>}
+								{m3dGenProviderModels.map(m => (
+									<option key={m.id} value={m.id}>{m.name}</option>
+								))}
+							</select>
+						</div>
+					</div>
+				)}
+
+				{/* 音频生成节点：Provider/Model 双下拉（按能力过滤） */}
+				{isAudioGenNode && (
+					<div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+						<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+							<label style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', width: 52, flexShrink: 0 }}>Provider</label>
+							<select
+								value={audioGenProviderId}
+								onChange={e => handleAudioGenProviderChange(e.target.value)}
+								style={{
+									flex: 1, padding: '4px 6px', borderRadius: 4, background: 'var(--vscode-input-background)',
+									color: 'var(--vscode-foreground)', border: '1px solid var(--vscode-input-border)', fontSize: 11, fontFamily: 'inherit',
+								}}
+							>
+								{audioGenProviders.length === 0 && <option value="">（无已认证的音频生成 Provider）</option>}
+								{audioGenProviders.map(p => (
+									<option key={p.id} value={p.id}>{p.name}</option>
+								))}
+							</select>
+						</div>
+						<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+							<label style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', width: 52, flexShrink: 0 }}>Model</label>
+							<select
+								value={audioGenModelId}
+								onChange={e => setAudioGenModelId(e.target.value)}
+								style={{
+									flex: 1, padding: '4px 6px', borderRadius: 4, background: 'var(--vscode-input-background)',
+									color: 'var(--vscode-foreground)', border: '1px solid var(--vscode-input-border)', fontSize: 11, fontFamily: 'inherit',
+								}}
+							>
+								{audioGenProviderModels.length === 0 && <option value="">（该 Provider 无音频生成模型）</option>}
+								{audioGenProviderModels.map(m => (
+									<option key={m.id} value={m.id}>{m.name}</option>
+								))}
+							</select>
+						</div>
 					</div>
 				)}
 
@@ -1299,7 +1605,11 @@ function FieldEditor({ field, value, onChange, providerId, nodeId }: { field: Ed
 					onChange={e => onChange(e.target.value)}
 					style={{ ...inputStyle, cursor: 'pointer' }}
 				>
-					{(field.options ?? []).map(o => <option key={o} value={o}>{o}</option>)}
+					{(field.options ?? []).map((o, i) => {
+						const optLabel = typeof o === 'string' ? o : (o.label ?? o.value ?? '');
+						const optValue = typeof o === 'string' ? o : (o.value ?? o.label ?? '');
+						return <option key={`${optValue}-${i}`} value={optValue}>{optLabel}</option>;
+					})}
 				</select>
 			</div>
 		);

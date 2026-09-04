@@ -22,8 +22,10 @@ import { registerSchemaLiteGraphNode } from './schemaLiteGraphNodes.js';
 import { COMFYTV_STAGE_META } from './comfyTVStageMeta.generated.js';
 import { COMFYTV_FX_FIELDS } from './comfyTVFxFields.generated.js';
 import { listBuiltinLabels } from './builtinWorkflows/index.js';
+import { EMOJI_SHEET_SIZES, EMOJI_SHEET_SIZE_DEFAULT } from './builtinWorkflows/emojiWorkflows.js';
 import { isFxBuildNode } from './fxChain.js';
 import { VIDEO_TO_GIF_TYPE, VIDEO_TO_GIF_WIDGETS } from './videoToGif.js';
+import { REMOVE_BG_TYPE, REMOVE_BG_WIDGETS } from './removeBg.js';
 
 export type NodeKind = 'react' | 'schema' | 'native' | 'llm';
 
@@ -31,7 +33,20 @@ export type NodeKind = 'react' | 'schema' | 'native' | 'llm';
 export type BackendKind = 'comfy' | 'provider';
 
 /** Provider capability a node requires (llm nodes filter by provider caps). */
-export type ProviderCaps = 'imageGen';
+export type ProviderCaps = 'imageGen' | 'videoGen' | 'modelGen' | 'chat' | 'audioGen';
+
+/**
+ * 微信表情包素材三规格（单一事实源：nodeCard 的 exportTarget→size 联动 +
+ * workflowRun 的导出执行共用）。
+ *  聊天页图标  50×50   PNG ≤100KB（透明背景）
+ *  表情封面图 240×240  PNG ≤500KB（透明背景）
+ *  详情页横幅 750×400  JPG ≤500KB（避免透明背景 → 白底）
+ */
+export const WEIXIN_EXPORT_TARGETS: Record<string, { w: number; h: number; mime: string; maxBytes: number }> = {
+	'聊天页图标': { w: 50, h: 50, mime: 'image/png', maxBytes: 100 * 1024 },
+	'表情封面图': { w: 240, h: 240, mime: 'image/png', maxBytes: 500 * 1024 },
+	'详情页横幅': { w: 750, h: 400, mime: 'image/jpeg', maxBytes: 500 * 1024 },
+};
 
 /**
  * ComfyTV stage variant（对齐 ComfyTV `stores/stageStore.ts` 的 StageVariant）。
@@ -521,7 +536,7 @@ export function registerSarosNodes(): void {
 	registerNodeSpec({
 		type: 'Saros.ModelImageGen',
 		kind: 'schema',
-		title: '模型文生图',
+		title: '图片生成',
 		category: 'saros',
 		inputs: [
 			{ name: 'texts', type: 'COMFYTV_TEXT' },
@@ -571,6 +586,308 @@ export function registerSarosNodes(): void {
 		providerCaps: 'imageGen',
 		color: '#06b6d4',
 		comfyTV: { stageKind: 'image', workflowKind: 'image-to-image' },
+	});
+	// ── Provider 视频生成节点（模型文生视频）──────────────────────────────────
+	// 经 videogen.generate RPC 走 provider 的 generateVideo()（扩展命令转发，
+	// 如 lightai-provider 的 floodGen：MiniMax H3 / 混元视频）。纯 provider
+	// 后端，不依赖 ComfyUI runner；输出 VIDEO 快照可与 Comfy 视频节点接力。
+	//
+	// 参数对齐主流图生视频 provider（2026-09-01，lightflood 协议）：
+	//   - duration 时长档位（4-15 秒，MiniMax H3）
+	//   - resolution 分辨率（768P / 2K）
+	//   - ratio 画面比例（图生视频时 provider 自动 adaptive）
+	// widget 名用 videoProvider/videoModel（区别于文生图的 provider/model），
+	// resolveControlOptions 按名过滤 supportsVideoGen 模型。
+	registerNodeSpec({
+		type: 'Saros.ModelVideoGen',
+		kind: 'schema',
+		title: '视频生成',
+		category: 'saros',
+		inputs: [
+			{ name: 'texts', type: 'COMFYTV_TEXT' },
+			{ name: 'images', type: 'COMFYTV_IMAGE' },
+		],
+		outputs: [
+			{ name: 'videos', type: 'COMFYTV_VIDEO' },
+			{ name: 'video', type: 'COMFYTV_VIDEO' },
+		],
+		widgets: [
+			{ name: 'videoProvider', type: 'COMBO', default: '', options: [] },
+			{ name: 'videoModel', type: 'COMBO', default: '', options: [] },
+			// 视频时长（秒；MiniMax H3 支持 4-15，provider 按档位取整）
+			{ name: 'duration', type: 'COMBO', default: '5', options: [
+				{ value: '4', label: '4 秒' },
+				{ value: '5', label: '5 秒' },
+				{ value: '6', label: '6 秒' },
+				{ value: '8', label: '8 秒' },
+				{ value: '10', label: '10 秒' },
+				{ value: '12', label: '12 秒' },
+				{ value: '15', label: '15 秒' },
+			]},
+			// 分辨率档位（provider 特有）
+			{ name: 'resolution', type: 'COMBO', default: '2K', options: [
+				{ value: '768P', label: '768P' },
+				{ value: '2K', label: '2K' },
+			]},
+			// 画面比例（文生视频必选具体值；图生视频 provider 自动 adaptive）
+			{ name: 'ratio', type: 'COMBO', default: '16:9', options: [
+				{ value: 'auto', label: '自动' },
+				{ value: '21:9', label: '21:9' },
+				{ value: '16:9', label: '16:9' },
+				{ value: '4:3', label: '4:3' },
+				{ value: '1:1', label: '1:1' },
+				{ value: '3:4', label: '3:4' },
+				{ value: '9:16', label: '9:16' },
+			]},
+			{ name: 'prompt', type: 'TEXT', default: '' },
+		],
+		backendKind: 'provider',
+		providerCaps: 'videoGen',
+		color: '#3f8a5a',
+		comfyTV: { stageKind: 'video', workflowKind: 'video' },
+	});
+	// ── 转动态表情包（provider 图生视频 → 前端抠像 → 透明 GIF）────────────────
+	// 定位：透明贴纸（上游图像节点产物）→ provider 视频模型（用户可选）图生视频
+	// → chroma-key 抠像 → ≤500KB 透明 GIF（微信表情开放平台规范：240×240、≤500KB、
+	// ≤3s、循环）。与 ComfyTV.DynEmojiStage 的差异：不绑定 ComfyUI/MiniMax H3，
+	// 走 videogen.generate RPC，纯 provider 后端。
+	// widget 名沿用 videoProvider/videoModel → resolveControlOptions 按
+	// supportsVideoGen 过滤（与 Saros.ModelVideoGen 共用同一套下拉数据源）。
+	registerNodeSpec({
+		type: 'Saros.AnimatedEmoji',
+		kind: 'schema',
+		title: '转动态表情包',
+		category: 'saros',
+		inputs: [
+			{ name: 'images', type: 'COMFYTV_IMAGE' },
+			{ name: 'texts', type: 'COMFYTV_TEXT' },
+		],
+		outputs: [
+			// ★ images（COMFYTV_IMAGES，放首位）：逐格透明 GIF batch——下游
+			//   ImagePicker.batch（COMFYTV_IMAGES）按类型连线取数（此前只有
+			//   animations/video 口，ImagePicker 连上后按 video 语义收集 → 永远
+			//   waiting for upstream）。放首位同时让 OUTPUT 预览走 batch 网格模式。
+			{ name: 'images', type: 'COMFYTV_IMAGES' },
+			{ name: 'animations', type: 'COMFYTV_VIDEO' },
+		],
+		widgets: [
+			// ★ 生成渠道（2026-09-03，仿静态表情包节点）：comfyui（本地视频工作流
+			//   I2V：Local MiniMax H3 I2V / Qwen Emoji Video 等）/ provider（RPC）。
+			{ name: 'backend', type: 'COMBO', default: 'provider', options: ['comfyui', 'provider'] },
+			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('video')[0] ?? '', options: workflowOptionsFor('video') },
+			{ name: 'videoProvider', type: 'COMBO', default: '', options: [] },
+			{ name: 'videoModel', type: 'COMBO', default: '', options: [] },
+			// 动作/风格 prompt（TEXT widget 由内嵌编辑器渲染，meta.prompt 透传）
+			{ name: 'prompt', type: 'TEXT', default: '' },
+			// 视频时长（微信规范 ≤3s；provider 按档位取整）
+			{ name: 'duration_s', type: 'COMBO', default: '3', options: [
+				{ value: '2', label: '2 秒' },
+				{ value: '3', label: '3 秒' },
+				{ value: '4', label: '4 秒' },
+				{ value: '5', label: '5 秒' },
+			]},
+			// GIF 输出参数（chroma-key + 压缩迭代消费）。
+			// ★ 微信表情开放平台规范：主图 GIF 240×240 ≤100KB；缩略图 PNG 240×240
+			//   ≤60KB（随 GIF 条目 meta.thumb 携带）。
+			{ name: 'fps', type: 'INT', default: 12, min: 6, max: 15 },
+			{ name: 'max_kb', type: 'INT', default: 100, min: 100, max: 2000 },
+			// m×n 网格切分：输入为 m×n 拼贴贴纸图 → 整图一次生成动图 → 逐帧切格。
+			// 1×1 = 单表情（整图模式）。margin 内缩比例（吸收邻格渗入/全局抖动）。
+			{ name: 'grid_rows', type: 'INT', default: 1, min: 1, max: 6 },
+			{ name: 'grid_cols', type: 'INT', default: 1, min: 1, max: 6 },
+			{ name: 'grid_margin', type: 'FLOAT', default: 0.03, min: 0, max: 0.2, step: 0.01 },
+			// ★ 绿幕抠像开关（2026-09-03）：非透明背景图像（照片/带底插画）不适用
+			//   绿幕+抠像（无绿幕可抠，抠像会把背景整块抠掉）→ 关闭后不合成绿底、
+			//   抠像容差归零，产出保留原背景的逐格 GIF。
+			{ name: 'chroma_enable', type: 'BOOLEAN', default: true },
+			{ name: 'chroma_color', type: 'STRING', default: '#00FF00' },
+			{ name: 'chroma_similarity', type: 'FLOAT', default: 0.4, min: 0, max: 1, step: 0.05 },
+			{ name: 'chroma_smoothness', type: 'FLOAT', default: 0.1, min: 0, max: 1, step: 0.05 },
+		],
+		backendKind: 'provider',
+		providerCaps: 'videoGen',
+		color: '#8a3fd0',
+		comfyTV: { stageKind: 'video', workflowKind: 'video' },
+	});
+	// ── Provider 3D 模型生成节点 ─────────────────────────────────────────────
+	// 经 modelgen.generate RPC 走 provider 的 generateModel3D()（如 lightai
+	// floodGen 的混元 3.5 文生/图生 3D）。输出 IMAGE 预览快照（3D 渲染图）
+	// + TEXT 端口输出 glb 下载链接，供下游节点/Agent 消费；产物多格式
+	// 源文件（fbx/obj）记录在快照 meta.modelUrl / meta.sources。
+	// widget 名 m3dProvider/m3dModel → resolveControlOptions 过滤 supportsModelGen。
+	registerNodeSpec({
+		type: 'Saros.Model3DGen',
+		kind: 'schema',
+		title: '3D 模型生成',
+		category: 'saros',
+		inputs: [
+			{ name: 'texts', type: 'COMFYTV_TEXT' },
+			{ name: 'images', type: 'COMFYTV_IMAGE' },
+		],
+		outputs: [
+			{ name: 'preview', type: 'COMFYTV_IMAGE' },
+			{ name: 'model_url', type: 'COMFYTV_TEXT' },
+		],
+		widgets: [
+			{ name: 'm3dProvider', type: 'COMBO', default: '', options: [] },
+			{ name: 'm3dModel', type: 'COMBO', default: '', options: [] },
+			// 目标面数（provider 特有；auto = 跟随精度档位）
+			{ name: 'faceCount', type: 'COMBO', default: 'auto', options: [
+				{ value: 'auto', label: '自动' },
+				{ value: '100000', label: '10 万面' },
+				{ value: '300000', label: '30 万面' },
+				{ value: '600000', label: '60 万面' },
+				{ value: '1500000', label: '150 万面' },
+			]},
+			// PBR 材质（混元 3.5 支持）
+			{ name: 'enablePbr', type: 'COMBO', default: 'false', options: [
+				{ value: 'false', label: '关' },
+				{ value: 'true', label: '开' },
+			]},
+			{ name: 'prompt', type: 'TEXT', default: '' },
+		],
+		backendKind: 'provider',
+		providerCaps: 'modelGen',
+		color: '#8a5a7a',
+		comfyTV: { stageKind: 'image', workflowKind: 'image' },
+	});
+	// （音频生成节点见下方 Saros.AudioGen —— TTS/音乐统一走该节点，
+	//   lightai 的 audio_* 模型经 audiogen.generate RPC 接入。）
+	// ── Provider 文本生成节点 ────────────────────────────────────────────────
+	// 经 textgen.generate RPC 走 provider.chat()（流式聚合，与反推提示词同机制）。
+	// 纯 provider 后端，不依赖 ComfyUI runner；输出 TEXT 快照可与 ComfyTV 文本链路
+	// （口播脚本 / 模型文生图 / 文生视频 prompt 端口）直接接力。
+	// widget 名 textProvider/textModel → chat 是模型通用能力，model 下拉不按
+	// 能力标志过滤（全模型可选，nodeCard.resolveControlOptions 同步）。
+	registerNodeSpec({
+		type: 'Saros.TextGen',
+		kind: 'schema',
+		title: '文本生成',
+		category: 'saros',
+		inputs: [
+			{ name: 'texts', type: 'COMFYTV_TEXT' },
+		],
+		outputs: [
+			{ name: 'texts', type: 'COMFYTV_TEXT' },
+			{ name: 'text', type: 'COMFYTV_TEXT' },
+		],
+		widgets: [
+			{ name: 'textProvider', type: 'COMBO', default: '', options: [] },
+			{ name: 'textModel', type: 'COMBO', default: '', options: [] },
+			// 采样温度（0 = 贪婪；provider 默认 0.7）
+			{ name: 'temperature', type: 'COMBO', default: '0.7', options: [
+				{ value: '0', label: '0（精确）' },
+				{ value: '0.4', label: '0.4' },
+				{ value: '0.7', label: '0.7（默认）' },
+				{ value: '1.0', label: '1.0' },
+			]},
+			// 系统提示（可选；为角色/格式约束预留）
+			{ name: 'system', type: 'TEXT', default: '' },
+			// 用户提示词（支持 {{input}} 上游模板 / @[node:] mention）
+			{ name: 'prompt', type: 'TEXT', default: '' },
+		],
+		backendKind: 'provider',
+		providerCaps: 'chat',
+		color: '#3b82f6',
+		comfyTV: { stageKind: 'text', workflowKind: 'text' },
+	});
+	// ── Provider 音频生成节点 ────────────────────────────────────────────────
+	// 经 audiogen.generate RPC 走 provider.generateAudio()（扩展命令转发，同
+	// videogen/modelgen 模式）。纯 provider 后端，不依赖 ComfyUI runner；输出
+	// AUDIO 快照可与 ComfyTV 音频链路（视频配音 / 口播导演 audio 端口）接力。
+	// widget 名 audioProvider/audioModel → resolveControlOptions 按
+	// supportsAudioGen 过滤模型。
+	registerNodeSpec({
+		type: 'Saros.AudioGen',
+		kind: 'schema',
+		title: '音频生成',
+		category: 'saros',
+		inputs: [
+			{ name: 'texts', type: 'COMFYTV_TEXT' },
+		],
+		outputs: [
+			{ name: 'audios', type: 'COMFYTV_AUDIO' },
+			{ name: 'audio', type: 'COMFYTV_AUDIO' },
+		],
+		widgets: [
+			{ name: 'audioProvider', type: 'COMBO', default: '', options: [] },
+			{ name: 'audioModel', type: 'COMBO', default: '', options: [] },
+			// 音频时长（秒；provider 按档位取整，空 = provider 默认）
+			{ name: 'duration', type: 'COMBO', default: '', options: [
+				{ value: '', label: '自动' },
+				{ value: '15', label: '15 秒' },
+				{ value: '30', label: '30 秒' },
+				{ value: '60', label: '60 秒' },
+				{ value: '120', label: '2 分钟' },
+				{ value: '240', label: '4 分钟' },
+			]},
+			// 生成数量
+			{ name: 'numAudios', type: 'INT', default: 1, min: 1, max: 4 },
+			// 提示词（风格/情绪/乐器等）
+			{ name: 'prompt', type: 'TEXT', default: '' },
+			// 歌词（可选；音乐类 provider 用，空 = 纯器乐）
+			{ name: 'lyrics', type: 'TEXT', default: '' },
+		],
+		backendKind: 'provider',
+		providerCaps: 'audioGen',
+		color: '#f59e0b',
+		comfyTV: { stageKind: 'audio', workflowKind: 'audio' },
+	});
+	// ── 微信表情包封面节点（provider 图像生成特化）─────────────────────────
+	// 微信表情包开放平台「表情封面图」规范（240×240 PNG ≤500KB，艺术家主页
+	// 列表展示）：透明背景、建议半身/全身像、无白边/锯齿/装饰/文字、避免白色
+	// 背景。默认 prompt 模板已编码全部规范；{{character}}/{{style}}/{{framing}}
+	// 引用本节点控件（runProviderImage 的 named 注入展开），填「角色描述」即出图。
+	// 复用 runProviderImage（backendKind='provider' 自动路由），零新增执行代码。
+	registerNodeSpec({
+		type: 'Saros.WeixinStickerCover',
+		kind: 'schema',
+		title: '微信表情包封面',
+		category: 'saros',
+		inputs: [
+			{ name: 'texts', type: 'COMFYTV_TEXT' },
+			{ name: 'images', type: 'COMFYTV_IMAGE' },
+		],
+		outputs: [
+			{ name: 'images', type: 'COMFYTV_IMAGES' },
+			{ name: 'image', type: 'COMFYTV_IMAGE' },
+		],
+		widgets: [
+			// 处理模式：生成（文生图，走 provider）| 导出规格化（上游批量图片按
+			// 微信素材规格本地转换——缩放/格式/体积控制，浏览器 canvas 执行）
+			{ name: 'mode', type: 'COMBO', default: '生成', options: ['生成', '导出规格化'] },
+			// 导出目标（微信素材三规格；仅「导出规格化」模式生效）：切换时由
+			// nodeCard 联动同步 size/custom_width/custom_height（WEIXIN_EXPORT_TARGETS）
+			{ name: 'exportTarget', type: 'COMBO', default: '表情封面图', options: ['表情封面图', '聊天页图标', '详情页横幅'] },
+			{ name: 'provider', type: 'COMBO', default: '', options: [] },
+			{ name: 'model', type: 'COMBO', default: '', options: [] },
+			// 表情角色描述（核心输入；空 = 通用可爱卡通角色）
+			{ name: 'character', type: 'TEXT', default: '' },
+			// 构图档位（规范：建议半身/全身像）
+			{ name: 'framing', type: 'COMBO', default: '半身像', options: ['半身像', '全身像', '头像特写'] },
+			// 表情风格
+			{ name: 'style', type: 'COMBO', default: '软萌可爱', options: ['软萌可爱', '像素风', '扁平插画', '3D渲染', '手绘线稿'] },
+			// 输出尺寸（生成模式用；含三种微信规格档，与 exportTarget 联动）
+			{ name: 'size', type: 'COMBO', default: '240x240', options: [
+				{ value: '240x240', label: '240×240（封面规范）' },
+				{ value: '50x50', label: '50×50（图标规范）' },
+				{ value: '750x400', label: '750×400（横幅规范）' },
+				{ value: '512x512', label: '512×512（高清）' },
+				{ value: '1024x1024', label: '1024×1024' },
+				{ value: '', label: '自定义' },
+			]},
+			{ name: 'custom_width', type: 'INT', default: 240 },
+			{ name: 'custom_height', type: 'INT', default: 240 },
+			{ name: 'numImages', type: 'INT', default: 1, min: 1, max: 8 },
+			{ name: 'seed', type: 'INT', default: -1 },
+			// 提示词：默认模板已编码微信规范；{{character}} 空 → 展开为空串不留孤立占位
+			{ name: 'prompt', type: 'TEXT', default: '微信表情包封面插画：{{character}}{{style}}风格，{{framing}}居中构图，姿态生动可爱。透明背景（PNG 通道），避免纯白色背景；无白边、无锯齿、无生硬直角、无装饰边框、无文字水印；构图合理少留白，色彩鲜明，适合微信聊天表情场景。' },
+			{ name: 'negativePrompt', type: 'TEXT', default: '白边, 锯齿, 生硬直角, 装饰边框, 文字, 水印, 纯白色背景, 复杂背景装饰' },
+		],
+		backendKind: 'provider',
+		providerCaps: 'imageGen',
+		color: '#07c160',
+		comfyTV: { stageKind: 'image', workflowKind: 'text-to-image' },
 	});
 	// ── Vox 口播视频节点（kind=schema，走 runStageWorkflow 内置模板）────────────
 	// 三节点串联：口播脚本(TEXT) → vox 图像(COMFYTV_IMAGES) → vox 视频(COMFYTV_VIDEO)。
@@ -1378,51 +1695,42 @@ export function registerDefaultComfyTVStages(): void {
 			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('emoji')[0], options: workflowOptionsFor('emoji') },
 			// 主题预设：作为 prompt 后缀的风格关键词（见 emojiWorkflows 的 SUFFIX 映射）。
 			{ name: 'style_preset', type: 'COMBO', default: 'Q版', options: ['Q版', '3D', '手绘', 'Meme', '漫画封', '粘土', '像素艺术', '可爱风'] },
+			// 生成渠道（2026-09-02）：'comfyui'（本地 ComfyUI，模型下拉 comfy_model）| 'provider'
+			// （provider 图生图 RPC，provider/model 下拉）。StatEmojiStageEditor 选项卡消费。
+			{ name: 'backend', type: 'COMBO', default: 'comfyui', options: ['comfyui', 'provider'] },
+			// ComfyUI 渠道模型（checkpoint 文件名）→ 整图图集模板 option:comfy_model 注入
+			// CheckpointLoaderSimple.ckpt_name；单格模板沿用 workflow 模板自身的 checkpoint。
+			{ name: 'comfy_model', type: 'COMBO', default: 'sd_xl_base_1.0.safetensors', options: [] },
+			// Provider 渠道（文生图命名约定：provider/model，supportsImageGen 过滤）
+			{ name: 'provider', type: 'COMBO', default: '', options: [] },
+			{ name: 'model', type: 'COMBO', default: '', options: [] },
+			// ★ 生成图像大小（2026-09-02）：整图图集的**整版分辨率**（非单格尺寸）。
+			//   provider → sendImageGen 的 width/height；comfyui → 覆盖模板
+			//   EmptyLatentImage 的 width/height（promptPostProcess 注入）。
+			//   选项见 emojiWorkflows.EMOJI_SHEET_SIZES（三处同步：registry / 编辑器 UI / 执行器）。
+			{ name: 'size', type: 'COMBO', default: EMOJI_SHEET_SIZE_DEFAULT, options: EMOJI_SHEET_SIZES },
 			{ name: 'rows', type: 'INT', default: 3, min: 1, max: 6 },
 			{ name: 'cols', type: 'INT', default: 3, min: 1, max: 6 },
 			{ name: 'prompt', type: 'TEXT', default: '' },
 			{ name: 'cells', type: 'TEXT', default: '[]' },
+			// m×n 每格裁剪框（归一化 [{x,y,w,h}]，JSON）——编辑器「调整裁剪」拖拽/缩放
+			// 写回；runEmojiStageGrid 消费（缺省 = 等分 + margin 内缩）。
+			{ name: 'cell_crops', type: 'TEXT', default: '' },
 			{ name: 'selected_index', type: 'INT', default: 0, min: 0, max: 35 },
 			// run_scope：'all'（生成全部）| 'cell'（只跑 selected_index 一格）。
 			// 由 StatEmojiStageEditor 在点击运行前写回，workflowRun.runEmojiStageGrid 消费。
 			{ name: 'run_scope', type: 'TEXT', default: 'all' },
-		],
+			// 整版图集背景策略（2026-09-02）：'auto'（默认，不追加背景子句）|
+			// 'transparent'（追加 isolated on transparent background）|
+			// 'white'（追加 flat clean white background）。
+			// ★ 切分不做抠图（2026-09-03 用户要求移除生成链路抠图）——透明化由
+			//   prompt 约束或手动「去背景」（内置 U²Net）完成。
+			{ name: 'sheet_background', type: 'COMBO', default: 'auto', options: ['auto', 'transparent', 'white'] },
+			],
 		color: '#e879f9',
 		comfyTV: { stageKind: 'emoji', workflowKind: 'emoji', variant: 'generator' },
 	});
 
-	// DynEmojiStage — 动态表情包（参考图 → MiniMax H3 绿幕视频 → 前端抠图 → GIF）。
-	// 通用提示词 + 基于图片生成视频；绿幕背景便于前端 chroma-key 抠图成透明 GIF。
-	registerNodeSpec({
-		type: 'ComfyTV.DynEmojiStage',
-		kind: 'schema',
-		title: '动态表情包',
-		category: 'comfyTV',
-		inputs: [
-			// image = 参考图（必填，驱动视频生成与抠图 mask）；text = 动作/风格提示词。
-			{ name: 'image', type: 'COMFYTV_IMAGE' },
-			{ name: 'text', type: 'COMFYTV_TEXT' },
-		],
-		outputs: [
-			// gif = 抠图后的透明 GIF；video = 绿幕原始视频（历史保留）。
-			{ name: 'gif', type: 'COMFYTV_IMAGE' },
-			{ name: 'video', type: 'COMFYTV_VIDEO' },
-		],
-		widgets: [
-			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('emoji-dyn')[0] ?? '动态表情 (MiniMax H3)', options: workflowOptionsFor('emoji-dyn') },
-			{ name: 'prompt', type: 'TEXT', default: '' },
-			{ name: 'duration_s', type: 'FLOAT', default: 3, min: 2, max: 15 },
-			// 绿幕色（chroma-key 抠图用），默认纯绿 #00FF00。
-			{ name: 'chroma_color', type: 'TEXT', default: '#00FF00' },
-			// 相似度/平滑度（前端抠图容差）。
-			{ name: 'chroma_similarity', type: 'FLOAT', default: 0.4, min: 0, max: 1 },
-			{ name: 'chroma_smoothness', type: 'FLOAT', default: 0.1, min: 0, max: 1 },
-			{ name: 'selected_index', type: 'INT', default: 0, min: 0, max: 35 },
-			{ name: 'run_scope', type: 'TEXT', default: 'all' },
-		],
-		color: '#c084fc',
-		comfyTV: { stageKind: 'emoji-dyn', workflowKind: 'emoji-dyn', variant: 'generator' },
-	});
 	// VideoToGifStage — 视频转 GIF（浏览器本地执行，见 videoToGif.ts 顶部注释：
 	// ComfyTV 无 gif stage，本机 ComfyUI 也只有 SaveAnimatedWEBP/PNG）。
 	// variant='transform' → 无「生成」语义的运行按钮，改由 ACTIONS/参数变更驱动；
@@ -1442,6 +1750,26 @@ export function registerDefaultComfyTVStages(): void {
 		widgets: VIDEO_TO_GIF_WIDGETS,
 		color: '#22d3ee',
 		comfyTV: { stageKind: 'video', workflowKind: 'video', variant: 'transform' },
+	});
+	// RemoveBgStage — 去背景（浏览器直连本地 rembg 服务，见 removeBg.ts 顶部注释：
+	// rembg_server.py 输出真 RGBA 透明 PNG，不依赖云端模型 transparency 支持）。
+	// variant='transform' → 无「生成」语义的运行按钮，改由 ACTIONS/参数变更驱动
+	//（同 VideoToGif）；输出 COMFYTV_IMAGE → 下游 ImageStage / 导出直接可用。
+	// 同 VideoToGif：不在 comfyTVStageMeta.generated.ts，comfyTV 元数据显式声明。
+	registerNodeSpec({
+		type: REMOVE_BG_TYPE,
+		kind: 'schema',
+		title: '去背景',
+		category: 'comfyTV',
+		inputs: [
+			{ name: 'input', type: 'COMFYTV_IMAGE' },
+		],
+		outputs: [
+			{ name: 'output', type: 'COMFYTV_IMAGE' },
+		],
+		widgets: REMOVE_BG_WIDGETS,
+		color: '#38bdf8',
+		comfyTV: { stageKind: 'image', workflowKind: 'image', variant: 'transform' },
 	});
 }
 

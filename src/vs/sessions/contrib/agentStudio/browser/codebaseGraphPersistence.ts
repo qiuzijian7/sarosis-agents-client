@@ -523,9 +523,16 @@ export class GraphPersistence {
 	private async _streamingGzip(chunks: Iterable<string>, onProgress?: (writtenMB: number) => void): Promise<{ compressed: Uint8Array; originalSize: number }> {
 		let originalSize = 0;
 
-		// 聚合小分片为 ~8MB 大块再写入压缩流：百万级小片逐片 await writer.write
+		// 聚合小分片为大块再写入压缩流：百万级小片逐片 await writer.write
 		// 会造成海量事件循环往返 + 每片独立的 gzip 调用开销，表现为长时间假死。
-		const BATCH = 8 * 1024 * 1024;
+		//
+		// 2026-09-02：8MB → 2MB。块大小直接决定「单次不让出主线程的时长」——96MB 图谱
+		// 按 8MB 切分，单次阻塞约 0.8s（UI 明显卡顿）；2MB 约 0.2s，接近无感。
+		// 代价是让出次数 12 → 48，而 setTimeout(0) 单次仅微秒级，相对每块数百毫秒的
+		// stringify + gzip 可忽略。2MB 仍属大块，不会退化成「百万级小片」的假死形态。
+		// （注：把整段序列化搬进 Worker 不可行——输入是主线程内存里 12.4w 个节点对象，
+		//  跨线程传输成本高于序列化本身。）
+		const BATCH = 2 * 1024 * 1024;
 
 		if (typeof CompressionStream === 'undefined') {
 			const parts: Uint8Array[] = [];

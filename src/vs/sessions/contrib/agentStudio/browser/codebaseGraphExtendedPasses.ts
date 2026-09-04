@@ -17,6 +17,9 @@ import { CodebaseGraphStore, GraphNode } from './codebaseGraphStore.js';
 
 /** MinHash 排列数（签名长度）。48 在阈值 0.7 附近分辨率为 ~1/48，兼顾精度与存储。 */
 export const MINHASH_PERM = 48;
+// LSH 分带参数：48 维签名切成 12 band × 4 行（band 数决定召回率，行数由 48/12 决定）
+const NUM_BANDS = 12;
+const ROWS_PER_BAND = 4;
 
 // ─── P1-10: pass_usages — 变量/类型引用边 ──────────────────────────────
 
@@ -303,33 +306,52 @@ export async function detectSimilarCodeIncremental(
 	const minHash = new MinHash(MINHASH_PERM);
 	const YIELD_EVERY = 2000;
 
-	// 全量函数签名（LSH 索引的底座）。跨轮可复用缓存，避免每轮重建 12.4w 项 Map。
-	const signatures = getSignaturesCached(allNodes, store);
-	const functions: GraphNode[] = [];
-	for (const [id] of signatures) {
-		const n = store.getNode(id);
-		if (n) { functions.push(n); }
-	}
+	// 全量函数签名 + LSH 桶（跨轮缓存）。2026-09-03：签名 Map 与桶都改为维护式增量
+	// （旧实现：节点数一变即全量重建 Map + 全量建桶，+520 节点的轮次实测 2804ms）。
+	const { signatures, entry } = getSignaturesCached(allNodes, store, newNodeIds);
 
-	// 本次新增/变更节点里，有签名的函数节点才参与配对
-	const newFunctions = functions.filter(f => newNodeIds.has(f.id));
+	// 本次新增/变更节点里，有签名的函数节点才参与配对。
+	// 直接从 newNodeIds 出发（O(新节点数)）；旧实现遍历全量签名 Map 逐个 getNode 再 filter，
+	// 12.4w 项白扫一遍。
+	const newFunctions: GraphNode[] = [];
+	for (const id of newNodeIds) {
+		if (signatures.has(id)) {
+			const n = store.getNode(id);
+			if (n) { newFunctions.push(n); }
+		}
+	}
 	if (newFunctions.length === 0) { return edges; }
 
-	const numBands = 12;
-	const rowsPerBand = 4;  // MINHASH_PERM(48) / 12 = 4
-	const buckets: Map<string, number[]>[] = Array.from({ length: numBands }, () => new Map());
-	let processed = 0;
-	for (const [nodeId, sig] of signatures) {
-		for (let b = 0; b < numBands; b++) {
-			const bandStart = b * rowsPerBand;
-			const bandEnd = bandStart + rowsPerBand;
-			const bandKey = sig.slice(bandStart, bandEnd).join(',');
-			const bucket = buckets[b].get(bandKey) || [];
-			bucket.push(nodeId);
-			buckets[b].set(bandKey, bucket);
+	const numBands = NUM_BANDS;
+	const rowsPerBand = ROWS_PER_BAND;
+	let buckets = entry.buckets;
+	if (!buckets) {
+		// 首次（或大规模删除后）：全量建桶（时间切片，避免独占主线程）
+		buckets = Array.from({ length: numBands }, () => new Map<string, number[]>());
+		let processed = 0;
+		for (const [nodeId, sig] of signatures) {
+			for (let b = 0; b < numBands; b++) {
+				const bandKey = sig.slice(b * rowsPerBand, b * rowsPerBand + rowsPerBand).join(',');
+				const bucket = buckets[b].get(bandKey);
+				if (bucket) { bucket.push(nodeId); } else { buckets[b].set(bandKey, [nodeId]); }
+			}
+			if (++processed % YIELD_EVERY === 0) {
+				await new Promise<void>(resolve => setTimeout(resolve, 0));
+			}
 		}
-		if (++processed % YIELD_EVERY === 0) {
-			await new Promise<void>(resolve => setTimeout(resolve, 0));
+		entry.buckets = buckets;
+	} else {
+		// 增量插桶：只处理本轮签名有变动的 id（O(新节点数 × numBands)）。
+		// 旧 band 条目残留无害：候选校验一律取 signatures 中的当前签名，
+		// 已删除节点由 getNode 拦截；签名未变的重复条目被候选 Set 去重吸收。
+		for (const id of newNodeIds) {
+			const sig = signatures.get(id);
+			if (!sig) { continue; }
+			for (let b = 0; b < numBands; b++) {
+				const bandKey = sig.slice(b * rowsPerBand, b * rowsPerBand + rowsPerBand).join(',');
+				const bucket = buckets[b].get(bandKey);
+				if (bucket) { bucket.push(id); } else { buckets[b].set(bandKey, [id]); }
+			}
 		}
 	}
 
@@ -382,29 +404,58 @@ export async function detectSimilarCodeIncremental(
  * 全量函数签名缓存：nodeId → MinHash 签名。
  *
  * 增量索引每轮都要为 LSH 建桶而重建这张 12.4w 项的 Map（filter + 属性访问），
- * 属纯 CPU 且结果在「图未大改」时不变。按 store 节点总数做保守失效判据：
- * 节点数变化（增删节点）即重建。即便未命中，也只多付一次 Map 构建，语义不变。
+ * 属纯 CPU 且结果在「图未大改」时不变。
+ *
+ * 演进（2026-09-03）：旧判据「节点数变化即全量重建」在有新节点的增量轮次恒失效
+ * （+520 节点 → 重建 12.4w 项 Map + 全量 LSH 建桶，实测 2804ms 占增量索引 84%）。
+ * 改为**维护式增量**：变更节点的签名 upsert（函数体变了签名变；不再是函数/无签名则移除），
+ * 仅当无缓存或节点数大幅下降（大规模删除，死 id 占比过高）才全量重建。
+ * LSH 桶挂在同一缓存 entry 上：首次全量建，之后每轮只增量插入变更 id 的 band 条目。
  *
  * 缓存为模块级 WeakMap（键为 store 实例），避免多 project 互相污染与内存泄漏。
  */
-const _signatureCache = new WeakMap<CodebaseGraphStore, { nodeCount: number; signatures: Map<number, number[]> }>();
+const _signatureCache = new WeakMap<CodebaseGraphStore, {
+	nodeCount: number;
+	signatures: Map<number, number[]>;
+	/** LSH 桶（NUM_BANDS 个 band → bandKey → nodeId[]）。首次构建后跨轮增量维护。 */
+	buckets: Map<string, number[]>[] | undefined;
+}>();
 
-function getSignaturesCached(allNodes: GraphNode[], store: CodebaseGraphStore): Map<number, number[]> {
+/** 判断节点是否为带有效 MinHash 签名的函数/方法节点。 */
+function isSigNode(n: GraphNode): boolean {
+	const p = n.properties as any;
+	return (n.label === 'function' || n.label === 'method') &&
+		Array.isArray(p?.minHash) && p.minHash.length === MINHASH_PERM;
+}
+
+function getSignaturesCached(
+	allNodes: GraphNode[],
+	store: CodebaseGraphStore,
+	newNodeIds?: Set<number>,
+): { signatures: Map<number, number[]>; entry: { nodeCount: number; signatures: Map<number, number[]>; buckets: Map<string, number[]>[] | undefined } } {
 	const nodeCount = store.getNodeCount();
-	const cached = _signatureCache.get(store);
-	if (cached && cached.nodeCount === nodeCount) {
-		return cached.signatures;
+	let cached = _signatureCache.get(store);
+	if (!cached || nodeCount < cached.nodeCount * 0.9) {
+		// 无缓存，或大规模删除（死 id 残留占比过高）→ 全量重建；桶一并作废。
+		const signatures = new Map<number, number[]>();
+		for (const n of allNodes) {
+			if (isSigNode(n)) { signatures.set(n.id, (n.properties as any).minHash as number[]); }
+		}
+		cached = { nodeCount, signatures, buckets: undefined };
+		_signatureCache.set(store, cached);
+		return { signatures, entry: cached };
 	}
-	const signatures = new Map<number, number[]>();
-	for (const n of allNodes) {
-		if ((n.label === 'function' || n.label === 'method') &&
-			Array.isArray((n.properties as any)?.minHash) &&
-			((n.properties as any).minHash as number[]).length === MINHASH_PERM) {
-			signatures.set(n.id, (n.properties as any).minHash as number[]);
+	// 增量维护：本轮变更节点的签名 upsert / 移除。已删除节点的死 id 保留在 Map 中
+	// 无害（候选校验时 getNode 拦截），仅在下一轮全量重建时清理。
+	if (newNodeIds && newNodeIds.size > 0) {
+		for (const id of newNodeIds) {
+			const n = store.getNode(id);
+			if (n && isSigNode(n)) { cached.signatures.set(id, (n.properties as any).minHash as number[]); }
+			else { cached.signatures.delete(id); }
 		}
 	}
-	_signatureCache.set(store, { nodeCount, signatures });
-	return signatures;
+	cached.nodeCount = nodeCount;
+	return { signatures: cached.signatures, entry: cached };
 }
 
 // ─── P1-13: pass_tests — 测试文件/函数检测 ──────────────────────────────

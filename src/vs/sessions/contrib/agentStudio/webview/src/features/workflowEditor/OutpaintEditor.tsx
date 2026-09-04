@@ -8,6 +8,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as React from 'react';
+import { loadCanvasImageWithProxy } from './canvasImageLoad';
 
 export interface OutpaintPadState {
 	left: number;
@@ -57,18 +58,14 @@ export function OutpaintEditor({ initial, imageRef, onCommit }: OutpaintEditorPr
 			setImgSize(null);
 			return;
 		}
-		const img = new Image();
-		img.crossOrigin = 'anonymous';
-		const onLoad = () => setImgSize({ w: img.naturalWidth, h: img.naturalHeight });
-		const onError = () => setImgSize(null);
-		img.addEventListener('load', onLoad);
-		img.addEventListener('error', onError);
-		img.src = imageRef;
-		return () => {
-			img.removeEventListener('load', onLoad);
-			img.removeEventListener('error', onError);
-			img.removeAttribute('src');
-		};
+		let cancelled = false;
+		// 直连失败（provider 签名 URL 无 CORS 头）自动回退 host 代理转 data URL
+		loadCanvasImageWithProxy(imageRef).then((img) => {
+			if (cancelled) { return; }
+			if (img) { setImgSize({ w: img.naturalWidth, h: img.naturalHeight }); }
+			else { setImgSize(null); }
+		});
+		return () => { cancelled = true; };
 	}, [imageRef]);
 
 	const natW = imgSize?.w ?? 768;

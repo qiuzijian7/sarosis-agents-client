@@ -23,7 +23,7 @@ import {
  * 用 `commands.executeCommand(...)` 注册自己的命令钩子。命令调用约定：
  *
  *   commands.executeCommand('agentStudio.workspaceLifecycle.register', {
- *       id: 'knot-agui',
+ *       id: 'demo-agui',
  *       onCreated: 'knot.workspace.sync',     // 可选
  *       onDeleted: 'knot.workspace.unsync',   // 可选
  *       onUpdated: 'knot.workspace.update',   // 可选

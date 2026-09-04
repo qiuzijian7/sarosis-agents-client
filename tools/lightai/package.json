@@ -1,0 +1,8 @@
+{
+  "name": "lightai-openai-adapter",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "LightAI (aigclsp.com gemini-chat) -> OpenAI compatible adapter",
+  "main": "server.js"
+}

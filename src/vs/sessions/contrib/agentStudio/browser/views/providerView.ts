@@ -139,6 +139,18 @@ export interface CustomProviderData {
 	apiKeyHeader?: 'bearer' | 'x-api-key';
 	/** Anthropic 版本头（默认 '2023-06-01'） */
 	anthropicVersion?: string;
+	/**
+	 * 文生图端点路径（可选，默认 'images/generations'）。
+	 * OpenAI 兼容的 text→image 端点，例如 'v1/images/generations'。
+	 * 某些网关/代理（如 chatgpt2api）的文生图路径与标准 OpenAI 不同，
+	 * 需在此配置正确路径以避免 405 Method Not Allowed。
+	 */
+	imageGenEndpointPath?: string;
+	/**
+	 * 文生图 HTTP 方法（可选，默认 'POST'）。
+	 * OpenAI 兼容服务器使用 POST；某些网关/代理可能期望其他方法（如 GET）。
+	 */
+	imageGenMethod?: 'POST' | 'GET';
 }
 
 // ─── Provider View ───────────────────────────────────────────────────────────
@@ -554,6 +566,49 @@ export class ProviderViewPane extends ViewPane {
 					mInput.onblur = saveM;
 					mRow.appendChild(mInput);
 					cardBody.appendChild(mRow);
+
+					// 文生图端点路径（可选，默认 images/generations）
+					const imgPathRow = $('div.provider-field');
+					const imgPathLabel = $('label.provider-field-label');
+					imgPathLabel.textContent = '文生图端点（可选）';
+					imgPathRow.appendChild(imgPathLabel);
+					const imgPathInput = document.createElement('input');
+					imgPathInput.type = 'text';
+					imgPathInput.className = 'provider-field-input';
+					imgPathInput.placeholder = '留空使用 images/generations';
+					imgPathInput.value = cpEntry.imageGenEndpointPath || '';
+					const saveImgPath = () => {
+						const v = imgPathInput.value.trim();
+						this._patchCustomProvider(provider.id, v ? { imageGenEndpointPath: v } : { imageGenEndpointPath: undefined });
+					};
+					imgPathInput.onchange = saveImgPath;
+					imgPathInput.onblur = saveImgPath;
+					imgPathRow.appendChild(imgPathInput);
+					cardBody.appendChild(imgPathRow);
+
+					// 文生图 HTTP 方法（可选，默认 POST）
+					const imgMethodRow = $('div.provider-field');
+					const imgMethodLabel = $('label.provider-field-label');
+					imgMethodLabel.textContent = '文生图方法（可选）';
+					imgMethodRow.appendChild(imgMethodLabel);
+					const imgMethodSel = document.createElement('select');
+					imgMethodSel.className = 'provider-field-input';
+					const optPost = document.createElement('option');
+					optPost.value = 'POST';
+					optPost.textContent = 'POST（标准）';
+					const optGet = document.createElement('option');
+					optGet.value = 'GET';
+					optGet.textContent = 'GET';
+					imgMethodSel.appendChild(optPost);
+					imgMethodSel.appendChild(optGet);
+					imgMethodSel.value = cpEntry.imageGenMethod || 'POST';
+					const saveImgMethod = () => {
+						const v = imgMethodSel.value as 'POST' | 'GET';
+						this._patchCustomProvider(provider.id, { imageGenMethod: v });
+					};
+					imgMethodSel.onchange = saveImgMethod;
+					imgMethodRow.appendChild(imgMethodSel);
+					cardBody.appendChild(imgMethodRow);
 				}
 
 				// 模型清单（Path B 增强：不弹窗，直接在卡片内勾选）
@@ -923,6 +978,38 @@ export class ProviderViewPane extends ViewPane {
 			row.appendChild(input);
 			openaiFields.appendChild(row);
 		}
+		{
+			const row = $('div.provider-field');
+			const label = $('label.provider-field-label');
+			label.textContent = '文生图端点（可选）';
+			row.appendChild(label);
+			const input = document.createElement('input');
+			input.type = 'text';
+			input.id = 'add-provider-imagegenpath';
+			input.className = 'provider-field-input';
+			input.placeholder = '留空使用 images/generations';
+			row.appendChild(input);
+			openaiFields.appendChild(row);
+		}
+		{
+			const row = $('div.provider-field');
+			const label = $('label.provider-field-label');
+			label.textContent = '文生图方法（可选）';
+			row.appendChild(label);
+			const sel = document.createElement('select');
+			sel.id = 'add-provider-imagemethod';
+			sel.className = 'provider-field-input';
+			const optPost = document.createElement('option');
+			optPost.value = 'POST';
+			optPost.textContent = 'POST（标准）';
+			const optGet = document.createElement('option');
+			optGet.value = 'GET';
+			optGet.textContent = 'GET';
+			sel.appendChild(optPost);
+			sel.appendChild(optGet);
+			row.appendChild(sel);
+			openaiFields.appendChild(row);
+		}
 		formCard.appendChild(openaiFields);
 
 		const toggleType = () => {
@@ -983,8 +1070,12 @@ export class ProviderViewPane extends ViewPane {
 			} else {
 				const chatPath = (document.getElementById('add-provider-chatpath') as HTMLInputElement).value.trim();
 				const modelsPath = (document.getElementById('add-provider-modelspath') as HTMLInputElement).value.trim();
+				const imgGenPath = (document.getElementById('add-provider-imagegenpath') as HTMLInputElement)?.value?.trim();
+				const imgGenMethod = (document.getElementById('add-providerimagemethod') as HTMLSelectElement)?.value as 'POST' | 'GET' | undefined;
 				if (chatPath) { entry.chatEndpointPath = chatPath; }
 				if (modelsPath) { entry.modelsEndpointPath = modelsPath; }
+				if (imgGenPath) { entry.imageGenEndpointPath = imgGenPath; }
+				if (imgGenMethod) { entry.imageGenMethod = imgGenMethod; }
 			}
 			customProviders.push(entry);
 			this.configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders);

@@ -331,7 +331,7 @@ export async function discoverModels(
 export async function httpRequest(params: IHttpRequestParams, log?: LogFn): Promise<IHttpRequestResult> {
 	const method = params.method ?? 'GET';
 	const timeoutMs = params.timeoutMs ?? 15000;
-	log?.('info', `[vssaros-llm] httpRequest ${method} ${params.url}${params.insecure ? ' (insecure)' : ''}`);
+	log?.('info', `[vssaros-llm] httpRequest ${method} ${params.url}${params.insecure ? ' (insecure)' : ''}${params.binary ? ' (binary)' : ''}`);
 
 	// 忽略 TLS 证书错误场景（公司代理 MITM）走 Node https 模块，绕过 fetch/undici 的证书校验。
 	if (params.insecure) {
@@ -346,6 +346,18 @@ export async function httpRequest(params: IHttpRequestParams, log?: LogFn): Prom
 			headers: params.headers ?? {},
 			signal: controller.signal,
 		});
+		if (params.binary) {
+			// 二进制路径：text() 会按 UTF-8 解码破坏字节 → arrayBuffer + base64。
+			const buf = await response.arrayBuffer().catch(() => new ArrayBuffer(0));
+			return {
+				ok: response.ok,
+				status: response.status,
+				statusText: response.statusText,
+				body: '',
+				base64: Buffer.from(buf).toString('base64'),
+				contentType: response.headers.get('content-type') ?? '',
+			};
+		}
 		const body = await response.text().catch(() => '');
 		return { ok: response.ok, status: response.status, statusText: response.statusText, body };
 	} finally {
@@ -395,6 +407,23 @@ async function insecureHttpRequest(params: IHttpRequestParams, timeoutMs: number
 			headers: params.headers ?? {},
 			rejectUnauthorized: false,
 		}, (res) => {
+			if (params.binary) {
+				// 二进制：Buffer 收集（不能 setEncoding，否则字节被 UTF-8 解码破坏）。
+				const chunks: Buffer[] = [];
+				res.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+				res.on('end', () => {
+					clearTimeout(timeoutId);
+					resolve({
+						ok: (res.statusCode ?? 0) < 400,
+						status: res.statusCode ?? 0,
+						statusText: res.statusMessage ?? '',
+						body: '',
+						base64: Buffer.concat(chunks).toString('base64'),
+						contentType: (res.headers['content-type'] as string | undefined) ?? '',
+					});
+				});
+				return;
+			}
 			let data = '';
 			res.setEncoding('utf8');
 			res.on('data', (chunk) => { data += chunk; });
@@ -424,7 +453,8 @@ async function insecureHttpRequest(params: IHttpRequestParams, timeoutMs: number
 export async function generateImage(params: IImageGenBridgeParams): Promise<{ images: Array<{ url?: string; b64?: string }> }> {
 	const { url, apiKey, body, extraHeaders, signal, log } = params;
 	const apiKeyHeader = params.apiKeyHeader ?? 'bearer';
-	log?.('info', `[vssaros-llm] generateImage → ${url}`);
+	const method = params.method || 'POST';
+	log?.('info', `[vssaros-llm] generateImage → ${method} ${url}${body.__imageDataUrl ? ' (img2img multipart)' : ''}`);
 
 	const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(extraHeaders ?? {}) };
 	if (apiKey) {
@@ -444,32 +474,116 @@ export async function generateImage(params: IImageGenBridgeParams): Promise<{ im
 		signal.addEventListener('abort', onOuterAbort, { once: true });
 	}
 	try {
-		const response = await fetch(url, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify(body),
-			signal: controller.signal,
-		});
+		// ── img2img 分派（2026-09-03）：body.__imageDataUrl 存在 → multipart
+		//    /images/edits（image 字段=参考图，其余字段转 form 字段）。node18+
+		//    全局 FormData/Blob 可用；Content-Type 必须移除（fetch 自动补
+		//    boundary，手动设会丢 boundary 导致服务端解析失败）。
+		let requestInit: RequestInit;
+		if (typeof body.__imageDataUrl === 'string' && body.__imageDataUrl) {
+			const imgBuf = await _resolveImageBuffer(body.__imageDataUrl, log);
+			if (!imgBuf) { throw new Error('img2img 参考图解析失败（仅支持 data: 或 http(s) 引用）'); }
+			const fd = new FormData();
+			// Buffer<ArrayBufferLike> 不能直接赋 BlobPart（tsgo 严格泛型）——与
+			// messageClient 的 proxied blob 同款断言（运行时 Uint8Array 视图有效）。
+			const imgPart = imgBuf as unknown as BlobPart;
+			fd.append('image', new Blob([imgPart], { type: 'image/png' }), 'reference.png');
+			for (const [k, v] of Object.entries(body)) {
+				if (k === '__imageDataUrl' || v === undefined || v === null) { continue; }
+				fd.append(k, typeof v === 'string' ? v : JSON.stringify(v));
+			}
+			const multipartHeaders: Record<string, string> = { ...(extraHeaders ?? {}) };
+			if (apiKey) {
+				if (apiKeyHeader === 'x-api-key') {
+					multipartHeaders['x-api-key'] = apiKey;
+					multipartHeaders['anthropic-version'] = '2023-06-01';
+				} else {
+					multipartHeaders['Authorization'] = `Bearer ${apiKey}`;
+				}
+			}
+			requestInit = { method: 'POST', headers: multipartHeaders, body: fd, signal: controller.signal };
+		} else {
+			requestInit = {
+				method,
+				headers,
+				body: method === 'GET' ? undefined : JSON.stringify(body),
+				signal: controller.signal,
+			};
+		}
+		const response = await fetch(url, requestInit);
 		if (!response.ok) {
 			const text = await response.text().catch(() => '');
-			log?.('error', `[vssaros-llm] generateImage failed: ${response.status} ${text}`);
-			throw new Error(`图片生成接口返回 ${response.status}${text ? `：${text.slice(0, 200)}` : ''}`);
+			log?.('error', `[vssaros-llm] generateImage failed: ${method} ${url} → ${response.status} ${text}`);
+			if (response.status === 405) {
+				throw new Error(`图片生成接口返回 405（${method} ${url}）：${text.slice(0, 120) || 'Method Not Allowed'}。该路径仅接受其他方法。OpenAI 兼容代理通常在 /v1 前缀下暴露图片端点，请在 Provider 设置中将「文生图路径」改为 v1/images/generations，或确认代理实际支持的路径与方法。`);
+			}
+			throw new Error(`图片生成接口返回 ${response.status}（${method} ${url}）${text ? `：${text.slice(0, 200)}` : ''}`);
 		}
 		const data: any = await response.json();
 		const rawImages: any[] = Array.isArray(data?.data) ? data.data : [];
-		return {
-			images: rawImages.map((img: any) => {
-				if (typeof img?.url === 'string' && img.url) { return { url: img.url }; }
-				if (typeof img?.b64_json === 'string' && img.b64_json) { return { b64: img.b64_json }; }
-				return {};
-			}).filter(img => img.url || img.b64),
-		};
+		const images: Array<{ url?: string; b64?: string }> = [];
+		for (const img of rawImages) {
+			if (typeof img?.b64_json === 'string' && img.b64_json) {
+				images.push({ b64: img.b64_json });
+			} else if (typeof img?.url === 'string' && img.url) {
+				// 远程 http(s) URL → 主进程下载转 base64，避免 renderer/webview
+				// 直连被 CORS / CSP 拦（webview img-src 只放行 http://127.0.0.1/localhost，
+				// 其它 http 会被拦截 → 图片不显示）。
+				const b64 = /^https?:\/\//i.test(img.url)
+					? await _downloadImageAsBase64(img.url, log)
+					: undefined;
+				if (b64) { images.push({ b64 }); }
+				else { images.push({ url: img.url }); }
+			}
+		}
+		return { images };
 	} catch (err) {
 		log?.('error', `[vssaros-llm] generateImage error: ${err}`);
 		throw err;
 	} finally {
 		clearTimeout(timeoutId);
 		if (signal && onOuterAbort) { signal.removeEventListener('abort', onOuterAbort); }
+	}
+}
+
+/**
+ * img2img 参考图解析：data: URL 解 base64；http(s) 下载转 Buffer。
+ * 仅支持这两类引用——画布快照 ref（`uid:output:N`）必须由调用方先物化。
+ * 失败返回 undefined（调用方抛出明确错误）。
+ */
+async function _resolveImageBuffer(ref: string, log?: LogFn): Promise<Buffer | undefined> {
+	try {
+		if (/^data:/i.test(ref)) {
+			const comma = ref.indexOf(',');
+			if (comma < 0) { return undefined; }
+			return Buffer.from(ref.slice(comma + 1), 'base64');
+		}
+		if (/^https?:\/\//i.test(ref)) {
+			const b64 = await _downloadImageAsBase64(ref, log);
+			return b64 ? Buffer.from(b64, 'base64') : undefined;
+		}
+		log?.('warn', `[vssaros-llm] img2img: unsupported image ref (expect data:/http(s)): ${ref.slice(0, 60)}`);
+		return undefined;
+	} catch (err) {
+		log?.('warn', `[vssaros-llm] img2img: resolve image buffer failed: ${err}`);
+		return undefined;
+	}
+}
+
+/** 下载远程图片并转 base64（主进程侧）。失败返回 undefined（调用方回退为原 url）。 */
+async function _downloadImageAsBase64(url: string, log?: LogFn): Promise<string | undefined> {
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), 30_000);
+	try {
+		const res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+		if (!res.ok) { return undefined; }
+		const buf = Buffer.from(await res.arrayBuffer());
+		if (buf.byteLength === 0) { return undefined; }
+		return buf.toString('base64');
+	} catch (err) {
+		log?.('warn', `[vssaros-llm] download image as base64 failed for ${url}: ${err}`);
+		return undefined;
+	} finally {
+		clearTimeout(timeoutId);
 	}
 }
 

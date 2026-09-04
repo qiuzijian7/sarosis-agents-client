@@ -27,11 +27,10 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import * as path from '../../../../base/common/path.js';
-import { FileAccess } from '../../../../base/common/network.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRequestService, asText } from '../../../../platform/request/common/request.js';
-import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
 import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } from '../common/skillLifecycle.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -65,19 +64,6 @@ interface IGitHubTreeEntry {
 interface IGitHubTreeResponse {
 	readonly tree: IGitHubTreeEntry[];
 	readonly truncated: boolean;
-}
-
-/** 精简后的 Knot 商城条目（与 resources/.agents/knot-skills-market.json 一致） */
-interface IKnotBundleItem {
-	id: string;
-	name: string;
-	title: string;
-	desc: string;
-	creator: string;
-	type: string;
-	ver: string;
-	dl: number;
-	tags: string[];
 }
 
 export class SkillInstallService extends Disposable implements ISkillInstallService {
@@ -130,9 +116,6 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 				case 'local':
 					entries = await this._fetchLocalEntries(hub);
 					break;
-				case 'knot-bundle':
-					entries = await this._fetchKnotBundleEntries(hub);
-					break;
 				default:
 					this.logService.warn(`[SkillInstall] Hub type '${hub.type}' not supported yet`);
 					entries = [];
@@ -176,11 +159,6 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 		}
 
 		try {
-			// Knot bundle 中的条目没有真实可下载的 SKILL.md —— 自动合成一个
-			if (entry.contentUrl.startsWith('knot-bundle://')) {
-				const synthesized = this._synthesizeKnotSkillMd(entry);
-				return await this.installFromContent(synthesized);
-			}
 			// 下载 SKILL.md 内容
 			const content = await this._fetchContent(entry.contentUrl);
 			if (!content) {
@@ -721,132 +699,6 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 
 	private _getInstalledSkillIds(): Set<string> {
 		return new Set(this.skillRegistry.getSkills().map((s: ISkillDefinition) => s.id));
-	}
-
-	/**
-	 * 从内置 JSON 文件读取 Knot 商城条目。
-	 * 数据文件：resources/.agents/knot-skills-market.json
-	 * 兼容多种运行环境（开发/打包、桌面/浏览器），使用与 SkillRegistryService 一致的多候选路径策略。
-	 */
-	private async _fetchKnotBundleEntries(hub: ISkillHubDefinition): Promise<ISkillHubEntry[]> {
-		const candidates: URI[] = [];
-
-		// 候选1（最稳）：FileAccess.asFileUri —— 与 SkillRegistry 内置扫描路径对齐
-		try {
-			const uri1 = FileAccess.asFileUri('vs/../../resources/.agents/knot-skills-market.json');
-			candidates.push(uri1);
-		} catch (e) {
-			this.logService.info(`[SkillInstall] knot-bundle: candidate1 failed: ${e}`);
-		}
-
-		// 候选2：appRoot 直接拼 resources（Electron dev 模式 appRoot ≡ projectRoot）
-		try {
-			const appRoot = (this.environmentService as INativeEnvironmentService).appRoot;
-			this.logService.info(`[SkillInstall] knot-bundle: appRoot=${appRoot ?? 'undefined'}`);
-			if (appRoot) {
-				const uri2 = URI.joinPath(URI.file(appRoot), 'resources', '.agents', 'knot-skills-market.json');
-				if (!candidates.some(c => c.toString() === uri2.toString())) {
-					candidates.push(uri2);
-				}
-			}
-		} catch (e) {
-			this.logService.info(`[SkillInstall] knot-bundle: candidate2 failed: ${e}`);
-		}
-
-		// 候选3：打包模式下 appRoot 可能是 out/ 子目录，往上一级
-		try {
-			const appRoot = (this.environmentService as INativeEnvironmentService).appRoot;
-			if (appRoot) {
-				const projectRoot = path.dirname(appRoot);
-				const uri3 = URI.joinPath(URI.file(projectRoot), 'resources', '.agents', 'knot-skills-market.json');
-				if (!candidates.some(c => c.toString() === uri3.toString())) {
-					candidates.push(uri3);
-				}
-			}
-		} catch (e) {
-			this.logService.info(`[SkillInstall] knot-bundle: candidate3 failed: ${e}`);
-		}
-
-		// 去重
-		const unique = candidates.filter((c, i, arr) =>
-			arr.findIndex(c2 => c.toString() === c2.toString()) === i
-		);
-		this.logService.info(`[SkillInstall] knot-bundle: candidates=${unique.map(c => c.toString()).join(' | ')}`);
-
-		for (const dataFile of unique) {
-			try {
-				if (!(await this.fileService.exists(dataFile))) {
-					this.logService.info(`[SkillInstall] knot-bundle: not found ${dataFile.toString()}`);
-					continue;
-				}
-				const content = await this.fileService.readFile(dataFile);
-				const text = content.value.toString();
-				const items: IKnotBundleItem[] = JSON.parse(text);
-				if (!Array.isArray(items)) {
-					this.logService.warn(`[SkillInstall] knot-bundle: not an array (${dataFile.toString()})`);
-					continue;
-				}
-				this.logService.info(`[SkillInstall] knot-bundle: loaded ${items.length} entries from ${dataFile.toString()}`);
-				return items.map(it => ({
-					id: it.name || it.id,
-					name: it.title || it.name || it.id,
-					description: it.desc ?? '',
-					category: (it.tags && it.tags.length > 0) ? it.tags[0] : undefined,
-					hubId: hub.id,
-					// 占位 contentUrl —— installFromHub 检测到 knot-bundle:// 前缀走合成路径
-					contentUrl: `knot-bundle://${it.id}`,
-					author: it.creator,
-					version: it.ver,
-					downloadCount: it.dl,
-					tags: it.tags,
-				}));
-			} catch (err) {
-				this.logService.warn(`[SkillInstall] knot-bundle: read failed ${dataFile.toString()}: ${err instanceof Error ? err.message : String(err)}`);
-			}
-		}
-
-		this.logService.error('[SkillInstall] knot-bundle: no readable data file found in any candidate');
-		return [];
-	}
-
-	/**
-	 * 为 Knot Bundle 条目合成最小可用的 SKILL.md（因为商城 zip 包不直接暴露 SKILL.md 文本）。
-	 */
-	private _synthesizeKnotSkillMd(entry: ISkillHubEntry): string {
-		// frontmatter `name` 是用户在技能列表里看到的显示名 —— 必须用 entry.name（对齐商城展示），
-		// 而不是 entry.id（id 是去重用的全局唯一标识，例：galeqin-1772594770）。
-		// id 单独通过 `source_id` 字段保留，便于溯源。
-		const sourceId = entry.id.replace(/[^A-Za-z0-9_-]/g, '-');
-		const displayName = (entry.name ?? entry.id).trim() || sourceId;
-		const desc = (entry.description ?? '').replace(/\r?\n/g, ' ').trim();
-		const tags = (entry.tags ?? []).map(t => t.trim()).filter(Boolean);
-		const lines = [
-			'---',
-			`name: ${JSON.stringify(displayName)}`,
-			`description: ${JSON.stringify(desc || displayName)}`,
-			'activation: manual',
-		];
-		if (tags.length > 0) {
-			lines.push(`category: ${tags[0]}`);
-		}
-		if (entry.author) {
-			lines.push(`author: ${entry.author}`);
-		}
-		if (entry.version) {
-			lines.push(`version: ${entry.version}`);
-		}
-		lines.push('source: knot-market');
-		lines.push(`source_id: ${sourceId}`);
-		lines.push('---');
-		lines.push('');
-		lines.push(`# ${entry.name}`);
-		lines.push('');
-		if (desc) {
-			lines.push(desc);
-			lines.push('');
-		}
-		lines.push(`> 此技能由 Knot 技能商城导入。使用前请到 Knot 平台 (https://knot.woa.com/skill/detail/${entry.id}) 阅读完整文档。`);
-		return lines.join('\n');
 	}
 
 	private async _fetchGitHubEntries(hub: ISkillHubDefinition): Promise<ISkillHubEntry[]> {

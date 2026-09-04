@@ -313,6 +313,24 @@
 	border-color: var(--vscode-focusBorder);
 }
 
+/* Read-only value (x-readonly): 插件自动维护的派生值，视觉上区别于可编辑输入框 */
+.plugin-detail-config-readonly {
+	width: 100%;
+	max-width: 480px;
+	padding: 6px 10px;
+	font-size: 13px;
+	font-family: var(--vscode-font-family);
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-editorWidget-background, transparent);
+	border: 1px dashed var(--vscode-input-border, var(--vscode-panel-border, #424242));
+	border-radius: 4px;
+	box-sizing: border-box;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	user-select: text;
+}
+
 .plugin-detail-config-input-number {
 	max-width: 200px;
 }

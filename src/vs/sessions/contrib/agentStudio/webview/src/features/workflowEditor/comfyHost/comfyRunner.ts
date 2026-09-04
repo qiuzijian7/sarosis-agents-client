@@ -138,6 +138,8 @@ export interface ComfyRunnerStatus {
 export interface ComfyRunProgress {
 	promptId: string;
 	value: number; // 0..100
+	/** 状态文本（如「AI 抠图模型下载中 12/176MB」），透传到节点卡片进度条 caption。 */
+	message?: string;
 }
 
 export interface ComfyRunResult {

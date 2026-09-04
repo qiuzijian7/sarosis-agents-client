@@ -203,16 +203,16 @@ suite('AgentOS Service (Phase 1)', () => {
 
 	test('setActiveModelSelection updates selection', () => {
 		const osService = createTestAgentOSService();
-		const provider = new MockModelProvider('knot-agui', 'Knot');
+		const provider = new MockModelProvider('demo-agui', 'Demo');
 
 		osService.registerModelProvider(provider);
 		osService.setActiveModelSelection({
-			providerId: 'knot-agui',
+			providerId: 'demo-agui',
 			modelId: 'agent-1',
 		});
 
 		const selection = osService.getActiveModelSelection();
-		assert.strictEqual(selection.providerId, 'knot-agui');
+		assert.strictEqual(selection.providerId, 'demo-agui');
 		assert.strictEqual(selection.modelId, 'agent-1');
 	});
 

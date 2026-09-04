@@ -137,6 +137,19 @@ export class MediaStore {
 			filePath = path.join(this.opts.rootDir, rel);
 			sizeBytes = buf.byteLength;
 			ref = ref || rel;
+		} else if (/^https?:\/\//i.test(ref)) {
+			// 远程 URL 引用（如 chatgpt2api 返回的 http://host/images/xxx.png）：
+			// webview 的 CSP `img-src` 对 http 只放行 127.0.0.1/localhost，
+			// 直连远程 http 会被拦截（图片不显示）。这里在主进程主动下载落盘，
+			// 之后 `_handleMediaGetUrl` 走 filePath 分支读文件转 data URL 展示，
+			// 同时保留 ref 作为原始引用（离线/兜底均可用本地文件）。
+			const downloaded = await this._downloadRemoteToFile(id, ref);
+			if (downloaded) {
+				fileName = downloaded.fileName;
+				filePath = downloaded.filePath;
+				sizeBytes = downloaded.sizeBytes;
+			}
+			// 下载失败：保持纯 URL 引用（原行为，仅索引不落盘）。
 		}
 
 		this.db.prepare(`
@@ -371,6 +384,49 @@ export class MediaStore {
 		const rel = path.join(relDir, `${id}.${ext}`);
 		fs.writeFileSync(path.join(this.opts.rootDir, rel), buf);
 		return rel;
+	}
+
+	/** 下载远程 http(s) 图片并落盘到媒体库。成功返回文件元信息，失败返回 null（回退为纯 URL 引用）。 */
+	private async _downloadRemoteToFile(id: string, url: string): Promise<{ fileName: string; filePath: string; sizeBytes: number } | null> {
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), 30_000);
+		try {
+			const res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+			if (!res.ok) { return null; }
+			const buf = Buffer.from(await res.arrayBuffer());
+			if (buf.byteLength === 0) { return null; }
+			const ext = this._extForRemote(url, res.headers.get('content-type'));
+			const rel = this._writeFile(id, ext, buf);
+			return {
+				fileName: path.basename(rel),
+				filePath: path.join(this.opts.rootDir, rel),
+				sizeBytes: buf.byteLength,
+			};
+		} catch {
+			return null;
+		} finally {
+			clearTimeout(timeoutId);
+		}
+	}
+
+	/** 从远程 URL 路径后缀或 content-type 推断落盘扩展名。 */
+	private _extForRemote(url: string, contentType?: string | null): string {
+		const m = url.match(/\.(\w+)(?:[?#]|$)/i);
+		if (m) {
+			const e = m[1].toLowerCase();
+			if (/^(png|jpe?g|webp|gif|avif|bmp|svg)$/.test(e)) { return e === 'jpeg' ? 'jpg' : e; }
+		}
+		if (contentType) {
+			const ct = contentType.split(';')[0].trim().toLowerCase();
+			if (ct === 'image/png') { return 'png'; }
+			if (ct === 'image/jpeg' || ct === 'image/jpg') { return 'jpg'; }
+			if (ct === 'image/webp') { return 'webp'; }
+			if (ct === 'image/gif') { return 'gif'; }
+			if (ct === 'image/avif') { return 'avif'; }
+			if (ct === 'image/bmp') { return 'bmp'; }
+			if (ct === 'image/svg+xml') { return 'svg'; }
+		}
+		return 'png';
 	}
 
 	private _toAsset(r: MediaRow): any {

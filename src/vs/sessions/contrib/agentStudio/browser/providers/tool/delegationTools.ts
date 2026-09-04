@@ -474,7 +474,7 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 					model: {
 						type: 'string',
 						description: 'Optional model for the sub-agent. Accepts "providerId/modelId" (e.g. ' +
-							'"knot-agui/gpt-4o-mini") or just "modelId" (reuses the session\'s current provider). ' +
+							'"demo-agui/gpt-4o-mini") or just "modelId" (reuses the session\'s current provider). ' +
 							'When set, the sub-agent runs with this model instead of the session default.',
 					},
 					isolation_level: {
@@ -573,7 +573,10 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 					return { providerId: v.slice(0, slash), modelId: v.slice(slash + 1) };
 				}
 				const active = ctx.agentOS.getActiveModelSelection?.();
-				return { providerId: active?.providerId ?? 'knot-agui', modelId: v };
+				// 无活动 provider 时不硬编码任何 provider id（原为已下线的 knot-agui），
+				// 返回 undefined 让调用方走「继承父 agent 当前模型」的逻辑。
+				if (!active?.providerId) { return undefined; }
+				return { providerId: active.providerId, modelId: v };
 			};
 			// 显式 modelArg 优先，否则继承父 agent 的当前 model（不做内置 Agent model 回退）。
 			// 事故（日志 1785142383743）：builtin `code-explorer` 硬编码 model='claude-sonnet-4-20250514'
@@ -851,7 +854,7 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 					`\n\n` +
 					`## Scope the sub-agent (optional):\n` +
 					`- \`toolsets\`: restrict which toolsets the sub-agent may use, e.g. ["core"] for read-only investigation. Omit for no restriction.\n` +
-					`- \`model\`: run the sub-agent on a specific model, e.g. "knot-agui/gpt-4o-mini" or just "gpt-4o-mini" (reuses the session provider). Use a cheaper model for trivial fan-out to save cost.\n` +
+					`- \`model\`: run the sub-agent on a specific model, e.g. "demo-agui/gpt-4o-mini" or just "gpt-4o-mini" (reuses the session provider). Use a cheaper model for trivial fan-out to save cost.\n` +
 					`\n\n` +
 					`## When to use:\n` +
 					`- Exploring ONE feature/mechanism even across multiple files or aspects\n` +

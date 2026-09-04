@@ -570,6 +570,85 @@ async function uploadLoadImageRefsForPrompt(
 	}
 }
 
+/**
+ * 模板 **输入字段名 → 加载器节点类名**（用于查 object_info 可选列表）。
+ * ⚠ 键是 binding 的字段名（ckpt_name/unet_name/...），值是节点类——
+ * 此前写反（类名→字段名）导致查表恒 undefined、预检恒空放行（2026-09-03）。
+ */
+const LOADER_NODE_FIELDS: Record<string, string> = {
+	ckpt_name: 'CheckpointLoaderSimple',
+	unet_name: 'UNETLoader',
+	clip_name: 'CLIPLoader',
+	vae_name: 'VAELoader',
+	lora_name: 'LoraLoader',
+};
+
+/**
+ * ★ 加载器模型存在性预检（2026-09-03）。
+ *
+ * 模板里写死的辅助模型（如 Qwen 的 text encoder `qwen_2.5_vl_7b_fp8_scaled` /
+ * VAE `qwen_image_vae`、LayeredDiffusion LoRA）不在任何下拉里，缺失时 ComfyUI
+ * 只报 `value not in list` —— 用户无从下手。这里在执行前把模板涉及的所有加载器
+ * 模型与对应 object_info 列表核对，缺失即返回中文清单（含目录指引）。
+ *
+ * 宽容策略：object_info 拉取失败 / 列表为空 → 不判缺失（交由 ComfyUI 原生报错），
+ * 避免预检自身故障阻塞正常执行。
+ */
+async function checkBuiltinLoaderModels(
+	runner: IComfyRunner | undefined,
+	cfg: StageWorkflowConfig,
+	values: Record<string, unknown> | undefined,
+): Promise<string[]> {
+	if (!runner || typeof cfg.inputs !== 'object' || cfg.inputs === null) {
+		// eslint-disable-next-line no-console
+		console.warn('[loaderPrecheck] skip: runner=', Boolean(runner), 'inputs type=', typeof cfg.inputs);
+		return [];
+	}
+	const base = runner.baseUrl.replace(/\/$/, '');
+	const toCheck: Array<{ node: string; value: string }> = [];
+	for (const [nodeId, fieldMap] of Object.entries(cfg.inputs)) {
+		if (!fieldMap || typeof fieldMap !== 'object') { continue; }
+		for (const [field, bindingRaw] of Object.entries(fieldMap)) {
+			const node = LOADER_NODE_FIELDS[field];
+			if (!node || !bindingRaw || typeof bindingRaw !== 'object') { continue; }
+			const b = bindingRaw as { from?: unknown; default?: unknown };
+			const fromOpt = typeof b.from === 'string' && b.from.startsWith('option:')
+				? String(values?.[b.from.slice('option:'.length)] ?? '')
+				: '';
+			const actual = (fromOpt || (typeof b.default === 'string' ? b.default : '')).trim();
+			if (actual) { toCheck.push({ node, value: actual }); }
+		}
+	}
+	if (toCheck.length === 0) {
+		// eslint-disable-next-line no-console
+		console.warn('[loaderPrecheck] skip: toCheck 为空');
+		return [];
+	}
+	const lists = new Map<string, string[]>();
+	for (const node of new Set(toCheck.map(c => c.node))) {
+		try {
+			const r = await fetch(`${base}/object_info/${node}`);
+			if (!r.ok) { lists.set(node, []); continue; }
+			const j = await r.json() as { [k: string]: { input?: { required?: Record<string, [string[], Record<string, unknown>]> } } };
+			const field = LOADER_NODE_FIELDS[node];
+			const l = j?.[node]?.input?.required?.[field]?.[0];
+			lists.set(node, Array.isArray(l) ? l : []);
+		} catch {
+			lists.set(node, []);
+		}
+	}
+	const missing: string[] = [];
+	for (const c of toCheck) {
+		const l = lists.get(c.node) ?? [];
+		if (l.length > 0 && !l.includes(c.value)) {
+			missing.push(`${c.value}（${c.node} 加载器，可经「依赖管理」下载）`);
+		}
+	}
+	// eslint-disable-next-line no-console
+	console.warn('[loaderPrecheck] toCheck=', JSON.stringify(toCheck), 'listSizes=', [...lists.entries()].map(([k, v]) => `${k}:${v.length}`).join(','), 'missing=', missing.length);
+	return missing;
+}
+
 export async function runStageWorkflow(options: StageWorkflowRunOptions): Promise<StageWorkflowRunResult> {
 	// eslint-disable-next-line no-console
 	console.warn(`[runStageWorkflow] ▶ START nodeId=${options.nodeId} type=${options.type} hasResolveImageRef=${Boolean(options.resolveImageRef)} signal=${options.signal ? 'present' : 'none'}`);
@@ -599,6 +678,29 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 		: undefined;
 	if (!cfg || typeof cfg.api_json !== 'object' || cfg.api_json === null) {
 		throw new StageWorkflowUnavailableError(`kind ${wfKind} 没有可用内置 workflow`);
+	}
+	// ★ 加载器模型存在性预检（2026-09-03）：模板写死的辅助模型（Qwen text
+	//   encoder / VAE / LayeredDiffusion LoRA 等）缺失时给出中文指引，而不是等
+	//   ComfyUI 报 `value not in list`。预检自身失败不阻塞（交由 ComfyUI 原生报错）。
+	try {
+		const missing = await checkBuiltinLoaderModels(runner, cfg, values);
+		if (missing.length > 0) {
+			// ★ 区分两类缺失，给不同指引：
+			//   ① qwen/flux 等 Diffusion 模型填进了 SDXL 模板（或反之）= 组错配 →
+			//      指引切模板（模型下拉已按模板过滤，重载后一般不会走到这）；
+			//   ② 辅助模型（text encoder/VAE/LoRA）真缺失 → 指引「依赖管理」下载。
+			const isDiffusion = /qwen|flux|sd3|wan|auraflow/i.test(missing.join(' '));
+			throw new Error(
+				isDiffusion
+					? `模型与模板不匹配：${missing.join('；')}。\n「${label}」模板需要 Checkpoint 模型（SDXL 系）；` +
+						`若要使用 qwen 等 Diffusion 模型，请把「工作流」切换为「Qwen 贴纸 (默认)」后重试。`
+					: `模板「${label}」缺少辅助模型：\n- ${missing.join('\n- ')}\n请打开「依赖管理」下载对应模型后重试。`,
+			);
+		}
+	} catch (e) {
+		if (e instanceof Error && /缺少辅助模型|模型与模板不匹配/.test(e.message)) { throw e; }
+		// eslint-disable-next-line no-console
+		console.warn('[runStageWorkflow] 加载器模型预检跳过（不阻塞）：', e);
 	}
 	// P2: inject upstream snapshots (first ref per media kind) so chained
 	// stages consume their predecessor's output.

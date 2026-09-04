@@ -8,6 +8,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as React from 'react';
+import { loadCanvasImageWithProxy } from './canvasImageLoad';
 import type { ComfyRunnerRegistry } from './comfyHost/comfyRunner';
 import {
 	drawMaskOps, maskOpsToJson, parseMaskOps, renderMaskBlob,
@@ -67,21 +68,22 @@ export function MaskPainter({ imageRef, initialOps, showPrompt, initialPrompt, o
 	const onOpsChangeRef = React.useRef(onOpsChange); onOpsChangeRef.current = onOpsChange;
 
 	// 加载源图，获取真实尺寸（mask 尺寸 = 源图尺寸，ComfyUI 后端对齐）
+	// 直连失败（provider 签名 URL 无 CORS 头）自动回退 host 代理转 data URL
 	React.useEffect(() => {
 		if (!imageRef) { setImgSize(null); setImgReady(false); return; }
-		const img = new Image();
-		imgElRef.current = img;
-		img.crossOrigin = 'anonymous';
-		const onLoad = () => { setImgSize({ w: img.naturalWidth, h: img.naturalHeight }); setImgReady(true); };
-		const onError = () => { setImgReady(false); setImgSize(null); };
-		img.addEventListener('load', onLoad);
-		img.addEventListener('error', onError);
-		img.src = imageRef;
-		return () => {
-			img.removeEventListener('load', onLoad);
-			img.removeEventListener('error', onError);
-			img.removeAttribute('src');
-		};
+		let cancelled = false;
+		loadCanvasImageWithProxy(imageRef).then((img) => {
+			if (cancelled) { return; }
+			imgElRef.current = img;
+			if (img) {
+				setImgSize({ w: img.naturalWidth, h: img.naturalHeight });
+				setImgReady(true);
+			} else {
+				setImgReady(false);
+				setImgSize(null);
+			}
+		});
+		return () => { cancelled = true; };
 	}, [imageRef]);
 
 	// 视图尺寸

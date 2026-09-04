@@ -136,7 +136,7 @@ suite('Model Selector Service (Phase 3)', () => {
 		const selector = new MockModelSelectorService();
 		
 		const provider1 = {
-			id: 'knot-agui',
+			id: 'demo-agui',
 			name: 'Knot AG-UI',
 			getAuthStatus: () => ModelAuthStatus.Authenticated,
 			listModels: async () => [
@@ -146,7 +146,7 @@ suite('Model Selector Service (Phase 3)', () => {
 		};
 
 		selector.addModelProvider(provider1);
-		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'agent-1' });
+		selector.setActiveSelection({ providerId: 'demo-agui', modelId: 'agent-1' });
 
 		// 注意：这里需要等待 listModels 完成
 		// 实际实现中应该使用事件或 Promise
@@ -156,13 +156,13 @@ suite('Model Selector Service (Phase 3)', () => {
 		const selector = new MockModelSelectorService();
 		
 		selector.setActiveSelection({
-			providerId: 'knot-agui',
+			providerId: 'demo-agui',
 			modelId: 'agent-1',
 		});
 
 		const selection = selector.getActiveSelection();
 		assert.ok(selection);
-		assert.strictEqual(selection.providerId, 'knot-agui');
+		assert.strictEqual(selection.providerId, 'demo-agui');
 		assert.strictEqual(selection.modelId, 'agent-1');
 	});
 
@@ -174,7 +174,7 @@ suite('Model Selector Service (Phase 3)', () => {
 
 		// 设置选择
 		selector.setActiveSelection({
-			providerId: 'knot-agui',
+			providerId: 'demo-agui',
 			modelId: 'agent-1',
 		});
 
@@ -188,7 +188,7 @@ suite('Model Selector Service (Phase 3)', () => {
 		
 		// 添加一个已认证的 provider
 		const provider = {
-			id: 'knot-agui',
+			id: 'demo-agui',
 			name: 'Knot AG-UI',
 			getAuthStatus: () => ModelAuthStatus.Authenticated,
 			listModels: async () => [
@@ -203,7 +203,7 @@ suite('Model Selector Service (Phase 3)', () => {
 		
 		const selection = selector.getActiveSelection();
 		assert.ok(selection);
-		assert.strictEqual(selection.providerId, 'knot-agui');
+		assert.strictEqual(selection.providerId, 'demo-agui');
 	});
 
 	test('no selection when no authenticated provider', () => {
@@ -299,7 +299,7 @@ suite('Model Selector Service (Phase 3)', () => {
 		const selector = new MockModelSelectorService();
 		
 		selector.addModelProvider({
-			id: 'knot-agui',
+			id: 'demo-agui',
 			name: 'Knot AG-UI',
 			getAuthStatus: () => ModelAuthStatus.Authenticated,
 			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
@@ -310,7 +310,7 @@ suite('Model Selector Service (Phase 3)', () => {
 			],
 		});
 
-		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'model-1' });
+		selector.setActiveSelection({ providerId: 'demo-agui', modelId: 'model-1' });
 		assert.strictEqual(selector.currentProviderSupportsAgents(), true);
 	});
 
@@ -334,7 +334,7 @@ suite('Model Selector Service (Phase 3)', () => {
 		const selector = new MockModelSelectorService();
 		
 		selector.addModelProvider({
-			id: 'knot-agui',
+			id: 'demo-agui',
 			name: 'Knot AG-UI',
 			getAuthStatus: () => ModelAuthStatus.Authenticated,
 			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
@@ -345,7 +345,7 @@ suite('Model Selector Service (Phase 3)', () => {
 			],
 		});
 
-		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'model-1' });
+		selector.setActiveSelection({ providerId: 'demo-agui', modelId: 'model-1' });
 		const agents = await selector.getAvailableAgents();
 		assert.strictEqual(agents.length, 2);
 		assert.strictEqual(agents[0].id, 'agent-1');
@@ -361,7 +361,7 @@ suite('Model Selector Service (Phase 3)', () => {
 		const selector = new MockModelSelectorService();
 		
 		selector.addModelProvider({
-			id: 'knot-agui',
+			id: 'demo-agui',
 			name: 'Knot AG-UI',
 			getAuthStatus: () => ModelAuthStatus.Authenticated,
 			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
@@ -371,7 +371,7 @@ suite('Model Selector Service (Phase 3)', () => {
 			],
 		});
 
-		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'model-1' });
+		selector.setActiveSelection({ providerId: 'demo-agui', modelId: 'model-1' });
 		selector.setSelectedAgentId('agent-1');
 		
 		assert.strictEqual(selector.getSelectedAgentId(), 'agent-1');
@@ -381,7 +381,7 @@ suite('Model Selector Service (Phase 3)', () => {
 		const selector = new MockModelSelectorService();
 		
 		selector.addModelProvider({
-			id: 'knot-agui',
+			id: 'demo-agui',
 			name: 'Knot AG-UI',
 			getAuthStatus: () => ModelAuthStatus.Authenticated,
 			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
@@ -391,7 +391,7 @@ suite('Model Selector Service (Phase 3)', () => {
 			],
 		});
 
-		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'model-1' });
+		selector.setActiveSelection({ providerId: 'demo-agui', modelId: 'model-1' });
 		selector.setSelectedAgentId('agent-1');
 		
 		assert.strictEqual(selector.getSelectedAgentId(), 'agent-1');
@@ -402,7 +402,7 @@ suite('Model Selector Service (Phase 3)', () => {
 		const selector = new MockModelSelectorService();
 		
 		selector.addModelProvider({
-			id: 'knot-agui',
+			id: 'demo-agui',
 			name: 'Knot AG-UI',
 			getAuthStatus: () => ModelAuthStatus.Authenticated,
 			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
@@ -412,7 +412,7 @@ suite('Model Selector Service (Phase 3)', () => {
 			],
 		});
 
-		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'model-1', agentId: 'agent-1' });
+		selector.setActiveSelection({ providerId: 'demo-agui', modelId: 'model-1', agentId: 'agent-1' });
 		assert.strictEqual(selector.getSelectedAgentId(), 'agent-1');
 		
 		// 切换到不支持 agent 的 provider

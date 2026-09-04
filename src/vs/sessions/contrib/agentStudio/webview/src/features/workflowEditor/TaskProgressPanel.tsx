@@ -58,8 +58,33 @@ function TaskRow({ task }: { task: TaskItem }): React.JSX.Element {
 			<div style={{ flex: 1, minWidth: 0 }}>
 				<div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
 					<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.label}</span>
-					<span style={{ flexShrink: 0, fontSize: 10, color: STATUS_COLOR[task.status] }}>
-						{STATUS_LABEL[task.status]} {progressText(task)}
+					<span style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5 }}>
+						<span style={{ fontSize: 10, color: STATUS_COLOR[task.status] }}>
+							{STATUS_LABEL[task.status]} {progressText(task)}
+						</span>
+						{/* ★ 行内取消（2026-09-02）：运行中/排队中且关联了画布节点 →
+						    调 abortNodeRun(nodeId) 中止运行（与卡片「取消」同链路：
+						    controller.abort → executor signal 检查 → canceled）。
+						    动态 import 避免与 WorkflowEditorPanel 循环依赖。 */}
+						{(task.status === 'running' || task.status === 'queued') && task.nodeId && (
+							<button
+								type="button"
+								title="取消此任务"
+								onClick={() => {
+									import('./WorkflowEditorPanel').then(({ abortNodeRun }) => {
+										if (task.nodeId) { abortNodeRun(task.nodeId); }
+									}).catch(() => { /* ignore */ });
+								}}
+								style={{
+									flexShrink: 0, width: 16, height: 16, lineHeight: '14px',
+									padding: 0, borderRadius: 4, cursor: 'pointer', fontSize: 10,
+									border: '1px solid var(--vscode-panel-border)', background: 'transparent',
+									color: 'var(--vscode-descriptionForeground)',
+								}}
+							>
+								✕
+							</button>
+						)}
 					</span>
 				</div>
 				{task.message && (

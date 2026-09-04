@@ -63,6 +63,18 @@ export interface IBYOKProviderDefinition {
 	 */
 	readonly imageGenEndpointPath?: string;
 	/**
+	 * Optional: img2img（图生图）endpoint path（default: 'images/edits'）。
+	 * OpenAI 兼容 multipart 端点（image 字段 = 参考图）。imageInput 存在时优先
+	 * 走此端点，失败自动回退文生图（参考图降级忽略，保证出图）。
+	 */
+	readonly imageEditEndpointPath?: string;
+	/**
+	 * Optional: HTTP method for the images generation endpoint (default: 'POST').
+	 * OpenAI-compatible servers use POST; some gateways/proxies expect 'GET'
+	 * (e.g. when tunneling via query params) — set this to match the server.
+	 */
+	readonly imageGenMethod?: 'POST' | 'GET';
+	/**
 	 * Optional: if true, this provider targets the native Anthropic Messages API (not OpenAI-compatible).
 	 * When set, cache_control will be injected into system messages to enable Prompt Caching (KV Cache).
 	 */
@@ -100,20 +112,24 @@ export function customProviderDataToDefinition(cp: CustomProviderData): IBYOKPro
 	const chatEndpointPath = cp.chatEndpointPath || (isAnthropic ? 'v1/messages' : 'v1/chat/completions');
 	const apiKeyHeader: 'bearer' | 'x-api-key' = cp.apiKeyHeader || (isAnthropic ? 'x-api-key' : 'bearer');
 	const staticModels = (cp.models && cp.models.length > 0)
-		? (cp.models || []).map((mid: string) => ({
-			id: mid,
-			name: mid,
-			capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.FunctionCalling],
-			supportsToolCall: true,
-			capabilityConfig: {
-				supportsSystemMessage: 'separated',
-				specialToolFormat: isAnthropic ? 'anthropic-style' : 'openai-style',
-				reasoningType: 'budget-slider',
-				supportsCaching: isAnthropic ? 'anthropic' : false,
-				supportsFIM: false,
-				reservedOutputTokenSpace: null,
-			} as IModelCapabilityConfig,
-		}))
+		? (cp.models || []).map((mid: string) => {
+			const mInfo: IModelInfo = {
+				id: mid,
+				name: mid,
+				capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.FunctionCalling],
+				supportsToolCall: true,
+				supportsImageGen: inferImageGen({ id: mid } as IModelInfo),
+				capabilityConfig: {
+					supportsSystemMessage: 'separated',
+					specialToolFormat: isAnthropic ? 'anthropic-style' : 'openai-style',
+					reasoningType: 'budget-slider',
+					supportsCaching: isAnthropic ? 'anthropic' : false,
+					supportsFIM: false,
+					reservedOutputTokenSpace: null,
+				} as IModelCapabilityConfig,
+			};
+			return mInfo;
+		})
 		: undefined;
 	return {
 		id: cp.id,
@@ -130,6 +146,8 @@ export function customProviderDataToDefinition(cp: CustomProviderData): IBYOKPro
 		staticModels,
 		apiKeyHeader,
 		anthropicVersion: isAnthropic ? (cp.anthropicVersion || '2023-06-01') : undefined,
+		imageGenEndpointPath: cp.imageGenEndpointPath,
+		imageGenMethod: cp.imageGenMethod,
 	};
 }
 

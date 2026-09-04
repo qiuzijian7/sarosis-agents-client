@@ -1659,17 +1659,6 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			return null;
 		}
 
-		// Knot (and any provider that executes tools server-side) does NOT
-		// surface the tool-call arguments back to the client — it would run
-		// `emit_html` on the server and swallow the payload. Skip function
-		// calling for those and let the caller fall back to text extraction.
-		if (selection.providerId.toLowerCase().includes('knot')) {
-			this.logService.info(
-				'[ConfigHtml] Active provider is Knot (server-side tools); skipping function-call path.',
-			);
-			return null;
-		}
-
 		const modelId = model || selection.modelId;
 		if (!modelId) {
 			return null;

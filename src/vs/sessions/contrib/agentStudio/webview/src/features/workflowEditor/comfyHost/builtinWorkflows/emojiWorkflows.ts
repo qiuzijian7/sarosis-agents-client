@@ -224,18 +224,27 @@ export const EMOJI_QWEN_STICKER: StageWorkflowConfig = {
 	},
 	result: { "type": "ui_save", "node": "13" },
 	inputs: {
-		"5": {
-			// ★ TextEncodeQwenImageEdit 的文本字段是 prompt（非 text），绑定名必须一致。
-			"prompt": {
-				"from": "main_prompt",
-				"default": "a cute cartoon sticker",
-				"suffix": ", thick outlines, vibrant colors, solid white background, die-cut sticker style, centered composition",
-				"required": false,
-			},
-		},
-		"7": {
-			"noise_seed": { "from": "option:seed", "default": "random_int31", "required": false, "cast": "int" },
-		},
+	"1": {
+	// ★ 模型下拉（comfy_model）→ UNETLoader.unet_name：用户选的 qwen/flux
+	//   diffusion 模型即生效（此前写死 2512，下拉选了也不起作用）。
+	"unet_name": {
+	"from": "option:comfy_model",
+	"default": "qwen_image_2512_fp8_e4m3fn.safetensors",
+	"required": false,
+	},
+	},
+	"5": {
+	// ★ TextEncodeQwenImageEdit 的文本字段是 prompt（非 text），绑定名必须一致。
+	"prompt": {
+	"from": "main_prompt",
+	"default": "a cute cartoon sticker",
+	"suffix": ", thick outlines, vibrant colors, solid white background, die-cut sticker style, centered composition",
+	"required": false,
+	},
+	},
+	"7": {
+	"noise_seed": { "from": "option:seed", "default": "random_int31", "required": false, "cast": "int" },
+	},
 	},
 };
 
@@ -258,73 +267,7 @@ export const EMOJI_QWEN_STICKER: StageWorkflowConfig = {
  * ⚠ MiniMax H3 trained range ≈ 124–362 帧（5–15s）；更短虽合法但属 untested。
  * 微信表情 GIF ≤3s，后续用「视频转 GIF」节点截取前 3s。
  */
-export const EMOJI_ANIMATED_MINIMAX: StageWorkflowConfig = (() => {
-	const base = JSON.parse(JSON.stringify(VIDEO_LOCAL_MINIMAX_H3_R2V)) as StageWorkflowConfig;
-	const api = base.api_json as unknown as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>;
-	const inputs = base.inputs as unknown as Record<string, Record<string, unknown>>;
 
-	// 表情包只取 1 张参考图：删除 R2V 模板里冗余的多图/视频/音频上游节点
-	// （LoadImage 139/201~207 + LoadVideo 301/303 + GetVideoComponents 302/304 + LoadAudio 401~403）。
-	const toRemove = ['139', '201', '202', '203', '204', '205', '206', '207', '301', '302', '303', '304', '401', '402', '403'];
-	for (const id of toRemove) { delete api[id]; delete inputs[id]; }
-
-	// 产物前缀独立，便于与普通视频区分。
-	const save = api['92'];
-	if (save?.inputs) {
-		save.inputs['filename_prefix'] = 'ComfyTV/emoji_video';
-		// ★ 强制 H.264：ComfyUI v0.30.0+ 的 SaveVideo 用 `codec: "auto"` 会**保留
-		//   源视频流**，而 MiniMax H3 默认输出 HEVC（H.265）。浏览器（Electron/Chrome）
-		//   没有 HEVC 解码器 → <video> 无法播放、convertVideoToGif 的 waitMetadata
-		//   触发 error → 转 GIF 失败，最终 fallback 成同样播不动的 mp4，
-		//   表现就是「动态表情生成成功但 output 不显示」。
-		//   codec 的 /prompt API 值是对象 `{ codec: 'h264' }`（见 nodes_video.py
-		//   execute: `codec["codec"]`）。h264 会强制转码，浏览器可解码。
-		save.inputs['codec'] = { codec: 'h264' };
-	}
-
-	// 方形分辨率（768 = 32×24，MiniMax H3 要求 32 倍数）。
-	const ref2v = api['136'];
-	if (ref2v?.inputs) {
-		ref2v.inputs['width'] = 768;
-		ref2v.inputs['height'] = 768;
-		// 清理 R2V 节点指向已删除节点的悬空字段：ref_image_1~8 / ref_video_0~1 /
-		// ref_video_audio_0~1 / ref_audio_0~2。只保留 ref_image_0（绑节点 137 LoadImage）。
-		delete ref2v.inputs['ref_images.ref_image_1'];
-		delete ref2v.inputs['ref_images.ref_image_2'];
-		delete ref2v.inputs['ref_images.ref_image_3'];
-		delete ref2v.inputs['ref_images.ref_image_4'];
-		delete ref2v.inputs['ref_images.ref_image_5'];
-		delete ref2v.inputs['ref_images.ref_image_6'];
-		delete ref2v.inputs['ref_images.ref_image_7'];
-		delete ref2v.inputs['ref_images.ref_image_8'];
-		delete ref2v.inputs['ref_videos.ref_video_0'];
-		delete ref2v.inputs['ref_videos.ref_video_1'];
-		delete ref2v.inputs['ref_video_audios.ref_video_audio_0'];
-		delete ref2v.inputs['ref_video_audios.ref_video_audio_1'];
-		delete ref2v.inputs['ref_audios.ref_audio_0'];
-		delete ref2v.inputs['ref_audios.ref_audio_1'];
-		delete ref2v.inputs['ref_audios.ref_audio_2'];
-	}
-
-	// ★ 表情包场景：138（PrimitiveStringMultiline，原是 1000+ 字符电影级 prompt）
-	//  改为简洁 prompt 绑定（main_prompt）+ 表达"让参考图动起来"的引导。
-	//  R2V 节点的 prompt 字段接 138，所以 prompt 自然流向 R2V。
-	inputs['138']['value'] = {
-		from: 'main_prompt',
-		default: 'an animated emoji sticker',
-		// ★ 关键：MiniMax H3 是视频生成大模型，训练数据大量带运镜（推拉/平移），默认
-		//   会给表情包加上"运镜"。表情包要的是「主体动、镜头不动」，必须显式写死
-		//   fixed/static camera + no camera movement，否则生成物是"镜头在动"而非"表情在动"。
-		suffix: ', smooth looping motion, cartoon style, vibrant colors, thick outlines, centered composition, high quality, fixed camera, static camera, no camera movement, the subject animates in place, camera stays perfectly still',
-		required: false,
-	};
-	// ★ 137 是 LoadImage，喂给 R2V ref_image_0。emojiStage 通常没有上游图（参考图 slot
-	//  多数为空），给一个本地存在的 fallback（material.png）保证 ref_image_0 不为
-	//  undefined；运行时若上游有图，runStageWorkflow 的 applyInputs 会用 upstream ref
-	//  覆盖这个默认值。
-	if (api['137']?.inputs) { api['137'].inputs['image'] = 'material.png'; }
-	return base;
-})();
 
 export const EMOJI_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
 	"Qwen 贴纸 (默认)": EMOJI_QWEN_STICKER,
@@ -448,15 +391,123 @@ export const EMOJI_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
 			},
 		},
 	},
+
+	/**
+	 * 表情包图集 (SDXL) —— **整图模式**专用模板（scope='all' 新路径）。
+	 *
+	 * 与单贴纸模板的本质差异：一次生成一张 **m×n 拼贴图集**（prompt 由
+	 * runEmojiStageGrid.buildEmojiSheetPrompt 组装：拼贴版式约束 + 每格描述），
+	 * 生成后前端 splitStickerSheet 按 m×n 切成独立小图 —— 1 次采样替代 m×n 次
+	 * （格间风格天然统一，成本 ≈ 1/m×n）。切分与抠底在前端完成（splitStickerSheet）。
+	 *
+	 * bindings：main_prompt（拼贴 prompt）+ seed + comfy_model（★ option:comfy_model
+	 * = 渠道选择「ComfyUI」时的 checkpoint 下拉值，resolveBinding 的 option: 分支
+	 * 直接从 values 取 —— 用户在编辑器选 qwen/sdxl 等本地模型即生效）。
+	 */
+	"表情包图集 (SDXL)": {
+		api_json: {
+			"1": {
+				"class_type": "CheckpointLoaderSimple",
+				"inputs": { "ckpt_name": "sd_xl_base_1.0.safetensors" },
+			},
+			"2": {
+				"class_type": "CLIPTextEncode",
+				"inputs": {
+					"text": "a sticker sheet",
+					"clip": ["1", 1],
+				},
+			},
+			"3": {
+				"class_type": "CLIPTextEncode",
+				"inputs": {
+					"text": "text, watermark, blurry, low quality, deformed, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, fused fingers, too many fingers, long neck",
+					"clip": ["1", 1],
+				},
+			},
+			"4": {
+				"class_type": "EmptyLatentImage",
+				"inputs": { "width": 1024, "height": 1024, "batch_size": 1 },
+			},
+			// ★ img2img 分支（2026-09-02）：上游 images 端口参考图 → LoadImage →
+			//   VAEEncode。无参考图时 KSampler 接 EmptyLatentImage（text2img），
+			//   LoadImage 从输出节点反向**不可达 → ComfyUI 不执行**（安全）；
+			//   有参考图时 runEmojiStageGrid 的 promptPostProcess 把 KSampler
+			//   latent_image 切到 ["9",0] + denoise=0.75（与单格 fallback 同款）。
+			"8": {
+				"class_type": "LoadImage",
+				"inputs": { "image": "material.png" },
+			},
+			"9": {
+				"class_type": "VAEEncode",
+				"inputs": {
+					"pixels": ["8", 0],
+					"vae": ["1", 2],
+				},
+			},
+			"5": {
+				"class_type": "KSampler",
+				"inputs": {
+					"model": ["1", 0],
+					"positive": ["2", 0],
+					"negative": ["3", 0],
+					"latent_image": ["4", 0],
+					"seed": 0,
+					"steps": 30,
+					"cfg": 7.0,
+					"sampler_name": "euler_ancestral",
+					"scheduler": "normal",
+					"denoise": 1.0,
+				},
+			},
+			"6": {
+				"class_type": "VAEDecode",
+				"inputs": {
+					"samples": ["5", 0],
+					"vae": ["1", 2],
+				},
+			},
+			"7": {
+				"class_type": "SaveImage",
+				"inputs": {
+					"images": ["6", 0],
+					"filename_prefix": "ComfyTV/emoji_sheet",
+				},
+			},
+		},
+		result: { "type": "ui_save", "node": "7" },
+		inputs: {
+			"2": {
+				"text": {
+					"from": "main_prompt",
+					"default": "a sticker sheet",
+					// 无 suffix：拼贴 prompt 由执行器整体组装（含版式约束+每格描述）
+					"required": false,
+				},
+			},
+			"1": {
+				// ★ ComfyUI 渠道的模型下拉（qwen/sdxl 等）→ checkpoint 注入
+				"ckpt_name": {
+					"from": "option:comfy_model",
+					"default": "sd_xl_base_1.0.safetensors",
+					"required": false,
+				},
+			},
+			"5": {
+				"seed": { "from": "option:seed", "default": "random_int31", "required": false, "cast": "int" },
+			},
+			// ★ 上游参考图注入（img2img）：有上游 images 快照时覆盖 LoadImage.image
+			//   为 resolveImageRef 上传后的文件名；无参考图时保持默认（节点不可达不执行）。
+			"8": {
+				"image": {
+					"from": "upstream_image:annotated",
+					"default": "material.png",
+					"required": false,
+				},
+			},
+		},
+	},
 };
 
-/**
- * 动态表情包（ComfyTV.DynEmojiStage）专用内置 workflow 模板集。
- *
- * 与静态 `EMOJI_BUILTIN_WORKFLOWS` 分离：动态节点走 image(参考图) + text(动作/风格)
- * 输入，绿幕便于 chroma-key，输出 mp4（MiniMax H3 图生视频）。静态节点不应显示动画模板。
- * 当前仅保留 MiniMax H3 一种动态方案，AnimateDiff 透明贴纸路线已移除。
- */
 /**
  * 主题预设 → 完整主 prompt 模板映射。
  *
@@ -489,6 +540,27 @@ export function styleTemplateOf(preset: string | undefined): string {
 	return STYLE_PROMPT_TEMPLATE[preset] ?? '';
 }
 
-export const EMOJI_DYN_BUILTIN_WORKFLOWS: Record<string, StageWorkflowConfig> = {
-	"动态表情 (MiniMax H3)": EMOJI_ANIMATED_MINIMAX,
-};
+/**
+ * 静态表情包「生成图像大小」档位（2026-09-02）。
+ *
+ * 三处**必须同步**（同 STYLE_PROMPT_TEMPLATE 的三处约定）：
+ *  1. registry.ts StatEmojiStage 的 `size` COMBO options；
+ *  2. StatEmojiStageEditor 的尺寸下拉；
+ *  3. workflowRun 的 resolveEmojiSheetSize（解析成 width/height）。
+ *
+ * 取值均为 **SDXL 友好分辨率**（64 的倍数、总像素接近 1024²）：
+ *  - 1024×1024 默认：SDXL 原生分辨率，格位排布最稳；
+ *  - 768×768：省显存/快（12GB 本机实测比 1024² 快一个量级），适合草稿；
+ *  - 1152×896 / 896×1152 / 1216×832 / 832×1216：横竖构图变体。
+ */
+export const EMOJI_SHEET_SIZES: Array<{ value: string; label: string }> = [
+	{ value: '1024x1024', label: '1024×1024（方形·推荐）' },
+	{ value: '768x768', label: '768×768（方形·省显存）' },
+	{ value: '1152x896', label: '1152×896（横向）' },
+	{ value: '896x1152', label: '896×1152（纵向）' },
+	{ value: '1216x832', label: '1216×832（宽幅）' },
+	{ value: '832x1216', label: '832×1216（长幅）' },
+];
+
+/** 默认尺寸档位（与 registry `size` 默认值一致）。 */
+export const EMOJI_SHEET_SIZE_DEFAULT = '1024x1024';

@@ -1791,22 +1791,12 @@
 	-webkit-user-select: text;
 }
 
-/* Streaming container - for Markdown rendering during stream output */
+/* Streaming container — 仅作为容器标识，不再承载光标。光标统一在 footer 行末
+   （与「处理中」pill 同一行），由 .streaming-cursor 元素渲染。2026-09-03 修复
+   「光标不在气泡尾部」：原 ::after 渲染在文本段末，视觉上远离 footer 区域，
+   与设计意图（footer 行作为气泡尾部）不符。1806 起的隐藏规则已无作用对象，一并清理。 */
 .streaming-container {
 	position: relative;
-}
-
-.streaming-container::after {
-	content: '|';
-	animation: blink-cursor 1s step-end infinite;
-	color: var(--vscode-editorCursor-foreground, inherit);
-	margin-left: 2px;
-}
-
-/* 气泡内有工具卡或工作流卡片时隐藏文本内嵌光标，改用气泡底部 span.streaming-cursor */
-.chat-bubble.has-tool-cards .streaming-container::after,
-.chat-bubble:has(.wf-trace) .streaming-container::after {
-	content: none;
 }
 
 @keyframes blink-cursor {
@@ -2784,7 +2774,6 @@
 	box-sizing: border-box;
 }
 .chat-bubble.assistant > .wf-trace { width: 100%; box-sizing: border-box; }
-.chat-bubble:has(.wf-trace) .streaming-container::after { content: none; }
 
 /* ── Workflow Card ── */
 .wf-card {
@@ -10214,23 +10203,9 @@
 	display: none;
 }
 
-/* ── Streaming cursor: terminal block style ── */
-.chat-messages.cli-mode .streaming-container::after {
-	content: '▋';
-	color: var(--vscode-textLink-foreground, #4aa3ff);
-	animation: cli-blink 1s step-end infinite;
-	margin-left: 1px;
-}
-
-@keyframes cli-blink {
-	50% { opacity: 0; }
-}
-
-/* Override rich mode's blink-cursor */
-.chat-messages.cli-mode .chat-bubble.has-tool-cards .streaming-container::after,
-.chat-messages.cli-mode .chat-bubble:has(.wf-trace) .streaming-container::after {
-	content: '▋';
-}
+/* ── Streaming cursor: terminal block style（光标已统一迁到 footer 行） ── */
+/* 2026-09-03：原 ::after 文本末尾光标已删除（参见 .streaming-container 注释），
+   CLI 模式不再单独定义 ::after，统一使用 footer 行的 .streaming-cursor 元素。 */
 
 /* ── Scrollbar: thinner in CLI mode ── */
 .chat-messages.cli-mode::-webkit-scrollbar {

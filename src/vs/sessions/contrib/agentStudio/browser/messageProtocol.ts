@@ -73,6 +73,12 @@ export type RequestType =
 	| 'providers.getSelectionForAgent'
 	| 'providers.openSettings'
 	| 'imagegen.generate'
+	| 'videogen.generate'
+	| 'modelgen.generate'
+	| 'audiogen.generate'
+	| 'textgen.generate'
+	| 'audiogen.generate'
+	| 'net.fetchAsDataUrl'
 	| 'media.import'
 	| 'media.list'
 	| 'media.get'
@@ -83,6 +89,7 @@ export type RequestType =
 	| 'media.setBoard'
 	| 'media.stats'
 	| 'media.purgeDeleted'
+	| 'media.getAsDataUrl'
 	| 'media.cleanOrphaned'
 	| 'media.enforceQuota'
 	| 'media.getRootDir'
@@ -185,6 +192,10 @@ export type RequestType =
 	| 'vox.getProgress'          // 查询 vox pipeline 运行进度/阶段
 	| 'vox.cancel'               // 取消 vox pipeline 运行（kill 子进程）
 	| 'vox.checkDeps'            // 检测 vox 依赖（python/项目/入口脚本/ffmpeg/APIKey）
+	| 'cutout.ensureModel'       // 表情包 AI 抠图：确保模型已下载（内置 rembg，主进程 ONNX）
+	| 'cutout.modelProgress'     // 表情包 AI 抠图：模型下载进度轮询（字节级）
+	| 'cutout.status'            // 表情包 AI 抠图：本地模型缓存状态查询
+	| 'cutout.remove'            // 表情包 AI 抠图：整版 RGBA → ONNX U²Net → 320² mask
 	| 'reversePrompt.generate'   // P2: describe an image via provider chat (WebView → Host)
 	| 'comfy.fetch'              // ComfyUI 跨源 403：主进程代理（node fetch 无 Origin 头）
 	| 'comfy.launch'             // ComfyUI 一键启动（--enable-cors-header，方案A 直连前置）

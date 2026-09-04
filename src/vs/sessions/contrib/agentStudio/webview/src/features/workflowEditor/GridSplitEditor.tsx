@@ -1,19 +1,22 @@
 /**
- * GridSplitEditor — 对齐 ComfyTV GridSplitStageCard 的内嵌网格编辑器。
+ * GridSplitEditor — 对齐 ComfyTV GridSplitStageCard 的内嵌网格编辑器（2026-09-01
+ * 按 ComfyTV 参考样式重构：大预览占位 + 预设排 + 横向 ROWS/COLS/BORDER 步进排 +
+ * OUTER BORDER 勾选排；选中格改为**点击预览单元格**，不再露出 Selected 步进器）。
  *
  * 交互组成：
- *  - 预设（2×2 / 3×3 / 4×4 / 2×3 / 3×2）一键设定 rows/cols；
- *  - Rows / Cols 步进器（1–10）；
- *  - Border 滑杆（0–4096，源像素，切掉的间隔带宽度）；
- *  - Outer border 开关（是否在整张图外缘也切掉 border 边距）；
- *  - 可视化网格预览（画布叠加：源图 + 单元格分隔带 + 选中单元格高亮）；
- *  - selected_index 步进器（0 … rows*cols-1，对应输出 batch 中选中的那一格）。
+ *  - 大预览（整卡宽，深底）：无上游图 → 居中网格图标 + "Connect an image to split"
+ *    占位（预览内 + 下方小字说明）；有图 → 源图 + 分隔带 + 网格线 + 选中格高亮，
+ *    点击单元格选中（写回 selected_index）；
+ *  - 预设（1×2 / 2×1 / 2×2 / 2×3 / 3×3）一键设定 rows/cols（对齐 ComfyTV 预设集）；
+ *  - ROWS / COLS / BORDER 紧凑步进组（横向一排，溢出横向滚动——对齐参考样式）；
+ *  - OUTER BORDER 勾选排（整宽描边药丸）。
  *
  * 所有参数通过 onCommit 写回（nodeCard → wf-node-control）：
  *   rows / cols / border / outer_border / selected_index
  * 与 ComfyTV 一致，这些字段在后端 schema 中 hidden=True（由面板驱动）。
  */
 import * as React from 'react';
+import { loadCanvasImageWithProxy } from './canvasImageLoad';
 
 export interface GridSplitInit {
   rows: number;
@@ -29,27 +32,31 @@ export interface GridSplitEditorProps {
   onCommit: (patch: Partial<GridSplitInit>) => void;
 }
 
+/** 预设集（对齐 ComfyTV GridSplitStageCard：label = `cols×rows`）。 */
 const PRESETS: Array<{ label: string; rows: number; cols: number }> = [
+  { label: '1×2', rows: 2, cols: 1 },
+  { label: '2×1', rows: 1, cols: 2 },
   { label: '2×2', rows: 2, cols: 2 },
+  { label: '2×3', rows: 3, cols: 2 },
   { label: '3×3', rows: 3, cols: 3 },
-  { label: '4×4', rows: 4, cols: 4 },
-  { label: '2×3', rows: 2, cols: 3 },
-  { label: '3×2', rows: 3, cols: 2 },
 ];
 
 const VIEW_W = 300;
-const MAX_VIEW_H = 220;
+const MAX_VIEW_H = 320;
+const PLACEHOLDER_H = 285;
 
-const btn = (active: boolean): React.CSSProperties => ({
-  padding: '3px 7px',
-  borderRadius: 5,
-  cursor: 'pointer',
-  fontSize: 10,
-  fontFamily: 'inherit',
-  border: '1px solid rgba(255,255,255,.14)',
-  background: active ? 'rgba(74,158,255,.22)' : 'rgba(255,255,255,.05)',
-  color: active ? '#9cc6ff' : 'var(--vscode-foreground)',
-});
+/* ── 样式常量（对齐 ComfyTV 参考截图的深色卡片质感）────────────────────────── */
+const PANEL_BG = '#17181c';
+const PANEL_BORDER = '1px solid rgba(255,255,255,.12)';
+const PREVIEW_BG = '#0b0c0e';
+const DIM = '#8a8f98';
+const ACCENT = '#4a9eff';
+
+const miniBtn: React.CSSProperties = {
+  width: 16, height: 16, lineHeight: '14px', padding: 0,
+  borderRadius: 4, cursor: 'pointer', fontSize: 11, fontFamily: 'inherit',
+  border: 'none', background: 'rgba(255,255,255,.06)', color: 'var(--vscode-foreground)',
+};
 
 export function GridSplitEditor({ initial, imageRef, onCommit }: GridSplitEditorProps): React.ReactElement {
   const [rows, setRows] = React.useState<number>(Math.max(1, initial.rows || 2));
@@ -69,27 +76,30 @@ export function GridSplitEditor({ initial, imageRef, onCommit }: GridSplitEditor
     }
   }, [cellCount, selectedIndex]);
 
-  // 加载上游图像
+  // 加载上游图像（直连失败自动回退 host 代理转 data URL，见 canvasImageLoad）
   React.useEffect(() => {
     setImgReady(false);
     if (!imageRef) { return; }
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => { imgElRef.current = img; setImgReady(true); };
-    img.onerror = () => { imgElRef.current = null; setImgReady(false); };
-    img.src = imageRef;
+    let cancelled = false;
+    loadCanvasImageWithProxy(imageRef).then((img) => {
+      if (cancelled) { return; }
+      imgElRef.current = img;
+      setImgReady(!!img);
+    });
+    return () => { cancelled = true; };
   }, [imageRef]);
 
   const viewH = React.useMemo(() => {
     const img = imgElRef.current;
     if (imgReady && img && img.naturalWidth && img.naturalHeight) {
       const h = Math.round((VIEW_W * img.naturalHeight) / img.naturalWidth);
-      return Math.max(80, Math.min(MAX_VIEW_H, h));
+      return Math.max(120, Math.min(MAX_VIEW_H, h));
     }
-    return 180;
+    return PLACEHOLDER_H;
   }, [imgReady]);
 
-  // 绘制网格预览
+  // 绘制网格预览（有图：源图 + 分隔带 + 网格线 + 选中格高亮；无图：纯深底，
+  // 占位图标与文案由 HTML 覆盖层渲染——比 canvas 文本更贴近参考样式）。
   React.useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) { return; }
@@ -98,7 +108,7 @@ export function GridSplitEditor({ initial, imageRef, onCommit }: GridSplitEditor
     canvas.width = VIEW_W;
     canvas.height = viewH;
     ctx.clearRect(0, 0, VIEW_W, viewH);
-    ctx.fillStyle = '#17181c';
+    ctx.fillStyle = PREVIEW_BG;
     ctx.fillRect(0, 0, VIEW_W, viewH);
 
     const img = imgElRef.current;
@@ -149,31 +159,37 @@ export function GridSplitEditor({ initial, imageRef, onCommit }: GridSplitEditor
       const sy = dy + (dh * selR) / rows;
       const sw = dw / cols;
       const sh = dh / rows;
-      ctx.strokeStyle = '#4a9eff';
+      ctx.strokeStyle = ACCENT;
       ctx.lineWidth = 2;
       ctx.strokeRect(sx + 1, sy + 1, sw - 2, sh - 2);
-    } else {
-      // 占位网格
-      ctx.strokeStyle = 'rgba(255,255,255,.08)';
-      ctx.lineWidth = 1;
-      for (let c = 0; c <= cols; c++) {
-        const x = (VIEW_W * c) / cols;
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, viewH); ctx.stroke();
-      }
-      for (let r = 0; r <= rows; r++) {
-        const y = (viewH * r) / rows;
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(VIEW_W, y); ctx.stroke();
-      }
-      ctx.fillStyle = 'rgba(255,255,255,.28)';
-      ctx.font = '11px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('无上游图像：连接图像后预览', VIEW_W / 2, viewH / 2);
     }
   }, [rows, cols, border, outerBorder, selectedIndex, imgReady, viewH]);
 
   const clampIdx = (v: number) => Math.max(0, Math.min(cellCount - 1, v));
 
-  const stepper = (
+  /** 点击预览选格（替代 Selected 步进器——对齐 ComfyTV 交互）。 */
+  const onCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const img = imgElRef.current;
+    if (!imgReady || !img || !img.naturalWidth) { return; }
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (!rect.width || !rect.height) { return; }
+    const x = ((e.clientX - rect.left) / rect.width) * VIEW_W;
+    const y = ((e.clientY - rect.top) / rect.height) * viewH;
+    const scale = Math.min(VIEW_W / img.naturalWidth, viewH / img.naturalHeight);
+    const dw = img.naturalWidth * scale;
+    const dh = img.naturalHeight * scale;
+    const dx = (VIEW_W - dw) / 2;
+    const dy = (viewH - dh) / 2;
+    if (x < dx || x > dx + dw || y < dy || y > dy + dh) { return; }
+    const c = Math.min(cols - 1, Math.max(0, Math.floor(((x - dx) / dw) * cols)));
+    const r = Math.min(rows - 1, Math.max(0, Math.floor(((y - dy) / dh) * rows)));
+    const idx = clampIdx(r * cols + c);
+    setSelectedIndex(idx);
+    onCommit({ selectedIndex: idx });
+  };
+
+  /** 紧凑步进组（label + − 值 ＋，描边药丸——对齐参考样式的 ROWS/COLS/BOR 组）。 */
+  const stepGroup = (
     label: string,
     value: number,
     min: number,
@@ -181,28 +197,72 @@ export function GridSplitEditor({ initial, imageRef, onCommit }: GridSplitEditor
     onChange: (v: number) => void,
     step = 1,
   ): React.ReactElement => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', minWidth: 54 }}>{label}</span>
-      <button style={btn(false)} onClick={() => onChange(Math.max(min, value - step))}>−</button>
-      <span style={{ fontSize: 11, fontFamily: 'monospace', minWidth: 22, textAlign: 'center' }}>{value}</span>
-      <button style={btn(false)} onClick={() => onChange(Math.min(max, value + step))}>＋</button>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 7px', border: PANEL_BORDER, borderRadius: 6, background: PANEL_BG }}>
+      <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1, color: DIM, marginRight: 2 }}>{label}</span>
+      <button style={miniBtn} onClick={() => onChange(Math.max(min, value - step))}>−</button>
+      <span style={{ fontSize: 11, fontFamily: 'Consolas, monospace', minWidth: 16, textAlign: 'center', color: 'var(--vscode-foreground)' }}>{value}</span>
+      <button style={miniBtn} onClick={() => onChange(Math.min(max, value + step))}>＋</button>
     </div>
   );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {/* 预设 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', marginRight: 2 }}>预设</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+      {/* 大预览（无图：居中网格图标 + 占位文案；有图：源图 + 网格 + 点击选格） */}
+      <div style={{ position: 'relative', width: '100%' }}>
+        <canvas
+          ref={canvasRef}
+          width={VIEW_W}
+          height={viewH}
+          onClick={onCanvasClick}
+          style={{
+            width: '100%', display: 'block', borderRadius: 8,
+            background: PREVIEW_BG, border: '1px solid rgba(255,255,255,.1)',
+            cursor: imgReady ? 'pointer' : 'default',
+          }}
+        />
+        {!imgReady && (
+          <div style={{
+            position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 10, pointerEvents: 'none',
+          }}>
+            {/* 网格图标（2×2 圆角方块，对齐参考截图的 ⊞ 占位图标） */}
+            <svg width="54" height="54" viewBox="0 0 54 54" fill="none">
+              {[
+                [8, 8], [30, 8], [8, 30], [30, 30],
+              ].map(([x, y]) => (
+                <rect key={`${x}-${y}`} x={x} y={y} width={16} height={16} rx={4}
+                  stroke="#4a4d55" strokeWidth={3} fill="none" />
+              ))}
+            </svg>
+            <span style={{ fontSize: 12.5, color: '#9ba0a8' }}>Connect an image to split</span>
+          </div>
+        )}
+      </div>
+      {!imgReady && (
+        <div style={{ fontSize: 11, color: DIM, textAlign: 'center', marginTop: -2 }}>
+          Connect an image to split
+        </div>
+      )}
+
+      {/* 预设排（等宽按钮，active = 描边高亮） */}
+      <div style={{ display: 'flex', gap: 5 }}>
         {PRESETS.map((p) => {
           const active = p.rows === rows && p.cols === cols;
           return (
             <button
               key={p.label}
-              style={btn(active)}
+              style={{
+                flex: 1, padding: '4px 0', borderRadius: 6, cursor: 'pointer',
+                fontSize: 11, fontFamily: 'Consolas, monospace',
+                border: active ? `1px solid ${ACCENT}` : '1px solid rgba(255,255,255,.12)',
+                background: active ? 'rgba(74,158,255,.12)' : PANEL_BG,
+                color: active ? '#7ab8ff' : 'var(--vscode-foreground)',
+              }}
               onClick={() => {
                 setRows(p.rows); setCols(p.cols);
-                onCommit({ rows: p.rows, cols: p.cols });
+                const idx = clampIdx(selectedIndex);
+                setSelectedIndex(idx);
+                onCommit({ rows: p.rows, cols: p.cols, selectedIndex: idx });
               }}
             >
               {p.label}
@@ -211,53 +271,28 @@ export function GridSplitEditor({ initial, imageRef, onCommit }: GridSplitEditor
         })}
       </div>
 
-      {/* 行/列 */}
-      {stepper('Rows', rows, 1, 10, (v) => { setRows(v); onCommit({ rows: v }); })}
-      {stepper('Cols', cols, 1, 10, (v) => { setCols(v); onCommit({ cols: v }); })}
-
-      {/* Border 滑杆 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)', minWidth: 54 }}>Border</span>
-        <input
-          type="range"
-          min={0}
-          max={256}
-          step={1}
-          value={Math.min(256, border)}
-          onChange={(e) => {
-            const v = Number(e.target.value);
-            setBorder(v);
-            onCommit({ border: v });
-          }}
-          style={{ flex: 1, accentColor: '#4a9eff' }}
-        />
-        <span style={{ fontSize: 10, fontFamily: 'monospace', minWidth: 32, textAlign: 'right' }}>{border}px</span>
+      {/* ROWS / COLS / BORDER 步进排（横向一排，溢出滚动——对齐参考样式） */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, overflowX: 'auto', paddingBottom: 2 }}>
+        {stepGroup('ROWS', rows, 1, 10, (v) => { setRows(v); onCommit({ rows: v }); })}
+        {stepGroup('COLS', cols, 1, 10, (v) => { setCols(v); onCommit({ cols: v }); })}
+        {stepGroup('BORDER', border, 0, 4096, (v) => { setBorder(v); onCommit({ border: v }); }, 2)}
       </div>
 
-      {/* Outer border 开关 */}
-      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--vscode-foreground)', cursor: 'pointer' }}>
+      {/* OUTER BORDER 勾选排（整宽描边药丸） */}
+      <label style={{
+        display: 'flex', alignItems: 'center', gap: 7, padding: '5px 10px',
+        border: PANEL_BORDER, borderRadius: 6, background: PANEL_BG,
+        fontSize: 9, fontWeight: 700, letterSpacing: 1, color: 'var(--vscode-foreground)',
+        cursor: 'pointer', userSelect: 'none',
+      }}>
         <input
           type="checkbox"
           checked={outerBorder}
           onChange={(e) => { setOuterBorder(e.target.checked); onCommit({ outerBorder: e.target.checked }); }}
-          style={{ accentColor: '#4a9eff' }}
+          style={{ accentColor: ACCENT, margin: 0 }}
         />
-        外缘边距 (outer border)
+        OUTER BORDER
       </label>
-
-      {/* 可视化网格预览 */}
-      <canvas
-        ref={canvasRef}
-        width={VIEW_W}
-        height={viewH}
-        style={{ width: '100%', borderRadius: 8, background: '#17181c', display: 'block', border: '1px solid rgba(255,255,255,.1)' }}
-      />
-
-      {/* selected_index */}
-      {stepper('Selected', selectedIndex, 0, cellCount - 1, (v) => { const c = clampIdx(v); setSelectedIndex(c); onCommit({ selectedIndex: c }); })}
-      <div style={{ fontSize: 9, color: 'var(--vscode-descriptionForeground)', fontFamily: 'monospace' }}>
-        输出 {cellCount} 格 · 选中第 {selectedIndex} 格（0 基）
-      </div>
     </div>
   );
 }

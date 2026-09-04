@@ -433,6 +433,22 @@ const MAX_LINE_LENGTH = 10000;   // 超过此行长的文件跳过（minified/�
 const SAVE_DEBOUNCE_MS = 30000;
 
 /**
+ * 增量索引触发 zst 全量落盘（_saveGraph，96MB 序列化 + gzip）的最小间隔（ms）。
+ *
+ * 背景（2026-09-02，日志 vscode-app-1788352997271）：增量索引每轮都排队一次全图
+ * 落盘，而变更本身已由 `_syncIncrementalToSqlite` 写入主进程 SQLite（实测 40-442ms）。
+ * SQLite 后端启用时，zst 制品退化为「冷启动快照」，每次增量重写 96MB 是纯冗余开销
+ * —— 故按此间隔节流，窗口内的增量只更新 SQLite。
+ *
+ * 取值：30min。zst 是权威快照（SQLite 允许落后，见 _syncIncrementalToSqlite 注释
+ * 「失败仅让 sqlite 落后于内存」），但有两条兜底：① 正常退出经 dispose→flushPendingSave
+ * 强制落盘，不丢数据；② 崩溃丢失的增量由 watcher 经 fileHashes 差异自动补回（自愈）。
+ * 故可放宽到 30min，换取更少的 96MB 全量重写。
+ * 未启用 SQLite 后端时不节流（此时 zst 是唯一持久化，必须每次落盘）。
+ */
+const ZST_SAVE_MIN_INTERVAL_MS = 30 * 60 * 1000;
+
+/**
  * 延迟落盘的**最长等待**上限（ms）。
  *
  * 纯 debounce 有饥饿问题：持续保存文件时每次都重置窗口，落盘被无限推迟，
@@ -2172,6 +2188,18 @@ self.onmessage = async function(e) {
 
 		const cts = new CancellationTokenSource(token);
 		const startTime = Date.now();
+		// ─── 阶段耗时埋点（2026-09-02）─────────────────────────────────────
+		// 背景：日志 1788352997271 实测增量索引 13-16s，却产出 0 节点 0 边；而既有日志
+		// 只有一条「✓ 增量索引完成 (15s)」，无法判断耗时落在锁等待 / 扫描 / 解析 /
+		// BM25 / 克隆检测 / 边匹配 / SQLite 补丁中的哪一段（快路径已跳过全量扫描）。
+		// 故逐段计时，完成时输出一条对账行：各段之和应≈总耗时，差额即未被埋点覆盖的开销。
+		let _segStart = startTime;
+		const _segMarks: string[] = [];
+		const _seg = (name: string): void => {
+			const now = Date.now();
+			_segMarks.push(`${name}=${now - _segStart}ms`);
+			_segStart = now;
+		};
 		this._isIndexing = true;
 		this._indexCts = cts;
 
@@ -2184,6 +2212,7 @@ self.onmessage = async function(e) {
 		}
 
 		try {
+			_seg('获取索引锁');
 			// 多 folder：按 root 解析对应项目名（回退到当前 _projectName）
 			const project = this._rootProjectMap.get(this._normalizeRoot(rootPath)) || this._projectName;
 			// P0 修复：增量重解析的节点/边同样按真实项目名写入
@@ -2228,6 +2257,7 @@ self.onmessage = async function(e) {
 					project, absFilesScan, (abs) => this._getRelativePath(abs));
 				this._onDidIndexProgress.fire(`⚡ 增量分类: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} =${classification.unchanged.length}`);
 			}
+			_seg(hasChangeSet ? 'watcher变更集快路径' : '全量扫描+分类');
 
 			// 零变更短路：跳过后续全部重活（BM25 重建/249k 节点相似度 pass/全量图谱保存）。
 			// 旧实现零变更也每轮全跑（30s+），配合 watcher 误报形成"扫描→空增量→保存→再扫描"卡顿循环
@@ -2257,63 +2287,102 @@ self.onmessage = async function(e) {
 			// 收集本次重解析节点的数字 id（供增量克隆检测：只对新节点做 LSH 配对，
 			// 避免每次 1 文件保存都全量 MinHash 扫描 12.4w 节点 → 同步卡死 renderer）。
 			const newOrChangedNodeIds = new Set<number>();
+			// 0 节点诊断（2026-09-02）：记录每个解析出 0 节点的文件的 status/reason。
+			// _parseFile 的 skipped/parse_error 路径此前无任何 INFO 日志，导致「改了源码
+			// 却 0 节点」无法定位 —— 典型 reason：unsupported extension / file too large /
+			// single-line file > 50KB (minified?) / line too long / no parser / parse_error。
+			const _zeroNodeFiles: string[] = [];
 			this._graph.store.setDeferBM25(true);
 			const toParseRel = [...classification.added, ...classification.modified];
-			for (let i = 0; i < toParseRel.length; i++) {
-				if (cts.token.isCancellationRequested) { break; }
-				const rel = toParseRel[i];
+			// ── 阶段 1：受限并发解析（2026-09-03）──
+			// 旧实现逐文件串行 await：6 文件轮解析 2818ms（平均 470ms/文件），而 Worker 池有
+			// N 个可并行。解析是「读文件 + Worker CPU」，对图无共享写，可安全并发。动态队列
+			// （nextIdx++）分发，大文件不会绑死某个 runner；墙钟时间 ≈ 最慢单文件而非总和。
+			// 主线程 fallback（Worker 池不可用）保持 K=1 串行——主线程并发解析只会互卡。
+			// 并发下每文件后的 yield 移除（Worker 模式主线程本就空闲），改到阶段 2 统一让出。
+			const parseTargets: { rel: string; abs: string }[] = [];
+			for (const rel of toParseRel) {
 				const abs = relToAbs.get(rel);
-				if (!abs) { continue; }
-				try {
-					const result = await this._parseFile(abs, cts.token);
-					for (const n of result.nodes) { newOrChangedNodeIds.add(this._graph.addNode(n)); nodesExtracted++; }
-					for (const e of result.edges) {
-						// call:/inherits:/implements:/usage: 虚拟边暂存（与全量索引同一分流逻辑）
-						if (e.target && typeof e.target === 'string' && e.target.startsWith('call:')) {
-							this._pendingCallEdges.push({ source: e.source, callee: e.target.slice(5), loopDepth: e.properties?.loopDepth ?? 0 });
-						} else if (e.target && typeof e.target === 'string' && (e.target.startsWith('inherits:') || e.target.startsWith('implements:'))) {
-							const kind: 'INHERITS' | 'IMPLEMENTS' = e.target.startsWith('implements:') ? 'IMPLEMENTS' : 'INHERITS';
-							this._pendingInheritEdges.push({ source: e.source, baseName: e.target.slice(e.target.indexOf(':') + 1), kind });
-						} else if (e.target && typeof e.target === 'string' && e.target.startsWith('usage:')) {
-							const name = e.target.slice(6);
-							const access: 'read' | 'write' = e.properties?.access === 'write' ? 'write' : 'read';
-							this._pendingUsageEdges.push({ source: e.source, name, access });
-						} else {
-							this._graph.addEdge(e);
+				if (abs) { parseTargets.push({ rel, abs }); }
+			}
+			const poolReady = await this._ensureWorkerPool();
+			const parseParallelism = poolReady
+				? Math.max(1, Math.min(this._parserWorkers.length, parseTargets.length))
+				: 1;
+			type ParsedFile = Awaited<ReturnType<CodebaseGraphService['_parseFile']>>;
+			const parseResults: { idx: number; rel: string; abs: string; result: ParsedFile }[] = [];
+			{
+				let nextIdx = 0;
+				const runOne = async (): Promise<void> => {
+					while (!cts.token.isCancellationRequested) {
+						const idx = nextIdx++;
+						if (idx >= parseTargets.length) { break; }
+						const t = parseTargets[idx];
+						try {
+							const result = await this._parseFile(t.abs, cts.token);
+							parseResults.push({ idx, rel: t.rel, abs: t.abs, result });
+						} catch (err: any) {
+							this._logService.debug('[CodebaseGraph]', `Incremental parse failed ${t.abs}: ${err?.message || err}`);
 						}
-						edgesExtracted++;
 					}
-					// 更新文件哈希（仅 mtime+size，避免 SHA-256 开销）
-					try {
-						const stat = await this._fileService.stat(URI.file(abs));
-						this._graph.store.upsertFileHash({
-							project,
-							relPath: rel,
-							sha256: '',
-							mtimeNs: stat.mtime * 1_000_000,
-							size: stat.size,
-						});
-						// Phase 2 接线：同步到主进程 SQLite 后端（默认关闭）
-						this._syncFileHashToSqlite(project, rel, '', stat.mtime * 1_000_000, stat.size);
-					} catch { /* 忽略哈希更新失败 */ }
-				} catch (err: any) {
-					this._logService.debug('[CodebaseGraph]', `Incremental parse failed ${abs}: ${err?.message || err}`);
+				};
+				await Promise.all(Array.from({ length: parseParallelism }, () => runOne()));
+			}
+
+			// ── 阶段 2：按原文件顺序写入（upsert/虚拟边分流/哈希为有序主线程操作）──
+			parseResults.sort((a, b) => a.idx - b.idx);
+			for (const { rel, abs, result } of parseResults) {
+				if (result.nodes.length === 0) {
+					_zeroNodeFiles.push(`${rel}[${result.status}${result.reason ? ': ' + result.reason : ''}]`);
 				}
+				for (const n of result.nodes) { newOrChangedNodeIds.add(this._graph.addNode(n)); nodesExtracted++; }
+				for (const e of result.edges) {
+					// call:/inherits:/implements:/usage: 虚拟边暂存（与全量索引同一分流逻辑）
+					if (e.target && typeof e.target === 'string' && e.target.startsWith('call:')) {
+						this._pendingCallEdges.push({ source: e.source, callee: e.target.slice(5), loopDepth: e.properties?.loopDepth ?? 0 });
+					} else if (e.target && typeof e.target === 'string' && (e.target.startsWith('inherits:') || e.target.startsWith('implements:'))) {
+						const kind: 'INHERITS' | 'IMPLEMENTS' = e.target.startsWith('implements:') ? 'IMPLEMENTS' : 'INHERITS';
+						this._pendingInheritEdges.push({ source: e.source, baseName: e.target.slice(e.target.indexOf(':') + 1), kind });
+					} else if (e.target && typeof e.target === 'string' && e.target.startsWith('usage:')) {
+						const name = e.target.slice(6);
+						const access: 'read' | 'write' = e.properties?.access === 'write' ? 'write' : 'read';
+						this._pendingUsageEdges.push({ source: e.source, name, access });
+					} else {
+						this._graph.addEdge(e);
+					}
+					edgesExtracted++;
+				}
+				// 更新文件哈希（仅 mtime+size，避免 SHA-256 开销）
+				try {
+					const stat = await this._fileService.stat(URI.file(abs));
+					this._graph.store.upsertFileHash({
+						project,
+						relPath: rel,
+						sha256: '',
+						mtimeNs: stat.mtime * 1_000_000,
+						size: stat.size,
+					});
+					// Phase 2 接线：同步到主进程 SQLite 后端（默认关闭）
+					this._syncFileHashToSqlite(project, rel, '', stat.mtime * 1_000_000, stat.size);
+				} catch { /* 忽略哈希更新失败 */ }
 				// 每个文件后让出主线程（旧值 i%50：改动 <50 个文件时**一次都不让出**，
-				// tree-sitter 解析 + 节点写入整段独占主线程，是"改 1 个文件也卡"的直接原因）。
-				// setTimeout(0) 单次开销极小（微秒级），相对每文件毫秒级的 tree-sitter 解析可忽略。
+				// 节点写入整段独占主线程，是"改 1 个文件也卡"的直接原因）。
+				// setTimeout(0) 单次开销极小（微秒级），相对毫秒级的写入可忽略。
 				await new Promise<void>(r => setTimeout(r, 0));
-				}
+			}
+			_seg(`解析${toParseRel.length}个文件`);
 			this._graph.store.setDeferBM25(false);
 			// 增量模式（force=false）：只刷新 defer 期间累积的脏集（本次变更的节点），
 			// 而非 clear() + 遍历全图 12.4w 节点——这是增量索引卡顿的最大单点之一。
 			await this._graph.store.rebuildBM25();
 			this._graph.store.checkpoint();
+			_seg('BM25增量重建+checkpoint');
 
 			// 增量克隆检测：只对本次重解析的新节点做「新节点 vs 全量」配对（insertEdge
 			// 按端点去重，天然幂等）。旧实现 `_runSimilarityPass()` 无参全量扫 12.4w 节点
 			// 做 MinHash/LSH，是同步无 yield 的重活——单文件保存也卡死 renderer 数秒。
 			const similarEdges = await this._runSimilarityPass(newOrChangedNodeIds);
+			_seg(`克隆检测(新节点${newOrChangedNodeIds.size})`);
 
 			// 增量继承边匹配（暂存的 inherits:/implements: 虚拟边 → 真实 INHERITS/IMPLEMENTS 边）
 			const matchedInherits = await this._matchInheritsToDefinitions();
@@ -2322,19 +2391,41 @@ self.onmessage = async function(e) {
 			// 增量使用边匹配（暂存的 usage: 虚拟边 → 真实 USAGE 边，带 access 读写）
 			const matchedUsage = await this._matchUsageEdgesToDefinitions();
 			edgesExtracted += matchedUsage;
+			_seg('继承边+使用边匹配');
 
 			// 延迟合并落盘：全图序列化 + gzip 是本流程最大单点（与变更集大小无关）。
 			// 连续保存时多次索引结果合并为一次落盘；dispose/显式刷新会强制落盘。
-			this._scheduleSaveGraph(rootPath, project);
+			//
+			// SQLite 后端启用时，本次变更随后由 _syncIncrementalToSqlite 写入主进程
+			// SQLite（实测 40-442ms），zst 制品退化为「冷启动快照」—— 每次增量都重写
+			// 96MB 是纯冗余，故按 ZST_SAVE_MIN_INTERVAL_MS 节流（窗口内只更新 SQLite）。
+			// 未启用 SQLite 后端时不节流（此时 zst 是唯一持久化，必须落盘）。
+			const zstThrottled = this._sqliteBackendEnabled
+				&& (Date.now() - this._lastZstSaveAt) < ZST_SAVE_MIN_INTERVAL_MS;
+			if (!zstThrottled) {
+				this._scheduleSaveGraph(rootPath, project);
+			}
 
 			// Phase 2b 增量补丁：仅同步变更文件到 sqlite（不触发全量重建）
 			if (this._sqliteBackendEnabled) {
 				this._onDidIndexProgress.fire('💾 SQLite 增量补丁...');
 				await this._syncIncrementalToSqlite(project, [...classification.deleted, ...classification.modified, ...classification.added]);
 			}
+			_seg('SQLite增量补丁');
+
+			// ─── 埋点对账行（2026-09-02）─────────────────────────────────────
+			// 各段之和应≈总耗时；若「未覆盖」占比大，说明耗时在未被埋点的代码段
+			// （如 deleteByFile 循环、文件哈希 stat、进度事件派发等）。
+			const _totalMs = Date.now() - startTime;
+			const _sumMs = _segMarks.reduce((acc, m) => acc + parseInt(m.slice(m.lastIndexOf('=') + 1), 10), 0);
+			this._logService.info('[CodebaseGraph]', `增量索引阶段耗时: ${_segMarks.join(' | ')} | 合计=${_sumMs}ms / 总=${_totalMs}ms / 未覆盖=${_totalMs - _sumMs}ms`);
+			// 0 节点诊断：仅在实际发生时输出，避免正常路径噪音。
+			if (_zeroNodeFiles.length > 0) {
+				this._logService.info('[CodebaseGraph]', `增量解析 0 节点文件 ${_zeroNodeFiles.length}/${toParseRel.length}: ${_zeroNodeFiles.slice(0, 5).join(', ')}${_zeroNodeFiles.length > 5 ? ` ...(另${_zeroNodeFiles.length - 5}个)` : ''}`);
+			}
 
 			const duration = Math.round((Date.now() - startTime) / 1000);
-			const message = `增量索引完成: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} (${nodesExtracted} 节点, ${edgesExtracted} 边, ${similarEdges} 克隆边, ${duration}s, 落盘已排队)`;
+			const message = `增量索引完成: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} (${nodesExtracted} 节点, ${edgesExtracted} 边, ${similarEdges} 克隆边, ${duration}s, ${zstThrottled ? 'zst落盘已节流(SQLite已持久化)' : '落盘已排队'})`;
 			this._onDidIndexProgress.fire(`✓ ${message}`);
 			const result: IIndexResult = {
 				success: true,
@@ -2367,6 +2458,9 @@ self.onmessage = async function(e) {
 	 * 全量索引不走这里（用 _saveGraph 立即落盘）：全量是用户显式触发的重活，
 	 * 且结果必须尽快持久化。
 	 */
+	/** 上次 zst 全量落盘时刻（节流基准，见 ZST_SAVE_MIN_INTERVAL_MS）。 */
+	private _lastZstSaveAt = 0;
+
 	private _scheduleSaveGraph(rootPath: string, project?: string): void {
 		const key = this._normalizeRoot(rootPath);
 		const pending = this._pendingSaves.get(key);
@@ -2464,6 +2558,8 @@ self.onmessage = async function(e) {
 				this._logService.warn('[CodebaseGraph]', `Graph save sanity check FAILED: 0 nodes for project=${project} but store holds ${totalCount} total nodes — node project-tag mismatch, saved artifact will be EMPTY`);
 			}
 			this._logService.info('[CodebaseGraph]', `Graph saved: ${artifactFile.fsPath} (project=${project ?? 'all'}, ${savedCount} nodes)`);
+			// 记录 zst 全量落盘时刻，作为增量路径节流基准（ZST_SAVE_MIN_INTERVAL_MS）
+			this._lastZstSaveAt = Date.now();
 			} catch (err: any) {
 				// best-effort 不等于静默：保存失败（如大图谱序列化 OOM）必须可见，否则启动加载不到图会莫名全量重建
 				this._logService.warn('[CodebaseGraph]', `Graph save failed: ${artifactFile.fsPath}: ${err?.message || err}`);
@@ -3549,9 +3645,18 @@ self.onmessage = async function(e) {
 		const project = this._projectName;
 
 		try {
+			// 增量模式但本次无任何新/变更节点（如改动的是被跳过的大文件）→ 直接跳过。
+			// 旧↔旧的克隆关系全量索引时已生成落盘，此处无需任何工作。
+			// Bug（2026-09-03）：旧写法 `onlyNodeIds && onlyNodeIds.size > 0` 让空集**回退
+			// 全量版** detectSimilarCode（O(全量²) 配对）——日志实测：新节点 0 仍耗 12954ms，
+			// 占增量索引总耗时 13018ms 的 99.5%。
+			if (onlyNodeIds && onlyNodeIds.size === 0) {
+				this._logService.debug('[CodebaseGraph]', 'Similarity pass: skipped (incremental, 0 new nodes)');
+				return 0;
+			}
 			const allNodes = store.getAllNodes().filter(n => n.project === project);
 			// 增量版为 async（内部对全量 LSH 建桶做时间切片，避免独占主线程）
-			const similarEdges = onlyNodeIds && onlyNodeIds.size > 0
+			const similarEdges = onlyNodeIds
 				? await detectSimilarCodeIncremental(onlyNodeIds, allNodes, store, 0.7)
 				: detectSimilarCode(allNodes, store, 0.7);
 			for (const edge of similarEdges) {

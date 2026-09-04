@@ -1,0 +1,38 @@
+{
+	"name": "lightai-provider",
+	"version": "1.0.0",
+	"description": "LightAI 图像生成模型提供者，提供与 LightAI（腾讯光子内部）的图片生成集成能力，供「模型文生图」节点使用。\n\n配置：在本插件详情页填写 cookie / userId，或前往设置搜索 lightai。",
+	"publisher": "saros",
+	"configuration": {
+		"properties": {
+			"lightai.endpoint": {
+				"type": "string",
+				"default": "https://lightai-gemini-chat-v1-sd.aigclsp.com",
+				"description": "LightAI 服务 base URL"
+			},
+			"lightai.cookie": {
+				"type": "string",
+				"default": "",
+				"description": "登录会话 Cookie（sessionid=xxx; uid=xxx），过期需重填"
+			},
+			"lightai.userId": {
+				"type": "string",
+				"default": "",
+				"description": "用户 ID（企微邮箱，x-user-id）"
+			},
+			"lightai.imageModels": {
+				"type": "array",
+				"default": [
+					"gemini-3.1-flash-image",
+					"gemini-3-pro-image",
+					"doubao-seedream-5-0-260128",
+					"gpt-image-2"
+				],
+				"description": "图片生成模型列表（自动发现，供「模型文生图」节点使用）",
+				"items": {
+					"type": "string"
+				}
+			}
+		}
+	}
+}

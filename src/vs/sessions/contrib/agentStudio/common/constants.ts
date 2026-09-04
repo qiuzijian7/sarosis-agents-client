@@ -9,10 +9,10 @@ export const AGENT_STUDIO_DATA_PATH_SETTING = 'sessions.agentStudio.dataPath';
 export const AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING = 'sessions.agentStudio.chatStreamLog.enabled';
 export const AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING = 'sessions.agentStudio.chatStreamLog.dumpTools';
 
-// NOTE: Knot AG-UI configuration keys are defined in the knot-agui extension's
-// package.json (contributes.configuration) and discovered at runtime via
-// ISettingsTabRegistry (contributes.agentStudioSettingsTab). Do NOT add
-// Knot-specific config keys here — they belong to the plugin.
+// NOTE: AG-UI provider plugins (e.g. codebuddy-provider) define their own configuration
+// keys in their extension's package.json (contributes.configuration) and are discovered at
+// runtime via ISettingsTabRegistry (contributes.agentStudioSettingsTab). Do NOT add
+// provider-specific config keys here — they belong to the plugin.
 
 // Configuration keys — Preferences
 export const AGENT_STUDIO_THEME_SETTING = 'sessions.agentStudio.preferences.theme';
@@ -86,8 +86,7 @@ export const AGENT_STUDIO_EMBEDDING_MODEL = 'sessions.agentStudio.embedding.mode
 export const AGENT_STUDIO_EMBEDDING_DIMENSIONS = 'sessions.agentStudio.embedding.dimensions';
 export const AGENT_STUDIO_EMBEDDING_API_KEY = 'sessions.agentStudio.embedding.apiKey';
 export const AGENT_STUDIO_EMBEDDING_BASE_URL = 'sessions.agentStudio.embedding.baseUrl';
-export const AGENT_STUDIO_EMBEDDING_KNOT_API_KEY = 'sessions.agentStudio.embedding.knot.apiKey';
-export const AGENT_STUDIO_EMBEDDING_KNOT_BASE_URL = 'sessions.agentStudio.embedding.knot.baseUrl';
+
 export const AGENT_STUDIO_EMBEDDING_LOCAL_ENABLED = 'sessions.agentStudio.embedding.local.enabled';
 export const AGENT_STUDIO_EMBEDDING_LOCAL_MODEL = 'sessions.agentStudio.embedding.local.model';
 

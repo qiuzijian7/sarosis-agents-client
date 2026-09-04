@@ -97,6 +97,9 @@ export interface IModelInfo {
 	readonly supportsToolCall?: boolean; // 是否支持工具调用
 	readonly supportsImages?: boolean;  // 是否支持图片（输入/输出）
 	readonly supportsImageGen?: boolean; // 是否支持文生图（text → image generation）
+	readonly supportsVideoGen?: boolean; // 是否支持文生视频（text/image → video generation）
+	readonly supportsModelGen?: boolean; // 是否支持 3D 模型生成（text/image → 3D asset）
+	readonly supportsAudioGen?: boolean; // 是否支持音频生成（text → audio/music）
 	readonly supportsReasoning?: boolean; // 是否支持推理/思考模式
 	readonly onlyReasoning?: boolean;   // 是否仅推理模式
 	readonly temperature?: number;      // 温度参数
@@ -188,7 +191,7 @@ export interface IModelPricing {
 // ─── Model Selection ────────────────────────────────────────────────────────────
 
 export interface IModelSelection {
-	readonly providerId: string;     // e.g. 'knot-agui'
+	readonly providerId: string;     // e.g. 'demo-agui'
 	readonly modelId: string;        // e.g. 'gpt-4o'
 	readonly agentId?: string;       // e.g. 'agent-123' (可选，仅支持 Agent 的 Provider 使用)
 }
@@ -209,7 +212,7 @@ export interface IModelAgentInfo {
 // 部分 Provider 还支持 Agent 选择（如 Knot）
 
 export interface IModelProvider {
-	readonly id: string;              // e.g. 'knot-agui', 'direct-openai'
+	readonly id: string;              // e.g. 'demo-agui', 'direct-openai'
 	readonly name: string;            // 显示名，e.g. 'Knot AG-UI'
 	readonly icon?: URI;
 	readonly priority: number;        // 默认优先级（决定默认选中）
@@ -250,6 +253,21 @@ export interface IModelProvider {
 	// 支持 text → image 的 Provider 实现此方法。生成的图片以 URL 或
 	// base64 data URL 返回，供画布节点（ImageStage 等）直接展示。
 	generateImage?(params: IImageGenParams, context?: IChatContext): Promise<IImageGenResult>;
+
+	// ─── 文生视频（可选）──────────────────────────────────────
+	// 支持 text/image → video 的 Provider 实现此方法。生成的视频以
+	// URL（+可选封面）返回，供画布视频节点直接播放。
+	generateVideo?(params: IVideoGenParams, context?: IChatContext): Promise<IVideoGenResult>;
+
+	// ─── 3D 模型生成（可选）───────────────────────────────────
+	// 支持 text/image → 3D 资产的 Provider 实现此方法。主产物 glb URL
+	// + 可选多格式源文件（fbx/obj…），供画布 3D 节点展示/下载。
+	generateModel3D?(params: IModel3DGenParams, context?: IChatContext): Promise<IModel3DGenResult>;
+
+	// ─── 音频生成（可选）──────────────────────────────────────
+	// 支持 text → audio（音乐/音效/语音）的 Provider 实现此方法。产物以
+	// URL（+可选时长/格式）返回，供画布音频节点（Saros.AudioGen）直接播放。
+	generateAudio?(params: IAudioGenParams, context?: IChatContext): Promise<IAudioGenResult>;
 }
 
 // ─── 文生图参数与结果 ─────────────────────────────────────────────────────────
@@ -285,6 +303,95 @@ export interface IImageGenParams {
 export interface IImageGenResult {
 	readonly images: Array<{ url?: string; b64?: string }>;
 }
+
+// ─── 文生视频参数与结果 ───────────────────────────────────────────────────────
+
+/** 文生视频请求参数。 */
+export interface IVideoGenParams {
+	/** 目标模型 ID（已通过 listModels 暴露，且 supportsVideoGen=true） */
+	readonly modelId: string;
+	/** 正向提示词（纯图生视频的 provider 可为空） */
+	readonly prompt?: string;
+	/** 视频时长（秒，provider 按档位取整） */
+	readonly duration?: number;
+	/** 分辨率档位（如 '768P' | '2K'，provider 特有） */
+	readonly resolution?: string;
+	/** 画面比例（如 '16:9'，provider 特有） */
+	readonly ratio?: string;
+	/** 输出宽度（像素，可选） */
+	readonly width?: number;
+	/** 输出高度（像素，可选） */
+	readonly height?: number;
+	/** 首帧/参考图引用（URL / data URL / 画布快照 ref），图生视频用 */
+	readonly imageInput?: string;
+}
+
+/** 文生视频结果：每条视频以 URL（+可选封面图）表达。 */
+export interface IVideoGenResult {
+	readonly videos: Array<{ url?: string; posterUrl?: string }>;
+}
+
+// ─── 音频生成参数与结果 ───────────────────────────────────────────────────────
+
+/** 音频生成请求参数（text → audio/music/speech，provider 特有参数按档位透传）。 */
+export interface IAudioGenParams {
+	/** 目标模型 ID（已通过 listModels 暴露，且 supportsAudioGen=true） */
+	readonly modelId: string;
+	/** 正向提示词（曲目风格/情绪/歌词/朗读文本等） */
+	readonly prompt?: string;
+	/** 歌词（可选，音乐类 provider 如 Suno 用；空 = 纯器乐） */
+	readonly lyrics?: string;
+	/** 音频时长（秒，provider 按档位取整；空 = provider 默认） */
+	readonly duration?: number;
+	/** 生成数量（默认 1） */
+	readonly numAudios?: number;
+	// ── TTS（文生语音）provider 特有 ──
+	/** 音色 id（MiniMax male-qn-qingse / Seed speaker id 等；空 = provider 默认音色） */
+	readonly voiceId?: string;
+	/** 语速（1 = 正常；MiniMax 0.5-2） */
+	readonly speed?: number;
+	/** 情绪（MiniMax happy/sad/angry…；空 = 自动） */
+	readonly emotion?: string;
+	/** 采样率（Seed 24000/32000/44100） */
+	readonly sampleRate?: number;
+}
+
+/** 音频生成结果：每条音频以 URL（+可选时长秒数/格式）表达。 */
+export interface IAudioGenResult {
+	readonly audios: Array<{ url?: string; duration?: number; format?: string }>;
+}
+
+// ─── 3D 模型生成参数与结果 ────────────────────────────────────────────────────
+
+/** 3D 模型生成请求参数。 */
+export interface IModel3DGenParams {
+	/** 目标模型 ID（已通过 listModels 暴露，且 supportsModelGen=true） */
+	readonly modelId: string;
+	/** 正向提示词（纯图生 3D 的 provider 可为空） */
+	readonly prompt?: string;
+	/** 参考图引用（URL / data URL / 画布快照 ref），图生 3D 用 */
+	readonly imageInput?: string;
+	/** 目标面数（'auto' 或数字，provider 特有） */
+	readonly faceCount?: number | 'auto';
+	/** 是否生成 PBR 材质（provider 特有） */
+	readonly enablePbr?: boolean;
+}
+
+/** 3D 模型生成结果：主产物 + 多格式源文件。 */
+export interface IModel3DGenResult {
+	readonly models: Array<{
+		/** 主产物 URL（惯例 glb） */
+		url?: string;
+		/** 预览图 URL（可选） */
+		previewUrl?: string;
+		/** 多格式源文件（glb/fbx/obj…，可选） */
+		sources?: Array<{ type: string; url: string }>;
+	}>;
+}
+
+// ─── 音频生成（TTS）参数与结果 ────────────────────────────────────────────────
+// 注：IAudioGenParams / IAudioGenResult 已在本文件「音频生成（可选）」段落定义
+//（generateAudio 旁），此处不再重复。
 
 // ─── Chat Context ──────────────────────────────────────────────────────
 // 传递给 chat() 的额外上下文（如选中的 Agent）

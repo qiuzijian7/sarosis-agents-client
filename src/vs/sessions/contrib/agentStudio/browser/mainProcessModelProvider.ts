@@ -68,14 +68,25 @@ export class MainProcessModelProvider extends BuiltInBYOKModelProvider {
 		}
 	}
 
-	/** 文生图：构造 OpenAI 兼容 images 请求并经主进程 channel 执行。 */
+	/**
+	 * 文生图 / 图生图：构造 OpenAI 兼容 images 请求并经主进程 channel 执行。
+	 *
+	 * ★ img2img（2026-09-03）：params.imageInput 存在时走 **multipart /images/edits**
+	 *   （主进程把 body.__imageDataUrl 解包成 FormData image 字段）。回退链：
+	 *   edits 405 → /v1/edits → 仍失败 → **文生图兜底**（参考图降级忽略，保证出图，
+	 *   与「无参考图」旧行为一致）。
+	 */
 	override async generateImage(params: IImageGenParams): Promise<IImageGenResult> {
 		const apiKey = this._getApiKey();
 		const baseUrl = this._getBaseUrl();
 		if (!this._definition.apiKeyOptional && !apiKey) {
 			throw new Error(`${this.name}: API key not configured`);
 		}
-		const imagePath = this._definition.imageGenEndpointPath || 'images/generations';
+		const imageInput = typeof params.imageInput === 'string' && params.imageInput ? params.imageInput : undefined;
+		const imagePath = imageInput
+			? (this._definition.imageEditEndpointPath || 'images/edits')
+			: (this._definition.imageGenEndpointPath || 'images/generations');
+		const imageMethod = this._definition.imageGenMethod || 'POST';
 		const url = `${baseUrl.replace(/\/+$/, '')}/${imagePath.replace(/^\/+/, '')}`;
 		const body: Record<string, unknown> = {
 			model: params.modelId,
@@ -91,16 +102,50 @@ export class MainProcessModelProvider extends BuiltInBYOKModelProvider {
 		if (params.quality) {
 			body['quality'] = params.quality;
 		}
-		this._logService.info(`[BYOK:${this.id}] MainProcessModelProvider: generateImage → ${url} (model=${params.modelId})`);
-		try {
-			return await this._channel.call<IImageGenResult>('imageGenerate', {
-				url,
+		if (imageInput) {
+			// img2img 协议标记：主进程 imageGenerate 解包为 multipart（见 llmBridgeNode）
+			body['__imageDataUrl'] = imageInput;
+		}
+		const callOnce = (u: string, m: string, b: Record<string, unknown> = body) =>
+			this._channel.call<IImageGenResult>('imageGenerate', {
+				url: u,
 				apiKey,
-				body,
+				body: b,
+				method: m,
 				extraHeaders: {},
 				apiKeyHeader: this._definition.apiKeyHeader,
 			});
+
+		this._logService.info(`[BYOK:${this.id}] MainProcessModelProvider: generateImage → ${imageMethod} ${url} (model=${params.modelId}${imageInput ? ', img2img' : ''})`);
+		try {
+			return await callOnce(url, imageMethod);
 		} catch (e) {
+			const msg = (e as Error)?.message ?? '';
+			// 405 常见于 OpenAI 兼容代理只在 /v1 前缀下暴露 images 端点
+			//（如 chatgpt2api）。自动回退到 /v1 前缀版本，免去手动配置。
+			const alreadyV1 = /\/v1\//.test(url) || imagePath.startsWith('v1/');
+			if (msg.includes('405') && !alreadyV1 && imageMethod === 'POST') {
+				const v1Url = `${baseUrl.replace(/\/+$/, '')}/v1/${imagePath.replace(/^\/+/, '')}`;
+				this._logService.info(`[BYOK:${this.id}] generateImage 405 → 自动回退 /v1 前缀: ${v1Url}`);
+				try {
+					return await callOnce(v1Url, imageMethod);
+				} catch (e2) {
+					this._logService.error(`[BYOK:${this.id}] MainProcessModelProvider: generateImage (/v1 回退) error:`, e2);
+					if (!imageInput) { throw e2; }
+					// img2img 全失败 → 继续走下方文生图兜底
+				}
+			}
+			// ★ img2img 兜底：edits 端点不可用（404/405/422…）→ 退回**文生图**，
+			//   参考图降级忽略——与「无参考图」旧行为一致，保证表情包链路仍能出图
+			//   （否则 chatgpt2api 这类只暴露 generations 的代理会让整条链路报废）。
+			if (imageInput) {
+				const genPath = this._definition.imageGenEndpointPath || 'images/generations';
+				const genUrl = `${baseUrl.replace(/\/+$/, '')}/${genPath.replace(/^\/+/, '')}`;
+				const fallbackBody = { ...body };
+				delete fallbackBody['__imageDataUrl'];
+				this._logService.warn(`[BYOK:${this.id}] img2img 端点不可用（${msg.slice(0, 80)}）→ 回退文生图 ${genUrl}（参考图被忽略）`);
+				return await callOnce(genUrl, 'POST', fallbackBody);
+			}
 			this._logService.error(`[BYOK:${this.id}] MainProcessModelProvider: generateImage error:`, e);
 			throw e;
 		}

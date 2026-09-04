@@ -340,8 +340,7 @@ export class McpDetailEditorPane extends EditorPane {
 		metaRow.style.color = 'var(--vscode-descriptionForeground)';
 
 		const typeLabel = model.type === 'official' ? '官方'
-			: model.type === 'knot' ? 'Knot'
-				: model.type === 'builtin' ? '内置' : '社区';
+			: model.type === 'builtin' ? '内置' : '社区';
 		metaRow.appendChild(this._chip(typeLabel, true));
 		if (model.transportType) { metaRow.appendChild(this._chip(model.transportType.toUpperCase())); }
 		if (model.creator) {

@@ -20,7 +20,7 @@ import {
 	IEmbeddingProviderInfo, IEmbeddingStatus,
 } from '../../common/embeddingProvider.js';
 import {
-	OpenAIEmbeddingProvider, KnotEmbeddingProvider, IEmbeddingProviderDefinition,
+	OpenAIEmbeddingProvider, IEmbeddingProviderDefinition,
 } from './openAIEmbeddingProvider.js';
 import { LocalEmbeddingProvider } from './localEmbeddingProvider.js';
 
@@ -30,7 +30,6 @@ export { IEmbeddingService } from '../../common/embeddingProvider.js';
 import {
 	AGENT_STUDIO_EMBEDDING_PROVIDER, AGENT_STUDIO_EMBEDDING_MODEL, AGENT_STUDIO_EMBEDDING_DIMENSIONS,
 	AGENT_STUDIO_EMBEDDING_API_KEY, AGENT_STUDIO_EMBEDDING_BASE_URL,
-	AGENT_STUDIO_EMBEDDING_KNOT_API_KEY, AGENT_STUDIO_EMBEDDING_KNOT_BASE_URL,
 	AGENT_STUDIO_EMBEDDING_LOCAL_ENABLED, AGENT_STUDIO_EMBEDDING_LOCAL_MODEL,
 	AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY, AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL,
 	AGENT_STUDIO_PROVIDER_NOUS_API_KEY, AGENT_STUDIO_PROVIDER_NOUS_BASE_URL,
@@ -85,7 +84,6 @@ export class EmbeddingService extends Disposable implements IEmbeddingService {
 			const keys = [
 				AGENT_STUDIO_EMBEDDING_PROVIDER, AGENT_STUDIO_EMBEDDING_MODEL, AGENT_STUDIO_EMBEDDING_DIMENSIONS,
 				AGENT_STUDIO_EMBEDDING_API_KEY, AGENT_STUDIO_EMBEDDING_BASE_URL,
-				AGENT_STUDIO_EMBEDDING_KNOT_API_KEY, AGENT_STUDIO_EMBEDDING_KNOT_BASE_URL,
 				AGENT_STUDIO_EMBEDDING_LOCAL_MODEL,
 				...Object.values(BYOK_KEY_MAP).flatMap(k => [k.apiKey, k.baseUrl]),
 			];
@@ -246,20 +244,6 @@ export class EmbeddingService extends Disposable implements IEmbeddingService {
 
 		if (selected === 'local') {
 			return this._local;
-		}
-
-		if (selected === 'knot') {
-			const def: IEmbeddingProviderDefinition = {
-				id: 'knot',
-				name: 'Knot',
-				kind: 'knot',
-				model,
-				dimensions,
-				overrideApiKeyConfigKey: AGENT_STUDIO_EMBEDDING_KNOT_API_KEY,
-				overrideBaseUrlConfigKey: AGENT_STUDIO_EMBEDDING_KNOT_BASE_URL,
-				defaultBaseUrl: '',
-			};
-			return new KnotEmbeddingProvider(def, this._configurationService, this._logService);
 		}
 
 		const byok = BYOK_KEY_MAP[selected];

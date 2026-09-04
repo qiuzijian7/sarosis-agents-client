@@ -24,8 +24,8 @@ export interface EditorField {
 	label: string;
 	kind: EditorFieldKind;
 	defaultValue: unknown;
-	/** select options (combo widgets) */
-	options?: string[];
+	/** select options (combo widgets) — plain string, or { label, value } pair. */
+	options?: Array<string | { label: string; value: string; group?: string }>;
 	placeholder?: string;
 }
 
@@ -252,6 +252,12 @@ export function buildEditorFields(spec: NodeSpec | undefined, excludePrompt = fa
 		if (spec.backendKind === 'provider') {
 			for (const w of spec.widgets ?? []) {
 				if (w.name === 'prompt') { continue; } // 已在上方
+				// 视频 / 3D / 音频生成节点的 provider/model 由弹窗专用双下拉渲染
+				// （NodeEditorPopup 的 isVideoGenNode / isM3dGenNode / isAudioGenNode
+				// 分支），此处跳过避免重复。
+				if (w.name === 'videoProvider' || w.name === 'videoModel') { continue; }
+				if (w.name === 'm3dProvider' || w.name === 'm3dModel') { continue; }
+				if (w.name === 'audioProvider' || w.name === 'audioModel') { continue; }
 				if (w.type === 'COMBO') {
 					if (w.name === 'provider') {
 						fields.push({ key: 'provider', label: 'Provider', kind: 'provider', defaultValue: w.default ?? '' });

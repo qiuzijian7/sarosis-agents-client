@@ -13,7 +13,7 @@ suite('Model Selector - Interface Definitions (Phase 3)', () => {
 	test('IModelSelectorService interface structure', () => {
 		const service = {
 			onDidChangeSelection: { /* Event */ },
-			getSelection: () => ({ providerId: 'knot-agui', modelId: 'agent-1' }),
+			getSelection: () => ({ providerId: 'demo-agui', modelId: 'agent-1' }),
 			setSelection: (s: any) => {},
 			onDidChangeAvailableModels: { /* Event */ },
 			getAvailableModels: () => [],
@@ -30,7 +30,7 @@ suite('Model Selector - Interface Definitions (Phase 3)', () => {
 	test('IModelSelectorItem interface structure', () => {
 		const item = {
 			provider: {
-				id: 'knot-agui',
+				id: 'demo-agui',
 				name: 'Knot AG-UI',
 				icon: 'codicon-comment',
 				authStatus: 'authenticated' as const,
@@ -44,7 +44,7 @@ suite('Model Selector - Interface Definitions (Phase 3)', () => {
 			},
 		};
 
-		assert.strictEqual(item.provider.id, 'knot-agui');
+		assert.strictEqual(item.provider.id, 'demo-agui');
 		assert.strictEqual(item.provider.authStatus, 'authenticated');
 		assert.strictEqual(item.model.id, 'agent-1');
 		assert.strictEqual(item.model.contextWindow, 128000);
@@ -65,7 +65,7 @@ suite('Model Selector - Interface Definitions (Phase 3)', () => {
 
 	test('IModelSelectionStorage - global default', () => {
 		const storage = {
-			_globalDefault: { providerId: 'knot-agui', modelId: 'agent-1' },
+			_globalDefault: { providerId: 'demo-agui', modelId: 'agent-1' },
 
 			getGlobalDefault: () => storage._globalDefault,
 			setGlobalDefault: (s: any) => { storage._globalDefault = s; },
@@ -77,7 +77,7 @@ suite('Model Selector - Interface Definitions (Phase 3)', () => {
 
 		const default_ = storage.getGlobalDefault();
 		assert.ok(default_);
-		assert.strictEqual(default_.providerId, 'knot-agui');
+		assert.strictEqual(default_.providerId, 'demo-agui');
 
 		storage.setGlobalDefault({ providerId: 'direct-openai', modelId: 'gpt-4' });
 		assert.strictEqual(storage.getGlobalDefault().providerId, 'direct-openai');
@@ -87,7 +87,7 @@ suite('Model Selector - Interface Definitions (Phase 3)', () => {
 		const storage = {
 			_workspaceSelection: undefined as any,
 
-			getGlobalDefault: () => ({ providerId: 'knot-agui', modelId: 'agent-1' }),
+			getGlobalDefault: () => ({ providerId: 'demo-agui', modelId: 'agent-1' }),
 			setGlobalDefault: (s: any) => {},
 			getWorkspaceSelection: () => storage._workspaceSelection,
 			setWorkspaceSelection: (s: any) => { storage._workspaceSelection = s; },
@@ -119,7 +119,7 @@ suite('Model Selector - Interface Definitions (Phase 3)', () => {
 			},
 		};
 
-		storage.addRecentSelection({ providerId: 'knot-agui', modelId: 'agent-1' });
+		storage.addRecentSelection({ providerId: 'demo-agui', modelId: 'agent-1' });
 		storage.addRecentSelection({ providerId: 'direct-openai', modelId: 'gpt-4' });
 
 		assert.strictEqual(storage.getRecentSelections().length, 2);
@@ -155,14 +155,14 @@ suite('Model Selector - Interface Definitions (Phase 3)', () => {
 	test('showQuickPick returns selection or undefined', async () => {
 		const showQuickPick = async (shouldSelect: boolean) => {
 			if (shouldSelect) {
-				return { providerId: 'knot-agui', modelId: 'agent-1' };
+				return { providerId: 'demo-agui', modelId: 'agent-1' };
 			}
 			return undefined;
 		};
 
 		const selected = await showQuickPick(true);
 		assert.ok(selected);
-		assert.strictEqual(selected.providerId, 'knot-agui');
+		assert.strictEqual(selected.providerId, 'demo-agui');
 
 		const cancelled = await showQuickPick(false);
 		assert.strictEqual(cancelled, undefined);
@@ -179,7 +179,7 @@ suite('Model Selector - Interface Definitions (Phase 3)', () => {
 		assert.strictEqual(openedProviderId, undefined);
 
 		// Open provider-specific settings
-		openSettings('knot-agui');
-		assert.strictEqual(openedProviderId, 'knot-agui');
+		openSettings('demo-agui');
+		assert.strictEqual(openedProviderId, 'demo-agui');
 	});
 });

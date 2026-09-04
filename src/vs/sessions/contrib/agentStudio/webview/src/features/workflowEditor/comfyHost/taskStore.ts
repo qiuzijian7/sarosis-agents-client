@@ -28,6 +28,11 @@ export interface TaskItem {
 	message?: string;
 	createdAt: number;
 	updatedAt: number;
+	/**
+	 * 关联的画布节点 id（仅 generate 单节点任务有）。任务进度面板的「取消」
+	 * 按钮据此调用 abortNodeRun(nodeId) 中止对应运行；全图/安装/下载任务无此字段。
+	 */
+	nodeId?: string;
 }
 
 export interface TaskPatch {
@@ -67,7 +72,7 @@ class TaskStore {
 		return this.getActiveCount() > 0;
 	}
 
-	add(type: TaskType, label: string, opts?: { id?: string; progress?: number; message?: string }): string {
+	add(type: TaskType, label: string, opts?: { id?: string; progress?: number; message?: string; nodeId?: string }): string {
 		const now = Date.now();
 		const id = opts?.id ?? `${type}-${now}-${Math.random().toString(36).slice(2, 7)}`;
 		// Reuse an existing running/queued task with the same id (idempotent start).
@@ -83,6 +88,7 @@ class TaskStore {
 			status: 'queued',
 			progress: opts?.progress ?? 0,
 			message: opts?.message,
+			...(opts?.nodeId ? { nodeId: opts.nodeId } : {}),
 			createdAt: now,
 			updatedAt: now,
 		};
@@ -120,6 +126,19 @@ class TaskStore {
 	/** Mark a task done. */
 	finish(id: string, ok: boolean, message?: string): void {
 		this.update(id, { status: ok ? 'success' : 'error', progress: ok ? 100 : this.tasks.find(t => t.id === id)?.progress ?? 0, ...(message !== undefined ? { message } : {}) });
+	}
+
+	/**
+	 * 按 nodeId 结束关联的活跃任务（生成单节点任务 add 时传了 nodeId）。
+	 * ★ 取消链路必须走这里：任务 id 是 `generate-<ts>-<rand>`，用 nodeId 冒充
+	 *   taskId 的 finish(nodeId) 永远匹配不到行 → 任务面板「进行中」永不结束。
+	 */
+	finishByNode(nodeId: string, ok: boolean, message?: string): void {
+		for (const t of [...this.tasks]) {
+			if (t.nodeId === nodeId && (t.status === 'queued' || t.status === 'running')) {
+				this.finish(t.id, ok, message);
+			}
+		}
 	}
 
 	remove(id: string): void {

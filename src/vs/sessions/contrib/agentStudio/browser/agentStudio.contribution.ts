@@ -135,8 +135,6 @@ import {
 	AGENT_STUDIO_EMBEDDING_DIMENSIONS,
 	AGENT_STUDIO_EMBEDDING_API_KEY,
 	AGENT_STUDIO_EMBEDDING_BASE_URL,
-	AGENT_STUDIO_EMBEDDING_KNOT_API_KEY,
-	AGENT_STUDIO_EMBEDDING_KNOT_BASE_URL,
 	AGENT_STUDIO_EMBEDDING_LOCAL_ENABLED,
 	AGENT_STUDIO_EMBEDDING_LOCAL_MODEL,
 	AGENT_STUDIO_AUX_VISION_PROVIDER,
@@ -399,7 +397,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[AGENT_STUDIO_DEFAULT_PROVIDER_SETTING]: {
 			type: 'string',
 			default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'custom'],
 			description: localize('agentStudio.preferences.defaultProvider', "Default AI Provider for new conversations. 'auto' selects the first available authenticated provider."),
 		},
 		[AGENT_STUDIO_DEFAULT_MODEL_SETTING]: {
@@ -449,7 +447,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			description: localize('agentStudio.marketplace.updateInterval', "资源更新检查间隔（秒）。"),
 		},
 		// --- Knot AG-UI ---
-		// Knot configuration is registered by the knot-agui extension via its package.json
+		// Knot configuration is registered by the demo-agui extension via its package.json
 		// contributes.configuration. The settings tab is discovered at runtime via
 		// ISettingsTabRegistry (contributes.agentStudioSettingsTab with when condition).
 		// --- Provider Connections ---
@@ -504,7 +502,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// --- Embedding (RAG vectorization) ---
 		[AGENT_STUDIO_EMBEDDING_PROVIDER]: {
 			type: 'string', default: 'openai',
-			enum: ['openai', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'custom', 'knot', 'local'],
+			enum: ['openai', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'custom', 'local'],
 			description: localize('agentStudio.embedding.provider', "Embedding provider for RAG vectorization. Reuses the selected provider's API key when an OpenAI-compatible provider is chosen; 'local' uses an offline transformers.js model (enable embedding.local.enabled)."),
 		},
 		[AGENT_STUDIO_EMBEDDING_MODEL]: {
@@ -523,14 +521,6 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'string', default: '',
 			description: localize('agentStudio.embedding.baseUrl', "Optional dedicated embedding API base URL (overrides the selected provider's base URL)."),
 		},
-		[AGENT_STUDIO_EMBEDDING_KNOT_API_KEY]: {
-			type: 'string', default: '',
-			description: localize('agentStudio.embedding.knot.apiKey', "Knot internal embedding API key."),
-		},
-		[AGENT_STUDIO_EMBEDDING_KNOT_BASE_URL]: {
-			type: 'string', default: '',
-			description: localize('agentStudio.embedding.knot.baseUrl', "Knot internal embedding API base URL."),
-		},
 		[AGENT_STUDIO_EMBEDDING_LOCAL_ENABLED]: {
 			type: 'boolean', default: false,
 			description: localize('agentStudio.embedding.local.enabled', "Enable offline local embedding (transformers.js) as a fallback when the API provider fails or for fully offline RAG."),
@@ -542,7 +532,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// --- Auxiliary Models ---
 		[AGENT_STUDIO_AUX_VISION_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'custom'],
 			description: localize('agentStudio.aux.vision.provider', "Provider for Vision (image analysis)."),
 		},
 		[AGENT_STUDIO_AUX_VISION_MODEL]: {
@@ -551,7 +541,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'custom'],
 			description: localize('agentStudio.aux.webExtract.provider', "Provider for Web Extract (page summarization)."),
 		},
 		[AGENT_STUDIO_AUX_WEB_EXTRACT_MODEL]: {
@@ -560,7 +550,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_SESSION_SEARCH_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'custom'],
 			description: localize('agentStudio.aux.sessionSearch.provider', "Provider for Session Search (history summarizing)."),
 		},
 		[AGENT_STUDIO_AUX_SESSION_SEARCH_MODEL]: {
@@ -569,7 +559,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_COMPRESSION_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'custom'],
 			description: localize('agentStudio.aux.compression.provider', "Provider for Compression (context compression)."),
 		},
 		[AGENT_STUDIO_AUX_COMPRESSION_MODEL]: {
@@ -578,7 +568,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_GOAL_JUDGE_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'custom'],
 			description: localize('agentStudio.aux.goalJudge.provider', "Provider for Goal Judge (goals feature)."),
 		},
 		[AGENT_STUDIO_AUX_GOAL_JUDGE_MODEL]: {
@@ -587,7 +577,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_CURATOR_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'custom'],
 			description: localize('agentStudio.aux.curator.provider', "Provider for Curator (code review)."),
 		},
 		[AGENT_STUDIO_AUX_CURATOR_MODEL]: {
@@ -759,13 +749,13 @@ registerSingleton(ITaskOrchestrationService, TaskOrchestrationService, Instantia
 // imgui.submit messages back through the same dispatcher.
 registerSingleton(IConfigHtmlService, ConfigHtmlService, InstantiationType.Delayed);
 // Workspace lifecycle event bus — generic, decoupled hook system used by
-// CLI/provider extensions (e.g. knot-agui) to react to workspace mutations
+// CLI/provider extensions (e.g. demo-agui) to react to workspace mutations
 // without any main-repo hardcoding. Eager so its extension-facing commands
 // (`agentStudio.workspaceLifecycle.register/unregister/list`) are available
 // before any extension is activated.
 registerSingleton(IWorkspaceLifecycleService, WorkspaceLifecycleService, InstantiationType.Eager);
 // Skill lifecycle event bus — generic, decoupled hook system used by
-// CLI/provider extensions (e.g. knot-agui) to react to skill mutations
+// CLI/provider extensions (e.g. demo-agui) to react to skill mutations
 // (add / remove / batch sync) on agent instances. Eager so its
 // extension-facing commands are available before any extension is activated.
 registerSingleton(ISkillLifecycleService, SkillLifecycleService, InstantiationType.Eager);
@@ -2717,7 +2707,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	 * `FileAccess.asBrowserUri` -- this works in renderer because the
 	 * resulting `vscode-file://vscode-app/...` URL is allowed by Electron's CSP.
 	 */
-	// NOTE: knot-agui and codebuddy-provider were removed from this list because:
+	// NOTE: codebuddy-provider（以及已下线的 knot-agui）不在此列表，原因是：
 	//   1. They are CJS modules (cannot be loaded via ESM import() in the renderer)
 	//   2. They export activate/deactivate (not a Plugin class) — _resolvePluginClass would fail
 	//   3. They are already registered as ModelProviders via LMBridge

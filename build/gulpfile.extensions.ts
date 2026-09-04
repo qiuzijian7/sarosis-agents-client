@@ -88,7 +88,6 @@ const compilations = [
 	'extensions/simple-browser/tsconfig.json',
 	'extensions/agent-studio/tsconfig.json',
 	'extensions/hermes-agent-provider/tsconfig.json',
-	'extensions/knot-agui/tsconfig.json',
 	'extensions/tof-authentication/tsconfig.json',
 	'extensions/tunnel-forwarding/tsconfig.json',
 	'extensions/typescript-language-features/web/tsconfig.json',

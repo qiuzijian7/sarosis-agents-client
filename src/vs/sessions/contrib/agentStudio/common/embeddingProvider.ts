@@ -15,7 +15,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 
 /** Embedding 提供方类型。 */
-export type EmbeddingProviderKind = 'openai' | 'knot' | 'local';
+export type EmbeddingProviderKind = 'openai' | 'local';
 
 /** 一次 embed 调用产出的结果（向量 + 用于溯源的 tag）。 */
 export interface IEmbeddingResult {

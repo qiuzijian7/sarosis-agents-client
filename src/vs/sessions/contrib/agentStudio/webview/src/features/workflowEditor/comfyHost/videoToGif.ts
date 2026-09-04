@@ -156,11 +156,15 @@ export function planGifFrames(
  * `sampleStride` 对像素下采样（默认每 4 个像素取 1）—— 480×270×48 帧 ≈ 620 万
  * 像素，全量排序会卡死 UI；下采样后量化质量几乎无差别。
  */
-export function medianCutPalette(rgba: Uint8Array, colors: number, sampleStride = 4): Uint8Array {
+export function medianCutPalette(rgba: Uint8Array, colors: number, sampleStride = 4, skipTransparent = false): Uint8Array {
 	const maxColors = Math.min(256, Math.max(2, Math.floor(colors)));
 	const px: number[] = [];
 	const stride = Math.max(1, Math.floor(sampleStride)) * 4;
 	for (let i = 0; i + 3 < rgba.length; i += stride) {
+		// ★ skipTransparent：chroma-key 抠像后透明像素（alpha<128）不参与装箱——
+		//   绿幕背景若混进调色板会浪费色数（透明区反正映射到 transparentIndex），
+		//   且纯绿大量入板会把主体色阶挤掉。
+		if (skipTransparent && rgba[i + 3] < 128) { continue; }
 		// 打包成单个整数（0xRRGGBB）省内存；alpha 忽略（GIF 不做半透明）
 		px.push((rgba[i] << 16) | (rgba[i + 1] << 8) | rgba[i + 2]);
 	}
@@ -229,6 +233,44 @@ export function mapToPaletteIndices(rgba: Uint8Array, palette: Uint8Array): Uint
 	const count = palette.length / 3;
 	const cache = new Map<number, number>();
 	for (let i = 0; i < n; i++) {
+		const r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
+		const key = (r << 16) | (g << 8) | b;
+		const hit = cache.get(key);
+		if (hit !== undefined) { out[i] = hit; continue; }
+		let bestIdx = 0;
+		let bestDist = Infinity;
+		for (let c = 0; c < count; c++) {
+			const dr = r - palette[c * 3], dg = g - palette[c * 3 + 1], db = b - palette[c * 3 + 2];
+			const d = dr * dr + dg * dg + db * db;
+			if (d < bestDist) { bestDist = d; bestIdx = c; if (d === 0) { break; } }
+		}
+	cache.set(key, bestIdx);
+	out[i] = bestIdx;
+}
+return out;
+}
+
+/**
+ * RGBA → 调色板索引（**带透明通道**版）。alpha < alphaThreshold 的像素直接映射到
+ * `transparentIndex`（配合 encodeGif 的 GCE 透明标记）；不透明像素按最近邻映射。
+ * 纯函数。
+ *
+ * 与 mapToPaletteIndices 的关系：普通视频转 GIF 无透明概念（1-bit alpha 也无意义）；
+ * chroma-key 抠像（动态表情包）必须让背景像素落到「透明索引」上，解码器按 GCE
+ * 标记还原透明，而 transparentIndex 处的调色板颜色本身不参与显示。
+ */
+export function mapToPaletteIndicesWithAlpha(
+	rgba: Uint8Array,
+	palette: Uint8Array,
+	transparentIndex: number,
+	alphaThreshold = 128,
+): Uint8Array {
+	const n = rgba.length >> 2;
+	const out = new Uint8Array(n);
+	const count = palette.length / 3;
+	const cache = new Map<number, number>();
+	for (let i = 0; i < n; i++) {
+		if (rgba[i * 4 + 3] < alphaThreshold) { out[i] = transparentIndex; continue; }
 		const r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
 		const key = (r << 16) | (g << 8) | b;
 		const hit = cache.get(key);
@@ -343,6 +385,13 @@ export interface GifFrameInput {
 	palette: Uint8Array;
 	/** 显示时长（厘秒） */
 	delayCs: number;
+	/**
+	 * 透明色索引（可选）。**存在时该帧启用透明**：
+	 * GCE 写 disposal=2（恢复背景，避免上一帧残影透过透明区）+ transparent flag，
+	 * indices 中等于该值 的像素解码后为透明。
+	 * 调用方须保证 palette 覆盖该索引（不足会由 encodeGif 补 0）。
+	 */
+	transparentIndex?: number;
 }
 
 /** 调色板色数补齐到 2 的幂（GIF 要求），返回 [补齐后的表, sizeCode]。纯函数。 */
@@ -385,11 +434,16 @@ export function encodeGif(frames: GifFrameInput[], width: number, height: number
 
 	for (const f of frames) {
 		const { table, sizeCode } = padPalette(f.palette);
-		// Graphic Control Extension（disposal=1 「不处置」，无透明色）
+		// Graphic Control Extension。
+		// 无透明（普通视频转 GIF）：disposal=1「不处置」——连续帧全量覆盖，最快。
+		// 有透明（chroma-key 抠像）：disposal=2「恢复背景」+ transparent flag——
+		//   ★ disposal=1 会让上一帧的不透明像素残留在本帧透明区后面（画布不清理），
+		//     主体移动时身后拖出重影；=2 每帧绘制前把画布恢复成背景色（透明）。
+		const hasT = typeof f.transparentIndex === 'number';
 		u8(0x21); u8(0xf9); u8(0x04);
-		u8(0x04);                       // packed: disposal(1)<<2
+		u8(hasT ? 0x09 : 0x04);         // packed: (disposal<<2)|transparentFlag
 		u16(Math.max(0, Math.round(f.delayCs)));
-		u8(0);                          // transparent color index（未启用）
+		u8(hasT ? (f.transparentIndex as number) : 0);   // transparent color index
 		u8(0x00);
 		// Image Descriptor
 		u8(0x2c);

@@ -6,6 +6,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as React from 'react';
+import { loadCanvasImageWithProxy } from './canvasImageLoad';
 import {
 	CROP_HANDLES, dragCrop, dragNewCrop, enforceAspect, fullCrop, fullCropNorm, hitTestCrop,
 	normToPx, pxToNorm, type CropHandle, type CropRectNorm, type CropRectPx,
@@ -53,22 +54,20 @@ export function CropEditor({ initial, imageRef, onCropChange }: CropEditorProps)
 			setImgReady(false);
 			return;
 		}
-		const img = new Image();
-		imgElRef.current = img;
-		img.crossOrigin = 'anonymous';
-		const onLoad = () => {
-			setImgSize({ w: img.naturalWidth, h: img.naturalHeight });
-			setImgReady(true);
-		};
-		const onError = () => { setImgReady(false); setImgSize(null); };
-		img.addEventListener('load', onLoad);
-		img.addEventListener('error', onError);
-		img.src = imageRef;
-		return () => {
-			img.removeEventListener('load', onLoad);
-			img.removeEventListener('error', onError);
-			img.removeAttribute('src');
-		};
+		let cancelled = false;
+		// 直连失败（provider 签名 URL 无 CORS 头）自动回退 host 代理转 data URL
+		loadCanvasImageWithProxy(imageRef).then((img) => {
+			if (cancelled) { return; }
+			imgElRef.current = img;
+			if (img) {
+				setImgSize({ w: img.naturalWidth, h: img.naturalHeight });
+				setImgReady(true);
+			} else {
+				setImgReady(false);
+				setImgSize(null);
+			}
+		});
+		return () => { cancelled = true; };
 	}, [imageRef]);
 
 	// 图像尺寸就绪后，把初始像素矩形 clamp 并转为归一化（仅一次）。

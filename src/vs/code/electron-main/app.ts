@@ -166,6 +166,7 @@ import { KB_SQLITE_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/comm
 import { GitVersionChannel } from '../../sessions/contrib/agentStudio/electron-main/gitVersionChannel.js';
 import { ComfyLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/comfyLaunchChannel.js';
 import { VoxLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/voxLaunchChannel.js';
+import { CutoutChannel } from '../../sessions/contrib/agentStudio/electron-main/cutoutChannel.js';
 import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
 import { MediaStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/mediaStoreChannel.js';
 import { MEDIA_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/mediaStoreChannel.js';
@@ -850,6 +851,11 @@ export class CodeApplication extends Disposable {
 	// Vox 口播视频节点（Vox.DirectorStage）本地 pipeline 执行：
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/voxLaunchChannel.ts。
 	this._register(new VoxLaunchChannel(this.logService, this.configurationService));
+
+	// 表情包 AI 抠图（内置 rembg 算法：onnxruntime-web + u2net，本进程内推理，
+	// 模型按需下载缓存到 ~/.vssaros/cutout-models）。逻辑在
+	// sessions/contrib/agentStudio/electron-main/cutoutChannel.ts。
+	this._register(new CutoutChannel(this.logService, this.configurationService));
 
 	// ──────────────────────────────────────────────────────────
 	// 内存诊断: 定期采样 + 超阈值自动 dump heap snapshot

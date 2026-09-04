@@ -14,6 +14,7 @@ import { asWebviewUri } from "../../../../workbench/contrib/webview/common/webvi
 import { IMainProcessService } from "../../../../platform/ipc/common/mainProcessService.js";
 import { IQuickInputService } from "../../../../platform/quickinput/common/quickInput.js";
 import { MEDIA_STORE_CHANNEL, type IMediaBackend, type MediaImportRequest, type MediaListFilter } from "../common/mediaStoreChannel.js";
+import { VSSAROS_LLM_CHANNEL, inlineRemoteImageUrls, type IHttpRequestResult } from "../common/llmBridge.js";
 import { createMediaStoreProxy } from "./mediaStoreProxy.js";
 import { IInstantiationService } from "../../../../platform/instantiation/common/instantiation.js";
 import { ICommandService } from "../../../../platform/commands/common/commands.js";
@@ -800,7 +801,7 @@ export class AgentStudioWebviewController extends Disposable {
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: blob: https: http://127.0.0.1:* http://localhost:* vscode-webview: vscode-resource:; media-src data: blob: http://127.0.0.1:* http://localhost:* vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:; connect-src data: blob: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: blob: https: http: vscode-webview: vscode-resource:; media-src data: blob: https: http: vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:; connect-src data: blob: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*;">
 	<title>Agent Studio</title>
 	${styleTag}
 	<style nonce="${nonce}">
@@ -1350,6 +1351,59 @@ export class AgentStudioWebviewController extends Disposable {
 						quality?: string;
 					},
 				);
+			case "videogen.generate":
+				return this._handleVideoGenGenerate(
+					p as unknown as {
+						providerId: string;
+						modelId: string;
+						prompt?: string;
+						duration?: number;
+						resolution?: string;
+						ratio?: string;
+						width?: number;
+						height?: number;
+						imageInput?: string;
+					},
+				);
+			case "modelgen.generate":
+				return this._handleModel3DGenGenerate(
+					p as unknown as {
+						providerId: string;
+						modelId: string;
+						prompt?: string;
+						imageInput?: string;
+						faceCount?: number | 'auto';
+						enablePbr?: boolean;
+					},
+				);
+			case "textgen.generate":
+				return this._handleTextGenGenerate(
+					p as unknown as {
+						providerId: string;
+						modelId: string;
+						prompt?: string;
+						system?: string;
+						temperature?: number;
+					},
+				);
+			case "audiogen.generate":
+				return this._handleAudioGenGenerate(
+					p as unknown as {
+						providerId: string;
+						modelId: string;
+						prompt?: string;
+						lyrics?: string;
+						duration?: number;
+						numAudios?: number;
+					},
+				);
+			case "net.fetchAsDataUrl":
+				// 跨源图像代理：webview 里 <img crossOrigin='anonymous'> 加载 provider
+				// 签名 URL（COS 等无 CORS 头）被浏览器拦 → canvas 编辑器拿不到像素。
+				// host fetch 不受 webview CORS 限制，拉取后转 data URL 回传。
+				return this._handleFetchAsDataUrl(
+					p as unknown as { url: string },
+				);
 			case "reversePrompt.generate":
 				// P2: describe an image via a provider's chat (reverse prompt).
 				return this._handleReversePromptGenerate(
@@ -1736,6 +1790,8 @@ export class AgentStudioWebviewController extends Disposable {
 				return this._handleMediaList(payload as MediaListFilter);
 			case "media.get":
 				return this._handleMediaGet(payload as { id: string });
+			case "media.getAsDataUrl":
+				return this._handleMediaGetAsDataUrl(payload as { id: string });
 			case "media.getRootDir":
 				return this._handleMediaGetRootDir();
 			case "media.setRootDir":
@@ -1758,6 +1814,8 @@ export class AgentStudioWebviewController extends Disposable {
 				return this._handleMediaStats();
 			case "media.purgeDeleted":
 				return this._handleMediaPurgeDeleted();
+			case "media.cleanOrphaned":
+				return this._handleMediaCleanOrphaned();
 			case "media.enforceQuota":
 				return this._handleMediaEnforceQuota(payload as { maxDays?: number; maxTotalBytes?: number });
 
@@ -1882,6 +1940,18 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 			case "vox.checkDeps": {
 				return this._handleVoxCheckDeps();
+			}
+			case "cutout.ensureModel": {
+				return this._handleCutoutEnsureModel(p as { model?: string });
+			}
+			case "cutout.modelProgress": {
+				return this._handleCutoutModelProgress(p as { model?: string });
+			}
+			case "cutout.status": {
+				return this._handleCutoutStatus();
+			}
+			case "cutout.remove": {
+				return this._handleCutoutRemove(p as { width?: number; height?: number; rgba?: Uint8Array; model?: string });
 			}
 			case "workflow.publishState": {
 				// 单行工具栏（v2）：查询发布状态（本地版本 vs 商城版本）。
@@ -2652,6 +2722,56 @@ export class AgentStudioWebviewController extends Disposable {
 			return { ok: false, error: 'vox:checkDeps: 主进程 IPC 不可用' };
 		} catch (err) {
 			return { ok: false, error: `vox:checkDeps 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	// ─── 表情包 AI 抠图（内置 rembg 算法；透传到主进程 vscode:cutout*）──
+
+	private async _handleCutoutEnsureModel(p: { model?: string }): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:cutoutEnsureModel', p ?? {});
+			}
+			return { ok: false, error: 'cutout:ensureModel: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `cutout:ensureModel 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	private async _handleCutoutModelProgress(p: { model?: string }): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:cutoutModelProgress', p ?? {});
+			}
+			return { ok: false, error: 'cutout:modelProgress: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `cutout:modelProgress 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	private async _handleCutoutStatus(): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:cutoutStatus', {});
+			}
+			return { ok: false, error: 'cutout:status: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `cutout:status 失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+	}
+
+	private async _handleCutoutRemove(p: { width?: number; height?: number; rgba?: Uint8Array; model?: string }): Promise<unknown> {
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				return await vscodeBridge.ipcRenderer.invoke('vscode:cutoutRemove', p);
+			}
+			return { ok: false, error: 'cutout:remove: 主进程 IPC 不可用' };
+		} catch (err) {
+			return { ok: false, error: `cutout:remove 失败：${err instanceof Error ? err.message : String(err)}` };
 		}
 	}
 
@@ -3837,6 +3957,9 @@ export class AgentStudioWebviewController extends Disposable {
 					supportsToolCall: m.supportsToolCall,
 					supportsImages: m.supportsImages,
 					supportsImageGen: m.supportsImageGen,
+					supportsVideoGen: m.supportsVideoGen,
+					supportsModelGen: m.supportsModelGen,
+					supportsAudioGen: m.supportsAudioGen,
 					supportsReasoning: m.supportsReasoning,
 					onlyReasoning: m.onlyReasoning,
 					reasoningType: m.capabilityConfig?.reasoningType,
@@ -3933,6 +4056,11 @@ export class AgentStudioWebviewController extends Disposable {
 	 * 文生图：webview 请求指定 provider + model 生成图片。
 	 * 走该 provider 的 generateImage()（主进程 channel / renderer 直连），
 	 * 返回 `{ images: [{ url? | b64? }] }`。
+	 *
+	 * ★ 返回前把外部 http(s) 图片 URL **就地内联为 b64**（主进程 IPC binary
+	 * httpRequest，无 CORS、签名 URL 尚在有效期）。否则 COS 等不带 ACAO 的
+	 * 签名 URL 进入快照/媒体库后：canvas 消费方（crossOrigin 编辑器）被 CORS
+	 * 拦、签名过期后 `<img>` 也 403（2026-09-01 用户报障根因）。
 	 */
 	private async _handleImageGenGenerate(payload: {
 		providerId: string;
@@ -3965,7 +4093,159 @@ export class AgentStudioWebviewController extends Disposable {
 			},
 			{ agentId: this.modelSelectorService.getSelectedAgentId?.() ?? undefined },
 		);
-		return { images: result.images ?? [] };
+		const images = (result.images ?? []) as Array<{ url?: string; b64?: string }>;
+		const inlined = await inlineRemoteImageUrls(images, async (url) => {
+			const channel = this.mainProcessService.getChannel(VSSAROS_LLM_CHANNEL);
+			const r = await channel.call<IHttpRequestResult>('httpRequest', { url, method: 'GET', binary: true, timeoutMs: 30_000 });
+			if (!r.ok || !r.base64) { throw new Error(`HTTP ${r.status} ${r.statusText}`); }
+			return { base64: r.base64, contentType: r.contentType || 'image/png' };
+		});
+		if (inlined.failures.length > 0) {
+			this.logService.warn(`[imagegen] ${inlined.failures.length} 张外链图片内联失败（保留原 url）：${inlined.failures.join(' | ')}`);
+		}
+		return { images: inlined.images };
+	}
+
+	/**
+	 * `videogen.generate` — 模型文生视频节点 RPC。
+	 * 走该 provider 的 generateVideo()（扩展命令转发），返回 `{ videos: [{ url, posterUrl? }] }`。
+	 */
+	private async _handleVideoGenGenerate(payload: {
+		providerId: string;
+		modelId: string;
+		prompt?: string;
+		duration?: number;
+		resolution?: string;
+		ratio?: string;
+		width?: number;
+		height?: number;
+		imageInput?: string;
+	}): Promise<{ videos: Array<{ url?: string; posterUrl?: string }> }> {
+		const provider = this.agentOSService.getModelProviders().find(p => p.id === payload.providerId);
+		if (!provider) {
+			throw new Error(`未找到 Provider：${payload.providerId}`);
+		}
+		if (!provider.generateVideo) {
+			throw new Error(`Provider ${provider.name} 不支持视频生成`);
+		}
+		const result = await provider.generateVideo(
+			{
+				modelId: payload.modelId,
+				prompt: payload.prompt,
+				duration: payload.duration,
+				resolution: payload.resolution,
+				ratio: payload.ratio,
+				width: payload.width,
+				height: payload.height,
+				imageInput: payload.imageInput,
+			},
+			{ agentId: this.modelSelectorService.getSelectedAgentId?.() ?? undefined },
+		);
+		return { videos: result.videos ?? [] };
+	}
+
+	/**
+	 * `modelgen.generate` — 3D 模型生成节点 RPC。
+	 * 走该 provider 的 generateModel3D()（扩展命令转发），返回 `{ models: [{ url, previewUrl?, sources? }] }`。
+	 */
+	private async _handleModel3DGenGenerate(payload: {
+		providerId: string;
+		modelId: string;
+		prompt?: string;
+		imageInput?: string;
+		faceCount?: number | 'auto';
+		enablePbr?: boolean;
+	}): Promise<{ models: Array<{ url?: string; previewUrl?: string; sources?: Array<{ type: string; url: string }> }> }> {
+		const provider = this.agentOSService.getModelProviders().find(p => p.id === payload.providerId);
+		if (!provider) {
+			throw new Error(`未找到 Provider：${payload.providerId}`);
+		}
+		if (!provider.generateModel3D) {
+			throw new Error(`Provider ${provider.name} 不支持 3D 模型生成`);
+		}
+		const result = await provider.generateModel3D(
+			{
+				modelId: payload.modelId,
+				prompt: payload.prompt,
+				imageInput: payload.imageInput,
+				faceCount: payload.faceCount,
+				enablePbr: payload.enablePbr,
+			},
+			{ agentId: this.modelSelectorService.getSelectedAgentId?.() ?? undefined },
+		);
+		return { models: result.models ?? [] };
+	}
+
+	/**
+	 * `textgen.generate` — 文本生成节点 RPC（Saros.TextGen）。
+	 * 经 provider.chat() 流式聚合文本（与 reversePrompt.generate 同机制，
+	 * 纯文本 message、无图片 part）。system 为空时不发系统消息。
+	 */
+	private async _handleTextGenGenerate(payload: {
+		providerId: string;
+		modelId: string;
+		prompt?: string;
+		system?: string;
+		temperature?: number;
+	}): Promise<{ text: string }> {
+		const provider = this.agentOSService.getModelProviders().find(p => p.id === payload.providerId);
+		if (!provider) {
+			throw new Error(`未找到 Provider：${payload.providerId}`);
+		}
+		if (typeof provider.chat !== 'function') {
+			throw new Error(`Provider ${provider.name} 不支持文本对话`);
+		}
+		const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+		if (payload.system && payload.system.trim()) {
+			messages.push({ role: 'system', content: payload.system.trim() });
+		}
+		messages.push({ role: 'user', content: payload.prompt ?? '' });
+		let text = '';
+		for await (const delta of provider.chat(
+			payload.modelId,
+			messages,
+			{ temperature: payload.temperature ?? 0.7 },
+			{ agentId: this.modelSelectorService.getSelectedAgentId?.() ?? undefined },
+		)) {
+			if (delta.type === 'text' && delta.content) { text += delta.content; }
+		}
+		if (!text.trim()) {
+			throw new Error('模型未返回文本');
+		}
+		return { text: text.trim() };
+	}
+
+	/**
+	 * `audiogen.generate` — 音频生成节点 RPC（Saros.AudioGen）。
+	 * 走该 provider 的 generateAudio()（扩展命令转发，同 videogen/modelgen 模式），
+	 * 返回 `{ audios: [{ url, duration?, format? }] }`。
+	 */
+	private async _handleAudioGenGenerate(payload: {
+		providerId: string;
+		modelId: string;
+		prompt?: string;
+		lyrics?: string;
+		duration?: number;
+		numAudios?: number;
+	}): Promise<{ audios: Array<{ url?: string; duration?: number; format?: string }> }> {
+		const provider = this.agentOSService.getModelProviders().find(p => p.id === payload.providerId);
+		if (!provider) {
+			throw new Error(`未找到 Provider：${payload.providerId}`);
+		}
+		if (!provider.generateAudio) {
+			throw new Error(`Provider ${provider.name} 不支持音频生成`);
+		}
+		const result = await provider.generateAudio(
+			{
+				modelId: payload.modelId,
+				prompt: payload.prompt,
+				lyrics: payload.lyrics,
+				duration: payload.duration,
+				numAudios: payload.numAudios,
+			},
+			{ agentId: this.modelSelectorService.getSelectedAgentId?.() ?? undefined },
+		);
+		return { audios: result.audios ?? [] };
 	}
 
 	// ─── Reverse Prompt (P2) ────────────────────────────────────────
@@ -4027,6 +4307,45 @@ export class AgentStudioWebviewController extends Disposable {
 			return { data: buf.toString('base64'), mimeType };
 		}
 		throw new Error(`不支持的图片引用：${ref.slice(0, 64)}`);
+	}
+
+	/**
+	 * `net.fetchAsDataUrl` — 跨源图像代理：拉取远程 URL 转成 data URL 返回。
+	 *
+	 * 为什么需要：canvas 类编辑器（GridSplit/Crop/Mask…）绘制预览必须
+	 * `<img crossOrigin='anonymous'>`（否则 canvas 被 taint，getImageData 抛错），
+	 * 而 provider 签名 URL（腾讯云 COS 等）响应不带 Access-Control-Allow-Origin
+	 * → webview 里带 crossOrigin 的加载直接被浏览器拦（net::ERR_FAILED）。
+	 *
+	 * 实现走主进程 `vscode:webFetch`（Chromium net.fetch，无 CORS/无 Origin 头）
+	 * binary 模式拿 base64 —— 与 _handleComfyFetch 同一条 IPC 通道。
+	 */
+	private async _handleFetchAsDataUrl(payload: { url: string }): Promise<{ dataUrl?: string; error?: string }> {
+		const url = payload?.url ?? '';
+		if (!/^https?:\/\//.test(url)) {
+			return { error: `net.fetchAsDataUrl: 仅支持 http(s) URL（${url.slice(0, 64)}）` };
+		}
+		try {
+			const vscodeBridge = (globalThis as any).vscode;
+			if (!vscodeBridge?.ipcRenderer?.invoke) {
+				return { error: 'net.fetchAsDataUrl: vscode:webFetch 通道不可用' };
+			}
+			const result = await vscodeBridge.ipcRenderer.invoke('vscode:webFetch', {
+				url,
+				method: 'GET',
+				binary: true,
+			}) as { ok?: boolean; status?: number; base64?: string; contentType?: string; error?: string };
+			if (result?.error) { return { error: result.error }; }
+			const status = result.status ?? 0;
+			const base64 = result.base64 ?? '';
+			if (status < 200 || status >= 300 || !base64) {
+				return { error: `net.fetchAsDataUrl: HTTP ${status}` };
+			}
+			const mime = (result.contentType ?? 'image/png').split(';')[0] || 'image/png';
+			return { dataUrl: `data:${mime};base64,${base64}` };
+		} catch (err) {
+			return { error: err instanceof Error ? err.message : String(err) };
+		}
 	}
 
 	/**
@@ -4338,20 +4657,37 @@ export class AgentStudioWebviewController extends Disposable {
 		return backend.get(payload.id);
 	}
 
+	/** 本地文件 → data URL（webview 沙箱无法直接用本地路径）。
+	 * ★ 2026-09-01：此 case 自媒体库上线起就缺失——webview `mediaGetAsDataUrl`
+	 * 一直收到「Unknown message type」reject → 有 filePath 的资产全部显示
+	 * 「不可用」（被误判为磁盘文件缺失）。 */
+	private async _handleMediaGetAsDataUrl(payload: { id: string }): Promise<string | null> {
+		const backend = this._getMediaBackend();
+		if (!backend) { return null; }
+		return backend.getAsDataUrl(payload.id);
+	}
+
+	private async _handleMediaCleanOrphaned() {
+		const backend = this._getMediaBackend();
+		if (!backend) { return { count: 0, freedBytes: 0 }; }
+		return backend.cleanOrphaned();
+	}
+
 	/** 返回 webview 可加载的资产 URL。
 	 *
 	 * 本地文件 → 读取为 base64 data URI（绕过 webview 资源协议：
 	 * asWebviewUri 生成的 https://file+*.vscode-cdn.net 域名在 pooled
 	 * webview 中无法被 DNS 解析 → ERR_NAME_NOT_RESOLVED）。
-	 * http/data URL 引用 → 原样透传。 */
+	 *
+	 * 优先 filePath：远程 http(s) 引用已在 `MediaStore.importAsset` 阶段
+	 * 由主进程下载落盘，读本地文件转 data URL 可绕过 webview CSP
+	 * `img-src` 对远程 http（非 127.0.0.1/localhost）的拦截。
+	 * 无本地文件时回退：data: 自包含 / https / 本地 http 原样透传。 */
 	private async _handleMediaGetUrl(payload: { id: string }) {
 		const backend = this._getMediaBackend();
 		if (!backend) { return null; }
 		const asset = await backend.get(payload.id);
 		if (!asset) { return null; }
-		if (asset.ref && /^(https?|data):/i.test(asset.ref)) {
-			return asset.ref;
-		}
 		if (asset.filePath) {
 			try {
 				const content = await this.fileService.readFile(URI.file(asset.filePath));
@@ -4370,8 +4706,10 @@ export class AgentStudioWebviewController extends Disposable {
 				return `data:${mime};base64,${b64}`;
 			} catch (err) {
 				this.logService.error(`[MediaGetUrl] readFile failed for ${asset.filePath}: ${err}`);
-				return null;
 			}
+		}
+		if (asset.ref && /^(https?|data):/i.test(asset.ref)) {
+			return asset.ref;
 		}
 		return asset.ref || null;
 	}

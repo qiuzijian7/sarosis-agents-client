@@ -9,7 +9,8 @@
 
 import * as React from 'react';
 import { useWorkflowEditorStore, nodeCategories, type NodeCategory } from './store';
-import { buildComfyPaletteItems, type PaletteItem, subscribeNodeRegistry, getNodeRegistryVersion } from './comfyHost/registry';
+import { type PaletteItem, subscribeNodeRegistry, getNodeRegistryVersion } from './comfyHost/registry';
+import { comfyGroups } from './NodePalette';
 import type { MenuItem } from './menuItems';
 
 export interface NodeContextMenuState {
@@ -54,7 +55,7 @@ const CATEGORY_COLORS: Record<NodeCategory, string> = {
 	layout: '#8b5cf6',
 };
 
-/** Build all menu groups (static orchestration + dynamic ComfyTV/native). Pure. */
+/** Build all menu groups (static orchestration + dynamic provider/ComfyTV/native). Pure. */
 export function buildMenuGroups(): MenuGroup[] {
 	const staticCats = nodeCategories.map<MenuGroup>(c => ({
 		id: c.category,
@@ -62,14 +63,18 @@ export function buildMenuGroups(): MenuGroup[] {
 		color: CATEGORY_COLORS[c.category],
 		items: c.items as PaletteItem[],
 	}));
-	return [
-		...staticCats,
-		{ id: 'llm', label: 'PROVIDER 文生图', color: '#06b6d4', items: buildComfyPaletteItems('llm') },
-		{ id: 'comfyTV', label: 'COMFYTV STAGES', color: '#e879f9', items: buildComfyPaletteItems('schema') },
-		{ id: 'comfyUI', label: 'COMFYUI NATIVE', color: '#f59e0b', items: buildComfyPaletteItems('native') },
-		// 过滤空组：如 'llm'（PROVIDER 文生图）当前无任何 kind='llm' 节点（ModelImageGen
-		// 已迁移为 kind='schema'），空分组不该出现在搜索浮窗/级联菜单里（点开是空）。
-	].filter(g => g.items.length > 0);
+	// ★ 动态分组复用 NodePalette.comfyGroups()（单一事实源）：Provider（Saros
+	//   系列直连 API）/ ComfyTV Stages / ComfyUI Native 的划分与节点面板完全一致
+	//   ——之前这里自建 llm/comfyTV/native 三组，与面板的 API 组拆分逻辑漂移
+	//   （Saros 节点曾同时出现在双击菜单的 COMFYTV STAGES 里）。
+	const dynamic = comfyGroups().map<MenuGroup>(g => ({
+		id: g.key,
+		label: g.label.toUpperCase(),
+		color: g.color,
+		items: g.items,
+	}));
+	// 过滤空组：空分组不该出现在搜索浮窗/级联菜单里（点开是空）。
+	return [...staticCats, ...dynamic].filter(g => g.items.length > 0);
 }
 
 /** Filter groups by query (label or type, case-insensitive). Pure. */

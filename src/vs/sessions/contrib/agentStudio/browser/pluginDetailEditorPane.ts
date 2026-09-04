@@ -28,8 +28,6 @@ import { IExtensionService } from '../../../../workbench/services/extensions/com
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 
-import { renderKnotCliSection } from './views/knotPluginDetailView.js';
-import { renderCodebuddyAuthSection } from './views/codebuddyPluginDetailView.js';
 
 const { $: $$ } = DOM;
 
@@ -45,6 +43,19 @@ interface IPluginConfigProperty {
 	markdownDescription?: string;
 	scope?: string;
 	items?: { type?: string; properties?: Record<string, unknown> };
+	/**
+	 * 可选：由 schema 的 `x-action` 声明的命令 id。存在时该属性渲染为**动作按钮**
+	 * （点击即执行命令），而不是输入控件，且不参与保存——它不是真正的配置值。
+	 * 这样插件无需在此处堆 `plugin.label === 'xxx'` 特例即可拥有自己的按钮。
+	 */
+	action?: string;
+	/** 可选：按钮文案，由 schema 的 `x-actionLabel` 声明；缺省用格式化后的 key。 */
+	actionLabel?: string;
+	/**
+	 * 可选：由 schema 的 `x-readonly` 声明。为 true 时该属性以只读文本展示，
+	 * 不渲染输入控件，且不参与保存——适用于由插件自动写入的派生值（如登录态、Token、User ID）。
+	 */
+	readOnly?: boolean;
 }
 
 export class PluginDetailEditorPane extends EditorPane {
@@ -326,24 +337,10 @@ export class PluginDetailEditorPane extends EditorPane {
 			scrollContainer.appendChild(section);
 		}
 
-		// ─── Knot CLI Status Section (only for knot-agui) ────
-		if (plugin.label === 'knot-agui') {
-			const cliSection = renderKnotCliSection(plugin, this.commandService, this.configurationService, this._configFieldValues);
-			scrollContainer.appendChild(cliSection);
-		}
-
-		// ─── CodeBuddy Auth Status Section (only for codebuddy-provider) ────
-		if (plugin.label === 'codebuddy-provider') {
-			const authSection = renderCodebuddyAuthSection(plugin, this.commandService, this.configurationService, () => {
-				if (this._container) {
-					this._initialized = false;
-					this._container.replaceChildren();
-					this._buildUI(this._container);
-					this._initialized = true;
-				}
-			});
-			scrollContainer.appendChild(authSection);
-		}
+		// 插件特例分支已全部移除：
+		//  - CodeBuddy 的登录/登出/刷新模型按钮与登录状态 → 通用 `x-action` / `x-readonly` 约定
+		//  - Knot CLI 状态区块 → 随 Knot 插件一并移除
+		// 现由 `contributes.configuration` + `x-action` / `x-readonly` 统一驱动，无 plugin.label 特例。
 
 		// ─── Configuration Section (from contributes.configuration) ──
 		const configProperties = this._getPluginConfigProperties(plugin);
@@ -371,8 +368,8 @@ export class PluginDetailEditorPane extends EditorPane {
 				// Load current value from configuration service
 				let currentValue = this.configurationService.getValue(prop.key);
 
-				// For codebuddy.models, if no user config exists and default is empty, try loading from model.json
-				if (prop.key === 'codebuddy.models') {
+				// 通用：任何 *.models 配置，若无用户值且默认值为空，尝试从插件目录下的 model.json 加载
+				if (prop.key.endsWith('.models')) {
 					const isEmpty =
 						currentValue === undefined || currentValue === null ||
 						(Array.isArray(currentValue) && currentValue.length === 0);
@@ -483,6 +480,10 @@ export class PluginDetailEditorPane extends EditorPane {
 			for (const [key, schema] of Object.entries(properties)) {
 				if (!schema || typeof schema !== 'object') { continue; }
 				const s = schema as Record<string, unknown>;
+				// 通用动作按钮约定：schema 上的 `x-action`（命令 id）与 `x-actionLabel`（按钮文案）。
+				// 任意插件都可借此在详情页获得按钮，无需在本文件里新增 plugin.label 特例。
+				const xAction = s['x-action'];
+				const xActionLabel = s['x-actionLabel'];
 				result.push({
 					key,
 					type: String(s.type || 'string'),
@@ -491,6 +492,9 @@ export class PluginDetailEditorPane extends EditorPane {
 					markdownDescription: s.markdownDescription ? String(s.markdownDescription) : undefined,
 					scope: s.scope ? String(s.scope) : undefined,
 					items: s.items as IPluginConfigProperty['items'],
+					action: typeof xAction === 'string' && xAction ? xAction : undefined,
+					actionLabel: typeof xActionLabel === 'string' && xActionLabel ? xActionLabel : undefined,
+					readOnly: s['x-readonly'] === true,
 				});
 			}
 
@@ -549,6 +553,50 @@ export class PluginDetailEditorPane extends EditorPane {
 			row.appendChild(descEl);
 		}
 
+		// ─── 只读展示（x-readonly）────────────────────────────
+		// 由插件自动写入的派生值（登录态 / Token / User ID 等）不适合让用户手改，
+		// 这里渲染为只读文本，并且不写入 _configFieldValues（否则保存时会把值清成 undefined）。
+		if (prop.readOnly) {
+			const valueEl = $$('div.plugin-detail-config-readonly');
+			const raw = value === undefined || value === null || value === '' ? '—' : String(value);
+			valueEl.textContent = raw;
+			valueEl.title = raw;
+			row.appendChild(valueEl);
+			return row;
+		}
+
+		// ─── 动作按钮（x-action）──────────────────────────────
+		// 声明了 `x-action` 的属性渲染为按钮而非输入控件：点击直接执行命令，
+		// 无需「保存设置」，也不写入配置。这样插件可自助扩展详情页交互，
+		// 避免继续在此文件里堆积 `plugin.label === 'xxx'` 的特例分支。
+		if (prop.action) {
+			const actionBtn = $$('button.plugin-detail-config-save-btn') as HTMLButtonElement;
+			actionBtn.type = 'button';
+			actionBtn.textContent = prop.actionLabel || this._formatConfigKey(prop.key);
+			actionBtn.onclick = async () => {
+				actionBtn.disabled = true;
+				const original = actionBtn.textContent;
+				actionBtn.textContent = localize('running', '执行中…');
+				try {
+					await this.commandService.executeCommand(prop.action!);
+					// 命令通常会改动配置（如登录后写入可用模型列表），
+					// 重建 UI 让详情页立即反映最新值，无需手动关闭再打开。
+					this._rerender();
+				} catch (err) {
+					console.error(`[PluginDetail] action "${prop.action}" failed:`, err);
+					this._showActionMessage(
+						localize('actionFailed', '❌ 执行失败：{0}', err instanceof Error ? err.message : String(err)),
+						'error',
+					);
+				} finally {
+					actionBtn.textContent = original;
+					actionBtn.disabled = false;
+				}
+			};
+			row.appendChild(actionBtn);
+			return row;
+		}
+
 		// Input control based on type
 		switch (prop.type) {
 			case 'string': {
@@ -591,8 +639,11 @@ export class PluginDetailEditorPane extends EditorPane {
 				if (prop.key.endsWith('.agents')) {
 					const agentsContainer = this._renderAgentsExpandableList(prop, value);
 					row.appendChild(agentsContainer);
-				} else if (prop.key === 'codebuddy.models') {
-					// Special handling for codebuddy.models: expandable list with id, name, maxInputTokens, maxAllowedSize
+				} else if (/\.(image|video|model3d|audio)?models$/i.test(prop.key)) {
+					// 通用：任何 *.models / *.imageModels / *.videoModels / *.model3dModels /
+					// *.audioModels 的 array 配置都用可展开列表渲染（id / name /
+					// maxInputTokens / maxAllowedSize…），与 codebuddy.models 保持一致；
+					// 同时兼容 string[] 与 object[] 两种形态。
 					const modelsContainer = this._renderModelsExpandableList(prop, value);
 					row.appendChild(modelsContainer);
 				} else {
@@ -624,6 +675,22 @@ export class PluginDetailEditorPane extends EditorPane {
 		}
 
 		return row;
+	}
+
+	/**
+	 * 在配置区底部的状态条显示一条消息（复用「保存设置」下方的 status 元素）。
+	 */
+	private _showActionMessage(text: string, kind: 'success' | 'error' | '' = ''): void {
+		const statusEl = this._container?.querySelector('#plugin-config-status') as HTMLElement | null;
+		if (!statusEl) { return; }
+		statusEl.textContent = text;
+		statusEl.className = 'plugin-detail-config-status' + (kind ? ' ' + kind : '');
+		if (statusEl.textContent) {
+			setTimeout(() => {
+				statusEl.textContent = '';
+				statusEl.className = 'plugin-detail-config-status';
+			}, 3000);
+		}
 	}
 
 	/**
@@ -801,7 +868,10 @@ export class PluginDetailEditorPane extends EditorPane {
 	private _renderModelsExpandableList(prop: IPluginConfigProperty, value: unknown): HTMLElement {
 		console.log(`[PluginDetail] _renderModelsExpandableList called for ${prop.key}, value:`, value);
 		const container = $$('div.plugin-detail-models-list');
-		const models: Array<{
+
+		// 模型条目既支持「对象数组」（codebuddy.models：id/name/maxInputTokens/...），
+		// 也支持「字符串数组」（lightai.models：仅模型 id）。
+		type ModelLike = {
 			id?: string;
 			name?: string;
 			vendor?: string;
@@ -825,7 +895,15 @@ export class PluginDetailEditorPane extends EditorPane {
 			repetition_penalty?: number;
 			isDefault?: boolean;
 			supportsExtra?: boolean;
-		}> = Array.isArray(value) ? [...value] : [];
+		};
+
+		const rawModels: unknown[] = Array.isArray(value) ? [...value] : [];
+		// 原始就是字符串数组时，展示层补全为对象；保存时再还原为字符串（见 syncToConfig），
+		// 避免把插件期望的 string[] 写成 object[] 导致模型读不到。
+		const isStringList = rawModels.length > 0 && typeof rawModels[0] === 'string';
+		const models: ModelLike[] = isStringList
+			? (rawModels as string[]).map(s => ({ id: s, name: s }))
+			: rawModels as ModelLike[];
 
 		// Ensure at least one default entry exists
 		if (models.length === 0) {
@@ -866,6 +944,11 @@ export class PluginDetailEditorPane extends EditorPane {
 		}));
 
 		const syncToConfig = () => {
+			// 原始是字符串数组 → 保存回字符串数组，保持插件读取格式不变
+			if (isStringList) {
+				this._configFieldValues.set(prop.key, modelsData.map(m => m.id).filter(id => !!id));
+				return;
+			}
 			const result = modelsData.map(m => ({
 				id: m.id,
 				name: m.name,
@@ -1177,6 +1260,11 @@ export class PluginDetailEditorPane extends EditorPane {
 		// Filter out internal properties (e.g. agentId used for identification)
 		const propsToSave = configProperties.filter(p => {
 			if (p.key.endsWith('.agentId')) { return false; }
+			// 动作按钮（x-action）只是触发命令，不是配置值，不参与保存
+			if (p.action) { return false; }
+			// 只读展示（x-readonly）不写回：它们由插件自动维护，
+			// 且 _renderConfigField 未把它们放入 _configFieldValues，强行保存会把值清成 undefined
+			if (p.readOnly) { return false; }
 			return true;
 		});
 
@@ -1237,16 +1325,25 @@ export class PluginDetailEditorPane extends EditorPane {
 				);
 			}
 			// Re-render
-			if (this._container) {
-				this._initialized = false;
-				this._container.replaceChildren();
-				this._buildUI(this._container);
-				this._initialized = true;
-			}
-		} catch (err) {
+			this._rerender();
+			} catch (err) {
 			console.error('[PluginDetailEditorPane] _toggleEnablement failed:', err);
-		}
-	}
+			}
+			}
+
+			/**
+			* 重建详情页 UI。
+			* 供「配置被命令/外部改动」后调用（如 x-action 登录后写入了模型列表），
+			* 使页面立即反映最新配置值，无需用户手动关闭再打开。
+			*/
+			private _rerender(): void {
+			if (this._container) {
+			this._initialized = false;
+			this._container.replaceChildren();
+			this._buildUI(this._container);
+			this._initialized = true;
+			}
+			}
 
 	override layout(dimension: DOM.Dimension): void {
 		if (this._container) {

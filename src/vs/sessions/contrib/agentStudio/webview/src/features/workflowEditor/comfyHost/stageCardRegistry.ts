@@ -35,7 +35,7 @@ export type StageEditorKind =
 	| 'relight'
 	| 'material'
 	| 'emoji-static'   // ComfyTV.StatEmojiStage —— 静态表情包网格编辑器
-	| 'emoji-dynamic'  // ComfyTV.DynEmojiStage —— 动态表情包编辑器
+	| 'animated-emoji' // Saros.AnimatedEmoji —— 转动态表情包编辑器（provider 视频模型 → 透明 GIF）
 	| 'image'      // LoadImage / ImageLoaderStage —— inline loader editor（读 properties.image）
 	| 'directorConsole';  // StoryboardEditorStage —— DirectorConsoleEditor（NodeCard 内嵌富编辑器，对齐 ComfyTV）
 
@@ -56,7 +56,10 @@ export const STAGE_EDITOR_KIND: Record<string, StageEditorKind> = {
 	'ComfyTV.RelightStage': 'relight',
 	'ComfyTV.MaterialStage': 'material',
 	'ComfyTV.StatEmojiStage': 'emoji-static',
-	'ComfyTV.DynEmojiStage': 'emoji-dynamic',
+	// Saros.AnimatedEmoji（转动态表情包）：AnimatedEmojiEditor 接管全部 widget——
+	// ★ 必须注册，否则 hasInlineEditor=false → 通用控件网格与内嵌编辑器**同时**
+	//   渲染同一批参数（两套 UI 重复）。
+	'Saros.AnimatedEmoji': 'animated-emoji',
 	'ComfyTV.StoryboardEditorStage': 'directorConsole',
 	// Loader 节点走 inline editor：image 字段直接展示缩略图+尺寸+上传，代替通用
 	// OUTPUT 区（与 ComfyTV LoadImage 一致 —— 图像就是产物本身，再画 OUTPUT 是
@@ -106,8 +109,14 @@ export const STAGE_HIDDEN_FIELDS: Record<string, readonly string[]> = {
 	'ComfyTV.PanoramaStage': ['workflow', 'prompt'],
 	'ComfyTV.RelightStage': ['main_prompt'],
 	'ComfyTV.MaterialStage': ['material_state'],
-	'ComfyTV.StatEmojiStage': ['rows', 'cols', 'fps', 'frames', 'prompt', 'cells', 'selected_index', 'run_scope', 'style_preset'],
-	'ComfyTV.DynEmojiStage': ['text', 'prompt', 'image', 'bg_color', 'motion_strength'],
+	'ComfyTV.StatEmojiStage': ['rows', 'cols', 'fps', 'frames', 'prompt', 'cells', 'selected_index', 'run_scope', 'style_preset', 'sheet_background'],
+	// AnimatedEmoji 全部 widget 由 AnimatedEmojiEditor 接管（provider/model 联动、
+	// 动作 chips、网格切分、抠像参数都在编辑器内自绘）。
+	'Saros.AnimatedEmoji': [
+		'videoProvider', 'videoModel', 'prompt', 'duration_s', 'fps', 'max_kb',
+		'grid_rows', 'grid_cols', 'grid_margin',
+		'chroma_color', 'chroma_similarity', 'chroma_smoothness',
+	],
 	'ComfyTV.StoryboardEditorStage': ['board_state'],
 	// Loader 节点 image 字段由 inline editor（ImageLoaderPreview）接管，不再渲染通用控件。
 	// ⚠ 只有 image 家族能列在这里：接管字段的前提是**真有组件渲染它**。
@@ -141,7 +150,7 @@ export const STAGE_MIN_HEIGHTS: Record<string, number> = {
 	'ComfyTV.MaterialStage': 500,
 	'ComfyTV.StoryboardEditorStage': 560,
 	'ComfyTV.StatEmojiStage': 500,
-	'ComfyTV.DynEmojiStage': 520,
+	'Saros.AnimatedEmoji': 560,   // AnimatedEmojiEditor：预览 + 5 个参数区块 + 运行按钮
 	'ComfyTV.ImageStage': 640,         // generator 节点（含 OUTPUT + ACTIONS）
 	// Vox 口播视频节点：导演节点含大量参数 + OUTPUT 视频预览区，脚本节点较矮。
 	'Vox.DirectorStage': 560,

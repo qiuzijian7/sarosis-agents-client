@@ -105,7 +105,7 @@ export interface IModelSelectorItem {
 }
 
 export interface IModelSelectorProviderInfo {
-	readonly id: string;          // e.g. 'knot-agui'
+	readonly id: string;          // e.g. 'demo-agui'
 	readonly name: string;        // e.g. 'Knot AG-UI'
 	readonly icon?: string;       // URI string
 	readonly authStatus: ModelAuthStatus;

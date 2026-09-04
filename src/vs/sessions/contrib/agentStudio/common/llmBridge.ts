@@ -90,6 +90,12 @@ export interface IHttpRequestParams {
 	readonly headers?: Record<string, string>;
 	readonly timeoutMs?: number;
 	/**
+	 * 二进制响应：body 以 base64 返回（`base64` + `contentType` 字段填充，
+	 * `body` 为空）。用于下载图片等二进制资源——文本路径的 `response.text()`
+	 * 会按 UTF-8 解码破坏字节。
+	 */
+	readonly binary?: boolean;
+	/**
 	 * 忽略 TLS 证书错误（如公司代理 MITM 导致 ERR_CERT_COMMON_NAME_INVALID）。
 	 * 仅用于可信的第三方只读元数据查询（如 models.dev），不用于密钥请求。
 	 */
@@ -101,19 +107,95 @@ export interface IHttpRequestResult {
 	readonly status: number;
 	readonly statusText: string;
 	readonly body: string;
+	/** 仅 `binary: true` 时填充：响应字节的 base64。 */
+	readonly base64?: string;
+	/** 仅 `binary: true` 时填充：响应 Content-Type（缺失回退空串）。 */
+	readonly contentType?: string;
+}
+
+// ─── Provider 文生图结果 URL 内联（宿主边界统一转 b64）──────────────────────────
+//
+// ## 为什么必须内联（2026-09-01 事故）
+//
+// 部分文生图/图片编辑 provider（如内部 mjai 网关）返回**带签名的外部 URL**（腾讯
+// COS 等），签名约 30 分钟过期，且服务器**不带 Access-Control-Allow-Origin**。
+// webview 侧：
+//  - `<img src>` 裸加载虽不受 CORS 限制，但任何 `crossOrigin='anonymous'` 的
+//    canvas 消费方（12+ 处编辑器/合成器：CropEditor/MaskPainter/emojiTextOverlay
+//    /layerEditor/cameraWidget…）直接被 CORS 拦截（用户报障 ERR_FAILED）；
+//  - webview fetch 同样被拦 → **webview 侧无法自救**；
+//  - 签名过期后连 `<img src>` 也会 403，图片永久丢失。
+//
+// 因此在宿主边界（`imagegen.generate` → `_handleImageGenGenerate`）**统一把
+// http(s) URL 下载为 b64**：主进程 Node fetch 无 CORS、签名尚在有效期。下游
+// `providerImagesToMedia` 优先读 url——内联成功时**必须删掉 url 字段**才会生成
+// `data:` 引用。下载失败保留原 url（优雅降级 = 现状）。
+
+/** 单条 provider 生成图（url 与 b64 二选一）。 */
+export interface IProviderImageEntry {
+	readonly url?: string;
+	readonly b64?: string;
+	readonly mime?: string;
+}
+
+/** 下载器注入接口（生产 = 主进程 IPC binary httpRequest；测试 = 桩）。 */
+export type DownloadImageB64 = (url: string) => Promise<{ base64: string; contentType: string }>;
+
+/** 视为「需要内联」的外部 http(s) 引用（data:/blob:/相对路径跳过）。 */
+export function isRemoteHttpUrl(url: string): boolean {
+	return /^https?:\/\//i.test(url);
+}
+
+/** 内联单张上限（base64 前的字节数）。超过则保留原 url，避免主进程内存膨胀。 */
+export const IMAGE_INLINE_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
+ * 把 provider 图片结果里的外部 http(s) URL 就地内联为 b64（纯函数，下载器注入）。
+ * 规则：
+ *  - `data:`/`blob:`/相对路径 → 原样保留；
+ *  - http(s) → 调 `download`；成功 → `{ b64, mime }`（**删除 url**，下游才会走
+ *    b64 分支）；失败/超限 → 保留原 url 并把错误计入 `failures`；
+ *  - 绝不抛错（单张失败不影响其余图片与主流程）。
+ */
+export async function inlineRemoteImageUrls(
+	images: IProviderImageEntry[],
+	download: DownloadImageB64,
+): Promise<{ images: IProviderImageEntry[]; failures: string[] }> {
+	const failures: string[] = [];
+	const out = await Promise.all(images.map(async (img): Promise<IProviderImageEntry> => {
+		const url = img.url;
+		if (!url || !isRemoteHttpUrl(url)) { return img; }
+		try {
+			const { base64, contentType } = await download(url);
+			if (!base64) { throw new Error('empty body'); }
+			const mime = /^image\//i.test(contentType) ? contentType : (img.mime || 'image/png');
+			return { b64: base64, mime, url: undefined };
+		} catch (err) {
+			failures.push(`${url.slice(0, 120)}: ${err instanceof Error ? err.message : String(err)}`);
+			return img; // 优雅降级：保留原 url（现状行为）
+		}
+	}));
+	return { images: out, failures };
 }
 
 // ─── 文生图（主进程侧执行）───────────────────────────────────────────────────
 
 /**
- * 文生图参数（OpenAI 兼容 `/images/generations` 端点）。
+ * 文生图 / 图生图参数（OpenAI 兼容 `/images/generations` 或 `/images/edits` 端点）。
  */
 export interface IImageGenBridgeParams {
 	/** images endpoint URL，例如 `${baseUrl}/images/generations` */
 	readonly url: string;
 	readonly apiKey: string;
-	/** 请求体（含 model/prompt/size/n 等） */
+	/**
+	 * 请求体（含 model/prompt/size/n 等）。
+	 * ★ img2img 协议：body 若含 `__imageDataUrl`（data: 或 http(s) 图片引用），
+	 *   主进程改走 **multipart/form-data** 的 `/images/edits`（image 字段=参考图，
+	 *   其余字段转 form 字段），并剥离该标记。JSON 与 multipart 由本函数内部分派。
+	 */
 	readonly body: Record<string, unknown>;
+	/** HTTP 方法（默认 POST；部分网关需 GET） */
+	readonly method?: 'POST' | 'GET';
 	readonly extraHeaders?: Record<string, string>;
 	/** API key auth header scheme（默认 'bearer'） */
 	readonly apiKeyHeader?: 'bearer' | 'x-api-key';
@@ -127,14 +209,83 @@ export interface IImageGenBridgeParams {
  * so both sides label the same models as image-gen capable.
  */
 export function inferImageGen(m: { id?: string; name?: string; description?: string }): boolean {
-	const hay = `${m.id ?? ''} ${m.name ?? ''} ${m.description ?? ''}`.toLowerCase();
+	let hay = `${m.id ?? ''} ${m.name ?? ''} ${m.description ?? ''}`.toLowerCase();
 	// Explicit generation phrases ("text to image", "image generation", …)
 	if (/(text[- ]to[- ]image|image[- ]generation|image[- ]gen|generate[ -]images|text2image|t2i)/.test(hay)) {
 		return true;
 	}
 	// Common text→image model markers (OpenAI dalle/gpt-image, Stability,
 	// Flux, Seedream, Ideogram, Hunyuan image, etc.)
-	return /(^|[^a-z])(dall-?e|gpt-image|flux|stable-diffusion|sdxl|sd3|seedream|ideogram|imagen|recraft|kandinsky|sana|hunyuan[- _]image|kolors|pixart)([^a-z]|$)/.test(hay);
+	//
+	// `image` is listed as a standalone marker (not just as part of `gpt-image` /
+	// `hunyuan_image`) so generic `*-image` naming is covered too — e.g. LightAI's
+	// `gemini-3.1-flash-image` / `gemini-3-pro-image` (Nano Banana family).
+	// The `(^|[^a-z])…([^a-z]|$)` boundaries keep it from matching chat models
+	// that merely contain the substring (there are none in practice, since chat
+	// models never use `image` as a standalone word).
+	// `picture_` 前缀：LightAI 编排域图片模型命名（picture_banana_2 / picture_gpt_image_2 …）
+	if (/(^|[^a-z])picture_[a-z0-9_]+/.test(hay)) { return true; }
+	// LightAI 编排域其它前缀（model_/video_/audio_）的 id 即使尾部含 "image"
+	//（如 model_hunyuan_polygen_image 图生低模，属 3D）也不是图片模型——
+	// 先剥掉 id token 再做家族词匹配，避免 `image` 误伤。
+	if (/(^|\s)(model|video|audio)_[a-z0-9_]+(\s|$)/.test(hay)) {
+		hay = hay.replace(/(model|video|audio)_[a-z0-9_]+/g, ' ');
+	}
+	return /(^|[^a-z])(dall-?e|gpt-image|flux|stable-diffusion|sdxl|sd3|seedream|ideogram|imagen|recraft|kandinsky|sana|hunyuan[- _]image|kolors|pixart|nano[- _]?banana|image)([^a-z]|$)/.test(hay);
+}
+
+/**
+ * Infer whether a model supports text/image→video generation from its id/name.
+ * 与 inferImageGen 同款启发式：
+ *  - LightAI 编排域命名规范：`video_*` 前缀（video_minimax_h3 / video_keling_26 …）
+ *  - 常见视频模型名标记（kling/可灵、seedance、wan/wanx、hunyuan-video、minimax video…）
+ *  - 显式生成短语（text-to-video / image-to-video / video generation …）
+ */
+export function inferVideoGen(m: { id?: string; name?: string; description?: string }): boolean {
+	const hay = `${m.id ?? ''} ${m.name ?? ''} ${m.description ?? ''}`.toLowerCase();
+	if (/(text[- ]to[- ]video|image[- ]to[- ]video|video[- ]generation|video[- ]gen|generate[ -]videos|text2video|i2v|t2v)/.test(hay)) {
+		return true;
+	}
+	// `video_` 前缀（LightAI 编排域命名）：与 discoverFloodModels 的分类一致，
+	// 前缀即品类（video_gemini_omni_flash / video_minimax_h3 的前缀后都是字母，
+	// 不能加 `([^a-z]|$)` 后界，否则整批漏判）。
+	if (/(^|[^a-z])video_[a-z0-9_]+/.test(hay)) { return true; }
+	// 常见视频模型家族标记（非编排域命名）
+	return /(^|[^a-z])(kling|keling|seedance|wanx?[- _]?[0-9]|hunyuan[- _]video|minimax[- _]video|video_gen|sora|veo|runway|gen-?3|luma|pika|hailuo)([^a-z]|$)/.test(hay);
+}
+
+/**
+ * Infer whether a model supports text/image→3D asset generation from its id/name.
+ * 与 inferVideoGen 同款启发式：
+ *  - LightAI 编排域命名规范：`model_*` 前缀（model_hunyuan_3_5 / model_tropo_3_1 …）
+ *  - 常见 3D 生成模型标记（tripo、rodin、hunyuan3d、meshy、luma ai…）
+ */
+export function inferModelGen(m: { id?: string; name?: string; description?: string }): boolean {
+	const hay = `${m.id ?? ''} ${m.name ?? ''} ${m.description ?? ''}`.toLowerCase();
+	if (/(image[- ]to[- ]3d|text[- ]to[- ]3d|3d[- ]generation|3d[- ]gen|generate[ -]3d|model[- ]gen)/.test(hay)) {
+		return true;
+	}
+	// `model_` 前缀（LightAI 编排域命名）：前缀即品类，同 video_ 不加后界
+	if (/(^|[^a-z])model_[a-z0-9_]+/.test(hay)) { return true; }
+	// 常见 3D 生成模型家族标记（非编排域命名）
+	return /(^|[^a-z])(tripo|rodin|hunyuan[- _]?3d|meshy|luma[- _]?ai|3d[_ -]model|instant[- _]?mesh|csm)([^a-z]|$)/.test(hay);
+}
+
+/**
+ * Infer whether a model supports text→audio generation (TTS / music / sfx) from its id/name.
+ * 与 inferVideoGen / inferModelGen 同款启发式：
+ *  - LightAI 编排域命名规范：`audio_` 前缀（audio_speech_28 …）
+ *  - 常见音频生成模型家族标记（speech、tts、voice、suno、audio）
+ */
+export function inferAudioGen(m: { id?: string; name?: string; description?: string }): boolean {
+	const hay = `${m.id ?? ''} ${m.name ?? ''} ${m.description ?? ''}`.toLowerCase();
+	if (/(text[- ]to[- ]audio|audio[- ]generation|audio[- ]gen|generate[ -]audio|t2a|tts\b|speech[- ]synth)/.test(hay)) {
+		return true;
+	}
+	// `audio_` 前缀（LightAI 编排域命名）：前缀即品类，同 video_/model_ 不加后界
+	if (/(^|[^a-z])audio_[a-z0-9_]+/.test(hay)) { return true; }
+	// 常见语音/音频家族标记（非编排域命名）
+	return /(^|[^a-z])(speech[- _]?[0-9]|minimax[- _]?speech|seed[- _]?audio|suno|cosyvoice|fish[- _]?speech|gpt[- _]?sovits)([^a-z]|$)/.test(hay);
 }
 
 // ─── Anthropic native SSE parser (shared by renderer + main process) ────────

@@ -449,7 +449,7 @@ export function spawnPickerForStage(srcNodeId: string, srcType: string): void {
 	//   缩略图。此前 EmojiStage 不在映射里 → 点运行后 auto-picker 落空（日志
 	//   「no picker class for srcType=ComfyTV.EmojiStage」），用户只能手动拖 picker
 	//   连线，而手动连线又受端口类型 / 保存链路影响容易失效 → picker 空。
-	const pickerClass = (srcType === 'ComfyTV.ImageStage' || srcType === 'ComfyTV.StatEmojiStage' || srcType === 'ComfyTV.DynEmojiStage')
+	const pickerClass = (srcType === 'ComfyTV.ImageStage' || srcType === 'ComfyTV.StatEmojiStage')
 		? 'ComfyTV.ImagePickerStage'
 		: srcType === 'ComfyTV.VideoStage' ? 'ComfyTV.VideoPickerStage'
 			: undefined;

@@ -29,6 +29,7 @@ import { registerMindMapNodes } from '../mindmap/MindMapNode';
 import { toLiteGraph, fromLiteGraph } from './comfyHost/ComfyGraphAdapter';
 import { filterNodesForLiteGraph, findUnsupportedNodes } from './comfyHost/canvasNodeFilter';
 import { CardStateStore } from './comfyHost/cardState';
+import { isLoaderNode, isPickerNode } from './comfyHost/workflowRun';
 import { attachOverlayLayer, createWidgetBridgeHost, widgetAreaInsets, LITEGRAPH_TITLE_HEIGHT, type OverlayNode, type OverlayOccluder, type WidgetBridgeHost } from './comfyHost/widgetBridge';
 
 /** Distance from a point to a line segment. */
@@ -124,6 +125,7 @@ import { getNodeCardMeta, createNodeCard, ORCH_RICH_NODE_TYPES } from './comfyHo
 import { patchInlineWidgetEditor } from './comfyHost/inlineWidgetEditor';
 import type { MediaSnapshotEntry } from './comfyHost/mediaSnapshot';
 import { buildMinimapScene, minimapToGraph, applyMinimapPan, renderMinimap } from './minimap';
+import { computeZoomTier, ZOOM_TIER_CSS, ZOOM_TIER_ENABLED } from './zoomTier';
 import { applyComfyNodeStyle } from './comfyNodeStyle';
 import { spawnFollowUp, spawnAssetLoader, ASSET_DRAG_MIME } from './comfyHost/actionSpawn';
 import { parseGuiWorkflow, guiToApi, type ComfyGuiWorkflow } from './comfyHost/comfyApiAdapter';
@@ -568,6 +570,17 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		let resizeFitTimer: ReturnType<typeof setTimeout> | undefined;
 
 		ensureSarosRegistration();
+		// ★ 缩放分级 CSS（2026-09-02 mockup 落地）：data-tier 驱动卡片内容形态。
+		//   节点图坐标几何恒定（连线/框选不受影响），只切卡片内容：
+		//   Full ≥0.7 全量 / Compact 0.35–0.7 仅输出预览 / Thumb <0.35 纯图铺满。
+		//   规则用 `:not()` 白名单反转——只需给「保留区」打标（output/thumb），
+		//   控件·提示词·内嵌编辑器·动作等未打标兄弟节点统一被隐藏。
+		if (ZOOM_TIER_ENABLED && !document.getElementById('saros-zoom-tier-css')) {
+			const tierStyle = document.createElement('style');
+			tierStyle.id = 'saros-zoom-tier-css';
+			tierStyle.textContent = ZOOM_TIER_CSS;
+			document.head.appendChild(tierStyle);
+		}
 		// Type-aware connection validation (image→image, text→text, ANY wildcard).
 		LiteGraph.isValidConnection = isValidLiteGraphConnection;
 		// ★ 交互约定对齐 ComfyUI 默认（legacy 模式，源自 ComfyUI 前端 settingStore：
@@ -904,8 +917,6 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				startClientY: e.clientY,
 				graphBefore: false,
 			};
-			// eslint-disable-next-line no-console
-			console.warn('[dragDown] dragRef SET, origPos=', dragRef.origPos);
 		};
 		const dragPointerMove = (e: PointerEvent) => {
 			if (!dragRef) { return; }
@@ -1216,6 +1227,9 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			const lc = canvasInstanceRef.current;
 			if (!g || !lc) { return; }
 			const ds = lc.ds;
+		// ★ 缩放分级档位（rAF 每帧算一次纯比较；写 DOM 前有变化守卫，见下方
+		//   container.dataset.tier —— 跨档才有 attribute 变更，无每帧抖动）。
+		const zoomTier = ZOOM_TIER_ENABLED ? computeZoomTier(ds.scale) : 'full';
 			const nodesForSync: OverlayNode[] = [];
 			const seen = new Set<string>();
 			containerOrder.length = 0;
@@ -1268,7 +1282,20 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			for (let nodeIdx = 0; nodeIdx < g.nodes.length; nodeIdx++) {
 				const n = g.nodes[nodeIdx];
 				const props = (n.properties ?? {}) as Record<string, unknown>;
-				const nodeId = String((n.properties as Record<string, unknown> | undefined)?.['__sarosId'] ?? n.id);
+				let nodeId = String((n.properties as Record<string, unknown> | undefined)?.['__sarosId'] ?? n.id);
+				// ★★ LiteGraph 原生 duplicate/paste（右键菜单 Clone / Ctrl+C·V）会
+				//   **整份复制 properties**——克隆节点带着与原节点相同的 __sarosId
+				//   （__sarosStageUid 的去重由下方 claimStageUid 按 numeric id 兜住，
+				//   但 __sarosId 没有去重）。撞车后果（2026-09-02 用户实测，复制
+				//   LoadImage 后）：① 卡片 key 撞车 → 其中一张的 DOM 卡被顶掉
+				//   （裸 LiteGraph 节点 =「原节点图片消失」）；② registerAlias
+				//   同 key 后写覆盖 → 原节点的 byNode 解析到副本的（空）归档键，
+				//   快照读取串线。这里检测撞车并给后来者重生成 __sarosId，
+				//   后缀带 LiteGraph numeric id（会话内唯一，天然去重）。
+				if (seen.has(nodeId)) {
+					nodeId = `${nodeId}--dup${n.id}`;
+					(n.properties as Record<string, unknown>)['__sarosId'] = nodeId;
+				}
 				seen.add(nodeId);
 				const type = String(props['__liteType'] ?? n.type ?? '');
 				const spec = getNodeSpec(type);
@@ -1338,6 +1365,14 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			// form widget owns the node height (arrange/computeSize + the
 			// measure feedback below), so a fixed 320px floor would fight it.
 			const container = bridge.ensureContainer(nodeId);
+			// 缩放分级：容器打 data-tier（有变化才写，防每帧 attribute 抖动）。
+			// ★ 跨档必须 markFormHeightDirty：CSS 切换不引发 React 渲染，卡片不会
+			//   自标 dirty —— 不喂高度的话 LiteGraph 保持 Full 档旧高度，Thumb 层
+			//   只有 4:3 一条而节点仍是大长条（2026-09-02 用户实测缩略图异常根因）。
+			if (ZOOM_TIER_ENABLED && container.dataset.tier !== zoomTier) {
+				container.dataset.tier = zoomTier;
+				markFormHeightDirty(nodeId);
+			}
 			// Height feedback: the card marked itself dirty after a render →
 			// measure the true content height once and feed it into
 			// LiteGraph's layout (widget height + node size).
@@ -1370,15 +1405,10 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 					// arrive in a future frame after React commits.
 					const prevHNum = parseFloat(prevHeight) || 0;
 					if (contentH > 0 && (!prevHNum || contentH >= prevHNum * 0.6)) {
+						// 高度反馈：测量值有效（非 bogus）才排队应用；无效则跳过——
+						// React 未提交 DOM 时的测量会在后续帧重新到达（见上方 #58 guard）。
 						deferredHeightFixes.push({ node: n as unknown as Parameters<typeof setDomFormContentHeight>[0], h: contentH });
-						// 高度反馈循环每帧可能触发多次；key 含目标高度，使「收敛过程」
-						// 仍能看到每个不同高度各一条，收敛后不再刷屏（见 warnOnce 注释）。
-						warnOnce(`heightFb:${nodeId}:${contentH}`,
-							'[heightFb] ' + JSON.stringify({ nodeId: nodeId.slice(0, 12), contentH, prevH: prevHeight.slice(0, -2) }));
-					} else {
-						warnOnce(`heightFb-skip:${nodeId}:${contentH}`,
-							'[heightFb SKIP] bogus ' + JSON.stringify({ nodeId: nodeId.slice(0, 12), contentH, prevH: prevHeight.slice(0, -2), ratio: prevHNum ? (contentH / prevHNum).toFixed(2) : '?' }));
-					}
+						}
 				}
 			}
 			// Base z follows draw order (graph.nodes index). Hovered /
@@ -1427,6 +1457,64 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 						if (!origin) { continue; }
 						const oid = claimStageUid(origin as unknown as Parameters<typeof claimStageUid>[0]);
 						if (!upstreamNodeIds.includes(oid)) { upstreamNodeIds.push(oid); }
+						// ★ loader「选图即用」连线即物化（2026-09-02）：上游 loader 若从未
+						//   运行（store 无快照），从其 properties 物化快照 —— 对齐 ComfyUI
+						//   LoadImage「加载即用」直觉：下游卡片的「引用」缩略图与执行链
+						//   （collectUpstreamRefs）在**连线后**立即生效，无需先单独运行
+						//   loader。幂等（有快照即跳过）；mediaAssetId 需异步解析，留在
+						//   运行时预物化兜底（WorkflowEditorPanel）。
+						const originType = String(origin.type ?? '');
+						const store = snapshotStoreRef.current;
+						if (store && isLoaderNode(originType) && store.byNode(oid).length === 0) {
+							const p = (origin.properties ?? {}) as Record<string, unknown>;
+							const kind: 'image' | 'video' | 'audio' | 'text' = originType.includes('Video') ? 'video'
+								: originType.includes('Audio') ? 'audio'
+								: originType.includes('Text') ? 'text' : 'image';
+							const ref = typeof p.image === 'string' && p.image ? p.image
+								: typeof p.directRef === 'string' && p.directRef ? p.directRef
+								: (kind === 'text' && typeof p.text === 'string' && p.text) ? p.text : '';
+							if (ref) {
+								store.put(
+									{ nodeId: oid, port: 'output', key: `${oid}:output:0`, media: { kind, ref }, index: 0 },
+									true /* skipImport */,
+								);
+							}
+						}
+						// ★ picker「选中即物化」（2026-09-02）：与 loader 同理 —— picker 是
+						//   消费型节点，自身快照恒空（图像挂在 producer 节点 ID 下），下游
+						//   节点（如 Saros.AnimatedEmoji）按 upstreamNodeIds=[picker uid] 查
+						//   快照必为空 → 卡片「引用」缩略图与执行链 findUpstreamImageRef
+						//   全部落空。picker 的选择存在 properties：directRef（跨节点直连）
+						//   或 selected_index（1-based，相对上游 batch）——据此物化一份
+						//   快照到 picker 名下。与 loader 不同点：**选择可变** → 不能幂等
+						//   跳过，必须每次核对 ref 是否一致，变了就覆盖（同 key 覆写）。
+						if (store && isPickerNode(originType)) {
+							const p = (origin.properties ?? {}) as Record<string, unknown>;
+							let wantRef = typeof p.directRef === 'string' && p.directRef ? p.directRef : '';
+							if (!wantRef) {
+								const idx = Number(p.selected_index);
+								if (Number.isFinite(idx) && idx >= 1) {
+									for (const l2 of g.links.values()) {
+										if (l2.target_id !== origin.id) { continue; }
+										const prod = g.getNodeById(l2.origin_id);
+										if (!prod) { continue; }
+										const puid = claimStageUid(prod as unknown as Parameters<typeof claimStageUid>[0]);
+										const list = store.byNode(puid).filter(e => e.media.kind === 'image');
+										const pick = list[idx - 1];
+										if (pick) { wantRef = pick.media.ref; break; }
+									}
+								}
+							}
+							if (wantRef) {
+								const cur = store.byNode(oid).find(e => e.media.kind === 'image');
+								if (!cur || cur.media.ref !== wantRef) {
+									store.put(
+										{ nodeId: oid, port: 'output', key: `${oid}:output:0`, media: { kind: 'image', ref: wantRef }, index: 0 },
+										true /* skipImport */,
+									);
+								}
+							}
+						}
 					}
 				}
 				// ── 持久 stage uid（媒体快照归档键）─────────────────────────
@@ -1445,6 +1533,27 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				if (!migratedUidsRef.current.has(stageUid)) {
 					migratedUidsRef.current.add(stageUid);
 					snapshotStoreRef.current?.renameNode(nodeId, stageUid);
+				}
+				// ★ 连线变化 → 下帧强制 remount 卡片：upstreamNodeIds 是 mount 期
+				//   一次性快照（createNodeCard options 只在挂载时传入），连线后若不
+				//   remount，下游编辑器（GridSplit/Crop/Erase…）的 upstreamNodeIds
+				//   仍是挂载时的旧值 →「无上游图像：连接图像后预览」。
+				//   包装而非覆盖 onConnectionsChange（LiteGraph 用户钩子，允许其他
+				//   消费者共存）；__sarosConnHook 标记防重复包装（节点对象跨
+				//   remount 复用）。remount 模式与上方 self-heal 一致：仅 unmount +
+				//   删缓存（不 releaseContainer），下一帧主循环自动重挂并重算
+				//   upstreamNodeIds / stageUid。
+				if (!(n as { __sarosConnHook?: boolean }).__sarosConnHook) {
+					(n as { __sarosConnHook?: boolean }).__sarosConnHook = true;
+					const prevHook = n.onConnectionsChange;
+					n.onConnectionsChange = function (this: unknown, ...args: Parameters<NonNullable<typeof n.onConnectionsChange>>) {
+						(prevHook as ((...a: unknown[]) => void) | undefined)?.apply(this, args);
+						const unmountCard = cardUnmounts.get(nodeId);
+						if (unmountCard) {
+							unmountCard();
+							cardUnmounts.delete(nodeId);
+						}
+					} as typeof n.onConnectionsChange;
 				}
 				const unmount = createNodeCard(container, meta, {
 					snapshotStore: snapshotStoreRef.current ?? undefined,
@@ -1545,14 +1654,7 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 					estimateHeight: orchRich && !fullCover ? 150 : stageMinHeight(nt),
 					estimateTop: (Math.max(n.inputs?.length ?? 0, n.outputs?.length ?? 0, 0)) * 20 + 6,
 				});
-				if (orchRich) {
-					// 编排富卡片挂上 form widget 时打点一次（每节点仅首次进入本分支）。
-					// 有这行说明 DOM 通路已生效；配合 [orchCard] 的 controls 数量即可
-					// 判断「没渲染」是通路问题还是数据源问题。
-					// eslint-disable-next-line no-console
-					console.warn('[orchForm] attached ' + JSON.stringify({ nodeId, type, fullCover }));
 				}
-			}
 			nodesForSync.push({
 				id: nodeId,
 				node: { pos: realPos, size: realSize },
@@ -1673,8 +1775,15 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			import('./WorkflowEditorPanel').then(({ abortNodeRun }) => {
 				const ok = abortNodeRun(detail.nodeId);
 				if (ok) {
-					cardStateStore.set(detail.nodeId, { runState: 'idle', progress: 0 });
-					getTaskStore().finish(detail.nodeId, false, '已取消');
+					// ★ cardStateStore 此前未定义（TS2552，运行时 ReferenceError 被
+					//   catch 吞掉）→ 取消后卡片按钮一直停在「取消」态不恢复。
+					cardStateStoreRef.current?.set(detail.nodeId, { runState: 'idle', progress: 0 });
+					// ★ finishByNode（taskId ≠ nodeId：task id 是 generate-<ts>-<rand>，
+					//   此前 finish(nodeId) 永远匹配不到 → 任务行「进行中」永不结束）；
+					//   getTaskStore 此前也从未 import（TS2304，同样 ReferenceError）。
+					import('./comfyHost/taskStore').then(({ getTaskStore }) => {
+						getTaskStore().finishByNode(detail.nodeId, false, '已取消');
+					}).catch(() => { /* ignore */ });
 				}
 			}).catch(() => { /* ignore */ });
 		};
@@ -2588,10 +2697,6 @@ function syncStoreToGraph(
 	existingGroups?: Array<Record<string, unknown>>,
 	liteCanvas?: LGraphCanvas | null,
 ): void {
-	// 诊断：打印同步的 nodes/edges 数量，帮助排查 action 创建节点后连线丢失
-	// eslint-disable-next-line no-console
-	console.warn('[syncStoreToGraph] nodes=', storeNodes.length, 'edges=', storeEdges.length,
-		'edgeIds=', storeEdges.map(e => `${e.source}->${e.target}`));
 	const wfNodes: WorkflowGraphNode[] = storeNodes.map(n => ({
 		id: n.id,
 		type: n.type as WorkflowGraphNode['type'],
@@ -2638,10 +2743,6 @@ function syncStoreToGraph(
 	// Preserve selection across the rebuild (#选中高亮一闪消失): configure()
 	// recreates every node, so lc.selected_nodes would point at dead nodes.
 	const savedSelection = snapshotSelection(liteCanvas);
-	// 诊断：configure 前的序列化图里是否真的带上了本文要连的 link
-	// eslint-disable-next-line no-console
-	console.warn('[syncStoreToGraph] BEFORE configure: keep.links.length=', (filtered.keep.links as unknown[] | undefined)?.length ?? 0,
-		'keep.links=', JSON.stringify(filtered.keep.links ?? []));
 	graph.configure({
 		...filtered.keep,
 		id: 'wf',
@@ -2660,37 +2761,6 @@ function syncStoreToGraph(
 	}
 	// Restore selection (rebind lc.selected_nodes to the rebuilt nodes).
 	restoreSelection(graph, liteCanvas, savedSelection);
-	// 诊断：configure 后验证连线是否真的存在于 graph.links，以及两端节点是否
-	// 把 link 注册到了 outputs[srcSlot].links / inputs[tgtSlot].links。
-	const rawLinks = (graph as unknown as { links?: unknown }).links;
-	const liveLinks: Array<{ id: number; origin_id?: number; target_id?: number; origin_slot?: number; target_slot?: number }> =
-		rawLinks instanceof Map ? [...(rawLinks as Map<number, { id: number; origin_id?: number; target_id?: number; origin_slot?: number; target_slot?: number }>).values()]
-			: Array.isArray(rawLinks) ? (rawLinks as Array<{ id: number; origin_id?: number; target_id?: number; origin_slot?: number; target_slot?: number }>) : [];
-	// eslint-disable-next-line no-console
-	console.warn('[syncStoreToGraph] after configure: graph.links is', rawLinks instanceof Map ? 'Map' : Array.isArray(rawLinks) ? 'array' : typeof rawLinks, 'count=', liveLinks.length);
-	for (const lk of liveLinks) {
-		const oNode = graph.getNodeById?.(lk.origin_id as number);
-		const tNode = graph.getNodeById?.(lk.target_id as number);
-		const oSlot = oNode?.outputs?.[lk.origin_slot as number];
-		const tSlot = tNode?.inputs?.[lk.target_slot as number];
-		const oOk = !!oSlot;
-		const tOk = !!tSlot;
-		// 节点是否把该 link 注册到 outputs[slot].links / inputs[slot].links ——
-		// 这才是 LiteGraph 实际绘制连线、以及 picker 经图遍历取上游的依据。
-		const oLinked = !!oSlot?.links?.includes?.(lk.id);
-		const tLinked = (tSlot as { link?: number | null } | undefined)?.link === lk.id;
-		// eslint-disable-next-line no-console
-		console.warn('[syncStoreToGraph] LINK', JSON.stringify({
-			id: lk.id, origin: lk.origin_id, origin_slot: lk.origin_slot,
-			target: lk.target_id, target_slot: lk.target_slot,
-			originNodeType: (oNode as unknown as { type?: string })?.type,
-			targetNodeType: (tNode as unknown as { type?: string })?.type,
-			originSlotExists: oOk, targetSlotExists: tOk,
-			originRegistered: oLinked, targetRegistered: tLinked,
-			originSlotName: oSlot?.name,
-			targetSlotName: tSlot?.name,
-		}));
-	}
 	// ── Post-configure link repair ──────────────────────────────────────
 	// graph.configure() 在 LiteGraph 0.17 中有时不会将 link 正确注册到
 	// node.outputs[slot].links / node.inputs[slot].links，导致连线不渲染且

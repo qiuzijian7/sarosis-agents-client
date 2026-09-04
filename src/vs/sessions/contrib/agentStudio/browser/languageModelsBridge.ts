@@ -34,12 +34,14 @@ import { IWorkbenchContribution } from '../../../../workbench/common/contributio
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ILanguageModelsService, IChatMessage, IChatMessagePart, IChatMessageToolResultPart, IChatResponsePart, IChatResponseToolUsePart, IChatResponseStepPart, ChatMessageRole, ILanguageModelChatMetadata, ChatImageMimeType } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { ensureTrailingUserBoundary, normalizeMessages } from '../common/agentRunState.js';
 import { ContextManager } from '../common/contextManager.js';
 import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING, AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING } from '../common/constants.js';
 import { join } from '../../../../base/common/path.js';
+import { inferImageGen, inferVideoGen, inferModelGen, inferAudioGen } from '../common/llmBridge.js';
 import {
 	IModelProvider,
 	IModelInfo,
@@ -49,6 +51,14 @@ import {
 	IModelOptions,
 	IChatContext,
 	IChatMessage as IAgentChatMessage,
+	IImageGenParams,
+	IImageGenResult,
+	IVideoGenParams,
+	IVideoGenResult,
+	IModel3DGenParams,
+	IModel3DGenResult,
+	IAudioGenParams,
+	IAudioGenResult,
 	ModelAuthStatus,
 	ModelCapability,
 } from '../common/providers.js';
@@ -185,13 +195,13 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		private readonly _environmentService: IEnvironmentService,
 		private readonly _configurationService: IConfigurationService,
 		private readonly _fileService: IFileService,
+		private readonly _commandService: ICommandService,
 	) {
 		super();
 		this.id = `lm:${vendor}`;
 		this.name = vendor.charAt(0).toUpperCase() + vendor.slice(1);
 		// isServerSideProvider 由各 vendor 扩展在自身 configuration 中声明。
-		// 例如 knot-agui 的 package.json 设 knot.isServerSideProvider 默认 true；
-		// codebuddy-provider 设 codebuddy.isServerSideProvider 默认 false。
+		// 例如 codebuddy-provider 的 package.json 设 codebuddy.isServerSideProvider 默认 false。
 		this.isServerSideProvider = this._configurationService.getValue<boolean>(`${vendor}.isServerSideProvider`) === true;
 	}
 
@@ -235,6 +245,18 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			// `reasoningUIType` falls through to the `'switch'` branch.
 			const supportsReasoning = this._inferSupportsReasoning(bareId, metadata);
 			const supportsImages = this._inferSupportsImages(bareId, metadata);
+			// `ILanguageModelChatMetadata` carries no text→image flag either, so provider
+			// extensions registering via `vscode.lm` cannot declare image generation.
+			// Recover it with the shared `inferImageGen` heuristic (same one used by the
+			// BYOK / built-in providers) so image models show up in the image-gen node —
+			// that node filters on `models.some(m => m.supportsImageGen)`.
+			const supportsImageGen = inferImageGen({ id: bareId, name: metadata.name, description: metadata.detail ?? metadata.tooltip });
+			// 视频 / 3D 能力同款启发式推断（编排域 `video_*` / `model_*` 前缀 +
+			// 常见模型家族名），供画布视频 / 3D 节点按 supportsVideoGen /
+			// supportsModelGen 过滤模型下拉。
+			const supportsVideoGen = inferVideoGen({ id: bareId, name: metadata.name, description: metadata.detail ?? metadata.tooltip });
+			const supportsModelGen = inferModelGen({ id: bareId, name: metadata.name, description: metadata.detail ?? metadata.tooltip });
+			const supportsAudioGen = inferAudioGen({ id: bareId, name: metadata.name, description: metadata.detail ?? metadata.tooltip });
 			const maxInput = metadata.maxInputTokens || 128000;
 		const maxOutput = metadata.maxOutputTokens || 4096;
 		// IOA 网关模型（如 hy3-ioa）的 context window 必须预留输出空间：
@@ -252,6 +274,10 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			capabilities: [ModelCapability.Chat],
 			...(supportsReasoning ? { supportsReasoning: true } : {}),
 			...(supportsImages ? { supportsImages: true } : {}),
+			...(supportsImageGen ? { supportsImageGen: true } : {}),
+			...(supportsVideoGen ? { supportsVideoGen: true } : {}),
+			...(supportsModelGen ? { supportsModelGen: true } : {}),
+			...(supportsAudioGen ? { supportsAudioGen: true } : {}),
 		});
 		}
 		return result;
@@ -469,6 +495,95 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 	notifyModelsChanged(): void {
 		this._onDidChangeModels.fire();
 		this._onDidChangeAgents.fire();
+	}
+
+	/**
+	 * 文生图：通用分发到 `${vendor}.generateImage` 命令。
+	 *
+	 * vscode.lm 注册的 vendor 扩展（如 lightai-provider）本身只承诺 chat 模型能力，
+	 * 没有 `vscode.lm.generateImage` 这种 API。因此文生图走「扩展显式注册命令」
+	 * 的方式：若 vendor 扩展注册了 `${vendor}.generateImage` 命令（参数为
+	 * `IImageGenParams` + 可选 `IChatContext`，返回 `IImageGenResult`），
+	 * 桥接就转发调用；否则抛出清晰错误。
+	 *
+	 * 现有已支持文生图能力的 BYOK provider（OpenAI 兼容 `builtInBYOKModelProvider`）不走此路径。
+	 */
+	async generateImage(params: IImageGenParams, context?: IChatContext): Promise<IImageGenResult> {
+		const commandId = `${this.vendor}.generateImage`;
+		try {
+			const result = await this._commandService.executeCommand<IImageGenResult>(commandId, params, context);
+			if (!result || !Array.isArray(result.images)) {
+				throw new Error(`Provider ${this.name} 文生图命令 ${commandId} 返回值缺少 images 数组`);
+			}
+			return result;
+		} 		catch (err: unknown) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes('not found')) {
+				throw new Error(`Provider ${this.name} 不支持文生图（扩展未实现 ${commandId} 命令）`);
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * 文生视频：与 generateImage 同模式，分发到 `${vendor}.generateVideo` 命令。
+	 * 扩展侧（如 lightai-provider 的 floodGen）注册该命令即可接入视频生成节点。
+	 */
+	async generateVideo(params: IVideoGenParams, context?: IChatContext): Promise<IVideoGenResult> {
+		const commandId = `${this.vendor}.generateVideo`;
+		try {
+			const result = await this._commandService.executeCommand<IVideoGenResult>(commandId, params, context);
+			if (!result || !Array.isArray(result.videos)) {
+				throw new Error(`Provider ${this.name} 视频生成命令 ${commandId} 返回值缺少 videos 数组`);
+			}
+			return result;
+		} catch (err: unknown) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes('not found')) {
+				throw new Error(`Provider ${this.name} 不支持视频生成（扩展未实现 ${commandId} 命令）`);
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * 3D 模型生成：与 generateImage 同模式，分发到 `${vendor}.generateModel3D` 命令。
+	 */
+	async generateModel3D(params: IModel3DGenParams, context?: IChatContext): Promise<IModel3DGenResult> {
+		const commandId = `${this.vendor}.generateModel3D`;
+		try {
+			const result = await this._commandService.executeCommand<IModel3DGenResult>(commandId, params, context);
+			if (!result || !Array.isArray(result.models)) {
+				throw new Error(`Provider ${this.name} 3D 生成命令 ${commandId} 返回值缺少 models 数组`);
+			}
+			return result;
+		} 		catch (err: unknown) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes('not found')) {
+				throw new Error(`Provider ${this.name} 不支持 3D 模型生成（扩展未实现 ${commandId} 命令）`);
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * 音频生成（TTS/音乐）：与 generateImage 同模式，分发到 `${vendor}.generateAudio` 命令。
+	 */
+	async generateAudio(params: IAudioGenParams, context?: IChatContext): Promise<IAudioGenResult> {
+		const commandId = `${this.vendor}.generateAudio`;
+		try {
+			const result = await this._commandService.executeCommand<IAudioGenResult>(commandId, params, context);
+			if (!result || !Array.isArray(result.audios)) {
+				throw new Error(`Provider ${this.name} 音频生成命令 ${commandId} 返回值缺少 audios 数组`);
+			}
+			return result;
+		} catch (err: unknown) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes('not found')) {
+				throw new Error(`Provider ${this.name} 不支持音频生成（扩展未实现 ${commandId} 命令）`);
+			}
+			throw err;
+		}
 	}
 
 	/** Collect all language models that belong to this vendor, with their resolved metadata. */
@@ -1127,6 +1242,7 @@ export class LanguageModelsToAgentOSBridge extends Disposable implements IWorkbe
 		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IFileService private readonly _fileService: IFileService,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 
@@ -1196,7 +1312,7 @@ export class LanguageModelsToAgentOSBridge extends Disposable implements IWorkbe
 				this._registered.get(vendor)!.provider.notifyModelsChanged();
 				continue;
 			}
-			const provider = new LanguageModelVendorProvider(vendor, this._lmService, this._logService, this._environmentService, this._configurationService, this._fileService);
+			const provider = new LanguageModelVendorProvider(vendor, this._lmService, this._logService, this._environmentService, this._configurationService, this._fileService, this._commandService);
 			const registration = this._agentOS.registerModelProvider(provider);
 			this._registered.set(vendor, { provider, registration });
 			this._logService.info(`[LMBridge] Registered vendor as IModelProvider: ${vendor} (id=${provider.id})`);

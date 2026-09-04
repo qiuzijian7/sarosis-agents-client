@@ -567,7 +567,7 @@ export type ChatMode = 'craft' | 'ask' | 'plan' | 'workflow';
 
 export interface IChatSendOptions {
 	readonly model?: string;
-	/** Provider ID override (e.g. 'byok', 'knot-agui'). When set together with
+	/** Provider ID override (e.g. 'byok', 'demo-agui'). When set together with
 	 *  `model`, the pair overrides the global active model selection for this
 	 *  single sendMessage call — used by workflow node-level provider/model. */
 	readonly providerId?: string;

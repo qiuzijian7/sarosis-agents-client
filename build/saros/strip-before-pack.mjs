@@ -19,7 +19,8 @@
  *   - node-pty 跨平台 prebuilds (仅保留 win32-x64, ~12MB)
  *
  * 【VsSaros 品牌下不工作 - 可安全排除】
- *   - @github/copilot (整个目录, 49MB) — 使用 Knot AG-UI, 不需要 GitHub Copilot
+ *   - @github/copilot (整个目录, 49MB) — VsSaros 使用自带的 AG-UI provider 扩展
+ *     （如 codebuddy-provider、lightai-provider），不需要 GitHub Copilot
  *   - @microsoft/1ds-* 遥测 SDK — 连接 Microsoft 端点, VsSaros 不应连 MS
  *   - @microsoft/applicationinsights-* — 同上
  *   - @microsoft/dynamicproto-js — 同上

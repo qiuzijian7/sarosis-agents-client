@@ -2431,7 +2431,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		for (const p of configuredProviders) {
 			const o = document.createElement('option');
 			o.value = p.id;
-			o.textContent = `${p.kind === 'openai' ? 'OpenAI' : p.kind === 'knot' ? 'Knot' : 'Local'} / ${p.model} (${p.dimensions}d)`;
+			o.textContent = `${p.kind === 'openai' ? 'OpenAI' : 'Local'} / ${p.model} (${p.dimensions}d)`;
 			if (p.id === embCfg.providerId) { o.selected = true; }
 			providerSelect.appendChild(o);
 		}

@@ -304,7 +304,7 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: blob: https: http://127.0.0.1:* http://localhost:* vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:; connect-src data: blob: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: blob: https: http: vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:; connect-src data: blob: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*;">
 	<title>Agent Studio</title>
 	<style nonce="${nonce}">${css}</style>
 	<style nonce="${nonce}">

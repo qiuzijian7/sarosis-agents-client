@@ -32,7 +32,7 @@ import { guiToApi, stripSarosNodesForExport } from './comfyHost/comfyApiAdapter'
 import { registerDefaultComfyTVStages, getNodeSpec } from './comfyHost/registry';
 import { getRunnerStatusStore } from './comfyHost/runnerStatusStore';
 import { spawnPickerForStage, spawnFollowUp } from './comfyHost/actionSpawn';
-import { isComfyExecutableSpec, isExecutableSpec, isPickerNode, runGraphExecution, runNodeOrStage, resolveFirstImageGenDefaults, defaultResolveLoadImageRef, type AskUserSendFn, type AskUserPayload } from './comfyHost/workflowRun';
+import { isComfyExecutableSpec, isExecutableSpec, isPickerNode, isLoaderNode, runGraphExecution, runNodeOrStage, resolveFirstImageGenDefaults, resolveMediaAssetUrl, defaultResolveLoadImageRef, type AskUserSendFn, type AskUserPayload } from './comfyHost/workflowRun';
 import { buildExecutionPlan } from './comfyHost/executionGraph';
 import { exportCanvasToWorkflowScript } from './comfyHost/canvasExport';
 import { registerStageRunner, unregisterStageRunner, registerDirectStageRunner, unregisterDirectStageRunner, materializeSnapshotEntry, type DirectStageRunResult } from './comfyHost/workflowSnapshotBridgeWebview';
@@ -569,7 +569,13 @@ export const WorkflowEditorPanel: React.FC = () => {
 		// Provider 后端节点（ModelImageGen）经 imagegen.generate RPC 执行，
 		// 不需要 ComfyUI runner；只有 Comfy 后端节点才要求 runner 在线。
 		const spec = getNodeSpec(nodeType);
-		const isProviderNode = spec?.backendKind === 'provider' || spec?.kind === 'llm';
+		// ★ Saros.AnimatedEmoji 例外（2026-09-03）：注册为 backendKind='provider'，
+		//   但其 values.backend==='comfyui' 时走 ComfyUI 视频工作流 → 需要 runner。
+		//   （此前恒按 provider 处理 → runner=undefined → comfyui 分支
+		//   resolveImageRef 读 runner.baseUrl 崩溃。）
+		const nodeDataEarly = (useWorkflowEditorStore.getState().nodes.find(n => n.id === nodeId)?.data ?? {}) as Record<string, unknown>;
+		const wantsComfyui = nodeDataEarly.backend === 'comfyui';
+		const isProviderNode = (spec?.backendKind === 'provider' || spec?.kind === 'llm') && !wantsComfyui;
 		const runner = isProviderNode ? undefined : comfyRegistryRef.current?.resolve(runnerPreference);
 		if (!canvas || (!isProviderNode && !runner)) {
 			// eslint-disable-next-line no-console
@@ -626,52 +632,133 @@ export const WorkflowEditorPanel: React.FC = () => {
 		const upstreams = state.edges
 			.filter(e => e.target === nodeId)
 			.map(e => canvas.stageUidOf(e.source) ?? e.source);
+		// 入边表（含 sourceHandle）：多输出口节点（如静态表情包 images/image）的
+		// 下游按源端口区分消费语义（转动态表情包：image 口=仅图集；images 口=独立格）。
+		const inbound = state.edges
+			.filter(e => e.target === nodeId)
+			.map(e => ({
+				source: canvas.stageUidOf(e.source) ?? e.source,
+				targetHandle: e.targetHandle ?? undefined,
+				sourceHandle: e.sourceHandle ?? undefined,
+			}));
+		// ★ 立即置 running（2026-09-02）：必须在 loader 预物化**之前**——预物化的
+		//   resolveMediaAssetUrl 是异步 fetch，放在它后面会让「点击 → 按钮变取消」
+		//   间隔数百 ms（拖资产场景更久），用户感觉点了没反应、还会再点（触发防
+		//   重复守卫）。先落状态再物化，按钮瞬变「取消」。
+		canvas.cardStateStore().set(nodeId, { runState: 'running', progress: 0 });
+		// ★ 上游 loader 预物化（2026-09-02）：LoadImage 等 no-Run loader 语义是
+		//   「选图即用」（对齐 ComfyUI LoadImage 直觉），但快照只有**运行 loader
+		//   节点**才写入 store —— 用户连上 loader 直接跑下游 → 下游
+		//   collectUpstreamRefs 拿不到图（表情包参考图丢失根因）。这里在运行前
+		//   把直接上游 loader 的选值（mediaAssetId / properties.image / directRef）
+		//   物化成快照；已有快照（运行过）则跳过。对所有消费 loader 的节点通用。
+		for (const upId of upstreams) {
+			const upNode = state.nodes.find(n => n.id === upId);
+			const upType = String(upNode?.type ?? '');
+			if (!isLoaderNode(upType)) { continue; }
+			const upUid = canvas.stageUidOf(upId) ?? upId;
+			if (!store || store.byNode(upUid).length > 0) { continue; }
+			const upValues = (upNode?.data ?? {}) as Record<string, unknown>;
+			const mediaAssetId = typeof upValues.mediaAssetId === 'string' ? upValues.mediaAssetId : '';
+			const kind: 'image' | 'video' | 'audio' | 'text' = upType.includes('Video') ? 'video'
+				: upType.includes('Audio') ? 'audio'
+				: upType.includes('Text') ? 'text' : 'image';
+			let ref = '';
+			if (mediaAssetId) {
+				ref = (await resolveMediaAssetUrl(mediaAssetId)) ?? '';
+			}
+			if (!ref && kind === 'text' && typeof upValues.text === 'string' && upValues.text) {
+				ref = upValues.text;
+			}
+			if (!ref && typeof upValues.image === 'string' && upValues.image) { ref = upValues.image; }
+			if (!ref && typeof upValues.directRef === 'string' && upValues.directRef) { ref = upValues.directRef; }
+			if (!ref) { continue; }
+			store.put(
+				{ nodeId: upUid, port: 'output', key: `${upUid}:output:0`, media: { kind, ref }, index: 0 },
+				true /* skipImport */,
+			);
+			// eslint-disable-next-line no-console
+			console.warn(`[runSingleSchemaNode] loader pre-materialized ${upType} → ${upUid} (${kind})`);
+		}
 		// 归档键：onNodeRun 已带 stageUid；右键菜单 Run 没有 → 从画布补齐。
 		const snapKey = stageUid ?? canvas.stageUidOf(nodeId) ?? nodeId;
-		// ComfyTV auto-picker: running an ImageStage / VideoStage with no
-		// downstream link spawns the matching picker stage and wires output[0]
-		// → picker.batch (faithful to useStageNode.onRunRequest).
+		// ★ 防重复运行 + 立即置 running + AbortController 占位（2026-09-02）：
+		//   三件事必须在**预物化 await 之前**——否则（a）await 期间二次点击可穿过
+		//   守卫启动并发运行；（b）按钮要等 resolveMediaAssetUrl fetch 才变「取消」。
+		//   此前连点「生成」会启动 N 个并发 runNodeOrStage，各自的 AbortController
+		//   在 _nodeAbortMap 同 key 互相覆盖 → 旧 controller 泄漏且不可取消、任务
+		//   面板出现多条「进行中」、图像生成费用×N。编辑器内嵌按钮（表情包/动态
+		//   表情等）与卡片 ▶ 都经过这里，守卫一处全覆盖。
+		//   ★ 守卫还必须在 taskStore.add 之前：被拒的重复运行不得残留任务行。
+		if (_nodeAbortMap.has(nodeId)) {
+			// eslint-disable-next-line no-console
+			console.warn('[runSingleSchemaNode] already running, ignore ' + JSON.stringify({ nodeId, nodeType }));
+			canvas.cardStateStore().set(nodeId, { runState: 'running', progress: 0 });
+			if (failLoud) { throw new Error('stage(): 节点已在运行中'); }
+			return;
+		}
+		canvas.cardStateStore().set(nodeId, { runState: 'running', progress: 0 });
+		// AbortController 占位（守卫与执行共用同一实例；取消/完成时 delete）
+		const abortCtrl = new AbortController();
+		_nodeAbortMap.set(nodeId, abortCtrl);
 		spawnPickerForStage(nodeId, nodeType);
 		setComfyRunState('running');
 		setComfyRunMsg(null);
 		// 任务进度面板：注册出图任务（单节点），onProgress 实时回填进度。
-		const taskId = getTaskStore().add('generate', nodeType, { message: '排队中…' });
+		// nodeId 关联 → 面板行内「取消」按钮可调 abortNodeRun 中止本任务。
+		const taskId = getTaskStore().add('generate', nodeType, { message: '排队中…', nodeId });
 		getTaskStore().start(taskId, '提交到 ComfyUI…');
-		// 立即把卡片状态置为 running（按钮变 cancel + RunProgress 出现）。原因：
-		// runNodeOrStage → runStageWorkflow → runner.invoke 的 onProgress 只在
-		// ComfyUI /history 返回 status_str 既非 success 也非 error 时才回调；快速出图
-		// (SDXL 5-10s) 下首轮轮询就 break 到 success 分支，onProgress 一次都没触发，
-		// cardState 保持 'idle' → 按钮一直「生成批图」、OUTPUT 永不显示（因为
-		// showOutput=runState==='success'）、用户感觉「点了没反应」。先设 running 兜底。
-		canvas.cardStateStore().set(nodeId, { runState: 'running', progress: 0 });
-		// ★ 创建 AbortController：支持 nodeCard「取消」按钮中止运行
-		const abortCtrl = new AbortController();
-		_nodeAbortMap.set(nodeId, abortCtrl);
 		// eslint-disable-next-line no-console
 		console.warn('[runSingleSchemaNode] invoking runNodeOrStage ' + JSON.stringify({ nodeId, nodeType, specKind: spec?.kind, backendKind: spec?.backendKind }));
-		const r = await runNodeOrStage({
-			// Provider 节点不读 runner；Comfy 节点在此前已确保 runner 存在。
-			runner: runner as unknown as Parameters<typeof runNodeOrStage>[0]['runner'],
-			nodeId,
-			// ★ 快照归档键 = stageUid（与 nodeCard 读侧一致）。缺省回退 nodeId，
-			//   保证「写入 nodeId、读取 stageUid」的不一致不再发生。
-			snapshotKey: snapKey,
-			type: nodeType,
-			getSpec: (t) => getNodeSpec(t),
-			values,
-			upstreams,
-			store,
-			signal: abortCtrl.signal,
-			onProgress: (p) => {
-				const prog = p.progress ?? p.value ?? 50;
-				canvas.cardStateStore().set(nodeId, { runState: 'running', progress: prog });
-				getTaskStore().update(taskId, { progress: prog, message: '生成中…' });
-				// ★ stage() 桥进度回推：ComfyUI 生成进度 → host 聊天工具卡。
-				onProgress?.(prog, `生成中 ${prog}%`);
-			},
-			// ★ 单节点执行也需注入 imagegen RPC 通道（ModelImageGen 等 provider 后端节点依赖）。
-			sendImageGen: (payload) => sendRequest('imagegen.generate', payload, 180_000),
-		});
+		let r: Awaited<ReturnType<typeof runNodeOrStage>>;
+		try {
+			r = await runNodeOrStage({
+				// Provider 节点不读 runner；Comfy 节点在此前已确保 runner 存在。
+				runner: runner as unknown as Parameters<typeof runNodeOrStage>[0]['runner'],
+				nodeId,
+				// ★ 快照归档键 = stageUid（与 nodeCard 读侧一致）。缺省回退 nodeId，
+				//   保证「写入 nodeId、读取 stageUid」的不一致不再发生。
+				snapshotKey: snapKey,
+				type: nodeType,
+				getSpec: (t) => getNodeSpec(t),
+				values,
+				upstreams,
+				inbound,
+				store,
+				signal: abortCtrl.signal,
+				onProgress: (p) => {
+					const prog = p.progress ?? p.value ?? 50;
+					// message（如「AI 抠图模型下载中 12/176MB」）透传到卡片 caption 与任务行。
+					const msg = (p as { message?: string }).message;
+					canvas.cardStateStore().set(nodeId, { runState: 'running', progress: prog, ...(msg ? { message: msg } : {}) });
+					getTaskStore().update(taskId, { progress: prog, message: msg || '生成中…' });
+					// ★ stage() 桥进度回推：ComfyUI 生成进度 → host 聊天工具卡。
+					onProgress?.(prog, msg || `生成中 ${prog}%`);
+				},
+				// ★ 单节点执行也需注入 imagegen RPC 通道（ModelImageGen 等 provider 后端节点依赖）。
+				sendImageGen: (payload) => sendRequest('imagegen.generate', payload, 180_000),
+				// 视频 / 3D 生成节点 RPC（Saros.ModelVideoGen / Saros.Model3DGen）。
+				// 视频生成耗时长（1-5 分钟），超时放宽到 10 分钟。
+				sendVideoGen: (payload) => sendRequest('videogen.generate', payload, 600_000),
+				sendModel3DGen: (payload) => sendRequest('modelgen.generate', payload, 600_000),
+				// 文本生成节点 RPC（Saros.TextGen）：provider.chat 流式聚合，chat 通常秒级返回
+				sendTextGen: (payload) => sendRequest('textgen.generate', payload, 180_000),
+				// 音频生成节点 RPC（Saros.AudioGen）：音乐类生成可达数分钟
+				sendAudioGen: (payload) => sendRequest('audiogen.generate', payload, 600_000),
+			});
+		} catch (err) {
+			// ★ 任何 executor 内部未捕获异常（如 ReferenceError、RPC reject 未被
+			//   executor 自身 catch）都必须落到节点卡片 ErrorBanner，否则「点运行
+			//   没反应、UI 无报错」。与下方 r.status!=='success' 分支保持一致。
+			_nodeAbortMap.delete(nodeId);
+			const errMsg = err instanceof Error ? err.message : String(err);
+			setComfyRunState('failed');
+			setComfyRunMsg('节点失败（详细原因见卡片）');
+			canvas.cardStateStore().set(nodeId, { runState: 'error', progress: 0, errorMsg: errMsg });
+			getTaskStore().finish(taskId, false, errMsg);
+			if (failLoud) { throw new Error(`stage(): 节点执行失败（${errMsg}）`); }
+			return;
+		}
 		// ★ 运行结束（成功/失败/取消）→ 清理 abort 控制器
 		_nodeAbortMap.delete(nodeId);
 		if (r.status === 'success') {
@@ -1133,6 +1220,13 @@ const handleExecute = useCallback(async () => {
 					getTaskStore().update(taskStoreId, { message: `执行节点 ${id}…` });
 				},
 				sendImageGen: (payload) => sendRequest('imagegen.generate', payload, 180_000),
+				// 视频 / 3D 生成节点 RPC（Saros.ModelVideoGen / Saros.Model3DGen，超时 10 分钟）
+				sendVideoGen: (payload) => sendRequest('videogen.generate', payload, 600_000),
+				sendModel3DGen: (payload) => sendRequest('modelgen.generate', payload, 600_000),
+				// 文本生成节点 RPC（Saros.TextGen）：provider.chat 流式聚合
+				sendTextGen: (payload) => sendRequest('textgen.generate', payload, 180_000),
+				// 音频生成节点 RPC（Saros.AudioGen）
+				sendAudioGen: (payload) => sendRequest('audiogen.generate', payload, 600_000),
 			// M3: Saros.Agent 编排节点 → workflow.runAgentNode（browser 侧 startWorkflowChild 桥）
 			runAgentNode: (payload, timeoutMs) => sendRequest('workflow.runAgentNode', payload, timeoutMs ?? 600_000),
 			// P1: Saros.AskUser 交互节点 → renderer 侧模态弹窗（暂停图执行等用户选择）

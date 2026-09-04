@@ -1,7 +1,7 @@
 /*---------------------------------------------------------------------------------------------
  *  AG-UI to ChatMessage adapter (minimal correct version)
  *
- *  Converts LanguageModelResponsePart (received from knot-agui extension)
+ *  Converts LanguageModelResponsePart (received from demo-agui extension)
  *  to unified ChatMessage format (following void project's approach).
  *
  *  This adapter is used in agentOSService.ts inside the streaming loop.
