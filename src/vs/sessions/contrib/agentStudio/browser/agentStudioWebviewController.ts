@@ -630,6 +630,12 @@ export class AgentStudioWebviewController extends Disposable {
 			]);
 			bundleJs = jsContent.value.toString();
 			bundleCss = cssContent.value.toString();
+			// ★ bundle 版本自报（2026-09-04）：让运行日志直接证明面板加载的是哪份
+			//   webview.js（排查「修复不生效 = pool 缓存/旧实例」问题）。
+			try {
+				const bundleStat = await this.fileService.stat(URI.joinPath(mediaUri, 'webview.js'));
+				this.logService.info(`[AS-BUNDLE] cold-path inline bundle mtime=${bundleStat?.mtime ?? '?'} len=${bundleJs.length}`);
+			} catch { /* stat 失败不影响加载 */ }
 		} catch (err) {
 			this.logService.error('[AgentStudioWebviewController] Failed to read inline bundles, falling back to external refs', err);
 		}

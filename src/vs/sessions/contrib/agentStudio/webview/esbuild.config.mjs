@@ -2,10 +2,38 @@
 import * as esbuild from 'esbuild';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { readdirSync, unlinkSync, rmdirSync, statSync } from 'fs';
+import { readdirSync, unlinkSync, rmdirSync, statSync, copyFileSync, mkdirSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWatch = process.argv.includes('--watch');
+
+/**
+ * ★ 产物自动同步（2026-09-04）：运行时（agentStudioWebviewPool/controller）从
+ * `out/vs/sessions/contrib/agentStudio/webview/media/` 读 bundle——此前 watch /
+ * build 都只写 `webview/media/`，需要手动复制才能生效（忘复制 = 「修复不生效」）。
+ * 挂 onEnd 后 watch 增量与一次性构建都自动同步，两条链只剩一条要手动跑
+ * （visual 沙箱见 visual/build.mjs --watch）。
+ */
+const syncToOutPlugin = {
+	name: 'sync-to-out',
+	setup(build) {
+		build.onEnd(() => {
+			// __dirname = <root>/src/vs/sessions/contrib/agentStudio/webview → 上 6 层 = 仓库根
+			const outDir = resolve(
+				__dirname, '..', '..', '..', '..', '..', '..',
+				'out', 'vs', 'sessions', 'contrib', 'agentStudio', 'webview', 'media',
+			);
+			try {
+				mkdirSync(outDir, { recursive: true });
+				for (const f of ['webview.js', 'webview.css']) {
+					copyFileSync(resolve(__dirname, 'media', f), resolve(outDir, f));
+				}
+			} catch (err) {
+				console.error('[esbuild] sync-to-out failed:', err);
+			}
+		});
+	},
+};
 
 function cleanMedia() {
 	const mediaDir = resolve(__dirname, 'media');
@@ -68,6 +96,7 @@ const buildOptions = {
 	pure: isWatch ? [] : ['console.log', 'console.info', 'console.debug', 'console.trace'],
 	// External - VS Code API is provided by the webview host
 	external: [],
+	plugins: [syncToOutPlugin],
 	logLevel: 'info',
 };
 

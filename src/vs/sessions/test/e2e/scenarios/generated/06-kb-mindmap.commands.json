@@ -1,0 +1,49 @@
+{
+	"scenario": "Scenario: KB generates and shows a mindmap for the imported notes",
+	"generatedAt": "2026-09-04T00:00:00.000Z",
+	"note": "Semantic commands — re-run 'npm run generate' if UI labels change. Depends on the KB mock pre-seed in web.test.ts (vault 'e2e-kb-vault', mock KB chat model); the generated canvas name 'React_Hooks.canvas' derives from the first mock LLM node title.",
+	"steps": [
+		{
+			"description": "Click the 知识库 (Knowledge Base) button in the activity bar",
+			"commands": [
+				"click tab \"知识库\""
+			]
+		},
+		{
+			"description": "Verify the knowledge base view shows the vault 我的知识库",
+			"commands": [
+				"# ASSERT_VISIBLE: 我的知识库"
+			]
+		},
+		{
+			"description": "Verify the imported note is visible in the notes section",
+			"commands": [
+				"# ASSERT_VISIBLE: React Hooks 与函数组件.md"
+			]
+		},
+		{
+			"description": "Click the 思维导图 (mindmap) button in the knowledge base header",
+			"commands": [
+				"click button \"思维导图\""
+			]
+		},
+		{
+			"description": "Verify a mindmap editor tab opens with the generated canvas file",
+			"commands": [
+				"# ASSERT_VISIBLE: React_Hooks.canvas"
+			]
+		},
+		{
+			"description": "Verify the generated mindmap node useState is visible in the canvas editor",
+			"commands": [
+				"# ASSERT_VISIBLE: useState"
+			]
+		},
+		{
+			"description": "Verify the generated mindmap node useEffect is visible in the canvas editor",
+			"commands": [
+				"# ASSERT_VISIBLE: useEffect"
+			]
+		}
+	]
+}

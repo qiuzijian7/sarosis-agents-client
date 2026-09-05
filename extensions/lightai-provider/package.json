@@ -51,7 +51,7 @@
 				"icon": "$(plug)"
 			},
 			{
-				"command": 			"lightai.refreshModels",
+				"command": "lightai.refreshModels",
 				"title": "LightAI: 获取模型信息",
 				"icon": "$(sync)"
 			},
@@ -284,8 +284,9 @@
 		"watch": "node ../../node_modules/typescript/bin/tsc -watch -p ./"
 	},
 	"dependencies": {
+		"playwright-core": "^1.62.1",
 		"saros-shared": "file:../shared",
-		"playwright-core": "^1.62.1"
+		"vssaros": "file:../.."
 	},
 	"devDependencies": {
 		"@types/node": "22.x",

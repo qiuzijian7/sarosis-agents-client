@@ -373,6 +373,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		header.appendChild(graphBtn);
 		const mindmapBtn = $('span.kb-hbtn');
 		mindmapBtn.textContent = '🧠'; mindmapBtn.title = '思维导图（打开或生成 .canvas）';
+		mindmapBtn.setAttribute('role', 'button');
+		mindmapBtn.setAttribute('aria-label', '思维导图');
 		mindmapBtn.onclick = () => void this._openMindmap();
 		header.appendChild(mindmapBtn);
 		const refreshBtn = $('span.kb-hbtn');

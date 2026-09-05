@@ -87,14 +87,14 @@ export function searchOutcomeHint(
 		parts.push(
 			'ripgrep is unavailable in this environment — content search ran as a slow directory walk ' +
 			'(file-name filter applied, but very large trees may be only partially scanned before the visit cap). ' +
-			'Prefer: (1) narrow path_filter to an exact subdirectory or file path, (2) file_read on the known path, ' +
+			'Prefer: (1) narrow path to an exact subdirectory or file path, (2) file_read on the known path, ' +
 			'or (3) search_files to locate the exact file first.'
 		);
 	} else if (includeGlob) {
 		parts.push(
 			`0 matches with include filter "${includeGlob}". The path filter may be too restrictive: ` +
 			'paths are matched RELATIVE to each project root — do NOT prefix with the root folder name. ' +
-			'Consider retrying without path_filter.'
+			'Consider retrying without path.'
 		);
 	} else {
 		parts.push(
@@ -106,7 +106,7 @@ export function searchOutcomeHint(
 		parts.push(
 			`search_code returned no matches ${streak} times in a row. Rewriting the query with more symbol guesses is not working — ` +
 			'STOP retrying search_code with similar queries. Instead: (1) use search_graph / query_graph for semantic/structural lookup, ' +
-			'or (2) run search_files to confirm the exact symbol/file name first, or (3) drop path_filter and search wider.'
+			'or (2) run search_files to confirm the exact symbol/file name first, or (3) drop path and search wider.'
 		);
 	}
 	// ★ 搜索范围透明化（2026-08-20，日志 1787217670299）——必须始终回显，让模型能

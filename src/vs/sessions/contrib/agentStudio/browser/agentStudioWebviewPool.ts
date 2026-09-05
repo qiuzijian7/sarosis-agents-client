@@ -78,6 +78,10 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 	/** Cached inline bundles (read once, reused for all warm instances). */
 	private _bundleJs: string | undefined;
 	private _bundleCss: string | undefined;
+	/** webview.js 的 mtime（bundle 缓存失效依据，见 _ensureBundles）。 */
+	private _bundleMtime = 0;
+	/** 当前 warm 实例渲染时所用的 bundle mtime（过期实例在 acquire 丢弃）。 */
+	private _warmBundleMtime = 0;
 
 	constructor(
 		@IWebviewService private readonly webviewService: IWebviewService,
@@ -89,7 +93,8 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 	}
 
 	get hasWarmWebview(): boolean {
-		return !!this._warmInstance;
+		// bundle 更新后过期 warm 实例不算 warm（acquire 会丢弃 → 冷路径）。
+		return !!this._warmInstance && this._warmBundleMtime === this._bundleMtime;
 	}
 
 	get isWarming(): boolean {
@@ -143,6 +148,22 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 			return undefined;
 		}
 
+		// ★ bundle 热更新（2026-09-04）：warm 实例渲染于旧 bundle（_ensureBundles
+		//   按 mtime 检测到磁盘更新后），丢弃过期实例——调用方走冷路径，用新
+		//   bundle 现创建面板。否则「改了 webview 代码不生效」会一直复现。
+		if (this._warmBundleMtime !== this._bundleMtime) {
+			this.logService.info(
+				`[AgentStudioWebviewPool] acquire() — warm instance predates bundle reload ` +
+				`(instance mtime=${this._warmBundleMtime}, disk mtime=${this._bundleMtime}), discarding → cold path`,
+			);
+			this._warmInstance = undefined;
+			instance.webview.dispose();
+			instance.container.remove();
+			// 立即补 warm（用新 bundle），下次 acquire 恢复热路径。
+			void this.startWarming();
+			return undefined;
+		}
+
 		this._warmInstance = undefined;
 		this.logService.info(
 			`[AgentStudioWebviewPool] acquire() — handing off warm webview ` +
@@ -164,10 +185,24 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 	}
 
 	private async _ensureBundles(): Promise<{ js: string; css: string } | undefined> {
-		if (this._bundleJs && this._bundleCss) {
-			return { js: this._bundleJs, css: this._bundleCss };
-		}
 		const mediaUri = this._getMediaUri();
+		// ★ bundle 按 mtime 失效（2026-09-04）：此前 read once 常驻缓存——esbuild
+		//   重建 out/ 后 warm pool 仍旧用旧代码，表现为「修复不生效，必须 Reload
+		//   Window」。现在每次 ensure 先 stat webview.js：mtime 变化即重读，下次
+		//   开面板自动加载新 bundle。stat 失败回退旧行为（用缓存/初次读取）。
+		let mtime = 0;
+		try {
+			const stat = await this.fileService.stat(URI.joinPath(mediaUri, 'webview.js'));
+			mtime = stat.mtime ?? 0;
+		} catch { /* stat 失败不阻塞 */ }
+		if (this._bundleJs && this._bundleCss) {
+			if (mtime <= 0 || mtime === this._bundleMtime) {
+				return { js: this._bundleJs, css: this._bundleCss };
+			}
+			this.logService.info(
+				`[AgentStudioWebviewPool] webview.js changed on disk (mtime ${this._bundleMtime} → ${mtime}) — reloading bundle`,
+			);
+		}
 		try {
 			const [jsContent, cssContent] = await Promise.all([
 				this.fileService.readFile(URI.joinPath(mediaUri, 'webview.js')),
@@ -175,6 +210,9 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 			]);
 			this._bundleJs = jsContent.value.toString();
 			this._bundleCss = cssContent.value.toString();
+			this._bundleMtime = mtime;
+			// ★ bundle 版本自报：日志直接证明 pool 加载的 webview.js 版本。
+			this.logService.info(`[AS-BUNDLE] pool bundle cached mtime=${mtime} len=${this._bundleJs.length}`);
 			return { js: this._bundleJs, css: this._bundleCss };
 		} catch (err) {
 			this.logService.warn('[AgentStudioWebviewPool] failed to read bundles:', err);
@@ -253,6 +291,9 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 		}
 
 		this._warmInstance = { webview, container, readyTs: result };
+		// 记录渲染本实例所用的 bundle 版本（mtime）——bundle 热更新后过期实例在
+		// acquire() 时被丢弃（见 acquire 的 mtime 检查）。
+		this._warmBundleMtime = this._bundleMtime;
 		container.setAttribute('data-agent-studio-pool', 'warm');
 
 		this.logService.info(

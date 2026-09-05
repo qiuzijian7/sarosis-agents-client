@@ -265,17 +265,18 @@ function parseCells(raw: string, count: number): EmojiStageCell[] {
  * ComfyUI 模型下拉选项（分组）：
  *  - group 'Checkpoint'：SDXL 等传统 checkpoint（CheckpointLoaderSimple，checkpoints/）
  *  - group 'Diffusion'：Qwen-Image / Flux 等新一代 diffusion 模型（UNETLoader，
- *    diffusion_models/）—— 「Qwen 贴纸」模板即用此类（unet_name）。
- * 两类模型工作流结构不同：checkpoint 模板配 SDXL 模板、Diffusion 模型配
- * 「Qwen 贴纸」模板，选错组合会被 ComfyUI 报加载错误（文件不在对应目录）。
+ *    diffusion_models/）——「Qwen 贴纸」模板即用此类（unet_name）。
+ * ★ 2026-09-04 起执行器按 value 前缀（ckpt:/unet:）+ 文件名判族**动态组装**
+ *   工作流（emojiModelAdapt），两类模型任意选择都能正确生成——本下拉不再
+ *   需要与「工作流」widget 手工配对。
  */
 export interface ComfyModelOption { label: string; value: string; group: string }
 
 /** /object_info 拉取失败时的兜底列表。 */
 const COMFY_MODEL_FALLBACK: ComfyModelOption[] = [
-  { label: 'sd_xl_base_1.0.safetensors', value: 'sd_xl_base_1.0.safetensors', group: 'Checkpoint 模型' },
-  { label: 'qwen_image_2512_fp8_e4m3fn.safetensors', value: 'qwen_image_2512_fp8_e4m3fn.safetensors', group: 'Diffusion 模型' },
-  { label: 'dreamshaper_8.safetensors', value: 'dreamshaper_8.safetensors', group: 'Checkpoint 模型' },
+  { label: 'sd_xl_base_1.0.safetensors', value: 'ckpt:sd_xl_base_1.0.safetensors', group: 'Checkpoint 模型' },
+  { label: 'qwen_image_2512_fp8_e4m3fn.safetensors', value: 'unet:qwen_image_2512_fp8_e4m3fn.safetensors', group: 'Diffusion 模型' },
+  { label: 'dreamshaper_8.safetensors', value: 'ckpt:dreamshaper_8.safetensors', group: 'Checkpoint 模型' },
 ];
 
 /**
@@ -290,9 +291,20 @@ type ComfyObjectInfo = Record<string, {
   input?: { required?: Record<string, [string[], Record<string, unknown>]> };
 }>;
 
+/** 模型列表诊断日志：console + 沙箱状态栏（canvasHost 监听 sandbox-log 事件）。 */
+function sandboxModelLog(text: string): void {
+  console.info('[sandbox/emoji-models]', text);
+  try {
+    window.dispatchEvent(new CustomEvent('sandbox-log', { detail: { text: '[模型列表] ' + text, cls: 'dim' } }));
+  } catch { /* 非沙箱宿主时无状态栏，忽略 */ }
+}
+
 async function fetchComfyModels(baseUrl: string): Promise<ComfyModelOption[]> {
   const cached = comfyModelsCache.get(baseUrl);
-  if (cached) { return cached; }
+  if (cached) {
+    sandboxModelLog(`命中缓存（${cached.length} 项，baseUrl=${baseUrl}）——刷新页面才会重拉`);
+    return cached;
+  }
   const base = baseUrl.replace(/\/$/, '');
   const pick = (json: ComfyObjectInfo, node: string, field: string): string[] => {
     const list = json?.[node]?.input?.required?.[field]?.[0];
@@ -305,14 +317,24 @@ async function fetchComfyModels(baseUrl: string): Promise<ComfyModelOption[]> {
     fetch(`${base}/object_info/CheckpointLoaderSimple`).then(r => { if (!r.ok) { throw new Error(String(r.status)); } return r.json(); }),
     fetch(`${base}/object_info/UNETLoader`).then(r => { if (!r.ok) { throw new Error(String(r.status)); } return r.json(); }),
   ]);
-  const ckList = ck.status === 'fulfilled' ? pick(ck.value, 'CheckpointLoaderSimple', 'ckpt_name') : [];
-  const unList = un.status === 'fulfilled' ? pick(un.value, 'UNETLoader', 'unet_name') : [];
-  if (ckList.length === 0 && unList.length === 0) { return COMFY_MODEL_FALLBACK; }
+  const ckOk = ck.status === 'fulfilled';
+  const unOk = un.status === 'fulfilled';
+  const ckList = ckOk ? pick(ck.value, 'CheckpointLoaderSimple', 'ckpt_name') : [];
+  const unList = unOk ? pick(un.value, 'UNETLoader', 'unet_name') : [];
+  sandboxModelLog(`baseUrl=${base}  CheckpointLoaderSimple ${ckOk ? 'ok' : 'FAILED(' + String(ck.status === 'rejected' ? ck.reason : '') + ')'} → ck=${ckList.length} 个；UNETLoader ${unOk ? 'ok' : 'FAILED'} → unet=${unList.length} 个`);
+  if (ckList.length === 0 && unList.length === 0) {
+    sandboxModelLog('两类都为空 → 回退内置兜底列表（3 项）');
+    return COMFY_MODEL_FALLBACK;
+  }
+  // ★ value 带来源前缀（2026-09-04）：ckpt:xxx / unet:xxx —— 执行器据此选择
+  //   CheckpointLoaderSimple 或 UNETLoader 并按文件名判族组装工作流（模型驱动，
+  //   不再依赖用户手工配对「工作流模板 × 模型」）。label 保持纯文件名供展示。
   const models: ComfyModelOption[] = [
-    ...ckList.map(v => ({ label: v, value: v, group: 'Checkpoint 模型' })),
-    ...unList.map(v => ({ label: v, value: v, group: 'Diffusion 模型' })),
+    ...ckList.map(v => ({ label: v, value: `ckpt:${v}`, group: 'Checkpoint 模型' })),
+    ...unList.map(v => ({ label: v, value: `unet:${v}`, group: 'Diffusion 模型' })),
   ];
   comfyModelsCache.set(baseUrl, models);
+  sandboxModelLog(`下拉共 ${models.length} 项（Checkpoint ${ckList.length} 在前 + Diffusion ${unList.length} 在后）；当前选中值若不在列表内会被自动替换`);
   return models;
 }
 
@@ -330,7 +352,7 @@ export function StatEmojiStageEditor({
   const [selectedIndex, setSelectedIndex] = React.useState<number>(initial.selectedIndex ?? 0);
   // ── 生成渠道（2026-09-02）：ComfyUI / Provider 选项卡 ─────────────────────
   const [backend, setBackend] = React.useState<EmojiBackend>(initial.backend === 'provider' ? 'provider' : 'comfyui');
-  const [comfyModel, setComfyModel] = React.useState<string>(initial.comfyModel || COMFY_MODEL_FALLBACK[0]);
+  const [comfyModel, setComfyModel] = React.useState<string>(initial.comfyModel || COMFY_MODEL_FALLBACK[0].value);
   const [providerId, setProviderId] = React.useState<string>(initial.providerId || '');
   const [modelId, setModelId] = React.useState<string>(initial.modelId || '');
   // ── 生成图像大小（2026-09-02）：整版图集分辨率 ───────────────────────────
@@ -357,10 +379,14 @@ export function StatEmojiStageEditor({
     });
     return () => { cancelled = true; };
   }, [runner.ready, runner.baseUrl]);
-  // 选中值不在列表（首拉完成/缓存变更）→ 联动第一个
+  // 选中值不在列表（首拉完成/模板默认缺失本机模型）→ 自动落到第一个本机 Checkpoint：
+  // 执行器按 value 前缀判族组装工作流——选 Diffusion 模型也能正确生成（不再 400）。
   React.useEffect(() => {
-    if (comfyModels.length > 0 && !comfyModels.includes(comfyModel)) {
-      setComfyModel(comfyModels[0]);
+    if (comfyModels.length === 0) { return; }
+    const val = (m: unknown): string => (typeof m === 'string' ? m : String((m as ComfyModelOption)?.value ?? ''));
+    if (!comfyModels.some(m => val(m) === comfyModel)) {
+      const firstCk = comfyModels.find(m => typeof m === 'string' || (m as ComfyModelOption).group === 'Checkpoint 模型');
+      setComfyModel(val(firstCk ?? comfyModels[0]));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [comfyModels]);
@@ -396,14 +422,12 @@ export function StatEmojiStageEditor({
   //   属于该组时自动切到组内第一个。
   // ⚠ 必须放在 workflow 定义之后：依赖数组渲染期求值，放前面会 TDZ 崩溃
   //   （曾导致整个节点富卡片渲染空白）。
-  React.useEffect(() => {
-    const group = /qwen/i.test(workflow ?? '') ? 'Diffusion 模型' : 'Checkpoint 模型';
-    const visible = comfyModels.filter(m => m.group === group);
-    if (visible.length === 0) { return; }
-    if (!visible.some(m => m.value === comfyModel)) {
-      setComfyModel(visible[0].value);
-    }
-  }, [workflow, comfyModels, comfyModel]);
+  // ★ 模型自由选择（不限用途）：执行侧按所选模型的组**自动配对工作流**——
+  //   Diffusion → Qwen 贴纸模板（UNETLoader）；Checkpoint → 图集/透明模板（ckpt_name）。
+  //   所选模型不在本机列表时回退按 workflow 推断。
+  const selectedModelGroup = comfyModels.find(m => m.value === comfyModel)?.group
+    ?? (/qwen/i.test(workflow ?? '') ? 'Diffusion 模型' : 'Checkpoint 模型');
+  const recGroup = selectedModelGroup;
 
   const cellCount = rows * cols;
   const [cells, setCells] = React.useState<EmojiStageCell[]>(() => parseCells(initial.cells, cellCount));
@@ -428,6 +452,7 @@ export function StatEmojiStageEditor({
       cells: JSON.stringify(cells),
       backend,
       comfy_model: comfyModel,
+      comfy_model_group: selectedModelGroup,
       provider: providerId,
       model: modelId,
       size,
@@ -506,12 +531,20 @@ export function StatEmojiStageEditor({
               style={{ flex: 1, minWidth: 0, height: 24, fontSize: 10, padding: '0 4px', background: '#17181c', color: 'var(--vscode-foreground, #e8e8e8)', border: '1px solid rgba(255,255,255,.14)', borderRadius: 4 }}
             >
               {comfyModels.length === 0 && <option value="">（ComfyUI 未连接）</option>}
-              {/* ★ 只显示与当前模板匹配的模型组：Qwen 贴纸 → Diffusion；SDXL → Checkpoint */}
+              {/* ★ 全量自由选择：所选模型组决定执行侧自动配对的工作流——
+                  Diffusion → Qwen 贴纸模板；Checkpoint → 图集/透明模板（不 400） */}
               {(() => {
-                const group = /qwen/i.test(workflow ?? '') ? 'Diffusion 模型' : 'Checkpoint 模型';
-                const visible = comfyModels.filter(m => m.group === group);
-                if (visible.length === 0) { return <option value="">（当前模板无可用模型——检查 ComfyUI 连接与模型目录）</option>; }
-                return visible.map(m => <option key={m.value} value={m.value}>{m.label}</option>);
+                const ck = comfyModels.filter(m => m.group === 'Checkpoint 模型');
+                const un = comfyModels.filter(m => m.group === 'Diffusion 模型');
+                const grp = (id: string, label: string, list: typeof ck, top: boolean) => (list.length ? (
+                  <optgroup key={id} label={(top ? '★ ' : '') + label}>
+                    {list.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                  </optgroup>
+                ) : null);
+                return [
+                  grp('ck', 'Checkpoint 模型（自动配 图集/透明 模板）', ck, selectedModelGroup === 'Checkpoint 模型'),
+                  grp('un', 'Diffusion 模型（自动配 Qwen 贴纸 模板）', un, selectedModelGroup === 'Diffusion 模型'),
+                ];
               })()}
             </select>
           </div>

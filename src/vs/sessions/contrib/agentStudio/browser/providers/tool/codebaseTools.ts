@@ -175,7 +175,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				`为避免长时间卡顿，请在继续前先询问用户：是否需要在对应项目文件夹下构建索引？\n` +
 				`${tpl ? tpl + '\n' : ''}` +
 				`用户确认后，可调用 index_repository（推荐带上 exclude_dirs 缩小范围）；` +
-				`若用户拒绝，则改用 search_code / search_files 这类不依赖索引的文件系统搜索，并尽量带 path_filter 收敛到具体子目录。`,
+				`若用户拒绝，则改用 search_code / search_files 这类不依赖索引的文件系统搜索，并尽量带 path 收敛到具体子目录。`,
 			);
 		};
 
@@ -1213,7 +1213,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				// .gitignore + 默认 exclude 两层挡住），最后退化为 execute_code 跑 python
 				// 手工扫文件。放行已实现（searchScopeOverride），但必须在 description 里
 				// 说出来，否则模型不知道这条路可走。
-				'Dependency sources ARE searchable: set path_filter to the package directory (e.g. node_modules/@scope/pkg/dist) and ' +
+				'Dependency sources ARE searchable: set path to the package directory (e.g. node_modules/@scope/pkg/dist) and ' +
 				'default ignore rules for that directory are lifted automatically — never hand-roll a script to read a bundle. ' +
 				'Output may be truncated, so use targeted queries. Modes: compact (default, matching lines, token-efficient), full (with surrounding source), files (paths only).',
 			inputSchema: {
@@ -1222,7 +1222,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				query: { type: 'string', description: 'Regex search pattern. Multi-word queries auto-convert to regex (foo bar → foo.*bar); pipe alternation SymA|SymB matches either.' },
 				mode: { type: 'string', enum: ['compact', 'full', 'files'], default: 'compact', description: 'compact: matching lines with line numbers (default). full: with surrounding source. files: just file paths.' },
 				filePattern: { type: 'string', description: 'File glob to RESTRICT which files are searched, passed straight to ripgrep (e.g. **/CoreUObject/**/*.cpp, src/**/*.ts). MUST be a specific path fragment — a bare extension wildcard like "*.cpp" does NOT narrow anything in a large multi-project repo (it matches tens of thousands of files).' },
-				path_filter: { type: 'string', description: 'Directory or file to search in — a search ROOT (like `rg <path>`), resolved against each workspace folder when relative (e.g. Engine/Source/Runtime/CoreUObject, f:/.../CoreUObject, GarbageCollection.cpp). May also be a glob containing * (e.g. **/CoreUObject/**). A non-existent path returns an explicit error, NOT "no matches". To filter by file name/type instead, use filePattern. Accepts `path` as an alias (same meaning as search_files\' `path`). ALWAYS set this on a large multi-project repo — an unscoped search streams the entire tree.' },
+				path: { type: 'string', description: 'Directory or file to search in — a search ROOT (like `rg <path>`), resolved against each workspace folder when relative (e.g. Engine/Source/Runtime/CoreUObject, f:/.../CoreUObject, GarbageCollection.cpp). May also be a glob containing * (e.g. **/CoreUObject/**). A non-existent path returns an explicit error, NOT "no matches". To filter by file name/type instead, use filePattern. Accepts `path_filter` as a legacy alias (same meaning). ALWAYS set this on a large multi-project repo — an unscoped search streams the entire tree.' },
 					context: { type: 'number', description: 'Lines of context before and after each match (like grep -C). Compact/full modes.' },
 					regex: { type: 'boolean', default: false, description: 'Treat query as a raw regex. When false (default), a plain literal is escaped and matched literally. Multi-word / pipe-alternation queries auto-enable regex.' },
 				project: { type: 'string', description: 'Project name to scope the search to a single indexed folder (optional, defaults to ALL workspace folders). Use list_projects to discover names — e.g. "UE5EA" to search only engine sources in a multi-folder workspace.' },
@@ -1260,12 +1260,14 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		// glob（*.cpp、GarbageCollection.cpp）无 `/` 时补 `**/`，否则引擎 _globToRegex
 		// 中 `*` 不跨目录，只匹配各搜索根直属文件→嵌套恒 0 命中（log 中 8 次空）。
 		const normalizedFilePattern = filePattern ? normalizeFileGlobForSearch(filePattern) : undefined;
-		// `path` 别名：与 search_files 参数名统一，避免混用导致静默全库扫（见上方注释）。
-		const _pathAliasRaw = typeof args['path'] === 'string' ? (args['path'] as string) : undefined;
+		// 参数名统一（2026-09-05）：正名 `path`（与 search_files / Claude Code Grep 对齐，
+		// 消除同语义两个名字导致的模型混用——实测 20:0 倾向 path）；`path_filter` 为
+		// 兼容别名（旧会话/旧 prompt 残留），handler 双读保证其继续生效。
+		const _pathRaw = typeof args['path'] === 'string' ? (args['path'] as string) : undefined;
 		const _pathFilterRaw = typeof args['path_filter'] === 'string' ? (args['path_filter'] as string) : undefined;
-		const pathFilter = _pathFilterRaw ?? _pathAliasRaw;
-		if (!_pathFilterRaw && _pathAliasRaw) {
-			ctx.logService.info(`[BuiltinTools][CBSearch] search_code: accepted "path" as alias for "path_filter" (value="${_pathAliasRaw}") — model used search_files' parameter name.`);
+		const pathFilter = _pathRaw ?? _pathFilterRaw;
+		if (!_pathRaw && _pathFilterRaw) {
+			ctx.logService.info(`[BuiltinTools][CBSearch] search_code: accepted legacy "path_filter" (value="${_pathFilterRaw}") — prefer "path".`);
 		}
 			const contextLines = Math.min(Math.max((args['context'] as number | undefined) ?? 0, 0), 10);
 		const limit = Math.min(Math.max((args['limit'] as number | undefined) ?? 30, 1), 100);
@@ -1320,7 +1322,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 						'search_code: this call would scan the ENTIRE search root (' +
 						allFolders.join(', ') + ') — a large Unreal-engine / multi-project tree, ' +
 						'so it would hit the 60s timeout. ' +
-						'Re-send with ONE of: path_filter (a subdirectory, e.g. "S1Game/Source" or "Engine/Source/Runtime/CoreUObject"), ' +
+						'Re-send with ONE of: path (a subdirectory, e.g. "S1Game/Source" or "Engine/Source/Runtime/CoreUObject"), ' +
 						'filePattern (a specific path-fragment glob, NOT a bare "*.cpp"), ' +
 						'or project=<folder-name> to pick a single indexed root. ' +
 						'For code-structure questions prefer search_graph (indexed, no filesystem scan).'
@@ -1369,7 +1371,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 						// （绝对路径不兜底——`**/f:/...` 是畸形 glob，事故 1785134772329）
 						includeGlob = `**/${pf}`;
 					} else {
-						return text(`search_code: path_filter 路径不存在: ${pathFilter}（已按搜索根解析并检查所有 workspace 根）。\npath_filter 是搜索根（目录或文件路径）；按文件名过滤请改用 filePattern（glob，如 **/*.cpp）；确认路径存在后重试，或去掉 path_filter 全库搜索。`);
+						return text(`search_code: path 路径不存在: ${pathFilter}（已按搜索根解析并检查所有 workspace 根）。\npath 是搜索根（目录或文件路径）；按文件名过滤请改用 filePattern（glob，如 **/*.cpp）；确认路径存在后重试，或去掉 path 全库搜索。`);
 					}
 				}
 			}

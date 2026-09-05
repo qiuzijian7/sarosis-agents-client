@@ -36,6 +36,11 @@ const {
 const PORT = 9100 + Math.floor(Math.random() * 900);
 const BASE_URL = `http://localhost:${PORT}/?skip-sessions-welcome`;
 
+/** Synchronous sleep that works on all platforms (no external `sleep` binary). */
+function sleepSync(ms) {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 const SYSTEM_PROMPT = [
 	'You are a test automation assistant. Given a snapshot of a web page\'s',
 	'accessibility tree and a test step written in natural language, output the',
@@ -160,7 +165,7 @@ function compileScenario(scenario) {
 				}
 			}
 
-			cp.spawnSync('sleep', ['1']);
+			sleepSync(1_000);
 		} catch (err) {
 			console.error(`    ✗ ${err.message}`);
 			compiledSteps.push({ description: step, commands: [], error: err.message });
@@ -216,13 +221,13 @@ async function main() {
 	}
 
 	// Wait for workbench to render
-	cp.spawnSync('sleep', ['5']);
+	sleepSync(5_000);
 
 	for (const scenario of scenarios) {
 		// Reset state between scenarios
 		runPlaywrightCli(['press', 'Escape']);
 		runPlaywrightCli(['goto', BASE_URL]);
-		cp.spawnSync('sleep', ['3']);
+		sleepSync(3_000);
 
 		const compiled = compileScenario(scenario);
 		const outPath = commandsPathForScenario(scenario.filePath);

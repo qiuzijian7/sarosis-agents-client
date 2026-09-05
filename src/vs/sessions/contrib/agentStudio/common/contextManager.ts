@@ -96,12 +96,18 @@ export type RetrieveContextFn = (req: IRetrieveContextRequest) => Promise<IRetri
 
 // ─── Default Configuration ──────────────────────────────────────────────────────
 
+/**
+ * 压缩阈值比例的**默认值**（唯一真源，2026-09-04 提取）。
+ * Lowered from 0.40→0.30 to trigger compression earlier (~60000 tokens / ~55 messages
+ * vs ~80000 tokens / ~77 messages) and avoid OOM on the extension host (V8 heap
+ * reaching 3.8GB with 77 messages + system prompt + tools + 18 extensions).
+ * With MAXIMUM_COMPRESSION_WINDOW=200000, threshold now = 200000 × 0.30 = 60000.
+ * UI 上下文环（agentChatPanel）以「窗口×此比例」为压缩线刻度——若改这里，环语义同步变。
+ */
+const COMPRESSION_THRESHOLD_DEFAULT = 0.30;
+
 const DEFAULT_CONFIG: IContextManagerConfig = {
-	// Lowered from 0.40→0.30 to trigger compression earlier (~60000 tokens / ~55 messages
-	// vs ~80000 tokens / ~77 messages) and avoid OOM on the extension host (V8 heap
-	// reaching 3.8GB with 77 messages + system prompt + tools + 18 extensions).
-	// With MAXIMUM_COMPRESSION_WINDOW=200000, threshold now = 200000 × 0.30 = 60000.
-	compressionThreshold: 0.30,
+	compressionThreshold: COMPRESSION_THRESHOLD_DEFAULT,
 	maxRecentMessages: 20, // Keep 20 recent messages
 	minMessagesToCompress: 10, // Minimum 10 messages to compress
 	maxSnapshotHistory: 10, // Keep 10 snapshots
@@ -1773,6 +1779,46 @@ ${conversationText}
 	/** 摘要 LLM 调用的最大输出 token（P2-1：随压缩窗口动态缩放，对齐 Hermes `min(window×0.05, 10000)`）。 */
 	private static readonly SUMMARY_MAX_TOKENS = 1200;
 	private static readonly SUMMARY_MAX_TOKENS_RATIO = 0.05;
+
+	/**
+	 * 压缩判定的有效窗口与阈值 —— **唯一真源**（2026-09-04）。
+	 *
+	 * `_evaluateTrigger` 与诊断日志（agentTurnExecutor / executionProvider 的
+	 * captured real prompt usage 行）必须共用此函数：硬地板/硬顶 clamp + 阈值比例
+	 * 若在日志处另写一份，出现两套口径就会漂移（对齐 estimateToolsSchemaTokens
+	 * 的教训——两套口径必然漂移）。用途：captured 日志带上
+	 * window→effectiveWindow→threshold 全链路，「不同模型窗口 → 阈值不同 →
+	 * 压缩时机不同」无需心算即可对账（如 128k 模型阈值 38400、200k 模型 60000）。
+	 */
+	public static resolveEffectiveWindow(
+		contextWindow: number | undefined,
+		compressionThreshold: number
+	): { effectiveWindow: number; thresholdTokens: number } {
+		const effectiveWindowRaw = Math.max(
+			contextWindow ?? ContextManager.MINIMUM_CONTEXT_WINDOW,
+			ContextManager.MINIMUM_CONTEXT_WINDOW
+		);
+		const effectiveWindow = Math.min(effectiveWindowRaw, ContextManager.MAXIMUM_COMPRESSION_WINDOW);
+		return { effectiveWindow, thresholdTokens: effectiveWindow * compressionThreshold };
+	}
+
+	/**
+	 * 诊断/日志用：按当前 config 计算有效窗口与阈值（与 `_evaluateTrigger` 同源）。
+	 * 供 executor 在 turn 开始时取本 turn 生效的压缩预算，随 usage 捕获日志输出。
+	 */
+	public getTriggerWindowBudget(contextWindow: number): { effectiveWindow: number; thresholdTokens: number } {
+		return ContextManager.resolveEffectiveWindow(contextWindow, this._config.compressionThreshold);
+	}
+
+	/**
+	 * 无 config 上下文时按**默认阈值比例**计算（UI 对齐用，2026-09-04）。
+	 * 供 agentChat 面板宿主（nativeChatEditorPane）向 UI 环推送 effectiveWindow /
+	 * thresholdTokens——面板侧没有 ContextManager 实例与 config，若自行复刻
+	 * clamp 常量或阈值比例会出现第二套口径（对齐 estimateToolsSchemaTokens 教训）。
+	 */
+	public static resolveEffectiveWindowDefault(contextWindow: number | undefined): { effectiveWindow: number; thresholdTokens: number } {
+		return ContextManager.resolveEffectiveWindow(contextWindow, COMPRESSION_THRESHOLD_DEFAULT);
+	}
 	private static readonly SUMMARY_MAX_TOKENS_CAP = 10000;
 	/**
 	 * 摘要 LLM 的独立超时（2026-08-21，修事故 1787282838177「LLM 永久正在思考中」）。
@@ -1974,12 +2020,11 @@ ${conversationText}
 		// 用上一轮 est 得 +1615 才是真实的 system 开销）。
 		// 正确做法在 agentTurnExecutor：请求发出时快照 est（estimateMessagesTokens），
 		// 待该请求自己的 usage 回来后与**同一请求**的 est 配对相减。
-		const effectiveWindowRaw = Math.max(
-			contextWindow ?? ContextManager.MINIMUM_CONTEXT_WINDOW,
-			ContextManager.MINIMUM_CONTEXT_WINDOW
+		// 2026-09-04：clamp + 阈值计算抽到静态 resolveEffectiveWindow（唯一真源），
+		// 诊断日志（captured real prompt usage）与判定共用同一口径，杜绝两套漂移。
+		const { effectiveWindow, thresholdTokens } = ContextManager.resolveEffectiveWindow(
+			contextWindow, compressionConfig.compressionThreshold
 		);
-		const effectiveWindow = Math.min(effectiveWindowRaw, ContextManager.MAXIMUM_COMPRESSION_WINDOW);
-		const thresholdTokens = effectiveWindow * compressionConfig.compressionThreshold;
 
 		// ── 阈值判定用「真实总 prompt」（effectiveTokens）对比阈值 ──
 		// effectiveTokens = 真实 usage（若有）否则 est+toolsSchema 粗估，即**发送给模型
@@ -2066,8 +2111,13 @@ ${conversationText}
 		};
 
 			const noop = (reason: string): IContextCompressionResult => {
-			// ── 诊断日志：跳过压缩时输出 warn，解释"为什么没触发" ──
-			this._log('warn',
+			// ── 诊断日志：按 reason 分级（2026-09-05，日志 1788591795446）──────────
+			// below_token_threshold / below_message_min 是**常态跳过**——多数 turn 都
+			// 低于阈值，一律 WARN 会让用户误判为异常（实测单会话 21 条 WARN 全是
+			// below_token_threshold，用户专门拿来问"是否合理"）。降为 info；
+			// anti_thrashing 等防抖/异常类跳过才是真信号，保留 warn。
+			const _skipLevel: 'info' | 'warn' = reason.startsWith('below_') ? 'info' : 'warn';
+			this._log(_skipLevel,
 				`[ContextManager][Compression] SKIPPED reason=${reason} | ` +
 				`effectiveTokens=${effectiveTokens} thresholdTokens=${thresholdTokens} ` +
 				`(window=${effectiveWindow}×${compressionConfig.compressionThreshold}) | ` +

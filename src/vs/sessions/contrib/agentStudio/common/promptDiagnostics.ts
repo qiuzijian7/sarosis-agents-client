@@ -286,17 +286,22 @@ export interface IToolSchemaProbeResult {
 	/** 该工具是否出现在本次请求的 tools 列表里（false = 被折叠或未启用）。 */
 	readonly present: boolean;
 	readonly descChars: number;
-	/** label → 是否命中。 */
-	readonly probes: ReadonlyArray<{ readonly label: string; readonly hit: boolean }>;
+	/** label → 是否命中。skipped=true 表示该探针因配置条件不适用（如审批关闭），不计缺陷。 */
+	readonly probes: ReadonlyArray<{ readonly label: string; readonly hit: boolean; readonly skipped?: boolean }>;
 }
 
 /**
  * 检查关键工具的 description 是否真的带着引导文案进入了本次请求。
  *
  * @param tools 本次请求实际发送的工具定义（executor 的 enabledTools）。
+ * @param approvalEnabled 审批是否开启（tools.confirmToolCalls）。approvalShape 探针
+ *   对应的 SHELL_APPROVAL_SHAPE_GUIDANCE 是**条件性下发**（审批关闭时整段不下发，
+ *   见 compatibilityTools.shellApprovalGuidance）——关闭时该探针标 skipped，
+ *   否则每 turn 假 warn（2026-09-05，日志 1788591795446）。
  */
 export function probeToolGuidance(
 	tools: ReadonlyArray<{ name?: string; description?: string }>,
+	approvalEnabled = true,
 ): IToolSchemaProbeResult[] {
 	const byName = new Map<string, string>();
 	for (const t of tools) {
@@ -311,7 +316,12 @@ export function probeToolGuidance(
 			descChars: desc?.length ?? 0,
 			probes: TOOL_GUIDANCE_PROBES
 				.filter((p) => p.tool === tool)
-				.map((p) => ({ label: p.label, hit: (desc ?? '').includes(p.probe) })),
+				.map((p) => {
+					if (p.label === 'approvalShape' && !approvalEnabled) {
+						return { label: p.label, hit: false, skipped: true };
+					}
+					return { label: p.label, hit: (desc ?? '').includes(p.probe) };
+				}),
 		};
 	});
 }
@@ -330,11 +340,12 @@ export function formatToolSchemaDiagLog(
 ): { readonly text: string; readonly level: 'info' | 'warn' } {
 	const parts = results.map((r) => {
 		if (!r.present) { return `${r.tool}: ABSENT(folded or disabled)`; }
-		const probeStr = r.probes.map((p) => `${p.label}=${p.hit ? 'YES' : 'NO'}`).join(' ');
+		const probeStr = r.probes.map((p) => `${p.label}=${p.skipped ? 'OFF' : p.hit ? 'YES' : 'NO'}`).join(' ');
 		return `${r.tool}: desc=${r.descChars}c ${probeStr}`;
 	});
 	// 只有「工具在场却探针 miss」才算缺陷：说明 description 组装丢了内容或被截断。
-	const missing = results.some((r) => r.present && r.probes.some((p) => !p.hit));
+	// skipped（配置条件不适用，如审批关闭的 approvalShape）不算缺陷。
+	const missing = results.some((r) => r.present && r.probes.some((p) => !p.hit && !p.skipped));
 	const text = `[ToolSchemaDiag] tools=${toolCount} schemaTok=${schemaTokens} | ${parts.join(' | ')}`
 		+ (missing ? '\n  ⚠ a guidance probe MISSED while the tool IS present → description assembly dropped or truncated it' : '');
 	return { text, level: missing ? 'warn' : 'info' };

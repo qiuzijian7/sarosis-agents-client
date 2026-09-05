@@ -18,6 +18,10 @@ import type { SingleNodeRunResult } from './nodeExecutor.js';
 import { runSingleNode, comfyOutputsToFxSnapshots } from './nodeExecutor.js';
 import { runStageWorkflow, StageWorkflowUnavailableError, collectUpstreamRefs, applyAssetRefOverrides, type StageWorkflowRunOptions } from './stageWorkflowExecutor.js';
 import { styleTemplateOf } from './builtinWorkflows/emojiWorkflows.js';
+import { buildEmojiModelPrompt, parseComfyModelValue } from './emojiModelAdapt.js';
+
+/** 通用负向词（checkpoint 系 KSampler negative；qwen/flux 组装链无 negative 输入，忽略）。 */
+const EMOJI_NEGATIVE_PROMPT = 'text, watermark, blurry, low quality, deformed, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, fused fingers, too many fingers, long neck';
 import { getPluginNodeRunner } from './pluginLoader.js';
 import { isFxNode, isFxChainNode } from './fxChain.js';
 import type { MediaSnapshotEntry, MediaKind, MediaRef } from './mediaSnapshot.js';
@@ -3226,8 +3230,37 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 				sheetRef = await localizeImageRef(sheetRef);
 				signal?.throwIfAborted();
 			} else {
-				// ComfyUI 渠道：整图图集模板（comfy_model → CheckpointLoaderSimple）
+				// ComfyUI 渠道：**模型驱动组装**（2026-09-04「任意模型」）——不再按
+				// comfy_model_group 挑模板，按所选模型族（qwen/flux/sd3.5/sdxl/sd15 ×
+				// ckpt/unet）动态构造最终 api_json（emojiModelAdapt）。单图与图集
+				// 共用同一条组装路径，任何模型都能生成。
 				const seed = Math.floor(Math.random() * 0x7fffffff);
+				const modelSpec = parseComfyModelValue(comfyModel || 'sd_xl_base_1.0.safetensors');
+				// 参考图先 resolve 成 ComfyUI 文件名（组装侧 LoadImage 就地写入；
+				// promptOverride 直通不再执行 executor 内的上游桥接）。
+				let sheetRefImage: string | undefined;
+				if (upstreamImageRef) {
+					const resolver = input.resolveLoadImageRef ?? defaultResolveLoadImageRef(input.runner);
+					const bridged = await raceAbort(resolver(upstreamImageRef, signal), signal);
+					if (bridged.ok && bridged.image) {
+						sheetRefImage = bridged.image;
+					} else {
+						// eslint-disable-next-line no-console
+						console.warn(`[EmojiStage] sheet ref resolve failed: ${bridged.error ?? 'unknown'} → 退回 text2img`);
+					}
+				}
+				const built = buildEmojiModelPrompt(modelSpec, {
+					positive: sheetPrompt,
+					negative: EMOJI_NEGATIVE_PROMPT,
+					seed,
+					width: sheetSize.width,
+					height: sheetSize.height,
+					refImage: sheetRefImage,
+					denoise: sheetRefImage ? 0.75 : 1.0,
+					filenamePrefix: 'ComfyTV/emoji_sheet',
+				});
+				// eslint-disable-next-line no-console
+				console.warn(`[EmojiStage] sheet 组装 model=${built.debug}`);
 				const r = await runStageWorkflow({
 					runner,
 					nodeId,
@@ -3237,7 +3270,6 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 					workflowKind: spec?.comfyTV?.workflowKind ?? 'emoji',
 					values: {
 						...values,
-						workflow: '表情包图集 (SDXL)',
 						prompt: sheetPrompt,
 						main_prompt: sheetPrompt,
 						comfy_model: comfyModel,
@@ -3249,18 +3281,9 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 					onProgress: (p) => onProgress?.({ progress: 5 + (typeof p.progress === 'number' ? p.progress : 0) * 0.6 }),
 					signal,
 					resolveImageRef: input.resolveLoadImageRef ?? defaultResolveLoadImageRef(input.runner),
-					// ★ 尺寸注入（size widget）★ img2img：有上游参考图时切 VAEEncode + denoise=0.75
-					promptPostProcess: composePostProcess(
-						sizePostProcess,
-						upstreamImageRef ? (prompt) => {
-							const ks = (prompt as Record<string, unknown>)['5'] as { inputs?: Record<string, unknown> } | undefined;
-							if (!ks?.inputs) { return; }
-							ks.inputs.latent_image = ['9', 0];
-							ks.inputs.denoise = 0.75;
-							// eslint-disable-next-line no-console
-							console.warn('[EmojiStage] sheet → img2img mode (denoise=0.75, ref image)');
-						} : undefined,
-					),
+					// ★ 模型驱动组装直通（跳过模板/bindings/预检），产物提取节点由组装返回
+					promptOverride: built.prompt,
+					promptSaveNodeId: built.saveNodeId,
 				});
 				lastPromptId = r.promptId || lastPromptId;
 				if (r.status !== 'success') {
@@ -3384,6 +3407,85 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 		}
 	}
 
+	// ★ ComfyUI 渠道单格生成（2026-09-04，与 provider 单格同语义——两渠道粒度
+	//   完全对齐：一个提示词 → 一张单表情贴纸 → 1×1 切分管线 → 替换选中格）。
+	//   此前 comfyui 的 scope='cell' 落进通用逐格循环走模板（无单贴纸样式约束、
+	//   无背景策略、产物不经 1×1 切分），行为与 provider 单格不一致。
+	if (scope === 'cell' && backend === 'comfyui' && !isRecrop) {
+		try {
+			const cmRaw = comfyModel || 'sd_xl_base_1.0.safetensors';
+			const modelSpec = parseComfyModelValue(cmRaw);
+			const cellPrompt = resolveCellPrompt(selIdx);
+			const seed = cells[selIdx]?.seed || Math.floor(Math.random() * 0x7fffffff);
+			// ★ 与 provider 单格/整版同源的背景策略 + 单贴纸样式约束。
+			const cellBg = resolveSheetBackground(values.sheet_background);
+			const cellBgClause = cellBg === 'auto' ? '' :
+				cellBg === 'transparent' ? ', isolated on transparent background' : ', isolated on white background';
+			const cellPositive = `${cellPrompt}, single die-cut sticker, thick outlines${cellBgClause}, centered`;
+			// 参考图 resolve 成 ComfyUI 文件名（组装侧 LoadImage 就地写入）。
+			let cellRefImage: string | undefined;
+			if (upstreamImageRef) {
+				const resolver = input.resolveLoadImageRef ?? defaultResolveLoadImageRef(input.runner);
+				const bridged = await raceAbort(resolver(upstreamImageRef, signal), signal);
+				if (bridged.ok && bridged.image) { cellRefImage = bridged.image; }
+			}
+			const built = buildEmojiModelPrompt(modelSpec, {
+				positive: cellPositive,
+				negative: EMOJI_NEGATIVE_PROMPT,
+				seed,
+				width: sheetSize.width,
+				height: sheetSize.height,
+				refImage: cellRefImage,
+				denoise: cellRefImage ? 0.75 : 1.0,
+				filenamePrefix: 'ComfyTV/emoji_cell',
+			});
+			// eslint-disable-next-line no-console
+			console.warn(`[EmojiStage] comfyui cell #${selIdx} 组装 model=${built.debug}`);
+			onProgress?.({ progress: 10 });
+			const r = await runStageWorkflow({
+				runner,
+				nodeId,
+				snapshotKey,
+				type,
+				kind: spec?.comfyTV?.kind ?? 'emoji',
+				workflowKind: spec?.comfyTV?.workflowKind ?? 'emoji',
+				values: { ...values, prompt: cellPositive, main_prompt: cellPositive, comfy_model: cmRaw, seed, batch_size: 1 },
+				upstreams,
+				store,
+				onProgress: (p) => onProgress?.({ progress: 10 + (typeof p.progress === 'number' ? p.progress : 0) * 0.8 }),
+				signal,
+				resolveImageRef: input.resolveLoadImageRef ?? defaultResolveLoadImageRef(input.runner),
+				promptOverride: built.prompt,
+				promptSaveNodeId: built.saveNodeId,
+			});
+			if (r.status !== 'success') {
+				return { promptId: r.promptId || lastPromptId, status: r.status, error: `表情生成失败：${r.error ?? 'unknown'}`, entries: collected };
+			}
+			const produced = store.byNode(snapshotKey).filter(e => e.media.kind === 'image');
+			const cellRef = produced[produced.length - 1]?.media.ref ?? '';
+			if (!cellRef) {
+				return { promptId: r.promptId || lastPromptId, status: 'error', error: '表情生成成功但未取到图像', entries: collected };
+			}
+			// 单格同样走 1×1 切分管线（纯裁剪，与 provider 单格/整图切分一致）。
+			const one = await splitStickerSheet(cellRef, 1, 1, { marginRatio: 0.01, cutoutBg: false }, fetchImpl);
+			bakedByTarget.set(selIdx, {
+				kind: 'image',
+				ref: one[0]?.dataUrl ?? cellRef,
+				meta: { mime: 'image/png', cellPrompt, sheetMode: 'cell' },
+			});
+			sheetMode = true;
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			// 取消响应（与 provider 单格分支一致）。
+			if (signal?.aborted || /AbortError/i.test(msg)) {
+				return { promptId: '', status: 'canceled', error: '已取消', entries: collected };
+			}
+			// eslint-disable-next-line no-console
+			console.error(`[EmojiStage] comfyui cell failed: ${msg}`);
+			return { promptId: '', status: 'error', error: `表情生成失败：${msg}`, entries: collected };
+		}
+	}
+
 	if (!sheetMode) for (let n = 0; n < targets.length; n++) {
 		if (signal?.aborted) {
 			return { promptId: lastPromptId, status: 'canceled', error: '已取消', entries: collected };
@@ -3451,6 +3553,61 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 			const label = fallback ?? (typeof v.workflow === 'string' ? v.workflow : '(default)');
 			// eslint-disable-next-line no-console
 			console.log(`[EmojiStage] cell #${i} tryRunCell label="${label}" prompt=${truncateForLog(cellPrompt, 80)} seed=${cellSeed}`);
+			// ★ 模型驱动组装优先（2026-09-04「任意模型」）：单格同样按 comfy_model
+			//   族动态构造（768² 贴纸惯例尺寸，SD1.5 自动 clamp）。fallback 重试
+			//   （fallback 参数存在）走模板路径——组装失败多为辅助模型缺失，
+			//   落回内置模板兜底。
+			const cmRaw = typeof v.comfy_model === 'string' ? v.comfy_model.trim() : '';
+			if (cmRaw && !fallback) {
+				const modelSpec = parseComfyModelValue(cmRaw);
+				let cellRefImage: string | undefined;
+				if (upstreamImageRef) {
+					const resolver = input.resolveLoadImageRef ?? defaultResolveLoadImageRef(input.runner);
+					const bridged = await raceAbort(resolver(upstreamImageRef, signal), signal);
+					if (bridged.ok && bridged.image) { cellRefImage = bridged.image; }
+				}
+				const built = buildEmojiModelPrompt(modelSpec, {
+					positive: cellPrompt,
+					negative: EMOJI_NEGATIVE_PROMPT,
+					seed: cellSeed,
+					width: 768,
+					height: 768,
+					refImage: cellRefImage,
+					denoise: cellRefImage ? 0.75 : 1.0,
+					filenamePrefix: 'ComfyTV/emoji_cell',
+				});
+				// eslint-disable-next-line no-console
+				console.warn(`[EmojiStage] cell #${i} 组装 model=${built.debug}`);
+				return runStageWorkflow({
+					runner,
+					nodeId,
+					snapshotKey,
+					type,
+					kind: spec?.comfyTV?.kind ?? 'emoji',
+					workflowKind: spec?.comfyTV?.workflowKind ?? 'emoji',
+					values: v,
+					upstreams,
+					store,
+					onProgress: (p) => {
+						const inner = typeof p.progress === 'number' ? p.progress : 0;
+						onProgress?.({ progress: (n + inner) / targets.length });
+					},
+					signal,
+					resolveImageRef: input.resolveLoadImageRef ?? defaultResolveLoadImageRef(input.runner),
+					promptOverride: built.prompt,
+					promptSaveNodeId: built.saveNodeId,
+				}).catch((err: unknown) => {
+					const msg = err instanceof Error ? err.message : String(err);
+					// eslint-disable-next-line no-console
+					console.error(`[EmojiStage] cell #${i} 组装 threw: ${msg}`);
+					return {
+						promptId: '',
+						status: 'error' as const,
+						error: msg,
+						entries: [] as MediaSnapshotEntry[],
+					};
+				});
+			}
 			return runStageWorkflow({
 				runner,
 				nodeId,

@@ -1440,7 +1440,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		let _reasoningSeen = false; // 诊断：标记是否收到过 reasoning_content
 		let _lastToolProgressAt = 0; // 参数进度上报节流（0 → 首个 arguments chunk 立即上报）
 
-		await parseSSEStream(response, progress, cancellationToken, (event) => {
+		await parseSSEStream(response, progress, cancellationToken, (event: any) => {
 			// ── SSE 事件采样（受 debugHttp + FORCE_FILE_LOGGING 开关控制）──────────
 			if (debugHttp || FORCE_FILE_LOGGING) {
 				_debugSseCount++;

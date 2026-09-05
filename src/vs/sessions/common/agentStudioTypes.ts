@@ -554,6 +554,63 @@ export interface AgentConfigHtml {
 	 * Default: 300.
 	 */
 	syncDebounceMs?: number;
+
+	/**
+	 * ★ ConfigHTML: 外部 HTTP 面板地址（如 `http://127.0.0.1:5600`）。
+	 *
+	 * 设置后预览走 **URL 预览容器**（`UrlPreviewEditorPane`，`frame-src *` 允许本地 http），
+	 * 而不是 `{agentDir}/config.html` 文件；ConfigHtml 面板
+	 * （`ConfigHtmlPanel.tsx`）的 CSP 是 `default-src 'none'`，无法 iframing/fetch 本地端口。
+	 *
+	 * 与 `htmlPath` 互斥：有 `url` 时优先使用 URL 模式，否则回退到文件模式（向后兼容）。
+	 */
+	url?: string;
+
+	/**
+	 * ★ URL 模式下「服务未启动则自动拉起」的配置。
+	 *
+	 * 缺省时按内置默认拉起测试面板（`test/browser/test-server.mjs`），
+	 * 因此多数场景只写 `url` 即可开箱即用。
+	 */
+	server?: AgentConfigHtmlServer;
+}
+
+/**
+ * ConfigHTML URL 模式下的本地服务启动描述。
+ * 由宿主（主进程）执行：探活 → spawn(detached) → 轮询 healthPath → 就绪后回调；
+ * 应用退出时按 PID 查杀，避免进程残留。
+ */
+export interface AgentConfigHtmlServer {
+	/** 可执行程序（默认 `process.execPath`，即当前 Node）。 */
+	command?: string;
+
+	/** 启动参数（默认指向仓库内 test-server.mjs）。 */
+	args?: string[];
+
+	/**
+	 * 工作目录。支持 `${workspaceRoot}` / `${agentDir}` 占位符。
+	 * 默认 `${workspaceRoot}`。
+	 */
+	cwd?: string;
+
+	/** 服务端口，用于探活与退出时按端口查杀。默认从 `url` 解析，否则 5600。 */
+	port?: number;
+
+	/** 健康探测路径（相对服务根）。默认 `/`。 */
+	healthPath?: string;
+
+	/**
+	 * **可选**的健康检查特征串：探活时响应体必须包含该子串，才算「是我们的服务」。
+	 * 只探活是不够的——端口可能被别的程序占着，此时 HTTP<500 照样命中会被误判为
+	 * 「服务已在运行」，预览打开的却是别的页面。留空则不校验身份。
+	 */
+	healthExpect?: string;
+
+	/** 就绪等待超时（ms）。默认 30000。 */
+	readyTimeoutMs?: number;
+
+	/** 附加环境变量。 */
+	env?: Record<string, string>;
 }
 
 /**

@@ -371,7 +371,11 @@ export class ExecutionProvider implements IExecutionProvider {
 							lastRealPromptTokens = realPrompt;
 							this._logService.info(
 								`[ExecutionProvider][Compression] captured real prompt usage: inputTokens=${u.inputTokens ?? 0} ` +
-								`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} → lastRealPromptTokens=${lastRealPromptTokens}`
+								`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} → lastRealPromptTokens=${lastRealPromptTokens} | ` +
+								// 窗口对账（2026-09-04）：不同模型窗口→阈值不同，压缩时机排查先看这里。
+								// 阈值不在本行心算——clamp(地板64k/顶200k)×比例 的精确值以
+								// ContextManager.resolveEffectiveWindow（_evaluateTrigger 同源）为准。
+								`model=${modelId} window=${compressionWindow}`
 							);
 						}
 					}

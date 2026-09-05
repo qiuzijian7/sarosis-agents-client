@@ -46,7 +46,9 @@ const TABS: TabDef[] = [
 	{ id: 'knowledge', label: '知识库',       icon: '📚' },
 	{ id: 'mcp',       label: 'MCP 配置',    icon: '🔌' },
 	{ id: 'rules',     label: 'Rule 配置',    icon: '📏' },
-	{ id: 'confightml',  label: 'ConfigHtml',  icon: '📝' },
+	// 「编辑」= 编辑 config.html 内容（源码 / 预览 / AI 生成）；
+	// 「配置」= 选择预览来源（本地文件 / URL 面板服务），在 native 设置面板的 ConfigHtml 页签里。
+	{ id: 'confightml',  label: 'ConfigHtml 编辑',  icon: '📝' },
 ];
 
 /* ── Props ─────────────────────────────────────────────────────── */

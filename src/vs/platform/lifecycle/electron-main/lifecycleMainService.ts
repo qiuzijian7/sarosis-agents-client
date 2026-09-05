@@ -302,6 +302,9 @@ export class LifecycleMainService extends Disposable implements ILifecycleMainSe
 		// should be called or not.
 		const windowAllClosedListener = () => {
 			this.trace('Lifecycle#app.on(window-all-closed)');
+			// ShutdownDiag（2026-09-05）：定位「点关闭无反应」——若此日志都不出现，
+			// 说明卡在窗口 close 阶段（renderer beforeunload / veto），而非 quit 阶段。
+			this.logService.info('[ShutdownDiag] window-all-closed fired');
 
 			// Windows/Linux: we quit when all windows have closed
 			// Mac: we only quit when quit was requested
@@ -315,6 +318,7 @@ export class LifecycleMainService extends Disposable implements ILifecycleMainSe
 		// closed, but before actually quitting.
 		electron.app.once('will-quit', e => {
 			this.trace('Lifecycle#app.on(will-quit) - begin');
+			this.logService.info('[ShutdownDiag] will-quit begin (shutdown sequence starting)');
 
 			// Prevent the quit until the shutdown promise was resolved
 			e.preventDefault();
@@ -352,12 +356,19 @@ export class LifecycleMainService extends Disposable implements ILifecycleMainSe
 		this.trace('Lifecycle#onWillShutdown.fire()');
 
 		const joiners: Promise<void>[] = [];
+		// ── ShutdownDiag（2026-09-05，用户实测「点击关闭无法关闭 app」）────────
+		// joiner 完成/超时用 info 级（原 trace 在用户日志不可见，是定位盲区）。
+		const _joinerT0 = Date.now();
+		const _pendingJoiners = new Map<string, boolean>();
 
 		this._onWillShutdown.fire({
 			reason,
 			join(id, promise) {
 				logService.trace(`Lifecycle#onWillShutdown - begin '${id}'`);
+				_pendingJoiners.set(id, true);
 				joiners.push(promise.finally(() => {
+					_pendingJoiners.set(id, false);
+					logService.info(`[ShutdownDiag] joiner '${id}' settled in ${Date.now() - _joinerT0}ms`);
 					logService.trace(`Lifecycle#onWillShutdown - end '${id}'`);
 				}));
 			}
@@ -367,7 +378,19 @@ export class LifecycleMainService extends Disposable implements ILifecycleMainSe
 
 			// Settle all shutdown event joiners
 			try {
-				await Promises.settled(joiners);
+				// ★ 超时竞速兜底（定位 + 双保险）：原实现 await 无超时——任何一个
+				// joiner 挂死（如遗留的 e.join 清理 promise 永不 resolve），
+				// will-quit 的 preventDefault 之后便不再 quit → app 永远关不掉。
+				// 现在 15s 后强制继续关闭，并点名仍未完成的 joiner。
+				const _timeoutPromise = new Promise<void>(resolve => {
+					setTimeout(() => {
+						const stillPending = [..._pendingJoiners.entries()].filter(([, v]) => v).map(([k]) => k);
+						logService.warn(`[ShutdownDiag] onWillShutdown joiners exceeded 15000ms — still pending: ${stillPending.join(', ') || '(none)'} → proceeding with shutdown anyway`);
+						resolve();
+					}, 15000);
+				});
+				await Promise.race([Promises.settled(joiners), _timeoutPromise]);
+				logService.info(`[ShutdownDiag] joiners phase done in ${Date.now() - _joinerT0}ms`);
 			} catch (error) {
 				this.logService.error(error);
 			}
@@ -375,7 +398,9 @@ export class LifecycleMainService extends Disposable implements ILifecycleMainSe
 			// Then, always make sure at the end
 			// the state service is flushed.
 			try {
+				const _t1 = Date.now();
 				await this.stateService.close();
+				logService.info(`[ShutdownDiag] stateService.close() done in ${Date.now() - _t1}ms`);
 			} catch (error) {
 				this.logService.error(error);
 			}

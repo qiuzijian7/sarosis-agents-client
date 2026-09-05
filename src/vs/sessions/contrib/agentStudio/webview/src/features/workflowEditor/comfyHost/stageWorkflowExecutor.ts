@@ -40,7 +40,11 @@ import type { BridgeFetchLike } from './imageGenToComfyBridge.js';
  */
 function withHardTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error(`${label} 硬超时（${ms}ms）— 底层请求无响应`)), ms);
+		const timer = setTimeout(() => reject(new Error(
+			`${label} 硬超时（${Math.round(ms / 1000)}s）— 大模型/大图生成可能仍在 ComfyUI 端继续执行` +
+			`（产物稍后可能出现在 ComfyUI output/ 目录）。` +
+			`对策：① 改用更小模型（如 Checkpoint 系 SDXL，实测秒级）；② 查看沙箱轮询日志确认卡在排队还是采样。`,
+		)), ms);
 		p.then(
 			(v) => { clearTimeout(timer); resolve(v); },
 			(e) => { clearTimeout(timer); reject(e); },
@@ -516,6 +520,18 @@ export interface StageWorkflowRunOptions {
 	 * 纯函数，接收深拷贝后的 prompt 引用，原地修改即可。
 	 */
 	promptPostProcess?: (prompt: StageWorkflowApiJson) => void;
+	/**
+	 * ★ 模型驱动组装直通（2026-09-04，表情包 ComfyUI 渠道「任意模型」支持）：
+	 * 调用方（runEmojiStageGrid → emojiModelAdapt.buildEmojiModelPrompt）按所选
+	 * 模型族动态组装的**最终 api_json**。存在时跳过：内置模板查询、bindings 注入
+	 * （injectWorkflowValues / applyStageOptionValues）、loader 预检、上游桥接
+	 * ——组装侧已就地写入 seed / 尺寸 / 参考图（LoadImage 已 resolve）。
+	 * 仅保留：RUNTIME 占位清理、引用完整性校验、promptPostProcess、invoke、
+	 * 产物提取主干。seed/模型错误时 ComfyUI 原生报错透传。
+	 */
+	promptOverride?: StageWorkflowApiJson;
+	/** promptOverride 的 SaveImage 节点号（产物提取 resultNode）。缺省 '99'。 */
+	promptSaveNodeId?: string;
 }
 
 export interface StageWorkflowRunResult {
@@ -660,24 +676,44 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 	// 模板 api_json 是纯原生 ComfyUI workflow，POST /prompt 即可出图，无需
 	// ComfyTV 扩展的 /comfytv/workflows、/comfytv/workflows/config 等端点。
 	// 未命中才抛 StageWorkflowUnavailableError，由调用方降级单节点执行。
-	const candidateKinds = options.workflowKinds?.length ? options.workflowKinds : [wfKind];
-	const rawWf = values?.workflow;
-	const selectedLabel = typeof rawWf === 'string' && rawWf ? rawWf : undefined;
-	// 解析实际 kind：优先按用户选中的 label 落在哪个候选 kind 的列表里，
-	// 否则回退到默认 kind + 默认 label（对齐 ComfyTV 运行时按 label 推断 kind）。
-	let resolvedKind = wfKind;
-	if (selectedLabel) {
-		for (const k of candidateKinds) {
-			if (listBuiltinWorkflows(k).workflows.some(w => w.label === selectedLabel)) { resolvedKind = k; break; }
+	// ★ 模型驱动组装直通（2026-09-04）：promptOverride（emojiModelAdapt 按所选
+	//   模型族组装的最终 api_json）存在时，跳过内置模板查询 / bindings 注入 /
+	//   loader 预检 / 上游桥接——组装侧已就地写入 seed / 尺寸 / 参考图
+	//   （LoadImage 已 resolve 成 ComfyUI 文件名）。
+	const promptOverrideMode = Boolean(options.promptOverride);
+	let cfg: StageWorkflowConfig;
+	let prompt: StageWorkflowApiJson;
+	let label: string | undefined;
+	if (promptOverrideMode && options.promptOverride) {
+		cfg = {
+			api_json: JSON.parse(JSON.stringify(options.promptOverride)) as StageWorkflowApiJson,
+			result: { type: 'ui_save', node: options.promptSaveNodeId ?? '99' },
+			inputs: {},
+		};
+		prompt = cfg.api_json;
+		// eslint-disable-next-line no-console
+		console.warn(`[runStageWorkflow] promptOverride 直通 nodeId=${nodeId} saveNode=${options.promptSaveNodeId ?? '99'} keys=${Object.keys(prompt).join(',')}`);
+	} else {
+		const candidateKinds = options.workflowKinds?.length ? options.workflowKinds : [wfKind];
+		const rawWf = values?.workflow;
+		const selectedLabel = typeof rawWf === 'string' && rawWf ? rawWf : undefined;
+		// 解析实际 kind：优先按用户选中的 label 落在哪个候选 kind 的列表里，
+		// 否则回退到默认 kind + 默认 label（对齐 ComfyTV 运行时按 label 推断 kind）。
+		let resolvedKind = wfKind;
+		if (selectedLabel) {
+			for (const k of candidateKinds) {
+				if (listBuiltinWorkflows(k).workflows.some(w => w.label === selectedLabel)) { resolvedKind = k; break; }
+			}
 		}
-	}
-	const builtinList = listBuiltinWorkflows(resolvedKind);
-	const label = selectedLabel ?? pickDefaultWorkflowLabel(builtinList, resolvedKind);
-	const cfg: StageWorkflowConfig | undefined = label
-		? getBuiltinWorkflowConfig(resolvedKind, label)
-		: undefined;
-	if (!cfg || typeof cfg.api_json !== 'object' || cfg.api_json === null) {
-		throw new StageWorkflowUnavailableError(`kind ${wfKind} 没有可用内置 workflow`);
+		const builtinList = listBuiltinWorkflows(resolvedKind);
+		label = selectedLabel ?? pickDefaultWorkflowLabel(builtinList, resolvedKind);
+		const templateCfg: StageWorkflowConfig | undefined = label
+			? getBuiltinWorkflowConfig(resolvedKind, label)
+			: undefined;
+		if (!templateCfg || typeof templateCfg.api_json !== 'object' || templateCfg.api_json === null) {
+			throw new StageWorkflowUnavailableError(`kind ${wfKind} 没有可用内置 workflow`);
+		}
+		cfg = templateCfg;
 	}
 	// ★ 加载器模型存在性预检（2026-09-03）：模板写死的辅助模型（Qwen text
 	//   encoder / VAE / LayeredDiffusion LoRA 等）缺失时给出中文指引，而不是等
@@ -692,7 +728,7 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 			const isDiffusion = /qwen|flux|sd3|wan|auraflow/i.test(missing.join(' '));
 			throw new Error(
 				isDiffusion
-					? `模型与模板不匹配：${missing.join('；')}。\n「${label}」模板需要 Checkpoint 模型（SDXL 系）；` +
+					? `模型与模板不匹配：${missing.join('；')}。\n「${label ?? '模型组装'}」需要 Checkpoint 模型（SDXL 系）；` +
 						`若要使用 qwen 等 Diffusion 模型，请把「工作流」切换为「Qwen 贴纸 (默认)」后重试。`
 					: `模板「${label}」缺少辅助模型：\n- ${missing.join('\n- ')}\n请打开「依赖管理」下载对应模型后重试。`,
 			);
@@ -702,40 +738,42 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 		// eslint-disable-next-line no-console
 		console.warn('[runStageWorkflow] 加载器模型预检跳过（不阻塞）：', e);
 	}
-	// P2: inject upstream snapshots (first ref per media kind) so chained
-	// stages consume their predecessor's output.
-	const upstreamValues = collectUpstreamRefs(store, upstreams);
-	// 「资产引用」（asset references，对齐 ComfyTV ImageStage）：卡片上钉住的资产
-	// **覆盖**同媒体类型的上游连线（与 ComfyTV injectAssetRefs 的 override 语义
-	// 一致）。项目侧 upstream 绑定按 kind 取单一 ref（无 slot 维度），故取
-	// slot 最小的一条作为该 kind 的输入。见 assetRefs.ts。
-	applyAssetRefOverrides(upstreamValues, values);
-	// ★ 三阶段串联桥接：上游图片快照 ref 可能是 data:/http URL（阶段产物经
-	//   materializeComfyImageRefs 物化），而 stage 内嵌的原生 LoadImage 只认
-	//   Comfy /view 引用或服务端文件名。这里在注入前把非 /view 引用上传到
-	//   ComfyUI，换成 /view 引用（后续 upstream_image:annotated 会再转 annotated
-	//   path 供 LoadImage 消费）。视频（kind=video）保持 /view 引用不物化，无需桥接。
-	if (resolveImageRef && typeof upstreamValues.image === 'string' && upstreamValues.image && !isComfyViewRef(upstreamValues.image)) {
-		// eslint-disable-next-line no-console
-		console.warn(`[runStageWorkflow] ⏳ before resolveImageRef (ref=${upstreamValues.image.slice(0, 80)})`);
-		const bridged = await withHardTimeout(resolveImageRef(upstreamValues.image, options.signal), 35_000, 'resolveImageRef');
-		// eslint-disable-next-line no-console
-		console.warn(`[runStageWorkflow] ✅ after resolveImageRef ok=${bridged.ok}`);
-		if (bridged.ok && bridged.image) {
-			upstreamValues.image = bridged.image;
-		} else {
-			// 桥接失败：保留原 ref（让 LoadImage 报 Invalid image file），
-			// 比静默替换成错误值更好排查。记录一条诊断日志。
+	if (!promptOverrideMode) {
+		// P2: inject upstream snapshots (first ref per media kind) so chained
+		// stages consume their predecessor's output.
+		const upstreamValues = collectUpstreamRefs(store, upstreams);
+		// 「资产引用」（asset references，对齐 ComfyTV ImageStage）：卡片上钉住的资产
+		// **覆盖**同媒体类型的上游连线（与 ComfyTV injectAssetRefs 的 override 语义
+		// 一致）。项目侧 upstream 绑定按 kind 取单一 ref（无 slot 维度），故取
+		// slot 最小的一条作为该 kind 的输入。见 assetRefs.ts。
+		applyAssetRefOverrides(upstreamValues, values);
+		// ★ 三阶段串联桥接：上游图片快照 ref 可能是 data:/http URL（阶段产物经
+		//   materializeComfyImageRefs 物化），而 stage 内嵌的原生 LoadImage 只认
+		//   Comfy /view 引用或服务端文件名。这里在注入前把非 /view 引用上传到
+		//   ComfyUI，换成 /view 引用（后续 upstream_image:annotated 会再转 annotated
+		//   path 供 LoadImage 消费）。视频（kind=video）保持 /view 引用不物化，无需桥接。
+		if (resolveImageRef && typeof upstreamValues.image === 'string' && upstreamValues.image && !isComfyViewRef(upstreamValues.image)) {
 			// eslint-disable-next-line no-console
-			console.warn(`[runStageWorkflow] upstream image bridge failed: ${bridged.error ?? 'unknown'} (ref=${upstreamValues.image.slice(0, 60)})`);
+			console.warn(`[runStageWorkflow] ⏳ before resolveImageRef (ref=${upstreamValues.image.slice(0, 80)})`);
+			const bridged = await withHardTimeout(resolveImageRef(upstreamValues.image, options.signal), 35_000, 'resolveImageRef');
+			// eslint-disable-next-line no-console
+			console.warn(`[runStageWorkflow] ✅ after resolveImageRef ok=${bridged.ok}`);
+			if (bridged.ok && bridged.image) {
+				upstreamValues.image = bridged.image;
+			} else {
+				// 桥接失败：保留原 ref（让 LoadImage 报 Invalid image file），
+				// 比静默替换成错误值更好排查。记录一条诊断日志。
+				// eslint-disable-next-line no-console
+				console.warn(`[runStageWorkflow] upstream image bridge failed: ${bridged.error ?? 'unknown'} (ref=${upstreamValues.image.slice(0, 60)})`);
+			}
 		}
+		// eslint-disable-next-line no-console
+		console.warn('[runStageWorkflow] upstreams=' + JSON.stringify(upstreams) + ' upstreamValues=' + JSON.stringify(upstreamValues));
+		prompt = injectWorkflowValues(cfg.api_json, cfg.inputs, values, upstreamValues).prompt;
+		// 把画布/表单里改过的 stage option（batch_size/resolution/aspect_ratio/workflow…）
+		// 直接覆写到 stage 节点的 inputs（后端 bindings 多数不覆盖这些 option，否则永远用模板默认值）。
+		applyStageOptionValues(prompt, type, values);
 	}
-	// eslint-disable-next-line no-console
-	console.warn('[runStageWorkflow] upstreams=' + JSON.stringify(upstreams) + ' upstreamValues=' + JSON.stringify(upstreamValues));
-	const { prompt } = injectWorkflowValues(cfg.api_json, cfg.inputs, values, upstreamValues);
-	// 把画布/表单里改过的 stage option（batch_size/resolution/aspect_ratio/workflow…）
-	// 直接覆写到 stage 节点的 inputs（后端 bindings 多数不覆盖这些 option，否则永远用模板默认值）。
-	applyStageOptionValues(prompt, type, values);
 	// ★ 上传桥：模板内原生 LoadImage 的 data:/http URL 参考图 → 上传取文件名
 	//   （否则 LoadImage 报 Invalid image file，见 uploadLoadImageRefsForPrompt）。
 	// eslint-disable-next-line no-console

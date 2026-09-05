@@ -406,5 +406,8 @@
   },
   "devDependencies": {
     "@types/node": "22.x"
+  },
+  "dependencies": {
+    "vssaros": "file:../.."
   }
 }

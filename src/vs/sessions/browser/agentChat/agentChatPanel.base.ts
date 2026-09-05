@@ -5,6 +5,7 @@
 
 import "./media/agentChat.css";
 import { Disposable, IDisposable } from '../../../base/common/lifecycle.js';
+import type { ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlConfig.js';
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { ILogService } from '../../../platform/log/common/log.js';
 import { MarkdownRenderOptions } from '../../../base/browser/markdownRenderer.js';
@@ -838,6 +839,13 @@ protected readonly _importedKbFileToolIds = new Set<string>();
 	protected readonly _onRemoveFeishuBinding?: (chatId: string) => void;
 	protected readonly _onGetFeishuDefaultAgent?: () => string | undefined;
 	protected readonly _onSetFeishuDefaultAgent?: (agentId: string | undefined) => void;
+
+	// ── ConfigHtml（URL 面板 / 本地 HTML）回调 ──
+	protected readonly _onGetConfigHtmlCfg?: () => Promise<ConfigHtmlCfg | undefined>;
+	protected readonly _onSaveConfigHtmlCfg?: (cfg: ConfigHtmlCfg) => Promise<void>;
+	protected readonly _onEnsureConfigHtmlServer?: (spec: Record<string, unknown>) => Promise<{ ok: boolean; alreadyRunning?: boolean; starting?: boolean; error?: string }>;
+	protected readonly _onStopConfigHtmlServer?: (spec: { url: string; port?: number }) => Promise<{ ok: boolean; killed: number[] }>;
+	protected readonly _onOpenConfigHtmlPreview?: (url: string) => Promise<void> | void;
 
 constructor(opts: {
 		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => void;
@@ -1727,6 +1735,10 @@ setAgentSessions(sessions: ReadonlyArray<IAgentSessionMeta>): void {
 	}
 
 setContextUsage(usage: IContextUsage | null): void {
+		// 保存完整推送（2026-09-04）：effectiveWindow/thresholdTokens 供
+		// _computeContextUsage 把环分母对齐到压缩判定口径（此前只提取 used，
+		// 分母一直用本地 maxInputTokens，大窗口模型出现「环 6% 实际 30%」错位）。
+		this._contextUsage = usage;
 		// 为了向后兼容，从 IContextUsage 提取 input/output 并设置 streamUsage
 		if (usage) {
 			this._streamUsage = { input: usage.used, output: 0, seen: true };

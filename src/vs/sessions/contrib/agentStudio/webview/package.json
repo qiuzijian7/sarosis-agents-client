@@ -5,7 +5,8 @@
   "description": "Agent Studio WebView React application for VS Code Sessions",
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "watch": "node esbuild.config.mjs --watch",
+    "watch": "node watch-all.mjs",
+    "watch:main": "node esbuild.config.mjs --watch",
     "build:kbblocks": "node esbuild.kbblocks.config.mjs",
     "watch:kbblocks": "node esbuild.kbblocks.config.mjs --watch",
     "typecheck": "tsc --noEmit",

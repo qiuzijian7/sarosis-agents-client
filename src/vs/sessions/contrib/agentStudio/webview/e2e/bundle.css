@@ -1,0 +1,86 @@
+/* src/features/mindmap/MindMapPanel.css */
+.mindmap-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  font-size: 12px;
+}
+.mindmap-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+.mindmap-toolbar button {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.mindmap-toolbar button:hover {
+  border-color: var(--vscode-focusBorder);
+}
+.mindmap-count {
+  margin-left: auto;
+  color: var(--vscode-descriptionForeground);
+}
+.mindmap-import {
+  padding: 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-input-background);
+}
+.mindmap-import-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.mindmap-import-tabs button {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.mindmap-import-tabs button.on {
+  border-color: var(--vscode-focusBorder);
+  color: var(--vscode-focusBorder);
+}
+.mindmap-import textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--vscode-input-background);
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  padding: 6px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 12px;
+}
+.mindmap-import textarea:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+.mindmap-import button {
+  margin-top: 6px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.mindmap-canvas-host {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}

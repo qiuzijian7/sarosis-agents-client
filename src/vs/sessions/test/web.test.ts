@@ -36,6 +36,11 @@ import { getSingletonServiceDescriptors } from '../../platform/instantiation/com
 import { ServiceIdentifier } from '../../platform/instantiation/common/instantiation.js';
 import { IWorkbench } from '../../workbench/browser/web.api.js';
 import { isEqual } from '../../base/common/resources.js';
+import { AgentStudioService } from '../contrib/agentStudio/browser/agentStudioService.js';
+import type { IChatModel } from '../contrib/agentStudio/browser/knowledge/llm.js';
+import { IMainProcessService } from '../../platform/ipc/common/mainProcessService.js';
+import type { IChannel } from '../../base/parts/ipc/common/ipc.js';
+import { mainWindow } from '../../base/browser/window.js';
 
 /**
  * Mock files pre-seeded in the in-memory file system. These match the
@@ -48,6 +53,83 @@ const MOCK_FS_FILES: Record<string, string> = {
 	'/mock-repo/package.json': '{\n\t"name": "mock-repo",\n\t"version": "1.0.0"\n}\n',
 	'/mock-repo/README.md': '# Mock Repository\n\nThis is a mock repository for E2E testing.\n',
 };
+
+// ---------------------------------------------------------------------------
+// Knowledge Base mock — vault + notes + mock LLM for mindmap generation
+//
+// The KB view addresses its vault through `URI.file()` (file:// scheme). Web
+// builds register an HTMLFileSystemProvider for `file://` when the browser
+// exposes the File System Access API (web.main gates on showDirectoryPicker),
+// which would swallow the vault traffic — it only serves handles picked
+// interactively. Drop the API at module load time (before workbench startup)
+// so web.main skips that registration and our in-memory provider below can
+// own the `file` scheme.
+// ---------------------------------------------------------------------------
+
+try {
+	delete (mainWindow as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+} catch { /* noop */ }
+
+const KB_DIR = '/mock-kb';
+const KB_VAULT_ID = 'e2e-kb-vault';
+
+/** Mock LLM payload returned for KB mindmap extraction (KbMindmapGenerator contract). */
+const MOCK_KB_MINDMAP_JSON = JSON.stringify({
+	nodes: [
+		{ id: 'n1', type: 'text', width: 280, height: 80, content: '**React Hooks**\n函数组件的状态与副作用机制' },
+		{ id: 'n2', type: 'text', width: 280, height: 80, content: '**useState**\n声明式状态钩子' },
+		{ id: 'n3', type: 'text', width: 280, height: 80, content: '**useEffect**\n副作用处理钩子' },
+	],
+	edges: [
+		{ id: 'e1', fromNode: 'n1', toNode: 'n2', label: '包含' },
+		{ id: 'e2', fromNode: 'n1', toNode: 'n3', label: '包含' },
+	],
+});
+
+/**
+ * Mock IChatModel for the KB pipeline. `KbMindmapGenerator` only uses
+ * `complete()`, and expects a bare JSON knowledge graph back.
+ */
+class MockKbChatModel implements IChatModel {
+	async extract<T = Record<string, unknown>>(req: { prompt: string }): Promise<T> {
+		return JSON.parse(MOCK_KB_MINDMAP_JSON) as T;
+	}
+	async complete(_system: string | undefined, _user: string, _temperature?: number): Promise<string> {
+		return MOCK_KB_MINDMAP_JSON;
+	}
+}
+
+// Patch the real AgentStudioService prototype so the KB mindmap pipeline
+// (import classification + mindmap generation) has an LLM without any
+// network backend. Only affects this test build.
+(AgentStudioService.prototype as unknown as { createKbChatModel?: () => IChatModel | null }).createKbChatModel
+	= function (): IChatModel | null { return new MockKbChatModel(); };
+
+// ---------------------------------------------------------------------------
+// MockMainProcessService — the pure web workbench has no main-process IPC
+// bridge, but a large slice of the AgentStudio service graph (agentStudioService,
+// codebaseMemoryMcp, codebaseGraph, modelSelector, ...) declares a dependency
+// on IMainProcessService. Without it none of those services instantiate and
+// whole views (Agent Chat, Knowledge Base) fail to render. This no-op mock
+// lets the real services run; channel calls resolve to undefined.
+// ---------------------------------------------------------------------------
+
+class MockMainProcessService implements IMainProcessService {
+	declare readonly _serviceBrand: undefined;
+
+	getChannel(_channelName: string): IChannel {
+		return new Proxy({}, {
+			get: (_target, prop) => {
+				if (prop === 'call' || typeof prop === 'string') {
+					return (_command?: unknown, ..._args: unknown[]) => Promise.resolve(undefined);
+				}
+				return undefined;
+			},
+		}) as IChannel;
+	}
+
+	registerChannel(): void { }
+}
 
 /**
  * Register the mock-fs:// file system provider directly in the workbench
@@ -66,6 +148,57 @@ function registerMockFileSystemProvider(serviceCollection: ServiceCollection): v
 		fileService.writeFile(uri, VSBuffer.fromString(content));
 	}
 	console.log('[Sessions Web Test] Registered mock-fs:// provider with pre-seeded files');
+
+	// Knowledge Base addresses its vault via URI.file() (file:// scheme). See
+	// the module-load comment above: the HTMLFileSystemProvider is prevented
+	// from registering, so the in-memory provider below owns `file://`.
+	try {
+		if (fileService.hasProvider(URI.file('/'))) {
+			console.warn('[Sessions Web Test] file:// provider already registered — KB vault will not resolve');
+		} else {
+			fileService.registerProvider('file', new InMemoryFileSystemProvider());
+			void preseedKnowledgeBaseFiles(fileService);
+		}
+	} catch (err) {
+		console.warn('[Sessions Web Test] file:// provider registration skipped:', err);
+	}
+}
+
+/**
+ * Pre-seed the KB vault on the in-memory file:// provider:
+ * `<kbDir>/<vaultId>/笔记/React Hooks 与函数组件.md` — the note the mindmap
+ * scenario consumes. Folders are created level by level (the in-memory
+ * provider does not create parent directories implicitly).
+ */
+async function preseedKnowledgeBaseFiles(fileService: IFileService): Promise<void> {
+	const vaultRoot = URI.file(`${KB_DIR}/${KB_VAULT_ID}`);
+	const notes = URI.joinPath(vaultRoot, '笔记');
+	const library = URI.joinPath(vaultRoot, '库');
+	for (const dir of [URI.file(KB_DIR), vaultRoot, library, notes]) {
+		try {
+			if (!await fileService.exists(dir)) { await fileService.createFolder(dir); }
+		} catch { /* already exists */ }
+	}
+	const noteContent = [
+		'---',
+		'title: React Hooks 与函数组件',
+		'---',
+		'',
+		'# React Hooks 与函数组件',
+		'',
+		'React Hooks 让函数组件拥有状态与副作用能力。',
+		'',
+		'## useState',
+		'',
+		'声明式状态钩子，用于在函数组件中保存可变状态。',
+		'',
+		'## useEffect',
+		'',
+		'副作用处理钩子，替代类组件的生命周期方法。',
+		'',
+	].join('\n');
+	await fileService.writeFile(URI.joinPath(notes, 'React Hooks 与函数组件.md'), VSBuffer.fromString(noteContent));
+	console.log(`[Sessions Web Test] Pre-seeded KB vault at file://${KB_DIR}/${KB_VAULT_ID}`);
 }
 
 const MOCK_ACCOUNT: IDefaultAccount = {
@@ -551,6 +684,7 @@ export class TestSessionsBrowserMain extends SessionsBrowserMain {
 			[IChatEntitlementService, new SyncDescriptor(MockChatEntitlementService)],
 			[IDefaultAccountService, new SyncDescriptor(MockDefaultAccountService)],
 			[IGitService, new SyncDescriptor(MockGitService)],
+			[IMainProcessService, new SyncDescriptor(MockMainProcessService)],
 		];
 		for (const [serviceId, mockDescriptor] of overrides) {
 			const idx = registry.findIndex(([id]) => id === serviceId);
@@ -585,6 +719,22 @@ export class TestSessionsBrowserMain extends SessionsBrowserMain {
 		storageService.store('sessions.recentlyPickedWorkspaces', recentWorkspaces, StorageScope.PROFILE, StorageTarget.MACHINE);
 
 		console.log(`[Sessions Web Test] Pre-seeded folder: ${mockFolderUri.toString()}`);
+
+		// Seed a deterministic KB vault (id must match preseedKnowledgeBaseFiles)
+		// so KnowledgeBaseViewPane activates it instead of creating a random one.
+		const kbVault = {
+			id: KB_VAULT_ID,
+			name: '我的知识库',
+			icon: '📚',
+			sort: 0,
+			sortMode: 'fileNameASC',
+			closed: false,
+			path: `${KB_DIR}/${KB_VAULT_ID}`,
+		};
+		storageService.store('agentStudio.kb.kbDir', KB_DIR, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		storageService.store('agentStudio.kb.vaults', JSON.stringify([kbVault]), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		storageService.store('agentStudio.kb.active', KB_VAULT_ID, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		console.log(`[Sessions Web Test] Pre-seeded KB vault "${KB_VAULT_ID}" (dir: ${KB_DIR})`);
 	}
 
 	protected override createWorkbench(domElement: HTMLElement, serviceCollection: ServiceCollection, logService: ILogService): IBrowserMainWorkbench {

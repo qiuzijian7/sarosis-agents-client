@@ -93,6 +93,11 @@ function resolveSemanticCommand(cmd, snapshotText) {
 const ASSERT_TIMEOUT_MS = 10_000;
 const ASSERT_POLL_MS = 500;
 
+/** Synchronous sleep that works on all platforms (no external `sleep` binary). */
+function sleepSync(ms) {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * @param {() => { ok: boolean; message?: string }} checkFn
  * @returns {{ ok: boolean; message?: string }}
@@ -101,7 +106,7 @@ function pollAssertion(checkFn) {
 	const deadline = Date.now() + ASSERT_TIMEOUT_MS;
 	let lastResult = checkFn();
 	while (!lastResult.ok && Date.now() < deadline) {
-		cp.spawnSync('sleep', [(ASSERT_POLL_MS / 1000).toString()]);
+		sleepSync(ASSERT_POLL_MS);
 		lastResult = checkFn();
 	}
 	return lastResult;
@@ -229,7 +234,7 @@ async function main() {
 	}
 
 	// Wait for workbench to render
-	cp.spawnSync('sleep', ['5']);
+	sleepSync(5_000);
 
 	let totalPassed = 0;
 	let totalFailed = 0;
@@ -241,13 +246,13 @@ async function main() {
 		// Reset state between scenarios
 		runPlaywrightCli(['press', 'Escape']);
 		runPlaywrightCli(['goto', BASE_URL]);
-		cp.spawnSync('sleep', ['3']);
+		sleepSync(3_000);
 
 		let scenarioPassed = true;
 
 		for (const [i, step] of data.steps.entries()) {
 			// Give the UI time to settle after each step (matches generate.cjs behavior)
-			cp.spawnSync('sleep', ['1']);
+			sleepSync(1_000);
 			const label = `  step ${i + 1}: ${step.description}`;
 
 			if (step.error) {

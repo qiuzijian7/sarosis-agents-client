@@ -74,6 +74,13 @@ import {
 	formatExplorationFindings,
 } from '../common/preLoopOrchestrator.js';
 import { registerPlanQueueHandle } from '../common/planQueueRegistry.js';
+
+/**
+ * 已对「API 请求中 0 个 MCP 工具」警告过的会话（2026-09-05）。
+ * 未配置/未连接 MCP 是稳态而非逐轮异常——同会话只 warn 一次，后续降级 info，
+ * 避免日志刷屏（实测单会话 23 条重复警告）。
+ */
+const _noMcpWarnedSessions = new Set<string>();
 import { getParadigmOverride, setParadigmOverride } from '../common/paradigmOverride.js';
 import {
 	toolConsecutiveFailureReminder,
@@ -333,9 +340,24 @@ interface ITurnContext {
 
 	let messages: any[];
 	if (effectiveSystemPrompt) {
+		// 去重（2026-09-04，用户导出「压缩上下文（部分）.txt」实证）：上游 driver 分层组装
+		// 可能已把完整系统提示放进 request.messages 头部，此处再 prepend 会得到两条
+		// **相邻且逐字相同**的 system 消息（该导出里两份 300 行系统提示，纯浪费 ~18k
+		// tokens/turn）。规则：首条已是 system 则**替换**为 effectiveSystemPrompt
+		// （executor 是 system 唯一真源——enforcement 追加也只发生在这里）；其后的
+		// 历史消息中与 effectiveSystemPrompt 完全相同的副本一并剔除。
+		const head = (request.messages as any[])[0];
+		let body = request.messages as any[];
+		if (head?.role === 'system') {
+			body = (request.messages as any[]).slice(1);
+			if (head.content !== effectiveSystemPrompt) {
+				host._logService.info(`[AgentOS] Replaced upstream system message (${head.content.length} chars) with effectiveSystemPrompt (${effectiveSystemPrompt.length} chars)`);
+			}
+		}
+		body = body.filter((m: any) => !(m?.role === 'system' && m.content === effectiveSystemPrompt));
 		messages = [
 			{ role: 'system', content: effectiveSystemPrompt },
-			...request.messages,
+			...body,
 		];
 		host._logService.info(`[AgentOS] Prepended frozen system prefix (${effectiveSystemPrompt.length} chars) as system message`);
 
@@ -413,6 +435,17 @@ interface ITurnContext {
 		// context even when older messages have been dropped.
 		const durableCtxMsg = buildDurableContextSystemMessage(host._durableContext);
 		if (durableCtxMsg) {
+			// 替换式注入（2026-09-04，用户导出实证）：上一轮注入的 durable system 若
+			// 残留在 request.messages 历史里，此处再插入就会每轮多一份（该导出里
+			// durable_context_data 快照两份相邻、290 行重复）。按内容前缀识别并移除
+			// 旧副本，只保留本次注入的最新一份。
+			const durableHead = durableCtxMsg.content.slice(0, 40);
+			const beforeCount = messages.length;
+			messages = messages.filter((m: any) =>
+				!(m?.role === 'system' && typeof m.content === 'string' && m.content.slice(0, 40) === durableHead));
+			if (messages.length !== beforeCount) {
+				host._logService.info(`[AgentOS] Removed ${beforeCount - messages.length} stale durable-context system message(s) before re-injection`);
+			}
 			// Inject right after system prompt, before user messages
 			let insertIdx = 0;
 			for (let i = 0; i < messages.length; i++) {
@@ -427,6 +460,14 @@ interface ITurnContext {
 				`[AgentOS] Injected durable context (${durableCtxMsg.content.length} chars, ` +
 				`ledger entries: ${host._delegationLedger.getAllEntries().length})`
 			);
+		}
+
+		// 重复注入检测（2026-09-04）：正常 composition = 主 system 1 + volatile 0/1 +
+		// durable 0/1。超过 3 条说明某处仍在重复 push——每条冗余副本每个 turn 都全额
+		// 计费（系统提示体量 ~18k tokens），必须当场暴露而不是等用户导出消息文件。
+		const _sysCount = messages.filter((m: any) => m?.role === 'system').length;
+		if (_sysCount > 3) {
+			host._logService.warn(`[AgentOS] ${_sysCount} system messages in outgoing request — likely duplicated prompt injection; each stale copy burns full tokens every turn`);
 		}
 
 		// ─── User Message XML Tag Enrichment ────────────────────────────
@@ -1361,9 +1402,13 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					);
 				}
 			}
-			const logFn = didCompress
-				? host._logService.info.bind(host._logService)
-				: host._logService.warn.bind(host._logService);
+			// 日志分级（2026-09-05）：didCompress=true（成功动作）与 below_* 常态跳过 → info；
+			// 其他 skip 原因（anti_thrashing 等防抖）→ warn（真信号）。此前 skip 一律 warn，
+			// below_token_threshold 每轮刷 WARN，用户误判为异常。
+			const _cmpSkipped = String(cmpMeta.skipped ?? '');
+			const logFn = (!didCompress && !_cmpSkipped.startsWith('below_'))
+				? host._logService.warn.bind(host._logService)
+				: host._logService.info.bind(host._logService);
 			logFn(
 				`[AgentOS][Compression] didCompress=${didCompress} ` +
 				`skipped=${JSON.stringify(cmpMeta.skipped ?? null)} ` +
@@ -2415,7 +2460,14 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					// 被截断 / 工具被折叠成桥接」三种情形，再判定是「模型不听」。
 					// 此前只能靠 toolsSchemaTokens 差值间接推断（13509→13912），
 					// 既要人工换算、也定位不到具体哪个工具。
-					const _probes = probeToolGuidance(enabledTools as ReadonlyArray<{ name?: string; description?: string }>);
+					const _probes = probeToolGuidance(
+					enabledTools as ReadonlyArray<{ name?: string; description?: string }>,
+					// 审批关闭时 approvalShape 探针的引导段本就不下发（见
+					// compatibilityTools.shellApprovalGuidance），探针标 skipped 不算缺陷。
+					typeof host._isToolCallConfirmationEnabled === 'function'
+						? host._isToolCallConfirmationEnabled()
+						: true,
+				);
 					const _schemaDiag = formatToolSchemaDiagLog(_probes, (enabledTools as unknown[]).length, _toolsSchemaAtRequest);
 					if (_schemaDiag.level === 'warn') {
 						host._logService.warn(_schemaDiag.text);
@@ -2450,7 +2502,16 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					`  Builtin tools (${builtinToolsSent.length}): [${builtinToolsSent.map((t: any) => t.name).join(', ')}]`
 				);
 				if (mcpToolsSent.length === 0) {
-					host._logService.warn(`[AgentOS] ⚠ NO MCP TOOLS in API request! MCP server may not be connected.`);
+					// 会话级一次性（2026-09-05，日志 1788591795446）：未配置/未连接 MCP 是
+					// 稳态而非逐轮异常，此前每 turn warn 一条（实测 23 条）——同会话只警告
+					// 一次，后续降级 info。
+					const sessKey = request.sessionId || request.agentId || 'unknown';
+					if (!_noMcpWarnedSessions.has(sessKey)) {
+						_noMcpWarnedSessions.add(sessKey);
+						host._logService.warn(`[AgentOS] ⚠ NO MCP TOOLS in API request — MCP servers not connected or configured (won't warn again this session; builtin tools unaffected)`);
+					} else {
+						host._logService.info(`[AgentOS] NO MCP TOOLS in API request (session already warned once)`);
+					}
 				}
 			} else {
 				host._logService.warn(`[AgentOS] ⚠ NO TOOLS at all in API request!`);

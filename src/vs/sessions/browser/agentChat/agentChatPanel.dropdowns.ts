@@ -5,6 +5,7 @@ import { IAgentChatMessage, IWorkspaceItem, IWorktreeItem, CHAT_MODE_UI, CHAT_MO
 import { positionDropdownAbove, positionDropdownBelow, disposeOutsideClick, registerOutsideClickClose } from './modules/dropdownHelpers.js';
 import { renderHistoryOverlay } from './modules/historyOverlay.js';
 import { AgentChatPanelComposer } from './agentChatPanel.composer.js';
+import { defaultPortOf, normalizeConfigHtml, normalizePanelUrl, validatePanelUrl, type ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlConfig.js';
 
 // Feature: dropdowns. Extracted from AgentChatPanelBase.
 export class AgentChatPanelDropdowns extends AgentChatPanelComposer {
@@ -321,6 +322,7 @@ protected override _renderSettingsOverlayContent(activeTab: string): void {
 			{ id: 'mcp', codicon: 'codicon codicon-server', label: 'MCP' },
 			{ id: 'knowledge', codicon: 'codicon codicon-library', label: '知识库' },
 			{ id: 'rules', codicon: 'codicon codicon-checklist', label: '规则' },
+			{ id: 'confightml', codicon: 'codicon codicon-globe', label: 'ConfigHtml' },
 		];
 		// Channel 绑定 tab：仅当提供飞书绑定回调时显示
 		if (this._onListFeishuBindings) {
@@ -354,6 +356,8 @@ protected override _renderSettingsOverlayContent(activeTab: string): void {
 			this._renderSettingsRulesTab(contentArea);
 		} else if (activeTab === 'channel') {
 			this._renderSettingsChannelTab(contentArea);
+		} else if (activeTab === 'confightml') {
+			void this._renderSettingsConfigHtmlTab(contentArea);
 		}
 
 		// Footer with "Open full editor" button — 使用 VS Code 原生 monaco-button
@@ -367,6 +371,216 @@ protected override _renderSettingsOverlayContent(activeTab: string): void {
 				this._onOpenSettings?.();
 			}),
 		);
+	}
+
+	/** ConfigHtml 配置页签：本地 HTML / URL 面板双模式。
+	 *  逻辑复用 common/configHtmlConfig.ts，与 native 设置面板（AgentSettingsEditorPane 的
+	 *  ConfigHtml tab）同一份契约；服务拉起经回调转主进程（spec 只带 url/port，由实现方补全）。 */
+	protected async _renderSettingsConfigHtmlTab(container: HTMLElement): Promise<void> {
+		const desc = append(container, $(".chat-settings-tab-desc"));
+		desc.textContent = '配置 ConfigHtml 预览来源（两种模式互斥）。预览固定在独立页签中打开。';
+
+		const cfg: ConfigHtmlCfg | undefined = this._onGetConfigHtmlCfg ? await this._onGetConfigHtmlCfg() : undefined;
+		const mode: 'local' | 'url' = cfg?.url ? 'url' : 'local';
+
+		const inputStyle = 'width:100%;box-sizing:border-box;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:4px;padding:4px 8px;font-size:12px;';
+		// ★ 操作日志（对齐 native 设置页 ConfigHtml tab）：启动/停止/保存全链路，
+		//   错误详情（含主进程带回的子进程输出尾部）不再只剩「失败 ✗」四个字。
+		//   先创建（detached），函数末尾 append 到 container —— 位置在保存按钮之后。
+		const logEl = $('div.chat-settings-confightml-log');
+		logEl.style.cssText = 'margin-top:8px;max-height:130px;overflow:auto;background:var(--vscode-terminal-background,#111);border:1px solid var(--vscode-input-border);border-radius:4px;padding:6px 8px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;';
+		const log = (text: string, cls: 'info' | 'ok' | 'err' | 'dim' = 'info') => {
+			const line = append(logEl, $('div'));
+			line.textContent = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${text}`;
+			line.style.color = cls === 'err'
+				? 'var(--vscode-testing-iconFailed, #f48771)'
+				: cls === 'ok'
+					? 'var(--vscode-testing-iconPassed, #3fb950)'
+					: cls === 'dim'
+						? 'var(--vscode-descriptionForeground, #8b949e)'
+						: 'var(--vscode-foreground)';
+			while (logEl.childElementCount > 200) { logEl.removeChild(logEl.firstElementChild!); }
+			logEl.scrollTop = logEl.scrollHeight;
+		};
+		log('ConfigHtml 页签已就绪。启动/停止/保存的全链路会记录在这里。', 'dim');
+		const flash = (btn: HTMLButtonElement, text: string, ok: boolean) => {
+			const old = btn.textContent;
+			btn.textContent = text;
+			btn.style.color = ok ? 'var(--vscode-testing-iconPassed, #3fb950)' : 'var(--vscode-testing-iconFailed, #f48771)';
+			setTimeout(() => { btn.textContent = old; btn.style.color = ''; }, 2500);
+		};
+
+		// ── 预览模式（radio 切换）──
+		const modeRow = append(container, $(".chat-settings-config-row"));
+		append(modeRow, $("span.config-row-label", undefined, '预览模式'));
+		const modeGroup = append(modeRow, $('div'));
+		modeGroup.style.display = 'flex';
+		modeGroup.style.gap = '16px';
+		let currentMode: 'local' | 'url' = mode;
+		const sections: Record<'local' | 'url', HTMLElement> = {
+			local: append(container, $('div')),
+			url: append(container, $('div')),
+		};
+		for (const [v, t] of [['local', '本地 HTML'], ['url', 'URL 面板']] as const) {
+			const wrap = append(modeGroup, $('label'));
+			wrap.style.display = 'flex';
+			wrap.style.gap = '4px';
+			wrap.style.alignItems = 'center';
+			wrap.style.cursor = 'pointer';
+			const radio = append(wrap, $('input')) as HTMLInputElement;
+			radio.type = 'radio';
+			radio.name = 'chat-config-html-mode';
+			radio.value = v;
+			radio.checked = v === mode;
+			radio.onchange = () => {
+				if (!radio.checked) { return; }
+				currentMode = v;
+				for (const k of ['local', 'url'] as const) { sections[k].style.display = k === currentMode ? '' : 'none'; }
+			};
+			append(wrap, $('span', undefined, t));
+		}
+
+		// ── 本地 HTML 区块 ──
+		const fileRow = append(sections.local, $(".chat-settings-config-row"));
+		append(fileRow, $("span.config-row-label", undefined, '预览源文件'));
+		const fileInput = append(fileRow, $("input")) as HTMLInputElement;
+		fileInput.type = 'text';
+		fileInput.value = cfg?.htmlPath ?? 'config.html';
+		fileInput.placeholder = 'config.html（相对 agent 目录）';
+		fileInput.style.cssText = inputStyle;
+
+		// ── URL 区块 ──
+		const urlRow = append(sections.url, $(".chat-settings-config-row"));
+		append(urlRow, $("span.config-row-label", undefined, '面板地址'));
+		const urlInput = append(urlRow, $("input")) as HTMLInputElement;
+		urlInput.type = 'text';
+		urlInput.value = cfg?.url ?? '';
+		urlInput.placeholder = 'http://127.0.0.1:5600';
+		urlInput.style.cssText = inputStyle;
+		const portRow = append(sections.url, $(".chat-settings-config-row"));
+		append(portRow, $("span.config-row-label", undefined, '服务端口'));
+		const portInput = append(portRow, $("input")) as HTMLInputElement;
+		portInput.type = 'number';
+		portInput.value = String(defaultPortOf(cfg, cfg?.url ?? ''));
+		portInput.placeholder = '5600';
+		portInput.style.cssText = inputStyle;
+		// 失焦自动补全 scheme（127.0.0.1:5600 → http://…），防探活 URL 拼接错乱
+		urlInput.addEventListener('blur', () => {
+			const fixed = normalizePanelUrl(urlInput.value);
+			if (fixed && fixed !== urlInput.value) {
+				urlInput.value = fixed;
+				log(`面板地址已规范化：${fixed}`, 'dim');
+			}
+		});
+		const expectRow = append(sections.url, $(".chat-settings-config-row"));
+		append(expectRow, $("span.config-row-label", undefined, '健康特征串'));
+		const expectInput = append(expectRow, $("input")) as HTMLInputElement;
+		expectInput.type = 'text';
+		expectInput.value = cfg?.server?.healthExpect ?? '';
+		expectInput.placeholder = '可选：响应体需包含的子串';
+		expectInput.title = '留空 = 只探活不校验身份。若该端口可能被其他程序占用，填入面板页面里的固定文字（如标题），探活时会校验。';
+		expectInput.style.cssText = inputStyle;
+		const svcRow = append(sections.url, $(".chat-settings-config-row"));
+		const startBtn = append(svcRow, $("button.monaco-button.monaco-text-button.chat-settings-open-full-btn")) as HTMLButtonElement;
+		startBtn.textContent = '▶ 启动服务';
+		const stopBtn = append(svcRow, $("button.monaco-button.monaco-text-button.chat-settings-open-full-btn")) as HTMLButtonElement;
+		stopBtn.textContent = '■ 停止服务';
+		const previewBtn = append(svcRow, $("button.monaco-button.monaco-text-button.chat-settings-open-full-btn")) as HTMLButtonElement;
+		previewBtn.textContent = '🌐 打开预览';
+
+		startBtn.onclick = () => {
+			const url = normalizePanelUrl(urlInput.value);
+			if (!url) { flash(startBtn, '请先填地址', false); log('✗ 启动失败：地址为空', 'err'); return; }
+			urlInput.value = url;
+			// ★ spec 只带 url/port：实现方（onEnsureConfigHtmlServer）会走共享 buildEnsureSpec
+			//   补全 command/args/cwd——之前实现方只透传，主进程 spawn 无参 node 直接挂住 30s。
+			const spec = { url, port: Number(portInput.value) || undefined, healthExpect: expectInput.value.trim() || undefined };
+			startBtn.textContent = '启动中…';
+			log(`▶ 启动服务：${url}（端口 ${spec.port ?? '-'}，启动中最长约 30s，请留意本日志）`, 'dim');
+			// ★ 前端并行探活动态：主进程 ensure 是一次性 invoke（内部轮询最长 30s、期间静默），
+			//   这里每 2s 自探一次端口，把进展实时写进日志——消除「卡住」的观感。
+			const t0 = Date.now();
+			let alive = false;
+			const poll = setInterval(() => {
+				if (alive) { return; }
+				const s = Math.round((Date.now() - t0) / 1000);
+				if (s > 45) { clearInterval(poll); return; }
+				fetch(url + '/', { mode: 'no-cors', signal: AbortSignal.timeout(1500) })
+					.then(() => {
+						if (!alive) { alive = true; log(`✓ 端口已有响应（${s}s）——等待主进程确认返回…`, 'ok'); }
+					})
+					.catch(() => {
+						if (s > 0 && s % 4 === 0) { log(`⏳ 探活中 ${s}s（服务尚未响应，可能仍在启动）…`, 'dim'); }
+					});
+			}, 2000);
+			const done = () => { clearInterval(poll); startBtn.textContent = '▶ 启动服务'; };
+			void this._onEnsureConfigHtmlServer?.(spec)
+				.then(r => {
+					done();
+					if (r.ok) {
+						log(r.alreadyRunning ? `✓ 服务已在运行（${url}）` : `✓ 面板服务已就绪（${url}）`, 'ok');
+					} else {
+						// 失败详情全量进日志：含主进程带回的子进程输出尾部
+						log(`✗ 启动失败：${r.error ?? '未知错误'}`, 'err');
+					}
+					flash(startBtn, r.ok ? (r.alreadyRunning ? '已在运行 ✓' : '已就绪 ✓') : '失败 ✗（详见日志）', r.ok);
+				})
+				.catch(err => {
+					done();
+					log(`✗ 调用主进程异常：${err instanceof Error ? err.message : String(err)}`, 'err');
+					flash(startBtn, '失败 ✗（详见日志）', false);
+				});
+		};
+		stopBtn.onclick = () => {
+			const url = normalizePanelUrl(urlInput.value);
+			const spec = { url, port: Number(portInput.value) || undefined };
+			log(`■ 停止服务：${url}`, 'dim');
+			void this._onStopConfigHtmlServer?.(spec)
+				.then(r => {
+					log(r.killed.length ? `✓ 已结束 ${r.killed.length} 个进程：${r.killed.join(', ')}` : '没有进程在监听该端口（服务未运行）', r.killed.length ? 'ok' : 'dim');
+					flash(stopBtn, r.killed.length ? `已停止 ✓（${r.killed.length} 个进程）` : '未在运行', true);
+				})
+				.catch(err => {
+					log(`✗ 停止异常：${err instanceof Error ? err.message : String(err)}`, 'err');
+					flash(stopBtn, '失败 ✗（详见日志）', false);
+				});
+		};
+		previewBtn.onclick = () => {
+			const url = normalizePanelUrl(urlInput.value);
+			if (!url) { flash(previewBtn, '请先填地址', false); return; }
+			urlInput.value = url;
+			void this._onOpenConfigHtmlPreview?.(url);
+		};
+
+		// ── 保存 ──
+		const saveRow = append(container, $(".chat-settings-config-row"));
+		const saveBtn = append(saveRow, $("button.monaco-button.monaco-text-button.chat-settings-open-full-btn")) as HTMLButtonElement;
+		saveBtn.textContent = '💾 保存配置';
+		saveBtn.onclick = () => {
+			const next = currentMode === 'url'
+				? normalizeConfigHtml('url', { url: urlInput.value, port: Number(portInput.value), prev: cfg })
+				: normalizeConfigHtml('local', { htmlPath: fileInput.value });
+			if (currentMode === 'url') {
+				const expect = expectInput.value.trim();
+				if (expect) { next.server = { ...(next.server ?? {}), healthExpect: expect }; }
+				else if (next.server) { delete next.server.healthExpect; }
+				const err = validatePanelUrl(next.url ?? '');
+				if (err) { flash(saveBtn, err, false); log(`✗ 保存失败：${err}`, 'err'); return; }
+			}
+			log(`💾 保存配置：${JSON.stringify(next)}`, 'dim');
+			void this._onSaveConfigHtmlCfg?.(next)
+				.then(() => {
+					log('✓ 已保存到 agent 元数据（.agent.md frontmatter）', 'ok');
+					flash(saveBtn, '已保存 ✓', true);
+				})
+				.catch(err => {
+					log(`✗ 保存失败：${err instanceof Error ? err.message : String(err)}`, 'err');
+					flash(saveBtn, '保存失败 ✗', false);
+				});
+		};
+
+		// 操作日志区（最后挂载：位于保存按钮下方）
+		append(container, logEl);
 	}
 
 protected override _renderSettingsPromptTab(container: HTMLElement): void {

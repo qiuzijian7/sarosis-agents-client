@@ -140,7 +140,8 @@
   },
   "dependencies": {
     "dompurify": "^3.4.1",
-    "mermaid": "^11.12.3"
+    "mermaid": "^11.12.3",
+    "vssaros": "file:../.."
   },
   "overrides": {
     "lodash-es": "4.18.1"

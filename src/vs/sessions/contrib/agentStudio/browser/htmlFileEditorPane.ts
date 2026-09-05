@@ -239,6 +239,15 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			this._logService.info('[HtmlFileEditorPane] setInput: matched HtmlPreviewEditorInput — entering preview-input path');
 			this._isHtml = true;
 			this._isPreviewInput = true;
+			// 2026-09-05 修复「Cannot read properties of undefined (reading 'hasCapability')」：
+			// 基类 EditorPane._input 只在 super.setInput 里赋值（editorPane.ts:117），
+			// 而本分支 bypass super（TextFileEditor.setInput 只接受 FileEditorInput）——
+			// 导致 pane.input 恒为 undefined；openEditor 激活该 editor 时
+			// editorGroupView.observeActiveEditor 的 context-key 更新读
+			// activeEditorPane.input.hasCapability 直接崩（editorGroupView.ts:303），
+			// 并使所有依赖 pane.input 的 workbench 逻辑失效。
+			// _input 为 protected，此处直接赋值即可。
+			this._input = input;
 
 			// Show the 编辑 / HTML / 预览 toggle for the preview input too,
 			// so users can switch between the visual editor, the HTML source

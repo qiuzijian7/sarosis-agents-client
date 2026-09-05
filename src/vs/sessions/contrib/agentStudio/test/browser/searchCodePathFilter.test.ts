@@ -126,7 +126,7 @@ suite('search_code path_filter（P1 搜索根模型，log 1785228894680）', () 
 	test('searchOutcomeHint（include 分支）cites the glob and advises removing the filter', () => {
 		const hint = searchOutcomeHint('**/UE5EA/Engine/**', 0, false);
 		assert.ok(hint.includes('**/UE5EA/Engine/**'), 'should cite the include glob');
-		assert.ok(hint.includes('path_filter'), 'should mention path_filter');
+		assert.ok(hint.includes('path'), 'should mention path');
 		assert.ok(hint.includes('root folder name'), 'should explain the root-name pitfall');
 		assert.ok(!hint.includes('STOP retrying'), '未达阈值不应有连空强引导');
 	});
@@ -138,7 +138,7 @@ suite('search_code path_filter（P1 搜索根模型，log 1785228894680）', () 
 		assert.ok(hint.includes('3 times in a row'), 'should cite the streak count');
 		assert.ok(hint.includes('search_graph'), 'should steer to search_graph');
 		assert.ok(hint.includes('query_graph'), 'should steer to query_graph');
-		assert.ok(hint.includes('path_filter'), 'should mention dropping/loosening path_filter');
+		assert.ok(hint.includes('path'), 'should mention dropping/loosening path');
 		assert.ok(hint.includes('STOP retrying'), 'should tell the model to stop retrying search_code');
 	});
 

@@ -7,54 +7,32 @@
  *
  *  ★ 确定性约束：所有假图都是内联 SVG data URL（固定尺寸/颜色/无随机），
  *    否则截图基线每次都会 diff。
+ *
+ *  ★ 单一真源：bridge 的构造逻辑在 `bridgeStub.mjs`（纯 JS，Node mocha 与浏览器
+ *    visual 两个宿主共用）。本文件只负责浏览器侧的组装与网络守卫。
  *--------------------------------------------------------------------------------------------*/
 
-/** 装上 nodeCard 依赖的 bridge。返回被拦下的请求（便于断言"没有真实网络"）。 */
+import { installBridgeMock as installBridgeStub } from './bridgeStub.mjs';
+
+export { createBridgeStub, fakeImageDataUrl, fakeImageSvg } from './bridgeStub.mjs';
+export type { BridgeMode } from './bridgeStub.mjs';
+
+/**
+ * 装上 nodeCard 依赖的 bridge（浏览器模式：假图、绝不出网）。
+ * 返回被拦下的请求（便于断言"没有真实网络"）。
+ */
 export function installBridgeMock(): { calls: string[] } {
-	const calls: string[] = [];
-	const proxiedFetch = async (input: RequestInfo | URL): Promise<Response> => {
-		const url = typeof input === 'string' ? input : String((input as Request).url ?? input);
-		calls.push(url);
-		// 任何真实网络请求都返回一张确定性假图，绝不出网。
-		const svg = fakeImageSvg('PROXIED', '#334155');
-		return new Response(svg, { status: 200, headers: { 'content-type': 'image/svg+xml' } });
-	};
-	(globalThis as unknown as Record<string, unknown>).__vssarosBridge = {
-		createProxiedFetch: () => proxiedFetch,
-		createComfyFetch: () => proxiedFetch,
-		getComfyCorsMode: () => 'direct',
-		probeDirectCors: async () => true,
-		reprobeComfyCors: async () => true,
-		subscribeComfyCors: () => () => { /* noop */ },
-		sendRequest: async () => ({}),
-		postMessage: () => { /* noop */ },
-		getState: () => ({}),
-		setState: () => { /* noop */ },
-		initMessageClient: () => { /* noop */ },
-	};
-	return { calls };
+	return installBridgeStub('browser');
 }
 
-/** 确定性假图：内联 SVG，带文字标签便于人眼分辨来源。 */
-export function fakeImageSvg(label: string, bg = '#1e293b'): string {
-	return [
-		`<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">`,
-		`<rect width="512" height="512" fill="${bg}"/>`,
-		`<circle cx="256" cy="200" r="96" fill="#f59e0b" opacity="0.85"/>`,
-		`<rect x="96" y="330" width="320" height="120" rx="12" fill="#38bdf8" opacity="0.7"/>`,
-		`<text x="256" y="480" font-family="monospace" font-size="34" fill="#e2e8f0" text-anchor="middle">${label}</text>`,
-		`</svg>`,
-	].join('');
-}
-
-/** 假图的 data URL 形式（snapshot ref 直接吃这个，无需网络）。 */
-export function fakeImageDataUrl(label: string, bg?: string): string {
-	// 用 encodeURIComponent 而非 base64：产物可读、diff 友好、无 unicode 坑。
-	return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(fakeImageSvg(label, bg))}`;
-}
-
-/** 屏蔽真实网络：任何漏网的 fetch/Image 请求都会被替换成假图，保证离线可跑。 */
-export function installNetworkGuard(): { blocked: string[] } {
+/**
+ * 屏蔽真实网络：任何漏网的 fetch/Image 请求都会被替换成假图，保证离线可跑。
+ *
+ * @param allow URL 前缀白名单——命中的请求走真实 fetch。
+ *   ★ 画布沙箱「真后端模式」用：放行本地 ComfyUI（`http://127.0.0.1:8188/`）。
+ *   画廊 780 场景不传 → 行为与旧版完全一致（全拦，截图基线不受影响）。
+ */
+export function installNetworkGuard(allow: string[] = []): { blocked: string[] } {
 	const blocked: string[] = [];
 	const realFetch = globalThis.fetch?.bind(globalThis);
 	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -63,11 +41,27 @@ export function installNetworkGuard(): { blocked: string[] } {
 		if (url.startsWith('data:') || url.startsWith('blob:')) {
 			return realFetch ? realFetch(input as RequestInfo, init) : new Response('');
 		}
+		// 白名单命中 → 真实请求（与真实 app 同一条 HTTP 通道）
+		if (allow.some(p => url.startsWith(p))) {
+			return realFetch ? realFetch(input as RequestInfo, init) : new Response('');
+		}
 		blocked.push(url);
-		return new Response(fakeImageSvg('BLOCKED', '#450a0a'), {
+		return new Response(fakeImageSvgBlocked(), {
 			status: 200,
 			headers: { 'content-type': 'image/svg+xml' },
 		});
 	}) as typeof globalThis.fetch;
 	return { blocked };
+}
+
+/** 被网络守卫拦下时返回的假图（红色，一眼可辨）。 */
+function fakeImageSvgBlocked(): string {
+	return [
+		`<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">`,
+		`<rect width="512" height="512" fill="#450a0a"/>`,
+		`<circle cx="256" cy="200" r="96" fill="#f59e0b" opacity="0.85"/>`,
+		`<rect x="96" y="330" width="320" height="120" rx="12" fill="#38bdf8" opacity="0.7"/>`,
+		`<text x="256" y="480" font-family="monospace" font-size="34" fill="#e2e8f0" text-anchor="middle">BLOCKED</text>`,
+		`</svg>`,
+	].join('');
 }

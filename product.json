@@ -141,14 +141,7 @@
 		"tokenEntitlementUrl": "",
 		"mcpRegistryDataUrl": ""
 	},
-	"trustedExtensionAuthAccess": {
-		"github": [
-			"GitHub.copilot-chat"
-		],
-		"github-enterprise": [
-			"GitHub.copilot-chat"
-		]
-	},
+	"trustedExtensionAuthAccess": {},
 	"onboardingKeymaps": [
 		{
 			"id": "vscode",

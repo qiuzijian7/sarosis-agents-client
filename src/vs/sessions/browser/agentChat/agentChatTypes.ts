@@ -656,6 +656,15 @@ export interface IContextUsage {
 	readonly limit: number;
 	readonly percent: number; // 0-100
 	readonly ratio: number;   // 0-1
+	/**
+	 * 压缩判定用的有效窗口（2026-09-04）：clamp(模型窗口, 64k, 200k)，
+	 * 与 ContextManager._evaluateTrigger 同源（host 经 resolveEffectiveWindow 计算）。
+	 * 缺省时 UI 回退用 limit（模型声明 maxInputTokens）——大窗口模型（>200k 被
+	 * 硬顶）会出现「环显示 6% 实际已过 30% 压缩线」的口径错位。
+	 */
+	readonly effectiveWindow?: number;
+	/** 压缩触发线 = effectiveWindow × 阈值比例。存在时 UI 环以它为满刻度。 */
+	readonly thresholdTokens?: number;
 }
 
 /** Checkpoint info for the CheckpointBar */

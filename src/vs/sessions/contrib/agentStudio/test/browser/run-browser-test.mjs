@@ -12,6 +12,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
 import * as esbuild from 'esbuild';
+// ★ bridge stub 与浏览器 visual harness **共用同一份实现**（webview/visual/bridgeStub.mjs）。
+//   bridgeStub 是 `.mjs`（纯 JS）正因为本 runner 不经 esbuild 打包，只能 import `.mjs`。
+//   这样才能杜绝「Node mocha / 浏览器 visual」两份 stub 各自演进导致行为漂移。
+import { installBridgeMock } from '../../webview/visual/bridgeStub.mjs';
 
 const require = createRequire(import.meta.url);
 const Mocha = require('mocha');
@@ -70,15 +74,13 @@ await esbuild.build({
 const mocha = new Mocha({ ui: 'tdd', timeout: 10000 });
 // 浏览器侧模块（nodeExecutor/comfyRunner/nodeCard/stageWorkflowExecutor 等）在
 // import 时读取 globalThis.__vssarosBridge（webview IIFE 副作用挂载）。node 测试
-// 环境无该副作用 → 注入 no-op stub（fetch 相关用例自带 fetchLike，不会走到）。
-(globalThis).__vssarosBridge = {
-	// node 测试无真实 ComfyUI：图片物化 fetch 返回 404（走 materializeComfyImageRefs
-	// 的容错路径——保留原 ref 不物化），保证 runSingleNode 等执行链可测。
-	createComfyFetch: () => async () => new Response('', { status: 404 }),
-	createProxiedFetch: () => async () => new Response('', { status: 404 }),
-	getComfyCorsMode: () => 'unknown',
-	...(globalThis).__vssarosBridge,
-};
+// 环境无该副作用 → 注入 stub。
+//   mode='node' → 图片物化 fetch 返回 404，走 materializeComfyImageRefs 容错路径
+//   （保留原 ref 不物化），保证 runSingleNode 等执行链可测。
+// 仅当测试文件未自行设置时才注入（个别用例会带自己的 fetchLike）。
+if (!(globalThis).__vssarosBridge) {
+	installBridgeMock('node');
+}
 mocha.addFile(out);
 mocha.run((failures) => {
 	process.exit(failures ? 1 : 0);

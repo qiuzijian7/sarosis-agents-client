@@ -19,7 +19,8 @@
     "compile": "gulp compile-extension:vscode-colorize-tests"
   },
   "dependencies": {
-    "jsonc-parser": "^3.2.0"
+    "jsonc-parser": "^3.2.0",
+    "vssaros": "file:../.."
   },
   "devDependencies": {
     "@types/node": "22.x"

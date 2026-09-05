@@ -1,12 +1,12 @@
-import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
-import { createTrustedTypesPolicy } from '../../../base/browser/trustedTypes.js';
+import { $, append, addDisposableListener, EventType, clearNode } from '../../../base/browser/dom.js';
 import { IToolCall } from './agentChatTypes.js';
 import { AgentChatPanelWebCard } from './agentChatPanel.webCard.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
 
-// 工作台启用了 Trusted Types：把渲染好的 SVG 字符串转成 TrustedHTML 才能赋给
-// innerHTML（DOMParser 在打包版同样会被 TrustedHTML 拦截，见 _parseMermaidSvgToNode）。
-const _mermaidTtPolicy = createTrustedTypesPolicy('agentMermaidCard', { createHTML: value => value });
+// 2026-09-05：SVG 注入统一改为 <img> + Blob URL（_createMermaidSvgImage）。
+// 该 fork 的 Chromium 对 Trusted Types 极严格：innerHTML（含清空）、DOMParser
+// 任何 type（含 text/xml）都强制 TrustedHTML，只有 img.src（资源加载，非注入
+// sink）能稳定绕开。不再依赖 Trusted Types policy。
 
 // Reads the pixel size from width/height attributes (absolute px only) or the
 // viewBox, so the rendered <img> gets a sane intrinsic width and scales via
@@ -107,7 +107,9 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 	}
 
 	protected override _createMermaidCard(tc: IToolCall, key: string): HTMLElement {
-		const wrapper = $('.tool-header-wrapper.tool-card-delegate');
+		// tool-card-mermaid：专属类，覆盖 delegate 的 header-row flex-start 对齐
+		//（mermaid 标题单行，需要垂直居中，见 agentChat.css）
+		const wrapper = $('.tool-header-wrapper.tool-card-delegate.tool-card-mermaid');
 		const isDone = tc.status === 'success' || (!tc.status) ||
 			(tc.status !== 'running' && tc.status !== 'error' && tc.status !== 'approval_required' && tc.status !== 'rejected' && tc.status !== 'canceled');
 		const isRunning = tc.status === 'running';
@@ -122,6 +124,7 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 			if (m) { diagramTitle = m[1]; }
 		}
 		const resultText = (typeof tc.result === 'string' ? tc.result : '');
+		const fullMarkup = diagramMarkup.replace(/\\n/g, '\n');
 
 		// ── Header ──
 		const header = append(wrapper, $('.tool-header'));
@@ -142,6 +145,33 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 		if (isRunning) { titleEl.classList.add('shimmer'); }
 
 		const right = append(row, $('.tool-header-right'));
+		// 2026-09-05：「在新编辑器打开」按钮移到 title 行右侧并改造为超链接样式
+		// （用户要求）。样式参考编辑器内常见 link：accent 色 + 默认无下划线、hover 加下划线。
+		// click 需 stopPropagation 避免触发 header 折叠，preventDefault 阻止锚点跳转。
+		if (fullMarkup.trim()) {
+			const openLink = document.createElement('a');
+			openLink.href = '#';
+			openLink.textContent = '查看文件';
+			openLink.title = '在新编辑器打开预览';
+			openLink.setAttribute('role', 'button');
+			openLink.style.cssText = 'font-size:12px;color:var(--accent,#60a5fa);' +
+				'text-decoration:none;margin-right:8px;cursor:pointer;user-select:none;';
+			this._register(addDisposableListener(openLink, EventType.MOUSE_ENTER, () => {
+				openLink.style.textDecoration = 'underline';
+			}));
+			this._register(addDisposableListener(openLink, EventType.MOUSE_LEAVE, () => {
+				openLink.style.textDecoration = 'none';
+			}));
+			this._register(addDisposableListener(openLink, EventType.CLICK, (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				if (this._onExecuteCommand) {
+					this._onExecuteCommand('_mermaid-chat.openPreviewHost', fullMarkup, diagramTitle || 'Mermaid 预览')
+						.catch(err => console.warn('[MermaidCard] openPreview failed:', err));
+				}
+			}));
+			right.appendChild(openLink);
+		}
 		if (isErr) {
 			const errBadge = append(right, $('span.tool-status.tool-status.error'));
 			errBadge.textContent = '✗';
@@ -157,120 +187,230 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 		}
 
 		// ── Body ──
-		const body = append(wrapper, $('.tool-header-children'));
-
-		// ── Preview Panel (always present) ──
-		const previewPanel = append(body, $('.mc-preview'));
-		previewPanel.style.cssText =
-			'position:relative;min-height:48px;display:flex;align-items:center;justify-content:center;' +
-			'padding:12px;overflow:auto;max-height:420px;' +
-			'background:repeating-linear-gradient(0deg,transparent,transparent 19px,' +
-			'rgba(255,255,255,0.008) 19px,rgba(255,255,255,0.008) 20px),' +
-			'repeating-linear-gradient(90deg,transparent,transparent 19px,' +
-			'rgba(255,255,255,0.008) 19px,rgba(255,255,255,0.008) 20px);' +
-			'border-bottom:1px solid var(--void-border-1,rgba(255,255,255,0.08));';
-		const fullMarkup = diagramMarkup.replace(/\\n/g, '\n');
+		// 2026-09-05：图表卡片默认展开（用户要求）——CSS 里 .tool-header-children
+		// 默认 max-height:0/opacity:0（收起），必须初始挂 expanded class。
+		const body = append(wrapper, $('.tool-header-children.tool-header-children-expanded'));
 
 		if (isRunning && !diagramMarkup.trim()) {
+			// 流式未就绪：仅加载态
+			const previewPanel = append(body, $('.mc-preview'));
+			previewPanel.style.cssText =
+				'position:relative;min-height:48px;display:flex;align-items:center;justify-content:center;' +
+				'padding:12px;overflow:auto;max-height:420px;' +
+				'border-bottom:1px solid var(--void-border-1,rgba(255,255,255,0.08));';
 			previewPanel.appendChild(this._mcLoadingDots('正在准备 Mermaid 图示…'));
 		} else if (diagramMarkup.trim()) {
-			const markdownSrc = diagramMarkup;
-			const previewLoading = this._mcLoadingDots('正在渲染图示…');
-			previewPanel.appendChild(previewLoading);
-
-			// ── Toolbar ──
-			const toolbar = append(body, $('.mc-toolbar'));
-			toolbar.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 12px;' +
+			// ── Tab 行：左「代码 | 图表」分段切换，右控件组 ──
+			// 2026-09-05 按 UI 稿重构：主题切换 / 缩放 / 在新编辑器打开 / 下载。
+			const tabRow = append(body, $('.mc-tab-row'));
+			tabRow.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 12px;' +
 				'border-bottom:1px solid var(--void-border-1,rgba(255,255,255,0.08));' +
-				'background:var(--void-bg-3,#252525);';
-			const tbLabel = append(toolbar, $('span.mc-toolbar-label'));
-			tbLabel.textContent = '图示';
-			tbLabel.style.cssText = 'font-size:10px;color:var(--void-fg-4,#6e7681);' +
-				'text-transform:uppercase;letter-spacing:0.8px;margin-right:auto;';
-
-			// Open in new tab (primary)
-			toolbar.appendChild(this._mcBtn(
-				'M3 3h4v1H4v8h8v-3h1v4H3V3zm5 1h5v5h-1V5.7l-5.65 5.65-.7-.7L11.3 5H8V4z',
-				'在新标签页打开', true,
-				(e) => {
-					e.stopPropagation();
-					if (this._onExecuteCommand) {
-						this._onExecuteCommand('_mermaid-chat.openPreview', fullMarkup, diagramTitle || 'Mermaid 预览')
-							.catch(err => console.warn('[MermaidCard] openPreview failed:', err));
-					}
+				'background:var(--void-bg-3,#1e222a);';
+			const tabs = append(tabRow, $('.mc-tabs'));
+			tabs.style.cssText = 'display:flex;gap:2px;padding:2px;border-radius:6px;' +
+				'background:rgba(0,0,0,0.28);';
+			const mkTab = (label: string, active: boolean) => {
+				const t = $('button.mc-tab') as HTMLButtonElement;
+				t.textContent = label;
+				t.style.cssText = 'padding:3px 14px;font-size:11.5px;font-weight:500;border:none;' +
+					'border-radius:4px;cursor:pointer;background:transparent;transition:all 0.15s;' +
+					'color:var(--void-fg-4,#6e7681);';
+				if (active) {
+					t.style.background = 'rgba(96,165,250,0.18)';
+					t.style.color = 'var(--void-fg-1,#dbe6ff)';
 				}
-			));
+				this._register(addDisposableListener(t, EventType.MOUSE_ENTER, () => {
+					if (t.classList.contains('mc-tab-active')) { return; }
+					t.style.color = 'var(--void-fg-2,#aab)'; t.style.background = 'rgba(255,255,255,0.05)';
+				}));
+				this._register(addDisposableListener(t, EventType.MOUSE_LEAVE, () => {
+					if (t.classList.contains('mc-tab-active')) { return; }
+					t.style.color = 'var(--void-fg-4,#6e7681)'; t.style.background = 'transparent';
+				}));
+				return t;
+			};
+			const codeTab = mkTab('代码', false);
+			const chartTab = mkTab('图表', true);
+			tabs.appendChild(codeTab);
+			tabs.appendChild(chartTab);
 
-			// Copy SVG
-			const svgCopyBtn = this._mcBtn(
-				'M4 4h3v1H5v7h7v-2h1v3H4V4zm3 0h5v5h-1V5.7l-6.35 10.35l-.7-.7L10.3 5H7V4z',
-				'复制 SVG', false,
-				(e) => {
-					e.stopPropagation();
-					const svgEl = previewPanel.querySelector('svg');
-					if (svgEl) {
-						try { navigator.clipboard.writeText(svgEl.outerHTML); } catch { /* ignore */ }
-						const labelText = svgCopyBtn.lastChild;
-						if (labelText && labelText.nodeType === 3) {
-							labelText.textContent = '✓ 已复制';
-							setTimeout(() => { labelText.textContent = '复制 SVG'; }, 1500);
-						}
-					}
-				}
+			// ── 控件组（右侧）──
+			const ctl = append(tabRow, $('.mc-ctl'));
+			ctl.style.cssText = 'display:flex;align-items:center;gap:2px;margin-left:auto;';
+			const mkIconBtn = (iconD: string | string[], title: string, label?: string) => {
+				const b = $('button.mc-ctl-btn') as HTMLButtonElement;
+				b.title = title;
+				b.style.cssText = 'display:inline-flex;align-items:center;gap:5px;padding:4px 7px;font-size:11.5px;' +
+					'border:none;border-radius:5px;cursor:pointer;background:transparent;' +
+					'color:var(--void-fg-3,#9aa4b2);transition:all 0.15s;white-space:nowrap;';
+				const paths = Array.isArray(iconD) ? iconD : [iconD];
+				for (const d of paths) { b.appendChild(this._svgIcon(d, 14)); }
+				if (label) { b.appendChild(document.createTextNode(label)); }
+				this._register(addDisposableListener(b, EventType.MOUSE_ENTER, () => {
+					b.style.background = 'rgba(255,255,255,0.07)';
+					b.style.color = 'var(--void-fg-1,#d4d4d4)';
+				}));
+				this._register(addDisposableListener(b, EventType.MOUSE_LEAVE, () => {
+					b.style.background = 'transparent';
+					b.style.color = 'var(--void-fg-3,#9aa4b2)';
+				}));
+				return b;
+			};
+
+			// ── 视图容器 ──
+			// 图表视图：深色画布（贴合 UI 稿），SVG 居中、可缩放
+			const previewPanel = append(body, $('.mc-preview'));
+			previewPanel.style.cssText =
+				'position:relative;min-height:220px;max-height:480px;overflow:auto;' +
+				'display:flex;align-items:center;justify-content:center;padding:16px;' +
+				'background:var(--void-bg-1,#14171c);';
+			// 代码视图：默认隐藏
+			const codeView = append(body, $('.mc-code-view'));
+			codeView.style.cssText = 'display:none;padding:12px 14px;background:var(--void-bg-1,#14171c);' +
+				'font-family:var(--monaco-monospace-font,monospace);font-size:11.5px;line-height:1.6;' +
+				'color:var(--void-fg-2,#c9d1d9);white-space:pre-wrap;word-break:break-word;' +
+				'max-height:480px;overflow:auto;margin:0;';
+			codeView.textContent = fullMarkup;
+
+			// ── 状态 ──
+			let currentTheme: 'dark' | 'default' = 'dark';
+			let currentSvg = '';
+			let zoom = 1; // 1 = fit 卡片宽度
+			let baseMaxWidth = 0; // 渲染后从 svg 的 style.max-width 解析的自然宽度（px）
+			const bodyCls = this._container.ownerDocument.body.classList;
+			const ideIsDark = bodyCls.contains('vs-dark') || bodyCls.contains('hc-black')
+				|| bodyCls.contains('vscode-dark') || bodyCls.contains('vscode-high-contrast');
+			currentTheme = ideIsDark ? 'dark' : 'default';
+
+			// 主题切换按钮（图标随当前主题变：暗色渲染中显示 ☀ = 切到亮色）
+			const themeBtn = mkIconBtn([], '切换亮/暗主题');
+			themeBtn.textContent = currentTheme === 'dark' ? '☀' : '☾';
+			themeBtn.style.fontSize = '13px';
+
+			const zoomOutBtn = mkIconBtn('M8 3.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9zM3 3 1 1M13.5 8h-5', '缩小');
+			const zoomInBtn = mkIconBtn('M8 3.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9zM3 3 1 1M8.75 5.5v5M6.25 8h5', '放大');
+			const downloadBtn = mkIconBtn(
+				'M8 1v8.5M4.8 6.8 8 10l3.2-3.2M2.5 12.5h11', '下载 SVG', '下载'
 			);
-			svgCopyBtn.style.opacity = '0.5';
-			svgCopyBtn.style.pointerEvents = 'none';
-			toolbar.appendChild(svgCopyBtn);
+			ctl.appendChild(themeBtn);
+			ctl.appendChild(zoomOutBtn);
+			ctl.appendChild(zoomInBtn);
+			ctl.appendChild(downloadBtn);
 
-			// Copy Source
-			const srcCopyBtn = this._mcBtn(
-				'M5 4l-4 4 4 4M11 4l4 4-4 4', '复制源代码', false,
-				(e) => {
-					e.stopPropagation();
-					try { navigator.clipboard.writeText(fullMarkup); } catch { /* ignore */ }
-					const labelText = srcCopyBtn.lastChild;
-					if (labelText && labelText.nodeType === 3) {
-						labelText.textContent = '✓ 已复制';
-						setTimeout(() => { labelText.textContent = '复制源代码'; }, 1500);
-					}
+			// ── Tab 切换 ──
+			const setView = (view: 'chart' | 'code') => {
+				const chartActive = view === 'chart';
+				for (const [t, on] of [[chartTab, chartActive], [codeTab, !chartActive]] as const) {
+					t.classList.toggle('mc-tab-active', on);
+					t.style.background = on ? 'rgba(96,165,250,0.18)' : 'transparent';
+					t.style.color = on ? 'var(--void-fg-1,#dbe6ff)' : 'var(--void-fg-4,#6e7681)';
 				}
-			);
-			toolbar.appendChild(srcCopyBtn);
+				previewPanel.style.display = chartActive ? 'flex' : 'none';
+				codeView.style.display = chartActive ? 'none' : 'block';
+				// 控件仅对图表视图有意义
+				for (const b of [themeBtn, zoomOutBtn, zoomInBtn]) {
+					b.style.opacity = chartActive ? '1' : '0.35';
+					b.style.pointerEvents = chartActive ? 'auto' : 'none';
+				}
+			};
+			this._register(addDisposableListener(codeTab, EventType.CLICK, (e) => { e.stopPropagation(); setView('code'); }));
+			this._register(addDisposableListener(chartTab, EventType.CLICK, (e) => { e.stopPropagation(); setView('chart'); }));
 
-			// ── Source Code Panel (collapsed by default) ──
-			const srcSection = append(body, $('.mc-source'));
-			srcSection.style.cssText = 'border-top:1px solid var(--void-border-1,rgba(255,255,255,0.08));';
-			const srcToggle = append(srcSection, $('.mc-source-toggle'));
-			srcToggle.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 12px;' +
-				'cursor:pointer;font-size:11px;color:var(--void-fg-4,#6e7681);font-weight:600;transition:color 0.15s;';
-			const srcChev = append(srcToggle, $('span.mc-source-chevron'));
-			srcChev.textContent = '▶';
-			srcChev.style.cssText = 'font-size:9px;transition:transform 0.15s;display:inline-block;';
-			append(srcToggle, $('span.mc-source-label')).textContent = 'Mermaid 源代码';
-
-			const srcCode = append(srcSection, $('.mc-source-code'));
-			srcCode.style.cssText = 'display:none;margin:0 12px 10px;padding:10px 12px;' +
-				'background:var(--void-bg-3,#252525);border:1px solid var(--void-border-1,rgba(255,255,255,0.08));' +
-				'border-radius:6px;font-family:var(--monaco-monospace-font,monospace);font-size:11px;' +
-				'line-height:1.55;color:var(--void-fg-2,#ccc);white-space:pre-wrap;word-break:break-word;' +
-				'max-height:220px;overflow-y:auto;';
-			srcCode.textContent = fullMarkup;
-
-			this._register(addDisposableListener(srcToggle, EventType.CLICK, () => {
-				const open = srcCode.classList.toggle('mc-source-code-open');
-				srcCode.style.display = open ? 'block' : 'none';
-				srcChev.textContent = open ? '▼' : '▶';
-				srcChev.style.transform = open ? 'rotate(0deg)' : '';
+			// ── 缩放（1 = mermaid 自然尺寸；通过 max-width 缩放 img）──
+			const applyZoom = () => {
+				const el = previewPanel.querySelector('img, svg') as HTMLElement | null;
+				if (!el) { return; }
+				const base = baseMaxWidth > 0 ? baseMaxWidth : (previewPanel.clientWidth - 32);
+				el.style.maxWidth = Math.round(base * zoom) + 'px';
+			};
+			this._register(addDisposableListener(zoomOutBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				zoom = Math.max(0.3, zoom / 1.2);
+				applyZoom();
 			}));
-			this._register(addDisposableListener(srcToggle, EventType.MOUSE_ENTER, () => {
-				srcToggle.style.color = 'var(--void-fg-3,#9d9d9d)';
-			}));
-			this._register(addDisposableListener(srcToggle, EventType.MOUSE_LEAVE, () => {
-				srcToggle.style.color = 'var(--void-fg-4,#6e7681)';
+			this._register(addDisposableListener(zoomInBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				zoom = Math.min(5, zoom * 1.2);
+				applyZoom();
 			}));
 
-			// ── Async SVG render ──
-			void this._renderMermaidCardSvg(markdownSrc, previewPanel, previewLoading, svgCopyBtn);
+			// 「在新编辑器打开」监听已移至 header 右侧按钮（见上方 right 容器处）。
+
+			// ── 下载 SVG ──
+			this._register(addDisposableListener(downloadBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				if (!currentSvg) { return; }
+				try {
+					const blob = new Blob([currentSvg], { type: 'image/svg+xml;charset=utf-8' });
+					const url = URL.createObjectURL(blob);
+					const a = document.createElement('a');
+					a.href = url;
+					a.download = (diagramTitle || 'mermaid').replace(/[\\/:*?"<>|]+/g, '_') + '.svg';
+					a.click();
+					setTimeout(() => URL.revokeObjectURL(url), 2000);
+				} catch { /* ignore */ }
+			}));
+
+			// ── 渲染（主题可切换重渲）──
+			// 2026-09-05 修复「主题切换未生效」：mermaid SVG 背景透明，颜色全靠线条/
+			// 文字——dark 主题白字需要深底、default 主题黑字需要浅底。画布背景若固定
+			// 深色，切到亮色主题后黑字在深底上几乎不可见（= 用户看到的「未生效」）。
+			// 故背景必须随渲染主题联动。
+			const renderChart = async (theme: 'dark' | 'default') => {
+				previewPanel.style.background = theme === 'dark' ? 'var(--void-bg-1,#14171c)' : '#ffffff';
+				console.info(`[MermaidCard] renderChart start theme=${theme} markupLen=${fullMarkup.length} attached=${previewPanel.isConnected}`);
+				clearNode(previewPanel);
+				const loading = this._mcLoadingDots('正在渲染图示…');
+				previewPanel.appendChild(loading);
+				const cmd = this._onExecuteCommand;
+				if (!cmd) {
+					loading.textContent = 'Mermaid 渲染不可用（_onExecuteCommand 未注册）';
+					console.warn('[MermaidCard] _onExecuteCommand unavailable');
+					return;
+				}
+				try {
+					const svg = await cmd('_agentStudio.renderMermaidSvg', fullMarkup, theme);
+					if (typeof svg !== 'string' || svg.indexOf('<svg') === -1) {
+						console.warn('[MermaidCard] renderMermaidSvg returned invalid:', typeof svg, svg && String(svg).slice(0, 120));
+						clearNode(previewPanel);
+						this._mcShowError(previewPanel, loading, '无法渲染该 Mermaid 图示（渲染器返回空结果）');
+						return;
+					}
+					const safeSvg = this._sanitizeMermaidSvg(svg);
+					if (!safeSvg) {
+						console.warn('[MermaidCard] sanitize produced empty svg');
+						clearNode(previewPanel);
+						this._mcShowError(previewPanel, loading, '无法渲染该 Mermaid 图示（SVG 消毒失败）');
+						return;
+					}
+					currentSvg = safeSvg;
+					zoom = 1;
+					loading.remove();
+					// 2026-09-05：<img> + Blob URL 显示 SVG——绕开 Trusted Types
+					//（img.src 是资源加载，非 HTML 注入 sink；innerHTML/DOMParser 在此
+					// fork 全被 TT 拦）。缩放通过 img.style.maxWidth 调整。
+					const img = this._createMermaidSvgImage(safeSvg);
+					previewPanel.appendChild(img);
+					const size = _svgIntrinsicSize(safeSvg);
+					baseMaxWidth = size ? size.width : (previewPanel.clientWidth - 32) || 600;
+					console.info(`[MermaidCard] svg injected via <img> len=${safeSvg.length} baseMaxWidth=${baseMaxWidth} attached=${previewPanel.isConnected}`);
+				} catch (err) {
+					console.error('[MermaidCard] render failed:', err);
+					const msg = (err instanceof Error ? err.message : String(err));
+					clearNode(previewPanel);
+					this._mcShowError(previewPanel, loading, msg);
+				}
+			};
+
+			this._register(addDisposableListener(themeBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				currentTheme = currentTheme === 'dark' ? 'default' : 'dark';
+				themeBtn.textContent = currentTheme === 'dark' ? '☀' : '☾';
+				void renderChart(currentTheme);
+			}));
+
+			// 首次渲染（跟随 IDE 主题）
+			void renderChart(currentTheme);
 		}
 
 		// ── Tool-call-level error ──
@@ -291,14 +431,26 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 		}));
 
 		return wrapper;
+		}
+
+	/**
+	 * 清洗 Mermaid SVG 字符串以安全注入 innerHTML：
+	 * - mermaid strict 模式已消毒输出，这里再剥掉可能的 <script> 与 on* 事件属性（防御纵深）。
+	 * - 返回清洗后的 SVG 字符串；不含 <svg> 根元素时返回 null（由调用方回退到 <img> 方案）。
+	 */
+	protected _sanitizeMermaidSvg(svg: string): string | null {
+		if (!svg || svg.indexOf('<svg') === -1) { return null; }
+		return svg
+			.replace(/<script[\s\S]*?<\/script>/gi, '')
+			.replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
 	}
 
 	/**
-	 * Renders a Mermaid diagram to an inline SVG inside the preview panel.
-	 * On success appends the SVG node; on failure shows an error message with
-	 * an icon. Enables the "Copy SVG" button when SVG is available.
+	 * Renders a Mermaid diagram to an inline SVG inside a preview panel.
+	 * 2026-09-05：工具卡片已改用 renderChart（tab/主题/缩放），本方法保留给
+	 * markdown 代码块（```mermaid）的轻量预览路径（markdown.ts）调用。
 	 */
-	private async _renderMermaidCardSvg(
+	protected async _renderMermaidCardSvg(
 		markup: string,
 		previewPanel: HTMLElement,
 		loadingEl: HTMLElement,
@@ -316,48 +468,26 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 				|| bodyCls.contains('vscode-dark') || bodyCls.contains('vscode-high-contrast');
 			const svg = await cmd('_agentStudio.renderMermaidSvg', markup.replace(/\\n/g, '\n'), isDark ? 'dark' : 'default');
 			if (typeof svg === 'string' && svg.indexOf('<svg') !== -1) {
-				// 优先把 SVG 作为 TrustedHTML 直接注入（而非 <img blob:>）：
-				//   - <img> 受主窗口 img-src CSP 限制（打包版 blob: 可能被拦，onerror 不显示）
-				//   - <img> 受限上下文不渲染 foreignObject（HTML 标签），流程图标签会空白
-				//   - DOMParser 在打包版同样被 Trusted Types 拦（"This document requires
-				//     'TrustedHTML' assignment"），故必须走 createTrustedTypesPolicy 生成
-				//     TrustedHTML 再赋 innerHTML。
 				const safeSvg = this._sanitizeMermaidSvg(svg);
 				if (safeSvg) {
-					previewPanel.innerHTML = (_mermaidTtPolicy?.createHTML(safeSvg) ?? safeSvg) as string;
+					// 2026-09-05：同工具卡片——innerHTML / DOMParser 在此 fork 全被
+					// Trusted Types 拦，统一用 <img> + Blob URL（img.src 非注入 sink）。
+					loadingEl.remove();
+					const img = this._createMermaidSvgImage(safeSvg);
+					img.onload = () => {
+						if (copySvgBtn) {
+							copySvgBtn.style.opacity = '1';
+							copySvgBtn.style.pointerEvents = 'auto';
+						}
+					};
+					previewPanel.appendChild(img);
 					if (copySvgBtn) {
 						copySvgBtn.style.opacity = '1';
 						copySvgBtn.style.pointerEvents = 'auto';
 					}
 					return;
 				}
-				// 回退：<img> backed by Blob URL（消毒失败等极端情况）
-				const img = document.createElement('img');
-				img.alt = 'Mermaid diagram';
-				const size = _svgIntrinsicSize(svg);
-				if (size) { img.width = Math.round(size.width); }
-				// min-width:0 is essential: .mc-preview is display:flex, and a flex item
-				// defaults to min-width:auto (won't shrink below its intrinsic width). With
-				// a wide diagram that floor exceeds max-width:100% and wins, so the image
-				// overflows instead of scaling to fit. Zeroing it lets max-width shrink it.
-				img.style.cssText = 'max-width:100%;height:auto;display:block;margin:0 auto;min-width:0;';
-				const blobUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
-				this._register({ dispose: () => URL.revokeObjectURL(blobUrl) });
-				img.onload = () => {
-					loadingEl.remove();
-					previewPanel.appendChild(img);
-					if (copySvgBtn) {
-						copySvgBtn.style.opacity = '1';
-						copySvgBtn.style.pointerEvents = 'auto';
-					}
-				};
-				img.onerror = () => {
-					console.warn('[MermaidCard] SVG <img> failed to load; svg.length=' + svg.length +
-						', head=' + svg.slice(0, 120).replace(/\s+/g, ' '));
-					this._mcShowError(previewPanel, loadingEl, 'SVG 图片加载失败');
-				};
-				// Attach handlers before assigning src so load/error are never missed.
-				img.src = blobUrl;
+				this._mcShowError(previewPanel, loadingEl, '无法渲染该 Mermaid 图示');
 				return;
 			}
 			this._mcShowError(previewPanel, loadingEl, '无法渲染该 Mermaid 图示');
@@ -368,15 +498,25 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 	}
 
 	/**
-	 * 清洗 Mermaid SVG 字符串以安全注入 innerHTML：
-	 * - mermaid strict 模式已消毒输出，这里再剥掉可能的 <script> 与 on* 事件属性（防御纵深）。
-	 * - 返回清洗后的 SVG 字符串；不含 <svg> 根元素时返回 null（由调用方回退到 <img> 方案）。
+	 * 2026-09-05 最终方案：<img> + Blob URL 显示 SVG。
+	 * 该 fork 的 Chromium 对 Trusted Types 极严格：innerHTML（含清空）、
+	 * DOMParser.parseFromString 的任何 type（含 text/xml）都强制 TrustedHTML，
+	 * 全部抛 "This document requires 'TrustedHTML' assignment"。唯一稳定绕开的
+	 * 路径是 <img src=blob:>——img.src 是资源加载（URL），不是 HTML 注入 sink，
+	 * TT 不拦截。代价：<img> 不渲染 foreignObject（mermaid 中带 <br>/<b> 等
+	 * HTML 标签的节点 label 会丢富文本），但图整体形状与文字可见。
 	 */
-	protected _sanitizeMermaidSvg(svg: string): string | null {
-		if (!svg || svg.indexOf('<svg') === -1) { return null; }
-		return svg
-			.replace(/<script[\s\S]*?<\/script>/gi, '')
-			.replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+	protected _createMermaidSvgImage(safeSvg: string): HTMLImageElement {
+		const blobUrl = URL.createObjectURL(new Blob([safeSvg], { type: 'image/svg+xml;charset=utf-8' }));
+		this._register({ dispose: () => URL.revokeObjectURL(blobUrl) });
+		const img = document.createElement('img');
+		img.alt = 'Mermaid diagram';
+		const size = _svgIntrinsicSize(safeSvg);
+		if (size) { img.width = Math.round(size.width); }
+		img.style.cssText = 'max-width:100%;height:auto;display:block;margin:0 auto;min-width:0;';
+		img.onerror = () => console.error('[MermaidCard] svg <img> failed to load');
+		img.src = blobUrl;
+		return img;
 	}
 
 	/** Replaces the loading content in the preview panel with an error display. */

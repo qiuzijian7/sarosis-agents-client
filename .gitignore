@@ -263,3 +263,6 @@ _*_redesign.html
 # Scratch / generated artifacts (not for commit)
 scratch_*.py
 deepseek-*.html
+
+# 测试面板的本地执行历史（flaky / 耗时基线）—— 个人数据，不入库
+src/vs/sessions/contrib/agentStudio/test/browser/.test-history.json

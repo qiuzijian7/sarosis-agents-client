@@ -17,7 +17,9 @@
     "compile": "gulp compile-extension:grunt",
     "watch": "gulp watch-extension:grunt"
   },
-  "dependencies": {},
+  "dependencies": {
+    "vssaros": "file:../.."
+  },
   "devDependencies": {
     "@types/node": "22.x"
   },

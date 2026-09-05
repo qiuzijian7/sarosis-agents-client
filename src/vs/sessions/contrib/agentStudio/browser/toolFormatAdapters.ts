@@ -151,27 +151,45 @@ export class OpenAIToolFormatAdapter implements IToolFormatAdapter {
 	}
 
 	normalizeSchema(schema: Record<string, unknown>): Record<string, unknown> {
+		return this._normalize(schema, 0);
+	}
+
+	/**
+	 * @param depth 0 = schema 根。嵌套层（depth ≥ 1）的 additionalProperties 在
+	 * 非 strict 模式下会被剥离——多数 OpenAI 兼容网关（IOA 等）不接受 depth ≥ 1
+	 * 的该字段，会在接收侧 sanitize 时剥掉并刷警告（[CodeBuddy][sanitize] …
+	 * stripped at depth 2，实测 workflow 工具每请求都触发）。源头清掉语义不变
+	 * （非 strict 下该字段本就无强制校验），消除每请求一次的重复清洗与日志噪音。
+	 * 对齐 GeminiToolFormatAdapter 已有的 additionalProperties 删除策略。
+	 */
+	private _normalize(schema: Record<string, unknown>, depth: number): Record<string, unknown> {
 		const normalized = { ...schema };
 
 		if (this._strictMode) {
-			// OpenAI strict mode 要求 additionalProperties: false
+			// OpenAI strict mode 要求 additionalProperties: false（含嵌套 object）
 			if (normalized['type'] === 'object' && !('additionalProperties' in normalized)) {
 				normalized['additionalProperties'] = false;
 			}
+		} else if (depth > 0 && normalized['type'] === 'object' && 'additionalProperties' in normalized) {
+			delete normalized['additionalProperties'];
+		}
 
-			// 递归处理 properties 中的 object 类型
-			const properties = normalized['properties'] as Record<string, unknown> | undefined;
-			if (properties) {
-				const normalizedProps: Record<string, unknown> = {};
-				for (const [key, value] of Object.entries(properties)) {
-					if (typeof value === 'object' && value !== null) {
-						normalizedProps[key] = this.normalizeSchema(value as Record<string, unknown>);
-					} else {
-						normalizedProps[key] = value;
-					}
-				}
-				normalized['properties'] = normalizedProps;
+		// 递归处理嵌套 schema：properties 与 items（原实现漏了 items —— strict 模式下
+		// 数组项里的 object 不会被补 additionalProperties: false，OpenAI strict 会拒绝；
+		// workflow_apply 的 nodes.items 就是这种形态）。
+		const properties = normalized['properties'] as Record<string, unknown> | undefined;
+		if (properties) {
+			const normalizedProps: Record<string, unknown> = {};
+			for (const [key, value] of Object.entries(properties)) {
+				normalizedProps[key] = (typeof value === 'object' && value !== null)
+					? this._normalize(value as Record<string, unknown>, depth + 1)
+					: value;
 			}
+			normalized['properties'] = normalizedProps;
+		}
+		const items = normalized['items'] as Record<string, unknown> | undefined;
+		if (items && typeof items === 'object' && !Array.isArray(items)) {
+			normalized['items'] = this._normalize(items, depth + 1);
 		}
 
 		return normalized;

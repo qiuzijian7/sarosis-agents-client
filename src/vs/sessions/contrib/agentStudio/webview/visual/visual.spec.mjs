@@ -37,6 +37,15 @@ const diffDir = path.join(__dirname, 'diff');
 
 const WRITE_BASELINE = process.argv.includes('--baseline');
 const NO_SHOT = process.argv.includes('--no-shot');
+/**
+ * ★ --run 执行模式：每个节点 goto `?run=1&only=<type>`，**真跑** runNodeOrStage，
+ *   断言「执行结果 ↔ UI 状态」闭环（R17–R21）。不做画廊断言、不截图。
+ *   与画廊模式（模拟状态）互补：画廊看长相，执行模式看行为。
+ */
+const RUN_ARG = process.argv.find(a => a.startsWith('--run')) ?? '';
+const RUN_MODE = RUN_ARG !== '';
+/** --run=fake → 假后端（invoke 返回确定性 outputs），让 success / OUTPUT 区可被断言 */
+const RUN_FAKE = RUN_ARG === '--run=fake';
 const ONLY = (process.argv.find(a => a.startsWith('--only=')) ?? '').split('=')[1] || '';
 /** --dump=<nodeType>[:<state>] 单节点诊断模式 */
 const DUMP_RAW = (process.argv.find(a => a.startsWith('--dump=')) ?? '').split('=')[1] || '';
@@ -300,6 +309,92 @@ const scenarios = await page.$$eval('[data-vt-scenario]', cells => cells.map(c =
 	hideActions: c.getAttribute('data-vt-hide-actions') === 'true',
 })));
 console.log(`[visual] ${scenarios.length} 个场景`);
+
+// ── 5b. 执行模式（--run）：真跑执行器 + UI 状态闭环 ────────────────────────
+// 与画廊模式的本质差别：画廊的 success 态是「手工塞假图 + 设 runState」**模拟**
+// 的；这里每卡片都真跑一次 runNodeOrStage，状态由执行器返回驱动 React 重渲染。
+// 只有这样才能暴露「执行结果 ↔ UI 契约」不一致的 bug。
+if (RUN_MODE) {
+	const nodeTypes = [...new Set(scenarios.map(s => s.nodeType))];
+	console.log(`[visual] 执行模式：真跑 ${nodeTypes.length} 个节点`);
+	const runRows = [];
+
+	const runFlag = RUN_FAKE ? 'fake' : '1';
+	for (const nodeType of nodeTypes) {
+		await page.goto(`${BASE}/?run=${runFlag}&only=${encodeURIComponent(nodeType)}`, { waitUntil: 'load' });
+		let ok = true;
+		try {
+			await page.waitForSelector('body[data-vt-ready="true"]', { timeout: 60_000 });
+		} catch {
+			const fatal = await page.getAttribute('body', 'data-vt-fatal');
+			fail(`run:${nodeType}`, 'R17', `执行模式未就绪 fatal=${fatal ?? '(timeout)'}`);
+			ok = false;
+		}
+		if (!ok) {
+			runRows.push({ nodeType, status: 'FATAL', error: '', entries: 0, before: '', after: '', ms: -1, cardH: -1 });
+			continue;
+		}
+		const r = await page.evaluate(() => {
+			const b = document.body;
+			const host = document.querySelector('[data-vt-card-host]');
+			return {
+				status: b.getAttribute('data-vt-run-status') ?? '',
+				error: b.getAttribute('data-vt-run-error') ?? '',
+				entries: Number(b.getAttribute('data-vt-run-entries') ?? 0),
+				before: b.getAttribute('data-vt-run-state-before') ?? '',
+				after: b.getAttribute('data-vt-run-state-after') ?? '',
+				kinds: (b.getAttribute('data-vt-run-kinds') ?? '').split(',').filter(Boolean),
+				ms: Number(b.getAttribute('data-vt-run-ms') ?? -1),
+				cardH: host ? Math.round(host.getBoundingClientRect().height) : -1,
+				// R22：OUTPUT 区是否真的渲染出缩略图（假后端下应 > 0）
+				outputImgs: host ? host.querySelectorAll('img').length : 0,
+			};
+		});
+		runRows.push({ nodeType, ...r });
+		const sc = `run:${nodeType}`;
+		// R18 状态驱动一致：idle → 执行结果（证明 UI 被真执行驱动，而非模拟塞状态）
+		if (r.before !== 'idle') { fail(sc, 'R18', `执行前卡片状态应为 idle，实际 ${r.before || '(空)'}`); }
+		if (r.after !== r.status) { fail(sc, 'R18', `卡片状态(${r.after}) 与执行结果(${r.status}) 不一致`); }
+		// R19 成功必须有产物 —— 画廊的「手工塞假图」永远测不到 entries=0 的塌陷
+		if (r.status === 'success' && r.entries <= 0) {
+			fail(sc, 'R19', `执行 success 但 entries=0（OUTPUT 区会空白）`);
+		}
+		// R20 错误必须有文案 —— 否则 UI 上是一条空的错误横幅
+		if (r.status === 'error' && !r.error.trim()) {
+			fail(sc, 'R20', `执行 error 但 error 文案为空`);
+		}
+		// R21 卡片未塌陷
+		if (r.cardH >= 0 && r.cardH < MIN_CARD_H) { fail(sc, 'R21', `卡片塌陷 h=${r.cardH}px`); }
+		// R22 OUTPUT 区渲染（仅假后端有意义）：success 必须渲染出缩略图。
+		//   这是画廊「手工塞假图」测不到的一层 —— 那里图片是塞进 store 的，
+		//   这里是执行器产出后经 UI 渲染出来的，写回键错位就会在这里暴露。
+		//   判据按**产出类型**走：只有产出 image 快照才要求 img。纯文本节点
+		//   （Saros.Prompt / Vox.ScriptStage / Saros.Merge）产出的是 text，
+		//   一律要求 img 会把它们误报成「OUTPUT 未渲染」（首轮全量就误报了 3 条）。
+		if (RUN_FAKE && r.status === 'success' && r.kinds.includes('image') && r.outputImgs <= 0) {
+			fail(sc, 'R22', `产出 image 快照（kinds=${r.kinds.join('|')}）但 OUTPUT 区无 img（缩略图未渲染）`);
+		}
+	}
+
+	const byStatus = {};
+	for (const r of runRows) { byStatus[r.status] = (byStatus[r.status] ?? 0) + 1; }
+	console.log('\n===== 执行模式汇总 =====');
+	console.log('节点总数 :', runRows.length);
+	for (const [k, v] of Object.entries(byStatus)) { console.log(`  ${String(k).padEnd(10)}: ${v}`); }
+	const okRows = runRows.filter(r => r.status === 'success');
+	console.log(`\n-- success 节点（无后端即可产出，共 ${okRows.length}）--`);
+	for (const r of okRows) { console.log(`  ${r.nodeType}  entries=${r.entries}  ${r.ms}ms`); }
+	if (notes.length) {
+		console.log(`\n-- 浏览器日志（前 10）--`);
+		for (const n of notes.slice(0, 10)) { console.log('  ' + n.split('\n')[0]); }
+	}
+	console.log(`\n${failures.length === 0 ? '执行模式全部通过' : failures.length + ' 条失败'}`);
+	for (const f of failures.slice(0, 40)) { console.log(`  [${f.rule}] ${f.scenario}: ${f.detail}`); }
+
+	await browser.close();
+	server.close();
+	process.exit(failures.length ? 1 : 0);
+}
 
 // 网络隔离核对：harness 不应有漏网请求
 const blocked = Number(await page.getAttribute('body', 'data-vt-blocked-requests'));

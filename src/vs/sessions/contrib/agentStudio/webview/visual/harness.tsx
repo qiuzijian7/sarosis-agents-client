@@ -33,6 +33,16 @@ interface HarnessQuery {
 	only?: string;
 	state?: RunStateName;
 	withUpstream: boolean;
+	/** ★ 执行模式：渲染单卡片后**真跑** `runNodeOrStage`，UI 自动切到结果状态。 */
+	run?: boolean;
+	/**
+	 * ★ 假后端（仅执行模式）：`runner.invoke` 返回**确定性 outputs**，让节点走通
+	 *   success 路径。无后端时 223 个节点只有 3 个纯文本节点能 success，
+	 *   OUTPUT 区的渲染永远测不到 —— 假后端就是为补这一块。
+	 */
+	fake?: boolean;
+	/** ★ 测试面板（?panel=1）：列出全部节点，可视化勾选后批量执行。 */
+	panel?: boolean;
 }
 
 /** spec 通过 addInitScript 注入的 ComfyTV 真实源码快照（nodeType → {html, css}）。 */
@@ -45,15 +55,65 @@ declare global {
 function parseQuery(): HarnessQuery {
 	const p = new URLSearchParams(location.search);
 	const stateRaw = p.get('state');
+	const runRaw = p.get('run') ?? '';
 	return {
 		only: p.get('only') ?? undefined,
 		state: ALL_RUN_STATES.includes(stateRaw as RunStateName) ? (stateRaw as RunStateName) : undefined,
 		withUpstream: p.get('upstream') !== '0',
+		// ?run=1     → 无后端（走真实错误路径 / 本地节点）
+		// ?run=fake  → 假后端（走 success 路径，验证 OUTPUT 区渲染）
+		run: runRaw === '1' || runRaw === 'fake',
+		fake: runRaw === 'fake',
+		panel: p.get('panel') === '1',
 	};
 }
 
+/**
+ * 执行模式的默认节点与输入。
+ * - 默认节点用 `Saros.Prompt`：纯文本、不调后端，无后端环境也能 success。
+ * - 输入给 `prompt`（Prompt 节点读的是 prompt 不是 text，见 workflowSandbox 用例）。
+ */
+const RUN_DEFAULT_TYPE = 'Saros.Prompt';
+const RUN_VALUES: Record<string, unknown> = {
+	prompt: 'a cinematic portrait of a cat, 85mm, soft light',
+	text: 'hello',
+};
+
+/**
+ * 假后端的 `runner.invoke`：返回**确定性** outputs，让节点走通 success 路径。
+ * 无后端时 223 个节点只有 3 个纯文本节点能 success，OUTPUT 区渲染永远测不到。
+ * images 会转成 `runner.baseUrl/view?...`，随后被 bridge mock 换成内联 SVG 假图
+ * —— 所以离线也能渲染出 OUTPUT 缩略图。
+ */
+const FAKE_INVOKE = async (): Promise<{
+	promptId: string;
+	outputs: Record<string, unknown>;
+	status: 'success';
+	durationMs: number;
+}> => ({
+	promptId: 'sandbox-fake',
+	outputs: {
+		images: [{ filename: 'fake-output.png', subfolder: '', type: 'output' }],
+		text: 'sandbox fake output',
+	},
+	status: 'success',
+	durationMs: 1,
+});
+
 async function main(): Promise<void> {
 	const q = parseQuery();
+
+	// ★ 执行模式（?run=1）：渲染单卡片 + **真跑**执行器。
+	//   与画廊模式完全独立 —— 画廊 780 场景的渲染路径与截图基线不受影响。
+	if (q.run) {
+		await runMode(q);
+		return;
+	}
+	// ★ 测试面板（?panel=1）：可视化勾选节点 → 批量执行 → 逐行看结果。
+	if (q.panel) {
+		await panelMode();
+		return;
+	}
 
 	// ② 动态导入真实模块（mock 已就位）
 	const [registry, nodeCardMod, snapMod, cardStateMod, stageCardMod, agentStoreMod, picklistStoreMod, providerStoreMod, refMod] = await Promise.all([
@@ -203,6 +263,242 @@ async function main(): Promise<void> {
 	document.body.setAttribute('data-vt-scenarios', String(scenarios.length));
 	document.body.setAttribute('data-vt-blocked-requests', String(netGuard.blocked.length));
 	document.body.setAttribute('data-vt-bridge-calls', String(bridge.calls.length));
+}
+
+/**
+ * ★ 执行模式（?run=1）：渲染一张真实卡片，然后**真跑** `runNodeOrStage`。
+ *
+ * 与画廊模式的本质差别：画廊的 success 态是「手工塞假图 + 设 runState」**模拟**的；
+ * 这里的状态由执行器真实返回、经 `CardStateStore.set` 驱动 React 重渲染产生。
+ * 只有这样才能暴露「执行结果 ↔ UI 契约」不一致的 bug：
+ *   - `entries=[]` 空结果时 UI 是否塌陷（手工塞图时永远有图）
+ *   - error 态显示的是执行器**真实** error 字段（模拟时是固定文案）
+ *   - 写回键 `snapshotKey`(stageUid) vs 读侧 `nodeId` 错位 → OUTPUT 不刷新
+ *
+ * 与 Node 侧 `workflowSandbox.test.ts` 共用同一份 `runtime.ts`，只是宿主不同：
+ * Node 只跑 `run()`，浏览器额外有 `mount()` 做渲染闭环。
+ */
+async function runMode(q: HarnessQuery): Promise<void> {
+	// mock 已在模块顶层装好（installBridgeMock），createSandbox 不会重复装
+	const [runtimeMod, runtimeDomMod] = await Promise.all([
+		import('./runtime'),
+		import('./runtimeDom'),
+	]);
+	const sb = await runtimeMod.createSandbox({
+		mode: 'browser',
+		mountImpl: runtimeDomMod.mountCard,
+		...(q.fake ? { invoke: FAKE_INVOKE } : {}),
+	});
+
+	const type = q.only ?? RUN_DEFAULT_TYPE;
+	const nodeId = 'run-node';
+	const root = document.getElementById('root');
+	if (!root) { throw new Error('#root missing'); }
+	root.className = 'vt-focus';
+
+	const spec = sb.getSpec(type) as { kind?: string } | undefined;
+	const cell = document.createElement('div');
+	cell.className = 'vt-cell';
+	cell.setAttribute('data-vt-scenario', 'run');
+	cell.setAttribute('data-vt-node-type', type);
+	cell.setAttribute('data-vt-kind', String(spec?.kind ?? ''));
+	cell.setAttribute('data-vt-state', 'running');
+
+	const label = document.createElement('div');
+	label.className = 'vt-label';
+	label.textContent = `${type}  ·  执行模式`;
+	cell.appendChild(label);
+
+	const host = document.createElement('div');
+	host.className = 'vt-card-host';
+	host.setAttribute('data-vt-card-host', 'run');
+	cell.appendChild(host);
+	root.appendChild(cell);
+
+	// ① 渲染（idle 态）
+	await sb.mount(host, type, nodeId);
+	const readState = (): string => (sb.cardState.get as (id: string) => { runState?: string })(nodeId)?.runState ?? '';
+	const before = readState();
+
+	// ② 真跑执行器
+	const t0 = performance.now();
+	const res = await sb.run(type, RUN_VALUES, nodeId);
+	const dt = Math.round(performance.now() - t0);
+	const after = readState();
+
+	// ★ 产出快照的类型（image/text/audio/…）——R22 据此精确断言：
+	//   产出 image 才要求 OUTPUT 区有 img；纯文本节点（Prompt/Script/Merge）
+	//   本来就没有图，一律要求 img 会误报。
+	const kindsOf = (): string => {
+		try {
+			const store = sb.store as unknown as {
+				byNode?: (id: string) => Array<{ media?: { kind?: string } }>;
+			};
+			const list = store.byNode ? store.byNode.call(sb.store, nodeId) : [];
+			return [...new Set(list.map(e => e?.media?.kind).filter(Boolean))].join(',');
+		} catch { return ''; }
+	};
+
+	// ③ 结果落到 DOM，供 Playwright 断言
+	document.body.setAttribute('data-vt-run-node', type);
+	document.body.setAttribute('data-vt-run-status', res.status);
+	document.body.setAttribute('data-vt-run-error', res.error ?? '');
+	document.body.setAttribute('data-vt-run-entries', String(res.entries?.length ?? 0));
+	document.body.setAttribute('data-vt-run-kinds', kindsOf());
+	document.body.setAttribute('data-vt-run-ms', String(dt));
+	document.body.setAttribute('data-vt-run-state-before', before);
+	document.body.setAttribute('data-vt-run-state-after', after);
+	cell.setAttribute('data-vt-state', res.status);
+
+	await waitForImages(root);
+	document.body.setAttribute('data-vt-freeze', '1');
+	const settle = await waitForStableLayout(root);
+	document.body.setAttribute('data-vt-settle', settle);
+	document.body.setAttribute('data-vt-ready', 'true');
+	document.body.setAttribute('data-vt-scenarios', '1');
+}
+
+/**
+ * ★ 测试面板（?panel=1）：可视化勾选节点 → 批量**真跑** → 逐行看结果。
+ *
+ * 解决的问题：命令行只能 `--run` 全量或 `--only=X` 单个，没法「挑几个跑」。
+ * 面板提供：搜索过滤、全选/全不选、结果筛选（成功/失败/未跑）、逐行状态与耗时。
+ *
+ * 与 `--run` 共用同一份 `runtime.ts`，只是把「跑哪些」交给界面决定。
+ */
+async function panelMode(): Promise<void> {
+	const runtimeMod = await import('./runtime');
+	const boot = await runtimeMod.createSandbox({ mode: 'browser' });
+	const types = (boot.specs as Array<{ type: string }>).map(s => s.type).sort();
+
+	const root = document.getElementById('root');
+	if (!root) { throw new Error('#root missing'); }
+	root.className = 'vt-panel';
+	root.innerHTML = `
+		<div class="vt-panel-bar">
+			<strong>执行测试面板</strong>
+			<label><input type="checkbox" id="vt-fake" checked/> 假后端（让 success 路径可跑）</label>
+			<input type="search" id="vt-search" placeholder="过滤节点名…"/>
+			<button id="vt-all">全选</button>
+			<button id="vt-none">全不选</button>
+			<select id="vt-filter">
+				<option value="">全部结果</option>
+				<option value="success">仅成功</option>
+				<option value="error">仅失败</option>
+				<option value="untested">仅未跑</option>
+			</select>
+			<button id="vt-run" class="vt-primary">执行选中</button>
+			<span id="vt-stat" class="vt-count"></span>
+		</div>
+		<div class="vt-panel-list" id="vt-list"></div>
+	`;
+
+	const list = document.getElementById('vt-list') as HTMLElement;
+	const stat = document.getElementById('vt-stat') as HTMLElement;
+	const runBtn = document.getElementById('vt-run') as HTMLButtonElement;
+
+	interface RowState { status: string; entries: number; error: string; ms: number; }
+	const states = new Map<string, RowState | null>();
+
+	for (const t of types) {
+		const row = document.createElement('label');
+		row.className = 'vt-row';
+		row.dataset.type = t;
+		row.dataset.state = 'untested';
+		row.innerHTML = `
+			<input type="checkbox" class="vt-pick" data-type="${t}" checked/>
+			<span class="vt-name">${t}</span>
+			<span class="vt-badge" data-role="badge">—</span>
+			<span class="vt-detail" data-role="detail"></span>
+		`;
+		list.appendChild(row);
+		states.set(t, null);
+	}
+
+	const applyFilter = (): void => {
+		const kw = (document.getElementById('vt-search') as HTMLInputElement).value.trim().toLowerCase();
+		const f = (document.getElementById('vt-filter') as HTMLSelectElement).value;
+		for (const row of Array.from(list.children) as HTMLElement[]) {
+			const t = row.dataset.type ?? '';
+			const st = states.get(t);
+			const matchKw = !kw || t.toLowerCase().includes(kw);
+			const matchF = !f || (f === 'untested' ? !st : st?.status === f);
+			row.style.display = matchKw && matchF ? '' : 'none';
+		}
+	};
+
+	const updateStat = (): void => {
+		let done = 0; let ok = 0; let bad = 0;
+		for (const st of states.values()) {
+			if (!st) { continue; }
+			done++;
+			if (st.status === 'success') { ok++; } else { bad++; }
+		}
+		stat.textContent = `${done} / ${types.length} 已跑  ·  ✓ ${ok}  ·  ✗ ${bad}`;
+	};
+
+	const runSelected = async (): Promise<void> => {
+		const fake = (document.getElementById('vt-fake') as HTMLInputElement).checked;
+		runBtn.disabled = true;
+		runBtn.textContent = '执行中…';
+		// ★ 每次执行新建沙箱：fake 与否决定 runner.invoke，建好后无法切换
+		const box = await runtimeMod.createSandbox({
+			mode: 'browser',
+			...(fake ? { invoke: FAKE_INVOKE } : {}),
+		});
+		const picked = (Array.from(list.querySelectorAll('.vt-pick')) as HTMLInputElement[])
+			.filter(c => c.checked)
+			.map(c => c.dataset.type ?? '');
+		for (const t of picked) {
+			const row = list.querySelector(`.vt-row[data-type="${CSS.escape(t)}"]`) as HTMLElement | null;
+			if (!row) { continue; }
+			row.dataset.state = 'running';
+			(row.querySelector('[data-role="badge"]') as HTMLElement).textContent = 'running';
+			const t0 = performance.now();
+			let st: RowState;
+			try {
+				const res = await box.run(t, RUN_VALUES, 'panel-' + t);
+				st = {
+					status: res.status,
+					entries: res.entries?.length ?? 0,
+					error: res.error ?? '',
+					ms: Math.round(performance.now() - t0),
+				};
+			} catch (e) {
+				st = {
+					status: 'FATAL',
+					entries: 0,
+					error: e instanceof Error ? e.message : String(e),
+					ms: Math.round(performance.now() - t0),
+				};
+			}
+			states.set(t, st);
+			row.dataset.state = st.status;
+			(row.querySelector('[data-role="badge"]') as HTMLElement).textContent = st.status;
+			(row.querySelector('[data-role="detail"]') as HTMLElement).textContent =
+				`${st.entries} 条 · ${st.ms}ms${st.error ? ' · ' + st.error : ''}`;
+			updateStat();
+			// 让出主线程，保持搜索/滚动可响应
+			await new Promise<void>(r => setTimeout(r, 0));
+		}
+		runBtn.disabled = false;
+		runBtn.textContent = '执行选中';
+		applyFilter();
+	};
+
+	(document.getElementById('vt-all') as HTMLElement).addEventListener('click', () => {
+		for (const c of Array.from(list.querySelectorAll('.vt-pick')) as HTMLInputElement[]) { c.checked = true; }
+	});
+	(document.getElementById('vt-none') as HTMLElement).addEventListener('click', () => {
+		for (const c of Array.from(list.querySelectorAll('.vt-pick')) as HTMLInputElement[]) { c.checked = false; }
+	});
+	(document.getElementById('vt-search') as HTMLElement).addEventListener('input', applyFilter);
+	(document.getElementById('vt-filter') as HTMLElement).addEventListener('change', applyFilter);
+	runBtn.addEventListener('click', () => { void runSelected(); });
+
+	updateStat();
+	document.body.setAttribute('data-vt-ready', 'true');
+	document.body.setAttribute('data-vt-scenarios', String(types.length));
 }
 
 /**

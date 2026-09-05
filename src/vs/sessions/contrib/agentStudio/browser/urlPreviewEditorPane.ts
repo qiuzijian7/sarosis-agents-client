@@ -96,34 +96,74 @@ export class UrlPreviewEditorPane extends EditorPane {
 			// iframe pointing at the target URL. The webview provides the
 			// sandboxed container; the iframe handles the actual page load.
 			const escapedUrl = url.replace(/"/g, '&quot;');
+			// ★ 状态提示：加载中 / 超时（本地面板服务可能仍在启动）/ 失败 + 重试按钮。
+			//   本地 http 服务由宿主按需拉起（vscode:configHtmlEnsureServer），
+			//   首次启动可能要几秒到几十秒，没有提示会让人以为面板坏了。
 			const html = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval'; frame-src *;">
-<style>
-	html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #fff; }
-	iframe { width: 100%; height: 100%; border: none; display: block; }
-	.loading-overlay {
-		position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-		font-family: sans-serif; font-size: 14px; color: #888; background: #fff;
-		transition: opacity 0.3s; pointer-events: none;
-	}
-	.loading-overlay.hidden { opacity: 0; }
-</style>
-</head>
-<body>
-<div class="loading-overlay" id="loader">Loading…</div>
-<iframe src="${escapedUrl}" id="frame" allow="fullscreen; clipboard-read; clipboard-write"></iframe>
-<script>
-	(function() {
-		var f = document.getElementById('frame');
-		var l = document.getElementById('loader');
-		f.addEventListener('load', function() { l.classList.add('hidden'); });
-	})();
-</script>
-</body>
-</html>`;
+			<html>
+			<head>
+			<meta charset="utf-8">
+			<meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval'; frame-src *;">
+			<style>
+			html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #fff; }
+			iframe { width: 100%; height: 100%; border: none; display: block; }
+			#overlay {
+			position: fixed; inset: 0; display: flex; flex-direction: column;
+			align-items: center; justify-content: center; gap: 12px;
+			font-family: sans-serif; font-size: 14px; color: #888; background: #fff;
+			transition: opacity 0.3s;
+			}
+			#overlay.hidden { opacity: 0; pointer-events: none; }
+			#overlay.error { color: #c33; }
+			#retry {
+			display: none; padding: 6px 16px; border: 1px solid #d0d0d0; border-radius: 4px;
+			background: #f5f5f5; color: #333; cursor: pointer; font-size: 13px;
+			}
+			#retry:hover { background: #e8e8e8; }
+			</style>
+			</head>
+			<body>
+			<div id="overlay">
+			<div id="msg">正在加载 ${escapedUrl} …</div>
+			<button id="retry">重试</button>
+			</div>
+			<iframe src="${escapedUrl}" id="frame" allow="fullscreen; clipboard-read; clipboard-write"></iframe>
+			<script>
+			(function() {
+			var f = document.getElementById('frame');
+			var o = document.getElementById('overlay');
+			var m = document.getElementById('msg');
+			var b = document.getElementById('retry');
+			var done = false;
+			var src = ${JSON.stringify(url)};
+
+			function ok() { done = true; o.classList.add('hidden'); }
+			function fail(text) {
+				if (done) { return; }
+				o.classList.add('error');
+				o.classList.remove('hidden');
+				m.textContent = text;
+				b.style.display = '';
+			}
+
+			f.addEventListener('load', ok);
+			f.addEventListener('error', function() { fail('页面加载失败'); });
+			b.addEventListener('click', function() {
+				done = false;
+				o.classList.remove('error');
+				b.style.display = 'none';
+				m.textContent = '正在重试…';
+				f.src = src + (src.indexOf('?') >= 0 ? '&' : '?') + '_r=' + Date.now();
+			});
+
+			// 10s 仍未加载 → 提示（本地服务可能刚被拉起、仍在构建/扫描节点）
+			setTimeout(function() {
+				if (!done) { fail('加载超时——服务可能仍在启动，可稍后点击「重试」'); }
+			}, 10000);
+			})();
+			</script>
+			</body>
+			</html>`;
 			this._webview.setHtml(html);
 		} catch (err) {
 			if (this._container) {

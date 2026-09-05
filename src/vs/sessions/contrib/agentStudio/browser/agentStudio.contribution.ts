@@ -284,8 +284,8 @@ import { SelfEvolutionService } from './selfEvolutionService.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService, IEditorGroup, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IUntitledTextEditorService } from '../../../../workbench/services/untitled/common/untitledTextEditorService.js';
-import { UntitledTextEditorInput } from '../../../../workbench/services/untitled/common/untitledTextEditorInput.js';
+// 2026-09-05：图表预览改走 HtmlPreviewEditorInput（内存 HTML 通道），
+// UntitledTextEditorService / UntitledTextEditorInput 不再被使用，import 已移除。
 
 /**
  * Type-safe accessor for the agent editor part (AGENT_EDITOR_PART).
@@ -613,6 +613,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			description: localize('agentStudio.tof.paasid', "TOF 应用 appkey (paasid)，用于构造 passport.woa.com 登录 URL。"),
 		},
 		[TOF_SITE_BASE_URL_SETTING]: {
+			// 必须与扩展侧 extensions/tof-authentication/src/tofAuthProvider.ts 的默认值一致，
+			// 否则本处注册的 default 会优先生效，扩展里的 fallback 永远走不到。
+			// ⚠ 该域名需在 DNS 中可解析，否则登录后回调地址不可达（This site can't be reached）。
 			type: 'string', default: 'http://vssaros.woa.com',
 			description: localize('agentStudio.tof.siteBaseUrl', "网关站点基础 URL，TOF 回调地址前缀（须为 .woa.com 白名单域名）。"),
 		},
@@ -2391,14 +2394,24 @@ CommandsRegistry.registerCommand(
 );
 
 // 图表预览：在编辑器区域打开新标签，渲染 SVG 图表。
-// Mermaid 卡片调用 _mermaid-chat.openPreview（mermaidCard.ts:198），
+// Mermaid 卡片调用 _mermaid-chat.openPreviewHost（mermaidCard.ts:202），
 // Draw.io 卡片调用 _drawio-chat.openPreview（drawioCard.ts）——两者共用同一页面外壳，
 // 仅渲染器不同（drawio 源码是 mxGraphModel XML，不是 mermaid 语法，不能混用）。
+// 图表预览 HTML 的内容哈希（djb2）：同内容 → 同 URI → HtmlPreviewEditorInput.matches
+// 按 resource 匹配 → openEditor 复用/激活已有标签，避免每次点击堆积重复标签
+// （旧实现用 Date.now() 生成 URI，同图点 N 次开 N 个标签）。
+function diagramContentHash(s: string): string {
+	let h = 5381;
+	for (let i = 0; i < s.length; i++) { h = (((h << 5) + h) + s.charCodeAt(i)) | 0; }
+	return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 async function openDiagramPreview(
 	accessor: ServicesAccessor,
 	render: (theme: 'dark' | 'default') => Promise<string>,
 	title: string | undefined,
 	logTag: string,
+	contentKey: string,
 ): Promise<void> {
 	const editorService = accessor.get(IEditorService);
 	const logService = accessor.get(ILogService);
@@ -2421,40 +2434,146 @@ async function openDiagramPreview(
 <meta charset="UTF-8">
 <title>${escapeHtml(title || '图表预览')}</title>
 <style>
-html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: auto; background: ${isDark ? '#1e1e1e' : '#ffffff'}; color: ${isDark ? '#cccccc' : '#333333'}; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-.header { position: sticky; top: 0; z-index: 10; padding: 6px 16px; background: ${isDark ? '#252525' : '#f3f3f3'}; border-bottom: 1px solid ${isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'}; display: flex; align-items: center; gap: 12px; }
+html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; display: flex; flex-direction: column; background: ${isDark ? '#1e1e1e' : '#ffffff'}; color: ${isDark ? '#cccccc' : '#333333'}; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.header { flex: none; padding: 6px 12px; background: ${isDark ? '#252525' : '#f3f3f3'}; border-bottom: 1px solid ${isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'}; display: flex; align-items: center; gap: 12px; }
 .header h1 { font-size: 13px; font-weight: 600; margin: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .zoom-controls { display: flex; align-items: center; gap: 4px; font-size: 11px; color: ${isDark ? '#999' : '#666'}; }
 .zoom-btn { cursor: pointer; padding: 2px 8px; border-radius: 4px; border: 1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)'}; background: transparent; color: inherit; font-size: 12px; line-height: 18px; }
 .zoom-btn:hover { background: ${isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)'}; }
-.svg-container { display: flex; justify-content: center; padding: 20px; min-height: calc(100vh - 40px); transition: transform 0.15s ease; }
-.svg-container svg { max-width: 100%; height: auto; }
+.zoom-level { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; cursor: pointer; user-select: none; }
+.svg-container { flex: 1; overflow: auto; cursor: grab; }
+.svg-container.panning { cursor: grabbing; }
+.svg-stage { transform-origin: 0 0; user-select: none; -webkit-user-select: none; width: max-content; margin: 20px auto; }
+.svg-stage svg { display: block; }
+.hint { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); font-size: 11px; opacity: 0.7; pointer-events: none; white-space: nowrap; color: #999; padding: 4px 10px; border-radius: 10px; background: rgba(0,0,0,0.3); }
+.kb-wheel-hint { margin-left: 8px; padding: 3px 8px; font-size: 10.5px; color: var(--vscode-descriptionForeground, #999); border: 1px solid rgba(128,128,128,0.25); border-radius: 4px; white-space: nowrap; user-select: none; cursor: help; }
 </style>
 </head>
 <body>
 <div class="header">
 <h1>${escapeHtml(title || '图表预览')}</h1>
 <div class="zoom-controls">
-<button class="zoom-btn" onclick="document.querySelector('.svg-container').style.transform = 'scale(' + (parseFloat(document.querySelector('.svg-container').style.transform.replace(/[^0-9.]/g,'') || 1) * 1.25).toFixed(2) + ')'">+</button>
-<span id="zoom-level">100%</span>
-<button class="zoom-btn" onclick="document.querySelector('.svg-container').style.transform = 'scale(' + (parseFloat(document.querySelector('.svg-container').style.transform.replace(/[^0-9.]/g,'') || 1) / 1.25).toFixed(2) + ')'">-</button>
-<button class="zoom-btn" onclick="document.querySelector('.svg-container').style.transform = 'scale(1)'">重置</button>
+<button id="z-out" class="zoom-btn" title="缩小">−</button>
+<span id="zoom-level" class="zoom-level" title="点击适应窗口">100%</span>
+<button id="z-in" class="zoom-btn" title="放大">+</button>
+<button id="z-fit" class="zoom-btn" title="适应窗口（双击画布同效）">适应</button>
+<button id="z-100" class="zoom-btn" title="原始大小">1:1</button>
+<span class="kb-wheel-hint" title="按住 Ctrl 并滚动鼠标滚轮可缩放">Ctrl + 滚轮 缩放</span>
 </div>
 </div>
-<div class="svg-container">${svg}</div>
+<div class="svg-container" id="container">
+<div class="svg-stage" id="stage">${svg.replace(/<\/script/gi, '<\\/script')}</div>
+</div>
+<div class="hint">拖拽 平移 · 双击 适应窗口 · 滚轮(按住 Ctrl) 缩放</div>
 <script>
-const container = document.querySelector('.svg-container');
-const zoomLevel = document.getElementById('zoom-level');
-function updateZoom() { const m = container.style.transform.match(/scale\\(([^)]+)\\)/); zoomLevel.textContent = m ? Math.round(parseFloat(m[1]) * 100) + '%' : '100%'; }
-container.addEventListener('wheel', (e) => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); const current = parseFloat(container.style.transform.replace(/[^0-9.]/g,'') || 1); const delta = e.deltaY > 0 ? 0.9 : 1.111; const next = Math.max(0.1, Math.min(10, current * delta)); container.style.transform = 'scale(' + next.toFixed(3) + ')'; updateZoom(); }, { passive: false });
+(function() {
+	var container = document.getElementById('container');
+	var stage = document.getElementById('stage');
+	var svg = stage.querySelector('svg');
+	var zoomLevel = document.getElementById('zoom-level');
+	var scale = 1;
+	var natW = 0, natH = 0;
+
+	function measure() {
+		if (!svg) { natW = container.clientWidth - 40; natH = container.clientHeight - 40; return; }
+		var vb = svg.viewBox && svg.viewBox.baseVal;
+		if (vb && vb.width > 0 && vb.height > 0) { natW = vb.width; natH = vb.height; return; }
+		try {
+			var bb = svg.getBBox();
+			if (bb.width > 0 && bb.height > 0) { natW = bb.width; natH = bb.height; return; }
+		} catch (e) { /* ignore */ }
+		var r = svg.getBoundingClientRect();
+		natW = (r.width / scale) || 800; natH = (r.height / scale) || 600;
+	}
+
+	function apply() {
+		if (!svg) { zoomLevel.textContent = '—'; return; }
+		svg.style.width = Math.round(natW * scale) + 'px';
+		svg.style.height = Math.round(natH * scale) + 'px';
+		stage.style.width = Math.round(natW * scale) + 'px';
+		stage.style.height = Math.round(natH * scale) + 'px';
+		zoomLevel.textContent = Math.round(scale * 100) + '%';
+	}
+
+	function zoomAt(factor, anchorX, anchorY) {
+		var old = scale;
+		scale = Math.max(0.05, Math.min(8, scale * factor));
+		if (scale === old) { return; }
+		var r1 = stage.getBoundingClientRect();
+		var useAnchor = (anchorX !== undefined);
+		var ax = useAnchor ? anchorX : r1.left + r1.width / 2;
+		var ay = useAnchor ? anchorY : r1.top + r1.height / 2;
+		var contentX = (ax - r1.left) / old, contentY = (ay - r1.top) / old;
+		apply();
+		var r2 = stage.getBoundingClientRect();
+		container.scrollLeft += (contentX * scale + r2.left) - ax;
+		container.scrollTop += (contentY * scale + r2.top) - ay;
+	}
+
+	function fit() {
+		measure();
+		var pad = 40;
+		var s = Math.min((container.clientWidth - pad) / natW, (container.clientHeight - pad) / natH);
+		scale = Math.max(0.05, Math.min(8, Math.min(s, 1) || 1));
+		apply();
+		container.scrollLeft = Math.max(0, (stage.scrollWidth - container.clientWidth) / 2);
+		container.scrollTop = Math.max(0, (stage.scrollHeight - container.clientHeight) / 2);
+	}
+
+	function reset100() { zoomAt(1 / scale); }
+
+	document.getElementById('z-in').addEventListener('click', function() { zoomAt(1.25); });
+	document.getElementById('z-out').addEventListener('click', function() { zoomAt(0.8); });
+	document.getElementById('z-fit').addEventListener('click', fit);
+	document.getElementById('z-100').addEventListener('click', reset100);
+	zoomLevel.addEventListener('click', fit);
+
+	container.addEventListener('wheel', function(e) {
+		if (!e.ctrlKey && !e.metaKey) { return; }
+		e.preventDefault();
+		zoomAt(e.deltaY > 0 ? 0.9 : 1.111, e.clientX, e.clientY);
+	}, { passive: false });
+
+	var dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
+	container.addEventListener('mousedown', function(e) {
+		if (e.button !== 0) { return; }
+		dragging = true; sx = e.clientX; sy = e.clientY; sl = container.scrollLeft; st = container.scrollTop;
+		container.classList.add('panning');
+		e.preventDefault();
+	});
+	window.addEventListener('mousemove', function(e) {
+		if (!dragging) { return; }
+		container.scrollLeft = sl - (e.clientX - sx);
+		container.scrollTop = st - (e.clientY - sy);
+	});
+	window.addEventListener('mouseup', function() { dragging = false; container.classList.remove('panning'); });
+	container.addEventListener('dblclick', fit);
+
+	fit();
+})();
 </script>
 </body>
 </html>`;
 
-			// 用 UntitledTextEditorInput 打开 HTML 内容（编辑器区域标签页）
-			const untitledTextEditorService = accessor.get(IUntitledTextEditorService);
-			const model = untitledTextEditorService.create({ initialValue: html, languageId: 'html' });
-			const input = accessor.get(IInstantiationService).createInstance(UntitledTextEditorInput, model);
+			// 2026-09-05 修复「图表预览标签内容空白」：此前用 UntitledTextEditorInput
+			// 打开 HTML 源码，但 HtmlFileEditorPane 的 matcher 只注册了 FileEditorInput /
+			// HtmlPreviewEditorInput（contribution.ts:926-936）—— untitled 输入不在其中，
+			// 落回默认文本编辑器且无法渲染页面 → 标签打开后空白。
+			// 改用项目统一的「内存 HTML → 编辑器区」通道（同 chat Apply
+			// chatEditorIntegration.ts:153-157）：HtmlPreviewEditorInput 携带
+			// htmlContent + 虚拟 saros-html-preview URI（不落盘），由
+			// HtmlFileEditorPane 的 preview webview 渲染完整页面（含缩放控制脚本），
+			// 并自动获得 编辑/HTML/预览 三态切换。
+			// 内容哈希去重：同图复用已有标签（HtmlPreviewEditorInput.matches 按
+			// resource URI 匹配 → openEditor 激活已有 tab 而非创建新 tab）。
+			const diagramId = diagramContentHash(contentKey);
+			const virtualUri = URI.from({ scheme: 'saros-html-preview', path: `/diagram-preview/${diagramId}.html` });
+			const input = new HtmlPreviewEditorInput(
+				virtualUri,
+				title || '图表预览',
+				undefined, undefined, undefined, undefined,
+				html,
+			);
 
 			await editorService.openEditor(input, { pinned: true });
 			logService.info('[' + logTag + '] opened in editor tab:', title || '(untitled)');
@@ -2463,19 +2582,28 @@ container.addEventListener('wheel', (e) => { if (!e.ctrlKey && !e.metaKey) retur
 		}
 }
 
+// 2026-09-05：命令由 `_mermaid-chat.openPreview` 改名为 `_mermaid-chat.openPreviewHost`——
+// extensions/mermaid-chat-features/src/extension.ts:38 注册了**同名**命令（扩展激活晚于
+// workbench contribution 顶层注册，executeCommand 实际执行的是扩展版），扩展版走
+// vscode.window.createWebviewPanel（OverlayWebview 路径）——本项目 fork 的 Chromium 上
+// 该路径渲染空白（见 htmlPreviewEditorInput.ts 头注释），且其 HTML 的 .mermaid 初始
+// visibility:hidden，渲染脚本失败即永远空白。改名绕开冲突，强制走本文件的
+// openDiagramPreview（HtmlPreviewEditorInput 内存 HTML 通道，渲染可靠）。
 CommandsRegistry.registerCommand(
-	'_mermaid-chat.openPreview',
+	'_mermaid-chat.openPreviewHost',
 	async (accessor: ServicesAccessor, markup: string, title?: string) => {
 		if (!markup || !markup.trim()) {
 			accessor.get(ILogService).warn('[MermaidOpenPreview] markup is empty, skipping');
 			return;
 		}
 		const renderer = accessor.get(IMermaidInlineRenderer);
+		const normalized = markup.replace(/\\n/g, '\n');
 		await openDiagramPreview(
 			accessor,
-			theme => renderer.renderToSvg(markup.replace(/\\n/g, '\n'), theme),
+			theme => renderer.renderToSvg(normalized, theme),
 			title,
 			'MermaidOpenPreview',
+			normalized,
 		);
 	},
 );
@@ -2493,6 +2621,7 @@ CommandsRegistry.registerCommand(
 			theme => renderer.renderToSvg(source, theme),
 			title,
 			'DrawioOpenPreview',
+			source,
 		);
 	},
 );

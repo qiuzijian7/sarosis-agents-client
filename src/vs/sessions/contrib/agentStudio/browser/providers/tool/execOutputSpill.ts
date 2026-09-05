@@ -86,7 +86,7 @@ export function spillNoticeMessage(filePath: string, totalChars: number, inlineH
 		+ `The command produced ${totalChars} characters; only the first ${inlineHead.length} are shown above.\n`
 		+ `The COMPLETE output was written to:\n  ${filePath}\n`
 		+ `Nothing was lost. To inspect the rest, use the file tools on that path instead of re-running the command:\n`
-		+ `  - search_code with path_filter set to that file — to jump straight to an error/symbol\n`
+		+ `  - search_code with path set to that file — to jump straight to an error/symbol\n`
 		+ `  - file_read with offset/limit — to page through it\n`
 		+ `Do NOT re-run the command just to see the output again.`
 	);

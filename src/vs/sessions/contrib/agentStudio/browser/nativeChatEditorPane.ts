@@ -45,6 +45,10 @@ import { AgentStreamRecorder } from './agentStreamRecorder.js';
 import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
+import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
+import { buildEnsureSpec, nativeIpcBridge, normalizePanelUrl, type ConfigHtmlCfg } from '../common/configHtmlConfig.js';
+import { ensureConfigHtmlServerAndOpenPreview } from './configHtmlPreviewOpener.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { XtermCliPanel } from '../../../browser/agentChat/xtermTui/xtermCliPanel.js';
 import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
@@ -60,6 +64,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { ContextManager } from '../common/contextManager.js';
 import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment, IToolCall } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
@@ -321,6 +326,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IFileService private readonly _fileService: IFileService,
 		@IModelService private readonly _modelService: IModelService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@IDialogService private readonly _dialogService: IDialogService,
 		@ILogService private readonly _logService: ILogService,
 		@INativeEnvironmentService private readonly _envService: INativeEnvironmentService,
 		@INotificationService private readonly _notificationService: INotificationService,
@@ -849,7 +855,9 @@ export class NativeChatEditorPane extends EditorPane {
 				});
 			},
 			onOpenHtmlPreview: () => {
-				// 打开 agent 的 config.html 文件（检查并创建默认文件，用文本编辑器打开）
+				// ★ 按 agent 的 configHtml 配置预览（与设置页「打开预览」共享同一 opener，行为一致）：
+				//   url 模式 → 探活/拉起面板服务 + 打开 URL 预览；
+				//   文件模式 → 原 config.html 逻辑（不存在则创建默认文件）。
 				if (!this._currentAgentId) {
 					this._logService.info('[NativeChatEditorPane] onOpenHtmlPreview: no agent selected');
 					return;
@@ -857,6 +865,21 @@ export class NativeChatEditorPane extends EditorPane {
 				(async () => {
 					try {
 						const agentId = this._currentAgentId!;
+						const agent = await this._agentStudioService.getAgent(agentId);
+						const cfg = agent?.configHtml as ConfigHtmlCfg | undefined;
+						if (cfg?.url?.trim()) {
+							const wsRoot = this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? '';
+							await ensureConfigHtmlServerAndOpenPreview({
+								url: cfg.url,
+								server: cfg.server,
+								wsRoot,
+								notificationService: this._notificationService,
+								logService: this._logService,
+								dialogService: this._dialogService,
+								open: (input, options) => this._openInMainColumn(input, options),
+							});
+							return;
+						}
 						const agentDir = await this._agentStudioService.getAgentDir(agentId);
 						const configHtmlUri = URI.joinPath(agentDir, 'config.html');
 
@@ -1381,6 +1404,55 @@ export class NativeChatEditorPane extends EditorPane {
 					this._notificationService.notify({ severity: Severity.Info, message: '已取消飞书渠道默认 Agent' });
 				}
 			},
+			// ── ConfigHtml（URL 面板 / 本地 HTML）—— 对齐 AgentSettingsEditorPane ──
+			onGetConfigHtmlCfg: async (): Promise<ConfigHtmlCfg | undefined> => {
+				if (!this._currentAgentId) { return undefined; }
+				try {
+					const agent = await this._agentStudioService.getAgent(this._currentAgentId);
+					return (agent?.configHtml ?? undefined) as ConfigHtmlCfg | undefined;
+				} catch {
+					return undefined;
+				}
+			},
+			onSaveConfigHtmlCfg: async (cfg: ConfigHtmlCfg): Promise<void> => {
+				if (!this._currentAgentId) { return; }
+				await this._agentStudioService.updateAgent(this._currentAgentId, { configHtml: cfg });
+			},
+			onEnsureConfigHtmlServer: async (spec: Record<string, unknown>): Promise<{ ok: boolean; alreadyRunning?: boolean; starting?: boolean; error?: string }> => {
+				const bridge = nativeIpcBridge();
+				if (!bridge?.ipcRenderer?.invoke) {
+					return { ok: false, error: '当前环境不支持' };
+				}
+				// ★ 聊天设置页只传 {url,port,healthExpect?}——这里必须走共享 buildEnsureSpec 补全
+				//   command/args/cwd（注释原本承诺「由实现方补全」但之前只透传）：
+				//   主进程收到空 args 会 spawn 一个无参数的 node（REPL）挂住 30s，表现为「点了没反应」。
+				const url = normalizePanelUrl(String(spec.url ?? ''));
+				const wsRoot = this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? '';
+				const formPort = Number(spec.port ?? NaN);
+				const agent = this._currentAgentId
+					? await this._agentStudioService.getAgent(this._currentAgentId).catch(() => undefined)
+					: undefined;
+				const server = (agent?.configHtml as ConfigHtmlCfg | undefined)?.server;
+				const full = {
+					...buildEnsureSpec(url, Number.isFinite(formPort) && formPort > 0 ? formPort : undefined, wsRoot),
+					...(server?.command ? { command: server.command } : {}),
+					...(server?.args ? { args: server.args } : {}),
+					...(server?.healthPath ? { healthPath: server.healthPath } : {}),
+					...(typeof spec.healthExpect === 'string' && spec.healthExpect ? { healthExpect: spec.healthExpect } : server?.healthExpect ? { healthExpect: server.healthExpect } : {}),
+					...(server?.readyTimeoutMs ? { readyTimeoutMs: server.readyTimeoutMs } : {}),
+					...(server?.cwd ? { cwd: server.cwd.replace(/\$\{workspaceRoot\}/g, wsRoot) } : {}),
+					...(server?.env ? { env: server.env } : {}),
+				};
+				return await bridge.ipcRenderer.invoke('vscode:configHtmlEnsureServer', full) as { ok: boolean; alreadyRunning?: boolean; starting?: boolean; error?: string };
+			},
+			onStopConfigHtmlServer: async (spec: { url: string; port?: number }): Promise<{ ok: boolean; killed: number[] }> => {
+				const bridge = nativeIpcBridge();
+				if (!bridge?.ipcRenderer?.invoke) { return { ok: false, killed: [] }; }
+				return await bridge.ipcRenderer.invoke('vscode:configHtmlStopServer', spec) as { ok: boolean; killed: number[] };
+			},
+			onOpenConfigHtmlPreview: async (url: string): Promise<void> => {
+				await this._openInMainColumn(UrlPreviewEditorInput.getOrCreate(url), { pinned: true });
+			},
 		} as any) as IChatPanel);
 
 		this._container!.appendChild(this._chatPanel.element);
@@ -1615,6 +1687,20 @@ export class NativeChatEditorPane extends EditorPane {
 		this._register(this._agentStudioService.onDidChangeAgents(() => {
 			if (!this._chatPanel) { return; }
 			void this._loadAvailableAgents();
+		}));
+
+		// 2026-09-04 修复「新建工作区后聊天框工作区下拉框不刷新」：
+		// AgentStudioService 在 createWorkspace/update/delete 等 6 处 fire onDidChangeWorkspace
+		// （workspaceView/searchView/knowledgeBaseView/workspaceToolbar 均已监听），
+		// 但本 pane 此前未订阅 → 聊天面板的 _workspaces 缓存停留在初始化时的快照；
+		// 且下拉框打开时只要缓存非空就直接渲染缓存（agentChatPanel.dropdowns.ts
+		// _openWorkspaceDropdown 的 staticItems 短路），永不重新加载 —— 新工作区
+		// 对聊天框完全不可见。现对齐 onDidChangeAgents 的模式：事件驱动重拉列表。
+		// _loadWorkspaces 内部 setWorkspaces + setSelectedWorkspace（保选中的
+		// _currentWorkspaceId 优先），不会打断用户当前的选择。
+		this._register(this._agentStudioService.onDidChangeWorkspace(() => {
+			if (!this._chatPanel) { return; }
+			void this._loadWorkspaces();
 		}));
 
 		// Orchestration plan listeners removed — task orchestration entry point is closed.
@@ -3615,6 +3701,20 @@ private _handleStreamDelta(delta: any): void {
 							output: delta.usage.outputTokens ?? 0,
 							seen: true,
 						});
+						// 分母对齐（2026-09-04）：随真值推送压缩判定口径的窗口/阈值
+						// （ContextManager.resolveEffectiveWindowDefault 唯一真源：clamp(窗口,64k,200k)），
+						// UI 环以压缩线为满刻度——大窗口模型不再出现「环 6% 实际 30%」错位。
+						const budget = ContextManager.resolveEffectiveWindowDefault(limit);
+						const _used = (delta.usage.inputTokens ?? 0) + (delta.usage.outputTokens ?? 0);
+						const _ratio = Math.max(0, Math.min(1, _used / budget.effectiveWindow));
+						this._chatPanel?.setContextUsage({
+							used: _used,
+							limit: budget.effectiveWindow,
+							ratio: _ratio,
+							percent: _ratio * 100,
+							effectiveWindow: budget.effectiveWindow,
+							thresholdTokens: budget.thresholdTokens,
+						} as IContextUsage);
 					}
 				}
 				break;
@@ -3626,12 +3726,15 @@ private _handleStreamDelta(delta: any): void {
 				}
 				const limit = this._currentMaxContextTokens ?? 0;
 				if (limit > 0 && compacted > 0) {
-					const ratio = Math.max(0, Math.min(1, compacted / limit));
+					const budget = ContextManager.resolveEffectiveWindowDefault(limit);
+					const ratio = Math.max(0, Math.min(1, compacted / budget.effectiveWindow));
 					this._chatPanel?.setContextUsage({
 						used: compacted,
-						limit,
+						limit: budget.effectiveWindow,
 						ratio,
 						percent: ratio * 100,
+						effectiveWindow: budget.effectiveWindow,
+						thresholdTokens: budget.thresholdTokens,
 					} as IContextUsage);
 				}
 				const origCount = (delta as any).compressionOriginalCount ?? 0;

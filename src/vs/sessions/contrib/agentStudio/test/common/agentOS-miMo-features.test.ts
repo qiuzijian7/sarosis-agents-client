@@ -558,25 +558,29 @@ suite('Argument coercion & repair (P2a zero-dependency)', () => {
 		assert.ok(r.reject!.content.error.includes('query'), 'reject must name the required field');
 	});
 
-	test('coerceOrReject: former alias keys now warn unknown (P2)', () => {
-		// 旧别名（pattern/path/file_glob/output_mode）现在就是普通未声明参数，
-		// 逐一报 unknown —— 这正是 kimi zod 校验失败时给出的信号形态。
+	test('coerceOrReject: search_code legacy `path_filter` is normalized to `path`', () => {
+		// 2026-09-05：search_code 搜索根正名改为 `path`（与 search_files / Claude Code
+		// Grep 对齐，消除同语义两名导致的模型混用——实测 20:0 倾向 path）；path_filter
+		// 为兼容别名，coerce 层归一为 path。真正未声明的参数仍报 unknown。
 		const schema = {
 			required: ['query'],
 			properties: {
 				query: { type: 'string', description: 'Search pattern.' },
 				mode: { type: 'string', description: 'Output mode.' },
 				filePattern: { type: 'string', description: 'Glob filter.' },
-				path_filter: { type: 'string', description: 'Search root.' },
+				path: { type: 'string', description: 'Search root.' },
 			},
 		};
 		const warnings: string[] = [];
-		coerceOrReject(
-			{ query: 'FGCInfo', path: 'Runtime/CoreUObject', file_glob: '*.cpp', output_mode: 'content' },
-			schema, 'search_code', { warn: (m) => warnings.push(m), info: () => {} },
+		const r = coerceOrReject(
+			{ query: 'FGCInfo', path_filter: 'Runtime/CoreUObject', file_glob: '*.cpp', output_mode: 'content' },
+			schema, 'search_code', { warn: (m) => warnings.push(m), info: (m) => warnings.push(m) },
 		);
-		for (const k of ['path', 'file_glob', 'output_mode']) {
-			assert.ok(warnings.some((w) => w.includes('unknown argument') && w.includes(k)), `former alias "${k}" must warn unknown`);
+		assert.strictEqual((r.args as Record<string, unknown>)['path'], 'Runtime/CoreUObject', 'path_filter must be normalized to path');
+		assert.strictEqual('path_filter' in (r.args as Record<string, unknown>), false, 'alias key must be removed');
+		assert.ok(warnings.some((w) => w.includes('normalized argument alias') && w.includes('path_filter')), 'normalization must be logged');
+		for (const k of ['file_glob', 'output_mode']) {
+			assert.ok(warnings.some((w) => w.includes('unknown argument') && w.includes(k)), `genuinely unknown "${k}" must still warn`);
 		}
 	});
 

@@ -338,6 +338,29 @@ protected override _getMarkdownOptions(isStreaming: boolean = false): MarkdownRe
 				const lines = code.split('\n');
 				const isLarge = lines.length > LARGE_CODE_THRESHOLD;
 
+				// ── Mermaid fence 兜底内联预览（2026-09-05，日志 1788596740459）────────
+				// 设计意图是模型调 renderMermaidDiagram 工具出专用卡片；但模型有时无视
+				// 「DIAGRAM REQUESTS — ALWAYS USE THE TOOL」直接在文本里输出 ```mermaid
+				// fence，此前被渲染成普通代码块，用户看不到图。兜底：代码块上方追加
+				// 异步 SVG 预览（复用 renderMermaidSvg 隐藏 webview），源码块保留
+				// （Copy/Apply 不受影响）。
+				// 节流：流式期间 wrapper 每帧重建，setTimeout 随元素废弃自然丢弃——
+				// 仅流结束后的最终重建真正触发渲染（零状态节流）。
+				let mermaidPreview: HTMLElement | undefined;
+				if (lang.toLowerCase() === 'mermaid' && code.trim()) {
+					mermaidPreview = document.createElement('div');
+					mermaidPreview.className = 'mermaid-fallback-preview';
+					const mermaidLoading = document.createElement('div');
+					mermaidLoading.className = 'mermaid-card-loading';
+					mermaidLoading.textContent = 'Mermaid 预览渲染中…';
+					mermaidPreview.appendChild(mermaidLoading);
+					window.setTimeout(() => {
+						// 元素已随流式重建脱离 DOM 则跳过
+						if (!mermaidPreview?.isConnected) { return; }
+						void this._renderMermaidCardSvg(code, mermaidPreview, mermaidLoading);
+					}, 800);
+				}
+
 				// Wrapper
 				const wrapper = document.createElement('div');
 				wrapper.className = `code-block-wrapper${isLarge ? ' code-block-collapsed' : ''}`;
@@ -451,6 +474,11 @@ protected override _getMarkdownOptions(isStreaming: boolean = false): MarkdownRe
 				codeEl.textContent = code;
 				pre.appendChild(codeEl);
 				wrapper.appendChild(pre);
+
+				// Mermaid 预览插在代码块上方（图优先，源码在下可折叠）
+				if (mermaidPreview) {
+					wrapper.insertBefore(mermaidPreview, pre);
+				}
 
 				return wrapper;
 			},

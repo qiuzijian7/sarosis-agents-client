@@ -87,7 +87,6 @@ const compilations = [
 	'extensions/search-result/tsconfig.json',
 	'extensions/simple-browser/tsconfig.json',
 	'extensions/agent-studio/tsconfig.json',
-	'extensions/hermes-agent-provider/tsconfig.json',
 	'extensions/tof-authentication/tsconfig.json',
 	'extensions/tunnel-forwarding/tsconfig.json',
 	'extensions/typescript-language-features/web/tsconfig.json',

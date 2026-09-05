@@ -91,7 +91,11 @@ export function registerWorkflowTool(ctx: IWorkflowToolContext): void {
 						},
 						required: ['name', 'description'],
 					},
-					args: { type: 'object', description: 'Optional JSON input exposed to the script as the `args` global (wrap a bare list as a field, e.g. {"files": [...]})', additionalProperties: true },
+					// additionalProperties: true 已删（2026-09-05，日志 1788596740459/1788674…）：
+				// 它是 [CodeBuddy][sanitize] "workflow additionalProperties stripped at depth 2"
+				// 每请求告警的唯一来源。JSON Schema 默认即允许额外属性，删掉语义不变；
+				// args 的自由输入由 description 声明即可。
+				args: { type: 'object', description: 'Optional free-form JSON input exposed to the script as the `args` global (wrap a bare list as a field, e.g. {"files": [...]})' },
 					canvasAnchorUid: { type: 'string', description: 'Optional canvas stageUid: on success the return value is archived as a SAROS_JSON snapshot on that canvas node (its OUTPUT card shows the JSON); enables nodeOutput() round-trips on later runs.' },
 				},
 				required: ['script', 'meta'],

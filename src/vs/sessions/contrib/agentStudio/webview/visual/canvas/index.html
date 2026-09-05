@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>工作流画布沙箱（手拖节点）</title>
+<!-- esbuild 把节点内联样式抽成了独立文件，必须显式引入 -->
+<link rel="stylesheet" href="canvas.css" />
+<style>
+	/* VS Code 暗色变量：nodeCard 只依赖这 8 个（与 harness/index.html 一致） */
+	:root {
+		--vscode-foreground: #cccccc;
+		--vscode-descriptionForeground: #9d9d9d;
+		--vscode-editor-background: #1f1f1f;
+		--vscode-panel-border: #2b2b2b;
+		--vscode-input-background: #313131;
+		--vscode-input-border: #3c3c3c;
+		--vscode-button-secondaryBackground: #313131;
+		--vscode-focusBorder: #0078d4;
+	}
+
+	* { box-sizing: border-box; }
+
+	/* ★ 坑 3：容器高度必须非零。clientHeight=0 时 applyCanvasSize 会**静默跳过**
+	   resize（LiteGraphCanvas.tsx:714-717）——不报错，但画布什么都不显示。 */
+	html, body, #root { height: 100%; margin: 0; padding: 0; }
+
+	body {
+		background: #141414;
+		color: var(--vscode-foreground);
+		font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+		font-size: 12px;
+		overflow: hidden;
+	}
+
+	.app { display: flex; flex-direction: column; height: 100%; }
+
+	#toolbar {
+		flex: 0 0 auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+		padding: 6px 10px; background: #1b1b1b; border-bottom: 1px solid var(--vscode-panel-border);
+	}
+	#toolbar select, #toolbar input, #toolbar button {
+		background: var(--vscode-input-background); color: var(--vscode-foreground);
+		border: 1px solid var(--vscode-input-border); border-radius: 3px;
+		padding: 3px 8px; font-size: 12px;
+	}
+	#toolbar button { cursor: pointer; }
+	#toolbar button:hover:not(:disabled) { background: #3a3a3a; }
+	#toolbar button.primary { background: #0e639c; border-color: #0e639c; color: #fff; }
+	#toolbar button.primary:hover:not(:disabled) { background: #1177bb; }
+	#toolbar button:disabled { opacity: .45; cursor: default; }
+	#toolbar .sp { flex: 1 1 auto; }
+	#toolbar .stat { opacity: .7; font-variant-numeric: tabular-nums; }
+
+	/* ★ 画布容器：min-height:0 是关键，否则 flex 子项不收缩、高度溢出 */
+	#canvas-root { flex: 1 1 auto; min-height: 0; position: relative; background: #1e1e1e; }
+
+	#status {
+		flex: 0 0 auto; height: 170px; display: flex; flex-direction: column;
+		background: #171717; border-top: 1px solid var(--vscode-panel-border);
+		font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
+	}
+	#status .status-head { display: flex; gap: 6px; align-items: center; flex: 0 0 auto;
+		padding: 3px 10px; background: #101318; border-bottom: 1px solid var(--vscode-panel-border);
+		font-size: 10px; color: #8b949e; }
+	#status .status-head .grow { flex: 1; }
+	#status .status-head button { background: transparent; border: 1px solid #30363d;
+		color: #8b949e; border-radius: 3px; padding: 1px 10px; cursor: pointer; font-size: 10px; }
+	#status .status-head button:hover:not(:disabled) { color: #e6edf3; background: #2a313c; }
+	#status .status-head button:disabled { opacity: .4; cursor: default; }
+	#status .status-body { flex: 1 1 auto; overflow: auto; padding: 4px 10px;
+		white-space: pre-wrap; line-height: 1.5; }
+	#status .ok { color: #4ec9b0; }
+	#status .err { color: #f48771; }
+	#status .warn { color: #d29922; }
+	#status .dim { opacity: .55; }
+
+	#boot { padding: 24px; opacity: .7; }
+</style>
+</head>
+<body>
+	<div id="root"><div id="boot">正在装载画布沙箱…</div></div>
+	<script src="canvas.js"></script>
+</body>
+</html>

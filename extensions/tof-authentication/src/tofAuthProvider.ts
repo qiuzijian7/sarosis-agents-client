@@ -121,7 +121,8 @@ export class TofAuthenticationProvider implements vscode.AuthenticationProvider,
 		const cfg = vscode.workspace.getConfiguration('sessions.agentStudio.tof');
 		return {
 			paasid: cfg.get<string>('paasid') || 'sls_mcp_app',
-			siteBaseUrl: cfg.get<string>('siteBaseUrl') || 'http://saroasis-mcp.woa.com',
+			// 必须与 workbench 侧 agentStudio.contribution.ts 注册的 default 一致
+		siteBaseUrl: cfg.get<string>('siteBaseUrl') || 'http://vssaros.woa.com',
 			gatewayBaseUrl: cfg.get<string>('gatewayBaseUrl') || 'http://21.169.46.116:8080',
 			timeoutSeconds: cfg.get<number>('loginTimeout') || 180,
 		};

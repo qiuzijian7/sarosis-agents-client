@@ -165,6 +165,7 @@ import { KbSqliteStoreChannel } from '../../sessions/contrib/agentStudio/electro
 import { KB_SQLITE_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/kbSqliteStoreChannel.js';
 import { GitVersionChannel } from '../../sessions/contrib/agentStudio/electron-main/gitVersionChannel.js';
 import { ComfyLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/comfyLaunchChannel.js';
+import { ConfigHtmlServerChannel } from '../../sessions/contrib/agentStudio/electron-main/configHtmlServerChannel.js';
 import { VoxLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/voxLaunchChannel.js';
 import { CutoutChannel } from '../../sessions/contrib/agentStudio/electron-main/cutoutChannel.js';
 import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
@@ -847,6 +848,10 @@ export class CodeApplication extends Disposable {
 	// （sessions/contrib/agentStudio/electron-main/comfyLaunchChannel.ts），
 	// 此处仅负责注册其生命周期。
 	this._register(new ComfyLaunchChannel(this.logService, this.configurationService));
+
+	// ConfigHTML URL 模式：本地面板服务按需拉起 / 停止（如测试面板 127.0.0.1:5600）。
+	// 逻辑在 sessions/contrib/agentStudio/electron-main/configHtmlServerChannel.ts。
+	this._register(new ConfigHtmlServerChannel(this.logService, this.lifecycleMainService));
 
 	// Vox 口播视频节点（Vox.DirectorStage）本地 pipeline 执行：
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/voxLaunchChannel.ts。

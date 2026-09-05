@@ -18,7 +18,10 @@ runs through the real code paths.
 | `IChatEntitlementService` | Returns `ChatEntitlement.Free` | No real Copilot account in CI |
 | `IDefaultAccountService` | Returns a fake signed-in account | Hides the "Sign In" button |
 | `IGitService` | Resolves immediately (no 10s barrier) | No real git extension in web tests |
+| `IMainProcessService` | No-op channels (resolve to `undefined`) | Pure web has no main-process IPC bridge, but the AgentStudio service graph depends on it |
 | Chat agents (`copilotcli`, etc.) | Canned keyword-matched responses with `textEdit` progress items | No real LLM backend |
+| KB chat model | `AgentStudioService.prototype.createKbChatModel` returns a canned knowledge-graph LLM | No real LLM backend for KB import/mindmap extraction |
+| `file://` FileSystemProvider | `InMemoryFileSystemProvider` replaces the web `HTMLFileSystemProvider` (via `showDirectoryPicker` removal at module load) | KB vault addresses `URI.file()` paths; the web provider only serves interactively-picked handles |
 | `mock-fs://` FileSystemProvider | `InMemoryFileSystemProvider` registered directly in the workbench (not extension host) | Must be available before any service tries to resolve workspace files |
 | GitHub authentication | Always-signed-in mock provider (extension) | No real OAuth flow |
 | Code Review command | Returns canned review comments per file (extension) | No real Copilot AI review |
@@ -374,6 +377,32 @@ Example scenario:
 **Important**: Don't assert hardcoded line counts (e.g. `+23`). Instead assert
 on file names and content snippets — the real diff engine computes the actual
 counts, which may change as mock file content evolves.
+
+### Testing the Knowledge Base & Mindmaps (06)
+
+Scenario `06-kb-mindmap` exercises the full knowledge-base → mindmap pipeline:
+
+1. `web.test.ts` pre-seeds a deterministic KB vault (`/mock-kb/e2e-kb-vault`
+   on the in-memory `file://` provider, activated via the
+   `agentStudio.kb.*` storage keys) containing one imported note:
+   `React Hooks 与函数组件.md`
+2. `createKbChatModel()` is patched to return a canned knowledge graph
+   (same JSON contract as the KB unit tests), so the real
+   `KbMindmapGenerator` extraction → merge → relayout → write `.canvas`
+   pipeline runs end to end
+3. The scenario opens the 知识库 view, clicks the 🧠 思维导图 header button,
+   and asserts the generated `React_Hooks.canvas` opens in the real
+   `CanvasEditorPane` with visible mindmap nodes
+
+Notes:
+- The generated canvas file name derives from the first node title of the
+  mock LLM payload — update `06-kb-mindmap.commands.json` if you change
+  `MOCK_KB_MINDMAP_JSON`.
+- The 🧠 header button exposes `aria-label="思维导图"` so the semantic
+  selector is stable; don't remove it.
+- The KB view also auto-triggers mindmap generation ~2s after the vault
+  activates, so the canvas may already exist when the button is clicked —
+  both paths converge on opening the same file.
 
 ### Adding Mock File Edits
 

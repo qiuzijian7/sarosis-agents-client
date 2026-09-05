@@ -34,7 +34,7 @@ Pop-Location
 # 的扩展逐个执行 npm run compile。shared 需在其它扩展前编译（作为依赖被引用）。
 # （transpile-plugins 已用 esbuild 处理有 contributes.agentCapabilities 的 agentmemory-memory。）
 $extSkip = @('hermes-agent','execution-example','kanban-example','memory-example','planning-example',
-  'retrieval-example','tool-example','copilot','vscode-api-tests','vscode-colorize-tests',
+  'retrieval-example','tool-example','vscode-api-tests','vscode-colorize-tests',
   'vscode-colorize-perf-tests','vscode-test-resolver','agent-studio')
 $compileTargets = @()
 foreach ($extDir in (Get-ChildItem extensions -Directory)) {

@@ -569,13 +569,20 @@ export const WorkflowEditorPanel: React.FC = () => {
 		// Provider 后端节点（ModelImageGen）经 imagegen.generate RPC 执行，
 		// 不需要 ComfyUI runner；只有 Comfy 后端节点才要求 runner 在线。
 		const spec = getNodeSpec(nodeType);
-		// ★ Saros.AnimatedEmoji 例外（2026-09-03）：注册为 backendKind='provider'，
-		//   但其 values.backend==='comfyui' 时走 ComfyUI 视频工作流 → 需要 runner。
-		//   （此前恒按 provider 处理 → runner=undefined → comfyui 分支
-		//   resolveImageRef 读 runner.baseUrl 崩溃。）
+		// ★ 渠道感知的 runner 判定（2026-09-04）：
+		//   - Saros.AnimatedEmoji：注册为 backendKind='provider'，但 values.backend===
+		//     'comfyui' 时走 ComfyUI 视频工作流 → 需要 runner（否则 resolveImageRef
+		//     读 runner.baseUrl 崩溃）。
+		//   - ComfyTV.StatEmojiStage / DynEmojiStage：**无 backendKind**（调度恒认为
+		//     需要 runner），但其 values.backend==='provider' 时纯走 RPC → 不需要
+		//     runner——否则 ComfyUI 未启动时 provider 渠道被探测卡死（渠道互锁）。
 		const nodeDataEarly = (useWorkflowEditorStore.getState().nodes.find(n => n.id === nodeId)?.data ?? {}) as Record<string, unknown>;
 		const wantsComfyui = nodeDataEarly.backend === 'comfyui';
-		const isProviderNode = (spec?.backendKind === 'provider' || spec?.kind === 'llm') && !wantsComfyui;
+		const wantsProvider = nodeDataEarly.backend === 'provider';
+		const isEmojiStage = nodeType === 'ComfyTV.StatEmojiStage' || nodeType === 'ComfyTV.DynEmojiStage';
+		const isProviderNode = wantsComfyui ? false
+			: wantsProvider && isEmojiStage ? true
+				: (spec?.backendKind === 'provider' || spec?.kind === 'llm');
 		const runner = isProviderNode ? undefined : comfyRegistryRef.current?.resolve(runnerPreference);
 		if (!canvas || (!isProviderNode && !runner)) {
 			// eslint-disable-next-line no-console

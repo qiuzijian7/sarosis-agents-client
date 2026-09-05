@@ -104,6 +104,63 @@
 		word-break: break-all;
 	}
 
+	/* ── 测试面板（?panel=1）：可视化勾选节点 → 批量执行 ── */
+	.vt-panel { display: flex; flex-direction: column; min-height: 100vh; }
+
+	.vt-panel-bar {
+		display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+		padding: 8px 12px; background: #1b1b1b;
+		border-bottom: 1px solid var(--vscode-panel-border);
+	}
+	.vt-panel-bar input[type="search"],
+	.vt-panel-bar select {
+		background: var(--vscode-input-background); color: var(--vscode-foreground);
+		border: 1px solid var(--vscode-input-border); border-radius: 3px; padding: 3px 6px;
+	}
+	.vt-panel-bar input[type="search"] { min-width: 180px; }
+	.vt-panel-bar button {
+		background: var(--vscode-button-secondaryBackground); color: var(--vscode-foreground);
+		border: 1px solid var(--vscode-input-border); border-radius: 3px;
+		padding: 3px 10px; cursor: pointer; font-family: inherit; font-size: 12px;
+	}
+	.vt-panel-bar button:hover:not(:disabled) { background: #3a3a3a; }
+	.vt-panel-bar button:disabled { opacity: .5; cursor: default; }
+	.vt-panel-bar button.vt-primary { background: #0e639c; border-color: #1177bb; color: #fff; }
+	.vt-panel-bar button.vt-primary:hover:not(:disabled) { background: #1177bb; }
+	.vt-panel-bar .vt-count { margin-left: auto; opacity: .75; font-variant-numeric: tabular-nums; }
+
+	.vt-panel-list { padding: 8px 12px 32px; }
+
+	.vt-row {
+		display: grid; grid-template-columns: 18px minmax(200px, 1fr) 76px 2fr;
+		gap: 8px; align-items: center;
+		padding: 3px 6px; border-radius: 4px; cursor: pointer;
+		border-left: 2px solid transparent;
+	}
+	.vt-row:hover { background: #232323; }
+	.vt-row .vt-name {
+		font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 11px;
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.vt-row .vt-badge {
+		font-size: 10px; text-align: center; padding: 1px 4px;
+		border-radius: 3px; background: #2a2a2a; color: #9d9d9d;
+	}
+	.vt-row .vt-detail {
+		font-size: 10px; color: var(--vscode-descriptionForeground);
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+
+	/* 执行结果着色 */
+	.vt-row[data-state="success"] { border-left-color: #2ea043; }
+	.vt-row[data-state="success"] .vt-badge { background: rgba(46,160,67,.18); color: #4ac26b; }
+	.vt-row[data-state="error"] { border-left-color: #f14c4c; }
+	.vt-row[data-state="error"] .vt-badge { background: rgba(241,76,76,.16); color: #f4878a; }
+	.vt-row[data-state="running"] .vt-badge { background: rgba(0,120,212,.2); color: #4aa3f0; }
+	.vt-row[data-state="FATAL"] { border-left-color: #c586c0; }
+	.vt-row[data-state="FATAL"] .vt-badge { background: rgba(197,134,192,.16); color: #d8a0d3; }
+	.vt-row[data-state="untested"] { opacity: .7; }
+
 	/* ★★ 截图基线稳定性：冻结一切时变视觉。
 	   不冻结的话 running 态进度条动画 / spinner / transition 会让每次截图都不同
 	   （实测像素差 98%），基线彻底失效。

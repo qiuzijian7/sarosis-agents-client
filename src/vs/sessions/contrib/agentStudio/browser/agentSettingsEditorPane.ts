@@ -31,13 +31,22 @@ import { IAgentVersionService, type AgentCommitMeta } from '../common/agentVersi
 import { gitUnavailableReason } from './gitVersionCore.js';
 import { ITofAuthService } from '../common/tofAuth.js';
 import type { Agent } from '../../../common/agentStudioTypes.js';
+import {
+	buildEnsureSpec, defaultPortOf, normalizeConfigHtml, previewModeOf, validatePanelUrl,
+	type ConfigHtmlCfg,
+	nativeIpcBridge,
+	normalizePanelUrl,
+} from '../common/configHtmlConfig.js';
+import { ensureConfigHtmlServerAndOpenPreview } from './configHtmlPreviewOpener.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
 import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
 
 const { $: $$ } = DOM;
 
-type TabId = 'prompt' | 'skills' | 'mcp' | 'rules' | 'binding' | 'versions' | 'runtime';
+type TabId = 'prompt' | 'skills' | 'mcp' | 'rules' | 'binding' | 'versions' | 'runtime' | 'confightml';
 
 interface TabDef {
 	id: TabId;
@@ -53,6 +62,7 @@ const TABS: TabDef[] = [
 	{ id: 'mcp', label: 'MCP 配置', icon: '🔌' },
 	{ id: 'rules', label: 'Rule 配置', icon: '📏' },
 	{ id: 'binding', label: 'Channel 绑定', icon: '🔗' },
+	{ id: 'confightml', label: 'ConfigHtml', icon: '🌐' },
 ];
 
 /**
@@ -148,6 +158,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@IAgentVersionService private readonly agentVersionService: IAgentVersionService,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IClipboardService private readonly clipboardService: IClipboardService,
 	) {
 		super(AgentSettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -224,6 +236,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		this._buildPlaceholderTab('mcp');
 		this._buildPlaceholderTab('rules');
 		this._buildBindingTab();
+		this._buildConfigHtmlTab();
 
 		this._showTab(this._activeTab);
 	}
@@ -299,11 +312,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 		uploadBtn.onclick = () => this._handleUpload();
 		actions.appendChild(uploadBtn);
 
-		const configHtmlBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
-		configHtmlBtn.textContent = '🌐 ConfigHtml';
-		configHtmlBtn.title = '打开 ConfigHTML 预览';
-		configHtmlBtn.onclick = () => this._openConfigHtmlPreview();
-		actions.appendChild(configHtmlBtn);
+		// ConfigHtml 按钮已移除：功能改为独立页签（🌐 ConfigHtml tab）——
+		// 页签内含配置表单（url / displayMode / server）与「打开预览」入口。
 
 		const exportBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
 		exportBtn.textContent = '📦 导出';
@@ -1351,6 +1361,10 @@ export class AgentSettingsEditorPane extends EditorPane {
 			this._loadVersionHistory();
 			this._loadMarketplaceVersions();
 		}
+		// 进入 ConfigHtml 页签时刷新表单（反映外部/其他端变更）
+		if (tabId === 'confightml') {
+			this._fillConfigHtmlTab();
+		}
 		// Update tab buttons
 		const tabs = this._container?.querySelectorAll('.agent-settings-tab');
 		tabs?.forEach(t => {
@@ -1441,6 +1455,11 @@ export class AgentSettingsEditorPane extends EditorPane {
 			// Update skills
 			this._agentSkills = this._agent.skills || [];
 			this._renderSkills();
+
+			// ★ 同步 ConfigHtml 表单：外部入口（聊天框设置、另一个设置页实例等）保存后
+			//   会触发 onDidChangeAgents → 走到这里；不刷新就会出现
+			//   「两个设置面板显示不同地址」的不同步（_showTab 只在切 tab 时才填表单）。
+			this._fillConfigHtmlTab();
 
 			// Update runtime config (paradigm + budget)
 			if (this._paradigmSelect && this._budgetInput) {
@@ -1753,13 +1772,392 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 	// ── ConfigHtml ──
 
+	// ── ConfigHtml Tab ──
+
+	private _configHtmlLogEl: HTMLElement | undefined;
+	private _configHtmlModeRadios: HTMLInputElement[] = [];
+
+	/** ConfigHtml 页签内的操作日志（启动/停止/保存的全链路，排查「点了没反应」）。 */
+	private _configHtmlLog(text: string, cls: 'info' | 'ok' | 'err' | 'dim' = 'info'): void {
+		if (!this._configHtmlLogEl) { return; }
+		const line = document.createElement('div');
+		const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+		line.textContent = `[${ts}] ${text}`;
+		line.style.color = cls === 'err'
+			? 'var(--vscode-testing-iconFailed, #f48771)'
+			: cls === 'ok'
+				? 'var(--vscode-testing-iconPassed, #3fb950)'
+				: cls === 'dim'
+					? 'var(--vscode-descriptionForeground, #8b949e)'
+					: 'var(--vscode-foreground, #e8e8e8)';
+		this._configHtmlLogEl.appendChild(line);
+		// 上限 200 行，超出淘汰最早的
+		while (this._configHtmlLogEl.childElementCount > 200) {
+			this._configHtmlLogEl.removeChild(this._configHtmlLogEl.firstElementChild!);
+		}
+		this._configHtmlLogEl.scrollTop = this._configHtmlLogEl.scrollHeight;
+	}
+	private _configHtmlUrlInput: HTMLInputElement | undefined;
+	private _configHtmlPortInput: HTMLInputElement | undefined;
+	private _configHtmlHtmlPathInput: HTMLInputElement | undefined;
+	/** 可选的健康检查特征串（server.healthExpect）：探活时校验响应体，防端口被别的程序占用误判。 */
+	private _configHtmlExpectInput: HTMLInputElement | undefined;
+	private _configHtmlUrlSection: HTMLElement | undefined;
+	private _configHtmlLocalSection: HTMLElement | undefined;
+
+	/**
+	 * 构建 ConfigHtml 配置页签：**本地 HTML** / **URL 面板** 两种预览模式（radio 切换）。
+	 * 展示模式固定为独立页签（tab），不再提供选项。
+	 */
+	private _buildConfigHtmlTab(): void {
+		const section = $$('div.agent-settings-tab-pane');
+		section.dataset.tabPane = 'confightml';
+
+		const desc = $$('div.tab-pane-desc');
+		desc.textContent = '配置 ConfigHtml 预览来源（两种模式互斥）。本地 HTML 渲染 agent 目录下的文件；URL 面板渲染本地面板服务（未启动时点「启动服务」自动拉起，如测试面板 127.0.0.1:5600）。预览固定在独立页签中打开。';
+		section.appendChild(desc);
+
+		const inputStyle = 'flex:1;min-width:0;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:4px;padding:4px 8px;font-size:12px;';
+		const mkRow = (labelText: string, parent: HTMLElement) => {
+			const row = $$('div.agent-settings-row1');
+			const label = $$('div.agent-settings-label') as HTMLElement;
+			label.textContent = labelText;
+			row.appendChild(label);
+			parent.appendChild(row);
+			return row;
+		};
+
+		// ── 预览模式（radio 切换）──
+		const modeRow = mkRow('预览模式', section);
+		const modeGroup = $$('div') as HTMLElement;
+		modeGroup.style.cssText = 'display:flex;gap:16px;align-items:center;';
+		this._configHtmlModeRadios = [];
+		for (const [v, t] of [['local', '本地 HTML'], ['url', 'URL 面板']] as const) {
+			const wrap = $$('label') as HTMLElement;
+			wrap.style.cssText = 'display:flex;gap:4px;align-items:center;cursor:pointer;font-size:12px;';
+			const radio = document.createElement('input');
+			radio.type = 'radio';
+			radio.name = 'config-html-mode';
+			radio.value = v;
+			radio.onchange = () => { if (radio.checked) { this._configHtmlApplyMode(v as 'local' | 'url'); } };
+			const span = $$('span') as HTMLElement;
+			span.textContent = t;
+			wrap.appendChild(radio);
+			wrap.appendChild(span);
+			modeGroup.appendChild(wrap);
+			this._configHtmlModeRadios.push(radio);
+		}
+		modeRow.appendChild(modeGroup);
+
+		// ── 本地 HTML 模式区块 ──
+		this._configHtmlLocalSection = $$('div') as HTMLElement;
+		const fileRow = mkRow('预览源文件', this._configHtmlLocalSection);
+		this._configHtmlHtmlPathInput = document.createElement('input');
+		this._configHtmlHtmlPathInput.type = 'text';
+		this._configHtmlHtmlPathInput.placeholder = 'config.html（相对 agent 目录）';
+		this._configHtmlHtmlPathInput.style.cssText = inputStyle;
+		fileRow.appendChild(this._configHtmlHtmlPathInput);
+		section.appendChild(this._configHtmlLocalSection);
+
+		// ── URL 模式区块 ──
+		this._configHtmlUrlSection = $$('div') as HTMLElement;
+		const urlRow = mkRow('面板地址', this._configHtmlUrlSection);
+		this._configHtmlUrlInput = document.createElement('input');
+		this._configHtmlUrlInput.type = 'text';
+		this._configHtmlUrlInput.placeholder = 'http://127.0.0.1:5600';
+		this._configHtmlUrlInput.style.cssText = inputStyle;
+		// 失焦时自动补全 scheme（127.0.0.1:5600 → http://127.0.0.1:5600）：
+		// 缺 scheme 的输入会让 new URL() 把主机名当协议，探活 URL 拼接全部错乱。
+		const urlInput = this._configHtmlUrlInput;
+		urlInput.addEventListener('blur', () => {
+			const fixed = normalizePanelUrl(urlInput.value);
+			if (fixed && fixed !== urlInput.value) {
+				urlInput.value = fixed;
+				this._configHtmlLog(`面板地址已规范化：${fixed}`, 'dim');
+			}
+			this._configHtmlSyncUrlPort('url');
+		});
+		urlRow.appendChild(this._configHtmlUrlInput);
+		const portRow = mkRow('服务端口', this._configHtmlUrlSection);
+		this._configHtmlPortInput = document.createElement('input');
+		this._configHtmlPortInput.type = 'number';
+		this._configHtmlPortInput.placeholder = '5600';
+		this._configHtmlPortInput.style.cssText = inputStyle;
+		portRow.appendChild(this._configHtmlPortInput);
+		// 端口框失焦 → 反向同步：改写地址里的端口段
+		this._configHtmlPortInput.addEventListener('blur', () => { this._configHtmlSyncUrlPort('port'); });
+		const expectRow = mkRow('健康特征串', this._configHtmlUrlSection);
+		this._configHtmlExpectInput = document.createElement('input');
+		this._configHtmlExpectInput.type = 'text';
+		this._configHtmlExpectInput.placeholder = '可选：响应体需包含的子串';
+		this._configHtmlExpectInput.title = '留空 = 只探活、不校验身份。若该端口可能被其他程序占用，填入面板页面里的固定文字（如标题），探活时会校验，避免把别人的服务误判为本面板。';
+		this._configHtmlExpectInput.style.cssText = inputStyle;
+		expectRow.appendChild(this._configHtmlExpectInput);
+		const svcRow = $$('div.agent-settings-row1');
+		const startBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		startBtn.textContent = '▶ 启动服务';
+		startBtn.title = '探测面板服务，未启动则自动拉起';
+		startBtn.onclick = () => { void this._configHtmlEnsureService(); };
+		svcRow.appendChild(startBtn);
+		const stopBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		stopBtn.textContent = '■ 停止服务';
+		stopBtn.onclick = () => { void this._configHtmlStopService(); };
+		svcRow.appendChild(stopBtn);
+		const previewBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		previewBtn.textContent = '🌐 打开预览';
+		previewBtn.onclick = () => { void this._openConfigHtmlPreview(); };
+		svcRow.appendChild(previewBtn);
+		this._configHtmlUrlSection.appendChild(svcRow);
+		section.appendChild(this._configHtmlUrlSection);
+
+		// ── 保存 ──
+		const saveRow = $$('div.agent-settings-row1');
+		saveRow.style.marginTop = '10px';
+		const saveBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		saveBtn.textContent = '💾 保存配置';
+		saveBtn.onclick = () => { void this._saveConfigHtmlTab(); };
+		saveRow.appendChild(saveBtn);
+		section.appendChild(saveRow);
+
+		// ── 操作日志区（启动/停止/保存全链路，排查「点了没反应」）──
+		const logBlock = $$('div.agent-settings-row1');
+		logBlock.style.display = 'block';
+		const logHead = document.createElement('div');
+		logHead.style.cssText = 'display:flex;align-items:center;gap:10px;';
+		const logLabel = $$('div.agent-settings-label') as HTMLElement;
+		logLabel.textContent = '操作日志';
+		logHead.appendChild(logLabel);
+		const copyBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		copyBtn.textContent = '📋 复制日志';
+		copyBtn.title = '复制全部操作日志到剪贴板';
+		copyBtn.onclick = () => {
+			const text = Array.from(this._configHtmlLogEl?.children ?? [])
+				.map(c => c.textContent ?? '').join('\n');
+			if (!text) { this._configHtmlLog('日志为空，无可复制内容', 'dim'); return; }
+			const done = () => {
+				copyBtn.textContent = '✓ 已复制';
+				this._configHtmlLog('日志已复制到剪贴板', 'ok');
+				setTimeout(() => { copyBtn.textContent = '📋 复制日志'; }, 1500);
+			};
+			// ★ 不用 navigator.clipboard：vscode-file origin 下 writeText 权限被拒
+			//   （"Write permission denied"）。走 workbench IClipboardService（主进程实现）。
+			this.clipboardService.writeText(text).then(done).catch((err) => {
+				this._configHtmlLog(`复制失败：${err instanceof Error ? err.message : String(err)}`, 'err');
+			});
+		};
+		logHead.appendChild(copyBtn);
+		logBlock.appendChild(logHead);
+		this._configHtmlLogEl = $$('div.agent-settings-confightml-log') as HTMLElement;
+		this._configHtmlLogEl.style.cssText = 'margin-top:6px;max-height:140px;overflow:auto;background:var(--vscode-terminal-background, #111);border:1px solid var(--vscode-input-border);border-radius:4px;padding:6px 8px;font-family:ui-monospace, Menlo, Consolas, monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;';
+		logBlock.appendChild(this._configHtmlLogEl);
+		section.appendChild(logBlock);
+		this._configHtmlLog('ConfigHtml 页签已构建。点「▶ 启动服务」开始；本日志记录探活/拉起/保存全链路。', 'dim');
+
+		this._tabContentContainer!.appendChild(section);
+		this._fillConfigHtmlTab();
+	}
+
+	/** 当前预览模式（radio 状态）。 */
+	private _configHtmlCurrentMode(): 'local' | 'url' {
+		return this._configHtmlModeRadios.find(r => r.checked)?.value as 'local' | 'url' ?? 'local';
+	}
+
+	/** 按模式显示/隐藏参数区块。 */
+	private _configHtmlApplyMode(mode: 'local' | 'url'): void {
+		if (this._configHtmlLocalSection) { this._configHtmlLocalSection.style.display = mode === 'local' ? '' : 'none'; }
+		if (this._configHtmlUrlSection) { this._configHtmlUrlSection.style.display = mode === 'url' ? '' : 'none'; }
+	}
+
+	/**
+	 * 「面板地址」与「服务端口」**双向联动**：
+	 * - 地址失焦：url 带显式端口（`:5600`）→ 同步到端口框；url 无端口（隐含 80/443）→ 把端口框的值补进 url。
+	 *   不联动的话，`http://127.0.0.1`（隐含 80）+ 端口 5600 会让探活打 80、服务却在 5600，永远探不通。
+	 * - 端口失焦：改写 url 的端口段，保证两者始终一致（探活/预览看 url，停止服务按端口查杀）。
+	 */
+	private _configHtmlSyncUrlPort(source: 'url' | 'port'): void {
+		const urlInput = this._configHtmlUrlInput;
+		const portInput = this._configHtmlPortInput;
+		if (!urlInput || !portInput) { return; }
+		const url = normalizePanelUrl(urlInput.value);
+		if (!url) { return; }
+		try {
+			const u = new URL(url);
+			const portNum = Number(portInput.value);
+			if (source === 'url' && u.port) {
+				portInput.value = u.port;   // 地址里写的端口优先
+				return;
+			}
+			if (Number.isFinite(portNum) && portNum > 0 && portNum !== 80 && portNum !== 443) {
+				u.port = String(portNum);
+				const next = u.toString();
+				if (next !== urlInput.value) {
+					urlInput.value = next;
+					portInput.value = String(portNum);
+					this._configHtmlLog(`地址与端口已联动：${next}`, 'dim');
+				}
+			}
+		} catch { /* 非法地址留给 validatePanelUrl 报错 */ }
+	}
+
+	/** URL 模式下当前表单对应的服务拉起参数（未填地址返回 undefined）。 */
+	private _configHtmlEnsureSpec(): Record<string, unknown> | undefined {
+		const url = (this._configHtmlUrlInput?.value ?? '').trim();
+		if (!url) { return undefined; }
+		const wsRoot = this.workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? '';
+		const expect = (this._configHtmlExpectInput?.value ?? '').trim() || undefined;
+		// ★ 与 webview 共享同一份 spec 构造逻辑（common/configHtmlConfig.ts）
+		return buildEnsureSpec(url, Number(this._configHtmlPortInput?.value ?? ''), wsRoot, expect);
+	}
+
+	private async _configHtmlEnsureService(): Promise<void> {
+		const url = (this._configHtmlUrlInput?.value ?? '').trim();
+		this._configHtmlLog(`▶ 启动服务：${url || '(地址为空)'}`);
+		if (!url) {
+			this._configHtmlLog('✗ 地址为空，无法启动', 'err');
+			this.notificationService.error('请先填写面板地址');
+			return;
+		}
+		const wsRoot = this.workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? '';
+		this._configHtmlLog(`workspaceRoot = ${wsRoot || '(无工作区文件夹)'}`, 'dim');
+		const spec = this._configHtmlEnsureSpec();
+		this._configHtmlLog(`spec = ${JSON.stringify(spec)}`, 'dim');
+		if (!spec) { this._configHtmlLog('✗ spec 构造失败', 'err'); return; }
+		const bridge = nativeIpcBridge();
+		if (!bridge?.ipcRenderer?.invoke) {
+			this._configHtmlLog('✗ vscode.ipcRenderer 不可用（非 Electron 或 preload 未注入）——这正是「点了没反应」的常见原因', 'err');
+			this.notificationService.error('无法调用主进程：IPC 桥不可用（详见页签内操作日志）');
+			return;
+		}
+		this._configHtmlLog('→ 主进程 vscode:configHtmlEnsureServer：探活 → 未运行则 spawn → 轮询就绪（默认 30s）…', 'dim');
+		this.notificationService.info(`正在启动面板服务 ${url} …`);
+		try {
+			const r = await bridge.ipcRenderer.invoke('vscode:configHtmlEnsureServer', spec) as { ok: boolean; alreadyRunning?: boolean; starting?: boolean; error?: string; pid?: number; elapsedMs?: number };
+			if (r.ok) {
+				const detail = r.alreadyRunning ? '服务已在运行' : `新启动 pid=${r.pid ?? '-'}，耗时 ${r.elapsedMs ?? '?'}ms`;
+				this._configHtmlLog(`✓ ${detail}`, 'ok');
+				this.notificationService.info(r.alreadyRunning ? `面板服务已在运行（${url}）` : `面板服务已就绪（${url}）`);
+			} else if (r.starting) {
+				this._configHtmlLog(`⏳ 仍在启动中（pid=${r.pid ?? '-'}）：${r.error ?? ''}`, 'info');
+				this.notificationService.warn(`面板服务仍在启动中，请稍后重试`);
+			} else {
+				this._configHtmlLog(`✗ 启动失败：${r.error ?? '未知错误'}`, 'err');
+				this.notificationService.error(`面板服务启动失败（详见操作日志）`);
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this._configHtmlLog(`✗ 调用主进程异常：${msg}`, 'err');
+			this.notificationService.error(`拉起面板服务失败（详见操作日志）`);
+		}
+	}
+
+	private async _configHtmlStopService(): Promise<void> {
+		const url = (this._configHtmlUrlInput?.value ?? '').trim();
+		const port = Number(this._configHtmlPortInput?.value ?? '') || undefined;
+		this._configHtmlLog(`■ 停止服务：${url || '(地址为空)'} port=${port ?? '-'}`);
+		if (!url) { this._configHtmlLog('✗ 地址为空', 'err'); return; }
+		const bridge = nativeIpcBridge();
+		if (!bridge?.ipcRenderer?.invoke) { this._configHtmlLog('✗ vscode.ipcRenderer 不可用', 'err'); return; }
+		this._configHtmlLog('→ 主进程 vscode:configHtmlStopServer：按端口查杀 …', 'dim');
+		try {
+			const r = await bridge.ipcRenderer.invoke('vscode:configHtmlStopServer', { url, port }) as { ok: boolean; killed: number[] };
+			this._configHtmlLog(r.killed.length
+				? `✓ 已结束 ${r.killed.length} 个进程：${r.killed.join(', ')}`
+				: '没有进程在监听该端口（服务未运行）', r.killed.length ? 'ok' : 'dim');
+		} catch (err) {
+			this._configHtmlLog(`✗ 停止异常：${err instanceof Error ? err.message : String(err)}`, 'err');
+		}
+	}
+
+	/** 把当前 agent 的 configHtml 配置填入表单（进入页签/加载后调用）。 */
+	private _fillConfigHtmlTab(): void {
+		const cfg = this._agent?.configHtml;
+		const mode = previewModeOf(cfg as ConfigHtmlCfg | undefined);
+		for (const r of this._configHtmlModeRadios) { r.checked = r.value === mode; }
+		this._configHtmlApplyMode(mode);
+		if (this._configHtmlUrlInput) { this._configHtmlUrlInput.value = cfg?.url ?? ''; }
+		if (this._configHtmlPortInput) { this._configHtmlPortInput.value = String(defaultPortOf(cfg as ConfigHtmlCfg | undefined, cfg?.url ?? '')); }
+		if (this._configHtmlHtmlPathInput) { this._configHtmlHtmlPathInput.value = cfg?.htmlPath ?? 'config.html'; }
+		if (this._configHtmlExpectInput) { this._configHtmlExpectInput.value = cfg?.server?.healthExpect ?? ''; }
+	}
+
+	private async _saveConfigHtmlTab(): Promise<void> {
+		if (!this._agentId || !this._agent) { return; }
+		const mode = this._configHtmlCurrentMode();
+		this._configHtmlLog(`💾 保存配置（模式=${mode}）`, 'dim');
+		// ★ 校验与规范化都走共享模块（common/configHtmlConfig.ts），与 webview 侧一致
+		const prev = this._agent.configHtml as ConfigHtmlCfg | undefined;
+		let cfg: ConfigHtmlCfg;
+		if (mode === 'url') {
+			const url = (this._configHtmlUrlInput?.value ?? '').trim();
+			const err = validatePanelUrl(url);
+			if (err) { this._configHtmlLog(`✗ ${err}`, 'err'); this.notificationService.error(err); return; }
+			cfg = normalizeConfigHtml('url', { url, port: Number(this._configHtmlPortInput?.value ?? ''), prev });
+			const expect = (this._configHtmlExpectInput?.value ?? '').trim();
+			if (expect) {
+				cfg.server = { ...(cfg.server ?? {}), healthExpect: expect };
+			} else if (cfg.server) {
+				delete cfg.server.healthExpect;
+			}
+		} else {
+			cfg = normalizeConfigHtml('local', { htmlPath: this._configHtmlHtmlPathInput?.value ?? '' });
+		}
+		this._configHtmlLog(`规范化结果 = ${JSON.stringify(cfg)}`, 'dim');
+		try {
+			await this.agentStudioService.updateAgent(this._agentId, { configHtml: cfg } as Partial<Agent>);
+			this._agent.configHtml = cfg;
+			this._configHtmlLog('✓ 已保存到 agent 元数据（.agent.md frontmatter 的 configHtml 字段）', 'ok');
+			this.notificationService.info('ConfigHtml 配置已保存');
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this._configHtmlLog(`✗ 保存失败：${msg}`, 'err');
+			this.notificationService.error(`保存失败: ${msg}`);
+		}
+	}
+
+	/**
+	 * 打开 ConfigHtml 预览。
+	 *
+	 * ★ 两种模式：
+	 *   1. **文件模式**（默认/向后兼容）：渲染 `{agentDir}/config.html`
+	 *      —— 走 `HtmlFileEditorPane`，HTML 内可用 `AgentConfigHtml.*` SDK。
+	 *   2. **URL 模式**（`configHtml.url` 有值）：预览一个本地 HTTP 面板
+	 *      —— 走 `UrlPreviewEditorPane`（其 CSP `frame-src *` 允许本地 http；
+	 *      ConfigHtml 面板的 `default-src 'none'` 做不到）。
+	 *      服务未启动时**自动拉起**（主进程 `vscode:configHtmlEnsureServer`），
+	 *      全过程有通知提示；退出应用时由主进程按端口清理。
+	 */
 	private async _openConfigHtmlPreview(): Promise<void> {
 		if (this._readOnly) { return; }
 		if (!this._agentId) { return; }
 		try {
-			const agentDir = await this.agentStudioService.getAgentDir(this._agentId);
-			const configUri = URI.joinPath(agentDir, 'config.html');
-			this.editorService.openEditor({ resource: configUri, options: { pinned: true } }, this.group);
+			// ★ 预览优先使用**表单实时值**（与「启动服务」按钮一致）：
+			//   之前读的是已保存配置——用户填了 url 未保存 → cfg.url 为空 → 误走文件模式打开 config.html。
+			const formMode = this._configHtmlCurrentMode();
+			const formUrl = normalizePanelUrl(this._configHtmlUrlInput?.value ?? '');
+			const savedCfg = this._agent?.configHtml;
+			const useFormUrl = formMode === 'url' && !!formUrl;
+			const url = useFormUrl ? formUrl : savedCfg?.url?.trim();
+
+			// ── 模式 1：文件模式（原行为）─────────────────────────────────
+			if (!url) {
+				const agentDir = await this.agentStudioService.getAgentDir(this._agentId);
+				const configUri = URI.joinPath(agentDir, savedCfg?.htmlPath || 'config.html');
+				this.editorService.openEditor({ resource: configUri, options: { pinned: true } }, this.group);
+				return;
+			}
+
+			// ── 模式 2：URL 模式（探活 → 拉起 → 预览；逻辑在共享 opener，与聊天框一致）──
+			const wsRoot = this.workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? '';
+			await ensureConfigHtmlServerAndOpenPreview({
+				url,
+				server: savedCfg?.server,
+				formPort: useFormUrl ? Number(this._configHtmlPortInput?.value ?? '') : undefined,
+				wsRoot,
+				notificationService: this.notificationService,
+				logService: this.logService,
+				dialogService: this.dialogService,
+				open: (input, options) => this.editorService.openEditor(input as EditorInput, options, this.group),
+			});
 		} catch (err) {
 			this.notificationService.error(`打开 ConfigHtml 失败: ${err instanceof Error ? err.message : String(err)}`);
 		}

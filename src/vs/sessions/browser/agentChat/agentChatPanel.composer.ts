@@ -1618,10 +1618,16 @@ protected override _computeInputBaselineTokens(): number {
 protected override _computeContextUsage(): IContextUsage | null {
 		// 从当前模型获取 maxInputTokens（匹配 React：currentModel?.maxInputTokens）
 		const currentModelInfo = this._models.find(m => m.id === this._currentModel);
-		const limit = currentModelInfo?.maxInputTokens ?? 0;
-		if (limit <= 0) {
+		const declaredLimit = currentModelInfo?.maxInputTokens ?? 0;
+		if (declaredLimit <= 0) {
 			return null;
 		}
+		// 分母对齐压缩判定（2026-09-04）：优先用 host 推送的 effectiveWindow
+		// （ContextManager.resolveEffectiveWindow 唯一真源：clamp(模型窗口, 64k, 200k)）。
+		// 大窗口模型（contextWindow>200k，如 1M 模型解析出 936000）此前分母用原始
+		// maxInputTokens → 环显示 60601/936000≈6%，实际判定 30% 触发压缩——
+		// 即「UI 显示没满却压缩」的主因。无推送（空闲/刷新后）回退模型声明值。
+		const limit = this._contextUsage?.effectiveWindow ?? declaredLimit;
 
 		const isStreaming = this._streamPhase !== 'idle' && this._streamPhase !== 'error';
 
@@ -1677,7 +1683,25 @@ protected override _doUpdateContextRing(): void {
 		// 重新计算 contextUsage（3层逻辑，匹配 React）
 		const computed = this._computeContextUsage();
 		if (computed) {
-			this._contextUsage = computed;
+			// 2026-09-05 修复：computed 只含本地面板三层估算（used/limit/ratio/percent），
+			// 不含 host 推送的 effectiveWindow/thresholdTokens（setContextUsage 自
+			// 2026-09-04 起携带的压缩判定口径字段）。原实现整体覆盖 _contextUsage，
+			// 推送字段只存活到下一次重算即丢失 → 分母回落模型声明 maxInputTokens、
+			// 压缩线消失，2026-09-04 的「环 6% 实际 30%」对齐修复实际失效。
+			// 改为字段级合并：估值以 computed 为准，保留推送的对齐口径
+			// （_computeContextUsage 的 limit 优先级恰好依赖此处的 effectiveWindow 存续）。
+			const pushed = this._contextUsage;
+			const pushedEffectiveWindow = pushed?.effectiveWindow;
+			const pushedThresholdTokens = pushed?.thresholdTokens;
+			this._contextUsage = {
+				...computed,
+				...(pushedEffectiveWindow !== undefined && pushedEffectiveWindow > 0
+					? { effectiveWindow: pushedEffectiveWindow }
+					: {}),
+				...(pushedThresholdTokens !== undefined && pushedThresholdTokens > 0
+					? { thresholdTokens: pushedThresholdTokens }
+					: {}),
+			};
 		}
 		// 渲染环形进度条
 		const ring = this._container.querySelector('.context-usage-ring') as HTMLElement | null;

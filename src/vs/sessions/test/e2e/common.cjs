@@ -60,6 +60,9 @@ function runPlaywrightCli(args) {
 		stdio: ['ignore', 'pipe', 'pipe'],
 		timeout: 30_000,
 		env: { ...process.env },
+		// On Windows `playwright-cli` resolves to an npm .cmd shim which Node
+		// refuses to spawn without a shell (CVE-2024-27980 hardening).
+		shell: process.platform === 'win32',
 	});
 	const stdout = (result.stdout || '').toString();
 	const stderr = (result.stderr || '').toString();

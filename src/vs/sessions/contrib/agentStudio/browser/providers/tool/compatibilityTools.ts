@@ -353,7 +353,7 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				// ① 用途边界：只补系统提示词未覆盖的两条映射 + 依赖目录可搜
 				+ '\n\nThis tool is for TERMINAL operations (git, npm, docker, builds, tests, CLI scripts), NOT file operations:'
 				+ ' use search_files / search_code / file_read to find and read, patch to edit part of a file, file_write to create one.'
-				+ ' Those are indexed and cannot time out on a huge tree. To search a dependency, point search_code\'s path_filter at it'
+				+ ' Those are indexed and cannot time out on a huge tree. To search a dependency, point search_code\'s path at it'
 				+ ' (e.g. node_modules/<pkg>/dist) — allowed and indexed; never hand-roll a script that reads the bundle.'
 				// ② shell 写文件的合理边界（系统提示词完全没有；对齐 MiMo bash.gpt.txt）
 				+ '\n\nShell writes are fine when they are the natural result of a command (formatter, code generator, build or package'

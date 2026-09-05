@@ -64,5 +64,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.18.10"
+  },
+  "dependencies": {
+    "vssaros": "file:../.."
   }
 }

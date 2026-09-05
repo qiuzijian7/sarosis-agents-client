@@ -1158,11 +1158,20 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 					// 诊断（2026-07-27）：积分 pill 排查——渡海到 renderer 侧后 credit 是否
 					// 仍在。若此处 usage.credit 为 undefined 但下方 keys 里有形似字段
 					// （credits/cost/price/...），说明字段名在网关侧被改了，未在此同步更新。
-					this._logService.info(
+					//
+					// 降噪（2026-09-04，日志 vscode-app-1788504108364 分析）：原为 INFO 且
+					// 每个 usage data part 都打一次——长会话上千条、占整份日志 26%+，
+					// credit 正常时毫无信息量。降为 debug；仅当 credit 字段 MISSING
+					// （诊断价值真正存在：网关侧字段名变更）时保留 INFO。
+					const _usageDiag =
 						`[LMBridge] usage decoded | credit=${usage.credit ?? 'MISSING'} ` +
 						`raw keys=[${Object.keys(raw).join(',')}] raw.credit=${raw.credit ?? 'n/a'} ` +
-						`raw.credits=${raw.credits ?? 'n/a'} raw.cost=${raw.cost ?? 'n/a'}`
-					);
+						`raw.credits=${raw.credits ?? 'n/a'} raw.cost=${raw.cost ?? 'n/a'}`;
+					if (typeof raw.credit !== 'number') {
+						this._logService.info(_usageDiag);
+					} else {
+						this._logService.debug(_usageDiag);
+					}
 					if (
 						usage.inputTokens !== undefined ||
 						usage.outputTokens !== undefined ||

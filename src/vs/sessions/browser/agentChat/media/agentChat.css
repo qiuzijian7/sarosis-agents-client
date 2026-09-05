@@ -3253,6 +3253,16 @@
 	line-height: 1;
 	margin-top: 1px;
 }
+/* Mermaid 卡：标题单行，header 行垂直居中（delegate 默认 flex-start 会使其偏上，
+   右侧「在新编辑器打开」按钮加入后高度差更明显）。2026-09-05 用户反馈。 */
+.tool-card-mermaid .tool-header-row { align-items: center; }
+.tool-card-mermaid .tool-header-icon {
+	align-self: center;
+	margin-top: 0;
+}
+.tool-card-mermaid .tool-header-title-container {
+	line-height: 20px;
+}
 /* 标题可点击展开（复用 clickable 视觉） */
 .tool-card-delegate .tool-header-title-clickable { cursor: pointer; }
 
@@ -8140,6 +8150,8 @@
 	height: 22px;
 	margin-right: 4px;
 	flex-shrink: 0;
+	/* 2026-09-05：作为 .context-usage-tooltip 的定位锚点（tooltip 显示在环上方） */
+	position: relative;
 }
 
 .context-usage-ring .ring-track {
@@ -8157,6 +8169,36 @@
 
 .context-usage-ring.danger .ring-progress {
 	stroke: #ef4444;
+}
+
+/* ── Context usage tooltip（自定义浮层）─────────────────────────────
+   2026-09-04 交互优化（contextRing.ts）把 tooltip 从原生 title 改为自定义
+   浮层，DOM 由 JS 挂到 .context-usage-ring 内，但本 CSS 规则此前遗漏 ——
+   无样式 div 留在文档流内，被 22px 环容器挤压成竖条（「上下文：301,820 /
+   192,000 tokens」逐字折行）并与发送按钮重叠。现补齐：
+   - absolute 脱离文档流，以环为锚点显示在环上方（bottom: 100%）；
+   - white-space: pre-line 渲染多行文案（JS 用 \n 拼接两行提示）；
+   - pointer-events:none 防止浮层自身挡住 mouseleave 造成闪烁；
+   - width: max-content 按内容自适应宽度，长行由 max-width 兜底折行。 */
+.context-usage-tooltip {
+	position: absolute;
+	bottom: calc(100% + 8px);
+	left: 50%;
+	transform: translateX(-50%);
+	width: max-content;
+	max-width: 320px;
+	white-space: pre-line;
+	text-align: left;
+	pointer-events: none;
+	z-index: 1000;
+	padding: 6px 10px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-editorWidget-border, #4a4a4a);
+	background: var(--vscode-editorWidget-background, #2d2d2d);
+	color: var(--vscode-foreground, #ccc);
+	font-size: 11px;
+	line-height: 1.5;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -11958,3 +12000,28 @@
 .clarify-tool-card .clarify-icon { color: var(--vscode-textLink-foreground, #60a5fa); flex-shrink: 0; margin-right: 2px; }
 .clarify-body { padding: 0; }
 
+
+
+/* Mermaid fence 兜底预览（2026-09-05）：
+   模型未调 renderMermaidDiagram 而直接输出 `mermaid 代码块时，
+   代码块上方内联渲染 SVG（图优先，源码块保留在下）。 */
+.mermaid-fallback-preview {
+	margin: 0 0 8px 0;
+	padding: 8px;
+	border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+	border-radius: 6px;
+	background: var(--vscode-editor-background, transparent);
+	overflow-x: auto;
+}
+.mermaid-fallback-preview img,
+.mermaid-fallback-preview svg {
+	max-width: 100%;
+	height: auto;
+	display: block;
+	margin: 0 auto;
+}
+.mermaid-card-loading {
+	color: var(--vscode-descriptionForeground, #8b949e);
+	font-size: 11px;
+	padding: 6px 2px;
+}

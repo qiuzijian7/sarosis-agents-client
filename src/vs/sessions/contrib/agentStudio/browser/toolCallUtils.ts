@@ -626,13 +626,37 @@ export interface CoerceOrRejectResult {
 	warnings?: string[];
 }
 
+/**
+ * 模型高频误写的参数别名 → schema 正名（2026-09-05）。
+ * 背景：search_code 旧正名 path_filter 与 search_files 的 path 同语义不同名，
+ * 模型连续 20 次传 path（警告回传未纠偏，每次退化成全库扫描）。现 search_code
+ * 正名改为 `path`（与 search_files / Claude Code Grep 对齐），path_filter 为
+ * 兼容别名在此归一：正名缺位时把别名值搬过去并删掉别名键，降级 info 不再 warn。
+ * 注意：search_files 不设条目——其正名就是 path，误加反向映射会把正确参数改坏。
+ */
+const ARG_PARAM_ALIASES: Record<string, Record<string, string>> = {
+	search_code: { path_filter: 'path' },
+};
+
 export function coerceOrReject(
-	args: Record<string, unknown>,
+	rawArgs: Record<string, unknown>,
 	schema: Record<string, unknown> | undefined,
 	toolName: string,
 	log: { warn(msg: string): void; info(msg: string): void },
 ): CoerceOrRejectResult {
-	if (!schema) { return { args }; }
+	if (!schema) { return { args: rawArgs }; }
+	// 别名归一：在 coerce 之前做（不得原地改调用方对象，先浅拷贝）
+	let args = rawArgs;
+	const aliases = ARG_PARAM_ALIASES[toolName];
+	if (aliases) {
+		for (const [from, to] of Object.entries(aliases)) {
+			if (from in args && !(to in args)) {
+				args = { ...args, [to]: args[from] };
+				delete args[from];
+				log.info(`[AgentOS][Coerce] "${toolName}" — normalized argument alias "${from}" → "${to}"`);
+			}
+		}
+	}
 	const coerced = coerceArgsToSchema(args, schema);
 	// 2026-07-29：区分无害类型自愈（string→array/number/boolean）与 schema 违规。
 	// 类型自愈是 by-design（coerceToolArgs 中的自动包装/转换），降级 INFO 减少 WARN 噪音。
