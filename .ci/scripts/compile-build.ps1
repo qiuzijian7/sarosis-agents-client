@@ -23,12 +23,17 @@ if (Test-Path out) {
   if (Test-Path out) { Remove-Item -Recurse -Force out -EA SilentlyContinue }
   Write-Host '[clean] out/ removed'
 }
-Write-Host '[clean] removing tsbuildinfo (scoped to build/src/extensions)...'
-foreach ($dir in @('build', 'src', 'extensions', 'remote')) {
-  Get-ChildItem $dir -Recurse -Filter *.tsbuildinfo -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
+Write-Host '[clean] removing tsbuildinfo via git (junction-safe)...'
+# 禁止 Get-ChildItem -Recurse：extensions/*/node_modules/vssaros 是指向仓库根的 junction 自引用，
+# PS5.1 -Recurse 跟随 junction 无限循环（曾致 CI 卡死 2h/4h，被蓝盾心跳超时强杀）。
+# git 不跟随目录 junction，全仓枚举实测 ~2s。extensions\tsconfig.tsbuildinfo 已被 .gitignore 覆盖。
+$stale = @(git ls-files --others --ignored --exclude-standard -- '*.tsbuildinfo' 2>$null)
+$stale += Get-ChildItem -Filter *.tsbuildinfo -EA SilentlyContinue | Select-Object -ExpandProperty FullName
+$removed = 0
+foreach ($p in ($stale | Sort-Object -Unique)) {
+  if ($p -and (Test-Path $p)) { Remove-Item -Force -EA SilentlyContinue $p; $removed++ }
 }
-Get-ChildItem -Filter *.tsbuildinfo -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
-Write-Host '[clean] done, starting gulp...'
+Write-Host ('[clean] removed ' + $removed + ' tsbuildinfo files, starting gulp...')
 
 # 直接调用本地 gulp，绕开 npx（npx 找不到本地包时会交互式询问 "Ok to proceed?"，CI 无 stdin 导致无限挂起）
 $gulp = Join-Path $repoRoot 'node_modules\.bin\gulp.cmd'
