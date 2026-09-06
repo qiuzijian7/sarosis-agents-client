@@ -48,6 +48,9 @@ export const MODE_OPTIONS: IModeOption[] = [
 ];
 
 export const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string }> = {
+	// 2026-09-06：参数流式期的占位卡（网关未下发 function.name 时）——
+	// 走内置标题路径，避免「正在调用 生成工具调用…」的拗口拼接。
+	pending_args: { done: '工具调用', running: '正在生成工具调用参数…' },
 	file_read: { done: '读取文件', running: '正在读取文件' },
 	file_write: { done: '写入文件', running: '正在写入文件' },
 	file_list: { done: '查看目录', running: '正在查看目录' },
@@ -1387,6 +1390,15 @@ updateMessage(
 				const rafIdx = idx;
 				this._streamingUpdateRaf = requestAnimationFrame(() => {
 					this._streamingUpdateRaf = null;
+					// ★ 分诊埋点 #5（2026-09-06）：确认 rAF 回调是否真的在执行
+					// （窗口不可见/标签后台时 rAF 会被节流甚至暂停 → DOM 永不更新）。
+					if (rafIdx < this._messages.length) {
+						const _d2 = this._messages[rafIdx] as any;
+						_d2._rafRuns = (_d2._rafRuns ?? 0) + 1;
+						if (_d2._rafRuns % 50 === 0) {
+							this._logService.info(`[UmdDiag] raf-run n=${_d2._rafRuns} msgId=${this._messages[rafIdx].id} v5`);
+						}
+					}
 					if (rafIdx < this._messages.length) {
 						this._updateMessageDom(rafIdx, this._messages[rafIdx]);
 					}

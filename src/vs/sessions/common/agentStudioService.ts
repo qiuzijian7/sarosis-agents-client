@@ -385,6 +385,10 @@ export interface IChatStreamDelta {
 	readonly metadata?: Record<string, unknown>;
 	readonly progress?: number;
 	readonly stage?: string;
+	/** tool_progress 结构化字段（2026-09-06 v2）：参数累积字节数。 */
+	readonly bytes?: number;
+	/** tool_progress 结构化字段（2026-09-06 v2）：arguments 累积串前缀（≤8KB），仅供预览，禁作完成/执行判定。 */
+	readonly partialArgs?: string;
 	/** Whether the tool call succeeded (only meaningful on `tool_end`). */
 	readonly success?: boolean;
 	/**

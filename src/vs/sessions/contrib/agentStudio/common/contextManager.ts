@@ -2615,11 +2615,32 @@ ${conversationText}
 				if (injectResult?.injectedContext) {
 					// P4: Separate fixed system messages (stable prefix) from dynamic messages.
 					// Inject the memory context AFTER fixed system, preserving cache prefix.
-					const fixedSystem = ceilinged.filter(m =>
+					const fixedSystemRaw = ceilinged.filter(m =>
 						m.role === 'system' &&
 						!this._isSummaryMessage(m) &&
 						!this._isInjectedContextMessage(m)
 					);
+					// 去重（2026-09-06）：压缩重组时 fixedSystem 可能含**逐字相同**的多份
+					// system —— 主提示重复 / durable 快照重复（用户导出「压缩上下文（部分）.txt」
+					// 实证：两份 300 行系统提示 + 两份 290 行 durable 快照，~18k tokens/turn 纯浪费）。
+					// 副本来源：executor 侧已修（主 system prepend 去重 + durable 替换式注入），
+					// 但**压缩重组不走 agentTurnExecutor 的去重逻辑**——压缩产物本身若已重复，
+					// 下一轮的输入就带着双份。按内容去重，保留首次出现。
+					const _fixedSeen = new Set<string>();
+					const fixedSystem = fixedSystemRaw.filter(m => {
+						const c = typeof (m as any).content === 'string' ? (m as any).content : '';
+						if (!c) { return true; }                  // 空内容不参与去重
+						if (_fixedSeen.has(c)) { return false; }  // 逐字重复 → 剔除
+						_fixedSeen.add(c);
+						return true;
+					});
+					if (fixedSystem.length !== fixedSystemRaw.length) {
+						this._log('info',
+							`[ContextManager][Compression] Pre-compact injection: deduped fixed-system ` +
+							`${fixedSystemRaw.length}→${fixedSystem.length} ` +
+							`(removed ${fixedSystemRaw.length - fixedSystem.length} identical-content duplicate(s))`
+						);
+					}
 					const dynamicMessages = ceilinged.filter(m =>
 						!(m.role === 'system' &&
 						  !this._isSummaryMessage(m) &&
@@ -2780,11 +2801,30 @@ ${conversationText}
 		const conversation = messages.filter(m => m.role !== 'system');
 
 		// 保留固定的系统消息（非摘要、非注入上下文、非旧的 checkpoint 锚点）
-		const fixedSystem = systemMessages.filter(m =>
+		const fixedSystemRaw = systemMessages.filter(m =>
 			!this._isSummaryMessage(m)
 			&& !this._isInjectedContextMessage(m)
 			&& !this._isCheckpointMessage(m)
 		);
+		// 去重（2026-09-06）：与 Pre-compact injection 路径同源——checkpoint 重建时
+		// fixedSystem 可能含逐字相同的多份 system（主提示 / durable 快照双份，
+		// 见「压缩上下文（部分）.txt」导出实证 ~18k tokens/turn 纯浪费）。
+		// 按内容去重，保留首次出现。
+		const _fixedSeenCp = new Set<string>();
+		const fixedSystem = fixedSystemRaw.filter(m => {
+			const c = typeof (m as any).content === 'string' ? (m as any).content : '';
+			if (!c) { return true; }
+			if (_fixedSeenCp.has(c)) { return false; }
+			_fixedSeenCp.add(c);
+			return true;
+		});
+		if (fixedSystem.length !== fixedSystemRaw.length) {
+			this._log('info',
+				`[ContextManager][Checkpoint] REBUILD: deduped fixed-system ` +
+				`${fixedSystemRaw.length}→${fixedSystem.length} ` +
+				`(removed ${fixedSystemRaw.length - fixedSystem.length} identical-content duplicate(s))`
+			);
+		}
 
 		// 注入式上下文（PreCompactInjector 产出）必须保留，否则每次压缩都会在头部累积新块
 		const injected = messages.filter(m => this._isInjectedContextMessage(m));

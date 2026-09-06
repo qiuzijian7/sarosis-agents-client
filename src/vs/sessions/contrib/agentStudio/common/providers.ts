@@ -568,6 +568,16 @@ export interface IModelDelta {
 	readonly content?: string;
 	readonly toolCall?: IToolCallInfo;
 	readonly error?: string;
+	/** tool_progress 结构化字段（2026-09-06 v2）：正在生成参数的工具名。 */
+	readonly toolName?: string;
+	/** tool_progress 结构化字段（2026-09-06 v2）：参数累积字节数。 */
+	readonly bytes?: number;
+	/**
+	 * tool_progress 结构化字段（2026-09-06 v2）：arguments 累积串前缀（≤8KB），
+	 * 供 partial JSON 预览（如 file_write 的 path 提前显示）。
+	 * ⚠ 仅供展示预览——严禁用作完成/执行判定（完成判定唯一来源是 tool_start）。
+	 */
+	readonly partialArgs?: string;
 	/** Token 使用量（type === 'usage' 时携带） */
 	readonly usage?: IModelUsage;
 	/**
@@ -1522,6 +1532,15 @@ export interface IChatStreamDelta {
 	readonly metadata?: Record<string, unknown>;
 	readonly progress?: number; // 0-100 进度百分比（用于 tool_progress 类型）
 	readonly stage?: string; // 当前阶段描述（用于 tool_progress 类型）
+	/** tool_progress 结构化字段（2026-09-06 v2，doc/tool-args-streaming-preview-design.md）：参数累积字节数。 */
+	readonly bytes?: number;
+	/**
+	 * tool_progress 结构化字段（2026-09-06 v2）：arguments 累积串前缀（≤8KB），
+	 * 供 partial JSON 预览（如 file_write 的 path 提前显示）。
+	 * ⚠ 仅供展示预览——严禁用作完成/执行判定（完成判定唯一来源是 tool_start，
+	 * 见 Vercel AI SDK issue #12052「大参数中途恰好可解析 → 过早发射」教训）。
+	 */
+	readonly partialArgs?: string;
 	readonly success?: boolean; // tool_end 时表示工具是否执行成功
 	/** Token 使用量（type === 'usage' 时携带） */
 	readonly usage?: IModelUsage;

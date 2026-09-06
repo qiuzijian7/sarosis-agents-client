@@ -842,14 +842,28 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 					// 计时器续命——超大参数生成期不再误判死流（事故 1785049332701）。
 					if (_frDataPart.mimeType === VSSAROS_TOOL_CALL_PROGRESS_MIME && _frDataPart.data) {
 						let _tpStage = '正在生成工具调用参数…';
+						let _tpName: string | undefined;
+						let _tpBytes: number | undefined;
+						let _tpPartialArgs: string | undefined;
 						try {
 							const _tp = JSON.parse(_frDataPart.data.toString());
 							const _kb = Math.max(1, Math.round((Number(_tp?.bytes) || 0) / 1024));
-							const _nm = typeof _tp?.name === 'string' && _tp.name ? ` ${_tp.name}` : '';
+							_tpName = typeof _tp?.name === 'string' && _tp.name ? _tp.name : undefined;
+							_tpBytes = Number.isFinite(Number(_tp?.bytes)) ? Number(_tp.bytes) : undefined;
+							_tpPartialArgs = typeof _tp?.partialArgs === 'string' && _tp.partialArgs ? _tp.partialArgs : undefined;
+							const _nm = _tpName ? ` ${_tpName}` : '';
 							_tpStage = `正在生成工具调用参数${_nm}… 已 ${_kb} KB`;
 						} catch { /* 解码失败 — 用默认 stage */ }
 						yieldedContent = true; // 流确证存活；此后失败不走 P4 重试（避免重复正文）
-						yield { type: 'tool_progress', content: _tpStage };
+						// 2026-09-06 v2：结构化 toolName/bytes/partialArgs 透传（参数预览，
+						// doc/tool-args-streaming-preview-design.md）；stage/content 兼容旧消费者。
+						yield {
+							type: 'tool_progress',
+							content: _tpStage,
+							...(_tpName ? { toolName: _tpName } : {}),
+							...(_tpBytes !== undefined ? { bytes: _tpBytes } : {}),
+							...(_tpPartialArgs ? { partialArgs: _tpPartialArgs } : {}),
+						};
 						continue; // 不传给 _toModelDelta（它不认识此 MIME）
 					}
 						const delta = this._toModelDelta(p, modelId);

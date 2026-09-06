@@ -1,20 +1,21 @@
 /*---------------------------------------------------------------------------------------------
  *  removeBgExecutor — 「去背景」节点的浏览器本地执行。
  *
- *  链路：取上游最新图像 ref → fetch 成 bytes → **内置 AI 抠图**（主进程 ONNX
- *  U²Net，cutout.remove RPC，见 cutoutAi.ts）→ RGBA PNG → 上传 ComfyUI input/
- *  （失败退 data:）→ snapshotStore.put。
+ *  链路：取上游最新图像 ref → fetch 成 bytes → **ComfyUI 抠图**（saros_cutout
+ *  自定义节点 SarosBiRefNetCutout，见 comfyCutout.ts）→ RGBA PNG（含 ComfyUI
+ *  output view URL）→ snapshotStore.put。
  *
- *  2026-09-03：处理端从「本地 rembg 独立服务（rembg_server.py:7000）」切换为
- *  **内置 ONNX 推理** —— 无需启动任何服务；模型按需下载缓存（~/.vssaros/cutout-models）。
+ *  2026-09-06：处理端从「主进程内置 ONNX U²Net（cutout.remove RPC，模型缓存
+ *  ~/.vssaros/cutout-models）」切换为 **ComfyUI 自定义节点** —— 主进程不再参与
+ *  抠图，模型唯一落盘位置是 ComfyUI 的 models/onnx/。
  *  rembg widget（model/alpha_matting/post_process）保留在节点 UI 上但被忽略
- *  （U²Net 无对应参数）；后续接入 isnet-anime 等内置模型时再把 model 映射接回来。
+ *  （saros_cutout 只收 image）；后续接入多模型时再把 model 映射接回来。
  *--------------------------------------------------------------------------------------------*/
 
 import type { ComfyRunProgress, IComfyRunner } from './comfyRunner.js';
 import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
 import type { SingleNodeRunResult } from './nodeExecutor.js';
-import { removeBackgroundRgba } from './cutoutAi.js';
+import { comfyRemoveBackground } from './comfyCutout.js';
 
 export interface RemoveBgInput {
 	runner: IComfyRunner;
@@ -82,34 +83,6 @@ async function fetchImageBytes(ref: string, fetchImpl: typeof fetch): Promise<Ui
 	return new Uint8Array(await response.arrayBuffer());
 }
 
-/** 内置 AI 抠图：PNG/JPEG bytes → 解码 → U²Net mask → 带 alpha 的 PNG Blob。 */
-async function removeBackgroundPng(bytes: Uint8Array, onStatus?: (text: string) => void): Promise<Blob> {
-	const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: 'image/png' }));
-	try {
-		const img = new Image();
-		img.src = url;
-		await new Promise<void>((resolve, reject) => {
-			img.onload = () => resolve();
-			img.onerror = () => reject(new Error('去背景：上游图像解码失败'));
-		});
-		const W = img.naturalWidth, H = img.naturalHeight;
-		const cv = document.createElement('canvas');
-		cv.width = W; cv.height = H;
-		const ctx = cv.getContext('2d', { willReadFrequently: true });
-		if (!ctx) { throw new Error('去背景：无法创建画布'); }
-		ctx.drawImage(img, 0, 0);
-		const imageData = ctx.getImageData(0, 0, W, H);
-		const out = await removeBackgroundRgba(new Uint8Array(imageData.data.buffer.slice(0)), W, H, 'u2net', undefined, onStatus);
-		imageData.data.set(out);
-		ctx.putImageData(imageData, 0, 0);
-		const dataUrl = cv.toDataURL('image/png');
-		const resp = await fetch(dataUrl);
-		return await resp.blob();
-	} finally {
-		URL.revokeObjectURL(url);
-	}
-}
-
 /** 浏览器本地执行「去背景」。 */
 export async function runRemoveBgNode(input: RemoveBgInput): Promise<SingleNodeRunResult> {
 	const { runner, nodeId, values, upstreams, store, onProgress } = input;
@@ -121,34 +94,22 @@ export async function runRemoveBgNode(input: RemoveBgInput): Promise<SingleNodeR
 
 	try {
 		const fetchImpl = input.fetchImpl ?? globalThis.fetch;
-		onProgress?.({ value: 10 });
+		onProgress?.({ promptId: '', value: 10 });
 		const bytes = await fetchImageBytes(src, fetchImpl);
-		onProgress?.({ value: 35 });
+		onProgress?.({ promptId: '', value: 35 });
 
-		// 处理端 = 主进程内置 ONNX U²Net（cutout.remove，rembg 算法内置化）
-		const outBlob = await removeBackgroundPng(bytes, (text) => onProgress?.({ promptId: '', value: 35, message: text }));
-		onProgress?.({ value: 75 });
-		const dataUrl = await blobToDataUrl(outBlob);
-
-		// ── 上传 ComfyUI input/（失败退 data:，同 instantExecutor 的容错理由）──
-		// 上传后下游 ComfyUI stage 可直接 LoadImage 引用；浏览器本地 stage 用 data: 也行。
+		// 处理端 = ComfyUI saros_cutout 节点（GPU/CPU 自动）。结果自带 ComfyUI
+		// output view URL —— 下游 ComfyUI stage 可直接 LoadImage 引用；浏览器
+		// 本地 stage 经 /view 拉取也无需再上传。data: 仅作 view 拉取失败时的兜底。
+		const cutout = await comfyRemoveBackground(runner, bytes, (text) => onProgress?.({ promptId: '', value: 35, message: text }));
+		onProgress?.({ promptId: '', value: 75 });
+		const dataUrl = await blobToDataUrl(cutout.blob);
 		let ref = '';
 		try {
-			const form = new FormData();
-			// 文件名必须唯一，否则 ComfyUI 覆盖同名文件返回同一 name → 浏览器
-			// 命中磁盘缓存显示旧图（见 instantExecutor 同处注释）。
-			form.append('image', outBlob, `removebg-${Date.now()}-${Math.floor(Math.random() * 1e6)}.png`);
-			const resp = await runner.fetchApi?.('/upload/image', { method: 'POST', body: form });
-			const data = await resp?.json() as { name?: string; subfolder?: string; type?: string } | undefined;
-			const name = String(data?.name ?? '');
-			if (name) {
-				const subfolder = String(data?.subfolder ?? '');
-				const typeOut = String(data?.type ?? 'output');
-				ref = `${runner.baseUrl}/view?filename=${encodeURIComponent(name)}${subfolder ? '&subfolder=' + encodeURIComponent(subfolder) : ''}&type=${typeOut}`;
-			}
-		} catch {
-			// 忽略：走 data: 兜底
-		}
+			// 用可注入 fetchImpl（代理）探测：直接裸 fetch 跨源 view URL 会被 CORS 拦。
+			const check = await fetchImpl(cutout.viewUrl, { method: 'HEAD' });
+			if (check.ok) { ref = cutout.viewUrl; }
+		} catch { /* 跨源 HEAD 失败：走 data: 兜底 */ }
 		if (!ref) { ref = dataUrl; }
 
 		// meta.mime 必须是 image/png：下游 LoadImage / 导出按 mime 判定，透明 PNG 换成
@@ -165,7 +126,7 @@ export async function runRemoveBgNode(input: RemoveBgInput): Promise<SingleNodeR
 			index: 0,
 		};
 		store.put(entry);
-		onProgress?.({ value: 100 });
+		onProgress?.({ promptId: '', value: 100 });
 		return { promptId: '', status: 'success', entries: [entry], durationMs: 0 };
 	} catch (err) {
 		return { promptId: '', status: 'error', error: err instanceof Error ? err.message : String(err), entries: [] };

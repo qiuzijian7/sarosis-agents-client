@@ -809,6 +809,18 @@ private _createToolCallCardCore(tc: IToolCall, confirmation?: IConfirmationData)
 				buildContent: (container) => {
 					if (isRunning && !tc.result) {
 						const placeholder = append(container, $('.tool-section-placeholder'));
+						// 2026-09-06：参数流式期占位卡（pending_args）——参数还在生成，
+						// 谈不上「等待执行结果」。args 已有内容时直接显示**尾部实时预览**
+						//（参数正在逐字成型，对齐 Claude Code/Cline 的卡内流式参数）；
+						// 尚无内容时才显示通用文案。
+						if (tc.name === 'pending_args') {
+							const argsStr = typeof tc.args === 'string' ? tc.args : (tc.args ? JSON.stringify(tc.args) : '');
+							placeholder.textContent = argsStr
+								? argsStr.slice(-240)
+								: '正在生成工具调用参数…';
+							placeholder.classList.add('tool-args-streaming');
+							return;
+						}
 						placeholder.textContent = '等待结果返回...';
 						return;
 					}

@@ -3027,6 +3027,11 @@ export async function splitStickerSheet(
  *    被替换的旧产物追加到末尾保留历史（重新生成后历史不删除，仍在 OUTPUT 显示）。
  *
  * 单格失败即返回 error，但**已成功的格保留归档**（部分成功可见）。
+ *
+ * ## sheet 输入直通（2026-09）
+ * `sheet` 输入端口连线 → 跳过全部生成链路，直接按 rows×cols 纯裁剪上游整图。
+ * 上游取图优先级：上游归档的 sheetFull 整图（port 'sheet'）> 上游最新 image
+ * （外部拼贴图未必带 sheetFull 标注）。归档契约与自生成完全一致。
  */
 async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
 	const { runner, nodeId, type, values, upstreams, store, getSpec, onProgress, signal } = input;
@@ -3147,6 +3152,16 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 	const upstreamRefMap = collectUpstreamRefs(store, upstreams);
 	applyAssetRefOverrides(upstreamRefMap, values);
 	const upstreamImageRef = upstreamRefMap['image'] ?? '';
+	// ★ sheet 输入直通（2026-09）：`sheet` 输入端口连线 → 取上游归档的整图图集
+	//   （meta.sheetFull='1'，port 'sheet'；兜底上游最新 image——外部拼贴图上游
+	//   未必带 sheetFull 标注）。调度器已把边 source 映射为上游 snapshotKey
+	//   （workflowRun 主调度 inbound 构造处），byNode 直查即可。
+	const sheetInputSource = input.inbound?.find(e => e.targetHandle === 'sheet')?.source ?? '';
+	const upstreamSheetRef = sheetInputSource ? (() => {
+		const entries = store.byNode(sheetInputSource).filter(e => e.media.kind === 'image');
+		return ([...entries].reverse().find(e => e.media.meta?.sheetFull === '1')
+			?? entries[entries.length - 1])?.media.ref ?? '';
+	})() : '';
 	// ★ 生成图像大小（2026-09-02）：整版图集分辨率，两渠道共用。
 	//   provider → sendImageGen.width/height；comfyui → 覆盖模板 latent 尺寸。
 	const sheetSize = resolveEmojiSheetSize(values.size);
@@ -3163,7 +3178,24 @@ async function runEmojiStageGrid(input: NodeExecutionInput): Promise<SingleNodeR
 	try {
 		let sheetRef = '';
 		let cellPromptList: string[] = [];
-		if (isRecrop) {
+		// ★ sheet 直通模式（2026-09）：上游整图图集 → 跳过生成，直接切分。
+		//   归档契约与自生成一致（sheetFull='1' + rows/cols meta），下游
+		//   latestRoundOf / nodeCard 对账逻辑无需感知来源差异。
+		if (upstreamSheetRef) {
+			sheetRef = await localizeImageRef(upstreamSheetRef);
+			cellPromptList = [];
+			// 整图归档（port 'sheet'，meta.sheetFull='1'）：与自生成分支同契约，
+			// 本节点输出 sheet 口（sheetFull 归档）供下一级 EmojiStage 直通连线。
+			store.put({
+				nodeId: snapshotKey,
+				port: 'sheet',
+				key: '',
+				media: { kind: 'image', ref: sheetRef, meta: { sheetFull: '1', rows: String(rows), cols: String(cols) } },
+			});
+			onProgress?.({ progress: 60 });
+			// eslint-disable-next-line no-console
+			console.warn(`[EmojiStage] sheet passthrough from=${sheetInputSource.slice(0, 40)} ref=${sheetRef.slice(0, 40)}…`);
+		} else if (isRecrop) {
 			// 裁剪基底 = **原生整图**（meta.sheetFull='1'）：cell_crops 是用户在
 			// MiniImageEditor 的整图视图上调出来的，坐标系归属于原生整图；合并
 			// 图集（sheet='1'）已被标准化重拼，几何不再对应 cell_crops。此前靠

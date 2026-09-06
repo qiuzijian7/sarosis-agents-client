@@ -452,6 +452,14 @@ protected override _updateMessageDom(idx: number, msg: IAgentChatMessage): void 
 	if (!this._messagesContainer) { return; }
 	// P2: 使用 data-msg-id 查找元素，解除 idx → children[idx] 硬绑定。
 	// 懒加载场景下 DOM 顺序与 _messages 数组顺序可能不一致（老消息后插入）。
+	// ★ 分诊埋点 #5（2026-09-06）：_updateMessageDom 是否每帧被调用 + 关键判据现场。
+	{
+		const _d = msg as any;
+		_d._umdCalls = (_d._umdCalls ?? 0) + 1;
+		if (_d._umdCalls % 50 === 0) {
+			this._logService.info(`[UmdDiag] enter msgId=${msg.id} calls=${_d._umdCalls} isStreaming=${msg.isStreaming} partsLen=${msg.parts?.length ?? 0} elFound=${!!this._messagesContainer?.querySelector(`[data-msg-id="${msg.id}"]`)} v5`);
+		}
+	}
 	const existingEl = this._messagesContainer.querySelector(`[data-msg-id="${msg.id}"]`) as HTMLElement | null;
 	if (!existingEl) {
 		if ((window as any).__SAROSIS_PARTS_DIAG) {
@@ -632,7 +640,18 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 	}
 	// 就地同步：内部会先移除旧指示器再按需 append，O(1)，不触碰任何 part。
 	this._ensurePhaseIndicator(bubble, ctx.msg);
-	return true;
+	// ★★ 2026-09-06 根修（用户六报「思考卡卡住」，v5 分诊日志 1788675076424
+	// 实锤：enter=50 有、keyed=0）：本规则原为 `return true`（认领并短路责任链）。
+	// 但 `existingIndicator` 只查 `.thinking-indicator`，而 _ensurePhaseIndicator 在
+	// activityText 有值（「正在生成工具调用参数…」）时插入的是
+	// `.phase-activity-indicator.phase-executing` —— 查询恒为 null，与恒为 true 的
+	// shouldShowThinking 永远「不一致」→ **每帧都进入并 return true 短路**，
+	// 排在后面的 keyed-reconcile 永不执行 → thinking part 永不就地更新
+	// → 思考卡永远停在首帧（数据侧 frames=3500+ 全部正常）。
+	// 改为**不认领**（return false）：指示器已就地同步完毕，继续交给
+	// keyed-reconcile 处理 parts（_reconcileParts 末尾同样会调 _ensurePhaseIndicator，
+	// 幂等，不会重复插入）。
+	return false;
 }
 
 	// ── Keyed Reconciliation ──────────────────────────────────────────────
@@ -651,6 +670,12 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 	 */
 	private _reconcileParts(bubble: HTMLElement, msg: IAgentChatMessage): void {
 		const keyedParts = this._buildKeyedParts(msg);
+		// ★ 诊断埋点 #4（2026-09-06）：keyed diff 现场——parts 布局与气泡子元素数。
+		const _dg = msg as any;
+		if (keyedParts.some(kp => kp.part.kind === 'thinking') && (msg.thinking || '').length - (_dg._dgRc ?? -1) >= 400) {
+			_dg._dgRc = (msg.thinking || '').length;
+			this._logService.info(`[ThinkingDiag] reconcile n=${keyedParts.length} kinds=[${keyedParts.map(k => k.part.kind[0]).join(',')}] bubbleKids=${bubble.children.length} v4`);
+		}
 
 		// 收集已有 keyed 元素。
 		// ⚠ 必须走 queryPartElements（只取直接子元素）—— 用后代查询会把卡片内部
@@ -785,17 +810,45 @@ private readonly _finalizedPartText = new WeakMap<HTMLElement, string>();
 			// P-T1 修正：逐卡片判定是否处于「正在思考」活跃态——仅当该 episode 是
 			// 最后一个 part 且 message 仍在思考流式时，本卡才显示「思考中...」。
 			// 此前误用 message 级 msg.isThinking，导致多思考卡时所有卡都被标为思考中。
-			const isLastPart = !!msg.parts && msg.parts[msg.parts.length - 1] === part;
-			const cardIsThinking = !!msg.isStreaming && isLastPart && !!msg.isThinking;
+			// ★ 2026-09-06 修复：活跃态判定与「内容归属」同源。
+			// pane 侧 thinking 增量始终追加到**最后一个 thinking part**（见
+			// nativeChatEditorPane case 'thinking'），而此处原判据是「part 是 parts
+			// 数组最后一个元素」。思考后紧跟 tool part 时（交错流式：partsLen=11
+			// lastPartKind=tool）thinking part 不是末尾 → cardIsThinking=false
+			// → 该卡不展开、header 显示完成态 → 内容虽已渲染却不可见，表现为
+			// 用户报的「thinking 卡片丢失 / 没有在卡片中流式输出文本」。
+			const isLastThinkingPart = msg.parts
+				? [...msg.parts].reverse().find(p => p.kind === 'thinking') === part
+				: true;
+			const cardIsThinking = !!msg.isStreaming && isLastThinkingPart && !!msg.isThinking;
 			this._updateThinkingCardHeader(el, cardIsThinking);
 			const body = el.querySelector('.thinking-card-body') as HTMLElement | null;
-			if (body && body.dataset.rendered === '1') {
+			if (body) {
+				// ★ 2026-09-06 修正：此前的「活跃卡强制展开」已移除——
+				// 上一张 episode 卡被 _autoCollapseThinkingCard 自动折叠后，新 episode
+				// 出现前的那一帧它仍是 isLastThinkingPart → 被强制展开；下一帧新卡
+				// 出现它变非 last → 又被自动折叠，表现为「展开一次又折叠」的闪烁
+				//（用户报）。新 episode 本身就是新建的卡（默认展开），无需强制展开。
 				const thinkingText = (part as IThinkingMessagePart).text;
-				// 同上：thinkingMdScheduler 亦为单 target，多思考卡时同样需要去重
+				// ★ 诊断埋点 #4（2026-09-06）：链路可观测——inPlace 执行 + body 现场 vs 数据。
+				// 每 400 字符增量打一条。若日志完全没有本行 → 实例未加载本版本代码。
+				const _dg = msg as any;
+				if (thinkingText.length - (_dg._dgInPlace ?? -1) >= 400) {
+					_dg._dgInPlace = thinkingText.length;
+					this._logService.info(`[ThinkingDiag] inPlace textLen=${thinkingText.length} bodyTextLen=${(body.textContent || '').length} bodyKids=${body.children.length} rendered=${body.dataset.rendered} connected=${body.isConnected} partKey=${el.getAttribute('data-part-key')} v4`);
+				}
 				if (this._scheduledPartText.get(body) === thinkingText) { return; }
 				this._scheduledPartText.set(body, thinkingText);
 				this._attachStreamCardPin(body);
-				this.thinkingMdScheduler.schedule(body, thinkingText, 'markdown');
+				// ★★ 2026-09-06 第三次修复（用户连续三报「思考卡卡住」）：
+				// 绕开 thinkingMdScheduler，直接每帧同步 _renderThinkingCardBody。
+				// 多帧 schedule 同一 body → flush 时依赖 _lastRenderedWeakMap 基线 + markdown
+				// 增量渲染（renderIncremental）共同维持正文增长。实测该链路在 950+ 帧
+				// / 3139 字符的 thinking 流式下未把新 text 写进 DOM（UI 永远停在首帧，
+				// 日志 1788662336134，0 条 md:incremental-failed）。理论无破口，但
+				// 失去根因可见性 → 直接同步渲染兜底（textContent 清空+renderMarkdownContent
+				// 同步重渲染），markdown 文本字节增长时主线程开销 <10ms/帧，可接受。
+				this._renderThinkingCardBody(body, { ...msg, thinking: thinkingText });
 			}
 		}
 		// tool / subagent：状态由 _updateToolCardStatuses 统一处理
@@ -817,6 +870,14 @@ private readonly _finalizedPartText = new WeakMap<HTMLElement, string>();
 
 	/** keyed-reconcile fast rule——统一处理所有 part 变化场景。 */
 	private _ruleKeyedReconcile(ctx: IMsgUpdateCtx): boolean {
+		// ★ 分诊埋点 #5（2026-09-06）：keyed-reconcile 认领判据现场。
+		{
+			const _d = ctx.msg as any;
+			_d._krcCalls = (_d._krcCalls ?? 0) + 1;
+			if (_d._krcCalls % 50 === 0) {
+				this._logService.info(`[UmdDiag] keyed calls=${_d._krcCalls} isStreaming=${ctx.msg.isStreaming} hasParts=${ctx.hasParts} bubble=${!!ctx.el.querySelector('.chat-bubble')} v5`);
+			}
+		}
 		if (!ctx.msg.isStreaming || !ctx.hasParts) { return false; }
 		const bubble = ctx.el.querySelector('.chat-bubble') as HTMLElement | null;
 		if (!bubble) { return false; }
@@ -992,16 +1053,27 @@ protected override _updateStreamingContentInPlace(existingEl: HTMLElement, msg: 
 	// 或中途被移除重建（thinking 指示器路径会 remove + 重新 append 占位），
 	// 这里每次增量更新补一次，保证指示始终存在（内部幂等，无 DOM 写入则不重排）。
 	this._syncProcessingIndicator(existingEl, msg);
-	// 2026-07-26：thinking episode 就地更新——最后 part 是 thinking 时，其卡片
-	// body 随 episode 文本增长就地重渲染（折叠态懒渲染 body 未建则跳过，
-	// 展开时由卡片自身的懒渲染补全）。
-	const lastPart = msg.parts?.[msg.parts.length - 1];
-	if (lastPart?.kind === 'thinking') {
+	// 2026-07-26：thinking episode 就地更新——thinking 卡 body 随 episode 文本
+	// 增长就地重渲染（折叠态懒渲染 body 未建则跳过，展开时由卡片自身的懒渲染补全）。
+	// ★ 2026-09-06 修复（用户报「思考中卡住只显示正在生成工具调用参数」）：
+	// 原判据 `lastPart?.kind === 'thinking'` 在 reasoning 与 tool_calls **交错流式**
+	// 的模型（glm-5.2 等，日志 1788659587940）下失效——工具卡（含 tool_progress
+	// 合成卡）push 进 parts 后 lastPart 变为 tool，本分支被跳过 → 思考卡内容停止
+	// 流式，卡在交错点；而 tool_progress 阶段指示器照常刷新，观感即「思考中卡住」。
+	// 改为定位**最后一个 thinking part**（它才是仍可能增长的 episode），
+	// DOM 侧最后一张 .thinking-card 与之按序对应。
+	const lastThinkingPart = msg.parts
+		? [...msg.parts].reverse().find(p => p.kind === 'thinking') as IThinkingMessagePart | undefined
+		: undefined;
+	if (lastThinkingPart) {
 		const cards = existingEl.querySelectorAll('.thinking-card');
 		const lastCardBody = cards[cards.length - 1]?.querySelector('.thinking-card-body') as HTMLElement | null;
-		if (lastCardBody && lastCardBody.dataset.rendered === '1') {
+		if (lastCardBody) {
+			// ★★ 2026-09-06 第三次修复：与 _updatePartInPlace 一致——thinking 卡流式
+			// 期间完全绕开 thinkingMdScheduler，每帧同步 _renderThinkingCardBody。
+			// 根因与日志证据详见 _updatePartInPlace 分支注释（1788662336134）。
+			this._renderThinkingCardBody(lastCardBody, { ...msg, thinking: lastThinkingPart.text });
 			this._attachStreamCardPin(lastCardBody); // 幂等：挂载流式钉底（用户上滚自动解除）
-			this.thinkingMdScheduler.schedule(lastCardBody, (lastPart as IThinkingMessagePart).text, 'markdown');
 		}
 	}
 }
@@ -1962,6 +2034,17 @@ protected override _createFooter(msg: IAgentChatMessage): HTMLElement {
 			append(durWrap, $('span.chat-footer-pill-icon.codicon.codicon-watch'));
 			append(durWrap, $('span.chat-footer-pill-label', undefined, '耗时'));
 			append(durWrap, $('span.chat-footer-pill-value', undefined, `: ${this._formatDuration(durMs)}`));
+		}
+
+		// ── 「已中断」标记（2026-09-06）──
+		// 流式输出途中关闭 app 时，nativeChatEditorPane 在 onWillShutdown 里把半截内容
+		// 落盘并打 metadata.streamInterrupted=true（否则 assistant 消息只在 agent loop
+		// 完整结束后才 append，重启后内容全丢）。此处在 footer 明示，避免用户误以为
+		// 这就是模型的完整回答。
+		if (msg.metadata?.streamInterrupted === true) {
+			const interruptedWrap = append(footer, $("span.chat-bubble-footer-item.chat-footer-pill.interrupted-item"));
+			append(interruptedWrap, $('span.chat-footer-pill-icon.codicon.codicon-debug-stop'));
+			append(interruptedWrap, $('span.chat-footer-pill-label', undefined, '已中断'));
 		}
 
 		// ── 「处理中」状态（footer 版，见 _createProcessingIndicator）──

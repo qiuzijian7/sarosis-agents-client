@@ -2,8 +2,8 @@
  *  miniEditorAi — 迷你图像编辑器（MiniImageEditor）的 AI 工具纯逻辑层。
  *
  *  四个工具与后端：
- *    - 去背景   → 本地 rembg 服务（rembg_server.py，POST /api/remove；与工作流
- *                 Saros.RemoveBg 节点同一契约，常量复用 comfyHost/removeBg.ts）。
+ *    - 去背景   → ComfyUI saros_cutout 节点（comfyHost/comfyCutout.ts；2026-09-06
+ *                 起替代主进程 ONNX 链路，模型位于 ComfyUI models/onnx/）。
  *    - AI消除   → provider LLM img2img（imagegen.generate RPC，imageInput）：
  *                 蒙版区域烙品红标记块 + 自动 prompt「移除并自然填补背景」。
  *    - 局部重绘 → 同上，用户 prompt：「重绘品红标记区域为 …」。
@@ -22,7 +22,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { REMBG_DEFAULT_URL } from './comfyHost/removeBg.js';
-import { removeBackgroundRgba } from './comfyHost/cutoutAi.js';
+import { comfyRemoveBackgroundDataUrl, resolveActiveComfyRunner, type CutoutProgressCallback } from './comfyHost/comfyCutout.js';
 
 export { REMBG_DEFAULT_URL };
 
@@ -73,6 +73,34 @@ export async function downscaleDataUrl(dataUrl: string, maxSide = GEN_MAX_SIDE):
 	out.height = Math.max(1, Math.round(h * scale));
 	out.getContext('2d')?.drawImage(img, 0, 0, out.width, out.height);
 	return out.toDataURL('image/png');
+}
+
+/**
+ * 统计 dataURL 图的「完全透明像素」占比（alpha < 8 视为透明；间隔采样控制开销）。
+ * 用途：一键去背景前的守卫——基底若是已被抠过的透明图（历史版本曾把抠图结果
+ * 就地覆盖 sheetFull 归档），再跑一次模型只会得到视觉零变化，必须提前拦截。
+ * 纯 canvas 函数（浏览器环境）。
+ */
+export async function getFullyTransparentRatio(dataUrl: string): Promise<number> {
+	const img = await loadImage(dataUrl);
+	const w = img.naturalWidth, h = img.naturalHeight;
+	if (w <= 0 || h <= 0) { return 0; }
+	const canvas = document.createElement('canvas');
+	canvas.width = w;
+	canvas.height = h;
+	const ctx = canvas.getContext('2d', { willReadFrequently: true });
+	if (!ctx) { return 0; }
+	ctx.drawImage(img, 0, 0);
+	const { data } = ctx.getImageData(0, 0, w, h);
+	// 4 通道 RGBA；横向按 step=4 采样，密度足以判定「大面积透明」。
+	let transparent = 0;
+	let total = 0;
+	const step = 4 * 4;
+	for (let i = 3; i < data.length; i += step) {
+		total++;
+		if (data[i] < 8) { transparent++; }
+	}
+	return total === 0 ? 0 : transparent / total;
 }
 
 /** 加载图片（data URL / 同源 URL）。跨源 URL 需 anonymous（与 MiniImageEditor 同策略）。 */
@@ -192,30 +220,16 @@ export function friendlyRembgError(err: unknown): Error {
 }
 
 /**
- * 调本地 rembg `/api/remove`：dataURL 图 → RGBA 透明 PNG dataURL。
- * 与 Saros.RemoveBg 节点同契约（file/model/a/ppm 字段）；固定 bria-rmbg +
- * post_process（编辑器场景不需要暴露调参）。浏览器环境（FormData/atob）。
+ * 「AI 去背景」：dataURL 图 → RGBA 透明 PNG dataURL。
+ * 2026-09-06：处理端 = ComfyUI saros_cutout 节点（comfyHost/comfyCutout.ts）——
+ * 主进程 ONNX 链路（cutout.* RPC）与 127.0.0.1:7000 独立 rembg 服务均废弃。
+ * baseUrl 参数仅为签名兼容保留，不再使用。
  */
-export async function rembgRemoveDataUrl(dataUrl: string, baseUrl = REMBG_DEFAULT_URL, onStatus?: (text: string) => void): Promise<string> {
-	// 2026-09-03：切换到**内置 AI 抠图**（主进程 ONNX U²Net，cutout.remove RPC，
-	// 见 comfyHost/cutoutAi.ts）—— 全项目废弃 127.0.0.1:7000 独立 rembg 服务
-	// （rembg_server.py 不再需要启动）。baseUrl 参数仅为签名兼容保留，不再使用。
+export async function rembgRemoveDataUrl(
+	dataUrl: string,
+	baseUrl = REMBG_DEFAULT_URL,
+	onStatus?: CutoutProgressCallback,
+): Promise<string> {
 	void baseUrl;
-	const img = new Image();
-	img.src = dataUrl;
-	await new Promise<void>((resolve, reject) => {
-		img.onload = () => resolve();
-		img.onerror = () => reject(new Error('去背景：图片解码失败'));
-	});
-	const W = img.naturalWidth, H = img.naturalHeight;
-	const cv = document.createElement('canvas');
-	cv.width = W; cv.height = H;
-	const ctx = cv.getContext('2d', { willReadFrequently: true });
-	if (!ctx) { throw new Error('去背景：无法创建画布'); }
-	ctx.drawImage(img, 0, 0);
-	const imageData = ctx.getImageData(0, 0, W, H);
-	const out = await removeBackgroundRgba(new Uint8Array(imageData.data.buffer.slice(0)), W, H, 'u2net', undefined, onStatus);
-	imageData.data.set(out);
-	ctx.putImageData(imageData, 0, 0);
-	return cv.toDataURL('image/png');
+	return comfyRemoveBackgroundDataUrl(resolveActiveComfyRunner(), dataUrl, onStatus);
 }

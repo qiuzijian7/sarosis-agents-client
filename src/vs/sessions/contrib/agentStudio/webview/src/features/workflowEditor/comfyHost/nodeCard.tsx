@@ -54,6 +54,7 @@ import { resolveMediaAssetUrl, collectUpstreamTexts, composeImageGridOnChroma, s
 import { useProviderStore } from '../../../store/useProviderStore';
 import { useAgentStore } from '../../../store/useAgentStore';
 import { usePicklistStore } from '../picklistStore';
+import { useWorkflowEditorStore } from '../store';
 import { ACTIONS_BY_KIND, actionKeyFor, type StageAction, type ImagePreset } from './actionSpawn';
 import { MaskPainter } from '../MaskPainter';
 import { CropEditor } from '../CropEditor';
@@ -63,7 +64,7 @@ import { ColorGradeEditor } from '../ColorGradeEditor';
 import { TransformEditor } from '../TransformEditor';
 import { StatEmojiStageEditor } from '../StatEmojiStageEditor';
 import { MiniImageEditor, type CellCropRect } from '../MiniImageEditor';
-import { refToPngDataUrl, rembgRemoveDataUrl } from '../miniEditorAi.js';
+import { getFullyTransparentRatio, refToPngDataUrl, rembgRemoveDataUrl } from '../miniEditorAi.js';
 import { createPortal } from 'react-dom';
 import { AnimatedEmojiEditor } from '../AnimatedEmojiEditor';
 import { MultiangleEditor } from './MultiangleEditor';
@@ -1294,7 +1295,28 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	// run button instead of an executable (but doomed) control.
 	const runnerStatus = useRunnerStatus();
 	const needsRunner = meta.kind === 'schema' || meta.kind === 'native';
-	const engineDisconnected = needsRunner && !runnerStatus.ready;
+	// ★ 渠道感知豁免（2026-09-06，对齐调度层 runSingleSchemaNode 的三态判定）：
+	//   混合 backend 节点（静态/转动态表情包）在 values.backend==='provider' 时
+	//   纯走 provider RPC（videogen/imagegen.generate），**不需要 ComfyUI runner**
+	//   ——按钮不应显示「未连接引擎」（否则 provider 渠道被 ComfyUI 连接状态卡死）。
+	//   反向（backend==='comfyui'）仍按 needsRunner 走原探测。
+	const nodeBackend = useWorkflowEditorStore(
+		(s: Any) => (s.nodes.find((nn: Any) => nn.id === nodeId)?.data as Any)?.backend as string | undefined,
+	);
+	// ★ sheet 直通上游（2026-09-06）：sheet 输入口连线的源节点 id（画布 nodeId）。
+	//   对齐调度器 runEmojiStageGrid 的 inbound 解析（workflowRun.ts：targetHandle==='sheet'
+	//   → 上游 snapshotKey）——UI 预览与执行取数必须同规则，否则「预览看到的」和
+	//   「实际切分的」不一致。选择器返回 string（无连线 = 空串），Object.is 稳定。
+	//   上游归档键是 stageUid，但 MediaSnapshotStore.byNode 的别名机制
+	//   （registerAlias：nodeId → uid）让画布 nodeId 也能命中。
+	const sheetPassthroughSource = useWorkflowEditorStore((s: Any) =>
+		s.edges.find((e: Any) => e.target === nodeId && e.targetHandle === 'sheet')?.source ?? '',
+	);
+	const providerBackendExempt = nodeBackend === 'provider'
+		&& (meta.nodeType === 'ComfyTV.StatEmojiStage'
+			|| meta.nodeType === 'ComfyTV.DynEmojiStage'
+			|| meta.nodeType === 'Saros.AnimatedEmoji');
+	const engineDisconnected = needsRunner && !runnerStatus.ready && !providerBackendExempt;
 	// Provider 后端的 schema 卡片（Saros.ModelImageGen）需要动态 provider/model
 	// 下拉：provider 列出已认证文生图 provider，model 随 provider 联动。
 	const providers = useProviderStore(s => s.providers);
@@ -1418,33 +1440,84 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	//   提示用户重新生成，而不是拿错误基底凑合。
 	// ★ sheetFull 取**尾部最新**（2026-09-03）：find 从头取第一个——多轮生成后
 	//   旧轮的原生整图（尺寸/内容都可能不同）会永久抢占缩略图与编辑基底。
-	const sheetFullEntry = (() => {
+	const localSheetFull = (() => {
 		for (let i = ownSnapshots.length - 1; i >= 0; i--) {
 			const e = ownSnapshots[i];
 			if (e.media?.kind === 'image' && e.media?.meta?.sheetFull === '1') { return e; }
 		}
 		return undefined;
 	})();
-	// ★ LLM 原图一键去背景（2026-09-03）：本地 rembg 抠图 → 透明 PNG **替换 sheetFull 归档**
-	//（meta 原样保留 → 仍是合法裁剪基底；缩略图棋盘底直显透明）。失败 alert 说明
-	//（服务未启动等），当前归档不动。与整图编辑 Save 同一替换语义。
+	// ★ sheet 直通预览（2026-09-06）：本地还没有 sheetFull 归档（未生成过）但 sheet
+	//   输入口已连线 → 立即把上游整图图集显示在「原图」页签（编辑器默认页签即
+	//   original，连线后无需再点任何东西）。取数规则对齐执行器 runEmojiStageGrid
+	//   （workflowRun.ts ~3160）：优先上游 sheetFull 归档、兜底上游最新 image
+	//   （外部拼贴图上游未必带 sheetFull 标注）。响应式：ownSnapshots 的订阅基于
+	//   store 全局版本号，上游归档变更同样触发本卡片重渲染 → 随渲染重新求值。
+	//   本地一旦生成过即优先本地，与执行器「recrop 用本地 sheetFull 基底」一致。
+	const passthroughSheetFull = (() => {
+		if (!sheetPassthroughSource || localSheetFull) { return undefined; }
+		const images = (snapshotStore?.byNode(sheetPassthroughSource) ?? []).filter(e => e.media?.kind === 'image');
+		const upstream = [...images].reverse().find(e => e.media?.meta?.sheetFull === '1') ?? images[images.length - 1];
+		return upstream?.media.ref ? upstream : undefined;
+	})();
+	const sheetFullEntry = localSheetFull ?? passthroughSheetFull;
+	// 直通条目只读：整图编辑/联动重切/去背景都会经 replaceByKey 落键——直通时
+	// 该键是**上游节点**名下的归档，改写会污染上游数据。消费处按此标志禁写。
+	const sheetFullEntryIsPassthrough = localSheetFull == null && passthroughSheetFull != null;
+	// ★ LLM 原图一键去背景（2026-09-03；2026-09-06 语义变更）：本地 rembg 抠图 →
+	// 透明 PNG 写入「调整后」图集口（port 'image'，meta.sheet='1'，与单格编辑重拼
+	// 同一 gKey 契约）——**原图 sheetFull 归档不动**（仍是编辑基底）。「🧩 调整后」
+	// 页签直显抠图结果（棋盘底透明显效），下游转动态读取该图集即得每格透明贴纸。
+	// 失败 alert 说明（服务未启动等），任何归档都不动。
 	const [sheetRemovingBg, setSheetRemovingBg] = React.useState(false);
+	// 去背景阶段进度（模型下载阶段为字节级百分比 → 进度条宽度；其余阶段展示文本）
+	const [sheetRemoveBgStage, setSheetRemoveBgStage] = React.useState<{ text: string; percent?: number } | null>(null);
+	// 去背景完成计数（成功后 +1 → 编辑器据此自动切到「🧩 调整后」页签）
+	const [sheetRemoveBgDoneTick, setSheetRemoveBgDoneTick] = React.useState(0);
 	const handleSheetRemoveBg = async () => {
 		const entry = sheetFullEntry;
 		if (!entry || !snapshotStore || sheetRemovingBg) { return; }
 		setSheetRemovingBg(true);
+		setSheetRemoveBgStage({ text: '读取图像…' });
 		try {
 			const dataUrl = await refToPngDataUrl(entry.media.ref);
-			const out = await rembgRemoveDataUrl(dataUrl);
-			const ok = snapshotStore.replaceByKey(entry.key, { ...entry.media, ref: out });
-			if (!ok) {
-				// key 失效兜底：追加新条目并保留 sheetFull 身份（meta 原样）
-				snapshotStore.put({ nodeId: snapKey ?? nodeId ?? entry.nodeId, port: entry.port, key: '', media: { ...entry.media, ref: out } }, true);
+			// ★ 守卫（2026-09-06）：基底已大面积透明 = 已被抠过（旧版本曾把抠图结果
+			//   就地覆盖 sheetFull 归档；对新版本而言那份归档就是被污染的历史数据）。
+			//   拿透明图再跑模型只会得到视觉零变化，直接拦截并提示重生成原图。
+			if (await getFullyTransparentRatio(dataUrl) > 0.25) {
+				throw new Error('当前整版图已是抠图结果（大面积透明），去背景不会有效果。请先重新生成原图归档，再执行去背景。');
 			}
+			const out = await rembgRemoveDataUrl(dataUrl, undefined, (text) => {
+				setSheetRemoveBgStage({ text });
+			});
+			// 写入「调整后」图集口：行列沿用原图归档（网格叠加与下游等分切割契约），
+			// removeBg='1' 标记来源，便于与单格编辑重拼产物区分。
+			const rawRows = Number(entry.media.meta?.rows ?? 0);
+			const rawCols = Number(entry.media.meta?.cols ?? 0);
+			const gKey = `${snapKey ?? nodeId ?? ''}:image:0`;
+			const gMedia = {
+				kind: 'image' as const,
+				ref: out,
+				meta: {
+					mime: 'image/png',
+					sheet: '1',
+					...(rawRows > 0 ? { rows: String(rawRows) } : {}),
+					...(rawCols > 0 ? { cols: String(rawCols) } : {}),
+					removeBg: '1',
+				},
+			};
+			if (snapshotStore.get(gKey)) {
+				snapshotStore.replaceByKey(gKey, gMedia);
+			} else {
+				snapshotStore.put({ nodeId: snapKey ?? nodeId ?? '', port: 'image', key: gKey, media: gMedia, index: 0 }, true);
+			}
+			// 通知编辑器自动切到「🧩 调整后」页签（完成计数器驱动）
+			setSheetRemoveBgDoneTick(t => t + 1);
 		} catch (err) {
 			window.alert(err instanceof Error ? err.message : String(err));
 		} finally {
 			setSheetRemovingBg(false);
+			setSheetRemoveBgStage(null);
 		}
 	};
 	// Esc 关闭独立编辑窗口
@@ -3059,10 +3132,17 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 						onCellEdit={(i) => setEditingEmojiCell(i)}
 						// 双击 LLM 原图 → 整图编辑。-1 = 哨兵「整图模式」（cellIndex 恒 ≥0，无歧义）：
 						// 复用同一 portal 弹窗与 MiniImageEditor，仅 onApply 目标不同（见弹窗内 EmojiSheetEditor 分支）。
-						onSheetEdit={() => setEditingEmojiCell(-1)}
-						// 🪄 一键去背景：本地 rembg → 透明 PNG 替换 sheetFull 归档（见 handleSheetRemoveBg）
-						onSheetRemoveBg={handleSheetRemoveBg}
-						sheetRemovingBg={sheetRemovingBg}
+						// ★ 直通预览禁编辑：写入路径（replaceByKey）落在 sheetFullEntry.key——
+						//   直通时该 key 属于**上游节点**归档，编辑会污染上游数据。上游图
+						//   要改请回上游节点处理；本节点生成自己的原图后编辑自动恢复。
+						onSheetEdit={sheetFullEntryIsPassthrough ? undefined : () => setEditingEmojiCell(-1)}
+						// 🪄 一键去背景：本地 rembg → 透明 PNG 写入「调整后」图集口（原图归档不动；见 handleSheetRemoveBg）
+						//   直通预览禁用（同 onSheetEdit：上游归档不可改写）。
+						onSheetRemoveBg={sheetFullEntryIsPassthrough ? undefined : handleSheetRemoveBg}
+						// ★ sheet 直通预览标志（2026-09-06）：编辑器据此显示只读提示、禁用整图编辑/去背景。
+						isPassthroughSheet={sheetFullEntryIsPassthrough}
+						sheetRemoveBgStage={sheetRemoveBgStage}
+						sheetRemoveBgDoneTick={sheetRemoveBgDoneTick}
 						onRunRequest={(cellIndex) => {
 							// run_scope 决定执行范围（workflowRun.runEmojiStageGrid 消费）：
 							//   cellIndex 有值 → 'cell'（只重生成该格，并同步 selected_index）
@@ -3190,6 +3270,9 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 										} else if (!snapshotStore) {
 											// eslint-disable-next-line no-console
 											console.warn('[EmojiSheetEditor] apply skipped: snapshotStore 未注入');
+										} else if (sheetFullEntryIsPassthrough) {
+											// eslint-disable-next-line no-console
+											console.warn('[EmojiSheetEditor] apply skipped: 当前原图为 sheet 直通预览（上游归档只读）');
 										} else if (!sheetFullEntry) {
 											// eslint-disable-next-line no-console
 											console.warn('[EmojiSheetEditor] apply skipped: sheetFull 条目不存在');

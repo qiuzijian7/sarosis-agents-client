@@ -128,7 +128,15 @@ export function adaptModelDelta(deps: ModelAccessDeps, delta: any): IChatStreamD
 	}
 	// tool_progress（2026-07-26 治本）：工具参数生成进度透传——
 	// resilience/subagent 看门狗据此续命；UI 仅作轻量提示，不进正文/装配。
-	if (delta.type === 'tool_progress') { return { type: 'tool_progress', stage: safeContent(delta.content) }; }
+	// 2026-09-06 v2：透传结构化 toolName/bytes/partialArgs（参数预览，
+	// doc/tool-args-streaming-preview-design.md）；老 provider 无这些字段 → 缺省跳过。
+	if (delta.type === 'tool_progress') {
+		const _tpResult: any = { type: 'tool_progress', stage: safeContent(delta.content) || safeContent(delta.stage) };
+		if (typeof delta.toolName === 'string' && delta.toolName) { _tpResult.toolName = delta.toolName; }
+		if (typeof delta.bytes === 'number' && Number.isFinite(delta.bytes)) { _tpResult.bytes = delta.bytes; }
+		if (typeof delta.partialArgs === 'string' && delta.partialArgs) { _tpResult.partialArgs = delta.partialArgs; }
+		return _tpResult;
+	}
 	if (delta.type === 'done') { return { type: 'done' }; }
 	if (delta.type === 'error') { return { type: 'error', content: safeContent(delta.error) || safeContent(delta.content) || 'Unknown error' }; }
 	if (delta.type === 'usage' && delta.usage) { return { type: 'usage', usage: delta.usage }; }

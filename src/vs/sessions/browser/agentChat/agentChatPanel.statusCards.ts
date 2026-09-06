@@ -88,6 +88,7 @@ export abstract class AgentChatPanelStatusCards extends AgentChatPanelWorkflowCa
 	/** 渲染 thinking 卡片 body（markdown），并标记 rendered='1'（懒渲染完成态）。
 	 *  幂等：先清空（_renderMarkdownContent 为 append 语义），可重复调用。 */
 	protected _renderThinkingCardBody(body: HTMLElement, msg: IAgentChatMessage): void {
+		const _tBefore = (body.textContent || '').length;
 		body.textContent = '';
 		if (msg.thinking) {
 			this._renderMarkdownContent(body, msg.thinking);
@@ -100,6 +101,13 @@ export abstract class AgentChatPanelStatusCards extends AgentChatPanelWorkflowCa
 		this.thinkingMdScheduler.markRendered(body, msg.thinking ?? '');
 		// 2026-07-26 用户要求：thinking 过程中 body 滚动条保持吸底
 		body.scrollTop = body.scrollHeight;
+		// ★ 诊断埋点 #4（2026-09-06）：同步渲染执行证据——渲染前后 body 长度对比。
+		const _tAfter = (body.textContent || '').length;
+		const _dg = msg as any;
+		if ((msg.thinking || '').length - (_dg._dgCard ?? -1) >= 400) {
+			_dg._dgCard = (msg.thinking || '').length;
+			this._logService.info(`[ThinkingDiag] renderCard target=${(msg.thinking || '').length} before=${_tBefore} after=${_tAfter} connected=${body.isConnected} v4`);
+		}
 	}
 
 	/** P-T1：就地更新 thinking 卡片 header（active/icon/title），不重建卡片。

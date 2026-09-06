@@ -1599,13 +1599,21 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 					_lastToolProgressAt = _nowTp;
 					let _tpBytes = 0;
 					let _tpName = '';
+					let _tpPartialArgs = '';
 					for (const [, _acc] of toolCallAccumulators) {
 						_tpBytes += _acc.arguments.length;
 						if (!_tpName && _acc.name) { _tpName = _acc.name; }
+						if (!_tpPartialArgs && _acc.arguments) { _tpPartialArgs = _acc.arguments; }
 					}
+					// ── 2026-09-06 v2（阶段 4，doc/tool-args-streaming-preview-design.md）──
+					// 附带 partialArgs（参数累积串前 8KB）：renderer 的 partialJson
+					// （extractPartialFields）从中提取顶层标量字段（如 file_write 的
+					// path）供 UI 参数预览。仅供展示——完成判定仍唯一认
+					// finish_reason='tool_calls' / tool_start。
+					_tpPartialArgs = _tpPartialArgs.slice(0, 8 * 1024);
 					progress.report(
 						vscode.LanguageModelDataPart.json(
-							{ name: _tpName, bytes: _tpBytes },
+							{ name: _tpName, bytes: _tpBytes, partialArgs: _tpPartialArgs },
 							'application/vnd.saros.tool-call-progress+json',
 						),
 					);

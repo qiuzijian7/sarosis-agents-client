@@ -167,7 +167,6 @@ import { GitVersionChannel } from '../../sessions/contrib/agentStudio/electron-m
 import { ComfyLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/comfyLaunchChannel.js';
 import { ConfigHtmlServerChannel } from '../../sessions/contrib/agentStudio/electron-main/configHtmlServerChannel.js';
 import { VoxLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/voxLaunchChannel.js';
-import { CutoutChannel } from '../../sessions/contrib/agentStudio/electron-main/cutoutChannel.js';
 import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
 import { MediaStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/mediaStoreChannel.js';
 import { MEDIA_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/mediaStoreChannel.js';
@@ -857,10 +856,8 @@ export class CodeApplication extends Disposable {
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/voxLaunchChannel.ts。
 	this._register(new VoxLaunchChannel(this.logService, this.configurationService));
 
-	// 表情包 AI 抠图（内置 rembg 算法：onnxruntime-web + u2net，本进程内推理，
-	// 模型按需下载缓存到 ~/.vssaros/cutout-models）。逻辑在
-	// sessions/contrib/agentStudio/electron-main/cutoutChannel.ts。
-	this._register(new CutoutChannel(this.logService, this.configurationService));
+	// AI 抠图（去背景）2026-09-06 起由 ComfyUI 自定义节点 saros_cutout 执行
+	// （webview 侧 comfyHost/comfyCutout.ts），主进程不再承载 ONNX 推理与模型缓存。
 
 	// ──────────────────────────────────────────────────────────
 	// 内存诊断: 定期采样 + 超阈值自动 dump heap snapshot

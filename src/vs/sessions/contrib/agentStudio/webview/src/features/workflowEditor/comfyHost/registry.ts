@@ -1685,11 +1685,18 @@ export function registerDefaultComfyTVStages(): void {
 			{ name: 'text', type: 'COMFYTV_TEXT' },
 			{ name: 'texts', type: 'COMFYTV_TEXT' },
 			{ name: 'images', type: 'COMFYTV_IMAGE' },
+			// ★ sheet = 上游整图图集直通（2026-09）：连线时 runEmojiStageGrid 跳过
+			//   生成，直接按 rows×cols 切分上游整图归档（外部拼贴图 / 上游
+			//   EmojiStage 的 sheetFull 整图传递链）。零生成成本的图集入口。
+			{ name: 'sheet', type: 'COMFYTV_IMAGE' },
 		],
 		outputs: [
-			// images = m×n 表情批次；image = 当前选中格（selected_index）。
+			// images = m×n 表情批次；image = 当前选中格（selected_index）；
+			// sheet = 原生整图图集（port 'sheet' 的 sheetFull 归档，供下游
+			// EmojiStage 的 sheet 输入口直通连线）。
 			{ name: 'images', type: 'COMFYTV_IMAGES' },
 			{ name: 'image', type: 'COMFYTV_IMAGE' },
+			{ name: 'sheet', type: 'COMFYTV_IMAGE' },
 		],
 		widgets: [
 			{ name: 'workflow', type: 'COMBO', default: workflowOptionsFor('emoji')[0], options: workflowOptionsFor('emoji') },

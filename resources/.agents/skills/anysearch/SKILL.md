@@ -26,6 +26,8 @@ AnySearch is a unified real-time search service (JSON-RPC 2.0 endpoint). One cal
 
 **MANDATORY: Resolve the runtime and command BEFORE first call. Do NOT pick an arbitrary runtime.**
 
+**How to run (execute_code)**: the commands below use paths **relative to this skill's directory**. With `execute_code`, pass `cwd: "<this skill's directory>"` — do **NOT** use `cd <dir> && <cmd>` (chained commands force an approval prompt and violate the tool's own description). The skill directory (absolute) is returned by `read_skill` as `skillDir`.
+
 ```bash
 python3 --version 2>&1 || python --version 2>&1   # → if version → use Python command
 node --version 2>&1                                # → if no Python but Node → use Node.js command
@@ -58,7 +60,7 @@ sh scripts/anysearch_cli.sh doc
 The `doc` output covers parameter details for all commands, vertical routing rules, batch parallelism, and content extraction — it is the canonical command spec.
 
 **Reminder**:
-- Use absolute paths or paths relative to the workspace root for script references.
+- Run the CLI with `execute_code` + `cwd: "<skill dir>"` and the relative paths shown above — never `cd <dir> && <cmd>` (approval prompt), and never mix a leading `cd` with the tool's `cwd` argument.
 - Multi-line or JSON-heavy arguments are better in PowerShell/bash (avoid cmd.exe quoting issues).
 
 ### Decision Flow (Routing Priority)

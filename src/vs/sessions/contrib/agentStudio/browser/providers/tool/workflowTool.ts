@@ -91,11 +91,15 @@ export function registerWorkflowTool(ctx: IWorkflowToolContext): void {
 						},
 						required: ['name', 'description'],
 					},
-					// additionalProperties: true 已删（2026-09-05，日志 1788596740459/1788674…）：
-				// 它是 [CodeBuddy][sanitize] "workflow additionalProperties stripped at depth 2"
-				// 每请求告警的唯一来源。JSON Schema 默认即允许额外属性，删掉语义不变；
-				// args 的自由输入由 description 声明即可。
-				args: { type: 'object', description: 'Optional free-form JSON input exposed to the script as the `args` global (wrap a bare list as a field, e.g. {"files": [...]})' },
+					// args 的 schema 演进（2026-09-05，两轮实测）：
+				// ① initial additionalProperties:true → [CodeBuddy][sanitize]
+				//    "additionalProperties stripped at depth 2"（IOA 拒绝 depth≥1 的该字段）；
+				// ② 删掉后变裸 object → sanitize 改报 "object without properties —
+				//    injected _freeform placeholder"（IOA 同样拒绝无 properties 的裸 object，
+				//    见 workflowTools.ts 同款注释）。每请求一条 WARN 刷屏。
+				// ③ 终态：type:'string'（JSON 编码字符串）——完全绕开 IOA 对 object 的两个
+				//    限制；handler 双收（string→JSON.parse，object 兼容非 IOA 直连）。
+				args: { type: 'string', description: 'Optional JSON input (JSON-encoded STRING) exposed to the script as the `args` global. Example: "{\\"files\\":[\\"a.png\\",\\"b.png\\"]}". Wrap a bare list as a field, e.g. {"files": [...]}.' },
 					canvasAnchorUid: { type: 'string', description: 'Optional canvas stageUid: on success the return value is archived as a SAROS_JSON snapshot on that canvas node (its OUTPUT card shows the JSON); enables nodeOutput() round-trips on later runs.' },
 				},
 				required: ['script', 'meta'],
@@ -115,6 +119,21 @@ export function registerWorkflowTool(ctx: IWorkflowToolContext): void {
 			if (!script) {
 				return [{ type: 'text', text: 'workflow tool: "script" must be a non-empty string (the plain-JS body).' }];
 			}
+			// args 归一（2026-09-05）：IOA 网关下模型按 schema 传 JSON 编码字符串；
+			// 非 IOA 直连时模型可能直接传 object——双收。
+			let scriptArgs: unknown;
+			const _rawScriptArgs = args['args'];
+			if (_rawScriptArgs !== undefined) {
+				if (typeof _rawScriptArgs === 'string') {
+					try {
+						scriptArgs = JSON.parse(_rawScriptArgs);
+					} catch {
+						return [{ type: 'text', text: 'workflow tool: "args" must be valid JSON (it is exposed to the script as the `args` global). Example: "{\\"files\\":[]}"' }];
+					}
+				} else {
+					scriptArgs = _rawScriptArgs;
+				}
+			}
 			const dispatch = ctx.orchestrationService.subAgentDispatch;
 			if (!dispatch || !agentId) {
 				return [{ type: 'text', text: 'workflow tool: orchestration service or calling agent unavailable — cannot attribute children. Fall back to delegate_task.' }];
@@ -129,7 +148,7 @@ export function registerWorkflowTool(ctx: IWorkflowToolContext): void {
 				},
 				{
 					script, meta,
-					...(args['args'] !== undefined ? { args: args['args'] } : {}),
+					...(scriptArgs !== undefined ? { args: scriptArgs } : {}),
 					...(typeof args['canvasAnchorUid'] === 'string' ? { canvasAnchorUid: args['canvasAnchorUid'].trim() } : {}),
 					signal,
 					// 模型产出的脚本只存在于本次对话 → 投影是唯一可重放载体，必须落盘。

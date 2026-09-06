@@ -15,6 +15,20 @@ export const CUTOUT_BIREFNET_CUTOUT: StageWorkflowConfig = {
                 "image": "the_lily_veil.png",
             },
         },
+        "19": {
+            "class_type": "SarosBiRefNetCutout",
+            "inputs": {
+                "image": [
+                    "17",
+                    0,
+                ],
+                // 部署源：D:\ComfyUI\custom_nodes\saros_cutout（本仓库
+                // scripts/comfy-custom-nodes/saros_cutout）。模型列表是运行时
+                // 枚举 ~/.vssaros/cutout-models 得到的，这里写死 full@1024 与
+                // 默认值一致；若该机未装 onnxruntime-gpu 节点会自动退回 CPU EP。
+                "model": "BiRefNet-general-epoch_244.onnx",
+            },
+        },
         "18": {
             "class_type": "SaveImage",
             "inputs": {

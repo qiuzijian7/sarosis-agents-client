@@ -1947,18 +1947,6 @@ export class AgentStudioWebviewController extends Disposable {
 			case "vox.checkDeps": {
 				return this._handleVoxCheckDeps();
 			}
-			case "cutout.ensureModel": {
-				return this._handleCutoutEnsureModel(p as { model?: string });
-			}
-			case "cutout.modelProgress": {
-				return this._handleCutoutModelProgress(p as { model?: string });
-			}
-			case "cutout.status": {
-				return this._handleCutoutStatus();
-			}
-			case "cutout.remove": {
-				return this._handleCutoutRemove(p as { width?: number; height?: number; rgba?: Uint8Array; model?: string });
-			}
 			case "workflow.publishState": {
 				// 单行工具栏（v2）：查询发布状态（本地版本 vs 商城版本）。
 				const ps = p as { workflowId: string };
@@ -2728,56 +2716,6 @@ export class AgentStudioWebviewController extends Disposable {
 			return { ok: false, error: 'vox:checkDeps: 主进程 IPC 不可用' };
 		} catch (err) {
 			return { ok: false, error: `vox:checkDeps 失败：${err instanceof Error ? err.message : String(err)}` };
-		}
-	}
-
-	// ─── 表情包 AI 抠图（内置 rembg 算法；透传到主进程 vscode:cutout*）──
-
-	private async _handleCutoutEnsureModel(p: { model?: string }): Promise<unknown> {
-		try {
-			const vscodeBridge = (globalThis as any).vscode;
-			if (vscodeBridge?.ipcRenderer?.invoke) {
-				return await vscodeBridge.ipcRenderer.invoke('vscode:cutoutEnsureModel', p ?? {});
-			}
-			return { ok: false, error: 'cutout:ensureModel: 主进程 IPC 不可用' };
-		} catch (err) {
-			return { ok: false, error: `cutout:ensureModel 失败：${err instanceof Error ? err.message : String(err)}` };
-		}
-	}
-
-	private async _handleCutoutModelProgress(p: { model?: string }): Promise<unknown> {
-		try {
-			const vscodeBridge = (globalThis as any).vscode;
-			if (vscodeBridge?.ipcRenderer?.invoke) {
-				return await vscodeBridge.ipcRenderer.invoke('vscode:cutoutModelProgress', p ?? {});
-			}
-			return { ok: false, error: 'cutout:modelProgress: 主进程 IPC 不可用' };
-		} catch (err) {
-			return { ok: false, error: `cutout:modelProgress 失败：${err instanceof Error ? err.message : String(err)}` };
-		}
-	}
-
-	private async _handleCutoutStatus(): Promise<unknown> {
-		try {
-			const vscodeBridge = (globalThis as any).vscode;
-			if (vscodeBridge?.ipcRenderer?.invoke) {
-				return await vscodeBridge.ipcRenderer.invoke('vscode:cutoutStatus', {});
-			}
-			return { ok: false, error: 'cutout:status: 主进程 IPC 不可用' };
-		} catch (err) {
-			return { ok: false, error: `cutout:status 失败：${err instanceof Error ? err.message : String(err)}` };
-		}
-	}
-
-	private async _handleCutoutRemove(p: { width?: number; height?: number; rgba?: Uint8Array; model?: string }): Promise<unknown> {
-		try {
-			const vscodeBridge = (globalThis as any).vscode;
-			if (vscodeBridge?.ipcRenderer?.invoke) {
-				return await vscodeBridge.ipcRenderer.invoke('vscode:cutoutRemove', p);
-			}
-			return { ok: false, error: 'cutout:remove: 主进程 IPC 不可用' };
-		} catch (err) {
-			return { ok: false, error: `cutout:remove 失败：${err instanceof Error ? err.message : String(err)}` };
 		}
 	}
 

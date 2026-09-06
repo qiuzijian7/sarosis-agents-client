@@ -343,6 +343,15 @@ def cmd_batch_search(args):
     """Execute multiple search queries in parallel (2-5 queries)."""
     query_items = getattr(args, "query_items", None) or []
     raw = args.queries or getattr(args, "queries_opt", None)
+    # 2026-09-05：--queries 改 nargs='+' 后 queries_opt 可能是多值 list（模型高频
+    # 形态 --queries "q1" "q2" ...，argparse 只认单值时报 unrecognized 3/5 个）。
+    # 归并：多值 list → JSON 数组字符串走原逻辑（_repair_json 已支持裸串项）；
+    # 单元素保留原字符串（@file 语义不破坏）。
+    if isinstance(raw, (list, tuple)):
+        if len(raw) == 1:
+            raw = raw[0]
+        else:
+            raw = json.dumps([str(x).strip().strip("'\"") for x in raw])
 
     if query_items:
         queries = [{"query": q} for q in query_items]
@@ -362,6 +371,11 @@ def cmd_batch_search(args):
             queries = json.loads(raw)
             if not isinstance(queries, list):
                 queries = [queries]
+            # 归一：裸串项 → {"query": s}（--queries nargs='+' 多值归并会产生纯字符串数组）
+            queries = [
+                q if isinstance(q, dict) else {"query": str(q).strip().strip("'\"")}
+                for q in queries
+            ]
         except json.JSONDecodeError:
             queries = _repair_json(raw)
         if len(queries) < 1:
@@ -559,8 +573,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     batch_p.add_argument(
-        "--queries", "-q", dest="queries_opt",
-        help="JSON array of search query objects (alternative to positional arg). Prefix @ to read from file.",
+        "--queries", "-q", dest="queries_opt", nargs="+",
+        help="JSON array of search query objects (alternative to positional arg), OR multiple bare query strings (auto-wrapped as {query}). Prefix @ to read from file.",
     )
     batch_p.add_argument(
         "--query",

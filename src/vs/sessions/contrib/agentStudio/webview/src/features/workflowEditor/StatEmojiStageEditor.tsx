@@ -103,10 +103,17 @@ export interface StatEmojiStageEditorProps {
   onCellEdit?: (cellIndex: number) => void;
   /** ★ 双击 LLM 原图 → 整图编辑（MiniImageEditor 全图模式，nodeCard 层挂载；2026-09-03）。 */
   onSheetEdit?: () => void;
-  /** ★ LLM 原图「去背景」按钮：本地 rembg 抠图并替换 sheetFull 归档（nodeCard 层执行；2026-09-03）。 */
+  /** ★ LLM 原图「去背景」按钮：本地 rembg 抠图 → 写入「调整后」图集口（原图归档不动；nodeCard 层执行）。 */
   onSheetRemoveBg?: () => void;
+  /** ★ 当前原图是 sheet 口直通的上游图集（2026-09-06）：只读预览——禁整图编辑/去背景
+      （写入会落到上游节点归档），提示条说明来源。本节点生成后自动恢复可编辑。 */
+  isPassthroughSheet?: boolean;
   /** 去背景执行中（按钮禁用 + 文案切换）。 */
   sheetRemovingBg?: boolean;
+  /** 去背景阶段进度（文本 + 可选百分比，用于按钮下方进度条；2026-09-05）。 */
+  sheetRemoveBgStage?: { text: string; percent?: number } | null;
+  /** 去背景成功计数（每次成功 +1 → 编辑器自动切到「🧩 调整后」页签；2026-09-06）。 */
+  sheetRemoveBgDoneTick?: number;
   /** 应用裁剪（run_scope='recrop'：跳过生成，按 cell_crops 对整图重裁）。 */
   /** @ 提及候选（节点 + 文件），由 NodeCard 注入；缺省时输入框仍可用但无 @ 面板。 */
   mentionCandidates?: MentionCandidate[];
@@ -339,12 +346,17 @@ async function fetchComfyModels(baseUrl: string): Promise<ComfyModelOption[]> {
 }
 
 export function StatEmojiStageEditor({
-  initial, sheetRef, sheetGrid, rebuiltSheetRef, rebuiltGrid, cellRefs, workflowOptions, styleOptions, onCommit, onRunRequest, running, onCancelRequest, onCellEdit, onSheetEdit, onSheetRemoveBg, sheetRemovingBg, mentionCandidates, onPinAsset,
+  initial, sheetRef, sheetGrid, rebuiltSheetRef, rebuiltGrid, cellRefs, workflowOptions, styleOptions, onCommit, onRunRequest, running, onCancelRequest, onCellEdit, onSheetEdit, onSheetRemoveBg, isPassthroughSheet, sheetRemovingBg, sheetRemoveBgStage, sheetRemoveBgDoneTick, mentionCandidates, onPinAsset,
 }: StatEmojiStageEditorProps): React.ReactElement {
   /** 原图解码尺寸（缩略图标签显示，也用于核对「LLM 返回 vs 编辑器输入」）。 */
   const [sheetSize, setSheetSize] = React.useState<{ w: number; h: number } | null>(null);
   /** ★ 图集卡片视图：original=原生整图（编辑基底）/ rebuilt=调整后图集（下游所见）。 */
   const [sheetView, setSheetView] = React.useState<'original' | 'rebuilt'>('original');
+  // 去背景成功 → 自动切到「🧩 调整后」页签直显抠图结果（计数器跳变触发，避免初始挂载误切）。
+  React.useEffect(() => {
+    if (!sheetRemoveBgDoneTick) { return; }
+    setSheetView('rebuilt');
+  }, [sheetRemoveBgDoneTick]);
   const [rows, setRows] = React.useState<number>(Math.max(1, Math.min(6, initial.rows || 3)));
   const [cols, setCols] = React.useState<number>(Math.max(1, Math.min(6, initial.cols || 3)));
   const [stylePreset, setStylePreset] = React.useState<string>(
@@ -609,7 +621,7 @@ export function StatEmojiStageEditor({
                 <button
                   key={v.id}
                   onClick={() => setSheetView(v.id)}
-                  title={v.id === 'rebuilt' ? '单格编辑/裁剪保存后重拼的图集——下游转动态节点读取的就是它' : 'LLM 返回的原生整图（编辑基底）'}
+                  title={v.id === 'rebuilt' ? '单格编辑/裁剪保存后重拼、或整图去背景后的图集——下游转动态节点读取的就是它' : 'LLM 返回的原生整图（编辑基底，去背景不会改动它）'}
                   style={{
                     padding: '2px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 9, fontWeight: 600, fontFamily: 'inherit',
                     border: sheetView === v.id ? '1px solid #a855f7' : '1px solid rgba(255,255,255,.14)',
@@ -626,13 +638,16 @@ export function StatEmojiStageEditor({
               {sheetView === 'original' ? ' · 双击图片整图编辑' : ' · 下游转动态读取此图集'}
             </span>
           )}
-          {/* 🪄 去背景：一键本地 rembg 抠图 → 透明 PNG 替换原图归档（棋盘底直显透明效果）。
-              仅原生整图视图显示（作用于编辑基底，调整后图集是派生产物）。 */}
+          {/* 🪄 去背景：一键本地 rembg 抠图 → 透明 PNG 写入「调整后」图集（原图归档不动，
+              抠图结果在「🧩 调整后」页签棋盘底直显透明效果）。
+              仅原生整图视图显示（作用对象是编辑基底整图，调整后图集是派生产物）。 */}
           {sheetRef && sheetView === 'original' && (
             <button
               onClick={onSheetRemoveBg}
-              disabled={sheetRemovingBg}
-              title="去除整图背景 → 透明 PNG（本地 rembg 服务）"
+              disabled={sheetRemovingBg || isPassthroughSheet}
+              title={isPassthroughSheet
+                ? "当前原图来自上游 sheet 口连线（直通预览，只读）。请在生成本节点的原图后再去背景。"
+                : "整图去背景 → 透明 PNG（本地 rembg 服务）。原图不动，结果显示在「🧩 调整后」页签，下游转动态读取该图集。"}
               style={{
                 padding: '2px 7px', borderRadius: 5, cursor: sheetRemovingBg ? 'wait' : 'pointer', fontSize: 10, fontWeight: 600,
                 border: '1px solid rgba(56,189,248,.5)', background: sheetRemovingBg ? 'rgba(148,163,184,.2)' : 'rgba(56,189,248,.16)', color: sheetRemovingBg ? '#94a3b8' : '#38bdf8',
@@ -641,6 +656,31 @@ export function StatEmojiStageEditor({
             >{sheetRemovingBg ? '去背景中…' : '🪄 去背景'}</button>
           )}
         </div>
+        {/* ★ sheet 直通预览（2026-09-06）：原图来自上游连线 → 只读提示条。
+            本节点生成自己的原图后 nodeCard 侧 isPassthroughSheet 变 false，提示自动消失。 */}
+        {isPassthroughSheet && (
+          <div style={{
+            fontSize: 10, lineHeight: 1.6, padding: '4px 8px', borderRadius: 6,
+            background: 'rgba(168,85,247,.12)', border: '1px solid rgba(168,85,247,.35)',
+            color: '#d8b4fe',
+          }}>
+            当前「原图」为 sheet 口直通的上游图集（只读预览）：确认内容后点「生成」即按此图集切分。
+            整图编辑 / 去背景需本节点生成原图后使用（避免改写上游归档）。
+          </div>
+        )}
+        {/* 去背景进度条：模型下载阶段显示字节级百分比，其余阶段显示阶段文本（2026-09-05）。 */}
+        {sheetRemovingBg && sheetRemoveBgStage && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div style={{ height: 3, borderRadius: 2, background: 'rgba(255,255,255,.1)', overflow: 'hidden' }}>
+              <div style={{
+                height: '100%', width: `${Math.max(2, Math.min(100, sheetRemoveBgStage.percent ?? 4))}%`,
+                background: sheetRemoveBgStage.percent === undefined ? '#38bdf8' : 'linear-gradient(90deg,#38bdf8,#a855f7)',
+                transition: 'width .4s ease', borderRadius: 2,
+              }} />
+            </div>
+            <span style={{ fontSize: 9, color: 'var(--vscode-descriptionForeground, #9a9a9a)' }}>{sheetRemoveBgStage.text}</span>
+          </div>
+        )}
         {(() => {
           const shownRef = sheetView === 'rebuilt' && rebuiltSheetRef ? rebuiltSheetRef : sheetRef;
           const shownGrid = sheetView === 'rebuilt' ? rebuiltGrid : sheetGrid;
@@ -666,7 +706,7 @@ export function StatEmojiStageEditor({
                 src={shownRef}
                 alt="llm-sheet"
                 title={sheetView === 'original' ? '双击整图编辑（MiniImageEditor）' : '调整后的图集（下游转动态节点读取）'}
-                onDoubleClick={sheetView === 'original' ? () => onSheetEdit?.() : undefined}
+                onDoubleClick={sheetView === 'original' && !isPassthroughSheet ? () => onSheetEdit?.() : undefined}
                 onLoad={(e) => {
                   const im = e.currentTarget;
                   setSheetSize({ w: im.naturalWidth, h: im.naturalHeight });

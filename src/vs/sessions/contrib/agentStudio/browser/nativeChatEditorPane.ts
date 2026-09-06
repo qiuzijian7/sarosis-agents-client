@@ -64,6 +64,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ContextManager } from '../common/contextManager.js';
 import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment, IToolCall } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
@@ -339,9 +340,11 @@ export class NativeChatEditorPane extends EditorPane {
 		@IViewsService private readonly _viewsService: IViewsService,
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@IWorktreeService private readonly _worktreeService: IWorktreeService,
+		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, _storageService);
 		this._installSanitizeTraceSink();
+		this._installInterruptedStreamPersist(lifecycleService);
 	}
 
 	/**
@@ -362,6 +365,64 @@ export class NativeChatEditorPane extends EditorPane {
 				`  afterTail="${e.afterTail.replace(/\n/g, '\\n')}"`
 			);
 		})));
+	}
+
+	/**
+	 * 关窗前把「未完成的流式输出」落盘（2026-09-06，用户报「输出一半的内容消失」）。
+	 *
+	 * 根因：assistant 消息只在 agent loop **完整结束**后才由 agentChatService
+	 * 落盘（收集到 fullContent 才 append）；而保存流式中内容的 runtime state 是
+	 * **纯内存**（nativeChatEditorInput 注释自证 "Not serialized (transient)"，
+	 * 仅为同进程 tab 切换设计）。故流式途中关闭 app → 进程终止 → 消息从未 append
+	 * → 重启后内容消失。
+	 *
+	 * 此处在 onWillShutdown 时：若仍有进行中的流且已有内容，append 一条 partial
+	 * assistant 消息并标记 streamInterrupted，重启后内容仍在。
+	 *
+	 * 用 onWillShutdown 而非 dispose：dispose 不能 await，而 appendMessage 是 async
+	 * 写文件；只有 e.join() 能真正等到写完成（对齐 agentChatService 的 sessionIndex
+	 * 兜底，其注释亦如此说明）。
+	 *
+	 * 不产生重复：流正常结束后 _streamingAssistantId 被清空且 _isSending=false，
+	 * 判定不成立；此时内容由服务端正常 append。
+	 */
+	private _installInterruptedStreamPersist(lifecycleService: ILifecycleService): void {
+		this._register(lifecycleService.onWillShutdown(e => {
+			const content = (this._streamingAssistantMsg?.content ?? '').trim();
+			// 仅「确实有进行中的流 + 已有内容」才落盘：
+			// - 流已结束 → _streamingAssistantId 已清空 / _isSending=false
+			// - 空内容（刚开始就关）→ 不留下空气泡
+			if (!this._streamingAssistantId || !this._isSending || !content) { return; }
+			if (!this._currentAgentId) { return; }
+			e.join(this._persistInterruptedStream(content), {
+				id: 'nativeChatEditorPane.interruptedStream',
+				label: 'Saving interrupted assistant output',
+			});
+		}));
+	}
+
+	/** 落盘半截的 assistant 输出（关窗兜底）。 */
+	private async _persistInterruptedStream(content: string): Promise<void> {
+		const agentId = this._currentAgentId;
+		const id = this._streamingAssistantId;
+		if (!agentId || !id) { return; }
+		try {
+			await this._chatService.appendMessage(agentId, {
+				id,
+				role: 'assistant',
+				content,
+				agentId,
+				agentSessionId: this._currentSessionId ?? undefined,
+				timestamp: new Date().toISOString(),
+				metadata: { streamInterrupted: true },
+			} as any);
+			this._logService.info(
+				`[NativeChatEditorPane#${this._paneId}] persisted interrupted stream output ` +
+				`(${content.length} chars) before shutdown`
+			);
+		} catch (err) {
+			this._logService.warn('[NativeChatEditorPane] Failed to persist interrupted stream:', err);
+		}
 	}
 
 	// ─── 外部 http(s) 链接：系统浏览器打开 ─────────────────────────────
@@ -3181,17 +3242,40 @@ private _handleStreamDelta(delta: any): void {
 					const prevThinking = assistantMsg.thinking ?? '';
 					const thinkingContent = delta.fullThinking !== undefined ? delta.fullThinking : (prevThinking + (delta.content ?? ''));
 					assistantMsg.thinking = thinkingContent;
+					// 诊断（2026-09-06）：「思考卡卡住」需区分数据层（delta 没到/内容空）
+					// 与渲染层（delta 到了 DOM 没更新）。节流打点：每 25 帧或每 4KB 一条。
+					{
+						const _thMsg = assistantMsg as any;
+						_thMsg._thFrames = (_thMsg._thFrames ?? 0) + 1;
+						if (_thMsg._thFrames % 25 === 0 || thinkingContent.length - (_thMsg._thLastLoggedLen ?? 0) >= 4096) {
+							_thMsg._thLastLoggedLen = thinkingContent.length;
+							this._logService.info(`[ChatStream] thinking streaming frames=${_thMsg._thFrames} totalLen=${thinkingContent.length} partsLen=${assistantMsg.parts?.length ?? 0} lastPartKind=${assistantMsg.parts?.[assistantMsg.parts.length - 1]?.kind ?? 'none'}`);
+						}
+					}
 					// thinking 作为 parts 流片段（2026-07-26 用户要求：不固定顶部，
-					// 跟随 LLM 流式输出的实际发生位置）。增量追加到当前 episode 的
-					// thinking part；若最后一个 part 非 thinking（文本/工具已流过）
-					// → 开新 episode（新 part），卡片渲染在当轮内容之前。
+					// 跟随 LLM 流式输出的实际发生位置）。
+					// ★ 2026-09-06 修正一（日志 1788670708266）：原「last part 非 thinking
+					// → 开新 episode」被周期性 tool part 插拔打碎（12606 字符切成 13 段）
+					// → 改为追加到最后一个 thinking part。
+					// ★★ 2026-09-06 修正二（用户报「第二次思考被错误并入第一张卡」）：
+					// 修正一**过度**——agent loop 的**第二轮思考**（上一轮工具执行完之后
+					// 的新思考）语义上是新 episode，不该并进第一张卡。正确的 episode 边界
+					// 是「工具执行结束」（tool_end/tool_result），而非「last part 的种类」：
+					//   - 思考→工具参数生成（合成卡插拔）→ 同一轮内 → **连续追加** ✓
+					//   - 工具执行完（tool_end）→ 新一轮思考 → **新 episode 新卡** ✓
+					// 实现：tool_end/tool_result 时置 `_thinkingEpClosed=true`；下一个
+					// thinking delta 开新 part 并复位标志。
 					const increment = thinkingContent.slice(prevThinking.length);
 					if (assistantMsg.parts && increment.length > 0) {
-						const last = assistantMsg.parts[assistantMsg.parts.length - 1] as any;
-						if (last && last.kind === 'thinking') {
-							last.text += increment;
+						const epClosed = (assistantMsg as any)._thinkingEpClosed === true;
+						const lastThinking = epClosed
+							? undefined
+							: ([...assistantMsg.parts].reverse().find(p => (p as any).kind === 'thinking') as any);
+						if (lastThinking) {
+							lastThinking.text += increment;
 						} else {
 							assistantMsg.parts.push({ kind: 'thinking', text: increment } as any);
+							(assistantMsg as any)._thinkingEpClosed = false;
 						}
 					}
 					this._chatPanel?.setStreamThinkingBuffer(thinkingContent);
@@ -3206,16 +3290,29 @@ private _handleStreamDelta(delta: any): void {
 				if (!assistantMsg || !assistantId) { return; }
 				if (!assistantMsg.toolCalls) { assistantMsg.toolCalls = []; }
 
-				// 清除 tool_progress 期间为 file_write 创建的合成卡片
-				const synthId = (assistantMsg as any)._tpFileWriteId as string | undefined;
-				if (synthId && delta.toolName === 'file_write') {
-					const si = assistantMsg.toolCalls.findIndex((t: any) => t.id === synthId);
-					if (si >= 0) { assistantMsg.toolCalls.splice(si, 1); }
-					if (assistantMsg.parts) {
-						const pi = assistantMsg.parts.findIndex((p: any) => p.kind === 'tool' && p.tool?.id === synthId);
-						if (pi >= 0) { assistantMsg.parts.splice(pi, 1); }
+				// 清除 tool_progress 期间创建的合成占位卡（2026-09-06：从 file_write
+				// 专用推广到任意工具；id 前缀 _tp_synth_<tool>_，兼容清理旧 _tp_fw_ 残留）
+				let _carriedArgs = '';
+				if (assistantMsg.toolCalls?.length) {
+					const synthCards = assistantMsg.toolCalls.filter((t: any) => {
+						const tid = String(t.id);
+						return tid.startsWith('_tp_synth_') || tid.startsWith('_tp_fw_');
+					});
+					// 2026-09-06：占位卡在参数流式期间已累积了参数文本，tool_start 建真实
+					// 卡时把这段文本**继承**过来，避免卡内已显示的参数被清空（观感回退）。
+					// 清除不再按 name 匹配——占位卡在网关未下发 function.name 时暂名
+					// 'unknown'，按名匹配会漏删 → 真实卡与占位卡并存（重复卡）。
+					_carriedArgs = synthCards.length
+						? synthCards.map((c: any) => c.args ?? '').filter(Boolean).join('')
+						: '';
+					for (const sc of synthCards) {
+						const si = assistantMsg.toolCalls.indexOf(sc);
+						if (si >= 0) { assistantMsg.toolCalls.splice(si, 1); }
+						if (assistantMsg.parts) {
+							const pi = assistantMsg.parts.findIndex((p: any) => p.kind === 'tool' && p.tool?.id === sc.id);
+							if (pi >= 0) { assistantMsg.parts.splice(pi, 1); }
+						}
 					}
-					delete (assistantMsg as any)._tpFileWriteId;
 				}
 
 				const newToolCallId = delta.toolCallId ?? `tool_${Date.now()}`;
@@ -3247,7 +3344,8 @@ private _handleStreamDelta(delta: any): void {
 				assistantMsg.toolCalls.push({
 					id: newToolCallId,
 					name: delta.toolName ?? '',
-					args: '',
+					// 继承占位卡在参数流式期间已累积的参数文本
+					args: _carriedArgs,
 					status: 'running',
 					displayName: delta.displayName,
 					renderType: delta.renderType,
@@ -3287,58 +3385,31 @@ private _handleStreamDelta(delta: any): void {
 			break;
 			}
 			case 'tool_progress': {
-				// 工具参数流式生成进度（2026-07-26 治本 UI 化）：此前该信号只喂
-				// idle 计时器，界面上不可见——超大参数（file_write 写大文件，
-				// 万级 tokens 数分钟）期间屏幕假死（事故 1785065604981）。
-				// 现把进度文本透到阶段指示器（activityText），每秒可见刷新。
-				if (!assistantMsg || !assistantId) { return; }
-				assistantMsg.activityText = delta.stage ?? '正在生成工具调用参数…';
-
-				// file_write 参数服务端生成期间（非增量 tool_args）：提前创建合成卡片，
-				// 在真实 tool_start 到达前显示「正在生成文件内容…」占位 + KB 进度提示。
-				const tpStage = delta.stage || '';
-				const tpMatch = tpStage.match(/正在生成工具调用参数\s+(\S+)/);
-				const tpToolName = tpMatch?.[1];
-				const isFw = tpToolName === 'file_write';
-				const hasRealFwCard = assistantMsg.toolCalls?.some(
-					(t: any) => t.name === 'file_write' && t.status === 'running' && t.id !== (assistantMsg as any)._tpFileWriteId);
-				let toolCallsChanged = false;
-				if (isFw && !hasRealFwCard) {
-					if (!assistantMsg.toolCalls) { assistantMsg.toolCalls = []; }
-					let synthId = (assistantMsg as any)._tpFileWriteId as string | undefined;
-					// 首次创建：生成合成工具调用并加入 parts
-					if (!synthId || !assistantMsg.toolCalls.some((t: any) => t.id === synthId)) {
-						synthId = `_tp_fw_${Date.now()}`;
-						(assistantMsg as any)._tpFileWriteId = synthId;
-						assistantMsg.toolCalls.push({
-							id: synthId, name: 'file_write', args: '', status: 'running',
-							displayName: '写入文件', renderType: 'file_write', defaultShow: true,
-						});
-						if (assistantMsg.parts) {
-							const tcRef = assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1];
-							assistantMsg.parts.push({ kind: 'tool', tool: tcRef } as any);
-						}
-						toolCallsChanged = true;
-					}
-					// 后续进度：仅通过 activityText 刷新 KB 计数（卡片本身占位不变）
-				}
-				this._chatPanel?.updateMessage(assistantId, {
-					activityText: assistantMsg.activityText,
-					isStreaming: true,
-				...(toolCallsChanged ? {
-					toolCalls: (assistantMsg.toolCalls ?? []).slice(),
-					parts: assistantMsg.parts?.slice(),
-				} : {}),
-				});
+				// ★ 2026-09-06 终版：UI 完全静默（用户定论：占位卡「全部干掉」）。
+				// 参数流式呈现的两轮尝试（阶段指示器播报 → 占位卡卡内流式参数）在
+				// glm **reasoning 与 tool_calls 并行**的真实形态下都无法干净呈现：
+				// ① 指示器与「正在思考」状态冲突；② 占位卡与思考/正文交错插入，
+				// 且 push 进 parts 时不更新 _streamTextSegmentBase → 后续 text delta
+				// 按旧 base 切分 → **正文整段重复**（用户实测截图）。
+				// progress 帧回归其原始价值——provider 1s 节流信号供
+				// resilience/P4/subagent 看门狗 idle 续命（防误杀健康流，事故
+				// 1785049332701），UI 不做任何呈现。参数生成期界面由思考卡/正文
+				// 流式自然覆盖（glm 并行形态下无假死窗）。
 				break;
 			}
 			case 'tool_args': {
 				if (!assistantMsg || !assistantId) { return; }
+				// 2026-09-06：参数已到齐（工具进入执行）→ 参数生成期确定结束，清除
+				// 瞬时活动文本。否则 tool_start 之后到达的 tool_progress 会把
+				// 「正在生成工具调用参数…」指示器点亮到 turn 结束（tool_args/tool_end
+				// 此前都不清，只有 text/tool_start/done 清）。
+				assistantMsg.activityText = undefined;
 				const argCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
 				if (argCall) {
 					argCall.args = (argCall.args ?? '') + (delta.content ?? '');
 					this._chatPanel?.updateMessage(assistantId, {
 						toolCalls: assistantMsg.toolCalls!.slice(),
+						activityText: undefined,
 						isStreaming: true,
 						streamPhase: 'tool_executing',
 					});
@@ -3355,6 +3426,9 @@ private _handleStreamDelta(delta: any): void {
 			}
 			case 'tool_end': {
 				if (!assistantMsg || !assistantId) { return; }
+				// ★ 2026-09-06：工具执行结束 = 当前思考 episode 关闭。之后的新思考
+				// （下一轮 LLM 输出）开新 thinking part / 新卡，不再并进第一张卡。
+				(assistantMsg as any)._thinkingEpClosed = true;
 				const endCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
 				if (endCall) {
 					// 根据服务端返回的 success 字段决定状态——失败时显示红色警告工具卡而非绿色成功卡。
@@ -3365,12 +3439,15 @@ private _handleStreamDelta(delta: any): void {
 						endCall.error = endCall.result;
 					}
 				this._applyStreamPhase('llm_streaming');
+				// 2026-09-06：工具已结束 → 清除瞬时活动文本（参数生成期确定结束）。
+				assistantMsg.activityText = undefined;
 				// turn 间「正在思考...」指示器（2026-07-26 修正）：指示器条件已放宽为
 				// 仅 isThinking（见 agentChatPanel.messages.ts _ensurePhaseIndicator），
 				// 无需清空 thinking——旧实现（tool_end 清 thinking）会导致置顶的
 				// thinking 卡片在每个工具边界消失/重现，引发布局跳动（1785065604981）。
 				this._chatPanel?.updateMessage(assistantId, {
 					toolCalls: assistantMsg.toolCalls!.slice(),
+					activityText: undefined,
 					isStreaming: true,
 					isThinking: true,
 					streamPhase: 'llm_streaming',
@@ -3380,6 +3457,8 @@ private _handleStreamDelta(delta: any): void {
 			}
 			case 'tool_result': {
 				if (!assistantMsg || !assistantId) { return; }
+				// ★ 2026-09-06：同 tool_end——工具结果到达即关闭当前思考 episode。
+				(assistantMsg as any)._thinkingEpClosed = true;
 				const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
 				if (resultCall) {
 					resultCall.result = delta.content;

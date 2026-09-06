@@ -5474,6 +5474,18 @@
 	padding: 4px 0;
 }
 
+/* 2026-09-06：参数流式期占位卡（pending_args）的参数尾部实时预览——
+   等宽字体 + 限高滚动，参数逐字成型时视觉上"正在打字"。 */
+.tool-section-placeholder.tool-args-streaming {
+	font-family: var(--monaco-monospace-font, monospace);
+	font-style: normal;
+	opacity: 0.85;
+	max-height: 96px;
+	overflow: hidden;
+	word-break: break-all;
+	white-space: pre-wrap;
+}
+
 /* Divider between sections */
 .tool-section-divider {
 	height: 1px;
@@ -5795,6 +5807,19 @@
 	font-weight: 500;
 	color: var(--vscode-foreground, #ddd);
 	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
+}
+
+/* ── 「已中断」标记（2026-09-06）──
+   流式输出途中关闭 app 时落盘的半截内容（metadata.streamInterrupted=true）。
+   用警示色与「耗时/积分」等普通 pill 区分，避免用户误读为模型的完整回答。
+   颜色走 VS Code 主题变量，保证深/浅色主题均可读。 */
+.chat-bubble-footer-item.chat-footer-pill.interrupted-item {
+	border-color: var(--vscode-inputValidation-warningBorder, rgba(234, 179, 8, 0.45));
+	background: var(--vscode-inputValidation-warningBackground, rgba(234, 179, 8, 0.12));
+}
+.chat-bubble-footer-item.chat-footer-pill.interrupted-item .chat-footer-pill-icon,
+.chat-bubble-footer-item.chat-footer-pill.interrupted-item .chat-footer-pill-label {
+	color: var(--vscode-inputValidation-warningForeground, #eab308);
 }
 
 /* ── 「处理中」状态（2026-08-29）──

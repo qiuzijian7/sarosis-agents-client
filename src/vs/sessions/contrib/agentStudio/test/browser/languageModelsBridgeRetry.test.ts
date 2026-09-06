@@ -128,6 +128,28 @@ suite('tool_call progress pipeline（治本）', () => {
 		assert.strictEqual((d as any).stage, '正在生成工具调用参数 file_write… 已 12 KB');
 	});
 
+	test('adaptModelDelta：tool_progress 结构化字段透传（2026-09-06 v2）', () => {
+		const deps = { logService: { info() { /* noop */ } } } as any;
+		const d: any = adaptModelDelta(deps, {
+			type: 'tool_progress',
+			content: '正在生成工具调用参数 file_write… 已 12 KB',
+			toolName: 'file_write',
+			bytes: 12288,
+			partialArgs: '{"path":"a.ts"',
+		});
+		assert.strictEqual(d.toolName, 'file_write');
+		assert.strictEqual(d.bytes, 12288);
+		assert.strictEqual(d.partialArgs, '{"path":"a.ts"');
+	});
+
+	test('adaptModelDelta：tool_progress 无结构化字段 → 不产生字段（v1 兼容）', () => {
+		const deps = { logService: { info() { /* noop */ } } } as any;
+		const d: any = adaptModelDelta(deps, { type: 'tool_progress', content: '正在生成工具调用参数…' });
+		assert.strictEqual(d.toolName, undefined);
+		assert.strictEqual(d.bytes, undefined);
+		assert.strictEqual(d.partialArgs, undefined);
+	});
+
 	test('adaptModelDelta：tool_progress 无 content → 空 stage（不崩溃）', () => {
 		const deps = { logService: { info() { /* noop */ } } } as any;
 		const d = adaptModelDelta(deps, { type: 'tool_progress' });
