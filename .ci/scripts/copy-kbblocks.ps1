@@ -1,5 +1,6 @@
 # 复制 kbblocks webview 资源到 out-build
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+# Join-Path 三参数形式需 PS 7+；构建机为 PS 5.1，改用 Split-Path 两次。
+$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
 $srcMedia = "src\vs\sessions\contrib\agentStudio\webview\media"

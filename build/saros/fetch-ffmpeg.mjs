@@ -39,7 +39,10 @@ const CUSTOM_URL = urlArg >= 0 ? args[urlArg + 1] : undefined;
 const CHECK_ONLY = args.includes('--check-only');
 
 const DEFAULT_URL = 'https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip';
-const URL = CUSTOM_URL || DEFAULT_URL;
+// 切勿命名为 URL：模块级 const URL 会遮蔽全局 URL 构造器，
+// 令下方重定向处理里的 `new URL(loc, url)` 抛 "TypeError: URL is not a constructor"
+// （2026-09-06 CI 事故，ffmpeg 下载静默失败）。
+const FFMPEG_ZIP_URL = CUSTOM_URL || DEFAULT_URL;
 
 const FFMPEG = join(BIN_DIR, 'ffmpeg.exe');
 const FFPROBE = join(BIN_DIR, 'ffprobe.exe');
@@ -82,7 +85,7 @@ mkdirSync(BIN_DIR, { recursive: true });
 const zipPath = join(BIN_DIR, '_ffmpeg_tmp.zip');
 const extractDir = join(BIN_DIR, '_ffmpeg_extract');
 
-log(`⬇️  下载 ffmpeg: ${URL}`);
+log(`⬇️  下载 ffmpeg: ${FFMPEG_ZIP_URL}`);
 log(`   目标: ${BIN_DIR}`);
 
 function download(url, dest) {
@@ -138,7 +141,7 @@ function findBinaries(dir) {
 }
 
 try {
-	await download(URL, zipPath);
+	await download(FFMPEG_ZIP_URL, zipPath);
 	log('✅ 下载完成，解压中...');
 
 	rmSync(extractDir, { recursive: true, force: true });

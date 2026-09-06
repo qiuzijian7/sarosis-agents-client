@@ -83,5 +83,9 @@ foreach ($ext in ($compileTargets | Sort-Object { $_ -eq 'shared' } -Descending)
   Pop-Location
 }
 
-npx gulp compile-extensions-build --verbose
+# 直接调本地 gulp，绕开 npx（npx 找不到本地包时会交互式询问 "Ok to proceed?"，
+# CI 无 stdin 导致无限挂起）。
+$gulp = Join-Path $repoRoot 'node_modules\.bin\gulp.cmd'
+if (-not (Test-Path $gulp)) { Write-Error "local gulp not found at $gulp"; exit 1 }
+& $gulp compile-extensions-build --verbose
 if ($LASTEXITCODE -ne 0) { Write-Error "Extensions build failed"; exit 1 }

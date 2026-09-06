@@ -250,20 +250,58 @@ function fromLocalEsbuild(extensionPath: string, esbuildConfigFileName: string):
 	return result;
 }
 
+// 2026-09-06 生产事故修复：CI（Windows Server 2016 / Node 22）在
+// `getProductionDependencies(...).flatMap(dep => walkFiles(dep))` 抛
+// RangeError: Maximum call stack size exceeded，导致 compile-extensions-build 与
+// vscode-win32-x64 双双失败、最终无 exe 可归档。
+// 两个成因，均已消除：
+//   1) `out.push(...walkFiles(full))` 用扩展运算符展开子结果，元素即实参，
+//      单目录文件数上万时直接击穿调用栈上限；
+//   2) node_modules 下存在指向祖先目录的 junction / 自引用链接（npm workspace
+//      自链接 vssaros 等），Windows junction 的 dirent.isDirectory() 同样为 true，
+//      朴素递归会无限下钻。
+// 改为显式栈迭代（无递归）+ realpath 去重断环 + 深度上限兜底。
+const WALK_MAX_DEPTH = 64;
+
 function walkFiles(dir: string): string[] {
 	const out: string[] = [];
-	let entries: fs.Dirent[];
+	const seen = new Set<string>();
 	try {
-		entries = fs.readdirSync(dir, { withFileTypes: true });
+		seen.add(fs.realpathSync(dir));
 	} catch {
 		return out;
 	}
-	for (const entry of entries) {
-		const full = path.join(dir, entry.name);
-		if (entry.isDirectory()) {
-			out.push(...walkFiles(full));
-		} else if (entry.isFile()) {
-			out.push(full);
+
+	const stack: Array<{ dir: string; depth: number }> = [{ dir, depth: 0 }];
+	while (stack.length) {
+		const { dir: current, depth } = stack.pop()!;
+		if (depth > WALK_MAX_DEPTH) {
+			continue;
+		}
+		let entries: fs.Dirent[];
+		try {
+			entries = fs.readdirSync(current, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			const full = path.join(current, entry.name);
+			if (entry.isDirectory()) {
+				// 断环：junction / 符号链接可能指回祖先目录，realpath 去重可终止
+				let real: string;
+				try {
+					real = fs.realpathSync(full);
+				} catch {
+					continue;
+				}
+				if (seen.has(real)) {
+					continue;
+				}
+				seen.add(real);
+				stack.push({ dir: full, depth: depth + 1 });
+			} else if (entry.isFile()) {
+				out.push(full);
+			}
 		}
 	}
 	return out;

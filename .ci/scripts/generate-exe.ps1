@@ -1,6 +1,11 @@
 ﻿$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
+# 直接调本地 gulp，绕开 npx（npx 找不到本地包时会交互式询问 "Ok to proceed?"，
+# CI 无 stdin 导致无限挂起）。
+$gulp = Join-Path $repoRoot 'node_modules\.bin\gulp.cmd'
+if (-not (Test-Path $gulp)) { Write-Error "local gulp not found at $gulp"; exit 1 }
+
 Write-Host "=== Generating Windows EXE installer ==="
 
 # 清理上次构建残留的安装包 exe（构建机杀软可能仍锁定该文件，导致 Inno 重写同名文件时
@@ -60,7 +65,7 @@ function Invoke-InnoTask {
   param([string]$Task)
   $max = 3
   for ($i = 1; $i -le $max; $i++) {
-    npx gulp $Task --verbose
+    & $gulp $Task --verbose
     if ($LASTEXITCODE -eq 0) { return $true }
     Write-Host ('[WARN] ' + $Task + ' failed (exit ' + $LASTEXITCODE + '), retry ' + $i + '/' + $max + ' after 10s')
     Start-Sleep -Seconds 10

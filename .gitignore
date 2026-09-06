@@ -156,6 +156,7 @@ _*.ts
 *.safetensors.part
 *.safetensors.incomplete
 ms_tmp/
+tmp-*/
 download*.err
 download*.out
 final_manifest.json
