@@ -29,6 +29,23 @@ import vzip from 'gulp-vinyl-zip';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
+// 2026-09-07 生产事故修复：compile-extensions-build 在 CI（Windows Server 2016）报
+// `EMFILE: too many open files, open '<某个模块/资源文件>'` 而失败。
+// 成因是聚合层面的文件描述符压力：packageLocalExtensionsStream 用 es.merge 并行跑约 50
+// 个扩展流，每个流虽已做单文件背压（见 fromLocalNormal 的 pushNext），但并行总量仍会
+// 超过 Windows CRT 的句柄上限；此时任意一次 open（含 require 模块、vsce/vinyl 读文件）
+// 都会抛 EMFILE，报错路径只是「不幸的下一个」，与该文件本身无关。
+// graceful-fs 会在 EMFILE/ENFILE 时把 open 请求排队并在描述符释放后重试，
+// gracefulify 直接 patch 全局 fs 单例，因此 vsce / vinyl-fs / 本文件的
+// createReadStream 等所有消费者一并受益。必须在其它模块大量 open 之前执行。
+// graceful-fs 是 gulp/vinyl-fs 的传递依赖（根 node_modules 必有）；即便解析失败也只是
+// 退回未加固状态，不能因此让整个构建崩掉，故加 try/catch。
+try {
+	(require('graceful-fs') as { gracefulify(f: typeof fs): void }).gracefulify(fs);
+} catch (err) {
+	fancyLog(ansiColors.yellow('[extensions] graceful-fs unavailable, EMFILE hardening disabled: ') + String(err));
+}
+
 const root = path.dirname(path.dirname(import.meta.dirname));
 // const commit = getVersion(root);
 // const sourceMappingURLBase = `https://main.vscode-cdn.net/sourcemaps/${commit}`;
@@ -260,17 +277,29 @@ function fromLocalEsbuild(extensionPath: string, esbuildConfigFileName: string):
 //   2) node_modules 下存在指向祖先目录的 junction / 自引用链接（npm workspace
 //      自链接 vssaros 等），Windows junction 的 dirent.isDirectory() 同样为 true，
 //      朴素递归会无限下钻。
-// 改为显式栈迭代（无递归）+ realpath 去重断环 + 深度上限兜底。
+// 改为显式栈迭代（无递归）+ realpath 去重断环 + 深度上限兜底 + 真实子树包含性检查。
+//
+// 2026-09-07 追加：仅靠 realpath 去重只能「断环」，拦不住「顺着 junction 把整个仓库
+// 合法遍历一遍」——vssaros → 仓库根、extensions\node_modules\typescript → 根
+// node_modules\typescript 都会让文件列表暴涨到全仓规模（20 万+），随后打包阶段并发
+// open 触发 EMFILE（报错路径形如 .../typescript/node_modules/@octokit/... 即穿越
+// junction 后的仓库根内容）。这里加真实路径包含性检查：只收集物理位于起始目录真实
+// 子树内的文件，任何指向外部的 junction / 符号链接一律不下钻。
 const WALK_MAX_DEPTH = 64;
 
 function walkFiles(dir: string): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();
+	let rootReal: string;
 	try {
-		seen.add(fs.realpathSync(dir));
+		rootReal = fs.realpathSync(dir);
 	} catch {
 		return out;
 	}
+	seen.add(rootReal);
+	// Windows 路径大小写不敏感：统一小写后比较前缀，避免 realpath 规范化后大小写差异误判。
+	const normalize = (p: string) => process.platform === 'win32' ? p.toLowerCase() : p;
+	const rootPrefix = normalize(rootReal.endsWith(path.sep) ? rootReal : rootReal + path.sep);
 
 	const stack: Array<{ dir: string; depth: number }> = [{ dir, depth: 0 }];
 	while (stack.length) {
@@ -292,6 +321,11 @@ function walkFiles(dir: string): string[] {
 				try {
 					real = fs.realpathSync(full);
 				} catch {
+					continue;
+				}
+				// 包含性检查：真实路径逃出起始目录子树（junction 指向仓库根 / 根
+				// node_modules 等）一律不下钻，否则整个仓库会被卷入文件列表。
+				if (!normalize(real).startsWith(rootPrefix)) {
 					continue;
 				}
 				if (seen.has(real)) {

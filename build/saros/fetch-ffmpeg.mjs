@@ -81,9 +81,13 @@ if (isReady() && verifyBinary(FFMPEG) && verifyBinary(FFPROBE)) {
 
 mkdirSync(BIN_DIR, { recursive: true });
 
-// 下载 zip 到临时目录
-const zipPath = join(BIN_DIR, '_ffmpeg_tmp.zip');
-const extractDir = join(BIN_DIR, '_ffmpeg_extract');
+// 下载 zip 到临时目录。
+// 临时文件名必须按进程唯一：CI 复用同一工作区，上次被强杀的构建可能仍持有
+// _ffmpeg_tmp.zip 的句柄，固定名会报 "because it is being used by another process"，
+// 导致 ffmpeg 静默缺失（安装包丢掉配音/视频能力）。
+const tmpTag = `${process.pid}_${Date.now()}`;
+const zipPath = join(BIN_DIR, `_ffmpeg_tmp_${tmpTag}.zip`);
+const extractDir = join(BIN_DIR, `_ffmpeg_extract_${tmpTag}`);
 
 log(`⬇️  下载 ffmpeg: ${FFMPEG_ZIP_URL}`);
 log(`   目标: ${BIN_DIR}`);
@@ -176,6 +180,9 @@ try {
 		throw new Error('复制后 ffmpeg 无法执行（-version 校验失败），可能下载损坏');
 	}
 } catch (err) {
+	// 失败路径同样要清理本进程的临时文件，避免残留污染下一次复用同一工作区的构建。
+	rmSync(zipPath, { force: true });
+	rmSync(extractDir, { recursive: true, force: true });
 	log(`❌ 下载/解压失败: ${err.message}`);
 	log('');
 	log('手动方案：');
