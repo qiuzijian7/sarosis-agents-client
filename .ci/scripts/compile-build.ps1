@@ -23,15 +23,22 @@ if (Test-Path out) {
   if (Test-Path out) { Remove-Item -Recurse -Force out -EA SilentlyContinue }
   Write-Host '[clean] out/ removed'
 }
-Write-Host '[clean] removing tsbuildinfo via git (junction-safe)...'
-# 禁止 Get-ChildItem -Recurse：extensions/*/node_modules/vssaros 是指向仓库根的 junction 自引用，
-# PS5.1 -Recurse 跟随 junction 无限循环（曾致 CI 卡死 2h/4h，被蓝盾心跳超时强杀）。
-# git 不跟随目录 junction，全仓枚举实测 ~2s。extensions\tsconfig.tsbuildinfo 已被 .gitignore 覆盖。
-$stale = @(git ls-files --others --ignored --exclude-standard -- '*.tsbuildinfo' 2>$null)
-$stale += Get-ChildItem -Filter *.tsbuildinfo -EA SilentlyContinue | Select-Object -ExpandProperty FullName
+Write-Host '[clean] removing tsbuildinfo (bounded depth, no traversal)...'
+# 禁止任何树遍历（Get-ChildItem -Recurse / git ls-files 均曾死循环）：extensions/*/node_modules/vssaros
+# 是 npm workspace 指向仓库根的 junction 自引用，遍历器跟进去就是无限循环。
+# 改为有界深度展开（0-3 层），展开前过滤 node_modules，只读目录名、绝不进入任何目录内部。
+$dirs = @($repoRoot)
+for ($i = 0; $i -lt 3; $i++) {
+  $dirs = @($dirs) + @(
+    $dirs | Where-Object { $_ -notmatch '\\node_modules' } |
+      ForEach-Object { Get-ChildItem $_ -Directory -EA SilentlyContinue } |
+      Select-Object -ExpandProperty FullName
+  )
+}
 $removed = 0
-foreach ($p in ($stale | Sort-Object -Unique)) {
-  if ($p -and (Test-Path $p)) { Remove-Item -Force -EA SilentlyContinue $p; $removed++ }
+foreach ($d in ($dirs | Sort-Object -Unique)) {
+  $p = Join-Path $d 'tsconfig.tsbuildinfo'
+  if (Test-Path $p) { Remove-Item -Force -EA SilentlyContinue $p; $removed++ }
 }
 Write-Host ('[clean] removed ' + $removed + ' tsbuildinfo files, starting gulp...')
 
