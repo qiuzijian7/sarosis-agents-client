@@ -2,6 +2,24 @@
 $repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
+# 删除 npm workspace 自链接 junction：extensions/*/node_modules/vssaros（及 extensions/node_modules/vssaros）
+# 指向仓库根，tsc 编译扩展时模块解析会经 junction 拉入全仓 .ts，导致 EMFILE (too many open files)。
+# 只删 vssaros（指向仓库根的巨型自引用）；保留 saros-shared（指向 extensions/shared，是扩展真实依赖）。
+# cmd rmdir 对 junction 只断开链接本身，不触碰目标内容；枚举仅列一层目录名，无递归风险。
+$juncRemoved = 0
+$nmDirs = @(Get-ChildItem extensions -Directory -EA SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'node_modules' })
+$nmDirs += (Join-Path $repoRoot 'extensions\node_modules')
+foreach ($nm in $nmDirs) {
+  if (-not (Test-Path $nm)) { continue }
+  $link = Join-Path $nm 'vssaros'
+  if (Test-Path $link) {
+    cmd /c rmdir "$link" 2>$null
+    if (-not (Test-Path $link)) { $juncRemoved++ }
+  }
+}
+Write-Host ('[junction-clean] removed ' + $juncRemoved + ' vssaros self-link junctions')
+
+
 # Delete extensions known to fail vsce packaging (workspace cache safety)
 cmd /c "rd /s /q extensions\hermes-agent 2>nul"
 cmd /c "rd /s /q extensions\execution-example 2>nul"
