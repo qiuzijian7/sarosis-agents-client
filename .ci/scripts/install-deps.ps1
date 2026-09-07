@@ -17,6 +17,24 @@ node --version
 cmd /c "rd /s /q node_modules 2>nul"
 cmd /c "rd /s /q build\node_modules 2>nul"
 
+# extensions/*/node_modules 此前【从不清理】，而蓝盾工作区跨次构建复用（E:\data\landun\workspace），
+# 于是历次失败/中断的 npm install 残骸永久累积。2026-09-07 事故实证：
+#   extensions\css-language-features\node_modules\balanced-match\node_modules\@shikijs\langs\dist\*.mjs
+# balanced-match 是零依赖的几十行 tiny 包，本仓库任何 package.json / package-lock.json 都不含
+# shiki（已 git grep 验证为 0 命中）——纯属陈年残骸。@shikijs/langs 单包就有 200+ 个 .mjs，
+# 被 gulp 扩展流当作扩展内容遍历读取，直接把 Windows CRT 句柄打爆 → EMFILE。
+# 这也解释了为何 build/lib/extensions.ts 里的 graceful-fs 加固没能救回来：graceful-fs 只能在
+# 句柄紧张时排队重试，扛不住「凭空多出上万个本不该存在的文件」这种量级。
+# 逐个 rd 而非整体删 extensions（扩展源码在版本控制内，node_modules 不在），保持可重入。
+Write-Host '=== Cleaning stale extensions/*/node_modules (workspace is reused across builds) ==='
+$staleCount = 0
+foreach ($d in (Get-ChildItem extensions -Directory -Recurse -Depth 2 -Filter 'node_modules' -EA SilentlyContinue)) {
+  cmd /c ('rd /s /q "' + $d.FullName + '" 2>nul')
+  if (-not (Test-Path $d.FullName)) { $staleCount++ }
+}
+cmd /c "rd /s /q extensions\node_modules 2>nul"
+Write-Host ('[clean] removed ' + $staleCount + ' extensions node_modules dirs')
+
 # ===== 3. Install Spectre =====
 $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Community"
 $vsInstaller = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs_installer.exe"
@@ -147,13 +165,21 @@ if (-not (Test-Path $mainRg)) {
 }
 
 # ===== 8. Install extension dependencies =====
-$extRoots = Get-ChildItem extensions -Directory -Depth 2
+# 原写法 `Get-ChildItem extensions -Directory -Depth 2` 会递归进 node_modules：
+# extensions\<ext>\node_modules\<pkg> 的深度【正好是 2】，于是脚本把上千个 npm 包目录
+# 当成扩展逐个执行 npm install（2026-09-07 日志里成片的
+# "[WARN] commander/katex/d3-array/stylis/mlly/ufo/agent-base npm install exited 1" 即是此因，
+# 它们全是 npm 包而非扩展）。这些越权 install 正是 extensions/*/node_modules 里
+# balanced-match\node_modules\@shikijs 这类脏依赖的来源——直接导致 gulp 遍历时 EMFILE。
+# 同时 out/ 是编译产物，其 package.json 是构建脚本写入的 {"type":"commonjs"}，对它 install 同样有害。
+$extRoots = Get-ChildItem extensions -Directory -Recurse -Depth 2 -EA SilentlyContinue |
+  Where-Object { $_.FullName -notmatch '\\node_modules(\\|$)' -and $_.FullName -notmatch '\\(out|dist)(\\|$)' }
 foreach ($extDir in $extRoots) {
   if (Test-Path ($extDir.FullName + '/package.json')) {
     Push-Location $extDir.FullName
     npm install --ignore-scripts
     if ($LASTEXITCODE -ne 0) {
-      Write-Host ('[WARN] ' + $extDir + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
+      Write-Host ('[WARN] ' + $extDir.FullName + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
     }
     Pop-Location
   }
