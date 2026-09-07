@@ -53,14 +53,28 @@ function isReady() {
 	return existsSync(FFMPEG) && existsSync(FFPROBE);
 }
 
-function verifyBinary(p) {
+function sleepSync(ms) {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// 刚 cpSync 落盘的 ~80MB exe 立即执行常被系统占用/杀软扫描挡住（Windows 上报
+// "The process cannot access the file"），并非二进制损坏 —— 2026-09-07 CI 因此把
+// 已正确安装的 ffmpeg 判为"下载损坏"并 exit 1。故失败要重试。
+function verifyBinary(p, attempts = 3) {
 	if (!existsSync(p)) { return false; }
-	try {
-		execSync(`"${p}" -version`, { stdio: 'ignore', timeout: 15000 });
-		return true;
-	} catch {
-		return false;
+	for (let i = 1; i <= attempts; i++) {
+		try {
+			execSync(`"${p}" -version`, { stdio: 'ignore', timeout: 15000 });
+			return true;
+		} catch (e) {
+			if (i === attempts) {
+				log(`   ⚠️ ${p} -version 校验失败（第 ${i}/${attempts} 次）: ${e.message.split('\n')[0]}`);
+				return false;
+			}
+			sleepSync(1500);
+		}
 	}
+	return false;
 }
 
 if (CHECK_ONLY) {

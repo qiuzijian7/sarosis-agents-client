@@ -16,22 +16,30 @@ if (-not (Test-Path 'build\node_modules\@vscode\vsce')) {
   Write-Host '[deps-heal] build/ dependencies restored'
 }
 
-# 删除 npm workspace 自链接 junction：extensions/*/node_modules/vssaros（及 extensions/node_modules/vssaros）
-# 指向仓库根，tsc 编译扩展时模块解析会经 junction 拉入全仓 .ts，导致 EMFILE (too many open files)。
-# 只删 vssaros（指向仓库根的巨型自引用）；保留 saros-shared（指向 extensions/shared，是扩展真实依赖）。
+# 删除自链接 junction：39 个扩展的 package.json 都声明 "vssaros": "file:../.."，npm install 会在
+# extensions/*/node_modules/vssaros 建一个指向【仓库根】的 junction。编译/打包扩展时遍历器顺着它
+# 拉入全仓（尤其 out-build/ 十万级文件）→ EMFILE (too many open files)。
+# 只删 vssaros；保留 saros-shared（指向 extensions/shared，是扩展真实依赖）。
 # cmd rmdir 对 junction 只断开链接本身，不触碰目标内容；枚举仅列一层目录名，无递归风险。
-$juncRemoved = 0
-$nmDirs = @(Get-ChildItem extensions -Directory -EA SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'node_modules' })
-$nmDirs += (Join-Path $repoRoot 'extensions\node_modules')
-foreach ($nm in $nmDirs) {
-  if (-not (Test-Path $nm)) { continue }
-  $link = Join-Path $nm 'vssaros'
-  if (Test-Path $link) {
-    cmd /c rmdir "$link" 2>$null
-    if (-not (Test-Path $link)) { $juncRemoved++ }
+# ★ 必须在【所有 npm install 之后】再调用一次：任何一次 extension 内的 npm install 都会重建该 junction
+#   （2026-09-07 事故：junction-clean 删掉 40 个后，codebuddy-provider 的 npm install 又装回 1 个，
+#    gulp 遂在 extensions\codebuddy-provider\node_modules\vssaros\out-build\... 上 EMFILE）。
+function Remove-VssarosJunctions {
+  param([string]$Tag)
+  $juncRemoved = 0
+  $nmDirs = @(Get-ChildItem extensions -Directory -EA SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'node_modules' })
+  $nmDirs += (Join-Path $repoRoot 'extensions\node_modules')
+  foreach ($nm in $nmDirs) {
+    if (-not (Test-Path $nm)) { continue }
+    $link = Join-Path $nm 'vssaros'
+    if (Test-Path $link) {
+      cmd /c rmdir "$link" 2>$null
+      if (-not (Test-Path $link)) { $juncRemoved++ }
+    }
   }
+  Write-Host ('[junction-clean:' + $Tag + '] removed ' + $juncRemoved + ' vssaros self-link junctions')
 }
-Write-Host ('[junction-clean] removed ' + $juncRemoved + ' vssaros self-link junctions')
+Remove-VssarosJunctions -Tag 'pre'
 
 
 # Delete extensions known to fail vsce packaging (workspace cache safety)
@@ -96,6 +104,28 @@ foreach ($ext in ($compileTargets | Sort-Object { $_ -eq 'shared' } -Descending)
   }
   Pop-Location
 }
+
+# ===== agent-studio 单独编译 =====
+# 它既没有 compile 脚本（不会被上面的动态循环选中），也不被 gulp 扩展管线识别，而 out/ 又被 .gitignore
+# 排除 → CI checkout 后永远没有 out/extension.js，generate-exe.ps1 的自愈拿不到源，直接 FATAL 拒绝出包
+# （2026-09-07：extensions\agent-studio\out 在仓库也缺失）。这里用根 tsc 显式编译。
+$asDir = 'extensions\agent-studio'
+if (Test-Path (Join-Path $asDir 'tsconfig.json')) {
+  Write-Host '[compile-ext] Compiling agent-studio (no compile script, tsc -p)'
+  & node (Join-Path $repoRoot 'node_modules\typescript\bin\tsc') -p $asDir
+  if ($LASTEXITCODE -ne 0) { Write-Error 'FATAL: agent-studio tsc failed'; exit 1 }
+  # 根 package.json 是 "type": "module"，产物是 CJS，必须落 out/package.json 覆盖模块类型，
+  # 否则 require 时报 ERR_REQUIRE_ESM。写【无 BOM】UTF-8。
+  [IO.File]::WriteAllText((Join-Path $repoRoot "$asDir\out\package.json"), '{"type":"commonjs"}', (New-Object Text.UTF8Encoding $false))
+  if (-not (Test-Path (Join-Path $asDir 'out\extension.js'))) {
+    Write-Error 'FATAL: agent-studio out\extension.js 未生成'
+    exit 1
+  }
+  Write-Host '[OK] agent-studio compiled'
+}
+
+# 所有 npm install 已结束，此处必须再清一次 junction（见上方函数注释）。
+Remove-VssarosJunctions -Tag 'pre-gulp'
 
 # 直接调本地 gulp，绕开 npx（npx 找不到本地包时会交互式询问 "Ok to proceed?"，
 # CI 无 stdin 导致无限挂起）。
