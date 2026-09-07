@@ -1,4 +1,4 @@
-# 打包 vscode-win32-x64
+﻿# 打包 vscode-win32-x64
 # Join-Path 的三参数形式（$PSScriptRoot '..' '..'）依赖 PowerShell 7+ 的
 # -AdditionalChildPath；构建机是 Windows Server 2016 / PS 5.1，会抛
 # "A positional parameter cannot be found that accepts argument '..'"，

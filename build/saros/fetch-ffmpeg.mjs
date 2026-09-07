@@ -124,7 +124,12 @@ function download(url, dest) {
 				}
 			});
 			res.on('error', reject);
-			res.on('end', () => {
+			file.on('error', reject);
+			// 必须等【写流 close】而非 res 'end'：响应结束时数据仍在内核/流缓冲里，
+			// 文件句柄未释放，紧接着的 Expand-Archive 会报
+			// "The process cannot access the file ... because it is being used by another process"
+			// （2026-09-07 CI 事故：163MB 下完立刻解压失败，ffmpeg 静默缺失）。
+			file.on('close', () => {
 				process.stdout.write('\n');
 				resolvePromise();
 			});
@@ -146,12 +151,18 @@ function findBinaries(dir) {
 
 try {
 	await download(FFMPEG_ZIP_URL, zipPath);
-	log('✅ 下载完成，解压中...');
+	const zipSize = statSync(zipPath).size;
+	if (zipSize < 10 * 1024 * 1024) {
+		throw new Error(`下载的 zip 过小（${(zipSize / 1024 / 1024).toFixed(1)}MB），疑似被拦截或截断`);
+	}
+	log(`✅ 下载完成（${(zipSize / 1024 / 1024).toFixed(1)}MB），解压中...`);
 
 	rmSync(extractDir, { recursive: true, force: true });
 	mkdirSync(extractDir, { recursive: true });
+	// -ErrorAction Stop：Expand-Archive 的错误默认非终止，powershell 仍退出 0，
+	// 会让解压失败伪装成「解压后未找到 ffmpeg.exe」，掩盖真实原因。
 	execSync(
-		`powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force"`,
+		`powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force"`,
 		{ stdio: 'inherit' },
 	);
 

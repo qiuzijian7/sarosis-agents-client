@@ -2,6 +2,20 @@
 $repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
+# 依赖完整性自愈：install-deps.ps1 会先 rd /s /q build\node_modules 再在末段重装；
+# 若它在中途（如 native rebuild）失败 exit 1，蓝盾并不会中断 Job，build/node_modules 便一直是空的，
+# 于是这里的 gulp bundle-extensions-build 在 118ms 内报 Cannot find module '@vscode/vsce'
+# （vsce 属于 build/package.json，不在根 node_modules）——白跑 30 分钟编译才暴露。
+if (-not (Test-Path 'build\node_modules\@vscode\vsce')) {
+  Write-Host '[deps-heal] build/node_modules/@vscode/vsce missing - reinstalling build/ dependencies...'
+  Push-Location build
+  npm install --ignore-scripts
+  $healRc = $LASTEXITCODE
+  Pop-Location
+  if ($healRc -ne 0) { Write-Error 'FATAL: build/ npm install failed (deps-heal)'; exit 1 }
+  Write-Host '[deps-heal] build/ dependencies restored'
+}
+
 # 删除 npm workspace 自链接 junction：extensions/*/node_modules/vssaros（及 extensions/node_modules/vssaros）
 # 指向仓库根，tsc 编译扩展时模块解析会经 junction 拉入全仓 .ts，导致 EMFILE (too many open files)。
 # 只删 vssaros（指向仓库根的巨型自引用）；保留 saros-shared（指向 extensions/shared，是扩展真实依赖）。

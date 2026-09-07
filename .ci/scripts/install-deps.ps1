@@ -46,14 +46,27 @@ $env:ELECTRON_MIRROR       = "https://npmmirror.com/mirrors/electron/"
 npm install --ignore-scripts
 if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: npm install --ignore-scripts failed"; exit 1 }
 
-npm rebuild `
-  @parcel/watcher @vscode/native-watchdog @vscode/policy-watcher `
-  @vscode/spdlog @vscode/windows-process-tree @vscode/windows-registry `
-  @vscode/deviceid @vscode/sqlite3 @vscode/windows-mutex `
-  @vscode/windows-ca-certs kerberos native-keymap node-pty `
-  windows-foreground-love `
-  --foreground-scripts
-if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: native rebuild failed"; exit 1 }
+# node-gyp 的 VS 探测（powershell + Add-Type 编译 Find-VisualStudio.cs）在构建机上偶发失败：
+# 同一次 rebuild 里前两个包刚 "find VS using VS2022" 成功，下一个包就报
+# "could not use PowerShell to find Visual Studio 2017 or newer"，整条 npm rebuild 随之中止。
+# 该失败一旦发生，脚本 exit 1 → 后续 build/ 依赖、扩展依赖、ripgrep 全部跳过，
+# 而流水线不会因此中断，白跑 30 分钟编译后在 compile-extensions 报 Cannot find module '@vscode/vsce'
+# （2026-09-07 事故）。因此这里按重试处理（npm rebuild 幂等，已成功的包会被跳过/快速重建）。
+$env:npm_config_msvs_version = "2022"
+$nativeOk = $false
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+  npm rebuild `
+    @parcel/watcher @vscode/native-watchdog @vscode/policy-watcher `
+    @vscode/spdlog @vscode/windows-process-tree @vscode/windows-registry `
+    @vscode/deviceid @vscode/sqlite3 @vscode/windows-mutex `
+    @vscode/windows-ca-certs kerberos native-keymap node-pty `
+    windows-foreground-love `
+    --foreground-scripts
+  if ($LASTEXITCODE -eq 0) { $nativeOk = $true; break }
+  Write-Host ('[WARN] native rebuild attempt ' + $attempt + ' failed (exit ' + $LASTEXITCODE + '), retrying in 15s...')
+  Start-Sleep -Seconds 15
+}
+if (-not $nativeOk) { Write-Error "FATAL: native rebuild failed after 3 attempts"; exit 1 }
 
 # ===== 5.4 @vscode/tree-sitter-wasm 显式保障（语法高亮 wasm 打包必需）=====
 # 背景：蓝盾构建机 npm install 偶发漏装该包，导致打包产物 resources/app/node_modules/

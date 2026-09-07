@@ -1,4 +1,4 @@
-# 构建 KB markdown webview bundle (kbblocks.js)
+﻿# 构建 KB markdown webview bundle (kbblocks.js)
 # Join-Path 三参数形式需 PS 7+；构建机为 PS 5.1，改用 Split-Path 两次。
 $repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
