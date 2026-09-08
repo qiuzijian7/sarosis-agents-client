@@ -253,6 +253,10 @@ export class ConfigHtmlServerChannel extends Disposable {
 		// 影响它——detached 子进程在主进程退出后仍能完成 taskkill/kill。
 		// 权衡：清理结果不再进退出日志；ensure 侧的探活+身份校验仍能兜住残留误判。
 		this.lifecycleMainService.onWillShutdown(() => {
+			// ★ ShutdownTimeline（2026-09-07）：主进程层「收到关闭」的锚点——若渲染
+			// 进程的 beforeShutdown 日志缺失而本条出现，说明关闭卡在主进程→渲染的
+			// 传递之前（如窗口 close 被拦截/主线程阻塞）。
+			this.logService.info(`[ShutdownTimeline] MAIN onWillShutdown fired, spawnedPorts=${this._spawnedPorts.size}`);
 			if (this._spawnedPorts.size === 0) { return; }
 			const ports = [...this._spawnedPorts];
 			this._spawnedPorts.clear();

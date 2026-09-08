@@ -117,7 +117,11 @@ export function instantOutputSize(
  * `TypeError: Failed to execute 'drawImage' … not of type '(CSSImageValue or …)'`.
  */
 export function applyInstantDraw(
-	ctx: { drawImage?: (img: unknown, ...args: number[]) => void; translate?: (...a: number[]) => void; rotate?: (r: number) => void; scale?: (...a: number[]) => void },
+	// 2026-09-07：旧签名 `(img: unknown, ...args: number[]) => void` 无法接受真实的
+	// `CanvasRenderingContext2D`（其 drawImage 是 3 个重载，无法匹配单一签名）→
+	// 8 处调用点报 TS2345。改用 `any` 形参：重载方法可赋值给 `(...args:any[])=>void`，
+	// 真实的 ctx 与 e2e 录制 fake 都仍可传入（结构意图不变，零运行时影响）。
+	ctx: { drawImage?: (img: any, ...args: any[]) => void; translate?: (...a: number[]) => void; rotate?: (r: number) => void; scale?: (...a: number[]) => void },
 	type: string,
 	values: Record<string, unknown>,
 	srcW: number,

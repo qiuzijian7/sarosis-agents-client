@@ -16,38 +16,12 @@ import { Progress } from '../../../../platform/progress/common/progress.js';
 import { DEFAULT_MAX_SEARCH_RESULTS, IExtendedExtensionSearchOptions, ITextSearchPreviewOptions, SearchError, SearchErrorCode, serializeSearchError, TextSearchMatch } from '../common/search.js';
 import { Range, TextSearchComplete2, TextSearchContext2, TextSearchMatch2, TextSearchProviderOptions, TextSearchQuery2, TextSearchResult2 } from '../common/searchExtTypes.js';
 import { AST as ReAST, RegExpParser, RegExpVisitor } from 'vscode-regexpp';
-import { rgPath } from '@vscode/ripgrep';
-import * as fs from 'fs';
+import { rgDiskPath, isRipgrepAvailable, RIPGREP_MISSING_HINT } from './ripgrepAvailability.js';
 import { anchorGlob, IOutputChannel, Maybe, rangeToSearchRange, searchRangeToRange } from './ripgrepSearchUtils.js';
 import type { RipgrepTextSearchOptions } from '../common/searchExtTypesInternal.js';
 import { newToOldPreviewOptions } from '../common/searchExtConversionTypes.js';
 
-// If @vscode/ripgrep is in an .asar file, then the binary is unpacked.
-const rgDiskPath = rgPath.replace(/\bnode_modules\.asar\b/, 'node_modules.asar.unpacked');
-
-/**
- * Whether the ripgrep binary is actually present on disk. See the matching
- * explanation in `ripgrepFileSearch.ts` for why this check is needed.
- */
-export const isRipgrepAvailable: boolean = (() => {
-	try {
-		return fs.existsSync(rgDiskPath);
-	} catch {
-		return false;
-	}
-})();
-
-/**
- * Human-readable hint shown to the user when ripgrep is unavailable.
- * Kept in sync with `ripgrepFileSearch.ts` and the build-side
- * `ensureRipgrepBinaryTask` log message.
- */
-export const RIPGREP_MISSING_HINT =
-	`ripgrep binary not found at ${rgDiskPath}. ` +
-	`Activity bar search requires ripgrep. ` +
-	`Re-install VsSaros (the build should copy rg.exe into node_modules.asar.unpacked) ` +
-	`or copy @vscode/ripgrep/bin/rg[.exe] from a working install into ` +
-	`<app>/node_modules.asar.unpacked/@vscode/ripgrep/bin/ manually.`;
+export { isRipgrepAvailable, RIPGREP_MISSING_HINT };
 
 export class RipgrepTextSearchEngine {
 

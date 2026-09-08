@@ -179,6 +179,22 @@ export interface WidgetBridgeHost {
 
 export function createWidgetBridgeHost(layer: HTMLElement, doc: MinimalDocument = globalThis.document): WidgetBridgeHost {
 	const containers = new Map<string, HTMLElement>();
+	/**
+	 * ★ 每帧脏检查缓存（P0 性能优化）。
+	 *
+	 * `sync` 是 rAF 每帧调用：此前对**每张**卡片无条件写 ~15 个 style（含昂贵的
+	 * `clip-path`）→ 拖拽时静止节点也被全量重写，N 个节点 = 每帧 15N 次样式写入 +
+	 * N 次 clip-path 重解析（paint invalidation）。17 节点实测明显掉帧。
+	 *
+	 * 这里缓存每张卡片上次写入的**完整签名**（位置/尺寸/缩放/ring/z/clip），
+	 * 签名未变 → 整段跳过（零 DOM 写入）。拖拽时通常只有 1-2 个节点在动，
+	 * 其余节点直接命中缓存 → 省掉 ~90% 的写入与全部 clip-path 重建。
+	 */
+	const lastSyncSig = new Map<string, string>();
+	/** clip 结果缓存（P1）：`clipSig → clip 字符串`，避免每帧重跑 buildClipPath。 */
+	const lastClip = new Map<string, { sig: string; value: string }>();
+	/** 2 位小数，与 buildClipPath 内部精度一致（避免浮点抖动导致缓存永不命中）。 */
+	const r2 = (v: number): number => Math.round(v * 100) / 100;
 
 	function ensureContainer(nodeId: string): HTMLElement {
 		let el = containers.get(nodeId);
@@ -213,6 +229,10 @@ export function createWidgetBridgeHost(layer: HTMLElement, doc: MinimalDocument 
 				el.remove();
 				containers.delete(nodeId);
 			}
+			// 同步清脏检查缓存：否则节点 id 复用（nextNodeId 会回收序号）时
+			// 新卡片会命中旧签名 → 首帧不写样式（卡片停在旧位置）
+			lastSyncSig.delete(nodeId);
+			lastClip.delete(nodeId);
 		},
 		sync(nodes, viewport, occluders): void {
 			// Cards default to sitting just below LiteGraph's title bar and
@@ -315,6 +335,57 @@ export function createWidgetBridgeHost(layer: HTMLElement, doc: MinimalDocument 
 				// `maxPorts*20 + 6 + …`，同样在端口行下方。
 				const insetT = TOP_INSET;
 				const insetB = fullCover ? 0 : BOTTOM_INSET;
+				// ── 以下 ring / z / clip 原在样式写入之后计算（line ~356/~368/~390），
+				//    现**提前到这里**：P0 脏检查必须在写任何 style 之前完成，否则
+				//    只能省掉最后一步 clipPath，前面的 left/top/… 仍每帧重写。
+				// Selection / execution-state ring（原位置见下方注释块）。
+				const ring = overlayRingColor(fullCover, selected, state);
+				// ── 层级：ComfyUI getDomWidgetZIndex ─────────────────────────
+				const z = (zIndex ?? 0) + 1;
+				// ── 裁剪：ComfyUI useDomClipping（见 domClipping.ts 头部说明）──
+				const elRect: ClipRect = {
+					x: rect.left + insetL * scale,
+					y: rect.top + insetT * scale,
+					width: Math.max(0, designW - insetL - insetR) * scale,
+					height: (widgetRect && !fullCover
+						? Math.max(0, widgetRect.height)
+						: Math.max(0, designH - insetT - insetB)) * scale,
+				};
+				// ★ P1：holes 收集前先做**包围盒快速排除** —— 绝大多数 occluder
+				//   与本卡片根本不相交，直接跳过，把 N 降到实际重叠的少数几个。
+				const holes: ClipRect[] = [];
+				for (const src of clipSources) {
+					if (src.z <= z - 1) { continue; }
+					const hr = src.rect;
+					if (hr.x >= elRect.x + elRect.width || hr.x + hr.width <= elRect.x
+						|| hr.y >= elRect.y + elRect.height || hr.y + hr.height <= elRect.y) { continue; }
+					holes.push(hr);
+				}
+				// ★ P1：clip 结果缓存 —— elRect + holes 都没变就不重跑 buildClipPath
+				const rectSig = `${r2(elRect.x)},${r2(elRect.y)},${r2(elRect.width)},${r2(elRect.height)}`;
+				let holeSig = '';
+				for (const h of holes) { holeSig += `${r2(h.x)},${r2(h.y)},${r2(h.width)},${r2(h.height)};`; }
+				const clipSig = `${rectSig}|${holeSig}|${r2(scale)}`;
+				const cachedClip = lastClip.get(id);
+				let clip: string;
+				if (cachedClip && cachedClip.sig === clipSig) {
+					clip = cachedClip.value;
+				} else {
+					clip = buildClipPath(elRect, holes, scale);
+					lastClip.set(id, { sig: clipSig, value: clip });
+				}
+				// ★ P0：整卡脏检查 —— 所有会变的样式签名未变 → **零 DOM 写入**
+				//   （覆盖 left/top/width/height/transform/boxShadow/zIndex/clipPath）。
+				//   拖拽时静止节点直接命中 → 省掉绝大部分每帧样式写入与 clip 重解析。
+				const sig = `${rectSig}|${r2(scale)}|${ring ?? ''}|${z}|${clip}`;
+				if (lastSyncSig.get(id) === sig) {
+					// ★ 防御：跳过整段写入时仍要保证 display 是可见的 —— 卡片上一帧若
+					//   不在 nodes 里，末尾循环会把它置为 'none'；本帧重新出现时签名
+					//   可能仍未变（位置没动）→ 直接 continue 会让卡片**永远隐身**。
+					if (el.style.display !== 'block') { el.style.display = 'block'; }
+					continue;
+				}
+				lastSyncSig.set(id, sig);
 				// Position in screen px: the graph-unit inset scales with zoom so
 				// the card stays locked to the widget area of the node.
 				el.style.left = `${rect.left + insetL * scale}px`;
@@ -353,7 +424,7 @@ export function createWidgetBridgeHost(layer: HTMLElement, doc: MinimalDocument 
 				// paints OUTSIDE the element and is not affected by the
 				// container's overflow:hidden; the 8px radius matches the
 				// NodeCard's own border-radius so the ring hugs the card.
-				const ring = overlayRingColor(fullCover, selected, state);
+				// （ring / z 的计算已提到本循环开头，供 P0 脏检查签名使用）
 				if (ring) {
 					el.style.borderRadius = '8px';
 					el.style.boxShadow = `0 0 0 2px ${ring}`;
@@ -365,25 +436,7 @@ export function createWidgetBridgeHost(layer: HTMLElement, doc: MinimalDocument 
 				// 的歧义）。overlay layer 有 `isolation: isolate`，所有卡片是它的
 				// 直接子元素，因此这些 z-index 在同一个 stacking context 内比较，
 				// 结果稳定 —— 不需要每帧重排 DOM，也不做 hover 提升（ComfyUI 也没有）。
-				const z = (zIndex ?? 0) + 1;
 				el.style.zIndex = String(z);
-				// ── 裁剪：ComfyUI useDomClipping ─────────────────────────────
-				// 挖掉所有层级更高节点的 renderArea：DOM 卡片整体在 canvas 之上，
-				// 只有把这块区域从下层卡片里"抠掉"，上层节点的 canvas 标题栏/背景
-				// 才不会被下层 DOM 盖住（这正是重叠节点"UI 穿插"的根因）。
-				const elRect: ClipRect = {
-					x: rect.left + insetL * scale,
-					y: rect.top + insetT * scale,
-					width: Math.max(0, designW - insetL - insetR) * scale,
-					height: (widgetRect && !fullCover
-						? Math.max(0, widgetRect.height)
-						: Math.max(0, designH - insetT - insetB)) * scale,
-				};
-				const holes: ClipRect[] = [];
-				for (const src of clipSources) {
-					if (src.z > z - 1) { holes.push(src.rect); }
-				}
-				const clip = buildClipPath(elRect, holes, scale);
 				el.style.clipPath = clip || 'none';
 			}
 			for (const [id, el] of containers) {

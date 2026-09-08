@@ -272,9 +272,28 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// 关窗前把防抖窗口内未落盘的 session index 写出（dispose 不能 await，
 		// onWillShutdown 的 join 才能真正等待写完成，否则最后几条消息的
 		// messageCount/updatedAt 会丢失）。
+		// ★ 硬超时（2026-09-07）：join 的 promise 若挂起会**永久阻塞关闭**（用户报
+		// 「点击 close 按钮没有反应」）。与 nativeChatEditorPane.interruptedStream
+		// 同一模式——shutdown 期间服务可能半销毁，文件写入有挂起风险；宁可丢
+		// 这几个 index 字段（下次会话刷新自愈），绝不让 app 关不掉。
 		this._register(lifecycleService.onWillShutdown(e => {
-			if (this._sessionIndexDirty.size === 0) { return; }
-			e.join(this._flushAllSessionIndexes(), {
+			if (this._sessionIndexDirty.size === 0) {
+				this.logService.info('[ShutdownTimeline] sessionIndex: clean, skip join');
+				return;
+			}
+			const FLUSH_TIMEOUT_MS = 3000;
+			const timeout = new Promise<void>(resolve => {
+				setTimeout(() => resolve(), FLUSH_TIMEOUT_MS);
+			});
+			const work = this._flushAllSessionIndexes().catch(() => { });
+			// 注意：这里**不清 timer**——e.join 后同步 clearTimeout 会让超时永不触发。
+			// 进程即将退出，timer 泄漏无碍；work 先完成时 timeout promise 留至退出也无碍。
+			const t0 = Date.now();
+			this.logService.info(`[ShutdownTimeline] sessionIndex flush begin dirty=${this._sessionIndexDirty.size}`);
+			e.join(Promise.race([work, timeout]).then(() => {
+				this.logService.info(`[ShutdownTimeline] sessionIndex flush done elapsed=${Date.now() - t0}ms` +
+					`(elapsed>=${FLUSH_TIMEOUT_MS} → timed out, index fields lost)`);
+			}), {
 				id: 'agentChatService.sessionIndex',
 				label: 'Saving agent session index',
 			});
@@ -1433,10 +1452,73 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			}
 		}
 
+		// ── 合并「中断草稿」（2026-09-06）──
+		// 关闭 app 时若流式输出未结束，pane 只写了一个**小 draft 文件**（见
+		// saveInterruptedDraft），不重写整个 session 历史 → 关闭不被阻塞。
+		// 此处在加载历史时消费它：补进返回列表（用户立即可见）+ 异步写回 session
+		// 文件（持久化）。消费即删除，保证只合并一次。
+		if (sessionId) {
+			const draftMsg = await this._consumeInterruptedDraft(agentId, sessionId);
+			if (draftMsg) {
+				messages = [...(messages || []), draftMsg];
+				this._historyCache.set(key, messages);
+				void this.appendMessage(agentId, draftMsg).catch(err =>
+					this.logService.error('[AgentChatService] Failed to persist recovered interrupted draft:', err),
+				);
+			}
+		}
+
 		this.logService.info(
 			`[AgentChatService] getHistory: ${(messages || []).length} msgs for ${key}`,
 		);
 		return messages || [];
+	}
+
+	// ─── 中断草稿（2026-09-06）：关闭时写小文件，加载时消费 ──────────────
+
+	private async _getDraftUri(agentId: string, sessionId: string): Promise<URI> {
+		const { sessionsDirUri } = await this._resolveAgentPaths(agentId);
+		return URI.joinPath(sessionsDirUri, `${sessionId}.draft.json`);
+	}
+
+	async saveInterruptedDraft(agentId: string, sessionId: string, content: string): Promise<void> {
+		try {
+			const uri = await this._getDraftUri(agentId, sessionId);
+			await this.fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify({
+				content,
+				savedAt: Date.now(),
+			})));
+			this.logService.info(
+				`[AgentChatService] saved interrupted draft (${content.length} chars) for ${agentId}/${sessionId}`,
+			);
+		} catch (err) {
+			this.logService.error('[AgentChatService] Failed to save interrupted draft:', err);
+		}
+	}
+
+	/** 读取并**删除**草稿（消费一次，避免重复合并）。无草稿返回 undefined。 */
+	private async _consumeInterruptedDraft(agentId: string, sessionId: string): Promise<ChatMessage | undefined> {
+		try {
+			const uri = await this._getDraftUri(agentId, sessionId);
+			if (!(await this.fileService.exists(uri))) { return undefined; }
+			const raw = (await this.fileService.readFile(uri)).value.toString();
+			await this.fileService.del(uri);
+			const parsed = JSON.parse(raw);
+			const content = typeof parsed?.content === 'string' ? parsed.content : '';
+			if (!content.trim()) { return undefined; }
+			return {
+				id: `msg_${Date.now()}_interrupted`,
+				role: 'assistant',
+				content,
+				agentId,
+				agentSessionId: sessionId,
+				timestamp: new Date(parsed.savedAt ?? Date.now()).toISOString(),
+				metadata: { streamInterrupted: true },
+			};
+		} catch (err) {
+			this.logService.warn('[AgentChatService] Failed to consume interrupted draft:', err);
+			return undefined;
+		}
 	}
 
 	async clearHistory(agentId: string, sessionId?: string): Promise<void> {

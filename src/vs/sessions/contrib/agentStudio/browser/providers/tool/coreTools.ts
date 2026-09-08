@@ -27,7 +27,7 @@ import { NonRetryableToolError, ToolSecurityLevel } from '../../../common/provid
 import type { IToolResultContent } from '../../../common/providers.js';
 import { SearchHelpers, redactSecrets } from './searchHelpers.js';
 import { detectTerminalSearchCommand, terminalSearchCommandHint } from './terminalCommandGuards.js';
-import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, detectScriptSourceWrite, scriptSourceWriteGuardMessage } from './executeCodeGuards.js';
+import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDANCE, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, detectScriptSourceWrite, scriptSourceWriteGuardMessage, recordFileReadSuccess, recordFileReadFailure } from './executeCodeGuards.js';
 import { stripShellNoise, isSlowStartCommand, emptyTerminalOutputMessage, createShellNoiseStripper } from './terminalOutputDiagnosis.js';
 import { pickTerminalStrategy, decideIdleWaitAction } from './terminalCompletionStrategy.js';
 import { runExecOutputPipeline } from './execOutputPipeline.js';
@@ -648,10 +648,19 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				.map(c => c.name);
 			if (candidates.length === 0) { return []; }
 
-			const lowerName = fileName.toLowerCase();
+			// 2026-09-07：比较前做 Unicode 规范折叠（借鉴 Hermes-Agent
+			// `_unicode_variant_match`）。macOS 用 NFD 分解存储文件名、截图名含
+			// 窄不换行空格 U+202F、Finder 重命名会把 ' 变成弯引号 U+2019——
+			// 这些差异在终端/UI 里**肉眼不可见**，不折叠就会误判为"文件不存在"。
+			const canon = (s: string): string => s.normalize('NFC')
+				.replace(/[  ]/g, ' ')
+				.replace(/[‘’]/g, "'")
+				.toLowerCase();
+
+			const lowerName = canon(fileName);
 			const scored = candidates.map(name => ({
 				name,
-				dist: _levenshtein(lowerName, name.toLowerCase()),
+				dist: _levenshtein(lowerName, canon(name)),
 			}));
 
 			const threshold = Math.max(fileName.length / 2, 3);
@@ -765,7 +774,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			inputSchema: {
 				type: 'object',
 				properties: {
-					path: { type: 'string', description: 'Absolute path or workspace-relative path' },
+					path: { type: 'string', description: 'File path. MUST be grounded: copy it verbatim from a previous tool result (search_files / search_graph / search_code / file_read) — never assemble or recall a path from memory. Relative paths resolve against the primary workspace root; in a multi-folder workspace prefer the absolute path returned by the search tool.' },
 					offset: { type: 'integer', description: 'Line number to start reading from (1-indexed, default: 1)', default: 1, minimum: 1 },
 					limit: { type: 'integer', description: 'Maximum number of lines to read (default: 500, max: 2000). Use limit:1 to probe a file\'s total line count and size without reading its content.', default: 500, maximum: 2000 },
 				},
@@ -784,7 +793,29 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			const limit = Math.min(Math.max(Number(args['limit'] ?? 500), 1), READ_MAX_LIMIT);
 
 			// 读操作：仅解析相对路径为绝对路径，不触发沙箱判定
-			const resolvedPath = await ctx.resolveAndCheckWorkspacePath(agentId, requestedPath, false);
+			let resolvedPath = await ctx.resolveAndCheckWorkspacePath(agentId, requestedPath, false);
+
+			// ── 多根兜底探测（2026-09-07）──────────────────────────────────
+			// 借鉴 Continue `resolveRelativePathInDir`（core/util/ideUtils.ts:19）：
+			// 它把相对路径在**每个** workspace 根下探测、取首个存在者。而我们的
+			// resolveWorkspacePath 只对首个允许根解析 → 多根工作区下，模型拿着
+			// 另一个仓库里的相对路径会 File not found。
+			// 这里只在「首根解析结果不存在」时兜底遍历其余根（**成功路径行为不变**，
+			// 零回归风险），为后续输出「最短唯一相对路径」铺路。
+			if (!/^[a-zA-Z]:[\\/]/.test(requestedPath) && !requestedPath.startsWith('/')) {
+				try {
+					if (!await ctx.fileService.exists(URI.file(resolvedPath))) {
+						for (const folder of ctx.workspaceService.getWorkspace().folders) {
+							const candidate = URI.joinPath(folder.uri, requestedPath).fsPath;
+							if (candidate !== resolvedPath && await ctx.fileService.exists(URI.file(candidate))) {
+								ctx.logService.info(`[coreTools] file_read: "${requestedPath}" not under primary root; resolved via "${candidate}"`);
+								resolvedPath = candidate;
+								break;
+							}
+						}
+					}
+				} catch { /* 探测失败 → 沿用原解析结果，行为不变 */ }
+			}
 
 			// 二进制守护
 			if (isBinaryPath(resolvedPath)) {
@@ -837,7 +868,31 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				mtime = result.mtime;
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-			if (msg.includes('FILE_NOT_FOUND') || msg.includes('ENOENT') || msg.includes('not found') || msg.includes('not exist')) {
+				// ── 畸形路径识别（2026-09-07，日志 1788763596406）────────────────
+				// 上游工具（如 search_files 索引快路径）曾产出「工作区根 + 绝对路径」
+				// 的畸形路径 `g:/…/repo/g:\Custom…`；模型照抄后 file_read 只会得到一句
+				// "File not found"，既不说路径畸形、也不提示去重新定位。这里在消费侧
+				// 再兜一层：识别出多个盘符段 → 明确指出并要求重新取路径。
+				const driveHits = resolvedPath.match(/[a-zA-Z]:[\\/]/g);
+				if (driveHits && driveHits.length > 1) {
+					ctx.logService.warn(`[coreTools] file_read got a MALFORMED path (multiple drive segments): ${resolvedPath}`);
+					recordFileReadFailure(resolvedPath, 'malformed path');
+					throw new NonRetryableToolError(
+						`Malformed path: "${requestedPath}" resolves to "${resolvedPath}", which contains more than one ` +
+						`drive/root segment (a workspace root joined with an absolute path). This path can never exist. ` +
+						`Do NOT retry it — re-locate the file with search_files / search_code and copy the path from its output.`,
+					);
+				}
+				// ★ 2026-09-07：原判断漏了 'nonexistent'（"Unable to resolve nonexistent
+				// file"，fileService 的标准措辞不含 "not exist"/"not found"）→ 该形态
+				// 走 throw err 原样透传，无相似建议无纠错反馈（日志 1788713328385：
+				// 幻觉路径 webidx\... 原样回给模型，随后 patch 用猜的内容连败 5 次）。
+				const notFound = msg.includes('FILE_NOT_FOUND') || msg.includes('ENOENT') || msg.includes('not found')
+					|| msg.includes('not exist') || msg.includes('nonexistent') || msg.includes('resolve nonexistent');
+				// read-state 登记（无论走哪个反馈分支，失败都要记）——patch 失败时
+				// describeReadGap 据此点破「你从未成功读过该文件」（本次事故直接解药）。
+				recordFileReadFailure(resolvedPath, msg);
+				if (notFound) {
 				// NonRetryableToolError（2026-08-21）：文件不存在是**确定性失败** ——
 				// 3 秒退避内文件不会自己出现。日志 1787292837471 实测 3 个不存在的临时
 				// 文件各被重试 3 次（9 次调用 + ~6s 退避），模型只拿到同一条错误重复 3 遍。
@@ -863,6 +918,9 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 
 			// 去重 stub
 			const dedupResult = checkReadDedup(agentKey, readKey, mtime);
+			// read-state 登记（2026-09-07）：成功读取即记录，patch 失败时
+			// describeReadGap 据此区分「从未读过」vs「读取后文件已变」。
+			recordFileReadSuccess(resolvedPath);
 			if (dedupResult.blocked) {
 				throw new Error(`BLOCKED: This file region has not changed since your last ${dedupResult.stubCount} reads. The content is unchanged — review what you already have.`);
 			}
@@ -966,7 +1024,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			inputSchema: {
 				type: 'object',
 				properties: {
-					path: { type: 'string' },
+					path: { type: 'string', description: 'File path. MUST be grounded: copy it verbatim from a previous tool result (search_files / search_graph / search_code / file_read) — never assemble or recall a path from memory. Relative paths resolve against the primary workspace root; in a multi-folder workspace prefer the absolute path returned by the search tool.' },
 					content: { type: 'string' },
 				},
 				required: ['path', 'content'],
@@ -1040,6 +1098,11 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				try { await ctx.fileService.del(tmpUri); } catch { /* best effort */ }
 				throw renameErr;
 			}
+			// ★ 2026-09-07（P3 配套，对齐 Claude Code 的 Write 标记已读）：写成功后
+			// 登记 read-state。内容是本次调用自己写的、完全已知，等价于「读过」——
+			// 若不登记，`file_write 建文件 → patch 微调` 这一常见流程会被 P3
+			// read-before-edit 硬闸误拦，强迫模型多读一次（纯浪费一轮）。
+			recordFileReadSuccess(resolvedPath);
 			return text(`wrote ${content.length} chars to ${normalizedUri.fsPath}`);
 		},
 	});
@@ -1139,7 +1202,8 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				throw new NonRetryableToolError(
 					`terminal: Unix-only command '${unixCmd}' is not available on Windows (cmd.exe/PowerShell, Git Bash not installed). ` +
 					`Rewrite the pipeline with a PowerShell equivalent: ... | ${UNIX_ONLY_COMMAND_HINTS[unixCmd] ?? unixCmd} ` +
-					`(e.g. powershell -NoProfile -Command "<your cmd> | Select-Object -First 60"), then reissue terminal with the corrected command.`
+					`(e.g. powershell -NoProfile -Command "<your cmd> | Select-Object -First 60"), then reissue terminal with the corrected command. ` +
+					`${GIT_BASH_INSTALL_GUIDANCE}`
 				);
 			}
 			}

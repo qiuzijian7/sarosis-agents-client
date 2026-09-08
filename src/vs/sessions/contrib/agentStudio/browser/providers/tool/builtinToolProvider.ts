@@ -173,6 +173,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			configurationService: this.configurationService,
 			storageService: this.storageService,
 			logService: this.logService,
+			fileService: this.fileService,
 			sandboxBypassRoots: this._sandboxBypassRoots,
 			kbStoragePathKey: AGENT_STUDIO_KB_STORAGE_PATH,
 		}, agentId, requestedPath, checkSandbox);

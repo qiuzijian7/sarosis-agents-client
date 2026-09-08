@@ -96,6 +96,16 @@ export function searchOutcomeHint(
 			'paths are matched RELATIVE to each project root — do NOT prefix with the root folder name. ' +
 			'Consider retrying without path.'
 		);
+	} else if (searchRoots && searchRoots.length > 0) {
+		// 有 path 却宣称 "no path filter applied" 是撒谎（2026-09-06，日志
+		// 1788702171955：roots=[nodeCard.tsx] 却落进旧 else 文案）。有 path 时如实
+		// 回显范围，并提示两类真实可能：范围内确无符号 / query 转义错配
+		//（字面 "\\{" 匹配的是反斜杠+{，不是 {——模型按正则习惯写转义的最常见坑）。
+		parts.push(
+			`0 matches within path=${searchRoots.join(', ')}. Either the symbol does not exist in that scope, ` +
+			'or the query escaping is off — a literal "\\{" matches a backslash followed by "{", not "{". ' +
+			'Retry WITHOUT path to search the whole tree, or pass regex:true with plain escapes (in regex, "\\{" already means "{").'
+		);
 	} else {
 		parts.push(
 			'No matches anywhere (no path filter applied). The symbols likely do not exist as written — ' +

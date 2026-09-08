@@ -120,14 +120,23 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
  * toDataURL 可用（MiniImageEditor 同路径已验证）。浏览器环境。
  */
 export async function refToPngDataUrl(ref: string): Promise<string> {
-	const img = await loadImage(ref);
-	const canvas = document.createElement('canvas');
-	canvas.width = img.naturalWidth || 1;
-	canvas.height = img.naturalHeight || 1;
-	const ctx = canvas.getContext('2d');
-	if (!ctx) { throw new Error('浏览器无法创建画布'); }
-	ctx.drawImage(img, 0, 0);
-	return canvas.toDataURL('image/png');
+	// ★ toBlob（异步编码，浏览器后台线程）替代 toDataURL（同步，4MB 级 PNG 编码
+	//   会冻结主线程 ~1s ——「点去背景卡住」的感知来源之一）。FileReader 回读 dataURL。
+	return loadImage(ref).then((img) => new Promise<string>((resolve, reject) => {
+		const canvas = document.createElement('canvas');
+		canvas.width = img.naturalWidth || 1;
+		canvas.height = img.naturalHeight || 1;
+		const ctx = canvas.getContext('2d');
+		if (!ctx) { reject(new Error('浏览器无法创建画布')); return; }
+		ctx.drawImage(img, 0, 0);
+		canvas.toBlob((blob) => {
+			if (!blob) { reject(new Error('PNG 编码失败')); return; }
+			const fr = new FileReader();
+			fr.onload = () => resolve(String(fr.result ?? ''));
+			fr.onerror = () => reject(fr.error ?? new Error('读取编码结果失败'));
+			fr.readAsDataURL(blob);
+		}, 'image/png');
+	}));
 }
 
 // ─── 扩图 ───────────────────────────────────────────────────────────────────
@@ -231,5 +240,7 @@ export async function rembgRemoveDataUrl(
 	onStatus?: CutoutProgressCallback,
 ): Promise<string> {
 	void baseUrl;
+	// eslint-disable-next-line no-console
+	console.warn(`[RemoveBg] rembgRemoveDataUrl in=${dataUrl.length}B → ComfyUI saros_cutout`);
 	return comfyRemoveBackgroundDataUrl(resolveActiveComfyRunner(), dataUrl, onStatus);
 }

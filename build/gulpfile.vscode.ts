@@ -6,6 +6,7 @@
 import gulp from 'gulp';
 import * as fs from 'fs';
 import * as path from 'path';
+import { execSync } from 'child_process';
 import es from 'event-stream';
 import vfs from 'vinyl-fs';
 import rename from 'gulp-rename';
@@ -659,6 +660,62 @@ function prepareCopilotRipgrepShimTask(platform: string, arch: string, destinati
 	};
 }
 
+/**
+ * 确保打包前 @vscode/ripgrep 的平台二进制存在（2026-09-07，根治降级搜索）。
+ *
+ * 背景：@vscode/ripgrep 的 postinstall 从 GitHub 下载 rg 二进制；CI 环境常无
+ * GITHUB_TOKEN/网络受限 → 下载失败 → node_modules/@vscode/ripgrep/bin/ 为空。
+ * 此前整条打包链对这一缺失**静默**（prepareCopilotRipgrepShimTask catch 后 warn
+ * 继续），产物安装后 searchService spawn rg 恒 ENOENT → agent 的 search_code /
+ * search_files 永久降级 Node walk（5000 文件预算 cap，大仓库假阴性频发，
+ * 日志 1788746435013 系列实证）。
+ *
+ * 兜底顺序：缺失 → `npm rebuild @vscode/ripgrep`（重跑 postinstall）→
+ * 仍缺失 → **fail the build**（宁可打包失败，也不静默产出残缺搜索能力的安装包）。
+ */
+function ensureRipgrepBinaryTask(platform: string, arch: string): task.Task {
+	return task.define(`ensure-ripgrep-binary-${platform}-${arch}`, async () => {
+		const rgBin = path.join(process.cwd(), 'node_modules', '@vscode', 'ripgrep', 'bin', platform === 'win32' ? 'rg.exe' : 'rg');
+		if (fs.existsSync(rgBin)) { return; }
+		console.warn(`[ensureRipgrepBinary] rg binary missing at ${rgBin} — running "npm rebuild @vscode/ripgrep" (postinstall downloads from GitHub; needs network or GITHUB_TOKEN)...`);
+		try {
+			execSync('npm rebuild @vscode/ripgrep', { stdio: 'inherit', cwd: process.cwd() });
+		} catch (err) {
+			console.warn(`[ensureRipgrepBinary] npm rebuild failed: ${err}`);
+		}
+		if (fs.existsSync(rgBin)) { return; }
+		// ── 兜底 2：vendor 入库拷贝（对齐 Cursor 等内部 fork 的离线构建做法）──
+		// postinstall 下载与 npm rebuild 都依赖 GitHub 网络；vendor 目录（build/
+		// ripgrep-vendor/<target>/）直接随仓库分发二进制，让打包**完全离线可用**。
+		// target 命名与 @vscode/ripgrep postinstall 的 getTarget() 一致。
+		const vendorTarget: Record<string, string> = {
+			'win32-x64': 'x86_64-pc-windows-msvc',
+			'win32-arm64': 'aarch64-pc-windows-msvc',
+			'darwin-x64': 'x86_64-apple-darwin',
+			'darwin-arm64': 'aarch64-apple-darwin',
+			'linux-x64': 'x86_64-unknown-linux-musl',
+			'linux-arm64': 'aarch64-unknown-linux-musl',
+			'linux-armhf': 'arm-unknown-linux-gnueabihf',
+		};
+		const target = vendorTarget[`${platform}-${arch}`];
+		const vendorBin = target
+			? path.join(process.cwd(), 'build', 'ripgrep-vendor', target, platform === 'win32' ? 'rg.exe' : 'rg')
+			: undefined;
+		if (vendorBin && fs.existsSync(vendorBin)) {
+			fs.mkdirSync(path.dirname(rgBin), { recursive: true });
+			fs.copyFileSync(vendorBin, rgBin);
+			console.log(`[ensureRipgrepBinary] restored rg from vendor: ${vendorBin} → ${rgBin}`);
+			return;
+		}
+		throw new Error('[ensureRipgrepBinary] @vscode/ripgrep binary still missing after rebuild, and no vendor copy at ' +
+			(vendorBin ?? `<no target mapping for ${platform}-${arch}>`) + '. ' +
+			'The packaged app would silently lose full-tree search (agent search_code/search_files ' +
+			'would permanently degrade to a budgeted Node walk). Fix one of: (1) set GITHUB_TOKEN so ' +
+			'the postinstall download succeeds; (2) place rg[.exe] into build/ripgrep-vendor/<target>/ ' +
+			'(target names match @vscode/ripgrep getTarget(), e.g. x86_64-pc-windows-msvc).');
+	});
+}
+
 const buildRoot = path.dirname(root);
 
 const BUILD_TARGETS = [
@@ -682,6 +739,7 @@ BUILD_TARGETS.forEach(buildTarget => {
 
 		const packageTasks: task.Task[] = [
 			compileNativeExtensionsBuildTask,
+			ensureRipgrepBinaryTask(platform, arch),
 			util.rimraf(path.join(buildRoot, destinationFolderName)),
 			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
 			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName),

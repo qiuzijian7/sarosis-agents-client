@@ -7,6 +7,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	detectUnixOnlyCommand,
+	recordFileReadSuccess, recordFileReadFailure, describeReadGap, hasEverReadSuccessfully, markFileModified,
 	skillScriptAbsolutePaths,
 	UNIX_ONLY_COMMAND_HINTS,
 	detectPowerShellOnlyCmdlet,
@@ -313,5 +314,57 @@ suite('executeCodeGuards — isDeterministicScriptFailure', () => {
 		assert.ok(msg.includes('fail identically'), 'should explain determinism');
 		assert.ok(msg.includes('patch tool'), 'should steer to patch for code edits');
 		assert.ok(!msg.includes('undefined'));
+	});
+});
+
+suite('read-state 跟踪（2026-09-07，patch 连败根因的解药）', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('★ 从未读过 → 点破「search 是猜的」并要求先 file_read', () => {
+		const gap = describeReadGap('g:\\repo\\src\\a.ts');
+		assert.ok(gap.includes('NEVER successfully read'), gap);
+		assert.ok(gap.includes('GUESSED'), gap);
+		assert.ok(gap.includes('file_read'), gap);
+	});
+
+	test('★ 上次读取失败（幻觉路径）→ 反馈携带失败原因', () => {
+		recordFileReadFailure('g:\\repo\\src\\webidx\\b.ts', 'Unable to resolve nonexistent file');
+		const gap = describeReadGap('g:/repo/src/webidx/b.ts');
+		assert.ok(gap.includes('FAILED'), gap);
+		assert.ok(gap.includes('nonexistent file'), gap);
+		assert.ok(gap.includes('correct absolute path'), gap);
+	});
+
+	test('★ 读过 → 提示文件可能已变化', () => {
+		recordFileReadSuccess('g:\\repo\\src\\c.ts');
+		const gap = describeReadGap('g:/Repo/SRC/c.ts');
+		assert.ok(gap.includes('may have changed'), gap);
+		assert.ok(gap.includes('Re-read'), gap);
+	});
+
+	test('★ 路径归一化：正斜杠/反斜杠/大小写等价', () => {
+		recordFileReadSuccess('g:\\repo\\src\\d.ts');
+		assert.ok(!describeReadGap('g:/repo/src/d.ts').includes('NEVER'), '同文件不同斜杠应视为已读');
+		recordFileReadFailure('G:/REPO/SRC/E.TS', 'x');
+		assert.ok(describeReadGap('g:\\repo\\src\\e.ts').includes('FAILED'));
+	});
+
+	test('★ P3 二期 写后失效：patch 过的文件再 patch 前必须重读（日志 1788757547227）', () => {
+		recordFileReadSuccess('g:\\repo\\src\\MiniImageEditor.tsx');
+		assert.strictEqual(hasEverReadSuccessfully('g:\\repo\\src\\MiniImageEditor.tsx'), true);
+		markFileModified('g:\\repo\\src\\MiniImageEditor.tsx');
+		assert.strictEqual(hasEverReadSuccessfully('g:\\repo\\src\\MiniImageEditor.tsx'), false, '改动后必须视为未读（需重读）');
+		assert.ok(describeReadGap('g:\\repo\\src\\MiniImageEditor.tsx').includes('OUTDATED'), 'stale 应给出「内容已过时」专属反馈');
+		recordFileReadSuccess('g:\\repo\\src\\MiniImageEditor.tsx');
+		assert.strictEqual(hasEverReadSuccessfully('g:\\repo\\src\\MiniImageEditor.tsx'), true, '重读后恢复可读');
+	});
+
+	test('★ P3 read-before-edit：hasEverReadSuccessfully 三态', () => {
+		assert.strictEqual(hasEverReadSuccessfully('g:\\repo\\src\\never.ts'), false, '从未读过');
+		recordFileReadFailure('g:/repo/src/failed.ts', 'nonexistent');
+		assert.strictEqual(hasEverReadSuccessfully('g:\\REPO\\src\\failed.ts'), false, '读过但失败 ≠ 读过');
+		recordFileReadSuccess('g:/repo/src/ok.ts');
+		assert.strictEqual(hasEverReadSuccessfully('g:\\repo\\SRC\\ok.ts'), true, '成功读过（大小写/斜杠归一化）');
 	});
 });

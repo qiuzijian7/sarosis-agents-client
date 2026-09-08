@@ -1,7 +1,7 @@
 import { $, append } from '../../../base/browser/dom.js';
 import { IToolCall } from './agentChatTypes.js';
 import { AgentChatPanelSearchCard } from './agentChatPanel.searchCard.js';
-import { createSvgIcon, SEARCH_ICON_D, parseToolArgs } from './agentChatPanel.toolCards.js';
+import { createSvgIcon, SEARCH_ICON_D, parseToolArgs, toolCardStatusClass } from './agentChatPanel.toolCards.js';
 
 /**
  * Web 族工具卡片：web_search / web_extract / anysearch（execute_code 运行 anysearch_cli.py）。
@@ -65,7 +65,10 @@ function parseAnysearchCommand(cmd: string): { subcommand: string; query: string
 }
 
 function createWebExtractCard(tc: IToolCall): HTMLElement {
-	const wrapper = $('.tool-card.tool-card-extract');
+	// data-tool-id + 状态类：同 searchCard（2026-09-07），否则
+	// _updateToolCardStatuses 索引不到本卡 → 永不重建 → 结果永不显示。
+	const wrapper = $(`.tool-card.${toolCardStatusClass(tc.status)}.tool-card-extract`);
+	if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
 	const isRunning = tc.status === 'running';
 	const isErr = tc.status === 'error';
 
@@ -218,7 +221,9 @@ export abstract class AgentChatPanelWebCard extends AgentChatPanelSearchCard {
 	 * 展开体用 markdown 渲染（## 标题 / 编号 **加粗标题** / URL / 摘要），链接可点击。
 	 */
 	protected _createWebSearchCard(tc: IToolCall): HTMLElement {
-		const wrapper = $('.tool-card.tool-card-search.tool-card-web-search');
+		// data-tool-id + 状态类：同 searchCard（2026-09-07）
+		const wrapper = $(`.tool-card.${toolCardStatusClass(tc.status)}.tool-card-search.tool-card-web-search`);
+		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
 		const isRunning = tc.status === 'running';
 		const isErr = tc.status === 'error';
 
@@ -293,7 +298,9 @@ export abstract class AgentChatPanelWebCard extends AgentChatPanelSearchCard {
 	 * 查询词 + 命令 + 输出预览。壳复用 extract 卡片样式。
 	 */
 	protected _createAnysearchCard(tc: IToolCall): HTMLElement {
-		const wrapper = $('.tool-card.tool-card-extract.tool-card-anysearch');
+		// data-tool-id + 状态类：同 searchCard（2026-09-07）
+		const wrapper = $(`.tool-card.${toolCardStatusClass(tc.status)}.tool-card-extract.tool-card-anysearch`);
+		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
 		const isRunning = tc.status === 'running';
 		const isErr = tc.status === 'error';
 

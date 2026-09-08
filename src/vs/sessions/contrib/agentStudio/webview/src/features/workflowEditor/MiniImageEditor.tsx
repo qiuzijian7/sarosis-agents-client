@@ -12,6 +12,7 @@
  *    随裁剪一并上抛。实现细节见 miniEditorAi.ts 顶部注释。 */
 import * as React from 'react';
 import { sendRequest } from '../../bridge/messageClient.js';
+import { HoverErrorBadge } from './ErrorBadge';
 import { useProviderStore } from '../../store/useProviderStore';
 import { resolvePreferredImageGenDefaults } from './comfyHost/workflowRun.js';
 import {
@@ -43,6 +44,14 @@ export interface Props {
    * 仅保留画笔/矩形/套索/橡皮/文字等直接绘制工具。
    */
   sheetOnly?: boolean;
+  /**
+   * ★ 只读模式（2026-09-06）：基底图是**上游节点**的归档（sheet 口直通预览），
+   *   编辑产物无处落盘——写回会污染上游数据。此时禁用一切会改写基底的入口
+   *   （AI 工具/画笔/橡皮/套索/文字/应用剪切/保存），仅保留查看（缩放/平移/关闭）。
+   *   与 sheetOnly 的区别：sheetOnly 是「无原图的降级编辑」（仍可编辑本格），
+   *   readOnly 是「有原图但禁止任何改动」。
+   */
+  readOnly?: boolean;
   cellKey: number;
   /** 顶部标题覆盖（缺省 = 「编辑格 {cellKey}」；整图编辑模式 nodeCard 传「编辑原图」）。 */
   heading?: string;
@@ -802,7 +811,10 @@ export function MiniImageEditor(p: Props): React.ReactElement {
     setAiBusy('去背景中…');
     try {
       const composed = composeMarkedImage(base, overlayRef.current, hasEditsRef.current, null);
-      const out = await rembgRemoveDataUrl(composed, undefined, setAiBusy);
+      // percent 贯通（2026-09-07）：busy 文案带百分比（推理阶段 25→90）。
+      const out = await rembgRemoveDataUrl(composed, undefined, (text, percent) => {
+        setAiBusy(percent !== undefined ? `${text} ${Math.round(percent)}%` : text);
+      });
       pushAiSnap();
       await applyAiResult(out);
     } catch (err) {
@@ -1084,7 +1096,12 @@ export function MiniImageEditor(p: Props): React.ReactElement {
 
   const hint = TOOLS.find(t => t.id === tool)?.hint ?? '';
   /** 降级模式（无原生整图）隐藏裁剪类工具：整图裁剪需要原图才有意义。 */
-  const tools = p.sheetOnly ? TOOLS.filter(t => t.id !== 'crop' && t.id !== 'move') : TOOLS;
+  const tools = p.readOnly
+    // ★ 只读：只留「平移」——其余工具（裁剪/绘制/AI）的产物都无处落盘。
+    ? TOOLS.filter(t => t.id === 'pan')
+    : (p.sheetOnly ? TOOLS.filter(t => t.id !== 'crop' && t.id !== 'move') : TOOLS);
+  // 只读时默认工具必须是 pan（否则残留已选中的画笔等仍会响应画布事件）。
+  const readOnlySafeTool: Tool = p.readOnly ? 'pan' : tool;
   // hover 裁剪框手柄/框内时光标优先（缩放/移动反馈）
   const cursorCss = hoverCursor
     ? hoverCursor
@@ -1116,7 +1133,9 @@ export function MiniImageEditor(p: Props): React.ReactElement {
             <button key={t.id} title={t.label} onClick={() => setTool(t.id)} style={iconBtn(tool === t.id)}>{t.icon}</button>
           ))}
         </div>
-        {/* 色板 */}
+        {/* 色板（只读隐藏：没有可绘制的工具） */}
+        {!p.readOnly && (
+        <>
         <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
           {PALETTE.map(c => (
             <button key={c} title={c} onClick={() => setColor(c)} style={{
@@ -1134,6 +1153,8 @@ export function MiniImageEditor(p: Props): React.ReactElement {
           ⬤<input type="range" min={4} max={120} value={brush} onChange={(e) => setBrush(Number(e.target.value))} style={{ width: 70 }} />
           <span style={{ minWidth: 20, textAlign: 'right' }}>{brush}</span>
         </label>
+        </>
+        )}
         {/* 视图切换：原图（自定义裁剪取景） / 格内（裁剪框内容放大）——降级模式隐藏 */}
         {!p.sheetOnly && (
           <div style={{ display: 'flex', gap: 3 }}>
@@ -1241,7 +1262,7 @@ export function MiniImageEditor(p: Props): React.ReactElement {
             }}
           >{aiBusy
             ?? (tool === 'rembg' ? '▶ 执行去背景' : tool === 'aierase' ? '▶ 执行消除' : tool === 'aiinpaint' ? '▶ 执行重绘' : '▶ 执行扩图')}</button>
-          {aiError && <span style={{ fontSize: 10, color: '#f87171', flexBasis: '100%' }}>⚠ {aiError}</span>}
+          {aiError && <HoverErrorBadge message={aiError} />}
         </div>
       )}
 
@@ -1302,6 +1323,13 @@ export function MiniImageEditor(p: Props): React.ReactElement {
 
       {/* ── Save：裁剪框内区域（含编辑）→ 新 PNG 上抛，调用方替换该格产物 ── */}
       <button
+        disabled={!!p.readOnly}
+        title={p.readOnly ? '只读：当前原图是上游节点的直通预览，不可编辑' : undefined}
+        style={{
+          padding: '6px 10px', borderRadius: 6, fontSize: 10, fontWeight: 600, border: 'none', color: '#fff',
+          background: p.readOnly ? 'rgba(255,255,255,.12)' : 'linear-gradient(180deg,#3b82f6,#2563eb)',
+          cursor: p.readOnly ? 'not-allowed' : 'pointer', opacity: p.readOnly ? 0.5 : 1,
+        }}
         onClick={() => {
           let cropped = '';
           try {
@@ -1317,7 +1345,6 @@ export function MiniImageEditor(p: Props): React.ReactElement {
           if (!cropped) return;
           p.onApply(cropRef.current, cropped);
         }}
-        style={{ padding: '6px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 10, fontWeight: 600, border: 'none', color: '#fff', background: 'linear-gradient(180deg,#3b82f6,#2563eb)' }}
       >
         💾 保存裁剪图{hasEdits ? '（含编辑）' : ''}
       </button>

@@ -387,13 +387,29 @@ export class NativeChatEditorPane extends EditorPane {
 	 * 判定不成立；此时内容由服务端正常 append。
 	 */
 	private _installInterruptedStreamPersist(lifecycleService: ILifecycleService): void {
+		// 关闭尝试打点（2026-09-06「关闭 app 按钮不生效」排查）：
+		// 若点了关闭却连这条都没有 → 事件根本没到 pane，与本落盘逻辑无关；
+		// 若有 onBeforeShutdown 但没有 onWillShutdown → 被别处 veto 卡住。
+		this._register(lifecycleService.onBeforeShutdown(e => {
+			this._logService.info(
+				`[NativeChatEditorPane#${this._paneId}] onBeforeShutdown: reason=${e.reason} ` +
+				`isSending=${this._isSending} streamingId=${this._streamingAssistantId ?? 'null'}`
+			);
+		}));
+
 		this._register(lifecycleService.onWillShutdown(e => {
 			const content = (this._streamingAssistantMsg?.content ?? '').trim();
+			this._logService.info(
+				`[NativeChatEditorPane#${this._paneId}] onWillShutdown: reason=${e.reason} ` +
+				`isSending=${this._isSending} streamingId=${this._streamingAssistantId ?? 'null'} ` +
+				`contentLen=${content.length} agent=${this._currentAgentId ?? 'null'}`
+			);
 			// 仅「确实有进行中的流 + 已有内容」才落盘：
 			// - 流已结束 → _streamingAssistantId 已清空 / _isSending=false
 			// - 空内容（刚开始就关）→ 不留下空气泡
 			if (!this._streamingAssistantId || !this._isSending || !content) { return; }
-			if (!this._currentAgentId) { return; }
+			// 草稿按 sessionId 命名，agentId / sessionId 缺一不可
+			if (!this._currentAgentId || !this._currentSessionId) { return; }
 			e.join(this._persistInterruptedStream(content), {
 				id: 'nativeChatEditorPane.interruptedStream',
 				label: 'Saving interrupted assistant output',
@@ -401,27 +417,61 @@ export class NativeChatEditorPane extends EditorPane {
 		}));
 	}
 
-	/** 落盘半截的 assistant 输出（关窗兜底）。 */
+	/** 落盘半截的 assistant 输出（关窗兜底，带硬超时）。 */
 	private async _persistInterruptedStream(content: string): Promise<void> {
 		const agentId = this._currentAgentId;
 		const id = this._streamingAssistantId;
 		if (!agentId || !id) { return; }
+
+		// 硬超时（2026-09-06）：WillShutdownEvent.join 的 promise 若永不完成，会
+		// **永久阻塞关闭** —— 其文档原文：promise "will block the application from
+		// closing"，joiner 正是为「takes very long or never completes」准备的标识。
+		// shutdown 期间服务可能已半销毁，appendMessage 内的 _ensureHistoryLoaded /
+		// 文件写入都有挂起风险 → 宁可丢这次半截内容，也绝不让 app 关不掉。
+		//
+		// ★ 同类事故先例（务必遵守）：configHtmlServerChannel.ts:249 —— 2026-09-05
+		// 用户实测「点击关闭无法关闭 app」，根因正是 e.join 阻塞 shutdown（每个端口
+		// 串行 netstat+taskkill 可卡 10s+），最终改为 **fire-and-forget** 才解决。
+		// 即本项目已有「shutdown 路径不要 join 慢操作」的共识。此处之所以仍用 join，
+		// 是因为落盘必须在进程退出前完成才有意义（fire-and-forget 会被进程退出打断），
+		// 故以硬超时兜底：只 join 一个通常 <100ms 的小写入，挂起则 3s 放弃。
+		const PERSIST_TIMEOUT_MS = 1500;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<'timeout'>(resolve => {
+			timer = setTimeout(() => resolve('timeout'), PERSIST_TIMEOUT_MS);
+		});
+		const work = (async (): Promise<'done'> => {
+			try {
+				// 写**独立草稿小文件**（几 KB，通常 <50ms），不重写整个 session 历史
+				// —— 关闭速度不受会话长度影响。草稿在下次 getHistory 时被消费、
+				// 补进历史并落盘（agentChatService._consumeInterruptedDraft）。
+				await this._chatService.saveInterruptedDraft(
+					agentId,
+					this._currentSessionId ?? '',
+					content,
+				);
+			} catch (err) {
+				this._logService.warn('[NativeChatEditorPane] Failed to persist interrupted stream:', err);
+			}
+			return 'done';   // 失败同样视为结束：绝不让异常阻塞关闭
+		})();
+
 		try {
-			await this._chatService.appendMessage(agentId, {
-				id,
-				role: 'assistant',
-				content,
-				agentId,
-				agentSessionId: this._currentSessionId ?? undefined,
-				timestamp: new Date().toISOString(),
-				metadata: { streamInterrupted: true },
-			} as any);
-			this._logService.info(
-				`[NativeChatEditorPane#${this._paneId}] persisted interrupted stream output ` +
-				`(${content.length} chars) before shutdown`
-			);
-		} catch (err) {
-			this._logService.warn('[NativeChatEditorPane] Failed to persist interrupted stream:', err);
+			const result = await Promise.race([work, timeout]);
+			if (result === 'timeout') {
+				this._logService.warn(
+					`[NativeChatEditorPane#${this._paneId}] interrupted stream persist TIMEOUT ` +
+					`(${PERSIST_TIMEOUT_MS}ms) — giving up so shutdown is never blocked ` +
+					`(content=${content.length} chars not saved)`
+				);
+			} else {
+				this._logService.info(
+					`[NativeChatEditorPane#${this._paneId}] persisted interrupted stream output ` +
+					`(${content.length} chars) before shutdown`
+				);
+			}
+		} finally {
+			if (timer !== undefined) { clearTimeout(timer); }
 		}
 	}
 
@@ -2774,6 +2824,40 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 	}
 
 	/**
+	 * 跨流补发的 tool_result / tool_end 兜底（2026-09-06）。
+	 *
+	 * 工具在所属消息的流结束后才执行，其结果/结束事件常在**下一轮流开头**才到达
+	 * pane——此时 `_streamingAssistantMsg` 已切到新消息，按当前消息 find 工具卡
+	 * 必然失配，旧实现静默 return → 卡片 status=success（end 在同流先到）但
+	 * result 永远为空 → 永远显示「等待工具结果」（日志 1788709752561 实证：
+	 * branch=awaiting-result status=success；STREAM_END toolStarts=3 toolResults=1）。
+	 *
+	 * 此处从最新消息往回扫，找到持有该 toolCallId 的卡就地补写，并让 panel
+	 * 重渲该消息。全部消息都没有 → warn 留痕（此前此路径完全不可观测）。
+	 */
+	private _applyLateToolDelta(currentMsgId: string, toolCallId: string | undefined, apply: (tc: any) => void, kind: string): void {
+		if (!toolCallId || !this._chatPanel) { return; }
+		const msgs = this._chatPanel.getMessages();
+		for (let i = msgs.length - 1; i >= 0; i--) {
+			const m = msgs[i] as any;
+			if (m.id === currentMsgId || m.role !== 'assistant') { continue; }
+			const tc = (m.toolCalls ?? []).find((t: any) => t.id === toolCallId);
+			if (!tc) { continue; }
+			apply(tc);
+			this._chatPanel.updateMessage(m.id, { toolCalls: (m.toolCalls ?? []).slice() });
+			this._logService.info(
+				`[NativeChatEditorPane#${this._paneId}] ${kind} for ${toolCallId} applied to EARLIER ` +
+				`message ${m.id} (late cross-stream delivery — placeholder card recovered)`
+			);
+			return;
+		}
+		this._logService.warn(
+			`[NativeChatEditorPane#${this._paneId}] ${kind} dropped — no card for toolCallId=${toolCallId} ` +
+			`in current or any earlier message`
+		);
+	}
+
+	/**
 	 * 共享的流式 delta 处理方法。
 	 * 供 _sendMessageInternal 回调（本地发送）和 onDidStreamDelta 监听器（外部发送，如看板任务）共同调用。
 	 * 读取/更新 _streamingAssistantId 和 _streamingAssistantMsg 共享字段。
@@ -2828,9 +2912,15 @@ private _handleStreamDelta(delta: any): void {
 				const typeBreakdown = Object.entries(pf.totalTypes).sort((a, b) => b[1] - a[1]).slice(0, 8)
 					.map(([t, c]) => `${t}=${c}`).join(',');
 				const slowCount = pf.slowOps.length;
+				// 工具对账（2026-09-06）：tool_start vs tool_result 计数。★ 差值跨流
+				// **正常**——tool_result 在下一轮流开头补发（工具在流结束后执行），
+				// 故只做对账回显、不做告警；整份日志总和失衡才是结果丢失信号
+				//（当日曾因误读单流差值错判「丢失 2/3」）。
+				const toolStarts = pf.totalTypes['tool_start'] ?? 0;
+				const toolResults = pf.totalTypes['tool_result'] ?? 0;
 				// 2026-08-30：加 paneId/sessionId —— 多窗口并发时两个 pane 的 STREAM_END
 				// 混在同一份日志里且无标识，只能靠计数反推归属（排查 20260829T232635 的痛点）。
-				this._logService.info(`[StreamPerf] STREAM_END p${this._paneId} session=${this._currentSessionId} total=${totalElapsed}ms deltas=${pf.deltaCount} types={${typeBreakdown}} slowFlushes=${slowCount}`);
+				this._logService.info(`[StreamPerf] STREAM_END p${this._paneId} session=${this._currentSessionId} total=${totalElapsed}ms deltas=${pf.deltaCount} types={${typeBreakdown}} slowFlushes=${slowCount} toolStarts=${toolStarts} toolResults=${toolResults}`);
 				delete this._streamPerf;
 			}
 			return;
@@ -3119,10 +3209,12 @@ private _handleStreamDelta(delta: any): void {
 			case 'text':
 				if (!assistantMsg || !assistantId) { return; }
 				{
+					// ★ 2026-09-06 重复文本修复：先捕获替换前的 content 长度。
 					// fullText 比 content 短时回退到 append 模式
 					// （agentStudioWebviewController 检测到 tool XML 后会重置 streamingTextBuffer，
 					// 导致后续 fullText 只含工具标签后的文本，无脑替换会清空冒泡内容）
-					let textContent = (delta.fullText !== undefined && delta.fullText.length >= assistantMsg.content.length)
+					const prevContentLen = assistantMsg.content.length;
+					let textContent = (delta.fullText !== undefined && delta.fullText.length >= prevContentLen)
 						? delta.fullText
 						: (assistantMsg.content + (delta.content ?? ''));
 					// ★ 流式 sanitize：模型可能在  think 块内「伪造」工具调用形状
@@ -3144,24 +3236,38 @@ private _handleStreamDelta(delta: any): void {
 					streamPhase: 'llm_streaming',
 				});
 					// P0: 跟踪文本→工具→文本的时间顺序。
-					// text part 只保存「当前段」文本 = content.slice(_streamTextSegmentBase)，
-					// 而非全量 content——否则工具后的新 text part 会重复包含工具前的文本，
-					// 导致同一段文本在工具卡前后渲染两次。
+					// text part 只保存「当前段」文本，而非全量 content——否则工具后的
+					// 新 text part 会重复包含工具前的文本，导致同一段文本在工具卡前后
+					// 渲染两次。
+					//
+					// ★ 2026-09-06 重复文本修复（日志 1788708458481 实证）：
+					// 旧实现用 `_streamTextSegmentBase` 切段，但 base 在跨 iteration
+					// 场景必然失明——时序：iter1 文本 A(230c) → tool_start（base=230）
+					// → content_replace（base=content.len-A'.len=0）→ iter2 首 delta
+					// 的 fullText=**A+B(469c)**（webviewController 的 streamingTextBuffer
+					// 跨 iteration 累积、原生 tool_calls 不重置它）→ 替换模式成立 →
+					// slice(base=0) 切出 **A+B 整段**，此时最后 part 是 tool → push
+					// text(469c) part → A 在 text(230c) 与 text(469c) 两个 part 里
+					// 各渲染一次（PartsDiag 实证两 part 并存，469=230+239 精确吻合；
+					// UI 表现：同一段话在工具卡前后各出现一遍，第二份还带新内容）。
+					//
+					// 新公式不依赖 base：本段起点 = 替换前 content 长 - 当前段长
+					// （= 本段之前所有已渲染文本的总长）。
+					//  - 继续本段（last 是 text）：segStart = 段起点 → segText = 段+增量 ✅
+					//  - 工具后开新段（last 是 tool）：lastSegLen=0 → segStart=prevLen
+					//    → segText = **纯增量**（替换模式 = fullText 超出旧 content 的
+					//    部分；append 模式 = delta.content）→ 不再裹挟历史文本 ✅
+					//  - 替换模式恒有 fullText.length ≥ prevLen → segStart 永不越界，
+					//    旧 base overshoot 分支自然消失（warn 保留作观测）。
 					if (assistantMsg.parts) {
-						// ★ 2026-08-31 修复：`_streamTextSegmentBase` 可能因时序（tool_start
-						// 记的是当时的 content 长度、content_replace 会按 parts 重算 content、
-						// 会话恢复续接）跑到 `textContent` 长度之外，此时 slice 得到空串。
-						// 原逻辑把这个空串**无条件写回**最后一个 text part → 已渲染的末段
-						// 被清空（日志实证：上一段还是 text(34c)，下一条 delta 后变 text(0c)）。
-						// 若此后没有 content_replace 兜底，丢失即永久化 → 消息尾部截断。
-						// 故：base 跑过头时回退为整段，而非算出空串。
-						const base = this._streamTextSegmentBase;
-						let segText = base > 0 && base <= textContent.length
-							? textContent.slice(base)
-							: textContent;
+						const last = assistantMsg.parts[assistantMsg.parts.length - 1];
+						const lastSegLen = (last && last.kind === 'text') ? (((last as any).text ?? '').length) : 0;
+						const segStart = Math.max(0, prevContentLen - lastSegLen);
+						let segText = segStart <= textContent.length
+							? textContent.slice(segStart)
+							: textContent;   // 防御回退（理论上不再触达）
 						// 防御：segText 来自已 sanitize 的全量文本，但再做一次幂等 sanitize 无害
 						segText = sanitizeAssistantVisibleText(segText, 'streaming');
-						const last = assistantMsg.parts[assistantMsg.parts.length - 1];
 						if (last && last.kind === 'text') {
 							// 最后一个 part 是 text → 就地更新当前段。
 							// 空段只在 last 本身尚为空时才允许写入，绝不覆盖已有内容。
@@ -3172,10 +3278,10 @@ private _handleStreamDelta(delta: any): void {
 							// 最后一个 part 是 tool（或空）→ 开启新 text 段
 							assistantMsg.parts.push({ kind: 'text', text: segText } as any);
 						}
-						if (base > textContent.length) {
+						if (segStart > textContent.length) {
 							this._logService.warn(
-								`[NativeChatEditorPane#${this._paneId}] text seg base overshoot: ` +
-								`base=${base} contentLen=${textContent.length} segText.len=${segText.length}`
+								`[NativeChatEditorPane#${this._paneId}] text seg start overshoot: ` +
+								`segStart=${segStart} contentLen=${textContent.length} segText.len=${segText.length}`
 							);
 						}
 					}
@@ -3196,7 +3302,20 @@ private _handleStreamDelta(delta: any): void {
 						const dumpOf = (arr: any[]) => JSON.stringify(arr.map((p: any) =>
 							p.kind === 'tool' ? `tool:${((p?.tool?.name) ?? (p?.tool?.toolName) ?? '?')}`
 								: `text(${(p?.text ?? '').length}c)`));
-						this._logService.info(`[NativeChatEditorPane#${this._paneId}] content_replace IN content.len=${replaced.length} parts=${dumpOf(oldParts)}`);
+						// 节流（2026-09-06）：本条与下方 OUT 每条都对 **全部 parts 做
+						// JSON.stringify**，而 content_replace 在流式过程中每个 chunk
+						// 都会触发一次 —— 实测单个 delta 处理 19ms（SLOW_FLUSH 阈值
+						// 16ms），且成本随 parts 数量增长 → 长输出越来越卡、主线程繁忙。
+						// 诊断价值在于 parts 序列（排查 2026-08-31「消息中间截断」），
+						// 故保留、**每 25 次输出一次**（对齐下方 thinking 日志的节流模式）。
+						// 且必须在 if 内调用 dumpOf —— 否则模板字符串会先求值，节流
+						// 也省不掉 stringify 的成本。
+						const _crMsg = assistantMsg as any;
+						_crMsg._crReplaceCount = (_crMsg._crReplaceCount ?? 0) + 1;
+						const _crLog = (_crMsg._crReplaceCount % 25) === 1;
+						if (_crLog) {
+							this._logService.info(`[NativeChatEditorPane#${this._paneId}] content_replace IN content.len=${replaced.length} seq=${_crMsg._crReplaceCount} parts=${dumpOf(oldParts)}`);
+						}
 
 						const newParts: any[] = oldParts.map((p: any) => ({ ...p }));
 						// 找到最后一个文本段，用 replaced 覆盖它；保留其余 parts 不变。
@@ -3221,7 +3340,9 @@ private _handleStreamDelta(delta: any): void {
 						// delta 的 slice 会算出重复文本或空串（配合上面 base 越界回退才不至于清空，
 						// 但会重复包含前面各段的文字）。
 						this._streamTextSegmentBase = Math.max(0, assistantMsg.content.length - replaced.length);
-						this._logService.info(`[NativeChatEditorPane#${this._paneId}] content_replace OUT content.len=${assistantMsg.content.length} base=${this._streamTextSegmentBase} parts=${dumpOf(newParts)}`);
+						if (_crLog) {
+						this._logService.info(`[NativeChatEditorPane#${this._paneId}] content_replace OUT content.len=${assistantMsg.content.length} base=${this._streamTextSegmentBase} seq=${_crMsg._crReplaceCount} parts=${dumpOf(newParts)}`);
+					}
 					} else {
 						assistantMsg.content = replaced;
 					}
@@ -3242,16 +3363,10 @@ private _handleStreamDelta(delta: any): void {
 					const prevThinking = assistantMsg.thinking ?? '';
 					const thinkingContent = delta.fullThinking !== undefined ? delta.fullThinking : (prevThinking + (delta.content ?? ''));
 					assistantMsg.thinking = thinkingContent;
-					// 诊断（2026-09-06）：「思考卡卡住」需区分数据层（delta 没到/内容空）
-					// 与渲染层（delta 到了 DOM 没更新）。节流打点：每 25 帧或每 4KB 一条。
-					{
-						const _thMsg = assistantMsg as any;
-						_thMsg._thFrames = (_thMsg._thFrames ?? 0) + 1;
-						if (_thMsg._thFrames % 25 === 0 || thinkingContent.length - (_thMsg._thLastLoggedLen ?? 0) >= 4096) {
-							_thMsg._thLastLoggedLen = thinkingContent.length;
-							this._logService.info(`[ChatStream] thinking streaming frames=${_thMsg._thFrames} totalLen=${thinkingContent.length} partsLen=${assistantMsg.parts?.length ?? 0} lastPartKind=${assistantMsg.parts?.[assistantMsg.parts.length - 1]?.kind ?? 'none'}`);
-						}
-					}
+					// （2026-09-06「思考卡卡住」的节流诊断打点已移除：glm reasoning 每轮
+					// 5 万+ 帧，每 25 帧一条 = 2000+ 条日志，完全淹没其他事件——日志
+					// 1788708458481 实证排查时只能先过滤掉它。需要时用 STREAM_END 的
+					// thinking=NNNN 计数对账即可。）
 					// thinking 作为 parts 流片段（2026-07-26 用户要求：不固定顶部，
 					// 跟随 LLM 流式输出的实际发生位置）。
 					// ★ 2026-09-06 修正一（日志 1788670708266）：原「last part 非 thinking
@@ -3452,6 +3567,14 @@ private _handleStreamDelta(delta: any): void {
 					isThinking: true,
 					streamPhase: 'llm_streaming',
 				});
+				} else {
+					// ★ 2026-09-06 跨流补发兜底：tool_end 可能晚于所属消息的流结束到达
+					//（此时 _streamingAssistantMsg 已切到下一条消息，find 必然失配）。
+					this._applyLateToolDelta(assistantId, delta.toolCallId, tc => {
+						const isError = (delta.success === false);
+						tc.status = isError ? 'error' : 'success';
+						if (isError && tc.result && !tc.error) { tc.error = tc.result; }
+					}, 'tool_end');
 				}
 				break;
 			}
@@ -3467,6 +3590,18 @@ private _handleStreamDelta(delta: any): void {
 					this._chatPanel?.updateMessage(assistantId, {
 						toolCalls: assistantMsg.toolCalls!.slice(),
 					});
+				} else {
+					// ★ 2026-09-06 跨流补发兜底（「工具卡显示等待工具结果」根因，日志
+					// 1788709752561 实证 branch=awaiting-result status=success）：
+					// 工具结果常在**下一轮流的流开头补发**（agent loop 的工具在流结束后
+					// 执行），此时 _streamingAssistantMsg 已切到新消息——旧 find 在新消息
+					// 的 toolCalls 里找上一条消息的工具 id，必然失配 → 静默 return →
+					// 卡片 status=success（end 在同流先到）但 result 永远为空 →
+					// 永远显示「等待工具结果」。此处回溯更早的消息补写结果。
+					this._applyLateToolDelta(assistantId, delta.toolCallId, tc => {
+						tc.result = delta.content;
+						if (tc.status === 'running') { tc.status = 'success'; }
+					}, 'tool_result');
 				}
 				break;
 			}
@@ -3636,8 +3771,16 @@ private _handleStreamDelta(delta: any): void {
 						// 「点击取消后工具卡片没展示取消状态」）：取消时 handler 被
 						// abort 打断、无 tool_end，此前一律误标 success（绿勾）。
 						// 现按 isCanceled 区分：取消 → 'canceled'（卡片显示已取消），
-						// 正常完成 → 'success'；已被 tool_end 设为 error 的保留不变。
-						if (tc.status === 'running') { tc.status = isCanceled ? 'canceled' : 'success'; }
+						// 已被 tool_end 设为 error 的保留不变。
+						// ★ 2026-09-07 修复（日志 1788710908280 实证）：**非取消不再置
+						// success**。此处的 done 只是 **iteration 边界**（LLM 响应流结束），
+						// 而工具在其**之后**才执行（日志：DONE 时三卡已 success，但
+						// tool_end=0、「Executing tool」在 DONE 之后）——结果下一轮流才
+						// 补发。提前标 success 会造出「status=success 且 result 空」的卡，
+						// 渲染落进 awaiting 分支 → 永远显示「等待工具结果」。保持 running
+						// （转圈）才是真实状态；终态由 tool_end/tool_result 写入（跨流
+						// 补发时 _applyLateToolDelta 跨消息兜底）。
+						if (tc.status === 'running' && isCanceled) { tc.status = 'canceled'; }
 					}
 				}
 				const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());

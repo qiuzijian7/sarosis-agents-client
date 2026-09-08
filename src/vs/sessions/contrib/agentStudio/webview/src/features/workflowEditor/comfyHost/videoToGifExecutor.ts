@@ -278,6 +278,9 @@ export async function runVideoToGifNode(input: VideoToGifInput): Promise<SingleN
 //   2. 压缩迭代：编码后超过 max_bytes 时按 色数→帧率→尺寸 逐级降级重编码
 //      （RGBA 帧缓存复用，降级不重新 seek 解码视频）；
 //   3. GIF 透明是 1-bit（GIF89a 无半透明），边缘羽化以「despill 去绿边」代替。
+//   4. 首帧一致性（2026-09-07 需求）：可选 firstFrameOverride —— 用参考图（已绿底
+//      合成）按帧尺寸重采样+抠像后整体替换第 0 帧，保证动图第 0 帧与输入静态
+//      贴纸完全一致（视频模型首帧相对参考图常有漂移）。
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** 解析 #RRGGBB / #RGB 十六进制颜色。非法输入回退纯绿 #00FF00。 */
@@ -383,6 +386,41 @@ export function chromaKeyFrame(
 				if (rgba[i + 1] > cap) { rgba[i + 1] = cap; }
 			}
 		}
+	}
+}
+
+/**
+ * 参考图 → 指定尺寸 RGBA 帧（重采样 + 同参数 chroma-key）。
+ *
+ * 「首帧一致性」（2026-09-07）：视频模型首帧相对参考图常有漂移（构图/配色/
+ * 细节微变），把**输入参考图本身**（已绿底合成）重采样到 GIF 帧尺寸并按同一
+ * 参数抠像后替换第 0 帧，保证动图起点与输入静态贴纸逐像素同源。
+ * 网格模式传入整版拼贴图 → 上层按常规帧切格，每格第 0 帧即对应静态格。
+ */
+async function loadSeedFrameRgba(
+	imageRef: string,
+	width: number,
+	height: number,
+	key: { r: number; g: number; b: number },
+	similarity: number,
+	smoothness: number,
+	fetchImpl: typeof fetch,
+): Promise<Uint8Array> {
+	const blob = /^data:/i.test(imageRef) ? dataUrlToBlob(imageRef) : await (await fetchImpl(imageRef)).blob();
+	const bitmap = await createImageBitmap(blob);
+	try {
+		const canvas = document.createElement('canvas');
+		canvas.width = width;
+		canvas.height = height;
+		const ctx = canvas.getContext('2d', { willReadFrequently: true });
+		if (!ctx) { throw new Error('浏览器无法创建画布。'); }
+		ctx.drawImage(bitmap, 0, 0, width, height);
+		const data = ctx.getImageData(0, 0, width, height).data;
+		const rgba = new Uint8Array(data.buffer.slice(0));
+		chromaKeyFrame(rgba, key, similarity, smoothness);
+		return rgba;
+	} finally {
+		bitmap.close();
 	}
 }
 
@@ -496,13 +534,15 @@ export async function convertVideoToGridTransparentGifs(
 	fetchImpl: typeof fetch,
 	onProgress?: (p: ComfyRunProgress) => void,
 	maxBytes = 500 * 1024,
+	/** ★ 首帧一致性：参考图 ref（已绿底合成的**整版拼贴图**）→ 抠像后替换第 0 帧，每格第 0 帧 = 对应静态格。 */
+	firstFrameOverride?: string,
 ): Promise<ConvertedGridGifs> {
 	const rows = Math.max(1, Math.min(6, Math.round(grid.rows)));
 	const cols = Math.max(1, Math.min(6, Math.round(grid.cols)));
 	if (rows === 1 && cols === 1) {
 		// 1×1 退化：直接走单图管线（语义等价，省一次切格/缩放开销）。
 		// thumbs=[]（单图管线不产缩略图——微信上传场景固定走网格管线）。
-		const single = await convertVideoToTransparentGif(videoRef, values, chroma, fetchImpl, onProgress, maxBytes);
+		const single = await convertVideoToTransparentGif(videoRef, values, chroma, fetchImpl, onProgress, maxBytes, firstFrameOverride);
 		return { gifs: [single], thumbs: [], rows: 1, cols: 1, cellW: single.width, cellH: single.height, level: single.level };
 	}
 	let objectUrl = '';
@@ -545,6 +585,18 @@ export async function convertVideoToGridTransparentGifs(
 		}
 		if (rgbaFrames.length === 0) {
 			throw new Error('未能抽取任何视频帧（检查 start_s / end_s 区间）。');
+		}
+		// ★ 首帧一致性（2026-09-07）：整版拼贴参考图（已绿底合成）按帧尺寸重采样
+		//   + 同参数抠像后替换第 0 帧 —— 后续按 rows×cols 正常切格，每格第 0 帧
+		//   即对应输入静态格（与切格几何完全对齐：同一 crop/scale 管线）。
+		//   失败不阻断（视频首帧兜底）。
+		if (firstFrameOverride) {
+			try {
+				rgbaFrames[0] = await loadSeedFrameRgba(firstFrameOverride, plan.width, plan.height, key, chroma.similarity, chroma.smoothness, fetchImpl);
+			} catch (e) {
+				// eslint-disable-next-line no-console
+				console.warn(`[VideoToGif] firstFrameOverride 加载失败，保留视频首帧: ${e instanceof Error ? e.message : String(e)}`);
+			}
 		}
 
 		// ── 切格 + 缩放（margin 内缩吸收邻格渗入；目标 ≤240 微信规范）────────
@@ -670,6 +722,8 @@ export async function convertVideoToTransparentGif(
 	fetchImpl: typeof fetch,
 	onProgress?: (p: ComfyRunProgress) => void,
 	maxBytes = 500 * 1024,
+	/** ★ 首帧一致性：参考图 ref（已绿底合成）→ 抠像后替换 GIF 第 0 帧。 */
+	firstFrameOverride?: string,
 ): Promise<ConvertedTransparentGif> {
 	let objectUrl = '';
 	const video = document.createElement('video');
@@ -713,6 +767,16 @@ export async function convertVideoToTransparentGif(
 		}
 		if (rgbaFrames.length === 0) {
 			throw new Error('未能抽取任何视频帧（检查 start_s / end_s 区间）。');
+		}
+		// ★ 首帧一致性（2026-09-07）：参考图（已绿底合成）按帧尺寸重采样 + 同参数
+		//   抠像后整体替换第 0 帧 —— 动图起点 = 输入静态贴纸。失败不阻断（视频首帧兜底）。
+		if (firstFrameOverride) {
+			try {
+				rgbaFrames[0] = await loadSeedFrameRgba(firstFrameOverride, plan.width, plan.height, key, chroma.similarity, chroma.smoothness, fetchImpl);
+			} catch (e) {
+				// eslint-disable-next-line no-console
+				console.warn(`[VideoToGif] firstFrameOverride 加载失败，保留视频首帧: ${e instanceof Error ? e.message : String(e)}`);
+			}
 		}
 
 		// ── 压缩迭代：色数 → 帧率 → 尺寸 逐级降级，首个达标即停 ───────────────

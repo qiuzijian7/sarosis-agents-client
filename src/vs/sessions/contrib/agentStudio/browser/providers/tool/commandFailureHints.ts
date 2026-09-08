@@ -117,6 +117,23 @@ const FAILURE_PATTERNS: readonly IFailurePattern[] = [
 			'Either read/patch the existing item, or pick a different name/path.',
 	},
 	{
+		// ★ 2026-09-06：spawn 的 shell 可执行缺失（ENOENT 真因之一）——
+		// 必须排在 no-such-file **之前**：泛化的「命令里的路径不存在」会误导模型
+		// 去改命令，而命令本身没问题，改了永远修不好。
+		id: 'spawn-shell-enoent',
+		test: /\[ENOENT diagnosis\][^\n]*shell executable not found/i,
+		text: 'The shell executable (Git Bash) was not found — the COMMAND itself is fine; do not modify it. ' +
+			'This usually means Git Bash was moved or uninstalled. Reinstall Git for Windows, or set the ' +
+			'SAROS_GIT_BASH_PATH environment variable to the bash.exe path and restart the app.',
+	},
+	{
+		// ★ 2026-09-06：cwd 不存在（ENOENT 另一真因）——命令从未被启动。
+		id: 'spawn-cwd-enoent',
+		test: /\[ENOENT diagnosis\][^\n]*cwd does not exist/i,
+		text: 'The "cwd" directory passed to this tool does not exist — the command was never started. ' +
+			'Verify the directory exists (search_files / read_dir), then reissue with an existing cwd.',
+	},
+	{
 		id: 'no-such-file',
 		// 注意：中文措辞不能套 \b —— 中文字符不是 word char，`路径。` 两侧均非 word，
 		// \b 不成立会导致整条正则对中文 shell 输出失效（2026-08-21 单测捕获）。

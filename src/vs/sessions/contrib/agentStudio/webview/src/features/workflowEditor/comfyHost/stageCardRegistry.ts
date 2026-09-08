@@ -111,10 +111,9 @@ export const STAGE_HIDDEN_FIELDS: Record<string, readonly string[]> = {
 	'ComfyTV.MaterialStage': ['material_state'],
 	'ComfyTV.StatEmojiStage': ['rows', 'cols', 'fps', 'frames', 'prompt', 'cells', 'selected_index', 'run_scope', 'style_preset', 'sheet_background'],
 	// AnimatedEmoji 全部 widget 由 AnimatedEmojiEditor 接管（provider/model 联动、
-	// 动作 chips、网格切分、抠像参数都在编辑器内自绘）。
+	// 动作 chips、抠像参数都在编辑器内自绘；网格切分参数随逐格模式移除）。
 	'Saros.AnimatedEmoji': [
-		'videoProvider', 'videoModel', 'prompt', 'duration_s', 'fps', 'max_kb',
-		'grid_rows', 'grid_cols', 'grid_margin',
+		'videoProvider', 'videoModel', 'prompt', 'cell_actions', 'duration_s', 'fps', 'max_kb',
 		'chroma_color', 'chroma_similarity', 'chroma_smoothness',
 	],
 	'ComfyTV.StoryboardEditorStage': ['board_state'],

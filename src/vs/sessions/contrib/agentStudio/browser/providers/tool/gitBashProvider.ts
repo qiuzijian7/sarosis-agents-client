@@ -271,3 +271,13 @@ export function coreutilsDir(info: IGitBashInfo): string {
 export function _resetGitBashCacheForTests(): void {
 	_cached = undefined;
 }
+
+/**
+ * 运行时失效（2026-09-07，日志 1788757547227）：spawn 报 ENOENT 且诊断确认
+ * bash.exe 已不存在（Git 被卸载/移动/盘符变化）时调用——清除进程级缓存，
+ * 让后续调用重新探测（或直接降级原生 shell）。
+ * 不清除的话，缓存的"已找到"会让之后每条 execute_code 都以同样方式失败。
+ */
+export function invalidateGitBashCache(): void {
+	_cached = undefined;
+}

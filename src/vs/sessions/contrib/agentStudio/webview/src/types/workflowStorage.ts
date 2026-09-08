@@ -109,3 +109,20 @@ export interface IStoredWorkflow {
 	breakpoints?: string[];
 	[key: string]: unknown;
 }
+
+// ─── 执行状态（2026-09-07 补定义）────────────────────────────────────────
+// 原 `types/workflowExecution` 模块**已不存在**（仓库内零定义），但
+// features/workflowEditor/store.ts 仍在导入 WorkflowExecutionStatus /
+// IWorkflowNodeExecutionState → TS2307。此处按既有用法（executionStatus /
+// nodeExecutionStates）补齐最小定义；字段保持可选 + 索引签名，避免对未知用途
+// 施加过强约束（后续若还原真实形状，请替换为本定义）。
+export type WorkflowExecutionStatus = 'idle' | 'running' | 'success' | 'error' | 'canceled';
+
+export interface IWorkflowNodeExecutionState {
+	status: WorkflowExecutionStatus;
+	nodeId?: string;
+	error?: string;
+	startedAt?: number;
+	finishedAt?: number;
+	[key: string]: unknown;
+}

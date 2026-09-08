@@ -218,12 +218,20 @@ export async function fetchCredentials(
 	const opts = launchOptions();
 	const timeoutMs = Math.max(30, cfg<number>('loginTimeout', 300)) * 1000;
 
-	const launch = async (headless: boolean) => {
+	const launch = async (headless: boolean, clearCookies = false) => {
 		const context = await chromium.launchPersistentContext(profileDir, {
 			...opts,
 			headless,
 		});
 		try {
+			// ★ 交互式登录前清空 profile 里的旧 Cookie（2026-09-07）：persistCookies
+			//   会把过期 sessionid 持久化 30 天，不清的话 waitForLogin 的
+			//   extractFromContext **秒回旧 Cookie** → resolveUserId(旧) → 50008 →
+			//   交互式登录根本没给用户输入机会（实测复现）。清空后等待逻辑才真正
+			//   等待「新登录」出现。
+			if (clearCookies) {
+				await context.clearCookies().catch(() => undefined);
+			}
 			const page = context.pages()[0] ?? (await context.newPage());
 			await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 			const found = await waitForLogin(context, headless ? 15000 : timeoutMs, onProgress);
@@ -249,8 +257,10 @@ export async function fetchCredentials(
 	}
 
 	// 2) 交互式登录：打开浏览器让用户完成 Oasis/QQ 登录，会话写入 profile
+	// ★ clearCookies=true：无头失败多半意味着 profile 里是**过期**会话，必须清掉
+	//   再等新登录（否则 extractFromContext 秒回旧值，交互式秒失败）。
 	onProgress?.('请在打开的浏览器窗口中完成 LightAI 登录…');
-	const found = await launch(false);
+	const found = await launch(false, true);
 	const info = await resolveUserId(found.cookie);
 	console.log(`${LOG} 登录成功，已写入 profile`);
 	return {

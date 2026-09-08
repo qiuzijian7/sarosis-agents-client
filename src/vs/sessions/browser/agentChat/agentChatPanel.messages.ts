@@ -670,12 +670,6 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 	 */
 	private _reconcileParts(bubble: HTMLElement, msg: IAgentChatMessage): void {
 		const keyedParts = this._buildKeyedParts(msg);
-		// ★ 诊断埋点 #4（2026-09-06）：keyed diff 现场——parts 布局与气泡子元素数。
-		const _dg = msg as any;
-		if (keyedParts.some(kp => kp.part.kind === 'thinking') && (msg.thinking || '').length - (_dg._dgRc ?? -1) >= 400) {
-			_dg._dgRc = (msg.thinking || '').length;
-			this._logService.info(`[ThinkingDiag] reconcile n=${keyedParts.length} kinds=[${keyedParts.map(k => k.part.kind[0]).join(',')}] bubbleKids=${bubble.children.length} v4`);
-		}
 
 		// 收集已有 keyed 元素。
 		// ⚠ 必须走 queryPartElements（只取直接子元素）—— 用后代查询会把卡片内部
@@ -830,13 +824,6 @@ private readonly _finalizedPartText = new WeakMap<HTMLElement, string>();
 				// 出现它变非 last → 又被自动折叠，表现为「展开一次又折叠」的闪烁
 				//（用户报）。新 episode 本身就是新建的卡（默认展开），无需强制展开。
 				const thinkingText = (part as IThinkingMessagePart).text;
-				// ★ 诊断埋点 #4（2026-09-06）：链路可观测——inPlace 执行 + body 现场 vs 数据。
-				// 每 400 字符增量打一条。若日志完全没有本行 → 实例未加载本版本代码。
-				const _dg = msg as any;
-				if (thinkingText.length - (_dg._dgInPlace ?? -1) >= 400) {
-					_dg._dgInPlace = thinkingText.length;
-					this._logService.info(`[ThinkingDiag] inPlace textLen=${thinkingText.length} bodyTextLen=${(body.textContent || '').length} bodyKids=${body.children.length} rendered=${body.dataset.rendered} connected=${body.isConnected} partKey=${el.getAttribute('data-part-key')} v4`);
-				}
 				if (this._scheduledPartText.get(body) === thinkingText) { return; }
 				this._scheduledPartText.set(body, thinkingText);
 				this._attachStreamCardPin(body);
@@ -1454,8 +1441,49 @@ private _needsArgsDrivenRebuild(card: HTMLElement, tc: IToolCall): boolean {
 	return needsArgsDrivenRebuild({ hasEmptyCommandPlaceholder, hasUnresolvedPathPlaceholder }, args);
 }
 
-protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentChatMessage): void {
+	/**
+	 * result 后到判据（2026-09-06）：卡上 data-result-len 签名 vs 当前 result 长度。
+	 * - tc.result 为空 → false（无可渲染内容）
+	 * - 卡上无签名（-1）且 result 有值 → true（result 首次到达）
+	 * - 签名与当前长度一致 → false（已同步，自限：每卡每 result 版本至多重建一次）
+	 */
+	private _needsResultDrivenRebuild(oldCard: HTMLElement, tc: { id?: string; result?: unknown }): boolean {
+		const r = tc.result;
+		if (r === undefined || r === null || r === '') { return false; }
+		const len = typeof r === 'string' ? r.length : JSON.stringify(r).length;
+		if (len === 0) { return false; }
+		return Number(oldCard.getAttribute('data-result-len') ?? '-1') !== len;
+	}
+
+protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentChatMessage, forceResultRefresh = false): void {
 	if (!msg.toolCalls || msg.toolCalls.length === 0) { return; }
+		// ★ forceResultRefresh（2026-09-06）：DONE 转换时对所有**有 result 的工具卡**
+		// 无条件整卡重建一次。背景：tool_result 常在流式中到达，此刻 body 渲染被
+		// isRunning 跳过且 result-len 签名已记录（增量路径自限不再重建）→ 卡 body
+		// 永远空白（用户报「代码搜索工具卡片内容为空」）。此处一次性回填，低频
+		// （DONE 每消息一次 × 工具数）。
+		if (forceResultRefresh) {
+			// 触发留痕（2026-09-06）：判定 DONE 回填是否真的执行 + 有几卡带 result
+			this._logService.info(`[ToolCard] forceResultRefresh fired: toolCalls=${msg.toolCalls.length} withResult=${msg.toolCalls.filter(t => t.result != null && t.result !== '').length}`);
+			const cardById0 = new Map<string, HTMLElement>();
+			for (const el of existingEl.querySelectorAll('[data-tool-id]')) {
+				const id = el.getAttribute('data-tool-id');
+				if (id && !cardById0.has(id)) { cardById0.set(id, el as HTMLElement); }
+			}
+			for (const tc of msg.toolCalls) {
+				if (!tc.id || tc.result === undefined || tc.result === null || tc.result === '') { continue; }
+				const oldCard = cardById0.get(tc.id);
+				if (!oldCard) { continue; }
+				const savedScroll = this._captureScrollPositions(oldCard);
+				const newCard = this._createToolCallCard(tc);
+				const oldPartKey = oldCard.getAttribute('data-part-key');
+				if (oldPartKey) { newCard.setAttribute('data-part-key', oldPartKey); }
+				newCard.setAttribute('data-result-len', String(typeof tc.result === 'string' ? tc.result.length : JSON.stringify(tc.result).length));
+				oldCard.replaceWith(newCard);
+				this._restoreScrollPositionsDeferred(newCard, savedScroll);
+			}
+			return;
+		}
 		// 工具卡可能位于 .tool-calls-section（旧整段渲染）或气泡直接子节点（parts 交错渲染）。
 		// 统一按 data-tool-id 在整个消息元素内查找，两种模式都命中。
 		//
@@ -1526,6 +1554,27 @@ protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentC
 	oldCard.replaceWith(newCard);
 		this._applySubAgentRefreshFX(newCard, prevSa);
 		this._restoreScrollPositionsDeferred(newCard, savedScroll);
+		} else if (this._needsResultDrivenRebuild(oldCard, tc)) {
+			// ★ result 后到补齐（2026-09-06，用户报「代码搜索工具卡片内容为空」）：
+			// 与下方 args 后到（1787363991734）完全同源——tool_result delta 已把
+			// tc.result 写入数据层（nativeChatEditorPane case 'tool_result'），但
+			// status 往往已在 tool_end 时定稿为 success，`currentStatus !== newStatus`
+			// 不成立 → 本函数唯一的整卡重建路径被跳过 → 卡 body 永远空白。
+			// 判据自限（卡上 data-result-len 签名）：与当前 result 长度一致即跳过，
+			// 每张卡每个 result 版本最多重建一次，不会退化成每帧重建。
+			const _rLen = (tc.result === undefined || tc.result === null || tc.result === '')
+				? 0
+				: (typeof tc.result === 'string' ? tc.result.length : JSON.stringify(tc.result).length);
+			this.refreshLogger.record('card:result-arrived' as any, {
+				msgId: msg.id, toolId: tc.id, isStreaming: msg.isStreaming,
+			});
+			const savedScroll = this._captureScrollPositions(oldCard);
+			const newCard = this._createToolCallCard(tc);
+			const oldPartKey = oldCard.getAttribute('data-part-key');
+			if (oldPartKey) { newCard.setAttribute('data-part-key', oldPartKey); }
+			newCard.setAttribute('data-result-len', String(_rLen));
+			oldCard.replaceWith(newCard);
+			this._restoreScrollPositionsDeferred(newCard, savedScroll);
 		} else if (this._needsArgsDrivenRebuild(oldCard, tc)) {
 			// ★ args 后到补齐（2026-08-22，日志 1787363991734）：`tool_start` 与
 			// `tool_args` 是两个独立 delta —— 建卡时 tc.args 还是空，终端族卡片渲染
@@ -2057,6 +2106,10 @@ protected override _createFooter(msg: IAgentChatMessage): HTMLElement {
 	}
 
 protected override _transitionStreamingToComplete(existingEl: HTMLElement, msg: IAgentChatMessage): void {
+		// ★ 2026-09-06：工具卡 body 最终回填（force）——流式中 result 到达时 body
+		// 被 isRunning 跳过且签名自限（增量路径不再重建），此处一次性整卡重建回填，
+		// 否则卡片展开永远空白（用户报「代码搜索工具卡片内容为空」）。
+		this._updateToolCardStatuses(existingEl, msg, true);
 		const bubble = existingEl.querySelector('.chat-bubble') as HTMLElement | null;
 		if (!bubble) {
 			// 找不到 bubble，回退到全量重建

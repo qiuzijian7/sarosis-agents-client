@@ -73,7 +73,8 @@ export class SandboxGuard {
 			allowedList,
 		];
 		if (v.suggestedPath) {
-			lines.push('', `建议路径（落在允许根内）：${v.suggestedPath}`);
+			// 2026-09-07：suggestedPath 现由 computeSuggestedPath 验证真实存在后给出
+			lines.push('', `建议路径（已验证真实存在）：${v.suggestedPath}`);
 		}
 		const buttons: Array<{ id: string; label: string; primary?: boolean; danger?: boolean }> = [
 			{ id: 'allow_once', label: '允许本次', primary: true },

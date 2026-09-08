@@ -14,7 +14,8 @@ import { useWorkflowEditorStore } from './store';
 import { getNodeSpec } from './comfyHost/registry';
 import { buildEditorFields, coerceEditorValue, buildSarosEditorFields, sarosDataToValues, sarosValuesToData, isSarosJsonField, type EditorField } from './comfyHost/nodeEditorForm';
 import { type SingleNodeRunResult } from './comfyHost/nodeExecutor';
-import { runNodeOrStage, runProviderImage, runProviderVideo, runProviderModel3D, runProviderAudio, runAnimatedEmoji, isPickerNode, isLoaderNode, collectUpstreamCandidates, resolveFirstImageGenDefaults } from './comfyHost/workflowRun';
+import { runNodeOrStage, runProviderImage, runProviderVideo, runProviderModel3D, runProviderAudio, isPickerNode, isLoaderNode, collectUpstreamCandidates, resolveFirstImageGenDefaults } from './comfyHost/workflowRun';
+import { getNodeDefinition } from './comfyHost/nodeDefinition.js';
 import { ComfyRunnerRegistry } from './comfyHost/comfyRunner';
 import type { MediaSnapshotStore } from './comfyHost/mediaSnapshotStore';
 import { mediaList, resolveAssetUrl, type MediaAsset } from './mediaAssets';
@@ -564,20 +565,25 @@ export function NodeEditorPopup({
 			return;
 		}
 		if (isAnimatedEmojiNode) {
-			const r = await runAnimatedEmoji({
-				runner: runners.resolve(preference)!,
-				nodeId,
-				snapshotKey: snapKey,
-				type: nodeType,
-				getSpec: (t) => getNodeSpec(t),
-				values: coerced,
-				upstreams,
-				store,
-				onProgress: (p) => {
-					cardStateStore?.set(nodeId, { runState: 'running', progress: p.progress ?? p.value ?? 50 });
-				},
-				sendVideoGen: (payload) => sendRequest<Record<string, unknown>, { videos: Array<{ url?: string; posterUrl?: string }> }>('videogen.generate', payload, 600_000),
-			});
+			// ★ 节点定义框架（2026-09-07）：popupChannel 声明式查表——definition.run
+			//   即该节点的执行器（能力注入同旧硬编码分支：videogen RPC 600s）。
+			const animatedDef = getNodeDefinition(nodeType);
+			const r = await (animatedDef
+				? animatedDef.run({
+					runner: runners.resolve(preference)!,
+					nodeId,
+					snapshotKey: snapKey,
+					type: nodeType,
+					getSpec: (t) => getNodeSpec(t),
+					values: coerced,
+					upstreams,
+					store,
+					onProgress: (p) => {
+						cardStateStore?.set(nodeId, { runState: 'running', progress: p.progress ?? p.value ?? 50 });
+					},
+					sendVideoGen: (payload) => sendRequest<Record<string, unknown>, { videos: Array<{ url?: string; posterUrl?: string }> }>('videogen.generate', payload, 600_000),
+				})
+				: { promptId: '', status: 'error' as const, error: '节点定义未注册（nodes/index.ts）', entries: [] });
 			setResult(r);
 			if (r.status === 'success') {
 				setState('success');
@@ -1754,6 +1760,18 @@ function LibraryThumb({ asset, onClick }: { asset: MediaAsset; onClick: () => vo
 	);
 }
 
+/** 富选项（agent/skill/tool 选择器的统一形状）：差异字段一律可选，见下方 useMemo 注释。 */
+interface RichPickerOption {
+	value: string;
+	label: string;
+	id?: string;
+	icon?: string;
+	description?: string;
+	category?: string;
+	skills?: number;
+	tools?: number;
+}
+
 function SearchableSelect({ field, value, onChange, labelStyle, inputStyle }: {
 	field: EditorField;
 	value: string;
@@ -1773,7 +1791,10 @@ function SearchableSelect({ field, value, onChange, labelStyle, inputStyle }: {
 	// ★ 富选项：agent/skill/tool 不再只回显 `name (id)`，而是携带 icon /
 	//   description / 分类 / 技能·工具数徽章，选项渲染成富卡片（对齐 ComfyUI
 	//   节点搜索框的选项信息密度）。filtered/current 仍按 value+label 匹配。
-	const options = React.useMemo(() => {
+	// 2026-09-07：显式标注元素类型。此前 TS 把三个分支的对象字面量推断成**联合
+	// 数组**，取公共成员后 `o.category / o.skills / o.tools` 均不存在 → TS2339 ×11。
+	// 标注为「全部可选」的富选项类型后各分支仍按自身字段构造，运行时行为不变。
+	const options = React.useMemo<RichPickerOption[]>(() => {
 		if (field.kind === 'agent') {
 			return agents.map(a => ({
 				value: a.id,

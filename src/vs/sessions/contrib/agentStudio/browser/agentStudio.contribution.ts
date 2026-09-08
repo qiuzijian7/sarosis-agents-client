@@ -2915,6 +2915,13 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			`[AgentCapabilityPlugins][Diag] Final manifest size=${manifest.length}; about to activate each entry`,
 		);
 		for (const entry of manifest) {
+			// ★ 跳过 *-example 系列示例插件（2026-09-07）：capability 示例（priority 50、CI 已跳过）
+			//   属死代码，激活只会产生无用的 disposable 实例（日志可见
+			//   [LEAKED DISPOSABLE] ExecutionExamplePlugin），还占激活耗时。
+			if (/example/i.test(entry.id)) {
+				this.logService.info(`[AgentCapabilityPlugins][Diag] skip example plugin: ${entry.id}`);
+				continue;
+			}
 			if (this._activatedPlugins.has(this._normalizePluginId(entry.id))) {
 				this.logService.info(`[AgentCapabilityPlugins][Diag] ${entry.id} already activated -- skip`);
 				continue;

@@ -64,6 +64,8 @@ import {
 	isShellToolWithCommandArg,
 	detectAntiGuidanceCommand,
 	formatAntiGuidanceLog,
+	tryRewriteLeadingCd,
+	formatLeadingCdRewriteLog,
 } from '../common/shellCommandSafety.js';
 import {
 	buildToolAuditReport, formatToolAuditLog, formatGuardrailFiredLog,
@@ -159,6 +161,7 @@ import { buildDurableContextSystemMessage } from '../common/durableContextMiddle
 import { AGUIChatMessageBuilder } from '../common/adapters/aguiAdapter.js';
 import { ContextManager, RETRIEVAL_COMPACTION_ENABLED, RETRIEVAL_BUDGET_RATIO } from '../common/contextManager.js';
 import { injectMemoryContext, isMemoryInjectionEnabled } from './agentMemoryInjection.js';
+import { getLastMcpServerStats } from './agentToolAssembly.js';
 import type { ChatMessage } from '../common/types.js';
 import { IterationBudget } from '../common/iterationBudget.js';
 import { AgentLoopStrategyFactory } from './agentLoopStrategyFactory.js';
@@ -2508,7 +2511,15 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					const sessKey = request.sessionId || request.agentId || 'unknown';
 					if (!_noMcpWarnedSessions.has(sessKey)) {
 						_noMcpWarnedSessions.add(sessKey);
-						host._logService.warn(`[AgentOS] ⚠ NO MCP TOOLS in API request — MCP servers not connected or configured (won't warn again this session; builtin tools unaffected)`);
+						// ★ 2026-09-07：旧文案「not connected or configured」把两种成因
+						// 混为一谈，实测误导（日志 1788767675940：comfy-mcp 已连接、
+						// 39 个工具已发现，实为被 agent 工具集裁掉，却被读成连不上）。
+						// 现按「连接层面是否检测到 MCP 服务器」分叉，两句的处置完全不同。
+						const stats = getLastMcpServerStats();
+						const reason = stats
+							? `MCP tools excluded by agent toolset — servers connected: [${stats.servers.join(', ')}] with ${stats.toolCount} tool(s) available but none enabled for this agent (add 'mcp:<server>' to the agent's tools, or enable the MCP toolset)`
+							: `MCP servers not connected or configured — no MCP tool was discovered in this session`;
+						host._logService.warn(`[AgentOS] ⚠ NO MCP TOOLS in API request — ${reason} (won't warn again this session; ${builtinToolsSent.length} builtin tools unaffected)`);
 					} else {
 						host._logService.info(`[AgentOS] NO MCP TOOLS in API request (session already warned once)`);
 					}
@@ -4021,9 +4032,30 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				for (const _tc of effectiveToolCalls as ReadonlyArray<{ name: string; arguments?: unknown }>) {
 					if (!isShellToolWithCommandArg(_tc.name)) { continue; }
 					try {
-						const _a = typeof _tc.arguments === 'string' ? JSON.parse(_tc.arguments) : _tc.arguments;
+						const _isStrArgs = typeof _tc.arguments === 'string';
+						const _a = _isStrArgs ? JSON.parse(_tc.arguments as string) : _tc.arguments;
 						const _cmd = typeof (_a as any)?.command === 'string' ? (_a as any).command : '';
 						if (!_cmd) { continue; }
+						// ★ 2026-09-06 方案 B：leading-cd 是**确定性可无损改写**的形态
+						// （dir 与 rest 的切分不依赖语义）——执行前直接规范化成
+						// cwd + command，本次执行即为正确形态（不再带 `&&`、不再
+						// 依赖 shell 的 cd 副作用）；仍打 INFO 回灌以承担教育职能。
+						// 不可安全改写（含变量/命令替换等）时回落原告警路径。
+						const _rw = tryRewriteLeadingCd(
+							_cmd,
+							typeof (_a as any)?.cwd === 'string' ? (_a as any).cwd : undefined,
+						);
+						if (_rw) {
+							const _nextArgs = { ...(_a as any), command: _rw.command, cwd: _rw.cwd };
+							// arguments 可能是 string（协议层）或 object（内部），分别写回；
+							// tc 字段为 readonly → map 产生新对象覆盖（同废弃名归一化写法）。
+							effectiveToolCalls = effectiveToolCalls.map(t => t === _tc
+								? { ...t, arguments: _isStrArgs ? JSON.stringify(_nextArgs) : _nextArgs }
+								: t);
+							host._logService.info(formatLeadingCdRewriteLog(_tc.name, _rw));
+							_auditMark('antiGuidanceRewritten', (_audit.watermarks.get('antiGuidanceRewritten')?.max ?? 0) + 1, 0, _tc.name);
+							continue;
+						}
 						const _findings = detectAntiGuidanceCommand(_cmd);
 						if (_findings.length > 0) {
 							host._logService.warn(formatAntiGuidanceLog(_tc.name, _cmd, _findings));

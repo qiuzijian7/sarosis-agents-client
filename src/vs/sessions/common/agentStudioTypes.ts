@@ -772,6 +772,13 @@ export interface ChatMessageMetadata {
 	compressedCount?: number;
 	/** compaction 边界：节省的估算 tokens。 */
 	tokensSaved?: number;
+	/**
+	 * 流式输出未结束时关闭 app，落盘的是**半截内容**（2026-09-06）。
+	 * 由 nativeChatEditorPane 在 onWillShutdown 写草稿、agentChatService 在
+	 * getHistory 消费时打上；UI 在气泡 footer 显示「已中断」，避免用户误读为
+	 * 模型的完整回答。
+	 */
+	streamInterrupted?: boolean;
 }
 
 // Reference item for ReferencesCard (VS Code chatReferencesContentPart pattern)

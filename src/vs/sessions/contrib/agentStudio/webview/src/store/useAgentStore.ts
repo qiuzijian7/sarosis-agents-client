@@ -80,6 +80,9 @@ export interface Agent {
 	// ── ConfigHtml ────────────────────────────────────
 	configHtml?: {
 		mdPath: string;
+		// 2026-09-07：AgentEditorPane 已在读写 htmlPath（HTML 版配置页），但类型定义
+		// 里漏了该字段 → TS2339 / TS2353。补上（与 mdPath 同为路径字段，语义一致）。
+		htmlPath?: string;
 		parserPath?: string;
 		stylesPath?: string;
 		displayMode: 'side' | 'replace' | 'tab';

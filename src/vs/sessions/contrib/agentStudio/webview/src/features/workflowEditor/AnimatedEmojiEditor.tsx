@@ -28,11 +28,6 @@ export interface AnimatedEmojiInit {
   duration_s: number;
   fps: number;
   max_kb: number;
-  /** m×n 网格切分：1×1 = 单表情（整图模式）；>1 = 输入拼贴图逐帧切格。 */
-  gridRows: number;
-  gridCols: number;
-  /** 切格内缩比例（0-0.2，吸收邻格渗入/全局抖动）。 */
-  gridMargin: number;
   chromaColor: string;
   chromaSimilarity: number;
   chromaSmoothness: number;
@@ -98,10 +93,6 @@ export function AnimatedEmojiEditor({
   const [durationS, setDurationS] = React.useState<number>(initial.duration_s || 3);
   const [fps, setFps] = React.useState<number>(initial.fps || 12);
   const [maxKb, setMaxKb] = React.useState<number>(initial.max_kb || 100);
-  const [gridRows, setGridRows] = React.useState<number>(initial.gridRows || 1);
-  const [gridCols, setGridCols] = React.useState<number>(initial.gridCols || 1);
-  const [gridMargin, setGridMargin] = React.useState<number>(
-    typeof initial.gridMargin === 'number' ? initial.gridMargin : 0.1);
   const [chromaColor, setChromaColor] = React.useState<string>(initial.chromaColor || '#00FF00');
   // ★ 绿幕抠像开关：关闭 = 支持非透明背景图像（不合成绿底、产出带原背景 GIF）
   const [chromaEnable, setChromaEnable] = React.useState<boolean>(initial.chromaEnable !== false);
@@ -109,8 +100,8 @@ export function AnimatedEmojiEditor({
     typeof initial.chromaSimilarity === 'number' ? initial.chromaSimilarity : 0.4);
   const [chromaSmoothness, setChromaSmoothness] = React.useState<number>(
     typeof initial.chromaSmoothness === 'number' ? initial.chromaSmoothness : 0.1);
-  // 参数页签（2026-09-02）：GIF 输出 / 网格切分 / 绿幕抠像 三页切换。
-  const [tab, setTab] = React.useState<'gif' | 'grid' | 'chroma'>('gif');
+  // 参数页签：GIF 输出 / 绿幕抠像 两页切换。
+  const [tab, setTab] = React.useState<'gif' | 'chroma'>('gif');
   // ★ 图集预览模式（2026-09-03）：生成成功后默认显示「逐格 GIF 拼贴动图」
   //   （9 张 GIF 按 rows×cols 拼回图集位置同步循环 = 图集动图效果）；可切回
   //   静帧（调 margin/网格时看静态对齐更清楚）。
@@ -159,16 +150,13 @@ export function AnimatedEmojiEditor({
       duration_s: durationS,
       fps,
       max_kb: maxKb,
-      grid_rows: gridRows,
-      grid_cols: gridCols,
-      grid_margin: gridMargin,
       chroma_color: chromaColor,
       chroma_enable: chromaEnable,
       chroma_similarity: chromaSimilarity,
       chroma_smoothness: chromaSmoothness,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backend, workflow, seed, providerId, modelId, durationS, fps, maxKb, gridRows, gridCols, gridMargin, chromaEnable, chromaColor, chromaSimilarity, chromaSmoothness]);
+  }, [backend, workflow, seed, providerId, modelId, durationS, fps, maxKb, chromaEnable, chromaColor, chromaSimilarity, chromaSmoothness]);
 
   const stepper = (
     label: string,
@@ -191,46 +179,32 @@ export function AnimatedEmojiEditor({
   /** 预览图集的真实像素比例（onLoad 记录）——网格叠加层与图像区 1:1 对齐用。 */
   const [sheetNatural, setSheetNatural] = React.useState<{ w: number; h: number } | null>(null);
 
-  // ── 图集预览（2026-09-02）：上游参考图/图集 + 拆分网格叠加，参数实时生效。
-  // 生效行列 = 用户显式设置（>1）> 上游图集 meta（sheetGrid）> 1×1；
-  // ★ 装不下自动扩：与执行器 runAnimatedEmoji 的行列决策**严格一致**——
-  //   显式 grid 的 rows*cols 装不下 upstreamCount 张时，执行器会按张数近似
-  //   方形重算（cols=ceil(sqrt(n))，rows=ceil(n/cols)，上限 6）。预览若不
-  //   同步扩，网格叠加仍按旧行列 → 格子与图集内容错位（「网格切分不正确」）。
-  let effRows = gridRows > 1 ? gridRows : (sheetGrid?.rows ?? 1);
-  let effCols = gridCols > 1 ? gridCols : (sheetGrid?.cols ?? 1);
-  // ★ 生效 margin：消费上游图集时**跟随图集 meta**（图集 gap 是拼装时的既成
-  //   事实——静态节点 image 口恒 margin=0 无缝等分；slider 默认 0.03 若强行
-  //   用于切分，每格内缩 3% 且越往右/下累积偏移 = 「图集切分不正确」）。
-  //   slider 仅在「执行时自动拼贴独立格」场景生效（upstreamSheetRef 为空）。
-  const effMargin = inputSheetRef && sheetGrid?.margin !== undefined ? sheetGrid.margin : gridMargin;
+  // ── 图集预览：上游参考图/图集 + 拆分网格叠加。
+  // ★ 逐格模式（2026-09-07）：行列只跟随上游图集 meta（sheetGrid）——每格
+  //   独立生成 GIF，不再有用户可调的 rows/cols/margin 网格参数。
+  //   装不下自动扩（与执行器一致）：nUp 张装不下时按张数近似方形重算。
+  let effRows = sheetGrid?.rows ?? 1;
+  let effCols = sheetGrid?.cols ?? 1;
+  const effMargin = sheetGrid?.margin ?? 0;
   const nUp = upstreamCount ?? 0;
   if (nUp > 1 && effRows * effCols < nUp) {
     effCols = Math.min(6, Math.ceil(Math.sqrt(nUp)));
     effRows = Math.min(6, Math.ceil(nUp / effCols));
   }
   const effGrid = effRows > 1 || effCols > 1;
-  // 网格几何（对齐执行器拼贴：gap=margin×cell，cell 归一化 1，近似 cellW≈cellH）：
+  // 网格几何（对齐上游图集拼装：gap=margin×cell，cell 归一化 1，近似 cellW≈cellH）：
   // T = cols + (cols+1)*margin；第 i 格内容区 x = (margin + i*(1+margin)) / T，宽 1/T。
   const gridT = Math.max(0.0001, effCols + (effCols + 1) * effMargin);
-  // 纵向 margin 以 cellH 为基准（执行器 gap 统一用 margin×cellW；表情贴纸
-  // cellW≈cellH，此处近似同比例——预览误差可忽略）。
   const gridTh = Math.max(0.0001, effRows + (effRows + 1) * effMargin);
-  const cells: Array<{ x: number; y: number; w: number; h: number; n: number; ix: number; iy: number; iw: number; ih: number }> = [];
+  const cells: Array<{ x: number; y: number; w: number; h: number; n: number }> = [];
   if (effGrid && inputSheetRef) {
-    // ★ 内缩（gridMargin slider）＝执行器切格的实际裁切范围（吸收邻格渗入），
-    //   预览中以内缩框可视化——slider 拖动即见 GIF 内容边界变化。
-    const inset = Math.max(0, Math.min(0.45, gridMargin));
     for (let r = 0; r < effRows; r++) {
       for (let c = 0; c < effCols; c++) {
         const x = (effMargin + c * (1 + effMargin)) / gridT;
         const y = (effMargin + r * (1 + effMargin)) / gridTh;
         const w = 1 / gridT;
         const h = 1 / gridTh;
-        cells.push({
-          x, y, w, h, n: r * effCols + c + 1,
-          ix: x + w * inset, iy: y + h * inset, iw: w * (1 - inset * 2), ih: h * (1 - inset * 2),
-        });
+        cells.push({ x, y, w, h, n: r * effCols + c + 1 });
       }
     }
   }
@@ -327,12 +301,11 @@ export function AnimatedEmojiEditor({
         )}
       </div>
 
-      {/* 参数页签（2026-09-02）：GIF 输出 / 网格切分 / 绿幕抠像 三页切换 */}
+      {/* 参数页签：GIF 输出 / 绿幕抠像 两页切换（网格切分页随整图切格路线移除） */}
       <div style={{ border: '1px solid rgba(168,85,247,.28)', borderRadius: 8, background: 'rgba(168,85,247,.05)', overflow: 'hidden' }}>
         <div style={{ display: 'flex', borderBottom: '1px solid rgba(168,85,247,.28)' }}>
           {([
             { id: 'gif', label: '🎞 GIF 输出' },
-            { id: 'grid', label: '✂️ 网格切分' },
             { id: 'chroma', label: '🟢 绿幕抠像' },
           ] as const).map(t => (
             <button
@@ -354,7 +327,7 @@ export function AnimatedEmojiEditor({
           {tab === 'gif' && (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--vscode-descriptionForeground, #9a9a9a)', fontFamily: 'monospace' }}>单格 240×240 · 循环 · 共 {gridRows * gridCols} 张</span>
+                <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--vscode-descriptionForeground, #9a9a9a)', fontFamily: 'monospace' }}>单格 240×240 · 循环 · 共 {Math.max(1, nUp)} 张</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 {stepper('时长 秒', durationS, 2, 5, 1, setDurationS)}
@@ -370,39 +343,6 @@ export function AnimatedEmojiEditor({
                 上限针对**单个 GIF**（每格各自 ≤上限，不是图集总量）：超限自动降级
                 （色数→帧率→尺寸，尺寸不降保 240×240）。微信规范：主图 GIF 240×240
                 ≤100KB；每格自动附带缩略图 PNG 240×240 ≤60KB（随条目 meta.thumb）
-              </div>
-            </>
-          )}
-          {tab === 'grid' && (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ marginLeft: 'auto', fontSize: 9, fontFamily: 'monospace', color: (gridRows > 1 || gridCols > 1) ? '#c084fc' : 'var(--vscode-descriptionForeground, #9a9a9a)' }}>
-                  {gridRows * gridCols > 1 ? `${gridRows}×${gridCols} → ${gridRows * gridCols} 个 GIF` : '单表情'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                {([
-                  { label: '1×1 单表情', r: 1, c: 1 },
-                  { label: '2×2', r: 2, c: 2 },
-                  { label: '3×3', r: 3, c: 3 },
-                  { label: '2×3', r: 2, c: 3 },
-                  { label: '3×2', r: 3, c: 2 },
-                ] as const).map(p => (
-                  <button key={p.label} style={btn(gridRows === p.r && gridCols === p.c)}
-                    onClick={() => { setGridRows(p.r); setGridCols(p.c); }}>
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                {stepper('行', gridRows, 1, 6, 1, setGridRows)}
-                {stepper('列', gridCols, 1, 6, 1, setGridCols)}
-                {stepper('边距', Math.round(gridMargin * 100) / 100, 0, 0.2, 0.01, (v) => setGridMargin(Math.max(0, Math.min(0.2, v))))}
-              </div>
-              <div style={{ fontSize: 9, color: 'var(--vscode-descriptionForeground, #9a9a9a)', lineHeight: 1.5 }}>
-                输入 m×n <b>等分拼贴</b>贴纸图，整图一次生成动图后逐帧切格（1 次视频调用出全部表情，画风天然统一）。
-                边距=拼贴隔离带+切格内缩（双重防串格）：模型动图元素（泪滴/星星/肢体）
-                越过格边界时会落在隔离带上被绿幕抠掉。默认 0.1；仍串格再调大，主体被裁则调小。
               </div>
             </>
           )}
@@ -508,21 +448,13 @@ export function AnimatedEmojiEditor({
                 viewBox="0 0 1 1" preserveAspectRatio="none"
                 style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
               >
-                {/* 外框（紫虚线）＝等分格区域；内框（青实线）＝边距内缩后的
-                    实际 GIF 裁切范围——「边距」slider 拖动即见。 */}
+                {/* 外框（紫虚线）＝上游图集等分格区域。 */}
                 {cells.map(c => (
                   <rect
                     key={c.n}
                     x={c.x} y={c.y} width={c.w} height={c.h} fill="none"
                     stroke="rgba(168,85,247,.85)" strokeWidth={0.003}
                     strokeDasharray="0.012 0.008"
-                  />
-                ))}
-                {cells.map(c => (
-                  <rect
-                    key={`i${c.n}`}
-                    x={c.ix} y={c.iy} width={c.iw} height={c.ih} fill="none"
-                    stroke="rgba(34,211,238,.9)" strokeWidth={0.0025}
                   />
                 ))}
               </svg>

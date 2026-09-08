@@ -24,6 +24,10 @@
  *--------------------------------------------------------------------------------------------*/
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
+// 2026-09-07：被测试模块 `../editorCore` **已不存在**（kbBlocks 下现只有 index.tsx +
+// __tests__），该测试为孤儿用例（同目录 run-editorcore-tests.mjs 亦引用同一路径）。
+// 保留用例以待模块回归，单行抑制 TS2307（不删文件、不删用例）。
+// @ts-ignore -- module removed; test retained intentionally
 import { extractOutline, countWords, countChars, estimateReadingMinutes, type IOutlineItem } from '../editorCore.js';
 
 /* ===========================================================================================

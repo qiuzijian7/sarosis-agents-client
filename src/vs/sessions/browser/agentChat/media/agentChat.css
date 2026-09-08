@@ -7971,6 +7971,36 @@
 	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
 
+/* 2026-09-07：body 级下拉框滚动条与项目风格统一。
+   这批下拉框（provider/model/workspace/worktree）由 _dropdownBody 挂到
+   document.body（脱离 .chat-container），未命中 agentChat.css:74 的全局
+   `*::-webkit-scrollbar` 规则，落回 Windows 原生灰色粗滚动条（含箭头按钮），
+   与项目深色精致风格不符。对齐 .chat-agent-dropdown-list 的 4px 细滚动条规范。 */
+.provider-dropdown,
+.workspace-dropdown,
+.chat-worktree-dropdown {
+	scrollbar-width: thin;
+	scrollbar-color: rgba(128, 128, 128, 0.3) transparent;
+}
+.provider-dropdown::-webkit-scrollbar,
+.workspace-dropdown::-webkit-scrollbar,
+.chat-worktree-dropdown::-webkit-scrollbar { width: 4px; }
+.provider-dropdown::-webkit-scrollbar-track,
+.workspace-dropdown::-webkit-scrollbar-track,
+.chat-worktree-dropdown::-webkit-scrollbar-track { background: transparent; }
+.provider-dropdown::-webkit-scrollbar-thumb,
+.workspace-dropdown::-webkit-scrollbar-thumb,
+.chat-worktree-dropdown::-webkit-scrollbar-thumb {
+	background: rgba(128, 128, 128, 0.3);
+	border-radius: 4px;
+}
+.provider-dropdown::-webkit-scrollbar-thumb:hover,
+.workspace-dropdown::-webkit-scrollbar-thumb:hover,
+.chat-worktree-dropdown::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.45); }
+.provider-dropdown::-webkit-scrollbar-button,
+.workspace-dropdown::-webkit-scrollbar-button,
+.chat-worktree-dropdown::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+
 .provider-dropdown-item {
 	display: flex;
 	align-items: center;

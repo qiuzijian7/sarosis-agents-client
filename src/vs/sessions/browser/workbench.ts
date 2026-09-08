@@ -654,8 +654,22 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this._register(lifecycleService.onWillShutdown(() => this._storeAgentChatLayout()));
 
 		// Lifecycle
-		this._register(lifecycleService.onWillShutdown(event => this._onWillShutdown.fire(event)));
+		// ★ ShutdownTimeline（2026-09-07，用户报「点击关闭无反应」）：关闭链路分三层——
+		// ① 窗口 X → 主进程收到 close；② 主进程发 beforeShutdown(veto 窗口) → willShutdown
+		// (join 窗口) 给渲染进程；③ 渲染进程退出 → 主进程收窗口销毁 → 进程退出。
+		// 三条时间线日志逐一对应，复现时按缺失的最早节点定位卡点：
+		//   beforeShutdown 没出现 → 主进程没收到/没发（主进程层问题）
+		//   willShutdown 没出现  → beforeShutdown 阶段被 veto 卡住
+		//   didShutdown 没出现   → willShutdown 的某个 join 挂起（对照各 joiner 自己的日志）
+		this._register(lifecycleService.onBeforeShutdown(e => {
+			this.logService.info(`[ShutdownTimeline] beforeShutdown reason=${e.reason}`);
+		}));
+		this._register(lifecycleService.onWillShutdown(event => {
+			this.logService.info(`[ShutdownTimeline] willShutdown begin reason=${event.reason} (joins pending...)`);
+			this._onWillShutdown.fire(event);
+		}));
 		this._register(lifecycleService.onDidShutdown(() => {
+			this.logService.info(`[ShutdownTimeline] didShutdown — renderer exiting now`);
 			this._onDidShutdown.fire();
 			this.dispose();
 		}));

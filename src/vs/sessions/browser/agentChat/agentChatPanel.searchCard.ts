@@ -2,7 +2,7 @@ import { $, append } from '../../../base/browser/dom.js';
 import { IToolCall } from './agentChatTypes.js';
 import { parseSearchResultItems, parseToonGraphData, parseToonTraceData, type SearchResultItem, type ToonGraphData, type ToonTraceData } from './agentChatPanel.searchResultParse.js';
 import { AgentChatPanelConfirmCards } from './agentChatPanel.confirmCards.js';
-import { createSvgIcon, SEARCH_ICON_D } from './agentChatPanel.toolCards.js';
+import { createSvgIcon, SEARCH_ICON_D, toolCardStatusClass } from './agentChatPanel.toolCards.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
 
 /**
@@ -17,7 +17,19 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 	 * 使用原生 DOM，零 innerHTML。
 	 */
 	protected override _createSearchToolCard(tc: IToolCall, key: string): HTMLElement {
-		const wrapper = $('.tool-card.tool-card-search');
+		// ★ 2026-09-07 修复「搜索卡永远显示『正在搜索…』/ 内容为空」（日志 1788711707227）：
+		// 数据层完全正常（PartsDiag：10 success，toolStarts=11/toolResults=10/tool_end=10，
+		// 零 dropped），但 DOM 永远停在建卡那一刻的 running 占位。
+		// 根因：本卡壳是 `$('.tool-card.tool-card-search')` —— 既无 `data-tool-id`
+		// 也无状态类，而 `_updateToolCardStatuses` 用
+		// `querySelectorAll('[data-tool-id]')` 建索引后 `cardById.get(tc.id)` 取卡，
+		// 取不到就 `continue` → **本族卡片从未进入任何重建路径**
+		// （日志三处印证：card:status-change 仅 2 次 / forceResultRefresh 0 次 /
+		//  domToolCards=0）。delegate/file/terminal 族都有这两项，故只有搜索族坏。
+		// 状态类须拼在 `tool-card-search` **之前**：见 toolCardStatusClass 注释
+		// （正则取首个匹配，否则会被读成状态 `search` → 恒重建）。
+		const wrapper = $(`.tool-card.${toolCardStatusClass(tc.status)}.tool-card-search`);
+		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
 		const isRunning = tc.status === 'running';
 		const isErr = tc.status === 'error';
 
@@ -121,6 +133,10 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 		if (tc.result && !isRunning) {
 			const raw = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
 			const resultText = this._toolResultText(raw);
+			// 渲染埋点（2026-09-06「搜索卡片内容为空」排查）：静态分支全自洽，需运行时
+			// 数据判明 result 实际形态/长度/解析产物。走 _logService（落 vscode-app 日志，
+			// console.info 不进日志文件——首版埋点通道选错的教训）。
+			this._logService.info(`[SearchCard] render body key=${key} resultType=${typeof tc.result} rawLen=${raw.length} parsedLen=${resultText.length} head="${resultText.slice(0, 60).replace(/\n/g, ' ')}"`);
 
 			// TOON 格式富卡片渲染（search_graph / trace_path）
 			if (this._tryRenderToonCard(resultsArea, resultText, key)) {
@@ -141,6 +157,7 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 				} else {
 					// 无结构化结果：尝试原始文本预览，否则显示 "没有找到匹配结果"
 					const lines = resultText.split('\n').filter(l => l.trim()).slice(0, 8);
+					this._logService.info(`[SearchCard] branch=${lines.length > 0 ? 'text-preview' : 'no-match-placeholder'} key=${key} lines=${lines.length}`);
 					if (lines.length > 0) {
 						const preview = append(resultsArea, $('.search-text-preview'));
 						preview.textContent = lines.join('\n').slice(0, 600);
@@ -151,8 +168,16 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 				}
 			}
 		} else if (isRunning) {
+			this._logService.info(`[SearchCard] branch=running-placeholder key=${key} resultType=${typeof tc.result}`);
 			const progress = append(resultsArea, $('.search-progress'));
 			progress.textContent = '\u23F3 正在搜索...'; // ⏳
+		} else {
+			// 兜底占位（2026-09-06「工具卡内容为空」）：status 非 running 且 result
+			// 为空——多为「结果在下一轮流开头补发」的窗口期或下发链路异常。卡片任何
+			// 状态下都不得是纯空白容器。
+			this._logService.info(`[SearchCard] branch=awaiting-result key=${key} status=${tc.status}`);
+			const wait = append(resultsArea, $('.search-progress'));
+			wait.textContent = '\u23F3 等待工具结果…';
 		}
 
 		// 始终可展开

@@ -54,6 +54,39 @@ export interface CodebaseToolContext {
 	getParentWorktreePath?: () => string | undefined;
 }
 
+/**
+ * 项目相对 filePath → 绝对路径（root/file）——**模块级单一实现**。
+ *
+ * 2026-09-07：原实现只存在于 `registerCodebaseTools` 闭包内，导致同文件的
+ * `runSemanticSearch` 等模块级函数拿不到它，只能在别处手写拼接（这正是
+ * search_files 产出 `g:/root/g:\abs` 畸形路径的成因）。现提升为模块级，
+ * 由所有输出路径的调用点共用，杜绝「两份实现必然漂移」。
+ *
+ * 规则：已是绝对路径（盘符或 / 开头）→ 原样返回；否则拼所属 project 的索引根；
+ * 拼接结果若出现多个盘符段 → 判为畸形（调用方绕过本函数所致），告警并退化。
+ */
+function _absPathOf(
+	graphService: { getProjectRoots(): Record<string, string> },
+	project: string | undefined,
+	filePath: string,
+	logService?: ILogService,
+): string {
+	const p = filePath.replace(/\\/g, '/');
+	if (/^[a-zA-Z]:\//.test(p) || p.startsWith('/')) { return p; }
+	const root = project ? graphService.getProjectRoots()[project] : undefined;
+	if (!root) { return p; }
+	const joined = `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/${p}`;
+	const drives = joined.match(/[a-zA-Z]:[\\/]/g);
+	if (drives && drives.length > 1) {
+		logService?.warn(
+			`[BuiltinTools] malformed path assembled — filePath is already absolute but was joined with a project root: ` +
+			`filePath="${filePath}" project="${project ?? '-'}" root="${root}" joined="${joined}". Returning the absolute path as-is.`,
+		);
+		return p;
+	}
+	return joined;
+}
+
 export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 	const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
 	const json = (obj: unknown): IToolResultContent[] => [{ type: 'text', text: JSON.stringify(obj, null, 2) }];
@@ -225,13 +258,9 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 	 * 这里直接用节点所属 project 的索引根拼绝对路径，模型可原样 file_read。
 	 * 已是绝对路径（盘符或 / 开头）或根不可解析时原样返回。
 	 */
-	const _absPath = (project: string | undefined, filePath: string): string => {
-		const p = filePath.replace(/\\/g, '/');
-		if (/^[a-zA-Z]:\//.test(p) || p.startsWith('/')) { return p; }
-		const roots = ctx.codebaseGraphService.getProjectRoots();
-		const root = project ? roots[project] : undefined;
-		return root ? `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/${p}` : p;
-	};
+	// 薄包装：统一走模块级 _absPathOf（单一实现，见上方注释）
+	const _absPath = (project: string | undefined, filePath: string): string =>
+		_absPathOf(ctx.codebaseGraphService, project, filePath, ctx.logService);
 
 	/** 项目相对 filePath → 绝对 loc（root/file:line）；规则同 _absPath。 */
 	const _absLoc = (project: string | undefined, filePath: string | undefined, startLine: number | undefined): string => {
@@ -884,6 +913,13 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		}
 		// [CBSearch] snippet 命中追踪（含 filePath 与行范围，排查路径归属问题）
 		ctx.logService.info(`[BuiltinTools] [CBSearch][trace] get_code_snippet hit: qn="${qualifiedName}" file=${result.filePath ?? '-'} lines=${result.startLine ?? '?'}-${result.endLine ?? '?'}`);
+		// 2026-09-07：与 search_graph / search_files 保持一致的**路径口径**——
+		// 输出前归一为绝对路径（_absPath 对已绝对路径幂等）。此前直接回吐图谱里的
+		// filePath，图谱存的是**项目相对路径**，模型拿着相对路径在多根工作区下会
+		// 被解析到别的根（与 search_graph 已归一化的结果不一致）。
+		if (result && typeof result === 'object' && typeof (result as any).filePath === 'string') {
+			(result as any).filePath = _absPath((result as any).project, (result as any).filePath);
+		}
 		return json(result);
 		},
 	});
@@ -1102,7 +1138,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				properties: {
 					pattern: { type: 'string', description: 'REQUIRED. The actual text to find: a regex for content search, or a glob (e.g., \'*.py\', \'*config*\') when mode=\'files\'. The search term ALWAYS goes here, never in `mode`.' },
 					mode: { type: 'string', enum: ['content', 'files_with_matches', 'count', 'files'], default: 'content', description: 'What to do with `pattern` (this is the MODE selector, never the search term):\n- \'content\' (default): regex-search inside files, return matching lines with line numbers\n- \'files_with_matches\': regex-search inside files, return only the file paths that contain a match\n- \'count\': regex-search inside files, return match counts per file\n- \'files\': treat `pattern` as a filename glob and find files by NAME (use this instead of ls; sorted by modification time)' },
-					path: { type: 'string', description: 'Directory or file to search in (default: current working directory)', default: '.' },
+					path: { type: 'string', description: 'Directory or file to search in (default: current working directory). Paths taken from earlier tool output are safest; a non-existent path returns an explicit error, not "no matches".', default: '.' },
 					file_glob: { type: 'string', description: 'Filter which files to search by glob (e.g., \'*.py\' to only search Python files). Applies to content/files_with_matches/count modes.' },
 					limit: { type: 'integer', description: 'Maximum number of results to return (default: 50)', default: 50 },
 					offset: { type: 'integer', description: 'Skip first N results for pagination (default: 0)', default: 0 },
@@ -1160,14 +1196,17 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				const indexedFiles = await ctx.codebaseGraphService.listIndexedFilePaths();
 				if (indexedFiles.length > 0) {
 					const re = _globToRegex(glob);
-					const roots = ctx.codebaseGraphService.getProjectRoots();
 					const matched: string[] = [];
 					for (const f of indexedFiles) {
 						if (re && !re.test(f.filePath)) { continue; }
-						const root = roots[f.project];
-						matched.push(root
-							? `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/${f.filePath}`
-							: f.filePath);
+						// ★ 2026-09-07（日志 1788763596406「search_files 路径拼接异常」）：
+						// 此前直接 `root + '/' + f.filePath` 拼接，而 filePath **有时已是
+						// 绝对路径** → 产出畸形路径
+						//   `g:/customworkspaces/aiprojects/sarosis-agents-client/g:\CustomWorkspaces\...`
+						// （工作区根 + 带盘符的绝对路径叠加）。模型拿它去 file_read /
+						// patch 必然 File not found。改用本文件已有的 _absPath：它对
+						// 绝对路径短路返回原值，仅在相对路径时才拼根。
+						matched.push(_absPath(f.project, f.filePath));
 					}
 					// 2026-07-27（日志 1785118063787）：阈值从 ≥10 降为 ≥1——精确文件名
 					// 搜索（GarbageCollection.cpp 全图仅 1-2 个）是 files 查询主流形态，
@@ -1255,7 +1294,10 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		if (!rawQuery) { return text('search_code requires "query" (the search term). Example: search_code({query:"FooBar"}) or search_code({query:"SymA|SymB", mode:"files"}).'); }
 			let mode = (args['mode'] as string | undefined) || 'compact';
 			if (!['compact', 'full', 'files'].includes(mode)) { mode = 'compact'; }
-		const filePattern = args['filePattern'] as string | undefined;
+		// 双读：coerce 层已把 `file_glob` 归一为 `filePattern`（toolCallUtils
+		// ARG_PARAM_ALIASES），此处再兜一次，保证任何未过 coerce 的调用路径
+		// 也能让过滤**真正生效**而非静默丢弃（日志 1788770874565）。
+		const filePattern = (args['filePattern'] ?? args['file_glob']) as string | undefined;
 		// ── filePattern 归一化（2026-07-28，日志 1785231958842）：裸文件名/裸扩展
 		// glob（*.cpp、GarbageCollection.cpp）无 `/` 时补 `**/`，否则引擎 _globToRegex
 		// 中 `*` 不跨目录，只匹配各搜索根直属文件→嵌套恒 0 命中（log 中 8 次空）。
@@ -1432,6 +1474,31 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				// 单 root（project 指定）时不加分段标题，保持旧输出格式；多 root 才分段标注来源
 				perRootResults.push(searchRoots.length > 1 ? `## [${root.label}]\n${r}` : r);
 			}
+		// 字面 0 命中 → 按「模型原样 query 作为正则」重试一次（2026-09-06，日志
+		// 1788702171955）：模型常按正则习惯写 query（`\{` 意图匹配 `{`，对齐 Claude
+		// Code Grep 语义），但未传 regex=true → 上方按字面再转义一层（\{ → \\\{）→
+		// rg 匹配「字面反斜杠+{」→ 对无反斜杠的源码永不命中。此时模型的原始 query
+		// 恰是它想要的表达——按正则原样重跑一轮。仅当 query 含反斜杠（转义错配的
+		// 特征）且是合法正则时才重试，避免无谓开销。
+		if (!anyMatches && searchQuery !== rawQuery && rawQuery.includes('\\') && !_signal?.aborted) {
+			let regexValid = false;
+			try { new RegExp(rawQuery); regexValid = true; } catch { /* invalid regex — skip retry */ }
+			if (regexValid) {
+				ctx.logService.info(`[BuiltinTools] [CBSearch] literal 0-hit → retrying query as raw regex: "${rawQuery.slice(0, 60)}"`);
+				for (const root of searchRoots) {
+					let r = await ctx.searchHelpers.searchContent(
+						root.path, rawQuery, includeGlob, limit, offset, outputMode, effContext, _signal,
+					);
+					r = redactSecrets(r);
+					if (outputMode === 'content' && mode !== 'full') {
+						r = ctx.searchHelpers.densifySearchOutput(r);
+					}
+					const isEmpty = /^\(no matches\)$/.test(r.trim());
+					if (!isEmpty) { anyMatches = true; }
+					perRootResults.push(searchRoots.length > 1 ? `## [${root.label}]\n${r}` : r);
+				}
+			}
+		}
 		let result = anyMatches
 			? perRootResults.join('\n\n')
 			: '(no matches)';
@@ -1730,7 +1797,11 @@ export function runSemanticSearch(ctx: CodebaseToolContext, keywords: string[], 
 				name: r.node.name,
 				type: r.node.label,
 				qualifiedName: r.node.qualifiedName,
-				filePath: r.node.filePath,
+				// 2026-09-07：同 get_code_snippet —— 图谱 filePath 是项目相对路径，
+				// 输出前归一为绝对路径，避免模型按相对路径解析到错误的工作区根。
+				filePath: r.node.filePath
+					? _absPathOf(ctx.codebaseGraphService, r.node.project, r.node.filePath, ctx.logService)
+					: r.node.filePath,
 				project: r.node.project,
 				inDegree: r.node.inDegree,
 				outDegree: r.node.outDegree,

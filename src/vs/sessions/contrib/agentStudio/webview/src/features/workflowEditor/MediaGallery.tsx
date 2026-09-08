@@ -276,10 +276,19 @@ export function MediaGallery({ workflowId, onClose }: { workflowId: string; onCl
 		try {
 			if (a.isDeleted) { await mediaRestore(a.id); }
 			else { await mediaRemove(a.id); }
+		} catch {
+			return; // 失败保持原状（busy 已在 finally 清除）
 		} finally {
 			setBusy(prev => { const s = new Set(prev); s.delete(a.id); return s; });
 		}
-		await load();
+		// ★ 乐观本地移除，不走 load() 全量重载——否则 setLoading(true) 会把
+		//   整个网格替换成「加载中…」，418 项缩略图全部卸载再重建（删除单项
+		//   闪一次全列表）。软删/恢复后该项都应从当前视图消失：
+		//   非回收站视图=已删；回收站视图=已恢复（不再是 deleted）。
+		setItems(prev => prev.filter(x => x.id !== a.id));
+		setTotal(t => Math.max(0, t - 1));
+		// 统计（项数/容量）变化后台刷新，不触发列表 loading
+		void refreshStats();
 	};
 
 	const inputStyle: React.CSSProperties = {

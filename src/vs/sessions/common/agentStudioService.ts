@@ -725,6 +725,18 @@ export interface IAgentChatService {
 	appendMessage(agentId: string, message: ChatMessage): Promise<void>;
 
 	/**
+	 * 保存「中断草稿」——流式输出未结束时关闭 app，把半截内容写到一个**独立小文件**。
+	 *
+	 * 为何不直接 appendMessage：后者会**重写整个 session 历史文件**，长会话时可能
+	 * 数百毫秒到数秒；而它又被放在 shutdown 的 join 里，会直接拖慢/阻塞关闭
+	 * （2026-09-05 configHtmlServerChannel 已有「join 慢操作导致点关闭无反应」的
+	 * 事故）。写独立草稿只有几 KB、通常 <50ms，关闭几乎无感。
+	 *
+	 * 草稿在下次 getHistory 时被消费：补进返回列表并异步落进 session 历史。
+	 */
+	saveInterruptedDraft(agentId: string, sessionId: string, content: string): Promise<void>;
+
+	/**
 	 * Update an existing message in the chat history (by id) and persist.
 	 * Used by workflow trace updates (workflowExecutions/events/collectVariables)
 	 * which modify an existing assistant message in-place.

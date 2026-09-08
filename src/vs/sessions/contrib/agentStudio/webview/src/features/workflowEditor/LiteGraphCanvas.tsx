@@ -469,6 +469,10 @@ function collectAsset(workflowId: string, entry: MediaSnapshotEntry): void {
 	});
 }
 
+// 幂等标记：同一次 paste 事件只允许被处理一次。window 级监听叠加快捷键链路时
+// 会重复进入 handleCanvasPaste，导致一次 Ctrl+V 建出两个 LoadImage 节点。
+const handledPasteEvents = new WeakSet<ClipboardEvent>();
+
 export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraphCanvasProps>(
 	function LiteGraphCanvas({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onNodeContextMenu, onLinkHandleClick, onRequestRun, onCanvasDoubleClick, workflowId }: LiteGraphCanvasProps, ref): React.JSX.Element {
 	const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -1721,6 +1725,18 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				warnOnce(`bulk-unmount:${unmountedCount}`,
 					'[syncOverlay] bulk card unmount ' + JSON.stringify({ unmountedCount, seen: [...seen], totalTracked: cardUnmounts.size + unmountedCount, emptySeenStreak }));
 			}
+			// ★ 别名表批量裁剪（2026-09-07）：pruneAliases 此前只有单测调用，运行期
+			//   只增不减（诊断里 35+ 条残留，含 --dupN 复制节点），既噪声也存在「同名
+			//   nodeId 复用到已删节点 uid」的串号风险。内置安全阀：存活集合为空时拒绝
+			//   裁剪（加载中 / graph.clear 的瞬时窗口），故直接传 seen 是安全的。
+			if (seen.size > 0) {
+				const pruned = (snapshotStoreRef.current as { pruneAliases?: (live: Iterable<string>) => number } | undefined)
+					?.pruneAliases?.(seen) ?? 0;
+				if (pruned > 0) {
+					// eslint-disable-next-line no-console
+					console.log(`[syncOverlay] pruned stale aliases: ${pruned} (live=${seen.size})`);
+				}
+			}
 			bridge.sync(nodesForSync, { x: ds.offset[0], y: ds.offset[1], scale: ds.scale }, occluders);
 			// ── Apply deferred height fixes AFTER bridge.sync() ───────────
 			// bridge.sync() overwrites container height to widgetRect.height
@@ -1883,13 +1899,19 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		// 粘贴不抢处理，让 processKey 粘贴节点；图片粘贴始终抢（节点粘贴不涉图）。
 		const handleCanvasPaste = (e: ClipboardEvent) => {
 			if (isEditableTarget(e.target)) { return; }
+			// ★ 幂等护栏：同一次剪贴板事件只处理一次。window 级监听 + StrictMode
+			//   双调用 / 多画布实例并存时，重复进入会创建两个 LoadImage 节点。
+			if (handledPasteEvents.has(e)) { return; }
+			handledPasteEvents.add(e);
 			const cd = e.clipboardData;
 			if (!cd) { return; }
 			const state = useWorkflowEditorStore.getState();
 			const rect = canvas.getBoundingClientRect();
 			const ds = liteCanvas.ds;
-			const cx = typeof e.clientX === 'number' ? e.clientX : rect.left + rect.width / 2;
-			const cy = typeof e.clientY === 'number' ? e.clientY : rect.top + rect.height / 2;
+			// ClipboardEvent 无 clientX/clientY（其 TS 定义里不存在这两个属性），
+			// 粘贴事件也没有光标位置，因此统一落在画布可视中心。
+			const cx = rect.left + rect.width / 2;
+			const cy = rect.top + rect.height / 2;
 			const x = (cx - rect.left) / ds.scale - ds.offset[0];
 			const y = (cy - rect.top) / ds.scale - ds.offset[1];
 
@@ -1899,19 +1921,21 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				const blob = imageItem.getAsFile();
 				if (blob) {
 					e.preventDefault();
+					// ★ 节点在同步阶段就创建：FileReader 是异步的，等到 onload 再
+					//   addNode 会丢失此刻的 ds/rect（画布可能已被平移缩放），
+					//   且异步窗口期内其它粘贴链路可能再建一个节点。
+					const newId = state.addNode('ComfyTV.ImageLoaderStage', { x, y });
+					if (!newId) { return; }
 					const reader = new FileReader();
 					reader.onload = () => {
 						const dataUrl = typeof reader.result === 'string' ? reader.result : '';
 						if (!dataUrl) { return; }
-						const newId = state.addNode('ComfyTV.ImageLoaderStage', { x, y });
-						if (newId) {
-							state.updateNodeData(newId, { image: dataUrl });
-							// 写快照 store → 卡片立即展示（下一帧 renameNode 迁移到 stageUid）。
-							snapshotStoreRef.current?.put({
-								nodeId: newId, port: 'output', key: `${newId}:output:0`,
-								media: { kind: 'image', ref: dataUrl }, index: 0,
-							});
-						}
+						state.updateNodeData(newId, { image: dataUrl });
+						// 写快照 store → 卡片立即展示（下一帧 renameNode 迁移到 stageUid）。
+						snapshotStoreRef.current?.put({
+							nodeId: newId, port: 'output', key: `${newId}:output:0`,
+							media: { kind: 'image', ref: dataUrl }, index: 0,
+						});
 					};
 					reader.readAsDataURL(blob);
 					return;

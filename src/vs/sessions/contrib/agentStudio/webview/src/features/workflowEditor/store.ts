@@ -28,7 +28,9 @@ import type {
 	WorkflowGraphNode,
 	WorkflowGraphConnection,
 } from '../../types/workflowStorage';
-import type { WorkflowExecutionStatus, IWorkflowNodeExecutionState } from '../../types/workflowExecution';
+// 2026-09-07：原 `../../types/workflowExecution` 模块已不存在（TS2307），
+// 两个类型已补进 types/workflowStorage（与其 WorkflowGraph* 类型同处）。
+import type { WorkflowExecutionStatus, IWorkflowNodeExecutionState } from '../../types/workflowStorage';
 import { normalizeNodeType } from './nodeTypeAliases';
 
 // ─── Framework-agnostic node/edge model ────────────────────────────────────────
@@ -527,7 +529,9 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 								type: normalizeNodeType(step.type),
 								position: { x: 250 + i * 180, y: 250 },
 								data: {
-									label: step.name,
+									// 2026-09-07：旧格式 steps 的字段为 unknown（IStoredWorkflow 索引
+									// 签名），直接赋给 string 报 TS2322；此处按已知语义收窄。
+									label: (step.name as string) ?? '',
 									executorId: step.executorId,
 									taskId: step.taskId,
 									condition: step.condition,

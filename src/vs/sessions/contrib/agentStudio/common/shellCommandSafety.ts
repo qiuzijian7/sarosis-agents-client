@@ -671,6 +671,71 @@ export function formatAntiGuidanceLog(
 	return lines.join('\n');
 }
 
+// ─── leading-cd 自动改写（2026-09-06，方案 B：确定性规范化）────────────
+
+/** `cd X && Y` 改写结果。 */
+export interface ILeadingCdRewrite {
+	/** 去掉 cd 前缀后的命令。 */
+	command: string;
+	/** 归并后的工作目录（写回工具的 cwd 参数）。 */
+	cwd: string;
+	/** 改写前的原始命令（日志用）。 */
+	original: string;
+}
+
+/** 与 `LEADING_CD_RE` 同源但带捕获组：`<dir>` + 剩余命令。 */
+const LEADING_CD_CAPTURE_RE = /^\s*cd\s+([^\n&;|]+?)\s*(?:&&|;)\s*([\s\S]*)$/i;
+
+/**
+ * 目录片段白名单——**保守改写**的边界。
+ *
+ * 只改写肉眼可判的纯路径（字母数字、`_ . - ~`、`/` `\`、空格、`:`）。
+ * 含变量展开（`$HOME`）、命令替换（`` `..` `` `$(..)`）、括号、通配符等一律
+ * **不改写**——这些形态的求值依赖 shell 上下文，客户端字符串拼接会得到错误
+ * 的 cwd，宁可维持原样交给（会弹审批的）原生执行。
+ */
+const SAFE_CD_DIR_RE = /^[A-Za-z0-9_ .\-~\\/:]+$/;
+
+/**
+ * 把 `cd <dir> && <rest>` 规范化为 `cwd=<dir>` + `command=<rest>`。
+ *
+ * ## 为什么是「改写」而不是继续只告警（2026-09-06）
+ * `[AntiGuidance]` 只记录不拦截，模型本次仍以 `cd X && Y` 形态执行——在
+ * win32 / 沙箱下这既可能失败，也仍会因 `&&` 触发审批打断。**该形态是确定性
+ * 可无损改写的**（dir 与 rest 的切分不依赖语义），故执行前直接规范化：
+ * 本次执行即为正确形态，同时打 INFO 回灌让模型长期收敛（教育职能不丢）。
+ *
+ * @param command 原始命令
+ * @param currentCwd 工具已有的 cwd 参数（相对目录会拼到它之后）
+ * @returns 改写结果；不可安全改写时返回 undefined
+ */
+export function tryRewriteLeadingCd(command: string, currentCwd?: string): ILeadingCdRewrite | undefined {
+	const cmd = (command ?? '').trim();
+	if (!cmd) { return undefined; }
+	const m = LEADING_CD_CAPTURE_RE.exec(cmd);
+	if (!m) { return undefined; }
+	const rawDir = (m[1] ?? '').trim().replace(/^["']+|["']+$/g, '');
+	const rest = (m[2] ?? '').trim();
+	if (!rawDir || !rest || !SAFE_CD_DIR_RE.test(rawDir)) { return undefined; }
+	const isAbs = /^[A-Za-z]:[\\/]/.test(rawDir) || rawDir.startsWith('/');
+	const base = (currentCwd ?? '').trim();
+	let cwd = rawDir;
+	if (!isAbs && base) {
+		const sep = base.includes('\\') ? '\\' : '/';
+		const baseTrimmed = base.replace(/[\\/]+$/, '');
+		cwd = `${baseTrimmed}${sep}${rawDir}`;
+	}
+	return { command: rest, cwd, original: cmd };
+}
+
+/** 渲染 leading-cd 改写日志（首行沿用 `[AntiGuidance]` 前缀，便于同一 grep 统计命中与改写量）。 */
+export function formatLeadingCdRewriteLog(toolName: string, rw: ILeadingCdRewrite): string {
+	const clip = (s: string) => (s.length > 160 ? `${s.slice(0, 160)}…` : s);
+	return `[AntiGuidance] ${toolName}: auto-rewrote leading cd → cwd="${rw.cwd}" (pass "cwd" rather than \`cd X && Y\`)\n`
+		+ `  before: ${clip(rw.original)}\n`
+		+ `  after:  ${clip(rw.command)}`;
+}
+
 // ─── 详细判定 + 安全二进制画像（P1-1 / P2-2）──────────────────────────────
 
 export interface IShellSafetyDetail {

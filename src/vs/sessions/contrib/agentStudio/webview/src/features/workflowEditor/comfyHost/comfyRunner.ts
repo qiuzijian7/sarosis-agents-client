@@ -136,7 +136,10 @@ export interface ComfyRunnerStatus {
 }
 
 export interface ComfyRunProgress {
-	promptId: string;
+	// 2026-09-07：改为可选——进度回调在拿到 /prompt 响应**之前**就会触发
+	// （如 instantExecutor 的 "20/60" 阶段），此时尚无 promptId。旧签名强制必填
+	// 使所有 `onProgress?.({ value })` 报 TS2345（实测 ×7）。
+	promptId?: string;
 	value: number; // 0..100
 	/** 状态文本（如「AI 抠图模型下载中 12/176MB」），透传到节点卡片进度条 caption。 */
 	message?: string;
@@ -163,7 +166,12 @@ export interface ComfyRunOptions {
 export interface ComfyApiResponse {
 	ok: boolean;
 	status: number;
-	json(): Promise<unknown>;
+	// 2026-09-07：旧签名 `json(): Promise<unknown>` 让所有 `data?.name` /
+	// `data?.subfolder` 之类的取值报 TS2339（unknown 上无属性）——实测该类错误主力。
+	// 改为 `Promise<any>`（调用点取得 any，与标准 fetch 的用法一致）。
+	// ⚠ 不要用泛型 `json<T = any>(): Promise<T>`：现有实现返回的是 `Promise<unknown>`，
+	//    无法满足「对任意 T 返回 Promise<T>」→ 实现处报 TS2322（已实测踩过）。
+	json(): Promise<any>;
 	text(): Promise<string>;
 }
 

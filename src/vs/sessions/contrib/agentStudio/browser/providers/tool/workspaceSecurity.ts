@@ -3,12 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { join } from '../../../../../../base/common/path.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { IStorageService, StorageScope } from '../../../../../../platform/storage/common/storage.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { INativeEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
+import { IFileService } from '../../../../../../platform/files/common/files.js';
+import { URI } from '../../../../../../base/common/uri.js';
 import { IAgentStudioService } from '../../../../../common/agentStudioService.js';
 import { resolveWorkspacePath } from '../../../common/workspacePathResolver.js';
 import { AgentNetworkDomainSettingId } from '../../../../../../platform/networkFilter/common/settings.js';
@@ -36,6 +37,94 @@ export class SandboxViolationError extends Error {
 	}
 }
 
+/**
+ * 计算建议路径（2026-09-07 重写）：旧算法 =「basename 重定向到第一个允许根」，
+ * 丢弃全部子目录 → 建议路径必然不存在（日志 1788746435013 案例：真实文件在 8 层
+ * 子目录下，建议却指向仓库根）——模型/用户按建议重试落空，若改用 file_write 还会
+ * 在仓库根制造重复文件，护栏从「拒绝越界」变成「诱导写错位置」。
+ *
+ * 新算法两级，**建议必须指向真实存在的文件**：
+ *  ① 结构修复（零搜索成本）：requestedPath 的路径段中若含某允许根的末段名
+ *     （典型：.../AIProjects/AIProjects/sarosis-agents-client/src/... 的重复前缀
+ *     幻觉），截取其后全部段拼回该允许根，并用 fileService.exists 验证；
+ *  ② basename 限深回溯（≤6 层 / ≤500 目录 / 噪声目录跳过，大小写不敏感）：
+ *     仅当**唯一命中**时才建议（多命中无法确定意图，诚实放弃）。
+ * 两级都失败 → undefined，由调用方回退为 search_files 定位引导。
+ */
+/**
+ * P2 结构修复（2026-09-07）：requestedPath 的路径段中若锚定到某允许根的末段名
+ * （典型：.../AIProjects/AIProjects/sarosis-agents-client/src/... 的重复前缀幻觉），
+ * 截取其后全部段拼回该允许根，并用 fileService.exists 验证。
+ * 返回修复后的真实路径；无法修复 → undefined。
+ *
+ * 安全边界（双层）：① 只有路径中**包含**根目录名段才触发——模型想写根外新文件
+ * 的路径不含根名段，不会误触发；② 修复结果必须 exists——「写新文件」天然不命中，
+ * 只有「读/改已有文件的路径幻觉」会被自愈，意图保留充分。
+ */
+async function structuralRepairOutOfRootPath(
+	fileService: IFileService,
+	requestedPath: string,
+	candidateRoots: string[],
+): Promise<string | undefined> {
+	const segs = requestedPath.replace(/\\/g, '/').split('/').filter(s => s.length > 0);
+	for (const root of candidateRoots) {
+		const rootSegs = root.replace(/\\/g, '/').split('/').filter(s => s.length > 0);
+		const rootEnd = (rootSegs[rootSegs.length - 1] || '').toLowerCase();
+		if (!rootEnd) { continue; }
+		const idx = segs.map(s => s.toLowerCase()).lastIndexOf(rootEnd);
+		if (idx >= 0 && idx < segs.length - 1) {
+			const candidate = `${root.replace(/[\\/]+$/, '')}/${segs.slice(idx + 1).join('/')}`;
+			try {
+				if (await fileService.exists(URI.file(candidate))) { return candidate; }
+			} catch { /* 探测失败继续 */ }
+		}
+	}
+	return undefined;
+}
+
+async function computeSuggestedPath(
+	fileService: IFileService,
+	requestedPath: string,
+	candidateRoots: string[],
+): Promise<string | undefined> {
+	const segs = requestedPath.replace(/\\/g, '/').split('/').filter(s => s.length > 0);
+	const wantedBase = (segs[segs.length - 1] || '').toLowerCase();
+	if (!wantedBase) { return undefined; }
+
+	// ① 结构修复（独立函数，与 P2 容错解析共享）
+	const structural = await structuralRepairOutOfRootPath(fileService, requestedPath, candidateRoots);
+	if (structural) { return structural; }
+
+	// ② basename 限深回溯（唯一命中才建议）
+	for (const root of candidateRoots) {
+		const hits: string[] = [];
+		const seen = new Set<string>();
+		let dirs = 0;
+		const walk = async (uri: URI, depth: number): Promise<void> => {
+			if (hits.length > 1 || dirs >= 500 || depth > 6) { return; }
+			const key = uri.toString();
+			if (seen.has(key)) { return; }
+			seen.add(key);
+			dirs++;
+			let stat;
+			try { stat = await fileService.resolve(uri); } catch { return; }
+			for (const child of stat.children ?? []) {
+				if (hits.length > 1) { return; }
+				if (child.isDirectory) {
+					// 噪声目录跳过（核心项对齐 SearchHelpers.NOISE_DIR_NAMES）
+					if (/^(node_modules|\.git|out|dist|build|\.next|\.cache|coverage|__pycache__|\.worktrees?|\.vssaros.*|\.venv|target)$/i.test(child.name)) { continue; }
+					await walk(child.resource, depth + 1);
+				} else if (child.name.toLowerCase() === wantedBase) {
+					hits.push(child.resource.fsPath);
+				}
+			}
+		};
+		await walk(URI.file(root.replace(/[\\/]+$/, '')), 0);
+		if (hits.length === 1) { return hits[0]; }
+	}
+	return undefined;
+}
+
 export interface WorkspacePathDeps {
 	studioService: IAgentStudioService;
 	workspaceService: IWorkspaceContextService;
@@ -43,6 +132,8 @@ export interface WorkspacePathDeps {
 	configurationService: IConfigurationService;
 	storageService: IStorageService;
 	logService: ILogService;
+	/** 2026-09-07：建议路径的存在性验证与限深回溯定位（见 computeSuggestedPath）。 */
+	fileService: IFileService;
 	/** 本次工具调用临时放行的精确路径集合（按引用传入，重试期增删即时生效）。 */
 	sandboxBypassRoots: Set<string>;
 	/** Config key controlling where knowledge bases are persisted. */
@@ -67,7 +158,7 @@ export async function resolveAndCheckWorkspacePathImpl(
 	requestedPath: string,
 	checkSandbox: boolean = true,
 ): Promise<string> {
-	const { studioService, workspaceService, environmentService, configurationService, storageService, logService, sandboxBypassRoots, kbStoragePathKey } = deps;
+	const { studioService, workspaceService, environmentService, configurationService, storageService, logService, sandboxBypassRoots, kbStoragePathKey, fileService } = deps;
 
 	// 收集所有允许的根路径
 	const allowedRoots: string[] = [];
@@ -247,7 +338,22 @@ export async function resolveAndCheckWorkspacePathImpl(
 	// 盘符与正/反斜杠归一化。
 	const { resolvedPath, isAllowed, normalizedRoots } = resolveWorkspacePath(requestedPath, allowedRoots);
 
-	// 计算建议路径：把请求文件名重定向到第一个非 saros 数据目录的允许根下。
+	// ── 「合法但可疑」软告警（2026-09-07，借鉴 Hermes-Agent `_path_resolution_warning`）──
+	// 场景：相对路径（如 `../other/x` 或模型少写了一级目录）被解析到**所有允许根之外**。
+	// 读操作（checkSandbox=false）不判沙箱 → 这类越界会**静默读到工作区外**，日志里
+	// 完全无痕，排障时只能看到"读到了奇怪的文件"。Hermes 的做法是明确告警并提示
+	// 传绝对路径。此处对齐：警告但不阻断（写操作仍走下方沙箱拒绝，行为不变）。
+	if (!isAllowed && !/^[a-zA-Z]:[\\/]/.test(requestedPath) && !requestedPath.startsWith('/')) {
+		logService.warn(
+			`[WorkspaceSecurity] relative path "${requestedPath}" resolved to "${resolvedPath}", which is OUTSIDE ` +
+			`every allowed root (${normalizedRoots.join(' | ')}). The operation will target a directory different ` +
+			`from the workspace — if unintended (e.g. a git-worktree session writing into the main checkout), ` +
+			`pass an absolute path under the intended root instead.`,
+		);
+	}
+
+	// 计算建议路径（2026-09-07 重写，见 computeSuggestedPath）：仅当能定位到
+	// 允许根内真实存在的文件时才建议（建议 = 真实路径）；否则 undefined。
 	const requestedBase = (requestedPath.split(/[\\/]/).pop() || 'file')
 		.replace(/[<>:"/\\|?*]/g, '_');
 	const candidateRoots = allowedRoots.filter(r => {
@@ -255,23 +361,55 @@ export async function resolveAndCheckWorkspacePathImpl(
 		// Exclude legacy ~/.saros and the app data root (~/.vssaros) as suggestion targets
 		return !normalized.includes(`/${LEGACY_SAROS_DIR}`) && !normalized.endsWith('/.vssaros') && !normalized.endsWith('/.vssaros-dev');
 	});
-	const suggestedPath = candidateRoots.length > 0
-		? join(candidateRoots[0], requestedBase)
+	const suggestedPath = fileService && candidateRoots.length > 0
+		? await computeSuggestedPath(fileService, requestedPath, candidateRoots)
 		: undefined;
+
+	// P2 自动放行的候选根（2026-09-07 二次收紧）：**排除 worktree 根**。
+	// worktree 是主仓的另一份 checkout，同结构文件在两边都存在 → 结构修复的
+	// exists 验证无法区分，静默把编辑重定向到「存在但不是用户想改的那一份」
+	// 是真实误伤。worktree 场景仍可通过 suggestedPath + 确认卡片让用户显式选择
+	//（有人看着），只是不再无声自动放行。
+	const autoRepairRoots = worktreeRoot
+		? candidateRoots.filter(r => r.replace(/\\/g, '/').toLowerCase() !== worktreeRoot.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase())
+		: candidateRoots;
 
 	// 仅写/删操作触发沙箱判定，读操作直接返回已解析路径
 	if (checkSandbox && !isAllowed) {
+		// ── P2 容错解析前置（2026-09-07，拒绝变自愈）────────────────────
+		// 抛错前先尝试结构修复：路径幻觉（前缀重复等）若修复后落在允许根内且
+		// 文件真实存在，直接放行——省一整轮「拒绝→读建议→重试」往返。
+		// 安全边界见 structuralRepairOutOfRootPath（仅修前缀 + exists 硬验证 +
+		// basename 不变，写新文件场景天然不触发）。修复全程 warn 留痕（透明）。
+		if (fileService && autoRepairRoots.length > 0) {
+			const repaired = await structuralRepairOutOfRootPath(fileService, requestedPath, autoRepairRoots);
+			if (repaired) {
+				logService.warn(
+					`[WorkspaceSecurity] path auto-corrected (out-of-root hallucination, structural repair): ` +
+					`"${requestedPath}" → "${repaired}"`,
+				);
+				return repaired;
+			}
+		}
 		const allowedList = normalizedRoots.length > 0
 			? normalizedRoots.map(r => `  - ${r}`).join('\n')
 			: '  (无 — 请确认已正确配置工作区)';
+		// 2026-09-07：建议/引导拼进消息（同时给用户与模型）。建议路径已验证真实
+		// 存在（「改用建议路径」按钮依赖它）；无建议时给可执行的纠错反馈——
+		// 引导 search_files 定位（对齐范式），杜绝「basename 重定向」式有损建议。
+		const suggestionLine = suggestedPath
+			? `\n已定位到可能的目标文件（已验证真实存在）：${suggestedPath}`
+			: `\n未能定位该文件的真实位置（可能是路径拼写错误）。请用 search_files 以 filePattern "**/${requestedBase}" 查找真实绝对路径后重试，不要凭记忆拼接路径。`;
 		const baseMessage = worktreeRoot
 			? `安全沙箱限制：该 Agent 实例已绑定 worktree。\n` +
 				`路径 "${requestedPath}" (解析后: "${resolvedPath}") 超出了允许范围。\n` +
 				`当前允许的目录：\n${allowedList}\n` +
-				`请在上述目录内操作。如需写入其它目录，可在确认卡片中选择「允许本次」/「允许此工作区」，或解除该 Agent 的 worktree 绑定。`
+				`请在上述目录内操作。如需写入其它目录，可在确认卡片中选择「允许本次」/「允许此工作区」，或解除该 Agent 的 worktree 绑定。` +
+				suggestionLine
 			: `安全沙箱限制：路径 "${requestedPath}" (解析后: "${resolvedPath}") 不在允许的工作区目录内。\n` +
 				`当前允许的工作区目录：\n${allowedList}\n` +
-				`请在上述目录内操作，或在 Saros 工作区设置中配置正确的路径。`;
+				`请在上述目录内操作，或在 Saros 工作区设置中配置正确的路径。` +
+				suggestionLine;
 		// 抛出结构化错误，供 agentOSService 检测并弹出确认卡片
 		// （而非仅回显一段错误文本导致 agent loop 无效重试）。
 		throw new SandboxViolationError(

@@ -98,13 +98,18 @@ export type RetrieveContextFn = (req: IRetrieveContextRequest) => Promise<IRetri
 
 /**
  * 压缩阈值比例的**默认值**（唯一真源，2026-09-04 提取）。
- * Lowered from 0.40→0.30 to trigger compression earlier (~60000 tokens / ~55 messages
- * vs ~80000 tokens / ~77 messages) and avoid OOM on the extension host (V8 heap
- * reaching 3.8GB with 77 messages + system prompt + tools + 18 extensions).
- * With MAXIMUM_COMPRESSION_WINDOW=200000, threshold now = 200000 × 0.30 = 60000.
+ * History: 0.40 → 0.30 (2026-09-04, trigger earlier to avoid extension-host OOM on
+ * V8 heap 3.8GB with 77 messages) → 0.85 → 0.70 (2026-09-07, compress fairly late
+ * while keeping a usable safety margin). With MAXIMUM_COMPRESSION_WINDOW=200000,
+ * threshold = 200000 × 0.70 = 140000 (hard floor 64000 → 44800).
+ *
+ * 与 HIGH_PRESSURE_COMPRESSION_RATIO=0.8 的关系：本值 0.70 **低于**高水位 0.8，
+ * 故常规 token 阈值门会先于高水位门触发；高水位（0.8，豁免消息数下限/冷却/
+ * anti-thrashing）退化为「消息数不足等防抖门挡住时的兜底强制压缩」。语义正确。
+ *
  * UI 上下文环（agentChatPanel）以「窗口×此比例」为压缩线刻度——若改这里，环语义同步变。
  */
-const COMPRESSION_THRESHOLD_DEFAULT = 0.30;
+const COMPRESSION_THRESHOLD_DEFAULT = 0.70;
 
 const DEFAULT_CONFIG: IContextManagerConfig = {
 	compressionThreshold: COMPRESSION_THRESHOLD_DEFAULT,

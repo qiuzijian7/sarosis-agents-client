@@ -61,6 +61,24 @@ export interface ToolAssemblyDeps {
 	setLastDispatcherCtx: (ctx: IDispatcherContext) => void;
 }
 
+/**
+ * 最近一次 _getEnabledTools **过滤前**检测到的 MCP 服务器（2026-09-07）。
+ *
+ * 用途：区分「发给 LLM 的工具里没有 MCP」的两种成因——
+ * ① 服务器根本没连上/没配置（本值为 undefined）；
+ * ② 服务器连上了、工具也有，但被 agent 的工具集配置裁掉（本值有内容但请求里 MCP 数为 0）。
+ * 二者表象相同（请求里 0 个 MCP 工具）但处置完全不同，日志必须能分辨。
+ */
+let _lastMcpServerStats: { servers: string[]; toolCount: number } | undefined;
+
+function setLastMcpServerStats(stats: { servers: string[]; toolCount: number } | undefined): void {
+	_lastMcpServerStats = stats;
+}
+
+export function getLastMcpServerStats(): { servers: string[]; toolCount: number } | undefined {
+	return _lastMcpServerStats;
+}
+
 export async function getEnabledTools(
 	deps: ToolAssemblyDeps,
 	agentId: string,
@@ -124,6 +142,17 @@ export async function getEnabledTools(
 		const servers = [...mcpToolsetByServer.entries()].map(([s, tools]) => `${s}(${tools.length})`).join(', ');
 		deps.logService.info(`[AgentOS] _getEnabledTools: MCP servers detected — ${servers}`);
 	}
+	// ★ 记录最近一次检测到的 MCP 服务器（2026-09-07）：供「发给 LLM 的工具里没有 MCP」
+	// 的诊断日志区分两种情况——MCP 根本没连上 vs 连上了但被 agent 工具集裁掉。
+	// 这里统计的是**过滤前**的 enabled 集，故能反映「连接层面是否有 MCP 工具」。
+	setLastMcpServerStats(
+		mcpToolsetByServer.size > 0
+			? {
+				servers: [...mcpToolsetByServer.keys()],
+				toolCount: mcpOriginal.length,
+			}
+			: undefined,
+	);
 
 	// Step 2: 推断 toolset
 	const tagged: TTool[] = builtin.map(t => ({

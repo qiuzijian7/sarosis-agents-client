@@ -166,7 +166,7 @@ suite('Agent Studio - Context Compression (Hermes 三段式)', () => {
 		// metadata 完整
 		const md = result.metadata as any;
 		assert.strictEqual(md.contextWindow, 64000);
-		assert.strictEqual(md.thresholdTokens, 19200);
+		assert.strictEqual(md.thresholdTokens, 44800);
 		assert.ok(md.headCount >= 1 && md.headCount <= 3, 'headCount 应为 1..3');
 		assert.ok(md.middleCount > 0, '应有被摘要的中间段');
 		assert.ok(md.tailCount >= 1, '应保留尾部');
@@ -416,11 +416,11 @@ suite('Agent Studio - Context Compression (Hermes 三段式)', () => {
 
 		// 大窗口（如 1,000,000）→ 阈值很高 → 不需要压缩
 		const statsBig = cm.getCompressionStats(big, 1_000_000);
-		// 注意：有效窗口被 MAXIMUM_COMPRESSION_WINDOW=200000 封顶，阈值=60000，
+		// 注意：有效窗口被 MAXIMUM_COMPRESSION_WINDOW=200000 封顶，阈值=200000×0.70=140000，
 		// 该大对话估算 token 已超过封顶阈值 → 仍需压缩（避免超大窗口下永不触发）。
 		assert.strictEqual(statsBig.needsCompression, true, '超大窗口被封顶到 200K 后仍会压缩');
 
-		// 小窗口（用硬地板 64000）→ 阈值 32000 → 需要压缩
+		// 小窗口（用硬地板 64000）→ 阈值 44800 → 需要压缩
 		const statsSmall = cm.getCompressionStats(big, 64000);
 		assert.strictEqual(statsSmall.needsCompression, true, '小窗口下需要压缩');
 		assert.ok(statsSmall.estimatedTokens > 0);
@@ -435,7 +435,7 @@ suite('Agent Studio - Context Compression (Hermes 三段式)', () => {
 		const result = await cm.compressContext(messages, undefined, 1000);
 		const md = result.metadata as any;
 		assert.strictEqual(md.contextWindow, 64000, '低于地板的窗口应被抬到 64000');
-		assert.strictEqual(md.thresholdTokens, 19200, '阈值 = 地板 × 0.30');
+		assert.strictEqual(md.thresholdTokens, 44800, '阈值 = 地板 × 0.70');
 	});
 
 	// ─── 边界：全是 system 或没有中间段 ─────────────────────────────────────────

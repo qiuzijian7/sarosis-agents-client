@@ -10,7 +10,7 @@ import {
 	evaluateShellCommandSafety, evaluateToolCallShellSafety,
 	isShellToolWithCommandArg, ShellCommandSafety,
 	detectAntiGuidanceCommand, formatAntiGuidanceLog, SHELL_APPROVAL_SHAPE_GUIDANCE,
-	shellApprovalGuidance,
+	shellApprovalGuidance, tryRewriteLeadingCd, formatLeadingCdRewriteLog,
 } from '../../common/shellCommandSafety.js';
 
 /**
@@ -442,6 +442,73 @@ suite('shellCommandSafety — 引号内的 % 豁免（窄口）', () => {
 // 当 `tools.confirmToolCalls` 关闭时这个后果不发生，整段指引必须**不下发**，否则
 // 就成了「描述一个永不发生的后果」（标题党 + ~400 token 浪费）。本测试守卫这个
 // 策略点：调用方把审批开关读出来传进来，纯函数据此决定发不发。
+
+suite('tryRewriteLeadingCd — leading-cd 自动改写（2026-09-06 方案 B）', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('★ 用户实测命令：cd <win 路径> && grep … → cwd + command', () => {
+		const rw = tryRewriteLeadingCd(
+			'cd g:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/sessions/contrib/agentStudio/webview/src/features/workflowEditor/comfyHost && grep -n "sheetFullEntry" media/x.js');
+		assert.ok(rw, '应改写');
+		assert.strictEqual(rw!.cwd, 'g:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/sessions/contrib/agentStudio/webview/src/features/workflowEditor/comfyHost');
+		assert.strictEqual(rw!.command, 'grep -n "sheetFullEntry" media/x.js');
+		assert.ok(!rw!.command.includes('&&'));
+	});
+
+	test('分号形态 `cd X; Y` 同样改写', () => {
+		const rw = tryRewriteLeadingCd('cd /tmp/build; ls -la')!;
+		assert.strictEqual(rw.cwd, '/tmp/build');
+		assert.strictEqual(rw.command, 'ls -la');
+	});
+
+	test('带引号的目录 → 去引号后作为 cwd', () => {
+		const rw = tryRewriteLeadingCd('cd "C:/Program Files/x" && dir')!;
+		assert.strictEqual(rw.cwd, 'C:/Program Files/x');
+		assert.strictEqual(rw.command, 'dir');
+	});
+
+	test('相对目录 + 已有 cwd → 拼接（不覆盖已有 cwd）', () => {
+		const rw = tryRewriteLeadingCd('cd src && ls', 'g:/repo')!;
+		assert.strictEqual(rw.cwd, 'g:/repo/src');
+	});
+
+	test('★ 保守边界：含变量/命令替换/通配符的目录不改写（返回 undefined）', () => {
+		for (const c of ['cd $HOME && ls', 'cd `pwd` && ls', 'cd $(pwd) && ls', 'cd build* && ls']) {
+			assert.strictEqual(tryRewriteLeadingCd(c), undefined, `不应改写: ${c}`);
+		}
+	});
+
+	test('`cd a&&b && ls`（无空格）按 shell 语义等于 `cd a && b && ls` → 改写为 cwd=a', () => {
+		const rw = tryRewriteLeadingCd('cd a&&b && ls')!;
+		assert.strictEqual(rw.cwd, 'a');
+		assert.strictEqual(rw.command, 'b && ls');
+	});
+
+	test('★ 保守边界：rest 为空 / 只有 cd / 非 cd 开头 → 不改写', () => {
+		assert.strictEqual(tryRewriteLeadingCd('cd /tmp &&'), undefined);
+		assert.strictEqual(tryRewriteLeadingCd('cd /tmp'), undefined);
+		assert.strictEqual(tryRewriteLeadingCd('grep -n x y'), undefined);
+		assert.strictEqual(tryRewriteLeadingCd(''), undefined);
+		assert.strictEqual(tryRewriteLeadingCd(undefined as any), undefined);
+	});
+
+	test('改写后不再命中 leading-cd 规则（判据与改写同源）', () => {
+		const cmd = 'cd /repo && wc -l a.txt';
+		assert.ok(detectAntiGuidanceCommand(cmd).some(f => f.rule === 'leading-cd'));
+		const rw = tryRewriteLeadingCd(cmd)!;
+		assert.ok(!detectAntiGuidanceCommand(rw.command).some(f => f.rule === 'leading-cd'));
+	});
+
+	test('日志含 before/after 与 cwd（便于核对改写正确性）', () => {
+		const rw = tryRewriteLeadingCd('cd /repo && ls')!;
+		const out = formatLeadingCdRewriteLog('execute_code', rw);
+		assert.ok(out.includes('auto-rewrote leading cd'));
+		assert.ok(out.includes('/repo'));
+		assert.ok(out.includes('before:'));
+		assert.ok(out.includes('after:'));
+	});
+});
 
 suite('shellCommandSafety — shellApprovalGuidance 按审批开关生成', () => {
 

@@ -49,6 +49,27 @@ export const FILE_ICON_D = 'M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v11
 export const ERROR_ICON_D = 'M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zM7.25 4.5h1.5v5h-1.5v-5zm0 6.5h1.5v1.5h-1.5V11z';
 export const SEARCH_ICON_D = 'M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04z';
 
+/**
+ * 工具卡状态外壳类名（2026-09-07，修「搜索卡永远显示正在搜索/内容为空」）。
+ *
+ * 必须与 `_updateToolCardStatuses` 的 `newStatus` 计算**逐项一致** —— 那里用
+ * `oldCard.className.match(/tool-card-(\w+)/)` 读回当前状态并与新状态比较，
+ * 不一致才整卡重建。两边只要有一项对不上，卡片就会**每帧重建**（性能）或
+ * **永不重建**（内容不刷新）。
+ *
+ * ⚠ 用法：状态类必须拼在**专属类之前**（如
+ * `.tool-card.${cls}.tool-card-search`）—— 上述正则取**首个**匹配，
+ * 若 `tool-card-search` 在前会被读成状态 `search`，与任何真实状态都不等
+ * → 恒重建。
+ */
+export function toolCardStatusClass(status: string | undefined): string {
+	return status === 'error' ? 'tool-card-error'
+		: status === 'running' ? 'tool-card-running'
+			: status === 'approval_required' ? 'tool-card-approval'
+				: (status === 'rejected' || status === 'canceled') ? 'tool-card-rejected'
+					: 'tool-card-success';
+}
+
 export abstract class AgentChatPanelToolCards extends AgentChatPanelBase {
 
 

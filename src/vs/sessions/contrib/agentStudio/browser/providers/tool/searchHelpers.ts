@@ -15,6 +15,7 @@ import { URI } from '../../../../../../base/common/uri.js';
 import { IFileService, type IFileStat } from '../../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
+import { NonRetryableToolError } from '../../../common/providers.js';
 import { ISearchService, QueryType, type ITextQuery, type IFileQuery, type ISearchComplete } from '../../../../../../workbench/services/search/common/search.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../../../base/common/errors.js';
@@ -506,7 +507,12 @@ export class SearchHelpers {
 	async searchFilesByGlob(
 		resolvedPath: string, pattern: string, limit: number, offset: number, signal?: AbortSignal,
 	): Promise<string> {
+		// 2026-09-07：与 searchContent 同款存在性检查（幻觉 path 此前静默 0 结果）
+		if (!(await this._statOrNull(resolvedPath))) {
+			throw new NonRetryableToolError(await this._pathNotFoundMessage(resolvedPath));
+		}
 		if (this._ripgrepBroken) {
+			this._warnDegradedSearchOnce();
 			return this._nodeFileSearch(resolvedPath, pattern, limit, offset, signal);
 		}
 		try {
@@ -528,6 +534,7 @@ export class SearchHelpers {
 		} catch (e) {
 			const reason = e instanceof Error ? e.message : String(e);
 			this._noteRgBroken(reason);
+			this._warnDegradedSearchOnce();
 			return this._nodeFileSearch(resolvedPath, pattern, limit, offset, signal);
 		}
 	}
@@ -539,6 +546,52 @@ export class SearchHelpers {
 		try { return await this.fileService.resolve(URI.file(resolvedPath)); } catch { return null; }
 	}
 
+	/**
+	 * path 不存在的纠错反馈（2026-09-07）：此前幻觉/拼错的目录 path 会静默落入
+	 * 搜索并返回 "0 matches within path=..."，与「路径存在但范围内无符号」完全
+	 * 不可区分——模型在错误前提下继续推理（webidx/webview 手误案，日志
+	 * 1788713328385；截图案例 `path=xxx.log`）。对齐 file_read 的 nonexistent
+	 * 修复思路：确定性失败 → NonRetryableToolError + 相似目录建议。
+	 */
+	private async _pathNotFoundMessage(resolvedPath: string): Promise<string> {
+		const uri = URI.file(resolvedPath);
+		const missing = uri.path.split('/').pop() ?? resolvedPath;
+		const suggestions: string[] = [];
+		try {
+			const parent = await this.fileService.resolve(URI.joinPath(uri, '..'));
+			const names = (parent.children ?? []).filter(c => c.isDirectory).map(c => c.name);
+			const lower = missing.toLowerCase();
+			for (const n of names) {
+				if (suggestions.length >= 5) { break; }
+				const l = n.toLowerCase();
+				if (l !== lower && (l.includes(lower) || lower.includes(l) || SearchHelpers._editDistanceLE2(l, lower))) {
+					suggestions.push(n);
+				}
+			}
+		} catch { /* 父目录也不存在 → suggestions 空 */ }
+		if (suggestions.length > 0) {
+			return `path not found: ${resolvedPath}\nDid you mean one of these directories (under the same parent)?\n${suggestions.map(s => `  - ${s}`).join('\n')}`;
+		}
+		return `path not found: ${resolvedPath}\nThe parent directory may not exist either — the path was likely guessed or mis-assembled. ` +
+			`Call search_files with filePattern "**/${missing}" to locate the real absolute path, then pass that exact path. Do NOT guess again.`;
+	}
+
+	/** 编辑距离 ≤2 判定（两串均为短目录名，O(mn) 开销可忽略；带剪枝）。 */
+	private static _editDistanceLE2(a: string, b: string): boolean {
+		if (Math.abs(a.length - b.length) > 2) { return false; }
+		const m = a.length, n = b.length;
+		let prev = Array.from({ length: n + 1 }, (_, i) => i);
+		for (let i = 1; i <= m; i++) {
+			const cur = [i];
+			for (let j = 1; j <= n; j++) {
+				cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+			}
+			if (Math.min(...cur) > 2) { return false; }
+			prev = cur;
+		}
+		return prev[n] <= 2;
+	}
+
 	async searchContent(
 		resolvedPath: string, pattern: string, fileGlob: string | undefined,
 		limit: number, offset: number, outputMode: string, contextLines: number,
@@ -548,10 +601,16 @@ export class SearchHelpers {
 		// 对齐 Void 的 search_in_file（内存 model 逐行匹配，零 ripgrep 进程/二进制依赖，
 		// renderer 安全）。ripgrep 仅在目录级树搜索这一快路径上保留。
 		const targetStat = await this._statOrNull(resolvedPath);
-		if (targetStat && !targetStat.isDirectory) {
+		if (!targetStat) {
+			// 2026-09-07：path 不存在是确定性失败——此前静默落入 walk/rg 搜索并返回
+			// "0 matches within path=..."，与「路径存在但无符号」不可区分。
+			throw new NonRetryableToolError(await this._pathNotFoundMessage(resolvedPath));
+		}
+		if (!targetStat.isDirectory) {
 			return this._grepSingleFile(URI.file(resolvedPath), pattern, limit, offset, signal, outputMode, contextLines);
 		}
 		if (this._ripgrepBroken) {
+			this._warnDegradedSearchOnce();
 			return this._searchContentWalkFallback(resolvedPath, pattern, fileGlob, limit, offset, outputMode, signal);
 		}
 		try {
@@ -612,6 +671,7 @@ export class SearchHelpers {
 				}
 			}
 			this._noteRgBroken(reason);
+			this._warnDegradedSearchOnce();
 			return this._searchContentWalkFallback(resolvedPath, pattern, fileGlob, limit, offset, outputMode, signal);
 		}
 	}
@@ -625,11 +685,33 @@ export class SearchHelpers {
 		if (/rg\.exe|ripgrep|rgProcessError|ENOENT|spawn/i.test(reason)) {
 			if (!this._ripgrepBroken) {
 				this._ripgrepBroken = true;
-				this.logService.info(`[BuiltinTools] ripgrep unavailable (${reason}); permanently falling back to Node.js walk for search tools`);
+				// 2026-09-07：info → warn。降级是**能力残缺**（5000 文件预算 cap、
+				// 大仓库假阴性），不是正常回退——必须以 warn 级别在日志可见。
+				this.logService.warn(`[BuiltinTools] ripgrep unavailable (${reason}); permanently falling back to Node.js walk for search tools`);
 			}
 		} else {
 			this.logService.warn(`[BuiltinTools] search failed (${reason}), falling back to Node.js walk`);
 		}
+	}
+
+	/** 降级警告是否已打过（每进程一次，避免每次搜索刷屏）。 */
+	private _degradedWarned = false;
+
+	/**
+	 * 降级搜索路径的显式警告（2026-09-07，用户要求「rg 不可用要显示警告日志」）。
+	 * 此前 `_noteRgBroken` 只在触发瞬间打一条 info、之后每次降级搜索完全静默——
+	 * 排障时无法从日志看出「这条 no matches 是在降级/预算受限下产出的」。
+	 * 每进程首次降级搜索时打一条 warn 汇总能力边界。
+	 */
+	private _warnDegradedSearchOnce(): void {
+		if (this._degradedWarned) { return; }
+		this._degradedWarned = true;
+		this.logService.warn(
+			'[BuiltinTools] ripgrep unavailable — search tools are running in DEGRADED Node-walk mode ' +
+			'(hard budget: 5000 files / 30000 dirs, alphabetical order; large trees may be only partially ' +
+			'scanned, so "no matches" can be false negatives). Fix the @vscode/ripgrep binary ' +
+			'(rebuild/reinstall — build-side ensureRipgrepBinaryTask guards this) for full-tree search.',
+		);
 	}
 
 	private async _searchContentWalkFallback(
@@ -645,10 +727,33 @@ export class SearchHelpers {
 		// 5000 文件预算在 Engine/Plugins 等噪声目录耗尽，永远到不了 Engine/Source——
 		// 日志 1785894964584：12+ 次 search_code 恒 27-32s 全 no matches）。
 		const globRe = globToRegexForSearch(fileGlob ?? '');
-		await this._walkAndGrep(normalizedUri, pattern, hits, Math.min(limit + offset, 500), signal, globRe);
+		const walkStats = await this._walkAndGrep(normalizedUri, pattern, hits, Math.min(limit + offset, 500), signal, globRe);
 		const total = hits.length;
 		const paged = hits.slice(offset, offset + limit);
-		return this._appendSearchFooter(paged.join('\n') || '(no matches)', total, paged.length, offset, limit, 'match');
+		// 诚实化（2026-09-06，对齐 OpenHands/SWE-agent 的截断标注共识）：
+		// 「预算耗尽」绝不能伪装成 "(no matches)" —— 后者会触发 tool-hint
+		// "symbols likely do not exist"，让模型得出「代码里没有」的错误结论。
+		let out: string;
+		if (total === 0) {
+			if (walkStats.budgetExhausted) {
+				const degraded = this._ripgrepBroken
+					? ' Search engine degraded (ripgrep unavailable → slow budgeted walk); repair @vscode/ripgrep for full-tree search.'
+					: '';
+				out = `(no matches within ${walkStats.filesVisited} visited files — SEARCH BUDGET EXHAUSTED, coverage incomplete.${degraded} Narrow it: add file_glob / path filter, or point path at a subdirectory.)`;
+			} else {
+				out = '(no matches)';
+			}
+		} else if (paged.length === 0) {
+			// 2026-09-07：分页越界——此前输出 "(no matches)" + footer "[共 N 条匹配]"
+			// 自相矛盾（日志 1788746435013 实例），明示越界与总数。
+			out = `(offset ${offset} beyond end of results — total ${total} match(es). Use a smaller offset.)`;
+		} else {
+			out = paged.join('\n');
+			if (walkStats.budgetExhausted) {
+				out += `\n(note: search budget exhausted after ${walkStats.filesVisited} files — results may be incomplete; consider narrowing with file_glob/path)`;
+			}
+		}
+		return this._appendSearchFooter(out, total, paged.length, offset, limit, 'match');
 	}
 
 	/**
@@ -659,12 +764,14 @@ export class SearchHelpers {
 		if (outputMode === 'files_only') {
 			const files = fileMatches.map(m => m.resource.fsPath);
 			const p = files.slice(offset, offset + limit);
+			if (p.length === 0 && files.length > 0) { return `(offset ${offset} beyond end of results — total ${files.length} file(s). Use a smaller offset.)`; }
 			return this._appendSearchFooter(p.join('\n') || '(no matching files)', files.length, p.length, offset, limit, 'file');
 		}
 		if (outputMode === 'count') {
 			const c = new Map<string, number>();
 			for (const fm of fileMatches) { c.set(fm.resource.fsPath, fm.results?.length ?? 0); }
 			const e = [...c.entries()].slice(offset, offset + limit);
+			if (e.length === 0 && c.size > 0) { return `(offset ${offset} beyond end of results — total ${c.size} file(s). Use a smaller offset.)`; }
 			return this._appendSearchFooter(e.map(([f, n]) => `${f}: ${n} match(es)`).join('\n') || '(no matches)', c.size, e.length, offset, limit, 'file');
 		}
 		const matches: { file: string; line: number; text: string }[] = [];
@@ -679,7 +786,11 @@ export class SearchHelpers {
 		}
 		const t = matches.length;
 		const p = matches.slice(offset, offset + limit);
-		if (p.length === 0) { return '(no matches)'; }
+		if (p.length === 0) {
+			// 2026-09-07：t>0 且本页空 = 分页越界，明示；t=0 才是真正无匹配
+			if (t > 0) { return `(offset ${offset} beyond end of results — total ${t} match(es). Use a smaller offset.)`; }
+			return '(no matches)';
+		}
 		return this._appendSearchFooter(p.map(m => `${m.file}:${m.line}: ${m.text}`).join('\n'), t, p.length, offset, limit, 'match');
 	}
 
@@ -844,11 +955,15 @@ export class SearchHelpers {
 
 		const total = hits.length;
 		const paged = hits.slice(offset, offset + limit);
+		if (paged.length === 0 && total > 0) {
+			// 2026-09-07：分页越界——明示 offset 超出总数（替代裸 "(no matches)" 的矛盾组合）
+			return `(offset ${offset} beyond end of results — total ${total} match(es). Use a smaller offset.)`;
+		}
 		const out = paged.join('\n') || '(no matches)';
 		return this._appendSearchFooter(out, total, paged.length, offset, limit, 'match');
 	}
 
-	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number, signal?: AbortSignal, fileGlobRe?: RegExp): Promise<void> {
+	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number, signal?: AbortSignal, fileGlobRe?: RegExp): Promise<{ filesVisited: number; dirsVisited: number; budgetExhausted: boolean }> {
 		// Hard global cap on files we will read+grep regardless of `limit`.
 		// This protects against pathological recursion (huge build trees, symlink
 		// loops, accidentally pointing at C:\) which can OOM the renderer because
@@ -951,6 +1066,15 @@ export class SearchHelpers {
 		};
 
 		await walk(dir);
+		// 返回统计（2026-09-06）：供调用方区分「真的无匹配」与「预算耗尽没搜完」——
+		// 此前两者都返回 "(no matches)"，后者被 tool-hint 包装成
+		// "symbols likely do not exist"，系统性误导模型（EmojiSheet 案：5000 文件
+		// 预算在 src/vs/base~platform 字母序耗尽，永远到不了 sessions/webview）。
+		return {
+			filesVisited: filesVisited.count,
+			dirsVisited: dirsVisited.count,
+			budgetExhausted: filesVisited.count >= MAX_FILES_VISITED || dirsVisited.count >= MAX_DIRS_VISITED,
+		};
 	}
 }
 

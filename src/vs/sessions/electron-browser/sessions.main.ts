@@ -128,7 +128,7 @@ export class SessionsMain extends Disposable {
 		}, services.serviceCollection, services.logService);
 
 		// Listeners
-		this.registerListeners(workbench, services.storageService);
+		this.registerListeners(workbench, services.storageService, services.logService);
 
 		// Startup
 		const instantiationService = workbench.startup();
@@ -162,10 +162,19 @@ export class SessionsMain extends Disposable {
 		return [];
 	}
 
-	private registerListeners(workbench: AgenticWorkbench, storageService: NativeWorkbenchStorageService): void {
+	private registerListeners(workbench: AgenticWorkbench, storageService: NativeWorkbenchStorageService, logService: ILogService): void {
 
 		// Workbench Lifecycle
-		this._register(workbench.onWillShutdown(event => event.join(storageService.close(), { id: 'join.closeStorage', label: localize('join.closeStorage', "Saving UI state") })));
+		// ★ ShutdownTimeline（2026-09-07）：storageService.close() 是 willShutdown 的
+		// 最后一个 join 之一，挂起会阻塞关闭——begin/end 打点用于区分「卡在 storage
+		// 关闭」还是「卡在它之前的其他 join」。
+		this._register(workbench.onWillShutdown(event => {
+			const t0 = Date.now();
+			logService.info('[ShutdownTimeline] storage close join begin');
+			event.join(storageService.close().then(() => {
+				logService.info(`[ShutdownTimeline] storage close join done elapsed=${Date.now() - t0}ms`);
+			}), { id: 'join.closeStorage', label: localize('join.closeStorage', "Saving UI state") });
+		}));
 		this._register(workbench.onDidShutdown(() => this.dispose()));
 	}
 

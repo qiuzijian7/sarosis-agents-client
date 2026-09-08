@@ -37,7 +37,7 @@ import {
 	buildForkContext,
 	prefixCacheAligned,
 } from '../../common/forkContext.js';
-import { coerceToolArgs, coerceOrReject } from '../../browser/toolCallUtils.js';
+import { coerceToolArgs, coerceOrReject, annotateCoerceWarnings } from '../../browser/toolCallUtils.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -579,9 +579,21 @@ suite('Argument coercion & repair (P2a zero-dependency)', () => {
 		assert.strictEqual((r.args as Record<string, unknown>)['path'], 'Runtime/CoreUObject', 'path_filter must be normalized to path');
 		assert.strictEqual('path_filter' in (r.args as Record<string, unknown>), false, 'alias key must be removed');
 		assert.ok(warnings.some((w) => w.includes('normalized argument alias') && w.includes('path_filter')), 'normalization must be logged');
-		for (const k of ['file_glob', 'output_mode']) {
-			assert.ok(warnings.some((w) => w.includes('unknown argument') && w.includes(k)), `genuinely unknown "${k}" must still warn`);
-		}
+
+		// ★ 2026-09-07（日志 1788770874565）：`file_glob` 曾是「genuinely unknown」——
+		// 模型把 search_files 的参数名用在 search_code 上，过滤被**静默丢弃**
+		// （模型以为限定了类型，实际全库扫描）。现归一为 filePattern，必须：
+		//   ① 值搬到 filePattern（过滤真正生效）② 别名键移除 ③ 记 info 归一日志
+		//   ④ **不再**报 unknown argument（已不是未知参数）。
+		assert.strictEqual((r.args as Record<string, unknown>)['filePattern'], '*.cpp', 'file_glob must be normalized to filePattern');
+		assert.strictEqual('file_glob' in (r.args as Record<string, unknown>), false, 'file_glob alias key must be removed');
+		assert.ok(warnings.some((w) => w.includes('normalized argument alias') && w.includes('file_glob')), 'file_glob normalization must be logged');
+		assert.ok(
+			!warnings.some((w) => w.includes('unknown argument') && w.includes('file_glob')),
+			'file_glob must no longer warn unknown (it is a known alias now)',
+		);
+		// 真正未声明的参数仍须告警
+		assert.ok(warnings.some((w) => w.includes('unknown argument') && w.includes('output_mode')), 'genuinely unknown "output_mode" must still warn');
 	});
 
 	test('coerceOrReject: a genuinely unknown argument still warns', () => {
@@ -615,5 +627,37 @@ suite('Argument coercion & repair (P2a zero-dependency)', () => {
 		assert.strictEqual(r.reject, undefined, 'offset is a legit pagination param, not a rejection');
 		const unknownWarns = warnings.filter((w) => w.includes('unknown argument'));
 		assert.deepStrictEqual(unknownWarns, [], `search_code offset must not warn unknown; got: ${unknownWarns.join(' | ')}`);
+	});
+});
+
+suite('annotateCoerceWarnings — 回传形态', () => {
+	const note = (w: string[]) => annotateCoerceWarnings([{ type: 'text', text: 'ORIGINAL' }], w);
+
+	test('★ 数组形态（内置工具的真实返回）必须注入 arg-warning（日志 1788772321283）', () => {
+		// 此前实现用 `!Array.isArray(content)` 排除数组 → 所有内置工具（handler 返回
+		// IToolResultContent[]）的 coerce 警告都被静默丢弃，模型永远收不到纠偏信息。
+		const out = note(['unknown argument: "file_glob"']) as unknown[];
+		assert.ok(Array.isArray(out), '数组形态必须保持数组（不破坏下游解析）');
+		assert.strictEqual(out.length, 2, 'note 应作为首条插入，原内容保留');
+		assert.ok(
+			JSON.stringify(out[0]).includes('arg-warning'),
+			`首条必须是 arg-warning note；got: ${JSON.stringify(out[0])}`,
+		);
+		assert.ok(JSON.stringify(out).includes('ORIGINAL'), '原有结果内容不得丢失');
+	});
+
+	test('字符串 / 普通对象形态仍按原规则注入', () => {
+		const s = annotateCoerceWarnings('BODY', ['w1']) as string;
+		assert.ok(s.startsWith('[arg-warning]') && s.includes('BODY'));
+
+		const o = annotateCoerceWarnings({ a: 1 }, ['w1']) as Record<string, unknown>;
+		assert.ok(String(o['_argWarning']).includes('arg-warning'));
+		assert.strictEqual(o['a'], 1);
+	});
+
+	test('无警告时原样返回（不产生噪音）', () => {
+		const arr = [{ type: 'text', text: 'X' }];
+		assert.strictEqual(annotateCoerceWarnings(arr, undefined), arr, 'undefined warnings → 原对象');
+		assert.strictEqual(annotateCoerceWarnings(arr, []), arr, '空 warnings → 原对象');
 	});
 });

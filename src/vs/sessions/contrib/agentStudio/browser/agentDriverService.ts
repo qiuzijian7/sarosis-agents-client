@@ -1707,6 +1707,27 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			lines.push(`The workspace root directory is: ${rootDir}`);
 		}
 
+		// ── P1 路径纪律（2026-09-07；09-07 二次修正）─────────────────────────
+		// 背景：模型把系统上下文里的根路径与自记前缀拼接，产生 `AIProjects\AIProjects\...`
+		// 式重复前缀幻觉（日志 1788746435013），patch/file_read 连锁失败。
+		//
+		// ⚠ 初版把「相对路径优先」当作 Claude Code 惯例——**核对后是错的**：CC 的
+		// Read/Edit 明确要求绝对路径（"must be an absolute path, not a relative path"），
+		// 其抗幻觉靠的是**接地（grounding）**：路径必须来自工具输出 + read-before-edit。
+		// 本项目是多根工作区（引擎+项目），且 file_* 的相对路径只对**首个**允许根解析，
+		// 而 search_code 是逐根尝试——一律推相对路径会把这个语义差异激活成高频故障。
+		// 故纪律的核心是「接地」而非「相对」：绝对路径从工具输出原文复制，
+		// 相对路径仅在单根场景使用。
+		lines.push(
+			'',
+			'Path rule (IMPORTANT): every path you pass to a tool must be GROUNDED — copied verbatim from a previous',
+			'tool result (search_graph / search_files / search_code / file_read output). NEVER assemble, prefix, or',
+			'"recall" a path from memory: a wrong path fails the call and wastes a turn.',
+			'If you have no grounded path yet, locate the file first (search_files / search_graph), then copy the path it returns.',
+			'Relative paths are resolved against the workspace root above — safe for single-root work; when this workspace',
+			'has Related Directories (below), prefer the absolute path from the tool output to avoid resolving against the wrong root.',
+		);
+
 		// ── 列出所有关联目录 ──────────────────────────────────────────
 		// 工作区可能关联多个代码仓库（如 S1Game + UE5EA）。
 		// LLM 需要知道所有目录才能正确搜索所有代码。

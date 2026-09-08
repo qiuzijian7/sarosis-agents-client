@@ -49,6 +49,9 @@ function _parseArgs(raw: unknown): Record<string, unknown> {
 	return {};
 }
 
+// 注：本函数已无调用者（实现迁入 agentChatPanel.webCard.ts 的 createWebExtractCard，
+// 见该文件 L18 注释）。故 2026-09-07 的 data-tool-id/状态类修复只落在 webCard 侧，
+// 此处不动，避免给死代码引入新依赖。
 export function createExtractToolCard(tc: IToolCall, key: string): HTMLElement {
 	const wrapper = $('.tool-card.tool-card-extract');
 	const isRunning = tc.status === 'running';

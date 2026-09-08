@@ -633,9 +633,16 @@ export interface CoerceOrRejectResult {
  * 正名改为 `path`（与 search_files / Claude Code Grep 对齐），path_filter 为
  * 兼容别名在此归一：正名缺位时把别名值搬过去并删掉别名键，降级 info 不再 warn。
  * 注意：search_files 不设条目——其正名就是 path，误加反向映射会把正确参数改坏。
+ *
+ * 2026-09-07 增补 `file_glob → filePattern`（日志 1788770874565）：模型把
+ * search_files 的参数名 `file_glob` 用在 search_code 上（后者正名 filePattern），
+ * 此前 coerce 只 warn "unknown argument… may be ignored" ——**参数被静默丢弃**，
+ * 模型以为限定了文件类型、实际是未收窄的全库扫描，且无人知情。此处归一后
+ * 过滤真正生效，并降级为 info（不再是告警噪音），模型无需纠偏。
+ * 同样只在 search_code 下加：search_files 的 file_glob 是正名，不能反向映射。
  */
 const ARG_PARAM_ALIASES: Record<string, Record<string, string>> = {
-	search_code: { path_filter: 'path' },
+	search_code: { path_filter: 'path', file_glob: 'filePattern' },
 };
 
 export function coerceOrReject(
@@ -697,7 +704,17 @@ export function annotateCoerceWarnings(content: unknown, warnings: string[] | un
 		`The tool ran with the remaining (valid) arguments — the ignored argument had no effect. ` +
 		`Check the tool schema and re-send with the correct argument name if you intended that behavior.`;
 	if (typeof content === 'string') { return `${note}\n${content}`; }
-	if (content && typeof content === 'object' && !Array.isArray(content)) {
+	// ★ 2026-09-07（日志 1788770874565 / 1788772321283）：原实现显式排除数组
+	// （`!Array.isArray(content)`）→ 而**所有内置工具**的 handler 都返回
+	// IToolResultContent[]（text() / json() 的产物）→ 数组分支直接 `return content`，
+	// 导致 coerce 的 schema 违规警告**从未回传给模型**——模型传错参数名被静默忽略，
+	// 既不知情也无法自我纠正（file_glob 一案即由此长期未暴露）。
+	// 现在把 note 作为**首条** text 插入（不改写已有元素，避免破坏下游按
+	// resultType 解析的卡片渲染），模型与用户都能在第一眼看到。
+	if (Array.isArray(content)) {
+		return [{ type: 'text', text: note } as unknown, ...(content as unknown[])];
+	}
+	if (content && typeof content === 'object') {
 		return { ...(content as Record<string, unknown>), _argWarning: note };
 	}
 	return content;

@@ -18,7 +18,7 @@ import { getPlanQueueHandle } from '../../../common/planQueueRegistry.js';
 import { formatCurrentTaskReminder } from '../../../common/preLoopOrchestrator.js';
 import type { AgentParadigm } from '../../../common/agentLoopStrategy.js';
 import { setParadigmOverride, getParadigmOverride, clearParadigmOverride, SWITCHABLE_PARADIGMS } from '../../../common/paradigmOverride.js';
-import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, rewriteUnixPipelineToPowerShell, powerShellEncodedCommand, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, isCommandNotFoundFailure, detectBareSourceCode, bareSourceCodeGuardMessage, isDeterministicScriptFailure, deterministicScriptFailureMessage, detectScriptSourceWrite, scriptSourceWriteGuardMessage } from './executeCodeGuards.js';
+import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDANCE, rewriteUnixPipelineToPowerShell, powerShellEncodedCommand, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, isCommandNotFoundFailure, detectBareSourceCode, bareSourceCodeGuardMessage, isDeterministicScriptFailure, deterministicScriptFailureMessage, detectScriptSourceWrite, scriptSourceWriteGuardMessage, describeReadGap, hasEverReadSuccessfully, markFileModified } from './executeCodeGuards.js';
 import { runExecOutputPipeline } from './execOutputPipeline.js';
 import { ProcessOutputCollector } from '../../../common/processOutputDecoder.js';
 import { decideOutputSpill, spillFileName, spillNoticeMessage, selectSpillFilesToDelete } from './execOutputSpill.js';
@@ -26,7 +26,7 @@ import { resolveSarosPath, userDataRootFromPath, SarosPath } from '../../../comm
 import { shellPlatformGuidance, windowsDualShellGuidance } from './shellPlatformPrompt.js';
 import { resolveShellDialect } from '../../../common/shellDialect.js';
 import { annotateCommandFailure, annotateMaskedSuccess, renderFailureHint } from './commandFailureHints.js';
-import { detectGitBash, coreutilsDir } from './gitBashProvider.js';
+import { detectGitBash, coreutilsDir, invalidateGitBashCache } from './gitBashProvider.js';
 import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
 import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 import { computePatch } from '../../../common/patchMatcher.js';
@@ -34,7 +34,7 @@ import { shellApprovalGuidance } from '../../../common/shellCommandSafety.js';
 import { detectCommandObfuscation } from '../../../common/shellStaticAnalysis.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { ICheckpointService } from '../../../common/checkpointService.js';
-import { encodeBase64 } from '../../../../../../base/common/buffer.js';
+import { encodeBase64, decodeBase64 } from '../../../../../../base/common/buffer.js';
 
 export interface CompatToolContext {
 	register: (d: IBuiltinToolRegistration) => void;
@@ -252,7 +252,7 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				name: 'patch',
 				description: 'Apply a targeted edit to a file by replacing an exact block of text. Preferred over file_write for modifying existing files. ALWAYS read the file first (file_read) and copy the "search" text verbatim from it — the match must be exact except for line endings, which are handled automatically. If "search" occurs more than once the call fails, so include enough surrounding context to make it unique (or pass replace_all=true deliberately). Do not issue multiple patch calls for the same file in one batch; apply them one at a time so each sees the previous result.' +
 				' RULES: (1) "search" and "replace" MUST differ — a pure-whitespace change is rejected as a no-op. (2) After a successful patch within a region, re-read the file before patching that same region again; the text may have changed, so never assume the previous content is still present.',
-				inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'File path to patch' }, search: { type: 'string', description: 'Exact text to search for, copied verbatim from the file' }, replace: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace all occurrences (default: false)' } }, required: ['path', 'search', 'replace'] },
+				inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'File to patch. MUST be grounded: copy it verbatim from the file_read call you made on this file (patch requires a prior successful file_read) — never assemble or recall a path from memory. Relative paths resolve against the primary workspace root; in a multi-folder workspace prefer the absolute path from the tool output.' }, search: { type: 'string', description: 'Exact text to search for, copied verbatim from the file' }, replace: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace all occurrences (default: false)' } }, required: ['path', 'search', 'replace'] },
 				// category 必须是 'filesystem'（不是 'file'）：inferSecurityLevel 只在
 				// category==='filesystem' 分支里检查 name.includes('patch')。旧值 'file'
 				// 使 patch 一路落到名称模式表（其中并无 'patch'）→ 被判 Safe → 全程
@@ -271,6 +271,27 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 					throw new NonRetryableToolError('patch failed: both "path" and "search" are required.');
 				}
 				const resolved = await ctx.resolveAndCheckWorkspacePath(agentId, filePath);
+				// ── P3 read-before-edit 硬闸（2026-09-07，对齐 Claude Code）──────
+				// patch.search 必须逐字复制自真实文件内容；从未成功 file_read 过该
+				// 文件的调用几乎必然是凭记忆拼的（日志 1788713328385：patch 连败 ×5
+				// 的直接来源）。此前只有「失败后关联反馈」（describeReadGap），这里
+				// 升级为**前置拦截**——失败从「patch 连败」提前到「第一次调用即纠偏」，
+				// 与 Claude Code "File has not been read yet" 同款纪律。
+				if (!hasEverReadSuccessfully(resolved)) {
+					ctx.logService.warn(`[BuiltinTools] patch ${filePath} rejected: file not read yet (read-before-edit gate)`);
+					// 2026-09-07（日志 1788760209187）：硬闸触发 2 次但模型**始终没补读**
+					// ——它在 search_code 输出里看到了该文件的匹配行，误以为已知内容。
+					// 原文案只说「先 file_read」，没点破这个误判，模型照旧重试 patch。
+					// 追加 describeReadGap（复用）以区分「从未读过」与「本会话改过需重读」。
+					throw new NonRetryableToolError(
+						`patch rejected (read-before-edit rule): this file has not been read yet in this session — ` +
+						`call file_read on "${filePath}" FIRST, then copy the "search" block verbatim from its output and reissue patch.\n` +
+						`NOTE: matching lines shown by search_code / search_files / search_graph are FRAGMENTS — they do NOT count as ` +
+						`reading the file and are usually not the current content. Do NOT retry patch with a guessed block: ` +
+						`it will be rejected again.` +
+						describeReadGap(resolved),
+					);
+				}
 				const fileUri = URI.file(resolved);
 				const buf = await ctx.fileService.readFile(fileUri);
 				const original = buf.value.toString();
@@ -281,7 +302,11 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 					// 用 NonRetryableToolError —— 同参数重试必然同样失败，只会浪费
 					// 三次尝试与三倍日志（见 toolExecutor 的 retryable 注释）。
 					ctx.logService.warn(`[BuiltinTools] patch ${filePath} rejected: ${outcome.reason}`);
-					throw new NonRetryableToolError(outcome.message);
+					// ★ 2026-09-07：追加 read-state 关联反馈（日志 1788713328385 实测
+					// patch 连败 ×5 → same-args 循环：模型 file_read 传幻觉路径失败后
+					// 不重读，凭猜的内容拼 search）。原消息只说 "search 必须精确"，
+					// 没点破「你从未成功读过该文件」——反馈没打中要害。
+					throw new NonRetryableToolError(outcome.message + describeReadGap(resolved));
 				}
 
 				// ── 回滚点（2026-08-21）────────────────────────────────────
@@ -294,6 +319,10 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				}
 
 				await ctx.fileService.writeFile(fileUri, VSBuffer.fromString(outcome.content));
+				// P3 二期（2026-09-07，日志 1788757547227）：patch 成功后把该文件
+				// read-state 置为 stale —— 再对该文件 patch 前必须重新 file_read，
+				// 否则第二个 patch 的 search 基于改动前内容、必然 not_found。
+				markFileModified(resolved);
 				const parts = [`Patched ${filePath} — replaced ${outcome.replacedCount} occurrence${outcome.replacedCount === 1 ? '' : 's'}.`];
 				if (outcome.lineEndingAdjusted) {
 					// 明确告知，避免模型下次仍按 \n 提交而以为是自己运气好
@@ -383,6 +412,11 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				type: 'object',
 				properties: {
 					command: { type: 'string', description: 'Shell command to execute, e.g. "python3 scripts/anysearch_cli.py search \\"your query\\""". Required unless action=poll/kill is used.' },
+					// 免转义通道（2026-09-06）：放在 schema 而非 description 正文 —— description
+					// token 成本高（见 :326 注释），schema 字段说明同样随 schema 下发到模型。
+					// 文案刻意不举反斜杠例子（避免 schema 文本自身的嵌套转义地狱）。
+					script_b64: { type: 'string', description: 'The ENTIRE script, base64-encoded (UTF-8 bytes → base64). PREFERRED over "command" whenever the script contains backslashes, regex patterns, or escape sequences — transport cannot corrupt it. MUST be paired with "interpreter" so the script runs via stdin without any shell parsing (without "interpreter" it degrades to a shell command line, which can still mangle backslashes). Mutually exclusive with "command"; all safety guards still apply.' },
+					interpreter: { type: 'string', enum: ['node', 'python3', 'python'], description: 'Interpreter for "script_b64" (required for full escaping immunity): the decoded script is piped to this interpreter via stdin, bypassing shell parsing entirely. e.g. interpreter:"node" runs the decoded script as JavaScript.' },
 					// 2026-08-22（对齐 MiMo bash.txt）：5-10 词说明。除 UI/审批卡片展示外，
 					// 还解决「args 后到时工具卡空白」—— tool_start 只带工具名，有了
 					// description 卡片在命令文本到达前就能显示意图（见 toolCardArgsRefresh）。
@@ -410,8 +444,45 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				const err = ctrl.stderr ? `\n[stderr]${ctrl.stderr}` : '';
 				return text(`[execute_code ${action}] task ${taskId} — ${status} (exit ${ctrl.exitCode ?? -1})${out}${err}`);
 			}
-			const command = String(args['command'] ?? '').trim();
-			if (!command) { throw new NonRetryableToolError('execute_code requires "command" (or action=poll/kill with taskId)'); }
+			// base64 免转义通道（2026-09-06，同日升级）：双剥实证 —— 模型正确写
+			// '\\u'（JSON 层正确），但 spawn(command, {shell}) 让命令**再经 shell
+			// 解析一次**，bash 双引号内 \\ → \ → node 实收 '\u' SyntaxError。
+			// 即损耗在 JSON 解码 + shell 包装两层，昨天的「b64 → decode → 走 shell」
+			// 只免疫了第一层（decode 出的反斜杠仍会被 shell 剥）。
+			// 真·免疫 = 配 interpreter：decode 后的脚本体**走 stdin**
+			// （spawn interpreter argv + stdin.write，零 shell 解析，复用 heredoc 通道）。
+			// 护栏语义保持：command 构造为等价 heredoc 文本，让 hardline / 源码写入 /
+			// 混淆检测等护栏照常看到脚本体（与 _extractHeredoc 原路径一致）。
+			const b64Arg = typeof args['script_b64'] === 'string' ? (args['script_b64'] as string).trim() : '';
+			const interpreterArg = typeof args['interpreter'] === 'string' ? (args['interpreter'] as string).trim() : '';
+			let command = String(args['command'] ?? '').trim();
+			let stdinScript: { interpreter: string; script: string } | undefined;
+			if (b64Arg) {
+				if (command) {
+					throw new NonRetryableToolError('execute_code: pass either "command" or "script_b64", not both');
+				}
+				const decoded = decodeBase64(b64Arg).toString().trim();
+				if (!decoded) {
+					throw new NonRetryableToolError('execute_code: "script_b64" decoded to an empty script');
+				}
+				if (interpreterArg) {
+					const allowed = ['node', 'python3', 'python'];
+					if (!allowed.includes(interpreterArg)) {
+						throw new NonRetryableToolError(`execute_code: "interpreter" must be one of ${allowed.join(', ')} (got "${interpreterArg}")`);
+					}
+					stdinScript = { interpreter: interpreterArg, script: decoded };
+					// 护栏/审计需要看到脚本体：构造等价 heredoc 形态文本（与原
+					// heredoc 路径语义一致 —— 护栏对完整脚本生效，而非空命令）。
+					command = `${interpreterArg} <<'SCRIPT_B64'\n${decoded}\nSCRIPT_B64`;
+					ctx.logService.info(`[CompatTools] execute_code: script_b64 via stdin (${interpreterArg}, ${decoded.length} chars) — shell-free, escaping-layer immune`);
+				} else {
+					// 未配 interpreter：退化为 shell 命令行（含反斜杠仍可能被 shell 剥，
+					// schema 已引导配 interpreter 获得完整免疫）。
+					command = decoded;
+					ctx.logService.info(`[CompatTools] execute_code: decoded script_b64 as shell command (${command.length} chars) — JSON-layer immune only, pass "interpreter" for shell-free execution`);
+				}
+			}
+			if (!command) { throw new NonRetryableToolError('execute_code requires "command" (or "script_b64", or action=poll/kill with taskId)'); }
 			// HARDLINE 不可绕过地板（灾难性/不可逆命令，任何审批与自主模式都无法放行）
 			const hardline = detectHardlineViolation(command);
 			if (hardline) {
@@ -515,7 +586,8 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 							`and its arguments cannot be mapped to PowerShell automatically. ` +
 							`Rewrite the pipeline with a PowerShell equivalent: ... | ${UNIX_ONLY_COMMAND_HINTS[unixCmd] ?? unixCmd} ` +
 							`(e.g. powershell -NoProfile -Command "<your cmd> | Select-Object -First 60"), then reissue execute_code with the corrected command. ` +
-							`For searching file CONTENT prefer search_code, and for finding FILES prefer search_files — both are indexed and need no shell.`
+							`For searching file CONTENT prefer search_code, and for finding FILES prefer search_files — both are indexed and need no shell. ` +
+							`${GIT_BASH_INSTALL_GUIDANCE}`
 						);
 					}
 				}
@@ -547,9 +619,43 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			// cwd 不为空时走沙箱校验；否则默认使用工作区根目录（不传 cwd 时
 			// Node.js spawn 默认 process.cwd() = Electron app dir，不是 workspace root）。
 			// 技能 CLI 不在此做自动解析——绝对路径由技能注入/read_skill 直接给出。
-			const cwd: string | undefined = rawCwd
+			let cwd: string | undefined = rawCwd
 				? await ctx.resolveAndCheckWorkspacePath(undefined, rawCwd, false)
 				: ctx.workspaceRoot;
+
+			// ── cwd 幻觉兜底（2026-09-08，日志 1788832048803）──────────────────
+			// 模型传的 cwd 可能是幻觉路径（实例：`g:\CustomWorkspaces\sarosis-agents-
+			// client\src\...`，少了 AIProjects 一级）→ resolveAndCheckWorkspacePath 对
+			// 绝对路径原样放行（读操作不判沙箱）→ spawn 报 ENOENT 且**伪装成
+			// bash.exe 缺失**（Node 在 cwd 无效时的报错形态）。
+			// 修复：cwd 不存在时做结构修复——在 cwd 的段中锚定工作区根的末段名，
+			// 截取其后段拼回真实根 + exists 验证（与沙箱建议路径的 ① 同款算法）；
+			// 修复成功 → warn 留痕并使用（省一轮失败重试）；失败 → 保留原值，
+			// spawn 失败后由 [ENOENT diagnosis] 给模型明确反馈。
+			if (cwd && rawCwd) {
+				let cwdExists = false;
+				try { cwdExists = await ctx.fileService.exists(URI.file(cwd)); } catch { /* 探测失败按不存在处理 */ }
+				if (!cwdExists) {
+					const root = (ctx.workspaceRoot || '').replace(/[\\/]+$/, '');
+					const rootEnd = root ? root.split('/').pop()?.toLowerCase() : undefined;
+					const segs = rawCwd.replace(/\\/g, '/').split('/').filter(Boolean);
+					const idx = rootEnd ? segs.map(s => s.toLowerCase()).lastIndexOf(rootEnd) : -1;
+					const repaired = (root && rootEnd && idx >= 0 && idx < segs.length - 1)
+						? `${root}/${segs.slice(idx + 1).join('/')}`
+						: undefined;
+					let repairedOk = false;
+					if (repaired) {
+						try { repairedOk = await ctx.fileService.exists(URI.file(repaired)); } catch { /* 视为修复失败 */ }
+					}
+					if (repaired && repairedOk) {
+						ctx.logService.warn(
+							`[CompatTools] execute_code cwd auto-corrected (cwd does not exist): "${rawCwd}" → "${repaired}"`,
+						);
+						cwd = repaired;
+					}
+					// 修复失败 → 保留原值；spawn 失败后 [ENOENT diagnosis] 会给模型明确反馈
+				}
+			}
 
 			// ── 越界访问未绑定 worktree 副本（2026-08-20，日志 1787217670299）────────
 			// execute_code 是 shell，对 `cd .worktrees/<branch>/...` 没有任何路径约束，
@@ -568,18 +674,56 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 		// Windows cmd 不支持 heredoc（`python3 << 'EOF' ... EOF` 报 "此时不应有 <<", exit 1）。
 		// 检测 heredoc：提取解释器 + 脚本，改经 stdin 传给解释器执行（跨平台）。
 		// 注意用 effectiveCommand：Unix→PowerShell 改写后不含 heredoc，检测自然落空。
-		const heredoc = _extractHeredoc(effectiveCommand);
+		// script_b64+interpreter 优先：脚本走 stdin（零 shell 解析），绕过 shell 包装
+		// 对反斜杠的转义损耗；否则按原逻辑从命令文本提取 heredoc。
+		const heredoc = stdinScript ?? _extractHeredoc(effectiveCommand);
 		if (heredoc) {
 			ctx.logService.info(`[CompatTools] execute_code: heredoc detected, running ${heredoc.interpreter} via stdin`);
 		}
 		// Git Bash 模式：传 shell 路径 + coreutils PATH 前缀给主进程（Hermes
 		// _prepend_git_bash_dirs 同款思路——非登录 bash 不 source /etc/profile，
 		// 必须显式把 usr\bin 前置到 PATH，head/tail/grep 等才可用）。
-		const result = await _execCodeSandbox(
+		let result = await _execCodeSandbox(
 			effectiveCommand, cwd, timeoutSec * 1000, ctx.logService, heredoc,
 			gitBash ? { shell: gitBash.bashPath, pathPrefix: coreutilsDir(gitBash) } : undefined,
 			background,
 		);
+
+		// ── ENOENT 归因诊断 + shell 降级重跑（2026-09-07，日志 1788757547227）──
+		//
+		// 现象：主进程 spawn 报 `spawn D:\...\bash.exe ENOENT`，模型收到的却是
+		// 「A path in the command does not exist … use search_files」——**错误归因**
+		//（实测 bash 存在、同会话其它命令（含 `npx tsc | grep`）都成功）。
+		// 根因：09-06 加的 ENOENT 诊断挂在**本地 spawn** 分支且依赖 require('fs')，
+		// 而 execute_code 走主进程 IPC → 诊断从未执行 → 落到泛化的 no-such-file 提示，
+		// 模型照它去改一条本来正确的命令，永远修不好。
+		//
+		// 对齐业界：VS Code 终端 profile 失效即回退系统 shell；Claude Code 在
+		// Windows 直接用 PowerShell 而非强依赖 Git Bash。此处两步走：
+		//   ① 用 fileService 精确区分「shell 可执行缺失」/「cwd 缺失」/其它；
+		//   ② 确属 shell 缺失 → 清缓存 + 用原生 shell 重跑一次（命令本身不变）；
+		//      cwd 缺失 → 不擅自改 cwd（会改变语义），只补诊断文本让 hint 命中。
+		let shellFallbackNote: string | undefined;
+		if (!result.success && gitBash && /ENOENT/i.test(result.stderr)) {
+			const shellExists = await ctx.fileService.exists(URI.file(gitBash.bashPath)).catch(() => true);
+			const cwdExists = cwd ? await ctx.fileService.exists(URI.file(cwd)).catch(() => true) : true;
+			if (!shellExists) {
+				invalidateGitBashCache();
+				ctx.logService.warn(`[CompatTools] execute_code: shell executable missing (${gitBash.bashPath}) — retrying once with native Windows shell`);
+				const retried = await _execCodeSandbox(
+					effectiveCommand, cwd, timeoutSec * 1000, ctx.logService, heredoc, undefined, background,
+				);
+				if (retried.success || !/ENOENT/i.test(retried.stderr)) {
+					result = retried;
+					shellFallbackNote =
+						`[shell-fallback] Git Bash at ${gitBash.bashPath} is missing, so the command was re-run with the ` +
+						`native Windows shell (the command itself was NOT changed). Reinstall Git for Windows, or set ` +
+						`SAROS_GIT_BASH_PATH to the bash.exe path and restart, to restore POSIX commands (head/grep/sed).`;
+				}
+			} else if (!cwdExists) {
+				result = { ...result, stderr: `${result.stderr}\n[ENOENT diagnosis] cwd does not exist: ${cwd}` };
+			}
+		}
 		// 后台执行：spawn 即返回，不阻塞当前轮（P0-2）
 		if (result.background && result.taskId) {
 			return text(
@@ -613,6 +757,7 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				);
 			}
 			if (worktreeNote) { parts.push(worktreeNote, ''); }
+			if (shellFallbackNote) { parts.push(shellFallbackNote, ''); }
 			if (out) { parts.push(out); }
 			if (err) { parts.push(`[stderr]\n${err}`); }
 			parts.push(`(exit code: ${result.exitCode})`);
@@ -754,7 +899,31 @@ function _execCodeNodeFallback(command: string, cwd: string | undefined, timeout
 			}, timeoutMs) : undefined;
 			child.stdout?.on('data', (d: Buffer) => stdoutCollector.push(d));
 			child.stderr?.on('data', (d: Buffer) => stderrCollector.push(d));
-			child.on('error', (err) => { if (!settled) { settled = true; clearTimeout(t); resolve({ success: false, stdout: stdoutCollector.decode(), stderr: err.message, exitCode: -1 }); } });
+			child.on('error', (err) => {
+				if (!settled) {
+					settled = true; clearTimeout(t);
+					let stderrMsg = err.message;
+					// ★ 2026-09-06：win32 spawn 的 ENOENT 报的是 file 名，但 **cwd 不存在
+					// 同样报 ENOENT**——不区分会让外层 hint 误指「命令里的路径不存在」，
+					// 模型照提示去改命令永远修不好（真因是 shell 可执行或 cwd 缺失）。
+					// 这里同步做一次存在性诊断，把准确原因写进 stderr。
+					if ((err as any).code === 'ENOENT') {
+						try {
+							// eslint-disable-next-line local/code-import-patterns
+							const fs = require('fs') as typeof import('fs');
+							const hints: string[] = [];
+							if (shellExec?.shell && !fs.existsSync(shellExec.shell)) {
+								hints.push(`shell executable not found: ${shellExec.shell} (Git Bash may have been moved/uninstalled; set SAROS_GIT_BASH_PATH to the bash.exe path and restart)`);
+							}
+							if (cwd && !fs.existsSync(cwd)) {
+								hints.push(`cwd does not exist: ${cwd}`);
+							}
+							if (hints.length) { stderrMsg += `\n[ENOENT diagnosis] ${hints.join('; ')}`; }
+						} catch { /* 诊断失败不影响原错误 */ }
+					}
+					resolve({ success: false, stdout: stdoutCollector.decode(), stderr: stderrMsg, exitCode: -1 });
+				}
+			});
 			child.on('close', (code) => { if (!settled) { settled = true; clearTimeout(t); resolve({ success: code === 0, stdout: stdoutCollector.decode(), stderr: stderrCollector.decode(), exitCode: code ?? -1 }); } });
 		} catch (err) {
 			resolve({ success: false, stdout: '', stderr: String(err), exitCode: -1 });

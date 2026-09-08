@@ -45,6 +45,7 @@ export interface ShortcutKeyInfo {
  * must never steal keystrokes from inputs/textarea/select/contentEditable.
  */
 export function isEditableTarget(target: unknown): boolean {
+	// ★ 带 isContentEditable 的普通对象（单测/DOM 片段）也要走标签判断。
 	if (!target || typeof (target as { localName?: unknown }).localName !== 'string') {
 		return false;
 	}

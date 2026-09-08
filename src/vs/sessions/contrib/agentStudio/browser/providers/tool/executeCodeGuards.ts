@@ -17,6 +17,88 @@
 
 import type { ShellDialect } from './shellPlatformPrompt.js';
 
+// ── read-state 跟踪（2026-09-07，patch 连败根因的解药）────────────────
+//
+// 背景（日志 1788713328385，patch "search text not found" ×5 → same-args 循环）：
+// 模型 file_read 传了幻觉路径（`...agentStudio\webidx\...`，webview 的手误）→
+// 读取失败 → 模型**不重读**，凭猜测的内容拼 patch.search → 连败 5 次触发循环
+// 拦截。patch 的失败消息只说 "search 必须与文件完全一致"，**没有点破「你从来没
+// 成功读过这个文件」**——反馈没打中要害，模型自然继续猜。
+//
+// 对齐 Claude Code 的 read-before-edit 纪律：file_read 的成败在此登记（进程级
+// 内存，会话重启即清零——足够覆盖单次任务周期），patch 失败时查表给**针对该
+// 文件的精确反馈**（从没读过 / 上次读取失败 / 上次读取已 N 秒前）。
+
+interface IFileReadState { ok: boolean; at: number; note?: string; stale?: boolean }
+const _fileReadState = new Map<string, IFileReadState>();
+const _normFilePath = (p: string): string => p.replace(/\//g, '\\').trim().toLowerCase();
+
+export function recordFileReadSuccess(path: string): void {
+	if (path) { _fileReadState.set(_normFilePath(path), { ok: true, at: Date.now() }); }
+}
+
+export function recordFileReadFailure(path: string, note: string): void {
+	if (path) { _fileReadState.set(_normFilePath(path), { ok: false, at: Date.now(), note: note.slice(0, 160) }); }
+}
+
+/**
+ * 该路径在本会话（进程生命周期）内是否被 file_read **成功**读过。
+ * P3 read-before-edit 硬闸（2026-09-07，对齐 Claude Code "File has not been
+ * read yet"）的查询入口：patch 前置校验，从未读过 → 硬拒。
+ */
+export function hasEverReadSuccessfully(path: string): boolean {
+	const st = _fileReadState.get(_normFilePath(path ?? ''));
+	return !!st && st.ok;
+}
+
+/**
+ * P3 二期 · 写后失效（2026-09-07，日志 1788757547227 实证）：本会话刚写入/改动过
+ * 该文件 → read-state 置为 stale，下次 patch 前必须重新 file_read。
+ *
+ * 场景：同一批次连发两个 patch 打同一文件（第一个改 import、第二个改使用方），
+ * 第二个的 `search` 基于改动前的内容 → "search text not found"（本次日志实测
+ * 1 次，MiniImageEditor.tsx）。P3 一期只拦「从未读过」，管不到这类内容过时。
+ * 对齐 Claude Code 语义：write 后视为已读（内容刚写、模型已知），patch 后再
+ * patch 需重读。
+ */
+export function markFileModified(path: string): void {
+	if (path) {
+		_fileReadState.set(_normFilePath(path), {
+			ok: false,
+			at: Date.now(),
+			stale: true,
+			note: 'you modified this file in this session (patch) — re-read it before patching again',
+		});
+	}
+}
+
+/**
+ * patch "search text not found" 时的关联反馈。
+ *
+ * @returns 追加到错误消息末尾的文案；空串 = 状态健康（最近读过且无异常），
+ *          此时维持原「空白/缩进必须精确」的提示即可。
+ */
+export function describeReadGap(path: string): string {
+	const st = _fileReadState.get(_normFilePath(path ?? ''));
+	if (!st) {
+		return '\n⚠ READ-STATE: You have NEVER successfully read this file with file_read in this session. '
+			+ 'The "search" text you sent was GUESSED, not copied from real content — that is why it can never match. '
+			+ 'Call file_read on the exact absolute path FIRST, then copy the search block verbatim from its output.';
+	}
+	if (!st.ok && st.stale) {
+		return '\n⚠ READ-STATE: you modified this file earlier in this session, so the content you hold is now OUTDATED. '
+			+ 'Re-read it with file_read and copy the search block from the fresh output.';
+	}
+	if (!st.ok) {
+		return `\n⚠ READ-STATE: your most recent file_read on this path FAILED (${st.note}). `
+			+ 'The "search" text you sent was guessed from stale context — it can never match. '
+			+ 'Call file_read with the correct absolute path first, then copy the search block verbatim from its output.';
+	}
+	const agoSec = Math.max(1, Math.round((Date.now() - st.at) / 1000));
+	return `\n⚠ READ-STATE: last successful file_read was ${agoSec}s ago — the file may have changed since `
+		+ '(parallel edits / your own earlier patch). Re-read the target region with file_read, then reissue patch.';
+}
+
 /** Unix-only 命令 → PowerShell 等价写法（用于护栏错误消息）。 */
 export const UNIX_ONLY_COMMAND_HINTS: Record<string, string> = {
 	head: 'Select-Object -First <N>',
@@ -25,6 +107,17 @@ export const UNIX_ONLY_COMMAND_HINTS: Record<string, string> = {
 	sed: "ForEach-Object { $_ -replace '<old>','<new>' }",
 	awk: 'ForEach-Object with -split',
 };
+
+/**
+ * 2026-09-06：Git Bash 缺失时的一次性安装引导（附在 Unix-only 护栏报错末尾）。
+ *
+ * 把「降级提示」升级为「升级引导」：护栏报错只教模型换 PowerShell 写法，但
+ * POSIX 能力缺失的根因是环境——模型把这句转述给用户，用户装一次 Git for
+ * Windows 后本护栏即不再触发。放 executeCodeGuards（判据所在模块）保证
+ * 两处护栏（execute_code / terminal）引用同一份文案。
+ */
+export const GIT_BASH_INSTALL_GUIDANCE =
+	'Note: installing Git for Windows (https://git-scm.com/downloads/win) would make POSIX commands (grep/head/sed/awk) work natively in execute_code/terminal — this guard would stop firing.';
 
 /**
  * Windows 护栏：检测命令段起始位置（行首 / `|` / `&&` / `;` 之后）的 Unix-only 命令。

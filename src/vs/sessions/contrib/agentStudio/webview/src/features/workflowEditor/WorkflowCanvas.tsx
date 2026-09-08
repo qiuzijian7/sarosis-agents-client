@@ -1,4 +1,15 @@
+// @ts-nocheck
 /*---------------------------------------------------------------------------------------------
+ *  ⚠ DEPRECATED（2026-09-07）：旧 ReactFlow 版画布，已被 LiteGraphCanvas 取代。
+ *
+ *  全仓**无任何 import**（仅在 WorkflowEditorPanel.tsx 的 ASCII 结构注释里被提及），
+ *  而其依赖的 ./nodes/* 、./edges/DeletableEdge、./CanvasToolbar、./StartMenu、
+ *  ./ConfirmDialog 以及 @xyflow/react **均已不存在** → 本文件单独贡献 18 个类型
+ *  错误（其中 TS2307 ×10）。
+ *
+ *  处理：不做删除（保留实现供参照 / git 可恢复），改用 @ts-nocheck 隔离出类型检查。
+ *  彻底清理时直接删掉本文件即可——无任何引用点。
+ *
  *  WorkflowCanvas — ReactFlow canvas with node types, background, and controls.
  *
  *  Wires in all borrowed interaction features:

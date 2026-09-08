@@ -15,9 +15,11 @@
  */
 import * as React from 'react';
 import { MentionTextarea, type MentionCandidate } from './comfyHost/MentionTextarea';
+import { HoverErrorBadge, HoverTip } from './ErrorBadge';
 import { styleTemplateOf, EMOJI_SHEET_SIZES, EMOJI_SHEET_SIZE_DEFAULT } from './comfyHost/builtinWorkflows/emojiWorkflows.js';
 import { useRunnerStatus } from './comfyHost/runnerStatusStore';
 import { useProviderStore } from '../../store/useProviderStore';
+import type { EmojiSheetBackground } from './comfyHost/workflowRun';
 
 export interface EmojiStageCell {
   prompt: string;
@@ -39,6 +41,8 @@ const SHEET_BG_OPTIONS: Array<{ value: EmojiSheetBackground; label: string }> = 
   { value: 'transparent', label: '透明底' },
   { value: 'white', label: '白底' },
 ];
+
+
 
 
 
@@ -105,8 +109,11 @@ export interface StatEmojiStageEditorProps {
   onSheetEdit?: () => void;
   /** ★ LLM 原图「去背景」按钮：本地 rembg 抠图 → 写入「调整后」图集口（原图归档不动；nodeCard 层执行）。 */
   onSheetRemoveBg?: () => void;
-  /** ★ 当前原图是 sheet 口直通的上游图集（2026-09-06）：只读预览——禁整图编辑/去背景
-      （写入会落到上游节点归档），提示条说明来源。本节点生成后自动恢复可编辑。 */
+  /** ★ 当前原图是 sheet 口直通的上游图集（2026-09-06）：只读预览——禁整图编辑
+      （写入会落到上游节点归档）。sheet 口保持连线期间始终只读（执行器直通优先：
+      连线时点「生成」按上游图集切分，本节点不会产出新原图）；整图编辑请回上游节点
+      处理。★ 去背景不受此限（2026-09-06 修正）：产物写本节点「调整后」图集口
+      （snapKey:image:0），不触碰上游归档。 */
   isPassthroughSheet?: boolean;
   /** 去背景执行中（按钮禁用 + 文案切换）。 */
   sheetRemovingBg?: boolean;
@@ -114,6 +121,8 @@ export interface StatEmojiStageEditorProps {
   sheetRemoveBgStage?: { text: string; percent?: number } | null;
   /** 去背景成功计数（每次成功 +1 → 编辑器自动切到「🧩 调整后」页签；2026-09-06）。 */
   sheetRemoveBgDoneTick?: number;
+  /** 去背景失败错误（红条展示；webview 会静默吞掉 window.alert，错误必须走 UI 内反馈）。 */
+  sheetRemoveBgError?: string | null;
   /** 应用裁剪（run_scope='recrop'：跳过生成，按 cell_crops 对整图重裁）。 */
   /** @ 提及候选（节点 + 文件），由 NodeCard 注入；缺省时输入框仍可用但无 @ 面板。 */
   mentionCandidates?: MentionCandidate[];
@@ -291,7 +300,7 @@ const COMFY_MODEL_FALLBACK: ComfyModelOption[] = [
  * `input.required.ckpt_name[0]` 枚举）。模块级按 baseUrl 缓存（ComfyUI 进程内
  * 模型列表不变）；失败回退 fallback 列表（首次启动模型目录可能仍在扫描）。
  */
-const comfyModelsCache = new Map<string, string[]>();
+const comfyModelsCache = new Map<string, ComfyModelOption[]>();
 
 /** /object_info/<node> 响应的所需切片（具名类型：.tsx 内联泛型会被当 JSX 解析）。 */
 type ComfyObjectInfo = Record<string, {
@@ -346,7 +355,7 @@ async function fetchComfyModels(baseUrl: string): Promise<ComfyModelOption[]> {
 }
 
 export function StatEmojiStageEditor({
-  initial, sheetRef, sheetGrid, rebuiltSheetRef, rebuiltGrid, cellRefs, workflowOptions, styleOptions, onCommit, onRunRequest, running, onCancelRequest, onCellEdit, onSheetEdit, onSheetRemoveBg, isPassthroughSheet, sheetRemovingBg, sheetRemoveBgStage, sheetRemoveBgDoneTick, mentionCandidates, onPinAsset,
+  initial, sheetRef, sheetGrid, rebuiltSheetRef, rebuiltGrid, cellRefs, workflowOptions, styleOptions, onCommit, onRunRequest, running, onCancelRequest, onCellEdit, onSheetEdit, onSheetRemoveBg, isPassthroughSheet, sheetRemovingBg, sheetRemoveBgStage, sheetRemoveBgDoneTick, sheetRemoveBgError, mentionCandidates, onPinAsset,
 }: StatEmojiStageEditorProps): React.ReactElement {
   /** 原图解码尺寸（缩略图标签显示，也用于核对「LLM 返回 vs 编辑器输入」）。 */
   const [sheetSize, setSheetSize] = React.useState<{ w: number; h: number } | null>(null);
@@ -594,11 +603,15 @@ export function StatEmojiStageEditor({
           <select
             value={sheetBackground}
             onChange={(e) => setSheetBackground(e.target.value as EmojiSheetBackground)}
-            title="整版生成时的背景：跟随提示词（默认）=不追加背景约束，由你的描述决定；透明底=要求模型直接出透明；白底=强制白底。生成切分不做抠图——需要透明贴纸请在图集区点「去背景」（内置 U²Net）或用迷你编辑器处理。"
             style={{ flex: 1, minWidth: 0, height: 24, fontSize: 10, padding: '0 4px', background: '#17181c', color: 'var(--vscode-foreground, #e8e8e8)', border: '1px solid rgba(255,255,255,.14)', borderRadius: 4 }}
           >
             {SHEET_BG_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
+          <HoverTip
+            variant="info"
+            tipWidth={300}
+            tip={'整版生成时的背景：跟随提示词（默认）=不追加背景约束，由你的描述决定；透明底=要求模型直接出透明；白底=强制白底。\n生成切分不做抠图——需要透明贴纸请在图集区点「去背景」（内置 U²Net）或用迷你编辑器处理。'}
+          />
         </div>
 
       </div>
@@ -609,21 +622,24 @@ export function StatEmojiStageEditor({
         border: '1px solid rgba(255,255,255,.1)', borderRadius: 8, padding: 8,
         background: '#25272e', display: 'flex', flexDirection: 'column', gap: 6,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--vscode-descriptionForeground, #9a9a9a)' }}>🖼 图集</span>
-          {/* 双视图：原生整图（编辑基底）/ 调整后（单格编辑保存后重拼=下游所见） */}
+        {/* ★ 精简头行（2026-09-07）：nowrap 防挤压换行（此前窄面板下「图集/页签/
+            说明」全部竖排折行）；长说明收进 hover title，行内只留尺寸。 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'nowrap', minWidth: 0 }}>
+          <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--vscode-descriptionForeground, #9a9a9a)', whiteSpace: 'nowrap', flexShrink: 0 }}>图集</span>
+          {/* 双视图：原图（编辑基底）/ 调整后（单格编辑保存后重拼=下游所见） */}
           {rebuiltSheetRef && (
-            <div style={{ display: 'flex', gap: 3 }}>
+            <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
               {([
-                { id: 'original', label: '原生整图' },
-                { id: 'rebuilt', label: '🧩 调整后' },
+                { id: 'original', label: '原图' },
+                { id: 'rebuilt', label: '调整后' },
               ] as const).map(v => (
                 <button
                   key={v.id}
                   onClick={() => setSheetView(v.id)}
-                  title={v.id === 'rebuilt' ? '单格编辑/裁剪保存后重拼、或整图去背景后的图集——下游转动态节点读取的就是它' : 'LLM 返回的原生整图（编辑基底，去背景不会改动它）'}
+                  title={v.id === 'rebuilt' ? '单格编辑/裁剪保存后重拼、或整图去背景后的图集——下游转动态节点读取的就是它' : 'LLM 返回的原生整图（编辑基底，双击图片可整图编辑；去背景不会改动它）'}
                   style={{
-                    padding: '2px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 9, fontWeight: 600, fontFamily: 'inherit',
+                    padding: '2px 6px', borderRadius: 4, cursor: 'pointer', fontSize: 9, fontWeight: 600, fontFamily: 'inherit',
+                    whiteSpace: 'nowrap',
                     border: sheetView === v.id ? '1px solid #a855f7' : '1px solid rgba(255,255,255,.14)',
                     background: sheetView === v.id ? 'rgba(168,85,247,.2)' : 'rgba(255,255,255,.05)',
                     color: sheetView === v.id ? '#d8b4fe' : 'var(--vscode-descriptionForeground, #9a9a9a)',
@@ -633,39 +649,50 @@ export function StatEmojiStageEditor({
             </div>
           )}
           {sheetSize && (
-            <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--vscode-descriptionForeground, #9a9a9a)' }}>
+            <span
+              title={sheetView === 'original' ? '双击图片可整图编辑（去背景不改原图）' : '下游动态表情包制作读取此图集'}
+              style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--vscode-descriptionForeground, #9a9a9a)', whiteSpace: 'nowrap', flexShrink: 0 }}
+            >
               {sheetSize.w}×{sheetSize.h}
-              {sheetView === 'original' ? ' · 双击图片整图编辑' : ' · 下游转动态读取此图集'}
             </span>
           )}
           {/* 🪄 去背景：一键本地 rembg 抠图 → 透明 PNG 写入「调整后」图集（原图归档不动，
-              抠图结果在「🧩 调整后」页签棋盘底直显透明效果）。
-              仅原生整图视图显示（作用对象是编辑基底整图，调整后图集是派生产物）。 */}
+              抠图结果在「调整后」页签棋盘底直显透明效果）。
+              仅原图视图显示（作用对象是编辑基底整图，调整后图集是派生产物）。 */}
           {sheetRef && sheetView === 'original' && (
             <button
               onClick={onSheetRemoveBg}
-              disabled={sheetRemovingBg || isPassthroughSheet}
-              title={isPassthroughSheet
-                ? "当前原图来自上游 sheet 口连线（直通预览，只读）。请在生成本节点的原图后再去背景。"
-                : "整图去背景 → 透明 PNG（本地 rembg 服务）。原图不动，结果显示在「🧩 调整后」页签，下游转动态读取该图集。"}
+              disabled={sheetRemovingBg}
+              title="整图去背景 → 透明 PNG。原图不动，结果显示在「调整后」页签，下游转动态读取该图集。"
               style={{
-                padding: '2px 7px', borderRadius: 5, cursor: sheetRemovingBg ? 'wait' : 'pointer', fontSize: 10, fontWeight: 600,
+                padding: '2px 6px', borderRadius: 5, cursor: sheetRemovingBg ? 'wait' : 'pointer', fontSize: 10, fontWeight: 600,
+                whiteSpace: 'nowrap', flexShrink: 0,
                 border: '1px solid rgba(56,189,248,.5)', background: sheetRemovingBg ? 'rgba(148,163,184,.2)' : 'rgba(56,189,248,.16)', color: sheetRemovingBg ? '#94a3b8' : '#38bdf8',
-                flexShrink: 0,
               }}
-            >{sheetRemovingBg ? '去背景中…' : '🪄 去背景'}</button>
+            >{sheetRemovingBg ? '去背景中…' : '去背景'}</button>
+          )}
+          {/* 失败徽标（共享 ErrorBadge）：红色「!」圆标，hover 显示完整错误 tip（不常驻挤占版面） */}
+          {sheetRemoveBgError && !sheetRemovingBg && (
+            <HoverErrorBadge message={sheetRemoveBgError} />
           )}
         </div>
         {/* ★ sheet 直通预览（2026-09-06）：原图来自上游连线 → 只读提示条。
-            本节点生成自己的原图后 nodeCard 侧 isPassthroughSheet 变 false，提示自动消失。 */}
+            直通优先于本地归档（对齐 nodeCard 2026-09-06 修正）：连线期间恒只读，
+            断开 sheet 口连线后恢复本地归档（可编辑）。 */}
         {isPassthroughSheet && (
-          <div style={{
-            fontSize: 10, lineHeight: 1.6, padding: '4px 8px', borderRadius: 6,
-            background: 'rgba(168,85,247,.12)', border: '1px solid rgba(168,85,247,.35)',
-            color: '#d8b4fe',
-          }}>
-            当前「原图」为 sheet 口直通的上游图集（只读预览）：确认内容后点「生成」即按此图集切分。
-            整图编辑 / 去背景需本节点生成原图后使用（避免改写上游归档）。
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{
+              fontSize: 10, lineHeight: 1.6, padding: '3px 8px', borderRadius: 6, flex: 1, minWidth: 0,
+              background: 'rgba(168,85,247,.12)', border: '1px solid rgba(168,85,247,.35)',
+              color: '#d8b4fe', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            }}>
+              原图为 sheet 口直通的上游图集（只读预览）——点「生成」即按此图集切分
+            </span>
+            <HoverTip
+              variant="info"
+              tipWidth={300}
+              tip={'原图为 sheet 口直通的上游图集（只读预览）：确认内容后点「生成」即按此图集切分。\n整图编辑请回上游节点处理（去背景产物写在本节点「调整后」图集，可直接使用）；断开 sheet 口连线后恢复本节点归档（可编辑）。'}
+            />
           </div>
         )}
         {/* 去背景进度条：模型下载阶段显示字节级百分比，其余阶段显示阶段文本（2026-09-05）。 */}

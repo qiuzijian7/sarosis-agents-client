@@ -1241,34 +1241,6 @@ const handleExecute = useCallback(async () => {
 				resolveImageGenDefaults: async () =>
 					resolveFirstImageGenDefaults(useProviderStore.getState().providers),
 				resolveLoadImageRef: defaultResolveLoadImageRef(runner!, comfyFetchRef.current as never),
-				// Vox 口播视频导演节点：vox.run 启动 + vox.getProgress 轮询 + vox.cancel。
-				runVoxPipeline: async ({ projectId, beats, onStage, signal }) => {
-					const start = await sendRequest('vox.run', { projectId, beats }, 30_000) as { ok: boolean; projectId?: string; error?: string };
-					if (!start.ok) { return { ok: false, error: start.error ?? 'vox.run 启动失败' }; }
-					const pollStart = Date.now();
-					for (;;) {
-						if (signal?.aborted) {
-							await sendRequest('vox.cancel', { projectId }, 5000);
-							return { ok: false, error: '已取消' };
-						}
-						const p = await sendRequest('vox.getProgress', { projectId }, 10_000) as {
-							ok: boolean;
-							state?: { status: string; stage: string; progress: number; finalMp4Path?: string; finalMp4Url?: string; error?: string };
-						};
-						const s = p.state;
-						if (s) {
-							onStage?.(s.stage, s.progress);
-							if (s.status === 'success') { return { ok: true, finalMp4Path: s.finalMp4Path, finalMp4Url: s.finalMp4Url }; }
-							if (s.status === 'error') { return { ok: false, error: s.error ?? 'vox pipeline 失败' }; }
-							if (s.status === 'canceled') { return { ok: false, error: '已取消' }; }
-						}
-						if (Date.now() - pollStart > 600_000) {
-							await sendRequest('vox.cancel', { projectId }, 5000);
-							return { ok: false, error: 'vox pipeline 超时（10 分钟）' };
-						}
-						await new Promise(r => setTimeout(r, 1500));
-					}
-				},
 				fetchImpl: comfyFetchRef.current as never,
 				mode: comfyRunParallel ? 'parallel' : 'serial',
 				parallelConcurrency: 4,

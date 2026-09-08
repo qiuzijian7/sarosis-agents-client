@@ -14,7 +14,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
-import type { ProviderInfo } from '../../../../store/useProviderStore.js';
+// 2026-09-07：原路径 `../../../../store/...` 多了一级（指向 webview/store，不存在）
+// → TS2307。本文件在 src/features/workflowEditor/comfyHost/，store 在 src/store/。
+import type { ProviderInfo } from '../../../store/useProviderStore.js';
 
 export interface ReversePromptRunInput {
 	/** Target node id (or label). */

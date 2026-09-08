@@ -28,9 +28,11 @@ const DEFAULT_CUTOUT_MODEL_FILE = 'BiRefNet-general-epoch_244.onnx';
 
 /**
  * 阶段回调（旧 cutoutAi.CutoutProgressCallback 的收窄版）：模型下载/字节级进度
- * 已随主进程链路移除，只剩阶段文本，供 UI busy 标签/进度条消费。
+ * 已随主进程链路移除。percent（2026-09-07）：0-100 阶段/推理进度，供 UI 进度条
+ * fill 宽度消费——此前只有文本，推理期间（BiRefNet 大图数十秒）进度条恒空，
+ * 用户以为没点上。
  */
-export type CutoutProgressCallback = (text: string) => void;
+export type CutoutProgressCallback = (text: string, percent?: number) => void;
 
 /** 每个 baseUrl 复用一个 fetch（内含 CORS 模式探测缓存）。 */
 const comfyFetchCache = new Map<string, typeof fetch>();
@@ -52,8 +54,12 @@ export function resolveActiveComfyRunner(): IComfyRunner {
 	const registry = getActiveRunnerRegistry();
 	const runner = registry?.resolve(getActiveRunnerPreference()) ?? registry?.list()[0];
 	if (!runner) {
+		// eslint-disable-next-line no-console
+		console.warn('[RemoveBg] resolveActiveComfyRunner：无可用 runner（未连接工作流运行器）');
 		throw new Error(buildNotConnectedMessage());
 	}
+	// eslint-disable-next-line no-console
+	console.warn(`[RemoveBg] resolveActiveComfyRunner → ${runner.baseUrl}`);
 	return runner;
 }
 
@@ -73,7 +79,16 @@ function buildNotConnectedMessage(): string {
 export async function checkCutoutEnvironment(runner: IComfyRunner): Promise<string | null> {
 	let content: string;
 	try {
-		const resp = await getComfyFetch(runner.baseUrl)(`${runner.baseUrl}/object_info`);
+		// ★ 只查目标节点（/object_info/SarosBiRefNetCutout）：全量 /object_info 在
+		//   重度 ComfyUI（1800+ 节点）下响应 10MB+，webview 主线程 text()+JSON.parse
+		//   会冻结 UI 数秒 —— 用户反馈的「点去背景 app 卡住」即此（2026-09-07）。
+		//   推理本身在 ComfyUI 进程执行（GPU/CPU），不占 app 线程。
+		const resp = await getComfyFetch(runner.baseUrl)(`${runner.baseUrl}/object_info/${CUTOUT_NODE_CLASS}`);
+		if (resp.status === 404) {
+			// 单节点查询 404 = 节点未安装（ComfyUI 对未知 /object_info/{node} 返 404）
+			return 'ComfyUI 缺少去背景节点 SarosBiRefNetCutout：请安装 saros_cutout 自定义节点'
+				+ '（一键脚本 setup-saros-cutout.ps1，或见 docs/ComfyUI-去背景环境安装指南.md）。';
+		}
 		if (!resp.ok) {
 			return `无法访问 ComfyUI（HTTP ${resp.status}）：${runner.baseUrl} —— 请确认 ComfyUI 已启动。`;
 		}
@@ -122,7 +137,7 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 
 /** 上传图像到 ComfyUI input/，返回 LoadImage 可用的文件名。 */
 async function uploadImageToComfy(runner: IComfyRunner, blob: Blob, onStatus?: CutoutProgressCallback): Promise<string> {
-	onStatus?.('上传图像到 ComfyUI…');
+	onStatus?.('上传图像到 ComfyUI…', 15);
 	// 文件名必须唯一：ComfyUI 覆盖同名文件返回同一 name → 浏览器命中磁盘缓存显示旧图。
 	const name = `saros-cutout-${Date.now()}-${Math.floor(Math.random() * 1e6)}.png`;
 	const form = new FormData();
@@ -133,6 +148,8 @@ async function uploadImageToComfy(runner: IComfyRunner, blob: Blob, onStatus?: C
 	if (!uploaded) {
 		throw new Error(`上传图像到 ComfyUI 失败：${data?.error ?? `HTTP ${resp?.status ?? '??'}`}`);
 	}
+	// eslint-disable-next-line no-console
+	console.warn(`[RemoveBg] uploaded → ${uploaded}`);
 	return uploaded;
 }
 
@@ -160,16 +177,22 @@ async function runCutoutWorkflow(
 		prompt,
 		onProgress: (p: ComfyRunProgress) => {
 			if (typeof p.value === 'number') {
-				onStatus?.(`抠图推理中 ${Math.round(p.value)}%…`);
+				// percent 贯通（2026-09-07）：推理进度映射到 25→90 段（前面上传/环境
+				// 预检占 25%，后面拉取结果占 10%）→ 进度条 fill 实时增长。
+				onStatus?.(`抠图推理中 ${Math.round(p.value)}%…`, 25 + Math.round(p.value) * 0.65);
 			} else if (p.message) {
-				onStatus?.(p.message);
+				onStatus?.(p.message, 25);
 			}
 		},
 	});
 	if (result.status === 'canceled') { throw new Error('去背景已取消'); }
 	if (result.status !== 'success') {
+		// eslint-disable-next-line no-console
+		console.warn(`[RemoveBg] workflow FAILED status=${result.status} error=${result.error ?? '—'}`);
 		throw new Error(result.error ?? 'ComfyUI 抠图执行失败');
 	}
+	// eslint-disable-next-line no-console
+	console.warn(`[RemoveBg] workflow ok outputs=[${Object.keys(result.outputs ?? {}).join(' | ')}]`);
 	const saveOutputs = result.outputs[SAVE_IMAGE_NODE] as { images?: Array<{ filename?: string; subfolder?: string; type?: string }> } | undefined;
 	const image = saveOutputs?.images?.[0];
 	if (!image?.filename) {
@@ -185,7 +208,10 @@ async function fetchOutputBytes(runner: IComfyRunner, out: { filename: string; s
 		+ `&type=${encodeURIComponent(out.type)}`;
 	const resp = await getComfyFetch(runner.baseUrl)(`${runner.baseUrl}/view?${query}`);
 	if (!resp.ok) { throw new Error(`读取抠图结果失败：HTTP ${resp.status}`); }
-	return new Uint8Array(await resp.arrayBuffer());
+	const outBytes = new Uint8Array(await resp.arrayBuffer());
+	// eslint-disable-next-line no-console
+	console.warn(`[RemoveBg] fetched output bytes=${outBytes.length}B`);
+	return outBytes;
 }
 
 /**
@@ -198,14 +224,16 @@ export async function comfyRemoveBackground(
 	bytes: Uint8Array,
 	onStatus?: CutoutProgressCallback,
 ): Promise<{ blob: Blob; viewUrl: string }> {
-	onStatus?.('准备去背景…');
+	onStatus?.('准备去背景…', 5);
 	// 环境预检先行：未连接/缺节点/缺模型在上传前就给出可操作的诊断（而非等推理失败）。
 	const envProblem = await checkCutoutEnvironment(runner);
+	// eslint-disable-next-line no-console
+	console.warn(`[RemoveBg] envCheck: ${envProblem ?? 'ok（ComfyUI 已连接，saros_cutout 节点+模型就绪）'}`);
 	if (envProblem) { throw new Error(envProblem); }
 	const uploaded = await uploadImageToComfy(runner, new Blob([bytes as unknown as BlobPart], { type: 'image/png' }), onStatus);
-	onStatus?.('已上传，启动抠图工作流…');
+	onStatus?.('已上传，启动抠图工作流…', 25);
 	const out = await runCutoutWorkflow(runner, uploaded, onStatus);
-	onStatus?.('拉取结果图像…');
+	onStatus?.('拉取结果图像…', 95);
 	const resultBytes = await fetchOutputBytes(runner, out);
 	const blob = new Blob([resultBytes as unknown as BlobPart], { type: 'image/png' });
 	const viewUrl = `${runner.baseUrl}/view?filename=${encodeURIComponent(out.filename)}`

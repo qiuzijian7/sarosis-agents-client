@@ -682,7 +682,11 @@ export async function runStageWorkflow(options: StageWorkflowRunOptions): Promis
 	//   （LoadImage 已 resolve 成 ComfyUI 文件名）。
 	const promptOverrideMode = Boolean(options.promptOverride);
 	let cfg: StageWorkflowConfig;
-	let prompt: StageWorkflowApiJson;
+	// 2026-09-07：原 `let prompt: StageWorkflowApiJson;`（未初始化）——TS 控制流分析
+	// 判定存在「使用前未赋值」路径 → TS2454 ×10。初始化为空对象：正常路径两个分支
+	// 都会覆写它（promptOverride / 模板注入），默认值仅用于消除未定义路径；
+	// 且避免了原本可能发生的运行时 `Object.entries(undefined)` TypeError。
+	let prompt: StageWorkflowApiJson = {};
 	let label: string | undefined;
 	if (promptOverrideMode && options.promptOverride) {
 		cfg = {
