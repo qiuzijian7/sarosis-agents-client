@@ -2,7 +2,7 @@
  *  [generated] codebuddyModels.generated.ts — 由 visual/build.mjs 从
  *  extensions/codebuddy-provider/model.json 生成（勿手改，构建时覆盖）。
  *  用途：聊天沙箱 provider/model 下拉的真实 CodeBuddy 模型清单。
- *  生成时间：2026-09-08T02:00:01.543Z（73 个模型）
+ *  生成时间：2026-09-08T15:31:09.321Z（73 个模型）
  *--------------------------------------------------------------------------------------------*/
 
 export interface ICodeBuddyModel {

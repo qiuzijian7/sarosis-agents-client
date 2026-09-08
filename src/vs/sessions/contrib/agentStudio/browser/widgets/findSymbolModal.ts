@@ -17,6 +17,7 @@
  */
 
 import * as dom from '../../../../../base/browser/dom.js';
+import { renderLabelWithIcons } from '../../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import { ICodebaseGraphService, GraphNode } from '../codebaseGraphService.js';
@@ -162,17 +163,24 @@ export class FindSymbolModal {
 			limit: 200,
 		});
 		if (token !== this._searchToken) { return; }
-		const nodes = (results.nodes || []).filter(n => this._matchesFilter(n));
+		// 「当前 solution」= 当前工作区所有已注册项目（getProjectRoots 键集合）。
+		// 旧实现 `project !== '_default'` 一律排除——图谱节点打的是真实项目名（folder
+		// basename），'_default' 只是兜底，勾选复选框会把结果全部滤空（同 openFileModal 修复）。
+		const solutionProjects = this._onlyCurrentSol.checked
+			? new Set(Object.keys(this._graphService.getProjectRoots()))
+			: undefined;
+		// fail-open：键集合为空（SQLite-only 启动早期）时不过滤，避免全空
+		const useSolFilter = !!solutionProjects && solutionProjects.size > 0;
+		const nodes = (results.nodes || []).filter(n => this._matchesFilter(n, useSolFilter ? solutionProjects : undefined));
 		this._rows = nodes;
 		this._selectedIndex = 0;
 		this._renderTable();
 	}
 
-	private _matchesFilter(n: GraphNode): boolean {
-		if (this._onlyCurrentSol.checked) {
+	private _matchesFilter(n: GraphNode, solutionProjects: Set<string> | undefined): boolean {
+		if (solutionProjects) {
 			const project = (n as any).project;
-			// 简单把"当前 solution"理解为默认 project
-			if (project && project !== '_default') { return false; }
+			if (project && !solutionProjects.has(project)) { return false; }
 		}
 		if (this._onlyClasses.checked) {
 			if (n.type !== 'class' && n.type !== 'interface' && (n.label !== 'class' && n.label !== 'interface')) {
@@ -211,7 +219,11 @@ export class FindSymbolModal {
 			const symbolCell = dom.$('div');
 			symbolCell.style.cssText = 'flex:1;display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;';
 			const icon = dom.$('span');
-			icon.textContent = NODE_TYPE_CODICON[n.type] ?? '$(symbol-misc)';
+			// $(codicon) 语法必须经 renderLabelWithIcons 解析成图标元素——直接 textContent
+			// 会把 '$(symbol-variable)' 当字面文本显示（Bug 2026-09-08，用户截图）。
+			for (const el of renderLabelWithIcons(NODE_TYPE_CODICON[n.type] ?? '$(symbol-misc)')) {
+				icon.appendChild(typeof el === 'string' ? document.createTextNode(el) : el);
+			}
 			icon.style.cssText = 'flex:0 0 auto;opacity:.8;';
 			symbolCell.appendChild(icon);
 			const name = dom.$('span');

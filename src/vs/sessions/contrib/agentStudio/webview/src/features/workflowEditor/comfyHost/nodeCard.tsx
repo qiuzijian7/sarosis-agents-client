@@ -66,6 +66,7 @@ import { TransformEditor } from '../TransformEditor';
 import { StatEmojiStageEditor } from '../StatEmojiStageEditor';
 import { MiniImageEditor, type CellCropRect } from '../MiniImageEditor';
 import { getFullyTransparentRatio, refToPngDataUrl, rembgRemoveDataUrl } from '../miniEditorAi.js';
+import { removeBgDataUrlLocal } from './emojiSheetUtils.js';
 import { createPortal } from 'react-dom';
 import { AnimatedEmojiEditor } from '../AnimatedEmojiEditor';
 import { MultiangleEditor } from './MultiangleEditor';
@@ -759,6 +760,10 @@ function ErrorBanner({ message, cancel }: { message: string; cancel: boolean }):
 	const color = cancel ? '#f59e0b' : '#ef4444';
 	return (
 		<div
+			// ★ 拖拽豁免标记（2026-09-08）：LiteGraphCanvas 的 dragPointerDown 在
+			//   container capture 阶段把按下-移动劫持为节点拖拽——错误横幅是长文本
+			//   诊断区（userSelect:text），必须允许鼠标框选复制。
+			data-no-node-drag="true"
 			style={{
 				display: 'flex', alignItems: 'flex-start', gap: 5,
 				padding: '5px 7px', borderRadius: 4, fontSize: 10, lineHeight: 1.35,
@@ -911,7 +916,35 @@ function SnapshotPreview({ store, nodeId, entries: entriesProp, batch }: { store
 	const storeVersion = useStoreVersionLocal(store);
 	if (entries.length === 0) { return null; }
 	const images = entries.filter(e => e.media.kind === 'image');
-	const others = entries.filter(e => e.media.kind !== 'image');
+	// ★ videoEntries（2026-09-08）：video 条目单独收集——旧逻辑 video 落 others
+	//   只显示文本标签行；视频直出模式（gif_enable=false）产物必须可播放。
+	//   （下方 1069 行原有的 videos 变量是 others 的旧过滤，保持不动。）
+	const videoEntries = entries.filter(e => e.media.kind === 'video');
+	const others = entries.filter(e => e.media.kind !== 'image' && e.media.kind !== 'video');
+	// ★ 视频直出（gif_enable=false，2026-09-08）：产物是 mp4（kind='video'）——
+	//   旧逻辑 images=0 时直接落到 others 标签行，视频完全不渲染（用户实测
+	//   「生成的视频没有在 output 中显示」）。单值 + 纯 video → 整宽播放器。
+	if (!batch && videoEntries.length >= 1 && images.length === 0) {
+		const e = videoEntries[videoEntries.length - 1];
+		return (
+			<div
+				style={{
+					position: 'relative', marginTop: 4, width: '100%',
+					borderRadius: 6, overflow: 'hidden',
+					border: '1px solid rgba(255,255,255,.12)', background: '#000',
+					pointerEvents: 'auto',
+				}}
+			>
+				<video
+					key={e.key}
+					src={bustedSrc(e.media.ref, e.index, storeVersion)}
+					autoPlay loop muted controls playsInline
+					onLoadedMetadata={() => { markFormHeightDirty(nodeId); }}
+					style={{ display: 'block', width: '100%', height: 'auto', maxHeight: 360, objectFit: 'contain' }}
+				/>
+			</div>
+		);
+	}
 	// 单值输出（COMFYTV_IMAGE）→ 整宽大图。批次输出（COMFYTV_IMAGES）→ 下方网格。
 	if (!batch && images.length >= 1) {
 		const e = images[images.length - 1];
@@ -970,26 +1003,27 @@ function SnapshotPreview({ store, nodeId, entries: entriesProp, batch }: { store
 			</div>
 		);
 	}
-	if (images.length > 0) {
+	if (images.length > 0 || videoEntries.length > 0) {
 		return (
 			<div style={{ marginTop: 4 }}>
 				{/* BATCH 徽标：对齐 ComfyTV 的粉色 `BATCH` 药丸（右对齐于网格上方）。 */}
-				{images.length > 1 && (
+				{images.length + videoEntries.length > 1 && (
 					<div style={{ display: 'flex', marginBottom: 3 }}>
 						<span style={{
 							marginLeft: 'auto', fontSize: 8, fontWeight: 700, letterSpacing: .6,
 							padding: '1px 5px', borderRadius: 3,
 							background: 'rgba(255,140,200,.25)', color: '#ffb0d8',
-						}}>BATCH {images.length}</span>
+						}}>BATCH {images.length + videoEntries.length}</span>
 					</div>
 				)}
-				{/* ctv-batch-grid：自适应列宽的方格网（每格 object-cover + #N 角标）。 */}
+				{/* ctv-batch-grid：自适应列宽的方格网（每格 object-cover + #N 角标）。
+				    ★ video 条目（gif_enable=false 直出的 mp4）用 <video> 循环播放。 */}
 				<div style={{
 					display: 'grid',
 					gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))',
 					gap: 4,
 				}}>
-				{images.map((e, i) => (
+				{[...images, ...videoEntries].map((e, i) => (
 					<div key={e.key} style={{
 						position: 'relative', aspectRatio: '1 / 1', borderRadius: 4, overflow: 'hidden',
 						border: '1px solid rgba(255,255,255,.12)', background: 'rgba(255,255,255,.03)',
@@ -997,13 +1031,22 @@ function SnapshotPreview({ store, nodeId, entries: entriesProp, batch }: { store
 						// overlay container is pointer-events:none
 						pointerEvents: 'auto',
 					}}>
-						<img
-							key={e.key}
-							src={bustedSrc(e.media.ref, e.index, storeVersion)}
-							alt="preview"
-							onLoad={() => { markFormHeightDirty(nodeId); }}
-							style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-						/>
+						{e.media.kind === 'video' ? (
+							<video
+								key={e.key}
+								src={bustedSrc(e.media.ref, e.index, storeVersion)}
+								autoPlay loop muted playsInline
+								style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+							/>
+						) : (
+							<img
+								key={e.key}
+								src={bustedSrc(e.media.ref, e.index, storeVersion)}
+								alt="preview"
+								onLoad={() => { markFormHeightDirty(nodeId); }}
+								style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+							/>
+						)}
 						{/* `#N` 角标（ComfyTV batch cell 左下角）。 */}
 						<span style={{
 							position: 'absolute', left: 2, bottom: 2, padding: '0 3px', borderRadius: 2,
@@ -1014,14 +1057,16 @@ function SnapshotPreview({ store, nodeId, entries: entriesProp, batch }: { store
 							title="下载"
 							onClick={(ev) => { ev.stopPropagation(); void downloadSnapshot(store, e); }}
 							style={{
-								position: 'absolute', right: 2, bottom: 2, width: 16, height: 16,
+								position: 'absolute', right: 2, bottom: 2, width: 18, height: 18,
 								display: 'flex', alignItems: 'center', justifyContent: 'center',
-								fontSize: 9, lineHeight: 1, cursor: 'pointer',
-								background: 'rgba(0,0,0,.55)', color: '#fff', border: 'none', borderRadius: 3,
-								opacity: 0, transition: 'opacity .12s',
+								fontSize: 10, lineHeight: 1, cursor: 'pointer',
+								background: 'rgba(0,0,0,.7)', color: '#fff', border: 'none', borderRadius: 3,
+								// ★ 常显（2026-09-08 用户需求）：hover 才显示的隐藏式交互
+								//   没有被感知（用户以为没有下载功能）。
+								opacity: 0.85, transition: 'opacity .12s',
 							}}
 							onMouseEnter={ev => { ev.currentTarget.style.opacity = '1'; }}
-							onMouseLeave={ev => { ev.currentTarget.style.opacity = '0'; }}
+							onMouseLeave={ev => { ev.currentTarget.style.opacity = '0.85'; }}
 						>⤓</button>
 					</div>
 				))}
@@ -1259,7 +1304,14 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const snapKey = stageUid ?? nodeId;
 	const kindColor = KIND_COLOR[meta.kind] ?? '#888';
 	const run = useNodeCardState(cardStateStore, nodeId);
-	const runLabel = RUN_LABEL[meta.stageKind ?? ''] ?? { label: '运行', icon: '▶' };
+	// ★ AnimatedEmoji 覆盖默认「生成视频」（2026-09-08）：其 stageKind='video'
+	//   但语义是「全部格逐格动图」，与 VideoStage 的单视频区分——
+	//   「生成全部动态表情」+ 点击前归位 run_scope='all'（编辑器单格重生成会
+	//   残留 run_scope='cell'，直接点卡片按钮会只跑一格）。
+	const isAnimatedEmoji = meta.nodeType === 'Saros.AnimatedEmoji';
+	const runLabel = isAnimatedEmoji
+		? { label: '生成全部动态表情', icon: '▶' }
+		: RUN_LABEL[meta.stageKind ?? ''] ?? { label: '运行', icon: '▶' };
 	// ★ Agent/Skill/Tool 富身份卡：从 store 查元信息（icon/role/description/徽章）。
 	//   `meta.identity` 只带原始 id（纯函数提取），此处 resolve 成完整身份对象。
 	const agents = useAgentStore(s => s.agents);
@@ -1312,7 +1364,11 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const stageVariant: StageVariant = meta.variant ?? 'generator';
 	// ★ 编排富卡片不显示 ▶ 运行按钮：Prompt 只是提示词容器，Agent 的执行由整图
 	//   Run / 右键菜单驱动（showRun 为 true 仅为放开控件+prompt 渲染，见上）。
-	const showRunButton = stageVariant === 'generator' && !meta.isPicker && !isOrchRich;
+	// ★ AnimatedEmoji 也不显示（2026-09-08 用户需求「仅保留生成表情包[x] 按钮」）：
+	//   编辑器内唯一运行按钮已承担 全部/多选/单格 三种粒度——卡片 RUN 按钮与其
+	//   重复且语义易混（success 态显示「重新运行」像另一个功能）。
+	const showRunButton = stageVariant === 'generator' && !meta.isPicker && !isOrchRich
+		&& meta.nodeType !== 'Saros.AnimatedEmoji';
 	// P2 engine-ready gate: schema/native nodes need a live ComfyUI runner.
 	// When none is connected, show a "disconnected" placeholder + disable the
 	// run button instead of an executable (but doomed) control.
@@ -1521,6 +1577,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	//   Emoji 但无 sheet 口（registry.ts 仅 images/texts），旧门控 .includes('Emoji')
 	//   误命中 → 每次渲染刷一屏 final=NONE 噪音。按 inputs 含 sheet 判定后只有
 	//   StatEmojiStage（及未来新增 sheet 口的节点）进入诊断，白名单零维护。
+	//   （同签名去重已存在：sig/emojiSheetDiagSeen，2026-09-08 补 upstreamKeys 压缩。）
 	React.useEffect(() => {
 		if (!(meta.inputs ?? []).some(p => p.name === 'sheet')) { return; }
 		const upstreamAll = sheetPassthroughSource ? (snapshotStore?.byNode(sheetPassthroughSource) ?? []) : [];
@@ -1528,16 +1585,23 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		const upstreamSheetFull = upstreamImages.filter(e => e.media?.meta?.sheetFull === '1');
 		// ── 可疑判定：只有这些才 warn；正常路径走 console.log（生产被 esbuild 摇掉，
 		//    不再污染 WARN 通道 —— 旧版无条件 warn，每次渲染刷一屏 final=NONE）。
+		const final = sheetFullEntry ? (sheetFullEntryIsPassthrough ? 'PASSTHROUGH' : 'LOCAL') : 'NONE';
 		const suspicious: string[] = [];
 		if (sheetPassthroughSource && upstreamAll.length === 0) { suspicious.push('①有sheet连线但上游无快照(别名miss?)'); }
-		// ② 只有「直通图真的被选中」才算可疑 —— 本地优先（final=LOCAL）时上游
-		//   普通图已被正确忽略、整图编辑正常可用，再报「已禁用编辑」属误报。
+		// ② 只有「直通图真的被选中」**且上游有表情图集语义**（快照带 sheet/rows
+		//   痕迹）才算可疑 —— 上游是 ImageLoader 等普通图时本来就没有 sheetFull
+		//   元数据，直通是设计路径（单图模式合法工作），报「整图编辑被禁」属误报
+		//   （用户实测：loader → StatEmoji 一直触发 ⚠，但功能全部正常）。
+		const upstreamHasSheetSemantic = upstreamImages.some(e =>
+			e.media?.meta?.sheet === '1' || e.media?.meta?.rows !== undefined);
 		if (sheetPassthroughSource && upstreamImages.length > 0 && upstreamSheetFull.length === 0
-			&& sheetFullEntryIsPassthrough) {
-			suspicious.push('②上游仅有普通图无sheetFull→直通占位致整图编辑被禁(需当图集用请在上游补rows/cols)');
+			&& sheetFullEntryIsPassthrough && upstreamHasSheetSemantic) {
+			suspicious.push('②上游是表情图集快照但缺sheetFull原图→直通占位致整图编辑被禁(在上游重新生成一次即可补齐)');
 		}
-		if (ownSnapshots.length > 0 && !localSheetFull) { suspicious.push('③本地有产物但无sheetFull原图归档(重裁无基底)'); }
-		const final = sheetFullEntry ? (sheetFullEntryIsPassthrough ? 'PASSTHROUGH' : 'LOCAL') : 'NONE';
+		// ③ 只在 LOCAL 模式（编辑基底应来自本节点 sheetFull 归档）才有「重裁无
+		//   基底」问题 —— passthrough 模式基底来自上游直通图，本地产物（逐格 GIF
+		//   等）不需要 sheetFull，报了也是误报。
+		if (ownSnapshots.length > 0 && !localSheetFull && final === 'LOCAL') { suspicious.push('③本地有产物但无sheetFull原图归档(重裁无基底)'); }
 		// ── 去重：同节点同状态只打一次（避免每次渲染重复）
 		const sig = `${nodeId}|${final}|${sheetPassthroughSource}|${ownSnapshots.length}|${upstreamAll.length}|${upstreamSheetFull.length}|${suspicious.join(',')}`;
 		if (emojiSheetDiagSeen.get(nodeId ?? '—') === sig) { return; }
@@ -1557,12 +1621,17 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			.filter(a => a.nodeId === sheetPassthroughSource || a.nodeId === nodeId)
 			.map(a => `${a.nodeId}→${String(a.uid).slice(0, 8)}`)
 			.join(' | ') || '—';
+		// ★ 日志降噪（2026-09-08）：4)upstreamKeys 巨串（历史轮全打，随运行次数
+		//   无限增长）压缩为「计数 + 首 3 条」；同一签名连续重渲染只打一次。
+		const upstreamKeysBrief = upstreamAll.length
+			? `${upstreamAll.length} 条: ${upstreamAll.slice(0, 3).map(e => e.key).join(' | ')}${upstreamAll.length > 3 ? ' …' : ''}`
+			: '—';
 		const text =
 			`[EmojiSheet] node=${nodeId ?? '—'} type=${meta.nodeType ?? '—'}\n` +
 			`  1)edgeSource=${sheetPassthroughSource || '—(无 sheet 连线)'}\n` +
 			`  2)own=${ownSnapshots.length} localSheetFull=${localSheetFull ? 'YES' : 'no'} ref=${desc(localSheetFull)}\n` +
 			`  3)upstream: all=${upstreamAll.length} image=${upstreamImages.length} sheetFull=${upstreamSheetFull.length}\n` +
-			`  4)upstreamKeys=${upstreamAll.map(e => e.key).join(' | ') || '—'}\n` +
+			`  4)upstreamKeys=${upstreamKeysBrief}\n` +
 			`  5)aliases(related)=${relatedAlias} (total=${allAliases.length})\n` +
 			`  6)passthrough=${passthroughSheetFull ? 'YES' : 'no'}(isSheetFull=${passthroughIsSheetFull}) ` +
 			`final=${final} ref=${desc(sheetFullEntry)}` +
@@ -1589,7 +1658,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	// 去背景失败错误（编辑器内红条展示）：webview 会静默吞掉 window.alert，
 	// 错误必须走 UI 内反馈，否则执行链失败时用户看到「点了没反应」（2026-09-06）。
 	const [sheetRemoveBgError, setSheetRemoveBgError] = React.useState<string | null>(null);
-	const handleSheetRemoveBg = async () => {
+	const handleSheetRemoveBg = async (algo: 'ai' | 'chroma' | 'flood' = 'ai', chromaParams?: { similarity: number; smoothness: number; greenDominance: number }) => {
 		// ★ 需求（2026-09-07）：去背景须**以原始图集为源**，在副本上抠图，抠图结果
 		//   作为行列分割基底。故源恒取「未抠图的原始基底」——sheetFullEntry 可能已
 		//   指向上一轮去背景产物（尾部最新 sheet='1'），再抠一次零变化。
@@ -1629,9 +1698,19 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		//   async（不会等待）→ 先过滤出带指纹的产物，再单次 await 求指纹比对。
 		const removeBgProducts = ownSnapshots.filter(e =>
 			e.media?.kind === 'image' && e.media?.meta?.removeBg === '1' && e.media?.meta?.sourceSha);
+		// ★ 判重按「算法 + 参数」区分（2026-09-08 二修）：同源但**算法或参数不同**
+		//   都应允许重抠——用户改绿幕参数后重试被「同源产物」跳过即此漏洞（日志
+		//   实证）。chroma 参数序列化入指纹（声明在函数级：put meta 复用）；旧产物
+		//   无字段视为缺省参数。
+		const paramsKey = algo === 'chroma' && chromaParams
+			? JSON.stringify([chromaParams.similarity, chromaParams.smoothness, chromaParams.greenDominance])
+			: '';
 		if (removeBgProducts.length > 0) {
 			const sourceSha = await sha256Hex(entry.media.ref);
-			if (removeBgProducts.some(e => e.media?.meta?.sourceSha === sourceSha)) {
+			if (removeBgProducts.some(e =>
+				(e.media?.meta?.removeBgAlgo ?? 'ai') === algo
+				&& (e.media?.meta?.removeBgParams ?? '') === paramsKey
+				&& e.media?.meta?.sourceSha === sourceSha)) {
 				// eslint-disable-next-line no-console
 				console.warn('[RemoveBg] skip：同源产物已存在（sourceSha 匹配），不重复执行模型');
 				// UI 反馈（约定：任何 return 不得静默）：跳过时切到「🧩 调整后」页签
@@ -1658,12 +1737,22 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			if (isAlreadyRemoved) {
 				throw new Error('当前基底已是去背景产物，再抠一次不会有变化。请在「原图」页签选回原始图集后重试。');
 			}
-			const out = await rembgRemoveDataUrl(dataUrl, undefined, (text, percent) => {
-				// ★ percent 贯通（2026-09-07）：ComfyUI saros_cutout 各阶段/推理进度
-				//   带百分比 → 编辑器进度条 fill 实时增长（此前只有文本，推理期间
-				//   进度条恒空，用户以为没点上）。
-				setSheetRemoveBgStage({ text, percent });
-			});
+			// ★ 算法分发（2026-09-08 下拉化）：ai=ComfyUI saros_cutout（原行为）；
+			//   chroma/flood=**本地 canvas**（emojiSheetUtils.removeBgDataUrlLocal，
+			//   零依赖毫秒级，无需 ComfyUI 连接）。chroma 校验失败（非绿幕）抛错
+			//   → 红条提示，与既有错误链路一致。
+			let out: string;
+			if (algo === 'ai') {
+				out = await rembgRemoveDataUrl(dataUrl, undefined, (text, percent) => {
+					// ★ percent 贯通（2026-09-07）：ComfyUI saros_cutout 各阶段/推理进度
+					//   带百分比 → 编辑器进度条 fill 实时增长（此前只有文本，推理期间
+					//   进度条恒空，用户以为没点上）。
+					setSheetRemoveBgStage({ text, percent });
+				});
+			} else {
+				setSheetRemoveBgStage({ text: algo === 'chroma' ? '本地绿幕抠图…' : '本地白底抠图…' });
+				out = await removeBgDataUrlLocal(dataUrl, algo, algo === 'chroma' ? chromaParams : undefined);
+			}
 			// eslint-disable-next-line no-console
 			console.warn(`[RemoveBg] model done in=${dataUrl.length}B out=${out.length}B${Math.abs(out.length - dataUrl.length) < 512 ? '（⚠ 输出≈输入：模型可能未抠除任何背景）' : ''}`);
 			// 写入「调整后」图集口（★ 副本语义，2026-09-06）：结果作为**新条目追加**
@@ -1711,6 +1800,8 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 						...(rawRows > 0 ? { rows: String(rawRows) } : {}),
 						...(rawCols > 0 ? { cols: String(rawCols) } : {}),
 						removeBg: '1',
+						removeBgAlgo: algo,
+						removeBgParams: paramsKey,
 						sourceSha,
 					},
 				},
@@ -1894,6 +1985,11 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		const seen = new Set<string>();
 		const out: AssetCandidate[] = [];
 		for (const e of [...allImageOutputs].reverse()) {
+			// ★ AnimatedEmoji 排除本节点产物（2026-09-08 用户反馈）：生成的动态
+			//   表情 GIF 在快照里也是 kind='image'，「新图在前」排序让它永远霸占
+			//   资产引用候选前排——而资产引用的语义是「钉参考图（静态贴纸）」，
+			//   自己的输出永远不该成为自己的参考。
+			if (isAnimatedEmoji && nodeId && e.nodeId === nodeId) { continue; }
 			const ref = e.media.ref;
 			if (!ref || seen.has(ref)) { continue; }
 			seen.add(ref);
@@ -1901,7 +1997,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			if (out.length >= 40) { break; }
 		}
 		return out;
-	}, [allImageOutputs]);
+	}, [allImageOutputs, isAnimatedEmoji, nodeId]);
 	/** @ 提及候选：节点（插 @[node:label]）+ 文件（钉成资产引用）。 */
 	const mentionCandidates = React.useMemo<MentionCandidate[]>(() => [
 		...(meta.inputs ?? []).map(p => ({ group: 'node' as const, label: p.name })),
@@ -1952,7 +2048,10 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const isMaterial = editorKind === 'material';
 	const isDirectorConsole = editorKind === 'directorConsole';
 	const isEmojiStatic = editorKind === 'emoji-static';
-	const isEmoji = isEmojiStatic;
+	// ★ 动态表情包也算「emoji 卡片 RUN 语义」（2026-09-08）：RUN 按钮点击前
+	//   归位 run_scope='all'（编辑器单格重生成会残留 'cell'，直接点卡片按钮
+	//   会只跑一格——「生成全部动态表情」必须全量）。
+	const isEmoji = isEmojiStatic || editorKind === 'animated-emoji';
 	// W: Loader 内嵌预览（对齐 ComfyTV LoadImage：filename + 上传 + 缩略图 + W×H），
 	//   替代通用 OUTPUT 区。
 	const isImageLoader = editorKind === 'image';
@@ -2303,8 +2402,23 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		// ★ 只统计 port 'output'——sheet 模式的整图归档在 port 'sheet'，混进来
 		//   会让 OUTPUT 区出现整图 + BATCH 计数翻倍。
 		for (const e of ownOutputs) { seen.set(mediaDedupeKey(e.media), e); }
-		return Array.from(seen.values()).slice(-batchSize);
-	}, [ownOutputs, batchSize]);
+		const deduped = Array.from(seen.values());
+		// ★ AnimatedEmoji（2026-09-08）：再按 meta.cellIndex 去重（同格保留最新
+		//   index），并按格序输出——历史累积的脏条目（旧版 put 恒追加 + panel
+		//   双写）在渲染端被治愈，单格重生成后 OUTPUT 严格 9 格原地刷新。
+		if (isAnimatedEmoji) {
+			const byCell = new Map<number, MediaSnapshotEntry>();
+			for (const e of deduped) {
+				const ci = Number(e.media.meta?.cellIndex ?? -1);
+				if (ci < 0) { continue; }
+				const prev = byCell.get(ci);
+				if (!prev || (prev.index ?? 0) <= (e.index ?? 0)) { byCell.set(ci, e); }
+			}
+			return Array.from(byCell.keys()).sort((a, b) => a - b)
+				.map(ci => byCell.get(ci) as MediaSnapshotEntry).slice(-batchSize);
+		}
+		return deduped.slice(-batchSize);
+	}, [ownOutputs, batchSize, isAnimatedEmoji]);
 
 	// ── Picker Pool（对齐 ComfyTV usePickerStage + mergeImagePool）──
 	// pool 有两个来源：'upstream'（直接上游，默认，selected_index 相对上游
@@ -3343,8 +3457,10 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							comfyModel: String(ctl('comfy_model', 'sd_xl_base_1.0.safetensors') ?? ''),
 							providerId: String(ctl('provider', '') ?? ''),
 							modelId: String(ctl('model', '') ?? ''),
-							// 整版背景策略（auto|transparent|white，默认 auto = 跟随提示词）
-							sheetBackground: String(ctl('sheet_background', 'auto') ?? 'auto') as 'white' | 'transparent' | 'auto',
+							// 整版背景策略（auto|green|transparent|white，默认 auto = 跟随提示词）
+							sheetBackground: String(ctl('sheet_background', 'auto') ?? 'auto') as 'white' | 'green' | 'transparent' | 'auto',
+							// 切分抠图方式（none|chroma|flood，默认 none）
+							cutoutMode: (() => { const m = String(ctl('cutout_mode', 'none') ?? 'none'); return m === 'chroma' || m === 'flood' ? m : 'none'; })() as 'none' | 'chroma' | 'flood',
 							// 生成图像大小（2026-09-02）：整版图集分辨率 'WxH'
 							size: String(ctl('size', '1024x1024') ?? '1024x1024'),
 						}}
@@ -3412,7 +3528,10 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 					//   直通禁写（那才会 replaceByKey 落上游键）。放行后上游 ImageLoader
 					//   等无去背景能力的节点不再卡死用户。
 					onSheetRemoveBg={handleSheetRemoveBg}
-						// ★ sheet 直通预览标志（2026-09-06）：编辑器据此显示只读提示、禁用整图编辑。
+												// ★ 去背景执行中（2026-09-08 补传）：此前漏传 → 按钮永远无
+												//   「去背景中…」/禁用态，点击毫无视觉反馈（用户反馈实证）。
+												sheetRemovingBg={sheetRemovingBg}
+												// ★ sheet 直通预览标志（2026-09-06）：编辑器据此显示只读提示、禁用整图编辑。
 						//   2026-09-07 收窄：仅「真图集直通」（meta.sheetFull='1'）只读；上游
 						//   普通图直通可整图编辑（产物写本节点 sheetFull 基底）。
 						isPassthroughSheet={sheetFullEntryIsPassthrough && passthroughIsSheetFull}
@@ -3813,6 +3932,12 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							// ★ 绿幕抠像开关（2026-09-03）：非透明背景图像可关闭
 							// （ctl 字面量收窄 → 一律 String 化比较）
 							chromaEnable: String(ctl('chroma_enable', true)) !== 'false',
+							// ★ 抠像开关（2026-09-08，与绿幕合成解耦）
+							matteEnable: String(ctl('matte_enable', true)) !== 'false',
+							// ★ GIF 输出开关（2026-09-08）：关 = 直接输出生成的视频
+							gifEnable: String(ctl('gif_enable', true)) !== 'false',
+							// ★ 抠像算法（2026-09-08）：rgb / flood / ycbcr
+							chromaAlgo: String(ctl('chroma_algo', 'rgb') ?? 'rgb'),
 							}}
 							// ComfyUI 渠道可选视频工作流（registry workflowOptionsFor('video')，
 							// 存于 meta.controls 的 workflow COMBO options——同 emojiWorkflowOptions 模式）
@@ -3821,15 +3946,30 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							const opts = (c?.options ?? []).map(o => (typeof o === 'string' ? o : String(o?.value ?? o?.label ?? ''))).filter(s => s.length > 0);
 							return opts.length > 0 ? opts : undefined;
 							})()}
-							cellRefs={ownOutputs.map(e => ({
+							// ★ cellRefs 用 latestOutputs（按 cellIndex 去重后的稳定序列）——
+							//   ownOutputs 含历史累积条目会让网格取到旧数据。
+							cellRefs={latestOutputs.map(e => ({
 							ref: e.media.ref,
 							kind: e.media.kind === 'video' ? 'video' : 'image',
 							}))}
-						// ★ 图集预览输入：**图集优先**（静态表情包 image 口整版图，网格叠加
-						//   与 meta 行列精确对齐）；无图集时回退首张独立格。
-						inputSheetRef={upstreamSheetMeta.ref || upstreamImageRefs[0]}
+							// ★ 格级「原始视频/抠图 GIF」切换（2026-09-08）：绿幕原片在
+							//   port='video'（归档键 cellN），output 只有 GIF——按 cellIndex
+							//   取最新一条（与执行器 rematte 同语义）。
+							cellVideoRefs={(() => {
+								const byIdx = new Map<number, string>();
+								for (const e of ownSnapshots) {
+									if (e.port !== 'video' || e.media.kind !== 'video' || !e.media.ref) { continue; }
+									const idx = Number(e.media.meta?.cellIndex ?? -1);
+									if (idx >= 0) { byIdx.set(idx, e.media.ref); }
+								}
+								return [...byIdx.entries()].map(([ci, ref]) => ({ cellIndex: ci, ref }));
+							})()}
+						// ★ 网格行列：跟随上游图集 meta（表情包图片网格 rows×cols）
 						sheetGrid={upstreamSheetMeta.rows ? { rows: upstreamSheetMeta.rows, cols: upstreamSheetMeta.cols, margin: upstreamSheetMeta.margin } : undefined}
 						upstreamCount={upstreamImageRefs.length}
+						// ★ 格级「原图」来源（2026-09-08 三态切换）：上游逐格静态贴纸
+						//   （上游 StatEmoji 产物 / 多张独立格）——与 executor jobs 同序。
+						cellSourceRefs={upstreamImageRefs}
 						onCommit={commitControls}
 						running={run.runState === 'running'}
 						onCancelRequest={() => {
@@ -3847,6 +3987,17 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 						}}
 						onRunRequest={() => {
 							if (nodeId) {
+								window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
+							}
+						}}
+						// ★ 单格重抠图（2026-09-08 改语义）：网格 ⟳ → run_scope='rematte'
+						//   ——不再重新生成视频，用该格已归档的绿幕视频按**当前抠像参数**
+						//   直接重跑 抠像→GIF（秒级出效果，调参迭代专用）。
+						//   ★ cell_indices 置空（2026-09-08）：批量操作的 cell_indices 残留
+						//   会被 rematte 解析优先采用——单格 ⟳ 意外变多格全跑（实测格 2-9）。
+						onRunCellRequest={(i) => {
+							if (nodeId) {
+								commitControls({ run_scope: 'rematte', selected_index: i + 1, cell_indices: '' });
 								window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
 							}
 						}}

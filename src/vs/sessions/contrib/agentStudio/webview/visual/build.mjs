@@ -82,6 +82,8 @@ const constEnumDownlevelPlugin = {
 const entries = [
 	{ name: 'harness', entry: path.join(__dirname, 'harness.tsx'), out: path.join(distDir, 'harness.js') },
 	{ name: 'canvas', entry: path.join(__dirname, 'canvas', 'canvasHost.tsx'), out: path.join(distDir, 'canvas', 'canvas.js') },
+	// ★ 抠像算法对比实验室（2026-09-08）：拖入绿幕视频 → 逐帧并排 rgb/flood/ycbcr。
+	{ name: 'keying-lab', entry: path.join(__dirname, 'keyingLab.tsx'), out: path.join(distDir, 'keying-lab.js') },
 ];
 
 /** @type {esbuild.BuildOptions} */
@@ -106,6 +108,7 @@ const baseOptions = {
 fs.mkdirSync(path.join(distDir, 'canvas'), { recursive: true });
 fs.copyFileSync(path.join(__dirname, 'index.html'), path.join(distDir, 'index.html'));
 fs.copyFileSync(path.join(__dirname, 'canvas', 'index.html'), path.join(distDir, 'canvas', 'index.html'));
+fs.copyFileSync(path.join(__dirname, 'keying-lab.html'), path.join(distDir, 'keying-lab.html'));
 
 // ── 生成 CodeBuddy 真实模型清单模块（聊天沙箱 provider/model 下拉数据源）────
 // 数据源：extensions/codebuddy-provider/model.json（73 个真实模型，与 vssaros.exe
@@ -170,5 +173,6 @@ if (serve || watch) {
 		console.log(`[visual] harness → http://localhost:${PORT}/`);
 		console.log(`[visual] 单节点聚焦示例 → http://localhost:${PORT}/?only=ComfyTV.ImageStage&state=success`);
 		console.log(`[visual] ★ 画布沙箱（手拖节点）→ http://localhost:${PORT}/canvas/`);
+		console.log(`[visual] ★ 抠像算法对比实验室 → http://localhost:${PORT}/keying-lab.html`);
 	});
 }

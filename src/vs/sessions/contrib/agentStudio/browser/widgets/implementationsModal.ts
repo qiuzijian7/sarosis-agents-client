@@ -16,6 +16,7 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { renderLabelWithIcons } from '../../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { CodebaseGraphModal } from './codebaseGraphModal.js';
 
 export interface IImplementationItem {
@@ -116,7 +117,10 @@ export class ImplementationsModal {
 			}
 
 			const icon = dom.$('span');
-			icon.textContent = '$(type-hierarchy-sub)';
+			// $(codicon) 需经 renderLabelWithIcons 解析，textContent 直写会显示字面文本
+			for (const el of renderLabelWithIcons('$(type-hierarchy-sub)')) {
+				icon.appendChild(typeof el === 'string' ? document.createTextNode(el) : el);
+			}
 			icon.style.cssText = 'flex:0 0 auto;opacity:.8;';
 			row.appendChild(icon);
 

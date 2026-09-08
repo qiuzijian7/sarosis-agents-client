@@ -103,7 +103,13 @@ export function registerEmojiNodes(): void {
 			// 'white'（追加 flat clean white background）。
 			// ★ 切分不做抠图（2026-09-03 用户要求移除生成链路抠图）——透明化由
 			//   prompt 约束或手动「去背景」（内置 U²Net）完成。
-			{ name: 'sheet_background', type: 'COMBO', default: 'auto', options: ['auto', 'transparent', 'white'] },
+			{ name: 'sheet_background', type: 'COMBO', default: 'auto', options: ['auto', 'green', 'transparent', 'white'] },
+			// 抠图方式（2026-09-08）：切分图集时对每格抠底。
+			// 'none'（默认）= 纯裁剪不抠图；'flood' = 白底 flood-fill（图集底=白时用）；
+			// 'chroma' = 绿幕 chroma-key（复用 VideoToGif 的 chromaKeyFrame，五道后处理；
+			//   选择后 prompt 自动追加绿幕底约束，模型出绿幕图集 → 切分自动采样 key 抠净。
+			//   白发/白描边零误伤 —— 色度与幕布拉开即安全；主体含高饱和绿时换品红幕）。
+			{ name: 'cutout_mode', type: 'COMBO', default: 'none', options: ['none', 'flood', 'chroma'] },
 			],
 		color: '#e879f9',
 		comfyTV: { stageKind: 'emoji', workflowKind: 'emoji', variant: 'generator' },

@@ -156,15 +156,21 @@ export class MediaSnapshotStore {
 	}
 
 	/**
-	 * 按 key **原地覆盖**媒体内容（不新增 index、不触发媒体库导入）。
+	 * 按 key **原地覆盖**媒体内容（不新增 index）。
 	 * 用途：EmojiCellEditor 橡皮擦/涂改——直接更新整图（port 'sheet'）或
 	 * 单格产物（port 'output'）的像素，保持快照序列稳定。
+	 *
+	 * ★ opts.importEntry（2026-09-08）：传入完整 entry 时触发媒体库导入
+	 *   （onAsset，与 put 同路径）——视频直出模式（gif_enable=false）的产物
+	 *   经原地替换归档，provider COS 签名 URL 约 2 小时过期，**必须落盘媒体库**
+	 *   否则「生成的视频无处可寻」。EmojiCellEditor 的像素编辑不传（同资产
+	 *   更新，不应重复导入）。
 	 *
 	 * @returns 是否成功（key 不存在 → false。**此前静默 return**，调用方无从
 	 *   得知「替换没生效」，用户看到的就是「编辑后 output 没更新」。改为显式
 	 *   返回 + warn，由调用方兜底提示。）
 	 */
-	replaceByKey(key: string, media: MediaRef): boolean {
+	replaceByKey(key: string, media: MediaRef, opts?: { importEntry?: MediaSnapshotEntry }): boolean {
 		if (!this.refs.has(key)) {
 			// eslint-disable-next-line no-console
 			console.warn(`[MediaSnapshotStore] replaceByKey: key not found → ${key}（快照可能在编辑期间被重排/清除）`);
@@ -172,6 +178,9 @@ export class MediaSnapshotStore {
 		}
 		this.refs.set(key, media);
 		void this.backend.saveMeta?.(key, media);
+		if (opts?.importEntry) {
+			this.onAsset?.({ ...opts.importEntry, key, media });
+		}
 		this.notify();
 		return true;
 	}

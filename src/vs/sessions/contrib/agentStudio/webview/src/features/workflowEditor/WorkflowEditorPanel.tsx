@@ -1012,14 +1012,17 @@ export const WorkflowEditorPanel: React.FC = () => {
 	}, []);
 
 	// P1: Saros.AskUser 交互弹窗。askUserFn 返回一个 Promise，用户点击选项后
-	// resolve（单选=label 字符串，多选=label 数组）；取消/超时 → 弹窗关闭但
-	// 图执行因 AbortSignal 由 handleCancel 统一中止（或 executor 抛错）。
+	// resolve（单选=label 字符串，多选=label 数组；**params 模式=键值对象**，跳过=空对象）；
+	// 取消/超时 → 弹窗关闭但图执行因 AbortSignal 由 handleCancel 统一中止（或 executor 抛错）。
 	const [askUserDialog, setAskUserDialog] = useState<AskUserPayload | null>(null);
-	const askUserResolveRef = useRef<((v: string | string[]) => void) | null>(null);
+	const askUserResolveRef = useRef<((v: string | string[] | Record<string, string>) => void) | null>(null);
 	const [askUserSelected, setAskUserSelected] = useState<Set<string>>(new Set());
-	const askUserFn: AskUserSendFn = useCallback((payload) => new Promise<string | string[]>((resolve) => {
+	// ★ params 动态参数表单的填写值（key → 用户输入）
+	const [askUserParamValues, setAskUserParamValues] = useState<Record<string, string>>({});
+	const askUserFn: AskUserSendFn = useCallback((payload) => new Promise<string | string[] | Record<string, string>>((resolve) => {
 		askUserResolveRef.current = resolve;
 		setAskUserSelected(new Set());
+		setAskUserParamValues({});
 		setAskUserDialog(payload);
 	}), []);
 	const submitAskUser = useCallback(() => {
@@ -1032,6 +1035,13 @@ export const WorkflowEditorPanel: React.FC = () => {
 		askUserResolveRef.current = null;
 		setAskUserDialog(null);
 	}, [askUserDialog, askUserSelected]);
+	// ★ params 模式提交：键值对象直接反馈（空字段保留空串——下游可判断）
+	const submitAskUserParams = useCallback(() => {
+		const resolve = askUserResolveRef.current;
+		if (resolve) { resolve({ ...askUserParamValues }); }
+		askUserResolveRef.current = null;
+		setAskUserDialog(null);
+	}, [askUserParamValues]);
 	const toggleAskUserOption = useCallback((label: string) => {
 		setAskUserSelected(prev => {
 			const next = new Set(prev);
@@ -2389,35 +2399,69 @@ const handleExecute = useCallback(async () => {
 				}} onClick={e => e.stopPropagation()}>
 					<div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>🙋 需要你的输入</div>
 					<div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)', marginBottom: 14, lineHeight: 1.6 }}>{askUserDialog.question}</div>
-					<div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
-						{askUserDialog.options.map(o => {
-							const active = askUserSelected.has(o.label);
-							return (
-								<button key={o.label} onClick={() => toggleAskUserOption(o.label)} style={{
-									display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', width: '100%',
-									padding: '8px 11px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12,
-									background: active ? 'var(--vscode-menu-selectionBackground, #094771)' : 'transparent',
-									border: `1px solid ${active ? 'var(--vscode-focusBorder, #007fd4)' : 'var(--vscode-panel-border)'}`,
-									color: 'var(--vscode-foreground)',
-								}}>
-									<span style={{ width: 16, flexShrink: 0, color: active ? '#3fb950' : 'var(--vscode-descriptionForeground)' }}>
-										{askUserDialog.multiSelect ? (active ? '☑' : '☐') : (active ? '◉' : '○')}
-									</span>
-									<span style={{ flex: 1 }}>{o.label}</span>
-									{o.description && <span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)' }}>{o.description}</span>}
-								</button>
-							);
-						})}
-					</div>
+					{askUserDialog.params && askUserDialog.params.length > 0 ? (
+						// ★ params 动态参数表单：渲染输入框（text/number/textarea），
+						//   提交后以键值对象反馈给工作流（AskUser 输出 SAROS_JSON）。
+						<div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+							{askUserDialog.params.map(p => (
+								<label key={p.key} style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: 'var(--vscode-foreground)' }}>
+									<span>{p.label}</span>
+									{p.type === 'textarea' ? (
+										<textarea
+											rows={3}
+											value={askUserParamValues[p.key] ?? ''}
+											onChange={e => setAskUserParamValues(prev => ({ ...prev, [p.key]: e.target.value }))}
+											style={{ fontFamily: 'inherit', fontSize: 12, padding: '5px 8px', borderRadius: 4, border: '1px solid var(--vscode-panel-border)', background: 'var(--vscode-input-background)', color: 'var(--vscode-input-foreground)', resize: 'vertical' }}
+										/>
+									) : (
+										<input
+											type={p.type === 'number' ? 'number' : 'text'}
+											value={askUserParamValues[p.key] ?? ''}
+											onChange={e => setAskUserParamValues(prev => ({ ...prev, [p.key]: e.target.value }))}
+											style={{ fontFamily: 'inherit', fontSize: 12, padding: '5px 8px', borderRadius: 4, border: '1px solid var(--vscode-panel-border)', background: 'var(--vscode-input-background)', color: 'var(--vscode-input-foreground)' }}
+										/>
+									)}
+								</label>
+							))}
+						</div>
+					) : (
+						<div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+							{askUserDialog.options.map(o => {
+								const active = askUserSelected.has(o.label);
+								return (
+									<button key={o.label} onClick={() => toggleAskUserOption(o.label)} style={{
+										display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', width: '100%',
+										padding: '8px 11px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12,
+										background: active ? 'var(--vscode-menu-selectionBackground, #094771)' : 'transparent',
+										border: `1px solid ${active ? 'var(--vscode-focusBorder, #007fd4)' : 'var(--vscode-panel-border)'}`,
+										color: 'var(--vscode-foreground)',
+									}}>
+										<span style={{ width: 16, flexShrink: 0, color: active ? '#3fb950' : 'var(--vscode-descriptionForeground)' }}>
+											{askUserDialog.multiSelect ? (active ? '☑' : '☐') : (active ? '◉' : '○')}
+										</span>
+										<span style={{ flex: 1 }}>{o.label}</span>
+										{o.description && <span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)' }}>{o.description}</span>}
+									</button>
+								);
+							})}
+						</div>
+					)}
 					<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-						<button onClick={() => { askUserResolveRef.current?.(''); askUserResolveRef.current = null; setAskUserDialog(null); }}
+						<button onClick={() => { askUserResolveRef.current?.(askUserDialog.params?.length ? {} : ''); askUserResolveRef.current = null; setAskUserDialog(null); }}
 							style={{ fontSize: 12, cursor: 'pointer', border: '1px solid var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-foreground)', borderRadius: 4, padding: '4px 12px', fontFamily: 'inherit' }}>
 							跳过
 						</button>
-						<button onClick={submitAskUser} disabled={askUserSelected.size === 0}
-							style={{ fontSize: 12, cursor: askUserSelected.size ? 'pointer' : 'not-allowed', border: '1px solid #22c55e', background: '#22c55e', color: '#fff', borderRadius: 4, padding: '4px 14px', fontFamily: 'inherit', fontWeight: 600, opacity: askUserSelected.size ? 1 : 0.5 }}>
-							{askUserDialog.multiSelect ? `确认选择 (${askUserSelected.size})` : '确认'}
-						</button>
+						{askUserDialog.params && askUserDialog.params.length > 0 ? (
+							<button onClick={submitAskUserParams}
+								style={{ fontSize: 12, cursor: 'pointer', border: '1px solid #22c55e', background: '#22c55e', color: '#fff', borderRadius: 4, padding: '4px 14px', fontFamily: 'inherit', fontWeight: 600 }}>
+								提交
+							</button>
+						) : (
+							<button onClick={submitAskUser} disabled={askUserSelected.size === 0}
+								style={{ fontSize: 12, cursor: askUserSelected.size ? 'pointer' : 'not-allowed', border: '1px solid #22c55e', background: '#22c55e', color: '#fff', borderRadius: 4, padding: '4px 14px', fontFamily: 'inherit', fontWeight: 600, opacity: askUserSelected.size ? 1 : 0.5 }}>
+								{askUserDialog.multiSelect ? `确认选择 (${askUserSelected.size})` : '确认'}
+							</button>
+						)}
 					</div>
 				</div>
 			</div>

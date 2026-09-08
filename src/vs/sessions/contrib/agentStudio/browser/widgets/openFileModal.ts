@@ -18,6 +18,7 @@
  */
 
 import * as dom from '../../../../../base/browser/dom.js';
+import { renderLabelWithIcons } from '../../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import { basename as pathBasename } from '../../../../../base/common/path.js';
@@ -164,8 +165,18 @@ export class OpenFileModal {
 	private _filter(): void {
 		const q = this._searchInput?.value?.toLowerCase().trim() ?? '';
 		const onlyCurrent = this._onlyCurrentSol?.checked ?? true;
+		// 「当前 solution」= 当前工作区所有已注册项目（getProjectRoots 的键集合）。
+		// Bug（2026-09-08，用户截图）：旧实现 `f.project !== '_default'` 一律排除——而图谱节点
+		// 打的是真实项目名（_addNodes → _activeProject，通常为 folder basename），'_default'
+		// 只是兜底值，导致复选框默认勾选时列表恒空。
+		const solutionProjects = onlyCurrent
+			? new Set(Object.keys(this._graphService.getProjectRoots()))
+			: undefined;
+		// fail-open：_rootProjectMap 未就绪（SQLite-only 启动早期）时键集合为空，无法判定
+		// solution 范围——此时不过滤，避免回到"恒空"。
+		const useSolFilter = !!solutionProjects && solutionProjects.size > 0;
 		this._rows = this._allFiles.filter(f => {
-			if (onlyCurrent && f.project && f.project !== '_default') { return false; }
+			if (useSolFilter && solutionProjects && f.project && !solutionProjects.has(f.project)) { return false; }
 			if (!q) { return true; }
 			return f.name.toLowerCase().includes(q) || f.filePath.toLowerCase().includes(q);
 		});
@@ -206,7 +217,11 @@ export class OpenFileModal {
 			const fileCell = dom.$('div');
 			fileCell.style.cssText = 'flex:2;display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;';
 			const icon = dom.$('span');
-			icon.textContent = iconFor(file.filePath);
+			// $(codicon) 需经 renderLabelWithIcons 解析，textContent 直写会显示字面文本
+			// （同 findSymbolModal 2026-09-08 修复；此前列表为空未暴露）
+			for (const el of renderLabelWithIcons(iconFor(file.filePath))) {
+				icon.appendChild(typeof el === 'string' ? document.createTextNode(el) : el);
+			}
 			icon.style.cssText = 'flex:0 0 auto;opacity:.8;';
 			fileCell.appendChild(icon);
 			const name = dom.$('span');

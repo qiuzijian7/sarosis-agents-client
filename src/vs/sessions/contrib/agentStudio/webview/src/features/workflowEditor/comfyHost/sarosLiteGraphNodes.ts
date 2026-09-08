@@ -56,7 +56,10 @@ const NODE_CONFIGS: SarosNodeConfig[] = [
 	// ★ Start 的 spec 有 2 个输出（out + COMFYTV_TEXT 桥的 text），class 原来只有
 	//   1 个 → 槽位数不等，`syncNodePortsToSpec` 放弃同步，且画布上 text 桥端口
 	//   根本不存在（无法直连 ComfyTV stage 的 texts/prompt）。补齐。
-	{ type: 'Saros.Start', title: '开始', color: SAROS_COLORS.start, outputs: [{ name: 'out', type: 'SAROS_JSON' }, { name: 'text', type: 'COMFYTV_TEXT' }], widgets: [{ type: 'text', name: 'args', value: '{}' }] },
+	// 2026-09-08：卡片零参数 UI —— text 输出端口移除；args widget 标 hidden
+	//（保留 properties 持久化通道：args JSON 仍经运行前参数面板 / out 口消费，
+	// 与 Prompt/Agent 的 hidden widget 同款做法）。
+	{ type: 'Saros.Start', title: '开始', color: SAROS_COLORS.start, outputs: [{ name: 'out', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'args', value: '{}', hidden: true }] },
 	{ type: 'Saros.End', title: '结束', color: SAROS_COLORS.end, inputs: [{ name: 'in', type: 'SAROS_JSON' }] },
 	{ type: 'Saros.Task', title: '任务', color: SAROS_COLORS.task, inputs: [{ name: 'in', type: 'SAROS_JSON' }], outputs: [{ name: 'out', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'taskId', value: '' }] },
 	// prompt 由 **DOM 富卡片**的 MentionTextarea 接管（复用 ImageStage 的 prompt

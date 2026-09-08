@@ -267,6 +267,8 @@ import './codebaseGraphBootstrap.js';
 import './codebaseGraphLanguageFeatures.contribution.js';
 // Find Symbol（Shift+Alt+S，VAX 风格符号搜索 QuickPick）。Self-registers.
 import './codebaseGraphFindSymbol.contribution.js';
+// Class Hierarchy（Alt+Shift+G，类继承关系模态，单击节点跳转定义）。Self-registers.
+import './codebaseGraphClassHierarchy.contribution.js';
 // VAX 检索命令集（Open File/Find References/Goto Implementation/List Methods）。Self-registers.
 import './codebaseGraphVaxSearch.contribution.js';
 // Integrated browser "创建看板任务" right-click → kanban scrape. Self-registers.

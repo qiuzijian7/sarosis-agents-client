@@ -671,6 +671,17 @@ const HOME = `<!doctype html>
 				</ul>
 				<a class="alt" href="/visual/?panel=1">打开</a>
 			</div>
+
+			<div class="card">
+				<h3>抠像对比实验室</h3>
+				<p>拖入<strong>绿幕视频</strong>（转动态表情包的 I2V 输出），并排对比 <code>rgb / flood / ycbcr</code> 三种抠像算法。</p>
+				<ul>
+					<li>逐帧对比 + 诊断高亮（被抠像素标红，定位主体误伤）</li>
+					<li>一键生成真 GIF 对比（产品同链编码，含体积/耗时）</li>
+					<li>相似度 / 平滑带 / 幕色参数实时重跑</li>
+				</ul>
+				<a class="alt" href="/visual/keying-lab.html">打开</a>
+			</div>
 		</div>
 
 		<div class="note">

@@ -38,8 +38,40 @@ export type EmojiBackend = 'comfyui' | 'provider';
 
 const SHEET_BG_OPTIONS: Array<{ value: EmojiSheetBackground; label: string }> = [
   { value: 'auto', label: '跟随提示词（默认）' },
+  { value: 'green', label: '绿幕（推荐）' },
   { value: 'transparent', label: '透明底' },
   { value: 'white', label: '白底' },
+];
+
+/**
+ * 「去背景」按钮算法（2026-09-08 由单按钮改下拉）：
+ * - ai：ComfyUI saros_cutout（BiRefNet 语义分割，最通用，需 ComfyUI 连接）
+ * - chroma：绿幕 chroma-key（本地零依赖，自动采样幕布色；图集须为绿幕底）
+ * - flood：白底几何 flood-fill（本地零依赖，仅白底图集）
+ */
+export type SheetRemoveBgAlgo = 'ai' | 'chroma' | 'flood';
+
+const SHEET_REMOVE_BG_OPTIONS: Array<{ value: SheetRemoveBgAlgo; label: string }> = [
+  { value: 'ai', label: 'AI 模型' },
+  { value: 'chroma', label: '绿幕' },
+  { value: 'flood', label: '白底几何' },
+];
+
+/**
+ * 切分抠图方式（widget `cutout_mode`，2026-09-08）：
+ * - none：纯裁剪（默认，2026-09-03 起行为）
+ * - flood：白底 flood-fill 抠底（图集底=白时可用）
+ * - chroma：绿幕 chroma-key —— 复用 VideoToGif 的 chromaKeyFrame（色度主抠 +
+ *   choke/despill/形态学/碎块五道后处理）。选择后 prompt 自动追加绿幕底约束，
+ *   模型出绿幕图集 → 切分时自动采样 key 色抠净。白发/白描边零误伤（色度与幕布
+ *   拉开即安全）；主体含高饱和绿时需换品红/蓝幕。
+ */
+export type EmojiCutoutMode = 'none' | 'flood' | 'chroma';
+
+const CUTOUT_MODE_OPTIONS: Array<{ value: EmojiCutoutMode; label: string }> = [
+  { value: 'none', label: '不抠图（默认）' },
+  { value: 'chroma', label: '绿幕（推荐）' },
+  { value: 'flood', label: '白底几何' },
 ];
 
 
@@ -68,6 +100,8 @@ export interface StatEmojiStageInit {
   modelId?: string;
   /** 整版图集背景策略（widget sheet_background，缺省 'white'）。 */
   sheetBackground?: EmojiSheetBackground;
+  /** 切分抠图方式（widget cutout_mode，缺省 'none'）。 */
+  cutoutMode?: EmojiCutoutMode;
   /** 生成图像大小（widget size，'WxH'，缺省 '1024x1024'）。 */
   size?: string;
 }
@@ -107,8 +141,10 @@ export interface StatEmojiStageEditorProps {
   onCellEdit?: (cellIndex: number) => void;
   /** ★ 双击 LLM 原图 → 整图编辑（MiniImageEditor 全图模式，nodeCard 层挂载；2026-09-03）。 */
   onSheetEdit?: () => void;
-  /** ★ LLM 原图「去背景」按钮：本地 rembg 抠图 → 写入「调整后」图集口（原图归档不动；nodeCard 层执行）。 */
-  onSheetRemoveBg?: () => void;
+  /** ★ LLM 原图「去背景」：按所选算法抠图 → 写入「调整后」图集口（原图归档不动；nodeCard 层执行）。
+      2026-09-08 改为下拉选择算法：ai=ComfyUI saros_cutout / chroma=绿幕（本地）/ flood=白底几何（本地）。
+      chroma 时携带可调参数（similarity/smoothness/greenDominance，2026-09-08）。 */
+  onSheetRemoveBg?: (algo: SheetRemoveBgAlgo, chromaParams?: { similarity: number; smoothness: number; greenDominance: number }) => void;
   /** ★ 当前原图是 sheet 口直通的上游图集（2026-09-06）：只读预览——禁整图编辑
       （写入会落到上游节点归档）。sheet 口保持连线期间始终只读（执行器直通优先：
       连线时点「生成」按上游图集切分，本节点不会产出新原图）；整图编辑请回上游节点
@@ -384,9 +420,26 @@ export function StatEmojiStageEditor({
   // 背景子句，交回用户 prompt / 主题模板（以 transparent background 结尾），
   // 并由切图兜底抠白底（cutoutBg）得到透明贴纸。
   const [sheetBackground, setSheetBackground] = React.useState<EmojiSheetBackground>(
-    initial.sheetBackground === 'white' || initial.sheetBackground === 'transparent'
+    initial.sheetBackground === 'white' || initial.sheetBackground === 'transparent' || initial.sheetBackground === 'green'
       ? initial.sheetBackground
       : 'auto',
+  );
+  // ── 「去背景」按钮算法选择（2026-09-08 下拉化）──────────────────────────
+  // 纯 UI 状态（不入 widget 持久化）：ai=ComfyUI / chroma=绿幕本地 / flood=白底本地。
+  const [sheetRemoveBgAlgo, setSheetRemoveBgAlgo] = React.useState<SheetRemoveBgAlgo>('ai');
+  // ★ 绿幕参数可调（2026-09-08）：similarity 越大抠得越净（误删↑）/ smoothness
+  //   控制过渡带与 despill 带宽 / greenDominance 越大对白色主体越宽容（绿残留↑）。
+  //   默认=表情包推荐值（真实图集验证：白色主体零误删）。
+  const [rbgSimilarity, setRbgSimilarity] = React.useState(0.25);
+  const [rbgSmoothness, setRbgSmoothness] = React.useState(0.08);
+  const [rbgGreenDom, setRbgGreenDom] = React.useState(90);
+  // ── 切分抠图方式（2026-09-08）────────────────────────────────────────────
+  // none = 纯裁剪；chroma = 绿幕 chroma-key（prompt 自动追加绿幕底，切分自动采样
+  // key 抠净，白发零误伤）；flood = 白底 flood-fill。默认 none（2026-09-03 行为）。
+  const [cutoutMode, setCutoutMode] = React.useState<EmojiCutoutMode>(
+    initial.cutoutMode === 'chroma' || initial.cutoutMode === 'flood'
+      ? initial.cutoutMode
+      : 'none',
   );
 
   // ComfyUI checkpoint 列表：runner 就绪后拉一次（模块级缓存）
@@ -478,13 +531,14 @@ export function StatEmojiStageEditor({
       model: modelId,
       size,
       sheet_background: sheetBackground,
+      cutout_mode: cutoutMode,
     };
     // workflow 仅在本编辑器真的提供了选项时才写回，避免在无选项场景把
     // node.properties.workflow 覆写成空串（会让 runStageWorkflow 落回默认模板）。
     if (workflowOptions && workflowOptions.length > 0 && workflow) { patch.workflow = workflow; }
     onCommit(patch);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, cols, stylePreset, selectedIndex, cells, workflow, backend, comfyModel, providerId, modelId, size, sheetBackground]);
+  }, [rows, cols, stylePreset, selectedIndex, cells, workflow, backend, comfyModel, providerId, modelId, size, sheetBackground, cutoutMode]);
 
   const setCell = (i: number, patch: Partial<EmojiStageCell>): void => {
     setCells(prev => prev.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
@@ -610,7 +664,24 @@ export function StatEmojiStageEditor({
           <HoverTip
             variant="info"
             tipWidth={300}
-            tip={'整版生成时的背景：跟随提示词（默认）=不追加背景约束，由你的描述决定；透明底=要求模型直接出透明；白底=强制白底。\n生成切分不做抠图——需要透明贴纸请在图集区点「去背景」（内置 U²Net）或用迷你编辑器处理。'}
+            tip={'整版生成时的背景：跟随提示词（默认）=不追加背景约束，由你的描述决定；绿幕（推荐）=强制绿幕底（配合「切分抠图=绿幕」自动抠净，白发零误伤）；透明底=要求模型直接出透明；白底=强制白底。\n★ 选了具体底色时，提示词（主题模板/格描述）里的透明要求会被覆盖——以本选项为准。'}
+          />
+        </div>
+
+        {/* 切分抠图方式（2026-09-08）：none / chroma（绿幕）/ flood（白底几何） */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+          <span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground, #9a9a9a)', whiteSpace: 'nowrap' }}>切分抠图</span>
+          <select
+            value={cutoutMode}
+            onChange={(e) => setCutoutMode(e.target.value as EmojiCutoutMode)}
+            style={{ flex: 1, minWidth: 0, height: 24, fontSize: 10, padding: '0 4px', background: '#17181c', color: 'var(--vscode-foreground, #e8e8e8)', border: '1px solid rgba(255,255,255,.14)', borderRadius: 4 }}
+          >
+            {CUTOUT_MODE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <HoverTip
+            variant="info"
+            tipWidth={320}
+            tip={'切分图集时的抠图算法：\n· 不抠图（默认）= 纯裁剪，保留模型输出的背景\n· 绿幕（推荐）= 提示词自动要求绿幕底，切分时按色度抠净（白发/白描边零误伤，边缘经 choke/despill/形态学规整）\n· 白底几何 = flood-fill 抠白底（仅白底图集可用，边缘较硬）\n注：绿幕模式自动改写提示词要求纯绿底；若主体本身含高饱和绿色请改用品红/蓝幕素材。'}
           />
         </div>
 
@@ -660,22 +731,60 @@ export function StatEmojiStageEditor({
               抠图结果在「调整后」页签棋盘底直显透明效果）。
               仅原图视图显示（作用对象是编辑基底整图，调整后图集是派生产物）。 */}
           {sheetRef && sheetView === 'original' && (
-            <button
-              onClick={onSheetRemoveBg}
-              disabled={sheetRemovingBg}
-              title="整图去背景 → 透明 PNG。原图不动，结果显示在「调整后」页签，下游转动态读取该图集。"
-              style={{
-                padding: '2px 6px', borderRadius: 5, cursor: sheetRemovingBg ? 'wait' : 'pointer', fontSize: 10, fontWeight: 600,
-                whiteSpace: 'nowrap', flexShrink: 0,
-                border: '1px solid rgba(56,189,248,.5)', background: sheetRemovingBg ? 'rgba(148,163,184,.2)' : 'rgba(56,189,248,.16)', color: sheetRemovingBg ? '#94a3b8' : '#38bdf8',
-              }}
-            >{sheetRemovingBg ? '去背景中…' : '去背景'}</button>
+            <>
+              <select
+                value={sheetRemoveBgAlgo}
+                onChange={(e) => setSheetRemoveBgAlgo(e.target.value as SheetRemoveBgAlgo)}
+                disabled={sheetRemovingBg}
+                title="去背景算法：AI 模型=ComfyUI 语义分割（最通用）；绿幕=色度抠图（图集须为绿幕底，自动采样幕布色）；白底几何=flood-fill（仅白底图集）。"
+                style={{ height: 20, fontSize: 10, padding: '0 2px', background: '#17181c', color: 'var(--vscode-foreground, #e8e8e8)', border: '1px solid rgba(255,255,255,.14)', borderRadius: 4, flexShrink: 0 }}
+              >
+                {SHEET_REMOVE_BG_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <button
+                onClick={() => onSheetRemoveBg?.(sheetRemoveBgAlgo, sheetRemoveBgAlgo === 'chroma'
+                  ? { similarity: rbgSimilarity, smoothness: rbgSmoothness, greenDominance: rbgGreenDom }
+                  : undefined)}
+                disabled={sheetRemovingBg}
+                title="整图去背景 → 透明 PNG。原图不动，结果显示在「调整后」页签，下游转动态读取该图集。"
+                style={{
+                  padding: '2px 6px', borderRadius: 5, cursor: sheetRemovingBg ? 'wait' : 'pointer', fontSize: 10, fontWeight: 600,
+                  whiteSpace: 'nowrap', flexShrink: 0,
+                  border: '1px solid rgba(56,189,248,.5)', background: sheetRemovingBg ? 'rgba(148,163,184,.2)' : 'rgba(56,189,248,.16)', color: sheetRemovingBg ? '#94a3b8' : '#38bdf8',
+                }}
+              >{sheetRemovingBg ? '去背景中…' : '去背景'}</button>
+            </>
           )}
           {/* 失败徽标（共享 ErrorBadge）：红色「!」圆标，hover 显示完整错误 tip（不常驻挤占版面） */}
           {sheetRemoveBgError && !sheetRemovingBg && (
             <HoverErrorBadge message={sheetRemoveBgError} />
           )}
         </div>
+        {/* ★ 绿幕参数可调（2026-09-08）：仅算法=绿幕时显示。★ 必须是 header 行的
+            **兄弟块**而非其 flex 子项——否则被头部行挤压竖排溢出（用户截图实证）。 */}
+        {sheetRef && sheetView === 'original' && sheetRemoveBgAlgo === 'chroma' && !sheetRemovingBg && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 10, color: 'var(--vscode-descriptionForeground, #9a9a9a)', padding: '2px 4px 0' }}>
+            {([
+              ['相似度', rbgSimilarity, setRbgSimilarity, 0.05, 0.6, 0.05],
+              ['去绿边', rbgSmoothness, setRbgSmoothness, 0, 0.3, 0.02],
+              ['绿阈', rbgGreenDom, setRbgGreenDom, 30, 150, 10],
+            ] as Array<[string, number, (v: number) => void, number, number, number]>).map(([label, val, set, min, max, step]) => (
+              <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
+                {label}
+                <button
+                  onClick={() => set(Math.max(min, Math.round((val - step) * 1000) / 1000))}
+                  style={{ width: 16, height: 18, padding: 0, lineHeight: '16px', fontSize: 10, cursor: 'pointer', background: '#17181c', color: 'var(--vscode-foreground, #e8e8e8)', border: '1px solid rgba(255,255,255,.14)', borderRadius: 3 }}
+                >−</button>
+                <span style={{ fontFamily: 'monospace', minWidth: 28, textAlign: 'center' }}>{val}</span>
+                <button
+                  onClick={() => set(Math.min(max, Math.round((val + step) * 1000) / 1000))}
+                  style={{ width: 16, height: 18, padding: 0, lineHeight: '16px', fontSize: 10, cursor: 'pointer', background: '#17181c', color: 'var(--vscode-foreground, #e8e8e8)', border: '1px solid rgba(255,255,255,.14)', borderRadius: 3 }}
+                >+</button>
+              </span>
+            ))}
+            <span title="相似度越大抠得越净（误删白色主体风险↑）；绿阈越大对白色主体越宽容（绿残留风险↑）。默认 0.25/0.08/90。">ⓘ</span>
+          </div>
+        )}
         {/* ★ sheet 直通预览（2026-09-06）：原图来自上游连线 → 只读提示条。
             直通优先于本地归档（对齐 nodeCard 2026-09-06 修正）：连线期间恒只读，
             断开 sheet 口连线后恢复本地归档（可编辑）。 */}

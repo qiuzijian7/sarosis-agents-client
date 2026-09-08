@@ -231,7 +231,7 @@ export function getNodeSpec(type: string): NodeSpec | undefined {
 interface PortBearingNode {
 	type?: string;
 	inputs?: Array<{ name?: string; type?: unknown; label?: string }>;
-	outputs?: Array<{ name?: string; type?: unknown; label?: string }>;
+	outputs?: Array<{ name?: string; type?: unknown; label?: string; links?: Array<number> | null }>;
 }
 
 /**
@@ -248,17 +248,45 @@ interface PortBearingNode {
  * **槽位下标**寻址，改名不会断线；增删才会。槽位数量不一致时直接放弃（说明
  * 该节点的形状由运行时 object_info 精化过，spec 不再是权威）。
  *
+ * ★ 例外：**outputs 的尾部收缩**（2026-09-08）。spec 移除尾部输出端口（如
+ *   Start.text 下线）时，老节点残留端口按上面的长度守卫会**永远残留**。尾部
+ *   pop 不改变保留端口的下标（连线寻址安全），前提是前缀名字与 spec 完全一致
+ *   （防其他 spec 演进形态误删）；被删端口的连线经可选 `graph.removeLink` 断开。
+ *
+ * @param graph 可选：断开被收缩端口的连线（LiteGraph `graph.removeLink(id)`）。
  * @returns 是否发生了修改（调用方据此决定要不要重绘）。
  */
-export function syncNodePortsToSpec(node: PortBearingNode): boolean {
+export function syncNodePortsToSpec(
+	node: PortBearingNode,
+	graph?: { removeLink?(id: number): unknown },
+): boolean {
 	const spec = node.type ? getNodeSpec(node.type) : undefined;
 	if (!spec) { return false; }
 	let changed = false;
 	const sync = (
-		live: Array<{ name?: string; type?: unknown; label?: string }> | undefined,
+		live: Array<{ name?: string; type?: unknown; label?: string; links?: Array<number> | null }> | undefined,
 		want: ReadonlyArray<{ name: string; type: string }> | undefined,
+		kind: 'inputs' | 'outputs',
 	): void => {
-		if (!live || !want || live.length !== want.length) { return; }
+		if (!live || !want) { return; }
+		if (live.length > want.length && kind === 'outputs') {
+			// 尾部收缩：前 want.length 个名字必须与 spec 一致才执行
+			let prefixOk = true;
+			for (let i = 0; i < want.length; i++) {
+				if (live[i]?.name !== want[i].name) { prefixOk = false; break; }
+			}
+			if (prefixOk) {
+				for (let i = want.length; i < live.length; i++) {
+					for (const lid of (live[i].links ?? [])) {
+						try { graph?.removeLink?.(lid); } catch { /* link 已断，忽略 */ }
+					}
+				}
+				live.length = want.length;
+				changed = true;
+			}
+			return;
+		}
+		if (live.length !== want.length) { return; }
 		for (let i = 0; i < live.length; i++) {
 			const slot = live[i];
 			const def = want[i];
@@ -269,8 +297,8 @@ export function syncNodePortsToSpec(node: PortBearingNode): boolean {
 			if (typeof slot.type === 'string' && slot.type !== def.type) { slot.type = def.type; changed = true; }
 		}
 	};
-	sync(node.inputs, spec.inputs);
-	sync(node.outputs, spec.outputs);
+	sync(node.inputs, spec.inputs, 'inputs');
+	sync(node.outputs, spec.outputs, 'outputs');
 	return changed;
 }
 

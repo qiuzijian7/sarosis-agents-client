@@ -2233,7 +2233,13 @@ self.onmessage = async function(e) {
 			let relToAbs: Map<string, string>;
 			let classification: { added: string[]; modified: string[]; deleted: string[]; unchanged: string[] };
 			const hasChangeSet = !!(changeSet && (changeSet.added.length || changeSet.modified.length || changeSet.deleted.length));
-			if (hasChangeSet) {
+			// 空基线守卫（2026-09-08）：图无节点或 fileHashes 基线为空 = 从未完成全量索引。
+			// 此时快路径只索引「本次变更的文件」，图谱永远残缺——只含被编辑过的文件，
+			// Find Symbol / Open File 检索不到其它任何源文件（用户实测：快照仅 4 文件 739
+			// 节点，instantNodes.ts 的 rotateDegrees 不在图内）。降级为全量扫描 + 分类：
+			// 无哈希记录的文件全部判为 added → 等效全量重建，一次补齐基线。
+			const hasBaseline = this._graph.store.getNodeCount() > 0 && this._graph.store.getFileHashCount() > 0;
+			if (hasChangeSet && hasBaseline) {
 				const added = changeSet!.added;
 				const modified = changeSet!.modified;
 				const deleted = changeSet!.deleted;
@@ -2858,7 +2864,10 @@ self.onmessage = async function(e) {
 			}
 			const id = ++this._parseReqId;
 			const worker = this._parserWorkers[id % this._parserWorkers.length];
-			return await this._parseViaWorker(worker, id, source, wasmLang, filePath);
+			// 必须传相对路径：Worker 内 walkAST 直接把 filePath 写进节点（全量索引传 relPath，
+			// 回归 2026-09-08：增量曾传绝对路径 → 图里 filePath 混入 g:\... 绝对路径，
+			// OpenFileModal joinPath(root, abs) 拼出错误路径静默打不开）。
+			return await this._parseViaWorker(worker, id, source, wasmLang, this._getRelativePath(filePath));
 		}
 
 		// Fallback（dev/非打包环境）：主线程解析（依赖 importAMDNodeModule 加载 tree-sitter）。

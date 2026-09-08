@@ -55,14 +55,21 @@ export function withRemoteProxyFetch(fetchImpl: typeof fetch, opts?: { forceProx
  * 为什么必须：provider 签名 URL（腾讯云 COS 等）**带时效**（q-sign-time 通常
  * 2 小时），直接归档 → 重启 app / 签名过期后 403 →「llm 原图消失」而本地合成
  * 的格子（data URL）还在。所有进快照的远程图像都应先过这里。
+ *
+ * ★ 2026-09-08 放宽到 video/*：动态表情的绿幕原片同样是 COS 签名 URL——不固化
+ *   则「重新抠图」（⟳）在签名过期后 403 失败、原片预览黑屏。mp4 几 MB dataURL
+ *   可接受（3s 768P ≈ 2-5MB）。
  */
 export async function localizeImageRef(ref: string): Promise<string> {
 	if (!ref || !/^https?:\/\//i.test(ref)) { return ref; }
 	try {
-		const resp = await withRemoteProxyFetch(fetch)(ref);
+		// ★ forceProxy（2026-09-08）：外网 URL 在 webview CSP 下直连 100% 被拦
+		//   （connect-src 只放行本机）——先直连只会每次刷两行 CSP 报错 + 白等
+		//   一跳，直接走 host 代理。
+		const resp = await withRemoteProxyFetch(fetch, { forceProxy: true })(ref);
 		if (!resp.ok) { return ref; }
 		const blob = await resp.blob();
-		if (!blob.type.startsWith('image/')) { return ref; }
+		if (!blob.type.startsWith('image/') && !blob.type.startsWith('video/')) { return ref; }
 		return await blobToDataUrl(blob);
 	} catch {
 		return ref;
@@ -556,9 +563,24 @@ export interface AskUserPayload {
 	question: string;
 	options: Array<{ label: string; description?: string }>;
 	multiSelect: boolean;
+	/**
+	 * ★ 动态参数表单（可选）：非空时交互卡片渲染**输入框**而非选项按钮，
+	 *   用户填写后以 `Record<key, value>` 反馈给工作流（answer = 键值对象）。
+	 *   定义来自 AskUser 节点的 `params` widget（JSON 数组）。
+	 */
+	params?: AskUserParam[];
 }
-/** P1: injected ask-user RPC for Saros.AskUser nodes (required when the graph has one). */
-export type AskUserSendFn = (payload: AskUserPayload, timeoutMs?: number) => Promise<string | string[]>;
+/** AskUser 动态参数定义（params widget 的 JSON 数组元素）。 */
+export interface AskUserParam {
+	key: string;
+	label: string;
+	type?: 'text' | 'number' | 'textarea';
+}
+/**
+ * P1: injected ask-user RPC for Saros.AskUser nodes (required when the graph has one).
+ * 返回：选项模式 = label 字符串（多选为数组）；**params 模式 = 键值对象**（跳过 = 空对象）。
+ */
+export type AskUserSendFn = (payload: AskUserPayload, timeoutMs?: number) => Promise<string | string[] | Record<string, string>>;
 
 export interface NodeExecutionInput {
 	runner: IComfyRunner;

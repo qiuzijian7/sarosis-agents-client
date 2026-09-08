@@ -26,4 +26,5 @@ import './askUserNode.js';
 import './statEmojiNode.js';
 import './multiPanelStoryboardNode.js';
 import './videoToGifNode.js';
+import './videoMatteNode.js';
 import './removeBgNode.js';

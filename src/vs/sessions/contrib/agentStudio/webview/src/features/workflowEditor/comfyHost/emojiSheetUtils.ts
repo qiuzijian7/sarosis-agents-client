@@ -19,6 +19,7 @@ import { runSingleNode, comfyOutputsToFxSnapshots } from './nodeExecutor.js';
 import { runStageWorkflow, StageWorkflowUnavailableError, collectUpstreamRefs, applyAssetRefOverrides, type StageWorkflowRunOptions } from './stageWorkflowExecutor.js';
 import { styleTemplateOf } from './builtinWorkflows/emojiWorkflows.js';
 import { buildEmojiModelPrompt, parseComfyModelValue } from './emojiModelAdapt.js';
+import { chromaKeyFrame, autoSampleChromaKeyRgba } from './videoToGifExecutor.js';
 
 /** 通用负向词（checkpoint 系 KSampler negative；qwen/flux 组装链无 negative 输入，忽略）。 */
 const EMOJI_NEGATIVE_PROMPT = 'text, watermark, blurry, low quality, deformed, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, fused fingers, too many fingers, long neck';
@@ -33,8 +34,7 @@ import { runInstantNode } from './instantExecutor.js';
 import { isVideoToGifNode, EMOJI_GIF_PARAMS } from './videoToGif.js';
 import { isRemoveBgNode } from './removeBg.js';
 import { runRemoveBgNode } from './removeBgExecutor.js';
-import { runVideoToGifNode, convertVideoToGif, convertVideoToGridTransparentGifs, blobToDataUrl, dataUrlToBlob } from './videoToGifExecutor.js';
-import { isRelightNode } from './relightEditor.js';
+import { runVideoToGifNode, convertVideoToGif, convertVideoToGridTransparentGifs, blobToDataUrl, dataUrlToBlob } from './videoToGifExecutor.js';import { isRelightNode } from './relightEditor.js';
 import { runRelightNode } from './relightExecutor.js';
 import { isPosterNode } from './posterEditor.js';
 import { runPosterNode } from './posterExecutor.js';
@@ -144,18 +144,21 @@ import {
 
 // ★ 表情图集配置与切分工具（background/size/margin/prompt/crops/splitStickerSheet）。
 
-export type EmojiSheetBackground = 'white' | 'transparent' | 'auto';
+export type EmojiSheetBackground = 'white' | 'green' | 'transparent' | 'auto';
 
-/** 各策略对应的 header 尾句（`auto` = 空 ⇒ 整句省略）。 */
+/** 各策略对应的 header 尾句（`auto` = 空 ⇒ 整句省略）。
+ * ★ 'white' 从 UI 选项移除（2026-09-08 换成 'green'），但**类型/子句保留**：
+ *   旧工作流存的 'white' 继续有效（resolveSheetBackground 兼容），不静默变语义。 */
 const SHEET_BACKGROUND_CLAUSE: Record<EmojiSheetBackground, string> = {
 	white: 'flat clean white background',
+	green: 'solid pure green screen background (#00FF00), flat uniform green, no gradient, no shadows on the background',
 	transparent: 'isolated on transparent background',
 	auto: '',
 };
 
 /** 任意 widget 值 → 合法策略（非法/未设置回落 `auto`：不干预用户 prompt）。 */
 export function resolveSheetBackground(v: unknown): EmojiSheetBackground {
-	return v === 'white' || v === 'transparent' ? v : 'auto';
+	return v === 'white' || v === 'green' || v === 'transparent' ? v : 'auto';
 }
 
 /** 默认整版分辨率（与 registry `size` 默认值 / 模板 EmptyLatentImage 一致）。 */
@@ -233,14 +236,17 @@ export function buildEmojiSheetPrompt(
 ): string {
 	const total = rows * cols;
 	const bg = SHEET_BACKGROUND_CLAUSE[background];
-	// ★ 格间留白强化（2026-09-07）：「clear thin gaps」实测模型留白过小 → 贴纸
-	//   几乎贴满格 → 切分单格边缘带邻格内容 → 转动态相互污染。改为：宽缝 + 贴纸
-	//   只占格内约 75% 居中 + 明确「不触碰/不越过格边」。
+	// ★ 格间留白强化（2026-09-07；2026-09-08 二次加大）：「clear wide gaps」实测
+	//   模型留白仍不足（贴纸视觉上几乎相邻）→ 占比 75% 降到 65%，并把间隔量化
+	//   为「≥ 格宽 15%」+「间距 ≈ 贴纸厚度」的强约束——量化数字比形容词可遵循。
 	const header =
 		`a sticker sheet of ${total} separate die-cut cartoon stickers arranged in a strict ` +
-		`${rows} rows × ${cols} columns grid layout, equal-size cells, clear wide gaps between ` +
-		`stickers, each sticker occupies about 75% of its cell, centered, never touching or ` +
-		`crossing the cell edges, each sticker fully inside its own cell with white outline` +
+		`${rows} rows × ${cols} columns grid layout, equal-size cells, large generous empty ` +
+		`gaps between stickers (at least 15% of the cell width on every side), each sticker ` +
+		`occupies only about 65% of its cell, centered, with wide clear margins all around, ` +
+		`never touching or crossing the cell edges, each sticker fully inside its own cell, ` +
+		`each sticker has a thick bold white sticker border (die-cut outline, clean smooth ` +
+		`rounded white edge, clearly visible)` +
 		(bg ? `, ${bg}` : '');
 	const unique = new Set(cellPrompts.map(p => p.trim()).filter(Boolean));
 	let body: string;
@@ -257,7 +263,133 @@ export function buildEmojiSheetPrompt(
 		}
 		body = lines.join('; ');
 	}
+	// ★ 以图集底为准（2026-09-08）：background='green' 时，**格描述**（主题模板
+	//   尾句 isolated on transparent background / 用户手写「透明背景」）里的透明
+	//   要求被绿幕覆盖 —— 此前正是「header 绿幕 + 模板透明」两个矛盾指令让
+	//   gpt-image-2 出白底（模型谁也不听）。英文模板尾句与中文描述都替换。
+	if (background === 'green') {
+		body = body
+			.replace(/isolated on transparent background/gi, 'isolated on green screen background')
+			.replace(/transparent background/gi, 'green screen background')
+			.replace(/透明背景/g, '绿幕背景')
+			.replace(/透明底/g, '绿幕底');
+	}
 	return `${header}. ${body}`;
+}
+
+/**
+ * 贴纸 alpha 平滑（2026-09-08，「绿幕边缘不光滑」修复）：**PNG 表情包专用**——
+ * chromaKeyFrame 的后处理链为 GIF 1-bit alpha 设计（alpha 只有 0/255，放大必锯齿；
+ * 开运算仅 1px 尺度治不了多像素波浪）。本函数在其输出上追加两步：
+ *
+ * ① **3×3 中值滤波**（作用 alpha 通道）：二值 mask 的经典平滑——孤立 1-2px 毛刺
+ *    与小凹凸被邻域中位取代，不缩边、不改变主体尺寸；
+ * ② **边界羽化**：不透明像素按 8 邻域透明占比把 alpha 降至 45%~100%（邻域越空
+ *    越透明）——得到 1px 级软过渡边，视觉圆滑（PNG 支持半透明；GIF 链路不经过
+ *    本函数不受影响）。
+ *
+ * 纯同步（418² 格 ~2ms）。
+ */
+export function smoothStickerAlpha(rgba: Uint8Array, w: number, h: number): void {
+	const n = w * h;
+	const a = new Uint8Array(n);
+	for (let p = 0; p < n; p++) { a[p] = rgba[p * 4 + 3]; }
+	// ① 3×3 中值滤波（边界用自身值填充）
+	const med = new Uint8Array(n);
+	const win = new Uint8Array(9);
+	for (let y = 0; y < h; y++) {
+		for (let x = 0; x < w; x++) {
+			let k = 0;
+			const self = a[y * w + x];
+			for (let dy = -1; dy <= 1; dy++) {
+				for (let dx = -1; dx <= 1; dx++) {
+					const yy = y + dy, xx = x + dx;
+					win[k++] = (yy < 0 || yy >= h || xx < 0 || xx >= w) ? self : a[yy * w + xx];
+				}
+			}
+			for (let i = 1; i < 9; i++) {
+				const v = win[i];
+				let j = i - 1;
+				while (j >= 0 && win[j] > v) { win[j + 1] = win[j]; j--; }
+				win[j + 1] = v;
+			}
+			med[y * w + x] = win[4];
+		}
+	}
+	// ② 边界羽化：邻域（含图边视作外部）透明占比 → alpha 线性降至下限 45%
+	for (let y = 0; y < h; y++) {
+		for (let x = 0; x < w; x++) {
+			const p = y * w + x;
+			if (med[p] === 0) { continue; }
+			let clear = 0, cnt = 0;
+			for (let dy = -1; dy <= 1; dy++) {
+				for (let dx = -1; dx <= 1; dx++) {
+					if (dy === 0 && dx === 0) { continue; }
+					const yy = y + dy, xx = x + dx;
+					cnt++;
+					if (yy < 0 || yy >= h || xx < 0 || xx >= w || med[yy * w + xx] === 0) { clear++; }
+				}
+			}
+			rgba[p * 4 + 3] = Math.round(med[p] * (1 - 0.55 * (clear / cnt)));
+		}
+	}
+}
+
+/**
+ * 本地整版去背景（2026-09-08，「去背景」按钮算法下拉用）：对**整版图集**
+ * dataURL 做一次本地抠图，返回透明 PNG dataURL。零依赖、毫秒级（无需 ComfyUI）。
+ *
+ * - `chroma`：自动采样四边 key 色（须绿色主导，否则抛错提示换「白底几何」——
+ *   与切分管线不同：按钮是用户显式选择，静默降级反而让结果与选择不符难排查）
+ *   → chromaKeyFrame（同款五道后处理）。
+ * - `flood`：floodFillWhiteBg 抠白底（protectPx=0，见其 JSDoc 的真实图实测）。
+ */
+export async function removeBgDataUrlLocal(
+	dataUrl: string,
+	mode: 'chroma' | 'flood',
+	/** ★ chroma 参数可调（2026-09-08，「去背景」下拉配套）：缺省=表情包推荐值。
+	 *  similarity 越大抠得越净（误删风险↑）；greenDominance 越大对浅色主体越宽容
+	 *  （绿残留风险↑）。 */
+	chromaParams?: { similarity?: number; smoothness?: number; greenDominance?: number },
+): Promise<string> {
+	const sim = Math.max(0.05, Math.min(0.8, chromaParams?.similarity ?? 0.25));
+	const smo = Math.max(0, Math.min(0.4, chromaParams?.smoothness ?? 0.08));
+	const gd = Math.max(18, Math.min(200, chromaParams?.greenDominance ?? 90));
+	const blob = dataUrlToBlob(dataUrl);
+	const objectUrl = URL.createObjectURL(blob);
+	try {
+		const img = document.createElement('img');
+		await new Promise<void>((resolve, reject) => {
+			img.onload = () => resolve();
+			img.onerror = () => reject(new Error('图集解码失败（格式不支持或数据损坏）。'));
+			img.src = objectUrl;
+		});
+		const W = img.naturalWidth;
+		const H = img.naturalHeight;
+		if (W <= 0 || H <= 0) { throw new Error('图集尺寸无效。'); }
+		const cv = document.createElement('canvas');
+		cv.width = W; cv.height = H;
+		const ctx = cv.getContext('2d', { willReadFrequently: true });
+		if (!ctx) { throw new Error('浏览器无法创建画布。'); }
+		ctx.drawImage(img, 0, 0);
+		const data = ctx.getImageData(0, 0, W, H);
+		const rgba = new Uint8Array(data.data.buffer);
+		if (mode === 'chroma') {
+			const key = autoSampleChromaKeyRgba(rgba, W, H);
+			const greenDominant = key.g >= 100 && key.g - Math.max(key.r, key.b) >= 60;
+			if (!greenDominant) {
+				throw new Error(`采样到的幕布色 rgb(${key.r},${key.g},${key.b}) 不是绿色 —— 图集背景不是绿幕。白底图集请选「白底几何」，或重新生成绿幕图集。`);
+			}
+			chromaKeyFrame(rgba, key, sim, smo, 'rgb', { greenDominance: gd, boxFilterDistance: true, softAlpha: true });
+			// ★ softAlpha 自带连续软边，smoothStickerAlpha（二值事后平滑）跳过
+		} else {
+			floodFillWhiteBg(rgba, W, H, 0);
+		}
+		ctx.putImageData(data, 0, 0);
+		return cv.toDataURL('image/png');
+	} finally {
+		URL.revokeObjectURL(objectUrl);
+	}
 }
 
 /**
@@ -418,7 +550,7 @@ export async function splitStickerSheet(
 	imgRef: string,
 	rows: number,
 	cols: number,
-	opts: { marginRatio?: number; cutoutBg?: boolean; protectPx?: number; cellCrops?: SheetCellCrop[] | null },
+	opts: { marginRatio?: number; cutoutBg?: boolean; protectPx?: number; chroma?: boolean; cellCrops?: SheetCellCrop[] | null },
 	fetchImpl: typeof fetch,
 ): Promise<SplitSheetCell[]> {
 	const blob = /^data:/i.test(imgRef) ? dataUrlToBlob(imgRef) : await (await fetchImpl(imgRef)).blob();
@@ -441,6 +573,29 @@ export async function splitStickerSheet(
 		fctx.drawImage(img, 0, 0);
 
 		const cutout = opts.cutoutBg !== false;
+		// ★ 透明背景预检（2026-09-08）：模型原生输出带 alpha 的图集（prompt 模板
+		//   transparent background 生效 / 模型支持 alpha 输出）时**跳过一切抠图**
+		//   —— 再跑 chroma（采样透明像素得到无意义 key）或 flood 都是多余甚至有害。
+		//   判据：全图**抽稀**统计 alpha<8 的像素占比 > 3%（真透明背景图集通常
+		//   >20%；不透明图集为 0%）。抽稀步长 16 像素（查每 4 个像素的 alpha 字节，
+		//   i+=64），1254² 约 9.8 万样本，一次 getImageData 成本可接受。
+		let alreadyTransparent = false;
+		{
+			const probe = fctx.getImageData(0, 0, W, H).data;
+			let tr = 0;
+			let total = 0;
+			for (let i = 3; i < probe.length; i += 64) { total++; if (probe[i] < 8) { tr++; } }
+			alreadyTransparent = total > 0 && tr / total > 0.03;
+			if (alreadyTransparent && (opts.chroma || cutout)) {
+				// eslint-disable-next-line no-console
+				console.warn(`[EmojiStage] 图集已带透明背景（透明像素 ${(100 * tr / total).toFixed(1)}%），跳过抠图（chroma/flood）——纯裁剪`);
+			}
+		}
+		// 绿幕模式：key 色延迟采样（首格时从整版四边取中位），全格共用。
+		let chromaKey: { r: number; g: number; b: number } | null = null;
+		// ★ 非绿幕降级标志（2026-09-08）：采样到非绿 key（模型未遵循绿幕 prompt）→
+		//   整图集降级白底 flood-fill，避免「白 key 抠掉白色主体」灾难。
+		let chromaBroken = false;
 		const crops = opts.cellCrops && opts.cellCrops.length === rows * cols
 			? opts.cellCrops
 			: defaultSheetCellCrops(rows, cols, opts.marginRatio ?? EMOJI_SHEET_MARGIN_RATIO);
@@ -470,7 +625,49 @@ export async function splitStickerSheet(
 			const cctx = cell.getContext('2d', { willReadFrequently: true });
 			if (!cctx) { throw new Error('浏览器无法创建画布。'); }
 			cctx.drawImage(full, x0, y0, cw, ch, 0, 0, cw, ch);
-			if (cutout) {
+			if (alreadyTransparent) {
+				// 已透明：纯裁剪（抠图三态 none/chroma/flood 均跳过）
+			} else if (opts.chroma && !chromaBroken) {
+				// ★ 绿幕模式（2026-09-08）：复用 VideoToGif 的产品级 chromaKeyFrame
+				//   （主抠 + 五道后处理：choke 内缩 / 邻接 despill / 形态学开 / 碎块清除）。
+				//   key 色由**首格**从整版四边自动采样（绿幕图集背景均匀，一次采样全格共用，
+				//   避免逐格采样被格内主体干扰）。默认 similarity 0.4 / smoothness 0.1
+				//   （与动图抠像默认一致）。适用前提：图集背景为纯绿幕（绿衣服等高饱和
+				//   绿主体会被误抠 —— 换品红/蓝幕即可，算法不变）。
+				if (!chromaKey) {
+					chromaKey = autoSampleChromaKeyRgba(new Uint8Array(fctx.getImageData(0, 0, W, H).data.buffer), W, H);
+					// ★ 绿色主导校验（2026-09-08 修复「图集表现异常」）：模型可能不遵循
+					//   绿幕 prompt（gpt-image-2 常见，出白底/浅底图集）。若采样到的 key
+					//   不是绿色主导（如白色 exc≈0），以它为 key 色距抠图会把白底+白色
+					//   主体（白发/白描边）全抠掉，黑色细碎主体再被形态学开+碎块清除
+					//   抹掉 → 整格只剩零星彩色碎片。故：非绿幕 → 置 chromaBroken，
+					//   **整图集降级白底 flood-fill**（白底场景 flood 反而最稳）。
+					const greenDominant = chromaKey.g >= 100 && chromaKey.g - Math.max(chromaKey.r, chromaKey.b) >= 60;
+					if (!greenDominant) {
+						chromaBroken = true;
+						chromaKey = null;
+						// eslint-disable-next-line no-console
+						console.warn(`[EmojiStage] chroma mode: sampled key 非绿色主导 —— 图集不是绿幕（模型未遵循绿幕 prompt），整图集降级白底 flood-fill 抠图`);
+					} else {
+						// eslint-disable-next-line no-console
+						console.warn(`[EmojiStage] chroma mode: sampled key=rgb(${chromaKey.r},${chromaKey.g},${chromaKey.b}) green-dominant ✓`);
+					}
+				}
+			}
+			if (opts.chroma && !chromaBroken && chromaKey) {
+				const data = cctx.getImageData(0, 0, cw, ch);
+				// ★ 表情包专用参数（2026-09-08）：贴纸=白描边+白发**白色主体**，默认
+				//   similarity 0.4 / greenDominance 18 会把沾绿溢色的浅色主体误删。
+				//   收紧：t2≈146 + greenDominance 90。
+				// ★ OBS 对标软边（2026-09-08）：距离场 3×3 盒式预滤波 + 连续 pow 曲线
+				//   alpha（smoothStickerAlpha 的中值+羽化专为二值 alpha 事后补救设计，
+				//   软 alpha 下跳过，避免过度羽化）。
+				chromaKeyFrame(new Uint8Array(data.data.buffer), chromaKey, 0.25, 0.08, 'rgb', {
+					greenDominance: 90, boxFilterDistance: true, softAlpha: true,
+				});
+				cctx.putImageData(data, 0, 0);
+			} else if (!alreadyTransparent && (cutout || (opts.chroma && chromaBroken))) {
+				// flood 路径：白底图集（或 chroma 降级）走 floodFillWhiteBg
 				const data = cctx.getImageData(0, 0, cw, ch);
 				floodFillWhiteBg(new Uint8Array(data.data.buffer), cw, ch, opts.protectPx ?? 0);
 				cctx.putImageData(data, 0, 0);

@@ -913,6 +913,11 @@ export class CodebaseGraphStore {
 		return this._fileHashes.get(`${project}:${relPath}`);
 	}
 
+	/** 基线规模（零拷贝）：为 0 说明从未完成全量索引（增量快路径不可信，见 _runIncrementalIndex）。 */
+	getFileHashCount(): number {
+		return this._fileHashes.size;
+	}
+
 	deleteFileHash(project: string, relPath: string): void {
 		this._fileHashes.delete(`${project}:${relPath}`);
 	}

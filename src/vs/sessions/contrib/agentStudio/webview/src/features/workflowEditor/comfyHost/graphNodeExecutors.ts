@@ -109,6 +109,7 @@ import {
 	AgentNodeRunResult,
 	AgentNodeSendFn,
 	AskUserPayload,
+	AskUserParam,
 	AskUserSendFn,
 	NodeExecutionInput,
 	isLoadImageNode,
@@ -340,18 +341,54 @@ export async function runAskUserNodeExecutor(input: NodeExecutionInput): Promise
 		}
 	}
 	if (options.length === 0) {
-		return { ...empty, error: 'AskUser 节点缺少选项（编辑节点填写 options）' };
+		// ★ params 模式下选项可空（卡片渲染输入框而非选项按钮）
+		const hasParams = typeof values.params === 'string' && values.params.trim() && values.params.trim() !== '[]';
+		if (!hasParams) {
+			return { ...empty, error: 'AskUser 节点缺少选项（编辑节点填写 options，或配置 params 动态参数）' };
+		}
+	}
+	// ★ 动态参数表单（params widget，JSON 数组 [{key,label,type?}]）：非空时
+	//   交互卡片渲染输入框，用户填写后以 Record<key,value> 反馈（answer = 键值对象），
+	//   下游经 SAROS_JSON 快照消费。非法 JSON → 明确报错（与 options 惯例一致）。
+	let params: AskUserParam[] | undefined;
+	const rawParams = values.params;
+	if (typeof rawParams === 'string' && rawParams.trim() && rawParams.trim() !== '[]') {
+		try {
+			const arr: unknown = JSON.parse(rawParams);
+			if (!Array.isArray(arr)) {
+				return { ...empty, error: 'AskUser params 不是合法 JSON 数组' };
+			}
+			params = (arr as Array<{ key?: unknown; label?: unknown; type?: unknown }>)
+				.map(p => ({
+					key: String(p?.key ?? '').trim(),
+					label: String(p?.label ?? '').trim(),
+					type: (p?.type === 'number' || p?.type === 'textarea' ? p.type : 'text') as AskUserParam['type'],
+				}))
+				.filter(p => p.key)
+				.map(p => ({ key: p.key, label: p.label || p.key, type: p.type }));
+			if (params.length === 0) { params = undefined; }
+		} catch {
+			return { ...empty, error: 'AskUser params 不是合法 JSON 数组' };
+		}
 	}
 	const multiSelect = values.multiSelect === 'yes' || values.multiSelect === true;
 	onProgress?.({ progress: 30 });
 	try {
-		const answer = await askUser({ nodeId, question, options, multiSelect }, 600_000);
+		const answer = await askUser(
+			params ? { nodeId, question, options, multiSelect, params } : { nodeId, question, options, multiSelect },
+			600_000,
+		);
 		signal?.throwIfAborted();
 		onProgress?.({ progress: 95 });
 		const snapKey = input.snapshotKey ?? nodeId;
+		// params 模式 answer 是键值对象（跳过 = 空对象）；选项模式是 string/string[]。
+		// 两者都以 JSON 文本落快照（SAROS_JSON），下游 {{input}}/Agent 消费语义不变。
+		const answerValue: unknown = (answer && typeof answer === 'object' && !Array.isArray(answer))
+			? answer
+			: answer;
 		const entry: MediaSnapshotEntry = {
 			nodeId: snapKey, port: 'output', key: `${snapKey}:output:0`, index: 0,
-			media: { kind: 'text', ref: JSON.stringify({ answer }), meta: { sarosJson: '1', mime: 'application/json', askUserNode: '1' } },
+			media: { kind: 'text', ref: JSON.stringify({ answer: answerValue }), meta: { sarosJson: '1', mime: 'application/json', askUserNode: '1' } },
 		};
 		store.put(entry, true);
 		return { promptId: '', status: 'success', entries: [entry] };

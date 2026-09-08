@@ -283,6 +283,31 @@ export async function runVideoToGifNode(input: VideoToGifInput): Promise<SingleN
 //      贴纸完全一致（视频模型首帧相对参考图常有漂移）。
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * 绿幕 key 色自动采样（2026-09-08）：从帧**四边**各取 32 个点，以「绿色超出量
+ * （G − max(R,B)）的中位」为中心聚类取均值 —— 抗个别噪点/主体贴边干扰。
+ * 前提：四边基本全是幕布色。chroma_color='auto' 时由 convertVideoToTransparentGif
+ * 从首帧采样（视频压缩会让幕布绿漂移，采样值比固定 #00FF00 更贴合实际帧）。
+ * 纯同步。
+ */
+export function autoSampleChromaKeyRgba(
+	rgba: Uint8Array, w: number, h: number,
+): { r: number; g: number; b: number } {
+	const pts: Array<[number, number]> = [];
+	for (let t = 0.05; t <= 0.96; t += 1 / 32) {
+		pts.push([Math.floor(t * w), 2], [Math.floor(t * w), h - 3], [2, Math.floor(t * h)], [w - 3, Math.floor(t * h)]);
+	}
+	const cand = pts.map(([x, y]) => {
+		const i = (y * w + x) * 4;
+		return [rgba[i], rgba[i + 1], rgba[i + 2]];
+	});
+	const exc = cand.map(c => c[1] - Math.max(c[0], c[2]));
+	const med = exc.slice().sort((a, b) => a - b)[Math.floor(exc.length / 2)];
+	const near = cand.filter((c, i) => Math.abs(exc[i] - med) < 12);
+	const pick = (ch: number) => Math.round(near.reduce((s, c) => s + c[ch], 0) / Math.max(1, near.length));
+	return { r: pick(0), g: pick(1), b: pick(2) };
+}
+
 /** 解析 #RRGGBB / #RGB 十六进制颜色。非法输入回退纯绿 #00FF00。 */
 export function parseHexColor(hex: string): { r: number; g: number; b: number } {
 	const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex ?? '').trim());
@@ -303,27 +328,234 @@ export function parseHexColor(hex: string): { r: number; g: number; b: number } 
 }
 
 /**
- * chroma-key 抠像（就位修改 rgba 的 alpha 通道）。GIF 只有 1-bit 透明，因此：
- *   - 色距 < similarity×442        → alpha=0（完全透明）
- *   - 色距 < (similarity+smoothness)×442 → 保持不透明 + **despill**（把 G 通道
- *     钳到 max(R,B)，消除主体边缘的绿色溢色/泛绿描边）
- *   - 其余                          → 原样保留
+ * chroma-key 抠像算法库（2026-09-08 策略化重构）：
+ *   - chromaKeyFrame：策略分发入口（主抠三选一 + 共享后处理），签名向后兼容
+ *     （algo 缺省 'rgb' = 既有行为）。
+ *   - 主抠算法对比（视觉对比工具：visual/keying-lab.html，拖入绿幕视频逐帧并排）：
+ *     · rgb   色距全帧判定（最快；绿幕不均 → 阈值边界抖动 → 毛刺）
+ *     · flood 泛洪连通（主体内部绿色元素零误伤；要求贴纸不贴帧边）
+ *     · ycbcr Cb/Cr 色度距离（亮度解耦，打光不均最稳）
+ *   - chromaPostProcess 共享后处理五道（RGB 阈值语义 / GIF 1-bit alpha）：
+ *   - 色距 < similarity×442 → alpha=0；<(similarity+smoothness)×442 → 过渡带
+ *     despill（G 钳到 max(R,B)）；其余原样。
+ *   1. 绿色优势清除：暗化/灰化的绿（色距超阈但 G 主导）补抠；
+ *   2. choke（mask 内缩）：贴边 1px 带 Green fringe 像素清除；
+ *   3. 邻接溢色：贴透明区 ≤2px 统一 despill；
+ *   4. 形态学开运算（09-08「边缘不规整」）：erosion+dilation 各 1px 去毛刺；
+ *   5. 孤立碎块清除：4-连通域 <4px 噪声块清除。
+ * 纯同步（240² <10ms；720P 帧源约 30-50ms）。
+ */
+/** 抠像算法标识（values.chroma_algo；2026-09-08 对比调研落地）。 */
+export type ChromaKeyAlgo = 'rgb' | 'flood' | 'ycbcr';
+
+/** 抠像算法注册表：编辑器下拉数据源 + visual/keying-lab 对比工具共用。 */
+export const CHROMA_KEY_ALGOS: Array<{ id: ChromaKeyAlgo; label: string; tip: string }> = [
+	{
+		id: 'rgb', label: 'RGB 色距（默认）',
+		tip: '全帧逐像素与绿幕色距判定，最快。绿幕打光不均时阈值边界抖动 → 边缘毛刺；主体含绿色元素（服饰/眼睛）可能被误抠。',
+	},
+	{
+		id: 'flood', label: '泛洪连通',
+		tip: '从帧边缘泛洪，只抠「与背景连通」的绿幕区域——主体内部绿色元素零误伤（不需要背景完美均匀，只需边缘可达）。代价：帧边缘必须全是背景（贴纸不贴边）。',
+	},
+	{
+		id: 'ycbcr', label: 'YCbCr 色度',
+		tip: 'Cb/Cr 色度平面距离判定（广播级 keyer 经典做法）——色度与亮度解耦，对绿幕亮度不均（阴影/光斑/暗角）明显更稳；边缘同样走后处理规整。',
+	},
+];
+
+/** 像素到 key 的 RGB 欧氏距离（主抠/泛洪共用）。 */
+function keyDistance(r: number, g: number, b: number, kr: number, kg: number, kb: number): number {
+	const dr = r - kr, dg = g - kg, db = b - kb;
+	return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+/** 解析 values.chroma_algo（非法值回退 'rgb'，向后兼容旧工作流）。 */
+export function parseChromaAlgo(raw: unknown): ChromaKeyAlgo {
+	return raw === 'flood' || raw === 'ycbcr' ? raw : 'rgb';
+}
+
+/**
+ * 主抠 A：RGB 色距全帧判定（既有算法，缺省）。
  *
- * ★ 2026-09-03 增强（「绿边残留」修复），三道后处理：
- *   1. **绿色优势清除**：视频压缩/绿幕不均会产生「暗化/灰化的绿」，其到纯绿的
- *      色距可能超出阈值而漏网——按**绿色主导度**（G − max(R,B)）补抠，阈值与
- *      smoothness 挂钩。
- *   2. **choke（mask 内缩）**：与透明区相邻的边缘像素若仍带绿色优势 → alpha=0
- *      （吃掉贴边 1px 绿 fringe；贴纸白描边不含绿色优势，不受影响）。
- *   3. **邻接溢色**：贴着透明区 ≤2px 的不透明像素统一 despill（G 钳到 max(R,B)）
- *      ——只处理边界带，贴纸内部的绿色元素（叶片/服饰）不受影响。
- * 纯同步函数（每帧 240×240=5.8 万像素，多趟遍历 <5ms）。
+ * ★ 2026-09-08 边缘锐化重设计：d<t2（含过渡带）**直接透明**——旧行为「过渡带
+ *   保留+despill」会把白绿混合像素以不透明灰白留在 alpha 里（GIF 1-bit 无
+ *   半透明），视觉即描边外缘 2-3px「灰白绒毛」——despill 去绿后绒毛反而更明显。
+ *   现在过渡带清除 → 描边外缘锐利（代价：真实描边被啃 1-2px，可接受）。
+ *   smoothness 语义变为「外扩清除带宽」。
+ */
+function keyPrimaryRgb(
+	rgba: Uint8Array, W: number, H: number,
+	key: { r: number; g: number; b: number }, t1: number, t2: number, greenDominate: number,
+): void {
+	const kr = key.r, kg = key.g, kb = key.b;
+	for (let y = 0; y < H; y++) {
+		for (let x = 0; x < W; x++) {
+			const i = (y * W + x) * 4;
+			const d = keyDistance(rgba[i], rgba[i + 1], rgba[i + 2], kr, kg, kb);
+			if (d < t2) {
+				rgba[i + 3] = 0;                       // 透明（含过渡带，边缘锐化）
+			} else {
+				const gExcess = rgba[i + 1] - Math.max(rgba[i], rgba[i + 2]);
+				if (gExcess > greenDominate && rgba[i + 1] > 60) {
+					// 绿色优势清除：压缩伪影/绿幕不均产生的暗化绿（色距超阈值但 G 明显主导）
+					rgba[i + 3] = 0;
+				}
+			}
+		}
+	}
+}
+
+/**
+ * 主抠 B：YCbCr 色度平面距离（2026-09-08 新增）。
+ * BT.601 Cb/Cr 与亮度解耦——绿幕打光不均（阴影/亮度梯度）只改变 Y，不影响
+ * Cb/Cr → 阈值边界不再随亮度抖动，边缘稳定性显著优于 RGB 欧氏。
+ * 阈值域：|Cb|,|Cr| ≤ ~142 → 对角线 ≈ 200.8（与 RGB 442 同语义换算）。
+ */
+function keyPrimaryYcbcr(
+	rgba: Uint8Array, W: number, H: number,
+	key: { r: number; g: number; b: number }, t1: number, t2: number, greenDominate: number,
+): void {
+	const MAXD_CB = 200.8;
+	const scale = MAXD_CB / 441.67;             // 与 RGB 语义对齐：similarity/smoothness 同值同比例
+	const ct1 = t1 * scale, ct2 = t2 * scale;
+	// key 的色度坐标（只算一次）
+	const kY = 0.299 * key.r + 0.587 * key.g + 0.114 * key.b;
+	const kCb = 0.564 * (key.b - kY);
+	const kCr = 0.713 * (key.r - kY);
+	for (let y = 0; y < H; y++) {
+		for (let x = 0; x < W; x++) {
+			const i = (y * W + x) * 4;
+			const r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+			const yy = 0.299 * r + 0.587 * g + 0.114 * b;
+			const dcb = 0.564 * (b - yy) - kCb;
+			const dcr = 0.713 * (r - yy) - kCr;
+			const d = Math.sqrt(dcb * dcb + dcr * dcr);
+			if (d < ct2) {
+				rgba[i + 3] = 0;                       // 透明（含过渡带，边缘锐化）
+			} else {
+				const gExcess = g - Math.max(r, b);
+				if (gExcess > greenDominate && g > 60) {
+					rgba[i + 3] = 0;
+				}
+			}
+		}
+	}
+}
+
+/**
+ * 主抠 C：泛洪连通 keying（2026-09-08 新增）。
+ * 从帧边缘（四角 + 四边中点）BFS 泛洪，只把「与背景连通」的绿幕区抠掉——
+ * 主体内部的绿色元素（服饰/眼睛/叶片）与背景不连通 → 零误伤。
+ * 扩展判定用 t2（过渡带也纳入连通域），d<t1 纯透明、t1..t2 despill 保留——
+ * 阈值语义与 RGB 版一致；后处理 choke/despill/open/碎块照常生效。
+ * 前提：帧边缘必须全是背景（贴纸不贴边）——表情包管线满足（绿幕合成时留边）。
+ */
+function keyPrimaryFlood(
+	rgba: Uint8Array, W: number, H: number,
+	key: { r: number; g: number; b: number }, t1: number, t2: number,
+): void {
+	const kr = key.r, kg = key.g, kb = key.b;
+	const visited = new Uint8Array(W * H);
+	const stack: number[] = [];
+	const trySeed = (sx: number, sy: number): void => {
+		const p = sy * W + sx;
+		if (visited[p]) { return; }
+		const i = p * 4;
+		if (rgba[i + 3] !== 0 && keyDistance(rgba[i], rgba[i + 1], rgba[i + 2], kr, kg, kb) < t2) {
+			visited[p] = 1;
+			stack.push(p);
+		}
+	};
+	trySeed(0, 0); trySeed(W - 1, 0); trySeed(0, H - 1); trySeed(W - 1, H - 1);
+	trySeed(W >> 1, 0); trySeed(W >> 1, H - 1); trySeed(0, H >> 1); trySeed(W - 1, H >> 1);
+	while (stack.length) {
+		const cur = stack.pop() as number;
+		const i = cur * 4;
+		// 出队即透明（含 t1..t2 过渡带——与 rgb/ycbcr 同步的边缘锐化语义：
+		// 混合像素若 despill 保留会形成灰白绒毛边）。
+		rgba[i + 3] = 0;
+		const cy = (cur / W) | 0;
+		const cx = cur - cy * W;
+		// 4-邻扩展：色距 < t2 的邻居纳入连通域（贴纸边缘混合像素 d>t2 → 留给 choke）
+		if (cx > 0) { const j = cur - 1; if (!visited[j]) { const q = j * 4; if (keyDistance(rgba[q], rgba[q + 1], rgba[q + 2], kr, kg, kb) < t2) { visited[j] = 1; stack.push(j); } } }
+		if (cx + 1 < W) { const j = cur + 1; if (!visited[j]) { const q = j * 4; if (keyDistance(rgba[q], rgba[q + 1], rgba[q + 2], kr, kg, kb) < t2) { visited[j] = 1; stack.push(j); } } }
+		if (cy > 0) { const j = cur - W; if (!visited[j]) { const q = j * 4; if (keyDistance(rgba[q], rgba[q + 1], rgba[q + 2], kr, kg, kb) < t2) { visited[j] = 1; stack.push(j); } } }
+		if (cy + 1 < H) { const j = cur + W; if (!visited[j]) { const q = j * 4; if (keyDistance(rgba[q], rgba[q + 1], rgba[q + 2], kr, kg, kb) < t2) { visited[j] = 1; stack.push(j); } } }
+	}
+}
+
+/**
+ * 2× 超采样降采样（2026-09-08「细线装饰锯齿」）：src 为 2W×2H 的抠像后帧，
+ * 按 2×2 子像素覆盖率聚合回 W×H。
+ * - alpha：≥2/4 子像素不透明 → 255（1-bit 二值，边缘位置精度翻倍）
+ * - RGB：取**不透明子像素**的平均色（透明子像素是 despill 后的绿幕混合，
+ *   混入会污染边缘色；全透明格保留任一子像素色——编码时被跳过无影响）。
+ * 纯同步。奇数尺寸向下取整（W/H 恒为偶数——2×plan.width）。
+ */
+function downsampleChroma2x(src: Uint8Array, W2: number, H2: number): Uint8Array {
+	const W = W2 >> 1;
+	const H = H2 >> 1;
+	const out = new Uint8Array(W * H * 4);
+	for (let y = 0; y < H; y++) {
+		for (let x = 0; x < W; x++) {
+			let cnt = 0, r = 0, g = 0, b = 0, n = 0;
+			for (let dy = 0; dy < 2; dy++) {
+				const sy = y * 2 + dy;
+				for (let dx = 0; dx < 2; dx++) {
+					const s = ((sy * W2) + (x * 2 + dx)) * 4;
+					if (src[s + 3] !== 0) {
+						cnt++;
+						r += src[s]; g += src[s + 1]; b += src[s + 2]; n++;
+					}
+				}
+			}
+			const o = (y * W + x) * 4;
+			out[o + 3] = cnt >= 2 ? 255 : 0;
+			const s0 = ((y * 2) * W2 + (x * 2)) * 4;
+			if (n > 0) {
+				out[o] = r / n; out[o + 1] = g / n; out[o + 2] = b / n;
+			} else {
+				out[o] = src[s0]; out[o + 1] = src[s0 + 1]; out[o + 2] = src[s0 + 2];
+			}
+		}
+	}
+	return out;
+}
+
+/**
+ * chroma-key 抠像（就位修改 rgba 的 alpha 通道）——策略分发版。
+ *
+ * 主抠（三选一，values.chroma_algo / 参数 algo）+ 共享后处理（choke 内缩、
+ * 邻接 despill、形态学开运算、孤立碎块清除）。算法注册表见 CHROMA_KEY_ALGOS。
+ * GIF 只有 1-bit 透明：alpha 严格二值，边缘质量靠 despill + 形态学保障。
  */
 export function chromaKeyFrame(
 	rgba: Uint8Array,
 	key: { r: number; g: number; b: number },
 	similarity: number,
 	smoothness: number,
+	algo: ChromaKeyAlgo = 'rgb',
+	/** ★ 可选调参（2026-09-08，向后兼容）：greenDominance 覆盖「绿色优势扩展清除」
+	 *  阈值。默认 max(18, band*0.35) 对**视频真人/深色主体**合适，但对**白色主体
+	 *  贴纸**（表情包 die-cut 白描边+白发）过狠：白像素沾轻度绿幕溢色
+	 *  （如 RGB(200,255,180)，gExcess=55>18）就会被清除 —— 主抠保留了它、扩展
+	 *  清除又吃掉，表现即「贴纸内部被错误删除」。表情包入口应传 90
+	 *  （gExcess>90 才算真绿溢：绿白混合 127 仍清 ✓、轻溢白 45 保留 ✓）。
+	 * ★ boxFilterDistance / softAlpha（2026-09-08 OBS 对标调研落地，**仅 rgb 算法**，
+	 *   默认关——VideoToGif 的 GIF 1-bit 链路行为不变）：
+	 *   - boxFilterDistance：色度距离场先做 **3×3 盒式预滤波**再判定（OBS shader
+	 *     同款）——在 alpha 判定**之前**平滑距离场，噪声/压缩瑕疵的单像素距离跳动
+	 *     被抹平，锯齿从源头减少（事后修补的上限由此决定）；
+	 *   - softAlpha：**连续软 alpha**——`alpha *= pow(saturate((d−t1)/(t2−t1)), 1.5)`
+	 *     （OBS 同款曲线，指数 1.5 偏向不透明），过渡带 0→1 连续而非二值跳变；
+	 *     启用时**跳过 choke/开运算**（它们会把软边重新啃成硬边），仅保留 despill
+	 *     与碎块清除。 */
+	opts?: {
+		greenDominance?: number;
+		boxFilterDistance?: boolean;
+		softAlpha?: boolean;
+	},
 ): void {
 	const MAXD = 441.67;   // RGB 立方体空间对角线长度
 	const W = Math.max(1, Math.round(Math.sqrt(rgba.length / 4)));   // 由长度反推宽度（正方形帧）
@@ -331,26 +563,160 @@ export function chromaKeyFrame(
 	const t1 = Math.max(0, Math.min(1, similarity)) * MAXD;
 	const band = Math.max(0, Math.min(1, smoothness)) * MAXD;
 	const t2 = t1 + band;
-	const kr = key.r, kg = key.g, kb = key.b;
 	// 绿色主导度阈值：与 smoothness 联动（平滑带越宽，扩展清除越保守）
-	const greenDominate = Math.max(18, band * 0.35);
-	for (let i = 0; i + 3 < rgba.length; i += 4) {
-		const dr = rgba[i] - kr, dg = rgba[i + 1] - kg, db = rgba[i + 2] - kb;
-		const d = Math.sqrt(dr * dr + dg * dg + db * db);
-		const gExcess = rgba[i + 1] - Math.max(rgba[i], rgba[i + 2]);
-		if (d < t1) {
-			rgba[i + 3] = 0;                       // 完全透明
-		} else if (d < t2) {
-			// 边缘带：不透明但去绿溢色（G 钳到 R/B 最大值，视觉上从绿边变中性边）
-			const cap = Math.max(rgba[i], rgba[i + 2]);
-			if (rgba[i + 1] > cap) { rgba[i + 1] = cap; }
-		} else if (gExcess > greenDominate && rgba[i + 1] > 60) {
-			// 绿色优势清除：压缩伪影/绿幕不均产生的暗化绿（色距超阈值但 G 明显主导）
+	const greenDominate = opts?.greenDominance ?? Math.max(18, band * 0.35);
+	// ★ 软 alpha 路径（OBS 对标，2026-09-08）：仅 rgb 算法。距离场 3×3 盒式预滤波
+	//   + 连续 pow 曲线 alpha；跳过 choke/开运算（硬边后处理会啃掉软边），保留
+	//   despill 与碎块清除。
+	if (opts?.softAlpha && algo !== 'flood') {
+		keySoftWithDistField(rgba, W, H, key, t1, t2, greenDominate, !!opts?.boxFilterDistance);
+		// despill（OBS 式局部去饱和，2026-09-08 实测修正）：半透明边缘像素是
+		//   绿白混合色，仅钳 G 会留绿色光晕——向灰度混合（越透明越灰）后叠加
+		//   无绿色感；不透明像素仍用 G 钳制。
+		for (let i = 0; i < rgba.length; i += 4) {
+			const a = rgba[i + 3];
+			if (a === 0) { continue; }
+			const r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+			if (a < 255) {
+				const k = a / 255;
+				const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+				rgba[i] = gray * (1 - k) + r * k;
+				rgba[i + 1] = gray * (1 - k) + g * k;
+				rgba[i + 2] = gray * (1 - k) + b * k;
+			} else if (g > Math.max(r, b)) {
+				rgba[i + 1] = Math.max(r, b);
+			}
+		}
+		removeSmallAlphaIslands(rgba, W, H);
+		return;
+	}
+	switch (algo) {
+		case 'flood': keyPrimaryFlood(rgba, W, H, key, t1, t2); break;
+		case 'ycbcr': keyPrimaryYcbcr(rgba, W, H, key, t1, t2, greenDominate); break;
+		default: keyPrimaryRgb(rgba, W, H, key, t1, t2, greenDominate);
+	}
+	chromaPostProcess(rgba, W, H);
+}
+
+/**
+ * 软 alpha 主抠（2026-09-08 OBS 对标）：距离场（可选 3×3 盒式预滤波）→
+ * 连续 alpha = 原alpha × pow(saturate((d−t1)/(t2−t1)), 1.5)；绿色优势清除
+ * （d≥t2 且 gExcess>gd）直接置 0。**不二值化**——边缘保留 1px 级渐变。
+ */
+function keySoftWithDistField(
+	rgba: Uint8Array, W: number, H: number,
+	key: { r: number; g: number; b: number }, t1: number, t2: number,
+	greenDominate: number, boxFilter: boolean,
+): void {
+	const n = W * H;
+	const dist = new Float32Array(n);
+	for (let p = 0; p < n; p++) {
+		const i = p * 4;
+		dist[p] = Math.hypot(rgba[i] - key.r, rgba[i + 1] - key.g, rgba[i + 2] - key.b);
+	}
+	let df = dist;
+	if (boxFilter) {
+		// ★ 两遍 3×3 盒滤（2026-09-08「细线锯齿仍存」）：单遍 3×3 只抹单像素距离
+		//   跳动，抹不掉 H.264 4:2:0 块效应（8px 尺度）——两遍卷积 ≈ 5×5 三角核，
+		//   平滑半径翻倍。距离场平滑不破坏形状（对细线安全，区别于 mask 开运算）。
+		let src = dist;
+		for (let pass = 0; pass < 2; pass++) {
+			const dst = new Float32Array(n);
+			const inp = src;
+			for (let y = 0; y < H; y++) {
+				for (let x = 0; x < W; x++) {
+					let sum = 0, cnt = 0;
+					for (let dy = -1; dy <= 1; dy++) {
+						const yy = y + dy;
+						if (yy < 0 || yy >= H) { continue; }
+						for (let dx = -1; dx <= 1; dx++) {
+							const xx = x + dx;
+							if (xx < 0 || xx >= W) { continue; }
+							sum += inp[yy * W + xx];
+							cnt++;
+						}
+					}
+					dst[y * W + x] = sum / Math.max(1, cnt);
+				}
+			}
+			src = dst;
+		}
+		df = src;
+	}
+	const band = Math.max(1e-6, t2 - t1);
+	for (let p = 0; p < n; p++) {
+		const i = p * 4;
+		if (rgba[i + 3] === 0) { continue; }
+		const d = df[p];
+		const g = rgba[i + 1], r = rgba[i], b = rgba[i + 2];
+		const gExcess = g - Math.max(r, b);
+		// 真绿溢（重混合像素）直接透明（与硬路径语义一致）
+		if (d < t1 || (d >= t2 && gExcess > greenDominate && g > 60)) {
 			rgba[i + 3] = 0;
+			continue;
+		}
+		if (d < t2) {
+			// 过渡带：连续曲线（指数 1.5 偏向不透明，主体边缘不发虚）
+			const k = Math.pow(Math.min(1, Math.max(0, (d - t1) / band)), 1.5);
+			rgba[i + 3] = Math.round(rgba[i + 3] * k);
 		}
 	}
+}
+
+/** 软 alpha 路径的碎块清除：4-连通 alpha>8 岛屿 <6px 清除（软边场景阈值略宽）。 */
+function removeSmallAlphaIslands(rgba: Uint8Array, W: number, H: number): void {
+	const n = W * H;
+	const visited = new Uint8Array(n);
+	const stack: number[] = [];
+	const members: number[] = [];
+	for (let start = 0; start < n; start++) {
+		if (visited[start] || rgba[start * 4 + 3] <= 8) { continue; }
+		members.length = 0;
+		stack.length = 0;
+		stack.push(start);
+		visited[start] = 1;
+		while (stack.length) {
+			const cur = stack.pop() as number;
+			members.push(cur);
+			const cy = (cur / W) | 0;
+			const cx = cur - cy * W;
+			const push = (j: number) => { if (!visited[j] && rgba[j * 4 + 3] > 8) { visited[j] = 1; stack.push(j); } };
+			if (cx > 0) { push(cur - 1); }
+			if (cx + 1 < W) { push(cur + 1); }
+			if (cy > 0) { push(cur - W); }
+			if (cy + 1 < H) { push(cur + W); }
+		}
+		if (members.length < 6) {
+			for (const m of members) { rgba[m * 4 + 3] = 0; }
+		}
+	}
+}
+
+/**
+ * 抠像共享后处理（三算法共用，2026-09-08 从 chromaKeyFrame 拆出）：
+ * choke（mask 内缩）→ 邻接 despill → 形态学开运算 → 孤立碎块清除。
+ */
+function chromaPostProcess(rgba: Uint8Array, W: number, H: number): void {
 	// ── choke（mask 内缩）：与透明区相邻且带绿色优势的边缘像素 → alpha=0。
 	//    两趟迭代（各吃 1px）；从 alpha 快照判定邻接，避免本趟清除影响下一像素。
+	// ★ 首趟无条件内缩（2026-09-08 边缘锐化）：主抠过渡带改透明后，贴边仍可能
+	//   残留 1px 半混合像素（色距刚超 t2）——无条件吃 1px（不判颜色），描边外
+	//   缘彻底实心化；描边主体（内部像素不贴透明区）不受影响。
+	{
+		const snap = new Uint8Array(rgba);
+		for (let y = 0; y < H; y++) {
+			for (let x = 0; x < W; x++) {
+				const i = (y * W + x) * 4;
+				if (snap[i + 3] === 0) { continue; }
+				let touchesTransparent = false;
+				if (x > 0 && snap[i - 4 + 3] === 0) { touchesTransparent = true; }
+				else if (x + 1 < W && snap[i + 4 + 3] === 0) { touchesTransparent = true; }
+				else if (y > 0 && snap[i - W * 4 + 3] === 0) { touchesTransparent = true; }
+				else if (y + 1 < H && snap[i + W * 4 + 3] === 0) { touchesTransparent = true; }
+				if (touchesTransparent) { rgba[i + 3] = 0; }
+			}
+		}
+	}
 	const CHOKES = 2;
 	for (let pass = 0; pass < CHOKES; pass++) {
 		const snap = new Uint8Array(rgba);        // alpha 快照（含 RGB，代价可接受）
@@ -387,6 +753,72 @@ export function chromaKeyFrame(
 			}
 		}
 	}
+	// ── 形态学开运算（2026-09-08「边缘不规整」优化①）：erosion 1px + dilation 1px
+	//    （4-邻域十字结构元素）。视频压缩噪声让色距阈值边界逐帧抖动 → alpha 边缘
+	//    出现 1px 毛刺/锯齿（视觉即「动图边缘不规整」）。开运算吃掉宽度 ≤1px 的
+	//    尖刺与贴边噪声点；净尺寸不变（先蚀后胀），白描边（宽 ≥2px）形状不受影响。
+	{
+		const eroded = new Uint8Array(rgba.length);
+		for (let y = 0; y < H; y++) {
+			for (let x = 0; x < W; x++) {
+				const i = (y * W + x) * 4;
+				if (rgba[i + 3] === 0) { continue; }
+				// 4-邻域全不透明才保留（边界外视为满足；边界像素被腐蚀）
+				const left = x === 0 || rgba[i - 4 + 3] !== 0;
+				const right = x + 1 >= W || rgba[i + 4 + 3] !== 0;
+				const up = y === 0 || rgba[i - W * 4 + 3] !== 0;
+				const down = y + 1 >= H || rgba[i + W * 4 + 3] !== 0;
+				if (left && right && up && down) {
+					eroded[i + 3] = rgba[i + 3];
+				}
+			}
+		}
+		// dilation：4-邻域存在腐蚀幸存像素 → 保留（透明像素 RGB 保持原样，仅 alpha）
+		for (let y = 0; y < H; y++) {
+			for (let x = 0; x < W; x++) {
+				const i = (y * W + x) * 4;
+				if (eroded[i + 3] !== 0) { continue; }
+				if ((x > 0 && eroded[i - 4 + 3] !== 0)
+					|| (x + 1 < W && eroded[i + 4 + 3] !== 0)
+					|| (y > 0 && eroded[i - W * 4 + 3] !== 0)
+					|| (y + 1 < H && eroded[i + W * 4 + 3] !== 0)) {
+					rgba[i + 3] = 255;
+				} else {
+					rgba[i + 3] = 0;
+				}
+			}
+		}
+	}
+	// ── 孤立碎块清除（2026-09-08「边缘不规整」优化②）：开运算对 2-3px 的噪声
+	//    碎块无效（腐蚀幸存的块中心会被膨胀复原）——按 4-连通域扫 alpha，面积
+	//    < 4px 的碎块清除。阈值保守（240² 下 4px ≈ 2×2）：贴纸装饰元素（挥手
+	//    粒子/爱心/汗滴）面积普遍 ≥4px 不受影响；1-3px 边缘噪声碎片被清除。
+	{
+		const nPx = W * H;
+		const visited = new Uint8Array(nPx);
+		const stack: number[] = [];
+		const members: number[] = [];
+		for (let start = 0; start < nPx; start++) {
+			if (visited[start] || rgba[start * 4 + 3] === 0) { continue; }
+			members.length = 0;
+			stack.length = 0;
+			stack.push(start);
+			visited[start] = 1;
+			while (stack.length) {
+				const cur = stack.pop() as number;
+				members.push(cur);
+				const cy = (cur / W) | 0;
+				const cx = cur - cy * W;
+				if (cx > 0) { const j = cur - 1; if (!visited[j] && rgba[j * 4 + 3] !== 0) { visited[j] = 1; stack.push(j); } }
+				if (cx + 1 < W) { const j = cur + 1; if (!visited[j] && rgba[j * 4 + 3] !== 0) { visited[j] = 1; stack.push(j); } }
+				if (cy > 0) { const j = cur - W; if (!visited[j] && rgba[j * 4 + 3] !== 0) { visited[j] = 1; stack.push(j); } }
+				if (cy + 1 < H) { const j = cur + W; if (!visited[j] && rgba[j * 4 + 3] !== 0) { visited[j] = 1; stack.push(j); } }
+			}
+			if (members.length < 4) {
+				for (const px of members) { rgba[px * 4 + 3] = 0; }
+			}
+		}
+	}
 }
 
 /**
@@ -405,6 +837,7 @@ async function loadSeedFrameRgba(
 	similarity: number,
 	smoothness: number,
 	fetchImpl: typeof fetch,
+	algo: ChromaKeyAlgo = 'rgb',
 ): Promise<Uint8Array> {
 	const blob = /^data:/i.test(imageRef) ? dataUrlToBlob(imageRef) : await (await fetchImpl(imageRef)).blob();
 	const bitmap = await createImageBitmap(blob);
@@ -414,10 +847,11 @@ async function loadSeedFrameRgba(
 		canvas.height = height;
 		const ctx = canvas.getContext('2d', { willReadFrequently: true });
 		if (!ctx) { throw new Error('浏览器无法创建画布。'); }
+		ctx.imageSmoothingQuality = 'high';
 		ctx.drawImage(bitmap, 0, 0, width, height);
 		const data = ctx.getImageData(0, 0, width, height).data;
 		const rgba = new Uint8Array(data.buffer.slice(0));
-		chromaKeyFrame(rgba, key, similarity, smoothness);
+		chromaKeyFrame(rgba, key, similarity, smoothness, algo, { boxFilterDistance: true });
 		return rgba;
 	} finally {
 		bitmap.close();
@@ -426,17 +860,25 @@ async function loadSeedFrameRgba(
 
 /**
  * 压缩降级档位：colors 色数、fps 抽稀（0=沿用计划帧率）、width 缩放（0=沿用）。
- * ★ 微信规范 240×240 是**硬尺寸**——末两档保持 240（width 0）只降色数/帧率；
- *   100KB 上限较紧，240² 动图靠「色数→帧率」双降逼近（仍超限则 overLimit 提示，
- *   不缩尺寸——缩尺寸产出不合规）。
+ *
+ * ★ 2026-09-08 重排（「描边不清晰」根因，日志实锤）：旧表**色数最先牺牲**
+ *   （128→96→64→48…），白描边的抗锯齿渐变带被低色数量化成粗阶梯 → 视觉
+ *   「描边模糊/绒毛」。实测 36 帧 240²/128 色 = 1.1MB，100KB 上限下 5 档全超。
+ *   新策略：**帧率先行**（体积线性下降：36→13 帧约省 64%）、色数殿后（128 保持
+ *   到 5fps 档）、尺寸最后（240 是微信硬尺寸）。表情包 4-6fps 完全可接受
+ *   （微信表情普遍 5-10fps），而描边量化糊无法逆转。
+ *   注：透明 GIF 主体移动时**帧间差分不可用**（disposal=2 每帧全量重绘），
+ *   100KB 约束下降档不可避免——质量优先场景请调大 max_kb（对比期建议 500）。
  */
 const TRANSPARENT_GIF_LEVELS: Array<{ colors: number; fps: number; width: number }> = [
-	{ colors: 128, fps: 0, width: 0 },
-	{ colors: 96, fps: 0, width: 0 },
-	{ colors: 64, fps: 10, width: 0 },
-	{ colors: 48, fps: 8, width: 192 },
-	{ colors: 32, fps: 8, width: 160 },
-	{ colors: 24, fps: 6, width: 0 },
+	{ colors: 128, fps: 0, width: 0 },    // 全量：计划帧率 + 128 色
+	{ colors: 128, fps: 8, width: 0 },    // 帧率先降（体积近线性减半）
+	{ colors: 128, fps: 5, width: 0 },    // 色数仍是 128（描边清晰）
+	{ colors: 96, fps: 5, width: 0 },
+	{ colors: 64, fps: 5, width: 0 },
+	{ colors: 48, fps: 4, width: 0 },
+	{ colors: 32, fps: 4, width: 0 },
+	{ colors: 24, fps: 4, width: 0 },
 ];
 
 export interface ConvertedTransparentGif extends ConvertedGif {
@@ -572,6 +1014,10 @@ export async function convertVideoToGridTransparentGifs(
 		if (!ctx) { throw new Error('浏览器无法创建画布。'); }
 
 		// ── 逐帧抽取 + 抠像（整帧，格切分在抠像之后——一次 chroma-key 全帧复用）──
+		// ★ 缩放质量（2026-09-08 锯齿优化）：768P→240 高质量插值，减少边缘混合带。
+		ctx.imageSmoothingQuality = 'high';
+		// ★ 抠像算法可选（2026-09-08 调研落地）：values.chroma_algo（rgb/flood/ycbcr）
+		const algo = parseChromaAlgo(values.chroma_algo);
 		const key = parseHexColor(chroma.color);
 		const rgbaFrames: Uint8Array[] = [];
 		for (let i = 0; i < plan.times.length; i++) {
@@ -579,7 +1025,7 @@ export async function convertVideoToGridTransparentGifs(
 			ctx.drawImage(video, 0, 0, plan.width, plan.height);
 			const data = ctx.getImageData(0, 0, plan.width, plan.height).data;
 			const rgba = new Uint8Array(data.buffer.slice(0));
-			chromaKeyFrame(rgba, key, chroma.similarity, chroma.smoothness);
+			chromaKeyFrame(rgba, key, chroma.similarity, chroma.smoothness, algo, { boxFilterDistance: true });
 			rgbaFrames.push(rgba);
 			onProgress?.({ promptId: '', value: 3 + Math.round((i + 1) / plan.times.length * 45) });
 		}
@@ -592,7 +1038,7 @@ export async function convertVideoToGridTransparentGifs(
 		//   失败不阻断（视频首帧兜底）。
 		if (firstFrameOverride) {
 			try {
-				rgbaFrames[0] = await loadSeedFrameRgba(firstFrameOverride, plan.width, plan.height, key, chroma.similarity, chroma.smoothness, fetchImpl);
+				rgbaFrames[0] = await loadSeedFrameRgba(firstFrameOverride, plan.width, plan.height, key, chroma.similarity, chroma.smoothness, fetchImpl, algo);
 			} catch (e) {
 				// eslint-disable-next-line no-console
 				console.warn(`[VideoToGif] firstFrameOverride 加载失败，保留视频首帧: ${e instanceof Error ? e.message : String(e)}`);
@@ -616,6 +1062,7 @@ export async function convertVideoToGridTransparentGifs(
 		scaleCanvas.height = cellH;
 		const sctx = scaleCanvas.getContext('2d', { willReadFrequently: true });
 		if (!sctx) { throw new Error('浏览器无法创建画布。'); }
+		sctx.imageSmoothingQuality = 'high';
 		// cells[r][c] = 该格全部帧的 RGBA（行主序扁平化：cellFrames[r*cols+c]）
 		const cellFrames: Uint8Array[][] = Array.from({ length: rows * cols }, () => []);
 		const big = document.createElement('canvas');
@@ -745,23 +1192,41 @@ export async function convertVideoToTransparentGif(
 		}
 		const plan = planGifFrames(values, video.duration, srcW, srcH);
 
+		// ★ 2× 超采样抗锯齿（2026-09-08「细线装饰锯齿」）：1-bit alpha 的 staircase
+		//   只能靠提高判定分辨率缓解——在 2×（480）分辨率抽帧 + 抠像，再按 2×2
+		//   子像素**覆盖率**二值降采样（>50% 不透明 → 255）。边缘位置精度翻倍、
+		//   台阶减半；细线（240 下 1-2px）在 480 下是 2-4px，开运算不再整条吃掉。
+		const SS = 2;
 		const canvas = document.createElement('canvas');
-		canvas.width = plan.width;
-		canvas.height = plan.height;
+		canvas.width = plan.width * SS;
+		canvas.height = plan.height * SS;
 		const ctx = canvas.getContext('2d', { willReadFrequently: true });
 		if (!ctx) { throw new Error('浏览器无法创建画布。'); }
 
 		// ── 逐帧抽取 + 抠像（缓存 RGBA，供多档重编码复用）────────────────────
-		const key = parseHexColor(chroma.color);
+		// ★ 缩放质量（2026-09-08 锯齿优化）：768P→480 高质量插值，减少边缘混合带。
+		ctx.imageSmoothingQuality = 'high';
+		// ★ 抠像算法可选（2026-09-08 调研落地）：values.chroma_algo（rgb/flood/ycbcr）
+		const algo = parseChromaAlgo(values.chroma_algo);
+		// ★ key 色自动采样（2026-09-08）：chroma.color='auto' → 从**首帧**四边采样。
+		//   视频编码会让幕布绿漂移（#00FF00 → 偏黄绿/暗绿），采样值贴合实际帧，
+		//   比 fix 死 hex 更稳；采样一次全帧复用（幕布色帧间基本恒定）。
+		const autoKey = chroma.color === 'auto';
+		let key = autoKey ? { r: 0, g: 255, b: 0 } : parseHexColor(chroma.color);
 		const rgbaFrames: Uint8Array[] = [];
 		for (let i = 0; i < plan.times.length; i++) {
 			await seekTo(video, plan.times[i]);
-			ctx.drawImage(video, 0, 0, plan.width, plan.height);
-			const data = ctx.getImageData(0, 0, plan.width, plan.height).data;
+			ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+			const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
 			// slice(0) 复制出独立 buffer（后续 chromaKeyFrame 就位改写，不污染 ImageData 池）
 			const rgba = new Uint8Array(data.buffer.slice(0));
-			chromaKeyFrame(rgba, key, chroma.similarity, chroma.smoothness);
-			rgbaFrames.push(rgba);
+			if (autoKey && i === 0) {
+				key = autoSampleChromaKeyRgba(rgba, canvas.width, canvas.height);
+				// eslint-disable-next-line no-console
+				console.warn(`[VideoToGif] chroma color=auto: sampled key=rgb(${key.r},${key.g},${key.b}) from first frame`);
+			}
+			chromaKeyFrame(rgba, key, chroma.similarity, chroma.smoothness, algo, { boxFilterDistance: true });
+			rgbaFrames.push(downsampleChroma2x(rgba, canvas.width, canvas.height));
 			// 抽帧+抠像占 3-60%，压缩迭代占 60-95%
 			onProgress?.({ promptId: '', value: 3 + Math.round((i + 1) / plan.times.length * 57) });
 		}
@@ -772,10 +1237,29 @@ export async function convertVideoToTransparentGif(
 		//   抠像后整体替换第 0 帧 —— 动图起点 = 输入静态贴纸。失败不阻断（视频首帧兜底）。
 		if (firstFrameOverride) {
 			try {
-				rgbaFrames[0] = await loadSeedFrameRgba(firstFrameOverride, plan.width, plan.height, key, chroma.similarity, chroma.smoothness, fetchImpl);
+				rgbaFrames[0] = await loadSeedFrameRgba(firstFrameOverride, plan.width, plan.height, key, chroma.similarity, chroma.smoothness, fetchImpl, algo);
 			} catch (e) {
 				// eslint-disable-next-line no-console
 				console.warn(`[VideoToGif] firstFrameOverride 加载失败，保留视频首帧: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
+
+		// ★ 首尾回环混合（2026-09-08「视频首尾帧不一致」）：视频模型无循环约束，
+		//   GIF 无限循环播放时尾帧→首帧跳变突兀。尾部 m 帧与首帧**全通道线性
+		//   插值**（RGB+alpha），播放末段平滑过渡回起点——循环无缝。m=4 对
+		//   subtle motion 表情无鬼影；大动作可关（loop_blend=false）。
+		if (values.loop_blend !== false && rgbaFrames.length > 6) {
+			const m = Math.min(4, rgbaFrames.length - 2);
+			const first = rgbaFrames[0];
+			for (let k = 0; k < m; k++) {
+				const t = (k + 1) / (m + 1);          // 0.2→0.8：末帧最接近首帧
+				const tail = rgbaFrames[rgbaFrames.length - m + k];
+				for (let p = 0; p < tail.length; p += 4) {
+					tail[p] = Math.round(tail[p] * (1 - t) + first[p] * t);
+					tail[p + 1] = Math.round(tail[p + 1] * (1 - t) + first[p + 1] * t);
+					tail[p + 2] = Math.round(tail[p + 2] * (1 - t) + first[p + 2] * t);
+					tail[p + 3] = Math.round(tail[p + 3] * (1 - t) + first[p + 3] * t);
+				}
 			}
 		}
 
@@ -804,6 +1288,8 @@ export async function convertVideoToTransparentGif(
 				big.height = plan.height;
 				const bctx = big.getContext('2d', { willReadFrequently: true });
 				if (!sctx || !bctx) { throw new Error('浏览器无法创建画布。'); }
+				sctx.imageSmoothingQuality = 'high';
+				bctx.imageSmoothingQuality = 'high';
 				const shrunk: Uint8Array[] = [];
 				const imgData = bctx.createImageData(plan.width, plan.height);
 				for (const rgba of rgbaFrames) {
@@ -856,3 +1342,83 @@ export async function convertVideoToTransparentGif(
 		if (objectUrl) { URL.revokeObjectURL(objectUrl); }
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 视频抠图（ComfyTV.VideoMatteStage，2026-09-08）—— 独立工具节点。
+//
+// 与「转动态表情包」（Saros.AnimatedEmoji）的差异：本节点**不生成视频**，只对
+// 上游任意视频（视频生成节点产物 / 上传视频）做本地抠像 → 透明 GIF。管线完全
+// 复用 convertVideoToTransparentGif（抽帧 + chromaKeyFrame 五道后处理 + 压缩
+// 迭代），抠像参数默认值对齐静态表情包验证基准（sim=0.25 / smooth=0.08）。
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** 浏览器本地执行「视频抠图」。 */
+export async function runVideoMatteNode(input: VideoToGifInput): Promise<SingleNodeRunResult> {
+	const { runner, nodeId, values, upstreams, store, onProgress } = input;
+	const snapshotKey = input.snapshotKey ?? nodeId;
+	const src = firstUpstreamVideo(store, upstreams);
+	if (!src) {
+		return { promptId: '', status: 'error', error: '视频抠图需要上游视频输入（请先连接并运行一个视频节点）。', entries: [] };
+	}
+
+	// 抠像参数（默认对齐静态表情包验证基准 sim=0.25/smooth=0.08；color 默认
+	// auto = 首帧四边自动采样，幕布绿漂移时比固定 hex 稳）。
+	const chroma = {
+		color: String(values.chroma_color ?? 'auto') || 'auto',
+		similarity: Number.isFinite(Number(values.chroma_similarity)) ? Number(values.chroma_similarity) : 0.25,
+		smoothness: Number.isFinite(Number(values.chroma_smoothness)) ? Number(values.chroma_smoothness) : 0.08,
+	};
+	const maxKb = Math.max(100, Math.min(2000, Math.round(Number(values.max_kb) || 500)));
+	// eslint-disable-next-line no-console
+	console.warn(`[VideoMatte] start nodeId=${nodeId} src=${src.slice(0, 60)} algo=${String(values.chroma_algo ?? 'rgb')} color=${chroma.color} sim=${chroma.similarity} smooth=${chroma.smoothness} maxKb=${maxKb}`);
+
+	try {
+		const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+		const converted = await convertVideoToTransparentGif(src, values, chroma, fetchImpl, onProgress, maxKb * 1024);
+		const outBlob = converted.gifBlob;
+
+		// ── 上传（失败退 data:，同 runVideoToGifNode）───────────────────────
+		let ref = '';
+		try {
+			const form = new FormData();
+			form.append('image', outBlob, `video-matte-${Date.now()}-${Math.floor(Math.random() * 1e6)}.gif`);
+			const resp = await runner.fetchApi?.('/upload/image', { method: 'POST', body: form });
+			const data = await resp?.json() as { name?: string; subfolder?: string; type?: string } | undefined;
+			const name = String(data?.name ?? '');
+			if (name) {
+				const subfolder = String(data?.subfolder ?? '');
+				const typeOut = String(data?.type ?? 'output');
+				ref = `${runner.baseUrl}/view?filename=${encodeURIComponent(name)}${subfolder ? '&subfolder=' + encodeURIComponent(subfolder) : ''}&type=${typeOut}`;
+			}
+		} catch {
+			// 忽略：走 data: 兜底
+		}
+		if (!ref) { ref = await blobToDataUrl(outBlob); }
+
+		// kind:'image' —— GIF 用 <img> 播放（<video> 无法播 gif，见 runVideoToGifNode 注释）
+		const entry = {
+			nodeId: snapshotKey,
+			port: 'output',
+			key: `${snapshotKey}:output:0`,
+			media: {
+				kind: 'image' as const,
+				ref,
+				meta: {
+					mime: 'image/gif',
+					transparent: '1',
+					gifFrames: String(converted.frames),
+					gifSize: `${converted.width}x${converted.height}`,
+					gifDelayCs: String(converted.delayCs),
+					matteLevel: String(converted.level),
+				},
+			},
+			index: 0,
+		};
+		store.put(entry);
+		onProgress?.({ value: 100 });
+		return { promptId: '', status: 'success', entries: [entry], durationMs: 0 };
+	} catch (err) {
+		return { promptId: '', status: 'error', error: String(err), entries: [] };
+	}
+}
+

@@ -133,6 +133,7 @@ import { MediaSnapshotStore } from './comfyHost/mediaSnapshotStore';
 import { registerSnapshotSource, unregisterSnapshotSource } from './comfyHost/workflowSnapshotBridgeWebview';
 import { createIndexedDBBackend } from './comfyHost/indexedDBBackend';
 import { mediaImport } from './mediaAssets';
+import { sendRequest } from '../../bridge/messageClient';
 import { shouldCollectMedia, parseDataUrl } from './comfyHost/mediaCollect';
 import type { WorkflowGraphNode, WorkflowGraphConnection } from '../../types/workflowStorage';
 
@@ -435,7 +436,7 @@ interface LiteGraphCanvasProps {
 // comfyHost/mediaCollect.ts (unit-tested); this function only performs the
 // side effect (mediaImport IPC).
 const collectedAssetKeys = new Set<string>();
-function collectAsset(workflowId: string, entry: MediaSnapshotEntry): void {
+async function collectAsset(workflowId: string, entry: MediaSnapshotEntry): Promise<void> {
 	const decision = shouldCollectMedia(workflowId, entry.media.ref, collectedAssetKeys);
 	if (!decision) { return; }
 	collectedAssetKeys.add(decision.key);
@@ -446,11 +447,26 @@ function collectAsset(workflowId: string, entry: MediaSnapshotEntry): void {
 	// entries with no saved image. Decode it and hand over `base64` + `ext`
 	// so MediaStore.importAsset mirrors it into the media directory.
 	const parsed = parseDataUrl(entry.media.ref);
-	const req = parsed
+	// ★ 外网 http(s) ref 固化落盘（2026-09-08「provider mp4 默认下载到本地」）：
+	//   provider 渠道的视频产物是 COS 签名 URL（约 2h 过期）——此前只传 ref →
+	//   host 仅索引不下载 → 过期后媒体库死链（「生成的视频无处可寻」）。现在
+	//   经 host 代理（net.fetchAsDataUrl，主进程无 CSP 限制）拉取后走 base64
+	//   落盘路径——媒体库拿到真实本地文件。拉取失败回退 ref 索引（不丢条目）。
+	let base64Req: { base64: string; ext: string; mime?: string } | null = parsed;
+	if (!base64Req && /^https?:/i.test(entry.media.ref)
+		&& !/^https?:\/\/(127\.0\.0\.1|localhost)([:/]|$)/i.test(entry.media.ref)) {
+		try {
+			const r = await sendRequest<{ url: string }, { dataUrl?: string; error?: string }>(
+				'net.fetchAsDataUrl', { url: entry.media.ref }, 120_000,
+			);
+			base64Req = r?.dataUrl ? parseDataUrl(r.dataUrl) : null;
+		} catch { /* 代理失败 → 回退 ref 索引 */ }
+	}
+	const req = base64Req
 		? {
-			base64: parsed.base64,
-			ext: parsed.ext,
-			mime: parsed.mime,
+			base64: base64Req.base64,
+			ext: base64Req.ext,
+			mime: base64Req.mime,
 			kind: entry.media.kind,
 			workflowId: workflowId || undefined,
 			nodeId: entry.nodeId,
@@ -463,10 +479,12 @@ function collectAsset(workflowId: string, entry: MediaSnapshotEntry): void {
 			nodeId: entry.nodeId,
 			provider: decision.provider,
 		};
-	void mediaImport(req).catch(() => {
+	try {
+		await mediaImport(req);
+	} catch {
 		// Allow a later run to retry instead of silently dropping the asset.
 		collectedAssetKeys.delete(decision.key);
-	});
+	}
 }
 
 // 幂等标记：同一次 paste 事件只允许被处理一次。window 级监听叠加快捷键链路时
@@ -533,7 +551,8 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 					// ★ 之前只收 image，video 产物（MiniMax H3 mp4 / vox 视频）被过滤、
 					//   不进媒体库。改为 image + video 都收录（audio 暂不收录）。
 					if (entry.media.kind !== 'image' && entry.media.kind !== 'video') { return; }
-					collectAsset(workflowIdRef.current ?? '', entry);
+					// ★ collectAsset 已 async（外网 ref 需先经 host 代理拉取固化落盘）
+					void collectAsset(workflowIdRef.current ?? '', entry);
 				},
 			},
 		);
@@ -825,6 +844,11 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			const tag = t.tagName;
 			if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') { return true; }
 			if (t.isContentEditable) { return true; }
+			// ★ data-no-node-drag 标记（2026-09-08 扩展为 closest 祖先链）：标记元素
+			//   及其子树的 pointer 拖拽不劫持为节点移动——错误横幅等**可选中文本区**
+			//   需要（userSelect:text 只管文本选择，capture 阶段的 dragPointerDown
+			//   仍会把按下-移动劫持成节点拖拽，导致文字框选失败）。
+			if (t.closest('[data-no-node-drag]')) { return true; }
 			// 笔刷/绘画类 <canvas>（如 MaskPainter 的擦除笔刷）：自身处理 pointer
 			// 拖拽绘制，必须跳过节点拖拽，否则笔刷拖拽会与节点移动冲突。
 			if (t instanceof HTMLCanvasElement && t.getAttribute('data-no-node-drag') === 'true') { return true; }
@@ -1349,7 +1373,7 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			// 改注册表 spec 只影响新建节点，已存在/已存盘的节点会永远停在旧端口名
 			//（如 Rotate 的 `input`/`output` 而非 `Image`/`Image`）。这里按帧兜底
 			// 纠正；只改名不动槽位数量，连线按下标寻址故不会断。
-			if (syncNodePortsToSpec(n as unknown as Parameters<typeof syncNodePortsToSpec>[0])) {
+			if (syncNodePortsToSpec(n as unknown as Parameters<typeof syncNodePortsToSpec>[0], g)) {
 				// 与同文件其余 6 处一致用可选链 —— LGraphCanvas 实例在某些版本下
 				// 暴露的是 `setDirtyCanvas`，未对齐的 `setDirty` 直接抛
 				// `TypeError: N.setDirty is not a function`，syncOverlay 每帧抛一次

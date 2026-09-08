@@ -142,6 +142,7 @@ import {
 	splitEmojiPrompts,
 } from './workflowRunShared.js';
 import { splitStickerSheet, defaultSheetCellCrops, parseSheetCellCrops, buildEmojiSheetPrompt, resolveSheetBackground, resolveEmojiSheetSize, makeSizePostProcess, composePostProcess, EMOJI_SHEET_MARGIN_RATIO, type SheetCellCrop, type SplitSheetCell } from './emojiSheetUtils.js';
+import { composeImageGridOnChroma } from './chromaCompose.js';
 
 // ★ 静态表情包执行器（runEmojiStageGrid）。
 
@@ -263,7 +264,10 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 	//   同源：① 上游连线快照 ② values.comfytv_image_refs 钉住资产。
 	const upstreamRefMap = collectUpstreamRefs(store, upstreams);
 	applyAssetRefOverrides(upstreamRefMap, values);
-	const upstreamImageRef = upstreamRefMap['image'] ?? '';
+	// ★ 改 let（2026-09-08）：sheet 口兜底普通图（isSheetFull=false）不再短路生成
+	//   （原「无条件直通」让点「重新生成」永远不调 provider——用户日志实证），
+	//   改为并入参考图（img2img），见 upstreamSheet 声明后的回填。
+	let upstreamImageRef = upstreamRefMap['image'] ?? '';
 	// ★ sheet 输入直通（2026-09）：`sheet` 输入端口连线 → 取上游归档的整图图集
 	//   （meta.sheetFull='1'，port 'sheet'；兜底上游最新 image——外部拼贴图上游
 	//   未必带 sheetFull 标注）。调度器已把边 source 映射为上游 snapshotKey
@@ -277,6 +281,12 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 		return { ref: (hit ?? entries[entries.length - 1])?.media.ref ?? '', isSheetFull: !!hit };
 	})() : { ref: '', isSheetFull: false };
 	const upstreamSheetRef = upstreamSheet.ref;
+	// ★ 兜底普通图（isSheetFull=false）并入参考图（2026-09-08）：上游连线的是
+	//   普通图（非 sheetFull 归档）时，用户意图多半是 img2img 参考——直通切分会
+	//   「吞掉重新生成」且把普通图伪装成图集等分切割（几何必然错位）。
+	if (!upstreamSheet.isSheetFull && !upstreamImageRef && upstreamSheetRef) {
+		upstreamImageRef = upstreamSheetRef;
+	}
 	// ★ 生成图像大小（2026-09-02）：整版图集分辨率，两渠道共用。
 	//   provider → sendImageGen.width/height；comfyui → 覆盖模板 latent 尺寸。
 	const sheetSize = resolveEmojiSheetSize(values.size);
@@ -287,6 +297,12 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 	//   整图（port 'sheet'）按新 cell_crops 重裁——零生成成本反复校准。
 	const cellCrops = parseSheetCellCrops(values.cell_crops, rows, cols);
 	const isRecrop = values.run_scope === 'recrop';
+	// ★ 抠图方式（2026-09-08）：none = 纯裁剪（2026-09-03 起默认）；flood = 白底
+	//   flood-fill；chroma = 绿幕 chroma-key（需绿幕图集，prompt 自动追加绿幕底）。
+	//   声明在外层：切分（splitStickerSheet）在 if(isRecrop)/else 之外共用。
+	const cutoutMode = values.cutout_mode === 'flood' || values.cutout_mode === 'chroma'
+		? (values.cutout_mode as 'flood' | 'chroma')
+		: 'none';
 	// ★ 切分 = **纯裁剪**（2026-09-03 用户要求）：生成链路不执行任何抠图
 	//   （flood-fill / AI 均不跑）。透明化由两条路径覆盖：① prompt 的图集底
 	//   约束（模型原生输出）；② 用户手动点「去背景」/迷你编辑器（内置 U²Net）。
@@ -296,7 +312,11 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 		// ★ sheet 直通模式（2026-09）：上游整图图集 → 跳过生成，直接切分。
 		//   归档契约与自生成一致（sheetFull='1' + rows/cols meta），下游
 		//   latestRoundOf / nodeCard 对账逻辑无需感知来源差异。
-		if (upstreamSheetRef) {
+		// ★ 2026-09-08 收紧：仅 **sheetFull='1' 真图集**才直通——上游是普通图时
+		//   直通会①吞掉「重新生成」（永远不调 provider，用户日志实证）②把普通图
+		//   伪装成图集等分切割（几何错位）。普通图改走参考图（见 upstreamSheet
+		//   声明处的回填），落到下方正常生成分支。
+		if (upstreamSheetRef && upstreamSheet.isSheetFull) {
 			sheetRef = await localizeImageRef(upstreamSheetRef);
 			cellPromptList = [];
 			// 整图归档（port 'sheet'，meta.sheetFull='1'）：与自生成分支同契约，
@@ -336,9 +356,15 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 			// ★ 背景策略：默认 auto —— 不再强加白底，让「透明背景」的格描述生效
 			//   （白底交由下方切图的 floodFillWhiteBg 兜底抠除，见 cutoutBg）。
 			const sheetBg = resolveSheetBackground(values.sheet_background);
-			const sheetPrompt = buildEmojiSheetPrompt(rows, cols, cellPrompts, sheetBg);
+			// chroma 模式需要**绿幕图集**——prompt 自动追加绿幕底约束（用户不必手写）；
+			// 但 sheet_background='green' 时 header/替换已含绿幕子句，不重复追加。
+			// 抠像在切分阶段进行（cutoutMode 见上方声明）。
+			const chromaSuffix = cutoutMode === 'chroma' && sheetBg !== 'green'
+				? ', IMPORTANT: the entire background MUST be solid pure green screen color (#00FF00), flat uniform green backdrop behind every sticker, absolutely no white background, no transparent background, no gray, no gradient, no shadows on the background'
+				: '';
+			const sheetPrompt = buildEmojiSheetPrompt(rows, cols, cellPrompts, sheetBg) + chromaSuffix;
 			// eslint-disable-next-line no-console
-			console.warn(`[EmojiStage] sheet mode backend=${backend} bg=${sheetBg} size=${sheetSize.width}x${sheetSize.height} ${rows}x${cols} prompt=${truncateForLog(sheetPrompt, 140)}`);
+			console.warn(`[EmojiStage] sheet mode backend=${backend} bg=${sheetBg} cutout=${cutoutMode} size=${sheetSize.width}x${sheetSize.height} ${rows}x${cols} prompt=${truncateForLog(sheetPrompt, 140)}`);
 			onProgress?.({ progress: 5 });
 			if (backend === 'provider') {
 				const send = input.sendImageGen;
@@ -454,9 +480,15 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 			cellPromptList = cellPrompts;
 		}
 		onProgress?.({ progress: 72 });
-		// ★ 拆分 = 按行列（cell_crops）**纯裁剪**：不做任何抠图（2026-09-03 用户
-		//   要求移除生成链路抠图）。透明化走 prompt 图集底约束或手动「去背景」。
-		const cellsOut = await splitStickerSheet(sheetRef, rows, cols, { marginRatio: EMOJI_SHEET_MARGIN_RATIO, cutoutBg: false, cellCrops }, fetchImpl);
+		// ★ 拆分 = 按行列（cell_crops）裁剪 + 可选抠图（cutout_mode，2026-09-08）：
+		//   none = 纯裁剪（2026-09-03 起默认）；flood = 白底 flood-fill 抠底；
+		//   chroma = 绿幕 chroma-key（sheetUtils 内自动采样 key 色 + 五道后处理）。
+		const cellsOut = await splitStickerSheet(sheetRef, rows, cols, {
+			marginRatio: EMOJI_SHEET_MARGIN_RATIO,
+			cutoutBg: cutoutMode === 'flood',
+			chroma: cutoutMode === 'chroma',
+			cellCrops,
+		}, fetchImpl);
 		for (let i = 0; i < cellsOut.length; i++) {
 			bakedByTarget.set(i, {
 				kind: 'image',

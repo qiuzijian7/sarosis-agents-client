@@ -143,7 +143,7 @@ export class MediaStore {
 			// 直连远程 http 会被拦截（图片不显示）。这里在主进程主动下载落盘，
 			// 之后 `_handleMediaGetUrl` 走 filePath 分支读文件转 data URL 展示，
 			// 同时保留 ref 作为原始引用（离线/兜底均可用本地文件）。
-			const downloaded = await this._downloadRemoteToFile(id, ref);
+			const downloaded = await this._downloadRemoteToFile(id, ref, entry.kind === 'video' ? 'mp4' : 'png');
 			if (downloaded) {
 				fileName = downloaded.fileName;
 				filePath = downloaded.filePath;
@@ -386,8 +386,9 @@ export class MediaStore {
 		return rel;
 	}
 
-	/** 下载远程 http(s) 图片并落盘到媒体库。成功返回文件元信息，失败返回 null（回退为纯 URL 引用）。 */
-	private async _downloadRemoteToFile(id: string, url: string): Promise<{ fileName: string; filePath: string; sizeBytes: number } | null> {
+	/** 下载远程 http(s) 图片/视频并落盘到媒体库。成功返回文件元信息，失败返回 null（回退为纯 URL 引用）。
+	 *  fallbackExt：URL/content-type 都推断不出时的兜底扩展名（视频资产传 'mp4'，避免 mp4 存成 .png）。 */
+	private async _downloadRemoteToFile(id: string, url: string, fallbackExt = 'png'): Promise<{ fileName: string; filePath: string; sizeBytes: number } | null> {
 		const controller = new AbortController();
 		const timeoutId = setTimeout(() => controller.abort(), 30_000);
 		try {
@@ -395,7 +396,7 @@ export class MediaStore {
 			if (!res.ok) { return null; }
 			const buf = Buffer.from(await res.arrayBuffer());
 			if (buf.byteLength === 0) { return null; }
-			const ext = this._extForRemote(url, res.headers.get('content-type'));
+			const ext = this._extForRemote(url, res.headers.get('content-type'), fallbackExt);
 			const rel = this._writeFile(id, ext, buf);
 			return {
 				fileName: path.basename(rel),
@@ -410,11 +411,14 @@ export class MediaStore {
 	}
 
 	/** 从远程 URL 路径后缀或 content-type 推断落盘扩展名。 */
-	private _extForRemote(url: string, contentType?: string | null): string {
+	private _extForRemote(url: string, contentType?: string | null, fallbackExt = 'png'): string {
 		const m = url.match(/\.(\w+)(?:[?#]|$)/i);
 		if (m) {
 			const e = m[1].toLowerCase();
-			if (/^(png|jpe?g|webp|gif|avif|bmp|svg)$/.test(e)) { return e === 'jpeg' ? 'jpg' : e; }
+			// ★ 视频扩展名（2026-09-08）：视频直出模式（gif_enable=false）的产物
+			//   是 mp4——旧白名单只有图片，推断不到 → 兜底 'png' → mp4 内容存成
+			//   .png（用户实测「没有生成 mp4，生成了一个 png 图像」）。
+			if (/^(png|jpe?g|webp|gif|avif|bmp|svg|mp4|webm|mov|m4v|mkv)$/.test(e)) { return e === 'jpeg' ? 'jpg' : e; }
 		}
 		if (contentType) {
 			const ct = contentType.split(';')[0].trim().toLowerCase();
@@ -425,8 +429,12 @@ export class MediaStore {
 			if (ct === 'image/avif') { return 'avif'; }
 			if (ct === 'image/bmp') { return 'bmp'; }
 			if (ct === 'image/svg+xml') { return 'svg'; }
+			// ★ 视频 mime（2026-09-08）
+			if (ct === 'video/mp4' || ct === 'application/mp4') { return 'mp4'; }
+			if (ct === 'video/webm') { return 'webm'; }
+			if (ct === 'video/quicktime') { return 'mov'; }
 		}
-		return 'png';
+		return fallbackExt;
 	}
 
 	private _toAsset(r: MediaRow): any {

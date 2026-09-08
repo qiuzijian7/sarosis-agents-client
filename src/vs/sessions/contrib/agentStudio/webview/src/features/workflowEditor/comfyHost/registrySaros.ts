@@ -50,8 +50,9 @@ const jin = (required: boolean = true): PortSpec => ({ name: 'in', type: 'SAROS_
 	const jout = (required: boolean = false): PortSpec => ({ name: 'out', type: 'SAROS_JSON', required });
 	registerNodeSpec({ type: 'Saros.Start', kind: 'react', title: '开始', category: 'system', inputs: [], outputs: [
 		{ name: 'out', type: 'SAROS_JSON', required: false },
-		// COMFYTV_TEXT 桥：args.text 或 args.prompt 字段直连 ComfyTV stage 的 texts/prompt 输入
-		{ name: 'text', type: 'COMFYTV_TEXT', required: false },
+		// 2026-09-08：移除 text 输出端口（用户要求卡片零参数 UI）。
+		// 原「COMFYTV_TEXT 桥」（args.text 直连 stage prompt）随端口下线；
+		// args 数据仍经 out 口 SAROS_JSON 与运行前参数面板消费。
 	], color: SAROS_NODE_COLORS.start, widgets: [{ name: 'args', type: 'TEXT', default: '{}' }] });
 	registerNodeSpec({ type: 'Saros.End', kind: 'react', title: '结束', category: 'system', inputs: [jin(true)], outputs: [], color: SAROS_NODE_COLORS.end });
 	registerNodeSpec({ type: 'Saros.Task', kind: 'react', title: '任务', category: 'basic', inputs: [jin()], outputs: [jout()], color: SAROS_NODE_COLORS.task, widgets: [{ name: 'prompt', type: 'TEXT' }] });
@@ -140,6 +141,10 @@ const jin = (required: boolean = true): PortSpec => ({ name: 'in', type: 'SAROS_
 		{ name: 'questionText', type: 'TEXT', default: 'Select an option' },
 		{ name: 'options', type: 'TEXT', default: '[{"label":"Option 1"},{"label":"Option 2"}]' },
 		{ name: 'multiSelect', type: 'COMBO', default: 'no', options: ['yes', 'no'] },
+		// ★ 动态参数表单（JSON 数组 [{key,label,type}]，type ∈ text/number/textarea）：
+		//   非空时交互卡片渲染**输入框**而非选项按钮，用户填写后以键值对象反馈
+		//   （answer = {key: value, ...}，SAROS_JSON 快照）。options 可为空。
+		{ name: 'params', type: 'TEXT', default: '[]' },
 	] });
 	registerNodeSpec({ type: 'Saros.Group', kind: 'react', title: '分组', category: 'layout', inputs: [], outputs: [], color: SAROS_NODE_COLORS.group });
 }

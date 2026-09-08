@@ -305,6 +305,7 @@ function extractByKeys(result: Record<string, unknown>, patterns: string[]): str
 async function floodPoll(def: FloodModelDef, taskId: string): Promise<{ urls: string[]; posters: string[]; result: Record<string, unknown> }> {
 	const voucher = await getVoucher();
 	const started = Date.now();
+	let polls = 0;
 	while (Date.now() - started < def.timeoutMs) {
 		await new Promise(r => setTimeout(r, 5000));
 		let j: Record<string, FloodTaskStatus> | null = null;
@@ -326,7 +327,12 @@ async function floodPoll(def: FloodModelDef, taskId: string): Promise<{ urls: st
 		const st = j?.[taskId];
 		if (!st) { continue; }
 		if (st.status === 0 || st.status === 1) {
-			console.log(`${LOG} 任务 ${taskId.slice(0, 8)}…: ${st.message || '处理中'}`);
+			// ★ 轮询降噪（2026-09-08）：状态不变时每 5 次（25s）打一条带计数——
+			//   此前每轮一条「处理中」，3s 视频 ~12 次轮询刷 12 行同文。
+			polls++;
+			if (polls === 1 || polls % 5 === 0) {
+				console.log(`${LOG} 任务 ${taskId.slice(0, 8)}…: ${st.message || '处理中'} (poll#${polls}, ${Math.round((Date.now() - started) / 1000)}s)`);
+			}
 			continue;
 		}
 		if (st.status !== 2) {

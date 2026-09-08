@@ -16,6 +16,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { PluginDetailEditorInput } from './pluginDetailEditorInput.js';
 import * as DOM from '../../../../base/browser/dom.js';
+import { renderLabelWithIcons } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { IAgentPlugin, IAgentPluginService } from '../../../../workbench/contrib/chat/common/plugins/agentPluginService.js';
 import { IEnablementModel, ContributionEnablementState, isContributionEnabled } from '../../../../workbench/contrib/chat/common/enablement.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -173,24 +174,30 @@ export class PluginDetailEditorPane extends EditorPane {
 		const agents = plugin.agents.get();
 		const mcpServers = plugin.mcpServerDefinitions.get();
 
+		// $(codicon) 需经 renderLabelWithIcons 解析为图标元素，textContent 直写会显示字面文本
+		const setBadge = (badge: HTMLElement, text: string): void => {
+			for (const el of renderLabelWithIcons(text)) {
+				badge.appendChild(typeof el === 'string' ? document.createTextNode(el) : el);
+			}
+		};
 		if (skills.length > 0) {
 			const badge = $$('span.plugin-detail-badge');
-			badge.textContent = `$(lightbulb) ${skills.length} skill${skills.length > 1 ? 's' : ''}`;
+			setBadge(badge, `$(lightbulb) ${skills.length} skill${skills.length > 1 ? 's' : ''}`);
 			badges.appendChild(badge);
 		}
 		if (commands.length > 0) {
 			const badge = $$('span.plugin-detail-badge');
-			badge.textContent = `$(terminal) ${commands.length} cmd${commands.length > 1 ? 's' : ''}`;
+			setBadge(badge, `$(terminal) ${commands.length} cmd${commands.length > 1 ? 's' : ''}`);
 			badges.appendChild(badge);
 		}
 		if (agents.length > 0) {
 			const badge = $$('span.plugin-detail-badge');
-			badge.textContent = `$(robot) ${agents.length} agent${agents.length > 1 ? 's' : ''}`;
+			setBadge(badge, `$(robot) ${agents.length} agent${agents.length > 1 ? 's' : ''}`);
 			badges.appendChild(badge);
 		}
 		if (mcpServers.length > 0) {
 			const badge = $$('span.plugin-detail-badge.mcp');
-			badge.textContent = '$(plug) MCP';
+			setBadge(badge, '$(plug) MCP');
 			badges.appendChild(badge);
 		}
 		titleInfo.appendChild(badges);

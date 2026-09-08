@@ -492,7 +492,12 @@ initMessageClient((type, data) => {
 		break;
 	}
 		default:
-			console.warn(`[AgentStudio] Unknown event type: ${type}`);
+			// ★ workflow.saved 静默（2026-09-08）：宿主每次草稿保存都广播该事件
+			//   （数秒一条），本面板不消费——刷 Unknown warn 纯噪音。其余未知
+			//   事件仍告警（漏消费的排查线索）。
+			if (type !== 'workflow.saved') {
+				console.warn(`[AgentStudio] Unknown event type: ${type}`);
+			}
 	}
 });
 

@@ -19,7 +19,9 @@ import { ExplorerFolderContext } from '../../../../workbench/contrib/files/commo
 import { IExplorerService } from '../../../../workbench/contrib/files/browser/files.js';
 import { OpenEditorCommandId } from '../../../../workbench/contrib/searchEditor/browser/constants.js';
 import { resolveResourcesForSearchIncludes } from '../../../../workbench/services/search/common/queryBuilder.js';
+import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { SESSIONS_FILES_VIEW_ID } from '../../files/browser/filesView.js';
+import { AGENT_STUDIO_SEARCH_VIEW_ID } from '../../agentStudio/common/constants.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ISearchViewModelWorkbenchService } from '../../../../workbench/contrib/search/browser/searchTreeModel/searchViewModelWorkbenchService.js';
 import { SearchViewModelWorkbenchService } from '../../../../workbench/contrib/search/browser/searchTreeModel/searchModel.js';
@@ -246,10 +248,30 @@ configurationRegistry.registerConfiguration({
 	}
 });
 
+// [Saros] Ctrl+Shift+F：打开左侧栏 Search 视图（agentStudio.search 容器 / AgentStudioSearchViewPane）
+// 并聚焦搜索输入框。旧绑定是 OpenEditorCommandId（Search Editor，独立编辑器页），不符合
+// 「快捷键直接选中左侧栏搜索页 + 光标进搜索框」的需求（2026-09-08）。
+// 聚焦链路：IViewsService.openView(id, focus=true) → pane.focus() → SearchView.focus()
+// → searchWidget.focus()（无搜索结果时聚焦输入框，见 searchView.ts:1191）。
 KeybindingsRegistry.registerKeybindingRule({
-	id: OpenEditorCommandId,
+	id: 'sessions.search.openSearchView',
 	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyF,
 	weight: KeybindingWeight.WorkbenchContrib,
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'sessions.search.openSearchView',
+			title: localize2('sessionsSearch.openSearchView', "Open Search View"),
+			f1: true,
+		});
+	}
+
+	override async run(accessor: ServicesAccessor): Promise<void> {
+		const viewsService = accessor.get(IViewsService);
+		await viewsService.openView(AGENT_STUDIO_SEARCH_VIEW_ID, true);
+	}
 });
 
 MenuRegistry.appendMenuItem(MenuId.ViewTitle, {

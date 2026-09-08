@@ -976,8 +976,11 @@ export class AgentStudioWebviewController extends Disposable {
 		const perfTypes = new Set(['agents.list', 'skills.list', 'memory.listL0', 'memory.listL1']);
 		const t0 = perfTypes.has(type) ? Date.now() : 0;
 
+		// ★ generate 类 RPC 不打 payload（2026-09-08 日志优化）：prompt 全文与
+		//   执行器侧日志（cell start/参数指纹）重复且巨长——只留 type/id 供关联。
+		const skipPayload = type.endsWith('.generate');
 		this.logService.info(
-			`[AgentStudio] _handleMessage: type=${type}, id=${id}, panelType=${this.panelType}, payload=${JSON.stringify(payload)?.slice(0, 200)}`,
+			`[AgentStudio] _handleMessage: type=${type}, id=${id}, panelType=${this.panelType}${skipPayload ? '' : `, payload=${JSON.stringify(payload)?.slice(0, 200)}`}`,
 		);
 
 		try {
