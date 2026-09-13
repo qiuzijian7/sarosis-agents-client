@@ -514,8 +514,55 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 		return this._getUserTasksJsonUri();
 	}
 
+	/**
+	 * 工作区级任务落点 —— `<folder>/.sarosworkspace/tasks.json`。
+	 *
+	 * ★ 刻意**不**用 `<folder>/.vscode/tasks.json`（用户 2026-09-13 定规：本项目不读不写
+	 * 工作区 `.vscode/`）。这是**安全**问题而非洁癖：该文件在**工作区内、模型可写**，
+	 * 而 tasks.json 能定义**任意命令**，`runOptions.runOn = 'folderOpen'` 更是
+	 * 「打开文件夹即执行」；`.vscode/tasks.json` 同时还是 VS Code 原生任务系统的输入，
+	 * 一份文件被两个执行体消费。
+	 *
+	 * 工作区级数据统一落 `.sarosworkspace/`（见 agentStudio `WORKSPACE_DATA_DIR`），
+	 * 与 workflows / checkpoints / agents / sessions 同源。
+	 */
 	private _getWorkspaceTasksJsonUri(folder: URI | undefined): URI | undefined {
-		return folder?.path ? joinPath(folder, '.vscode', 'tasks.json') : undefined;
+		return folder?.path ? joinPath(folder, '.sarosworkspace', 'tasks.json') : undefined;
+	}
+
+	/**
+	 * 一次性迁移：把旧落点 `<folder>/.vscode/tasks.json` 里属于 Agent 会话的条目
+	 * （`inAgents: true`）搬到新落点，之后**永不再读**旧文件。
+	 *
+	 * 幂等判据是「新文件不存在」—— 迁移成功后新文件必然存在，因此天然只跑一次；
+	 * 旧文件里 `inAgents` 为假的条目属于 VS Code 普通任务，**原样留在原处不动**。
+	 *
+	 * 迁移失败（权限 / 并发写）不阻断读取：新文件读不到就是空列表，与迁移前旧文件
+	 * 里没有 agent 条目的效果一致。
+	 */
+	private async _migrateLegacyWorkspaceTasks(folder: URI | undefined): Promise<void> {
+		if (!folder?.path) {
+			return;
+		}
+		const newUri = this._getWorkspaceTasksJsonUri(folder);
+		if (!newUri) {
+			return;
+		}
+		try {
+			if (await this._fileService.exists(newUri)) {
+				return;
+			}
+			const legacyUri = joinPath(folder, '.vscode', 'tasks.json');
+			if (!await this._fileService.exists(legacyUri)) {
+				return;
+			}
+			const legacy = await this._readTasksJson(legacyUri);
+			const agentTasks = (legacy.tasks ?? []).filter(task => !!task.inAgents);
+			await this._jsonEditingService.write(newUri, [
+				{ path: ['version'], value: legacy.version ?? '2.0.0' },
+				{ path: ['tasks'], value: agentTasks },
+			], true);
+		} catch { /* 迁移是尽力而为，失败不影响读取 */ }
 	}
 
 	private _getUserTasksJsonUri(): URI | undefined {
@@ -551,6 +598,7 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 		predicate: (task: ITaskEntry) => boolean
 	): Promise<ISessionTaskWithTarget[]> {
 		const result: ISessionTaskWithTarget[] = [];
+		await this._migrateLegacyWorkspaceTasks(this._getSessionFolder(session));
 		const targets: TaskStorageTarget[] = ['workspace', 'user'];
 		for (const target of targets) {
 			const uri = this._getTasksJsonUri(session, target);
@@ -615,6 +663,7 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 			return;
 		}
 
+		await this._migrateLegacyWorkspaceTasks(folder);
 		const tasksUri = this._getWorkspaceTasksJsonUri(folder);
 		const tasksJson = tasksUri ? await this._readTasksJson(tasksUri) : {};
 		// Discard if a newer refresh has started.

@@ -18,6 +18,13 @@ export const KB_SECTION_LABEL: Record<KbSection, string> = {
 };
 
 /**
+ * 知识库搜索模式：
+ *  - fulltext：全文倒排索引检索，结果显示在独立面板（不参与树过滤）
+ *  - filename：按文件名过滤树节点
+ */
+export type KbSearchMode = 'fulltext' | 'filename';
+
+/**
  * 知识库（Vault / 笔记本）。仿 SiYuan 的 Box：
  *  - 磁盘上一个文件夹 = 一个 Vault
  *  - 元数据保存于 storage（id 即文件夹名，类似 SiYuan 用 ID 命名目录）

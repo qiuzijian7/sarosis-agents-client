@@ -398,7 +398,17 @@ protected readonly _thinkingCardState = new Map<string, boolean>();
  *  用于全量替换（replaceChildren 物理归零 scrollTop）后恢复；
  *  lastUserScrollAt 记录用户最近一次「向上滚动（拖拽/滚轮）」的时间戳，
  *  用于在宽限期内抑制程序化强制置底，避免高频钉底调用与拖拽争抢滚动位置。 */
-private readonly _streamCardPinState = new WeakMap<HTMLElement, { pinned: boolean; lastUserTop: number; lastUserScrollAt: number }>();
+protected readonly _streamCardPinState = new WeakMap<HTMLElement, { pinned: boolean; lastUserTop: number; lastUserScrollAt: number }>();
+
+	/**
+	 * 标记「刚发生过程序化 scrollTop 写入」的容器（2026-09-13）。
+	 *
+	 * 用途：写入 scrollTop 会异步派发 scroll 事件，而 `_attachStreamCardPin` 的监听器
+	 * 会把「向下滚动但未到底 / 位置变小」判定为**用户操作**并解除 pinned。恢复滚动位置
+	 * （写回重建前的旧 top）正是这种写入 —— 若被误判，容器将永久失去钉底能力，
+	 * 表现为 delegate 卡片滚动条停在顶部、必须手动拖到底。
+	 */
+	protected readonly _suppressPinScrollEvent = new WeakSet<HTMLElement>();
 
 /** 给卡内滚动容器挂载流式钉底（幂等）：渲染更新后自动置底；
  *  用户滚动离开底部则解除钉底（之后可自由拖拽），滚回底部恢复跟随。
@@ -419,12 +429,26 @@ protected _attachStreamCardPin(container: HTMLElement): void {
 			// 把滚动位置交还给用户，避免与高频钉底调用争抢导致「拖不动」。
 			state.pinned = false;
 			state.lastUserScrollAt = Date.now();
+		} else if (this._suppressPinScrollEvent.has(container)) {
+			// ★ 2026-09-13：程序化写入 scrollTop 引发的事件（恢复位置/钉底）——
+			//   不能当作「用户滚动」处理。否则「恢复到旧位置(0)」这一写会走下面的
+			//   else 分支把 pinned 置 false，容器此后永久失去钉底能力：
+			//   delegate 卡片滚动条因此停在顶部，必须手动拖到底。
+			//   这里只更新基线，不改变 pinned 语义（由写入方决定）。
 		} else {
 			// 向下滚动但未到底：保持解除，避免半路被钉回底部
 			state.pinned = false;
 		}
 		state.lastUserTop = container.scrollTop;
 	}, { passive: true });
+}
+
+/** 标记「本次 scrollTop 写入是程序化的，其 scroll 事件不应改变 pinned」。 */
+protected _markProgrammaticPinWrite(container: HTMLElement): void {
+	this._suppressPinScrollEvent.add(container);
+	// scroll 事件是异步派发的（下一任务），必须跨帧保留标记；用微任务清空即可，
+	// 因为同一帧内的多次写入同属一次程序化操作。
+	queueMicrotask(() => { this._suppressPinScrollEvent.delete(container); });
 }
 
 /** 渲染后回调（thinkingMdScheduler 的 afterRender）：pinned → 滚到底跟随；
@@ -450,7 +474,11 @@ protected _pinStreamCardToBottom(container: HTMLElement): void {
 		state,
 		Date.now(),
 	);
-	if (top !== undefined) { container.scrollTop = top; }
+	if (top !== undefined) {
+		// 程序化写入：标记后其 scroll 事件不会被误判为「用户上滚」而解除 pinned
+		this._markProgrammaticPinWrite(container);
+		container.scrollTop = top;
+	}
 }
 
 /**
@@ -501,7 +529,11 @@ protected _pinAllScrollableBodiesToBottom(container: HTMLElement): void {
 	}
 
 	// ── 相②：只写。此时已无后续读取，写入不会再引发强制重排。 ──
-	for (const w of pendingWrites) { w.el.scrollTop = w.top; }
+	for (const w of pendingWrites) {
+		// 程序化写入：标记后其 scroll 事件不会被误判为「用户上滚」而解除 pinned
+		this._markProgrammaticPinWrite(w.el);
+		w.el.scrollTop = w.top;
+	}
 }
 
 protected static readonly STREAMING_MD_INTERVAL = 100;
@@ -731,9 +763,17 @@ protected _nodeCollapsedState = new Map<string, boolean>();
 
 protected readonly _onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => void;
 
+/**
+ * 插队立即发送（任务队列项「↑」）：中断当前流后直接把文本发出去。
+ * 与 `_onSendMessage` 的区别在于**绕开「LLM 输出中→再次入队」分支** ——
+ * 队列项本就只在输出中产生，用 `_onSendMessage` 只会把它删了又新建。
+ * 由宿主注入（需要 `cancelStream`，面板层拿不到）。未注入时回退为普通发送。
+ */
+protected readonly _onInterruptAndSend?: (text: string) => void;
+
 protected readonly _onCancelExecution: () => void;
 	/**
-	 * 跳过当前工具（terminal 等长命令卡住时用户点击「继续执行」）：
+	 * 跳过当前工具（terminal 等长命令卡住时用户点击「跳过」）：
 	 * 只中止正在执行的工具，不取消整个 turn——agent 拿到中断结果后继续后续步骤。
 	 */
 	protected readonly _onSkipCurrentTool?: () => void;
@@ -897,6 +937,8 @@ protected readonly _importedKbFileToolIds = new Set<string>();
 
 constructor(opts: {
 		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => void;
+		/** 插队立即发送（任务队列「↑」）：中断当前流后直接发送，绕开入队分支。 */
+		onInterruptAndSend?: (text: string) => void;
 		onCancelExecution: () => void;
 		onSkipCurrentTool?: () => void;
 		onToggleCollapse: () => void;
@@ -996,6 +1038,7 @@ constructor(opts: {
 		this._logService = opts.logService;
 		this._scrollbar = this._register(new ScrollbarController(this));
 		this._onSendMessage = opts.onSendMessage;
+		this._onInterruptAndSend = opts.onInterruptAndSend;
 		this._onCancelExecution = opts.onCancelExecution;
 		this._onSkipCurrentTool = opts.onSkipCurrentTool;
 		this._onSelectAgent = opts.onSelectAgent;
@@ -1079,6 +1122,10 @@ constructor(opts: {
 			get textarea() { return self._textarea ?? null; },
 			get isSending() { return self._isSending; },
 			onSendMessage: (text) => { self._onSendMessage?.(text); },
+			// 插队发送委托给宿主面板：中断当前流需要 `cancelStream`（位于
+			// nativeChatEditorPane 层，面板本身拿不到）。宿主实现为
+			// cancelStream → setSending(false,{triggerExecuteNext:false}) → 直接发送。
+			onInterruptAndSend: (text) => { self._onInterruptAndSend?.(text); },
 			get agentId() { return self._agent?.id; },
 			get onOpenCompressionDetail() { return self._onOpenCompressionDetail; },
 			get onOpenMemoryDetail() { return self._onOpenMemoryDetail; },

@@ -866,17 +866,6 @@
 	overflow-y: auto; background: var(--vscode-editor-background, #1e1e1e);
 }
 .tbp-body.active { display: block; }
-.tbp-task-summary {
-	font-size: 12px; color: var(--vscode-descriptionForeground, #969696);
-	margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
-}
-.tbp-status-dot {
-	width: 6px; height: 6px; border-radius: 50%;
-	background: var(--vscode-charts-yellow, #cca700);
-	animation: tbp-pulse 1.6s ease-in-out infinite;
-}
-@keyframes tbp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-.tbp-status-dot.executing { background: var(--vscode-charts-red, #f48771); }
 .tbp-task-list { display: flex; flex-direction: column; gap: 2px; }
 .tbp-task-item {
 	display: flex; align-items: center; padding: 6px 10px;
@@ -4788,6 +4777,13 @@
 .tool-header-title {
 	color: var(--void-fg-3);
 	flex-shrink: 0;
+	/* 标题为 flex 子项，垂直居中不能只靠祖先 align-items —— 祖先链上
+	   .tool-header-title-container / .tool-header-left 会随内容高度撑开，
+	   单独声明 align-self 保证标题在行内垂直居中（用户反馈标题偏上）。 */
+	align-self: center;
+	display: inline-flex;
+	align-items: center;
+	line-height: 1.4;
 	font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
 	font-size: 11.5px;
 	font-weight: normal;
@@ -12174,26 +12170,25 @@
 /* 终端 body：直接放输出（无 section 包装）*/
 .terminal-body { padding: 0; }
 
-.terminal-placeholder {
-	font-size: 11.5px;
-	font-style: italic;
-	color: var(--void-fg-3, #8b8b9a);
-	opacity: 0.7;
-	padding: 8px 10px;
-}
+/* 2026-09-13 删除：`.terminal-placeholder`（运行中占位文本）。
+   它唯一的宿主 `.terminal-running-row` 已移除，渲染层不再产出该节点。 */
 
-/* 终端输出块（直接 child of body）*/
+/* 终端输出块（直接 child of body）
+   2026-09-13 简化：去掉上边框 —— 命令块/输出块/exits bar 三段各有上边框，
+   叠在一起形成「三层横线」；输出本来就是主体，用左侧 2px 强调线区分即可。
+   2026-09-13 缩高：max-height 400px → 200px（用户要求「下方高度减少一半」）。
+   超出部分仍可滚动，只是把默认可视区收一半，避免一张卡片独占整屏。 */
 .terminal-body .terminal-output-block {
 	margin: 0;
 	border-radius: 0;
 	border: none;
-	border-top: 1px solid var(--void-border-2, #3a3a52);
-	max-height: 400px;
+	border-left: 2px solid var(--void-border-2, #3a3a52);
+	max-height: 200px;
 	overflow-y: auto;
 	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
 	font-size: 12px;
-	line-height: 1.55;
-	padding: 6px 12px 8px;
+	line-height: 1.5;
+	padding: 6px 12px 8px 10px;
 }
 
 /* 2026-08-21：每行 stdout/stderr 单独 div，> 前缀对齐截图样式 */
@@ -12216,66 +12211,38 @@
 	flex: 1;
 	min-width: 0;
 	white-space: pre-wrap;
-	word-break: break-all;
+	/* break-all 会在任意字符处断行 —— 实测把 "pooled" 切成 "poole"+"d"。
+	   overflow-wrap 只在**放不下整个词**时才断，长路径/URL 仍能换行。 */
+	overflow-wrap: anywhere;
+	word-break: normal;
 	color: var(--void-fg-2, #d4d4d8);
 }
 
 
-/* 终端运行中：占位 + 「继续下一步」按钮同行 */
-.terminal-running-row {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
-	padding: 8px 10px;
-	border-top: 1px solid var(--void-border-2, #3a3a52);
-	background: var(--void-bg-3, rgba(255,255,255,0.02));
-}
+/* 2026-09-13 删除：`.terminal-running-row` 与 `.terminal-running-row .terminal-placeholder`。
+   这组样式服务于旧的「占位文本 + 继续下一步按钮同行」布局；「继续下一步」
+   按钮已改为 header 常驻的「跳过」（.terminal-skip-btn，见下方注释），
+   渲染层不再产出 .terminal-running-row，纯 CSS 残留。 */
 
-/* 占位文本（运行中） */
-.terminal-running-row .terminal-placeholder {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	font-style: normal;
-	color: var(--void-fg-3, #8b8b9a);
-	opacity: 1;
-	padding: 0;
-}
-
-/* 继续下一步按钮 */
-.terminal-continue-btn {
-	background: var(--vscode-button-secondaryBackground, #3a3d41);
-	color: var(--vscode-button-secondaryForeground, #d4d4d8);
-	border: 1px solid var(--vscode-button-border, #555);
+/* 跳过按钮 —— 仅保留 header 常驻的一种形态 */
+.terminal-skip-btn {
+	margin-left: 8px;
+	padding: 2px 8px;
+	font-size: 11px;
 	border-radius: 3px;
-	font-size: 11.5px;
-	padding: 3px 10px;
+	background: var(--vscode-button-background, #0e639c);
+	border: 1px solid var(--vscode-button-border, transparent);
+	color: var(--vscode-button-foreground, #fff);
 	cursor: pointer;
 	white-space: nowrap;
 	transition: background 0.15s, border-color 0.15s;
 }
-.terminal-continue-btn:hover {
-	background: var(--vscode-button-secondaryHoverBackground, #45494e);
-	border-color: var(--vscode-focusBorder, #007fd4);
+.terminal-skip-btn:hover {
+	background: var(--vscode-button-hoverBackground, #1177bb);
 }
-.terminal-continue-btn:disabled {
+.terminal-skip-btn:disabled {
 	opacity: 0.5;
 	cursor: default;
-}
-/* 「继续执行」按钮（terminal header 常驻版，卡片折叠也可见） */
-.terminal-continue-btn.terminal-continue-header {
-	margin-left: 8px;
-	padding: 2px 8px;
-	font-size: 11px;
-	background: var(--vscode-button-background, #0e639c);
-	border-color: var(--vscode-button-border, transparent);
-	color: var(--vscode-button-foreground, #fff);
-}
-.terminal-continue-btn.terminal-continue-header:hover {
-	background: var(--vscode-button-hoverBackground, #1177bb);
 }
 
 
@@ -12298,55 +12265,10 @@
 	flex-shrink: 0;
 }
 
-/* ① 状态行 */
-.terminal-status-row {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	min-width: 0;
-}
-.terminal-status-row .terminal-logo {
-	margin-right: 0;
-	flex-shrink: 0;
-}
-.terminal-label {
-	font-size: 11.5px;
-	font-weight: 500;
-	color: var(--void-fg-2, #b8b8c2);
-	flex-shrink: 0;
-}
-.terminal-status-pill {
-	font-size: 10.5px;
-	line-height: 1.4;
-	padding: 0 6px;
-	border-radius: 3px;
-	border: 1px solid transparent;
-	white-space: nowrap;
-	flex-shrink: 0;
-}
-.terminal-status-pill.ok {
-	color: #4ec9b0;
-	border-color: rgba(78, 201, 176, 0.40);
-}
-.terminal-status-pill.fail {
-	color: #e94560;
-	border-color: rgba(233, 69, 96, 0.45);
-	background: rgba(233, 69, 96, 0.08);
-}
-.terminal-status-pill.run {
-	color: #f0b95d;
-	border-color: rgba(240, 185, 93, 0.35);
-	background: rgba(240, 185, 93, 0.10);
-}
-.terminal-status-pill.need {
-	color: #f0b95d;
-	border-color: rgba(240, 185, 93, 0.35);
-	background: rgba(240, 185, 93, 0.10);
-}
-.terminal-status-pill.rej {
-	color: var(--void-fg-3, #8b8b9a);
-	border-color: var(--void-border-2, #3a3a52);
-}
+/* 2026-09-13 删除死代码：`.terminal-status-row` / `.terminal-status-pill.*`。
+   2026-08-21 header 重构（去掉「状态行 + pill」双行布局）后，渲染层已不再产出
+   这些节点（fileCards.ts 只用 .terminal-cmd-line / .terminal-cmd-status），
+   留下的是纯 CSS 残留。相关行：12290-12338。 */
 
 /* 单行命令：状态前缀 + 提示符 + 命令体（折叠态单行省略） */
 .terminal-cmd-line {
@@ -12376,7 +12298,9 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	word-break: break-all;
+	/* 与输出区一致：不在任意字符处断词（这里还有 ellipsis 兜底，影响较小，
+	   但 break-all 会让省略号出现在单词中间，视觉上像乱码） */
+	word-break: normal;
 }
 .terminal-cmd-empty {
 	color: var(--void-fg-3, #8b8b9a);
@@ -12394,114 +12318,97 @@
 	flex-shrink: 0;
 }
 
-/* 运行中解释行：脉冲点 + 文案 */
-.terminal-explain-row {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	padding: 6px 12px;
-	font-size: 11.5px;
-	color: var(--void-fg-3, #8b8b9a);
-	border-top: 1px solid var(--void-border-2, #3a3a52);
-}
-.terminal-explain-row.running {
-	background: rgba(240, 185, 93, 0.08);
-	color: #f0b95d;
-}
-.terminal-live-dot {
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
-	background: currentColor;
-	flex-shrink: 0;
-	box-shadow: 0 0 0 0 currentColor;
-	animation: terminal-live-pulse 1.4s infinite;
-}
-@keyframes terminal-live-pulse {
-	0%   { box-shadow: 0 0 0 0 currentColor; }
-	70%  { box-shadow: 0 0 0 6px transparent; }
-	100% { box-shadow: 0 0 0 0 transparent; }
-}
-.terminal-explain-text { flex: 1; min-width: 0; }
+/* 2026-09-13 删除：`.terminal-explain-row` / `.terminal-live-dot` /
+   `@keyframes terminal-live-pulse` / `.terminal-explain-text`。
+   这组样式服务于「运行中解释行（脉冲点 + 文案）」—— 该行已在同日的
+   「实时输出改用闪烁光标」改动中从渲染层移除（fileCards.ts running 分支
+   不再创建 .terminal-explain-row.running 与 codicon-loading spinner），
+   此处仅剩 CSS 残留。运行中的「活动」指示现由 .terminal-live-cursor 承担。 */
 
-/* 展开后的完整命令块（反引号换行不丢） */
-.terminal-cmd-block {
-	padding: 6px 12px;
-	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
-	font-size: 11.5px;
-	line-height: 1.5;
-	color: var(--void-fg-2, #d4d4d8);
-	white-space: pre-wrap;
-	word-break: break-all;
-	background: rgba(255, 255, 255, 0.02);
-	border-top: 1px solid var(--void-border-2, #3a3a52);
-}
+/* 2026-09-13 删除：`.terminal-cmd-block`（卡内完整命令块）。
+   命令已在 header 行（`.terminal-cmd-line`）显示，正文重复一遍是冗余，
+   两处渲染点（running / result 分支）已一并移除。 */
 
-/* 运行中实时输出（方案1：旁路通道直播 PTY 清洗后增量输出） */
+/* 运行中实时输出（方案1：旁路通道直播 PTY 清洗后增量输出）
+   2026-09-13 简化：与完成态输出对齐 —— 左侧强调线 + 统一行高/字号，
+   去掉深色背景块与上边框，避免「运行中」和「已完成」看起来是两种卡片。
+   2026-09-13 缩高：max-height 320px → 180px。运行中的输出是「预览」，
+   用户要看完整内容可以等结束后展开（那时才有滚动到位的意义）；
+   180px ≈ 8 行，足够看清进度而不至于把聊天流撑得很长。
+   min-height 保证空输出时（只有光标）盒子不塌成一条线。 */
 .terminal-live-output {
 	margin: 0;
-	padding: 8px 12px;
-	max-height: 320px;
+	padding: 4px 12px 4px 10px;
+	min-height: 22px;
+	max-height: 180px;
 	overflow: auto;
 	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
-	font-size: 11.5px;
+	font-size: 12px;
 	line-height: 1.5;
 	color: var(--void-fg-2, #d4d4d8);
 	white-space: pre-wrap;
-	word-break: break-all;
-	background: rgba(0, 0, 0, 0.28);
-	border-top: 1px solid var(--void-border-2, #3a3a52);
+	overflow-wrap: anywhere;
+	word-break: normal;
+	border-left: 2px solid var(--void-border-2, #3a3a52);
 }
 
-.terminal-running-badge {
-	display: inline-flex;
-	align-items: center;
-	gap: 6px;
-	margin: 8px 12px 0;
-	padding: 3px 10px;
-	border-radius: 999px;
-	font-size: 11px;
-	font-weight: 600;
-	color: #f0b95d;
-	background: rgba(240, 185, 93, 0.12);
-	border: 1px solid rgba(240, 185, 93, 0.3);
+/* 运行中闪烁光标：取代原「运行中 · 实时输出」徽标行 + spinner 占位行。
+   ★ 2026-09-13 修复「光标不闪」：
+     1) 原用 inline-block + width/height + vertical-align 定位，在 <pre>
+        （line-height 1.5 = 18px、字号 12px）里基线与行高都对不齐，
+        光标常被挤到行外或裁切，看起来像「一直亮着」。
+        改用**字符级**方案：直接渲染一个实心块字符 `▊`，继承当前行的
+        字号/行高/颜色，天然与文本对齐，不依赖任何盒子几何。
+     2) 闪烁用 `step-end` + 显式双段关键帧（0-49% 亮 / 50-100% 暗），
+        避免某些引擎在 opacity 首尾相同时把动画判定为「无变化」而不重绘。
+     3) 光标随内容滚出可视区时会「消失」→ 由渲染层保证光标始终可见
+        （见 fileCards.ts 中的 scrollTop 处理）。 */
+.terminal-live-cursor {
+	display: inline;
+	color: var(--void-fg-2, #d4d4d8);
+	animation: terminal-cursor-blink 1s step-end infinite;
+	will-change: opacity;
 }
-.terminal-running-badge::before {
-	content: '';
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
-	background: currentColor;
-	box-shadow: 0 0 0 0 currentColor;
-	animation: terminal-live-pulse 1.4s infinite;
+@keyframes terminal-cursor-blink {
+	0%,
+	49%   { opacity: 1; }
+	50%,
+	100%  { opacity: 0.15; }
+}
+/* 尊重「减少动态效果」偏好：闪烁是纯装饰，此类用户应看到静止光标 */
+@media (prefers-reduced-motion: reduce) {
+	.terminal-live-cursor { animation: none; opacity: 0.6; }
 }
 
-/* exit bar：exit code + 输出统计 */
+/* exit bar：exit code + 输出统计
+   2026-09-13 简化：去掉上边框（改由输出区收尾留白自然分隔），
+   并统一左侧缩进与输出区对齐。 */
 .terminal-exit-bar {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 5px 12px;
-	border-top: 1px solid var(--void-border-2, #3a3a52);
+	padding: 4px 12px 6px 10px;
 	font-size: 11px;
 	color: var(--void-fg-3, #8b8b9a);
-	background: rgba(0, 0, 0, 0.18);
+	background: transparent;
 }
+/* 2026-09-13 简化：exit code 标签由「描边方框」改为「纯色文字」。
+   统计数字本来就是次要元信息，三个描边小方框在行尾很碎很吵。
+   用颜色（绿=成功 / 红=失败）承载语义即可，不需要边框和底色。 */
 .terminal-exit-tag {
 	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
 	font-size: 10.5px;
-	padding: 1px 6px;
-	border-radius: 3px;
-	border: 1px solid;
+	font-variant-numeric: tabular-nums;
+	padding: 0;
+	border: none;
+	background: none;
 }
 .terminal-exit-tag.zero {
 	color: #4ec9b0;
-	border-color: rgba(78, 201, 176, 0.45);
 }
 .terminal-exit-tag.nonzero {
 	color: #e94560;
-	border-color: rgba(233, 69, 96, 0.45);
-	background: rgba(233, 69, 96, 0.06);
+	font-weight: 600;
 }
 .terminal-exit-meta {
 	font-variant-numeric: tabular-nums;

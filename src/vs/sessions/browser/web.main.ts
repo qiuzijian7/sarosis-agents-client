@@ -54,7 +54,11 @@ export class SessionsBrowserMain extends BrowserMain {
 		// Workspace — use a stable synthetic workspace identifier for agents
 		const sessionsWorkspaceUri = joinPath(environmentService.userRoamingDataHome, 'agent-sessions.code-workspace');
 		const workspaceIdentifier = getWorkspaceIdentifier(sessionsWorkspaceUri);
-		const workspaceContextService = new SessionsWorkspaceContextService(workspaceIdentifier, uriIdentityService);
+		const workspaceContextService = new SessionsWorkspaceContextService(workspaceIdentifier, uriIdentityService, fileService, logService);
+
+		// Seed the in-memory folder list from the backing `.code-workspace` file's
+		// `folders` array (parity with SessionsMain on desktop).
+		await workspaceContextService.initialize();
 
 		serviceCollection.set(IWorkspaceContextService, workspaceContextService);
 		serviceCollection.set(IWorkspaceEditingService, workspaceContextService);

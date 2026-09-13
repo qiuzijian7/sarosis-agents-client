@@ -41,6 +41,17 @@ export const PROTECTED_EXACT_NAMES: ReadonlySet<string> = new Set<string>([
 	'known_hosts', 'secrets', 'credentials',
 	// `.vscode` 段 —— 安全相关目录，三条理由见模块头注释。
 	'.vscode',
+	// 本产品自己的数据目录 —— 与 `.vscode` 同级保护（2026-09-13「方案 C」）：
+	// 二者承载**约束性数据**：`~/.vssaros/tool-allow.json`（工具授权表）、
+	// `~/.vssaros/User/settings.json`、`<workspace>/.sarosworkspace/agents/*`（agent 定义）、
+	// workflows、checkpoints、会话记录。模型能写它们就是「被约束者改写约束」——
+	// 例如给自己加 terminal 授权、或改写 agent 的 systemPrompt。
+	//
+	// ⚠ 作用域说明：本判定只用于**模型发起的工具调用**（`toolExecutionGuard`），
+	// 产品自身经 `IFileService` 读写这两个目录**不受影响**。代价是模型往
+	// `<workspace>/.sarosworkspace/tmp/`（附件下载产物）写文件也会走审批 —— 这是有意的取舍：
+	// 该目录整体是产品元数据，不做子目录例外，否则「保护名单」又会漂成两份。
+	'.vssaros', '.sarosworkspace',
 ]);
 
 /** 受保护的**文件名后缀**。 */

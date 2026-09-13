@@ -393,6 +393,20 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		const body = append(wrapper, $('.tool-header-children'));
 		const scroll = append(body, $('div.delegate-scroll'));
 
+		// 默认置底（2026-09-13 用户需求）：卡片挂载后让 .delegate-scroll 滚到最新内容。
+		// 必须在此显式钉底 —— _pinAllScrollableBodiesToBottom 通过 needsPinPass 跳过
+		// 「内容未溢出」的容器（首帧内容往往还没撑满），既不 attach 也不写 scrollTop，
+		// 于是滚动条停在顶部。attach 之后由 _attachStreamCardPin 的 scroll 监听接管：
+		// 用户滚轮/拖动离开底部即解除 pinned，宽限期内不再强制置底。
+		this._attachStreamCardPin(scroll);
+		requestAnimationFrame(() => {
+			if (!scroll.isConnected) { return; }
+			const state = this._streamCardPinState.get(scroll);
+			if (!state?.pinned) { return; }
+			this._markProgrammaticPinWrite(scroll);
+			scroll.scrollTop = scroll.scrollHeight;
+		});
+
 		// ① 任务指令
 		if (instruction) {
 			const sec = append(scroll, $('div.du-sec'));

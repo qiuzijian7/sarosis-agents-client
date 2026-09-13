@@ -307,6 +307,42 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 	}
 
 	private async ensureAgentsWindow(openConfig: IOpenConfiguration): Promise<IOpenConfiguration> {
+		// A user may launch the agents app with an explicit `.code-workspace`
+		// (double-click, `--folder-uri`, or a positional CLI arg). In that case the
+		// declared folders must win over the default agents workspace, otherwise the
+		// multi-root file would never reach the sessions window (which reads
+		// `configuration.workspace`). Fall back to the fixed agents workspace when
+		// no workspace file was supplied.
+		const requestedWorkspaceUri = this._findRequestedWorkspaceFile(openConfig);
+
+		// ── DIAGNOSTIC: why did the agents window pick the fallback file? ──
+		// `_findRequestedWorkspaceFile` scans three sources in order and returns
+		// the first hit; logging the raw CLI payload beside its result separates
+		// "arg never reached main" from "arg present but not recognized".
+		this.logService.info(
+			'[windowsManager][diag] ensureAgentsWindow | '
+			+ `requestedWorkspaceUri=${requestedWorkspaceUri?.fsPath ?? 'undefined'} | `
+			+ `cli._=${JSON.stringify(openConfig.cli?._ ?? null)} | `
+			+ `cli.folder-uri=${JSON.stringify(openConfig.cli?.['folder-uri'] ?? null)} | `
+			+ `urisToOpen=${JSON.stringify((openConfig.urisToOpen ?? []).map(u => isWorkspaceToOpen(u) ? u.workspaceUri.fsPath : (isFolderToOpen(u) ? u.folderUri.fsPath : String(u))))} | `
+			+ `isEmbeddedApp=${(process as INodeProcess).isEmbeddedApp} | `
+			+ `fallback=${this.environmentMainService.agentSessionsWorkspace?.fsPath ?? 'undefined'}`,
+		);
+
+		if (requestedWorkspaceUri && await this.fileService.exists(requestedWorkspaceUri)) {
+			this.logService.info(`[windowsManager] agents window opening user workspace: ${requestedWorkspaceUri.fsPath}`);
+			return {
+				urisToOpen: [{ workspaceUri: requestedWorkspaceUri }],
+				userEnv: openConfig.userEnv,
+				cli: openConfig.cli,
+				noRecentEntry: true,
+				context: openConfig.context,
+				contextWindowId: openConfig.contextWindowId,
+				initialStartup: openConfig.initialStartup,
+				forceNewWindow: true,
+			};
+		}
+
 		const agentSessionsWorkspaceUri = this.environmentMainService.agentSessionsWorkspace;
 		if (!agentSessionsWorkspaceUri) {
 			throw new Error('Agents workspace is not configured');
@@ -319,6 +355,11 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			await this.fileService.writeFile(agentSessionsWorkspaceUri, VSBuffer.fromString(emptyWorkspaceContent));
 		}
 
+		this.logService.info(
+			`[windowsManager][diag] falling back to agents workspace | ${agentSessionsWorkspaceUri.fsPath} ` +
+			`| existedOnDisk=${workspaceExists}`,
+		);
+
 		return {
 			urisToOpen: [{ workspaceUri: agentSessionsWorkspaceUri }],
 			userEnv: openConfig.userEnv,
@@ -330,6 +371,74 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			forceNewWindow: true,
 		};
 	}
+
+	/**
+	 * Find a `.code-workspace` file explicitly requested by the caller, looking at
+	 * (in order): the resolved `urisToOpen`, the `--folder-uri` list, and the
+	 * positional CLI arguments. Returns `undefined` when none is present so the
+	 * caller can fall back to the default agents workspace.
+	 */
+	private _findRequestedWorkspaceFile(openConfig: IOpenConfiguration): URI | undefined {
+		// 1) Explicit openables (API / OS "open with")
+		for (const openable of openConfig.urisToOpen ?? []) {
+			if (isWorkspaceToOpen(openable)) {
+				return openable.workspaceUri;
+			}
+			if (isFolderToOpen(openable) && hasWorkspaceFileExtension(openable.folderUri.fsPath)) {
+				return openable.folderUri;
+			}
+			if (isFileToOpen(openable) && hasWorkspaceFileExtension(openable.fileUri.fsPath)) {
+				return openable.fileUri;
+			}
+		}
+
+		// 2) `--folder-uri` / `--file-uri`
+		const fromFlags = [
+			...(openConfig.cli?.['folder-uri'] ?? []),
+			...(openConfig.cli?.['file-uri'] ?? []),
+		];
+		for (const raw of fromFlags) {
+			const uri = this._safeParseUri(raw);
+			if (uri && hasWorkspaceFileExtension(uri.fsPath)) {
+				return uri;
+			}
+		}
+
+		// 3) Positional arguments (`<app> path/to/file.code-workspace`)
+		for (const raw of openConfig.cli?._ ?? []) {
+			if (!hasWorkspaceFileExtension(raw)) {
+				continue;
+			}
+			const uri = this._safeParseUri(raw);
+			if (uri) {
+				return uri;
+			}
+		}
+
+		return undefined;
+	}
+
+	/**
+	 * Parse a CLI argument into a resource URI. Values may be a `file://` URL, a
+	 * `vscode-remote://` URL, or a bare filesystem path.
+	 */
+	private _safeParseUri(raw: string): URI | undefined {
+		try {
+			const uri = URI.parse(raw);
+			if (uri.scheme && uri.scheme !== Schemas.file) {
+				return uri;
+			}
+			if (uri.scheme === Schemas.file) {
+				return uri;
+			}
+		} catch {
+			// not a URL — fall through to path handling
+		}
+
+		const fsPath = raw.trim();
+		return fsPath ? URI.file(fsPath) : undefined;
+	}
+
 
 	async open(openConfig: IOpenConfiguration): Promise<ICodeWindow[]> {
 		this.logService.trace('windowsManager#open');

@@ -7,6 +7,7 @@ import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IModelSelectorService, IModelSelectorItem, IModelSelectorProviderInfo } from '../common/modelSelector.js';
 import { IModelSelection, IModelAgentInfo } from '../common/providers.js';
+import { isChatCapableModel } from '../common/chatModelFilter.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -349,6 +350,15 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 					+ `auth=${authStatus} models=${models.length}`,
 				);
 				for (const model of models) {
+					// 过滤掉纯生成类模型（图片/视频/3D/音频）。这类 provider（如 lightai）
+					// 借 VS Code LM API 把媒体生成模型混进了语言模型列表，选中即抛错。
+					// 判定依据是能力标记而非 vendor 名，见 chatModelFilter.ts。
+					if (!isChatCapableModel(model)) {
+						this._logService.trace(
+							`[ModelSelector][Diag]     model=${provider.id}:${model.id} skipped (not chat-capable)`,
+						);
+						continue;
+					}
 					items.push({
 						provider: providerInfo,
 						model,

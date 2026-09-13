@@ -5,6 +5,8 @@ import { buildKeyedParts, lastTextPartKey, queryPartElements, PART_KEY_ATTR, IKe
 import { AgentChatPanelDropdowns } from './agentChatPanel.dropdowns.js';
 import { filterChildSubAgents } from './subAgentCardUtils.js';
 import { parseToolArgsWithDiagnostics, parseToolArgsLoose, warnToolArgsRepair } from './toolArgsJson.js';
+import { shouldPreserveExpandedAcrossRebuild, shouldPersistExpandState } from './toolCardExpandState.js';
+
 import { needsArgsDrivenRebuild } from './toolCardArgsRefresh.js';
 import type { FullRefreshSource } from './agentChatPanel.refreshLog.js';
 
@@ -1217,6 +1219,15 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 						const card = newEl.querySelector(`[data-tool-id="${id}"]`) as HTMLElement | null;
 						if (card) { this._restoreScrollPositions(card, saved); }
 					}
+					// ★ 2026-09-13：恢复之后统一钉底（与 _pinAfterRestore 同一顺序约定）。
+					//   原先此路径只恢复、不钉底 —— delegate 卡片整消息重建后
+					//   .delegate-scroll 会停在捕获位置（常为顶部），需用户手动拖到底。
+					this._pinAllScrollableBodiesToBottom(newEl);
+				});
+			} else {
+				// 无捕获（首次渲染）：等一帧让 layout 稳定再钉底
+				requestAnimationFrame(() => {
+					if (newEl.isConnected) { this._pinAllScrollableBodiesToBottom(newEl); }
 				});
 			}
 		}
@@ -1256,7 +1267,14 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 			// 贴底判定（2026-07-27 修正）：仅「无滚动（内容未溢出）」或「距底 <24px」视为
 			// 贴底跟随；用户上滚（含滚到顶部，距底 >24px）→ 不跟随，保持其位置不被新内容
 			// 拽走。去掉旧 `scrollTop<=2→跟随` 误判（把"用户滚到顶部"当"应置底"而强制拽回）。
-			const atBottom = el.scrollHeight <= el.clientHeight + 1
+			//
+			// ★ 2026-09-13 补充：`scrollTop === 0 && 未溢出` 这一支必须视为 atBottom。
+			//   内容尚未撑开时 scrollTop 恒为 0，恢复时若写回 0 会把「本应跟随底部」
+			//   误判成「用户在顶部」——delegate 卡片的 .delegate-scroll 因此永远停在
+			//   顶部（配合重建后钉底被覆盖，见 _pinAfterRestore 注释）。
+			//   无溢出 ⇒ 根本不存在「用户的滚动选择」，按 atBottom 处理才是自洽的。
+			const notOverflowing = el.scrollHeight <= el.clientHeight + 1;
+			const atBottom = notOverflowing
 				|| el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 			out.push({ selector, top: el.scrollTop, left: el.scrollLeft, atBottom });
 			if (diag) {
@@ -1282,6 +1300,8 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 			const el = root.querySelector(s.selector) as HTMLElement | null;
 			if (el) {
 				const target = s.atBottom ? el.scrollHeight : s.top;
+				// 程序化写入：标记后其 scroll 事件不会被误判为「用户上滚」而解除 pinned
+				this._markProgrammaticPinWrite(el);
 				el.scrollTop = target;
 				el.scrollLeft = s.left;
 				if (diag) {
@@ -1303,6 +1323,39 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 		if (saved.length === 0) { return; }
 		requestAnimationFrame(() => {
 			if (root.isConnected) { this._restoreScrollPositions(root, saved); }
+		});
+	}
+
+	/**
+	 * 重建后「恢复滚动位置 → 再钉底」的正确顺序（两者同处一个 rAF 之后）。
+	 *
+	 * 为什么必须合并到同一个 rAF：`_restoreScrollPositionsDeferred` 是异步的，
+	 * 若在其后**同步**调用 `_pinAllScrollableBodiesToBottom`，钉底会先执行、
+	 * 随后被 rAF 里的「旧位置恢复」覆盖 —— delegate 卡片的 `.delegate-scroll`
+	 * 因此永远停在顶部（首次渲染捕获值恒为 0）。
+	 *
+	 * 这里把两步按序放进同一个 rAF：先恢复，后钉底。钉底本身仍会尊重
+	 * `_streamCardPinState` 的 `pinned` 标志 —— 用户主动上滚过的容器不会被拽回底部。
+	 *
+	 * @param root         重建后的新卡片
+	 * @param saved        重建前捕获的滚动位置（空数组表示无需恢复）
+	 */
+	private _pinAfterRestore(
+		root: HTMLElement,
+		saved: Array<{ selector: string; top: number; left: number; atBottom: boolean }>,
+	): void {
+		if (saved.length === 0) {
+			// 无捕获（首次渲染）：等一帧让展开动画/layout 稳定后再钉底
+			requestAnimationFrame(() => {
+				if (root.isConnected) { this._pinAllScrollableBodiesToBottom(root); }
+			});
+			return;
+		}
+		requestAnimationFrame(() => {
+			if (!root.isConnected) { return; }
+			this._restoreScrollPositions(root, saved);
+			// 恢复之后再钉底：pinned 的容器跟随到底，用户上滚过的保持原位
+			this._pinAllScrollableBodiesToBottom(root);
 		});
 	}
 
@@ -1497,8 +1550,20 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 			oldCard.replaceWith(newCard);
 			this._applySubAgentRefreshFX(newCard, prevSa);
 			this._restoreScrollPositionsDeferred(newCard, savedScroll);
-			// 流式重建后重新钉底：使 delegate 卡片内 .delegate-scroll 自动跟随内容增长置底
-			this._pinAllScrollableBodiesToBottom(newCard);
+			// ★ 2026-09-13 修复「delegate 卡片滚动条默认不置底」：
+			//   原实现把 `_pinAllScrollableBodiesToBottom` 放在这里**同步**执行，
+			//   而上面的 `_restoreScrollPositionsDeferred` 是 **rAF 异步**执行的 ——
+			//   于是顺序反过来：同步 pin 先把 .delegate-scroll 钉到底，
+			//   随后 rAF 才把「重建前捕获的旧 scrollTop」写回去，**覆盖掉刚做的钉底**。
+			//
+			//   而捕获值往往是 0：首次渲染时旧卡的 .delegate-scroll 尚未被内容撑开
+			//   （scrollHeight <= clientHeight），`_captureScrollPositions` 的贴底判据
+			//   `atBottom` 为 false，于是被当成「用户在顶部」而恢复 top=0 ——
+			//   结果滚动条永远停在顶部，必须手动拖到底。
+			//
+			//   修法：把钉底也放进**同一个 rAF 之后**（见 `_pinAfterRestore`），
+			//   保证「先恢复用户位置、再按 pinned 状态钉底」这一正确顺序。
+			this._pinAfterRestore(newCard, savedScroll);
 			rebuiltAny = true;
 		}
 		// 子代理已到达但对应工具卡尚未渲染（极少见：subagent 先于 delegate tool call 出现）：
@@ -1604,30 +1669,46 @@ protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentC
 			// 重建前保留展开态（如委派卡片运行中自动展开/用户手动展开）+ 卡内滚动位置，
 			// 重建后恢复，避免实时刷新时折叠导致看不到执行内容。
 			// 展开态用 :scope 直属查找（防内嵌 subagent 卡同名 class 误读）。
+			//
+			// ⚠ 关键区分（2026-09-13）：`wasExpanded` 为 true 有两种来源 ——
+			//   ① 用户手动点开（写入过 _toolCallExpandState）
+			//   ② 卡片因「运行中」自动展开（第 677 行 `userChoice ?? (isRunning && !tc.result)`，
+			//      此时 Map 里**没有**该 id）
+			// 只有 ① 是「用户选择」，必须跨重建保留；② 只是当下的状态默认值，
+			// 一旦 status 变成 success 就该按新状态重新计算 → 折叠。
+			// 原实现无条件沿用旧 DOM 展开态并写回 Map，把②固化为 true，
+			// 导致「terminal 卡片执行完毕后自动折叠」永远不生效。
 			const oldBody = oldCard.querySelector(':scope > .tool-header-children') as HTMLElement | null;
 			const wasExpanded = oldBody?.classList.contains('tool-header-children-expanded') ?? false;
+			const userChoseExpandState = !!tc.id && this._toolCallExpandState.has(tc.id);
 			const savedScroll = this._captureScrollPositions(oldCard);
 		const prevSa = this._snapshotSubAgentSections(oldCard);
 		const newCard = this._createToolCallCard(tc);
 		// 保留 data-part-key——keyed reconciliation 依赖此属性匹配工具卡
 		const oldPartKey = oldCard.getAttribute('data-part-key');
 		if (oldPartKey) { newCard.setAttribute('data-part-key', oldPartKey); }
-		if (wasExpanded) {
+		if (shouldPreserveExpandedAcrossRebuild({ wasExpanded, userChoseExpandState })) {
+			// 用户显式选择过展开 → 跨重建保留（不再重复写 Map：值已经是 true）。
 			const newBody = newCard.querySelector('.tool-header-children') as HTMLElement | null;
 			if (newBody) {
 				newBody.classList.add('tool-header-children-expanded');
 				const ch = newCard.querySelector('.tool-header-chevron') as HTMLElement | null;
 				if (ch) { ch.classList.add('tool-header-chevron-expanded'); }
-				if (tc.id) { this._toolCallExpandState.set(tc.id, true); }
 			}
 		} else {
-			// 旧卡折叠态同样写回 Map，避免 defaultShow / 其他重建路径把卡片重新展开
+			// 旧卡折叠态 或 仅因「运行中」自动展开 → 一律落到新卡自己的默认值。
+			// `_createToolCallCard` 已按 `userChoice ?? (isRunning && !tc.result)`
+			// 算好展开态，这里只需清掉旧 DOM 残留的展开 class。
 			const newBody = newCard.querySelector('.tool-header-children') as HTMLElement | null;
 			if (newBody) {
 				newBody.classList.remove('tool-header-children-expanded');
 				const ch = newCard.querySelector('.tool-header-chevron') as HTMLElement | null;
 				if (ch) { ch.classList.remove('tool-header-chevron-expanded'); }
-				if (tc.id) { this._toolCallExpandState.set(tc.id, false); }
+			}
+			// 仅在「用户真的选择过折叠」时回写，让选择跨重建持久。
+			// 绝不把「自动展开」写回 Map —— 那会让默认值计算永久失效（原 bug）。
+			if (shouldPersistExpandState({ wasExpanded, userChoseExpandState }) && tc.id) {
+				this._toolCallExpandState.set(tc.id, false);
 			}
 		}
 		// 保留 title/conclusion 节点身份，消除流式整卡重建导致的标题/结论闪烁

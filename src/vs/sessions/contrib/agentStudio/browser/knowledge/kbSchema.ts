@@ -327,13 +327,33 @@ export function buildTypeClassificationPrompt(schema: IKBSchema, content: string
 
 /**
  * 清洗 topic 候选字符串：去除 HTML 标签 / DOCTYPE / 注释、Markdown 记号、文件系统
- * 非法字符与多余空白，截断到 40 字符。
+ * 非法字符与多余空白。
  * 返回清洗后的短标题；若结果不含任何中文字符或字母数字（即纯符号/标记），
- * 返回 undefined ——调用方应回退到「未分类」或既有目录匹配。
+ * 或形如「句子/提示词」而非「短标题」，返回 undefined ——调用方应回退到「未分类」
+ * 或既有目录匹配。
  *
  * 注意：这是「文件名安全」纯函数（对齐 llm_wiki makeQuerySlug），输入必须是
  * 分类产物（LLM topic / 既有目录名），**禁止从内容行派生语义 topic**。
  */
+
+/** topic 目录名长度上限（字符）。超出视为「一句话」而非「标题」，回退「未分类」。 */
+const MAX_KB_TOPIC_LENGTH = 24;
+
+/**
+ * 判定候选是否形如句子/提示词而非短标题。
+ * 历史上 `_parseLibCategory` 的兜底分支会把路径段当 topic，而导入路径段可能是
+ * 整段用户提示词（含「，并」「。先」「请」「分析」等），曾被静默截断为 40 字后
+ * 直接落成目录名。此处用「超长 + 句读/指令特征」双重条件拒绝这类输入。
+ */
+function looksLikeSentence(text: string): boolean {
+	if (text.length > MAX_KB_TOPIC_LENGTH) { return true; }
+	// 句读符号：出现即说明是句子碎片而非标题（清洗后这些符号通常已被替换为空格，
+	// 但逗号/顿号等全角标点未被上一步移除，故在此判定）。
+	if (/[，。；！？、…—]/.test(text)) { return true; }
+	// 指令/口吻特征词：提示词常见的起手式。
+	return /^(我来|请你?|帮我|分析一下|先确认|如下|以下|根据)/.test(text);
+}
+
 export function sanitizeKbTopic(raw: string): string | undefined {
 	const cleaned = (raw ?? '')
 		.replace(/<![^>]*>/g, ' ')                 // <!DOCTYPE ...> / 条件注释
@@ -341,8 +361,9 @@ export function sanitizeKbTopic(raw: string): string | undefined {
 		.replace(/<[^>]+>/g, ' ')                  // HTML 标签
 		.replace(/[#*_`~\[\]{}()<>\\|"'：:]/g, ' ') // Markdown 记号 / 非法文件名字符
 		.replace(/\s+/g, ' ')
-		.trim()
-		.slice(0, 40)
 		.trim();
-	return /[\u4e00-\u9fff\w]/.test(cleaned) ? cleaned : undefined;
+	// 语义门控先于长度截断：句子/提示词一律拒绝，避免被静默截断成「伪标题」。
+	if (looksLikeSentence(cleaned)) { return undefined; }
+	const capped = cleaned.slice(0, MAX_KB_TOPIC_LENGTH).trim();
+	return /[\u4e00-\u9fff\w]/.test(capped) ? capped : undefined;
 }

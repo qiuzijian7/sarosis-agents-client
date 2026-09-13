@@ -37,6 +37,11 @@ playwright-report/
 .coverage/
 .vscode-test/
 
+# 本地临时产物与归档（不入库）
+.tmp-*
+.tmp_*
+_archive/
+
 # Node.js dependencies
 node_modules/
 .node_modules/

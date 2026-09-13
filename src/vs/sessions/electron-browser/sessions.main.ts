@@ -302,8 +302,34 @@ export class SessionsMain extends Disposable {
 		//
 		// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-		const workspaceIdentifier = getWorkspaceIdentifier(environmentService.agentSessionsWorkspace);
-		const workspaceContextService = new SessionsWorkspaceContextService(workspaceIdentifier, uriIdentityService);
+		// Prefer the workspace the caller actually opened (e.g. a user-supplied
+		// `.code-workspace` passed via CLI or "open with"). Only fall back to the
+		// built-in agents workspace when no such workspace was requested.
+		const requestedWorkspaceIdentifier = reviveIdentifier(this.configuration.workspace);
+		const workspaceIdentifier = isWorkspaceIdentifier(requestedWorkspaceIdentifier)
+			? requestedWorkspaceIdentifier
+			: getWorkspaceIdentifier(environmentService.agentSessionsWorkspace);
+
+		// ── DIAGNOSTIC: which workspace file did this window actually resolve? ──
+		// A multi-root `.code-workspace` silently opening on the empty fallback
+		// file is indistinguishable from a parsed-but-empty user file, so log the
+		// raw input, the branch taken, and the resulting configPath together.
+		logService.info(
+			'[SessionsWindow][diag] workspace resolution | '
+			+ `rawConfiguration.workspace=${JSON.stringify(this.configuration.workspace)} | `
+			+ `revived=${requestedWorkspaceIdentifier ? JSON.stringify(requestedWorkspaceIdentifier) : 'undefined'} | `
+			+ `isWorkspaceIdentifier=${isWorkspaceIdentifier(requestedWorkspaceIdentifier)} | `
+			+ `branch=${isWorkspaceIdentifier(requestedWorkspaceIdentifier) ? 'USER_SUPPLIED' : 'FALLBACK'} | `
+			+ `agentSessionsWorkspace=${environmentService.agentSessionsWorkspace?.fsPath ?? 'undefined'} | `
+			+ `cliArgs=${JSON.stringify((this.configuration as { _?: unknown })._ ?? null)}`,
+		);
+
+		const workspaceContextService = new SessionsWorkspaceContextService(workspaceIdentifier, uriIdentityService, fileService, logService);
+
+		// Seed the in-memory folder list from the backing `.code-workspace` file's
+		// `folders` array. This must happen before the configuration service is
+		// created below, so that workspace settings resolve against the real roots.
+		await workspaceContextService.initialize();
 
 		// Workspace
 		serviceCollection.set(IWorkspaceContextService, workspaceContextService);

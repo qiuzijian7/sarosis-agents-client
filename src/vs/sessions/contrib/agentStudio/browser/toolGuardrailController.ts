@@ -87,6 +87,22 @@ export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	'kanban_swarm',
 ]);
 
+// ─── 失败容忍工具名单（直译自 Hermes `FAILURE_TOLERANT_TOOL_NAMES`）─────
+// 这些工具的失败是**常态**而非「卡死」：terminal 里跑一个不存在的命令、
+// execute_code 里试一段语法错误的脚本，都是正常的探索过程。若对它们施加
+// same_tool_failure halt，会把「调试」误判为「循环」并强行终止整个循环。
+//
+// 注意：本名单**只豁免 same_tool_failure halt**，不影响 exact_failure block
+// （同一命令一字不改地失败 N 次，依然该拦）与 no_progress 检测。
+export const FAILURE_TOLERANT_TOOL_NAMES: ReadonlySet<string> = new Set([
+	'terminal',
+	'execute_code',
+	'process',
+	'process_manage',
+	'browser_navigate',
+	'web_extract',
+]);
+
 // ─── 配置 ────────────────────────────────────────────────────────────
 export interface IToolCallGuardrailConfig {
 	/** 是否启用 warn 等级（不阻断执行，仅在结果中追加提示）。默认开启 */
@@ -368,7 +384,11 @@ export class ToolGuardrailController {
 			this._sameToolFailureCounts.set(toolName, sameCount);
 
 			// halt 优先级最高 —— 先看是否触发同名工具 halt
-			if (this._config.hardStopEnabled && sameCount >= this._config.sameToolFailureHaltAfter) {
+			// 失败容忍工具（terminal/execute_code 等）豁免：它们的失败是调试常态，
+			// 强行 halt 会打断正常探索。见 FAILURE_TOLERANT_TOOL_NAMES 注释。
+			if (this._config.hardStopEnabled
+				&& !FAILURE_TOLERANT_TOOL_NAMES.has(toolName)
+				&& sameCount >= this._config.sameToolFailureHaltAfter) {
 				const decision: IToolGuardrailDecision = {
 					action: 'halt',
 					code: 'same_tool_failure_halt',

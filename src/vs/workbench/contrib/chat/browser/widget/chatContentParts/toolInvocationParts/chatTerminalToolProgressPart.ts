@@ -20,6 +20,7 @@ import { IChatCollapsibleIODataPart } from '../chatToolInputOutputContentPart.js
 import { BaseChatToolInvocationSubPart } from './chatToolInvocationSubPart.js';
 import { extractImagesFromToolInvocationOutputDetails } from '../../../../common/chatImageExtraction.js';
 import { TerminalToolAutoExpand } from './terminalToolAutoExpand.js';
+import { TerminalCompletionAction, resolveTerminalCompletionAction } from './terminalCompletionCollapse.js';
 import { ChatCollapsibleContentPart } from '../chatCollapsibleContentPart.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import '../media/chatTerminalToolProgressPart.css';
@@ -567,6 +568,10 @@ export class ChatTerminalToolProgressPart extends BaseChatToolInvocationSubPart 
 		this._thinkingCollapsibleWrapper?.expand();
 	}
 
+	public collapseCollapsibleWrapper(): void {
+		this._thinkingCollapsibleWrapper?.collapse();
+	}
+
 	public markCollapsibleWrapperComplete(): void {
 		this._thinkingCollapsibleWrapper?.markComplete();
 	}
@@ -946,15 +951,33 @@ export class ChatTerminalToolProgressPart extends BaseChatToolInvocationSubPart 
 		// Update title to show completion state
 		this.markCollapsibleWrapperComplete();
 
-		// Auto-collapse on success (exit code 0)
-		if (resolvedCommand?.exitCode === 0 && this._outputView.isExpanded && !this._userToggledOutput) {
-			this._toggleOutput(false);
-		}
-
-		// Keep outer wrapper expanded on error for visibility
 		const autoExpandFailures = this._configurationService.getValue<boolean>(ChatConfiguration.AutoExpandToolFailures);
-		if (autoExpandFailures && resolvedCommand?.exitCode !== undefined && resolvedCommand.exitCode !== 0 && this._thinkingCollapsibleWrapper) {
-			this.expandCollapsibleWrapper();
+		const action = resolveTerminalCompletionAction({
+			exitCode: resolvedCommand?.exitCode,
+			userToggledOutput: this._userToggledOutput,
+			autoExpandFailures,
+		});
+
+		switch (action) {
+			case TerminalCompletionAction.Collapse:
+				// Fold both the inner output section AND the outer collapsible wrapper: the wrapper is
+				// what visually wraps the whole card, so folding only the inner output leaves the card
+				// expanded. The wrapper↔output autorun syncs the inner section, but we still toggle it
+				// explicitly so the case where no wrapper is used (plain toolbar layout) collapses too.
+				if (this._outputView.isExpanded) {
+					this._toggleOutput(false);
+				}
+				this.collapseCollapsibleWrapper();
+				break;
+			case TerminalCompletionAction.Expand:
+				// Keep outer wrapper expanded on error for visibility.
+				if (this._thinkingCollapsibleWrapper) {
+					this.expandCollapsibleWrapper();
+				}
+				break;
+			case TerminalCompletionAction.None:
+			default:
+				break;
 		}
 	}
 
@@ -1697,6 +1720,15 @@ export class ChatTerminalThinkingCollapsibleWrapper extends ChatCollapsibleConte
 
 	public expand(): void {
 		this.setExpanded(true);
+	}
+
+	/**
+	 * Collapses the outer wrapper. Needed because the base class keeps
+	 * `setExpanded` protected, so the owning progress part cannot fold it
+	 * from the outside after a command completes successfully.
+	 */
+	public collapse(): void {
+		this.setExpanded(false);
 	}
 
 	override hasSameContent(_other: IChatRendererContent, _followingContent: IChatRendererContent[], _element: ChatTreeItem): boolean {

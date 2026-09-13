@@ -45,9 +45,17 @@ import {
 	canonicalToolArgsHash,
 	hashToolResult,
 	detectToolCallPingPong,
+	detectArgumentChurn,
+	RUN_STATE_LIMITS,
 	locateTaggedIdXmlTags,
 	stripTaggedIdXmlTags,
 } from '../common/agentRunState.js';
+import {
+	computeStreakKey,
+	detectReasonStreak,
+	reasonStreakReminder,
+	REASON_STREAK_TRIGGER_COUNT,
+} from '../common/reasonStreak.js';
 import {
 	AgentCommand,
 	TRANSFER_TO_AGENT_TOOL,
@@ -105,6 +113,7 @@ import {
 	advanceSingleToolStreak,
 	batchReadOnlyToolsReminder,
 	xmlToolCallLeakReminder,
+	argumentChurnReminder,
 } from '../common/loopReminders.js';
 import {
 	ToolGuardrailController,
@@ -1012,9 +1021,18 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			warningsEnabled: true,
 			hardStopEnabled: true,
 			exactFailureWarnAfter: 2,
-			exactFailureBlockAfter: Number.MAX_SAFE_INTEGER,   // 交给 detectToolCallLoop
+			// 同 (name+args) 失败 5 次 → block 后续同签名调用（对齐 Hermes 默认 5）。
+			// 设 5 而非 Hermes 的 3：detectToolCallLoop 已在同签名第 3 次触发，
+			// 本门设更低会被它完全遮蔽（永远轮不到）；设 5 保留「detectToolCallLoop
+			// 拦签名、本门兜更长期的重放」这条分工，两条规则各自可达。
+			exactFailureBlockAfter: 5,
 			sameToolFailureWarnAfter: 3,
-			sameToolFailureHaltAfter: Number.MAX_SAFE_INTEGER, // 交给 MAX_CONSECUTIVE_TOOL_FAILURES
+			// 同名工具（非失败容忍名单）失败 8 次 → halt 退出主循环（对齐 Hermes 默认 8）。
+			// ⚠ 此前为 Number.MAX_SAFE_INTEGER（永不 halt），导致 same_tool_failure 只
+			// 剩 MAX_CONSECUTIVE_TOOL_FAILURES 的 warn 兜底 —— 责任链断裂，模型可无限
+			// 反复试探同一工具而不被叫停（日志实证：consecutiveFail 3/3 FIRED 后仍续跑
+			// 到 4/3）。恢复真实阈值后，该信号重新具备硬停能力。
+			sameToolFailureHaltAfter: 8,
 			noProgressWarnAfter: 2,
 			noProgressBlockAfter: 2,                            // 与 detectToolCallLoop(3) 分工，见上
 		});
@@ -3901,8 +3919,19 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					}
 
 					const { loop, count } = detectToolCallLoop(runState.toolCallHistory, tc.name, args);
-					// 无论是否 loop，都记录到历史（对齐原内联函数无条件 push）
-					runState = reduceRunState(runState, { type: 'RECORD_TOOL_CALL', name: tc.name, argsHash });
+					// 无论是否 loop，都记录到历史（对齐原内联函数无条件 push）。
+					// streakKey 是「整轮」签名（以 thinking 为主键，见 common/reasonStreak.ts），
+					// 同轮多个工具算出相同的 key —— 这正是「工具漂移仍算同一 streak」的实现方式。
+					const _roundStreakKey = computeStreakKey({
+						reasoning: thinkingContent,
+						toolCalls: [{ name: tc.name, argsHash }],
+					});
+					runState = reduceRunState(runState, {
+						type: 'RECORD_TOOL_CALL',
+						name: tc.name,
+						argsHash,
+						streakKey: _roundStreakKey,
+					});
 					if (loop) {
 						host._logService.warn(`[AgentOS] Tool call loop detected: "${tc.name}" called ${count} times with same args — blocking`);
 						return false;  // 阻止执行
@@ -4019,6 +4048,48 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				// 修复：循环内只收集 reminder，待整批 tool result 全部 append 完成后统一 flush，
 				// 保证 tool 序列连续紧邻。声明在 try 外，供 catch 之后的 flush 点可见。
 				const _pendingBatchReminders: string[] = [];
+
+				// ── MiMo-Code reasoning streak（P1）────────────────────────────
+				// 与 per-call 的 detectToolCallLoop 互补：后者只看「同一工具 + 同一参数」，
+				// 抓不到「thinking 内容不变、工具不断漂移」这一主流卡死形态。本判定以
+				// thinking 为主键（reasonStreak.ts），工具漂移仍算同一 streak。
+				//
+				// 纯检测 + 强引导注入，**不阻断执行**：streakKey 来自上一轮已落库的
+				// history（本轮调用在下方过滤循环中才写入），故这里评估的是「截至上一轮」
+				// 的连续情况，天然滞后一轮 —— 这是刻意的，避免把本轮尚未执行的调用算进去。
+				// reminder 走 _pendingBatchReminders 延迟通道（与 consecutiveFail 同款），
+				// 保证 tool result 序列紧邻不被 user 消息劈开。
+				{
+					const _streakHistory = runState.toolCallHistory
+						.map((entry) => entry.streakKey ?? '')
+						.filter((key) => key.length > 0);
+					const _reasonStreak = detectReasonStreak(_streakHistory);
+					if (_reasonStreak >= REASON_STREAK_TRIGGER_COUNT) {
+						host._logService.warn(
+							`[AgentOS] Reasoning streak detected: identical thinking for ${_reasonStreak} consecutive rounds ` +
+							`(iter=${iteration}) — injecting recovery guidance`,
+						);
+						_auditFired('reasonStreak', REASON_STREAK_TRIGGER_COUNT);
+						_pendingBatchReminders.push(reasonStreakReminder(_reasonStreak));
+					}
+				}
+
+				// ── openclaw argument_churn（P3）───────────────────────────────
+				// 与上面三者互补的第四种形态：**同一工具、参数每次都不一样、连续反复**。
+				// loop（同参）与 ping-pong（两工具交替）都要求签名重复或交替，天然漏检
+				// 这种「不断微调参数再试一次」的偏执。纯检测 + 引导注入，**不阻断执行**：
+				// 连续读不同文件 / 跑不同命令在形态上完全一致，误报面大，故只提醒不定罪。
+				{
+					const _churn = detectArgumentChurn(runState.toolCallHistory);
+					if (_churn.churn) {
+						host._logService.warn(
+							`[AgentOS] Argument churn detected: "${_churn.toolName}" called ${_churn.length} times ` +
+							`in a row with ${_churn.distinctArgs} different arguments (iter=${iteration}) — injecting recovery guidance`,
+						);
+						_auditFired('argumentChurn', RUN_STATE_LIMITS.ARGUMENT_CHURN_THRESHOLD);
+						_pendingBatchReminders.push(argumentChurnReminder(_churn.toolName ?? 'tool', _churn.length));
+					}
+				}
 
 				// [ToolAudit] 登记本批次入参指纹（供 dup 统计）。放在连击检测之前，
 				// 保证串行/并行/delegate-split 三条执行路径都已覆盖。
@@ -4283,6 +4354,15 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					host._logService.warn(
 						`[AgentOS] Guardrail ${_after.action}: ${_after.code} (tool=${toolName}, count=${_after.count})`,
 					);
+				}
+				// halt = 「退出主循环」的信号（见 toolGuardrailController.ts:19 契约）。
+				// 复用既有 _forceWrapUpRound 收尾机制（同 4198 行 textSearchStreak 的处理）：
+				// 置位后本轮禁工具、强制模型基于已收集信息产出结论，避免同工具被无限重试。
+				// 此前仅记 warn 日志而不置位，halt 决策形同虚设 —— 这正是
+				// same_tool_failure 信号「检出却不生效」的最后一处断点。
+				if (_after.action === 'halt') {
+					_forceWrapUpRound = true;
+					_auditFired('guardrailHalt', _after.count ?? 0);
 				}
 
 				// 回填结果哈希（易失字段已剥离）供 ping-pong 等跨调用检测使用。

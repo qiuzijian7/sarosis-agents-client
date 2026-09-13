@@ -53,6 +53,16 @@ export const RUN_STATE_LIMITS = {
 	TOOL_LOOP_THRESHOLD: 3,
 	/** 反思阶段最大次数（loop 内 MAX_REFLECT_ITERATIONS） */
 	MAX_REFLECT_ITERATIONS: 1,
+	/**
+	 * 参数抖动检测阈值（openclaw `argument_churn`）：同一工具、**参数各不相同**、
+	 * 连续达到该次数即判定为「在参数上反复试探」。
+	 *
+	 * 为什么单列而不复用 TOOL_LOOP_THRESHOLD：loop 判定的是「完全相同」，
+	 * 只有 3 次即可确信；抖动判定的是「每次都不同」，误报面更大（正常的
+	 * 连续 file_read 读不同文件、连续 terminal 跑不同命令都长这样），
+	 * 故阈值刻意更高，只在明显偏执的形态下才触发。
+	 */
+	ARGUMENT_CHURN_THRESHOLD: 5,
 } as const;
 
 /** AgentOS reducer 化灰度开关默认值（Step 4）。
@@ -101,6 +111,16 @@ export interface IToolCallHistoryEntry {
 	readonly argsHash: string;
 	/** 结果哈希（易失字段已剥离）。执行后回填。 */
 	readonly resultHash?: string;
+	/**
+	 * 本轮的**循环签名键**（`reason:<hash>` 或 `tool:<signature>`，见 `common/reasonStreak.ts`）。
+	 *
+	 * 与 `resultHash` 同样保持可选：旧的 checkpoint / 序列化数据没有该字段，
+	 * 反序列化后为 undefined，reasoning 循环检测自动降级（不判定），不影响既有逻辑。
+	 *
+	 * 为什么不复用 `name`/`argsHash`：那两者是**单个工具**的签名；streakKey 是
+	 * **整轮**的概念（以 thinking 为主键，工具漂移仍算同一轮），粒度不同。
+	 */
+	readonly streakKey?: string;
 }
 
 // ─── State schema ──────────────────────────────────────────────────
@@ -150,7 +170,7 @@ export type AgentAction =
 	| { type: 'COMPACT_MESSAGES'; messages: AgentRunMessage[] }
 	| { type: 'BUMP_ITERATION'; by?: number }
 	| { type: 'SET_PHASE'; phase: StreamPhase }
-	| { type: 'RECORD_TOOL_CALL'; name: string; argsHash: string }
+	| { type: 'RECORD_TOOL_CALL'; name: string; argsHash: string; streakKey?: string }
 	/** 工具执行后回填结果哈希（供 ping-pong / no-progress 等跨调用检测使用） */
 	| { type: 'RECORD_TOOL_RESULT'; name: string; argsHash: string; resultHash: string }
 	| { type: 'RECONCILE_ORPHANS'; endedIds: string[] }
@@ -431,7 +451,11 @@ export function reduceRunState(state: AgentRunState, action: AgentAction): Agent
 		case 'RECORD_TOOL_CALL':
 			return {
 				...state,
-				toolCallHistory: appendToolHistory(state.toolCallHistory, { name: action.name, argsHash: action.argsHash }),
+				toolCallHistory: appendToolHistory(state.toolCallHistory, {
+					name: action.name,
+					argsHash: action.argsHash,
+					streakKey: action.streakKey,
+				}),
 			};
 
 		case 'RECORD_TOOL_RESULT': {
@@ -717,6 +741,75 @@ export function detectToolCallPingPong(
 		toolA: history[n - 1].name,
 		toolB: history[seq[1]].name,
 	};
+}
+
+// ─── 参数抖动检测（同一工具、参数各异、连续反复，对齐 openclaw argument_churn）────
+export interface IArgumentChurnDetection {
+	/** 尾部是否存在「同一工具 + 参数全不相同」的连续长串 */
+	readonly churn: boolean;
+	/** 该连续串的长度（条数） */
+	readonly length: number;
+	/** 抖动发生的工具名，便于日志与提示文案具体化 */
+	readonly toolName?: string;
+	/**
+	 * 该串中不同参数的个数。等于 `length` 才说明「每次都换了参数」；
+	 * 若小于 `length`，说明中间有重复 —— 那是 loop 的领域，本检测已让位（churn=false）。
+	 */
+	readonly distinctArgs: number;
+}
+
+/**
+ * 检测「同一工具、参数各不相同、连续反复」的偏执试探形态。
+ *
+ * 与既有三种检测的分工（**互不重叠**）：
+ *   · `detectToolCallLoop`    —— 同一签名重复（同工具 + 同参数）；
+ *   · `detectToolCallPingPong`—— 两个不同签名严格交替；
+ *   · 本函数                   —— **同一工具，参数每次都不一样**。
+ *
+ * 典型病灶：模型在 `terminal` 上反复微调命令（加个 `-la`、换个路径、改个引号），
+ * 或对同一文件反复换参数 `file_read`，每次签名都不同，前两者全部漏检。
+ *
+ * ⚠ 误报防护：连续读**不同**文件、连续跑**不同**命令都是合法推进，形态上与本病灶
+ * 完全一致。因此本函数只做**判定**，由调用方决定是注入引导还是拦截；
+ * 且阈值（ARGUMENT_CHURN_THRESHOLD=5）刻意高于 loop 阈值，只在明显偏执时才触发。
+ */
+export function detectArgumentChurn(
+	history: ReadonlyArray<IToolCallHistoryEntry>,
+	threshold: number = RUN_STATE_LIMITS.ARGUMENT_CHURN_THRESHOLD,
+): IArgumentChurnDetection {
+	const none: IArgumentChurnDetection = { churn: false, length: 0, distinctArgs: 0 };
+	// 阈值参数非法时不判定；但**不提前返回**，仍统计 length/distinctArgs ——
+	// 这两个字段是诊断信息（调用方与测试依赖），只有在历史为空时才真的无从统计。
+	if (threshold < 2) {
+		return none;
+	}
+	if (history.length === 0) {
+		return none;
+	}
+
+	const tailName = history[history.length - 1].name;
+	// 自尾部向前收集「同一工具」的连续串；一遇到别的工具立即停止。
+	// 只看工具名（不看参数）—— 参数正是本检测要观察的变量。
+	const argsHashes = new Set<string>();
+	let length = 0;
+	for (let i = history.length - 1; i >= 0; i--) {
+		if (history[i].name !== tailName) {
+			break;
+		}
+		argsHashes.add(history[i].argsHash);
+		length++;
+	}
+
+	if (length < threshold) {
+		return { ...none, length };
+	}
+	// 参数必须**两两不同**：出现重复说明存在 loop，交由 detectToolCallLoop 处理，
+	// 本检测主动让位，避免同一现象被两个检测器重复上报。
+	if (argsHashes.size !== length) {
+		return { churn: false, length, distinctArgs: argsHashes.size, toolName: tailName };
+	}
+
+	return { churn: true, length, distinctArgs: argsHashes.size, toolName: tailName };
 }
 
 // ─── XML 文本工具调用泄漏检测 ────────────────────────────────────────────────

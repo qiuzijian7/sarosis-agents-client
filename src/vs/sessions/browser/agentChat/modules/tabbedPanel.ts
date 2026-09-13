@@ -31,6 +31,12 @@ export interface ITabbedPanelContext {
 	readonly textarea: HTMLElement | null;
 	readonly isSending: boolean;
 	readonly onSendMessage: (text: string) => void;
+	/**
+	 * 插队立即发送：中断当前 LLM 输出，把该任务直接发出去（不再重新入队）。
+	 * 由队列项的「↑」按钮调用 —— 该按钮只在 `isSending` 为 true 时可见，
+	 * 此时 `onSendMessage` 会命中「入队」分支而永不发送，故必须走此专用通路。
+	 */
+	readonly onInterruptAndSend?: (text: string) => void;
 	readonly agentId?: string;
 	readonly onOpenCompressionDetail?: ((data: Record<string, unknown>) => void) | null;
 	readonly onOpenMemoryDetail?: ((agentId: string, memoryType?: string, contentPreview?: string) => void) | null;
@@ -245,22 +251,6 @@ export class TabbedPanelManager extends Disposable {
 		if (!list) { return; }
 		while (list.firstChild) { list.removeChild(list.firstChild); }
 
-		// Summary line
-		const pending = this._items.filter(i => i.status === 'pending').length;
-		if (this._items.length > 0) {
-			const summary = document.createElement('div');
-			summary.className = 'tbp-task-summary';
-			if (this._items.some(i => i.status === 'executing')) {
-				const dot = document.createElement('span');
-				dot.className = 'tbp-status-dot executing';
-				summary.appendChild(dot);
-				summary.appendChild(document.createTextNode(`还有 ${pending} 个任务待执行`));
-			} else {
-				summary.appendChild(document.createTextNode(`共 ${this._items.length} 个任务`));
-			}
-			list.appendChild(summary);
-		}
-
 		for (const item of this._items) {
 			list.appendChild(this._createTaskItemEl(item));
 		}
@@ -338,11 +328,12 @@ export class TabbedPanelManager extends Disposable {
 			const sendBtn = document.createElement('button');
 			sendBtn.className = 'tbp-task-btn send';
 			sendBtn.textContent = '↑';
-			sendBtn.disabled = this.ctx.isSending;
-			sendBtn.title = this.ctx.isSending ? 'LLM 输出中，请等待' : '发送此任务';
+			// 不再因 isSending 禁用：队列项本就只在 LLM 输出中产生，禁用等于永远点不动。
+			// 点击语义改为「插队」——中断当前输出后立刻发送本条。
+			sendBtn.title = '插队立即发送（会中断当前输出）';
 			sendBtn.addEventListener('click', (e) => {
 				e.stopPropagation();
-				this.ctx.onSendMessage(item.content);
+				this.ctx.onInterruptAndSend?.(item.content);
 				this.remove(item.id);
 			});
 			actions.appendChild(sendBtn);

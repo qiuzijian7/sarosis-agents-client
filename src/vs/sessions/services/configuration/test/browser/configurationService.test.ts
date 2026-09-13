@@ -35,6 +35,7 @@ suite('Sessions ConfigurationService', () => {
 	let testObject: ConfigurationService;
 	let workspaceService: SessionsWorkspaceContextService;
 	let fileService: FileService;
+	let uriIdentityService: UriIdentityService;
 	let userDataProfileService: IUserDataProfileService;
 	const configurationRegistry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration);
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -88,7 +89,7 @@ suite('Sessions ConfigurationService', () => {
 		disposables.add(fileService.registerProvider(ROOT.scheme, fileSystemProvider));
 
 		const environmentService = TestEnvironmentService;
-		const uriIdentityService = disposables.add(new UriIdentityService(fileService));
+		uriIdentityService = disposables.add(new UriIdentityService(fileService));
 		const userDataProfilesService = disposables.add(new UserDataProfilesService(environmentService, fileService, uriIdentityService, logService));
 		disposables.add(fileService.registerProvider(Schemas.vscodeUserData, disposables.add(new FileUserDataProvider(ROOT.scheme, fileSystemProvider, Schemas.vscodeUserData, userDataProfilesService, uriIdentityService, logService))));
 		userDataProfileService = disposables.add(new UserDataProfileService(userDataProfilesService.defaultProfile));
@@ -96,7 +97,7 @@ suite('Sessions ConfigurationService', () => {
 		const configResource = joinPath(ROOT, 'agent-sessions.code-workspace');
 		await fileService.writeFile(configResource, VSBuffer.fromString(JSON.stringify({ folders: [] })));
 
-		workspaceService = disposables.add(new SessionsWorkspaceContextService(getWorkspaceIdentifier(configResource), uriIdentityService));
+		workspaceService = disposables.add(new SessionsWorkspaceContextService(getWorkspaceIdentifier(configResource), uriIdentityService, fileService, logService));
 		testObject = disposables.add(new ConfigurationService(userDataProfileService, workspaceService, uriIdentityService, fileService, new NullPolicyService(), logService));
 		await testObject.initialize();
 	});
@@ -132,6 +133,90 @@ suite('Sessions ConfigurationService', () => {
 		await workspaceService.addFolders([{ uri: folder }]);
 		assert.strictEqual(testObject.getValue('sessionsConfigurationService.testSetting', { resource: folder }), 'folderValue');
 	}));
+
+	// #endregion
+
+	// #region Workspace file seeding
+
+	suite('initialize()', () => {
+
+		test('seeds folders from the backing .code-workspace file', async () => {
+			const configResource = joinPath(ROOT, 'multi-root.code-workspace');
+			const alpha = joinPath(ROOT, 'alpha');
+			const beta = joinPath(ROOT, 'beta');
+			await fileService.writeFile(configResource, VSBuffer.fromString(JSON.stringify({
+				folders: [
+					{ path: alpha.fsPath, name: 'Alpha' },
+					{ path: beta.fsPath },
+				],
+			})));
+
+			const service = disposables.add(new SessionsWorkspaceContextService(
+				getWorkspaceIdentifier(configResource), uriIdentityService, fileService, new NullLogService(),
+			));
+			await service.initialize();
+
+			const folders = service.getWorkspace().folders;
+			assert.strictEqual(folders.length, 2);
+			assert.strictEqual(folders[0].name, 'Alpha');
+			assert.strictEqual(folders[0].uri.fsPath, alpha.fsPath);
+			assert.strictEqual(folders[1].uri.fsPath, beta.fsPath);
+		});
+
+		test('resolves relative folder paths against the workspace file location', async () => {
+			const configResource = joinPath(ROOT, 'relative.code-workspace');
+			await fileService.writeFile(configResource, VSBuffer.fromString(JSON.stringify({
+				folders: [{ path: 'sibling-project' }],
+			})));
+
+			const service = disposables.add(new SessionsWorkspaceContextService(
+				getWorkspaceIdentifier(configResource), uriIdentityService, fileService, new NullLogService(),
+			));
+			await service.initialize();
+
+			const folders = service.getWorkspace().folders;
+			assert.strictEqual(folders.length, 1);
+			assert.strictEqual(folders[0].uri.fsPath, joinPath(ROOT, 'sibling-project').fsPath);
+		});
+
+		test('leaves folders empty for a workspace file with no folders', async () => {
+			const configResource = joinPath(ROOT, 'empty.code-workspace');
+			await fileService.writeFile(configResource, VSBuffer.fromString(JSON.stringify({ folders: [] })));
+
+			const service = disposables.add(new SessionsWorkspaceContextService(
+				getWorkspaceIdentifier(configResource), uriIdentityService, fileService, new NullLogService(),
+			));
+			await service.initialize();
+
+			assert.strictEqual(service.getWorkspace().folders.length, 0);
+		});
+
+		test('does not throw when the workspace file is missing', async () => {
+			const configResource = joinPath(ROOT, 'does-not-exist.code-workspace');
+			const service = disposables.add(new SessionsWorkspaceContextService(
+				getWorkspaceIdentifier(configResource), uriIdentityService, fileService, new NullLogService(),
+			));
+
+			await service.initialize();
+
+			assert.strictEqual(service.getWorkspace().folders.length, 0);
+		});
+
+		test('does not throw when the workspace file is malformed', async () => {
+			const configResource = joinPath(ROOT, 'malformed.code-workspace');
+			await fileService.writeFile(configResource, VSBuffer.fromString('{ not valid json'));
+
+			const service = disposables.add(new SessionsWorkspaceContextService(
+				getWorkspaceIdentifier(configResource), uriIdentityService, fileService, new NullLogService(),
+			));
+
+			await service.initialize();
+
+			assert.strictEqual(service.getWorkspace().folders.length, 0);
+		});
+	});
+
+	// #endregion
 
 	test('folder settings are removed when folders are removed', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
 		const folder = joinPath(ROOT, 'removedFolder');

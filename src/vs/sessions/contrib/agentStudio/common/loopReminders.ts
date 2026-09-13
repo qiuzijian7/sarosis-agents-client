@@ -35,6 +35,28 @@ export function terminalEmptyOutputReminder(): string {
 	].join('\n');
 }
 
+// ─── 参数抖动提示（同一工具、参数各异、连续反复）─────────────────────────────
+
+/**
+ * 同一工具以「每次都不同的参数」连续调用 N 次后注入（对齐 openclaw `argument_churn`）。
+ *
+ * 与 `toolConsecutiveFailureReminder` 的区别：那条针对**失败**（工具报错），
+ * 本条针对**未失败但无进展**（工具都成功了，只是参数一直在微调）。
+ * 这是最容易被漏掉的一种浪费 —— 没有错误信号，日志看起来一切正常。
+ */
+export function argumentChurnReminder(toolName: string, callCount: number): string {
+	return [
+		'<system-reminder>',
+		`You have called "${toolName}" ${callCount} times in a row, each time with different arguments.`,
+		'This pattern usually means you are guessing parameters instead of diagnosing the problem.',
+		'STOP varying the arguments blindly. Instead:',
+		'  · Read the previous results carefully and base the next call on evidence, not on trial and error.',
+		'  · If the tool keeps returning what you need but you keep re-querying, you already have the answer — use it.',
+		'  · If the correct arguments are genuinely unknown, ask the user instead of enumerating possibilities.',
+		'</system-reminder>',
+	].join('\n');
+}
+
 // ─── 文本-无工具提醒 ─────────────────────────────────────────────────────────
 
 /** LLM 输出了文本但无任何工具调用（在重试上下文中），提醒停止描述、立即行动。 */

@@ -19,6 +19,7 @@ import { localize } from '../../../../nls.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IJSONEditingService, IJSONValue } from '../../configuration/common/jsonEditing.js';
 import { ResourceMap } from '../../../../base/common/map.js';
+import { IWorkbenchEnvironmentService } from '../../environment/common/environmentService.js';
 
 export const EXTENSIONS_CONFIG = '.vscode/extensions.json';
 
@@ -55,17 +56,34 @@ export class WorkspaceExtensionsConfigService extends Disposable implements IWor
 		@IModelService private readonly modelService: IModelService,
 		@ILanguageService private readonly languageService: ILanguageService,
 		@IJSONEditingService private readonly jsonEditingService: IJSONEditingService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super();
 		this._register(workspaceContextService.onDidChangeWorkspaceFolders(e => this._onDidChangeExtensionsConfigs.fire()));
 		this._register(fileService.onDidFilesChange(e => {
 			const workspace = workspaceContextService.getWorkspace();
-			if ((workspace.configuration && e.affects(workspace.configuration))
-				|| workspace.folders.some(folder => e.affects(folder.toResource(EXTENSIONS_CONFIG)))
-			) {
+			// agents 窗口不看 folder 级扩展推荐（见 `_readWorkspaceFolderConfigs`），
+			// 也就不必监听那些文件 —— 监听它们只会白跑一遍刷新。
+			const folderChanged = this._readWorkspaceFolderConfigs
+				&& workspace.folders.some(folder => e.affects(folder.toResource(EXTENSIONS_CONFIG)));
+			if ((workspace.configuration && e.affects(workspace.configuration)) || folderChanged) {
 				this._onDidChangeExtensionsConfigs.fire();
 			}
 		}));
+	}
+
+	/**
+	 * 是否读取 folder 级 `<folder>/.vscode/extensions.json`。
+	 *
+	 * ★ **agents 窗口恒为 false**（用户 2026-09-13 定规「方案 C」：本项目不读不写工作区
+	 * `.vscode/`）。该文件在**工作区内、模型可写**，而它的内容会变成「推荐安装扩展」提示 ——
+	 * **安装扩展即代码执行**，等于把代码执行权交给工作区里可被改写的内容。
+	 *
+	 * 标准窗口保持 VS Code 原生语义（推荐扩展是编辑器本身的能力），故按窗口类型区分，
+	 * 而不是直接改 `EXTENSIONS_CONFIG` 常量 —— 那会连标准窗口一起改掉。
+	 */
+	private get _readWorkspaceFolderConfigs(): boolean {
+		return !this.environmentService.isSessionsWindow;
 	}
 
 	async getExtensionsConfigs(): Promise<IExtensionsConfigContent[]> {
@@ -94,18 +112,18 @@ export class WorkspaceExtensionsConfigService extends Disposable implements IWor
 		const workspace = this.workspaceContextService.getWorkspace();
 		const workspaceExtensionsConfigContent = workspace.configuration ? await this.resolveWorkspaceExtensionConfig(workspace.configuration) : undefined;
 		const workspaceFolderExtensionsConfigContents = new ResourceMap<IExtensionsConfigContent>();
-		await Promise.all(workspace.folders.map(async workspaceFolder => {
+		await Promise.all(this._writableFolderTargets.map(async workspaceFolder => {
 			const extensionsConfigContent = await this.resolveWorkspaceFolderExtensionConfig(workspaceFolder);
 			workspaceFolderExtensionsConfigContents.set(workspaceFolder.uri, extensionsConfigContent);
 		}));
 
 		const isWorkspaceRecommended = workspaceExtensionsConfigContent && workspaceExtensionsConfigContent.recommendations?.some(r => r.toLowerCase() === extensionId);
-		const recommendedWorksapceFolders = workspace.folders.filter(workspaceFolder => workspaceFolderExtensionsConfigContents.get(workspaceFolder.uri)?.recommendations?.some(r => r.toLowerCase() === extensionId));
+		const recommendedWorksapceFolders = this._writableFolderTargets.filter(workspaceFolder => workspaceFolderExtensionsConfigContents.get(workspaceFolder.uri)?.recommendations?.some(r => r.toLowerCase() === extensionId));
 		const isRecommended = isWorkspaceRecommended || recommendedWorksapceFolders.length > 0;
 
 		const workspaceOrFolders = isRecommended
 			? await this.pickWorkspaceOrFolders(recommendedWorksapceFolders, isWorkspaceRecommended ? workspace : undefined, localize('select for remove', "Remove extension recommendation from"))
-			: await this.pickWorkspaceOrFolders(workspace.folders, workspace.configuration ? workspace : undefined, localize('select for add', "Add extension recommendation to"));
+			: await this.pickWorkspaceOrFolders(this._writableFolderTargets, workspace.configuration ? workspace : undefined, localize('select for add', "Add extension recommendation to"));
 
 		for (const workspaceOrWorkspaceFolder of workspaceOrFolders) {
 			if (isWorkspace(workspaceOrWorkspaceFolder)) {
@@ -120,18 +138,18 @@ export class WorkspaceExtensionsConfigService extends Disposable implements IWor
 		const workspace = this.workspaceContextService.getWorkspace();
 		const workspaceExtensionsConfigContent = workspace.configuration ? await this.resolveWorkspaceExtensionConfig(workspace.configuration) : undefined;
 		const workspaceFolderExtensionsConfigContents = new ResourceMap<IExtensionsConfigContent>();
-		await Promise.all(workspace.folders.map(async workspaceFolder => {
+		await Promise.all(this._writableFolderTargets.map(async workspaceFolder => {
 			const extensionsConfigContent = await this.resolveWorkspaceFolderExtensionConfig(workspaceFolder);
 			workspaceFolderExtensionsConfigContents.set(workspaceFolder.uri, extensionsConfigContent);
 		}));
 
 		const isWorkspaceUnwanted = workspaceExtensionsConfigContent && workspaceExtensionsConfigContent.unwantedRecommendations?.some(r => r === extensionId);
-		const unWantedWorksapceFolders = workspace.folders.filter(workspaceFolder => workspaceFolderExtensionsConfigContents.get(workspaceFolder.uri)?.unwantedRecommendations?.some(r => r === extensionId));
+		const unWantedWorksapceFolders = this._writableFolderTargets.filter(workspaceFolder => workspaceFolderExtensionsConfigContents.get(workspaceFolder.uri)?.unwantedRecommendations?.some(r => r === extensionId));
 		const isUnwanted = isWorkspaceUnwanted || unWantedWorksapceFolders.length > 0;
 
 		const workspaceOrFolders = isUnwanted
 			? await this.pickWorkspaceOrFolders(unWantedWorksapceFolders, isWorkspaceUnwanted ? workspace : undefined, localize('select for remove', "Remove extension recommendation from"))
-			: await this.pickWorkspaceOrFolders(workspace.folders, workspace.configuration ? workspace : undefined, localize('select for add', "Add extension recommendation to"));
+			: await this.pickWorkspaceOrFolders(this._writableFolderTargets, workspace.configuration ? workspace : undefined, localize('select for add', "Add extension recommendation to"));
 
 		for (const workspaceOrWorkspaceFolder of workspaceOrFolders) {
 			if (isWorkspace(workspaceOrWorkspaceFolder)) {
@@ -285,12 +303,28 @@ export class WorkspaceExtensionsConfigService extends Disposable implements IWor
 	}
 
 	private async resolveWorkspaceFolderExtensionConfig(workspaceFolder: IWorkspaceFolder): Promise<IExtensionsConfigContent> {
+		// agents 窗口不读 `<folder>/.vscode/extensions.json`（见 `_readWorkspaceFolderConfigs`）。
+		// 返回空内容 = 「该 folder 没有推荐」，而不是「读失败」——调用方的语义都按前者处理。
+		if (!this._readWorkspaceFolderConfigs) {
+			return {};
+		}
 		try {
 			const content = await this.fileService.readFile(workspaceFolder.toResource(EXTENSIONS_CONFIG));
 			const extensionsConfigContent = <IExtensionsConfigContent>parse(content.value.toString());
 			return this.parseExtensionConfig(extensionsConfigContent);
 		} catch (e) { /* ignore */ }
 		return {};
+	}
+
+	/**
+	 * 允许作为「推荐写入目标」的 folder 集合。
+	 *
+	 * agents 窗口为空 —— 既不从 `<folder>/.vscode/extensions.json` 读，也就**绝不能写它**
+	 * （写一个自己不读的文件，比不写更糟：会在用户仓库里凭空造出配置）。
+	 * 此时只剩「工作区文件（`.code-workspace`）的 `extensions` 段」这一个目标。
+	 */
+	private get _writableFolderTargets(): IWorkspaceFolder[] {
+		return this._readWorkspaceFolderConfigs ? [...this.workspaceContextService.getWorkspace().folders] : [];
 	}
 
 	private parseExtensionConfig(extensionsConfigContent: IExtensionsConfigContent): IExtensionsConfigContent {

@@ -270,7 +270,17 @@ export function rewriteWorkspaceFileForNewLocation(rawWorkspaceContents: string,
 	return newContent;
 }
 
-function doParseStoredWorkspace(path: URI, contents: string): IStoredWorkspace {
+/**
+ * Parses the content of a `.code-workspace` file into its stored representation.
+ *
+ * Exposed publicly so that callers outside the workspace-management service
+ * (e.g. the sessions workspace context service, which reads the workspace file
+ * directly instead of going through the main-process workspaces service) can
+ * resolve the configured `folders` array.
+ *
+ * @throws if `contents` is not a valid workspace file (no `folders` array).
+ */
+export function doParseStoredWorkspace(path: URI, contents: string): IStoredWorkspace {
 
 	// Parse workspace file
 	const storedWorkspace: IStoredWorkspace = json.parse(contents); // use fault tolerant parser

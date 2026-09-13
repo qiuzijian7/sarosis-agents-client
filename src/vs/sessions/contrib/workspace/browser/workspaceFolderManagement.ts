@@ -39,10 +39,15 @@ export class WorkspaceFolderManagementContribution extends Disposable implements
 	private async updateWorkspaceFoldersForSession(session: ISession | undefined): Promise<void> {
 		await this.manageTrustWorkspaceForSession(session);
 		const activeSessionFolderData = this.getActiveSessionFolderData(session);
-		const currentRepo = this.workspaceContextService.getWorkspace().folders[0]?.uri;
+		const currentFolders = this.workspaceContextService.getWorkspace().folders;
+		const currentRepo = currentFolders[0]?.uri;
 
+		// A session without a resolvable repository must NOT tear the workspace down:
+		// in a multi-root `.code-workspace` the folder list is declared by the file,
+		// not by the active session. Only drop a root we ourselves injected earlier
+		// (i.e. one that is absent from the declared set).
 		if (!activeSessionFolderData) {
-			if (currentRepo) {
+			if (currentRepo && !this._isDeclaredFolder(currentRepo)) {
 				await this.workspaceEditingService.removeFolders([currentRepo], true);
 			}
 			return;
@@ -57,7 +62,34 @@ export class WorkspaceFolderManagementContribution extends Disposable implements
 			return;
 		}
 
+		// The active session's repository may already be one of several declared
+		// roots — in that case only the ordering changes, not the folder set.
+		const existingIndex = currentFolders.findIndex(folder => this.uriIdentityService.extUri.isEqual(folder.uri, activeSessionFolderData!.uri));
+		if (existingIndex >= 0) {
+			return;
+		}
+
+		// Only replace the leading folder when the list is a single injected root;
+		// otherwise append so declared multi-root projects survive a session switch.
+		if (this._isDeclaredFolder(currentRepo)) {
+			await this.workspaceEditingService.addFolders([activeSessionFolderData], true);
+			return;
+		}
+
 		await this.workspaceEditingService.updateFolders(0, 1, [activeSessionFolderData], true);
+	}
+
+	/**
+	 * True when the URI is part of the folder set declared by the open workspace
+	 * file, i.e. it was not injected by the sessions window itself.
+	 */
+	private _isDeclaredFolder(uri: URI): boolean {
+		try {
+			return this.workspaceContextService.getWorkspace().folders
+				.some(folder => this.uriIdentityService.extUri.isEqual(folder.uri, uri));
+		} catch {
+			return false;
+		}
 	}
 
 	private getActiveSessionFolderData(session: ISession | undefined): IWorkspaceFolderCreationData | undefined {

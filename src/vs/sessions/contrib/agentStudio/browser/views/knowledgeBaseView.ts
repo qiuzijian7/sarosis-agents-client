@@ -57,7 +57,6 @@ import { writeReviewNote, listReviewNotes, approveReviewNote, routeLintToReview 
 import { CodebaseIndexEditorInput } from '../codebaseIndexEditorInput.js';
 import { ICodebaseGraphService } from '../codebaseGraphService.js';
 
-import { type KbSearchMode } from './knowledgeBase/kbTreeViewer.js';
 import { IIndexConfig, IndexMode, ICodebaseMemoryMcpService } from '../codebaseMemoryMcpService.js';
 import { COMMON_EXCLUDE_DIRS } from '../../common/codebaseIndexDefaults.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
@@ -77,6 +76,7 @@ import { localize } from '../../../../../nls.js';
 import {
 	IKbVault, IKbNode, KbSection,
 	KbSortMode, KB_SORT_GROUPS, newVaultId,
+	type KbSearchMode,
 } from './knowledgeBase/kbTypes.js';
 import { KbMindmapGenerator } from './knowledge/kbMindmapGenerator.js';
 import {
@@ -139,6 +139,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _activeVault: IKbVault | undefined;
 	/** P3-3：文件监听 debounce handle。 */
 	private _kbRefreshHandle: ReturnType<typeof setTimeout> | undefined;
+	/**
+	 * `onDidRequestKbRefresh` 的 debounce handle。
+	 * 独立于 `_kbRefreshHandle`，避免两者互相 clearTimeout 导致事件丢失。
+	 */
+	private _kbRequestRefreshHandle: ReturnType<typeof setTimeout> | undefined;
 	/** 重命名进行中：禁止任何视图重建（避免输入框被 replaceChildren 销毁导致重命名被取消）。 */
 	private _renameActive = false;
 
@@ -167,6 +172,15 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _searchToken = 0;
 	/** 侧边栏显示模式：文件树 | 最近编辑 */
 	private _viewMode: 'tree' | 'recent' = 'tree';
+
+	/**
+	 * 分区刷新代次：每个 section 一份，每次 refreshSection 自增。
+	 * 用于丢弃「过期刷新」——并发重建同一分区时，只有最后一次的渲染可以落 DOM，
+	 * 避免先发起方在 `listChildren` 让出点之后回写、覆盖后发起方的结果。
+	 */
+	private _sectionRefreshGen: Record<KbSection, number> = { library: 0, notes: 0 };
+	/** 分区在途刷新：同一 section 的并发请求合并为一次，后到者复用前者的 Promise。 */
+	private _sectionRefreshInFlight = new Map<KbSection, Promise<void>>();
 
 	/** 全文倒排索引（替代遍历式搜索，对齐 FTS5 语义） */
 	private _index: KbFullTextIndex;
@@ -266,9 +280,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._register(this.agentStudioService.onDidChangeWorkspace((wsId) => {
 			void this._autoLinkWorkspace(wsId);
 		}));
-		// 后台 KB agent 完成导入处理后触发刷新
+		// 后台 KB agent 完成导入处理后触发刷新。
+		// 导入会连发多次该事件（入口/抽取各一次），且随后文件系统事件已由
+		// _onVaultFilesChange 的增量路径覆盖，故此处 debounce 后走「靶向增量」，
+		// 不再每次 renderAll 全量重建。
 		this._register(this.agentStudioService.onDidRequestKbRefresh(() => {
-			this.refresh();
+			this._scheduleKbRequestRefresh();
 		}));
 		// P3-3：监听 vault 文件变化（外部编辑/外部程序改动），debounce 后刷新 + 重建导航
 		this._register(this.fileService.onDidFilesChange(e => this._onVaultFilesChange(e)));
@@ -1089,9 +1106,15 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this._scroll.appendChild(this.renderSection('notes'));
 		}
 		this.renderBacklinksPanel();
-		// 填充 section body 内容（DOM 是当前主可见内容）
-		void this.refreshSection('library');
-		void this.refreshSection('notes');
+		// 填充 section body 内容（DOM 是当前主可见内容）。
+		// 两个分区互不依赖，并行 await 一次即可；原先的两次 `void` 调用既不等待、
+		// 也无法被下方计时埋点覆盖真实耗时。
+		void Promise.all([
+			this.refreshSection('library'),
+			this.refreshSection('notes'),
+		]).then(() => {
+			this.logService.info(`[KB perf] renderAll #${callId} sections loaded: ${(performance.now() - t0).toFixed(1)}ms`);
+		});
 		// 标签分类区块（设计图：单一可折叠标题，内含 标签搜索 + 分组列表）
 		this._scroll.appendChild(this.renderTagClassificationSection());
 		const _lf = this._activeVault?.linkedFolders?.length ?? -1;
@@ -1612,14 +1635,23 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	//  Tree
 	// ═══════════════════════════════════════════════════════════
 
-	private async loadSectionTree(section: KbSection, body: HTMLElement, countEl: HTMLElement): Promise<void> {
+	private async loadSectionTree(section: KbSection, body: HTMLElement, countEl: HTMLElement, gen?: number): Promise<void> {
 		if (!this._activeVault) { return; }
+		// 进入即校验：若本次刷新已被更新的刷新取代，连「加载中…」都不该写
+		// （否则过期调用会把占位符留在屏幕上，等不到任何人来清）。
+		if (this._isSectionRefreshStale(section, gen)) { return; }
 		const t0 = performance.now();
 		body.replaceChildren();
 		const loading = $('div.kb-loading'); loading.textContent = '加载中…'; body.appendChild(loading);
 		try {
 			const sectionUri = this.sectionUri(this._activeVault, section);
 			const nodes = await this.listChildren(sectionUri, section);
+			// 竞态让出点：listChildren 期间可能已有更新的刷新接管本分区。
+			// 此时不得再写 DOM，否则会覆盖新内容（先发起方后回写）。
+			if (this._isSectionRefreshStale(section, gen)) {
+				this.logService.info(`[KB] loadSectionTree(${section}) discarded: superseded by newer refresh`);
+				return;
+			}
 			body.replaceChildren();
 			if (nodes.length === 0) {
 				const empty = $('div.kb-empty-inline'); empty.textContent = '暂无内容';
@@ -1669,6 +1701,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			}
 			countEl.textContent = String(this.countNodes(section, nodes) + linkCount);
 			this.logService.info(`[KB loadSectionTree] countEl="${countEl.textContent}" (vaultNodes=${nodes.length} + linkCount=${linkCount}) body childNodes after=${body.children.length}`);
+			// 分片渲染期间又让出了多个帧，恢复展开子树前再校验一次代次。
+			if (this._isSectionRefreshStale(section, gen)) {
+				this.logService.info(`[KB] loadSectionTree(${section}) expansion restore skipped: superseded`);
+				return;
+			}
 			// 恢复已展开文件夹（并行，避免逐个 await 造成的级联抖动；各文件夹写各自容器互不干扰）
 			await Promise.all(nodes
 				.filter(node => node.isDirectory && this._expandedFolders.has(node.path))
@@ -2357,16 +2394,75 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 	}
 
+	/**
+	 * 重建指定分区。
+	 *
+	 * 并发保护（P2）：
+	 * - 同一 section 在途时**合并**请求——后到者复用前者的 Promise，不重复 listChildren/重建 DOM，
+	 *   因此 `_runLint` + `_buildNoteFromLibrary` 之类的叠加操作不会各自刷一遍；
+	 * - 每次刷新领一个代次号，`loadSectionTree` 渲染前校验；若期间已有更新的刷新发起，
+	 *   本次结果直接丢弃，避免「先发起方后回写」覆盖新内容（对齐 `_searchToken` 的防竞态语义）。
+	 */
 	private async refreshSection(section: KbSection): Promise<void> {
 		this.markSearchDirty();
-		// DOM 渲染：始终填充
-		const body = this._scroll.querySelector(`.kb-section-body[data-section="${section}"]`) as HTMLElement | null;
-		const countEl = body?.parentElement?.querySelector('.kb-count') as HTMLElement | null;
-		if (body) { await this.loadSectionTree(section, body, countEl ?? $('span.kb-count')); }
+		const existing = this._sectionRefreshInFlight.get(section);
+		if (existing) { return existing; }
+		const gen = ++this._sectionRefreshGen[section];
+		const task = (async () => {
+			// DOM 渲染：始终填充
+			const body = this._scroll.querySelector(`.kb-section-body[data-section="${section}"]`) as HTMLElement | null;
+			const countEl = body?.parentElement?.querySelector('.kb-count') as HTMLElement | null;
+			if (!body) { return; }
+			if (this._sectionRefreshGen[section] !== gen) { return; }
+			await this.loadSectionTree(section, body, countEl ?? $('span.kb-count'), gen);
+		})().finally(() => {
+			// 仅当自己仍是最新在途者时才清理，避免误删后来者的登记。
+			if (this._sectionRefreshInFlight.get(section) === task) {
+				this._sectionRefreshInFlight.delete(section);
+			}
+		});
+		this._sectionRefreshInFlight.set(section, task);
+		return task;
+	}
+
+	/** 供 `loadSectionTree` 校验「本次渲染是否已被更新的刷新取代」。 */
+	private _isSectionRefreshStale(section: KbSection, gen?: number): boolean {
+		return gen !== undefined && this._sectionRefreshGen[section] !== gen;
 	}
 
 	private refresh(): void {
 		if (this._activeVault) { this.markSearchDirty(); this.renderAll(); }
+	}
+
+	/**
+	 * 导入完成事件（`onDidRequestKbRefresh`）的刷新入口。
+	 *
+	 * 与文件监听路径共用 300ms 防抖与靶向增量语义：
+	 * - 首次触发（视图尚无 DOM 或换 vault）→ 必须走 renderAll 全量重建才能出内容；
+	 * - 已有 DOM 的后续触发 → 走 _reloadVisible 增量，避免整段 replaceChildren。
+	 */
+	private _scheduleKbRequestRefresh(): void {
+		if (!this._activeVault) { return; }
+		if (this._kbRequestRefreshHandle !== undefined) { clearTimeout(this._kbRequestRefreshHandle); }
+		this._kbRequestRefreshHandle = setTimeout(() => {
+			this._kbRequestRefreshHandle = undefined;
+			if (!this._activeVault) { return; }
+			// 重命名进行中不得重建 DOM（会销毁内联输入框并取消重命名）。
+			if (this._renameActive) {
+				this.logService.info('[KB] requestKbRefresh → skip (rename in progress)');
+				return;
+			}
+			const v = this._activeVault;
+			const hasDom = this._scroll.querySelector('.kb-section-body') !== null;
+			if (!hasDom) {
+				this.logService.info('[KB] requestKbRefresh → full render (no DOM yet)');
+				this.refresh();
+				return;
+			}
+			this.logService.info('[KB] requestKbRefresh → targeted incremental refresh');
+			this.markSearchDirty();
+			void this._reloadVisible(this.sectionUri(v, 'notes'), this.sectionUri(v, 'library'));
+		}, 300);
 	}
 
 	private async openKbFolder(): Promise<void> {
@@ -3852,7 +3948,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 	}
 
-	/** DOM 层文件名过滤：按名称匹配显隐节点；目录在其自身或后代匹配时保留可见（对齐原 KbTreeFilter 行为）。 */
+	/** DOM 层文件名过滤：按名称匹配显隐节点；目录在其自身或后代匹配时保留可见。 */
 	private _applyDomFilenameFilter(query: string): void {
 		const q = query.trim().toLowerCase();
 		for (const body of Array.from(this._scroll.querySelectorAll('.kb-section-body[data-section]'))) {

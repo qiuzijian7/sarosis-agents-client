@@ -5,3 +5,13 @@ out/
 dist/
 .vscode-test/
 extensions/
+
+# 已废弃扩展归档（292M 死代码，避免污染知识图谱）
+_removed_extensions/
+# 本地归档：mockup 原型稿、临时脚本、历史快照
+_archive/
+# 工具自身工作数据
+.codebase-memory/
+.codebuddy/
+.claude/
+.worktrees/

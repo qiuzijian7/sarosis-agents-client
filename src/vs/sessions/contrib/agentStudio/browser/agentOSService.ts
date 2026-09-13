@@ -266,7 +266,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 */
 	private _loopAbortController: AbortController | undefined;
 	/**
-	 * 工具级「跳过」信号（per-turn 懒重建）：用户点 terminal 卡片「继续执行」时 abort，
+	 * 工具级「跳过」信号（per-turn 懒重建）：用户点 terminal 卡片「跳过」时 abort，
 	 * 只中止当前正在执行的工具，turn 本身不被取消——agent 拿到中断结果后继续后续步骤。
 	 */
 	private _toolSkipController: AbortController | undefined;
@@ -2961,7 +2961,7 @@ private readonly _sandboxGuard: SandboxGuard;
 	 *  - **[P1] Execution metadata** (timing, truncation, timeout info)
 	 */
 	/**
-	 * 跳过当前正在执行的工具（terminal 长命令卡住时用户点「继续执行」）。
+	 * 跳过当前正在执行的工具（terminal 长命令卡住时用户点「跳过」）。
 	 * 只 abort 工具级信号——executeWithRetryAndTimeout 内层 controller 随之 abort，
 	 * terminal 返回中断结果回传 LLM；turn 的 abortSignal 不受影响，agent 继续后续步骤。
 	 */

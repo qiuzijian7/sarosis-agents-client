@@ -13,6 +13,9 @@ import { IWorkspaceFolderCreationData } from '../../../../platform/workspaces/co
 import { getWorkspaceIdentifier } from '../../../../workbench/services/workspaces/browser/workspaces.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { doParseStoredWorkspace, toWorkspaceFolders } from '../../../../platform/workspaces/common/workspaces.js';
 export class SessionsWorkspaceContextService extends Disposable implements IWorkspaceContextService, IWorkspaceEditingService {
 
 	declare readonly _serviceBrand: undefined;
@@ -33,10 +36,66 @@ export class SessionsWorkspaceContextService extends Disposable implements IWork
 	constructor(
 		workspaceIdentifier: IWorkspaceIdentifier,
 		private readonly uriIdentityService: IUriIdentityService,
+		private readonly fileService: IFileService,
+		private readonly logService: ILogService,
 	) {
 		super();
 		this.workspace = new Workspace(workspaceIdentifier.id, [], false, workspaceIdentifier.configPath, uri => uriIdentityService.extUri.ignorePathCasing(uri));
 	}
+
+	/**
+	 * The backing `.code-workspace` file this service mirrors.
+	 */
+	private get _configPath(): URI {
+		return this.workspace.configuration!;
+	}
+
+	/**
+	 * Reads the backing `.code-workspace` file and seeds the in-memory folder list
+	 * from its `folders` array.
+	 *
+	 * The constructor intentionally starts with an empty folder list (it cannot do
+	 * async file I/O), which is why a multi-root workspace file previously showed
+	 * no folders at all: nothing ever parsed `configPath`. Call this once during
+	 * startup, before the configuration service resolves workspace settings.
+	 *
+	 * Failures are logged and swallowed — a malformed or missing workspace file
+	 * must not prevent the window from opening.
+	 */
+	async initialize(): Promise<void> {
+		const configPath = this._configPath;
+		try {
+			if (!await this.fileService.exists(configPath)) {
+				this.logService.info(`[SessionsWorkspaceContext] workspace file not found, starting with no folders: ${configPath.fsPath}`);
+				return;
+			}
+
+			const contents = (await this.fileService.readFile(configPath)).value.toString();
+			const stored = doParseStoredWorkspace(configPath, contents);
+			const folders = toWorkspaceFolders(stored.folders, configPath, this.uriIdentityService.extUri);
+
+			if (folders.length === 0) {
+				this.logService.info(`[SessionsWorkspaceContext] workspace file has no folders: ${configPath.fsPath}`);
+				return;
+			}
+
+			this.workspace.update(new Workspace(
+				this.workspace.id,
+				folders,
+				false,
+				configPath,
+				uri => this.uriIdentityService.extUri.ignorePathCasing(uri),
+			));
+
+			this.logService.info(
+				`[SessionsWorkspaceContext] loaded ${folders.length} folder(s) from ${configPath.fsPath}: ` +
+				folders.map(f => f.uri.fsPath).join(', '),
+			);
+		} catch (err) {
+			this.logService.error(`[SessionsWorkspaceContext] failed to parse workspace file ${configPath.fsPath}:`, err);
+		}
+	}
+
 
 	getCompleteWorkspace(): Promise<IWorkspace> {
 		return Promise.resolve(this.workspace);

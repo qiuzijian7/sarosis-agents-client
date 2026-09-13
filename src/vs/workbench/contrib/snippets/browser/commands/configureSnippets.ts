@@ -22,6 +22,7 @@ import { ISnippetsService } from '../snippets.js';
 import { SnippetSource } from '../snippetsFile.js';
 import { ITextFileService } from '../../../../services/textfile/common/textfiles.js';
 import { IUserDataProfileService } from '../../../../services/userDataProfile/common/userDataProfile.js';
+import { IWorkbenchEnvironmentService } from '../../../../services/environment/common/environmentService.js';
 
 namespace ISnippetPick {
 	export function is(thing: object | undefined): thing is ISnippetPick {
@@ -270,6 +271,7 @@ export class ConfigureSnippetsAction extends SnippetsAction {
 		const fileService = accessor.get(IFileService);
 		const textFileService = accessor.get(ITextFileService);
 		const labelService = accessor.get(ILabelService);
+		const environmentService = accessor.get(IWorkbenchEnvironmentService);
 
 		const picks = await computePicks(snippetService, userDataProfileService, languageService, labelService);
 		const existing: QuickPickInput[] = picks.existing;
@@ -282,12 +284,18 @@ export class ConfigureSnippetsAction extends SnippetsAction {
 		}];
 
 		const workspaceSnippetPicks: SnippetPick[] = [];
-		for (const folder of workspaceService.getWorkspace().folders) {
-			workspaceSnippetPicks.push({
-				scope: nls.localize('new.workspace_scope', "{0} workspace", folder.name),
-				label: nls.localize('new.folder', "New Snippets file for '{0}'...", folder.name),
-				uri: folder.toResource('.vscode')
-			});
+		// ★ agents 窗口不提供「为工作区新建 Snippets 文件」—— 该选项会创建
+		// `<folder>/.vscode/*.code-snippets`（用户 2026-09-13 定规「方案 C」：本项目不读不写
+		// 工作区 `.vscode/`）。与 `snippetsService._initWorkspaceFolderSnippets` 的读取闸门成对：
+		// 只堵读不堵写，会出现「能建但建完不生效」的哑状态。标准窗口行为不变。
+		if (!environmentService.isSessionsWindow) {
+			for (const folder of workspaceService.getWorkspace().folders) {
+				workspaceSnippetPicks.push({
+					scope: nls.localize('new.workspace_scope', "{0} workspace", folder.name),
+					label: nls.localize('new.folder', "New Snippets file for '{0}'...", folder.name),
+					uri: folder.toResource('.vscode')
+				});
+			}
 		}
 
 		if (existing.length > 0) {

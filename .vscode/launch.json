@@ -327,7 +327,12 @@
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests",
 				"--skip-sessions-welcome",
-				"--agents"
+				"--agents",
+				// [Saros] Launch the agents window against this repo's `.code-workspace`
+				// so its declared `folders` become the workspace roots. `code.bat` also
+				// forwards `%CD%` positionally; the workspace-file arg takes precedence
+				// in `ensureAgentsWindow()` because only it carries a workspace extension.
+				"${workspaceFolder}/sarosis-agents-client.code-workspace"
 			],
 			"userDataDir": "${userHome}/.vssaros-dev",
 			"webRoot": "${workspaceFolder}",

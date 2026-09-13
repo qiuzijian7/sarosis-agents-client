@@ -1,3 +1,5 @@
+import * as nls from '../../../nls.js';
+
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { IToolCall, IAgentChatMessage, IConfirmationData } from './agentChatTypes.js';
 import { AgentChatPanelCodebaseCards } from './agentChatPanel.codebaseCards.js';
@@ -615,18 +617,18 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				}
 			}));
 
-			// 右侧：继续执行（running）+ 复制 + 时长
+			// 右侧：跳过（running）+ 复制 + 时长
 			const right = append(row, $('.tool-header-right.terminal-right'));
-			// 「继续执行」按钮：仅 running 态显示——中止当前长命令、不取消整个 turn。
+			// 「跳过」按钮：仅 running 态显示——中止当前长命令、不取消整个 turn。
 			// 折叠态也常驻可见（避免用户折叠后找不到「跳过」入口）。
 			if (isRunning && this._onSkipCurrentTool) {
-				const skipBtn = append(right, $('button.terminal-continue-btn.terminal-continue-header')) as HTMLButtonElement;
-				skipBtn.textContent = '继续执行';
-				skipBtn.title = '不等待命令完成，跳过当前命令并继续后续步骤';
+				const skipBtn = append(right, $('button.terminal-skip-btn')) as HTMLButtonElement;
+				skipBtn.textContent = nls.localize('agentChat.skipRunningCommand', '跳过');
+				skipBtn.title = nls.localize('agentChat.skipRunningCommandTooltip', '中断当前命令，Agent 继续后续步骤');
 				this._register(addDisposableListener(skipBtn, EventType.CLICK, (e) => {
 					e.stopPropagation();
 					skipBtn.disabled = true;
-					skipBtn.textContent = '已跳过';
+					skipBtn.textContent = nls.localize('agentChat.commandSkipped', '已跳过');
 					this._onSkipCurrentTool?.();
 				}));
 			}
@@ -636,7 +638,7 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 			// 复制按钮
 			if (commandText) {
 				const copyBtn = append(right, $('button.terminal-copy-btn'));
-				copyBtn.title = '复制命令';
+				copyBtn.title = nls.localize('agentChat.copyCommand', '复制命令');
 				const copySvg = this._svgCopyIcon();
 				copyBtn.appendChild(copySvg);
 				this._register(addDisposableListener(copyBtn, EventType.CLICK, (e) => {
@@ -649,7 +651,7 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 			// 独立终端按钮（「在终端中显示」：绿色框图标，非 running 态可点）
 			if (this._onRunInTerminal && commandText && !isRunning) {
 				const termBtn = append(right, $('button.terminal-open-btn'));
-				termBtn.title = '在终端中显示';
+				termBtn.title = nls.localize('agentChat.showInTerminal', '在终端中显示');
 				this._svgTerminalOpenIcon(termBtn, 'terminal-open-icon');
 				this._register(addDisposableListener(termBtn, EventType.CLICK, (e) => {
 					e.stopPropagation();
@@ -682,33 +684,36 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 			// 先清理上一次同 tc.id 的直播订阅（防重建泄漏），running 分支会重新登记
 			_disposeLiveTerminalSub(tc.id);
 			if (isRunning && !tc.result) {
-				// 运行中：等宽命令块 + 实时输出（方案1：旁路通道直播 PTY 清洗后的增量输出）
-				if (commandText) {
-					const cmdBlock = append(innerBox, $('.terminal-cmd-block'));
-					cmdBlock.textContent = commandText;
-				}
-				// 运行中徽标（置于输出区上方）
-				const badge = append(innerBox, $('.terminal-running-badge'));
-				badge.textContent = '运行中 · 实时输出';
+				// 运行中：实时输出（方案1：旁路通道直播 PTY 清洗后的增量输出）
+				//
+				// ★ 2026-09-13 移除卡内「完整命令块」：header 行已经用等宽字体显示了
+				//   命令（.terminal-cmd-line，折叠态单行省略），正文再重复一次整条命令
+				//   纯属冗余 —— 截图实证：一条 `echo === ... ; du ...` 长命令在 header
+				//   与 body 各占三行，正文主体（实时输出）反被挤到下面。
+				//   命令完整原文仍可通过 header 的「复制命令」按钮取得。
+				//
+				// ★ 2026-09-13 移除「运行中 · 实时输出」徽标行：该文案是自明的
+				//   （卡片本身在 running 态），却常驻占一行 + 缩进，把输出区往下推。
+				//   运行中状态改由输出区末尾的闪烁光标承载（见 .terminal-live-cursor）。
 				// 实时输出区：先渲染已累计缓存（卡片可能因 tool_args 到达而重建），
 				// 再订阅增量 chunk 就地追加并自动滚底。
 				const liveOut = getTerminalLiveOutput(tc.id);
 				const livePre = append(innerBox, $('pre.terminal-live-output')) as HTMLPreElement;
 				livePre.textContent = liveOut;
-				// ★ 2026-09-13 修复：loading 行改为**可移除** —— 原实现只在「初始无输出」时
-				//   添加它、且**从不移除** → 有输出后 spinner 仍留在输出区下方，用户看到
-				//   「只有一个转圈、没有数据」而误判「实时输出不可见」（截图实证）。
-				const explainRow = !liveOut
-					? append(innerBox, $('.terminal-explain-row.running'))
-					: null;
-				if (explainRow) {
-					append(explainRow, $('span.codicon.codicon-loading', { style: 'animation:spin 1s linear infinite' }));
-				}
+				// 闪烁光标：spinner 占位行/徽标行都撤掉后，用行内光标表示「仍在接收」。
+				// 有输出时光标跟在最后一行末尾，无输出时它就是唯一的「活动」指示。
+				//
+				// ★ 必须写入一个实心块字符：`display: inline` 的空 span 内容宽度为 0，
+				//   光标会「看不见」（CSS 的 width/height 对 inline 无效）。
+				//   用 `▊`（U+258A）让光标具备字符宽度，且天然继承当前行的基线/行高。
+				const cursor = append(livePre, $('span.terminal-live-cursor'));
+				cursor.textContent = '\u258A';
 				const sub = onTerminalLiveOutput((e) => {
 					if (e.toolCallId !== tc.id) { return; }
-					livePre.textContent = (livePre.textContent ?? '') + e.chunk;
+					// 光标是 livePre 的末位子节点，追加文本必须插到它**之前**，
+					// 否则光标会被后续输出甩到内容上方（原 append(textContent) 的行为）。
+					livePre.insertBefore(document.createTextNode(e.chunk), cursor);
 					livePre.scrollTop = livePre.scrollHeight;
-					explainRow?.remove();	// 首个 chunk 到达即撤掉 loading
 				});
 				_liveTerminalSubs.set(tc.id, sub);
 				// ★ 诊断（2026-09-13）：实时输出链路的关键 id 与初始缓存长度。
@@ -722,11 +727,8 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				// 运行结束：清理直播订阅与缓存
 				_disposeLiveTerminalSub(tc.id);
 				clearTerminalLiveOutput(tc.id);
-				// 完整命令块（展开后可见，反引号换行不丢）
-				if (commandText) {
-					const cmdBlock = append(innerBox, $('.terminal-cmd-block'));
-					cmdBlock.textContent = commandText;
-				}
+				// ★ 2026-09-13 同上：移除卡内「完整命令块」。
+				//   展开态正文 = 纯输出（+ exit bar），命令只出现在 header。
 				// ★ 2026-08-21 重构：每行加 `> ` 前缀（等宽字体 + 缩进），对齐截图样式。
 				// tc.result 是 agentOS 层包出来的 [{type:"text",text:"..."}] 协议外壳，
 				// 先剥掉再渲染。stderr 行用 `! ` 前缀 + warning 色。

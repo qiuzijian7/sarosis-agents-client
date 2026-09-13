@@ -14,6 +14,7 @@ import { setSnippetSuggestSupport } from '../../../../editor/contrib/suggest/bro
 import { localize } from '../../../../nls.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { FileChangeType, IFileService } from '../../../../platform/files/common/files.js';
+import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { ILifecycleService, LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkspace, IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -224,6 +225,7 @@ export class SnippetsService implements ISnippetsService {
 		@IExtensionResourceLoaderService private readonly _extensionResourceLoaderService: IExtensionResourceLoaderService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IWorkbenchEnvironmentService private readonly _workbenchEnvironmentService: IWorkbenchEnvironmentService,
 		@ILanguageConfigurationService languageConfigurationService: ILanguageConfigurationService,
 	) {
 		this._pendingWork.push(Promise.resolve(lifecycleService.when(LifecyclePhase.Restored).then(() => {
@@ -431,6 +433,13 @@ export class SnippetsService implements ISnippetsService {
 	}
 
 	private async _initWorkspaceFolderSnippets(workspace: IWorkspace, bucket: DisposableStore): Promise<any> {
+		// ★ agents 窗口不读 `<folder>/.vscode/*.code-snippets`（用户 2026-09-13 定规「方案 C」：
+		// 本项目不读不写工作区 `.vscode/`）。该目录在**工作区内、模型可写** —— 读它等于让工作区
+		// 内容往补全里注入文本（低危，但与其他 `.vscode/` 源同源，一并关掉才不出现"只堵一半"）。
+		// 标准窗口保持 VS Code 原生语义。
+		if (this._workbenchEnvironmentService.isSessionsWindow) {
+			return;
+		}
 		const promises = workspace.folders.map(async folder => {
 			const snippetFolder = folder.toResource('.vscode');
 			const value = await this._fileService.exists(snippetFolder);

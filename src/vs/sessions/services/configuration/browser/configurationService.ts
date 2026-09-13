@@ -3,9 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ResourceMap } from '../../../../base/common/map.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Queue } from '../../../../base/common/async.js';
@@ -25,9 +24,9 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IPolicyService, NullPolicyService } from '../../../../platform/policy/common/policy.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
-import { IWorkspaceContextService, IWorkspaceFoldersChangeEvent, IWorkspaceFolder, WorkbenchState, Workspace } from '../../../../platform/workspace/common/workspace.js';
-import { FolderConfiguration, UserConfiguration } from '../../../../workbench/services/configuration/browser/configuration.js';
-import { APPLICATION_SCOPES, APPLY_ALL_PROFILES_SETTING, FOLDER_CONFIG_FOLDER_NAME, FOLDER_SETTINGS_PATH, IWorkbenchConfigurationService, RestrictedSettings } from '../../../../workbench/services/configuration/common/configuration.js';
+import { IWorkspaceContextService, IWorkspaceFolder, Workspace } from '../../../../platform/workspace/common/workspace.js';
+import { UserConfiguration } from '../../../../workbench/services/configuration/browser/configuration.js';
+import { APPLICATION_SCOPES, APPLY_ALL_PROFILES_SETTING, IWorkbenchConfigurationService, RestrictedSettings } from '../../../../workbench/services/configuration/common/configuration.js';
 import { Configuration } from '../../../../workbench/services/configuration/common/configurationModels.js';
 import { IUserDataProfileService } from '../../../../workbench/services/userDataProfile/common/userDataProfile.js';
 
@@ -45,6 +44,26 @@ class SessionsDefaultConfiguration extends DefaultConfiguration {
 
 }
 
+/**
+ * Agent Studio（agents 窗口）的配置服务。
+ *
+ * ★★ **本项目不从 `<folder>/.vscode/settings.json` 读取任何数据**（用户 2026-09-13 定规）。
+ *
+ * 来源只有三层：默认值（含 `agentsWindow` 覆写）、策略（policy）、用户级
+ * `~/.vssaros/User/settings.json`。**folder 级（`.vscode/settings.json`）与
+ * `.code-workspace` 的 `settings` 段一律不加载**，folder 配置模型恒为空。
+ *
+ * 理由（与「授权表不放 `.vscode/`」同源，见 `common/toolAllowStore.ts` 注释）：
+ * `.vscode/settings.json` 在**工作区内、模型可写** —— 读取它等于让「被约束者改写约束」：
+ * 仓库里（或被注入到文件/网页/issue 的指令）写一条 `sessions.agentStudio.*` /
+ * `chat.agent.*` 就能改掉模型、provider、自动批准档位、技能开关等本产品的行为。
+ *
+ * 同理也**不往那里写**：`updateValue` 的 `WORKSPACE` / `WORKSPACE_FOLDER` 目标会抛错，
+ * 而不是静默改写到用户级（那等于把「工作区作用域」升级成「全局作用域」= 放宽权限）。
+ *
+ * 注：这只约束 agents 窗口（本项目）。标准 workbench 仍按 VS Code 原生语义读取
+ * 工作区设置 —— 那是编辑器本身的能力，不在本约定范围内。
+ */
 export class ConfigurationService extends Disposable implements IWorkbenchConfigurationService {
 
 	declare readonly _serviceBrand: undefined;
@@ -53,7 +72,6 @@ export class ConfigurationService extends Disposable implements IWorkbenchConfig
 	private readonly defaultConfiguration: DefaultConfiguration;
 	private readonly policyConfiguration: IPolicyConfiguration;
 	private readonly userConfiguration: UserConfiguration;
-	private readonly cachedFolderConfigs = this._register(new DisposableMap<URI, FolderConfiguration>(new ResourceMap()));
 	private readonly agentsWindowReadOnlyKeys = new Set<string>();
 
 	private readonly _onDidChangeConfiguration = this._register(new Emitter<IConfigurationChangeEvent>());
@@ -70,8 +88,8 @@ export class ConfigurationService extends Disposable implements IWorkbenchConfig
 	constructor(
 		userDataProfileService: IUserDataProfileService,
 		private readonly workspaceService: IWorkspaceContextService,
-		private readonly uriIdentityService: IUriIdentityService,
-		private readonly fileService: IFileService,
+		uriIdentityService: IUriIdentityService,
+		fileService: IFileService,
 		policyService: IPolicyService,
 		private readonly logService: ILogService,
 	) {
@@ -101,8 +119,6 @@ export class ConfigurationService extends Disposable implements IWorkbenchConfig
 		this._register(this.defaultConfiguration.onDidChangeConfiguration(({ defaults, properties }) => this.onDefaultConfigurationChanged(defaults, properties)));
 		this._register(this.policyConfiguration.onDidChangeConfiguration(configurationModel => this.onPolicyConfigurationChanged(configurationModel)));
 		this._register(this.userConfiguration.onDidChangeConfiguration(userConfiguration => this.onUserConfigurationChanged(userConfiguration)));
-		this._register(this.workspaceService.onWillChangeWorkspaceFolders(e => e.join(this.loadFolderConfigurations(e.changes.added))));
-		this._register(this.workspaceService.onDidChangeWorkspaceFolders(e => this.onWorkspaceFoldersChanged(e)));
 	}
 
 	async initialize(): Promise<void> {
@@ -125,7 +141,7 @@ export class ConfigurationService extends Disposable implements IWorkbenchConfig
 			workspace,
 			this.logService
 		);
-		await this.loadFolderConfigurations(workspace.folders);
+		// ★ 刻意**不**加载 `<folder>/.vscode/settings.json`：见类注释。
 	}
 
 	// #region IWorkbenchConfigurationService
@@ -187,14 +203,19 @@ export class ConfigurationService extends Disposable implements IWorkbenchConfig
 		await this.reloadConfiguration();
 	}
 
+	/**
+	 * 解析 `updateValue` 应写入的文件 —— **只有用户级** `settings.json`。
+	 *
+	 * `WORKSPACE` / `WORKSPACE_FOLDER` 目标会落到 `<folder>/.vscode/settings.json`，
+	 * 那是**工作区内、模型可写**的文件：本项目既不从它读、也不往它写（见类注释）。
+	 *
+	 * 这里**明确抛错**而不是悄悄改写到用户级 —— 把「工作区作用域」静默升级成
+	 * 「全局作用域」等于**放宽权限**（例如一条只想在某个仓库生效的授权变成处处生效）。
+	 */
 	private getSettingsResource(target: ConfigurationTarget | undefined, resource: URI | undefined): URI {
 		if (target === ConfigurationTarget.WORKSPACE_FOLDER || target === ConfigurationTarget.WORKSPACE) {
-			if (resource) {
-				const folder = this.workspaceService.getWorkspaceFolder(resource);
-				if (folder) {
-					return this.uriIdentityService.extUri.joinPath(folder.uri, FOLDER_SETTINGS_PATH);
-				}
-			}
+			const where = resource ? (this.workspaceService.getWorkspaceFolder(resource)?.uri.fsPath ?? resource.toString()) : 'workspace';
+			throw new Error(`Unable to write workspace settings for ${where}: VsSaros does not read or write '<folder>/.vscode/settings.json'.`);
 		}
 		return this.settingsResource;
 	}
@@ -211,18 +232,7 @@ export class ConfigurationService extends Disposable implements IWorkbenchConfig
 		const userModel = await this.userConfiguration.initialize();
 		const previousData = this._configuration.toData();
 		const change = this._configuration.compareAndUpdateLocalUserConfiguration(userModel);
-
-		// Reload folder configurations
-		for (const folder of this.workspaceService.getWorkspace().folders) {
-			const folderConfiguration = this.cachedFolderConfigs.get(folder.uri);
-			if (folderConfiguration) {
-				const folderModel = await folderConfiguration.loadConfiguration();
-				const folderChange = this._configuration.compareAndUpdateFolderConfiguration(folder.uri, folderModel);
-				change.keys.push(...folderChange.keys);
-				change.overrides.push(...folderChange.overrides);
-			}
-		}
-
+		// 无 folder 级配置可重载 —— 见类注释（不读 `.vscode/settings.json`）。
 		this.triggerConfigurationChange(change, previousData, ConfigurationTarget.USER);
 	}
 
@@ -272,12 +282,6 @@ export class ConfigurationService extends Disposable implements IWorkbenchConfig
 		const previousData = this._configuration.toData();
 		const change = this._configuration.compareAndUpdateDefaultConfiguration(defaults, properties);
 		this._configuration.updateLocalUserConfiguration(this.userConfiguration.reparse({ exclude: [...this.agentsWindowReadOnlyKeys] }));
-		for (const folder of this.workspaceService.getWorkspace().folders) {
-			const folderConfiguration = this.cachedFolderConfigs.get(folder.uri);
-			if (folderConfiguration) {
-				this._configuration.updateFolderConfiguration(folder.uri, folderConfiguration.reparse());
-			}
-		}
 		this.triggerConfigurationChange(change, previousData, ConfigurationTarget.DEFAULT);
 	}
 
@@ -291,46 +295,6 @@ export class ConfigurationService extends Disposable implements IWorkbenchConfig
 		const previousData = this._configuration.toData();
 		const change = this._configuration.compareAndUpdateLocalUserConfiguration(userConfiguration);
 		this.triggerConfigurationChange(change, previousData, ConfigurationTarget.USER);
-	}
-
-	private onWorkspaceFoldersChanged(e: IWorkspaceFoldersChangeEvent): void {
-		// Remove configurations for removed folders
-		const previousData = this._configuration.toData();
-		const keys: string[] = [];
-		const overrides: [string, string[]][] = [];
-		for (const folder of e.removed) {
-			const change = this._configuration.compareAndDeleteFolderConfiguration(folder.uri);
-			keys.push(...change.keys);
-			overrides.push(...change.overrides);
-			this.cachedFolderConfigs.deleteAndDispose(folder.uri);
-		}
-		if (keys.length || overrides.length) {
-			this.triggerConfigurationChange({ keys, overrides }, previousData, ConfigurationTarget.WORKSPACE_FOLDER);
-		}
-	}
-
-	private onWorkspaceFolderConfigurationChanged(folder: IWorkspaceFolder): void {
-		const folderConfiguration = this.cachedFolderConfigs.get(folder.uri);
-		if (folderConfiguration) {
-			folderConfiguration.loadConfiguration().then(configurationModel => {
-				const previousData = this._configuration.toData();
-				const change = this._configuration.compareAndUpdateFolderConfiguration(folder.uri, configurationModel);
-				this.triggerConfigurationChange(change, previousData, ConfigurationTarget.WORKSPACE_FOLDER);
-			}, onUnexpectedError);
-		}
-	}
-
-	private async loadFolderConfigurations(folders: readonly IWorkspaceFolder[]): Promise<void> {
-		for (const folder of folders) {
-			let folderConfiguration = this.cachedFolderConfigs.get(folder.uri);
-			if (!folderConfiguration) {
-				folderConfiguration = new FolderConfiguration(false, folder, FOLDER_CONFIG_FOLDER_NAME, WorkbenchState.WORKSPACE, true, this.fileService, this.uriIdentityService, this.logService, { needsCaching: () => false, read: async () => '', write: async () => { }, remove: async () => { } });
-				folderConfiguration.addRelated(folderConfiguration.onDidChange(() => this.onWorkspaceFolderConfigurationChanged(folder)));
-				this.cachedFolderConfigs.set(folder.uri, folderConfiguration);
-			}
-			const configurationModel = await folderConfiguration.loadConfiguration();
-			this._configuration.updateFolderConfiguration(folder.uri, configurationModel);
-		}
 	}
 
 	private triggerConfigurationChange(change: IConfigurationChange, previousData: IConfigurationData, target: ConfigurationTarget): void {

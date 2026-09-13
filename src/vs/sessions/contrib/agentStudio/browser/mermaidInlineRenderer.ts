@@ -100,19 +100,48 @@ export class MermaidInlineRenderer extends Disposable implements IMermaidInlineR
 		return this._readyPromise;
 	}
 
-	private async _createWebview(): Promise<void> {
+	/**
+	 * Locations the hidden renderer's webview bundle may live under.
+	 *
+	 * `appRoot` is the directory holding the running code (`out/`), but the
+	 * mermaid bundle is produced by its own webview build into
+	 * `extensions/mermaid-chat-features/chat-webview-out/` and is NOT copied
+	 * into `out/`. Resolving a single hard-coded location therefore failed in
+	 * every layout except a fully packaged install, which is what left the chat
+	 * card's "图表" tab blank while the sidebar preview (same renderer, already
+	 * built) kept working.
+	 */
+	private _bundleCandidates(): URI[] {
 		const appRoot = (this._environmentService as INativeEnvironmentService).appRoot;
-		const bundleUri = URI.joinPath(
-			URI.file(appRoot),
-			'extensions', 'mermaid-chat-features', 'chat-webview-out', 'index-render-inline.js',
-		);
+		const segments = ['extensions', 'mermaid-chat-features', 'chat-webview-out', 'index-render-inline.js'];
 
-		let bundleJs: string;
-		try {
-			const content = await this._fileService.readFile(bundleUri);
-			bundleJs = content.value.toString();
-		} catch (err) {
-			this._logService.error('[MermaidInlineRenderer] failed to read index-render-inline.js bundle', err);
+		// Dev layout: the bundle sits next to the sources, sibling to `out/`.
+		// Packaged layout: it ships inside the app root. Try the source-adjacent
+		// copy first (always the freshest local build), then the app-root copy.
+		return [
+			URI.joinPath(URI.file(appRoot), '..', ...segments),
+			URI.joinPath(URI.file(appRoot), ...segments),
+		];
+	}
+
+	private async _readBundle(): Promise<string | undefined> {
+		for (const bundleUri of this._bundleCandidates()) {
+			try {
+				const content = await this._fileService.readFile(bundleUri);
+				this._logService.info(`[MermaidInlineRenderer] using render bundle: ${bundleUri.fsPath}`);
+				return content.value.toString();
+			} catch {
+				// try next candidate
+			}
+		}
+		return undefined;
+	}
+
+	private async _createWebview(): Promise<void> {
+		const bundleJs = await this._readBundle();
+		if (!bundleJs) {
+			const tried = this._bundleCandidates().map(u => u.fsPath).join(' | ');
+			this._logService.error(`[MermaidInlineRenderer] render bundle not found. Tried: ${tried}`);
 			throw new Error('Mermaid 渲染 bundle 不存在（请先构建 mermaid-chat-features 的 webview）');
 		}
 

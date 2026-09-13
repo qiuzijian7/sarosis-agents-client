@@ -321,7 +321,7 @@ export class KbImportController extends Disposable {
 				// 诊断：记录模型原始输出开头，便于排查格式偏差（此前失败时无任何线索）。
 				logService.warn(`[KbImportController] stage2 no FILE blocks parsed (output len=${gen.length}), head: ${gen.slice(0, 300).replace(/\s+/g, ' ')}`);
 				// 兜底：模型未按 FILE 块格式输出时，将原始输出落为单篇笔记到源文件目录
-				const libCat = KbImportController._parseLibCategory(libContent, libDir, libFileUri);
+				const libCat = KbImportController._parseLibCategory(libContent, libDir, libFileUri, logService);
 				const safeName = KbImportController._sanitizeFsName(libCat.topic) || '未命名';
 				const salvaged = await KbImportController._salvageSingleNoteToDir(gen, safeName, salvageDir, fileService);
 				written = salvaged ? [salvaged] : [];
@@ -670,7 +670,7 @@ export class KbImportController extends Disposable {
 	 *   - 文件导入：库文件为原始文件副本（无 frontmatter）→ 从目录路径推导
 	 *     （库/<typeDir>/<topic>/<原始文件名>，分类信息由入库时的目录承载）。
 	 */
-	private static _parseLibCategory(libContent: string, libDir?: URI, libFileUri?: URI): { typeDir: string; topic: string } {
+	private static _parseLibCategory(libContent: string, libDir?: URI, libFileUri?: URI, logService?: ILogService): { typeDir: string; topic: string } {
 		const fm = libContent.match(/^---\n([\s\S]*?)\n---/);
 		const pick = (key: string): string | undefined => {
 			const m = fm?.[1].match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
@@ -685,10 +685,15 @@ export class KbImportController extends Disposable {
 			const rel = libFileUri.path.substring(libDir.path.length).replace(/^\/+/, '');
 			const segs = rel.split('/').filter(s => !!s);
 			if (segs.length >= 3) {
-				return {
-					typeDir: decodeURIComponent(segs[0]),
-					topic: sanitizeKbTopic(decodeURIComponent(segs[1])) ?? '未分类',
-				};
+				// segs[1] 本该是 topic 目录名，但历史上它可能承载整段导入提示词。
+				// sanitizeKbTopic 现会对句子/超长输入返回 undefined，此时回退「未分类」，
+				// 而不是把提示词直接建成目录。
+				const rawTopic = decodeURIComponent(segs[1]);
+				const safeTopic = sanitizeKbTopic(rawTopic);
+				if (safeTopic) {
+					return { typeDir: decodeURIComponent(segs[0]), topic: safeTopic };
+				}
+				logService?.warn(`[KbImportController] _parseLibCategory rejected topic candidate (looks like sentence): ${rawTopic.slice(0, 60)}`);
 			}
 		}
 		return { typeDir: 'note', topic: '未分类' };

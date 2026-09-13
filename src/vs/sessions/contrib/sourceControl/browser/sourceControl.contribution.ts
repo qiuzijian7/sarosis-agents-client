@@ -38,6 +38,8 @@ import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { WorktreeViewPane } from '../../worktree/browser/worktreeView.js';
 import { WorktreeCommands, WorktreeContextKeys } from '../../worktree/common/worktreeTypes.js';
 import { IsPhoneLayoutContext } from '../../../common/contextkeys.js';
+import { folderListsMatch, mergeWorkspaceFolders } from '../common/workspaceFolderMerge.js';
+
 import { SourceControlViewPaneContainer } from './sourceControlViewPaneContainer.js';
 
 // ─── View Container & View IDs ────────────────────────────────────────────────
@@ -324,6 +326,17 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 		}
 	}
 
+	/**
+	 * Merge SCM target roots into the current folder list (see
+	 * `mergeWorkspaceFolders` for the ordering and de-duplication rules).
+	 */
+	private _mergeWorkspaceFolders(
+		currentFolders: readonly { readonly uri: URI; readonly name: string }[],
+		targets: readonly { uri: URI; name: string }[],
+	): { uri: URI; name: string }[] {
+		return mergeWorkspaceFolders(currentFolders, targets);
+	}
+
 	private async _syncWorkspaceFolder(workspaceId: string): Promise<void> {
 		const workspace = await this.agentStudioService.getWorkspace(workspaceId);
 		if (!workspace) {
@@ -392,10 +405,16 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 
 		const targetUris = targets.map(t => t.uri);
 
-		// Skip the folder update if the current root set already matches the target set
+		// Merge the active workspace's roots INTO the current folder list instead of
+		// replacing it. A user-opened `.code-workspace` may declare several folders
+		// (multi-root); clobbering the list with a single workspace's roots collapses
+		// the explorer to that one folder. Existing folders keep their position and
+		// new roots are appended.
+		const mergedFolders = this._mergeWorkspaceFolders(currentFolders, targets);
+
+		// Skip the folder update if the current root set already matches the merged set
 		// (same length, same order, same URIs) — avoids redundant churn & git re-scan.
-		const sameAsCurrent = currentFolders.length === targets.length &&
-			currentFolders.every((cf, i) => this.uriIdentityService.extUri.isEqual(cf.uri, targets[i].uri));
+		const sameAsCurrent = folderListsMatch(currentFolders, mergedFolders);
 		if (sameAsCurrent) {
 			await this._updateGitContextKey();
 			this._pruneVisibleRepositories(targetUris);
@@ -404,9 +423,9 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 
 		try {
 			if (currentFolders.length === 0) {
-				await this.workspaceEditingService.addFolders(targets, true);
+				await this.workspaceEditingService.addFolders(mergedFolders, true);
 			} else {
-				await this.workspaceEditingService.updateFolders(0, currentFolders.length, targets, true);
+				await this.workspaceEditingService.updateFolders(0, currentFolders.length, mergedFolders, true);
 			}
 		} catch (err) {
 			console.warn('[SourceControlWorkspaceSync] Failed to sync workspace folders:', err);

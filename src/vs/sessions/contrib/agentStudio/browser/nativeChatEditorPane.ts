@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
@@ -14,7 +14,7 @@ import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/servic
 import { IEditorGroupView } from '../../../../workbench/browser/parts/editor/editor.js';
 import { EditorActivation, IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { addDisposableListener } from '../../../../base/browser/dom.js';
-import { toDisposable } from '../../../../base/common/lifecycle.js';
+import { toDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -60,6 +60,7 @@ import { IAgentStudioService, IAgentChatService, IAgentTaskBoardService, IChatAt
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
+import { isChatCapableModel } from '../common/chatModelFilter.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { earliestCheckpointTime, findConversationKeepIndex } from '../common/checkpointConversationAnchor.js';
 import { describeSkippedSnapshots } from '../common/checkpointSnapshotPolicy.js';
@@ -763,6 +764,37 @@ export class NativeChatEditorPane extends EditorPane {
 		const PanelCtor = useCliPanel ? XtermCliPanel : AgentChatPanel;
 		this._chatPanel = this._register(new PanelCtor({
 			logService: this._logService,
+			// 任务队列「↑ 插队立即发送」：中断当前流式输出，把排队的该条任务立刻发出。
+			// 复刻 _handleEditMessage 的既有模式 —— cancelStream → setSending(false)（不触发 executeNext，
+			// 避免排空队列与随后的直接发送竞态）→ 直接走 _sendMessageInternal 派发。
+			onInterruptAndSend: async (text: string) => {
+				try {
+					const agentId = this._currentAgentId ?? 'claw';
+					const sessionId = this._currentSessionId ?? undefined;
+					// 1) 中断当前流式输出（同 onCancelExecution 的做法）
+					this._workflowTrace?.cancelExecution();
+					this._chatService.cancelStream(agentId, sessionId);
+					// 2) 立即恢复 UI 状态；triggerExecuteNext=false 防止排空队列与直接发送竞态
+					this._chatPanel?.setSending(false, { triggerExecuteNext: false });
+					this._isSending = false;
+					const cancelId = this._streamingAssistantId;
+					const cancelMsg = this._streamingAssistantMsg;
+					if (cancelId && cancelMsg) {
+						this._applyStreamPhase('canceled');
+						this._chatPanel?.updateMessage(cancelId, {
+							content: this._buildCanceledContent(cancelMsg),
+							toolCalls: cancelMsg.toolCalls ? cancelMsg.toolCalls.slice() : undefined,
+							isStreaming: false,
+							isThinking: false,
+							streamPhase: 'canceled',
+						});
+					}
+					// 3) 把排队的该条任务立刻发出（绕过队列直接派发）
+					await this._sendMessageInternal?.(text);
+				} catch (err) {
+					this._logService.warn('[NativeChatEditorPane] onInterruptAndSend failed', err);
+				}
+			},
 			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => {
 			// 注：防重入逻辑已下移到 AgentChatPanel._handleSendMessage（流式时入队，非流式时直接发送）
 			// 此处不再拦截，让 Panel 的队列机制处理并发发送。
@@ -960,7 +992,7 @@ export class NativeChatEditorPane extends EditorPane {
 			onEditMessage: (messageId: string, newText: string) => {
 				void this._handleEditMessage(messageId, newText);
 			},
-			// 「继续执行」：只中止当前正在执行的工具（terminal 长命令等），
+			// 「跳过」：只中止当前正在执行的工具（terminal 长命令等），
 			// 不取消整个 turn——agent 拿到中断结果后继续后续步骤，避免原地卡住。
 			onSkipCurrentTool: () => {
 				this._agentOSService.skipCurrentTool();
@@ -2189,6 +2221,12 @@ export class NativeChatEditorPane extends EditorPane {
 			void this._loadAvailableAgents();
 		}));
 
+		// 2026-09-13 修复「多窗口同时跑时，非活跃窗口的压缩 UI 不更新」：
+		// 压缩基线此前只写裸 localStorage —— 物理上跨窗口共享，但**没有变更通知**，
+		// 于是窗口 B 必须等自己下次切 agent/session 才重读。现改为写入 IStorageService
+		// 并订阅其跨窗口广播（external=true），A 窗口压缩后 B 立即同步进度圈。
+		this._registerCompactedBaselineSync();
+
 		// 2026-09-04 修复「新建工作区后聊天框工作区下拉框不刷新」：
 		// AgentStudioService 在 createWorkspace/update/delete 等 6 处 fire onDidChangeWorkspace
 		// （workspaceView/searchView/knowledgeBaseView/workspaceToolbar 均已监听），
@@ -2914,12 +2952,35 @@ export class NativeChatEditorPane extends EditorPane {
 		}
 	}
 
-	/** 持久化压缩基线到 localStorage（key 按 agentId:sessionId 隔离）。 */
+	/** 压缩基线的 storage key（跨窗口共享，故用 APPLICATION scope）。 */
+	private _compactedBaselineKey(): string | undefined {
+		if (!this._currentAgentId || !this._currentSessionId) { return undefined; }
+		return `saros.compactedBaseline.${this._currentAgentId}.${this._currentSessionId}`;
+	}
+
+	/**
+	 * 持久化压缩基线。
+	 *
+	 * 2026-09-13：从裸 `localStorage` 迁移到 `IStorageService`（StorageScope.APPLICATION）。
+	 *
+	 * 动机（多窗口压缩 UI 不更新）：`localStorage` 虽在 Electron 同源渲染进程间物理共享，
+	 * 但它**不产生任何变更通知** —— 窗口 A 压缩后窗口 B 无从得知，只能等自己下次
+	 * 切 agent/session 时才重读。`IStorageService` 的写入会经 IPC 广播到所有窗口
+	 * （storageIpc.ts `onDidChangeStorage`），使 `_registerCompactedBaselineSync`
+	 * 能实时刷新对端 UI。
+	 *
+	 * 仍保留 localStorage 双写：迁移期兜底，且旧值可被 `_restoreCompactedBaseline`
+	 * 的降级分支读到，避免升级后已压缩会话的进度圈瞬间回退到未压缩值。
+	 */
 	private _saveCompactedBaseline(baseline: number): void {
-		if (!this._currentAgentId || !this._currentSessionId) { return; }
+		const key = this._compactedBaselineKey();
+		if (!key) { return; }
 		try {
-			const key = `saros:compactedBaseline:${this._currentAgentId}:${this._currentSessionId}`;
-			localStorage.setItem(key, String(baseline));
+			this._storageService.store(key, String(baseline), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		} catch { /* storage may be unavailable */ }
+		// 兼容旧版本读取（双写，见方法注释）
+		try {
+			localStorage.setItem(`saros:compactedBaseline:${this._currentAgentId}:${this._currentSessionId}`, String(baseline));
 		} catch { /* localStorage may be unavailable */ }
 	}
 
@@ -3208,16 +3269,20 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 	} catch (err) { this._logService.warn('[NativeChatEditorPane] _applyAgentDefaultModelSelection failed:', err); }
 }
 
-	/** 从 localStorage 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）。
-	 *  新会话或无压缩历史时清除基线，避免残留旧值。 */
+	/** 从持久化存储恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）。
+	 *  新会话或无压缩历史时清除基线，避免残留旧值。
+	 *
+	 *  读取顺序：IStorageService（新）→ localStorage（旧版本遗留）→ 0。
+	 *  降级分支保证升级后首次打开旧会话时，压缩基线不会瞬间回退。 */
 	private _restoreCompactedBaseline(): void {
-		if (!this._currentAgentId || !this._currentSessionId) {
+		const key = this._compactedBaselineKey();
+		if (!key) {
 			this._chatPanel?.setCompactedBaseline(0);
 			return;
 		}
+		// 1. 新存储（跨窗口共享 + 变更通知）
 		try {
-			const key = `saros:compactedBaseline:${this._currentAgentId}:${this._currentSessionId}`;
-			const saved = localStorage.getItem(key);
+			const saved = this._storageService.get(key, StorageScope.APPLICATION);
 			if (saved) {
 				const baseline = parseInt(saved, 10);
 				if (baseline > 0) {
@@ -3225,9 +3290,56 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 					return;
 				}
 			}
+		} catch { /* storage may be unavailable */ }
+		// 2. 旧存储降级（迁移期）
+		try {
+			const legacy = localStorage.getItem(`saros:compactedBaseline:${this._currentAgentId}:${this._currentSessionId}`);
+			if (legacy) {
+				const baseline = parseInt(legacy, 10);
+				if (baseline > 0) {
+					this._chatPanel?.setCompactedBaseline(baseline);
+					// 顺手迁移到新存储，下次即走快路径
+					this._saveCompactedBaseline(baseline);
+					return;
+				}
+			}
 		} catch { /* localStorage may be unavailable */ }
 		// 无保存的基线 → 重置为 0（新会话或从未压缩过）
 		this._chatPanel?.setCompactedBaseline(0);
+	}
+
+	/**
+	 * 订阅「他窗口写入的压缩基线」—— 修复多窗口压缩 UI 不更新。
+	 *
+	 * 场景：窗口 A 跑完一轮触发压缩并落盘基线；窗口 B 打开着同一 agent+session，
+	 * 其进度圈 / 压缩提示应当同步刷新，而不必等用户手动切换会话。
+	 *
+	 * 实现：`IStorageService.onDidChangeValue` 经主进程 IPC 广播
+	 * （storageIpc.ts `onDidChangeStorage`），`key` 传 undefined 表示监听该 scope
+	 * 下所有键的变更 —— 因为用户可能在 B 窗口切换了 agent/session，
+	 * 此时不同的 key 才是「当前会话」的基线，必须由回调内的 `_compactedBaselineKey()`
+	 * 实时比较而非订阅时固定。
+	 */
+	private _registerCompactedBaselineSync(): void {
+		this._register(this._storageService.onDidChangeValue(
+			StorageScope.APPLICATION,
+			undefined,
+			// 该 DisposableStore 只管理 Event.filter 的内部过滤器，订阅本体由外层 _register 释放
+			this._register(new DisposableStore()),
+		)((e) => {
+			const currentKey = this._compactedBaselineKey();
+			if (!currentKey || e.key !== currentKey) { return; }
+			// external=true 表示变更来自另一个窗口/进程（见 IStorageValueChangeEvent 注释）。
+			// 本窗口自身的写入已在 context_compacted 分支更新过 UI，跳过以免重复渲染。
+			if (!e.external) { return; }
+			const baseline = parseInt(this._storageService.get(currentKey, StorageScope.APPLICATION) ?? '0', 10);
+			if (baseline > 0) {
+				this._chatPanel?.setCompactedBaseline(baseline);
+				this._logService.info(
+					`[NativeChatEditorPane] Compacted baseline synced from another window: ${baseline} (session=${this._currentSessionId})`,
+				);
+			}
+		}));
 	}
 
 	// ---------- checkpoint wiring (aligned with ChatBarPart) ----------
@@ -5097,10 +5209,15 @@ private _handleStreamDelta(delta: any): void {
 			const items = await this._modelSelector.getAvailableModels();
 			this._logService.debug(`[NativeChatEditorPane][Init] _refreshModelSelector getAvailableModels done count=${items?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
 
-			// Provider list — unique by id, preserving order
+			// Provider list — unique by id, preserving order.
+			// 只收录至少有一个对话可用模型的 provider，避免纯媒体生成 provider
+			// （如 lightai）以空分组的形式出现在下拉里。见 chatModelFilter.ts。
 			const seenProviders = new Set<string>();
 			const providers: IPanelProviderInfo[] = [];
 			for (const it of items) {
+				if (!isChatCapableModel(it.model)) {
+					continue;
+				}
 				if (!seenProviders.has(it.provider.id)) {
 					seenProviders.add(it.provider.id);
 					providers.push({
@@ -5115,6 +5232,9 @@ private _handleStreamDelta(delta: any): void {
 			const seenModels = new Set<string>();
 			const models: IPanelModelInfo[] = [];
 			for (const it of items) {
+				if (!isChatCapableModel(it.model)) {
+					continue;
+				}
 				const key = `${it.provider.id}:${it.model.id}`;
 				if (!seenModels.has(key)) {
 					seenModels.add(key);

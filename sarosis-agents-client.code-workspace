@@ -3,6 +3,14 @@
 		{
 			"name": "sarosis-agents-client",
 			"path": "."
+		},
+		{
+			"name": "Saros-agents-pocket",
+			"path": "../Saros-agents-pocket"
+		},
+		{
+			"name": "saros-marketplace",
+			"path": "../saros-marketplace"
 		}
 	],
 	"settings": {
