@@ -18,7 +18,7 @@
 
 export type PortType = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'TEXT' | 'SAROS_JSON' | 'ANY' | string;
 import { INSTANT_WIDGETS } from './instantNodes.js';
-import { registerSchemaLiteGraphNode } from './schemaLiteGraphNodes.js';
+import { registerSchemaLiteGraphNode, FLOW_SLOT_LABEL } from './schemaLiteGraphNodes.js';
 import { COMFYTV_STAGE_META } from './comfyTVStageMeta.generated.js';
 import { COMFYTV_FX_FIELDS } from './comfyTVFxFields.generated.js';
 import { listBuiltinLabels } from './builtinWorkflows/index.js';
@@ -188,6 +188,28 @@ export function registerNodeSpec(spec: NodeSpec): boolean {
 			};
 		}
 	}
+	// ★ W7-flow：bridge(schema)/provider(llm) 节点尾部注入隐形 FLOW 控制口
+	//   （flowIn/flowOut）。「从 Start 开始」要求任何待执行节点都能挂进 Start
+	//   可达链，而数据端口类型（COMFYTV_*/TEXT/IMAGE…）不承载控制语义 —— FLOW
+	//   口是纯控制通道：锚点渲染在 title 两侧（schemaLiteGraphNodes 设 slot.pos，
+	//   LiteGraph 原生折叠分支天然兼容）、连线青色虚线、不进执行器数据上游。
+	//   在唯一入口注入 → stage 注册循环 / refineStage 覆盖 / defineNode 全量
+	//   形态三条路径都自动覆盖；react（已有 SAROS_JSON in/out 复用为控制口）与
+	//   native（ComfyUI 契约，端口来自 /object_info）不注入。
+	//   幂等：尾部已是 FLOW 口（refineStage 重注册携带旧注入结果）则跳过。
+	if (spec.kind === 'schema' || spec.kind === 'llm') {
+		const lastIn = spec.inputs?.[spec.inputs.length - 1];
+		const lastOut = spec.outputs?.[spec.outputs.length - 1];
+		spec = {
+			...spec,
+			inputs: lastIn?.type === FLOW_PORT_TYPE
+				? spec.inputs
+				: [...(spec.inputs ?? []), { name: FLOW_IN_PORT, type: FLOW_PORT_TYPE, required: false }],
+			outputs: lastOut?.type === FLOW_PORT_TYPE
+				? spec.outputs
+				: [...(spec.outputs ?? []), { name: FLOW_OUT_PORT, type: FLOW_PORT_TYPE, required: false }],
+		};
+	}
 	registry.set(spec.type, {
 		spec,
 		create: () => ({}),
@@ -293,7 +315,14 @@ export function syncNodePortsToSpec(
 			if (slot.name !== def.name) { slot.name = def.name; changed = true; }
 			// label 是 LiteGraph 实际绘制的文字（addInput 时传的 { label }）。
 			// 只改 name 不改 label，画布上仍然显示旧名字。
-			if (slot.label !== undefined && slot.label !== def.name) { slot.label = def.name; changed = true; }
+			// ★ W7-flow：FLOW 控制口的 label 必须保持 FLOW_SLOT_LABEL（空格）。
+			//   它锚在 title 两侧，label 文字会叠在标题上；而**空串不行**——
+			//   LiteGraph `renderingLabel = label || localized_name || name || ''`
+			//   用的是 `||`，空串 falsy 会回退到 name（'flowIn'）继续画（实测两次
+			//   返工的真因）。另：此前这里无条件写 def.name，每帧把 constructor
+			//   设的值改回 'flowIn' → 文字复活，故 FLOW 口需按类型分流。
+			const wantLabel = def.type === FLOW_PORT_TYPE ? FLOW_SLOT_LABEL : def.name;
+			if (slot.label !== undefined && slot.label !== wantLabel) { slot.label = wantLabel; changed = true; }
 			if (typeof slot.type === 'string' && slot.type !== def.type) { slot.type = def.type; changed = true; }
 		}
 	};
@@ -329,11 +358,38 @@ export function validateNodeSpec(spec: NodeSpec): string[] {
 
 /** Link-type compatibility matrix (mirrors LiteGraph isValidConnection + ComfyTV).
  *  Identical types connect. 'ANY' connects to anything. Everything else is strict.
+ *
+ *  ★ W7-flow：`FLOW` 是控制流专用类型 —— 只能与 FLOW 相连（**不与 ANY 互通**），
+ *  防止把控制线误插进数据口（ANY 通配会把 FLOW 吞掉）。控制流不携带媒体快照，
+ *  数据口连接语义完全不受影响。
  */
 export function isPortTypeCompatible(a: PortType, b: PortType): boolean {
+	if (a === FLOW_PORT_TYPE || b === FLOW_PORT_TYPE) { return a === b; }
 	if (a === b) { return true; }
 	if (a === 'ANY' || b === 'ANY') { return true; }
 	return false;
+}
+
+/** 控制流端口类型（title 侧锚点、青色虚线连线；见 registerNodeSpec 注入逻辑）。 */
+export const FLOW_PORT_TYPE = 'FLOW';
+/** 控制流端口名（LiteGraph slot 名 = store 边的 sourceHandle/targetHandle）。 */
+export const FLOW_IN_PORT = 'flowIn';
+export const FLOW_OUT_PORT = 'flowOut';
+/** 控制流视觉色（title 锚点 pin + 虚线连线统一用青色）。 */
+export const FLOW_COLOR = '#22d3ee';
+
+/**
+ * 是否为「参与控制流的端口类型」：FLOW 显式控制口，以及编排节点复用为控制
+ * 通道的 SAROS_JSON / ANY 口。这些类型的**边**在画布上渲染为青色虚线
+ * （`isFlowLinkType`），且 FLOW 边不进入执行器的数据上游（upstreams）。
+ */
+export function isFlowPortType(t: string | undefined): boolean {
+	return t === FLOW_PORT_TYPE || t === 'SAROS_JSON' || t === 'ANY';
+}
+
+/** 按 link 两端类型判定是否控制流边（渲染虚线用）。 */
+export function isFlowLinkType(srcType: string | undefined, dstType: string | undefined): boolean {
+	return isFlowPortType(srcType) && isFlowPortType(dstType);
 }
 
 /** Three-layer model for cross-layer connection gating (see doc/workflow-pipeline-fusion-design.md).
@@ -357,12 +413,34 @@ export function nodeLayer(kind: NodeKind): NodeLayer {
 }
 
 /**
+ * 系统级入口/出口锚点 —— 跨层 gate 对其豁免（W7）。
+ *
+ * 为什么必须豁免：「运行 = 从 Start 开始」要求任何要执行的节点都能挂到 Start 的
+ * 可达链上。若 Start/End 仍受 orchestration↔media 禁连约束，用户就无法把 Start
+ * 接到原生 ComfyUI 节点（media 层）→ 那条链永远在作用域外、永远不执行。
+ * Start/End 不做数据变换（Start 只提供 args 契约、End 只透传标记输出），把它们
+ * 当「必须经 bridge 中转」的普通编排节点是过度约束。
+ */
+const LAYER_GATE_EXEMPT_TYPES = new Set(['Saros.Start', 'Saros.End']);
+
+/**
  * Cross-layer connection gate. Orchestration nodes must NOT connect directly
  * to media nodes (and vice-versa) — they must go through a bridge (schema /
  * ComfyTV stage). Everything else is allowed, including intra-layer links.
+ *
+ * `srcType` / `dstType` 可选：传入时对系统入口/出口锚点（Saros.Start /
+ * Saros.End）豁免跨层限制（W7，见 LAYER_GATE_EXEMPT_TYPES）。不传 = 旧行为。
  * Pure, unit-testable without LiteGraph.
  */
-export function canConnectLayers(srcKind: NodeKind, dstKind: NodeKind): boolean {
+export function canConnectLayers(
+	srcKind: NodeKind,
+	dstKind: NodeKind,
+	srcType?: string,
+	dstType?: string,
+): boolean {
+	if (LAYER_GATE_EXEMPT_TYPES.has(srcType ?? '') || LAYER_GATE_EXEMPT_TYPES.has(dstType ?? '')) {
+		return true;
+	}
 	const s = nodeLayer(srcKind);
 	const d = nodeLayer(dstKind);
 	if ((s === 'orchestration' && d === 'media') || (s === 'media' && d === 'orchestration')) {
@@ -465,7 +543,9 @@ export const SAROS_NODE_COLORS = {
  * 也能引用而不必把 React 组件拉进 LiteGraph 节点模块。
  */
 export const ORCH_RICH_NODE_TYPES = new Set<string>([
-	'Saros.Start',
+	// ★ Saros.Start 已移出（2026-09-09）：卡片零参数 UI 后 Start 与 End 对称，
+	//   走纯 canvas 渲染（DOM 富卡 overlay 会把 Start 撑高到 ~150px，
+	//   与 End 的纯标题+端口高度不一致）。
 	'Saros.Prompt',
 	'Saros.Task',
 	'Saros.Agent',
@@ -476,7 +556,13 @@ export const ORCH_RICH_NODE_TYPES = new Set<string>([
 	'Saros.Merge',
 	'Saros.Loop',
 	'Saros.Parallel',
-	'Saros.AskUser',
+	// ★ Saros.AskUser 已移出（2026-09-11，多问题重构）：它的参数已收敛为嵌套的
+	//   `data.questions`（多问题 × 每问题独立模式/选项/参数），扁平 DOM 控件无法
+	//   表达 → spec.widgets 清空、编辑统一走弹窗。此时留在富卡集合里会**双向失效**：
+	//   ① 富卡分支按 `meta.controls` 逐行渲染控件（现为空 → 一片空白）
+	//   ② 该分支还会**抑制摘要**（nodeCard `!isOrchRich && meta.widgetSummary`）
+	//   → 卡片既无控件也无「问题列表=N 个」摘要。移出后走普通 react 卡片：
+	//   摘要由 sarosFieldSummary 的 questions 分支给出，信息不丢。
 ]);
 
 // -- 节点注册聚合（2026-09-07 拆分）：各功能域注册封装在子模块的 registerXxxNodes()

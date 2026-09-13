@@ -283,7 +283,9 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 
 	// 若子代理仍有 running，强制 delegate 状态为「执行中」（父 tc.status 可能滞后）
 	if (!isRunning && !isErr) {
-		const subs = filterChildSubAgents(tc.subAgents, tc.id);
+		// ★ 2026-09-12：走兜底匹配（同 _resolveChildSubAgents 注释）——严格匹配在
+		// 本地假 parentToolCallId 场景恒空，会导致卡片状态 pill 误判为「完成」。
+		const subs = this._resolveChildSubAgents(tc);
 		if (subs.some((s: any) => s.status === 'running')) {
 			isRunning = true;
 			isDone = false;
@@ -357,7 +359,7 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		if (pillClass === 'running') { append(pill, $('span.status-pill-dot')); }
 		append(pill, $('span')).textContent = pillText;
 		// 耗时：优先取 tc.duration（数据链设置则用），否则从子代理 startedAt/completedAt 计算
-		const childSubs = filterChildSubAgents(tc.subAgents, tc.id);
+		const childSubs = this._resolveChildSubAgents(tc);
 		const delegateDuration = typeof tc.duration === 'number' ? tc.duration
 			: (() => {
 				const subs = childSubs as ISubAgentData[] || [];
@@ -369,9 +371,22 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 				const end = fullyDone ? Math.max(...allEnded) : Date.now();
 				return end - start;
 			})();
-		if (typeof delegateDuration === 'number') {
-			append(right, $('span.tool-header-duration')).textContent = this._formatDuration(delegateDuration);
+		// ★ 2026-09-13：汇总子代理的 token / 积分用量（**仅计算，渲染已下移到卡片左下角** ——
+		//   用户反馈：耗时/token/积分挤在 header 右侧与状态 pill 争位，要求统一放卡片底部）。
+		//   数据链见 ISubAgentData.tokensUsed / creditUsed 注释；每个 LLM turn 的 usage
+		//   到达即刷新，所以数字会随子代理推进而增长。
+		const subsForTokens = childSubs as ISubAgentData[];
+		let tokIn = 0;
+		let tokOut = 0;
+		let creditTotal = 0;
+		for (const s of subsForTokens) {
+			if (s.tokensUsed) {
+				tokIn += s.tokensUsed.input;
+				tokOut += s.tokensUsed.output;
+			}
+			if (typeof s.creditUsed === 'number') { creditTotal += s.creditUsed; }
 		}
+		const tokTotal = tokIn + tokOut;
 
 
 		// 展开体：单个可滚动列表（任务指令 / 执行列表 / 执行结果）
@@ -499,7 +514,62 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 			chevron.classList.add('tool-header-chevron-expanded');
 		}
 
+		// ★ 2026-09-13（用户需求）：**资源消耗信息统一移到卡片左下角** ——
+		//   耗时 / token / 积分。此前它们在 header 右侧与状态 pill 挤在一行：
+		//     ① 信息密度高，与「状态」语义混杂；
+		//     ② 状态 pill 宽度随文案变化（执行中/完成/失败…），会把右侧统计挤得左右跳。
+		//   下移到卡片底部后：header 只剩「标题 + 状态」，统计与 body 内容同属「结果」语义。
+		//   ★ 放在 `wrapper`（卡片根）末尾而非 `body` 内 —— 折叠时仍可见，
+		//     否则用户收起卡片就看不到消耗了。
+		//   三项各自独立判空：无数据不渲染（不占位、不显示 0）。
+		{
+			const meta = append(wrapper, $('div.dlg-meta-row'));
+			if (typeof delegateDuration === 'number') {
+				append(meta, $('span.dlg-meta-item')).textContent = `⏱ ${this._formatDuration(delegateDuration)}`;
+			}
+			if (tokTotal > 0) {
+				const fmtTok = (n: number): string => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+				const tokEl = append(meta, $('span.dlg-meta-item'));
+				tokEl.textContent = `⚡ ${fmtTok(tokTotal)}`;
+				tokEl.title = `token 消耗：输入 ${tokIn.toLocaleString()} / 输出 ${tokOut.toLocaleString()} / 合计 ${tokTotal.toLocaleString()}`;
+			}
+			if (creditTotal > 0) {
+				const crEl = append(meta, $('span.dlg-meta-item'));
+				crEl.textContent = `💳 ${creditTotal.toFixed(2)}`;
+				crEl.title = `积分消耗：${creditTotal.toFixed(2)}`;
+			}
+			// 三项都无数据 → 移除空行，避免卡片底部多一条空白
+			if (!meta.firstChild) { meta.remove(); }
+		}
+
 		return wrapper;
+	}
+
+	/**
+	 * ★ 2026-09-12：解析本 delegate 卡片应归属的子代理，带**兜底匹配**。
+	 *
+	 * 严格匹配按 `parentToolCallId === tc.id`（真实 LLM tool call id）。但历史数据 /
+	 * 未透传 toolCallId 的调用方会产生**本地假 id**（`delegate_<ts>_<rand>` /
+	 * `plan_explore_<ts>_<rand>`），严格匹配恒为空 → 「执行列表」恒显示占位
+	 * 「子 Agent 正在执行任务…」、「执行结果」恒落到 else 分支显示「（执行中…）」
+	 * —— 即用户报的「subagent 卡片不显示执行内容」。
+	 *
+	 * 兜底：严格匹配为空时，回退到 parentToolCallId 形如本地假 id、且**前缀与本卡类型
+	 * 一致**（delegate_task→`delegate_`；plan_explore→`plan_explore_`）的子代理。
+	 * 前缀区分可避免 delegate / plan_explore 两类卡片互相串数据；同消息内多张**同类**
+	 * 卡片仍会共享兜底结果（罕见：LLM 通常串行委派），严格匹配命中时不走此路径。
+	 */
+	private _resolveChildSubAgents(tc: IToolCall): ISubAgentData[] {
+		const strict = filterChildSubAgents(tc.subAgents, tc.id);
+		if (strict.length > 0) { return strict; }
+		const all = tc.subAgents;
+		if (!all || all.length === 0) { return strict; }
+		const prefix = tc.name === 'plan_explore' ? 'plan_explore_' : 'delegate_';
+		const loose = all.filter(sa => {
+			const pid = (sa as { parentToolCallId?: string }).parentToolCallId;
+			return typeof pid === 'string' && pid.startsWith(prefix);
+		});
+		return loose.length > 0 ? loose : strict;
 	}
 
 	/**
@@ -508,7 +578,7 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 	 * （fan-out 并行批次）渲染，每个子代理用 _createSubAgentCard 生成独立子卡。
 	 */
 	protected _renderSubAgentsInside(container: HTMLElement, tc: IToolCall): void {
-		const childSubs = filterChildSubAgents(tc.subAgents, tc.id);
+		const childSubs = this._resolveChildSubAgents(tc);
 		if (!childSubs || childSubs.length === 0) { return; }
 
 		// 按 groupId 分组（fan-out 并行多批次）

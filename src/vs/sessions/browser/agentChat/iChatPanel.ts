@@ -10,6 +10,7 @@ import type {
 	IAgentInfo,
 	IProviderInfo,
 	IModelInfo,
+	IImageModelGroup,
 	StreamPhase,
 	IWorktreeItem,
 	IWorkspaceItem,
@@ -53,7 +54,24 @@ export interface IChatPanelCallbacks {
 	onChangeChatMode?: (chatMode: 'craft' | 'ask' | 'plan') => void;
 	onSelectProvider?: (providerId: string) => void;
 	onSelectModel?: (modelId: string) => void;
-	onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => void;
+	/** 「图片模型」选择回调：偏好字符串 `auto` | `provider:<providerId>:<modelId>`（2026-09-10）。 */
+	onSelectImageModel?: (preference: string) => void;
+	/**
+	 * 提示词优化回调（输入框 ✨ 按钮，2026-09-10）：接收输入框原文，返回优化后文本；
+	 * 返回 undefined 表示失败/取消（调用方保持输入框不变）。
+	 */
+	onOptimizePrompt?: (text: string) => Promise<string | undefined>;
+	/**
+	 * 检查点动作回调。
+	 * · `undoAll`    —— 回退**代码**（保留对话）：把所有被改文件还原到本轮最初内容。
+	 * · `keepAll`    —— 保留代码、仅丢弃检查点数据（关掉检查点条）。
+	 * · `openDiff`   —— 打开某文件 / 全部文件的 diff。
+	 * · `undoConversation`（2026-09-12，P1-1）—— 回退**对话**（保留代码）：把聊天历史
+	 *   截断到本轮起点之前，磁盘文件不动。对齐 Claude Code `/rewind` 的 Restore conversation。
+	 * · `openTimeline`（2026-09-12，P2-1）—— 打开**检查点时间线**：列出本会话全部可回退
+	 *   检查点，选中即回退到该点（文件 + 对话同时回到该点之前）。对齐 Claude Code `/rewind` 菜单。
+	 */
+	onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff' | 'undoConversation' | 'openTimeline', payload?: { filePath?: string; checkpointId?: string }) => void;
 	onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
 	onEditMessage?: (messageId: string, newText: string) => void;
 	onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string; activation?: string; source?: string; version?: string; enabled: boolean; category?: string }>;
@@ -62,7 +80,12 @@ export interface IChatPanelCallbacks {
 	onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
 	onOpenMcpSettings?: () => void;
 	onOpenHtmlPreview?: () => void;
-	onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
+	/** D4：selection 可为对象态答案 { __askUserAnswer:1, labels, params }（字符串/数组态=旧行为）。 */
+	/** ImagePicker 多选提交（2026-09-11）：refs = 选中的媒体引用，作为 resume 值回传执行侧。 */
+	onPickerSelectSubmit?: (pickerId: string, executionId: string, nodeId: string, refs: string[]) => void;
+	/** 节点交互表单提交（2026-09-11 框架）：values 序列化后作为 resume 值回传执行侧。 */
+	onNodeInteractionSubmit?: (interactionId: string, executionId: string, nodeId: string, values: Record<string, unknown>) => void;
+	onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[] | { __askUserAnswer: 1; labels: string[]; params?: Record<string, string>; multiSelect?: boolean }) => void;
 	onClarifySubmit?: (toolCallId: string, selection: string) => void;
 	onQuestionClick?: (question: { label: string }) => void;
 	onReferenceClick?: (ref: { kind: string; uri?: string; name: string; range?: { startLine: number } }) => void;
@@ -135,6 +158,10 @@ export interface IChatPanel extends IDisposable {
 	setModels(models: IModelInfo[]): void;
 	setCurrentProvider(provider: string): void;
 	setCurrentModel(model: string): void;
+	/** 设置图片模型分组（按 provider 归类，2026-09-10）。 */
+	setImageModels(groups: IImageModelGroup[]): void;
+	/** 设置当前图片模型偏好（`auto` | `provider:<providerId>:<modelId>`）。 */
+	setCurrentImageModel(preference: string): void;
 
 	// ── Messages ──
 	setMessages(messages: IAgentChatMessage[]): void;

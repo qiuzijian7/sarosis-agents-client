@@ -158,8 +158,13 @@ import {
 	TOF_SITE_BASE_URL_SETTING,
 	TOF_GATEWAY_BASE_URL_SETTING,
 	TOF_LOGIN_TIMEOUT_SETTING,
+	TOF_DEFAULT_SITE_BASE_URL,
 	AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING,
 	AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING,
+	AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING,
+	AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING,
+	AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING,
+	AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING,
 	AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING,
 	CHANNEL_DEFINITIONS,
 } from '../common/constants.js';
@@ -243,6 +248,8 @@ import { TaskOverviewEditorPane } from './taskOverviewEditorPane.js';
 import { TaskOverviewEditorInput } from './taskOverviewEditorInput.js';
 import { TaskDetailEditorPane } from './taskDetailEditorPane.js';
 import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
+import { AgentMediaEditorPane } from './agentMedia/agentMediaEditorPane.js';
+import { AgentMediaEditorInput } from './agentMedia/agentMediaEditorInput.js';
 import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 import { HtmlFileEditorPane } from './htmlFileEditorPane.js';
 import { MdFileEditorPane } from './mdFileEditorPane.js';
@@ -279,6 +286,9 @@ import { AgentStudioDashboardEditorInput } from './agentStudioDashboardEditorInp
 import { AgentStudioDashboardViewPane } from './views/agentStudioDashboardView.js';
 import { WorkflowEditorPane } from './workflowEditorPane.js';
 import { WorkflowEditorInput } from './workflowEditorInput.js';
+// P2（2026-09-13）：单节点编辑器开在独立 tab。
+import { WorkflowNodeEditorPane } from './workflowNodeEditorPane.js';
+import { WorkflowNodeEditorInput } from './workflowNodeEditorInput.js';
 import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
 import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
 import { ISelfEvolutionService } from '../common/selfEvolution.js';
@@ -345,6 +355,16 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			description: localize('agentStudio.codebaseGraph.sqliteBackend', "Codebase 图谱查询/搜索默认走主进程 SQLite（FTS5）后端，避免内存全量扫描。默认开启；设为 false 关闭后回退内存 store。"),
+		},
+		'saros.codebaseGraph.excludeProfile': {
+			type: 'string',
+			enum: ['balanced', 'full'],
+			enumDescriptions: [
+				localize('agentStudio.codebaseGraph.excludeProfile.balanced', "平衡档（默认）：排除依赖/构建产物，以及 test、docs、scripts、resources 等源码目录——索引最快，但测试与脚本代码不可检索。"),
+				localize('agentStudio.codebaseGraph.excludeProfile.full', "完整档：只排除依赖与构建产物，保留 test、docs、scripts 等源码目录——测试/脚本文档中的符号也能被检索，索引耗时更长。"),
+			],
+			default: 'balanced',
+			description: localize('agentStudio.codebaseGraph.excludeProfile', "Codebase 图谱的目录排除档位。切换后需重新索引才会生效。"),
 		},
 		'sessions.agentStudio.tools.autoApproveReadOnlyCommands': {
 			type: 'boolean',
@@ -615,10 +635,16 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			description: localize('agentStudio.tof.paasid', "TOF 应用 appkey (paasid)，用于构造 passport.woa.com 登录 URL。"),
 		},
 		[TOF_SITE_BASE_URL_SETTING]: {
-			// 必须与扩展侧 extensions/tof-authentication/src/tofAuthProvider.ts 的默认值一致，
-			// 否则本处注册的 default 会优先生效，扩展里的 fallback 永远走不到。
-			// ⚠ 该域名需在 DNS 中可解析，否则登录后回调地址不可达（This site can't be reached）。
-			type: 'string', default: 'http://vssaros.woa.com',
+			// 必须与以下三处保持一致（本处注册的 default 会**优先生效**，其余两处永远走不到）：
+			//   · extensions/tof-authentication/package.json 的 configuration.properties
+			//   · extensions/tof-authentication/src/tofAuthProvider.ts 的 fallback
+			//   · TOF_DEFAULT_SITE_BASE_URL（common/constants.ts，由单测锁定）
+			// ⚠ 该域名必须能在 DNS 中解析，否则登录后回调地址不可达（This site can't be reached）。
+			// 2026-09-10 事故：此处曾写 `http://vssaros.woa.com`（扩展侧已是 saroasis-mcp.woa.com），
+			// 两处漂移 + 本处优先生效 → 未显式配置的环境登录必失败：passport 登录成功后跳
+			// `http://vssaros.woa.com/api/v1/auth/tof/callback?cb_port=<port>&state=…` → NXDOMAIN。
+			// 实测 vssaros.woa.com 已无 DNS 记录；saroasis-mcp.woa.com 解析到 21.169.46.116（网关同 IP）。
+			type: 'string', default: TOF_DEFAULT_SITE_BASE_URL,
 			description: localize('agentStudio.tof.siteBaseUrl', "网关站点基础 URL，TOF 回调地址前缀（须为 .woa.com 白名单域名）。"),
 		},
 		[TOF_GATEWAY_BASE_URL_SETTING]: {
@@ -642,6 +668,49 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			description: localize('agentStudio.skills.includeWorkflows', "将已存储的工作流作为「可执行型 skill」暴露给 agent（双向打通 A 向）。开启后可用 /skill <workflowId> 触发执行工作流；关闭则不再暴露。默认开启。"),
+		},
+		// --- Skills: 注入预算（2026-09-11 接线；此前两个常量存在但从未注册/消费）---
+		[AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING]: {
+			type: 'number',
+			default: 10,
+			minimum: 1,
+			maximum: 100,
+			description: localize('agentStudio.skills.maxSkillsInPrompt', "单个 turn 最多注入**完整正文**的技能数量。超出者降级为摘要（保留名称 / 描述 / 目录路径，模型可按需 read_skill 读全文）——**不会丢弃**，故 always 技能的语义不受影响。默认 10。"),
+		},
+		[AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING]: {
+			type: 'number',
+			default: 48000,
+			minimum: 1000,
+			maximum: 1000000,
+			description: localize('agentStudio.skills.maxSkillsPromptChars', "单个 turn 注入的 skill **完整正文**字符总预算（约 4 字符 = 1 token）。超出者降级为摘要。默认 48000（约 12k tokens，占 200k 上下文的 ~6%）。"),
+		},
+	},
+});
+
+// --- Tool Search 折叠配置（2026-09-11 接线：键一直存在但从未注册 schema）-------------
+// 读取方：`agentOSService._getToolSearchConfig`（缺失时回退 DEFAULT_TOOL_SEARCH_CONFIG）。
+// 此前键未注册 → 设置 UI 看不到、无补全，用户只能手写 settings.json。
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'agentStudio',
+	title: localize('agentStudio', "Agent Studio"),
+	properties: {
+		[AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING]: {
+			type: 'string',
+			enum: ['off', 'on', 'auto'],
+			default: 'auto',
+			enumDescriptions: [
+				'从不折叠：全部工具 schema 直发（工具多时显著增大请求体积）。',
+				'总是折叠：可折叠工具一律走 tool_search 按需发现。',
+				'按阈值自动折叠：可折叠工具 token 超过上下文窗口的 thresholdPct% 时折叠（推荐）。',
+			],
+			description: localize('agentStudio.toolSearch.enabled', "工具检索（tool_search）的折叠策略。默认 auto。"),
+		},
+		[AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING]: {
+			type: 'number',
+			default: 10,
+			minimum: 0,
+			maximum: 100,
+			description: localize('agentStudio.toolSearch.thresholdPct', "auto 模式下触发折叠的阈值：可折叠工具 token 占模型上下文窗口的百分比（0–100）。调小 = 更早折叠（省体积，但模型多一次 tool_search）。默认 10。"),
 		},
 	},
 });
@@ -922,6 +991,20 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
+// Register AgentMediaEditorPane — 在中间栏编辑器独立展示聊天里的媒体（生成图 / 候选图 / 参考图）。
+// 2026-09-11 用户需求：聊天框显示的图片双击后在中间编辑器单独 pane 展示。
+// 用自定义 input 而非 FileEditorInput：媒体 ref 多为 data URL（画布生成结果的主流形态），无文件资源可依附。
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		AgentMediaEditorPane,
+		AgentMediaEditorPane.ID,
+		localize('agentMediaEditor', "媒体预览"),
+	),
+	[
+		new SyncDescriptor(AgentMediaEditorInput)
+	]
+);
+
 // Register HtmlFileEditorPane — unified HTML editor: handles both
 // standard .html files (FileEditorInput, 3-mode toggle) and
 // saros-html-preview:// scheme (HtmlPreviewEditorInput, agent config preview).
@@ -1062,6 +1145,20 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(WorkflowEditorInput)
+	]
+);
+
+// Register WorkflowNodeEditorPane — 单个节点的编辑器开在独立 tab（2026-09-13，P2）。
+// 入口：节点卡片「⛶ 全屏」浮层里的「↗ 独立窗口」按钮 → RPC workflow.openNodeEditor。
+// resource 是 `saros-workflow-node:/{workflowId}/{nodeId}` → 与画布 tab 并存、同节点去重。
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		WorkflowNodeEditorPane,
+		WorkflowNodeEditorPane.ID,
+		localize('workflowNodeEditor', "Workflow Node Editor"),
+	),
+	[
+		new SyncDescriptor(WorkflowNodeEditorInput)
 	]
 );
 
@@ -3432,9 +3529,11 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		// --- Remaining icons (after Plugins) ---
 
 		// Knowledge Base (order: 110)
+		// 2026-09-11：左侧栏页签文案由「知识库」改为「资料库」（id/命令/存储键不变，
+		// 避免破坏已有配置与命令注册；仅用户可见标题变化）。
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.knowledgeBase',
-			title: localize2('agentStudio.knowledgeBase.title', "知识库"),
+			title: localize2('agentStudio.knowledgeBase.title', "资料库"),
 			icon: kbIcon,
 			viewId: AGENT_STUDIO_KB_VIEW_ID,
 			order: 110,

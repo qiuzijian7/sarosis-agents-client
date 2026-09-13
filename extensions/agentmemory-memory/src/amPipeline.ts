@@ -14,7 +14,7 @@
 import type { Memory, SemanticMemory, ProceduralMemory } from './amTypes.js';
 import { KV, generateId, estimateTokens } from './amSchema.js';
 import { StateKV } from './stateKV.js';
-import { KnowledgeGraph, type GraphRetrievalResult } from './knowledgeGraph.js';
+import { KnowledgeGraph, type GraphNode, type GraphEdge, type GraphRetrievalResult } from './knowledgeGraph.js';
 import { PatternDetector, type PatternDetectionResult } from './patternDetector.js';
 import { autoForget, retentionScore, retentionEvict, evict, lessonDecaySweep, autoPage } from './amFunctions.js';
 import { compress as llmCompress, compressSynthetic } from './compressor.js';
@@ -78,24 +78,74 @@ export async function getProfile(kv: StateKV, agentId: string): Promise<ProjectP
 
 // ─── 3. Knowledge Graph ────────────────────────────────────────────────
 
-let _graph: KnowledgeGraph | null = null;
-function getGraph(): KnowledgeGraph { if (!_graph) _graph = new KnowledgeGraph(); return _graph; }
+// P1-7（2026-09-09）：图谱从「全局单例 + 不持久化」改为 per-agent + KV 持久化。
+// 旧实现两处缺陷：① 全局单例跨 agent 实体串台（graphQuery 虽带 agentId 但查的是同一张图）；
+// ② 纯内存不持久化 → 网关重启即清零（graph 流恒空，直到手动 graphBuild）。
+// 持久化落 KV.graphNodes / KV.graphEdges（amSchema 早已定义但从未使用）：
+// graphExtract 写入（fire-and-fail-safe），graphQuery / graphStats 惰性加载。
+const _graphs = new Map<string, KnowledgeGraph>();
+const _graphLoaded = new Set<string>();
+function getGraph(agentId: string): KnowledgeGraph {
+	let g = _graphs.get(agentId);
+	if (!g) { g = new KnowledgeGraph(); _graphs.set(agentId, g); }
+	return g;
+}
+
+/** 惰性加载：首次访问该 agent 图谱时从 KV 恢复（无持久化数据则保持空图） */
+async function ensureGraph(kv: StateKV, agentId: string): Promise<KnowledgeGraph> {
+	if (!_graphLoaded.has(agentId)) {
+		_graphLoaded.add(agentId);
+		try {
+			const nodes = await kv.get<GraphNode[]>(KV.graphNodes(agentId), 'current');
+			if (nodes && nodes.length > 0) {
+				const edges = (await kv.get<GraphEdge[]>(KV.graphEdges(agentId), 'current')) || [];
+				getGraph(agentId).restoreFromData(nodes, edges);
+			}
+		} catch { /* 持久化层故障不阻断检索 */ }
+	}
+	return getGraph(agentId);
+}
+
+/** 图谱落盘（graphExtract 后调用；失败不阻断抽取主流程） */
+async function persistGraph(kv: StateKV, agentId: string): Promise<void> {
+	const g = _graphs.get(agentId);
+	if (!g) return;
+	await kv.set(KV.graphNodes(agentId), 'current', g.getNodes());
+	await kv.set(KV.graphEdges(agentId), 'current', g.getEdges());
+}
 
 export async function graphExtract(kv: StateKV, agentId: string, memoryId: string, content: string): Promise<void> {
-	getGraph().extractFromMemory(memoryId, content, agentId);
+	getGraph(agentId).extractFromMemory(memoryId, content, agentId);
+	try { await persistGraph(kv, agentId); } catch { /* 持久化失败不阻断 */ }
 }
 
-export function graphQuery(agentId: string, query: string, depth = 2, limit = 10): GraphRetrievalResult[] {
-	return getGraph().searchByEntities(KnowledgeGraph.extractEntityNames(query), depth, limit);
+export async function graphQuery(kv: StateKV, agentId: string, query: string, depth = 2, limit = 10): Promise<GraphRetrievalResult[]> {
+	const g = await ensureGraph(kv, agentId);
+	return g.searchByEntities(KnowledgeGraph.extractEntityNames(query), depth, limit);
 }
 
-export function graphStats(): { nodes: number; edges: number } {
-	return { nodes: getGraph().nodeCount, edges: getGraph().edgeCount };
+export async function graphStats(kv: StateKV, agentId: string): Promise<{ nodes: number; edges: number }> {
+	const g = await ensureGraph(kv, agentId);
+	return { nodes: g.nodeCount, edges: g.edgeCount };
 }
 
-/** 重置图谱单例（对齐 agentmemory mem::graph-reset：清空索引以便重建） */
-export function resetGraph(): void {
-	_graph = null;
+/** 重置图谱（对齐 agentmemory mem::graph-reset：清空内存 + 删除 KV 持久化，便于重建）。
+ *  带 agentId 时走精确路径（直接删该 agent 的持久化 key，不依赖 listScopes——
+ *  兼容测试用 kv stub）；不带时枚举全部 mem:graph: scope。 */
+export async function resetGraph(kv?: StateKV, agentId?: string): Promise<void> {
+	_graphs.clear();
+	_graphLoaded.clear();
+	if (!kv) return;
+	try {
+		if (agentId) {
+			await kv.delete(KV.graphNodes(agentId), 'current');
+			await kv.delete(KV.graphEdges(agentId), 'current');
+		} else {
+			for (const scope of await kv.listScopes('mem:graph:')) {
+				await kv.clearScope(scope);
+			}
+		}
+	} catch { /* KV 故障不阻断 */ }
 }
 
 // ─── 4. Consolidation Pipeline ──────────────────────────────────────────
@@ -105,6 +155,11 @@ interface EpisodicMemory {
 	keyDecisions: string[]; filesModified: string[]; concepts: string[];
 	observationCount: number; createdAt: string;
 }
+
+/** P0（2026-09-10）：每个 agent 保留的 episodic 上限（超出按 createdAt 删除最老的）。
+ *  实测：旧实现把整个数组读-追加-整体写回同一个 key，导致单值膨胀到 ~0.94MB、
+ *  O(N²) 写放大，且 subagent agentId 唯一 → 211 个遗留 scope 共 188MB（全库 56%）。 */
+const MAX_EPISODES_PER_AGENT = 100;
 
 export async function extractEpisodic(kv: StateKV, agentId: string, sessionId: string, longEntries: Memory[]): Promise<EpisodicMemory[]> {
 	const now = new Date().toISOString();
@@ -117,8 +172,22 @@ export async function extractEpisodic(kv: StateKV, agentId: string, sessionId: s
 		concepts: [...new Set(longEntries.flatMap(m => m.concepts))].slice(0, 30),
 		observationCount: longEntries.length, createdAt: now,
 	};
-	const existing = await kv.list<EpisodicMemory>(KV.semantic(agentId));
-	await kv.set(KV.semantic(agentId), 'episodic', [...existing, ep] as any);
+	// P0 修复：逐条写入（每个 episode 独立 key），不再整体重写数组。
+	// 读取侧 extractSemantic 已兼容「数组 / 独立条目」两种格式。
+	await kv.set(KV.semantic(agentId), ep.id, ep);
+
+	// 容量守卫：超出上限时删除最老的 episode（防单 agent 无限累积）
+	try {
+		const all = await kv.list<any>(KV.semantic(agentId));
+		const epis = all.filter((e: any) => !Array.isArray(e) && typeof e?.id === 'string' && e.id.startsWith('epi'));
+		if (epis.length > MAX_EPISODES_PER_AGENT) {
+			const sorted = [...epis].sort((a: any, b: any) =>
+				new Date(b?.createdAt ?? 0).getTime() - new Date(a?.createdAt ?? 0).getTime());
+			for (const old of sorted.slice(MAX_EPISODES_PER_AGENT)) {
+				await kv.delete(KV.semantic(agentId), (old as any).id);
+			}
+		}
+	} catch { /* 守卫失败不影响本次固化 */ }
 	return [ep];
 }
 
@@ -227,37 +296,46 @@ export async function compressMemories() {
 
 export async function runFullSweep(kv: StateKV, agentId: string, sessionId: string, tokenBudget: number): Promise<Record<string, unknown>> {
 	const result: Record<string, unknown> = {};
+	// P1-13（2026-09-11）：分步耗时诊断。实测单 agent sweep 独占网关事件循环 21.5s
+	// （并发 HTTP 请求被阻塞 20.6s → renderer 5s 超时 → 误判 UNREACHABLE），
+	// 但当时无法知道 21s 花在哪一步。timings 随返回值暴露（网关日志无落盘渠道）。
+	const timings: Record<string, number> = {};
+	const step = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+		const t0 = Date.now();
+		try { return await fn(); } finally { timings[name] = Date.now() - t0; }
+	};
+	result.timings = timings;
 
 	// auto-forget
-	const forgetResult = await autoForget(kv, agentId, false);
+	const forgetResult = await step('autoForget', () => autoForget(kv, agentId, false));
 	result.autoForget = { ttlExpired: forgetResult.ttlExpired.length, contradictions: forgetResult.contradictions.length };
 
 	// retention
-	const retentionResult = await retentionScore(kv, agentId);
-	const evicted = await retentionEvict(kv, agentId);
+	const retentionResult = await step('retentionScore', () => retentionScore(kv, agentId));
+	const evicted = await step('retentionEvict', () => retentionEvict(kv, agentId));
 	result.retention = { total: retentionResult.total, evicted, tiers: retentionResult.tiers };
 
 	// evict
-	const evictResult = await evict(kv, agentId, false);
+	const evictResult = await step('evict', () => evict(kv, agentId, false));
 	result.evict = evictResult;
 
 	// consolidation
-	const consolResult = await runConsolidationPipeline(kv, agentId, sessionId);
+	const consolResult = await step('consolidation', () => runConsolidationPipeline(kv, agentId, sessionId));
 	result.consolidation = consolResult;
 
 	// profile
-	const profile = await buildProfile(kv, agentId);
+	const profile = await step('profile', () => buildProfile(kv, agentId));
 	result.profile = { concepts: profile.topConcepts.length, files: profile.topFiles.length };
 
 	// graph
-	result.graph = graphStats();
+	result.graph = await step('graph', () => graphStats(kv, agentId));
 
 	// lessons decay
-	const lessonResult = await lessonDecaySweep(kv, agentId);
+	const lessonResult = await step('lessons', () => lessonDecaySweep(kv, agentId));
 	result.lessons = lessonResult;
 
 	// auto-page
-	const paged = await autoPage(kv, agentId, tokenBudget);
+	const paged = await step('autoPage', () => autoPage(kv, agentId, tokenBudget));
 	result.autoPage = { paged };
 
 	return result;

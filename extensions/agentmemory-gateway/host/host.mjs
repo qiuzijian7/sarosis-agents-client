@@ -47,9 +47,45 @@ const __dirname = path.dirname(__filename);
 
 const TAG = '[agentmemory-store]';
 
+// ── P1-14（2026-09-11）：网关日志落盘 ────────────────────────────────
+// 背景：主进程 spawn 网关时未捕获 stdout → [mem-prune]/[mem-summary]/sweep/请求日志
+// 在用户日志里完全不可见（排障时只能手动 spawn + 重定向 stdout 才能看到，
+// 例如「sweep 独占 21s」就是靠这个手段定位的）。现由网关自写 dataDir/gateway.log。
+// 注意：本函数不得调用 resolveDataDir()——emit 会在 resolveDataDir 内部被调用（迁移日志），
+// 会递归。此处直接按同一规则推导路径。
+const LOG_FILE_MAX_BYTES = 5 * 1024 * 1024;
+let _logFilePath; // undefined=未解析；null=不可用
+let _logBytes = 0;
+function gatewayLogPath() {
+	if (_logFilePath !== undefined) { return _logFilePath; }
+	try {
+		const home = process.env.HOME || process.env.USERPROFILE || '.';
+		const dir = process.env.AGENTMEMORY_DATA_DIR
+			|| path.join(home, isDevMode() ? '.vssaros-dev' : '.vssaros', '.agentmemory');
+		_logFilePath = path.join(dir, 'gateway.log');
+		try { _logBytes = fs.statSync(_logFilePath).size; } catch { _logBytes = 0; }
+	} catch { _logFilePath = null; }
+	return _logFilePath;
+}
+function appendGatewayLog(line) {
+	const p = gatewayLogPath();
+	if (!p) { return; }
+	try {
+		// 简单轮转：超 5MB 时归档为 gateway.log.1（覆盖上一份），避免无限增长
+		if (_logBytes > LOG_FILE_MAX_BYTES) {
+			try { fs.renameSync(p, p + '.1'); } catch { /* ignore */ }
+			_logBytes = 0;
+		}
+		fs.appendFileSync(p, line);
+		_logBytes += line.length;
+	} catch { /* 日志失败绝不影响主流程 */ }
+}
+
 function emit(kind, msg, extra = {}) {
 	const obj = { kind, msg, ts: new Date().toISOString(), ...extra };
-	process.stdout.write(JSON.stringify(obj) + '\n');
+	const line = JSON.stringify(obj) + '\n';
+	process.stdout.write(line);
+	appendGatewayLog(line);
 }
 
 // ── 记忆操作请求日志 ─────────────────────────────────────────
@@ -296,10 +332,12 @@ function listAll(scope) {
 }
 
 function listAgents() {
+	// 2026-09-09 修复：前缀此前是已废弃的 'mem:long:'（amSchema 无此 scope）→ 恒返回 []。
+	// 现对齐当前 episodic scope 'mem:memories:<agentId>'。
 	const agents = new Set();
-	const prefix = 'mem:long:';
+	const prefix = 'mem:memories:';
 	if (backendKind === 'sqlite') {
-		const rows = db.prepare("SELECT DISTINCT scope FROM kv_store WHERE scope LIKE 'mem:long:%' AND length(value) > 1").all();
+		const rows = db.prepare("SELECT DISTINCT scope FROM kv_store WHERE scope LIKE 'mem:memories:%' AND length(value) > 1").all();
 		for (const r of rows) agents.add(r.scope.replace(prefix, ''));
 		return [...agents];
 	}
@@ -408,11 +446,13 @@ const getAgentVectorIndex = (agentId) => {
 const gatewayVectorGetter = (agentId) => {
 	const vi = vectorIndexByAgent.get(agentId);
 	if (!vi || vi.size === 0) {
-		return { available: false, size: 0, search: async () => [] };
+		return { available: false, size: 0, mode: 'trigram', search: async () => [] };
 	}
+	// P1-6(b)：透出 mode（trigram 伪向量 / model 真语义），检索融合层据此定权
 	return {
 		available: true,
 		get size() { return vi.size; },
+		mode: vi.mode,
 		search: async (query, limit) => {
 			return vi.search(query, limit);
 		},
@@ -659,6 +699,73 @@ async function rebuildIndexesFromKV() {
 	}
 }
 
+// ── A4（2026-09-10）：孤儿/超期数据剪枝（防容量再次失控）─────────────
+// 背景：实测库曾达 343MB，其中 188MB 是 subagent-* 的 semantic/obs（一次性子代理会话，
+// agentId 唯一 → 永不清理），另有 17MB 无代码引用的 mem:index 残留。
+// 引擎侧容量守卫（amPipeline MAX_EPISODES_PER_AGENT）只对**被访问**的 agent 生效，
+// subagent scope 固化后不再被访问 → 必须由网关侧定期剪枝。
+const PRUNE_TTL_MS = (() => {
+	const d = Number(process.env['AGENTMEMORY_PRUNE_TTL_DAYS']);
+	return Number.isFinite(d) && d > 0 ? d * 86400000 : 7 * 86400000;
+})();
+const PRUNE_MAX_VALUE_BYTES = (() => {
+	const kb = Number(process.env['AGENTMEMORY_PRUNE_MAX_VALUE_KB']);
+	return Number.isFinite(kb) && kb > 0 ? kb * 1024 : 256 * 1024;
+})();
+let _lastPruneAt = 0;
+
+function pruneOrphanData(force = false) {
+	if (backendKind !== 'sqlite' || !db) { return; }
+	const now = Date.now();
+	if (!force && now - _lastPruneAt < 24 * 3600 * 1000) { return; }
+	_lastPruneAt = now;
+	try {
+		// ① 超期 subagent 会话数据（semantic 固化 + obs 观察暂存 + memories episodic 条目）
+		// 2026-09-10 扩展：mem:memories:subagent-% 此前不在剪枝范围（实测 5309 行/7.9MB
+		// 一次性 episodic 永久滞留）。注意 SQL 直删会留下 BM25/向量索引残留条目，
+		// 但 subagent scope 固化后不再被检索，且重启全量重建即消除——可接受。
+		const stale = db.prepare(
+			"DELETE FROM kv_store WHERE (scope LIKE 'mem:semantic:subagent-%' OR scope LIKE 'mem:obs:subagent-%' OR scope LIKE 'mem:memories:subagent-%')"
+			+ ' AND (updated_at IS NULL OR updated_at < ?)').run(now - PRUNE_TTL_MS);
+		// ② 旧格式巨型键 / 超阈值单值（旧 extractEpisodic 的数组键 'episodic' 可深达千层）
+		const oversized = db.prepare(
+			"DELETE FROM kv_store WHERE (scope LIKE 'mem:semantic:%' OR scope LIKE 'mem:obs:%' OR scope LIKE 'mem:index%')"
+			+ " AND (key = 'episodic' OR LENGTH(value) > ?)").run(PRUNE_MAX_VALUE_BYTES);
+
+		// ③ 遗留 scope（2026-09-11）：V1 时代产物——当前 amSchema 的 KV 定义里已无
+		//    vector / short / long / episodic 四族（无任何代码读取），实测滞留约 1.5MB
+		//    （458KB 的 mem:vector:coder 等正是「OVERSIZED」告警的来源，此前提示 "run prune"
+		//    但 prune 并不覆盖这些 scope → 文案误导）。
+		const legacy = db.prepare(
+			"DELETE FROM kv_store WHERE (scope LIKE 'mem:vector:%' OR scope LIKE 'mem:short:%' OR scope LIKE 'mem:long:%' OR scope LIKE 'mem:episodic:%')"
+			+ ' AND (updated_at IS NULL OR updated_at < ?)').run(now - PRUNE_TTL_MS);
+
+		// ④ retention 分数残留（2026-09-11）：retentionScore 每轮 sweep 全量重写**活跃**条目
+		//    的分数 → 超期行必为孤儿（被替代/已删记忆的残留，无代码会读）。
+		//    实测该 scope 40237 行 / 7.4MB，是库内第二大族。
+		const staleScores = db.prepare(
+			"DELETE FROM kv_store WHERE scope LIKE 'mem:retention:%' AND (updated_at IS NULL OR updated_at < ?)"
+		).run(now - 7 * 86400000);
+
+		// ⑤（2026-09-11 撤回）曾尝试「死 agent 的派生数据清理」：以「既无 memories 也无
+		//    semantic/obs」判定 agent 已死，清理其 graph/index/retention 等派生 scope。
+		//    实测**误判**：只写 graph（P1-7 图谱持久化）或只写 index 的 agent 会被判死 →
+		//    冒烟用例「重启后图谱 KV 仍在」失败。收益仅 69 行（0.03%），风险不成比例，故撤回。
+		//    若将来重做：活跃判据必须覆盖**全部内容型 scope**（graph/lessons/procedural/
+		//    crystals/core-memory/summaries…），且各 scope 族的 agent 段位置不同
+		//    （mem:obs:<agent>:<sid> 在前、mem:graph:nodes:<agent> 在后），不可用统一切分。
+
+		const removed = (stale.changes ?? 0) + (oversized.changes ?? 0) + (legacy.changes ?? 0) + (staleScores.changes ?? 0);
+		if (removed > 0) {
+			// 轻量回收 WAL；完整 VACUUM 会锁库，留给手工维护
+			try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+			emit('log', `[mem-prune] removed ${removed} row(s): stale-subagent=${stale.changes ?? 0} oversized/legacy=${oversized.changes ?? 0} v1-legacy=${legacy.changes ?? 0} stale-scores=${staleScores.changes ?? 0}`);
+		}
+	} catch (err) {
+		emit('warn', `[mem-prune] failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
 async function readBody(req) {
 	const chunks = [];
 	for await (const chunk of req) chunks.push(chunk);
@@ -681,6 +788,8 @@ async function main() {
 	BM25Ctor = await resolveBm25Module();
 	await resolveVectorModule();  // 先加载向量索引模块，再重建（否则 VectorCtor 恒 null）
 	await rebuildIndexesFromKV();
+	// A4：启动即剪枝一次（subagent 遗留/旧格式巨型键），之后每 24h 由 sweep 触发
+	pruneOrphanData(true);
 
 	// Opt1: host the REAL AgentMemoryProviderV2 (engine + IMemoryProvider)
 	// in this process. The renderer extension is now a thin proxy.
@@ -839,6 +948,9 @@ async function main() {
 						const body = Buffer.concat(chunks).toString('utf8');
 						setKV(scope, key, body);
 						indexMemoryPut(scope, key, body);
+						// 2026-09-09 修复：HTTP 写路径此前只更新 BM25 不更新向量索引，
+						// 与 InProcessKV.set（双写）行为不一致 → 经 HTTP 写入的记忆检索不到向量流。
+						indexMemoryPutVector(scope, key, body);
 						res.writeHead(200, { 'Content-Type': 'application/json' });
 						res.end(JSON.stringify({ ok: true, bytes: body.length }));
 					} finally {
@@ -857,6 +969,8 @@ async function main() {
 					try {
 						delKV(scope, key);
 						indexMemoryDelete(scope, key, removedId);
+						// 2026-09-09 修复：与 PUT 对称，删除时同步移除向量索引
+						indexMemoryDeleteVector(scope, key, removedId);
 						res.writeHead(200, { 'Content-Type': 'application/json' });
 						res.end(JSON.stringify({ ok: true }));
 					} finally {
@@ -890,6 +1004,16 @@ async function main() {
 				const scope = decodeURIComponent(kvListMatch[1]);
 				pendingWrites++;
 				try {
+					// 2026-09-09 修复：删除整个 scope 前先从 BM25/向量索引移除条目
+					//（此前索引残留已删记忆，直到下次启动全量重建才消失）。
+					if (/^mem:memories:(.+)$/.test(scope)) {
+						for (const k of listKeys(scope)) {
+							let removedId;
+							try { removedId = JSON.parse(getKV(scope, k) ?? 'null')?.id; } catch { /* ignore */ }
+							indexMemoryDelete(scope, k, removedId);
+							indexMemoryDeleteVector(scope, k, removedId);
+						}
+					}
 					deleteScope(scope);
 					res.writeHead(200, { 'Content-Type': 'application/json' });
 					res.end(JSON.stringify({ ok: true }));
@@ -1010,7 +1134,11 @@ async function main() {
 		// ── Mesh 联邦同步（2026-07-26，复刻原版 /agentmemory/mesh/receive|export）──
 		// 鉴权：AGENTMEMORY_SECRET 未配置 → 503（同步禁用）；
 		// 已配置 → 要求 Bearer 匹配（401）。跨机使用需 AGENTMEMORY_HOST=0.0.0.0 绑定。
-		if (url === '/mesh/receive' || url.startsWith('/mesh/receive?') || url === '/mesh/export' || url.startsWith('/mesh/export?')) {
+		// 2026-09-09 修复：url 是 URL 对象（上方 new URL），此前对它做字符串相等比较/
+		// 调 .startsWith 抛 TypeError 被外层 catch 兜成 500 → /mesh/* 永不可达，
+		// 且所有未匹配路径返回 500 而非 404。现统一用 url.pathname 判定。
+		const meshPath = url.pathname;
+		if (meshPath === '/mesh/receive' || meshPath === '/mesh/export') {
 			const secret = process.env.AGENTMEMORY_SECRET;
 			if (!secret) {
 				res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -1028,10 +1156,9 @@ async function main() {
 				res.end(JSON.stringify({ error: 'provider not ready' }));
 				return;
 			}
-			const urlObj = new URL(req.url, 'http://localhost');
-			const agent = urlObj.searchParams.get('agent') || 'default';
+			const agent = url.searchParams.get('agent') || 'default';
 			try {
-				if (url.startsWith('/mesh/receive') && req.method === 'POST') {
+				if (meshPath === '/mesh/receive' && req.method === 'POST') {
 					const body = await readBody(req);
 					const payload = JSON.parse(body || '{}');
 					const result = await providerInstance.meshReceive(agent, payload);
@@ -1040,9 +1167,9 @@ async function main() {
 					res.end(JSON.stringify(result ?? { accepted: 0 }));
 					return;
 				}
-				if (url.startsWith('/mesh/export') && req.method === 'GET') {
-					const since = urlObj.searchParams.get('since') || undefined;
-					const scopesParam = urlObj.searchParams.get('scopes');
+				if (meshPath === '/mesh/export' && req.method === 'GET') {
+					const since = url.searchParams.get('since') || undefined;
+					const scopesParam = url.searchParams.get('scopes');
 					const scopes = scopesParam ? scopesParam.split(',').map(s => s.trim()).filter(Boolean) : undefined;
 					const result = await providerInstance.meshExport(agent, scopes, since);
 					res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1072,6 +1199,12 @@ async function main() {
 	const bindHost = process.env.AGENTMEMORY_HOST || '127.0.0.1';
 	server.listen(port, bindHost, () => {
 		emit('ready', `KV store ready on port ${port}`, { port, dataDir, engine: backendKind, host: bindHost });
+		// 启动后 5s 输出一次各 agent 健康度（不等首轮清扫）
+		setTimeout(() => {
+			try {
+				for (const scope of allMemoryScopes()) { logMemSummary(scope.slice('mem:memories:'.length)); }
+			} catch { /* ignore */ }
+		}, 5000);
 	});
 
 	// ── 定期维护清扫（Opt1：弥补 ConsolidationPipeline 无自动触发的缺口）──
@@ -1079,14 +1212,94 @@ async function main() {
 	// 保证即使 renderer 不手动触发，gateway 侧也会周期运行。
 	const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 	let _sweeping = false; // 防重叠
+	/** P1-12：每轮 sweep 最多处理的 agent 数（游标轮转，防单轮长阻塞） */
+	const SWEEP_MAX_AGENTS_PER_TICK = 5;
+	let _sweepCursor = 0;
+
+	// ── P1-9（2026-09-09）：检索健康度诊断行（对齐 codebase 图谱 [summary] 模式）──
+	// 每轮清扫后打一行：indexed/total < 90% → ⚠ DEFICIENT（warn）。
+	// 背景：伪向量降级/索引 FIFO 淘汰/双写不一致等问题此前零信号——
+	// 「有降级路径 ≠ 主路径可用」，降级必须有健康度出口。
+	const MEM_SUMMARY_MIN_RATIO = 0.9;
+
+	/** 库级容量统计（60s 缓存——最大单值需全表扫描，不宜每 agent 都算） */
+	let _dbStats = { at: 0, sizeMB: 0, maxValueKB: 0 };
+	function getDbStats() {
+		const now = Date.now();
+		if (now - _dbStats.at < 60_000) { return _dbStats; }
+		let sizeMB = 0, maxValueKB = 0;
+		try {
+			// 注意：本文件只 `import * as path`，没有裸 join —— 必须 path.join
+			const files = backendKind === 'sqlite'
+				? [path.join(dataDir, 'state_store.db'), path.join(dataDir, 'state_store.db-wal')]
+				: [path.join(dataDir, 'kv_store.json')];
+			for (const f of files) {
+				try { sizeMB += fs.statSync(f).size / (1024 * 1024); } catch { /* ignore */ }
+			}
+			if (backendKind === 'sqlite' && db) {
+				const r = db.prepare('SELECT MAX(LENGTH(value)) n FROM kv_store').get();
+				maxValueKB = Math.round((r?.n ?? 0) / 1024);
+			}
+		} catch { /* ignore */ }
+		_dbStats = { at: now, sizeMB: Number(sizeMB.toFixed(1)), maxValueKB };
+		return _dbStats;
+	}
+
+	function logMemSummary(agentId) {
+		if (!agentId) return;
+		try {
+			const scope = `mem:memories:${agentId}`;
+			const values = listAll(scope);
+			let total = 0;
+			for (const v of Object.values(values)) {
+				try {
+					const o = typeof v === 'string' ? JSON.parse(v) : v;
+					if (o && o.content && o.isLatest !== false && o.deleted !== true) { total++; }
+				} catch { /* skip non-memory value */ }
+			}
+			const idx = indexByAgent.get(agentId);
+			const indexed = idx ? idx.size : 0;
+			const evicted = idx && typeof idx.evictedCount === 'number' ? idx.evictedCount : 0;
+			const vi = vectorIndexByAgent.get(agentId);
+			const vectorSize = vi ? vi.size : 0;
+			const stats = getDbStats();
+			const deficient = total > 0 && indexed < Math.ceil(total * MEM_SUMMARY_MIN_RATIO);
+			// 容量告警：单值超剪枝阈值（默认 256KB）或库超 500MB
+			const oversized = stats.maxValueKB > (PRUNE_MAX_VALUE_BYTES / 1024);
+			const bloated = stats.sizeMB > 500;
+			const bad = deficient || oversized || bloated;
+			const notes = [
+				deficient ? 'DEFICIENT — memory unreachable from search index (rebuild or raise AGENTMEMORY_BM25_MAX_DOCS)' : null,
+				oversized ? `OVERSIZED value ${stats.maxValueKB}KB (>${Math.round(PRUNE_MAX_VALUE_BYTES / 1024)}KB) — legacy array key? run prune` : null,
+				bloated ? `DB ${stats.sizeMB}MB >500MB — run VACUUM / prune` : null,
+			].filter(Boolean).join('; ');
+			emit(bad ? 'warn' : 'log',
+				`[mem-summary] agent=${agentId} indexed=${indexed}/${total} evicted=${evicted} | vector=${vectorSize} | db=${stats.sizeMB}MB maxValue=${stats.maxValueKB}KB | ${bad ? '⚠ ' + notes : '✓ ok'}`);
+		} catch (err) {
+			// 诊断绝不打断清扫
+			emit('log', `[mem-summary] agent=${agentId} diagnostic failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
 	const runScheduledSweep = async () => {
+		// A4：剪枝（内部 24h 节流）先于清扫，避免清扫扫描刚被删的数据
+		pruneOrphanData();
 		if (_sweeping || !providerInstance) return;
 		_sweeping = true;
 		try {
 			const scopes = allMemoryScopes();
 			if (scopes.length === 0) return;
-			emit('log', `${TAG} scheduled sweep starting for ${scopes.length} agent(s)`);
-			for (const scope of scopes) {
+			// P1-12（2026-09-11）：分片 + 让出事件循环。
+			// 背景：实测用户日志出现 observe/triggerHook/onTaskCompleted 同时 5s 超时——
+			// 引擎侧 runFullSweep 内含数千次**同步** sqlite 调用（retentionScore 逐条
+			// getAccessLog + 全量写回），一次扫全部 agent 会让网关事件循环长时间独占，
+			// HTTP 请求排队超时 → renderer 误判 UNREACHABLE。
+			// 现每轮最多处理 SWEEP_MAX_AGENTS_PER_TICK 个（游标轮转），且 agent 之间
+			// 让出事件循环，把单次阻塞窗口从"全部 agent"压到"1 个 agent"。
+			const tick = scopes.slice(_sweepCursor, _sweepCursor + SWEEP_MAX_AGENTS_PER_TICK);
+			_sweepCursor = (_sweepCursor + tick.length) >= scopes.length ? 0 : _sweepCursor + tick.length;
+			emit('log', `${TAG} scheduled sweep: ${tick.length}/${scopes.length} agent(s) (cursor→${_sweepCursor})`);
+			for (const scope of tick) {
 				const agentId = scope.slice('mem:memories:'.length);
 				if (!agentId) continue;
 				try {
@@ -1097,6 +1310,9 @@ async function main() {
 				} catch (err) {
 					emit('warn', `${TAG} sweep failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`);
 				}
+				logMemSummary(agentId);
+				// 让出事件循环：给并发 HTTP 请求插队机会
+				await new Promise(r => setImmediate(r));
 			}
 		} finally {
 			_sweeping = false;

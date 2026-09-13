@@ -73,11 +73,19 @@ suite('AgentSchedulerService (Plan D)', () => {
 
 	test('registerCron 返回 handle、fire created 事件并进入列表', () => {
 		const svc = makeScheduler();
+		// ★ 资源释放修正（2026-09-11）：handle 自身持有 disposable（定时器等），
+		//   原用例只 dispose 了 svc → ensureNoDisposablesAreLeakedInTestSuite()
+		//   的 teardown 报「1 undisposed disposables」。其余用例均已成对释放。
+		let handle: ReturnType<typeof svc.registerCron> | undefined;
+		// ★ 订阅需显式释放（2026-09-11）：`onDidScheduleChange()` 返回 disposable
+		//   （内部 `toDisposable`），且不由 svc.dispose() 回收 → 不保存即泄漏
+		//   （tracker 实测：Leaking disposable = FunctionDisposable，创建点即本行）。
+		let sub: { dispose(): void } | undefined;
 		try {
 			const changes: string[] = [];
-			svc.onDidScheduleChange(e => changes.push(e.changeType));
+			sub = svc.onDidScheduleChange(e => changes.push(e.changeType));
 
-			const handle = svc.registerCron(cronConfig('agent-A'));
+			handle = svc.registerCron(cronConfig('agent-A'));
 			assert.ok(typeof handle.scheduleId === 'string' && handle.scheduleId.length > 0, '应返回 scheduleId');
 			assert.strictEqual(handle.type, 'cron');
 			assert.ok(changes.includes('created'), '应 fire created 事件');
@@ -87,6 +95,8 @@ suite('AgentSchedulerService (Plan D)', () => {
 			assert.strictEqual(all[0].id, handle.scheduleId);
 			assert.strictEqual(all[0].state, ScheduleState.Active);
 		} finally {
+			sub?.dispose();
+			handle?.dispose();
 			svc.dispose();
 		}
 	});
@@ -135,9 +145,10 @@ suite('AgentSchedulerService (Plan D)', () => {
 	test('pause / resume 切换状态并 fire 对应事件', () => {
 		const svc = makeScheduler();
 		const handle = svc.registerCron(cronConfig('agent-A'));
+		let sub: { dispose(): void } | undefined;   // ★ 订阅需显式释放（见首例注释）
 		try {
 			const changes: string[] = [];
-			svc.onDidScheduleChange(e => changes.push(e.changeType));
+			sub = svc.onDidScheduleChange(e => changes.push(e.changeType));
 
 			svc.pauseSchedule(handle.scheduleId);
 			assert.strictEqual(svc.listAllSchedules('')[0].state, ScheduleState.Paused, '应变为 Paused');
@@ -148,11 +159,17 @@ suite('AgentSchedulerService (Plan D)', () => {
 			assert.ok(changes.includes('resumed'), '应 fire resumed');
 
 			// 重复 pause / resume 不应重复 fire
-			svc.pauseSchedule(handle.scheduleId); // Paused
+			// ★ 修正（2026-09-11）：上一行 resumeSchedule 已把 state 拉回 Active →
+			//   下面第 1 次 pause 是**真实状态切换**（必须 fire，计数 1 → 2）；
+			//   只有第 2 次（state 已是 Paused）才不应 fire。原断言写死 1 属算错
+			//   （pauseSchedule 内已有 `if (state === Active)` 幂等守卫）。
+			const before = changes.filter(c => c === 'paused').length;
+			svc.pauseSchedule(handle.scheduleId); // Active → Paused（真实切换，应 fire）
 			svc.pauseSchedule(handle.scheduleId); // 已是 Paused，不再 fire
 			const pausedCount = changes.filter(c => c === 'paused').length;
-			assert.strictEqual(pausedCount, 1, '重复 pause 不应产生多余 paused 事件');
+			assert.strictEqual(pausedCount, before + 1, '仅真实状态切换才 fire；重复 pause 不产生多余事件');
 		} finally {
+			sub?.dispose();
 			handle.dispose();
 			svc.dispose();
 		}
@@ -161,14 +178,17 @@ suite('AgentSchedulerService (Plan D)', () => {
 	test('removeSchedule 移除条目并 fire removed 事件', () => {
 		const svc = makeScheduler();
 		const handle = svc.registerCron(cronConfig('agent-A'));
+		let sub: { dispose(): void } | undefined;   // ★ 订阅需显式释放（见首例注释）
 		try {
 			const changes: string[] = [];
-			svc.onDidScheduleChange(e => changes.push(e.changeType));
+			sub = svc.onDidScheduleChange(e => changes.push(e.changeType));
 
 			svc.removeSchedule(handle.scheduleId);
 			assert.strictEqual(svc.listAllSchedules('').length, 0, '移除后应无条目');
 			assert.ok(changes.includes('removed'), '应 fire removed');
 		} finally {
+			sub?.dispose();
+			handle.dispose();
 			svc.dispose();
 		}
 	});
@@ -176,16 +196,18 @@ suite('AgentSchedulerService (Plan D)', () => {
 	test('triggerNow 通过 handle 立即执行并 fire onDidTrigger', async () => {
 		const svc = makeScheduler();
 		const handle = svc.registerInterval(intervalConfig('agent-A'));
+		let sub: { dispose(): void } | undefined;   // ★ 订阅需显式释放（见首例注释）
 		try {
 			let triggered = 0;
 			let lastInput: IScheduleInput | undefined;
-			svc.onDidTrigger(e => { triggered++; lastInput = e.input; });
+			sub = svc.onDidTrigger(e => { triggered++; lastInput = e.input; });
 
 			await handle.triggerNow();
 
 			assert.strictEqual(triggered, 1, 'triggerNow 应 fire 一次 onDidTrigger');
 			assert.ok(lastInput && lastInput.messageTemplate.includes('run task'), '触发事件应携带 input');
 		} finally {
+			sub?.dispose();
 			handle.dispose();
 			svc.dispose();
 		}
@@ -194,7 +216,7 @@ suite('AgentSchedulerService (Plan D)', () => {
 	test('过期的 one-shot 立即执行且 handle 标记为 completed', () => {
 		const svc = makeScheduler();
 		let triggered = 0;
-		svc.onDidTrigger(() => { triggered++; });
+		const sub = svc.onDidTrigger(() => { triggered++; });   // ★ 订阅需显式释放（见首例注释）
 		// triggerAt 在过去 → 注册时立即执行
 		const handle = svc.registerOneShot(oneShotConfig('agent-A', Date.now() - 1000));
 		try {
@@ -202,6 +224,8 @@ suite('AgentSchedulerService (Plan D)', () => {
 			assert.strictEqual(handle.type, 'one-shot');
 			assert.strictEqual(handle.getNextFireTime(), null, '已完成 one-shot 无下次触发');
 		} finally {
+			sub.dispose();
+			handle.dispose();
 			svc.dispose();
 		}
 	});

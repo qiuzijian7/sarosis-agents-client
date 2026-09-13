@@ -79,7 +79,11 @@ suite('AgentStudio - KB 功能调用入口集成流程', () => {
 
 	test('体检入口流程：lint → 报告 → lint-report.md → log 记录', async () => {
 		const fs = new MockFileService();
-		fs.addFile(URI.joinPath(root(), 'A.md'), '纯正文 [[不存在的笔记]]'); // 断链 + 缺 frontmatter
+		// ★ 契约同步（2026-09-11）：kbLint 只对 **frontmatter 含 `sources` 或 `status`
+		//   的「规整笔记」**跑规则（库源文件仅作为链接目标登记，不参与检查）；
+		//   现行规则集 = broken-link / no-sources / orphan（`no-frontmatter` 已不存在）。
+		//   故 A.md 需带 frontmatter 才会被 lint；它同时缺 sources → 触发 no-sources。
+		fs.addFile(URI.joinPath(root(), 'A.md'), '---\nstatus: draft\n---\n纯正文 [[不存在的笔记]]'); // 断链 + 缺 sources
 		fs.addFile(URI.joinPath(root(), 'B.md'), '---\nsources:\n  - "[[库/x.md]]"\n---\nB 正文 [[A]]');
 
 		// 模拟 _runLint 入口：lintVault → formatLintReport → writeFile → appendKbLog
@@ -89,7 +93,7 @@ suite('AgentStudio - KB 功能调用入口集成流程', () => {
 		await KbImportController.appendKbLog(fs as any, root(), `体检：${issues.length} 项问题`);
 
 		assert.ok(issues.some(i => i.rule === 'broken-link'), '应检出断链');
-		assert.ok(issues.some(i => i.rule === 'no-frontmatter'), '应检出缺 frontmatter');
+		assert.ok(issues.some(i => i.rule === 'no-sources'), '应检出缺 sources 溯源');
 		const reportFile = fs.contentOf(URI.joinPath(root(), 'lint-report.md'))!;
 		assert.ok(reportFile.includes('断链'), '报告应含断链');
 		assert.ok(reportFile.includes('# 知识库体检报告'), '报告标题正确');

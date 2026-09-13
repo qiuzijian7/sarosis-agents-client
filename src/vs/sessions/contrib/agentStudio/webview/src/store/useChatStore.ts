@@ -110,6 +110,11 @@ export interface LiveWorkflowAskUser {
 	status: 'pending' | 'answered' | 'cancelled' | 'expired';
 	/** Final selection (option labels) once answered. */
 	selection?: string | string[];
+	/** D3（2026-09-10）：允许自由输入——选项尾部渲染自定义输入框。 */
+	allowCustom?: boolean;
+	customLabel?: string;
+	/** D4：动态参数字段定义（多字段输入表单）。 */
+	fields?: Array<{ key: string; label?: string; kind?: string; default?: string; placeholder?: string }>;
 	createdAt: number;
 	answeredAt?: number;
 }

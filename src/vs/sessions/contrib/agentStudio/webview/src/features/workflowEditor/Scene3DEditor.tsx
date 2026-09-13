@@ -313,7 +313,7 @@ export function Scene3DEditor({ initialState, runners, preference, onStateChange
 				const yaw = drag.startRotationY + delta;
 				p.transform.quaternion = quaternionFromYaw(yaw);
 			} else {
-				// 垂直拖拽每 100px = 缩放 1.0（向下放大）
+				// 垂直拖拽每 100px = 缩放 1.0（向上拖放大 / 向下拖缩小）
 				const delta = (drag.startClientY - e.clientY) / 100;
 				const s = Math.max(0.05, drag.startScale + delta);
 				p.transform.scale = { x: s, y: s, z: s };
@@ -343,12 +343,6 @@ export function Scene3DEditor({ initialState, runners, preference, onStateChange
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	const scheduleUpload = React.useCallback(() => {
-		if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); }
-		uploadTimerRef.current = setTimeout(() => { void uploadRender(); }, UPLOAD_DEBOUNCE_MS);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [uploadRender]);
-
 	const uploadRender = React.useCallback(async () => {
 		const t = threeRef.current;
 		if (!t) { return; }
@@ -367,6 +361,14 @@ export function Scene3DEditor({ initialState, runners, preference, onStateChange
 			onRenderUploaded(null);
 		}
 	}, [onRenderUploaded]);
+
+	// ★ scheduleUpload 必须在 uploadRender 之后（其依赖数组在 render 期求值，
+	//   引用后置 const 会 TDZ——类型检查批次 54 修复）。
+	const scheduleUpload = React.useCallback(() => {
+		if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); }
+		uploadTimerRef.current = setTimeout(() => { void uploadRender(); }, UPLOAD_DEBOUNCE_MS);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [uploadRender]);
 
 	React.useEffect(() => () => { if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); } }, []);
 

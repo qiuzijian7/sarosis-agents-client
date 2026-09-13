@@ -56,9 +56,13 @@ export interface ToolAssemblyDeps {
 	cachedToolDefs: Map<string, IToolDefinition[]>;
 	toolDefsCacheMax: number;
 	// Write callbacks (for fields that get reassigned on host)
+	// ★ 2026-09-11：`setLastAssembly` / `setLastDispatcherCtx` 必须带 **agentId** ——
+	// 宿主侧据此**按 agent 分别保存**。此前是全局单值 + last-write-wins，多 agent /
+	// 多 session 并发时，A 会话的 `tool_call` 会用 B 会话最后写入的 catalog 做
+	// scope 门控（= 跨会话串台：要么放行了不该放的工具，要么拦住了合法的）。
 	setLastAllEnabledToolNames: (names: Set<string>) => void;
-	setLastAssembly: (assembly: IAssemblyResult) => void;
-	setLastDispatcherCtx: (ctx: IDispatcherContext) => void;
+	setLastAssembly: (agentId: string, assembly: IAssemblyResult) => void;
+	setLastDispatcherCtx: (agentId: string, ctx: IDispatcherContext) => void;
 }
 
 /**
@@ -194,11 +198,18 @@ export async function getEnabledTools(
 	}
 	if (agentTools?.length) {
 		const toolSet = new Set(agentTools);
-		scoped = allTagged.filter(t =>
+		// ★ 2026-09-11 修复：此处原为 `allTagged.filter(...)` —— **丢弃**了前面
+		// focus（Step 3a）与 enabledToolsets（Step 3b）的收窄结果，退回全量重算。
+		// 后果：同时配置 `tools[]` 与 `enabledToolsets[]` 时后者形同虚设；focus
+		// 模式的白名单也被绕过（本步骤是九步过滤里**唯一**不用 `scoped.filter` 的）。
+		// 语义应为**叠加收窄**（取交集），与下方 allowedTools 注释 "Applied on top
+		// of toolsetsOverride" 一致。
+		const beforeTools = scoped.length;
+		scoped = scoped.filter(t =>
 			toolSet.has(t.name) || isBridgeTool(t.name)
 			|| getToolsetPriority(t.toolset) === ToolsetPriority.Always
 		);
-		deps.logService.info(`[AgentOS] _getEnabledTools: agent ${agentId} tools config -> ${scoped.length}/${allTagged.length}`);
+		deps.logService.info(`[AgentOS] _getEnabledTools: agent ${agentId} tools config -> ${scoped.length}/${beforeTools} tools`);
 	}
 
 	if (agentDisabledToolsets?.length) {
@@ -252,12 +263,18 @@ export async function getEnabledTools(
 	// Step 3e: per-request tool-name exclusion (delegation) — unconditional, applied
 	// AFTER all toolset/allowlist filtering so the parent can hide specific tools
 	// (e.g. index_repository) from a sub-agent without touching the toolset config.
+	// ★ 2026-09-11：`'*'` 的标记需跨越到 Step 4（见下方 `mcpForAssembly`）。
+	let excludeAll = false;
 	if (excludedTools?.length) {
 		const excludedSet = new Set(excludedTools);
 		const beforeExclude = scoped.length;
 		// '*' 通配：排除全部工具（2026-07-26 P1 停滞强制总结的禁工具轮——
 		// 对齐 MiMo max-steps 的 toolChoice:"none"，模型只能输出文本总结）。
-		scoped = excludedSet.has('*') ? [] : scoped.filter(t => !excludedSet.has(t.name));
+		// ★ 修复：此前只清空 `scoped`，但 Step 4 的 `mcpTagged` 是**无条件**拼回的
+		// → 禁工具轮里模型仍可经桥接 tool_call 调用 MCP 工具，`toolChoice:none`
+		// 的语义被绕过（该轮本意是「只能输出文本总结」）。
+		excludeAll = excludedSet.has('*');
+		scoped = excludeAll ? [] : scoped.filter(t => !excludedSet.has(t.name));
 		if (beforeExclude !== scoped.length) {
 			deps.logService.info(`[AgentOS] _getEnabledTools: excludedTools [${excludedTools.join(', ')}] -> ${scoped.length}/${beforeExclude} tools`);
 		}
@@ -268,18 +285,29 @@ export async function getEnabledTools(
 	// Step 4: Assembly 层
 	const nonMcpScoped = scoped.filter(t => !mcpToolNameSet.has(t.name));
 	const tsConfig = deps.getToolSearchConfig();
-	const assembly = assembleToolDefs([...nonMcpScoped, ...mcpTagged], {
+	// ★ 2026-09-11：禁工具轮（excludedTools 含 '*'）必须把 MCP 工具一并清掉 ——
+	// 否则 `mcpTagged` 仍进 assembly 并生成桥接工具，模型可绕过 toolChoice:none。
+	const mcpForAssembly = excludeAll ? [] : mcpTagged;
+	const assembly = assembleToolDefs([...nonMcpScoped, ...mcpForAssembly], {
 		contextLength: contextWindow,
 		config: tsConfig,
 	});
 	let finalTools = assembly.toolDefs;
 
-	if (!assembly.activated && mcpOriginal.length > 0) {
-		deps.logService.info(`[AgentOS] _getEnabledTools: passthrough — ${mcpOriginal.length} MCP tools sent directly`);
+	if (!excludeAll && mcpOriginal.length > 0) {
+		// ★ 2026-09-11 修正**日志谎报**：此前在 `!assembly.activated` 时打
+		// "passthrough — N MCP tools sent directly"，但 `assembleToolDefs` 的
+		// **两个分支返回完全相同的 toolDefs**（`finalVisible + bridge`）——
+		// deferrable 工具**从不直发**，activated 与否都只经桥接访问。
+		// 原措辞会让排障者以为「MCP 工具已直发，模型应能直接调用」，与实际相反。
+		deps.logService.info(
+			`[AgentOS] _getEnabledTools: ${mcpOriginal.length} MCP tools behind unified bridge ` +
+			`(deferrable 从不直发；threshold gate 目前仅影响元数据)`,
+		);
 	}
 
-	deps.setLastAssembly(assembly);
-	deps.setLastDispatcherCtx(buildDispatcherContext(assembly, tsConfig));
+	deps.setLastAssembly(agentId, assembly);
+	deps.setLastDispatcherCtx(agentId, buildDispatcherContext(assembly, tsConfig));
 
 	// 诊断日志
 	{
@@ -310,7 +338,11 @@ export async function getEnabledTools(
 	}
 
 	if (mcpOriginal.length) {
-		deps.logService.info(`[AgentOS] _getEnabledTools: ${mcpOriginal.length} MCP tools — ${assembly.activated ? 'folded into unified bridge' : 'sent directly (passthrough)'}`);
+		// 同上（2026-09-11）：两分支 toolDefs 相同 → 一律走桥接；原 "sent directly
+		// (passthrough)" 是历史误述，会让排障结论完全反向。
+		deps.logService.info(
+			`[AgentOS] _getEnabledTools: ${mcpOriginal.length} MCP tools — accessible via unified bridge (activated=${assembly.activated})`,
+		);
 	}
 	if (assembly.activated) {
 		deps.logService.info(`[AgentOS] _getEnabledTools: Tool Search activated — ${assembly.deferredCount} deferred (~${assembly.deferredTokens} tokens, thresh ~${assembly.thresholdTokens})`);

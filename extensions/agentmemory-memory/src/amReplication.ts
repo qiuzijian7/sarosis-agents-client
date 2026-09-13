@@ -444,13 +444,13 @@ export async function graphBuild(kv: StateKV, agentId: string): Promise<{ proces
 	for (const m of active) {
 		await pipe.graphExtract(kv, agentId, m.id, m.content);
 	}
-	const stats = pipe.graphStats();
+	const stats = await pipe.graphStats(kv, agentId);
 	return { processed: active.length, nodes: stats.nodes, edges: stats.edges };
 }
 
-/** 重置图谱（原版 graph-reset：清空索引以便重建） */
-export function graphReset(): { success: boolean } {
-	pipe.resetGraph();
+/** 重置图谱（原版 graph-reset：清空内存 + KV 持久化，便于重建） */
+export async function graphReset(kv?: StateKV, agentId?: string): Promise<{ success: boolean }> {
+	await pipe.resetGraph(kv, agentId);
 	return { success: true };
 }
 

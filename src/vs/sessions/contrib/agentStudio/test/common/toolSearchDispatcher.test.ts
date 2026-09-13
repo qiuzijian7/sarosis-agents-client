@@ -197,6 +197,34 @@ suite('ToolSearchDispatcher — dispatchToolSearch', () => {
 		);
 		assert.strictEqual(result.success, true);
 	});
+
+	// ── 直发（visible）工具兜底（2026-09-11）────────────────────────────────
+	// catalog 只含 deferred；core / Always 工具是**直发**的，不进 catalog。
+	// 此前搜它会得到 "No tools found" → 模型误判「工具不存在」；而 tool_describe
+	// 有 visibleDefs 兜底能查到 → 两者不对称（describe 注释已点出该死循环）。
+
+	test('★ 直发工具兜底：catalog 未命中但已在工具列表 → 明确告知无需 search', () => {
+		const visible = [makeDef('renderMermaidDiagram', 'Render a mermaid diagram')];
+		const result = dispatchToolSearch(
+			{ query: 'renderMermaidDiagram' }, catalog, DEFAULT_TOOL_SEARCH_CONFIG, visible,
+		);
+		assert.strictEqual(result.success, true);
+		assert.ok(result.text.includes('ALREADY in your tool list'), `应告知已直发，实际：${result.text}`);
+		assert.ok(result.text.includes('renderMermaidDiagram'));
+	});
+
+	test('兜底不误报：直发列表里也没有 → 仍报 No tools found', () => {
+		const visible = [makeDef('renderMermaidDiagram', 'Render a mermaid diagram')];
+		const result = dispatchToolSearch({ query: 'github_issue' }, catalog, DEFAULT_TOOL_SEARCH_CONFIG, visible);
+		assert.ok(result.text.includes('No tools found'), `实际：${result.text}`);
+	});
+
+	test('catalog 命中优先于兜底（不改变原有行为）', () => {
+		const visible = [makeDef('renderMermaidDiagram', 'Render a mermaid diagram')];
+		const result = dispatchToolSearch({ query: 'kanban' }, catalog, DEFAULT_TOOL_SEARCH_CONFIG, visible);
+		assert.ok(result.text.includes('Found'), `实际：${result.text}`);
+		assert.ok(!result.text.includes('ALREADY in your tool list'), 'catalog 命中时不应走兜底');
+	});
 });
 
 // ─── dispatchToolDescribe ──────────────────────────────────────────────────
@@ -381,5 +409,23 @@ suite('ToolSearchDispatcher — dispatchBridgeTool', () => {
 		const result = dispatchBridgeTool('unknown_tool', {}, ctx);
 		assert.strictEqual(result.type, 'call_error');
 		assert.strictEqual(result.success, false);
+	});
+
+	test('★ 集成：tool_search 能搜到**直发**工具（与 tool_describe 对称，消除死循环）', () => {
+		// 2026-09-11：此前 catalog 只含 deferred，直发工具搜不到 → 模型得到
+		// "No tools found"（误判不存在），却能用 tool_describe 查到 —— 不对称。
+		const visibleOnly = [makeDef('renderMermaidDiagram', 'Render a mermaid diagram')];
+		const visibleCtx = buildDispatcherContext(
+			// ★ 必须显式覆盖 `toolDefs` —— makeAssembly 的默认值是 `[]`，
+			// 只传 deferredDefs 会得到「无直发工具」的 assembly（本用例要的正是直发）。
+			makeAssembly(visibleOnly, { toolDefs: visibleOnly, deferredDefs: [] } as any),
+			DEFAULT_TOOL_SEARCH_CONFIG,
+		);
+		const s = dispatchBridgeTool('tool_search', { query: 'renderMermaidDiagram' }, visibleCtx);
+		const d = dispatchBridgeTool('tool_describe', { name: 'renderMermaidDiagram' }, visibleCtx);
+		assert.strictEqual(s.success, true);
+		assert.strictEqual(d.success, true, 'describe 早有兜底，应能找到');
+		assert.ok(s.text?.includes('renderMermaidDiagram'), `search 也应能找到直发工具，实际：${s.text}`);
+		assert.ok(!s.text?.includes('No tools found'), `不应再报「找不到」，实际：${s.text}`);
 	});
 });

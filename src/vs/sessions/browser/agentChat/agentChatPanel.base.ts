@@ -9,7 +9,7 @@ import type { ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlC
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { ILogService } from '../../../platform/log/common/log.js';
 import { MarkdownRenderOptions } from '../../../base/browser/markdownRenderer.js';
-import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, HeaderPanelType, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, IPlanTaskCard, OrchestrationPlan, PlanTask } from './agentChatTypes.js';
+import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, IImageModelGroup, HeaderPanelType, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowPickerSelect, ILiveWorkflowNodeInteraction, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, IPlanTaskCard, OrchestrationPlan, PlanTask } from './agentChatTypes.js';
 // ChatMode removed — replaced by chatOnly boolean toggle
 import type { IChatPanel } from './iChatPanel.js';
 import { TabbedPanelManager } from './modules/tabbedPanel.js';
@@ -178,6 +178,13 @@ export const TOOL_MERMAID_TOOLS = new Set(['rendermermaiddiagram', 'mermaid_rend
 export const TOOL_DRAWIO_TOOLS = new Set(['renderDrawioDiagram', 'renderdrawiodiagram', 'drawio_render', 'render_diagram']);
 
 export function _patchNestedMarkdown(source: string): string {
+	// 2026-09-11 快速路径：不含 ``` 直接返回。超长媒体 content（单条可达 8MB 的
+	// base64 图片文本，见 agentDriverService 的媒体内联）跑 `/```(\w*|.*)(md|…)/`
+	// 纯属浪费——`.match` 在 MB 级单行上有明显回溯开销，而这类内容不可能含
+	// 嵌套 markdown 围栏。
+	if (source.indexOf('```') === -1) {
+		return source;
+	}
 	if (!source.match(/```(\w*|.*)(md|markdown|gfm|github-markdown)/)) {
 		return source;
 	}
@@ -269,9 +276,9 @@ protected _worktreeDropdownOutsideClick: IDisposable | null = null;
 
 protected _modeDropdownOutsideClick: IDisposable | null = null;
 
-protected _providerDropdownOutsideClick: IDisposable | null = null;
+protected _chatModelDropdownOutsideClick: IDisposable | null = null;
 
-protected _modelDropdownOutsideClick: IDisposable | null = null;
+protected _imageModelDropdownOutsideClick: IDisposable | null = null;
 
 protected _scrollbarPopup: HTMLElement | null = null;
 
@@ -546,6 +553,22 @@ protected _providers: IProviderInfo[] = [];
 
 protected _models: IModelInfo[] = [];
 
+/** 图片模型分组（按 provider 归类，见 IImageModelGroup）。 */
+protected _imageModelGroups: IImageModelGroup[] = [];
+
+/** 提示词优化按钮（发送按钮左侧，2026-09-10）。 */
+protected _promptOptimizeBtn: HTMLElement | null = null;
+
+/** 提示词优化进行中（防重入 + 按钮 loading 态）。 */
+protected _optimizeInFlight = false;
+
+/**
+ * 当前图片模型偏好：`''`（未配置）| `provider:<providerId>:<modelId>`。
+ * 2026-09-10：去掉「自动」选项 —— 默认未配置，chip 显示占位「图片模型」；
+ * 未配置时由下游按默认路由（等价原 auto 语义），不在 UI 暴露。
+ */
+protected _currentImageModel = '';
+
 protected _activeHeaderPanel: HeaderPanelType = null;
 
 protected _abortController: AbortController | null = null;
@@ -652,17 +675,21 @@ protected _modeTrigger: HTMLElement | null = null;
 
 protected _modeDropdownTrigger: HTMLElement | null = null;
 
-protected _providerDropdownEl: HTMLElement | null = null;
+/** 「对话模型」下拉（2026-09-10 由 Provider + Model 两个下拉合并而来）。
+ *  一级 = provider 列表，hover 任一行飞出二级 = 该 provider 的模型列表。 */
+protected _chatModelDropdownEl: HTMLElement | null = null;
 
-	protected _providerTrigger: HTMLElement | null = null;
+protected _chatModelTrigger: HTMLElement | null = null;
 
-	protected _providerDropdownTrigger: HTMLElement | null = null;
+protected _chatModelDropdownTrigger: HTMLElement | null = null;
 
-protected _modelDropdownEl: HTMLElement | null = null;
+/** 「图片模型」下拉（2026-09-10 新增）。一级 = 自动 + 图片 provider，
+ *  hover 任一行飞出二级 = 该 provider 的图片模型列表。 */
+protected _imageModelDropdownEl: HTMLElement | null = null;
 
-protected _modelTrigger: HTMLElement | null = null;
+protected _imageModelTrigger: HTMLElement | null = null;
 
-protected _modelDropdownTrigger: HTMLElement | null = null;
+protected _imageModelDropdownTrigger: HTMLElement | null = null;
 
 protected _historyOverlayEl: HTMLElement | null = null;
 
@@ -750,7 +777,13 @@ protected readonly _onOpenSettings?: () => void;
 
 protected readonly _onSelectModel?: (modelId: string) => void;
 
-protected readonly _onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => void;
+	/** 图片模型偏好选择回调（见 IImageModelGroup 注释）。 */
+	protected readonly _onSelectImageModel?: (preference: string) => void;
+
+	/** 提示词优化回调（输入框 ✨ 按钮，2026-09-10）。 */
+	protected readonly _onOptimizePrompt?: (text: string) => Promise<string | undefined>;
+
+protected readonly _onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff' | 'undoConversation' | 'openTimeline', payload?: { filePath?: string; checkpointId?: string }) => void;
 
 protected readonly _onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
 
@@ -766,13 +799,25 @@ protected readonly _onOpenMcpSettings?: () => void;
 
 protected readonly _onOpenHtmlPreview?: () => void;
 
+/**
+ * 双击聊天里的媒体 → 在中间栏编辑器独立 pane 打开（2026-09-11 用户需求）。
+ * 载荷的 `src` 已由 `_mediaSrc` 转成可加载 URL（data: / http(s): / blob: / vscode-file:）。
+ */
+protected readonly _onOpenMedia?: (payload: { src: string; kind: string; title?: string }) => void;
+
 protected readonly _onGetAgentSkills?: () => string[];
 
 protected readonly _onAddSkill?: (skillId: string) => Promise<void>;
 
 protected readonly _onRemoveSkill?: (skillId: string) => Promise<void>;
 
-protected readonly _onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
+protected readonly _onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[] | { __askUserAnswer: 1; labels: string[]; params?: Record<string, string>; multiSelect?: boolean } | { __askUserAnswer: 1; answers: Record<string, unknown> }) => void;
+
+/** ImagePicker 多选提交（2026-09-11）：refs = 选中的媒体引用（作为 resume 值传回执行侧）。 */
+protected readonly _onPickerSelectSubmit?: (pickerId: string, executionId: string, nodeId: string, refs: string[]) => void;
+
+/** 节点交互表单提交（2026-09-11 框架）：values = 表单字段值（JSON 序列化后 resume）。 */
+protected readonly _onNodeInteractionSubmit?: (interactionId: string, executionId: string, nodeId: string, values: Record<string, unknown>) => void;
 
 protected readonly _onClarifySubmit?: (toolCallId: string, selection: string) => void;
 
@@ -873,7 +918,11 @@ constructor(opts: {
 		// onChangeMode removed — ChatMode replaced by chatOnly toggle
 		onSelectProvider?: (providerId: string) => void;
 		onSelectModel?: (modelId: string) => void;
-		onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => void;
+		/** 「图片模型」选择回调：偏好字符串 `auto` | `provider:<id>`（2026-09-10）。 */
+		onSelectImageModel?: (preference: string) => void;
+		/** 提示词优化回调（输入框 ✨ 按钮，2026-09-10）。 */
+		onOptimizePrompt?: (text: string) => Promise<string | undefined>;
+		onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff' | 'undoConversation' | 'openTimeline', payload?: { filePath?: string; checkpointId?: string }) => void;
 		onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
 		onEditMessage?: (messageId: string, newText: string) => void;
 		onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string; activation?: string; source?: string; version?: string; enabled: boolean; category?: string }>;
@@ -881,11 +930,17 @@ constructor(opts: {
 		onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
 		onOpenMcpSettings?: () => void;
 		onOpenHtmlPreview?: () => void;
+		/** 双击聊天里的媒体 → 在中间栏编辑器独立 pane 打开（2026-09-11）。 */
+		onOpenMedia?: (payload: { src: string; kind: string; title?: string }) => void;
 		onGetAgentSkills?: () => string[];
 		onAddSkill?: (skillId: string) => Promise<void>;
 		onRemoveSkill?: (skillId: string) => Promise<void>;
 		// New callbacks for missing features
-		onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
+		onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[] | { __askUserAnswer: 1; labels: string[]; params?: Record<string, string>; multiSelect?: boolean } | { __askUserAnswer: 1; answers: Record<string, unknown> }) => void;
+		/** ImagePicker 多选提交（2026-09-11）：refs 作为 resume 值回传执行侧。 */
+		onPickerSelectSubmit?: (pickerId: string, executionId: string, nodeId: string, refs: string[]) => void;
+		/** 节点交互表单提交（2026-09-11 框架）：values 序列化后作为 resume 值。 */
+		onNodeInteractionSubmit?: (interactionId: string, executionId: string, nodeId: string, values: Record<string, unknown>) => void;
 		onClarifySubmit?: (toolCallId: string, selection: string) => void;
 		onChangeChatMode?: (chatMode: 'craft' | 'ask' | 'plan') => void;
 		onQuestionClick?: (question: ISuggestedQuestion) => void;
@@ -960,6 +1015,8 @@ constructor(opts: {
 		// _onChangeMode removed — replaced by chatOnly toggle (setChatOnly)
 		this._onSelectProvider = opts.onSelectProvider;
 		this._onSelectModel = opts.onSelectModel;
+		this._onSelectImageModel = opts.onSelectImageModel;
+		this._onOptimizePrompt = opts.onOptimizePrompt;
 		this._onCheckpointAction = opts.onCheckpointAction;
 		this._onConfirmationAction = opts.onConfirmationAction;
 		this._onEditMessage = opts.onEditMessage;
@@ -968,11 +1025,14 @@ constructor(opts: {
 		this._onListMcpServers = opts.onListMcpServers;
 		this._onOpenMcpSettings = opts.onOpenMcpSettings;
 		this._onOpenHtmlPreview = opts.onOpenHtmlPreview;
+		this._onOpenMedia = opts.onOpenMedia;
 		this._onGetAgentSkills = opts.onGetAgentSkills;
 		this._onAddSkill = opts.onAddSkill;
 		this._onRemoveSkill = opts.onRemoveSkill;
 		// New callbacks
 		this._onAskUserSubmit = opts.onAskUserSubmit;
+		this._onPickerSelectSubmit = opts.onPickerSelectSubmit;
+		this._onNodeInteractionSubmit = opts.onNodeInteractionSubmit;
 		this._onClarifySubmit = opts.onClarifySubmit;
 		this._onChangeChatMode = opts.onChangeChatMode;
 		this._onQuestionClick = opts.onQuestionClick;
@@ -1649,6 +1709,46 @@ setCurrentModel(model: string): void {
 		if (this._agent) { this._refreshInputArea(); }
 	}
 
+	/**
+	 * 设置图片模型分组数据（2026-09-10）。
+	 * 由 pane 从 `getAvailableModels()` 中筛出 `supportsImageGen` 的模型后按 provider 分组。
+	 */
+	setImageModels(groups: IImageModelGroup[]): void {
+		this._imageModelGroups = groups.slice();
+	}
+
+	/**
+	 * 设置当前图片模型偏好（`auto` | `provider:<id>`）。
+	 * 仅更新 chip 文案（轻量刷新输入区），不重建消息列表。
+	 */
+	setCurrentImageModel(preference: string): void {
+		if (preference === this._currentImageModel) { return; }
+		this._currentImageModel = preference;
+		if (this._agent) { this._refreshInputArea(); }
+	}
+
+	/**
+	 * 当前图片模型偏好的显示名：
+	 *  - 未配置（`''`，含历史遗留的 `auto`）→ 占位文案「图片模型」
+	 *  - `provider:<providerId>:<modelId>` → 对应模型 label
+	 * 找不到对应项时回退显示 modelId（避免 chip 空白）。
+	 */
+	protected _getImageModelLabel(): string {
+		const pref = this._currentImageModel;
+		// 'auto' 为 2026-09-10 之前的默认值（已弃用），按未配置处理。
+		if (!pref || pref === 'auto') { return '图片模型'; }
+		const parts = pref.split(':');
+		if (parts[0] === 'provider' && parts.length >= 3) {
+			const providerId = parts[1];
+			const modelId = parts.slice(2).join(':');
+			const group = this._imageModelGroups.find(g => g.providerId === providerId);
+			const model = group?.models.find(m => m.id === modelId);
+			if (model) { return model.label; }
+			return modelId;
+		}
+		return pref;
+	}
+
 protected _refreshInputArea(): void {
 		// 保存当前输入内容（切换 provider/model 时不应清空输入框）
 		const savedValue = this._getComposerText();
@@ -1875,8 +1975,8 @@ protected _closeAllDropdowns(): void {
 			this._msgNavOverlayEl = null;
 		}
 		this._closeModeDropdown();
-		this._closeProviderDropdown();
-		this._closeModelDropdown();
+		this._closeChatModelDropdown();
+		this._closeImageModelDropdown();
 		this._closeSlashMenu();
 	}
 
@@ -2233,13 +2333,13 @@ protected _openModeDropdown(customTrigger?: HTMLElement | null): void  { throw n
 
 protected _closeModeDropdown(): void  { throw new Error('[moved-to-feature] _closeModeDropdown'); }
 
-protected _openProviderDropdown(customTrigger?: HTMLElement | null): void  { throw new Error('[moved-to-feature] _openProviderDropdown'); }
+protected _openChatModelDropdown(customTrigger?: HTMLElement | null): void  { throw new Error('[moved-to-feature] _openChatModelDropdown'); }
 
-protected _closeProviderDropdown(): void  { throw new Error('[moved-to-feature] _closeProviderDropdown'); }
+protected _closeChatModelDropdown(): void  { throw new Error('[moved-to-feature] _closeChatModelDropdown'); }
 
-	protected _openModelDropdown(customTrigger?: HTMLElement | null): void  { throw new Error('[moved-to-feature] _openModelDropdown'); }
+	protected _openImageModelDropdown(customTrigger?: HTMLElement | null): void  { throw new Error('[moved-to-feature] _openImageModelDropdown'); }
 
-protected _closeModelDropdown(): void  { throw new Error('[moved-to-feature] _closeModelDropdown'); }
+protected _closeImageModelDropdown(): void  { throw new Error('[moved-to-feature] _closeImageModelDropdown'); }
 
 protected _renderHistoryOverlay(): void  { throw new Error('[moved-to-feature] _renderHistoryOverlay'); }
 
@@ -2446,15 +2546,34 @@ override dispose(): void {
 	protected abstract _createLiveWorkflowTraceView(
 		workflowExecutions: Record<string, ILiveWorkflowExecution>,
 		workflowEvents?: ILiveWorkflowEvent[],
-		collectVariables?: Record<string, ILiveCollectVariable>
+		collectVariables?: Record<string, ILiveCollectVariable>,
+		askUsers?: ILiveWorkflowAskUser[],
+		pickerSelects?: ILiveWorkflowPickerSelect[],
+		nodeInteractions?: ILiveWorkflowNodeInteraction[]
 	): HTMLElement;
 	protected abstract _createCollectVarsCard(execId: string, cv: ILiveCollectVariable): HTMLElement;
-	protected abstract _createNodeCard(sa: ILiveWorkflowSubAgent): HTMLElement;
+	/**
+	 * 节点卡。`interactions` = 属于该节点的配置表单（2026-09-11 用户需求：配置 UI
+	 * 内嵌进对应节点卡，不再与节点卡并列渲染）。
+	 */
+	protected abstract _createNodeCard(sa: ILiveWorkflowSubAgent, interactions?: ILiveWorkflowNodeInteraction[]): HTMLElement;
 	protected abstract _createTimeline(exec: ILiveWorkflowExecution, events: ILiveWorkflowEvent[]): HTMLElement;
 	protected abstract _createTimelineItem(label: string, status: string): HTMLElement;
 	protected abstract _createConfirmationCard(cf: IConfirmationData): HTMLElement;
 	protected abstract _createTerminalConfirmationCard(cf: IConfirmationData): HTMLElement;
 	protected abstract _createAskUserCard(askUser: ILiveWorkflowAskUser): HTMLElement;
+
+	/**
+	 * ImagePicker 交互选择卡（2026-09-11 用户需求）：执行到 picker 阶段时暂停，
+	 * 卡片展示上游候选图供用户多选，确认后 resume 才推进下游节点。
+	 */
+	protected abstract _createPickerSelectCard(pickerSelect: ILiveWorkflowPickerSelect): HTMLElement;
+
+	/**
+	 * 节点交互表单卡（2026-09-11 框架）：按 schema 动态渲染表单（数字/下拉/文本/
+	 * 开关/m×n 网格/列表），用户提交后节点才执行、随后继续下游。
+	 */
+	protected abstract _createNodeInteractionCard(interaction: ILiveWorkflowNodeInteraction): HTMLElement;
 	protected abstract _createTodoListCard(todos: ITodoItem[]): HTMLElement;
 	protected abstract _createPlanTasksCard(planTasks: IPlanTaskCard): HTMLElement;
 	protected abstract _createQuestionCarouselCard(questions: ISuggestedQuestion[]): HTMLElement;

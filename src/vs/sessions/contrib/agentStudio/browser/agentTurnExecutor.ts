@@ -55,6 +55,10 @@ import {
 	applyCommandToState,
 } from '../common/agentGraph.js';
 import { buildForkContext, prefixCacheAligned } from '../common/forkContext.js';
+// 工具结果里的图像项：剥离出来改走 role:'user'（tool 消息的 contentParts 三家 provider 都不读）
+import {
+	splitToolResultImages, buildToolImageMessage, toolImageOmittedNote, resolveSupportsImages,
+} from '../common/toolResultImages.js';
 import { deriveAskRoutingContext } from '../common/askRouting.js';
 import { isBridgeTool, getToolsetForTool } from '../common/toolsetConfig.js';
 import { buildPromptBudgetReport, formatPromptBudgetLog, shouldEmitBudgetReport } from '../common/promptBudget.js';
@@ -429,6 +433,7 @@ interface ITurnContext {
 			logService: host._logService,
 			getActiveMemoryProvider: () => memoryProvider,
 			injectedSessions: host._injectedSessions,
+			metaInjectedSessions: host._metaInjectedSessions,
 		}, request, messages);
 		messages = memResult.messages;
 
@@ -4103,6 +4108,14 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			// 因为 request.subAgent 在该作用域可见；若放在外层块声明则无法穿透到此处（TS2304）。
 			const askRouting = deriveAskRoutingContext(request.subAgent, undefined, workState.mode);
 
+			// ★★ 2026-09-13：主模型是否支持**图片输入** —— 必须在闭包**外**解析：
+			// `_processToolResult` 是**同步** generator（不能用 `await`），能力值由闭包捕获。
+			// 用途：工具结果里的图像项改走 `role:'user'` 消息前**必须**门控它 ——
+			// 对不支持图片的模型发图会让 provider 直接 400（Claude Code 的 `Read` 踩过）。
+			// 解析结果按 provider::model 缓存（见 `toolResultImages.resolveSupportsImages`），
+			// 故每轮一次的成本可忽略；失败一律 false（fail-closed：不发图）。
+			const _turnSupportsImages = await resolveSupportsImages(modelProvider, selection?.modelId);
+
 			// ─── 工具结果后处理（并行/串行共用，2026-07-27 消除 ~80 行重复）──
 			// 从 toolResult 提取公共逻辑：连续失败追踪、terminal 空输出检测、
 			// 消息追加、tool_result/tool_end yield。闭包捕获 messages / _toolConsecutiveFailures /
@@ -4235,7 +4248,24 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					});
 					_audit.iterations = iteration;
 				}
-				const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
+				// ★★ 2026-09-13：工具结果里的**图像项**必须与文本分开处理。
+				//
+				// 此前它们被 `safeStringifyToolResult` 一起 JSON 化，再按
+				// `MAX_TOOL_RESULT_CHARS`(100K) 截断 → **base64 被切断损坏**；而
+				// `messageFormatConverter` 的 `role:'tool'` 分支只读字符串（三家皆然），
+				// 所以图像**从来没有**以图像形式到达模型（`mcpToolProvider` / `image_generate`
+				// 返回的 image 项同样如此 —— 这是个既存缺陷）。
+				//
+				// 处置：图像项剥离出来，改走下方 `role:'user'` 消息（唯一可移植的位置），
+				// 且**门控主模型的 `supportsImages`**（否则 provider 直接 400）。
+				// 详见 `common/toolResultImages` 头注释。
+				const _imgSplit = splitToolResultImages(toolResult.content);
+				const _imgSupported = _imgSplit.images.length > 0 && _turnSupportsImages;
+				const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(_imgSplit.text)))
+					// 不支持图片时，**必须让模型知道「有图但没附上」**（静默削弱是本项目一贯要避免的）
+					+ (_imgSplit.images.length > 0 && !_imgSupported
+						? toolImageOmittedNote(toolName, _imgSplit.images.length)
+						: '');
 
 				// Hermes 护栏 after_call：用本轮结果推进计数并取回决策（warn / halt）。
 				// args 经 toolCallId 反查 —— 本函数是闭包，可直接访问 localExecutedCalls；
@@ -4274,6 +4304,16 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					content: resultStr,
 					toolCallId: toolResult.toolCallId,
 				});
+				// 图像另走一条 `role:'user'` 消息（只有该分支读 `contentParts`，
+				// 三家 provider 都会转成各自的图像格式）。**只在主模型支持图片时发**，
+				// 否则会 400；不支持时上面已用文本说明「有图但没附上」。
+				if (_imgSupported) {
+					const _imgMsg = buildToolImageMessage(_imgSplit.images, toolName);
+					// `appendMessages` 的形参是 `AgentRunMessage`（`common/agentRunState` 的窄化类型），
+					// 而 `toolResultImages` 只依赖 `common/providers` 的 `IChatMessage` ——
+					// 两者结构兼容，此处显式收窄即可（不把窄化类型反向引入公共模块）。
+					if (_imgMsg) { messages = appendMessages(messages, _imgMsg as unknown as AgentRunMessage); }
+				}
 				yield { type: 'tool_result', content: resultStr, toolCallId: toolResult.toolCallId };
 				yield { type: 'tool_end', toolCallId: toolResult.toolCallId, success: toolResult.success };
 				endedToolIds.add(toolResult.toolCallId);

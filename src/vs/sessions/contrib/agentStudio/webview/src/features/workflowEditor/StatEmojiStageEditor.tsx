@@ -74,6 +74,19 @@ const CUTOUT_MODE_OPTIONS: Array<{ value: EmojiCutoutMode; label: string }> = [
   { value: 'flood', label: '白底几何' },
 ];
 
+/**
+ * 切分方式（widget `cell_crop_mode`，2026-09-10）：
+ * - grid：等分网格（默认，现状）——固定行列等分裁剪，用户可手动调整裁剪框
+ * - auto：自动居中——抠图后逐格检测贴纸包围盒，以贴纸中心正方形裁剪（边缘不裁、
+ *   视觉居中）；三重有界（尺寸/位移/边界）防跑偏，检测失败自动落回等分
+ */
+export type EmojiCellCropMode = 'grid' | 'auto';
+
+const CELL_CROP_MODE_OPTIONS: Array<{ value: EmojiCellCropMode; label: string }> = [
+  { value: 'auto', label: '自动居中（推荐）' },
+  { value: 'grid', label: '等分网格' },
+];
+
 
 
 
@@ -102,6 +115,8 @@ export interface StatEmojiStageInit {
   sheetBackground?: EmojiSheetBackground;
   /** 切分抠图方式（widget cutout_mode，缺省 'none'）。 */
   cutoutMode?: EmojiCutoutMode;
+  /** 切分方式（widget cell_crop_mode，缺省 'grid'）。 */
+  cellCropMode?: EmojiCellCropMode;
   /** 生成图像大小（widget size，'WxH'，缺省 '1024x1024'）。 */
   size?: string;
 }
@@ -441,6 +456,12 @@ export function StatEmojiStageEditor({
       ? initial.cutoutMode
       : 'none',
   );
+  // ── 切分方式（2026-09-10，默认 2026-09-10 改为 'auto'）────────────────────
+  // grid = 等分网格（手动控制）；auto = 自动居中（推荐——抠图后检测贴纸包围盒，
+  // 以贴纸中心正方形裁剪，边缘不裁、视觉居中；三重有界防跑偏，失败落回等分）。
+  const [cellCropMode, setCellCropMode] = React.useState<EmojiCellCropMode>(
+    initial.cellCropMode === 'grid' ? 'grid' : 'auto',
+  );
 
   // ComfyUI checkpoint 列表：runner 就绪后拉一次（模块级缓存）
   const runner = useRunnerStatus();
@@ -532,13 +553,14 @@ export function StatEmojiStageEditor({
       size,
       sheet_background: sheetBackground,
       cutout_mode: cutoutMode,
+      cell_crop_mode: cellCropMode,
     };
     // workflow 仅在本编辑器真的提供了选项时才写回，避免在无选项场景把
     // node.properties.workflow 覆写成空串（会让 runStageWorkflow 落回默认模板）。
     if (workflowOptions && workflowOptions.length > 0 && workflow) { patch.workflow = workflow; }
     onCommit(patch);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, cols, stylePreset, selectedIndex, cells, workflow, backend, comfyModel, providerId, modelId, size, sheetBackground, cutoutMode]);
+  }, [rows, cols, stylePreset, selectedIndex, cells, workflow, backend, comfyModel, providerId, modelId, size, sheetBackground, cutoutMode, cellCropMode]);
 
   const setCell = (i: number, patch: Partial<EmojiStageCell>): void => {
     setCells(prev => prev.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
@@ -682,6 +704,23 @@ export function StatEmojiStageEditor({
             variant="info"
             tipWidth={320}
             tip={'切分图集时的抠图算法：\n· 不抠图（默认）= 纯裁剪，保留模型输出的背景\n· 绿幕（推荐）= 提示词自动要求绿幕底，切分时按色度抠净（白发/白描边零误伤，边缘经 choke/despill/形态学规整）\n· 白底几何 = flood-fill 抠白底（仅白底图集可用，边缘较硬）\n注：绿幕模式自动改写提示词要求纯绿底；若主体本身含高饱和绿色请改用品红/蓝幕素材。'}
+          />
+        </div>
+
+        {/* 切分方式（2026-09-10）：等分网格 / 自动居中（检测贴纸包围盒，边缘不裁） */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground, #9a9a9a)', whiteSpace: 'nowrap' }}>切分方式</span>
+          <select
+            value={cellCropMode}
+            onChange={(e) => setCellCropMode(e.target.value as EmojiCellCropMode)}
+            style={{ flex: 1, minWidth: 0, height: 24, fontSize: 10, padding: '0 4px', background: '#17181c', color: 'var(--vscode-foreground, #e8e8e8)', border: '1px solid rgba(255,255,255,.14)', borderRadius: 4 }}
+          >
+            {CELL_CROP_MODE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <HoverTip
+            variant="info"
+            tipWidth={320}
+            tip={'切分方式：\n· 等分网格（默认）= 按行列等分裁剪，贴纸不居中/贴边时可能裁到，可在图集上双击「调整裁剪」手动修正\n· 自动居中 = 抠图后逐格检测贴纸包围盒，以贴纸中心正方形裁剪（边缘不裁、视觉居中，自动保留火花/爱心等装饰）\n自动居中带三重保护（尺寸/位移/边界有界），检测失败自动落回等分——不会比等分更差。'}
           />
         </div>
 
@@ -980,8 +1019,8 @@ export function StatEmojiStageEditor({
           }}
         />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: 9, color: 'var(--vscode-descriptionForeground, #9a9a9a)' }}>动作（点击插入到本格 prompt）</span>
-          <ActionChips onPick={(t) => setCell(selectedIndex, { prompt: appendToPrompt(selCell?.prompt ?? '', t) })} />
+          <span style={{ fontSize: 9, color: 'var(--vscode-descriptionForeground, #9a9a9a)' }}>动作（点击替换上方本格 prompt）</span>
+          <ActionChips onPick={(t) => setCell(selectedIndex, { prompt: t })} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--vscode-descriptionForeground, #9a9a9a)' }}>
           <span>种子</span>

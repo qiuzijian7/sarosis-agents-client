@@ -144,7 +144,7 @@ export function registerPlanExploreTool(ctx: {
 			source: ctx.id,
 		},
 
-		handler: async (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string): Promise<IToolResultContent[]> => {
+		handler: async (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string, sessionId?: string, toolCallId?: string): Promise<IToolResultContent[]> => {
 			const goal = (args['goal'] as string) || '';
 			const rawAreas = (args['areas'] as Array<Record<string, unknown>>) || [];
 
@@ -215,7 +215,11 @@ export function registerPlanExploreTool(ctx: {
 				// ─── P0/P1: 流式执行过程旁路总线 ───────────────────────────────
 				// 维护每个子 agent 的全量卡片快照（cardMap），事件驱动更新，节流 fire。
 				// UI 按 id upsert。流式与最终态共用 dispatch 内部 subAgentId，天然去重。
-				const parentToolCallId = `plan_explore_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+				// ★ 2026-09-12：优先用**真实 toolCallId**（与 delegate_task 同一处修复）。
+				// 卡片侧 `filterChildSubAgents(subAgents, tc.id)` 是严格相等过滤，
+				// 本地假 id 永不匹配 → 子代理卡片拿不到数据（详见 delegationTools 同处注释）。
+				const parentToolCallId = toolCallId
+					|| `plan_explore_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 				type MutableCard = {
 					id: string;
 					type: 'explore';
@@ -230,6 +234,16 @@ export function registerPlanExploreTool(ctx: {
 				toolTraces: Array<{ id: string; name: string; status: 'running' | 'done' | 'error'; args?: string; result?: string }>;
 				startedAt?: number;
 				completedAt?: number;
+				/**
+				 * ★ 2026-09-13：实时 token 用量。
+				 *
+				 * 注意这是**本地** MutableCard 类型（与 `MutableCardState` 平行的一份，
+				 * 多了 `areaIndex`），两边都要有该字段 —— `reduceCardState` 按
+				 * `MutableCardState` 写入，此处再映射给 `fireSubAgentTrace`。
+				 */
+				tokensUsed?: { input: number; output: number };
+				/** ★ 2026-09-13：累计积分（与 tokensUsed 平行，见 reducer 的 Progress 分支）。 */
+				creditUsed?: number;
 			};
 				const cardMap = new Map<string, MutableCard>();
 				let batchGroupId: string | undefined;
@@ -253,6 +267,9 @@ export function registerPlanExploreTool(ctx: {
 								toolTraces: c.toolTraces.map(t => ({ ...t })),
 								parentToolCallId,
 								startedAt: c.startedAt, completedAt: c.completedAt,
+								// ★ 2026-09-13：实时 token / 积分用量（执行中即可见）
+								tokensUsed: c.tokensUsed ? { ...c.tokensUsed } : undefined,
+								creditUsed: c.creditUsed,
 							})),
 						});
 					} catch { /* sink errors are swallowed by design */ }

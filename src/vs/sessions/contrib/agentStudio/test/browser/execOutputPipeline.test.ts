@@ -18,6 +18,8 @@ import {
 	redactSecretsInOutput, foldLongLines, foldDependencyStackFrames,
 	aggregateTscDiagnostics, foldNpmNoise, LONG_LINE_MAX,
 } from '../../browser/providers/tool/execOutputPipeline.js';
+// 跨实现一致性断言用（两套脱敏实现互有缺口，见下方 suite）
+import { redactSecrets } from '../../browser/providers/tool/searchHelpers.js';
 
 suite('execOutputPipeline — 公共链各步', () => {
 
@@ -64,6 +66,88 @@ suite('execOutputPipeline — 公共链各步', () => {
 	test('普通输出不被脱敏误伤', () => {
 		const s = 'compiled 42 files in 1.2s';
 		assert.strictEqual(redactSecretsInOutput(s), s);
+	});
+
+	/**
+	 * ★★ 2026-09-13 修正：`redact` 是**安全**步骤，不得被 never-worse 契约丢弃。
+	 *
+	 * 脱敏是**替换**，长度可长可短 —— `PASSWORD=hunter2`（16 字符）→
+	 * `PASSWORD=<redacted>`（20 字符）**反而变长** → 原实现按「没变小就丢弃」把该步
+	 * **静默回滚** → 短口令 / 短密钥原样进模型上下文。
+	 *
+	 * 影响面：`terminal` 另有一层无条件 `redactSecrets`（coreTools.ts:436）而幸免；
+	 * `execute_code`（compatibilityTools 的 `_pipeExecOutput`）**只**靠本管道 → 泄露。
+	 */
+	test('★★ 变长的脱敏也必须生效（`PASSWORD=hunter2`）', () => {
+		const r = runExecOutputPipeline('PASSWORD=hunter2', 'node x.js');
+		assert.ok(!r.text.includes('hunter2'),
+			`短口令必须脱敏（修前被 never-worse 丢弃）：${r.text}`);
+		assert.ok(r.text.includes('<redacted>'), r.text);
+	});
+
+	test('★★ 短密钥同样必须脱敏（`MY_TOKEN=abc123`）', () => {
+		const r = runExecOutputPipeline('MY_TOKEN=abc123', 'python3 x.py');
+		assert.ok(!r.text.includes('abc123'), r.text);
+	});
+
+	test('★ appliedStages 记录真的改变了输出的步骤（含安全步骤）', () => {
+		const r = runExecOutputPipeline('PASSWORD=hunter2', 'node x.js');
+		assert.ok(r.appliedStages.includes('redact'), `实际 ${r.appliedStages.join(',')}`);
+	});
+
+	test('★★ 控制组：普通输出不被改动，appliedStages 仍为空（安全步骤无变化时不记名）', () => {
+		const r = runExecOutputPipeline('compiled 42 files in 1.2s', 'git status');
+		assert.strictEqual(r.text, 'compiled 42 files in 1.2s');
+		assert.deepStrictEqual(r.appliedStages, []);
+	});
+
+	test('★ 控制组：注入序列剥离仍必定执行（不依赖命令形态）', () => {
+		const r = runExecOutputPipeline('ok\x1b[31mred\x1b[0m', 'git status');
+		assert.ok(!/\x1b\[/.test(r.text), r.text);
+	});
+
+	test('★ 脱敏仍在 longline 之前（长密钥不被行内截断拆成两半）', () => {
+		// 模块头注释的核心警告：longline 若先跑，长行中的 token 会被截断成两半 → 正则再也匹配不上
+		const long = 'x'.repeat(400) + 'AKIAIOSFODNN7EXAMPLE' + 'y'.repeat(400);
+		const r = runExecOutputPipeline(long, 'git status');
+		assert.ok(!r.text.includes('AKIAIOSFODNN7EXAMPLE'), '长行中的密钥也必须被脱敏');
+	});
+
+	/**
+	 * ★★ 两套脱敏实现的一致性（2026-09-13）。
+	 *
+	 * `searchHelpers.redactSecrets` 与 `execOutputPipeline.redactSecretsInOutput` 因
+	 * 「零依赖 / 可独立单测」约束各自维护模式集，此前**互有缺口**：
+	 *   · `redactSecrets` 缺 `Bearer <不透明令牌>`（见其数组内注释）；
+	 *   · `redactSecretsInOutput` 缺 GitLab `glpat-`。
+	 * ⇒ `file_read` / `search_*`（只用前者）与 `execute_code`（只用后者）各漏一半。
+	 * 本用例用同一组样本钉住「两者都不再泄露」，防止将来再次漂移。
+	 */
+	test('★★ 两套实现必须遮蔽同一组凭据样本（防漂移）', () => {
+		const samples = [
+			'Authorization: Bearer abcdefghijklmnopqrst',
+			'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop',
+			'id AKIAIOSFODNN7EXAMPLE',
+			'ghp_1234567890abcdefghij',
+			'glpat-abcdefghijklmnopqrst',
+			'xoxb-abcdefghijklmnop',
+			'sk-ant-abcdefghijklmnopqrstuv',
+			'-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----',
+		];
+		const secrets = [
+			'abcdefghijklmnopqrst', 'AKIAIOSFODNN7EXAMPLE', 'ghp_1234567890abcdefghij',
+			'glpat-abcdefghijklmnopqrst', 'xoxb-abcdefghijklmnop',
+			'sk-ant-abcdefghijklmnopqrstuv', 'MIIEow',
+		];
+		for (const s of samples) {
+			const a = redactSecrets(s);
+			const b = redactSecretsInOutput(s);
+			for (const secret of secrets) {
+				if (!s.includes(secret)) { continue; }
+				assert.ok(!a.includes(secret), `redactSecrets 泄露 "${secret}" ← ${s}`);
+				assert.ok(!b.includes(secret), `redactSecretsInOutput 泄露 "${secret}" ← ${s}`);
+			}
+		}
 	});
 
 	test('foldLongLines 折叠超长行并标注省略量', () => {

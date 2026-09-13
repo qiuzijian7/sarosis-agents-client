@@ -22,6 +22,14 @@ export interface ICardMenuEntries {
 	readonly onTogglePin?: () => void;
 	/** 复制（有则显示） */
 	readonly onDuplicate?: () => void;
+	/**
+	 * 导出为 JSON 文件（有则显示）。
+	 *
+	 * 2026-09-11 补：工作流列表此前只有「导入」入口，没有对称的「导出」——
+	 * 分享 / 备份 / 换机迁移只能先打开编辑器再导出。本项由 workflowView 接线，
+	 * 其余卡片族（preset / skill）不传即不显示。
+	 */
+	readonly onExport?: () => void;
 	/** 升级（有则显示），label 如 "升级到 v1.0.1" */
 	readonly upgradeLabel?: string;
 	readonly onUpgrade?: () => void;
@@ -49,6 +57,10 @@ export function showCardContextMenu(
 	if (entries.onUpgrade) {
 		const run = entries.onUpgrade;
 		actions.push(toAction({ id: 'card.upgrade', label: entries.upgradeLabel ?? '升级', run }));
+	}
+	if (entries.onExport) {
+		const run = entries.onExport;
+		actions.push(toAction({ id: 'card.export', label: '导出 JSON 文件', run }));
 	}
 	if (entries.onUpload) {
 		const run = entries.onUpload;

@@ -13,9 +13,13 @@ import {
 import { asWebviewUri } from "../../../../workbench/contrib/webview/common/webview.js";
 import { IMainProcessService } from "../../../../platform/ipc/common/mainProcessService.js";
 import { IQuickInputService } from "../../../../platform/quickinput/common/quickInput.js";
+import { ITextModelService } from "../../../../editor/common/services/resolverService.js";
+import { ILanguageService } from "../../../../editor/common/languages/language.js";
+import { CHECKPOINT_DIFF_SCHEME, CheckpointDiffContentProvider, CheckpointDiffStore } from "./checkpointDiffContentProvider.js";
 import { MEDIA_STORE_CHANNEL, type IMediaBackend, type MediaImportRequest, type MediaListFilter } from "../common/mediaStoreChannel.js";
 import { VSSAROS_LLM_CHANNEL, inlineRemoteImageUrls, type IHttpRequestResult } from "../common/llmBridge.js";
 import { createMediaStoreProxy } from "./mediaStoreProxy.js";
+import { hasWriteCapability, isWriteTool } from "../common/writeExclusion.js";
 import { IInstantiationService } from "../../../../platform/instantiation/common/instantiation.js";
 import { ICommandService } from "../../../../platform/commands/common/commands.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
@@ -31,6 +35,7 @@ import {
 } from "../common/agentStudio.js";
 import { ISkillRegistry } from "../common/skills.js";
 import { IWorkflowStorageService } from "../common/workflowStorage.js";
+import { DEFAULT_WORKFLOW_SESSION_ID, sortSessionsByRecent } from "../common/workflowSessions.js";
 import { IWorkflowExecutionService } from "../common/workflowExecutionService.js";
 import { IMarketplaceService } from "../common/marketplace.js";
 import { WorkflowPublishModal } from "./workflowPublishModal.js";
@@ -61,8 +66,12 @@ import { ToolApprovalDecision } from "../common/providers.js";
 import { Emitter } from '../../../../base/common/event.js';
 import { workflowAppliedEmitter } from './providers/tool/builtinToolProvider.js';
 import { canvasOpsRequestEmitter, resolveCanvasOps } from './providers/tool/canvasOpsBridge.js';
-import { snapshotArchiveEmitter, snapshotQueryEmitter, resolveSnapshotOutput, projectionArchiveEmitter, stageRunEmitter, resolveStageRun, onStageRunProgress, directStageRunEmitter, resolveDirectStageRun, onDirectStageRunProgress, type SnapshotArchiveRequest, type SnapshotQueryRequest, type SnapshotResultPayload, type ProjectionArchiveRequest, type StageRunRequest, type StageRunResultPayload, type StageRunProgressPayload, type DirectStageRunPayload } from './workflow/workflowSnapshotBridge.js';
+import { snapshotArchiveEmitter, snapshotQueryEmitter, resolveSnapshotOutput, projectionArchiveEmitter, stageRunEmitter, resolveStageRun, onStageRunProgress, executionIdOfStageRun, extractStageSnapshot, markDirectStageRunHandled, notifyDirectStageRunControllerReady, directStageRunUnhandledEmitter, tryMarkOpeningCanvas, releaseOpeningCanvas, directStageRunEmitter, directStageRunCancelEmitter, resolveDirectStageRun, onDirectStageRunProgress, onDirectStageRunHeartbeat, abandonDirectStageRun, stageRunCancelEmitter, onStageRunHeartbeat, abandonStageRun, snapshotMediaPutEmitter, type SnapshotArchiveRequest, type SnapshotQueryRequest, type SnapshotResultPayload, type ProjectionArchiveRequest, type StageRunRequest, type StageRunResultPayload, type StageRunProgressPayload, type DirectStageRunPayload, type SnapshotMediaPutRequest } from './workflow/workflowSnapshotBridge.js';
 import { createComfyStageDelegate } from './workflow/comfyStageBridge.js';
+import { WorkflowEditorInput } from './workflowEditorInput.js';
+// P2（2026-09-13）：单节点编辑器开独立 tab 的 EditorInput。
+import { WorkflowNodeEditorInput } from './workflowNodeEditorInput.js';
+import { CanvasExecutionPool } from './canvasExecutionPool.js';
 import { executeWorkflowScript } from './workflow/workflowExecutor.js';
 import { createWorkflowChildPort } from './providers/tool/workflowChildPort.js';
 import { validateWorkflowMeta, type IWorkflowMeta } from '../common/workflow/types.js';
@@ -70,6 +79,8 @@ import type { UnifiedSubAgentDispatch } from '../common/unifiedSubAgentDispatch.
 import { canvasContextStore } from './messageEnrichment/canvasContextStore.js';
 import { IWorkbenchThemeService } from "../../../../workbench/services/themes/common/workbenchThemeService.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
+// 工作流文件导入（2026-09-11）：host 侧弹原生文件选择对话框。
+import { IFileDialogService } from "../../../../platform/dialogs/common/dialogs.js";
 import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
 import { VSBuffer, encodeBase64 } from "../../../../base/common/buffer.js";
 import { IModelService } from "../../../../editor/common/services/model.js";
@@ -151,6 +162,19 @@ interface IIncomingMessage {
  * When panelType is undefined, the full app (legacy single-pane mode) is rendered.
  */
 export class AgentStudioWebviewController extends Disposable {
+	/**
+	 * 所有存活的 controller 实例（P2b 跨窗口节点值广播用，2026-09-13）。
+	 *
+	 * 场景：同一工作流可同时开在多个 webview —— 画布 tab（`WorkflowEditorPane`）+
+	 * 节点编辑器 tab（`WorkflowNodeEditorPane`，P2a）。任一窗口改了节点值必须同步到
+	 * 其它窗口，否则两处显示不一致。
+	 *
+	 * ★ 用 `Set`（全量）而非 `Map<workflowId, Set>`：接收端 `applyNodeControl` 会按
+	 *   「该 nodeId 是否存在于本工作流」**天然过滤**（不存在 → 返回 false，无副作用），
+	 *   省掉 workflowId 分组维护与注销时序问题。
+	 */
+	private static readonly _instances = new Set<AgentStudioWebviewController>();
+
 	private _webview: IWebviewElement | undefined;
 
 	private readonly _sessionService: IWorkspaceSessionService;
@@ -206,6 +230,24 @@ export class AgentStudioWebviewController extends Disposable {
 	 */
 	private readonly _perfCreateTs = Date.now();
 
+	/** 离屏画布执行池（headless direct stage run，② 完整版）：首次 unhandled 时懒创建。 */
+	private _canvasExecPool: CanvasExecutionPool | undefined;
+
+	/** webview React app 是否已就绪（首条 toHost 消息）：direct stage 重放的时机闸门。 */
+	private _webviewAppReady = false;
+
+	/**
+	 * 本画布面板**已转发、尚未收到回程**的直跑 runId（2026-09-11）。
+	 * 面板 `dispose()` 时逐个 abandon —— 面板没了就没人回程，立即收尾比等空闲超时更准确。
+	 */
+	private readonly _forwardedDirectStageRuns = new Set<string>();
+
+	/**
+	 * 本画布面板已转发、尚未收到回程的 `stage()` runId（2026-09-11，与直跑同构）。
+	 * 面板 `dispose()` 时逐个 abandon。
+	 */
+	private readonly _forwardedStageRuns = new Set<string>();
+
 	/** Feature flag: if true, use Native Chat mode (skip webview creation) */
 	private _useNativeMode = false;
 
@@ -239,6 +281,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@IWorkbenchThemeService
 		private readonly workbenchThemeService: IWorkbenchThemeService,
 		@IFileService private readonly fileService: IFileService,
+		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@IWorkspaceContextService
 		private readonly workspaceContextService: IWorkspaceContextService,
 		@ITaskOrchestrationService
@@ -261,8 +304,25 @@ export class AgentStudioWebviewController extends Disposable {
 		@IAgentStudioWebviewPool private readonly webviewPool: IAgentStudioWebviewPool,
 		@IMainProcessService private readonly mainProcessService: IMainProcessService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
+		@ITextModelService private readonly textModelService: ITextModelService,
+		@ILanguageService private readonly languageService: ILanguageService,
 	) {
 		super();
+
+		// ── P2b（2026-09-13）：登记到跨窗口广播集合 ────────────────────────
+		// 用 `_register` 而非 override dispose()：保证与本对象其它资源同生命周期
+		// 释放，且不需要在本类里额外维护一个 dispose 覆盖（易漏调用 super）。
+		AgentStudioWebviewController._instances.add(this);
+		this._register({
+			dispose: () => { AgentStudioWebviewController._instances.delete(this); },
+		});
+
+		// 2026-09-12（P2-2）：检查点 diff 改用**虚拟文档**（内容只在内存，不落磁盘临时文件）。
+		// 注册自定义 scheme 的模型内容提供者；store 由本 controller 持有（批次清理见 beginBatch）。
+		this._register(this.textModelService.registerTextModelContentProvider(
+			CHECKPOINT_DIFF_SCHEME,
+			new CheckpointDiffContentProvider(this._checkpointDiffStore, this.modelService, this.languageService),
+		));
 
 		// ── DIAGNOSTIC: confirm constructor is entered ──
 		this.logService.info(`[AS-DIAG] AgentStudioWebviewController CONSTRUCTOR — panelType=${this.panelType}, hasInitialData=${!!this.initialData}, container=${!!this.container}`);
@@ -402,6 +462,21 @@ export class AgentStudioWebviewController extends Disposable {
 				sendFullStateFor(e.executionId);
 			}),
 		);
+		// ★ 进度推送（2026-09-12 修缺口③）：`nodeStates[].progress` 会随逐格进度更新，
+		//   但此前**只在状态跳变时**才推给画布 ✗ → 没有本地执行器的节点（非 comfyStage，
+		//   如编排/脚本节点）在画布上看不到百分比。
+		//   ⚠ **必须节流**：`node_progress` 是逐帧事件 ✗，每次都推全量会刷爆消息通道
+		//   （同批次168/171 的教训）。按 executionId 节流 300ms ✓。
+		const progressPushedAt = new Map<string, number>();
+		this._register(
+			this.workflowExecutionService.onDidExecutionTrace((ev) => {
+				if (ev.kind !== 'node_progress') { return; }
+				const now = Date.now();
+				if (now - (progressPushedAt.get(ev.executionId) ?? 0) < 300) { return; }
+				progressPushedAt.set(ev.executionId, now);
+				sendFullStateFor(ev.executionId);
+			}),
+		);
 		this._register(
 			this.workflowExecutionService.onDidChangeBreakpoints((e) => {
 				if (!sendFullStateFor(e.executionId)) {
@@ -421,7 +496,10 @@ export class AgentStudioWebviewController extends Disposable {
 				// Skip verbose logging for delta events — hundreds fire during streaming
 				// and the console I/O contributes to UI thread saturation.
 				if (trace.kind !== 'delta') {
-					console.log(`[AgentStudioWebviewController] onDidExecutionTrace: kind=${trace.kind} node=${(trace as any).nodeId} execId=${trace.executionId} session=${trace.sessionId}`);
+					// ★ 改用 logService（2026-09-10）：console.log 不进 renderer.log，
+					//   导致「ask_user 是否已转发到 webview」在日志里不可判定——
+					//   排查 webview 链呈现断点时每轮都缺这一行关键证据。
+					this.logService.info(`[AgentStudioWebviewController] onDidExecutionTrace → webview: kind=${trace.kind} node=${(trace as any).nodeId} execId=${trace.executionId} session=${trace.sessionId} panelType=${this.panelType ?? 'none'}`);
 				}
 				this._sendEvent('workflow.executionTrace', { ...trace });
 			}),
@@ -954,6 +1032,19 @@ export class AgentStudioWebviewController extends Disposable {
 			return;
 		}
 
+		// ★ webview app 就绪判定（2026-09-10）：首条 toHost 消息 = React bundle 已
+		//   加载、message listener 已注册。direct stage run 的挂起重放必须等到此刻
+		//   ——此前 notifyReady 在 controller 构造期调用，重放事件经 _sendEvent 发给
+		//   仍在 bootstrap 的 webview 会**静默丢失**（vscode postMessage 无回执），
+		//   pending 干等超时（ImageLoader spinner 卡死实测链）。
+		if (!this._webviewAppReady) {
+			this._webviewAppReady = true;
+			const replayed = notifyDirectStageRunControllerReady();
+			if (replayed > 0) {
+				this.logService.info(`[AgentStudioWebviewController] webview app ready → replayed ${replayed} pending direct stage run(s)`);
+			}
+		}
+
 		// ── Perf relay from webview ──────────────────────────────────────
 		// The webview pushes its first-load timeline here so the full
 		// host→webview chain is visible in one log. Short-circuit before
@@ -1086,8 +1177,14 @@ export class AgentStudioWebviewController extends Disposable {
 
 		switch (type) {
 			// ─── Agents ────────────────────────────────────────────
-			case "agents.list":
-				return this.agentStudioService.getAgents();
+			case "agents.list": {
+				// P0①：附写能力 —— 画布 planner 据此把可写节点排进独占层（同层至多一个写者），
+				// 避免两个可写子代理并发（共享父 worktree → 必然写冲突）。
+				// 在 host 侧算，因为写工具名单（DESTRUCTIVE_TOOL_PATTERNS）在 common/，
+				// 而 webview **不 import common/**。
+				const agents = await this.agentStudioService.getAgents();
+				return agents.map(a => ({ ...a, writeCapable: hasWriteCapability({ allowedTools: a.tools }) }));
+			}
 			case "agents.presets":
 				return this.agentStudioService.getAgentPresets();
 			case "agents.get":
@@ -1831,6 +1928,38 @@ export class AgentStudioWebviewController extends Disposable {
 			// ─── Workflow Editor ──────────────────────────────────
 			case "workflow.get": {
 				const wp = p as unknown as { id: string; workspaceId?: string };
+				// ★ 打开画布时补发**当前执行状态**（2026-09-12 修缺口①「中途打开画布看不到状态」）：
+				//   状态推送是**事件驱动**的（只在节点状态跳变 / 断点变化时发 ✗）→ 画布若在运行
+				//   **中途**才打开，就要等下一次跳变才拿到状态，期间节点看起来「静止 / 未运行」✗。
+				//   握手（workflow.get）时补发一次全量 ✓ —— 覆盖**聊天驱动**的执行（与画布驱动
+				//   共用同一个 workflowExecutionService ✓）。
+				try {
+					for (const st of this.workflowExecutionService.getActiveExecutions()) {
+						// ⚠ 只补发**当前打开的**工作流：别的工作流的 nodeStates 会把无关节点
+						//   标成 running / done ✗（nodeId 在不同工作流间可能重名）。
+						const wfId = (st as { workflowId?: string }).workflowId;
+						if (wfId && wp.id && wfId !== wp.id) { continue; }
+						// 载荷形状与构造函数内的 serializeExecutionState 一致（那个是局部闭包 ✗，
+						// 此处不可见）—— 改这里时两处要同步 ✓。
+						const s = st as unknown as {
+							executionId: string; status: unknown; currentNodeId?: string;
+							startTime?: unknown; endTime?: unknown; error?: unknown;
+							nodeStates?: Map<string, unknown>; breakpoints?: Set<string>;
+						};
+						this._sendEvent('workflow.executionUpdate', {
+							executionId: s.executionId,
+							status: s.status,
+							currentNodeId: s.currentNodeId,
+							startTime: s.startTime,
+							endTime: s.endTime,
+							error: s.error,
+							nodeStates: s.nodeStates ? Object.fromEntries(s.nodeStates) : {},
+							breakpoints: s.breakpoints ? Array.from(s.breakpoints) : undefined,
+						});
+					}
+				} catch (err) {
+					this.logService.warn('[AgentStudioWebviewController] 补发执行状态失败（不影响打开画布）:', err);
+				}
 				return this._handleWorkflowGet(wp);
 			}
 			case "workflow.save": {
@@ -1865,6 +1994,29 @@ export class AgentStudioWebviewController extends Disposable {
 				const lp = p as unknown as { workspaceId?: string };
 				return this._handleWorkflowList(lp);
 			}
+			// ─── 工作流 Session（2026-09-11 用户需求）─────────────────
+			case "workflow.sessions.list": {
+				const sp = p as unknown as { workflowId: string };
+				return this._handleWorkflowSessionsList(sp);
+			}
+			case "workflow.sessions.select": {
+				const sp = p as unknown as { workflowId: string; sessionId: string };
+				return this._handleWorkflowSessionsSelect(sp);
+			}
+			case "workflow.sessions.rename": {
+				const sp = p as unknown as { workflowId: string; sessionId: string; name: string };
+				return this._handleWorkflowSessionsRename(sp);
+			}
+			// ─── 本地文件导入工作流（2026-09-11）─────────────────────
+			// 编辑器 webview 的「⤵ 导入」入口；侧边栏入口不经 RPC（直接调服务）。
+			case "workflow.importFile": {
+				return this._handleWorkflowImportFile();
+			}
+			// ─── 单节点编辑器开独立 tab（2026-09-13，P2）─────────────
+			case "workflow.openNodeEditor": {
+				const np = p as unknown as { workflowId?: string; nodeId?: string; nodeType?: string; editorTitle?: string };
+				return this._handleWorkflowOpenNodeEditor(np);
+			}
 			case "workflow.reorder": {
 				const rp = p as unknown as { orderedIds: string[]; workspaceId?: string };
 				return this._handleWorkflowReorder(rp);
@@ -1888,6 +2040,20 @@ export class AgentStudioWebviewController extends Disposable {
 			case "workflow.stageRunResult": {
 				// P0: webview 回程「画布节点执行结果」（stage() 写方向桥）。
 				const srr = p as unknown as StageRunResultPayload;
+				// 已回程 → 从「待回程」集合移除（面板销毁时不再重复 abandon）。
+				if (srr?.runId) { this._forwardedStageRuns.delete(srr.runId); }
+				// ★ P1-1 修复（2026-09-13）：脚本内 `stage()` 的产物 → 累积到发起它的
+				//   **script 节点卡**（聊天卡缩略图）。此前只落画布快照库，host 不收集
+				//   → 脚本节点在聊天卡上永远没有缩略图（画布上却看得到）。
+				//   ⚠ 必须在 `resolveStageRun` **之前**反查归属 —— resolve 会移除 pending
+				//   表项，之后再查 runId→executionId 就查不到了 ✗。
+				if (srr?.runId) {
+					const execId = executionIdOfStageRun(srr.runId);
+					const snap = extractStageSnapshot(srr.value);
+					if (execId && snap.length > 0) {
+						this.workflowExecutionService.collectScriptStageSnapshot(execId, snap);
+					}
+				}
 				if (srr?.runId && !resolveStageRun(srr)) {
 					this.logService.warn(`[AgentStudioWebviewController] workflow.stageRunResult: unknown runId=${srr.runId} (already resolved/timed out)`);
 				}
@@ -1896,14 +2062,63 @@ export class AgentStudioWebviewController extends Disposable {
 			case "workflow.stageRunProgress": {
 				// P0 进度透传：webview 在 ComfyUI 生成期间回推实时进度。
 				const spr = p as unknown as StageRunProgressPayload;
-				if (spr?.runId) { onStageRunProgress(spr); }
+				if (spr?.runId) {
+					// ★ P0 修复（2026-09-13）：脚本内 `stage()` 的进度**同时**归到发起它的
+					//   script 节点卡 —— 此前这条进度只喂工具卡，导致脚本节点在聊天卡上
+					//   永远没有进度条（质量评估实测缺口）。归属信息在 pending 里本就有
+					//   （供 cancelExecution 批量放弃用），这里只是反查一次。
+					const execId = executionIdOfStageRun(spr.runId);
+					if (execId) {
+						this.workflowExecutionService.reportScriptStageProgress(execId, spr.progress, spr.message);
+					}
+					onStageRunProgress(spr);
+				}
+				return { ok: true };
+			}
+			case "workflow.stageRunHeartbeat": {
+				// stage() 心跳（2026-09-11）：只续期、不触碰 UI（与直跑同构）。
+				const hb = p as unknown as { runId?: string };
+				if (hb?.runId) { onStageRunHeartbeat(hb); }
 				return { ok: true };
 			}
 			case "workflow.stageDirectRunResult": {
 				// 存储工作流 ComfyStage 直跑回程（direct stage run 桥）。
 				const srr = p as unknown as StageRunResultPayload;
+				// 已回程 → 从「待回程」集合移除（面板销毁时不再重复 abandon）。
+				if (srr?.runId) { this._forwardedDirectStageRuns.delete(srr.runId); }
 				if (srr?.runId && !resolveDirectStageRun(srr)) {
 					this.logService.warn(`[AgentStudioWebviewController] workflow.stageDirectRunResult: unknown runId=${srr.runId} (already resolved/timed out)`);
+				}
+				return { ok: true };
+			}
+			case "workflow.nodeValuesChanged": {
+				// ★ 画布 → 卡片回流（2026-09-11 用户需求：卡片数据 ↔ 画布节点 UI 始终同步）。
+				//   用户在画布上改控件 → 转发给聊天卡的 trace 控制器更新字段值。
+				//   **单向**：只更新卡片、绝不回写画布 → 防回环 ✓（回写会与「卡片→画布」成环 ✗）。
+				const nv = p as unknown as { nodeId?: string; values?: Record<string, unknown> };
+				if (nv?.nodeId && nv.values && typeof nv.values === 'object') {
+					this._sendEvent('workflow.executionTrace', {
+						kind: 'node_values_changed',
+						nodeId: nv.nodeId,
+						values: nv.values,
+						executionId: '',   // 卡片按 nodeId 匹配，无需执行 id ✓
+						sessionId: '',
+					});
+					// ★ P2b（2026-09-13）：同时广播给**其它** webview —— 同一工作流可能同时
+					//   开在画布 tab 与节点编辑器 tab（P2a），两边必须保持一致。
+					//   接收端以 origin='external' 应用 → 不再回发 → 无环（见 _broadcastNodeValues）。
+					this._broadcastNodeValues(nv.nodeId, nv.values as Record<string, unknown>);
+				}
+				return { ok: true };
+			}
+			case "workflow.snapshotPut": {
+				// ★ P4（2026-09-13）：webview 产出图/视频 → 广播给同工作流的其它窗口
+				//   （画布 tab ↔ 节点编辑器 tab / 独立窗口）。各 webview 的 IndexedDB
+				//   互不可见，必须显式同步；ref 是自包含 URL → 无需传 payload。
+				//   接收端 putRemote 写入 → 不再广播 → 无回环 ✓。
+				const sp = p as unknown as { nodeId?: string; port?: string; media?: unknown };
+				if (sp?.nodeId && sp.port && sp.media) {
+					this._broadcastSnapshot(sp.nodeId, sp.port, sp.media);
 				}
 				return { ok: true };
 			}
@@ -1911,6 +2126,12 @@ export class AgentStudioWebviewController extends Disposable {
 				// 存储工作流 ComfyStage 直跑进度透传。
 				const spr = p as unknown as StageRunProgressPayload;
 				if (spr?.runId) { onDirectStageRunProgress(spr); }
+				return { ok: true };
+			}
+			case "workflow.stageDirectRunHeartbeat": {
+				// 直跑心跳（2026-09-11）：只续期、不触碰 UI —— 把「活性」与「进度」解耦。
+				const hb = p as unknown as { runId?: string };
+				if (hb?.runId) { onDirectStageRunHeartbeat(hb); }
 				return { ok: true };
 			}
 			case "workflow.runAgentNode": {
@@ -2736,6 +2957,58 @@ export class AgentStudioWebviewController extends Disposable {
 			data,
 		};
 		this._postToWebview(event, `_sendEvent type=${type}`, type.startsWith("chat.stream"));
+	}
+
+	/**
+	 * 把节点值变更广播给**其它** webview（P2b，2026-09-13）。
+	 *
+	 * 触发点：webview 发来 `workflow.nodeValuesChanged`（画布控件改动或卡片控件改动 ——
+	 * 两条路径都会经 `applyNodeControl(origin='canvas')` → `scheduleNotifyHost`）。
+	 *
+	 * 为什么不需要「按 workflowId 过滤」：接收端以 `origin='external'` 应用值，
+	 * 若该 nodeId 不属于自己的工作流 → `applyNodeControl` 返回 false（无副作用）。
+	 *
+	 * 防回环（三层）：
+	 *   ① 不发给发起方自己（`peer === this` 跳过）；
+	 *   ② 接收端以 `origin='external'` 应用 → **不**调 `scheduleNotifyHost`；
+	 *   ③ 因此不会再产生 `workflow.nodeValuesChanged` → 环被切断。
+	 */
+	private _broadcastNodeValues(nodeId: string, values: Record<string, unknown>): void {
+		this._broadcastToPeers('workflow.nodeValuesRemote', { nodeId, values }, `nodeValues ${nodeId}`);
+	}
+
+	/**
+	 * ★ P4（2026-09-13）：把**本窗口产出的图/视频**广播给其它窗口。
+	 *
+	 * 为什么需要：各 webview 的 `MediaSnapshotStore` 用各自 origin 下的 IndexedDB
+	 * 作为 backend（`vscode-webview://<webview-id>` 隔离）→ A 窗口跑出的产物，B 窗口
+	 * 的卡片预览看不到（除非重载）。
+	 *
+	 * 为什么成本低：`MediaRef.ref` 是**自包含 URL 字符串**（http / COS 签名 URL /
+	 * data URL），payload 无需传输 —— 接收端 `putRemote` 后可直接加载 ✓。
+	 * 超长 ref（> 2MB 的 data URL）由 webview 侧 `snapshotBroadcast` 提前拦截。
+	 */
+	private _broadcastSnapshot(nodeId: string, port: string, media: unknown): void {
+		this._broadcastToPeers('workflow.snapshotPutRemote', { nodeId, port, media }, `snapshot ${nodeId}:${port}`);
+	}
+
+	/**
+	 * 广播给**其它** controller（跳过自己 → 防回声）。P2b/P4 共用的传输层。
+	 *
+	 * 无需按 workflowId 分组：接收端各自按「该 nodeId/产物是否属于本工作流」过滤
+	 * （节点值走 `applyNodeControl` 的返回 false；产物走 store 的 putRemote 写入，
+	 *  非本工作流的 nodeId 会在卡片上无宿主，无副作用）。
+	 */
+	private _broadcastToPeers(eventType: string, data: unknown, label: string): void {
+		let peers = 0;
+		for (const peer of AgentStudioWebviewController._instances) {
+			if (peer === this) { continue; }
+			peer._sendEvent(eventType, data);
+			peers++;
+		}
+		if (peers > 0) {
+			this.logService.info(`[AgentStudioWebviewController] broadcast ${label} → ${peers} peer(s)`);
+		}
 	}
 
 	/**
@@ -3784,6 +4057,14 @@ export class AgentStudioWebviewController extends Disposable {
 				this._sendEvent('workflow.snapshotArchive', req);
 			}),
 		);
+		// ★ 媒体落库（2026-09-11）：选择型节点（ImagePicker 等）的选中结果写进 webview
+		//   快照库，使下游按 store 取上游参考图时能拿到（此前只写 host executionState
+		//   → Saros.AnimatedEmoji 报「需要上游参考图输入」）。
+		this._register(
+			snapshotMediaPutEmitter.event((req: SnapshotMediaPutRequest) => {
+				this._sendEvent('workflow.snapshotMediaPut', req);
+			}),
+		);
 		// M4b: persist the runtime projection as an openable read-only workflow.
 		this._register(
 			projectionArchiveEmitter.event((req: ProjectionArchiveRequest) => {
@@ -3796,17 +4077,141 @@ export class AgentStudioWebviewController extends Disposable {
 		this._register(
 			stageRunEmitter.event((req: StageRunRequest) => {
 				this._sendEvent('workflow.stageRun', req);
+				// 记录待回程的 runId（面板销毁时 abandon，2026-09-11）。
+				this._forwardedStageRuns.add(req.runId);
+			}),
+		);
+		// ★ 取消 stage()（2026-09-11，与直跑同构）：host 判定请求被放弃 → 通知画布停止执行。
+		this._register(
+			stageRunCancelEmitter.event((e: { runId: string }) => {
+				if (this.panelType !== 'workflow-editor') { return; }
+				if (!this._webview) { return; }
+				this._sendEvent('workflow.stageRunCancel', { runId: e.runId });
 			}),
 		);
 		// Direct stage run：存储工作流 ComfyStage 节点直跑（按 stageClass + values，不依赖画布 stageUid）。
 		this._register(
 			directStageRunEmitter.event((req: DirectStageRunPayload) => {
+				// ★ 同步 ack（headless 轻量版）：告知 bridge 本 controller 已接手该请求，
+				//   否则 bridge 判定「无画布」并挂入 unhandled 队列。
+				//   ★ 仅画布面板接手（2026-09-10 日志实锤第 9 层）：每个面板一个 controller
+				//   实例且都订阅本 emitter——chat 面板 controller 有 webview 会 ack 并把
+				//   请求发给 chat webview（那里没有 runStageByClass runner）→ 永久挂起
+				//   （ImageLoader spinner 实测）。非画布面板不 ack，请求留给画布。
+				if (this.panelType !== 'workflow-editor') { return; }
+				//   ★ webview 未就绪时也不 ack：重放到达时本 controller 的 _webview 可能
+				//   尚未创建（openEditor 异步）——ack 后 _postToWebview 静默丢弃
+				//   （no webview/iframe WARN）。不 ack → bridge 重入 unhandled → 等下次重放。
+				if (!this._webview) {
+					this.logService.warn(`[AgentStudioWebviewController] stageDirectRun ${req.runId}: canvas webview not ready yet → leaving pending for replay`);
+					return;
+				}
+				markDirectStageRunHandled();
 				this._sendEvent('workflow.stageDirectRun', req);
+				// 记录待回程的 runId（面板销毁时 abandon）。
+				this._forwardedDirectStageRuns.add(req.runId);
 			}),
 		);
+		// ★ 面板销毁 → 放弃本面板名下仍在等待的直跑（2026-09-11）：
+		//   画布面板关闭后没人再回程，立即收尾（NoCanvas）比等空闲超时准确。
+		this._register({
+			dispose: () => {
+				for (const id of [...this._forwardedDirectStageRuns]) { abandonDirectStageRun(id); }
+				this._forwardedDirectStageRuns.clear();
+				// stage() 路径同理（2026-09-11，与直跑同构）。
+				for (const id of [...this._forwardedStageRuns]) { abandonStageRun(id); }
+				this._forwardedStageRuns.clear();
+			},
+		});
+		// ★ 取消直跑（2026-09-11）：host 判定该请求已放弃（空闲超时）→ 通知画布**停止执行**，
+		//   消除「聊天报失败、画布仍在跑并在稍后出图」的僵尸 ✗。
+		//   与上方同理：仅画布面板转发（chat 面板的 webview 没有 runStageByClass runner），
+		//   且 webview 未就绪时无法送达 —— 此时画布侧本就没在跑，静默丢弃即可。
+		this._register(
+			directStageRunCancelEmitter.event((e: { runId: string }) => {
+				if (this.panelType !== 'workflow-editor') { return; }
+				if (!this._webview) { return; }
+				this._sendEvent('workflow.stageDirectRunCancel', { runId: e.runId });
+			}),
+		);
+		// ★ 本画布 controller 就绪 → 重放因无画布而挂起的 direct stage 请求。
+		//   （2026-09-10 移至 _handleMessage 首条消息处：构造期 webview 仍在加载
+		//   bundle，重放事件会静默丢失——见 _handleMessage 内注释。）
 		// 注入生产 Comfy 执行委托：把存储工作流 ComfyStage 节点转发给画布 webview 真正执行
 		// （否则 /workflow <id> 触发含表情包节点的存储工作流时，该节点被静默跳过）。
 		this.workflowExecutionService.setComfyExecutionDelegate(createComfyStageDelegate());
+
+		// ★ P1-4：脚本执行委托（Dynamic Workflow 脚本作为 DAG 节点）。
+		//   deps 复用画布直连路径的现成依赖（dispatch/agentOS/logService），闭包捕获，
+		//   避免 workflowExecutionService 反向依赖本 controller/agentDriverService 构成 DI 环。
+		this.workflowExecutionService.setScriptExecutionDelegate({
+			execute: async (input) => {
+				const dispatch = this.taskOrchestrationService.subAgentDispatch as UnifiedSubAgentDispatch | undefined;
+				if (!dispatch) { return { ok: false, error: '子代理编排服务不可用（subAgentDispatch 缺失）' }; }
+				const r = await executeWorkflowScript(
+					{ dispatch, agentOS: this.agentOSService, parentAgentId: 'canvas-agent-node', logService: this.logService },
+					{
+						script: input.script, meta: { name: input.meta.name, description: input.meta.name }, args: input.args,
+						// ★ 归属执行 id 透传（2026-09-11）：脚本内 stage() 的 pending 归它名下，
+						//   使 cancelExecution 能一并中止（与直跑同构）。
+						...(input.executionId !== undefined ? { executionId: input.executionId } : {}),
+					},
+				);
+				return { ok: r.ok, error: r.error, value: r.value };
+			},
+		});
+
+		// ★ headless 轻量版闭环（2026-09-09）：聊天触发出图但**没有任何画布打开**时
+		//   （direct stage 请求无 controller 同步 ack），自动打开最近的工作流画布——
+		//   画布 controller 就绪（订阅 emitter）即调 notifyDirectStageRunControllerReady()
+		//   自动重放挂起请求。用户不开画布则 90s 兜底超时，行为不变。
+		let openingForUnhandled = false;
+		this._register(
+			directStageRunUnhandledEmitter.event((e) => {
+				const { runId } = e;
+				if (openingForUnhandled) { return; }
+				// ★ 全局互斥（2026-09-10）：workflowExecutionService 构造也订阅了
+				//   unhandled（native 聊天场景的常驻宿主）——不互斥会双开画布。
+				if (!tryMarkOpeningCanvas()) { return; }
+				openingForUnhandled = true;
+				void (async () => {
+					try {
+						// ★ ②完整版：优先交给离屏 canvas 执行池（完全不打开 editor，用户无感）。
+						if (!this._canvasExecPool) {
+							this._canvasExecPool = this._register(new CanvasExecutionPool(this.webviewPool, this.logService));
+							this._register(this._canvasExecPool.onDidFail(({ payload }) => {
+								this.logService.warn(`[AgentStudioWebviewController] canvas pool failed for runId=${payload.runId} → fallback to open-canvas path`);
+							}));
+						}
+						if (this._canvasExecPool.tryExecute(e.request)) {
+							this.logService.info(`[AgentStudioWebviewController] ${runId} → canvas execution pool (headless)`);
+							return;
+						}
+						// 池不可用（无 warm webview）→ 回退：自动打开画布（preserveFocus）。
+						// 优先按请求自带 workflowId 打开**正确**的工作流；取不到再回退最近一个。
+						const wfId = e.request.workflowId;
+						let wf = wfId ? await this.workflowStorageService.getWorkflow(wfId).catch(() => undefined) : undefined;
+						if (!wf) {
+							const wfs = await this.workflowStorageService.listWorkflows().catch(() => []);
+							wf = wfs[0];
+						}
+						if (!wf) {
+							this.logService.warn(`[DirectStageRun] ${runId} 无画布且无存储工作流 → 保持挂起（90s 超时兜底）`);
+							return;
+						}
+						const input = new WorkflowEditorInput(wf);
+						const existing = this.editorService.findEditors(input);
+						// ★ preserveFocus：自动开画布不抢用户当前焦点（headless 无感化第一步）。
+						if (existing.length > 0) { await this.editorService.openEditor(existing[0].editor, { pinned: true, preserveFocus: true }); }
+						else { await this.editorService.openEditor(input, { pinned: true, preserveFocus: true }); }
+						this.logService.info(`[DirectStageRun] ${runId} 无画布 → 已自动打开工作流「${String((wf as { name?: string }).name ?? wf.id)}」${wfId ? '(按 workflowId)' : '(回退最近)'}，controller 就绪后自动重放`);
+					} finally {
+						openingForUnhandled = false;
+						releaseOpeningCanvas();
+					}
+				})();
+			}),
+		);
 	}
 
 	/**
@@ -4574,10 +4979,11 @@ export class AgentStudioWebviewController extends Disposable {
 	 * Handle `tools.list` message from webview — populate the Saros.Tool 节点的
 	 * toolName 下拉。列出所有已注册 tool provider 的全部工具（去重）。
 	 */
-	private async _handleToolsList(payload: { agentId?: string }): Promise<Array<{ id: string; name: string; description?: string }>> {
+	private async _handleToolsList(payload: { agentId?: string }): Promise<Array<{ id: string; name: string; description?: string; writeCapable: boolean }>> {
 		try {
 			const tools = await this.agentOSService.listAllToolsWithState(payload?.agentId ?? '');
-			return tools.map(t => ({ id: t.name, name: t.name, description: t.description }));
+			// P0①：附写能力（`Saros.Tool` 节点的写者分层信号；与 agents.list 同一判据）。
+			return tools.map(t => ({ id: t.name, name: t.name, description: t.description, writeCapable: isWriteTool(t.name) }));
 		} catch (err) {
 			this.logService.warn('[AgentStudio] tools.list failed', err);
 			return [];
@@ -4763,23 +5169,79 @@ export class AgentStudioWebviewController extends Disposable {
 		payload: IMemoryDeletePayload,
 		layer: "conversation" | "memory",
 	): Promise<IMemoryDeleteResponse> {
-		// IMemoryProvider doesn't expose deleteMemory — graceful degradation.
-		this.logService.info(`[AgentStudioWebviewController] memory.delete (${layer}) not supported by in-process provider, skipping ${payload.recordIds?.length ?? 0} items`);
-		return { deleted: 0, failed: [...(payload.recordIds ?? [])] };
+		// P0-5（2026-09-09）：此前恒返回 {deleted:0}（假成功，UI 逐行删除按钮无效）。
+		// 现按层路由真实删除：
+		//   conversation = L0 working/core 层 → coreMemoryRemove（接口未声明，运行时探测）
+		//   memory       = L1 episodic 层     → deleteMemory（IMemoryProvider 可选方法）
+		const ids = payload.recordIds ?? [];
+		if (ids.length === 0) { return { deleted: 0, failed: [] }; }
+		const provider = this.agentOSService.getActiveMemoryProvider();
+		if (!provider) {
+			this.logService.warn(`[AgentStudioWebviewController] memory.delete (${layer}): no memory provider available, ${ids.length} item(s) NOT deleted`);
+			return { deleted: 0, failed: [...ids] };
+		}
+		const agentId = payload.agentId || 'default';
+		let deleted = 0;
+		const failed: string[] = [];
+		for (const id of ids) {
+			try {
+				let ok: boolean;
+				if (layer === 'conversation') {
+					const coreRemove = (provider as { coreMemoryRemove?: (agentId: string, id: string) => Promise<boolean> | boolean }).coreMemoryRemove;
+					if (typeof coreRemove !== 'function') { throw new Error('provider.coreMemoryRemove unavailable'); }
+					ok = await coreRemove.call(provider, agentId, id);
+				} else {
+					ok = await provider.deleteMemory?.(agentId, id) ?? false;
+				}
+				if (ok) { deleted++; } else { failed.push(id); }
+			} catch (err) {
+				this.logService.warn(`[AgentStudioWebviewController] memory.delete (${layer}) failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+				failed.push(id);
+			}
+		}
+		if (failed.length > 0) {
+			this.logService.warn(`[AgentStudioWebviewController] memory.delete (${layer}): ${deleted} deleted, ${failed.length} failed`);
+		}
+		return { deleted, failed };
 	}
 
 	/**
 	 * 删除指定 Agent 关联的所有记忆（级联清理）。
-	 * IMemoryProvider 不支持批量删除，此处为 no-op（优雅降级）。
+	 * P0-5（2026-09-09）：此前是 no-op（假成功日志）。现调用 provider.removeAgent
+	 * （引擎侧清除该 agent 全部 KV scope；接口未声明，运行时探测，失败 fail-loud）。
 	 */
 	private async _cleanupAgentMemory(agentId: string): Promise<void> {
 		if (!agentId) { return; }
-		this.logService.info(`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): skipped (in-process provider doesn't support bulk delete)`);
+		const provider = this.agentOSService.getActiveMemoryProvider();
+		if (!provider) {
+			this.logService.warn(`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): no memory provider, memory NOT cleaned`);
+			return;
+		}
+		const removeAgent = (provider as { removeAgent?: (agentId: string) => Promise<void> | void }).removeAgent;
+		if (typeof removeAgent !== 'function') {
+			this.logService.warn(`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): provider.removeAgent unavailable, memory NOT cleaned`);
+			return;
+		}
+		try {
+			await removeAgent.call(provider, agentId);
+			this.logService.info(`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): all memory scopes removed`);
+		} catch (err) {
+			this.logService.warn(`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}) failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	// ─── Public API ─────────────────────────────────────────────────────────────
 
 	// ── Checkpoint Diff ──────────────────────────────
+
+	/**
+	 * 检查点 diff 的虚拟文档内容存储（2026-09-12，P2-2）。
+	 *
+	 * 取代此前的磁盘临时文件方案（`.sarosworkspace/checkpoint-diffs/`）：快照内容
+	 * 只存在于内存 → ①不再产生磁盘副作用（源码不落盘）；②**不再需要临时目录清理
+	 * 机制**（原 P0-3 的 `_purgeTempDiffDirOnce` 已随之移除，少一个生命周期状态）。
+	 */
+	private readonly _checkpointDiffStore = new CheckpointDiffStore();
 
 	/**
 	 * Handle "open checkpoint diff" request from the webview.
@@ -4811,20 +5273,19 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 			const snapshotContent = matched.content;
 
-			// 2. Write snapshot to a temp file under workspace home
-			const wsId = this.agentStudioService.getActiveWorkspaceId();
-			let baseDir: string;
-			if (wsId) {
-				const workspace = await this.agentStudioService.getWorkspace(wsId);
-				baseDir = workspace?.path ?? (this._environmentService as INativeEnvironmentService).userHome.fsPath;
-			} else {
-				baseDir = (this._environmentService as INativeEnvironmentService).userHome.fsPath;
-			}
+			// 2. 快照内容登记到**内存**虚拟文档（2026-09-12，P2-2：不再写磁盘临时文件）。
 			// 从快照 URI 取文件名（比 split('/') 更健壮，能正确处理 file:/// 等 scheme）。
 			const fileName = matched.uri.path.split('/').filter(Boolean).pop() ?? 'file';
-			const baseDirUri = URI.file(baseDir);
-			const snapshotUri = URI.joinPath(baseDirUri, '.sarosworkspace', 'checkpoint-diffs', checkpointId, fileName);
-			await this.fileService.writeFile(snapshotUri, VSBuffer.fromString(snapshotContent));
+			if (matched.contentOmitted) {
+				// P2-3：内容被省略（超大/二进制）→ 无法展示 diff，明确告知而非显示空白。
+				this.logService.warn(
+					`[AgentStudioWebviewController] openCheckpointDiff: ${fileName} has no stored content ` +
+					`(omitted: too large or binary) — cannot show diff`,
+				);
+				return;
+			}
+			this._checkpointDiffStore.beginBatch();
+			const snapshotUri = this._checkpointDiffStore.register(fileName, snapshotContent);
 
 			// 3. Build diff editor input and open
 			const diffInput: IResourceDiffEditorInput = {
@@ -4929,31 +5390,22 @@ export class AgentStudioWebviewController extends Disposable {
 				return;
 			}
 
-			// 解析临时快照写入根目录（与单文件 diff 一致）。
-			const wsId = this.agentStudioService.getActiveWorkspaceId();
-			let baseDir: string;
-			if (wsId) {
-				const workspace = await this.agentStudioService.getWorkspace(wsId);
-				baseDir = workspace?.path ?? (this._environmentService as INativeEnvironmentService).userHome.fsPath;
-			} else {
-				baseDir = (this._environmentService as INativeEnvironmentService).userHome.fsPath;
-			}
-			const baseDirUri = URI.file(baseDir);
-
-			// 为每个文件写出"原始内容"临时文件，并构造 diff 资源项。
+			// 2026-09-12（P2-2）：快照内容登记到**内存**虚拟文档（不再写磁盘临时文件）。
+			this._checkpointDiffStore.beginBatch();
+			// 为每个文件登记"原始内容"，并构造 diff 资源项。
 			const resources: IResourceDiffEditorInput[] = [];
 			for (const snap of snapshots) {
 				const fileName = snap.uri.path.split('/').filter(Boolean).pop() ?? 'file';
-				// 用 snapshotId 作为子目录，避免同名文件互相覆盖。
-				const originalUri = URI.joinPath(
-					baseDirUri, '.sarosworkspace', 'checkpoint-diffs', '__all__', snap.id, fileName,
-				);
-				try {
-					await this.fileService.writeFile(originalUri, VSBuffer.fromString(snap.content));
-				} catch (err) {
-					this.logService.warn(`[AgentStudioWebviewController] openAllCheckpointsDiff: failed to write temp for ${fileName}: ${err}`);
+				if (snap.contentOmitted) {
+					// P2-3：内容被省略（超大/二进制）→ 无法展示 diff，跳过并提示。
+					this.logService.warn(
+						`[AgentStudioWebviewController] openAllCheckpointsDiff: skipping ${fileName} ` +
+						`(snapshot content omitted: too large or binary)`,
+					);
 					continue;
 				}
+				// 每次 register 生成唯一 URI → 同名文件互不覆盖（原「snapshotId 子目录」的作用）。
+				const originalUri = this._checkpointDiffStore.register(fileName, snap.content);
 				resources.push({
 					original: { resource: originalUri },
 					modified: { resource: snap.uri },
@@ -5165,8 +5617,105 @@ export class AgentStudioWebviewController extends Disposable {
 			await this.workflowExecutionService.resumeExecution(payload.executionId, payload.userInput);
 			return { success: true };
 		} catch (err) {
-			this.logService.error('[AgentStudioWebviewController] workflow.resume failed', err);
-			throw err;
+			// ★ 断点续跑回退（2026-09-11）：`resumeExecution` 只在「有 pending 交互暂停」
+			//   （AskUser / 断点）时可用，否则抛「No pending pause」。此时若磁盘上存在该
+			//   executionId 的 checkpoint，说明是**崩溃/被杀后**的恢复请求 → 走断点续跑
+			//   （completed 节点复用产出，其余重跑）。这样「恢复」按钮对两种场景都可用，
+			//   无需新增 UI 入口 / RPC。
+			try {
+				await this.workflowExecutionService.resumeFromCheckpoint(payload.executionId);
+				return { success: true, resumedFromCheckpoint: true };
+			} catch (resumeErr) {
+				this.logService.error('[AgentStudioWebviewController] workflow.resume failed', err);
+				throw resumeErr instanceof Error && /没有可恢复的断点/.test(resumeErr.message) ? err : resumeErr;
+			}
+		}
+	}
+
+	/**
+	 * Handle `workflow.importFile` — 弹出原生文件选择器，导入本地工作流 JSON
+	 * （2026-09-11 审计缺口补齐）。
+	 *
+	 * 与侧边栏「⤵ Import」共用同一条服务链路（`workflowStorageService.importWorkflowJson`），
+	 * 区别只是入口：webview 无法访问宿主文件系统，故由 host 弹对话框 + 读文件。
+	 *
+	 * 返回结构：
+	 *  - `{ ok: true, workflowId, name, warnings? }` 导入成功（warnings 为非致命提示）
+	 *  - `{ ok: false, cancelled: true }` 用户取消（webview 应静默处理）
+	 *  - `{ ok: false, error }` 解析/写入失败（消息面向用户，可直接展示）
+	 */
+	private async _handleWorkflowImportFile(): Promise<{
+		ok: boolean; workflowId?: string; name?: string; warnings?: string[]; cancelled?: boolean; error?: string;
+	}> {
+		let picked;
+		try {
+			picked = await this.fileDialogService.showOpenDialog({
+				title: '导入工作流（选择 JSON 文件）',
+				canSelectFiles: true,
+				canSelectFolders: false,
+				canSelectMany: false,
+				filters: [{ name: '工作流 JSON', extensions: ['json'] }],
+			});
+		} catch (err) {
+			return { ok: false, error: `打开文件选择器失败：${err instanceof Error ? err.message : String(err)}` };
+		}
+		if (!picked || picked.length === 0) { return { ok: false, cancelled: true }; }
+		try {
+			const text = (await this.fileService.readFile(picked[0])).value.toString();
+			const { workflow, warnings } = await this.workflowStorageService.importWorkflowJson(text);
+			this.logService.info(`[AgentStudioWebviewController] workflow.importFile: imported ${workflow.id}`);
+			return { ok: true, workflowId: workflow.id, name: workflow.name, ...(warnings.length > 0 ? { warnings } : {}) };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.importFile failed', err);
+			return { ok: false, error: err instanceof Error ? err.message : String(err) };
+		}
+	}
+
+	/**
+	 * Handle `workflow.openNodeEditor` — 把某节点的编辑器开在**独立 editor tab**
+	 * （2026-09-13，P2）。
+	 *
+	 * 与 `workflow.open`（只返回工作流数据、不开 tab）的区别：本 RPC 真的开一个
+	 * 编辑器 tab，resource = `saros-workflow-node:/{workflowId}/{nodeId}` → 与画布
+	 * tab 并存、同一节点重复调用只聚焦已有 tab（去重由 `matches()` 保证）。
+	 *
+	 * 编辑器标题由 webview 传入（取 `stageEditorDescriptor().title`）—— host 侧不持有
+	 * webview 的 `stageCardRegistry`，避免为此再引一份 kind 表。
+	 */
+	private async _handleWorkflowOpenNodeEditor(payload: {
+		workflowId?: string; nodeId?: string; nodeType?: string; editorTitle?: string; inWindow?: boolean;
+	}): Promise<{ ok: boolean; error?: string }> {
+		const workflowId = payload?.workflowId ?? '';
+		const nodeId = payload?.nodeId ?? '';
+		if (!workflowId || !nodeId) {
+			return { ok: false, error: '缺少 workflowId / nodeId' };
+		}
+		try {
+			const wf = await this.workflowStorageService.getWorkflow(workflowId).catch(() => undefined);
+			const input = new WorkflowNodeEditorInput(
+				workflowId,
+				nodeId,
+				payload.nodeType,
+				payload.editorTitle ?? '节点编辑器',
+				wf?.name,
+			);
+			await this.editorService.openEditor(input, { pinned: true });
+			this.logService.info(`[AgentStudioWebviewController] workflow.openNodeEditor: ${workflowId}/${nodeId}${payload.inWindow ? ' (inWindow)' : ''}`);
+			// ★ P3（2026-09-13）：可选把刚打开的编辑器移入**独立（辅助）窗口**。
+			//   原生命令作用于当前 active editor —— `openEditor` 默认即激活该 editor，
+			//   故此处无需再 activate。**失败不阻断**：tab 已经开好了，用户仍可手动
+			//   把 tab 拖出成窗（命令在某些宿主/禁用多窗口环境下不可用）。
+			if (payload.inWindow) {
+				try {
+					await this.commandService.executeCommand('workbench.action.moveEditorToNewWindow');
+				} catch (err) {
+					this.logService.warn('[AgentStudioWebviewController] moveEditorToNewWindow 不可用（tab 已打开，可手动拖出成窗）', err);
+				}
+			}
+			return { ok: true };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.openNodeEditor failed', err);
+			return { ok: false, error: err instanceof Error ? err.message : String(err) };
 		}
 	}
 
@@ -5217,6 +5766,76 @@ export class AgentStudioWebviewController extends Disposable {
 		} catch (err) {
 			this.logService.error('[AgentStudioWebviewController] workflow.breakpoint.get failed', err);
 			throw err;
+		}
+	}
+
+	/**
+	 * 工作流 Session 列表（2026-09-11 用户需求）：返回该工作流的全部 session +
+	 * 默认激活项（最近使用）。画布打开时据此设置快照库作用域。
+	 */
+	private async _handleWorkflowSessionsList(payload: { workflowId: string }): Promise<Record<string, unknown>> {
+		try {
+			const sessions = await this.workflowStorageService.listWorkflowSessions(payload.workflowId);
+			const sorted = sortSessionsByRecent(sessions);
+			return {
+				sessions: sorted.map(s => ({
+					id: s.id,
+					name: s.name,
+					chatSessionId: s.chatSessionId,
+					runCount: s.runCount,
+					updatedAt: s.updatedAt,
+				})),
+				activeSessionId: sorted[0]?.id ?? DEFAULT_WORKFLOW_SESSION_ID,
+			};
+		} catch (err) {
+			this.logService.warn('[AgentStudioWebviewController] workflow.sessions.list failed', err);
+			return { sessions: [], activeSessionId: DEFAULT_WORKFLOW_SESSION_ID };
+		}
+	}
+
+	/** 用户在画布中切换 session（2026-09-11）：记录最近使用（touch），返回确认。 */
+	private async _handleWorkflowSessionsSelect(payload: { workflowId: string; sessionId: string }): Promise<Record<string, unknown>> {
+		try {
+			await this.workflowStorageService.touchWorkflowSession(payload.workflowId, payload.sessionId);
+			this.logService.info(`[AgentStudioWebviewController] workflow session selected: wf=${payload.workflowId} sid=${payload.sessionId}`);
+		} catch (err) {
+			this.logService.warn('[AgentStudioWebviewController] workflow.sessions.select failed', err);
+		}
+		return { ok: true, sessionId: payload.sessionId };
+	}
+
+	/**
+	 * 重命名 session（2026-09-11 用户需求）：仅改显示名，不动 id（产物隔离 key 前缀）
+	 * 也不动 updatedAt（列表顺序）。返回更新后的完整列表，webview 直接刷新下拉框
+	 * （省一次 workflow.sessions.list 往返）。
+	 */
+	private async _handleWorkflowSessionsRename(
+		payload: { workflowId: string; sessionId: string; name: string },
+	): Promise<Record<string, unknown>> {
+		try {
+			const changed = await this.workflowStorageService.renameWorkflowSession(
+				payload.workflowId, payload.sessionId, payload.name,
+			);
+			this.logService.info(
+				`[AgentStudioWebviewController] workflow session rename: wf=${payload.workflowId} ` +
+				`sid=${payload.sessionId} name=${payload.name} changed=${changed}`,
+			);
+			const sessions = await this.workflowStorageService.listWorkflowSessions(payload.workflowId);
+			const sorted = sortSessionsByRecent(sessions);
+			return {
+				ok: true,
+				changed,
+				sessions: sorted.map(s => ({
+					id: s.id,
+					name: s.name,
+					chatSessionId: s.chatSessionId,
+					runCount: s.runCount,
+					updatedAt: s.updatedAt,
+				})),
+			};
+		} catch (err) {
+			this.logService.warn('[AgentStudioWebviewController] workflow.sessions.rename failed', err);
+			return { ok: false };
 		}
 	}
 

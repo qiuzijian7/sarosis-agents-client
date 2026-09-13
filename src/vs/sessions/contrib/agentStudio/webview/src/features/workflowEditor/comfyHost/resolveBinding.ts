@@ -75,6 +75,15 @@ export function resolveBinding(
 		throw new BindingError(`binding recursion too deep: ${binding}`);
 	}
 
+	// ★ 非字符串防御（2026-09-10）：本解析器是 **ComfyTV 语法**（upstream_image:value /
+	//   option:/literal:/{{var}}），与 browser 编排侧的**结构化引用 `{$ref:{node,path}}`**
+	//   是两套独立体系（后者见 browser/workflow/structuredRefs.ts）。JS 层无类型保护，
+	//   对象误入会在下面 text.includes 处 TypeError 崩溃 —— 提前抛 BindingError，
+	//   错误信息直接指出体系错配，避免误判为「$ref 不被支持」。
+	if (typeof binding !== 'string') {
+		throw new BindingError(`binding 必须是字符串，收到 ${typeof binding}（结构化引用 {$ref} 属 browser 编排侧，webview 侧请用 ComfyTV 语法或 upstream_<port>:value）`);
+	}
+
 	// 1. template-variable pre-pass: resolve {{var}} embedded anywhere
 	const withVars = resolveTemplateVars(binding, ctx);
 	if (withVars !== binding) {

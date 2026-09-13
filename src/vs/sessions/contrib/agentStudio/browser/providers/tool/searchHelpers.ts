@@ -27,6 +27,7 @@ import {
 	type ITerminalSearchPattern,
 } from './terminalCommandGuards.js';
 import { extractExcludeDirNames } from '../../../common/codebaseIndexDefaults.js';
+import { sensitiveExcludeGlobs } from './sensitivePaths.js';
 
 export class SearchHelpers {
 	// 重复搜索熔断：连续相同搜索 ≥N 次直接拦截（P3 2026-07-29：只拦不警，
@@ -79,11 +80,16 @@ export class SearchHelpers {
 		'**/Intermediate/**', '**/Saved/**', '**/Binaries/**', '**/DerivedDataCache/**',
 		// out-build/out-test/out-vscode（Saros 自身仓库）
 		'**/out-build/**', '**/out-test/**', '**/out-vscode/**',
-		// 敏感文件（P4 2026-07-29，对齐 kimi SENSITIVE_FILTER_RG_ARGS）：密钥/凭据
-		// 永不进 grep 结果（redactSecrets 是后过滤，此处源头排除更彻底）
-		'**/.env', '**/.env.*',
-		'**/id_rsa', '**/id_rsa.*', '**/id_ed25519', '**/id_ed25519.*', '**/id_ecdsa', '**/id_ecdsa.*',
-		'**/.aws', '**/.aws/**', '**/.gcp', '**/.gcp/**',
+		// 敏感文件（密钥 / 凭据）：永不进 grep 结果 —— `redactSecrets` 是**后过滤**，
+		// 此处源头排除更彻底。
+		//
+		// ★ 2026-09-13：改为**由 `sensitivePaths` 单一真源派生**。此前这里是手抄表
+		// （P4 2026-07-29，对齐 kimi SENSITIVE_FILTER_RG_ARGS），实测落后于真源
+		// （缺 .ssh / .kube / .config/gcloud / .git-credentials / auth.json /
+		// .npmrc / .pypirc / .anthropic_oauth.json）→ **读守卫被 search_code 绕过**：
+		// file_read 拒绝读 `.npmrc`，而 search_code 照样返回其内容。
+		// 详见 `sensitivePaths.sensitiveExcludeGlobs` 的注释。
+		...sensitiveExcludeGlobs(),
 	];
 
 	/**
@@ -733,33 +739,56 @@ export class SearchHelpers {
 		// 诚实化（2026-09-06，对齐 OpenHands/SWE-agent 的截断标注共识）：
 		// 「预算耗尽」绝不能伪装成 "(no matches)" —— 后者会触发 tool-hint
 		// "symbols likely do not exist"，让模型得出「代码里没有」的错误结论。
+		// 诚实化补全（2026-09-11）：**所有**「结果被削弱」的原因都必须出现在输出里，
+		// 共四类 —— 预算耗尽 / 单文件 256 KiB 截断 / 单文件 512 KiB 跳过 / 引擎降级。
+		// ★ 关键是 `total === 0` 分支：只要存在任一削弱原因，裸报 `(no matches)` 就是
+		// **谎报**（命中可能就在被整份跳过的文件里、或在文件后半段），会被 tool-hint
+		// 包装成 "symbols likely do not exist" → 模型据此认定「代码里没有」。
+		const notes = buildWalkHonestyNotes(walkStats, this._ripgrepBroken);
 		let out: string;
 		if (total === 0) {
-			if (walkStats.budgetExhausted) {
-				const degraded = this._ripgrepBroken
-					? ' Search engine degraded (ripgrep unavailable → slow budgeted walk); repair @vscode/ripgrep for full-tree search.'
-					: '';
-				out = `(no matches within ${walkStats.filesVisited} visited files — SEARCH BUDGET EXHAUSTED, coverage incomplete.${degraded} Narrow it: add file_glob / path filter, or point path at a subdirectory.)`;
+			if (walkStats.budgetExhausted || notes.length > 0) {
+				const head = walkStats.budgetExhausted
+					? `(no matches within ${walkStats.filesVisited} visited files — SEARCH BUDGET EXHAUSTED, coverage incomplete.`
+					: `(no matches within ${walkStats.filesVisited} visited files — COVERAGE INCOMPLETE.`;
+				out = `${head}${formatHonestyNotes(notes)} Narrow it: add file_glob / path filter, or point path at a subdirectory.)`;
 			} else {
 				out = '(no matches)';
 			}
 		} else if (paged.length === 0) {
 			// 2026-09-07：分页越界——此前输出 "(no matches)" + footer "[共 N 条匹配]"
 			// 自相矛盾（日志 1788746435013 实例），明示越界与总数。
-			out = `(offset ${offset} beyond end of results — total ${total} match(es). Use a smaller offset.)`;
+			out = `(offset ${offset} beyond end of results — total ${total} match(es). Use a smaller offset.)${formatHonestyNotes(notes)}`;
 		} else {
-			out = paged.join('\n');
-			if (walkStats.budgetExhausted) {
-				out += `\n(note: search budget exhausted after ${walkStats.filesVisited} files — results may be incomplete; consider narrowing with file_glob/path)`;
-			}
+			// 有结果也要披露削弱原因（此前仅 budgetExhausted 披露，截断/跳过/降级全静默）。
+			const allNotes = walkStats.budgetExhausted
+				? [...notes, `search budget exhausted after ${walkStats.filesVisited} files / ${walkStats.dirsVisited} dirs — results may be incomplete; consider narrowing with file_glob/path`]
+				: notes;
+			out = paged.join('\n') + formatHonestyNotes(allNotes);
 		}
 		return this._appendSearchFooter(out, total, paged.length, offset, limit, 'match');
 	}
 
 	/**
 	 * ISearchComplete → 搜索结果字符串（替代 _formatRgOutput）。
+	 *
+	 * ★ 诚实化（2026-09-11）：查询设了 `maxResults: 5000`，命中上限时
+	 *   `result.limitHit === true`、结果被**截断**。此前三个分支一律按「全量」报告
+	 *   总数（如 footer 的 `[共 N 条匹配]`），与走查路径的 `budgetExhausted` 标注
+	 *   （"coverage incomplete"）**不对称** —— 主路径（ripgrep，正常环境下的唯一路径）
+	 *   反而更不诚实，模型会据此认定「匹配就这些」，与本文件 L733 注释明确反对的
+	 *   「让模型得出『代码里没有』的错误结论」属同一类错误。此处统一补截断说明。
 	 */
 	private _formatSearchComplete(result: ISearchComplete, outputMode: string, limit: number, offset: number): string {
+		const out = this._formatSearchCompleteCore(result, outputMode, limit, offset);
+		if (!result.limitHit) { return out; }
+		return out
+			+ `\n(note: search hit the result cap (maxResults=5000) — this list is TRUNCATED, not exhaustive;`
+			+ ` narrow it with file_glob / path filter, or use a more specific pattern, to see the rest)`;
+	}
+
+	/** `_formatSearchComplete` 主体（不含截断标注）。 */
+	private _formatSearchCompleteCore(result: ISearchComplete, outputMode: string, limit: number, offset: number): string {
 		const fileMatches = result.results ?? [];
 		if (outputMode === 'files_only') {
 			const files = fileMatches.map(m => m.resource.fsPath);
@@ -851,6 +880,13 @@ export class SearchHelpers {
 		const results: { path: string; mtime: number }[] = [];
 		const MAX_VISIT = 5_000;
 		let visited = 0;
+		// ★ 诚实化（2026-09-11）：预算耗尽必须披露 —— 与内容搜索的 `_walkAndGrep` 同规则
+		// （那条路径已修，本方法属**平行路径漏修**）。此前裸报 "(no matching files)"，
+		// 会被 tool-hint 包装成「没有这个文件」，而实际只是没搜完。
+		let budgetExhausted = false;
+		// ★ 目录去重（2026-09-11）：符号链接环会让同一目录被反复遍历、白白耗光 5000
+		// 文件预算（`_walkAndGrep` 早有 seenDirs 防护，此处对齐）。
+		const seenDirs = new Set<string>();
 		// 搜索根显式指向被排除目录时放行该目录（与 ripgrep 路径保持等价语义）
 		const NOISE = applyNoiseDirsOverride(SearchHelpers.NOISE_DIR_NAMES, this._scopeOverride(resolvedPath));
 		// UE 形态 root：追加 Content/ThirdParty 等非源码海量目录（进程级缓存探测）；
@@ -862,12 +898,15 @@ export class SearchHelpers {
 		const regex = globToRegexForSearch(pattern) ?? /^.*$/i;
 
 		const walk = async (dir: string): Promise<void> => {
-			if (visited >= MAX_VISIT) { return; }
+			if (visited >= MAX_VISIT) { budgetExhausted = true; return; }
 			if (signal?.aborted) { return; }
+			if (seenDirs.has(dir)) { return; }
+			seenDirs.add(dir);
 			const entries = await this.fileService.resolve(URI.file(dir));
 			if (!entries.children) { return; }
 			for (const c of entries.children) {
-				if (visited >= MAX_VISIT || signal?.aborted) { return; }
+				if (visited >= MAX_VISIT) { budgetExhausted = true; return; }
+				if (signal?.aborted) { return; }
 				const fullPath = `${dir}/${c.name}`.replace(/\\/g, '/');
 				if (c.isDirectory) {
 					if (NOISE.has(c.name) || unrealNoise?.has(c.name) || c.name.startsWith('.')) { continue; }
@@ -889,7 +928,26 @@ export class SearchHelpers {
 		results.sort((a, b) => b.mtime - a.mtime);
 		const total = results.length;
 		const paged = results.slice(offset, offset + limit);
-		const out = paged.map(r => r.path).join('\n') || '(no matching files)';
+		// 诚实化（2026-09-11）：与内容搜索走查路径**同规则** —— 任何「结果被削弱」的
+		// 原因都必须在输出里明说（预算耗尽 / 遍历被 abort / 引擎降级）。尤其 0 命中时：
+		// 裸报 "(no matching files)" 会被 tool-hint 包装成「没有这个文件」，而实际只是
+		// 没搜完（本方法不读文件内容，故无 256 KiB 截断 / 512 KiB 跳过两类）。
+		const notes = buildWalkHonestyNotes({
+			filesVisited: visited, dirsVisited: seenDirs.size, budgetExhausted,
+			truncatedFiles: 0, skippedLargeFiles: 0, aborted: signal?.aborted === true,
+		}, this._ripgrepBroken);
+		const allNotes = budgetExhausted
+			? [...notes, `search budget exhausted after ${visited} files / ${seenDirs.size} dirs — results may be incomplete; consider narrowing the path`]
+			: notes;
+		const listed = paged.map(r => r.path).join('\n');
+		let out: string;
+		if (listed === '' && allNotes.length > 0) {
+			out = `(no matching files within ${visited} visited files — COVERAGE INCOMPLETE.${formatHonestyNotes(allNotes)})`;
+		} else if (listed === '') {
+			out = '(no matching files)';
+		} else {
+			out = listed + formatHonestyNotes(allNotes);
+		}
 		return this._appendSearchFooter(out, total, paged.length, offset, limit, 'file');
 	}
 
@@ -915,33 +973,45 @@ export class SearchHelpers {
 			return '(cannot read file)';
 		}
 		const text = typeof content.value === 'string' ? content.value : content.value.toString();
-		const safeText = text.length > 256 * 1024 ? text.substring(0, 256 * 1024) : text;
+		// ★ 诚实化（2026-09-11）：超 256 KiB 时只搜前 256 KiB —— 此前是**静默截断**，
+		//   大文件后半段的命中会凭空消失，模型据此认定「文件里没有该内容」。
+		const truncated = text.length > 256 * 1024;
+		const safeText = truncated ? text.substring(0, 256 * 1024) : text;
 		const lines = safeText.split('\n');
+		// 结果被削弱的两种情况必须在输出里明说（同 `_searchContentWalkFallback` 的
+		// `budgetExhausted` 标注精神：绝不能把「搜得不完整」伪装成「搜完了没有」）。
+		let aborted = false;
+		const withNotes = (s: string): string => {
+			const notes: string[] = [];
+			if (truncated) { notes.push('(note: file exceeds 256 KiB — only the first 256 KiB was searched; matches beyond that are NOT included)'); }
+			if (aborted) { notes.push('(note: search was cancelled before finishing this file — results are PARTIAL)'); }
+			return notes.length > 0 ? s + '\n' + notes.join('\n') : s;
+		};
 
 		// 先收集全部命中行号（与上下文窗口计算无关，避免重复扫描）
 		const matchIdx: number[] = [];
 		for (let i = 0; i < lines.length; i++) {
-			if (signal?.aborted) { break; }
+			if (signal?.aborted) { aborted = true; break; }
 			if (matchFn(lines[i])) { matchIdx.push(i); }
 		}
 
 		// files_only：只报文件路径（对齐 _formatSearchComplete 的 files_only 语义）
 		if (outputMode === 'files_only') {
-			if (matchIdx.length === 0) { return '(no matching files)'; }
-			return this._appendSearchFooter(fileUri.fsPath, 1, 1, offset, limit, 'file');
+			if (matchIdx.length === 0) { return withNotes('(no matching files)'); }
+			return withNotes(this._appendSearchFooter(fileUri.fsPath, 1, 1, offset, limit, 'file'));
 		}
 		// count：报告该文件命中行数
 		if (outputMode === 'count') {
 			const c = matchIdx.length;
 			const out = c === 0 ? '(no matches)' : `${fileUri.fsPath}: ${c} match(es)`;
-			return this._appendSearchFooter(out, c, c === 0 ? 0 : 1, offset, limit, 'file');
+			return withNotes(this._appendSearchFooter(out, c, c === 0 ? 0 : 1, offset, limit, 'file'));
 		}
 
 		// content（默认）/ 带 context 的上下文窗口
 		const hits: string[] = [];
 		const seen = new Set<number>();
 		for (const mi of matchIdx) {
-			if (signal?.aborted) { break; }
+			if (signal?.aborted) { aborted = true; break; }
 			const from = contextLines > 0 ? Math.max(0, mi - contextLines) : mi;
 			const to = contextLines > 0 ? Math.min(lines.length - 1, mi + contextLines) : mi;
 			for (let j = from; j <= to; j++) {
@@ -957,13 +1027,13 @@ export class SearchHelpers {
 		const paged = hits.slice(offset, offset + limit);
 		if (paged.length === 0 && total > 0) {
 			// 2026-09-07：分页越界——明示 offset 超出总数（替代裸 "(no matches)" 的矛盾组合）
-			return `(offset ${offset} beyond end of results — total ${total} match(es). Use a smaller offset.)`;
+			return withNotes(`(offset ${offset} beyond end of results — total ${total} match(es). Use a smaller offset.)`);
 		}
 		const out = paged.join('\n') || '(no matches)';
-		return this._appendSearchFooter(out, total, paged.length, offset, limit, 'match');
+		return withNotes(this._appendSearchFooter(out, total, paged.length, offset, limit, 'match'));
 	}
 
-	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number, signal?: AbortSignal, fileGlobRe?: RegExp): Promise<{ filesVisited: number; dirsVisited: number; budgetExhausted: boolean }> {
+	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number, signal?: AbortSignal, fileGlobRe?: RegExp): Promise<IWalkSearchStats> {
 		// Hard global cap on files we will read+grep regardless of `limit`.
 		// This protects against pathological recursion (huge build trees, symlink
 		// loops, accidentally pointing at C:\) which can OOM the renderer because
@@ -974,6 +1044,10 @@ export class SearchHelpers {
 		const MAX_DIRS_VISITED = 30_000;
 		const filesVisited = { count: 0 };
 		const dirsVisited = { count: 0 };
+		// ★ 诚实化计数（2026-09-11）：下面两处「静默削弱」必须被统计并由调用方披露，
+		// 否则裸报的 `(no matches)` 可能是**谎报**（有文件被整份跳过、或只搜了前半段）。
+		const truncatedFiles = { count: 0 };     // 超 256 KiB → 只搜前半段
+		const skippedLargeFiles = { count: 0 };  // 超 512 KiB → 整份跳过
 		const seenDirs = new Set<string>();
 		const rootFs = fileGlobRe ? dir.fsPath.replace(/\\/g, '/') : '';
 		// 搜索根显式指向被排除目录时放行该目录（与 ripgrep 路径保持等价语义）
@@ -986,9 +1060,16 @@ export class SearchHelpers {
 		// which is a major contributor to OOM under parallel execution.
 		const BINARY_EXT_RE = /\.(?:exe|dll|so|dylib|node|pak|asar|wasm|bin|obj|lib|a|o|class|jar|pyc|pyo|whl|zip|tar|gz|tgz|bz2|7z|rar|xz|zst|png|jpe?g|gif|bmp|ico|webp|tif|tiff|svg|psd|mp3|wav|ogg|flac|mp4|mov|avi|mkv|webm|pdf|docx?|xlsx?|pptx?|sqlite|db|map|woff2?|ttf|eot|otf|uasset|umap|upk|ubulk|uexp)$/i;
 
-		// 预编译正则（对齐 Hermes rg regex 语义），无效正则回退为字面子串匹配
+		// 预编译正则（对齐 Hermes rg regex 语义），无效正则回退为字面子串匹配。
+		// ★ 修 bug（2026-09-11）：原为 `new RegExp(query, 'gi')` —— **全局标志 + .test()
+		//   是有状态的**（`lastIndex` 跨行推进），导致**连续命中行隔行漏掉**：
+		//   `['foo','foo','foo'].map(l => /foo/gi.test(l))` → [true,false,true]，
+		//   而逐行独立判定应为 [true,true,true]。目录遍历模式下这会静默丢一半命中，
+		//   且行号错乱 —— 模型据此得出「只有这几处」的错误结论。
+		//   逐行 test 不需要全局标志（`_grepSingleFile` 早有同样注释并已用 'i'，
+		//   此处是对齐补齐）。本文件其余 `g/gi` 正则均用于 replace/matchAll，合法。
 		let regex: RegExp | null = null;
-		try { regex = new RegExp(query, 'gi'); } catch { /* keep regex=null → use includes */ }
+		try { regex = new RegExp(query, 'i'); } catch { /* keep regex=null → use includes */ }
 		const matchFn = regex
 			? (line: string) => regex!.test(line)
 			: (line: string) => line.includes(query);
@@ -1024,7 +1105,12 @@ export class SearchHelpers {
 			// 敏感文件跳过（P4，对齐 kimi SENSITIVE_FILTER；.aws/.gcp 目录已被 dot-dir skip 覆盖）
 			if (/^\.env(?:\..*)?$|^id_(?:rsa|ed25519|ecdsa)(?:\..*)?$/i.test(child.name)) { continue; }
 				// Existing 512 KiB safety net (we keep it as a second line of defense).
-				if (typeof child.size === 'number' && child.size > 512 * 1024) { continue; }
+				if (typeof child.size === 'number' && child.size > 512 * 1024) {
+					// ★ 诚实化（2026-09-11）：此前是**静默 continue** —— 该文件内的命中
+					// 完全消失且无任何计数，模型据此认定「代码里没有」。改为计数 + 披露。
+					skippedLargeFiles.count++;
+					continue;
+				}
 
 				// fileGlob 过滤：不命中文件名 glob 的文件不读、不占 filesVisited 预算
 				//（此前形参丢弃 → 全树逐文件 grep，预算在噪声目录耗尽——日志 1785894964584）
@@ -1052,7 +1138,11 @@ export class SearchHelpers {
 					const text = buf.value.toString();
 					// Hard cap per-file string size to keep heap pressure bounded even
 					// if the size hint was missing/wrong.
-					const safeText = text.length > 256 * 1024 ? text.substring(0, 256 * 1024) : text;
+					// ★ 诚实化（2026-09-11）：截断必须计数（此前静默 —— 后半段命中凭空
+					// 消失，与 `_grepSingleFile` 的单文件路径口径对齐：那里早已披露）。
+					const truncated = text.length > 256 * 1024;
+					if (truncated) { truncatedFiles.count++; }
+					const safeText = truncated ? text.substring(0, 256 * 1024) : text;
 					const lines = safeText.split('\n');
 					for (let i = 0; i < lines.length; i++) {
 						if (signal?.aborted) { return; }
@@ -1074,41 +1164,88 @@ export class SearchHelpers {
 			filesVisited: filesVisited.count,
 			dirsVisited: dirsVisited.count,
 			budgetExhausted: filesVisited.count >= MAX_FILES_VISITED || dirsVisited.count >= MAX_DIRS_VISITED,
+			truncatedFiles: truncatedFiles.count,
+			skippedLargeFiles: skippedLargeFiles.count,
+			// ★ 诚实化（2026-09-11）：外部超时 / 取消会 abort 遍历，此时结果是**部分**的
+			// 却此前完全无标注（`_grepSingleFile` 早有 aborted 标注，此处是对齐补齐）。
+			// 直接读 signal 状态而非在各 return 点埋标记：abort 后 signal.aborted 恒为
+			// true，语义等价且零侵入（误报方向也只是「更保守地声明不完整」）。
+			aborted: signal?.aborted === true,
 		};
 	}
 }
 
-// ── 密钥脱敏（对齐 Hermes redact_sensitive_text；原 coreTools 模块级，提取为共享导出）──
-// search_files / file_read / file_write / terminal 等工具输出统一脱敏，避免重复定义。
-const _REDACT_PATTERNS_WHOLE: ReadonlyArray<readonly [RegExp, string]> = [
-	// PEM 私钥块
-	[/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '<REDACTED PRIVATE KEY>'],
-	// JWT
-	[/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '<REDACTED JWT>'],
-	// AWS Access Key
-	[/\bAKIA[0-9A-Z]{16}\b/g, '<REDACTED AWS KEY>'],
-	// GitHub tokens
-	[/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '<REDACTED>'],
-	[/\bgithub_pat_[A-Za-z0-9_]{22,}\b/g, '<REDACTED>'],
-	// GitLab
-	[/\bglpat-[A-Za-z0-9_-]{20}\b/g, '<REDACTED>'],
-	// Slack
-	[/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '<REDACTED>'],
-	// OpenAI / Anthropic
-	[/\bsk-[A-Za-z0-9]{20,}\b/g, '<REDACTED>'],
-	[/\bsk-ant-[A-Za-z0-9_-]{20,}\b/g, '<REDACTED>'],
-];
+// ── 密钥脱敏 ────────────────────────────────────────────────────────────────
+// 2026-09-13：模式集**抽到零依赖的 `common/redactSecrets.ts`**，本文件改为转发。
+//
+// 起因：此前本文件与 `execOutputPipeline.ts` 各维护一份（`common/` 不能引用 `browser/`，
+// 而本文件带重型依赖 → 需要脱敏的**纯逻辑**模块只能再抄一份，于是干脆不脱敏），
+// 实测漂移 —— 本份缺 `Bearer <不透明令牌>`、管道那份缺 GitLab `glpat-`，
+// 且 `patch` 的回显（`common/patchMatcher.ts` 渲染）**完全没有脱敏**。
+// 现在四侧（本文件 / 管道 / patchMatcher / contextManager）共用同一真源。
+//
+// 保留本导出名，调用点（coreTools / codebaseTools 等）无需改动。
+export { redactSecrets } from '../../../common/redactSecrets.js';
 
-const _REDACT_PATTERN_ASSIGN = /((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|authorization|auth)\b)(\s*[:=]\s*)(['"]?)[^\s'"]+/gi;
+// ── 走查（降级）路径的诚实性披露（2026-09-11）─────────────────────────────
+//
+// 背景：`_walkAndGrep` 有两处**静默削弱** —— 超 512 KiB 的文件被整份跳过、
+// 超 256 KiB 的文件只搜前半段。二者此前都不计数、不披露，于是裸报的
+// `(no matches)` 可能是**谎报**（命中就在被跳过的文件里、或在文件后半段），
+// 而 tool-hint 会把它包装成 "symbols likely do not exist" → 模型据此得出
+// 「代码里没有」的错误结论。
+//
+// 与 `_grepSingleFile` 的 `withNotes`、`_formatSearchComplete` 的 TRUNCATED
+// 标注同属一条原则：**结果被削弱时必须明说，绝不伪装成完整结果**。
 
-/** 脱敏密钥（对齐 Hermes redact_sensitive_text）。search_files / file_read / file_write / terminal 等工具输出复用。 */
-export function redactSecrets(input: string): string {
-	if (!input) { return input; }
-	let out = input;
-	for (const [re, mask] of _REDACT_PATTERNS_WHOLE) {
-		out = out.replace(re, mask);
+/** `_walkAndGrep` 的走查统计（诚实性披露的依据）。 */
+export interface IWalkSearchStats {
+	filesVisited: number;
+	dirsVisited: number;
+	/** 文件 / 目录预算耗尽 → 覆盖不完整。 */
+	budgetExhausted: boolean;
+	/** 因超 256 KiB 只搜了前半段的文件数（后半段的命中**未**包含）。 */
+	truncatedFiles: number;
+	/** 因超 512 KiB 被整份跳过的文件数（其内部命中**完全未**搜）。 */
+	skippedLargeFiles: number;
+	/** 遍历被 abort（外部超时 / 取消）→ 结果是**部分**的。 */
+	aborted: boolean;
+}
+
+/**
+ * 把诚实性说明拼成统一格式的注记块（`\n(note: a; b)`）。
+ *
+ * 抽出为共享纯函数：走查内容搜索（`_searchContentWalkFallback`）与文件名搜索
+ * （`_nodeFileSearch`）两条路径都要用 —— 避免两处各写一份而漂移（本仓高频的
+ * 「修了一半」模式）。
+ */
+export function formatHonestyNotes(notes: readonly string[]): string {
+	return notes.length > 0 ? `\n(note: ${notes.join('; ')})` : '';
+}
+
+/**
+ * 走查路径的「结果被削弱」说明（纯函数，便于单测）。
+ *
+ * 覆盖三类（预算耗尽由调用方按分支措辞单独表达，故不在此重复）：
+ *  ① 单文件 256 KiB 截断；② 单文件 512 KiB 整份跳过；③ 引擎降级（ripgrep 不可用）。
+ *
+ * ★ 第 ③ 类**无论有无结果都要披露**：此前只在「0 命中」分支提降级，有结果时
+ * 模型完全不知道覆盖面已被削弱（慢速有预算遍历 ≠ 全树搜索）。
+ */
+export function buildWalkHonestyNotes(stats: IWalkSearchStats, ripgrepBroken: boolean): string[] {
+	const notes: string[] = [];
+	// 中断排最前：它使**整份结果**不可信（不只是某几个文件），严重度高于其余三类。
+	if (stats.aborted) {
+		notes.push('search was cancelled before finishing — results are PARTIAL');
 	}
-	out = out.replace(_REDACT_PATTERN_ASSIGN,
-		(_m, key: string, sep: string, q: string) => `${key}${sep}${q}<REDACTED>${q}`);
-	return out;
+	if (stats.truncatedFiles > 0) {
+		notes.push(`${stats.truncatedFiles} file(s) exceed 256 KiB — only the first 256 KiB of each was searched; matches beyond that are NOT included`);
+	}
+	if (stats.skippedLargeFiles > 0) {
+		notes.push(`${stats.skippedLargeFiles} file(s) exceed 512 KiB were SKIPPED entirely — matches inside them are NOT included`);
+	}
+	if (ripgrepBroken) {
+		notes.push('search engine degraded (ripgrep unavailable → slow budgeted walk, alphabetical order); repair @vscode/ripgrep for full-tree search');
+	}
+	return notes;
 }

@@ -37,6 +37,7 @@ import { detectGitBash } from './providers/tool/gitBashProvider.js';
 import { resolveShellDialect } from '../common/shellDialect.js';
 import { restoreRunState } from '../common/agentRunState.js';
 import type { AgentRunState, AgentRunStateSnapshot } from '../common/agentRunState.js';
+import { formatProgressPct } from '../common/progressFormat.js';
 
 // ─── Skill 目录 XML 渲染（可单测的纯函数） ───────────────────────────
 // 抽离自 buildSystemPrompt 的 buildSkillEntry 闭包，便于单元测试覆盖
@@ -46,6 +47,14 @@ import type { AgentRunState, AgentRunStateSnapshot } from '../common/agentRunSta
 /**
  * 把一个 skill 渲染成 `<available_skills>` 目录里的一条 `<skill>` XML。
  * @param compact 为 true 时省略 <description>（超预算降级用）
+ *
+ * ★ 2026-09-11 状态说明：**当前生产路径不调用本函数**（全仓仅 3 个测试文件引用，
+ *   调用点计数 = 24 测试 + 1 定义 + **0 生产**）。
+ *   原因：system prompt 已改为只放静态 `<available_skills>` 使用说明、**不再注入
+ *   技能目录**（渐进披露 Phase 1），故「目录渲染」这一能力被产品决策停用。
+ *   **保留而非删除**：① 实现正确且有 24 个边界用例保护（80 字符截断 / compact
+ *   降级 / workflow 标注 / support_files 上限 10）；② 若将来恢复「目录注入」形态，
+ *   它是现成实现。**若确认永不恢复，可连同这 3 个测试文件一并删除。**
  */
 export function buildSkillEntryXml(s: ISkillDefinition, compact: boolean): string {
 	const lines = ['  <skill>'];
@@ -311,10 +320,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			accessor.get(IWorkflowExecutionService)
 		);
 
-		yield {
-			type: 'text',
-			content: `⚙️ 正在执行工作流 **${trigger.workflowId}**${trigger.input ? `（输入：${trigger.input}）` : ''}...\n\n`,
-		};
+		// ★ 不再 yield「正在执行」文本：workflowTraceController 会为本次执行创建
+		//   「▶ 工作流名 — 执行中...」活卡片（含内嵌面板与进度），文本消息与之重复，
+		//   造成一 turn 两条 assistant 回答（用户反馈 2026-09-09）。执行中反馈全部由卡承担。
 
 		let executionId: string;
 		try {
@@ -338,6 +346,13 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		// abort 联动：chat 侧取消 → 取消工作流执行
 		const abortListener = () => { void wfService.cancelExecution(executionId); };
 		controller.signal.addEventListener('abort', abortListener);
+
+		// ★ 订阅句柄提升到 try 之外（2026-09-11 修 listener 泄漏）：两个订阅都必须在
+		//   finally 释放 —— 否则 abort / 异常 / 消费者提前 break 时句柄丢失、永久泄漏。
+		/** 逐格进度订阅（全 turn 唯一）。 */
+		let progressSub: { dispose(): void } | undefined;
+		/** 当前这一轮「等待终态」的订阅；**每轮 await 返回后都必须释放**（见循环内注释）。 */
+		let statusSub: { dispose(): void } | undefined;
 
 		try {
 			// 收集终态结果（输出文本 + 媒体快照）。
@@ -363,7 +378,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			// ComfyStage 节点逐格进度（node_progress trace）→ 队列 + 唤醒器。
 			const progressQueue: Array<{ nodeName: string; progress: number; message?: string }> = [];
 			let progressWake: (() => void) | null = null;
-			const progressSub = wfService.onDidExecutionTrace(ev => {
+			progressSub = wfService.onDidExecutionTrace(ev => {
 				if (ev.executionId !== executionId || ev.kind !== 'node_progress') { return; }
 				progressQueue.push({ nodeName: ev.nodeName, progress: ev.progress, ...(ev.message !== undefined ? { message: ev.message } : {}) });
 				progressWake?.();
@@ -373,11 +388,12 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			let finalOutput: { output: string; failed: boolean; cancelled: boolean; images: string[] };
 			for (;;) {
 				const terminal = await new Promise<{ output: string; failed: boolean; cancelled: boolean; images: string[] } | null>((resolve) => {
-					const sub = wfService.onDidExecutionStatusChange(state => {
+					statusSub = wfService.onDidExecutionStatusChange(state => {
 						if (state.executionId !== executionId) { return; }
 						const s = state.status as string;
 						if (s === 'completed' || s === 'failed' || s === 'cancelled') {
-							sub.dispose();
+							statusSub?.dispose();
+							statusSub = undefined;
 							const collected = collectFinal(state);
 							resolve({ output: collected.output, failed: s === 'failed', cancelled: s === 'cancelled', images: collected.images });
 						}
@@ -389,6 +405,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					// 竞态兜底：等待期间已有进度到达则立即唤醒。
 					if (progressQueue.length > 0) { progressWake(); }
 				});
+
+				// ★★ 必须在此释放（2026-09-11 修 listener 泄漏）：**进度唤醒路径**
+				//   （resolve(null)）不会走终态分支的 dispose —— 此前每收到一条
+				//   node_progress 就泄漏一个 onDidExecutionStatusChange 监听器，
+				//   实测累积到 175 个并触发 base/common/event.ts 的 LEAK 告警。
+				//   终态路径已 dispose，这里是幂等兜底（dispose 可重复调用）。
+				statusSub?.dispose();
+				statusSub = undefined;
 
 				if (terminal !== null) {
 					finalOutput = terminal;
@@ -405,30 +429,100 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						...(latest.message !== undefined ? { stage: latest.message } : {}),
 						progressData: [{
 							id: `wf-${executionId}-progress`,
-							content: latest.message ?? `${latest.nodeName}：生成中 ${latest.progress}%`,
+							// ★ 百分比必须 `formatProgressPct`（2026-09-12 用户需求「生成的进度
+							//   最多显示小数点后2位」）：`progress` 是 `value/max*100` 的无限小数，
+							//   直接插值会显示「生成中 45.45454545454546%」✗。
+							content: latest.message ?? `${latest.nodeName}：生成中 ${formatProgressPct(latest.progress)}%`,
 							status: latest.progress >= 100 ? 'completed' as const : 'in-progress' as const,
 						}],
 					};
 				}
 			}
-			progressSub.dispose();
+			// progressSub 的释放在 finally（异常/abort 路径同样要释放，见函数尾）。
 
 			if (finalOutput.cancelled) {
 				yield { type: 'text', content: `⏹ 工作流已取消。` };
 			} else if (finalOutput.failed) {
-				yield { type: 'text', content: `❌ 工作流执行失败。${finalOutput.output ? `\n\n${finalOutput.output}` : ''}` };
+				// ★ 失败文本彻底静默（2026-09-10 用户反馈「重启后仍冗余」）：native
+				//   WorkflowTraceController 渲染的工作流卡已完整呈现失败（节点卡红✗+
+				//   error 文本+流程条缺失阶段），driver 文本若再发一行「❌ 工作流执行失败
+				//   N个节点失败 Option1（详见工作流卡）」是字面完全重复。成功路径
+				//   （L437）已对称：无 output/媒体就不发文案。本路径直接不 yield。
+				// 兜底：仅当 executionState 查不到（罕见：纯文本流 UI 模式 / 卡未 attach）
+				// 才发极简一行 + raw output 兜底，避免极端场景「完全无失败提示」。
+				const st = wfService.getExecutionState(executionId);
+				if (!st) {
+					yield { type: 'text', content: `❌ 工作流执行失败。${(finalOutput.output ?? '').trim()}` };
+				}
 			} else {
-				const mediaMd = finalOutput.images.length > 0
-					? `\n\n${finalOutput.images.map((ref, i) => `![输出 ${i + 1}](${ref})`).join('\n')}`
-					: '';
-				yield {
-					type: 'text',
-					content: `${finalOutput.output
-						? finalOutput.output
-						: `✅ 工作流 **${trigger.workflowId}** 执行完成。`}${mediaMd}`,
-				};
+				// ★★ 2026-09-11 修复「切换会话后，带图片消息显示为 base64 原文」★★
+				//
+				// 原实现把**全部**媒体快照的 data URI 内联成 Markdown 图片
+				// （`![输出 N](data:image/jpeg;base64,…)`）。实测场景：42 张 × 数百 KB
+				// ≈ **8.4MB 单条 content** → 渲染时 `marked.parse` 处理超长单行抛
+				// `RangeError: Maximum call stack size exceeded`（栈顶 lheading 正则，
+				// 本地实测 8.4MB 必现）→ `renderMarkdown` 无 try/catch、异常冒泡，
+				// 用户看到的就是被兜底成纯文本的 base64 原文。
+				// 流式期间走增量分段渲染（每段几 KB）侥幸正常，**切换会话重载历史
+				// 走全量渲染才暴露**——这正是用户报「切换会话后显示错误」的原因。
+				//
+				// 且这段 base64 还会：① 撑大落盘 JSON；② 污染发给 LLM 的上下文。
+				// 而媒体**早已由工作流卡**（snapshot → 卡片缩略图）完整展示，内联纯属冗余。
+				//
+				// 现改为：仅内联「单张 ≤ INLINE_MEDIA_MAX_BYTES 且总数 ≤ INLINE_MEDIA_MAX_COUNT」
+				// 的媒体（保证单条 content 可控，marked 不溢出），其余以一行摘要指向工作流卡。
+				//
+				// ★ 2026-09-12 补充（用户反馈「下方内容与上方工具卡片重复」）：
+				//   卡片已把媒体（缩略图）与状态（✓ 已完成 / 各节点输出字数 / 流程条）
+				//   完整呈现，而这段 driver 文本里的三部分**都是重复**：
+				//     ① `![输出 N](data:…)` 内联图  → 与卡片缩略图重复；
+				//     ② `📎 另有 N 个输出未内联…请见上方工作流卡片` → 本身就是「请看卡片」；
+				//     ③ 清理后的 `📎 输出 N（图片已由工作流卡片展示…）` 占位更是自我承认的重复
+				//        （历史脏数据被 `_scrubOversizedInlineMedia` 改写后的形态）。
+				//   → **有卡片时不再发任何媒体/占位文本**，只保留工作流自身的文字产出
+				//     （`finalOutput.output`，可能是节点生成的有用描述）。
+				//   → 无卡片（纯文本流 UI / 卡未 attach）时仍须内联，否则用户什么都看不到。
+				//   判据与下方失败分支的兜底保持一致（都用 getExecutionState 是否存在）。
+				const cardAttached = !!wfService.getExecutionState(executionId);
+				if (!cardAttached) {
+					const INLINE_MEDIA_MAX_BYTES = 200 * 1024;
+					const INLINE_MEDIA_MAX_COUNT = 4;
+					const inlinable = finalOutput.images.filter(
+						ref => typeof ref === 'string' && ref.length > 0 && ref.length <= INLINE_MEDIA_MAX_BYTES,
+					);
+					const shown = inlinable.slice(0, INLINE_MEDIA_MAX_COUNT);
+					const mediaMd = shown.length > 0
+						? `\n\n${shown.map((ref, i) => `![输出 ${i + 1}](${ref})`).join('\n')}`
+						: '';
+					const omittedCount = finalOutput.images.length - shown.length;
+					const omittedMd = omittedCount > 0
+						? `\n\n📎 另有 ${omittedCount} 个输出未内联展示（体积较大或数量较多）。`
+						: '';
+					// ★ 有实际输出/媒体才发文本；空输出不再发「✅ 执行完成」兜底文案
+					//   （用户反馈 2026-09-09）。
+					if (finalOutput.output || mediaMd || omittedMd) {
+						yield { type: 'text', content: `${finalOutput.output ?? ''}${mediaMd}${omittedMd}` };
+					}
+				}
+				// ★ 2026-09-12（用户第二次反馈：`已完成 42 个输出` 也是重复）：
+				//   有卡片时**连 output 也不发**。
+				//
+				//   依据：`collectFinal` 取的是「最后一个 completed 且有 output 的节点」的
+				//   output —— 实测（表情包工作流）就是 ComfyStage 自动生成的
+				//   `已完成 N 个输出` 这类**状态文案**（N = 图片数），而卡片上已经显示了
+				//   「输出约 N 字」+「✓ 已完成」，零额外信息量。
+				//
+				//   ⚠ 若将来某工作流的 End 节点确实产出**有意义的总结文本**，把下面这行
+				//     分支加回来即可（有卡片时单独发 output）：
+				//       else if (finalOutput.output) { yield { type: 'text', content: finalOutput.output }; }
 			}
 		} finally {
+			// ★ 订阅释放（2026-09-11）：此前 progressSub 只在正常路径 dispose、
+			//   statusSub 只在终态分支 dispose → abort / 异常 / 提前 break 时两者都可能泄漏。
+			progressSub?.dispose();
+			progressSub = undefined;
+			statusSub?.dispose();
+			statusSub = undefined;
 			controller.signal.removeEventListener('abort', abortListener);
 		}
 	}
@@ -1927,7 +2021,12 @@ export function buildUserContentParts(
 				data: att.data,
 				mimeType: att.mimeType as ChatImageMimeType,
 			});
-		} else if (att.type === 'file') {
+		} else if (att.type === 'file' || att.type === 'image') {
+			// ★ 兜底（2026-09-11）：`type === 'image'` 但 `mimeType` 非 image/* 时，
+			//   上面的首个分支不成立、原条件（仅 `type === 'file'`）也不匹配 →
+			//   该附件被**静默丢弃**（用户数据凭空消失）。现并入文件分支，按文本
+			//   文件上下文内联（契约见 test/browser/chatAttachmentToLLM.test.ts
+			//   「type=image 但 mimeType 非 image/* → 不视为图片（走文件分支）」）。
 			const fileContext = `\n\n--- File: ${att.name} ---\n${att.data}\n--- End of ${att.name} ---`;
 			if (contentParts.length > 0 && contentParts[0].type === 'text') {
 				// 追加到首个 text 块，避免产生过多零散文本块

@@ -7,11 +7,14 @@ import assert from 'assert';
 import {
 	filterNodesForLiteGraph,
 	findUnsupportedNodes,
-	SAROSIS_NODE_TYPES,
+	SAROS_NODE_TYPES,
 	isLiteGraphRenderable,
 } from '../../webview/src/features/workflowEditor/comfyHost/canvasNodeFilter.js';
 import { registerNodeSpec, unregisterNodeSpec } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
-import { sarosisNodeConfigs } from '../../webview/src/features/workflowEditor/comfyHost/sarosisLiteGraphNodes.js';
+// ★ 修正 import 路径拼写（2026-09-11）：实际文件是 `sarosLiteGraphNodes.ts`
+//   （saros，无 i），此前写成 `sarosisLiteGraphNodes.js` → esbuild 解析失败 →
+//   整个测试文件无法运行（长期静默失效）。导出函数名 `sarosNodeConfigs` 未变。
+import { sarosNodeConfigs } from '../../webview/src/features/workflowEditor/comfyHost/sarosLiteGraphNodes.js';
 
 const GRAPH = {
 	last_node_id: 4,
@@ -31,28 +34,28 @@ const GRAPH = {
 
 suite('canvasNodeFilter', () => {
 
-	suite('SAROSIS_NODE_TYPES', () => {
+	suite('SAROS_NODE_TYPES', () => {
 		test('includes the 11 Saros custom types', () => {
-			assert.strictEqual(SAROSIS_NODE_TYPES.has('Saros.Start'), true);
-			assert.strictEqual(SAROSIS_NODE_TYPES.has('Saros.AskUser'), true);
-			assert.strictEqual(SAROSIS_NODE_TYPES.has('ComfyTV.X'), false);
+			assert.strictEqual(SAROS_NODE_TYPES.has('Saros.Start'), true);
+			assert.strictEqual(SAROS_NODE_TYPES.has('Saros.AskUser'), true);
+			assert.strictEqual(SAROS_NODE_TYPES.has('ComfyTV.X'), false);
 		});
 
-		test('every sarosisNodeConfig has a LiteGraph class name', () => {
-			for (const cfg of sarosisNodeConfigs()) {
-				assert.ok(SAROSIS_NODE_TYPES.has(cfg.type), `missing ${cfg.type}`);
+		test('every sarosNodeConfig has a LiteGraph class name', () => {
+			for (const cfg of sarosNodeConfigs()) {
+				assert.ok(SAROS_NODE_TYPES.has(cfg.type), `missing ${cfg.type}`);
 			}
 		});
 
-		test('ModelImageGen stays OUT of sarosisNodeConfigs (schema class owns it)', () => {
-			// Regression: a stale SarosisNode config for Saros.ModelImageGen
+		test('ModelImageGen stays OUT of sarosNodeConfigs (schema class owns it)', () => {
+			// Regression: a stale SarosNode config for Saros.ModelImageGen
 			// re-registered after registerSarosisNodes() overwrote the schema
 			// class (registerNodeType is last-write-wins) → old canvas widgets
 			// (providerId/modelId/…) rendered underneath the DOM form card.
 			assert.strictEqual(
-				sarosisNodeConfigs().some(c => c.type === 'Saros.ModelImageGen'),
+				sarosNodeConfigs().some(c => c.type === 'Saros.ModelImageGen'),
 				false,
-				'Saros.ModelImageGen is a schema node — a SarosisNode config would clobber its LiteGraph class',
+				'Saros.ModelImageGen is a schema node — a SarosNode config would clobber its LiteGraph class',
 			);
 		});
 	});

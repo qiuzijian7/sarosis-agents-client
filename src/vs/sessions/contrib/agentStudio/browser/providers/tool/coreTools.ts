@@ -27,7 +27,7 @@ import { NonRetryableToolError, ToolSecurityLevel } from '../../../common/provid
 import type { IToolResultContent } from '../../../common/providers.js';
 import { SearchHelpers, redactSecrets } from './searchHelpers.js';
 import { detectTerminalSearchCommand, terminalSearchCommandHint } from './terminalCommandGuards.js';
-import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDANCE, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, detectScriptSourceWrite, scriptSourceWriteGuardMessage, recordFileReadSuccess, recordFileReadFailure } from './executeCodeGuards.js';
+import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDANCE, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, recordFileReadSuccess, recordFileReadFailure } from './executeCodeGuards.js';
 import { stripShellNoise, isSlowStartCommand, emptyTerminalOutputMessage, createShellNoiseStripper } from './terminalOutputDiagnosis.js';
 import { pickTerminalStrategy, decideIdleWaitAction } from './terminalCompletionStrategy.js';
 import { runExecOutputPipeline } from './execOutputPipeline.js';
@@ -37,7 +37,7 @@ import { shellPlatformGuidance, windowsDualShellGuidance } from './shellPlatform
 import { resolveShellDialect } from '../../../common/shellDialect.js';
 import { annotateCommandFailure, annotateMaskedSuccess, renderFailureHint } from './commandFailureHints.js';
 import { detectGitBash, gitBashShellEnvironment, type IGitBashInfo } from './gitBashProvider.js';
-import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
+import { shellPreflightRejection } from './shellPreflightGuards.js';
 import { shellApprovalGuidance } from '../../../common/shellCommandSafety.js';
 import { appendTerminalLiveOutput, clearTerminalLiveOutput } from '../../../../../browser/agentChat/terminalLiveOutput.js';
 import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
@@ -46,12 +46,63 @@ import {
 	detectSensitivePath,
 	devicePathBlockedMessage,
 	sensitiveReadBlockedMessage,
-	sensitiveWriteBlockedMessage,
+	sensitiveWriteRejection,
 } from './sensitivePaths.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { AgentNetworkDomainSettingId } from '../../../../../../platform/networkFilter/common/settings.js';
 import { isWindows } from '../../../../../../base/common/platform.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
+
+/**
+ * 图片类扩展名 —— 这类应由 `vision_analyze` 处理（见 {@link binaryReadRejectedMessage}）。
+ * 与 `isBinaryPath` 里的图片段保持一致。
+ */
+const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
+	'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff', '.ico', '.svg', '.psd',
+]);
+
+/** 二进制**文档**类扩展名 —— 可先转文本（pandoc / csv / python）。 */
+const DOCUMENT_EXTENSIONS: ReadonlySet<string> = new Set([
+	'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+]);
+
+/**
+ * 二进制读取被拒时的**可执行**指引（2026-09-13 重写）。
+ *
+ * ## 旧文案的问题：不可执行
+ *
+ * 只有一句「Use a different tool for binary files」+ docx/xlsx 转换建议 —— 对**图片**
+ * （最高频的一类：模型自己截的 mockup 截图）**无法执行**：
+ *   · 没点名该用哪个工具（「a different tool」= 让模型自己猜）；
+ *   · 给的三条建议（pandoc / csv / python）全不适用于 PNG。
+ *
+ * 实测日志：模型拿 `docs/kb-mockups/_shot-sidebar.png` 调 `file_read` 被拒 ——
+ * 而项目**已有** `vision_analyze`（`VSSAROS_TOOL_NAMES.READ_IMAGE` 的规范工具，
+ * 且本轮起已支持本地文件路径）。整条「渲染 → 截图 → 看效果」闭环就卡在这句话上。
+ *
+ * ## 原则
+ *
+ * 拒绝文案必须把「下一步做什么」说到**可执行** —— 否则模型只会重试或绕路
+ * （本项目在 patch 失败、读守卫、源码写入等处的文案都遵循这条）。
+ *
+ * ⚠ 本函数被 `visionAnalyzeTools.test.ts` **交叉断言**：文案里的工具名必须与
+ * `VISION_ANALYZE_TOOL_NAME` 一致 —— 工具改名而指引没跟上，测试会红。
+ */
+export function binaryReadRejectedMessage(requested: string, resolved: string): string {
+	const ext = (/\.[A-Za-z0-9]+$/.exec(resolved)?.[0] ?? '').toLowerCase();
+	if (IMAGE_EXTENSIONS.has(ext)) {
+		return `Cannot read '${requested}' as text — it is an image (${ext}).\n`
+			+ 'Use `vision_analyze` instead: it accepts a LOCAL FILE PATH (also a data URL / base64 / http(s) URL) '
+			+ 'and returns a TEXT answer about the image — that is the supported way to look at an image.\n'
+			+ 'Do NOT retry file_read on images, and do NOT base64 the file through a shell command just to read it.';
+	}
+	if (DOCUMENT_EXTENSIONS.has(ext)) {
+		return `Cannot read '${requested}' as text — it is a binary document (${ext}).\n`
+			+ 'Convert it to text first (e.g. .docx → pandoc, .xlsx → csv, .ipynb → python script).';
+	}
+	return `Cannot read '${requested}' as text — binary file (${ext || 'unknown type'}).\n`
+		+ 'file_read only handles UTF-8 text; use a tool that understands this format.';
+}
 
 export interface CoreToolContext {
 	register(reg: IBuiltinToolRegistration): IDisposable;
@@ -817,9 +868,10 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				} catch { /* 探测失败 → 沿用原解析结果，行为不变 */ }
 			}
 
-			// 二进制守护
+			// 二进制守护 —— 文案按扩展名分类，必须给出**可执行**的下一步
+			// （图片 → 点名 `vision_analyze`；文档 → 转换建议；其余 → 说明本工具只读文本）
 			if (isBinaryPath(resolvedPath)) {
-				throw new Error(`Cannot read binary file '${requestedPath}'. Use a different tool for binary files.\nFor supported structured documents, consider converting to text first (e.g., .docx → pandoc, .xlsx → csv, .ipynb → python script).`);
+				throw new Error(binaryReadRejectedMessage(requestedPath, resolvedPath));
 			}
 
 			// ── 设备/内核伪文件系统：恒拦（读取会阻塞或泄露内核信息）──────
@@ -920,7 +972,9 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			const dedupResult = checkReadDedup(agentKey, readKey, mtime);
 			// read-state 登记（2026-09-07）：成功读取即记录，patch 失败时
 			// describeReadGap 据此区分「从未读过」vs「读取后文件已变」。
-			recordFileReadSuccess(resolvedPath);
+			// P3（2026-09-12）：一并登记 mtime 作为「外部修改检测」的基线 —— patch 会用它
+			// 判断文件是否在本会话读取后被用户/其他进程改过。
+			recordFileReadSuccess(resolvedPath, mtime);
 			if (dedupResult.blocked) {
 				throw new Error(`BLOCKED: This file region has not changed since your last ${dedupResult.stubCount} reads. The content is unchanged — review what you already have.`);
 			}
@@ -1044,19 +1098,17 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			const normalizedUri = URI.file(resolvedPath);
 			let content = String(args['content'] ?? '');
 
-			// ── 敏感路径拒绝（共享表 sensitivePaths.ts，与读同一真源）──────
+			// ── 敏感 / 设备路径拒绝（共享表 sensitivePaths.ts，与读同一真源）──────
 			// 写凭据/密钥文件无合理场景，恒拦（不受 sensitiveReadGuard 影响）。
-			const writeDeviceHit = detectDevicePath(resolvedPath);
-			if (writeDeviceHit) {
-				ctx.logService.warn(`[coreTools] file_write BLOCKED: ${requestedPath} is a device path`);
-				throw new NonRetryableToolError(devicePathBlockedMessage(writeDeviceHit, 'write'));
-			}
-			const writeSensitiveHit = detectSensitivePath(resolvedPath);
-			if (writeSensitiveHit) {
+			// 2026-09-13：抽成 `sensitiveWriteRejection` **单一入口** —— 此前只有本工具
+			// 有这一步，`patch` 完全没有（同一份敏感路径，file_write 硬拒、patch 只需
+			// 点一次「允许」就能写）。详见 sensitivePaths 模块注释。
+			const sensitiveWriteHit = sensitiveWriteRejection(resolvedPath);
+			if (sensitiveWriteHit) {
 				ctx.logService.warn(
-					`[coreTools] file_write BLOCKED: ${requestedPath} matches sensitive ${writeSensitiveHit.kind} "${writeSensitiveHit.matched}"`,
+					`[coreTools] file_write BLOCKED (${sensitiveWriteHit.kind}): ${requestedPath} matches "${sensitiveWriteHit.matched}"`,
 				);
-				throw new NonRetryableToolError(sensitiveWriteBlockedMessage(writeSensitiveHit));
+				throw new NonRetryableToolError(sensitiveWriteHit.message);
 			}
 
 			// ── P1: 行尾保持（对齐 Hermes）──────────────────────────
@@ -1159,22 +1211,18 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		handler: async (args, signal, agentId, sessionId, toolCallId) => {
 		const command = String(args['command'] ?? '').trim();
 		if (!command) { throw new Error('command is required'); }
-		// HARDLINE 不可绕过地板（灾难性/不可逆命令，任何审批与自主模式都无法放行）
-		const hardline = detectHardlineViolation(command);
-		if (hardline) {
-			throw new NonRetryableToolError(hardlineViolationMessage(hardline, 'terminal'));
-		}
-		// 源码写入护栏（2026-08-21，日志 1787319805992）：terminal 与 execute_code 同为
-		// shell 路径 —— 脚本里 open(p,"w") / sed -i / Set-Content 改源码不会创建
-		// checkpoint、不过文件编辑审批。file_write/patch 的免审批豁免所依赖的三道闸门
-		// 对任意 shell 命令全不成立，故这里必须硬拦并引导回编辑工具。
-		const sourceWrite = detectScriptSourceWrite(command);
-		if (sourceWrite) {
-			ctx.logService.warn(
-				`[coreTools] terminal BLOCKED: command writes source file directly ` +
-				`(${sourceWrite.api}, target=${sourceWrite.target})`,
-			);
-			throw new NonRetryableToolError(scriptSourceWriteGuardMessage(sourceWrite, 'terminal'));
+		// ─── 执行前护栏（2026-09-13：收敛为共享入口）──────────────────────
+		// 四条护栏（HARDLINE / 裸源码 / 源码写入 / 混淆-下载即执行）原先与
+		// `execute_code` **各写一份** → 实际漂移：**后两条只挂在 execute_code 上**，
+		// 同一句 `curl … | bash`（RCE / prompt-injection 向量）走 terminal 就能绕过。
+		// 现统一走 `shellPreflightGuards.shellPreflightRejection`（单一入口）。
+		// `cwd` 必须传进护栏（与 `execute_code` 对称）：目标写成**裸文件名**时，
+		// 只有拼上运行目录才能判出「它其实是产物」。
+		const cwdArg = typeof args['cwd'] === 'string' ? (args['cwd'] as string).trim() : '';
+		const rejection = shellPreflightRejection(command, 'terminal', cwdArg || undefined);
+		if (rejection) {
+			ctx.logService.warn(`[coreTools] terminal BLOCKED (${rejection.kind}): ${rejection.detail}`);
+			throw new NonRetryableToolError(rejection.message);
 		}
 		// Hermes 环境归一（2026-08-18）：探测 Git Bash（进程级缓存，首次后零开销）。
 		// 可用 → 终端直接跑 bash（POSIX 方言）；不可用 → 回退 PowerShell/cmd。

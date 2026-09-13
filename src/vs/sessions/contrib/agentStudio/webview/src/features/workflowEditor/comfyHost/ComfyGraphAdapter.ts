@@ -132,6 +132,9 @@ export function toLiteGraph(
 	}
 
 	for (const conn of wfConnections) {
+		// ⚠ FLOW 控制边（flowIn/flowOut）**不过滤** —— syncStoreToGraph 也走
+		// toLiteGraph，在这里过滤会把画布上的控制连线删掉。ComfyUI 导出的
+		// 过滤在 LiteGraphCanvas.exportApi 出口做（那是唯一面向 ComfyUI 的路径）。
 		const from = idToLite.get(conn.from);
 		const to = idToLite.get(conn.to);
 		if (from === undefined || to === undefined) {

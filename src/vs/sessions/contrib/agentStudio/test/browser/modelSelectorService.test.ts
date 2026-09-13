@@ -41,12 +41,16 @@ suite('Model Selector Service (Phase 3)', () => {
 		}
 
 		setActiveSelection(selection: { providerId: string; modelId: string; agentId?: string }): void {
-			const providerChanged = this._activeSelection?.providerId !== selection.providerId;
+			// ★ 修正（2026-09-11）：仅当**已有** provider 且与新 provider 不同，才算
+			//   「切换」。原实现把「首次设置」（`_activeSelection` 为 undefined）
+			//   也判为 providerChanged → `_selectedAgentId` 被清空 → 首次
+			//   `setActiveSelection({…, agentId})` 拿不到 agentId
+			//   （getSelectedAgentId() 恒返回 undefined）。
+			const prevProviderId = this._activeSelection?.providerId;
 			this._activeSelection = selection;
-			
-			// 切换 Provider 时重置 Agent 选择
-			if (providerChanged) {
-				this._selectedAgentId = undefined;
+
+			if (prevProviderId !== undefined && prevProviderId !== selection.providerId) {
+				this._selectedAgentId = undefined;   // 切换 Provider → 重置 Agent 选择
 			} else {
 				this._selectedAgentId = selection.agentId;
 			}

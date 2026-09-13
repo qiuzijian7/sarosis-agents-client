@@ -243,7 +243,45 @@ export async function composeImageGridOnChroma(
 export const ANIMATED_EMOJI_GREEN_SUFFIX =
 	', solid pure green background #00FF00, uniform flat green screen backdrop, ' +
 	'subject stays centered, background remains solid green in every frame, ' +
+	'no shadows or reflections cast onto the background, no green tint on the subject, ' +
 	'no background changes, no camera movement, loop-friendly subtle motion';
+
+/**
+ * ★★ **不透明约束后缀**（2026-09-12 用户需求「视频中，不要有半透明效果」）。
+ *
+ * 为什么必须在**生成阶段**约束，而不是靠抠像算法兜底：
+ *   绿幕合成只有 `C = a·F + (1−a)·B` **一个方程**，却要求 a（不透明度）与 F（前景
+ *   真色）两个未知数 —— 半透明元素叠在绿幕上时**数学上欠定** ✗：
+ *     · 「按色距猜 alpha」的经典 keyer（rgb/ycbcr/hsv/lab/keylight…）会把它当背景删掉 ✗；
+ *     · 反混合（un-multiply）也只能靠「前景本身不绿」的假设勉强恢复，且低 alpha 区
+ *       1/a 会放大 H.264 色度下采样的噪声（实测偏青绿）✗；
+ *     · GIF 更是 **1-bit alpha**（只有全透/全不透两档）⇒ 半透明像素二值化后要么留一圈
+ *       脏边、要么被啃掉 ✗。
+ *   ⇒ **在源头让模型画成实心**，比事后任何算法都便宜、都可靠 ✓。
+ *
+ * 措辞要点（提示词工程）：**正面肯定句优先**（fully opaque / solid / hard edges），
+ * 负面概念只点最关键的几个 —— 罗列太多反而可能把概念「召唤」出来 ✗。
+ */
+export const ANIMATED_EMOJI_OPAQUE_SUFFIX =
+	', the character and every element of it are fully opaque solid, 100% opaque pixels, ' +
+	'solid flat colors with crisp hard edges, every shape completely filled in, ' +
+	'each frame rendered at full opacity from start to end, ' +
+	'no semi-transparent or translucent parts, no see-through or glass-like elements, ' +
+	'no soft glow or light halo, no fading in or out, no ghosting, no motion blur';
+
+/**
+ * 组装动态表情包「单格视频」的最终提示词（**唯一真源**，2026-09-12）。
+ *
+ * 结构：全局动作描述 + 该格动作描述 + **不透明约束（恒定）** + 绿幕约束（仅开抠像时）。
+ * · 不透明约束**恒追加**（与 chroma 开关无关）：即使不抠像，半透明元素在 1-bit alpha
+ *   的 GIF 里同样无法表达 ✗。
+ * · 后缀以 `', '` 开头 —— 动作描述为空时去掉前导逗号（避免「， solid pure…」）。
+ */
+export function buildAnimatedEmojiVideoPrompt(rawPrompt: string, cellPrompt: string, chromaEnabled: boolean): string {
+	const parts = [rawPrompt.trim(), cellPrompt.trim()].filter(Boolean);
+	const suffix = ANIMATED_EMOJI_OPAQUE_SUFFIX + (chromaEnabled ? ANIMATED_EMOJI_GREEN_SUFFIX : '');
+	return parts.length ? `${parts.join(', ')}${suffix}` : suffix.slice(2);
+}
 
 /** 网格拼贴模式（grid>1）追加的逐格独立运动约束（对冲视频模型的全局运动倾向）。 */
 export const ANIMATED_EMOJI_GRID_SUFFIX =

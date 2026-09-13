@@ -18,7 +18,8 @@ import { getPlanQueueHandle } from '../../../common/planQueueRegistry.js';
 import { formatCurrentTaskReminder } from '../../../common/preLoopOrchestrator.js';
 import type { AgentParadigm } from '../../../common/agentLoopStrategy.js';
 import { setParadigmOverride, getParadigmOverride, clearParadigmOverride, SWITCHABLE_PARADIGMS } from '../../../common/paradigmOverride.js';
-import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDANCE, rewriteUnixPipelineToPowerShell, powerShellEncodedCommand, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, isCommandNotFoundFailure, detectBareSourceCode, bareSourceCodeGuardMessage, isDeterministicScriptFailure, deterministicScriptFailureMessage, detectScriptSourceWrite, scriptSourceWriteGuardMessage, describeReadGap, hasEverReadSuccessfully, markFileModified } from './executeCodeGuards.js';
+import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDANCE, rewriteUnixPipelineToPowerShell, powerShellEncodedCommand, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, isCommandNotFoundFailure, isDeterministicScriptFailure, deterministicScriptFailureMessage, describeReadGap, hasEverReadSuccessfully, markFileModified, detectBenignSearchExit, detectExternalModification, describeExternalModification, parseTimeoutSecondsFromStderr, timeoutGuidanceMessage } from './executeCodeGuards.js';
+import { buildEditedRegionContext, computeInsert } from '../../../common/patchMatcher.js';
 import { runExecOutputPipeline } from './execOutputPipeline.js';
 import { ProcessOutputCollector } from '../../../common/processOutputDecoder.js';
 import { decideOutputSpill, spillFileName, spillNoticeMessage, selectSpillFilesToDelete } from './execOutputSpill.js';
@@ -27,11 +28,11 @@ import { shellPlatformGuidance, windowsDualShellGuidance } from './shellPlatform
 import { resolveShellDialect } from '../../../common/shellDialect.js';
 import { annotateCommandFailure, annotateMaskedSuccess, renderFailureHint } from './commandFailureHints.js';
 import { detectGitBash, coreutilsDir, invalidateGitBashCache } from './gitBashProvider.js';
-import { detectHardlineViolation, hardlineViolationMessage } from './commandSafety.js';
+import { shellPreflightRejection } from './shellPreflightGuards.js';
+import { sensitiveWriteRejection } from './sensitivePaths.js';
 import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 import { computePatch } from '../../../common/patchMatcher.js';
 import { shellApprovalGuidance } from '../../../common/shellCommandSafety.js';
-import { detectCommandObfuscation } from '../../../common/shellStaticAnalysis.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { ICheckpointService } from '../../../common/checkpointService.js';
 import { encodeBase64, decodeBase64 } from '../../../../../../base/common/buffer.js';
@@ -250,9 +251,9 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 		ctx.register({
 			definition: {
 				name: 'patch',
-				description: 'Apply a targeted edit to a file by replacing an exact block of text. Preferred over file_write for modifying existing files. ALWAYS read the file first (file_read) and copy the "search" text verbatim from it — the match must be exact except for line endings, which are handled automatically. If "search" occurs more than once the call fails, so include enough surrounding context to make it unique (or pass replace_all=true deliberately). Do not issue multiple patch calls for the same file in one batch; apply them one at a time so each sees the previous result.' +
-				' RULES: (1) "search" and "replace" MUST differ — a pure-whitespace change is rejected as a no-op. (2) After a successful patch within a region, re-read the file before patching that same region again; the text may have changed, so never assume the previous content is still present.',
-				inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'File to patch. MUST be grounded: copy it verbatim from the file_read call you made on this file (patch requires a prior successful file_read) — never assemble or recall a path from memory. Relative paths resolve against the primary workspace root; in a multi-folder workspace prefer the absolute path from the tool output.' }, search: { type: 'string', description: 'Exact text to search for, copied verbatim from the file' }, replace: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace all occurrences (default: false)' } }, required: ['path', 'search', 'replace'] },
+				description: 'Apply a targeted edit to an existing file. TWO MODES — pick by intent: (A) TEXT MODE (default, for REWRITING existing content): pass "search" (copied verbatim from the file) + "replace". The match must be exact except for line endings, which are handled automatically. If "search" occurs more than once the call fails, so include enough surrounding context to make it unique (or pass replace_all=true deliberately). (B) LINE MODE (for INSERTING new content with no existing text to anchor on — a new import, a new function, appending at EOF): pass "insert_line" + put the new text in "replace", and OMIT "search". insert_line is the 1-based line number the text is inserted BEFORE (valid 1..totalLines+1; use totalLines+1 to append at EOF) — take it from file_read output (LINE_NUM|CONTENT). Prefer LINE MODE when there is nothing to match; prefer TEXT MODE when you are rewriting existing lines. ALWAYS read the file first (file_read): patch requires a prior successful file_read. Do not issue multiple patch calls for the same file in one batch; apply them one at a time so each sees the previous result.' +
+				' RULES: (1) "search" and "replace" MUST differ — a pure-whitespace change is rejected as a no-op. (2) A successful patch returns the "Updated region" (current text WITH line numbers) — reuse it verbatim to continue editing this file; no need to re-read. You only need file_read again if your next "search" targets a region you already modified (its old text is gone), if your next "insert_line" is AFTER a region you already changed (line numbers there have shifted), or if the returned region does not cover what you need.',
+				inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'File to patch. MUST be grounded: copy it verbatim from the file_read call you made on this file (patch requires a prior successful file_read) — never assemble or recall a path from memory. Relative paths resolve against the primary workspace root; in a multi-folder workspace prefer the absolute path from the tool output.' }, search: { type: 'string', description: 'TEXT MODE: exact text to search for, copied verbatim from the file. Omit entirely when using insert_line.' }, replace: { type: 'string', description: 'TEXT MODE: the replacement text. LINE MODE: the text to insert.' }, insert_line: { type: 'integer', description: 'LINE MODE: insert "replace" BEFORE this 1-based line number instead of searching. Valid 1..totalLines+1 (totalLines+1 appends at EOF). Line numbers come from file_read output (LINE_NUM|CONTENT). When set, omit "search".' }, replace_all: { type: 'boolean', description: 'TEXT MODE only: replace all occurrences (default: false)' } }, required: ['path', 'replace'] },
 				// category 必须是 'filesystem'（不是 'file'）：inferSecurityLevel 只在
 				// category==='filesystem' 分支里检查 name.includes('patch')。旧值 'file'
 				// 使 patch 一路落到名称模式表（其中并无 'patch'）→ 被判 Safe → 全程
@@ -266,17 +267,53 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				const search = String(args['search'] ?? '');
 				const replace = String(args['replace'] ?? '');
 				const replaceAll = Boolean(args['replace_all']);
+				// ── 模式判定（P2，2026-09-12）───────────────────────────────────
+				// insert_line 存在 → **行号插入模式**（无既有文本可锚定时的正解：
+				// 新增 import / 追加到 EOF / 插入新函数）；否则 → **文本匹配模式**。
+				// schema 的 required 只保留 path/replace，模式相关的缺失在此给出
+				// **可执行**的报错（而不是笼统的 schema 校验失败）。
+				const rawInsertLine = args['insert_line'];
+				const hasInsertLine = rawInsertLine !== undefined && rawInsertLine !== null && rawInsertLine !== '';
+				const insertLine = hasInsertLine ? Number(rawInsertLine) : NaN;
 				// 入参缺失是模型的确定性错误，重试同样的参数无意义 → 直接抛不可重试
-				if (!filePath || !search) {
-					throw new NonRetryableToolError('patch failed: both "path" and "search" are required.');
+				if (!filePath) {
+					throw new NonRetryableToolError('patch failed: "path" is required.');
+				}
+				if (hasInsertLine && search) {
+					throw new NonRetryableToolError(
+						'patch failed: pass EITHER "search" (text mode) OR "insert_line" (line mode), not both. ' +
+						'To insert new text at a line number, drop "search" and keep "insert_line" + "replace".',
+					);
+				}
+				if (!hasInsertLine && !search) {
+					throw new NonRetryableToolError(
+						'patch failed: provide "search" (text mode — rewrite existing content) or "insert_line" ' +
+						'(line mode — insert new content at a line number). Line numbers come from file_read output.',
+					);
 				}
 				const resolved = await ctx.resolveAndCheckWorkspacePath(agentId, filePath);
+				// ── 敏感 / 设备路径拒绝（2026-09-13：与 file_write 对齐）──────────
+				// 此前本工具**完全没有**这一步（连 sensitivePaths 都没 import）→ 同一份
+				// 敏感路径，`file_write` 硬拒、`patch` 只需用户点一次「允许」就能写。
+				// 而 `writeDenyList` 只覆盖 userHome / appData **之下**，工作区内的
+				// `auth.json` / `.git-credentials` / `.npmrc` / `.pypirc` 与
+				// `/dev/` `/proc/` `/sys/` 都不在其中 → patch 真能写进去。
+				// 判定真源 = `sensitivePaths.sensitiveWriteRejection`（纯函数、可单测）。
+				const sensitiveWriteHit = sensitiveWriteRejection(resolved);
+				if (sensitiveWriteHit) {
+					ctx.logService.warn(
+						`[CompatTools] patch BLOCKED (${sensitiveWriteHit.kind}): ${filePath} matches "${sensitiveWriteHit.matched}"`,
+					);
+					throw new NonRetryableToolError(sensitiveWriteHit.message);
+				}
 				// ── P3 read-before-edit 硬闸（2026-09-07，对齐 Claude Code）──────
 				// patch.search 必须逐字复制自真实文件内容；从未成功 file_read 过该
 				// 文件的调用几乎必然是凭记忆拼的（日志 1788713328385：patch 连败 ×5
 				// 的直接来源）。此前只有「失败后关联反馈」（describeReadGap），这里
 				// 升级为**前置拦截**——失败从「patch 连败」提前到「第一次调用即纠偏」，
 				// 与 Claude Code "File has not been read yet" 同款纪律。
+				// P2 的行号插入模式**同样适用**：insert_line 必须来自真实 file_read
+				// 的行号（凭记忆猜的行号会插到错误位置，危害不小于猜文本）。
 				if (!hasEverReadSuccessfully(resolved)) {
 					ctx.logService.warn(`[BuiltinTools] patch ${filePath} rejected: file not read yet (read-before-edit gate)`);
 					// 2026-09-07（日志 1788760209187）：硬闸触发 2 次但模型**始终没补读**
@@ -295,8 +332,13 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				const fileUri = URI.file(resolved);
 				const buf = await ctx.fileService.readFile(fileUri);
 				const original = buf.value.toString();
+				// P3（2026-09-12）：本次读取到的 mtime，用于检测「本会话读过之后被外部改动」。
+				const currentMtime = Number((buf as { mtime?: number }).mtime ?? 0);
+				const externallyModified = detectExternalModification(resolved, currentMtime);
 
-				const outcome = computePatch(original, search, replace, replaceAll, filePath);
+				const outcome = hasInsertLine
+					? computeInsert(original, insertLine, replace, filePath)
+					: computePatch(original, search, replace, replaceAll, filePath);
 				if (!outcome.ok) {
 					// 必须抛错：走 return 会被 executeTool 记成 OK、模型收到"成功"。
 					// 用 NonRetryableToolError —— 同参数重试必然同样失败，只会浪费
@@ -306,7 +348,13 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 					// patch 连败 ×5 → same-args 循环：模型 file_read 传幻觉路径失败后
 					// 不重读，凭猜的内容拼 search）。原消息只说 "search 必须精确"，
 					// 没点破「你从未成功读过该文件」——反馈没打中要害。
-					throw new NonRetryableToolError(outcome.message + describeReadGap(resolved));
+					// P3（2026-09-12）：若文件在读取后被**外部**改过，那才是失配的最可能
+					// 原因 —— 优先点破，否则模型会误以为是自己抄错了文本，反复重试同样的
+					// search（与 file_write 既有的 _check_file_staleness 同源判断）。
+					throw new NonRetryableToolError(
+						outcome.message + describeReadGap(resolved) +
+						(externallyModified ? describeExternalModification(resolved, currentMtime) : ''),
+					);
 				}
 
 				// ── 回滚点（2026-08-21）────────────────────────────────────
@@ -319,16 +367,37 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				}
 
 				await ctx.fileService.writeFile(fileUri, VSBuffer.fromString(outcome.content));
-				// P3 二期（2026-09-07，日志 1788757547227）：patch 成功后把该文件
-				// read-state 置为 stale —— 再对该文件 patch 前必须重新 file_read，
-				// 否则第二个 patch 的 search 基于改动前内容、必然 not_found。
+				// P0+P1（2026-09-12）：patch 成功后不再置 stale（详见 executeCodeGuards.markFileModified
+				// 的注释）。此处 markFileModified 只登记 patchedSinceRead 供失败路径定向纠偏；
+				// 因为下面的返回值已把「改动区域的最新文本」交给模型，它无需重读即可继续 patch。
 				markFileModified(resolved);
-				const parts = [`Patched ${filePath} — replaced ${outcome.replacedCount} occurrence${outcome.replacedCount === 1 ? '' : 's'}.`];
+				let msg = hasInsertLine
+					? `Patched ${filePath} — inserted at line ${outcome.editedLineStart}.`
+					: `Patched ${filePath} — replaced ${outcome.replacedCount} occurrence${outcome.replacedCount === 1 ? '' : 's'}.`;
 				if (outcome.lineEndingAdjusted) {
 					// 明确告知，避免模型下次仍按 \n 提交而以为是自己运气好
-					parts.push(`(Your search text used different line endings; it was converted to the file's ${outcome.lineEnding} before matching.)`);
+					msg += hasInsertLine
+						? ` (Your text used different line endings; it was converted to the file's ${outcome.lineEnding}.)`
+						: ` (Your search text used different line endings; it was converted to the file's ${outcome.lineEnding} before matching.)`;
 				}
-				return text(parts.join(' '));
+				// ★ P0（2026-09-12）：回传改动区域（带行号，格式与 file_read 一致）。
+				// 此前只回一句 "Patched …"，模型手里仍是被改动**之前**的文本 —— 要继续改
+				// 邻近区域就只能重读整个文件（同一文件连续 patch 时反复付出读+上下文的代价）。
+				// replaceAll 多处替换时只展示首处（单一行范围无法表达多处）。
+				const multiReplacement = !hasInsertLine && outcome.replacedCount > 1;
+				msg += `\n\nUpdated region (lines ${outcome.editedLineStart}-${outcome.editedLineEnd}` +
+					`${multiReplacement ? `, showing the first of ${outcome.replacedCount} replacements` : ''}):\n` +
+					buildEditedRegionContext(outcome.content, outcome.editedLineStart, outcome.editedLineEnd) +
+					`\n(This text is CURRENT — you may patch this file again using it directly. Re-read only if your next ` +
+					`"search" targets a region you already changed` +
+					`${hasInsertLine ? `, or if your next "insert_line" is greater than ${outcome.editedLineEnd} (line numbers below it have shifted)` : ''}.)`;
+				// P3（2026-09-12）：文件在本会话读取后被外部改过，而本次 search 恰好仍命中
+				// （改动落在别的区域）→ 本次不阻断（inform 语义，与 file_write 一致），
+				// 但必须提示：模型手里**其他区域**的内容已过时，后续编辑前应先重读。
+				if (externallyModified) {
+					msg += describeExternalModification(resolved, currentMtime);
+				}
+				return text(msg);
 			},
 		});
 
@@ -483,41 +552,19 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				}
 			}
 			if (!command) { throw new NonRetryableToolError('execute_code requires "command" (or "script_b64", or action=poll/kill with taskId)'); }
-			// HARDLINE 不可绕过地板（灾难性/不可逆命令，任何审批与自主模式都无法放行）
-			const hardline = detectHardlineViolation(command);
-			if (hardline) {
-				throw new NonRetryableToolError(hardlineViolationMessage(hardline, 'execute_code'));
-			}
-			// 裸源码护栏（2026-08-21，日志 1787292837471）：模型把多行 Python 源码
-			// 直接当 command 传入 → shell 拿 `import` 当程序名 → exit 1。
-			// 平台无关（POSIX shell 同样失败），故置于平台护栏之前。
-			const bareSource = detectBareSourceCode(command);
-			if (bareSource) {
-				throw new NonRetryableToolError(bareSourceCodeGuardMessage(bareSource, 'execute_code'));
-			}
-			// 源码写入护栏（2026-08-21，日志 1787319805992）：patch 连败后模型退化为
-			// 跑 python heredoc 直接 open(p,"w") 重写 .tsx，且成功 —— shell 路径不留
-			// checkpoint、不过编辑审批，仓库被改却无回滚点。详见 executeCodeGuards。
-			const sourceWrite = detectScriptSourceWrite(command);
-			if (sourceWrite) {
-				ctx.logService.warn(
-					`[CompatTools] execute_code BLOCKED: script writes source file directly ` +
-					`(${sourceWrite.api}, target=${sourceWrite.target})`,
-				);
-				throw new NonRetryableToolError(scriptSourceWriteGuardMessage(sourceWrite, 'execute_code'));
-			}
-			// 混淆 / 下载即执行检测（P0-1，对齐 openclaw rejectUnsafeExec*）：
-			// curl|sh / base64 -d|bash / iex (iwr ...) 等明确恶意形态直接阻断，
-			// 避免远程代码执行 / prompt injection 向量。其余（eval / 命令替换）仅提示。
-			const obfuscation = detectCommandObfuscation(command);
-			const blockedObf = obfuscation.find((f) => f.block);
-			if (blockedObf) {
-				throw new NonRetryableToolError(
-					`execute_code blocked: command uses a download-and-execute / decode-and-execute pattern ` +
-					`(${blockedObf.kind} matched \`${blockedObf.matched}\`)\n` +
-					`This is a common remote-code-execution / prompt-injection vector. Download the script separately ` +
-					`(file_write to save, file_read to inspect it), then execute_code the saved file.`,
-				);
+			// ─── 执行前护栏（2026-09-13：收敛为共享入口）──────────────────────
+			// 四条护栏（HARDLINE / 裸源码 / 源码写入 / 混淆-下载即执行）原先内联在此，
+			// 与 `terminal` 的 handler **各写一份** → 实际漂移：后两条只挂在本工具上，
+			// 同一句 `curl … | bash` 走 terminal 就能绕过（只剩审批兜底）。
+			// 现统一走 `shellPreflightGuards.shellPreflightRejection`（单一入口），
+			// 两个 shell 工具**结构上不可能再漂移**。详见该模块头注释。
+			// `cwd` 必须传进护栏：目标写成**裸文件名**时，只有拼上运行目录才能判出
+			// 「它其实是产物」（`cwd: "docs/kb-mockups"` + `> admin.html` 曾被误拦）。
+			const cwdArg = typeof args['cwd'] === 'string' ? (args['cwd'] as string).trim() : '';
+			const rejection = shellPreflightRejection(command, 'execute_code', cwdArg || undefined);
+			if (rejection) {
+				ctx.logService.warn(`[CompatTools] execute_code BLOCKED (${rejection.kind}): ${rejection.detail}`);
+				throw new NonRetryableToolError(rejection.message);
 			}
 			// 2026-08-29（日志 1787974178941）：移除 `timeout` 的 120s 封顶。
 		//
@@ -769,9 +816,16 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			// pipefail），而输出里可能有 rustc / pytest / npm 的失败特征。此前只有失败侧
 			// 有提示、成功侧零兜底，模型会把这类 exit 0 当成「构建通过」。
 			const combinedOut = `${result.stdout}\n${result.stderr}`;
+			// ── 良性非零退出码（2026-09-09）：检索命令「无匹配」= exit 1、xargs 子命令
+			// 非零 = exit 123，都是正常语义而非失败。必须在 failureHint 之前判定 ——
+			// 否则 annotateCommandFailure 会给出误导性的「失败下一步」提示。
+			const benignSearchExit = result.success
+				? undefined
+				: detectBenignSearchExit(effectiveCommand, result.exitCode, result.stderr);
+			if (benignSearchExit) { parts.push('', benignSearchExit); }
 			const failureHint = result.success
 				? annotateMaskedSuccess(effectiveCommand, combinedOut)
-				: annotateCommandFailure(result.exitCode, combinedOut);
+				: (benignSearchExit ? undefined : annotateCommandFailure(result.exitCode, combinedOut));
 			if (failureHint) {
 				parts.push('', renderFailureHint(failureHint));
 				const hintLog = `[CompatTools] execute_code ${result.success ? 'masked-success' : 'failure'} hint: ` +
@@ -782,6 +836,16 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			const body = parts.join('\n');
 			// 失败（非 0 exit / 启动失败 / 超时）→ 抛错触发失败熔断，避免子代理对失败命令反复重试
 			if (!result.success) {
+				// 良性检索退出码 → **不抛错**（日志案例：find|xargs grep 输出完整有效却被
+				// 判 FAILED，模型收到「失败」后会重跑一遍白烧一轮）。退出码仍在 body 内
+				// 如实回显 + [exit-note] 解释语义，对模型完全透明。
+				if (benignSearchExit) {
+					ctx.logService.info(
+						`[CompatTools] execute_code exit ${result.exitCode} treated as SUCCESS ` +
+						`(benign search exit: no-match / xargs child status)`,
+					);
+					return text(body);
+				}
 				// 失败分类（2026-08-21，日志 1787292837471）：「命令/程序不存在」是**确定性
 				// 失败** —— 命令名不会在退避间隙里变对。旧版一律抛普通 Error → toolExecutor
 				// 判为可重试 → 退避重试 3 次（实测 exit 255 `'Out-String' 不是内部或外部命令`
@@ -789,6 +853,24 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				// 退避，模型只拿到同一条错误重复 3 遍）。工具级重试其后已整体移除
 				// （460 份日志 216 次重试 0 次成功），分类仍保留 —— 其错误文案是模型引导。
 				const combined = `${result.stdout}\n${result.stderr}`;
+				// ── 超时（P0+P3，2026-09-12）────────────────────────────────────
+				// 超时是**独立失败类别**，且最需要引导：模型原先只看到
+				// `[timeout: process tree killed after Ns]` 一句技术信息，既不知道
+				// 「这不是失败是超时」，也不知道已有 background:true / timeout 两条出路，
+				// 于是换写法继续重试同一件长任务（日志实证：`start` 与 `cmd //c start`
+				// 各失败一次）。这里点破定性 + 给出可执行出路 + 形态识别。
+				// 必须排在 commandNotFound / deterministicScript 之前：超时消息里常混有
+				// 部分输出，可能被那两类误判为命令缺失或脚本错误。
+				const timeoutSec = parseTimeoutSecondsFromStderr(result.stderr);
+				if (timeoutSec !== undefined) {
+					ctx.logService.warn(`[CompatTools] execute_code TIMEOUT after ${timeoutSec}s: ${effectiveCommand}`);
+					// NonRetryableToolError：同参数重发必然再次超时；改参数（background /
+					// timeout）是**新调用**，不受影响。
+					throw new NonRetryableToolError(
+						`execute_code timed out (exit ${result.exitCode}):\n${body}` +
+						timeoutGuidanceMessage(timeoutSec, effectiveCommand),
+					);
+				}
 				if (isCommandNotFoundFailure(combined)) {
 					throw new NonRetryableToolError(
 						`execute_code failed (exit ${result.exitCode}) — command or program not found; retrying will not help.\n${body}\n` +

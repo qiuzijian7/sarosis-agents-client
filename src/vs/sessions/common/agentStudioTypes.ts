@@ -309,6 +309,21 @@ export interface Agent {
 	 * 未设置 = 跟随全局默认 provider。
 	 */
 	providerId?: string;
+	/**
+	 * 图片生成模型（如 'dall-e-3' / 'flux-dev' / ComfyUI 的模型名）。
+	 *
+	 * 用途（2026-09-10 新增）：
+	 *  - 聊天框「图片模型」选择器的默认值（无本地覆盖时使用）；
+	 *  - 图片生成工具（image_generate 等）未显式传 model 时的兜底。
+	 *
+	 * 未设置 = 聊天框使用 provider 侧默认，或由用户在聊天框临时选择。
+	 */
+	imageModel?: string;
+	/**
+	 * 图片生成 provider ID（须满足 `IModelInfo.supportsImageGen === true`）。
+	 * 与 imageModel 配对使用；未设置 = 跟随 imageModel 所属 provider 或全局默认。
+	 */
+	imageProviderId?: string;
 	skills: string[];
 	tools?: string[];
 	/**

@@ -724,8 +724,12 @@ export interface IMemoryProvider {
 	/** Get project profile */
 	getProfile?(agentId: string): Record<string, unknown> | null;
 
-	/** Get timeline of memory events */
-	getTimeline?(agentId: string): Array<Record<string, unknown>>;
+	/**
+	 * Get timeline of memory events。
+	 * Opt1：真实引擎在网关进程——实现可返回 Promise（调用方 instanceof Promise 分流），
+	 * 同步返回空数组的实现是「假成功」（调用方误读为无数据），禁止。
+	 */
+	getTimeline?(agentId: string): Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>;
 
 	/** Get all pinned slots */
 	getSlots?(agentId: string): Array<{ name: string; content: string }>;
@@ -767,14 +771,20 @@ export interface IMemoryProvider {
 	/** Get relation statistics */
 	getRelationStats?(agentId: string): Record<string, number>;
 
-	/** Trace provenance chain for a memory */
-	traceProvenance?(agentId: string, memoryId: string): Record<string, unknown> | null;
+	/**
+	 * Trace provenance chain for a memory。
+	 * Opt1：实现可返回 Promise（同 getTimeline 注记——同步假成功禁止）。
+	 */
+	traceProvenance?(agentId: string, memoryId: string): Record<string, unknown> | null | Promise<Record<string, unknown> | null>;
 
 	/** Get audit log */
-	getAuditLog?(filter?: { operation?: string; agentId?: string; limit?: number }): Array<Record<string, unknown>>;
+	getAuditLog?(filter?: { operation?: string; agentId?: string; limit?: number }): Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>;
 
-	/** Get audit summary */
-	getAuditSummary?(): Record<string, number>;
+	/**
+	 * Get audit summary — memoryDetailEditorPane 审计页签消费（V2 引擎读真实 AuditLog）。
+	 * Opt1：实现可返回 Promise（同步假成功禁止）。
+	 */
+	getAuditSummary?(): Record<string, number> | Promise<Record<string, number>>;
 
 	// ─── Report & Git APIs (for memory detail panel) ──────────────────────
 

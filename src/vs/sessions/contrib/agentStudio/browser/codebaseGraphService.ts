@@ -24,9 +24,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { ITreeSitterLibraryService } from '../../../../editor/common/services/treeSitter/treeSitterLibraryService.js';
-import { getModuleLocation } from '../../../../workbench/services/treeSitter/browser/treeSitterLibraryService.js';
+// getModuleLocation / FileAccess / wrapWorkerUrl 已随 Worker 池迁到 codebaseGraphParserPool
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { FileAccess } from '../../../../base/common/network.js';
 import type { Parser as TreeSitterParser, Language as TreeSitterLanguage } from '@vscode/tree-sitter-wasm';
 import { CodebaseGraphStore, resolveSearchFileCandidates } from './codebaseGraphStore.js';
 import { CypherEngine } from './codebaseGraphCypher.js';
@@ -36,6 +35,7 @@ import { tracePath, getGraphSchema as getSchema, GraphSchema, searchCode as grap
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { createCodebaseGraphSqliteBackend } from './codebaseGraphStoreProxy.js';
 import type { ICodebaseGraphSqliteBackend } from '../common/codebaseGraphStoreChannel.js';
 import { LspCrossResolver } from './codebaseGraphLsp.js';
@@ -44,14 +44,17 @@ import { INDEX_LOCK_FILENAME, INDEX_LOCK_HEARTBEAT_MS, createIndexLockToken, isI
 import { buildSemanticEdges, detectSimilarCode, detectSimilarCodeIncremental, MinHash, MINHASH_PERM } from './codebaseGraphExtendedPasses.js';
 import { runMultiLevelLeiden, detectDeadCodeEnhanced, computeTwoLevelLOD, executeExtendedCypher, computeAllSignals } from './codebaseGraphAdvancedAnalysis.js';
 import { CrossRepoDiscovery } from './codebaseGraphCrossRepoDiscovery.js';
-import { wrapWorkerUrl } from './shared/workerPoolManager.js';
 import { GraphPersistence } from './codebaseGraphPersistence.js';
 import { scanEnvUrls } from './codebaseGraphEnvScan.js';
 import { linkConfigToCode } from './codebaseGraphConfigLink.js';
 import { TraceIngester } from './codebaseGraphTraces.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher, CodebaseGraphChangeEvent } from './codebaseGraphWatcher.js';
 import { CodebaseGraphIncrementalIndexer } from './codebaseGraphIncremental.js';
-import { COMMON_EXCLUDE_DIRS, mergeExcludeDirs, parseCbmIgnore, extractExcludeDirNames } from '../common/codebaseIndexDefaults.js';
+import { shouldRecordHashAfterParse, EXTENSION_TO_WASM_LANG, AST_TO_NODE_TYPE } from '../common/codebaseIndexDefaults.js';
+import { CodebaseGraphExcludeResolver } from './codebaseGraphExcludeResolver.js';
+import { CodebaseGraphScanner } from './codebaseGraphScanner.js';
+import { CodebaseGraphParserPool } from './codebaseGraphParserPool.js';
+import { buildWorkerCode } from './codebaseGraphWorkerCode.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -131,7 +134,9 @@ export interface IIndexResult {
 }
 
 /** 单文件索引覆盖率状态（对标 C 的 parse_partial/skipped/not_indexed） */
-export type FileCoverageStatus = 'indexed' | 'skipped' | 'parse_error' | 'timeout' | 'partial';
+// 状态类型下沉到 common（store 与测试共用）；此处 re-export 保持既有 import 路径兼容
+import { FileCoverageStatus } from '../common/codebaseIndexDefaults.js';
+export type { FileCoverageStatus };
 
 export interface IFileCoverage {
 	path: string;            // 相对路径
@@ -152,6 +157,20 @@ export interface IIndexCoverageReport {
 	coveragePct: number;     // indexed / totalFiles * 100
 	skippedFiles: IFileCoverage[];
 	errorFiles: IFileCoverage[];
+}
+
+/**
+ * 索引健康度报告（2026-09-09）。
+ * 判据 nodesPerFile < 2 = 残缺：解析大面积失败且失败被固化时，图只剩被编辑过的文件。
+ */
+export interface IIndexHealthReport {
+	nodeCount: number;
+	fileCount: number;        // fileHashes 基线条数（参与过索引的文件数）
+	nodesPerFile: number;     // nodeCount / fileCount，正常 ≥ 2
+	parseFailedFiles: number; // 本轮覆盖率里 parse_error + timeout 数
+	absPathViolations: number;// filePath 写成绝对路径的契约违规数
+	deficient: boolean;
+	message?: string;         // 残缺时的用户可读提示
 }
 
 export interface IGraphStatus {
@@ -260,6 +279,11 @@ export interface ICodebaseGraphService {
 	getIndexStatus(): { project: string; exists: boolean; nodeCount: number; edgeCount: number; fileCount: number; coverage?: IIndexCoverageReport };
 	getIndexStatusAsync(): Promise<{ project: string; exists: boolean; nodeCount: number; edgeCount: number; fileCount: number; coverage?: IIndexCoverageReport }>;
 	getIndexCoverage(): IIndexCoverageReport;
+	/**
+	 * 索引健康度（2026-09-09）。「有数据」≠「健康」——图可能只含被编辑过的文件
+	 * （解析大面积失败且失败被固化）。供 UI 在空结果时给出「图谱残缺，请重建」提示。
+	 */
+	getIndexHealth(): IIndexHealthReport;
 	getMissedGraph(): { nodes: { id: string; name: string; type: string; kind?: string; detail?: string }[]; edges: { source: string; target: string; type: string }[] };
 
 	tracePath(sourceName: string, targetName: string | undefined, mode?: string): any;
@@ -353,49 +377,9 @@ export interface ICodebaseGraphService {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const EXTENSION_TO_WASM_LANG: Record<string, string> = {
-	'.ts': 'typescript',
-	'.tsx': 'tsx',
-	'.mts': 'typescript',
-	'.cts': 'typescript',
-	'.js': 'javascript',
-	'.jsx': 'javascript',
-	'.mjs': 'javascript',
-	'.py': 'python',
-	'.go': 'go',
-	'.rs': 'rust',
-	'.java': 'java',
-	'.rb': 'ruby',
-	'.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp', '.h': 'cpp', '.hpp': 'cpp', '.hxx': 'cpp',
-	'.cs': 'c-sharp',
-	'.php': 'php',
-};
+// EXTENSION_TO_WASM_LANG 已下沉到 common/codebaseIndexDefaults.js（service 与 Scanner 共用）
 
-const AST_TO_NODE_TYPE: Record<string, string> = {
-	'function_declaration': 'function',
-	'function_definition': 'function',
-	'function_item': 'function',
-	'method_definition': 'function',
-	'method_declaration': 'function',
-	'constructor_declaration': 'function',
-	'destructor_declaration': 'function',
-	'class_declaration': 'class',
-	'class_definition': 'class',
-	'class_specifier': 'class',
-	'impl_item': 'class',
-	'struct_specifier': 'class',
-	'interface_declaration': 'interface',
-	'type_alias_declaration': 'interface',
-	'trait_item': 'interface',
-	'protocol_declaration': 'interface',
-	'enum_declaration': 'enum',
-	'enum_item': 'enum',
-	'enum_specifier': 'enum',
-	'variable_declarator': 'variable',
-	'global_variable_declaration': 'variable',
-	'const_item': 'variable',
-	'static_item': 'variable',
-};
+
 
 /** 分支节点类型 — 用于计算圈复杂度 */
 const BRANCH_NODE_TYPES = new Set([
@@ -412,9 +396,11 @@ const LOOP_NODE_TYPES = new Set([
 /**
  * 通用默认排除目录 —— 单一来源见 `common/codebaseIndexDefaults.ts`。
  * UE / 游戏引擎等特异性排除不再硬编码，改为读取 code-workspace 的
- * `search.exclude`/`files.exclude` 配置（见 `_resolveExcludeDirs`）。
+ * `search.exclude`/`files.exclude` 配置。
+ *
+ * 注：原 `DEFAULT_EXCLUDE_DIRS` 已随排除集解析一并移入 CodebaseGraphExcludeResolver
+ * （2026-09-09，P1-5）——档位基线统一由 `excludeDirsForProfile()` 提供，避免两处口径漂移。
  */
-const DEFAULT_EXCLUDE_DIRS = COMMON_EXCLUDE_DIRS;
 
 const MAX_FILE_SIZE = 1024 * 1024; // 1 MB
 const MAX_LINE_LENGTH = 10000;   // 超过此行长的文件跳过（minified/生成代码会导致 tree-sitter 挂起）
@@ -651,7 +637,12 @@ class GraphStore {
 
 	private _toNumId(strId: string): number {
 		if (!this._nodeIdMap.has(strId)) {
-			const newId = this._nodeIdMap.size + 1;
+			// Bug（2026-09-09，用户堆栈实锤）：原 `newId = this._nodeIdMap.size + 1`——
+			// 加载恢复后映射表为空而 store 已有 17.5w 节点，新节点 id 从 1 开始**覆盖
+			// 已有节点** → 下一轮删除旧节点时把新节点连带删除 → QN 键悬空 →
+			// 第三轮 upsertNode 读 `existing.inDegree` 崩溃（且图数据被污染）。
+			// 改从 store 的 _nextNodeId 分配（与持久化恢复的计数器衔接，永不冲突）。
+			const newId = this._store.allocNodeId();
 			this._nodeIdMap.set(strId, newId);
 			this._revIdMap.set(newId, strId);
 		}
@@ -740,6 +731,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private readonly _watchScopeCache = new Map<string, { excludeDirs: Set<string>; keepDirs?: string[] }>();
 	private _cypherEngine: CypherEngine | undefined;
 	private _semanticSearch: SemanticSearch | undefined;
+	/** 排除集解析（P1-5 拆分；见 codebaseGraphExcludeResolver.ts）。 */
+	private readonly _excludeResolver: CodebaseGraphExcludeResolver;
+	/** 文件扫描（P1-5 拆分；见 codebaseGraphScanner.ts）。 */
+	private readonly _scanner: CodebaseGraphScanner;
 	private _projectName = '_default';
 	/** 多 folder：归一化 rootPath → 项目名，供增量索引/监听/保存按 folder 解析正确的 project。 */
 	private _rootProjectMap = new Map<string, string>();
@@ -781,15 +776,12 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private _indexCoverage: Map<string, IFileCoverage> = new Map();
 
 	// ─── Worker Pool (parallel tree-sitter parsing) ────────────────────
-	private _parserWorkers: Worker[] = [];
-	private _workerInitPromise: Promise<boolean> | undefined;
-	// 增量解析复用的请求 id 计数器（与 _parserWorkers 轮询配对，保证并发请求 id 唯一）
+	// 池的创建 / 自愈 / 解析调度已拆到 CodebaseGraphParserPool（P1-5，2026-09-09）。
+	private readonly _parserPool: CodebaseGraphParserPool;
+	/** 兼容转发：既有调用点仍按池列表读取（实际由 _parserPool 持有）。 */
+	private get _parserWorkers(): readonly Worker[] { return this._parserPool.workers; }
+	// 增量解析复用的请求 id 计数器（与池轮询配对，保证并发请求 id 唯一）
 	private _parseReqId = 0;
-	// Worker 崩溃自愈：保存池创建参数，崩溃时重建替补（对齐 C 版监督子进程语义——
-	// browser Worker 有独立堆，崩溃仅影响自身，主线程重建即可）。
-	private _workerUrl: string | undefined;
-	private _workerTsWasm: Uint8Array | undefined;
-	private _workerLangWasms: Record<string, Uint8Array> | undefined;
 
 	constructor(
 		@ILogService private readonly _logService: ILogService,
@@ -801,8 +793,15 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		@ICodebaseGraphWatcher private readonly _graphWatcher: CodebaseGraphWatcher,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super();
+		this._excludeResolver = this._instantiationService.createInstance(CodebaseGraphExcludeResolver);
+		this._scanner = this._instantiationService.createInstance(CodebaseGraphScanner, this._excludeResolver);
+		this._parserPool = this._instantiationService.createInstance(
+			CodebaseGraphParserPool,
+			(tsJsContent: string) => this._buildWorkerCode(tsJsContent),
+		);
 
 		// Phase 2 接线：经主进程代理的 SQLite 后端（默认不启用；见 `_sqliteBackendEnabled`）。
 		// renderer sandbox 不能加载原生模块，SQLite 宿主在 main 进程，这里只是透明代理。
@@ -1001,8 +1000,11 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			await this._sqliteBackend.upsertEdgesBatch(edges as (GraphEdge & { sourceId?: number; targetId?: number })[]);
 			const dur = Date.now() - tStart;
 			this._logService.info('[CodebaseGraph]', `SQLite incremental patch done: ${nodes.length} nodes + ${edges.length} edges (${changedRels.length} files, ${dur}ms)`);
-			// 增量补丁写入成功 → 清除「空库」标记（见 _sqliteEmptyProjects）。
-			if (nodes.length > 0) { this._sqliteEmptyProjects.delete(project); }
+			// 增量补丁**写入成功**即清除「空库」标记（见 _sqliteEmptyProjects）。
+			// Bug（2026-09-09）：旧实现只在 `nodes.length > 0` 时清除——若本轮变更没有
+			// 新节点（仅删除文件 / 改动文件解析失败），标记会**永久残留**，此后即使
+			// SQLite 已可用也一直走内存路径（慢且可能与 SQLite 不一致）。
+			this._sqliteEmptyProjects.delete(project);
 		} catch (err) {
 			this._logService.warn('[CodebaseGraph]', 'SQLite incremental patch failed (sqlite may lag until next full sync):', err);
 		}
@@ -1194,552 +1196,42 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 * 初始化 Worker 池：读取 tree-sitter.js + WASM 文件，创建 N 个 Worker。
 	 * 失败时返回 false，调用方 fallback 到主线程解析。
 	 */
+	/** 初始化池（委托 CodebaseGraphParserPool；失败返回 false → 调用方 fallback 主线程）。 */
 	private async _ensureWorkerPool(): Promise<boolean> {
-		if (this._workerInitPromise) { return this._workerInitPromise; }
-		this._workerInitPromise = this._initWorkerPool();
-		return this._workerInitPromise;
-	}
-
-	private async _initWorkerPool(): Promise<boolean> {
-		try {
-			// 1. 读取 tree-sitter.js (AMD 模块)
-			const wasmDir = getModuleLocation(this._environmentService);
-			const tsJsUri = FileAccess.asFileUri(`${wasmDir}/tree-sitter.js`);
-			const tsJsContent = (await this._fileService.readFile(tsJsUri)).value.toString();
-
-			// 2. 读取 tree-sitter.wasm (运行时 WASM)
-			const tsWasmUri = FileAccess.asFileUri(`${wasmDir}/tree-sitter.wasm`);
-			const tsWasmBytes = new Uint8Array((await this._fileService.readFile(tsWasmUri)).value.buffer);
-
-			// 3. 读取各语言的 WASM 文件
-			const langWasms: Record<string, Uint8Array> = {};
-			const langs = [...new Set(Object.values(EXTENSION_TO_WASM_LANG))];
-			for (const lang of langs) {
-				try {
-					const uri = FileAccess.asFileUri(`${wasmDir}/tree-sitter-${lang}.wasm`);
-					langWasms[lang] = new Uint8Array((await this._fileService.readFile(uri)).value.buffer);
-				} catch { /* skip unavailable */ }
-			}
-			this._logService.info('[CodebaseGraph]', `Worker pool: loaded tree-sitter.js (${tsJsContent.length}B), runtime WASM (${tsWasmBytes.length}B), ${Object.keys(langWasms).length} langs`);
-
-			// 4. 构建 Worker 代码 (AMD shim + tree-sitter.js + 解析逻辑)
-			const workerCode = this._buildWorkerCode(tsJsContent);
-			const blob = new Blob([workerCode], { type: 'application/javascript' });
-			const rawUrl = URL.createObjectURL(blob);
-			const workerUrl = wrapWorkerUrl(rawUrl);  // CSP TrustedScriptURL 包装
-
-			// 保存重建参数（Worker 崩溃自愈用）。WASM 原始 buffer 未被 transfer——
-			// 每次 init 前都 slice() 出独立副本转移，原件可反复用于重建。
-			this._workerUrl = workerUrl;
-			this._workerTsWasm = tsWasmBytes;
-			this._workerLangWasms = langWasms;
-
-			// 5. 创建 Worker 池
-			const poolSize = Math.min(4, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
-			const initPromises: Promise<Worker | null>[] = [];
-			for (let i = 0; i < poolSize; i++) {
-				initPromises.push(this._createAndInitWorker(workerUrl, tsWasmBytes, langWasms));
-			}
-			const workers = await Promise.all(initPromises);
-			this._parserWorkers = workers.filter((w): w is Worker => w !== null);
-
-			if (this._parserWorkers.length === 0) {
-				this._logService.warn('[CodebaseGraph]', 'Worker pool: all workers failed to init, fallback to main thread');
-				return false;
-			}
-			for (const w of this._parserWorkers) { this._attachWorkerSelfHealing(w); }
-			this._logService.info('[CodebaseGraph]', `Worker pool ready: ${this._parserWorkers.length}/${poolSize} workers`);
-			return true;
-		} catch (err: any) {
-			this._logService.warn('[CodebaseGraph]', `Worker pool init failed: ${err?.message || err}, fallback to main thread`);
-			return false;
-		}
-	}
-
-	private _createAndInitWorker(url: string, tsWasmBytes: Uint8Array, langWasms: Record<string, Uint8Array>): Promise<Worker | null> {
-		return new Promise((resolve) => {
-			let worker: Worker;
-			try {
-				worker = new Worker(url);
-			} catch (err: any) {
-				this._logService.warn('[CodebaseGraph]', `Worker creation failed: ${err?.message || err}`);
-				resolve(null);
-				return;
-			}
-			const timeout = setTimeout(() => { worker.terminate(); this._logService.warn('[CodebaseGraph]', 'Worker init timeout (15s) — worker script may have failed during evaluation'); resolve(null); }, 15000);
-			// init 阶段的脚本级错误（如模块求值抛错）经 error 事件暴露，必须记录否则只能盲猜失败原因
-			const errHandler = (e: ErrorEvent) => {
-				this._logService.warn('[CodebaseGraph]', `Worker init script error: ${e.message || 'unknown'} @ ${e.filename || '?'}:${e.lineno || '?'}`);
-			};
-			worker.addEventListener('error', errHandler);
-			const initHandler = (e: MessageEvent) => {
-				const data = e.data;
-				if (data.type === 'init-done') {
-					clearTimeout(timeout);
-					worker.removeEventListener('message', initHandler);
-					worker.removeEventListener('error', errHandler);
-					resolve(worker);
-				} else if (data.type === 'init-error') {
-					clearTimeout(timeout);
-					worker.removeEventListener('error', errHandler);
-					this._logService.warn('[CodebaseGraph]', `Worker init-error: ${data.error || 'unknown'}`);
-					worker.terminate();
-					resolve(null);
-				} else if (data.type === 'log') {
-					this._logService.warn('[CodebaseGraph]', `Worker: ${data.message}`);
-				}
-			};
-			worker.addEventListener('message', initHandler);
-			// 复制并 transfer WASM buffers (每个 worker 需要独立副本)
-			const tsWasmCopy = tsWasmBytes.slice().buffer;
-			const langWasmsCopy: Record<string, ArrayBuffer> = {};
-			const transferList: ArrayBuffer[] = [tsWasmCopy];
-			for (const [k, v] of Object.entries(langWasms)) {
-				const copy = v.slice().buffer;
-				langWasmsCopy[k] = copy;
-				transferList.push(copy);
-			}
-			worker.postMessage({ type: 'init', tsWasm: tsWasmCopy, langWasms: langWasmsCopy }, transferList);
-		});
-	}
-
-	/**
-	 * Worker 崩溃自愈：browser Worker 有独立堆，WASM OOM/语法崩溃只会杀死自身。
-	 * 监听 error 事件 → 从池中摘除并异步重建替补（对齐 C 版 index_supervisor 语义）。
-	 * 在途 parse 由其 15s 超时兜底（该文件跳过，下轮索引重试，类似 C 的毒文件 quarantine）。
-	 */
-	private _attachWorkerSelfHealing(worker: Worker): void {
-		worker.addEventListener('error', (e: ErrorEvent) => {
-			this._logService.warn('[CodebaseGraph]', `Worker crashed (${e.message ?? 'unknown'}), respawning replacement…`);
-			const idx = this._parserWorkers.indexOf(worker);
-			if (idx >= 0) { this._parserWorkers.splice(idx, 1); }
-			try { worker.terminate(); } catch { /* ignore */ }
-			if (!this._workerUrl || !this._workerTsWasm || !this._workerLangWasms) { return; }
-			this._createAndInitWorker(this._workerUrl, this._workerTsWasm, this._workerLangWasms).then(replacement => {
-				if (replacement) {
-					this._attachWorkerSelfHealing(replacement);
-					this._parserWorkers.push(replacement);
-					this._logService.info('[CodebaseGraph]', `Worker pool healed: ${this._parserWorkers.length} worker(s)`);
-				} else {
-					this._logService.warn('[CodebaseGraph]', `Worker respawn failed, pool now ${this._parserWorkers.length} worker(s)`);
-				}
-			});
-		});
+		return this._parserPool.ensure();
 	}
 
 	/**
 	 * 构建 Worker 代码：AMD shim + tree-sitter.js 内联 + AST 遍历逻辑。
+	 *
+	 * ★ 待拆（P1-5 最后一块，2026-09-09 评估后主动留待完整会话）：
+	 *   本方法 ~353 行**字符串内嵌 JS**（无类型检查 / lint / 测试覆盖），加上
+	 *   `_ensureWorkerPool` / `_createAndInitWorker` / `_parseViaWorker` 共约 550 行，
+	 *   拆到 `codebaseGraphParserPool.ts` 需要一次性完整读取 + 逐字复制，中断会留半成品。
+	 *   搬迁要点：① 字符串必须逐字复制（建议搬完用 `new Function(code)` 做一次语法自检）
+	 *   ② 打包版依赖「Worker 内 fileService 读 wasm」的路径，**不得**改为独立 worker 文件
+	 *   ③ 池实例与 `_parserWorkers` / `_workerUrl` / `_workerTsWasm` / `_workerLangWasms`
+	 *      / `_parseReqId` 一并迁移，service 侧保留委托方法。
+	 */
+	/**
+	 * 构建 Worker 代码（AMD shim + tree-sitter.js 内联 + AST 遍历逻辑）。
+	 * 实现已迁到 CodebaseGraphWorkerCode（P1-5 收尾，2026-09-09）——该字符串不受 tsgo/lint
+	 * 检查，独立成文件后便于后续加语法自检与逐步改造。
 	 */
 	private _buildWorkerCode(tsJsContent: string): string {
-		return `
-// === AMD Loader Shim (捕获 @vscode/tree-sitter-wasm 的 define 调用) ===
-let _tsModule;
-self.define = function(deps, factory) {
-  if (typeof deps === 'function') { _tsModule = deps(); }
-  else if (Array.isArray(deps) && typeof factory === 'function') {
-    const mockDeps = deps.map(function(d) {
-      if (d === 'exports') return (_tsModule = {});
-      if (d === 'require') return function() { return undefined; };
-      return undefined;
-    });
-    const result = factory.apply(null, mockDeps);
-    _tsModule = result || _tsModule;
-  } else { _tsModule = deps; }
-};
-self.define.amd = true;
-// CommonJS shim (某些 UMD 模块会检查 module.exports)
-self.module = { exports: {} };
-self.exports = self.module.exports;
-// document stub：tree-sitter.js 模块求值时立即调用 getCurrentScriptUrl()（算 _scriptName/scriptDirectory）。
-// Worker 中无 document/__filename → 抛 'Unable to determine script URL'，整个 blob 脚本求值中止、onmessage 从未注册
-// → 全部 worker init 超时失败、回退主线程解析（数万文件卡死 UI）。
-// scriptDirectory 对本 worker 无意义（运行时 WASM 经 locateFile blob URL 加载），stub 使其温和返回 undefined。
-self.document = { currentScript: null };
-
-// === Tree-sitter.js (AMD module, inlined) ===
-${tsJsContent}
-
-// === Fallback: 如果 AMD shim 未捕获模块，尝试从全局/CommonJS 获取 ===
-if (!_tsModule) {
-  if (self.module && self.module.exports && self.module.exports.Parser) {
-    _tsModule = self.module.exports;
-  } else if (typeof self.TreeSitter !== 'undefined') {
-    _tsModule = self.TreeSitter;
-  }
-}
-
-// === Worker Logic ===
-let Parser = null, Language = null, languages = {}, initDone = false;
-
-const AST_TO_NODE_TYPE = ${JSON.stringify(AST_TO_NODE_TYPE)};
-
-async function doInit(tsWasm, langWasms) {
-  const TS = _tsModule;
-  if (!TS || !TS.Parser) throw new Error('TreeSitter module not loaded (AMD shim failed, _tsModule=' + (TS ? Object.keys(TS) : 'null') + ')');
-  // 运行时 WASM：字节已由 postMessage 传入，直接喂 wasmBinary 给 Emscripten——
-  // 严禁走 fetch(blob:)：blob worker 继承文档 CSP（connect-src 无 blob:），fetch 必被拦截。
-  try {
-    await TS.Parser.init({ locateFile: function() { return 'tree-sitter.wasm'; }, wasmBinary: tsWasm });
-  } catch (e) {
-    throw new Error('TS.Parser.init failed: ' + (e && e.message ? e.message : String(e)) + ' (tsWasmBytes=' + tsWasm.byteLength + ')');
-  }
-  Parser = TS.Parser;
-  Language = TS.Language;
-  // 加载语言 WASM。注意：Language.load 仅认 Uint8Array；transfer 到 worker 的是 ArrayBuffer，
-  // 直接传会误入 fetch 分支（CSP 拦截）——必须 new Uint8Array 包装。
-  let langLoaded = 0;
-  const failedLangs = [];
-  for (const langName in langWasms) {
-    try { languages[langName] = await Language.load(new Uint8Array(langWasms[langName])); langLoaded++; }
-    catch(e) { failedLangs.push(langName + '(' + (e && e.message ? e.message : String(e)).substring(0, 80) + ')'); }
-  }
-  if (failedLangs.length > 0) {
-    self.postMessage({ type: 'log', level: 'warn', message: 'lang wasm load failed: ' + failedLangs.join(', ') });
-  }
-  if (langLoaded === 0 && Object.keys(langWasms).length > 0) {
-    throw new Error('No language WASM loaded (0/' + Object.keys(langWasms).length + ')');
-  }
-  initDone = true;
-}
-
-// 递归提取 AST 节点名称 — 支持 C/C++ 深层标识符
-// C++ tree-sitter 中标识符通常不在直接子节点：
-//   function_definition → declarator:function_declarator → declarator:field_identifier
-//   class_specifier     → name:type_identifier
-var IDENTIFIER_TYPES = {
-  identifier: true, field_identifier: true, type_identifier: true,
-  namespace_identifier: true, template_name: true, destructor_name: true
-};
-// C/C++ 函数名提取：沿 declarator 链取真正函数名（返回类型 type_identifier 在 DFS 中会先命中，
-// 如 inline TArray X::ConvertToArray() 会被误取名 "TArray"，须优先走 declarator）
-var _isDeclaratorWrapper = function (t) {
-  return t === 'function_declarator' || t === 'pointer_declarator' ||
-    t === 'reference_declarator' || t === 'parenthesized_declarator' || t === 'init_declarator';
-};
-function _extractDeclaratorName(node, source) {
-  var n = node;
-  for (var i = 0; i < 12; i++) {
-    var decl = n.childForFieldName ? n.childForFieldName('declarator') : undefined;
-    if (!decl) {
-      // reference_declarator 等的 function_declarator 无 declarator 字段，从 children 找
-      var cs = n.children || [];
-      for (var k = 0; k < cs.length; k++) { if (_isDeclaratorWrapper(cs[k].type)) { decl = cs[k]; break; } }
-    }
-    if (!decl) break;
-    n = decl;
-    if (_isDeclaratorWrapper(n.type)) { continue; }
-    break;
-  }
-  // qualified_identifier 的 name 可能嵌套（ns::deep::method → deep::method），循环取最内层
-  while (n.type === 'qualified_identifier') {
-    var nm = n.childForFieldName ? n.childForFieldName('name') : undefined;
-    if (!nm || typeof nm.startIndex !== 'number') break;
-    if (nm.type === 'qualified_identifier') { n = nm; continue; }
-    return source.substring(nm.startIndex, nm.endIndex);
-  }
-  if (n.type === 'identifier' || n.type === 'field_identifier' || n.type === 'type_identifier' ||
-    n.type === 'destructor_name' || n.type === 'operator_name' || n.type === 'template_name' ||
-    n.type === 'namespace_identifier') {
-    return source.substring(n.startIndex, n.endIndex);
-  }
-  return undefined;
-}
-function extractName(node, source) {
-  if (node.type === 'function_definition' || node.type === 'function_declaration' || node.type === 'function_declarator') {
-    var fnName = _extractDeclaratorName(node, source);
-    if (fnName !== undefined) return fnName;
-  }
-  function recurse(n) {
-    if (IDENTIFIER_TYPES[n.type]) return source.substring(n.startIndex, n.endIndex);
-    if (n.type === 'name') return source.substring(n.startIndex, n.endIndex);
-    var children = n.children || [];
-    for (var i = 0; i < children.length; i++) {
-      var r = recurse(children[i]);
-      if (r !== undefined) return r;
-    }
-    return undefined;
-  }
-  return recurse(node);
-}
-
-// 分支/循环节点类型（用于复杂度计算）
-var BRANCH_NODE_TYPES = {
-  if_statement:1, else_clause:1, for_statement:1, while_statement:1,
-  do_statement:1, switch_statement:1, case_statement:1, catch_clause:1,
-  conditional_expression:1, ternary_expression:1
-};
-var LOOP_NODE_TYPES = { for_statement:1, while_statement:1, do_statement:1 };
-
-function computeComplexity(node) {
-  var cyclomatic = 0, maxLoopDepth = 0;
-  function traverse(n, depth) {
-    if (BRANCH_NODE_TYPES[n.type]) cyclomatic++;
-    if (LOOP_NODE_TYPES[n.type]) { depth++; if (depth > maxLoopDepth) maxLoopDepth = depth; }
-    var children = n.children || [];
-    for (var i = 0; i < children.length; i++) traverse(children[i], depth);
-  }
-  traverse(node, 0);
-  return { cyclomatic: cyclomatic, maxLoopDepth: maxLoopDepth };
-}
-
-function _extractCalleeName(node, source) {
-  var fnNode = node.childForFieldName ? node.childForFieldName('function') : undefined;
-  if (fnNode) {
-    var name = extractName(fnNode, source);
-    if (name) return name;
-    if (fnNode.type === 'member_expression') {
-      var prop = fnNode.childForFieldName ? fnNode.childForFieldName('property') : undefined;
-      if (prop) return source.substring(prop.startIndex, prop.endIndex);
-    }
-    return undefined;
-  }
-  return undefined;
-}
-
-// 过程内高阶热路径分析（#9 过程间传播的基础；worker 内联版）
-function _analyzeIntra(node, source, fnName) {
-  var ITERATOR_APIS = { forEach:1, map:1, filter:1, reduce:1, reduceRight:1, find:1, findIndex:1, some:1, every:1, flatMap:1, each:1, collect:1, eachChild:1, walk:1, iterate:1 };
-  var ALLOC_APIS = { new:1, alloc:1, allocate:1, create:1, make:1, build:1, malloc:1, construct:1, clone:1 };
-  var r = { linearScanInLoop:false, allocInLoop:false, recursionInLoop:false, unguardedRecursion:false };
-  var isRecursive = false;
-  function visit(n, loopDepth, underGuard) {
-    if (n.type === 'call_expression' || n.type === 'call' || n.type === 'method_invocation' || n.type === 'invocation_expression') {
-      var callee = _extractCalleeName(n, source);
-      if (callee) {
-        if (callee === fnName) {
-          isRecursive = true;
-          if (loopDepth > 0) r.recursionInLoop = true;
-          if (!underGuard) r.unguardedRecursion = true;
-        }
-        if (loopDepth > 0) {
-          if (ITERATOR_APIS[callee]) r.linearScanInLoop = true;
-          if (ALLOC_APIS[callee]) r.allocInLoop = true;
-        }
-      }
-    }
-    if (loopDepth > 0 && n.type === 'new_expression') r.allocInLoop = true;
-    var isGuard = (n.type === 'if_statement' || n.type === 'conditional_expression' || n.type === 'ternary_expression' || n.type === 'switch_statement' || n.type === 'when_clause' || n.type === 'match_arm' || n.type === 'else_clause');
-    var nextLoop = LOOP_NODE_TYPES[n.type] ? loopDepth + 1 : loopDepth;
-    var nextGuard = underGuard || isGuard;
-    if (n.children) { for (var i = 0; i < n.children.length; i++) visit(n.children[i], nextLoop, nextGuard); }
-  }
-  visit(node, 0, false);
-  if (!isRecursive) r.unguardedRecursion = false;
-  return r;
-}
-
-// 继承/接口实现提取（worker 内联版，无法 import 外部模块，逻辑与 codebaseGraphQueries.extractInherits 对齐）：
-// C++ base_class_clause / TS-Java heritage(extends_clause|implements_clause) / Python superclasses / Ruby superclass
-function _extractInheritNames(node, source) {
-  var result = { inherits: [], implements: [] };
-  function collectInto(n, out) {
-    var children = n.children || [];
-    for (var i = 0; i < children.length; i++) {
-      var c = children[i];
-      if (c.type === 'identifier' || c.type === 'type_identifier' || c.type === 'constant') {
-        out.push(source.substring(c.startIndex, c.endIndex));
-      }
-      collectInto(c, out);
-    }
-  }
-  if (node.childForFieldName) {
-    var heritage = node.childForFieldName('heritage');
-    if (heritage) {
-      var hc = heritage.children || [];
-      for (var j = 0; j < hc.length; j++) {
-        if (hc[j].type === 'extends_clause') { collectInto(hc[j], result.inherits); }
-        else if (hc[j].type === 'implements_clause') { collectInto(hc[j], result.implements); }
-        else { collectInto(hc[j], result.inherits); }
-      }
-    }
-    var f = node.childForFieldName('superclasses'); if (f) collectInto(f, result.inherits);
-    f = node.childForFieldName('base_class_clause'); if (f) collectInto(f, result.inherits);
-    f = node.childForFieldName('superclass'); if (f) collectInto(f, result.inherits);
-  }
-  return result;
-}
-
-// USAGE 提取（读写区分，worker 内联版，与主线程 _isUsageNode/_collectUsageEdges 对齐）
-function _isUsageNode(t) {
-  return t === 'assignment_expression' || t === 'assignment' ||
-    t === 'augmented_assignment_expression' || t === 'compound_assignment_expression' ||
-    t === 'type_annotation' || t === 'type_identifier' || t === 'type_hint' ||
-    t === 'new_expression' || t === 'object_creation_expression';
-}
-function _collectUsageEdges(node, source, currentFn, edges) {
-  var add = function (name, access) {
-    if (name && name.length > 0 && name !== 'this') {
-      edges.push({ source: currentFn, target: 'usage:' + name, type: 'USAGE', properties: { access: access } });
-    }
-  };
-  if (node.type === 'assignment_expression' || node.type === 'assignment' ||
-    node.type === 'augmented_assignment_expression' || node.type === 'compound_assignment_expression') {
-    var left = node.childForFieldName ? (node.childForFieldName('left') || node.childForFieldName('target')) : undefined;
-    if (left) {
-      if (left.type === 'identifier' || left.type === 'field_identifier') {
-        add(source.substring(left.startIndex, left.endIndex), 'write');
-      } else if (left.childForFieldName) {
-        var prop = left.childForFieldName('property') || left.childForFieldName('field');
-        if (prop && (prop.type === 'property_identifier' || prop.type === 'identifier')) {
-          add(source.substring(prop.startIndex, prop.endIndex), 'write');
-        }
-      }
-    }
-    return;
-  }
-  if (node.type === 'type_annotation' || node.type === 'type_hint') {
-    var ch = node.children || [];
-    for (var i = 0; i < ch.length; i++) {
-      if (ch[i].type === 'type_identifier' || ch[i].type === 'identifier') {
-        add(source.substring(ch[i].startIndex, ch[i].endIndex), 'read');
-      }
-    }
-    return;
-  }
-  if (node.type === 'type_identifier') {
-    add(source.substring(node.startIndex, node.endIndex), 'read');
-    return;
-  }
-  if (node.type === 'new_expression' || node.type === 'object_creation_expression') {
-    var ctor = node.childForFieldName ? (node.childForFieldName('constructor') || node.childForFieldName('type') || node.childForFieldName('class')) : undefined;
-    if (ctor) {
-      add(source.substring(ctor.startIndex, ctor.endIndex), 'read');
-    }
-  }
-}
-
-function walkAST(node, source, filePath, nodes, edges, currentFn, loopDepth) {
-  if (loopDepth === undefined) loopDepth = 0;
-  const nodeType = AST_TO_NODE_TYPE[node.type];
-  let myFn = currentFn;
-  // Call sites → CALLS edge (virtual target, resolved later in _matchCallsToDefinitions)
-  if (currentFn && (node.type === 'call_expression' || node.type === 'call' || node.type === 'method_invocation' || node.type === 'invocation_expression')) {
-    const callee = _extractCalleeName(node, source);
-    if (callee) {
-      edges.push({ source: currentFn, target: 'call:' + callee, type: 'CALLS', properties: { loopDepth: loopDepth } });
-    }
-  }
-  // Usage sites → USAGE edge (read/write, resolved later in _matchUsageEdgesToDefinitions)
-  if (currentFn && _isUsageNode(node.type)) {
-    _collectUsageEdges(node, source, currentFn, edges);
-  }
-  if (nodeType) {
-    const name = extractName(node, source);
-    if (name) {
-      const qualifiedName = filePath + '::' + name;
-      const startLine = node.startPosition ? node.startPosition.row + 1 : undefined;
-      const endLine = node.endPosition ? node.endPosition.row + 1 : undefined;
-      var cx = computeComplexity(node);
-      var intra = (nodeType === 'function' || nodeType === 'method') ? _analyzeIntra(node, source, name) : undefined;
-      var hasMetrics = cx.cyclomatic > 0 || cx.maxLoopDepth > 0;
-      var props = (hasMetrics || intra) ? {} : undefined;
-      if (hasMetrics) { props.cyclomatic = cx.cyclomatic; props.loop_depth = cx.maxLoopDepth; }
-      if (intra) {
-        props.linear_scan_in_loop = intra.linearScanInLoop ? 1 : 0;
-        props.alloc_in_loop = intra.allocInLoop ? 1 : 0;
-        props.recursion_in_loop = intra.recursionInLoop ? 1 : 0;
-        props.unguarded_recursion = intra.unguardedRecursion ? 1 : 0;
-      }
-      nodes.push({ id: qualifiedName, name: name, type: nodeType, filePath: filePath, qualifiedName: qualifiedName, inDegree: 0, outDegree: 0, startLine: startLine, endLine: endLine, properties: props });
-      edges.push({ source: filePath, target: qualifiedName, type: 'CONTAINS' });
-      // 继承/接口实现边（虚拟目标 inherits:/implements:<baseName>，索引后由 _matchInheritsToDefinitions 解析）
-      if (nodeType === 'class' || nodeType === 'interface') {
-        var bases = _extractInheritNames(node, source);
-        for (var bi = 0; bi < bases.inherits.length; bi++) {
-          edges.push({ source: qualifiedName, target: 'inherits:' + bases.inherits[bi], type: 'INHERITS' });
-        }
-        for (var ii = 0; ii < bases.implements.length; ii++) {
-          edges.push({ source: qualifiedName, target: 'implements:' + bases.implements[ii], type: 'IMPLEMENTS' });
-        }
-      }
-      myFn = qualifiedName;
-    }
-  }
-  const nextLoopDepth = LOOP_NODE_TYPES[node.type] ? loopDepth + 1 : loopDepth;
-  if (node.children) {
-    for (let i = 0; i < node.children.length; i++) {
-      walkAST(node.children[i], source, filePath, nodes, edges, myFn, nextLoopDepth);
-    }
-  }
-}
-
-// Worker 级 parser 缓存（对齐 C 版 get_thread_parser）：按语言复用 Parser 实例，
-// 避免大仓库每文件一次 new Parser() + setLanguage（数万次 WASM 语言绑定开销）。
-const parserCache = {};
-
-self.onmessage = async function(e) {
-  const msg = e.data;
-  if (msg.type === 'init') {
-    try {
-      await doInit(msg.tsWasm, msg.langWasms);
-      self.postMessage({ type: 'init-done', langCount: Object.keys(languages).length });
-    } catch(err) {
-      self.postMessage({ type: 'init-error', error: err.message || String(err) });
-    }
-  } else if (msg.type === 'parse') {
-    try {
-      const lang = languages[msg.langName];
-      if (!lang) { self.postMessage({ type: 'parse-result', id: msg.id, nodes: [], edges: [] }); return; }
-      let parser = parserCache[msg.langName];
-      if (!parser) { parser = new Parser(); parser.setLanguage(lang); parserCache[msg.langName] = parser; }
-      const tree = parser.parse(msg.source);
-      const nodes = [], edges = [];
-      // 必须释放 tree（WASM 线性内存），否则数千文件后 ts_malloc_default abort
-      if (tree) { try { walkAST(tree.rootNode, msg.source, msg.filePath, nodes, edges); } finally { tree.delete(); } }
-      self.postMessage({ type: 'parse-result', id: msg.id, nodes: nodes, edges: edges });
-    } catch(err) {
-      self.postMessage({ type: 'parse-result', id: msg.id, nodes: [], edges: [], error: err.message || String(err) });
-    }
-  }
-};
-`;
+		return buildWorkerCode(tsJsContent);
 	}
 
 	/**
 	 * 通过 Worker 解析单个文件（带 15 秒超时，防止 tree-sitter 挂起导致死锁）
 	 */
+	/** 提交一次解析（委托 CodebaseGraphParserPool，含 15s 超时兜底）。 */
 	private _parseViaWorker(worker: Worker, id: number, source: string, langName: string, filePath: string): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; status: FileCoverageStatus; reason?: string }> {
-		return new Promise((resolve) => {
-			let resolved = false;
-			const handler = (e: MessageEvent) => {
-				if (e.data.type === 'parse-result' && e.data.id === id) {
-					if (resolved) { return; }
-					resolved = true;
-					clearTimeout(timeout);
-					worker.removeEventListener('message', handler);
-					const nodes: GraphNode[] = e.data.nodes || [];
-					const edges: GraphEdge[] = e.data.edges || [];
-					const err: string | undefined = e.data.error;
-					// 解析出错但有部分节点 → partial；全空 → parse_error；正常 → indexed
-					const status: FileCoverageStatus = err
-						? (nodes.length > 0 ? 'partial' : 'parse_error')
-						: 'indexed';
-					resolve({ nodes, edges, status, reason: err });
-				}
-			};
-			worker.addEventListener('message', handler);
-
-			// 15 秒超时：某些文件（如生成的代码、超长行）可能导致 tree-sitter 挂起
-			const timeout = setTimeout(() => {
-				if (resolved) { return; }
-				resolved = true;
-				worker.removeEventListener('message', handler);
-				this._logService.warn('[CodebaseGraph]', `⏱ Worker parse timeout (15s), skipping: ${filePath}`);
-				resolve({ nodes: [], edges: [], status: 'timeout', reason: 'worker parse timeout 15s' }); // 跳过该文件，继续处理下一个
-			}, 15000);
-
-			worker.postMessage({ type: 'parse', id, source, langName, filePath });
-		});
+		return this._parserPool.parse(worker, id, source, langName, filePath);
 	}
 
 	private _disposeWorkers(): void {
-		for (const w of this._parserWorkers) { w.terminate(); }
-		this._parserWorkers = [];
-		this._workerInitPromise = undefined;
-		// 清理自愈参数（dispose 后若再崩溃不应重建）
-		this._workerUrl = undefined;
-		this._workerTsWasm = undefined;
-		this._workerLangWasms = undefined;
+		this._parserPool.dispose();
 	}
 
 	// ─── Main Index Method ──────────────────────────────────────────────
@@ -1784,12 +1276,15 @@ self.onmessage = async function(e) {
 
 		// 1. Scan files
 		// 全量索引前刷新缓存：用户可能刚改过 .cbmignore / 刚添加 .uproject
-		this._invalidateExcludeCache(rootPath);
-		const excludeDirs = await this._resolveExcludeDirs(rootPath, config.excludeDirs);
+		this._excludeResolver.invalidate(rootPath);
+		const excludeDirs = await this._excludeResolver.resolve(rootPath, config.excludeDirs);
 		// 记录本次全量索引的生效范围，供 watcher/增量索引用同一口径（防幻影变更）
 		this._watchScopeCache.set(this._normalizeRoot(rootPath), { excludeDirs, keepDirs: config.keepDirs ? [...config.keepDirs] : undefined });
 		this._onDidIndexProgress.fire('📁 扫描文件...');
-		const files = await this._scanFiles(rootPath, excludeDirs, config.subPath, cts.token, config.keepDirs);
+		const files = await this._scanner.scanFiles(
+			rootPath, excludeDirs, config.subPath, cts.token, config.keepDirs,
+			msg => this._onDidIndexProgress.fire(msg),
+		);
 			const filesScanned = files.length;
 			this._onDidIndexProgress.fire(`📁 找到 ${filesScanned} 个源文件`);
 
@@ -1841,15 +1336,16 @@ self.onmessage = async function(e) {
 				const content = await this._fileService.readFile(URI.file(filePath));
 				source = content.value.toString();
 			} catch { this._recordCoverage(relPath, 'skipped', 'read failed'); await this._recordFileHash(this._projectName, relPath, filePath); continue; }
-				if (source.length > MAX_FILE_SIZE) { this._recordCoverage(relPath, 'skipped', `file too large (${source.length} > ${MAX_FILE_SIZE})`); continue; }
+				if (source.length > MAX_FILE_SIZE) { this._recordCoverage(relPath, 'skipped', `file too large (${source.length} > ${MAX_FILE_SIZE})`); await this._recordFileHash(this._projectName, relPath, filePath); continue; }
 				// 跳过超长行文件（minified/生成代码会导致 tree-sitter 挂起）
-				if (source.indexOf('\n', 0) === -1 && source.length > 50000) { this._recordCoverage(relPath, 'skipped', 'single-line file > 50KB (minified?)'); continue; } // 单行超 50K
+				if (source.indexOf('\n', 0) === -1 && source.length > 50000) { this._recordCoverage(relPath, 'skipped', 'single-line file > 50KB (minified?)'); await this._recordFileHash(this._projectName, relPath, filePath); continue; } // 单行超 50K
 				// 快速检测最长行（只检查前 100 行，避免开销）
 				let maxLineLen = 0;
 				const lines = source.split('\n');
 				const checkLines = Math.min(lines.length, 100);
 				for (let li = 0; li < checkLines; li++) { if (lines[li].length > maxLineLen) { maxLineLen = lines[li].length; } }
-				if (maxLineLen > MAX_LINE_LENGTH) { this._recordCoverage(relPath, 'skipped', `line too long (${maxLineLen} > ${MAX_LINE_LENGTH})`); continue; }
+				// 防护类 skipped（永不可解析）必须记哈希——否则 watcher 每轮重报 added 翻烧饼
+				if (maxLineLen > MAX_LINE_LENGTH) { this._recordCoverage(relPath, 'skipped', `line too long (${maxLineLen} > ${MAX_LINE_LENGTH})`); await this._recordFileHash(this._projectName, relPath, filePath); continue; }
 
 				// 诊断日志：每 500 文件记录当前解析路径，便于定位卡死文件
 				if (idx % 500 === 0) {
@@ -1882,8 +1378,9 @@ self.onmessage = async function(e) {
 			// 记录逐文件覆盖率（indexed/partial/parse_error/timeout）
 			this._recordCoverage(relPath, result.status, result.reason, result.nodes.length);
 
-				// 记录文件哈希（mtime+size），供增量重索引分类使用
-				await this._recordFileHash(this._projectName, relPath, filePath);
+				// 记录文件哈希（mtime+size），供增量重索引分类使用。
+				// parse_error/timeout 不记（重试，见 _recordHashAfterParse）——否则失败固化。
+				await this._recordHashAfterParse(this._projectName, relPath, filePath, result.status);
 
 				if (idx % 50 === 0) {
 						const pct = Math.round(idx / filesScanned * 100);
@@ -1932,8 +1429,8 @@ self.onmessage = async function(e) {
 			}
 			// 记录逐文件覆盖率（indexed/partial/parse_error/timeout/skipped）
 			this._recordCoverage(relPath, result.status, result.reason, result.nodes.length);
-			// 记录文件哈希（mtime+size），供增量重索引分类使用
-			await this._recordFileHash(this._projectName, relPath, filePath);
+			// 记录文件哈希（mtime+size），供增量重索引分类使用。parse_error/timeout 不记（重试）。
+			await this._recordHashAfterParse(this._projectName, relPath, filePath, result.status);
 			if (i > 0 && i % YIELD_INTERVAL === 0) {
 					await new Promise<void>(resolve => setTimeout(resolve, 0));
 				}
@@ -2076,6 +1573,8 @@ self.onmessage = async function(e) {
 		}
 
 			const duration = Math.round((Date.now() - startTime) / 1000);
+			// 汇总诊断：全量轮 coverage 已 reset，直接统计全部 entries
+			this._logIndexSummary('full');
 			const result: IIndexResult = {
 				success: true,
 				message: `索引完成: ${filesScanned} 文件, ${nodesExtracted} 节点, ${edgesExtracted} 边`,
@@ -2125,7 +1624,7 @@ self.onmessage = async function(e) {
 		this._rootProjectMap.set(this._normalizeRoot(rootPath), project);
 		// watcher 扫描与索引扫描使用同一套目录排除（否则 Intermediate/ 等目录每轮误报全量 added）。
 		// 排除集解析含异步探测（.cbmignore / workspace exclude 配置），故 start 延后到解析完成。
-		void this._resolveExcludeDirs(rootPath, extraExcludeDirs).then(excludeDirs => {
+		void this._excludeResolver.resolve(rootPath, extraExcludeDirs).then(excludeDirs => {
 			const keep = keepDirs?.length ? [...keepDirs] : undefined;
 			// 记录生效范围：增量索引 / git-head 全量重建复用同一口径（防幻影变更翻烧饼）
 			this._watchScopeCache.set(this._normalizeRoot(rootPath), { excludeDirs, keepDirs: keep });
@@ -2204,6 +1703,8 @@ self.onmessage = async function(e) {
 		this._indexCts = cts;
 
 		let releaseLock: () => void;
+		// 变更文件清单（catch 里也要能读到——classification 是 try 块级作用域）
+		let changedFilesBrief = '';
 		try {
 			releaseLock = await this._lockIndex(rootPath);
 		} catch (lockErr) {
@@ -2222,7 +1723,7 @@ self.onmessage = async function(e) {
 			// 旧实现空调用 _resolveExcludeDirs(rootPath)（零 extra、无 keepDirs），与全量索引口径不一致，
 			// 导致基线 fileHashes 与增量扫描集错配：watcher 报幻影 deleted → 增量又报 added（翻烧饼循环）。
 			const cachedScope = this._watchScopeCache.get(this._normalizeRoot(rootPath));
-			const incExcludeDirs = cachedScope?.excludeDirs ?? await this._resolveExcludeDirs(rootPath);
+			const incExcludeDirs = cachedScope?.excludeDirs ?? await this._excludeResolver.resolve(rootPath);
 
 			// ─── 增量快路径（2026-08-21，日志 1787282021811）────────────────────────
 			// watcher 已算出变更集（root-relative '/' 分隔，与 _getRelativePath 口径一致），
@@ -2238,7 +1739,19 @@ self.onmessage = async function(e) {
 			// Find Symbol / Open File 检索不到其它任何源文件（用户实测：快照仅 4 文件 739
 			// 节点，instantNodes.ts 的 rotateDegrees 不在图内）。降级为全量扫描 + 分类：
 			// 无哈希记录的文件全部判为 added → 等效全量重建，一次补齐基线。
-			const hasBaseline = this._graph.store.getNodeCount() > 0 && this._graph.store.getFileHashCount() > 0;
+			//
+			// 残缺检测（2026-09-09，快照取证 fileHashes=6017 但仅 1196 节点）：有基线 ≠ 健康——
+			// 旧实现解析失败（parse_error/timeout）也记哈希 → classifyFiles 全判 unchanged →
+			// **失败永久固化**（6017 文件全部 skipped，只有被编辑过的文件产出节点）。
+			// 每文件平均节点数 < 2 即判残缺（正常项目 ≥ 5），清哈希强制全量重建。
+			const graphNodeCount = this._graph.store.getNodeCount();
+			const hashCount = this._graph.store.getFileHashCount();
+			const deficientGraph = graphNodeCount > 0 && hashCount > 0 && graphNodeCount / hashCount < 2;
+			if (deficientGraph) {
+				this._graph.store.clearFileHashes();
+				this._logService.warn('[CodebaseGraph]', `[baseline] deficient graph: ${graphNodeCount} nodes / ${hashCount} hashes — clearing hashes to force full re-index`);
+			}
+			const hasBaseline = graphNodeCount > 0 && this._graph.store.getFileHashCount() > 0;
 			if (hasChangeSet && hasBaseline) {
 				const added = changeSet!.added;
 				const modified = changeSet!.modified;
@@ -2255,7 +1768,10 @@ self.onmessage = async function(e) {
 				this._onDidIndexProgress.fire(`⚡ 增量索引：watcher 变更集 +${added.length} ~${modified.length} -${deleted.length}（跳过全量扫描）`);
 			} else {
 				this._onDidIndexProgress.fire('⚡ 增量索引：扫描变更文件...');
-				const absFilesScan = await this._scanFiles(rootPath, incExcludeDirs, undefined, cts.token, cachedScope?.keepDirs);
+				const absFilesScan = await this._scanner.scanFiles(
+					rootPath, incExcludeDirs, undefined, cts.token, cachedScope?.keepDirs,
+					msg => this._onDidIndexProgress.fire(msg),
+				);
 				relToAbs = new Map<string, string>();
 				for (const abs of absFilesScan) { relToAbs.set(this._getRelativePath(abs), abs); }
 				absFiles = absFilesScan;
@@ -2285,6 +1801,12 @@ self.onmessage = async function(e) {
 			for (const rel of [...classification.deleted, ...classification.modified]) {
 				this._graph.deleteByFile(rel);
 				this._graph.store.deleteFileHash(project, rel);
+				// 同步移除旧覆盖率条目：被改文件随后会重新 _recordCoverage，
+				// 被删文件则不应继续留在 coverage（否则 check_index_coverage 报幻影条目）
+				this._indexCoverage.delete(rel);
+			}
+			for (const rel of classification.deleted) {
+				this._parseFailCounts.delete(rel);
 			}
 
 			// 2. 重新解析新增/被改文件
@@ -2338,6 +1860,9 @@ self.onmessage = async function(e) {
 			// ── 阶段 2：按原文件顺序写入（upsert/虚拟边分流/哈希为有序主线程操作）──
 			parseResults.sort((a, b) => a.idx - b.idx);
 			for (const { rel, abs, result } of parseResults) {
+				// 记录逐文件覆盖率（与全量路径同口径）。此前增量路径只写 _zeroNodeFiles 诊断、
+				// 不写 coverage → [summary] 在增量轮恒为 indexed=0（无法反映真实处理量）。
+				this._recordCoverage(rel, result.status, result.reason, result.nodes.length);
 				if (result.nodes.length === 0) {
 					_zeroNodeFiles.push(`${rel}[${result.status}${result.reason ? ': ' + result.reason : ''}]`);
 				}
@@ -2358,18 +1883,24 @@ self.onmessage = async function(e) {
 					}
 					edgesExtracted++;
 				}
-				// 更新文件哈希（仅 mtime+size，避免 SHA-256 开销）
+				// 更新文件哈希（仅 mtime+size，避免 SHA-256 开销）。
+				// parse_error/timeout 不记（允许下轮重试，见 _recordHashAfterParse）——否则失败固化。
 				try {
-					const stat = await this._fileService.stat(URI.file(abs));
-					this._graph.store.upsertFileHash({
-						project,
-						relPath: rel,
-						sha256: '',
-						mtimeNs: stat.mtime * 1_000_000,
-						size: stat.size,
-					});
-					// Phase 2 接线：同步到主进程 SQLite 后端（默认关闭）
-					this._syncFileHashToSqlite(project, rel, '', stat.mtime * 1_000_000, stat.size);
+					if (result.status === 'parse_error' || result.status === 'timeout') {
+						await this._recordHashAfterParse(project, rel, abs, result.status);
+					} else {
+						const stat = await this._fileService.stat(URI.file(abs));
+						this._graph.store.upsertFileHash({
+							project,
+							relPath: rel,
+							sha256: '',
+							mtimeNs: stat.mtime * 1_000_000,
+							size: stat.size,
+						});
+						// Phase 2 接线：同步到主进程 SQLite 后端（默认关闭）
+						this._syncFileHashToSqlite(project, rel, '', stat.mtime * 1_000_000, stat.size);
+						this._parseFailCounts.delete(rel);
+					}
 				} catch { /* 忽略哈希更新失败 */ }
 				// 每个文件后让出主线程（旧值 i%50：改动 <50 个文件时**一次都不让出**，
 				// 节点写入整段独占主线程，是"改 1 个文件也卡"的直接原因）。
@@ -2430,6 +1961,10 @@ self.onmessage = async function(e) {
 				this._logService.info('[CodebaseGraph]', `增量解析 0 节点文件 ${_zeroNodeFiles.length}/${toParseRel.length}: ${_zeroNodeFiles.slice(0, 5).join(', ')}${_zeroNodeFiles.length > 5 ? ` ...(另${_zeroNodeFiles.length - 5}个)` : ''}`);
 			}
 
+			// 汇总诊断：增量轮 coverage 是累积的，按本轮处理范围取子集
+			this._logIndexSummary('incremental', [...classification.added, ...classification.modified, ...classification.deleted]);
+			changedFilesBrief = [...classification.added, ...classification.modified, ...classification.deleted].join(', ');
+
 			const duration = Math.round((Date.now() - startTime) / 1000);
 			const message = `增量索引完成: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} (${nodesExtracted} 节点, ${edgesExtracted} 边, ${similarEdges} 克隆边, ${duration}s, ${zstThrottled ? 'zst落盘已节流(SQLite已持久化)' : '落盘已排队'})`;
 			this._onDidIndexProgress.fire(`✓ ${message}`);
@@ -2442,7 +1977,10 @@ self.onmessage = async function(e) {
 			this._onDidIndexComplete.fire(result);
 			return result;
 		} catch (err: any) {
-			const msg = `增量索引失败: ${err?.message || String(err)}`;
+			// stack 必须输出：「undefined reading X」类错误只有堆栈才能定位（2026-09-09 教训——
+			// 只有 message 时无法定位 inDegree 崩溃点，排查耗时）。
+			this._logService.error('[CodebaseGraph]', `增量索引失败 stack:\n${err?.stack || '(no stack)'}`);
+			const msg = `增量索引失败: ${err?.message || String(err)} (files: ${changedFilesBrief || 'unknown'})`;
 			this._onDidIndexProgress.fire(`✗ ${msg}`);
 			return { success: false, message: msg, duration: 0 };
 		} finally {
@@ -2578,219 +2116,15 @@ self.onmessage = async function(e) {
 
 	// ─── Exclude Dirs Resolution (P1/P3/P4) ──────────────────────────────────
 
-	/** .cbmignore 解析缓存：归一化 root → 目录名列表 */
-	private readonly _cbmIgnoreCache = new Map<string, string[]>();
-
-	/**
-	 * 读取 code-workspace 的 `search.exclude` / `files.exclude` 配置，提取目录名。
-	 * UE / 游戏引擎等特异性排除由用户在 code-workspace 中显式配置，索引器不再探测 `*.uproject`。
-	 */
-	private _readWorkspaceExcludes(rootPath: string): string[] {
-		const resource = URI.file(rootPath);
-		const searchExclude = this._configurationService.getValue<Record<string, boolean | { when?: string }>>('search.exclude', { resource });
-		const filesExclude = this._configurationService.getValue<Record<string, boolean | { when?: string }>>('files.exclude', { resource });
-		return mergeExcludeDirs(extractExcludeDirNames(searchExclude), extractExcludeDirNames(filesExclude));
-	}
-
-	/** 读取并解析 `<root>/.cbmignore`（P4：此前只写不读）。不存在时返回空列表。 */
-	private async _readCbmIgnore(rootPath: string): Promise<string[]> {
-		const key = this._normalizeRoot(rootPath);
-		const cached = this._cbmIgnoreCache.get(key);
-		if (cached !== undefined) { return cached; }
-		let dirs: string[] = [];
-		try {
-			const content = await this._fileService.readFile(URI.joinPath(URI.file(rootPath), '.cbmignore'));
-			dirs = parseCbmIgnore(content.value.toString());
-		} catch {
-			// 文件不存在是常态，不记日志
-		}
-		this._cbmIgnoreCache.set(key, dirs);
-		return dirs;
-	}
-
-	/**
-	 * 解析某个 root 的最终排除目录集合：
-	 * 通用默认 + code-workspace 的 `search.exclude`/`files.exclude` + `.cbmignore` + 调用方额外指定。
-	 */
-	private async _resolveExcludeDirs(rootPath: string, extra?: readonly string[]): Promise<Set<string>> {
-		const cbmIgnore = await this._readCbmIgnore(rootPath);
-		const wsExcludes = this._readWorkspaceExcludes(rootPath);
-		const merged = mergeExcludeDirs(
-			DEFAULT_EXCLUDE_DIRS,
-			wsExcludes,
-			cbmIgnore,
-			extra,
-		);
-		if (wsExcludes.length || cbmIgnore.length) {
-			this._logService.info('[CodebaseGraph]', `[exclude] ${rootPath}: workspace=${wsExcludes.length} items, cbmignore=${cbmIgnore.length} items, total=${merged.length}`);
-		}
-		return new Set(merged);
-	}
-
-	/** 使排除目录相关缓存失效（配置变更 / 重新索引时调用）。 */
-	private _invalidateExcludeCache(rootPath: string): void {
-		const key = this._normalizeRoot(rootPath);
-		this._cbmIgnoreCache.delete(key);
-	}
+	// 排除集解析已拆到 CodebaseGraphExcludeResolver（P1-5，2026-09-09）。
+	// 注意：档位基线由 resolver 统一解析，此处不再重复（避免两处口径漂移）。
 
 	// ─── File Scanning ───────────────────────────────────────────────────────
-
-	private _scanFileCount = 0; // 扫描累计计数（用于进度频率控制）
-	private _scanRootPath = ''; // 扫描根路径（用于计算相对路径判断 keepDirs）
-
-	private async _scanFiles(rootPath: string, excludeDirs: Set<string>, subPath: string | undefined, token: CancellationToken, keepDirs?: string[]): Promise<string[]> {
-		const scanPath = subPath
-			? URI.joinPath(URI.file(rootPath), subPath).fsPath
-			: rootPath;
-		const results: string[] = [];
-		this._scanFileCount = 0;
-		this._scanRootPath = scanPath.replace(/\\/g, '/');
-		// 构建 keepDirs 匹配集合（大小写不敏感，标准化为 / 分隔）
-		const keepSet = new Set<string>();
-		if (keepDirs) {
-			for (const k of keepDirs) {
-				keepSet.add(k.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase());
-			}
-		}
-		this._logService.info('[CodebaseGraph]', `[scan] start: ${scanPath}, excludeDirs=${[...excludeDirs].join(',')}, keepDirs=${[...keepSet].join(',')}`);
-		this._onDidIndexProgress.fire(`📁 扫描目录: ${scanPath}`);
-		await this._scanDir(URI.file(scanPath), excludeDirs, results, token, 0, keepSet);
-		this._logService.info('[CodebaseGraph]', `[scan] done: ${results.length} files`);
-		this._onDidIndexProgress.fire(`📁 扫描完成: 找到 ${results.length} 个源文件`);
-		return results;
-	}
-
-	// 大小写不敏感的排除目录集合
-	private _excludeLowerCache: Set<string> | undefined;
-	private _excludeLowerKey: string = '';
-	private _isExcluded(name: string, excludeDirs: Set<string>): boolean {
-		if (excludeDirs.has(name)) { return true; }
-		// 构建大小写不敏感集合（缓存，避免每次重建）
-		const key = [...excludeDirs].sort().join(',');
-		if (this._excludeLowerKey !== key) {
-			this._excludeLowerCache = new Set([...excludeDirs].map(d => d.toLowerCase()));
-			this._excludeLowerKey = key;
-		}
-		return this._excludeLowerCache?.has(name.toLowerCase()) ?? false;
-	}
-
-	private async _scanDir(dirUri: URI, excludeDirs: Set<string>, results: string[], token: CancellationToken, depth: number, keepSet: Set<string>): Promise<void> {
-		if (token.isCancellationRequested) { return; }
-		if (depth > 30) { return; }
-
-		let stat;
-		try {
-			stat = await this._fileService.resolve(dirUri);
-		} catch {
-			return;
-		}
-
-		if (!stat.children) { return; }
-
-		let dirCount = 0, fileCount = 0;
-		for (const child of stat.children) {
-			if (token.isCancellationRequested) { return; }
-			if (child.name.startsWith('.') && child.name !== '.' && child.name !== '..') {
-				continue;
-			}
-			// 检查排除规则 + keepDirs 例外
-			if (this._isExcluded(child.name, excludeDirs)) {
-				// 如果是目录，检查是否在 keepDirs 中（通过相对路径匹配）
-				if (child.isDirectory && keepSet.size > 0) {
-					const childPath = child.resource.fsPath.replace(/\\/g, '/');
-					const relPath = this._scanRootPath && childPath.startsWith(this._scanRootPath)
-						? childPath.substring(this._scanRootPath.length).replace(/^\/+/, '')
-						: child.name;
-					// 检查 relPath 或其父路径是否匹配 keepSet 中的任一条目
-					const relPathLower = relPath.toLowerCase();
-					let shouldKeep = false;
-					for (const keep of keepSet) {
-						// 精确匹配或 keep 是 relPath 的子路径前缀
-						if (relPathLower === keep || relPathLower.startsWith(keep + '/') || keep.startsWith(relPathLower + '/')) {
-							shouldKeep = true;
-							break;
-						}
-					}
-				if (shouldKeep) {
-					// 该被排除目录是"通向 keep 的祖先"（keep 是其子孙）→ 只沿 keep 路径下钻，
-					// 禁止全量遍历祖先（防止 Content 等巨型目录因 keep 命中而卡死/海量扫描）
-					const isKeepAncestor = [...keepSet].some(k => k.startsWith(relPathLower + '/'));
-					if (isKeepAncestor) {
-						this._logService.info('[CodebaseGraph]', `[scan] keep-path descend through excluded ancestor: ${relPath}`);
-						await this._scanKeepPath(child.resource, relPathLower, excludeDirs, results, token, keepSet, depth + 1);
-						continue;
-					}
-					this._logService.info('[CodebaseGraph]', `[scan] keeping excluded dir: ${relPath}`);
-					// 继续扫描此目录（keep 精确命中）
-				} else {
-					continue;
-				}
-				} else {
-					continue;
-				}
-			}
-			if (child.isDirectory) {
-				dirCount++;
-				await this._scanDir(child.resource, excludeDirs, results, token, depth + 1, keepSet);
-			} else if (child.isFile) {
-				fileCount++;
-				const ext = this._getExtension(child.name);
-				if (ext && EXTENSION_TO_WASM_LANG[ext]) {
-					results.push(child.resource.fsPath);
-					this._scanFileCount++;
-					// 每 500 个文件 fire 一次进度（降低日志噪声）
-					if (this._scanFileCount % 500 === 0) {
-						const dirName = dirUri.fsPath.split(/[\\/]/).pop() || '';
-						this._onDidIndexProgress.fire(`📁 扫描中: ${results.length} 文件 (${dirName})`);
-					}
-				}
-			}
-		}
-
-		// 根目录和深层目录都记录日志（降级为 debug，避免刷屏）
-		if (depth <= 2 || dirCount > 5) {
-			const dirName = dirUri.fsPath.split(/[\\/]/).pop() || dirUri.fsPath;
-			this._logService.debug('[CodebaseGraph]', `[scan] depth=${depth} dir=${dirName} dirs=${dirCount} files=${fileCount} total=${results.length}`);
-		}
-	}
+	// 文件遍历（含 keepDirs 例外下钻）已拆到 CodebaseGraphScanner（P1-5，2026-09-09）。
 
 	private _getExtension(fileName: string): string {
 		const idx = fileName.lastIndexOf('.');
 		return idx >= 0 ? fileName.substring(idx).toLowerCase() : '';
-	}
-
-	/**
-	 * 沿 keep 路径逐级下钻（每级只进入通向 keep 的下一段），直到某目录本身是 keep 精确命中时，
-	 * 再对该目录执行完整 _scanDir。用于"被排除祖先仅因 keep 保留"的场景：
-	 * 例如 keep=content/script 时，只遍历 Content/Script 分支，跳过 Content/Art、Content/Audio 等。
-	 * relPathLower 为 dirUri 相对扫描根的路径（小写 / 分隔）。
-	 */
-	private async _scanKeepPath(dirUri: URI, relPathLower: string, excludeDirs: Set<string>, results: string[], token: CancellationToken, keepSet: Set<string>, depth: number): Promise<void> {
-		// 提取 dirUri 下所有"通向 keep"的下一段目录名
-		const nextSegs = new Set<string>();
-		let exactKeep = false;
-		for (const keep of keepSet) {
-			if (keep === relPathLower) { exactKeep = true; }
-			else if (keep.startsWith(relPathLower + '/')) {
-				nextSegs.add(keep.slice(relPathLower.length + 1).split('/')[0]);
-			}
-		}
-		// 当前目录本身就是 keep 精确目录 → 整目录全扫（含其全部子树）
-		if (exactKeep) {
-			this._logService.info('[CodebaseGraph]', `[scan] keep-path reached keep dir: ${relPathLower}`);
-			await this._scanDir(dirUri, excludeDirs, results, token, depth, keepSet);
-			return;
-		}
-		// 否则只沿下一段目录下钻（不遍历祖先的其他内容）
-		for (const seg of nextSegs) {
-			if (token.isCancellationRequested) { return; }
-			const childUri = URI.joinPath(dirUri, seg);
-			const stat = await this._fileService.stat(childUri).catch(() => undefined);
-			if (stat?.isDirectory) {
-				this._logService.info('[CodebaseGraph]', `[scan] keep-path descend: ${relPathLower}/${seg}`);
-				await this._scanKeepPath(childUri, `${relPathLower}/${seg}`, excludeDirs, results, token, keepSet, depth + 1);
-			}
-		}
 	}
 
 	/** 取路径最后一段作为默认项目名（多 folder：每 folder 用其目录名作项目名）。 */
@@ -3252,6 +2586,37 @@ self.onmessage = async function(e) {
 	private _recordCoverage(relPath: string, status: FileCoverageStatus, reason?: string, nodeCount?: number): void {
 		const ext = this._getExtension(relPath);
 		this._indexCoverage.set(relPath, { path: relPath, status, reason, nodes: nodeCount, ext });
+	}
+
+	/** 解析失败重试上限（会话级内存）：超过后记哈希放弃，防「失败文件每轮 watcher 重报」翻烧饼。 */
+	private _parseFailCounts = new Map<string, number>();
+	private static readonly PARSE_FAIL_RETRY_MAX = 3;
+
+	/**
+	 * 解析后按结果决定是否记录哈希基线（统一全量/增量两条路径的策略）。
+	 *
+	 * Bug（2026-09-09，快照取证）：旧实现**无论解析成败都记哈希**——全量轮 6000 文件
+	 * 解析失败（parse_error/timeout）后哈希照记 → classifyFiles 全判 unchanged →
+	 * **失败永久固化**（图只剩被编辑过的文件，Find Symbol 检索不到任何未编辑符号）。
+	 * 现在：parse_error/timeout 不记哈希允许重试，但会话内失败超上限后放弃（防翻烧饼）；
+	 * 实例重启清零计数——环境修复（如 wasm 可用）后重启即自愈。
+	 */
+	private async _recordHashAfterParse(project: string, relPath: string, absPath: string, status: FileCoverageStatus): Promise<void> {
+		let fails = 0;
+		if (status === 'parse_error' || status === 'timeout') {
+			fails = (this._parseFailCounts.get(relPath) ?? 0) + 1;
+			this._parseFailCounts.set(relPath, fails);
+		} else {
+			this._parseFailCounts.delete(relPath); // 成功/防护类跳过：清计数
+		}
+		// 策略判定抽为纯函数（common），可被单测直接覆盖
+		if (!shouldRecordHashAfterParse(status, fails, CodebaseGraphService.PARSE_FAIL_RETRY_MAX)) {
+			return; // 不记哈希：下次 watcher 轮询重试
+		}
+		if (fails > 0) {
+			this._logService.debug('[CodebaseGraph]', `[parse] ${relPath} failed ${fails}x — recording hash to stop retrying (restart to reset)`);
+		}
+		await this._recordFileHash(project, relPath, absPath);
 	}
 
 	/** 记录文件哈希（仅 mtime+size，避免 SHA-256 开销），供增量重索引的 mtime/size 分类使用。 */
@@ -4324,6 +3689,119 @@ self.onmessage = async function(e) {
 		return { project: this._projectName, exists: false, nodeCount: 0, edgeCount: 0, fileCount: 0 };
 	}
 
+	/**
+	 * 索引健康度：把「图是否可用」变成可判定的量化指标（2026-09-09）。
+	 *
+	 * 背景：图谱曾出现 6017 条基线 vs 1196 节点（每文件 0.2 个节点）——解析大面积失败
+	 * 且失败被固化，但 hasGraphData() 仍返回 true、UI 无任何提示，用户只能看到「搜不到」。
+	 * 判据：nodesPerFile < 2 视为残缺（正常项目 ≥ 5），另暴露解析失败数、契约违规数。
+	 */
+	getIndexHealth(): IIndexHealthReport {
+		const nodeCount = this._graph.store.getNodeCount();
+		const hashCount = this._graph.store.getFileHashCount();
+		const nodesPerFile = hashCount > 0 ? nodeCount / hashCount : 0;
+		const entries = [...this._indexCoverage.values()];
+		let parseFailed = 0;
+		for (const e of entries) {
+			if (e.status === 'parse_error' || e.status === 'timeout') { parseFailed++; }
+		}
+		const deficient = nodeCount > 0 && hashCount > 0 && nodesPerFile < 2;
+		return {
+			nodeCount,
+			fileCount: hashCount,
+			nodesPerFile: Math.round(nodesPerFile * 100) / 100,
+			parseFailedFiles: parseFailed,
+			absPathViolations: this._graph.store.getAbsPathViolationCount(),
+			deficient,
+			message: deficient
+				? `图谱残缺：${nodeCount} 节点 / ${hashCount} 文件（每文件 ${nodesPerFile.toFixed(2)} 节点，正常 ≥ 2）— 请重新索引`
+				: undefined,
+		};
+	}
+
+	/** 上次 SQLite 新鲜度校验时刻（节流基准）。 */
+	private _lastSqliteFreshnessCheckAt = 0;
+	private static readonly SQLITE_FRESHNESS_CHECK_INTERVAL_MS = 60_000;
+
+	/**
+	 * SQLite 新鲜度校验（2026-09-09，P0-1 第一步）。
+	 *
+	 * 三份状态源（内存 store / 主进程 SQLite / 磁盘 zst）可独立漂移，旧实现只在
+	 * 「SQLite 查到 0 条」时才被动回退内存——**落后但非空的情况完全静默**，查询会持续
+	 * 拿到陈旧/残缺结果。这里主动比对两侧节点数，明显落后即告警并后台补同步。
+	 *
+	 * 节流 60s：getNodeCount 是一次轻量 COUNT，但每查一次都做 IPC 仍不必要。
+	 * 触发同步是 fire-and-forget，不阻塞本次查询。
+	 *
+	 * @returns true = SQLite 可信（本次可查 SQLite）；false = 已确认落后，
+	 *   调用方本次应改走内存，避免把陈旧/残缺结果返回给用户（2026-09-09 补）。
+	 */
+	private async _ensureSqliteFreshness(project: string): Promise<boolean> {
+		if (!this._sqliteBackendEnabled || !this.hasGraphData()) { return true; }
+		const now = Date.now();
+		if (now - this._lastSqliteFreshnessCheckAt < CodebaseGraphService.SQLITE_FRESHNESS_CHECK_INTERVAL_MS) { return true; }
+		this._lastSqliteFreshnessCheckAt = now;
+		try {
+			const sqliteCount = await this._sqliteBackend!.getNodeCount(project);
+			const memCount = this._graph.store.getNodeCount();
+			const lagging = sqliteCount === 0 || (memCount > 1000 && sqliteCount < memCount * 0.5);
+			if (lagging) {
+				this._logService.warn('[CodebaseGraph]', `[sqlite-freshness] sqlite lags behind memory: sqlite=${sqliteCount} memory=${memCount} (project="${project}") — using in-memory for this query, syncing in background`);
+				this._sqliteEmptyProjects.delete(project); // 同步完成后应重新走 SQLite 路径
+				void this._syncGraphToSqlite().catch(err =>
+					this._logService.debug('[CodebaseGraph]', `[sqlite-freshness] background sync failed: ${err}`));
+				return false; // 本次别查 SQLite：它的数据是陈旧/残缺的
+			}
+		} catch (err) {
+			this._logService.debug('[CodebaseGraph]', `[sqlite-freshness] check failed: ${err}`);
+		}
+		return true;
+	}
+
+	/**
+	 * 索引汇总诊断日志（2026-09-09，D6「静默降级链无出口」）。
+	 *
+	 * 背景：图谱曾出现「6017 文件基线 vs 1196 节点」的残缺状态，但系统完全静默——
+	 * 只能靠手工解包 `.codebase-memory/graph.db.zst` 才能判断索引是否真的成功。
+	 * 现在每轮索引结束打一行聚合日志：成功/跳过/失败分类（按原因 top3）+ 健康度结论，
+	 * 让用户（和排障）从日志直接判成败，不必再解包快照。
+	 *
+	 * @param scopedRels 增量轮本轮处理的文件（coverage 是累积的，需按本轮范围取子集）。
+	 */
+	private _logIndexSummary(kind: 'full' | 'incremental', scopedRels?: string[]): void {
+		try {
+			const all = [...this._indexCoverage.values()];
+			const scope = scopedRels ? new Set(scopedRels) : undefined;
+			const entries = scope ? all.filter(e => scope.has(e.path)) : all;
+
+			let indexed = 0, skipped = 0, failed = 0;
+			const reasonCounts = new Map<string, number>();
+			for (const e of entries) {
+				if (e.status === 'parse_error' || e.status === 'timeout') {
+					failed++;
+					const r = e.reason || e.status;
+					reasonCounts.set(r, (reasonCounts.get(r) ?? 0) + 1);
+				} else if (e.status === 'skipped') {
+					skipped++;
+					const r = (e.reason || 'skipped').split('(')[0].trim();
+					reasonCounts.set(r, (reasonCounts.get(r) ?? 0) + 1);
+				} else {
+					indexed++;
+				}
+			}
+			const top = [...reasonCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+				.map(([r, c]) => `${r}×${c}`).join(', ');
+			const health = this.getIndexHealth();
+			this._logService.info('[CodebaseGraph]',
+				`[summary] ${kind}: indexed=${indexed} skipped=${skipped} failed=${failed}` +
+				`${top ? ` | top reasons: ${top}` : ''}` +
+				` | health: ${health.nodeCount} nodes / ${health.fileCount} files = ${health.nodesPerFile} per file` +
+				`${health.deficient ? ` ⚠ DEFICIENT — ${health.message}` : ' ✓ ok'}`);
+		} catch (err) {
+			this._logService.debug('[CodebaseGraph]', `[summary] failed: ${err}`);
+		}
+	}
+
 	getIndexCoverage(): IIndexCoverageReport {
 		const entries = [...this._indexCoverage.values()];
 		const totalFiles = entries.length;
@@ -4739,16 +4217,19 @@ self.onmessage = async function(e) {
 			if (_ms > 200) { this._logService.warn(`[CodebaseGraph] [searchGraphAsync][diag] IN-MEMORY sync path slow: ${_ms}ms needle="${(params.query || params.namePattern || '').slice(0, 40)}" total=${_r.total}`); }
 			return _r;
 		}
-		// ─── sqlite 空库门控（2026-08-20，对齐 searchHelpers._ripgrepBroken 模式）──
-		// 图从 gzip artifact 加载但本会话未做 sqlite 同步时，sqlite 恒为空 → 旧实现
-		// 每次 search_graph 都「查一次空 sqlite + 回退内存图」两步走（日志
-		// 1787214724132 每次都打 `sqlite empty — falling back`）。既然本 project 已确认
-		// 空，后续直接走内存图，省掉每次的无效 IPC 往返。索引/同步成功后会清除标记。
-		{
-			const _proj = params.project ?? this._projectName;
-			if (this._sqliteEmptyProjects.has(_proj) && this.hasGraphData()) {
-				return this.searchGraph(params);
-			}
+		// ─── SQLite 新鲜度校验（2026-09-09，P0-1「单一事实源」第一步）──────────
+		// D1「三源静默漂移」：权威关系倒挂（注释说 zst 权威、查询却走 SQLite），
+		// SQLite 落后于内存时旧实现**毫无信号**，只有 candidates=0 才被动回退内存。
+		// 这里主动比对两侧节点数：明显落后 → warn + 后台补同步，使漂移可见且自愈，
+		// 为最终切换到「SQLite 单一事实源」铺路（有自愈后切换风险大幅下降）。
+		// 落后（陈旧/残缺）时本次改走内存——否则会把旧数据当成查询结果返回。
+		//
+		// 注（P0-1 收尾）：原「空库门控」（_sqliteEmptyProjects.has → 直接走内存）已删除，
+		// 由本校验完全覆盖——其判定含 `sqliteCount === 0`（空库即落后），且修复了标记
+		// 永久残留的问题（同步成功/落后检测均会清除）。空库场景最多多一次无效 IPC
+		// （60s 节流内），换得「标记残留 → 永远查内存」这类状态机缺陷的消失。
+		if (!await this._ensureSqliteFreshness(params.project ?? this._projectName)) {
+			return this.searchGraph(params);
 		}
 		const limit = params.limit ?? 200;
 		const offset = params.offset ?? 0;
@@ -4773,13 +4254,10 @@ self.onmessage = async function(e) {
 			return this.searchGraph(params);
 		}
 		if (candidates.length === 0 && this.hasGraphData()) {
-			// sqlite 库为空（图从 gzip 加载、本会话未同步）→ 回退内存图，并记住本 project
-			// 已空，后续查询直接走内存（见方法开头的空库门控），避免每次多一次无效 IPC。
-			const _proj = params.project ?? this._projectName;
-			if (!this._sqliteEmptyProjects.has(_proj)) {
-				this._sqliteEmptyProjects.add(_proj);
-				this._logService.info(`[CodebaseGraph] [searchGraphAsync] sqlite empty for project "${_proj}" — falling back to in-memory graph and short-circuiting subsequent queries (run index_repository to populate sqlite)`);
-			}
+			// sqlite 空结果但内存有图 → 回退内存图（灾备）。
+			// 2026-09-09：不再写「空库」标记（freshness 校验已覆盖该场景：空库 → 落后 →
+			// 本次走内存 + 后台同步），避免标记残留导致「同步成功后仍永久查内存」。
+			this._logService.info(`[CodebaseGraph] [searchGraphAsync] sqlite returned 0 candidates — falling back to in-memory graph (run index_repository to populate sqlite)`);
 			return this.searchGraph(params);
 		}
 		const _tFetchMs = Date.now() - _tFetch;

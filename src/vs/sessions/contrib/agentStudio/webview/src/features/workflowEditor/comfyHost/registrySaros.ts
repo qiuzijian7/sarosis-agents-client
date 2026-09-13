@@ -48,13 +48,24 @@ export function registerSarosNodes(): void {
 	// 此处 spec 是端口名权威：syncNodePortsToSpec 每帧同步，须与 sarosLiteGraphNodes 的 NODE_CONFIGS 同名同数。
 const jin = (required: boolean = true): PortSpec => ({ name: 'in', type: 'SAROS_JSON', required });
 	const jout = (required: boolean = false): PortSpec => ({ name: 'out', type: 'SAROS_JSON', required });
+	// ★ W7（2026-09-09）：Start.out / End.in 端口类型 = 'ANY'（原 SAROS_JSON）。
+	//   「运行 = 从 Start 开始」要求任何待执行链都能挂到 Start 上，而
+	//   `isPortTypeCompatible` 是严格同类型匹配 —— SAROS_JSON 连不上 ComfyTV
+	//   stage 的 TEXT/IMAGE 端口，媒体链就永远进不了 Start 作用域（→ 永不执行）。
+	//   ANY 是 LiteGraph/registry 既有的通配类型（isPortTypeCompatible L335），
+	//   语义上也贴合：Start 输出「入口触发 + args 契约」、End 接收「任意最终产物」。
+	//   ⚠ 必须与 sarosLiteGraphNodes.NODE_CONFIGS 的同名端口类型保持一致
+	//   （syncNodePortsToSpec 每帧比对，类型漂移会导致端口反复重建）。
 	registerNodeSpec({ type: 'Saros.Start', kind: 'react', title: '开始', category: 'system', inputs: [], outputs: [
-		{ name: 'out', type: 'SAROS_JSON', required: false },
+		{ name: 'out', type: 'ANY', required: false },
 		// 2026-09-08：移除 text 输出端口（用户要求卡片零参数 UI）。
 		// 原「COMFYTV_TEXT 桥」（args.text 直连 stage prompt）随端口下线；
-		// args 数据仍经 out 口 SAROS_JSON 与运行前参数面板消费。
-	], color: SAROS_NODE_COLORS.start, widgets: [{ name: 'args', type: 'TEXT', default: '{}' }] });
-	registerNodeSpec({ type: 'Saros.End', kind: 'react', title: '结束', category: 'system', inputs: [jin(true)], outputs: [], color: SAROS_NODE_COLORS.end });
+		// W7 起 out 口为 ANY，可直连 stage 的 text/prompt 端口替代该桥。
+		// 2026-09-09：移除 args 参数 UI（无 widgets）——卡片零参数 UI 收尾。
+		// args 数据通道保留：properties.args 仍经运行前参数面板 / out 口
+		// 消费（collectStartArgs 直读 node.properties，不依赖 spec.widgets）。
+	], color: SAROS_NODE_COLORS.start });
+	registerNodeSpec({ type: 'Saros.End', kind: 'react', title: '结束', category: 'system', inputs: [{ name: 'in', type: 'ANY', required: true }], outputs: [], color: SAROS_NODE_COLORS.end });
 	registerNodeSpec({ type: 'Saros.Task', kind: 'react', title: '任务', category: 'basic', inputs: [jin()], outputs: [jout()], color: SAROS_NODE_COLORS.task, widgets: [{ name: 'prompt', type: 'TEXT' }] });
 	// ★ 编排节点的 widgets 是 **DOM 富卡的数据源**（`getNodeCardMeta` 从
 	//   `spec.widgets` 派生 `controls` 与 `hasPrompt`）—— 让参数复用 ImageStage
@@ -137,15 +148,17 @@ const jin = (required: boolean = true): PortSpec => ({ name: 'in', type: 'SAROS_
 	registerNodeSpec({ type: 'Saros.Switch', kind: 'react', title: 'Switch', category: 'controlFlow', inputs: [jin()], outputs: [
 		{ name: 'case-1', type: 'SAROS_JSON' }, { name: 'case-2', type: 'SAROS_JSON' }, { name: 'case-3', type: 'SAROS_JSON' }, { name: 'case-4', type: 'SAROS_JSON' }, { name: 'default', type: 'SAROS_JSON' },
 	], color: SAROS_NODE_COLORS.switch, widgets: [{ name: 'evaluationTarget', type: 'TEXT' }, { name: 'cases', type: 'TEXT', default: '[]' }] });
-	registerNodeSpec({ type: 'Saros.AskUser', kind: 'react', title: '询问', category: 'controlFlow', inputs: [jin()], outputs: [{ name: 'answer', type: 'SAROS_JSON' }], color: SAROS_NODE_COLORS.askUser, widgets: [
-		{ name: 'questionText', type: 'TEXT', default: 'Select an option' },
-		{ name: 'options', type: 'TEXT', default: '[{"label":"Option 1"},{"label":"Option 2"}]' },
-		{ name: 'multiSelect', type: 'COMBO', default: 'no', options: ['yes', 'no'] },
-		// ★ 动态参数表单（JSON 数组 [{key,label,type}]，type ∈ text/number/textarea）：
-		//   非空时交互卡片渲染**输入框**而非选项按钮，用户填写后以键值对象反馈
-		//   （answer = {key: value, ...}，SAROS_JSON 快照）。options 可为空。
-		{ name: 'params', type: 'TEXT', default: '[]' },
-	] });
+	// ★ 多问题重构（2026-09-11）：AskUser 的**唯一数据源 = `data.questions`**
+	//   （[{key,text,mode,options?,params?,...}]，见 nodeEditorForm.AskUserQuestion）。
+	//   旧的扁平字段 widgets（questionText/options/multiSelect/params）已移除 ——
+	//   它们曾是卡片 DOM 控件的字段源，与弹窗编辑器（VSSAROS_FIELDS.questions）
+	//   形成**两套不同步的编辑入口**（用户实测：卡片显示旧字段、弹窗显示新列表，
+	//   改任一侧另一侧不动）。嵌套结构（多问题 × 每问题独立模式/选项/参数）本质
+	//   无法用扁平单行控件表达 → 卡片改为显示摘要（「问题列表=N 个」，
+	//   nodeCard.sarosFieldSummary），编辑统一走弹窗（双击节点）。
+	//   旧字段仍由执行器回落兼容（data.questions 为空时读 questionText/options/
+	//   params），存量工作流零迁移。
+	registerNodeSpec({ type: 'Saros.AskUser', kind: 'react', title: '询问', category: 'controlFlow', inputs: [jin()], outputs: [{ name: 'answer', type: 'SAROS_JSON' }], color: SAROS_NODE_COLORS.askUser, widgets: [] });
 	registerNodeSpec({ type: 'Saros.Group', kind: 'react', title: '分组', category: 'layout', inputs: [], outputs: [], color: SAROS_NODE_COLORS.group });
 }
 

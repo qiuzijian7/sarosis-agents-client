@@ -11,7 +11,7 @@
 //  ② 抽取文件读/写/删 + 网络副作用，喂给审批 reason 文案（P2-2）：classifyCommandEffects
 
 export interface IObfuscationFinding {
-	kind: 'remote-pipe' | 'decode-pipe' | 'iex' | 'invoke-expression' | 'eval' | 'command-substitution' | 'backtick' | 'process-substitution';
+	kind: 'remote-pipe' | 'decode-pipe' | 'encoded-command' | 'iex' | 'invoke-expression' | 'eval' | 'command-substitution' | 'backtick' | 'process-substitution';
 	matched: string;
 	/** true = 明确恶意（下载即执行 / 解码即执行），应直接阻断；false = 需提示但可放行 */
 	block: boolean;
@@ -27,8 +27,28 @@ const BACKTICK = /`[^`]*`/;
 const PROC_SUB = /<\s*\([^)]*\)/;
 
 /**
+ * PowerShell `-EncodedCommand` / `-enc`：载荷是 UTF-16LE base64，**任何静态分析都看不到
+ * 真实命令** —— 经典「解码即执行」形态。
+ *
+ * 2026-09-13 补：此前 `block:true` 的四项只覆盖 `curl|sh` / `base64 -d|sh` / `iex` /
+ * `Invoke-Expression`，**漏了这一类**。三条旁证说明它真实可达：
+ *   ① 本项目自己的 `powerShellEncodedCommand`（executeCodeGuards）就用它包裹命令；
+ *   ② `shellCommandSafety.GLOBAL_DANGEROUS_ARGS` 早已把 `-encodedcommand` / `-enc`
+ *      列为危险参数（但那只影响「免打扰」白名单，**不影响硬拦**）；
+ *   ③ 它是绕过任何字符串级检测的标准手法。
+ *
+ * ⚠ 刻意**不含** `-Command`：本项目自己的护栏文案就在教模型用
+ * `powershell -NoProfile -Command "<cmd>"`（见 `powerShellCmdletGuardMessage`），
+ * 拦它会与自身引导直接矛盾。
+ * ⚠ 也刻意不含 `-Encoding`（`Get-Content -Encoding UTF8` 是合法参数）——
+ * `-enc\b` 的词边界天然排除 `-encoding`（`c` 与 `o` 之间无边界）。
+ */
+const ENCODED_COMMAND = /\s-(?:encodedcommand|enc)\b/i;
+
+/**
  * 检测命令中的混淆 / 下载即执行模式。
- * - block:true 的项（remote-pipe / decode-pipe / iex / invoke-expression）明确恶意，调用方应直接拒绝。
+ * - block:true 的项（remote-pipe / decode-pipe / encoded-command / iex / invoke-expression）
+ *   明确恶意，调用方应直接拒绝。
  * - 其余（eval / 命令替换 / 反引号 / 进程替换）属常见写法，仅返回供提示，由既有 BLOCKING_SHELL_TOKENS 决定审批。
  */
 export function detectCommandObfuscation(command: string): IObfuscationFinding[] {
@@ -39,6 +59,7 @@ export function detectCommandObfuscation(command: string): IObfuscationFinding[]
 	};
 	add(REMOTE_PIPE, { kind: 'remote-pipe', block: true });
 	add(DECODE_PIPE, { kind: 'decode-pipe', block: true });
+	add(ENCODED_COMMAND, { kind: 'encoded-command', block: true });
 	add(IEX, { kind: 'iex', block: true });
 	add(INVOKE_EXPR, { kind: 'invoke-expression', block: true });
 	add(EVAL, { kind: 'eval', block: false });
@@ -46,6 +67,23 @@ export function detectCommandObfuscation(command: string): IObfuscationFinding[]
 	add(BACKTICK, { kind: 'backtick', block: false });
 	add(PROC_SUB, { kind: 'process-substitution', block: false });
 	return findings;
+}
+
+/**
+ * 「下载即执行 / 解码即执行」的拦截文案 —— **单一真源**（`execute_code` 与 `terminal` 共用）。
+ *
+ * 2026-09-13：此前该护栏只挂在 `execute_code` 上，`terminal` 没挂 → 同一句
+ * `curl … | bash` 走 `execute_code` 被硬拦、走 `terminal` 却能过（只剩审批兜底，
+ * 而用户可能已对 terminal 选过「始终允许」）。现连同调用点一起收敛到共享入口
+ * `shellPreflightGuards.shellPreflightRejection`，两条路径不可能再漂移。
+ */
+export function obfuscationBlockedMessage(finding: IObfuscationFinding, toolName: string): string {
+	return (
+		`${toolName} blocked: command uses a download-and-execute / decode-and-execute pattern ` +
+		`(${finding.kind} matched \`${finding.matched}\`)\n` +
+		`This is a common remote-code-execution / prompt-injection vector. Download the script separately ` +
+		`(file_write to save, file_read to inspect it), then run the saved file.`
+	);
 }
 
 export interface IEffectClassification {

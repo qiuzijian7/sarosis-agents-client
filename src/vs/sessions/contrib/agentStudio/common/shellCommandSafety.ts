@@ -220,6 +220,39 @@ const SUBCOMMAND_ALLOWLIST: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 ]);
 
 /**
+ * **两级**子命令白名单（P1，2026-09-12）—— 用于「子命令本身有副作用，但它的某个
+ * 孙命令只读」的形态。
+ *
+ * ## 起因
+ * `SUBCOMMAND_ALLOWLIST` 只有一层，无法表达 `git stash list`（只读）与
+ * `git stash pop`（改工作区）的区别 —— 只能把整个 `stash` 排除，于是最常见的
+ * 「看看 stash 里有什么」也必须弹审批打断。
+ *
+ * ## 与 MiMo 的取舍
+ * MiMo 的 `permission/arity.ts` 用「命令前缀 → token 数」解决同一问题
+ * （`git stash` → 3 tokens，于是 `git stash list` 的前 3 个 token 即「人类可理解
+ * 的命令」）。本表思路等价但**更严**：不做 arity 推断，而是**显式枚举**
+ * 「哪条两级路径的哪个孙命令只读」—— 保持 fail-closed，不认识的形态一律回审批。
+ *
+ * ## 格式
+ * 键 = `"<命令> <子命令>"`（均已小写）；值 = 允许的孙命令集合（小写）。
+ * ⚠ 值里的项**不含前导 `-`**：带选项的形态（如 `git config --get`）不覆盖，
+ * 会因取不到「非选项 token」而自然回退审批（fail-closed）。
+ *
+ * ## 覆盖边界（刻意保守）
+ * 只收录**已在 `SUBCOMMAND_ALLOWLIST` 里出现过、或确属只读**的命令 ——
+ * 本表**不引入新的顶层命令**，因此不需要同时改 `SAFE_COMMANDS`，
+ * 改动面为零风险。
+ */
+const SUBCOMMAND_PATH_ALLOWLIST: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+	// git：stash / worktree / submodule 本身会改工作区，但下列孙命令只读
+	['git stash', new Set(['list', 'show'])],
+	['git worktree', new Set(['list'])],
+	['git submodule', new Set(['status', 'summary'])],
+	['git bisect', new Set(['log'])],
+]);
+
+/**
  * 参数排除表 —— 命令在白名单内，但带上这些参数就能执行任意代码 / 删文件。
  * 取自 continue 的 `isSafeCommand`（`find -exec` / `grep --exec`）。
  */
@@ -318,6 +351,10 @@ function isSafeSegment(segment: string): boolean {
 		// 第一个非选项参数即子命令
 		const sub = lowerArgs.find(a => !a.startsWith('-'));
 		if (!sub || !allowedSubs.has(sub)) {
+			// P1（2026-09-12）：两级判定 —— `git stash list` 这类「有副作用的子命令 +
+			// 只读孙命令」的形态。必须放在此处（子命令已被拒之后），因为两级表里的
+			// 子命令（stash / worktree / …）**刻意不在**一层白名单里。
+			if (sub && isSafeSubcommandPath(name, sub, lowerArgs)) { return true; }
 			// 包管理器的 run/test 子命令 → 尝试「验证/构建脚本」判定
 			// （npm run build / npm test / yarn build 等；git 等非包管理器不在此列）
 			if (BUILD_VERIFY_PACKAGE_MANAGERS.has(name)) {
@@ -328,6 +365,21 @@ function isSafeSegment(segment: string): boolean {
 	}
 
 	return true;
+}
+
+/**
+ * 两级子命令判定（P1，2026-09-12）：`<命令> <子命令> <孙命令>` 的孙命令是否只读。
+ *
+ * 只看**第一个非选项参数**作为孙命令（与一层判定同源）—— 带选项的形态取不到
+ * 非选项 token 时返回 `false`，自然回退审批（fail-closed）。
+ */
+function isSafeSubcommandPath(name: string, sub: string, lowerArgs: readonly string[]): boolean {
+	const allowedGrands = SUBCOMMAND_PATH_ALLOWLIST.get(`${name} ${sub}`);
+	if (!allowedGrands) { return false; }
+	// 跳过子命令本身，取其后第一个非选项 token 作为孙命令
+	const afterSub = lowerArgs.slice(lowerArgs.indexOf(sub) + 1);
+	const grand = afterSub.find(a => !a.startsWith('-'));
+	return !!grand && allowedGrands.has(grand);
 }
 
 /**

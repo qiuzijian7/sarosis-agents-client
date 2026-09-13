@@ -23,33 +23,17 @@ import { buildEmojiModelPrompt, parseComfyModelValue } from './emojiModelAdapt.j
 /** 通用负向词（checkpoint 系 KSampler negative；qwen/flux 组装链无 negative 输入，忽略）。 */
 const EMOJI_NEGATIVE_PROMPT = 'text, watermark, blurry, low quality, deformed, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, fused fingers, too many fingers, long neck';
 import { getPluginNodeRunner } from './pluginLoader.js';
-import { isFxNode, isFxChainNode } from './fxChain.js';
 import type { MediaSnapshotEntry, MediaKind, MediaRef } from './mediaSnapshot.js';
 import { mediaGet, resolveAssetUrl } from '../mediaAssets.js';
 import { loadCanvasImageWithProxy } from '../canvasImageLoad.js';
 import { WEIXIN_EXPORT_TARGETS } from './registry.js';
-import { isInstantNode } from './instantNodes.js';
-import { runInstantNode } from './instantExecutor.js';
 import { isVideoToGifNode, EMOJI_GIF_PARAMS } from './videoToGif.js';
 import { isRemoveBgNode } from './removeBg.js';
 import { runRemoveBgNode } from './removeBgExecutor.js';
 import { runVideoToGifNode, convertVideoToGif, convertVideoToGridTransparentGifs, blobToDataUrl, dataUrlToBlob } from './videoToGifExecutor.js';
-import { isRelightNode } from './relightEditor.js';
-import { runRelightNode } from './relightExecutor.js';
-import { isPosterNode } from './posterEditor.js';
-import { runPosterNode } from './posterExecutor.js';
-import { isLayerEditorNode } from './layerEditor.js';
-import { runLayerEditorNode } from './layerExecutor.js';
-import { isStoryboardEditorNode } from './storyboardEditor.js';
-import { runStoryboardEditorNode } from './storyboardExecutor.js';
-import { isMultiPanelStoryboardNode, parsePanelsState, buildMultiPanelPrompt, isPanelsEmpty, splitStoryToPanels } from './multiPanelStoryboard.js';
-import { isMaterialNode } from './materialEditor.js';
-import { runMaterialNode } from './materialExecutor.js';
-import { isScene3DNode } from './scene3dEditor.js';
-import { runScene3DNode } from './scene3dExecutor.js';
 import { parseSize, findUpstreamImageRef } from './imageGenBackend.js';
 import { isComfyViewRef, resolveLoadImageImageRef, type BridgeFetchLike } from './imageGenToComfyBridge.js';
-import { buildExecutionPlan, buildParallelExecutionPlan, computeExecutionOrder, computeInactiveNodes, type ExecutionNodeLike, type ExecutionEdgeLike } from './executionGraph.js';
+import { buildExecutionPlan, buildParallelExecutionPlan, computeExecutionOrder, computeInactiveNodes, resolveStartScope, collectDownstreamClosure, type ExecutionNodeLike, type ExecutionEdgeLike } from './executionGraph.js';
 import type { SubflowDefinition } from './subflow.js';
 import { resolveNodeMentions, createStoreLookup } from './nodeMentions.js';
 import { flattenSubflows } from './subflow.js';
@@ -73,15 +57,11 @@ import { sendRequest } from '../../../bridge/messageClient.js';
  * raceAbort 兜底（外层 RPC 已 abort 后，本兜底结果会被丢弃）。
  */
 import { runEmojiStageGrid } from './emojiExecutor.js';
-import {
-	runProviderPickerNode,
-	runProviderImage,
-	runProviderVideo,
-	runProviderModel3D,
-	runProviderText,
-	runProviderAudio,
-	runMultiPanelStoryboardNode,
-} from './providerExecutors.js';
+// ★ P0-2 清理（2026-09-11）：原先从 providerExecutors 导入的
+//   runProviderPickerNode / runProviderImage / runProviderVideo / runProviderModel3D /
+//   runProviderText / runProviderAudio / runMultiPanelStoryboardNode **在本文件内已无使用**
+//   （分发链硬编码分支全部收编为 nodes/ 声明式定义；对外仍由下方 barrel 的
+//   `export { … } from './providerExecutors.js'` 提供，消费方 import 不受影响）。
 import {
 	runWeixinStickerExport,
 } from './weixinStickerExport.js';
@@ -131,8 +111,6 @@ import {
 	resolveTemplateVars,
 	resolvePromptVariables,
 	makeNamedWithVariables,
-	isLLMImageNode,
-	isProviderPickerNode,
 	PROVIDER_PICKER_PREFIX,
 	parseProviderPickerConfig,
 	collectUpstreamProviderConfig,
@@ -168,6 +146,7 @@ import {
 	runLoaderNode,
 	resolveUpstreamSnapshotText,
 	mapSnapshotKeys,
+	makeFlowEdgeClassifier,
 	EmojiCellState,
 	parseEmojiCells,
 	clampInt,
@@ -179,7 +158,6 @@ import {
 	splitEmojiPrompts,
 } from './workflowRunShared.js';
 import { getNodeDefinition } from './nodeDefinition.js';
-import { isStatEmojiStageNode } from './providerExecutors.js';
 // ★ 节点定义汇聚（2026-09-07 框架）：副作用注册——definition 查表由此填充，
 //   必须先于 runNodeOrStage 首次调用执行（模块求值序保证）。
 import './nodes/index.js';
@@ -192,9 +170,11 @@ export {
 	isToolNodeType, isAskUserNodeType, collectStartArgs, stringifyResolvedValue, findUnresolvedPlaceholders,
 	resolveTemplateVars, resolvePromptVariables, makeNamedWithVariables, isLLMImageNode, isProviderPickerNode,
 	PROVIDER_PICKER_PREFIX, parseProviderPickerConfig, collectUpstreamProviderConfig, collectOrchestrationValues,
+	makeFlowEdgeClassifier,
 	raceAbort, isLoadImageNode, resolveLoadImageInputForNode, defaultResolveLoadImageRef,
 	resolveFirstImageGenDefaults, resolvePreferredImageGenDefaults, collectUpstreamValues,
 	isPickerNode, isLoaderNode, collectUpstreamCandidates, resolveMediaAssetUrl, inferPickerKind,
+	parsePickerIndexList, parsePickerRefList, publishPickerSelection,
 	withRemoteProxyFetch, localizeImageRef, resolveUpstreamSnapshotText,
 	collectUpstreamTexts, stripMarkdownCodeFence, extractJsonArray, parseEmojiCellArray, splitEmojiPrompts,
 	parseEmojiCells, clampInt, truncateForLog,
@@ -215,35 +195,23 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 	//   不再改本分发链。未命中走下方既有硬编码分支（存量节点渐进迁移）。
 	const nodeDefinition = getNodeDefinition(type);
 	if (nodeDefinition) { return nodeDefinition.run(input); }
-	if (isProviderPickerNode(type)) { return runProviderPickerNode(input); }
-	// ★ 视频 / 3D / 文本 / 音频生成节点必须在 isLLMImageNode **之前**判定 —— 五者都是
-	//   backendKind='provider' 的 schema 节点，isLLMImageNode 会把它们一并吞掉。
-	if (isLLMImageNode(getSpec(type))) { return runProviderImage(input); }
-	if (isInstantNode(type)) { return runInstantNode(input); }
-	if (isRelightNode(type)) { return runRelightNode(input); }
-	if (isPosterNode(type)) { return runPosterNode(input); }
-	if (isLayerEditorNode(type)) { return runLayerEditorNode(input); }
-	if (isStoryboardEditorNode(type)) { return runStoryboardEditorNode(input); }
-	if (isMultiPanelStoryboardNode(type)) { return runMultiPanelStoryboardNode(input); }
-	if (isMaterialNode(type)) { return runMaterialNode(input); }
-	if (isScene3DNode(type)) { return runScene3DNode(input); }
-	if (isPickerNode(type)) { return runPickerNode(input); }
-	if (isLoaderNode(type)) { return runLoaderNode(input); }
-	if (isFxNode(type)) {
-		const fxValues = { ...collectUpstreamValues(store, upstreams), ...values };
-		return runSingleNode({
-			runner, nodeId, snapshotKey: input.snapshotKey, type, values: fxValues, store,
-			// The chain terminal emits a real video snapshot (standard
-			// extraction); intermediate builders emit the threaded fx value.
-			extractOutputs: isFxChainNode(type) ? undefined : comfyOutputsToFxSnapshots,
-			onProgress: (p) => onProgress?.({ value: p.value }),
-			signal,
-		});
-	}
-	// 通用 schema 分支之前拦截（否则会走 runStageWorkflow 的占位 api_json）。
-	// EmojiStage 必须在通用 schema 分支之前拦截。
-	//  - 静态 StatEmojiStage：m×n 网格展开成多次单图执行（每格独立 prompt/seed）。
-	if (isStatEmojiStageNode(type)) { return runEmojiStageGrid({ ...input, values }); }
+	// ★ P0-2 迁移（2026-09-11）：原 `isProviderPickerNode` 硬编码分支已删除 ——
+	//   `Saros.ProviderPicker` 由 nodes/providerPickerNode.ts 声明式收编，上方查表即命中。
+	// ★ P0-2 迁移（2026-09-11）：原 `isLLMImageNode` 硬编码分支已删除 —— 它覆盖的
+	//   **全部 7 个** provider 类节点（`kind='llm'` 或 `schema`+`backendKind='provider'`：
+	//   ModelImageGen / ModelVideoGen / Model3DGen / TextGen / AudioGen /
+	//   WeixinStickerCover / AnimatedEmoji）均已由 nodes/ 下定义收编，上方查表即命中。
+	//   该分支原为「视频/3D/文本/音频必须先于 isLLMImageNode 判定」的补偿逻辑，
+	//   收编后已无意义。
+	//   护栏：workflowNodeDefinitions.test.ts「provider 类节点必须有声明式定义」——
+	//   新增 provider 节点若漏定义会**测试失败**，而不是静默掉到下方 runSingleNode
+	//   （拿 ComfyUI runner 跑纯 RPC 节点 → 崩 / node-not-found）。
+	// ★ v41 批次 5（2026-09-09）：instant/relight/poster/layerEditor/storyboardEditor/
+	//   material/scene3d/picker/loader 共 15 个本地 stage 已由 nodes/localStageNodes.ts
+	//   声明式收编（分发首位查表命中即执行），硬编码分支删除。
+	//   StatEmojiStage / MultiPanelStoryboardStage 同（批次 4）。
+	// ★ v42 批次 10：fx（builder+chain）与原生 LoadImage 已由 nodes/fxAndLoadImageNodes.ts 收编。
+	// 通用 schema 分支（StatEmojiStage 已由 nodes/statEmojiNode.ts 声明式收编）。
 	const spec = getSpec(type);
 	if (spec?.kind === 'schema') {
 		return runStageWorkflow({
@@ -272,15 +240,7 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 			return { promptId: '', status: 'error', error: err instanceof Error ? err.message : String(err), entries: [] };
 		});
 	}
-	if (isLoadImageNode(type)) {
-		// B 场景：原生 LoadImage 的 image 若来自 Provider 快照（http/data URL），
-		// 先上传到 ComfyUI 再执行（原生 LoadImage 需要服务端 /view 引用）。
-		const bridged = await resolveLoadImageInputForNode(input);
-		if (bridged.status === 'error') { return bridged.result; }
-		if (bridged.values !== values) {
-			return runSingleNode({ runner, nodeId, snapshotKey: input.snapshotKey, type, values: bridged.values, store, onProgress: (p) => onProgress?.({ value: p.value }), signal });
-		}
-	}
+	// ★ v42 批次 10：LoadImage 已由 nodes/fxAndLoadImageNodes.ts 收编（bridging 一并迁入）。
 	// P2: plugin nodes — run the plugin's onRun hook (if any) to transform the
 	// values before the backend call. onRun gets upstream snapshot refs per port
 	// and the plugin-local storage.
@@ -312,7 +272,34 @@ export async function runNodeOrStage(input: NodeExecutionInput): Promise<SingleN
 }
 
 /**
- * Execute the executable sub-graph upstream-first. Stops on the first failure.
+ * 失败收尾：把 rootIds 的**可达下游**标 skipped（独立并行分支不受影响）。
+ *
+ * ★ 对齐 host 引擎的 `_cascadeSkipDownstream`（browser/workflowExecutionService.ts）：
+ *   两个引擎对同一个工作流的失败收尾语义必须一致。此前 webview 侧失败后直接 return，
+ *   下游卡片停留在 idle —— 用户无法区分「没跑到」与「被上游失败连累」。
+ *   **仅改卡片状态与 skippedIds，不改执行语义**（调用方随后仍然终止本次 run）。
+ */
+function markDownstreamSkipped(
+	cardState: CardStateStore,
+	edges: ExecutionEdgeLike[],
+	stepIds: readonly string[],
+	result: GraphRunResult,
+	rootIds: readonly string[],
+): void {
+	if (rootIds.length === 0) { return; }
+	const closure = collectDownstreamClosure(rootIds, edges);
+	const already = new Set<string>([...result.ran, ...result.skippedIds]);
+	for (const id of stepIds) {
+		if (!closure.has(id) || already.has(id)) { continue; }
+		cardState.set(id, { runState: 'skipped', progress: 0 });
+		result.skippedIds.push(id);
+	}
+}
+
+/**
+ * Execute the executable sub-graph upstream-first. Stops on the first failure
+ * (its reachable downstream is marked skipped — independent branches keep their
+ * own state, matching the host engine's cascade-skip semantics).
  * In 'parallel' mode independent steps run concurrently within each topological
  * layer (Comfy backend steps serialized; provider/local steps pooled).
  */
@@ -323,7 +310,7 @@ export async function runGraphExecution(options: GraphRunOptions): Promise<Graph
 		mode = 'serial', parallelConcurrency = 4, taskId, fetchImpl, snapshotKeyOf,
 	} = options;
 	const result: GraphRunResult = {
-		success: false, hasCycle: false, ran: [], skippedIds: [], failed: null, results: {},
+		success: false, hasCycle: false, ran: [], skippedIds: [], outOfScopeIds: [], failed: null, results: {},
 		taskId, mode,
 	};
 
@@ -338,9 +325,21 @@ export async function runGraphExecution(options: GraphRunOptions): Promise<Graph
 		return runGraphExecutionParallel({ ...options, nodes: runNodes, edges: runEdges }, result);
 	}
 
-	const plan = buildExecutionPlan(runNodes, runEdges, type => isExecutableSpec(getSpec(type)) || isAgentNodeType(type) || isTaskNodeType(type) || isSkillNodeType(type) || isToolNodeType(type) || isPromptNodeType(type) || isGateNodeType(type) || isMergeNodeType(type) || isLoopNodeType(type) || isEndNodeType(type) || isAskUserNodeType(type));
+	// W7: 从 Start 开始执行 —— 图含已编排的 Saros.Start 时只跑其作用域
+	// （可达闭包 + 数据依赖补全）；无 Start / Start 未编排 → 全图（存量兼容）。
+	const startScope = resolveStartScope(runNodes, runEdges);
+	result.startScope = { startIds: startScope.startIds, degraded: startScope.degraded, scoped: startScope.scope !== null };
+	// W7-flow：flowIn/flowOut 端口（type=FLOW）的边是纯控制流 —— 不进数据上游。
+	const classifyEdge = makeFlowEdgeClassifier(runNodes, getSpec);
+	const plan = buildExecutionPlan(runNodes, runEdges, type => isExecutableSpec(getSpec(type)) || isAgentNodeType(type) || isTaskNodeType(type) || isSkillNodeType(type) || isToolNodeType(type) || isPromptNodeType(type) || isGateNodeType(type) || isMergeNodeType(type) || isLoopNodeType(type) || isEndNodeType(type) || isAskUserNodeType(type), startScope.scope, classifyEdge);
 	result.hasCycle = plan.hasCycle;
 	if (plan.hasCycle) { return result; }
+	// 作用域外的可执行节点：标 idle 并计入 outOfScopeIds（**不是** error——
+	// 「没接到 Start」是编排状态而非失败；卡片保持中性，工具栏给出计数提示）。
+	for (const id of plan.outOfScope) {
+		cardState.set(id, { runState: 'idle', progress: 0 });
+		result.outOfScopeIds.push(id);
+	}
 	// A ComfyUI runner is only required for schema/native nodes; a graph made
 	// purely of provider (llm) nodes can run without a connected runner.
 	const needsRunner = plan.steps.some(s => isComfyExecutableSpec(getSpec(s.type)));
@@ -424,6 +423,8 @@ export async function runGraphExecution(options: GraphRunOptions): Promise<Graph
 		} else {
 			cardState.set(step.id, { runState: 'error', progress: 0, errorMsg: r.error ?? '执行失败' });
 			result.failed = { nodeId: step.id, error: r.error ?? '执行失败' };
+			// 下游显式标 skipped（对齐 host 引擎级联跳过语义），再终止本次 run。
+			markDownstreamSkipped(cardState, runEdges, plan.steps.map(s => s.id), result, [step.id]);
 			return result;
 		}
 	}
@@ -440,10 +441,24 @@ export async function runGraphExecution(options: GraphRunOptions): Promise<Graph
  * recorded), matching the serial stop-on-first-failure contract.
  */
 async function runGraphExecutionParallel(options: GraphRunOptions, result: GraphRunResult): Promise<GraphRunResult> {
-	const { nodes, edges, getSpec, resolveRunner, snapshotStore, cardState, nodeValues, onNodeStart, signal, sendImageGen, resolveImageGenDefaults, resolveLoadImageRef, parallelConcurrency = 4, fetchImpl, snapshotKeyOf } = options;
-	const plan = buildParallelExecutionPlan(nodes, edges, type => isExecutableSpec(getSpec(type)) || isAgentNodeType(type) || isTaskNodeType(type) || isSkillNodeType(type) || isToolNodeType(type) || isPromptNodeType(type) || isGateNodeType(type) || isMergeNodeType(type) || isLoopNodeType(type) || isEndNodeType(type) || isAskUserNodeType(type));
+	const { nodes, edges, getSpec, resolveRunner, snapshotStore, cardState, nodeValues, onNodeStart, signal, sendImageGen, resolveImageGenDefaults, resolveLoadImageRef, parallelConcurrency = 4, fetchImpl, snapshotKeyOf, writeStepIds } = options;
+	// W7: Start 入口作用域（parallel 版同款语义，见 runGraphExecution）
+	const startScope = resolveStartScope(nodes, edges);
+	result.startScope = { startIds: startScope.startIds, degraded: startScope.degraded, scoped: startScope.scope !== null };
+	const plan = buildParallelExecutionPlan(nodes, edges, type => isExecutableSpec(getSpec(type)) || isAgentNodeType(type) || isTaskNodeType(type) || isSkillNodeType(type) || isToolNodeType(type) || isPromptNodeType(type) || isGateNodeType(type) || isMergeNodeType(type) || isLoopNodeType(type) || isEndNodeType(type) || isAskUserNodeType(type), startScope.scope, makeFlowEdgeClassifier(nodes, getSpec),
+		// P0① 写者独占层：可写节点不与任何节点同层并发（未注入 writeStepIds → 不拆，行为不变）。
+		writeStepIds ? (step => writeStepIds.has(step.id)) : undefined);
+	// P0① 诊断：被单独串行化的写者（「为什么这一层慢」可解释）。
+	if (plan.serializedWriters.length > 0) {
+		// eslint-disable-next-line no-console
+		console.warn(`[WorkflowRun] P0① 写者串行化 ${plan.serializedWriters.length} 个节点（同层写者互斥）：${plan.serializedWriters.join(', ')}`);
+	}
 	result.hasCycle = plan.hasCycle;
 	if (plan.hasCycle) { return result; }
+	for (const id of plan.outOfScope) {
+		cardState.set(id, { runState: 'idle', progress: 0 });
+		result.outOfScopeIds.push(id);
+	}
 	const needsRunner = plan.layers.some(l => l.some(s => isComfyExecutableSpec(getSpec(s.type))));
 	const runner = needsRunner ? resolveRunner() : undefined;
 	if (needsRunner && !runner) {
@@ -492,6 +507,8 @@ async function runGraphExecutionParallel(options: GraphRunOptions, result: Graph
 		const local = activeLayer.filter(s => !isBackend(s));
 		let layerFailed = 0;
 		let layerRan = 0;
+		/** 本层失败节点（用于失败收尾时标下游 skipped）。 */
+		const layerFailedIds: string[] = [];
 
 		const runStep = async (step: { id: string; type: string; upstreams?: string[] }) => {
 			if (signal?.aborted) { return; }
@@ -533,6 +550,7 @@ async function runGraphExecutionParallel(options: GraphRunOptions, result: Graph
 				if (!result.failed) {
 					result.failed = { nodeId: step.id, error: r.error ?? '执行失败' };
 				}
+				layerFailedIds.push(step.id);
 				layerFailed++;
 			}
 		};
@@ -547,7 +565,11 @@ async function runGraphExecutionParallel(options: GraphRunOptions, result: Graph
 		result.layerStats = layerStats;
 
 		// Stop at the first layer with a failure (barrier semantics).
-		if (layerFailed > 0 || result.failed) { break; }
+		if (layerFailed > 0 || result.failed) {
+			// 失败层之后的所有层都不再执行 → 把失败节点的可达下游标 skipped（同 serial 语义）。
+			markDownstreamSkipped(cardState, edges, plan.layers.flat().map(s => s.id), result, layerFailedIds);
+			break;
+		}
 	}
 
 	if (!result.failed) { result.success = true; }

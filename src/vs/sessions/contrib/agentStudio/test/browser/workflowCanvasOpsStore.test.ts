@@ -5,11 +5,11 @@
  *--------------------------------------------------------------------------------------------*/
 import assert from 'assert';
 import { applyCanvasOpsToStore } from '../../webview/src/features/workflowEditor/WorkflowEditorPanel.js';
-import { registerSarosisNodes } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
+import { registerSarosNodes } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
 
-// The webview calls registerSarosisNodes() on mount; tests do the same so
+// The webview calls registerSarosNodes() on mount; tests do the same so
 // applyCanvasOps' getNodeSpec() finds Saros.* types.
-suiteSetup(() => { registerSarosisNodes(); });
+suiteSetup(() => { registerSarosNodes(); });
 
 interface TestNode { id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown>; }
 interface TestEdge { id: string; source: string; target: string; }

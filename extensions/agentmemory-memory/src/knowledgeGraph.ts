@@ -307,6 +307,24 @@ export class KnowledgeGraph {
 	/** Get all edges (for cascade/diagnostics) */
 	getEdges(): GraphEdge[] { return Array.from(this._edges.values()); }
 
+	/**
+	 * P1-7（2026-09-09）：从持久化数据恢复（来自 KV.graphNodes / KV.graphEdges）。
+	 * 忽略悬挂边（端点节点不存在的边）；nameIndex 按 name 重建。
+	 */
+	restoreFromData(nodes: GraphNode[], edges: GraphEdge[]): void {
+		for (const n of nodes || []) {
+			if (!n?.id || !n?.name) continue;
+			this._nodes.set(n.id, n);
+			const key = n.name.toLowerCase();
+			if (!this._nameIndex.has(key)) { this._nameIndex.set(key, n.id); }
+		}
+		for (const e of edges || []) {
+			if (!e?.id) continue;
+			if (!this._nodes.has(e.sourceNodeId) || !this._nodes.has(e.targetNodeId)) continue;
+			this._edges.set(e.id, e);
+		}
+	}
+
 	/** Mark a node as stale (when source memory is superseded) */
 	markNodeStale(nodeId: string): boolean {
 		const node = this._nodes.get(nodeId);

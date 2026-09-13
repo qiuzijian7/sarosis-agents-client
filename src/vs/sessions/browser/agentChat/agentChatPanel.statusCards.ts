@@ -88,6 +88,27 @@ export abstract class AgentChatPanelStatusCards extends AgentChatPanelWorkflowCa
 	/** 渲染 thinking 卡片 body（markdown），并标记 rendered='1'（懒渲染完成态）。
 	 *  幂等：先清空（_renderMarkdownContent 为 append 语义），可重复调用。 */
 	protected _renderThinkingCardBody(body: HTMLElement, msg: IAgentChatMessage): void {
+		// ★★ 2026-09-12 根因修复（日志 1788662336134「思考卡卡住 / UI 永远停在首帧」）★★
+		//
+		// 本方法是「清空 + 全量重渲染」语义（`body.textContent = ''`），会**移除** DOM 子节点，
+		// 使 `_incMdState[body].tailEl` 变成**孤儿**（parentNode === null）。而清空 DOM 之前
+		// **没有**重置增量状态——对比流式结束路径（`messages.ts` 的 `_transitionStreamingToComplete`
+		// 先 `_resetIncrementalMd(body)` 再渲染）正是缺了这一步。于是后续 `scheduler.flush`
+		// 走 `_tryIncrementalMarkdownRender` 时：
+		//   · `state` 仍存在 → **不走**首次骨架重建分支（那里才会 `container.replaceChildren()`）；
+		//   · `state.lastRendered` 是**旧文本**（`markRendered` 只同步 scheduler 的 WeakMap 基线，
+		//     不改 `_incMdState`）→ 判定"内容有变化"，继续往下；
+		//   · `frozenLen` 未变、分歧点不早于它 → 不触发重置；
+		//   · 最终把新内容渲染进**孤儿 tailEl** → DOM 上看不到，却**返回 true（成功）**
+		//     → scheduler 同步基线，后续帧因"内容未变"直接跳过 → **UI 永远停在首帧**；
+		//   · 因为没走全量替换，`md:incremental-failed` 一条都不会有（日志实证 0 条，
+		//     这正是当年判为「理论无破口」的原因——所有日志都显示链路"正常"）。
+		//
+		// 修复：清空 DOM **前**先重置增量状态，保证 tailEl 引用始终有效。
+		// 注：修掉本破口后，流式 thinking 理论上已可安全切回 `thinkingMdScheduler`
+		// （省掉每帧全量重渲染），但该路径有三次回归史，故本次只修根因、保留同步渲染，
+		// 待实测稳定后再评估切回。
+		this._resetIncrementalMd(body);
 		body.textContent = '';
 		if (msg.thinking) {
 			this._renderMarkdownContent(body, msg.thinking);

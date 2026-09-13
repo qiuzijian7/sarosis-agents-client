@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>分类 / 标签管理 — vssaros KB Mockup</title>
+<link rel="stylesheet" href="kb-mockup.css">
+<!--
+  页面说明（对应交付要求 4）：
+  · 功能模块：分类树（左侧）/ 标签工具栏（搜索、排序、批量）/ 标签表格（使用计数、趋势）/ 合并与重命名操作 / 未使用标签清理
+  · 对应框架组件：
+      - 分类树          → KnowledgeBaseViewPane 的 Vault→笔记本→笔记 树形结构（kbVault 数据源）
+      - 标签计数        → 条目 frontmatter 的 tags 字段聚合（kbMarkdown 解析结果）
+      - 合并/重命名     → 对全库条目执行批量 patch，走 kbLint 校验后进入审核队列
+  · 无法静态呈现的交互均以 [交互注释] 标注（见源码中 [交互注释] 行）。
+-->
+<style>
+	.kb-cat-layout { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+
+	/* 分类树 */
+	.kb-tree { padding: 6px 4px; }
+	.kb-tree-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: var(--kb-radius-sm); font-size: var(--kb-fs-sm); color: var(--kb-fg-muted); cursor: pointer; }
+	.kb-tree-row:hover { background: var(--kb-hover); color: var(--kb-fg); }
+	.kb-tree-row.is-active { background: var(--kb-accent-bg); color: var(--kb-accent-fg); }
+	.kb-tree-row .kb-caret { width: 12px; height: 12px; flex-shrink: 0; color: var(--kb-fg-dim); transition: transform .15s ease; }
+	.kb-tree-row.is-open .kb-caret { transform: rotate(90deg); }
+	.kb-tree-row .kb-node-ico { width: 14px; height: 14px; flex-shrink: 0; }
+	.kb-tree-row .kb-spacer { flex: 1; }
+	.kb-tree-row .kb-cnt { font-size: var(--kb-fs-xs); color: var(--kb-fg-dim); font-variant-numeric: tabular-nums; }
+	.kb-tree-row.lv2 { padding-left: 22px; }
+	.kb-tree-row.lv3 { padding-left: 38px; }
+
+	/* 标签表格内的小部件 */
+	.kb-tag-count { display: flex; align-items: center; gap: 8px; min-width: 130px; }
+	.kb-tag-meter { flex: 1; height: 5px; border-radius: 3px; background: var(--kb-bg); border: 1px solid var(--kb-border); overflow: hidden; min-width: 50px; }
+	.kb-tag-meter > i { display: block; height: 100%; background: linear-gradient(90deg, var(--kb-accent-border), var(--kb-link)); }
+	.kb-tag-num { font-variant-numeric: tabular-nums; font-size: var(--kb-fs-sm); width: 32px; text-align: right; }
+	.kb-trend-up { color: var(--kb-success-fg); }
+	.kb-trend-flat { color: var(--kb-fg-dim); }
+	.kb-trend-down { color: var(--kb-danger); }
+	.kb-unused { opacity: .6; }
+
+	/* 工具栏 */
+	.kb-toolbar2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-bottom: 1px solid var(--kb-border); }
+
+	@media (max-width: 1366px) {
+		.kb-cat-layout { grid-template-columns: 1fr; }
+		.kb-tree-wrap { max-height: 220px; overflow-y: auto; }
+	}
+</style>
+</head>
+<body>
+<div class="kb-app">
+
+	<header class="kb-topbar">
+		<span class="kb-title">
+			<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8 1a3.5 3.5 0 0 0-3.5 3.5V5H4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-.5V4.5A3.5 3.5 0 0 0 8 1Zm2.5 4h-5V4.5a2.5 2.5 0 0 1 5 0V5Z"/></svg>
+			Saros Agent Studio · 知识库
+		</span>
+		<span class="kb-spacer"></span>
+		<label class="kb-searchbox">
+			<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+			<input type="text" placeholder="检索知识库…">
+			<kbd>Ctrl K</kbd>
+		</label>
+		<button class="kb-iconbtn kb-tip" data-tip="通知（3 条未读）">
+			<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a1 1 0 0 1 1 1v.6A4.5 4.5 0 0 1 12.5 7v3l1.2 1.8a.7.7 0 0 1-.6 1.2H3a.7.7 0 0 1-.6-1.2L3.5 10V7A4.5 4.5 0 0 1 7 2.6V2a1 1 0 0 1 1-1Zm-1.7 12h3.4a1.7 1.7 0 0 1-3.4 0Z"/></svg>
+		</button>
+		<span class="kb-badge kb-badge-blue">张工 · 管理员</span>
+	</header>
+
+	<aside class="kb-sidebar">
+		<div class="kb-section">工作区 <span class="kb-count">个人 Vault</span></div>
+		<a class="kb-nav" href="index.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5 1.5 4.6V8c0 3.4 2.8 5.9 6.5 6.5 3.7-.6 6.5-3.1 6.5-6.5V4.6L8 1.5Z"/></svg></span>
+			<span class="kb-nav-label">知识库首页</span>
+		</a>
+		<a class="kb-nav" href="documents.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Zm5.5 1.7 2.8 2.8H9.5V3.2Z"/></svg></span>
+			<span class="kb-nav-label">文档列表</span>
+			<span class="kb-badge">128</span>
+		</a>
+		<a class="kb-nav" href="search.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg></span>
+			<span class="kb-nav-label">搜索</span>
+		</a>
+		<a class="kb-nav is-active" href="categories.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.5A1.5 1.5 0 0 1 3 2h3.2l1.4 1.5H13A1.5 1.5 0 0 1 14.5 5v7A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V3.5Z"/></svg></span>
+			<span class="kb-nav-label">分类 / 标签</span>
+		</a>
+		<a class="kb-nav" href="entry-edit.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></span>
+			<span class="kb-nav-label">条目编辑器</span>
+		</a>
+		<div class="kb-nav-group">管理</div>
+		<a class="kb-nav" href="admin.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a2.6 2.6 0 0 1 1.3 4.9l.8 4.6a1 1 0 0 1-.3.9l-1.5 1.4a.4.4 0 0 1-.6 0L6.2 11.4a1 1 0 0 1-.3-.9l.8-4.6A2.6 2.6 0 0 1 8 1Z"/></svg></span>
+			<span class="kb-nav-label">权限与用户</span>
+		</a>
+		<a class="kb-nav" href="document-detail.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 3A1.5 1.5 0 0 1 4 1.5h8A1.5 1.5 0 0 1 13.5 3v10A1.5 1.5 0 0 1 12 14.5H4A1.5 1.5 0 0 1 2.5 13V3Z"/></svg></span>
+			<span class="kb-nav-label">文档详情示例</span>
+		</a>
+	</aside>
+
+	<main class="kb-main">
+		<nav class="kb-crumb" style="margin-bottom:12px">
+			<span>工作区</span><span class="kb-crumb-sep">›</span>
+			<a href="index.html">知识库</a><span class="kb-crumb-sep">›</span>
+			<span class="kb-crumb-here">分类 / 标签管理</span>
+		</nav>
+
+		<div class="kb-page-head" style="margin-bottom:14px">
+			<h1 style="margin:0;font-size:var(--kb-fs-h1);font-weight:600;color:var(--kb-fg-strong)">分类 / 标签管理</h1>
+			<span style="flex:1"></span>
+			<!-- [交互注释] 「新建标签」弹窗校验重名（同名时输入框转 is-invalid 并提示「标签已存在」） -->
+			<button class="kb-btn">新建标签</button>
+			<button class="kb-btn kb-btn-primary">保存变更</button>
+		</div>
+
+		<div class="kb-cat-layout">
+			<!-- ── 左：分类树 ── -->
+			<div class="kb-card kb-tree-wrap" style="padding:0">
+				<div class="kb-panel-head" style="padding:9px 12px">
+					<h3 style="font-size:var(--kb-fs-md)">分类树</h3>
+					<span class="kb-spacer"></span>
+					<button class="kb-iconbtn kb-tip" data-tip="全部展开"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M3 8h10v1.5H3V8Z"/><path d="M7.2 3.5h1.6v3H7.2v-3Z"/></svg></button>
+				</div>
+				<div class="kb-tree">
+					<!-- [交互注释] 树节点懒加载子级；点击节点右侧筛选器同步右侧标签表 -->
+					<div class="kb-tree-row is-open is-active">
+						<svg class="kb-caret" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4V4Z"/></svg>
+						<svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h3l1.3 1.5H12.5A1.5 1.5 0 0 1 14 5v7a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12V3.5Z"/></svg>
+						<span>我的知识库</span><span class="kb-spacer"></span><span class="kb-cnt">128</span>
+					</div>
+					<div class="kb-tree-row lv2 is-open">
+						<svg class="kb-caret" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4V4Z"/></svg>
+						<svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.5h4l1.2 1.5H13A1.5 1.5 0 0 1 14.5 5.5v7A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5v-8.5A1.5 1.5 0 0 1 3 2.5Z"/></svg>
+						<span>Agent Studio 架构设计</span><span class="kb-spacer"></span><span class="kb-cnt">32</span>
+					</div>
+					<div class="kb-tree-row lv3"><svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5h8v13H4z" opacity=".0"/><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg><span>架构决策（ADR）</span><span class="kb-spacer"></span><span class="kb-cnt">14</span></div>
+					<div class="kb-tree-row lv3"><svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg><span>技术方案</span><span class="kb-spacer"></span><span class="kb-cnt">11</span></div>
+					<div class="kb-tree-row lv3"><svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg><span>需求文档</span><span class="kb-spacer"></span><span class="kb-cnt">7</span></div>
+					<div class="kb-tree-row lv2 is-open">
+						<svg class="kb-caret" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4V4Z"/></svg>
+						<svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.5h4l1.2 1.5H13A1.5 1.5 0 0 1 14.5 5.5v7A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5v-8.5A1.5 1.5 0 0 1 3 2.5Z"/></svg>
+						<span>会议纪要 · 2026 Q3</span><span class="kb-spacer"></span><span class="kb-cnt">41</span>
+					</div>
+					<div class="kb-tree-row lv3"><svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg><span>周会</span><span class="kb-spacer"></span><span class="kb-cnt">22</span></div>
+					<div class="kb-tree-row lv3"><svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg><span>评审会</span><span class="kb-spacer"></span><span class="kb-cnt">12</span></div>
+					<div class="kb-tree-row lv3"><svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg><span>访谈</span><span class="kb-spacer"></span><span class="kb-cnt">7</span></div>
+					<div class="kb-tree-row lv2 is-open">
+						<svg class="kb-caret" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4V4Z"/></svg>
+						<svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.5h4l1.2 1.5H13A1.5 1.5 0 0 1 14.5 5.5v7A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5v-8.5A1.5 1.5 0 0 1 3 2.5Z"/></svg>
+						<span>竞品调研 · NotebookLM</span><span class="kb-spacer"></span><span class="kb-cnt">18</span>
+					</div>
+					<div class="kb-tree-row lv3"><svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg><span>能力拆解</span><span class="kb-spacer"></span><span class="kb-cnt">10</span></div>
+					<div class="kb-tree-row lv3"><svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg><span>额度对比</span><span class="kb-spacer"></span><span class="kb-cnt">8</span></div>
+					<div class="kb-tree-row lv2">
+						<svg class="kb-caret" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4V4Z"/></svg>
+						<svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.5h4l1.2 1.5H13A1.5 1.5 0 0 1 14.5 5.5v7A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5v-8.5A1.5 1.5 0 0 1 3 2.5Z"/></svg>
+						<span>前端规范手册</span><span class="kb-spacer"></span><span class="kb-cnt">12</span>
+					</div>
+					<div class="kb-tree-row lv2">
+						<svg class="kb-caret" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4V4Z"/></svg>
+						<svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.5h4l1.2 1.5H13A1.5 1.5 0 0 1 14.5 5.5v7A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5v-8.5A1.5 1.5 0 0 1 3 2.5Z"/></svg>
+						<span>故障复盘库</span><span class="kb-spacer"></span><span class="kb-cnt">9</span>
+					</div>
+					<div class="kb-tree-row lv2">
+						<svg class="kb-caret" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4V4Z"/></svg>
+						<svg class="kb-node-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.5h4l1.2 1.5H13A1.5 1.5 0 0 1 14.5 5.5v7A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5v-8.5A1.5 1.5 0 0 1 3 2.5Z"/></svg>
+						<span>剪藏 · 技术文章</span><span class="kb-spacer"></span><span class="kb-cnt">16</span>
+					</div>
+				</div>
+			</div>
+
+			<!-- ── 右：标签表格 ── -->
+			<div class="kb-card" style="padding:0">
+				<div class="kb-toolbar2">
+					<label class="kb-searchbox" style="width:200px">
+						<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+						<input type="text" placeholder="筛选标签…">
+					</label>
+					<select class="kb-select">
+						<option selected>排序：使用次数</option>
+						<option>名称 A→Z</option>
+						<option>最近使用</option>
+					</select>
+					<label class="kb-filter-opt" style="cursor:pointer"><input type="checkbox"><span>只看未使用</span></label>
+					<span style="flex:1"></span>
+					<!-- [交互注释] 选中多行后「合并标签」可用；合并需选择目标标签，冲突时提示是否保留双方别名 -->
+					<button class="kb-btn kb-btn-sm" disabled>合并标签</button>
+					<button class="kb-btn kb-btn-sm">批量重命名</button>
+				</div>
+
+				<div class="kb-table-wrap" style="border:none;border-radius:0">
+					<table class="kb-table">
+						<thead>
+							<tr>
+								<th style="width:34px"><input type="checkbox" class="kb-checkbox"></th>
+								<th>标签</th>
+								<th>使用次数</th>
+								<th class="kb-col-opt">分布</th>
+								<th class="kb-col-opt">近 30 天趋势</th>
+								<th class="kb-col-opt">首次引入</th>
+								<th style="width:110px">操作</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><span class="kb-tag">架构</span></td>
+								<td><div class="kb-tag-count"><div class="kb-tag-meter"><i style="width:100%"></i></div><span class="kb-tag-num">47</span></div></td>
+								<td class="kb-col-opt kb-num">5 本</td>
+								<td class="kb-col-opt"><span class="kb-trend-up">↑ 12%</span></td>
+								<td class="kb-col-opt">2026-01-08</td>
+								<td><a class="kb-btn kb-btn-sm kb-btn-ghost" href="search.html">检索</a><button class="kb-iconbtn kb-tip" data-tip="重命名"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><span class="kb-tag">纪要</span></td>
+								<td><div class="kb-tag-count"><div class="kb-tag-meter"><i style="width:87%"></i></div><span class="kb-tag-num">41</span></div></td>
+								<td class="kb-col-opt kb-num">1 本</td>
+								<td class="kb-col-opt"><span class="kb-trend-up">↑ 8%</span></td>
+								<td class="kb-col-opt">2026-02-20</td>
+								<td><a class="kb-btn kb-btn-sm kb-btn-ghost" href="search.html">检索</a><button class="kb-iconbtn kb-tip" data-tip="重命名"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><span class="kb-tag">调研</span></td>
+								<td><div class="kb-tag-count"><div class="kb-tag-meter"><i style="width:60%"></i></div><span class="kb-tag-num">28</span></div></td>
+								<td class="kb-col-opt kb-num">3 本</td>
+								<td class="kb-col-opt"><span class="kb-trend-flat">→ 0%</span></td>
+								<td class="kb-col-opt">2026-03-11</td>
+								<td><a class="kb-btn kb-btn-sm kb-btn-ghost" href="search.html">检索</a><button class="kb-iconbtn kb-tip" data-tip="重命名"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><span class="kb-tag">规范</span></td>
+								<td><div class="kb-tag-count"><div class="kb-tag-meter"><i style="width:51%"></i></div><span class="kb-tag-num">24</span></div></td>
+								<td class="kb-col-opt kb-num">2 本</td>
+								<td class="kb-col-opt"><span class="kb-trend-up">↑ 4%</span></td>
+								<td class="kb-col-opt">2026-03-30</td>
+								<td><a class="kb-btn kb-btn-sm kb-btn-ghost" href="search.html">检索</a><button class="kb-iconbtn kb-tip" data-tip="重命名"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><span class="kb-tag">构建</span></td>
+								<td><div class="kb-tag-count"><div class="kb-tag-meter"><i style="width:40%"></i></div><span class="kb-tag-num">19</span></div></td>
+								<td class="kb-col-opt kb-num">1 本</td>
+								<td class="kb-col-opt"><span class="kb-trend-flat">→ 0%</span></td>
+								<td class="kb-col-opt">2026-04-15</td>
+								<td><a class="kb-btn kb-btn-sm kb-btn-ghost" href="search.html">检索</a><button class="kb-iconbtn kb-tip" data-tip="重命名"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><span class="kb-tag">检索</span></td>
+								<td><div class="kb-tag-count"><div class="kb-tag-meter"><i style="width:38%"></i></div><span class="kb-tag-num">18</span></div></td>
+								<td class="kb-col-opt kb-num">2 本</td>
+								<td class="kb-col-opt"><span class="kb-trend-up">↑ 22%</span></td>
+								<td class="kb-col-opt">2026-04-22</td>
+								<td><a class="kb-btn kb-btn-sm kb-btn-ghost" href="search.html">检索</a><button class="kb-iconbtn kb-tip" data-tip="重命名"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><span class="kb-tag">复盘</span></td>
+								<td><div class="kb-tag-count"><div class="kb-tag-meter"><i style="width:26%"></i></div><span class="kb-tag-num">12</span></div></td>
+								<td class="kb-col-opt kb-num">1 本</td>
+								<td class="kb-col-opt"><span class="kb-trend-down">↓ 5%</span></td>
+								<td class="kb-col-opt">2026-05-06</td>
+								<td><a class="kb-btn kb-btn-sm kb-btn-ghost" href="search.html">检索</a><button class="kb-iconbtn kb-tip" data-tip="重命名"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><span class="kb-tag">剪藏</span></td>
+								<td><div class="kb-tag-count"><div class="kb-tag-meter"><i style="width:34%"></i></div><span class="kb-tag-num">16</span></div></td>
+								<td class="kb-col-opt kb-num">1 本</td>
+								<td class="kb-col-opt"><span class="kb-trend-up">↑ 6%</span></td>
+								<td class="kb-col-opt">2026-05-18</td>
+								<td><a class="kb-btn kb-btn-sm kb-btn-ghost" href="search.html">检索</a><button class="kb-iconbtn kb-tip" data-tip="重命名"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><span class="kb-tag">访谈</span></td>
+								<td><div class="kb-tag-count"><div class="kb-tag-meter"><i style="width:15%"></i></div><span class="kb-tag-num">7</span></div></td>
+								<td class="kb-col-opt kb-num">1 本</td>
+								<td class="kb-col-opt"><span class="kb-trend-flat">→ 0%</span></td>
+								<td class="kb-col-opt">2026-06-02</td>
+								<td><a class="kb-btn kb-btn-sm kb-btn-ghost" href="search.html">检索</a><button class="kb-iconbtn kb-tip" data-tip="重命名"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><span class="kb-tag kb-unused">迁移</span> <span class="kb-badge kb-badge-amber">未使用</span></td>
+								<td><div class="kb-tag-count"><div class="kb-tag-meter"><i style="width:8%"></i></div><span class="kb-tag-num">3</span></div></td>
+								<td class="kb-col-opt kb-num">1 本</td>
+								<td class="kb-col-opt"><span class="kb-trend-down">↓ 40%</span></td>
+								<td class="kb-col-opt">2026-08-28</td>
+								<td><a class="kb-btn kb-btn-sm kb-btn-ghost" href="search.html">检索</a><button class="kb-iconbtn kb-tip" data-tip="重命名"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></td>
+							</tr>
+							<tr class="kb-skel-demo kb-skeleton">
+								<td></td><td><div class="kb-skel-line" style="width:54px"></div></td>
+								<td><div class="kb-skel-line" style="width:110px"></div></td>
+								<td class="kb-col-opt"><div class="kb-skel-line" style="width:36px"></div></td>
+								<td class="kb-col-opt"><div class="kb-skel-line" style="width:44px"></div></td>
+								<td class="kb-col-opt"><div class="kb-skel-line" style="width:60px"></div></td>
+								<td></td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+
+				<div class="kb-pager" style="padding:10px 14px">
+					<span class="kb-page-info">共 42 个标签 · 未使用 6 个</span>
+					<button class="kb-page" disabled>‹</button>
+					<button class="kb-page is-current">1</button>
+					<button class="kb-page">2</button>
+					<button class="kb-page">›</button>
+				</div>
+			</div>
+		</div>
+	</main>
+</div>
+</body>
+</html>

@@ -24,7 +24,11 @@
  *  - Saros operates on the raw tool_calls array before dispatching,
  *    since it doesn't have LangGraph's state model
  *
- *  Valid range for maxConcurrent: [2, 4] (aligned with deer-flow)
+ *  ★ 丢弃必须显式披露（2026-09-11）：调用方除打日志外，还须为每个 dropped call
+ *    补一条失败 tool_result（见 {@link buildDroppedDelegationResult}）并在委派账本
+ *    中先登记再标 cancelled —— 否则模型以为这些任务都在跑。
+ *
+ *  Valid range for maxConcurrent: [2, 5]（与 delegationTools 的 MAX_TASKS_PER_CALL 对齐）
  *--------------------------------------------------------------------------------------------*/
 
 import type { IToolCallInfo } from './providers.js';
@@ -152,6 +156,49 @@ export class SubagentLimitMiddleware {
 /** Clamp subagent limit to valid range [2, 5] (aligned with MAX_TASKS_PER_CALL). */
 export function clampSubagentLimit(value: number): number {
 	return Math.max(MIN_SUBAGENT_LIMIT, Math.min(MAX_SUBAGENT_LIMIT, value));
+}
+
+/** 「超限被丢弃的委派」回给模型的失败 tool_result（结构兼容 agentOSService 的 results 元素）。 */
+export interface DroppedDelegationResult {
+	readonly toolCallId: string;
+	readonly content: {
+		readonly ok: false;
+		readonly dropped: true;
+		readonly reason: 'subagent_concurrency_limit';
+		readonly message: string;
+	};
+	readonly success: false;
+}
+
+/**
+ * 构造「超限被丢弃的委派」的失败 tool_result。
+ *
+ * ★ 为什么必须回一条 result：本中间件只是把超出 maxConcurrent 的委派从执行列表里
+ *   摘掉，**不执行也不回告**。若不补这条 result，模型会以为这些任务都在跑
+ *   （后续推理建立在错误前提上：漏做、或重复提交），也看不到任何失败原因。
+ *   对齐本仓「结果被削弱时必须在输出里显式披露」的原则。纯函数，便于单测。
+ *
+ * @param callId 被丢弃的 tool_call id（必须与模型下发的 id 一致，否则无法配对）
+ * @param keptCount 本轮回告中实际保留（会执行）的委派数
+ * @param submittedCount 模型本轮提交的委派总数
+ */
+export function buildDroppedDelegationResult(
+	callId: string,
+	keptCount: number,
+	submittedCount: number,
+): DroppedDelegationResult {
+	return {
+		toolCallId: callId,
+		content: {
+			ok: false,
+			dropped: true,
+			reason: 'subagent_concurrency_limit',
+			message: `This delegation was NOT executed: at most ${keptCount} sub-agent delegations may run per iteration, `
+				+ `and ${submittedCount} were submitted. Re-submit this task in the next iteration `
+				+ `(or split it into smaller batches).`,
+		},
+		success: false,
+	};
 }
 
 /**

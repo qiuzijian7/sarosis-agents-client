@@ -55,7 +55,16 @@ import { FileAccess } from '../../../../base/common/network.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
 import { IWorkflowStorageService, IStoredWorkflow } from '../common/workflowStorage.js';
-import { AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING } from '../common/constants.js';
+import {
+	AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING,
+	AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING,
+	AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING,
+} from '../common/constants.js';
+import {
+	planSkillInjections, buildSkillBudgetNote, DEFAULT_SKILL_BUDGET, type ISkillBudget,
+	type ISkillBudgetCandidate,
+	SKILL_PRIORITY_REQUIRED, SKILL_PRIORITY_EXPLICIT, SKILL_PRIORITY_ALWAYS, SKILL_PRIORITY_AUTO,
+} from '../common/skillInjectionBudget.js';
 import { ensureNonEmptySkillId, resolveSkillId } from '../common/skillId.js';
 import { skillScriptAbsolutePaths } from './providers/tool/executeCodeGuards.js';
 
@@ -300,37 +309,61 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	}
 
 	resolveActivations(context: ISkillActivationContext): Promise<readonly ISkillInjection[]> {
-		const out: ISkillInjection[] = [];
 		const explicit = new Set((context.explicit ?? []).map(s => s.toLowerCase()));
 		const required = new Set((context.required ?? []).map(s => s.toLowerCase()));
 		const userMsg = context.userMessage.toLowerCase();
 
+		// ── 1. 收集候选（带**优先级**与**正文体量**）────────────────────────
+		// ★ 2026-09-11：此前直接 push —— 无排序、不限量、不限字符，多 always /
+		// required 技能时每轮 prompt 无界膨胀（`maxSkillsInPrompt` /
+		// `maxSkillsPromptChars` 两个开关是**死常量**，从未接线）。
+		const candidates: ISkillBudgetCandidate[] = [];
 		for (const skill of this._skills.values()) {
 			// 首先检查 skill 是否启用
 			if (skill.enabled === false) { continue; }
 
-			let take = false;
-			if (required.has(skill.id.toLowerCase())) {
+			const id = skill.id.toLowerCase();
+			let priority: number | undefined;
+			if (required.has(id)) {
 				// 强制加载：agent 配置中指定的技能，无论 activation 模式都必须注入
-				take = true;
+				priority = SKILL_PRIORITY_REQUIRED;
+			} else if (explicit.has(id)) {
+				// 用户显式 `/skill <id>`：意图最强，优先于 always
+				//（always 是常驻噪音源，显式请求才应最优先占预算）
+				priority = SKILL_PRIORITY_EXPLICIT;
 			} else if (skill.activation === 'always') {
-				take = true;
-			} else if (explicit.has(skill.id.toLowerCase())) {
-				take = true;
-			} else if (skill.activation === 'auto' && skill.match) {
-				take = skill.match.some(kw => userMsg.includes(kw.toLowerCase()));
+				priority = SKILL_PRIORITY_ALWAYS;
+			} else if (skill.activation === 'auto' && skill.match
+				&& skill.match.some(kw => userMsg.includes(kw.toLowerCase()))) {
+				priority = SKILL_PRIORITY_AUTO;
 			}
-			if (!take) { continue; }
+			if (priority === undefined) { continue; }
+			candidates.push({ skill, priority, contentChars: renderSkillBody(skill).length });
+		}
 
+		// ── 2. 预算分配（纯函数，见 common/skillInjectionBudget.ts）────────
+		const budget = this._getSkillBudget();
+		const plan = planSkillInjections(candidates, budget);
+		if (plan.summary.length > 0) {
+			this.logService.info(
+				`[SkillRegistry] skill injection budget applied: ${plan.full.length} full / ` +
+				`${plan.summary.length} summary-only (maxFull=${budget.maxFullSkills}, maxChars=${budget.maxPromptChars})`,
+			);
+		}
+
+		const out: ISkillInjection[] = [];
+
+		// ── 3a. 完整正文注入 ──────────────────────────────────────────────
+		// 渐进披露（Phase 1）：所有激活技能统一以 user placement 注入为独立 user message，
+		// 不再内联 system prompt（避免冻结前缀失效缓存 + 符合系统提示词通用性约束）。
+		// required（agent 配置强制）/ always / explicit（/skill）/ auto（关键词命中）
+		// 均走同一路径，确保强制/常驻技能真正进入 LLM。
+		// 注：Knot 的 background_knowledge 路径从未实现（仅历史注释），Knot 现走标准
+		// messages 路径，user placement 技能可正常到达模型（见 agentDriverService L909-916）。
+		// 已触发的 workflow 技能不注入文本，由 agentDriverService 转交执行引擎。
+		for (const skill of plan.full) {
 			out.push({
 				skill,
-				// 渐进披露（Phase 1）：所有激活技能统一以 user placement 注入为独立 user message，
-				// 不再内联 system prompt（避免冻结前缀失效缓存 + 符合系统提示词通用性约束）。
-				// required（agent 配置强制）/ always / explicit（/skill）/ auto（关键词命中）
-				// 均走同一路径，确保强制/常驻技能真正进入 LLM。
-				// 注：Knot 的 background_knowledge 路径从未实现（仅历史注释），Knot 现走标准
-				// messages 路径，user placement 技能可正常到达模型（见 agentDriverService L909-916）。
-				// 已触发的 workflow 技能不注入文本，由 agentDriverService 转交执行引擎。
 				placement: 'user',
 				content: this._renderInjection(skill),
 				// 可执行型 skill（workflow 来源）携带 executor，供 ExecutionProvider 触发执行而非注入文本
@@ -338,7 +371,52 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			});
 		}
 
+		// ── 3b. 超预算技能 → 摘要注入（**不丢弃**）────────────────────────
+		// 丢弃会让预算悄悄破坏 `always` 的语义（「模型总能看到它」）；摘要保留
+		// 存在性 + 定位手段（目录路径），正文由模型按需 `read_skill` 取。
+		if (plan.summary.length > 0) {
+			const budgetNote = buildSkillBudgetNote(plan.summary.length);
+			for (const skill of plan.summary) {
+				out.push({
+					skill,
+					placement: 'user',
+					content: this._renderSummaryInjection(skill, budgetNote),
+					executor: skill.executor,
+				});
+			}
+		}
+
 		return Promise.resolve(out);
+	}
+
+	/**
+	 * 读取 skill 注入预算（2026-09-11 接线：两个开关此前是**死常量**）。
+	 *
+	 * 非法/非正值 → 回退默认：用户手写 settings.json 可能写出 0 / 负数 / 字符串，
+	 * 若直接采信会「静默禁用全部技能正文」（比不限量更糟）。
+	 */
+	private _getSkillBudget(): ISkillBudget {
+		const maxFull = this.configurationService.getValue<number>(AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING);
+		const maxChars = this.configurationService.getValue<number>(AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING);
+		return {
+			maxFullSkills: typeof maxFull === 'number' && Number.isFinite(maxFull) && maxFull > 0
+				? Math.floor(maxFull) : DEFAULT_SKILL_BUDGET.maxFullSkills,
+			maxPromptChars: typeof maxChars === 'number' && Number.isFinite(maxChars) && maxChars > 0
+				? Math.floor(maxChars) : DEFAULT_SKILL_BUDGET.maxPromptChars,
+		};
+	}
+
+	/**
+	 * 超预算技能的**摘要注入**（2026-09-11）：保留「技能存在」的事实与定位手段
+	 * （name / description / 目录路径），丢掉正文体积。
+	 */
+	private _renderSummaryInjection(skill: ISkillDefinition, budgetNote: string): string {
+		return [
+			`### Skill available (summary — full body omitted by prompt budget): ${skill.name}`,
+			skill.description ? `_${skill.description}_` : '',
+			skill.resource ? `**Skill directory**: \`${skill.resource.fsPath}\`` : '',
+			budgetNote,
+		].filter(Boolean).join('\n');
 	}
 
 	/** 启用指定 skill */

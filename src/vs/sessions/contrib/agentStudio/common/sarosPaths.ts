@@ -54,6 +54,15 @@ export const SarosPath = {
 	contextStorage: 'context-storage',
 	/** Pending plan approval records (durable across window refreshes): `{root}/pending-approvals/` */
 	pendingApprovals: 'pending-approvals',
+	/**
+	 * Tool allow-list（「始终允许 / 在工作区允许」的记忆）: `{root}/tool-allow.json`。
+	 *
+	 * ⚠ 为什么必须放这里（2026-09-13）：本项目**所有**数据都放 `.vssaros/`，不写 `.vscode/`
+	 * （那是 VS Code 自己的配置目录）。此前它经 `ConfigurationTarget.WORKSPACE` 落到
+	 * `<workspace>/.vscode/settings.json` —— ① 违反本约定；② 该文件在**工作区内、模型可写**
+	 * → 「被约束者可以改写约束」（给自己授权）。`.vssaros/` 已被 `writeDenyList` 硬拒。
+	 */
+	toolAllow: 'tool-allow.json',
 } as const;
 
 // ─── Path resolution ─────────────────────────────────────────────────────────

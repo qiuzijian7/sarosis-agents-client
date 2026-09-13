@@ -157,6 +157,16 @@ suite('StructuredOutputParser', () => {
 		assert.deepStrictEqual(result.tasks[0].dependencies, ['2']);
 	});
 
+	// ★ 回归（2026-09-11）：`_tryCoerce` 的 array 分支原只处理「JSON 数组」与
+	//   「JSON 标量」，**非 JSON** 的单值字符串（如 "T1"）会落到 `break` →
+	//   返回 undefined → 调用方取默认 `[]` → 依赖被**静默丢弃**（任务间顺序丢失）。
+	//   修复后按单元素数组处理。
+	test('★ 回归：非 JSON 的单值依赖字符串也归一为单元素数组', () => {
+		const response = '{"tasks": [{"id": "1", "title": "Test", "dependencies": "T1"}]}';
+		const result = parser.parseTaskDecomposition(response);
+		assert.deepStrictEqual(result.tasks[0].dependencies, ['T1'], '非 JSON 单值不应被丢弃');
+	});
+
 	// ─── Edge Cases ────────────────────────────────────────────────────────
 
 	test('handles empty tasks array', () => {

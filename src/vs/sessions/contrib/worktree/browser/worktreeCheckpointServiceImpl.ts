@@ -105,8 +105,21 @@ export class WorktreeCheckpointService extends Disposable implements IWorktreeCh
 		try {
 			this.logService.info(`[WorktreeCheckpoint] Rolling back to checkpoint ${checkpointRef} at ${worktreePath}`);
 
-			// Verify the checkpoint ref exists
-			await this.execGit(worktreePath, ['show-ref', '--verify', checkpointRef]);
+			// 2026-09-12：ref 不存在时**显式判定**并给精准日志（warn + 原因），而不是让
+			// show-ref 的非零退出冒泡成笼统的「Failed to rollback」—— 后者会让排障者
+			// 误以为 reset 失败（实际是目标 ref 压根不存在）。
+			// 注：此判定取自已删除的 node 版实现 —— 那份实现唯一的「比 browser 版更正确」
+			// 之处（其余逻辑两者等价，但 node 版用字符串拼 shell 命令存在注入风险）。
+			let refExists = '';
+			try {
+				refExists = await this.execGit(worktreePath, ['show-ref', '--verify', checkpointRef]);
+			} catch {
+				// `show-ref --verify` 对不存在的 ref 返回非零 → 视为「不存在」，下方统一处理
+			}
+			if (!refExists.trim()) {
+				this.logService.warn(`[WorktreeCheckpoint] Checkpoint ref ${checkpointRef} does not exist`);
+				return false;
+			}
 
 			// Roll back using git reset --hard
 			await this.execGit(worktreePath, ['reset', '--hard', checkpointRef]);

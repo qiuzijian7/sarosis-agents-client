@@ -82,7 +82,13 @@ const CODING_FOCUS_TOOLSETS: readonly string[] = [
 	'core',          // 文件、终端、记忆
 	'tool-search',   // 桥接工具
 	'mcp',           // MCP 工具（折叠）
-	'codebase',      // 代码知识图谱（search_graph / query_graph / get_architecture 等）
+	// ⚠ 2026-09-11 注：`'codebase'` 在 `TOOLSET_DEFINITIONS` 中**并不存在**
+	// （只有 `codebase-grep`）→ 本项**永不匹配**任何工具。实际 codebase graph 工具
+	// （search_graph / query_graph / get_architecture…）因 `exactNames` 规则归入
+	// `core`，而 `core` 已是本列表首项 → 它们不会被裁，故**保留不删**：
+	// 它记录了「作者本意想要一个独立 codebase toolset」这一意图，删除需同步改
+	// `focusMode.test.ts` 的断言而收益为零。
+	'codebase',
 	'codebase-grep', // 代码内容 grep（search_code）——事故 1785144631124：漏此项导致 focus 模式
 	                 // 先于 toolsetsOverride 生效时把 search_code 剪掉，子代理只能用 search_files
 	'memory',        // 记忆

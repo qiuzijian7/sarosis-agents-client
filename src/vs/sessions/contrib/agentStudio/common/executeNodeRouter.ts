@@ -41,6 +41,9 @@ const SAROS_TYPES = new Set<string>([
 	WorkflowNodeType.Switch,
 	WorkflowNodeType.AskUser,
 	WorkflowNodeType.Group,
+	// P1-4：Script 节点（Dynamic Workflow 脚本作为 DAG 节点）也走 saros 路由——
+	// 漏登记会让 `Saros.Script` 判为 'unknown'，编排节点被静默跳过执行。
+	WorkflowNodeType.Script,
 ]);
 
 /**

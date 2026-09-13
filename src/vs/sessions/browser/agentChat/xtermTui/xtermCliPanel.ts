@@ -15,6 +15,7 @@ import type {
 	IAgentInfo,
 	IProviderInfo,
 	IModelInfo,
+	IImageModelGroup,
 	StreamPhase,
 	IWorktreeItem,
 	IWorkspaceItem,
@@ -542,6 +543,11 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 	setCurrentModel(model: string): void {
 		this._currentModel = model;
 	}
+
+	// 图片模型（2026-09-10）：CLI 面板不渲染该下拉，no-op。
+	setImageModels(_groups: IImageModelGroup[]): void { /* no-op */ }
+
+	setCurrentImageModel(_preference: string): void { /* no-op */ }
 
 	// ═══════════════════════════════════════════════════════════════════
 	// IChatPanel — Messages

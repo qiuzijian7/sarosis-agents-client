@@ -12,6 +12,7 @@ import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { IAgentStudioService } from '../../../../../common/agentStudioService.js';
 import { resolveWorkspacePath } from '../../../common/workspacePathResolver.js';
+import { realPathBestEffort, realRootsBestEffort, realPathAllowedWithinRoots } from '../../../common/symlinkGuard.js';
 import { AgentNetworkDomainSettingId } from '../../../../../../platform/networkFilter/common/settings.js';
 import { resolveKbRoot } from '../../knowledge/knowledgeStorage.js';
 import { LEGACY_SAROS_DIR } from '../../../common/sarosPaths.js';
@@ -336,7 +337,51 @@ export async function resolveAndCheckWorkspacePathImpl(
 	// 后者在大小写敏感文件系统（Linux）上会把 `/Foo/x` 误判为落在 `/foo`
 	// 沙箱内，是一处跨平台越界隐患；新实现按 scheme/平台正确处理大小写、
 	// 盘符与正/反斜杠归一化。
-	const { resolvedPath, isAllowed, normalizedRoots } = resolveWorkspacePath(requestedPath, allowedRoots);
+	let { resolvedPath, isAllowed, normalizedRoots } = resolveWorkspacePath(requestedPath, allowedRoots);
+
+	// ★★ 符号链接逃逸防护（2026-09-13）—— 详见 `common/symlinkGuard` 模块头注释。
+	//
+	// 上面的边界校验是**纯词法**的（零文件系统访问）→ **不解析符号链接**。于是
+	// `<workspace>/evil --symlink--> ~/.vssaros/User` 这类路径会被判为「在允许根内」，
+	// 而 `writeDenyList` / `sensitiveWriteRejection` / `isProtectedPath` 三条也按
+	// **词法**路径查 → 全部落空 → 写 `<workspace>/evil/settings.json` 可**免审批**
+	// 改写 provider apiKey（apiKey 就在 `~/.vssaros/User/settings.json`）。
+	//
+	// 处置：把**目标**与**允许根**都做一次 best-effort realpath，再重算一次边界。
+	//   · 解析失败（新建文件 / 平台不支持）→ 原样返回 → 行为与修正前**完全一致**（fail-safe）；
+	//   · 允许根也解析 → 不引入误拒（macOS `/tmp` → `/private/tmp`）；
+	//   · 只有「真实路径 ≠ 词法路径」（即真的存在 symlink）时才可能改变判定。
+	//
+	// 返回的 `resolvedPath` 因此是**真实路径** → 下游的写黑名单、敏感路径硬拒、
+	// 受保护路径判定、以及 `file_read` 读守卫，全部自动变成 symlink-aware。
+	if (fileService) {
+		const realpath = (u: URI) => fileService.realpath(u);
+		const realPath = await realPathBestEffort(realpath, resolvedPath);
+		if (realPath !== resolvedPath) {
+			const realRoots = await realRootsBestEffort(realpath, allowedRoots);
+			const recheck = resolveWorkspacePath(realPath, realRoots);
+			// ⚠ 差异**未必**是符号链接：Windows 上模型常给出 `/tmp/x` 这类 Unix 风格路径，
+			// 而 realpath 会把它规范化成 `g:\tmp\x`（**同一位置**，只是形态不同）。
+			// 实测 `vscode-app-1789281483413.log:611` 就打出一条「symlink resolved」误报，
+			// 而那次 `file_read` 的报错是 "File not found" —— 与 symlink 无关。
+			//
+			// ⇒ 判据改成**「边界判定是否真的被改变」**（不依赖任何关于路径形态的假设）：
+			//   没改变 → 只记 debug（避免刷屏）；改变了 → warn（这才是真正要看的）。
+			if (recheck.isAllowed !== isAllowed) {
+				logService.warn(
+					`[WorkspaceSecurity] real path changed the sandbox verdict: ` +
+					`"${resolvedPath}" → "${realPath}" (allowed ${isAllowed} → ${recheck.isAllowed})`,
+				);
+			} else {
+				logService.debug(
+					`[WorkspaceSecurity] real path differs (same verdict): "${resolvedPath}" → "${realPath}"`,
+				);
+			}
+			resolvedPath = realPath;
+			isAllowed = recheck.isAllowed;
+			normalizedRoots = recheck.normalizedRoots;
+		}
+	}
 
 	// ── 「合法但可疑」软告警（2026-09-07，借鉴 Hermes-Agent `_path_resolution_warning`）──
 	// 场景：相对路径（如 `../other/x` 或模型少写了一级目录）被解析到**所有允许根之外**。
@@ -384,11 +429,25 @@ export async function resolveAndCheckWorkspacePathImpl(
 		if (fileService && autoRepairRoots.length > 0) {
 			const repaired = await structuralRepairOutOfRootPath(fileService, requestedPath, autoRepairRoots);
 			if (repaired) {
+				// ★★ 2026-09-13：自愈结果是本函数的**第二条出口**，必须过同一套符号链接判定。
+				//
+				// 自愈的验证用 `fileService.exists`，而 `exists` **会跟随 symlink**
+				// （`<ws>/link -> ~/.ssh` 下 `link/id_rsa` 判为存在）→ 若这条出口不解析真实路径，
+				// 就等于从它绕过上面刚加的 symlink 防护（「另一条出口没挂检查」是今日最高频的成因）。
+				const realpath = (u: URI) => fileService.realpath(u);
+				if (await realPathAllowedWithinRoots(realpath, repaired, allowedRoots)) {
+					const repairedReal = await realPathBestEffort(realpath, repaired);
+					logService.warn(
+						`[WorkspaceSecurity] path auto-corrected (out-of-root hallucination, structural repair): ` +
+						`"${requestedPath}" → "${repairedReal}"`,
+					);
+					return repairedReal;
+				}
 				logService.warn(
-					`[WorkspaceSecurity] path auto-corrected (out-of-root hallucination, structural repair): ` +
+					`[WorkspaceSecurity] structural repair REJECTED (real path escapes allowed roots): ` +
 					`"${requestedPath}" → "${repaired}"`,
 				);
-				return repaired;
+				// 不接受自愈 → 落到下方正常拒绝流程（抛 SandboxViolationError）
 			}
 		}
 		const allowedList = normalizedRoots.length > 0

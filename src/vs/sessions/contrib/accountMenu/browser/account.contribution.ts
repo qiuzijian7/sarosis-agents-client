@@ -768,13 +768,28 @@ registerAction2(class extends Action2 {
 		const notificationService = accessor.get(INotificationService);
 		const user = tofAuthService.currentUser;
 		if (user) {
-			// 已登录 → 显示用户信息
-			await dialogService.info(
-				localize('personalInfoTitle', "个人中心"),
-				localize('personalInfoMessage', "当前登录：{0}（工号 {1}{2}）",
+			// 已登录 → 显示用户信息 + 登出按钮。
+			// 2026-09-11：旧实现只用 dialogService.info 展示信息，没有任何登出入口
+			// （用户反馈"登录模块缺少登出功能"）。侧边栏底部 Personal 是唯一可达的个人
+			// 中心入口——views/personalView.ts 里虽有「🚪 登出」按钮，但该视图从未注册
+			// （constants 有 id、toolbar 有标签映射，缺 viewsRegistry.registerViews），
+			// 属死代码，用户看不到。故在此补上登出。
+			const { result } = await dialogService.prompt<'logout'>({
+				type: Severity.Info,
+				message: localize('personalInfoMessage', "当前登录：{0}（工号 {1}{2}）",
 					user.login_name, user.staff_id,
-					user.team ? '，团队 ' + user.team : '')
-			);
+					user.team ? '，团队 ' + user.team : ''),
+				detail: localize('personalInfoDetail', "点击「登出」将清除本地登录票据，需重新登录才能上传/发布资源。"),
+				buttons: [{
+					label: localize('personalSignOutButton', "登出"),
+					run: () => 'logout' as const,
+				}],
+				cancelButton: localize('closeButton', "关闭"),
+			});
+			if (await result === 'logout') {
+				await tofAuthService.logout();
+				notificationService.info('已登出');
+			}
 		} else {
 			// 未登录 → 确认后发起 TOF 登录
 			const { confirmed } = await dialogService.confirm({

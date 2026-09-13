@@ -14,7 +14,8 @@
  *   5. conversation_summary   — 对话历史摘要（cb_summary）
  *   6. working_memory_content — 长期记忆内容
  *   7. additional_data        — 运行时元信息
- *   8. system_reminder        — 行为提醒
+ *   8. canvas_context         — 工作流画布状态
+ *   9. system_reminder        — 行为提醒
  *
  * 所有标签为**同级兄弟关系**，不是嵌套关系。
  * 输出格式参考 CodeBuddy：

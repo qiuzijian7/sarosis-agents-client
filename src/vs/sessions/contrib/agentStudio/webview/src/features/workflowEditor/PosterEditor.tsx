@@ -85,12 +85,6 @@ export function PosterEditor({ initialLayout, images, runners, preference, width
 	const toggleSelect = (id: string) =>
 		setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
-	const scheduleUpload = React.useCallback(() => {
-		if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); }
-		uploadTimerRef.current = setTimeout(() => { void uploadRender(); }, UPLOAD_DEBOUNCE_MS);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [uploadRender]);
-
 	const uploadRender = React.useCallback(async () => {
 		const canvas = canvasRef.current;
 		if (!canvas) { return; }
@@ -109,6 +103,14 @@ export function PosterEditor({ initialLayout, images, runners, preference, width
 			onRenderUploaded(null);
 		}
 	}, [onRenderUploaded]);
+
+	// ★ scheduleUpload 必须在 uploadRender 之后（其依赖数组在 render 期求值，
+	//   引用后置 const 会 TDZ——类型检查批次 54 修复）。
+	const scheduleUpload = React.useCallback(() => {
+		if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); }
+		uploadTimerRef.current = setTimeout(() => { void uploadRender(); }, UPLOAD_DEBOUNCE_MS);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [uploadRender]);
 
 	React.useEffect(() => () => { if (uploadTimerRef.current) { clearTimeout(uploadTimerRef.current); } }, []);
 

@@ -16,7 +16,98 @@
 //
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import type { DisposableStore } from '../../../../../base/common/lifecycle.js';
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Node 测试环境垫片（2026-09-11）
+//
+// ① DOM：`nativeChatEditorPane.ts` 模块级 import `base/browser/window.js`
+//    （`export const mainWindow = window as CodeWindow`）→ Node 下导入即抛
+//    `ReferenceError: window is not defined` → 「NativeChatEditorPane — 结构与契约」
+//    整组用例因 `mod === undefined` 连锁失败。
+//
+//    ★★ 必须**临时安装 + 立即还原**，不能常驻：批量运行器
+//    `run-all-browser-tests.mjs` 是**单进程单 Mocha 实例**（`runs them sequentially
+//    under a single Mocha instance`），常驻全局会污染同进程内后续所有测试文件
+//    （实证：常驻 window/document 让 ScheduleViewRenderer 多出 9 个失败）。
+//    故仅在 `suiteSetup` 里导入 pane 模块的那一瞬间安装，导入完立刻 `delete` 还原。
+//
+// ② 资源：`EditorInput` 实例自带 disposable。测试 NativeChatEditorInput.create()
+//    创建后从不释放 → `ensureNoDisposablesAreLeakedInTestSuite()` 的 teardown 报
+//    「There are N undisposed disposables!」。正确用法是**捕获该函数的返回值**并
+//    `add()`（其 teardown 会先 dispose 该 store 再做泄漏判定，见 utils.ts:53-81）。
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 安装最小 DOM 垫片，返回**还原函数**（删除本次新增的全局）。
+ * 只应在导入需要 DOM 的模块前后成对调用，避免污染同进程的其它测试文件。
+ */
+function installDomShim(): () => void {
+	const g = globalThis as unknown as Record<string, any>;
+	const added: string[] = [];
+	const set = (key: string, value: unknown): void => {
+		if (typeof g[key] === 'undefined') { g[key] = value; added.push(key); }
+	};
+
+	const makeEl = (): any => ({
+		style: {}, classList: { add() { }, remove() { } },
+		appendChild() { }, removeChild() { }, setAttribute() { }, removeAttribute() { },
+		addEventListener() { }, removeEventListener() { }, remove() { },
+	});
+	const doc: any = {
+		createElement: makeEl, createTextNode: makeEl, createDocumentFragment: makeEl,
+		head: makeEl(), body: makeEl(), documentElement: makeEl(),
+		addEventListener() { }, removeEventListener() { },
+		querySelector: () => null, querySelectorAll: () => [],
+	};
+	set('document', doc);
+	set('window', {
+		document: doc, addEventListener() { }, removeEventListener() { },
+		navigator: { userAgent: 'node' }, location: { href: 'node://test' },
+		setTimeout, clearTimeout, setInterval, clearInterval,
+	});
+	set('navigator', { userAgent: 'node' });
+	// pane 模块在**类定义期**引用 HTMLElement → 缺它导入期即抛。
+	set('HTMLElement', class HTMLElement { });
+	set('Element', class Element { });
+	set('Node', class Node { });
+	const Ev = class Event { constructor(public type = '') { } };
+	set('Event', Ev);
+	set('CustomEvent', Ev);
+	set('MutationObserver', class MutationObserver { observe() { } disconnect() { } takeRecords() { return []; } });
+	set('ResizeObserver', class ResizeObserver { observe() { } unobserve() { } disconnect() { } });
+	// pane 模块导入期调用 customElements.define(...)。
+	const registry = new Map<string, unknown>();
+	set('customElements', {
+		define(name: string, ctor: unknown) { registry.set(name, ctor); },
+		get(name: string) { return registry.get(name); },
+		whenDefined: async (name: string) => registry.get(name),
+		upgrade() { },
+	});
+
+	return () => { for (const k of added) { delete g[k]; } };
+}
+
+/** 当前用例的 disposable 容器（各 suite 经 `trackLeaks()` 注入）。 */
+let currentStore: Pick<DisposableStore, 'add'> | undefined;
+
+/**
+ * 替代裸调 `ensureNoDisposablesAreLeakedInTestSuite()`：
+ * 捕获其返回值（自动释放 store），并在**每个用例运行前**把它设为当前容器，
+ * 使 `createInput()` 登记的实例在泄漏判定之前被释放。
+ */
+function trackLeaks(): void {
+	const ds = ensureNoDisposablesAreLeakedInTestSuite();
+	setup(() => { currentStore = ds; });
+}
+
+/** 包装 `createInput(NativeChatEditorInput, ...)`：创建即登记释放（避免 disposable 泄漏）。 */
+function createInput(Ctor: { create(...args: unknown[]): any }, ...args: unknown[]): any {
+	const input = Ctor.create(...args);
+	currentStore?.add(input);
+	return input;
+}
 
 // ══════════════════════════════════════════════════════════════════
 // 1. NativeChatEditorInput — 多实例隔离
@@ -24,40 +115,40 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/
 
 suite('NativeChatEditorInput — 多实例隔离', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	trackLeaks();
 
 	test('create() 每次返回不同实例且 chatId 唯一', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const a = NativeChatEditorInput.create();
-		const b = NativeChatEditorInput.create();
+		const a = createInput(NativeChatEditorInput, );
+		const b = createInput(NativeChatEditorInput, );
 		assert.ok(a !== b, '不同调用应为不同实例');
 		assert.ok(a.chatId !== b.chatId, 'chatId 应唯一');
 		assert.ok(a.chatId.length > 0, 'chatId 不应为空');
 	});
 
 	test('create(chatId) 使用指定 chatId', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('my-custom-id');
+		const input = createInput(NativeChatEditorInput, 'my-custom-id');
 		assert.strictEqual(input.chatId, 'my-custom-id');
 	});
 
 	test('resource 唯一且基于 chatId', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const a = NativeChatEditorInput.create('chat-a');
-		const b = NativeChatEditorInput.create('chat-b');
+		const a = createInput(NativeChatEditorInput, 'chat-a');
+		const b = createInput(NativeChatEditorInput, 'chat-b');
 		assert.ok(a.resource.toString() !== b.resource.toString(), '不同 chatId 的 resource 应不同');
 		assert.ok(a.resource!.scheme === 'native-chat', 'scheme 应为 native-chat');
 	});
 
 	test('matches() 仅匹配相同 chatId 的同类实例', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const a = NativeChatEditorInput.create('chat-a');
-		const b = NativeChatEditorInput.create('chat-b');
-		const a2 = NativeChatEditorInput.create('chat-a');
+		const a = createInput(NativeChatEditorInput, 'chat-a');
+		const b = createInput(NativeChatEditorInput, 'chat-b');
+		const a2 = createInput(NativeChatEditorInput, 'chat-a');
 
 		assert.strictEqual(a.matches(b), false, '不同 chatId 不应 match');
 		assert.strictEqual(a.matches(a), true, '自身应 match');
@@ -65,17 +156,17 @@ suite('NativeChatEditorInput — 多实例隔离', () => {
 	});
 
 	test('matches() 对非 NativeChatEditorInput 返回 false', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('chat-x');
+		const input = createInput(NativeChatEditorInput, 'chat-x');
 		assert.strictEqual(input.matches({}), false, '非 EditorInput 对象不应 match');
 		assert.strictEqual(input.matches(null as any), false, 'null 不应 match');
 	});
 
 	test('setAgentInfo() 更新 name/agentId，不传 sessionId 时不修改', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('chat-test', 'initial-agent', 'initial-session');
+		const input = createInput(NativeChatEditorInput, 'chat-test', 'initial-agent', 'initial-session');
 
 		input.setAgentInfo('NewName', 'new-agent');
 		assert.strictEqual(input.name, 'NewName');
@@ -85,9 +176,9 @@ suite('NativeChatEditorInput — 多实例隔离', () => {
 	});
 
 	test('setAgentInfo() 更新 sessionId', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('chat-test');
+		const input = createInput(NativeChatEditorInput, 'chat-test');
 
 		input.setAgentInfo('Agent', 'agent-1', 'session-1');
 		assert.strictEqual(input.agentId, 'agent-1');
@@ -99,23 +190,23 @@ suite('NativeChatEditorInput — 多实例隔离', () => {
 	});
 
 	test('初始 name 默认为 "Agent Chat"', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('chat-default');
+		const input = createInput(NativeChatEditorInput, 'chat-default');
 		assert.strictEqual(input.name, 'Agent Chat');
 	});
 
 	test('create(name) 使用指定 name', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('chat-x', undefined, undefined, 'Custom Name');
+		const input = createInput(NativeChatEditorInput, 'chat-x', undefined, undefined, 'Custom Name');
 		assert.strictEqual(input.name, 'Custom Name');
 	});
 
 	test('saveRuntimeState / getRuntimeState 往返一致', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('chat-rt');
+		const input = createInput(NativeChatEditorInput, 'chat-rt');
 
 		// 初始无 runtime state
 		assert.strictEqual(input.getRuntimeState(), undefined, '初始应为 undefined');
@@ -134,9 +225,9 @@ suite('NativeChatEditorInput — 多实例隔离', () => {
 	});
 
 	test('clearRuntimeState 清除保存的状态', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('chat-clear');
+		const input = createInput(NativeChatEditorInput, 'chat-clear');
 		input.saveRuntimeState({ messages: [], streamPhase: 'idle', isSending: false, agentLoaded: false });
 		assert.ok(input.getRuntimeState(), '保存后应有状态');
 
@@ -145,9 +236,9 @@ suite('NativeChatEditorInput — 多实例隔离', () => {
 	});
 
 	test('runtime state 不参与序列化（transient）', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('chat-serial', 'agent-1', 'sess-1', 'Test');
+		const input = createInput(NativeChatEditorInput, 'chat-serial', 'agent-1', 'sess-1', 'Test');
 
 		// 保存 runtime state
 		input.saveRuntimeState({ messages: [{ id: 'm1' }], streamPhase: 'tool_executing', isSending: true, agentLoaded: true });
@@ -167,26 +258,26 @@ suite('NativeChatEditorInput — 多实例隔离', () => {
 	});
 
 	test('capabilities 为 Readonly', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const { EditorInputCapabilities } = await import('../../../../../../workbench/common/editor.js');
-		const input = NativeChatEditorInput.create('chat-readonly');
+		const { EditorInputCapabilities } = await import('../../../../../workbench/common/editor.js');
+		const input = createInput(NativeChatEditorInput, 'chat-readonly');
 		assert.ok(input.capabilities & EditorInputCapabilities.Readonly, '应为 Readonly');
 	});
 
 	test('canMove() 返回 true（允许拖拽到新 group）', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('chat-movable');
+		const input = createInput(NativeChatEditorInput, 'chat-movable');
 		assert.strictEqual(input.canMove(0, 1), true);
 	});
 
 	test('typeId 和 editorId 常量', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 		assert.strictEqual(NativeChatEditorInput.TypeID, 'workbench.editors.nativeChatInput');
 		assert.strictEqual(NativeChatEditorInput.EditorID, 'workbench.editor.nativeChat');
-		const input = NativeChatEditorInput.create('chat-ids');
+		const input = createInput(NativeChatEditorInput, 'chat-ids');
 		assert.strictEqual(input.typeId, 'workbench.editors.nativeChatInput');
 		assert.strictEqual(input.editorId, 'workbench.editor.nativeChat');
 	});
@@ -198,7 +289,7 @@ suite('NativeChatEditorInput — 多实例隔离', () => {
 
 suite('NativeChatEditorInput 序列化 — Pop Out/In 快照', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	trackLeaks();
 
 	/**
 	 * 模拟 NativeChatEditorInputSerializer.serialize 的逻辑
@@ -220,14 +311,14 @@ suite('NativeChatEditorInput 序列化 — Pop Out/In 快照', () => {
 	function deserializeInput(serialized: string): any {
 		const data = JSON.parse(serialized);
 		// eslint-disable-next-line @typescript-eslint/no-var-requires
-		const mod = require('../../nativeChatEditorInput.js');
-		return mod.NativeChatEditorInput.create(data.chatId, data.agentId, data.sessionId, data.name);
+		const mod = require('../../browser/nativeChatEditorInput.js');
+		return createInput(mod.NativeChatEditorInput, data.chatId, data.agentId, data.sessionId, data.name);
 	}
 
 	test('serialize → deserialize 往返一致（含 agent + session）', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const original = NativeChatEditorInput.create('chat-roundtrip', 'agent-42', 'session-99', 'Coder');
+		const original = createInput(NativeChatEditorInput, 'chat-roundtrip', 'agent-42', 'session-99', 'Coder');
 
 		const json = serializeInput(original);
 		const restored = deserializeInput(json);
@@ -239,9 +330,9 @@ suite('NativeChatEditorInput 序列化 — Pop Out/In 快照', () => {
 	});
 
 	test('serialize → deserialize 往返一致（无 agent/session）', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const original = NativeChatEditorInput.create('chat-empty');
+		const original = createInput(NativeChatEditorInput, 'chat-empty');
 
 		const json = serializeInput(original);
 		const restored = deserializeInput(json);
@@ -253,22 +344,22 @@ suite('NativeChatEditorInput 序列化 — Pop Out/In 快照', () => {
 	});
 
 	test('序列化 JSON 包含 type 标记字段', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const input = NativeChatEditorInput.create('chat-type');
+		const input = createInput(NativeChatEditorInput, 'chat-type');
 		const json = JSON.parse(serializeInput(input));
 		assert.strictEqual(json.type, 'native-chat');
 	});
 
 	test('pop out 快照收集：多个 input 序列化为数组', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		// 模拟 popoutChat action 中收集 movedEditors 的逻辑
 		const inputs = [
-			NativeChatEditorInput.create('chat-1', 'agent-a', 'sess-a', 'Agent A'),
-			NativeChatEditorInput.create('chat-2', 'agent-b', 'sess-b', 'Agent B'),
-			NativeChatEditorInput.create('chat-3', 'agent-c', undefined, 'Agent C'),
+			createInput(NativeChatEditorInput, 'chat-1', 'agent-a', 'sess-a', 'Agent A'),
+			createInput(NativeChatEditorInput, 'chat-2', 'agent-b', 'sess-b', 'Agent B'),
+			createInput(NativeChatEditorInput, 'chat-3', 'agent-c', undefined, 'Agent C'),
 		];
 
 		const movedEditors = inputs.map(ed => ({
@@ -284,7 +375,7 @@ suite('NativeChatEditorInput 序列化 — Pop Out/In 快照', () => {
 
 		// 模拟 reopen-chat handler 恢复
 		const restored = movedEditors.map(saved =>
-			NativeChatEditorInput.create(saved.chatId, saved.agentId, saved.sessionId, saved.name)
+			createInput(NativeChatEditorInput, saved.chatId, saved.agentId, saved.sessionId, saved.name)
 		);
 
 		assert.strictEqual(restored.length, 3);
@@ -294,19 +385,19 @@ suite('NativeChatEditorInput 序列化 — Pop Out/In 快照', () => {
 	});
 
 	test('空快照恢复不抛异常', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		// 模拟 reopen-chat handler 收到空 editors 数组
 		const savedEditors: any[] = [];
 		const restored = savedEditors.map(saved =>
-			NativeChatEditorInput.create(saved.chatId, saved.agentId, saved.sessionId, saved.name)
+			createInput(NativeChatEditorInput, saved.chatId, saved.agentId, saved.sessionId, saved.name)
 		);
 		assert.strictEqual(restored.length, 0);
 	});
 
 	test('反序列化损坏 JSON 返回 fallback 实例', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		// 模拟 deserialize 中 JSON.parse 失败的 catch 分支
@@ -317,6 +408,9 @@ suite('NativeChatEditorInput 序列化 — Pop Out/In 快照', () => {
 		} catch {
 			// 回退到 getInstance()
 			const fallback = NativeChatEditorInput.getInstance();
+			// getInstance() 创建的是**静态单例**（NativeChatEditorInput._instance），
+			// 不由本用例直接创建 → 需显式登记释放，否则泄漏 1 个 disposable。
+			currentStore?.add(fallback);
 			assert.ok(fallback, 'fallback 实例应存在');
 			assert.strictEqual(fallback.chatId, 'default');
 		}
@@ -329,40 +423,59 @@ suite('NativeChatEditorInput 序列化 — Pop Out/In 快照', () => {
 
 suite('NativeChatEditorPane — 结构与契约', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	// ★ 预热导入（2026-09-11）：导入 pane 会连带**首次初始化平台单例**
+	//   （ThemingRegistry / platform/request、workbench/browser/parts/editor/editorPane）
+	//   —— 它们本就存活于整个进程，属合法的模块级单例。若在首个用例内首次导入，
+	//   这些单例会落在泄漏跟踪窗口内 → 被误判为「测试泄漏 4 个 disposable」。
+	//   `suiteSetup` 早于每个用例的 `setup`（跟踪起点），在此导入即把单例创建
+	//   移出跟踪窗口（同时也让后续用例的 `await import` 命中缓存）。
+	//
+	//   ★ DOM 垫片只在此刻临时安装、导入后立即还原 —— 批量运行器是单进程单 Mocha
+	//     实例，常驻全局会污染同进程内后续测试文件（实证：ScheduleViewRenderer
+	//     多出 9 个失败）。
+	suiteSetup(async () => {
+		const restore = installDomShim();
+		try {
+			await import('../../browser/nativeChatEditorPane.js');
+		} finally {
+			restore();
+		}
+	});
+
+	trackLeaks();
 
 	test('可导入且为类', async () => {
-		const mod = await import('../../nativeChatEditorPane.js');
+		const mod = await import('../../browser/nativeChatEditorPane.js');
 		const ctor = (mod as any).NativeChatEditorPane;
 		assert.ok(typeof ctor === 'function', 'NativeChatEditorPane 应可构造');
 	});
 
 	test('ID 为 workbench.editor.nativeChat', async () => {
-		const mod = await import('../../nativeChatEditorPane.js');
+		const mod = await import('../../browser/nativeChatEditorPane.js');
 		const ctor = (mod as any).NativeChatEditorPane;
 		assert.strictEqual(ctor.ID, 'workbench.editor.nativeChat');
 	});
 
 	test('_chatPanel 是实例级字段（非 static）', async () => {
-		const mod = await import('../../nativeChatEditorPane.js');
+		const mod = await import('../../browser/nativeChatEditorPane.js');
 		const ctor = (mod as any).NativeChatEditorPane;
 		assert.ok(!('_chatPanel' in ctor), '_chatPanel 不应为 static');
 	});
 
 	test('_loadGeneration 是实例级字段（竞态保护）', async () => {
-		const mod = await import('../../nativeChatEditorPane.js');
+		const mod = await import('../../browser/nativeChatEditorPane.js');
 		const ctor = (mod as any).NativeChatEditorPane;
 		assert.ok(!('_loadGeneration' in ctor), '_loadGeneration 不应为 static');
 	});
 
 	test('focusInput 是公共方法', async () => {
-		const mod = await import('../../nativeChatEditorPane.js');
+		const mod = await import('../../browser/nativeChatEditorPane.js');
 		const ctor = (mod as any).NativeChatEditorPane;
 		assert.strictEqual(typeof ctor.prototype.focusInput, 'function', 'focusInput 应为方法');
 	});
 
 	test('_nextPaneId 静态计数器存在（多实例调试 ID）', async () => {
-		const mod = await import('../../nativeChatEditorPane.js');
+		const mod = await import('../../browser/nativeChatEditorPane.js');
 		const ctor = (mod as any).NativeChatEditorPane;
 		assert.ok(typeof ctor._nextPaneId === 'number', '_nextPaneId 应为 static number');
 	});
@@ -374,7 +487,7 @@ suite('NativeChatEditorPane — 结构与契约', () => {
 
 suite('Pop Out / Pop In — 快照收集与恢复', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	trackLeaks();
 
 	/**
 	 * 模拟 popoutChat action 中收集聊天编辑器并生成快照的逻辑
@@ -408,19 +521,19 @@ suite('Pop Out / Pop In — 快照收集与恢复', () => {
 	 * @returns 恢复后的 NativeChatEditorInput 数组
 	 */
 	function restoreFromSnapshot(movedEditors: any[]): any[] {
-		const mod = require('../../nativeChatEditorInput.js');
+		const mod = require('../../browser/nativeChatEditorInput.js');
 		return movedEditors.map(saved =>
-			mod.NativeChatEditorInput.create(saved.chatId, saved.agentId, saved.sessionId, saved.name)
+			createInput(mod.NativeChatEditorInput, saved.chatId, saved.agentId, saved.sessionId, saved.name)
 		);
 	}
 
 	test('收集 NativeChatEditorInput 快照', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		const editors = [
-			NativeChatEditorInput.create('chat-1', 'agent-a', 'sess-a', 'Agent A'),
-			NativeChatEditorInput.create('chat-2', 'agent-b', undefined, 'Agent B'),
+			createInput(NativeChatEditorInput, 'chat-1', 'agent-a', 'sess-a', 'Agent A'),
+			createInput(NativeChatEditorInput, 'chat-2', 'agent-b', undefined, 'Agent B'),
 		];
 
 		const { movedEditors, isNativeChat } = collectChatSnapshot(editors);
@@ -433,12 +546,12 @@ suite('Pop Out / Pop In — 快照收集与恢复', () => {
 	});
 
 	test('收集混合编辑器（含非聊天编辑器）', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		const editors = [
 			{ typeId: 'workbench.editors.fileEditor' },  // 非聊天编辑器
-			NativeChatEditorInput.create('chat-1', 'agent-a', undefined, 'Agent'),
+			createInput(NativeChatEditorInput, 'chat-1', 'agent-a', undefined, 'Agent'),
 			{ typeId: 'workbench.editors.settings' },   // 非聊天编辑器
 		];
 
@@ -456,12 +569,12 @@ suite('Pop Out / Pop In — 快照收集与恢复', () => {
 	});
 
 	test('快照恢复：所有字段往返一致', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		const original = [
-			NativeChatEditorInput.create('chat-1', 'agent-a', 'sess-a', 'Agent A'),
-			NativeChatEditorInput.create('chat-2', 'agent-b', 'sess-b', 'Agent B'),
+			createInput(NativeChatEditorInput, 'chat-1', 'agent-a', 'sess-a', 'Agent A'),
+			createInput(NativeChatEditorInput, 'chat-2', 'agent-b', 'sess-b', 'Agent B'),
 		];
 
 		const { movedEditors } = collectChatSnapshot(original);
@@ -477,10 +590,10 @@ suite('Pop Out / Pop In — 快照收集与恢复', () => {
 	});
 
 	test('快照恢复后 matches() 保持一致', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
-		const original = NativeChatEditorInput.create('chat-persist', 'agent-x', 'sess-x', 'X');
+		const original = createInput(NativeChatEditorInput, 'chat-persist', 'agent-x', 'sess-x', 'X');
 		const { movedEditors } = collectChatSnapshot([original]);
 		const [restored] = restoreFromSnapshot(movedEditors);
 
@@ -489,11 +602,11 @@ suite('Pop Out / Pop In — 快照收集与恢复', () => {
 	});
 
 	test('pop out 后 agent 状态保留（模拟拖拽到新窗口）', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		// 创建 input，设置 agent
-		const input = NativeChatEditorInput.create('chat-drag', undefined, undefined, 'Agent Chat');
+		const input = createInput(NativeChatEditorInput, 'chat-drag', undefined, undefined, 'Agent Chat');
 		assert.strictEqual(input.agentId, undefined);
 
 		// 模拟 _selectAndLoadAgent 调用 setAgentInfo 写回
@@ -520,10 +633,10 @@ suite('Pop Out / Pop In — 快照收集与恢复', () => {
 
 suite('AgentChatService.sendMessage — 并发契约', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	trackLeaks();
 
 	test('sendMessage 接收 onDelta（并发安全契约）', async () => {
-		const mod = await import('../../agentChatService.js');
+		const mod = await import('../../browser/agentChatService.js');
 		const ctor = (mod as any).AgentChatService;
 		assert.ok(typeof ctor === 'function', 'AgentChatService 应可构造');
 
@@ -533,13 +646,13 @@ suite('AgentChatService.sendMessage — 并发契约', () => {
 	});
 
 	test('_activeOnDeltas 是 Map（非单例回调，支持并发流）', async () => {
-		const mod = await import('../../agentChatService.js');
+		const mod = await import('../../browser/agentChatService.js');
 		const ctor = (mod as any).AgentChatService;
 		assert.ok(!('_activeOnDeltas' in ctor), '_activeOnDeltas 不应为 static');
 	});
 
 	test('_getOnDeltaForAgent 方法存在（按 agentId 路由）', async () => {
-		const mod = await import('../../agentChatService.js');
+		const mod = await import('../../browser/agentChatService.js');
 		const ctor = (mod as any).AgentChatService;
 		assert.strictEqual(typeof ctor.prototype._getOnDeltaForAgent, 'function', '_getOnDeltaForAgent 应为方法');
 	});
@@ -562,7 +675,7 @@ suite('AgentChatService.sendMessage — 并发契约', () => {
 
 suite('预设查找 — _findChatPaneForAgent 全量遍历', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	trackLeaks();
 
 	/**
 	 * 模拟 _findChatPaneForAgent 的核心逻辑
@@ -584,9 +697,9 @@ suite('预设查找 — _findChatPaneForAgent 全量遍历', () => {
 	}
 
 	test('找到活跃 tab 中的匹配 chat', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
-		const target = NativeChatEditorInput.create('chat-1', 'agent-target');
+		const target = createInput(NativeChatEditorInput, 'chat-1', 'agent-target');
 
 		const groups = [{
 			editors: [target],
@@ -598,12 +711,12 @@ suite('预设查找 — _findChatPaneForAgent 全量遍历', () => {
 	});
 
 	test('找到后台（非活跃）tab 中的匹配 chat', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		// 模拟两个 tab，目标在第二个（后台）
-		const other = NativeChatEditorInput.create('chat-other', 'agent-other');
-		const target = NativeChatEditorInput.create('chat-target', 'agent-target');
+		const other = createInput(NativeChatEditorInput, 'chat-other', 'agent-other');
+		const target = createInput(NativeChatEditorInput, 'chat-target', 'agent-target');
 
 		const groups = [{
 			editors: [other, target],  // target 在后台
@@ -615,12 +728,12 @@ suite('预设查找 — _findChatPaneForAgent 全量遍历', () => {
 	});
 
 	test('跨多个 group 查找', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
-		const target = NativeChatEditorInput.create('chat-g2', 'agent-target');
+		const target = createInput(NativeChatEditorInput, 'chat-g2', 'agent-target');
 		const groups = [
-			{ editors: [NativeChatEditorInput.create('chat-g1', 'agent-other')] },
+			{ editors: [createInput(NativeChatEditorInput, 'chat-g1', 'agent-other')] },
 			{ editors: [target] },
 		];
 
@@ -631,11 +744,11 @@ suite('预设查找 — _findChatPaneForAgent 全量遍历', () => {
 	});
 
 	test('未找到匹配返回 undefined', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		const groups = [{
-			editors: [NativeChatEditorInput.create('chat-1', 'agent-a')],
+			editors: [createInput(NativeChatEditorInput, 'chat-1', 'agent-a')],
 		}];
 
 		const found = findChatForAgent(groups, 'agent-not-exist');
@@ -648,10 +761,10 @@ suite('预设查找 — _findChatPaneForAgent 全量遍历', () => {
 	});
 
 	test('混合编辑器类型（只匹配 NativeChatEditorInput）', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
-		const target = NativeChatEditorInput.create('chat-native', 'agent-native');
+		const target = createInput(NativeChatEditorInput, 'chat-native', 'agent-native');
 		const groups = [{
 			editors: [
 				{ typeId: 'workbench.editors.fileEditor', agentId: 'agent-native' },  // 非 native chat
@@ -666,11 +779,11 @@ suite('预设查找 — _findChatPaneForAgent 全量遍历', () => {
 	});
 
 	test('同一 agentId 多个 chat → 返回第一个', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
-		const first = NativeChatEditorInput.create('chat-1', 'agent-dup');
-		const second = NativeChatEditorInput.create('chat-2', 'agent-dup');
+		const first = createInput(NativeChatEditorInput, 'chat-1', 'agent-dup');
+		const second = createInput(NativeChatEditorInput, 'chat-2', 'agent-dup');
 
 		const groups = [{
 			editors: [first, second],
@@ -688,7 +801,7 @@ suite('预设查找 — _findChatPaneForAgent 全量遍历', () => {
 
 suite('多 Agent 并发 — 系统消息隔离', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	trackLeaks();
 
 	/**
 	 * 模拟 AgentChatService 的并发流隔离机制：
@@ -875,7 +988,7 @@ suite('多 Agent 并发 — 系统消息隔离', () => {
 
 suite('多 Agent 并发 — Worktree 隔离', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	trackLeaks();
 
 	/**
 	 * 模拟 AgentBinding 的 worktreePath 隔离：
@@ -944,12 +1057,12 @@ suite('多 Agent 并发 — Worktree 隔离', () => {
 	});
 
 	test('NativeChatEditorInput 携带 worktree 信息（onSelectWorktree 回调）', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		// 模拟两个 chat tab 绑定不同 agent → 不同 worktree
-		const inputA = NativeChatEditorInput.create('chat-wt-a', 'agent-a', 'sess-a', 'Agent A');
-		const inputB = NativeChatEditorInput.create('chat-wt-b', 'agent-b', 'sess-b', 'Agent B');
+		const inputA = createInput(NativeChatEditorInput, 'chat-wt-a', 'agent-a', 'sess-a', 'Agent A');
+		const inputB = createInput(NativeChatEditorInput, 'chat-wt-b', 'agent-b', 'sess-b', 'Agent B');
 
 		// 验证两个 input 的 agent/session 隔离
 		assert.strictEqual(inputA.agentId, 'agent-a');
@@ -970,14 +1083,14 @@ suite('多 Agent 并发 — Worktree 隔离', () => {
 	});
 
 	test('多 agent 并发执行时 worktree 路径不串台', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		// 模拟 3 个 chat tab，各绑定不同 agent + worktree
 		const chats = [
-			{ input: NativeChatEditorInput.create('chat-1', 'coder', 'sess-1', 'Coder'), worktree: '/repo/wt-coder' },
-			{ input: NativeChatEditorInput.create('chat-2', 'pm', 'sess-2', 'PM'), worktree: '/repo/wt-pm' },
-			{ input: NativeChatEditorInput.create('chat-3', 'reviewer', 'sess-3', 'Reviewer'), worktree: '/repo/wt-reviewer' },
+			{ input: createInput(NativeChatEditorInput, 'chat-1', 'coder', 'sess-1', 'Coder'), worktree: '/repo/wt-coder' },
+			{ input: createInput(NativeChatEditorInput, 'chat-2', 'pm', 'sess-2', 'PM'), worktree: '/repo/wt-pm' },
+			{ input: createInput(NativeChatEditorInput, 'chat-3', 'reviewer', 'sess-3', 'Reviewer'), worktree: '/repo/wt-reviewer' },
 		];
 
 		// 每个 chat 保存不同的 runtime state（模拟并发流式输出）
@@ -1005,12 +1118,12 @@ suite('多 Agent 并发 — Worktree 隔离', () => {
 	});
 
 	test('worktree 切换不影响其他 chat 的 agent 状态', async () => {
-		const mod = await import('../../nativeChatEditorInput.js');
+		const mod = await import('../../browser/nativeChatEditorInput.js');
 		const { NativeChatEditorInput } = mod as any;
 
 		// 两个 chat，不同 agent
-		const inputA = NativeChatEditorInput.create('chat-1', 'agent-a', 'sess-1', 'Agent A');
-		const inputB = NativeChatEditorInput.create('chat-2', 'agent-b', 'sess-2', 'Agent B');
+		const inputA = createInput(NativeChatEditorInput, 'chat-1', 'agent-a', 'sess-1', 'Agent A');
+		const inputB = createInput(NativeChatEditorInput, 'chat-2', 'agent-b', 'sess-2', 'Agent B');
 
 		// Chat A 切换 worktree（模拟 onSelectWorktree 回调）
 		// 这里只验证 input 的 agentId 不受 worktree 切换影响

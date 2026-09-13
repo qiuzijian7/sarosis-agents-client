@@ -133,6 +133,35 @@ suite('filterToolsByChatMode — plan mode schema stability', () => {
 		assert.ok(result.some(t => t.name === 'file_read'));
 	});
 
+	test('★ ask mode 排除「声明为 Safe 但实为写类」的工具（patch / execute_command 名单缺口回归）', () => {
+		// 2026-09-11 修：DESTRUCTIVE_TOOL_PATTERNS 曾漏掉本仓库实际存在的两个写类工具
+		// —— `patch`（改文件）与 `execute_command`（任意命令执行，`/^command$/i` 锚定
+		// 匹配不到它）。漏项时它们只能靠描述启发式兜底（判定不稳定）= 只读模式漏闸。
+		// 此处刻意声明 securityLevel: Safe，确保拦截来自**工具名名单**而非 securityLevel。
+		const writeByPattern = [
+			{ name: 'patch', securityLevel: ToolSecurityLevel.Safe },
+			{ name: 'execute_command', securityLevel: ToolSecurityLevel.Safe },
+			{ name: 'apply_patch', securityLevel: ToolSecurityLevel.Safe },
+			{ name: 'write_file', securityLevel: ToolSecurityLevel.Safe },
+			{ name: 'edit_file', securityLevel: ToolSecurityLevel.Safe },
+		] as any[];
+		assert.deepStrictEqual(
+			filterToolsByChatMode(writeByPattern, 'ask').map(t => t.name), [],
+			'写类工具不得出现在 ask 模式工具面',
+		);
+
+		// 反向护栏：名单不得误伤真只读工具（否则 ask 模式会变得不可用）。
+		const readOnly = [
+			{ name: 'file_read', securityLevel: ToolSecurityLevel.Safe },
+			{ name: 'search_graph', securityLevel: ToolSecurityLevel.Safe },
+			{ name: 'query_graph', securityLevel: ToolSecurityLevel.Safe },
+		] as any[];
+		assert.deepStrictEqual(
+			filterToolsByChatMode(readOnly, 'ask').map(t => t.name).sort(),
+			['file_read', 'query_graph', 'search_graph'],
+		);
+	});
+
 	test('plan and craft produce identical tool lists (prefix-cache stable)', () => {
 		const planResult = filterToolsByChatMode(allTools, 'plan');
 		const craftResult = filterToolsByChatMode(allTools, 'craft');

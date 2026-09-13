@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工作流节点：聊天卡展示覆盖度与框架质量评估</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #161923; --panel2: #1c2029; --border: #2a2f3a;
+    --fg: #e6e8ee; --dim: #9aa3b2; --dim2: #6b7484;
+    --accent: #22d3ee; --ok: #4ade80; --warn: #fbbf24; --err: #f87171; --purple: #a78bfa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: .3px; }
+  h2 { font-size: 19px; margin: 44px 0 14px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border); }
+  h2 .n { color: var(--accent); font-family: Consolas, monospace; margin-right: 8px; }
+  h3 { font-size: 15px; margin: 26px 0 10px; color: var(--fg); }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 28px; }
+  p { margin: 10px 0; }
+  code { font-family: Consolas, "Courier New", monospace; font-size: 12.5px;
+    background: #0b0e14; border: 1px solid var(--border); border-radius: 3px;
+    padding: 1px 5px; color: #a5d6ff; }
+  .file { color: var(--dim2); font-size: 11.5px; font-family: Consolas, monospace; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left;
+    vertical-align: top; }
+  th { background: var(--panel2); font-weight: 600; color: var(--dim); font-size: 12px; }
+  tr:nth-child(even) td { background: #13161e; }
+  .verdict { background: var(--panel); border: 1px solid var(--border);
+    border-left: 3px solid var(--warn); border-radius: 6px; padding: 16px 20px; margin: 22px 0; }
+  .verdict.ok { border-left-color: var(--ok); }
+  .verdict.err { border-left-color: var(--err); }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 10px;
+    font-size: 11px; font-family: Consolas, monospace; white-space: nowrap; }
+  .b-ok { background: rgba(74,222,128,.14); color: var(--ok); border: 1px solid rgba(74,222,128,.35); }
+  .b-no { background: rgba(248,113,113,.14); color: var(--err); border: 1px solid rgba(248,113,113,.35); }
+  .b-part { background: rgba(251,191,36,.14); color: var(--warn); border: 1px solid rgba(251,191,36,.35); }
+  .b-info { background: rgba(34,211,238,.12); color: var(--accent); border: 1px solid rgba(34,211,238,.32); }
+  .b-purple { background: rgba(167,139,250,.14); color: var(--purple); border: 1px solid rgba(167,139,250,.35); }
+  pre { background: #0b0e14; border: 1px solid var(--border); border-radius: 6px;
+    padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.6; margin: 12px 0; }
+  pre code { background: none; border: none; padding: 0; color: #c9d1d9; }
+  .cm { color: #6b7484; }
+  .hi { color: var(--warn); }
+  .hi2 { color: var(--accent); }
+  ul, ol { margin: 10px 0; padding-left: 24px; }
+  li { margin: 6px 0; }
+  .score { display: grid; grid-template-columns: 150px 1fr 56px; gap: 10px 14px;
+    align-items: center; margin: 16px 0; }
+  .score .bar { height: 8px; background: #0b0e14; border-radius: 4px; overflow: hidden;
+    border: 1px solid var(--border); }
+  .score .fill { height: 100%; }
+  .score .val { font-family: Consolas, monospace; font-size: 13px; text-align: right; }
+  .legend { color: var(--dim); font-size: 12px; margin-top: 8px; }
+  .toc { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    padding: 14px 20px; margin: 24px 0; font-size: 13px; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc ol { margin: 6px 0; padding-left: 22px; }
+  .flow { background: #0b0e14; border: 1px solid var(--border); border-radius: 6px;
+    padding: 16px; font-family: Consolas, monospace; font-size: 12px; line-height: 1.75;
+    overflow-x: auto; white-space: pre; color: #c9d1d9; }
+  .kpi { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 20px 0; }
+  .kpi > div { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 14px; text-align: center; }
+  .kpi .num { font-size: 24px; font-family: Consolas, monospace; font-weight: 600; }
+  .kpi .lbl { font-size: 11.5px; color: var(--dim); margin-top: 4px; }
+  .t-num { font-family: Consolas, monospace; color: var(--dim2); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>工作流节点：聊天卡展示覆盖度与框架质量评估</h1>
+<div class="sub">
+  调研范围：<code>browser/workflowExecutionService.ts</code>、<code>browser/workflowTraceController.ts</code>、
+  <code>browser/agentChat/agentChatPanel.workflowCards.ts</code>、<code>webview/.../comfyHost/*</code>、<code>webview/.../index.tsx</code>、各 registry<br>
+  目标：判断「每个节点在聊天框工作流工具卡片中的展示内容与进度」是否与节点自身 UI 一致、是否有遗漏，并评估框架质量
+</div>
+
+<div class="toc">
+  <strong>目录</strong>
+  <ol>
+    <li><a href="#s1">结论摘要（是否满足要求）</a></li>
+    <li><a href="#s1b">修复状态（2026-09-13）</a></li>
+    <li><a href="#s2">架构真相：聊天卡不在 webview 里渲染</a></li>
+    <li><a href="#s3">对照矩阵：节点类别 × 展示维度</a></li>
+    <li><a href="#s4">问题清单（P0 / P1 / P2）</a></li>
+    <li><a href="#s5">框架质量评分</a></li>
+    <li><a href="#s6">改进建议（按性价比排序）</a></li>
+    <li><a href="#s7">关键代码位置索引</a></li>
+  </ol>
+</div>
+
+<h2 id="s1"><span class="n">01</span>结论摘要</h2>
+
+<div class="verdict err">
+  <strong>不满足要求。</strong>框架能保证「<strong>节点名</strong>一致」与「<strong>产物数据同源</strong>」，
+  但<strong>展示内容与进度的覆盖是残缺的</strong> —— 存在 3 处结构性缺口：
+  <ol style="margin-bottom:0">
+    <li><strong>图标/副标题两套体系</strong>：聊天卡只有 4 个硬编码图标，而画布卡有完整注册表（约 230 个节点类型）；
+      业务节点的副标题直接显示<strong>机器类型名</strong>（如 <code>comfyStage</code>）。</li>
+    <li><strong>进度只覆盖 1 类节点</strong>：<code>node_progress</code> 全仓<strong>只有一个发射点</strong>，
+      在 Comfy 节点执行器内 → 脚本 / Agent / Saros 逻辑节点在聊天卡上<strong>永远没有进度条</strong>。</li>
+    <li><strong>产物通道三处不对称</strong>：脚本节点产物只到画布、Agent 节点产物只到聊天卡、绿幕原片被聊天卡刻意过滤。</li>
+  </ol>
+</div>
+
+<div class="verdict ok">
+  <strong>✓ 以上问题已于 2026-09-13 全部处理完毕</strong>（P0 3 项 + P1 4 项 + P2 6 项，其中 2 项经复核为「有意保留」）。
+  详见 <a href="#s1b" style="color:var(--ok)">§1.5 修复状态</a>。
+</div>
+
+<h2 id="s1b"><span class="n">1.5</span>修复状态（2026-09-13）</h2>
+
+<p>全部改动集中在 <strong>host 侧</strong>（webview 侧仅 2 处纯类型 + 3 处架构注释）→ 一次 Reload Window 覆盖全部。
+累计新增/扩充单测 <strong>21 个</strong>，全部守卫测试通过（lint 0 / tsgo 0 / webview typecheck 0 新增）。</p>
+
+<table>
+  <tr><th style="width:52px">级别</th><th style="width:230px">问题</th><th>处理方式</th></tr>
+  <tr>
+    <td><span class="badge b-no">P0-1</span></td>
+    <td>聊天卡图标 4 项硬编码<br>（其余一律 🤖）</td>
+    <td>改为 <strong>host 按节点描述符推导</strong>：stage <code>kind</code> 子串匹配 → 产物语义（8 类），否则引擎类型（12 项），最后 ⚙️ 兜底。
+      <strong>图标维度从「约 230 个节点类型」降到「8 类语义」</strong> → 新增 stage 自动命中。渲染层 <code>sa.icon ?? 旧表</code>（历史消息兼容）。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">P0-2</span></td>
+    <td>副标题 = 机器类型名<br>（<code>comfyStage</code>）</td>
+    <td>改为<strong>描述符摘要</strong>：<code>stage: crop · wf: image-edit</code>（与画布 nodeCard 的 <code>schemaDetail</code> <strong>同款文案</strong>）；
+      无 stage 元数据时给中文标签（脚本节点 / 条件分支 / 流程结束），<strong>绝不回退机器名</strong>。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">P0-3</span></td>
+    <td>进度只覆盖 Comfy 节点</td>
+    <td>补齐 <strong>script 节点</strong>（复用脚本内 <code>stage()</code> 已有的进度通道 —— 经 <code>executionIdOfStageRun</code> 反查归属 → <code>reportScriptStageProgress</code>）。
+      <strong>经复核：其余类别（prompt/ifElse/switch/task/skill/tool/end）是毫秒级节点，本就不需要进度；Agent 用 delta 流式（反馈更丰富）</strong> → 真实缺口只有 script。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">P1-1</span></td>
+    <td>script 产物不进聊天卡</td>
+    <td><code>stage()</code> 回程的 <code>value.snapshot</code> 累积到 <code>nodeState.snapshot</code> → 走<strong>与 Comfy 节点完全相同</strong>的展示通道（按 (port,ref) 去重）。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">P1-2</span></td>
+    <td>Agent / Task 画布卡停在 idle</td>
+    <td><strong>根因</strong>：这两类节点从不 fire <code>_onDidNodeExecutionStatusChange</code>，而它是画布卡状态的唯一来源。
+      补 <strong>前/中/后三次状态 fire</strong>（Running / Completed·Cancelled / Failed）+ 文本输出写进画布快照库。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">P1-3</span></td>
+    <td>绿幕原片被静默过滤</td>
+    <td>加一行提示「已隐藏 N 个绿幕原片（体积过大，请在画布阶段① 预览）」。<strong>排除本身保留</strong>（data URL 数 MB 直喂 &lt;video&gt; 会卡顿）。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-part">P1-4</span></td>
+    <td><code>apply:'skip'</code> 模式无产物</td>
+    <td><strong>有意保留</strong> —— 该模式语义就是「只收集配置，不执行不产出」。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">P2-1</span></td>
+    <td>死契约 <code>picker_select</code></td>
+    <td>契约表 3 张表 + controller 2 个分支 + 2 个 handler 全部清理。
+      <strong>过程中发现项目的一个质量亮点</strong>：契约测试有<strong>反向守卫</strong>（交叉校验 controller 分支 ↔ 契约表），清理不同步会立刻失败。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">P2-2</span></td>
+    <td><code>execution_end</code> 无统计</td>
+    <td>根因：卡片耗时由 controller 用 <code>Date.now(), Date.now()</code> 现取 → <strong>恒 0.0s</strong>。
+      改为 host 给真实 <code>durationMs</code> + 成功/失败/取消/跳过计数 → 卡片 header 显示「12.3s · 3 成功 · 1 失败」。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">P2-3</span></td>
+    <td>过滤不对称 + 静默丢弃</td>
+    <td>catch 分支补 FLOW 链筛选（与成功分支对齐）+ controller 的 <code>if (!sa)</code> 加<strong>去重日志</strong>（此前完全静默）。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-part">P2-4</span></td>
+    <td>完成后 <code>progress=100</code> 不发 trace</td>
+    <td><strong>可接受</strong> —— 渲染层用 <code>isRunning</code> 门控，发了也不显示（且避免「100% 残留」误导）。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">P2-5</span></td>
+    <td>截断长度分散（200/400/2000/4000）</td>
+    <td>收敛为 <code>CARD_TEXT_LIMITS</code> 四档<strong>具名常量</strong>（值不变），5 处调用点统一引用。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">P2-6</span></td>
+    <td>出卡规则分散 3 文件</td>
+    <td>收敛为 <code>browser/workflow/cardVisibility.ts</code> <strong>唯一规则表</strong>（<code>isCardEligibleNodeType</code> + <code>isNodeVisibleOnCard</code>），替换 5 处调用点。
+      <strong>结构性收益</strong>：过滤对称性从「靠人记得写两遍」变成「结构上不可能漏」。</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-no">—</span></td>
+    <td>死链无任何说明</td>
+    <td>在 <code>index.tsx</code> 的 trace 分支与 <code>ExecutionTimelinePanel.tsx</code> 头部加<strong>架构注释</strong>：
+      「聊天卡实际由 native 侧渲染，webview 中间态无渲染器 → <strong>要改聊天卡请改 native 侧</strong>」。</td>
+  </tr>
+</table>
+
+<h3>关键实现细节（踩过的坑）</h3>
+<ul>
+  <li><strong>顺序依赖</strong>：<code>stageRunResult</code> 的产物收集必须在 <code>resolveStageRun</code> <strong>之前</strong>反查归属 —— resolve 会移除 pending 表项，之后查不到 runId→executionId。</li>
+  <li><strong>必填字段</strong>：<code>node_progress.nodeName</code> 是必填（首轮 tsgo 报 TS2345 才发现）→ 脚本节点映射必须缓存 <code>nodeName</code>。</li>
+  <li><strong>不冒充 SAROS_JSON</strong>：Agent 文本产物写画布时 meta 用 <code>text/plain</code> —— <code>sarosJson:'1'</code> 会被下游当作 SAROS_JSON 归档解析。</li>
+  <li><strong>const enum 不可运行时引用</strong>：<code>WorkflowNodeType</code> 是 <code>const enum</code>，esbuild（测试 runner）无法跨文件引用 → <code>cardVisibility.ts</code> 必须用字面量（已加注释说明）。</li>
+  <li><strong>类型排除优先于 FLOW 链</strong>：<code>isNodeVisibleOnCard</code> 先判类型再判链 —— 排除类型即使在 FLOW 链上也不出卡（有单测锁定）。</li>
+</ul>
+
+<div class="kpi">
+  <div><div class="num" style="color:var(--err)">4 / 15</div><div class="lbl">聊天卡图标映射<br>覆盖的归一化节点类型</div></div>
+  <div><div class="num" style="color:var(--err)">1 / 15</div><div class="lbl">有 <code>node_progress</code><br>的节点类别</div></div>
+  <div><div class="num" style="color:var(--warn)">3 处</div><div class="lbl">产物通道不对称<br>（单向可见）</div></div>
+  <div><div class="num" style="color:var(--warn)">2 条</div><div class="lbl">并行 trace 消费链<br>（其中 1 条已死）</div></div>
+</div>
+
+<h3>做得对的三件事（不应推翻）</h3>
+<table>
+  <tr><th style="width:180px">机制</th><th>说明</th><th style="width:250px">位置</th></tr>
+  <tr>
+    <td><strong>显示名跨层对齐</strong></td>
+    <td>host 侧 <code>_nodeDisplayName</code> 复用 <code>COMFYTV_STAGE_META</code> 的 title（即画布 <code>spec.title</code>），
+      使聊天卡节点名与画布标题一致 —— 这是唯一被显式对齐的元数据维度。</td>
+    <td class="file">workflowExecutionService.ts:2940-2954<br>workflow/nodeDisplayName.ts:10-19</td>
+  </tr>
+  <tr>
+    <td><strong>产物数据同源</strong></td>
+    <td>聊天卡与画布卡的产物都源自 webview 的 <code>MediaSnapshotStore</code>，
+      分叉点收敛在<strong>单一处</strong>（执行收尾时序列化一份副本回传），不是两套采集。</td>
+    <td class="file">WorkflowEditorPanel.tsx:1178-1197</td>
+  </tr>
+  <tr>
+    <td><strong>trace 契约 + 运行时校验</strong></td>
+    <td>存在显式契约表 <code>traceContract.ts</code>，并在消费入口做非破坏性断言（不符只记日志）。
+      这是少见的好实践 —— 它让「字段漂移」可被发现。</td>
+    <td class="file">workflow/traceContract.ts<br>workflowTraceController.ts:201-221</td>
+  </tr>
+</table>
+
+<h2 id="s2"><span class="n">02</span>架构真相：聊天卡不在 webview 里渲染</h2>
+
+<p>这是理解全部覆盖问题的前提。项目里存在<strong>两条并行的 trace 消费链</strong>，但只有一条真正渲染聊天卡：</p>
+
+<div class="flow">host <span class="hi2">WorkflowExecutionService</span>
+  │  _onDidExecutionTrace.fire(...)
+  ▼
+<span class="hi2">agentStudioWebviewController</span>:504   <span class="cm">← host→webview 的唯一转发点</span>
+  │  _sendEvent('workflow.executionTrace', trace)
+  ├─────────────────────────────────────────────┬──────────────────────────────────────
+  ▼                                             ▼
+<span class="hi">【链 A】webview React 侧</span>                        <span class="hi2">【链 B】native browser 侧（真正的聊天卡）</span>
+index.tsx:70-206 routeWorkflowTrace           workflowTraceController.ts:220-273 _handleTrace
+  │                                             │  写 _subAgents / _askUsers / _nodeInteractions / _events
+  ▼                                             ▼
+useChatStore（liveWorkflowExecutions）         chatPanel.updateMessage(msgId, {...})
+  │                                             │
+  ▼                                             ▼
+<span style="color:var(--err)">✗ 无任何渲染器消费</span>                          agentChatPanel.workflowCards.ts:42-159
+  （ExecutionTimelinePanel 定义存在               _createNodeCard(sa, interaction)  ← 每个节点一行
+    但全仓无 import → 死代码）                     :955-1212</div>
+
+<div class="verdict">
+  <strong>问题：链 A 是死链。</strong>
+  <code>webview/src/index.tsx:70-206</code> 的 <code>routeWorkflowTrace</code> 维护了一整套
+  <code>liveWorkflowExecutions</code> / <code>liveAskUsers</code> / <code>liveCollectVariables</code> 状态机，
+  但唯一会消费它的组件 <code>ExecutionTimelinePanel.tsx</code> <strong>没有任何 import</strong>。
+  <br>后果：① 每条 trace 在 webview 侧白跑一遍状态机（含 <code>commitWorkflowExecution</code> 里异步
+  <code>chat.append</code> 落盘）；② 维护者会误以为「聊天卡在 webview 里」，改错地方。
+</div>
+
+<p>另外，链 A 与链 B 消费的 <strong>kind 集合不同</strong>：</p>
+<table>
+  <tr><th style="width:230px">trace kind</th><th style="width:130px">链 B（native，真渲染）</th><th style="width:130px">链 A（webview）</th><th>备注</th></tr>
+  <tr><td><code>subagent_start</code> / <code>subagent_end</code></td><td><span class="badge b-ok">消费</span></td><td><span class="badge b-ok">消费</span></td><td>节点行的建立与收尾</td></tr>
+  <tr><td><code>delta</code></td><td><span class="badge b-ok">消费</span></td><td><span class="badge b-ok">消费</span></td><td>流式文本 / 工具调用</td></tr>
+  <tr><td><code>ask_user(_end)</code> / <code>collect_variables(_end)</code></td><td><span class="badge b-ok">消费</span></td><td><span class="badge b-ok">消费</span></td><td>交互卡</td></tr>
+  <tr><td><code>node_progress</code></td><td><span class="badge b-ok">消费</span> <span class="t-num">L561-582</span></td><td><span class="badge b-no">未消费</span></td><td><strong>聊天卡进度条的唯一来源</strong></td></tr>
+  <tr><td><code>node_interaction(_end)</code></td><td><span class="badge b-ok">消费</span> <span class="t-num">L515-550</span></td><td><span class="badge b-no">未消费</span></td><td>节点配置表单</td></tr>
+  <tr><td><code>node_values_changed</code></td><td><span class="badge b-ok">消费</span> <span class="t-num">L593-608</span></td><td><span class="badge b-no">未消费</span></td><td>画布改值 → 刷新卡片表单初值</td></tr>
+  <tr><td><code>picker_select(_end)</code></td><td><span class="badge b-part">有分支</span></td><td><span class="badge b-no">未消费</span></td><td><strong>无发射端</strong>（死契约，见 P2-1）</td></tr>
+  <tr><td><code>execution_end</code></td><td><span class="badge b-ok">消费</span> <span class="t-num">L761-901</span></td><td><span class="badge b-ok">消费</span></td><td>落盘为永久消息</td></tr>
+</table>
+
+<h2 id="s3"><span class="n">03</span>对照矩阵：节点类别 × 展示维度</h2>
+
+<p>下表是本次调研的核心产出。判定依据是 <strong>host 侧 trace 发射条件</strong>（决定聊天卡里有没有这一行）
+与 <strong>各展示维度的数据来源</strong>（决定这一行里有什么）。</p>
+
+<p class="legend">
+  <span class="badge b-ok">✓ 完整</span>
+  <span class="badge b-part">△ 部分/有损</span>
+  <span class="badge b-no">✗ 缺失</span>
+  <span class="badge b-info">— 设计上不适用</span>
+</p>
+
+<table>
+  <tr>
+    <th style="width:180px">节点类别（归一化 type）</th>
+    <th style="width:110px">聊天卡出卡</th>
+    <th style="width:105px">标题</th>
+    <th style="width:105px">副标题</th>
+    <th style="width:95px">图标</th>
+    <th style="width:95px">进度</th>
+    <th style="width:95px">产物</th>
+  </tr>
+  <tr>
+    <td><strong>Comfy 阶段节点</strong><br><span class="t-num">comfyStage / comfy<br>（ComfyTV.* / Saros.* 媒体 / picker）</span></td>
+    <td><span class="badge b-ok">✓</span> FLOW 链上即出卡</td>
+    <td><span class="badge b-ok">✓</span> 与画布一致</td>
+    <td><span class="badge b-no">✗</span> 显示 <code>comfyStage</code></td>
+    <td><span class="badge b-no">✗</span> 🤖 兜底</td>
+    <td><span class="badge b-ok">✓</span> 唯一有进度的类别</td>
+    <td><span class="badge b-ok">✓</span> 全量 + 逐格增量</td>
+  </tr>
+  <tr>
+    <td><strong>脚本节点</strong> <span class="t-num">script</span></td>
+    <td><span class="badge b-ok">✓</span></td>
+    <td><span class="badge b-ok">✓</span></td>
+    <td><span class="badge b-no">✗</span> 显示 <code>script</code></td>
+    <td><span class="badge b-no">✗</span></td>
+    <td><span class="badge b-no">✗</span> <strong>无</strong>（未接 onProgress）</td>
+    <td><span class="badge b-no">✗</span> <strong>无</strong>（不写 nodeState.snapshot）</td>
+  </tr>
+  <tr>
+    <td><strong>Agent 节点</strong> <span class="t-num">agent</span></td>
+    <td><span class="badge b-ok">✓</span> 专属 trace</td>
+    <td><span class="badge b-ok">✓</span></td>
+    <td><span class="badge b-part">△</span> prompt 前 200 字</td>
+    <td><span class="badge b-ok">✓</span> 🤖（唯一正确命中）</td>
+    <td><span class="badge b-info">—</span> 用 <code>delta</code> 流式代替</td>
+    <td><span class="badge b-part">△</span> 仅文本；<strong>画布卡不动</strong></td>
+  </tr>
+  <tr>
+    <td><strong>Saros 逻辑节点</strong><br><span class="t-num">prompt / ifElse / switch / task / skill / tool</span></td>
+    <td><span class="badge b-ok">✓</span> FLOW 链上即出卡</td>
+    <td><span class="badge b-ok">✓</span></td>
+    <td><span class="badge b-no">✗</span> 显示机器名</td>
+    <td><span class="badge b-part">△</span> prompt/skill/tool 命中，其余 🤖</td>
+    <td><span class="badge b-no">✗</span></td>
+    <td><span class="badge b-no">✗</span></td>
+  </tr>
+  <tr>
+    <td><strong>逻辑分组节点</strong><br><span class="t-num">group / loop / parallel</span><br><span class="t-num">(Saros.Merge / Loop / Parallel)</span></td>
+    <td><span class="badge b-no">✗ 不出卡</span><br><span class="t-num">NON_EXECUTING_TYPES → skip</span></td>
+    <td><span class="badge b-info">—</span></td><td><span class="badge b-info">—</span></td>
+    <td><span class="badge b-info">—</span></td><td><span class="badge b-info">—</span></td><td><span class="badge b-info">—</span></td>
+  </tr>
+  <tr>
+    <td><strong>Start</strong> <span class="t-num">start</span></td>
+    <td><span class="badge b-info">—</span> 刻意排除</td>
+    <td colspan="5"><span class="t-num">由 root <code>__workflow__</code> 卡代表整个执行（工作流名 + 描述）</span></td>
+  </tr>
+  <tr>
+    <td><strong>End</strong> <span class="t-num">end</span></td>
+    <td><span class="badge b-part">△ 会出卡</span><br><span class="t-num">不在排除列表内</span></td>
+    <td><span class="badge b-ok">✓</span></td>
+    <td><span class="badge b-no">✗</span> 显示 <code>end</code></td>
+    <td><span class="badge b-no">✗</span></td>
+    <td><span class="badge b-no">✗</span></td>
+    <td><span class="badge b-no">✗</span></td>
+  </tr>
+  <tr>
+    <td><strong>AskUser</strong> <span class="t-num">askUser</span></td>
+    <td><span class="badge b-info">—</span> 走<strong>专属交互卡</strong></td>
+    <td colspan="5"><span class="t-num">独立卡片（选项 / 表单 / 自定义输入），不与节点行混排</span></td>
+  </tr>
+  <tr>
+    <td><strong>数据辅助节点</strong><br><span class="t-num">loader / picker（仅数据连线，不在 FLOW 链）</span></td>
+    <td><span class="badge b-no">✗ 不出卡</span><br><span class="t-num">FLOW 链过滤</span></td>
+    <td><span class="badge b-info">—</span></td><td><span class="badge b-info">—</span></td>
+    <td><span class="badge b-info">—</span></td><td><span class="badge b-info">—</span></td>
+    <td><span class="badge b-info">—</span>（画布可见）</td>
+  </tr>
+  <tr>
+    <td><strong>ComfyUI 原生节点</strong><br><span class="t-num">LoadImage / KSampler…（动态注册）</span></td>
+    <td><span class="badge b-part">△</span> 取决于是否 FLOW 链</td>
+    <td><span class="badge b-ok">✓</span></td>
+    <td><span class="badge b-no">✗</span></td>
+    <td><span class="badge b-no">✗</span></td>
+    <td><span class="badge b-no">✗</span></td>
+    <td><span class="badge b-no">✗</span></td>
+  </tr>
+</table>
+
+<h3>「是否出卡」的两道过滤（都合理，但不对称）</h3>
+
+<pre><code><span class="cm">// ① FLOW 链过滤 —— 只有 flow 连线上的节点才占聊天卡的「阶段位」</span>
+<span class="cm">//    （数据连线上的 loader/picker 不出现，避免刷屏）</span>
+workflowExecutionService.ts:1159  <span class="cm">// subagent_start</span>
+workflowExecutionService.ts:1400  <span class="cm">// subagent_end('done')</span>
+  → this._nodeOnFlowChain(workflow, node.id)
+
+<span class="cm">// ② 类型排除 —— Start / AskUser 有各自的代表卡，Agent 走更丰富的专属 trace</span>
+node.type !== Agent && node.type !== Start && node.type !== AskUser
+workflowExecutionService.ts:1155 / 1397 / 1473 / 1507
+
+<span class="hi">// ⚠ 不对称：catch 分支的失败/取消只做 ②，不做 ①</span>
+workflowExecutionService.ts:1473-1482  <span class="cm">// cancelled</span>
+workflowExecutionService.ts:1507-1517  <span class="cm">// error</span>
+<span class="cm">// → 数据辅助节点若在 catch 路径失败，仍会发 subagent_end；</span>
+<span class="cm">//   但它从未发过 subagent_start，controller 找不到 sa → 静默丢弃</span>
+workflowTraceController.ts:497  if (!sa) { return; }</code></pre>
+
+<h2 id="s4"><span class="n">04</span>问题清单</h2>
+
+<h3>P0 — 结构性（影响「是否满足要求」的判定）</h3>
+
+<table>
+  <tr><th style="width:40px">#</th><th style="width:200px">问题</th><th>证据与影响</th></tr>
+  <tr>
+    <td>P0-1</td>
+    <td><strong>元数据两套体系</strong><br>（图标）</td>
+    <td>
+      <p>聊天卡的节点图标是一张 <strong>4 项硬编码表</strong>：</p>
+      <pre><code><span class="cm">// agentChatPanel.workflowCards.ts:987-997</span>
+const typeIcons: Record&lt;string, string&gt; = {
+  agent: '🤖', prompt: '📝', skill: '⚡', tool: '🔧',
+};
+const icon = typeIcons[(sa as any).type ?? 'agent'] ?? '🤖';  <span class="cm">// 未知一律 🤖</span></code></pre>
+      <p>而画布卡片走完整注册表（<code>registry.ts</code> 的 <code>NodeSpec</code>，
+      约 <strong>230 个 type</strong>，含 <code>spec.title</code> / <code>color</code> / <code>category</code> / <code>brand</code>）。</p>
+      <p><strong>影响</strong>：host 归一化后约 <strong>15 种</strong>节点类型，聊天卡只正确命中 4 种
+      → 其余 <strong>11 种（含全部 ComfyTV / Saros stage）在聊天卡里都是同一个 🤖</strong>。
+      用户在聊天卡上无法区分「裁剪」和「生成视频」。</p>
+    </td>
+  </tr>
+  <tr>
+    <td>P0-2</td>
+    <td><strong>副标题 = 机器类型名</strong></td>
+    <td>
+      <pre><code><span class="cm">// workflowExecutionService.ts:1169</span>
+<span class="cm">// 业务节点没有 task，用节点类型代替</span>
+task: node.type,</code></pre>
+      <p><strong>影响</strong>：同一个节点，画布上显示「裁剪」（<code>spec.title</code>），
+      聊天卡副标题显示 <code>comfyStage</code> / <code>script</code> / <code>end</code>。
+      标题层做了对齐（<code>_nodeDisplayName</code>），副标题层却没有。</p>
+    </td>
+  </tr>
+  <tr>
+    <td>P0-3</td>
+    <td><strong>进度只覆盖 1 类节点</strong></td>
+    <td>
+      <pre><code><span class="cm">// 全仓 kind:'node_progress' 只有一个发射点</span>
+workflowExecutionService.ts:2894   <span class="cm">// 在 _executeComfyNode 的 delegate onProgress 内</span></code></pre>
+      <p><strong>影响</strong>：<code>script</code> / <code>agent</code> / <code>prompt</code> /
+      <code>ifElse</code> / <code>end</code> 等节点在聊天卡上<strong>永远不显示进度条</strong>，只有转圈 spinner。
+      而画布卡片是<strong>所有执行中节点都有进度条</strong>（<code>cardState.ts</code> 的
+      <code>runState==='running'</code> 即渲染 <code>RunProgress</code>）。</p>
+      <p>脚本节点的进度其实<strong>已经产生</strong>了 —— 脚本内 <code>stage()</code> 的进度走
+      <code>workflowEngine._onStageRun</code> 的 <code>stage-progress</code> 事件，
+      但只用于工具卡，未接成 <code>node_progress</code>。</p>
+    </td>
+  </tr>
+</table>
+
+<h3>P1 — 覆盖缺口（有产物/进度但通道不对称）</h3>
+
+<table>
+  <tr><th style="width:40px">#</th><th style="width:200px">现象</th><th>证据</th></tr>
+  <tr>
+    <td>P1-1</td>
+    <td>脚本节点产物<br><strong>只到画布，聊天卡拿不到</strong></td>
+    <td><pre><code><span class="cm">// workflowExecutionService.ts:264-268  _executeScriptNode</span>
+if (r.ok) {
+  if (nodeState) {
+    nodeState.status = Completed;
+    nodeState.output = typeof r.value === 'string' ? r.value : JSON.stringify(r.value);
+    <span class="hi">// ← 从不写 nodeState.snapshot</span>
+  }
+}</code></pre>
+    <p>而脚本内 <code>stage()</code> 产出的图/视频确实落进了 webview 的 store（画布可见）。
+    由于 <code>subagent_end</code> 的 <code>snapshot</code> 取自 <code>nodeState.snapshot</code>（L1411），
+    聊天卡上这个节点<strong>没有缩略图</strong>。</p></td>
+  </tr>
+  <tr>
+    <td>P1-2</td>
+    <td>Agent 节点产物<br><strong>只到聊天卡，画布卡不动</strong></td>
+    <td><pre><code><span class="cm">// workflowExecutionService.ts:1871-1891  _executeAgentNode</span>
+nodeState.output = message.content?.substring(0, 4000);
+<span class="hi">// ← 只写 output；不发 requestDirectStageRun</span></code></pre>
+    <p>因此画布侧的 <code>cardStateStore</code> / <code>snapshotStore</code> 完全不动 ——
+    host 驱动路径下，画布节点卡停在 idle，<strong>无进度、无缩略图</strong>。</p></td>
+  </tr>
+  <tr>
+    <td>P1-3</td>
+    <td>绿幕原片（<code>port:'video'</code>）<br><strong>被聊天卡刻意排除</strong></td>
+    <td><pre><code><span class="cm">// agentChatPanel.workflowCards.ts:1107-1117</span>
+<span class="cm">// ★ 始终排除 port='video'：绿幕 mp4 的 data URL 常达数 MB，</span>
+<span class="cm">//   聊天卡直喂 &lt;video&gt; 会卡顿/黑屏…需要看原片请到画布阶段①预览</span>
+(mediaSnapAll ?? []).filter(m =&gt; m.port !== 'video');</code></pre>
+    <p>排除<strong>有充分理由</strong>，但用户在聊天卡上<strong>看不到任何提示</strong>（不会知道「这里有产物但被隐藏了」）。</p></td>
+  </tr>
+  <tr>
+    <td>P1-4</td>
+    <td>交互表单提交<br><strong>只在聊天卡</strong></td>
+    <td><pre><code><span class="cm">// workflowExecutionService.ts:2844-2854  apply:'skip' 模式</span>
+ns.output = '仅配置（skip 模式，不执行）';
+<span class="hi">// ← 无 snapshot、无 store.put</span></code></pre>
+    <p>用户在聊天卡填完表单，画布节点卡上没有任何变化反馈。</p></td>
+  </tr>
+</table>
+
+<h3>P2 — 一致性 / 健壮性</h3>
+
+<table>
+  <tr><th style="width:40px">#</th><th style="width:200px">问题</th><th>说明</th></tr>
+  <tr>
+    <td>P2-1</td>
+    <td><strong><code>picker_select</code> 是死契约</strong></td>
+    <td>契约表有定义（<code>traceContract.ts:30-31,50-51,64</code>）、controller 有处理分支
+      （<code>workflowTraceController.ts:251-256, 633-667</code>）、单测有 fixture，
+      但<strong>全仓没有任何发射端</strong>。2026-09-11「单链路改造」后已由
+      <code>node_interaction</code> 的 <code>applyMode==='snapshot'</code> 取代，契约却未清理。</td>
+  </tr>
+  <tr>
+    <td>P2-2</td>
+    <td><strong><code>execution_end</code> 不带任何汇总</strong></td>
+    <td>只带 <code>executionId / sessionId / status</code>。耗时是 controller 用
+      <code>Date.now()</code> <strong>现场取</strong>（<code>workflowTraceController.ts:797-798, 824-825</code>），
+      <strong>不是真实执行起止时间</strong>；成功/失败节点数<strong>不计算</strong>。
+      （编排链另发一条文本摘要消息，不走 trace。）</td>
+  </tr>
+  <tr>
+    <td>P2-3</td>
+    <td><strong>catch 分支静默丢弃</strong></td>
+    <td>失败/取消的 <code>subagent_end</code> 不做 FLOW 链过滤（见 §3 代码块），
+      对未发过 <code>subagent_start</code> 的节点，controller 在
+      <code>workflowTraceController.ts:497</code> <code>if (!sa) return;</code> 静默返回 ——
+      <strong>排障时没有任何线索</strong>（连一行 warn 都没有）。</td>
+  </tr>
+  <tr>
+    <td>P2-4</td>
+    <td>完成后进度不发 trace</td>
+    <td><code>workflowExecutionService.ts:2918</code> 节点完成时 <code>nodeState.progress = 100</code>
+      但<strong>不发</strong> <code>node_progress</code> → 聊天卡靠 <code>subagent_end</code> 翻状态，
+      进度条在 100% 前就消失（渲染层用 <code>isRunning</code> 门控，属可接受）。</td>
+  </tr>
+  <tr>
+    <td>P2-5</td>
+    <td>输出截断长度不统一</td>
+    <td>业务节点 <code>substring(0, 400)</code>（<code>L1407</code>）、Agent 节点 <code>4000</code>（<code>L1890</code>）、
+      编排链 <code>2000</code>。业务节点的 400 字符对「脚本输出」这类节点偏短。</td>
+  </tr>
+  <tr>
+    <td>P2-6</td>
+    <td>过滤规则分散在 3 个文件</td>
+    <td>「出不出卡」由 4 类规则共同决定：FLOW 链（<code>flowChain.ts</code>）+ 类型排除
+      （<code>workflowExecutionService</code> 5 处）+ <code>__workflow__</code> 合成根
+      （<code>workflowCards.ts:118</code>）+ port 过滤（<code>workflowCards.ts:1111-1130</code>）。
+      <strong>没有单点可查的「节点 → 卡片可见性」规则表</strong>。</td>
+  </tr>
+</table>
+
+<h2 id="s5"><span class="n">05</span>框架质量评分</h2>
+
+<div class="score">
+  <div>数据一致性</div>
+  <div class="bar"><div class="fill" style="width:40%;background:var(--warn)"></div></div>
+  <div class="val" style="color:var(--warn)">4 / 10</div>
+
+  <div>展示覆盖完整度</div>
+  <div class="bar"><div class="fill" style="width:45%;background:var(--warn)"></div></div>
+  <div class="val" style="color:var(--warn)">4.5 / 10</div>
+
+  <div>架构清晰度</div>
+  <div class="bar"><div class="fill" style="width:50%;background:var(--warn)"></div></div>
+  <div class="val" style="color:var(--warn)">5 / 10</div>
+
+  <div>可扩展性</div>
+  <div class="bar"><div class="fill" style="width:30%;background:var(--err)"></div></div>
+  <div class="val" style="color:var(--err)">3 / 10</div>
+
+  <div>健壮性（回环/取消）</div>
+  <div class="bar"><div class="fill" style="width:70%;background:var(--ok)"></div></div>
+  <div class="val" style="color:var(--ok)">7 / 10</div>
+
+  <div>可观测性</div>
+  <div class="bar"><div class="fill" style="width:60%;background:var(--warn)"></div></div>
+  <div class="val" style="color:var(--warn)">6 / 10</div>
+</div>
+
+<table>
+  <tr><th style="width:130px">维度</th><th style="width:70px">评分</th><th>理由</th></tr>
+  <tr>
+    <td>数据一致性</td><td><strong>4 / 10</strong></td>
+    <td><span class="badge b-ok">✓</span> 产物同源、分叉点单一、显示名对齐、有契约层校验。
+      <span class="badge b-no">✗</span> 但<strong>图标/副标题是两套独立体系</strong>，
+      同一节点在两处呈现不同信息 —— 这是用户直接可感知的不一致。</td>
+  </tr>
+  <tr>
+    <td>展示覆盖完整度</td><td><strong>4.5 / 10</strong></td>
+    <td><span class="badge b-ok">✓</span> Comfy 节点链路完整（进度 + 产物 + 增量）。
+      <span class="badge b-no">✗</span> 进度覆盖 1/15 类型；产物有 4 处单向可见；
+      Merge/Loop/Parallel 完全不出卡。</td>
+  </tr>
+  <tr>
+    <td>架构清晰度</td><td><strong>5 / 10</strong></td>
+    <td><span class="badge b-ok">✓</span> 有 trace 契约 + 单一转发点 + 注释密度高（每处都写了「为什么」）。
+      <span class="badge b-no">✗</span> 存在<strong>死链（webview trace 状态机）</strong>与
+      <strong>死契约（picker_select）</strong>；「出卡规则」分散 3 文件无单点。</td>
+  </tr>
+  <tr>
+    <td>可扩展性</td><td><strong>3 / 10</strong></td>
+    <td><span class="badge b-ok">✓</span> 新增 stage 的<strong>标题</strong>自动对齐（共享
+      <code>COMFYTV_STAGE_META</code>）。
+      <span class="badge b-no">✗</span> 但<strong>图标要手改 4 项硬编码表</strong>；
+      新增节点类型默认无进度（除非它恰好是 Comfy 节点）；
+      聊天卡没有「按 nodeType 分派组件」的能力（统一一个 <code>_createNodeCard</code>）。
+      → 新增一类节点，聊天卡展示质量<strong>不会自动跟上</strong>。</td>
+  </tr>
+  <tr>
+    <td>健壮性</td><td><strong>7 / 10</strong></td>
+    <td><span class="badge b-ok">✓</span> 多项防回环设计到位：<code>node_values_changed</code> 单向、
+      <code>applyNodeControl</code> 的 <code>origin</code> 开关、快照增量去重、取消短路
+      （<code>_bailOutIfCancelled</code>）、<code>mergeSnapshotMedia</code> 幂等合并。
+      <span class="badge b-no">✗</span> 但失败路径过滤不对称、静默丢弃、状态归一化把未知 status
+      一律折成 <code>'error'</code>（<code>workflowTraceController.ts:499</code>）。</td>
+  </tr>
+  <tr>
+    <td>可观测性</td><td><strong>6 / 10</strong></td>
+    <td><span class="badge b-ok">✓</span> 有 <code>traceContract.ts</code> 运行时断言、
+      <code>snapshotResult</code>/<code>stageRunResult</code> 的 unknown-id warn、
+      多处「不静默」的注释约定。
+      <span class="badge b-no">✗</span> 但 <code>if (!sa) return</code> 这类静默分支仍在，
+      <code>execution_end</code> 无统计使「为什么这次跑了 3 分钟」无从回答。</td>
+  </tr>
+</table>
+
+<div class="verdict">
+  <strong>总体：约 5 / 10 —— 「核心链路可用，但一致性与覆盖是半成品」。</strong>
+  <br>框架的<strong>骨架是对的</strong>（单一转发点 + 契约层 + 产物同源 + 防回环），
+  问题集中在<strong>「元数据/覆盖没有统一到一处」</strong>：
+  标题对齐了、产物同源了，但图标、副标题、进度、产物可见性各自为政。
+</div>
+
+<h2 id="s6"><span class="n">06</span>改进建议（按性价比排序）</h2>
+
+<table>
+  <tr><th style="width:40px">序</th><th style="width:220px">动作</th><th style="width:80px">成本</th><th>收益</th></tr>
+  <tr>
+    <td>1</td>
+    <td><strong>聊天卡改读节点描述符</strong><br>把 <code>subagent_start</code> 的 trace 载荷从
+      <code>task: node.type</code> 换成<strong>描述符摘要</strong>
+      （host 已有 <code>_nodeDisplayName</code> + <code>STAGE_TITLE_BY_TYPE</code>，
+      再补一个 <code>icon/brand</code> 字段即可）。</td>
+    <td><span class="badge b-ok">低</span></td>
+    <td>一次性解决 P0-1 + P0-2：图标与副标题都变成与画布一致的人类可读文本。
+      改动集中在 <code>workflowExecutionService.ts:1169</code> +
+      <code>workflowCards.ts:987-997</code>。</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>把进度提升为「所有执行节点」的通用能力</strong><br>
+      在 <code>_executeScriptNode</code> / <code>_executeAgentNode</code> 也接
+      <code>onProgress</code> → 发 <code>node_progress</code>（脚本的进度源已存在，
+      只是没接成 trace）。</td>
+    <td><span class="badge b-part">中</span></td>
+    <td>解决 P0-3。脚本节点是重灾区（长任务、无反馈）。</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>清理死代码 / 死契约</strong><br>
+      ① 删或标记 <code>webview/src/index.tsx</code> 的 trace 状态机分支（保留
+      <code>workflow.executionUpdate</code> 等画布用事件）；
+      ② 从契约 + controller + 单测中移除 <code>picker_select</code>。</td>
+    <td><span class="badge b-ok">低</span></td>
+    <td>减少「改错地方」的风险；契约与实现重新一致。</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><strong>失败路径过滤对齐</strong><br>catch 分支的 <code>subagent_end</code> 也加
+      <code>_nodeOnFlowChain</code> 判断；或至少在 controller
+      <code>if (!sa)</code> 处打一行 debug 日志。</td>
+    <td><span class="badge b-ok">低</span></td>
+    <td>消除静默丢弃（P2-3），排障有迹可循。</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td><strong>补齐产物通道</strong><br>
+      ① <code>_executeScriptNode</code> 收集 <code>store.byNode()</code> 写入
+      <code>nodeState.snapshot</code>；
+      ② Agent 节点同理写画布 <code>cardStateStore</code>（或明确文档化为「画布不反映 Agent 结果」）。</td>
+    <td><span class="badge b-part">中</span></td>
+    <td>解决 P1-1 / P1-2，消除「同一个节点两处显示不同产物」。</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td><strong>建立单点「卡片可见性规则表」</strong><br>把 FLOW 链 + 类型排除 + port 过滤收敛成一张
+      声明表（如 <code>cardVisibility.ts</code>），供 host 与渲染层共用。</td>
+    <td><span class="badge b-part">中</span></td>
+    <td>解决 P2-6，新增节点类型时「是否出卡」有唯一答案。</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td><strong>聊天卡显示「已隐藏 N 项产物」提示</strong><br>对 <code>port:'video'</code> 等被过滤项，
+      渲染一行说明而非完全静默。</td>
+    <td><span class="badge b-ok">低</span></td>
+    <td>消除 P1-3 的「用户不知情」。</td>
+  </tr>
+  <tr>
+    <td>8</td>
+    <td><strong><code>execution_end</code> 带统计</strong><br>补 <code>durationMs</code> /
+      <code>doneCount</code> / <code>errorCount</code>（真实起止由 host 记录）。</td>
+    <td><span class="badge b-ok">低</span></td>
+    <td>解决 P2-2，让「这次跑了多久/几个节点失败」可直接回答。</td>
+  </tr>
+</table>
+
+<h2 id="s7"><span class="n">07</span>关键代码位置索引</h2>
+
+<table>
+  <tr><th style="width:290px">职责</th><th>位置</th></tr>
+  <tr><td>trace 契约表 + 运行时校验</td><td class="file">browser/workflow/traceContract.ts<br>browser/workflowTraceController.ts:201-221</td></tr>
+  <tr><td>host→webview 唯一转发点</td><td class="file">browser/agentStudioWebviewController.ts:504</td></tr>
+  <tr><td>native trace 状态机（真正渲染链）</td><td class="file">browser/workflowTraceController.ts:220-273（dispatch）<br>:275-401 start / :442-494 delta / :496-509 end<br>:561-582 progress / :515-550 interaction / :761-901 execution_end</td></tr>
+  <tr><td>聊天卡渲染（节点列表 / 单节点卡）</td><td class="file">sessions/browser/agentChat/agentChatPanel.workflowCards.ts:42-159<br>_createNodeCard :955-1212</td></tr>
+  <tr><td>聊天卡图标表（4 项硬编码）</td><td class="file">agentChatPanel.workflowCards.ts:987-997</td></tr>
+  <tr><td>聊天卡产物渲染 + video 排除</td><td class="file">agentChatPanel.workflowCards.ts:1110-1161 / :1107-1117</td></tr>
+  <tr><td>聊天卡类型定义</td><td class="file">browser/agentChat/agentChatTypes.ts:923-951</td></tr>
+  <tr><td>webview 侧 trace 状态机（死链）</td><td class="file">webview/src/index.tsx:70-206（入口 :496-509）<br>store：webview/src/store/useChatStore.ts:1991-2544</td></tr>
+  <tr><td>节点执行与 trace 发射</td><td class="file">browser/workflowExecutionService.ts<br>start :1160-1170 / end :1401-1412 / progress :2893-2906<br>script :264-268 / agent :1871-1891 / 交互 :2751-2794</td></tr>
+  <tr><td>节点显示名（与画布对齐）</td><td class="file">workflowExecutionService.ts:2940-2954<br>browser/workflow/nodeDisplayName.ts:62</td></tr>
+  <tr><td>FLOW 链过滤</td><td class="file">browser/workflow/flowChain.ts:58-65</td></tr>
+  <tr><td>进度源（ComfyUI ws + 轮询兜底）</td><td class="file">webview/.../comfyHost/comfyRunner.ts:289-338（report :294）<br>:353-386（ws）</td></tr>
+  <tr><td>画布卡进度 store</td><td class="file">webview/.../comfyHost/cardState.ts:15-28 / 写入点见 WorkflowEditorPanel.tsx:1131-1191、workflowRun.ts:386-424</td></tr>
+  <tr><td>画布卡产物 store</td><td class="file">webview/.../comfyHost/mediaSnapshotStore.ts<br>byNode :510-536 / latestRoundOf :579-623</td></tr>
+  <tr><td>产物回传分叉点</td><td class="file">webview/.../WorkflowEditorPanel.tsx:1178-1197</td></tr>
+  <tr><td>画布卡渲染</td><td class="file">webview/.../comfyHost/nodeCard.tsx<br>getNodeCardMeta :550-688 / RunProgress :781-812 / 卡片主体 :2807+</td></tr>
+  <tr><td>节点注册表（约 230 type）</td><td class="file">webview/.../comfyHost/registry.ts:94-113（NodeSpec）/ :173-235（register）<br>registrySaros.ts / registryComfyStages.ts / registryProviderGen.ts / registryTools.ts / registryEmoji.ts</td></tr>
+  <tr><td>stage 描述符层（画布专用）</td><td class="file">webview/.../comfyHost/stageCardRegistry.ts:24-164</td></tr>
+</table>
+
+<div class="legend" style="margin-top:34px;border-top:1px solid var(--border);padding-top:14px">
+  调研方式：四条并行代码走查（渲染链路 / trace 发射 / 注册表与描述符 / 进度与产物回传），
+  全部结论均带 文件:行号 依据；未发现「聊天卡与画布卡元数据应统一」的既有 TODO 或设计文档。
+</div>
+
+</div>
+</body>
+</html>

@@ -84,6 +84,78 @@ export function cleanTracePreview(raw: string, maxLen: number): string {
 	return s.length > maxLen ? s.slice(0, maxLen - 1) + '…' : s;
 }
 
+// ── 动态表情包三阶段（画布 Saros.AnimatedEmoji）─────────────────────────────
+/**
+ * 阶段链定义：与执行器 `run_scope`（video/matte/gif）及快照归档 port
+ * （video/matte/output）**一一对应**。改阶段数/名称时只改这里 + 卡片渲染
+ * （执行器文件头有同一份契约说明）。
+ */
+export const ANIMATED_EMOJI_STAGES: ReadonlyArray<{
+	id: AnimatedEmojiStageId;
+	num: string;
+	label: string;
+	port: string;
+}> = [
+	{ id: 'video', num: '①', label: '生成视频', port: 'video' },
+	{ id: 'matte', num: '②', label: '视频抠像', port: 'matte' },
+	{ id: 'gif', num: '③', label: 'GIF 输出', port: 'output' },
+];
+
+export type AnimatedEmojiStageId = 'video' | 'matte' | 'gif';
+
+/** 该卡片是否属于动态表情包节点（类型优先，节点显示名兜底）。 */
+export function isAnimatedEmojiCard(nodeType?: string, nodeName?: string): boolean {
+	if (nodeType === 'Saros.AnimatedEmoji') { return true; }
+	return /动态表情包/.test(nodeName ?? '');
+}
+
+/**
+ * 从进度文案解析当前阶段。执行器发的是「阶段① 生成视频 · 格 3/9」这类 message
+ * （见 animatedEmojiExecutor 的 onProgress）。返回 undefined = 非本节点的文案。
+ */
+export function parseAnimatedEmojiStage(message?: string): AnimatedEmojiStageId | undefined {
+	if (!message) { return undefined; }
+	if (message.includes('阶段①')) { return 'video'; }
+	if (message.includes('阶段②')) { return 'matte'; }
+	if (message.includes('阶段③')) { return 'gif'; }
+	return undefined;
+}
+
+/** 动态表情包阶段卡状态。 */
+export interface IAnimatedEmojiStageState {
+	/** 正在跑的阶段（无匹配进度文案 → undefined）。 */
+	current?: AnimatedEmojiStageId;
+	/** 各阶段是否已有产物（由快照 port 推断）。 */
+	done: Record<AnimatedEmojiStageId, boolean>;
+	/** 各阶段产物条数。 */
+	counts: Record<AnimatedEmojiStageId, number>;
+}
+
+/**
+ * 由「快照条目（含 port）」+「进度文案」推断三阶段状态。
+ *
+ * ★ 判据只用 `port`（不看 ref/kind）——归档端口就是阶段契约：
+ *   `video`=阶段① 产物、`matte`=阶段② 产物、`output`=阶段③ 产物。
+ * 纯函数（可 Node 单测）。
+ */
+export function computeAnimatedEmojiStageState(
+	snapshot: ReadonlyArray<{ port?: unknown }> | undefined,
+	message?: string,
+): IAnimatedEmojiStageState {
+	const counts: Record<AnimatedEmojiStageId, number> = { video: 0, matte: 0, gif: 0 };
+	for (const m of snapshot ?? []) {
+		const port = typeof m?.port === 'string' ? m.port : '';
+		if (port === 'video') { counts.video++; }
+		else if (port === 'matte') { counts.matte++; }
+		else if (port === 'output') { counts.gif++; }
+	}
+	return {
+		current: parseAnimatedEmojiStage(message),
+		done: { video: counts.video > 0, matte: counts.matte > 0, gif: counts.gif > 0 },
+		counts,
+	};
+}
+
 /** 把 JSON 值转成可读短文本（cleanTracePreview 的递归辅助）。 */
 function stringifyTraceValue(v: unknown): string {
 	// [{"type":"text","text":"…"}] 内容包装 → 拼接内层文本

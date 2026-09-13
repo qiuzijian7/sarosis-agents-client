@@ -469,7 +469,13 @@ export class StructuredOutputParser {
 		}
 
 		// Handle the special "phases" → "tasks" unwrapping
-		if ('tasks' in result === false && 'phases' in obj && Array.isArray(obj.phases)) {
+		// ★ 修正（2026-09-11）：原判据 `'tasks' in result === false` **恒为 false** ——
+		//   `result` 是**按 schema 字段**构建的，缺失的 `tasks` 已在上面被
+		//   `_applyDefault()` 填成 `[]`，于是 `tasks` 永远存在 → 解包分支从未触发
+		//   （`{phases:[{tasks:[…]}]}` 恒得 0 个任务）。判据改为看**输入对象**。
+		const inputTasks = obj['tasks'];
+		const inputHasTasks = Array.isArray(inputTasks) ? inputTasks.length > 0 : inputTasks !== undefined;
+		if (!inputHasTasks && Array.isArray(obj['phases'])) {
 			this.logService.info('[StructuredOutput] Unwrapping phases structure into flat tasks array');
 			const allTasks: unknown[] = [];
 			for (const phase of obj.phases) {
@@ -574,7 +580,14 @@ export class StructuredOutputParser {
 					try {
 						const parsed = JSON.parse(value);
 						if (Array.isArray(parsed)) { return parsed; }
+						// ★ 修正（2026-09-11）：JSON **标量**（如 `"2"` → 2）不是数组，
+						//   原实现直接落到 `break` → 返回 undefined → 调用方取默认 `[]`，
+						//   单值依赖被**静默丢弃**（`dependencies: "2"` 恒得 `[]`）。
+						//   现按「单个元素」处理（与 `_asStringArray` 的意图一致）。
+						if (parsed !== null && parsed !== undefined) { return [parsed]; }
 					} catch { /* not a JSON string */ }
+					// 非 JSON 的普通字符串 → 单元素数组（如 `dependencies: "T1"`）
+					if (value.length > 0) { return [value]; }
 				}
 				break;
 		}

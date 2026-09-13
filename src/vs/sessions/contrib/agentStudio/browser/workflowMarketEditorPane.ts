@@ -271,7 +271,11 @@ export class WorkflowMarketEditorPane extends EditorPane {
 	}
 
 	private _createCard(pkg: IMarketplacePackage): HTMLElement {
-		const isInstalled = this._installedWorkflowIds.has(pkg.id);
+		// ★ 2026-09-11 修复：此前只比对 `pkg.id`，但本地工作流 id 形态是 `wf-{slug}`
+		//   （= 商城 `pkg.slug`），而 `pkg.id` 常是商城内部 id → 「✓ 已安装」角标
+		//   永不点亮，用户会重复点安装。与上方列表过滤（builtinWfIds 同时比对
+		//   slug 与 id，见 _loadPackages）保持同一判定口径。
+		const isInstalled = this._installedWorkflowIds.has(pkg.id) || this._installedWorkflowIds.has(pkg.slug);
 		const isInstalling = this._installingSlugs.has(pkg.slug);
 
 		const card = $('div.wfm-card');

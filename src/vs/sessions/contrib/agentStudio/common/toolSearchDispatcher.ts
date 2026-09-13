@@ -183,6 +183,17 @@ export function dispatchToolSearch(
 	args: Record<string, unknown>,
 	catalog: ICatalogEntry[],
 	config: IToolSearchConfig,
+	/**
+	 * 已直接下发给 LLM 的工具（`assembly.toolDefs`）。
+	 *
+	 * ★ 2026-09-11 补齐（与 `dispatchToolDescribe` 的 `visibleDefs` 兜底**对称**）：
+	 * catalog 只含 **deferred（被折叠）** 工具；core / Always 优先级的工具是**直发**的，
+	 * 不进 catalog。此前模型搜一个「明明就在自己工具列表里」的工具会得到
+	 * `No tools found` → 误判「该工具不存在」；而 `tool_describe` 有兜底能查到
+	 * → 两者行为不对称。（describe 的注释早已点出这个死循环，但当时只修了 describe ——
+	 * 本仓高频的「修一半」。）
+	 */
+	visibleDefs?: readonly IToolDefinition[],
 ): IDispatchResult {
 	const query = String(args.query ?? '').trim();
 	if (!query) {
@@ -195,6 +206,21 @@ export function dispatchToolSearch(
 
 	const hits = searchCatalog(catalog, query, limit);
 	if (hits.length === 0) {
+		// ★ 兜底：在**直发**工具里按名称/描述做子串匹配（不用 BM25 —— 直发工具量少，
+		// 且模型通常是搜精确名字或关键词）。命中时明确告知「它已在你的工具列表里、
+		// 直接调用即可」，避免模型继续 tool_search → tool_call 绕圈。
+		const q = query.toLowerCase();
+		const visibleHits = (visibleDefs ?? []).filter(t =>
+			t.name.toLowerCase().includes(q) || (t.description ?? '').toLowerCase().includes(q),
+		).slice(0, limit);
+		if (visibleHits.length > 0) {
+			const vLines = visibleHits.map(t => `  - ${t.name}: ${(t.description ?? '').slice(0, 120)}`);
+			return {
+				text: `Found ${visibleHits.length} tool(s) that are ALREADY in your tool list (no search needed):\n` +
+					`${vLines.join('\n')}\n\nThese tools are sent directly — call them directly (tool_call is not needed).`,
+				success: true,
+			};
+		}
 		return {
 			text: `No tools found matching "${query}".`,
 			success: true,
@@ -455,7 +481,8 @@ export function dispatchBridgeTool(
 	const catalog = buildCatalogCached(ctx.assembly.deferredDefs);
 
 	if (bridgeToolName === TOOL_SEARCH_BRIDGE_TOOLS.search) {
-		const r = dispatchToolSearch(args, catalog, ctx.config);
+		// 传 visibleDefs：catalog 只含 deferred，**直发**工具需兜底（与 describe 分支对称）。
+		const r = dispatchToolSearch(args, catalog, ctx.config, ctx.assembly.toolDefs);
 		return { type: 'search', text: r.text, success: r.success };
 	}
 

@@ -5,9 +5,12 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { buildUserContentParts } from '../agentDriverService.js';
-import { MessageFormatConverter } from '../common/adapters/messageFormatConverter.js';
-import type { IChatMessage, IChatContentPart } from '../common/providers.js';
+// ★ 相对路径修正（2026-09-11）：本文件位于 test/browser/，目标模块在
+//   agentStudio/browser|common 下 → 需 2 层（`../../`），此前写成 1 层（`../`）
+//   → esbuild「Could not resolve」→ 整个文件无法构建。
+import { buildUserContentParts } from '../../browser/agentDriverService.js';
+import { MessageFormatConverter } from '../../common/adapters/messageFormatConverter.js';
+import type { IChatMessage, IChatContentPart } from '../../common/providers.js';
 import type { IChatAttachmentSend } from '../../../../common/agentStudioService.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -65,7 +68,10 @@ suite('Chat input attachments → LLM (multimodal correctness)', () => {
 		const parts = buildUserContentParts('describe', [makeImageAttachment()]);
 		assert.ok(parts, '应返回 contentParts');
 		assert.strictEqual(parts!.length, 2, 'text 块 + image 块');
-		assert.deepStrictEqual(parts![0], { type: 'text', text: 'describe' });
+		// ★ 契约同步（2026-09-11）：用户原始输入现由 `wrapUserQuery()` 包装为
+		//   `<user_query>…</user_query>`（见 browser/userQuery.ts —— 让模型明确区分
+		//   「用户真实指令」与下方追加的附件上下文）。文件/文件夹上下文保持在标签之外。
+		assert.deepStrictEqual(parts![0], { type: 'text', text: '<user_query>describe</user_query>' });
 		const img = parts![1];
 		assert.strictEqual(img.type, 'image');
 		assert.strictEqual((img as any).data, PNG_BASE64, '图片真实 base64 数据应被保留');
@@ -77,7 +83,8 @@ suite('Chat input attachments → LLM (multimodal correctness)', () => {
 		assert.ok(parts);
 		assert.strictEqual(parts!.length, 1, '文本与文件上下文合并到同一 text 块');
 		const text = (parts![0] as { type: 'text'; text: string }).text;
-		assert.ok(text.startsWith('see file'), '原始文本应保留');
+		// ★ 同上：原始文本被 `<user_query>` 包裹后仍是**前缀**（文件上下文追加在其后）。
+		assert.ok(text.startsWith('<user_query>see file</user_query>'), '原始文本应保留（含 user_query 包裹）');
 		assert.ok(text.includes('--- File: notes.txt ---'), '应包含文件标记');
 		assert.ok(text.includes('hello from attachment'), '文件真实内容应被内联');
 		assert.ok(text.includes('--- End of notes.txt ---'), '应包含文件结束标记');

@@ -884,29 +884,23 @@
 	cursor: default; font-size: 13px;
 }
 .tbp-task-item:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
-.tbp-task-item.tbp-task-executing { background: rgba(244, 135, 113, 0.12); }
-.tbp-task-item.tbp-task-done { opacity: 0.5; }
-.tbp-task-status {
-	width: 15px; height: 15px; border-radius: 50%;
-	border: 2px solid var(--vscode-descriptionForeground, #6b6b6b); flex-shrink: 0;
-	display: flex; align-items: center; justify-content: center; font-size: 9px; line-height: 1;
+/* ★ 2026-09-12：状态圆圈移除后，改由「左侧竖条」承载状态提示。
+   用 inset box-shadow 而非 border-left —— 不占布局、不改变原有 padding/gap，
+   列表项内容起始位置完全一致（border-left 会让所有行右移 2px）。
+   executing=红、done=绿，与 summary 行 .tbp-status-dot 的状态色保持一致。 */
+.tbp-task-item.tbp-task-executing {
+	background: rgba(244, 135, 113, 0.12);
+	box-shadow: inset 2px 0 0 var(--vscode-charts-red, #f48771);
 }
-.tbp-task-status.tbp-task-status-pending { border-color: #6b6b6b; }
-.tbp-task-item.tbp-task-executing .tbp-task-status {
-	border-color: var(--vscode-charts-red, #f48771);
-	background: var(--vscode-charts-red, #f48771);
-	box-shadow: 0 0 6px rgba(244, 135, 113, 0.5);
+.tbp-task-item.tbp-task-done {
+	opacity: 0.5;
+	box-shadow: inset 2px 0 0 var(--vscode-charts-green, #89d185);
 }
-.tbp-task-item.tbp-task-executing .tbp-task-status::after {
-	content: ''; width: 5px; height: 5px; background: white; border-radius: 50%;
-}
-.tbp-task-item.tbp-task-done .tbp-task-status {
-	border-color: var(--vscode-charts-green, #89d185);
-	background: var(--vscode-charts-green, #89d185);
-}
-.tbp-task-item.tbp-task-done .tbp-task-status::after {
-	content: '\2713'; color: #1e1e1e; font-weight: bold;
-}
+/* ★ 2026-09-12：移除任务项的状态圆圈（用户反馈 pending 项前的空心圆圈多余）。
+   状态改由**整行样式**表达，不再需要独立的 status 元素：
+     - executing → 行背景泛红（.tbp-task-item.tbp-task-executing）
+     - done      → 文字删除线 + 半透明（.tbp-task-item.tbp-task-done）
+   对应的 span 已从 tabbedPanel.ts 的 _createTaskItemEl 中移除。 */
 .tbp-task-content {
 	flex: 1; line-height: 1.4; min-width: 0;
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1340,6 +1334,20 @@
 	line-height: 1.5;
 }
 
+/* 覆盖边界声明（2026-09-12，P1-2）：shell 改动 / move·rename 不在回退范围内。
+   用次级小字 + 左侧竖线，明确是「范围说明」而非警告（不阻断操作）。 */
+.checkpoint-undo-scope-note {
+	margin: 0 18px 8px;
+	padding: 6px 10px;
+	font-size: 11.5px;
+	line-height: 1.5;
+	color: var(--ec-text-secondary);
+	opacity: 0.85;
+	background: rgba(128, 128, 128, 0.08);
+	border-left: 2px solid rgba(128, 128, 128, 0.35);
+	border-radius: 2px;
+}
+
 /* File list */
 .checkpoint-undo-file-list {
 	margin: 0 16px 12px;
@@ -1438,6 +1446,32 @@
 .checkpoint-undo-btn.cancel:hover {
 	background: rgba(128, 128, 128, 0.08);
 	color: var(--ec-text-primary);
+}
+/* 「仅回退对话」（2026-09-12，P1-1）：次动作 —— 蓝色描边区别于 confirm(绿) / cancel(灰)，
+   表明它是「另一条回退路径」而非取消。 */
+.checkpoint-undo-btn.conversation-only {
+	background: transparent;
+	border-color: var(--ec-accent, #58a6ff);
+	color: var(--ec-accent, #58a6ff);
+}
+.checkpoint-undo-btn.conversation-only:hover {
+	background: rgba(88, 166, 255, 0.12);
+}
+/* 「历史检查点…」（2026-09-12，P2-1）：打开时间线，与「仅回退对话」同为次动作，
+   用中性描边区分（不抢 confirm 的视觉权重）。两个次按钮收紧内边距，
+   避免 4 个按钮 + 「不再提示」复选框在窄弹窗里挤爆。 */
+.checkpoint-undo-btn.timeline {
+	background: transparent;
+	border-color: var(--ec-border-primary);
+	color: var(--ec-text-secondary);
+}
+.checkpoint-undo-btn.timeline:hover {
+	background: rgba(128, 128, 128, 0.08);
+	color: var(--ec-text-primary);
+}
+.checkpoint-undo-btn.conversation-only,
+.checkpoint-undo-btn.timeline {
+	padding: 6px 12px;
 }
 
 /* "Don't prompt again" checkbox */
@@ -1596,10 +1630,11 @@
 	color: inherit;
 }
 
-/* Mode / Provider / Model / Agent 标签 — 与 .chat-toolbar-btn.provider-tag/.model-tag 完全一致 */
+/* Mode / 对话模型 / 图片模型 / Agent 标签 — 与 .chat-toolbar-btn 同名芯片完全一致
+   （2026-09-10：原 provider-tag / model-tag 合并为 chat-model-tag，新增 image-model-tag） */
 .chat-user-edit-tb-btn.mode-tag,
-.chat-user-edit-tb-btn.provider-tag,
-.chat-user-edit-tb-btn.model-tag,
+.chat-user-edit-tb-btn.chat-model-tag,
+.chat-user-edit-tb-btn.image-model-tag,
 .chat-user-edit-tb-btn.agent-tag {
 	border: 1px solid var(--ec-border-primary);
 	border-radius: 6px;
@@ -1608,8 +1643,8 @@
 	opacity: 1;
 }
 .chat-user-edit-tb-btn.mode-tag:hover,
-.chat-user-edit-tb-btn.provider-tag:hover,
-.chat-user-edit-tb-btn.model-tag:hover,
+.chat-user-edit-tb-btn.chat-model-tag:hover,
+.chat-user-edit-tb-btn.image-model-tag:hover,
 .chat-user-edit-tb-btn.agent-tag:hover {
 	border-color: var(--ec-accent);
 }
@@ -1693,6 +1728,23 @@
 	color: inherit;
 	user-select: text;
 	-webkit-user-select: text;
+}
+
+/* Markdown 渲染失败的降级文本（2026-09-11）：超长 content 触发 marked 栈溢出时，
+   该块降级为纯文本而非让整条消息渲染中断。此时内容是 base64/长 URL 等原始文本，
+   用等宽字体 + break-all + 限高滚动，避免把聊天框撑爆。 */
+.message-content.md-render-fallback {
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11px;
+	line-height: 1.45;
+	white-space: pre-wrap;
+	word-break: break-all;
+	opacity: 0.75;
+	max-height: 320px;
+	overflow: auto;
+	background: rgba(128, 128, 128, 0.06);
+	border-radius: 6px;
+	padding: 6px 8px;
 }
 
 .message-content p {
@@ -2797,6 +2849,16 @@
 }
 
 /* ── Workflow Header ── */
+/* ★ P2-2（2026-09-13）：工作流卡片的执行统计（真实耗时 + 成功/失败/取消/跳过计数）。
+   仅终态渲染；`margin-left:auto` 把它推到状态徽章左侧。 */
+.wf-card-stats {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #9aa0a6);
+	white-space: nowrap;
+	margin-left: auto;
+	margin-right: 8px;
+	font-variant-numeric: tabular-nums;
+}
 .wf-header {
 	display: flex;
 	align-items: center;
@@ -2958,6 +3020,78 @@
 	color: #666;
 	font-size: 10px;
 	font-variant-numeric: tabular-nums;
+}
+
+/* ★ 生成进度（2026-09-11 用户需求：画布生成进度实时同步到对应阶段卡）
+   百分比与细进度条只在运行中出现；进度条放在 node-body 之外 → 折叠时仍可见。 */
+.node-progress {
+	color: var(--vscode-charts-blue, #4a9eff);
+	font-size: 10px;
+	font-variant-numeric: tabular-nums;
+	min-width: 30px;
+	text-align: right;
+}
+/* ★ 两阶段进度文案（2026-09-11）：显示当前跑的是哪个阶段（阶段① 视频抠像 /
+   阶段② GIF 输出）——单行省略，完整文案在 title。 */
+.node-progress-msg {
+	color: var(--vscode-descriptionForeground, #9a9a9a);
+	font-size: 9px;
+	max-width: 180px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* ★ 动态表情包阶段链（2026-09-12）：①②③ 各阶段是否已有产物 + 当前阶段高亮。
+   与进度条一样放在 node-body 之外 → 卡片折叠时也可见。 */
+.ae-stages {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin: 4px 0 0;
+}
+.ae-stage-chip {
+	font-size: 9px;
+	line-height: 16px;
+	padding: 0 6px;
+	border-radius: 8px;
+	border: 1px solid rgba(128, 128, 128, 0.35);
+	color: var(--vscode-descriptionForeground, #9a9a9a);
+	background: transparent;
+	white-space: nowrap;
+}
+.ae-stage-chip.done {
+	border-color: rgba(16, 185, 129, 0.5);
+	color: var(--vscode-charts-green, #10b981);
+	background: rgba(16, 185, 129, 0.12);
+}
+.ae-stage-chip.current {
+	border-color: rgba(74, 158, 255, 0.7);
+	color: var(--vscode-charts-blue, #4a9eff);
+	background: rgba(74, 158, 255, 0.16);
+	animation: ae-stage-pulse 1.4s ease-in-out infinite;
+}
+@keyframes ae-stage-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.55; }
+}
+/* ★ 阶段产物分区标题（③ GIF 输出 / ② 抠像结果 / ① 绿幕原片提示） */
+.node-media-label {
+	font-size: 9px;
+	color: var(--vscode-descriptionForeground, #9a9a9a);
+	margin: 4px 0 2px;
+}
+.node-progress-bar {
+	height: 2px;
+	margin: 4px 0 0;
+	background: rgba(128, 128, 128, 0.2);
+	border-radius: 1px;
+	overflow: hidden;
+}
+.node-progress-bar-fill {
+	height: 100%;
+	background: var(--vscode-charts-blue, #4a9eff);
+	transition: width 0.25s ease-out;
 }
 
 /* ── Node Body ── */
@@ -3344,6 +3478,23 @@
 	font-variant-numeric: tabular-nums;
 	flex-shrink: 0;
 }
+
+/* ★ 2026-09-13：委派卡片「资源消耗」行 —— 耗时 / token / 积分，位于**卡片左下角**。
+   原先它们在 header 右侧与状态 pill 挤在一行：① 信息密度高、与「状态」语义混杂；
+   ② pill 宽度随文案变化（执行中/完成/失败…）会把统计挤得左右跳。下移后 header
+   只剩「标题 + 状态」，统计与 body 内容同属「结果」语义。
+   挂在卡片根节点（.tool-header-wrapper）末尾，因此**折叠时仍然可见** ✓。 */
+.tool-card-delegate .dlg-meta-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 4px 10px 6px;
+	font-size: 11px;
+	color: var(--void-fg-4, var(--vscode-descriptionForeground));
+	font-variant-numeric: tabular-nums;
+	flex-wrap: wrap;
+}
+.tool-card-delegate .dlg-meta-item { white-space: nowrap; }
 
 /* 状态 pill（复用 void 配色语义，带 vscode 回退） */
 .status-pill {
@@ -4758,6 +4909,25 @@
 	overflow-x: auto;
 }
 .tool-children-terminal pre { white-space: pre; color: var(--void-fg-2); max-width: 100%; overflow-x: auto; }
+
+/* ── 图片生成结果（2026-09-10）──
+   image_generate 工具卡内的图片网格：data URL（pane 侧由 saros-media:// 解析而来）
+   或 provider 外链。点击可放大（复用附件 lightbox）。 */
+.image-gen-result {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 6px 0;
+}
+.image-gen-result-img {
+	max-width: 260px;
+	max-height: 260px;
+	border-radius: 6px;
+	border: 1px solid var(--void-border, rgba(128, 128, 128, 0.25));
+	cursor: zoom-in;
+	object-fit: contain;
+	background: var(--void-bg-2, rgba(0, 0, 0, 0.15));
+}
 .tool-children-terminal .tool-terminal-code {
 	user-select: text;
 	cursor: auto;
@@ -5646,7 +5816,7 @@
 	background: rgba(245, 158, 11, 0.10);
 	border: 1px solid rgba(245, 158, 11, 0.28);
 }
-/* 压缩图标不旋转（🗜️ 旋转观感怪），改用呼吸脉冲表达“进行中” */
+/* 压缩图标不旋转（🗜️ 旋转观感怪），改用呼吸脉冲表达"进行中" */
 .phase-activity-indicator.phase-compressing .phase-icon {
 	animation: phase-compress-pulse 1.6s ease-in-out infinite;
 }
@@ -6698,6 +6868,66 @@
 	background: rgba(255,255,255,0.12);
 }
 
+/* ── Inline workflow chip（输入框内已选工作流 chip）─────────────────
+   2026-09-10：此前 .inline-workflow-chip 完全没有 CSS（第三次「DOM 有、
+   CSS 缺」），contenteditable 里的裸 span 呈白字 + ▶ + ✕ 挤在一起。
+   现对齐 skill-chip 家族结构（inline-flex / user-select:all 原子选中 /
+   ellipsis），色彩用品牌橙 #FF5A2E（可执行/行动语义，与 skill 蓝区分）：
+   点击 chip 主体打开参数表单（composer.ts:1178），✕ 移除，徽标显示已设参数数。 */
+.inline-workflow-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin: 0 2px;
+	padding: 1px 6px 1px 8px;
+	border-radius: 8px;
+	background: rgba(255, 90, 46, 0.12);
+	border: 1px solid rgba(255, 90, 46, 0.28);
+	font-size: 12px;
+	line-height: 1.4;
+	color: #ff8a63;
+	vertical-align: baseline;
+	/* user-select:all：chip 作为原子单元可被 Ctrl+A 全选/复制/删除包含 */
+	user-select: all;
+	white-space: nowrap;
+	max-width: 260px;
+	cursor: pointer;
+}
+.inline-workflow-chip:hover {
+	background: rgba(255, 90, 46, 0.2);
+	border-color: rgba(255, 90, 46, 0.45);
+}
+.inline-workflow-chip-icon {
+	font-size: 10px;
+	line-height: 1;
+	/* ▶ 略缩：与文字基线对齐时 12px 的 ▶ 视觉过大 */
+	transform: translateY(0.5px);
+}
+.inline-workflow-chip-name {
+	font-weight: 500;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 160px;
+}
+.inline-workflow-chip-badge {
+	font-size: 10px;
+	opacity: 0.75;
+	white-space: nowrap;
+}
+.inline-workflow-chip-remove {
+	margin-left: 2px;
+	cursor: pointer;
+	opacity: 0.6;
+	font-size: 11px;
+	border-radius: 4px;
+	padding: 0 2px;
+}
+.inline-workflow-chip-remove:hover {
+	opacity: 1;
+	background: rgba(255, 255, 255, 0.12);
+}
+
 /* ── Bubble skill chip（用户消息气泡内的只读 skill pill，解析 /skill <id> 标记渲染）── */
 .bubble-skill-chip {
 	display: inline-flex;
@@ -6818,17 +7048,17 @@
 	white-space: nowrap;
 }
 
-/* Provider / Model tags */
-.chat-toolbar-btn.provider-tag,
-.chat-toolbar-btn.model-tag {
+/* 对话模型 / 图片模型 tags（2026-09-10 由 provider/model tag 演化而来） */
+.chat-toolbar-btn.chat-model-tag,
+.chat-toolbar-btn.image-model-tag {
 	border: 1px solid var(--ec-border-primary);
 	border-radius: 6px;
 	padding: 3px 8px;
 	background: var(--ec-bg-hover);
 }
 
-.chat-toolbar-btn.provider-tag:hover,
-.chat-toolbar-btn.model-tag:hover {
+.chat-toolbar-btn.chat-model-tag:hover,
+.chat-toolbar-btn.image-model-tag:hover {
 	border-color: var(--ec-accent);
 }
 
@@ -6844,6 +7074,51 @@
 /* ═══════════════════════════════════════════════════════════════════
    Send / Cancel Button
    ═══════════════════════════════════════════════════════════════════ */
+/* ── 提示词优化按钮（发送按钮左侧，2026-09-10）────────────────────────
+   方案移植自 prompt-optimizer（见 agentChat/promptOptimize.ts 头注释）：
+   点击把输入框文本交给当前对话模型改写后回填。无输入时禁用；
+   优化中显示旋转圆环（隐藏 ✨ 图标）。 */
+.chat-prompt-optimize-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border: none;
+	border-radius: 8px;
+	background: var(--as-bg-tertiary, rgba(255, 255, 255, 0.06));
+	color: var(--ec-text-muted, #8b949e);
+	cursor: pointer;
+	transition: background 0.12s, color 0.12s;
+	flex-shrink: 0;
+}
+.chat-prompt-optimize-btn:hover:not(:disabled) {
+	background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.1));
+	color: var(--vscode-foreground, #e6edf3);
+}
+.chat-prompt-optimize-btn.disabled,
+.chat-prompt-optimize-btn:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+/* 优化中：隐藏 ✨，用伪元素画旋转圆环 */
+.chat-prompt-optimize-btn.loading svg {
+	display: none;
+}
+.chat-prompt-optimize-btn.loading::after {
+	content: '';
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+	border-top-color: currentColor;
+	animation: chat-optimize-spin 0.7s linear infinite;
+}
+@keyframes chat-optimize-spin {
+	to { transform: rotate(360deg); }
+}
+
 .chat-send-circle {
 	width: 22px;
 	height: 22px;
@@ -7897,17 +8172,17 @@
 }
 
 .chat-toolbar-btn.mode-tag,
-.chat-toolbar-btn.provider-tag,
+.chat-toolbar-btn.chat-model-tag,
 .chat-toolbar-btn.agent-tag,
-.chat-toolbar-btn.model-tag {
+.chat-toolbar-btn.image-model-tag {
 	background: var(--as-bg-tertiary, rgba(255,255,255,0.04));
 	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
 }
 
 .chat-toolbar-btn.mode-tag:hover,
-.chat-toolbar-btn.provider-tag:hover,
+.chat-toolbar-btn.chat-model-tag:hover,
 .chat-toolbar-btn.agent-tag:hover,
-.chat-toolbar-btn.model-tag:hover {
+.chat-toolbar-btn.image-model-tag:hover {
 	background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.08));
 	border-color: var(--as-border-focus, rgba(124, 185, 255, 0.4));
 }
@@ -7961,8 +8236,12 @@
 	bottom: calc(100% + 6px);
 	left: 0;
 	min-width: 180px;
-	max-height: 280px;
-	overflow-y: auto;
+	/* ⚠ 2026-09-10：对话模型 / 图片模型下拉的二级菜单是**飞出式**（一级行的绝对定位
+	   子元素，left: calc(100% + 6px)）。父容器若保留 overflow-y:auto / max-height，
+	   飞出的二级面板会被裁剪掉。故一级面板改为 overflow: visible 且不设最大高度，
+	   滚动改由二级面板自身承担（.provider-dropdown-submenu 有 max-height + auto）。
+	   一级列表只有少量 provider，不滚动不影响使用。 */
+	overflow: visible;
 	background: #252a33;
 	border: 1px solid #3d444f;
 	border-radius: 8px;
@@ -8052,6 +8331,142 @@
 	font-size: 12px;
 	color: #6e7681;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   对话模型 / 图片模型（2026-09-10）
+   由原 provider-tag + model-tag 两个芯片合并 / 新增而来。
+   芯片只显示模型名，类型由前置 SVG 图标承担；下拉为
+   「一级 provider 列表 + hover 飞出二级模型列表」。
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── 芯片配色：对话模型（蓝，与 skill 同系）/ 图片模型（品牌橙，与 workflow 同系）── */
+.chat-toolbar-btn.chat-model-tag,
+.chat-user-edit-tb-btn.chat-model-tag {
+	color: var(--vscode-charts-blue, #60a5fa);
+	border-color: color-mix(in srgb, #60a5fa 42%, transparent);
+	background: color-mix(in srgb, #60a5fa 10%, transparent);
+}
+.chat-toolbar-btn.chat-model-tag:hover {
+	border-color: color-mix(in srgb, #60a5fa 75%, transparent);
+}
+.chat-toolbar-btn.image-model-tag,
+.chat-user-edit-tb-btn.image-model-tag {
+	color: #ff8a63;
+	border-color: color-mix(in srgb, #ff5a2e 42%, transparent);
+	background: color-mix(in srgb, #ff5a2e 10%, transparent);
+}
+.chat-toolbar-btn.image-model-tag:hover {
+	border-color: color-mix(in srgb, #ff5a2e 75%, transparent);
+}
+
+/* ── 一级面板 ── */
+.chat-model-dropdown,
+.image-model-dropdown {
+	min-width: 240px;
+}
+/* 一级行：名称占满剩余宽度 + 右侧「当前」/数量/箭头。
+   需覆盖 .provider-dropdown-item 的 space-between（多元素时会被拆散）。 */
+.provider-dropdown-item.chat-model-l1 {
+	position: relative;
+	justify-content: flex-start;
+	gap: 6px;
+}
+.provider-dropdown-item.hover-l1 {
+	background: #383f4b;
+	color: #e6edf3;
+}
+.provider-dropdown-chev {
+	font-size: 13px;
+	opacity: 0.7;
+	flex-shrink: 0;
+	color: #8b949e;
+}
+.provider-dropdown-count {
+	font-size: 10px;
+	color: #8b949e;
+	flex-shrink: 0;
+}
+.provider-dropdown-cur {
+	font-size: 9px;
+	padding: 1px 5px;
+	border-radius: 4px;
+	background: color-mix(in srgb, #60a5fa 16%, transparent);
+	color: #60a5fa;
+	flex-shrink: 0;
+}
+.provider-dropdown-check {
+	width: 12px;
+	flex-shrink: 0;
+	font-size: 11px;
+	color: #60a5fa;
+}
+/* 图片模型下拉的选中勾用品牌橙（与芯片配色一致） */
+.image-model-dropdown .provider-dropdown-check {
+	color: #ff8a63;
+}
+.provider-dropdown-tag {
+	font-size: 9px;
+	padding: 1px 5px;
+	border-radius: 4px;
+	background: rgba(255, 255, 255, 0.07);
+	color: #8b949e;
+	flex-shrink: 0;
+}
+.provider-dropdown-tag.vision {
+	color: #c586c0;
+	background: rgba(197, 134, 192, 0.12);
+}
+/* ── 二级飞出面板（hover 展开，无需点击）── */
+.provider-dropdown-submenu {
+	position: absolute;
+	left: calc(100% + 6px);
+	top: -5px;
+	width: 250px;
+	max-height: 320px;
+	overflow-y: auto;
+	background: #252a33;
+	border: 1px solid #3d444f;
+	border-radius: 8px;
+	padding: 5px;
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+	z-index: 101;
+	display: none;
+	scrollbar-width: thin;
+	scrollbar-color: rgba(128, 128, 128, 0.3) transparent;
+}
+.provider-dropdown-submenu.open {
+	display: block;
+}
+/* 视口约束（JS 计算后加类）：
+   - flip-left：右侧空间不足 → 向左飞出
+   - flip-up  ：下方空间不足且上方更宽裕 → 向上飞出（底边对齐一级行底部） */
+.provider-dropdown-submenu.flip-left {
+	left: auto;
+	right: calc(100% + 6px);
+}
+.provider-dropdown-submenu.flip-up {
+	top: auto;
+	bottom: -5px;
+}
+.provider-dropdown-subhead {
+	padding: 4px 8px 6px;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.5px;
+	text-transform: uppercase;
+	color: #8b949e;
+}
+.provider-dropdown-submenu .provider-dropdown-item {
+	font-size: 12px;
+}
+.provider-dropdown-submenu::-webkit-scrollbar { width: 4px; }
+.provider-dropdown-submenu::-webkit-scrollbar-track { background: transparent; }
+.provider-dropdown-submenu::-webkit-scrollbar-thumb {
+	background: rgba(128, 128, 128, 0.3);
+	border-radius: 4px;
+}
+.provider-dropdown-submenu::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.45); }
+.provider-dropdown-submenu::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 
 /* Mode-dropdown specific (composer) — mirrors provider-dropdown */
 .mode-dropdown-composer {
@@ -8234,14 +8649,17 @@
    - absolute 脱离文档流，以环为锚点显示在环上方（bottom: 100%）；
    - white-space: pre-line 渲染多行文案（JS 用 \n 拼接两行提示）；
    - pointer-events:none 防止浮层自身挡住 mouseleave 造成闪烁；
-   - width: max-content 按内容自适应宽度，长行由 max-width 兜底折行。 */
+   - width: max-content 按内容自适应宽度，长行由 max-width 兜底折行。
+   2026-09-09 右缘对齐修复：环位于 composer 工具栏最右端，tooltip 原以环为
+   中心水平居中（left:50% + translateX(-50%)），右半必然溢出 .chat-composer-box
+   的 overflow:hidden（圆角裁剪）被切掉。改为右缘对齐环（right:0，向左展开），
+   完全落在 composer 宽度内。 */
 .context-usage-tooltip {
 	position: absolute;
 	bottom: calc(100% + 8px);
-	left: 50%;
-	transform: translateX(-50%);
+	right: -6px;
 	width: max-content;
-	max-width: 320px;
+	max-width: min(320px, 90vw);
 	white-space: pre-line;
 	text-align: left;
 	pointer-events: none;
@@ -8310,6 +8728,10 @@
 	flex-direction: column;
 	gap: 1px;
 	overflow: hidden;
+	/* flex:1 + min-width:0：让 info 占据剩余宽度并把右侧 kind badge 推到行尾，
+	   同时保证 name/desc 的 ellipsis 正常生效。 */
+	flex: 1;
+	min-width: 0;
 }
 
 .slash-menu-item-name {
@@ -8324,6 +8746,38 @@
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+/* ── Slash 菜单 kind 标签（区分同名 skill / workflow）─────────────────
+   2026-09-10：skill 与 workflow 可能同名（如「表情包工作流」两类都有），
+   此前菜单无 kind 标识会被误认为重复数据。右侧 badge 标注类型，
+   配色沿用既有语义：skill 蓝（能力注入）、workflow 橙（可执行，与
+   .inline-workflow-chip 品牌橙一致）。 */
+.slash-menu-item-kind {
+	flex-shrink: 0;
+	margin-left: auto;
+	padding: 1px 6px;
+	border-radius: 6px;
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: 0.3px;
+	text-transform: uppercase;
+	opacity: 0.85;
+}
+.slash-menu-item--skill .slash-menu-item-kind {
+	color: var(--ec-accent, #60a5fa);
+	background: rgba(96, 165, 250, 0.12);
+	border: 1px solid rgba(96, 165, 250, 0.25);
+}
+.slash-menu-item--workflow .slash-menu-item-kind {
+	color: #ff8a63;
+	background: rgba(255, 90, 46, 0.12);
+	border: 1px solid rgba(255, 90, 46, 0.28);
+}
+/* workflow 的 ▶ 图标同步用橙色，与 badge 形成一致的类型色。 */
+.slash-menu-item--workflow .slash-menu-item-icon {
+	background: rgba(255, 90, 46, 0.12);
+	color: #ff8a63;
 }
 
 /* ── P0-2: @mention file search menu ── */
@@ -10423,8 +10877,8 @@
 .cli-mode .chat-attachment-bar,
 .cli-mode .chat-toolbar-left,
 .cli-mode .chat-toolbar-divider,
-.cli-mode .chat-toolbar-btn.provider-tag,
-.cli-mode .chat-toolbar-btn.model-tag,
+.cli-mode .chat-toolbar-btn.chat-model-tag,
+.cli-mode .chat-toolbar-btn.image-model-tag,
 .cli-mode .chat-toolbar-btn.mode-tag,
 .cli-mode .chat-toolbar-btn.agent-tag {
 	display: none;
@@ -10474,6 +10928,11 @@
 /* Hide the context-usage ring in CLI mode (visual noise). */
 .cli-mode .context-usage-ring,
 .cli-mode .context-usage-ring-wrap {
+	display: none;
+}
+
+/* 提示词优化按钮在 CLI 模式不展示（与工具栏其它芯片一致） */
+.cli-mode .chat-prompt-optimize-btn {
 	display: none;
 }
 
@@ -10592,6 +11051,81 @@
 .askuser-submit:disabled {
 	opacity: 0.4;
 	cursor: default;
+}
+
+/* ── D3 自由输入（2026-09-10）：选项之外的自定义答案 ───────────────── */
+
+.askuser-custom {
+	padding: 6px 10px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.askuser-custom-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #888);
+	flex-shrink: 0;
+}
+
+/* ── 多问题（2026-09-11）：单页渲染每个问题块 ─────────────────────── */
+.askuser-question-block {
+	padding: 8px 0;
+	border-bottom: 1px dashed var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+}
+.askuser-question-block:last-of-type {
+	border-bottom: none;
+}
+.askuser-question-text {
+	font-size: 12px;
+	font-weight: 600;
+	margin-bottom: 6px;
+	color: var(--vscode-foreground, #ccc);
+}
+.askuser-question-block .askuser-options {
+	margin-bottom: 4px;
+}
+
+.askuser-custom-input {
+	flex: 1;
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.35));
+	border-radius: 4px;
+	background: var(--vscode-input-background, rgba(0, 0, 0, 0.2));
+	color: var(--vscode-input-foreground, #cccccc);
+	font-family: inherit;
+	font-size: 12px;
+	outline: none;
+}
+
+.askuser-custom-input:focus {
+	border-color: var(--vscode-focusBorder, var(--vscode-charts-blue, #60a5fa));
+}
+
+.askuser-custom-input::placeholder {
+	color: var(--vscode-input-placeholderForeground, #888);
+}
+
+/* ── D4 动态参数：image 字段（文件选择 + 缩略图预览） ───────────────── */
+
+.askuser-image-preview {
+	display: none;
+	width: 56px;
+	height: 56px;
+	object-fit: cover;
+	border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.35));
+	border-radius: 4px;
+	flex-shrink: 0;
+}
+
+.askuser-image-preview.has-image {
+	display: block;
+}
+
+.askuser-file-input {
+	flex: 1;
+	font-size: 12px;
+	color: var(--vscode-foreground, #cccccc);
 }
 
 .askuser-answer {
@@ -12080,3 +12614,469 @@
 	font-size: 11px;
 	padding: 6px 2px;
 }
+/* ── 节点卡媒体结果（2026-09-10：静态表情包等生成结果展示） ─────────── */
+
+.node-media {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 6px;
+}
+
+/* ★ 卡片图片悬浮按钮（2026-09-11 用户需求）：右上角「放大」、右下角「下载」。
+   wrapper 只做定位，不改动图片自身尺寸规则（.node-media-thumb 的 120×120 + flex:0 0 auto
+   等仍然生效）—— 图片被移进 wrapper 后不再是 flex item，其固定 width/height 直接起作用。 */
+.chat-media-wrap {
+	position: relative;
+	display: inline-block;
+	line-height: 0;
+	flex: 0 0 auto;
+}
+.chat-media-actions {
+	position: absolute;
+	inset: 0;
+	pointer-events: none; /* 仅按钮可点，其余区域仍可点透（候选图单击=选中） */
+}
+.chat-media-btn {
+	position: absolute;
+	pointer-events: auto;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 12px;
+	line-height: 1;
+	color: #fff;
+	background: rgba(0, 0, 0, 0.55);
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+	opacity: 0.75;
+	transition: opacity 0.12s ease-out, background 0.12s ease-out;
+}
+.chat-media-wrap:hover .chat-media-btn { opacity: 1; }
+.chat-media-btn:hover { background: rgba(0, 0, 0, 0.8); }
+.chat-media-btn.zoom { top: 4px; right: 4px; }
+.chat-media-btn.download { bottom: 4px; right: 4px; }
+
+/* ★ 视频 / 音频有**原生控制条**，右下角会被控制条压住或反过来压住控制条 ✗
+   （2026-09-11 用户要求「下载按钮也出现在视频/音频上」时的必要调整）。
+   最终形态（2026-09-11 二改）：视频与音频**统一**把两个按钮放右上角横向排开 ——
+   原方案给视频的下载按钮设 `bottom: 36px` 硬编码避让控制条，但控制条高度随主题/缩放变化，
+   仍可能轻微重叠 ✗；统一放右上角则完全不依赖控制条几何 ✓。
+   · 音频额外需要 wrapper 定宽：音频自身是 `width:100%`，wrapper 不定宽会被
+     shrink-to-fit 压扁 ✗。 */
+.chat-media-wrap.video .chat-media-btn.download,
+.chat-media-wrap.audio .chat-media-btn.download { top: 4px; right: 28px; bottom: auto; }
+.chat-media-wrap.audio { width: 100%; max-width: 320px; }
+
+.node-media-thumb {
+	width: 120px;
+	height: 120px;
+	/* ★ flex-shrink: 0（2026-09-10 用户反馈「表情包图片显示不全」）：缩略图是
+	   flex item，默认会被压缩——多图一行时每张被挤成竖条（图片被横向裁切）。
+	   固定尺寸 + 禁止收缩，超宽自动换行（父级 flex-wrap）。 */
+	flex: 0 0 auto;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+	object-fit: cover;
+}
+
+.node-media-video {
+	max-width: 220px;
+	border-radius: 4px;
+}
+
+.node-media-audio {
+	width: 100%;
+	max-width: 320px;
+}
+
+/* ── ImagePicker 多选卡（2026-09-11）：执行到 picker 阶段暂停，用户勾选后 resume ── */
+
+.picker-card {
+	margin: 8px 0;
+	padding: 10px 12px;
+	border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.35));
+	border-radius: 6px;
+	background: var(--vscode-editor-background, rgba(255, 255, 255, 0.02));
+}
+
+.picker-card.pending {
+	border-color: var(--vscode-focusBorder, #4a9eff);
+}
+
+.picker-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 6px;
+}
+
+.picker-title {
+	flex: 1;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--vscode-foreground, #cccccc);
+}
+
+.picker-badge {
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 8px;
+	background: rgba(74, 158, 255, 0.18);
+	color: var(--vscode-foreground, #cccccc);
+}
+
+.picker-badge.answered {
+	background: rgba(76, 175, 80, 0.18);
+}
+
+.picker-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+	margin-bottom: 8px;
+}
+
+.picker-grid {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	max-height: 320px;
+	overflow-y: auto;
+}
+
+.picker-item {
+	position: relative;
+	cursor: pointer;
+	border-radius: 4px;
+	border: 2px solid transparent;
+	line-height: 0;
+}
+
+.picker-item.readonly { cursor: default; }
+
+.picker-item.selected {
+	border-color: var(--vscode-focusBorder, #4a9eff);
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder, #4a9eff) inset;
+}
+
+.picker-thumb {
+	width: 72px;
+	height: 72px;
+	object-fit: cover;
+	border-radius: 3px;
+	display: block;
+}
+
+.picker-audio {
+	width: 160px;
+}
+
+.picker-check {
+	position: absolute;
+	top: 2px;
+	right: 2px;
+	width: 16px;
+	height: 16px;
+	line-height: 16px;
+	text-align: center;
+	font-size: 11px;
+	border-radius: 50%;
+	background: var(--vscode-focusBorder, #4a9eff);
+	color: #fff;
+}
+
+.picker-check:empty { display: none; }
+
+.picker-actions {
+	display: flex;
+	gap: 8px;
+	margin-top: 10px;
+	align-items: center;
+}
+
+.picker-select-all,
+.picker-clear-all {
+	font-size: 11px;
+	padding: 3px 10px;
+	cursor: pointer;
+	border-radius: 3px;
+	border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.35));
+	background: transparent;
+	color: var(--vscode-foreground, #cccccc);
+}
+
+.picker-submit {
+	margin-left: auto;
+	font-size: 11px;
+	padding: 4px 14px;
+	cursor: pointer;
+	border: none;
+	border-radius: 3px;
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #fff);
+}
+
+.picker-submit.disabled,
+.picker-submit:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.picker-answer {
+	margin-top: 6px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+}
+
+/* ── 节点交互表单卡（2026-09-11 框架）：任意节点执行前配置 UI ───────── */
+
+.ni-card {
+	margin: 8px 0;
+	padding: 10px 12px;
+	border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.35));
+	border-radius: 6px;
+	background: var(--vscode-editor-background, rgba(255, 255, 255, 0.02));
+}
+
+.ni-card.pending { border-color: var(--vscode-focusBorder, #4a9eff); }
+
+/* ═══════════════════════════════════════════════════════════════════
+   「需要你操作」高亮 + 右下角通知条（2026-09-12 用户需求）
+   ───────────────────────────────────────────────────────────────────
+   工作流执行到需要用户交互的节点会**暂停**（AskUser / ImagePicker / 节点配置表单 /
+   变量收集）。此前待交互卡只是**静态**蓝边（`.pending`），在长对话里很容易被忽略 ✗，
+   用户体感是「工作流卡住不动了」。现改为两重提示：
+     · 待交互卡**呼吸式**高亮边框（一眼看出「在等我」）；
+     · 右下角**常驻通知条**（跨滚动可见，点击直达该卡）。
+   ⚠ 四个 pending 选择器必须与 TS 侧 `_syncInteractionToast` 的 selector 映射一致。
+   ═══════════════════════════════════════════════════════════════════ */
+
+@keyframes chat-interaction-breathe {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.42), inset 0 0 0 0 rgba(74, 158, 255, 0); }
+	50% { box-shadow: 0 0 0 5px rgba(74, 158, 255, 0.10), inset 0 0 14px 0 rgba(74, 158, 255, 0.18); }
+}
+
+.picker-card.pending,
+.ni-card.pending,
+.askuser-card.pending,
+.collect-vars-card.pending {
+	border-color: var(--vscode-focusBorder, #4a9eff);
+	animation: chat-interaction-breathe 1.8s ease-in-out infinite;
+}
+
+/* 点击通知条「去选择」后短暂闪一下目标卡（配合 scrollIntoView 定位） */
+@keyframes chat-interaction-flash {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0); }
+	35% { box-shadow: 0 0 0 6px rgba(74, 158, 255, 0.45); }
+}
+.chat-interaction-flash { animation: chat-interaction-flash 0.9s ease-out 2; }
+
+/* 内嵌于节点卡的配置表单（`.node-body .ni-card` 去掉了外框）——改用「左侧强调条 +
+   淡蓝底呼吸」，否则边框光晕在无边框元素上显得突兀 ✗（且 `animation` 会覆盖
+   上面的 box-shadow，故此处必须换成自己的动画 ✗）。 */
+@keyframes chat-interaction-breathe-bg {
+	0%, 100% { background-color: rgba(74, 158, 255, 0.05); }
+	50% { background-color: rgba(74, 158, 255, 0.14); }
+}
+.node-body .ni-card.pending {
+	box-shadow: inset 3px 0 0 0 var(--vscode-focusBorder, #4a9eff);
+	background-color: rgba(74, 158, 255, 0.06);
+	animation: chat-interaction-breathe-bg 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.picker-card.pending,
+	.ni-card.pending,
+	.askuser-card.pending,
+	.collect-vars-card.pending,
+	.node-body .ni-card.pending,
+	.chat-interaction-flash { animation: none; }
+}
+
+/* ── 右下角「需要你操作」通知条 ──
+   ★ `absolute` 而非 `fixed`（2026-09-12）：挂在 `.chat-container`（`position:relative`）
+   内 → 定位在**聊天面板**的右下角 ✓，始终与待交互卡同屏；`fixed` 会跑到**整个窗口**
+   右下角，聊天面板不在那个角落时用户看不到 ✗。`.chat-container` 的 overflow:hidden
+   顺带把通知条约束在面板内 ✓。 */
+.chat-interaction-toast {
+	position: absolute;
+	right: 16px;
+	bottom: 16px;
+	z-index: 10050;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	max-width: min(440px, calc(100vw - 32px));
+	padding: 10px 12px;
+	border-radius: 10px;
+	border: 1px solid var(--vscode-focusBorder, #4a9eff);
+	background: var(--vscode-editorWidget-background, #252a33);
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+	color: var(--vscode-foreground, #ddd);
+	font-size: 12px;
+	line-height: 1.45;
+	opacity: 0;
+	transform: translateY(12px);
+	pointer-events: none;
+	transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.chat-interaction-toast.visible {
+	opacity: 1;
+	transform: translateY(0);
+	pointer-events: auto;
+}
+
+.chat-interaction-toast .cit-icon { font-size: 16px; line-height: 1; flex: 0 0 auto; }
+.chat-interaction-toast .cit-body { flex: 1 1 auto; min-width: 0; }
+.chat-interaction-toast .cit-title { font-weight: 600; }
+.chat-interaction-toast .cit-desc {
+	margin-top: 2px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.chat-interaction-toast .cit-action {
+	flex: 0 0 auto;
+	padding: 4px 10px;
+	border: none;
+	border-radius: 5px;
+	cursor: pointer;
+	font-size: 11px;
+	font-weight: 600;
+	color: #fff;
+	background: var(--vscode-button-background, #0a66c2);
+}
+.chat-interaction-toast .cit-action:hover { background: var(--vscode-button-hoverBackground, #1177d1); }
+.chat-interaction-toast .cit-close {
+	flex: 0 0 auto;
+	padding: 2px 4px;
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground, #888);
+	cursor: pointer;
+	font-size: 12px;
+}
+.chat-interaction-toast .cit-close:hover { color: var(--vscode-foreground, #ddd); }
+
+/* ★ 内嵌于节点卡时（2026-09-11 用户需求：「配置 UI 转移到对应的节点卡片内部」）：
+   配置表单不再是一张独立卡（避免「卡中卡」的视觉噪音与「像两个节点」的误读），
+   降级为节点卡内的一个分区 —— 去外框、去圆角、去背景，仅用上方虚线分隔。 */
+.node-body .ni-card {
+	margin: 8px 0 0;
+	padding: 8px 0 0;
+	border: none;
+	border-top: 1px dashed var(--vscode-input-border, rgba(128, 128, 128, 0.25));
+	border-radius: 0;
+	background: transparent;
+}
+
+.ni-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.ni-title { flex: 1; font-size: 12px; font-weight: 600; }
+.ni-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: rgba(74, 158, 255, 0.18); }
+.ni-badge.submitted { background: rgba(76, 175, 80, 0.18); }
+.ni-desc { font-size: 11px; color: var(--vscode-descriptionForeground, #999); margin-bottom: 8px; }
+
+.ni-form { display: flex; flex-direction: column; gap: 10px; }
+.ni-field { display: flex; flex-direction: column; gap: 4px; }
+.ni-label { font-size: 11px; color: var(--vscode-descriptionForeground, #bbb); }
+
+.ni-input {
+	font-size: 12px;
+	padding: 4px 8px;
+	border-radius: 3px;
+	border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.35));
+	background: var(--vscode-input-background, rgba(0, 0, 0, 0.15));
+	color: var(--vscode-input-foreground, #ccc);
+}
+
+.ni-grid-inputs { display: flex; gap: 14px; }
+.ni-num-box { display: flex; align-items: center; gap: 6px; }
+.ni-num-label { font-size: 11px; color: var(--vscode-descriptionForeground, #bbb); }
+.ni-number { width: 64px; }
+.ni-checkbox { width: auto; align-self: flex-start; }
+.ni-textarea { resize: vertical; min-height: 48px; }
+
+.ni-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+.ni-list-row { display: flex; align-items: center; gap: 6px; }
+.ni-list-index { font-size: 10px; color: var(--vscode-descriptionForeground, #888); min-width: 22px; }
+.ni-list-input { flex: 1; }
+
+/* 参考图像字段（2026-09-11 用户需求）：有默认值直接显示缩略图；无值给「选择图像」按钮 */
+.ni-hint { font-size: 10px; color: var(--vscode-descriptionForeground, #888); }
+.ni-image-ref-preview { display: flex; align-items: center; gap: 8px; }
+.ni-image-ref-thumb {
+	max-width: 96px;
+	max-height: 96px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.35));
+	object-fit: cover;
+}
+.ni-image-ref-empty { font-size: 11px; color: var(--vscode-descriptionForeground, #888); }
+.ni-image-ref-picker { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.ni-image-ref-btn {
+	font-size: 11px;
+	padding: 3px 10px;
+	cursor: pointer;
+	border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.35));
+	border-radius: 3px;
+	background: var(--vscode-button-secondaryBackground, rgba(255, 255, 255, 0.06));
+	color: var(--vscode-button-secondaryForeground, #ccc);
+}
+/* ★ 按钮行（2026-09-12）：「更换参考图/选择图像」与「✕ 移除」并排（picker 是 column ✗，
+   不包一层行容器两个按钮会上下堆叠、看着像两个不相关的控件 ✗）。 */
+.ni-image-ref-btnrow { display: flex; align-items: center; gap: 6px; }
+/* 移除按钮：危险语义 → 红字 + hover 填充（与「更换」明确区分，避免误点 ✗）。 */
+.ni-image-ref-btn.ni-image-ref-remove { color: #f87171; border-color: rgba(248, 113, 113, 0.45); }
+.ni-image-ref-btn.ni-image-ref-remove:hover {
+	background: rgba(248, 113, 113, 0.16);
+	border-color: rgba(248, 113, 113, 0.7);
+}
+.ni-image-ref-grid {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	max-height: 180px;
+	overflow-y: auto;
+	padding: 4px;
+	border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.25));
+	border-radius: 4px;
+	background: rgba(0, 0, 0, 0.12);
+}
+.ni-image-ref-tile { cursor: pointer; border: 2px solid transparent; border-radius: 4px; padding: 2px; line-height: 0; }
+.ni-image-ref-tile.selected { border-color: var(--vscode-focusBorder, #4a9eff); }
+.ni-image-ref-tile-img { width: 64px; height: 64px; object-fit: cover; border-radius: 3px; display: block; }
+
+/* ★ 上传格（2026-09-11）：上游无候选时的唯一来源 —— 尺寸与候选 tile 的图位对齐（64px）。
+   恒出现在候选网格首位，故「选择图像」永远有东西可点（修「参考图无法选择」）。 */
+.ni-image-ref-tile.upload {
+	display: flex; flex-direction: column; align-items: center; justify-content: center;
+	width: 64px; height: 64px; gap: 2px;
+	border: 1px dashed var(--vscode-input-border, rgba(128, 128, 128, 0.45));
+	color: var(--vscode-descriptionForeground, #888);
+}
+.ni-image-ref-tile.upload:hover {
+	border-color: var(--vscode-focusBorder, #4a9eff);
+	color: var(--vscode-foreground, #ddd);
+}
+.ni-image-ref-upload-icon { font-size: 16px; line-height: 1; }
+.ni-image-ref-upload-text { font-size: 10px; }
+
+.ni-actions { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+.ni-submit {
+	font-size: 11px;
+	padding: 4px 14px;
+	cursor: pointer;
+	border: none;
+	border-radius: 3px;
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #fff);
+}
+.ni-submit.disabled, .ni-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+.ni-answer { margin-top: 6px; font-size: 11px; color: var(--vscode-descriptionForeground, #999); }

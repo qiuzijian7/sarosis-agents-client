@@ -9,6 +9,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { GraphRunResult } from './workflowRun.js';
+import { formatProgressPct } from './progressFormat.js';
 
 export type TaskState = 'running' | 'success' | 'error';
 
@@ -109,7 +110,10 @@ export function formatTaskStatus(status: TaskStatus): string {
 		: status.state === 'success' ? '成功'
 		: '失败';
 	const lines: string[] = [
-		`任务 ${status.taskId}：${stateLabel}（进度 ${status.progress}%，完成 ${status.ran}/${status.total}，失败 ${status.failed}）`,
+		// ★ 百分比走 `formatProgressPct`（2026-09-12 用户需求「最多 2 位小数」）：
+		//   `TaskStatus.progress` 由 buildTaskStatus 取整，但外部（host / 上层组装）
+		//   也可能塞入 `ran/total*100` 的原始小数 → 统一在此收口，避免长小数外泄 ✗。
+		`任务 ${status.taskId}：${stateLabel}（进度 ${formatProgressPct(status.progress)}%，完成 ${status.ran}/${status.total}，失败 ${status.failed}）`,
 	];
 	for (const s of status.steps) {
 		const state = s.runState === 'success' ? '✓' : '✗';

@@ -52,13 +52,16 @@ suite('Agent Studio - Agent Version Management', () => {
 			assert.strictEqual(hunk.lines.length, 4);
 
 			assert.strictEqual(hunk.lines[0].kind, 'context');
-			assert.strictEqual(hunk.lines[0].text, ' unchanged line');
+			// ★ 契约同步（2026-09-11）：上下文行与 `+`/`-` 行一致，`text` **剥掉行首标记**
+			//   （`line.slice(1)`，见 common/gitVersionPure.ts）。unified diff 的行首空格
+			//   是标记而非内容 —— 旧断言保留了它，属过期期望。
+			assert.strictEqual(hunk.lines[0].text, 'unchanged line');
 			assert.strictEqual(hunk.lines[1].kind, 'remove');
 			assert.strictEqual(hunk.lines[1].text, 'removed line');
 			assert.strictEqual(hunk.lines[2].kind, 'add');
 			assert.strictEqual(hunk.lines[2].text, 'added line');
 			assert.strictEqual(hunk.lines[3].kind, 'context');
-			assert.strictEqual(hunk.lines[3].text, ' still unchanged');
+			assert.strictEqual(hunk.lines[3].text, 'still unchanged');
 		});
 
 		test('多 hunk — 正确分离', () => {
@@ -153,7 +156,10 @@ suite('Agent Studio - Agent Version Management', () => {
 				author: 'Saros Agent',
 				time: '2026-07-18T21:00:00.000Z',
 			};
-			assert.strictEqual(meta.sha.length, 41);
+			// ★ 修正（2026-09-11）：上方字面量实际是 **40** 字符（16+16+8），
+			//   且真实 SHA-1 十六进制就是 40 位 —— 原断言写 41 属笔误
+			//   （该文件长期无法构建，故从未暴露）。
+			assert.strictEqual(meta.sha.length, 40);
 			assert.strictEqual(meta.shortSha.length, 7);
 			assert.ok(meta.message.includes('auto:'));
 			assert.strictEqual(meta.author, 'Saros Agent');

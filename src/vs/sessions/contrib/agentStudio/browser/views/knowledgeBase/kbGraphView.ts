@@ -81,36 +81,61 @@ const enum VisualState {
 
 // ---------------------------------------------------------------------------
 // ontosight 配色系统：紫罗兰宝石 (Vibrant Amethyst)
+//
+// 设计色值为「Dark+ 主题下的默认观感」，同时映射到 VS Code 主题变量。
+// resolveTheme() 在渲染时读取这些 CSS 变量（回退到设计色值），
+// 因此图谱会随编辑器主题切换而更新，而非把色值写死。
 // ---------------------------------------------------------------------------
 
-const COLOR_PALETTE = {
-	primary: {
-		normal: '#6366F1',      // Indigo — 选中态
-		hover: '#4F46E5',
-		glow: '#818CF8',
-	},
-	success: {
-		normal: '#8B5CF6',      // Violet — 默认节点色（紫罗兰宝石）
-		hover: '#7C3AED',
-	},
-	warning: {
-		normal: '#FFD700',      // Cyber Gold — 高亮态
-		hover: '#F59E0B',
-		glow: '#FDE68A',
-	},
-	neutral: {
-		light: '#64748B',       // Slate-500
-		lighter: '#F1F5F9',     // Slate-100
-		muted: '#94A3B8',
-	},
-};
+/** 一组语义色的「设计默认值 + VS Code 主题变量名」映射 */
+interface IThemeColor {
+	/** 设计默认色值（无主题变量或变量为空时回退） */
+	fallback: string;
+	/** VS Code CSS 变量名（省略则以 fallback 为准） */
+	varName?: string;
+}
 
-const TEXT_PALETTE = {
-	label: '#1E293B',          // Slate-800
-	description: '#64748B',    // Slate-500
-	contrast: '#FFFFFF',
-	halo: '#FFFFFF',           // 描边色
-};
+const THEME_COLOR_KEYS = {
+	// ── 节点 / 边强调色 ──
+	primaryNormal: { fallback: '#6366F1', varName: '--vscode-focusBorder' }, // Indigo — 选中态
+	primaryHover: { fallback: '#4F46E5' },
+	primaryGlow: { fallback: '#818CF8' },
+	successNormal: { fallback: '#8B5CF6' }, // Violet — 默认节点色
+	successHover: { fallback: '#7C3AED' },
+	warningNormal: { fallback: '#FFD700', varName: '--vscode-editorWarning-foreground' }, // Cyber Gold — 高亮态
+	warningHover: { fallback: '#F59E0B' },
+	warningGlow: { fallback: '#FDE68A' },
+	// ── 中性色 ──
+	neutralLight: { fallback: '#64748B', varName: '--vscode-descriptionForeground' },
+	neutralLighter: { fallback: '#F1F5F9', varName: '--vscode-editor-background' },
+	neutralMuted: { fallback: '#94A3B8' },
+	// ── 文本 / 描边 ──
+	textLabel: { fallback: '#1E293B', varName: '--vscode-editor-foreground' },
+	textDescription: { fallback: '#64748B', varName: '--vscode-descriptionForeground' },
+	textContrast: { fallback: '#FFFFFF', varName: '--vscode-editor-background' },
+	textHalo: { fallback: '#FFFFFF', varName: '--vscode-editor-background' },
+} satisfies Record<string, IThemeColor>;
+
+/** 解析后的主题色板 */
+type IResolvedTheme = Record<keyof typeof THEME_COLOR_KEYS, string>;
+
+/** 读取单个 VS Code CSS 变量，空值回退到设计色值 */
+function readThemeVar(el: HTMLElement | undefined, spec: IThemeColor): string {
+	if (!spec.varName || !el) {
+		return spec.fallback;
+	}
+	const value = getComputedStyle(el).getPropertyValue(spec.varName).trim();
+	return value || spec.fallback;
+}
+
+/** 依据宿主元素解析整套主题色板（渲染时调用，可热跟随主题） */
+function resolveTheme(host: HTMLElement | undefined): IResolvedTheme {
+	const resolved = {} as IResolvedTheme;
+	for (const key of Object.keys(THEME_COLOR_KEYS) as (keyof IResolvedTheme)[]) {
+		resolved[key] = readThemeVar(host, THEME_COLOR_KEYS[key]);
+	}
+	return resolved;
+}
 
 // 边标签关系类型 → 可读名称
 const EDGE_LABEL_MAP: Record<string, string> = {
@@ -149,38 +174,41 @@ interface INodeStyle {
 	labelFontSize: number;
 }
 
-const NODE_STYLES: Record<VisualState, INodeStyle> = {
-	[VisualState.DEFAULT]: {
-		fill: COLOR_PALETTE.success.normal,          // Violet #8B5CF6
-		stroke: '#FFFFFF',
-		lineWidth: 1.5,
-		shadowBlur: 15,
-		shadowColor: `${COLOR_PALETTE.success.normal}80`,
-		labelFontWeight: 500,
-		labelFill: TEXT_PALETTE.label,
-		labelFontSize: 12,
-	},
-	[VisualState.SELECTED]: {
-		fill: COLOR_PALETTE.primary.normal,          // Indigo #6366F1
-		stroke: '#FFFFFF',
-		lineWidth: 3,
-		shadowBlur: 30,
-		shadowColor: `${COLOR_PALETTE.primary.glow}B0`,
-		labelFontWeight: 800,
-		labelFill: COLOR_PALETTE.primary.normal,
-		labelFontSize: 14,
-	},
-	[VisualState.HIGHLIGHTED]: {
-		fill: COLOR_PALETTE.warning.normal,          // Cyber Gold #FFD700
-		stroke: '#FFFFFF',
-		lineWidth: 3,
-		shadowBlur: 35,
-		shadowColor: `${COLOR_PALETTE.warning.normal}A0`,
-		labelFontWeight: 800,
-		labelFill: '#000000',
-		labelFontSize: 14,
-	},
-};
+/** 依据主题色板生成三态节点样式（渲染时求值，支持主题热切换） */
+function buildNodeStyles(theme: IResolvedTheme): Record<VisualState, INodeStyle> {
+	return {
+		[VisualState.DEFAULT]: {
+			fill: theme.successNormal,          // Violet — 默认节点色
+			stroke: theme.textContrast,
+			lineWidth: 1.5,
+			shadowBlur: 15,
+			shadowColor: `${theme.successNormal}80`,
+			labelFontWeight: 500,
+			labelFill: theme.textLabel,
+			labelFontSize: 12,
+		},
+		[VisualState.SELECTED]: {
+			fill: theme.primaryNormal,          // Indigo — 选中态
+			stroke: theme.textContrast,
+			lineWidth: 3,
+			shadowBlur: 30,
+			shadowColor: `${theme.primaryGlow}B0`,
+			labelFontWeight: 800,
+			labelFill: theme.primaryNormal,
+			labelFontSize: 14,
+		},
+		[VisualState.HIGHLIGHTED]: {
+			fill: theme.warningNormal,          // Cyber Gold — 高亮态
+			stroke: theme.textContrast,
+			lineWidth: 3,
+			shadowBlur: 35,
+			shadowColor: `${theme.warningNormal}A0`,
+			labelFontWeight: 800,
+			labelFill: '#000000',
+			labelFontSize: 14,
+		},
+	};
+}
 
 // ---------------------------------------------------------------------------
 // 边样式（三态）— 发光光纤 (Glowing Optical Fibers)
@@ -199,44 +227,47 @@ interface IEdgeStyle {
 	labelBgOpacity: number;
 }
 
-const EDGE_STYLES: Record<VisualState, IEdgeStyle> = {
-	[VisualState.DEFAULT]: {
-		stroke: '#CBD5E1',                           // Slate-300
-		lineWidth: 1.2,
-		opacity: 0.45,
-		shadowBlur: 0,
-		shadowColor: 'transparent',
-		labelFill: '#1E293B',
-		labelFontSize: 11,
-		labelFontWeight: 700,
-		labelBgFill: '#FFFFFF',
-		labelBgOpacity: 0.75,
-	},
-	[VisualState.SELECTED]: {
-		stroke: COLOR_PALETTE.primary.normal,        // Indigo
-		lineWidth: 3,
-		opacity: 1,
-		shadowBlur: 10,
-		shadowColor: `${COLOR_PALETTE.primary.normal}80`,
-		labelFill: COLOR_PALETTE.primary.normal,
-		labelFontSize: 12,
-		labelFontWeight: 800,
-		labelBgFill: '#FFFFFF',
-		labelBgOpacity: 0.85,
-	},
-	[VisualState.HIGHLIGHTED]: {
-		stroke: COLOR_PALETTE.warning.normal,        // Cyber Gold
-		lineWidth: 3.5,
-		opacity: 1,
-		shadowBlur: 10,
-		shadowColor: `${COLOR_PALETTE.warning.normal}60`,
-		labelFill: '#000000',
-		labelFontSize: 12,
-		labelFontWeight: 800,
-		labelBgFill: '#FFFFFF',
-		labelBgOpacity: 0.85,
-	},
-};
+/** 依据主题色板生成三态边样式（渲染时求值，支持主题热切换） */
+function buildEdgeStyles(theme: IResolvedTheme): Record<VisualState, IEdgeStyle> {
+	return {
+		[VisualState.DEFAULT]: {
+			stroke: theme.neutralMuted,                  // Slate-300 附近的中性色
+			lineWidth: 1.2,
+			opacity: 0.45,
+			shadowBlur: 0,
+			shadowColor: 'transparent',
+			labelFill: theme.textLabel,
+			labelFontSize: 11,
+			labelFontWeight: 700,
+			labelBgFill: theme.textContrast,
+			labelBgOpacity: 0.75,
+		},
+		[VisualState.SELECTED]: {
+			stroke: theme.primaryNormal,                 // Indigo
+			lineWidth: 3,
+			opacity: 1,
+			shadowBlur: 10,
+			shadowColor: `${theme.primaryNormal}80`,
+			labelFill: theme.primaryNormal,
+			labelFontSize: 12,
+			labelFontWeight: 800,
+			labelBgFill: theme.textContrast,
+			labelBgOpacity: 0.85,
+		},
+		[VisualState.HIGHLIGHTED]: {
+			stroke: theme.warningNormal,                 // Cyber Gold
+			lineWidth: 3.5,
+			opacity: 1,
+			shadowBlur: 10,
+			shadowColor: `${theme.warningNormal}60`,
+			labelFill: '#000000',
+			labelFontSize: 12,
+			labelFontWeight: 800,
+			labelBgFill: theme.textContrast,
+			labelBgOpacity: 0.85,
+		},
+	};
+}
 
 // ---------------------------------------------------------------------------
 // KbGraphView
@@ -281,6 +312,11 @@ export class KbGraphView extends Disposable {
 	private _simRunning = false;
 	private _drawScheduled = false;
 	private _drawCount = 0;
+
+	// 主题（渲染时解析；随编辑器主题变化刷新）
+	private _theme: IResolvedTheme = resolveTheme(undefined);
+	private _nodeStyles: Record<VisualState, INodeStyle> = buildNodeStyles(this._theme);
+	private _edgeStyles: Record<VisualState, IEdgeStyle> = buildEdgeStyles(this._theme);
 
 	// 事件
 	private readonly _onNodeClick = this._register(new Emitter<IGraphClickEvent>());
@@ -327,6 +363,9 @@ export class KbGraphView extends Disposable {
 
 		this._ctx = this._canvas.getContext('2d')!;
 
+		// 解析主题（挂载后 container 已在文档中，可读到 CSS 变量）
+		this._refreshTheme();
+
 		// 事件绑定
 		this._canvas.addEventListener('mousedown', this._onMouseDown);
 		this._canvas.addEventListener('mousemove', this._onMouseMove);
@@ -340,6 +379,13 @@ export class KbGraphView extends Disposable {
 
 		this._centerX = this._canvas.width / 2;
 		this._centerY = this._canvas.height / 2;
+	}
+
+	/** 重新解析主题色板与派生样式（宿主主题变化时可再次调用） */
+	private _refreshTheme(): void {
+		this._theme = resolveTheme(this._container ?? document.body);
+		this._nodeStyles = buildNodeStyles(this._theme);
+		this._edgeStyles = buildEdgeStyles(this._theme);
 	}
 
 	/** 加载图谱数据并开始布局渲染 */
@@ -363,7 +409,7 @@ export class KbGraphView extends Disposable {
 				vx: 0,
 				vy: 0,
 				radius: this._computeNodeRadius(n),
-				color: n.color ?? COLOR_PALETTE.success.normal, // 默认紫罗兰宝石色
+				color: n.color ?? this._theme.successNormal, // 默认紫罗兰宝石色
 			};
 			this._nodes.push(rn);
 			this._nodeMap.set(n.id, rn);
@@ -567,7 +613,7 @@ export class KbGraphView extends Disposable {
 	private _drawNode(node: IRenderNode): void {
 		const ctx = this._ctx;
 		const state = this._getNodeState(node);
-		const style = NODE_STYLES[state];
+		const style = this._nodeStyles[state];
 
 		// 外发光阴影
 		ctx.save();
@@ -593,7 +639,7 @@ export class KbGraphView extends Disposable {
 		// 悬停高亮环
 		if (node === this._hoveredNode && node !== this._selectedNode && !this._highlightedNodes.has(node.data.id)) {
 			ctx.save();
-			ctx.strokeStyle = '#FFFFFF';
+			ctx.strokeStyle = this._theme.textHalo;
 			ctx.lineWidth = 2;
 			ctx.globalAlpha = 0.8;
 			ctx.beginPath();
@@ -619,7 +665,7 @@ export class KbGraphView extends Disposable {
 		ctx.textBaseline = 'top';
 
 		// Halo 描边（确保在复杂背景下清晰）
-		ctx.strokeStyle = TEXT_PALETTE.halo;
+		ctx.strokeStyle = this._theme.textHalo;
 		ctx.lineWidth = 3;
 		ctx.lineJoin = 'round';
 		ctx.strokeText(label, node.x, node.y + node.radius + LAYOUT.LABEL_OFFSET);
@@ -631,6 +677,7 @@ export class KbGraphView extends Disposable {
 		const bx = node.x - bw / 2;
 		const by = node.y + node.radius + LAYOUT.LABEL_OFFSET - LAYOUT.LABEL_PADDING[0];
 
+		// 半透明白底（固定浅色覆盖层，与主题色无关：用于在任意节点色上保证标签可读）
 		ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
 		ctx.beginPath();
 		this._roundRect(ctx, bx, by, bw, bh, LAYOUT.LABEL_BG_RADIUS);
@@ -648,7 +695,7 @@ export class KbGraphView extends Disposable {
 	private _drawEdge(edge: IRenderEdge): void {
 		const ctx = this._ctx;
 		const state = this._getEdgeState(edge);
-		const style = EDGE_STYLES[state];
+		const style = this._edgeStyles[state];
 
 		ctx.save();
 		ctx.globalAlpha = style.opacity;

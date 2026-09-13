@@ -8,6 +8,8 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	detectUnixOnlyCommand,
 	recordFileReadSuccess, recordFileReadFailure, describeReadGap, hasEverReadSuccessfully, markFileModified,
+	detectExternalModification, describeExternalModification,
+	detectLongRunningCommand, parseTimeoutSecondsFromStderr, timeoutGuidanceMessage,
 	skillScriptAbsolutePaths,
 	UNIX_ONLY_COMMAND_HINTS,
 	detectPowerShellOnlyCmdlet,
@@ -17,6 +19,9 @@ import {
 	bareSourceCodeGuardMessage,
 	isDeterministicScriptFailure,
 	deterministicScriptFailureMessage,
+	detectBenignSearchExit,
+	detectScriptSourceWrite,
+	scriptSourceWriteGuardMessage,
 } from '../../browser/providers/tool/executeCodeGuards.js';
 
 suite('executeCodeGuards — Windows Unix 命令护栏', () => {
@@ -350,14 +355,23 @@ suite('read-state 跟踪（2026-09-07，patch 连败根因的解药）', () => {
 		assert.ok(describeReadGap('g:\\repo\\src\\e.ts').includes('FAILED'));
 	});
 
-	test('★ P3 二期 写后失效：patch 过的文件再 patch 前必须重读（日志 1788757547227）', () => {
+	test('★ P0+P1 写后视为已读：patch 过的文件可直接再 patch，不必重读（2026-09-12 改语义）', () => {
 		recordFileReadSuccess('g:\\repo\\src\\MiniImageEditor.tsx');
 		assert.strictEqual(hasEverReadSuccessfully('g:\\repo\\src\\MiniImageEditor.tsx'), true);
 		markFileModified('g:\\repo\\src\\MiniImageEditor.tsx');
-		assert.strictEqual(hasEverReadSuccessfully('g:\\repo\\src\\MiniImageEditor.tsx'), false, '改动后必须视为未读（需重读）');
-		assert.ok(describeReadGap('g:\\repo\\src\\MiniImageEditor.tsx').includes('OUTDATED'), 'stale 应给出「内容已过时」专属反馈');
+		// P1（2026-09-12）：patch 成功 = 内容已知 = 视为已读 —— 不再强制重读。
+		// 依据 patch 返回值现在回传「Updated region」（见 patchMatcher 的
+		// buildEditedRegionContext），模型手里已是最新文本。
+		assert.strictEqual(hasEverReadSuccessfully('g:\\repo\\src\\MiniImageEditor.tsx'), true,
+			'patch 后仍视为已读（不再强制重读）');
+		// 但失败路径仍要给出定向纠偏：点破「patch 过但未重读」，并提示可复用 Updated region
+		const gap = describeReadGap('g:\\repo\\src\\MiniImageEditor.tsx');
+		assert.ok(gap.includes('NOT re-read'), `应点破「patch 过但未重读」，实际：${gap}`);
+		assert.ok(gap.includes('Updated region'), '应提示可复用上次回传的 Updated region');
+		// 重读后 patchedSinceRead 被清除，纠偏文案随之消失
 		recordFileReadSuccess('g:\\repo\\src\\MiniImageEditor.tsx');
-		assert.strictEqual(hasEverReadSuccessfully('g:\\repo\\src\\MiniImageEditor.tsx'), true, '重读后恢复可读');
+		assert.ok(!describeReadGap('g:\\repo\\src\\MiniImageEditor.tsx').includes('NOT re-read'),
+			'重读后不再提示「patch 过但未重读」');
 	});
 
 	test('★ P3 read-before-edit：hasEverReadSuccessfully 三态', () => {
@@ -366,5 +380,282 @@ suite('read-state 跟踪（2026-09-07，patch 连败根因的解药）', () => {
 		assert.strictEqual(hasEverReadSuccessfully('g:\\REPO\\src\\failed.ts'), false, '读过但失败 ≠ 读过');
 		recordFileReadSuccess('g:/repo/src/ok.ts');
 		assert.strictEqual(hasEverReadSuccessfully('g:\\repo\\SRC\\ok.ts'), true, '成功读过（大小写/斜杠归一化）');
+	});
+
+	test('★ P3 外部修改检测：mtime 变大才判定（对齐 file_write 的 > 语义）', () => {
+		recordFileReadSuccess('g:\\repo\\src\\ext.ts', 1000);
+		assert.strictEqual(detectExternalModification('g:\\repo\\src\\ext.ts', 1000), false, '同 mtime → 未改动');
+		assert.strictEqual(detectExternalModification('g:\\repo\\src\\ext.ts', 2000), true, 'mtime 变大 → 外部改动');
+		assert.strictEqual(detectExternalModification('g:\\repo\\src\\ext.ts', 500), false,
+			'mtime 变小（时钟回拨）→ 不判定，避免误报');
+	});
+
+	test('★ P3：基线缺失时不判定（宁可漏报不误报）', () => {
+		recordFileReadSuccess('g:\\repo\\src\\noMtime.ts');
+		assert.strictEqual(detectExternalModification('g:\\repo\\src\\noMtime.ts', 2000), false, '无 mtime 基线 → 不判定');
+		assert.strictEqual(detectExternalModification('g:\\repo\\src\\neverRead2.ts', 2000), false, '从未读过 → 不判定');
+		assert.strictEqual(detectExternalModification('g:\\repo\\src\\noMtime.ts', 0), false, '拿不到当前 mtime → 不判定');
+	});
+
+	test('★ P3：重读后基线刷新，旧的外部改动不再报', () => {
+		recordFileReadSuccess('g:\\repo\\src\\ext3.ts', 1000);
+		assert.strictEqual(detectExternalModification('g:\\repo\\src\\ext3.ts', 2000), true);
+		recordFileReadSuccess('g:\\repo\\src\\ext3.ts', 2000);
+		assert.strictEqual(detectExternalModification('g:\\repo\\src\\ext3.ts', 2000), false, '重读后基线已更新');
+	});
+
+	test('★ P3 提示文案：点破「外部改动」并指向 file_read', () => {
+		recordFileReadSuccess('g:\\repo\\src\\ext4.ts', 1000);
+		const msg = describeExternalModification('g:\\repo\\src\\ext4.ts', 6000);
+		assert.ok(msg.includes('EXTERNAL CHANGE'), msg);
+		assert.ok(msg.includes('file_read'), msg);
+		assert.ok(msg.includes('ext4.ts'), '应含具体文件路径');
+	});
+
+	test('★ P3：路径归一化对检测同样生效', () => {
+		recordFileReadSuccess('g:\\repo\\src\\NormExt.ts', 1000);
+		assert.strictEqual(detectExternalModification('g:/REPO/SRC/normext.ts', 2000), true,
+			'不同斜杠/大小写应识别为同一文件');
+	});
+
+	test('★ P0 超时解析：兼容主进程与回退两种文案', () => {
+		assert.strictEqual(parseTimeoutSecondsFromStderr('[timeout: process tree killed after 20s]'), 20);
+		assert.strictEqual(parseTimeoutSecondsFromStderr('[timeout: process killed after 30s]'), 30);
+		assert.strictEqual(parseTimeoutSecondsFromStderr('out\n[timeout: process tree killed after 300s]\ntail'), 300);
+		assert.strictEqual(parseTimeoutSecondsFromStderr('no timeout here'), undefined);
+		assert.strictEqual(parseTimeoutSecondsFromStderr(''), undefined);
+	});
+
+	test('★ P3 长任务识别：包管理器 + 长动词', () => {
+		assert.strictEqual(detectLongRunningCommand('npm install'), 'npm install');
+		assert.strictEqual(detectLongRunningCommand('pnpm i'), 'pnpm i');
+		assert.strictEqual(detectLongRunningCommand('yarn add react'), 'yarn add');
+		assert.strictEqual(detectLongRunningCommand('cargo build --release'), 'cargo build');
+		assert.strictEqual(detectLongRunningCommand('docker compose up -d'), 'docker compose up');
+		assert.strictEqual(detectLongRunningCommand('npm run dev'), 'npm run');
+	});
+
+	test('★ P3 长任务识别：裸构建 / 测试 / 服务', () => {
+		assert.strictEqual(detectLongRunningCommand('make -j8'), 'make');
+		assert.strictEqual(detectLongRunningCommand('tsc --noEmit'), 'tsc');
+		assert.strictEqual(detectLongRunningCommand('vitest run'), 'vitest');
+		assert.strictEqual(detectLongRunningCommand('pytest -q'), 'pytest');
+	});
+
+	test('★ P3 长任务识别：watch 模式与「打开外部程序」（日志根因）', () => {
+		assert.strictEqual(detectLongRunningCommand('tsc --watch'), 'tsc');
+		assert.strictEqual(detectLongRunningCommand('start "" "docs/index.html"'), 'opening an external app');
+		assert.strictEqual(detectLongRunningCommand('cmd //c start "" "x.html"'), 'opening an external app');
+		assert.strictEqual(detectLongRunningCommand('open ./x.html'), 'opening an external app');
+	});
+
+	test('★ P3 宁缺毋滥：普通命令不得误报为长任务', () => {
+		assert.strictEqual(detectLongRunningCommand('git status'), undefined);
+		assert.strictEqual(detectLongRunningCommand('ls -la'), undefined);
+		assert.strictEqual(detectLongRunningCommand('grep -rn foo src'), undefined);
+		assert.strictEqual(detectLongRunningCommand('node script.mjs'), undefined);
+		assert.strictEqual(detectLongRunningCommand(''), undefined);
+	});
+
+	test('★ P3 只看首条语句（管道/串联之后不参与判定）', () => {
+		assert.strictEqual(detectLongRunningCommand('npm ls | grep foo'), undefined,
+			'首段 npm ls 不是长动词 → 不判定');
+		assert.strictEqual(detectLongRunningCommand('npm install && npm run build'), 'npm install');
+	});
+
+	test('★ P0 引导文案：定性 + 两条出路 + 劝阻原样重发 + 带上形态', () => {
+		const msg = timeoutGuidanceMessage(20, 'npm install');
+		assert.ok(msg.includes('TIMEOUT'), msg);
+		assert.ok(msg.includes('20s'), '应带上实际超时秒数');
+		assert.ok(msg.includes('background:true'), '应给出 background 出路');
+		assert.ok(msg.includes('taskId'), '应说明返回 taskId');
+		assert.ok(msg.includes('action:"poll"'), '应给出 poll 用法');
+		assert.ok(msg.includes('timeout: 300'), '应给出加大 timeout 的示例');
+		assert.ok(msg.includes('0 for no limit'), '应说明 0 = 不限时');
+		assert.ok(msg.includes('Do NOT re-send the same command'), '应劝阻原样重发');
+		assert.ok(msg.includes('npm install'), '应带上识别到的形态');
+	});
+
+	test('★ P0 引导文案：未识别形态时不编造，但仍给通用出路', () => {
+		const msg = timeoutGuidanceMessage(30, 'my-custom-tool --serve');
+		assert.ok(msg.includes('TIMEOUT'), msg);
+		assert.ok(!msg.includes('Detected long-running shape'), '无命中不得编造形态');
+		assert.ok(msg.includes('background:true'), '仍应给出通用出路');
+	});
+});
+
+suite('检索类良性非零退出码（2026-09-09，exit 123 假失败）', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('★ 日志原案：find|xargs grep → exit 123 判为良性', () => {
+		const cmd = 'echo "=== CSS ===" ; grep -n "context-usage-tooltip" -A 30 a.css | head -45 ; '
+			+ 'find src/vs/sessions -name "*.css" | xargs grep -ln "context-usage-tooltip"';
+		const note = detectBenignSearchExit(cmd, 123, '');
+		assert.ok(note, 'exit 123 + xargs 应判良性');
+		assert.ok(note!.includes('xargs'), note);
+		assert.ok(note!.includes('do not re-run') || note!.includes('not a failure') || note!.includes('NOT a failure'), note);
+	});
+
+	test('★ grep 无匹配 exit 1 判为良性（POSIX 语义）', () => {
+		const note = detectBenignSearchExit('cat a.ts | grep -n "nope"', 1, '');
+		assert.ok(note, 'exit 1 + 末段 grep + 无 stderr 应判良性');
+		assert.ok(note!.includes('no match'), note);
+	});
+
+	test('★ 反例：exit 1 但有 stderr → 不判良性（可能是真错误）', () => {
+		assert.strictEqual(detectBenignSearchExit('grep -n x missing.ts', 1, 'grep: missing.ts: No such file'), undefined);
+	});
+
+	test('★ 反例：exit 1 末段非检索命令 → 不判良性', () => {
+		assert.strictEqual(detectBenignSearchExit('npm run build', 1, ''), undefined);
+		assert.strictEqual(detectBenignSearchExit('grep -n x a.ts | node process.js', 1, ''), undefined,
+			'末段是 node，退出码归 node');
+	});
+
+	test('★ 反例：其它退出码不放行（2/127/255 等真失败）', () => {
+		for (const code of [2, 126, 127, 255, 124]) {
+			assert.strictEqual(detectBenignSearchExit('grep -n x a.ts', code, ''), undefined, `exit ${code} 不应放行`);
+		}
+	});
+
+	test('★ 反例：exit 123 但语句里没有 xargs → 不判良性', () => {
+		assert.strictEqual(detectBenignSearchExit('python3 script.py', 123, ''), undefined);
+	});
+
+	test('★ 取末条语句判定：xargs 在前段、末段是别的命令', () => {
+		// `;` 后另起 python，退出码归 python → 123 不能算 xargs 的良性码
+		assert.strictEqual(detectBenignSearchExit('find . | xargs grep -l x ; python3 t.py', 123, ''), undefined);
+	});
+
+	test('Select-String / rg / findstr 同样适用无匹配语义', () => {
+		assert.ok(detectBenignSearchExit('rg "nope" src', 1, ''));
+		assert.ok(detectBenignSearchExit('findstr /n "nope" a.txt', 1, ''));
+		assert.ok(detectBenignSearchExit('Get-Content a.txt | Select-String "nope"', 1, ''));
+	});
+});
+
+/**
+ * 源码写入护栏 —— 「下划线前缀产物」例外（2026-09-13）。
+ *
+ * 项目约定（`.gitignore:151` 原文注释「underscore-prefixed = throwaway debug scripts」，
+ * 且 `_*.ts`/`_*.js`/`_*.py` 等模式**无前导斜杠 → 任意深度生效**）：路径中**任一段**
+ * 以 `_` 开头即视为产物，脚本可直接写，不再被护栏拦下。
+ *
+ * 起因：模型按项目习惯写 `_render.url.json` / `docs/_draft.md` 每次都被拦，只能改用
+ * `file_write` 逐个创建 —— 生成多个 mockup 时摩擦显著。首版只放行「工作区根」，
+ * 与 `.gitignore` 的任意深度口径自相矛盾，故本次放开。
+ */
+suite('executeCodeGuards — 源码写入护栏：下划线产物例外', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('★ 放行：工作区根的下划线产物（原能力回归）', () => {
+		assert.strictEqual(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('_render.url.json', '{}')"`),
+			undefined, '_render.url.json 应放行');
+		assert.strictEqual(
+			detectScriptSourceWrite(`python3 -c "open('_mockup.html','w').write('x')"`),
+			undefined, '_mockup.html 应放行');
+	});
+
+	test('★ 放行：任意深度的下划线前缀（本次修订的核心）', () => {
+		assert.strictEqual(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('docs/_draft.md','x')"`),
+			undefined, 'docs/_draft.md 应放行（与 .gitignore 同口径）');
+		assert.strictEqual(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('src/_scratch.ts','x')"`),
+			undefined, 'src/_scratch.ts 应放行');
+		assert.strictEqual(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('_kb-mockups/a.html','x')"`),
+			undefined, '目录段带下划线也应放行');
+	});
+
+	test('★ 仍拦：普通源码（例外不得外溢）', () => {
+		const hit = detectScriptSourceWrite(`node -e "require('fs').writeFileSync('src/real.ts','x')"`);
+		assert.ok(hit, 'src/real.ts 仍应被拦');
+		assert.ok(hit.target.includes('src/real.ts'), `target 应指向该文件，实际 ${hit.target}`);
+	});
+
+	test('★ 仍拦：段内（非段首）的下划线不算产物', () => {
+		// `_` 不在段首 → 不属产物约定，不得被例外放行
+		assert.ok(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('src/my_file.ts','x')"`),
+			'src/my_file.ts 的 _ 在段内，仍应被拦');
+		assert.ok(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('my_file.ts','x')"`),
+			'工作区根的 my_file.ts 仍应被拦');
+	});
+
+	test('★ 仍拦：既无下划线前缀段、也不是 mockup 目录', () => {
+		assert.ok(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('docs/research/a.md','x')"`),
+			'docs/research/ 两条例外都不满足，仍应被拦');
+	});
+
+	test('变量绑定形式同样适用（放行与拦截都不漏）', () => {
+		assert.strictEqual(
+			detectScriptSourceWrite('p = "_render.url.json"\nopen(p, "w").write("x")'),
+			undefined, '绑定到产物路径的变量应放行');
+		assert.ok(
+			detectScriptSourceWrite('p = "src/real.ts"\nopen(p, "w").write("x")'),
+			'绑定到源码路径的变量仍应被拦');
+	});
+
+	test('构建产物目录仍放行（回归）', () => {
+		assert.strictEqual(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('out/x.js','x')"`), undefined);
+		assert.strictEqual(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('dist/a.css','x')"`), undefined);
+	});
+
+	test('★ 护栏文案给出新的逃生舱（不再只说「工作区根」）', () => {
+		const hit = detectScriptSourceWrite(`node -e "require('fs').writeFileSync('src/real.ts','x')"`);
+		assert.ok(hit);
+		const msg = scriptSourceWriteGuardMessage(hit, 'execute_code');
+		assert.ok(msg.includes('"_"-prefixed segment'), `应说明「任一下划线前缀段」: ${msg}`);
+		assert.ok(msg.includes('docs/_draft.md'), '应给出源码树内的产物示例');
+	});
+});
+
+/**
+ * 源码写入护栏 —— 「mockup」原型目录例外（2026-09-13）。
+ *
+ * 模型按项目习惯把原型 HTML 写进 `docs/kb-mockups/*.html`，但 `docs/` 不在
+ * `GENERATED_PATH_MARKER` 的目录名单里 → 被拦。仓库实测 4 个 mockup 目录，内容全是
+ * 可弃原型产物（无源码），故把「段名 = `mockup(s)`，或以 `-mockup(s)` 结尾」纳入产物目标。
+ */
+suite('executeCodeGuards — 源码写入护栏：mockup 原型目录例外', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('★ 放行：仓库实测的 4 个 mockup 目录', () => {
+		assert.strictEqual(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('docs/kb-mockups/index.html','x')"`),
+			undefined, 'docs/kb-mockups/（日志原案）');
+		assert.strictEqual(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('docs/design-mockups/planA.html','x')"`),
+			undefined, 'docs/design-mockups/');
+		assert.strictEqual(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('doc/layout-mockup/layout-mockup.html','x')"`),
+			undefined, 'doc/layout-mockup/（单数）');
+		assert.strictEqual(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('mockups/a.html','x')"`),
+			undefined, '裸 mockups/');
+	});
+
+	test('★ 仍拦：mockup 只作定语 / 前缀的目录（例外不得外溢）', () => {
+		assert.ok(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('src/mockupRenderer/a.ts','x')"`),
+			'mockupRenderer/ 是真源码目录（mockup 仅作定语）');
+		assert.ok(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('src/mockup-utils/a.ts','x')"`),
+			'mockup-utils/ 是前缀式命名，不属产物目录');
+	});
+
+	test('★ 仍拦：docs/ 下的普通文档目录（回归）', () => {
+		assert.ok(
+			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('docs/research/a.md','x')"`),
+			'docs/research/ 无 mockup 段，仍拦');
 	});
 });

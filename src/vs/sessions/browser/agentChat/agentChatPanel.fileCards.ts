@@ -662,11 +662,17 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 			const innerBox = append(inner, $('.tool-children-wrapper-inner'));
 			innerBox.classList.add('terminal-body');
 
-			const expanded = this._toolCallExpandState.get(tc.id) ?? false;
-			// 写回记忆表：流式重建/运行结束后续渲染都按此恢复，避免被自动折叠
-			if (tc.id && !this._toolCallExpandState.has(tc.id)) {
-				this._toolCallExpandState.set(tc.id, expanded);
-			}
+			// ★ 2026-09-13（用户需求「terminal 卡片默认展开，执行完毕后自动折叠」）：
+			//   展开态 = **用户显式选择** ?? **按状态的默认值**。
+			//     ① 运行中 → 默认**展开**（终端输出是用户最想实时看到的内容；
+			//        默认折叠会让「运行中·实时输出」完全不可见 —— 用户报「实时数据 UI 不可见」）；
+			//     ② 执行完毕 → 默认**折叠**（结果已在正文，卡片不再长期占屏）。
+			//   ⚠ 此处**不再无条件写回** `_toolCallExpandState`：原实现一进卡片就把当时的
+			//     展开态写进记忆表，导致「用户从未操作过」与「用户选择过」无法区分 ——
+			//     于是「执行完毕自动折叠」永远不生效（记忆表里早有 true）。
+			//     现在只读记忆表，写入仅发生在用户手动 toggle 时（见下方 chevron 点击）。
+			const userChoice = tc.id ? this._toolCallExpandState.get(tc.id) : undefined;
+			const expanded = userChoice ?? (isRunning && !tc.result);
 			if (expanded) {
 				body.classList.add('tool-header-children-expanded');
 				chevron.classList.add('tool-header-chevron-expanded');
@@ -689,17 +695,29 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				const liveOut = getTerminalLiveOutput(tc.id);
 				const livePre = append(innerBox, $('pre.terminal-live-output')) as HTMLPreElement;
 				livePre.textContent = liveOut;
+				// ★ 2026-09-13 修复：loading 行改为**可移除** —— 原实现只在「初始无输出」时
+				//   添加它、且**从不移除** → 有输出后 spinner 仍留在输出区下方，用户看到
+				//   「只有一个转圈、没有数据」而误判「实时输出不可见」（截图实证）。
+				const explainRow = !liveOut
+					? append(innerBox, $('.terminal-explain-row.running'))
+					: null;
+				if (explainRow) {
+					append(explainRow, $('span.codicon.codicon-loading', { style: 'animation:spin 1s linear infinite' }));
+				}
 				const sub = onTerminalLiveOutput((e) => {
 					if (e.toolCallId !== tc.id) { return; }
 					livePre.textContent = (livePre.textContent ?? '') + e.chunk;
 					livePre.scrollTop = livePre.scrollHeight;
+					explainRow?.remove();	// 首个 chunk 到达即撤掉 loading
 				});
 				_liveTerminalSubs.set(tc.id, sub);
-				// 尚无任何输出时仅保留加载动画（不显示占位文本，避免误导）
-				if (!liveOut) {
-					const explain = append(innerBox, $('.terminal-explain-row.running'));
-					append(explain, $('span.codicon.codicon-loading', { style: 'animation:spin 1s linear infinite' }));
-				}
+				// ★ 诊断（2026-09-13）：实时输出链路的关键 id 与初始缓存长度。
+				//   `tc.id` 为空是「直播通道完全空转」的典型原因（appendTerminalLiveOutput
+				//   要求非空 id），此前无任何打点，排查只能靠猜。
+				this._logService.trace(
+					`[TerminalCard] live-output wiring: toolCallId=${tc.id ?? '(EMPTY)'} ` +
+					`cachedLen=${liveOut.length} isRunning=${isRunning}`,
+				);
 			} else if (tc.result) {
 				// 运行结束：清理直播订阅与缓存
 				_disposeLiveTerminalSub(tc.id);

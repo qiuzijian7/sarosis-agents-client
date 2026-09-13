@@ -142,7 +142,10 @@ suite('CORE_TOOLS whitelist', () => {
 		assert.strictEqual(isCoreTool('file_write'), true);
 		assert.strictEqual(isCoreTool('terminal'), true);
 		assert.strictEqual(isCoreTool('memory_list'), true);
-		assert.strictEqual(isCoreTool('todo'), true);
+		// `todo` 工具已于 2026-07-04 被 `update_plan` 替代（见 compatibilityTools.ts
+		// 的「替代旧的 todo 工具」注释），CORE_TOOLS 里对应项也已换成 `update_plan`。
+		// 原断言引用的是**已删除的工具** —— 属过时断言（长期红，2026-09-11 修正）。
+		assert.strictEqual(isCoreTool('update_plan'), true);
 		assert.strictEqual(isCoreTool('web_search'), true);
 	});
 
@@ -154,8 +157,9 @@ suite('CORE_TOOLS whitelist', () => {
 
 	test('isCoreToolset returns true for protected toolsets', () => {
 		assert.strictEqual(isCoreToolset('core'), true);
-		assert.strictEqual(isCoreToolset('mcp-bridge'), true);
 		assert.strictEqual(isCoreToolset('tool-search'), true);
+		// `mcp-bridge` 已于 2026-09-11 删除（靠 `mcp_tool_` 前缀匹配、而该前缀的工具
+		// 早已不存在 → 永不匹配的死配置），对应断言同步移除。
 	});
 
 	test('isCoreToolset returns false for non-protected toolsets', () => {
@@ -170,8 +174,13 @@ suite('CORE_TOOLS whitelist', () => {
 		assert.ok(CORE_TOOLS.has('tool_call'), 'tool_call is whitelisted');
 	});
 
-	test('CORE_TOOLSET_IDS contains the 3 protected toolsets', () => {
-		assert.strictEqual(CORE_TOOLSET_IDS.size, 3);
+	test('CORE_TOOLSET_IDS contains the protected toolsets', () => {
+		// 2026-09-11：`mcp-bridge` 已删除（靠 `mcp_tool_` 前缀匹配、而该前缀的工具
+		// 早已不存在 → 永不匹配的死配置）→ 集合由 3 项变 **2 项**。
+		assert.strictEqual(CORE_TOOLSET_IDS.size, 2);
+		assert.ok(CORE_TOOLSET_IDS.has('core'));
+		assert.ok(CORE_TOOLSET_IDS.has('tool-search'));
+		assert.ok(!CORE_TOOLSET_IDS.has('mcp-bridge'), 'mcp-bridge 不应再出现在核心 toolset 集合中');
 	});
 });
 

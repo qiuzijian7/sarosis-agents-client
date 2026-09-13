@@ -27,8 +27,12 @@ import {
 	rembgRemoveDataUrl,
 	MARK_COLOR,
 } from './miniEditorAi.js';
+// ★ 裁剪框拖拽纯数学（2026-09-11 抽出）：方向/边界语义抽成可单测的纯函数，
+//   组件只负责「读指针归一化坐标 → 调这里 → setCrop」。见 miniImageCropDrag.ts 头注释。
+import { moveCropBy, resizeCropByCorner, resizeCropKeepTopLeft, type CellCropRect } from './miniImageCropDrag.js';
 
-export interface CellCropRect { x: number; y: number; w: number; h: number; }
+/** 归一化裁剪框（0..1，相对整图）——定义在 miniImageCropDrag（纯模块），此处 re-export 保持既有导入路径。 */
+export type { CellCropRect } from './miniImageCropDrag.js';
 
 /** 画布视图：'sheet' = 整张原图（自定义裁剪取景）；'cell' = 裁剪框内容放大（细节编辑）。 */
 type ViewMode = 'sheet' | 'cell';
@@ -1010,25 +1014,19 @@ export function MiniImageEditor(p: Props): React.ReactElement {
     const n = pointerToSheetNorm(e);
     if (!n) return;
     if (d.mode === 'handle') {
-      // ★ 四角手柄缩放：**对角固定**，被拖角跟随光标（min 2% 防翻转）
-      const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-      const o = d.orig;
-      let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
-      if (d.corner === 'nw' || d.corner === 'sw') { x0 = clamp(n.x, 0, x1 - 0.02); } else { x1 = clamp(n.x, x0 + 0.02, 1); }
-      if (d.corner === 'nw' || d.corner === 'ne') { y0 = clamp(n.y, 0, y1 - 0.02); } else { y1 = clamp(n.y, y0 + 0.02, 1); }
-      setCrop({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+      // ★ 四角手柄缩放：**对角固定**，被拖角跟随光标（min 2% 防翻转）——纯函数见 miniImageCropDrag。
+      setCrop(resizeCropByCorner(d.corner, d.orig, n));
       return;
     }
     // 位移按**整图归一化**（与视图无关，两种视图下手感一致）
     const dx = n.x - d.startNx, dy = n.y - d.startNy;
-    const o = d.orig;
     if (d.mode === 'pan') {
-      // ★ 裁剪框整体拖动 = **跟随鼠标**（o.x + dx / o.y + dy）。此前写成减号
-      //   （o.x - dx）→ 拖拽方向完全反向（向上拖方块向下跑）。减号是「视图
-      //   平移」（grab 滚动条反向）的语义，框移动不该用它。
-      setCrop({ x: Math.max(0, Math.min(1 - o.w, o.x + dx)), y: Math.max(0, Math.min(1 - o.h, o.y + dy)), w: o.w, h: o.h });
+      // ★ 裁剪框整体拖动 = **跟随鼠标**（+dx/+dy）。减号是「视图平移（grab 滚动条
+      //   反向）」的语义，框移动用它会导致「向上拖方块向下跑」。
+      setCrop(moveCropBy(d.orig, dx, dy));
     } else {
-      setCrop({ x: Math.max(0, Math.min(0.98, o.x)), y: Math.max(0, Math.min(0.98, o.y)), w: Math.max(0.05, Math.min(1 - o.x, o.w + dx)), h: Math.max(0.05, Math.min(1 - o.y, o.h + dy)) });
+      // Shift：左上角固定，宽高随位移（clamp 到图界）
+      setCrop(resizeCropKeepTopLeft(d.orig, dx, dy));
     }
   };
 
@@ -1299,11 +1297,7 @@ export function MiniImageEditor(p: Props): React.ReactElement {
               const dx = (e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0) / img.naturalWidth;
               const dy = (e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0) / img.naturalHeight;
               const c = cropRef.current;
-              setCrop({
-                x: Math.max(0, Math.min(1 - c.w, c.x + dx)),
-                y: Math.max(0, Math.min(1 - c.h, c.y + dy)),
-                w: c.w, h: c.h,
-              });
+              setCrop(moveCropBy(c, dx, dy));
             }
           }}
           tabIndex={0}

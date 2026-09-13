@@ -7,7 +7,7 @@ import {
 	guiToApi,
 	apiToGui,
 	resolveApiReferences,
-	stripSarosisNodesForExport,
+	stripSarosNodesForExport,
 	type ComfyGuiWorkflow,
 } from '../../webview/src/features/workflowEditor/comfyHost/comfyApiAdapter.js';
 
@@ -149,7 +149,7 @@ suite('comfyApiAdapter', () => {
 		});
 	});
 
-	suite('stripSarosisNodesForExport', () => {
+	suite('stripSarosNodesForExport', () => {
 
 		const isNonComfy = (t: string) => t === 'Saros.ModelImageGen' || t === 'Saros.Prompt';
 
@@ -167,7 +167,7 @@ suite('comfyApiAdapter', () => {
 		};
 
 		test('removes Saros nodes and dangling links, keeps Comfy nodes', () => {
-			const { workflow, skipped } = stripSarosisNodesForExport(MIXED, isNonComfy);
+			const { workflow, skipped } = stripSarosNodesForExport(MIXED, isNonComfy);
 			assert.deepStrictEqual(skipped, ['Saros.Prompt', 'Saros.ModelImageGen']);
 			assert.deepStrictEqual(workflow.nodes.map(n => n.type), ['CheckpointLoaderSimple', 'KSampler']);
 			assert.strictEqual(workflow.links!.length, 1);
@@ -175,7 +175,7 @@ suite('comfyApiAdapter', () => {
 		});
 
 		test('all-Saros workflow → empty nodes, no links', () => {
-			const { workflow, skipped } = stripSarosisNodesForExport(
+			const { workflow, skipped } = stripSarosNodesForExport(
 				{ nodes: [{ id: 9, type: 'Saros.Prompt', inputs: [], outputs: [] }], links: [] },
 				isNonComfy,
 			);
@@ -184,7 +184,7 @@ suite('comfyApiAdapter', () => {
 		});
 
 		test('no non-Comfy nodes → unchanged workflow', () => {
-			const { workflow, skipped } = stripSarosisNodesForExport(GUI_WF, isNonComfy);
+			const { workflow, skipped } = stripSarosNodesForExport(GUI_WF, isNonComfy);
 			assert.strictEqual(workflow.nodes.length, GUI_WF.nodes.length);
 			assert.strictEqual(skipped.length, 0);
 		});

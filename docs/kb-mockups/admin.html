@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>权限与用户管理 — vssaros KB Mockup</title>
+<link rel="stylesheet" href="kb-mockup.css">
+<!--
+  页面说明（对应交付要求 4）：
+  · 功能模块：Tab 导航（成员 / 角色 / Vault 共享 / 审计日志）/ 成员表格（10 条）/ 角色权限矩阵 /
+              邀请成员 / 权限开关
+  · 对应框架组件：
+      - 成员表          → 服务层权限校验（KnowledgeBaseService 的 ACL 数据源）
+      - 角色矩阵        → 对应枚举角色：管理员 / 编辑者 / 审核者 / 只读 / 访客
+      - 邀请流程        → 邮件邀请 + 待接受状态（异步，见注释）
+      - 审计日志        → 敏感操作（删除、权限变更、导出）留痕
+  · 无法静态呈现的交互均以 [交互注释] 标注（见源码中 [交互注释] 行）。
+-->
+<style>
+	/* Tabs */
+	.kb-tabs { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--kb-border); margin-bottom: 16px; }
+	.kb-tab { padding: 9px 14px; font-size: var(--kb-fs-md); color: var(--kb-fg-muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+	.kb-tab:hover { color: var(--kb-fg); }
+	.kb-tab.is-active { color: var(--kb-accent-fg); border-bottom-color: var(--kb-accent-border); font-weight: 600; }
+	.kb-tab .kb-badge { margin-left: 6px; }
+
+	/* 页面头 */
+	.kb-head-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+	.kb-head-row h1 { margin: 0; font-size: var(--kb-fs-h1); font-weight: 600; color: var(--kb-fg-strong); }
+
+	/* 工具条 */
+	.kb-toolbar2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; }
+
+	/* 用户单元格 */
+	.kb-user { display: flex; align-items: center; gap: 9px; min-width: 0; }
+	.kb-avatar {
+		width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+		display: flex; align-items: center; justify-content: center;
+		font-size: 11px; font-weight: 600; color: #fff;
+		background: linear-gradient(135deg, #3a5a7a, #26496a);
+	}
+	.kb-avatar.a2 { background: linear-gradient(135deg, #6b4a7a, #4a2f5a); }
+	.kb-avatar.a3 { background: linear-gradient(135deg, #4a7a5a, #2f5a3a); }
+	.kb-avatar.a4 { background: linear-gradient(135deg, #7a6a4a, #5a4a2f); }
+	.kb-avatar.a5 { background: linear-gradient(135deg, #7a4a4a, #5a2f2f); }
+	.kb-user-name { display: flex; flex-direction: column; min-width: 0; }
+	.kb-user-name b { color: var(--kb-fg-strong); font-weight: 500; font-size: var(--kb-fs-md); }
+	.kb-user-name span { font-size: var(--kb-fs-xs); color: var(--kb-fg-dim); }
+
+	/* 角色徽章着色 */
+	.kb-role-admin { color: #d2a8ff; border-color: #4a2f6b; background: #221430; }
+	.kb-role-editor { color: #79b8ff; border-color: #2b4a6b; background: #14212f; }
+	.kb-role-reviewer { color: #e3b341; border-color: #5a4a22; background: #2d2410; }
+	.kb-role-viewer { color: var(--kb-fg-muted); }
+
+	/* 权限开关 */
+	.kb-switch { position: relative; display: inline-block; width: 32px; height: 18px; cursor: pointer; }
+	.kb-switch input { opacity: 0; width: 0; height: 0; }
+	.kb-switch .kb-slider { position: absolute; inset: 0; background: #3a3a3a; border: 1px solid var(--kb-border); border-radius: 9px; transition: .15s; }
+	.kb-switch .kb-slider::before { content: ""; position: absolute; width: 12px; height: 12px; left: 2px; top: 2px; background: #ccc; border-radius: 50%; transition: .15s; }
+	.kb-switch input:checked + .kb-slider { background: var(--kb-accent-bg); border-color: var(--kb-accent-border); }
+	.kb-switch input:checked + .kb-slider::before { transform: translateX(14px); background: var(--kb-accent-fg); }
+	.kb-switch input:disabled + .kb-slider { opacity: .4; cursor: not-allowed; }
+
+	/* 权限矩阵 */
+	.kb-matrix { width: 100%; border-collapse: collapse; font-size: var(--kb-fs-sm); }
+	.kb-matrix th, .kb-matrix td { padding: 7px 10px; border-bottom: 1px solid var(--kb-border-soft); text-align: center; }
+	.kb-matrix th:first-child, .kb-matrix td:first-child { text-align: left; color: var(--kb-fg); width: 40%; }
+	.kb-matrix thead th { font-size: var(--kb-fs-xs); color: var(--kb-fg-muted); background: var(--kb-panel-2); border-bottom: 1px solid var(--kb-border); font-weight: 600; }
+	.kb-matrix tbody tr:hover { background: var(--kb-hover); }
+	.kb-matrix .kb-grp { background: var(--kb-bg); color: var(--kb-fg-dim); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; font-weight: 600; text-align: left !important; padding: 5px 10px; }
+	.kb-yn { font-weight: 700; }
+	.kb-yn.yes { color: var(--kb-success-fg); }
+	.kb-yn.no { color: var(--kb-fg-dim); }
+	.kb-yn.partial { color: var(--kb-warning-fg); }
+
+	/* 邀请表单卡 */
+	.kb-invite { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+	.kb-invite .kb-field { margin-bottom: 0; }
+
+	@media (max-width: 1366px) {
+		.kb-matrix .kb-col-opt { display: none; }
+	}
+</style>
+</head>
+<body>
+<div class="kb-app">
+
+	<header class="kb-topbar">
+		<span class="kb-title">
+			<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8 1a3.5 3.5 0 0 0-3.5 3.5V5H4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-.5V4.5A3.5 3.5 0 0 0 8 1Zm2.5 4h-5V4.5a2.5 2.5 0 0 1 5 0V5Z"/></svg>
+			Saros Agent Studio · 知识库
+		</span>
+		<span class="kb-spacer"></span>
+		<label class="kb-searchbox">
+			<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+			<input type="text" placeholder="检索知识库…">
+			<kbd>Ctrl K</kbd>
+		</label>
+		<span class="kb-badge kb-badge-blue">张工 · 管理员</span>
+	</header>
+
+	<aside class="kb-sidebar">
+		<div class="kb-section">工作区 <span class="kb-count">个人 Vault</span></div>
+		<a class="kb-nav" href="index.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5 1.5 4.6V8c0 3.4 2.8 5.9 6.5 6.5 3.7-.6 6.5-3.1 6.5-6.5V4.6L8 1.5Z"/></svg></span>
+			<span class="kb-nav-label">知识库首页</span>
+		</a>
+		<a class="kb-nav" href="documents.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Zm5.5 1.7 2.8 2.8H9.5V3.2Z"/></svg></span>
+			<span class="kb-nav-label">文档列表</span>
+			<span class="kb-badge">128</span>
+		</a>
+		<a class="kb-nav" href="search.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg></span>
+			<span class="kb-nav-label">搜索</span>
+		</a>
+		<a class="kb-nav" href="categories.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.5A1.5 1.5 0 0 1 3 2h3.2l1.4 1.5H13A1.5 1.5 0 0 1 14.5 5v7A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V3.5Z"/></svg></span>
+			<span class="kb-nav-label">分类 / 标签</span>
+		</a>
+		<a class="kb-nav" href="entry-edit.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></span>
+			<span class="kb-nav-label">条目编辑器</span>
+		</a>
+		<div class="kb-nav-group">管理</div>
+		<a class="kb-nav is-active" href="admin.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a2.6 2.6 0 0 1 1.3 4.9l.8 4.6a1 1 0 0 1-.3.9l-1.5 1.4a.4.4 0 0 1-.6 0L6.2 11.4a1 1 0 0 1-.3-.9l.8-4.6A2.6 2.6 0 0 1 8 1Z"/></svg></span>
+			<span class="kb-nav-label">权限与用户</span>
+		</a>
+		<a class="kb-nav" href="document-detail.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 3A1.5 1.5 0 0 1 4 1.5h8A1.5 1.5 0 0 1 13.5 3v10A1.5 1.5 0 0 1 12 14.5H4A1.5 1.5 0 0 1 2.5 13V3Z"/></svg></span>
+			<span class="kb-nav-label">文档详情示例</span>
+		</a>
+	</aside>
+
+	<main class="kb-main">
+		<nav class="kb-crumb" style="margin-bottom:12px">
+			<span>工作区</span><span class="kb-crumb-sep">›</span>
+			<a href="index.html">知识库</a><span class="kb-crumb-sep">›</span>
+			<span class="kb-crumb-here">权限与用户管理</span>
+		</nav>
+
+		<div class="kb-head-row">
+			<h1>权限与用户管理</h1>
+			<span style="flex:1"></span>
+			<button class="kb-btn kb-btn-primary">
+				<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 2a4 4 0 0 1 4 4c0 .7-.2 1.3-.5 1.8l3.2 3.2-1.3 1.5L10 9.3A4 4 0 1 1 8 2Zm0 2.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>
+				邀请成员
+			</button>
+		</div>
+
+		<!-- Tabs -->
+		<div class="kb-tabs">
+			<div class="kb-tab is-active">成员 <span class="kb-badge">12</span></div>
+			<div class="kb-tab">角色与权限</div>
+			<div class="kb-tab">Vault 共享</div>
+			<div class="kb-tab">审计日志</div>
+		</div>
+		<!-- [交互注释] Tab 切换为客户端路由（不重载页面），各面板数据独立懒加载；权限不足的 Tab 对非管理员隐藏 -->
+
+		<!-- ── 成员面板（当前选中）── -->
+		<div style="display:grid;grid-template-columns:1fr;gap:16px">
+
+			<!-- 邀请卡 -->
+			<div class="kb-card">
+				<div class="kb-card-title" style="margin-bottom:10px">邀请新成员</div>
+				<div class="kb-invite">
+					<div class="kb-field" style="flex:1;min-width:220px">
+						<label>邮箱地址 <span class="kb-field-req">*</span></label>
+						<input class="kb-input" type="email" placeholder="name@company.com" style="width:100%">
+					</div>
+					<div class="kb-field" style="min-width:150px">
+						<label>角色</label>
+						<select class="kb-select"><option>编辑者</option><option>审核者</option><option>只读</option></select>
+					</div>
+					<div class="kb-field" style="min-width:180px">
+						<label>作用范围</label>
+						<select class="kb-select"><option>仅指定笔记本</option><option>整个 Vault</option></select>
+					</div>
+					<button class="kb-btn kb-btn-primary" style="height:26px">
+						<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M1.5 3.5 8 8l6.5-4.5M2 3h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+						发送邀请
+					</button>
+				</div>
+				<!-- [交互注释] 邮箱格式非法时输入框转 is-invalid + 下方显示 kb-field-error；发送后按钮进入 is-busy，
+				                   成功后生成「待接受」成员并 toast 提示；重复邀请已存在成员会提示合并 -->
+				<div class="kb-field-error is-error" style="margin-top:8px">
+					<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M8 1.5 15 14H1L8 1.5Zm0 4a.8.8 0 0 0-.8.8v2.9a.8.8 0 0 0 1.6 0V6.3A.8.8 0 0 0 8 5.5Zm0 5.9a.9.9 0 1 0 0 1.8.9.9 0 0 0 0-1.8Z"/></svg>
+					校验示例：邮箱「zhang@" 格式不正确
+				</div>
+			</div>
+
+			<!-- 成员表 -->
+			<div class="kb-card" style="padding:0">
+				<div class="kb-toolbar2" style="border-bottom:1px solid var(--kb-border)">
+					<label class="kb-searchbox" style="width:200px">
+						<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+						<input type="text" placeholder="搜索成员…">
+					</label>
+					<select class="kb-select"><option>角色：全部</option><option>管理员</option><option>编辑者</option><option>审核者</option><option>只读</option></select>
+					<select class="kb-select"><option>状态：全部</option><option>已激活</option><option>待接受</option><option>已停用</option></select>
+					<span style="flex:1"></span>
+					<button class="kb-btn kb-btn-sm">导出成员列表</button>
+				</div>
+
+				<div class="kb-table-wrap" style="border:none;border-radius:0">
+					<table class="kb-table">
+						<thead>
+							<tr>
+								<th style="width:34px"><input type="checkbox" class="kb-checkbox"></th>
+								<th>成员</th>
+								<th>角色</th>
+								<th class="kb-col-opt">作用范围</th>
+								<th>状态</th>
+								<th class="kb-col-opt kb-num">贡献条目</th>
+								<th class="kb-col-opt">最近活跃</th>
+								<th style="width:90px">操作</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox" disabled></td>
+								<td><div class="kb-user"><span class="kb-avatar">张工</span><span class="kb-user-name"><b>张工（你）</b><span>zhang.gong@company.com</span></span></div></td>
+								<td><span class="kb-badge kb-role-admin">管理员</span></td>
+								<td class="kb-col-opt">整个 Vault</td>
+								<td><span class="kb-badge kb-badge-green">已激活</span></td>
+								<td class="kb-col-opt kb-num">63</td>
+								<td class="kb-col-opt">现在</td>
+								<td><span class="kb-btn kb-btn-sm kb-btn-ghost" style="opacity:.4">—</span></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><div class="kb-user"><span class="kb-avatar a2">李薇</span><span class="kb-user-name"><b>李薇</b><span>li.wei@company.com</span></span></div></td>
+								<td><span class="kb-badge kb-role-editor">编辑者</span></td>
+								<td class="kb-col-opt">Agent Studio 架构设计</td>
+								<td><span class="kb-badge kb-badge-green">已激活</span></td>
+								<td class="kb-col-opt kb-num">34</td>
+								<td class="kb-col-opt">2 小时前</td>
+								<td><span class="kb-cell-actions" style="display:inline-flex"><button class="kb-iconbtn kb-tip" data-tip="编辑权限"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></span></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><div class="kb-user"><span class="kb-avatar a3">王泽</span><span class="kb-user-name"><b>王泽</b><span>wang.ze@company.com</span></span></div></td>
+								<td><span class="kb-badge kb-role-reviewer">审核者</span></td>
+								<td class="kb-col-opt">整个 Vault</td>
+								<td><span class="kb-badge kb-badge-green">已激活</span></td>
+								<td class="kb-col-opt kb-num">28</td>
+								<td class="kb-col-opt">昨天</td>
+								<td><span class="kb-cell-actions" style="display:inline-flex"><button class="kb-iconbtn kb-tip" data-tip="编辑权限"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></span></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><div class="kb-user"><span class="kb-avatar a4">陈默</span><span class="kb-user-name"><b>陈默</b><span>chen.mo@company.com</span></span></div></td>
+								<td><span class="kb-badge kb-role-editor">编辑者</span></td>
+								<td class="kb-col-opt">竞品调研 · NotebookLM</td>
+								<td><span class="kb-badge kb-badge-green">已激活</span></td>
+								<td class="kb-col-opt kb-num">22</td>
+								<td class="kb-col-opt">3 天前</td>
+								<td><span class="kb-cell-actions" style="display:inline-flex"><button class="kb-iconbtn kb-tip" data-tip="编辑权限"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></span></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><div class="kb-user"><span class="kb-avatar a5">刘芳</span><span class="kb-user-name"><b>刘芳</b><span>liu.fang@company.com</span></span></div></td>
+								<td><span class="kb-badge kb-role-viewer">只读</span></td>
+								<td class="kb-col-opt">会议纪要 · 2026 Q3</td>
+								<td><span class="kb-badge kb-badge-green">已激活</span></td>
+								<td class="kb-col-opt kb-num">0</td>
+								<td class="kb-col-opt">5 天前</td>
+								<td><span class="kb-cell-actions" style="display:inline-flex"><button class="kb-iconbtn kb-tip" data-tip="编辑权限"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></span></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><div class="kb-user"><span class="kb-avatar a2">赵敏</span><span class="kb-user-name"><b>赵敏</b><span>zhao.min@company.com</span></span></div></td>
+								<td><span class="kb-badge kb-role-editor">编辑者</span></td>
+								<td class="kb-col-opt">故障复盘库</td>
+								<td><span class="kb-badge kb-badge-green">已激活</span></td>
+								<td class="kb-col-opt kb-num">15</td>
+								<td class="kb-col-opt">上周</td>
+								<td><span class="kb-cell-actions" style="display:inline-flex"><button class="kb-iconbtn kb-tip" data-tip="编辑权限"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></span></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><div class="kb-user"><span class="kb-avatar a3">孙涛</span><span class="kb-user-name"><b>孙涛</b><span>sun.tao@company.com</span></span></div></td>
+								<td><span class="kb-badge kb-role-viewer">只读</span></td>
+								<td class="kb-col-opt">整个 Vault</td>
+								<td><span class="kb-badge kb-badge-amber">待接受</span></td>
+								<td class="kb-col-opt kb-num">0</td>
+								<td class="kb-col-opt">—</td>
+								<td><span class="kb-cell-actions" style="display:inline-flex"><button class="kb-btn kb-btn-sm kb-btn-ghost">重发邀请</button></span></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><div class="kb-user"><span class="kb-avatar a4">周舟</span><span class="kb-user-name"><b>周舟</b><span>zhou.zhou@company.com</span></span></div></td>
+								<td><span class="kb-badge kb-role-reviewer">审核者</span></td>
+								<td class="kb-col-opt">前端规范手册</td>
+								<td><span class="kb-badge kb-badge-green">已激活</span></td>
+								<td class="kb-col-opt kb-num">19</td>
+								<td class="kb-col-opt">上周</td>
+								<td><span class="kb-cell-actions" style="display:inline-flex"><button class="kb-iconbtn kb-tip" data-tip="编辑权限"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></button></span></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><div class="kb-user"><span class="kb-avatar a5">吴磊</span><span class="kb-user-name"><b>吴磊</b><span>wu.lei@company.com</span></span></div></td>
+								<td><span class="kb-badge kb-role-viewer">只读</span></td>
+								<td class="kb-col-opt">剪藏 · 技术文章</td>
+								<td><span class="kb-badge" style="color:var(--kb-fg-dim)">已停用</span></td>
+								<td class="kb-col-opt kb-num">6</td>
+								<td class="kb-col-opt">08-15</td>
+								<td><span class="kb-cell-actions" style="display:inline-flex"><button class="kb-iconbtn kb-tip" data-tip="重新启用"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M8 2.5a5.5 5.5 0 1 1-5.4 6.5h1.6A4 4 0 1 0 8 4V1L4.5 4.5 8 8V4.2Z"/></svg></button></span></td>
+							</tr>
+							<tr>
+								<td><input type="checkbox" class="kb-checkbox"></td>
+								<td><div class="kb-user"><span class="kb-avatar a2">郑楠</span><span class="kb-user-name"><b>郑楠</b><span>zheng.nan@company.com</span></span></div></td>
+								<td><span class="kb-badge kb-role-editor">编辑者</span></td>
+								<td class="kb-col-opt">Agent Studio 架构设计</td>
+								<td><span class="kb-badge kb-badge-amber">待接受</span></td>
+								<td class="kb-col-opt kb-num">0</td>
+								<td class="kb-col-opt">—</td>
+								<td><span class="kb-cell-actions" style="display:inline-flex"><button class="kb-btn kb-btn-sm kb-btn-ghost">重发邀请</button></span></td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				<div class="kb-pager" style="padding:10px 14px">
+					<span class="kb-page-info">共 12 位成员 · 2 位待接受</span>
+					<button class="kb-page" disabled>‹</button>
+					<button class="kb-page is-current">1</button>
+					<button class="kb-page">2</button>
+					<button class="kb-page">›</button>
+				</div>
+			</div>
+
+			<!-- ── 角色权限矩阵（预览，真实为 Tab 2 内容）── -->
+			<div class="kb-card" style="padding:0">
+				<div class="kb-panel-head">
+					<h3>角色权限矩阵</h3>
+					<span style="flex:1"></span>
+					<span class="kb-badge">只读预览</span>
+					<button class="kb-btn kb-btn-sm kb-btn-ghost">保存修改</button>
+				</div>
+				<div style="padding:0 0 8px">
+					<table class="kb-matrix">
+						<thead>
+							<tr>
+								<th>能力 / 权限</th>
+								<th>管理员</th>
+								<th>编辑者</th>
+								<th>审核者</th>
+								<th>只读</th>
+								<th class="kb-col-opt">访客</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr><td class="kb-grp" colspan="6">内容</td></tr>
+							<tr><td>查看知识库内容</td><td class="kb-yn yes">✓</td><td class="kb-yn yes">✓</td><td class="kb-yn yes">✓</td><td class="kb-yn yes">✓</td><td class="kb-yn yes kb-col-opt">✓</td></tr>
+							<tr><td>创建 / 编辑条目</td><td class="kb-yn yes">✓</td><td class="kb-yn yes">✓</td><td class="kb-yn no">—</td><td class="kb-yn no">—</td><td class="kb-yn no kb-col-opt">—</td></tr>
+							<tr><td>删除条目</td><td class="kb-yn yes">✓</td><td class="kb-yn partial">部分</td><td class="kb-yn no">—</td><td class="kb-yn no">—</td><td class="kb-yn no kb-col-opt">—</td></tr>
+							<tr><td>审核待发布条目</td><td class="kb-yn yes">✓</td><td class="kb-yn no">—</td><td class="kb-yn yes">✓</td><td class="kb-yn no">—</td><td class="kb-yn no kb-col-opt">—</td></tr>
+							<tr><td class="kb-grp" colspan="6">导入 / 导出</td></tr>
+							<tr><td>导入资料（文件 / URL / Obsidian）</td><td class="kb-yn yes">✓</td><td class="kb-yn yes">✓</td><td class="kb-yn no">—</td><td class="kb-yn no">—</td><td class="kb-yn no kb-col-opt">—</td></tr>
+							<tr><td>导出知识库</td><td class="kb-yn yes">✓</td><td class="kb-yn partial">部分</td><td class="kb-yn yes">✓</td><td class="kb-yn no">—</td><td class="kb-yn no kb-col-opt">—</td></tr>
+							<tr><td class="kb-grp" colspan="6">管理</td></tr>
+							<tr><td>管理标签 / 分类</td><td class="kb-yn yes">✓</td><td class="kb-yn yes">✓</td><td class="kb-yn no">—</td><td class="kb-yn no">—</td><td class="kb-yn no kb-col-opt">—</td></tr>
+							<tr><td>重建索引</td><td class="kb-yn yes">✓</td><td class="kb-yn no">—</td><td class="kb-yn no">—</td><td class="kb-yn no">—</td><td class="kb-yn no kb-col-opt">—</td></tr>
+							<tr><td>管理成员与角色</td><td class="kb-yn yes">✓</td><td class="kb-yn no">—</td><td class="kb-yn no">—</td><td class="kb-yn no">—</td><td class="kb-yn no kb-col-opt">—</td></tr>
+							<tr><td>查看审计日志</td><td class="kb-yn yes">✓</td><td class="kb-yn no">—</td><td class="kb-yn yes">✓</td><td class="kb-yn no">—</td><td class="kb-yn no kb-col-opt">—</td></tr>
+						</tbody>
+					</table>
+				</div>
+				<!-- [交互注释] 矩阵单元格点击可切换 ✓/—（编辑态）；「保存修改」触达服务层 ACL 更新，
+				                   变更立即对所有在线成员生效（推送通知），历史记录写入审计日志 -->
+			</div>
+
+			<!-- ── Vault 共享设置 ── -->
+			<div class="kb-card" style="padding:0">
+				<div class="kb-panel-head"><h3>Vault 共享设置</h3></div>
+				<div style="padding:4px 0">
+					<div style="display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--kb-border-soft)">
+						<div style="flex:1">
+							<div class="kb-card-title" style="font-size:var(--kb-fs-md)">允许通过链接共享笔记本</div>
+							<div class="kb-card-sub">开启后，成员可生成带有效期的只读分享链接</div>
+						</div>
+						<label class="kb-switch"><input type="checkbox" checked><span class="kb-slider"></span></label>
+					</div>
+					<div style="display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--kb-border-soft)">
+						<div style="flex:1">
+							<div class="kb-card-title" style="font-size:var(--kb-fs-md)">允许访客访问（无需登录）</div>
+							<div class="kb-card-sub">关闭时所有访问均需登录与权限校验</div>
+						</div>
+						<label class="kb-switch"><input type="checkbox"><span class="kb-slider"></span></label>
+					</div>
+					<div style="display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--kb-border-soft)">
+						<div style="flex:1">
+							<div class="kb-card-title" style="font-size:var(--kb-fs-md)">新成员默认角色为「审核者」</div>
+							<div class="kb-card-sub">开启后邀请时默认选中审核者，可逐条覆盖</div>
+						</div>
+						<label class="kb-switch"><input type="checkbox"><span class="kb-slider"></span></label>
+					</div>
+					<div style="display:flex;align-items:center;gap:12px;padding:11px 16px">
+						<div style="flex:1">
+							<div class="kb-card-title" style="font-size:var(--kb-fs-md)">强制双人审核（高风险操作）</div>
+							<div class="kb-card-sub" style="color:var(--kb-warning-fg)">只有管理员可修改；当前组织策略锁定，无法关闭</div>
+						</div>
+						<label class="kb-switch"><input type="checkbox" checked disabled><span class="kb-slider"></span></label>
+					</div>
+				</div>
+			</div>
+		</div>
+	</main>
+</div>
+</body>
+</html>

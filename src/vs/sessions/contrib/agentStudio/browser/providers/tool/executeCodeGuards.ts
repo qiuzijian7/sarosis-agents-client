@@ -29,12 +29,35 @@ import type { ShellDialect } from './shellPlatformPrompt.js';
 // 内存，会话重启即清零——足够覆盖单次任务周期），patch 失败时查表给**针对该
 // 文件的精确反馈**（从没读过 / 上次读取失败 / 上次读取已 N 秒前）。
 
-interface IFileReadState { ok: boolean; at: number; note?: string; stale?: boolean }
+interface IFileReadState {
+	ok: boolean;
+	at: number;
+	note?: string;
+	/** @deprecated 2026-09-12 起不再由 patch 设置（见 markFileModified）。保留字段仅为兼容既有调用方与测试。 */
+	stale?: boolean;
+	/**
+	 * 本会话 patch 过该文件、且此后未再 file_read。
+	 * 不阻止下一次 patch（P1，2026-09-12），仅用于失败时给出精准纠偏。
+	 */
+	patchedSinceRead?: boolean;
+	/**
+	 * 最近一次成功 file_read 时文件的 mtime（ms）—— P3（2026-09-12）外部修改检测的基线。
+	 * 拿不到（fileService 未返回）时缺省，此时检测退化为「不判定」。
+	 */
+	mtime?: number;
+}
 const _fileReadState = new Map<string, IFileReadState>();
 const _normFilePath = (p: string): string => p.replace(/\//g, '\\').trim().toLowerCase();
 
-export function recordFileReadSuccess(path: string): void {
-	if (path) { _fileReadState.set(_normFilePath(path), { ok: true, at: Date.now() }); }
+export function recordFileReadSuccess(path: string, mtime?: number): void {
+	if (path) {
+		_fileReadState.set(_normFilePath(path), {
+			ok: true,
+			at: Date.now(),
+			// mtime 缺失（fileService 未返回 / 为 0）时不写该字段 → 检测退化为「不判定」
+			...(typeof mtime === 'number' && mtime > 0 ? { mtime } : {}),
+		});
+	}
 }
 
 export function recordFileReadFailure(path: string, note: string): void {
@@ -52,22 +75,64 @@ export function hasEverReadSuccessfully(path: string): boolean {
 }
 
 /**
- * P3 二期 · 写后失效（2026-09-07，日志 1788757547227 实证）：本会话刚写入/改动过
- * 该文件 → read-state 置为 stale，下次 patch 前必须重新 file_read。
+ * P3（2026-09-12）外部修改检测 —— 对齐 Cline `FileContextTracker` 的
+ * 「只在**外部**（用户/其他进程）修改时才提醒重读，自己改的不算」，
+ * 以及本项目 `file_write` 既有的 `_check_file_staleness`（coreTools.ts）。
  *
- * 场景：同一批次连发两个 patch 打同一文件（第一个改 import、第二个改使用方），
- * 第二个的 `search` 基于改动前的内容 → "search text not found"（本次日志实测
- * 1 次，MiniImageEditor.tsx）。P3 一期只拦「从未读过」，管不到这类内容过时。
- * 对齐 Claude Code 语义：write 后视为已读（内容刚写、模型已知），patch 后再
- * patch 需重读。
+ * 语义：拿「本次操作前 stat 到的 mtime」与「上次成功 file_read 时的 mtime」比较，
+ * 更大 → 说明文件在模型读取之后被外部改过，模型手里的内容已过时。
+ *
+ * 采用 `>` 而非 `!==`：与 `file_write` 的既有判定保持一致，避免时钟回拨造成误报。
+ * 任一基线缺失（从未成功读过 / mtime 取不到）→ 返回 `false`（**不判定**，
+ * 宁可漏报也不误报 —— 误报会让模型做无谓的重读）。
+ *
+ * 注意：本函数**只提供信号**，调用方决定是提示还是拦截。当前 patch 与 file_write
+ * 一样只做**提示**（inform），不阻断 —— 外部改动可能落在与 search 无关的区域，
+ * 此时 patch 仍会正常命中，硬拦反而是误伤。
+ */
+export function detectExternalModification(path: string, currentMtime: number): boolean {
+	const st = _fileReadState.get(_normFilePath(path ?? ''));
+	if (!st || !st.mtime || !currentMtime) { return false; }
+	return currentMtime > st.mtime;
+}
+
+/** 外部修改的提示文案（追加到 patch 成功回报或失败消息末尾）。 */
+export function describeExternalModification(path: string, currentMtime: number): string {
+	const st = _fileReadState.get(_normFilePath(path ?? ''));
+	const ago = st ? Math.max(1, Math.round((currentMtime - st.mtime!) / 1000)) : 0;
+	return `\n⚠ EXTERNAL CHANGE: ${path} was modified OUTSIDE this session (by the user or another process) ` +
+		`about ${ago}s after you last read it. The content you are working from may be outdated. ` +
+		`Call file_read again before further edits to this file.`;
+}
+
+/**
+ * 本会话 patch 过该文件 —— **不再**把 read-state 置为 stale（2026-09-12，P0+P1）。
+ *
+ * 历史（P3 二期，2026-09-07，日志 1788757547227 实证）：patch 成功后置 stale，
+ * 强制下次 patch 前重读。它治好了「第二个 patch 的 search 基于改动前内容 →
+ * not_found」，代价是**同一文件连续 patch 必须反复重读整个文件**（可感知的浪费）。
+ *
+ * 现在改为与 `file_write` 一致的语义：**patch 成功 = 内容已知 = 视为已读**。
+ * 依据：
+ *   ① patch 的返回值现在回传「改动区域上下文」（patchMatcher.buildEditedRegionContext），
+ *      模型手里已是最新文本，可据其续写下一次 patch；
+ *   ② 即便模型的 search 真的过时，`computePatch` 会以 `not_found` 失败，并由
+ *      `describeReadGap` 给出「你 patch 过但未重读」的精准纠偏 —— 该问题只会在
+ *      失败时才暴露，用**前置强制读**去防它属于过度代价（对齐 Cline
+ *      FileContextTracker：「We do NOT want Cline to reload the context every time
+ *      a file is modified」，且 Cline 自己编辑后 `cline_read_date` 会一并刷新）。
+ *
+ * 仅登记 `patchedSinceRead` 供失败路径使用，**不阻断**下一次 patch。
  */
 export function markFileModified(path: string): void {
 	if (path) {
-		_fileReadState.set(_normFilePath(path), {
-			ok: false,
-			at: Date.now(),
-			stale: true,
-			note: 'you modified this file in this session (patch) — re-read it before patching again',
+		const key = _normFilePath(path);
+		const prev = _fileReadState.get(key);
+		_fileReadState.set(key, {
+			ok: true,
+			// 保留原读取时间：patch 并未让模型重新「读」文件，只是让它掌握了改动后的区域
+			at: prev?.at ?? Date.now(),
+			patchedSinceRead: true,
 		});
 	}
 }
@@ -85,6 +150,14 @@ export function describeReadGap(path: string): string {
 			+ 'The "search" text you sent was GUESSED, not copied from real content — that is why it can never match. '
 			+ 'Call file_read on the exact absolute path FIRST, then copy the search block verbatim from its output.';
 	}
+	// P0+P1（2026-09-12）：patch 过但未重读 —— 不再是「硬拒」的前置条件，而是失败时
+	// 的定向纠偏：告诉模型「过时的是你改过的那片区域」，并指出可复用上次回传的
+	// Updated region，避免它误以为必须整文件重读。
+	if (st.patchedSinceRead) {
+		return '\n⚠ READ-STATE: you patched this file earlier in this session and have NOT re-read it since. '
+			+ 'If your "search" block overlaps a region you already changed, it no longer matches the file. '
+			+ 'Re-read with file_read (or reuse the "Updated region" text returned by your previous patch) and retry.';
+	}
 	if (!st.ok && st.stale) {
 		return '\n⚠ READ-STATE: you modified this file earlier in this session, so the content you hold is now OUTDATED. '
 			+ 'Re-read it with file_read and copy the search block from the fresh output.';
@@ -97,6 +170,138 @@ export function describeReadGap(path: string): string {
 	const agoSec = Math.max(1, Math.round((Date.now() - st.at) / 1000));
 	return `\n⚠ READ-STATE: last successful file_read was ${agoSec}s ago — the file may have changed since `
 		+ '(parallel edits / your own earlier patch). Re-read the target region with file_read, then reissue patch.';
+}
+
+// ── 检索类「良性非零退出码」（2026-09-09，日志：exit 123 假失败）────────────
+//
+// 事故：`grep -n pat file | head -45 ; find . -name "*.css" | xargs grep -ln pat`
+// 输出**完全成功**（前段命中 45 行、后段列出 2 个命中文件），却被判 FAILED：
+//   · `grep` 无匹配 = **exit 1**（POSIX 明确规定：0=有匹配 / 1=无匹配 / 2=错误）；
+//   · `xargs` 在被调用命令返回 1-125 时自己返回 **exit 123**。
+// find|xargs grep 场景下必然有部分批次无匹配 → grep 1 → xargs 123，**这是检索
+// 命令的正常语义，不是失败**。旧实现对所有非零 exit 一律抛错（compatibilityTools
+// 的 `throw new Error(execute_code failed (exit N))`）→ 模型拿到有效输出的同时被
+// 告知「失败」，典型反应是换写法重跑一遍（纯浪费）；更糟的是它可能不信任已拿到
+// 的正确结果。
+//
+// 判定刻意**保守**（宁可漏判也不误判真失败）：
+//   · exit 123 —— xargs 专属码，语义唯一，语句里出现 xargs 即可判定；
+//   · exit 1  —— 歧义大（无数真失败也是 1），故三重约束：决定退出码的**末段管道**
+//     必须是纯检索命令、**stderr 为空**（grep 的真错误是 exit 2 且带 stderr）。
+
+/** 末段管道为「无匹配即 exit 1」的检索命令。 */
+const SEARCH_CMD_HEAD = /^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|findstr|select-string)\b/i;
+
+/**
+ * 判定非零退出码是否属于「检索命令的正常无匹配语义」。
+ *
+ * @returns 附加给模型的说明文案；`undefined` = 不是良性退出，按失败处理。
+ */
+export function detectBenignSearchExit(command: string, exitCode: number, stderr: string): string | undefined {
+	if (!command || (exitCode !== 1 && exitCode !== 123)) { return undefined; }
+	// 决定整体退出码的是**最后一条语句**（`;` / `&&` / `||` 之后），其中又是**最后
+	// 一个管道段**（bash 默认未开 pipefail）。
+	const lastStatement = command.split(/;|&&|\|\|/).pop() ?? '';
+	const lastPipeSeg = (lastStatement.split('|').pop() ?? '').trim();
+
+	if (exitCode === 123 && /\bxargs\b/.test(lastStatement)) {
+		return '[exit-note] exit 123 is xargs\' way of reporting "a command I invoked returned 1-125". '
+			+ 'With `xargs grep`, any batch without a match makes grep exit 1 — so 123 here means '
+			+ '"some batches had no match", NOT a failure. The output above is complete and valid; '
+			+ 'do not re-run the command.';
+	}
+
+	if (exitCode === 1 && SEARCH_CMD_HEAD.test(lastPipeSeg) && !stderr.trim()) {
+		return '[exit-note] exit 1 from a search command means "no match found" (POSIX: 0=match, '
+			+ '1=no match, 2=error) — it is NOT an execution failure. Treat the output above as '
+			+ 'authoritative: the pattern simply is not present in the searched scope. '
+			+ 'Do not re-run the same search expecting a different result.';
+	}
+
+	return undefined;
+}
+
+// ── 超时引导（P0+P3，2026-09-12，日志实证 start 超时后继续绕路）──────────────
+//
+// 事故：`execute_code: start "" "docs/kb-mockups/index.html"` 超时被杀，模型收到的
+// 只有 `[timeout: process tree killed after 20s]` 这一句**纯技术信息** —— 没有
+// 「这不是失败、是超时」的定性，也没有「长任务该用 background:true」的出路，
+// 于是模型换着写法继续重试同一件事，白烧轮次（同日日志里 `start` 与
+// `cmd //c start` 各失败一次）。
+//
+// 对比开源实现（2026-09-12 调研）：MiMo 的 bash 默认超时 2min（可配）且提示
+// 可用参数；本项目默认 30s 且超时后零引导。故这里补的不是「调大默认值」，
+// 而是**把已有能力（background:true / timeout 参数）在失败点上讲清楚** ——
+// 让正确行为变容易，而不是替模型做决定。
+
+/**
+ * 长任务形态识别（P3）—— 超时时用于给出**针对该命令**的建议。
+ *
+ * 判据刻意保守：只认**几乎必然超过默认超时**的形态（安装 / 构建 / 测试 / 服务器 /
+ * 监听 / 打开外部程序），避免把普通命令误报成「长任务」而误导模型改用后台。
+ *
+ * @returns 命中的形态标签（用于回报），未命中返回 `undefined`。
+ */
+export function detectLongRunningCommand(command: string): string | undefined {
+	// 只看第一条语句（`;` / `&&` / `||` / `|` 之前）—— 决定整体耗时的是它
+	const head = (command.split(/[|;]|&&|\|\|/)[0] ?? '').trim().toLowerCase();
+	if (!head) { return undefined; }
+
+	// 包管理器 / 构建器 + 长动词：npm install / pnpm i / cargo build / docker compose up
+	const pkgVerb = /^(?:npm|pnpm|yarn|bun|npx|pip|pip3|poetry|uv|cargo|go|mvn|mvnw|gradle|gradlew|dotnet|composer|bundle|gem|mix|swift|flutter|pod|docker(?:\s+compose)?)\s+(install|i|ci|add|update|upgrade|build|test|run|start|serve|dev|watch|up|pull|deploy|publish|create|generate|init|new)\b/.exec(head);
+	if (pkgVerb) { return pkgVerb[0]; }
+
+	// 裸构建 / 测试 / 服务命令
+	const bare = /^(make|cmake|ninja|tsc|vite|webpack|rollup|esbuild|swc|parcel|turbo|nx|jest|vitest|pytest|tox|mocha|playwright|cypress|serve|http-server|nodemon|next|nuxt|astro|uvicorn|gunicorn|flask|django-admin|rails|sbt|bazel|buck|terraform|ansible|helm|kubectl)\b/.exec(head);
+	if (bare) { return bare[1]; }
+
+	// 监听模式（即便动词不在上表里，watch 也几乎必然长驻）
+	if (/\s--?w(?:atch)?\b/.test(head)) { return 'watch mode'; }
+
+	// 打开外部程序：不阻塞返回，必然吃满超时（日志里 start 的根因）
+	if (/^(?:start|open|xdg-open|explorer|code)\b/.test(head) ||
+		/^cmd\s+(?:\/\/c|\/c)\s+start\b/.test(head) ||
+		/^powershell(?:\.exe)?\s+.*\bstart-process\b/.test(head)) {
+		return 'opening an external app';
+	}
+	return undefined;
+}
+
+/**
+ * 从 stderr 里提取实际超时秒数。
+ *
+ * 主进程（app.ts）与 renderer 侧 fallback 都会写入
+ * `[timeout: process tree killed after Ns]` / `[timeout: process killed after Ns]`，
+ * 本函数是该文案的**唯一解析入口**（文案改动时只需同步这里）。
+ */
+export function parseTimeoutSecondsFromStderr(stderr: string): number | undefined {
+	const m = /\[timeout:[^\]]*?after (\d+)s\]/.exec(stderr);
+	return m ? Number(m[1]) : undefined;
+}
+
+/**
+ * 超时引导（P0）—— 追加在超时失败消息末尾。
+ *
+ * 只做两件事：① 点破「这不是命令失败，而是被超时杀掉」（输出可能不完整）；
+ * ② 给出**可直接执行**的两条出路（`background:true` / 提高 `timeout`），
+ * 并明确劝阻「原样重发」（必然再超时）。
+ *
+ * @param timeoutSec 实际超时秒数（来自 `parseTimeoutSecondsFromStderr`）。
+ * @param command    模型传入的原始命令（用于形态识别）。
+ */
+export function timeoutGuidanceMessage(timeoutSec: number, command: string): string {
+	const shape = detectLongRunningCommand(command);
+	return (
+		`\n\n⚠ TIMEOUT — this command did NOT finish within ${timeoutSec}s and was killed, so the output ` +
+		`above may be incomplete (a killed command reports exit -1).\n` +
+		(shape ? `Detected long-running shape: \`${shape}\`. ` : '') +
+		`If it is expected to take longer, re-run it with ONE of:\n` +
+		`  • background:true — returns immediately with a taskId; then ` +
+		`execute_code({ action:"poll", taskId }) to read its output, or action:"kill" to stop it. ` +
+		`Best for installs / builds / test suites / servers / watchers.\n` +
+		`  • a larger "timeout" (in seconds) — e.g. timeout: 300; pass 0 for no limit at all.\n` +
+		`Do NOT re-send the same command unchanged — it will time out again.`
+	);
 }
 
 /** Unix-only 命令 → PowerShell 等价写法（用于护栏错误消息）。 */
@@ -390,6 +595,144 @@ const GENERATED_PATH_MARKER = new RegExp(
 	'i',
 );
 
+/**
+ * 「下划线前缀」产物路径（2026-09-13；同日修订为**任意深度**）。
+ *
+ * ## 由来
+ * 本项目约定：临时 / mockup / 渲染产物以 `_` 开头命名 —— 仓库根实测 10+ 个
+ * （`_askuser_editor_mockup.html`、`_delegate_card_mockup.html`、`_flow_ports_mockup.html` …）。
+ * 而 {@link GENERATED_PATH_MARKER} 只认 `out/ dist/ build/ tmp/` 这类**目录**，与项目
+ * 实际约定不匹配 → 模型按习惯写 `_render.url.json` / `_*.html` **每次都被拦**，只能改用
+ * `file_write` 逐个创建（生成多个 mockup 时摩擦显著）。
+ *
+ * ## 为什么放到「任意深度」
+ * 首版把放行面限定在「工作区根（路径中不含分隔符）」，理由是 `_` 前缀并非产物专属
+ * （`src/_internal.ts` 也以下划线开头）。但**项目自己的 .gitignore 已经把口径定死了**：
+ *
+ *     # Scratch / temporary working files (underscore-prefixed = throwaway debug scripts)
+ *     _*.ps1  _*.py  _*.js  _*.cjs  _*.mjs  _*.ts        ← .gitignore:151-157
+ *
+ * 这些模式**没有前导斜杠 → 在任意深度生效**（gitignore 语义）。实测：
+ *     git check-ignore --no-index src/_internal.ts     → .gitignore:156:_*.ts
+ *     git check-ignore --no-index docs/deep/_draft.ts  → .gitignore:156:_*.ts
+ *     git check-ignore --no-index src/vs/_scratch.js   → .gitignore:153:_*.js
+ *     git check-ignore --no-index src/internal.ts      → （不忽略）
+ * 即「`_` 前缀 = throwaway，不是源码」在**任意深度**都是本项目的成文约定。护栏若只认
+ * 工作区根，就与仓库自己的口径矛盾 —— 模型按约定命名（`docs/_draft.md`、`src/_scratch.ts`）
+ * 仍被拦，摩擦无解。
+ *
+ * ## 判定：路径中**任一段**以 `_` 开头即视为产物
+ *   · `_render.url.json`        → 放行
+ *   · `docs/_draft.md`          → 放行
+ *   · `_kb-mockups/a.html`      → 放行（目录段带 `_`）
+ *   · `src/_internal.ts`        → 放行（与 .gitignore 同口径）
+ *   · `my_file.ts` / `a/b_c.ts` → 不受影响（`_` 不在段首）
+ *   · `docs/kb-mockups/a.html`  → **仍拦**（路径中无 `_` 前缀段，不属该约定）
+ *
+ * ⚠ 本例外只放宽「目标是否产物」，其余判据（写形态命中 / 源码扩展名 / fail-closed）不变。
+ */
+const UNDERSCORE_ARTIFACT_RE = /(?:^|[\\/])_[^\\/]/;
+
+/**
+ * 「mockup」原型目录（2026-09-13）—— 目录段名 = `mockup`/`mockups`，或以 `-mockup(s)` 结尾。
+ *
+ * ## 由来
+ * 模型按项目习惯把原型 HTML 写进 `docs/kb-mockups/*.html`，但 `docs/` 不在
+ * {@link GENERATED_PATH_MARKER} 的目录名单里 → 被拦，只能逐个 `file_write`。
+ *
+ * 仓库实测这类目录共 4 个，**内容全是可弃原型产物、无源码**：
+ *   · `doc/layout-mockup/`                                       1 html + 1 md
+ *   · `docs/design-mockups/`                                     4 html
+ *   · `docs/kb-mockups/`                                         8 html + 1 css + README
+ *   · `src/vs/sessions/contrib/agentStudio/test/browser/mockups/` 1 html（测试夹具）
+ *
+ * ## 为什么是「段名以 -mockup(s) 结尾」而非「段名含 mockup」
+ * 后者会放行 `src/mockupRenderer/` 这类**真源码目录**（mockup 只是定语），也会放行
+ * `mockup-utils/` 这类前缀式命名。前者覆盖全部实测目录，又不越界 —— 判据收紧到
+ * 「整段就是 `mockup(s)`，或它的后缀恰好是 `-mockup(s)`」。
+ *
+ * ⚠ 与 {@link UNDERSCORE_ARTIFACT_RE} 同属「目标是否产物」的放宽，其余判据不变。
+ */
+const MOCKUP_DIR_MARKER = /(?:^|[\\/])(?:[^\\/]*-)?mockups?[\\/]/i;
+
+/**
+ * 目标路径是否属于「允许脚本写入的产物」—— 构建产物目录、`mockup` 原型目录，
+ * 或带 `_` 前缀段的产物路径。
+ *
+ * 单一判定入口：`_collectSourcePathVariables` 与 `_findSourceTargetInSegment` 必须
+ * 同源调用，否则「变量绑定」与「字面量」两条路径的放行面会漂移。
+ *
+ * ## `cwd` 参与判定（2026-09-13 补完「已知限制」）
+ *
+ * 三条豁免规则**都要求路径里含目录段**（`out/` `dist/` …、`mockup(s)/`、`_` 前缀段），
+ * 而**裸文件名**（如 `admin.html`）一个都不匹配 → 一律按「非产物」处理。
+ *
+ * 后果（实测日志 `vscode-app-1789281483413` 与本次日志）：模型在 `docs/kb-mockups/` 下
+ * 生成 mockup，命令写成 `cwd: "docs/kb-mockups"` + `> admin.html` —— 目标**其实是产物**
+ * （`docs/kb-mockups/` 正是豁免目录），却仍被拦，只能逐个 `file_write`。
+ *
+ * 现把两个 shell 工具的 `cwd` 参数透传进来：目标为**相对路径**时，用
+ * `cwd + '/' + target` 判定。`cwd` 是**真实生效**的运行目录（shell 确实在那里执行），
+ * 故拼接结果就是文件的真实落点 —— 模型无法靠伪造 `cwd` 去够到目录外的源码：
+ * 它给什么 `cwd`，文件就真的落在那里。
+ *
+ * ## 三个必须做对的细节
+ *
+ * 1. **只在目标相对时拼接** —— 绝对路径（`/x`、`C:\x`）与 `~` 开头不受 `cwd` 影响；
+ * 2. **拼接后必须归一化**（折叠 `.` / `..`）—— 否则 `cwd: "out"` + `> ../../src/app.ts`
+ *    会因字符串前缀含 `out/` 而被误判为产物，而**真实落点是 `src/app.ts`**。
+ *    `..` 穿透是「用 `cwd` 伪装成产物」的唯一入口，必须堵住（`_normalizeArtifactPath`）；
+ * 3. **仍保留原有「路径自带目录段」判定** —— 写全路径（`docs/kb-mockups/a.html`）时
+ *    不依赖 `cwd`，与改动前完全一致。
+ *
+ * ⚠ 残留（fail-closed，有意保留）：**没有 `cwd` 时**裸文件名仍按源码处理 ——
+ * 裸名无法判定落在哪个目录，宁可按源码拦下，由拒绝文案引导补 `cwd` 或写全路径。
+ * （两个工具都接受 `cwd`，故这条残留只在调用方未传时出现。）
+ */
+function isAllowedArtifactTarget(filePath: string, cwd?: string): boolean {
+	if (_matchesArtifactPath(filePath)) { return true; }
+	// 目标不是相对路径（绝对 / `~`）→ `cwd` 对它无影响
+	if (!cwd || !_isCwdRelative(filePath)) { return false; }
+	return _matchesArtifactPath(_normalizeArtifactPath(`${cwd}/${filePath}`));
+}
+
+/** 三条豁免规则本体（对「已归一化」的路径求值）。 */
+function _matchesArtifactPath(p: string): boolean {
+	return GENERATED_PATH_MARKER.test(p)
+		|| MOCKUP_DIR_MARKER.test(p)
+		|| UNDERSCORE_ARTIFACT_RE.test(p);
+}
+
+/** 该路径是否**相对 cwd** —— 只有相对的才需要拼 `cwd`。 */
+function _isCwdRelative(p: string): boolean {
+	if (!p) { return false; }
+	if (/^[\\/]/.test(p)) { return false; }            // /abs、\abs
+	if (/^[A-Za-z]:[\\/]/.test(p)) { return false; }   // C:\ / C:/
+	if (p.startsWith('~')) { return false; }           // ~/… 由 shell 展开，与 cwd 无关
+	return true;
+}
+
+/**
+ * 归一化「cwd + 相对目标」：统一分隔符 + 折叠 `.` / `..`。
+ *
+ * 刻意**不引 `path` 模块** —— 本模块头注释承诺「无 VS Code 依赖，可独立单测」，
+ * 且这段纯字符串逻辑（约 10 行）足够简单到可被直接审查。
+ * 结果只用于**正则匹配**（不用于真实路径解析），故丢掉前导 `/` 无影响。
+ */
+function _normalizeArtifactPath(p: string): string {
+	const out: string[] = [];
+	for (const seg of p.replace(/\\/g, '/').split('/')) {
+		if (!seg || seg === '.') { continue; }
+		// `..` 能弹掉上一段就弹；弹不掉（已在最前）则保留 —— 保留即「不像产物」，fail-closed
+		if (seg === '..' && out.length > 0 && out[out.length - 1] !== '..') {
+			out.pop();
+			continue;
+		}
+		out.push(seg);
+	}
+	return out.join('/');
+}
+
 /** 单条「写文件」形态。 */
 interface IScriptWritePattern {
 	readonly id: string;
@@ -467,6 +810,74 @@ const SCRIPT_WRITE_PATTERNS: readonly IScriptWritePattern[] = [
 		label: 'shell redirection (> / >>) into a file',
 		scope: 'line',
 	},
+
+	// ── P1（2026-09-13）：补齐「就地编辑 / 下载落盘 / 原地清空」类写形态 ──────
+	// 起因：2026-09-13 与 Cline 的 plan-mode command-guard（`command-guard.ts`）对照，
+	// 发现本表只覆盖 8 种写形态，而 Cline 另外还拦 `sed -i` / `perl -i` / `awk inplace`
+	// / `sort -o` / `curl -o` / `wget` / `tee` / `truncate` 等。这里补齐**写/覆写**类。
+	//
+	// ★ 三条**刻意不加**（属另一档改动 —— 需要「取末参数」语义或 AST）：
+	//   · `cp` / `mv` / `install`：目标是**最后一个参数**，而本表的
+	//     `_findSourceTargetInSegment` 取**首个**源码扩展名字面量 → 会把高频合法形态
+	//     `cp src/a.ts dist/`（把源码拷进产物目录）误判成写源码。
+	//   · `dd of=<file>`：`dd if=src/a.ts of=/dev/null`（读源码并丢弃）会让「首个字面量」
+	//     命中**输入**而非 `of=` 目标 → 与上同类的误伤。写块设备那条已由 HARDLINE 兜底。
+	//   · `find -delete`：属**删除**族（P2「删除类强制确认」的范围），不是「写源码」；
+	//     放进本表会让错误文案（"writes source code directly"）失真。
+	//
+	// 每条都要求**命令起始位置**（`^` / `|` / `;` / `&` 之后）—— 与 detectUnixOnlyCommand
+	// 同一惯用法，避免 `--sort=date`、`"-i"` 这类**同名文本**被误认成命令。
+	{
+		// tee / tee -a：参数即写入目标（`... | tee src/a.ts`）
+		id: 'tee',
+		pattern: /(?:^|[|;&]+)\s*tee\b(?:\s+-[a-zA-Z]+)*\s/gm,
+		label: 'tee — write stdout into a file',
+		scope: 'line',
+	},
+	{
+		// truncate -s 0 file / truncate --size=0 file
+		id: 'truncate',
+		pattern: /(?:^|[|;&]+)\s*truncate\b[^|;&\n]*\s(?:-s|--size[= ])/gm,
+		label: 'truncate -s — resize/empty a file in place',
+		scope: 'line',
+	},
+	{
+		// perl -i / -pi / -ni（就地编辑；标志可与其它字母合并，故用 [a-zA-Z]*i[a-zA-Z]*；
+		// 末尾 `(?=\s|$)` 排除 `perl -e 'print "-i"'` 这类**字符串里**的同名文本）
+		id: 'perl-inplace',
+		pattern: /(?:^|[|;&]+)\s*perl\b[^|;&\n]*?\s-[a-zA-Z]*i[a-zA-Z]*(?=\s|$)/gm,
+		label: 'perl -i — in-place stream edit',
+		scope: 'line',
+	},
+	{
+		// gawk 就地编辑：awk -i inplace / --in-place
+		id: 'awk-inplace',
+		pattern: /(?:^|[|;&]+)\s*awk\b[^|;&\n]*\s(?:-i\s+inplace|--in-place)\b/gm,
+		label: 'awk -i inplace — in-place stream edit',
+		scope: 'line',
+	},
+	{
+		// sort -o <file>：-o 须紧跟在 sort 与若干标志之后（GNU 规范写法）——
+		// 以免 `sort <source> -o <artifact>` 这种「源在前、目标在后」被误判成写源码
+		id: 'sort-output',
+		pattern: /(?:^|[|;&]+)\s*sort\s+(?:-[a-zA-Z]+\s+)*-o\s/gm,
+		label: 'sort -o — write sorted output into a file',
+		scope: 'line',
+	},
+	{
+		// curl -o <file> / --output <file>：下载直接落盘
+		id: 'curl-output',
+		pattern: /(?:^|[|;&]+)\s*curl\b[^|;&\n]*\s(?:-o|--output)\s/gm,
+		label: 'curl -o — download straight into a file',
+		scope: 'line',
+	},
+	{
+		// wget -O <file>（大写 O）/ --output-document[=]<file>
+		id: 'wget-output',
+		pattern: /(?:^|[|;&]+)\s*wget\b[^|;&\n]*\s(?:-O|--output-document[= ])/gm,
+		label: 'wget -O — download straight into a file',
+		scope: 'line',
+	},
 ];
 
 /** 命中结果：写 API 形态 + 被写的源码目标。 */
@@ -478,6 +889,47 @@ export interface IScriptSourceWriteHit {
 }
 
 /**
+ * 从「赋值右值」尽力还原出一个字面量路径（2026-09-13 扩展）。
+ *
+ * 原实现只认**单个**字面量（`p = "src/a.ts"`），于是这些**自然写法**全被漏掉：
+ *   · `p = path.join("src", "a.ts")`     —— Node 最常见
+ *   · `p = os.path.join("src", "a.ts")`  —— Python 最常见
+ *   · `p = "src/" + "a.ts"`              —— 拼接
+ *   · `p = Path("src") / "a.ts"`         —— pathlib 的 `/` 运算符
+ * 它们随后 `writeFileSync(p, code)` / `open(p, "w")` —— 只看参数区**看不到扩展名**
+ * （扩展名被 join 拆开了）→ 漏拦。
+ *
+ * ## 精度取舍：**只认纯字面量表达式**
+ *
+ * 右值里一旦出现未知标识符（`path.join(__dirname, "a.ts")` 里的 `__dirname`）就**不绑定**。
+ * 理由是产物豁免（out/ dist/ build/ tmp/）依赖**完整路径**判断：把未知前缀丢掉会让
+ * `path.join("out", "a.ts")` 退化成 `a.ts` → 被误判成非产物而**误拦**。
+ * 本护栏是「引导模型改用 file_write」的**软约束**（真正的门是审批），故宁可少拦、不可误伤。
+ *
+ * 未绑定时的兜底仍在：写调用**参数区里**出现带扩展名的字面量照样会被拦
+ * （见 {@link _findSourceTargetInSegment} 的 ① 分支）。
+ */
+function _literalPathFromRhs(rhs: string): string | undefined {
+	const expr = rhs.trim();
+	if (!expr) { return undefined; }
+	const lit = /(?:[rRfFbBuU]{0,2})["']([^"'\n]*)["']/g;
+	// 把字面量换成空格后，剩下的骨架只允许出现：连接符/括号/逗号/点 + 已知的 join 系列标识符。
+	// 任何其它标识符（`__dirname` / `X` / `compute`）都会让骨架校验失败 → 不绑定。
+	const skeleton = expr.replace(lit, ' ');
+	if (!/^(?:[\s+\/,.()]|(?:os\s*\.\s*)?path(?:lib)?\s*(?:\.\s*Path)?|Path|join)*$/.test(skeleton)) {
+		return undefined;
+	}
+	const parts: string[] = [];
+	let m: RegExpExecArray | null;
+	lit.lastIndex = 0;
+	while ((m = lit.exec(expr)) !== null) { parts.push(m[1]); }
+	if (parts.length === 0) { return undefined; }
+	// 单字面量时 `join('/')` 即原值；多段（join / 拼接 / pathlib 的 `/`）按 `/` 连接，
+	// 这样 `path.join("out", "a.ts")` 仍是 `out/a.ts` → 产物豁免照样生效。
+	return parts.join('/');
+}
+
+/**
  * 收集「被赋值为源码路径的变量名」。
  *
  * 必要性：模型的实际写法是路径与写调用**分行** ——
@@ -485,22 +937,22 @@ export interface IScriptSourceWriteHit {
  * 只看 `open(...)` 的参数区永远看不到扩展名。故先建立变量→源码路径的绑定，
  * 再在参数区里认变量名。
  *
- * 覆盖 Python（`p = r"..."` / `p = Path("...")`）与 JS（`const p = "..."`）。
+ * 覆盖 Python（`p = r"..."` / `p = Path("...")` / `os.path.join(...)`）与
+ * JS（`const p = "..."` / `path.join(...)` / 拼接）—— 右值解析见 {@link _literalPathFromRhs}。
  */
-function _collectSourcePathVariables(command: string): Map<string, string> {
+function _collectSourcePathVariables(command: string, cwd?: string): Map<string, string> {
 	const out = new Map<string, string>();
-	const re = new RegExp(
-		// [const|let|var] name = [Path(] [r|f|rb]"...ext" [)]
-		'(?:^|[\\s;{(])(?:const\\s+|let\\s+|var\\s+)?([A-Za-z_$][\\w$]*)\\s*=\\s*' +
-		'(?:(?:pathlib\\s*\\.\\s*)?Path\\s*\\(\\s*)?' +
-		'(?:[rRfFbBuU]{1,2})?["\']([^"\'\\n]*\\.(?:' + SOURCE_EXT_ALTERNATION + '))["\']',
-		'g',
-	);
+	// `[const|let|var] name = <右值>`；右值取到换行 / 分号为止（再由 _literalPathFromRhs 解析）
+	const re = /(?:^|[\s;{(])(?:const\s+|let\s+|var\s+)?([A-Za-z_$][\w$]*)\s*=\s*([^\n;]+)/g;
+	const sourceExtRe = new RegExp('\\.(?:' + SOURCE_EXT_ALTERNATION + ')$', 'i');
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(command)) !== null) {
-		const [, name, filePath] = m;
-		if (GENERATED_PATH_MARKER.test(filePath)) { continue; }
-		out.set(name, filePath);
+		const filePath = _literalPathFromRhs(m[2]);
+		if (!filePath) { continue; }
+		// 只绑定**源码**路径（join 出的 csv / json 报告等不应进入绑定表，否则会误拦）
+		if (!sourceExtRe.test(filePath)) { continue; }
+		if (isAllowedArtifactTarget(filePath, cwd)) { continue; }
+		out.set(m[1], filePath);
 	}
 	return out;
 }
@@ -509,10 +961,10 @@ function _collectSourcePathVariables(command: string): Map<string, string> {
  * 在一段文本（写 API 的参数区）中查找源码目标：直接的路径字面量，或已知的
  * 源码路径变量名。返回可读的目标描述，未命中返回 undefined。
  */
-function _findSourceTargetInSegment(segment: string, sourceVars: Map<string, string>): string | undefined {
+function _findSourceTargetInSegment(segment: string, sourceVars: Map<string, string>, cwd?: string): string | undefined {
 	// ① 直接出现的路径（带引号或裸写，如 `> src/a.ts`）
 	const literal = new RegExp('[\\w./\\\\:$~-]*\\.(?:' + SOURCE_EXT_ALTERNATION + ')\\b', 'i').exec(segment);
-	if (literal && !GENERATED_PATH_MARKER.test(literal[0])) {
+	if (literal && !isAllowedArtifactTarget(literal[0], cwd)) {
 		return literal[0];
 	}
 	// ② 绑定到源码路径的变量名
@@ -581,11 +1033,17 @@ function _sameLinePrefix(command: string, before: number): string {
  *
  * `open()` 额外要求 mode 为写模式：只读打开源码（分析、统计、生成报告）必须放行。
  *
+ * @param command 模型传入的原始命令。
+ * @param cwd 命令的**实际运行目录**（两个 shell 工具都支持 `cwd` 参数）。
+ *   传进来后，**相对路径**的目标会先拼成 `cwd/target` 再判是否产物 ——
+ *   否则 `cwd: "docs/kb-mockups"` + `> admin.html` 这类**产物写入**会被误拦
+ *   （三条豁免规则都要求路径含目录段，裸名一个都不匹配）。
+ *   省略时保持原行为（裸名 fail-closed 按源码处理）。
  * @returns 命中的写形态与目标；未命中返回 undefined。
  */
-export function detectScriptSourceWrite(command: string): IScriptSourceWriteHit | undefined {
+export function detectScriptSourceWrite(command: string, cwd?: string): IScriptSourceWriteHit | undefined {
 	if (!command) { return undefined; }
-	const sourceVars = _collectSourcePathVariables(command);
+	const sourceVars = _collectSourcePathVariables(command, cwd);
 	for (const wp of SCRIPT_WRITE_PATTERNS) {
 		// 每次使用新建正则：模式表是模块级常量，带 g 标志的 lastIndex 会跨调用残留
 		const re = new RegExp(wp.pattern.source, wp.pattern.flags);
@@ -604,7 +1062,7 @@ export function detectScriptSourceWrite(command: string): IScriptSourceWriteHit 
 				if (re.lastIndex <= m.index) { re.lastIndex = m.index + 1; }
 				continue;
 			}
-			const target = _findSourceTargetInSegment(segment, sourceVars);
+			const target = _findSourceTargetInSegment(segment, sourceVars, cwd);
 			if (target) { return { api: wp.label, target }; }
 			if (re.lastIndex <= m.index) { re.lastIndex = matchEnd > m.index ? matchEnd : m.index + 1; }
 		}
@@ -623,12 +1081,18 @@ export function scriptSourceWriteGuardMessage(hit: IScriptSourceWriteHit, toolNa
 		`${toolName}: blocked — this command writes source code directly (${hit.api}, target: ${hit.target}).\n` +
 		`Shell-based edits bypass the editing safeguards: no checkpoint is captured (so the change CANNOT be ` +
 		`rolled back), no edit approval is requested, and the change is not reviewable as a diff.\n` +
-		`Use the file editing tools instead:\n` +
-		`  • patch      — replace an exact block (read the file first, copy "search" verbatim; line endings are handled automatically)\n` +
-		`  • file_write — only when creating a new file or rewriting one in full\n` +
+		`Use the file editing tools instead — pick by whether the file already exists:\n` +
+		`  • NEW file      → file_write (creates it in one call; no prior read needed)\n` +
+		`  • EXISTING file → file_read it FIRST (patch is gated on a prior successful read — ` +
+		`patching unread files is rejected), then patch\n` +
+		`      patch TEXT mode: replace an exact block (copy "search" verbatim; line endings are handled automatically)\n` +
+		`      patch LINE mode: pass insert_line + "replace" to INSERT new content at a line number (no text to match)\n` +
 		`If patch keeps failing with "search text not found", re-read the exact region with file_read and copy ` +
 		`the search text from that output — do NOT fall back to a hand-rolled read/splice/write script.\n` +
-		`(Writing generated artifacts under out/ dist/ build/ tmp/ is still allowed.)`
+		`(Writing generated artifacts is still allowed and does NOT need a bypass: under ` +
+		`out/ dist/ build/ tmp/, in a "mockup" prototype dir (e.g. docs/kb-mockups/), or ANY path ` +
+		`with a "_"-prefixed segment — per this repo's .gitignore convention ("_" = throwaway ` +
+		`debug/scratch), e.g. _mockup.html, _render.url.json, docs/_draft.md, _kb-mockups/a.html.)`
 	);
 }
 

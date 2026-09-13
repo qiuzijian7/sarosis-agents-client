@@ -44,10 +44,17 @@ suite('domWidget', () => {
 			assert.strictEqual(one - base, 28);
 		});
 
-		test('estimateFormTop clears title bar + one row per port pair', () => {
-			assert.strictEqual(estimateFormTop(0, 0), 30 + 2);
-			assert.strictEqual(estimateFormTop(1, 1), 30 + 20 + 2);
-			assert.strictEqual(estimateFormTop(3, 1), estimateFormTop(1, 3));
+		test('★ estimateFormTop 返回 body 相对坐标（max(ports) × SLOT_HEIGHT + 6）', () => {
+			// ★ 契约同步（2026-09-11）：实现已改为 **body 相对坐标**（见 domWidget.ts
+			//   注释：litegraph 0.17 的标题栏绘制在 pos[1] **之上** → node-local y=0
+			//   是节点 body 顶部而非标题栏；`arrange()` 从 (slots bottom) + 2 =
+			//   maxPorts × SLOT_HEIGHT + 6 开始排 widget，此处精确镜像该值）。
+			//   旧期望「30 + title bar」已不适用。SLOT_HEIGHT = 20（模块内常量，未导出）。
+			const SLOT = 20;
+			assert.strictEqual(estimateFormTop(0, 0), 0 * SLOT + 6);
+			assert.strictEqual(estimateFormTop(1, 1), 1 * SLOT + 6);
+			assert.strictEqual(estimateFormTop(3, 1), estimateFormTop(1, 3), '取 input/output 较大者');
+			assert.strictEqual(estimateFormTop(3, 1), 3 * SLOT + 6);
 		});
 	});
 

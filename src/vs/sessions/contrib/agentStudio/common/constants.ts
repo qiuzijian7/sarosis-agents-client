@@ -34,6 +34,18 @@ export const AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING = 'sessions.agentStudi
 /** 是否将已存储的工作流作为「可执行型 skill」暴露给 agent（双向打通 A 向）。默认开启。 */
 export const AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING = 'sessions.agentStudio.skills.includeWorkflows';
 
+// Configuration keys — Tool Search（折叠阈值门控）
+/**
+ * Tool Search 折叠开关：`off` 从不折叠 / `on` 总是折叠 / `auto` 按阈值折叠。
+ *
+ * ★ 2026-09-11 补注册 schema：这两个键**一直**被 `agentOSService._getToolSearchConfig`
+ * 读取，但从未在 `IConfigurationRegistry` 注册 → 设置 UI 里看不到、无补全，
+ * 用户只能手写 `settings.json`（改错了也无提示）。
+ */
+export const AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING = 'agentStudio.toolSearch.enabled';
+/** Tool Search 自动折叠阈值（deferrable 工具 token 占上下文窗口的百分比，0–100）。 */
+export const AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING = 'agentStudio.toolSearch.thresholdPct';
+
 // Configuration keys — Driver concurrency
 export const AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING = 'sessions.agentStudio.driver.turnConcurrencyLimit';
 
@@ -60,6 +72,17 @@ export const AGENT_STUDIO_AUX_CURATOR_MODEL = 'sessions.agentStudio.aux.curator.
 export const AGENT_STUDIO_AUX_EMBEDDING_PROVIDER = 'sessions.agentStudio.aux.embedding.provider';
 export const AGENT_STUDIO_AUX_EMBEDDING_MODEL = 'sessions.agentStudio.aux.embedding.model';
 export const AGENT_STUDIO_AUX_EMBEDDING_DIMENSIONS = 'sessions.agentStudio.aux.embedding.dimensions';
+
+// Configuration keys — Image Generation（用户级默认，2026-09-10）
+//
+// 为什么需要它：agent 配置（.agent.md 的 imageModel/imageProviderId）是首选来源，
+// 但**内置 agent 只读**（如 saros-claw，updateAgent 被拒）——用户在聊天框/设置页
+// 选的图片模型无处持久化（localStorage 只在本 pane 生效，工具侧读不到）→
+// image_generate 落到「自动路由」→ 取 customProviders 里**第一个**有
+// supportsImageGen 的 provider（实测是 grnexus，而其网关不开放 Images API → 404）。
+// 有了用户级默认后：agent 配置缺失时读这里，用户的选择才真正生效。
+export const AGENT_STUDIO_IMAGE_GEN_PROVIDER = 'sessions.agentStudio.imageGen.provider';
+export const AGENT_STUDIO_IMAGE_GEN_MODEL = 'sessions.agentStudio.imageGen.model';
 
 // Configuration keys — Provider (API connections)
 export const AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY = 'sessions.agentStudio.provider.openrouter.apiKey';
@@ -150,6 +173,22 @@ export const TOF_PAASID_SETTING = 'sessions.agentStudio.tof.paasid';
 export const TOF_SITE_BASE_URL_SETTING = 'sessions.agentStudio.tof.siteBaseUrl';
 export const TOF_GATEWAY_BASE_URL_SETTING = 'sessions.agentStudio.tof.gatewayBaseUrl';
 export const TOF_LOGIN_TIMEOUT_SETTING = 'sessions.agentStudio.tof.loginTimeout';
+
+/**
+ * TOF 登录回调站点（单一事实源，2026-09-10）。
+ *
+ * 该域名承担登录回调：passport 登录成功 → 跳 `<此域名>/api/v1/auth/tof/callback?cb_port=…`。
+ * **必须 DNS 可解析**，否则浏览器报 `DNS_PROBE_FINISHED_NXDOMAIN`（This site can't be reached），
+ * 而本地 loopback server 只能干等到超时。
+ *
+ * 事故（2026-09-10）：本仓曾同时存在两个不同的默认值 —— workbench 侧
+ * `http://vssaros.woa.com`（已无 DNS 记录）与扩展侧 `http://saroasis-mcp.woa.com`；
+ * 因 workbench 的配置注册**优先**，未显式配置的环境一律走失效域名 → 登录必失败。
+ * 现统一为本常量，并由单测锁定；扩展侧（独立 tsc 工程，无法 import 本文件）需手工同步：
+ *   · extensions/tof-authentication/package.json → configuration…siteBaseUrl.default
+ *   · extensions/tof-authentication/src/tofAuthProvider.ts → _getConfig 的 fallback
+ */
+export const TOF_DEFAULT_SITE_BASE_URL = 'http://saroasis-mcp.woa.com';
 
 // Channel keys — ALL channels supported by OpenClaw
 // Sources: ChannelsConfig explicit properties (9) + UI renderChannel switch (8)

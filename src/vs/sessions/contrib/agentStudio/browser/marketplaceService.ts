@@ -34,6 +34,8 @@ import { IPackageInstallerRegistry, PackageManifest } from '../common/packageIns
 import { ITofAuthService } from '../common/tofAuth.js';
 import { compareSemver } from './publishVersioning.js';
 import { resolvePublishAuthor } from '../common/publishAuthor.js';
+// 发布 manifest 组装（纯函数，2026-09-11 抽出以便单测锁定「元数据不丢失」）。
+import { buildPublishManifest } from './workflow/publishManifest.js';
 
 const TOKEN_KEY = 'saros.marketplace.token';
 const USER_KEY = 'saros.marketplace.user';
@@ -556,22 +558,12 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		// 1. 准备本地资源目录 + manifest
 		const { localDir, manifest } = await installer.preparePack(localId);
 
-		// Apply user-provided overrides to manifest
-		// author 三级兜底：显式 override > manifest 自带 > 当前登录用户
-		// （依赖 skill 自动上传等路径不传 author，也能落到登录者身份）
-		const finalManifest: Record<string, unknown> = {
-			...manifest,
-			name: opts.name || manifest.name,
-			version: opts.version || manifest.version,
-			description: opts.description ?? manifest.description,
-			category: opts.category ?? manifest.category,
-			author: opts.author ?? manifest.author ?? resolvePublishAuthor(this._user),
-		};
-		// Inject skillRefs/mcpRefs if provided
-		if (kind === 'agent') {
-			if (opts.skillRefs?.length) { finalManifest.skillRefs = opts.skillRefs; }
-			if (opts.mcpRefs?.length) { finalManifest.mcpRefs = opts.mcpRefs; }
-		}
+		// 组装最终 manifest（纯函数，见 workflow/publishManifest.ts 与配套单测）。
+		// ★ 2026-09-11 修复：`visibility` / `tags` / `useGuide` 曾在此处被丢弃 ——
+		//   弹窗收集了、IPublishOptions 也声明了，但内联组装只合并了 5 个基础字段，
+		//   于是商城的「可见性 / 标签 / 使用指南」永远为空。抽出纯函数后由
+		//   test/browser/publishManifest.test.ts 锁定该行为（防再次回归）。
+		const finalManifest = buildPublishManifest(manifest, opts, resolvePublishAuthor(this._user));
 		const version = finalManifest.version;
 
 		// 1.4 slug + name 冲突检查：两者均需在商城唯一，否则上传失败
@@ -607,6 +599,11 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 						kind: finalManifest.kind,
 						description: finalManifest.description ?? '',
 						category: finalManifest.category ?? 'other',
+						// ★ 首次创建即带上元数据（2026-09-11，同 finalManifest 的修复）：
+						//   服务端若支持这些字段则首发布立刻生效；不支持则被忽略，不影响创建。
+						//   useGuide 可能较大，只随 manifest 走包内，不塞进创建请求。
+						...(finalManifest.visibility !== undefined ? { visibility: finalManifest.visibility } : {}),
+						...(finalManifest.tags !== undefined ? { tags: finalManifest.tags } : {}),
 					});
 					this.logService.info(`[Marketplace] 已创建新包: ${localId}`);
 				} catch (createErr) {

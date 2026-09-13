@@ -424,7 +424,12 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 		// provides sandbox isolation when needed (controlled by the no-sandbox
 		// marker comment in the webview HTML content).
 
-		const allowRules = ['cross-origin-isolated', 'autoplay', 'local-network-access'];
+		// Note: 'local-network-access' is intentionally omitted — it is a newer
+		// Permissions Policy feature that this Electron's Chromium does not
+		// recognize yet, and iframe `allow` declarations with unknown features
+		// spam the console with "Unrecognized feature" warnings. Re-add it when
+		// the Electron's Chromium supports the Local Network Access proposal.
+		const allowRules = ['cross-origin-isolated', 'autoplay'];
 		if (!isFirefox) {
 			allowRules.push('clipboard-read', 'clipboard-write');
 		}

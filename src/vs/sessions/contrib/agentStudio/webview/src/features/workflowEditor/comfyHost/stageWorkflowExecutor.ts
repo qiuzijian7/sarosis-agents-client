@@ -19,6 +19,7 @@
 
 import type { IComfyRunner } from './comfyRunner.js';
 import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
+import { collectUpstreamValues } from './workflowRunShared.js';
 import type { MediaSnapshotEntry } from './mediaSnapshot.js';
 import { comfyOutputsToSnapshots } from './nodeExecutor.js';
 import { materializeComfyImageRefs } from './comfyImagePersist.js';
@@ -220,16 +221,9 @@ export function collectUpstreamRefs(
 	store: MediaSnapshotStore,
 	upstreams: string[] | undefined,
 ): Record<string, string> {
-	const out: Record<string, string> = {};
-	if (!upstreams) { return out; }
-	for (const nodeId of upstreams) {
-		for (const entry of store.byNode(nodeId)) {
-			const kind = entry.media.kind;
-			if (kind === 'unknown' || out[kind]) { continue; }
-			out[kind] = entry.media.ref;
-		}
-	}
-	return out;
+	// ★ v42 消重：逻辑与 workflowRunShared.collectUpstreamValues 完全同构
+	//   （唯一差异 = fx 线程值 vs /view URL），委托同一个实现，语义从此单点维护。
+	return collectUpstreamValues(store, upstreams, { fxThreading: false });
 }
 
 /**

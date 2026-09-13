@@ -83,3 +83,36 @@ export function getNodeDefinition(type: string): NodeDefinition | undefined {
 export function getAllNodeDefinitions(): NodeDefinition[] {
 	return [...definitions.values()];
 }
+
+/** 已注册定义的 type 列表（护栏校验用）。 */
+export function getRegisteredDefinitionTypes(): string[] {
+	return [...definitions.keys()];
+}
+
+/**
+ * 必须具备执行分发的编排/控制流节点 —— 防「注册 type 拼错/漏注册」漂移的护栏。
+ *
+ * 由来（2026-09-09）：`gateNode.ts` 曾把 type 写成不存在的 `'Saros.Gate'`
+ * （真名是 `Saros.IfElse` / `Saros.Switch`），`loopNode.ts` 漏了
+ * `Saros.Parallel` —— 查表精确匹配，未命中就**静默**掉到 `runSingleNode`
+ * 拿 ComfyUI runner 执行编排节点（runner 为 null 时崩、非 null 时报
+ * node-not-found）。这类错误编译期无感、只在真跑控制流时炸，必须由护栏兜住。
+ *
+ * ⚠ 新增编排/控制流节点时，type 要同时出现在这里与 nodes/ 的 definition 文件。
+ * 不含 `Saros.Start` / `Saros.Group` / `Saros.Subflow`：
+ *  - Start 无副作用（args 契约由调度器直读，无需执行器）
+ *  - Group 是纯布局容器
+ *  - Subflow 在执行前被 flattenSubflows 展开，不会走单节点分发
+ */
+export const REQUIRED_RUNTIME_NODE_TYPES: readonly string[] = [
+	'Saros.End', 'Saros.Task', 'Saros.Prompt', 'Saros.Agent', 'Saros.Skill', 'Saros.Tool',
+	'Saros.IfElse', 'Saros.Switch', 'Saros.Merge', 'Saros.Loop', 'Saros.Parallel', 'Saros.AskUser',
+];
+
+/**
+ * 校验 REQUIRED_RUNTIME_NODE_TYPES 全部已注册执行器。返回缺失的 type 列表
+ * （空数组 = 健康）。Pure —— 供单测与画布初始化自检共用。
+ */
+export function findMissingRuntimeDefinitions(): string[] {
+	return REQUIRED_RUNTIME_NODE_TYPES.filter(t => !definitions.has(t));
+}

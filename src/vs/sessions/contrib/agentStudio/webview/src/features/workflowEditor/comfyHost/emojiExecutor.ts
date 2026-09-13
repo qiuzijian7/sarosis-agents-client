@@ -13,6 +13,7 @@
 
 import type { IComfyRunner } from './comfyRunner.js';
 import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
+import { hasSheetLikeMeta, isSheetFullMeta, META_SHEET_FLAG, sheetDimsMeta } from './mediaSnapshotStore.js';
 import type { CardStateStore } from './cardState.js';
 import type { SingleNodeRunResult } from './nodeExecutor.js';
 import { runSingleNode, comfyOutputsToFxSnapshots } from './nodeExecutor.js';
@@ -141,7 +142,7 @@ import {
 	parseEmojiCellArray,
 	splitEmojiPrompts,
 } from './workflowRunShared.js';
-import { splitStickerSheet, defaultSheetCellCrops, parseSheetCellCrops, buildEmojiSheetPrompt, resolveSheetBackground, resolveEmojiSheetSize, makeSizePostProcess, composePostProcess, EMOJI_SHEET_MARGIN_RATIO, type SheetCellCrop, type SplitSheetCell } from './emojiSheetUtils.js';
+import { splitStickerSheet, defaultSheetCellCrops, parseSheetCellCrops, buildEmojiSheetPrompt, resolveSheetBackground, resolveEmojiSheetSize, makeSizePostProcess, composePostProcess, autoDetectCellCrops, EMOJI_SHEET_MARGIN_RATIO, type SheetCellCrop, type SplitSheetCell, type SheetOwnershipMask } from './emojiSheetUtils.js';
 import { composeImageGridOnChroma } from './chromaCompose.js';
 
 // ★ 静态表情包执行器（runEmojiStageGrid）。
@@ -211,7 +212,7 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 	//   scope='all' 的 clearNode 中清掉后由合并图集承担 recrop 基底职能。
 	const isSheetEntry = (m: MediaRef): boolean => {
 		const meta = (m as { meta?: Record<string, string> }).meta as Record<string, string> | undefined;
-		return meta?.sheet === '1' || meta?.sheetFull === '1';
+		return hasSheetLikeMeta(meta);
 	};
 	const imagesOf = (): MediaRef[] => store.byNode(snapshotKey)
 		.filter(e => (e.media.kind === 'image' || e.media.kind === 'video') && !isSheetEntry(e.media))
@@ -275,7 +276,7 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 	const sheetInputSource = input.inbound?.find(e => e.targetHandle === 'sheet')?.source ?? '';
 	const upstreamSheet = sheetInputSource ? (() => {
 		const entries = store.byNode(sheetInputSource).filter(e => e.media.kind === 'image');
-		const hit = [...entries].reverse().find(e => e.media.meta?.sheetFull === '1');
+		const hit = [...entries].reverse().find(e => isSheetFullMeta(e.media.meta));
 		// ★ 与预览（nodeCard）同规则：命中 sheetFull = 真图集基底（cell_crops 坐标系有效）；
 		//   兜底普通图仅作显示兼容，isSheetFull=false 供日志/下游判定。
 		return { ref: (hit ?? entries[entries.length - 1])?.media.ref ?? '', isSheetFull: !!hit };
@@ -325,7 +326,7 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 				nodeId: snapshotKey,
 				port: 'sheet',
 				key: '',
-				media: { kind: 'image', ref: sheetRef, meta: { sheetFull: '1', rows: String(rows), cols: String(cols) } },
+				media: { kind: 'image', ref: sheetRef, meta: { sheetFull: META_SHEET_FLAG, rows: String(rows), cols: String(cols) } },
 			});
 			onProgress?.({ progress: 60 });
 			// eslint-disable-next-line no-console
@@ -336,7 +337,7 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 			// 图集（sheet='1'）已被标准化重拼，几何不再对应 cell_crops。此前靠
 			// 「key 字典序尾部恰好是 sheetFull」碰对——显式化，消除运气依赖。
 			const sheetEntry = [...store.byNode(snapshotKey)].reverse()
-				.find(e => e.media.kind === 'image' && e.media.meta?.sheetFull === '1');
+				.find(e => e.media.kind === 'image' && isSheetFullMeta(e.media.meta));
 			if (!sheetEntry) {
 				return { promptId: '', status: 'error', error: '没有可重裁的图集——请先正常生成一次', entries: collected };
 			}
@@ -345,7 +346,7 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 			//   recrop 前先本地化（幂等，data URL 原样返回），重裁产物不再续写过期 URL。
 			sheetRef = await localizeImageRef(sheetRef);
 			// eslint-disable-next-line no-console
-			console.warn(`[EmojiStage] recrop base=${sheetEntry.media.meta?.sheetFull === '1' ? 'sheetFull' : 'mergedSheet'} rows/cols=${rows}x${cols} cellCrops=${JSON.stringify(cellCrops)} ref=${sheetRef.slice(0, 40)}…`);
+			console.warn(`[EmojiStage] recrop base=${isSheetFullMeta(sheetEntry.media.meta) ? 'sheetFull' : 'mergedSheet'} rows/cols=${rows}x${cols} cellCrops=${JSON.stringify(cellCrops)} ref=${sheetRef.slice(0, 40)}…`);
 			// 保留上次各格 prompt 元数据（recrop 不改内容只改裁剪）
 			cellPromptList = store.byNode(snapshotKey)
 				.filter(e => e.port === 'output' && e.media.meta?.cellPrompt)
@@ -475,19 +476,37 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 				nodeId: snapshotKey,
 				port: 'sheet',
 				key: '',
-				media: { kind: 'image', ref: sheetRef, meta: { sheetFull: '1', rows: String(rows), cols: String(cols) } },
+				media: { kind: 'image', ref: sheetRef, meta: { sheetFull: META_SHEET_FLAG, rows: String(rows), cols: String(cols) } },
 			});
 			cellPromptList = cellPrompts;
 		}
 		onProgress?.({ progress: 72 });
-		// ★ 拆分 = 按行列（cell_crops）裁剪 + 可选抠图（cutout_mode，2026-09-08）：
+		// ★ 切分方式（2026-09-10）：'auto' = 自动居中——抠图后逐格检测贴纸包围盒，
+		//   以贴纸中心正方形裁剪（三重有界防跑偏/吞并/交叉，失败落回等分）。检测
+		//   需 alpha：cutout_mode=none 时函数内部用「检测域四边中位色」色差兜底。
+		// ★ 2026-09-10 修正：recrop 才跳过（尊重用户手动微调过的 cell_crops），
+		//   新生成 + 上游直通都启用 auto（直通图集往往格式不规则，最需要自动居中）。
+		let effectiveCrops = cellCrops;
+		let ownership: SheetOwnershipMask | null = null;
+		if (values.cell_crop_mode === 'auto' && !isRecrop) {
+			onProgress?.({ progress: 73 });
+			const detected = await autoDetectCellCrops(sheetRef, rows, cols, { fetchImpl });
+			if (detected) {
+				effectiveCrops = detected.crops;
+				ownership = detected.ownership;
+				// eslint-disable-next-line no-console
+				console.warn(`[EmojiStage] auto cell crops applied: ${JSON.stringify(detected.crops.slice(0, 3).map(c => ({ x: +c.x.toFixed(3), y: +c.y.toFixed(3), w: +c.w.toFixed(3) })))}…`);
+			}
+		}
+		// ★ 拆分 = 按行列（cell_crops / 自动检测框）裁剪 + 可选抠图（cutout_mode）：
 		//   none = 纯裁剪（2026-09-03 起默认）；flood = 白底 flood-fill 抠底；
 		//   chroma = 绿幕 chroma-key（sheetUtils 内自动采样 key 色 + 五道后处理）。
 		const cellsOut = await splitStickerSheet(sheetRef, rows, cols, {
 			marginRatio: EMOJI_SHEET_MARGIN_RATIO,
 			cutoutBg: cutoutMode === 'flood',
 			chroma: cutoutMode === 'chroma',
-			cellCrops,
+			cellCrops: effectiveCrops,
+			ownership,
 		}, fetchImpl);
 		for (let i = 0; i < cellsOut.length; i++) {
 			bakedByTarget.set(i, {
@@ -1021,7 +1040,7 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 				media: {
 					kind: 'image',
 					ref: sheetDataUrl,
-					meta: { mime: 'image/png', sheet: '1', rows: String(rows), cols: String(cols), margin: '0' },
+					meta: { mime: 'image/png', sheet: META_SHEET_FLAG, ...sheetDimsMeta(rows, cols), margin: '0' },
 				},
 				index: 0,
 			};

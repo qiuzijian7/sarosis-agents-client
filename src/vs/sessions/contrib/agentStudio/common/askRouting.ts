@@ -12,9 +12,17 @@
  *   - foreground（用户直接会话的主 agent）→ interactive：弹交互确认卡片（现状行为）。
  *   - subagent（后台派发的子 agent）        → inherit：非交互放行。子 agent 的
  *       可见工具列表已被 SUB_AGENT_PERMISSIONS 在过滤层收窄（explore=只读 /
- *       general=可写 / scout=外部只读），能被 LLM 调到的工具即在其权限档内，
- *       后台运行不应弹交互确认阻塞父级 loop —— 等价于 MiMo「background subagent
- *       继承父授权」。
+ *       general=可写 / scout=外部只读），后台运行不应弹交互确认阻塞父级 loop ——
+ *       等价于 MiMo「background subagent 继承父授权」。
+ *
+ *       ⚠ 2026-09-13 更正：原文这里还写着「**能被 LLM 调到的工具即在其权限档内**」——
+ *       该前提**已被本项目自己的测试证伪**：`test/browser/writeExclusion.test.ts` 记录
+ *       「Explore 档 `canWrite=false`，但其**工具面含 terminal**」，而 terminal 能写
+ *       任何路径、能删任何东西 → 「能调到 ≠ 在权限档内」。
+ *
+ *       因此 `inherit` **不再是无条件放行**（见 `toolExecutionGuard.checkAndApprove`）：
+ *       受保护路径 / 删除类命令**一律拒绝**（非交互下无法弹卡片，fail-closed），
+ *       MCP 工具**只有用户已显式授权该工具**才放行。普通调用仍非交互放行，免打扰不变。
  *   - system（非交互系统 agent，如未来的 checkpoint/dream/distill）→ auto-deny：
  *       不阻塞 loop，直接拒绝越权工具。当前项目暂无独立 system agent 类别，保留
  *       该分支以对齐 MiMo 语义、便于后续扩展。

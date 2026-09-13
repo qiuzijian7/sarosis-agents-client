@@ -18,6 +18,8 @@ export interface MemoryInjectionDeps {
 	readonly logService: ILogService;
 	getActiveMemoryProvider: () => any;
 	injectedSessions: Set<string>;
+	/** P0-1（2026-09-09）：仅注入过「元信息」的 session——下一轮恢复完整注入（一次性） */
+	metaInjectedSessions: Set<string>;
 }
 
 /**
@@ -55,11 +57,11 @@ export async function* injectMemoryContext(
 			.reverse().find(m => m?.role === 'user')?.content ?? '';
 		memoryProvider.triggerHook('session_start', {
 			agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
-		}).catch(() => {});
+		}).catch((err: unknown) => deps.logService.debug(`[AgentOS][MemoryInjection] session_start hook failed: ${err instanceof Error ? err.message : String(err)}`));
 		memoryProvider.triggerHook('prompt_submit', {
 			agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
 			userMessage: userMsg.slice(0, 2000),
-		}).catch(() => {});
+		}).catch((err: unknown) => deps.logService.debug(`[AgentOS][MemoryInjection] prompt_submit hook failed: ${err instanceof Error ? err.message : String(err)}`));
 	}
 
 	if (memoryProvider) {
@@ -68,8 +70,12 @@ export async function* injectMemoryContext(
 			// 已注入的 session 直接跳过后续 loadContext（此前先全量构建再丢弃，
 			// 每轮白付一次混合搜索 + 策展组装的成本）。
 			const sessionKey = request.sessionId || request.agentId;
-			const alreadyInjected = deps.injectedSessions.has(sessionKey);
-			if (alreadyInjected) {
+			// P0-1（2026-09-09）：注入节奏 = 首轮元信息 → 次轮完整注入（一次性）→ 之后跳过。
+			// 旧实现「已注入即 return」使下方 isNewSession 恒 true，导致「后续轮次完整注入」
+			// 分支（下方 else if）不可达——两种语义现拆为两个状态（injectedSessions + metaInjectedSessions）。
+			const fullyInjected = deps.injectedSessions.has(sessionKey);
+			const metaOnlyInjected = deps.metaInjectedSessions.has(sessionKey);
+			if (fullyInjected && !metaOnlyInjected) {
 				return { messages };
 			}
 
@@ -85,11 +91,17 @@ export async function* injectMemoryContext(
 			const timeoutPromise = new Promise<null>(resolve =>
 				setTimeout(() => resolve(null), MEMORY_INJECT_TIMEOUT_MS));
 			let memoryContext: any = null;
+			let loadError: unknown = null;
 			try {
 				memoryContext = await Promise.race([loadPromise, timeoutPromise]);
-			} catch { /* 与超时同等降级 */ }
+			} catch (err) { loadError = err; }
 			if (memoryContext == null) {
-				deps.logService.warn(`[AgentOS][MemoryInjection] loadContext timeout/error (${MEMORY_INJECT_TIMEOUT_MS}ms cap) — injecting empty context for agent ${request.agentId}`);
+				// R2（2026-09-09）：区分「超时」与「provider 抛错」——此前两者混为
+				// 同一条 warn，网关故障（错误）与网关繁忙（超时）无法分辨。
+				const reason = loadError
+					? `error: ${loadError instanceof Error ? loadError.message : String(loadError)}`
+					: `timeout (${MEMORY_INJECT_TIMEOUT_MS}ms cap)`;
+				deps.logService.warn(`[AgentOS][MemoryInjection] loadContext degraded — ${reason} — injecting empty context for agent ${request.agentId}`);
 				memoryContext = { longTermMemories: [], shortTermMemories: [], injectedContext: '' };
 			}
 
@@ -153,9 +165,9 @@ export async function* injectMemoryContext(
 			// 2026-08-07：新 session 元信息模式——首条消息不注入具体记忆内容，
 			// 只注入「存在记忆 + 可用工具检索」的元信息标记，防止旧结论锚定新任务。
 			// 后续轮次恢复正常完整注入。planModePrefix 保留（同 session 的 plan 模式仍需）。
-			const isNewSession = !deps.injectedSessions.has(sessionKey);
+			const isFirstInjection = !fullyInjected;
 
-			if (isNewSession && blocks.length > 0) {
+			if (isFirstInjection && blocks.length > 0) {
 				// 新 session 且有记忆上下文：注入元信息而非具体内容
 				const blockCount = memoryContext.contextBlocks ?? blocks.length;
 				const tokens = memoryContext.contextTokens ?? Math.ceil(blocks.join('\n\n').length / 3);
@@ -175,6 +187,7 @@ export async function* injectMemoryContext(
 				}
 				messages = insertMessages(messages, insertIdx, { role: 'system', content: result });
 				deps.injectedSessions.add(sessionKey);
+				deps.metaInjectedSessions.add(sessionKey);
 				deps.logService.info(
 					`[AgentOS] New session — injected memory META-INFO only (${blockCount} blocks, ~${tokens} tokens, agent=${request.agentId})`
 				);
@@ -205,6 +218,7 @@ export async function* injectMemoryContext(
 				}
 				messages = insertMessages(messages, insertIdx, { role: 'system', content: result });
 				deps.injectedSessions.add(sessionKey);
+				deps.metaInjectedSessions.delete(sessionKey);
 
 			deps.logService.info(
 				`[AgentOS] Injected agentmemory-context (strategy=${strategy}, ${result.length} chars, ` +

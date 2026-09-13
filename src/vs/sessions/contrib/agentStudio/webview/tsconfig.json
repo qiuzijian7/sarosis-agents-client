@@ -15,7 +15,6 @@
     "declaration": false,
     "outDir": "./dist",
     "rootDir": "./src",
-    "baseUrl": "./src",
     "paths": {
       "@/*": ["./*"]
     }

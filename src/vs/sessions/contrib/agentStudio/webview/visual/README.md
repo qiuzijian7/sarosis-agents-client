@@ -215,6 +215,11 @@ browser context 的 fallback 字体行高与最终字体不同）。诊断值写
   `LOCAL_EDITOR_NODE_TYPES`，否则整张卡片空白（R1 会拦住）。
 - **新增专用编辑器接管的字段**：登记进 `stageCardRegistry.STAGE_HIDDEN_FIELDS`，
   R4 会自动豁免；不登记则报 `control-missing`。
+- **新增节点编辑器时同步声明承载方式**：在 `stageCardRegistry.STAGE_EDITOR_META` 登记
+  该 kind 的 `title` / `host`（`'react'` 项目内组件 / `'iframe'` 外部 Web 应用）/
+  `fullscreen`。漏登记会被 `nodeEditorDescriptor.test.ts` 拦住（覆盖完整性双向校验）。
+  注意 `fullscreen: true` 只是**声明意图** —— 还需在 `nodeCard` 实现该编辑器的
+  「全屏尺寸渲染分支」，否则点了按钮是空浮层（当前只有导演台已实现）。
 - **移植 ComfyTV UI 时注意宽度前提**：ComfyUI 节点可拖宽，本项目节点卡片固定 280px。
   照搬单行横排布局必定溢出（Multiangle 案例）。优先竖排 / grid `minmax(0,1fr)`。
 - **`<select>` / `<input>` 放进 flex 或 grid 必须显式 `minWidth: 0`**：

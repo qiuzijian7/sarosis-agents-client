@@ -6,6 +6,7 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import type { ICheckpointService } from '../common/checkpointService.js';
 import type { ICommandService } from '../../../../platform/commands/common/commands.js';
+import type { ILogService } from '../../../../platform/log/common/log.js';
 import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
 import type { ICheckpointInfo } from '../../../browser/agentChat/agentChatTypes.js';
 
@@ -15,12 +16,17 @@ import type { ICheckpointInfo } from '../../../browser/agentChat/agentChatTypes.
  *
  * Extracted from NativeChatEditorPane to isolate checkpoint logic
  * (~100 lines) from the EditorPane lifecycle code.
+ *
+ * 2026-09-12（P0-4）：所有空 `catch {}` 改为 `logService.warn` —— 此前检查点条
+ * 静默消失（refreshBar 抛错）或「查看变更」毫无反应（命令未注册）时，日志里
+ * **零痕迹**，排障只能靠猜。对齐项目内「降级必须可见」原则。
  */
 export class CheckpointManager extends Disposable {
 
 	constructor(
 		private readonly _checkpointService: ICheckpointService,
 		private readonly _commandService: ICommandService,
+		private readonly _logService: ILogService,
 	) {
 		super();
 	}
@@ -80,7 +86,11 @@ export class CheckpointManager extends Disposable {
 				files,
 			};
 			panel.setCheckpoint(info);
-		} catch {
+		} catch (err) {
+			// 2026-09-12（P0-4）：此前空 catch 吞错 —— 检查点条静默消失时无从排查。
+			this._logService.warn(
+				`[CheckpointManager] refreshBar failed (agent=${agentId}, session=${sessionId}): ${err}`,
+			);
 			panel.setCheckpoint(null);
 		}
 	}
@@ -94,19 +104,21 @@ export class CheckpointManager extends Disposable {
 		sessionId: string | null,
 		action: 'undoAll' | 'keepAll' | 'openDiff',
 		payload?: { filePath?: string; checkpointId?: string },
-	): Promise<void> {
-		if (!agentId || !sessionId) { return; }
+	): Promise<{ skippedFiles?: string[] } | undefined> {
+		if (!agentId || !sessionId) { return undefined; }
 		try {
 			if (action === 'undoAll') {
-				await this._checkpointService.revertAllCheckpoints(agentId, sessionId);
+				const result = await this._checkpointService.revertAllCheckpoints(agentId, sessionId);
 				await this._checkpointService.deleteAllCheckpoints(agentId, sessionId);
 				panel?.setCheckpoint(null);
-				return;
+				// 2026-09-12（P2-3）：把「因体积/二进制未纳入检查点而未回退」的文件
+				// 上抛给调用方提示用户（对齐 Claude Code「skipped N files」）。
+				return { skippedFiles: result.skippedFiles };
 			}
 			if (action === 'keepAll') {
 				await this._checkpointService.deleteAllCheckpoints(agentId, sessionId);
 				panel?.setCheckpoint(null);
-				return;
+				return undefined;
 			}
 			if (action === 'openDiff') {
 				try {
@@ -114,10 +126,21 @@ export class CheckpointManager extends Disposable {
 						'agentStudio.openCheckpointDiff',
 						{ agentId, sessionId, filePath: payload?.filePath },
 					);
-				} catch { /* command not registered */ }
+				} catch (err) {
+					// 2026-09-12（P0-4）：该命令此前**全仓未注册**，异常被空 catch 吞掉 →
+					// 用户点「查看变更」毫无反应、日志零痕迹。现至少留痕（命令仍未注册，
+					// 属已知缺口，修复方案见 doc/checkpoint-mechanism-analysis.md P0-4）。
+					this._logService.warn(
+						`[CheckpointManager] openDiff unavailable — command 'agentStudio.openCheckpointDiff' ` +
+						`is not registered (agent=${agentId}, session=${sessionId}): ${err}`,
+					);
+				}
 			}
-		} catch {
-			// ignore
+		} catch (err) {
+			this._logService.warn(
+				`[CheckpointManager] action "${action}" failed (agent=${agentId}, session=${sessionId}): ${err}`,
+			);
 		}
+		return undefined;
 	}
 }

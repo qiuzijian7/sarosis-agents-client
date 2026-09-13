@@ -18,18 +18,23 @@
 import * as React from 'react';
 import { LiteGraph, LGraph, LGraphCanvas, LGraphGroup, LLink, LGraphNode } from '@comfyorg/litegraph';
 import { useWorkflowEditorStore } from './store';
+import { applyNodeControl } from './comfyHost/nodeControlWrite';
+import { scheduleBroadcastSnapshot } from './comfyHost/snapshotBroadcast';
 import {
 	resolveShortcutAction, isEditableTarget, toggleModeForNodes, toggleCollapseForNodes,
 	createGroupForNodes, removeGroupsContaining, NODE_MODE_MUTE, NODE_MODE_BYPASS,
 } from './shortcuts';
-import { registerSarosNodes, registerDefaultComfyTVStages, getNodeSpec, isPortTypeCompatible, isValidLiteGraphConnection, canConnectLayers, registerComfyUINativeNode, syncNodePortsToSpec, getAllSpecs } from './comfyHost/registry';
+import { registerSarosNodes, registerDefaultComfyTVStages, getNodeSpec, isPortTypeCompatible, isFlowLinkType, isValidLiteGraphConnection, canConnectLayers, registerComfyUINativeNode, syncNodePortsToSpec, getAllSpecs } from './comfyHost/registry';
 import { ConnectionDropMenu, type CompatibleNodeItem } from './comfyHost/ConnectionDropMenu';
+// W7 护栏：编排/控制流节点执行分发自检（见下方 registerSaros 调用处）。
+import { findMissingRuntimeDefinitions } from './comfyHost/nodeDefinition';
+import { applyFlowSlotPositions } from './comfyHost/schemaLiteGraphNodes';
 import { registerSarosLiteGraphNodes } from './comfyHost/sarosLiteGraphNodes';
 import { registerMindMapNodes } from '../mindmap/MindMapNode';
 import { toLiteGraph, fromLiteGraph } from './comfyHost/ComfyGraphAdapter';
 import { filterNodesForLiteGraph, findUnsupportedNodes } from './comfyHost/canvasNodeFilter';
 import { CardStateStore } from './comfyHost/cardState';
-import { isLoaderNode, isPickerNode } from './comfyHost/workflowRun';
+import { isLoaderNode, isPickerNode, parsePickerIndexList, parsePickerRefList } from './comfyHost/workflowRun';
 import { attachOverlayLayer, createWidgetBridgeHost, widgetAreaInsets, LITEGRAPH_TITLE_HEIGHT, type OverlayNode, type OverlayOccluder, type WidgetBridgeHost } from './comfyHost/widgetBridge';
 
 /** Distance from a point to a line segment. */
@@ -123,7 +128,7 @@ import { hasStageEditor, stageMinHeight } from './comfyHost/stageCardRegistry';
 import { claimStageUid, releaseStageUidByOwner, readStageUid } from './comfyHost/stageIdentity';
 import { getNodeCardMeta, createNodeCard, ORCH_RICH_NODE_TYPES } from './comfyHost/nodeCard';
 import { patchInlineWidgetEditor } from './comfyHost/inlineWidgetEditor';
-import type { MediaSnapshotEntry } from './comfyHost/mediaSnapshot';
+import { mergeImagePool, type MediaSnapshotEntry } from './comfyHost/mediaSnapshot';
 import { buildMinimapScene, minimapToGraph, applyMinimapPan, renderMinimap } from './minimap';
 import { computeZoomTier, ZOOM_TIER_CSS, ZOOM_TIER_ENABLED } from './zoomTier';
 import { applyComfyNodeStyle } from './comfyNodeStyle';
@@ -156,6 +161,8 @@ export function applyNodeDragDelta(
 
 let sarosRegistered = false;
 let crossLayerGatePatched = false;
+/** W7-flow：控制流连线虚线样式 patch 是否已装（模块级幂等）。 */
+let flowLinkStylePatched = false;
 let zoomToFitPatched = false;
 
 /**
@@ -305,6 +312,21 @@ function ensureSarosRegistration(): void {
 	registerDefaultComfyTVStages();
 	patchZoomToFit();
 
+	// W7 护栏：编排/控制流节点的执行分发自检。查表是精确匹配，type 拼错或漏注册
+	// 只会在真跑该节点时才炸（掉到 runSingleNode 拿 ComfyUI runner 执行编排节点），
+	// 编译期与启动期都无感 —— 这里在注册完成后立刻报警，把「运行时静默崩」提前成
+	// 「控制台明确告警」。（实证：Saros.Gate 拼错 + Saros.Parallel 漏注册。）
+	{
+		const missing = findMissingRuntimeDefinitions();
+		if (missing.length > 0) {
+			console.error(
+				`[LiteGraphCanvas] 节点执行分发缺失：${missing.join(', ')} —— ` +
+				`这些节点执行时会掉到 runSingleNode（当作 ComfyUI 原生节点）而失败。` +
+				`请在 comfyHost/nodes/ 下为其 defineNodeRuntime 并在 nodes/index.ts 引入。`,
+			);
+		}
+	}
+
 	// Cross-layer connection gate (P1 — see doc/workflow-pipeline-fusion-design.md).
 	// LiteGraph's own `isValidConnection` only sees port *types*, not node *kinds*,
 	// so an orchestration node (react/llm) could otherwise link directly to a media
@@ -318,15 +340,85 @@ function ensureSarosRegistration(): void {
 			targetNode: { type?: unknown } | undefined,
 			targetSlot: unknown,
 		) {
-			const srcSpec = getNodeSpec(String(this.type ?? ''));
-			const dstSpec = getNodeSpec(String(targetNode?.type ?? ''));
-			if (srcSpec && dstSpec && !canConnectLayers(srcSpec.kind, dstSpec.kind)) {
+			const srcType = String(this.type ?? '');
+			const dstType = String(targetNode?.type ?? '');
+			const srcSpec = getNodeSpec(srcType);
+			const dstSpec = getNodeSpec(dstType);
+			// W7: 传 type 让 Saros.Start / Saros.End 豁免跨层限制（系统入口/出口锚点
+			// 必须能直连媒体节点，否则「从 Start 开始」无法把媒体链纳入作用域）。
+			if (srcSpec && dstSpec && !canConnectLayers(srcSpec.kind, dstSpec.kind, srcType, dstType)) {
 				// Reject silently (matches isValidConnection's return-null contract).
 				return null;
 			}
 			return origConnect.call(this, slot, targetNode, targetSlot);
 		};
 		crossLayerGatePatched = true;
+	}
+
+	// W7-flow 控制流连线样式（一次 patch，幂等）：控制流边渲染为**青色虚线流动**
+	// —— 与 mockup 场景 C 一致：
+	//   * FLOW       = bridge/provider 的隐形控制口（title 侧锚点）
+	//   * SAROS_JSON = 编排节点间既有的控制通道（Task→Agent→End 等）
+	//   * ANY 双端   = Start/End 的 ANY 口互连 / ANY↔SAROS_JSON（如 Start→AskUser）
+	// 数据边（COMFYTV_* / TEXT / IMAGE…）不受影响。renderLink 无 dash 参数，
+	// 包装 patch 在调用前后设置/复位 lineDash；lineDashOffset 按时间流动。
+	//
+	// ★ ANY 必须按**双端类型**判定，不能只看 link.type：ComfyUI 原生节点的输入口
+	//   全是 ANY（registerComfyUINativeNode），单看 ANY 会把原生数据边也画成虚线
+	//   （实测用户反馈「Start→AskUser 仍是实线」的另一面风险）。规则 = 两端类型
+	//   都属 {FLOW, SAROS_JSON, ANY} 才算控制流边（registry.isFlowLinkType）。
+	if (!flowLinkStylePatched) {
+		const origRenderLink = LGraphCanvas.prototype.renderLink;
+		LGraphCanvas.prototype.renderLink = function (
+			this: LGraphCanvas,
+			ctx: CanvasRenderingContext2D,
+			...rest: unknown[]
+		) {
+			// ★ 不要按位置取 link：签名是 (ctx, a, b, link, skip_border, flow,
+			//   color, …)，去掉 ctx 后 link 在 rest[2]；此前误用 rest[3]（= skip_border）
+			//   → `link?.type` 恒 undefined → **虚线 patch 从未生效**（只有
+			//   link_type_colors 的青色生效，用户看到的是「青色实线」）。
+			//   改为特征查找：link 是唯一带 origin_id/target_id 的非数组对象
+			//   （rest[0]/rest[1] 是坐标数组，skip_border 是 boolean）。
+			const link = rest.find(x =>
+				!!x && typeof x === 'object' && !Array.isArray(x)
+				&& ('origin_id' in (x as Record<string, unknown>) || 'target_id' in (x as Record<string, unknown>)),
+			) as {
+				type?: string; origin_id?: number; target_id?: number;
+				origin_slot?: number; target_slot?: number; color?: string;
+			} | undefined;
+			let isFlow = link?.type === 'FLOW' || link?.type === 'SAROS_JSON';
+			if (!isFlow && link?.type === 'ANY') {
+				// 取对端端口类型：graph 节点 → 对应 slot 的 type。
+				const g = (this as unknown as { graph?: { getNodeById?(id: number): unknown } }).graph;
+				const src = g?.getNodeById?.(link.origin_id ?? -1) as { outputs?: Array<{ type?: string }> } | undefined;
+				const dst = g?.getNodeById?.(link.target_id ?? -1) as { inputs?: Array<{ type?: string }> } | undefined;
+				isFlow = isFlowLinkType(
+					src?.outputs?.[link.origin_slot ?? -1]?.type,
+					dst?.inputs?.[link.target_slot ?? -1]?.type,
+				);
+			}
+			if (isFlow) {
+				// 控制流 ANY 边（Start/End 的 ANY 口）也统一青色：link.color 优先于
+				// link_type_colors，就地打标即可（序列化只存 6 元组，不落 color）。
+				if (link && !link.color) { link.color = '#22d3ee'; }
+				ctx.save();
+				ctx.setLineDash([7, 5]);
+				ctx.lineDashOffset = -((performance.now() / 60) % 12);
+				try {
+					return (origRenderLink as (...a: unknown[]) => void).apply(this, [ctx, ...rest]);
+				} finally {
+					ctx.restore();
+				}
+			}
+			return (origRenderLink as (...a: unknown[]) => void).apply(this, [ctx, ...rest]);
+		} as typeof LGraphCanvas.prototype.renderLink;
+		// 控制流边统一青色（SAROS_JSON 边原为 slate，虚线 + 青色语义更统一）
+		LGraphCanvas.link_type_colors['FLOW'] = '#22d3ee';
+		LGraphCanvas.link_type_colors['SAROS_JSON'] = '#22d3ee';
+		// ANY 边的颜色不全局改（native 数据边也用 ANY）；控制流 ANY 边由上面的
+		// link.color 就地打标变青，非控制流 ANY 边保持类型默认色。
+		flowLinkStylePatched = true;
 	}
 
 	sarosRegistered = true;
@@ -492,7 +584,7 @@ async function collectAsset(workflowId: string, entry: MediaSnapshotEntry): Prom
 const handledPasteEvents = new WeakSet<ClipboardEvent>();
 
 export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraphCanvasProps>(
-	function LiteGraphCanvas({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onNodeContextMenu, onLinkHandleClick, onRequestRun, onCanvasDoubleClick, workflowId }: LiteGraphCanvasProps, ref): React.JSX.Element {
+	function LiteGraphCanvas({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onNodeContextMenu, onLinkContextMenu, onLinkHandleClick, onRequestRun, onCanvasDoubleClick, workflowId }: LiteGraphCanvasProps, ref): React.JSX.Element {
 	const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
 	const graphRef = React.useRef<LGraph | null>(null);
 	const canvasInstanceRef = React.useRef<LGraphCanvas | null>(null);
@@ -554,6 +646,11 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 					// ★ collectAsset 已 async（外网 ref 需先经 host 代理拉取固化落盘）
 					void collectAsset(workflowIdRef.current ?? '', entry);
 				},
+				// ★ P4 跨窗口同步（2026-09-13）：本窗口产出的图/视频 → 广播给同工作流的
+				//   其它窗口（画布 tab ↔ 节点编辑器 tab / 独立窗口），否则在 A 窗口跑出的
+				//   产物，B 窗口的卡片预览看不到（各自 IndexedDB 互不可见）。
+				//   接收侧见下方 `wf-node-snapshot` 监听（以 putRemote 写入 → 不再广播）。
+				onProduced: (entry) => { scheduleBroadcastSnapshot(entry); },
 			},
 		);
 		void snapshotStoreRef.current.hydrate();
@@ -1380,6 +1477,11 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				// 把整个节点 UI 抹掉。
 				canvas.setDirty?.(true, true);
 			}
+			// W7-flow：FLOW 控制口锚点跟随节点宽度（卡片自适应/展开收起会改变
+			// size[0]，输出锚 x = size+4 需每帧校正；幂等，无变化时零写入）。
+			if (applyFlowSlotPositions(n as unknown as LGraphNode)) {
+				canvas.setDirty?.(true, true);
+			}
 			const fullCover = hasStageEditor(nt);
 			// ★ 编排富卡片：卡片里有 DOM 参数控件（provider/model/agent 下拉 +
 			//   prompt textarea，复用 ImageStage 那套组件），必须和 schema 节点一样
@@ -1508,38 +1610,74 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 								);
 							}
 						}
-						// ★ picker「选中即物化」（2026-09-02）：与 loader 同理 —— picker 是
-						//   消费型节点，自身快照恒空（图像挂在 producer 节点 ID 下），下游
-						//   节点（如 Saros.AnimatedEmoji）按 upstreamNodeIds=[picker uid] 查
-						//   快照必为空 → 卡片「引用」缩略图与执行链 findUpstreamImageRef
-						//   全部落空。picker 的选择存在 properties：directRef（跨节点直连）
-						//   或 selected_index（1-based，相对上游 batch）——据此物化一份
-						//   快照到 picker 名下。与 loader 不同点：**选择可变** → 不能幂等
-						//   跳过，必须每次核对 ref 是否一致，变了就覆盖（同 key 覆写）。
+						// ★ picker「选中即物化」（2026-09-02；多选扩展 2026-09-12）：与 loader
+						//   同理 —— picker 是消费型节点，自身快照恒空（图像挂在 producer 节点
+						//   ID 下），下游（如 Saros.AnimatedEmoji）按 upstreamNodeIds=[picker uid]
+						//   查快照必为空 → 卡片「引用」缩略图与执行链 findUpstreamImageRef 全部
+						//   落空。picker 的选择存在 properties，据此物化到 picker 名下。
+						// ★ **多选**（2026-09-12 用户需求「支持多选，选中的每张都输出」）：
+						//   输出 N 条快照（output:0..N-1）→ 下游 byNode 拿到全部；单图消费者
+						//   取第一张，行为不变。
+						// ★ 取数优先级（2026-09-12 修「选 8 张、下游引用只 3 张」）：
+						//   ① `selected_indices`（上游池视图的 0-based 序号数组，**与卡片网格
+						//      高亮同源**）→ 序号经 `mergeImagePool` 候选顺序还原成 refs；
+						//   ② `directRefs` / `directRef`（'all' 视图的 ref 选择）；
+						//   ③ `selected_index` 单值兜底（旧数据）。
+						//   ⚠ 必须**先**判 ①：画布上点选只写 `selected_indices`，若 `directRefs`
+						//   残留旧值（聊天卡上次同步 / 上一次 'all' 视图）而优先级更高，就会按
+						//   旧 refs 输出 → 「节点选 8 张、下游只 3 张」✗。
+						//   ⚠ `selected_index` 单值兜底只在**没有** ref 选择时启用：'all' 视图下
+						//   它被复位为 1（无意义），参与判定会把序号路径误激活 ✗。
+						// ★ 幂等（关键）：`store.put` 是**追加**语义（自动分配 next index，
+						//   不认 entry.key），若每次 syncOverlay 都 put 会无限累积 → 必须
+						//   先与现有 output 序列比对，变了才「清旧 + 重写」。
 						if (store && isPickerNode(originType)) {
 							const p = (origin.properties ?? {}) as Record<string, unknown>;
-							let wantRef = typeof p.directRef === 'string' && p.directRef ? p.directRef : '';
-							if (!wantRef) {
-								const idx = Number(p.selected_index);
-								if (Number.isFinite(idx) && idx >= 1) {
-									for (const l2 of g.links.values()) {
-										if (l2.target_id !== origin.id) { continue; }
-										const prod = g.getNodeById(l2.origin_id);
-										if (!prod) { continue; }
-										const puid = claimStageUid(prod as unknown as Parameters<typeof claimStageUid>[0]);
-										const list = store.byNode(puid).filter(e => e.media.kind === 'image');
-										const pick = list[idx - 1];
-										if (pick) { wantRef = pick.media.ref; break; }
+							let wantRefs: string[] = [];
+							// ② 'all' 视图的 ref 选择（directRefs 数组 → directRef 单值）
+							const directList = parsePickerRefList(p.directRefs);
+							const directSingle = typeof p.directRef === 'string' && p.directRef ? p.directRef : '';
+							const hasDirect = directList.length > 0 || !!directSingle;
+							// ① 上游池视图的序号选择（selected_indices 多选 → selected_index 单值兜底）
+							const idxList = parsePickerIndexList(p.selected_indices);
+							const rawIdx = Number(p.selected_index);
+							const idxs = idxList.length > 0
+								? idxList
+								: (!hasDirect && Number.isFinite(rawIdx) && rawIdx >= 1 ? [rawIdx - 1] : []);
+							if (idxs.length > 0) {
+								// ★ 候选顺序必须与**卡片池**（`pickerPool = mergeImagePool(pickerOutputs)`）
+								//   完全一致：`selected_indices` 是用户**按卡片池网格**点的序号，
+								//   而 `byNode` 是 index 升序（旧图在前）、`mergeImagePool` 反转 +
+								//   去重（新图在前）→ 直接用 byNode 会**选错图** ✗。
+								const raw: MediaSnapshotEntry[] = [];
+								for (const l2 of g.links.values()) {
+									if (l2.target_id !== origin.id) { continue; }
+									const prod = g.getNodeById(l2.origin_id);
+									if (!prod) { continue; }
+									const puid = claimStageUid(prod as unknown as Parameters<typeof claimStageUid>[0]);
+									for (const e of store.byNode(puid)) {
+										if (e.media.kind === 'image') { raw.push(e); }
 									}
 								}
+								const candRefs = mergeImagePool(raw).map(e => e.media.ref);
+								wantRefs = idxs.map(i => candRefs[i]).filter((r): r is string => typeof r === 'string' && r.length > 0);
 							}
-							if (wantRef) {
-								const cur = store.byNode(oid).find(e => e.media.kind === 'image');
-								if (!cur || cur.media.ref !== wantRef) {
-									store.put(
-										{ nodeId: oid, port: 'output', key: `${oid}:output:0`, media: { kind: 'image', ref: wantRef }, index: 0 },
-										true /* skipImport */,
-									);
+							if (wantRefs.length === 0 && hasDirect) {
+								wantRefs = directList.length > 0 ? directList : [directSingle];
+							}
+							if (wantRefs.length > 0) {
+								const existing = store.byNode(oid).filter(e => e.media.kind === 'image');
+								const same = existing.length === wantRefs.length
+									&& existing.every((e, i) => e.media.ref === wantRefs[i]);
+								if (!same) {
+									// store.put 追加语义 → 先同步清掉旧 output（remove 同步从 refs 删除）
+									for (const e of existing) { void store.remove(e.key); }
+									wantRefs.forEach((ref, i) => {
+										store.put(
+											{ nodeId: oid, port: 'output', key: `${oid}:output:${i}`, media: { kind: 'image', ref }, index: i },
+											true /* skipImport */,
+										);
+									});
 								}
 							}
 						}
@@ -1864,11 +2002,35 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			if (!node) { return; }
 			node.properties.prompt = detail.prompt;
 			// 同步写到 zustand store 的 node.data（执行链路数据源），与 handleNodeControl 保持一致。
-			useWorkflowEditorStore.getState().updateNodeData(detail.nodeId, { prompt: detail.prompt });
+			// ★ P2b 收尾（2026-09-13）：改走**统一写入口** `applyNodeControl(origin='canvas')`。
+			//   原来直接 `updateNodeData(store)` 有两处缺口：
+			//     ① 与 handleNodeControl 的双写路径不一致（两套写路径必然漂移 ✗）；
+			//     ② **不通知 host** → 画布 tab ↔ 节点编辑器 tab 的 prompt 不同步
+			//        （prompt 是卡片最常改的字段，缺口明显）。
+			//   properties 已在上一行单独写入（applyNodeControl 只负责 store + 通知）。
+			applyNodeControl(detail.nodeId, 'prompt', detail.prompt, 'canvas');
 			graph.change?.();
 			graph.setDirtyCanvas?.(true, true);
 		};
 		window.addEventListener('wf-node-prompt', handleNodePrompt);
+
+		// ★ P4 跨窗口同步（2026-09-13）：**其它窗口**产出的图/视频 → 写入本窗口的快照
+		//   库，卡片预览立即出现（否则需重载窗口才可见）。
+		//   写入走 `putRemote`：① 不再广播（防回环 ✓）；② 按 ref 去重（同一产物的重复
+		//   广播不会在卡片历史里堆成一串相同的图 ✓）；③ skipImport（A 窗口已导入媒体库）。
+		const handleNodeSnapshot = (e: Event) => {
+			const detail = (e as CustomEvent<{ nodeId?: string; port?: string; media?: MediaSnapshotEntry['media'] }>).detail;
+			const store = snapshotStoreRef.current;
+			if (!detail?.nodeId || !detail.port || !detail.media?.kind || !detail.media.ref || !store) { return; }
+			const inserted = store.putRemote({
+				nodeId: detail.nodeId,
+				port: detail.port,
+				key: '',   // put 内部会按本地单调 index 重写
+				media: detail.media,
+			});
+			if (inserted) { graph.setDirtyCanvas?.(true, true); }
+		};
+		window.addEventListener('wf-node-snapshot', handleNodeSnapshot);
 
 		// Inline parameter controls (workflow/resolution/batch_size/…) → write back
 		// into BOTH node.properties (LiteGraph 原生画布持久化) AND useWorkflowEditorStore
@@ -1876,7 +2038,7 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		// runNodeOrStage → injectWorkflowValues → 实际生效的 values）。原版只写
 		// node.properties 导致 widget 改后 values 拿不到新值（batch_size=2 永远不生效）。
 		const handleNodeControl = (e: Event) => {
-			const detail = (e as CustomEvent<{ nodeId: string; name: string; value: unknown }>).detail;
+			const detail = (e as CustomEvent<{ nodeId: string; name: string; value: unknown; origin?: 'canvas' | 'external' }>).detail;
 			if (!detail?.nodeId || !detail.name) { return; }
 			const node = graph.nodes.find(n => String((n.properties as Record<string, unknown> | undefined)?.['__sarosId'] ?? n.id) === detail.nodeId);
 			if (!node) { return; }
@@ -1884,7 +2046,11 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			// 同步写到 zustand store 的 node.data（执行链路数据源）。
 			// 用 .getState().updateNodeData 直接 mutate，不触发 store 订阅重渲染（LiteGraph
 			// 自身已 setDirtyCanvas）。
-			useWorkflowEditorStore.getState().updateNodeData(detail.nodeId, { [detail.name]: detail.value });
+			// ★ 唯一写入口（2026-09-11）：画布自身与外部同步（host canvas op / 卡片回流）
+			//   共用 `applyNodeControl` —— 避免两套写路径漂移 ✗。
+			// ★ P2b（2026-09-13）：透传来源 —— 其它窗口同步来的值以 'external' 应用，
+			//   `applyNodeControl` 据此**不**回调 host（否则跨窗口互发 → 回环/抖动 ✗）。
+			applyNodeControl(detail.nodeId, detail.name, detail.value, detail.origin === 'external' ? 'external' : 'canvas');
 			graph.change?.();
 			graph.setDirtyCanvas?.(true, true);
 		};
@@ -1985,6 +2151,7 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			window.removeEventListener('wf-node-edit', handleNodeEdit);
 			window.removeEventListener('wf-node-action', handleNodeAction);
 			window.removeEventListener('wf-node-prompt', handleNodePrompt);
+			window.removeEventListener('wf-node-snapshot', handleNodeSnapshot);
 			window.removeEventListener('wf-node-control', handleNodeControl);
 			window.removeEventListener('dragover', handleAssetDragOver);
 			window.removeEventListener('drop', handleAssetDrop);
@@ -2239,6 +2406,14 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			const graph = graphRef.current;
 			if (!graph || graph.nodes.length === 0) { return null; }
 			const serialized = graph.serialize();
+			// W7-flow：FLOW 控制口是编排层概念，ComfyUI 没有对应端口/节点 ——
+			// 导出到 ComfyUI GUI workflow 时丢弃这些 link（type='FLOW'）。这是
+			// 唯一面向 ComfyUI 的出口；画布同步（syncStoreToGraph）走的
+			// toLiteGraph **不过滤**，否则控制连线会从画布上消失。
+			const links = (serialized as { links?: Array<[number, number, number, number, number, string]> }).links;
+			if (links) {
+				serialized.links = links.filter(l => l[5] !== 'FLOW') as typeof serialized.links;
+			}
 			const wf = serialized as unknown as ComfyGuiWorkflow;
 			return wf;
 		},

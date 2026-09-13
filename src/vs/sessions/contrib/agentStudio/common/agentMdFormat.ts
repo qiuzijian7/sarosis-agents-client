@@ -29,6 +29,9 @@ interface AgentMdRaw {
 	description?: string;
 	model?: string | string[];
 	providerId?: string;
+	// 图片生成模型（2026-09-10 扩展字段，VS Code Chat 忽略）
+	imageModel?: string;
+	imageProviderId?: string;
 	tools?: string | string[];
 	icon?: string;
 	handoffs?: unknown;       // VS Code 用 lowercase `handoffs`
@@ -207,6 +210,9 @@ export function buildAgentMd(agent: Agent): string {
 	if (agent.role && agent.role !== 'assistant') { fm.role = agent.role; }
 	if (agent.category && agent.category !== 'General') { fm.category = agent.category; }
 	fm.source = agent.source ?? 'custom';
+	// 图片生成模型（2026-09-10）：与对话模型并列持久化，聊天框「图片模型」选择器读回
+	if (agent.imageModel) { fm.imageModel = agent.imageModel; }
+	if (agent.imageProviderId) { fm.imageProviderId = agent.imageProviderId; }
 	if (agent.owner) { fm.owner = agent.owner; }
 	if (agent.version) { fm.version = agent.version; }
 	if (agent.storeId) { fm.storeId = agent.storeId; }
@@ -278,6 +284,9 @@ export function parseAgentMd(content: string): { agent: Partial<Agent>; systemPr
 		model: typeof raw.model === 'string' ? raw.model
 			: (Array.isArray(raw.model) && raw.model.length > 0 ? raw.model[0] : 'claude-sonnet-4-20250514'),
 		providerId: typeof raw.providerId === 'string' ? raw.providerId : undefined,
+		// 图片生成模型（2026-09-10）
+		imageModel: typeof raw.imageModel === 'string' ? raw.imageModel : undefined,
+		imageProviderId: typeof raw.imageProviderId === 'string' ? raw.imageProviderId : undefined,
 		category: typeof raw.category === 'string' ? raw.category : 'General',
 		source: (raw.source === 'builtin' || raw.source === 'custom') ? raw.source : 'custom',
 		owner: typeof raw.owner === 'string' ? raw.owner : undefined,

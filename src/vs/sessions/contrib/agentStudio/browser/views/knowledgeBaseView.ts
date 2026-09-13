@@ -79,6 +79,13 @@ import {
 	KbSortMode, KB_SORT_GROUPS, newVaultId,
 } from './knowledgeBase/kbTypes.js';
 import { KbMindmapGenerator } from './knowledge/kbMindmapGenerator.js';
+import {
+	naturalCompare as naturalComparePure,
+	formatSizeCompact,
+	cssEscapeAttribute,
+	normalizePathForCompare,
+	isAbsolutePath,
+} from './knowledgeBase/kbViewUtils.js';
 import { STORAGE_VAULTS, STORAGE_ACTIVE, STORAGE_KB_DIR } from '../knowledge/kbVaultState.js';
 import type { IChatModel } from '../knowledge/llm.js';
 import { KbFullTextIndex, IKbSearchHit } from './knowledgeBase/kbIndex.js';
@@ -87,12 +94,8 @@ import { KbNativeKernel, INativeBacklinkResult } from './knowledgeBase/kbNativeK
 import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelService.js';
 import { IEmbeddingService } from '../../common/embeddingProvider.js';
 import { resolveAuxEmbeddingProviderId, resolveAuxEmbeddingConfig } from '../knowledge/embeddingConfigResolver.js';
-import {
-	AGENT_STUDIO_AUX_EMBEDDING_PROVIDER,
-	AGENT_STUDIO_AUX_EMBEDDING_MODEL,
-	AGENT_STUDIO_AUX_EMBEDDING_DIMENSIONS,
-} from '../../common/constants.js';
 import { KbWorkerManager } from './knowledgeBase/kbWorkerManager.js';
+import { renderKbSettingsPanel } from './knowledgeBase/kbSettingsPanel.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
 import { MemoryDetailEditorInput } from '../memoryDetailEditorInput.js';
 import { CodebaseMemoryDetailEditorInput } from '../codebaseMemoryDetailEditorInput.js';
@@ -361,10 +364,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._body = container;
 		this._body.classList.add('kb-view');
 
-		// ── ═══ 知识库 Section Header ═══ ──
+		// ── ═══ 资料库 Section Header ═══ ──
+		// 2026-09-11：与左侧栏页签文案保持一致（「知识库」→「资料库」）。
 		const header = $('div.kb-header');
 		const title = $('span.kb-title');
-		title.textContent = '📚 知识库';
+		title.textContent = '📚 资料库';
 		header.appendChild(title);
 		header.appendChild($('span.kb-spacer'));
 		const graphBtn = $('span.kb-hbtn');
@@ -410,7 +414,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const searchBox = $('div.kb-search-box');
 		safeSetInnerHtml(searchBox, '<span>🔍</span>');
 		const searchInput = document.createElement('input');
-		searchInput.placeholder = '搜索知识库…';
+		searchInput.placeholder = '搜索资料库…';
 		searchInput.oninput = () => this.applyFilter(searchInput.value.trim().toLowerCase());
 		this._searchInput = searchInput;
 		searchBox.appendChild(searchInput);
@@ -431,7 +435,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			} else {
 				modeBtn.textContent = '全文';
 				modeBtn.title = '当前：全文检索（点击切换为文件名筛选）';
-				searchInput.placeholder = '搜索知识库…';
+				searchInput.placeholder = '搜索资料库…';
 			}
 			// 触发重新过滤
 			this.applyFilter(searchInput.value.trim().toLowerCase());
@@ -1771,7 +1775,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	private naturalCompare(a: string, b: string): number {
-		return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+		return naturalComparePure(a, b);
 	}
 
 	/**
@@ -2051,9 +2055,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	private fmtSize(bytes: number): string {
-		if (bytes < 1024) { return `${bytes}B`; }
-		if (bytes < 1024 * 1024) { return `${(bytes / 1024).toFixed(1)}KB`; }
-		return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+		return formatSizeCompact(bytes);
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -2389,181 +2391,25 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	private renderSettingsPanel(): void {
-		this._settingsDD.replaceChildren();
-
-		const title = $('div.kb-dd-title'); title.textContent = '知识库设置';
-		this._settingsDD.appendChild(title);
-
-		// 知识库目录配置行（Vault 及其「库」「笔记」子文件夹均在此目录下）
-		const row = $('div.kb-set-row');
-		const label = $('span.kb-set-label'); label.textContent = '📁 知识库目录';
-		const path = $('span.kb-set-path'); path.id = 'kbRootPath'; path.textContent = this.rootUri.fsPath;
-		const browse = $('span.kb-set-btn.primary'); browse.id = 'kbRootBrowse'; browse.textContent = '📂'; browse.title = '浏览文件夹…';
-		const manual = $('span.kb-set-btn'); manual.id = 'kbRootManual'; manual.textContent = '📄'; manual.title = '手动输入路径';
-		row.append(label, path, browse, manual);
-		this._settingsDD.appendChild(row);
-
-		const hint = $('div.kb-set-hint'); hint.textContent = '点击 📂 选择文件夹，或 📄 手动输入路径（Vault 及其「库」「笔记」子文件夹均在此目录下）';
-		this._settingsDD.appendChild(hint);
-
-		// ── Embedding 模型配置 ──
-		const embDivider = $('div.kb-divider');
-		this._settingsDD.appendChild(embDivider);
-
-		const embTitle = $('div.kb-dd-title'); embTitle.textContent = '🧬 Embedding 模型';
-		this._settingsDD.appendChild(embTitle);
-
-		const embCfg = resolveAuxEmbeddingConfig(this.configurationService);
-
-		// Provider select — 动态获取已配置的 Embedding Provider 列表
-		const providerRow = $('div.kb-set-row');
-		const providerLabel = $('span.kb-set-label'); providerLabel.textContent = 'Provider';
-		const providerSelect = document.createElement('select') as HTMLSelectElement;
-		providerSelect.className = 'kb-set-select';
-
-		// Auto 始终作为首个选项
-		const autoOpt = document.createElement('option');
-		autoOpt.value = 'auto'; autoOpt.textContent = 'Auto（自动）';
-		if (embCfg.providerId === 'auto') { autoOpt.selected = true; }
-		providerSelect.appendChild(autoOpt);
-
-		// 从 IEmbeddingService 获取已激活（已配置 API Key）的 provider 列表
-		const allProviders = this._ragEmbeddingService.listProviders();
-		const configuredProviders = allProviders.filter(p => p.configured);
-		for (const p of configuredProviders) {
-			const o = document.createElement('option');
-			o.value = p.id;
-			o.textContent = `${p.kind === 'openai' ? 'OpenAI' : 'Local'} / ${p.model} (${p.dimensions}d)`;
-			if (p.id === embCfg.providerId) { o.selected = true; }
-			providerSelect.appendChild(o);
-		}
-		// 若当前选中 provider 不在已配置列表中（可能被动态移除了），保留原值但不默认选中
-		if (!embCfg.providerId || embCfg.providerId === 'auto') {
-			// auto always valid
-		} else if (!configuredProviders.some(p => p.id === embCfg.providerId)) {
-			// 当前值不在已配置列表中 → 额外添加一个标记项，提示用户
-			const o = document.createElement('option');
-			o.value = embCfg.providerId;
-			o.textContent = `${embCfg.providerId}（未配置）`;
-			o.selected = true;
-			o.disabled = false;
-			providerSelect.appendChild(o);
-		}
-
-		providerSelect.onchange = () => {
-			this.configurationService.updateValue(AGENT_STUDIO_AUX_EMBEDDING_PROVIDER, providerSelect.value);
-			void this._logOp('settings.embedding.provider', 'success', { target: providerSelect.value });
-		};
-		providerRow.append(providerLabel, providerSelect);
-		this._settingsDD.appendChild(providerRow);
-
-		const providerHint = $('div.kb-set-hint'); providerHint.textContent = 'Auto 表示跟随全局 Embedding Provider 设置';
-		this._settingsDD.appendChild(providerHint);
-
-		// Model input
-		const modelRow = $('div.kb-set-row');
-		const modelLabel = $('span.kb-set-label'); modelLabel.textContent = 'Model';
-		const modelInput = document.createElement('input');
-		modelInput.className = 'kb-set-input';
-		modelInput.value = embCfg.modelId;
-		modelInput.placeholder = 'text-embedding-3-small';
-		modelInput.onchange = () => {
-			const v = modelInput.value.trim();
-			if (v) {
-				this.configurationService.updateValue(AGENT_STUDIO_AUX_EMBEDDING_MODEL, v);
-				void this._logOp('settings.embedding.model', 'success', { target: v });
-			}
-		};
-		modelRow.append(modelLabel, modelInput);
-		this._settingsDD.appendChild(modelRow);
-
-		const modelHint = $('div.kb-set-hint'); modelHint.textContent = '向量化模型 ID（留空使用默认 text-embedding-3-small）';
-		this._settingsDD.appendChild(modelHint);
-
-		// Dimensions input
-		const dimRow = $('div.kb-set-row');
-		const dimLabel = $('span.kb-set-label'); dimLabel.textContent = 'Dimensions';
-		const dimInput = document.createElement('input');
-		dimInput.type = 'number';
-		dimInput.className = 'kb-set-num';
-		dimInput.value = String(embCfg.dimensions);
-		dimInput.min = '1'; dimInput.max = '8192'; dimInput.step = '64';
-		dimInput.onchange = () => {
-			const v = parseInt(dimInput.value, 10);
-			if (Number.isFinite(v) && v > 0) {
-				this.configurationService.updateValue(AGENT_STUDIO_AUX_EMBEDDING_DIMENSIONS, v);
-				void this._logOp('settings.embedding.dimensions', 'success', { target: String(v) });
-			}
-		};
-		dimRow.append(dimLabel, dimInput);
-		this._settingsDD.appendChild(dimRow);
-
-		const dimHint = $('div.kb-set-hint'); dimHint.textContent = '向量维度（默认 512，范围 1-8192，修改后需重建索引）';
-		this._settingsDD.appendChild(dimHint);
-
-		// 重建向量索引按钮
-		const rebuildRow = $('div.kb-set-row');
-		const rebuildBtn = $('div.kb-set-action'); rebuildBtn.textContent = '🔄 重新构建向量索引';
-		rebuildBtn.onclick = (e) => {
-			e.stopPropagation();
-			this._settingsDD.classList.remove('show');
-			void this.rebuildVectorIndex();
-		};
-		rebuildRow.appendChild(rebuildBtn);
-		this._settingsDD.appendChild(rebuildRow);
-
-		// ── Vault 统计 ──
-		if (this._activeVault) {
-			const docs = this._nativeKernel?.allDocs() ?? [];
-			const totalSize = docs.reduce((sum, d) => sum + (d.size || 0), 0);
-			const sqliteActive = !!this._kbSqliteStore;
-			const stats = $('div.kb-set-hint');
-			stats.style.paddingTop = '8px';
-			stats.style.borderTop = `1px solid var(--vscode-panel-border, #444)`;
-			stats.style.marginTop = '4px';
-			let statsHtml = [
-				`📄 ${docs.length} 文档`,
-				totalSize > 0 ? `· ${this._formatSize(totalSize)}` : '',
-				sqliteActive ? '· 🗄️ SQLite FTS5' : '· 💾 内存索引',
-			].filter(Boolean).join(' ');
-			if (this._activeVault.linkedWorkspaces?.length) {
-				statsHtml += ` · 🔧 ${this._activeVault.linkedWorkspaces.length} 工作区`;
-			}
-			safeSetInnerHtml(stats, statsHtml);
-			this._settingsDD.appendChild(stats);
-		}
-
-		// 快捷入口：打开当前知识库文件夹
-		const openRow = $('div.kb-set-row');
-		const openBtn = $('div.kb-set-action'); openBtn.textContent = '📂 打开知识库文件夹';
-		openBtn.onclick = (e) => { e.stopPropagation(); this._settingsDD.classList.remove('show'); void this.openKbFolder(); };
-		openRow.appendChild(openBtn);
-		this._settingsDD.appendChild(openRow);
-
-		// 交互
-		const rootPath = path;
-		browse.onclick = (e) => { e.stopPropagation(); void this.pickKbDir(rootPath.textContent); };
-		manual.onclick = (e) => {
-			e.stopPropagation();
-			const input = document.createElement('input');
-			input.className = 'kb-set-input';
-			input.value = rootPath.textContent;
-			rootPath.replaceWith(input);
-			input.focus(); input.select();
-			let done = false;
-			const commit = (save: boolean) => {
-				if (done) { return; }
-				done = true;
-				const v = input.value.trim();
-				if (save && v) { void this.applyKbDir(v); }
-				else { this.renderSettingsPanel(); }
-			};
-			input.onkeydown = (ke) => {
-				if (ke.key === 'Enter') { ke.preventDefault(); commit(true); }
-				else if (ke.key === 'Escape') { ke.preventDefault(); commit(false); }
-			};
-			input.onblur = () => commit(true);
-		};
+		const docs = this._activeVault ? (this._nativeKernel?.allDocs() ?? []) : [];
+		const totalSize = docs.reduce((sum, d) => sum + (d.size || 0), 0);
+		renderKbSettingsPanel({
+			container: this._settingsDD,
+			configurationService: this.configurationService,
+			providers: this._ragEmbeddingService.listProviders(),
+			rootPath: this.rootUri.fsPath,
+			hasActiveVault: !!this._activeVault,
+			docCount: docs.length,
+			totalSize,
+			sqliteActive: !!this._kbSqliteStore,
+			linkedWorkspaceCount: this._activeVault?.linkedWorkspaces?.length ?? 0,
+			logOp: (code, detail) => { void this._logOp(code, 'success', detail); },
+			onPickDir: (current) => { void this.pickKbDir(current); },
+			onApplyDir: (dir) => { void this.applyKbDir(dir); },
+			onRebuildVectorIndex: () => { void this.rebuildVectorIndex(); },
+			onOpenKbFolder: () => { void this.openKbFolder(); },
+			onRerender: () => this.renderSettingsPanel(),
+		});
 	}
 
 	/** 调原生文件夹选择框，选取知识库目录。 */
@@ -2763,16 +2609,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 检查路径是否为绝对路径（兼容 Windows 盘符和 Unix /）。 */
 	private _isAbsolutePath(p: string): boolean {
-		return /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('/');
-	}
-
-	private _formatSize(bytes: number): string {
-		if (bytes < 1024) { return `${bytes} B`; }
-		const kb = bytes / 1024;
-		if (kb < 1024) { return `${kb.toFixed(1)} KB`; }
-		const mb = kb / 1024;
-		if (mb < 1024) { return `${mb.toFixed(1)} MB`; }
-		return `${(mb / 1024).toFixed(1)} GB`;
+		return isAbsolutePath(p);
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -3844,7 +3681,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	private cssEscape(s: string): string {
-		return s.replace(/["\\]/g, '\\$&');
+		return cssEscapeAttribute(s);
 	}
 
 	private findNodeEl(section: KbSection, path: string): HTMLElement | null {
@@ -3978,7 +3815,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 路径比较归一化（与 sectionOfPath 同口径：统一斜杠 + 小写，兼容 Windows 盘符大小写差异）。 */
 	private _normPath(p: string): string {
-		return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+		return normalizePathForCompare(p);
 	}
 
 	/** 分区根路径（用于判断某路径的父级是否为分区根，从而把刷新键归一到 null）。 */

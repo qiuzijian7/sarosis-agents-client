@@ -15,10 +15,10 @@ import {
 	type PluginManifest,
 	type PluginModule,
 } from '../../webview/src/features/workflowEditor/comfyHost/pluginLoader.js';
-import { getNodeSpec, registerSarosisNodes } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
+import { getNodeSpec, registerSarosNodes } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
 
 // Clean registry before each run (avoid leaking plugin node types across tests).
-suiteSetup(() => { registerSarosisNodes(); });
+suiteSetup(() => { registerSarosNodes(); });
 
 function fakeModule(registerBody?: (api: unknown) => void): PluginModule {
 	// A module whose register() calls defineNode with the given defs.

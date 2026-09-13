@@ -27,6 +27,7 @@ import { IObservable, autorun } from '../../../../../../base/common/observable.j
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IMcpService, IMcpServer, IMcpTool, McpConnectionState, IMcpToolCallContext } from '../../../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent, ToolSecurityLevel } from '../../../common/providers.js';
+import { MCP_TOOL_CATEGORY_PREFIX } from '../../../common/toolApprovalPolicy.js';
 
 // 不再需要 SEPARATOR — 使用 VS Code MCP 系统的 tool.id 作为路由名
 
@@ -268,9 +269,11 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 			name: routedName,
 			description: desc,
 			inputSchema: def.inputSchema as Record<string, unknown>,
-			category: `mcp:${this._sanitize(server.definition.id)}`,
+			// 前缀 = `MCP_TOOL_CATEGORY_PREFIX`（单一真源）—— 审批策略据此识别 MCP 来源的工具，
+			// 把它们从「沙箱内文件写自动放行」中排除（MCP 工具不经过路径沙箱、不创建 checkpoint）。
+			category: `${MCP_TOOL_CATEGORY_PREFIX}${this._sanitize(server.definition.id)}`,
 			source: this.id,
-			securityLevel: this._inferSecurityLevel(tool),
+			securityLevel: this._inferSecurityLevel(server, tool),
 		};
 	}
 
@@ -282,13 +285,26 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 	 * 2. MCP 协议 annotations.destructiveHint === true → Dangerous
 	 * 3. 无 annotations → 从描述首句推断（首句描述主要操作，避免正文中的示例误判）
 	 *
+	 * ⚠ 2026-09-13：**`Safe` 不等于「免审批」**（对 MCP 工具而言）。
+	 * 这两个注解都是 **server 自报**的（规范称之为 *hint*），客户端无法验证；
+	 * 因此 `ToolApprovalService.checkAndApprove` 的 `Safe` 早返回**已对 MCP 来源的工具关闭**
+	 * （判定真源 `common/toolApprovalPolicy.isMcpSourcedTool`）。
+	 * 本函数产出的 `Safe` 只用于「ask/plan 模式下提供哪些工具」这类 UX 过滤。
+	 *
+	 * 另：`destructiveHint === true → Dangerous` 保留 —— 它只会**升级**要求，永远安全。
+	 *
 	 * 首句匹配优于全文匹配：codebase-memory-mcp 的 search_graph 描述中
 	 * "update settings" 是搜索示例而非写操作，全文匹配会误判为 Dangerous。
+	 *
+	 * ★ 2026-09-11 修复：缓存键必须含**服务器维度** —— 此前仅用 `toolName`，
+	 * 两个服务器若有同名工具但 annotations / 描述不同，第二个会直接复用第一个
+	 * 的等级（可能是 Dangerous 被误判为 Safe → **跳过审批**）。
 	 */
-	private _inferSecurityLevel(tool: IMcpTool): ToolSecurityLevel {
+	private _inferSecurityLevel(server: IMcpServer, tool: IMcpTool): ToolSecurityLevel {
 		const toolName = tool.definition.name;
+		const cacheKey = `${server.definition.id}::${toolName}`;
 		// 缓存命中 → 直接返回，不打日志
-		const cached = this._securityLevelCache.get(toolName);
+		const cached = this._securityLevelCache.get(cacheKey);
 		if (cached !== undefined) {
 			return cached;
 		}
@@ -307,7 +323,7 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 			result = this._inferFromDescription(toolName, tool.definition.description);
 		}
 
-		this._securityLevelCache.set(toolName, result);
+		this._securityLevelCache.set(cacheKey, result);
 		return result;
 	}
 

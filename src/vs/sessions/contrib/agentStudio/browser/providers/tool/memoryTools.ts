@@ -28,11 +28,16 @@ export interface MemoryToolContext {
 }
 
 /**
- * M2（2026-07-26 §16）：子代理记忆写入预算——subagent 的 agentId 每次任务唯一，
+ * M2（2026-07-26 §16）：记忆写入预算——subagent 的 agentId 每次任务唯一，
  * 按 agentId 计数即 per-task 预算（默认 10，AGENT_STUDIO_SUBAGENT_MAX_MEMORY_WRITES
  * 可配）。运行日志曾出现单个子代理 93 次 writeMemory（memory_remember 滥用）。
+ *
+ * P0-4（2026-09-09）：主代理此前完全无限制，且工具描述谎称 "at most 3 saves"
+ * （与实际 10 不符）。现主代理也设预算（默认 50，AGENT_STUDIO_MAIN_MAX_MEMORY_WRITES
+ * 可配）。注意主代理 agentId 会话内稳定，故按「会话生命周期」计数而非 per-task；
+ * 超限时错误信息会引导模型改用 memory_search / memory_recall 复用已有记忆。
  */
-const _subagentMemoryWrites = new Map<string, number>();
+const _memoryWrites = new Map<string, number>();
 const SUBAGENT_MEMORY_WRITE_BUDGET = (() => {
 	try {
 		const raw = typeof process !== 'undefined' ? process.env['AGENT_STUDIO_SUBAGENT_MAX_MEMORY_WRITES'] : undefined;
@@ -40,18 +45,27 @@ const SUBAGENT_MEMORY_WRITE_BUDGET = (() => {
 		return Number.isInteger(n) && n > 0 ? n : 10;
 	} catch { return 10; }
 })();
+const MAIN_MEMORY_WRITE_BUDGET = (() => {
+	try {
+		const raw = typeof process !== 'undefined' ? process.env['AGENT_STUDIO_MAIN_MAX_MEMORY_WRITES'] : undefined;
+		const n = raw !== undefined ? Number(raw) : NaN;
+		return Number.isInteger(n) && n > 0 ? n : 50;
+	} catch { return 50; }
+})();
 
-function checkSubagentMemoryBudget(agentId: string): { allowed: boolean; used: number } {
-	if (!agentId.startsWith('subagent-')) { return { allowed: true, used: 0 }; }
-	const used = _subagentMemoryWrites.get(agentId) ?? 0;
-	if (used >= SUBAGENT_MEMORY_WRITE_BUDGET) { return { allowed: false, used }; }
-	_subagentMemoryWrites.set(agentId, used + 1);
+/** 导出供测试：预算耗尽分支此前零覆盖（P2 补测，2026-09-09） */
+export function checkMemoryWriteBudget(agentId: string): { allowed: boolean; used: number; budget: number; isSubagent: boolean } {
+	const isSubagent = agentId.startsWith('subagent-');
+	const budget = isSubagent ? SUBAGENT_MEMORY_WRITE_BUDGET : MAIN_MEMORY_WRITE_BUDGET;
+	const used = _memoryWrites.get(agentId) ?? 0;
+	if (used >= budget) { return { allowed: false, used, budget, isSubagent }; }
+	_memoryWrites.set(agentId, used + 1);
 	// 防御性上限：map 超 500 键时淘汰最老（agentId 含时间戳，插入序≈时间序）
-	if (_subagentMemoryWrites.size > 500) {
-		const oldest = _subagentMemoryWrites.keys().next().value;
-		if (oldest !== undefined) { _subagentMemoryWrites.delete(oldest); }
+	if (_memoryWrites.size > 500) {
+		const oldest = _memoryWrites.keys().next().value;
+		if (oldest !== undefined) { _memoryWrites.delete(oldest); }
 	}
-	return { allowed: true, used: used + 1 };
+	return { allowed: true, used: used + 1, budget, isSubagent };
 }
 
 export function registerMemoryTools(ctx: MemoryToolContext): void {
@@ -60,7 +74,7 @@ export function registerMemoryTools(ctx: MemoryToolContext): void {
 	ctx.register({
 		definition: {
 			name: 'memory_remember',
-			description: 'Save a memory entry. Use ONLY for facts/preferences/decisions valuable across sessions (e.g. user preferences, project conventions, key decisions). Do NOT record transient task progress — put that in your final reply instead. Limit: at most 3 saves per task. The memory backend (AgentMemory) automatically deduplicates identical content.',
+			description: 'Save a memory entry. Use ONLY for facts/preferences/decisions valuable across sessions (e.g. user preferences, project conventions, key decisions). Do NOT record transient task progress — put that in your final reply instead. Limit: at most 10 saves per task (subagents) / 50 per session (main agents). The memory backend (AgentMemory) automatically deduplicates identical content.',
 			inputSchema: { type: 'object', properties: {
 				content: { type: 'string', description: 'Memory content to save' },
 				memory_type: { type: 'string', enum: ['working', 'pattern', 'preference', 'architecture', 'bug', 'workflow', 'fact'], description: 'Memory type (对齐 agentmemory mem::remember). working→核心槽位(mem:core-memory), 其余原生类型→长期记忆(mem:memories). semantic/procedural 由固化管线自动产出, 不接受手动写入 (default: fact)' },
@@ -77,10 +91,13 @@ export function registerMemoryTools(ctx: MemoryToolContext): void {
 			if (!content) { return [{ type: 'text', text: 'memory_remember error: content is required' }]; }
 			const slotId = args['slot_id'] as string | undefined;
 
-			// M2: 子代理写入预算（per-task 默认 10 次）
-			const budget = checkSubagentMemoryBudget(agentId);
+			// P0-4: 记忆写入预算（子代理 per-task 默认 10 / 主代理 per-session 默认 50）
+			const budget = checkMemoryWriteBudget(agentId);
 			if (!budget.allowed) {
-				return [{ type: 'text', text: `memory_remember: 记忆写入预算已用尽（本任务 ${SUBAGENT_MEMORY_WRITE_BUDGET} 次上限）。请将结论写入最终回复返回给主代理，而不是继续写入记忆。` }];
+				const hint = budget.isSubagent
+					? `memory_remember: 记忆写入预算已用尽（本任务 ${budget.budget} 次上限）。请将结论写入最终回复返回给主代理，而不是继续写入记忆。`
+					: `memory_remember: 记忆写入预算已用尽（本会话 ${budget.budget} 次上限）。请优先用 memory_search / memory_recall 复用已有记忆，并把结论写入最终回复，而不是继续写入。`;
+				return [{ type: 'text', text: hint }];
 			}
 
 			const memProvider = ctx.agentOS.getActiveMemoryProvider();

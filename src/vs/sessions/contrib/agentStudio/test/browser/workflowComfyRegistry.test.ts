@@ -14,10 +14,17 @@ import {
 	isPortTypeCompatible,
 	isValidLiteGraphConnection,
 	buildComfyPaletteItems,
+} from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
+// ★ import 路径修正（2026-09-11）：以下三个符号已从 registry.ts 迁出 ——
+//   registerSarosNodes / registerComfyUINativeNode → registrySaros.ts；
+//   normalizePortType → registryTools.ts。此前仍从 registry.js 导入 →
+//   esbuild「No matching export」→ 整个文件无法构建（长期在 build-failure 基线内，
+//   19 个用例从未真正运行）。逻辑未变，仅拆分导入来源。
+import {
 	registerSarosNodes,
 	registerComfyUINativeNode,
-	normalizePortType,
-} from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
+} from '../../webview/src/features/workflowEditor/comfyHost/registrySaros.js';
+import { normalizePortType } from '../../webview/src/features/workflowEditor/comfyHost/registryTools.js';
 
 suite('comfyHost registry', () => {
 

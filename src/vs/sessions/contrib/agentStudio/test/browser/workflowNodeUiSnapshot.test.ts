@@ -181,8 +181,10 @@ const STAGE_NODES: UiExpectation[] = [
 		minHeight: 520,
 	},
 	{
-		type: 'ComfyTV.EmojiStage',
-		editorKind: 'emoji',
+		// ★ 类型/kind 名同步（2026-09-11）：节点已注册为 `ComfyTV.StatEmojiStage`，
+		//   编辑器 kind 由 `'emoji'` 改名为 `'emoji-static'`（stageCardRegistry.ts）。
+		type: 'ComfyTV.StatEmojiStage',
+		editorKind: 'emoji-static',
 		mustHave: { inlineEditor: true },
 		forbidden: { controls: ['rows', 'cols', 'fps', 'frames', 'prompt', 'cells', 'selected_index', 'run_scope'] },
 		minHeight: 500,
@@ -193,10 +195,9 @@ const ORCH_NODES: Array<{
 	type: string;
 	mustHave: { controls: string[]; prompt?: boolean };
 }> = [
-	{
-		type: 'Saros.Start',
-		mustHave: { controls: ['args'] },                // JSON 文本域
-	},
+	// ★ Saros.Start 已移出（2026-09-11 同步）：生产侧 2026-09-09 刻意把它移出
+	//   ORCH_RICH_NODE_TYPES —— 卡片零参数 UI 后 Start 与 End 对称，改走纯 canvas
+	//   渲染（DOM 富卡 overlay 会把 Start 撑高到 ~150px）。故不再断言其富卡控件。
 	{
 		type: 'Saros.Prompt',
 		mustHave: { controls: [], prompt: true },       // 只有 prompt
@@ -225,10 +226,10 @@ const ORCH_NODES: Array<{
 		type: 'Saros.Switch',
 		mustHave: { controls: ['evaluationTarget', 'cases'] },
 	},
-	{
-		type: 'Saros.AskUser',
-		mustHave: { controls: ['questionText', 'options', 'multiSelect'] },
-	},
+	// ★ Saros.AskUser 已移出（2026-09-11 同步）：生产侧同日把它移出
+	//   ORCH_RICH_NODE_TYPES —— 参数收敛为嵌套 `data.questions`，扁平 DOM 控件
+	//   无法表达 → spec.widgets 清空、编辑走弹窗；留集合里会双向失效
+	//   （既无控件也抑制摘要）。改走普通 react 卡片 + questions 摘要。
 	{
 		type: 'Saros.Merge',
 		mustHave: { controls: ['mode'] },
@@ -261,9 +262,15 @@ suite('node UI structural snapshot (controls/prompt/inlineEditor/flags)', () => 
 		//   真正该守的不变量：STAGE_EDITOR_KIND 的每个值都必须是 nodeCard 真的会
 		//   渲染的 kind。这里以 StageEditorKind 联合类型为白名单——把 kind 加进
 		//   联合类型时必然会看到本注释，从而记得同步 nodeCard 分支。
+		// ★ 白名单同步（2026-09-11）：以 stageCardRegistry.ts 的 `StageEditorKind`
+		//   联合类型为唯一真值。此前列表已过期 —— 缺 'emoji-static'（StatEmojiStage
+		//   的编辑器，nodeCard.tsx 有 isEmojiStatic 分支）、'animated-emoji'
+		//   （Saros.AnimatedEmoji）、'directorConsole'（StoryboardEditorStage），
+		//   且残留已被改名的 'emoji' → 守卫误报「nodeCard cannot render」。
 		const RENDERABLE: readonly StageEditorKind[] = [
 			'mask', 'crop', 'transform', 'outpaint', 'gridSplit', 'colorGrade',
-			'kenBurns', 'multiangle', 'panorama', 'relight', 'material', 'emoji', 'image',
+			'kenBurns', 'multiangle', 'panorama', 'relight', 'material',
+			'emoji-static', 'animated-emoji', 'image', 'directorConsole',
 		];
 		for (const [type, kind] of Object.entries(STAGE_EDITOR_KIND)) {
 			assert.ok(RENDERABLE.includes(kind),
@@ -333,12 +340,15 @@ suite('node UI structural snapshot (controls/prompt/inlineEditor/flags)', () => 
 		});
 	}
 
-	test('ORCH_RICH_NODE_TYPES 已登记的 12 类编排节点', () => {
+	test('ORCH_RICH_NODE_TYPES 已登记的 10 类编排节点', () => {
+		// ★ 同步（2026-09-11）：12 → 10 —— Saros.Start（2026-09-09）与
+		//   Saros.AskUser（2026-09-11）已被**刻意**移出富卡集合（registry.ts 内有
+		//   详细理由：前者改纯 canvas 渲染，后者参数嵌套化 + 抑制摘要问题）。
 		const expected = [
-			'Saros.Start', 'Saros.Prompt', 'Saros.Task',
+			'Saros.Prompt', 'Saros.Task',
 			'Saros.Agent', 'Saros.Skill', 'Saros.Tool',
 			'Saros.IfElse', 'Saros.Switch', 'Saros.Merge',
-			'Saros.Loop', 'Saros.Parallel', 'Saros.AskUser',
+			'Saros.Loop', 'Saros.Parallel',
 		];
 		for (const t of expected) {
 			assert.ok(ORCH_RICH_NODE_TYPES.has(t),

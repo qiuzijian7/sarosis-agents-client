@@ -223,13 +223,11 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 		category: "tts",
 		source: 'hermes-bundled',
 	},
-	{
-		name: "todo",
-		description: "Manage a task list for tracking multi-step work. Add, list, update, and remove tasks.",
-		inputSchema: {"type":"object","properties":{"action":{"type":"string","enum":["add","list","update","remove","clear"],"description":"Action to perform"},"id":{"type":"string","description":"Task ID (for update/remove)"},"text":{"type":"string","description":"Task description (for add)"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Task status (for update)"}},"required":["action"]},
-		category: "todo",
-		source: 'hermes-bundled',
-	},
+	// ★ 2026-09-11 删除 `todo` 条目：该工具**已于 2026-07-04 被 `update_plan` 替代**
+	// （见 `compatibilityTools.ts` 的「替代旧的 todo 工具（CRUD 式 task list）」注释），
+	// `CORE_TOOLS` 与 toolsetConfig 中的对应项也早已换成 `update_plan`。
+	// 保留它只会注册一个**永不生效的 stub**（无真实 handler）并误导后人以为该工具存在。
+	// 注：本文件部分定义来自上游 Hermes 同步 —— 若同步后它再次出现，请重新删除。
 
 	{
 		name: "session_search",
@@ -622,11 +620,9 @@ export const BUNDLED_TOOLSETS: Readonly<Record<string, IToolsetDefinition>> = {
 		tools: ["text_to_speech"],
 		includes: [],
 	},
-	"todo": {
-		description: "Task planning",
-		tools: ["todo"],
-		includes: [],
-	},
+	// ★ 2026-09-11 删除 `todo` toolset：其唯一工具 `todo` 已被 `update_plan` 替代
+	// 并从 `BUNDLED_TOOL_DEFINITIONS` 移除（见该文件内说明）。保留会构成**悬空引用**
+	// —— `bundledTools.test.ts` 的「no dangling references」用例会直接失败。
 	"memory": {
 		description: "Persistent memory",
 		tools: ["memory_remember","memory_list"],

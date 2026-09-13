@@ -32,6 +32,7 @@ import { IFilesConfigurationService } from '../../../../workbench/services/files
 import { TextFileEditor } from '../../../../workbench/contrib/files/browser/editors/textFileEditor.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import * as DOM from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -635,10 +636,68 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		}
 	}
 
+	/**
+	 * 把 HTML 中的相对资源引用重写为 webview 可访问的 URI。
+	 *
+	 * webview 运行在 `vscode-webview://` 自定义方案下，无法直接读取磁盘文件，
+	 * 因此同目录下的 `<link href>`、`<script src>`、`<img src>` 等相对路径
+	 * 必须经 asWebviewUri() 转成 `https://file+*.vscode-cdn.net/...` 形式，
+	 * 并依赖 localResourceRoots 授权。绝对 URL（http/https/data/blob/#）保持不变。
+	 */
+	private _rewriteRelativeResourceUrls(html: string): string {
+		const resource = this.input?.resource;
+		if (!resource) {
+			return html;
+		}
+		const dirUri = URI.file(resource.fsPath.replace(/[\\/][^\\/]+$/, ''));
+
+		// 只重写这些属性上的相对引用；跳过 http(s)/data/blob/协议相对/锚点。
+		const attrPattern = /(<(?:link|script|img|source|video|audio|iframe|use)\b[^>]*?\b(?:href|src)\s*=\s*)(["'])([^"']+)\2/gi;
+
+		return html.replace(attrPattern, (match, prefix: string, quote: string, url: string) => {
+			if (!this._isRelativeResourceUrl(url)) {
+				return match;
+			}
+			// 去掉查询串/哈希后再解析为文件 URI，避免被当作路径的一部分。
+			const [pathPart, suffix] = this._splitUrlSuffix(url);
+			const fileUri = URI.joinPath(dirUri, ...pathPart.split('/').filter(segment => segment && segment !== '.'));
+			return `${prefix}${quote}${asWebviewUri(fileUri).toString()}${suffix}${quote}`;
+		});
+	}
+
+	/** 判断 URL 是否为需要重写的同目录相对路径。 */
+	private _isRelativeResourceUrl(url: string): boolean {
+		const trimmed = url.trim();
+		if (!trimmed) {
+			return false;
+		}
+		// 已有方案（http:、https:、data:、blob:、vscode-*:、file:）或协议相对（//）→ 不处理
+		if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith('//')) {
+			return false;
+		}
+		// 纯锚点 → 不处理
+		if (trimmed.startsWith('#')) {
+			return false;
+		}
+		return true;
+	}
+
+	/** 拆分 URL 的路径部分与查询/哈希后缀，保留后缀原样。 */
+	private _splitUrlSuffix(url: string): [string, string] {
+		const match = url.match(/^([^?#]*)([?#].*)?$/);
+		return [match?.[1] ?? url, match?.[2] ?? ''];
+	}
+
 	private _wrapHtmlForWebview(html: string): string {
+		// 相对路径资源（<link href> / <script src> / <img src> 等）在 webview 中
+		// 无法直接访问磁盘文件，必须先重写为 asWebviewUri() 生成的可用地址。
+		html = this._rewriteRelativeResourceUrls(html);
+
 		// ~/.saros 目录下的文件不受沙箱限制，vscode-file: 允许通过
 		// file:// 协议访问本地资源（如 config.html 内嵌的 img / iframe / fetch）。
-		const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; img-src 'self' data: https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; font-src data: https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; connect-src https: http://127.0.0.1:* http://localhost:* vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; frame-src https: vscode-webview: vscode-file:;">`;
+		// style-src/img-src/font-src 需放行 https://*.vscode-cdn.net —— 相对资源经
+		// asWebviewUri() 重写后指向该域；同时保留 'self' 以允许 webview 自身 origin。
+		const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline' https: https://*.vscode-cdn.net vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; script-src 'unsafe-inline' 'unsafe-eval' https: https://*.vscode-cdn.net vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; img-src 'self' data: https: https://*.vscode-cdn.net vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; font-src 'self' data: https: https://*.vscode-cdn.net vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; connect-src https: http://127.0.0.1:* http://localhost:* https://*.vscode-cdn.net vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; frame-src https: https://*.vscode-cdn.net vscode-webview: vscode-file:;">`;
 		const baseStyle = `<style>html,body{margin:0;padding:0;}body{background:#ffffff;color:#1e1e1e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;}@media (prefers-color-scheme: dark){body{background:#1e1e1e;color:#d4d4d4;}}</style>`;
 		// 预览模式强制隐藏编辑器 runtime chrome——无论源 HTML 是否嵌入了
 		// 预览模式清理：隐藏编辑模式 chrome，递归移除 contentEditable 残留

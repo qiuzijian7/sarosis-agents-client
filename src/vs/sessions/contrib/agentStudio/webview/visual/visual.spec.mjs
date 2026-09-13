@@ -283,6 +283,11 @@ const ready = await page.getAttribute('body', 'data-vt-ready');
 if (ready !== 'true') {
 	const fatal = await page.getAttribute('body', 'data-vt-fatal');
 	console.error(`[visual] harness 启动失败：${fatal}`);
+	// ★ 完整 stack 在页面 pre.vt-mount-error 里（main().catch 写入），dump 出来定位
+	try {
+		const stack = await page.$eval('pre.vt-mount-error', el => el.textContent ?? '');
+		console.error(stack);
+	} catch { /* pre 不存在则跳过 */ }
 	await browser.close(); server.close();
 	process.exit(1);
 }

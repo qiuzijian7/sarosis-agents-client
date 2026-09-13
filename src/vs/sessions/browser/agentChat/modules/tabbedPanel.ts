@@ -318,10 +318,11 @@ export class TabbedPanelManager extends Disposable {
 		grip.textContent = '⋮⋮';
 		row.appendChild(grip);
 
-		// Status dot
-		const dot = document.createElement('span');
-		dot.className = `tbp-task-status tbp-task-status-${status}`;
-		row.appendChild(dot);
+		// ★ 2026-09-12：移除任务项前的状态圆圈（用户反馈：pending 项的空心圆圈显得多余，
+		//   见截图）。状态改由**整行样式**表达，无需额外图标：
+		//     - executing → 行背景泛红（.tbp-task-executing）
+		//     - done      → 文字删除线 + 半透明（.tbp-task-done）
+		//   对应的 `.tbp-task-status` CSS 规则已同步删除。
 
 		// Content
 		const content = document.createElement('span');

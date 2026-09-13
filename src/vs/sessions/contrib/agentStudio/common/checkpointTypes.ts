@@ -60,6 +60,14 @@ export interface IFileSnapshot {
 	 * existed (treated as `true` → restore-by-write).
 	 */
 	readonly existedBefore?: boolean;
+	/**
+	 * 内容因体积过大或为二进制被省略（2026-09-12，P2-3）：此时 `content` 为空，
+	 * 回退**跳过该文件**并计入 {@link IJumpToCheckpointResult.skippedFiles}。
+	 *
+	 * 为什么不能「写入空内容」：二进制经 `VSBuffer.toString()` 解码后再写回会产出
+	 * **损坏文件** —— 比不回退更糟（用户以为已还原）。故宁可不回退并显式告知。
+	 */
+	readonly contentOmitted?: boolean;
 }
 
 /**
@@ -97,4 +105,10 @@ export interface IJumpToCheckpointResult {
 	readonly checkpointId: string;
 	readonly restoredFiles: string[]; // URIs that were restored
 	readonly removedMessages: number; // number of messages removed (after checkpoint)
+	/**
+	 * 因快照内容被省略（超大 / 二进制）而**未能回退**的文件（2026-09-12，P2-3）。
+	 * 调用方应向用户显式提示（对齐 Claude Code「skipped N files」），
+	 * 避免用户误以为已完全还原。
+	 */
+	readonly skippedFiles?: string[];
 }

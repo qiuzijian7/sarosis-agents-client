@@ -167,6 +167,33 @@ export type RequestType =
 	| 'workflow.breakpoint.clear' // v5a: clear a workflow-level breakpoint (WebView → Host)
 	| 'workflow.breakpoint.get'   // v5a: fetch persisted breakpoints (WebView → Host)
 	| 'workflow.list'            // v10: list all workflows (WebView → Host)
+	| 'workflow.sessions.list'   // 2026-09-11: list workflow sessions (WebView → Host)
+	| 'workflow.sessions.select' // 2026-09-11: select active workflow session (WebView → Host)
+	| 'workflow.sessions.rename' // 2026-09-11: rename a workflow session (WebView → Host)
+	| 'workflow.importFile'      // 2026-09-11: import a workflow from a local JSON file (WebView → Host；host 侧弹原生文件对话框)
+	| 'workflow.openNodeEditor'  // 2026-09-13: 把某节点的编辑器开在独立 editor tab (WebView → Host)
+	| 'workflow.snapshotPut'     // 2026-09-13 (P4): 本窗口产出图/视频 → host 广播给同工作流的其它窗口 (WebView → Host)
+	// ── 一致性补齐（2026-09-11）：webview 侧已登记但 host 缺失的请求类型。
+	//    由 test/browser/messageProtocolConsistency.test.ts 守卫，防再次漂移。
+	| 'agents.export'
+	| 'agents.import'
+	| 'workspace.createWithWorktree'
+	| 'workspace.assignWorktree'
+	| 'workspace.resetWorktree'
+	| 'workspace.removeWorktree'
+	| 'media.getFilePath'
+	| 'triage.specify'
+	| 'triage.decompose'
+	| 'diagnostics.run'
+	| 'diagnostics.list'
+	| 'diagnostics.dismiss'
+	| 'swarm.create'
+	| 'swarm.status'
+	| 'swarm.list'
+	| 'swarm.blackboard'
+	| 'swarm.cancel'
+	| 'orchestration.updateTask'
+	| 'orchestration.decomposeTask'
 	| 'workflow.reorder'         // v19: reorder workflow list (WebView → Host)
 	| 'workflow.open'            // v19: open a workflow in the editor (WebView → Host)
 	| 'workflow.submitVariables' // v6: submit pre-execution variable values (WebView → Host)
@@ -176,8 +203,11 @@ export type RequestType =
 	| 'workflow.executeScript'  // M4c: webview 直接执行脚本（绕过 LLM 决策，确定性触发）
 	| 'workflow.stageRunResult' // P0: webview 回程「画布节点执行结果」（stage() 写方向桥）
 	| 'workflow.stageRunProgress' // P0: webview 回程「画布节点执行进度」（ComfyUI 生成实时进度）
+	| 'workflow.stageRunHeartbeat' // 2026-09-11：stage() 心跳回程（只续期，与直跑同构）
 	| 'workflow.stageDirectRunResult' // 存储工作流 ComfyStage 直跑回程（direct stage run 桥）
 	| 'workflow.stageDirectRunProgress' // 存储工作流 ComfyStage 直跑进度回程
+	| 'workflow.stageDirectRunHeartbeat' // 2026-09-11：直跑心跳回程（只续期，解耦「活性」与「进度」）
+	| 'workflow.nodeValuesChanged'  // 2026-09-11：画布节点值变更回流（卡片数据 ↔ 画布节点 UI 同步）
 	| 'workflow.publishState'    // 单行工具栏：查询发布状态（本地版本 vs 商城版本）
 	| 'workflow.publish'         // 单行工具栏：打开发布 modal（上传 / 更新到商城）
 	| 'workflow.versionHistory'  // 单行工具栏：切换版本历史侧边面板（由 EditorPane 处理）
@@ -234,6 +264,8 @@ export type EventType =
 	| 'confightml.chatStreamDone'   // stream complete (success or error)
 	| 'chat.toolApprovalRequest'
 	| 'chat.injectPrompt'        // host requests webview to inject a prompt into the chat (e.g. workflow run)
+	| 'workflow.nodeValuesRemote' // P2b（2026-09-13）：其它窗口改了同一节点的值（画布 tab ↔ 节点编辑器 tab 同步；接收端以 origin='external' 应用，不回发 → 防回环）
+	| 'workflow.snapshotPutRemote' // P4（2026-09-13）：其它窗口产出的图/视频（接收端 putRemote 写入 → 不再广播 → 防回环）
 	| 'workflow.loaded'          // host sends workflow data to webview editor
 	| 'workflow.saved'           // host confirms save to webview
 	| 'workflow.stateApplied'    // host pushes AI-generated workflow state to webview editor
@@ -241,7 +273,11 @@ export type EventType =
 	| 'workflow.executionTrace'  // P4: host pushes subagent trace (start/delta/end) to owner agent's chat
 	| 'workflow.canvasOps'      // Agent-driven canvas: host pushes canvas ops batch to webview (P0)
 	| 'workflow.snapshotQuery'   // M2 dynamic workflow: host asks webview to resolve nodeOutput(stageUid,slot)
-	| 'workflow.snapshotArchive'; // M2 dynamic workflow: host archives a workflow run result as SAROS_JSON
+	| 'workflow.snapshotArchive' // M2 dynamic workflow: host archives a workflow run result as SAROS_JSON
+	| 'workflow.snapshotMediaPut' // 2026-09-11：host 把**媒体引用**落进 webview 快照库（选择型节点输出与普通节点同构）
+	| 'workflow.stageDirectRun'       // 存储工作流 ComfyStage 直跑（host → 画布按 stageClass 执行）
+	| 'workflow.stageDirectRunCancel' // 2026-09-11：host 放弃该直跑（空闲超时）→ 画布停止执行，消除僵尸
+	| 'workflow.stageRunCancel';     // 2026-09-11：host 放弃该 stage()（空闲超时 / 取消）→ 同上（与直跑同构）
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 

@@ -16,6 +16,9 @@ import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
 import type { CardStateStore } from './cardState.js';
 import type { SingleNodeRunResult } from './nodeExecutor.js';
 import { runSingleNode, comfyOutputsToFxSnapshots } from './nodeExecutor.js';
+// ★ Loop/Parallel body 递归执行需要 runNodeOrStage——与 workflowRun.ts 构成循环依赖，
+//   但调用发生在运行时（非模块初始化期）+ 函数声明提升 → esbuild bundle 下安全。
+import { runNodeOrStage } from './workflowRun.js';
 import { runStageWorkflow, StageWorkflowUnavailableError, collectUpstreamRefs, applyAssetRefOverrides, type StageWorkflowRunOptions } from './stageWorkflowExecutor.js';
 import { styleTemplateOf } from './builtinWorkflows/emojiWorkflows.js';
 import { buildEmojiModelPrompt, parseComfyModelValue } from './emojiModelAdapt.js';
@@ -362,7 +365,9 @@ export async function runAskUserNodeExecutor(input: NodeExecutionInput): Promise
 				.map(p => ({
 					key: String(p?.key ?? '').trim(),
 					label: String(p?.label ?? '').trim(),
-					type: (p?.type === 'number' || p?.type === 'textarea' ? p.type : 'text') as AskUserParam['type'],
+					// ★ image 加入白名单（2026-09-10）：此前只认 number/textarea，
+					//   其余一律归一 text —— image 字段会退化成文本框，用户无法上传参考图。
+					type: (p?.type === 'number' || p?.type === 'textarea' || p?.type === 'image' ? p.type : 'text') as AskUserParam['type'],
 				}))
 				.filter(p => p.key)
 				.map(p => ({ key: p.key, label: p.label || p.key, type: p.type }));

@@ -108,11 +108,20 @@ suite('WorkflowExecutionService Comfy node execution', () => {
 
 	suite('no delegate registered', () => {
 
-		test('skips the node with a warning', async () => {
+		test('★ 显式清空 delegate → fail-loud 标 Failed 并警告（2026-09-11 同步新契约）', async () => {
 			const { svc, log } = buildService({ storage: makeWorkflowStorage(WORKFLOW) });
+			// ★ 两处契约变更（均为刻意）：
+			//   ① 2026-09-10：服务**构造期默认注册** Comfy 委托（`createComfyStageDelegate`）
+			//      —— 修复 native 聊天触发存储工作流时 controller 未创建 → delegate 缺失
+			//      → 所有 ComfyStage 报「no Comfy execution delegate」并级联跳过下游
+			//      （表情包工作流卡死根因）。故须显式清空才能走到兜底分支。
+			//   ② v39 fail-loud：兜底由「静默 return」改为**标 Failed + 级联跳过下游**
+			//      —— 旧版节点状态缺失会让终态误判 Completed、下游拿到空输入。
+			svc._comfyDelegate = undefined;
 			const state = makeState();
 			await svc._executeComfyNode(state, WORKFLOW, comfyNode());
-			assert.strictEqual(state.nodeStates.get('n-comfy'), undefined);
+			const ns = state.nodeStates.get('n-comfy');
+			assert.strictEqual(ns?.status, 'failed', 'fail-loud：应为 Failed 而非静默跳过');
 			assert.ok(log.warnings.some(w => w.includes('no Comfy execution delegate')), 'should warn about missing delegate');
 		});
 	});

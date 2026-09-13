@@ -76,7 +76,13 @@ function dbClose(db: Database): Promise<void> {
 let _sqliteRequire: ReturnType<typeof createRequire> | undefined;
 function makeSQLiteRequire(): NodeRequire {
 	if (!_sqliteRequire) {
-		_sqliteRequire = createRequire(import.meta.url);
+		// esbuild CJS bundle（测试 runner 等）下 import.meta.url 为 undefined →
+		// createRequire(undefined) 抛 ERR_INVALID_ARG_VALUE。回退 cwd 解析
+		// （runner 已把项目 node_modules 加进 globalPaths）。
+		const base = typeof import.meta.url === 'string'
+			? import.meta.url
+			: `${process.cwd().replace(/[\\/]+$/, '')}/package.json`;
+		_sqliteRequire = createRequire(base);
 	}
 	return _sqliteRequire;
 }

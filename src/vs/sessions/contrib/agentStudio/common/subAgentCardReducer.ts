@@ -38,6 +38,18 @@ export interface MutableCardState {
 	startedAt?: number;
 	/** 子代理结束时间（Completed/Failed/Interrupted 时记录，epoch ms） */
 	completedAt?: number;
+	/**
+	 * ★ 2026-09-13：**累计** token 用量（input/output），执行过程中实时更新。
+	 *
+	 * 数据源：`unifiedSubAgentDispatch` 的 usage delta 分支 —— 每个 LLM turn 的 usage
+	 * 到达时 emit 一条 Progress 事件带上累计值（此前只在 Completed 时下发，卡片要等
+	 * 子代理跑完才有数字）。
+	 */
+	tokensUsed?: { input: number; output: number };
+	/**
+	 * ★ 2026-09-13：**累计**积分消耗，执行过程中实时更新（与 `tokensUsed` 同一数据链）。
+	 */
+	creditUsed?: number;
 }
 
 /**
@@ -133,12 +145,30 @@ export function reduceCardState(
 			if (event.progressNote) {
 				card.progress = event.progressNote;
 			}
+			// ★ 2026-09-13：实时 token 用量 —— 每个 LLM turn 的 usage 到达即刷新
+			//   （见 unifiedSubAgentDispatch 的 usage 分支），让卡片在**执行过程中**
+			//   就能显示消耗，而不是等 Completed。
+			if (event.tokensUsed) {
+				card.tokensUsed = { ...event.tokensUsed };
+			}
+			if (typeof event.creditUsed === 'number') {
+				card.creditUsed = event.creditUsed;
+			}
 			break;
 
-		case SubAgentEventType.Completed:
+			case SubAgentEventType.Completed:
 			card.status = 'done';
 			card.progress = undefined;
 			card.completedAt = Date.now();
+			// ★ 2026-09-13：完成事件也带 tokensUsed（终值），覆盖「最后一个 turn 的 usage
+			//   与 Completed 同帧到达」的时序，避免卡片停在倒数第二个 turn 的数字。
+			if (event.tokensUsed) {
+				card.tokensUsed = { ...event.tokensUsed };
+			}
+			// ★ 2026-09-13：积分终值（与 tokensUsed 同帧到达，避免停在倒数第二个 turn）。
+			if (typeof event.creditUsed === 'number') {
+				card.creditUsed = event.creditUsed;
+			}
 			if (event.output) {
 				card.output = event.output.slice(0, 2000);
 			}

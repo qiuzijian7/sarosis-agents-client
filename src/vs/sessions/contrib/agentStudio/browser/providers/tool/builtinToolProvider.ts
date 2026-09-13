@@ -45,7 +45,7 @@ import { IToolProvider, IToolDefinition, IToolCall, IToolResult } from '../../..
 import { ISkillRegistry } from '../../../common/skills.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { ITerminalService } from '../../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IAgentStudioService, ITaskOrchestrationService, IAgentTaskBoardService } from '../../../../../common/agentStudioService.js';
+import { IAgentStudioService, ITaskOrchestrationService, IAgentTaskBoardService, IAgentChatService } from '../../../../../common/agentStudioService.js';
 import { ITriageService } from '../../../common/triageService.js';
 import { ISwarmService } from '../../../common/swarmService.js';
 import { ICheckpointService } from '../../../common/checkpointService.js';
@@ -60,7 +60,10 @@ import { registerCodebaseTools } from './codebaseTools.js';
 import { registerKanbanTools } from './kanbanTools.js';
 import { registerWorkflowTools } from './workflowTools.js';
 import { registerCanvasTools } from './canvasTools.js';
+import { registerImageGenTools } from './imageGenTools.js';
 import { registerMindmapTools } from './mindmapTools.js';
+import { createMediaStoreProxy } from '../../mediaStoreProxy.js';
+import { IMainProcessService } from '../../../../../../platform/ipc/common/mainProcessService.js';
 import { IPlaywrightService } from '../../../../../../platform/browserView/common/playwrightService.js';
 import { IEditorService } from '../../../../../../workbench/services/editor/common/editorService.js';
 import { ISessionsManagementService } from '../../../../../../sessions/services/sessions/common/sessionsManagement.js';
@@ -85,6 +88,21 @@ import { registerCoreTools } from './coreTools.js';
 import { executeToolImpl } from './toolExecutor.js';
 import { registerHandoffTools } from './handoffTools.js';
 import { registerMermaidTools } from './mermaidTools.js';
+import { registerDrawioTools } from './drawioTools.js';
+import { registerSessionSearchTools } from './sessionSearchTools.js';
+import { registerVisionAnalyzeTools, readLocalImageAsBase64 } from './visionAnalyzeTools.js';
+import {
+	detectDevicePath, detectSensitivePath, devicePathBlockedMessage, sensitiveReadBlockedMessage,
+} from './sensitivePaths.js';
+import { AgentNetworkDomainSettingId } from '../../../../../../platform/networkFilter/common/settings.js';
+// 主模型图片能力判定（与 agent loop 同一真源，带 provider::model 缓存 + fail-closed）
+import { resolveSupportsImages } from '../../../common/toolResultImages.js';
+import { registerMediaGenTools } from './mediaGenTools.js';
+import { registerSchedulerTools } from './schedulerTools.js';
+// 注意：`IAgentSchedulerService` 是 `createDecorator` 的返回值（**值**，非纯类型），
+// 用作 DI 装饰器时必须用普通 import —— `import type` 会触发 TS1361
+// （"cannot be used as a value because it was imported using 'import type'"）。
+import { IAgentSchedulerService } from '../../../common/agentScheduler.js';
 import { ToolRegistry, type IBuiltinToolRegistration } from './toolRegistry.js';
 
 /** Config key controlling where knowledge bases are persisted. Empty = `<userHome>/.saros/kb`. */
@@ -221,6 +239,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IAgentStudioService private readonly studioService: IAgentStudioService,
+		@IAgentChatService private readonly agentChatService: IAgentChatService,
+		@IAgentSchedulerService private readonly schedulerService: IAgentSchedulerService,
 		@IAgentOSService private readonly agentOS: IAgentOSService,
 		@ITaskOrchestrationService private readonly orchestrationService: ITaskOrchestrationService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
@@ -241,6 +261,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@IWebContentExtractorService private readonly webContentExtractorService: IWebContentExtractorService,
 		@ISearchService private readonly searchService: ISearchService,
 		@IKbNativeKernelService private readonly kbKernelService: IKbNativeKernelService,
+		@IMainProcessService private readonly mainProcessService: IMainProcessService,
 	) {
 		super();
 		this._skillManagerTool = new SkillManagerTool(
@@ -263,6 +284,32 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerAdvancedMemoryTools(); // 接入引擎编排/治理能力：governance/team/mesh/sentinel/obsidian/cascade
 		this._registerRoutineCrystalFacetTools(); // 接入高阶记忆能力：routine/crystal/facet
 		this._registerSkillTools();
+		// ★ 2026-09-10：image_generate 真实实现，必须在 _registerBundledTools 之前 ——
+		// 后者对未注册的 bundled 定义注册 stub（isStub → listTools 跳过），
+		// 先注册真实 handler 才能让 LLM 看到并调用该工具（ctx.hasTool 判据）。
+		this._registerImageGenTools();
+		// ★ 2026-09-11：drawio 真实实现，同样**必须在 _registerBundledTools 之前** ——
+		// 否则 bundled 里的 renderDrawioDiagram 定义会因 ctx.hasTool() 未命中而被
+		// 注册成 stub（isStub → listTools 跳过）→ 模型看不到该工具，整条 drawio 链路
+		// （渲染器 drawioInlineRenderer / 卡片 drawioCard / 预览命令）成为永远走不到
+		// 的死代码。与 _registerImageGenTools 同一模式（见其上方注释）。
+		this._registerDrawioTools();
+		// ★ 2026-09-11：session_search 真实实现，同样必须在 _registerBundledTools 之前
+		// —— 否则 bundled 里的 session_search 定义会被注册成 stub（isStub → listTools
+		// 跳过）→ 模型永远看不到（此前正是此状态：配置项 / 工具名映射 / 白名单俱全，
+		// 唯独缺 handler）。
+		this._registerSessionSearchTools();
+		// ★ 2026-09-11：vision_analyze 真实实现（同源半成品第 4 例），同样必须在
+		// _registerBundledTools 之前 —— 否则 bundled 定义被注册成 stub 并被 listTools
+		// 跳过 → 模型看不到（此前正是此状态）。
+		this._registerVisionAnalyzeTools();
+		// ★ 2026-09-11：video_generate / text_to_speech 真实实现（同源半成品第 5、6 例），
+		// 同样必须在 _registerBundledTools 之前 —— 否则 bundled 定义被注册成 stub
+		// 并被 listTools 跳过 → 模型看不到（此前正是此状态）。
+		this._registerMediaGenTools();
+		// ★ 2026-09-11：cronjob 真实实现（同源半成品第 7 例）—— 调度能力与视图早已
+		// 齐备，唯独缺 LLM 工具入口；同样必须在 _registerBundledTools 之前注册。
+		this._registerSchedulerTools();
 		this._registerBundledTools();
 		this._registerDelegationTools();
 		this._registerPlanExploreTool(); // WorkBuddy-style plan mode: parallel exploration
@@ -673,6 +720,28 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		});
 	}
 
+	/**
+	 * 图片生成工具（2026-09-10）：`image_generate` 的真实 handler。
+	 *
+	 * 模型来源优先级：调用参数 > 当前 agent 配置（imageProviderId/imageModel，
+	 * 由 agent 设置页与聊天框「图片模型」选择器共同写入）> 自动路由。
+	 */
+	private _registerImageGenTools(): void {
+		registerImageGenTools({
+			register: (def) => this.register(def),
+			agentOS: this.agentOS,
+			studioService: this.studioService,
+			logService: this.logService,
+			// 生成结果落盘到媒体资产库（renderer → 主进程 IPC）。落盘而非把 base64
+			// 塞进工具结果字符串：后者会随 tool_result 进入 LLM 上下文，一张 1MP
+			// PNG 的 base64 ≈ 1–2MB，直接爆掉上下文预算。
+			mediaBackend: createMediaStoreProxy(this.mainProcessService),
+			// 用户级图片模型默认（内置 agent 只读时 agent 配置恒为空 → 靠它兜底，
+			// 否则会掉进自动路由选中不支持 Images API 的 provider）
+			configurationService: this.configurationService,
+		});
+	}
+
 
 	// ─── Codebase Tools (built-in, no external MCP binary) ─────────────────
 	//
@@ -713,6 +782,127 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		registerMermaidTools({
 			register: d => this.register(d),
 			logService: this.logService,
+		});
+	}
+
+	/**
+	 * Draw.io 图示渲染工具（与 `_registerMermaidTools` 完全对称，2026-09-11 补全）。
+	 *
+	 * 注意注册**时机**：调用点在 `_registerBundledTools()` 之前（见构造函数），
+	 * 这样 `ctx.hasTool('renderDrawioDiagram')` 才能命中、跳过 bundled stub。
+	 */
+	private _registerDrawioTools(): void {
+		registerDrawioTools({
+			register: d => this.register(d),
+			logService: this.logService,
+		});
+	}
+
+	/**
+	 * 会话历史搜索工具（`session_search`，2026-09-11 补全）。
+	 *
+	 * 数据源复用 `IAgentChatService`（会话索引 `sessions.json` + 每会话消息文件），
+	 * 因此**无需新增存储**；这里只做服务 → 工具 ctx 的适配（ctx 收窄成两个函数，
+	 * 便于单测直接 mock，不必构造整个 IAgentChatService）。
+	 *
+	 * 注册**时机**：调用点在 `_registerBundledTools()` 之前（见构造函数），
+	 * 否则 bundled 里的同名定义会先注册成 stub 并被 `listTools` 跳过。
+	 */
+	private _registerSessionSearchTools(): void {
+		registerSessionSearchTools({
+			register: d => this.register(d),
+			logService: this.logService,
+			listSessions: agentId => this.agentChatService.listAgentSessions(agentId),
+			loadMessages: (agentId, sessionId) => this.agentChatService.getHistory(agentId, sessionId),
+		});
+	}
+
+	/**
+	 * 图像分析工具（`vision_analyze`，2026-09-11 补全）。
+	 *
+	 * 复用既有能力：`IModelProvider.chat` 的**多模态消息已完备支持**
+	 * （`IChatMessage.contentParts` + `messageFormatConverter` 已实现 OpenAI /
+	 * Anthropic / Gemini 三种图片格式），因此无需新建调用链，只需选模型 + 组装消息。
+	 *
+	 * 模型来源：设置面板「Vision（图像分析）」写入的 aux 配置 → 自动路由到
+	 * 第一个 `supportsImages` 的模型。
+	 */
+	private _registerVisionAnalyzeTools(): void {
+		registerVisionAnalyzeTools({
+			register: d => this.register(d),
+			logService: this.logService,
+			configurationService: this.configurationService,
+			getModelProviders: () => this.agentOS.getModelProviders(),
+			// ★ 2026-09-13：主模型是否支持图片输入 —— 决定 `mode:auto` 走「附上图像」还是
+			// 「aux 模型给文本答案」。复用 `toolResultImages.resolveSupportsImages`
+			// （按 provider::model 缓存 + fail-closed），与 agent loop 里的判定**同一真源**。
+			mainModelSupportsImages: async () => {
+				const sel = this.agentOS.getActiveModelSelection();
+				const provider = this.agentOS.getModelProviders().find(p => p.id === sel?.providerId);
+				return resolveSupportsImages(provider, sel?.modelId);
+			},
+			// ★ 2026-09-13：本地图片路径支持 —— **复用 `file_read` 的同一套读护栏**
+			// （沙箱路径解析 / 设备伪文件系统 / 敏感路径读守卫）。
+			//
+			// 为什么必须同源：本工具把字节**发给外部模型 provider**，与 `file_read` 的
+			// 出网面完全一致。若这里不跑那三件套，它就成了一条**绕过读守卫的通道**
+			// （image 后缀不在敏感名表里，但目录级敏感项如 `.ssh/` `.aws/` `.config/gcloud/`
+			// 仍会被 `detectSensitivePath` 命中 —— 漏掉就是又一个「另一条出口没挂检查」，
+			// 那是今天最高频的缺陷形态）。
+			loadLocalImage: async (requestedPath, agentId) => {
+				// 读操作：与 `file_read` 一致，只解析、不触发沙箱拒绝（checkSandbox=false）
+				const resolved = await this._resolveAndCheckWorkspacePath(agentId, requestedPath, false);
+				const deviceHit = detectDevicePath(resolved);
+				if (deviceHit) {
+					throw new Error(devicePathBlockedMessage(deviceHit, 'read'));
+				}
+				const guardEnabled = this.configurationService.getValue<boolean>(
+					AgentNetworkDomainSettingId.SensitiveReadGuard,
+				) ?? true;
+				if (guardEnabled) {
+					const sensitiveHit = detectSensitivePath(resolved);
+					if (sensitiveHit) {
+						this.logService.warn(
+							`[BuiltinTools] vision_analyze BLOCKED: ${requestedPath} matches sensitive ${sensitiveHit.kind} "${sensitiveHit.matched}"`,
+						);
+						throw new Error(sensitiveReadBlockedMessage(sensitiveHit));
+					}
+				}
+				return readLocalImageAsBase64(this.fileService, resolved);
+			},
+		});
+	}
+
+	/**
+	 * 视频 / 语音生成工具（`video_generate`、`text_to_speech`，2026-09-11 补全）。
+	 *
+	 * 底层能力早已实现（`IModelProvider.generateVideo/generateAudio` + 扩展命令转发 +
+	 * host RPC + 画布节点），此前仅缺 LLM 工具入口 —— 与 `image_generate` 完全对称
+	 * （后者 2026-09-10 已补），故此处照同一模式接线。
+	 *
+	 * 注册**时机**：调用点在 `_registerBundledTools()` 之前（见构造函数）。
+	 */
+	private _registerMediaGenTools(): void {
+		registerMediaGenTools({
+			register: d => this.register(d),
+			logService: this.logService,
+			getModelProviders: () => this.agentOS.getModelProviders(),
+		});
+	}
+
+	/**
+	 * 定时任务工具（`cronjob`，2026-09-11 补全）。
+	 *
+	 * 底层 `IAgentSchedulerService` 早已实现（含 Cron 解析、执行策略、执行历史、
+	 * 定时任务视图），此前仅缺 LLM 工具入口 —— 模型无法用自然语言创建定时任务。
+	 *
+	 * 注册**时机**：调用点在 `_registerBundledTools()` 之前（见构造函数）。
+	 */
+	private _registerSchedulerTools(): void {
+		registerSchedulerTools({
+			register: d => this.register(d),
+			logService: this.logService,
+			scheduler: this.schedulerService,
 		});
 	}
 

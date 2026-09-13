@@ -46,6 +46,8 @@ export type FullRefreshSource =
 	// ── 整条消息重建（_rebuildMessageElement / replaceChild）──
 	/** 责任链 fast+slow rules 全部未命中的兜底重建（`_updateMessageDom` 末尾）。 */
 	| 'msg:slowpath-fallback'
+	/** AskUser 交互卡出现/状态翻转（`_ruleAskUsersChange`，2026-09-10）。 */
+	| 'msg:askusers-change'
 	/** thinking 活跃态翻转（`_ruleThinkingStateChange`）。 */
 	| 'msg:thinking-state-change'
 	/**
@@ -101,6 +103,19 @@ export interface IFullRefreshMetrics {
 const AGGREGATE_EVERY = 20;
 
 /**
+ * ★ 2026-09-12：窗口内全量重建总量**告警阈值**。
+ *
+ * 由来：此前只有「每 20 次打一条」的聚合日志，属于**事后诊断**——重建量劣化时
+ * 没有任何主动信号，只能靠人翻日志数 `[FullRefresh]` 条数才能发现。
+ *
+ * 全量重建是本面板最贵的路径（整条消息 markdown 全文 + 全部卡片重建）。正常流式下
+ * `keyed-reconcile` 应几乎全部命中，全量重建应接近 0；一旦窗口内累计超过该阈值，
+ * 基本可判定「keyed diff 退化 / 兜底路径（slowpath-fallback、keyed-inconsistent）
+ * 接管」——它是渲染抖动与掉帧的**先行指标**，值得立即告警。
+ */
+const REBUILD_ALERT_THRESHOLD = 40;
+
+/**
  * 聚合窗口（ms）。超过该间隔未再触发则视为新一轮，计数归零 ——
  * 否则跨 turn 的累计值会掩盖「本轮是否异常」。
  */
@@ -123,6 +138,11 @@ export class FullRefreshLogger {
 
 	private readonly _states = new Map<FullRefreshSource, ISourceState>();
 
+	/** ★ 2026-09-12：全局窗口起点（所有来源共用，用于重建量告警）。 */
+	private _windowStart = 0;
+	/** ★ 2026-09-12：上次告警时的窗口总重建量（每翻倍再报，避免刷屏）。 */
+	private _lastAlertTotal = 0;
+
 	/**
 	 * @param _sink 输出函数。默认 `console.info` —— renderer 的 console 会被
 	 *              `platform/log` 转写进 `vscode-app-*.log`（实测 `log.ts:117 INFO`
@@ -141,6 +161,11 @@ export class FullRefreshLogger {
 	 */
 	record(source: FullRefreshSource, metrics: IFullRefreshMetrics = {}): boolean {
 		const now = this._now();
+		// ★ 2026-09-12：全局窗口滚动 —— 跨窗口重置告警基线（阈值一半，使首次达标即告警）。
+		if (this._windowStart === 0 || now - this._windowStart > AGGREGATE_WINDOW_MS) {
+			this._windowStart = now;
+			this._lastAlertTotal = REBUILD_ALERT_THRESHOLD >> 1;
+		}
 		let st = this._states.get(source);
 		if (!st || now - st.lastAt > AGGREGATE_WINDOW_MS) {
 			st = { count: 0, lastAt: now, printedAtCount: 0 };
@@ -149,9 +174,28 @@ export class FullRefreshLogger {
 		st.count++;
 		st.lastAt = now;
 
+		// ★ 2026-09-12 P0：窗口内重建总量超阈值 → **主动告警**（每翻倍再报一次）。
+		//   详见 REBUILD_ALERT_THRESHOLD 注释：重建量异常是「keyed diff 退化 /
+		//   兜底路径接管」的先行指标，此前只能事后翻日志统计。
+		let alerted = false;
+		const windowTotal = [...this._states.values()].reduce((s, x) => s + x.count, 0);
+		if (windowTotal >= REBUILD_ALERT_THRESHOLD && windowTotal >= this._lastAlertTotal * 2) {
+			this._lastAlertTotal = windowTotal;
+			alerted = true;
+			const top = [...this._states.entries()]
+				.sort((a, b) => b[1].count - a[1].count)
+				.slice(0, 3)
+				.map(([src, x]) => `${src}×${x.count}`)
+				.join(', ');
+			this._sink(
+				`[FullRefresh][ALERT] 窗口内全量重建 ${windowTotal} 次（阈值 ${REBUILD_ALERT_THRESHOLD}）` +
+				`— 疑似 keyed diff 退化 / 兜底路径接管，检查渲染抖动。Top: ${top}`,
+			);
+		}
+
 		// 首次必打；之后每 AGGREGATE_EVERY 次打一条
 		const shouldPrint = st.count === 1 || st.count - st.printedAtCount >= AGGREGATE_EVERY;
-		if (!shouldPrint) { return false; }
+		if (!shouldPrint) { return alerted; }
 		st.printedAtCount = st.count;
 		this._sink(formatFullRefreshLog(source, metrics, st.count));
 		return true;

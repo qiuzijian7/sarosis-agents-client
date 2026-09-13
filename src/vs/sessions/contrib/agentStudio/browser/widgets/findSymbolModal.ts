@@ -69,6 +69,21 @@ export class FindSymbolModal {
 			onOk: () => { void this._accept(); },
 			onDispose: () => this.dispose(),
 		});
+		// 全局键盘（document capture）—— 让焦点在 modal 内任何位置（row / checkbox / div）时
+		// 也能 ↑↓ 移动选项 + Enter 跳转；过滤 target 必须在 overlay 内，避免干扰其他应用快捷键。
+		// 与下方搜索框 listener 形成互补（document capture 优先；若注册失败搜索框 listener 仍可工作）。
+		const overlay = (this._modal as unknown as { _overlay?: HTMLElement })._overlay;
+		const docKeyHandler = (e: KeyboardEvent) => {
+			if (this._disposed || !overlay) { return; }
+			if (!overlay.contains(e.target as Node)) { return; }
+			if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); this._moveSelection(1); }
+			else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); this._moveSelection(-1); }
+			else if (e.key === 'Home') { e.preventDefault(); e.stopPropagation(); this._selectIndex(0); }
+			else if (e.key === 'End') { e.preventDefault(); e.stopPropagation(); this._selectIndex(this._rows.length - 1); }
+			else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); void this._accept(); }
+		};
+		document.addEventListener('keydown', docKeyHandler, true);
+		this._disposables.add({ dispose: () => document.removeEventListener('keydown', docKeyHandler, true) });
 		// 用初始 query（光标单词）触发首次搜索
 		this._scheduleSearch();
 	}
@@ -112,6 +127,7 @@ export class FindSymbolModal {
 			else if (key === 'ArrowUp') { e.preventDefault(); this._moveSelection(-1); }
 			else if (key === 'Home') { e.preventDefault(); this._selectIndex(0); }
 			else if (key === 'End') { e.preventDefault(); this._selectIndex(this._rows.length - 1); }
+			else if (key === 'Enter' && !e.browserEvent.shiftKey) { e.preventDefault(); void this._accept(); }
 		}));
 		this._disposables.add(dom.addDisposableListener(this._onlyCurrentSol, 'change', () => this._scheduleSearch()));
 		this._disposables.add(dom.addDisposableListener(this._onlyClasses, 'change', () => this._scheduleSearch()));
@@ -195,6 +211,19 @@ export class FindSymbolModal {
 		this._titleHint.textContent = this._rows.length > 0
 			? localize('findSymbol.hint', '[1 of {0}]', this._rows.length)
 			: '';
+
+		// 空结果 + 图谱残缺 → 明确提示（否则用户只能看到空列表，无法判断是「不存在」
+		// 还是「图没建好」。2026-09-09：基线 6017 文件 vs 1196 节点的残缺图长期无提示）
+		if (this._rows.length === 0) {
+			const health = this._graphService.getIndexHealth?.();
+			if (health?.deficient && health.message) {
+				const warn = dom.$('div');
+				warn.textContent = '⚠ ' + health.message;
+				warn.style.cssText = 'padding:10px 12px;color:var(--vscode-inputValidation-warningForeground, var(--vscode-descriptionForeground));';
+				this._table.appendChild(warn);
+				return; // 空结果：无需渲染表头/行
+			}
+		}
 
 		// 表头
 		const header = dom.$('div');

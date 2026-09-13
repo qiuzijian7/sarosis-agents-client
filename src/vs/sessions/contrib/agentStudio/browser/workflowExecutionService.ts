@@ -8,15 +8,32 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentChatService } from '../common/agentStudio.js';
 import { IWorkflowStorageService, IStoredWorkflow, WorkflowNodeType, WorkflowGraphNode } from '../common/workflowStorage.js';
-import type { IComfyExecutionDelegate, ComfyExecutionInput } from '../common/comfyBridge.js';
+import type { IComfyExecutionDelegate, ComfyExecutionInput, ComfyExecutionResult } from '../common/comfyBridge.js';
 import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
-import { IWorkflowExecutionService, WorkflowExecutionStatus, WorkflowNodeExecutionStatus } from '../common/workflowExecutionService.js';
-import type { IWorkflowExecutionState, IWorkflowExecutionOptions, IWorkflowNodeExecutionState, IWorkflowTraceEvent, IAskUserOption } from '../common/workflowExecutionService.js';
+import { IWorkflowExecutionService, WorkflowExecutionStatus, WorkflowNodeExecutionStatus, type IScriptExecutionDelegate } from '../common/workflowExecutionService.js';
+import type { IWorkflowExecutionState, IWorkflowExecutionOptions, IWorkflowNodeExecutionState, IWorkflowTraceEvent, IAskUserOption, IAskUserField, IAskUserQuestion } from '../common/workflowExecutionService.js';
+import { buildWorkflowCheckpoint, parseWorkflowCheckpoint, planWorkflowResume, type IWorkflowCheckpoint } from '../common/workflowCheckpoint.js';
+import { validateStructuredRefs } from './workflow/structuredRefs.js';
+import { CARD_TEXT_LIMITS, isCardEligibleNodeType, isNodeVisibleOnCard } from './workflow/cardVisibility.js';
+// ★ 聊天卡描述符（图标 + 副标题）推导 —— 2026-09-13 从本文件移出以便单测（含 kind 覆盖率护栏）。
+import { describeCardNode } from './workflow/cardDescriptor.js';
+import { resolveNodeDisplayName } from './workflow/nodeDisplayName.js';
+import { buildInteractionInitialValues, applyInteractionValues, buildImageRefDefaults, collectImageRefCandidates } from './workflow/nodeInteraction/index.js';
+import type { INodeInteractionField } from './workflow/nodeInteraction/types.js';
+import { catalogInteraction, catalogTitle, findNodeCatalogEntry, findCatalogByAlias } from './workflow/nodeCatalog.js';
+// ★ 画布 stage 标题表（2026-09-10）：comfyTVStageMeta.generated.ts 是**纯数据文件**
+//   （无 vscode/浏览器依赖，自动生成），跨层 import 仅取「stage 全名 → 画布可读标题」
+//   映射，使卡片阶段名与画布 nodeCard 显示一致（spec.title）。
+import { COMFYTV_STAGE_META } from '../webview/src/features/workflowEditor/comfyHost/comfyTVStageMeta.generated.js';
+import { createComfyStageDelegate } from './workflow/comfyStageBridge.js';
+import { directStageRunUnhandledEmitter, tryMarkOpeningCanvas, releaseOpeningCanvas, putWorkflowSnapshotMedia, abandonDirectStageRunsForExecution, abandonStageRunsForExecution } from './workflow/workflowSnapshotBridge.js';
+import { WorkflowEditorInput } from './workflowEditorInput.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceRegistry } from '../common/agentWorkspace.js';
-import { substituteHostVariables, buildRuntimeValueMap, collectWorkflowVariables } from './utils/templateUtils.js';
+import { substituteHostVariables, buildRuntimeValueMap, collectWorkflowVariables, parseSharedPublishKeys } from './utils/templateUtils.js';
 
 /**
  * 节点类型别名 → 引擎运行时枚举（小写形态，与 WorkflowNodeType 一致）。
@@ -34,19 +51,110 @@ const NODE_TYPE_ALIASES: Readonly<Record<string, WorkflowNodeType>> = Object.fre
 });
 
 /**
+ * 编排引擎 switch 实际处理的节点类型集合（_executeNodeRecursive 的 case 清单）。
+ * Saros.* 归一后不在此集合的类型 = 媒体 stage 节点（Saros.AnimatedEmoji /
+ * Saros.EmojiStage / Saros.RelightStage…）→ 归一成 comfyStage 走 Comfy 执行分支。
+ */
+const ORCHESTRATION_TYPES: ReadonlySet<string> = new Set([
+	'start', 'end', 'task', 'prompt', 'agent', 'skill', 'tool', 'ifElse',
+	'switch', 'askUser', 'comfy', 'comfyStage', 'script', 'picker',
+]);
+
+/**
+ * ComfyTV Picker 家族（画布持久化全名）—— 调试预览节点，无 Run 行为。
+ * 未连线时不执行、不报错；有上游连线时汇总上游媒体快照供卡片预览。
+ * 用正则匹配（而非枚举全名）以便同时覆盖 `ComfyTV.ImagePickerStage` 与
+ * `Saros.ImagePickerStage` 两种前缀写法。
+ */
+const PICKER_STAGE_RE = /(?:^|\.)(?:Image|Video|Audio)PickerStage$/;
+
+/**
+ * ComfyTV stage 全名 → 画布 nodeCard 显示的可读标题（`spec.title`）。
+ * 用于卡片阶段名回退：节点名为机器名时显示「Emoji Stage」等，与画布所见一致。
+ */
+const STAGE_TITLE_BY_TYPE: ReadonlyMap<string, string> = new Map(
+	COMFYTV_STAGE_META.map(m => [m.nodeId, m.title]),
+);
+
+// ★ 聊天卡描述符（图标 + 副标题推导）已移至 `./workflow/cardDescriptor.ts`（2026-09-13）。
+//   移出原因：① 原先是本文件的模块私有函数 → 无法单测；② 实测暴露护栏需求 ——
+//   `iconForStageKind` 按 kind 子串匹配，新增一类 stage kind 时若忘记补规则，图标会
+//   **静默退化**为引擎兜底 ⚙️（实测 14 种 kind 里有 4 种未命中：material / model /
+//   storyboard / timeline，已补）。现在由 `cardDescriptor.test.ts` 遍历全部 kind 守卫 ✓。
+//   本文件仍保留 `STAGE_TITLE_BY_TYPE`（标题维度）—— 同源同一份生成数据。
+
+/**
+ * Agent / Task 文本输出落进画布快照库时的**长度上限**（P1-2 产物部分，2026-09-13）。
+ *
+ * 为什么需要：`nodeState.output` 存的是 **LLM 全量回复**（可数万字），而快照库会把它
+ * 写进 IndexedDB（`saveMeta`）→ 不限制会让工作流的快照库体积失控 ✗。
+ * 8000 字符足够覆盖正常摘要/报告；超出部分在画布卡的 OUTPUT 区本就显示不下。
+ */
+const AGENT_OUTPUT_SNAPSHOT_MAX = 8000;
+
+/**
+ * `ComfyTV.Asset*` 前缀的资产加载节点（webview `isLoaderNode` 的 startsWith 分支）。
+ * 注：Loader 家族（ImageLoaderStage 等）**故意不在此列**——它们必须走 comfyStage
+ * → delegate → webview `runLoaderNode`（no-Run 本地产出快照），否则参考图丢失；
+ * Asset* 未在 localStageNodes 注册本地执行器，归 Picker 走预览分支避免报错。
+ */
+const ASSET_STAGE_RE = /(?:^|\.)Asset[A-Za-z]*Stage$|^ComfyTV\.Asset/;
+
+/**
+ * 引擎无执行 case 的**非媒体**类型（布局分组/控制容器）：保持归一原值落
+ * default「skipping」是**正确**行为（它们本就不是可执行节点）。
+ * 除此之外的 Saros.* 未知名 = 媒体 stage → 归 comfyStage。
+ */
+const NON_EXECUTING_TYPES: ReadonlySet<string> = new Set(['group', 'loop', 'parallel']);
+
+/**
  * 把任意形态的 node.type 归一化成引擎枚举（小写驼峰）。
  * 幂等：已是合法枚举值则原样返回。未知类型原样返回（Comfy.* 等第三方类型走这条）。
  */
-function normalizeRuntimeNodeType(type: string | undefined): string {
+export function normalizeRuntimeNodeType(type: string | undefined): string {
 	if (!type) { return ''; }
+	// ★ 节点清单优先（2026-09-11 框架完善：新增节点只改 nodeCatalog.ts）：
+	//   清单里声明了 type/aliases + engineType 的节点直接归一，无需再改本函数的
+	//   别名表或前缀规则。
+	const catEntry = findNodeCatalogEntry(type) ?? findCatalogByAlias(type);
+	if (catEntry?.engineType) { return catEntry.engineType; }
 	const direct = NODE_TYPE_ALIASES[type];
 	if (direct) { return direct; }
+	// ★ Picker 家族特判（2026-09-10 用户需求）：ImagePicker 是**调试预览节点**，
+	//   未连线时不应执行也不应报错 —— 必须在下方的 `ComfyTV.` 通配（→ comfyStage →
+	//   真跑 ComfyUI）之前拦截，否则会被当成可执行 stage 走 Comfy 分支而失败。
+	//
+	//   ⚠ Loader 家族**不在此列**（2026-09-10 参考图丢失实锤）：ImageLoader 必须走
+	//   comfyStage → delegate → webview `runLoaderNode` 才能把「节点弹窗选定的图 /
+	//   mediaAssetId 资产」物化成快照返回（webview 侧 `isLocalStage` 已识别
+	//   `/(LoaderStage|PickerStage)$/` → 无需 ComfyUI runner，纯本地产出）。此前把
+	//   Loader 也归 Picker → 只汇总**上游**（loader 是源节点，无上游）→ 快照永远为空
+	//   → 下游 StatEmojiStage 的参考图（input.images）丢失。
+	// Picker 家族走 **comfyStage**（由 _executeComfyNode 的交互段 apply:'snapshot' 接管，
+	// 不真跑 ComfyUI）—— 单链路改造（2026-09-11）：不再有独立的 Picker 执行分支。
+	if (PICKER_STAGE_RE.test(type) || ASSET_STAGE_RE.test(type)) {
+		return WorkflowNodeType.ComfyStage;
+	}
 	// 命名空间形态（Saros.IfElse）→ 去前缀并还原驼峰首字母小写。
 	if (type.startsWith('Saros.')) {
 		const bare = type.slice('Saros.'.length);
 		const decap = bare.charAt(0).toLowerCase() + bare.slice(1);
-		return NODE_TYPE_ALIASES[decap] ?? NODE_TYPE_ALIASES[bare.toLowerCase()] ?? decap;
+		const aliased = NODE_TYPE_ALIASES[decap] ?? NODE_TYPE_ALIASES[bare.toLowerCase()] ?? decap;
+		// ★ 媒体 stage 归一（2026-09-10 日志实锤）：Saros.AnimatedEmoji 等媒体节点
+		//   decap 后不在编排枚举集合 → 此前落 default 被静默跳过（表情包工作流
+		//   只跑 start→end 的实测根因）→ 统一归 comfyStage 走 Comfy 执行分支。
+		//   Group/Loop/Parallel（布局/容器，非媒体）保持原值——default 跳过是正确行为。
+		if (!ORCHESTRATION_TYPES.has(aliased) && !NON_EXECUTING_TYPES.has(aliased)) {
+			return WorkflowNodeType.ComfyStage;
+		}
+		return aliased;
 	}
+	// ★ Comfy 家族前缀（2026-09-10 修复）：画布持久化的媒体节点是 `ComfyTV.EmojiStage`
+	//   等全名（actionSpawn/state.addNode 证实），此前不归一 → 全部落 default
+	//   「Unknown node type, skipping」被**静默跳过** —— 聊天触发的存储工作流
+	//   只跑 start→end（进度卡只剩两个胶囊的实测根因）。
+	if (type.startsWith('ComfyTV.')) { return WorkflowNodeType.ComfyStage; }
+	if (type.startsWith('Comfy.')) { return WorkflowNodeType.Comfy; }
 	return type;
 }
 
@@ -66,6 +174,30 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	readonly onDidExecutionTrace: Event<IWorkflowTraceEvent> = this._onDidExecutionTrace.event;
 
 	private _executions = new Map<string, IWorkflowExecutionState>();
+	/**
+	 * ★ 当前正在执行的 script 节点（executionId → nodeId，P0 修复 2026-09-13）。
+	 *
+	 * 脚本内 `stage()` 的进度回程只带 runId/executionId（无 nodeId），靠这张表归到
+	 * 具体的 script 节点卡 —— 否则该节点在聊天卡上永远没有进度条（质量评估实测缺口）。
+	 * 工作流按拓扑**串行**执行 → 同一 executionId 至多一个活跃 script 节点 ✓。
+	 *
+	 * 同时缓存 `nodeName`（`node_progress` 的必填字段）—— 报告进度时只有 executionId，
+	 * 无法回头再查 workflow 里的节点，故登记时一次算好。
+	 */
+	private readonly _activeScriptNodes = new Map<string, { nodeId: string; nodeName: string }>();
+	/**
+	 * ★ 脚本执行期间累积的 `stage()` 产物（executionId → snapshot 条目，P1-1 修复 2026-09-13）。
+	 *
+	 * 脚本内 `stage()` 的产物只落在画布快照库，host 侧此前不收集 → 脚本节点在聊天卡上
+	 * 没有缩略图。这里按执行累积，脚本结束时写入 `nodeState.snapshot`（与 Comfy 节点同通道）。
+	 */
+	private readonly _scriptStageSnapshots = new Map<string, NonNullable<IWorkflowNodeExecutionState['snapshot']>>();
+	/**
+	 * ★ 断点恢复态的执行 id（2026-09-11）：只有这些执行会**跳过已 Completed 的节点**。
+	 * 为什么不在正常路径也跳：正常执行由 `visited` + 递归保证不会重入已完成节点，
+	 * 无条件跳过反而会掩盖「节点被重复调度」这类潜在 bug。
+	 */
+	private _resumedExecutions = new Set<string>();
 	private _pauseResolvers = new Map<string, (value: string | string[]) => void>();
 	/** sessionId cache: key=`${agentId}:${executionId}`, value=agentSessionId */
 	private _sessionCache = new Map<string, string>();
@@ -79,6 +211,7 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	private _pendingAskUser = new Map<string, {
 		executionId: string; sessionId: string; nodeId: string; nodeName: string;
 		question: string; options: IAskUserOption[]; multiSelect: boolean;
+	/** D4：动态参数字段（多字段输入表单）。 */
 	}>();
 
 	/** v6: resolvers for pre-execution variable collection (keyed by executionId). */
@@ -112,6 +245,149 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		this._comfyDelegate = delegate;
 	}
 
+	/** 脚本执行委托（P1-4：Dynamic Workflow 脚本作为 DAG 节点；懒注入避免 DI 环，仿 Comfy）。 */
+	private _scriptDelegate: IScriptExecutionDelegate | undefined;
+
+	setScriptExecutionDelegate(delegate: IScriptExecutionDelegate | undefined): void {
+		this._scriptDelegate = delegate;
+	}
+
+	/**
+	 * P1-4：执行 Script 节点（Dynamic Workflow 脚本作为 DAG 节点）。
+	 * 复用 executeWorkflowScript 委托（由 agentDriverService 懒注入，仿 Comfy delegate）。
+	 * 结果物化 nodeState.output/status；失败标 Failed（级联由上游调用方按 status 处理）。
+	 */
+	private async _executeScriptNode(
+		executionState: IWorkflowExecutionState,
+		workflow: IStoredWorkflow,
+		node: WorkflowGraphNode,
+		_options?: IWorkflowExecutionOptions,
+	): Promise<void> {
+		const nodeState = executionState.nodeStates.get(node.id);
+		const data = (node.data ?? {}) as { script?: string; name?: string; args?: unknown };
+		const fail = (msg: string): void => {
+			this.logService.warn(`[WorkflowExecution] Script node ${node.id} FAILED: ${msg}`);
+			// ★ 级联（与 Comfy fail-loud 一致）：标 Failed + 跳过下游，独立分支不受影响。
+			const failed: IWorkflowNodeExecutionState = {
+				nodeId: node.id,
+				status: WorkflowNodeExecutionStatus.Failed,
+				error: msg,
+				startTime: nodeState?.startTime ?? new Date().toISOString(),
+				endTime: new Date().toISOString(),
+				...(nodeState?.output !== undefined ? { output: nodeState.output } : {}),
+			};
+			executionState.nodeStates.set(node.id, failed);
+			this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...failed } });
+			const adjLocal = new Map<string, { targetId: string; fromPort?: string }[]>();
+			for (const c of (workflow.connections ?? [])) {
+				const list = adjLocal.get(c.from) ?? [];
+				list.push({ targetId: c.to, fromPort: c.fromPort });
+				adjLocal.set(c.from, list);
+			}
+			this._cascadeSkipDownstream(executionState, node.id, adjLocal);
+		};
+		if (!this._scriptDelegate) { fail('no script execution delegate registered'); return; }
+		if (!data.script) { fail('Script node missing "script"'); return; }
+		// ★ P0 修复（2026-09-13）：登记「当前正在执行的 script 节点」—— 脚本内 `stage()`
+		//   的进度回程只带 executionId（无 nodeId），靠这张表把进度归到本节点卡。
+		//   否则该节点在聊天卡上永远只有 spinner、没有进度条（质量评估实测缺口）。
+		this._activeScriptNodes.set(executionState.executionId, {
+			nodeId: node.id,
+			nodeName: this._nodeDisplayName(node),
+		});
+		try {
+			const r = await this._scriptDelegate.execute({
+				script: data.script,
+				meta: { name: data.name ?? 'script' },
+				args: data.args,
+				// ★ 归属执行 id（2026-09-11）：脚本内 `stage()` 的 pending 归它名下 ——
+				//   用户取消该执行时，`cancelExecution` 才能一并中止（与直跑同构）。
+				executionId: executionState.executionId,
+			});
+			if (r.ok) {
+				if (nodeState) {
+					nodeState.status = WorkflowNodeExecutionStatus.Completed;
+					nodeState.output = typeof r.value === 'string' ? r.value : (r.value !== undefined ? JSON.stringify(r.value) : '');
+					// ★ P1-1 修复（2026-09-13）：把脚本内 `stage()` 产出的媒体挂到本节点
+					//   → `subagent_end` 带上 snapshot → 聊天卡显示缩略图。
+					//   此前只写 output（文本）→ 脚本节点在聊天卡上永远没有缩略图，
+					//   而同一产物在画布上可见（用户可感知的不一致）。
+					const snaps = this._scriptStageSnapshots.get(executionState.executionId);
+					if (snaps && snaps.length > 0) { nodeState.snapshot = snaps; }
+				}
+			} else {
+				fail(r.error ?? 'script failed');
+			}
+		} catch (e) {
+			fail((e as Error).message);
+		} finally {
+			// 串行执行下不会被覆盖；仍加身份校验保证幂等（异常路径也不会残留）。
+			if (this._activeScriptNodes.get(executionState.executionId)?.nodeId === node.id) {
+				this._activeScriptNodes.delete(executionState.executionId);
+			}
+			// 产物累积同理清理（成功分支已写入 nodeState，无需保留）。
+			this._scriptStageSnapshots.delete(executionState.executionId);
+		}
+	}
+
+	/**
+	 * ★ 脚本内 `stage()` 的进度 → 归到发起它的 script 节点卡（P0 修复，2026-09-13）。
+	 *
+	 * 数据来源：controller 收到 `workflow.stageRunProgress` 时，经
+	 * `executionIdOfStageRun(runId)` 反查归属后转交本方法（见接口注释）。
+	 *
+	 * 语义：脚本可连续调用多个 stage，进度会随 stage 切换**回退**（80% → 0%）。
+	 * 这是有意取舍 —— 比「完全没有反馈」更接近真实状态；`message` 加「脚本 · 」
+	 * 前缀让用户明白这是脚本内某一步，而非整个节点重新开始。
+	 */
+	reportScriptStageProgress(executionId: string, progress: number, message?: string): void {
+		const active = this._activeScriptNodes.get(executionId);
+		// 非脚本路径（画布直跑 / 工具卡）→ 忽略：那些进度已有自己的消费方。
+		if (!active || !Number.isFinite(progress)) { return; }
+		const owner = this._executionSession.get(executionId);
+		if (!owner) { return; }
+		const pct = Math.max(0, Math.min(100, progress));
+		const ns = this._executions.get(executionId)?.nodeStates.get(active.nodeId);
+		if (ns) { ns.progress = pct; }
+		this._onDidExecutionTrace.fire({
+			kind: 'node_progress',
+			executionId,
+			sessionId: owner.sessionId,
+			nodeId: active.nodeId,
+			nodeName: active.nodeName,
+			progress: pct,
+			message: message ? `脚本 · ${message}` : '脚本执行中',
+		});
+	}
+
+	/**
+	 * ★ 脚本内 `stage()` 产物累积（P1-1 修复，2026-09-13）。见接口注释。
+	 *
+	 * 去重：同一产物可能被多个 stage 透传（如「选择型」节点把上游原样传出）→
+	 * 按 (port, ref) 去重，避免聊天卡里出现一串相同的图。
+	 */
+	collectScriptStageSnapshot(executionId: string, snapshot: ReadonlyArray<{
+		port: string;
+		kind: 'image' | 'video' | 'audio' | 'text' | 'unknown';
+		ref: string;
+		meta?: Record<string, unknown>;
+	}>): void {
+		// 非脚本路径（画布直跑 / 工具卡）→ 忽略：那些产物已有自己的展示通道。
+		if (!this._activeScriptNodes.has(executionId)) { return; }
+		const acc = this._scriptStageSnapshots.get(executionId) ?? [];
+		for (const m of snapshot) {
+			if (!m || typeof m.ref !== 'string' || !m.ref) { continue; }
+			if (acc.some(x => x.port === m.port && x.ref === m.ref)) { continue; }
+			acc.push({
+				port: m.port || 'output',
+				kind: m.kind,
+				ref: m.ref,
+				...(m.meta ? { meta: m.meta } : {}),
+			});
+		}
+		if (acc.length > 0) { this._scriptStageSnapshots.set(executionId, acc); }
+	}
+
 	constructor(
 		@ILogService private readonly logService: ILogService,
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
@@ -119,13 +395,88 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		@IFileService private readonly fileService: IFileService,
 		@IWorkspaceRegistry private readonly workspaceRegistry: IWorkspaceRegistry,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
+		@IEditorService private readonly _editorService: IEditorService,
 	) {
 		super();
+		// ★ 默认 Comfy 委托在此注册（2026-09-10 日志实锤）：此前由
+		//   AgentStudioWebviewController 构造时注入——native 聊天触发存储工作流时
+		//   该 controller 可能尚未创建 → delegate 缺失 → 所有 ComfyStage 节点
+		//   「no Comfy execution delegate registered」FAILED + 级联跳过整条下游
+		//   （表情包工作流第三次卡死的根因）。createComfyStageDelegate 无 UI 依赖：
+		//   走 bridge 模块级 requestDirectStageRun + headless unhandled 链路
+		//   （无画布时自动开画布/离屏池），在服务构造期注册即可。controller 的
+		//   setComfyExecutionDelegate 调用注入同款实现，幂等。
+		this._comfyDelegate = createComfyStageDelegate(this.logService);
+
+		// ★ headless 兜底「自动开画布」下沉到本服务（2026-09-10 日志实锤）：
+		//   unhandled 的消费者此前只在 AgentStudioWebviewController——native 聊天
+		//   触发时无 controller → direct stage 请求永远挂起（ImageLoader spinner
+		//   卡死，最终 join 死锁 fail-loud）。本服务在 native 场景必然存在（它就是
+		//   执行器本身）。开画布经 bridge 全局互斥，与 controller 的订阅（webview
+		//   场景还有离屏池路径）不双开。
+		this._register(
+			directStageRunUnhandledEmitter.event((e) => {
+				if (!tryMarkOpeningCanvas()) { return; }
+				const { runId } = e;
+				void (async () => {
+					try {
+						const wfId = e.request.workflowId;
+						let wf = wfId ? await this.workflowStorage.getWorkflow(wfId).catch(() => undefined) : undefined;
+						if (!wf) {
+							const wfs = await this.workflowStorage.listWorkflows().catch(() => []);
+							wf = wfs[0];
+						}
+						if (!wf) {
+							this.logService.warn(`[WorkflowExecution] ${runId} 无画布且无存储工作流 → 保持挂起（90s 超时兜底）`);
+							return;
+						}
+						const input = new WorkflowEditorInput(wf);
+						const existing = this._editorService.findEditors(input);
+						if (existing.length > 0) { await this._editorService.openEditor(existing[0].editor, { pinned: true, preserveFocus: true }); }
+						else { await this._editorService.openEditor(input, { pinned: true, preserveFocus: true }); }
+						this.logService.info(`[WorkflowExecution] ${runId} 无画布 → 已自动打开工作流「${String((wf as { name?: string }).name ?? wf.id)}」${wfId ? '(按 workflowId)' : '(回退最近)'}，controller 就绪后自动重放`);
+					} finally {
+						releaseOpeningCanvas();
+					}
+				})();
+			}),
+		);
 	}
 
 	// --------------------------------------------------------------------------------------------
 	// Public API
 	// --------------------------------------------------------------------------------------------
+
+	/**
+	 * v38: 同 executeWorkflow，但**可 await 终态**。
+	 * 旧接口 fire-and-forget（立即返回 executionId），调用方（测试/脚本/agentDriver）
+	 * 只能轮询 onDidExecutionStatusChange 才能拿到终态——可测试性差。
+	 * 本方法在内部仍立即返回语义上不阻塞外部（executeWorkflow 本身仍 fire-and-forget），
+	 * 只是把「等终态」封装成可 await 的 Promise。返回终态状态与错误信息。
+	 */
+	async executeWorkflowAndWait(
+		workflowId: string,
+		options?: IWorkflowExecutionOptions,
+	): Promise<{ executionId: string; status: WorkflowExecutionStatus; error?: string }> {
+		const executionId = await this.executeWorkflow(workflowId, options);
+		const state = this._executions.get(executionId);
+		if (!state) {
+			return { executionId, status: WorkflowExecutionStatus.Failed, error: 'execution state missing' };
+		}
+		if (state.status !== WorkflowExecutionStatus.Running) {
+			return { executionId, status: state.status, error: state.error };
+		}
+		await new Promise<void>(resolve => {
+			const sub = this.onDidExecutionStatusChange(s => {
+				if (s.executionId === executionId && s.status !== WorkflowExecutionStatus.Running) {
+					sub.dispose();
+					resolve();
+				}
+			});
+		});
+		const final = this._executions.get(executionId);
+		return { executionId, status: final?.status ?? WorkflowExecutionStatus.Failed, error: final?.error };
+	}
 
 	async executeWorkflow(workflowId: string, options?: IWorkflowExecutionOptions): Promise<string> {
 		this.logService.info(`[WorkflowExecution] executeWorkflow: workflowId=${workflowId}`);
@@ -134,6 +485,24 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		const workflow = await this.workflowStorage.getWorkflow(workflowId);
 		if (!workflow) {
 			throw new Error(`Workflow not found: ${workflowId}`);
+		}
+
+		// ★ $ref 静态预检（2026-09-10 阶段 2）：执行前一次性列出所有结构化引用问题
+		//   （节点 id 悬空 / 对非契约节点写 path / $ref 缺 node）——否则引用写错只有
+		//   跑到那个节点时才逐条 warn，排查成本高。预检不阻断执行（保持容错），
+		//   只把问题集中到日志首部。
+		try {
+			const refProblems = validateStructuredRefs((workflow.nodes ?? []) as unknown as Parameters<typeof validateStructuredRefs>[0]);
+			for (const p of refProblems) {
+				const line = `[WorkflowExecution] $ref 预检 ${p.severity}: 节点 ${p.nodeId} 的 binding '${p.bindingKey}' → ${p.message}`;
+				if (p.severity === 'error') { this.logService.error(line); }
+				else { this.logService.warn(line); }
+			}
+			if (refProblems.length > 0) {
+				this.logService.info(`[WorkflowExecution] $ref 预检共 ${refProblems.length} 个问题（error=${refProblems.filter(p => p.severity === 'error').length}）`);
+			}
+		} catch (e) {
+			this.logService.warn(`[WorkflowExecution] $ref 预检跳过：${e instanceof Error ? e.message : String(e)}`);
 		}
 
 		// Create execution state. v5a: copy workflow-level breakpoints into the
@@ -233,6 +602,24 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			);
 		}
 
+		// ★ 工作流 Session（2026-09-11 用户需求：工作流画布 session 隔离 + 与聊天
+		//   session 对应）：解析「聊天 session ↔ 工作流 session」绑定 —— 同一聊天
+		//   session 复用同一工作流 session；切换聊天 session 时自动新建一个，隔离
+		//   各自生成的内容。记入 executionState 供后续「快照/产物按 session 隔离」
+		//   使用（存储位于 `{workflowsDir}/{workflowId}/sessions.json`）。
+		try {
+			const wfSession = await this.workflowStorage.getOrCreateWorkflowSession(workflowId, ownerSessionId);
+			executionState.workflowSessionId = wfSession.id;
+			this.logService.info(
+				`[WorkflowExecution] 工作流 session: wf=${workflowId} sid=${wfSession.id} ` +
+				`chat=${ownerSessionId ?? '-'} name=${wfSession.name} runs=${wfSession.runCount}`,
+			);
+		} catch (e) {
+			this.logService.warn(
+				`[WorkflowExecution] 工作流 session 解析失败（继续执行）：${e instanceof Error ? e.message : String(e)}`,
+			);
+		}
+
 		// v7: ALWAYS fire __workflow__ so the webview can create a live container.
 		// Without this, subagent cards never render because the container is never
 		// created. If we have an owner session, use it; otherwise fire with a
@@ -247,6 +634,8 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			nodeId: '__workflow__',
 			nodeName: workflow.name || workflowId,
 			nodeType: 'workflow',
+			// ★ P0 修复（2026-09-13）：容器卡图标（与节点卡同一套推导语义）。
+			icon: '🌊',
 			ask: workflow.description || `Run workflow: ${workflow.name || workflowId}`,
 		} as any);
 
@@ -268,6 +657,8 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					executionId,
 					sessionId: ownerSession.sessionId,
 					status: 'failed',
+					// ★ P2-2（2026-09-13）：异常收尾也带统计（endTime 已在上方写入）。
+					...this._executionStats(executionState),
 				});
 			}
 		});
@@ -354,6 +745,15 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		// 设置状态为暂停
 		state.status = WorkflowExecutionStatus.Paused;
 		state.currentNodeId = nodeId;
+		// ★ 等待用户配置（2026-09-12 用户需求：聊天卡状态实时同步到画布节点 UI）：
+		//   把**当前节点**标为 `AwaitingInput` → 画布显示「待配置」（黄色描边 + 角标）✓。
+		//   覆盖 AskUser / node_interaction / picker_select —— 三者本质都是「暂停等用户」✓。
+		//   若不区分，画布会一直显示 Running，用户以为"在跑"、实际在等他操作 ✗。
+		const waiting = state.nodeStates.get(nodeId);
+		if (waiting) {
+			waiting.status = WorkflowNodeExecutionStatus.AwaitingInput;
+			this._onDidNodeExecutionStatusChange.fire({ executionId, nodeState: { ...waiting } });
+		}
 		this._onDidExecutionStatusChange.fire(state);
 
 		// 创建延迟 Promise，等待用户恢复
@@ -378,6 +778,14 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		const state = this._executions.get(executionId);
 		if (state) {
 			state.status = WorkflowExecutionStatus.Running;
+			// ★ 清除「待配置」（2026-09-12）：用户已提交 → 当前节点回到 Running ✓
+			//   （节点 id 用 pauseExecution 写入的 `currentNodeId` —— resume 没有 nodeId 参数 ✗）。
+			const waitingId = state.currentNodeId;
+			const ns = waitingId ? state.nodeStates.get(waitingId) : undefined;
+			if (ns && ns.status === WorkflowNodeExecutionStatus.AwaitingInput) {
+				ns.status = WorkflowNodeExecutionStatus.Running;
+				this._onDidNodeExecutionStatusChange.fire({ executionId, nodeState: { ...ns } });
+			}
 			this._onDidExecutionStatusChange.fire(state);
 		}
 	}
@@ -404,6 +812,19 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		// promise doesn't leak. Also fire ask_user_end so the webview card
 		// flips to "cancelled" state.
 		this._cancelPendingAskUserForExecution(executionId, 'cancelled');
+
+		// ★ 中止本执行名下的「画布直跑」（2026-09-11）：
+		//   ① 通知画布**停止生成**（此前取消后画布仍在跑、稍后还会出图 ✗ 僵尸）；
+		//   ② reject 让等待中的节点 delegate 立即收尾（此前只能等空闲超时才解开 ✗）。
+		//   必须在 status=Cancelled **之后**（L654 已设）：节点 delegate 抛错时 catch 分支
+		//   据此把节点标 Cancelled 而非 Failed（不发红叉）✓。
+		const abandoned = abandonDirectStageRunsForExecution(executionId);
+		// ★ 脚本路径的 `stage()` 同样收尾（2026-09-11，与直跑同构）：
+		//   否则取消后脚本会一直等到空闲超时 ✗。
+		const abandonedStage = abandonStageRunsForExecution(executionId);
+		if (abandoned > 0 || abandonedStage > 0) {
+			this.logService.info(`[WorkflowExecution] cancelExecution: abandoned ${abandoned} direct stage run(s) + ${abandonedStage} stage() run(s)`);
+		}
 
 		// v6: resolve any pending variable collection so executeWorkflow doesn't hang.
 		const varResolver = this._variableResolvers.get(executionId);
@@ -449,6 +870,61 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			resolver('');
 			this._pauseResolvers.delete(executionId);
 		}
+	}
+
+	/**
+	 * ★ 取消短路（2026-09-11 修复「点击取消后工作流工具卡片进度条不终止」）。
+	 *
+	 * 场景：执行停在**交互类暂停**（AskUser 选项 / 节点配置表单 node_interaction）
+	 * 时用户点取消 —— `cancelExecution` 会把 `_pauseResolvers` 以空值 resolve（见
+	 * `_cancelPendingAskUserForExecution`），于是 `pauseExecution` **正常返回**而非
+	 * 抛错。若调用方不检查状态就继续往下走，就会出现「用户已取消但节点仍在跑」：
+	 *   ① 节点继续执行 → 真实发起生成（消耗算力、产出用户已放弃的图）；
+	 *   ② 节点被标 Completed、发 `subagent_end('done')` → 卡片 spinner 继续转；
+	 *   ③ `execution_end` 要等整个节点（含 headless 开画布 90s 兜底）跑完才发
+	 *      → 卡片长时间停在「运行中」，用户感知即「取消无效」。
+	 *
+	 * 本方法在所有「可能被取消打断的 await 之后」调用，做三件事并返回 true：
+	 *   - 节点状态标 `Cancelled`（不发 Failed 的红叉，UI 显示「已取消」）；
+	 *   - 发 `subagent_end(cancelled)` 让卡片 spinner 立刻停止（与 catch 分支
+	 *     的 L1340 同因：失败/取消也必须发 subagent_end）；
+	 *   - 幂等：同节点重复调用只收尾一次（短路点有多个，避免重复 trace）。
+	 *
+	 * AskUser 节点不在此发 subagent_end —— 它有专属交互卡，与既有规则一致
+	 * （见 `_executeNodeRecursive` 的 subagent_end 排除列表）。
+	 */
+	private _bailOutIfCancelled(
+		executionState: IWorkflowExecutionState,
+		node: WorkflowGraphNode,
+	): boolean {
+		if (executionState.status !== WorkflowExecutionStatus.Cancelled) { return false; }
+		const existing = executionState.nodeStates.get(node.id);
+		if (existing?.status === WorkflowNodeExecutionStatus.Cancelled) { return true; }
+		const nodeState: IWorkflowNodeExecutionState = existing ?? {
+			nodeId: node.id,
+			status: WorkflowNodeExecutionStatus.Cancelled,
+			startTime: new Date().toISOString(),
+		};
+		nodeState.status = WorkflowNodeExecutionStatus.Cancelled;
+		nodeState.endTime = new Date().toISOString();
+		executionState.nodeStates.set(node.id, nodeState);
+		this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
+		const owner = this._executionSession.get(executionState.executionId);
+		// ★ 规则单点化（2026-09-13 P2-6）：类型排除收敛到 `cardVisibility`。
+		//   此处**不做** FLOW 链判断 —— 本方法只在节点**执行中途**被取消时触发，
+		//   而能执行到中途的节点必然已发过 `subagent_start`（必在 FLOW 链上）✓。
+		if (owner && isCardEligibleNodeType(node.type)) {
+			this._onDidExecutionTrace.fire({
+				kind: 'subagent_end',
+				executionId: executionState.executionId,
+				sessionId: owner.sessionId,
+				nodeId: node.id,
+				status: 'cancelled',
+				output: '',
+			});
+		}
+		this.logService.info(`[WorkflowExecution] Node ${node.id} (${node.type}) 已被取消 → 短路，不再执行`);
+		return true;
 	}
 
 	getExecutionState(executionId: string): IWorkflowExecutionState | undefined {
@@ -558,9 +1034,24 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		// 在此统一成引擎枚举的小写形态，避免落进 default 分支导致条件判断失效。
 		const nodes = (workflow.nodes ?? []).map(n => {
 			const normalized = normalizeRuntimeNodeType(n.type);
-			if (normalized === n.type) { return n; }
-			this.logService.info(`[WorkflowExecution] Normalized node "${n.id}" type "${n.type}" → "${normalized}"`);
-			return { ...n, type: normalized } as WorkflowGraphNode;
+			// ★ 原始 type 注入（2026-09-10 日志实锤「缺少 stageClass」）：媒体节点归一后
+			//   type='comfyStage'，**原始全名**（ComfyTV.ImageLoaderStage / Saros.AnimatedEmoji）
+			//   正是 ComfyUI 需要的 stageClass。必须在此处（原始 type 尚在）注入
+			//   data.stageClass —— 下游 _executeNodeRecursive 拿到的 rawNode.type 已被本
+			//   map 归一化（= 'comfyStage' 占位名），在那里注入只会写入占位名 → 被
+			//   resolveStageClass 过滤 → 「缺少 stageClass」。
+			const out = (normalized === n.type ? n : { ...n, type: normalized }) as WorkflowGraphNode;
+			if (normalized === WorkflowNodeType.ComfyStage) {
+				const d = (out.data ?? {}) as Record<string, unknown>;
+				const cur = typeof d['stageClass'] === 'string' ? d['stageClass'] : '';
+				if (!cur || cur === 'comfyStage' || cur === 'comfy') {
+					out.data = { ...d, stageClass: n.type };
+				}
+			}
+			if (normalized !== n.type) {
+				this.logService.info(`[WorkflowExecution] Normalized node "${n.id}" type "${n.type}" → "${normalized}"`);
+			}
+			return out;
 		});
 		const connections = workflow.connections ?? [];
 
@@ -577,6 +1068,16 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		if (!startNode) {
 			throw new Error('Workflow has no Start node');
 		}
+		// W7: Start 输入契约（args）注入 —— 打通「画布 Start 参数」与「聊天框/Agent
+		// 触发」两套变量通道。此前 `{{args.x}}` 只在 webview 画布路径生效
+		// （collectStartArgs / startArgsOverride），headless 执行时该占位符永远
+		// 解析不到（静默留字面量）。这里把 Start 节点的 args 展平成 `args.<key>`
+		// 写入 executionState.context —— `_buildEvalContext` 会把 context 里的
+		// string 项暴露给 `_replaceVariables`，于是 prompt/binding 里的
+		// `{{args.key}}` 在两条路径下语义一致。
+		// 优先级对齐画布侧（运行时覆盖 > 节点默认）：聊天触发传入的同名 context
+		// 项（variables / input）覆盖 Start 节点里的默认值。
+		this._injectStartArgs(executionState, nodes);
 
 		// v31: visited set prevents diamond-pattern re-execution and infinite
 		// loops from accidental cycles. maxDepth protects against stack
@@ -584,18 +1085,63 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		// execution run.
 		const visited = new Set<string>();
 		const MAX_DEPTH = 500;
-		await this._executeNodeRecursive(executionState, workflow, startNode, adj, options, visited, 0, MAX_DEPTH);
+		// v38: 入度表（join 语义）—— 每个节点被多少条边指向。后继入度归零才执行。
+		// 旧 DFS 在菱形（A→B→D, A→C→D）中 B 完成后立即执行 D，C 的产出丢失；
+		// 入度归零保证 D 等到全部前驱完成（真 join）。不可达子图入度永不归零，
+		// 自动跳过（与旧「只从 Start DFS」行为一致）；环同理被跳过而非死循环。
+		const inDeg = new Map<string, number>();
+		for (const conn of connections) {
+			inDeg.set(conn.to, (inDeg.get(conn.to) ?? 0) + 1);
+		}
+		// W7: 起跑集解析 —— 正常情况就是 [Start]（严格「从 Start 开始」）。
+		// Start 未编排（无出边 / 出边只到 End）时退化为「全部根节点」，与画布侧
+		// resolveStartScope 的 degraded 分支保持同一语义：同一张图在画布 ▶ 运行
+		// 与聊天框调用下跑同样的节点集（否则聊天里「什么都没发生」）。
+		const entryNodes = this._resolveEntryNodes(nodes, connections, startNode, inDeg);
+		// ★ 递归使用「归一化 + stageClass 注入后」的 nodes 副本（2026-09-10 日志实锤）：
+		//   递归内查找下游节点用 `workflow.nodes.find(...)`——若传原始 workflow，
+		//   下游媒体节点拿到的仍是**未注入**的原始 data（无 stageClass）→ StatEmoji
+		//   等报「缺少 stageClass」；而入口节点（来自上面归一化数组）正常（ImageLoader
+		//   通过、StatEmoji 失败的不一致现象正源于此）。
+		const execWorkflow: IStoredWorkflow = { ...workflow, nodes };
+		for (const entry of entryNodes) {
+			if (executionState.status === WorkflowExecutionStatus.Cancelled) { break; }
+			if (visited.has(entry.id)) { continue; }
+			await this._executeNodeRecursive(executionState, execWorkflow, entry, adj, options, visited, 0, MAX_DEPTH, inDeg);
+		}
 
 		// Mark execution as completed (or failed if any node failed)
 		if (executionState.status === WorkflowExecutionStatus.Running) {
+			// ★ join 死锁 fail-loud（2026-09-10 卡死实锤）：主循环结束仍有节点
+			//   入度 > 0 且从未被递归（!visited）→ 它们永远不会执行。此前直接标
+			//   completed——「Execution completed」假象，出图节点从未跑。
+			const stuck = nodes.filter(n =>
+				(inDeg.get(n.id) ?? 0) > 0
+				&& !visited.has(n.id)
+				&& executionState.nodeStates.get(n.id)?.status !== WorkflowNodeExecutionStatus.Skipped);
 			const hasFailed = [...executionState.nodeStates.values()]
 				.some(s => s.status === WorkflowNodeExecutionStatus.Failed);
-			executionState.status = hasFailed
-				? WorkflowExecutionStatus.Failed
-				: WorkflowExecutionStatus.Completed;
+			if (stuck.length > 0) {
+				const detail = stuck.map(n => {
+					const pending = connections
+						.filter(c => c.to === n.id && !visited.has(c.from))
+						.map(c => c.from);
+					return `${n.id}（等待未执行的上游: ${pending.join(', ') || '?'}）`;
+				}).join('; ');
+				this.logService.error(
+					`[WorkflowExecution] Execution ${executionState.executionId} DEADLOCK: ` +
+					`${stuck.length} node(s) stuck on join — ${detail}`,
+				);
+				executionState.status = WorkflowExecutionStatus.Failed;
+				executionState.error = `${stuck.length} 个节点等待从未执行的上游（join 死锁）：${detail}`;
+			} else {
+				executionState.status = hasFailed
+					? WorkflowExecutionStatus.Failed
+					: WorkflowExecutionStatus.Completed;
+			}
 			executionState.endTime = new Date().toISOString();
 			this._onDidExecutionStatusChange.fire(executionState);
-			this.logService.info(`[WorkflowExecution] Execution ${executionState.executionId} ${hasFailed ? 'failed (some nodes failed)' : 'completed'}`);
+			this.logService.info(`[WorkflowExecution] Execution ${executionState.executionId} ${executionState.status === WorkflowExecutionStatus.Failed ? (executionState.error ? 'failed (deadlock)' : 'failed (some nodes failed)') : 'completed'}`);
 		}
 
 		// P4: fire execution_end so the owner chat can commit the final assistant message.
@@ -612,6 +1158,8 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				executionId: executionState.executionId,
 				sessionId: ownerSession.sessionId,
 				status: finalStatus,
+				// ★ P2-2（2026-09-13）：真实统计（耗时 + 成功/失败/取消/跳过节点数）。
+				...this._executionStats(executionState),
 			});
 		}
 	}
@@ -619,15 +1167,67 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	private async _executeNodeRecursive(
 		executionState: IWorkflowExecutionState,
 		workflow: IStoredWorkflow,
-		node: WorkflowGraphNode,
+		rawNode: WorkflowGraphNode,
 		adj: Map<string, { targetId: string; fromPort?: string }[]>,
 		options: IWorkflowExecutionOptions | undefined,
 		visited: Set<string>,
 		depth: number,
 		maxDepth: number,
+		inDeg: Map<string, number>,
 	): Promise<void> {
+		// ★ 全名化归一（2026-09-10 修复）：画布持久化的是 `Saros.AskUser` 等全名，
+		//   而 switch (node.type) 的 case 匹配引擎枚举（`askUser`）——不归一化时
+		//   所有编排节点落入 default「Unknown node type, skipping」被静默跳过，
+		//   下游 join 入度永不归零 → 执行卡死（实测 wf-emoji-workflow 卡死根因）。
+		const normalizedType = normalizeRuntimeNodeType(rawNode.type);
+		const node: WorkflowGraphNode = { ...rawNode, type: normalizedType as WorkflowNodeType };
+		// 注：媒体节点的 stageClass 注入已前移至 executeWorkflow 的归一化入口
+		// （_executeWorkflowAsync 开头）——那里原始 type 尚在；此处 rawNode.type 已被
+		// 入口归一化，注入只会写入 'comfyStage' 占位名（2026-09-10 实测「缺少
+		// stageClass」的成因），故移除。
 		// Check if execution was cancelled
 		if (executionState.status === WorkflowExecutionStatus.Cancelled) {
+			return;
+		}
+
+		// v38: 级联 Skipped 的节点不再执行（_cascadeSkipDownstream 已标记）。
+		// 但仍要继续向下递归：后继可能因 join 未达而尚未被级联标记到。
+		// ★ 先标 visited 防菱形重入（两个前驱都归零会递归两次 → 入度被双重递减）。
+		if (executionState.nodeStates.get(node.id)?.status === WorkflowNodeExecutionStatus.Skipped) {
+			visited.add(node.id);
+			this.logService.info(`[WorkflowExecution] Node ${node.id} is Skipped (cascade), propagating without executing`);
+			const succs2 = (adj.get(node.id) ?? []).map(e => e.targetId);
+			for (const nextNodeId of succs2) {
+				const d = (inDeg.get(nextNodeId) ?? 1) - 1;
+				inDeg.set(nextNodeId, d);
+				if (d > 0) { continue; }
+				const nextNode = workflow.nodes?.find(n => n.id === nextNodeId);
+				if (nextNode && !visited.has(nextNodeId)) {
+					await this._executeNodeRecursive(executionState, workflow, nextNode, adj, options, visited, depth + 1, maxDepth, inDeg);
+				}
+			}
+			return;
+		}
+
+		// ★ 断点恢复（2026-09-11）：checkpoint 里已 Completed 的节点**复用产出、不重跑**，
+		//   但必须照常向下推进入度（与上面的 Skipped 分支同构）——否则下游 join 永不归零，
+		//   恢复后的执行会卡住。产出已在 nodeStates 里（resumeFromCheckpoint 回填）→
+		//   下游 `{{nodeId.output}}` 替换照常取到值。
+		//   仅对「恢复态」执行生效（见 `_resumedExecutions` 字段注释）。
+		if (this._resumedExecutions.has(executionState.executionId)
+			&& executionState.nodeStates.get(node.id)?.status === WorkflowNodeExecutionStatus.Completed) {
+			visited.add(node.id);
+			this.logService.info(`[WorkflowExecution] Node ${node.id} reused from checkpoint (already completed), propagating`);
+			const succs3 = (adj.get(node.id) ?? []).map(e => e.targetId);
+			for (const nextNodeId of succs3) {
+				const d = (inDeg.get(nextNodeId) ?? 1) - 1;
+				inDeg.set(nextNodeId, d);
+				if (d > 0) { continue; }
+				const nextNode = workflow.nodes?.find(n => n.id === nextNodeId);
+				if (nextNode && !visited.has(nextNodeId)) {
+					await this._executeNodeRecursive(executionState, workflow, nextNode, adj, options, visited, depth + 1, maxDepth, inDeg);
+				}
+			}
 			return;
 		}
 
@@ -665,7 +1265,34 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			startTime: new Date().toISOString(),
 		};
 		executionState.nodeStates.set(node.id, nodeState);
-		this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
+		this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
+
+		// ★ 节点级 trace（2026-09-10 修复）：此前只有 Agent 节点（_executeAgentNode）
+		//   fire subagent_start —— 聊天进度卡的业务节点全部缺位，用户只看到
+		//   start→end 两个胶囊（截图实测）。这里对所有节点统一发卡片事件；
+		//   Agent 节点跳过（其 executor 已发带 task/输出的更丰富版本）；
+		//   AskUser 跳过（用户反馈 2026-09-10：专属交互卡已展示选择结果，
+		//   节点卡重复同一信息 → 双卡）。
+		const nodeOwner = this._executionSession.get(executionState.executionId);
+		// ★ 规则单点化（2026-09-13 P2-6）：类型排除 + FLOW 链筛选收敛到 `cardVisibility`
+		//   （唯一规则表；新增节点类型时「是否出卡」有单点可查，避免各处漂移）。
+		if (nodeOwner && isNodeVisibleOnCard(workflow.connections, node)) {
+			// ★ P0 修复（2026-09-13）：副标题不再塞机器名 `node.type`，改用节点描述符
+			//   （stage kind/workflowKind，与画布 nodeCard 的 schemaDetail 一致）；
+			//   同时带上 host 推导的图标（渲染层不再按 nodeType 猜）。
+			const desc = this._nodeCardDescriptor(node);
+			this._onDidExecutionTrace.fire({
+				kind: 'subagent_start',
+				executionId: executionState.executionId,
+				workflowAgentId: nodeOwner.workflowAgentId,
+				sessionId: nodeOwner.sessionId,
+				nodeId: node.id,
+				nodeName: this._nodeDisplayName(node),
+				nodeType: node.type,
+				task: desc.subtitle,
+				icon: desc.icon,
+			});
+		}
 
 		// v23: substitute upstream node outputs and the `$prev` alias in
 		// `data.prompt` / `data.skillArgs[*]` / `data.toolParams[*]` BEFORE
@@ -727,7 +1354,7 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 							nodeState.status = WorkflowNodeExecutionStatus.Completed;
 							nodeState.endTime = new Date().toISOString();
 							executionState.nodeStates.set(node.id, nodeState);
-							this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
+							this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
 							return;
 
 						case WorkflowNodeType.Task:
@@ -801,6 +1428,20 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					nextNodeIds = this._getNextNodes(node.id, adj);
 					break;
 
+				case WorkflowNodeType.Picker:
+					// ⚠ 已废弃（2026-09-11 单链路改造）：Picker 家族现归一为 comfyStage，
+					//   由 _executeComfyNode 的交互段（catalog apply:'snapshot'）接管。
+					//   保留此 case 仅防御历史数据里显式 type='picker' 的节点。
+					await this._executeComfyNode(executionState, workflow, node, options);
+					nextNodeIds = this._getNextNodes(node.id, adj);
+					break;
+
+				case WorkflowNodeType.Script:
+					// ★ P1-4：动态工作流脚本作为 DAG 节点（复用 executeWorkflowScript 委托）。
+					await this._executeScriptNode(executionState, workflow, node, options);
+					nextNodeIds = this._getNextNodes(node.id, adj);
+					break;
+
 				default:
 					this.logService.warn(`[WorkflowExecution] Unknown node type: ${node.type}, skipping`);
 					nextNodeIds = this._getNextNodes(node.id, adj);
@@ -834,10 +1475,17 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					nodeState.error = undefined;
 					nodeState.endTime = undefined;
 					executionState.nodeStates.set(node.id, nodeState);
-					this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
+					this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
 					await new Promise(resolve => setTimeout(resolve, delay));
 				}
 			}
+
+			// ★ 取消短路（2026-09-11）：节点执行期间被取消（交互暂停被解开 / delegate
+			//   执行中取消）→ 节点内已标 Cancelled 并发过 subagent_end(cancelled)。
+			//   此处必须 return：否则会无条件把状态覆盖回 Completed 并发
+			//   subagent_end('done') —— 卡片 spinner 继续转、状态与「已取消」自相矛盾，
+			//   下游也会被继续递归（直到各自的入口检查才停）。
+			if (this._bailOutIfCancelled(executionState, node)) { return; }
 
 			// Mark node as completed
 			nodeState.status = WorkflowNodeExecutionStatus.Completed;
@@ -865,22 +1513,57 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				}
 			}
 			executionState.nodeStates.set(node.id, nodeState);
-			this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
+			this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
+
+			// ★ 节点级 trace 收尾（2026-09-10）：与上方统一 subagent_start 配对。
+			//   output 截断到 400 字符（媒体节点 output 是 data URL/ref，卡片不需要全文）。
+			//   AskUser 跳过（与 start 侧同因：专属交互卡已展示，双卡去重）。
+			// ★ 规则单点化（2026-09-13 P2-6）：与 start 侧同一规则表。
+			if (nodeOwner && isNodeVisibleOnCard(workflow.connections, node)) {
+				this._onDidExecutionTrace.fire({
+					kind: 'subagent_end',
+					executionId: executionState.executionId,
+					sessionId: nodeOwner.sessionId,
+					nodeId: node.id,
+					status: 'done',
+					// ★ P2-5 收敛（2026-09-13）：长度上限统一到 CARD_TEXT_LIMITS（值不变）。
+					output: nodeState.output !== undefined ? String(nodeState.output).substring(0, CARD_TEXT_LIMITS.nodeOutput) : '',
+					// ★ 媒体快照透传（2026-09-10）：媒体节点（StatEmojiStage 等）的
+					//   output 只是引用文本，卡片要渲染缩略图必须有 snapshot
+					//   （port/kind/ref）——节点卡展示生成结果的直接来源。
+					...(nodeState.snapshot && nodeState.snapshot.length > 0 ? { snapshot: nodeState.snapshot } : {}),
+				});
+			}
 
 			// v32: write node output to SharedMemory for cross-node communication.
-			// Any downstream node can read this via executionState.sharedMemory.get(nodeId).
+			// ★ 2026-09-11 补齐读路径：此前 sharedMemory **只写不读**（全服务无消费点）
+			//   → 注释承诺的「Any downstream node can read this」从未成立。现在两条通路：
+			//   ① 键 = nodeId → 下游 `{{<nodeId>}}` / `{{<nodeId>.output}}`（与 nodeStates 等价）；
+			//   ② 节点声明 `data.publishes`（语义名，字符串或数组）→ 下游 `{{shared.<key>}}`
+			//      —— **下游无需知道是哪个节点产出的**，这是多 Agent 协同里按语义引用的关键。
+			//   `parseSharedPublishKeys` 会丢弃无法被 `{{shared.<key>}}` 替换的键（防静默失效）。
 			if (nodeState.output !== undefined) {
-				executionState.sharedMemory.set(node.id, String(nodeState.output));
+				const outputText = String(nodeState.output);
+				executionState.sharedMemory.set(node.id, outputText);
+				for (const key of parseSharedPublishKeys((node.data as Record<string, unknown> | undefined)?.publishes)) {
+					executionState.sharedMemory.set(key, outputText);
+				}
 			}
 
 			// v32: save checkpoint after node success
 			this._saveCheckpoint(executionState).catch(() => { /* best-effort */ });
 
-			// Execute next nodes
+			// Execute next nodes —— ★ v38 join 语义：入度归零才执行（等待全部前驱）。
 			for (const nextNodeId of nextNodeIds) {
+				const d = (inDeg.get(nextNodeId) ?? 1) - 1;
+				inDeg.set(nextNodeId, d);
+				if (d > 0) {
+					this.logService.info(`[WorkflowExecution] Node ${nextNodeId} waiting for ${d} more upstream node(s) (join)`);
+					continue;
+				}
 				const nextNode = workflow.nodes?.find(n => n.id === nextNodeId);
 				if (nextNode) {
-					await this._executeNodeRecursive(executionState, workflow, nextNode, adj, options, visited, depth + 1, maxDepth);
+					await this._executeNodeRecursive(executionState, workflow, nextNode, adj, options, visited, depth + 1, maxDepth, inDeg);
 				}
 			}
 		} catch (err) {
@@ -904,7 +1587,25 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				nodeState.status = WorkflowNodeExecutionStatus.Cancelled;
 				nodeState.endTime = new Date().toISOString();
 				executionState.nodeStates.set(node.id, nodeState);
-				this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
+				this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
+				// ★ 失败/取消也必须发 subagent_end trace（2026-09-10 实测卡只显示 spinner
+				//   不显示错误信息）：success 分支 L1163 发硬编码 done；失败/取消路径
+				//   此前不发 → WorkflowTraceController._handleSubagentEnd 永远收不到 →
+				//   subAgent.status 永远 running → 节点卡 spinner 永转 + error 不可见。
+				const cancelOwner = this._executionSession.get(executionState.executionId);
+				// ★ 规则单点化（2026-09-13 P2-6）：与成功分支同一规则表 ——
+				//   此前此处漏了 FLOW 筛选（过滤不对称），导致非 FLOW 节点取消时发出
+				//   没有对应卡片的 end 事件 → controller 静默丢弃 ✗。收敛后结构上不可能再漏。
+				if (cancelOwner && isNodeVisibleOnCard(workflow.connections, node)) {
+					this._onDidExecutionTrace.fire({
+						kind: 'subagent_end',
+						executionId: executionState.executionId,
+						sessionId: cancelOwner.sessionId,
+						nodeId: node.id,
+						status: 'cancelled',
+						output: '',
+					});
+				}
 				return;
 			}
 			// v32: Cascade failure — instead of immediately failing the entire
@@ -916,7 +1617,30 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			nodeState.error = err instanceof Error ? err.message : String(err);
 			nodeState.endTime = new Date().toISOString();
 			executionState.nodeStates.set(node.id, nodeState);
-			this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
+			this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
+			// ★ 失败原因必须落日志（2026-09-10）：此前 error 只存 nodeState——
+			//   排查「缺少阶段」时日志里只有 Cascade skipped，看不到根因。
+			this.logService.error(
+				`[WorkflowExecution] Node ${this._nodeDisplayName(node)} (${node.id}, ${node.type}) FAILED: ${nodeState.error}` +
+				(err instanceof Error && err.stack ? `\n${err.stack}` : ''),
+			);
+
+			// ★ 失败也必须发 subagent_end trace（2026-09-10）：success 分支硬编码
+			//   status='done'，失败路径不补 → 节点卡 status 永远 running → spinner
+			//   永转 + 错误不可见（用户反馈）。
+			const failOwner = this._executionSession.get(executionState.executionId);
+			// ★ 规则单点化（2026-09-13 P2-6）：与成功/取消分支同一规则表。
+			if (failOwner && isNodeVisibleOnCard(workflow.connections, node)) {
+				this._onDidExecutionTrace.fire({
+					kind: 'subagent_end',
+					executionId: executionState.executionId,
+					sessionId: failOwner.sessionId,
+					nodeId: node.id,
+					status: 'error',
+					output: nodeState.error ?? '',
+					error: nodeState.error ?? '',
+				});
+			}
 
 			// Collect all downstream node IDs reachable from this failed node.
 			this._cascadeSkipDownstream(executionState, node.id, adj);
@@ -965,7 +1689,7 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			executionState.nodeStates.set(targetId, skippedState);
 			this._onDidNodeExecutionStatusChange.fire({
 				executionId: executionState.executionId,
-				nodeState: skippedState,
+				nodeState: { ...skippedState },
 			});
 			this.logService.info(
 				`[WorkflowExecution] Cascade: skipped node ${targetId} because upstream ${failedNodeId} failed`,
@@ -986,6 +1710,15 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		_options?: IWorkflowExecutionOptions,
 	): Promise<void> {
 		this.logService.info(`[WorkflowExecution] Executing Task node: ${node.id}`);
+		// ★ P1-2 修复（2026-09-13）：与 Agent 节点同因 —— Task 节点此前**不 fire 节点状态
+		//   变化** → 画布卡片停在 idle（`onDidNodeExecutionStatusChange` → `sendFullStateFor`
+		//   是画布卡状态的唯一来源）。补齐前/后 fire。
+		const taskNodeState = executionState.nodeStates.get(node.id)
+			?? { nodeId: node.id, status: WorkflowNodeExecutionStatus.Running, startTime: new Date().toISOString() };
+		taskNodeState.status = WorkflowNodeExecutionStatus.Running;
+		taskNodeState.startTime = taskNodeState.startTime ?? new Date().toISOString();
+		executionState.nodeStates.set(node.id, taskNodeState);
+		this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...taskNodeState } });
 		const data = node.data ?? {};
 		// v9: prefer data.prompt (configured via PropertyPanel), then data.label, then node.name.
 		// Never use hardcoded fallbacks that could cause the agent to call unrelated skills.
@@ -1027,10 +1760,37 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			const nodeState = executionState.nodeStates.get(node.id);
 			if (nodeState) {
 				nodeState.output = message.content || '';
+				// ★ P1-2（2026-09-13）：终态 fire → 画布卡翻到「完成 / 已取消」。
+				const wasCancelledNow = (executionState.status as string) === 'cancelled';
+				nodeState.status = wasCancelledNow
+					? WorkflowNodeExecutionStatus.Cancelled
+					: WorkflowNodeExecutionStatus.Completed;
+				nodeState.endTime = new Date().toISOString();
+				this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
+				// ★ P1-2 产物部分（2026-09-13）：Task 的文本输出写进画布快照库
+				//   （与 Agent 节点同款；meta 用 text/plain，不冒充 sarosJson）。
+				if (!wasCancelledNow && typeof nodeState.output === 'string' && nodeState.output) {
+					putWorkflowSnapshotMedia({
+						anchorUid: node.id,
+						port: 'output',
+						kind: 'text',
+						ref: nodeState.output.substring(0, AGENT_OUTPUT_SNAPSHOT_MAX),
+						meta: { taskNode: '1', mime: 'text/plain' },
+					});
+				}
 			}
 
 			this.logService.info(`[WorkflowExecution] Task ${node.id} completed: ${message.content?.substring(0, 100)}`);
 		} catch (err) {
+			// ★ P1-2（2026-09-13）：失败也 fire 状态 → 画布卡显示红叉（与 Agent 节点同）。
+			const taskNsFail = executionState.nodeStates.get(node.id);
+			if (taskNsFail) {
+				taskNsFail.status = WorkflowNodeExecutionStatus.Failed;
+				taskNsFail.error = err instanceof Error ? err.message : String(err);
+				taskNsFail.endTime = new Date().toISOString();
+				executionState.nodeStates.set(node.id, taskNsFail);
+				this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...taskNsFail } });
+			}
 			this.logService.error(`[WorkflowExecution] Task ${node.id} failed:`, err);
 			throw err;
 		}
@@ -1090,6 +1850,16 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		options?: IWorkflowExecutionOptions,
 	): Promise<void> {
 		this.logService.info(`[WorkflowExecution] Executing Agent node: ${node.id}`);
+		// ★ P1-2 修复（2026-09-13）：Agent 节点此前**不 fire 节点状态变化** → 画布卡片
+		//   停在 idle（既无「运行中」也无「完成」），而同一工作流里的 Comfy 节点是正常的 ✗。
+		//   host 的 `onDidNodeExecutionStatusChange` → `sendFullStateFor` 是**画布卡状态的
+		//   唯一来源**（见 agentStudioWebviewController 的注册处）→ 这里补齐前/后两次 fire。
+		const agentNodeState = executionState.nodeStates.get(node.id)
+			?? { nodeId: node.id, status: WorkflowNodeExecutionStatus.Running, startTime: new Date().toISOString() };
+		agentNodeState.status = WorkflowNodeExecutionStatus.Running;
+		agentNodeState.startTime = agentNodeState.startTime ?? new Date().toISOString();
+		executionState.nodeStates.set(node.id, agentNodeState);
+		this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...agentNodeState } });
 		const data = node.data ?? {};
 		const agentId = (data.agentId as string) || options?.agentId;
 		const ownerSession = this._executionSession.get(executionState.executionId);
@@ -1170,7 +1940,10 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				nodeId: node.id,
 				nodeName: (data.label as string) || node.name || node.id,
 				nodeType: 'agent',
-				task: nodePrompt.substring(0, 200),
+				task: nodePrompt.substring(0, CARD_TEXT_LIMITS.subtitle),
+				// ★ P0 修复（2026-09-13）：Agent 节点图标（此前渲染层恰好命中旧表，
+				//   现在统一由 host 给出，保证与其它节点同一套推导路径）。
+				icon: '🤖',
 			});
 		} else {
 			this.logService.warn(
@@ -1273,6 +2046,29 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			const nodeState = executionState.nodeStates.get(node.id);
 			if (nodeState) {
 				nodeState.output = message.content || '';
+				// ★ P1-2 修复（2026-09-13）：终态也要 fire → 画布卡从「运行中」翻到
+				//   「完成 / 已取消」（此前只改 output、不通知 → 画布卡永远停在 idle ✗）。
+				const wasCancelledNow = (executionState.status as string) === 'cancelled';
+				nodeState.status = wasCancelledNow
+					? WorkflowNodeExecutionStatus.Cancelled
+					: WorkflowNodeExecutionStatus.Completed;
+				nodeState.endTime = new Date().toISOString();
+				this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
+				// ★ P1-2 产物部分（2026-09-13）：Agent 的**文本输出**写进画布快照库
+				//   → 画布卡 OUTPUT 区可见（此前 host 驱动路径下画布完全没有产物，
+				//   而画布本地执行同一节点时是有的 —— 同一节点两处表现不一致 ✗）。
+				//   形态与画布本地执行 Agent（graphNodeExecutors）一致（kind:'text'）；
+				//   但 meta 用 text/plain —— **不冒充** `sarosJson`（那会被下游当作
+				//   SAROS_JSON 归档解析 ✗）。长度上限见 AGENT_OUTPUT_SNAPSHOT_MAX。
+				if (!wasCancelledNow && typeof nodeState.output === 'string' && nodeState.output) {
+					putWorkflowSnapshotMedia({
+						anchorUid: node.id,
+						port: 'output',
+						kind: 'text',
+						ref: nodeState.output.substring(0, AGENT_OUTPUT_SNAPSHOT_MAX),
+						meta: { agentNode: '1', mime: 'text/plain' },
+					});
+				}
 			}
 
 			// v21: if the execution was cancelled mid-stream, fire subagent_end
@@ -1288,7 +2084,7 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					sessionId: ownerSession.sessionId,
 					nodeId: node.id,
 					status: wasCancelled ? 'cancelled' : 'done',
-					output: message.content?.substring(0, 4000) || '',
+					output: message.content?.substring(0, CARD_TEXT_LIMITS.agentOutput) || '',
 				});
 			}
 
@@ -1304,6 +2100,15 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					status: 'error',
 					error: err instanceof Error ? err.message : String(err),
 				});
+			}
+			// ★ P1-2（2026-09-13）：失败也 fire 状态 → 画布卡显示红叉，而不是一直「运行中」。
+			const nsFail = executionState.nodeStates.get(node.id);
+			if (nsFail) {
+				nsFail.status = WorkflowNodeExecutionStatus.Failed;
+				nsFail.error = err instanceof Error ? err.message : String(err);
+				nsFail.endTime = new Date().toISOString();
+				executionState.nodeStates.set(node.id, nsFail);
+				this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nsFail } });
 			}
 			this.logService.error(`[WorkflowExecution] Agent ${node.id} failed:`, err);
 			throw err;
@@ -1369,6 +2174,109 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		return meta.id;
 	}
 
+	/**
+	 * 阶段 1：从 AskUser 的字段定义与回答中收集**媒体资产**（kind='image'）。
+	 * 约定：image 类型字段的值是**资产引用**（MediaSnapshotStore 的 ref / 快照引用），
+	 * 不内联 data URL——避免 JSON 膨胀、支持复用与懒加载。非 image 字段不进 assets。
+	 */
+	/**
+	 * 阶段 2：解析结构化引用 `{ node, path }`。
+	 * 数据源 = 目标节点的 output（若是 AskUser 契约 JSON 则按路径取子值，
+	 * 否则整段作为文本）。路径支持 `params.x` / `assets.x` / `labels.0`；
+	 * 空 path = 整段 output。解析不到 → warn + undefined（调用方回落模板/default）。
+	 */
+	private _resolveStructuredRef(
+		executionState: IWorkflowExecutionState,
+		nodeId: string,
+		path: string,
+		bindingKey: string,
+	): unknown {
+		const ns = executionState.nodeStates.get(nodeId);
+		if (!ns || ns.output === undefined) {
+			this.logService.warn(`[WorkflowExecution] $ref 悬空：节点 ${nodeId} 无输出（binding=${bindingKey}）`);
+			return undefined;
+		}
+		const raw = ns.output;
+		// 契约 JSON（AskUser 等数据源节点）→ 按路径取值
+		if (typeof raw === 'string' && raw.trim().startsWith('{')) {
+			try {
+				const obj = JSON.parse(raw) as unknown;
+				if (obj && typeof obj === 'object') {
+					if (!path) { return obj; }
+					const value = path.split('.').reduce<unknown>((acc, seg) => {
+						if (acc && typeof acc === 'object') {
+							return (acc as Record<string, unknown>)[seg];
+						}
+						return undefined;
+					}, obj);
+					if (value === undefined) {
+						this.logService.warn(`[WorkflowExecution] $ref 路径不存在：${nodeId}.${path}（binding=${bindingKey}）`);
+						return undefined;
+					}
+					return value;
+				}
+			} catch { /* 非 JSON → 整段文本 */ }
+		}
+		return raw;
+	}
+
+	private static _collectAskUserAssets(
+		fields: IAskUserField[],
+		params: Record<string, string>,
+	): Record<string, string> {
+		const out: Record<string, string> = {};
+		for (const f of fields) {
+			if (f.kind !== 'image') { continue; }
+			const v = typeof params[f.key] === 'string' ? (params[f.key] as string).trim() : '';
+			if (v) { out[f.key] = v; }
+		}
+		return out;
+	}
+
+	/**
+	 * 解析 `data.questions`（多问题，2026-09-11）。返回空数组 = 走旧的单问题路径。
+	 *
+	 * 容错：非法 JSON / 非数组 → 空数组（回落旧字段，不让节点因配置脏数据而失败）；
+	 * 每问题 key 缺省 `q{i+1}`、text 缺省空、mode 缺省 options；options 支持字符串
+	 * 简写（`["A","B"]`）；无内容（无 text/options/params）的问题被丢弃。
+	 */
+	private static _parseAskUserQuestions(data: Record<string, unknown>): IAskUserQuestion[] {
+		const raw = data.questions;
+		let arr: unknown = raw;
+		if (typeof raw === 'string') {
+			if (!raw.trim()) { return []; }
+			try { arr = JSON.parse(raw); } catch { return []; }
+		}
+		if (!Array.isArray(arr)) { return []; }
+		const out: IAskUserQuestion[] = [];
+		arr.forEach((item, i) => {
+			const q = (item ?? {}) as Record<string, unknown>;
+			const key = String(q.key ?? '').trim() || `q${i + 1}`;
+			const text = String(q.text ?? '').trim();
+			const mode: 'options' | 'params' = q.mode === 'params' ? 'params' : 'options';
+			const options = Array.isArray(q.options)
+				? (q.options as unknown[])
+					.map(o => typeof o === 'string' ? { label: o } : (o as IAskUserOption))
+					.filter(o => o && typeof o.label === 'string' && o.label.trim())
+				: [];
+			const params = Array.isArray(q.params)
+				? (q.params as unknown[])
+					.map(p => p as IAskUserField)
+					.filter(p => p && typeof p.key === 'string' && p.key.trim())
+				: [];
+			if (!text && options.length === 0 && params.length === 0) { return; }
+			out.push({
+				key, text, mode,
+				required: q.required === true,
+				options, params,
+				multiSelect: q.multiSelect === true,
+				allowCustom: q.allowCustom === true,
+				customLabel: typeof q.customLabel === 'string' ? q.customLabel : undefined,
+			});
+		});
+		return out;
+	}
+
 	private async _executeAskUserNode(
 		executionState: IWorkflowExecutionState,
 		workflow: IStoredWorkflow,
@@ -1377,17 +2285,67 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	): Promise<string | string[]> {
 		this.logService.info(`[WorkflowExecution] Executing AskUser node: ${node.id}`);
 		const data = node.data ?? {};
-		const question = (data.question as string) || '请提供更多输入';
-		const options = (data.options as IAskUserOption[]) || [];
-		const multiSelect = (data.multiSelect as boolean) ?? false;
+		let question = (data.question as string) || '请提供更多输入';
+		let options = (data.options as IAskUserOption[]) || [];
+		// ★ multiSelect / allowCustom 兼容双形态（2026-09-10）：画布表单历史上把它们
+		//   当**字符串**存（'yes'/'no'，nodeEditorForm kind:'text'），而这里按 boolean
+		//   读 —— `'yes' as boolean` 只是类型断言、运行时仍是字符串，靠 truthy 侥幸
+		//   可用；用户填 'Yes'/'true' 之外的任何词（如 'Y'）都静默失效。改为显式归一，
+		//   字符串/布尔都认（表单已同步改为 yes/no 下拉，减少手填出错面）。
+		const truthyFlag = (v: unknown): boolean => v === true
+			|| (typeof v === 'string' && ['yes', 'true', '1', 'on'].includes(v.trim().toLowerCase()));
+		const multiSelect = truthyFlag(data.multiSelect);
+		const allowCustom = truthyFlag(data.allowCustom);
+		const customLabel = (data.customLabel as string) || '其他（请输入）';
+		// ★ 多问题（2026-09-11）：data.questions 非空 → 多问题模式。每问题独立
+		//   模式（options / params）；空则回落旧的单问题字段（零迁移）。
+		const questions = WorkflowExecutionService._parseAskUserQuestions(data);
+		// ★ D4：动态参数表单（多字段输入）。fields 定义同 options 一样支持动态覆盖。
+		let fields = (data.fields as IAskUserField[]) || [];
 		const ownerSession = this._executionSession.get(executionState.executionId);
+
+		// ★ D2 动态参数（2026-09-10）：上游节点输出 SAROS_JSON 形状
+		//   `{ question?, options?: [{label, description?}] }` 时**字段级覆盖**静态配置
+		//   （借鉴 LangGraph interrupt 载荷模式）——Agent（LLM 运行时生成选项）与
+		//   Script 节点可动态出题。静态 data 永远作回落，旧行为 100% 兼容。
+		const upstreamIds = (workflow.connections ?? []).filter(c => c.to === node.id).map(c => c.from);
+		for (const uid of upstreamIds) {
+			const upState = executionState.nodeStates.get(uid);
+			if (!upState || upState.status !== WorkflowNodeExecutionStatus.Completed || !upState.output) { continue; }
+			try {
+				const parsed = JSON.parse(upState.output) as { question?: unknown; options?: unknown; fields?: unknown } | null;
+				if (!parsed || typeof parsed !== 'object') { continue; }
+				if (typeof parsed.question === 'string' && parsed.question.trim()) { question = parsed.question; }
+				// D4：动态字段定义（[{key,label,kind,default}]）——与 options 同级覆盖。
+				if (Array.isArray(parsed.fields)) {
+					const dynFields = (parsed.fields as unknown[])
+						.map(f => f as IAskUserField)
+						.filter(f => f && typeof f.key === 'string' && f.key.trim());
+					if (dynFields.length > 0) { fields = dynFields; }
+				}
+				if (Array.isArray(parsed.options)) {
+					const dyn = (parsed.options as unknown[])
+						.map(o => typeof o === 'string' ? { label: o } : (o as IAskUserOption))
+						.filter(o => o && typeof o.label === 'string' && o.label.trim());
+					if (dyn.length > 0) {
+						options = dyn as IAskUserOption[];
+						this.logService.info(`[WorkflowExecution] AskUser ${node.id}: 动态选项覆盖（来自上游 ${uid}，${dyn.length} 项）`);
+					} else {
+						this.logService.warn(`[WorkflowExecution] AskUser ${node.id}: 上游动态 options 为空数组，回落静态配置`);
+					}
+				}
+			} catch { /* 上游输出非 JSON → 静默回落静态配置（T4 容错） */ }
+		}
 
 		try {
 			// v4: fire ask_user trace event BEFORE pausing so the webview can render
 			// an interactive card in the workflow owner agent's chat. The card will
 			// send `workflow.resume` (RPC) when the user picks an option.
 			if (ownerSession) {
-				const nodeName = (data.label as string) || node.name || node.id;
+				const nodeName = this._nodeDisplayName(node);
+				// ★ 环节点日志（2026-09-10 卡死排查）：ask_user fire 无日志时无法区分
+				//   「fire 未发生（ownerSession 缺失）」与「面板渲染断链」。
+				this.logService.info(`[WorkflowExecution] AskUser ${node.id}: firing ask_user trace → session=${ownerSession.sessionId}, options=${options.length}, fields=${fields?.length ?? 0}`);
 				this._pendingAskUser.set(`${executionState.executionId}:${node.id}`, {
 					executionId: executionState.executionId,
 					sessionId: ownerSession.sessionId,
@@ -1406,6 +2364,11 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					question,
 					options,
 					multiSelect,
+					allowCustom,
+					customLabel,
+					fields,
+					// ★ 多问题（2026-09-11）：非空 → 卡片按单页渲染全部问题
+					...(questions.length > 0 ? { questions } : {}),
 				});
 			}
 
@@ -1417,6 +2380,13 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				question,
 				options,
 			);
+
+			// ★ 取消短路（2026-09-11）：AskUser 暂停期间用户点取消 → `cancelExecution`
+			//   已 resolve 本 pause（返回 ''）并发出 ask_user_end('cancelled')，交互卡
+			//   已是「已取消」。此处若不检查，会把空字符串当**用户回答**继续处理
+			//   （标节点 Completed、发 ask_user_end('answered') 覆盖取消态、按空答案
+			//   路由下游）→ 卡片显示「已回答」而用户明明取消了。
+			if (this._bailOutIfCancelled(executionState, node)) { return ''; }
 
 			// v4: fire ask_user_end so the webview card flips to "answered" state.
 			if (ownerSession) {
@@ -1432,6 +2402,126 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			}
 
 			this.logService.info(`[WorkflowExecution] User input received: ${JSON.stringify(userInput)}`);
+
+			// ★ D4：对象态回答 = { __askUserAnswer:1, labels, params }。
+			//   labels 走既有链路（context.userInput + port 路由按 label 匹配，零影响）；
+			//   params 另存 context.askUserParams[nodeId]，不污染既有 consumer。
+			// 对象态可能以 JSON 字符串抵达（resume 通道保持 string|string[] 签名）。
+			let answerObject: { __askUserAnswer?: number; labels?: unknown; params?: unknown; multiSelect?: boolean } | undefined;
+			if (typeof userInput === 'string' && userInput.startsWith('{')) {
+				try { answerObject = JSON.parse(userInput); } catch { /* 普通文本回答 */ }
+			} else if (userInput && typeof userInput === 'object' && !Array.isArray(userInput)) {
+				answerObject = userInput as typeof answerObject;
+			}
+			if (answerObject) {
+				const ans = answerObject;
+				// ★ 多问题（2026-09-11）：`{ __askUserAnswer:1, answers:{ q1:…, q2:{…} } }`
+				//   输出契约 `{ __askUser:1, answers, labels, params, assets }` —— answers
+				//   按问题 key 组织（选项模式 = 文案/数组；参数模式 = {字段:值}），
+				//   下游 `{{input.q1}}` / `{{input.q2.topic}}` 消费；同时把参数模式
+				//   的值**并入 params**（保持既有 `askUserParams` / 模板链路可用）。
+				const multiAnswers = (ans as { answers?: unknown }).answers;
+				if (multiAnswers && typeof multiAnswers === 'object' && !Array.isArray(multiAnswers)) {
+					const answers = multiAnswers as Record<string, unknown>;
+					const mergedParams: Record<string, string> = {};
+					const mergedAssets: Record<string, string> = {};
+					for (const q of questions) {
+						const v = answers[q.key];
+						if (q.mode === 'params' && v && typeof v === 'object' && !Array.isArray(v)) {
+							const fields = q.params ?? [];
+							const collected = WorkflowExecutionService._collectAskUserAssets(fields, v as Record<string, string>);
+							for (const [k, val] of Object.entries(collected)) { mergedAssets[`${q.key}.${k}`] = val; }
+							for (const [k, val] of Object.entries(v as Record<string, string>)) {
+								if (collected[k] === undefined && typeof val === 'string') { mergedParams[`${q.key}.${k}`] = val; }
+							}
+						}
+					}
+					const contract: Record<string, unknown> = {
+						__askUser: 1,
+						answers,
+						...(Object.keys(mergedParams).length > 0 ? { params: mergedParams } : {}),
+						...(Object.keys(mergedAssets).length > 0 ? { assets: mergedAssets } : {}),
+					};
+					const nodeState = executionState.nodeStates.get(node.id);
+					if (nodeState) {
+						nodeState.output = JSON.stringify(contract);
+						const snaps = Object.entries(mergedAssets).map(([key, ref]) => ({
+							port: 'output', kind: 'image' as const, ref, meta: { askUserAsset: key },
+						}));
+						if (snaps.length > 0) { nodeState.snapshot = snaps; }
+						this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
+					}
+					if (Object.keys(mergedParams).length > 0) {
+						const bag = ((executionState.context['askUserParams'] as Record<string, Record<string, string>> | undefined) ?? {});
+						bag[node.id] = mergedParams;
+						executionState.context['askUserParams'] = bag;
+					}
+					if (Object.keys(mergedAssets).length > 0) {
+						const abag = ((executionState.context['askUserAssets'] as Record<string, Record<string, string>> | undefined) ?? {});
+						abag[node.id] = mergedAssets;
+						executionState.context['askUserAssets'] = abag;
+						const prevImages = Array.isArray(executionState.context['images']) ? executionState.context['images'] as string[] : [];
+						executionState.context['images'] = [...prevImages, ...Object.values(mergedAssets)];
+					}
+					this.logService.info(`[WorkflowExecution] AskUser ${node.id}: 多问题作答 ${Object.keys(answers).length} 项（params=${Object.keys(mergedParams).length}, assets=${Object.keys(mergedAssets).length}）`);
+					// 返回值供 port 路由（labels 语义）：多问题取首个非空答案的文本
+					const firstText = Object.values(answers).map(v => typeof v === 'string' ? v : '').find(s => s);
+					return firstText ?? JSON.stringify(answers);
+				}
+				if (ans.__askUserAnswer === 1) {
+					const labels = Array.isArray(ans.labels) ? (ans.labels as string[]).filter(l => typeof l === 'string') : [];
+					const params = (ans.params && typeof ans.params === 'object' && !Array.isArray(ans.params))
+						? ans.params as Record<string, string>
+						: {};
+					// ★ 数据契约（2026-09-10 阶段 1）：AskUser 作为**数据源节点**，
+					//   输出结构化契约（labels / params / assets）供下游 $ref 引用，
+					//   而非只把选项文本塞进 $prev（媒体与多字段此前完全丢失）。
+					const assets = WorkflowExecutionService._collectAskUserAssets(fields, params);
+					// ★ params 只留**文本/数字**：media 字段（base64 data URL，可达数 MB）
+					//   必须从 params 剥离——否则下游 `{{askUserParams.<id>.<key>}}` 之类
+					//   模板合成会把整段 base64 塞进 prompt（涨 token 且污染模型输入）。
+					//   媒体统一走 assets → context.images / snapshot 通道。
+					const textParams: Record<string, string> = { ...params };
+					for (const k of Object.keys(assets)) { delete textParams[k]; }
+					const contract = {
+						__askUser: 1,
+						labels,
+						params: textParams,
+						...(Object.keys(assets).length > 0 ? { assets } : {}),
+					};
+					const nodeState = executionState.nodeStates.get(node.id);
+					if (nodeState) {
+						nodeState.output = JSON.stringify(contract);
+						// 媒体进 snapshot —— 供聊天卡渲染 + 下游媒体端口消费。
+						const snaps = Object.entries(assets).map(([key, ref]) => ({
+							port: 'output',
+							kind: 'image' as const,
+							ref,
+							meta: { askUserAsset: key },
+						}));
+						if (snaps.length > 0) { nodeState.snapshot = snaps; }
+						this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
+					}
+
+					if (Object.keys(textParams).length > 0) {
+						const bag = ((executionState.context['askUserParams'] as Record<string, Record<string, string>> | undefined) ?? {});
+						bag[node.id] = textParams;
+						executionState.context['askUserParams'] = bag;
+						this.logService.info(`[WorkflowExecution] AskUser ${node.id}: 动态参数 ${Object.keys(textParams).length} 项已入 context.askUserParams`);
+					}
+					if (Object.keys(assets).length > 0) {
+						const abag = ((executionState.context['askUserAssets'] as Record<string, Record<string, string>> | undefined) ?? {});
+						abag[node.id] = assets;
+						executionState.context['askUserAssets'] = abag;
+						// ★ 同时并入 context.images——下游媒体节点（EmojiStage 等）
+						//   在无显式 binding 时回落消费 context.images（既有链路）。
+						const prevImages = Array.isArray(executionState.context['images']) ? executionState.context['images'] as string[] : [];
+						executionState.context['images'] = [...prevImages, ...Object.values(assets)];
+						this.logService.info(`[WorkflowExecution] AskUser ${node.id}: 媒体资产 ${Object.keys(assets).length} 项已入 context.askUserAssets + context.images`);
+					}
+					return ans.multiSelect ? labels : (labels[0] ?? '');
+				}
+			}
 			return userInput;
 		} catch (err) {
 			// v4: mark the pending ask_user as expired so the card shows "failed" state.
@@ -1634,6 +2724,12 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		}
 	}
 
+	// ★ `_nodeOnFlowChain` 已移除（2026-09-13 质量评估 P2-6）：FLOW 链 + 类型排除的
+	//   判定收敛到 `workflow/cardVisibility.ts` 的 `isNodeVisibleOnCard` —— **唯一规则表**，
+	//   结构上杜绝各处漂移（catch 分支曾漏掉 FLOW 筛选，导致非 FLOW 节点的 subagent_end
+	//   没有对应卡片、被 controller 静默丢弃 ✗）。原注释（端口约定 / 保守视为 FLOW）
+	//   随之迁移到 `flowChain.ts` 与 `cardVisibility.ts`。
+
 	/**
 	 * Execute a ComfyUI-compatible node (WorkflowNodeType.Comfy / ComfyStage).
 	 * The actual Comfy invocation is delegated to an injected
@@ -1651,11 +2747,38 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		const data = node.data ?? {};
 		const comfy = (data.comfy ?? {}) as { mode?: 'workflow' | 'stage'; stageClass?: string; workflowId?: string };
 
-		if (!this._comfyDelegate) {
-			this.logService.warn(
-				`[WorkflowExecution] Comfy node ${node.id} skipped: no Comfy execution delegate registered. ` +
-				`Use setComfyExecutionDelegate() to enable ComfyUI execution.`,
-			);
+		// ★ 选择型/纯配置型节点（catalog 声明 apply:'snapshot'|'skip'）**不需要 ComfyUI
+		//   delegate** —— 它们由下方交互段处理并直接 return（不执行节点）。此前 delegate
+		//   检查在交互段之前，会让这类节点在未开画布时被误判 Failed（Picker 家族单链路
+		//   改造，2026-09-11）。
+		const interactionSchemaEarly = catalogInteraction(
+			typeof data['stageClass'] === 'string' ? data['stageClass'] : undefined,
+		);
+		const skipsExecution = interactionSchemaEarly?.apply === 'snapshot' || interactionSchemaEarly?.apply === 'skip';
+
+		if (!this._comfyDelegate && !skipsExecution) {
+			// ★ v39 fail-loud（与脚本域 stagePort 缺省 fail-loud 语义一致）：
+			//   旧版静默 return —— 节点状态缺失 → 终态可能误判 Completed、级联不触发、
+			//   下游拿到空输入。现在标 Failed + 级联跳过下游，独立分支不受影响。
+			const msg = 'no Comfy execution delegate registered. ' +
+				'Open the workflow canvas (which registers the delegate via setComfyExecutionDelegate) to enable ComfyUI execution.';
+			this.logService.warn(`[WorkflowExecution] Comfy node ${node.id} FAILED: ${msg}`);
+			const nodeState: IWorkflowNodeExecutionState = {
+				nodeId: node.id,
+				status: WorkflowNodeExecutionStatus.Failed,
+				error: msg,
+				startTime: new Date().toISOString(),
+				endTime: new Date().toISOString(),
+			};
+			executionState.nodeStates.set(node.id, nodeState);
+			this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...nodeState } });
+			const adjLocal = new Map<string, { targetId: string; fromPort?: string }[]>();
+			for (const c of (workflow.connections ?? [])) {
+				const list = adjLocal.get(c.from) ?? [];
+				list.push({ targetId: c.to, fromPort: c.fromPort });
+				adjLocal.set(c.from, list);
+			}
+			this._cascadeSkipDownstream(executionState, node.id, adjLocal);
 			return;
 		}
 
@@ -1664,7 +2787,38 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		const bindings = (data.bindings ?? {}) as Record<string, string>;
 		const defaults = (data.defaults ?? {}) as Record<string, unknown>;
 		const values: Record<string, unknown> = {};
+
+		// ★ 节点顶层配置透传（2026-09-10 用户反馈「动态表情包参数报错」）：
+		//   画布把节点配置（`videoProvider` / `videoModel` / `provider` / `model` /
+		//   `duration_s` / `fps` / `chroma_*` / `selected_index` / `cell_indices` …）
+		//   存在 **data 顶层**，而 host 此前只组装 bindings + defaults → webview
+		//   `runAnimatedEmoji` 收不到 `videoProvider`/`videoModel` → 直接抛
+		//   「请先在节点设置中选择 Provider 和视频生成模型」（日志实锤：画布 data 里
+		//   明明配了 lm:lightai / video_minimax_h3）。这里先把 data 顶层标量/数组铺进
+		//   values；bindings 在其后覆盖（显式引用优先），defaults 仅在两者都没有时兜底。
+		const DATA_INTERNAL_KEYS = new Set([
+			'bindings', 'defaults', 'label', 'stageClass', 'comfy',
+			'__sarosStageUid', 'hasBreakpoint', 'position', 'style',
+		]);
+		for (const [k, v] of Object.entries(data)) {
+			if (DATA_INTERNAL_KEYS.has(k) || v === undefined || v === null) { continue; }
+			const t = typeof v;
+			if (t === 'string' || t === 'number' || t === 'boolean' || Array.isArray(v)) {
+				values[k] = v;
+			}
+		}
+
 		for (const [key, binding] of Object.entries(bindings)) {
+			// ★ 阶段 2（2026-09-10）：binding 支持**结构化引用**
+			//   `{ "$ref": { "node": "<nodeId>", "path": "params.x" | "assets.x" | "labels.0" } }`
+			//   ——数据传参保类型、可校验、重命名可追踪；`{{}}` 仅保留给文本合成。
+			if (binding && typeof binding === 'object' && !Array.isArray(binding)) {
+				const ref = (binding as { $ref?: { node?: unknown; path?: unknown } }).$ref;
+				if (ref && typeof ref.node === 'string') {
+					const refValue = this._resolveStructuredRef(executionState, ref.node, typeof ref.path === 'string' ? ref.path : '', key);
+					if (refValue !== undefined) { values[key] = refValue; continue; }
+				}
+			}
 			const resolved = WorkflowExecutionService._replaceVariables(
 				typeof binding === 'string' ? binding : String(binding),
 				this._buildEvalContext(executionState),
@@ -1688,13 +2842,246 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			values['images'] = ctxImages;
 		}
 
-		const input: ComfyExecutionInput = { values, defaults };
+		// ★ 上游连线参考图（2026-09-10 用户反馈「静态表情包的参考图未生效」）：
+		//   画布上 `ImageLoader --images--> StatEmojiStage` 这类**数据连线**，此前
+		//   host 只认 bindings 与 context.images，**从不读连线** → 上游 loader 经
+		//   webview runLoaderNode 物化出的快照（nodeState.snapshot）从未注入下游的
+		//   images 端口 → 参考图丢失（生成结果与参考图无关）。
+		//   这里按入边汇总上游 image 快照；显式 binding / 聊天附件优先（不覆盖）。
+		if (values['images'] === undefined) {
+			const upstreamImages: string[] = [];
+			for (const c of (workflow.connections ?? [])) {
+				if (c.to !== node.id) { continue; }
+				const upState = executionState.nodeStates.get(c.from);
+				for (const m of (upState?.snapshot ?? [])) {
+					if (m.kind === 'image' && typeof m.ref === 'string' && m.ref) {
+						upstreamImages.push(m.ref);
+					}
+				}
+			}
+			if (upstreamImages.length > 0) {
+				values['images'] = upstreamImages;
+				this.logService.info(`[WorkflowExecution] ${node.id}: 上游连线注入参考图 ${upstreamImages.length} 张`);
+			}
+		}
+
+		// ★ 节点交互 UI（2026-09-11 用户需求：**通用框架**）：命中 schema 的节点在
+		//   执行前**暂停**，卡片按 schema 动态渲染表单（如静态表情包的 m×n 格数 /
+		//   每格提示词 / 表情包风格），用户提交后把值合并进 values 再执行 —— 实现
+		//   「用户配置完成才进入下一阶段」。与 AskUser / ImagePicker 共用 pause/resume；
+		//   提交值以 JSON 字符串回传（同 D4 约定，避免扩展 pause 签名）。
+		// 交互声明：**唯一来源 = nodeCatalog**（新增节点只改 nodeCatalog.ts，schema 较大时
+		// 放 catalogNodes/<node>.ts）。2026-09-11 已删除与之并存的历史表
+		// NODE_INTERACTION_SCHEMAS（两张表会导致「生产走新表、测试验旧表」的静默漂移）。
+		const interactionSchema = catalogInteraction(
+			typeof data['stageClass'] === 'string' ? data['stageClass'] : undefined,
+		);
+		if (interactionSchema) {
+			const owner = this._executionSession.get(executionState.executionId);
+			// 行为模式（schema 声明驱动，2026-09-11 框架完善）：
+			//   values   → 提交值合并进 values，随后正常执行（配置型）
+			//   snapshot → 提交值 = 媒体 refs，直接作为节点输出，**不执行节点**（选择型）
+			//   skip     → 只收集配置，不执行不产出
+			const applyMode = interactionSchema.apply ?? 'values';
+			// snapshot 模式的候选媒体（卡片据此渲染缩略图网格）。
+			const candidates: NonNullable<ComfyExecutionResult['snapshot']> = [];
+			if (applyMode === 'snapshot') {
+				const fromSelf = interactionSchema.snapshotSource === 'self';
+				// ★ 去重（2026-09-11 用户反馈「ImagePicker 候选里大量重复图像」）：
+				//   ① `connections` 是**按边**记录的（含 fromPort/toPort）—— 同一上游节点
+				//      若有多条边连入（多端口各连一条）会在 sourceIds 里出现多次，
+				//      于是它的**整份快照被重复收集**（实测：上游 11 条 → 候选 22 条）。
+				//   ② 同一 ref 可能同时存在于多个端口/条目：sheet 口与 image 口可能指向
+				//      同一张合成图；单格重新生成的「历史保留」项与当前项也可能同文件。
+				//   去重键取 `ref` —— 同一张图在候选里出现两次对用户没有意义。
+				const sourceIds = [...new Set(
+					fromSelf ? [node.id] : (workflow.connections ?? []).filter(c => c.to === node.id).map(c => c.from),
+				)];
+				const seenCandidateRefs = new Set<string>();
+				for (const sid of sourceIds) {
+					const st = executionState.nodeStates.get(sid);
+					for (const m of (st?.snapshot ?? [])) {
+						if (m.kind !== 'image' && m.kind !== 'video' && m.kind !== 'audio') { continue; }
+						if (!m.ref || seenCandidateRefs.has(m.ref)) { continue; }
+						seenCandidateRefs.add(m.ref);
+						candidates.push(m);
+					}
+				}
+			}
+			// ★ 参考图像字段（2026-09-11 用户需求）：schema 声明 kind='image-ref' 时，
+			//   把**上游图像**作为默认值（用户不选也能直接用上游图），并把上游候选带给
+			//   卡片供「选择图像」。
+			//   ⚠ 不能复用 `__candidates` —— 那个键会让卡片**整卡**切到 ImagePicker
+			//   候选网格模式（见 _createNodeInteractionCard 开头分支），表单就不渲染了。
+			const imageRefFields = interactionSchema.fields.filter(
+				(f): f is Extract<INodeInteractionField, { kind: 'image-ref' }> => f.kind === 'image-ref',
+			);
+			const assetCandidates: Array<{ ref: string; label?: string }> = [];
+			let upstreamRefs: string[] = [];
+			if (imageRefFields.length > 0) {
+				// ★ 候选分两组（2026-09-11 用户报障「表情包的参考图像无法进行选择」）：
+				//   上游 = 默认值来源；上游 + 本工作流其它节点 = 网格候选。
+				//   原本只取**直接上游** → 表情包节点（上游只有 start，不产图）候选为空 →
+				//   卡片按「无候选不渲染按钮」连「选择图像」都不给 → 用户完全无法指定参考图 ✗。
+				const picked = collectImageRefCandidates(
+					workflow.connections,
+					executionState.nodeStates,
+					node.id,
+					(sid) => {
+						const n = (workflow.nodes ?? []).find(x => x.id === sid);
+						return n ? this._nodeDisplayName(n) : undefined;
+					},
+				);
+				upstreamRefs = picked.upstream.map(c => c.ref);
+				assetCandidates.push(...picked.all);
+			}
+			const baseInitialValues = buildInteractionInitialValues(interactionSchema, values);
+			// 节点未钉住资产（初值为空）且有上游图像 → 用第一张作**默认参考图**。
+			// 纯函数抽出（可单测）：见 nodeInteraction/helpers.buildImageRefDefaults。
+			// ⚠ 只传**上游**（不传 all）：否则会把无关节点的图自动钉成默认参考图 ✗。
+			const imageRefDefaults = buildImageRefDefaults(
+				interactionSchema, baseInitialValues, upstreamRefs);
+			if (owner) {
+				this._onDidExecutionTrace.fire({
+					kind: 'node_interaction',
+					executionId: executionState.executionId,
+					sessionId: owner.sessionId,
+					nodeId: node.id,
+					nodeName: this._nodeDisplayName(node),
+					stageClass: typeof data['stageClass'] === 'string' ? data['stageClass'] : undefined,
+					title: interactionSchema.title,
+					...(interactionSchema.description !== undefined ? { description: interactionSchema.description } : {}),
+					...(interactionSchema.submitLabel !== undefined ? { submitLabel: interactionSchema.submitLabel } : {}),
+					fields: interactionSchema.fields as unknown as Array<Record<string, unknown>>,
+					initialValues: {
+						...baseInitialValues,
+						...imageRefDefaults,
+						// 参考图像候选（上游图像）—— 供卡片「选择图像」按钮。
+						...(assetCandidates.length > 0 ? { __assetCandidates: assetCandidates } : {}),
+						// 选择型：把候选媒体随初值带给卡片（卡片渲染缩略图网格 + 多选）。
+						...(applyMode === 'snapshot'
+							? { __candidates: candidates, __multiSelect: interactionSchema.multiSelect !== false }
+							: {}),
+					},
+				});
+			}
+			let submitted: Record<string, unknown> | undefined;
+			try {
+				const raw = await this.pauseExecution(executionState.executionId, node.id, interactionSchema.title, []);
+				if (typeof raw === 'string' && raw.trim().startsWith('{')) {
+					submitted = JSON.parse(raw) as Record<string, unknown>;
+				} else if (Array.isArray(raw)) {
+					// 选择型：卡片可能直接回传 refs 数组
+					submitted = { __refs: raw };
+				}
+			} catch (e) {
+				this.logService.warn(`[WorkflowExecution] 节点交互 ${node.id}: pause 失败（${e instanceof Error ? e.message : String(e)}）→ 用现有配置执行`);
+			}
+			if (owner) {
+				this._onDidExecutionTrace.fire({
+					kind: 'node_interaction_end',
+					executionId: executionState.executionId,
+					sessionId: owner.sessionId,
+					nodeId: node.id,
+					status: submitted ? 'submitted' : 'skipped',
+					...(submitted ? { values: submitted } : {}),
+				});
+			}
+
+			// ★ 取消短路（2026-09-11）：交互暂停期间用户点了取消 → pause 以空值返回
+			//   （不是抛错）→ 必须在此停住，否则会带着「用户已取消」继续执行节点：
+			//   真实发起生成（消耗算力）、节点标 Completed、卡片 spinner 继续转、
+			//   execution_end 迟迟不发（用户感知「取消后进度条不终止」）。
+			//   交互卡已在上方收到 node_interaction_end(skipped) → 显示为已跳过。
+			if (this._bailOutIfCancelled(executionState, node)) { return; }
+
+			// ── 按模式处理提交值 ─────────────────────────────────────────────
+			if (applyMode === 'snapshot') {
+				const rawRefs = submitted?.['__refs'];
+				const refs = Array.isArray(rawRefs)
+					? rawRefs.filter((r): r is string => typeof r === 'string')
+					: (candidates.map(c => c.ref));   // 未提交/取消 → 兜底全选（不阻断下游）
+				const allowed = new Set(candidates.map(c => c.ref));
+				const chosen = candidates.filter(c => allowed.has(c.ref) && refs.includes(c.ref));
+				const finalMedia = chosen.length > 0 ? chosen : candidates;
+				// ★ 落进 **webview 快照库**（2026-09-11 修 bug）：选择型节点**不执行**，其选中
+				//   结果此前只存在 host 侧 executionState —— 而下游执行器（如
+				//   Saros.AnimatedEmoji 逐格图生视频）是按 `store.byNode(上游 id)` /
+				//   `latestRoundOf` 从 **webview 快照库**取上游参考图的 → 永远取不到 →
+				//   报「动态表情包制作需要上游参考图输入」。落库后 picker 的输出对下游
+				//   与普通节点**完全同构**（原样透传 meta，图集标记等语义随之保留）。
+				//   port 用 picker 自身的输出口名（'image'）；下游按边的 sourceHandle 决定
+				//   语义，与该 port 无关，故此处不影响既有消费方。
+				for (const m of finalMedia) {
+					putWorkflowSnapshotMedia({
+						anchorUid: node.id,
+						port: 'image',
+						kind: m.kind === 'video' ? 'video' : m.kind === 'audio' ? 'audio' : 'image',
+						ref: m.ref,
+						...(m.meta ? { meta: m.meta } : {}),
+					});
+				}
+				const ns = executionState.nodeStates.get(node.id) ?? {
+					nodeId: node.id,
+					status: WorkflowNodeExecutionStatus.Running,
+					startTime: new Date().toISOString(),
+				};
+				ns.status = WorkflowNodeExecutionStatus.Completed;
+				ns.endTime = new Date().toISOString();
+				ns.snapshot = finalMedia;
+				ns.output = `已选择 ${finalMedia.length}/${candidates.length} 项输出给下游`;
+				executionState.nodeStates.set(node.id, ns);
+				this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...ns } });
+				this.logService.info(`[WorkflowExecution] 节点交互 ${node.id}: snapshot 模式选择 ${finalMedia.length}/${candidates.length} 项（节点不执行）`);
+				return;   // ★ 选择型：不执行节点
+			}
+			if (applyMode === 'skip') {
+				const ns = executionState.nodeStates.get(node.id) ?? {
+					nodeId: node.id,
+					status: WorkflowNodeExecutionStatus.Running,
+					startTime: new Date().toISOString(),
+				};
+				ns.status = WorkflowNodeExecutionStatus.Completed;
+				ns.endTime = new Date().toISOString();
+				ns.output = '仅配置（skip 模式，不执行）';
+				executionState.nodeStates.set(node.id, ns);
+				this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState: { ...ns } });
+				return;
+			}
+			// 默认 values 模式：合并后继续执行
+			if (submitted) {
+				Object.assign(values, applyInteractionValues(interactionSchema, values, submitted));
+				this.logService.info(`[WorkflowExecution] 节点交互 ${node.id}: 用户提交 ${Object.keys(submitted).length} 项配置 → 合并后执行`);
+			} else {
+				this.logService.info(`[WorkflowExecution] 节点交互 ${node.id}: 未提交（跳过）→ 用节点现有配置执行`);
+			}
+		}
+
+		const input: ComfyExecutionInput = {
+			values,
+			defaults,
+			// ★ headless 轻量版：透传当前工作流 id —— 无画布时自动开画布可定位正确工作流。
+			workflowId: (executionState as { workflowId?: string }).workflowId,
+			// ★ 上游节点 id（2026-09-11）：webview `runStageByClass` 需要它从快照库取
+			//   上游快照 —— 逐格图生视频类 stage（Saros.AnimatedEmoji）的参考图正是
+			//   上游 StatEmojiStage 的格子快照，此前 webview 侧硬编码 `upstreams: []`
+			//   → 报「动态表情包制作需要上游参考图输入」。
+			upstreams: (workflow.connections ?? []).filter(c => c.to === node.id).map(c => c.from),
+			// ★ 工作流 session（2026-09-11）：webview 侧据此隔离快照库（不同聊天会话
+			//   生成的内容互不可见）。
+			...(executionState.workflowSessionId ? { workflowSessionId: executionState.workflowSessionId } : {}),
+		};
 		const ownerSession = this._executionSession.get(executionState.executionId);
-		const nodeName = (typeof data.label === 'string' && data.label) || node.name || node.id;
-		const result = await this._comfyDelegate.execute(node, input, {
+		const nodeName = this._nodeDisplayName(node);
+		// 上方检查已保证：需要执行的节点此时必有 delegate（选择型/纯配置型已 return）。
+		const delegate = this._comfyDelegate;
+		if (!delegate) {
+			throw new Error(`Comfy node ${node.id}: delegate 缺失（不应到达此处）`);
+		}
+		const result = await delegate.execute(node, input, {
 			executionId: executionState.executionId,
 			// 逐格/逐帧进度透传：更新 nodeState.progress + 发 node_progress trace（聊天卡进度条）。
-			onProgress: (progress, message) => {
+			onProgress: (progress, message, media) => {
 				const ns = executionState.nodeStates.get(node.id);
 				if (ns) { ns.progress = progress; }
 				this._onDidExecutionTrace.fire({
@@ -1705,9 +3092,19 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					nodeName,
 					progress,
 					...(message !== undefined ? { message } : {}),
+					// ★ 逐格媒体回流（2026-09-11 用户需求「输出一个就显示一个」）：节点**尚未结束**
+					//   时就把新产出的格子带给卡片。此前 snapshot 只在 subagent_end 下发 →
+					//   9 格必须全跑完聊天卡才出图 ✗（画布侧早已逐格显示 ✓）。
+					//   增量语义（画布侧保证同格只报一次）→ 卡片侧**合并**而非替换。
+					...(media ? { media } : {}),
 				});
 			},
 		});
+
+		// ★ 取消短路（2026-09-11）：执行**期间**（已提交 ComfyUI / 等画布 90s 兜底
+		//   期间）用户点了取消 → 结果不可信（可能是超时兜底的半成品），不应写
+		//   output/snapshot，否则卡片会把「已取消」渲染成一次成功产出。
+		if (this._bailOutIfCancelled(executionState, node)) { return; }
 
 		const nodeState = executionState.nodeStates.get(node.id);
 		if (nodeState) {
@@ -1721,6 +3118,93 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		this.logService.info(
 			`[WorkflowExecution] Comfy node ${node.id} completed (mode=${comfy.mode ?? 'workflow'}, outputs=${Object.keys(result.outputs).length})`,
 		);
+	}
+
+	/**
+	 * 节点显示名（2026-09-10 用户要求「阶段名称要显示为工作流中的节点的名字」）。
+	 *
+	 * 画布上 ComfyTV stage 的标题栏文字是**自动生成的机器名**
+	 * （`ComfyTV.StatEmojiStage-1788782920357-1`，保存在 node.name / data.label），
+	 * 而用户在画布 nodeCard 上看到的是 `spec.title`（「Emoji Stage」「ImagePicker」）。
+	 * 此前候选链第一个非空即返回 → 命中机器名 → 卡片与画布所见不符。
+	 *
+	 * 现交由纯函数 resolveNodeDisplayName：用户命名优先 → 机器名则查 stage 标题表
+	 * （画布 nodeCard 的 spec.title，与画布一致）→ 最后兜底。
+	 */
+	private _nodeDisplayName(node: WorkflowGraphNode): string {
+		const d = (node.data ?? {}) as Record<string, unknown>;
+		const stageClass = typeof d['stageClass'] === 'string' ? d['stageClass'] : undefined;
+		const rawType = stageClass ?? node.type;
+		// ★ 节点清单优先（2026-09-11 框架完善：新增节点只改 nodeCatalog.ts 的 title），
+		//   回退画布 stage 标题表（COMFYTV_STAGE_META）。
+		const catTitle = catalogTitle(rawType);
+		return resolveNodeDisplayName({
+			candidates: [d['label'], d['title'], (node as { title?: unknown }).title, node.name],
+			rawType,
+			normalizedType: node.type,
+			titleByType: catTitle ? new Map([[rawType, catTitle]]) : STAGE_TITLE_BY_TYPE,
+			fallback: node.name || node.id,
+		});
+	}
+
+	/**
+	 * ★ 聊天卡展示描述符（P0 修复，2026-09-13）：图标 + 副标题。
+	 *
+	 * 修复的问题（质量评估实测）：聊天卡的图标是渲染层**4 项硬编码表**
+	 * （agent🤖 / prompt📝 / skill⚡ / tool🔧），其余一律 🤖；副标题则直接塞
+	 * `node.type` 机器名（`comfyStage` / `script` / `end`）→ 同一节点在画布上显示
+	 * 「裁剪」（spec.title），在聊天卡上显示 🤖 + `comfyStage` —— 用户可感知的不一致。
+	 *
+	 * 现在由 host 统一推导，数据源**全部复用既有表**（不新增按 type 索引的表）：
+	 *   · 图标   ：stage `kind`（子串匹配，耐用）→ 引擎类型 → ⚙️ 兜底
+	 *   · 副标题 ：stage `kind`/`workflowKind`（与画布 nodeCard 的 `schemaDetail` 同款文案）
+	 *              → 引擎类型中文标签（**不回退机器名**）
+	 *
+	 * 与 `_nodeDisplayName`（标题）配套：两者共同保证「聊天卡看到的 = 画布看到的」。
+	 */
+	private _nodeCardDescriptor(node: WorkflowGraphNode): { icon: string; subtitle: string } {
+		const d = (node.data ?? {}) as Record<string, unknown>;
+		const stageClass = typeof d['stageClass'] === 'string' ? d['stageClass'] : undefined;
+		// 推导逻辑集中在 `cardDescriptor.describeCardNode`（可单测 + 有护栏：新增 stage kind
+		// 未补图标规则时 `cardDescriptor.test.ts` 会失败）。rawType 必须是**原始全名**
+		// （stage meta 表按全名索引；归一化后的 `comfyStage` 查不到）。
+		return describeCardNode(stageClass ?? node.type ?? '', node.type ?? '');
+	}
+
+	/**
+	 * ★ 执行统计（P2-2 修复，2026-09-13）：真实耗时 + 各状态节点数。
+	 *
+	 * 供 `execution_end` 携带 → 聊天卡显示「12.3s · 3 成功 / 1 失败」。
+	 *
+	 * 修复的问题：此前 `execution_end` 只有 status，聊天卡的耗时由 controller 用
+	 * `Date.now()` 现场取（起止同一时刻）→ **恒显示 0.0s** ✗；节点计数完全缺失，
+	 * 「这次跑了多久、几个节点失败」无法回答。
+	 *
+	 * 耗时用 `state.startTime`/`endTime`（ISO 字符串，host 在开始时写入）✓。
+	 */
+	private _executionStats(state: IWorkflowExecutionState): {
+		durationMs?: number; doneCount: number; errorCount: number; cancelledCount: number; skippedCount: number;
+	} {
+		let doneCount = 0;
+		let errorCount = 0;
+		let cancelledCount = 0;
+		let skippedCount = 0;
+		for (const ns of state.nodeStates.values()) {
+			switch (ns.status) {
+				case WorkflowNodeExecutionStatus.Completed: doneCount++; break;
+				case WorkflowNodeExecutionStatus.Failed: errorCount++; break;
+				case WorkflowNodeExecutionStatus.Cancelled: cancelledCount++; break;
+				case WorkflowNodeExecutionStatus.Skipped: skippedCount++; break;
+				default: break;   // Pending / Running / AwaitingInput
+			}
+		}
+		const start = state.startTime ? Date.parse(state.startTime) : NaN;
+		const end = state.endTime ? Date.parse(state.endTime) : NaN;
+		const durationMs = Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : undefined;
+		return {
+			...(durationMs !== undefined ? { durationMs } : {}),
+			doneCount, errorCount, cancelledCount, skippedCount,
+		};
 	}
 
 	private async _executeIfElseNode(
@@ -2148,6 +3632,107 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		}
 	}
 
+	/**
+	 * W7: 解析本次执行的起跑节点集合。
+	 *
+	 *  - 常规：`[startNode]` —— 严格「从 Start 开始」，Start 不可达的子图靠入度
+	 *    永不归零自动跳过（v38 语义）。
+	 *  - 退化：Start **未编排**（没有出边，或出边只指向 End/另一个 Start）时，
+	 *    返回 Start + 所有入度为 0 的其它根节点 ≈ 全图执行。
+	 *    与 webview `resolveStartScope().degraded` 同语义 —— 让「只摆了 Start→End
+	 *    而业务链独立」的存量图在聊天框触发时不会一个业务节点都不跑。
+	 */
+	private _resolveEntryNodes(
+		nodes: readonly WorkflowGraphNode[],
+		connections: readonly { from: string; to: string }[],
+		startNode: WorkflowGraphNode,
+		inDeg: ReadonlyMap<string, number>,
+	): WorkflowGraphNode[] {
+		const typeById = new Map(nodes.map(n => [n.id, n.type]));
+		const isTerminalTarget = (id: string): boolean => {
+			const t = typeById.get(id);
+			return t === WorkflowNodeType.End || t === WorkflowNodeType.Start;
+		};
+		const startIds = new Set(nodes.filter(n => n.type === WorkflowNodeType.Start).map(n => n.id));
+		const orchestrated = connections.some(c => startIds.has(c.from) && !isTerminalTarget(c.to));
+		if (orchestrated) {
+			// ★ 孤儿根节点并入起跑集（2026-09-10 卡死实锤）：表情包工作流的
+			//   ImageLoaderStage 不挂 Start 链（独立素材加载起点），此前被「严格从
+			//   Start 开始」设计性跳过 → 下游 StatEmojiStage 的 join 入度永不归零 →
+			//   「Execution completed」假象 + 出图节点从未执行。入度 0 的非 Start
+			//   节点 = 画布上独立摆放的执行起点（多源 DAG），必须并入起跑集。
+			const orphanRoots = nodes.filter(n =>
+				n.type !== WorkflowNodeType.Start &&
+				n.type !== WorkflowNodeType.End &&
+				(inDeg.get(n.id) ?? 0) === 0);
+			if (orphanRoots.length > 0) {
+				this.logService.info(
+					`[WorkflowExecution] ${orphanRoots.length} orphan root node(s) outside the Start chain ` +
+					`added to entry set: ${orphanRoots.map(n => `${n.id}(${n.type})`).join(', ')}`,
+				);
+				return [startNode, ...orphanRoots];
+			}
+			return [startNode];
+		}
+		const roots = nodes.filter(n => n.id !== startNode.id && (inDeg.get(n.id) ?? 0) === 0);
+		if (roots.length === 0) {
+			return [startNode];
+		}
+		this.logService.warn(
+			`[WorkflowExecution] Start node "${startNode.id}" is not wired to any business node ` +
+			`— degrading to whole-graph execution (${roots.length} extra root node(s)). ` +
+			`Connect Start → first node to control the entry point precisely.`,
+		);
+		return [startNode, ...roots];
+	}
+
+	/**
+	 * W7: 把 Start 节点的 `data.args` 展平成 `args.<key>` 注入执行上下文。
+	 *
+	 * 语义与 webview 侧 `collectStartArgs`（comfyHost/workflowRunShared.ts）对齐：
+	 *  - args 支持 JSON 字符串或对象两种形态（非法 JSON 静默忽略）；
+	 *  - 多个 Start 浅合并，后者覆盖前者；
+	 *  - **已存在的 context 同名项优先**（聊天/Agent 触发传入的 variables / input
+	 *    是运行时覆盖，语义等价画布侧 `startArgsOverride`）。
+	 * 值统一 String 化：`_buildEvalContext` 只把 string 项暴露给模板替换。
+	 */
+	private _injectStartArgs(
+		executionState: IWorkflowExecutionState,
+		nodes: readonly WorkflowGraphNode[],
+	): void {
+		const merged: Record<string, unknown> = {};
+		for (const n of nodes) {
+			if (n.type !== WorkflowNodeType.Start) { continue; }
+			const raw = (n.data as Record<string, unknown> | undefined)?.args;
+			if (typeof raw === 'string') {
+				try {
+					const parsed = JSON.parse(raw) as unknown;
+					if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+						Object.assign(merged, parsed as Record<string, unknown>);
+					}
+				} catch {
+					this.logService.warn(`[WorkflowExecution] Start node ${n.id}: data.args is not valid JSON, ignored`);
+				}
+			} else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+				Object.assign(merged, raw as Record<string, unknown>);
+			}
+		}
+		const keys = Object.keys(merged);
+		if (keys.length === 0) { return; }
+		for (const [k, v] of Object.entries(merged)) {
+			const contextKey = `args.${k}`;
+			// 运行时覆盖优先：context 已有同名 key（触发方显式传入）→ 不动；
+			// 否则若 context 有裸 key（如 variables 里的 `topic`）→ 用它覆盖默认值。
+			if (executionState.context[contextKey] !== undefined) { continue; }
+			const override = executionState.context[k];
+			const value = override !== undefined ? override : v;
+			executionState.context[contextKey] = typeof value === 'object' && value !== null
+				? JSON.stringify(value)
+				: String(value ?? '');
+		}
+		this.logService.info(`[WorkflowExecution] Injected Start args into context: ${keys.map(k => `args.${k}`).join(', ')}`);
+	}
+
 	private static _replaceVariables(template: string, values: Record<string, string>): string {
 		// v23: delegate to the shared `substituteHostVariables` so both the
 		// pre-execution pass and the per-node pass use the SAME regex
@@ -2263,6 +3848,9 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			nodeVariables: (data.variables as Record<string, string> | undefined) ?? undefined,
 			upstreamOutputs,
 			workflowName: workflow.name || '',
+			// ★ 共享内存读路径（2026-09-11）：`{{shared.<key>}}`。此前 sharedMemory
+			//   只写不读 → 文档承诺的「所有节点可见」从未生效。
+			sharedMemory: executionState.sharedMemory,
 		});
 
 		let didReplace = false;
@@ -2389,9 +3977,11 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				const excess = history.length - executionState.options.maxHistoryMessages;
 				await this.agentChatService.clearHistory(agentId, agentSessionId);
 				const kept = history.slice(-executionState.options.maxHistoryMessages);
-				for (const msg of kept) {
-					await this.agentChatService.appendMessage(agentId, msg);
-				}
+				// ★ 2026-09-11：改为批量落盘（原为逐条 `await appendMessage`）。
+				// `appendMessage` 每次都会**全量重写**会话文件与全局历史，逐条调用
+				// `maxHistoryMessages` 次（常见 50–100）会造成 O(N × 会话大小) 的
+				// 同步阻塞 —— 与 finalization 那次「app 卡死」同源（日志 20260911T193945）。
+				await this.agentChatService.appendMessagesBatch(agentId, kept);
 				this.logService.info(
 					`[WorkflowExecution] Trimmed ${excess} old messages from session ${agentSessionId} ` +
 					`for node ${node.id} (kept ${kept.length})`,
@@ -2518,35 +4108,17 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	 */
 		private async _saveCheckpoint(executionState: IWorkflowExecutionState): Promise<void> {
 		try {
-			const nodeStates: Record<string, any> = {};
-			for (const [nodeId, ns] of executionState.nodeStates.entries()) {
-				nodeStates[nodeId] = {
-					status: ns.status,
-					output: ns.output ?? null,
-					error: ns.error ?? null,
-					startTime: ns.startTime ?? null,
-					endTime: ns.endTime ?? null,
-				};
-			}
-			// Sanitize context to avoid JSON.stringify errors (functions, circular refs, etc.)
-			const sanitizedContext: Record<string, string> = {};
-			for (const [key, val] of Object.entries(executionState.context)) {
-				try {
-					const json = JSON.stringify(val);
-					sanitizedContext[key] = json;
-				} catch {
-					sanitizedContext[key] = String(val);
-				}
-			}
-			const checkpoint = {
+			// ★ 写出格式统一走 `buildWorkflowCheckpoint`（与 `parseWorkflowCheckpoint` 成对，
+			//   往返由 workflowCheckpoint 测试保证）。此前格式**内联在此处**、读入侧根本不存在
+			//   → 改字段无任何提示，且「只写不读」使断点续跑实际不可用。
+			const checkpoint = buildWorkflowCheckpoint({
 				executionId: executionState.executionId,
 				workflowId: executionState.workflowId,
 				status: executionState.status,
-				timestamp: new Date().toISOString(),
-				nodeStates,
-				context: sanitizedContext,
-				sharedMemory: [...(executionState.sharedMemory?.entries() ?? [])],
-			};
+				nodeStates: executionState.nodeStates.entries(),
+				context: executionState.context,
+				sharedMemory: executionState.sharedMemory?.entries() ?? [],
+			});
 
 			const workspaces = this.workspaceRegistry.getWorkspaces();
 			const activeWorkspace = workspaces.find(w => w.isActive);
@@ -2569,5 +4141,101 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				`${err instanceof Error ? err.message : err}`,
 			);
 		}
+	}
+
+	/**
+	 * 读取并校验 checkpoint（磁盘内容**不可信**：手改 / 旧版本 / 写入被中断
+	 * → 必须经 `parseWorkflowCheckpoint` 校验，坏文件不能让恢复流程炸掉）。
+	 *
+	 * 返回 `undefined` = 没有可恢复的断点（文件不存在 / 校验失败 / 无活动工作区）。
+	 */
+	private async _loadCheckpoint(executionId: string): Promise<IWorkflowCheckpoint | undefined> {
+		try {
+			const workspaces = this.workspaceRegistry.getWorkspaces();
+			const activeWorkspace = workspaces.find(w => w.isActive);
+			if (!activeWorkspace?.path) { return undefined; }
+			const fileUri = URI.joinPath(
+				URI.file(activeWorkspace.path),
+				'.sarosworkspace',
+				'checkpoints',
+				`${executionId}.json`,
+			);
+			const content = await this.fileService.readFile(fileUri);
+			const parsed = parseWorkflowCheckpoint(content.value.toString());
+			if (!parsed.ok) {
+				this.logService.warn(`[WorkflowExecution] Checkpoint 校验失败（${executionId}）：${parsed.error}`);
+				return undefined;
+			}
+			return parsed.checkpoint;
+		} catch (err) {
+			this.logService.info(
+				`[WorkflowExecution] 无可用 checkpoint（${executionId}）：` +
+				`${err instanceof Error ? err.message : err}`,
+			);
+			return undefined;
+		}
+	}
+
+	/**
+	 * ★ 断点续跑（2026-09-11 补齐「只写不读」的另一半）。
+	 *
+	 * 语义（崩溃一致性）：`completed` 节点**复用产出**（output 回填 nodeStates，下游
+	 * `{{nodeId.output}}` 照常取用），其余节点（含崩溃时处于 `running` 的）**全部重跑**。
+	 * 判定规则见 `planWorkflowResume` —— 关键点是**绝不把 `running` 当成功**（崩溃时
+	 * 正在执行的节点副作用可能只做了一半）。
+	 *
+	 * 调用方：`workflow.resume`（webview 侧「恢复」按钮）在**没有 pending 交互暂停**时
+	 * 回退到本方法。
+	 */
+	async resumeFromCheckpoint(executionId: string): Promise<string> {
+		const checkpoint = await this._loadCheckpoint(executionId);
+		if (!checkpoint) {
+			throw new Error(`没有可恢复的断点: ${executionId}`);
+		}
+		const workflow = await this.workflowStorage.getWorkflow(checkpoint.workflowId);
+		if (!workflow) {
+			throw new Error(`断点对应的工作流不存在: ${checkpoint.workflowId}`);
+		}
+
+		const nodeIds = (workflow.nodes ?? []).map(n => n.id);
+		const plan = planWorkflowResume(checkpoint, nodeIds);
+		this.logService.info(`[WorkflowExecution] resumeFromCheckpoint ${executionId}: ${plan.summary}`);
+
+		const reusableByNode = new Map(plan.reusable.map(r => [r.nodeId, r]));
+		const nodeStates = new Map<string, IWorkflowNodeExecutionState>();
+		for (const nodeId of nodeIds) {
+			const reusable = reusableByNode.get(nodeId);
+			nodeStates.set(nodeId, reusable
+				? {
+					nodeId,
+					status: WorkflowNodeExecutionStatus.Completed,
+					output: reusable.output,
+					endTime: checkpoint.timestamp,
+				}
+				: { nodeId, status: WorkflowNodeExecutionStatus.Pending });
+		}
+
+		const sharedMemory = new Map<string, string>(checkpoint.sharedMemory ?? []);
+		const context: Record<string, unknown> = {};
+		for (const [key, value] of Object.entries(checkpoint.context ?? {})) {
+			try { context[key] = JSON.parse(value); } catch { context[key] = value; }
+		}
+
+		const state: IWorkflowExecutionState = {
+			executionId: checkpoint.executionId,
+			workflowId: checkpoint.workflowId,
+			status: WorkflowExecutionStatus.Running,
+			nodeStates,
+			startTime: new Date().toISOString(),
+			context,
+			sharedMemory,
+		};
+		this._executions.set(executionId, state);
+		// ★ 标记「本次执行是断点恢复」：`_executeNodeRecursive` 只对恢复态跳过已 Completed
+		//   节点（正常执行不会重入已完成节点，加跳过反而会掩盖潜在 bug）。
+		this._resumedExecutions.add(executionId);
+		this._onDidExecutionStatusChange.fire(state);
+		await this._executeWorkflowAsync(state, workflow, undefined);
+		return executionId;
 	}
 }

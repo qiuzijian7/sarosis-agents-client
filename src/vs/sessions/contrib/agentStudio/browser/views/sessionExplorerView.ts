@@ -38,10 +38,13 @@ import { INotificationService } from '../../../../../platform/notification/commo
 import { ActionBar, ActionsOrientation } from '../../../../../base/browser/ui/actionbar/actionbar.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { WORKSPACE_DATA_DIR, AGENTS_DIR } from '../../common/constants.js';
+import { IWorkflowStorageService } from '../../common/workflowStorage.js';
+import { sortSessionsByRecent, type IWorkflowSessionMeta } from '../../common/workflowSessions.js';
+import { WorkflowEditorInput } from '../workflowEditorInput.js';
 
 // ─── Tree Element Types ──────────────────────────────────────────────────────
 
-export const enum SessionExplorerItemType { AgentGroup, Session }
+export const enum SessionExplorerItemType { AgentGroup, Session, WorkflowSession }
 
 export interface IAgentGroupElement {
 	readonly type: SessionExplorerItemType.AgentGroup;
@@ -56,7 +59,20 @@ export interface ISessionElement {
 	readonly agentName: string;
 }
 
-export type SessionExplorerElement = IAgentGroupElement | ISessionElement;
+/**
+ * 工作流 session 条目（2026-09-11 用户需求）：与聊天 session 并列展示，
+ * 点击打开对应工作流画布（画布内可继续切换 session）。
+ */
+export interface IWorkflowSessionElement {
+	readonly type: SessionExplorerItemType.WorkflowSession;
+	readonly workflowId: string;
+	readonly workflowName: string;
+	readonly session: IWorkflowSessionMeta;
+	readonly agentId: string;
+	readonly agentName: string;
+}
+
+export type SessionExplorerElement = IAgentGroupElement | ISessionElement | IWorkflowSessionElement;
 
 // ─── Tree Delegate ───────────────────────────────────────────────────────────
 
@@ -112,7 +128,7 @@ interface ISessionTemplate {
 	label: HTMLSpanElement; desc: HTMLSpanElement; actionBar: ActionBar; disposables: DisposableStore;
 }
 
-class SessionItemRenderer implements ICompressibleTreeRenderer<ISessionElement, FuzzyScore, ISessionTemplate> {
+class SessionItemRenderer implements ICompressibleTreeRenderer<ISessionElement | IWorkflowSessionElement, FuzzyScore, ISessionTemplate> {
 	static readonly TEMPLATE_ID = 'sessionExplorer.sessionItem';
 	readonly templateId = SessionItemRenderer.TEMPLATE_ID;
 	constructor(private readonly onDelete: (agentId: string, sessionId: string) => void) { }
@@ -126,11 +142,19 @@ class SessionItemRenderer implements ICompressibleTreeRenderer<ISessionElement, 
 		return { label, desc, actionBar, disposables: new DisposableStore() };
 	}
 
-	renderElement(node: ITreeNode<ISessionElement, FuzzyScore>, _: number, t: ISessionTemplate): void {
-		const s = node.element;
+	renderElement(node: ITreeNode<ISessionElement | IWorkflowSessionElement, FuzzyScore>, _: number, t: ISessionTemplate): void {
+		const el = node.element;
+		t.disposables.clear(); t.actionBar.clear();
+		if (el.type === SessionExplorerItemType.WorkflowSession) {
+			// ★ 工作流 session（2026-09-11 用户需求）：🎬 前缀区分聊天会话；展示所属
+			//   工作流 + 运行次数；点击打开对应画布（删除在工作流侧管理，这里不给按钮）。
+			t.label.textContent = `🎬 ${el.workflowName} · ${el.session.name}`;
+			t.desc.textContent = `运行 ${el.session.runCount ?? 0} 次 · ${fmtTime(el.session.updatedAt)}`;
+			return;
+		}
+		const s = el;
 		t.label.textContent = s.session.name;
 		t.desc.textContent = `${s.session.messageCount} 条消息 · ${fmtTime(s.session.updatedAt)}`;
-		t.disposables.clear(); t.actionBar.clear();
 		t.actionBar.push(toAction({
 			id: `se.delete.${s.session.id}`, label: localize('delete', "删除"), class: ThemeIcon.asClassName(Codicon.close),
 			run: () => this.onDelete(s.agentId, s.session.id),
@@ -141,7 +165,8 @@ class SessionItemRenderer implements ICompressibleTreeRenderer<ISessionElement, 
 	disposeTemplate(t: ISessionTemplate): void { t.disposables.dispose(); t.actionBar.dispose(); }
 }
 
-function fmtTime(iso: string): string {
+function fmtTime(iso: string | number): string {
+	// 兼容两种时间源：聊天 session 用 ISO 字符串，工作流 session 用毫秒时间戳。
 	const d = Date.now() - new Date(iso).getTime(); const m = Math.floor(d / 60000);
 	if (m < 1) return '刚刚'; if (m < 60) return `${m} 分钟前`;
 	const h = Math.floor(m / 60); if (h < 24) return `${h} 小时前`;
@@ -155,6 +180,7 @@ class SessionExplorerDataSource implements IAsyncDataSource<null, SessionExplore
 	constructor(
 		private readonly svc: IAgentStudioService,
 		private readonly chat: IAgentChatService,
+		private readonly workflowStorage: IWorkflowStorageService,
 		private readonly getFilterId: () => string | null,
 		private readonly logService: ILogService,
 	) { }
@@ -177,7 +203,29 @@ class SessionExplorerDataSource implements IAsyncDataSource<null, SessionExplore
 		}
 		if (e.type === SessionExplorerItemType.AgentGroup) {
 			const ss = await (this.chat as any).listAgentSessions(e.agent.id) as AgentSessionMeta[];
-			return ss.map(s => ({ type: SessionExplorerItemType.Session, session: s, agentId: e.agent.id, agentName: e.agent.name }));
+			const out: SessionExplorerElement[] = ss.map(s => ({ type: SessionExplorerItemType.Session, session: s, agentId: e.agent.id, agentName: e.agent.name }));
+			// ★ 工作流 session（2026-09-11 用户需求）：该 agent 名下工作流的 session 一并
+			//   列出（不同会话生成的内容相互隔离），点击打开对应工作流画布。
+			try {
+				const wfs = await this.workflowStorage.listWorkflows();
+				for (const wf of wfs) {
+					if (wf.agentId && wf.agentId !== e.agent.id) { continue; }
+					const wss = await this.workflowStorage.listWorkflowSessions(wf.id).catch(() => [] as IWorkflowSessionMeta[]);
+					for (const ws of sortSessionsByRecent(wss)) {
+						out.push({
+							type: SessionExplorerItemType.WorkflowSession,
+							workflowId: wf.id,
+							workflowName: wf.name || wf.id,
+							session: ws,
+							agentId: e.agent.id,
+							agentName: e.agent.name,
+						});
+					}
+				}
+			} catch (err) {
+				this.logService.warn('[SessionExplorer] list workflow sessions failed', err);
+			}
+			return out;
 		}
 		return [];
 	}
@@ -187,9 +235,13 @@ class SessionExplorerFilter implements ITreeFilter<SessionExplorerElement> { fil
 class SessionExplorerA11y implements IListAccessibilityProvider<SessionExplorerElement> {
 	getWidgetAriaLabel(): string { return localize('seAria', "Sessions"); }
 	getAriaLabel(e: SessionExplorerElement): string {
-		return e.type === SessionExplorerItemType.AgentGroup
-			? `Agent ${e.agent.name} ${e.sessionCount} sessions`
-			: `Session ${e.session.name} ${e.session.messageCount} msgs`;
+		if (e.type === SessionExplorerItemType.AgentGroup) {
+			return `Agent ${e.agent.name} ${e.sessionCount} sessions`;
+		}
+		if (e.type === SessionExplorerItemType.WorkflowSession) {
+			return `Workflow ${e.workflowName} session ${e.session.name}`;
+		}
+		return `Session ${e.session.name} ${e.session.messageCount} msgs`;
 	}
 }
 
@@ -216,6 +268,8 @@ export class SessionExplorerViewPane extends ViewPane {
 		@IAgentStudioService private readonly _studioService: IAgentStudioService,
 		@IAgentChatService private readonly _chatService: IAgentChatService,
 		@IEditorService private readonly _editorService: IEditorService,
+		// ★ 工作流 session 列表（2026-09-11 用户需求）：列出各工作流的 session 并支持跳转。
+		@IWorkflowStorageService private readonly _workflowStorageService: IWorkflowStorageService,
 		@IDialogService private readonly _dialogService: IDialogService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@ILogService private readonly _logService: ILogService,
@@ -266,7 +320,7 @@ export class SessionExplorerViewPane extends ViewPane {
 			new SessionExplorerDelegate(),
 			{ isIncompressible: () => true },
 			[new AgentGroupRenderer(id => this._deleteAllSessionsForAgent(id)), new SessionItemRenderer((eid, sid) => this._deleteSession(eid, sid))],
-			new SessionExplorerDataSource(this._studioService, this._chatService, () => this.filterAgentId, this._logService),
+			new SessionExplorerDataSource(this._studioService, this._chatService, this._workflowStorageService, () => this.filterAgentId, this._logService),
 			{
 				accessibilityProvider: new SessionExplorerA11y(),
 				filter: this.instantiationService.createInstance(SessionExplorerFilter),
@@ -280,7 +334,14 @@ export class SessionExplorerViewPane extends ViewPane {
 			},
 		));
 
-		this._register(this.tree.onDidOpen(e => { if (e.element?.type === SessionExplorerItemType.Session) this._openSession(e.element); }));
+		this._register(this.tree.onDidOpen(e => {
+			if (e.element?.type === SessionExplorerItemType.Session) {
+				this._openSession(e.element);
+			} else if (e.element?.type === SessionExplorerItemType.WorkflowSession) {
+				// ★ 工作流 session（2026-09-11 用户需求）：点击跳转 → 打开对应工作流画布。
+				void this._openWorkflowSession(e.element);
+			}
+		}));
 		this._register(this._chatService.onDidChangeAgentSessions(() => this.refresh()));
 		this._register(this._studioService.onDidChangeAgents(() => this.refresh()));
 		this._register(this._studioService.onDidChangeActiveWorkspace(() => { this.filterAgentId = null; this.refresh(); }));
@@ -314,6 +375,36 @@ export class SessionExplorerViewPane extends ViewPane {
 			sel.appendChild(opt);
 		}
 		sel.value = prev || '';
+	}
+
+	/**
+	 * 打开工作流 session 对应的画布（2026-09-11 用户需求：列表点击跳转）。
+	 * 复用 workflowView 的打开方式（findEditors 去重 → openEditor，避免重复标签）。
+	 */
+	private async _openWorkflowSession(element: IWorkflowSessionElement): Promise<void> {
+		try {
+			const wf = await this._workflowStorageService.getWorkflow(element.workflowId);
+			if (!wf) {
+				this._notificationService.warn(localize('wfSessionNoWorkflow', "工作流不存在：{0}", element.workflowId));
+				return;
+			}
+			const input = new WorkflowEditorInput(wf);
+			const existing = this._editorService.findEditors(input);
+			if (existing.length > 0) {
+				await this._editorService.openEditor(
+					existing[0].editor,
+					{ revealIfVisible: true, preserveFocus: false },
+				);
+			} else {
+				await this._editorService.openEditor(input, { pinned: true, preserveFocus: false });
+			}
+			this._logService.info(
+				`[SessionExplorer] open workflow session: wf=${element.workflowId} sid=${element.session.id} name=${element.session.name}`,
+			);
+		} catch (err) {
+			this._logService.error('[SessionExplorer] open workflow session failed', err);
+			this._notificationService.warn(localize('wfSessionOpenFailed', "打开工作流画布失败"));
+		}
 	}
 
 	private async _openSession(element: ISessionElement): Promise<void> {

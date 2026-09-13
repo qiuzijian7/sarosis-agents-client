@@ -55,10 +55,21 @@ export function getPermissionMode(chatMode: ChatMode): PermissionMode {
 
 // ─── Tool-name patterns ─────────────────────────────────────────────────
 
-/** Tool names that are explicitly destructive (write / delete / execute). */
+/**
+ * Tool names that are explicitly destructive (write / delete / execute).
+ *
+ * ★ 2026-09-11 补缺：原名单漏了本仓库**实际存在**的两个写类工具 —— `patch`（改文件）
+ *   与 `execute_command`（任意命令执行，等价于 terminal）。本文件 ask 策略的提示词
+ *   （`getStrategyGuidance('ask')`）早已声明「Disabled: file_write, patch,
+ *   execute_command, file_delete」，但名单里没有它们 → ask 模式下这两个工具只能靠
+ *   描述启发式（_inferReadOnlyFromDescription）兜底，判定不稳定 = 只读模式漏闸。
+ *   同时该名单现在是 `writeExclusion.isWriteTool` 的单一真源（写冲突互斥判据），
+ *   漏项会导致「可写子代理被误判为只读 → 并发写冲突」。
+ */
 export const DESTRUCTIVE_TOOL_PATTERNS: readonly RegExp[] = [
-	/^file_write$/i, /^file_delete$/i, /^write$/i, /^delete$/i, /^remove$/i,
-	/^terminal$/i, /^shell$/i, /^exec$/i, /^bash$/i, /^command$/i,
+	/^file_write$/i, /^write_file$/i, /^file_delete$/i, /^delete_file$/i, /^write$/i, /^delete$/i, /^remove$/i,
+	/^patch$/i, /^apply_patch$/i, /^edit_file$/i, /^multi_edit$/i,
+	/^terminal$/i, /^execute_command$/i, /^run_command$/i, /^shell$/i, /^exec$/i, /^bash$/i, /^command$/i,
 	/^mkdir$/i, /^mv$/i, /^cp$/i, /^rename$/i, /^chmod$/i,
 ];
 

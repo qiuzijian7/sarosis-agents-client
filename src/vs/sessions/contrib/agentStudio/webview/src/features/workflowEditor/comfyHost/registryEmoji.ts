@@ -110,6 +110,11 @@ export function registerEmojiNodes(): void {
 			//   选择后 prompt 自动追加绿幕底约束，模型出绿幕图集 → 切分自动采样 key 抠净。
 			//   白发/白描边零误伤 —— 色度与幕布拉开即安全；主体含高饱和绿时换品红幕）。
 			{ name: 'cutout_mode', type: 'COMBO', default: 'none', options: ['none', 'flood', 'chroma'] },
+			// 切分方式（2026-09-10，默认 2026-09-10 改为 'auto'）：
+			//   'grid' = 等分网格（现状/手动控制）；'auto' = 自动居中（抠图后逐格
+			//   检测贴纸包围盒，以贴纸中心正方形裁剪，三重有界防跑偏，失败落回等分；
+			//   检测结果记入每格 meta.cellRect；无 alpha 时用「检测域四边中位色」色差兜底）。
+			{ name: 'cell_crop_mode', type: 'COMBO', default: 'auto', options: ['grid', 'auto'] },
 			],
 		color: '#e879f9',
 		comfyTV: { stageKind: 'emoji', workflowKind: 'emoji', variant: 'generator' },

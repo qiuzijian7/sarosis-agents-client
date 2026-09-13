@@ -12,10 +12,12 @@ import {
 	DELEGATION_TOOL_TIMEOUT_MS,
 	DEFAULT_TOOL_TIMEOUT_MS,
 	MCP_TOOL_TIMEOUT_MS,
+	DANGEROUS_TOOL_TIMEOUT_MS,
 	DEFAULT_TOOL_RETRY_POLICY,
 	executeWithRetryAndTimeout,
 	getTimeoutForTool,
 } from '../../browser/toolExecutionGuard.js';
+import { ToolSecurityLevel } from '../../common/providers.js';
 
 /** 永远返回 retryable 失败的 mock provider（模拟超时中断）。 */
 function makeFailingProvider(calls: string[]) {
@@ -66,6 +68,21 @@ suite('toolExecutionGuard', () => {
 			assert.strictEqual(getTimeoutForTool('file_read'), DEFAULT_TOOL_TIMEOUT_MS);
 			assert.strictEqual(getTimeoutForTool('search_graph'), 30_000);
 			assert.strictEqual(getTimeoutForTool('terminal'), MCP_TOOL_TIMEOUT_MS);
+		});
+
+		test('★ MCP 暴露的 Dangerous 工具 → 300s（审批等待不得被 MCP 分支截断）', () => {
+			// 2026-09-11 修复：原判定顺序 MCP(120s) → analysis → slow → Dangerous(300s)，
+			// 导致经 MCP 暴露的危险工具只拿 120s —— 而多出的时长正是留给**审批等待**的
+			// （超时即 Deny + cancelAgentLoop），审批还没走完就被判失败。
+			assert.strictEqual(
+				getTimeoutForTool('mcp_foo_delete', { securityLevel: ToolSecurityLevel.Dangerous } as never, 'mcp:server1'),
+				DANGEROUS_TOOL_TIMEOUT_MS,
+			);
+			// 非危险的 MCP 工具仍是 120s（确认修复未破坏原语义）
+			assert.strictEqual(
+				getTimeoutForTool('mcp_foo_query', { securityLevel: ToolSecurityLevel.Safe } as never, 'mcp:server1'),
+				MCP_TOOL_TIMEOUT_MS,
+			);
 		});
 	});
 

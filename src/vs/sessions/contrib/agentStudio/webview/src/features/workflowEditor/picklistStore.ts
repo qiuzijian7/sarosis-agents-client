@@ -22,6 +22,8 @@ export interface ToolItem {
 	id: string;
 	name: string;
 	description?: string;
+	/** P0① 写能力（host 在 `tools.list` 响应里计算并附上）。 */
+	writeCapable?: boolean;
 }
 
 interface PicklistState {

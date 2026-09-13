@@ -16,7 +16,7 @@
  */
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 // ─── Pure logic helpers (模拟所有权判断的核心逻辑) ──────────────────────────
 
@@ -91,6 +91,66 @@ const USER_BOB: CurrentUser = { id: 'user-002', username: 'bob' };
 const USER_NO_ID: CurrentUser = { id: '', username: '' };
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
+
+/**
+ * 模拟完整的 UI 决策流程：
+ * 1. 检查包是否存在 → 决定首次上传 vs 更新
+ * 2. 检查所有权 → 决定是否隐藏按钮和锁定面板
+ *
+ * ★ 作用域修正（2026-09-11）：本函数原先定义在 `End-to-end scenarios` suite **内部**，
+ *   却被另一个 suite（`Edge cases` 的「user switches identity」）调用 → 越界 →
+ *   `ReferenceError: decideUIBehavior is not defined`。现提升到**模块作用域**。
+ */
+function decideUIBehavior(
+	getPackageResult: 'success' | 'error',
+	packageAuthor?: PackageAuthor,
+	currentUser?: CurrentUser,
+): {
+	showUpload: boolean;      // 显示"上传到商城"按钮
+	showUpgrade: boolean;     // 显示"升级"按钮或"已是最新"徽章
+	showDelete: boolean;      // 显示"卸载"按钮
+	showEdit: boolean;        // 显示"编辑文件"按钮
+	showToggle: boolean;      // 显示"启用/禁用"开关
+	isReadonly: boolean;      // 面板是否为只读
+} {
+	const locked = shouldLockEditor(getPackageResult, packageAuthor, currentUser);
+	const hideMarketBtns = shouldHideUploadButtons(getPackageResult, packageAuthor, currentUser);
+	void locked;   // 保留原语义（仅 hideMarketBtns 参与分支），显式标注避免未使用告警
+
+	if (getPackageResult === 'error') {
+		// 包不存在 → 首次上传
+		return {
+			showUpload: true,
+			showUpgrade: false,
+			showDelete: true,
+			showEdit: true,
+			showToggle: true,
+			isReadonly: false,
+		};
+	}
+
+	if (hideMarketBtns) {
+		// 包存在 + 非所有者 → 只读模式
+		return {
+			showUpload: false,
+			showUpgrade: false,
+			showDelete: false,
+			showEdit: false,
+			showToggle: false,
+			isReadonly: true,
+		};
+	}
+
+	// 包存在 + 所有者 → 全部可用
+	return {
+		showUpload: false,
+		showUpgrade: true,
+		showDelete: true,
+		showEdit: true,
+		showToggle: true,
+		isReadonly: false,
+	};
+}
 
 suite('Skill Owner Check', () => {
 
@@ -225,61 +285,6 @@ suite('Skill Owner Check', () => {
 	// ════════════════════════════════════════════════════════════════════
 
 	suite('End-to-end scenarios', () => {
-
-		/**
-		 * 模拟完整的 UI 决策流程：
-		 * 1. 检查包是否存在 → 决定首次上传 vs 更新
-		 * 2. 检查所有权 → 决定是否隐藏按钮和锁定面板
-		 */
-		function decideUIBehavior(
-			getPackageResult: 'success' | 'error',
-			packageAuthor?: PackageAuthor,
-			currentUser?: CurrentUser,
-		): {
-			showUpload: boolean;      // 显示"上传到商城"按钮
-			showUpgrade: boolean;     // 显示"升级"按钮或"已是最新"徽章
-			showDelete: boolean;      // 显示"卸载"按钮
-			showEdit: boolean;        // 显示"编辑文件"按钮
-			showToggle: boolean;      // 显示"启用/禁用"开关
-			isReadonly: boolean;      // 面板是否为只读
-		} {
-			const locked = shouldLockEditor(getPackageResult, packageAuthor, currentUser);
-			const hideMarketBtns = shouldHideUploadButtons(getPackageResult, packageAuthor, currentUser);
-
-			if (getPackageResult === 'error') {
-				// 包不存在 → 首次上传
-				return {
-					showUpload: true,
-					showUpgrade: false,
-					showDelete: true,
-					showEdit: true,
-					showToggle: true,
-					isReadonly: false,
-				};
-			}
-
-			if (hideMarketBtns) {
-				// 包存在 + 非所有者 → 只读模式
-				return {
-					showUpload: false,
-					showUpgrade: false,
-					showDelete: false,
-					showEdit: false,
-					showToggle: false,
-					isReadonly: true,
-				};
-			}
-
-			// 包存在 + 所有者 → 全部可用
-			return {
-				showUpload: false,
-				showUpgrade: true,
-				showDelete: true,
-				showEdit: true,
-				showToggle: true,
-				isReadonly: false,
-			};
-		}
 
 		test('owner viewing their own skill → full control', () => {
 			const ui = decideUIBehavior('success', OWNER_AUTHOR, USER_ALICE);

@@ -75,7 +75,7 @@ export const DEFAULT_TOOL_SEARCH_CONFIG: IToolSearchConfig = {
 };
 
 /**
- * 可见工具的软上限。Always 优先级（core/mcp-bridge/tool-search）工具永不计入限制，
+ * 可见工具的软上限。Always 优先级（core/tool-search）工具永不计入限制，
  * 仅对 High/Medium/Low 工具生效。防止直发过多 schema 导致 HTTP 400 "input length too long"。
  * 与 Hermes-Agent 的区别：Hermes 无限制但 MCP 工具远少于本项目（本项目有 30+ MCP 工具）。
  */

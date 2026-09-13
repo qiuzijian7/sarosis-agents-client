@@ -5,9 +5,9 @@ import assert from 'assert';
 import {
 	buildEditorFields,
 	coerceEditorValue,
-	buildSarosisEditorFields,
-	sarosisDataToValues,
-	sarosisValuesToData,
+	buildSarosEditorFields,
+	sarosDataToValues,
+	sarosValuesToData,
 	type EditorField,
 } from '../../webview/src/features/workflowEditor/comfyHost/nodeEditorForm.js';
 import type { NodeSpec } from '../../webview/src/features/workflowEditor/comfyHost/registry.js';
@@ -115,10 +115,27 @@ suite('nodeEditorForm', () => {
 			assert.ok(agent.some(f => f.key === 'providerId'));
 			const ifElse = buildEditorFields(spec({ type: 'Saros.IfElse', kind: 'react' }));
 			assert.ok(ifElse.some(f => f.key === 'evaluationTarget'));
-			assert.ok(ifElse.some(f => f.key === 'branches'));
+			// ★ IfElse 分支现为**固定 true/false 输出端口**（见字段 placeholder），
+			//   不再有可配置的 branches 数组字段。执行器仍读 node.data.branches
+			//   仅为兼容旧工作流（缺省 [True, False] 与固定端口一一对应）。
+			assert.strictEqual(ifElse.some(f => f.key === 'branches'), false);
+			// Switch 走 cases（前 4 项对应 case-1..4 端口 + default 端口）
+			const sw = buildEditorFields(spec({ type: 'Saros.Switch', kind: 'react' }));
+			assert.ok(sw.some(f => f.key === 'cases' && f.kind === 'textarea'));
+			// ★ 契约同步（2026-09-11）：AskUser 参数已随**多问题重构**收敛为嵌套
+			//   `questions` 数组（每个问题自带模式/选项/必填/多选/自由输入）；
+			//   旧的扁平字段（questionText / options / params / multiSelect …）
+			//   **不再出现在表单里**，打开弹窗时由 sarosDataToValues 自动迁移为
+			//   questions[0]（见 nodeEditorForm.ts 的 Saros.AskUser 注释）。
 			const askUser = buildEditorFields(spec({ type: 'Saros.AskUser', kind: 'react' }));
-			assert.ok(askUser.some(f => f.key === 'questionText'));
-			assert.ok(askUser.some(f => f.key === 'options' && f.kind === 'textarea'));
+			assert.ok(askUser.some(f => f.key === 'questions' && f.kind === 'textarea'));
+			assert.strictEqual(askUser.some(f => f.key === 'questionText'), false, '扁平字段已下线');
+			assert.strictEqual(askUser.some(f => f.key === 'multiSelect'), false, '扁平字段已下线');
+			// P1-4：Script 节点（脚本作为 DAG 节点）——script 必填、name/args 可选
+			const script = buildEditorFields(spec({ type: 'Saros.Script', kind: 'react' }));
+			assert.ok(script.some(f => f.key === 'script' && f.kind === 'textarea'));
+			assert.ok(script.some(f => f.key === 'name'));
+			assert.ok(script.some(f => f.key === 'args'));
 		});
 
 		test('unknown react type → no fields', () => {
@@ -128,8 +145,8 @@ suite('nodeEditorForm', () => {
 
 	suite('Saros field converters', () => {
 
-		test('sarosisDataToValues stringifies JSON fields and maps agentConfig', () => {
-			const values = sarosisDataToValues('Saros.Agent', {
+		test('sarosDataToValues stringifies JSON fields and maps agentConfig', () => {
+			const values = sarosDataToValues('Saros.Agent', {
 				agentId: 'code',
 				agentConfig: { providerId: 'p', modelId: 'm' },
 				prompt: 'hello',
@@ -140,14 +157,14 @@ suite('nodeEditorForm', () => {
 			assert.strictEqual(values.prompt, 'hello');
 		});
 
-		test('sarosisDataToValues falls back to defaults for missing fields', () => {
-			const values = sarosisDataToValues('Saros.Prompt', undefined);
+		test('sarosDataToValues falls back to defaults for missing fields', () => {
+			const values = sarosDataToValues('Saros.Prompt', undefined);
 			assert.strictEqual(values.prompt, '');
 			assert.strictEqual(values.variables, '{}');
 		});
 
-		test('sarosisValuesToData parses JSON fields and rebuilds agentConfig', () => {
-			const data = sarosisValuesToData('Saros.Agent', {
+		test('sarosValuesToData parses JSON fields and rebuilds agentConfig', () => {
+			const data = sarosValuesToData('Saros.Agent', {
 				agentId: 'code',
 				providerId: 'p',
 				modelId: 'm',
@@ -157,15 +174,19 @@ suite('nodeEditorForm', () => {
 			assert.strictEqual(data.prompt, 'hi');
 		});
 
-		test('sarosisValuesToData keeps invalid JSON as the raw string', () => {
-			const data = sarosisValuesToData('Saros.Skill', { skillName: 's', skillArgs: 'not-json' });
+		test('sarosValuesToData keeps invalid JSON as the raw string', () => {
+			const data = sarosValuesToData('Saros.Skill', { skillName: 's', skillArgs: 'not-json' });
 			assert.strictEqual(data.skillArgs, 'not-json');
 		});
 
-		test('sarosisValuesToData multiSelect string → boolean', () => {
-			const data = sarosisValuesToData('Saros.AskUser', { questionText: 'q', options: '[]', multiSelect: 'yes' });
-			assert.strictEqual(data.multiSelect, true);
-			assert.deepStrictEqual(data.options, []);
+		test('★ sarosValuesToData：AskUser 只认 questions（扁平字段已下线，2026-09-11 同步）', () => {
+			// ★ 契约同步：AskUser 表单唯一入口是 `questions`（JSON textarea）；
+			//   旧的扁平字段（questionText/options/multiSelect…）不再是表单字段 →
+			//   不应出现在产物里（多问题重构，见 nodeEditorForm.ts 注释）。
+			const data = sarosValuesToData('Saros.AskUser', { questions: '[]' });
+			assert.deepStrictEqual(data.questions, [], 'JSON textarea → 数组');
+			assert.strictEqual(data.multiSelect, undefined, '扁平字段已下线');
+			assert.strictEqual(data.questionText, undefined, '扁平字段已下线');
 		});
 	});
 
@@ -207,20 +228,20 @@ suite('nodeEditorForm', () => {
 		});
 
 		test('ProviderPicker persists providerId/modelId flat (no agentConfig)', () => {
-			const data = sarosisValuesToData('Saros.ProviderPicker', { providerId: 'openrouter', modelId: 'flux' });
+			const data = sarosValuesToData('Saros.ProviderPicker', { providerId: 'openrouter', modelId: 'flux' });
 			assert.strictEqual(data.providerId, 'openrouter');
 			assert.strictEqual(data.modelId, 'flux');
 			assert.strictEqual(data.agentConfig, undefined);
 		});
 
-		test('ProviderPicker round-trips through sarosisDataToValues', () => {
-			const values = sarosisDataToValues('Saros.ProviderPicker', { providerId: 'openrouter', modelId: 'flux' });
+		test('ProviderPicker round-trips through sarosDataToValues', () => {
+			const values = sarosDataToValues('Saros.ProviderPicker', { providerId: 'openrouter', modelId: 'flux' });
 			assert.strictEqual(values.providerId, 'openrouter');
 			assert.strictEqual(values.modelId, 'flux');
 		});
 
 		test('Agent still uses agentConfig (regression guard)', () => {
-			const data = sarosisValuesToData('Saros.Agent', { providerId: 'p', modelId: 'm' });
+			const data = sarosValuesToData('Saros.Agent', { providerId: 'p', modelId: 'm' });
 			assert.deepStrictEqual(data.agentConfig, { providerId: 'p', modelId: 'm' });
 			assert.strictEqual(data.providerId, undefined);
 		});

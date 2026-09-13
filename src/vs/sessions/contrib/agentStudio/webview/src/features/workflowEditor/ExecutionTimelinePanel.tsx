@@ -10,6 +10,14 @@
  *   - Color-coded by kind (running=blue, done=green, error=red, ask=purple)
  *   - Latest events at the bottom; auto-scrolls to bottom as new events come
  *   - Cap: 200 events per session (set in store)
+ *
+ *  ⚠⚠ 当前**无挂载点**（2026-09-13 质量评估）：全仓无任何文件 import 本组件
+ *  —— 聊天卡已改为 **native 侧**渲染（`sessions/browser/agentChat/agentChatPanel.workflowCards.ts`
+ *  经 `browser/workflowTraceController.ts` → `chatPanel.updateMessage`）。
+ *  因此本组件消费的 `useChatStore.liveWorkflowEvents` 在运行时不会被渲染。
+ *  保留原因：webview 侧 `index.tsx` 的 trace 路由仍在维护该 store（其
+ *  `execution_end` 分支有落盘副作用），且该面板是唯一的「事件时间线」视图实现，
+ *  可能被重新挂载。★ 要改聊天卡的节点展示/进度，请改 native 侧。
  *--------------------------------------------------------------------------------------------*/
 
 /* eslint-disable local/code-no-unexternalized-strings */

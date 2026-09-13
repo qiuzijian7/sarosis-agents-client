@@ -26,18 +26,27 @@ export class BM25Index {
 	private readonly b = 0.75;
 	/**
 	 * P2 内存边界：BM25 索引最多保留的文档数。超过后按插入顺序（FIFO，
-	 * Map 保序）淘汰最早的文档，防止 ext host 堆无界增长撞 4GB cage。
-	 * 0 = 不限制。可通过环境变量 AGENTMEMORY_BM25_MAX_DOCS 覆盖。
+	 * Map 保序）淘汰最早的文档。0 = 不限制。
+	 * 可通过环境变量 AGENTMEMORY_BM25_MAX_DOCS 覆盖；构造参数优先级最高（测试用）。
 	 *
-	 * 默认 1000（每条平均 ~2KB tokens × Map<string,Set<string>> 引用开销 ~5KB
-	 * → 1000 条约 5MB heap，是安全上限。之前 5000 在多扩展并存的 ext host
-	 * 4GB cage 里仍偏高，降到 1000 更稳）。
+	 * P1-8（2026-09-09）：默认 1000 → 5000。1000 的依据是「ext host 4GB cage」，
+	 * 但引擎已迁入网关专用子进程（Opt1），该约束失效；5000 条 ≈ 25MB heap，
+	 * 在专用进程中安全。淘汰事件经 evictedCount 暴露，由网关 [mem-summary] 上报
+	 * ——被淘汰的文档 KV 里在、检索不到，此前零信号。
 	 */
-	private readonly _maxDocs: number = (() => {
+	private _maxDocs: number = (() => {
 		const raw = (globalThis as any)?.process?.env?.['AGENTMEMORY_BM25_MAX_DOCS'];
 		const n = raw ? parseInt(raw, 10) : NaN;
-		return Number.isFinite(n) && n > 0 ? n : 1000;
+		return Number.isFinite(n) && n > 0 ? n : 5000;
 	})();
+	/** P1-8: 因 _maxDocs 上限被 FIFO 淘汰的文档累计数 */
+	private _evictedCount = 0;
+
+	constructor(maxDocs?: number) {
+		if (Number.isFinite(maxDocs) && (maxDocs as number) > 0) {
+			this._maxDocs = maxDocs as number;
+		}
+	}
 
 	private stem(word: string): string {
 		return stemPorter(word);
@@ -97,6 +106,7 @@ export class BM25Index {
 			const oldest = this.entries.keys().next().value as string | undefined;
 			if (oldest === undefined) { break; }
 			this.remove(oldest);
+			this._evictedCount++;
 		}
 	}
 
@@ -248,6 +258,9 @@ export class BM25Index {
 	}
 
 	get size(): number { return this.entries.size; }
+
+	/** P1-8: 因上限被 FIFO 淘汰的文档累计数（淘汰 = KV 在但检索不可达） */
+	get evictedCount(): number { return this._evictedCount; }
 
 	clear(): void {
 		this.entries.clear();

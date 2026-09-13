@@ -410,14 +410,30 @@ export function registerDefaultComfyTVStages(): void {
 	refineStage('ComfyTV.AudioSplitStage', undefined,
 		[{ name: 'audio', type: 'COMFYTV_AUDIO' }, { name: 'video', type: 'COMFYTV_VIDEO' }],
 		[{ name: 'audio_a', type: 'COMFYTV_AUDIO' }, { name: 'audio_b', type: 'COMFYTV_AUDIO' }]);
-	// Picker 家族：媒体批量 → 单选快照。
-	refineStage('ComfyTV.ImagePickerStage', undefined,
+	// Picker 家族：媒体批量 → 选择快照（**多选**，2026-09-12 用户需求「多选图片时
+	// UI 要有多选状态」）。
+	// ★ 选中字段**必须声明在 widgets 里**：`getNodeCardMeta.toControls` 只把
+	//   spec.widgets 派生成 `meta.controls`（ComfyTV 分支且只收 COMBO/INT/FLOAT/
+	//   BOOLEAN）→ 未声明的字段在卡片**重挂载**后读不回（多选态丢失、回退单张）。
+	//   同 AnimatedEmoji `run_scope/cell_indices` 的教训。
+	//   · `selected_index`(INT, 1-based) = **主选**（旧数据/外部调用兼容，执行器兜底）；
+	//   · `selected_indices`(TEXT, JSON 0-based 数组) = 上游池视图的**全部**选中；
+	//   · `directRef`(TEXT) / `directRefs`(TEXT, JSON 数组) 同上，用于「全部」池视图。
+	//   picker 卡片 `showRun === false` → 这些 widget 不会渲染成通用控件行 ✓
+	//   （多选 UI 由 Pool 网格自绘）。
+	const pickerWidgets: NodeSpec['widgets'] = [
+		{ name: 'selected_index', type: 'INT', default: 1, min: 1, max: 9999 },
+		{ name: 'selected_indices', type: 'TEXT', default: '' },
+		{ name: 'directRef', type: 'TEXT', default: '' },
+		{ name: 'directRefs', type: 'TEXT', default: '' },
+	];
+	refineStage('ComfyTV.ImagePickerStage', pickerWidgets,
 		[{ name: 'batch', type: 'COMFYTV_IMAGES' }],
 		[{ name: 'image', type: 'COMFYTV_IMAGE' }]);
-	refineStage('ComfyTV.VideoPickerStage', undefined,
+	refineStage('ComfyTV.VideoPickerStage', pickerWidgets,
 		[{ name: 'batch', type: 'COMFYTV_VIDEO' }],
 		[{ name: 'video', type: 'COMFYTV_VIDEO' }]);
-	refineStage('ComfyTV.AudioPickerStage', undefined,
+	refineStage('ComfyTV.AudioPickerStage', pickerWidgets,
 		[{ name: 'batch', type: 'COMFYTV_AUDIO' }],
 		[{ name: 'audio', type: 'COMFYTV_AUDIO' }]);
 	// Loader 家族（ComfyTV loaders.py 语义：media 输入 / 上传 → 快照输出）。
@@ -426,7 +442,7 @@ export function registerDefaultComfyTVStages(): void {
 	//   `audio`、TextLoaderStage → `text`（非通用的 `output`）。此前写死 `output`
 	//   导致连线端口标签与 ComfyTV 参考 UI 不一致（「loadimage/loadvideo 参数错误」）。
 	//   端口**类型**仍用 COMFYTV_* 族（与其它 ComfyTV stage 同族，连线语义一致）。
-	const loader = (type: string, outType: string, outName: string, widgets: NodeWidgetSpec[] = []): void => {
+	const loader = (type: string, outType: string, outName: string, widgets: NodeSpec['widgets'] = []): void => {
 		const existing = registry.get(type)?.spec;
 		if (!existing) { return; }
 		registerNodeSpec({

@@ -499,7 +499,7 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 			category: 'delegation',
 			source: ctx.id,
 		},
-		handler: async (args, signal, agentId) => {
+		handler: async (args, signal, agentId, sessionId, toolCallId) => {
 			// 模型可能把 task 传成对象（而非 schema 声明的字符串），
 			// 派发前归一化为字符串，避免 subAgent.task 变成对象后 CompletionGate 崩溃。
 			const task = args['task'] !== undefined ? normalizeTaskArg(args['task']) : undefined;
@@ -593,7 +593,18 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 			// 子 agent 执行的 tool_start / tool_end 事件经旁路总线实时推送到
 			// SubAgentCard（不走主 delta 流）。与 planExploreTool 对齐，共享
 			// subAgentCardReducer 纯函数驱动卡片快照，UI 按 id 幂等 upsert。
-			const parentToolCallId = `delegate_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+			// ★★ 2026-09-12 修复「subagent 工具卡片不显示执行内容」★★
+			// 原实现用**本地生成的假 id** 作 parentToolCallId，而卡片渲染侧
+			// （agentChatPanel.delegateCards.ts）用 `filterChildSubAgents(tc.subAgents, tc.id)`
+			// **严格相等**过滤 —— `tc.id` 是 LLM 真实 tool call id，与假 id 永不相等
+			// → childSubs 恒为空 → 「执行列表」恒显示占位「子 Agent 正在执行任务…」、
+			// 「执行结果」恒落到 else 分支显示「（执行中…）」，子代理的 toolTraces /
+			// output 全部拿不到（用户报「为什么不显示执行内容」）。
+			// 根因是 handler 签名（toolRegistry.ts:13）本就带 `toolCallId` 第 5 参，
+			// 但此处只取了前 3 个 → 丢掉真实 id 后拿假 id 顶替。
+			// 现优先用真实 toolCallId；极端情况（调用方未透传）才回退旧假 id。
+			const parentToolCallId = toolCallId
+				|| `delegate_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 			const cardMap = new Map<string, MutableCardState>();
 			let batchGroupId = parentToolCallId;
 			let flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -613,6 +624,9 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 							groupId: batchGroupId, toolTraces: c.toolTraces.map(t => ({ ...t })),
 							parentToolCallId,
 							startedAt: c.startedAt, completedAt: c.completedAt,
+							// ★ 2026-09-13：实时 token / 积分用量（执行中即可见，见 reducer 的 Progress 分支）
+							tokensUsed: c.tokensUsed ? { ...c.tokensUsed } : undefined,
+							creditUsed: c.creditUsed,
 							skipSubAgentCard: true,
 						})),
 					});
@@ -679,10 +693,13 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 			// 注意（事故 1785143114444）：`search_code` 挂在独立 toolset `codebase-grep`
 			// 而非 `codebase`，遗漏它会导致 code-explorer 子代理只能用 `search_files`（ripgrep 文件名/路径）
 			// 手搜代码内容，104 次搜索里 0 次 search_code——治本方案是把 `codebase-grep` 纳入默认。
+			// 注：`mcp-bridge` 已于 2026-09-11 删除（永不匹配的死 toolset —— 无工具
+			// 带 `mcp_tool_` 前缀），故从各默认列表一并移除；它此前也只是占位，
+			// 移除不改变子代理实际可见的工具集。
 			const DEFAULT_TOOLSETS_BY_TYPE: Record<string, string[]> = {
-				'code-explorer': ['core', 'mcp-bridge', 'codebase', 'codebase-grep'],
-				'researcher': ['core', 'mcp-bridge', 'web'],
-				'data': ['core', 'mcp-bridge', 'exec', 'data'],
+				'code-explorer': ['core', 'codebase', 'codebase-grep'],
+				'researcher': ['core', 'web'],
+				'data': ['core', 'exec', 'data'],
 			};
 			const effectiveToolsets = toolsetsArg && toolsetsArg.length > 0
 				? toolsetsArg

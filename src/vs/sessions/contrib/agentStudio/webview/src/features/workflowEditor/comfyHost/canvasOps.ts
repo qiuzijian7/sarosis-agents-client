@@ -48,7 +48,53 @@ export type CanvasOp =
 	| { op: 'delete_node'; node: string }
 	| { op: 'connect'; source: string; target: string; sourceHandle?: string; targetHandle?: string; id?: string }
 	| { op: 'disconnect'; source: string; target: string; sourceHandle?: string; targetHandle?: string }
-	| { op: 'select'; node?: string | null };
+	| { op: 'select'; node?: string | null }
+	/**
+	 * picker 选中同步（2026-09-11 用户需求）：聊天卡勾选 ImagePicker 的候选 → 写回画布节点
+	 * 的选中态（`selected_index` / `directRef`）。
+	 *
+	 * ⚠ **必须由 `applyCanvasOpsToStore` 预处理**：聊天卡给的是 **refs**，而画布要的是
+	 * **池内序号** ✗ —— ref→序号 的映射需要快照库（池），而本内核是**纯函数、无 store** ✗。
+	 * 调用方解析成 `update_node` 补丁后再交给本内核（同 `__generate_flow__` 的预处理范式）。
+	 */
+	| { op: 'select_picker_refs'; node: string; refs: string[] };
+
+/**
+ * 把聊天卡给来的 `refs` 解析成 picker 节点的选中补丁（**纯函数**，可单测）。
+ *
+ * 由来（2026-09-11 用户需求）：聊天卡勾选 ImagePicker 候选后要与**画布节点**同步。
+ * ★ **多选**（2026-09-12 用户需求「多选图片时 UI 要有多选状态」）：聊天卡可勾多张 →
+ * 画布 picker 也必须整批高亮。选中态有两个维度、每个维度两个字段：
+ *  · 上游池视图：`selected_index`（**1-based 主选**，= 第一张）+ `selected_indices`
+ *    （**全部**选中序号 JSON 数组，0-based，相对上游池）→ 网格逐格高亮；
+ *  · `'all'` 视图：`directRef`（主选 ref）+ `directRefs`（**全部** ref JSON 数组）→
+ *    按 ref 匹配，**不需要序号**。
+ * 单值字段保留 = 旧调用方 / 执行器兜底仍能工作（向后兼容）。
+ *
+ * ⚠ ref 不在池内 → **不写序号字段**（绝不猜序号 ✗ —— 猜错会高亮到**错误的格子**，
+ *   比不同步更糟）。ref 字段仍写，`'all'` 视图依旧正确。
+ */
+export function buildPickerSelectionPatch(
+	refs: ReadonlyArray<string>,
+	poolRefs: ReadonlyArray<string>,
+): { selected_index?: number; selected_indices?: string; directRef?: string; directRefs?: string } {
+	const list = refs.filter((r): r is string => typeof r === 'string' && r.length > 0);
+	const first = list[0];
+	if (!first) { return {}; }
+	const patch: { selected_index?: number; selected_indices?: string; directRef?: string; directRefs?: string } = {
+		directRef: first,
+		directRefs: JSON.stringify(list),
+	};
+	// 序号只在**能解析出来**时写（池内序号 = 上游池数组下标）；解析不出的 ref 跳过，
+	// 但只要有任意一张能解析，就写数组（其余张只靠 directRefs 在 'all' 视图命中）。
+	// ★ 主选 `selected_index` 必须跟**第一个请求的 ref**（与 directRef 同源），
+	//   不能取序号最小值 —— 否则聊天卡勾「第 3 张 + 第 1 张」时主选变成第 1 张 ✗。
+	const firstIdx = poolRefs.indexOf(first);
+	if (firstIdx >= 0) { patch.selected_index = firstIdx + 1; }
+	const idxs = [...new Set(list.map(r => poolRefs.indexOf(r)).filter(i => i >= 0))].sort((a, b) => a - b);
+	if (idxs.length > 0) { patch.selected_indices = JSON.stringify(idxs); }
+	return patch;
+}
 
 export interface OpResult {
 	/** Index of the op this result belongs to (for diagnostics). */
@@ -298,6 +344,15 @@ export function applyCanvasOps(model: CanvasModel, ops: CanvasOp[], options: App
 						results.push({ opIndex: i, summary: `selected ${node.data?.label ?? node.id}`, ids: [node.id] });
 					}
 					break;
+				}
+
+				case 'select_picker_refs': {
+					// ⚠ 本内核**处理不了**：把 ref 映射成池序号需要快照库（池），而这里是纯函数 ✗。
+					//   必须由 `applyCanvasOpsToStore` 预处理成 `update_node` 补丁（见 op 注释）。
+					//   fail-loud：静默忽略会让「聊天选了但画布没同步」变成哑 bug ✗。
+					throw new Error(
+						`select_picker_refs: 必须由 applyCanvasOpsToStore 预处理（ref→池序号 需要快照库）：节点 "${op.node}"`,
+					);
 				}
 
 				default: {

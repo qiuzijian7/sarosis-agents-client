@@ -22,7 +22,15 @@ import { getToolsetForTool, TOOLSET_DEFINITIONS } from '../../common/toolsetConf
 const KNOWN_SECURITY_LEVELS = new Set(['safe', 'cautious', 'dangerous']);
 
 /** 工具名命名规范：小写字母开头，仅含小写字母/数字/下划线。 */
-const TOOL_NAME_RE = /^[a-z][a-z0-9_]*$/;
+// 工具名约定：小写字母开头，其余为字母 / 数字 / 下划线。
+//
+// ★ 2026-09-11：放开**驼峰**（此前为 /^[a-z][a-z0-9_]*$/，只允许全小写）。
+// 原因：bundled 目录里的名字是「与真实工具名对齐的占位」—— `registerBundledTools`
+// 用 `ctx.hasTool(def.name)` 决定是否跳过注册（`toolRegistry.hasTool` 是 `Map.has`，
+// **大小写敏感**），故名字必须与真实注册名**逐字一致**。而真实工具确实存在驼峰名
+// （`renderMermaidDiagram` / `renderDrawioDiagram`），旧约定会把它们误判为非法。
+// 首字符仍必须是小写字母（拒绝 `RenderX` / `_x` / `2x` 之类）。
+const TOOL_NAME_RE = /^[a-z][a-zA-Z0-9_]*$/;
 
 suite('Agent Studio - Bundled Tools (all tools)', () => {
 

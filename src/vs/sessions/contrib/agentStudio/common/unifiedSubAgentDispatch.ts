@@ -35,6 +35,7 @@ import { decideTaskGate, MAX_TASK_GATE_SUBAGENT_REACT, type IIncompleteTask, typ
 import { StallWatchdog } from './stallWatchdog.js';
 import { defaultPostStopDecision, type ISubAgentPostStopHook } from './subAgentHooks.js';
 import { type IForkContext } from './forkContext.js';
+import { createWriteExclusionLock, hasWriteCapability, WriteLockAbortedError, type IWriteExclusionLock } from './writeExclusion.js';
 
 // ─── SubAgent Types (inspired by OpenCode's agent types) ──────────────────
 
@@ -433,6 +434,8 @@ export interface SubAgentResult {
 	readonly apiCalls?: number;
 	/** Token usage (if available from the LLM response) */
 	readonly tokensUsed?: { input: number; output: number };
+	/** ★ 2026-09-13：累计积分消耗（网关 usage.credit）。 */
+	readonly creditUsed?: number;
 	/** Detailed per-turn token usage (inspired by deer-flow SubagentTokenCollector). */
 	readonly tokenUsage?: SubagentTokenUsage;
 	/** Why the sub-agent stopped executing */
@@ -463,6 +466,8 @@ interface _ExecResult {
 	readonly apiCallCount: number;
 	readonly budgetExhausted: boolean;
 	readonly tokensUsed?: { input: number; output: number };
+	/** ★ 2026-09-13：累计积分消耗（网关 usage.credit）。 */
+	readonly creditUsed?: number;
 	readonly toolTrace: SubAgentToolTraceEntry[];
 	/** Files that were modified (written/created) by this sub-agent */
 	readonly filesModified: string[];
@@ -655,6 +660,13 @@ export interface SubAgentEvent {
 	readonly durationMs?: number;
 	/** Token usage (for Completed) */
 	readonly tokensUsed?: { input: number; output: number };
+	/**
+	 * ★ 2026-09-13：**累计**积分消耗（网关 usage.credit）。
+	 *
+	 * 执行中随 `Progress` 事件实时下发（与 `tokensUsed` 同一时机），完成后由
+	 * `Completed` 事件给终值 —— 卡片左下角据此展示。
+	 */
+	readonly creditUsed?: number;
 	/** Exit reason (for Completed / Failed / Interrupted) */
 	readonly exitReason?: SubAgentExitReason;
 	/** Group id to cluster parallel sub-agents into one card */
@@ -819,6 +831,40 @@ export class UnifiedSubAgentDispatch {
 	/** Inject a logger for sub-agent stream diagnostics (heartbeat / DELTA GAP / handover). */
 	public setLogger(log: (level: 'info' | 'warn' | 'error', msg: string) => void): void {
 		this._log = log;
+	}
+
+	// ─── 写冲突互斥（P0②，2026-09-11）───────────────────────────────────────
+	/**
+	 * 可写子代理的串行化闸门。
+	 *
+	 * 为什么放在**调度层**而不是画布 planner：画布并行层 / 脚本 `parallel()` / swarm
+	 * workers / `delegate_task` 全部经 `executeSubAgent` 执行 → 一处加锁覆盖所有路径；
+	 * 且画布侧拿不到 agent 的工具面（`Saros.Agent` 节点只有 `agentId`，webview 不认识
+	 * 内置 agent 的 `tools`），无法自行判定写能力。
+	 *
+	 * 只读子代理（Explore/Scout，或工具面里没有写工具的 General）**完全不占锁**
+	 * → 并行探索这个主用法零回归。
+	 */
+	private readonly _writeLock: IWriteExclusionLock = createWriteExclusionLock();
+
+	/** 写互斥诊断快照（日志 / TaskBoard 观测「为什么变慢了」）。 */
+	getWriteLockStats() {
+		return this._writeLock.stats();
+	}
+
+	/**
+	 * 该子代理是否**可能写**（保守方向：宁可串行，不可写冲突）。
+	 * 判定优先级见 `hasWriteCapability`：显式工具面 > 权限档 > 类型兜底。
+	 */
+	private _isWriteCapableSubAgent(subAgent: SubAgentInstance): boolean {
+		const perms = SUB_AGENT_PERMISSIONS[subAgent.type];
+		return hasWriteCapability({
+			allowedTools: subAgent.options.allowedTools,
+			excludedTools: this._effectiveExcludedTools(subAgent),
+			canWrite: perms?.canWrite,
+			canExecute: perms?.canExecute,
+			type: subAgent.type,
+		});
 	}
 
 	// ─── delegate_task 子代理会话复用（2026-07-26 用户决策：
@@ -1020,9 +1066,6 @@ export class UnifiedSubAgentDispatch {
 			throw new Error(`SubAgent ${subAgentId} is not in pending state (current: ${subAgent.status})`);
 		}
 
-		subAgent.status = 'running';
-		const startedAt = Date.now();
-
 		// P2b + P3: 父→子取消传播仅对 subagent 档生效。
 		// peer 档为对等独立 agent,父 turn 的 abort 不应级联取消它 (其生命周期独立,
 		// 只有显式 interruptSubAgent / swarm.cancelSwarm 才能停)。故 peer 档把父
@@ -1030,6 +1073,40 @@ export class UnifiedSubAgentDispatch {
 		const effectiveAbortSignal = (subAgent.options.isolationLevel === 'peer')
 			? undefined
 			: abortSignal;
+
+		// ★ 写冲突互斥（P0②，2026-09-11）：可写子代理执行前先取写锁，只读者直通。
+		//   子代理共享父 worktree 且无隔离档 → 两个可写子代理并发 = 必然互相覆盖。
+		//   取锁在 `status='running'` / Spawned 事件**之前**：① 卡片不会显示「运行中」的假象
+		//   ② 排队时间不计入 subAgent.timeout / durationMs（排队不是它的执行时间）。
+		let releaseWriteLock: (() => void) | undefined;
+		if (this._isWriteCapableSubAgent(subAgent)) {
+			try {
+				releaseWriteLock = await this._writeLock.acquire({
+					owner: subAgent.id,
+					signal: effectiveAbortSignal,
+					onWait: ahead => this._log?.('info',
+						`[WriteLock] ${subAgent.id} queued behind ${ahead} writer(s) — 可写子代理串行化（共享 worktree，防写冲突）`),
+				});
+			} catch (error) {
+				if (error instanceof WriteLockAbortedError) {
+					// 排队期间父 turn 被取消 → 不启动执行（不占 token、不写文件），按「被中断」收尾。
+					subAgent.status = 'cancelled';
+					subAgent.result = {
+						success: false,
+						error: 'Interrupted while waiting for the write lock',
+						completedAt: Date.now(),
+						durationMs: 0,
+						tokenUsage: subAgent.tokenCollector.getUsage(),
+						exitReason: 'interrupted',
+					};
+					return subAgent.result;
+				}
+				throw error;
+			}
+		}
+
+		subAgent.status = 'running';
+		const startedAt = Date.now();
 
 		// Effect model: per-instance InterruptSignal（createSubAgent 时创建）。
 		// interruptSubAgent() 在 pending/running 任意时刻调用都有效；信号是粘性的，
@@ -1147,6 +1224,10 @@ export class UnifiedSubAgentDispatch {
 				groupId,
 			});
 			return subAgent.result;
+		} finally {
+			// ★ 写互斥锁必须在**所有**终态路径释放（正常/失败/取消/超时/异常）——
+			//   漏释放会让后续所有可写子代理永久排队。release 本身幂等。
+			releaseWriteLock?.();
 		}
 	}
 
@@ -1468,6 +1549,8 @@ export class UnifiedSubAgentDispatch {
 			durationMs,
 			apiCalls: execResult.apiCallCount,
 			tokensUsed: execResult.tokensUsed,
+			// ★ 2026-09-13：积分（与 tokensUsed 平行）。
+			creditUsed: execResult.creditUsed,
 			tokenUsage: subAgent.tokenCollector.getUsage(),
 			// salvage 保留原 exitReason（父代理可见 partial 性质），gate 成功才归一 completed；
 			// completedPartial 归一为 'partial'，让 formatDelegationResult 标 RESULT: partial。
@@ -1520,6 +1603,8 @@ export class UnifiedSubAgentDispatch {
 			output: execResult.output,
 			durationMs,
 			tokensUsed: execResult.tokensUsed,
+			// ★ 2026-09-13：完成事件也带积分终值（与 tokensUsed 同一时机）。
+			creditUsed: execResult.creditUsed,
 			toolsCompleted: execResult.apiCallCount,
 			exitReason,
 			groupId,
@@ -2020,6 +2105,8 @@ TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
 		let stalled = false;
 		let interrupted = false;
 		let tokensUsed: { input: number; output: number } | undefined;
+		/** ★ 2026-09-13：累计积分（网关末块 usage.credit）—— 与 tokensUsed 平行采集。 */
+		let creditUsed = 0;
 		const toolTrace: SubAgentToolTraceEntry[] = [];
 		const filesModified: string[] = [];
 		let currentToolName: string | undefined;
@@ -2307,6 +2394,25 @@ TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
 					cacheHitTokens: delta.usage.cachedTokens,
 					cacheWriteTokens: delta.usage.cacheWriteTokens,
 				});
+				// ★ 2026-09-13：积分累计 —— 网关末块 usage.credit（`IModelUsage.credit`）。
+				//   subagent 级此前**完全没有**采集积分（只有消息级 tokenUsage.credit），
+				//   而卡片左下角需要展示「本次委派花了多少积分」。
+				if (typeof delta.usage.credit === 'number') {
+					creditUsed += delta.usage.credit;
+				}
+				// ★ 2026-09-13（用户需求「subagent 工具卡片执行过程中实时显示 token 消耗」）：
+				//   每个 LLM turn 的 usage 到达时立刻 emit 一条 Progress 事件，带上**累计**用量。
+				//   此前 tokensUsed 只在 Completed 事件里下发 → 执行期间卡片完全看不到消耗，
+				//   要等子代理跑完才有数字。
+				//   复用 Progress 而非新增事件类型：它已是「轻量状态更新」通道，且
+				//   reduceCardState 对该事件的字段是增量赋值，不破坏既有语义。
+				if (emitEvent) {
+					emitEvent({
+						type: SubAgentEventType.Progress,
+						tokensUsed: { ...tokensUsed },
+						creditUsed,
+					});
+				}
 			}
 
 		// ── Terminal events ──
@@ -2454,7 +2560,7 @@ TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
 			`(${_isEmptyOutput ? 'empty' : 'weak'} LLM text, rawLen=${_rawOutput.trim().length}) agent=${request.agentId}`);
 	}
 
-	return { output: outputChunks.join(''), apiCallCount, budgetExhausted, tokensUsed, toolTrace, filesModified, stalled, interrupted };
+	return { output: outputChunks.join(''), apiCallCount, budgetExhausted, tokensUsed, creditUsed, toolTrace, filesModified, stalled, interrupted };
 }
 
 	/** Safely deliver a lifecycle event to the sink, swallowing any sink errors. */

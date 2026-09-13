@@ -33,6 +33,8 @@ export interface BM25Like {
 export interface VectorLike {
 	readonly available: boolean;
 	readonly size: number;
+	/** P1-6(b)：embedding 形态（trigram 伪向量 / model 真语义）；缺省视为 trigram */
+	readonly mode?: 'trigram' | 'model';
 	search(query: string, limit?: number): Promise<SearchHit[]>;
 }
 // 2026-07-25 P1 并发安全：getter 改为 agent 感知（按 agentId 返回对应索引）。
@@ -292,6 +294,20 @@ export async function remember(
 const RRF_K = 60;
 const HYBRID_BM25_WEIGHT = 0.4;
 const HYBRID_VECTOR_WEIGHT = 0.6;
+/**
+ * P1-6(b)（2026-09-09）：trigram 伪向量的降权。
+ * 默认 0.6 权重给的是「真语义 embedding」；但 xenova 为可选依赖且未安装时，
+ * 实际生效的是 384 维字符三元组 hash 伪向量（语义能力≈0）——旧实现把最大权重
+ * 给了最弱的流，等于用字符相似度稀释唯一可用的 BM25。
+ * 降为 0.2（经动态归一后 BM25 占 ~2/3），保留探索价值但不主导。
+ * 真语义 embedding（VectorIndex.mode='model'，经 embeddingProviders 恢复后）恢复 0.6。
+ */
+const HYBRID_VECTOR_WEIGHT_TRIGRAM = 0.2;
+
+/** 向量流有效权重——按 embedding 实际形态分级（undefined 视为 trigram，保守） */
+export function effectiveVectorWeight(mode: 'trigram' | 'model' | undefined): number {
+	return mode === 'model' ? HYBRID_VECTOR_WEIGHT : HYBRID_VECTOR_WEIGHT_TRIGRAM;
+}
 /** Graph 流默认权重（对齐原版 AGENTMEMORY_GRAPH_WEIGHT=0.3） */
 const GRAPH_WEIGHT_DEFAULT = 0.3;
 /** rerank 窗口（对齐原版 RERANK 窗口 20） */
@@ -347,8 +363,9 @@ export async function searchMemories(kv: StateKV, agentId: string, query: string
 			if (graphStreamWeight() <= 0) { return []; }
 			try {
 				// 动态导入避免模块环（amPipeline → amFunctions）。空图谱返回空。
+				// P1-7：graphQuery 现带 kv（惰性从 KV 恢复持久化图谱，per-agent 隔离）。
 				const { graphQuery } = await import('./amPipeline.js');
-				return graphQuery(agentId, query, 2, fetchDepth).map(r => ({ id: r.obsId, score: r.score }));
+				return (await graphQuery(kv, agentId, query, 2, fetchDepth)).map(r => ({ id: r.obsId, score: r.score }));
 			} catch { return []; }
 		})(),
 	]);
@@ -367,7 +384,7 @@ export async function searchMemories(kv: StateKV, agentId: string, query: string
 	const combined: Array<{ id: string; score: number }> = [];
 
 	let effectiveBm25W = HYBRID_BM25_WEIGHT;
-	let effectiveVectorW = hasVector ? HYBRID_VECTOR_WEIGHT : 0;
+	let effectiveVectorW = hasVector ? effectiveVectorWeight(vec?.mode) : 0;
 	let effectiveGraphW = hasGraph ? graphStreamWeight() : 0;
 	const totalW = effectiveBm25W + effectiveVectorW + effectiveGraphW;
 	if (totalW > 0) { effectiveBm25W /= totalW; effectiveVectorW /= totalW; effectiveGraphW /= totalW; }
@@ -652,30 +669,82 @@ export async function autoForget(kv: StateKV, agentId: string, dryRun: boolean =
 	const now = Date.now();
 	const result = { ttlExpired: [] as string[], contradictions: [] as Array<{ memoryA: string; memoryB: string; similarity: number }>, lowValue: [] as string[] };
 	const memories = await kv.list<Memory>(KV.memories(agentId));
+	const ttlSet = new Set<string>();
 	for (const mem of memories) {
 		if (mem.forgetAfter && now > new Date(mem.forgetAfter).getTime()) {
 			result.ttlExpired.push(mem.id);
+			ttlSet.add(mem.id);
 			if (!dryRun) { await kv.delete(KV.memories(agentId), mem.id); await deleteAccessLog(kv, agentId, mem.id); }
 		}
 	}
-	const latest = memories.filter(m => m.isLatest !== false && !result.ttlExpired.includes(m.id)).slice(0, 1000);
-	const compared = new Set<string>();
-	for (let i = 0; i < latest.length; i++) {
-		for (let j = i + 1; j < latest.length; j++) {
-			const key = latest[i].id < latest[j].id ? `${latest[i].id}|${latest[j].id}` : `${latest[j].id}|${latest[i].id}`;
-			if (compared.has(key)) continue;
-			compared.add(key);
-			const sim = jaccardSimilarity(latest[i].content.toLowerCase(), latest[j].content.toLowerCase());
-			if (sim > CONTRADICTION_THRESHOLD) {
-				result.contradictions.push({ memoryA: latest[i].id, memoryB: latest[j].id, similarity: sim });
-				if (!dryRun) {
-					const older = new Date(latest[i].createdAt).getTime() < new Date(latest[j].createdAt).getTime() ? latest[i] : latest[j];
-					older.isLatest = false;
-					older.updatedAt = new Date().toISOString();
-					await kv.set(KV.memories(agentId), older.id, older);
+	// R3（2026-09-09）：矛盾检测原为 O(N²) 全两两 jaccard 且截断 1000——截断与
+	// 索引上限 5000 不一致（检索得到、遗忘看不到），N 大时 sweep 卡网关。
+	// 现改为「预分词 + 倒排剪枝」：仅对共享低频 token（df ≤ 30%）的对计算精确
+	// jaccard，支持全量对比（安全上限 20000）。
+	// 剪枝假设：jaccard > 0.7 的近重复对必然共享大量 token，其中至少一个是低频；
+	// 全部重叠都由高频词（如 "the"）构成的病态对会被漏掉——对记忆清扫场景可接受。
+	const latest = memories.filter(m => m.isLatest !== false && !ttlSet.has(m.id)).slice(0, 20000);
+	/** ≤ 该规模走精确全两两（O(N²) 可接受且无剪枝漏检风险） */
+	const PAIRWISE_EXACT_LIMIT = 200;
+	const n = latest.length;
+	const tokenSets = latest.map(m => new Set(m.content.toLowerCase().split(/\s+/).filter(t => t.length > 2)));
+	const df = new Map<string, number>();
+	for (const s of tokenSets) { for (const t of s) { df.set(t, (df.get(t) ?? 0) + 1); } }
+	const dfCap = Math.max(2, Math.floor(n * 0.3));
+	const inverted = new Map<string, number[]>();
+	tokenSets.forEach((s, i) => {
+		for (const t of s) {
+			if ((df.get(t) ?? 0) > dfCap) continue;
+			const docs = inverted.get(t);
+			if (docs) { docs.push(i); } else { inverted.set(t, [i]); }
+		}
+	});
+	const CANDIDATE_BUDGET = 2_000_000;
+	const candidates = new Set<number>();
+	if (n <= PAIRWISE_EXACT_LIMIT) {
+		// 小样本：精确全两两（剪枝在 n 小时会退化——只有 2 条记忆时每个 token 的 df 都是
+		// 100%，会被"高频 token"规则全部跳过 → 矛盾漏检。此为回归修复，2026-09-10）
+		for (let i = 0; i < n; i++) {
+			for (let j = i + 1; j < n; j++) { candidates.add(i * n + j); }
+		}
+	} else {
+		outer: for (const docs of inverted.values()) {
+			for (let a = 0; a < docs.length; a++) {
+				for (let b = a + 1; b < docs.length; b++) {
+					candidates.add(docs[a] * n + docs[b]);
+					if (candidates.size > CANDIDATE_BUDGET) { break outer; }
 				}
 			}
 		}
+	}
+	// P1-13（2026-09-11）：Jaccard 直接复用已构建的 tokenSets。
+	// 原实现对**每一对候选**重新 toLowerCase + split + 建两个 Set——实测 saros-claw
+	// （1903 条）的 autoForget 独占 16.9s（占整个 sweep 的 96%），期间网关事件循环
+	// 被独占，并发 HTTP 请求阻塞 20s+ → renderer 5s 超时 → 误判 UNREACHABLE。
+	// tokenSets 与 jaccardSimilarity 内部口径完全一致（小写 / 按空白切分 / 长度>2），
+	// 故结果等价，仅省去重复的字符串处理。
+	const jaccardFromSets = (a: Set<string>, b: Set<string>): number => {
+		if (a.size === 0 && b.size === 0) { return 1; }
+		if (a.size === 0 || b.size === 0) { return 0; }
+		let inter = 0;
+		for (const w of a) { if (b.has(w)) { inter++; } }
+		return inter / (a.size + b.size - inter);
+	};
+	let _pairsProcessed = 0;
+	for (const code of candidates) {
+		const i = Math.floor(code / n), j = code % n;
+		const sim = jaccardFromSets(tokenSets[i], tokenSets[j]);
+		if (sim > CONTRADICTION_THRESHOLD) {
+			result.contradictions.push({ memoryA: latest[i].id, memoryB: latest[j].id, similarity: sim });
+			if (!dryRun) {
+				const older = new Date(latest[i].createdAt).getTime() < new Date(latest[j].createdAt).getTime() ? latest[i] : latest[j];
+				older.isLatest = false;
+				older.updatedAt = new Date().toISOString();
+				await kv.set(KV.memories(agentId), older.id, older);
+			}
+		}
+		// 让出事件循环：给并发 HTTP 请求插队机会（每 5 万对一次）
+		if (++_pairsProcessed % 50_000 === 0) { await new Promise<void>(r => setImmediate(r)); }
 	}
 	for (const mem of latest) {
 		if (mem.isLatest === false) continue;
@@ -694,8 +763,13 @@ const DEFAULT_DECAY = { lambda: 0.01, sigma: 0.3, tiers: { hot: 0.7, warm: 0.4, 
 export async function retentionScore(kv: StateKV, agentId: string): Promise<{ total: number; scores: RetentionScore[]; tiers: { hot: number; warm: number; cold: number; evictable: number } }> {
 	const memories = await kv.list<Memory>(KV.memories(agentId));
 	const scores: RetentionScore[] = [];
+	let _yieldCounter = 0;
 	for (const mem of memories) {
 		if (mem.isLatest === false) continue;
+		// P1-12（2026-09-11）：每 200 条让出事件循环。本循环逐条 getAccessLog（KV get，
+		// sqlite 同步 API）——scope 数千行时长时间独占事件循环，网关 HTTP 请求排队 5s
+		// 超时（用户日志实测 observe/triggerHook/onTaskCompleted 同时超时）。
+		if (++_yieldCounter % 200 === 0) { await new Promise<void>(r => setImmediate(r)); }
 		const log = await getAccessLog(kv, agentId, mem.id);
 		const typeWeights: Record<string, number> = { architecture: 0.9, pattern: 0.8, preference: 0.85, bug: 0.7, workflow: 0.6, fact: 0.5 };
 		const salience = Math.min(1, (typeWeights[mem.type] ?? 0.5) + Math.min(0.2, log.count * 0.02));
@@ -716,11 +790,13 @@ export async function retentionScore(kv: StateKV, agentId: string): Promise<{ to
 	return { total: scores.length, scores, tiers };
 }
 
-export async function retentionEvict(kv: StateKV, agentId: string, maxEvict: number = 50): Promise<number> {
+export async function retentionEvict(kv: StateKV, agentId: string, maxEvict: number = 500): Promise<number> {
 	const scores = await kv.list<RetentionScore>(KV.retentionScores(agentId));
 	const candidates = scores.filter(s => s.score < DEFAULT_DECAY.tiers.cold).sort((a, b) => a.score - b.score).slice(0, Math.min(1000, maxEvict));
 	let evicted = 0;
 	for (const c of candidates) {
+		// P1-12：每 100 条让出事件循环（同上，防网关事件循环长时间独占）
+		if (evicted > 0 && evicted % 100 === 0) { await new Promise<void>(r => setImmediate(r)); }
 		await kv.delete(KV.memories(agentId), c.memoryId);
 		await kv.delete(KV.retentionScores(agentId), c.memoryId);
 		await deleteAccessLog(kv, agentId, c.memoryId);
@@ -950,7 +1026,7 @@ export async function evict(kv: StateKV, agentId: string, dryRun: boolean = fals
 			if (!dryRun) { await kv.delete(KV.memories(agentId), mem.id); await deleteAccessLog(kv, agentId, mem.id); }
 			continue;
 		}
-		if (mem.isLatest === false && (now - new Date(mem.createdAt).getTime()) > 90 * MS_PER_DAY) {
+		if (mem.isLatest === false && (now - new Date(mem.updatedAt || mem.createdAt).getTime()) > 7 * MS_PER_DAY) {
 			stats.nonLatest++;
 			if (!dryRun) { await kv.delete(KV.memories(agentId), mem.id); await deleteAccessLog(kv, agentId, mem.id); }
 			continue;

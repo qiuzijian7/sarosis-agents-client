@@ -305,13 +305,13 @@ export async function runAmReplicationTests(): Promise<void> {
 
 	// ─── 8. Graph ────────────────────────────────────────────────────
 	await test('graphBuild: 批量抽取；graphReset: 清空后可重建', async (kv) => {
-		pipe.resetGraph();
+		await pipe.resetGraph(kv as any, AGENT);
 		await fn.remember(kv as any, AGENT, 'src/auth.ts uses jwt middleware for authentication', 'architecture');
 		const built = await repl.graphBuild(kv as any, AGENT);
 		assert(built.processed >= 1, `processed >= 1 (got ${built.processed})`);
 		assert(built.nodes > 0, `nodes > 0 (got ${built.nodes})`);
-		repl.graphReset();
-		const stats = pipe.graphStats();
+		await repl.graphReset(kv as any, AGENT);
+		const stats = await pipe.graphStats(kv as any, AGENT);
 		assert(stats.nodes === 0 && stats.edges === 0, 'graph cleared after reset');
 	});
 

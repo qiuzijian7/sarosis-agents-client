@@ -19,6 +19,7 @@
 
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { isAbsoluteGraphPath } from '../common/codebaseIndexDefaults.js';
 
 /**
  * 解析 searchCode / get_code_snippet 读取文件时用的 URI。
@@ -267,6 +268,17 @@ export class CodebaseGraphStore {
 	private _nodes: Map<number, GraphNode> = new Map();
 	private _nextNodeId = 1;
 
+	/**
+	 * 分配下一个节点 id（2026-09-09）。
+	 * GraphStore._toNumId 原用「自身映射表 size+1」分配——加载恢复后映射表为空
+	 * （字符串→数字映射不持久化），而 store 已有 17.5w 节点 → 新节点 id 从 1 开始
+	 * **覆盖已有节点** → 后续删除制造悬空 QN 键 → upsertNode 崩溃 + 图数据污染。
+	 * 统一从 store 的 _nextNodeId 分配，与持久化恢复的计数器天然衔接。
+	 */
+	allocNodeId(): number {
+		return this._nextNodeId++;
+	}
+
 	// Edge storage
 	private _edges: Map<number, GraphEdge> = new Map();
 	private _nextEdgeId = 1;
@@ -324,28 +336,61 @@ export class CodebaseGraphStore {
 
 	// ─── Node Operations ──────────────────────────────────────────────────
 
+	/**
+	 * filePath 契约违规集合（写入了绝对路径而非项目相对路径）。
+	 * 见 isAbsoluteGraphPath——生产写入路径已修，此处仅做运行时检测供健康度暴露，防回归。
+	 */
+	private _absPathViolations = new Set<string>();
+
+	/** 契约违规数量（绝对路径 filePath 的不同取值个数）。 */
+	getAbsPathViolationCount(): number {
+		return this._absPathViolations.size;
+	}
+
+	/** 契约违规样本（最多 n 条，供日志/诊断展示）。 */
+	getAbsPathViolationSample(n: number = 5): string[] {
+		return [...this._absPathViolations].slice(0, n);
+	}
+
+	/** QN 悬空键自愈计数（_nodesByQN 命中但节点不存在——索引不一致的信号）。 */
+	private _qnDanglingHealed = 0;
+	getQnDanglingHealedCount(): number {
+		return this._qnDanglingHealed;
+	}
+
 	upsertNode(node: Omit<GraphNode, 'id' | 'inDegree' | 'outDegree'> & { id?: number }): GraphNode {
+		if (node.filePath && isAbsoluteGraphPath(node.filePath)) {
+			this._absPathViolations.add(node.filePath);
+		}
 		const qnKey = `${node.project}:${node.qualifiedName}`;
 		const existingId = this._nodesByQN.get(qnKey);
+		// ★ 防御自愈（2026-09-09，用户堆栈实锤崩溃点）：_nodesByQN 命中但 _nodes 无对应
+		// 节点（索引不一致，如 id 分配冲突覆盖后又被删除）→ 旧代码 `this._nodes.get(existingId)!`
+		// 非空断言直接崩（`existing.inDegree`）。改为按新建处理：键将被下方 Create 分支的
+		// set 覆盖，自愈一致；计数暴露供健康度监测不一致频率。
+		const existing = existingId !== undefined ? this._nodes.get(existingId) : undefined;
+		if (existingId !== undefined && !existing) {
+			this._qnDanglingHealed++;
+			this._nodesByQN.delete(qnKey);
+		}
 
-		if (existingId !== undefined) {
-			// Update existing node
-			const existing = this._nodes.get(existingId)!;
+		if (existing) {
+			// Update existing node（existingId 已由上方守卫确保非 undefined 且节点存在）
 			const updated: GraphNode = {
 				...existing,
 				...node,
-				id: existingId,
+				id: existingId!,
 				inDegree: existing.inDegree,
 				outDegree: existing.outDegree,
 			};
-			this._nodes.set(existingId, updated);
+			this._nodes.set(existingId!, updated);
 			// Update BM25 index (skip if deferred — defer 期间只记脏集，结束由 rebuildBM25 增量处理)
 			if (!this._deferBM25) {
-				this._bm25.removeDocument(existingId);
-				this._bm25.addDocument(existingId, this._buildBM25Text(updated));
+				this._bm25.removeDocument(existingId!);
+				this._bm25.addDocument(existingId!, this._buildBM25Text(updated));
 			} else {
-				this._bm25DirtyAdded.add(existingId);
-				this._bm25DirtyRemoved.delete(existingId);
+				this._bm25DirtyAdded.add(existingId!);
+				this._bm25DirtyRemoved.delete(existingId!);
 			}
 			return updated;
 		}
@@ -916,6 +961,11 @@ export class CodebaseGraphStore {
 	/** 基线规模（零拷贝）：为 0 说明从未完成全量索引（增量快路径不可信，见 _runIncrementalIndex）。 */
 	getFileHashCount(): number {
 		return this._fileHashes.size;
+	}
+
+	/** 清空全部文件哈希基线（残缺图强制全量重建用：无哈希 → classifyFiles 全判 added）。 */
+	clearFileHashes(): void {
+		this._fileHashes.clear();
 	}
 
 	deleteFileHash(project: string, relPath: string): void {

@@ -273,16 +273,18 @@ suite('KbLinkGraph — 双链图谱', () => {
 		assert.strictEqual(data.links.length, 5);
 	});
 
-	test('buildFromDocs：系统文件（index.md）也会进图谱（walk 过滤，buildFromDocs 不区分）', () => {
+	test('★ buildFromDocs：与 walk 一致排除系统维护文件（index.md 不进图谱）', () => {
 		const docs = mkDocs(fileService, [
 			{ path: '/notes/index.md', name: 'index', section: 'notes', text: '[[a]]' },
 			{ path: '/notes/a.md', name: 'a', section: 'notes', text: 'ok' },
 		]);
 		graph.buildFromDocs(docs);
-		// buildFromDocs 只按扩展名过滤，不检查 SYS_FILES → index.md 被包含
+		// ★ 契约同步（2026-09-11）：buildFromDocs 现与 `walk` 一致排除 SYS_FILES
+		//   （index/overview/insights/log…）—— 否则同一文件会在「库 + 笔记」两个分区
+		//   各出现一次，以同名标签显示成「重复节点」污染关系图（见 kbGraph.ts 注释）。
 		const data = graph.getGraphData();
-		assert.strictEqual(data.nodes.length, 2);
-		assert.strictEqual(data.links.length, 1); // index→a
+		assert.strictEqual(data.nodes.length, 1, '仅 a.md 进图谱');
+		assert.strictEqual(data.links.length, 0, 'index→a 的链随 index.md 一并排除');
 	});
 
 	test('buildFromDocs：连续重建（reset）', () => {

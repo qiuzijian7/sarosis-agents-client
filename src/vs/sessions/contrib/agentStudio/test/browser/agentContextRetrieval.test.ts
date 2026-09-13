@@ -74,10 +74,13 @@ suite('storeTurnObservations', () => {
 		];
 		await storeTurnObservations(deps, provider, 'agent-1', 'sess-1', messages);
 		assert.strictEqual(attempted.length, 3, '失败不阻断后续写入');
-		// 失败的也已标记 seen（先 add 后写），重试不会洪泛重发
+		// ★ 契约同步（2026-09-11，R2 2026-09-09）：写失败会**回滚去重标记**
+		//   （旧实现「先 add 再吞错」→ 失败的观察永不重试、永久丢失且零痕迹；
+		//   见 agentContextRetrieval.ts 的 catch 分支）。故重跑时**只有失败的那条**
+		//   会重试，已成功的 2 条仍被去重跳过。
 		attempted.length = 0;
 		await storeTurnObservations(deps, provider, 'agent-1', 'sess-1', messages);
-		assert.strictEqual(attempted.length, 0, '失败消息不反复重发');
+		assert.strictEqual(attempted.length, 1, '仅失败的那条重试；已成功的去重跳过');
 	});
 
 	test('短消息（<8 字符）跳过', async () => {

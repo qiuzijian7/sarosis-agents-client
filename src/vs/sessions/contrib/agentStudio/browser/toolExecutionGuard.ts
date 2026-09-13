@@ -22,8 +22,15 @@ import type {
 } from '../common/providers.js';
 import { ToolSecurityLevel, ToolApprovalDecision, TOOL_APPROVAL_BACKSTOP_MS } from '../common/providers.js';
 import { isPlanFileWriteCall } from '../common/planFile.js';
-import { isSandboxFileWriteAutoApproved, isDestructiveToolCall } from '../common/toolApprovalPolicy.js';
+import {
+	isSandboxFileWriteAutoApproved, isDestructiveToolCall, detectForcedAskCommand,
+	isMcpSourcedTool,
+	classifyToolCategory, DEFAULT_AUTO_APPROVE,
+	type ToolCategory, type ToolAutoApproveMode,
+} from '../common/toolApprovalPolicy.js';
+import { isProtectedPath, commandTouchesProtectedPath } from '../common/protectedPaths.js';
 import { evaluateToolCallShellSafety, evaluateToolCallShellSafetyDetailed, isShellToolWithCommandArg, getToolCallCommandArg, ShellCommandSafety } from '../common/shellCommandSafety.js';
+import { decideExecAutoReview, type ExecReviewer } from '../common/execAutoReview.js';
 import {
 	runWithRetry,
 	type RetryPolicy,
@@ -358,6 +365,14 @@ export function getTimeoutForTool(toolName: string, toolDef?: IToolDefinition, s
 	if (toolName === 'execute_code') {
 		return DELEGATION_TOOL_TIMEOUT_MS;
 	}
+	// 危险工具（可能需等待审批）
+	// ★ 2026-09-11 修复：本判定原在 MCP 判定**之后**，导致「经 MCP 暴露的
+	// Dangerous 工具」只拿 120s（MCP_TOOL_TIMEOUT_MS）而非 300s —— 而 Dangerous
+	// 多出的时长正是留给**审批等待**的（超时即 Deny + cancelAgentLoop），被 MCP
+	// 分支截断后审批尚未走完就被判失败。故 Dangerous 必须最先判定。
+	if (toolDef?.securityLevel === ToolSecurityLevel.Dangerous) {
+		return DANGEROUS_TOOL_TIMEOUT_MS;
+	}
 	// MCP 工具给更多时间
 	if (source?.includes('mcp') || toolName.includes('__')) {
 		return MCP_TOOL_TIMEOUT_MS;
@@ -384,11 +399,6 @@ export function getTimeoutForTool(toolName: string, toolDef?: IToolDefinition, s
 		return MCP_TOOL_TIMEOUT_MS;
 	}
 
-	// 危险工具（可能需等待审批）
-	if (toolDef?.securityLevel === ToolSecurityLevel.Dangerous) {
-		return DANGEROUS_TOOL_TIMEOUT_MS;
-	}
-
 	return DEFAULT_TOOL_TIMEOUT_MS;
 }
 
@@ -408,21 +418,21 @@ export interface IToolAllowStore {
 	remember(toolName: string, scope: 'workspace' | 'global', command?: string): void;
 	/** 按完整 key（含可选 command 后缀）撤销持久授权。 */
 	revoke(key: string): void;
+	/**
+	 * 类别档位（Phase 1，2026-09-13）—— 「哪些调用免审批」的用户可控开关。
+	 *
+	 * **可选**：未注入时退化为 `DEFAULT_AUTO_APPROVE`（Phase 1 = 兼容档 = 既有行为），
+	 * 保证旧调用方与测试桩行为不变。
+	 */
+	autoApproveMode?(cat: ToolCategory): ToolAutoApproveMode;
 }
 
-/**
- * 受保护路径（fail-closed，对齐 Claude Code protected paths）。
- *
- * 即便用户对某工具选过「始终允许 / 在工作区允许」，对这类路径的写入仍**一律
- * 重新弹审批**，避免「一键放行」把仓库元数据（.git）或密钥/凭据改写权也交出去。
- * 仅做「命中即拦截」的保守匹配；路径无法判定时不误伤正常放行。
- */
-const PROTECTED_EXACT_NAMES = new Set<string>([
-	'.git', '.env', '.npmrc', '.git-credentials', '.netrc',
-	'id_rsa', 'id_ed25519', 'id_dsa', 'id_ecdsa', 'id_ecdsa_sk',
-	'known_hosts', 'secrets', 'credentials',
-]);
-const PROTECTED_SUFFIXES = ['.pem', '.key', '.p12', '.keystore', '.jks', '.crt', '.cer'];
+// 受保护路径判定（表 + 匹配）已抽到 **`common/protectedPaths.ts`**（2026-09-13，单一真源）。
+//
+// 抽出的原因：原判据只看**工具调用参数**里的路径，于是 **shell 命令字符串里的路径不在其中** ——
+// 用户一旦「始终允许 terminal」，`echo x > .git/hooks/pre-commit` / `Set-Content .vscode/tasks.json`
+// 这类命令就被**静默放行**（下次 commit 或任务运行即执行任意代码）。
+// 现在 `isProtected` 同时判**参数路径**与**命令路径**（见下方 `commandTouchesProtectedPath`）。
 
 // ─── 命令级细粒度授权 key（P1-d）─────────────────────────────────────────
 /** key 分隔符：toolName 或 toolName::commandPattern（pattern 可含 `*` 通配）。 */
@@ -481,29 +491,6 @@ function getToolCallPathArg(toolCall: { arguments?: unknown }): string | undefin
 	return undefined;
 }
 
-/** 该路径是否命中受保护集合（按路径段精确匹配，规避 `.github` 误伤 `.git` 之类）。 */
-function isProtectedPath(p: string | undefined): boolean {
-	if (!p) {
-		return false;
-	}
-	const lower = p.toLowerCase().replace(/\\/g, '/');
-	const segs = lower.split('/').filter(Boolean);
-	for (const seg of segs) {
-		if (PROTECTED_EXACT_NAMES.has(seg)) {
-			return true;
-		}
-		if (PROTECTED_SUFFIXES.some(s => seg.endsWith(s))) {
-			return true;
-		}
-		// .env.local / .env.production 等环境文件变体
-		if (seg.startsWith('.env.') || seg === '.env') {
-			return true;
-		}
-	}
-	// 兜底：路径中任意处出现的 .git 目录（如 repo/.git/config）
-	return lower.includes('/.git/') || lower.endsWith('/.git') || lower === '.git';
-}
-
 /**
  * 工具审批服务 — 管理工具执行前的用户确认流程。
  *
@@ -549,6 +536,21 @@ export class ToolApprovalService {
 	/** 注入 exec 自动审阅开关（P2-1，默认不开启 → fail-closed）。开启后，只读/验证构建命令交由该策略免确认。 */
 	setExecAutoReviewProvider(provider: () => boolean): void {
 		this._execAutoReviewProvider = provider;
+	}
+
+	/**
+	 * 模型辅助审查器（P2，2026-09-12）。
+	 *
+	 * 未注入时整条通道失效（行为与注入前完全一致）—— 这是刻意的默认：
+	 * 接模型意味着延迟与 token 成本，必须由调用方显式开启。
+	 * 判据/解析/fail-safe 全在 `common/execAutoReview`（纯函数、可单测），
+	 * 此处只持有注入的实现。
+	 */
+	private _execReviewer: ExecReviewer | undefined;
+
+	/** 注入模型辅助审查器（不注入 = 关闭该通道）。 */
+	setExecReviewer(reviewer: ExecReviewer | undefined): void {
+		this._execReviewer = reviewer;
 	}
 
 	/** 本会话内已"永久允许"的工具名集合 */
@@ -621,6 +623,53 @@ export class ToolApprovalService {
 	private static readonly APPROVAL_WAIT_TIMEOUT_MS = TOOL_APPROVAL_BACKSTOP_MS;
 
 	/**
+	 * 「必须由用户裁决」的三类动作 —— **单一真源**（2026-09-13）。
+	 *
+	 * 任何**非交互 / 免审批**通道都不得放行它们：
+	 *   ① 受保护路径 —— 写 `.git/hooks/*` 会在下次 commit 执行任意代码；
+	 *   ② 删除类命令 —— 不可回滚（checkpoint 也救不回）；
+	 *   ③ MCP 来源的工具 —— 不经路径沙箱、不建 checkpoint，且其 `securityLevel`
+	 *      来自 **server 自报的注解**（不可验证）。
+	 *
+	 * ⚠ 为什么必须抽成单一真源：这三条判定原先在**七条放行通道**里各写一遍
+	 * （沙箱文件写 / shell 白名单 / execAutoReview / Safe 早返回 / _isAllowed /
+	 * inherit / 无 handler 降级），**实测已经漂移** —— `inherit` 对 ③ 给了
+	 * 「用户已显式授权则放行」的豁免，而「无 handler」那条漏了，同一条规则两种行为。
+	 * 七处手写 ⇒ 必然漂移；一处定义 ⇒ 不可能漂移。
+	 *
+	 * 例外说明（③）：用户已对该工具**显式授权**（`_isAllowed`，即 `_alwaysAllowed`
+	 * 或持久化的 workspace/global 授权）时**不算**「需裁决」—— 那时用户已经裁决过了，
+	 * 这正是「inherit（继承父授权）」的本来含义。①② 无此例外（受保护路径与删除类
+	 * 命令的语义本就是「即便选过始终允许也一律重问」）。
+	 */
+	private _requiresUserDecision(
+		toolName: string,
+		toolDef: IToolDefinition | undefined,
+		isProtected: boolean,
+		forcedAsk: { readonly id: string; readonly label: string } | undefined,
+		command: string | undefined,
+	): boolean {
+		if (isProtected || forcedAsk) { return true; }
+		return isMcpSourcedTool(toolDef) && !this._isAllowed(toolName, command);
+	}
+
+	/**
+	 * 取该类别当前生效的档位（Phase 1，2026-09-13）。
+	 *
+	 * 缺省（store 未注入 / 文件里没这一项）→ `DEFAULT_AUTO_APPROVE`。
+	 * ⚠ 读取入口**只有这里** —— 不要在别处自己 spread 默认值，否则
+	 * 「缺省 vs 显式」的语义会在多处漂移（今日教训：同一规则 N 处必然漂移）。
+	 */
+	private _autoApproveMode(cat: ToolCategory): ToolAutoApproveMode {
+		try {
+			return this._allowStore?.autoApproveMode?.(cat) ?? DEFAULT_AUTO_APPROVE[cat];
+		} catch {
+			// 读配置失败 → 退回默认档（该问就问，绝不因故障放行）
+			return DEFAULT_AUTO_APPROVE[cat];
+		}
+	}
+
+	/**
 	 * 检查工具是否需要审批，并执行审批流程。
 	 *
 	 * @param ctx 发起 turn 的 agent/session（超时终止 loop 时需按 turnKey 精确取消）
@@ -658,8 +707,50 @@ export class ToolApprovalService {
 		const execControlAction = getExecCodeControlAction(toolCall.arguments);
 		if (toolCall.name === 'execute_code' && execControlAction) { return true; }
 
+		// ─── 类别档位（2026-09-13）────────────────────────────────────────
+		// 「哪些调用免审批」由**类别档位**决定，档位来自用户配置、缺省用默认值。
+		// 判定真源 = `classifyToolCategory`（纯函数）；档位读取入口 = `_autoApproveMode`。
+		//
+		// ★ **默认档 = `COMPAT_AUTO_APPROVE`（用户决策，2026-09-13）**，它编码的产品策略是：
+		//
+		//     > 沙箱内、非删除类的操作，直接放行。
+		//
+		//   （Cline 式「默认全问」已评估并**否决** —— 理由见 `COMPAT_AUTO_APPROVE` 的注释；
+		//     用户仍可在 `tool-allow.json` 里显式选择它。）
+		//
+		// ⚠ 档位**不豁免地板**：受保护路径 / 删除类命令 / 破坏性工具名 / 未授权 MCP /
+		// 沙箱越界 / `hardPermission` 一律照旧（本函数下半部分独立判定）。
+		// 即：这次「保持直接放行」的选择**没有放宽任何安全边界**。
+		const toolCategory = classifyToolCategory(toolDef);
+		const autoApproveMode = this._autoApproveMode(toolCategory);
+
 		// Safe 工具不需要审批
-		if (securityLevel === ToolSecurityLevel.Safe && !forceApproval) {
+		//
+		// ★ 2026-09-13：但 **MCP 来源的工具不得走此早返回** —— 这是今天最后一个「早返回绕过」。
+		//
+		// MCP 工具的 `securityLevel` 来自 `McpToolProvider._inferSecurityLevel` 的第 1 条：
+		// `annotations.readOnlyHint === true → Safe`。而该注解是 **server 自己声明的**
+		// （MCP 规范把它定义为 *hint*），客户端**无法验证** —— 于是「免审批」的决定权
+		// 落到了被审查方手里：一个写文件的 MCP 工具只要自称只读就免审批。
+		// `isDestructiveToolCall` 兜不住它（只按**工具名**匹配，`apply_change` / `sync_notes`
+		// 这类名字不含破坏性动词）。
+		//
+		// 与 `isSandboxFileWriteAutoApproved` 步骤 3 的论证**同构**：MCP 工具
+		// ① 不经路径沙箱 / 写黑名单、③ 不建 checkpoint、且「能碰哪些路径」无法静态判断
+		// → 任何免审批通道都不适用于它。
+		//
+		// ⚠ 保留 `securityLevel: Safe` 本身（**不移除**）：它还承担另一个职责 ——
+		// `isToolAllowedInAskMode` 用 `securityLevel === Safe` 决定 ask/plan 模式下**提供哪些工具**。
+		// 那是「提供与否」的 UX 过滤（工具仍受审批门控），与「免审批执行」是**两个决策**；
+		// 前者由自报注解决定是可接受的，后者不是。
+		//
+		// 代价：只读 MCP 工具首次调用会弹一次审批，用户点「始终允许」即恢复免打扰。
+		// ★ Phase 1：类别档位为 `ask` 的 `read` 类工具**不再走此早返回**。
+		//   对**非 `read` 类别**的 Safe 工具保持原行为（它们今天一律免审批，收紧会是
+		//   行为变化 —— Phase 1 要求零变化）。Phase 1 默认档 `read: auto` ⇒ 本条件恒真 ⇒
+		//   与修正前完全一致。
+		if (securityLevel === ToolSecurityLevel.Safe && !forceApproval && !isMcpSourcedTool(toolDef)
+			&& (toolCategory !== 'read' || autoApproveMode !== 'ask')) {
 			return true;
 		}
 
@@ -676,6 +767,27 @@ export class ToolApprovalService {
 		if (planRoot && isPlanFileWriteCall(toolCall.name, toolCall.arguments, planRoot)) {
 			return true;
 		}
+
+		// ─── 受保护路径（P1 修正，2026-09-13）──────────────────────────────
+		// ★ 必须在**所有自动放行分支之前**求值：此前它在 always-allow 检查前才计算
+		// （原位置更靠后），而 `isSandboxFileWriteAutoApproved` / 终端白名单 /
+		// execAutoReview 三个分支在那之前就已 `return true` → 文档承诺的
+		// 「受保护路径 fail-closed」**只挡住了 always-allow，没挡住自动放行**。
+		//
+		// 真实缺口：`file_write` 写 `.git/hooks/pre-commit`（或写 `.git/config` 的
+		// `core.hooksPath`）会被自动放行、**完全不弹审批** → 下次 commit 执行任意代码。
+		// `.env` 那类由 `writeDenyList` 硬拒兜底（更早的沙箱层），但 `.git/**`、
+		// 工作区内的 `*.pem` / `id_rsa` / `credentials` 只在**本判定**里，绕不过。
+		//
+		// ★ 2026-09-13：**shell 命令字符串里的路径同样要判** —— 此前只判工具参数，
+		// 于是「始终允许 terminal」之后 `echo x > .git/hooks/pre-commit` /
+		// `Set-Content .vscode/tasks.json` 这类命令被**静默放行**（写 .git/hooks 会在
+		// 下次 commit 执行任意代码；tasks.json 会在任务运行时执行）。
+		//
+		// 代价：`grep ~/.ssh/id_rsa` 这类**读**命令也会多弹一次审批 —— **有意为之**：
+		// `file_read` 对同一路径本就拒绝（读守卫），终端读同一路径不该「换个工具就能读」。
+		const isProtected = isProtectedPath(getToolCallPathArg(toolCall))
+			|| commandTouchesProtectedPath(getToolCallCommandArg(toolCall.name, toolCall.arguments));
 
 		// ─── 沙箱内非删除类文件操作免交互审批（2026-08-21，用户决策）──────────
 		// 用户策略：**操作沙箱内的文件，非删除类的操作，都可以直接放行。**
@@ -702,7 +814,9 @@ export class ToolApprovalService {
 		// `!forceApproval` 是**纵深防御**：本判定是规则式（动词匹配），若日后有人
 		// 放宽 FILE_WRITE_VERBS 或加入某个破坏性 category，破坏性调用可能从这里溜过。
 		// 当前 isSandboxFileWriteAutoApproved 已排除 delete/remove 等动词，此处属冗余保险。
-		if (!forceApproval && isSandboxFileWriteAutoApproved(toolDef)) {
+		// ★ Phase 1：本分支实现的是 `edit` 档 —— 档位为 `ask` 时不再自动放行。
+		//   （Phase 1 默认 `edit: auto` ⇒ 与修正前完全一致。）
+		if (autoApproveMode !== 'ask' && !forceApproval && !isProtected && isSandboxFileWriteAutoApproved(toolDef)) {
 			return true;
 		}
 
@@ -721,7 +835,12 @@ export class ToolApprovalService {
 		//
 		// `!forceApproval` 同样作纵深防御（破坏性判定优先）。
 		if (
-			!forceApproval
+			// ★ Phase 1：本分支实现 `execute: safe` 档 —— `ask` 时不自动放行。
+			//   （Phase 1 默认 `execute: safe` ⇒ 与修正前完全一致。）
+			autoApproveMode !== 'ask'
+			&& !forceApproval
+			// ★ P1 修正：受保护路径不得走白名单免确认（纵深防御；终端通常无 path 参数）
+			&& !isProtected
 			&& isShellToolWithCommandArg(toolCall.name)
 			&& (this._terminalAutoApproveProvider?.() === true || this._execAutoReviewProvider?.() === true)
 			&& evaluateToolCallShellSafety(toolCall.name, toolCall.arguments) === ShellCommandSafety.Safe
@@ -729,26 +848,107 @@ export class ToolApprovalService {
 			return true;
 		}
 
-		// 受保护路径 fail-closed（P1，对齐 Claude Code protected paths）：
-		// 即便用户对该工具选过「始终允许 / 在工作区允许」，对 .git / .env / SSH 私钥 /
-		// 凭据 / 证书等敏感路径的写入仍一律重新弹审批，避免「一键放行」误交密钥改写权。
-		// 仅做命中即拦截的保守匹配；路径无法判定时不误伤正常放行。终端命令无 path 参数，
-		// getToolCallPathArg 返回 undefined → 此处恒为 false，故不影响终端「始终允许」免打扰。
-		const isProtected = isProtectedPath(getToolCallPathArg(toolCall));
-
-		// 命令级细粒度 key：shell 工具的命令内容作为 key 的一部分，
-		// 使「始终允许 terminal」只放行具体命令而非整个终端工具。
+		// ─── 命令级 key + 删除类强制审批（P2，2026-09-13）────────────────────
+		// 命令级细粒度 key：shell 工具的命令内容作为 key 的一部分，使「始终允许 terminal」
+		// 只放行具体命令而非整个终端工具。
 		const rawCmd = isShellToolWithCommandArg(toolCall.name)
 			? getToolCallCommandArg(toolCall.name, toolCall.arguments)
 			: undefined;
 		const command = rawCmd ? normalizeCommand(rawCmd) : undefined;
+		// ★ 删除类命令 → **强制审批**（对齐 MiMo `bash_delete` 的 FORCED_ASK）：
+		// 即便用户点过「始终允许 terminal」、即便模型审查说 allow，`rm -rf <子目录>` /
+		// `git reset --hard` / `git clean -fd` 这类命令仍必须**逐次确认** —— 删除没有
+		// checkpoint（`captureBeforeToolEdit` 只在 file_write / patch 调用），执行后不可回滚。
+		// 判定真源 = `common/toolApprovalPolicy.detectForcedAskCommand`（纯函数、可单测）。
+		const forcedAsk = rawCmd ? detectForcedAskCommand(rawCmd) : undefined;
 
-		// 检查 always-allow 缓存（含持久化授权，跨会话生效；命令级 glob 匹配）
-		if (!isProtected && this._isAllowed(toolCall.name, command)) {
+		// ─── 档位 `auto`：除地板外全放行（Phase 1 默认不启用）──────────────────
+		// 这是 Cline 的 auto-approve 语义 —— 用户显式选择「这类操作不用问我」。
+		// 放在模型审查（`execAutoReview`）**之前**：既然已授权，就不必再花一次模型调用。
+		//
+		// 地板仍然生效（这是本分支与「无条件放行」的本质区别）：
+		//   · `forceApproval`  —— 破坏性工具名（isDestructiveToolCall）
+		//   · `isProtected`    —— 受保护路径（.git/hooks、.vscode、凭据文件…）
+		//   · `forcedAsk`      —— 删除类命令（rm / git reset --hard / git clean -fd…）
+		//   · 沙箱越界 / hardPermission / shell 写源码护栏 —— 在更早的层独立生效
+		if (autoApproveMode === 'auto' && !forceApproval && !isProtected && !forcedAsk) {
 			return true;
 		}
+
+		// ─── P2 模型辅助审查（2026-09-12）──────────────────────────────────
+		// 规则层**未**放行的命令，若开启了 execAutoReview 且注入了审查器，
+		// 交给一次廉价模型调用做二值判断（allow / ask）。定位与边界：
+		//   · 只放宽「灰色地带」（规则既不认它只读、也看不出危险）；
+		//   · **硬拦层独立生效** —— HARDLINE 地板与源码写入护栏在 handler 最前置
+		//     抛错，本分支放行也绕不过它们（本分支只是「不打扰用户」）；
+		//   · `forceApproval`（破坏性操作）与受保护路径**不送审** —— 那些是
+		//     显式拒绝，不是「规则没覆盖」，交给模型等于把已知结论再问一遍；
+		//   · **fail-safe**：超时 / 异常 / 输出不可解析 → ask（decideExecAutoReview
+		//     内部保证），绝不因审查故障放行；
+		//   · 开关与审查器**都**必须就位（`execAutoReview` 默认关闭、审查器默认未注入）
+		//     → 默认行为与引入前完全一致。
+		if (
+			// ★ Phase 1：本分支属 `execute` 档的「安全放行」实现 —— `ask` 时不启用。
+			autoApproveMode !== 'ask'
+			&& !forceApproval
+			// ★ P2：删除类命令**不送**模型审查 —— 那是「免打扰」通道，而删除不可回滚
+			&& !forcedAsk
+			// ★ P1 修正：受保护路径**不送审**（与本块注释原话「受保护路径不送审」一致，此前未落实）
+			&& !isProtected
+			&& this._execReviewer
+			&& this._execAutoReviewProvider?.() === true
+			&& isShellToolWithCommandArg(toolCall.name)
+		) {
+			const reviewCommand = getToolCallCommandArg(toolCall.name, toolCall.arguments);
+			if (reviewCommand) {
+				const reviewArgs = (toolCall.arguments ?? {}) as Record<string, unknown>;
+				const reviewCwd = typeof reviewArgs['cwd'] === 'string' ? reviewArgs['cwd'] as string : undefined;
+				const review = await decideExecAutoReview(
+					{
+						command: reviewCommand,
+						cwd: reviewCwd,
+						ruleReason: 'the rule-based read-only/build allowlist did not recognize this command',
+					},
+					this._execReviewer,
+				);
+				// 审查结论只用于「免打扰」判定；ask 时继续走下方正常审批流程。
+				// 用 console 而非 logService：ToolApprovalService 未持有日志服务，
+				// 而 renderer 的 console 会被 platform/log 转写进 vscode-app-*.log
+				// （与 agentChatPanel.refreshLog 同一机制），可观测性不打折。
+				// degraded 单独标出 —— 「模型说 ask」与「审查没跑成」是两类问题，
+				// 后者长期高频说明该通道没在起作用。
+				console.info(
+					`[ToolApproval] execAutoReview decision=${review.decision} risk=${review.risk}` +
+					`${review.degraded ? ' (degraded — fail-safe)' : ''} command=${reviewCommand.slice(0, 120)}` +
+					`${review.rationale ? ` rationale=${review.rationale}` : ''}`,
+				);
+				if (review.decision === 'allow') { return true; }
+			}
+		}
+
+		// ─── 显式拒绝 **优先于** 允许（deny-overrides-allow）────────────────
+		// ★ 2026-09-13 修正：此前 `_isAllowed` 排在前面，于是
+		// 「先对 `terminal` 选过『始终允许』（**工具级 blanket** —— 见 `entryMatches`
+		// 注释里写的旧数据形态），后来又明确拒绝 `terminal::rm -rf`」时**先说的赢**，
+		// 用户的显式拒绝被**静默忽略**。
+		//
+		// 拒绝优先是权限系统的通行约定（如 IAM 的 explicit deny），也更符合直觉：
+		// 用户表达的「不要执行这个」必须压过更早、更宽泛的「允许」。
+		//
+		// ⚠ 注意区分：**自动放行分支**（沙箱内文件写 / shell 白名单 / execAutoReview）
+		// 仍排在 `_isDenied` **之前** —— 那是**有意**的，见上方
+		// `isSandboxFileWriteAutoApproved` 的长注释（「即使用户曾对某个写工具选过
+		// 『总是拒绝』，也不该把编辑能力永久锁死」）。本处只调整
+		// `_isAllowed` 与 `_isDenied` 的**相对**顺序，不动那些分支。
 		if (this._isDenied(toolCall.name, command)) {
 			return false;
+		}
+		// 检查 always-allow 缓存（含持久化授权，跨会话生效；命令级 glob 匹配）
+		// 注：`isProtected` 已在**所有自动放行分支之前**求值（见上方长注释）——
+		// 受保护路径即便用户选过「始终允许 / 在工作区允许」也一律重新弹审批。
+		// ★ P2：`!forcedAsk` —— 删除类命令**不参与** always-allow（见上方 forcedAsk 注释）。
+		if (!isProtected && !forcedAsk && this._isAllowed(toolCall.name, command)) {
+			return true;
 		}
 
 		// ─── P1: 审批路由（MiMo decideAskRouting）─────────────────────
@@ -760,6 +960,36 @@ export class ToolApprovalService {
 		if (routing) {
 			const decision = decideAskRouting(routing);
 			if (decision === 'inherit') {
+				// ★★ 2026-09-13 修正：`inherit` 此前是**无条件** `return true` ——
+				// 而它排在所有 `isProtected` / `forcedAsk` / MCP 门控**之后**（那些门控只
+				// 作用于上方自动放行分支与 `_isAllowed`），于是**后台 subagent 成了绕过
+				// 全部审批的通道**：本文件自己的注释承诺「受保护路径即便用户选过
+				// 『始终允许』也一律重新弹审批」「删除类命令不参与 always-allow」
+				// 「MCP 工具不走任何免审批通道」—— 三条全被这一行架空。
+				//
+				// 原理由「能被 LLM 调到的工具即在其权限档内」**已被本项目自己的测试证伪**：
+				// `test/browser/writeExclusion.test.ts` 明确记录 ——
+				// 「Explore 档 SUB_AGENT_PERMISSIONS.Explore.canWrite=false，但其**工具面含
+				// terminal**」。而 terminal 能写任何路径、能删任何东西 → 「能调到 ≠ 在权限档内」。
+				//
+				// 非交互上下文里**没有「弹卡片」这个选项**（弹了会永久挂住父级 loop —— 见下方
+				// 超时闸门的长注释），所以这三类**必须由用户裁决**的动作只能**拒绝**，
+				// 由 subagent 回报父级；父级有交互能力，可以自己问用户后再执行。
+				// 这与同块 `system → auto-deny` 的哲学一致（非交互 = fail-closed）。
+				//
+				// 三类「必须由用户裁决」的动作一律拒绝 —— 判定真源见 `_requiresUserDecision`
+				// （受保护路径 / 删除类命令 / **未经用户显式授权**的 MCP 工具）。
+				// 非交互上下文没有「弹卡片」这个选项 → 只能拒绝，由 subagent 回报父级。
+				// 注：`forcedAsk` 的类型是 `{ id, label } | undefined`（**真值即强制**），
+				// 日志里取 `.label`，别直接拼对象。
+				if (this._requiresUserDecision(toolCall.name, toolDef, isProtected, forcedAsk, command)) {
+					console.info(
+						`[ToolApproval] inherit-deny tool=${toolCall.name} ` +
+						`protected=${isProtected} forcedAsk=${forcedAsk?.label ?? 'no'} ` +
+						`mcp=${isMcpSourcedTool(toolDef)} — 非交互子代理不得执行需用户裁决的动作`,
+					);
+					return false;
+				}
 				return true;
 			}
 			if (decision === 'auto-deny') {
@@ -771,7 +1001,36 @@ export class ToolApprovalService {
 		// Cautious 工具：首次使用时审批
 		// Dangerous 工具：每次审批
 		if (!this._handler) {
-			// 没有注册 handler — 默认允许（降级到无审批模式）
+			// 没有注册 handler — 降级到无审批模式（历史行为，保住可用性）。
+			//
+			// ★ 2026-09-13：但**不是无条件放行** —— 此前这里直接 `return true`，于是
+			// 「无 handler」成了**第七条绕过全部审批的通道**：受保护路径（写 `.git/hooks`
+			// 即代码执行）、删除类命令（`rm -rf`，不可回滚）、MCP 工具（不经沙箱、无 checkpoint）
+			// 全部静默通过，且**不留任何日志**。
+			//
+			// 本文件另一处写着「超时按**拒绝**处理（安全优先，**绝不默认放行**危险工具）」——
+			// 本分支此前与该原则**相反**。
+			//
+			// 无 handler 的真实场景：native chat pane 早期、未创建 webview controller 的宿主、
+			// headless 派发。此时没有 UI 可弹，只有 allow / deny 两条路 ——
+			// 与 `inherit`（后台 subagent）**完全同构**：**必须用户裁决的动作只能 deny**，
+			// 其余保持降级放行（否则该环境下 agent 完全不可用）。
+			//
+			// 另外一并带上用户的**显式长期拒绝**（`_isDenied`）—— 严格说此处是
+			// **冗余**（`_isDenied` 已在更上方提前返回），但作为纵深防御保留：
+			// 若将来有人把那条提前返回挪到本分支之后，这里仍能兜住。
+			if (
+				// 判定真源同 `inherit`（`_requiresUserDecision`）—— 一处定义，不可能漂移。
+				this._requiresUserDecision(toolCall.name, toolDef, isProtected, forcedAsk, command)
+				|| this._isDenied(toolCall.name, command)
+			) {
+				console.warn(
+					`[ToolApproval] no-handler-deny tool=${toolCall.name} ` +
+					`protected=${isProtected} forcedAsk=${forcedAsk?.label ?? 'no'} ` +
+					`mcp=${isMcpSourcedTool(toolDef)} — 无审批 UI 时不得执行需用户裁决的动作`,
+				);
+				return false;
+			}
 			return true;
 		}
 
@@ -786,16 +1045,33 @@ export class ToolApprovalService {
 			approvalReason = evaluateToolCallShellSafetyDetailed(toolCall.name, toolCall.arguments).reason;
 		}
 
+		const baseReason = forceApproval
+			? `Tool "${toolCall.name}" performs a destructive operation (delete/remove) that cannot be undone by a checkpoint.`
+			: effectiveSecurityLevel === ToolSecurityLevel.Dangerous
+				? (approvalReason ?? `Tool "${toolCall.name}" can modify files or execute system commands.`)
+				: `Tool "${toolCall.name}" may have side effects.`;
+
+		// ★ MCP 来源的工具：**不经工作区沙箱、也不创建回滚点**（2026-09-13）。
+		//
+		// `McpToolProvider.executeTool` 把 arguments **直接透传**给 server
+		// （`routed.tool.call(call.arguments, ...)`），不做任何路径解析 → 路径沙箱与
+		// `writeDenyList`（`.env` / `~/.ssh` / `User/settings.json`）对它**全部不生效**；
+		// 且它不创建 checkpoint → 写入不可回滚。工具层因此**无法**做路径校验
+		// （内容与目标都在 server 侧）。
+		//
+		// 正确的补救不是硬拒 —— 用户可能**故意**装了需要写 `~/.ssh` 的 MCP server；
+		// 而是让审批卡片把前提讲清楚，让用户在**知情**下决定（与内置工具在界面上不再一样）。
+		const mcpNote = isMcpSourcedTool(toolDef)
+			? ` ⚠ Provided by an MCP server: it runs OUTSIDE the workspace sandbox (it may write any path) ` +
+			`and does NOT create a rollback checkpoint. Check the arguments before allowing.`
+			: '';
+
 		const request: IToolApprovalRequest = {
 			toolCallId: toolCall.id,
 			toolName: toolCall.name,
 			arguments: toolCall.arguments,
 			securityLevel: effectiveSecurityLevel,
-			reason: forceApproval
-				? `Tool "${toolCall.name}" performs a destructive operation (delete/remove) that cannot be undone by a checkpoint.`
-				: effectiveSecurityLevel === ToolSecurityLevel.Dangerous
-					? (approvalReason ?? `Tool "${toolCall.name}" can modify files or execute system commands.`)
-					: `Tool "${toolCall.name}" may have side effects.`,
+			reason: baseReason + mcpNote,
 			agentId: ctx?.agentId,
 			sessionId: ctx?.sessionId,
 		};

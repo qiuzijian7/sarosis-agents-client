@@ -92,22 +92,40 @@ export function embedSync(text: string): Float32Array | null {
 	return vec;
 }
 
+export type VectorIndexMode = 'trigram' | 'model';
+
 export class VectorIndex {
 	private vectors = new Map<string, Float32Array>();
 	private _available = true;
 	private _dimension = 0;
 	/**
-	 * P2 内存边界：向量索引最多保留的条数。每条 384 维 Float32Array ≈ 1.5KB，
-	 * 无上限时全量常驻会撞 ext host 4GB cage。超过后 FIFO 淘汰最早的向量。
-	 * 可通过环境变量 AGENTMEMORY_VECTOR_MAX_DOCS 覆盖。
-	 *
-	 * 默认 1000（1000 × 1.5KB ≈ 1.5MB，是 ext host 里安全的常驻上限）。
+	 * P1-6(b)：向量表征形态。由**写入路径**决定——addText（trigram 同步伪向量）
+	 * 置 trigram，addModelVector（外部真语义 embedding）置 model。
+	 * 查询向量必须与库的写入形态同源（两种语义空间的余弦得分不可比）。
 	 */
-	private readonly _maxDocs: number = (() => {
+	private _mode: VectorIndexMode = 'trigram';
+	/**
+	 * P2 内存边界：向量索引最多保留的条数。每条 384 维 Float32Array ≈ 1.5KB。
+	 * 超过后 FIFO 淘汰最早的向量。可通过环境变量 AGENTMEMORY_VECTOR_MAX_DOCS
+	 * 覆盖；构造参数优先级最高（测试用）。
+	 *
+	 * P1-8（2026-09-09）：默认 1000 → 5000（同 BM25：引擎已迁入网关专用进程，
+	 * ext host 4GB cage 约束失效；5000 × 1.5KB ≈ 7.5MB 安全）。淘汰经
+	 * evictedCount 暴露，由网关 [mem-summary] 上报。
+	 */
+	private _maxDocs: number = (() => {
 		const raw = (globalThis as any)?.process?.env?.['AGENTMEMORY_VECTOR_MAX_DOCS'];
 		const n = raw ? parseInt(raw, 10) : NaN;
-		return Number.isFinite(n) && n > 0 ? n : 1000;
+		return Number.isFinite(n) && n > 0 ? n : 5000;
 	})();
+	/** P1-8: 因 _maxDocs 上限被 FIFO 淘汰的向量累计数 */
+	private _evictedCount = 0;
+
+	constructor(maxDocs?: number) {
+		if (Number.isFinite(maxDocs) && (maxDocs as number) > 0) {
+			this._maxDocs = maxDocs as number;
+		}
+	}
 
 	add(id: string, embedding: Float32Array): void {
 		// 重新插入以更新 FIFO 顺序
@@ -122,6 +140,7 @@ export class VectorIndex {
 				const oldest = this.vectors.keys().next().value as string | undefined;
 				if (oldest === undefined) { break; }
 				this.vectors.delete(oldest);
+				this._evictedCount++;
 			}
 		}
 	}
@@ -129,11 +148,21 @@ export class VectorIndex {
 	/**
 	 * 便捷方法：直接用文本添加（内部 trigram 同步 embedding，无需 transformers）。
 	 * 用于 gateway 子进程等只需 trigram fallback 的同步场景。查询侧 search()
-	 * 在 transformers 不可用时同样回退到 embedSync，两侧维度一致（384）。
+	 * 按 _mode 分流（trigram 库 → embedSync 查询，两侧语义空间一致）。
 	 */
 	addText(id: string, text: string): void {
+		this._mode = 'trigram';
 		const vec = embedSync(text);
 		if (vec) { this.add(id, vec); }
+	}
+
+	/**
+	 * P1-6(b)：写入外部真语义 embedding（embeddingProviders 工厂恢复后使用）。
+	 * 与 addText 互斥——混写会导致语义空间不一致。
+	 */
+	addModelVector(id: string, embedding: Float32Array): void {
+		this._mode = 'model';
+		this.add(id, embedding);
 	}
 
 	remove(id: string): void {
@@ -143,13 +172,17 @@ export class VectorIndex {
 	async search(query: string, limit = 20): Promise<VectorSearchResult[]> {
 		if (this.vectors.size === 0) return [];
 
-		const queryVec = await embed(query);
-		if (!queryVec) {
-			// Fallback to sync embedding
-			const syncVec = embedSync(query);
-			if (!syncVec) return [];
-			return this._searchWithVec(syncVec, limit);
+		// P1-6(b)：查询向量按库的写入形态分流。旧实现无条件先尝试真模型
+		// embedding——若 CDN 恰好可用，真语义查询向量会去对比 trigram 库向量
+		//（两个语义空间无关，余弦得分无意义），且白白触发 25MB 模型下载。
+		let queryVec: Float32Array | null;
+		if (this._mode === 'model') {
+			queryVec = await embed(query);
+			if (!queryVec) { queryVec = embedSync(query); }
+		} else {
+			queryVec = embedSync(query);
 		}
+		if (!queryVec) return [];
 		return this._searchWithVec(queryVec, limit);
 	}
 
@@ -166,6 +199,10 @@ export class VectorIndex {
 	get size(): number { return this.vectors.size; }
 	get available(): boolean { return this._available; }
 	get dimension(): number { return this._dimension; }
+	/** P1-6(b): 当前向量表征形态（trigram 伪向量 / 真语义 model） */
+	get mode(): VectorIndexMode { return this._mode; }
+	/** P1-8: 因上限被 FIFO 淘汰的向量累计数（淘汰 = KV 在但检索不可达） */
+	get evictedCount(): number { return this._evictedCount; }
 
 	clear(): void {
 		this.vectors.clear();

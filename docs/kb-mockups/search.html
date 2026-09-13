@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>搜索结果 — vssaros KB Mockup</title>
+<link rel="stylesheet" href="kb-mockup.css">
+<!--
+  页面说明（对应交付要求 4）：
+  · 功能模块：检索输入区（关键词 + 检索模式）/ 左侧筛选面板 / 结果统计与排序 / 结果列表（关键词高亮、
+              命中分块、引用溯源）/ 分页 / 无结果空状态
+  · 对应框架组件：
+      - 检索后端        → kb_search 工具（kbVaultRecallTools.ts，hybrid = BM25 + 向量）
+      - 模式切换        → 对应 kb_search 的 mode 参数（hybrid / fulltext / semantic）
+      - 结果条目点击    → 跳转 KbBlocksEditorPane 并定位到命中分块（#chunk-锚点）
+      - 筛选维度        → kb_search 的 notebook / tag / timeRange / author 过滤参数
+  · 无法静态呈现的交互均以 [交互注释] 标注（见源码中 [交互注释] 行）。
+-->
+<style>
+	.kb-search-layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; align-items: start; }
+
+	/* 检索头 */
+	.kb-search-head { padding: 16px; border: 1px solid var(--kb-border); border-radius: var(--kb-radius-lg); margin-bottom: 14px; background: var(--kb-panel); }
+	.kb-search-row { display: flex; gap: 8px; align-items: center; }
+	.kb-search-main { flex: 1; display: flex; align-items: center; gap: 8px; background: var(--kb-bg); border: 1px solid var(--kb-accent-border); box-shadow: 0 0 0 1px var(--kb-accent-border); border-radius: var(--kb-radius); padding: 0 12px; height: 36px; }
+	.kb-search-main svg { color: var(--kb-fg-muted); flex-shrink: 0; }
+	.kb-search-main input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--kb-fg-strong); font-size: var(--kb-fs-lg); font-family: inherit; }
+
+	/* 检索模式切换（对齐 kb_search mode 参数）*/
+	.kb-modes { display: inline-flex; border: 1px solid var(--kb-border); border-radius: var(--kb-radius); overflow: hidden; margin-top: 10px; }
+	.kb-mode { padding: 5px 12px; font-size: var(--kb-fs-sm); color: var(--kb-fg-muted); cursor: pointer; background: var(--kb-panel-2); border-right: 1px solid var(--kb-border); }
+	.kb-mode:last-child { border-right: none; }
+	.kb-mode:hover { background: var(--kb-hover); color: var(--kb-fg); }
+	.kb-mode.is-active { background: var(--kb-accent-bg); color: var(--kb-accent-fg); }
+	.kb-mode small { opacity: .65; font-family: var(--kb-mono); margin-left: 4px; }
+	.kb-search-hint { font-size: var(--kb-fs-xs); color: var(--kb-fg-dim); margin-top: 8px; }
+
+	/* 左侧筛选 */
+	.kb-filter-group { padding: 10px 12px; border-bottom: 1px solid var(--kb-border-soft); }
+	.kb-filter-group:last-child { border-bottom: none; }
+	.kb-filter-title { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--kb-fg-dim); font-weight: 600; margin-bottom: 8px; }
+	.kb-filter-opt { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: var(--kb-fs-sm); color: var(--kb-fg-muted); cursor: pointer; }
+	.kb-filter-opt:hover { color: var(--kb-fg); }
+	.kb-filter-opt input { accent-color: var(--kb-accent-border); }
+	.kb-filter-opt .kb-spacer { flex: 1; }
+	.kb-filter-opt .kb-cnt { font-size: var(--kb-fs-xs); color: var(--kb-fg-dim); font-variant-numeric: tabular-nums; }
+
+	/* 结果统计 / 排序 */
+	.kb-results-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+	.kb-results-bar .kb-count { font-size: var(--kb-fs-md); color: var(--kb-fg); }
+	.kb-results-bar b { color: var(--kb-fg-strong); }
+
+	/* 结果卡片 */
+	.kb-result { padding: 14px 16px; border: 1px solid var(--kb-border); border-radius: var(--kb-radius-lg); margin-bottom: 10px; background: var(--kb-panel); cursor: pointer; }
+	.kb-result:hover { border-color: var(--kb-accent-border); background: #202224; }
+	.kb-result-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+	.kb-result-title { font-size: var(--kb-fs-lg); font-weight: 600; color: var(--kb-fg-strong); }
+	.kb-result-score { margin-left: auto; font-family: var(--kb-mono); font-size: var(--kb-fs-xs); color: var(--kb-fg-dim); white-space: nowrap; }
+	.kb-result-path { font-size: var(--kb-fs-xs); color: var(--kb-fg-dim); margin: 3px 0 9px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+	.kb-result-snippet { font-size: var(--kb-fs-md); color: var(--kb-fg-muted); line-height: 1.7; }
+	.kb-result-snippet .kb-ellipsis { color: var(--kb-fg-dim); }
+	.kb-result-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+	.kb-hit-chunk { font-family: var(--kb-mono); font-size: 10px; color: var(--kb-fg-dim); background: var(--kb-bg); border: 1px solid var(--kb-border); border-radius: 3px; padding: 1px 5px; }
+	.kb-score-bar { display: inline-flex; gap: 1px; align-items: flex-end; height: 10px; }
+	.kb-score-bar i { width: 3px; background: var(--kb-accent-border); border-radius: 1px; }
+
+	@media (max-width: 1366px) {
+		.kb-search-layout { grid-template-columns: 1fr; }
+		.kb-filter-panel { display: flex; flex-wrap: wrap; gap: 0; }
+		.kb-filter-group { flex: 1 1 200px; border-bottom: none; border-right: 1px solid var(--kb-border-soft); }
+	}
+</style>
+</head>
+<body>
+<div class="kb-app">
+
+	<header class="kb-topbar">
+		<span class="kb-title">
+			<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8 1a3.5 3.5 0 0 0-3.5 3.5V5H4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-.5V4.5A3.5 3.5 0 0 0 8 1Zm2.5 4h-5V4.5a2.5 2.5 0 0 1 5 0V5Z"/></svg>
+			Saros Agent Studio · 知识库
+		</span>
+		<span class="kb-spacer"></span>
+		<label class="kb-searchbox">
+			<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+			<input type="text" value="双轨架构" placeholder="检索知识库…">
+			<kbd>Ctrl K</kbd>
+		</label>
+		<button class="kb-iconbtn kb-tip" data-tip="通知（3 条未读）">
+			<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a1 1 0 0 1 1 1v.6A4.5 4.5 0 0 1 12.5 7v3l1.2 1.8a.7.7 0 0 1-.6 1.2H3a.7.7 0 0 1-.6-1.2L3.5 10V7A4.5 4.5 0 0 1 7 2.6V2a1 1 0 0 1 1-1Zm-1.7 12h3.4a1.7 1.7 0 0 1-3.4 0Z"/></svg>
+		</button>
+		<span class="kb-badge kb-badge-blue">张工 · 管理员</span>
+	</header>
+
+	<aside class="kb-sidebar">
+		<div class="kb-section">工作区 <span class="kb-count">个人 Vault</span></div>
+		<a class="kb-nav" href="index.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5 1.5 4.6V8c0 3.4 2.8 5.9 6.5 6.5 3.7-.6 6.5-3.1 6.5-6.5V4.6L8 1.5Z"/></svg></span>
+			<span class="kb-nav-label">知识库首页</span>
+		</a>
+		<a class="kb-nav" href="documents.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Zm5.5 1.7 2.8 2.8H9.5V3.2Z"/></svg></span>
+			<span class="kb-nav-label">文档列表</span>
+			<span class="kb-badge">128</span>
+		</a>
+		<a class="kb-nav is-active" href="search.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg></span>
+			<span class="kb-nav-label">搜索</span>
+		</a>
+		<a class="kb-nav" href="categories.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.5A1.5 1.5 0 0 1 3 2h3.2l1.4 1.5H13A1.5 1.5 0 0 1 14.5 5v7A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V3.5Z"/></svg></span>
+			<span class="kb-nav-label">分类 / 标签</span>
+		</a>
+		<a class="kb-nav" href="entry-edit.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></span>
+			<span class="kb-nav-label">条目编辑器</span>
+		</a>
+		<div class="kb-nav-group">管理</div>
+		<a class="kb-nav" href="admin.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a2.6 2.6 0 0 1 1.3 4.9l.8 4.6a1 1 0 0 1-.3.9l-1.5 1.4a.4.4 0 0 1-.6 0L6.2 11.4a1 1 0 0 1-.3-.9l.8-4.6A2.6 2.6 0 0 1 8 1Z"/></svg></span>
+			<span class="kb-nav-label">权限与用户</span>
+		</a>
+		<a class="kb-nav" href="document-detail.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 3A1.5 1.5 0 0 1 4 1.5h8A1.5 1.5 0 0 1 13.5 3v10A1.5 1.5 0 0 1 12 14.5H4A1.5 1.5 0 0 1 2.5 13V3Z"/></svg></span>
+			<span class="kb-nav-label">文档详情示例</span>
+		</a>
+	</aside>
+
+	<main class="kb-main">
+		<nav class="kb-crumb" style="margin-bottom:12px">
+			<span>工作区</span><span class="kb-crumb-sep">›</span>
+			<a href="index.html">知识库</a><span class="kb-crumb-sep">›</span>
+			<span class="kb-crumb-here">搜索「双轨架构」</span>
+		</nav>
+
+		<!-- 检索输入区 -->
+		<div class="kb-search-head">
+			<div class="kb-search-row">
+				<div class="kb-search-main">
+					<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+					<input type="text" value="双轨架构">
+				</div>
+				<button class="kb-btn kb-btn-primary" style="height:36px;padding:0 16px">检索</button>
+			</div>
+			<!-- [交互注释] 切换检索模式触发重查：hybrid=BM25+向量融合（默认）；fulltext=仅关键词；semantic=仅语义。
+			                   输入词含引号/AND/OR 时解析为高级查询语法，非法语法在输入下方给出校验提示。-->
+			<div class="kb-modes">
+				<div class="kb-mode is-active">混合检索 <small>hybrid</small></div>
+				<div class="kb-mode">全文检索 <small>fulltext</small></div>
+				<div class="kb-mode">语义检索 <small>semantic</small></div>
+			</div>
+			<div class="kb-search-hint">支持 <code>""</code> 精确短语、<code>AND</code> / <code>OR</code> 组合、<code>-词</code> 排除；也支持自然语言提问，由 kb_search 返回带引用的答案。</div>
+		</div>
+
+		<div class="kb-search-layout">
+			<!-- ── 左侧筛选面板 ── -->
+			<div class="kb-card kb-filter-panel" style="padding:0">
+				<div class="kb-panel-head" style="padding:9px 12px">
+					<h3 style="font-size:var(--kb-fs-md)">筛选条件</h3>
+					<span class="kb-spacer"></span>
+					<button class="kb-btn kb-btn-ghost kb-btn-sm">重置</button>
+				</div>
+				<!-- [交互注释] 所有筛选条件变化即时重查（与关键词 AND 组合）；结果数随筛选实时更新 -->
+				<div class="kb-filter-group">
+					<div class="kb-filter-title">笔记本</div>
+					<label class="kb-filter-opt"><input type="checkbox" checked><span>Agent Studio 架构设计</span><span class="kb-spacer"></span><span class="kb-cnt">9</span></label>
+					<label class="kb-filter-opt"><input type="checkbox"><span>会议纪要 · 2026 Q3</span><span class="kb-spacer"></span><span class="kb-cnt">2</span></label>
+					<label class="kb-filter-opt"><input type="checkbox"><span>前端规范手册</span><span class="kb-spacer"></span><span class="kb-cnt">1</span></label>
+					<label class="kb-filter-opt"><input type="checkbox"><span>故障复盘库</span><span class="kb-spacer"></span><span class="kb-cnt">0</span></label>
+				</div>
+				<div class="kb-filter-group">
+					<div class="kb-filter-title">标签</div>
+					<label class="kb-filter-opt"><input type="checkbox" checked><span class="kb-tag">架构</span><span class="kb-spacer"></span><span class="kb-cnt">7</span></label>
+					<label class="kb-filter-opt"><input type="checkbox"><span class="kb-tag">ADR</span><span class="kb-spacer"></span><span class="kb-cnt">3</span></label>
+					<label class="kb-filter-opt"><input type="checkbox"><span class="kb-tag">构建</span><span class="kb-spacer"></span><span class="kb-cnt">2</span></label>
+					<label class="kb-filter-opt"><input type="checkbox"><span class="kb-tag">检索</span><span class="kb-spacer"></span><span class="kb-cnt">2</span></label>
+				</div>
+				<div class="kb-filter-group">
+					<div class="kb-filter-title">状态</div>
+					<label class="kb-filter-opt"><input type="checkbox" checked><span>已索引</span><span class="kb-spacer"></span><span class="kb-cnt">10</span></label>
+					<label class="kb-filter-opt"><input type="checkbox"><span class="kb-badge kb-badge-amber">待审核</span><span class="kb-spacer"></span><span class="kb-cnt">1</span></label>
+				</div>
+				<div class="kb-filter-group">
+					<div class="kb-filter-title">更新时间</div>
+					<label class="kb-filter-opt"><input type="radio" name="tr" checked><span>不限</span></label>
+					<label class="kb-filter-opt"><input type="radio" name="tr"><span>近 7 天</span><span class="kb-spacer"></span><span class="kb-cnt">5</span></label>
+					<label class="kb-filter-opt"><input type="radio" name="tr"><span>近 30 天</span><span class="kb-spacer"></span><span class="kb-cnt">9</span></label>
+				</div>
+			</div>
+
+			<!-- ── 右侧结果区 ── -->
+			<div>
+				<div class="kb-results-bar">
+					<span class="kb-count">找到 <b>12</b> 条结果（用时 68 ms）</span>
+					<span style="flex:1"></span>
+					<span class="kb-count-hint" style="font-size:var(--kb-fs-xs);color:var(--kb-fg-dim)">排序</span>
+					<!-- [交互注释] 排序切换即时重排（客户端排序，无新请求）；「相关度」依赖检索打分，其余为元数据排序 -->
+					<select class="kb-select">
+						<option selected>相关度</option>
+						<option>更新时间（新→旧）</option>
+						<option>创建时间</option>
+						<option>标题 A→Z</option>
+					</select>
+				</div>
+
+				<!-- 结果 1 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> Workbench 与 webview <mark class="kb-hl">双轨架构</mark>决策记录（ADR-018）</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:4px"></i><i style="height:6px"></i><i style="height:9px"></i><i style="height:10px"></i><i style="height:7px"></i></span>
+							0.941
+						</span>
+					</div>
+					<div class="kb-result-path"><span>Agent Studio 架构设计</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#004–011</span><span>·</span><span>更新于 2 小时前</span><span>·</span><span class="kb-badge kb-badge-green">已索引</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>决策结论：导航与轻量列表放在 workbench 原生视图，富文本编辑与图谱渲染放在 webview，两者通过统一的 KB 服务层共享数据。采用<mark class="kb-hl">双轨架构</mark>后，样式规范需同时覆盖两套环境<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">架构</span><span class="kb-tag">ADR</span>
+						<span class="kb-badge">命中 3 处 · 分块 #004 / #012 / #030</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 2 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> CSS 设计 token 规范：kbblocks 变量表（v3 草案）</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:3px"></i><i style="height:5px"></i><i style="height:8px"></i><i style="height:9px"></i><i style="height:5px"></i></span>
+							0.877
+						</span>
+					</div>
+					<div class="kb-result-path"><span>前端规范手册</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#019–022</span><span>·</span><span>更新于 4 天前</span><span>·</span><span class="kb-badge kb-badge-amber">待审核</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>需同时覆盖两套环境：原生视图优先使用 --vscode-* 主题变量，webview 内的 kbblocks 使用固化 token，并在两者之间保持视觉一致（详见 <mark class="kb-hl">双轨架构</mark>ADR-018）<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">规范</span>
+						<span class="kb-badge">命中 1 处 · 分块 #019</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 3 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> esbuild.kbblocks 构建链路与 IIFE 打包策略</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:3px"></i><i style="height:4px"></i><i style="height:7px"></i><i style="height:8px"></i><i style="height:4px"></i></span>
+							0.842
+						</span>
+					</div>
+					<div class="kb-result-path"><span>Agent Studio 架构设计</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#002–005</span><span>·</span><span>更新于 5 小时前</span><span>·</span><span class="kb-badge kb-badge-green">已索引</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>webview 侧单文件产物边界由 ADR-018 的<mark class="kb-hl">双轨架构</mark>定义确定，kbblocks 以 IIFE 打包为单入口，避免与 workbench 模块系统冲突<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">构建</span>
+						<span class="kb-badge">命中 2 处 · 分块 #002 / #005</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 4 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> Q3 第 11 周评审会纪要：KB 检索性能优化</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:2px"></i><i style="height:4px"></i><i style="height:6px"></i><i style="height:7px"></i><i style="height:3px"></i></span>
+							0.796
+						</span>
+					</div>
+					<div class="kb-result-path"><span>会议纪要 · 2026 Q3</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#008–009</span><span>·</span><span>更新于 昨天</span><span>·</span><span class="kb-badge kb-badge-blue">导入中</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>讨论了<mark class="kb-hl">双轨架构</mark>下列表页与编辑器之间的数据同步开销，结论是先做只读查询的缓存层，写入路径保持单源<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">纪要</span>
+						<span class="kb-badge">命中 1 处 · 分块 #008</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 5 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> kb_search 混合检索打分公式与调参记录</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:2px"></i><i style="height:3px"></i><i style="height:5px"></i><i style="height:6px"></i><i style="height:3px"></i></span>
+							0.731
+						</span>
+					</div>
+					<div class="kb-result-path"><span>Agent Studio 架构设计</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#014</span><span>·</span><span>更新于 08-22</span><span>·</span><span class="kb-badge kb-badge-green">已索引</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>检索链路的宿主归属参考 ADR-018 的<mark class="kb-hl">双轨架构</mark>边界定义，向量召回走 webview 侧 worker，BM25 走原生侧索引服务<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">检索</span><span class="kb-tag">ADR</span>
+						<span class="kb-badge">命中 1 处 · 分块 #014</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 6 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> 前端规范手册 · 索引</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:2px"></i><i style="height:3px"></i><i style="height:4px"></i><i style="height:5px"></i><i style="height:2px"></i></span>
+							0.688
+						</span>
+					</div>
+					<div class="kb-result-path"><span>前端规范手册</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#001</span><span>·</span><span>更新于 5 天前</span><span>·</span><span class="kb-badge kb-badge-green">已索引</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>目录页引用 ADR-018 作为样式分轨依据，并约定所有新组件需标注归属<mark class="kb-hl">双轨架构</mark>中的哪一轨<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">规范</span>
+						<span class="kb-badge">命中 1 处 · 分块 #001</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 7 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> 剪藏：RAG 引用溯源的五种前端呈现方式</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:2px"></i><i style="height:3px"></i><i style="height:4px"></i><i style="height:4px"></i><i style="height:2px"></i></span>
+							0.612
+						</span>
+					</div>
+					<div class="kb-result-path"><span>剪藏 · 技术文章</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#006</span><span>·</span><span>更新于 上周</span><span>·</span><span class="kb-badge kb-badge-green">已索引</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>文章建议在<mark class="kb-hl">双轨架构</mark>下，原生轨与 webview 轨使用同一套行内引用锚点样式，避免用户跨轨时认知跳变<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">剪藏</span><span class="kb-badge">来源：web.blog</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 8 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> Obsidian 迁移手册：wikilink 批量重写规则</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:2px"></i><i style="height:2px"></i><i style="height:3px"></i><i style="height:4px"></i><i style="height:2px"></i></span>
+							0.564
+						</span>
+					</div>
+					<div class="kb-result-path"><span>Agent Studio 架构设计</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#003</span><span>·</span><span>更新于 08-28</span><span>·</span><span class="kb-badge kb-badge-red">索引失败</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>迁移时 [[wikilink]] 需按<mark class="kb-hl">双轨架构</mark>的新路径规则批量重写，本条目因链接解析失败暂未完成索引<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">迁移</span>
+						<span class="kb-badge kb-badge-red">索引失败 · 查看错误</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 9 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> 用户访谈逐字稿：知识管理痛点（受访者 P07）</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:1px"></i><i style="height:2px"></i><i style="height:3px"></i><i style="height:3px"></i><i style="height:1px"></i></span>
+							0.502
+						</span>
+					</div>
+					<div class="kb-result-path"><span>会议纪要 · 2026 Q3</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#022</span><span>·</span><span>更新于 08-19</span><span>·</span><span class="kb-badge kb-badge-amber">待审核</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>受访者表示不太理解为何有的功能在侧边栏、有的在编辑器标签页，希望能有统一的<mark class="kb-hl">双轨架构</mark>心智模型说明<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">访谈</span>
+						<span class="kb-badge">命中 1 处 · 分块 #022</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 10 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> 线上事故 INC-20260831：索引队列积压复盘</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:1px"></i><i style="height:2px"></i><i style="height:2px"></i><i style="height:3px"></i><i style="height:1px"></i></span>
+							0.447
+						</span>
+					</div>
+					<div class="kb-result-path"><span>故障复盘库</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#011</span><span>·</span><span>更新于 上周</span><span>·</span><span class="kb-badge kb-badge-green">已索引</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>根因之一是<mark class="kb-hl">双轨架构</mark>两侧同时触发索引重建，导致队列争用；修复方案为服务层加分布式锁<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">复盘</span>
+						<span class="kb-badge">命中 1 处 · 分块 #011</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 11 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> NotebookLM Audio Overview 机制拆解与借鉴点</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:1px"></i><i style="height:2px"></i><i style="height:2px"></i><i style="height:2px"></i><i style="height:1px"></i></span>
+							0.401
+						</span>
+					</div>
+					<div class="kb-result-path"><span>竞品调研 · NotebookLM</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#009</span><span>·</span><span>更新于 3 天前</span><span>·</span><span class="kb-badge kb-badge-green">已索引</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>其封闭式 RAG 与我们的<mark class="kb-hl">双轨架构</mark>在「引用溯源」目标上一致，可作为行内引用锚点交互的参考<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">调研</span><span class="kb-tag">竞品</span>
+						<span class="kb-badge">命中 1 处 · 分块 #009</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 结果 12 -->
+				<div class="kb-result">
+					<div class="kb-result-head">
+						<span class="kb-result-title"><span class="kb-doc-ico" style="display:inline-flex;vertical-align:-2px"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Z"/></svg></span> 知识库产品需求文档 PRD v2.3</span>
+						<span class="kb-result-score">
+							<span class="kb-score-bar"><i style="height:1px"></i><i style="height:1px"></i><i style="height:2px"></i><i style="height:2px"></i><i style="height:1px"></i></span>
+							0.358
+						</span>
+					</div>
+					<div class="kb-result-path"><span>Agent Studio 架构设计</span><span class="kb-crumb-sep">›</span><span class="kb-hit-chunk">#041</span><span>·</span><span>更新于 07-30</span><span>·</span><span class="kb-badge kb-badge-green">已索引</span></div>
+					<div class="kb-result-snippet"><span class="kb-ellipsis">…</span>PRD 中「信息架构」章节最早提出<mark class="kb-hl">双轨架构</mark>的雏形，后由 ADR-018 正式确立<span class="kb-ellipsis">…</span></div>
+					<div class="kb-result-foot">
+						<span class="kb-tag">PRD</span>
+						<span class="kb-badge">命中 1 处 · 分块 #041</span>
+						<span style="flex:1"></span>
+						<a class="kb-btn kb-btn-sm" href="document-detail.html">打开</a>
+						<button class="kb-btn kb-btn-sm kb-tip" data-tip="复制含锚点引用">引用</button>
+					</div>
+				</div>
+
+				<!-- 分页 -->
+				<div class="kb-pager">
+					<span class="kb-page-info">第 1–12 条 / 共 12 条</span>
+					<button class="kb-page" disabled>‹</button>
+					<button class="kb-page is-current">1</button>
+					<button class="kb-page" disabled>›</button>
+				</div>
+
+				<!-- 空状态示例（无结果时） -->
+				<div class="kb-empty" style="margin-top:14px">
+					<b>无匹配结果</b><br>
+					试试放宽筛选条件、切换「语义检索」模式，或检查关键词拼写。<br>
+					<span style="font-size:var(--kb-fs-xs)">[交互注释] 此区块仅在结果数为 0 时展示，平时隐藏；可在筛选面板中一键「重置」恢复默认范围。</span>
+				</div>
+			</div>
+		</div>
+	</main>
+</div>
+</body>
+</html>

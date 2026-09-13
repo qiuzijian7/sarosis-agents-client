@@ -237,7 +237,11 @@ export function renderDelegationLedger(entries: DelegationEntry[]): string {
 	const lines: string[] = ['## Delegation Ledger'];
 	let charBudget = LEDGER_RENDER_CHAR_BUDGET - lines[0].length;
 
-	// Render the most recent entries first (LLMs attend to beginning of context more)
+	// 只保留最近 10 条（防上下文膨胀），并**保持时间顺序**（保留集里最早的在前）。
+	// ⚠ 原注释写「Render the most recent entries first (LLMs attend to beginning of
+	//   context more)」，但代码**并未反转** —— 2026-09-11 由 multiAgentCollaboration.test.ts
+	//   核出。时间序更可预测，故保留现状；若将来要「最近优先」（LLM 对上下文开头注意力更强），
+	//   需显式 `recent.reverse()` 并同步该测试。
 	const recent = entries.slice(-10); // Max 10 entries to keep the ledger tight
 
 	for (let i = 0; i < recent.length; i++) {

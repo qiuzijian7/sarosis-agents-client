@@ -10,7 +10,7 @@ import type { IComfyRunner } from './comfyRunner.js';
 import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
 import type { CardStateStore } from './cardState.js';
 import type { SingleNodeRunResult } from './nodeExecutor.js';
-import type { MediaSnapshotEntry, MediaKind } from './mediaSnapshot.js';
+import { mergeImagePool, type MediaSnapshotEntry, type MediaKind } from './mediaSnapshot.js';
 import type { ExecutionNodeLike, ExecutionEdgeLike } from './executionGraph.js';
 import { findUpstreamImageRef } from './imageGenBackend.js';
 import { isComfyViewRef, resolveLoadImageImageRef, type BridgeFetchLike } from './imageGenToComfyBridge.js';
@@ -19,29 +19,59 @@ import { sendRequest } from '../../../bridge/messageClient.js';
 import { mediaGet, resolveAssetUrl } from '../mediaAssets.js';
 
 export function withRemoteProxyFetch(fetchImpl: typeof fetch, opts?: { forceProxy?: boolean }): typeof fetch {
+	/**
+	 * ★ 403 + COS 签名 URL → 补一句可操作提示（2026-09-12 日志实证）：
+	 *   报错原文只有 `net.fetchAsDataUrl: HTTP 403`，用户看不出「原片签名过期了、
+	 *   要重跑阶段①」✗（用户实测：阶段③ 报此错、以为功能坏了）。
+	 */
+	const hint403 = (url: string, err: string): string =>
+		(/\b403\b/.test(err) && /q-sign-/i.test(url))
+			? `${err} —— 该 COS 签名 URL 约 2 小时过期，原片已失效：请重跑阶段① 生成新的绿幕原片`
+			: err;
+	/** 经 host 代理把 url 拉成 data URL。成功 → Response；失败 → 错误描述串（不抛）。 */
+	const proxyFetch = async (url: string): Promise<Response | string> => {
+		try {
+			const r = await sendRequest<{ url: string }, { dataUrl?: string; error?: string }>(
+				'net.fetchAsDataUrl', { url }, 120_000,
+			);
+			if (r?.dataUrl) { return new Response(dataUrlToBlob(r.dataUrl), { status: 200 }); }
+			return hint403(url, r?.error ?? url.slice(0, 96));
+		} catch (e) {
+			return hint403(url, e instanceof Error ? e.message : String(e));
+		}
+	};
 	return (async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = typeof input === 'string' ? input : (input as URL).toString();
 		if (!/^https?:/i.test(url) || /^https?:\/\/(127\.0\.0\.1|localhost)([:/]|$)/i.test(url)) {
 			return fetchImpl(url, init);
 		}
+		// ★★ 内网 COS 域名 → 公网 alias 重试（2026-09-12 日志实证）：
+		//   provider 返回的 `…cos-internal…` 在用户机器上**必然**拉不到（403 / DNS），
+		//   而阶段③ GIF 编码、`localizeImageRef` 归档固化都走这条 fetch ✗ ——
+		//   此前直接报 `外网资源拉取失败（host 代理）：net.fetchAsDataUrl: HTTP 403`
+		//   导致整格失败 ✗✗。失败后用公网 alias（只差 `-internal`）再试一次 ✓。
+		const alt = publicCosAlias(url);
 		// forceProxy：CSP 必拦的外网资源（COS 签名 URL 等，无 CORS 头）直接走 host
 		// 代理 —— 跳过注定失败的直连，消除每次运行的 CSP 噪音日志与一跳延迟。
 		if (opts?.forceProxy) {
-			const r = await sendRequest<{ url: string }, { dataUrl?: string; error?: string }>(
-				'net.fetchAsDataUrl', { url }, 120_000,
-			);
-			if (r?.dataUrl) { return new Response(dataUrlToBlob(r.dataUrl), { status: 200 }); }
-			throw new Error(`外网资源拉取失败（host 代理）：${r?.error ?? url.slice(0, 96)}`);
+			const first = await proxyFetch(url);
+			if (first instanceof Response) { return first; }
+			if (alt !== url) {
+				const second = await proxyFetch(alt);
+				if (second instanceof Response) { return second; }
+				throw new Error(`外网资源拉取失败（host 代理）：${second}`);
+			}
+			throw new Error(`外网资源拉取失败（host 代理）：${first}`);
 		}
 		try {
 			return await fetchImpl(url, init);
 		} catch (firstErr) {
-			try {
-				const r = await sendRequest<{ url: string }, { dataUrl?: string; error?: string }>(
-					'net.fetchAsDataUrl', { url }, 120_000,
-				);
-				if (r?.dataUrl) { return new Response(dataUrlToBlob(r.dataUrl), { status: 200 }); }
-			} catch { /* 代理也失败 → 抛原始错误，错误信息更有指向性 */ }
+			const r = await proxyFetch(url);
+			if (r instanceof Response) { return r; }
+			if (alt !== url) {
+				const r2 = await proxyFetch(alt);
+				if (r2 instanceof Response) { return r2; }
+			}
 			throw firstErr;
 		}
 	}) as typeof fetch;
@@ -62,18 +92,48 @@ export function withRemoteProxyFetch(fetchImpl: typeof fetch, opts?: { forceProx
  */
 export async function localizeImageRef(ref: string): Promise<string> {
 	if (!ref || !/^https?:\/\//i.test(ref)) { return ref; }
-	try {
-		// ★ forceProxy（2026-09-08）：外网 URL 在 webview CSP 下直连 100% 被拦
-		//   （connect-src 只放行本机）——先直连只会每次刷两行 CSP 报错 + 白等
-		//   一跳，直接走 host 代理。
-		const resp = await withRemoteProxyFetch(fetch, { forceProxy: true })(ref);
-		if (!resp.ok) { return ref; }
-		const blob = await resp.blob();
-		if (!blob.type.startsWith('image/') && !blob.type.startsWith('video/')) { return ref; }
-		return await blobToDataUrl(blob);
-	} catch {
-		return ref;
+	const tryFetch = async (u: string): Promise<string | null> => {
+		try {
+			// ★ forceProxy（2026-09-08）：外网 URL 在 webview CSP 下直连 100% 被拦
+			//   （connect-src 只放行本机）——先直连只会每次刷两行 CSP 报错 + 白等
+			//   一跳，直接走 host 代理。
+			const resp = await withRemoteProxyFetch(fetch, { forceProxy: true })(u);
+			if (!resp.ok) { return null; }
+			const blob = await resp.blob();
+			if (!blob.type.startsWith('image/') && !blob.type.startsWith('video/')) { return null; }
+			return await blobToDataUrl(blob);
+		} catch {
+			return null;
+		}
+	};
+	const direct = await tryFetch(ref);
+	if (direct) { return direct; }
+	// ★ 内网 COS 域名换公网 alias 重试一次（2026-09-12，见 publicCosAlias）：
+	//   provider 返回 `…cos-internal…` 时 host 代理**必然失败** ✗ → 归档退回原始
+	//   签名 URL → 签名过期后「原片加载失败」（用户实测：视频生成过、重启后播不了）✗。
+	const alias = publicCosAlias(ref);
+	if (alias !== ref) {
+		const viaAlias = await tryFetch(alias);
+		if (viaAlias) { return viaAlias; }
 	}
+	return ref;
+}
+
+/**
+ * ★ COS **内网域名 → 公网域名**（2026-09-12）。
+ *
+ * MiniMax 等 provider 返回的视频/图片 URL 落在**内网** endpoint
+ * （`<bucket>.cos-internal.<region>.tencentcos.cn`）—— 该域名只在腾讯内网可解析 ✗，
+ * 而我们的 host 代理跑在**用户机器**上 → `net.fetchAsDataUrl` / 归档时的
+ * `localizeImageRef` 必然拿不到字节 ✗ ⇒ 归档退回**原始签名 URL** ✗ ⇒ 签名过期后
+ * 预览「原片加载失败」（用户日志实证：`mjai-….cos-internal.ap-guangzhou…`）✗✗。
+ *
+ * COS 官方的同区域**公网** alias 只差一个 `-internal` ⇒ 拉取失败时用它重试一次 ✓。
+ * 非 COS 内网域名原样返回（幂等、可安全用于任意 URL）。
+ */
+export function publicCosAlias(url: string): string {
+	if (!/\.cos-internal\./i.test(url)) { return url; }
+	return url.replace(/\.cos-internal\./i, '.cos.');
 }
 
 /** A registered ComfyTV stage's extra metadata. */
@@ -148,6 +208,36 @@ export function isTaskNodeType(type: string): boolean {
 /** P0: `Saros.End` — 工作流输出标记：透传上游快照并标记为图最终输出。 */
 export function isEndNodeType(type: string): boolean {
 	return type === 'Saros.End';
+}
+
+/**
+ * W7-flow：构造「控制流边」判定器 —— 边的**入端口**类型为 FLOW（flowIn/flowOut
+ * 隐形控制口）即为纯控制边。供 build*Plan 把这类边从数据上游（upstreams）中
+ * 分离出去：executor 侧 `store.byNode(up)` / collectUpstreamValues 按 nodeId
+ * 无差别取快照，混入控制流上游会拿错媒体/文本。
+ *
+ * SAROS_JSON / ANY 编排边**不**算控制流（保持既有行为：Task→Agent→End 链的
+ * 快照透传语义不变；Start.out(ANY)→stage.text 的 COMFYTV_TEXT 桥也是数据）。
+ *
+ * 端口类型查不到（spec 缺失 / 旧数据）→ 按数据边处理（保守，行为不变）。Pure。
+ */
+export function makeFlowEdgeClassifier(
+	nodes: RunNode[],
+	getSpec: (type: string) => { inputs?: Array<{ name: string; type: string }>; outputs?: Array<{ name: string; type: string }> } | undefined,
+): (edge: { source: string; target: string; targetHandle?: string }) => boolean {
+	const flowInByNodeType = new Map<string, Set<string>>();
+	for (const n of nodes) {
+		const spec = getSpec(n.type ?? '');
+		if (!spec) { continue; }
+		const flowIns = new Set(
+			(spec.inputs ?? [])
+				.filter(p => p.type === 'FLOW')
+				.map(p => p.name),
+		);
+		if (flowIns.size > 0) { flowInByNodeType.set(n.id, flowIns); }
+	}
+	if (flowInByNodeType.size === 0) { return () => false; }
+	return (edge) => flowInByNodeType.get(edge.target)?.has(edge.targetHandle ?? '');
 }
 
 /** P0: `Saros.Skill` — 让子代理加载并执行指定技能（复用 runAgentNode 通道）。 */
@@ -491,6 +581,15 @@ export interface GraphRunOptions {
 	mode?: 'serial' | 'parallel';
 	/** Max parallel provider/local steps when mode='parallel' (default 4). */
 	parallelConcurrency?: number;
+	/**
+	 * P0① 可写节点 id 集合（可选）：同层内**至多一个**可写节点（写者独占一层）。
+	 *
+	 * 为什么：两个可写节点并发 = 必然写冲突（子代理共享父 worktree，无隔离档）。
+	 * 调度层写互斥锁已保证正确性，但写者会在并发池里**占槽空等**；计划层提前拆开即免。
+	 * 信号由画布层注入（`collectWriteStepIds`，能力值来自 host 的
+	 * `agents.list`/`tools.list` 的 `writeCapable`）。缺省不拆 → 存量行为不变。
+	 */
+	writeStepIds?: ReadonlySet<string>;
 	/** Stable identifier for the run (cross-session task tracking, P1). */
 	taskId?: string;
 	/** Injectable fetch (proxy for ComfyUI localhost 403 bypass); instant nodes use it. */
@@ -522,6 +621,20 @@ export interface GraphRunResult {
 	ran: string[];
 	/** W2 端口感知路由：被跳过的节点（gate 分支未激活 + 传导下游），非错误 */
 	skippedIds: string[];
+	/**
+	 * W7「从 Start 开始执行」：可执行但**未接入 Start 作用域**的节点 —— 本次不执行。
+	 * 与 skippedIds 区分：后者是分支路由跳过（已在链上），本项是根本没接入入口。
+	 */
+	outOfScopeIds: string[];
+	/** W7: 本次运行的入口判定结果（供 UI 提示「已从 Start 开始 / Start 未编排」）。 */
+	startScope?: {
+		/** 图中的 Start 节点 id */
+		startIds: string[];
+		/** Start 存在但未编排（无出边或只连 End）→ 已退化为全图执行 */
+		degraded: boolean;
+		/** true = 本次按 Start 作用域裁剪执行；false = 全图执行 */
+		scoped: boolean;
+	};
 	/** the first failing node (null when all ran) */
 	failed: { nodeId: string; error: string } | null;
 	/** per-node results of successful runs */
@@ -574,7 +687,8 @@ export interface AskUserPayload {
 export interface AskUserParam {
 	key: string;
 	label: string;
-	type?: 'text' | 'number' | 'textarea';
+	/** image = 图片上传（值填 **data URL**，与 browser 侧 kind='image' 同语义）。 */
+	type?: 'text' | 'number' | 'textarea' | 'image';
 }
 /**
  * P1: injected ask-user RPC for Saros.AskUser nodes (required when the graph has one).
@@ -859,14 +973,17 @@ export function resolvePreferredImageGenDefaults(
 export function collectUpstreamValues(
 	store: MediaSnapshotStore,
 	upstreams: string[] | undefined,
+	/** v42 消重参数：fx 链取数时 video 携带 fxChain 则注入打包值；stage 取数传 false（要 /view URL）。 */
+	opts?: { fxThreading?: boolean },
 ): Record<string, string> {
+	const fxThreading = opts?.fxThreading !== false;   // 默认 true（保持 fx 链既有行为）
 	const out: Record<string, string> = {};
 	if (!upstreams) { return out; }
 	for (const nodeId of upstreams) {
 		for (const entry of store.byNode(nodeId)) {
 			const kind = entry.media.kind;
 			if (kind === 'unknown' || out[kind]) { continue; }
-			out[kind] = entry.media.fxChain && kind === 'video'
+			out[kind] = fxThreading && entry.media.fxChain && kind === 'video'
 				? entry.media.fxChain
 				: entry.media.ref;
 		}
@@ -900,8 +1017,44 @@ export function collectUpstreamCandidates(
 	return out;
 }
 
-/** Local picker execution: emit the candidate chosen by selected_index (1-based, ComfyTV semantics).
- *  Picker 是路由节点（不产生新内容），put 时 skipImport=true 避免重复导入媒体库。 */
+/**
+ * 解析 picker 多选态（2026-09-12 用户需求「多选图片时 UI 要有多选状态」）。
+ *
+ * 两个持久化字段（**唯一真源**，卡片侧 nodeCard 与本执行器共用本函数，避免
+ * 「卡片按一套格式写、执行器按另一套读」的平行漂移）：
+ *   · `selected_indices`：上游池视图，**0-based 序号**的 JSON 数组（也容忍逗号分隔）；
+ *   · `directRefs`      ：'all' 视图，ref 的 JSON 数组。
+ * 非法 / 空 → `[]`（调用方回退单值 `selected_index` / `directRef`，旧数据兼容）。
+ */
+export function parsePickerIndexList(raw: unknown): number[] {
+	if (typeof raw !== 'string' || !raw.trim()) { return []; }
+	let arr: number[] = [];
+	try {
+		const a: unknown = JSON.parse(raw);
+		if (Array.isArray(a)) { arr = a.map(Number).filter(n => Number.isInteger(n) && n >= 0); }
+	} catch {
+		arr = raw.split(',').map(s => Number(s.trim())).filter(n => Number.isInteger(n) && n >= 0);
+	}
+	return [...new Set(arr)].sort((a, b) => a - b);
+}
+
+/** 解析 ref 数组（JSON；非法 / 空 → `[]`）。见 parsePickerIndexList。 */
+export function parsePickerRefList(raw: unknown): string[] {
+	if (typeof raw !== 'string' || !raw.trim()) { return []; }
+	try {
+		const a: unknown = JSON.parse(raw);
+		return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
+	} catch { return []; }
+}
+
+/** Local picker execution: emit the candidate(s) chosen in the node card.
+ *
+ *  Picker 是路由节点（不产生新内容），put 时 skipImport=true 避免重复导入媒体库。
+ *  ★ **多选**（2026-09-12）：`selected_indices` / `directRefs` 非空 → 一次产出多张
+ *    （每张一条 entry，key/index 递增）→ 下游 `latestRoundOf` 看到同一轮的 N 格。
+ *    **单图消费者取第一张，行为不变** ✓（collectUpstreamValues 的 out[kind] 取首值）；
+ *    多图消费者（如动态表情包 = 每张参考图一格）正是「多选」的语义。
+ *  数组为空 → 回退单值 `selected_index`（1-based）/ `directRef`（旧数据兼容）。 */
 export async function runPickerNode(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
 	// 归档键（= stageUid，缺省 nodeId）。entry.nodeId 决定 `store.put` 的键前缀，
 	// 必须与卡片读侧一致，否则 picker 自己的 OUTPUT 不刷新。
@@ -918,30 +1071,96 @@ export async function runPickerNode(input: NodeExecutionInput): Promise<SingleNo
 		}
 		return { promptId: '', status: 'error', error: '媒体库资产不可用（已删除？）', entries: [] };
 	}
-	// 次优先：跨节点「全部生成图」视图选中的 directRef（节点卡片 pool scope='all'
-	// 点选 → 直接输出该 ref，无需上游 batch 索引）。
-	const directRef = typeof input.values?.directRef === 'string' ? input.values.directRef : '';
-	if (directRef) {
-		const kind = inferPickerKind(input.type, directRef);
-		const entry: MediaSnapshotEntry = { nodeId: snapKey, port: 'output', key: `${snapKey}:output:0`, media: { kind, ref: directRef }, index: 0 };
-		input.store.put(entry, true /* skipImport */);
-		return { promptId: '', status: 'success', entries: [entry] };
+	// ★ 候选池（顺序必须与**卡片池** `pickerPool = mergeImagePool(pickerOutputs)` 一致）：
+	//   `selected_indices` 是用户**按卡片池网格**点的序号，而 `collectUpstreamCandidates`
+	//   是 byNode 顺序（index 升序 = 旧图在前）→ 直接按序号索引会**选错图** ✗。
+	//   （`collectUpstreamCandidates` 自身 byNode 契约不变 —— e2e 与 Poster/Crop 等
+	//    消费者依赖它。）
+	const candidates = mergeImagePool(collectUpstreamCandidates(input.store, input.upstreams));
+	// ★ ① 最优先：**上游池视图**的序号选择（`selected_indices`）—— 画布上点选写的就是它，
+	//   且与卡片网格高亮**同源**。必须排在 `directRefs` 之前：否则 `directRefs` 残留旧值
+	//   （聊天卡上次同步 / 上一次 'all' 视图）时会按旧 refs 输出 → 用户实证
+	//   「节点选了 8 张，下游引用只有 3 张」✗。
+	const pickedIdx = parsePickerIndexList(input.values?.selected_indices);
+	if (pickedIdx.length > 0) {
+		const entries: MediaSnapshotEntry[] = pickedIdx
+			.filter(i => i < candidates.length)
+			.map((i, k) => ({ nodeId: snapKey, port: 'output', key: `${snapKey}:output:${k}`, media: candidates[i].media, index: k }));
+		if (entries.length > 0) {
+			for (const e of entries) { input.store.put(e, true /* skipImport */); }
+			return { promptId: '', status: 'success', entries };
+		}
+		// 序号全越界（上游池已更新）→ 落到下方 ref / 单值路径兜底
 	}
-	const candidates = collectUpstreamCandidates(input.store, input.upstreams);
+	// ② 次优先：跨节点「全部生成图」视图选中的 ref（节点卡片 pool scope='all'
+	// 点选 → 直接输出该 ref，无需上游 batch 索引）。多选走 `directRefs`。
+	const directRef = typeof input.values?.directRef === 'string' ? input.values.directRef : '';
+	const directPicks = (() => {
+		const list = parsePickerRefList(input.values?.directRefs);
+		return list.length > 0 ? list : (directRef ? [directRef] : []);
+	})();
+	if (directPicks.length > 0) {
+		const entries: MediaSnapshotEntry[] = directPicks.map((ref, i) => ({
+			nodeId: snapKey, port: 'output', key: `${snapKey}:output:${i}`,
+			media: { kind: inferPickerKind(input.type, ref), ref }, index: i,
+		}));
+		for (const e of entries) { input.store.put(e, true /* skipImport */); }
+		return { promptId: '', status: 'success', entries };
+	}
+	// ③ 兜底：单值 `selected_index`（1-based，旧数据 / 未做多选选择时）。
 	if (!candidates.length) {
 		return { promptId: '', status: 'error', error: '选择器没有上游候选：请先连接上游生成节点并执行', entries: [] };
 	}
-	const idx = Math.max(0, Math.min((Number(input.values?.selected_index) || 1) - 1, candidates.length - 1));
-	const picked = candidates[idx];
-	const entry: MediaSnapshotEntry = {
-		nodeId: snapKey,
-		port: 'output',
-		key: `${snapKey}:output:0`,
-		media: picked.media,
-		index: 0,
-	};
-	input.store.put(entry, true /* skipImport */);
-	return { promptId: '', status: 'success', entries: [entry] };
+	const pickIdx = Math.max(0, Math.min((Number(input.values?.selected_index) || 1) - 1, candidates.length - 1));
+	const fallback: MediaSnapshotEntry[] = [{ nodeId: snapKey, port: 'output', key: `${snapKey}:output:0`, media: candidates[pickIdx].media, index: 0 }];
+	for (const e of fallback) { input.store.put(e, true /* skipImport */); }
+	return { promptId: '', status: 'success', entries: fallback };
+}
+
+/**
+ * ★ **点选即发布**（2026-09-12 修「picker 多选后下游参考图不更新」）：
+ * 把 picker 当前选中**立即**写进快照库，无需运行节点。
+ *
+ * 为什么必须有它：picker 是 **no-Run 节点**（卡片不渲染运行按钮，见 nodeCard
+ * `showRunButton = … && !meta.isPicker`）→ 用户点选只触发 `wf-node-control`
+ * 写 widget 值，**快照库不变** ✗ → 下游（如动态表情包）读 `store.byNode(picker)`
+ * 拿到的永远是**上一次运行**的旧选择 ✗（用户实证：池里选了 8 张，下游参考图
+ * 仍是旧值）。ComfyTV 原版 `usePickerStage` 是**响应式**发布（watch 选中即写），
+ * 本函数即该语义的显式入口。
+ *
+ * 复用 `runPickerNode` 的「池 → 条目」映射（唯一真源）——卡片池序号与执行器
+ * 候选序必须同口径，另写一份必然漂移。失败静默由调用方决定（点选态已落盘，
+ * 重跑节点仍可恢复）。
+ */
+export async function publishPickerSelection(opts: {
+	store: MediaSnapshotStore;
+	/** 归档键（= stageUid）。 */
+	snapKey: string;
+	type: string;
+	values: Record<string, unknown>;
+	upstreams?: string[];
+}): Promise<SingleNodeRunResult> {
+	// ★★ **必须先清掉本节点上一次发布**（2026-09-12，与 `put` 的语义强相关）：
+	//   `MediaSnapshotStore.put` **忽略调用方传入的 index**，为 (nodeId, port) 分配
+	//   「已有最大 index + 1」（刻意保留历史，见其注释）→ 点选 8 张后再点 3 张，
+	//   旧 8 条**不会**被覆盖，而是变成 8+3=11 条 ✗。下游动态表情包按
+	//   `latestRoundOf(picker).cells` 收集（picker 无 sheet → 返回**全部** cells ✗）
+	//   → 会把历次选择的并集当成参考图（越点越多）✗✗。
+	//   清空 + 重写 ⇒ 快照恒等于**当前选中**（这正是 picker「路由节点」的语义：
+	//   它不产出新内容，只转发当前选择）。
+	opts.store.clearNode(opts.snapKey);
+	// ★ runPickerNode 只消费 nodeId/snapshotKey/type/values/store/upstreams（不碰
+	//   runner/getSpec）——故此处按需构造最小输入，避免为「点选发布」引入整条
+	//   执行上下文（runner 在卡片侧不可得）。
+	const input = {
+		nodeId: opts.snapKey,
+		snapshotKey: opts.snapKey,
+		type: opts.type,
+		values: opts.values,
+		store: opts.store,
+		upstreams: opts.upstreams,
+	} as unknown as NodeExecutionInput;
+	return runPickerNode(input);
 }
 
 /** 解析媒体库资产为可加载 URL（http/data 直用；本地镜像走 host 转换）。导出给

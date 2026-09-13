@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { $, append } from '../../../../base/browser/dom.js';
+import { $, append, prepend } from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -113,7 +113,29 @@ export class MemoryDetailEditorPane extends EditorPane {
 	 * '__all__' → 加载所有 agent 的数据（searchAllAgents）
 	 * 其他值 → 加载指定 agent 的数据（searchMemory）
 	 */
+	/**
+	 * X8（2026-09-10）：记忆后端不可用时在面板顶部显示告警条——
+	 * 此前网关故障仅体现在日志里，用户看到的是"记忆全空"，无法判断是没数据还是服务挂了。
+	 * fire-and-forget：不阻断正常渲染。
+	 */
+	private _renderBackendWarning(): void {
+		void (async () => {
+			try {
+				const memProvider = this._agentOSService.getActiveMemoryProvider() as any;
+				const st = await memProvider?.getHealthStatus?.();
+				if (!st || st.status !== 'offline' || !this._container) { return; }
+				if (this._container.querySelector('.md-backend-warning')) { return; }
+				const bar = prepend(this._container, $('.md-backend-warning'));
+				append(bar, $('.icon')).textContent = '⚠';
+				append(bar, $('span')).textContent =
+					`记忆后端不可达（${st.baseUrl}）——当前展示的可能是空数据，写入将排队重试。`
+					+ ' 请检查网关是否运行：主进程日志搜 [agentmemory-gateway]，或检查 3111 端口是否在监听。';
+			} catch { /* 告警失败不影响面板 */ }
+		})();
+	}
+
 	private async _loadMemoryWithFilter(): Promise<void> {
+		this._renderBackendWarning();
 		if (this._agentFilter === '__all__') {
 			const memProvider = this._agentOSService.getActiveMemoryProvider();
 			if (!memProvider?.searchAllAgents) {
@@ -175,6 +197,12 @@ export class MemoryDetailEditorPane extends EditorPane {
 			.md-stat .value { font-size: 16px; font-weight: 600; color: var(--vscode-foreground); }
 			.md-stat.l0 .value { color: #569cd6; } .md-stat.l1 .value { color: #4ec9b0; }
 			.md-stat.l2 .value { color: #b799ff; } .md-stat.l3 .value { color: #f0a04b; }
+			/* X8（2026-09-10）：记忆后端不可用告警条 */
+			.md-backend-warning { display: flex; align-items: center; gap: 8px; padding: 8px 20px; flex-shrink: 0;
+				background: var(--vscode-inputValidation-warningBackground, rgba(255,180,0,0.12));
+				border-bottom: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
+				color: var(--vscode-foreground); font-size: 12px; }
+			.md-backend-warning .icon { font-size: 14px; }
 			/* Layer tabs */
 			.md-layer-tabs { display: flex; border-bottom: 1px solid var(--vscode-widget-border); padding: 0 20px; flex-shrink: 0; }
 			.md-layer-tab { padding: 8px 16px; cursor: pointer; font-size: 12px; color: var(--vscode-descriptionForeground); border-bottom: 2px solid transparent; transition: all 0.15s; display: flex; align-items: center; gap: 4px; }

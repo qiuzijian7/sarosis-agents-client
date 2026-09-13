@@ -102,6 +102,17 @@ export class StreamingRenderScheduler {
 		this._targets.delete(container);
 	}
 
+	/**
+	 * ★ 2026-09-12：该容器是否已有渲染基线（scheduler 认为它已渲染过内容）。
+	 *
+	 * 供调用方判断「能否直接 `schedule` 走增量」：**无基线**时 `schedule` 的首次分支
+	 * 会调 `renderFull`——而 `renderFull` 是 **append 语义**（`renderMarkdown` 追加子节点），
+	 * 若容器内已有内容会造成**内容翻倍**。故无基线时应先同步渲染一次建立基线。
+	 */
+	hasRendered(container: HTMLElement): boolean {
+		return this._lastRendered.has(container);
+	}
+
 	/** 取消 pending 的节流渲染（保留各容器已渲染基线）。 */
 	cancel(): void {
 		if (this._timer !== null) {

@@ -67,29 +67,51 @@ const STAGE_KIND_FIELDS: Record<string, Omit<EditorField, 'key'>[]> = {
 // uses JSON textareas for structured fields (variables/skillArgs/toolParams/
 // branches/options) so a workflow can be round-tripped without data loss.
 
+/**
+ * ★ 共享变量发布字段（2026-09-11）：节点输出可额外以**语义名**发布到本次运行的共享内存，
+ * 下游任意节点用 `{{shared.<key>}}` 引用 —— **下游无需知道是哪个节点产出的**（多 Agent
+ * 协同按语义引用的基础）。键名规则见 `browser/utils/templateUtils.ts::parseSharedPublishKeys`
+ * （仅 `[\w-]` / 点分，逗号分隔多个；不合法的键会被丢弃，否则写进去也永远替换不出来）。
+ *
+ * 只登记在弹窗表单（`VSSAROS_FIELDS`），**不**加到 `spec.widgets`（卡片控件）—— 与
+ * AskUser 多问题重构同一先例：卡片控件 + 弹窗字段 = 两套不同步的编辑入口。
+ */
+const PUBLISHES_FIELD: EditorField = {
+	key: 'publishes',
+	label: '发布为共享变量 (可选)',
+	kind: 'text',
+	defaultValue: '',
+	placeholder: '逗号分隔的语义名，如 verdict, plan；下游用 {{shared.verdict}} 引用（键名仅限字母数字-_，不支持中文）',
+};
+
 const VSSAROS_FIELDS: Record<string, EditorField[]> = {
 	'Saros.Prompt': [
 		{ key: 'prompt', label: '提示词', kind: 'textarea', defaultValue: '', placeholder: '提示词模板。可用占位符：{{input}}（上游）、{{args.x}}（Start 参数）、{{变量名}}（下方 variables 定义的局部变量）、{{节点名}}（上游节点）' },
 		{ key: 'variables', label: '变量 (JSON)', kind: 'textarea', defaultValue: '{}', placeholder: '局部变量：{"角色":"翻译助手","目标语言":"中文"}。值可为模板（支持 {{input}}/{{args.x}}），在提示词里用 {{变量名}} 引用' },
+		PUBLISHES_FIELD,
 	],
 	'Saros.Agent': [
 		{ key: 'agentId', label: 'Agent', kind: 'agent', defaultValue: '', placeholder: '选择 Agent' },
 		{ key: 'providerId', label: 'Provider', kind: 'agentProvider', defaultValue: '', placeholder: 'LLM Provider（聊天模型）' },
 		{ key: 'modelId', label: 'Model', kind: 'agentModel', defaultValue: '', placeholder: 'LLM 模型' },
 		{ key: 'prompt', label: '提示词', kind: 'textarea', defaultValue: '', placeholder: '发给 Agent 的任务模板，{{input}} = 上游输出' },
+		PUBLISHES_FIELD,
 	],
 	'Saros.Task': [
 		{ key: 'prompt', label: '任务描述', kind: 'textarea', defaultValue: '', placeholder: '原子子任务描述，{{input}} = 上游输出' },
 		{ key: 'agentId', label: 'Agent', kind: 'agent', defaultValue: '', placeholder: '留空 = 默认 saros-claw' },
+		PUBLISHES_FIELD,
 	],
 	'Saros.Skill': [
 		{ key: 'skillName', label: 'Skill', kind: 'skill', defaultValue: '', placeholder: '选择 Skill' },
 		{ key: 'task', label: '任务说明 (可选)', kind: 'text', defaultValue: '', placeholder: '告诉子代理要用这个技能完成什么（{{input}} = 上游输出）' },
 		{ key: 'skillArgs', label: '参数 (JSON)', kind: 'textarea', defaultValue: '{}', placeholder: '技能参数，{{input}} = 上游输出' },
+		PUBLISHES_FIELD,
 	],
 	'Saros.Tool': [
 		{ key: 'toolName', label: 'Tool', kind: 'tool', defaultValue: '', placeholder: '选择工具' },
 		{ key: 'toolParams', label: '参数 (JSON)', kind: 'textarea', defaultValue: '{}' },
+		PUBLISHES_FIELD,
 	],
 	'Saros.IfElse': [
 		{ key: 'evaluationTarget', label: '评估目标', kind: 'text', defaultValue: '', placeholder: '对上游 JSON 取点路径，例如 value 或 a.b.c；也支持 {{input.value}} 写法。留空 = 对上游整体做真值判定。true/false 两个输出端口' },
@@ -98,29 +120,36 @@ const VSSAROS_FIELDS: Record<string, EditorField[]> = {
 		{ key: 'evaluationTarget', label: '评估目标', kind: 'text', defaultValue: '', placeholder: '对上游 JSON 取点路径，例如 value 或 a.b.c；也支持 {{input.value}} 写法。留空 = 对上游整体取值' },
 		{ key: 'cases', label: '匹配值 (cases)', kind: 'textarea', defaultValue: '[]', placeholder: 'JSON 数组 ["a","b"] 或逗号分隔 a,b。前 4 项依次对应 case-1..4 端口，未命中走 default 端口' },
 	],
+	// ★ 多问题重构（2026-09-11，用户需求「自由编辑参数个数/类型/增删」+「多问题」）：
+	//   表单唯一入口 = `questions` 数组，每个问题自带模式（选项按钮 / 参数表单）、
+	//   选项或参数列表、必填/多选/自由输入开关。
+	//   旧的单问题字段（questionText / options / params / multiSelect / allowCustom /
+	//   customLabel）**不再出现在表单里** —— 打开弹窗时由 sarosDataToValues 自动
+	//   迁移为 questions[0]（见下方 Saros.AskUser 特例），保存后数据即升级；
+	//   执行器侧 questions 优先、旧字段回落，双向兼容。
 	'Saros.AskUser': [
-		{ key: 'questionText', label: '问题文本', kind: 'text', defaultValue: 'Select an option' },
-		{ key: 'options', label: '选项 (JSON)', kind: 'textarea', defaultValue: '[{"label":"Option 1"},{"label":"Option 2"}]' },
-		{ key: 'multiSelect', label: '多选', kind: 'select', defaultValue: 'no', options: ['yes', 'no'] },
+		{ key: 'questions', label: '问题列表', kind: 'textarea', defaultValue: '[]', placeholder: '每个问题独立配置：回答方式（选项按钮 / 参数表单）、选项或参数、必填与多选开关' },
 	],
 	'Saros.ProviderPicker': [
 		{ key: 'providerId', label: 'Provider', kind: 'provider', defaultValue: '' },
 		{ key: 'modelId', label: 'Model', kind: 'providerModel', defaultValue: '' },
 	],
-	// W1/P1: Start 工作流输入契约——args 定义全图可引用的 {{args.key}} 参数。
-	// 保持字符串存储（不加入 SAROS_JSON_KEYS）：registry 的 args widget 与
-	// 本表单双入口都写字符串，collectStartArgs 统一 JSON.parse。
-	'Saros.Start': [
-		{ key: 'args', label: '输入参数 (JSON)', kind: 'textarea', defaultValue: '{}', placeholder: '工作流输入契约，图内用 {{args.key}} 引用。例如 {"topic":"cyberpunk","count":4}' },
-	],
+	// 2026-09-09：Start 的「输入参数 (JSON)」表单随卡片 args UI 一并移除。
+	// 数据通道保留：properties.args 仍由运行前参数面板 / collectStartArgs 消费。
 	// End 输出契约：description 纯记录用途（执行器仍透传上游快照）。
 	'Saros.End': [
 		{ key: 'description', label: '输出说明 (可选)', kind: 'text', defaultValue: '', placeholder: '描述这个工作流的最终输出（记录用途，不影响执行）' },
 	],
+	// P1-4：动态工作流脚本作为 DAG 节点（复用 executeWorkflowScript，与「workflow 工具」同一引擎）。
+	'Saros.Script': [
+		{ key: 'script', label: '脚本', kind: 'textarea', defaultValue: '', placeholder: 'Dynamic Workflow 脚本（stage()/agent() 等 DSL）。在 DAG 里内联执行，输出作为本节点结果。' },
+		{ key: 'name', label: '名称', kind: 'text', defaultValue: 'script', placeholder: '脚本名（meta.name），用于日志与投影标识' },
+		{ key: 'args', label: '参数 (JSON)', kind: 'textarea', defaultValue: '{}', placeholder: '可选：传给脚本的 args，例如 {"topic":"cyberpunk"}' },
+	],
 };
 
 /** JSON-typed field keys whose value is stored as a structured object/array. */
-const SAROS_JSON_KEYS = new Set(['variables', 'skillArgs', 'toolParams', 'options']);
+const SAROS_JSON_KEYS = new Set(['variables', 'skillArgs', 'toolParams', 'options', 'params', 'questions']);
 
 /** P1: whether a field key is a JSON 对象/数组字段（表单用 KV 结构化编辑器渲染）。 */
 export function isSarosJsonField(key: string): boolean {
@@ -150,7 +179,68 @@ export function sarosDataToValues(type: string, data: Record<string, unknown> | 
 			out[f.key] = data?.[f.key] ?? f.defaultValue;
 		}
 	}
+	if (type === 'Saros.AskUser') {
+		out.questions = safeJsonStringify(migrateAskUserQuestions(data));
+	}
 	return out;
+}
+
+/** AskUser 单个问题的规范化形态（与执行器读取侧契约一致）。 */
+export interface AskUserQuestion {
+	key: string;
+	text: string;
+	mode: 'options' | 'params';
+	required?: boolean;
+	options?: Array<{ label: string; description?: string }>;
+	params?: Array<{ key: string; label?: string; type?: string }>;
+	multiSelect?: boolean;
+	allowCustom?: boolean;
+	customLabel?: string;
+}
+
+/**
+ * 旧单问题字段 → `questions[]` 迁移（2026-09-11 多问题重构）。
+ *
+ * 规则：`data.questions` 非空直接用（已是新格式）；否则若旧字段
+ * （questionText / options / params）有内容，合成一个 question —— 让存量节点
+ * 打开弹窗即见完整配置，用户保存后数据自然升级。两者都空 → 返回一个默认
+ * 选项模式的空问题（保证 UI 至少有一张可编辑卡片）。
+ * 纯函数，供编辑器与测试复用。
+ */
+export function migrateAskUserQuestions(data: Record<string, unknown> | undefined): AskUserQuestion[] {
+	const raw = data?.questions;
+	if (Array.isArray(raw) && raw.length > 0) { return raw as AskUserQuestion[]; }
+	if (typeof raw === 'string' && raw.trim()) {
+		try {
+			const parsed = JSON.parse(raw) as unknown;
+			if (Array.isArray(parsed) && parsed.length > 0) { return parsed as AskUserQuestion[]; }
+		} catch { /* 非法 JSON → 走旧字段迁移 */ }
+	}
+	const parseArr = <T>(v: unknown): T[] => {
+		if (Array.isArray(v)) { return v as T[]; }
+		if (typeof v === 'string' && v.trim()) {
+			try { const p = JSON.parse(v) as unknown; return Array.isArray(p) ? p as T[] : []; } catch { return []; }
+		}
+		return [];
+	};
+	const legacyOptions = parseArr<{ label: string; description?: string }>(data?.options);
+	const legacyParams = parseArr<{ key: string; label?: string; type?: string }>(data?.params);
+	const legacyText = typeof data?.questionText === 'string' ? data.questionText : '';
+	if (legacyOptions.length > 0 || legacyParams.length > 0 || legacyText.trim()) {
+		return [{
+			key: 'q1',
+			text: legacyText,
+			// params 非空且 options 为空 → 参数模式（与执行器的隐式优先级一致）
+			mode: legacyParams.length > 0 && legacyOptions.length === 0 ? 'params' : 'options',
+			required: false,
+			options: legacyOptions,
+			params: legacyParams,
+			multiSelect: !!data?.multiSelect,
+			allowCustom: !!data?.allowCustom,
+			customLabel: typeof data?.customLabel === 'string' ? data.customLabel : '',
+		}];
+	}
+	return [{ key: 'q1', text: 'Select an option', mode: 'options', required: false, options: [{ label: 'Option 1' }, { label: 'Option 2' }], params: [], multiSelect: false, allowCustom: false, customLabel: '' }];
 }
 
 /** Convert flat editor values → persisted `node.data` (JSON fields parsed). */

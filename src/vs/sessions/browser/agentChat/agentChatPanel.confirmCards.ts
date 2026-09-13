@@ -167,6 +167,139 @@ export abstract class AgentChatPanelConfirmCards extends AgentChatPanelStatusCar
 			return card;
 		}
 
+	/** D3：AskUser 自由输入的草稿（key = askUser.id）——卡片重渲染时保留用户输入。 */
+	private readonly _askUserCustomDrafts = new Map<string, string>();
+
+	/** D4：AskUser 动态参数草稿（key = askUser.id → { fieldKey: value }）。 */
+	private readonly _askUserParamDrafts = new Map<string, Record<string, string>>();
+
+	/**
+	 * ★ 多问题（2026-09-11）：每问题的作答草稿
+	 * （key = askUser.id → { [questionKey]: string | string[] | Record<string,string> }）。
+	 * 选项模式存 label（多选存数组）；参数模式存 { 字段key: 值 }。
+	 */
+	private readonly _askUserAnswersDrafts = new Map<string, Record<string, unknown>>();
+
+	/**
+	 * 多问题单页渲染（2026-09-11）。每问题独立模式（选项按钮 / 参数表单），
+	 * 底部一次提交 → `{ __askUserAnswer:1, answers:{ [key]: value } }`。
+	 * 选中态 / 输入值存在 `_askUserAnswersDrafts`，卡片重渲染不丢。
+	 */
+	private _renderMultiQuestionAskUser(card: HTMLElement, askUser: ILiveWorkflowAskUser): void {
+		const questions = askUser.questions ?? [];
+		const getDraft = (): Record<string, unknown> => this._askUserAnswersDrafts.get(askUser.id) ?? {};
+		const setAnswer = (qKey: string, value: unknown): void => {
+			this._askUserAnswersDrafts.set(askUser.id, { ...getDraft(), [qKey]: value });
+		};
+		const rerender = (): void => {
+			const msgEl = card.closest('.chat-message') as HTMLElement | null;
+			const msgId = msgEl?.dataset.msgId;
+			if (!msgId) { return; }
+			const msg = this._messages.find(m => m.id === msgId);
+			if (msg) { this._updateMessageDom(this._messages.indexOf(msg), msg); }
+		};
+
+		questions.forEach((q, qi) => {
+			const block = append(card, $('.askuser-question-block'));
+			append(block, $('div.askuser-question-text', undefined,
+				`${qi + 1}. ${q.text || '（未命名问题）'}${q.required ? ' *' : ''}`));
+
+			if (q.mode === 'params') {
+				const draft = (getDraft()[q.key] as Record<string, string> | undefined) ?? {};
+				const wrap = append(block, $('.askuser-fields'));
+				for (const f of q.params ?? []) {
+					const row = append(wrap, $('.askuser-field'));
+					append(row, $('span.askuser-custom-label', undefined, f.label || f.key));
+					const setField = (key: string, value: string): void => {
+						setAnswer(q.key, { ...((getDraft()[q.key] as Record<string, string> | undefined) ?? {}), [key]: value });
+					};
+					if (f.type === 'image') {
+						const fileInput = append(row, $('input.askuser-file-input')) as HTMLInputElement;
+						fileInput.type = 'file';
+						fileInput.accept = 'image/*';
+						const preview = append(row, $('img.askuser-image-preview')) as HTMLImageElement;
+						preview.alt = '';
+						const existing = draft[f.key] ?? '';
+						if (existing) { preview.src = existing; }
+						this._register(addDisposableListener(fileInput, EventType.CHANGE, () => {
+							const file = fileInput.files && fileInput.files.length > 0 ? fileInput.files[0] : undefined;
+							if (!file) { return; }
+							const reader = new FileReader();
+							reader.onload = () => {
+								const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+								if (!dataUrl) { return; }
+								setField(f.key, dataUrl);
+								preview.src = dataUrl;
+								preview.classList.add('has-image');
+							};
+							reader.readAsDataURL(file);
+						}));
+						continue;
+					}
+					if (f.type === 'textarea') {
+						const ta = append(row, $('textarea.askuser-custom-input')) as HTMLTextAreaElement;
+						ta.rows = 3;
+						ta.value = draft[f.key] ?? '';
+						this._register(addDisposableListener(ta, EventType.INPUT, () => setField(f.key, ta.value)));
+						continue;
+					}
+					const input = append(row, $('input.askuser-custom-input')) as HTMLInputElement;
+					input.type = f.type === 'number' ? 'number' : 'text';
+					input.value = draft[f.key] ?? '';
+					this._register(addDisposableListener(input, EventType.INPUT, () => setField(f.key, input.value)));
+				}
+				return;
+			}
+
+			// 选项模式
+			const multi = q.multiSelect === true;
+			const current = getDraft()[q.key];
+			const selected = multi
+				? (Array.isArray(current) ? current as string[] : [])
+				: (typeof current === 'string' && current ? [current] : []);
+			const optionsDiv = append(block, $(`.askuser-options.${multi ? 'multi' : 'single'}`));
+			for (const opt of q.options ?? []) {
+				const isSelected = selected.includes(opt.label);
+				const optBtn = append(optionsDiv, $('button.askuser-option' + (isSelected ? '.selected' : '')));
+				this._register(addDisposableListener(optBtn, EventType.CLICK, () => {
+					if (multi) {
+						const next = isSelected ? selected.filter(l => l !== opt.label) : [...selected, opt.label];
+						setAnswer(q.key, next);
+					} else {
+						setAnswer(q.key, opt.label);
+					}
+					rerender();
+				}));
+				append(optBtn, $('span.askuser-option-marker', undefined, multi ? (isSelected ? '☑' : '☐') : (isSelected ? '●' : '○')));
+				const body = append(optBtn, $('span.askuser-option-body'));
+				append(body, $('span.askuser-option-label', undefined, opt.label));
+				if (opt.description) { append(body, $('span.askuser-option-description', undefined, opt.description)); }
+			}
+			if (q.allowCustom) {
+				const customWrap = append(block, $('.askuser-custom'));
+				append(customWrap, $('span.askuser-custom-label', undefined, q.customLabel || '其他（请输入）'));
+				const input = append(customWrap, $('input.askuser-custom-input')) as HTMLInputElement;
+				input.type = 'text';
+				input.placeholder = '输入你的答案…';
+				input.value = multi ? '' : (typeof current === 'string' && !selected.includes(current) ? current : '');
+				this._register(addDisposableListener(input, EventType.INPUT, () => setAnswer(q.key, input.value)));
+			}
+		});
+
+		const actions = append(card, $('.askuser-actions'));
+		const submitBtn = append(actions, $('button.askuser-submit')) as HTMLButtonElement;
+		submitBtn.textContent = `提交（${questions.length} 个问题）`;
+		this._register(addDisposableListener(submitBtn, EventType.CLICK, () => {
+			const answers = getDraft();
+			const missing = questions.filter(q => q.required && !answers[q.key]).map(q => q.text || q.key);
+			if (missing.length > 0 && !window.confirm(`以下必填问题尚未回答，仍要提交吗？\n- ${missing.join('\n- ')}`)) { return; }
+			this._onAskUserSubmit?.(askUser.id, askUser.executionId, askUser.nodeId, {
+				__askUserAnswer: 1,
+				answers,
+			});
+		}));
+	}
+
 	protected override _createAskUserCard(askUser: ILiveWorkflowAskUser): HTMLElement {
 			const card = $(`.askuser-card.${askUser.status}`);
 			const isPending = askUser.status === 'pending';
@@ -187,7 +320,11 @@ export abstract class AgentChatPanelConfirmCards extends AgentChatPanelStatusCar
 			append(card, $('div.askuser-card-question', undefined, askUser.question));
 
 			// Options (interactive only while pending)
-			if (isPending) {
+			// ★ 多问题（2026-09-11）：questions 非空 → 单页渲染全部问题，一次提交
+			//   （`{ __askUserAnswer:1, answers:{...} }`）；否则走既有单问题分支。
+			if (isPending && askUser.questions && askUser.questions.length > 0) {
+				this._renderMultiQuestionAskUser(card, askUser);
+			} else if (isPending) {
 				const optionsDiv = append(card, $(`.askuser-options.${askUser.multiSelect ? 'multi' : 'single'}`));
 				askUser.options.forEach((opt, idx) => {
 					const isSelected = askUser.selectedIndices.includes(idx);
@@ -220,15 +357,95 @@ export abstract class AgentChatPanelConfirmCards extends AgentChatPanelStatusCar
 					}
 				});
 
+				// ★ D3 自由输入（2026-09-10）：allowCustom 时选项尾部渲染输入框，
+				//   用户可回答选项之外的答案（动态参数）。值随卡片重渲染保存在
+				//   askUserCustomDrafts（key = askUser.id）。
+				let customInput: HTMLInputElement | undefined;
+				if (askUser.allowCustom) {
+					const customWrap = append(card, $('.askuser-custom'));
+					append(customWrap, $('span.askuser-custom-label', undefined, askUser.customLabel || '其他（请输入）'));
+					customInput = append(customWrap, $('input.askuser-custom-input')) as HTMLInputElement;
+					customInput.type = 'text';
+					customInput.placeholder = '输入你的答案…';
+					customInput.value = this._askUserCustomDrafts.get(askUser.id) ?? '';
+					this._register(addDisposableListener(customInput, EventType.INPUT, () => {
+						if (customInput) { this._askUserCustomDrafts.set(askUser.id, customInput.value); }
+					}));
+				}
+
+				// ★ D4 动态参数字段（多字段输入表单）：值随重渲染保存在草稿 Map。
+				if (askUser.fields && askUser.fields.length > 0) {
+					const draft = this._askUserParamDrafts.get(askUser.id) ?? {};
+					const fieldsWrap = append(card, $('.askuser-fields'));
+					for (const f of askUser.fields) {
+						const row = append(fieldsWrap, $('.askuser-field'));
+						append(row, $('span.askuser-custom-label', undefined, f.label || f.key));
+						const setDraft = (key: string, value: string) => {
+							const next = { ...(this._askUserParamDrafts.get(askUser.id) ?? {}), [key]: value };
+							this._askUserParamDrafts.set(askUser.id, next);
+						};
+						// ★ 媒体字段（2026-09-10）：文件选择 + 缩略图预览，值 = **data URL**
+						//   ——与既有 context.images（聊天附件 data URL）同构，下游媒体端口
+						//   （EmojiStage 参考图等）无需额外转换即可消费。
+						if (f.kind === 'image') {
+							const fileInput = append(row, $('input.askuser-file-input')) as HTMLInputElement;
+							fileInput.type = 'file';
+							fileInput.accept = 'image/*';
+							const preview = append(row, $('img.askuser-image-preview')) as HTMLImageElement;
+							preview.alt = '';
+							const existing = draft[f.key] ?? f.default ?? '';
+							if (existing) { preview.src = existing; }
+							this._register(addDisposableListener(fileInput, EventType.CHANGE, () => {
+								const file = fileInput.files && fileInput.files.length > 0 ? fileInput.files[0] : undefined;
+								if (!file) { return; }
+								const reader = new FileReader();
+								reader.onload = () => {
+									const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+									if (!dataUrl) { return; }
+									setDraft(f.key, dataUrl);
+									preview.src = dataUrl;
+									preview.classList.add('has-image');
+								};
+								reader.readAsDataURL(file);
+							}));
+							continue;
+						}
+						const input = append(row, $('input.askuser-custom-input')) as HTMLInputElement;
+						input.type = f.kind === 'number' ? 'number' : 'text';
+						if (f.placeholder) { input.placeholder = f.placeholder; }
+						input.value = draft[f.key] ?? f.default ?? '';
+						this._register(addDisposableListener(input, EventType.INPUT, () => {
+							setDraft(f.key, input.value);
+						}));
+					}
+				}
+
 				// Submit button
 				const actions = append(card, $('.askuser-actions'));
-				const canSubmit = askUser.selectedIndices.length > 0;
+				const customValue = (customInput?.value ?? this._askUserCustomDrafts.get(askUser.id) ?? '').trim();
+				const canSubmit = askUser.selectedIndices.length > 0 || customValue.length > 0;
 				const submitBtn = append(actions, $('button.askuser-submit' + (canSubmit ? '' : '.disabled'))) as HTMLButtonElement;
 				submitBtn.textContent = askUser.multiSelect ? `提交选择 (${askUser.selectedIndices.length})` : '提交';
 				submitBtn.disabled = !canSubmit;
 				this._register(addDisposableListener(submitBtn, EventType.CLICK, () => {
-					if (!canSubmit) { return; }
-					const selectedLabels = askUser.selectedIndices.map(i => askUser.options[i]?.label).filter(Boolean);
+					const text = (this._askUserCustomDrafts.get(askUser.id) ?? '').trim();
+					if (!canSubmit && !text) { return; }
+					let selectedLabels = askUser.selectedIndices.map(i => askUser.options[i]?.label).filter(Boolean);
+					// 自由输入并入答案：多选时追加，单选且未选选项时作为唯一答案。
+					if (text) { selectedLabels = [...selectedLabels, text]; }
+					if (!askUser.multiSelect && selectedLabels.length > 1) { selectedLabels = [text]; }
+					// ★ D4：有动态参数字段时提交**对象态答案**（labels + params），
+					//   否则保持字符串/数组态（旧行为，零影响）。
+					const params = this._askUserParamDrafts.get(askUser.id) ?? {};
+					if (askUser.fields && askUser.fields.length > 0) {
+						this._onAskUserSubmit?.(askUser.id, askUser.executionId, askUser.nodeId, {
+							__askUserAnswer: 1,
+							labels: selectedLabels,
+							params,
+							multiSelect: askUser.multiSelect,
+						});
+						return;
+					}
 					// Call onAskUserSubmit callback
 					this._onAskUserSubmit?.(askUser.id, askUser.executionId, askUser.nodeId, askUser.multiSelect ? selectedLabels : selectedLabels[0] ?? '');
 				}));

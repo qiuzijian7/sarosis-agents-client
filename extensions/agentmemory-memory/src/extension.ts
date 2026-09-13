@@ -23,6 +23,12 @@ interface AgentOSLike {
 interface PluginContext {
 	agentOSService?: AgentOSLike;
 	agentOS?: AgentOSLike;
+	/** 宿主注入的日志服务（可选）——存在时记忆运行日志进 VS Code 日志文件 */
+	logService?: {
+		info?(msg: string): void;
+		warn?(msg: string): void;
+		error?(msg: string): void;
+	};
 	[key: string]: unknown;
 }
 
@@ -60,9 +66,13 @@ export class AgentMemoryPlugin {
 		}
 
 		try {
-			this._provider = new AgentMemoryProviderProxy();
+			// R9（2026-09-10）：注入宿主 logService，使记忆运行日志进 VS Code 日志文件
+			//（此前全走 console，用户日志里只有激活行、无运行时行，故障不可诊断）。
+			this._provider = new AgentMemoryProviderProxy(context.logService);
 			this._registration = agentOS.registerMemoryProvider(this._provider, 1000);
 			console.log('[AgentMemory] registered (priority=1000)');
+			// 启动探活：无论是否有记忆调用，都打一行网关可达性（+ 故障排查指引）
+			this._provider.probeGateway();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			console.error(`[AgentMemory] registerMemoryProvider error: ${msg}`);

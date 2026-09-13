@@ -121,10 +121,19 @@ export class MainProcessModelProvider extends BuiltInBYOKModelProvider {
 			return await callOnce(url, imageMethod);
 		} catch (e) {
 			const msg = (e as Error)?.message ?? '';
-			// 405 常见于 OpenAI 兼容代理只在 /v1 前缀下暴露 images 端点
+			// 405/404 常见于 OpenAI 兼容代理只在 /v1 前缀下暴露 images 端点
 			//（如 chatgpt2api）。自动回退到 /v1 前缀版本，免去手动配置。
+			// ★ 2026-09-10：加入 404 —— 部分 OpenAI 兼容代理对**缺 /v1 前缀**的路径
+			// 返回 404（而非 405），旧逻辑只判 405 → 明明 /v1 下有端点也不回退。
+			//
+			// ⚠ 注意区分两类 404：
+			//   ① 路径前缀问题（本回退能修）——/v1 下确有端点；
+			//   ② 网关根本不开放 Images API（回退无效）——如 grnexus 返回
+			//      "Images API is not supported for this platform"（见
+			//      workflowRunShared.ts:865 的既有记录）。此类只能换 provider，
+			//      imageGenTools 的错误提示已给出引导。
 			const alreadyV1 = /\/v1\//.test(url) || imagePath.startsWith('v1/');
-			if (msg.includes('405') && !alreadyV1 && imageMethod === 'POST') {
+			if ((msg.includes('405') || msg.includes('404')) && !alreadyV1 && imageMethod === 'POST') {
 				const v1Url = `${baseUrl.replace(/\/+$/, '')}/v1/${imagePath.replace(/^\/+/, '')}`;
 				this._logService.info(`[BYOK:${this.id}] generateImage 405 → 自动回退 /v1 前缀: ${v1Url}`);
 				try {

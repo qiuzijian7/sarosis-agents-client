@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工作流数据传递机制 · 参数如何生效</title>
+<style>
+	:root {
+		--bg: #0d1117; --bg2: #131a23; --bg3: #1a2230;
+		--fg: #e6edf3; --fg2: #9aa7b8; --fg3: #6b7a8d;
+		--line: #263040;
+		--c-input: #f0b429;   /* 用户输入 */
+		--c-store: #a78bfa;   /* 存储层 */
+		--c-sched: #22d3ee;   /* 调度层 */
+		--c-exec:  #34d399;   /* 执行层 */
+		--c-snap:  #f472b6;   /* 快照总线 */
+		--c-warn:  #fb7185;
+		--c-ok:    #4ade80;
+		--mono: 'Cascadia Code', Consolas, 'JetBrains Mono', monospace;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; padding: 0 0 80px; background: var(--bg); color: var(--fg);
+		font: 14px/1.75 -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+	}
+	.wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px; }
+	header {
+		padding: 44px 0 26px; border-bottom: 1px solid var(--line); margin-bottom: 34px;
+		background: radial-gradient(1200px 220px at 20% -40px, rgba(34,211,238,.10), transparent 70%);
+	}
+	h1 { font-size: 27px; margin: 0 0 10px; letter-spacing: .3px; }
+	h1 .sub { font-size: 14px; color: var(--fg2); font-weight: 400; margin-left: 10px; }
+	.lede { color: var(--fg2); font-size: 14.5px; max-width: 900px; }
+	.lede b { color: var(--fg); }
+	h2 {
+		font-size: 19px; margin: 46px 0 16px; padding-left: 12px;
+		border-left: 3px solid var(--c-sched); display: flex; align-items: center; gap: 10px;
+	}
+	h2 .n {
+		font: 700 12px/1 var(--mono); color: var(--c-sched); background: rgba(34,211,238,.12);
+		border: 1px solid rgba(34,211,238,.35); border-radius: 5px; padding: 4px 7px;
+	}
+	h3 { font-size: 15.5px; margin: 26px 0 10px; color: var(--fg); }
+	h4 { font-size: 13.5px; margin: 18px 0 8px; color: var(--fg2); font-weight: 600; }
+	p { margin: 9px 0; }
+	code {
+		font-family: var(--mono); font-size: 12.5px; background: var(--bg3);
+		padding: 1.5px 5px; border-radius: 4px; color: #9cdcfe; border: 1px solid var(--line);
+	}
+	pre {
+		background: #0a0e14; border: 1px solid var(--line); border-radius: 8px;
+		padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px;
+		line-height: 1.65; margin: 12px 0;
+	}
+	pre .cm { color: var(--fg3); }
+	pre .kw { color: #ff7b72; }
+	pre .fn { color: #d2a8ff; }
+	pre .st { color: #a5d6ff; }
+	pre .hl { color: var(--c-sched); font-weight: 600; }
+	pre .bad { color: var(--c-warn); }
+	table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+	th, td { border: 1px solid var(--line); padding: 9px 11px; text-align: left; vertical-align: top; }
+	th { background: var(--bg3); color: var(--fg); font-weight: 600; font-size: 12.5px; }
+	td code { font-size: 12px; }
+	tbody tr:nth-child(even) { background: rgba(255,255,255,.015); }
+	.tag {
+		display: inline-block; font: 600 10.5px/1 var(--mono); padding: 3px 7px;
+		border-radius: 4px; border: 1px solid; vertical-align: middle;
+	}
+	.t-in    { color: var(--c-input); border-color: rgba(240,180,41,.4); background: rgba(240,180,41,.1); }
+	.t-store { color: var(--c-store); border-color: rgba(167,139,250,.4); background: rgba(167,139,250,.1); }
+	.t-sched { color: var(--c-sched); border-color: rgba(34,211,238,.4); background: rgba(34,211,238,.1); }
+	.t-exec  { color: var(--c-exec); border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.1); }
+	.t-snap  { color: var(--c-snap); border-color: rgba(244,114,182,.4); background: rgba(244,114,182,.1); }
+	.t-warn  { color: var(--c-warn); border-color: rgba(251,113,133,.4); background: rgba(251,113,133,.1); }
+	.t-ok    { color: var(--c-ok); border-color: rgba(74,222,128,.4); background: rgba(74,222,128,.1); }
+
+	/* ── 分层图 ── */
+	.stack { display: flex; flex-direction: column; gap: 0; margin: 20px 0; }
+	.layer {
+		border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+		background: var(--bg2); position: relative;
+	}
+	.layer + .layer { margin-top: 30px; }
+	.layer + .layer::before {
+		content: '▼'; position: absolute; top: -25px; left: 50%; transform: translateX(-50%);
+		color: var(--fg3); font-size: 13px;
+	}
+	.layer .lhd { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+	.layer .lhd .ttl { font-weight: 700; font-size: 14.5px; }
+	.layer .lhd .file { font: 400 11.5px var(--mono); color: var(--fg3); }
+	.layer .body { color: var(--fg2); font-size: 13px; }
+	.layer .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+	.chip {
+		background: var(--bg3); border: 1px solid var(--line); border-radius: 6px;
+		padding: 6px 10px; font-size: 12px; font-family: var(--mono); color: var(--fg2);
+	}
+	.layer.l-in    { border-color: rgba(240,180,41,.35); }
+	.layer.l-store { border-color: rgba(167,139,250,.35); }
+	.layer.l-sched { border-color: rgba(34,211,238,.35); }
+	.layer.l-exec  { border-color: rgba(52,211,153,.35); }
+	.layer.l-out   { border-color: rgba(244,114,182,.35); }
+
+	/* ── 优先级阶梯 ── */
+	.prio { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
+	.prio .row {
+		display: flex; align-items: center; gap: 12px; padding: 11px 14px;
+		border: 1px solid var(--line); border-radius: 8px; background: var(--bg2);
+	}
+	.prio .row.win { border-color: rgba(74,222,128,.45); background: rgba(74,222,128,.06); }
+	.prio .lv {
+		font: 700 11px/1 var(--mono); color: var(--fg3); border: 1px solid var(--line);
+		border-radius: 4px; padding: 4px 6px; min-width: 26px; text-align: center;
+	}
+	.prio .row.win .lv { color: var(--c-ok); border-color: rgba(74,222,128,.45); }
+	.prio .desc { flex: 1; font-size: 13px; }
+	.prio .desc b { color: var(--fg); }
+	.prio .src { font: 400 11.5px var(--mono); color: var(--fg3); }
+
+	/* ── 时序 ── */
+	.steps { counter-reset: s; margin: 18px 0; }
+	.step {
+		position: relative; padding: 12px 14px 12px 52px; border: 1px solid var(--line);
+		border-radius: 8px; background: var(--bg2); margin-bottom: 8px;
+	}
+	.step::before {
+		counter-increment: s; content: counter(s);
+		position: absolute; left: 14px; top: 12px; width: 24px; height: 24px;
+		display: flex; align-items: center; justify-content: center;
+		background: rgba(34,211,238,.12); border: 1px solid rgba(34,211,238,.4);
+		border-radius: 50%; font: 700 11.5px var(--mono); color: var(--c-sched);
+	}
+	.step .st { font-weight: 600; font-size: 13.5px; margin-bottom: 3px; }
+	.step .sd { font-size: 12.5px; color: var(--fg2); }
+	.step code { font-size: 12px; }
+
+	.note {
+		border-left: 3px solid var(--c-sched); background: rgba(34,211,238,.05);
+		padding: 11px 14px; border-radius: 0 8px 8px 0; margin: 14px 0; font-size: 13px;
+	}
+	.note.warn { border-left-color: var(--c-warn); background: rgba(251,113,133,.06); }
+	.note.ok { border-left-color: var(--c-ok); background: rgba(74,222,128,.05); }
+	.note .nt { font-weight: 700; display: block; margin-bottom: 3px; }
+	.note.warn .nt { color: var(--c-warn); }
+	.note.ok .nt { color: var(--c-ok); }
+	.note .nt { color: var(--c-sched); }
+
+	.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+	@media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
+	.card {
+		border: 1px solid var(--line); border-radius: 9px; background: var(--bg2); padding: 14px 16px;
+	}
+	.card h4 { margin-top: 0; }
+	.flow-diagram { margin: 20px 0; }
+	svg { display: block; width: 100%; height: auto; }
+	svg text { font-family: var(--mono); font-size: 11.5px; fill: var(--fg2); }
+	svg .lbl { fill: var(--fg); font-weight: 600; font-size: 12px; }
+	svg .box { fill: var(--bg3); stroke: var(--line); }
+	.foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--fg3); font-size: 12.5px; }
+	.toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 0; }
+	.toc a {
+		color: var(--fg2); text-decoration: none; font-size: 12.5px;
+		border: 1px solid var(--line); border-radius: 20px; padding: 5px 12px; background: var(--bg2);
+	}
+	.toc a:hover { color: var(--c-sched); border-color: rgba(34,211,238,.5); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+	<h1>工作流数据传递机制<span class="sub">用户输入如何流到节点 · 参数如何生效 · 运行机制</span></h1>
+	<p class="lede">
+		工作流里「用户填的值」和「上游产出的数据」走的是<b>两条完全不同的通道</b>：
+		参数走 <b>属性（properties / data）</b>，媒体产物走 <b>快照总线（MediaSnapshotStore）</b>；
+		而<b>连线只决定拓扑顺序与「谁是谁的上游」</b>，数据本身从不沿连线直传。
+		理解这三句话，就能解释绝大多数「参数没生效 / 下游拿到空值」的问题。
+	</p>
+	<div class="toc">
+		<a href="#overview">一、总览</a>
+		<a href="#inputs">二、5 个输入入口</a>
+		<a href="#storage">三、存储双层</a>
+		<a href="#merge">四、输入合成优先级</a>
+		<a href="#snapshot">五、快照总线</a>
+		<a href="#template">六、模板占位符</a>
+		<a href="#schedule">七、谁执行：调度与路由</a>
+		<a href="#paths">八、三条执行路径</a>
+		<a href="#timeline">九、一次 Run 的时序</a>
+		<a href="#pitfalls">十、排错对照表</a>
+	</div>
+</header>
+
+<!-- ═══════════════ 一、总览 ═══════════════ -->
+<h2 id="overview"><span class="n">01</span>总览：五段式数据流</h2>
+
+<div class="flow-diagram">
+<svg viewBox="0 0 1100 300" preserveAspectRatio="xMidYMid meet">
+	<defs>
+		<marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+			<path d="M0,0 L7,3.2 L0,6.4 z" fill="#6b7a8d"/>
+		</marker>
+		<marker id="ar2" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+			<path d="M0,0 L7,3.2 L0,6.4 z" fill="#f472b6"/>
+		</marker>
+	</defs>
+
+	<!-- 1 输入 -->
+	<rect class="box" x="14" y="34" width="180" height="86" rx="9" stroke="#f0b429"/>
+	<text class="lbl" x="28" y="58" fill="#f0b429">① 用户输入</text>
+	<text x="28" y="78">Start.args（图级契约）</text>
+	<text x="28" y="94">卡片控件 / 弹窗（节点级）</text>
+	<text x="28" y="110">运行前参数面板</text>
+
+	<!-- 2 存储 -->
+	<rect class="box" x="248" y="34" width="180" height="86" rx="9" stroke="#a78bfa"/>
+	<text class="lbl" x="262" y="58" fill="#a78bfa">② 存储（双写）</text>
+	<text x="262" y="78">node.properties</text>
+	<text x="262" y="94">store.node.data</text>
+	<text x="262" y="110">comfyRunValuesRef</text>
+
+	<!-- 3 调度 -->
+	<rect class="box" x="482" y="34" width="190" height="86" rx="9" stroke="#22d3ee"/>
+	<text class="lbl" x="496" y="58" fill="#22d3ee">③ 调度</text>
+	<text x="496" y="78">拓扑计划 + Start 作用域</text>
+	<text x="496" y="94">分支路由（gate / AskUser）</text>
+	<text x="496" y="110">values 合成 + args 注入</text>
+
+	<!-- 4 执行 -->
+	<rect class="box" x="726" y="34" width="170" height="86" rx="9" stroke="#34d399"/>
+	<text class="lbl" x="740" y="58" fill="#34d399">④ 执行</text>
+	<text x="740" y="78">runNodeOrStage</text>
+	<text x="740" y="94">注入 api_json</text>
+	<text x="740" y="110">调 ComfyUI / Provider</text>
+
+	<!-- 5 输出 -->
+	<rect class="box" x="950" y="34" width="136" height="86" rx="9" stroke="#f472b6"/>
+	<text class="lbl" x="964" y="58" fill="#f472b6">⑤ 产物</text>
+	<text x="964" y="78">快照总线</text>
+	<text x="964" y="94">卡片 OUTPUT</text>
+	<text x="964" y="110">媒体库归档</text>
+
+	<!-- 主链路箭头 -->
+	<line x1="194" y1="77" x2="242" y2="77" stroke="#6b7a8d" stroke-width="1.6" marker-end="url(#ar)"/>
+	<line x1="428" y1="77" x2="476" y2="77" stroke="#6b7a8d" stroke-width="1.6" marker-end="url(#ar)"/>
+	<line x1="672" y1="77" x2="720" y2="77" stroke="#6b7a8d" stroke-width="1.6" marker-end="url(#ar)"/>
+	<line x1="896" y1="77" x2="944" y2="77" stroke="#6b7a8d" stroke-width="1.6" marker-end="url(#ar)"/>
+
+	<!-- 回流：快照 → 下一个节点的上游输入 -->
+	<path d="M 1018 120 C 1018 205, 560 205, 560 126" stroke="#f472b6" stroke-width="1.8"
+		fill="none" stroke-dasharray="7 5" marker-end="url(#ar2)"/>
+	<text x="700" y="200" fill="#f472b6">上游产物 → 下游 values.upstream（按 media.kind 取用）</text>
+	<text x="700" y="218" fill="#6b7a8d" font-size="11">连线只提供「上游 nodeId 列表」，数据走快照总线</text>
+</svg>
+</div>
+
+<div class="stack">
+	<div class="layer l-in">
+		<div class="lhd"><span class="ttl">① 用户输入</span><span class="file">Start 卡片 / 节点控件 / 弹窗 / 聊天工具</span></div>
+		<div class="body">五个入口，但最终都归一到「<b>某个节点的某个属性</b>」或「<b>图级 args</b>」两种形态。</div>
+	</div>
+	<div class="layer l-store">
+		<div class="lhd"><span class="ttl">② 存储：双层双写</span><span class="file">LiteGraphCanvas.tsx · useWorkflowEditorStore</span></div>
+		<div class="body">
+			<code>node.properties</code> 是画布真源（序列化保存到工作流文件）；<code>store.nodes[].data</code> 是执行链路真源。
+			<b>两者必须同时写</b> —— 历史 bug「提示词 two apple 未注入」就是只写了 properties。
+		</div>
+	</div>
+	<div class="layer l-sched">
+		<div class="lhd"><span class="ttl">③ 调度：谁执行、什么顺序、带什么值</span><span class="file">executionGraph.ts · workflowRun.ts</span></div>
+		<div class="body">
+			拓扑排序 + Start 作用域裁剪 + 分支路由 → 逐节点合成 <code>values</code>（三层优先级）并注入全局 <code>args</code>。
+		</div>
+	</div>
+	<div class="layer l-exec">
+		<div class="lhd"><span class="ttl">④ 执行：把值注入 ComfyUI 图</span><span class="file">stageWorkflowExecutor.injectWorkflowValues</span></div>
+		<div class="body">
+			按 <b>bindings</b>（<code>node_id.input_name → from</code>）从 values / upstreamValues 取值，cast/prefix/suffix 后写入 api_json 的对应 input。
+		</div>
+	</div>
+	<div class="layer l-out">
+		<div class="lhd"><span class="ttl">⑤ 产物：写回快照总线</span><span class="file">MediaSnapshotStore.put</span></div>
+		<div class="body">
+			执行产物按 <code>{sessionId}::{nodeId}:{port}:{index}</code> 归档；下游节点靠 <code>upstreams</code> 列表去总线取用，形成链式传递。
+		</div>
+	</div>
+</div>
+
+<!-- ═══════════════ 二、输入入口 ═══════════════ -->
+<h2 id="inputs"><span class="n">02</span>五个用户输入入口，各自的生效路径</h2>
+
+<table>
+	<thead>
+		<tr><th style="width:120px">入口</th><th style="width:150px">写入位置</th><th>生效路径</th><th style="width:110px">作用域</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><span class="tag t-in">Start.args</span><br><span style="font-size:11.5px;color:var(--fg3)">图级输入契约</span></td>
+			<td><code>node.data.args</code><br><span style="font-size:11.5px">JSON 字符串或对象</span></td>
+			<td><code>collectStartArgs(nodes)</code> → 合并成全局 <code>args</code> 对象 → 传给每个节点执行的 <code>input.args</code> → 文本类参数里写 <code>{{args.key}}</code> 即被替换</td>
+			<td>整图</td>
+		</tr>
+		<tr>
+			<td><span class="tag t-in">参数面板</span><br><span style="font-size:11.5px;color:var(--fg3)">运行时覆盖</span></td>
+			<td>临时对象<br><span style="font-size:11.5px">不持久化</span></td>
+			<td><code>promptStartArgs(nodes)</code> 读 Start 的 args 键 → 弹窗 → 用户改完返回 <code>startArgsOverride</code> → <code>{...collectStartArgs(), ...override}</code>（<b>运行时覆盖 &gt; 节点默认</b>）；取消返回 <code>null</code> 则中止本次运行</td>
+			<td>本次运行</td>
+		</tr>
+		<tr>
+			<td><span class="tag t-in">卡片控件</span><br><span style="font-size:11.5px;color:var(--fg3)">节点级参数</span></td>
+			<td><b>双写</b>：<code>node.properties[name]</code><br>+ <code>store.updateNodeData</code></td>
+			<td>控件 dispatch <code>wf-node-control</code> → <code>LiteGraphCanvas.handleNodeControl</code> 双写 → 运行时 <code>nodeValues[id]</code>（= <code>comfyRunValuesRef</code>）作为 <b>最高优先级</b> 合并进 <code>values</code></td>
+			<td>单节点</td>
+		</tr>
+		<tr>
+			<td><span class="tag t-in">弹窗编辑器</span><br><span style="font-size:11.5px;color:var(--fg3)">双击节点</span></td>
+			<td><code>comfyRunValuesRef[id]</code><br>+ <code>store.updateNodeData</code></td>
+			<td><code>NodeEditorPopup.onValuesCommit</code> → 写 <code>comfyRunValuesRef.current[id] = values</code>（执行直接读）+ 写 store（卡片刷新）</td>
+			<td>单节点</td>
+		</tr>
+		<tr>
+			<td><span class="tag t-in">聊天框 / Agent</span><br><span style="font-size:11.5px;color:var(--fg3)">headless 调用</span></td>
+			<td><code>executionState.context</code></td>
+			<td><code>_injectStartArgs()</code> 把 Start 的 <code>data.args</code> 展平成 <code>args.&lt;key&gt;</code> 写进 context → <code>_buildEvalContext</code> 暴露 string 项 → <code>_replaceVariables</code> 解析 <code>{{args.key}}</code>（<b>与画布路径同语义</b>）</td>
+			<td>整图</td>
+		</tr>
+	</tbody>
+</table>
+
+<h3>关键代码：卡片控件的双写（历史 bug 的修复点）</h3>
+<pre><span class="cm">// LiteGraphCanvas.tsx — handleNodeControl</span>
+<span class="kw">const</span> handleNodeControl = (e: Event) =&gt; {
+	<span class="kw">const</span> detail = (e <span class="kw">as</span> CustomEvent&lt;{ nodeId: <span class="kw">string</span>; name: <span class="kw">string</span>; value: <span class="kw">unknown</span> }&gt;).detail;
+	<span class="kw">const</span> node = graph.nodes.find(n =&gt; <span class="fn">String</span>(n.properties?.[<span class="st">'__sarosId'</span>] ?? n.id) === detail.nodeId);
+	node.properties[detail.name] = detail.value;          <span class="cm">// ① 画布真源（保存用）</span>
+	useWorkflowEditorStore.<span class="fn">getState</span>().<span class="fn">updateNodeData</span>(detail.nodeId, {
+		[detail.name]: detail.value,                       <span class="cm">// ② 执行真源（运行用）</span>
+	});
+	graph.<span class="fn">change</span>?.();
+	graph.<span class="fn">setDirtyCanvas</span>?.(<span class="kw">true</span>, <span class="kw">true</span>);
+};</pre>
+<div class="note warn">
+	<span class="nt">只写一半 = 参数永不生效</span>
+	原版只写 <code>node.properties</code> → 执行链路读的是 store 的 <code>node.data</code> → 用户输入被丢弃（实测：提示词 "two apple" 未注入，生成默认图像；<code>batch_size=2</code> 永远不生效）。<b>任何新增的控件/编辑入口都必须双写。</b>
+</div>
+
+<!-- ═══════════════ 三、存储双层 ═══════════════ -->
+<h2 id="storage"><span class="n">03</span>存储双层模型与同步方向</h2>
+
+<div class="grid2">
+	<div class="card">
+		<h4><span class="tag t-store">A</span> node.properties（LiteGraph）</h4>
+		<p style="font-size:13px;color:var(--fg2)">
+			画布引擎的真源。工作流保存时由 <code>graph.serialize()</code> 序列化；加载时 <code>configure()</code> 恢复。
+			<b>卡片的显示值直接从这里读</b>（<code>getNodeCardMeta(spec, node.properties)</code>）。
+		</p>
+	</div>
+	<div class="card">
+		<h4><span class="tag t-exec">B</span> store.nodes[].data（zustand）</h4>
+		<p style="font-size:13px;color:var(--fg2)">
+			执行链路真源。调度器 <code>runGraphExecution</code> 从 <code>nodes</code> 参数（= store 快照）读节点数据；
+			<code>collectStartArgs</code> / <code>collectOrchestrationValues</code> 也都读它。
+		</p>
+	</div>
+</div>
+
+<h3>两个同步方向</h3>
+<pre><span class="cm">// 方向 ①：store → graph（节点增删/连线变化时全量重建）</span>
+<span class="cm">// LiteGraphCanvas.tsx — useEffect([nodes, edges]) → syncStoreToGraph → graph.configure(...)</span>
+<span class="cm">// 效果：弹窗保存后 → store 变 → 触发重建 → node.properties 更新 → 卡片摘要刷新</span>
+
+<span class="cm">// 方向 ②：graph → store（用户拖拽/连线/改属性）</span>
+<span class="cm">// graph.on_change → syncGraphToStore → store.setNodes/Edges</span>
+<span class="cm">// 效果：画布上的操作被 store 感知 → 自动保存（2s debounce）</span>
+
+<span class="cm">// 方向 ③（点对点）：控件事件直接双写，不等全量同步</span>
+<span class="cm">// wf-node-control / wf-node-prompt / onValuesCommit → 同时写 properties 与 store</span></pre>
+
+<div class="note">
+	<span class="nt">为什么要双层？</span>
+	画布引擎需要 <code>properties</code> 做序列化与原生渲染；执行链路需要纯数据（不依赖 LiteGraph 实例）以便在无画布场景（headless / 脚本导出）复用同一套调度代码。<b>双写是这两套世界之间的桥</b>。
+</div>
+
+<!-- ═══════════════ 四、输入合成 ═══════════════ -->
+<h2 id="merge"><span class="n">04</span>运行时输入合成：三层优先级</h2>
+
+<p>每个节点执行前，调度器用下面这一行合成它的 <code>values</code>（<code>workflowRun.ts</code> L362）：</p>
+
+<pre><span class="kw">const</span> values = {
+	...<span class="fn">collectOrchestrationValues</span>(runNodes, step.upstreams),  <span class="cm">// ① 上游编排节点的文本</span>
+	...(nodeValues?.[step.id] ?? {}),                            <span class="cm">// ② 用户编辑过的值（覆盖 ①）</span>
+};
+
+<span class="kw">const</span> r = <span class="kw">await</span> <span class="fn">runNodeOrStage</span>({
+	runner, nodeId: step.id, snapshotKey: <span class="fn">snapshotKeyOf</span>?.(step.id),
+	type: step.type, getSpec, values,
+	args: startArgs,                        <span class="cm">// ③ 图级 args（独立通道，不进 values）</span>
+	resolveNamed,                           <span class="cm">//    具名引用解析器（label → 快照文本）</span>
+	upstreams: <span class="fn">mapSnapshotKeys</span>(step.upstreams, snapshotKeyOf),  <span class="cm">// ★ 映射成 stageUid</span>
+	inbound: runEdges.<span class="fn">filter</span>(e =&gt; e.target === step.id),      <span class="cm">//    端口级明细（sheet/text 等）</span>
+	nodes: runNodes, store: snapshotStore,
+	<span class="cm">/* … */</span>
+});</pre>
+
+<div class="prio">
+	<div class="row win">
+		<span class="lv">高</span>
+		<div class="desc">
+			<b>用户编辑值</b> <code>nodeValues[id]</code>（卡片控件 / 弹窗提交）
+			<div class="src">来源：comfyRunValuesRef.current — onValuesCommit / handleNodeControl 写入</div>
+		</div>
+	</div>
+	<div class="row">
+		<span class="lv">中</span>
+		<div class="desc">
+			<b>上游编排文本</b> <code>collectOrchestrationValues</code>
+			<div class="src">Saros.Prompt.data.prompt → <code>out.prompt</code>；Saros.Start.args.text / args.prompt → <code>out.prompt</code>（首个非空生效）</div>
+		</div>
+	</div>
+	<div class="row">
+		<span class="lv">低</span>
+		<div class="desc">
+			<b>上游媒体快照</b> <code>upstreamValues</code>（按 <code>media.kind</code> 取第一个 ref）
+			<div class="src">collectUpstreamValues(store, upstreams) → { image, video, text, … }</div>
+		</div>
+	</div>
+	<div class="row">
+		<span class="lv">旁</span>
+		<div class="desc">
+			<b>图级 args</b> <code>input.args</code>（不参与 values 合并，由模板解析器单独消费）
+			<div class="src">startArgs = { ...collectStartArgs(), ...startArgsOverride }</div>
+		</div>
+	</div>
+</div>
+
+<h3>值最终如何注入 ComfyUI</h3>
+<pre><span class="cm">// stageWorkflowExecutor.ts — injectWorkflowValues(apiJson, bindings, values, upstreamValues)</span>
+<span class="kw">for</span> (<span class="kw">const</span> [nodeId, node] <span class="kw">of</span> <span class="fn">Object.entries</span>(apiJson)) {
+	<span class="kw">for</span> (<span class="kw">const</span> [inputName, spec] <span class="kw">of</span> <span class="fn">Object.entries</span>(bindings?.[nodeId] ?? {})) {
+		<span class="kw">const</span> key = spec.from ?? inputName;
+		<span class="kw">const</span> resolved = <span class="fn">resolveBindingValue</span>(key, values, upstreamValues);  <span class="cm">// values 优先，其次上游快照</span>
+		<span class="kw">let</span> raw = resolved.has ? resolved.value : spec.default;               <span class="cm">// 都没有 → 用绑定默认值</span>
+		<span class="kw">if</span> (spec.cast) <span class="fn">applyCast</span>(raw, spec.cast);                            <span class="cm">// int / float / string / boolean</span>
+		<span class="kw">if</span> (spec.prefix || spec.suffix) v = <span class="fn">interpolate</span>(prefix) + v + <span class="fn">interpolate</span>(suffix);
+		inputs[inputName] = v;   <span class="cm">// ← 真正写进 api_json 的 inputs</span>
+	}
+}</pre>
+<p style="font-size:13px;color:var(--fg2)">
+	<code>bindings</code> 是 ComfyTV stage 的「参数声明表」，形如 <code>{ "3": { "text": { from: "prompt" }, "seed": { from: "seed", cast: "int", default: 0 } } }</code>。
+	<b>没被 binding 覆盖的 input 保持 api_json 原值</b> —— 这是「节点有参数但改了没用」的常见原因之一（绑定表里没声明该参数）。
+</p>
+
+<!-- ═══════════════ 五、快照总线 ═══════════════ -->
+<h2 id="snapshot"><span class="n">05</span>上游数据传递：快照总线（不是连线直传）</h2>
+
+<div class="flow-diagram">
+<svg viewBox="0 0 1100 250" preserveAspectRatio="xMidYMid meet">
+	<defs>
+		<marker id="ar3" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+			<path d="M0,0 L7,3.2 L0,6.4 z" fill="#34d399"/>
+		</marker>
+		<marker id="ar4" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+			<path d="M0,0 L7,3.2 L0,6.4 z" fill="#f472b6"/>
+		</marker>
+	</defs>
+	<!-- 上游节点 -->
+	<rect class="box" x="16" y="40" width="170" height="72" rx="8" stroke="#34d399"/>
+	<text class="lbl" x="30" y="64" fill="#34d399">节点 A（stage）</text>
+	<text x="30" y="84">执行 → 产物图</text>
+	<text x="30" y="100">snapshotKey = uid-A</text>
+
+	<!-- 快照总线 -->
+	<rect x="268" y="26" width="420" height="100" rx="10" fill="rgba(244,114,182,.07)" stroke="#f472b6"/>
+	<text class="lbl" x="284" y="50" fill="#f472b6">MediaSnapshotStore（快照总线）</text>
+	<text x="284" y="72">{sessionId}::uid-A:output:0 → image</text>
+	<text x="284" y="90">{sessionId}::uid-A:sheet:0  → image</text>
+	<text x="284" y="108">{sessionId}::uid-A:output:1 → image（第二轮）</text>
+
+	<!-- 下游节点 -->
+	<rect class="box" x="770" y="40" width="200" height="72" rx="8" stroke="#34d399"/>
+	<text class="lbl" x="784" y="64" fill="#34d399">节点 B（stage）</text>
+	<text x="784" y="84">upstreams = [uid-A]</text>
+	<text x="784" y="100">→ collectUpstreamValues</text>
+
+	<!-- 连线（只提供拓扑） -->
+	<path d="M 186 118 C 240 170, 700 170, 770 118" stroke="#6b7a8d" stroke-width="1.4"
+		fill="none" stroke-dasharray="4 4" marker-end="url(#ar)"/>
+	<text x="420" y="188" fill="#6b7a8d">连线（edge）只提供：source=uid-A, targetHandle=images</text>
+
+	<line x1="186" y1="76" x2="262" y2="76" stroke="#34d399" stroke-width="1.8" marker-end="url(#ar3)"/>
+	<text x="188" y="66" fill="#34d399" font-size="10.5">put()</text>
+	<line x1="694" y1="76" x2="764" y2="76" stroke="#f472b6" stroke-width="1.8" marker-end="url(#ar4)"/>
+	<text x="700" y="66" fill="#f472b6" font-size="10.5">byNode()</text>
+</svg>
+</div>
+
+<h3>归档键规则（mediaSnapshotStore.put）</h3>
+<pre>key = <span class="hl">`{sessionId}::{nodeId}:{port}:{index}`</span>
+<span class="cm">//  - index 由存储层按同 (nodeId, port) 前缀单调递增**自动分配**，
+//    调用方传的 index 被忽略 → 多轮执行不会互相覆盖（历史全保留）</span>
+<span class="cm">//  - nodeId 实际是 **stageUid**（画布为每个 stage 节点分配的稳定归档键）</span>
+<span class="cm">//  - port：'output'（最终产物）| 'sheet'（整图集）| 'image' | 'video' | …</span></pre>
+
+<h3>下游如何取数</h3>
+<table>
+	<thead><tr><th style="width:230px">读取函数</th><th>用途</th><th style="width:200px">取数规则</th></tr></thead>
+	<tbody>
+		<tr><td><code>collectUpstreamValues(store, upstreams)</code></td><td>按媒体类型收集上游产物，喂给 stage 的 binding</td><td>遍历 upstreams → <code>byNode()</code> → 每种 kind 取<b>第一个</b> ref</td></tr>
+		<tr><td><code>resolveUpstreamSnapshotText(store, upstreams)</code></td><td>取上游文本（供 <code>{{input}}</code>）</td><td>第一个 <code>meta.sarosJson==='1'</code> 或 <code>kind==='text'</code> 的 ref</td></tr>
+		<tr><td><code>collectUpstreamCandidates(store, upstreams)</code></td><td>picker / loader 的候选列表</td><td>收集上游<b>全部</b>快照供用户挑选</td></tr>
+		<tr><td><code>collectUpstreamTexts(...)</code></td><td>多上游文本聚合（如多 Prompt 合并）</td><td>按顺序拼接</td></tr>
+		<tr><td><code>collectOrchestrationValues(nodes, upstreams)</code></td><td>编排节点（Prompt/Start）的文本注入</td><td>读 <b>node.data</b>，不走快照</td></tr>
+	</tbody>
+</table>
+
+<div class="note warn">
+	<span class="nt">最容易踩的坑：upstreams 必须映射成归档键</span>
+	<code>store.byNode(x)</code> 查的是 <b>stageUid</b>。若把 nodeId 直接传下去，就是「写 uid、读 nodeId」→ 下游永远拿不到上游刚生成的图（<b>静默失败</b>）。
+	所以调度器统一走 <code>mapSnapshotKeys(step.upstreams, snapshotKeyOf)</code>。
+	另有 <code>registerAlias(nodeId → uid)</code> 别名表兜底，让两种键都能命中。
+</div>
+
+<!-- ═══════════════ 六、模板占位符 ═══════════════ -->
+<h2 id="template"><span class="n">06</span>模板占位符：文本参数里的动态引用</h2>
+
+<p>所有「文本类」参数（prompt、questionText、绑定 prefix/suffix…）在物化前会过一遍 <code>resolveTemplateVars</code>：</p>
+
+<table>
+	<thead><tr><th style="width:200px">占位符</th><th style="width:230px">数据来源</th><th>说明</th></tr></thead>
+	<tbody>
+		<tr><td><code>{{input}}</code></td><td>第一上游快照文本</td><td>兼容语义，取 <code>resolveUpstreamSnapshotText</code> 的结果</td></tr>
+		<tr><td><code>{{input.a.b}}</code></td><td>上游快照 JSON 的点路径</td><td>先 <code>JSON.parse</code> 再逐段 probe；对象/数组用 <code>JSON.stringify</code> 物化（避免 <code>[object Object]</code>）</td></tr>
+		<tr><td><code>{{args.key}}</code></td><td>Start 节点 args（含运行时覆盖）</td><td><b>图级参数的主通道</b>；支持点路径 <code>{{args.a.b}}</code></td></tr>
+		<tr><td><code>{{标签}}</code></td><td>具名引用：按节点 label 查快照</td><td><code>resolveNamed(label)</code> → label 匹配节点（重名取首个）→ 归档键 → 快照文本</td></tr>
+		<tr><td><code>{{标签.field}}</code></td><td>同上 + 点路径</td><td>对具名节点的快照做字段级取值</td></tr>
+	</tbody>
+</table>
+
+<div class="note ok">
+	<span class="nt">设计要点：未解析不静默</span>
+	解析不到的占位符 <b>原样保留</b>，同时 <code>findUnresolvedPlaceholders(text)</code> 会返回残留名单，执行器据此告警 —— 避免「带着 <code>{{args.topic}}</code> 字面量去生成图」这种静默错误。
+</div>
+
+<!-- ═══════════════ 七、调度 ═══════════════ -->
+<h2 id="schedule"><span class="n">07</span>谁执行：调度计划与路由</h2>
+
+<div class="steps">
+	<div class="step">
+		<div class="st">拓扑排序 <span class="tag t-sched">computeExecutionOrder</span></div>
+		<div class="sd">Kahn 算法对<b>全部节点</b>排序（上游优先）；有环 → 整体中止并提示。</div>
+	</div>
+	<div class="step">
+		<div class="st">Start 入口作用域 <span class="tag t-sched">resolveStartScope</span></div>
+		<div class="sd">
+			<b>scope = Start 正向可达闭包 ∪ 可达节点的上游闭包</b>。第二项不可省：媒体链的数据源（LoadImage / 素材节点）通常挂在 stage <b>上游</b>、不在 Start 下游，只取第一项会把它裁掉 → stage 报「无上游图像」。<br>
+			Start 无出边或只连 End → 判定「未编排」，<b>退化为全图执行</b>（存量图零迁移）。
+		</div>
+	</div>
+	<div class="step">
+		<div class="st">可执行过滤 <span class="tag t-sched">buildExecutionPlan</span></div>
+		<div class="sd">
+			分出三类：<code>steps</code>（要执行）、<code>skipped</code>（类型不可执行，如纯编排）、<code>outOfScope</code>（可执行但未接入 Start，标 <code>idle</code> 非 <code>error</code>）。
+		</div>
+	</div>
+	<div class="step">
+		<div class="st">分支路由 <span class="tag t-sched">computeInactiveNodes</span></div>
+		<div class="sd">
+			gate 节点（IfElse / Switch）执行后返回 <code>branch</code> → 记入 <code>branchOf</code> → 每步执行前重算激活表：<b>所有入边都未激活的节点 → skipped</b>（非错误）。AskUser 同理由 <code>answer</code> / <code>option-N</code> 端口路由。
+		</div>
+	</div>
+	<div class="step">
+		<div class="st">值合成与注入 <span class="tag t-sched">values / args / upstreams</span></div>
+		<div class="sd">见第 4 节的三层优先级；同时把 <code>args</code>、<code>upstreams</code>（归档键）、<code>inbound</code>（端口明细）一并交给执行器。</div>
+	</div>
+	<div class="step">
+		<div class="st">执行与回写 <span class="tag t-exec">runNodeOrStage → store.put</span></div>
+		<div class="sd">声明式节点查表分发（<code>getNodeDefinition</code>）→ 未命中走既有分支；产物写快照总线 → 供下游取用；卡片状态 <code>cardState.set(...)</code> 驱动 UI。</div>
+	</div>
+</div>
+
+<h3>数据上游 vs 控制上游（FLOW）</h3>
+<p style="font-size:13px;color:var(--fg2)">
+	控制流端口（<code>flowIn/flowOut</code>，type=<code>FLOW</code>）的边是<b>纯控制依赖</b>，只参与拓扑排序，<b>不进 <code>step.upstreams</code></b>（否则 executor 会按 nodeId 无差别取快照，把上游 Agent 的文本当图像用）。
+	由 <code>makeFlowEdgeClassifier</code> 在构计划时分离，<code>ExecutableStep.flowUpstreams</code> 单独记录。
+</p>
+
+<!-- ═══════════════ 八、三条路径 ═══════════════ -->
+<h2 id="paths"><span class="n">08</span>三条执行路径对比</h2>
+
+<table>
+	<thead>
+		<tr><th style="width:130px">维度</th><th>画布全图 Run</th><th>画布脚本路径</th><th>聊天框 / Agent</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>触发</td><td>▶ 运行（纯 Comfy/Provider 图）</td><td>▶ 运行（含编排节点）</td><td>LLM 工具调用工作流</td></tr>
+		<tr><td>实现</td><td><code>comfyHost/workflowRun.ts</code></td><td><code>canvasExport</code> → Dynamic Workflow 脚本</td><td><code>workflowExecutionService.ts</code></td></tr>
+		<tr><td>入口语义</td><td>Start 作用域（W7）</td><td>Start 作用域（导出时裁剪）</td><td>强制 Start + 未编排时退化</td></tr>
+		<tr><td>args 通道</td><td>参数面板 → <code>startArgsOverride</code></td><td>参数面板 → 脚本 <code>args</code></td><td>工具入参 → <code>context</code> → <code>_injectStartArgs</code></td></tr>
+		<tr><td>值来源</td><td><code>values</code>（三层合成）</td><td>导出时烘焙进脚本</td><td><code>_buildEvalContext</code> + variables</td></tr>
+		<tr><td>产物</td><td>快照总线 + 卡片 OUTPUT</td><td>快照 + 卡片 + 聊天工具卡</td><td>快照 + 聊天回执</td></tr>
+		<tr><td>进度 UI</td><td>卡片 runState / 任务面板</td><td>phase 进度 + 聊天工具卡</td><td>聊天流式</td></tr>
+	</tbody>
+</table>
+
+<div class="note">
+	<span class="nt">三者共用同一套语义</span>
+	入口判定（<code>resolveStartScope</code> / <code>_resolveEntryNodes</code>）、args 展开（<code>collectStartArgs</code> / <code>_injectStartArgs</code>）、模板语法（<code>{{args.x}}</code>）在三处保持一致 —— 同一张图在画布和聊天框里跑<b>同样的节点集</b>、<b>同样的参数语义</b>。
+</div>
+
+<!-- ═══════════════ 九、时序 ═══════════════ -->
+<h2 id="timeline"><span class="n">09</span>一次全图 Run 的完整时序</h2>
+
+<div class="steps">
+	<div class="step"><div class="st">点「▶ 运行」</div><div class="sd"><code>handleRun</code> 判断图里是否含编排节点 → 选全图 Run 或脚本路径。</div></div>
+	<div class="step"><div class="st">预检</div><div class="sd"><code>buildExecutionPlan</code> 用<b>与执行器同一个</b> Start 作用域算计划；<code>steps.length === 0</code> 则提示而非空转；有环则中止。</div></div>
+	<div class="step"><div class="st">参数面板</div><div class="sd"><code>promptStartArgs(nodes)</code> 读所有 Start 的 <code>data.args</code> 键 → 弹窗 → 返回 <code>startArgsOverride</code>（取消 = 中止）。</div></div>
+	<div class="step"><div class="st">构建执行计划</div><div class="sd">拓扑序 + Start 作用域 + 数据/控制上游分离 → <code>plan.steps</code>；<code>outOfScope</code> 标 idle。</div></div>
+	<div class="step"><div class="st">逐节点循环</div><div class="sd">
+		① 分支路由判定（未激活 → skipped）→ ② <code>cardState.set(running)</code> → ③ 合成 <code>values</code> → ④ <code>runNodeOrStage</code>
+	</div></div>
+	<div class="step"><div class="st">执行器内部</div><div class="sd">
+		查 <code>getNodeDefinition</code> → 命中即 <code>definition.run(input)</code>；schema 节点走 <code>runStageWorkflow</code> → <code>injectWorkflowValues</code> 把 values 写进 api_json → 提交 ComfyUI / 调 Provider RPC → 轮询进度。
+	</div></div>
+	<div class="step"><div class="st">产物归档</div><div class="sd"><code>store.put({ nodeId: snapshotKey, port, media })</code> → 触发媒体库导入（<code>onAsset</code>）→ 通知订阅者（卡片 OUTPUT 刷新）。</div></div>
+	<div class="step"><div class="st">下游取数</div><div class="sd">下一个节点的 <code>collectUpstreamValues(store, mappedUpstreams)</code> 从总线取到刚归档的产物 → 继续链式传递。</div></div>
+	<div class="step"><div class="st">收尾</div><div class="sd">成功 → <code>cardState.set(success)</code>；失败 → <code>result.failed</code> 记录<b>首个</b>失败节点并停止；提示「执行完成（从 Start 起）· N 个节点 · 未接入 Start M」。</div></div>
+</div>
+
+<!-- ═══════════════ 十、排错 ═══════════════ -->
+<h2 id="pitfalls"><span class="n">10</span>排错对照表：参数/数据「没生效」的 8 个典型原因</h2>
+
+<table>
+	<thead><tr><th style="width:250px">现象</th><th>根因</th><th style="width:250px">检查点</th></tr></thead>
+	<tbody>
+		<tr>
+			<td>卡片上改了参数，运行时没用</td>
+			<td>控件只写了 <code>properties</code> 没写 store（或反之）</td>
+			<td><code>handleNodeControl</code> 是否双写；执行读的是 <code>nodeValues</code></td>
+		</tr>
+		<tr>
+			<td>弹窗改了参数，卡片显示不变</td>
+			<td>卡片读 <code>properties</code>，弹窗写 store，未触发同步</td>
+			<td><code>onValuesCommit</code> → <code>updateNodeData</code> → <code>syncStoreToGraph</code></td>
+		</tr>
+		<tr>
+			<td>卡片与弹窗显示的是<b>两套不同字段</b></td>
+			<td>节点有<b>两个字段源</b>：<code>spec.widgets</code>（卡片控件）vs <code>VSSAROS_FIELDS</code>（弹窗）</td>
+			<td>两处字段名必须一致；否则出现「卡片显示旧字段、弹窗显示新字段」</td>
+		</tr>
+		<tr>
+			<td>改了 prompt 但生成的还是默认图</td>
+			<td>只写 <code>properties</code> 未写 store（历史 bug）</td>
+			<td><code>wf-node-prompt</code> 处理器是否双写</td>
+		</tr>
+		<tr>
+			<td><code>{{args.x}}</code> 原样出现在结果里</td>
+			<td>该路径没有注入 args（画布有、headless 缺）</td>
+			<td>画布：<code>collectStartArgs</code>；headless：<code>_injectStartArgs</code></td>
+		</tr>
+		<tr>
+			<td>下游 stage 报「无上游图像」</td>
+			<td><code>upstreams</code> 未映射成 <b>stageUid</b>，或数据源节点被 Start 作用域裁掉</td>
+			<td><code>mapSnapshotKeys</code>；<code>resolveStartScope</code> 的上游闭包补全</td>
+		</tr>
+		<tr>
+			<td>参数在节点上能看到，但生成时没传进去</td>
+			<td>stage 的 <b>bindings</b> 里没声明该参数（未绑定 → 不注入）</td>
+			<td>该 stage 的 <code>bindings[nodeId][inputName].from</code></td>
+		</tr>
+		<tr>
+			<td>某些节点「没跑」但没报错</td>
+			<td>三种正常情况：分支未激活（skipped）/ 未接入 Start（outOfScope）/ 类型不可执行（skipped）</td>
+			<td>看提示文案里的「跳过 N / 未接入 Start M」，区分是设计还是 bug</td>
+		</tr>
+	</tbody>
+</table>
+
+<div class="note ok">
+	<span class="nt">一句话总结</span>
+	<b>参数</b>：双写入 <code>properties</code> + <code>store.data</code> → 运行时按「用户值 &gt; 上游编排文本 &gt; 上游快照」合成 <code>values</code> → 经 bindings 注入 api_json。<br>
+	<b>数据</b>：产物写进快照总线（键 = stageUid:port:index）→ 下游按 <code>upstreams</code> 取用；<b>连线只决定顺序与上游关系，不搬数据</b>。<br>
+	<b>args</b>：Start 的 <code>data.args</code> 是整图输入契约，画布/脚本/聊天三条路径都归一到 <code>{{args.key}}</code> 模板。
+</div>
+
+<div class="foot">
+	依据当前代码库实现整理（<code>comfyHost/workflowRun.ts</code>、<code>workflowRunShared.ts</code>、<code>executionGraph.ts</code>、<code>stageWorkflowExecutor.ts</code>、<code>mediaSnapshotStore.ts</code>、<code>LiteGraphCanvas.tsx</code>、<code>WorkflowEditorPanel.tsx</code>、<code>browser/workflowExecutionService.ts</code>）。
+	行号以整理时为准，如与代码不符以代码为准。
+</div>
+
+</div>
+</body>
+</html>

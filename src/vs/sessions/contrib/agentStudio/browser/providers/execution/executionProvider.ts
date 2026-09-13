@@ -9,6 +9,10 @@ import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { IterationBudget } from '../../../common/iterationBudget.js';
 import { ContextManager } from '../../../common/contextManager.js';
+// 工具结果里的图像项：剥离出来改走 role:'user'（tool 消息的 contentParts 三家 provider 都不读）
+import {
+	splitToolResultImages, buildToolImageMessage, toolImageOmittedNote, resolveSupportsImages,
+} from '../../../common/toolResultImages.js';
 import { ToolArgumentRepairer } from '../../../common/toolRepair.js';
 import { ParallelToolExecutor } from '../../../common/parallelToolExecutor.js';
 import { FileContextStorageService } from '../../contextStorageService.js';
@@ -417,13 +421,31 @@ export class ExecutionProvider implements IExecutionProvider {
 				for (const toolResult of toolResults) {
 					// P2 源头截断（对齐 MiMo truncate.ts MAX_BYTES=50K）：超大工具输出在写入历史前
 					// 即做首尾保留 + 标注，避免污染上下文与压缩输入。仅影响极端大输出，正常结果不变。
-					const rawContent = JSON.stringify(toolResult.content);
+					//
+					// ★★ 2026-09-13：图像项**先剥离**再 JSON 化 —— 否则 base64 会被
+					// `truncateSourceToolOutput` 截断损坏，而 `role:'tool'` 的 content 是字符串，
+					// 图像块根本送不出去（`messageFormatConverter` 三家 provider 皆只读字符串）。
+					// 图像改走下方 `role:'user'` 消息，并**门控 `supportsImages`**（否则 400）。
+					// 与 `agentTurnExecutor` 同款处置，详见 `common/toolResultImages` 头注释。
+					const _toolName = assistantToolCalls.find(c => c.id === toolResult.toolCallId)?.name ?? 'tool';
+					const _imgSplit = splitToolResultImages(toolResult.content);
+					const _imgSupported = _imgSplit.images.length > 0
+						? await resolveSupportsImages(modelProvider, modelId)
+						: false;
+					const rawContent = JSON.stringify(_imgSplit.text)
+						+ (_imgSplit.images.length > 0 && !_imgSupported
+							? toolImageOmittedNote(_toolName, _imgSplit.images.length)
+							: '');
 					const toolResultMessage: IChatMessage = {
 						role: 'tool',
 						content: ContextManager.truncateSourceToolOutput(rawContent),
 						toolCallId: toolResult.toolCallId,
 					};
 					messages.push(toolResultMessage);
+					if (_imgSupported) {
+						const _imgMsg = buildToolImageMessage(_imgSplit.images, _toolName);
+						if (_imgMsg) { messages.push(_imgMsg); }
+					}
 				}
 
 

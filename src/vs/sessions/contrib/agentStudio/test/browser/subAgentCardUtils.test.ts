@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { cleanTracePreview, formatSubAgentTask } from '../../../../browser/agentChat/subAgentCardUtils.js';
+import { cleanTracePreview, formatSubAgentTask, isAnimatedEmojiCard, parseAnimatedEmojiStage, computeAnimatedEmojiStageState } from '../../../../browser/agentChat/subAgentCardUtils.js';
 
 suite('subAgentCardUtils', () => {
 
@@ -133,6 +133,53 @@ suite('subAgentCardUtils', () => {
 			const out = formatSubAgentTask(task, 'explore');
 			assert.ok(out.includes('查找 GC Worker 窃取核心源码'), `实际: ${out}`);
 			assert.ok(!out.startsWith('{'), '不应显示原始 JSON');
+		});
+	});
+
+	suite('动态表情包三阶段卡片状态（2026-09-12）', () => {
+
+		test('isAnimatedEmojiCard：类型优先，显示名兜底', () => {
+			assert.strictEqual(isAnimatedEmojiCard('Saros.AnimatedEmoji', undefined), true);
+			assert.strictEqual(isAnimatedEmojiCard(undefined, '动态表情包制作'), true);
+			assert.strictEqual(isAnimatedEmojiCard('ComfyTV.StatEmojiStage', '静态表情包'), false);
+			assert.strictEqual(isAnimatedEmojiCard(undefined, undefined), false);
+		});
+
+		test('parseAnimatedEmojiStage：识别执行器三个阶段文案', () => {
+			assert.strictEqual(parseAnimatedEmojiStage('阶段① 生成视频 · 格 3/9 生成中…'), 'video');
+			assert.strictEqual(parseAnimatedEmojiStage('阶段② 视频抠像 · 格 3/9'), 'matte');
+			assert.strictEqual(parseAnimatedEmojiStage('阶段③ GIF 输出 · 格 3/9 完成'), 'gif');
+			assert.strictEqual(parseAnimatedEmojiStage('ComfyUI 采样中'), undefined);
+			assert.strictEqual(parseAnimatedEmojiStage(undefined), undefined);
+		});
+
+		test('阶段完成态由快照 port 推断（video/matte/output → ①②③）', () => {
+			const st = computeAnimatedEmojiStageState([
+				{ port: 'video' }, { port: 'video' },
+				{ port: 'matte' },
+				{ port: 'output' },
+			], '阶段③ GIF 输出 · 格 1/2');
+			assert.deepStrictEqual(st.counts, { video: 2, matte: 1, gif: 1 });
+			assert.deepStrictEqual(st.done, { video: true, matte: true, gif: true });
+			assert.strictEqual(st.current, 'gif');
+		});
+
+		test('只跑了阶段① → 仅 video 为 done，其余 pending', () => {
+			const st = computeAnimatedEmojiStageState([{ port: 'video' }, { port: 'video' }], undefined);
+			assert.deepStrictEqual(st.done, { video: true, matte: false, gif: false });
+			assert.strictEqual(st.current, undefined);
+		});
+
+		test('未知/缺失 port 不误计（不把 sheet 等其它端口算进阶段）', () => {
+			const st = computeAnimatedEmojiStageState([{ port: 'sheet' }, {}, { port: undefined }], undefined);
+			assert.deepStrictEqual(st.counts, { video: 0, matte: 0, gif: 0 });
+			assert.deepStrictEqual(st.done, { video: false, matte: false, gif: false });
+		});
+
+		test('空快照不抛异常', () => {
+			const st = computeAnimatedEmojiStageState(undefined, '阶段① 生成视频 · 格 1/1');
+			assert.deepStrictEqual(st.counts, { video: 0, matte: 0, gif: 0 });
+			assert.strictEqual(st.current, 'video');
 		});
 	});
 });

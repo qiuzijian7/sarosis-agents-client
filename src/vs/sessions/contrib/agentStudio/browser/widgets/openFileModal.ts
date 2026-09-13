@@ -190,6 +190,18 @@ export class OpenFileModal {
 			? localize('openFile.hint', '[1 of {0}{1}]', this._rows.length, this._loaded ? '' : ' …')
 			: (this._loaded ? '' : localize('openFile.loading', 'Loading…'));
 
+		// 空结果 + 图谱残缺 → 明确提示（同 findSymbolModal；避免用户对着空列表猜原因）
+		if (this._rows.length === 0 && this._loaded) {
+			const health = this._graphService.getIndexHealth?.();
+			if (health?.deficient && health.message) {
+				const warn = dom.$('div');
+				warn.textContent = '⚠ ' + health.message;
+				warn.style.cssText = 'padding:10px 12px;color:var(--vscode-inputValidation-warningForeground, var(--vscode-descriptionForeground));';
+				this._table.appendChild(warn);
+				return;
+			}
+		}
+
 		// 表头
 		const header = dom.$('div');
 		header.style.cssText = 'display:flex;position:sticky;top:0;background:var(--vscode-editorWidget-background);border-bottom:1px solid var(--vscode-editorWidget-border);font-weight:bold;';

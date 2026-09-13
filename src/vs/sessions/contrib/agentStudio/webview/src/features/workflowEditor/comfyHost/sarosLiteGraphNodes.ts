@@ -56,11 +56,15 @@ const NODE_CONFIGS: SarosNodeConfig[] = [
 	// ★ Start 的 spec 有 2 个输出（out + COMFYTV_TEXT 桥的 text），class 原来只有
 	//   1 个 → 槽位数不等，`syncNodePortsToSpec` 放弃同步，且画布上 text 桥端口
 	//   根本不存在（无法直连 ComfyTV stage 的 texts/prompt）。补齐。
-	// 2026-09-08：卡片零参数 UI —— text 输出端口移除；args widget 标 hidden
-	//（保留 properties 持久化通道：args JSON 仍经运行前参数面板 / out 口消费，
-	// 与 Prompt/Agent 的 hidden widget 同款做法）。
-	{ type: 'Saros.Start', title: '开始', color: SAROS_COLORS.start, outputs: [{ name: 'out', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'args', value: '{}', hidden: true }] },
-	{ type: 'Saros.End', title: '结束', color: SAROS_COLORS.end, inputs: [{ name: 'in', type: 'SAROS_JSON' }] },
+	// 2026-09-08：卡片零参数 UI —— text 输出端口移除。
+	// 2026-09-09：args widget 删除（连 hidden 也不留）——hidden widget 仍参与
+	// computeSize 高度（Start 比 End 高一截的来源）；数据通道走 node.properties.args
+	//（运行前参数面板 / collectStartArgs 直读），不依赖 widget。
+	// 2026-09-09 W7：端口类型 SAROS_JSON → ANY，使 Start/End 能直连 ComfyTV stage
+	// 与原生媒体节点（「运行 = 从 Start 开始」的前提：媒体链必须能挂进作用域）。
+	// 必须与 registrySaros 的 spec 端口类型一致（syncNodePortsToSpec 每帧比对）。
+	{ type: 'Saros.Start', title: '开始', color: SAROS_COLORS.start, outputs: [{ name: 'out', type: 'ANY' }] },
+	{ type: 'Saros.End', title: '结束', color: SAROS_COLORS.end, inputs: [{ name: 'in', type: 'ANY' }] },
 	{ type: 'Saros.Task', title: '任务', color: SAROS_COLORS.task, inputs: [{ name: 'in', type: 'SAROS_JSON' }], outputs: [{ name: 'out', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'taskId', value: '' }] },
 	// prompt 由 **DOM 富卡片**的 MentionTextarea 接管（复用 ImageStage 的 prompt
 	// 输入框：@ 提及、自动高度、ComfyTV 配色）→ canvas widget 标 hidden，
@@ -86,7 +90,20 @@ const NODE_CONFIGS: SarosNodeConfig[] = [
 	{ type: 'Saros.Merge', title: '汇聚', color: SAROS_COLORS.merge, inputs: [{ name: 'inA', type: 'SAROS_JSON' }, { name: 'inB', type: 'SAROS_JSON' }], outputs: [{ name: 'out', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'mode', value: 'all' }] },
 	{ type: 'Saros.Loop', title: '循环', color: SAROS_COLORS.loop, inputs: [{ name: 'in', type: 'SAROS_JSON' }], outputs: [{ name: 'out', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'items', value: '[]' }, { type: 'text', name: 'concurrency', value: 1 }] },
 	{ type: 'Saros.Parallel', title: '并发', color: SAROS_COLORS.parallel, inputs: [{ name: 'in', type: 'SAROS_JSON' }], outputs: [{ name: 'out', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'items', value: '[]' }, { type: 'text', name: 'concurrency', value: 4 }] },
-	{ type: 'Saros.AskUser', title: '询问', color: SAROS_COLORS.askUser, inputs: [{ name: 'in', type: 'SAROS_JSON' }], outputs: [{ name: 'answer', type: 'SAROS_JSON' }], widgets: [{ type: 'text', name: 'questionText', value: '' }] },
+	// ★ AskUser 选项分支端口（2026-09-10）：引擎 v30 路由按 fromPort='option-N'
+	//   匹配用户所选选项（_getAskUserNextNodes），但画布此前只有单一 answer 端口
+	//   ——分支边根本连不出来，「no edges matched」必然发生（renderer.log 实锤）。
+	//   静态 4 个 option 端口（与 IfElse 的 case-N 同模式）：连到哪项，选哪项走哪条；
+	//   旧图的 answer 单边继续由引擎 fallback all edges 兜底。
+	{ type: 'Saros.AskUser', title: '询问', color: SAROS_COLORS.askUser, inputs: [{ name: 'in', type: 'SAROS_JSON' }], outputs: [
+		{ name: 'answer', type: 'SAROS_JSON' },
+		{ name: 'option-0', type: 'SAROS_JSON' }, { name: 'option-1', type: 'SAROS_JSON' },
+		{ name: 'option-2', type: 'SAROS_JSON' }, { name: 'option-3', type: 'SAROS_JSON' },
+		// ★ 多问题重构（2026-09-11）：原 `questionText` widget 已移除 —— 字段源统一为
+		//   `data.questions`（弹窗编辑 + 卡片摘要），避免 canvas widget 与弹窗两套入口
+		//   不同步。与 registrySaros 的 spec.widgets 必须保持一致（syncNodePortsToSpec
+		//   只比端口，widget 漂移无护栏，故此处显式注释）。
+	] },
 	{ type: 'Saros.Group', title: '分组', color: SAROS_COLORS.group },
 	{ type: 'Saros.Subflow', title: '子流程', color: SAROS_COLORS.subflow, inputs: [{ name: 'in', type: 'SAROS_JSON' }], outputs: [{ name: 'out', type: 'SAROS_JSON' }] },
 	{ type: 'Saros.ProviderPicker', title: 'Provider 选择', color: SAROS_COLORS.prompt, inputs: [], outputs: [{ name: 'config', type: 'TEXT' }], widgets: [

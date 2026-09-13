@@ -624,7 +624,7 @@ export class AgentMemoryProviderV2 {
 	async signalCleanup(agentId: string) { await this._ensureServer(); return repl.signalCleanup(this._kv, agentId); }
 	// ─── 原版机制复刻（amReplication）：graph 构建与重置 ────────────
 	async graphBuild(agentId: string) { await this._ensureServer(); return repl.graphBuild(this._kv, agentId); }
-	async graphReset() { await this._ensureServer(); return repl.graphReset(); }
+	async graphReset() { await this._ensureServer(); return repl.graphReset(this._kv); }
 	async sentinelCreate(agentId: string, name: string, condition: string, type?: string) { await this._ensureServer(); return adv.sentinelCreate(this._kv, agentId, name, condition, type as any); }
 	async sentinelList(agentId: string) { await this._ensureServer(); return adv.sentinelList(this._kv, agentId); }
 	async sentinelCheck(agentId: string) {
@@ -1261,10 +1261,18 @@ export class AgentMemoryProviderV2 {
 	async runMaintenanceSweep(agentId: string, sessionId?: string): Promise<Record<string, unknown>> {
 		await this._ensureServer();
 		const result: Record<string, unknown> = {};
+		// P1-13（2026-09-11）：外层步骤耗时诊断（runFullSweep 内部各步见 result.sweep.timings）。
+		// 实测单 agent sweep 独占事件循环 21.5s，需要知道 21s 花在哪一步才能治理。
+		const timings: Record<string, number> = {};
+		result.timings = timings;
+		const step = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+			const t0 = Date.now();
+			try { return await fn(); } finally { timings[name] = Date.now() - t0; }
+		};
 
 		// 0. D1 一次性迁移：summaries 中误存的 TeamSharedItem → 全局 team scope（幂等）
 		try {
-			const migration = await repl.migrateLegacyTeamShared(this._kv, agentId);
+			const migration = await step('teamMigration', () => repl.migrateLegacyTeamShared(this._kv, agentId));
 			if (migration.migrated > 0) { result.teamMigration = migration; }
 		} catch (err: any) {
 			result.teamMigrationError = err?.message ?? String(err);
@@ -1272,15 +1280,15 @@ export class AgentMemoryProviderV2 {
 
 		// 0.5 L1-L3 一次性清洗：客户端管线移除后的历史产物 l1-extract/l2-scene/l3-persona（幂等，§17）
 		try {
-			const l1l3 = await repl.purgeLegacyL1L3Extractions(this._kv, agentId);
+			const l1l3 = await step('l1l3Purge', () => repl.purgeLegacyL1L3Extractions(this._kv, agentId));
 			if (l1l3.purged > 0) { result.l1l3Purge = l1l3; }
 		} catch (err: any) {
 			result.l1l3PurgeError = err?.message ?? String(err);
 		}
 
-		// 1. 全量清扫
+		// 1. 全量清扫（内部各步耗时见 result.sweep.timings）
 		try {
-			result.sweep = await pipe.runFullSweep(this._kv, agentId, agentId, this._tokenBudget);
+			result.sweep = await step('runFullSweep', () => pipe.runFullSweep(this._kv, agentId, agentId, this._tokenBudget));
 		} catch (err: any) {
 			result.sweepError = err?.message ?? String(err);
 		}
@@ -1288,7 +1296,7 @@ export class AgentMemoryProviderV2 {
 		// 2. 技能提取（从当前记忆中的 workflow/pattern 提炼）
 		try {
 			const sid = sessionId ?? `sweep-${Date.now()}`;
-			const skill = await feat.extractSkill(this._kv, agentId, sid);
+			const skill = await step('extractSkill', () => feat.extractSkill(this._kv, agentId, sid));
 			if (skill) {
 				result.skillExtracted = {
 					skillId: skill.id,
@@ -1314,14 +1322,14 @@ export class AgentMemoryProviderV2 {
 
 		// 3. 自动晶化
 		try {
-			result.crystallize = await fin.autoCrystallize(this._kv, agentId);
+			result.crystallize = await step('autoCrystallize', () => fin.autoCrystallize(this._kv, agentId));
 		} catch (err: any) {
 			result.crystallizeError = err?.message ?? String(err);
 		}
 
 		// 4. 租约清理（接入 amFinal.leaseCleanup：过期 lease 标记 expired）
 		try {
-			result.leasesCleaned = await fin.leaseCleanup(this._kv, agentId);
+			result.leasesCleaned = await step('leaseCleanup', () => fin.leaseCleanup(this._kv, agentId));
 		} catch (err: any) {
 			result.leaseCleanupError = err?.message ?? String(err);
 		}
@@ -1329,7 +1337,7 @@ export class AgentMemoryProviderV2 {
 		// 5. 哨兵评估（接入 amAdvanced.sentinelCheck：threshold/pattern/schedule 条件
 		//    评估，命中的标记 triggered 并逐个发出 sentinel_triggered 事件）
 		try {
-			const sentinelResult = await adv.sentinelCheck(this._kv, agentId);
+			const sentinelResult = await step('sentinelCheck', () => adv.sentinelCheck(this._kv, agentId));
 			result.sentinels = sentinelResult;
 			for (const t of sentinelResult.triggered) {
 				this._emit('sentinel_triggered', agentId, t);

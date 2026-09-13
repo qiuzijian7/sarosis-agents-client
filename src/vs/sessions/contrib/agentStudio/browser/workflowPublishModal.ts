@@ -764,8 +764,11 @@ export class WorkflowPublishModal extends Disposable {
 			const result = await this.marketplaceService.publish(this.workflow.id, 'workflow', opts);
 
 			// 保存到本地工作流
+			// ★ 2026-09-11：捕获更新后的对象 —— 发布完成事件必须回传**最新**本地状态，
+			//   否则调用方（webview toast）拿到的是发布前的 version（构造时快照）。
+			let updatedLocal: IStoredWorkflow | undefined;
 			try {
-				await this.workflowStorage.updateWorkflow(this.workflow.id, {
+				updatedLocal = await this.workflowStorage.updateWorkflow(this.workflow.id, {
 					version: result.version,
 					category: category || undefined,
 					author: author || undefined,
@@ -798,7 +801,11 @@ export class WorkflowPublishModal extends Disposable {
 			}
 
 			this.notificationService.info(`工作流 "${this.workflow.name}" 已成功发布到商城 (v${result.version})`);
-			this._onDidPublish.fire(this.workflow);
+			// ★ 回传「本地最新状态」而非构造时快照：`this.workflow` 的 version 停留在
+			//   发布前（`updateWorkflow` 只改磁盘、不回写该只读字段），直接 fire 它会让
+			//   webview 的「✓ 已发布 vX」提示显示旧版本号。优先用 updateWorkflow 的返回值；
+			//   本地写失败时退化为「旧对象 + 商城返回的新版本号」。
+			this._onDidPublish.fire(updatedLocal ?? { ...this.workflow, version: result.version });
 
 			// 延迟关闭
 			setTimeout(() => { this.hide(); }, 1500);

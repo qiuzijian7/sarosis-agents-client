@@ -32,11 +32,13 @@ import { guiToApi, stripSarosNodesForExport } from './comfyHost/comfyApiAdapter'
 import { registerDefaultComfyTVStages, getNodeSpec } from './comfyHost/registry';
 import { getRunnerStatusStore } from './comfyHost/runnerStatusStore';
 import { spawnPickerForStage, spawnFollowUp } from './comfyHost/actionSpawn';
-import { isComfyExecutableSpec, isExecutableSpec, isPickerNode, isLoaderNode, runGraphExecution, runNodeOrStage, resolveFirstImageGenDefaults, resolveMediaAssetUrl, defaultResolveLoadImageRef, type AskUserSendFn, type AskUserPayload } from './comfyHost/workflowRun';
-import { buildExecutionPlan } from './comfyHost/executionGraph';
+import { isComfyExecutableSpec, isExecutableSpec, isPickerNode, isLoaderNode, makeFlowEdgeClassifier, runGraphExecution, runNodeOrStage, resolveFirstImageGenDefaults, resolveMediaAssetUrl, defaultResolveLoadImageRef, type AskUserSendFn, type AskUserPayload } from './comfyHost/workflowRun';
+import { buildExecutionPlan, resolveStartScope } from './comfyHost/executionGraph';
 import { exportCanvasToWorkflowScript } from './comfyHost/canvasExport';
-import { registerStageRunner, unregisterStageRunner, registerDirectStageRunner, unregisterDirectStageRunner, materializeSnapshotEntry, type DirectStageRunResult } from './comfyHost/workflowSnapshotBridgeWebview';
-import { applyCanvasOps, type CanvasModel, type CanvasNode, type CanvasEdge, type CanvasOp } from './comfyHost/canvasOps';
+import { registerStageRunner, unregisterStageRunner, registerDirectStageRunner, unregisterDirectStageRunner, materializeSnapshotEntry, activeStore, type DirectStageRunResult } from './comfyHost/workflowSnapshotBridgeWebview';
+import { applyCanvasOps, buildPickerSelectionPatch, type CanvasModel, type CanvasNode, type CanvasEdge, type CanvasOp } from './comfyHost/canvasOps';
+// ★ 池顺序对齐（2026-09-12）：ref→池序号映射必须与卡片网格/物化同用 mergeImagePool。
+import { mergeImagePool, type MediaSnapshotEntry } from './comfyHost/mediaSnapshot';
 import { buildGenerateFlow } from './comfyHost/generateFlow';
 import { computeDagLayout } from './comfyHost/dagLayout';
 import { buildSubflowFromGraph } from './comfyHost/subflow';
@@ -44,11 +46,14 @@ import { PluginManagerPanel } from './PluginManagerPanel';
 import { TaskProgressPanel } from './TaskProgressPanel';
 import { DependencyGuide } from './DependencyGuide';
 import { getTaskStore } from './comfyHost/taskStore';
+import { formatProgressPct } from './comfyHost/progressFormat';
 import { runReversePrompt } from './comfyHost/reversePromptRun';
 import { loadObjectInfoNodes } from './comfyHost/comfyObjectInfoLoader';
 import { useWorkflowEditorStore, undo as doUndo, redo as doRedo, pauseTracking, resumeTracking, type WorkflowEditorNode, type WorkflowEditorEdge } from './store';
 import { sendRequest, createComfyFetch } from '../../bridge/messageClient';
 import { useAgentStore } from '../../store/useAgentStore';
+import { usePicklistStore } from './picklistStore';
+import { collectWriteStepIds } from './comfyHost/writeStepIds';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useProviderStore, type ProviderInfo } from '../../store/useProviderStore';
 import type { IStoredWorkflow } from '../../types/workflowStorage';
@@ -150,6 +155,12 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const renameInputRef = useRef<HTMLInputElement>(null);
 	const [runnerPreference, setRunnerPreference] = useState('auto');
 
+	// ★ 工作流 Session（2026-09-11 用户需求）：画布内切换入口 —— 不同 session 隔离
+	//   生成内容（快照库作用域），切换即刷新画布卡片；列表来自 host（sessions.json）。
+	//   注：切换 handler 定义在 `workflowId` 声明之后（下方），避免 TDZ。
+	const [wfSessions, setWfSessions] = useState<Array<{ id: string; name: string; runCount?: number }>>([]);
+	const [activeWfSession, setActiveWfSession] = useState<string>('default');
+
 	// 全局 runner 单例：NodeCard 内嵌编辑器（MaskPainter「应用 mask」上传）读此上下文，
 	// 无需跨 LiteGraphCanvas → createNodeCard → NodeCard 三层传 prop。
 	useEffect(() => {
@@ -159,6 +170,8 @@ export const WorkflowEditorPanel: React.FC = () => {
 	useEffect(() => {
 		setActiveRunnerPreference(runnerPreference);
 	}, [runnerPreference]);
+
+	// ★ 打开画布 → 拉取该工作流的 session 列表（见下方 workflowId 声明之后）。
 
 	// P0: 全图 Comfy 执行状态（与 P3 host 执行状态分离）
 	const [comfyRunState, setComfyRunState] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
@@ -222,6 +235,33 @@ export const WorkflowEditorPanel: React.FC = () => {
 		}
 	}, []);
 
+	/**
+	 * 本地文件导入工作流（2026-09-11 缺口补齐）。
+	 *
+	 * 与 `handleComfyImportFile` 的**本质区别**：后者把 ComfyUI 画布 JSON 导进
+	 * **当前画布**（不新建工作流、不进列表）；本项把工作流 JSON 导入为**新的
+	 * 工作流实体**（落盘 + 出现在左侧列表）。webview 无法访问宿主文件系统 →
+	 * host 侧弹原生对话框（`workflow.importFile`）。
+	 */
+	const handleImportWorkflowFile = useCallback(async () => {
+		setValidationMsg('⏳ 请选择工作流 JSON 文件…');
+		try {
+			const r = await sendRequest('workflow.importFile', {}, 120_000) as {
+				ok: boolean; workflowId?: string; name?: string; warnings?: string[];
+				cancelled?: boolean; error?: string;
+			};
+			if (r?.cancelled) { setValidationMsg(null); return; }
+			if (r?.ok) {
+				const warn = r.warnings?.length ? `（${r.warnings.length} 条提示：${r.warnings[0]}）` : '';
+				setValidationMsg(`✓ 已导入「${r.name ?? ''}」${warn} · 可在左侧工作流列表打开`);
+			} else {
+				setValidationMsg(`导入失败：${r?.error ?? '未知错误'}`);
+			}
+		} catch (err) {
+			setValidationMsg(`导入失败：${err instanceof Error ? err.message : String(err)}`);
+		}
+	}, []);
+
 	const handleComfyExport = useCallback(() => {
 		const wf = liteGraphRef.current?.exportApi();
 		if (!wf) { setComfyImportMsg('画布为空，无可导出内容'); return; }
@@ -242,6 +282,71 @@ export const WorkflowEditorPanel: React.FC = () => {
 		a.click();
 		URL.revokeObjectURL(url);
 		setComfyImportMsg('已导出 api.json');
+	}, []);
+
+	/**
+	 * 导出为**工作流 JSON 文件**（2026-09-11 闭环补齐 —— `handleImportWorkflowFile` 的逆操作）。
+	 *
+	 * 为什么需要：此前导出侧只有两项，都不产出「可再导入的工作流」——
+	 *  `handleComfyExport` 剔除全部编排节点（产物只对 ComfyUI 有意义）、
+	 *  「直接执行」根本不产出文件。于是同事间分享 / 备份 / 换机迁移全部断链：
+	 *  拿到了文件也导不回来（导入侧只认工作流 JSON）。
+	 *
+	 * 数据来源（两处合并，各取所长）：
+	 *  - **画布最新态** ← `store.toWorkflowData()`（webview 是画布编辑真源，含尚未
+	 *    保存的编辑）；
+	 *  - **元信息** ← `__AGENT_STUDIO_INITIAL_DATA__.workflow`（完整 `IStoredWorkflow`：
+	 *    version / category / tags / useGuide / author 等，画布侧不编辑这些字段）。
+	 *
+	 * ★ 产出形状 = `IStoredWorkflow` 序列化 → 与 `parseWorkflowImportFile` 的识别字段
+	 * （name / id / nodes / steps / connections）**完全同构**，即「导出即导入的逆操作」。
+	 * 该契约由 `test/browser/workflowFileImport.test.ts` 的 round-trip 用例锁定——
+	 * 改动本函数或导入侧时，两侧任一处漂移都会被测试抓住。
+	 */
+	const handleWorkflowExport = useCallback(() => {
+		const state = useWorkflowEditorStore.getState();
+		const { nodes, connections } = state.toWorkflowData();
+		if (nodes.length === 0) { setComfyImportMsg('画布为空，无可导出内容'); return; }
+		const base = ((window as unknown as Record<string, unknown>).__AGENT_STUDIO_INITIAL_DATA__ as
+			{ type?: string; workflow?: IStoredWorkflow } | null | undefined)?.workflow ?? {} as IStoredWorkflow;
+		const name = state.workflowName || base.name || '未命名工作流';
+		// ★ **白名单**（与 browser 侧 `workflowFileExport.buildWorkflowExportPayload`
+		// 同构）：不做整实体展开 —— `workspaceId` / `updatedAt` / `source`（内置标记）
+		// 等不应随文件迁移（导入方是另一个工作区，副本也不该继承「内置」身份，
+		// 否则列表会显示错误的内置角标）。
+		// webview 无法 import browser 侧模块（值 import 零先例）→ 此处内联；
+		// 两侧形状一致性由 `workflowFileExport.test.ts` 的 round-trip 用例守护。
+		const payload: Record<string, unknown> = {
+			id: state.workflowId || base.id,
+			name,
+			description: state.workflowDescription || base.description || '',
+			steps: base.steps ?? [],
+			nodes,
+			connections,
+		};
+		if (base.presetId) { payload.presetId = base.presetId; }
+		if (base.agentId) { payload.agentId = base.agentId; }
+		if (state.workflowBreakpoints.length > 0) { payload.breakpoints = state.workflowBreakpoints; }
+		if (base.version) { payload.version = base.version; }
+		if (base.category) { payload.category = base.category; }
+		if (base.author) { payload.author = base.author; }
+		if (base.visibility) { payload.visibility = base.visibility; }
+		if (base.tags && base.tags.length > 0) { payload.tags = base.tags; }
+		if (base.useGuide) { payload.useGuide = base.useGuide; }
+		const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		// 文件名清洗（与 browser 侧 `workflowFileExport.workflowExportFileName`
+		// **同规则**）：Windows 非法字符 `\ / : * ? " < > |` → `-`，**再去首尾
+		// 连字符**（否则名为 `///` 的工作流会导出成 `---.workflow.json`），空则
+		// 回落 workflowId → `workflow`。中文名保留。
+		const fileBase = name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/^-+|-+$/g, '').trim()
+			|| (state.workflowId || '').trim() || 'workflow';
+		a.download = `${fileBase}.workflow.json`;
+		a.click();
+		URL.revokeObjectURL(url);
+		setComfyImportMsg(`已导出工作流 JSON（${nodes.length} 节点 / ${connections.length} 连线）`);
 	}, []);
 
 	// Execution state (P3: execution control UI)
@@ -265,6 +370,60 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const nodes = useWorkflowEditorStore(s => s.nodes);
 	const edges = useWorkflowEditorStore(s => s.edges);
 	const setDefaultAgentConfig = useWorkflowEditorStore(s => s.setDefaultAgentConfig);
+
+	// ★ 工作流 Session 切换（2026-09-11 用户需求）：**必须定义在 workflowId 之后**
+	//   （上方声明）—— 此前定义在组件顶部会触发 TDZ「Cannot access 'workflowId'
+	//   before initialization」导致整个面板崩溃。切换 = 快照库换作用域（卡片随之
+	//   重渲染）+ 通知 host 记录最近使用。
+	const handleWfSessionChange = useCallback((sid: string) => {
+		if (!sid) { return; }
+		setActiveWfSession(sid);
+		liteGraphRef.current?.snapshotStore()?.setActiveSession(sid);
+		if (workflowId) {
+			void sendRequest('workflow.sessions.select', { workflowId, sessionId: sid }).catch(() => { /* best-effort */ });
+		}
+	}, [workflowId]);
+
+	// ★ 重命名当前会话（2026-09-11 用户需求）：只改显示名 —— 不动 session id
+	//   （id 是快照库的隔离 key 前缀 `{sid}::` 与产物目录名，改名会让已有产物失联），
+	//   也不动 updatedAt（列表顺序派生自它）。host 返回更新后的完整列表，直接刷新下拉。
+	const handleWfSessionRename = useCallback(async () => {
+		if (!workflowId || !activeWfSession) { return; }
+		const current = wfSessions.find(s => s.id === activeWfSession);
+		const input = window.prompt('重命名会话', current?.name ?? activeWfSession);
+		if (input === null) { return; }                       // 用户取消
+		const name = input.trim();
+		if (!name || name === current?.name) { return; }      // 空名/未变化 → 不打扰 host
+		try {
+			const res = await sendRequest('workflow.sessions.rename', {
+				workflowId, sessionId: activeWfSession, name,
+			}) as { ok?: boolean; sessions?: Array<{ id: string; name: string; runCount?: number }> };
+			if (res?.sessions) { setWfSessions(res.sessions); }
+		} catch { /* best-effort：失败时保留旧名 */ }
+	}, [workflowId, activeWfSession, wfSessions]);
+
+	// ★ 打开画布 → 拉取该工作流的 session 列表，并把快照库切到默认（最近使用）
+	//   session（2026-09-11 用户需求）：画布展示「当前会话」的产物。
+	useEffect(() => {
+		if (!workflowId) { return; }
+		let cancelled = false;
+		(async () => {
+			try {
+				const res = await sendRequest('workflow.sessions.list', { workflowId }) as {
+					sessions?: Array<{ id: string; name: string; runCount?: number }>;
+					activeSessionId?: string;
+				};
+				if (cancelled) { return; }
+				setWfSessions(res?.sessions ?? []);
+				const active = res?.activeSessionId || 'default';
+				setActiveWfSession(active);
+				liteGraphRef.current?.snapshotStore()?.setActiveSession(active);
+			} catch {
+				/* 无 session 索引时保持 default（旧行为） */
+			}
+		})();
+		return () => { cancelled = true; };
+	}, [workflowId]);
 	// 右键 "添加节点" 菜单（NodeContextMenu 的 buildAddNodeSubmenu）需要 store.addNode
 	// 作为真源——之前漏掉了 destructure，导致 (type) => addNode(...) 抛 ReferenceError，
 	// 点击菜单项静默失败、不创建节点。
@@ -296,6 +455,22 @@ export const WorkflowEditorPanel: React.FC = () => {
 			// v18: auto-switch chat panel to workflow's bound agent
 			if (initialData.workflow.agentId) {
 				autoSwitchChatToWorkflowAgent(initialData.workflow.agentId);
+			}
+			// ★ P2（2026-09-13）：独立 tab 打开时（WorkflowNodeEditorPane 传入
+			//   `focusNodeId`），加载完成后自动打开该节点的**全屏编辑器**。
+			//   浮层状态在 nodeCard 内部（每张卡片自己的 state），故用 window 事件
+			//   通知 —— 与项目既有 `wf-node-*` 事件模式一致，避免把 focusNodeId
+			//   层层传进 LiteGraphCanvas → createNodeCard。
+			//   派发三次（300/900/1800ms）：画布挂载 + syncOverlay 建卡耗时不定，
+			//   早到的派发会被忽略（nodeCard 此时还没监听）；重复派发无害
+			//   （已全屏时 setState(true) 是幂等 no-op）。
+			const focusNodeId = (initialData as { focusNodeId?: unknown }).focusNodeId;
+			if (typeof focusNodeId === 'string' && focusNodeId) {
+				for (const delay of [300, 900, 1800]) {
+					setTimeout(() => {
+						window.dispatchEvent(new CustomEvent('wf-node-fullscreen', { detail: { nodeId: focusNodeId } }));
+					}, delay);
+				}
 			}
 		} else if (!loaded && loadAttempt < 19) {
 			// Data not ready yet — schedule retry (100ms intervals, up to 2s)
@@ -562,7 +737,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 
 	// 卡片 ▶ 运行按钮（wf-node-run → onNodeRun）→ 单节点执行。
 	// values 来自 node.data（= 画布 properties，内嵌控件已写回）。
-	const runSingleSchemaNode = useCallback(async (nodeId: string, nodeType: string, stageUid?: string, onProgress?: (progress: number, message?: string) => void, failLoud = false) => {
+	const runSingleSchemaNode = useCallback(async (nodeId: string, nodeType: string, stageUid?: string, onProgress?: (progress: number, message?: string) => void, failLoud = false, signal?: AbortSignal) => {
 		// eslint-disable-next-line no-console
 		console.warn('[runSingleSchemaNode] start ' + JSON.stringify({ nodeId, nodeType, stageUid }));
 		const canvas = liteGraphRef.current;
@@ -708,6 +883,12 @@ export const WorkflowEditorPanel: React.FC = () => {
 		// AbortController 占位（守卫与执行共用同一实例；取消/完成时 delete）
 		const abortCtrl = new AbortController();
 		_nodeAbortMap.set(nodeId, abortCtrl);
+		// ★ 外部中止信号联动（2026-09-11）：stage() 直跑被 host 放弃（空闲超时 / 取消）时，
+		//   同样中止本地执行 —— 否则画布仍会跑完（僵尸），聊天/脚本却已判失败 ✗。
+		if (signal) {
+			if (signal.aborted) { abortCtrl.abort(); }
+			else { signal.addEventListener('abort', () => abortCtrl.abort(), { once: true }); }
+		}
 		spawnPickerForStage(nodeId, nodeType);
 		setComfyRunState('running');
 		setComfyRunMsg(null);
@@ -740,7 +921,10 @@ export const WorkflowEditorPanel: React.FC = () => {
 					canvas.cardStateStore().set(nodeId, { runState: 'running', progress: prog, ...(msg ? { message: msg } : {}) });
 					getTaskStore().update(taskId, { progress: prog, message: msg || '生成中…' });
 					// ★ stage() 桥进度回推：ComfyUI 生成进度 → host 聊天工具卡。
-					onProgress?.(prog, msg || `生成中 ${prog}%`);
+					//   ★ 兜底文案的百分比必须 `formatProgressPct`（2026-09-12 用户需求
+					//     「生成的进度最多显示小数点后2位」）：`value/max*100` 是无限小数，
+					//     直接插值会显示成「生成中 45.45454545454546%」✗。
+					onProgress?.(prog, msg || `生成中 ${formatProgressPct(prog)}%`);
 				},
 				// ★ 单节点执行也需注入 imagegen RPC 通道（ModelImageGen 等 provider 后端节点依赖）。
 				sendImageGen: (payload) => sendRequest('imagegen.generate', payload, 180_000),
@@ -819,7 +1003,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 	// 动态工作流脚本里 `await stage("uid")` → host → 本 runner → runSingleSchemaNode
 	// （画布 Run 的同一执行器）→ ComfyUI 真正生成 → 读回快照物化返回。
 	// 这打通了「脚本域 ↔ 画布域」割裂：之前媒体节点在导出脚本里只能是 null 占位。
-	const runStageForScript = useCallback(async (stageUid: string, overrides?: Record<string, unknown>, onProgress?: (progress: number, message?: string) => void): Promise<unknown> => {
+	const runStageForScript = useCallback(async (stageUid: string, overrides?: Record<string, unknown>, onProgress?: (progress: number, message?: string) => void, signal?: AbortSignal): Promise<unknown> => {
 		const canvas = liteGraphRef.current;
 		if (!canvas) { throw new Error('画布未就绪：stage() 无法执行'); }
 		const state = useWorkflowEditorStore.getState();
@@ -836,7 +1020,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 				...overrides,
 			};
 		}
-		await runSingleSchemaNode(target.id, target.type, stageUid, onProgress, true /* failLoud：脚本域必须拿到明确失败 */);
+		await runSingleSchemaNode(target.id, target.type, stageUid, onProgress, true /* failLoud：脚本域必须拿到明确失败 */, signal);
 		// 执行完读回快照并物化（与 nodeOutput 同构，脚本可统一消费）
 		const store = canvas.snapshotStore();
 		if (!store) { throw new Error('stage(): 快照库不可用'); }
@@ -865,15 +1049,46 @@ export const WorkflowEditorPanel: React.FC = () => {
 		values: Record<string, unknown>,
 		images: string[] | undefined,
 		onProgress: (progress: number, message?: string) => void,
+		originNodeId?: string,
+		// ★ 上游节点 id（2026-09-11）：传给 runNodeOrStage 供其从快照库取上游快照 ——
+		//   逐格图生视频（Saros.AnimatedEmoji）的参考图正是上游 StatEmojiStage 的格子
+		//   快照。此前硬编码 upstreams: [] → 报「动态表情包制作需要上游参考图输入」。
+		upstreams?: string[],
+		// ★ 工作流 session（2026-09-11 用户需求：session 隔离）：据此切换快照库作用域，
+		//   不同聊天会话生成的内容互不可见。
+		workflowSessionId?: string,
+		// ★ 中止信号（2026-09-11）：host 放弃该直跑（空闲超时）时触发 → 透传进
+		//   runNodeOrStage 让画布真正停下（执行层早已支持，见 NodeExecutionInput.signal）。
+		//   否则「聊天报失败、画布仍在跑并在稍后出图」的僵尸 ✗。
+		signal?: AbortSignal,
 	): Promise<DirectStageRunResult> => {
-		const canvas = liteGraphRef.current;
-		if (!canvas) { throw new Error('画布未就绪：ComfyStage 无法执行'); }
+		// ★ 等画布 mount（2026-09-10 日志实锤）：direct stage run 重放到达时 webview
+		//   已就绪（首条消息），但 LiteGraphCanvas React 组件尚未 mount → liteGraphRef
+		//   仍 null。原代码立即抛「画布未打开」→ 节点 fail → cascade skip 下游。
+		//   改为短轮询（≤3s，每 100ms），mount 后立即继续，给 React 渲染窗口。
+		const canvasWaitDeadline = Date.now() + 3_000;
+		let canvas = liteGraphRef.current;
+		while (!canvas && Date.now() < canvasWaitDeadline) {
+			await new Promise<void>(r => setTimeout(r, 100));
+			canvas = liteGraphRef.current;
+		}
+		if (!canvas) { throw new Error('画布未就绪：ComfyStage 无法执行（mount 超时 3s）'); }
 		const store = canvas.snapshotStore();
 		if (!store) { throw new Error('ComfyStage：快照库不可用'); }
+		// ★ 切换快照库 session 作用域（2026-09-11 用户需求：session 隔离）：
+		//   同工作流不同聊天会话 → 不同 session → 归档 key 前缀不同 → 生成内容隔离；
+		//   切换后 notify → 画布卡片按新 session 重渲染（只显示本会话产物）。
+		if (workflowSessionId) { store.setActiveSession(workflowSessionId); }
 		const spec = getNodeSpec(stageClass);
 		const isProviderNode = spec?.backendKind === 'provider' || spec?.kind === 'llm';
-		const runner = isProviderNode ? undefined : comfyRegistryRef.current?.resolve(runnerPreference);
-		if (!isProviderNode && !runner) {
+		// ★ 按需启动 runner（2026-09-10 用户需求）：不依赖 ComfyUI 算力的 stage
+		//   不需要 runner 连接——本地 stage（Loader/Picker 家族：读写本地文件、
+		//   素材库、拖拽资产）纯本地执行，此前因 spec 默认 backendKind='comfy'
+		//   被要求 runner → 未启动 ComfyUI 时整条工作流失败（ImageLoader 实测）。
+		const isLocalStage = /(LoaderStage|PickerStage)$/.test(stageClass);
+		const needsRunner = !isProviderNode && !isLocalStage;
+		const runner = needsRunner ? comfyRegistryRef.current?.resolve(runnerPreference) : undefined;
+		if (needsRunner && !runner) {
 			throw new Error('未连接可用的 ComfyUI Runner（请先启动 ComfyUI）');
 		}
 		if (runner) {
@@ -883,28 +1098,81 @@ export const WorkflowEditorPanel: React.FC = () => {
 				throw new Error(`无法连接 ComfyUI 引擎（${probe.error ?? '连接失败'}）`);
 			}
 			getRunnerStatusStore().setReady(true, runner.baseUrl);
+		} else {
+			console.log(`[DirectStageRun] ${stageClass}: 本地 stage（无需 ComfyUI runner），跳过连接探测`);
 		}
-		const nodeId = `direct-${stageClass}-${Date.now().toString(36)}`;
+		// ★ snapKey 用**原节点 id**（2026-09-10 用户反馈「节点已有默认图片却报未选择」）：
+		//   此前用新生成的 `direct-*` 查询必然为空 → 误报「请先在节点弹窗中选择文件」。
+		//   originNodeId 由 host 透传（delegate 的 node.id）；缺失时才回退临时 id（旧行为）。
+		const nodeId = originNodeId || `direct-${stageClass}-${Date.now().toString(36)}`;
+		// ★★ 归档键必须用 **stageUid**（2026-09-11 修 bug：聊天驱动执行时画布不实时刷新）：
+		//   画布节点卡按 `stageUid` 读快照（nodeCard 的 snapKey），而此前这里把
+		//   `snapshotKey` 直接设成 originNodeId（DAG 节点 id，形如
+		//   `ComfyTV.StatEmojiStage-1788782920357-1`）→ 产出写在 nodeId 名下，
+		//   卡片按 stageUid 读**永远看不到** → 左侧画布无实时数据（右侧聊天卡正常，
+		//   因为聊天卡走 host 侧 executionState）。
+		//   ⚠ `store.registerAlias(nodeId, stageUid)` 只解决「按 nodeId 查 → 命中
+		//   stageUid 名下」，**不反向**（`nodeKeyPrefixes` = `[nodeId, aliasUid]`），
+		//   故**写入必须直接用 stageUid**。
+		//   与仓库既有约定一致：runSingleSchemaNode（L770-772）/ NodeEditorPopup /
+		//   runPickerNode 均注明「归档键 = stageUid，必须与卡片读侧一致，否则 OUTPUT 不刷新」。
+		const snapKey = originNodeId ? (canvas.stageUidOf(originNodeId) ?? originNodeId) : nodeId;
 		// 参考图：images[0] 注入 `image` 端口（EmojiStage 参考图绑定消费）。
 		const mergedValues: Record<string, unknown> = { ...values };
 		if (images && images.length > 0 && !mergedValues['image']) {
 			mergedValues['image'] = images[0];
 		}
+		// ★ 画布节点卡「运行中」实时同步（2026-09-11 用户需求：工作流执行过程中画布
+		//   要实时显示生成图像与节点状态）：聊天触发（headless/direct stage run）此前
+		//   只更新聊天侧卡片，**画布卡片状态不变**（runState 仅在画布内运行路径写入）。
+		//   这里在开跑前置 running，进度/成功/失败分别在 onProgress 与结果分支同步。
+		//   生成图本身由 runNodeOrStage 逐格写入 MediaSnapshotStore，nodeCard 经
+		//   useSyncExternalStore 订阅 → 缩略图自动实时出现。
+		canvas.cardStateStore()?.set(nodeId, { runState: 'running', progress: 0, message: '执行中…' });
 		const r = await runNodeOrStage({
 			runner: runner as unknown as Parameters<typeof runNodeOrStage>[0]['runner'],
 			nodeId,
-			snapshotKey: nodeId,
+			snapshotKey: snapKey,
 			type: stageClass,
 			getSpec: (t) => getNodeSpec(t),
 			values: mergedValues,
-			upstreams: [],
+			// ★ 上游节点 id（2026-09-11）：此前恒为 [] → 依赖上游快照的 stage
+			//   （Saros.AnimatedEmoji 逐格图生视频）取不到参考图而报错。
+			upstreams: upstreams ?? [],
 			store,
+			// ★ 中止信号（2026-09-11）：host 空闲超时后请求取消 → 画布立即停止生成。
+			signal,
 			onProgress: (p) => {
 				const prog = p.progress ?? p.value ?? 50;
-				onProgress(prog, `生成中 ${prog}%`);
+				// ★ 执行器自带文案优先（2026-09-12 修）：此前恒用「生成中 X%」把
+				//   执行器的 message 丢掉 ✗ —— 而 AnimatedEmoji 等执行器发的是
+				//   「阶段① 生成视频 · 格 3（3/9）生成中…」，聊天卡片的**阶段链**
+				//   正是靠文案里的 `阶段①/②/③` 标记推断「当前跑到哪一阶段」
+				//   （见 agentChat/subAgentCardUtils.parseAnimatedEmojiStage）⇒ 丢弃
+				//   文案会让阶段链永远推断不出当前阶段 ✗，用户只看到一个没有意义的
+				//   百分比。现在：有 message 用 message，无则退回「生成中 X%」。
+				//   ★ 百分比必须 `formatProgressPct`（用户需求：最多 2 位小数）。
+				const msg = (p as { message?: string }).message;
+				onProgress(prog, msg || `生成中 ${formatProgressPct(prog)}%`);
+				// ★ 画布节点卡进度实时同步（2026-09-11 用户需求）：聊天触发（headless）
+				//   执行时画布卡片此前不刷新，这里把进度写进 CardStateStore。
+				canvas.cardStateStore()?.set(nodeId, { runState: 'running', progress: prog, message: msg || `生成中 ${formatProgressPct(prog)}%` });
 			},
+			// ★ provider RPC 通道注入（2026-09-10 日志实锤）：Saros.AnimatedEmoji /
+			//   ModelVideoGen / ModelImageGen / Model3DGen / TextGen / AudioGen 等
+			//   **provider 后端节点**依赖这些通道（runAnimatedEmoji 无 sendVideoGen
+			//   直接报「Provider 视频生成通道未注入（videogen.generate）」）。画布内
+			//   执行路径一直有注入，direct stage run（聊天触发存储工作流）此前漏了 →
+			//   同一节点画布能跑、聊天触发必失败。超时与画布路径保持一致。
+			sendVideoGen: (payload) => sendRequest('videogen.generate', payload, 600_000),
+			sendImageGen: (payload) => sendRequest('imagegen.generate', payload, 180_000),
+			sendModel3DGen: (payload) => sendRequest('modelgen.generate', payload, 600_000),
+			sendTextGen: (payload) => sendRequest('textgen.generate', payload, 180_000),
+			sendAudioGen: (payload) => sendRequest('audiogen.generate', payload, 600_000),
 		});
 		if (r.status !== 'success') {
+			// ★ 画布节点卡失败态（2026-09-11）：聊天触发执行时同步到画布。
+			canvas.cardStateStore()?.set(nodeId, { runState: 'error', progress: 0, errorMsg: r.error ?? 'stage 执行失败' });
 			return { status: 'error', error: r.error ?? 'stage 执行失败', outputs: {} };
 		}
 		const entries = store.byNode(nodeId);
@@ -918,6 +1186,9 @@ export const WorkflowEditorPanel: React.FC = () => {
 			images: entries.filter(e => e.media.kind === 'image').map(e => e.media.ref),
 			videos: entries.filter(e => e.media.kind === 'video').map(e => e.media.ref),
 		};
+		// ★ 画布节点卡完成态（2026-09-11）：生成图已由 runNodeOrStage 写入快照库，
+		//   nodeCard 经 useSyncExternalStore 订阅 → 缩略图自动实时出现；这里补状态。
+		canvas.cardStateStore()?.set(nodeId, { runState: 'success', progress: 100, finishedAt: Date.now() });
 		return {
 			status: 'success',
 			outputs,
@@ -1193,7 +1464,11 @@ const handleExecute = useCallback(async () => {
 		// 可执行 = schema/native（ComfyUI runner）+ llm（imagegen.generate RPC）。
 		const state = useWorkflowEditorStore.getState();
 		const canvas = liteGraphRef.current;
-		const plan = buildExecutionPlan(state.nodes, state.edges, type => isExecutableSpec(getNodeSpec(type)));
+		// W7: 预检计划必须与 runGraphExecution 用**同一个** Start 作用域裁剪 ——
+		// 否则「图里有可执行节点但都不在 Start 作用域内」时，这里判定 steps>0 进入
+		// 全图 Run，执行器却一个节点都不跑（静默空转）。
+		const startScope = resolveStartScope(state.nodes, state.edges);
+		const plan = buildExecutionPlan(state.nodes, state.edges, type => isExecutableSpec(getNodeSpec(type)), startScope.scope, makeFlowEdgeClassifier(state.nodes as never, getNodeSpec));
 		if (plan.steps.length > 0 && canvas) {
 			const needsRunner = plan.steps.some(s => isComfyExecutableSpec(getNodeSpec(s.type)));
 			const runner = needsRunner ? comfyRegistryRef.current?.resolve(runnerPreference) : undefined;
@@ -1220,8 +1495,17 @@ const handleExecute = useCallback(async () => {
 				getTaskStore().finish(taskStoreId, false, '已取消（参数面板）');
 				return;
 			}
+			// P0① 写能力信号 → 同层至多一个写者（写者独占一层，不占并发槽空等）。
+			// 能力值来自 host：agents.list / tools.list 的 `writeCapable`（webview 不 import common/）。
+			const agents = useAgentStore.getState().agents;
+			const toolItems = usePicklistStore.getState().tools;
+			const writeStepIds = collectWriteStepIds(state.nodes, {
+				agentWriteCapable: (agentId) => agents.find(a => a.id === agentId)?.writeCapable,
+				toolWriteCapable: (toolName) => toolItems.find(t => t.id === toolName || t.name === toolName)?.writeCapable,
+			});
 			const r = await runGraphExecution({
 				startArgsOverride,
+				writeStepIds,
 				nodes: state.nodes,
 				edges: state.edges,
 				getSpec: (t) => getNodeSpec(t),
@@ -1258,7 +1542,13 @@ const handleExecute = useCallback(async () => {
 			});
 			if (r.success) {
 				setComfyRunState('done');
-				setComfyRunMsg(`全图执行完成 · ${r.ran.length} 个节点${r.skippedIds.length > 0 ? ` · 跳过 ${r.skippedIds.length}` : ''}`);
+				// W7: 入口语义可见化 —— 让用户一眼看出本次是「从 Start 起跑」还是全图，
+				// 以及有多少节点因未接入 Start 被排除（否则「少跑了节点」会被当成 bug）。
+				const scopeNote = r.startScope?.scoped
+					? '从 Start 起'
+					: r.startScope?.degraded ? '全图（Start 未接业务节点）' : '全图';
+				const outNote = r.outOfScopeIds.length > 0 ? ` · 未接入 Start ${r.outOfScopeIds.length}` : '';
+				setComfyRunMsg(`执行完成（${scopeNote}）· ${r.ran.length} 个节点${r.skippedIds.length > 0 ? ` · 跳过 ${r.skippedIds.length}` : ''}${outNote}`);
 				getTaskStore().finish(taskStoreId, true, `完成 · ${r.ran.length} 个节点`);
 				// W6: 激活路径标绿 / gate 未命中分支置灰
 				canvas.markRouteEdges?.(r.ran, r.skippedIds);
@@ -1353,11 +1643,13 @@ const handleExecute = useCallback(async () => {
 		}
 	}, [setValidationMsg, promptStartArgs]);
 
-	// ★ 智能路由（修「运行工作流没从 start 开始 / prompt 参数没生效」）：
-	// 工具栏「▶ 运行」此前固定走 handleExecute（全图 Comfy Run），遇到编排节点
-	// （Start/Prompt/Agent/IfElse…）会被静默跳过，Start 的 prompt 参数也不生效。
-	// 现在：含编排节点 → 走「直接执行」脚本路径（读 Start 参数 + 从 start 开始 +
-	// phase 进度 + 聊天框工具卡）；纯 Comfy/Provider 画布 → 全图 Run（保留并行）。
+	// ★ 智能路由（W7 统一入口语义）：工具栏「▶ 运行」按图的成分选执行通道，但
+	// **两条通道现在都从 Saros.Start 起跑**（resolveStartScope 单一真源）：
+	//   · 含编排节点（Start/Prompt/Agent/IfElse…）→ 脚本路径（Dynamic Workflow
+	//     引擎：Start 参数面板 + phase 进度 + 聊天框工具卡）
+	//   · 纯 Comfy/Provider 画布 → 全图 Run（保留并行模式）
+	// 图无 Start、或 Start 未接业务节点（无出边 / 只连 End）→ 退化为全图执行，
+	// 与存量图行为一致（并在提示里说明，避免「少跑了节点」被误判为 bug）。
 	const handleRun = useCallback(() => {
 		const state = useWorkflowEditorStore.getState();
 		const hasOrchestration = state.nodes.some(n => ORCHESTRATION_NODE_TYPES.has(n.type));
@@ -1421,6 +1713,20 @@ const handleExecute = useCallback(async () => {
 	const [openMenu, setOpenMenu] = useState<'import' | 'export' | 'canvas' | 'publish' | null>(null);
 	const [deleteConfirm, setDeleteConfirm] = useState(false);
 	const [descCollapsed, setDescCollapsed] = useState(false);
+
+	// ★ 会话机制一次性说明条（2026-09-11，方案 A 落地）：
+	//   明确「会话隔离什么 / 共享什么」，消除「改了节点，其他会话怎么办」的困惑。
+	//   全局一次（不带 workflowId —— 说明内容与具体工作流无关），点「知道了」后
+	//   写 localStorage 不再出现。lazy 初始化避免首帧闪烁；localStorage 不可用时
+	//   取 false（宁可不展示，也不要每次打开都重复打扰）。
+	const [sessionHintVisible, setSessionHintVisible] = useState(() => {
+		try { return localStorage.getItem('saros:wfSessionScopeHintDismissed') !== '1'; }
+		catch { return false; }
+	});
+	const dismissSessionHint = useCallback(() => {
+		setSessionHintVisible(false);
+		try { localStorage.setItem('saros:wfSessionScopeHintDismissed', '1'); } catch { /* ignore */ }
+	}, []);
 
 	const refreshPublishState = useCallback(async () => {
 		if (!workflowId) { return; }
@@ -1687,7 +1993,6 @@ const handleExecute = useCallback(async () => {
 							<button className={viewMode === 'canvas' ? 'on' : ''} title="画布视图（节点图编辑，唯一编辑真源）" onClick={() => setViewMode('canvas')}>⊞ 图</button>
 							<button className={viewMode === 'split' ? 'on' : ''} title="左右分栏：画布 + 脚本并排（可拖分隔条）" onClick={() => setViewMode('split')}>⫿ 分栏</button>
 							<button className={viewMode === 'code' ? 'on' : ''} title="脚本视图：画布的只读投影（Ctrl+Shift+V）" onClick={() => setViewMode('code')}>&lt;/&gt; 代码<span className="vs-kbd">⌃⇧V</span></button>
-							<button className={viewMode === 'mindmap' ? 'on' : ''} title="思维导图视图：从画布 Saros.MindMap* 节点派生（可导出 drawio）" onClick={() => setViewMode('mindmap')}>🧠 脑图</button>
 						</div>
 						<span className="wft-divider" />
 
@@ -1706,8 +2011,15 @@ const handleExecute = useCallback(async () => {
 							</button>
 							{openMenu === 'import' && (
 								<div className="wft-menu">
+									<div className="wft-mi-head">导入为新工作流</div>
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); void handleImportWorkflowFile(); }}>
+										<span className="mi-icon">🗂</span>
+										<span className="mi-label">工作流 JSON 文件<span className="mi-hint">落盘为独立工作流 · 出现在左侧列表</span></span>
+									</button>
+									<div className="wft-mi-head">导入到当前画布</div>
 									<button className="wft-mi" onClick={() => { setOpenMenu(null); comfyFileInputRef.current?.click(); }}>
-										<span className="mi-icon">📄</span><span className="mi-label">ComfyUI 工作流 JSON</span>
+										<span className="mi-icon">📄</span>
+										<span className="mi-label">ComfyUI 工作流 JSON<span className="mi-hint">替换/合并当前画布内容</span></span>
 									</button>
 								</div>
 							)}
@@ -1724,6 +2036,10 @@ const handleExecute = useCallback(async () => {
 									<button className="wft-mi" onClick={() => { setOpenMenu(null); setViewMode('code'); void handleExecuteScript(); }}>
 										<span className="mi-icon">▶</span>
 										<span className="mi-label">直接执行<span className="mi-hint">绕过 LLM 决策，运行过程在聊天框工具卡片展示</span></span>
+									</button>
+									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleWorkflowExport(); }}>
+										<span className="mi-icon">🗂</span>
+										<span className="mi-label">工作流 JSON 文件<span className="mi-hint">完整工作流 · 可再次导入（分享 / 备份 / 迁移）</span></span>
 									</button>
 									<button className="wft-mi" onClick={() => { setOpenMenu(null); handleComfyExport(); }}>
 										<span className="mi-icon">🧬</span>
@@ -1802,6 +2118,28 @@ const handleExecute = useCallback(async () => {
 							<span className="tk" />并行
 						</span>
 						<span className="wft-divider" />
+						{/* ★ 工作流 Session 选择器（2026-09-11 用户需求）：不同会话生成的内容
+						    相互隔离；切换即刷新画布卡片（快照库换作用域）。 */}
+						<select
+							className="wft-session-select"
+							title={'工作流会话：只隔离各自「生成的内容」（产物 / 缩略图）；节点参数与连线是所有会话共用的工作流定义——改一次，全部会话生效。'}
+							value={activeWfSession}
+							onChange={e => handleWfSessionChange(e.target.value)}
+							style={{ fontSize: 11, maxWidth: 160, padding: '2px 4px' }}
+						>
+							{wfSessions.length === 0 ? (
+								<option value={activeWfSession}>{activeWfSession === 'default' ? '默认会话' : activeWfSession}</option>
+							) : null}
+							{wfSessions.map(s => (
+								<option key={s.id} value={s.id}>{s.name}{s.runCount ? ` · ${s.runCount} 次` : ''}</option>
+							))}
+						</select>
+						{/* ★ 重命名当前会话（2026-09-11 用户需求）：仅改显示名，不影响产物隔离 */}
+						<button
+							className="wft-btn icon"
+							title="重命名当前会话"
+							onClick={() => { void handleWfSessionRename(); }}
+						>✏️</button>
 						<button ref={runnerBtnRef} className={'wft-btn icon' + (showRunners ? ' panel-on' : '')} title="ComfyUI Runner 管理" onClick={() => setShowRunners(v => !v)}>🖥</button>
 						<button className="wft-btn icon" title="插件管理（URL 安装 / 卸载 / 重载）" onClick={() => setShowPluginManager(true)}>🧩</button>
 					</div>
@@ -1908,6 +2246,24 @@ const handleExecute = useCallback(async () => {
 						<button className="wft-btn icon" title="折叠任务描述栏" onClick={() => setDescCollapsed(true)}>▴</button>
 					)}
 				</div>
+				)}
+
+				{/* ★ 会话机制一次性说明条（2026-09-11，方案 A 落地）：把「隔离什么 /
+				    共享什么」讲清楚——会话只隔离生成的内容，节点参数与连线是共用定义。
+				    全局一次（localStorage），点「知道了」后不再出现。 */}
+				{sessionHintVisible && (
+					<div className="wft-session-hint" role="note">
+						<span className="wft-session-hint-icon">💡</span>
+						<span className="wft-session-hint-text">
+							<b>会话</b>只隔离各自<u>生成的内容</u>（产物 / 缩略图）；
+							<b>节点参数与连线</b>是所有会话<u>共用</u>的工作流定义 —— 改一次，全部会话生效。
+						</span>
+						<button
+							className="wft-session-hint-close"
+							onClick={dismissSessionHint}
+							title="不再提示"
+						>知道了</button>
+					</div>
 				)}
 
 				{/* Main area — v3: flex 容器 = 画布 │ 分隔条 │ 代码投影；nodes 经右键菜单添加 */}
@@ -2175,7 +2531,19 @@ const handleExecute = useCallback(async () => {
 						// Saros (react) nodes persist their parameters into node.data.
 						const spec = getNodeSpec(editingNode.nodeType);
 						if (spec?.kind === 'react') {
+							// 兜底：确保 store 一定写入（下面的事件若因节点不在画布被丢弃，
+							// 至少执行链路的数据源已更新 —— 与原行为一致）。
 							useWorkflowEditorStore.getState().updateNodeData(id, values);
+							// ★ P2b（2026-09-13）：再逐字段派发统一写入口 `wf-node-control`，
+							//   补上原先缺失的两件事：
+							//     ① 写 LiteGraph `node.properties`（画布/序列化真源）——
+							//        原来只写 store，弹窗改完画布上的值不同步；
+							//     ② 经 applyNodeControl(origin='canvas') → scheduleNotifyHost
+							//        → host 广播给其它窗口（画布 tab ↔ 节点编辑器 tab）。
+							//   300ms 节流在 scheduleNotifyHost 内已有，批量提交不会打爆通道。
+							for (const [name, value] of Object.entries(values)) {
+								window.dispatchEvent(new CustomEvent('wf-node-control', { detail: { nodeId: id, name, value } }));
+							}
 						}
 					}}
 							onClose={() => setEditingNode(null)}
@@ -2400,13 +2768,41 @@ const handleExecute = useCallback(async () => {
 					<div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>🙋 需要你的输入</div>
 					<div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)', marginBottom: 14, lineHeight: 1.6 }}>{askUserDialog.question}</div>
 					{askUserDialog.params && askUserDialog.params.length > 0 ? (
-						// ★ params 动态参数表单：渲染输入框（text/number/textarea），
+						// ★ params 动态参数表单：渲染输入框（text/number/textarea/image），
 						//   提交后以键值对象反馈给工作流（AskUser 输出 SAROS_JSON）。
 						<div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
 							{askUserDialog.params.map(p => (
 								<label key={p.key} style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: 'var(--vscode-foreground)' }}>
 									<span>{p.label}</span>
-									{p.type === 'textarea' ? (
+									{/* ★ image 字段（2026-09-10）：文件选择 + 缩略图预览，值 = data URL
+									    ——与 browser 侧 confirmCards 的 kind='image' 同语义，
+									      下游媒体端口（参考图等）可直接消费。 */}
+									{p.type === 'image' ? (
+										<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+											<input
+												type="file"
+												accept="image/*"
+												onChange={e => {
+													const file = e.target.files?.[0];
+													if (!file) { return; }
+													const reader = new FileReader();
+													reader.onload = () => {
+														if (typeof reader.result !== 'string') { return; }
+														setAskUserParamValues(prev => ({ ...prev, [p.key]: reader.result as string }));
+													};
+													reader.readAsDataURL(file);
+												}}
+												style={{ flex: 1, fontSize: 11 }}
+											/>
+											{askUserParamValues[p.key] ? (
+												<img
+													src={askUserParamValues[p.key]}
+													alt=""
+													style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--vscode-panel-border)' }}
+												/>
+											) : null}
+										</div>
+									) : p.type === 'textarea' ? (
 										<textarea
 											rows={3}
 											value={askUserParamValues[p.key] ?? ''}
@@ -2582,8 +2978,43 @@ export function applyCanvasOpsToStore(
 		};
 	}
 
+	// ★ picker 选中同步（2026-09-11 用户需求）：聊天卡勾选 ImagePicker 候选 → 写回画布节点选中态。
+	//   `select_picker_refs` 必须在这里**预处理**成 `update_node` 补丁 —— ref→池序号的映射需要
+	//   快照库（池 = 直接上游的归档 + 顺序），而 `applyCanvasOps` 是**纯函数、无 store** ✗
+	//   （同 `__generate_flow__` 的预处理范式）。
+	const pickerOps = ops.filter(o => o.op === 'select_picker_refs');
+	const restOps = ops.filter(o => o.op !== 'select_picker_refs');
+	const preOps: Array<Record<string, unknown>> = [];
+	if (pickerOps.length > 0) {
+		const store = activeStore();
+		for (const po of pickerOps) {
+			const refs = Array.isArray(po.refs) ? (po.refs as string[]) : [];
+			const node = model.nodes.find(n => n.id === String(po.node ?? ''));
+			if (!node || refs.length === 0) { continue; }
+			// ★★ 池顺序必须与**画布卡片网格 / 物化**完全一致（2026-09-12 修用户实测
+			//   「聊天框选中的图像和工作流节点中同步显示的选中图像不一致」）：
+			//   卡片池 = `mergeImagePool(pickerOutputs)`（**新图在前** + 去重），
+			//   而这里此前用 `store.byNode(uid)` 的原序（index 升序 = **旧图在前**）✗
+			//   ⇒ 序号整体**反了** ⇒ 画布高亮到**另一组格子** ✗，且物化出的 refs 也错 ✗
+			//   （下游 AnimatedEmoji 的「引用」跟着错/空 ✗）。
+			//   ⚠ 三处必须同序：卡片网格（nodeCard PickerPoolGrid）、
+			//     LiteGraphCanvas 的「选中即物化」、以及这里的 ref→序号映射。
+			const raw: MediaSnapshotEntry[] = [];
+			for (const uid of model.edges.filter(e => e.target === node.id).map(e => e.source)) {
+				for (const entry of (store?.byNode(uid) ?? [])) {
+					if (entry?.media?.kind === 'image') { raw.push(entry); }
+				}
+			}
+			const poolRefs = mergeImagePool(raw).map(e => e.media.ref);
+			const patch = buildPickerSelectionPatch(refs, poolRefs);
+			if (Object.keys(patch).length > 0) {
+				preOps.push({ op: 'update_node', node: node.id, patch });
+			}
+		}
+	}
+
 	// Regular ops: atomic batch via applyCanvasOps.
-	const result = applyCanvasOps(model, ops as CanvasOp[]);
+	const result = applyCanvasOps(model, [...preOps, ...restOps] as CanvasOp[]);
 	if (result.ok) {
 		state.setNodes(result.model.nodes as unknown as WorkflowEditorNode[]);
 		state.setEdges(result.model.edges as unknown as WorkflowEditorEdge[]);

@@ -336,6 +336,181 @@ export function smoothStickerAlpha(rgba: Uint8Array, w: number, h: number): void
 }
 
 /**
+ * 自动居中裁剪检测（2026-09-10，`cell_crop_mode='auto'`，**G 方案**）。
+ *
+ * ## 方案 G：自由 CCL 框 + 像素级归属剔除（替代「检测域 + 硬边界」方案）
+ * 浏览器内六/七方案实测对比（tmp/emoji-split-test，1254² 3×3 白底图集）证明：
+ *   - 旧「检测域外扩 2% + 硬边界内缩 2%」：框零越界，但**裁切损失 6114px**
+ *     （贴纸被硬边界切掉 —— cell7 4429px、cell1 1388px），代价 > 收益；
+ *   - 「自由 CCL」：贴纸 100% 完整（裁切 0px），但框内会带进邻格越格像素 939px；
+ *   - ★ G = 自由 CCL 框 + 渲染时按连通域归属剔除非本格像素 → **裁切 0 + 外来 0**。
+ *
+ * ## 算法（全图一次 CCL，不再逐格检测域）
+ * 1. 前景掩码：有 alpha → `a>8`；无 alpha（不透明图集）→ 与**全图四边中位色**
+ *    色距 > 60；
+ * 2. 全图 4-连通域 CCL，产出 labels（像素→连通域）+ comps；
+ * 3. 保留 area ≥ 格面积 0.3% 的连通域；按 bbox 中心归格（ownerAll）；
+ * 4. 每格：中心在本格的连通域并集 bbox → ±2px → 正方形化 `S=max(w,h)×(1+padding)`
+ *    → 中心对齐（**无硬边界/尺寸界/位移界** —— 框允许越格/重叠，靠像素剔除兜底）；
+ * 5. 产出一张全图归属掩码 owners（像素→归属格，-1 = 背景/未归属小碎片），
+ *    供 splitStickerSheet 裁剪时把「非本格」像素 alpha 置 0。
+ *
+ * 任一格无连通域 → 该格回退等分 crop；整体异常/无前景 → null（调用方落回等分）。
+ * 返回 { crops, ownership }：crops 复用 `cell_crops` 契约（MiniImageEditor 微调零改动），
+ * ownership 需一路传到 splitStickerSheet 以启用像素级剔除。
+ */
+export async function autoDetectCellCrops(
+	imgRef: string,
+	rows: number,
+	cols: number,
+	opts: { padding?: number; fetchImpl?: typeof fetch } = {},
+): Promise<SheetDetectionResult | null> {
+	const padding = Math.max(0, Math.min(0.3, opts.padding ?? 0.08));
+	const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+	let objectUrl = '';
+	try {
+		const blob = /^data:/i.test(imgRef) ? dataUrlToBlob(imgRef) : await (await fetchImpl(imgRef)).blob();
+		objectUrl = URL.createObjectURL(blob);
+		const img = document.createElement('img');
+		await new Promise<void>((resolve, reject) => {
+			img.onload = () => resolve();
+			img.onerror = () => reject(new Error('图集解码失败'));
+			img.src = objectUrl;
+		});
+		const W = img.naturalWidth, H = img.naturalHeight;
+		if (W <= 0 || H <= 0) { return null; }
+		const cv = document.createElement('canvas');
+		cv.width = W; cv.height = H;
+		const ctx = cv.getContext('2d', { willReadFrequently: true });
+		if (!ctx) { return null; }
+		ctx.drawImage(img, 0, 0);
+		const data = ctx.getImageData(0, 0, W, H).data;
+		// 是否带 alpha（抽稀）
+		let tr = 0, total = 0;
+		for (let i = 3; i < data.length; i += 64) { total++; if (data[i] < 250) { tr++; } }
+		const hasAlpha = total > 0 && tr / total > 0.03;
+
+		const cw = W / cols, chh = H / rows;
+		const cellArea = cw * chh;
+		const gridCrop = (r: number, c: number): SheetCellCrop => {
+			const ix = cw * EMOJI_SHEET_MARGIN_RATIO, iy = chh * EMOJI_SHEET_MARGIN_RATIO;
+			return { x: (c * cw + ix) / W, y: (r * chh + iy) / H, w: (cw - ix * 2) / W, h: (chh - iy * 2) / H };
+		};
+
+		// ── 全图前景掩码（一次，供全图 CCL） ──
+		let bg = { r: 0, g: 0, b: 0 };
+		if (!hasAlpha) {
+			const edge: number[][] = [];
+			const sx = Math.max(1, Math.floor(W / 24)), sy = Math.max(1, Math.floor(H / 24));
+			for (let x = 0; x < W; x += sx) {
+				for (const y of [0, H - 1]) { const i = (y * W + x) * 4; edge.push([data[i], data[i + 1], data[i + 2]]); }
+			}
+			for (let y = 0; y < H; y += sy) {
+				for (const x of [0, W - 1]) { const i = (y * W + x) * 4; edge.push([data[i], data[i + 1], data[i + 2]]); }
+			}
+			const med = (ch: number) => edge.map(e => e[ch]).sort((a, b) => a - b)[Math.floor(edge.length / 2)] ?? 0;
+			bg = { r: med(0), g: med(1), b: med(2) };
+		}
+		const mask = new Uint8Array(W * H);
+		for (let p = 0; p < W * H; p++) {
+			const i = p * 4;
+			const fg = hasAlpha
+				? data[i + 3] > 8
+				: Math.hypot(data[i] - bg.r, data[i + 1] - bg.g, data[i + 2] - bg.b) > 60;
+			if (fg) { mask[p] = 1; }
+		}
+
+		// ── 全图 4-连通域 CCL（labels：像素 → 连通域 id，-1 = 背景） ──
+		const labels = new Int32Array(W * H).fill(-1);
+		const comps: Array<{ area: number; x0: number; y0: number; x1: number; y1: number }> = [];
+		const visited = new Uint8Array(W * H);
+		const stack: number[] = [];
+		for (let p0 = 0; p0 < mask.length; p0++) {
+			if (!mask[p0] || visited[p0]) { continue; }
+			const cid = comps.length;
+			let area = 0, x0 = W, y0 = H, x1 = -1, y1 = -1;
+			stack.length = 0;
+			stack.push(p0);
+			visited[p0] = 1;
+			while (stack.length) {
+				const cur = stack.pop() as number;
+				const yy = (cur / W) | 0;
+				const xx = cur - yy * W;
+				area++;
+				labels[cur] = cid;
+				if (xx < x0) { x0 = xx; }
+				if (yy < y0) { y0 = yy; }
+				if (xx > x1) { x1 = xx; }
+				if (yy > y1) { y1 = yy; }
+				const push = (j: number): void => { if (!visited[j] && mask[j]) { visited[j] = 1; stack.push(j); } };
+				if (xx > 0) { push(cur - 1); }
+				if (xx + 1 < W) { push(cur + 1); }
+				if (yy > 0) { push(cur - W); }
+				if (yy + 1 < H) { push(cur + W); }
+			}
+			comps.push({ area, x0, y0, x1, y1 });
+		}
+		if (comps.length === 0) { return null; }
+
+		// ── 归属格：保留连通域按 bbox 中心归格（ownerAll 下标 = comps 下标） ──
+		const keepArea = cellArea * 0.003;
+		const ownerAll = new Int32Array(comps.length).fill(-1);
+		const ownerOfComp = (cm: { x0: number; y0: number; x1: number; y1: number }): number => {
+			const cx = (cm.x0 + cm.x1) / 2, cy = (cm.y0 + cm.y1) / 2;
+			const gc = Math.min(cols - 1, Math.max(0, Math.floor(cx / cw)));
+			const gr = Math.min(rows - 1, Math.max(0, Math.floor(cy / chh)));
+			return gr * cols + gc;
+		};
+		const pool = comps.filter(cm => cm.area >= keepArea);
+		comps.forEach((cm, i) => { if (cm.area >= keepArea) { ownerAll[i] = ownerOfComp(cm); } });
+		const usePool = pool.length ? pool : comps;
+
+		// ── 每格框：中心在本格的连通域并集 bbox → 正方形化（无硬边界/尺寸界/位移界） ──
+		const out: SheetCellCrop[] = [];
+		for (let r = 0; r < rows; r++) {
+			for (let c = 0; c < cols; c++) {
+				const gx = c * cw, gy = r * chh;
+				const mine = usePool.filter(cm => {
+					const cx = (cm.x0 + cm.x1) / 2, cy = (cm.y0 + cm.y1) / 2;
+					return cx >= gx && cx < gx + cw && cy >= gy && cy < gy + chh;
+				});
+				if (mine.length === 0) { out.push(gridCrop(r, c)); continue; }
+				let bx0 = W, by0 = H, bx1 = -1, by1 = -1;
+				for (const cm of mine) {
+					bx0 = Math.min(bx0, cm.x0); by0 = Math.min(by0, cm.y0);
+					bx1 = Math.max(bx1, cm.x1); by1 = Math.max(by1, cm.y1);
+				}
+				// bbox ±2px 保住抗锯齿边，正方形化 ×(1+padding)，中心 = bbox 中心
+				const fx0 = bx0 - 2, fy0 = by0 - 2, fx1 = bx1 + 2, fy1 = by1 + 2;
+				const S = Math.max(fx1 - fx0, fy1 - fy0) * (1 + padding);
+				const ccx = (fx0 + fx1) / 2, ccy = (fy0 + fy1) / 2;
+				// 归一化并 clamp 到图内（图边缘贴纸允许非正方形）
+				const nx = Math.max(0, ccx - S / 2), ny = Math.max(0, ccy - S / 2);
+				const nw = Math.min(S, W - nx), nh = Math.min(S, H - ny);
+				out.push({ x: nx / W, y: ny / H, w: nw / W, h: nh / H });
+			}
+		}
+
+		// ── 全图归属掩码（像素 → 归属格，-1 = 背景/未归属小碎片，供切分剔除） ──
+		const owners = new Int32Array(W * H).fill(-1);
+		for (let p = 0; p < W * H; p++) {
+			const l = labels[p];
+			if (l >= 0) { owners[p] = ownerAll[l]; }
+		}
+
+		// eslint-disable-next-line no-console
+		console.warn(`[EmojiStage] autoDetectCellCrops(G 自由 CCL): ${rows}x${cols} hasAlpha=${hasAlpha} comps=${comps.length} 输出 ${out.length} 框（含归属掩码）`);
+		return { crops: out, ownership: { w: W, h: H, owners } };
+	} catch (e) {
+		// eslint-disable-next-line no-console
+		console.warn(`[EmojiStage] autoDetectCellCrops 失败，落回等分裁剪：${e instanceof Error ? e.message : String(e)}`);
+		return null;
+	} finally {
+		if (objectUrl) { URL.revokeObjectURL(objectUrl); }
+	}
+}
+
+/**
  * 本地整版去背景（2026-09-08，「去背景」按钮算法下拉用）：对**整版图集**
  * dataURL 做一次本地抠图，返回透明 PNG dataURL。零依赖、毫秒级（无需 ComfyUI）。
  *
@@ -499,6 +674,23 @@ export interface SheetCellCrop {
 	h: number;
 }
 
+/**
+ * 全图连通域归属掩码（2026-09-10，G 方案配套）——供 splitStickerSheet 在裁剪时
+ * 把「归属其他格」的邻格越格像素 alpha 置 0（根治「框内出现邻格元素」的残留）。
+ */
+export interface SheetOwnershipMask {
+	w: number;
+	h: number;
+	/** 长度 w*h，值 = 归属格 index（0..rows*cols-1），-1 = 背景 / 未归属小碎片（保留不剔）。 */
+	owners: Int32Array;
+}
+
+/** autoDetectCellCrops 的完整检测结果：裁剪框 + 归属掩码（切分剔除用）。 */
+export interface SheetDetectionResult {
+	crops: SheetCellCrop[];
+	ownership: SheetOwnershipMask;
+}
+
 /** 解析 values.cell_crops（JSON 数组，长度须 = rows*cols，坐标 0-1）。非法 → null。 */
 export function parseSheetCellCrops(raw: unknown, rows: number, cols: number): SheetCellCrop[] | null {
 	if (typeof raw !== 'string' || !raw.trim()) { return null; }
@@ -550,7 +742,7 @@ export async function splitStickerSheet(
 	imgRef: string,
 	rows: number,
 	cols: number,
-	opts: { marginRatio?: number; cutoutBg?: boolean; protectPx?: number; chroma?: boolean; cellCrops?: SheetCellCrop[] | null },
+	opts: { marginRatio?: number; cutoutBg?: boolean; protectPx?: number; chroma?: boolean; cellCrops?: SheetCellCrop[] | null; ownership?: SheetOwnershipMask | null },
 	fetchImpl: typeof fetch,
 ): Promise<SplitSheetCell[]> {
 	const blob = /^data:/i.test(imgRef) ? dataUrlToBlob(imgRef) : await (await fetchImpl(imgRef)).blob();
@@ -671,6 +863,23 @@ export async function splitStickerSheet(
 				const data = cctx.getImageData(0, 0, cw, ch);
 				floodFillWhiteBg(new Uint8Array(data.data.buffer), cw, ch, opts.protectPx ?? 0);
 				cctx.putImageData(data, 0, 0);
+			}
+			// ★ 像素级归属剔除（2026-09-10，G 方案）：把框内「归属其他格」的连通域
+			//   像素 alpha 置 0 —— 根治「自由 CCL 框越格/重叠把邻格贴纸带进本格」的
+			//   残留。ownership 由 autoDetectCellCrops 产出，与整图 W/H 严格对应。
+			if (opts.ownership && opts.ownership.w === W && opts.ownership.h === H) {
+				const id = cctx.getImageData(0, 0, cw, ch);
+				const d = id.data;
+				const owners = opts.ownership.owners;
+				for (let py = 0; py < ch; py++) {
+					const oy = y0 + py;
+					for (let px = 0; px < cw; px++) {
+						const ox = x0 + px;
+						const owner = owners[oy * W + ox];
+						if (owner >= 0 && owner !== ci) { d[(py * cw + px) * 4 + 3] = 0; }
+					}
+				}
+				cctx.putImageData(id, 0, 0);
 			}
 			// eslint-disable-next-line no-console
 			console.log(`[EmojiStage] split cell#${ci} src=[${x0},${y0} → ${x1},${y1}] ${cw}x${ch} crop=${JSON.stringify(crop)}`);

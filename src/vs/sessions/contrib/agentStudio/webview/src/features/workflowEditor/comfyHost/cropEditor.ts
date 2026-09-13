@@ -120,42 +120,53 @@ export function dragCrop(
 	const clampY = (v: number) => Math.max(0, Math.min(1, v));
 
 	if (handle === 'move') {
-		const newX = clampX(start.x + dx);
-		const newY = clampY(start.y + dy);
+		// ★ 整体移动：位置 clamp 到 [0, 1-w] / [0, 1-h]，**尺寸恒定**。
+		//   此前只把 newX/newY clamp 到 [0,1]，再用 `Math.min(start.w, 1 - newX)`
+		//   反推宽高 → 拖到右/下边缘时框被「挤扁」（尺寸缩小）而不是停住，
+		//   松手后裁剪区域与用户看到的不一致。语义对齐 MiniImageEditor 的框内拖动
+		//   （`x: Math.max(0, Math.min(1 - o.w, o.x + dx))`）。
+		const maxX = Math.max(0, 1 - start.w);
+		const maxY = Math.max(0, 1 - start.h);
 		return {
-			x: newX,
-			y: newY,
-			w: Math.min(start.w, 1 - newX),
-			h: Math.min(start.h, 1 - newY),
+			x: Math.max(0, Math.min(maxX, start.x + dx)),
+			y: Math.max(0, Math.min(maxY, start.y + dy)),
+			w: start.w,
+			h: start.h,
 		};
 	}
 	// resize handles: keep opposite corner anchored
 	let { x, y, w, h } = start;
+	// ★ 被拖动的「上边 / 左边」除了夹到图界，还**不得越过对边**：否则越过临界点后
+	//   反推出的尺寸变负 → 被 MIN_WH 兜住，框会翻到锚点另一侧（视觉上「跳一下」）。
+	//   MiniImageEditor 的四角手柄本来就有这层守卫（clamp(n.y, 0, y1 - 0.02)），此处对齐。
+	const MIN_WH = 0.02;
+	const clampTop = (v: number) => Math.min(clampY(v), start.y + start.h - MIN_WH);
+	const clampLeft = (v: number) => Math.min(clampX(v), start.x + start.w - MIN_WH);
 	if (handle === 'tl') {
-		x = clampX(start.x + dx); y = clampY(start.y + dy);
+		x = clampLeft(start.x + dx); y = clampTop(start.y + dy);
 		w = start.x + start.w - x; h = start.y + start.h - y;
 	} else if (handle === 'tr') {
-		y = clampY(start.y + dy);
+		y = clampTop(start.y + dy);
 		w = start.w + dx; h = start.y + start.h - y;
 	} else if (handle === 'bl') {
-		x = clampX(start.x + dx);
+		x = clampLeft(start.x + dx);
 		w = start.x + start.w - x; h = start.h + dy;
 	} else if (handle === 'br') {
 		w = start.w + dx; h = start.h + dy;
 	} else if (handle === 'l') {
-		x = clampX(start.x + dx); w = start.x + start.w - x;
+		x = clampLeft(start.x + dx); w = start.x + start.w - x;
 	} else if (handle === 'r') {
 		w = start.w + dx;
 	} else if (handle === 't') {
-		y = clampY(start.y + dy); h = start.y + start.h - y;
+		y = clampTop(start.y + dy); h = start.y + start.h - y;
 	} else if (handle === 'b') {
 		h = start.h + dy;
 	}
 	// clamp sizes to image bounds (keep anchored corner)
 	if (handle !== 't' && handle !== 'tl' && handle !== 'tr') { h = Math.min(h, 1 - y); }
 	if (handle !== 'l' && handle !== 'tl' && handle !== 'bl') { w = Math.min(w, 1 - x); }
-	w = Math.max(0.02, w);
-	h = Math.max(0.02, h);
+	w = Math.max(MIN_WH, w);
+	h = Math.max(MIN_WH, h);
 	let box = { x, y, w, h };
 	if (aspect) { box = enforceAspect(box, aspect, handle); }
 	return box;

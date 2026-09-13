@@ -396,9 +396,18 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			if (!force) {
 				const notReady = targetPaths.filter(p => !ctx.codebaseGraphService.hasProjectData(p));
 				if (notReady.length === 0) {
-					const status = ctx.codebaseGraphService.getIndexStatus();
-					return text(`index_repository: graph already loaded (${status?.nodeCount ?? 0} nodes, ${status?.edgeCount ?? 0} edges from ${status?.fileCount ?? 0} files). ` +
-						`Set force=true to re-index.`);
+					// 「有数据」≠「健康」：图可能只含被编辑过的文件（解析大面积失败且被固化）。
+					// 旧逻辑此时直接跳过重建 → 残缺图永远修不好（用户点重新索引也无效）。
+					// 2026-09-09：实测 6017 文件基线 / 1196 节点仍被判为「已加载」。
+					const health = ctx.codebaseGraphService.getIndexHealth?.();
+					if (health?.deficient) {
+						ctx.logService.warn(`[BuiltinTools] index_repository: deficient graph detected (${health.message}) — re-indexing instead of skipping`);
+						// 落穿：targetPaths 保持全部，走下面的重建流程
+					} else {
+						const status = ctx.codebaseGraphService.getIndexStatus();
+						return text(`index_repository: graph already loaded (${status?.nodeCount ?? 0} nodes, ${status?.edgeCount ?? 0} edges from ${status?.fileCount ?? 0} files). ` +
+							`Set force=true to re-index.`);
+					}
 				}
 				if (notReady.length < targetPaths.length) {
 					ctx.logService.info(`[BuiltinTools] index_repository: ${targetPaths.length - notReady.length} folder(s) already indexed, only indexing: ${notReady.join(', ')}`);
@@ -445,7 +454,15 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			}
 			// 优先用异步版本：内存 store 为空时从 SQLite 后端获取真实计数
 			const status = await ctx.codebaseGraphService.getIndexStatusAsync();
-			return json({ indexed: status.nodeCount > 0, ...status });
+			// 健康度一并返回（2026-09-09）：模型看到 deficient 时应先 index_repository
+			// 重建，而不是因 search_graph 空结果误判「图不可用」后退回 grep 几十次。
+			const health = ctx.codebaseGraphService.getIndexHealth?.();
+			return json({
+				indexed: status.nodeCount > 0,
+				...status,
+				...(health ? { health } : {}),
+				...(health?.deficient ? { warning: 'Graph is DEFICIENT — run index_repository (force=true) before relying on search results.' } : {}),
+			});
 		},
 	});
 
@@ -676,6 +693,12 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 					` — none in the current project. Those belong to a DIFFERENT indexed repository;` +
 					` pass project="<name>" explicitly if you really meant to search it. For symbols in the current` +
 					` project that are string literals / node-type names (not declarations), use search_code instead.`;
+			}
+			// 图谱残缺（解析大面积失败被固化）时如实告知模型，避免它误判「符号不存在」
+			// 而退回 grep——正确动作是先 index_repository (force=true) 重建（2026-09-09）。
+			const _health = ctx.codebaseGraphService.getIndexHealth?.();
+			if (_health?.deficient && _health.message) {
+				hint += ` ⚠ ${_health.message}. The graph is incomplete — run index_repository (force=true) and retry before concluding the symbol does not exist.`;
 			}
 			ctx.logService.warn(`[BuiltinTools] search_graph: 0 results (total=${totalNodes})`);
 			const fmt0 = (args['format'] as string) || 'toon';

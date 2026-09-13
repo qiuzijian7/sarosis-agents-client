@@ -404,6 +404,26 @@ export async function runAmV2Tests(): Promise<void> {
 		assertEq(memories.length, 1, 'not deleted in dryRun');
 	});
 
+	// P1-10a（2026-09-10）：superseded 行物理回收窗口 90d→7d。
+	// 背景：实测库 8424 行/9.2MB 被 supersede 的旧版本永滞留——90 天线对 2 个月新库永不触发。
+	await test('evict: purges superseded entries older than 7d, keeps fresh ones', async (kv) => {
+		await fn.remember(kv as any, AGENT_ID, 'old superseded entry', 'fact');
+		await fn.remember(kv as any, AGENT_ID, 'fresh superseded entry', 'fact');
+		const memories = await kv.list<Memory>(KV.memories(AGENT_ID));
+		const old = memories.find(m => m.content === 'old superseded entry')!;
+		const fresh = memories.find(m => m.content === 'fresh superseded entry')!;
+		old.isLatest = false;
+		old.updatedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+		await kv.set(KV.memories(AGENT_ID), old.id, old);
+		fresh.isLatest = false;
+		await kv.set(KV.memories(AGENT_ID), fresh.id, fresh);
+		const stats = await fn.evict(kv as any, AGENT_ID, false);
+		assert(stats.nonLatest >= 1, 'stale superseded detected');
+		const after = await kv.list<Memory>(KV.memories(AGENT_ID));
+		assert(!after.some(m => m.id === old.id), '8d-old superseded purged');
+		assert(after.some(m => m.id === fresh.id), 'fresh superseded kept');
+	});
+
 	// 10. autoPage
 	await test('autoPage: demotes core to archival when over budget', async (kv) => {
 		for (let i = 0; i < 20; i++) {
@@ -1484,14 +1504,14 @@ export async function runAmV2Tests(): Promise<void> {
 	await test('graphExtract: extracts entities from memory', async (kv) => {
 		const r = await fn.remember(kv as any, AGENT_ID, 'src/components/App.tsx uses jwt authentication and database connection pool', 'architecture', ['jwt', 'auth', 'database']);
 		await pipe.graphExtract(kv as any, AGENT_ID, r.id!, 'src/components/App.tsx uses jwt authentication and database connection pool');
-		const stats = pipe.graphStats();
+		const stats = await pipe.graphStats(kv as any, AGENT_ID);
 		assert(stats.nodes > 0, 'nodes extracted');
 	});
 
 	await test('graphQuery: searches graph entities', async (kv) => {
 		await fn.remember(kv as any, AGENT_ID, 'src/components/UserService.ts handles authentication with jwt middleware', 'architecture', ['auth', 'jwt']);
 		await pipe.graphExtract(kv as any, AGENT_ID, 'mem-1', 'src/components/UserService.ts handles authentication with jwt middleware');
-		const results = pipe.graphQuery(AGENT_ID, 'jwt authentication');
+		const results = await pipe.graphQuery(kv as any, AGENT_ID, 'jwt authentication');
 		assert(results.length >= 0, 'graph query completed');
 	});
 

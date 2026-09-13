@@ -17,7 +17,12 @@ import {
 	ToolApprovalDecision,
 	TOOL_APPROVAL_TIMEOUT_MS,
 	SandboxConfirmationDecision, ISandboxViolationInfo,
+	IChatMessage,
 } from '../common/providers.js';
+import {
+	EXEC_REVIEW_SYSTEM_PROMPT, EXEC_REVIEW_MAX_TOKENS,
+	buildExecReviewPrompt, parseExecReviewResponse,
+} from '../common/execAutoReview.js';
 import type { IConfirmationData } from '../../../browser/agentChat/agentChatTypes.js';
 import { SlotRegistry } from './slotRegistry.js';
 import { type TimeoutPolicy } from '../common/resilience.js';
@@ -40,15 +45,90 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { MenuRegistry, MenuId } from '../../../../platform/actions/common/actions.js';
 
-/** 持久化工具授权的设置键（与 ToolApprovalService 的 IToolAllowStore 实现共用） */
-const TOOL_ALLOW_WORKSPACE_KEY = 'sessions.agentStudio.tools.allowedToolsWorkspace';
-const TOOL_ALLOW_USER_KEY = 'sessions.agentStudio.tools.allowedToolsUser';
+/**
+ * **旧版**持久化工具授权用的 VS Code 设置键（2026-09-13 起**仅用于迁移**）。
+ *
+ * 授权表现在存 `~/.vssaros/tool-allow.json`（`SarosPath.toolAllow`）：
+ *   · 本项目的数据一律放 `.vssaros/`，不写 `.vscode/`（那是 VS Code 自己的配置目录）；
+ *   · 旧实现把 `workspace` 作用域经 `ConfigurationTarget.WORKSPACE` 落到
+ *     `<workspace>/.vscode/settings.json` —— 该文件在**工作区内、模型可写** ⇒
+ *     「被约束者可以改写约束」（给自己加 terminal/file_write 授权）。
+ * 这两个键在首次加载时被读一次并迁移，之后**不再读写**。
+ */
+const LEGACY_TOOL_ALLOW_WORKSPACE_KEY = 'sessions.agentStudio.tools.allowedToolsWorkspace';
+const LEGACY_TOOL_ALLOW_USER_KEY = 'sessions.agentStudio.tools.allowedToolsUser';
+
+/** 授权表文件 URI：`~/.vssaros/tool-allow.json`。 */
+function toolAllowFileUri(envService: IEnvironmentService): URI {
+	return resolveSarosPath(
+		userDataRootFromRoamingHome(envService.userRoamingDataHome), SarosPath.toolAllow,
+	);
+}
+
+/**
+ * 加载授权表；**首次加载时迁移**旧版 VS Code 设置里的条目（迁移后不再读它们）。
+ * 读不到 / 解析失败一律退化为空表（授权表是安全状态，宁可重新弹窗）。
+ */
+async function loadToolAllowFile(
+	envService: IEnvironmentService,
+	fileService: IFileService,
+	logService: ILogService,
+	legacyConfig: IConfigurationService | undefined,
+	workspaceId: string,
+): Promise<IToolAllowFile> {
+	let file = emptyToolAllowFile();
+	try {
+		const content = await fileService.readFile(toolAllowFileUri(envService));
+		file = parseToolAllowFile(content.value.toString());
+	} catch { /* 首次运行：文件不存在 */ }
+
+	try {
+		const legacyGlobal = legacyConfig?.getValue<string[]>(LEGACY_TOOL_ALLOW_USER_KEY) ?? [];
+		const legacyWorkspace = legacyConfig?.getValue<string[]>(LEGACY_TOOL_ALLOW_WORKSPACE_KEY) ?? [];
+		if (legacyGlobal.length > 0 || legacyWorkspace.length > 0) {
+			file = migrateLegacyEntries(file, legacyGlobal, legacyWorkspace, workspaceId);
+			logService.info(
+				`[AgentOS] tool-allow: migrated ${legacyGlobal.length + legacyWorkspace.length} entr(ies) `
+				+ `from legacy VS Code settings → ${SarosPath.toolAllow}`,
+			);
+			await persistToolAllowFile(envService, fileService, logService, file);
+		}
+	} catch { /* 迁移失败不影响主流程（旧值仍在设置里，下次再试） */ }
+
+	return file;
+}
+
+async function persistToolAllowFile(
+	envService: IEnvironmentService,
+	fileService: IFileService,
+	logService: ILogService,
+	file: IToolAllowFile,
+): Promise<void> {
+	try {
+		await fileService.writeFile(
+			toolAllowFileUri(envService), VSBuffer.fromString(serializeToolAllowFile(file)),
+		);
+	} catch (err) {
+		logService.warn('[AgentOS] Failed to persist tool allow-list:', err);
+	}
+}
+
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
+import {
+	emptyToolAllowFile, parseToolAllowFile, serializeToolAllowFile,
+	allEntriesFor, addEntry, removeEntry, migrateLegacyEntries, autoApproveFor,
+	type IToolAllowFile,
+} from '../common/toolAllowStore.js';
+import { DEFAULT_AUTO_APPROVE, type ToolCategory, type ToolAutoApproveMode } from '../common/toolApprovalPolicy.js';
+import {
+	AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING,
+	AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING,
+} from '../common/constants.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { URI } from '../../../../base/common/uri.js';
 import { join as pathJoin } from '../../../../base/common/path.js';
@@ -101,6 +181,7 @@ import {
 import {
 	SubagentLimitMiddleware,
 	DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+	buildDroppedDelegationResult,
 } from '../common/subagentLimitMiddleware.js';
 import {
 	TokenUsageLedger,
@@ -218,10 +299,19 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	// ─── Tool Search 三层分离状态（Assembly + Dispatcher）─────────────
 	// 参考 Hermes-Agent：assembly 结果缓存 + dispatcher context 缓存
 	// 避免每次工具调用都重建 catalog
-	/** 最近一次 Assembly 结果（含 deferredDefs） */
-	private _lastAssembly: IAssemblyResult | undefined;
-	/** 最近一次 Dispatcher 上下文（含 catalog + scopedNames） */
-	private _lastDispatcherCtx: IDispatcherContext | undefined;
+	/**
+	 * 最近一次 Assembly 结果（含 deferredDefs）—— **按 agentId 分开保存**。
+	 *
+	 * ★ 2026-09-11 修复跨会话串台：此前是**全局单值 + last-write-wins**，多 agent /
+	 * 多 session 并发时，A 会话的 `tool_call` 会用 B 会话最后写入的 catalog 做
+	 * scope 门控（放行不该放的工具 / 拦住合法的工具）。桥接执行入口
+	 * `_executeBridgeTool` 本就带 `agentId`，按它取即可。
+	 */
+	private readonly _lastAssemblyByAgent = new Map<string, IAssemblyResult>();
+	/** 最近一次 Dispatcher 上下文（含 catalog + scopedNames）—— 同上，按 agentId 分开保存。 */
+	private readonly _lastDispatcherCtxByAgent = new Map<string, IDispatcherContext>();
+	/** 上限防御：正常 agent 数远小于此；超出则整体清空（宁可多重建一次 catalog）。 */
+	private static readonly LAST_TOOL_CTX_MAX_AGENTS = 32;
 	/** 最近一次全量已启用工具名集合（不受 MAX_VISIBLE_TOOLS 截断影响），供白名单过滤用 */
 	public _lastAllEnabledToolNames: Set<string> = new Set();
 
@@ -376,6 +466,8 @@ private readonly _sandboxGuard: SandboxGuard;
 	/** P7: 注入幂等去重 — 同一 session 只注入一次 agentmemory-context（会话级，
 	 *  2026-07-25 修正：不再每轮末清理；LRU 上限防长进程无限增长） */
 	private _injectedSessions = new Set<string>();
+	/** P0-1（2026-09-09）：仅注入过「元信息」的 session——下一轮恢复完整注入（与 _injectedSessions 同 LRU） */
+	private _metaInjectedSessions = new Set<string>();
 	/** P8: 文件路径暂存 — 工具执行时收集涉及的文件路径，下一轮 volatile 层注入 */
 	private _stashedFiles = new Map<string, Set<string>>();
 	private static readonly MAX_STASHED_FILES = 20;
@@ -462,6 +554,7 @@ private readonly _sandboxGuard: SandboxGuard;
 				if (!s) { s = new Set(); this._storedMiddleHashes.set(sessionId, s); }
 				return s;
 			},
+			logService,
 		};
 		this._slotRegistry = this._register(new SlotRegistry(logService));
 
@@ -524,8 +617,7 @@ private readonly _sandboxGuard: SandboxGuard;
 		});
 
 		// exec 自动审阅（P2-1，默认关闭 → fail-closed）：开启后，只读/验证构建命令
-		// 交由执行策略免确认。当前为配置驱动的启发式审阅（非独立模型调用）；日后可
-		// 在此接廉价模型做 Unsafe 命令的细粒度自动放行。
+		// 交由执行策略免确认。
 		this._approvalService.setExecAutoReviewProvider(() => {
 			try {
 				return this._instantiationService.invokeFunction(accessor =>
@@ -538,48 +630,113 @@ private readonly _sandboxGuard: SandboxGuard;
 			}
 		});
 
+		// ─── P2 模型辅助审查（2026-09-12）───────────────────────────────────
+		// 接上真实模型：对规则层**未**放行的灰色地带命令做一次二值判断（allow / ask）。
+		//
+		// 调用形态与 `nativeChatEditorPane._optimizePrompt` 同款 —— **一次性 chat 调用**：
+		// 不写入会话历史、不触发 agent loop、不占用聊天面板的流式通道。
+		// 模型选择复用当前 active selection（与发送路径同源，避免再引入一套配置）。
+		//
+		// 判据/解析/fail-safe 全在 `common/execAutoReview`（纯函数、已单测）；
+		// 此处只负责「拿 provider → 跑一次 → 把文本交给解析器」。
+		// ⚠ 本注入**不改变默认行为**：`execAutoReview` 开关默认关闭时该通道不会触发。
+		this._approvalService.setExecReviewer(async (input) => {
+			try {
+				const selection = this._activeSelection ?? this.getActiveModelSelection();
+				const provider = selection?.providerId
+					? this._modelProviders.find(p => p.id === selection.providerId)
+					: undefined;
+				if (!provider || !selection?.modelId) {
+					return {
+						decision: 'ask', risk: 'unknown', degraded: true,
+						rationale: 'no active model available for review',
+					};
+				}
+				const messages: IChatMessage[] = [
+					{ role: 'system', content: EXEC_REVIEW_SYSTEM_PROMPT },
+					{ role: 'user', content: buildExecReviewPrompt(input) },
+				];
+				let out = '';
+				// temperature=0：审查要可复现，不要创造性；maxTokens 用审查专用上限（结论很短）
+				for await (const delta of provider.chat(selection.modelId, messages, {
+					temperature: 0,
+					maxTokens: EXEC_REVIEW_MAX_TOKENS,
+				})) {
+					if (delta.type === 'text' && delta.content) {
+						out += delta.content;
+					} else if (delta.type === 'error') {
+						throw new Error(delta.error || 'review model returned an error');
+					}
+				}
+				return parseExecReviewResponse(out);
+			} catch (err) {
+				// fail-safe：审查失败 → ask（`decideExecAutoReview` 还会兜一层超时/抛错）
+				const msg = err instanceof Error ? err.message : String(err);
+				this._logService.warn(`[AgentOS] execAutoReview failed (fail-safe → ask): ${msg}`);
+				return {
+					decision: 'ask', risk: 'unknown', degraded: true,
+					rationale: `review failed: ${msg.slice(0, 120)}`,
+				};
+			}
+		});
+
 		// 工具"始终允许 / 在工作区允许"持久化（P0 优化）。
 		// 让 workspace/global 作用域的授权跨会话生效，修复"始终允许后仍反复弹窗"。
-		// 读/写经 IConfigurationService；取不到服务时降级为不持久化（仅本会话生效）。
+		//
+		// ⚠ 2026-09-13 迁移到 `~/.vssaros/tool-allow.json`（此前经 IConfigurationService）：
+		//   ① **项目约定** —— 本项目数据一律放 `.vssaros/`（见 sarosPaths 模块注释），
+		//      不写进 `.vscode/`（那是 VS Code 自己的配置目录）；
+		//   ② **安全** —— 旧实现把 `workspace` 作用域写进 `<workspace>/.vscode/settings.json`，
+		//      该文件在**工作区内、模型可写** ⇒ 「被约束者可以改写约束」；
+		//      而 `.vssaros/` 已被 `writeDenyList` 硬拒，模型写不进去。
+		// 旧设置值在首次加载时**迁移**进来（用户已有的授权不丢），之后不再读写它们。
+		//
+		// 内存表用闭包持有：`isAllowed` 是**同步**接口，而文件 IO 是异步的 ——
+		// 故启动时异步加载一次，之后内存判定、落盘 fire-and-forget。
+		let toolAllowFile = emptyToolAllowFile();
+		const envService = this._environmentService;
+		const fileService = this._fileService;
+		let legacyConfig: IConfigurationService | undefined;
+		try {
+			legacyConfig = this._instantiationService.invokeFunction(a => a.get(IConfigurationService));
+		} catch { /* 无配置服务 → 跳过迁移 */ }
+		void loadToolAllowFile(envService, fileService, this._logService, legacyConfig, this._currentWorkspaceId)
+			.then(f => { toolAllowFile = f; });
+
 		const toolAllowStore: IToolAllowStore = {
 			isAllowed: (toolName: string, command?: string): boolean => {
 				try {
-					const cfg = this._instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService));
-					const ws = cfg.getValue<string[]>(TOOL_ALLOW_WORKSPACE_KEY) ?? [];
-					const user = cfg.getValue<string[]>(TOOL_ALLOW_USER_KEY) ?? [];
-					return [...ws, ...user].some(e => entryMatches(e, toolName, command));
+					return allEntriesFor(toolAllowFile, this._currentWorkspaceId)
+						.some(e => entryMatches(e, toolName, command));
 				} catch {
 					return false;
 				}
 			},
 			remember: (toolName: string, scope: 'workspace' | 'global', command?: string): void => {
 				try {
-					const cfg = this._instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService));
-					const key = scope === 'workspace' ? TOOL_ALLOW_WORKSPACE_KEY : TOOL_ALLOW_USER_KEY;
-					const target = scope === 'workspace' ? ConfigurationTarget.WORKSPACE : ConfigurationTarget.USER;
-					const cur = cfg.getValue<string[]>(key) ?? [];
-					const newKey = command ? `${toolName}${CMD_KEY_SEP}${command}` : toolName;
-					if (!cur.includes(newKey)) {
-						void cfg.updateValue(key, [...cur, newKey], target);
-					}
+					const entry = command ? `${toolName}${CMD_KEY_SEP}${command}` : toolName;
+					toolAllowFile = addEntry(toolAllowFile, scope, this._currentWorkspaceId, entry);
+					void persistToolAllowFile(envService, fileService, this._logService, toolAllowFile);
 				} catch {
 					/* 持久化失败不影响本次放行 */
 				}
 			},
 			revoke: (key: string): void => {
 				try {
-					const cfg = this._instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService));
-					for (const [k, target] of [
-						[TOOL_ALLOW_WORKSPACE_KEY, ConfigurationTarget.WORKSPACE],
-						[TOOL_ALLOW_USER_KEY, ConfigurationTarget.USER],
-					] as const) {
-						const cur = cfg.getValue<string[]>(k) ?? [];
-						if (cur.includes(key)) {
-							void cfg.updateValue(k, cur.filter(t => t !== key), target);
-						}
-					}
+					toolAllowFile = removeEntry(toolAllowFile, key);
+					void persistToolAllowFile(envService, fileService, this._logService, toolAllowFile);
 				} catch {
 					/* 撤销失败不影响本次调用 */
+				}
+			},
+			// Phase 1（2026-09-13）：类别档位。读同一份文件的 `autoApprove` 字段；
+			// 缺省（文件里没写）→ 由 `autoApproveFor` 回落到 `DEFAULT_AUTO_APPROVE`。
+			autoApproveMode: (cat: ToolCategory): ToolAutoApproveMode => {
+				try {
+					return autoApproveFor(toolAllowFile)[cat];
+				} catch {
+					// 读失败 → 退回默认档（该问就问，绝不因故障放行）
+					return DEFAULT_AUTO_APPROVE[cat];
 				}
 			},
 		};
@@ -629,10 +786,25 @@ private readonly _sandboxGuard: SandboxGuard;
 		// 用户只能手改 settings.json。这里用 QuickPick 列出当前所有持久授权并一键撤销。
 		this._register(CommandsRegistry.registerCommand('agentStudio.tools.revokeAllow', async () => {
 			try {
-				const cfg = this._instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService));
 				const quickInput = this._instantiationService.invokeFunction(accessor => accessor.get(IQuickInputService));
-				const ws = cfg.getValue<string[]>(TOOL_ALLOW_WORKSPACE_KEY) ?? [];
-				const user = cfg.getValue<string[]>(TOOL_ALLOW_USER_KEY) ?? [];
+				// ★ 2026-09-13 修正：授权表已迁到 `~/.vssaros/tool-allow.json`，**不再读 settings**。
+				//
+				// 此前这里读的是 `TOOL_ALLOW_WORKSPACE_KEY` / `TOOL_ALLOW_USER_KEY` —— 那两个键
+				// 现在只剩「首次加载时迁移一次」的用途（见文件头 `LEGACY_*` 注释），
+				// 迁移之后**恒为空** ⇒ 撤销命令会显示「当前没有任何持久化的工具授权」，
+				// 而用户明明授权过 —— 一个**静默失效**的撤销入口，而它是用户唯一的自救手段。
+				//
+				// 现改为与授权**判定**同一数据源（`loadToolAllowFile`），两者不可能再漂移。
+				let legacyConfig: IConfigurationService | undefined;
+				try {
+					legacyConfig = this._instantiationService.invokeFunction(a => a.get(IConfigurationService));
+				} catch { /* 无配置服务 → 跳过迁移 */ }
+				const file = await loadToolAllowFile(
+					this._environmentService, this._fileService, this._logService,
+					legacyConfig, this._currentWorkspaceId,
+				);
+				const ws = [...(file.workspaces[this._currentWorkspaceId] ?? [])];
+				const user = [...file.global];
 				type RevokeItem = IQuickPickItem & { tool: string };
 				// 命令级 key 形如 toolName::command，展示时拆分为「工具: 命令」更易读；
 				// pick.tool 仍保留完整 key 供精确撤销。
@@ -2210,6 +2382,7 @@ private readonly _sandboxGuard: SandboxGuard;
 	// （实际每轮全量注入），且 stash 在消费前即被清空（Recently Touched
 	// Files 死代码）。两者现按会话生命周期保留，LRU 上限防无限增长。
 	this._capMapSize(this._injectedSessions, AgentOSService.MAX_INJECTED_SESSIONS);
+	this._capMapSize(this._metaInjectedSessions, AgentOSService.MAX_INJECTED_SESSIONS);
 	this._capMapSize(this._stashedFiles, AgentOSService.MAX_STASH_SESSIONS);
 }
 
@@ -2413,8 +2586,14 @@ private readonly _sandboxGuard: SandboxGuard;
 			cachedToolDefs: this._cachedToolDefs,
 			toolDefsCacheMax: AgentOSService.TOOL_DEFS_CACHE_MAX,
 			setLastAllEnabledToolNames: (s) => { this._lastAllEnabledToolNames = s; },
-			setLastAssembly: (a) => { this._lastAssembly = a; },
-			setLastDispatcherCtx: (c) => { this._lastDispatcherCtx = c; },
+			setLastAssembly: (agentId, a) => {
+				if (this._lastAssemblyByAgent.size >= AgentOSService.LAST_TOOL_CTX_MAX_AGENTS) { this._lastAssemblyByAgent.clear(); }
+				this._lastAssemblyByAgent.set(agentId, a);
+			},
+			setLastDispatcherCtx: (agentId, c) => {
+				if (this._lastDispatcherCtxByAgent.size >= AgentOSService.LAST_TOOL_CTX_MAX_AGENTS) { this._lastDispatcherCtxByAgent.clear(); }
+				this._lastDispatcherCtxByAgent.set(agentId, c);
+			},
 		};
 	}
 
@@ -2557,7 +2736,7 @@ private readonly _sandboxGuard: SandboxGuard;
 	 * 对齐 Hermes 的 `agent.disabled_toolsets`：在 enabled 之后作为减法步骤应用。
 	 *
 	 * **核心保护**（对齐 Hermes `bundle_non_core_tools` #33924）：Always 优先级的
-	 * toolset（core / mcp-bridge / tool-search）即使在 disabled 列表中也不会被
+	 * toolset（core / tool-search）即使在 disabled 列表中也不会被
 	 * 完全剥离，只剥离其非核心部分。
 	 */
 	private _getAgentDisabledToolsets(agentId?: string): string[] | undefined {
@@ -2618,15 +2797,24 @@ private readonly _sandboxGuard: SandboxGuard;
 		askRouting?: IAskRoutingContext,
 		agentSessionId?: string,
 	): Promise<IToolResult> {
-		// 确保 dispatcher context 可用（_getEnabledTools 已构建，这是防御）
-		if (!this._lastDispatcherCtx || !this._lastAssembly) {
-			const tools = (await this.listAllToolsWithState(agentId ?? '')).filter(t => t.enabled);
-			const assembly = assembleToolDefs(tools, { config: DEFAULT_TOOL_SEARCH_CONFIG });
-			this._lastAssembly = assembly;
-			this._lastDispatcherCtx = buildDispatcherContext(assembly, DEFAULT_TOOL_SEARCH_CONFIG);
+		// ★ 2026-09-11：按 **agentId** 取该 agent 自己的 assembly / dispatcher 上下文。
+		// 此前读全局单值 → 多 agent / 多 session 并发时用错 catalog 做 scope 门控。
+		const ctxKey = agentId ?? '';
+		let dispatcherCtx = this._lastDispatcherCtxByAgent.get(ctxKey);
+		if (!dispatcherCtx || !this._lastAssemblyByAgent.has(ctxKey)) {
+			// 防御性兜底（正常路径 `_getEnabledTools` 已写入该 agent 的条目）。
+			// ★ 同时修：兜底此前用 `DEFAULT_TOOL_SEARCH_CONFIG` 而非用户的
+			// `_getToolSearchConfig()` → 用户配置的 thresholdPct / enabled 在这条
+			// 路径上完全失效（设置改了没反应）。
+			const tsConfig = this._getToolSearchConfig();
+			const tools = (await this.listAllToolsWithState(ctxKey)).filter(t => t.enabled);
+			const assembly = assembleToolDefs(tools, { config: tsConfig });
+			this._lastAssemblyByAgent.set(ctxKey, assembly);
+			dispatcherCtx = buildDispatcherContext(assembly, tsConfig);
+			this._lastDispatcherCtxByAgent.set(ctxKey, dispatcherCtx);
 		}
 
-		const dispatchResult = dispatchBridgeTool(bridgeToolName, args, this._lastDispatcherCtx);
+		const dispatchResult = dispatchBridgeTool(bridgeToolName, args, dispatcherCtx);
 
 		// search / describe / error → 直接返回文本
 		if (dispatchResult.type !== 'call_resolved') {
@@ -2859,15 +3047,37 @@ private readonly _sandboxGuard: SandboxGuard;
 		// Truncate excess sub-agent delegation calls (delegate_task / task) before
 		// execution to prevent the LLM from spawning too many parallel sub-agents
 		// in a single turn. More reliable than prompt-based limits.
+		// 委派参数解析（task 描述 + agent 类型）：截断登记与账本登记共用。
+		const describeDelegation = (tc: IToolCallInfo): { task: string; type: string } => {
+			let parsedArgs: Record<string, unknown> = {};
+			if (typeof tc.arguments === 'string') {
+				try { parsedArgs = JSON.parse(tc.arguments) as Record<string, unknown>; } catch { /* ignore */ }
+			}
+			return {
+				task: String(parsedArgs.task ?? parsedArgs.description ?? tc.name),
+				type: String(parsedArgs.agent_type ?? parsedArgs.type ?? ''),
+			};
+		};
 		const limitResult = this._subagentLimitMw.apply(toolCalls);
 		if (limitResult.wasTruncated) {
 			this._logService.warn(
 				`[AgentOS] SubagentLimitMiddleware truncated ${limitResult.droppedCalls.length} excess sub-agent calls ` +
 				`(original: ${limitResult.originalTaskCount}, kept: ${limitResult.keptTaskCount}, max: ${this._subagentLimitMw.maxConcurrent})`
 			);
-			// Track dropped calls in the delegation ledger as cancelled
+			// ★ 2026-09-11 修复「静默丢弃」：超限的委派此前**只打一条 warn 日志** ——
+			//   ① 账本里查不到：`markCancelled` 只改**已存在**条目，而这些 id 从未
+			//      `markDelegated` → 该调用是空转（no-op）；
+			//   ② 模型收不到任何 tool_result → 它以为这些任务都在跑，后续推理建立在
+			//      错误前提上（漏做 / 重复提交）。
+			//   现在：先补登记再标 cancelled（durable context 如实反映）+ 为每个被丢弃的
+			//   call 补一条显式失败 tool_result（模型可见的披露，见 buildDroppedDelegationResult）。
 			for (const dropped of limitResult.droppedCalls) {
+				const droppedInfo = describeDelegation(dropped);
+				this._delegationLedger.markDelegated(dropped.id, droppedInfo.task, droppedInfo.type);
 				this._delegationLedger.markCancelled(dropped.id);
+				results.push(buildDroppedDelegationResult(
+					dropped.id, limitResult.keptTaskCount, limitResult.originalTaskCount,
+				));
 			}
 		}
 		const truncatedCalls = limitResult.toolCalls;
@@ -2875,13 +3085,8 @@ private readonly _sandboxGuard: SandboxGuard;
 		// ─── Track delegate_task calls in the delegation ledger ───
 		for (const tc of truncatedCalls) {
 			if (this._subagentLimitMw.isDelegationCall(tc)) {
-				let parsedArgs: Record<string, unknown> = {};
-				if (typeof tc.arguments === 'string') {
-					try { parsedArgs = JSON.parse(tc.arguments) as Record<string, unknown>; } catch { /* ignore */ }
-				}
-				const taskDesc = String(parsedArgs.task ?? parsedArgs.description ?? tc.name);
-				const subagentType = String(parsedArgs.agent_type ?? parsedArgs.type ?? '');
-				this._delegationLedger.markDelegated(tc.id, taskDesc, subagentType);
+				const info = describeDelegation(tc);
+				this._delegationLedger.markDelegated(tc.id, info.task, info.type);
 			}
 		}
 
@@ -3723,8 +3928,10 @@ private readonly _sandboxGuard: SandboxGuard;
 		try {
 			const configService = this._configService;
 			if (!configService) { return DEFAULT_TOOL_SEARCH_CONFIG; }
-			const enabled = configService.getValue('agentStudio.toolSearch.enabled');
-			const thresholdPct = configService.getValue('agentStudio.toolSearch.thresholdPct');
+			// 键常量见 `common/constants.ts`，schema 注册见 `agentStudio.contribution.ts`
+			// （2026-09-11 补注册 —— 此前键存在且被读取，但从未注册 → 设置 UI 不可见）。
+			const enabled = configService.getValue(AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING);
+			const thresholdPct = configService.getValue(AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING);
 			if (enabled !== undefined || thresholdPct !== undefined) {
 				const rawEnabled = typeof enabled === 'string' ? enabled : '';
 				return {

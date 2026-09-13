@@ -96,7 +96,12 @@ suite('imageGenToComfyBridge — uploadRefToComfy', () => {
 		const fetchImpl: BridgeFetchLike = async (url) => {
 			calls.push(url);
 			if (url.startsWith('http://cdn/')) {
-				return { ok: true, json: () => ({}), text: () => 'BINARY' };
+				// ★ 契约同步（2026-09-11）：下载图片**必须**经 `blob()` / `arrayBuffer()`
+				//   读二进制 —— 原实现用 `text()` 按 UTF-8 解码，PNG/JPEG 的非法字节被
+				//   替换成 U+FFFD → Blob 数据损坏膨胀 → ComfyUI /upload/image 必然 400
+				//   （见 uploadRefToComfy 注释与 2026-08-20 事故）。现实现**拒绝回退
+				//   text()**，故 mock 必须提供 blob()。
+				return { ok: true, json: () => ({}), text: () => 'BINARY', blob: async () => new Blob(['BINARY'], { type: 'image/png' }) };
 			}
 			return { ok: true, json: () => ({ name: 'cdn.png' }), text: () => '' };
 		};

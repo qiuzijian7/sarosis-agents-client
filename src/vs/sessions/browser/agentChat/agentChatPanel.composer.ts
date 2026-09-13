@@ -143,7 +143,10 @@ protected override _renderInputArea(): void {
 
 				// Detect /skill /command patterns — show slash menu
 				// 允许 `-`（工作流 id 形如 wf-xxx），使 `/wf-` 输入过程中菜单持续显示。
-				const slashMatch = val.match(/^\/([\w-]*)$/);
+				// 2026-09-10：`[\w-]` 不含中文——`/表情包` 一输入中文菜单即被关闭，
+				// 过滤形同虚设。改为 `[^\s]*`（任意非空白），支持中日韩等工作流名称；
+				// 空格仍终止过滤阶段（进入 chip 后的自由文本），语义不变。
+				const slashMatch = val.match(/^\/([^\s]*)$/);
 				if (slashMatch) {
 					t.style.color = 'var(--ec-accent, #60a5fa)';
 					t.setAttribute('data-slash-command', slashMatch[1]);
@@ -175,6 +178,9 @@ protected override _renderInputArea(): void {
 
 			// 更新字符计数器
 			this._updateCharCounter(val);
+
+			// 同步提示词优化按钮可用态（无输入时禁用）
+			this._updatePromptOptimizeBtn();
 
 			// 草稿持久化钩子（per-session，pane 侧 debounce 落 localStorage）
 			this._onComposerTextChange?.(val);
@@ -535,22 +541,23 @@ protected override _renderInputArea(): void {
 			}),
 		);
 
-		// Provider chip
-		this._providerTrigger = this._appendToolbarBtn(leftToolbar, {
-			title: "选择 Provider",
-			svgPath: "M2 3h20v14H2zM8 21h8M12 17v4",
+		// 「对话模型」chip（2026-09-10：由原 Provider + Model 两个 chip 合并而来）
+		// 只显示模型名，provider 归属在下拉的一级列表里体现（见 _openChatModelDropdown）。
+		this._chatModelTrigger = this._appendToolbarBtn(leftToolbar, {
+			title: "选择对话模型（Provider / 模型）",
+			svgPath: "M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z",
 			hasLabel: true,
-			label: this._providers.find(p => p.id === this._currentProvider)?.label || this._currentProvider || "Provider",
+			label: this._models.find(m => m.id === this._currentModel)?.label || this._currentModel || "模型",
 			showChevron: true,
-			cssClass: "provider-tag",
+			cssClass: "chat-model-tag",
 		});
 		this._register(
-			addDisposableListener(this._providerTrigger, EventType.CLICK, (e) => {
+			addDisposableListener(this._chatModelTrigger, EventType.CLICK, (e) => {
 				e.stopPropagation();
-				if (this._providerDropdownEl) {
-					this._closeProviderDropdown();
+				if (this._chatModelDropdownEl) {
+					this._closeChatModelDropdown();
 				} else {
-					this._openProviderDropdown();
+					this._openChatModelDropdown();
 				}
 			}),
 		);
@@ -580,32 +587,48 @@ protected override _renderInputArea(): void {
 			);
 		}
 
-		// Model chip
-		this._modelTrigger = this._appendToolbarBtn(leftToolbar, {
-			title: "选择模型",
-			svgPath: "M4 17l6-6-6-6M12 19h8",
+		// 「图片模型」chip（2026-09-10 新增）——只显示所选模型名，默认「自动」。
+		this._imageModelTrigger = this._appendToolbarBtn(leftToolbar, {
+			title: "选择图片模型（图片生成）",
+			svgPath: "M3 3h18v18H3zM8.5 10a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM21 15l-5-5L5 21",
 			hasLabel: true,
-			label: this._models.find(m => m.id === this._currentModel)?.label || this._currentModel || "Model",
+			label: this._getImageModelLabel(),
 			showChevron: true,
-			cssClass: "model-tag",
+			cssClass: "image-model-tag",
 		});
 		this._register(
-			addDisposableListener(this._modelTrigger, EventType.CLICK, (e) => {
+			addDisposableListener(this._imageModelTrigger, EventType.CLICK, (e) => {
 				e.stopPropagation();
-				if (this._modelDropdownEl) {
-					this._closeModelDropdown();
+				if (this._imageModelDropdownEl) {
+					this._closeImageModelDropdown();
 				} else {
-					this._openModelDropdown();
+					this._openImageModelDropdown();
 				}
 			}),
 		);
 
-		// Right wrap: context-usage ring + char counter + send circle
+		// Right wrap：字符计数 → 上下文环 → ✨ 提示词优化 → 发送
+		// （2026-09-11 调整顺序：优化按钮置于「发送按钮左侧、上下文进度条右侧」）
 		const rightWrap = append(toolbar, $(".provider-model-chip-wrap"));
+
+		// 字符计数器
+		this._charCounterEl = append(rightWrap, $('span.chat-char-counter'));
+
+		// 上下文用量环
 		this._renderContextUsageRing(rightWrap);
 
-		// 字符计数器（在发送按钮左侧）
-		this._charCounterEl = append(rightWrap, $('span.chat-char-counter'));
+		// 提示词优化按钮（2026-09-10，发送按钮左侧）：把输入框文本交给 LLM 改写。
+		// 方案移植自 prompt-optimizer（见 agentChat/promptOptimize.ts 头注释）：
+		// 一次性 chat 调用，不进入会话历史、不触发 agent loop。
+		this._promptOptimizeBtn = append(rightWrap, $<HTMLButtonElement>('button.chat-prompt-optimize-btn'));
+		this._renderPromptOptimizeSvg();
+		this._updatePromptOptimizeBtn();
+		this._register(
+			addDisposableListener(this._promptOptimizeBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				void this._handleOptimizePrompt();
+			}),
+		);
 
 		// Send / Cancel button
 		this._sendBtn = append(
@@ -627,6 +650,75 @@ protected override _renderInputArea(): void {
 				}
 			}),
 		);
+	}
+
+	/** 渲染提示词优化按钮的 ✨ 图标（双四角星，stroke 风格与工具栏其它图标一致）。 */
+	protected _renderPromptOptimizeSvg(): void {
+		const btn = this._promptOptimizeBtn;
+		if (!btn) { return; }
+		const NS = 'http://www.w3.org/2000/svg';
+		const svg = document.createElementNS(NS, 'svg');
+		svg.setAttribute('width', '14');
+		svg.setAttribute('height', '14');
+		svg.setAttribute('viewBox', '0 0 24 24');
+		svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor');
+		svg.setAttribute('stroke-width', '1.7');
+		svg.setAttribute('stroke-linecap', 'round');
+		svg.setAttribute('stroke-linejoin', 'round');
+		const big = document.createElementNS(NS, 'path');
+		big.setAttribute('d', 'M12 2.6l2.2 5.8 5.8 2.2-5.8 2.2L12 18.6l-2.2-5.8L4 10.6l5.8-2.2L12 2.6z');
+		const small = document.createElementNS(NS, 'path');
+		small.setAttribute('d', 'M18.6 15.4l.85 2.2 2.2.85-2.2.85-.85 2.2-.85-2.2-2.2-.85 2.2-.85.85-2.2z');
+		svg.appendChild(big);
+		svg.appendChild(small);
+		btn.replaceChildren(svg);
+	}
+
+	/**
+	 * 同步提示词优化按钮的可用 / loading 态。
+	 * 无输入时禁用（避免空调用）；优化进行中禁用并显示转圈。
+	 */
+	protected _updatePromptOptimizeBtn(): void {
+		const btn = this._promptOptimizeBtn;
+		if (!btn) { return; }
+		const hasText = !!this._getComposerText().trim();
+		const busy = this._optimizeInFlight;
+		btn.classList.toggle('loading', busy);
+		btn.classList.toggle('disabled', !busy && !hasText);
+		(btn as HTMLButtonElement).disabled = busy || !hasText;
+		btn.title = busy
+			? '正在优化提示词…'
+			: (hasText ? '优化提示词（AI 改写输入内容）' : '先输入内容再优化');
+	}
+
+	/**
+	 * 提示词优化（2026-09-10）：取输入框文本 → 一次性 LLM 改写 → 回填输入框。
+	 * 失败/取消（回调返回 undefined）时保持原内容不变 —— 失败原因由宿主 notify。
+	 */
+	protected async _handleOptimizePrompt(): Promise<void> {
+		if (this._optimizeInFlight || !this._onOptimizePrompt) { return; }
+		const original = this._getComposerText().trim();
+		if (!original) { return; }
+
+		this._optimizeInFlight = true;
+		this._updatePromptOptimizeBtn();
+		try {
+			const optimized = await this._onOptimizePrompt(original);
+			const next = optimized?.trim();
+			if (!next || next === original) { return; }
+			// 用户在优化期间改动了输入框（含发送后清空）→ 不覆盖其新内容。
+			if (this._getComposerText().trim() !== original) {
+				this._logService?.info('[AgentChatPanel] optimize result discarded: composer changed during optimization');
+				return;
+			}
+			this._setComposerText(next);
+			// 回填后把光标放到末尾，便于用户继续编辑
+			this._textarea?.focus();
+		} finally {
+			this._optimizeInFlight = false;
+			this._updatePromptOptimizeBtn();
+		}
 	}
 
 protected override _appendToolbarBtn(
@@ -1069,6 +1161,10 @@ private _renderSlashItems(
 	for (const it of items) {
 		const item = this._createEl('div');
 		item.className = 'slash-menu-item';
+		// 2026-09-10：skill 与 workflow 可能同名（如「表情包工作流」既有 skill 又有
+		// workflow），此前菜单无任何 kind 标识，用户会误以为重复。加 --skill/--workflow
+		// 修饰类 + 右侧 kind badge，让两类条目一眼可辨（skill 蓝 / workflow 橙）。
+		item.classList.add(it.kind === 'workflow' ? 'slash-menu-item--workflow' : 'slash-menu-item--skill');
 		if (it.kind === 'skill') {
 			item.dataset.skillId = it.id;
 			item.dataset.skillName = it.label;
@@ -1091,6 +1187,10 @@ private _renderSlashItems(
 		desc.textContent = it.description;
 		info.appendChild(desc);
 		item.appendChild(info);
+		const kindBadge = this._createEl('span');
+		kindBadge.className = 'slash-menu-item-kind';
+		kindBadge.textContent = it.kind === 'workflow' ? 'workflow' : 'skill';
+		item.appendChild(kindBadge);
 		item.addEventListener('mousedown', (e) => {
 			e.preventDefault();
 			if (it.kind === 'workflow') {
@@ -1709,13 +1809,22 @@ protected override _doUpdateContextRing(): void {
 		const parent = ring.parentElement;
 		if (!parent) { return; }
 		const sendBtn = parent.querySelector('.chat-send-circle');
+		// 2026-09-11：环的重排锚点从「发送按钮之前」改为「提示词优化按钮之前」——
+		// 目标顺序为 字符计数 → 上下文环 → ✨ 优化 → 发送；若优化按钮不存在（CLI 等）
+		// 再回退到发送按钮之前。
+		const ringAnchor = this._promptOptimizeBtn ?? sendBtn;
 		ring.remove();
 		const tempParent = $('div');
 		this._renderContextUsageRing(tempParent);
 		const newRing = tempParent.firstElementChild;
-		if (newRing && sendBtn) {
-			parent.insertBefore(newRing, sendBtn);
-		} else if (newRing) {
+		if (!newRing) { return; }
+		// 2026-09-11 修复：本方法可由 500ms 防抖回调触发（_updateContextRing 流式期间），
+		// 回调执行时 DOM 可能已重排——ringAnchor 被移除或挂到了其它容器。
+		// insertBefore 要求参照节点是 parent 的直接子节点，否则抛 NotFoundError
+		// （未捕获，用户日志实测崩溃）。插入前校验，失配则回退 appendChild。
+		if (ringAnchor && ringAnchor.parentElement === parent) {
+			parent.insertBefore(newRing, ringAnchor);
+		} else {
 			parent.appendChild(newRing);
 		}
 	}
@@ -1822,6 +1931,8 @@ protected override _setComposerText(text: string): void {
 		root.style.height = newHeight + 'px';
 		// 更新字符计数器
 		this._updateCharCounter(text);
+		// 文本被程序性改写（草稿恢复 / 优化回填 / 发送后清空）时同步优化按钮态
+		this._updatePromptOptimizeBtn();
 	}
 
 	/** 按 skill id 查显示名（用于标记 → chip 还原）；查不到回退 id 本身。 */

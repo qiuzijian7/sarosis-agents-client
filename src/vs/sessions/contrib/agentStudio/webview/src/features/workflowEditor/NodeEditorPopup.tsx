@@ -12,7 +12,7 @@
 import * as React from 'react';
 import { useWorkflowEditorStore } from './store';
 import { getNodeSpec } from './comfyHost/registry';
-import { buildEditorFields, coerceEditorValue, buildSarosEditorFields, sarosDataToValues, sarosValuesToData, isSarosJsonField, type EditorField } from './comfyHost/nodeEditorForm';
+import { buildEditorFields, coerceEditorValue, buildSarosEditorFields, sarosDataToValues, sarosValuesToData, isSarosJsonField, type EditorField, type AskUserQuestion } from './comfyHost/nodeEditorForm';
 import { type SingleNodeRunResult } from './comfyHost/nodeExecutor';
 import { runNodeOrStage, runProviderImage, runProviderVideo, runProviderModel3D, runProviderAudio, isPickerNode, isLoaderNode, collectUpstreamCandidates, resolveFirstImageGenDefaults } from './comfyHost/workflowRun';
 import { getNodeDefinition } from './comfyHost/nodeDefinition.js';
@@ -712,7 +712,10 @@ export function NodeEditorPopup({
 			setResult({ promptId: '', status: 'error', error: '未找到可用的 ComfyUI Runner。', entries: [] });
 			return;
 		}
-		onValuesCommit?.(nodeId, { selected_index: idx + 1 });
+		// ★ 弹窗选图 = **重设**选中为这一张（弹窗是单选）：同时清掉画布卡片的多选
+		//   数组（`selected_indices`/`directRefs`）——否则数组优先，画布网格仍高亮
+		//   旧的多选、看起来「弹窗点了没反应」✗（多选 UI 见 nodeCard PickerPoolGrid）。
+		onValuesCommit?.(nodeId, { selected_index: idx + 1, selected_indices: '', directRef: '', directRefs: '' });
 		setState('running');
 		setResult(null);
 		cardStateStore?.set(nodeId, { runState: 'running', progress: 50 });
@@ -743,7 +746,8 @@ export function NodeEditorPopup({
 			setResult({ promptId: '', status: 'error', error: '未找到可用的 ComfyUI Runner。', entries: [] });
 			return;
 		}
-		onValuesCommit?.(nodeId, { mediaAssetId: asset.id, selected_index: 0 });
+		// 同上：选媒体库资产也是「重设」→ 清掉画布卡片的多选数组。
+		onValuesCommit?.(nodeId, { mediaAssetId: asset.id, selected_index: 0, selected_indices: '', directRef: '', directRefs: '' });
 		setState('running');
 		setResult(null);
 		cardStateStore?.set(nodeId, { runState: 'running', progress: 50 });
@@ -1466,6 +1470,351 @@ function JsonKeyValueField({ field, value, onChange, labelStyle, inputStyle }: {
 	);
 }
 
+/** 对象数组编辑器的列定义（每行渲染一个 input 或 select）。 */
+interface ArrayColumn {
+	key: string;
+	placeholder?: string;
+	/** 固定宽度或弹性（flex 值），缺省 flex:1。 */
+	flex?: string;
+	kind?: 'text' | 'select';
+	options?: string[];
+}
+
+/**
+ * 对象数组结构化编辑器（W7-params，2026-09-10）：
+ * 把 `[{key,label,type}, …]` 这类 JSON 数组渲染成**可增删的行**（每行 = 若干列
+ * 输入 + 删除按钮），底部「+ 添加」追加空行。解决「只能手写 JSON」的体验问题。
+ *
+ * 与 JsonKeyValueField 的分工：那个面向**扁平对象**（KV 对），本组件面向
+ * **对象数组**（行式）。两者都在解析失败时回退 textarea 并红框提示，并都提供
+ * 「切换为文本」逃生口（复杂/嵌套值仍可手写）。
+ *
+ * 值为 JSON 字符串（node.data 的存储形态，与执行器 `typeof rawParams === 'string'`
+ * 的读取契约一致）。
+ */
+function JsonObjectArrayField({ field, value, onChange, labelStyle, inputStyle, columns }: {
+	field: EditorField;
+	value: unknown;
+	onChange: (v: unknown) => void;
+	labelStyle: React.CSSProperties;
+	inputStyle: React.CSSProperties;
+	columns: ArrayColumn[];
+}): React.JSX.Element {
+	const [textMode, setTextMode] = React.useState(false);
+	const raw = String(value ?? '');
+	let parsed: unknown;
+	let parseError: string | undefined;
+	try { parsed = JSON.parse(raw || '[]'); } catch (e) { parseError = e instanceof Error ? e.message : String(e); }
+	const isObjArray = Array.isArray(parsed)
+		&& (parsed as unknown[]).every(r => r !== null && typeof r === 'object' && !Array.isArray(r));
+	const rows: Array<Record<string, unknown>> = isObjArray ? (parsed as Array<Record<string, unknown>>) : [];
+
+	const smallInput: React.CSSProperties = { ...inputStyle, padding: '3px 6px', fontSize: 11 };
+	const toggleBtn: React.CSSProperties = { fontSize: 10, cursor: 'pointer', border: '1px solid var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-descriptionForeground)', borderRadius: 4, padding: '1px 7px', marginLeft: 6, fontFamily: 'inherit' };
+
+	const commit = (next: Array<Record<string, unknown>>) => onChange(JSON.stringify(next, null, 2));
+	const setCell = (i: number, key: string, v: unknown) => {
+		const next = rows.map(r => ({ ...r }));
+		next[i][key] = v;
+		commit(next);
+	};
+	/** 空对象行（全列空值）——提交时过滤，避免残留空行。 */
+	const emptyRow = (): Record<string, unknown> => {
+		const o: Record<string, unknown> = {};
+		for (const c of columns) { o[c.key] = ''; }
+		return o;
+	};
+	/** 非空行判定：至少一列有非空值（否则视为用户加了行但没填，丢弃）。 */
+	const isMeaningful = (r: Record<string, unknown>): boolean =>
+		columns.some(c => String(r[c.key] ?? '').trim() !== '');
+	const addRow = () => commit([...rows.filter(isMeaningful), emptyRow()]);
+
+	if (parseError) {
+		return (
+			<div>
+				<label style={labelStyle}>{field.label}</label>
+				<div style={{ fontSize: 10, color: 'var(--vscode-errorForeground, #f48771)', marginBottom: 3 }}>JSON 语法错误：{parseError}</div>
+				<textarea rows={4} value={raw} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, resize: 'vertical', borderColor: 'var(--vscode-errorForeground)' }} />
+			</div>
+		);
+	}
+
+	if (textMode || !isObjArray) {
+		return (
+			<div>
+				<label style={labelStyle}>
+					{field.label}
+					{isObjArray && <button type="button" onClick={() => setTextMode(false)} style={toggleBtn}>切换到表单编辑</button>}
+				</label>
+				<textarea rows={5} value={raw} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.4 }} placeholder={field.placeholder} />
+			</div>
+		);
+	}
+
+	return (
+		<div>
+			<label style={labelStyle}>
+				{field.label}
+				<span style={{ opacity: 0.7, marginLeft: 6, fontSize: 9.5 }}>{rows.filter(isMeaningful).length} 项</span>
+				<button type="button" onClick={() => setTextMode(true)} style={toggleBtn}>切换为文本</button>
+			</label>
+			{rows.map((row, i) => (
+				<div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 3 }}>
+					{columns.map(c => (
+						c.kind === 'select' ? (
+							<select
+								key={c.key}
+								value={String(row[c.key] ?? c.options?.[0] ?? '')}
+								title={c.placeholder ?? c.key}
+								onChange={e => setCell(i, c.key, e.target.value)}
+								style={{ ...smallInput, flex: c.flex ?? 1, flexShrink: 0, cursor: 'pointer', fontFamily: 'var(--monospace, monospace)', fontSize: 10 }}
+							>
+								{(c.options ?? []).map(o => <option key={o} value={o}>{o}</option>)}
+							</select>
+						) : (
+							<input
+								key={c.key}
+								value={String(row[c.key] ?? '')}
+								placeholder={c.placeholder ?? c.key}
+								onChange={e => setCell(i, c.key, e.target.value)}
+								style={{ ...smallInput, flex: c.flex ?? 1, minWidth: 0 }}
+							/>
+						)
+					))}
+					<button
+						type="button"
+						title="删除此项"
+						onClick={() => commit(rows.filter((_, idx) => idx !== i))}
+						style={{ fontSize: 12, cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--vscode-descriptionForeground)', padding: '0 4px', flexShrink: 0 }}
+					>✕</button>
+				</div>
+			))}
+			<button
+				type="button"
+				onClick={addRow}
+				style={{ fontSize: 10, cursor: 'pointer', border: '1px dashed var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-descriptionForeground)', borderRadius: 4, padding: '2px 10px', marginTop: 2, fontFamily: 'inherit' }}
+			>+ 添加参数</button>
+		</div>
+	);
+}
+
+/**
+ * AskUser 多问题编辑器（2026-09-11 重构，用户需求「自由编辑参数个数/类型/增删」）。
+ *
+ * 结构：问题列表（可增删 / 折叠 / 复制 / ↑↓ 排序）→ 每张问题卡内：
+ *   问题文本 / 答案 key / 必填开关 / 回答方式二选一（选项按钮 | 参数表单）
+ *   选项模式：选项行（label + description）＋ 多选/自由输入开关 ＋ 自由输入标签
+ *   参数模式：参数行（key + label + type[text|number|textarea|image]）
+ * 底部「+ 添加问题」；最下方「高级：JSON」折叠区（导入 / 批量粘贴 / 排查）。
+ *
+ * 值为 JSON 字符串（节点 data.questions），与执行器读取契约一致。
+ * 旧单问题字段的迁移在 sarosDataToValues → migrateAskUserQuestions 完成。
+ */
+function AskUserQuestionsField({ field, value, onChange, labelStyle, inputStyle }: {
+	field: EditorField;
+	value: unknown;
+	onChange: (v: unknown) => void;
+	labelStyle: React.CSSProperties;
+	inputStyle: React.CSSProperties;
+}): React.JSX.Element {
+	const raw = String(value ?? '');
+	let parsed: AskUserQuestion[] | undefined;
+	let parseError: string | undefined;
+	try {
+		const p = JSON.parse(raw || '[]') as unknown;
+		if (Array.isArray(p)) { parsed = p as AskUserQuestion[]; }
+	} catch (e) { parseError = e instanceof Error ? e.message : String(e); }
+	const [openIdx, setOpenIdx] = React.useState(0);
+	const [jsonMode, setJsonMode] = React.useState(false);
+	const questions: AskUserQuestion[] = parsed ?? [];
+
+	const smallInput: React.CSSProperties = { ...inputStyle, padding: '3px 6px', fontSize: 11 };
+	const toggleBtn: React.CSSProperties = { fontSize: 10, cursor: 'pointer', border: '1px solid var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-descriptionForeground)', borderRadius: 4, padding: '1px 7px', marginLeft: 6, fontFamily: 'inherit' };
+	const cardStyle: React.CSSProperties = { border: '1px solid var(--vscode-panel-border)', borderRadius: 6, marginBottom: 6, overflow: 'hidden' };
+	const headStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, padding: '5px 7px', cursor: 'pointer', fontSize: 11 };
+	const noStyle: React.CSSProperties = { width: 16, height: 16, borderRadius: '50%', background: 'rgba(34,211,238,.16)', color: '#22d3ee', fontSize: 9.5, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 };
+	const badge = (text: string, color: string): React.JSX.Element => (
+		<span style={{ fontSize: 9, padding: '0 5px', borderRadius: 8, border: `1px solid ${color}`, color, flexShrink: 0 }}>{text}</span>
+	);
+	const segBtn = (on: boolean): React.CSSProperties => ({
+		flex: 1, padding: '4px 3px', fontSize: 10.5, fontFamily: 'inherit', cursor: 'pointer',
+		background: on ? 'rgba(34,211,238,.16)' : 'transparent', color: on ? '#22d3ee' : 'var(--vscode-descriptionForeground)',
+		border: '1px solid var(--vscode-panel-border)', borderRadius: 4, fontWeight: on ? 600 : 400,
+	});
+	const sw = (on: boolean): React.JSX.Element => (
+		<span style={{ display: 'inline-block', width: 26, height: 14, borderRadius: 8, background: on ? '#22d3ee' : '#4b4b4b', position: 'relative', verticalAlign: 'middle', flexShrink: 0 }}>
+			<span style={{ position: 'absolute', top: 2, left: on ? 14 : 2, width: 10, height: 10, borderRadius: '50%', background: '#fff', transition: 'left .12s' }} />
+		</span>
+	);
+
+	const commit = (next: AskUserQuestion[]) => onChange(JSON.stringify(next, null, 2));
+	const patchQ = (i: number, patch: Partial<AskUserQuestion>) => {
+		const next = questions.map((q, idx) => idx === i ? { ...q, ...patch } : q);
+		commit(next);
+	};
+	const moveQ = (i: number, dir: -1 | 1) => {
+		const j = i + dir;
+		if (j < 0 || j >= questions.length) { return; }
+		const next = questions.slice();
+		[next[i], next[j]] = [next[j], next[i]];
+		commit(next);
+		setOpenIdx(j);
+	};
+
+	if (parseError) {
+		return (
+			<div>
+				<label style={labelStyle}>{field.label}</label>
+				<div style={{ fontSize: 10, color: 'var(--vscode-errorForeground, #f48771)', marginBottom: 3 }}>questions JSON 语法错误：{parseError}</div>
+				<textarea rows={5} value={raw} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, resize: 'vertical', borderColor: 'var(--vscode-errorForeground)' }} />
+			</div>
+		);
+	}
+
+	if (jsonMode) {
+		return (
+			<div>
+				<label style={labelStyle}>{field.label}<button type="button" onClick={() => setJsonMode(false)} style={toggleBtn}>切换到表单编辑</button></label>
+				<textarea rows={8} value={raw} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.45, fontFamily: 'var(--monospace, monospace)' }} />
+			</div>
+		);
+	}
+
+	return (
+		<div>
+			<label style={labelStyle}>
+				{field.label}
+				<span style={{ opacity: 0.7, marginLeft: 6, fontSize: 9.5 }}>{questions.length} 个</span>
+				<button type="button" onClick={() => setJsonMode(true)} style={toggleBtn}>高级 JSON</button>
+			</label>
+
+			{questions.map((q, i) => {
+				const isOpen = openIdx === i;
+				const optCount = q.mode === 'params' ? (q.params?.length ?? 0) : (q.options?.length ?? 0);
+				return (
+					<div key={i} style={{ ...cardStyle, borderColor: isOpen ? 'rgba(34,211,238,.35)' : 'var(--vscode-panel-border)' }}>
+						{/* 头部：序号 / 摘要 / 徽标 / 折叠 */}
+						<div style={headStyle} onClick={() => setOpenIdx(isOpen ? -1 : i)}>
+							<span style={noStyle}>{i + 1}</span>
+							<span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: q.text ? 1 : 0.5 }}>
+								{q.text || '（未命名问题）'}
+							</span>
+							{badge(q.mode === 'params' ? `参数 ${optCount}` : `选项 ${optCount}`, q.mode === 'params' ? 'rgba(74,222,128,.5)' : 'rgba(34,211,238,.45)')}
+							{q.required ? badge('必填', 'rgba(244,135,113,.5)') : null}
+							<span style={{ color: 'var(--vscode-descriptionForeground)', fontSize: 9 }}>{isOpen ? '▾' : '▸'}</span>
+						</div>
+
+						{isOpen && (
+							<div style={{ padding: '7px 8px 9px', borderTop: '1px solid var(--vscode-panel-border)' }}>
+								{/* 问题文本 */}
+								<div style={{ marginBottom: 7 }}>
+									<label style={{ ...labelStyle, marginBottom: 2 }}>问题文本</label>
+									<input value={q.text} placeholder="向用户提出的问题（支持 {{input}} 占位符）"
+										onChange={e => patchQ(i, { text: e.target.value })} style={smallInput} />
+								</div>
+								{/* key + 必填 */}
+								<div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 7 }}>
+									<div style={{ flex: 1 }}>
+										<label style={{ ...labelStyle, marginBottom: 2 }}>答案键名 (key)</label>
+										<input value={q.key} placeholder={`q${i + 1}`}
+											onChange={e => patchQ(i, { key: e.target.value })} style={smallInput} />
+									</div>
+									<button type="button" onClick={() => patchQ(i, { required: !q.required })}
+										style={{ ...smallInput, width: 'auto', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}>
+										必填 {sw(!!q.required)}
+									</button>
+								</div>
+								{/* 模式切换 */}
+								<div style={{ marginBottom: 7 }}>
+									<label style={{ ...labelStyle, marginBottom: 2 }}>回答方式</label>
+									<div style={{ display: 'flex', gap: 4 }}>
+										<button type="button" style={segBtn(q.mode !== 'params')} onClick={() => patchQ(i, { mode: 'options' })}>选项按钮</button>
+										<button type="button" style={segBtn(q.mode === 'params')} onClick={() => patchQ(i, { mode: 'params' })}>参数表单</button>
+									</div>
+								</div>
+
+								{q.mode === 'params' ? (
+									<div style={{ marginBottom: 4 }}>
+										<label style={{ ...labelStyle, marginBottom: 2 }}>参数 {q.params?.length ?? 0} 项</label>
+										{(q.params ?? []).map((p, j) => (
+											<div key={j} style={{ display: 'flex', gap: 4, marginBottom: 3, alignItems: 'center' }}>
+												<input value={p.key} placeholder="key" style={{ ...smallInput, flex: 1, minWidth: 0, borderColor: p.key ? undefined : 'var(--vscode-errorForeground)' }}
+													onChange={e => { const next = (q.params ?? []).slice(); next[j] = { ...p, key: e.target.value }; patchQ(i, { params: next }); }} />
+												<input value={p.label ?? ''} placeholder="label（留空=key）" style={{ ...smallInput, flex: 1, minWidth: 0 }}
+													onChange={e => { const next = (q.params ?? []).slice(); next[j] = { ...p, label: e.target.value }; patchQ(i, { params: next }); }} />
+												<select value={p.type ?? 'text'} style={{ ...smallInput, flex: '0 0 84px', cursor: 'pointer', fontFamily: 'var(--monospace, monospace)', fontSize: 10 }}
+													onChange={e => { const next = (q.params ?? []).slice(); next[j] = { ...p, type: e.target.value }; patchQ(i, { params: next }); }}>
+													{['text', 'number', 'textarea', 'image'].map(t => <option key={t} value={t}>{t}</option>)}
+												</select>
+												<button type="button" title="删除参数" onClick={() => patchQ(i, { params: (q.params ?? []).filter((_, idx) => idx !== j) })}
+													style={{ fontSize: 11, cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--vscode-descriptionForeground)', padding: '0 3px' }}>✕</button>
+											</div>
+										))}
+										<button type="button" onClick={() => patchQ(i, { params: [...(q.params ?? []), { key: '', label: '', type: 'text' }] })}
+											style={{ fontSize: 10, cursor: 'pointer', border: '1px dashed var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-descriptionForeground)', borderRadius: 4, padding: '2px 9px', fontFamily: 'inherit' }}>+ 添加参数</button>
+									</div>
+								) : (
+									<div style={{ marginBottom: 4 }}>
+										<label style={{ ...labelStyle, marginBottom: 2 }}>选项 {q.options?.length ?? 0} 项</label>
+										{(q.options ?? []).map((o, j) => (
+											<div key={j} style={{ display: 'flex', gap: 4, marginBottom: 3, alignItems: 'center' }}>
+												<input value={o.label} placeholder="选项文案（必填）" style={{ ...smallInput, flex: 1, minWidth: 0, borderColor: o.label ? undefined : 'var(--vscode-errorForeground)' }}
+													onChange={e => { const next = (q.options ?? []).slice(); next[j] = { ...o, label: e.target.value }; patchQ(i, { options: next }); }} />
+												<input value={o.description ?? ''} placeholder="说明（可选）" style={{ ...smallInput, flex: 1.2, minWidth: 0 }}
+													onChange={e => { const next = (q.options ?? []).slice(); next[j] = { ...o, description: e.target.value }; patchQ(i, { options: next }); }} />
+												<button type="button" title="删除选项" onClick={() => patchQ(i, { options: (q.options ?? []).filter((_, idx) => idx !== j) })}
+													style={{ fontSize: 11, cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--vscode-descriptionForeground)', padding: '0 3px' }}>✕</button>
+											</div>
+										))}
+										<button type="button" onClick={() => patchQ(i, { options: [...(q.options ?? []), { label: '', description: '' }] })}
+											style={{ fontSize: 10, cursor: 'pointer', border: '1px dashed var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-descriptionForeground)', borderRadius: 4, padding: '2px 9px', fontFamily: 'inherit' }}>+ 添加选项</button>
+
+										<div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+											<button type="button" onClick={() => patchQ(i, { multiSelect: !q.multiSelect })}
+												style={{ ...smallInput, flex: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 5 }}>
+												<span>允许多选</span>{sw(!!q.multiSelect)}
+											</button>
+											<button type="button" onClick={() => patchQ(i, { allowCustom: !q.allowCustom })}
+												style={{ ...smallInput, flex: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 5 }}>
+												<span>允许自由输入</span>{sw(!!q.allowCustom)}
+											</button>
+										</div>
+										{q.allowCustom && (
+											<input value={q.customLabel ?? ''} placeholder="自由输入框标签（缺省「其他（请输入）」）"
+												onChange={e => patchQ(i, { customLabel: e.target.value })} style={{ ...smallInput, marginTop: 4 }} />
+										)}
+									</div>
+								)}
+
+								{/* 卡片工具 */}
+								<div style={{ display: 'flex', gap: 5, marginTop: 7 }}>
+									<button type="button" onClick={() => moveQ(i, -1)} disabled={i === 0}
+										style={{ ...toggleBtn, marginLeft: 0, opacity: i === 0 ? 0.4 : 1 }}>↑ 上移</button>
+									<button type="button" onClick={() => moveQ(i, 1)} disabled={i === questions.length - 1}
+										style={{ ...toggleBtn, marginLeft: 0, opacity: i === questions.length - 1 ? 0.4 : 1 }}>↓ 下移</button>
+									<button type="button" onClick={() => { const next = questions.slice(); next.splice(i + 1, 0, JSON.parse(JSON.stringify(q)) as AskUserQuestion); commit(next); setOpenIdx(i + 1); }}
+										style={{ ...toggleBtn, marginLeft: 0 }}>⧉ 复制</button>
+									<button type="button" onClick={() => { commit(questions.filter((_, idx) => idx !== i)); setOpenIdx(Math.max(0, i - 1)); }}
+										disabled={questions.length <= 1}
+										style={{ ...toggleBtn, marginLeft: 'auto', opacity: questions.length <= 1 ? 0.4 : 1 }}>✕ 删除问题</button>
+								</div>
+							</div>
+						)}
+					</div>
+				);
+			})}
+
+			<button type="button"
+				onClick={() => {
+					const n = questions.length + 1;
+					commit([...questions, { key: `q${n}`, text: '', mode: 'options', required: false, options: [{ label: '' }], params: [], multiSelect: false, allowCustom: false, customLabel: '' }]);
+					setOpenIdx(questions.length);
+				}}
+				style={{ fontSize: 10, cursor: 'pointer', border: '1px dashed var(--vscode-panel-border)', background: 'transparent', color: 'var(--vscode-descriptionForeground)', borderRadius: 4, padding: '3px 11px', marginTop: 2, fontFamily: 'inherit' }}>+ 添加问题</button>
+		</div>
+	);
+}
+
 function FieldEditor({ field, value, onChange, providerId, nodeId }: { field: EditorField; value: unknown; onChange: (v: unknown) => void; providerId?: string; nodeId?: string }): React.JSX.Element {
 	const labelStyle: React.CSSProperties = { fontSize: 10, color: 'var(--vscode-descriptionForeground)', marginBottom: 2, display: 'block' };
 	const inputStyle: React.CSSProperties = {
@@ -1554,8 +1903,47 @@ function FieldEditor({ field, value, onChange, providerId, nodeId }: { field: Ed
 	}
 
 	if (field.kind === 'textarea') {
+		// ★ AskUser 多问题编辑器（2026-09-11 重构）：问题列表（增删/折叠/复制/排序）
+		//   ＋ 每问题独立的模式（选项按钮 | 参数表单）与行编辑器。优先于通用分支。
+		if (field.key === 'questions') {
+			return <AskUserQuestionsField field={field} value={value} onChange={onChange} labelStyle={labelStyle} inputStyle={inputStyle} />;
+		}
 		// P1: JSON 对象字段（variables/skillArgs/toolParams/options/args）用 KV 结构化
 		// 编辑器替代裸 textarea——语法错误即时红框提示、无需手写 JSON。嵌套/数组自动回退文本。
+		//
+		// ★ AskUser `params` 是**对象数组**（[{key,label,type}]），KV 编辑器只认扁平
+		//   对象 → 会 fallback 成裸 textarea（用户反馈「缺少动态增加参数的功能」）。
+		//   这里改用行式编辑器（动态增删行 + type 下拉），列定义对齐执行器的参数契约
+		//   （graphNodeExecutors AskUser 分支：type ∈ text|number|textarea|image）。
+		if (field.key === 'params') {
+			return <JsonObjectArrayField
+				field={field}
+				value={value}
+				onChange={onChange}
+				labelStyle={labelStyle}
+				inputStyle={inputStyle}
+				columns={[
+					{ key: 'key', placeholder: 'key（如 topic）', flex: '0 0 30%' },
+					{ key: 'label', placeholder: '显示标签（缺省=key）', flex: '1' },
+					{ key: 'type', kind: 'select', options: ['text', 'number', 'textarea', 'image'], flex: '0 0 92px' },
+				]}
+			/>;
+		}
+		// AskUser `options` 同样是对象数组（[{label, description?}]，见执行器
+		// graphNodeExecutors AskUser 分支 L328-345）——用行编辑器替代裸 JSON。
+		if (field.key === 'options') {
+			return <JsonObjectArrayField
+				field={field}
+				value={value}
+				onChange={onChange}
+				labelStyle={labelStyle}
+				inputStyle={inputStyle}
+				columns={[
+					{ key: 'label', placeholder: '选项文案（必填）', flex: '1' },
+					{ key: 'description', placeholder: '说明（可选）', flex: '1.2' },
+				]}
+			/>;
+		}
 		if (isSarosJsonField(field.key) || field.key === 'args') {
 			return <JsonKeyValueField field={field} value={value} onChange={onChange} labelStyle={labelStyle} inputStyle={inputStyle} />;
 		}

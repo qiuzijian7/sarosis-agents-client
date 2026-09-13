@@ -249,12 +249,8 @@ const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
 
 
 		// ── Task / Planning ──
-		update_plan: {
-			emoji: '📋',
-			title: 'Plan',
-			label: 'Plan',
-			detailKeys: ['plan', 'explanation'],
-		},
+		// update_plan 的展示配置在下方 tools 区（🗺️，detailKeys 含 plan+explanation）——
+		// 此处曾重复定义导致 TS1117（后者覆盖前者），已合并。
 		todo: {
 			emoji: '📋',
 			title: 'Todo',
@@ -329,7 +325,7 @@ const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
 			emoji: '🗺️',
 			title: 'Update Plan',
 			label: 'Update Plan',
-			detailKeys: ['explanation'],
+			detailKeys: ['plan', 'explanation'],
 		},
 	},
 };

@@ -61,6 +61,63 @@ export function createMemoryBackend(): MediaSnapshotBackend & { entries: Map<str
  */
 const ALIASES_META_KEY = '__saros_aliases__';
 
+// ── v43 meta 类型化访问器（2026-09-09）──────────────────────────────────
+// 收敛 `sheetFull === '1'` 字符串约定：写入侧仍存字符串 '1'（持久化格式不变），
+// 读取侧一律走这两个访问器（单点维护；String() 同时兼容历史写入的数字 1）。
+/** 原生整图原图（重裁/单格替换的合法基底）。 */
+export function isSheetFullMeta(meta?: Record<string, unknown>): boolean {
+	return String(meta?.sheetFull) === '1';
+}
+/** v43: meta 标志常量——写入侧唯一真源（读取侧 isSheetFullMeta/hasSheetLikeMeta 单点判定）。 */
+export const META_SHEET_FLAG = '1';
+/** rows/cols 的类型化读取（调用方自行 clamp，各节点上限不同）。 */
+export function sheetDimsOf(meta?: Record<string, unknown>): { rows: number; cols: number } {
+	return { rows: Number(meta?.rows) || 0, cols: Number(meta?.cols) || 0 };
+}
+/** 合并图集（sheet='1'）或原生整图（sheetFull='1'）任一命中 = 图集类产物。 */
+export function hasSheetLikeMeta(meta?: Record<string, unknown>): boolean {
+	return String(meta?.sheet) === '1' || isSheetFullMeta(meta);
+}
+
+// ── meta 写侧类型化（2026-09-09，P0-2）────────────────────────────────
+// 存储层 meta 全为字符串（历史格式，不改），但写侧此前是**裸 String() 约定**：
+// 全仓 129 处 `key: String(x)`，漏写 String() 或 key 拼错都只在运行时暴露。
+// 这里提供「值序列化 + 图集/单格构造器」，让写侧也有编译期形状约束。
+// 持久化格式与读侧 isSheetFullMeta/sheetDimsOf 完全对称（仍存数字字符串）。
+
+/** meta 值序列化：undefined/null 直接丢弃该字段（避免写入 'undefined' 脏值）。 */
+export function metaValue(v: string | number | boolean | undefined | null): string | undefined {
+	if (v === undefined || v === null) { return undefined; }
+	return typeof v === 'string' ? v : String(v);
+}
+
+/** 构造 meta 片段：传入任意原始值，输出序列化后的 meta 补丁（自动丢弃空值）。 */
+export function buildMeta(
+	patch: Record<string, string | number | boolean | undefined | null>,
+): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(patch)) {
+		const s = metaValue(v);
+		if (s !== undefined) { out[k] = s; }
+	}
+	return out;
+}
+
+/**
+ * 图集维度写侧（与 sheetDimsOf 读侧对称）。
+ * **有限值一律写入（含 0）**——注意有消费方用 `meta.rows !== undefined` 判定
+ * 「上游是否带图集语义」（nodeCard upstreamHasSheetSemantic），省略 0 会改变
+ * 该判定；读侧 Number('0')||0 与 Number(undefined)||0 都是 0，故写 0 无害且更兼容。
+ */
+export function sheetDimsMeta(rows: number, cols: number): { rows?: string; cols?: string } {
+	const out: { rows?: string; cols?: string } = {};
+	const r = Number(rows);
+	const c = Number(cols);
+	if (Number.isFinite(r)) { out.rows = String(r); }
+	if (Number.isFinite(c)) { out.cols = String(c); }
+	return out;
+}
+
 export class MediaSnapshotStore {
 	private readonly refs = new Map<string, MediaRef>();
 	/**
@@ -79,13 +136,31 @@ export class MediaSnapshotStore {
 	private readonly maxPreviewRefs: number;
 	private readonly persistent: boolean;
 	private readonly onAsset?: (entry: MediaSnapshotEntry) => void;
+	/** ★ P4：本窗口主动产生的产物（用于跨窗口广播）。远端写入不触发。 */
+	private readonly onProduced?: (entry: MediaSnapshotEntry) => void;
 	private readonly listeners = new Set<() => void>();
 	/** opaque version bumped on every mutation (for useSyncExternalStore) */
 	private version = 0;
 
 	constructor(
 		private readonly backend: MediaSnapshotBackend,
-		opts?: { maxPreviewRefs?: number; persistent?: boolean; onAsset?: (entry: MediaSnapshotEntry) => void },
+		opts?: {
+			maxPreviewRefs?: number;
+			persistent?: boolean;
+			onAsset?: (entry: MediaSnapshotEntry) => void;
+			/**
+			 * ★ P4 跨窗口同步（2026-09-13）：本 webview **主动产生**的产物回调
+			 * （执行/编辑/粘贴写入 `put`）。上层据此广播给同工作流的其它窗口
+			 * （画布 tab ↔ 节点编辑器 tab / 独立窗口）。
+			 *
+			 * 为什么用回调而不是在 store 内直接调 bridge：本模块是
+			 * 「framework-agnostic, unit-testable with an injected backend」——
+			 * 保持零 bridge 依赖（与 `onAsset` 同一模式 ✓）。
+			 *
+			 * **远端写入（`putRemote`）不触发** → 无回环 ✓。
+			 */
+			onProduced?: (entry: MediaSnapshotEntry) => void;
+		},
 	) {
 		this.maxPreviewRefs = opts?.maxPreviewRefs ?? 200;
 		// Persistent stores (IndexedDB / host file) never evict refs — the
@@ -94,6 +169,7 @@ export class MediaSnapshotStore {
 		// unbounded growth is acceptable for the workflow-scoped stores.
 		this.persistent = opts?.persistent ?? false;
 		this.onAsset = opts?.onAsset;
+		this.onProduced = opts?.onProduced;
 	}
 
 	/** Subscribe to store mutations. Returns an unsubscribe function. */
@@ -105,6 +181,69 @@ export class MediaSnapshotStore {
 	/** Snapshot accessor compatible with useSyncExternalStore's getSnapshot. */
 	getSnapshot(): number {
 		return this.version;
+	}
+
+	// ── 工作流 Session 隔离（2026-09-11 用户需求）────────────────────────────
+	//  同一工作流的不同 session（对应不同聊天会话）生成的内容必须隔离：归档 key 加
+	//  `{sessionId}::` 前缀（读写全部经 _scoped 统一），因此不同 session 的同名节点
+	//  互不覆盖；查询（byNode/get）优先当前 session，再回退无前缀的历史 key（旧数据
+	//  兼容）。切换 session 只需 setActiveSession → notify → 卡片按新 session 重渲染。
+	private _activeSessionId = 'default';
+
+	/** 当前生效的工作流 session（快照按它隔离）。 */
+	setActiveSession(sessionId: string | undefined): void {
+		const next = sessionId && sessionId.trim() ? sessionId.trim() : 'default';
+		if (next === this._activeSessionId) { return; }
+		const prev = this._activeSessionId;
+		this._activeSessionId = next;
+		// ★★ 迁移「未指定会话」期间写入的产物（2026-09-12 用户需求「新建会话中的节点
+		//   预览图应该是干净的，其他会话产生的资源不应该污染新会话」）：
+		//   面板是**异步**取回当前 session 的 —— 若运行早于解析完成，产物会落在
+		//   `default::` 下 ✗。此前靠「读取侧 default 兜底」补可见性 ⇒ **所有**会话都能
+		//   看到它们（= 污染新会话 ✗✗，正是用户报的问题）。改为**在解析到真实 session
+		//   时把它迁过去**：归属明确 ✓、隔离严格 ✓、且不丢数据 ✓。
+		if (prev === 'default' && next !== 'default') { this.migrateDefaultScope(next); }
+		this.notify();
+	}
+
+	/**
+	 * 把 `default::{nodeId}:port:idx` 重写为 `{sid}::…`（内存键 + 持久化 meta 同步）。
+	 * 目标键已存在 → 丢弃旧条目（新 session 已有更新数据，避免 index 冲突 ✓）。
+	 */
+	private migrateDefaultScope(sid: string): void {
+		const moved: Array<{ oldKey: string; newKey: string; media: MediaRef }> = [];
+		for (const [key, media] of this.refs) {
+			if (!key.startsWith('default::')) { continue; }
+			const newKey = `${sid}::${key.slice('default::'.length)}`;
+			if (this.refs.has(newKey)) { continue; }
+			moved.push({ oldKey: key, newKey, media });
+		}
+		if (moved.length === 0) { return; }
+		for (const { oldKey, newKey, media } of moved) {
+			this.refs.delete(oldKey);
+			this.refs.set(newKey, media);
+			const i = this.lru.indexOf(oldKey);
+			if (i >= 0) { this.lru[i] = newKey; }
+			void this.backend.removeMeta?.(oldKey);
+			void this.backend.saveMeta?.(newKey, media);
+		}
+		// eslint-disable-next-line no-console
+		console.warn(`[MediaSnapshotStore] 迁移 ${moved.length} 条「未指定会话」产物 → ${sid}（运行早于 session 解析）`);
+	}
+
+	getActiveSession(): string {
+		return this._activeSessionId;
+	}
+
+	/** key 作用域化：`{sessionId}::{key}`。 */
+	private _scoped(key: string): string {
+		return `${this._activeSessionId}::${key}`;
+	}
+
+	/** 去掉 session 前缀（非 scoped key 原样返回）。 */
+	private _unscoped(prefix: string): string {
+		const sep = prefix.indexOf('::');
+		return sep >= 0 ? prefix.slice(sep + 2) : prefix;
 	}
 
 	private notify(): void {
@@ -128,8 +267,10 @@ export class MediaSnapshotStore {
 	 * @param skipImport 当 true 时不触发 onAsset 回调（picker/loader 等路由节点
 	 *   不产生新内容，只是透传上游已有资产，不应重复导入媒体库）。默认 false。
 	 */
-	put(entry: MediaSnapshotEntry, skipImport?: boolean): void {
-		const prefix = `${entry.nodeId}:${entry.port}:`;
+	put(entry: MediaSnapshotEntry, skipImport?: boolean, opts?: { remote?: boolean }): void {
+		// ★ session 作用域（2026-09-11）：key 加 `{sessionId}::` 前缀 → 不同 session
+		//   的同名节点互不覆盖（隔离）；同一 session 内仍按 (nodeId, port) 单调递增。
+		const prefix = this._scoped(`${entry.nodeId}:${entry.port}:`);
 		let nextIndex = 0;
 		for (const key of this.refs.keys()) {
 			if (!key.startsWith(prefix)) { continue; }
@@ -147,12 +288,46 @@ export class MediaSnapshotStore {
 		// asset management P1). Fire-and-forget; dedup lives at the callback.
 		// 路由节点（picker/loader）设 skipImport=true 避免重复导入上游已入库资产。
 		if (!skipImport) { this.onAsset?.(finalEntry); }
+		// ★ P4（2026-09-13）：本窗口**主动产生**的产物 → 通知上层广播给其它窗口
+		//   （画布 tab ↔ 节点编辑器 tab / 独立窗口）。远端写入传 `remote:true` →
+		//   不再广播 → 无回环 ✓。
+		if (opts?.remote !== true) { this.onProduced?.(finalEntry); }
 		this.evict();
 		this.notify();
 	}
 
+	/**
+	 * ★ P4（2026-09-13）：写入**其它窗口**产出的条目（跨窗口同步的接收端）。
+	 *
+	 * 与 `put` 的差别只有两点，都为了防回环/防重复：
+	 *  ① `remote: true` → 不触发 `onProduced`（否则 A→B→A 无限互发 ✗）；
+	 *  ② **去重**：同 (nodeId, port) 下已有**相同 ref** → 直接跳过。理由：`put` 的
+	 *     index 由本地单调递增分配（忽略传入值），若不去重，同一产物在 B 端会随
+	 *     A 的重复广播不断新增条目（卡片历史里出现一串相同图 ✗）。
+	 *     ref 是自包含 URL（http/COS/data URL），相同 ref 即同一份内容 ✓。
+	 *
+	 * `skipImport=true`：远端产物在 A 窗口**已**经 `onAsset` 导入过媒体库，
+	 *  B 端再导入会重复入库 ✗。
+	 *
+	 * @returns 是否实际写入（false = 重复条目，已跳过）
+	 */
+	putRemote(entry: MediaSnapshotEntry): boolean {
+		const prefix = this._scoped(`${entry.nodeId}:${entry.port}:`);
+		for (const [key, media] of this.refs) {
+			if (key.startsWith(prefix) && media.ref === entry.media.ref) { return false; }
+		}
+		this.put(entry, true, { remote: true });
+		return true;
+	}
+
+	/** 解析 key 到实际存储键：当前 session 优先，回退无前缀历史 key（旧数据兼容）。 */
+	private _resolveKey(key: string): string {
+		const scoped = this._scoped(key);
+		return this.refs.has(scoped) ? scoped : key;
+	}
+
 	get(key: string): MediaRef | undefined {
-		return this.refs.get(key);
+		return this.refs.get(this._resolveKey(key));
 	}
 
 	/**
@@ -171,22 +346,23 @@ export class MediaSnapshotStore {
 	 *   返回 + warn，由调用方兜底提示。）
 	 */
 	replaceByKey(key: string, media: MediaRef, opts?: { importEntry?: MediaSnapshotEntry }): boolean {
-		if (!this.refs.has(key)) {
+		const resolved = this._resolveKey(key);
+		if (!this.refs.has(resolved)) {
 			// eslint-disable-next-line no-console
 			console.warn(`[MediaSnapshotStore] replaceByKey: key not found → ${key}（快照可能在编辑期间被重排/清除）`);
 			return false;
 		}
-		this.refs.set(key, media);
-		void this.backend.saveMeta?.(key, media);
+		this.refs.set(resolved, media);
+		void this.backend.saveMeta?.(resolved, media);
 		if (opts?.importEntry) {
-			this.onAsset?.({ ...opts.importEntry, key, media });
+			this.onAsset?.({ ...opts.importEntry, key: resolved, media });
 		}
 		this.notify();
 		return true;
 	}
 
 	has(key: string): boolean {
-		return this.refs.has(key);
+		return this.refs.has(this._scoped(key)) || this.refs.has(key);
 	}
 
 	/** Restore refs previously persisted by the backend (refresh recovery).
@@ -196,6 +372,11 @@ export class MediaSnapshotStore {
 		if (!this.backend.listMeta) { return; }
 		const metas = await this.backend.listMeta();
 		let changed = false;
+		// ★★ **不做 session 推断**（2026-09-12 用户需求「新会话预览要干净」）：
+		//   此前按「恢复到的 key 里最多的那个 session」推断主导作用域 —— 那会让
+		//   **新建的会话**在 host 返回真实 session 之前，先按旧 session 渲染出别人的
+		//   产物 ✗✗（= 污染）。作用域现在只由 `setActiveSession`（host 的权威值）
+		//   决定；`default` 期间写入的产物由 `setActiveSession` 的**迁移**处理 ✓。
 		for (const { key, media } of metas) {
 			// ★ 别名表是保留 key，不作为普通 ref 恢复（否则会污染 refs 索引，
 			//   `byNode`/`allEntries` 会把它当成一条 text 快照）。
@@ -309,28 +490,79 @@ export class MediaSnapshotStore {
 	 */
 	private nodeKeyPrefixes(nodeId: string): string[] {
 		const alias = this.aliases.get(nodeId);
-		return alias && alias !== nodeId ? [nodeId, alias] : [nodeId];
+		const bases = alias && alias !== nodeId ? [nodeId, alias] : [nodeId];
+		// ★★ **严格会话隔离**（2026-09-12 用户需求「新建会话中的节点预览图应该是干净的，
+		//   其他会话产生的资源不应该污染新会话」）：
+		//   · 当前 session 的 key（`{sid}::{nodeId}`）**必然**命中 ✓；
+		//   · 无前缀的历史 key 仅在当前 session 为 `default`（= 未指定会话）时才回退 ✓
+		//     —— 那是 2026-09-11 引入会话作用域**之前**的旧数据 ✓；真实会话下若也回退，
+		//     新会话就会被旧会话/历史产物污染 ✗✗。
+		//   ★ 此前（批次132~135）为了让「误归档在 default 下的产物」可见，加了
+		//     `default::` 兜底 —— 那**正是**用户现在报的污染源 ✗；根因（运行早于
+		//     session 解析）改由 `setActiveSession` 的**迁移**修复（见该函数）✓。
+		return [
+			...bases.map(b => this._scoped(b)),
+			...(this._activeSessionId === 'default' ? bases : []),
+		];
 	}
 
 	/** All entries for a node (for card previews / history). */
 	byNode(nodeId: string): MediaSnapshotEntry[] {
-		const prefixes = this.nodeKeyPrefixes(nodeId);
-		const out: MediaSnapshotEntry[] = [];
-		const seen = new Set<string>();
-		// 前缀顺序 = [原 nodeId, 别名 uid]；Array#sort 稳定，故 index 相同时
-		// 弹窗历史（nodeId 名下）排在 run 输出（uid 名下）之前。
-		for (const prefix of prefixes) {
-			for (const [key, media] of this.refs) {
-				if (!key.startsWith(`${prefix}:`) || seen.has(key)) { continue; }
-				seen.add(key);
-				const rest = key.slice(prefix.length + 1);
-				const lastColon = rest.lastIndexOf(':');
-				const port = lastColon >= 0 ? rest.slice(0, lastColon) : '';
-				const index = lastColon >= 0 ? Number(rest.slice(lastColon + 1)) : 0;
-				out.push({ nodeId: prefix, port, key, media, index });
+		const collect = (prefixes: string[]): MediaSnapshotEntry[] => {
+			const acc: MediaSnapshotEntry[] = [];
+			const seen = new Set<string>();
+			// 前缀顺序 = [原 nodeId, 别名 uid]；Array#sort 稳定，故 index 相同时
+			// 弹窗历史（nodeId 名下）排在 run 输出（uid 名下）之前。
+			for (const prefix of prefixes) {
+				for (const [key, media] of this.refs) {
+					if (!key.startsWith(`${prefix}:`) || seen.has(key)) { continue; }
+					seen.add(key);
+					const rest = key.slice(prefix.length + 1);
+					const lastColon = rest.lastIndexOf(':');
+					const port = lastColon >= 0 ? rest.slice(0, lastColon) : '';
+					const index = lastColon >= 0 ? Number(rest.slice(lastColon + 1)) : 0;
+					// nodeId 还原为**去 session 前缀**的形态（消费方按节点 id 匹配，如
+					// upstreams 查询；key 保留完整 scoped 形态供 replaceByKey 使用）。
+					acc.push({ nodeId: this._unscoped(prefix), port, key, media, index });
+				}
 			}
-		}
+			return acc;
+		};
+		const out = collect(this.nodeKeyPrefixes(nodeId));
+		// ★ 空结果 + 别处有 → 打一行诊断（见 warnScopedMiss）：这类「产物其实在、
+		//   只是 session 作用域不对」的排查此前完全无迹可循 ✗。
+		if (out.length === 0) { this.warnScopedMiss(nodeId); }
 		return out.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+	}
+
+	/** 「按当前 session 查不到、但别的 session 有」的诊断去重表（每个 nodeId 只报一次）。 */
+	private readonly scopedMissWarned = new Set<string>();
+
+	/**
+	 * 诊断（2026-09-12）：`byNode()` 在当前 session 作用域下**查不到**任何产物，
+	 * 但该节点的产物其实存在于**别的 session 前缀**下时打一行 warn。
+	 *
+	 * 用途：用户看到「生成过视频，重启后却显示未生成视频」时，日志能直接指出
+	 * 是**会话作用域**问题（产物完好，只是当前 session 不是它归档时那个）——
+	 * 见 `hydrate()` 里的作用域推断。只打一次，避免每帧刷屏。
+	 */
+	private warnScopedMiss(nodeId: string): void {
+		if (this.scopedMissWarned.has(nodeId)) { return; }
+		const alias = this.aliases.get(nodeId);
+		const bases = alias && alias !== nodeId ? [nodeId, alias] : [nodeId];
+		let n = 0;
+		const sids = new Set<string>();
+		for (const key of this.refs.keys()) {
+			const base = this._unscoped(key);
+			if (!bases.some(b => base.startsWith(`${b}:`))) { continue; }
+			n++;
+			const sep = key.indexOf('::');
+			if (sep > 0) { sids.add(key.slice(0, sep)); }
+		}
+		if (n === 0) { return; }
+		this.scopedMissWarned.add(nodeId);
+		// eslint-disable-next-line no-console
+		console.warn(`[MediaSnapshotStore] session 作用域未命中：节点 ${nodeId} 在当前 session「${this._activeSessionId}」下查不到产物，但其它 session（${[...sids].join(', ') || '无前缀历史'}）下有 ${n} 条 —— 预览会显示「未生成」，实际产物仍在（换回对应 session 即可见）。`);
 	}
 
 	/**
@@ -351,7 +583,7 @@ export class MediaSnapshotStore {
 		const all = this.byNode(nodeId);
 		const isSheetEntry = (e: MediaSnapshotEntry): boolean => {
 			const meta = e.media.meta as Record<string, string> | undefined;
-			return e.media.kind === 'image' && (meta?.sheet === '1' || meta?.sheetFull === '1');
+			return e.media.kind === 'image' && hasSheetLikeMeta(meta);
 		};
 		const cells = all.filter(e => e.media.kind === 'image' && !isSheetEntry(e));
 		// ★ sheet 选取优先级（2026-09-03 根因修复）：
@@ -368,11 +600,12 @@ export class MediaSnapshotStore {
 			const e = all[i];
 			if (e.media.kind !== 'image') { continue; }
 			const meta = e.media.meta as Record<string, string> | undefined;
-			const isMerged = meta?.sheet === '1';
-			const isFull = meta?.sheetFull === '1';
+			const isMerged = String(meta?.sheet) === '1';
+			const isFull = isSheetFullMeta(meta);
 			if (!isMerged && !isFull) { continue; }
-			const r = Number(meta?.rows);
-			const c = Number(meta?.cols);
+			const dims = sheetDimsOf(meta);
+			const r = dims.rows;
+			const c = dims.cols;
 			const m = Number(meta?.margin);
 			const shape = {
 				entry: e,
@@ -464,10 +697,14 @@ export class MediaSnapshotStore {
 		if (live.size === 0) { return 0; }
 		const doomed: string[] = [];
 		for (const key of this.refs.keys()) {
-			const colon = key.indexOf(':');
+			// ★ session 作用域（2026-09-11 用户需求）：先剥离 `{sid}::` 前缀再比对
+			//   存活键 —— 否则 scoped key 的首个 ':' 落在 session 段里（`wfs_A:`），
+			//   前缀解析成 sessionId → 不在 liveKeys → 被误判孤儿删除（不可逆）。
+			const base = this._unscoped(key);
+			const colon = base.indexOf(':');
 			// 不含 ':' 的保留键（别名表等）与畸形键一律保守保留。
 			if (colon <= 0) { continue; }
-			if (!live.has(key.slice(0, colon))) { doomed.push(key); }
+			if (!live.has(base.slice(0, colon))) { doomed.push(key); }
 		}
 		if (doomed.length === 0) { return 0; }
 		for (const key of doomed) {

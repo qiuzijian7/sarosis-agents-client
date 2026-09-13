@@ -11,11 +11,15 @@ import {
 	extractAttachmentIds,
 	stripAttachmentHyperlinks,
 	ATTACHMENT_LINK_SCHEME,
-} from '../../../browser/agentChat/attachmentLink.js';
-import type { IChatAttachment } from '../../../browser/agentChat/agentChatTypes.js';
-import { buildUserContentParts } from '../agentDriverService.js';
-import { MessageFormatConverter } from '../common/adapters/messageFormatConverter.js';
-import type { IChatMessage, IChatContentPart } from '../common/providers.js';
+// ★ 相对路径修正（2026-09-11）：`agentChat/*` 实际位于 `src/vs/sessions/browser/
+//   agentChat/`（不在 agentStudio 下）→ 从 test/browser/ 需 4 层（`../../../../`）；
+//   agentStudio 自身的 browser/common 模块需 2 层（`../../`）。此前分别为 3 层/1 层
+//   → esbuild「Could not resolve」→ 整个文件无法构建。
+} from '../../../../browser/agentChat/attachmentLink.js';
+import type { IChatAttachment } from '../../../../browser/agentChat/agentChatTypes.js';
+import { buildUserContentParts } from '../../browser/agentDriverService.js';
+import { MessageFormatConverter } from '../../common/adapters/messageFormatConverter.js';
+import type { IChatMessage, IChatContentPart } from '../../common/providers.js';
 import type { IChatAttachmentSend } from '../../../../common/agentStudioService.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -109,6 +113,28 @@ suite('Chat input attachments → hyperlink embedding in input box', () => {
 		assert.ok(!stripped.includes(ATTACHMENT_LINK_SCHEME), '附件链接应被去除');
 	});
 
+	// ★ 回归（2026-09-11）：链接**紧邻文字**时不得凭空插入空格；两侧有空白时
+	//   必须收敛为**一个**空格。修复前直接 `replace(LINK,'')` —— 两侧各带一个空格
+	//   会留下双空格（'请分析  谢谢'）；而简单地「一律补一个空格」又会让紧邻
+	//   中文标点的场景变成 '看这个 。'。当前实现按「两侧是否本来有空白」区分。
+	test('★ 回归：链接紧邻中文标点不插空格；两侧有空白则收敛为一个空格', () => {
+		// 紧邻标点：链接两侧均无空白 → 直接删除，**不**插空格
+		assert.strictEqual(
+			stripAttachmentHyperlinks(`看这个[📄 f.md](${ATTACHMENT_LINK_SCHEME}://a1)。`),
+			'看这个。',
+		);
+		// 两侧有空白 → 收敛为**一个**空格（而非两个）
+		assert.strictEqual(
+			stripAttachmentHyperlinks(`请分析 [📄 f.md](${ATTACHMENT_LINK_SCHEME}://a2) 谢谢`),
+			'请分析 谢谢',
+		);
+		// 仅左侧有空白 → 保留一个空格
+		assert.strictEqual(
+			stripAttachmentHyperlinks(`分析 [📄 f.md](${ATTACHMENT_LINK_SCHEME}://a3)和`),
+			'分析 和',
+		);
+	});
+
 	// ── 4. 端到端：输入框超链接 → 去除 → 正确发送给 LLM ───────────────────
 
 	test('端到端：输入框含图片超链接 + 文本，去除超链接后图片真实数据仍经 contentParts 送达 LLM（OpenAI image_url）', () => {
@@ -145,7 +171,9 @@ suite('Chat input attachments → hyperlink embedding in input box', () => {
 		const parts = buildUserContentParts(cleanText, attachments);
 		assert.ok(parts);
 		const textPart = (parts![0] as { type: 'text'; text: string }).text;
-		assert.ok(textPart.startsWith('看这个文件'), '用户文本应保留');
+		// ★ 契约同步（2026-09-11）：用户输入现由 `wrapUserQuery()` 包成
+		//   `<user_query>…</user_query>`（文件上下文追加在标签之后）。
+		assert.ok(textPart.startsWith('<user_query>看这个文件</user_query>'), '用户文本应保留（含 user_query 包裹）');
 		assert.ok(textPart.includes('hello from attachment'), '文件真实内容应内联（非占位文本）');
 	});
 

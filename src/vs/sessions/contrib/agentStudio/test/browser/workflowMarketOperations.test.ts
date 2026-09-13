@@ -8,10 +8,12 @@
  *
  * 覆盖以下场景：
  *   1. WorkflowInstaller.install       — 从解压目录导入工作流到 ~/.vssaros/workflows/
+ *                                        （备份另落 ~/.vssaros/workflows-store/，与列表目录分离）
  *   2. WorkflowInstaller.preparePack   — 将本地工作流打包到临时目录
  *   3. WorkflowInstaller.getInstalledVersion — 从 installed-packages.json 查询已安装版本
  *   4. 版本比较（semver）              — 升级判定逻辑
  *   5. install 已存在工作流            — 同名冲突 / force 升级
+ *   6. install 沿用包内 id             — 改名后升级不产生重复条目（2026-09-11 回归）
  *
  * 测试策略：使用 mock 文件系统和 mock IWorkflowStorageService，
  *          通过 WorkflowInstaller 的公开 API 间接验证行为。
@@ -111,8 +113,12 @@ class MockWorkflowStorage {
 		return this._workflows.get(id);
 	}
 
-	async createWorkflow(data: { name: string; description?: string; steps?: any[] }): Promise<IStoredWorkflow> {
-		const id = `wf-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+	async createWorkflow(data: { name: string; description?: string; steps?: any[]; slug?: string }): Promise<IStoredWorkflow> {
+		// ★ 与真实实现对齐（2026-09-11）：`slug` 优先（用于还原包内 id），缺省才按 name 派生。
+		//   install 传 slug 是「升级不产生重复条目」的关键，mock 必须同语义否则测不出回归。
+		const id = data.slug
+			? `wf-${data.slug}`
+			: `wf-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 		const now = Date.now();
 		const wf: IStoredWorkflow = {
 			id,
@@ -261,16 +267,18 @@ suite('WorkflowMarketOperations', () => {
 		assert.strictEqual(result.storeId, 'wf-new-001');
 		assert.strictEqual(result.version, '1.0.0');
 
-		// 工作流应该被创建到 workflowStorage 中
+		// ★ 工作流必须**以包内 id** 创建（2026-09-11 修复）：
+		//   此前 install 不传 slug → createWorkflow 按 name 派生 id → 与包内 id 不一致，
+		//   导致「升级时按包内 id 查不到 → 再新建」的重复累积。这里直接按 storeId 查，
+		//   正是修复前会失败、修复后必通过的断言。
 		const created = await workflowStorage.getWorkflow(result.storeId);
-		// 注意：install 内部会 createWorkflow，但 createWorkflow 会生成新 id，所以不能用原 id 查
-		// 验证 listWorkflows 至少有一个
+		assert.ok(created, `工作流应以包内 id (${result.storeId}) 创建，而非按 name 派生的新 id`);
+		assert.strictEqual(created!.name, 'New Workflow');
 		const all = await workflowStorage.listWorkflows();
-		assert.ok(all.length > 0, '工作流应该被导入到 workflowStorage');
-		assert.strictEqual(all[0].name, 'New Workflow');
+		assert.strictEqual(all.length, 1, '一次安装只应产生一条工作流（修复前会因 id 不一致而重复）');
 	});
 
-	test('install: 同时备份到 ~/.vssaros/workflows/{id}/workflow.json', async () => {
+	test('install: 同时备份到 ~/.vssaros/workflows-store/{id}/workflow.json', async () => {
 		const manifest = makeManifest({ id: 'wf-backup-001' });
 		const extractedDir = URI.file('/tmp/extract/wf-backup-001');
 		const workflowData = makeWorkflow({ id: 'wf-backup-001', name: 'Backup Test' });
@@ -278,12 +286,37 @@ suite('WorkflowMarketOperations', () => {
 
 		const result = await installer.install(manifest, extractedDir);
 
-		// 备份文件应该存在于 ~/.vssaros/workflows/{id}/workflow.json
-		const expectedBackupPath = `/test-data/.vssaros/workflows/${manifest.id}/workflow.json`;
+		// ★ 备份落在 `workflows-store/`（2026-09-11 修复）：此前是 `workflows/`，
+		//   与工作流列表目录重合 → 同目录双写 + 可能多出一条「备份」工作流。
+		const expectedBackupPath = `/test-data/.vssaros/workflows-store/${manifest.id}/workflow.json`;
 		const backupContent = fileService._getFile(expectedBackupPath);
 		assert.ok(backupContent, `备份文件应存在于 ${expectedBackupPath}`);
 		const parsed = JSON.parse(backupContent!);
 		assert.strictEqual(parsed.name, 'Backup Test');
+		// 反向保证：备份**不得**再落到工作流列表目录（否则重复条目回归）
+		const wrongPath = `/test-data/.vssaros/workflows/${manifest.id}/workflow.json`;
+		assert.ok(!fileService._getFile(wrongPath), `备份不应落在列表目录 ${wrongPath}`);
+	});
+
+	test('install(force): 工作流改名后升级仍命中同一实体（不产生重复条目）', async () => {
+		// 场景：发布方把工作流从「Old Name」改名为「New Name」（id 不变 = wf-rename-001）。
+		// 修复前：已存在检查用包内 id 命中 → update 正常；但**首次**安装（本地为空）会走
+		// 新建分支，而 createWorkflow 按 name 派生 id → 本地 id ≠ 包内 id → 下次升级
+		// 查不到 → 再新建 → 列表出现两条。
+		const manifest = makeManifest({ id: 'wf-rename-001', name: 'New Name', version: '2.0.0' });
+		const extractedDir = URI.file('/tmp/extract/wf-rename-001');
+		const packData = makeWorkflow({ id: 'wf-rename-001', name: 'New Name', version: '2.0.0' });
+		fileService._setFile('/tmp/extract/wf-rename-001/workflow.json', JSON.stringify(packData));
+
+		// 第一次安装（本地无该工作流）
+		await installer.install(manifest, extractedDir, { force: true });
+		// 第二次安装（模拟「升级到 v2.0.0」）
+		const result = await installer.install(manifest, extractedDir, { force: true });
+
+		const all = await workflowStorage.listWorkflows();
+		assert.strictEqual(all.length, 1, '两次安装应更新同一条工作流，而不是新增第二条');
+		assert.strictEqual(all[0].id, 'wf-rename-001');
+		assert.strictEqual(result.storeId, 'wf-rename-001');
 	});
 
 	test('install: 工作流已存在且未指定 force 时抛出冲突错误', async () => {
@@ -458,9 +491,9 @@ suite('WorkflowMarketOperations', () => {
 
 	// ── 6. 工作流存储路径 ────────────────────────────────────────────────────
 
-	suite('工作流存储路径 ~/.vssaros/workflows/{workflowid}/', () => {
+	suite('备份路径 ~/.vssaros/workflows-store/{workflowid}/（与列表目录分离）', () => {
 
-	test('install 后备份目录为 ~/.vssaros/workflows/{id}/', async () => {
+	test('install 后备份目录为 ~/.vssaros/workflows-store/{id}/', async () => {
 		const manifest = makeManifest({ id: 'wf-path-001' });
 		const extractedDir = URI.file('/tmp/extract/wf-path-001');
 		fileService._setFile('/tmp/extract/wf-path-001/workflow.json', JSON.stringify(makeWorkflow({ id: 'wf-path-001' })));
@@ -469,7 +502,12 @@ suite('WorkflowMarketOperations', () => {
 
 		// 验证 targetDir 包含正确的路径
 		assert.ok(result.targetDir.includes('.vssaros'), 'targetDir 应包含 .vssaros');
-		assert.ok(result.targetDir.includes('workflows'), 'targetDir 应包含 workflows');
+		// ★ 必须落在 workflows-store（2026-09-11 修复）：此前与工作流列表目录
+		//   `workflows/` 重合 → 同目录双写 + 可能多出一条「备份」工作流。
+		//   断言用「路径段」判定而非 `includes('workflows')` —— 后者会被
+		//   `workflows-store` 子串命中，无法区分两者（旧断言正是因此漏判）。
+		assert.ok(result.targetDir.includes('workflows-store'), 'targetDir 应包含 workflows-store');
+		assert.ok(!/[\\/]workflows[\\/]/.test(result.targetDir), `targetDir 不应落在列表目录 workflows/ 内（实际 ${result.targetDir}）`);
 		assert.ok(result.targetDir.includes('wf-path-001'), 'targetDir 应包含工作流 ID');
 	});
 

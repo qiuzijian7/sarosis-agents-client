@@ -195,6 +195,15 @@ export function defaultBrowserWindowOptions(accessor: ServicesAccessor, windowSt
 			const sessionsIcon = join(environmentMainService.appRoot, 'resources/win32/sessions.ico');
 			const fallbackIcon = join(environmentMainService.appRoot, 'resources/win32/code.ico');
 			options.icon = existsSync(sessionsIcon) ? sessionsIcon : fallbackIcon;
+		} else {
+			// [Saros] 2026-09-11：主 app（构建产物模式，即非 dev 源码运行、非 embedded sub app）
+			// 此前**不设置** options.icon —— Electron 遂回退到 exe 内嵌图标，导致把
+			// `resources/win32/code.ico` 换成新 logo 后，标题栏左上角与任务栏按钮仍显示
+			// 旧图标（除非用 rcedit 重新注入 exe）。这里显式指向 code.ico：
+			// Windows 下 Electron 会把窗口图标写入窗口类的 ICON_BIG/ICON_SMALL，
+			// 从而覆盖任务栏按钮与窗口标题栏图标，无需重新打包 exe。
+			// （桌面快捷方式 .lnk 的图标仍取 exe 内嵌资源，需注入/重新打包才更新。）
+			options.icon = join(environmentMainService.appRoot, 'resources/win32/code.ico');
 		}
 	}
 

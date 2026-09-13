@@ -14,7 +14,9 @@ import {
 	sanitizeAttachmentFileName,
 	UnauthorizedAccessMessage,
 } from "../../common/bridge/bridgeSecurity.js";
-import { appendFileRefs } from "../bridge/bridgeAttachments.js";
+// ★ 相对路径修正（2026-09-11）：目标模块在 agentStudio/browser/bridge/ 下 → 需
+//   2 层（`../../`），此前写成 1 层 → esbuild「Could not resolve」→ 整文件无法构建。
+import { appendFileRefs } from "../../browser/bridge/bridgeAttachments.js";
 import { BridgeCard } from "../../common/bridge/bridgeTypes.js";
 
 suite("bridgeSecurity", () => {

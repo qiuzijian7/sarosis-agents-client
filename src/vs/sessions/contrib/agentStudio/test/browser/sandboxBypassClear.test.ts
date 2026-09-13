@@ -28,13 +28,14 @@
 import assert from 'assert';
 import * as nodePath from 'path';
 
+import { SandboxGuard } from '../../browser/agentSandboxGuard.js';
+// ★ import 来源修正（2026-09-11）：`SandboxConfirmationDecision` 由
+//   `common/providers.ts` 定义（agentSandboxGuard.ts 不再导出它）——此前从
+//   agentSandboxGuard.js 导入 → esbuild「No matching export」→ 整文件无法构建。
 import {
-	SandboxGuard,
 	SandboxConfirmationDecision,
-} from '../../browser/agentSandboxGuard.js';
-import type {
-	ISandboxViolationInfo,
-	IToolCallInfo,
+	type ISandboxViolationInfo,
+	type IToolCallInfo,
 } from '../../common/providers.js';
 
 // ── 与 builtinToolProvider 同构的临时放行集合（测试替身）──────────────────

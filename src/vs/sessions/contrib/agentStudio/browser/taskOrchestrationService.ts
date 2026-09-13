@@ -37,6 +37,9 @@ import { IEnvironmentService, INativeEnvironmentService } from '../../../../plat
 import { TaskDecomposer } from './taskDecomposer.js';
 import { AgentFactory } from './agentFactory.js';
 import { CanvasLayoutEngine } from './canvasLayoutEngine.js';
+// ★ P2-5 收敛（2026-09-13）：聊天卡文本长度上限统一到 cardVisibility 的 CARD_TEXT_LIMITS
+//   （此前 200/400/2000/4000 是散落各处的裸字面量，无单点可查）。
+import { CARD_TEXT_LIMITS } from './workflow/cardVisibility.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import type { IAgentTurnRequest, IChatStreamDelta } from '../common/providers.js';
 // ─── New unified imports ──────────────────────────────────────────────────
@@ -2102,7 +2105,7 @@ Goal: ${goal}`;
 					nodeName: task.assigneeName || task.title,
 					nodeType: 'agent',
 					status: 'done',
-					output: resultContent.slice(0, 2000),
+					output: resultContent.slice(0, CARD_TEXT_LIMITS.orchestrationOutput),
 				});
 			}
 
@@ -2594,7 +2597,7 @@ Goal: ${goal}`;
 					nodeName: taskTitle,
 					nodeType: 'agent',
 					status: 'done',
-					output: resultContent.slice(0, 2000),
+					output: resultContent.slice(0, CARD_TEXT_LIMITS.orchestrationOutput),
 				});
 				this._streamEventCallback('workflow.executionTrace', {
 					executionId: boardExecId,

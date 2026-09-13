@@ -12,7 +12,7 @@ import { IEditorOpenContext, IEditorPane, IUntypedEditorInput } from '../../../.
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorGroupView } from '../../../../workbench/browser/parts/editor/editor.js';
-import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
+import { EditorActivation, IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { addDisposableListener } from '../../../../base/browser/dom.js';
 import { toDisposable } from '../../../../base/common/lifecycle.js';
 import { mainWindow } from '../../../../base/browser/window.js';
@@ -29,6 +29,7 @@ import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.j
 import { ISkillRegistry } from '../common/skills.js';
 import { sanitizeAssistantVisibleText, addSanitizeTraceSink } from '../common/assistantVisibleText.js';
 import { IAgentOSService } from '../common/agentOS.js';
+import { buildPromptOptimizeMessages, sanitizeOptimizedOutput } from '../../../browser/agentChat/promptOptimize.js';
 import { filterUserFacingAgents } from '../common/builtinAgents.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IBridgeService } from './bridge/bridgeService.js';
@@ -46,6 +47,9 @@ import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
+import { AgentMediaEditorInput } from './agentMedia/agentMediaEditorInput.js';
+import { requestCanvasOps } from './providers/tool/canvasOpsBridge.js';
+import { AgentMediaEditorPane } from './agentMedia/agentMediaEditorPane.js';
 import { buildEnsureSpec, nativeIpcBridge, normalizePanelUrl, type ConfigHtmlCfg } from '../common/configHtmlConfig.js';
 import { ensureConfigHtmlServerAndOpenPreview } from './configHtmlPreviewOpener.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
@@ -57,16 +61,24 @@ import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { ICheckpointService } from '../common/checkpointService.js';
+import { earliestCheckpointTime, findConversationKeepIndex } from '../common/checkpointConversationAnchor.js';
+import { describeSkippedSnapshots } from '../common/checkpointSnapshotPolicy.js';
 import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
 import { IWorkflowStorageService } from '../common/workflowStorage.js';
+import { formatProgressPct } from '../common/progressFormat.js';
 import { collectWorkflowVariables } from './utils/templateUtils.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { createMediaStoreProxy } from './mediaStoreProxy.js';
+import type { IMediaBackend } from '../common/mediaStoreChannel.js';
+import { AGENT_STUDIO_IMAGE_GEN_PROVIDER, AGENT_STUDIO_IMAGE_GEN_MODEL } from '../common/constants.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ContextManager } from '../common/contextManager.js';
-import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment, IToolCall } from '../../../browser/agentChat/agentChatTypes.js';
+import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IImageModelGroup as IPanelImageModelGroup, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment, IToolCall } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
 import { TaskBoardStatus } from '../../../common/agentStudioTypes.js';
@@ -180,6 +192,14 @@ export class NativeChatEditorPane extends EditorPane {
 	private _localProviderId: string = '';
 	private _localModelId: string = '';
 	/**
+	 * 面板本地「图片模型」偏好（2026-09-10）：`''`（未配置）| `provider:<providerId>:<modelId>`。
+	 * 与 provider/model 一样只存面板本地，并持久化到 localStorage（per-pane）。
+	 * 未配置时不干预下游路由（等价原 auto 语义）。
+	 */
+	private _localImageModelPreference: string = '';
+	/** 媒体资产库代理（惰性创建）：把工具结果里的 `saros-media://<id>` 换成 data URL。 */
+	private _mediaBackend?: IMediaBackend;
+	/**
 	 * 会话只读（多开 --instance）：当前会话锁被另一实例持有时为 true，
 	 * _sendMessageInternal 拦截发送并提示，防止双写覆盖聊天历史。
 	 */
@@ -193,6 +213,8 @@ export class NativeChatEditorPane extends EditorPane {
 	private static readonly _STORAGE_PROVIDER = 'saros:lastProvider';
 	private static readonly _STORAGE_MODEL = 'saros:lastModel';
 	private static readonly _STORAGE_COMPOSER_TEXT = 'saros:composerText';
+	/** 「图片模型」偏好（2026-09-10，per-pane：key 后缀 paneId）。 */
+	private static readonly _STORAGE_IMAGE_MODEL = 'saros:imageModel';
 
 	private _isSending = false;
 	/**
@@ -226,6 +248,74 @@ export class NativeChatEditorPane extends EditorPane {
 	 */
 	private _streamingAssistantId: string | null = null;
 	private _streamingAssistantMsg: IAgentChatMessage | null = null;
+	/**
+	 * 2026-09-10：流式「已放弃」标记（修「输出中切换会话 → 聊天框卡死」第二道防线）。
+	 *
+	 * 用户在流式进行中**切走**时置 true（onOpenSession）；**切回该流式所属会话**时
+	 * 由 onOpenSession 复位为 false（2026-09-11 修正），下一次真正开始新流
+	 * （_initStreamingMessage）时也会复位。
+	 *
+	 * 背景：切换会话会 setMessages(新会话历史) 并清空 _streamingAssistantId，
+	 * 若旧会话的 delta 漏入（全局监听器在广播 sessionId 为空时会放行），
+	 * _processDelta 的「自愈」分支（_isSending && !isTerminal &&
+	 * !_streamingAssistantId）会反复 _initStreamingMessage()，在新会话的聊天框里
+	 * 凭空重建流式消息 → 高频 DOM 重建 → 主线程饱和卡死。第一道防线（本地
+	 * onDelta 的会话守卫）已堵住主要入口，本标记作为兜底：放弃态下禁止自愈重建。
+	 *
+	 * ⚠ 2026-09-11 修正：本标记**不能**做成「只置不复位」的一次性标记——切回原会话后
+	 * 自愈分支被永久阻断，而复位它的唯一入口 `_initStreamingMessage` 又正被该条件挡在
+	 * 门外，形成死锁，用户表现为「切走再切回，LLM 输出内容整段丢失」（日志
+	 * 1789133432350）。现在切回时复位 + 后台缓冲回放，见 `_backgroundDeltaBuffer`。
+	 */
+	private _streamingAbandoned = false;
+	/**
+	 * 2026-09-11：会话切换期间的「后台 delta 缓冲」——修「LLM 输出中切走再切回 → 内容丢失」。
+	 *
+	 * **事故（日志 1789133432350）**：agentic loop 跑到 iter=3（多轮工具调用）时用户切走再
+	 * 切回，切回后聊天框那段输出整段消失。三层原因叠加：
+	 *  ① assistant 消息要等 **loop 全部结束的 finalization** 才落盘
+	 *     （agentChatService.ts:2598-2647，`_streamingParts`/`_fullContentChunks` 都是
+	 *     `sendMessage` 的**局部变量**，没有任何「流式快照」查询接口）——loop 未结束时
+	 *     `getHistory` 必然拿不到这条消息（日志实证：切回后仍 `getHistory: 9 msgs`，
+	 *     与流式开始前同数）。
+	 *  ② `setMessages(历史)` 把流式消息（`_streamingAssistantId`）清空。
+	 *  ③ 9-10 的卡死修复「切走即丢弃旧 delta」**只置 `_streamingAbandoned=true` 不复位**，
+	 *     切回后 `_processDelta` 的自愈分支（`_isSending && !isTerminal &&
+	 *     !_streamingAssistantId && !_streamingAbandoned`）被永久阻断 → 后续 delta 全丢，
+	 *     且标记只能靠 `_initStreamingMessage` 复位，而它正被这个条件挡在门外 → **死锁**。
+	 *
+	 * **修复**：切走期间本会话的 delta 不丢弃，按 sessionId 排队；切回该会话时按序回放
+	 * 喂给 `_processDelta`，重建完整流式消息（delta 自包含增量、顺序回放即自洽）。
+	 * key = sessionId；上限见 `_BACKGROUND_DELTA_LIMIT`（防长时间切走爆内存）。
+	 */
+	private _backgroundDeltaBuffer = new Map<string, any[]>();
+	/**
+	 * ★ 2026-09-13：「切走瞬间的流式消息快照」—— 修「切走再切回，之前的 LLM 输出消失」。
+	 *
+	 * **事故（日志 1789269767739）**：切回时 `replaying 3 buffered delta(s)` —— 只有 3 个，
+	 * 而切走前那条 assistant 消息**已经渲染了一大段内容**。原因：
+	 *   `_backgroundDeltaBuffer` **只累积「切走后」到达的 delta** ✗；切走前的内容早已被
+	 *   `_handleStreamDelta` 消费、渲染进 `_streamingAssistantMsg`，**从未进过缓冲** ✗。
+	 * 而切回时 `setMessages(历史)` 清空 panel 侧消息，随后 `_resetStreamingMessage()`
+	 * 又清掉 pane 侧句柄（那一步是必要的 —— 否则回放的 delta 会追加到"孤儿对象"上，
+	 * `updateMessage(旧id)` 静默 no-op，见 onOpenSession 内注释）→ **切走前的内容彻底
+	 * 无源可依**，只能靠那 3 个 delta 重建 ✗✗。
+	 *
+	 * **修复**：切走时把 `_streamingAssistantMsg` 的**引用**存起来（key = sessionId）；
+	 * 切回时若它还没落盘（不在 getHistory 里）就插回 panel 并把句柄接回，之后回放的
+	 * delta 会继续往它身上追加 → 切走前 + 切走期间的内容都完整 ✓。
+	 *
+	 * 存**引用**即可：切走后该对象不再被 delta 修改（delta 进的是缓冲），且即便
+	 * `_streamingAssistantMsg` 被 `_resetStreamingMessage()` 置空也不影响这份引用。
+	 */
+	private _backgroundStreamingSnapshot = new Map<string, IAgentChatMessage>();
+	/**
+	 * 2026-09-12：后台缓冲因超限而被回收的 delta 累计数。
+	 * 切回时读一次并在回放日志里标注（>0 表示回放内容可能被截断），随后复位。
+	 */
+	private _backgroundDroppedDeltas = 0;
+	/** 后台 delta 缓冲上限（按条数）。超限后丢弃新来的并告警一次，避免长时间切走吃满内存。 */
+	private static readonly _BACKGROUND_DELTA_LIMIT = 20000;
 	/** LLM 流式输出记录器（createEditor 时初始化；默认关闭，localStorage 开关）。 */
 	private _streamRecorder: AgentStreamRecorder | undefined;
 	/** 看板变更后延迟 reload 的 timer，用于防止多个 board change 堆叠 reload。 */
@@ -319,6 +409,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IAgentTaskBoardService private readonly _taskBoardService: IAgentTaskBoardService,
 		@IModelSelectorService private readonly _modelSelector: IModelSelectorService,
 		@ICheckpointService private readonly _checkpointService: ICheckpointService,
+		@IQuickInputService private readonly _quickInputService: IQuickInputService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IWorkflowExecutionService private readonly _workflowExecutionService: IWorkflowExecutionService,
 		@IWorkflowStorageService private readonly _workflowStorageService: IWorkflowStorageService,
@@ -341,6 +432,10 @@ export class NativeChatEditorPane extends EditorPane {
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@IWorktreeService private readonly _worktreeService: IWorktreeService,
 		@ILifecycleService lifecycleService: ILifecycleService,
+		// ★ 2026-09-10：图片生成结果以 `saros-media://<assetId>` 短引用回传（避免 base64
+		// 进 LLM 上下文），UI 侧需要经主进程媒体库把它换成 data URL 才能显示。
+		// （图片模型偏好走既有的 _configurationService，见上方构造参数，无需重复注入。）
+		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, _storageService);
 		this._installSanitizeTraceSink();
@@ -799,6 +894,31 @@ export class NativeChatEditorPane extends EditorPane {
 							providerId: this._localProviderId || undefined,
 						},
 						(delta) => {
+							// ★★★ 2026-09-10 会话切换守卫（修「输出中切换会话 → 聊天框卡死」）★★★
+							// 本回调是 sendMessage 的闭包，与【发起发送时的会话】绑定；而
+							// onOpenSession 切换会话会立刻改写 _currentSessionId 并
+							// setMessages(新会话历史)（含 _resetStreamingMessage 清空
+							// _streamingAssistantId/_deltaBuffer）。此后旧会话的 delta 仍会
+							// 持续到达本回调，且全局 onDidStreamDelta 监听器因
+							// _localSendActiveSessionId 仍是旧会话（line ~1854 独占守卫）
+							// 会直接跳过 —— 旧会话 delta **只能**从这条原本无守卫的本地
+							// 回调进入 _processDelta，于是：
+							//   · _streamingAssistantId 为空 → 命中 _processDelta 的「自愈」
+							//     分支（line ~3207：_isSending && !isTerminal &&
+							//     !_streamingAssistantId）→ 反复 _initStreamingMessage()
+							//   · 每个 delta 都在【新会话的聊天框】里凭空重建/追加 assistant
+							//     消息 → 高频 addMessage + DOM 重建 → 主线程饱和 → UI 卡死
+							//     （日志 20260910T103549：17:46:45.314 后静默 2m22s，
+							//     用户最终强关窗口）。
+							// 守卫：发起会话已非当前会话 → 不渲染到当前聊天框，但**也不丢弃**。
+							// 2026-09-11 修正：原实现直接 return 丢弃，导致「切走再切回」后这段
+							// 输出永久消失（assistant 消息要等 loop 结束才落盘，切回时 getHistory
+							// 里没有它；详见 _backgroundDeltaBuffer 字段注释）。现改为存入后台
+							// 缓冲，切回该会话时由 onOpenSession 按序回放重建。
+							if (sentSessionId && this._currentSessionId && this._currentSessionId !== sentSessionId) {
+								this._bufferBackgroundDelta(sentSessionId, delta);
+								return;
+							}
 							this._handleStreamDelta(delta);
 						},
 					);
@@ -806,6 +926,14 @@ export class NativeChatEditorPane extends EditorPane {
 					this._chatPanel?.setSending(false);
 					this._isSending = false;
 					this._resetStreamingMessage();
+					// 2026-09-11：流已结束（内容已由 finalization 落盘），清掉该会话可能残留的
+					// 后台缓冲——否则下次切回会回放一份过期快照，与 getHistory 的落盘内容重复。
+					if (sentSessionId) {
+						this._backgroundDeltaBuffer.delete(sentSessionId);
+						// ★ 2026-09-13：流式快照同理 —— 内容已落盘，留着会让切回时把旧对象
+						//   再插一条（虽然 getHistory 的 id 去重能挡住，但引用已过期、不该留）。
+						this._backgroundStreamingSnapshot.delete(sentSessionId);
+					}
 				} catch (err) {
 					this._logService.error('[NativeChatEditorPane] sendMessage failed:', err);
 					// sendMessage 抛出后没有 _sendMessageInternal line 644 收尾，必须这里手动
@@ -814,6 +942,10 @@ export class NativeChatEditorPane extends EditorPane {
 					this._isSending = false;
 					this._isExternalSend = false;
 					this._resetStreamingMessage();
+					// ★ 2026-09-13：外部流结束 —— 清掉快照。外部发送路径拿不到 sessionId
+					//   （delta 只带 agentId/sessionId，pane 未持有），而同一 pane 同时只可能
+					//   有一个流 → 直接 clear 既安全又不会残留（否则下次切回会插回已落盘的旧对象）。
+					this._backgroundStreamingSnapshot.clear();
 				} finally {
 					// 本地发送结束（正常或异常）：释放该 session 的串台防护标记，
 					// 让其它同 agent 的 pane 恢复对该 session 流式 delta 的监听。
@@ -924,7 +1056,12 @@ export class NativeChatEditorPane extends EditorPane {
 						return;
 					}
 					const input = new AgentSettingsEditorInput(agent.id, agent.name);
-					await this._openInMainColumn(input, { pinned: true });
+					const pane = await this._openInMainColumn(input, { pinned: true });
+					// 同 onOpenMedia：若复用已有 tab，本次新建的 input 被引擎丢弃且不释放，
+					// 需调用方 dispose，否则 GC 时报 "[LEAKED DISPOSABLE]"。
+					if (pane?.input !== input) {
+						input.dispose();
+					}
 				} catch (err) {
 					this._logService.error('[NativeChatEditorPane] onOpenSettings failed:', err);
 				}
@@ -964,6 +1101,44 @@ export class NativeChatEditorPane extends EditorPane {
 				this._commandService.executeCommand('workbench.action.openSettings', 'mcp').catch(err => {
 					this._logService.error('[NativeChatEditorPane] onOpenMcpSettings failed:', err);
 				});
+			},
+			onOpenMedia: (media: { src: string; kind: string; title?: string }) => {
+				// ★ 双击聊天里的媒体 → 中间栏编辑器**独立 pane**（2026-09-11 用户需求）。
+				//   走 _openInMainColumn：sessions 布局下 mainPart = 中间栏主编辑器，
+				//   agentPart = 右侧聊天区 —— 必须显式指定，否则会落在聊天区的编辑器组里
+				//   覆盖聊天面板。
+				//   pinned:true → 固定标签，避免被后续预览（单击其他图）顶掉；
+				//   revealIfOpened + matches() 去重 → 重复双击同一张图复用同一 tab。
+				try {
+					const kind = (media.kind === 'image' || media.kind === 'video' || media.kind === 'audio')
+						? media.kind
+						: 'unknown';
+					const input = new AgentMediaEditorInput({ src: media.src, kind, ...(media.title ? { title: media.title } : {}) });
+					// ★ `override`（2026-09-11）：**显式指定 pane id** —— 兜底「按 input 类匹配失败」
+					//   的情况（EditorPaneRegistry 是按 `editor.constructor === 注册的 SyncDescriptor.ctor`
+					//   匹配的）。若匹配失败，VS Code 会回退成文本编辑器 → tab 标题正确但内容**空白** ✗，
+					//   正是用户实测「点放大后未显示图像」的形态。
+					//
+					// ★ 兜底释放（2026-09-11）：`revealIfOpened` + `matches()` 命中已有 tab 时，
+					//   openEditor 复用旧 editor 并**丢弃本次新建的 input 且不释放** —— 调用方
+					//   必须自行 dispose，否则 GC 时触发 "[LEAKED DISPOSABLE]"（重复点同一张图必现）。
+					//   打开失败同理。真正打开时 pane.input === input，保留由 group 管理生命周期。
+					void this._openInMainColumn(input, {
+						pinned: true,
+						revealIfOpened: true,
+						activation: EditorActivation.ACTIVATE,
+						override: AgentMediaEditorPane.ID,
+					}).then(pane => {
+						if (pane?.input !== input) {
+							input.dispose();
+						}
+					}, err => {
+						input.dispose();
+						this._logService.error('[NativeChatEditorPane] onOpenMedia failed:', err);
+					});
+				} catch (err) {
+					this._logService.error('[NativeChatEditorPane] onOpenMedia failed:', err);
+				}
 			},
 			onOpenHtmlPreview: () => {
 				// ★ 按 agent 的 configHtml 配置预览（与设置页「打开预览」共享同一 opener，行为一致）：
@@ -1094,6 +1269,51 @@ export class NativeChatEditorPane extends EditorPane {
 			try {
 				// 保存旧 session 草稿 → 切换 → 恢复目标 session 草稿
 				this._saveComposerDraft();
+				// ★ 2026-09-11：切走 / 切回 的流式状态处理（修「输出中切走再切回 → 内容丢失」）
+				// 9-10 的实现把 `_streamingAbandoned` 当成一次性标记「只置 true 不复位」，
+				// 切回原会话后 `_processDelta` 的自愈分支被永久阻断、标记又只能由
+				// `_initStreamingMessage` 复位（正被该条件挡住）→ 死锁 → 输出全丢。
+				// 现按「目标会话是否就是流式所属会话」分别处理：
+				const streamOwner = this._localSendActiveSessionId;
+				if (streamOwner && streamOwner === sessionId) {
+					// ① 切回「仍在流式输出中」的会话 → 解除放弃标记，让后续 delta 继续渲染。
+					//    流式消息本身由 setMessages 清空后，靠自愈分支在下一个 delta 上重建；
+					//    切走期间的内容则由下面的后台缓冲回放补齐。
+					this._streamingAbandoned = false;
+				} else if (this._streamingAssistantId || streamOwner !== null) {
+					// ② 切走（或切到另一个会话）→ 标记放弃，防止旧 delta 污染新会话的聊天框
+					//    （9-10 卡死根因）。待处理队列里的 delta 转入后台缓冲而非丢弃，
+					//    保证切回时能完整回放。
+					this._streamingAbandoned = true;
+					if (streamOwner) {
+						for (const d of this._deltaBuffer) {
+							this._bufferBackgroundDelta(streamOwner, d);
+						}
+					}
+					// ★ 2026-09-13：把**切走前已渲染的流式消息**存快照 —— 否则切回时只能靠
+					//   缓冲里的 delta 重建，而缓冲只含「切走后」的增量，切走前的内容全丢
+					//   （日志 1789269767739：replaying 3 buffered delta(s)，而切走前已渲染一大段）。
+					//   详见字段注释。
+					//
+					//   ★ key 取 `streamOwner ?? _currentSessionId`：**外部发送**
+					//   （看板 executeTaskForBoard 直调 agentChatService.sendMessage）时
+					//   `_localSendActiveSessionId` 为 **null**，若只用 streamOwner 守卫，
+					//   外部流切走再切回同样丢内容（平行路径 —— 本仓「修了一半」是高频模式）。
+					//   此刻 `_currentSessionId` 仍是**切走前**的会话（赋值在下方），正好是流所属会话 ✓。
+					const snapshotKey = streamOwner ?? this._currentSessionId;
+					if (snapshotKey && this._streamingAssistantMsg) {
+						this._backgroundStreamingSnapshot.set(snapshotKey, this._streamingAssistantMsg);
+					}
+					if (this._deltaFlushTimer !== null) {
+						clearTimeout(this._deltaFlushTimer);
+						this._deltaFlushTimer = null;
+					}
+					this._deltaBuffer = [];
+				} else {
+					// ③ 无进行中的本地流（切走期间该流已结束/未在发送）→ 复位标记，
+					//    避免「放弃」态残留到下一次切换（残留时自愈分支会被无谓阻断）。
+					this._streamingAbandoned = false;
+				}
 				this._currentSessionId = sessionId;
 				void this._updateSessionLock();
 				this._logService.debug(`[NativeChatEditorPane] onOpenSession: switched to session ${sessionId}`);
@@ -1108,7 +1328,76 @@ export class NativeChatEditorPane extends EditorPane {
 						this.input.setAgentInfo(this.input.name, agentId, sessionId, sessionName);
 					}
 				const history = await this._chatService.getHistory(agentId, sessionId);
-				this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+				const adaptedHistory = this._adaptHistoryMessages(history);
+				// ★ 2026-09-13：切回「仍在流式输出中」的会话时，把**切走瞬间的快照**接回末尾。
+				//   必须在 setMessages **之前**拼进数组（`addMessage` 会触发二次渲染）。
+				//   若该消息已落盘（loop 恰在切走期间结束 → getHistory 里已有同 id）则跳过，避免重复。
+				const streamingSnapshot = this._backgroundStreamingSnapshot.get(sessionId);
+				const snapshotUsable = !!streamingSnapshot
+					// 本地流：`_localSendActiveSessionId` 必须正是本会话（否则说明用户已在本
+					// pane 发了另一条到别的会话，旧快照不该再插回）。
+					// **外部流**（看板 executeTaskForBoard）时该字段恒为 null → 不做此限制；
+					// 此时「能从 Map 里按 sessionId 取到」本身已证明它属于本会话 ✓。
+					&& (this._localSendActiveSessionId === null || this._localSendActiveSessionId === sessionId)
+					&& !adaptedHistory.some(m => m.id === streamingSnapshot.id);
+				if (snapshotUsable && streamingSnapshot) {
+					adaptedHistory.push(streamingSnapshot);
+				}
+				this._chatPanel?.setMessages(adaptedHistory);
+				// ★★ 2026-09-11 补充修复「切回原会话后，原先正在输出的内容没有显示」★★
+				//
+				// `setMessages` 只整体替换 **panel 侧** 的 `_messages` 数组，**不会**清 pane
+				// 侧的 `_streamingAssistantId`/`_streamingAssistantMsg` —— 它们仍指向
+				// 【切走前】那条流式消息对象，而该对象已不在 `_messages` 里，成为**孤儿**。
+				//
+				// 后果：回放的后台 delta 走 `_processDelta` 的「assistantMsg 非空」正常分支
+				// → 全部追加到孤儿对象 → `panel.updateMessage(旧id, …)` 按 id 找不到 →
+				// **静默 no-op**，聊天框始终空白。
+				// 日志 1789135259834 铁证：`replaying 165 buffered delta(s)` 之后，既无
+				// `SELF-HEALED` 也无 `MISSING on type` 打点（说明 assistantMsg 恒非空、从未
+				// 进过自愈分支），而该轮流其实继续跑完 961 deltas 并正常落盘 —— 数据没丢，
+				// 只是**一条都没渲染**。
+				//
+				// 清空后，首个 delta 命中自愈分支重建流式消息，回放/后续 delta 才有归宿。
+				// 注意：此处**无条件**清空（不只在有缓冲时）——因为 `setMessages` 一旦执行，
+				// 任何残留的流式句柄都必然指向孤儿，留着只会让后续 delta 静默丢失。
+				this._resetStreamingMessage();
+				// ★ 2026-09-13：快照可用时**把流式句柄接回快照**（必须在 `_resetStreamingMessage`
+				//   之后 —— 那一步会清空句柄）。
+				//   为何必须接回：`_processDelta` 在 `_streamingAssistantId` 为空时走「自愈分支」
+				//   **新建**一条流式消息；若此处不接回，回放的 delta 会另建一条，切走前的内容
+				//   虽显示在列表里却**不会再被后续 delta 更新**（两处内容各走各的）✗。
+				//   接回后：回放 delta 直接追加到快照上 → 切走前 + 切走期间的内容连贯 ✓。
+				if (snapshotUsable && streamingSnapshot) {
+					this._streamingAssistantId = streamingSnapshot.id;
+					this._streamingAssistantMsg = streamingSnapshot;
+				}
+				// ★ 2026-09-11：回放切走期间攒下的 delta，把「尚未落盘、只存在于内存」的
+				// 流式输出补回 UI（assistant 消息要等 loop 结束才落盘，getHistory 里没有它）。
+				// 必须在 setMessages 之后：回放会经 _processDelta 的自愈分支重建流式消息，
+				// 顺序喂入才能还原 parts（text/tool 交错）的原始次序。
+				const pendingDeltas = this._backgroundDeltaBuffer.get(sessionId);
+				if (pendingDeltas && pendingDeltas.length > 0) {
+					this._backgroundDeltaBuffer.delete(sessionId);
+					this._logService.info(
+						`[NativeChatEditorPane] onOpenSession: replaying ${pendingDeltas.length} buffered delta(s) for session ${sessionId}` +
+						(this._backgroundDroppedDeltas > 0
+							// ★ 2026-09-12：缓冲超限曾回收过 delta —— 明确标注，避免"内容莫名变短"无从归因。
+							? ` — ⚠ ${this._backgroundDroppedDeltas} delta(s) recycled on overflow, content may be truncated`
+							: ''),
+					);
+					this._backgroundDroppedDeltas = 0;
+					// 回放期间必须处于发送态，否则自愈分支不重建流式消息 → 回放内容无处落。
+					// （正常切回时 _isSending 仍为 true；此处兜底防御被 delta 逻辑改写的情形。）
+					if (!this._isSending) {
+						this._isSending = true;
+						this._chatPanel?.setSending(true);
+					}
+					for (const d of pendingDeltas) {
+						if (!d) { continue; }	// 缓冲满载标记（见 _bufferBackgroundDelta）
+						this._handleStreamDelta(d);
+					}
+				}
 				// 恢复目标 session 的输入框草稿（无草稿则清空）
 				this._restoreComposerDraft();
 				// 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）
@@ -1147,6 +1436,15 @@ export class NativeChatEditorPane extends EditorPane {
 				this._logService.debug(`[NativeChatEditorPane] onDeleteSession: deleted session ${sessionId}`);
 				// 清理被删 session 的输入框草稿
 				try { localStorage.removeItem(this._composerDraftKey(agentId, sessionId)); } catch { /* ignore */ }
+				// 2026-09-12（P0-3）：会话被删除 → 连同其检查点数据（index.json + snapshots/）
+				// 一起回收。此前只重置 UI，磁盘数据永久残留（无任何清理入口）。
+				try {
+					await this._checkpointService.deleteSessionCheckpoints(agentId, sessionId);
+				} catch (err) {
+					this._logService.warn(
+						`[NativeChatEditorPane] onDeleteSession: failed to purge checkpoints of ${sessionId}: ${err}`,
+					);
+				}
 					// If the deleted session is the current one, switch to the most recent
 					// remaining session (or clear the view) and reload history + checkpoints.
 					if (this._currentSessionId === sessionId) {
@@ -1339,22 +1637,109 @@ export class NativeChatEditorPane extends EditorPane {
 				this._chatPanel?.setCurrentModel(modelId);
 				this._saveInputAreaState();
 			},
-			onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => {
+			// 提示词优化（2026-09-10，输入框 ✨ 按钮）：一次性 LLM 改写输入框文本。
+			// 不进入会话历史、不触发 agent loop（见 _optimizePrompt）。
+			onOptimizePrompt: (text: string) => this._optimizePrompt(text),
+			// 「图片模型」选择（2026-09-10）：偏好字符串 auto | provider:<pid>:<mid>。
+			// 面板本地持久化（per-pane localStorage），聊天中触发图片生成时按此路由。
+			onSelectImageModel: (preference: string) => {
+				this._logService.info(`[NativeChatEditorPane#${this._paneId}] onSelectImageModel: ${preference} (prev=${this._localImageModelPreference})`);
+				this._localImageModelPreference = preference;
+				try { localStorage.setItem(this._imageModelPrefKey(), preference); } catch { /* localStorage 不可用忽略 */ }
+				// ★ 2026-09-10：同步写入 agent 配置（.agent.md 的 imageModel/imageProviderId）。
+				// localStorage 只是本 pane 的即时缓存；agent 配置才是跨 pane / 跨会话 /
+				// 跨重启的权威值（也与 agent 设置页的「图片生成模型」双向一致）。
+				void this._persistImageModelToAgent(preference);
+				this._chatPanel?.setCurrentImageModel(preference);
+			},
+			onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff' | 'undoConversation' | 'openTimeline', payload?: { filePath?: string; checkpointId?: string }) => {
 				void this._handleCheckpointAction(action, payload);
 			},
 			onConfirmationAction: (confirmationId: string, buttonId: string) => {
 				void this._handleConfirmationAction(confirmationId, buttonId);
 			},
-			onAskUserSubmit: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => {
+			onAskUserSubmit: (askUserId: string, executionId: string, nodeId: string, selection: string | string[] | { __askUserAnswer: 1; labels: string[]; params?: Record<string, string>; multiSelect?: boolean } | { __askUserAnswer: 1; answers: Record<string, unknown> }) => {
 				this._logService.debug('[NativeChatEditorPane] onAskUserSubmit:', askUserId, executionId, nodeId, selection);
+				// ★ D4：对象态答案（labels + 动态 params）原样透传给 resume——
+				//   执行侧 _executeAskUserNode 判别 object 态并物化 params。
+				// ★ 多问题（2026-09-11）：`{ __askUserAnswer:1, answers:{…} }` **没有
+				//   labels 字段** —— 旧代码直接取 `selection.labels[0]` 会 TypeError
+				//   （卡片提交即崩）。这里按 answers 优先分支处理：卡片显示摘要文本，
+				//   resumeValue（下方 JSON.stringify）仍完整携带 answers。
+				const isObjAnswer = !!selection && typeof selection === 'object' && !Array.isArray(selection);
+				const multiAnswers = isObjAnswer && 'answers' in selection
+					? (selection as { answers?: Record<string, unknown> }).answers
+					: undefined;
+				const answer: string | string[] = multiAnswers
+					? Object.values(multiAnswers)
+						.map(v => typeof v === 'string' ? v : (v && typeof v === 'object' ? Object.values(v as Record<string, unknown>).join('/') : String(v ?? '')))
+						.filter(Boolean)
+						.join(' · ')
+					: isObjAnswer
+						? ((selection as { multiSelect?: boolean; labels: string[] }).multiSelect
+							? (selection as { labels: string[] }).labels
+							: ((selection as { labels: string[] }).labels[0] ?? ''))
+						: selection as string | string[];
 				// Optimistically mark the AskUser as answered, then resume the paused workflow.
 				// Both are delegated to the WorkflowTraceController, which owns the
 				// _askUsers state and the live-workflow message refresh.
-				this._workflowTrace?.markAskUserAnswered(askUserId, selection);
-				this._workflowTrace?.resumeExecution(executionId, selection).catch(err => {
+				// ★ D4：对象态答案（含动态 params）序列化后随 resume 传回执行侧
+				//   （执行侧 parse 出 __askUserAnswer 判别），卡片显示用 labels（answer）。
+				const resumeValue: string | string[] = (selection && typeof selection === 'object' && !Array.isArray(selection))
+					? JSON.stringify(selection)
+					: (selection as string | string[]);
+				this._workflowTrace?.markAskUserAnswered(askUserId, answer);
+				this._workflowTrace?.resumeExecution(executionId, resumeValue).catch(err => {
 					this._logService.error('[NativeChatEditorPane] Failed to resume workflow:', err);
 					// Rollback optimistic update on failure.
 					this._workflowTrace?.rollbackAskUser(askUserId);
+				});
+			},
+			// ★ ImagePicker 多选提交（2026-09-11 用户需求）：卡片勾选 → 乐观标记已选择
+			//   → resume 执行侧（refs 作为 pauseExecution 的解析值 → picker 节点输出）。
+			//   与 AskUser 同链路：失败回滚卡片状态。
+			onPickerSelectSubmit: (pickerId: string, executionId: string, nodeId: string, refs: string[]) => {
+				this._logService.info('[NativeChatEditorPane] onPickerSelectSubmit:', pickerId, executionId, nodeId, refs.length);
+				if (refs.length === 0) { return; }
+				this._workflowTrace?.markPickerSelected(pickerId, refs);
+				// ★ 与画布节点同步（2026-09-11 用户需求）：聊天卡勾选的候选要**写回画布
+				//   ImagePicker 节点的选中态**（`selected_index` / `directRef`）。
+				//   此前只 resume 执行侧 → 画布上仍是旧高亮 ✗。
+				//   走 canvasOps（host→webview 既有通道）；ref→池序号 由 webview 侧解析
+				//   （池 = 快照库 + 上游连线，host 算不出 ✗）。失败不影响主链路（仅日志）。
+				void requestCanvasOps([{ op: 'select_picker_refs', node: nodeId, refs }]).catch(err => {
+					this._logService.warn('[NativeChatEditorPane] picker→canvas 同步失败（不影响执行）:', err);
+				});
+				this._workflowTrace?.resumeExecution(executionId, refs).catch(err => {
+					this._logService.error('[NativeChatEditorPane] Failed to resume workflow (picker):', err);
+					this._workflowTrace?.rollbackPickerSelect(pickerId);
+				});
+			},
+			// ★ 节点交互表单提交（2026-09-11 框架）：表单值 JSON 序列化后作为 resume 值
+			//   回传执行侧（与 AskUser D4 的对象态答案同约定）；执行侧 JSON.parse 后
+			//   合并进节点 values，该节点才执行。
+			onNodeInteractionSubmit: (interactionId: string, executionId: string, nodeId: string, values: Record<string, unknown>) => {
+				this._logService.info('[NativeChatEditorPane] onNodeInteractionSubmit:', interactionId, executionId, nodeId, Object.keys(values).length);
+				this._workflowTrace?.markNodeInteractionSubmitted(interactionId, values);
+				// ★ 与画布节点同步（2026-09-11 用户需求：**所有**卡片数据 ↔ 画布节点 UI 始终同步）：
+				//   表单提交值此前**只**进执行期 values ✗ → 画布节点完全看不到用户在卡片里改的
+				//   行列/风格/提示词/参考图。现同时写回画布节点。
+				//   机制：复用既有 `update_node`（浅合并进 node.data —— 画布侧 node.properties
+				//   即 store 的 node.data，见 applyCanvasOpsToStore 的映射）✓，**无需新 op**。
+				//   ⚠ 画布侧约定：数组/对象以 **JSON 字符串**存储（如 comfytv_image_refs），
+				//   故非原始值必须序列化 —— 否则画布控件读到对象会解析失败 ✗。
+				const patch: Record<string, unknown> = {};
+				for (const [k, v] of Object.entries(values)) {
+					patch[k] = (v !== null && typeof v === 'object') ? JSON.stringify(v) : v;
+				}
+				if (Object.keys(patch).length > 0) {
+					void requestCanvasOps([{ op: 'update_node', node: nodeId, patch }]).catch(err => {
+						this._logService.warn('[NativeChatEditorPane] 表单→画布 同步失败（不影响执行）:', err);
+					});
+				}
+				this._workflowTrace?.resumeExecution(executionId, JSON.stringify(values)).catch(err => {
+					this._logService.error('[NativeChatEditorPane] Failed to resume workflow (node interaction):', err);
+					this._workflowTrace?.rollbackNodeInteraction(interactionId);
 				});
 			},
 			onClarifySubmit: (toolCallId: string, selection: string) => {
@@ -1783,7 +2168,11 @@ export class NativeChatEditorPane extends EditorPane {
 			const prev = (tc as any).progress as number | undefined;
 			if (typeof prev === 'number' && payload.progress < prev) { return; }
 			(tc as any).progress = payload.progress;
-			(tc as any).progressText = payload.message ?? `生成中 ${payload.progress}%`;
+			// ★ 百分比必须 `formatProgressPct`（2026-09-12 用户需求「生成的进度最多显示
+			//   小数点后2位」）：ComfyUI 进度是 `value/max*100` 的无限小数，直接插值会让
+			//   聊天卡显示「生成中 45.45454545454546%」✗（窄容器里还被 CSS 省略号截成
+			//   「45.45…」这种看起来像 bug 的样子）。
+			(tc as any).progressText = payload.message ?? `生成中 ${formatProgressPct(payload.progress)}%`;
 			// 节流：progress 事件高频（ComfyUI 轮询），避免每帧整体替换数组触发全量重渲染。
 			const now = Date.now();
 			const last = (this as any)._lastWfProgressFlush as number | undefined;
@@ -1815,6 +2204,18 @@ export class NativeChatEditorPane extends EditorPane {
 		}));
 
 		// Orchestration plan listeners removed — task orchestration entry point is closed.
+
+		// ★ 2026-09-12：本面板正在显示的会话被**别处**（会话历史视图 / 会话浏览器）删除时，
+		//   面板自身的 onDeleteSession 回调不会被调用 → `_currentSessionId` 会一直指向已删
+		//   会话 → 后续发送报 `Session ... not found`（日志 20260912T102833）。
+		//   订阅专门的删除事件，立刻切到最近会话（或清空视图）。
+		this._register(this._chatService.onDidDeleteAgentSession(async ({ agentId, sessionId }) => {
+			if (agentId !== this._currentAgentId || sessionId !== this._currentSessionId) { return; }
+			this._logService.info(
+				`[NativeChatEditorPane#${this._paneId}] current session ${sessionId} deleted elsewhere — switching away`,
+			);
+			await this._handleCurrentSessionDeleted(agentId);
+		}));
 
 		// Listen for streaming deltas from task execution / external sendMessage calls.
 		//
@@ -2153,7 +2554,7 @@ export class NativeChatEditorPane extends EditorPane {
 		// ── Initialize extracted controllers ────────────────────────────
 		// Checkpoint manager — encapsulates refresh + action logic
 		this._checkpointMgr = this._register(new CheckpointManager(
-			this._checkpointService, this._commandService,
+			this._checkpointService, this._commandService, this._logService,
 		));
 		this._register(this._checkpointService.onDidCreateCheckpoint((cp) => {
 			if (cp.agentId === this._currentAgentId && cp.sessionId === this._currentSessionId) {
@@ -2543,6 +2944,131 @@ private _composerDraftKey(agentId: string, sessionId: string): string {
 	return `${NativeChatEditorPane._STORAGE_COMPOSER_TEXT}:${agentId}:${sessionId}`;
 }
 
+/**
+ * 「图片模型」偏好的 localStorage key（per-pane，2026-09-10）。
+ * 值形如 `auto` | `provider:<providerId>:<modelId>`；不随 agent/session 变化
+ * （图片模型是面板级能力选择，与当前会话无关）。
+ */
+private _imageModelPrefKey(): string {
+	return `${NativeChatEditorPane._STORAGE_IMAGE_MODEL}:pane${this._paneId}`;
+}
+
+/**
+ * 把「图片模型」偏好写入 agent 配置（2026-09-10）。
+ *
+ * 偏好字符串 → agent 字段的映射（与 `_getImageModelLabel` 的解析约定一致）：
+ *   - `'auto'`                          → 清空 imageProviderId/imageModel（跟随全局默认）
+ *   - `'provider:<providerId>:<modelId>'` → 写入对应两个字段
+ *
+ * 为什么必须写 agent 配置：图片模型是 agent 级能力（决定该 agent 生成图片时用哪个
+ * 模型），需跨 pane / 跨会话 / 跨重启生效，且要与 agent 设置页「图片生成模型」
+ * 双向一致——只写 localStorage 会在换窗口后丢失。
+ */
+private async _persistImageModelToAgent(preference: string): Promise<void> {
+	let imageProviderId: string | undefined;
+	let imageModel: string | undefined;
+	const parts = (preference || '').split(':');
+	if (parts[0] === 'provider' && parts.length >= 3) {
+		imageProviderId = parts[1];
+		imageModel = parts.slice(2).join(':');
+	}
+
+	// ① 用户级全局配置：**总是写**（2026-09-10）。这是工具侧 image_generate 在
+	//    agent 配置缺失时读的那一份——内置 agent（只读）场景下用户的选择只有
+	//    落到这里才会真正生效，否则会掉进自动路由选中不支持 Images API 的 provider。
+	try {
+		await this._configurationService.updateValue(AGENT_STUDIO_IMAGE_GEN_PROVIDER, imageProviderId ?? '');
+		await this._configurationService.updateValue(AGENT_STUDIO_IMAGE_GEN_MODEL, imageModel ?? '');
+		this._logService.info(
+			`[NativeChatEditorPane#${this._paneId}] image model default persisted (user-level): ` +
+			`provider=${imageProviderId ?? '(cleared)'} model=${imageModel ?? '(cleared)'}`
+		);
+	} catch (err) {
+		this._logService.warn('[NativeChatEditorPane] persist image model default (user-level) failed:', err);
+	}
+
+	// ② agent 配置：可写时同步（自定义 agent 优先于全局默认）
+	if (!this._currentAgentId) { return; }
+	try {
+		await this._agentStudioService.updateAgent(this._currentAgentId, { imageProviderId, imageModel });
+		this._logService.info(
+			`[NativeChatEditorPane#${this._paneId}] _persistImageModelToAgent: agentId=${this._currentAgentId} ` +
+			`imageProviderId=${imageProviderId ?? '(default)'} imageModel=${imageModel ?? '(cleared)'} → .agent.md`
+		);
+	} catch (err) {
+		// ★ 2026-09-10：内置 agent 只读（如 saros-claw）→ 写 .agent.md 必然被拒。
+		// 这不是异常而是预期：此时保留 localStorage 缓存（本 pane 内仍然生效），
+		// 静默跳过 agent 持久化即可——否则用户每选一次图片模型都吃一条 error 日志
+		//（日志 1789050110889 实证：updateAgent(saros-claw): rejected — builtin
+		// agent is read-only）。要跨 pane 持久化请改用自定义 agent。
+		const msg = err instanceof Error ? err.message : String(err);
+		if (/只读|read-only/i.test(msg)) {
+			this._logService.info(
+				`[NativeChatEditorPane#${this._paneId}] _persistImageModelToAgent skipped — ` +
+				`agent "${this._currentAgentId}" is read-only (builtin); kept in localStorage only`
+			);
+		} else {
+			this._logService.warn('[NativeChatEditorPane] _persistImageModelToAgent failed:', err);
+		}
+	}
+}
+
+/** 从当前 agent 配置构造图片模型偏好串（未配置 → undefined，表示无 agent 级默认）。 */
+private async _imagePreferenceFromAgent(): Promise<string | undefined> {
+	if (!this._currentAgentId) { return undefined; }
+	try {
+		const agent = await this._agentStudioService.getAgent(this._currentAgentId);
+		if (agent?.imageProviderId && agent?.imageModel) {
+			return `provider:${agent.imageProviderId}:${agent.imageModel}`;
+		}
+	} catch { /* 读取失败按无默认处理 */ }
+	return undefined;
+}
+
+/** 媒体资产库代理（惰性创建）。 */
+private _getMediaBackend(): IMediaBackend {
+	let backend = this._mediaBackend;
+	if (!backend) {
+		backend = createMediaStoreProxy(this._mainProcessService);
+		this._mediaBackend = backend;
+	}
+	return backend;
+}
+
+/**
+ * 把工具结果里的 `saros-media://<assetId>` 引用替换为 data URL（2026-09-10）。
+ *
+ * 背景：图片生成工具（image_generate）为避免 base64 进入 LLM 上下文，结果里只放
+ * 媒体库短引用；UI 需要真实 data URL 才能显示图片。本方法在 **UI 侧**完成替换——
+ * 服务端落盘的历史仍是短引用（不会被污染），只影响当前显示。
+ *
+ * 替换后主动 updateMessage，让工具卡用新结果重渲染（工具卡据此渲染 <img>）。
+ */
+private async _resolveMediaRefsInToolResult(tc: any, msgId: string, msg: any): Promise<void> {
+	const text = typeof tc?.result === 'string' ? tc.result : '';
+	if (!text.includes('saros-media://')) { return; }
+	const ids = [...text.matchAll(/saros-media:\/\/([A-Za-z0-9_-]+)/g)].map(m => m[1]);
+	if (ids.length === 0) { return; }
+	let replaced = text;
+	let resolved = 0;
+	for (const id of ids) {
+		try {
+			const dataUrl = await this._getMediaBackend().getAsDataUrl(id);
+			if (dataUrl) {
+				replaced = replaced.split(`saros-media://${id}`).join(dataUrl);
+				resolved++;
+			}
+		} catch (err) {
+			this._logService.warn(`[NativeChatEditorPane] resolve media ref ${id} failed:`, err);
+		}
+	}
+	if (resolved > 0 && replaced !== text) {
+		tc.result = replaced;
+		this._chatPanel?.updateMessage(msgId, { toolCalls: (msg.toolCalls ?? []).slice() });
+		this._logService.info(`[NativeChatEditorPane#${this._paneId}] resolved ${resolved}/${ids.length} saros-media ref(s) → data URL for UI display`);
+	}
+}
+
 /** 保存当前输入框草稿到指定 session（默认当前；空文本则清除 key）。 */
 private _saveComposerDraft(agentId = this._currentAgentId, sessionId = this._currentSessionId): void {
 	if (!agentId || !sessionId) { return; }
@@ -2779,6 +3305,9 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 			);
 			return;
 		}
+		// 2026-09-10：真正开始一条新流 —— 解除「流式已放弃」标记（见字段注释）。
+		// 置于 stale 检查之后：自愈路径调用本方法时该标记必为 false，复位无副作用。
+		this._streamingAbandoned = false;
 		const id = `msg_${Date.now()}_assistant`;
 		const msg: IAgentChatMessage = {
 			id,
@@ -2878,6 +3407,93 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 	 * 1. 已通过 _initStreamingMessage() 初始化流式消息
 	 * 2. _isSending=true（按钮处于 stop 状态）
 	 */
+/**
+ * 把「非前台会话」的 delta 存入后台缓冲（切回时回放）。
+ *
+ * 只在「本 pane 本地发送的会话被切走」期间调用（见 sendMessage 的 onDelta 守卫）。
+ * 超限（`_BACKGROUND_DELTA_LIMIT`）后丢弃新 delta 并告警一次——丢弃**后缀**而非前缀，
+ * 保证回放出的 parts 前缀完整（tool_start/tool_end 配对不会从中间断裂）。
+ */
+private _bufferBackgroundDelta(sessionId: string, delta: any): void {
+	let buf = this._backgroundDeltaBuffer.get(sessionId);
+	if (!buf) {
+		buf = [];
+		this._backgroundDeltaBuffer.set(sessionId, buf);
+	}
+	const limit = NativeChatEditorPane._BACKGROUND_DELTA_LIMIT;
+	if (buf.length >= limit) {
+		// ★ 2026-09-12（P2 优化）：原实现「超限即丢**新** delta」，导致长时间切走时
+		//   切回后内容缺失且用户无感知。现改为**丢最旧的 text delta**——
+		//   ① text 是纯增量，丢掉只损失文字，不会破坏 parts 结构（tool_start/tool_end
+		//      必须配对，丢任一端都会让回放出的卡片错乱）；
+		//   ② 一次回收 5%，使后续 ~1000 个 delta 都不再触发本分支（摊销 O(1)）；
+		//   ③ 丢弃量记入 `_backgroundDroppedDeltas`，切回时在回放日志中标注，不静默。
+		const target = Math.max(1, Math.floor(limit * 0.05));
+		let removed = 0;
+		for (let i = 0; i < buf.length && removed < target;) {
+			const d = buf[i];
+			if (d && d.type === 'text') { buf.splice(i, 1); removed++; } else { i++; }
+		}
+		if (removed === 0) {
+			// 极端：缓冲内全是非 text（工具风暴）→ 退化为丢最旧一条（保尾部最新内容）
+			buf.shift();
+			removed = 1;
+		}
+		this._backgroundDroppedDeltas += removed;
+		this._logService.warn(
+			`[NativeChatEditorPane#${this._paneId}] background delta buffer full (${limit}) for session ${sessionId}; ` +
+			`recycled ${removed} oldest text delta(s) (total dropped=${this._backgroundDroppedDeltas}). ` +
+			`Replayed content may be truncated.`,
+		);
+	}
+	buf.push(delta);
+}
+
+/**
+ * ★ 2026-09-12：本面板正在显示的会话被**别处**删除后的处理。
+ *
+ * 场景：用户在会话历史视图 / 会话浏览器里删掉了聊天面板正打开的会话 —— 面板自己的
+ * `onDeleteSession` 回调不会触发，`_currentSessionId` 会一直指向已删会话，导致后续
+ * 发送 `getHistory: 0 msgs` + `Auto-rename failed: Session ... not found`
+ * （日志 20260912T102833）。
+ *
+ * 语义与 `onDeleteSession` 中「删的是当前会话」分支一致：优先切到最近会话，
+ * 没有则清空视图（`_currentSessionId = null`，下次发送由 `_ensureSession` 新建）。
+ */
+private async _handleCurrentSessionDeleted(agentId: string): Promise<void> {
+	try {
+		const sessions = await this._chatService.listAgentSessions(agentId);
+		if (sessions.length > 0) {
+			this._currentSessionId = sessions[0].id;
+			void this._updateSessionLock();
+			if (this.input instanceof NativeChatEditorInput) {
+				this.input.setAgentInfo(this.input.name, agentId, sessions[0].id, sessions[0].name);
+			}
+			try {
+				const history = await this._chatService.getHistory(agentId, this._currentSessionId);
+				this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+			} catch {
+				this._chatPanel?.setMessages([]);
+			}
+			this._restoreComposerDraft();
+			this._activateCheckpointSession(agentId, this._currentSessionId);
+		} else {
+			this._currentSessionId = null;
+			if (this.input instanceof NativeChatEditorInput) {
+				this.input.setAgentInfo(this.input.name, agentId, null);
+			}
+			this._chatPanel?.setMessages([]);
+			this._chatPanel?.setCheckpoint(null);
+			this._restoreComposerDraft();
+		}
+		await this._refreshSessionList();
+	} catch (err) {
+		this._logService.warn(
+			`[NativeChatEditorPane] _handleCurrentSessionDeleted(${agentId}) failed: ${err instanceof Error ? err.message : err}`,
+		);
+	}
+}
+
 private _handleStreamDelta(delta: any): void {
 	if (!delta) { return; }
 
@@ -3194,7 +3810,10 @@ private _handleStreamDelta(delta: any): void {
 			);
 			// 自愈：仍在发送态 + 非终态 delta + 确实没有流式消息 → 重建，让后续 delta 有归宿。
 			// 三重条件缺一不可：发送态保证不该丢内容；非终态避免空气泡；!_streamingAssistantId 防重建覆盖。
-			if (this._isSending && !isTerminal && !this._streamingAssistantId) {
+			// 2026-09-10 第四条件 !_streamingAbandoned：切换会话后旧会话的流已放弃，
+			// 漏入的 delta 不得在新会话里凭空重建流式消息（否则高频重建 → 卡死，
+			// 详见 _streamingAbandoned 字段注释）。
+			if (this._isSending && !isTerminal && !this._streamingAssistantId && !this._streamingAbandoned) {
 				this._initStreamingMessage();
 				assistantId = this._streamingAssistantId;
 				assistantMsg = this._streamingAssistantMsg;
@@ -3590,6 +4209,9 @@ private _handleStreamDelta(delta: any): void {
 					this._chatPanel?.updateMessage(assistantId, {
 						toolCalls: assistantMsg.toolCalls!.slice(),
 					});
+					// ★ 图片生成结果：把 `saros-media://<id>` 引用换成 data URL（仅 UI 显示，
+					// 落盘历史仍是短引用）——工具卡据此渲染图片。
+					void this._resolveMediaRefsInToolResult(resultCall, assistantId, assistantMsg);
 				} else {
 					// ★ 2026-09-06 跨流补发兜底（「工具卡显示等待工具结果」根因，日志
 					// 1788709752561 实证 branch=awaiting-result status=success）：
@@ -4204,12 +4826,198 @@ private _handleStreamDelta(delta: any): void {
 		await this._checkpointMgr?.refreshBar(this._chatPanel, this._currentAgentId, this._currentSessionId);
 	}
 
-	private async _handleCheckpointAction(action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }): Promise<void> {
+	private async _handleCheckpointAction(action: 'undoAll' | 'keepAll' | 'openDiff' | 'undoConversation' | 'openTimeline', payload?: { filePath?: string; checkpointId?: string }): Promise<void> {
 		try {
+			// 2026-09-12（P1-1）：只回退对话（保留代码）不走 CheckpointManager ——
+			// 它只服务文件回退；对话截断由本 pane 直接经 chatService 完成。
+			if (action === 'undoConversation') {
+				await this._revertConversationOnly();
+				return;
+			}
+			// 2026-09-12（P2-1）：检查点时间线同样由 pane 实现（需要 QuickPick + 刷新自身 UI）。
+			if (action === 'openTimeline') {
+				await this._openCheckpointTimeline();
+				return;
+			}
+			// 2026-09-12（P1-3）：回退**代码**前预检「agent 编辑之后被用户手动改过」的文件 ——
+			// 回退会把用户这次手改一并抹掉（唯一真实的数据丢失场景：agent 改完 → 用户又手改
+			// → 回退）。有冲突时二次确认；用户取消则整体中止（不改文件、不动检查点）。
+			if (action === 'undoAll' && this._currentAgentId && this._currentSessionId) {
+				const conflicts = await this._checkpointService.detectExternallyModifiedFiles(
+					this._currentAgentId, this._currentSessionId,
+				);
+				if (conflicts.length > 0) {
+					const names = conflicts
+						.map(f => f.split(/[/\\]/).filter(Boolean).pop() ?? f)
+						.slice(0, 5)
+						.join('、');
+					const more = conflicts.length > 5 ? ` 等 ${conflicts.length} 个文件` : '';
+					// `INotificationService.prompt` 返回 **handle**（不是下标）：用户选择经
+					// `IPromptChoice.run` 回调返回；直接关闭通知（不点任何项）→ 视为**取消**
+					// （保守：宁可不动，也不静默丢用户数据）。
+					const proceed = await new Promise<boolean>(resolve => {
+						let settled = false;
+						const handle = this._notificationService.prompt(
+							Severity.Warning,
+							`有 ${conflicts.length} 个文件在你手动修改之后被回退，这些改动会丢失：${names}${more}。是否继续？`,
+							[
+								{ label: '仍然回退', run: () => { settled = true; resolve(true); } },
+								{ label: '取消', run: () => { settled = true; resolve(false); }, isSecondary: true },
+							],
+						);
+						this._register(handle.onDidClose(() => {
+							if (!settled) { settled = true; resolve(false); }
+						}));
+					});
+					if (!proceed) {
+						this._logService.info(
+							'[NativeChatEditorPane] undoAll cancelled by user (manual edits detected after agent write)',
+						);
+						return;
+					}
+				}
+			}
 			// Delegated to CheckpointManager
-			await this._checkpointMgr?.handleAction(this._chatPanel, this._currentAgentId, this._currentSessionId, action, payload);
+			const result = await this._checkpointMgr?.handleAction(this._chatPanel, this._currentAgentId, this._currentSessionId, action, payload);
+			// 2026-09-12（P2-3）：有文件因体积过大/二进制未纳入检查点 → 明确告知用户，
+			// 避免「以为已完全还原」（对齐 Claude Code 的 skipped N files 提示）。
+			const skipNote = describeSkippedSnapshots(result?.skippedFiles ?? []);
+			if (skipNote) {
+				this._logService.warn(`[NativeChatEditorPane] ${skipNote}`);
+				this._notificationService.warn(skipNote);
+			}
 		} catch (err) {
 			this._logService.info('[NativeChatEditorPane] _handleCheckpointAction failed:', err);
+		}
+	}
+
+	/**
+	 * 只回退对话（2026-09-12，P1-1）：把聊天历史截断到「本轮起点之前」，**代码保持现状**。
+	 * 与「回撤改动」（只回退代码）互补，对齐 Claude Code `/rewind` 的 Restore conversation。
+	 *
+	 * 「本轮起点」= 最早的非 ghost 检查点的 `createdAt`。之所以用**时间戳**而不是检查点的
+	 * `messageId`：现有检查点（native 链工具侧创建的 tool_edit、webview 链的每轮锚点）创建时
+	 * 都**没有**写入 messageId，依赖它会让本功能静默失效。`ChatMessage.timestamp` 是 ISO
+	 * 字符串，需 `Date.parse` 后与 ms 时间戳比较。
+	 *
+	 * 保守边界（对齐 `_handleEditMessage` 的同类保护）：若历史中没有任何消息早于该时间戳
+	 * （说明本轮即会话开始）→ **拒绝截断**并 warn，绝不误清空整个会话。
+	 *
+	 * 检查点数据**保留**（代码没变，用户随后仍可「回撤改动」）。
+	 */
+	private async _revertConversationOnly(): Promise<void> {
+		const agentId = this._currentAgentId;
+		const sessionId = this._currentSessionId;
+		if (!agentId || !sessionId) {
+			this._logService.warn('[NativeChatEditorPane] revertConversationOnly: no active agent/session');
+			return;
+		}
+		// 1. 本轮起点时间 = 最早的非 ghost 检查点（纯函数，见 common/checkpointConversationAnchor）
+		const list = await this._checkpointService.listCheckpoints(agentId, sessionId);
+		const earliestAt = earliestCheckpointTime(list);
+		if (earliestAt === undefined) {
+			this._logService.warn('[NativeChatEditorPane] revertConversationOnly: no live checkpoint to anchor on');
+			return;
+		}
+
+		// 2. 找到最后一条「早于起点」的消息，保留到它（含）
+		const history = await this._chatService.getHistory(agentId, sessionId);
+		const keepIdx = findConversationKeepIndex(history, earliestAt);
+		if (keepIdx < 0) {
+			this._logService.warn(
+				`[NativeChatEditorPane] revertConversationOnly: refusing to truncate — no message predates the ` +
+				`earliest checkpoint (earliestAt=${earliestAt}, history=${history.length})`,
+			);
+			return;
+		}
+		const removed = history.length - (keepIdx + 1);
+		if (removed === 0) {
+			this._logService.info('[NativeChatEditorPane] revertConversationOnly: nothing to remove');
+			return;
+		}
+		await this._chatService.deleteMessagesAfter(agentId, sessionId, history[keepIdx].id);
+
+		// 3. 刷新面板（磁盘文件不动）
+		const refreshed = await this._chatService.getHistory(agentId, sessionId);
+		this._chatPanel?.setMessages(this._adaptHistoryMessages(refreshed));
+		this._logService.info(
+			`[NativeChatEditorPane] revertConversationOnly: kept ${keepIdx + 1}, removed ${removed} message(s) ` +
+			`(code untouched)`,
+		);
+	}
+
+	/**
+	 * 检查点时间线（2026-09-12，P2-1）：列出本会话全部可回退检查点，选中即回退到该点
+	 * —— **文件与对话同时**回到该检查点创建之前。对齐 Claude Code `/rewind` 的菜单体验。
+	 *
+	 * 与「回撤改动」（只能回到本轮起点）的区别：这里可以选择**历史任意一点**。
+	 *
+	 * 实现要点：
+	 *   · 用 {@link findConversationKeepIndex}（P1-1 的纯函数）按**时间戳**定位对话截断点
+	 *     （检查点未写 messageId，不能依赖它）；
+	 *   · 回退后刷新消息列表 + 检查点条；
+	 *   · 未纳入检查点的文件（P2-3 省略内容）经 `skippedFiles` 显式提示。
+	 */
+	private async _openCheckpointTimeline(): Promise<void> {
+		const agentId = this._currentAgentId;
+		const sessionId = this._currentSessionId;
+		if (!agentId || !sessionId) {
+			this._logService.warn('[NativeChatEditorPane] checkpointTimeline: no active agent/session');
+			return;
+		}
+		const list = (await this._checkpointService.listCheckpoints(agentId, sessionId)).filter(cp => !cp.isGhost);
+		if (list.length === 0) {
+			this._notificationService.info('当前会话没有可回退的检查点。');
+			return;
+		}
+
+		// 最新在前（用户通常想回到最近的某个点）。
+		const ordered = list.slice().sort((a, b) => b.createdAt - a.createdAt);
+		type TimelineItem = IQuickPickItem & { checkpointId: string };
+		const items: TimelineItem[] = ordered.map(cp => ({
+			label: cp.label || (cp.type === 'tool_edit' ? '工具修改' : '用户检查点'),
+			description: `${new Date(cp.createdAt).toLocaleString()}${cp.files?.length ? ` · ${cp.files.length} 个文件` : ''}`,
+			detail: cp.description,
+			checkpointId: cp.id,
+		}));
+
+		const picked = await this._quickInputService.pick(items, {
+			title: '回退到检查点',
+			placeHolder: '选择要回退到的检查点（文件与对话将同时回到该点之前）',
+			matchOnDescription: true,
+		});
+		if (!picked) { return; }
+
+		const cp = ordered.find(c => c.id === picked.checkpointId);
+		if (!cp) { return; }
+
+		try {
+			// 1. 文件回退（该检查点之后的检查点会被标记为 ghost）
+			const result = await this._checkpointService.jumpToCheckpoint(agentId, sessionId, cp.id);
+
+			// 2. 对话截断到该检查点之前（复用 P1-1 的锚点纯函数，按时间戳定位）
+			const history = await this._chatService.getHistory(agentId, sessionId);
+			const keepIdx = findConversationKeepIndex(history, cp.createdAt);
+			if (keepIdx >= 0) {
+				await this._chatService.deleteMessagesAfter(agentId, sessionId, history[keepIdx].id);
+			}
+
+			// 3. 刷新面板与检查点条
+			const refreshed = await this._chatService.getHistory(agentId, sessionId);
+			this._chatPanel?.setMessages(this._adaptHistoryMessages(refreshed));
+			await this._refreshCheckpointBar();
+
+			this._logService.info(
+				`[NativeChatEditorPane] checkpointTimeline: reverted to ${cp.id} ` +
+				`(restored ${result.restoredFiles.length}, skipped ${result.skippedFiles?.length ?? 0})`,
+			);
+
+			// 4. 未纳入检查点的文件（P2-3）显式提示，避免「以为已完全还原」
+			const skipNote = describeSkippedSnapshots(result.skippedFiles ?? []);
+			if (skipNote) { this._notificationService.warn(skipNote); }
+		} catch (err) {
+			this._logService.error('[NativeChatEditorPane] checkpointTimeline failed:', err);
+			this._notificationService.error(`回退失败：${(err as Error).message}`);
 		}
 	}
 
@@ -4325,6 +5133,55 @@ private _handleStreamDelta(delta: any): void {
 			this._chatPanel.setProviders(providers);
 			this._chatPanel.setModels(models);
 
+			// 图片模型分组（2026-09-10）：从同一份 items 中筛出支持文生图的模型
+			// （`supportsImageGen`），按 provider 归类供「图片模型」下拉使用 ——
+			// 复用既有数据，不新增任何后端调用。
+			const imageGroupMap = new Map<string, { providerId: string; providerLabel: string; models: Array<{ id: string; label: string }> }>();
+			for (const it of items) {
+				if (!it.model.supportsImageGen) { continue; }
+				const pid = it.provider.id;
+				let g = imageGroupMap.get(pid);
+				if (!g) {
+					g = { providerId: pid, providerLabel: it.provider.name, models: [] };
+					imageGroupMap.set(pid, g);
+				}
+				if (!g.models.some(m => m.id === it.model.id)) {
+					g.models.push({ id: it.model.id, label: it.model.name });
+				}
+			}
+			this._chatPanel.setImageModels([...imageGroupMap.values()] as IPanelImageModelGroup[]);
+
+			// 恢复图片模型偏好。优先级（2026-09-10）：
+			//   ① agent 配置（.agent.md 的 imageModel/imageProviderId）——自定义 agent 的权威值
+			//   ② 用户级全局配置——**内置 agent（只读，写不进 .agent.md）时用户选择的落点**，
+			//      也是 image_generate 工具实际读取的那一份（缺了这级，工具会掉进自动
+			//      路由选中不支持 Images API 的 provider → 404，日志 1789050110889）
+			//   ③ 本 pane 的 localStorage 缓存——同一窗口内的即时记忆
+			//   ④ 未配置（空字符串）——chip 显示占位「图片模型」，下游按默认路由
+			// 陈旧值（provider/模型已被移除）由面板 _getImageModelLabel 的回退逻辑兜底
+			// 显示，不阻断渲染。
+			let resolvedImagePref: string | undefined;
+			try {
+				resolvedImagePref = await this._imagePreferenceFromAgent();
+			} catch { /* 读取失败按无 agent 默认处理 */ }
+			// 'auto' 为 2026-09-10 之前的默认值（UI 已移除该选项）→ 按未配置处理。
+			if (resolvedImagePref === 'auto') { resolvedImagePref = undefined; }
+			if (!resolvedImagePref) {
+				try {
+					const gProvider = this._configurationService.getValue<string>(AGENT_STUDIO_IMAGE_GEN_PROVIDER);
+					const gModel = this._configurationService.getValue<string>(AGENT_STUDIO_IMAGE_GEN_MODEL);
+					if (gProvider && gModel) { resolvedImagePref = `provider:${gProvider}:${gModel}`; }
+				} catch { /* 读取失败继续下一级 */ }
+			}
+			if (!resolvedImagePref) {
+				try {
+					const savedImagePref = localStorage.getItem(this._imageModelPrefKey());
+					if (savedImagePref && savedImagePref !== 'auto') { resolvedImagePref = savedImagePref; }
+				} catch { /* localStorage 不可用忽略 */ }
+			}
+			this._localImageModelPreference = resolvedImagePref ?? '';
+			this._chatPanel.setCurrentImageModel(this._localImageModelPreference);
+
 			// 使用面板本地选择状态（不读共享 _modelSelector，避免跨面板污染）
 			const localProviderId = this._localProviderId;
 			const localModelId = this._localModelId;
@@ -4344,6 +5201,66 @@ private _handleStreamDelta(delta: any): void {
 			}
 		} catch (err) {
 			this._logService.info('[NativeChatEditorPane] _refreshModelSelector failed:', err);
+		}
+	}
+
+	/**
+	 * 提示词优化（输入框 ✨ 按钮，2026-09-10）。
+	 *
+	 * 取本面板当前选定的 provider/model 发起**一次性** chat 调用：
+	 *   · 不写入会话历史、不触发 agent loop、不占用聊天面板的流式通道；
+	 *   · 按 `promptOptimize.ts` 的模板（移植自 prompt-optimizer 的
+	 *     user-prompt-professional）改写输入框文本后原样返回。
+	 *
+	 * 失败时 notify 用户并返回 undefined —— 调用方据此保持输入框内容不变。
+	 */
+	private async _optimizePrompt(text: string): Promise<string | undefined> {
+		const trimmed = (text ?? '').trim();
+		if (!trimmed) { return undefined; }
+
+		// provider/model 解析：面板本地选择优先，回退共享选择（与发送路径一致）。
+		const selection = this._modelSelector.getSelection();
+		const providerId = this._localProviderId || selection?.providerId;
+		const modelId = this._localModelId || selection?.modelId;
+		if (!providerId || !modelId) {
+			this._notificationService.notify({ severity: Severity.Warning, message: '请先选择对话模型，再使用提示词优化。' });
+			return undefined;
+		}
+
+		const provider = this._agentOSService.getModelProviders().find(p => p.id === providerId);
+		if (!provider) {
+			this._notificationService.notify({ severity: Severity.Warning, message: `未找到 Provider「${providerId}」，无法优化提示词。` });
+			return undefined;
+		}
+
+		const t0 = performance.now();
+		try {
+			const messages = buildPromptOptimizeMessages(trimmed);
+			let out = '';
+			for await (const delta of provider.chat(modelId, messages, { temperature: 0.7, maxTokens: 2048 })) {
+				if (delta.type === 'text' && delta.content) {
+					out += delta.content;
+				} else if (delta.type === 'error') {
+					throw new Error(delta.error || '模型返回错误');
+				}
+			}
+			const optimized = sanitizeOptimizedOutput(out);
+			if (!optimized) {
+				this._notificationService.notify({ severity: Severity.Warning, message: '提示词优化未返回内容，请重试。' });
+				return undefined;
+			}
+			this._logService.info(
+				`[NativeChatEditorPane#${this._paneId}] _optimizePrompt: ok in ${(performance.now() - t0).toFixed(0)}ms ` +
+				`(provider=${providerId}, model=${modelId}, in=${trimmed.length}c, out=${optimized.length}c)`,
+			);
+			return optimized;
+		} catch (err) {
+			this._logService.error('[NativeChatEditorPane] _optimizePrompt failed:', err);
+			this._notificationService.notify({
+				severity: Severity.Error,
+				message: `提示词优化失败：${err instanceof Error ? err.message : String(err)}`,
+			});
+			return undefined;
 		}
 	}
 

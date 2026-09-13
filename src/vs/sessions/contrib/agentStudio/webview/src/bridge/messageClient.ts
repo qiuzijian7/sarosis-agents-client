@@ -152,6 +152,27 @@ export type RequestType =
 	| 'workflow.breakpoint.clear'
 	| 'workflow.breakpoint.get'
 	| 'workflow.list'
+	| 'workflow.get'
+	| 'workflow.sessions.list'
+	| 'workflow.sessions.select'
+	// 2026-09-11: import a workflow from a local JSON file (host 侧弹原生文件对话框)
+	| 'workflow.importFile'
+	// 2026-09-13: 把某节点的编辑器开在独立 editor tab（P2）
+	| 'workflow.openNodeEditor'
+	// 2026-09-13 (P4): 本窗口产出图/视频 → host 广播给同工作流的其它窗口
+	| 'workflow.snapshotPut'
+	| 'workflow.sessions.rename'
+	// ── 一致性补齐（2026-09-11）：host 侧已登记但 webview 缺失的请求类型。
+	//    由 test/browser/messageProtocolConsistency.test.ts 守卫，防再次漂移。
+	| 'agents.get'
+	| 'chat.addCheckpoint'
+	| 'chat.getCheckpoint'
+	| 'chat.deleteCheckpoint'
+	| 'confightml.kvGet'
+	| 'confightml.kvSet'
+	| 'confightml.kvDelete'
+	| 'confightml.kvList'
+	| 'confightml.runTerminal'
 	| 'workflow.reorder'
 	| 'workflow.open'
 	| 'workflow.submitVariables'
@@ -160,8 +181,11 @@ export type RequestType =
 	| 'workflow.runAgentNode'
 	| 'workflow.stageRunResult'
 	| 'workflow.stageRunProgress'
+	| 'workflow.stageRunHeartbeat'
 	| 'workflow.stageDirectRunResult'
 	| 'workflow.stageDirectRunProgress'
+	| 'workflow.nodeValuesChanged'   // 2026-09-11：画布节点值变更回流（卡片 ↔ 画布同步）
+	| 'workflow.stageDirectRunHeartbeat'
 
 	| 'workflow.publishState'
 	| 'workflow.publish'
@@ -314,7 +338,15 @@ export function sendRequest<TPayload = unknown, TResponse = unknown>(
 
 export type ComfyCorsMode = 'unknown' | 'direct' | 'proxied';
 
-const corsModeCache = new Map<string, ComfyCorsMode>();
+// ★ 跨 bundle 共享（2026-09-11）：测试批量运行器把每个 .test.ts 打成**独立 bundle**
+//   但跑在同一进程 —— 各 bundle 有各自的模块实例（模块级 Map 互不可见）。而
+//   `comfyRunner` 经 `__vssarosBridge` 取同步 API，测试环境的桥是 bridgeStub，
+//   需要读到「真实状态」。故把缓存挂到 globalThis：无论哪个 bundle 写入，读到的
+//   都是同一份数据（配合 bridgeStub 的 getComfyCorsMode 读取口）。
+//   生产单 bundle 场景下与普通模块级 Map 完全等价。
+const corsModeCache: Map<string, ComfyCorsMode> = ((globalThis as unknown as {
+	__vssarosCorsModeCache?: Map<string, ComfyCorsMode>;
+}).__vssarosCorsModeCache ??= new Map<string, ComfyCorsMode>());
 const probeInFlight = new Set<string>();
 const reprobeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const modeListeners = new Map<string, Set<(mode: ComfyCorsMode) => void>>();
@@ -686,6 +718,14 @@ export function setState<T>(state: T): void {
 	subscribeComfyCors,
 	pickFolderDialog,
 };
+
+// ★ 同步 API 的测试读取口（2026-09-11）：comfyRunner.ts 只能经 `__vssarosBridge`
+//   取 `getComfyCorsMode`（esbuild IIFE bundle 下命名导入取不到该函数，见其文件头注释）；
+//   而测试环境该桥被 `webview/visual/bridgeStub.mjs` 替换，桩的 Proxy 兜底把所有
+//   未知方法当作**异步**（返回 Promise）→ 同步 API 变成 Promise
+//   （实证：comfyRunner.collectRunnerRows 的 `mode` 字段拿到 Promise）。
+//   桩改为经本口委托真实实现 —— 同步语义与状态（共享的 corsModeCache）都保持同源。
+(globalThis as unknown as { __vssarosGetComfyCorsMode?: typeof getComfyCorsMode }).__vssarosGetComfyCorsMode = getComfyCorsMode;
 
 /**
  * 弹出 vscode 文件夹选择对话框（仅 webview 环境可用）。

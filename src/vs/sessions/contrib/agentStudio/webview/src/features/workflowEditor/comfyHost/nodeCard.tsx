@@ -25,6 +25,7 @@ import type { NodeSpec, StageVariant } from './registry';
 import { WEIXIN_EXPORT_TARGETS } from './registry';
 import { ORCH_RICH_NODE_TYPES } from './registry.js';
 import type { MediaSnapshotStore } from './mediaSnapshotStore';
+import { isSheetFullMeta, META_SHEET_FLAG, sheetDimsOf, sheetDimsMeta } from './mediaSnapshotStore.js';
 import type { MediaSnapshotEntry } from './mediaSnapshot';
 import { mergeImagePool, mediaDedupeKey, comfyViewUrl } from './mediaSnapshot';
 import { useNodeSnapshots, usePickerSnapshots, useAllSnapshots, mediaSnapshotHooks as mshHooks } from './useMediaSnapshot';
@@ -48,9 +49,9 @@ const { createProxiedFetch } = _bridge;
 import { useNodeCardState, type CardStateStore, type NodeRunState } from './cardState';
 import { useRunnerStatus } from './runnerStatusStore';
 import { markFormHeightDirty } from './domWidget';
-import { buildSarosEditorFields } from './nodeEditorForm';
+import { buildSarosEditorFields, migrateAskUserQuestions } from './nodeEditorForm';
 import { ComboPopover } from './ComboPopover';
-import { resolveMediaAssetUrl, collectUpstreamTexts, composeImageGridOnChroma, splitStickerSheet, EMOJI_SHEET_MARGIN_RATIO } from './workflowRun.js';
+import { resolveMediaAssetUrl, collectUpstreamTexts, composeImageGridOnChroma, splitStickerSheet, EMOJI_SHEET_MARGIN_RATIO, parsePickerIndexList, parsePickerRefList, publishPickerSelection } from './workflowRun.js';
 import { useProviderStore } from '../../../store/useProviderStore';
 import { useAgentStore } from '../../../store/useAgentStore';
 import { usePicklistStore } from '../picklistStore';
@@ -65,10 +66,11 @@ import { ColorGradeEditor } from '../ColorGradeEditor';
 import { TransformEditor } from '../TransformEditor';
 import { StatEmojiStageEditor } from '../StatEmojiStageEditor';
 import { MiniImageEditor, type CellCropRect } from '../MiniImageEditor';
-import { getFullyTransparentRatio, refToPngDataUrl, rembgRemoveDataUrl } from '../miniEditorAi.js';
-import { removeBgDataUrlLocal } from './emojiSheetUtils.js';
+import { getFullyTransparentRatio, refToPngDataUrl } from '../miniEditorAi.js';
+import { runSheetRemoveBg } from './emojiRemoveBg.js';
 import { createPortal } from 'react-dom';
 import { AnimatedEmojiEditor } from '../AnimatedEmojiEditor';
+import { emojiInputSigFor, emojiInputSig } from './animatedEmojiExecutor';
 import { MultiangleEditor } from './MultiangleEditor';
 import { AssetReferences, type AssetCandidate } from './AssetReferences';
 import { MentionTextarea, type MentionCandidate } from './MentionTextarea';
@@ -124,7 +126,7 @@ function LazyDirectorConsole(props: React.ComponentProps<typeof import('../Direc
 import { getActiveRunnerRegistry, getActiveRunnerPreference } from './runnerContext';
 import { useTransformPipeline, transformPhaseLabel } from './useTransformPipeline';
 import { isInstantNode } from './instantNodes';
-import { stageEditorKind, stageHiddenFields, stageMinHeight, stageCardFlags, contextSummary, hasStageEditor } from './stageCardRegistry';
+import { stageEditorKind, stageHiddenFields, stageMinHeight, stageCardFlags, contextSummary, hasStageEditor, stageEditorDescriptor } from './stageCardRegistry';
 import { preRunHint } from './stageSlots';
 import {
 	listStagePresets, saveStagePreset, deleteStagePreset, pickPresetValues,
@@ -192,6 +194,15 @@ export interface NodeCardMeta {
 	 */
 	cellActions?: string;
 	/**
+	 * AnimatedEmoji 绿幕色（node.properties.chroma_color）。
+	 *
+	 * ★ 与 cells 同理：`chroma_color` 是 STRING widget，toControls 对 ComfyTV 节点
+	 *   只收 COMBO/INT/FLOAT/BOOLEAN → 不进 controls → 编辑器 `ctl('chroma_color')`
+	 *   永远 fallback '#00FF00'（用户调过的幕布色重开面板即丢，且 onCommit 会把
+	 *   默认值写回覆盖）。这里显式透传。
+	 */
+	chromaColor?: string;
+	/**
 	 * EmojiStage 每格**裁剪框**原始 JSON（node.properties.cell_crops，
 	 * 数组 [{x,y,w,h}]——MiniImageEditor「调整裁剪」的持久化）。
 	 *
@@ -200,6 +211,18 @@ export interface NodeCardMeta {
 	 *   下游转动态图集裁剪与上游不一致」。
 	 */
 	cellCrops?: string;
+	/**
+	 * ★ Picker 多选选中态原始 JSON（2026-09-12 用户需求「多选图片时 UI 要有多选
+	 *   状态」）：`node.properties.selected_indices`（上游池视图，0-based 序号数组）/
+	 *   `node.properties.directRefs`（「全部」视图，ref 数组）。
+	 *
+	 * ★ 为什么显式透传：二者是 TEXT widget，而 `toControls` 的 ComfyTV 分支只收
+	 *   COMBO/INT/FLOAT/BOOLEAN → 不进 `meta.controls` → `ctl()` 读不到，卡片
+	 *   **重挂载后多选态丢失**（回退成 `selected_index` 单张）。与 cells /
+	 *   cell_crops / chroma_color 完全同理。
+	 */
+	pickerSelectedIndices?: string;
+	pickerDirectRefs?: string;
 	/** quick actions row (ComfyTV ACTIONS): icon+label, click opens editor */
 	actions?: StageAction[];
 	/** brand tag (ComfyTV / ComfyUI) shown at the top of the card */
@@ -481,6 +504,28 @@ function kindBadgeColor(stageKind: string | undefined): string {
 		const unit = key === 'variables' ? '变量' : key === 'options' ? '选项' : '参数';
 		return n > 0 ? `${label}=${n} ${unit}` : undefined;
 	}
+	// ★ 多问题（2026-09-11）：AskUser 卡片不再渲染旧字段控件（questionText/
+	//   options/multiSelect/params 已从 spec.widgets 移除，与弹窗编辑器的
+	//   `questions` 是两套不同步入口）→ 这里给卡片一个有意义的摘要：
+	//   「问题列表=2 个 · 选项 5」。值兼容数组（新保存）与 JSON 字符串（旧数据）。
+	if (key === 'questions') {
+		let n = 0;
+		let optN = 0;
+		let parN = 0;
+		try {
+			const arr: unknown = typeof value === 'string' ? JSON.parse(value) : value;
+			if (Array.isArray(arr)) {
+				n = arr.length;
+				for (const q of arr as Array<{ options?: unknown[]; params?: unknown[] }>) {
+					if (Array.isArray(q?.options)) { optN += q.options.length; }
+					if (Array.isArray(q?.params)) { parN += q.params.length; }
+				}
+			}
+		} catch { /* 非法 JSON → 不显示计数 */ }
+		if (n === 0) { return undefined; }
+		const detail = [optN > 0 ? `选项 ${optN}` : '', parN > 0 ? `参数 ${parN}` : ''].filter(Boolean).join(' · ');
+		return `${label}=${n} 个${detail ? ` · ${detail}` : ''}`;
+	}
 	if (key === 'cases') {
 		let n = 0;
 		if (typeof value === 'string') {
@@ -529,8 +574,14 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
 	// P1: JSON 对象字段显示「N 个变量/参数/选项」而非裸 JSON 截断；prompt 类
 	// 长文本显示「✓ 已填」而非无意义的 28 字碎片。
 	if (!widgetSummary && kind === 'react') {
+		// ★ AskUser 多问题（2026-09-11）：`questions` 可能尚未迁移（旧节点从未打开过
+		//   弹窗）→ 用 migrateAskUserQuestions 从旧字段（questionText/options/params）
+		//   合成同一份数据再摘要，保证卡片与弹窗显示**完全一致**的计数。
+		const props = spec?.type === 'Saros.AskUser'
+			? { ...properties, questions: JSON.stringify(migrateAskUserQuestions(properties)) }
+			: properties;
 		const summary = buildSarosEditorFields(spec?.type ?? '').map(f => {
-			const v = properties[f.key];
+			const v = props[f.key];
 			if (v === undefined || v === null || v === '') { return undefined; }
 			return sarosFieldSummary(f.label, f.key, v);
 		}).filter((s): s is string => !!s);
@@ -590,6 +641,12 @@ export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<s
 		// ★ AnimatedEmoji 每格动作描述 JSON（node.properties.cell_actions，
 		//   TEXT widget 不进 controls，同 cells 先例——编辑器逐格填写的动作）
 		cellActions: typeof properties.cell_actions === 'string' ? properties.cell_actions : undefined,
+		// ★ AnimatedEmoji 绿幕色（STRING widget 不进 controls，同 cells 先例）
+		chromaColor: typeof properties.chroma_color === 'string' ? properties.chroma_color : undefined,
+		// ★ Picker 多选选中态（TEXT widget 不进 controls，同 cells 先例——见
+		//   NodeCardMeta.pickerSelectedIndices 注释）
+		pickerSelectedIndices: typeof properties.selected_indices === 'string' ? properties.selected_indices : undefined,
+		pickerDirectRefs: typeof properties.directRefs === 'string' ? properties.directRefs : undefined,
 		// ★ RelightStage lights_data 透传（hidden 字段，见 NodeCardMeta.lightsData 注释）
 		lightsData: typeof properties.lights_data === 'string' ? properties.lights_data : undefined,
 		mainPrompt: typeof properties.main_prompt === 'string' ? properties.main_prompt : undefined,
@@ -915,11 +972,17 @@ function SnapshotPreview({ store, nodeId, entries: entriesProp, batch }: { store
 	//   React error #310`，stack 指向 `.map()` 里的 useCallback（useStoreVersion 内部）。
 	const storeVersion = useStoreVersionLocal(store);
 	if (entries.length === 0) { return null; }
-	const images = entries.filter(e => e.media.kind === 'image');
+	// ★ 过滤诊断原片（2026-09-11「OUTPUT 混入绿幕原片」）：AnimatedEmoji 把每格
+	//   绿幕原片归档在 port='video'（供 ⟳ 重抠图用）——它不是产物，混进 OUTPUT
+	//   网格会顶掉真正的 GIF（用户实测「9 个 GIF 没全部展示」= 网格里 5 格是
+	//   黑块原片播放器）。只排除 port==='video'（其他节点的产物都在 output
+	//   port 或无 port，不受影响）。
+	const entriesFiltered = entries.filter(e => e.port !== 'video');
+	const images = entriesFiltered.filter(e => e.media.kind === 'image');
 	// ★ videoEntries（2026-09-08）：video 条目单独收集——旧逻辑 video 落 others
 	//   只显示文本标签行；视频直出模式（gif_enable=false）产物必须可播放。
 	//   （下方 1069 行原有的 videos 变量是 others 的旧过滤，保持不动。）
-	const videoEntries = entries.filter(e => e.media.kind === 'video');
+	const videoEntries = entriesFiltered.filter(e => e.media.kind === 'video');
 	const others = entries.filter(e => e.media.kind !== 'image' && e.media.kind !== 'video');
 	// ★ 视频直出（gif_enable=false，2026-09-08）：产物是 mp4（kind='video'）——
 	//   旧逻辑 images=0 时直接落到 others 标签行，视频完全不渲染（用户实测
@@ -1131,18 +1194,23 @@ function SnapshotPreview({ store, nodeId, entries: entriesProp, batch }: { store
 
 /**
  * Picker Pool 缩略图网格（对齐 ComfyTV AssetPickerPopup 的 batch tab）：64px
- * 缩略图 + 可点选 + 单张下载 + 单张删除。选中判定支持两种视图：
- *   - scope='upstream'：selectedIndex（1-based，相对上游 batch）
- *   - scope='all'      ：directRef（字符串 ref，跨节点直接输出）
- * 选中写回由 onPick 负责（上游→selected_index；全部→directRef）。
+ * 缩略图 + 可点选 + 单张下载 + 单张删除。
+ *
+ * ★ **多选**（2026-09-12 用户需求「多选图片时 UI 要有多选状态」）：每个被选中的格
+ * 都画紫框 + ✓（此前只有单张高亮，用户点第 2 张时第 1 张的选中态消失）。
+ * 选中判定按视图：
+ *   - scope='upstream'：`selectedIndices`（0-based 池序号集合）
+ *   - scope='all'      ：`selectedRefs`（ref 集合，跨节点直接输出，无需序号）
+ * 写回由 `onPick` 负责（切换：已选 → 取消，未选 → 追加）。
  */
-function PickerPoolGrid({ entries, selectedIndex, directRef, poolScope, onPick, onRemove, store }: {
+function PickerPoolGrid({ entries, selectedIndices, selectedRefs, poolScope, onPick, onRemove, store }: {
 	entries: MediaSnapshotEntry[];
-	selectedIndex: number;
-	directRef: string;
+	selectedIndices: ReadonlySet<number>;
+	selectedRefs: ReadonlySet<string>;
 	poolScope: 'upstream' | 'all';
 	onPick: (zeroBasedIndex: number) => void;
-	onRemove: (key: string) => void;
+	/** ★ 只**发起**删除（key + ref 供确认框显示缩略图）——真正删除由确认后执行。 */
+	onRemove: (key: string, ref: string) => void;
 	store: MediaSnapshotStore;
 }): React.JSX.Element | null {
 	const images = entries.filter(e => e.media.kind === 'image');
@@ -1159,13 +1227,13 @@ function PickerPoolGrid({ entries, selectedIndex, directRef, poolScope, onPick, 
 			)}
 			{images.map((e, i) => {
 				const isSelected = poolScope === 'all'
-					? (directRef !== '' && e.media.ref === directRef)
-					: ((i + 1) === selectedIndex);
+					? selectedRefs.has(e.media.ref)
+					: selectedIndices.has(i);
 				return (
 					<div
 						key={e.key}
 						onClick={() => onPick(i)}
-						title={isSelected ? `已选第 ${i + 1} 张` : `选第 ${i + 1} 张`}
+						title={isSelected ? `已选第 ${i + 1} 张（点击取消）` : `选第 ${i + 1} 张（可多选）`}
 						style={{
 							position: 'relative', width: 64, height: 64, borderRadius: 4, overflow: 'hidden',
 							border: isSelected ? '2px solid #a855f7' : '1px solid rgba(255,255,255,.12)',
@@ -1187,7 +1255,7 @@ function PickerPoolGrid({ entries, selectedIndex, directRef, poolScope, onPick, 
 						>
 							<button
 								title="删除这张图"
-								onClick={(ev) => { ev.stopPropagation(); onRemove(e.key); }}
+								onClick={(ev) => { ev.stopPropagation(); onRemove(e.key, e.media.ref); }}
 								style={{
 									width: 16, height: 16, display: 'flex', alignItems: 'center', justifyContent: 'center',
 									fontSize: 10, lineHeight: 1, cursor: 'pointer',
@@ -1264,6 +1332,92 @@ export function getPromptStore(): PromptStore {
 
 
 
+/**
+ * AnimatedEmoji 逐格产物选择（纯函数；导出供单测 —— 见 workflowComfyNodeCard.test.ts）。
+ *
+ * 按 `meta.cellIndex` 去重（同格保留 **index 最大** = 最新），按格号升序返回。
+ *
+ * ★★ **绝不按数量截断**（2026-09-12 修用户反馈「生成 GIF 按钮执行完毕后，预览图
+ *   没有更新」）：每格至多 1 条**本身就是正确的限量**；若再套
+ *   `slice(-batchSize)`（batchSize = 当前上游格数），当**产物格数 > 上游格数**时会
+ *   从**低位格**开始丢 ✗ ——
+ *   实测：picker 由 9 张缩到 8 张（batchSize=8）而产物仍 9 格 → `slice(-8)` 恰好
+ *   丢掉 **cell 0**；用户刚点「③ 重新生成 GIF[0]」跑完、`output` 也原地替换成功，
+ *   预览却永远不更新 ✗（diag 完全吻合：`videoCells:9` 而 `gifCells:7` +
+ *   `cell0.gif:false`）。
+ */
+export function selectEmojiCellOutputs(deduped: MediaSnapshotEntry[]): MediaSnapshotEntry[] {
+	const byCell = new Map<number, MediaSnapshotEntry>();
+	for (const e of deduped) {
+		const ci = Number(e.media.meta?.cellIndex ?? -1);
+		if (ci < 0) { continue; }
+		const prev = byCell.get(ci);
+		if (!prev || (prev.index ?? 0) <= (e.index ?? 0)) { byCell.set(ci, e); }
+	}
+	return Array.from(byCell.keys()).sort((a, b) => a - b)
+		.map(ci => byCell.get(ci) as MediaSnapshotEntry);
+}
+
+/**
+ * 单条 AnimatedEmoji 产物是否**过期**（与当前上游输入不匹配 → 不送入预览）。
+ *
+ * 判定链（纯函数；导出供单测）：
+ *   1. `enabled=false`（非动态表情包节点 / 无上游输入）→ 不判过期（无可比对象）。
+ *   2. 无 `cellIndex`（非逐格产物，如旧的整图路线）→ 不判过期。
+ *   3. **格号越界**：`cellIndex ≥ 输入格数` → 该格在当前输入里已不存在 → 必过期
+ *      （无需指纹）。★ 仅当 `upstreamRefs.length > 1`（输入确实来自独立格）时判：
+ *      length===1 可能是「图集整图」兜底，其产物格号 0..N-1 合法，按 length 判会
+ *      把它们全误杀 ✗。
+ *   4. **无指纹**（`meta.srcSig` 缺失 = 新版执行器之前的产物）：无法证明与当前输入
+ *      一致 ✗ → 若本节点已有**带指纹**的产物（说明新版跑过、输入很可能已换过）则
+ *      一律判过期 ✓（fail-safe：宁可少显示 + 提示重跑，也绝不显示错图 ✗）。
+ *      整节点全无指纹时**不判** —— 否则升级瞬间会清空用户既有结果 ✗。
+ *   5. 有指纹 → 与当前输入指纹比对（口径必须与执行器写入侧一致：`emojiInputSigFor`）。
+ */
+export function isStaleEmojiArtifact(
+	entry: MediaSnapshotEntry,
+	opts: { enabled: boolean; upstreamRefs: readonly string[]; hasSigBearingArtifact: boolean; sheetRef?: string },
+): boolean {
+	if (!opts.enabled) { return false; }
+	const idx = Number(entry.media.meta?.cellIndex ?? -1);
+	if (idx < 0) { return false; }
+	if (opts.upstreamRefs.length > 1 && idx >= opts.upstreamRefs.length) { return true; }
+	const sig = entry.media.meta?.srcSig;
+	if (typeof sig !== 'string' || !sig) { return opts.hasSigBearingArtifact; }
+	// ★ 候选指纹 = 该格输入 **∪ 图集整图**（2026-09-12，日志实证）：
+	//   旧版执行器在「连的是 image 口且上游有图集」时按**图集整图**切格生成产物
+	//   （sheetOnly 路径，见 animatedEmojiExecutor 的历史注释）→ 产物 `srcSig` 记的是
+	//   **图集**的指纹 ✗。若只跟「第 i 格独立格」的指纹比，这一批产物会被**全部误判
+	//   过期**（用户实测：8 条视频集体隐藏、预览回到输入原图）✗✗。
+	//   产物只要与**当前任一可用输入**（该格 / 图集）一致即视为有效 ✓。
+	const candidates = [emojiInputSigFor(opts.upstreamRefs, idx)];
+	if (opts.sheetRef) { candidates.push(emojiInputSig(opts.sheetRef)); }
+	return !candidates.includes(sig);
+}
+
+/**
+ * OUTPUT / 逐格预览的**条目选择**（纯函数；导出供单测）。
+ *
+ * 两步：① 按 `mediaDedupeKey` 去重（executor 已 put 过一次、WorkflowEditorPanel
+ * 成功分支又对 `r.entries` 再 put 一次 → 同一张图会产生两条 index 不同、ref 相同
+ * 的条目；不去重会让 BATCH 计数翻倍，`slice(-batchSize)` 取到的其实是副本）；
+ * ② 分派：AnimatedEmoji → 逐格去重（**不截断**，见 selectEmojiCellOutputs）；
+ * 其余节点 → 取最后 batchSize 条（只显示最新一次 run 的 batch，不显示历史累积）。
+ */
+export function selectCardOutputs(
+	ownOutputs: MediaSnapshotEntry[],
+	opts: { isAnimatedEmoji: boolean; batchSize: number },
+): MediaSnapshotEntry[] {
+	const seen = new Map<string, MediaSnapshotEntry>();
+	// 保留**最后一次**出现（index 最大 = 最新），顺序按首次出现位置。
+	// 去重键用 mediaDedupeKey（locator 优先）：同一张图一次物化成 data:、
+	// 另一次保留 /view URL 时 ref 不同但 locator 相同，仍应视为一张。
+	for (const e of ownOutputs) { seen.set(mediaDedupeKey(e.media), e); }
+	const deduped = Array.from(seen.values());
+	if (opts.isAnimatedEmoji) { return selectEmojiCellOutputs(deduped); }
+	return deduped.slice(-opts.batchSize);
+}
+
 export interface NodeCardProps {
 	meta: NodeCardMeta;
 	snapshotStore?: MediaSnapshotStore;
@@ -1296,6 +1450,9 @@ async function sha256Hex(text: string): Promise<string> {
 
 const emojiSheetDiagSeen = new Map<string, string>();
 
+/** [EmojiStale] 换批检测诊断去重表：nodeId → 已打印（见 isStaleArtifact 调用处）。 */
+const emojiStaleDiagSeen = new Set<string>();
+
 export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid, upstreamNodeIds }: NodeCardProps): React.JSX.Element {
 	/**
 	 * 媒体快照的归档键。优先用持久 uid，未提供时回退 nodeId（向后兼容：
@@ -1304,6 +1461,18 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const snapKey = stageUid ?? nodeId;
 	const kindColor = KIND_COLOR[meta.kind] ?? '#888';
 	const run = useNodeCardState(cardStateStore, nodeId);
+	// ★ 等待用户配置（2026-09-12 用户需求：聊天卡状态实时同步到画布节点 UI）：
+	//   host 在 `pauseExecution` 时把该节点标为 `awaiting-input`（AskUser / 节点交互表单 /
+	//   picker 选择）→ 画布这里显示**黄色描边 + 「待配置」角标** ✓。
+	//   真源是 host 的 `nodeExecutionStates` —— 本地 `cardStateStore` 没有「等用户」这个
+	//   概念 ✗（它只管进度），两者是**不同维度**（本地=进度、host=执行状态），不算重复源 ✓。
+	const execStatus = useWorkflowEditorStore(s => s.nodeExecutionStates[nodeId ?? '']?.status);
+	// ⚠ 必须收窄成 string 再比：store 把**每节点**状态声明成了**执行级**枚举
+	//   （`IWorkflowNodeExecutionState.status: WorkflowExecutionStatus` ✗），
+	//   所以 TS 认为不可能等于 `'awaiting-input'`（TS2367）。语义上它就是节点状态 ✓。
+	const awaitingInput = (execStatus as string | undefined) === 'awaiting-input';
+	/** 描边色：待用户操作时用黄色（其余沿用节点类别色）。 */
+	const edgeColor = awaitingInput ? '#fbbf24' : kindColor;
 	// ★ AnimatedEmoji 覆盖默认「生成视频」（2026-09-08）：其 stageKind='video'
 	//   但语义是「全部格逐格动图」，与 VideoStage 的单视频区分——
 	//   「生成全部动态表情」+ 点击前归位 run_scope='all'（编辑器单格重生成会
@@ -1521,7 +1690,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const localSheetFull = (() => {
 		for (let i = ownSnapshots.length - 1; i >= 0; i--) {
 			const e = ownSnapshots[i];
-			if (e.media?.kind === 'image' && e.media?.meta?.sheetFull === '1') { return e; }
+			if (e.media?.kind === 'image' && isSheetFullMeta(e.media?.meta)) { return e; }
 		}
 		return undefined;
 	})();
@@ -1543,7 +1712,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		// 兜底「最后一张图」为兼容外部拼贴图（上游未必带 sheetFull 标注），与执行器
 		// workflowRun.ts 同规则；但是否**真图集基底**由 passthroughIsSheetFull 标记，
 		// 非图集基底必须禁用依赖 cell_crops 坐标系的操作（见下）。
-		const hit = [...images].reverse().find(e => e.media?.meta?.sheetFull === '1');
+		const hit = [...images].reverse().find(e => isSheetFullMeta(e.media?.meta));
 		return (hit ?? images[images.length - 1])?.media.ref ? (hit ?? images[images.length - 1]) : undefined;
 	})();
 	/**
@@ -1582,7 +1751,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		if (!(meta.inputs ?? []).some(p => p.name === 'sheet')) { return; }
 		const upstreamAll = sheetPassthroughSource ? (snapshotStore?.byNode(sheetPassthroughSource) ?? []) : [];
 		const upstreamImages = upstreamAll.filter(e => e.media?.kind === 'image');
-		const upstreamSheetFull = upstreamImages.filter(e => e.media?.meta?.sheetFull === '1');
+		const upstreamSheetFull = upstreamImages.filter(e => isSheetFullMeta(e.media?.meta));
 		// ── 可疑判定：只有这些才 warn；正常路径走 console.log（生产被 esbuild 摇掉，
 		//    不再污染 WARN 通道 —— 旧版无条件 warn，每次渲染刷一屏 final=NONE）。
 		const final = sheetFullEntry ? (sheetFullEntryIsPassthrough ? 'PASSTHROUGH' : 'LOCAL') : 'NONE';
@@ -1659,224 +1828,13 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	// 错误必须走 UI 内反馈，否则执行链失败时用户看到「点了没反应」（2026-09-06）。
 	const [sheetRemoveBgError, setSheetRemoveBgError] = React.useState<string | null>(null);
 	const handleSheetRemoveBg = async (algo: 'ai' | 'chroma' | 'flood' = 'ai', chromaParams?: { similarity: number; smoothness: number; greenDominance: number }) => {
-		// ★ 需求（2026-09-07）：去背景须**以原始图集为源**，在副本上抠图，抠图结果
-		//   作为行列分割基底。故源恒取「未抠图的原始基底」——sheetFullEntry 可能已
-		//   指向上一轮去背景产物（尾部最新 sheet='1'），再抠一次零变化。
-		const entry = (() => {
-			const candidates = [sheetFullEntry, localSheetFull, ...ownSnapshots]
-				.filter((e): e is NonNullable<typeof e> => Boolean(e));
-			const images = candidates.filter(e => e.media?.kind === 'image');
-			return images.find(e => e.media.meta?.removeBg !== '1') ?? images[0] ?? sheetFullEntry;
-		})();
-		// ★ 诊断日志（2026-09-06）：定位「点去背景后背景未被移除」。沿执行链埋点：
-		//   入口 → 透明守卫 → ComfyUI 上传/工作流/拉回 → 落档。只有 console.warn
-		//   能进生产 bundle（esbuild 把 log/info/debug 标 pure 摇掉），沿用 [EmojiSheet] 约定。
-		// eslint-disable-next-line no-console
-		console.warn(
-			`[RemoveBg] click node=${nodeId ?? '—'} snapKey=${snapKey ?? '—'}` +
-			` entry=${entry ? (entry === localSheetFull ? 'LOCAL-FULL' : (sheetFullEntryIsPassthrough ? 'PASSTHROUGH' : 'LOCAL')) : 'NONE'}` +
-			` srcRemoveBg='${entry?.media.meta?.removeBg ?? ''}'` +
-			`${entry ? ` ref=${(entry.media?.ref ?? '').slice(0, 48)}` : ''}` +
-			` rows=${entry?.media.meta?.rows ?? '—'} cols=${entry?.media.meta?.cols ?? '—'}`
-		);
-		if (sheetRemovingBg) {
-			// eslint-disable-next-line no-console
-			console.warn('[RemoveBg] ignored：上一轮去背景仍在执行（sheetRemovingBg=true）');
-			return;
-		}
-		// 入口守卫不再静默返回（2026-09-06）：无整版图/无快照存储 → 红条明示原因，
-		// 否则又是「点了没反应」（webview 吞 alert 后，任何 return 都必须给出 UI 反馈）。
-		if (!entry || !snapshotStore) {
-			setSheetRemoveBgError(!entry
-				? '没有可去背景的整版图：请先在本节点生成原图归档（或连线 sheet 口载入上游图集）。'
-				: '快照存储未就绪，无法写入去背景结果。请重新打开面板后重试。');
-			return;
-		}
-		// ★ 幂等判重（2026-09-07）：产物 meta.sourceSha 记录**源内容**指纹（sha256(源
-		//   data URL)）。同源已有成功产物 → 直接跳过，不再重复上传 ComfyUI 跑整轮
-		//   模型（日志实测 61 次轮询 + 2.8MB 重复传输）。注意 some/find 谓词不能是
-		//   async（不会等待）→ 先过滤出带指纹的产物，再单次 await 求指纹比对。
-		const removeBgProducts = ownSnapshots.filter(e =>
-			e.media?.kind === 'image' && e.media?.meta?.removeBg === '1' && e.media?.meta?.sourceSha);
-		// ★ 判重按「算法 + 参数」区分（2026-09-08 二修）：同源但**算法或参数不同**
-		//   都应允许重抠——用户改绿幕参数后重试被「同源产物」跳过即此漏洞（日志
-		//   实证）。chroma 参数序列化入指纹（声明在函数级：put meta 复用）；旧产物
-		//   无字段视为缺省参数。
-		const paramsKey = algo === 'chroma' && chromaParams
-			? JSON.stringify([chromaParams.similarity, chromaParams.smoothness, chromaParams.greenDominance])
-			: '';
-		if (removeBgProducts.length > 0) {
-			const sourceSha = await sha256Hex(entry.media.ref);
-			if (removeBgProducts.some(e =>
-				(e.media?.meta?.removeBgAlgo ?? 'ai') === algo
-				&& (e.media?.meta?.removeBgParams ?? '') === paramsKey
-				&& e.media?.meta?.sourceSha === sourceSha)) {
-				// eslint-disable-next-line no-console
-				console.warn('[RemoveBg] skip：同源产物已存在（sourceSha 匹配），不重复执行模型');
-				// UI 反馈（约定：任何 return 不得静默）：跳过时切到「🧩 调整后」页签
-				// 直示既有产物——即"结果已经在了"，而非"没反应"。
-				setSheetRemoveBgDoneTick(t => t + 1);
-				return;
-			}
-		}
-		setSheetRemovingBg(true);
-		setSheetRemoveBgError(null); // 重新执行前清掉上一轮错误（成功后红条不再残留）
-		setSheetRemoveBgStage({ text: '读取图像…' });
-		try {
-			const dataUrl = await refToPngDataUrl(entry.media.ref);
-			// ★ 守卫语义修正（2026-09-07）：原阈值 0.25 无条件拦截「大面积透明」，
-			//   但 sheet_background=transparent 生成的**原始归档**本就大面积透明
-			//   （本次 transparentRatio=0.334，源确系原图 sheetFull='1' rows=3 cols=3）
-			//   —— 真实需求是从原图复制副本再抠图，透明底原图属合法输入，不该拦。
-			//   真正该拦的只有「上一次去背景的**产物**」（meta.removeBg='1'）：
-			//   对自己再抠一次必然零变化。按产物标记判定，语义精确且无误伤。
-			const isAlreadyRemoved = entry.media.meta?.removeBg === '1';
-			const transparentRatio = await getFullyTransparentRatio(dataUrl);
-			// eslint-disable-next-line no-console
-			console.warn(`[RemoveBg] source=${dataUrl.length}B transparentRatio=${transparentRatio.toFixed(3)} removeBg='${entry.media.meta?.removeBg ?? ''}'（仅对去背景产物拦截）`);
-			if (isAlreadyRemoved) {
-				throw new Error('当前基底已是去背景产物，再抠一次不会有变化。请在「原图」页签选回原始图集后重试。');
-			}
-			// ★ 算法分发（2026-09-08 下拉化）：ai=ComfyUI saros_cutout（原行为）；
-			//   chroma/flood=**本地 canvas**（emojiSheetUtils.removeBgDataUrlLocal，
-			//   零依赖毫秒级，无需 ComfyUI 连接）。chroma 校验失败（非绿幕）抛错
-			//   → 红条提示，与既有错误链路一致。
-			let out: string;
-			if (algo === 'ai') {
-				out = await rembgRemoveDataUrl(dataUrl, undefined, (text, percent) => {
-					// ★ percent 贯通（2026-09-07）：ComfyUI saros_cutout 各阶段/推理进度
-					//   带百分比 → 编辑器进度条 fill 实时增长（此前只有文本，推理期间
-					//   进度条恒空，用户以为没点上）。
-					setSheetRemoveBgStage({ text, percent });
-				});
-			} else {
-				setSheetRemoveBgStage({ text: algo === 'chroma' ? '本地绿幕抠图…' : '本地白底抠图…' });
-				out = await removeBgDataUrlLocal(dataUrl, algo, algo === 'chroma' ? chromaParams : undefined);
-			}
-			// eslint-disable-next-line no-console
-			console.warn(`[RemoveBg] model done in=${dataUrl.length}B out=${out.length}B${Math.abs(out.length - dataUrl.length) < 512 ? '（⚠ 输出≈输入：模型可能未抠除任何背景）' : ''}`);
-			// 写入「调整后」图集口（★ 副本语义，2026-09-06）：结果作为**新条目追加**
-			// （put 自动分配递增 index → `…:image:N` 副本），绝不覆写既有条目——
-			// 此前 replaceByKey 死写 `image:0`，既「没有创建副本」，又会把单格编辑
-			// 重拼的图集抹掉。原图集与 sheetFull 原图归档都不动；所有读取方
-			// （「调整后」页签 rebuiltSheetRef、下游转动态 latestRoundOf.sheet）
-			// 都取**尾部最新** sheet='1' 条目 → 追加的副本自然成为下游所见，
-			// 历史副本保留可回退。行列沿用原图归档（网格叠加与下游等分切割契约）。
-			// ★ 兜底（2026-09-07）：直通图来自上游 ImageLoader 的 output:0，其
-			//   meta 不含 rows/cols ⇒ rawRows/rawCols 恒为 0 ⇒ 抠图副本写入时
-			//   行列丢失 ⇒ 下游转动态 latestRoundOf.sheet 算得 k=0（切不出格子）。
-			//   此时回退本节点自身的 rows/cols 控件值（网格叠加与等分切割契约）。
-			// ctl 的 fallback 传 0 时，draft/meta 缺失 ⇒ 返回数字 0 ⇒ `|| rawRows`
-			// 再回落 0 —— 两侧同时为 0，兜底恒失效（日志 rows=0 cols=0）。改为
-			// 取「首个 >0 的候选」，并补两道防线：本节点 rows/cols 控件值，以及
-			// 本地图集归档的行列（网格叠加与下游等分切割的同一契约源）。
-			const firstPositive = (...cands: number[]): number =>
-				cands.find(v => Number.isFinite(v) && Number(v) > 0) ?? 0;
-			let rawRows = firstPositive(
-				Number(entry.media.meta?.rows ?? 0),
-				Number(ctl('rows', 0)),
-				Number(localSheetFull?.media.meta?.rows ?? 0),
-			);
-			let rawCols = firstPositive(
-				Number(entry.media.meta?.cols ?? 0),
-				Number(ctl('cols', 0)),
-				Number(localSheetFull?.media.meta?.cols ?? 0),
-			);
-			// 指纹取**源 entry.ref**（与入口判重同一字符串）——对重编码后的 dataUrl
-			// 求哈希虽也可，但 ref 直取省一次全量哈希成本且两次点击间天然一致。
-			const sourceSha = await sha256Hex(entry.media.ref);
-			// eslint-disable-next-line no-console
-			console.warn(`[RemoveBg] put → node=${snapKey ?? nodeId ?? ''} port=image key=''（追加副本） sheet=1 removeBg=1 rows=${rawRows} cols=${rawCols} sha=${sourceSha.slice(0, 8)}`);
-			snapshotStore.put({
-				nodeId: snapKey ?? nodeId ?? '',
-				port: 'image',
-				key: '',
-				media: {
-					kind: 'image',
-					ref: out,
-					meta: {
-						mime: 'image/png',
-						sheet: '1',
-						...(rawRows > 0 ? { rows: String(rawRows) } : {}),
-						...(rawCols > 0 ? { cols: String(rawCols) } : {}),
-						removeBg: '1',
-						removeBgAlgo: algo,
-						removeBgParams: paramsKey,
-						sourceSha,
-					},
-				},
-				index: 0,
-			}, true /* skipImport：对已有产物的本地加工，不重复导出媒体库 */);
-			// eslint-disable-next-line no-console
-			console.warn('[RemoveBg] put ok → 「调整后」副本已追加（doneTick++ 触发编辑器自动切页）');
-			// ★ 联动重切单格（2026-09-07）：去背景成功后按行列把抠像整图切成单格，
-			//   写入下方行列格——此前只写「调整后」整图口，格子要么空白（从未切分）
-			//   要么还是带底旧图，用户以为去背景没生效。替换策略：既有格按
-			//   meta.cellIndex 精确匹配 → replaceByKey 原地更新（cellPrompt 等随格
-			//   保留）；缺失的格追加。**不放 clearNode**——sheetFull 原图、「调整后」
-			//   副本、其它口产物一律不动。cell_crops 有自定义时沿用（抠像图与原图
-			//   同尺寸，坐标系有效；与 recrop 同一契约）。
-			if (rawRows > 0 && rawCols > 0) {
-				try {
-					let cropsBg: CellCropRect[] = [];
-					try {
-						const arrBg = JSON.parse(String(ctl('cell_crops', '') || 'null')) as unknown;
-						if (Array.isArray(arrBg) && arrBg.length === rawRows * rawCols) {
-							const allNum = arrBg.every(it => {
-								const o = it as Partial<CellCropRect>;
-								return [o.x, o.y, o.w, o.h].every(v => typeof v === 'number' && Number.isFinite(v));
-							});
-							if (allNum) { cropsBg = arrBg as CellCropRect[]; }
-						}
-					} catch { /* 无自定义裁剪 → 等分 */ }
-					const cellsBg = await splitStickerSheet(out, rawRows, rawCols, { marginRatio: EMOJI_SHEET_MARGIN_RATIO, cutoutBg: false, cellCrops: cropsBg.length ? cropsBg : undefined }, globalThis.fetch);
-					const nodeKey = snapKey ?? nodeId ?? '';
-					// 旧格索引表（cellIndex → key/meta）
-					const oldCellByKey = new Map<string, { key: string; meta: any }>();
-					for (const e of snapshotStore.byNode(nodeKey)) {
-						if (e.port !== 'output' || e.media?.kind !== 'image') { continue; }
-						const ci = e.media.meta?.cellIndex;
-						if (typeof ci === 'number') { oldCellByKey.set(String(ci), { key: e.key, meta: e.media.meta ?? {} }); }
-					}
-					let replacedN = 0;
-					let addedN = 0;
-					for (let ci = 0; ci < cellsBg.length; ci++) {
-						const cellMeta: any = {
-							mime: 'image/png',
-							sheetMode: '1',
-							cellIndex: ci,
-							cellSize: `${cellsBg[ci].w}x${cellsBg[ci].h}`,
-							...(cropsBg[ci] ? { cellRect: JSON.stringify(cropsBg[ci]) } : {}),
-						};
-						const oldC = oldCellByKey.get(String(ci));
-						if (oldC) {
-							const merged: any = { ...cellMeta };
-							if (typeof oldC.meta?.cellPrompt === 'string' && oldC.meta.cellPrompt) { merged.cellPrompt = oldC.meta.cellPrompt; }
-							if (snapshotStore.replaceByKey(oldC.key, { kind: 'image', ref: cellsBg[ci].dataUrl, meta: merged })) { replacedN++; continue; }
-						}
-						snapshotStore.put({ nodeId: nodeKey, port: 'output', key: '', media: { kind: 'image', ref: cellsBg[ci].dataUrl, meta: cellMeta } }, true);
-						addedN++;
-					}
-					// eslint-disable-next-line no-console
-					console.warn(`[RemoveBg] 联动重切完成 rows=${rawRows} cols=${rawCols} cells=${cellsBg.length} replaced=${replacedN} added=${addedN}`);
-				} catch (sliceErr) {
-					// 切分失败不回滚整图口（去背景产物已就位）；引导手动重切。
-					// eslint-disable-next-line no-console
-					console.warn('[RemoveBg] 联动重切失败（整图口已更新，可点「生成」按行列重切）：', sliceErr instanceof Error ? sliceErr.message : String(sliceErr));
-				}
-			}
-			// 通知编辑器自动切到「🧩 调整后」页签（完成计数器驱动）
-			setSheetRemoveBgDoneTick(t => t + 1);
-		} catch (err) {
-			// eslint-disable-next-line no-console
-			console.warn('[RemoveBg] FAILED:', err instanceof Error ? `${err.message}${err.stack ? `\n${err.stack}` : ''}` : String(err));
-			// 不用 window.alert：webview 环境会静默忽略（无 allow-modals），
-			// 失败必须以 UI 内红条呈现（见 sheetRemoveBgError → StatEmojiStageEditor）。
-			setSheetRemoveBgError(err instanceof Error ? err.message : String(err));
-		} finally {
-			setSheetRemovingBg(false);
-			setSheetRemoveBgStage(null);
-		}
+		// ★ 已整体迁移至 emojiRemoveBg.ts（2026-09-09，行为不变）：此为薄委托，
+		//   显式注入原闭包捕获（派生值/store/ctl/setter）。调用点 onSheetRemoveBg 签名不变。
+		return runSheetRemoveBg({
+			sheetFullEntry, localSheetFull, ownSnapshots, sheetFullEntryIsPassthrough,
+			nodeId, snapKey, snapshotStore, sheetRemovingBg, ctl,
+			setSheetRemoveBgError, setSheetRemoveBgDoneTick, setSheetRemovingBg, setSheetRemoveBgStage,
+		}, algo, chromaParams);
 	};
 	// Esc 关闭独立编辑窗口
 	React.useEffect(() => {
@@ -2143,6 +2101,57 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		if (cellRefs.length > 0) { upstreamImageRefs.push(...cellRefs); }
 		else if (upstreamSheetMeta.ref) { upstreamImageRefs.push(upstreamSheetMeta.ref); }
 	}
+	// ★ 换批检测（2026-09-12 用户需求「输入新的一批图片时，阶段 1-2-3 的预览图应该
+	//   同步更新为新的」）：执行器归档产物时把「该格输入图指纹」写进 `meta.srcSig`；
+	//   此处比对**当前**上游输入指纹 —— 不一致的产物视为**过期**，不再送入预览
+	//   （于是 ①②③ 预览自动回落到新输入原图）。
+	//   ★ 逐条判定（而非整格判定）：重跑阶段① 后 video 已是新指纹、而 matte/output
+	//     仍是旧指纹 → 只隐藏后者，阶段① 的新原片照常显示 ✓。
+	//   ★ 无 srcSig 的历史数据不判过期（向后兼容：升级瞬间不清空既有结果）。
+	const canDetectStale = meta.nodeType === 'Saros.AnimatedEmoji' && upstreamImageRefs.length > 0;
+	/** 本节点是否已有「带输入指纹」的产物（= 新版执行器在本节点跑过）——见下方旧产物判定。 */
+	const hasSigBearingArtifact = ownSnapshots.some(e => {
+		const s = e.media.meta?.srcSig;
+		return typeof s === 'string' && s.length > 0;
+	});
+	const isStaleArtifact = (e: MediaSnapshotEntry): boolean => isStaleEmojiArtifact(e, {
+		enabled: canDetectStale,
+		upstreamRefs: upstreamImageRefs,
+		hasSigBearingArtifact,
+		// ★ 图集整图也作为候选输入（旧版执行器按图集切格生成产物，见该函数注释）
+		...(upstreamSheetMeta.ref ? { sheetRef: upstreamSheetMeta.ref } : {}),
+	});
+	/** 含过期产物的格（用于给用户一行「输入已更换，请重跑」提示）。 */
+	const staleCells = new Set<number>();
+	if (canDetectStale) {
+		for (const e of ownSnapshots) {
+			if (!isStaleArtifact(e)) { continue; }
+			const idx = Number(e.media.meta?.cellIndex ?? -1);
+			if (idx >= 0) { staleCells.add(idx); }
+		}
+	}
+	// ★ 诊断（2026-09-12）：换批检测判过期时打印**首条过期产物的指纹**与**当前输入
+	//   指纹** —— 「产物明明在、却被全判过期」只能靠这两个值定位（输入真换了？还是
+	//   比对口径不一致 ✗）。每个节点只打一次（`emojiSheetDiagSeen` 同款去重）。
+	if (canDetectStale && staleCells.size > 0 && !emojiStaleDiagSeen.has(snapKey)) {
+		emojiStaleDiagSeen.add(snapKey);
+		const first = ownSnapshots.find(e => isStaleArtifact(e));
+		const idx = Number(first?.media.meta?.cellIndex ?? 0);
+		// 上游首个 cell 的 key/index —— 判断「输入是真被重新生成（新 key / index 更大）
+		// 还是只是重新编码/水合（同 key）」，配合两个指纹定性 ✗。
+		const upUid = upstreamNodeIds?.[0];
+		const upRound = snapshotStore && upUid ? snapshotStore.latestRoundOf(upUid) : undefined;
+		const upCell0 = upRound?.cells?.[0];
+		// eslint-disable-next-line no-console
+		console.warn('[AnimatedEmoji][stale] ' + JSON.stringify({
+			node: snapKey, staleCells: staleCells.size, refs: upstreamImageRefs.length,
+			port: first?.port ?? '', cellIndex: idx,
+			artifactSig: String(first?.media.meta?.srcSig ?? ''),
+			cellSig: upstreamImageRefs.length ? emojiInputSigFor(upstreamImageRefs, idx) : '',
+			sheetSig: upstreamSheetMeta.ref ? emojiInputSig(upstreamSheetMeta.ref) : '',
+			upCell0: upCell0 ? { key: upCell0.key, index: upCell0.index, refLen: upCell0.media.ref.length } : null,
+		}));
+	}
 	const commitMaskField = React.useCallback((name: string, value: string) => {
 		if (!nodeId) { return; }
 		window.dispatchEvent(new CustomEvent('wf-node-control', { detail: { nodeId, name, value } }));
@@ -2390,35 +2399,12 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		const t = (meta.outputs?.[0]?.type ?? '').toUpperCase();
 		return t.endsWith('IMAGES') || t.endsWith('VIDEOS') || t.endsWith('AUDIOS');
 	}, [meta.outputs]);
-	const latestOutputs = React.useMemo(() => {
-		// ★ 去重：executor 内部已 put 过一次，WorkflowEditorPanel 成功分支又对
-		//   `r.entries` 再 put 一次（见该文件注释）——同一张图会产生**两条**
-		//   index 不同、ref 相同的条目。不去重会让 BATCH 计数翻倍，且
-		//   `slice(-batchSize)` 取到的其实是同一张图的副本。
-		//   保留**最后一次**出现（index 最大 = 最新），顺序按首次出现位置。
-		//   去重键用 mediaDedupeKey（locator 优先）：同一张图一次物化成 data:、
-		//   另一次保留 /view URL 时 ref 不同但 locator 相同，仍应视为一张。
-		const seen = new Map<string, MediaSnapshotEntry>();
-		// ★ 只统计 port 'output'——sheet 模式的整图归档在 port 'sheet'，混进来
-		//   会让 OUTPUT 区出现整图 + BATCH 计数翻倍。
-		for (const e of ownOutputs) { seen.set(mediaDedupeKey(e.media), e); }
-		const deduped = Array.from(seen.values());
-		// ★ AnimatedEmoji（2026-09-08）：再按 meta.cellIndex 去重（同格保留最新
-		//   index），并按格序输出——历史累积的脏条目（旧版 put 恒追加 + panel
-		//   双写）在渲染端被治愈，单格重生成后 OUTPUT 严格 9 格原地刷新。
-		if (isAnimatedEmoji) {
-			const byCell = new Map<number, MediaSnapshotEntry>();
-			for (const e of deduped) {
-				const ci = Number(e.media.meta?.cellIndex ?? -1);
-				if (ci < 0) { continue; }
-				const prev = byCell.get(ci);
-				if (!prev || (prev.index ?? 0) <= (e.index ?? 0)) { byCell.set(ci, e); }
-			}
-			return Array.from(byCell.keys()).sort((a, b) => a - b)
-				.map(ci => byCell.get(ci) as MediaSnapshotEntry).slice(-batchSize);
-		}
-		return deduped.slice(-batchSize);
-	}, [ownOutputs, batchSize, isAnimatedEmoji]);
+	// ★ 选择逻辑抽到 `selectCardOutputs`（纯函数，可单测）—— 历史上两次「预览不
+	//   更新」都出在这里（`slice(-batchSize)` 丢低位格 / 同格取到旧条目）。
+	const latestOutputs = React.useMemo(
+		() => selectCardOutputs(ownOutputs, { isAnimatedEmoji, batchSize }),
+		[ownOutputs, batchSize, isAnimatedEmoji],
+	);
 
 	// ── Picker Pool（对齐 ComfyTV usePickerStage + mergeImagePool）──
 	// pool 有两个来源：'upstream'（直接上游，默认，selected_index 相对上游
@@ -2437,45 +2423,140 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		() => (meta.isPicker ? mergeImagePool(poolScope === 'all' ? allImageOutputs : pickerOutputs) : []),
 		[meta.isPicker, poolScope, pickerOutputs, allImageOutputs],
 	);
-	// 当前选中项（ComfyTV selected_index，1-based）。picker 后端用该 widget 从
-	// batch 输入中选一张输出；前端高亮选中缩略图。仅 'upstream' 视图使用
-	// selected_index 高亮；'all' 视图用 directRef 匹配。
+	// ── picker 多选（2026-09-12 用户需求「多选图片时 UI 要有多选状态」）──────
+	// 读取顺序：本地草稿（刚点完，立即高亮）→ meta 透传（重挂载后从 properties
+	// 恢复）→ 旧字段 `selected_index` / `directRef`（**向后兼容**：老工作流只存
+	// 了单张，按「单选 = 只选中那一张」解释）。
+	const pickerSelIndicesRaw = (controlDrafts['selected_indices'] ?? meta.pickerSelectedIndices ?? '') as string;
+	const pickerDirectRefsRaw = (controlDrafts['directRefs'] ?? meta.pickerDirectRefs ?? '') as string;
+	/** 当前选中项（ComfyTV selected_index，1-based）。执行器兜底 / 旧数据兼容用。 */
 	const selectedIndex = React.useMemo(() => {
 		if (!meta.isPicker) { return 1; }
 		const v = controlDrafts['selected_index'];
 		const n = Number(v);
 		return Number.isInteger(n) && n >= 1 ? n : 1;
 	}, [meta.isPicker, controlDrafts]);
-	// 当前 directRef（'all' 视图选中项，字符串 ref）。用于高亮跨节点选中的图。
+	// 当前 directRef（'all' 视图主选，字符串 ref）。
 	const directRef = React.useMemo(() => {
 		const v = controlDrafts['directRef'];
 		return typeof v === 'string' ? v : '';
 	}, [controlDrafts]);
-	// 点选第 N 张（0-based）。'upstream' 视图 → selected_index；'all' 视图 →
-	// directRef（直接输出该 ref，跨节点无需上游 batch 索引）。
+	/** 上游池视图的**全部**选中序号（0-based）；空则回退单选的 selected_index。 */
+	const pickerSelectedIndices = React.useMemo<number[]>(() => {
+		if (!meta.isPicker) { return []; }
+		const arr = parsePickerIndexList(pickerSelIndicesRaw);
+		return arr.length > 0 ? arr : [selectedIndex - 1];
+	}, [meta.isPicker, pickerSelIndicesRaw, selectedIndex]);
+	/** 「全部」视图的全部选中 ref；空则回退单选的 directRef。 */
+	const pickerSelectedRefs = React.useMemo<string[]>(() => {
+		const arr = parsePickerRefList(pickerDirectRefsRaw);
+		return arr.length > 0 ? arr : (directRef ? [directRef] : []);
+	}, [pickerDirectRefsRaw, directRef]);
+	const pickerSelIndexSet = React.useMemo(() => new Set(pickerSelectedIndices), [pickerSelectedIndices]);
+	const pickerSelRefSet = React.useMemo(() => new Set(pickerSelectedRefs), [pickerSelectedRefs]);
+	/**
+	 * ★ **点选即发布**（2026-09-12 修用户反馈「picker 多选图像，下游动态表情包中
+	 *   参考图像没有更新」）。
+	 *
+	 * 根因：picker 是 **no-Run 节点**（`showRunButton = … && !meta.isPicker`，卡片
+	 * 没有运行按钮）→ 点选此前只派发 `wf-node-control` 写 widget 值，**快照库完全
+	 * 不动** ✗。而下游一律从 `store.byNode(pickerUid)` 取上游（动态表情包取参考图、
+	 * 画布物化、`collectUpstreamValues`…）→ 拿到的永远是**上一次运行**的旧选择 ✗
+	 * （日志实证：`workflow.nodeValuesChanged` 写了 selected_indices/directRefs，
+	 * 但没有任何快照写入）。ComfyTV 原版 `usePickerStage` 是响应式发布（watch 选中
+	 * 即写），本函数即该语义。
+	 *
+	 * ★ 传**新值**而非 `controlDrafts`：`setControlDrafts` 是异步的，此处 drafts
+	 *   仍是旧值 → 会发布上一次的选择 ✗。
+	 * ★ 失败静默：选中态已落盘，用户重跑 picker 仍可恢复；点选不该因发布失败弹错。
+	 */
+	const publishPickerSel = React.useCallback((values: Record<string, unknown>) => {
+		if (!meta.isPicker || !snapshotStore || !nodeId) { return; }
+		void publishPickerSelection({
+			store: snapshotStore,
+			snapKey: snapKey ?? nodeId,
+			type: meta.nodeType ?? '',
+			values,
+			upstreams: upstreamNodeIds,
+		}).catch(() => { /* 静默：见上 */ });
+	}, [meta.isPicker, meta.nodeType, snapshotStore, nodeId, snapKey, upstreamNodeIds]);
+	/**
+	 * 点选第 N 张（0-based）—— **切换**语义（多选）：已选 → 取消；未选 → 追加。
+	 * 同时写「数组字段」（多选真源）+「单值字段」（主选 = 第一张；旧调用方 / 执行器
+	 * 兜底仍读它）。取消到空集 → 单值复位为第 1 张（执行器按第 1 张兜底，与 Clear 一致）。
+	 */
 	const pickImage = React.useCallback((poolIndexZeroBased: number) => {
 		if (poolScope === 'all') {
 			const e = pickerPool[poolIndexZeroBased];
-			if (e) { commitControl('directRef', e.media.ref); }
+			if (!e) { return; }
+			const ref = e.media.ref;
+			const next = pickerSelectedRefs.includes(ref)
+				? pickerSelectedRefs.filter(r => r !== ref)
+				: [...pickerSelectedRefs, ref];
+			// ★ `directRefs` = **唯一真源**（ref 数组）：画布物化 / runPickerNode 只认它。
+			//   'all' 视图下 `selected_indices` 无意义（跨节点 ref 不在上游池内，算不出
+			//   序号）→ 清空，否则残留序号会被「上游」视图错误高亮到别的格子 ✗。
+			const patch = {
+				directRefs: next.length > 0 ? JSON.stringify(next) : '',
+				directRef: next[0] ?? '',
+				selected_indices: '',
+				selected_index: 1,
+			};
+			commitControls(patch);
+			// ★ 点选即发布（见 publishPickerSel 注释）：否则下游读到的还是旧快照 ✗
+			publishPickerSel(patch);
 			return;
 		}
-		commitControl('selected_index', poolIndexZeroBased + 1);
-	}, [poolScope, pickerPool, commitControl]);
-	// 清空选择（对齐 ComfyTV Clear）：清 picker 自身输出 + 重置选中到第 1 张。
-	// 走 commitControl 同步 local state，确保前端高亮即时重置。
+		const next = pickerSelectedIndices.includes(poolIndexZeroBased)
+			? pickerSelectedIndices.filter(i => i !== poolIndexZeroBased)
+			: [...pickerSelectedIndices, poolIndexZeroBased].sort((a, b) => a - b);
+		// ★★ 必须**同步写 ref 数组**（与序号同源）：下游（画布物化 / runPickerNode）
+		//   优先读 `directRefs`；若这里只写序号，`directRefs` 会停留在**旧值**
+		//   （如聊天卡上次同步的 3 张 / 上一次 'all' 视图的选择）→ 下游按旧 refs 输出
+		//   → 用户实证「节点选了 8 张，右侧下游引用只有 3 张」✗。
+		const nextRefs = next
+			.map(i => pickerPool[i]?.media.ref)
+			.filter((r): r is string => typeof r === 'string' && r.length > 0);
+		const patch = {
+			selected_indices: next.length > 0 ? JSON.stringify(next) : '',
+			selected_index: next.length > 0 ? next[0] + 1 : 1,
+			directRefs: nextRefs.length > 0 ? JSON.stringify(nextRefs) : '',
+			directRef: nextRefs[0] ?? '',
+		};
+		commitControls(patch);
+		// ★ 点选即发布（见 publishPickerSel 注释）：picker 无运行按钮，不在这里
+		//   发布 → 下游（动态表情包参考图）永远停留在旧选择 ✗。
+		publishPickerSel(patch);
+	}, [poolScope, pickerPool, pickerSelectedRefs, pickerSelectedIndices, commitControls, publishPickerSel]);
+	// 清空选择（对齐 ComfyTV Clear）：清 picker 自身输出 + 清空多选（含数组字段，
+	// 否则 Clear 后网格仍高亮旧选中 ✗）。
 	const clearPicker = React.useCallback(() => {
 		if (!nodeId) { return; }
 		snapshotStore?.clearNode(snapKey ?? nodeId);
-		commitControl('selected_index', 1);
-		commitControl('directRef', '');
-	}, [nodeId, snapKey, snapshotStore, commitControl]);
+		commitControls({ selected_index: 1, selected_indices: '', directRef: '', directRefs: '' });
+	}, [nodeId, snapKey, snapshotStore, commitControls]);
 	// 删除单张候选图（对齐 ComfyTV remove-pool-item）：从 store 移除该 entry。
-	// pool 实时聚合上游 entry，删除后立即从网格消失；同时重置选中到第 1 张
-	// 避免 selected_index 越界。
-	const removePoolImage = React.useCallback((key: string) => {
-		void snapshotStore?.remove(key);
-		commitControl('selected_index', 1);
-	}, [snapshotStore, commitControl]);
+	// ★★ **必须二次确认**（2026-09-12 用户需求「删除前，要有用户询问窗口，同意后
+	//   才可以删除」）：`store.remove` 会连 IndexedDB 里的 ref + meta 一起删
+	//   （不可恢复 ✗），而 × 是悬停才出现的小按钮，极易误触。故 × 只**发起**
+	//   （记下 key + ref），确认框里点「删除」才真正执行。
+	const [pendingPoolRemove, setPendingPoolRemove] = React.useState<{ key: string; ref: string } | null>(null);
+	const requestPoolRemove = React.useCallback((key: string, ref: string) => {
+		setPendingPoolRemove({ key, ref });
+	}, []);
+	const confirmPoolRemove = React.useCallback(() => {
+		const pending = pendingPoolRemove;
+		setPendingPoolRemove(null);
+		if (!pending) { return; }
+		// pool 实时聚合上游 entry，删除后立即从网格消失；同时清空选中避免序号越界。
+		void snapshotStore?.remove(pending.key);
+		// ★ 删图后清空**全部**选中字段（含 ref 数组）：否则 `directRefs` 残留已删 ref，
+		//   物化 / runPickerNode 仍按它输出 → 下游「引用」区显示已被删除的图 ✗。
+		commitControls({ selected_index: 1, selected_indices: '', directRef: '', directRefs: '' });
+		// ★ 同时清掉 picker **自己已发布的输出**（2026-09-12，与点选即发布配套）：
+		//   否则下游读到的还是上一次发布（含刚删掉的那张）→ 「删了但下游还在引用」✗。
+		if (snapKey ?? nodeId) { void snapshotStore?.clearNode(snapKey ?? nodeId ?? ''); }
+	}, [pendingPoolRemove, snapshotStore, commitControls, snapKey, nodeId]);
 
 	// ComfyTV ACTIONS: which action's preset list is expanded (edit / preset / change).
 	// 用模块级 Map 持久化，避免 graph.configure() → DOM widget 重建 → self-heal
@@ -2590,6 +2671,111 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 	const isFullEditor = !isSchema && hasInlineEditor;
 	/** 卡片区块开关（对齐 ComfyTV STAGE_CARD_PROPS）。 */
 	const cardFlags = stageCardFlags(meta.nodeType);
+	// ── ★ 导演台全屏浮层（2026-09-13）──────────────────────────────────────────
+	// 卡片内嵌导演台受两个硬约束：① 宽度 = 节点宽度（不自增）② 容器 overflow:hidden
+	// 裁剪 —— 于是「左画布 + 右 BOARD 面板 + 底部时间线」在窄节点里被压缩。全屏浮层
+	// 把整个 webview 视口交给它。
+	// 复用 portal 模式（与表情格编辑器同因）：画布节点带 transform/缩放，普通 fixed
+	// 会受 containing block 影响，只有 portal 到 document.body 才是真正的全屏浮层。
+	const [directorFullscreen, setDirectorFullscreen] = React.useState(false);
+	// 全屏时按视口尺寸渲染（resize 跟随）
+	const [fullscreenViewport, setFullscreenViewport] = React.useState(() => ({
+		w: typeof window === 'undefined' ? 1280 : window.innerWidth,
+		h: typeof window === 'undefined' ? 720 : window.innerHeight,
+	}));
+	React.useEffect(() => {
+		if (!directorFullscreen) { return; }
+		const onResize = () => setFullscreenViewport({ w: window.innerWidth, h: window.innerHeight });
+		window.addEventListener('resize', onResize);
+		return () => window.removeEventListener('resize', onResize);
+	}, [directorFullscreen]);
+	// Esc 关闭（与表情格编辑窗口同一交互约定）
+	React.useEffect(() => {
+		if (!directorFullscreen) { return; }
+		const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setDirectorFullscreen(false); } };
+		window.addEventListener('keydown', onKey);
+		return () => window.removeEventListener('keydown', onKey);
+	}, [directorFullscreen]);
+	// ★ P2（2026-09-13）：响应「独立 tab 打开 → 自动全屏」。
+	//   独立 tab 的 webview 与本画布 tab 共用同一 App（panelType 仍是 'workflow-editor'），
+	//   只是 initialData 多带 `focusNodeId`；浮层状态在卡片内部 → 由 WorkflowEditorPanel
+	//   派发 window 事件通知（与既有 wf-node-* 事件同模式）。
+	React.useEffect(() => {
+		if (!isDirectorConsole) { return; }
+		const onFullscreenRequest = (e: Event) => {
+			const detail = (e as CustomEvent<{ nodeId?: string }>).detail;
+			if (detail?.nodeId && detail.nodeId === nodeId) { setDirectorFullscreen(true); }
+		};
+		window.addEventListener('wf-node-fullscreen', onFullscreenRequest);
+		return () => window.removeEventListener('wf-node-fullscreen', onFullscreenRequest);
+	}, [isDirectorConsole, nodeId]);
+	/**
+	 * P2：把该节点的编辑器开成**独立 editor tab**（host 侧 WorkflowNodeEditorPane）。
+	 *
+	 * 独立 tab 与本画布 tab 并存（resource 不同：`saros-workflow-node:` vs
+	 * `saros-workflow:`）；同一节点重复点击只会聚焦已有 tab（`matches()` 去重）。
+	 * 标题取描述符的 title（host 侧不持有 kind 表）。
+	 *
+	 * 动态 import `sendRequest`：与 `nodeControlWrite.ts` 同一做法，避免在卡片模块
+	 * 顶层引入 bridge 依赖。
+	 */
+	const handleOpenInTab = React.useCallback(async (inWindow = false) => {
+		const wfId = useWorkflowEditorStore.getState().workflowId;
+		if (!wfId || !nodeId) { return; }
+		try {
+			const { sendRequest } = await import('../../../bridge/messageClient.js');
+			const r = await sendRequest('workflow.openNodeEditor', {
+				workflowId: wfId,
+				nodeId,
+				nodeType: meta.nodeType,
+				editorTitle: stageEditorDescriptor(meta.nodeType)?.title,
+				// ★ P3（2026-09-13）：true → host 打开 tab 后再移入独立（辅助）窗口。
+				//   命令不可用时 host 侧只告警，tab 仍在（可手动拖出成窗）。
+				inWindow,
+			}) as { ok?: boolean; error?: string };
+			if (!r?.ok) {
+				// eslint-disable-next-line no-console
+				console.warn('[nodeCard] workflow.openNodeEditor failed:', r?.error);
+			}
+		} catch (err) {
+			// eslint-disable-next-line no-console
+			console.warn('[nodeCard] workflow.openNodeEditor error:', err);
+		}
+	}, [meta.nodeType, nodeId]);
+	/**
+	 * 导演台渲染（卡片内联 + 全屏浮层**共用**）。
+	 *
+	 * ★ 单一渲染函数：两处宿主只有 width/height 不同，初始值 / 写回通道 / runner
+	 *   完全一致 → 「卡片里看到的」与「全屏里看到的」永远同一份状态（都走
+	 *   `controlDrafts` + `commitControl('board_state')`），不需要任何额外同步。
+	 *   （这也是「与卡片内联内容实时一致」的实现方式：不是同步，而是同一个数据源。）
+	 */
+	const renderDirectorConsole = (fullscreen: boolean) => {
+		const registry = getActiveRunnerRegistry();
+		const snapStore = snapshotStore;
+		return (
+			<LazyDirectorConsole
+				initialState={(controlDrafts['board_state'] ?? '') as string}
+				initialFountainText={storyboardFountainText || undefined}
+				width={fullscreen ? Math.max(960, fullscreenViewport.w - 48) : clampDim(Number(controlDrafts['width']), 1280)}
+				height={fullscreen ? Math.max(560, fullscreenViewport.h - 132) : clampDim(Number(controlDrafts['height']), 720)}
+				runners={registry ?? undefined}
+				preference={getActiveRunnerPreference()}
+				onStateChange={(json) => commitControl('board_state', json)}
+				onRenderUploaded={(url) => {
+					if (!url || !snapStore) { return; }
+					snapStore.put({
+						nodeId: snapKey,
+						port: 'output',
+						key: `${snapKey}:output:0`,
+						media: { kind: 'image', ref: url },
+						index: 0,
+					});
+				}}
+			/>
+		);
+	};
+
 	/** 运行反馈片段（进度条 + 错误横幅）。抽成变量以便 showRun 真/假两条路径共用，
 	 *  保证 picker/loader 等 no-Run 节点的错误同样可见（见下方两处引用）。 */
 	const runFeedback = (
@@ -2642,7 +2828,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 				// ComfyTV StageCard uses NO border on the root (a border would sit
 				// OUTSIDE the container's content box and visually overflow the node).
 				// The accent edge is drawn as an inset box-shadow instead.
-				boxShadow: `inset 0 0 0 1.5px ${kindColor}55`,
+				boxShadow: `inset 0 0 0 ${awaitingInput ? 2 : 1.5}px ${awaitingInput ? edgeColor : `${kindColor}55`}`,
 				color: 'var(--vscode-foreground, #ccc)',
 				fontFamily: 'inherit',
 				// ComfyTV StageCard cardClass：text-xs（12px）—— 真源 visual/comfyTvTruth.ts
@@ -2651,6 +2837,17 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 				flexDirection: 'column',
 				}}
 				>
+				{/* ★ 「待配置」角标（2026-09-12 用户需求：聊天卡状态同步到画布）：
+				    黄色描边之外再给一个**明确文案** —— 描边在缩小的节点上可能看不清，
+				    角标保证「一眼看到在等用户操作」✓。 */}
+				{awaitingInput && (
+					<div style={{
+						position: 'absolute', top: 2, right: 4, zIndex: 3,
+						background: '#fbbf24', color: '#1e1e1e',
+						fontSize: 9, fontWeight: 600, lineHeight: '14px',
+						padding: '0 5px', borderRadius: 7,
+					}}>待配置</div>
+				)}
 				{/* Inner content wrapper — opaque background. The container is
 				already inset to LiteGraph's widget area by widgetBridge (left/
 				right = BaseWidget.margin 15, top = title bar + port rows), so
@@ -3135,52 +3332,122 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			    替代原先「打开编辑器」弹窗（NodeEditorPopup）。数据走 controlDrafts/commitControl，
 			    上游 Fountain 文本走 collectUpstreamTexts 自动解析成 boards。
 			    用 LazyDirectorConsole 包装器延迟加载，避免 esbuild IIFE 的 TDZ 错误。 */}
-			{showRun && isDirectorConsole && (() => {
-				const registry = getActiveRunnerRegistry();
-				const snapStore = snapshotStore;
-				return (
+			{showRun && isDirectorConsole && (
+				<div
+					style={{
+						position: 'relative',
+						width: '100%',
+						height: '100%',
+						minWidth: 0,
+						minHeight: 0,
+						/* ★ 突破 NodeCard 三层 pointer-events:none，恢复编辑器内按钮/input 可点击 */
+						pointerEvents: 'auto',
+						display: 'flex',
+						flexDirection: 'column',
+					}}
+					/* ★ 阻止内部点击冒泡到 LiteGraphCanvas 的拖拽逻辑 */
+					onPointerDown={e => e.stopPropagation()}
+				>
+					{/* ★ 全屏入口（2026-09-13）：卡片宽度 = 节点宽度且 overflow:hidden，
+					    导演台的左右分栏 + 时间线在窄节点里被压缩 → 提供全屏浮层。
+					    按钮浮在右上角，不占编辑器布局高度。 */}
+					<button
+						type="button"
+						title="全屏编辑导演台（Esc 退出）"
+						onClick={e => { e.stopPropagation(); setDirectorFullscreen(true); }}
+						style={{
+							position: 'absolute', top: 4, right: 6, zIndex: 5,
+							padding: '2px 7px', fontSize: 10, lineHeight: 1.5, cursor: 'pointer',
+							background: 'rgba(0,0,0,.55)', color: '#e6e6e6',
+							border: '1px solid rgba(255,255,255,.22)', borderRadius: 5,
+						}}
+					>⛶ 全屏</button>
+					{/* ★ 全屏时**卸载**卡片内联实例（而非隐藏）：编辑器在 mount 时读取
+					    initialState，两个实例并存会各自持一份本地 state → 全屏里的编辑
+					    无法反映到卡片、且双方副作用（自动写回）可能互相覆盖。卸载后关闭
+					    全屏会重新挂载并读最新 `board_state`（全屏实例已 commitControl 写回）
+					    → 天然一致。浮层本就覆盖整个视口，卡片此刻不可见，无观感损失。 */}
+					{!directorFullscreen && renderDirectorConsole(false)}
+				</div>
+			)}
+
+			{/* ★ 导演台全屏浮层：portal 到 document.body（脱离画布 transform/缩放，
+			    与表情格编辑窗口同一模式）。与卡片内联**共用 renderDirectorConsole**
+			    → 同一份 controlDrafts 状态，两处内容天然一致。 */}
+			{showRun && isDirectorConsole && directorFullscreen && createPortal(
+				<div
+					style={{
+						position: 'fixed', inset: 0, zIndex: 3000,
+						background: 'rgba(0,0,0,.8)',
+						display: 'flex', flexDirection: 'column',
+					}}
+					onPointerDown={e => e.stopPropagation()}
+				>
 					<div
 						style={{
-							width: '100%',
-							height: '100%',
-							minWidth: 0,
-							minHeight: 0,
-							/* ★ 突破 NodeCard 三层 pointer-events:none，恢复编辑器内按钮/input 可点击 */
-							pointerEvents: 'auto',
-							display: 'flex',
-							flexDirection: 'column',
+							display: 'flex', alignItems: 'center', gap: 8,
+							padding: '6px 12px', flexShrink: 0,
+							borderBottom: '1px solid var(--vscode-panel-border)',
+							background: 'var(--vscode-editor-background, #1e1e1e)',
 						}}
-						/* ★ 阻止内部点击冒泡到 LiteGraphCanvas 的拖拽逻辑 */
-						onPointerDown={e => e.stopPropagation()}
 					>
-						<LazyDirectorConsole
-							initialState={(controlDrafts['board_state'] ?? '') as string}
-							initialFountainText={storyboardFountainText || undefined}
-							width={clampDim(Number(controlDrafts['width']), 1280)}
-							height={clampDim(Number(controlDrafts['height']), 720)}
-							runners={registry ?? undefined}
-							preference={getActiveRunnerPreference()}
-							onStateChange={(json) => commitControl('board_state', json)}
-							onRenderUploaded={(url) => {
-								if (!url || !snapStore) { return; }
-								snapStore.put({
-									nodeId: snapKey,
-									port: 'output',
-									key: `${snapKey}:output:0`,
-									media: { kind: 'image', ref: url },
-									index: 0,
-								});
+						<span style={{ fontSize: 12, fontWeight: 600 }}>🎬 导演台 · 全屏</span>
+						<span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground, #858585)', fontFamily: 'Consolas, monospace' }}>
+							{meta.nodeType}
+						</span>
+						<span style={{ flex: 1 }} />
+						{/* ★ P2：独立 editor tab（可与画布并排）。
+						    同一节点重复点击只聚焦已有 tab（host 侧 matches() 去重）。 */}
+						<button
+							type="button"
+							title="在独立编辑器标签页中打开（可与画布并排；两处编辑实时同步）"
+							onClick={() => { void handleOpenInTab(false); }}
+							style={{
+								padding: '3px 10px', fontSize: 11, cursor: 'pointer',
+								background: 'rgba(34,211,238,.12)', color: 'var(--vscode-foreground, #e6e6e6)',
+								border: '1px solid rgba(34,211,238,.45)', borderRadius: 5,
 							}}
-						/>
+						>↗ 独立标签</button>
+						{/* ★ P3（2026-09-13）：直接移入**独立窗口**（VS Code 辅助窗口）——
+						    适合多显示器「画布一屏、编辑器一屏」。命令不可用时 host 只告警，
+						    tab 仍在（可手动拖出成窗）。 */}
+						<button
+							type="button"
+							title="在独立窗口中打开（可移到另一显示器；编辑器已开时重复点击会聚焦已有窗口）"
+							onClick={() => { void handleOpenInTab(true); }}
+							style={{
+								padding: '3px 10px', fontSize: 11, cursor: 'pointer',
+								background: 'rgba(167,139,250,.12)', color: 'var(--vscode-foreground, #e6e6e6)',
+								border: '1px solid rgba(167,139,250,.45)', borderRadius: 5,
+							}}
+						>⬈ 新窗口</button>
+						<button
+							type="button"
+							title="关闭全屏（Esc）"
+							onClick={() => setDirectorFullscreen(false)}
+							style={{
+								padding: '3px 10px', fontSize: 11, cursor: 'pointer',
+								background: 'rgba(255,255,255,.06)', color: 'var(--vscode-foreground, #e6e6e6)',
+								border: '1px solid var(--vscode-panel-border)', borderRadius: 5,
+							}}
+						>✕ 关闭</button>
 					</div>
-				);
-			})()}
+					<div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', pointerEvents: 'auto' }}>
+						{renderDirectorConsole(true)}
+					</div>
+				</div>,
+				document.body,
+			)}
 
 			{/* Inline prompt editor (ComfyTV MainPromptInput equivalent).
 			    ComfyTV 只在 generator variant 挂 main_prompt（useStageNode.ts:114），
 			    transform/loader 没有 prompt。Multiangle/Panorama/Relight/Material/AnimatedEmoji 的
 			    prompt 由各自编辑器自绘（hasInlineEditor 已抑制通用控件网格，但本
-			    prompt 区独立门禁，须单独排除），不显示手动输入框。 */}
+			    prompt 区独立门禁，须单独排除），不显示手动输入框。
+			    ★ 2026-09-12 核对：`AnimatedEmoji` 此前**确实没有**自绘 prompt（原注释
+			      与实现不符 ✗，用户报「视频生成 缺提示词字段」）—— 现已在
+			      AnimatedEmojiEditor 阶段① 补上「提示词」textarea（写回 values.prompt），
+			      本处继续排除 ✓（否则同一参数两套 UI）。 */}
 			{showRun && stageVariant === 'generator' && meta.hasPrompt && !isMultiangle && !isPanorama && !isRelight && !isMaterial && editorKind !== 'animated-emoji' && (
 				<MentionTextarea
 					value={promptValue}
@@ -3228,7 +3495,12 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 						<span style={{ opacity: .7, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
 							{pickerPool.length === 0
 								? (poolScope === 'all' ? '… no images yet' : '… waiting for upstream')
-								: (poolScope === 'all' ? (directRef ? '· 已选' : '· 未选') : `· ${selectedIndex} selected`)}
+								: (poolScope === 'all'
+									// ★ 多选计数（2026-09-12）：旧文案 `· ${selectedIndex} selected`
+									//   实际是「选中序号」（点第 7 张就写 7）→ 被误读成「已选 7 张」，
+									//   而网格只有 1 格高亮。现改为真实**张数**。
+									? (pickerSelectedRefs.length > 0 ? `· 已选 ${pickerSelectedRefs.length} 张` : '· 未选')
+									: `· 已选 ${pickerSelectedIndices.length} 张`)}
 						</span>
 						{pickerPool.length > 0 && (
 							<button
@@ -3260,7 +3532,46 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 									<span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1, padding: '1px 5px', borderRadius: 3, background: 'rgba(168,85,247,.18)', color: '#a855f7' }}>({primaryOutputType})</span>
 								)}
 							</div>
-							{snapshotStore && <PickerPoolGrid entries={pickerPool} selectedIndex={selectedIndex} directRef={directRef} poolScope={poolScope} onPick={pickImage} onRemove={removePoolImage} store={snapshotStore} />}
+							{/* ★ 相对定位容器：删除确认框以 absolute 覆盖网格（见下）——
+							    不用 `position:fixed`：卡片在 widgetBridge 的 transform:scale
+							    容器内，fixed 会相对该容器定位 → 弹窗跑到画布别处 ✗。 */}
+							<div style={{ position: 'relative' }}>
+								{snapshotStore && <PickerPoolGrid entries={pickerPool} selectedIndices={pickerSelIndexSet} selectedRefs={pickerSelRefSet} poolScope={poolScope} onPick={pickImage} onRemove={requestPoolRemove} store={snapshotStore} />}
+								{/* ── 删除确认（2026-09-12 用户需求「删除前要有用户询问窗口」）──
+								    只覆盖网格区域（不遮挡卡片其它控件），显示待删图的缩略图
+								    + 「删除 / 取消」，默认焦点在取消侧（误触 × 后直接回车不删）。 */}
+								{pendingPoolRemove && pickerPool.some(e => e.key === pendingPoolRemove.key) && (
+									<div style={{
+										position: 'absolute', inset: 0, zIndex: 10, boxSizing: 'border-box',
+										borderRadius: 6, background: 'rgba(10,10,12,.88)',
+										border: '1px solid rgba(255,107,107,.55)',
+										display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+										gap: 5, padding: 6, pointerEvents: 'auto',
+									}}>
+										<div style={{ fontSize: 10, fontWeight: 700, color: '#fff' }}>删除这张图？</div>
+										<img
+											src={pendingPoolRemove.ref} alt=""
+											style={{ width: 46, height: 46, objectFit: 'contain', borderRadius: 4, background: '#1b1c20', border: '1px solid rgba(255,255,255,.2)' }}
+										/>
+										<div style={{ fontSize: 9, color: '#fca5a5', textAlign: 'center', lineHeight: 1.35 }}>
+											将从候选池移除（含本地缓存），<br />删除后不可恢复
+										</div>
+										<div style={{ display: 'flex', gap: 6 }}>
+											<button
+												type="button"
+												onClick={confirmPoolRemove}
+												style={{ padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10, fontWeight: 600, border: 'none', color: '#fff', background: '#b91c1c' }}
+											>删除</button>
+											<button
+												type="button"
+												onClick={() => setPendingPoolRemove(null)}
+												title="取消（不删除）"
+												style={{ padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10, border: '1px solid rgba(255,255,255,.25)', color: '#e8e8e8', background: 'transparent' }}
+											>取消</button>
+										</div>
+									</div>
+								)}
+							</div>
 						</>
 					)}
 				</>
@@ -3461,14 +3772,15 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							sheetBackground: String(ctl('sheet_background', 'auto') ?? 'auto') as 'white' | 'green' | 'transparent' | 'auto',
 							// 切分抠图方式（none|chroma|flood，默认 none）
 							cutoutMode: (() => { const m = String(ctl('cutout_mode', 'none') ?? 'none'); return m === 'chroma' || m === 'flood' ? m : 'none'; })() as 'none' | 'chroma' | 'flood',
+							// 切分方式（grid|auto，默认 grid = 等分网格）
+							cellCropMode: String(ctl('cell_crop_mode', 'grid') ?? 'grid') === 'auto' ? 'auto' as const : 'grid' as const,
 							// 生成图像大小（2026-09-02）：整版图集分辨率 'WxH'
 							size: String(ctl('size', '1024x1024') ?? '1024x1024'),
 						}}
 						// ★ LLM 原图缩略图（2026-09-03）：整图 ref + 归档时的 rows/cols（网格叠加）
 						sheetRef={sheetFullEntry?.media.ref}
 						sheetGrid={(() => {
-							const r = Number(sheetFullEntry?.media.meta?.rows ?? 0);
-							const c = Number(sheetFullEntry?.media.meta?.cols ?? 0);
+							const { rows: r, cols: c } = sheetDimsOf(sheetFullEntry?.media.meta);
 							return r > 0 && c > 0 ? { rows: r, cols: c } : undefined;
 						})()}
 						// ★ 调整后图集（2026-09-03）：单格编辑/裁剪保存后重拼的 image 口
@@ -3485,8 +3797,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							for (let i = ownSnapshots.length - 1; i >= 0; i--) {
 								const e = ownSnapshots[i];
 								if (e.media?.kind === 'image' && e.media?.meta?.sheet === '1') {
-									const r = Number(e.media.meta?.rows ?? 0);
-									const c = Number(e.media.meta?.cols ?? 0);
+									const { rows: r, cols: c } = sheetDimsOf(e.media.meta);
 									return r > 0 && c > 0 ? { rows: r, cols: c } : undefined;
 								}
 							}
@@ -3703,7 +4014,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 												media: {
 													kind: 'image',
 													ref: croppedDataUrl,
-													meta: { sheetFull: '1', rows: rowsN, cols: colsN, fromUpstreamPlain: '1' },
+													meta: { sheetFull: META_SHEET_FLAG, rows: rowsN, cols: colsN, fromUpstreamPlain: '1' },
 												},
 											}, true);
 											// eslint-disable-next-line no-console
@@ -3876,7 +4187,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 														media: {
 															kind: 'image' as const,
 															ref: sheetDataUrl,
-															meta: { mime: 'image/png', sheet: '1', rows: String(rows), cols: String(cols), rebuilt: '1' },
+															meta: { mime: 'image/png', sheet: META_SHEET_FLAG, ...sheetDimsMeta(rows, cols), rebuilt: '1' },
 														},
 														index: 0,
 													}, true);
@@ -3923,10 +4234,20 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							seed: Number(ctl('seed', 0)) || 0,
 							videoProvider: String(ctl('videoProvider', '') ?? ''),
 							videoModel: String(ctl('videoModel', '') ?? ''),
+							// ★ 提示词 / 动作描述（2026-09-12 用户需求「视频生成 增加提示词
+							//   字段」）：`prompt` 是 TEXT widget → **不进 meta.controls** ✗，
+							//   `ctl('prompt')` 恒 fallback ''（同 chroma_color / cells 的坑：
+							//   用户填的动作描述重开面板即丢，且编辑器 onCommit 会把空串写回
+							//   覆盖 ✗✗）⇒ 走 `meta.prompt` 直传；draft 优先（清空后不回弹
+							//   旧值），meta 作兜底。
+							prompt: String(ctl('prompt', meta.prompt ?? '') ?? ''),
 							duration_s: Number(ctl('duration_s', 3)) || 3,
 							fps: Number(ctl('fps', 12)) || 12,
 							max_kb: Number(ctl('max_kb', 100)) || 100,
-							chromaColor: String(ctl('chroma_color', '#00FF00') ?? '#00FF00'),
+							// ★ 绿幕色走 meta 直传（STRING widget 不进 controls，见
+							//   NodeCardMeta.chromaColor 注释）——否则用户调过的幕布色
+							//   重开面板即丢。
+							chromaColor: String(meta.chromaColor ?? ctl('chroma_color', '#00FF00') ?? '#00FF00'),
 							chromaSimilarity: Number(ctl('chroma_similarity', 0.4)) || 0.4,
 							chromaSmoothness: Number(ctl('chroma_smoothness', 0.1)) || 0.1,
 							// ★ 绿幕抠像开关（2026-09-03）：非透明背景图像可关闭
@@ -3948,9 +4269,36 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 							})()}
 							// ★ cellRefs 用 latestOutputs（按 cellIndex 去重后的稳定序列）——
 							//   ownOutputs 含历史累积条目会让网格取到旧数据。
-							cellRefs={latestOutputs.map(e => ({
+							//   ★ 换批检测：过期产物（meta.srcSig ≠ 当前输入指纹）不送入预览。
+							//   ★ 透传 cellIndex（2026-09-12）：latestOutputs 是「按 cellIndex
+							//     排序」的**压缩序列**，数组下标只在「9 格齐全」时才等于格号；
+							//     任一格产物缺失（失败 / 被上面的换批检测剔除）下标即整体
+							//     前移 → ③ 预览第 i 格显示别人的 GIF ✗。带上 cellIndex 后
+							//     编辑器按格号取值，与 ② 的 cellVideoRefs / cellMatteRefs
+							//     同口径（三处预览同格同源）。
+							cellRefs={latestOutputs.filter(e => !isStaleArtifact(e)).map(e => ({
 							ref: e.media.ref,
 							kind: e.media.kind === 'video' ? 'video' : 'image',
+							...(Number.isInteger(Number(e.media.meta?.cellIndex))
+								? { cellIndex: Number(e.media.meta?.cellIndex) }
+								: {}),
+							// ★ 重生成标识（2026-09-12）：`meta.gifStamp`（阶段③ 写入的时间戳）
+							//   或条目 index —— 卡片用它作 `<img>` 的 React key。**必需**：
+							//   参数/输入未变时 GIF 字节可能完全相同 → src 不变 → 浏览器不
+							//   重解码 → 用户看到「点了 ③ 但预览没更新」✗（换 key 强制重挂
+							//   `<img>`，动画重播 + 视觉上确实刷新了）。
+							rev: String(e.media.meta?.gifStamp ?? e.index ?? ''),
+							// ★ 该 GIF 依据的抠像参数签名（阶段③ 写入）：与当前 matte 的
+							//   `matteSig` 不等 → 「② 之后 GIF 已过期」→ ③ 预览回落到新抠像
+							//   结果并提示「待重转 GIF」（2026-09-12 用户实测反馈）。
+							...(typeof e.media.meta?.gifFromMatteSig === 'string'
+								? { fromMatteSig: e.media.meta.gifFromMatteSig }
+								: {}),
+							// ★ 该 GIF 依据的绿幕原片指纹：与当前 `cellVideoRefs` 的原片指纹
+							//   不等 → ① 重跑过 → GIF 过期（参数/输入都没变也照样过期）。
+							...(typeof e.media.meta?.gifFromVideoSig === 'string'
+								? { fromVideoSig: e.media.meta.gifFromVideoSig }
+								: {}),
 							}))}
 							// ★ 格级「原始视频/抠图 GIF」切换（2026-09-08）：绿幕原片在
 							//   port='video'（归档键 cellN），output 只有 GIF——按 cellIndex
@@ -3959,11 +4307,34 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 								const byIdx = new Map<number, string>();
 								for (const e of ownSnapshots) {
 									if (e.port !== 'video' || e.media.kind !== 'video' || !e.media.ref) { continue; }
+									if (isStaleArtifact(e)) { continue; }   // 换批检测：过期原片不显示
 									const idx = Number(e.media.meta?.cellIndex ?? -1);
 									if (idx >= 0) { byIdx.set(idx, e.media.ref); }
 								}
 								return [...byIdx.entries()].map(([ci, ref]) => ({ cellIndex: ci, ref }));
 							})()}
+							// ★ 阶段① 抠像结果（2026-09-11 两阶段拆分）：快照 port='matte'
+							//   （执行器 archiveMatteResult 写入的透明 PNG + 抠像参数凭据）
+							//   → 阶段① 预览窗口的静态兜底（本地序列帧未算完时显示）。
+							cellMatteRefs={(() => {
+								const byIdx = new Map<number, { ref: string; sig: string; stamp: number }>();
+								for (const e of ownSnapshots) {
+									if (e.port !== 'matte' || !e.media.ref) { continue; }
+									if (isStaleArtifact(e)) { continue; }   // 换批检测：过期抠像结果不显示
+									const idx = Number(e.media.meta?.cellIndex ?? -1);
+									// ★ 带上 matteSig / matteStamp（2026-09-12）：③ 预览据此判断
+									//   GIF 是否已过期（签名不等 = ② 换了参数；时间戳更晚 = ② 又
+									//   跑过一次）→ 回落显示新抠像结果 + 「待重转 GIF」。
+									const sig = typeof e.media.meta?.matteSig === 'string' ? e.media.meta.matteSig : '';
+									const stamp = Number(e.media.meta?.matteStamp ?? 0);
+									if (idx >= 0) {
+										byIdx.set(idx, { ref: e.media.ref, sig, stamp: Number.isFinite(stamp) ? stamp : 0 });
+									}
+								}
+								return [...byIdx.entries()].map(([ci, v]) => ({ cellIndex: ci, ref: v.ref, sig: v.sig, stamp: v.stamp }));
+							})()}
+						// ★ 换批提示（见上方 staleCells）：非空 → 编辑器显示一行「输入已更换」
+						staleCells={[...staleCells]}
 						// ★ 网格行列：跟随上游图集 meta（表情包图片网格 rows×cols）
 						sheetGrid={upstreamSheetMeta.rows ? { rows: upstreamSheetMeta.rows, cols: upstreamSheetMeta.cols, margin: upstreamSheetMeta.margin } : undefined}
 						upstreamCount={upstreamImageRefs.length}
@@ -3990,17 +4361,10 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 								window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
 							}
 						}}
-						// ★ 单格重抠图（2026-09-08 改语义）：网格 ⟳ → run_scope='rematte'
-						//   ——不再重新生成视频，用该格已归档的绿幕视频按**当前抠像参数**
-						//   直接重跑 抠像→GIF（秒级出效果，调参迭代专用）。
-						//   ★ cell_indices 置空（2026-09-08）：批量操作的 cell_indices 残留
-						//   会被 rematte 解析优先采用——单格 ⟳ 意外变多格全跑（实测格 2-9）。
-						onRunCellRequest={(i) => {
-							if (nodeId) {
-								commitControls({ run_scope: 'rematte', selected_index: i + 1, cell_indices: '' });
-								window.dispatchEvent(new CustomEvent('wf-node-run', { detail: { nodeId } }));
-							}
-						}}
+						// ★ 单格 ⟳「重新抠图+GIF」按钮已移除（2026-09-12 用户需求）：
+						//   单格重做改为「选中该格 → 阶段① 重新抠图 → 阶段② 生成 GIF」。
+						//   执行器的 run_scope='rematte' 协议保留（脚本/后续入口仍可用），
+						//   但 UI 不再有入口。
 					/>
 				</div>
 			)}
@@ -4302,7 +4666,7 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 									{duration}
 								</span>
 							</div>
-							{snapshotStore && snapKey && <SnapshotPreview store={snapshotStore} nodeId={snapKey} entries={latestOutputs} batch={isBatchOutput} />}
+							{snapshotStore && snapKey && <SnapshotPreview store={snapshotStore} nodeId={snapKey} entries={latestOutputs.filter(e => !isStaleArtifact(e))} batch={isBatchOutput} />}
 							</div>
 							)}
 							{/* GridSplit 空态：对齐 ComfyTV GridSplitStageCard——OUTPUT (TYPE) 头 +

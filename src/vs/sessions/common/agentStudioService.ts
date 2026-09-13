@@ -688,6 +688,16 @@ export interface IAgentChatService {
 	readonly onDidChangeAgentSessions: Event<{ agentId: string }>;
 
 	/**
+	 * Fired when a **specific session is deleted** (payload carries the deleted sessionId).
+	 *
+	 * ★ 2026-09-12：与 `onDidChangeAgentSessions` 区分 —— 后者 payload 只有 agentId，
+	 * 且在每次 messageCount 变化时都会 fire（一个 turn 50 条消息 = 50 次）。想知道
+	 * 「我正在显示的会话是否被删」的订阅方（聊天面板）需要这个精准事件：删除可能由
+	 * 会话历史视图 / 会话浏览器发起，面板自身的删除回调不会被调用。
+	 */
+	readonly onDidDeleteAgentSession: Event<{ agentId: string; sessionId: string }>;
+
+	/**
 	 * Fired for every delta during any sendMessage call (task execution, user chat, etc.).
 	 * Allows external panels (kanban, task overview) to observe streaming in real-time.
 	 */
@@ -723,6 +733,17 @@ export interface IAgentChatService {
 
 	/** Append a message to the chat history for an agent and persist. */
 	appendMessage(agentId: string, message: ChatMessage): Promise<void>;
+
+	/**
+	 * Append **multiple** messages with a single full-file rewrite (2026-09-11).
+	 *
+	 * `appendMessage` rewrites the whole session file **and** the global history on
+	 * every call, so calling it in a loop (persisting one message per turn, trimming
+	 * history, …) costs O(N × session size) and can block the renderer for minutes
+	 * (real incident: a 62-turn finalization froze the window past the point where
+	 * logs stopped, user-reported as "app 卡死"). Use this for any N-message batch.
+	 */
+	appendMessagesBatch(agentId: string, messages: readonly ChatMessage[]): Promise<void>;
 
 	/**
 	 * 保存「中断草稿」——流式输出未结束时关闭 app，把半截内容写到一个**独立小文件**。

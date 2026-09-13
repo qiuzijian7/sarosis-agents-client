@@ -130,7 +130,11 @@ suite('comfyCors（方案A 直连/代理路由）', () => {
 				const f = createComfyFetch(LOCAL);
 				await f('https://example.com/data.json');
 				await f('data:text/plain,hello');
-				assert.deepStrictEqual(calls, ['https://example.com/data.json', 'data:text/plain,hello']);
+				// ★ 契约同步（2026-09-11）：`data:` URL **一律本地解码、绝不走 fetch**
+				//   （messageClient.ts：webview CSP 的 connect-src 不含 data:，
+				//   `fetch('data:…')` 会被拦截并抛 TypeError → 详见 dataUrlToResponse）。
+				//   故只有 https 那次会到达全局 fetch。
+				assert.deepStrictEqual(calls, ['https://example.com/data.json']);
 			} finally { restore(); }
 		});
 

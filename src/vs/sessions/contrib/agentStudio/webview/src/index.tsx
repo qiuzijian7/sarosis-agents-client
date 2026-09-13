@@ -29,7 +29,7 @@ import { useDiagnosticsStore } from './store/useDiagnosticsStore.js';
 import { useSwarmStore } from './store/useSwarmStore.js';
 import { useDebugTraceStore } from './store/useDebugTraceStore.js';
 import { dispatchConfigHtmlEvent } from './features/configmd/configHtmlBridge.js';
-import { handleSnapshotArchiveEvent, handleSnapshotQueryEvent, handleStageRunEvent, handleDirectStageRunEvent } from './features/workflowEditor/comfyHost/workflowSnapshotBridgeWebview.js';
+import { handleSnapshotArchiveEvent, handleSnapshotMediaPutEvent, handleSnapshotQueryEvent, handleStageRunEvent, handleStageRunCancel, handleDirectStageRunEvent, handleDirectStageRunCancel } from './features/workflowEditor/comfyHost/workflowSnapshotBridgeWebview.js';
 import './styles/globals.css';
 import './styles/themes.css';
 import './styles/chat-enhanced.css';
@@ -457,16 +457,32 @@ initMessageClient((type, data) => {
 		handleSnapshotArchiveEvent(data);
 		break;
 	}
+	case 'workflow.snapshotMediaPut': {
+		// 2026-09-11：host 把选择型节点（ImagePicker 等）的选中媒体落进快照库 ——
+		// 使其输出对下游与普通节点同构（此前下游按 store 取参考图取不到）。
+		handleSnapshotMediaPutEvent(data);
+		break;
+	}
 	case 'workflow.stageRun': {
 		// P0 dynamic workflow: host asks the canvas to actually RUN a media node
 		// (stage(uid) hook) — this is what makes scripts able to generate images.
 		handleStageRunEvent(data);
 		break;
 	}
+	case 'workflow.stageRunCancel': {
+		// host 已放弃该 stage()（空闲超时 / 取消）→ 中止画布侧执行（2026-09-11，与直跑同构）。
+		handleStageRunCancel(data);
+		break;
+	}
 	case 'workflow.stageDirectRun': {
 		// 存储工作流 ComfyStage 直跑：host 按 stageClass + values 请求画布执行媒体节点
 		//（如 ComfyTV.EmojiStage 的 m×n 表情包），不依赖画布 stageUid。
 		handleDirectStageRunEvent(data);
+		break;
+	}
+	case 'workflow.stageDirectRunCancel': {
+		// host 已放弃该直跑（空闲超时）→ 中止画布侧执行，消除僵尸运行（2026-09-11）。
+		handleDirectStageRunCancel(data);
 		break;
 	}
 	case 'workflow.executionUpdate': {
@@ -481,6 +497,19 @@ initMessageClient((type, data) => {
 		// P4: host pushed per-node trace (subagent_start/delta/subagent_end/execution_end).
 		// Route to the chat store, which updates the transient live execution
 		// view rendered by the chat panel.
+		//
+		// ⚠⚠ 架构说明（2026-09-13 质量评估，务必先读）：
+		//   **聊天卡实际由 native 侧渲染**，不在这里 ——
+		//     host trace → `browser/workflowTraceController.ts` →
+		//     `chatPanel.updateMessage(...)` →
+		//     `sessions/browser/agentChat/agentChatPanel.workflowCards.ts` 的 `_createNodeCard`。
+		//   本条 webview 分支维护的 `liveWorkflowExecutions` / `liveWorkflowEvents` 等
+		//   **中间态当前没有渲染器**：唯一消费者 `ExecutionTimelinePanel.tsx` 全仓无 import
+		//   （死组件）。webview 侧也**不消费** `node_progress` / `node_interaction` /
+		//   `node_values_changed`（这些只在 native 链处理）。
+		//   保留原因：`execution_end` 分支的 `commitWorkflowExecution` 仍有**副作用**
+		//   （生成永久消息 + 异步 `chat.append` 落盘），且删除前需确认 native 侧不依赖。
+		//   ★ 结论：**要改聊天卡的节点展示/进度，改 native 侧；不要改这里。**
 		const trace = data as { executionId: string; sessionId: string; workflowAgentId: string;
 			kind: string; nodeId: string; nodeName?: string; nodeType?: string;
 			task?: string; delta?: unknown; output?: string; error?: string; status?: string };
@@ -489,6 +518,38 @@ initMessageClient((type, data) => {
 			console.log(`[AgentStudio] workflow.executionTrace → kind=${trace.kind} node=${trace.nodeId} session=${trace.sessionId}`);
 		}
 		routeWorkflowTrace(trace);
+		break;
+	}
+	case 'workflow.nodeValuesRemote': {
+		// ★ P2b（2026-09-13）：**其它窗口**（同一工作流的另一个 tab / 独立窗口）改了
+		//   节点值 → 应用到本画布，保证两处显示一致（P2a 的遗留）。
+		//
+		//   用 `origin: 'external'` 派发 `wf-node-control`：
+		//     · handleNodeControl 会写 LiteGraph properties + store → 卡片随之刷新 ✓
+		//     · applyNodeControl 以 external 应用 → **不再 scheduleNotifyHost** →
+		//       不产生新的 nodeValuesChanged → **无回环** ✓
+		//   节点不属于本工作流时 applyNodeControl 返回 false → 静默落空
+		//   （这正是 host 侧可以「全量广播」而不按 workflowId 分组的依据）。
+		const nv = data as { nodeId?: string; values?: Record<string, unknown> } | undefined;
+		if (nv?.nodeId && nv.values && typeof nv.values === 'object') {
+			for (const [name, value] of Object.entries(nv.values)) {
+				window.dispatchEvent(new CustomEvent('wf-node-control', {
+					detail: { nodeId: nv.nodeId, name, value, origin: 'external' },
+				}));
+			}
+		}
+		break;
+	}
+	case 'workflow.snapshotPutRemote': {
+		// ★ P4（2026-09-13）：**其它窗口**产出的图/视频 → 派发给画布写入本窗口快照库
+		//   （`LiteGraphCanvas` 的 `wf-node-snapshot` 监听 → `store.putRemote`）。
+		//   putRemote 不广播 → 无回环 ✓；按 ref 去重 → 卡片历史不重复堆图 ✓。
+		const sp = data as { nodeId?: string; port?: string; media?: unknown } | undefined;
+		if (sp?.nodeId && sp.port && sp.media) {
+			window.dispatchEvent(new CustomEvent('wf-node-snapshot', {
+				detail: { nodeId: sp.nodeId, port: sp.port, media: sp.media },
+			}));
+		}
 		break;
 	}
 		default:

@@ -1,7 +1,12 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio Host - Template Variable Utilities
- *  Runtime side of the {{variable}} system. Mirrors the webview
- *  `utils/templateUtils.ts` (Mustache-style double-brace identifiers).
+ *  Runtime side of the {{variable}} system (Mustache-style double-brace identifiers).
+ *
+ *  ★ 2026-09-11 更正：原文写「Mirrors the webview `utils/templateUtils.ts`」已过时 ——
+ *    webview 侧那份现位于 `webview/src/features/workflowEditor/utils/templateUtils.ts`，
+ *    且是**纯词法工具**（`extractVariables`/`substituteVariables`，不识别任何内置变量），
+ *    与本文件的语义（内置变量表 + 分层取值 + 共享内存命名空间）不是镜像关系。
+ *    不要照它改本文件，反之亦然。
  *
  *  Used by `WorkflowExecutionService` to substitute node data.prompt
  *  values just before sending them to an agent. Variable sources:
@@ -27,6 +32,56 @@
 // missing suffix still resolves correctly.
 export const HOST_VARIABLE_PATTERN = /\{\{(\$?[\w-]+(?:\.[\w-]+)*)\}\}/g;
 
+/**
+ * 共享内存变量的命名空间前缀：`{{shared.<key>}}`。
+ *
+ * ★ 为什么加前缀而不是直接裸键：裸键会与「运行上下文」（`executionState.context` 的键，
+ *   如 `taskTitle`）和「上游节点 id」抢同一个命名空间 —— 节点 id 是自动生成的 uid，
+ *   用户键名撞上它就变成静默串值。加前缀后三方命名空间互不干扰，语义也无歧义：
+ *   `shared.*` **永远**指共享内存。
+ */
+export const SHARED_VAR_PREFIX = 'shared.';
+
+/**
+ * 用与 `{{var}}` 替换**同一份**正则做整串判定（避免另写一份字符集规则后漂移）。
+ * 非全局正则 → 无 `lastIndex` 状态坑。
+ */
+const SHARED_KEY_PROBE = new RegExp(`^(?:${HOST_VARIABLE_PATTERN.source})$`);
+
+/**
+ * 候选键能否被真正替换为 `{{shared.<key>}}`。
+ * 不满足时**必须丢弃**：否则会写进共享内存却永远替换不出来（静默失效）。
+ * 例：`verdict` / `plan-v2` / `a.b` 通过；`我的裁决`（非 ASCII）与 `has space` 不通过。
+ */
+export function isSubstitutableSharedKey(key: string): boolean {
+	if (!key) { return false; }
+	return SHARED_KEY_PROBE.test(`{{${SHARED_VAR_PREFIX}${key}}}`);
+}
+
+/**
+ * 解析节点声明的「语义发布键」`data.publishes`。
+ * 接受三种形态（节点 data 可能来自手改 JSON / LLM 生成 / 弹窗表单）：
+ *   - 字符串数组：`["verdict", "plan"]`
+ *   - 单个键：`"verdict"`
+ *   - **逗号分隔**（弹窗表单是单行文本框，最自然的写法）：`"verdict, plan"`
+ *     ⚠ 只按**逗号**切分，不按空白 —— 空白切分会让 `"has space"` 变成两个「合法」键，
+ *       掩盖「键名不能含空格」这一事实（那种键根本替换不出来）。
+ * 归一：trim、去重、**丢弃无法被 `{{shared.<key>}}` 替换的键**（见 `isSubstitutableSharedKey`）。
+ */
+export function parseSharedPublishKeys(raw: unknown): string[] {
+	const list: unknown[] = typeof raw === 'string'
+		? raw.split(',')
+		: Array.isArray(raw) ? raw : [];
+	const out: string[] = [];
+	for (const item of list) {
+		if (typeof item !== 'string') { continue; }
+		const key = item.trim();
+		if (!isSubstitutableSharedKey(key)) { continue; }
+		if (!out.includes(key)) { out.push(key); }
+	}
+	return out;
+}
+
 /** Built-in variable names that are auto-populated at runtime — never ask the user. */
 const BUILTIN_VAR_NAMES: ReadonlySet<string> = new Set([
 	'taskDescription',
@@ -48,6 +103,9 @@ const BUILTIN_VAR_NAMES: ReadonlySet<string> = new Set([
  */
 function isBuiltinVarName(name: string): boolean {
 	if (BUILTIN_VAR_NAMES.has(name)) { return true; }
+	// ★ 共享内存命名空间（`shared.<key>`）：运行时由 `executionState.sharedMemory` 解析
+	//   → 不得当作「需要用户填写」的变量（2026-09-11，与 `{{shared.<key>}}` 读路径配套）。
+	if (name.startsWith(SHARED_VAR_PREFIX)) { return true; }
 	// Anything starting with `$` is a reserved runtime alias (e.g. `$prev`).
 	if (name.startsWith('$')) { return true; }
 	return false;
@@ -108,6 +166,13 @@ export function buildRuntimeValueMap(args: {
 	nodeVariables: Record<string, string> | undefined;
 	upstreamOutputs: Record<string, string> | undefined;
 	workflowName: string;
+	/**
+	 * ★ 共享内存（2026-09-11 补）：`executionState.sharedMemory`。
+	 * 暴露为 `{{shared.<key>}}`（命名空间隔离，见 `SHARED_VAR_PREFIX`）。
+	 * 此前 sharedMemory **只写不读**（全服务无消费点）→ 文档承诺的
+	 * 「Agent 间共享、所有节点可见」从未生效。
+	 */
+	sharedMemory?: ReadonlyMap<string, string> | undefined;
 }): Record<string, string> {
 	const values: Record<string, string> = {};
 	const ctx = args.context ?? {};
@@ -158,6 +223,14 @@ export function buildRuntimeValueMap(args: {
 		}
 	}
 
+	// Layer 3.5: 共享内存（`{{shared.<key>}}`）。命名空间独立 → 不会与上面三层抢键；
+	// 放在上游产出之后，保证 `shared.*` 永远指共享内存（可预测）。
+	if (args.sharedMemory) {
+		for (const [key, value] of args.sharedMemory) {
+			values[`${SHARED_VAR_PREFIX}${key}`] = value;
+		}
+	}
+
 	// Layer 4: workflow metadata.
 	values['workflowName'] = args.workflowName;
 
@@ -182,11 +255,13 @@ export function collectWorkflowVariables(
 ): Array<{ name: string; defaultValue: string }> {
 	const seen = new Set<string>();
 	const vars: Array<{ name: string; defaultValue: string }> = [];
-	const regex = /\{\{(\$?\w+)\}\}/g;
+	// ★ 与替换侧**同一份**正则（原为 `/\{\{(\$?\w+)\}\}/g` —— 双真源漂移：该旧正则不认
+	//   连字符，`{{my-var}}` 既不进参数表、也替换不出来，静默失效）。
+	const regex = HOST_VARIABLE_PATTERN;
 
 	// Mirrors workflowExecutionService._collectTemplateVariables isBuiltin.
-	// NOTE: `input` is intentionally NOT here — see doc comment above.
-	const isBuiltin = (n: string) => /^(taskDescription|taskTitle|workflowName|workflowDescription|\$prev|\$prev\.output|\$preNode|\$preNode\.output)$/.test(n);
+	// NOTE: `input` / `firstInput` is intentionally NOT builtin here — see doc comment above.
+	const isBuiltin = (n: string) => BUILTIN_VAR_NAMES.has(n) && n !== 'input' && n !== 'firstInput';
 
 	const scan = (text: string) => {
 		regex.lastIndex = 0;
@@ -194,6 +269,10 @@ export function collectWorkflowVariables(
 		while ((match = regex.exec(text)) !== null) {
 			const name = match[1];
 			if (isBuiltin(name)) { continue; }
+			// ★ 点分名 = **字段访问器**（`<nodeId>.output`、`$prev.output`、`shared.<key>`）
+			//   → 不是用户变量，必须显式排除。原实现是靠「旧正则不匹配点分名」**意外**实现的；
+			//   改用统一正则后若不显式排除，参数表单会去问用户「nodeA.output 填什么」。
+			if (name.includes('.')) { continue; }
 			if (name.startsWith('$')) { continue; } // any other $-prefixed alias
 			if (!seen.has(name)) {
 				seen.add(name);

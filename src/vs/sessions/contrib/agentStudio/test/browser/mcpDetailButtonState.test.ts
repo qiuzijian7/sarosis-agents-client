@@ -4,15 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
-import { Event } from '../../../../../../base/common/event.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { Event } from '../../../../../base/common/event.js';
 import { IEventBridgeService } from '../../common/eventBridge.js';
-import { IMcpService } from '../../../../../../workbench/contrib/mcp/common/mcpTypes.js';
-import { IWorkbenchMcpManagementService } from '../../../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
-import { IInstallableMcpServer } from '../../../../../../platform/mcp/common/mcpManagement.js';
-import { McpConnectionState, McpServerCacheState, IMcpServer } from '../../../../../../workbench/contrib/mcp/common/mcpTypes.js';
-import { observableValue, IObservable } from '../../../../../../base/common/observable.js';
-import { Disposable } from '../../../../../../base/common/lifecycle.js';
+import { IMcpService } from '../../../../../workbench/contrib/mcp/common/mcpTypes.js';
+import { IWorkbenchMcpManagementService } from '../../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
+import { IInstallableMcpServer } from '../../../../../platform/mcp/common/mcpManagement.js';
+import { McpConnectionState, McpServerCacheState, IMcpServer } from '../../../../../workbench/contrib/mcp/common/mcpTypes.js';
+import { observableValue, IObservable } from '../../../../../base/common/observable.js';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
 
 /**
  * Test suite for MCP detail editor pane button state synchronization.
@@ -252,7 +252,10 @@ suite('MCP Detail Editor Pane — Button State Sync', () => {
 		await mockMcpManagement.install({ name: 'TAPD-MCP', config: { type: 1, command: 'npx' } as any });
 
 		const installed = await mockMcpManagement.getInstalled();
-		const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
+		// ★ 修正（2026-09-11）：本用例名是「名称**大小写不敏感**（sanitize 后匹配）」，
+		//   但原 sanitize 未小写化 → 两侧大小写不同（'TAPD_MCP' vs 'tapd_mcp'）恒不匹配，
+		//   断言必失败（自相矛盾）。补 toLowerCase 才是真正的不敏感匹配。
+		const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_').toLowerCase();
 		const norm = sanitize('tapd-mcp'); // lowercase
 		const isInstalled = installed.some(s => s.name === 'tapd-mcp' || sanitize(s.name) === norm);
 

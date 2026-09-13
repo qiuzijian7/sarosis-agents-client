@@ -64,6 +64,13 @@ export function createBridgeStub(mode = 'browser', opts = {}) {
 		},
 		postMessage: (msg) => { calls.push('postMessage:' + String(msg && msg.type)); return undefined; },
 		getState: () => state,
+		// ★ 同步 bridge API 必须**显式登记**（2026-09-11）：下方 Proxy 兜底把所有
+		//   未知键当作异步方法（`async () => ({ok:true,data:null})`），但
+		//   `getComfyCorsMode` 是**同步** API（真实实现读 messageClient 模块内 Map）
+		//   → 经兜底会变成 Promise（实证：comfyRunner.collectRunnerRows 的 `mode`
+		//   字段拿到 Promise）。这里委托真实实现暴露的读取口，保持同步语义与
+		//   状态同源（corsModeCache）。
+		getComfyCorsMode: (origin) => (globalThis.__vssarosCorsModeCache?.get?.(origin) ?? 'unknown'),
 	};
 	// ★ Proxy 兜底：产品代码新增的 bridge 方法一律返回异步桩值（不崩、可记录）
 	return new Proxy(core, {

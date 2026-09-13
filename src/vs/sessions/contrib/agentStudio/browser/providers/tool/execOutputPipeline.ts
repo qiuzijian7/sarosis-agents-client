@@ -35,19 +35,51 @@
  * 2. **never-worse**：任何一步若没让字节数变小，就丢弃该步结果用原文。启发式重写
  *    有可能变长（例如聚合摘要比原始 3 行还长），这条契约让「优化」永不为负。
  * 3. **opt-out**：命令含 `# nofilter` / `# raw` → 整个管道跳过。排障时需要原始输出。
+ *
+ * ## ⚠ 安全步骤豁免 never-worse（2026-09-13 修正）
+ *
+ * `inject`（剥离注入序列）与 `redact`（脱敏）的职责是**消除危险内容**，不是减小体积，
+ * 故以 `always: true` 声明**无条件采纳**，不受上面第 2 条契约约束。
+ *
+ * 此前二者与降噪步骤共用 never-worse，而脱敏是**替换**、长度可长可短 ——
+ * `PASSWORD=hunter2`（16 字符）→ `PASSWORD=<redacted>`（20 字符）**反而变长** →
+ * 该步被**静默丢弃** → 短口令 / 短密钥原样进模型上下文。
+ *
+ * 影响面：`terminal` 另有一层**无条件** `redactSecrets`（coreTools.ts:436）而幸免；
+ * `execute_code`（compatibilityTools 的 `_pipeExecOutput` / `_truncateExecOutput`）
+ * **只**靠本管道 → 泄露。修一处，两处受益。
  */
+
+// 脱敏真源：零依赖的 `common/redactSecrets.ts`（2026-09-13 抽出，四侧共用）。
+// ⚠ 必须是 **import + 本地别名导出**，不能写成 `export { x as y } from '…'` ——
+// 后者是纯转发、**不产生本地绑定**，而本文件的 `COMMON_STAGES` 需要引用该名字
+// （实测：写成转发会 `ReferenceError: redactSecretsInOutput is not defined`）。
+import { redactSecrets as redactSecretsInOutput } from '../../../common/redactSecrets.js';
+
+export { redactSecretsInOutput };
 
 /** 单步处理器。 */
 interface IPipelineStage {
 	readonly name: string;
 	readonly run: (input: string) => string;
+	/**
+	 * 是否**无条件采纳**本步结果（豁免 never-worse 契约）。
+	 *
+	 * ⚠ 仅供**安全类**步骤使用 —— 它们的职责是「消除危险内容」，不是「减小体积」，
+	 * 所以绝不能因为「没让字节变小」而被丢弃，否则安全控制就被一个**优化契约**架空了。
+	 *
+	 * 为什么 `redact` 必须为 true：脱敏是**替换**，替换后长度可长可短 ——
+	 * `PASSWORD=hunter2`（16 字符）→ `PASSWORD=<redacted>`（20 字符）**反而变长**。
+	 * 若走 never-worse，这类**短口令 / 短密钥**的脱敏会被**静默丢弃** → 原样进上下文。
+	 */
+	readonly always?: boolean;
 }
 
 /** 管道结果。 */
 export interface IExecOutputPipelineResult {
 	/** 处理后的文本。 */
 	readonly text: string;
-	/** 实际生效（即真的让字节变小）的步骤名，按执行序。用于日志与单测断言。 */
+	/** 实际改变了输出的步骤名，按执行序。用于日志与单测断言。 */
 	readonly appliedStages: readonly string[];
 	/** 是否因 passthrough / opt-out 整体跳过。 */
 	readonly skipped: boolean;
@@ -143,29 +175,7 @@ export function stripTerminalInjectionSequences(input: string): string {
 		.replace(/\x1b[=>A-Za-z]/g, '');
 }
 
-/** 需要脱敏的凭据形态。顺序无关（各自独立匹配）。 */
-const SECRET_PATTERNS: readonly { readonly re: RegExp; readonly label: string }[] = [
-	{ re: /\bBearer\s+[A-Za-z0-9\-._~+/]{16,}=*/gi, label: 'Bearer' },
-	{ re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, label: 'JWT' },
-	{ re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, label: 'PEM' },
-	{ re: /\bAKIA[0-9A-Z]{16}\b/g, label: 'AWS' },
-	{ re: /\bgh[pousr]_[A-Za-z0-9]{16,}\b/g, label: 'GitHub' },
-	{ re: /\bsk-(?:proj-|ant-)?[A-Za-z0-9\-_]{16,}\b/g, label: 'APIKey' },
-	{ re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, label: 'Slack' },
-	// KEY=VALUE 形态（仅当 key 名含敏感词），保留 key 便于定位
-	{ re: /\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*)\s*[=:]\s*\S+/g, label: 'EnvSecret' },
-];
-
-/** 脱敏。必须在 longline 折叠之前 —— 见模块头注释。 */
-export function redactSecretsInOutput(input: string): string {
-	if (!input) { return ''; }
-	let out = input;
-	for (const { re, label } of SECRET_PATTERNS) {
-		out = out.replace(re, (m, key?: string) =>
-			label === 'EnvSecret' && key ? `${key}=<redacted>` : `<redacted:${label}>`);
-	}
-	return out;
-}
+/** 脱敏。必须在 longline 折叠之前 —— 见模块头注释（实现见文件头的 import）。 */
 
 /** 超长单行折叠阈值（字符）。minified bundle / base64 数据行的主要来源。 */
 export const LONG_LINE_MAX = 500;
@@ -310,8 +320,9 @@ export function foldNpmNoise(input: string): string {
 const COMMON_STAGES: readonly IPipelineStage[] = [
 	{ name: 'progress', run: collapseProgressFrames },
 	{ name: 'ansi', run: stripAnsiSequences },
-	{ name: 'inject', run: stripTerminalInjectionSequences },
-	{ name: 'redact', run: redactSecretsInOutput },
+	// inject / redact 是**安全类**步骤 → always:true，绝不能被 never-worse 丢弃
+	{ name: 'inject', run: stripTerminalInjectionSequences, always: true },
+	{ name: 'redact', run: redactSecretsInOutput, always: true },
 	{ name: 'longline', run: input => foldLongLines(input) },
 ];
 
@@ -360,6 +371,13 @@ export function runExecOutputPipeline(raw: string, command: string): IExecOutput
 			next = stage.run(cur);
 		} catch {
 			// 单步异常绝不能让整个工具失败 —— 保留上一步结果继续
+			continue;
+		}
+		// 安全类步骤（always）：**无条件采纳**结果，不受 never-worse 约束
+		// （见 IPipelineStage.always —— 脱敏可能让文本变长，但那不是丢弃它的理由）
+		if (stage.always) {
+			if (next !== cur) { applied.push(stage.name); }
+			cur = next;
 			continue;
 		}
 		// never-worse 契约：没让字节变小的步骤一律丢弃

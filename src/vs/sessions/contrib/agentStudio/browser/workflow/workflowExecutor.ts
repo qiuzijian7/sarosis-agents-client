@@ -41,6 +41,11 @@ export interface IExecuteWorkflowScriptInput {
 	readonly canvasAnchorUid?: string;
 	readonly signal?: AbortSignal;
 	/**
+	 * 归属的 workflow executionId（2026-09-11）：透传给 `stage()` 端口，使脚本内
+	 * `await stage()` 的 pending 归该执行名下 → 取消时能一并中止（与直跑同构）。
+	 */
+	readonly executionId?: string;
+	/**
 	 * 父工具卡 id（子代理卡片挂载目标）。画布「直接执行」由 host 生成合成 workflow
 	 * 工具卡（toolCallId），传入此字段让子代理卡片的 parentToolCallId 直接等于它，
 	 * 命中 nativeChatEditorPane._remapAndAttachSubAgents 的直连分支（tc.id === pid）。
@@ -106,7 +111,8 @@ export async function executeWorkflowScript(
 		{
 			childPort,
 			snapshotPort: createBridgeSnapshotPort(),
-			stagePort: createBridgeStagePort(),
+			// ★ 透传 executionId（2026-09-11）：脚本内 stage() 的 pending 归该执行名下。
+			stagePort: createBridgeStagePort(undefined, input.executionId !== undefined ? { executionId: input.executionId } : undefined),
 			...(maxDurationMs !== undefined ? { maxRunDurationMs: maxDurationMs } : {}),
 		},
 		(lvl: 'info' | 'warn', msg: string) => {

@@ -115,11 +115,13 @@ suite('nodeCard ComfyTV metadata (getNodeCardMeta)', () => {
 		assert.match(meta.widgetSummary ?? '', /提示词=✓ 已填/);
 	});
 
-	test('P1: Start node exposes an args field (input contract)', () => {
+	test('★ P1: Start 走零参数 UI（2026-09-11 同步：args 参数 UI 已刻意移除）', () => {
+		// registrySaros.ts 注释：「2026-09-09：移除 args 参数 UI（无 widgets）——
+		// 卡片零参数 UI 收尾」。args **数据通道保留**：properties.args 仍经运行前
+		// 参数面板 / out 口消费（collectStartArgs 直读 node.properties，不依赖
+		// spec.widgets）。故 Start 不再有内嵌编辑字段（与 End 对称）。
 		const fields = buildSarosEditorFields('Saros.Start');
-		assert.strictEqual(fields.length, 1);
-		assert.strictEqual(fields[0].key, 'args');
-		assert.strictEqual(fields[0].kind, 'textarea');
+		assert.strictEqual(fields.length, 0, 'Start 应为零参数 UI（无 widgets）');
 	});
 
 	test('P1: End node exposes a description field', () => {
@@ -127,9 +129,12 @@ suite('nodeCard ComfyTV metadata (getNodeCardMeta)', () => {
 		assert.strictEqual(fields[0].key, 'description');
 	});
 
-	test('P1: Start args summary counts parameters from JSON string', () => {
+	test('★ P1: Start 零参数 UI 下不再派生 args 摘要（2026-09-11 同步）', () => {
+		// 摘要由 spec.widgets 派生；args 已不再是 widget（见上一条）→ 摘要不应再
+		// 出现「输入参数 (JSON)=N 参数」。args 的真实入口是运行前参数面板。
 		const spec: any = { type: 'Saros.Start', kind: 'react', category: 'c', inputs: [], outputs: [] };
 		const meta = getNodeCardMeta(spec, { args: '{"topic":"cyberpunk","count":4}' });
-		assert.match(meta.widgetSummary ?? '', /输入参数 \(JSON\)=2 参数/);
+		assert.doesNotMatch(meta.widgetSummary ?? '', /输入参数 \(JSON\)/,
+			'args 已非 spec.widgets → 不应派生该摘要');
 	});
 });

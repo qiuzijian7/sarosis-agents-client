@@ -87,13 +87,41 @@ function makeStore(hashes: { relPath: string; mtimeNs: number; size: number }[])
 	};
 }
 
+/**
+ * 冲刷变更去抖（2026-09-11）。
+ *
+ * `_checkFiles` 判定出 added/modified/deleted 后并不直接 fire，而是经
+ * `_fireChangeDebounced` 走 **CHANGE_DEBOUNCE_MS = 2000ms** 的静默期
+ * （合并保存风暴，见该函数 JSDoc）→ `await poll()` 之后事件尚未发出，
+ * 旧断言必然拿到 `events.length === 0`。
+ *
+ * 这里直接把 pending 事件取出并 fire（等价于静默期结束），避免每个用例真等 2 秒
+ * （9 个用例将白耗 ~19s）。测试本就在驱动私有内部（`_roots`/`_poll`），口径一致。
+ */
+function flushDebounce(watcher: any): void {
+	const pending = watcher._pendingChanges as Map<string, { event: unknown; timer: unknown }>;
+	if (!pending || pending.size === 0) { return; }
+	for (const [key, entry] of [...pending.entries()]) {
+		clearTimeout(entry.timer as any);
+		pending.delete(key);
+		watcher._onDidChange.fire(entry.event);
+	}
+}
+
 function setup(files: Record<string, IFileSpec>, hashes: { relPath: string; mtimeNs: number; size: number }[], fsOpts: { rootMissing?: boolean } = {}) {
 	const events: any[] = [];
 	const watcher = new CodebaseGraphWatcher(makeFs(files, fsOpts) as any, makeLog() as any);
 	watcher.onDidChange(e => events.push(e));
 	watcher.start(ROOT, makeStore(hashes) as any, 'P', EXTS);
 	const root = (watcher as any)._roots[0];
-	return { watcher, events, root, poll: () => (watcher as any)._poll(root) as Promise<void> };
+	return {
+		watcher, events, root,
+		poll: async (): Promise<void> => {
+			await (watcher as any)._poll(root);
+			flushDebounce(watcher);
+			flushDebounce(watcher);   // ★ 结束静默期，让事件立刻可见
+		},
+	};
 }
 
 suite('CodebaseGraphWatcher stat-only change detection (2026-07-22)', () => {
@@ -223,6 +251,7 @@ suite('CodebaseGraphWatcher keepDirs exception (2026-08-03)', () => {
 		watcher.start(ROOT, makeStore([]) as any, 'P', EXTS, new Set(['content']), ['content/script']);
 		const root = (watcher as any)._roots[0];
 		await (watcher as any)._poll(root);
+		flushDebounce(watcher);
 		assert.strictEqual(events.length, 1);
 		assert.deepStrictEqual(
 			[...events[0].added].sort(),
@@ -243,6 +272,7 @@ suite('CodebaseGraphWatcher keepDirs exception (2026-08-03)', () => {
 		watcher.start(ROOT, makeStore([]) as any, 'P', EXTS, new Set(['content', 'node_modules']), ['content/script']);
 		const root = (watcher as any)._roots[0];
 		await (watcher as any)._poll(root);
+		flushDebounce(watcher);
 		assert.strictEqual(events.length, 1);
 		assert.deepStrictEqual(events[0].added, ['Content/Script/a.ts']);
 		watcher.dispose();
@@ -259,6 +289,7 @@ suite('CodebaseGraphWatcher keepDirs exception (2026-08-03)', () => {
 		watcher.start(ROOT, makeStore([]) as any, 'P', EXTS, new Set(['content']));
 		const root = (watcher as any)._roots[0];
 		await (watcher as any)._poll(root);
+		flushDebounce(watcher);
 		assert.strictEqual(events.length, 1);
 		assert.deepStrictEqual(events[0].added, ['src/c.ts']);
 		watcher.dispose();
@@ -274,6 +305,7 @@ suite('CodebaseGraphWatcher keepDirs exception (2026-08-03)', () => {
 		watcher.start(ROOT, makeStore([]) as any, 'P', EXTS, new Set(['Content']), ['Content\\Script\\']);
 		const root = (watcher as any)._roots[0];
 		await (watcher as any)._poll(root);
+		flushDebounce(watcher);
 		assert.strictEqual(events.length, 1);
 		assert.deepStrictEqual(events[0].added, ['Content/Script/a.ts']);
 		watcher.dispose();

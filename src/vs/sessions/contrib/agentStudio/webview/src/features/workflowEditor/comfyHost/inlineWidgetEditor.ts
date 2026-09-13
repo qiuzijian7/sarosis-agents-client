@@ -21,7 +21,7 @@
  *  Convert to screen: ((canvasPos - ds.offset) * ds.scale) + rect.left/top.
  *--------------------------------------------------------------------------------------------*/
 
-import type { LGraphNode } from '@comfyorg/litegraph';
+import type { LGraphNode, LGraphCanvas } from '@comfyorg/litegraph';
 
 interface InlineEditorOpts {
 	value: string;

@@ -65,6 +65,11 @@ function makeCtx(serviceOverrides: Record<string, unknown> = {}, ctxOverrides: R
 	},
 	searchHelpers: {
 		recordSearchRepeat: recordBehavior ?? ((..._a: any[]) => ({ count: 1 })),
+		// 重复搜索意图打点（2026-09-09 补桩）：此前 stub 缺该方法 → 20 个用例
+		// TypeError 存量失败（工具实现已加、测试 mock 未同步）。
+		recordSearchIntentRepeat: (ctxOverrides['recordSearchIntentRepeatBehavior'] as undefined
+			| ((...a: any[]) => { count: number; warning?: string; blocked?: string }))
+			?? ((..._a: any[]) => ({ count: 1 })),
 		// search_code 连续空结果连击（2026-07-28）默认不引导；用例可用
 		// recordSearchCodeEmptyStreakBehavior 覆盖以定制连击行为。
 		recordSearchCodeEmptyStreak: (ctxOverrides['recordSearchCodeEmptyStreakBehavior'] as undefined
@@ -450,9 +455,12 @@ suite('codebase tool entries: search_code (2026-07-27 ripgrep 重构)', () => {
 		});
 		const out = await getTool(tools, 'search_code').handler({ query: 'SomeHallucinatedSymbol' });
 		const txt = resultText(out);
-		assert.ok(txt.includes('no path filter'), '应说明未用过滤');
-		assert.ok(txt.includes('search_files') || txt.includes('search_graph'), '应引导先验证符号名');
-		assert.ok(!txt.includes('too restrictive'), '无过滤时不应提示过滤过严');
+		// 2026-09-09 同步实现语义：有 searchRoots（本用例 ctx 有 1 个 workspace folder）
+		// 时如实回显范围，不再宣称 "no path filter"（见 pathFilterNormalize.ts:99-108，
+		// 修「有 path 却宣称未过滤」的撒谎文案）。测试此前未同步 → 存量失败。
+		assert.ok(txt.includes('0 matches within path='), '应如实回显搜索范围');
+		assert.ok(txt.includes('Retry WITHOUT path') || txt.includes('search_files') || txt.includes('search_graph'), '应给出重试/换工具的引导');
+		assert.ok(!txt.includes('too restrictive'), '无显式过滤时不应提示过滤过严');
 	});
 
 	test('search_code 有过滤空命中 → 提示"过滤过严"而非"验证符号名"', async () => {

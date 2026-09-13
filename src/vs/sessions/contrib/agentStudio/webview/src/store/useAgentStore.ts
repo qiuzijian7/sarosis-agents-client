@@ -39,6 +39,11 @@ export interface Agent {
 	skillErrorCount?: number;
 	missingSkillIds?: string[];
 	tools: string[];
+	/**
+	 * P0① 写能力（host 在 `agents.list` 响应里计算并附上，见 agentStudioWebviewController）。
+	 * 画布 planner 用它把可写节点排进独占层；webview 不 import `common/`，故只消费布尔值。
+	 */
+	writeCapable?: boolean;
 
 	// ── Advanced (optional) ─────────────────────────
 	handOffs?: Array<{ agent: string; label: string; prompt: string; send: boolean }>;

@@ -110,12 +110,16 @@ export class AgentStudioEditorPane extends EditorPane {
 		this._webviewController?.reinitializeWebview(newSyncLayout);
 	}
 
-	/**
-	 * 获取内部容器元素（用于 popout 恢复后获取尺寸）。
-	 */
-	override getContainer(): HTMLElement | undefined {
-		return this._container;
-	}
+	// ★★ 刻意**不覆写** `getContainer()`（2026-09-11 修「显示脚本编辑器时上方出现空白」）：
+	//   基类 `Composite.getContainer()` 返回 `create(parent)` 收到的 `.editor-instance`，
+	//   而 `EditorPanes.doShowEditorPane` 会执行
+	//   `editorPanesParent.appendChild(assertReturnsDefined(editorPane.getContainer()))`
+	//   —— 工作台**把 getContainer() 当作「本 pane 的实例元素」来挂载与显隐**。
+	//   此前覆写成返回 `this._container`（内层容器）→ 打开本 pane 时内层容器被**搬出**
+	//   `.editor-instance`，而那个实例元素留在 `.editor-container` 里：空、`height:100%`、
+	//   **永不隐藏** → 同组内切换到别的编辑器（如脚本编辑器）时，其上方出现**一整块空白** ✗。
+	//   保持基类语义即可：容器留在实例内，随实例一起显隐 ✓。
+	//   （原注释称「用于 popout 恢复后获取尺寸」，但全仓库无调用方 —— 已确认可安全移除。）
 
 	private _disposeWebview(): void {
 		if (this._webviewController) {

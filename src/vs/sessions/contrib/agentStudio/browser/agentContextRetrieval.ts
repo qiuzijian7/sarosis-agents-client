@@ -18,6 +18,8 @@ export const RETRIEVED_CTX_PREFIX = '## Preserved Context (from memory)';
 export interface ContextRetrievalDeps {
 	/** 已外置的中间消息哈希去重集合（按 sessionId 分组）。 */
 	getStoredHashes: (sessionId: string) => Set<string>;
+	/** R2（2026-09-09）：可选告警出口——观察写入失败时输出（失败此前零痕迹） */
+	logService?: { warn(msg: string): void };
 }
 
 /**
@@ -237,12 +239,19 @@ export async function storeTurnObservations(
 		const key = String(hash);
 		if (seen.has(key)) { continue; }
 		seen.add(key);
-		await provider.observe(agentId, {
-			sessionId,
-			hookType: 'turn_observation',
-			timestamp: new Date().toISOString(),
-			data: { role: m.role ?? 'unknown', content: `[${m.role ?? 'unknown'}] ${text.slice(0, 1500)}` },
-		}).catch(() => {});
+		try {
+			await provider.observe(agentId, {
+				sessionId,
+				hookType: 'turn_observation',
+				timestamp: new Date().toISOString(),
+				data: { role: m.role ?? 'unknown', content: `[${m.role ?? 'unknown'}] ${text.slice(0, 1500)}` },
+			});
+		} catch (err) {
+			// R2（2026-09-09）：写失败必须回滚去重标记（旧实现先 add 再吞错 →
+			// 失败的观察**永不重试、永久丢失**且零痕迹），并输出告警。
+			seen.delete(key);
+			deps.logService?.warn(`[AgentContextRetrieval] observe write failed (will retry next turn): ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 }
 

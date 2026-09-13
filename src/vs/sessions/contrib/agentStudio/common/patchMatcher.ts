@@ -32,6 +32,12 @@
  * 而不是把文件归一化（后者会污染整个文件的行尾风格）。
  */
 
+// 脱敏真源：零依赖的 `common/redactSecrets.ts`（2026-09-13 抽出，四侧共用）。
+// 本模块**必须**能脱敏 —— 它渲染的是文件原文（成功回显改动区 ±3 行、失败回传
+// Closest match 原文片段），而 `file_read` 对同一批字节是脱敏的。
+// 此前因「`common/` 不能引用 `browser/`」而根本无从脱敏，只能原样回显。
+import { redactSecrets } from './redactSecrets.js';
+
 /** 文件的主行尾风格。 */
 export type LineEnding = 'LF' | 'CRLF';
 
@@ -60,6 +66,18 @@ export function convertToLineEnding(text: string, ending: LineEnding): string {
 	return ending === 'CRLF' ? text.replace(/\n/g, '\r\n') : text;
 }
 
+/**
+ * 行尾**类型标签** → 实际行尾**字符**。
+ *
+ * `LineEnding` 是 `'LF' | 'CRLF'` 这样的标签，**不是**可直接拼接的字符 ——
+ * 任何 `array.join(...)` / 手工拼接行的地方都必须经过本函数，否则会把字面量
+ * `"LF"` / `"CRLF"` 写进文件内容（P2 实现时实测踩坑：`join(lineEnding)` 产出
+ * `'aLFNEWLFbLFcLF'`）。
+ */
+export function lineEndingChars(ending: LineEnding): string {
+	return ending === 'CRLF' ? '\r\n' : '\n';
+}
+
 /** 单个候选诊断结果。 */
 export interface IClosestMatch {
 	/** 文件中的真实原文（供模型照抄，**不是**归一化后的文本）。 */
@@ -69,6 +87,17 @@ export interface IClosestMatch {
 	/** 候选在文件中的起始下标。 */
 	readonly index: number;
 }
+
+/**
+ * `blockAnchor` 允许的**最小跨度上限**（行）。
+ *
+ * 末行锚点的搜索上界 = `max(2n-1, 本值)`（`n` = search 行数）。
+ * 由来：2026-09-13 审计日志 `vscode-app-1789281483413` 发现，目标块是 13 行的 CSS 规则，
+ * 而模型只引用首尾锚点 + 少量中间行（约 5 行）⇒ 旧上界 `2n-1 = 9 < 13` ⇒ **给不出任何提示**，
+ * 文案退化成「No similar block was found either」，模型只能被迫重读整个文件。
+ * 放宽后靠「行数差最小」挑选，仍能选中真正贴近的那一块。
+ */
+const ANCHOR_SPAN_FLOOR = 40;
 
 /**
  * 在文件中寻找"看起来像 search"的片段，**仅用于生成错误提示，绝不用于替换**。
@@ -151,14 +180,40 @@ export function findClosestMatch(content: string, search: string): IClosestMatch
 		if (firstAnchor.length > 0 && lastAnchor.length > 0) {
 			for (let i = 0; i < lineCount; i++) {
 				if (rawLine(i).trim() !== firstAnchor) { continue; }
-				// 末行锚点允许在 ±(n) 行范围内漂移，取最接近原始行数的那个
+				// 末行锚点允许漂移，取**行数最接近原始 search** 的那个。
+				//
+				// ⚠ 2026-09-13 修正两处：
+				//
+				// ① **注释与实现不符**：原注释写「取最接近原始行数的那个」，代码却是
+				//    `return` **第一个命中**（从 lo 起最小跨度）—— 承诺的行为从未实现。
+				//    跨度越小 ⇒ 提示里越可能**少给中间行** ⇒ 模型照抄虽能匹配上、
+				//    但可能只改到目标区域的一部分。现改为真的按「行数差最小」挑选
+				//    （相同时取靠前的，保持确定性）。
+				//
+				// ② **窗口过窄导致「什么都不给」**：原上界是 `i + 2n - 1`，即**文件块最多
+				//    2n-1 行** ⇒ search 行数不足块长一半时直接放弃。
+				//    实测证据（`vscode-app-1789281483413`）：目标块是 `docs/kb-mockups/kb-mockup.css`
+				//    的 `.kb-node { … }`，共 **13 行**；模型引用首尾锚点 + 少量中间行（约 5 行）是
+				//    **很自然**的行为 ⇒ `2n-1 = 9 < 13` ⇒ 给不出提示 ⇒ 文案退化为
+				//    「No similar block was found either」⇒ 模型只能被迫重读整个文件。
+				//    同一次会话里 search 够长的那些调用**确实拿到了提示**（`blockAnchor`），
+				//    两个变体的差别就是 search 行数 —— 证据一致。
+				//
+				// 现在上界放宽为 `max(2n-1, ANCHOR_SPAN_FLOOR)`，靠上面的「行数差最小」
+				// 挑选保证选到最贴近的块（首行锚点唯一时，候选 `j` 只在真正的收尾行附近胜出）。
+				// 该片段**仅作提示**、绝不用于替换，故放宽是安全的。
 				const lo = Math.max(i + 1, i + n - 1 - n);
-				const hi = Math.min(lineCount - 1, i + n - 1 + n);
+				const hi = Math.min(lineCount - 1, i + Math.max(2 * n - 1, ANCHOR_SPAN_FLOOR));
+				let bestJ = -1;
+				let bestDiff = Number.POSITIVE_INFINITY;
 				for (let j = lo; j <= hi; j++) {
-					if (rawLine(j).trim() === lastAnchor) {
-						const { snippet, index } = sliceLines(i, j);
-						return { snippet, strategy: 'blockAnchor', index };
-					}
+					if (rawLine(j).trim() !== lastAnchor) { continue; }
+					const diff = Math.abs((j - i + 1) - n);
+					if (diff < bestDiff) { bestDiff = diff; bestJ = j; }
+				}
+				if (bestJ >= 0) {
+					const { snippet, index } = sliceLines(i, bestJ);
+					return { snippet, strategy: 'blockAnchor', index };
 				}
 			}
 		}
@@ -185,7 +240,11 @@ export function findAllOccurrences(content: string, search: string): number[] {
 export type PatchFailureReason =
 	| 'not_found'
 	| 'multiple_occurrences'
-	| 'identical_search_replace';
+	| 'identical_search_replace'
+	/** P2（2026-09-12）：insert_line 非整数或越界（合法范围 1..totalLines+1）。 */
+	| 'invalid_insert_line'
+	/** P2（2026-09-12）：insert_line 模式下待插入文本为空。 */
+	| 'empty_insert';
 
 export interface IPatchFailure {
 	readonly ok: false;
@@ -203,12 +262,58 @@ export interface IPatchSuccess {
 	readonly lineEnding: LineEnding;
 	/** 入参行尾与文件不一致、已自动转换。 */
 	readonly lineEndingAdjusted: boolean;
+	/**
+	 * 改动后内容中，本次写入文本所占的 1-based 起始行。
+	 * `replaceAll` 多处替换时为首处的起始行（多处无法用单一范围表达）。
+	 */
+	readonly editedLineStart: number;
+	/** 改动后内容中，本次写入文本所占的 1-based 结束行（与 `editedLineStart` 配对）。 */
+	readonly editedLineEnd: number;
 }
 
 export type PatchOutcome = IPatchSuccess | IPatchFailure;
 
 /** 错误提示中回传原文片段的长度上限（对齐 MiMo 的 2000）。 */
 export const CLOSEST_MATCH_HINT_LIMIT = 2000;
+
+/** 成功回报中「改动区域上下文」在改动行前后各取的行数。 */
+export const PATCH_CONTEXT_LINES = 3;
+
+/**
+ * 渲染改动区域上下文 —— 带行号，格式与 `file_read` 输出**完全一致**
+ * （紧凑 `LINE_NUM|CONTENT`，无 padding，见 coreTools.ts 的 file_read 渲染），
+ * 且**脱敏策略也一致**（2026-09-13 修正：此前只对齐了格式、没对齐脱敏 →
+ * `patch` 成了绕过 `file_read` 的「读文件」通道）。
+ *
+ * 起因（2026-09-12）：此前 patch 成功只回一句 `Patched X — replaced N occurrences`，
+ * 模型手里仍是被改动**之前**的文本，要继续修改邻近区域就只能重新 file_read 整个
+ * 文件 —— 同一文件连续 patch 时反复付出「读 + 上下文」的代价。
+ * 回传改动区域后，绝大多数「连续 patch 同一文件」的场景可直接续写；
+ * 格式与 file_read 对齐，是为了让模型能把片段**原样复制**进下一次的 "search"。
+ *
+ * @param content   替换后的完整文件内容（来自 `IPatchSuccess.content`）。
+ * @param lineStart 改动区域起始行（1-based，闭区间）。
+ * @param lineEnd   改动区域结束行（1-based，闭区间）。
+ * @param contextLines 前后各扩展的行数，默认 `PATCH_CONTEXT_LINES`。
+ */
+export function buildEditedRegionContext(
+	content: string,
+	lineStart: number,
+	lineEnd: number,
+	contextLines: number = PATCH_CONTEXT_LINES,
+): string {
+	const lines = content.split(/\r\n|\n/);
+	const from = Math.max(1, lineStart - contextLines);
+	const to = Math.min(lines.length, lineEnd + contextLines);
+	const out: string[] = [];
+	for (let n = from; n <= to; n++) {
+		out.push(`${n}|${lines[n - 1]}`);
+	}
+	// ★ 脱敏（2026-09-13）：本函数渲染的是**文件原文**，而 `file_read` 对同一批字节
+	// 是脱敏的 —— 不脱敏会让 `patch` 成为一条**绕过 file_read 的「读文件」通道**
+	// （patch 一次即可拿到改动区 ± PATCH_CONTEXT_LINES 行的明文）。
+	return redactSecrets(out.join('\n'));
+}
 
 /**
  * 计算 patch 结果 —— **纯函数，不写文件**。
@@ -276,9 +381,17 @@ export function computePatch(
 				`automatically, so the mismatch is in the text itself.)`;
 		}
 		if (closest) {
-			const snippet = closest.snippet.length > CLOSEST_MATCH_HINT_LIMIT
-				? `${closest.snippet.slice(0, CLOSEST_MATCH_HINT_LIMIT)}\n… (truncated)`
-				: closest.snippet;
+			// ★ 脱敏（2026-09-13）：`snippet` 切自**文件原文**（`findClosestMatch` 的契约），
+			// 而这条失败路径**不需要模型先知道任何文本** —— 发一个近似但不匹配的 search
+			// 就能拿回最多 2000 字符明文，比成功路径的 ±3 行更宽。必须与 file_read 同等脱敏。
+			//
+			// 顺序：**先脱敏再截断** —— 反过来的话，截断点可能落在 token 中间，把密钥切成
+			// 两半后正则再也匹配不上（与 `execOutputPipeline` 里 redact 必须在 longline
+			// 之前是同一条教训）。
+			const redacted = redactSecrets(closest.snippet);
+			const snippet = redacted.length > CLOSEST_MATCH_HINT_LIMIT
+				? `${redacted.slice(0, CLOSEST_MATCH_HINT_LIMIT)}\n… (truncated)`
+				: redacted;
 			message +=
 				`\n\nClosest match in the file (differs only by ${closest.strategy}). ` +
 				`Copy this verbatim into "search" and retry:\n` +
@@ -310,5 +423,126 @@ export function computePatch(
 		content = content.slice(0, at) + replace + content.slice(at + search.length);
 	}
 
-	return { ok: true, content, replacedCount: targets.length, lineEnding, lineEndingAdjusted };
+	// ── 改动区域行号（2026-09-12，P0）─────────────────────────────────────
+	// 逆序替换**不触碰** targets[0] 之前的文本，故「改动起始行」在替换前后一致：
+	// 数一遍 targets[0] 之前的换行符即可。比在替换后的内容里重新定位 replace 更稳
+	// —— replace 文本可能恰好也出现在文件的其他位置（后者会定位到错误的一处）。
+	// 结束行 = 起始行 + replace 占用的行数 - 1；`replace` 已转换为文件行尾，
+	// 故按 '\n' 计数对 CRLF / LF 都正确。
+	let newlinesBefore = 0;
+	for (let i = 0; i < targets[0]; i++) {
+		if (fileContent.charCodeAt(i) === 10 /* \n */) { newlinesBefore++; }
+	}
+	const editedLineStart = newlinesBefore + 1;
+	const editedLineEnd = editedLineStart + replace.split('\n').length - 1;
+
+	return {
+		ok: true, content, replacedCount: targets.length, lineEnding, lineEndingAdjusted,
+		editedLineStart, editedLineEnd,
+	};
+}
+
+/**
+ * 行号插入模式（P2，2026-09-12）—— 对齐 Cline `editor` 的 `insert_line`。
+ *
+ * 动机：文本匹配在「无文本可锚定」的场景天然无力 —— 新增一个 import、在文件末尾
+ * 追加一段、在某处插入新函数时，模型只能把**邻近的既有文本**抄进 `search` 来定位，
+ * 既冗长又易错（缩进/空白稍有出入即 not_found）。而 `file_read` 的输出本就带行号
+ * （`LINE_NUM|CONTENT`），模型手里已有精确坐标 —— 本函数把这份坐标变成一等的编辑方式。
+ *
+ * 与文本模式**互补而非替代**：
+ *   · **改写既有内容** → 仍用 `computePatch`（要改的内容本身就是最好的锚点，
+ *     且能防止行号漂移导致改错位置）；
+ *   · **新增内容** → 用本函数（没有既有文本可供锚定）。
+ *
+ * 行号语义与 `file_read` 严格对齐：行数 = `content.split(/\r\n|\n/).length`
+ * （与 coreTools.readFileLines 的 `rawLines` 一致，**末尾空行也算一行**）。
+ *
+ * 边界特判：文件以换行结尾时，`insert_line = totalLines + 1`（追加到 EOF）会先把
+ * 末尾空串摘掉再追加，使 `'a\nb\n' + 'X'` 得到直觉结果 `'a\nb\nX'` 而非
+ * `'a\nb\n\nX'`（Cline 的 splice 实现会多留一个空行）。
+ *
+ * @param fileContent        原始文件内容。
+ * @param insertLine         1-based 插入点：新文本插在「第 insertLine 行」**之前**。
+ *                           合法范围 `1..totalLines+1`，取 `totalLines+1` 即追加到 EOF。
+ * @param rawInsertText      待插入文本（可含换行；行尾自动转成文件风格）。
+ * @param filePathForMessage 错误消息中的文件路径。
+ */
+export function computeInsert(
+	fileContent: string,
+	insertLine: number,
+	rawInsertText: string,
+	filePathForMessage: string,
+): PatchOutcome {
+	const lineEnding = detectLineEnding(fileContent);
+	// 必须**先归一化到 LF 再切行**：若直接对已转成 CRLF 的文本 split('\n')，元素会
+	// 残留 \r，随后 join('\r\n') 会产出 `\r\r\n`（CRLF 文件下实测踩坑）。
+	// `insertLines` 供 splice 使用（元素不含 \r）；`insertText` 供整块追加与
+	// lineEndingAdjusted 判定使用（已是文件行尾）。
+	const normInsert = normalizeLineEndings(rawInsertText);
+	const insertLines = normInsert.split('\n');
+	const insertText = convertToLineEnding(normInsert, lineEnding);
+
+	if (insertText.length === 0) {
+		return {
+			ok: false,
+			reason: 'empty_insert',
+			message:
+				`patch failed: the text to insert (pass it in "replace") is empty in ${filePathForMessage}. ` +
+				`Provide the text you want inserted at line ${insertLine}.`,
+		};
+	}
+
+	const lines = fileContent.split(/\r\n|\n/);
+	const totalLines = lines.length; // 与 file_read 一致：末尾空行也算一行
+	const maxBoundary = totalLines + 1; // 追加到 EOF 的边界
+	const endsWithNewline = lines.length > 1 && lines[lines.length - 1] === '';
+
+	if (!Number.isInteger(insertLine) || insertLine < 1 || insertLine > maxBoundary) {
+		return {
+			ok: false,
+			reason: 'invalid_insert_line',
+			message:
+				`patch failed: insert_line must be an integer in 1..${maxBoundary} — ${filePathForMessage} has ` +
+				`${totalLines} lines, so use 1 to insert at the very top or ${maxBoundary} to append at EOF. ` +
+				`Got: ${insertLine}. (Line numbers come from file_read output, format LINE_NUM|CONTENT.)`,
+		};
+	}
+
+	// 空文件特例：'' 的 split 结果是 ['']（一个空串元素），走 splice+join 会产出 'X\n'，
+	// 而空文件插入应得到 'X'（与编辑器行为一致）。
+	if (fileContent.length === 0) {
+		return {
+			ok: true, content: insertText, replacedCount: 1, lineEnding,
+			lineEndingAdjusted: insertText !== rawInsertText,
+			editedLineStart: 1, editedLineEnd: insertLines.length,
+		};
+	}
+
+	// ★ 拼接必须用**实际行尾字符**（lineEndingChars），不能用 LineEnding 标签 ——
+	// 后者会把字面量 "LF"/"CRLF" 写进文件（P2 首版实测踩坑）。
+	const eol = lineEndingChars(lineEnding);
+	// 追加到「末尾空行之后」时摘掉那个空串，避免多引入一个空行（见函数注释）
+	const appendAtEof = insertLine === maxBoundary && endsWithNewline;
+	let content: string;
+	if (appendAtEof) {
+		content = [...lines.slice(0, -1), insertText].join(eol);
+	} else {
+		lines.splice(insertLine - 1, 0, ...insertLines);
+		content = lines.join(eol);
+	}
+
+	// 插入文本在新内容中的起始行 = 插入点之前的行数（1-based）；追加特判时少一行
+	const editedLineStart = appendAtEof ? insertLine - 1 : insertLine;
+
+	return {
+		ok: true,
+		content,
+		// 插入不是「替换」，但记为 1 处改动，让调用方的文案与统计口径统一
+		replacedCount: 1,
+		lineEnding,
+		lineEndingAdjusted: insertText !== rawInsertText,
+		editedLineStart,
+		editedLineEnd: editedLineStart + insertLines.length - 1,
+	};
 }

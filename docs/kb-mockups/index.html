@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库 View — vssaros KB Mockup</title>
+<link rel="stylesheet" href="kb-mockup.css">
+<!--
+  页面说明（对应交付要求）：
+  · 本页忠实复刻真实「知识库」侧边栏 ViewPane 的 DOM 结构与视觉。
+  · 设计依据（实测源码）：
+      - views/knowledgeBaseView.ts   （DOM 构建，class KnowledgeBaseView extends ViewPane）
+      - views/media/kbView.css       （全部 .kb-* 样式，797 行）
+  · 形态说明：真实 View 是**侧边栏 ViewPane**（垂直 flex，宽约 320px），
+    并非全屏多页应用；「库 / 笔记 / 标签分类」为可折叠 Section，而非顶部页签。
+  · 无法静态呈现的交互均以 [交互注释] 标注（见源码中 [交互注释] 行）。
+-->
+<style>
+	/* 页面级样式：本页仅补充 mockup 舞台，产品 UI 样式全部在 kb-mockup.css */
+	body { padding: 0; }
+</style>
+</head>
+<body>
+
+<div class="stage">
+
+	<!-- ═══════════════════════════════════════════════════════════════
+	     状态 1：完整主视图（库展开 / 笔记展开 / 标签分类）
+	     ═══════════════════════════════════════════════════════════════ -->
+	<div class="stage-item">
+		<div class="stage-caption">状态 1 · <b>完整主视图</b>（默认）</div>
+		<div class="viewport tall">
+			<div class="kb-view">
+
+				<!-- ═══ View 顶栏（35px，对齐 kbView.css .kb-header）═══ -->
+				<header class="kb-header">
+					<span class="kb-title">📚 资料库</span>
+					<span class="kb-spacer"></span>
+					<!-- [交互注释] 关系图谱：点击打开 KnowledgeBaseGraphEditorPane -->
+					<span class="kb-hbtn" title="关系图谱">🕸️</span>
+					<!-- [交互注释] 思维导图：由 kbMindmapGenerator 生成大纲导图 -->
+					<span class="kb-hbtn" title="思维导图">🧠</span>
+					<!-- [交互注释] 刷新：重扫 Vault 目录并重建树 -->
+					<span class="kb-hbtn" title="刷新">⟳</span>
+					<!-- [交互注释] 批量构建：对全部 raw 状态节点入队索引，进行中显示 spinner -->
+					<span class="kb-hbtn" title="批量构建">🏗️</span>
+					<!-- [交互注释] 设置：弹出 .kb-settings 面板（根目录 / Embedding 模型 / 向量索引） -->
+					<span class="kb-hbtn" title="设置">⚙</span>
+				</header>
+
+				<!-- ═══ 主区（flex:1，内含 Vault 栏 + 搜索行 + 滚动区）═══ -->
+				<div class="kb-section-body-main" style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:120px;">
+
+					<!-- Vault 切换栏 -->
+					<div class="kb-vault-bar">
+						<span class="kb-vault-icon">🗄️</span>
+						<!-- [交互注释] 点击展开 .kb-vault-menu 下拉，切换 / 新建 / 关闭知识库 -->
+						<div class="kb-vault-select">
+							<span class="kb-vname">个人 Vault</span>
+							<span class="kb-caret">▼</span>
+						</div>
+						<!-- [交互注释] 记忆库：在 Vault 栏下方插入 kb-mem-section -->
+						<span class="kb-abtn" title="记忆库">🧠</span>
+						<!-- [交互注释] 视图模式：在「📂 文件树 / 🕐 最近编辑」间循环（_viewMode: tree|recent）-->
+						<span class="kb-abtn" title="切换视图模式">📂</span>
+						<!-- [交互注释] 新建：弹出导入/新建下拉（Obsidian / 本地文件 / URL / 新建笔记）-->
+						<span class="kb-abtn" title="新建">＋</span>
+						<!-- [交互注释] 更多：批量操作、排序方式等 -->
+						<span class="kb-abtn" title="更多">⋯</span>
+					</div>
+
+					<!-- 搜索行 -->
+					<div class="kb-search-row">
+						<div class="kb-search-box">
+							<span>🔍</span>
+							<input type="text" placeholder="搜索资料库…" readonly>
+							<!-- [交互注释] 模式切换：点击在「全文 / 文件名」间切换（.filename 类高亮）-->
+							<span class="kb-search-mode-btn">全文</span>
+							<!-- [交互注释] 排序：弹出 .kb-dropdown 排序面板（名称/时间/大小/相关度）-->
+							<span class="kb-search-sort-btn" title="排序">↑↓</span>
+						</div>
+					</div>
+
+					<!-- 滚动区（Section 容器）-->
+					<div class="kb-scroll">
+
+						<!-- ═══ 「库」分区 ═══ -->
+						<div class="kb-section sec-library open" data-section="library">
+							<div class="kb-section-header">
+								<span class="kb-arrow">▼</span>
+								<span class="kb-title">库</span>
+								<span class="kb-count">12</span>
+								<span class="kb-section-spacer" style="flex:1"></span>
+								<div class="kb-section-toolbar">
+									<span class="kb-tool-btn" title="新建文件">📄+</span>
+									<span class="kb-tool-btn" title="新建文件夹">📁+</span>
+								</div>
+							</div>
+							<div class="kb-section-body" data-section="library">
+
+								<!-- 目录节点（展开）-->
+								<div class="kb-node dir" data-path="/个人 Vault/技术文档" data-section="library">
+									<span class="kb-twist">▼</span>
+									<span class="kb-ficon">📂</span>
+									<span class="kb-name">技术文档</span>
+									<span class="kb-status indexed" title="已索引"></span>
+									<div class="kb-actions">
+										<span class="kb-act" title="重命名">✎</span>
+										<span class="kb-act" title="删除">🗑</span>
+									</div>
+									<div class="kb-children">
+										<!-- 子节点：选中态 -->
+										<div class="kb-node selected" data-path="/个人 Vault/技术文档/ADR-018 增量索引.md" data-section="library">
+											<span class="kb-twist empty">▶</span>
+											<span class="kb-ficon">📄</span>
+											<span class="kb-name">ADR-018 增量索引.md</span>
+											<span class="kb-meta">4.2 KB</span>
+											<span class="kb-status indexed" title="已索引"></span>
+										</div>
+										<!-- 子节点：raw（未索引）-->
+										<div class="kb-node" data-path="/个人 Vault/技术文档/架构评审纪要.md" data-section="library">
+											<span class="kb-twist empty">▶</span>
+											<span class="kb-ficon">📄</span>
+											<span class="kb-name">架构评审纪要.md</span>
+											<span class="kb-meta">1.8 KB</span>
+											<span class="kb-status raw" title="未索引"></span>
+										</div>
+										<!-- 子节点：构建中（spinner）-->
+										<div class="kb-node building" data-path="/个人 Vault/技术文档/性能基准报告.md" data-section="library">
+											<span class="kb-twist empty">▶</span>
+											<span class="kb-ficon">📄</span>
+											<span class="kb-name">性能基准报告.md</span>
+											<span class="kb-building">⟳</span>
+										</div>
+										<!-- 子节点：已修改待重建 -->
+										<div class="kb-node" data-path="/个人 Vault/技术文档/部署手册.md" data-section="library">
+											<span class="kb-twist empty">▶</span>
+											<span class="kb-ficon">📄</span>
+											<span class="kb-name">部署手册.md</span>
+											<span class="kb-meta">6.1 KB</span>
+											<span class="kb-status modified" title="已修改，待重建索引"></span>
+										</div>
+									</div>
+								</div>
+
+								<!-- 目录节点（折叠）-->
+								<div class="kb-node dir" data-path="/个人 Vault/会议记录" data-section="library">
+									<span class="kb-twist">▶</span>
+									<span class="kb-ficon">📂</span>
+									<span class="kb-name">会议记录</span>
+									<span class="kb-status indexed"></span>
+									<div class="kb-actions">
+										<span class="kb-act" title="重命名">✎</span>
+										<span class="kb-act" title="删除">🗑</span>
+									</div>
+								</div>
+
+								<!-- 顶层文件 -->
+								<div class="kb-node" data-path="/个人 Vault/README.md" data-section="library">
+									<span class="kb-twist empty">▶</span>
+									<span class="kb-ficon">📄</span>
+									<span class="kb-name">README.md</span>
+									<span class="kb-meta">0.9 KB</span>
+									<span class="kb-status indexed"></span>
+								</div>
+							</div>
+						</div>
+
+						<!-- ═══ 「笔记」分区 ═══ -->
+						<div class="kb-section sec-notes open" data-section="notes">
+							<div class="kb-section-header">
+								<span class="kb-arrow">▼</span>
+								<span class="kb-title">笔记</span>
+								<span class="kb-count">36</span>
+								<span class="kb-section-spacer" style="flex:1"></span>
+								<div class="kb-section-toolbar">
+									<span class="kb-tool-btn" title="新建文件">📄+</span>
+									<span class="kb-tool-btn" title="新建文件夹">📁+</span>
+								</div>
+							</div>
+							<div class="kb-section-body" data-section="notes">
+								<div class="kb-node" data-path="/笔记/索引原理速记.md" data-section="notes">
+									<span class="kb-twist empty">▶</span>
+									<span class="kb-ficon">📝</span>
+									<span class="kb-name">索引原理速记</span>
+									<span class="kb-meta">昨天</span>
+								</div>
+								<div class="kb-node" data-path="/笔记/向量检索调优.md" data-section="notes">
+									<span class="kb-twist empty">▶</span>
+									<span class="kb-ficon">📝</span>
+									<span class="kb-name">向量检索调优</span>
+									<span class="kb-meta">3 天前</span>
+								</div>
+								<div class="kb-node" data-path="/笔记/双链写法约定.md" data-section="notes">
+									<span class="kb-twist empty">▶</span>
+									<span class="kb-ficon">📝</span>
+									<span class="kb-name">双链写法约定</span>
+									<span class="kb-meta">上周</span>
+								</div>
+							</div>
+						</div>
+
+						<!-- ═══ 「标签分类」分区 ═══ -->
+						<div class="kb-section kb-tagclass open">
+							<div class="kb-section-header">
+								<span class="kb-arrow">▶</span>
+								<span class="kb-title">
+									<span class="kb-cat">🏷️</span>
+									标签分类
+								</span>
+								<!-- [交互注释] 交集模式徽标：多标签筛选时取 AND 交集 -->
+								<span class="kb-and-badge">交集 AND</span>
+								<span class="kb-count">8</span>
+							</div>
+							<div class="kb-section-body">
+								<!-- 标签搜索（真实实现在分类内部；联想下拉 + 清除，实时过滤分组，不跳转）-->
+								<div class="kb-tag-search">
+									<div class="kb-search-box">
+										<span>🔍</span>
+										<input type="text" placeholder="搜索标签…" autocomplete="off" readonly>
+										<!-- [交互注释] 清除按钮：初始 display:none，有输入才显（清空输入并隐藏 .kb-suggest）-->
+										<span class="kb-search-clear" style="display:none">✕</span>
+									</div>
+									<div class="kb-suggest"></div>
+								</div>
+								<!-- 标签分组 -->
+								<div class="kb-tag-groups">
+									<div class="kb-tag-group open">
+										<div class="kb-tag-group-head">
+											<span class="kb-arrow">▼</span>
+											<span class="kb-tag-group-name">#架构设计</span>
+											<span class="kb-count">5 篇</span>
+										</div>
+										<div class="kb-tag-group-body">
+											<div class="kb-tag-doc">
+												<span class="kb-ficon">📄</span>
+												<span class="kb-tag-doc-name">ADR-018 增量索引.md</span>
+											</div>
+											<div class="kb-tag-doc">
+												<span class="kb-ficon">📄</span>
+												<span class="kb-tag-doc-name">模块分层约定.md</span>
+											</div>
+										</div>
+									</div>
+									<div class="kb-tag-group">
+										<div class="kb-tag-group-head">
+											<span class="kb-arrow">▼</span>
+											<span class="kb-tag-group-name">#性能优化</span>
+											<span class="kb-count">3 篇</span>
+										</div>
+									</div>
+								</div>
+							</div>
+						</div>
+
+					</div><!-- /kb-scroll -->
+				</div><!-- /kb-section-body-main -->
+
+				<!-- ═══ 拖拽分隔条（3px，hover 高亮）═══ -->
+				<div class="kb-drag-handle"></div>
+
+				<!-- ═══ 记忆库分区 ═══ -->
+				<div class="kb-mem-section">
+					<div class="kb-mem-header">
+						<span class="kb-mem-arrow">▼</span>
+						<span>🧠</span>
+						<span class="kb-mem-title">记忆库</span>
+						<!-- [交互注释] 刷新：重建记忆列表（this._renderMemoryList）-->
+						<span class="kb-mem-refresh" title="刷新记忆库">⟳</span>
+					</div>
+					<div class="kb-mem-body">
+						<div class="kb-mem-list">
+							<!-- 单一入口块：打开 MemoryDetailEditorPane（真实实现无正文条目）-->
+							<div class="kb-mem-entry">
+								<span class="kb-mem-entry-ic">🧠</span>
+								<div class="kb-mem-entry-text">
+									<div class="kb-mem-entry-title">查看完整记忆</div>
+									<div class="kb-mem-entry-meta">点击打开 MemoryDetailEditorPane</div>
+								</div>
+								<span class="kb-mem-entry-arrow">→</span>
+							</div>
+							<!-- 固定槽位概览（pinned slots）-->
+							<div class="kb-mem-slots">
+								<span class="kb-mem-slot">persona</span>
+								<span class="kb-mem-slot">user_preferences</span>
+								<span class="kb-mem-slot">project_context</span>
+							</div>
+						</div>
+					</div>
+				</div>
+
+				<!-- ═══ 代码库分区 ═══ -->
+				<div class="kb-codebase-section">
+					<div class="kb-codebase-header">
+						<span>🧬</span>
+						<span class="kb-code-title">代码库</span>
+						<span class="kb-code-arrow">▼</span>
+					</div>
+					<div class="kb-codebase-body">
+						<!-- 单一入口块：打开 CodebaseDetailEditorPane -->
+						<div class="kb-codebase-entry">
+							<span class="kb-code-ic">🧬</span>
+							<div class="kb-code-body">
+								<div class="kb-code-name">查看完整代码库</div>
+								<div class="kb-code-meta">点击打开 CodebaseDetailEditorPane</div>
+							</div>
+							<span class="kb-code-arrow-r">→</span>
+						</div>
+					</div>
+				</div>
+
+			</div><!-- /kb-view -->
+		</div>
+	</div>
+
+	<!-- ═══════════════════════════════════════════════════════════════
+	     状态 2：Vault 下拉菜单展开
+	     ═══════════════════════════════════════════════════════════════ -->
+	<div class="stage-item">
+		<div class="stage-caption">状态 2 · <b>Vault 切换下拉</b></div>
+		<div class="viewport">
+			<div class="kb-view">
+				<header class="kb-header">
+					<span class="kb-title">📚 资料库</span>
+					<span class="kb-spacer"></span>
+					<span class="kb-hbtn">🕸️</span>
+					<span class="kb-hbtn">🧠</span>
+					<span class="kb-hbtn">⟳</span>
+					<span class="kb-hbtn">🏗️</span>
+					<span class="kb-hbtn">⚙</span>
+				</header>
+				<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:120px;">
+					<div class="kb-vault-bar">
+						<span class="kb-vault-icon">🗄️</span>
+						<div class="kb-vault-select">
+							<span class="kb-vname">个人 Vault</span>
+							<span class="kb-caret">▲</span>
+						</div>
+						<span class="kb-abtn">🧠</span>
+						<span class="kb-abtn">📂</span>
+						<span class="kb-abtn">＋</span>
+						<span class="kb-abtn">⋯</span>
+
+						<!-- [交互注释] 下拉菜单：.show 类控制显示；「当前知识库」/「已关闭」分组 -->
+						<div class="kb-vault-menu show">
+							<div class="kb-grp">当前知识库</div>
+							<div class="kb-opt">
+								<span class="kb-check">✓</span>
+								<span>个人 Vault</span>
+								<span class="kb-path">~/Saros/个人Vault</span>
+							</div>
+							<div class="kb-opt">
+								<span class="kb-check"></span>
+								<span>团队共享库</span>
+								<span class="kb-path">~/Saros/Team</span>
+							</div>
+							<div class="kb-divider"></div>
+							<div class="kb-grp">已关闭</div>
+							<div class="kb-opt">
+								<span class="kb-check"></span>
+								<span>归档库 2025</span>
+								<span class="kb-path">~/Archive/2025</span>
+							</div>
+							<div class="kb-divider"></div>
+							<!-- [交互注释] 新建知识库：选择目录后写入 kbSchema 并激活 -->
+							<div class="kb-opt add">
+								<span class="kb-check">＋</span>
+								<span>新建知识库…</span>
+							</div>
+						</div>
+					</div>
+					<div class="kb-search-row">
+						<div class="kb-search-box">
+							<span>🔍</span>
+							<input type="text" placeholder="搜索资料库…" readonly>
+							<span class="kb-search-mode-btn">全文</span>
+							<span class="kb-search-sort-btn">↑↓</span>
+						</div>
+					</div>
+					<div class="kb-scroll" style="opacity:.35;">
+						<div class="kb-section sec-library open">
+							<div class="kb-section-header">
+								<span class="kb-arrow">▼</span>
+								<span class="kb-title">库</span>
+								<span class="kb-count">12</span>
+							</div>
+							<div class="kb-section-body" style="display:block">
+								<div class="kb-node dir"><span class="kb-twist">▼</span><span class="kb-ficon">📂</span><span class="kb-name">技术文档</span></div>
+								<div class="kb-node"><span class="kb-twist empty">▶</span><span class="kb-ficon">📄</span><span class="kb-name">README.md</span></div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════════════════════════════════════════════════════════════
+	     状态 3：设置面板展开
+	     ═══════════════════════════════════════════════════════════════ -->
+	<div class="stage-item">
+		<div class="stage-caption">状态 3 · <b>设置面板</b>（⚙ 弹出）</div>
+		<div class="viewport">
+			<div class="kb-view">
+				<header class="kb-header" style="position:relative;">
+					<span class="kb-title">📚 资料库</span>
+					<span class="kb-spacer"></span>
+					<span class="kb-hbtn">🕸️</span>
+					<span class="kb-hbtn">🧠</span>
+					<span class="kb-hbtn">⟳</span>
+					<span class="kb-hbtn">🏗️</span>
+					<span class="kb-hbtn" style="background:var(--vscode-toolbar-activeBackground);opacity:1">⚙</span>
+
+					<!-- [交互注释] 设置面板：根目录 / Embedding 模型 / 向量索引参数 / 危险操作 -->
+					<div class="kb-dropdown kb-settings show" style="top:38px;right:6px;left:auto;">
+						<div class="kb-dd-title">知识库设置</div>
+						<div class="kb-set-row">
+							<span class="kb-set-label">根目录</span>
+							<span class="kb-set-path">~/Saros/个人Vault</span>
+							<span class="kb-set-btn" title="选择目录">📂</span>
+						</div>
+						<div class="kb-set-row">
+							<span class="kb-set-label">Embedding</span>
+							<select class="kb-set-select">
+								<option>bge-m3（默认）</option>
+								<option>text-embedding-3-small</option>
+								<option>本地 · all-MiniLM-L6</option>
+							</select>
+						</div>
+						<div class="kb-set-row">
+							<span class="kb-set-label">分块大小</span>
+							<input class="kb-set-input" value="512" readonly>
+						</div>
+						<div class="kb-set-row">
+							<span class="kb-set-label">重叠</span>
+							<input class="kb-set-input" value="64" readonly>
+							<span class="kb-set-btn primary" title="保存">✓</span>
+						</div>
+						<div class="kb-set-hint">修改 Embedding 模型后需重建向量索引，重建期间检索会回退到全文模式。</div>
+						<!-- [交互注释] 重建索引：清空向量库并全量重建，进行中按钮转 is-busy -->
+						<div class="kb-set-action">重建向量索引</div>
+						<!-- [交互注释] 危险操作：二次确认后清空索引缓存 -->
+						<div class="kb-set-action warn">清空索引缓存</div>
+					</div>
+				</header>
+				<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:120px;">
+					<div class="kb-vault-bar">
+						<span class="kb-vault-icon">🗄️</span>
+						<div class="kb-vault-select"><span class="kb-vname">个人 Vault</span><span class="kb-caret">▼</span></div>
+						<span class="kb-abtn">🧠</span><span class="kb-abtn">📂</span><span class="kb-abtn">＋</span><span class="kb-abtn">⋯</span>
+					</div>
+					<div class="kb-search-row">
+						<div class="kb-search-box">
+							<span>🔍</span>
+							<input type="text" placeholder="搜索资料库…" readonly>
+							<span class="kb-search-mode-btn">全文</span>
+							<span class="kb-search-sort-btn">↑↓</span>
+						</div>
+					</div>
+					<div class="kb-scroll" style="opacity:.35;">
+						<div class="kb-section sec-library open">
+							<div class="kb-section-header">
+								<span class="kb-arrow">▼</span>
+								<span class="kb-title">库</span>
+								<span class="kb-count">12</span>
+							</div>
+							<div class="kb-section-body" style="display:block">
+								<div class="kb-node"><span class="kb-twist empty">▶</span><span class="kb-ficon">📄</span><span class="kb-name">README.md</span></div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════════════════════════════════════════════════════════════
+	     状态 4：搜索命中结果
+	     ═══════════════════════════════════════════════════════════════ -->
+	<div class="stage-item">
+		<div class="stage-caption">状态 4 · <b>搜索结果</b>（全文命中）</div>
+		<div class="viewport">
+			<div class="kb-view">
+				<header class="kb-header">
+					<span class="kb-title">📚 资料库</span>
+					<span class="kb-spacer"></span>
+					<span class="kb-hbtn">🕸️</span><span class="kb-hbtn">🧠</span>
+					<span class="kb-hbtn">⟳</span><span class="kb-hbtn">🏗️</span><span class="kb-hbtn">⚙</span>
+				</header>
+				<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:120px;">
+					<div class="kb-vault-bar">
+						<span class="kb-vault-icon">🗄️</span>
+						<div class="kb-vault-select"><span class="kb-vname">个人 Vault</span><span class="kb-caret">▼</span></div>
+						<span class="kb-abtn">🧠</span><span class="kb-abtn">📂</span><span class="kb-abtn">＋</span><span class="kb-abtn">⋯</span>
+					</div>
+					<div class="kb-search-row">
+						<div class="kb-search-box" style="border-color:var(--vscode-focusBorder)">
+							<span>🔍</span>
+							<input type="text" value="增量索引" readonly>
+							<!-- [交互注释] 已切到文件名模式：.filename 类为蓝色高亮 -->
+							<span class="kb-search-mode-btn filename">文件名</span>
+							<span class="kb-search-sort-btn">↑↓</span>
+						</div>
+					</div>
+					<div class="kb-scroll">
+						<!-- [交互注释] 搜索结果容器（.show 显示）：命中高亮 mark + 匹配度徽标 + 路径 + 片段 -->
+						<div class="kb-search-results show">
+							<div class="kb-search-head">找到 3 条结果（耗时 42 ms）</div>
+
+							<div class="kb-search-hit">
+								<span class="kb-ficon">📄</span>
+								<span class="kb-name">ADR-018 <mark>增量索引</mark>.md</span>
+								<span class="kb-hit-badge">92%</span>
+								<span class="kb-hit-path">技术文档</span>
+							</div>
+							<div class="kb-hit-snippet">…采用增量索引策略，仅对变更分块重新计算向量…</div>
+
+							<div class="kb-search-hit">
+								<span class="kb-ficon">📄</span>
+								<span class="kb-name">索引原理速记.md</span>
+								<span class="kb-hit-badge">78%</span>
+								<span class="kb-hit-path">笔记</span>
+							</div>
+							<div class="kb-hit-snippet">…<mark>增量索引</mark>阈值 512 KB，超出走全量重建…</div>
+
+							<div class="kb-search-hit">
+								<span class="kb-ficon">📄</span>
+								<span class="kb-name">性能基准报告.md</span>
+								<span class="kb-hit-badge">61%</span>
+								<span class="kb-hit-path">技术文档</span>
+							</div>
+							<div class="kb-hit-snippet">…对比全量索引与<mark>增量索引</mark>的构建耗时…</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════════════════════════════════════════════════════════════
+	     状态 5：双链反链面板
+	     ═══════════════════════════════════════════════════════════════ -->
+	<div class="stage-item">
+		<div class="stage-caption">状态 5 · <b>反链面板</b>（双链映射）</div>
+		<div class="viewport">
+			<div class="kb-view">
+				<header class="kb-header">
+					<span class="kb-title">📚 资料库</span>
+					<span class="kb-spacer"></span>
+					<span class="kb-hbtn">🕸️</span><span class="kb-hbtn">🧠</span>
+					<span class="kb-hbtn">⟳</span><span class="kb-hbtn">🏗️</span><span class="kb-hbtn">⚙</span>
+				</header>
+				<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:120px;">
+					<div class="kb-vault-bar">
+						<span class="kb-vault-icon">🗄️</span>
+						<div class="kb-vault-select"><span class="kb-vname">个人 Vault</span><span class="kb-caret">▼</span></div>
+						<span class="kb-abtn">🧠</span><span class="kb-abtn">📂</span><span class="kb-abtn">＋</span><span class="kb-abtn">⋯</span>
+					</div>
+					<div class="kb-search-row">
+						<div class="kb-search-box">
+							<span>🔍</span>
+							<input type="text" placeholder="搜索资料库…" readonly>
+							<span class="kb-search-mode-btn">全文</span>
+							<span class="kb-search-sort-btn">↑↓</span>
+						</div>
+					</div>
+					<div class="kb-scroll">
+						<div class="kb-section sec-library open">
+							<div class="kb-section-header">
+								<span class="kb-arrow">▼</span>
+								<span class="kb-title">库</span>
+								<span class="kb-count">12</span>
+							</div>
+							<div class="kb-section-body" style="display:block">
+								<div class="kb-node dir"><span class="kb-twist">▼</span><span class="kb-ficon">📂</span><span class="kb-name">技术文档</span></div>
+								<div class="kb-node selected" style="margin-left:20px"><span class="kb-twist empty">▶</span><span class="kb-ficon">📄</span><span class="kb-name">ADR-018 增量索引.md</span></div>
+							</div>
+						</div>
+					</div>
+
+					<!-- [交互注释] 反链面板：显示引用当前笔记的 [[双链]] 来源 -->
+					<div class="kb-backlinks">
+						<div class="kb-bl-header">反向链接</div>
+						<div class="kb-bl-group">
+							<div class="kb-bl-title">链接自「笔记」</div>
+							<div class="kb-bl-item">
+								<span class="kb-bl-ic">🔗</span>
+								<div class="kb-bl-label">索引原理速记</div>
+								<div class="kb-bl-snippet">…参见 [[ADR-018 增量索引]] 的分块策略…</div>
+							</div>
+							<div class="kb-bl-item">
+								<span class="kb-bl-ic">🔗</span>
+								<div class="kb-bl-label">向量检索调优</div>
+								<div class="kb-bl-snippet">…阈值参考 [[ADR-018 增量索引]]…</div>
+							</div>
+						</div>
+						<div class="kb-bl-group">
+							<div class="kb-bl-title">链接自「技术文档」</div>
+							<!-- [交互注释] missing：目标笔记不存在时灰显且不可点 -->
+							<div class="kb-bl-item missing">
+								<span class="kb-bl-ic">⚠</span>
+								<div class="kb-bl-label">部署手册（待创建）</div>
+								<div class="kb-bl-snippet">…前置阅读 [[ADR-018 增量索引]]…</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════════════════════════════════════════════════════════════
+	     状态 2：Vault 下拉菜单展开（.kb-dropdown）
+	     ═══════════════════════════════════════════════════════════════ -->
+	<div class="stage-item">
+		<div class="stage-label">状态 2 · Vault 切换下拉（.kb-dropdown）— 点击 .kb-vault-select 弹出，min-width 220px</div>
+		<div class="kb-view">
+			<div class="kb-head">
+				<span class="kb-vault-icon">📚</span>
+				<div class="kb-vault-select" style="position:relative;">
+					<span class="kb-vname">GR性能分析库</span>
+					<span class="kb-caret">▼</span>
+					<!-- [交互注释] 下拉为绝对定位，覆盖在 Section 之上，z-index:100 -->
+					<div class="kb-dropdown" style="display:block; top:30px; left:0; min-width:220px;">
+						<div class="kb-dd-item selected">
+							<span class="kb-dd-ic">✓</span>
+							<span class="kb-dd-label">GR性能分析库</span>
+							<span class="kb-dd-meta">128 笔记</span>
+						</div>
+						<div class="kb-dd-item">
+							<span class="kb-dd-ic"></span>
+							<span class="kb-dd-label">UE5 引擎源码笔记</span>
+							<span class="kb-dd-meta">342 笔记</span>
+						</div>
+						<div class="kb-dd-item">
+							<span class="kb-dd-ic"></span>
+							<span class="kb-dd-label">Saros 产品文档</span>
+							<span class="kb-dd-meta">57 笔记</span>
+						</div>
+						<div class="kb-dd-item">
+							<span class="kb-dd-ic"></span>
+							<span class="kb-dd-label">会议纪要</span>
+							<span class="kb-dd-meta">19 笔记</span>
+						</div>
+						<div class="kb-dd-sep"></div>
+						<div class="kb-dd-item">
+							<span class="kb-dd-ic">＋</span>
+							<span class="kb-dd-label">新建资料库…</span>
+						</div>
+						<div class="kb-dd-item">
+							<span class="kb-dd-ic">⚙</span>
+							<span class="kb-dd-label">资料库设置…</span>
+						</div>
+					</div>
+				</div>
+				<div class="kb-abtn" title="新建笔记">＋</div>
+				<div class="kb-abtn" title="导入">⬇</div>
+				<div class="kb-abtn" title="刷新">⟳</div>
+				<div class="kb-abtn" title="设置">⚙</div>
+				<div class="kb-abtn" title="折叠全部">⇱</div>
+			</div>
+
+			<!-- 下拉遮罩下的 Section 内容（半透明示意） -->
+			<div class="kb-sections" style="opacity:.45;">
+				<div class="kb-section">
+					<div class="kb-sec-head"><span class="kb-sec-caret">▼</span><span class="kb-sec-title">库</span></div>
+					<div class="kb-sec-body">
+						<div class="kb-node"><span class="kb-node-ic">📄</span><span class="kb-node-label">GR性能分析库</span></div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════════════════════════════════════════════════════════════
+	     状态 3：设置面板（.kb-settings）
+	     ═══════════════════════════════════════════════════════════════ -->
+	<div class="stage-item">
+		<div class="stage-label">状态 3 · 资料库设置面板（.kb-settings）— 点击顶栏 ⚙ 进入</div>
+		<div class="kb-view">
+			<div class="kb-head">
+				<span class="kb-vault-icon">📚</span>
+				<div class="kb-vault-select"><span class="kb-vname">GR性能分析库</span><span class="kb-caret">▼</span></div>
+				<div class="kb-abtn" title="返回">←</div>
+			</div>
+			<div class="kb-settings" style="display:block;">
+				<div class="kb-set-title">资料库设置</div>
+
+				<div class="kb-set-group">
+					<div class="kb-set-label">资料库路径</div>
+					<div class="kb-set-value">g:\CustomWorkspaces\AIProjects\study-vault\GR-性能分析库</div>
+				</div>
+
+				<div class="kb-set-group">
+					<div class="kb-set-label">存储格式</div>
+					<div class="kb-set-radio"><span class="kb-radio on"></span>Obsidian Markdown（.md + wiki 双链）</div>
+					<div class="kb-set-radio"><span class="kb-radio"></span>SiYuan .sy JSON</div>
+				</div>
+
+				<div class="kb-set-group">
+					<div class="kb-set-label">索引与检索</div>
+					<div class="kb-set-row"><span class="kb-switch on"></span><span>构建语义向量索引</span></div>
+					<div class="kb-set-row"><span class="kb-switch on"></span><span>混合检索（BM25 + 向量）</span></div>
+					<div class="kb-set-row"><span class="kb-switch"></span><span>保存时自动重建索引</span></div>
+				</div>
+
+				<div class="kb-set-group">
+					<div class="kb-set-label">导入行为</div>
+					<div class="kb-set-row"><span class="kb-switch on"></span><span>导入时自动生成结构化摘要</span></div>
+					<div class="kb-set-row"><span class="kb-switch on"></span><span>按内容自动归类到标签</span></div>
+					<div class="kb-set-row"><span class="kb-switch"></span><span>保留原始文件副本</span></div>
+				</div>
+
+				<div class="kb-set-actions">
+					<div class="kb-btn primary">保存</div>
+					<div class="kb-btn">取消</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════════════════════════════════════════════════════════════
+	     状态 4：搜索命中高亮（.kb-search-hits + .kb-hit）
+	     ═══════════════════════════════════════════════════════════════ -->
+	<div class="stage-item">
+		<div class="stage-label">状态 4 · 检索命中（混合检索 BM25+向量，命中文档按相关性排序）</div>
+		<div class="kb-view">
+			<div class="kb-head">
+				<span class="kb-vault-icon">📚</span>
+				<div class="kb-vault-select"><span class="kb-vname">GR性能分析库</span><span class="kb-caret">▼</span></div>
+				<div class="kb-abtn" title="新建笔记">＋</div>
+				<div class="kb-abtn" title="导入">⬇</div>
+				<div class="kb-abtn" title="设置">⚙</div>
+			</div>
+
+			<div class="kb-search-box">
+				<span class="kb-search-ic">🔍</span>
+				<input class="kb-search-input" value="AllowIncrementalReachability" readonly>
+				<span class="kb-search-clear">✕</span>
+			</div>
+			<!-- [交互注释] 输入时防抖 200ms 触发混合检索，结果替换 .kb-sections -->
+			<div class="kb-search-meta">找到 6 条结果 · 混合检索（BM25 3 · 语义 3）· 用时 42ms</div>
+
+			<div class="kb-search-hits">
+				<div class="kb-hit">
+					<div class="kb-hit-title">GC 增量可达性分析开关</div>
+					<div class="kb-hit-path">配置/GC配置.md · 命中 3 处</div>
+					<div class="kb-hit-snippet">…将 <mark>AllowIncrementalReachability</mark> 置为 1 后，引擎在两次 GC 之间只重扫变化对象的可达性…</div>
+				</div>
+				<div class="kb-hit">
+					<div class="kb-hit-title">DefaultEngine.ini 参数速查</div>
+					<div class="kb-hit-path">引擎配置/DefaultEngine.ini.md · 命中 1 处</div>
+					<div class="kb-hit-snippet">…[ConsoleVariables] 段下 <mark>AllowIncrementalReachability</mark>=1 与 gc.IncrementalReachability…</div>
+				</div>
+				<div class="kb-hit">
+					<div class="kb-hit-title">增量 GC 与帧时间抖动</div>
+					<div class="kb-hit-path">性能/GC停顿分析.md · 语义相关度 0.87</div>
+					<div class="kb-hit-snippet">…开启增量可达性后，单帧 GC 峰值从 12.4ms 降至 3.1ms，但需注意 <mark>AllowIncrementalReachability</mark> 与多线程 GC 的耦合…</div>
+				</div>
+				<div class="kb-hit">
+					<div class="kb-hit-title">GarbageCollectionGlobals.h 阅读笔记</div>
+					<div class="kb-hit-path">源码阅读/CoreUObject.md · 语义相关度 0.81</div>
+					<div class="kb-hit-snippet">…bAllowIncrementalReachability 全局变量由 CVar 驱动，见 GarbageCollection.cpp 第 315 行注释…</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════════════════════════════════════════════════════════════
+	     状态 5：反链面板（.kb-backlinks）— 笔记详情内
+	     ═══════════════════════════════════════════════════════════════ -->
+	<div class="stage-item">
+		<div class="stage-label">状态 5 · 笔记详情底部反向链接面板（.kb-backlinks / .kb-bl-item）</div>
+		<div class="kb-view" style="height:420px;">
+			<div class="kb-head">
+				<span class="kb-back">←</span>
+				<span class="kb-note-title">GC 增量可达性分析开关</span>
+			</div>
+			<div class="kb-note-preview">
+				<h2>GC 增量可达性分析开关</h2>
+				<p>将 <code>AllowIncrementalReachability</code> 置为 <strong>1</strong> 后，引擎在两次 GC 之间只重扫变化对象的可达性，把单帧峰值从 12.4ms 压到 3.1ms。</p>
+				<pre><code>[ConsoleVariables]
+AllowIncrementalReachability=1
+gc.IncrementalReachability.Parallel=1</code></pre>
+				<p>关联：[[DefaultEngine.ini 参数速查]]、[[增量 GC 与帧时间抖动]]</p>
+			</div>
+
+			<div class="kb-backlinks">
+				<div class="kb-bl-header">反向链接 · 4</div>
+				<div class="kb-bl-group">
+					<div class="kb-bl-title">配置</div>
+					<div class="kb-bl-item">
+						<span class="kb-bl-ic">📄</span>
+						<div class="kb-bl-label">DefaultEngine.ini 参数速查</div>
+						<div class="kb-bl-snippet">…GC 段参考 [[GC 增量可达性分析开关]] 中的增量开关说明…</div>
+					</div>
+					<div class="kb-bl-item">
+						<span class="kb-bl-ic">📄</span>
+						<div class="kb-bl-label">多线程 GC 配置</div>
+						<div class="kb-bl-snippet">…需与 [[GC 增量可达性分析开关]] 的 Parallel 参数配套设置…</div>
+					</div>
+				</div>
+				<div class="kb-bl-group">
+					<div class="kb-bl-title">性能</div>
+					<div class="kb-bl-item">
+						<span class="kb-bl-ic">📄</span>
+						<div class="kb-bl-label">增量 GC 与帧时间抖动</div>
+						<div class="kb-bl-snippet">…基线见 [[GC 增量可达性分析开关]] 的 12.4ms → 3.1ms…</div>
+					</div>
+					<div class="kb-bl-item missing">
+						<span class="kb-bl-ic">⚠</span>
+						<div class="kb-bl-label">GC 调优实验记录（待创建）</div>
+						<div class="kb-bl-snippet">…前置阅读 [[GC 增量可达性分析开关]]…</div>
+					</div>
+				</div>
+			</div>
+
+			<div class="kb-bl-hint">missing 状态：目标笔记不存在时灰显且不可点击</div>
+		</div>
+	</div>
+
+</div><!-- /stage -->
+
+
+</body>
+</html>

@@ -32,6 +32,11 @@ export type CanvasOp =
 	| { op: 'connect'; source: string; target: string; sourceHandle?: string; targetHandle?: string; id?: string }
 	| { op: 'disconnect'; source: string; target: string; sourceHandle?: string; targetHandle?: string }
 	| { op: 'select'; node?: string | null }
+	/**
+	 * picker 选中同步（2026-09-11 用户需求）：聊天卡勾选 ImagePicker 候选 → 写回画布节点选中态。
+	 * 由 webview 的 `applyCanvasOpsToStore` 预处理成 `update_node`（ref→池序号 需要快照库）。
+	 */
+	| { op: 'select_picker_refs'; node: string; refs: string[] }
 	| { op: 'undo' }
 	| { op: 'redo' };
 

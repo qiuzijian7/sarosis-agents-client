@@ -1177,8 +1177,41 @@ protected override _maybeCreateEnhancedResult(key: string, resultText: string): 
 		if (TOOL_CODEBASE_TOOLS.has(key)) {
 			return this._createCodebaseResultCard(key, resultText);
 		}
+		// ── image_generate: 图片生成结果（2026-09-10）──
+		if (key === 'image_generate') {
+			return this._createImageGenResultCard(resultText);
+		}
 		return null;
-	}
+		}
+
+		/**
+		* 图片生成结果卡（2026-09-10）。
+		*
+		* 结果文本里图片引用有两种形态：
+		*  - `data:image/...;base64,...` —— pane 侧已把媒体库短引用（`saros-media://<id>`）
+		*    解析成 data URL（**仅 UI 显示**；落盘历史仍是短引用，避免 base64 进 LLM 上下文）；
+		*  - `http(s)://….png|jpg|webp` —— provider 直接返回的外链。
+		* 两者都渲染成可点击放大的图片网格；无图时返回 null，交回默认文本渲染（展示文字说明）。
+		*/
+		protected _createImageGenResultCard(resultText: string): HTMLElement | null {
+		const dataUrls = resultText.match(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi) ?? [];
+		const httpUrls = resultText.match(/https?:\/\/[^\s"')\]]+\.(?:png|jpe?g|webp|gif|bmp)/gi) ?? [];
+		const urls = [...dataUrls, ...httpUrls];
+		if (urls.length === 0) { return null; }
+
+		const wrap = $('.image-gen-result');
+		for (const url of urls) {
+			const img = document.createElement('img');
+			img.className = 'image-gen-result-img';
+			img.src = url;
+			img.alt = 'generated image';
+			img.loading = 'lazy';
+			// 点击放大：复用附件图片的 lightbox
+			img.addEventListener('click', () => this._showLightbox(url));
+			append(wrap, img);
+		}
+		return wrap;
+		}
 
 /**
  * Mermaid 图示工具卡片 — 已抽取到 agentChatPanel.mermaidCard.ts（AgentChatPanelMermaidCard）。

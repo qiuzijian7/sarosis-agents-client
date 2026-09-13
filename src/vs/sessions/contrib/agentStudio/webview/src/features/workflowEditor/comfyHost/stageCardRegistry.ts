@@ -91,6 +91,86 @@ export const STAGE_EDITOR_KIND: Record<string, StageEditorKind> = {
 	'image-loader': 'image',
 };
 
+// ── 编辑器描述符（2026-09-13，P1）────────────────────────────────────────────
+//
+// 背景：节点编辑器要支持「多宿主」（卡片内联 → 全屏浮层 → 独立 tab → OS 窗口），
+// 需要两类与 `STAGE_EDITOR_KIND`（nodeType → kind）**正交**的信息：
+//   ① 承载方式：项目内 React 组件 vs 外部 Web 应用（Blender / OpenPencil 这类）
+//   ② 是否提供「⛶ 全屏」入口
+//
+// 设计取舍：**按 kind 定义**（而非按 nodeType）—— Rotate 与 Mirror 共享 'transform'
+// 描述符，避免为 20 个 nodeType 重复声明 title/host/fullscreen。nodeType → kind 仍由
+// `STAGE_EDITOR_KIND` 单一负责，两张表由 `stageEditorDescriptor()` 组合。
+//
+// ⚠ 为什么不把 STAGE_EDITOR_KIND / STAGE_HIDDEN_FIELDS / STAGE_MIN_HEIGHTS 合并成
+//   一张大表：三者**覆盖范围本就不同** ——
+//     · `STAGE_MIN_HEIGHTS` 含 kind='none' 的节点（ComfyTV.ImageStage、Vox.DirectorStage、
+//       VideoLoaderStage/AudioLoaderStage…）→ 有最小高度但**没有**内嵌编辑器；
+//     · `STAGE_HIDDEN_FIELDS` 有占位项（KenBurns 空数组，等预览组件补齐）。
+//   强行合并会丢失这层语义，并推翻现有的一致性守卫（kind ⟺ nodeCard 渲染分支 ⟺
+//   hiddenFields，见 test/browser/workflowNodeUiSnapshot.test.ts）。
+//
+// ⚠ 当前消费方：只有导演台实现了「⛶ 全屏」渲染路径（P0，nodeCard 的
+//   renderDirectorConsole）。`fullscreen: true` 目前是**声明意图** —— 把入口推广到
+//   其它编辑器前，需先为它们实现「全屏尺寸下的渲染分支」（各自的 renderXxx(fullscreen)）。
+
+/** 编辑器承载方式：react = 项目内 React 组件；iframe = 外部 Web 应用。 */
+export type NodeEditorHost = 'react' | 'iframe';
+
+export interface StageEditorKindMeta {
+	/** 窗口 / tab 标题（供独立 tab 与独立窗口使用；卡片内不显示）。 */
+	title: string;
+	host: NodeEditorHost;
+	/** 是否声明支持「⛶ 全屏」入口。 */
+	fullscreen: boolean;
+	/**
+	 * `host === 'iframe'` 时的 URL 解析器（B 类外部应用，如 Blender / OpenPencil）。
+	 * 入参：节点类型 + 已提交的控件值；返回要加载的 URL。
+	 */
+	resolveUrl?: (nodeType: string, values: Record<string, unknown>) => string;
+}
+
+/**
+ * kind → 描述符。**必须覆盖 `StageEditorKind` 的所有非 'none' 成员**
+ * （漏项会被 TS 报错 + test/browser/nodeEditorDescriptor.test.ts 双重拦截）。
+ */
+export const STAGE_EDITOR_META: Record<Exclude<StageEditorKind, 'none'>, StageEditorKindMeta> = {
+	mask: { title: '蒙版绘制', host: 'react', fullscreen: true },
+	crop: { title: '裁剪', host: 'react', fullscreen: true },
+	transform: { title: '变换', host: 'react', fullscreen: true },
+	outpaint: { title: '扩图', host: 'react', fullscreen: true },
+	gridSplit: { title: '切分', host: 'react', fullscreen: true },
+	colorGrade: { title: '调色', host: 'react', fullscreen: true },
+	kenBurns: { title: 'Ken Burns', host: 'react', fullscreen: true },
+	multiangle: { title: '多视角', host: 'react', fullscreen: true },
+	panorama: { title: '全景', host: 'react', fullscreen: true },
+	relight: { title: '重打光', host: 'react', fullscreen: true },
+	material: { title: '材质', host: 'react', fullscreen: true },
+	'emoji-static': { title: '表情包制作', host: 'react', fullscreen: true },
+	'animated-emoji': { title: '动态表情包', host: 'react', fullscreen: true },
+	// loader 的内联编辑器就是「缩略图 + 尺寸 + 上传」，放大无收益 → 不声明全屏。
+	image: { title: '图像载入', host: 'react', fullscreen: false },
+	directorConsole: { title: '导演台', host: 'react', fullscreen: true },
+};
+
+/** 节点 → 编辑器描述符（该节点没有内嵌编辑器时返回 undefined）。 */
+export function stageEditorDescriptor(
+	nodeType: string | undefined,
+): ({ kind: StageEditorKind } & StageEditorKindMeta) | undefined {
+	if (!nodeType) { return undefined; }
+	const kind = STAGE_EDITOR_KIND[nodeType];
+	if (!kind || kind === 'none') { return undefined; }
+	return { kind, ...STAGE_EDITOR_META[kind] };
+}
+
+/**
+ * 该节点是否声明支持「⛶ 全屏」。
+ * ⚠ 仅表示**数据层声明**；调用方（nodeCard）还必须有对应的全屏渲染分支。
+ */
+export function canFullscreenStage(nodeType: string | undefined): boolean {
+	return stageEditorDescriptor(nodeType)?.fullscreen === true;
+}
+
 /**
  * 由内嵌编辑器接管的字段 —— 这些字段**不再**渲染成通用 INT/BOOLEAN/COMBO 控件
  * （否则同一个参数出现两套 UI）。对齐 ComfyTV「专用卡片自带 UI」的效果。
@@ -109,12 +189,18 @@ export const STAGE_HIDDEN_FIELDS: Record<string, readonly string[]> = {
 	'ComfyTV.PanoramaStage': ['workflow', 'prompt'],
 	'ComfyTV.RelightStage': ['main_prompt'],
 	'ComfyTV.MaterialStage': ['material_state'],
-	'ComfyTV.StatEmojiStage': ['rows', 'cols', 'fps', 'frames', 'prompt', 'cells', 'selected_index', 'run_scope', 'style_preset', 'sheet_background', 'cutout_mode'],
+	'ComfyTV.StatEmojiStage': ['rows', 'cols', 'fps', 'frames', 'prompt', 'cells', 'selected_index', 'run_scope', 'style_preset', 'sheet_background', 'cutout_mode', 'cell_crop_mode'],
 	// AnimatedEmoji 全部 widget 由 AnimatedEmojiEditor 接管（provider/model 联动、
 	// 动作 chips、抠像参数都在编辑器内自绘；网格切分参数随逐格模式移除）。
+	// ★ 2026-09-11：随两阶段拆分补齐 backend/workflow/seed/matte_enable/gif_enable/
+	//   chroma_algo/loop_blend/chroma_enable —— 这些字段此前**未在 spec 声明**，
+	//   编辑器 ctl() 读不到已存值（重开面板即回默认并写回覆盖）。
+	//   `run_scope`/`cell_indices` 是运行时协议（TEXT，不进 controls），刻意不列。
 	'Saros.AnimatedEmoji': [
-		'videoProvider', 'videoModel', 'prompt', 'cell_actions', 'duration_s', 'fps', 'max_kb',
-		'chroma_color', 'chroma_similarity', 'chroma_smoothness',
+		'backend', 'workflow', 'seed', 'videoProvider', 'videoModel', 'prompt', 'cell_actions',
+		'duration_s', 'fps', 'max_kb', 'loop_blend',
+		'chroma_enable', 'matte_enable', 'gif_enable',
+		'chroma_color', 'chroma_algo', 'chroma_similarity', 'chroma_smoothness',
 	],
 	'ComfyTV.StoryboardEditorStage': ['board_state'],
 	// Loader 节点 image 字段由 inline editor（ImageLoaderPreview）接管，不再渲染通用控件。

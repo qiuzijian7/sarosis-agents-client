@@ -23,6 +23,7 @@
  */
 
 import type { IToolCallInfo, IToolDefinition } from "../common/providers.js";
+import { redactSecrets } from "../common/redactSecrets.js";
 
 // ─── Constants ──────────────────────────────────────────────────────
 
@@ -1229,10 +1230,26 @@ export function safeStringifyToolResult(
 			json = '"[unserialisable tool result]"';
 		}
 	}
+	// ★ 统一脱敏出口（2026-09-13）：本函数是**每个**工具结果转文本的通用序列化器
+	// （agentTurnExecutor / agentOSService 共 21 处调用），放在这里是为了兜住
+	// **工具层管不到**的内容：
+	//   · MCP 工具输出 —— 内容来自 server 侧，工具层根本无法判断是否含凭据；
+	//   · `read_lints` 等未主动脱敏的工具；
+	//   · 未来任何回显文件内容的工具（不再需要逐个记得挂脱敏）。
+	// 工具层已各自脱敏的（file_read / search_* / terminal / execute_code / patch）
+	// 再跑一遍是**幂等**的：掩码不以 `<` 开头，赋值形态对已掩码内容幂等。
+	//
+	// 顺序：**先脱敏再截断** —— 反过来的话截断点可能落在 token 中间，把密钥切成两半
+	// 后正则再也匹配不上（与管道里 redact 必须在 longline 之前同源）。
+	//
+	// ⚠ 本函数产出的是 **JSON**，所以脱敏规则必须只替换「值」、**保留定界符** ——
+	// 见 `common/redactSecrets.ts` 的 `_VALUE` 注释（去掉引号会让 `{"TOKEN":"x"}` 变成
+	// 无法解析的 `{"TOKEN":<redacted>}`）。
+	const redacted = redactSecrets(json);
 	// Final char-level cap (covers the case where the deep-truncated form is
 	// still larger than MAX_TOOL_RESULT_CHARS, e.g. extremely wide objects).
-	const final = limitToolResultSize(json, finalCharLimit);
-	if (preTruncated && final === json) {
+	const final = limitToolResultSize(redacted, finalCharLimit);
+	if (preTruncated && final === redacted) {
 		// no-op: keep marker
 	}
 	return final;

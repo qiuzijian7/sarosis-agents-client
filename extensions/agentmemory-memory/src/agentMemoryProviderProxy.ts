@@ -15,23 +15,80 @@
  *  「AgentMemoryProviderV2 不在插件中实现」的重构目标。
  *--------------------------------------------------------------------------------------------*/
 
-import { serverBase, REQUEST_TIMEOUT_MS } from './serverConfig.js';
+import { serverBase, REQUEST_TIMEOUT_MS, checkHealth } from './serverConfig.js';
+
+/** 极简日志口（与 ILogService 子集兼容；缺省回退 console——capability-plugin
+ *  上下文可能不提供 logService）。R9（2026-09-10）：日志必须能进 VS Code 日志
+ *  文件，否则「网关没起」这类故障在日志里零痕迹。 */
+export interface MemoryProxyLogger {
+	info?(msg: string): void;
+	warn?(msg: string): void;
+	error?(msg: string): void;
+	debug?(msg: string): void;
+}
 
 export class AgentMemoryProviderProxy {
 	readonly id = 'agentmemory';
 	readonly name = 'AgentMemory';
 
+	private _log: MemoryProxyLogger;
 	private _handlers = new Map<string, Set<(...args: any[]) => void>>();
 	private _providerBase = `${serverBase()}/provider`;
+
+	/**
+	 * R9（2026-09-10）：启动探活——注册后主动打一次健康状态行，
+	 * 使「网关是否在跑」在**没有任何记忆调用**时也可见（此前只有调用失败才告警，
+	 * 而用户未触发对话时日志里完全空白，无法判断网关状态）。
+	 */
+	probeGateway(): void {
+		void (async () => {
+			const up = await checkHealth();
+			if (up) {
+				this._markGateway(true, 'probe');
+				this._log.info?.(`[AgentMemory] gateway reachable at ${serverBase()} — memory enabled`);
+			} else {
+				// 启动期探活失败=确定不可达，直接判 down（不等"连续 2 次"去抖）+ 挂恢复探测
+				if (this._gatewayUp === undefined) { this._gatewayUp = false; }
+				this._startRecoveryProbe();
+				this._log.warn?.(`[AgentMemory] gateway UNREACHABLE at ${serverBase()} — memory will return empty defaults and queue writes. Check: main-process log for '[agentmemory-gateway]' (spawn/skip reason) and whether port 3111 is LISTENING.`);
+			}
+		})();
+	}
+
+	/**
+	 * X8（2026-09-10）：本地判定的健康状态（不发起请求）——供 UI 展示"记忆后端不可用"。
+	 * 引擎侧 V2.getHealthStatus 需经 HTTP 转发，网关不可达时拿不到结果，
+	 * 因此 renderer 侧基于 probeGateway/_call 的连接状态直接判定。
+	 */
+	getHealthStatus(): { status: 'healthy' | 'unknown' | 'offline'; gatewayUp: boolean; baseUrl: string } {
+		const up = this._gatewayUp;
+		return {
+			status: up === true ? 'healthy' : (up === false ? 'offline' : 'unknown'),
+			gatewayUp: up === true,
+			baseUrl: serverBase(),
+		};
+	}
+
+	// ─── 日志口（R9：进 VS Code 日志，缺省回退 console）────
 	/** 网关连接状态：只在状态迁移时打日志，避免刷屏。 */
 	private _gatewayUp: boolean | undefined = undefined;
-	/** 连续失败计数：单次 5s 超时（网关忙于压缩/大扫除）不判 down，连续 2 次才判（P2 去抖）。 */
-	private _consecutiveFailures = 0;
+	/** P1-12（2026-09-11）：超时与连接错误分级计数（取代原单一 _consecutiveFailures）。
+	 *  连接拒绝/重置=进程真没了 → 2 次判 down；
+	 *  超时（AbortError）=网关可能只是忙于同步重活（sweep/索引）→ 3 次才判 down。
+	 *  背景：用户日志实测 sweep 期间 observe/triggerHook/onTaskCompleted **同时**超时，
+	 *  两个不同方法的超时瞬间凑满"连续 2 次"→ 误判 UNREACHABLE。 */
+	private _consecutiveTimeouts = 0;
+	private _consecutiveNetErrors = 0;
 	/** P1 写入重试队列：网关短暂不可达时 writeMemory 不再静默丢弃，
 	 *  入队后在下次成功调用/定时器驱动下重放（上限 200 条防内存膨胀，单条最多 5 次）。 */
 	private _writeQueue: Array<{ agentId: string; entry: any; attempts: number }> = [];
 	private _flushTimer: ReturnType<typeof setTimeout> | undefined;
 	private _flushing = false;
+	/** P1-11（2026-09-11）：down 后的周期恢复探测——此前一旦判 down，除非下一次记忆调用
+	 *  恰好成功，状态永远 offline、写队列永远不重放（用户日志实测：UNREACHABLE 后会话
+	 *  再无调用，挂到进程退出）。30s 间隔 checkHealth 开销可忽略。 */
+	private _recoveryTimer: ReturnType<typeof setInterval> | undefined;
+	private static readonly RECOVERY_PROBE_MS = 30_000;
 
 	private _on(event: string, handler: (...args: any[]) => void): () => void {
 		if (!this._handlers.has(event)) this._handlers.set(event, new Set());
@@ -42,20 +99,55 @@ export class AgentMemoryProviderProxy {
 		this._handlers.get(event)?.forEach(h => { try { h(...args); } catch { /* ignore */ } });
 	}
 
-	private _markGateway(up: boolean, method: string): void {
+	private _markGateway(up: boolean, method: string, isTimeout = false): void {
 		if (up) {
-			this._consecutiveFailures = 0;
+			this._consecutiveTimeouts = 0;
+			this._consecutiveNetErrors = 0;
+			this._stopRecoveryProbe();
 			if (this._gatewayUp !== true) {
 				this._gatewayUp = true;
-				console.log(`[AgentMemory] gateway connected (first ok call: ${method})`);
+				this._log.info?.(`[AgentMemory] gateway connected (first ok call: ${method})`);
 			}
 			return;
 		}
-		// 去抖：连续 2 次失败才判 down（单次超时多为网关忙于压缩/大扫除的瞬态）
-		this._consecutiveFailures++;
-		if (this._gatewayUp === false || this._consecutiveFailures < 2) { return; }
+		// P1-12：分级去抖——超时 3 次 / 连接错误 2 次才判 down
+		let threshold: number;
+		if (isTimeout) {
+			this._consecutiveTimeouts++;
+			threshold = 3;
+		} else {
+			this._consecutiveNetErrors++;
+			threshold = 2;
+		}
+		const count = isTimeout ? this._consecutiveTimeouts : this._consecutiveNetErrors;
+		if (this._gatewayUp === false || count < threshold) { return; }
 		this._gatewayUp = false;
-		console.warn(`[AgentMemory] gateway UNREACHABLE — memory calls return empty defaults, writes queued for retry (failed: ${method})`);
+		this._log.warn?.(`[AgentMemory] gateway UNREACHABLE — memory calls return empty defaults, writes queued for retry (failed: ${method}${isTimeout ? ', timeouts' : ''}). Check port 3111 and the main-process log for '[agentmemory-gateway]'.`);
+		this._startRecoveryProbe();
+	}
+
+	/** P1-11：down 后每 30s 探活一次，恢复时立刻重连 + 重放写队列（不等下一次记忆调用）。 */
+	private _startRecoveryProbe(): void {
+		if (this._recoveryTimer !== undefined) { return; }
+		this._recoveryTimer = setInterval(() => {
+			void (async () => {
+				if (this._gatewayUp !== false) { this._stopRecoveryProbe(); return; }
+				try {
+					const up = await checkHealth();
+					if (up) {
+						this._stopRecoveryProbe();
+						this._markGateway(true, 'recovery-probe');
+						this._log.info?.(`[AgentMemory] gateway recovered — resuming memory calls and flushing ${this._writeQueue.length} queued write(s)`);
+						void this._flushWriteQueue();
+					}
+				} catch { /* 下轮继续探测 */ }
+			})();
+		}, AgentMemoryProviderProxy.RECOVERY_PROBE_MS);
+		// Node 测试环境：不阻止进程退出（renderer 环境无 unref，特性检测）
+		(this._recoveryTimer as unknown as { unref?: () => void })?.unref?.();
+	}
+	private _stopRecoveryProbe(): void {
+		if (this._recoveryTimer !== undefined) { clearInterval(this._recoveryTimer); this._recoveryTimer = undefined; }
 	}
 
 	/** 通用转发：POST /provider/<method> { args }，返回解析后的 JSON 或 null。
@@ -86,19 +178,26 @@ export class AgentMemoryProviderProxy {
 				if (!resp.ok) {
 					// 有响应 = 网关可达；是方法级故障（404 方法缺失 / 500 引擎抛错）
 					this._markGateway(true, method);
-					console.warn(`[AgentMemory] provider method '${method}' failed: HTTP ${resp.status} (gateway reachable — method-level error)`);
+					this._log.warn?.(`[AgentMemory] provider method '${method}' failed: HTTP ${resp.status} (gateway reachable — method-level error)`);
 					return null;
 				}
 				const txt = await resp.text();
 				const parsed = txt ? JSON.parse(txt) : null;
 				this._markGateway(true, method);
 				return parsed;
-			} catch {
+			} catch (err) {
+				// P1-11：此前 catch{} 完全吞掉错误对象——超时？连接拒绝？无法定位。
+				// 最终失败（判 down 前）warn 一次带原因；中间重试打 debug。
+				const reason = err instanceof Error ? err.message : String(err);
+				// P1-12：区分超时（AbortError，网关可能只是忙）与连接类错误（进程真没了）
+				const isTimeout = (err as { name?: string })?.name === 'AbortError' || /abort/i.test(reason);
 				if (attempt < maxAttempts) {
+					this._log.debug?.(`[AgentMemory] '${method}' attempt ${attempt}/${maxAttempts} network error: ${reason}`);
 					await new Promise<void>(r => setTimeout(r, attempt === 1 ? 500 : 1500));
 					continue;
 				}
-				this._markGateway(false, method);
+				this._log.warn?.(`[AgentMemory] '${method}' failed after ${maxAttempts} attempt(s): ${reason} (${REQUEST_TIMEOUT_MS}ms timeout per attempt)`);
+				this._markGateway(false, method, isTimeout);
 				return null;
 			}
 		}
@@ -111,7 +210,7 @@ export class AgentMemoryProviderProxy {
 		const ctx = (await this._call('loadContext', agentId, sessionId, query, options))
 			?? { longTermMemories: [], shortTermMemories: [], injectedContext: '' };
 		if (this._gatewayUp) {
-			console.log(
+			this._log.info?.(
 				`[AgentMemory] loadContext agent=${agentId} session=${sessionId}: ` +
 				`short=${ctx.shortTermMemories?.length ?? 0} long=${ctx.longTermMemories?.length ?? 0} ` +
 				`sysPrompt=${(ctx.systemPrompt ?? '').length} chars`
@@ -130,7 +229,7 @@ export class AgentMemoryProviderProxy {
 		if (ok) {
 			// 网关 host.mjs 对 void 方法统一回 { ok: true } —— ok 为真即调用成功，
 			// 本地补发 memory_written（网关宿主引擎的事件到不了 renderer，无 SSE 通道）。
-			console.log(`[AgentMemory] writeMemory ok: agent=${agentId} type=${memoryType} len=${entry?.content?.length ?? 0}`);
+			this._log.info?.(`[AgentMemory] writeMemory ok: agent=${agentId} type=${memoryType} len=${entry?.content?.length ?? 0}`);
 			this._emit('memory_written', agentId, {
 				memoryId: entry?.id ?? '',
 				noticeId,
@@ -142,7 +241,7 @@ export class AgentMemoryProviderProxy {
 		} else {
 			// P1：不再静默丢弃 —— 入队重试（网关忙于压缩/大扫除的瞬态会恢复）
 			this._enqueueWrite(agentId, entry);
-			console.warn(`[AgentMemory] writeMemory FAILED (queued for retry): agent=${agentId} type=${memoryType} len=${entry?.content?.length ?? 0}`);
+			this._log.warn?.(`[AgentMemory] writeMemory FAILED (queued for retry): agent=${agentId} type=${memoryType} len=${entry?.content?.length ?? 0}`);
 			this._emit('memory_write_failed', agentId, {
 				noticeId,
 				memoryType,
@@ -179,14 +278,14 @@ export class AgentMemoryProviderProxy {
 					item.attempts++;
 					if (item.attempts >= 5) {
 						this._writeQueue.shift();
-						console.warn(`[AgentMemory] writeMemory dropped after 5 attempts: agent=${item.agentId} len=${item.entry?.content?.length ?? 0}`);
+						this._log.warn?.(`[AgentMemory] writeMemory dropped after 5 attempts: agent=${item.agentId} len=${item.entry?.content?.length ?? 0}`);
 						continue;
 					}
 					break; // 网关仍不可达，等下一轮
 				}
 				this._writeQueue.shift();
 				const entry = item.entry;
-				console.log(`[AgentMemory] writeMemory replayed ok: agent=${item.agentId} len=${entry?.content?.length ?? 0}`);
+				this._log.info?.(`[AgentMemory] writeMemory replayed ok: agent=${item.agentId} len=${entry?.content?.length ?? 0}`);
 				const replaySessionId = (entry?.metadata?.['sessionId'] as string | undefined)
 					?? (entry?.metadata?.['session_id'] as string | undefined);
 				this._emit('memory_written', item.agentId, {
@@ -207,7 +306,7 @@ export class AgentMemoryProviderProxy {
 		const results = (await this._call('searchMemory', agentId, query)) ?? [];
 		if (this._gatewayUp) {
 			const q = (query ?? '').length > 40 ? query.slice(0, 40) + '…' : query;
-			console.log(`[AgentMemory] searchMemory agent=${agentId} query="${q}" → ${results.length} results`);
+			this._log.info?.(`[AgentMemory] searchMemory agent=${agentId} query="${q}" → ${results.length} results`);
 		}
 		return results;
 	}
@@ -374,9 +473,16 @@ export class AgentMemoryProviderProxy {
 	}
 
 	// ─── 同步桩（保持 IMemoryProvider 同步签名，本地返回空默认）────
-
-	getTimeline(agentId: string): unknown[] { return []; }
-	getAuditSummary(): Record<string, number> { return { totalAuditEntries: 0 }; }
+	// R4（2026-09-09）：getTimeline / getAuditSummary / traceProvenance 三个
+	// 假成功桩改为异步转发（getHookStats 模式）——getAuditSummary 是 V2 引擎
+	// 真实现（读 AuditLog，UI 审计页签消费），proxy 返回假 0 使页签恒显示 0 条。
+	// 接口签名已改 union（sync | Promise），调用方 instanceof Promise 分流。
+	getTimeline(agentId: string): Promise<Array<Record<string, unknown>>> {
+		return this._call('getTimeline', agentId).then((r: any) => r ?? []);
+	}
+	getAuditSummary(): Promise<Record<string, number>> {
+		return this._call('getAuditSummary').then((r: any) => r ?? { totalAuditEntries: 0 });
+	}
 	// ─── 技能方法（真实引擎在网关进程，统一异步转发）────
 	// agentId 为首参，对齐 host.mjs 的 /provider 路由约定（首参即 agentId）。
 	async getSkillStats(agentId: string): Promise<{ totalSkills: number; avgConfidence: number; avgSteps: number; totalUsage: number; writtenCount: number }> {
@@ -426,7 +532,9 @@ export class AgentMemoryProviderProxy {
 	async onGitCommit(commit: { sha: string; message: string; author: string; filesChanged: string[]; insertions: number; deletions: number; timestamp: number; branch?: string }): Promise<void> {
 		await this._call('onGitCommit', commit);
 	}
-	traceProvenance(agentId: string, memoryId: string): Record<string, unknown> | null { return null; }
+	traceProvenance(agentId: string, memoryId: string): Promise<Record<string, unknown> | null> {
+		return this._call('traceProvenance', agentId, memoryId).then((r: any) => r ?? null);
+	}
 	// setSlot/getSlot：IMemoryProvider 签名为同步（V1 兼容），但真实
 	// 引擎在网关进程，必须异步转发。调用方（editor pane）用 `?.` 且忽略
 	// 返回值，返回 Promise<void> 仍可赋值为 void 签名，不破坏契约。
@@ -478,7 +586,18 @@ export class AgentMemoryProviderProxy {
 	}
 
 	// ─── 兜底：未显式声明的方法一律转发网关（多为 async 高级特性）────
-	constructor() {
+	// R9（2026-09-10）：logger 注入与 Proxy 兜底合并进同一构造函数（类只能有一个 constructor）。
+	constructor(logger?: MemoryProxyLogger) {
+		// ★ 必须用箭头函数包裹而非直接取方法引用：ILogService 的方法在**原型**上，
+		//   直接 `(logger.warn)(m)` 调用会把 this 绑到包装对象 → 原型方法内访问实例
+		//   状态时抛错，被 fire-and-forget 的 void async 吞掉 → 日志静默消失
+		//   （2026-09-10 实测：logService 注入后探活日志一条都不输出，即此因）。
+		this._log = {
+			info: (m) => { if (logger?.info) { logger.info(m); } else { console.log(m); } },
+			warn: (m) => { if (logger?.warn) { logger.warn(m); } else { console.warn(m); } },
+			error: (m) => { if (logger?.error) { logger.error(m); } else { console.error(m); } },
+			debug: (m) => { if (logger?.debug) { logger.debug(m); } else { console.debug(m); } },
+		};
 		const self = this;
 		return new Proxy(this, {
 			get(target, prop: string) {

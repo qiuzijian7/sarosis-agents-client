@@ -125,6 +125,9 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _budgetInput: HTMLInputElement | undefined;
 	private _modelProviderSelect: HTMLSelectElement | undefined;
 	private _modelIdSelect: HTMLSelectElement | undefined;
+	// 图片生成模型（2026-09-10）：与对话模型并列，写入 .agent.md 的 imageModel/imageProviderId
+	private _imageProviderSelect: HTMLSelectElement | undefined;
+	private _imageModelSelect: HTMLSelectElement | undefined;
 
 	// ── Skills tab ──
 	private _skillsInstalledContainer: HTMLElement | undefined;
@@ -623,6 +626,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 			if (this._budgetInput) { this._budgetInput.disabled = true; }
 			if (this._modelProviderSelect) { this._modelProviderSelect.disabled = true; }
 			if (this._modelIdSelect) { this._modelIdSelect.disabled = true; }
+			if (this._imageProviderSelect) { this._imageProviderSelect.disabled = true; }
+			if (this._imageModelSelect) { this._imageModelSelect.disabled = true; }
 
 			// 禁用重命名触发（标题双击 + 铅笔按钮）
 			if (this._nameEl) {
@@ -660,6 +665,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 			if (this._budgetInput) { this._budgetInput.disabled = false; }
 			if (this._modelProviderSelect) { this._modelProviderSelect.disabled = false; }
 			if (this._modelIdSelect) { this._modelIdSelect.disabled = false; }
+			if (this._imageProviderSelect) { this._imageProviderSelect.disabled = false; }
+			if (this._imageModelSelect) { this._imageModelSelect.disabled = false; }
 			if (this._nameEl) {
 				this._nameEl.classList.add('editable');
 				this._nameEl.title = '双击重命名';
@@ -1242,7 +1249,129 @@ export class AgentSettingsEditorPane extends EditorPane {
 		providerGroup.appendChild(this._modelIdSelect);
 		section.appendChild(providerGroup);
 
+		// ── 图片生成模型（2026-09-10）──
+		// 与上方对话模型并列的独立配置：聊天框「图片模型」选择器读此值作为默认，
+		// 图片生成工具（image_generate）未显式指定时也用它兜底。
+		const imgGroup = $$('div.agent-settings-form-group');
+		const imgLabel = $$('label.agent-settings-label');
+		imgLabel.textContent = '图片生成模型';
+		imgGroup.appendChild(imgLabel);
+
+		const imgDesc = $$('div.agent-settings-desc');
+		imgDesc.textContent = '聊天框「图片模型」选择器的默认值，以及图片生成工具的兜底模型。仅列出标记了 supportsImageGen 的模型；选择「跟随全局默认」时由聊天框临时选择决定';
+		imgGroup.appendChild(imgDesc);
+
+		this._imageProviderSelect = document.createElement('select');
+		this._imageProviderSelect.className = 'agent-settings-select';
+		const imgAutoOpt = document.createElement('option');
+		imgAutoOpt.value = '';
+		imgAutoOpt.textContent = '跟随全局默认';
+		this._imageProviderSelect.appendChild(imgAutoOpt);
+		for (const p of this.agentOSService.getModelProviders()) {
+			const opt = document.createElement('option');
+			opt.value = p.id;
+			opt.textContent = p.name;
+			this._imageProviderSelect.appendChild(opt);
+		}
+		this._imageProviderSelect.onchange = () => {
+			void this._onImageProviderChanged();
+		};
+		imgGroup.appendChild(this._imageProviderSelect);
+
+		this._imageModelSelect = document.createElement('select');
+		this._imageModelSelect.className = 'agent-settings-select';
+		this._imageModelSelect.style.marginTop = '6px';
+		this._imageModelSelect.onchange = () => {
+			void this._saveImageModelConfig();
+		};
+		imgGroup.appendChild(this._imageModelSelect);
+		section.appendChild(imgGroup);
+
 		this._tabContentContainer?.appendChild(section);
+	}
+
+	/** 图片 Provider 切换：重新加载该 provider 的图片模型列表并保存 */
+	private async _onImageProviderChanged(): Promise<void> {
+		await this._refreshImageModelOptions();
+		await this._saveImageModelConfig();
+	}
+
+	/** 刷新图片模型下拉（仅 supportsImageGen 的模型）；preferModelId 用于加载时预选 */
+	private async _refreshImageModelOptions(preferModelId?: string): Promise<void> {
+		const providerSelect = this._imageProviderSelect;
+		const modelSelect = this._imageModelSelect;
+		if (!providerSelect || !modelSelect) { return; }
+
+		const providerId = providerSelect.value;
+		modelSelect.replaceChildren();
+
+		if (!providerId) {
+			const opt = document.createElement('option');
+			opt.value = '';
+			opt.textContent = '（跟随全局默认 / 聊天框选择）';
+			modelSelect.appendChild(opt);
+			modelSelect.disabled = true;
+			return;
+		}
+
+		modelSelect.disabled = this._readOnly;
+		const provider = this.agentOSService.getModelProviders().find(p => p.id === providerId);
+		let models: { id: string; name: string }[] = [];
+		try {
+			// 只保留声明支持图片生成的模型（IModelInfo.supportsImageGen）
+			models = (await provider?.listModels() ?? [])
+				.filter(m => (m as { supportsImageGen?: boolean }).supportsImageGen === true)
+				.map(m => ({ id: m.id, name: m.name || m.id }));
+		} catch { /* provider 模型列表加载失败时仅回退到当前值 */ }
+
+		// 当前已保存的模型必须始终可选（即使不在 provider 列表中）
+		const current = preferModelId ?? this._agent?.imageModel ?? '';
+		if (current && !models.some(m => m.id === current)) {
+			models = [{ id: current, name: `${current}（当前）` }, ...models];
+		}
+		if (models.length === 0) {
+			const opt = document.createElement('option');
+			opt.value = '';
+			opt.textContent = '（该 Provider 无图片生成模型）';
+			modelSelect.appendChild(opt);
+			return;
+		}
+		for (const m of models) {
+			const opt = document.createElement('option');
+			opt.value = m.id;
+			opt.textContent = m.name;
+			modelSelect.appendChild(opt);
+		}
+		if (current) {
+			modelSelect.value = current;
+		}
+	}
+
+	/** 保存图片生成模型配置到 agent（.agent.md 的 imageModel/imageProviderId） */
+	private async _saveImageModelConfig(): Promise<void> {
+		if (!this._agentId || this._readOnly || !this._imageProviderSelect) { return; }
+		try {
+			const providerId = this._imageProviderSelect.value || undefined;
+			const patch: Partial<Agent> = { imageProviderId: providerId };
+			// 仅在指定 provider 时同步写入模型；跟随全局默认时清空（避免残留旧值误导聊天框）
+			if (providerId && this._imageModelSelect?.value) {
+				patch.imageModel = this._imageModelSelect.value;
+			} else {
+				patch.imageModel = undefined;
+			}
+			await this.agentStudioService.updateAgent(this._agentId, patch);
+			if (this._agent) {
+				this._agent.imageProviderId = providerId;
+				this._agent.imageModel = patch.imageModel;
+			}
+			this.logService.info(
+				`[AgentSettingsEditorPane] _saveImageModelConfig: agentId=${this._agentId} ` +
+				`imageProviderId=${providerId ?? '(default)'} imageModel=${patch.imageModel ?? '(cleared)'} → .agent.md`
+			);
+		} catch (err) {
+			this.logService.error('[AgentSettingsEditorPane] _saveImageModelConfig failed:', err);
+			this.notificationService.warn(`保存图片模型配置失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	/** Provider 切换：重新加载该 provider 的模型列表并保存 */
@@ -1471,6 +1600,12 @@ export class AgentSettingsEditorPane extends EditorPane {
 			if (this._modelProviderSelect) {
 				this._modelProviderSelect.value = this._agent.providerId || '';
 				await this._refreshModelOptions(this._agent.model);
+			}
+
+			// 回填图片生成模型（2026-09-10）
+			if (this._imageProviderSelect) {
+				this._imageProviderSelect.value = this._agent.imageProviderId || '';
+				await this._refreshImageModelOptions(this._agent.imageModel);
 			}
 
 			// Update bindings tab

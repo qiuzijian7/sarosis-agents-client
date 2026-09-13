@@ -14,8 +14,11 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
-import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IDialogService, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
 import { $, clearNode } from '../../../../../base/browser/dom.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { joinPath } from '../../../../../base/common/resources.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { EditorsOrder } from '../../../../../workbench/common/editor.js';
 import { IViewsService } from '../../../../../workbench/services/views/common/viewsService.js';
@@ -32,6 +35,7 @@ import { ITofAuthService } from '../../common/tofAuth.js';
 import { IWorkflowVersionService } from '../../common/workflowVersionTypes.js';
 import { WorkflowPublishModal } from '../workflowPublishModal.js';
 import { applySavedOrder, CardDragSorter, CardOrderStore, CardPinStore, showCardContextMenu } from './cardItemBehaviors.js';
+import { buildWorkflowExportJson, workflowExportFileName } from '../workflow/workflowFileExport.js';
 
 /**
  * Workflow View - 工作流管理面板 (ActivityBar Sidebar)
@@ -81,6 +85,9 @@ export class WorkflowViewPane extends ViewPane {
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
 		@IWorkflowVersionService private readonly workflowVersionService: IWorkflowVersionService,
 		@IDialogService private readonly dialogService: IDialogService,
+		// 本地文件导入工作流（2026-09-11）：文件选择对话框 + 读文件。
+		@IFileDialogService private readonly fileDialogService: IFileDialogService,
+		@IFileService private readonly fileService: IFileService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -129,6 +136,14 @@ export class WorkflowViewPane extends ViewPane {
 		installBtn.title = 'Install Workflow from Marketplace';
 		installBtn.onclick = () => { void this._openMarketplace(); };
 		actionsGroup.appendChild(installBtn);
+
+		// ★ 本地文件导入（2026-09-11 审计缺口补齐）：此前工作流只有「商城下载」
+		//   一条获取渠道 —— 同事导出的 JSON、聊天传的文件、备份恢复都无处可导。
+		const importBtn = $('button.workflow-import-btn');
+		importBtn.textContent = '⤵ Import';
+		importBtn.title = 'Import Workflow from a local JSON file';
+		importBtn.onclick = () => { void this._handleImportWorkflowFile(); };
+		actionsGroup.appendChild(importBtn);
 
 		this._headerContainer.appendChild(actionsGroup);
 		this._root.appendChild(this._headerContainer);
@@ -185,6 +200,79 @@ export class WorkflowViewPane extends ViewPane {
 	private async _openMarketplace(): Promise<void> {
 		const input = WorkflowMarketEditorInput.getInstance();
 		await this.editorService.openEditor(input, { pinned: true });
+	}
+
+	/**
+	 * 从本地 JSON 文件导入工作流（2026-09-11）。
+	 *
+	 * 文件选择走原生对话框（`IFileDialogService`）；解析/校验/id 冲突消解全部
+	 * 委托 `workflowStorage.importWorkflowJson`（纯函数层可单测）。导入成功后
+	 * `onDidChangeWorkflows` 会触发 `_reload()`，这里无需手动刷新列表。
+	 *
+	 * 冲突语义：**绝不覆盖**已有工作流，而是生成 `-imported-N` 后缀副本；
+	 * 非致命问题（字段类型不符、无节点等）以 warning 汇总提示。
+	 */
+	private async _handleImportWorkflowFile(): Promise<void> {
+		let picked;
+		try {
+			picked = await this.fileDialogService.showOpenDialog({
+				title: '导入工作流（选择 JSON 文件）',
+				canSelectFiles: true,
+				canSelectFolders: false,
+				canSelectMany: false,
+				filters: [{ name: '工作流 JSON', extensions: ['json'] }],
+			});
+		} catch (err) {
+			this.notificationService.error(`打开文件选择器失败：${err instanceof Error ? err.message : String(err)}`);
+			return;
+		}
+		if (!picked || picked.length === 0) { return; }   // 用户取消
+		try {
+			const text = (await this.fileService.readFile(picked[0])).value.toString();
+			const { workflow, warnings } = await this.workflowStorage.importWorkflowJson(text);
+			this.notificationService.info(
+				`已导入工作流「${workflow.name}」（${workflow.id}）` +
+				(warnings.length > 0 ? ` · ${warnings.length} 条提示：${warnings.slice(0, 2).join('；')}` : ''),
+			);
+			await this._reload();
+		} catch (err) {
+			this.notificationService.error(`导入失败：${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	/**
+	 * 导出工作流为 JSON 文件（2026-09-11，与 `_handleImportWorkflowFile` 对称）。
+	 *
+	 * 为什么需要：此前只有「导入」入口，要导出必须先打开编辑器再走 webview 的
+	 * Blob 下载 —— 备份 / 分享 / 换机迁移在**列表层面**无法完成。本视图运行在
+	 * host，可直接用 `IFileDialogService` + `IFileService` 写盘，**无需新增 RPC**
+	 * （编辑器侧因运行在 webview 沙箱、无文件系统访问，才只能 Blob 下载）。
+	 *
+	 * 数据源：重新 `getWorkflow(wf.id)` 读盘 —— 列表项可能是陈旧副本；再经纯函数
+	 * `buildWorkflowExportJson`（白名单）序列化 → 产物可被导入侧无损读回，
+	 * round-trip 由 `workflowFileExport.test.ts` 锁定。
+	 *
+	 * 与编辑器导出的差异：这里导出的是**已落盘**内容；编辑器侧会用画布最新态
+	 * （含尚未保存的编辑）覆盖 nodes/connections。两者产出形状同构。
+	 */
+	private async _handleExportWorkflowFile(wf: IStoredWorkflow): Promise<void> {
+		try {
+			const fresh = await this.workflowStorage.getWorkflow(wf.id) ?? wf;
+			const target = await this.fileDialogService.showSaveDialog({
+				title: '导出工作流',
+				saveLabel: '导出',
+				filters: [{ name: '工作流 JSON', extensions: ['json'] }],
+				defaultUri: joinPath(
+					await this.fileDialogService.defaultFilePath(),
+					workflowExportFileName(fresh.name, fresh.id),
+				),
+			});
+			if (!target) { return; }   // 用户取消
+			await this.fileService.writeFile(target, VSBuffer.fromString(buildWorkflowExportJson(fresh)));
+			this.notificationService.info(`已导出工作流「${fresh.name}」→ ${target.fsPath}`);
+		} catch (err) {
+			this.notificationService.error(`导出失败：${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	private _renderLoading(): void {
@@ -304,6 +392,9 @@ export class WorkflowViewPane extends ViewPane {
 					pinned: isPinned,
 					onTogglePin: () => { this._pinStore.toggle(wf.id); this._renderList(); },
 					onDuplicate: () => { void this._handleDuplicate(wf); },
+					// 导出：内置工作流同样可导出（导出是只读副本，不改动原件）——
+					// 便于用户以内置工作流为模板改造成自己的版本。
+					onExport: () => { void this._handleExportWorkflowFile(wf); },
 					upgradeLabel: targetVersion ? `升级到 v${targetVersion}` : undefined,
 					onUpgrade: targetVersion ? () => { void this._handleUpgrade(wf, targetVersion); } : undefined,
 					onUpload: wf.source !== 'builtin' ? () => { this._handleUpload(wf); } : undefined,

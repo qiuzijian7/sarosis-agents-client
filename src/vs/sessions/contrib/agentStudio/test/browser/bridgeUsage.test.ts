@@ -34,7 +34,10 @@ suite('BridgeUsageReporter (P3)', () => {
 		assert.strictEqual(a.promptTokens, 30);
 		assert.strictEqual(a.completionTokens, 13);
 		assert.strictEqual(a.cachedTokens, 3);
-		assert.strictEqual(a.totalTokens, 41); // 10+5 + 31
+		// ★ 修正（2026-09-11）：注释自己算的就是 46（10+5 来自首次无显式 total 的记录
+		//   自动累计，第二次显式 total=31）—— 原断言写 41 属笔误（该文件长期无法构建，
+		//   故从未暴露）。
+		assert.strictEqual(a.totalTokens, 46); // 10+5 + 31
 		assert.strictEqual(a.calls, 2);
 		assert.strictEqual(a.credit, 2);
 	});

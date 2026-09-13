@@ -8,7 +8,7 @@
  *  并覆盖 auto（关键词命中/未命中）、explicit（/skill）、manual、disabled 分支。
  *--------------------------------------------------------------------------------------------*/
 import assert from 'assert';
-import { URI } from '../../../../base/common/uri.js';
+import { URI } from '../../../../../base/common/uri.js';
 import { SkillRegistry } from '../../browser/skillRegistryService.js';
 import type { ISkillDefinition, ISkillActivationContext } from '../../common/skills.js';
 

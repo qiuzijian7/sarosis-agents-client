@@ -30,7 +30,8 @@
 	},
 	"scripts": {
 		"compile": "tsc -p ./tsconfig.json && node -e \"require('fs').writeFileSync('out/package.json','{\\\"type\\\":\\\"module\\\"}')\"",
-		"watch": "tsc -watch -p ./tsconfig.json"
+		"watch": "tsc -watch -p ./tsconfig.json",
+		"test:unit": "tsc -p tsconfig.test.json && node scripts/run-unit-tests.mjs"
 	},
 	"dependencies": {
 		"vssaros": "file:../.."

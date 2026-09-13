@@ -30,9 +30,18 @@ import {
 	WorkflowResourceDir,
 } from '../common/workflowStorage.js';
 import { IWorkflowVersionService } from '../common/workflowVersionTypes.js';
+import {
+	type IWorkflowSessionMeta,
+	buildWorkflowSession,
+	pickSessionForChat,
+	renameWorkflowSession,
+	touchWorkflowSession,
+} from '../common/workflowSessions.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { SarosPath, resolveSarosPath } from '../common/sarosPaths.js';
 import * as path from '../../../../base/common/path.js';
+// 本地文件导入（2026-09-11）：纯函数解析/校验 + id 冲突消解（见 importWorkflowJson）。
+import { parseWorkflowImportFile, resolveImportSlug } from './workflow/workflowFileImport.js';
 
 const WORKFLOW_FILE = 'workflow.json';
 const DEFAULT_WORKFLOW_PRESET_ID = 'workflow-agent';
@@ -93,6 +102,104 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 			this._logService.error('[WorkflowStorage] Failed to resolve user workflows dir', err);
 			return undefined;
 		}
+	}
+
+	// ── 工作流 Session（2026-09-11 用户需求）────────────────────────────────
+	//  每个工作流可有多个 session，隔离不同聊天会话生成的内容；与聊天 session 绑定
+	//  （同一聊天 session 复用同一工作流 session）。索引存 sessions.json，产物目录
+	//  为 `{workflowsDir}/{workflowId}/sessions/{sessionId}/`。
+
+	/** session 索引文件：`{workflowsDir}/{workflowId}/sessions.json`。 */
+	private _sessionsIndexUri(workflowsDir: URI, workflowId: string): URI {
+		return URI.joinPath(workflowsDir, workflowId, 'sessions.json');
+	}
+
+	async listWorkflowSessions(workflowId: string): Promise<IWorkflowSessionMeta[]> {
+		if (!workflowId) { return []; }
+		const dir = await this._resolveWorkflowsDir();
+		if (!dir) { return []; }
+		try {
+			const content = await this._fileService.readFile(this._sessionsIndexUri(dir, workflowId));
+			const parsed = JSON.parse(content.value.toString());
+			return Array.isArray(parsed) ? (parsed as IWorkflowSessionMeta[]) : [];
+		} catch {
+			return []; // 无索引文件 = 尚未创建任何 session
+		}
+	}
+
+	private async _writeWorkflowSessions(workflowId: string, sessions: IWorkflowSessionMeta[]): Promise<void> {
+		const dir = await this._resolveWorkflowsDir();
+		if (!dir) { return; }
+		await this._ensureDir(URI.joinPath(dir, workflowId));
+		await this._fileService.writeFile(
+			this._sessionsIndexUri(dir, workflowId),
+			VSBuffer.fromString(JSON.stringify(sessions, null, 2)),
+		);
+	}
+
+	async createWorkflowSession(workflowId: string, name?: string, chatSessionId?: string): Promise<IWorkflowSessionMeta> {
+		const existing = await this.listWorkflowSessions(workflowId);
+		const meta = buildWorkflowSession({ workflowId, name, chatSessionId, existingCount: existing.length });
+		await this._writeWorkflowSessions(workflowId, [...existing, meta]);
+		const sessionDir = await this.getWorkflowSessionDir(workflowId, meta.id);
+		if (sessionDir) { await this._ensureDir(sessionDir); }
+		this._logService.info(
+			`[WorkflowStorage] session created: wf=${workflowId} sid=${meta.id} ` +
+			`chat=${chatSessionId ?? '-'} name=${meta.name}`,
+		);
+		return meta;
+	}
+
+	async getOrCreateWorkflowSession(workflowId: string, chatSessionId?: string): Promise<IWorkflowSessionMeta> {
+		const sessions = await this.listWorkflowSessions(workflowId);
+		const hit = pickSessionForChat(sessions, chatSessionId);
+		if (hit) {
+			const touched = touchWorkflowSession(hit);
+			await this._writeWorkflowSessions(workflowId, sessions.map(s => (s.id === hit.id ? touched : s)));
+			return touched;
+		}
+		// 未绑定该聊天 session → 新建（隔离）
+		return this.createWorkflowSession(workflowId, undefined, chatSessionId);
+	}
+
+	async touchWorkflowSession(workflowId: string, sessionId: string): Promise<void> {
+		const sessions = await this.listWorkflowSessions(workflowId);
+		let changed = false;
+		const next = sessions.map(s => {
+			if (s.id !== sessionId) { return s; }
+			changed = true;
+			return touchWorkflowSession(s);
+		});
+		if (changed) { await this._writeWorkflowSessions(workflowId, next); }
+	}
+
+	async getWorkflowSessionDir(workflowId: string, sessionId: string): Promise<URI | undefined> {
+		const dir = await this._resolveWorkflowsDir();
+		if (!dir || !workflowId || !sessionId) { return undefined; }
+		return URI.joinPath(dir, workflowId, 'sessions', sessionId);
+	}
+
+	/**
+	 * 重命名 session（2026-09-11 用户需求）：仅改显示名，不动 id（产物隔离 key 前缀）
+	 * 也不动 updatedAt（列表顺序，见 renameWorkflowSession 纯函数注释）。
+	 * @returns 是否实际写入（名字为空或未变化时 false）
+	 */
+	async renameWorkflowSession(workflowId: string, sessionId: string, name: string): Promise<boolean> {
+		if (!workflowId || !sessionId || !(name ?? '').trim()) { return false; }
+		const sessions = await this.listWorkflowSessions(workflowId);
+		let changed = false;
+		const next = sessions.map(s => {
+			if (s.id !== sessionId) { return s; }
+			const renamed = renameWorkflowSession(s, name);
+			if (renamed !== s) { changed = true; }
+			return renamed;
+		});
+		if (!changed) { return false; }
+		await this._writeWorkflowSessions(workflowId, next);
+		this._logService.info(
+			`[WorkflowStorage] session renamed: wf=${workflowId} sid=${sessionId} name=${name.trim()}`,
+		);
+		return true;
 	}
 
 	private async _ensureDir(dirUri: URI): Promise<void> {
@@ -224,6 +331,54 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 			this._logService.warn(`[WorkflowStorage] version init failed for ${id}:`, err));
 		this._onDidChangeWorkflows.fire();
 		return workflow;
+	}
+
+	/**
+	 * 从工作流 JSON 文本导入（本地文件导入，2026-09-11）。
+	 * 契约详见 `IWorkflowStorageService.importWorkflowJson`。
+	 *
+	 * 流程：纯函数解析/校验 → 读现有 id 集合 → 消解冲突得 slug → createWorkflow
+	 * → 补写 nodes/connections/版本元数据 → 返回（非致命问题走 warnings）。
+	 */
+	async importWorkflowJson(text: string): Promise<{ workflow: IStoredWorkflow; warnings: string[] }> {
+		const { payload, warnings } = parseWorkflowImportFile(text);
+		const existing = await this.listWorkflows();
+		const slug = resolveImportSlug(payload.sourceId, payload.name, new Set(existing.map(w => w.id)));
+		// 源 id 被消解（冲突）→ 明确告知，避免「怎么多了一份、id 还变了」的困惑。
+		if (payload.sourceId && `wf-${slug}` !== payload.sourceId) {
+			warnings.push(`源 id「${payload.sourceId}」已存在，导入为新工作流「wf-${slug}」（未覆盖原工作流）`);
+		}
+		let workflow = await this.createWorkflow({
+			name: payload.name,
+			description: payload.description,
+			...(payload.presetId ? { presetId: payload.presetId } : {}),
+			...(payload.agentId ? { agentId: payload.agentId } : {}),
+			steps: payload.steps as IStoredWorkflow['steps'],
+			slug,
+		});
+		// `createWorkflow` 的签名面向「新建空工作流」，不含画布数据 → 这里补写。
+		const patch: Partial<IStoredWorkflow> = {};
+		if (payload.nodes) { patch.nodes = payload.nodes as IStoredWorkflow['nodes']; }
+		if (payload.connections) { patch.connections = payload.connections as IStoredWorkflow['connections']; }
+		// 2026-09-11：breakpoints / author / visibility 此前**未随文件迁移** ——
+		// 导出侧已带上、解析侧已识别，此处却漏写 patch → 「导出 → 导入」静默丢
+		// 断点与发布元信息（round-trip 不闭环）。凡解析载荷里的可持久化字段，
+		// 这里必须一一落地。
+		if (payload.breakpoints && payload.breakpoints.length > 0) { patch.breakpoints = payload.breakpoints; }
+		if (payload.version) { patch.version = payload.version; }
+		if (payload.category) { patch.category = payload.category; }
+		if (payload.author) { patch.author = payload.author; }
+		if (payload.visibility) { patch.visibility = payload.visibility; }
+		if (payload.tags && payload.tags.length > 0) { patch.tags = payload.tags; }
+		if (payload.useGuide) { patch.useGuide = payload.useGuide; }
+		if (Object.keys(patch).length > 0) {
+			workflow = await this.updateWorkflow(workflow.id, patch);
+		}
+		this._logService.info(
+			`[WorkflowStorage] Imported workflow from file: ${workflow.id} ` +
+			`(nodes=${payload.nodes?.length ?? 0}, connections=${payload.connections?.length ?? 0})`,
+		);
+		return { workflow, warnings };
 	}
 
 	async updateWorkflow(id: string, patch: Partial<IStoredWorkflow>, workspaceId?: string, opts?: { autoCommit?: boolean }): Promise<IStoredWorkflow> {

@@ -61,6 +61,8 @@ const tempFiles = [];
 
 let buildOk = 0;
 let buildSkipped = 0;
+/** 编译失败的测试文件（相对路径，正斜杠）——用于基线比对。 */
+const buildFailedFiles = [];
 
 for (const entry of testFiles) {
 	const out = path.join(os.tmpdir(), `agentstudio-browser-all-${Date.now()}-${path.basename(entry, '.ts')}.cjs`);
@@ -88,6 +90,7 @@ for (const entry of testFiles) {
 		buildOk++;
 	} catch (err) {
 		buildSkipped++;
+		buildFailedFiles.push(path.relative(process.cwd(), entry).replace(/\\/g, '/'));
 		console.warn(`  [SKIP] ${path.relative(process.cwd(), entry)} — ${err.message.split('\n')[0]}`);
 		// Clean up the partial outfile if esbuild created it
 		try { fsSync.unlinkSync(out); } catch { /* ignore */ }
@@ -100,6 +103,29 @@ if (buildOk === 0) {
 }
 
 console.log(`\nBuilt ${buildOk} test file(s), skipped ${buildSkipped} (pre-existing build issues).`);
+
+// ─── ★ 破损测试基线校验（2026-09-09）────────────────────────────────────────
+// 背景：build 失败此前只打一条 [SKIP] warn、不影响退出码 —— 于是
+// `workflowComfyNodeEditorForm.test.ts`（199 行）因品牌改名漏改导入符号，
+// **从未执行过**却一直"绿"，既掩盖真实缺陷又给虚假安全感。
+// 现在：已知破损清单固化为基线（存量待修），**新增破损立即失败**。
+// 修好一个就从 BUILD_FAILURE_BASELINE 删一行；清单归零后可改为零容忍。
+const baselineFile = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), 'build-failure-baseline.json');
+let baseline = [];
+try {
+	baseline = JSON.parse(fsSync.readFileSync(baselineFile, 'utf8'));
+} catch { /* 无基线文件 = 零容忍 */ }
+const newlyBroken = buildFailedFiles.filter(f => !baseline.includes(f));
+const fixedFiles = baseline.filter(f => !buildFailedFiles.includes(f));
+if (fixedFiles.length > 0) {
+	console.log(`\n✓ ${fixedFiles.length} 个基线破损测试已修复（请从 build-failure-baseline.json 移除）：`);
+	for (const f of fixedFiles) { console.log(`    ${f}`); }
+}
+if (newlyBroken.length > 0) {
+	console.error(`\n✗ ${newlyBroken.length} 个测试文件**新增**编译失败（不在基线内）——视为测试失败：`);
+	for (const f of newlyBroken) { console.error(`    ${f}`); }
+	console.error('  修复导入/符号后重跑；确属预期请显式加入 build-failure-baseline.json。');
+}
 
 // ─── Run each bundled file in its own Mocha instance ────────────────────────
 // Per-file isolation: a crash in one test file (e.g. module-level `window` ref)
@@ -143,5 +169,9 @@ cleanup();
 console.log(`\n---`);
 console.log(`Total: ${totalPassing} passing, ${totalFailing} failing`);
 console.log(`Built: ${buildOk} | Skipped (build): ${buildSkipped} | Skipped (runtime): ${totalSkippedRuntime}`);
+if (baseline.length > 0) {
+	console.log(`Build-failure baseline: ${baseline.length} known broken (see build-failure-baseline.json)`);
+}
 console.log(`---`);
-process.exit(globFailures ? 1 : 0);
+// ★ 新增编译失败也判失败（破损测试不得静默潜伏）。
+process.exit((globFailures || newlyBroken.length) ? 1 : 0);

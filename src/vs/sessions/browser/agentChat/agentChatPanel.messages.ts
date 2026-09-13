@@ -515,6 +515,31 @@ protected override _updateMessageDom(idx: number, msg: IAgentChatMessage): void 
 		contentLen: (msg.content || '').length,
 		note: `domToolCards=${domToolCards} domParts=${domParts} wasStreamingMark=${existingEl.querySelector('.streaming-container, .streaming-cursor') !== null}`,
 	});
+	// ★ 2026-09-12（P2 责任链审计）：把「**流式期间**走兜底」单独升级为告警。
+	//   设计上 `isStreaming && hasParts` 应被 fast rule `keyed-reconcile` **一律认领**，
+	//   因此流式中落到这里说明 keyed diff 主动放弃了（bubble 缺失 / parts 不一致）——
+	//   属于**本可避免**的全量重建，是抖动与掉帧的直接来源，值得立即告警而非只记一条日志；
+	//   而 `!isStreaming` 的兜底（流结束收尾、历史消息结构变化）属正常路径，仅记日志。
+	//
+	// ⚠ 2026-09-12 修正（消除误报）：原判据只查 `isStreaming`，漏了本注释上一段已写明的
+	//   `hasParts` —— 于是「无 parts 的流式消息」也被告警。而这类消息是**合法状态**：
+	//   `agentChatPanel.base.ts` 在 content 与 toolCalls **皆空**时把 `m.parts` 置为
+	//   `undefined`（纯 thinking 期间 / 首帧空消息）。此时 `_ruleKeyedReconcile` 的
+	//   `!ctx.hasParts → return false` 是**正确**的 —— 没有 part 可以 diff，
+	//   兜底重建也只是重建一个空消息，并非「本可避免的全量重建」。
+	//   实证日志：`msgId=msg_1789206739483_assistant parts=0 domParts=0 streamingMark=false`
+	//   —— 两侧一致为 0，说明该消息本来就没有 part，属此类合法场景。
+	//   真缺陷的判据是「**有** parts 却没被认领」（bubble 缺失 / keyed diff 主动放弃）。
+	//   `parts=0` 的情形仍会被上面的 refreshLogger 记一条 `source=msg:slowpath-fallback`，
+	//   只是不再升级为告警（保留了可观测性，同时去掉噪音）。
+	const hasParts = (msg.parts?.length ?? 0) > 0;
+	if (msg.isStreaming && hasParts) {
+		this._logService.warn(
+			`[AgentChatPanel] slowpath-fallback DURING STREAMING msgId=${msg.id} parts=${msg.parts?.length ?? 0} ` +
+			`domParts=${domParts} streamingMark=${existingEl.querySelector('.streaming-container, .streaming-cursor') !== null} — ` +
+			`keyed-reconcile 本应认领，请检查其判据（bubble 缺失 / parts 不一致）。`,
+		);
+	}
 	this._cleanupMarkdownDisposables(existingEl);
 	const newEl = this._createMessageElement(msg);
 	this._messagesContainer.replaceChild(newEl, existingEl);
@@ -530,7 +555,17 @@ private _buildMsgUpdateCtx(idx: number, msg: IAgentChatMessage, el: HTMLElement)
 		(msg.subAgents && msg.subAgents.length > 0) ||
 		(msg.workflowExecutions && Object.keys(msg.workflowExecutions).length > 0) ||
 		(msg.workflowEvents && msg.workflowEvents.length > 0) ||
-		(msg.collectVariables && Object.keys(msg.collectVariables).length > 0);
+		(msg.collectVariables && Object.keys(msg.collectVariables).length > 0) ||
+		// ★ askUsers 纳入结构变化（2026-09-10 卡死修复）：AskUser 交互卡此前不在
+		//   判定内，若该次 updateMessage 恰好只带 askUsers 变化，责任链可能走
+		//   流式增量路径而永不重建 → 提问卡不出现 → 工作流永久等待（用户实测卡死）。
+		(msg.askUsers && msg.askUsers.length > 0) ||
+		// ★ pickerSelects 同因纳入（2026-09-11 ImagePicker 多选卡）：否则选择卡
+		//   可能不渲染 → 用户无从勾选 → 工作流永久暂停。
+		(msg.pickerSelects && msg.pickerSelects.length > 0) ||
+		// ★ nodeInteractions 同因（2026-09-11 节点交互框架）：否则配置表单卡不渲染
+		//   → 节点永久等待提交。
+		(msg.nodeInteractions && msg.nodeInteractions.length > 0);
 	return {
 		idx,
 		msg,
@@ -547,6 +582,11 @@ private readonly _msgUpdateFastRules: IMsgUpdateRule[] = [
 	// 短路责任链，而沙箱确认恰恰发生在流式期间（agent loop 暂停等待用户决策，
 	// isStreaming 仍为 true）。若被它拦截，确认卡片/内嵌询问按钮永远不会渲染。
 	{ name: 'confirmation-change', handle: (c) => this._ruleConfirmationChange(c) },
+	// ★ AskUser 卡出现/状态翻转 → 全量重建（2026-09-10 卡死修复）：与 confirmation
+	//   同模式且必须排在 keyed-reconcile 之前——工作流活卡 isStreaming=true 期间
+	//   ask_user 到达，keyed-reconcile 若先认领只同步 parts，提问卡永不渲染 →
+	//   工作流永久等待（表情包工作流实测）。
+	{ name: 'askusers-change', handle: (c) => this._ruleAskUsersChange(c) },
 	{ name: 'thinking-state-change', handle: (c) => this._ruleThinkingStateChange(c) },
 	{ name: 'keyed-reconcile', handle: (c) => this._ruleKeyedReconcile(c) },
 ];
@@ -592,6 +632,35 @@ private _ruleConfirmationChange(ctx: IMsgUpdateCtx): boolean {
 		console.info(`[PartsDiag] _updateMessageDom idx=${ctx.idx} msgId=${ctx.msg.id} → REBUILD (confirmation ${sig || 'cleared'})`);
 	}
 	this._rebuildMessageElement(ctx.el, ctx.msg, 'msg:confirmation-change');
+	return true;
+}
+
+/**
+ * AskUser 交互卡出现/状态翻转 → 全量重建（与 confirmation 同模式，2026-09-10）。
+ * 签名 = 各卡 `${id}:${status}` 列表——pending 卡出现（工作流暂停等输入）与
+ * answered 翻转（用户点选）都必须触发一次重建。
+ * 沿用 confirmation 的教训：签名 Map 用 msg.id 为 key（不能绑 DOM 元素，见
+ * _confirmationSig 注释），避免 rebuild 后的重建风暴。
+ */
+private readonly _askUsersSig = new Map<string, string>();
+
+private _ruleAskUsersChange(ctx: IMsgUpdateCtx): boolean {
+	const list = ctx.msg.askUsers ?? [];
+	const sig = list.map(a => `${a.id}:${a.status ?? 'pending'}`).join('|');
+	const prev = this._askUsersSig.get(ctx.msg.id);
+	// ★ 观测面（2026-09-10）：面板内部诊断此前只在 __SAROSIS_PARTS_DIAG 下 console.info，
+	//   而 console 不进 renderer.log → 「提问卡为何不显示」在日志里不可判定。
+	//   改为 logService.info（rule 命中/未命中都有痕迹）。
+	// ★ 2026-09-12（性能）：改为**仅签名变化时**输出 —— 本 rule 是 fast rule，
+	//   `_updateMessageDom` 每帧都会调用它，无条件日志等于**每帧一条**（字符串拼接 +
+	//   落盘 IPC），即使 askUsers 完全无变化。该观测面的用途是"提问卡为何不显示"，
+	//   只在状态翻转时才有诊断价值，稳态日志纯属洪泛。
+	if (prev === sig) { return false; }
+	this._logService.info(`[AskUsersRule] msg=${ctx.msg.id} count=${list.length} sig='${sig}' prev='${prev ?? ''}'`);
+	this._askUsersSig.set(ctx.msg.id, sig);
+	if (list.length === 0 && !prev) { return false; } // 双空无变化，避免无谓重建
+	this._logService.info(`[AskUsersRule] → REBUILD msg=${ctx.msg.id} (askusers ${sig || 'cleared'})`);
+	this._rebuildMessageElement(ctx.el, ctx.msg, 'msg:askusers-change');
 	return true;
 }
 
@@ -827,15 +896,25 @@ private readonly _finalizedPartText = new WeakMap<HTMLElement, string>();
 				if (this._scheduledPartText.get(body) === thinkingText) { return; }
 				this._scheduledPartText.set(body, thinkingText);
 				this._attachStreamCardPin(body);
-				// ★★ 2026-09-06 第三次修复（用户连续三报「思考卡卡住」）：
-				// 绕开 thinkingMdScheduler，直接每帧同步 _renderThinkingCardBody。
-				// 多帧 schedule 同一 body → flush 时依赖 _lastRenderedWeakMap 基线 + markdown
-				// 增量渲染（renderIncremental）共同维持正文增长。实测该链路在 950+ 帧
-				// / 3139 字符的 thinking 流式下未把新 text 写进 DOM（UI 永远停在首帧，
-				// 日志 1788662336134，0 条 md:incremental-failed）。理论无破口，但
-				// 失去根因可见性 → 直接同步渲染兜底（textContent 清空+renderMarkdownContent
-				// 同步重渲染），markdown 文本字节增长时主线程开销 <10ms/帧，可接受。
-				this._renderThinkingCardBody(body, { ...msg, thinking: thinkingText });
+				// ★★ 2026-09-12：**切回 thinkingMdScheduler**（根因已修，见
+				//   `agentChatPanel.statusCards.ts` `_renderThinkingCardBody` 的修复注释）。
+				//
+				// 历史：2026-09-06 因「思考卡卡住」连做三次修复，最终绕开 scheduler 改为
+				// **每帧同步全量重渲染**（textContent 清空 + renderMarkdownContent）。
+				// 2026-09-12 找到真凶——`_renderThinkingCardBody` 清空 DOM 前**未重置增量状态**，
+				// 使 `_incMdState.tailEl` 变孤儿：增量渲染把内容写进已脱离 DOM 的节点、
+				// 却返回 true，于是 scheduler 同步基线、后续帧跳过 → UI 永远停在首帧
+				//（且因未走全量替换，`md:incremental-failed` 一条都没有，故当年判为
+				// 「理论无破口」）。修复后该链路已可靠。
+				//
+				// 切回收益：每帧 O(全文) 重渲染 → 「100ms 节流 + frozen/tail 增量」O(尾部)。
+				// 注意：无基线时必须先同步渲染建立基线——`schedule` 的首次分支会走
+				// `renderFull`（**append 语义**），在已有内容的容器上会**内容翻倍**。
+				if (this.thinkingMdScheduler.hasRendered(body)) {
+					this.thinkingMdScheduler.schedule(body, thinkingText, 'markdown');
+				} else {
+					this._renderThinkingCardBody(body, { ...msg, thinking: thinkingText });
+				}
 			}
 		}
 		// tool / subagent：状态由 _updateToolCardStatuses 统一处理
@@ -1056,10 +1135,14 @@ protected override _updateStreamingContentInPlace(existingEl: HTMLElement, msg: 
 		const cards = existingEl.querySelectorAll('.thinking-card');
 		const lastCardBody = cards[cards.length - 1]?.querySelector('.thinking-card-body') as HTMLElement | null;
 		if (lastCardBody) {
-			// ★★ 2026-09-06 第三次修复：与 _updatePartInPlace 一致——thinking 卡流式
-			// 期间完全绕开 thinkingMdScheduler，每帧同步 _renderThinkingCardBody。
-			// 根因与日志证据详见 _updatePartInPlace 分支注释（1788662336134）。
-			this._renderThinkingCardBody(lastCardBody, { ...msg, thinking: lastThinkingPart.text });
+			// ★★ 2026-09-12：与 _updatePartInPlace 一致**切回 thinkingMdScheduler**
+			//（根因已修，详见 statusCards.ts `_renderThinkingCardBody` 的修复注释；
+			//  无基线时先同步渲染建立基线，避免 schedule 首次分支的 append 语义把内容翻倍）。
+			if (this.thinkingMdScheduler.hasRendered(lastCardBody)) {
+				this.thinkingMdScheduler.schedule(lastCardBody, lastThinkingPart.text, 'markdown');
+			} else {
+				this._renderThinkingCardBody(lastCardBody, { ...msg, thinking: lastThinkingPart.text });
+			}
 			this._attachStreamCardPin(lastCardBody); // 幂等：挂载流式钉底（用户上滚自动解除）
 		}
 	}
@@ -1742,12 +1825,17 @@ protected override _createMessageElement(msg: IAgentChatMessage): HTMLElement {
 	// 不再使用此处独立的 .subagent-cards-section。
 
 		// LiveWorkflowTraceView — collapsible workflow execution trace
+		let hasWfTraceCard = false;
 		if (!isUser && msg.workflowExecutions && Object.keys(msg.workflowExecutions).length > 0) {
+			hasWfTraceCard = true;
 			bubble.appendChild(this._createLiveWorkflowTraceView(
 				msg.workflowExecutions,
 				msg.workflowEvents,
-				msg.collectVariables
-			));
+				msg.collectVariables,
+				msg.askUsers,
+				msg.pickerSelects,
+				msg.nodeInteractions
+				));
 		}
 
 		// Confirmation card
@@ -1758,7 +1846,9 @@ protected override _createMessageElement(msg: IAgentChatMessage): HTMLElement {
 		}
 
 		// AskUser cards (workflow interactive input)
-		if (!isUser && msg.askUsers && msg.askUsers.length > 0) {
+		// ★ 有 workflow 卡时已内嵌渲染（上方 _createLiveWorkflowTraceView），
+		//   不再在消息顶层重复渲染（2026-09-10 用户要求：卡应在 workflow 卡内部）。
+		if (!isUser && !hasWfTraceCard && msg.askUsers && msg.askUsers.length > 0) {
 			for (const askUser of msg.askUsers) {
 				bubble.appendChild(this._createAskUserCard(askUser));
 			}
@@ -2132,9 +2222,14 @@ protected override _transitionStreamingToComplete(existingEl: HTMLElement, msg: 
 			const lastThinkingPart = msg.parts
 				? [...msg.parts].reverse().find(p => p.kind === 'thinking') as IThinkingMessagePart | undefined
 				: undefined;
+			// ★ 2026-09-12：`reset()` 必须**先于**建立基线 —— 它会重建 `_lastRendered`
+			//   WeakMap（清空所有容器的已渲染基线）。原顺序「先 markRendered（在
+			//   _renderThinkingCardBody 内）再 reset」会把刚建立的基线立刻抹掉；
+			//   切回 scheduler 后，这会让该 body 后续更新被误判为「无基线」而回退
+			//   同步渲染（性能回退 + 语义矛盾）。
+			this.thinkingMdScheduler.reset();
 			this._resetIncrementalMd(body);
 			this._renderThinkingCardBody(body, { ...msg, thinking: lastThinkingPart?.text ?? msg.thinking });
-			this.thinkingMdScheduler.reset();
 		}
 	}
 
@@ -2147,6 +2242,12 @@ protected override _transitionStreamingToComplete(existingEl: HTMLElement, msg: 
 			streamingContainer.classList.remove('streaming-container');
 			// 清理旧的 markdown disposable
 			this._cleanupMarkdownDisposables(streamingContainer);
+			// ★ 2026-09-12：清空 DOM 前必须重置增量状态 —— `_cleanupMarkdownDisposables`
+			//   只 dispose 子项、**不删 `_incMdState` 条目**，留下指向被移除节点的孤儿
+			//   tailEl；此后若有 pending flush（同 tick 内）走 `_tryIncrementalMarkdownRender`
+			//   会把内容写进孤儿并返回"成功"，DOM 静默不更新。与 thinking 卡同源
+			//   （详见 `agentChatPanel.statusCards.ts` `_renderThinkingCardBody` 的根因注释）。
+			this._resetIncrementalMd(streamingContainer);
 			streamingContainer.textContent = '';
 			const lastText = this._lastStreamTextOf(msg);
 			this._renderMarkdownContent(streamingContainer, lastText, true);
@@ -2619,6 +2720,14 @@ protected override _openUndoConfirmDialog(): void {
 		const desc = append(dialog, $('p.checkpoint-undo-desc'));
 		desc.textContent = `回退将会恢复操作变更过的 ${cp.fileCount} 个文件`;
 
+		// 2026-09-12（P1-2）：诚实声明检查点的**覆盖边界** —— 通过 shell（execute_code /
+		// terminal）执行的改动不在检查点范围内，回退不会恢复它们；move/rename 亦不可回滚
+		// （源路径消失且无快照）。此前 UI 无任何提示，用户容易误以为「回退 = 完全还原」。
+		// 对齐 Claude Code 明确列出限制（bash 改动不跟踪）的做法。
+		const scopeNote = append(dialog, $('p.checkpoint-undo-scope-note'));
+		scopeNote.textContent = '仅覆盖 agent 通过文件工具（file_write / patch）所做的改动；'
+			+ '通过 shell（execute_code / terminal）执行的改动、以及文件的移动/改名不在回退范围内。';
+
 		// ── 文件变更列表 ──
 		const fileList = append(dialog, $('.checkpoint-undo-file-list'));
 		for (const f of cp.files) {
@@ -2655,6 +2764,18 @@ protected override _openUndoConfirmDialog(): void {
 
 		const confirmBtn = append(btnGroup, $('button.checkpoint-undo-btn.confirm'));
 		confirmBtn.textContent = '确认';
+		confirmBtn.title = '回退代码改动（保留对话）';
+		// 2026-09-12（P1-1）：只回退对话（保留代码）—— 与「确认」（只回退代码）互补，
+		// 对齐 Claude Code `/rewind` 的 Restore conversation。截断锚点由 pane 侧按
+		// 最早检查点时间计算（检查点未写 messageId，不能依赖它）。
+		const conversationBtn = append(btnGroup, $('button.checkpoint-undo-btn.conversation-only'));
+		conversationBtn.textContent = '仅回退对话';
+		conversationBtn.title = '把对话回退到本轮起点，保留已改动的代码';
+		// 2026-09-12（P2-1）：检查点时间线 —— 列出本会话全部可回退检查点，选择回退到其中
+		// 任意一点（文件 + 对话同时回到该点之前）。对齐 Claude Code `/rewind` 的菜单体验。
+		const timelineBtn = append(btnGroup, $('button.checkpoint-undo-btn.timeline'));
+		timelineBtn.textContent = '历史检查点…';
+		timelineBtn.title = '列出本会话全部检查点，选择回退到其中任意一点';
 		const cancelBtn = append(btnGroup, $('button.checkpoint-undo-btn.cancel'));
 		cancelBtn.textContent = '取消';
 
@@ -2673,6 +2794,16 @@ protected override _openUndoConfirmDialog(): void {
 			if (e.target === overlay) { closeDialog(); }
 		}));
 		this._register(addDisposableListener(cancelBtn, EventType.CLICK, closeDialog));
+		// 仅回退对话（保留代码）—— 不参与「不再提示」记忆（那是文件回退的确认偏好）。
+		this._register(addDisposableListener(conversationBtn, EventType.CLICK, () => {
+			closeDialog();
+			this._onCheckpointAction?.('undoConversation');
+		}));
+		// 历史检查点（时间线）—— 打开 QuickPick 由 pane 侧实现（需要 agent/session 与刷新能力）。
+		this._register(addDisposableListener(timelineBtn, EventType.CLICK, () => {
+			closeDialog();
+			this._onCheckpointAction?.('openTimeline');
+		}));
 		this._register(addDisposableListener(confirmBtn, EventType.CLICK, () => {
 			// 记住"不再提示"
 			if (noPromptCb.checked) {
@@ -2740,24 +2871,25 @@ protected override _openUserEditOverlay(msg: IAgentChatMessage): void {
 			showChevron: false,
 			cssClass: `mode-tag mode-tag-${this._chatMode} mode-tag-readonly`,
 		});
-		const curProvider = this._providers.find(p => p.id === this._currentProvider)?.label || this._currentProvider || 'Provider';
-		const providerBtn = this._appendEditToolbarBtn(leftTools, { title: '切换 Provider', svgPath: 'M2 3h20v14H2zM8 21h8M12 17v4', hasLabel: true, label: curProvider, showChevron: true, cssClass: 'provider-tag' });
-		this._register(addDisposableListener(providerBtn, EventType.CLICK, (e) => {
+		// 对话模型（2026-09-10：原 provider + model 两个 chip 合并，仅显示模型名）
+		const curModelLabel = this._models.find(m => m.id === this._currentModel)?.label || this._currentModel || '模型';
+		const chatModelBtn = this._appendEditToolbarBtn(leftTools, { title: '切换对话模型', svgPath: 'M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z', hasLabel: true, label: curModelLabel, showChevron: true, cssClass: 'chat-model-tag' });
+		this._register(addDisposableListener(chatModelBtn, EventType.CLICK, (e) => {
 			e.stopPropagation();
-			if (this._providerDropdownEl) {
-				this._closeProviderDropdown();
+			if (this._chatModelDropdownEl) {
+				this._closeChatModelDropdown();
 			} else {
-				this._openProviderDropdown(providerBtn);
+				this._openChatModelDropdown(chatModelBtn);
 			}
 		}));
-		const curModel = this._currentModel || 'Model';
-		const modelBtn = this._appendEditToolbarBtn(leftTools, { title: '切换模型', svgPath: 'M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7M12 12v7M8 12v7M16 12v7M5 3h14l-2 4H7L5 3z', hasLabel: true, label: curModel, showChevron: true, cssClass: 'model-tag' });
-		this._register(addDisposableListener(modelBtn, EventType.CLICK, (e) => {
+		// 图片模型（2026-09-10 新增，仅显示模型名 / 默认「自动」）
+		const imageModelBtn = this._appendEditToolbarBtn(leftTools, { title: '切换图片模型', svgPath: 'M3 3h18v18H3zM8.5 10a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM21 15l-5-5L5 21', hasLabel: true, label: this._getImageModelLabel(), showChevron: true, cssClass: 'image-model-tag' });
+		this._register(addDisposableListener(imageModelBtn, EventType.CLICK, (e) => {
 			e.stopPropagation();
-			if (this._modelDropdownEl) {
-				this._closeModelDropdown();
+			if (this._imageModelDropdownEl) {
+				this._closeImageModelDropdown();
 			} else {
-				this._openModelDropdown(modelBtn);
+				this._openImageModelDropdown(imageModelBtn);
 			}
 		}));
 		const right = append(toolbar, $('span.chat-user-edit-toolbar-right'));

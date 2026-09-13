@@ -23,8 +23,8 @@ import { AgentTaskBoardService } from '../../browser/agentTaskBoardService.js';
 import { TaskOrchestrationService } from '../../browser/taskOrchestrationService.js';
 import { TaskBoardStatus } from '../../common/types.js';
 import { ITaskOrchestrationService, IAgentStudioService, IChatAttachmentSend } from '../../common/agentStudio.js';
-import { VSBuffer, encodeBase64 } from '../../../../base/common/buffer.js';
-import { URI } from '../../../../base/common/uri.js';
+import { VSBuffer, encodeBase64 } from '../../../../../base/common/buffer.js';
+import { URI } from '../../../../../base/common/uri.js';
 
 // ─── Mock ILogService ────────────────────────────────────────────────────────
 class MockLogService {
@@ -173,7 +173,7 @@ suite('Task Board → Agent 数据传递', () => {
 			assert.strictEqual(txt.data, 'design spec');
 		});
 
-		test('无附件的任务执行时 attachments 为 undefined（不回归）', async () => {
+		test('无附件的任务执行时 attachments 为空数组（不回归）', async () => {
 			const fileService = new InMemoryFileService();
 			fileService.seedTaskboard(JSON.stringify([buildTaskRecord()]));
 			const orchestration = new MockOrchestrationService();
@@ -182,7 +182,10 @@ suite('Task Board → Agent 数据传递', () => {
 			await svc.updateTask('task-1', { status: TaskBoardStatus.Running });
 
 			assert.strictEqual(orchestration.executeTaskForBoardCalls.length, 1);
-			assert.strictEqual(orchestration.executeTaskForBoardCalls[0].info.attachments, undefined);
+			// ★ 契约同步（2026-09-11）：`_resolveAttachmentPayloads` 对「无附件」返回
+			//   **空数组**（`if (!attachments || attachments.length === 0) return [];`），
+			//   不再返回 undefined。
+			assert.deepStrictEqual(orchestration.executeTaskForBoardCalls[0].info.attachments, []);
 			assert.strictEqual(orchestration.executeTaskForBoardCalls[0].info.worktreePath, '/repo/wt1');
 		});
 	});
@@ -220,7 +223,7 @@ suite('Task Board → Agent 数据传递', () => {
 			assert.ok(call.message.includes('spec.txt'), 'prompt 应列出附件名');
 		});
 
-		test('无 attachments 时 sendMessage 的 options.attachments 为 undefined（不回归）', async () => {
+		test('无 attachments 时 sendMessage 的 options.attachments 为空数组（不回归）', async () => {
 			const { service, agentChat } = makeOrchestrationService();
 			await service.executeTaskForBoard('ws-1', 'task-1', {
 				title: '实现登录页',
@@ -228,7 +231,9 @@ suite('Task Board → Agent 数据传递', () => {
 				worktreePath: '/repo/wt1',
 			});
 			assert.strictEqual(agentChat.lastSendMessageArgs.length, 1);
-			assert.strictEqual(agentChat.lastSendMessageArgs[0].opts.attachments, undefined);
+			// ★ 契约同步（2026-09-11）：编排层把「任务附件 + 描述内联 data-uri」合并为
+			//   数组（`taskInlineData` 默认 `[]`）→ 无附件时是**空数组**而非 undefined。
+			assert.deepStrictEqual(agentChat.lastSendMessageArgs[0].opts.attachments, []);
 			assert.strictEqual(agentChat.lastSendMessageArgs[0].opts.worktreePath, '/repo/wt1');
 		});
 	});
@@ -260,7 +265,13 @@ function makeTaskBoardService(fileService: InMemoryFileService, orchestration?: 
 	};
 
 	const environmentService = { userHome: URI.file('/tmp') } as any;
-	const configurationService = { getValue: () => undefined } as any;
+	// ★ 补 onDidChangeConfiguration（2026-09-11）：TaskOrchestrationService 构造期会注册
+	//   配置变更监听；旧 mock 只有 getValue → 构造即抛
+	//   「this.configurationService.onDidChangeConfiguration is not a function」。
+	const configurationService = {
+		getValue: () => undefined,
+		onDidChangeConfiguration: () => ({ dispose() { } }),
+	} as any;
 	const playwrightService = {} as any;
 
 	return new AgentTaskBoardService(
@@ -276,7 +287,13 @@ function makeTaskBoardService(fileService: InMemoryFileService, orchestration?: 
 function makeOrchestrationService(): { service: TaskOrchestrationService; agentChat: MockAgentChatService } {
 	const fileService = new InMemoryFileService();
 	const logService = new MockLogService();
-	const configurationService = { getValue: () => undefined } as any;
+	// ★ 补 onDidChangeConfiguration（2026-09-11）：TaskOrchestrationService 构造期会注册
+	//   配置变更监听；旧 mock 只有 getValue → 构造即抛
+	//   「this.configurationService.onDidChangeConfiguration is not a function」。
+	const configurationService = {
+		getValue: () => undefined,
+		onDidChangeConfiguration: () => ({ dispose() { } }),
+	} as any;
 	const environmentService = { userHome: URI.file('/tmp') } as any;
 
 	const agentChat = new MockAgentChatService();
@@ -287,7 +304,11 @@ function makeOrchestrationService(): { service: TaskOrchestrationService; agentC
 		getWorkspace: async () => undefined,
 		createAgent: async () => ({ id: 'agent-1', name: 'Agent One' }),
 	} as any;
-	const taskBoardService = {} as any;
+	// ★ 补 updateTaskStatus（2026-09-11）：TaskOrchestrationService 执行前后会回写
+	//   任务状态；旧 mock 是空对象 → 抛「updateTaskStatus is not a function」。
+	const taskBoardService = {
+		updateTaskStatus: async () => undefined,
+	} as any;
 	const agentOSService = {} as any;
 	const workspaceContextService = {} as any;
 	const workflowStorage = { listWorkflows: async () => [] } as any;

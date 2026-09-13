@@ -48,10 +48,63 @@ const PORT_TYPE_COLOR: Record<string, string> = {
 	'STRING': '#3b82f6',
 	'VIDEO': '#10b981',
 	'AUDIO': '#f59e0b',
+	'ANY': '#94a3b8',            // slate blue（Start/End 等通配口）
+	// W7-flow 控制流口（title 侧锚点 + 青色虚线）
+	'FLOW': '#22d3ee',
 };
 
 export function portTypeColor(t: string): string {
 	return PORT_TYPE_COLOR[t] ?? PORT_TYPE_COLOR[String(t).toUpperCase()] ?? '#22c55e';
+}
+
+/**
+ * W7-flow：FLOW 控制口的 label 值。
+ *
+ * ★ 必须是**空格**而不是空串：LiteGraph `NodeSlot.renderingLabel`（litegraph.es.js
+ * L1310）是 `this.label || this.localized_name || this.name || ''` —— 用的是 `||`
+ * 不是 `??`，空串是 falsy 会**回退到 name**（'flowIn'）继续画文字（实测两次返工
+ * 的真因）。空格是 truthy → 通过 `if (text)` 判定 → fillText(' ') 无可见像素。
+ * name 不能动（store 边的 sourceHandle/targetHandle + makeFlowEdgeClassifier 依赖它）。
+ */
+export const FLOW_SLOT_LABEL = ' ';
+
+/**
+ * W7-flow：把 FLOW 控制口的连接点定位到 **title 两侧**（数据口保持端口行）。
+ *
+ * LiteGraph 的 slot 自带相对坐标覆盖（getInputSlotPos：`if (input.pos) return
+ * [nodeX + pos[0], nodeY + pos[1]]`），pin 绘制（drawSlots→slot.draw）、连线
+ * 端点（renderLink）、命中检测（getSlotInPosition 的 20×20 矩形）**全部消费
+ * 同一坐标** —— 覆盖 pos 后三者自动一致，无需 patch 任何方法。
+ *
+ *  - ★ y 取 **负值** `-NODE_TITLE_HEIGHT/2`：`node.pos` 是 **body** 左上角，
+ *    标题栏在其**上方**（负坐标区）。此前误用 `+titleH/2`（=+15）落在首行数据口
+ *    （y=(0+0.7)*20=14）旁边 → 两者同一水平线，文字/圆点都挤在一起。负值才是
+ *    真正的「title 垂直中心」，与首行数据口相距 ~29px。
+ *  - 输入锚 x=`-4`（左缘外半悬）、输出锚 x=`w+4`（右缘外），与端口行 pin
+ *    （x≈10 / w-10）错开，视觉读作「节点级连接点」。
+ *  - 折叠态零代码且**天然一致**：getInputSlotPos 的 `flags.collapsed` 分支
+ *    （优先于 pos 覆盖）返回 `nodeY - NODE_TITLE_HEIGHT*0.5` —— 与本函数同一 y。
+ *  - 输出侧 x 依赖节点宽度（卡片自适应/展开收起会变）→ 由 LiteGraphCanvas
+ *    每帧循环调用本函数保持同步（幂等，FLOW 口每节点仅 2 个）。
+ *
+ * @returns 是否修改了任何 slot（供调用方决定 setDirty）。
+ */
+export function applyFlowSlotPositions(node: LGraphNode): boolean {
+	let changed = false;
+	// 负 y = 标题栏垂直中心（body 之上）。与折叠态原生锚点 y 完全一致。
+	const anchorY = -LiteGraph.NODE_TITLE_HEIGHT * 0.5;
+	const width = node.size?.[0] ?? 0;
+	for (const slot of node.inputs ?? []) {
+		if (slot.type !== 'FLOW') { continue; }
+		const p: [number, number] = [-4, anchorY];
+		if (slot.pos?.[0] !== p[0] || slot.pos?.[1] !== p[1]) { slot.pos = p; changed = true; }
+	}
+	for (const slot of node.outputs ?? []) {
+		if (slot.type !== 'FLOW') { continue; }
+		const p: [number, number] = [width + 4, anchorY];
+		if (slot.pos?.[0] !== p[0] || slot.pos?.[1] !== p[1]) { slot.pos = p; changed = true; }
+	}
+	return changed;
 }
 
 /** Build an LGraphNode subclass for a ComfyTV schema stage.
@@ -84,12 +137,19 @@ export function createSchemaNodeClass(spec: NodeSpec): typeof LGraphNode {
 			this.boxcolor = spec.color ?? STAGE_COLOR;
 			for (const inp of spec.inputs ?? []) {
 				const colour = portTypeColor(inp.type);
-				this.addInput(inp.name, inp.type, { label: inp.name, color_off: colour, color_on: colour } as never);
+				// W7-flow：FLOW 口 label 用空格（见 FLOW_SLOT_LABEL 注释：空串会被
+				// renderingLabel 的 `||` 链回退到 name）—— 它锚在 title 两侧，文字会
+				// 叠在标题上；青色 pin 本身即语义。
+				const flow = inp.type === 'FLOW';
+				this.addInput(inp.name, inp.type, { label: flow ? FLOW_SLOT_LABEL : inp.name, color_off: colour, color_on: colour } as never);
 			}
 			for (const out of spec.outputs ?? []) {
 				const colour = portTypeColor(out.type);
-				this.addOutput(out.name, out.type, { label: out.name, color_off: colour, color_on: colour } as never);
+				const flow = out.type === 'FLOW';
+				this.addOutput(out.name, out.type, { label: flow ? FLOW_SLOT_LABEL : out.name, color_off: colour, color_on: colour } as never);
 			}
+			// W7-flow：FLOW 控制口锚到 title 两侧（宽度变化由每帧 syncFlowAnchors 跟随）。
+			applyFlowSlotPositions(this);
 			// Give the node a sensible body so the card has room even before
 			// the first layout pass. The DOM form widget (below) refines the
 			// height once the React content is measured.
@@ -152,8 +212,14 @@ export function createSchemaNodeClass(spec: NodeSpec): typeof LGraphNode {
 			// before replacing, then restore into the new slot objects.
 			const prevInputLinks = (this.inputs ?? []).map(p => p.link);
 			const prevOutputLinks = (this.outputs ?? []).map(p => p.links);
-			this.inputs = (spec.inputs ?? []).map((p, i) => ({ name: p.name, type: p.type, link: prevInputLinks[i] ?? null, dir: 'in' as const })) as unknown as INodeInputSlot[];
-			this.outputs = (spec.outputs ?? []).map((p, i) => ({ name: p.name, type: p.type, links: prevOutputLinks[i] ?? null, dir: 'out' as const })) as unknown as INodeOutputSlot[];
+			// 重建时保留 addInput/addOutput 时的类型色（此前丢失 → 重开工作流后
+			// pin 颜色回退全局色表，COMFYTV_* 全变默认绿）；FLOW 口 label 用空格
+			// （同 constructor，见 FLOW_SLOT_LABEL）。
+			this.inputs = (spec.inputs ?? []).map((p, i) => ({ name: p.name, type: p.type, link: prevInputLinks[i] ?? null, dir: 'in' as const, label: p.type === 'FLOW' ? FLOW_SLOT_LABEL : p.name, color_off: portTypeColor(p.type), color_on: portTypeColor(p.type) })) as unknown as INodeInputSlot[];
+			this.outputs = (spec.outputs ?? []).map((p, i) => ({ name: p.name, type: p.type, links: prevOutputLinks[i] ?? null, dir: 'out' as const, label: p.type === 'FLOW' ? FLOW_SLOT_LABEL : p.name, color_off: portTypeColor(p.type), color_on: portTypeColor(p.type) })) as unknown as INodeOutputSlot[];
+			// W7-flow：configure 按当前 spec 重建端口数组后重设 FLOW 锚点
+			// （spec 尾部注入的 flowIn/flowOut 对存量节点在此处补齐）。
+			applyFlowSlotPositions(this);
 		}
 	}
 	return SchemaStageNode;

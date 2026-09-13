@@ -95,6 +95,20 @@ export interface ICheckpointService {
 	revertAllCheckpoints(agentId: string, sessionId: string): Promise<IJumpToCheckpointResult>;
 
 	/**
+	 * 预检：找出「agent 编辑之后被**用户手动改过**」的文件（2026-09-12，P1-3）。
+	 *
+	 * 回退写回的是「agent 写入前的内容」，故天然保留此前所有人类改动；**唯一真正的
+	 * 丢失场景**是 agent 改完 → 用户又手改 → 回退（用户这次手改被抹掉）。此方法用于
+	 * 在回退前发现该情况，让调用方向用户二次确认。
+	 *
+	 * 保守实现：无 agent 写入基线（窗口重载后）或读不到的文件一律跳过 ——
+	 * 宁可漏报（不打扰）也不误报（惊吓式确认）。
+	 *
+	 * @returns 被外部修改过的文件 URI 列表（空 = 无冲突）。
+	 */
+	detectExternallyModifiedFiles(agentId: string, sessionId: string): Promise<string[]>;
+
+	/**
 	 * Get the earliest snapshot of every file touched across all (non-ghost)
 	 * tool_edit checkpoints. Backs the "查看全部变更" multi-file diff window
 	 * (original content vs current on-disk content).
@@ -117,6 +131,24 @@ export interface ICheckpointService {
 	 * that reload will not re-show the bar.
 	 */
 	deleteAllCheckpoints(agentId: string, sessionId: string): Promise<void>;
+
+	/**
+	 * 会话生命周期结束时**彻底回收**其检查点数据（2026-09-12，P0-3）：
+	 * 删除整个会话目录（`index.json` + `snapshots/`）。
+	 *
+	 * 与 {@link deleteAllCheckpoints} 的区别：后者只清空索引与快照文件（目录仍在），
+	 * 这里连目录一起删 —— 用于「会话已被用户删除」的场景，避免磁盘永久残留。
+	 */
+	deleteSessionCheckpoints(agentId: string, sessionId: string): Promise<void>;
+
+	/**
+	 * 清扫过期会话的检查点（TTL，2026-09-12，P0-3）。
+	 * 遍历检查点根目录下的每个 agent/session，其**最新**检查点早于 `maxAgeMs` →
+	 * 删除整个会话目录。尽力而为（失败只 warn，不抛）。
+	 *
+	 * @returns 被删除的会话数。
+	 */
+	pruneStaleSessions(maxAgeMs?: number): Promise<number>;
 
 	/** Get file snapshots for a checkpoint.
 	 *  Returns the full snapshot objects (id, uri, languageId, content).

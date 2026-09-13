@@ -1221,98 +1221,198 @@ protected override _forceRenderAllMessages(): void {
 		this._modeDropdownTrigger = null;
 	}
 
-	protected override _openProviderDropdown(customTrigger?: HTMLElement | null): void {
+	protected override _openChatModelDropdown(customTrigger?: HTMLElement | null): void {
 		this._closeAllDropdowns();
-		this._providerDropdownTrigger = customTrigger ?? this._providerTrigger;
-		if (this._providerDropdownTrigger) { this._providerDropdownTrigger.classList.add('open'); }
+		this._chatModelDropdownTrigger = customTrigger ?? this._chatModelTrigger;
+		if (this._chatModelDropdownTrigger) { this._chatModelDropdownTrigger.classList.add('open'); }
 
-		this._providerDropdownEl = append(this._dropdownBody(this._providerDropdownTrigger), $(".provider-dropdown"));
-		this._positionDropdownAbove(this._providerDropdownEl, this._providerDropdownTrigger);
+		this._chatModelDropdownEl = append(this._dropdownBody(this._chatModelDropdownTrigger), $(".provider-dropdown.chat-model-dropdown"));
+		this._positionDropdownAbove(this._chatModelDropdownEl, this._chatModelDropdownTrigger);
 
 		if (this._providers.length === 0) {
-			append(this._providerDropdownEl, $(".provider-dropdown-empty", undefined, '暂无可用 Provider'));
+			append(this._chatModelDropdownEl, $(".provider-dropdown-empty", undefined, '暂无可用 Provider'));
 		} else {
 			for (const p of this._providers) {
-				const item = append(this._providerDropdownEl, $(`.provider-dropdown-item${this._currentProvider === p.id ? '.active' : ''}`));
-				append(item, $("span.provider-dropdown-name", undefined, p.label));
-				this._register(
-					addDisposableListener(item, EventType.CLICK, () => {
-						this._closeProviderDropdown();
-						if (p.id !== this._currentProvider) {
-							this._currentProvider = p.id;
-							this._onSelectProvider?.(p.id);
-							// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
-							this._refreshInputArea();
-						}
-					}),
-				);
-			}
-		}
-
-		this._disposeOutsideClick(this._providerDropdownOutsideClick);
-		this._providerDropdownOutsideClick = this._registerOutsideClickClose(this._providerDropdownEl, this._providerDropdownTrigger, () => this._closeProviderDropdown());
-	}
-
-protected override _closeProviderDropdown(): void {
-		this._disposeOutsideClick(this._providerDropdownOutsideClick);
-		this._providerDropdownOutsideClick = null;
-		if (this._providerDropdownEl) {
-			this._providerDropdownEl.remove();
-			this._providerDropdownEl = null;
-		}
-		if (this._providerDropdownTrigger) { this._providerDropdownTrigger.classList.remove('open'); }
-		this._providerDropdownTrigger = null;
-	}
-
-protected override _openModelDropdown(customTrigger?: HTMLElement | null): void {
-		this._closeAllDropdowns();
-		this._modelDropdownTrigger = customTrigger ?? this._modelTrigger;
-		if (this._modelDropdownTrigger) { this._modelDropdownTrigger.classList.add('open'); }
-
-		this._modelDropdownEl = append(this._dropdownBody(this._modelDropdownTrigger), $(".provider-dropdown.model-dropdown"));
-		this._positionDropdownAbove(this._modelDropdownEl, this._modelDropdownTrigger);
-
-		// 仅显示当前 provider 对应的 model
-		const filtered = this._currentProvider
-			? this._models.filter(m => !m.provider || m.provider === this._currentProvider)
-			: this._models;
-
-		if (filtered.length === 0) {
-			append(this._modelDropdownEl, $(".provider-dropdown-empty", undefined, '暂无可用模型'));
-		} else {
-			for (const m of filtered) {
-				const item = append(this._modelDropdownEl, $(`.provider-dropdown-item${this._currentModel === m.id ? '.active' : ''}`));
-				append(item, $("span.provider-dropdown-name", undefined, m.label));
-				if (m.provider) {
-					append(item, $("span.provider-dropdown-detail", undefined, m.provider));
+				const models = this._models.filter(m => m.provider === p.id);
+				const row = append(this._chatModelDropdownEl, $(".provider-dropdown-item.chat-model-l1"));
+				append(row, $("span.provider-dropdown-name", undefined, p.label));
+				if (this._currentProvider === p.id) {
+					append(row, $("span.provider-dropdown-cur", undefined, '当前'));
 				}
-				this._register(
-					addDisposableListener(item, EventType.CLICK, () => {
-						this._closeModelDropdown();
-						if (m.id !== this._currentModel) {
-							this._currentModel = m.id;
-							this._onSelectModel?.(m.id);
-							// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
-							this._refreshInputArea();
+				append(row, $("span.provider-dropdown-count", undefined, String(models.length)));
+				append(row, $("span.provider-dropdown-chev", undefined, '›'));
+
+				// 二级：该 provider 的模型列表（hover 飞出，无需点击）
+				const sub = append(row, $(".provider-dropdown-submenu"));
+				append(sub, $(".provider-dropdown-subhead", undefined, p.label));
+				if (models.length === 0) {
+					append(sub, $(".provider-dropdown-empty", undefined, '暂无可用模型'));
+				} else {
+					for (const m of models) {
+						const isCur = this._currentModel === m.id;
+						const item = append(sub, $(`.provider-dropdown-item${isCur ? '.active' : ''}`));
+						append(item, $("span.provider-dropdown-check", undefined, isCur ? '✓' : ''));
+						append(item, $("span.provider-dropdown-name", undefined, m.label));
+						if (m.supportsImages) {
+							append(item, $("span.provider-dropdown-tag.vision", undefined, '视觉'));
 						}
-					})
-				);
+						this._register(
+							addDisposableListener(item, EventType.CLICK, (e) => {
+								e.stopPropagation();
+								this._closeChatModelDropdown();
+								const providerChanged = p.id !== this._currentProvider;
+								const modelChanged = m.id !== this._currentModel;
+								this._currentProvider = p.id;
+								this._currentModel = m.id;
+								if (providerChanged) { this._onSelectProvider?.(p.id); }
+								if (modelChanged) { this._onSelectModel?.(m.id); }
+								// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
+								this._refreshInputArea();
+							}),
+						);
+					}
+				}
+				this._attachHoverSubmenu(row, sub);
 			}
 		}
 
-		this._disposeOutsideClick(this._modelDropdownOutsideClick);
-		this._modelDropdownOutsideClick = this._registerOutsideClickClose(this._modelDropdownEl, this._modelDropdownTrigger, () => this._closeModelDropdown());
+		this._disposeOutsideClick(this._chatModelDropdownOutsideClick);
+		this._chatModelDropdownOutsideClick = this._registerOutsideClickClose(this._chatModelDropdownEl, this._chatModelDropdownTrigger, () => this._closeChatModelDropdown());
 	}
 
-protected override _closeModelDropdown(): void {
-		this._disposeOutsideClick(this._modelDropdownOutsideClick);
-		this._modelDropdownOutsideClick = null;
-		if (this._modelDropdownEl) {
-			this._modelDropdownEl.remove();
-			this._modelDropdownEl = null;
+	/**
+	 * hover 飞出二级菜单（2026-09-10，对话模型 / 图片模型共用）。
+	 *
+	 * 一级行 `mouseenter` → 显示其二级面板（并收起同级其它面板）；
+	 * 一级行或二级面板 `mouseleave` → **120ms 延迟收起**（允许鼠标穿过 6px 间隙不闪烁）；
+	 * 进入二级面板 `mouseenter` → 取消待执行的收起。
+	 *
+	 * 二级面板为一级行的绝对定位子元素（`left: calc(100% + 6px)`），因此
+	 * 一级面板**必须 overflow: visible**（见 agentChat.css 注释），否则会被裁剪。
+	 * 视口约束（2026-09-10 补垂直方向）：
+	 *   - 右侧空间不足 → 加 `.flip-left` 向左飞出；
+	 *   - 下方空间不足且上方更宽裕 → 加 `.flip-up` 向上飞出，并按可用空间收紧
+	 *     max-height（否则 17 个模型的 provider 会把面板顶出窗口底部，被任务栏遮挡）。
+	 */
+	protected _attachHoverSubmenu(row: HTMLElement, sub: HTMLElement): void {
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const HIDE_DELAY_MS = 120;
+
+		const show = () => {
+			if (timer) { clearTimeout(timer); timer = null; }
+			const parent = row.parentElement;
+			if (parent) {
+				parent.querySelectorAll('.provider-dropdown-submenu.open').forEach(el => {
+					if (el !== sub) { el.classList.remove('open'); }
+				});
+				parent.querySelectorAll('.provider-dropdown-item.hover-l1').forEach(el => {
+					if (el !== row) { el.classList.remove('hover-l1'); }
+				});
+			}
+			row.classList.add('hover-l1');
+			sub.classList.add('open');
+
+			// ── 水平约束：视口右侧空间不足 → 向左飞出 ──
+			const panelRect = (this._chatModelDropdownEl ?? this._imageModelDropdownEl)?.getBoundingClientRect();
+			if (panelRect) {
+				const subWidth = sub.offsetWidth || 250;
+				sub.classList.toggle('flip-left', panelRect.right + 6 + subWidth > window.innerWidth - 8);
+			}
+
+			// ── 垂直约束：下方空间不足且上方更宽裕 → 向上飞出，并按可用空间收紧高度 ──
+			// 注意：必须在 `.open` 之后测量（display:none 时 offsetHeight 为 0）。
+			const rowRect = row.getBoundingClientRect();
+			const subHeight = sub.offsetHeight || 320;
+			const spaceBelow = window.innerHeight - 8 - (rowRect.top - 5);
+			const spaceAbove = rowRect.bottom + 5 - 8;
+			const flipUp = subHeight > spaceBelow && spaceAbove > spaceBelow;
+			sub.classList.toggle('flip-up', flipUp);
+			const avail = Math.max(120, Math.min(320, flipUp ? spaceAbove : spaceBelow));
+			sub.style.maxHeight = `${avail}px`;
+		};
+		const scheduleHide = () => {
+			if (timer) { clearTimeout(timer); }
+			timer = setTimeout(() => {
+				timer = null;
+				sub.classList.remove('open');
+				row.classList.remove('hover-l1');
+			}, HIDE_DELAY_MS);
+		};
+
+		this._register(addDisposableListener(row, EventType.MOUSE_ENTER, show));
+		this._register(addDisposableListener(row, EventType.MOUSE_LEAVE, scheduleHide));
+		this._register(addDisposableListener(sub, EventType.MOUSE_ENTER, show));
+		this._register(addDisposableListener(sub, EventType.MOUSE_LEAVE, scheduleHide));
+	}
+
+protected override _closeChatModelDropdown(): void {
+		this._disposeOutsideClick(this._chatModelDropdownOutsideClick);
+		this._chatModelDropdownOutsideClick = null;
+		if (this._chatModelDropdownEl) {
+			this._chatModelDropdownEl.remove();
+			this._chatModelDropdownEl = null;
 		}
-		if (this._modelDropdownTrigger) { this._modelDropdownTrigger.classList.remove('open'); }
-		this._modelDropdownTrigger = null;
+		if (this._chatModelDropdownTrigger) { this._chatModelDropdownTrigger.classList.remove('open'); }
+		this._chatModelDropdownTrigger = null;
+	}
+
+protected override _openImageModelDropdown(customTrigger?: HTMLElement | null): void {
+		this._closeAllDropdowns();
+		this._imageModelDropdownTrigger = customTrigger ?? this._imageModelTrigger;
+		if (this._imageModelDropdownTrigger) { this._imageModelDropdownTrigger.classList.add('open'); }
+
+		this._imageModelDropdownEl = append(this._dropdownBody(this._imageModelDropdownTrigger), $(".provider-dropdown.image-model-dropdown"));
+		this._positionDropdownAbove(this._imageModelDropdownEl, this._imageModelDropdownTrigger);
+
+		// 一级：图片 provider 列表（2026-09-10 去掉「自动」选项 —— 未配置时 chip
+		// 显示占位「图片模型」，由下游按默认路由处理，不在 UI 暴露该概念）。
+		if (this._imageModelGroups.length === 0) {
+			append(this._imageModelDropdownEl, $(".provider-dropdown-empty", undefined, '暂无可用图片模型'));
+		} else {
+			for (const g of this._imageModelGroups) {
+				const row = append(this._imageModelDropdownEl, $(".provider-dropdown-item.chat-model-l1.image-model-l1"));
+				append(row, $("span.provider-dropdown-name", undefined, g.providerLabel));
+				append(row, $("span.provider-dropdown-count", undefined, String(g.models.length)));
+				append(row, $("span.provider-dropdown-chev", undefined, '›'));
+
+				// 二级：该 provider 的图片模型（hover 飞出）
+				const sub = append(row, $(".provider-dropdown-submenu"));
+				append(sub, $(".provider-dropdown-subhead", undefined, g.providerLabel));
+				for (const m of g.models) {
+					const pref = `provider:${g.providerId}:${m.id}`;
+					const isCur = this._currentImageModel === pref;
+					const item = append(sub, $(`.provider-dropdown-item${isCur ? '.active' : ''}`));
+					append(item, $("span.provider-dropdown-check", undefined, isCur ? '✓' : ''));
+					append(item, $("span.provider-dropdown-name", undefined, m.label));
+					this._register(
+						addDisposableListener(item, EventType.CLICK, (e) => {
+							e.stopPropagation();
+							this._closeImageModelDropdown();
+							if (!isCur) {
+								this._currentImageModel = pref;
+								this._onSelectImageModel?.(pref);
+								this._refreshInputArea();
+							}
+						}),
+					);
+				}
+				this._attachHoverSubmenu(row, sub);
+			}
+		}
+
+		this._disposeOutsideClick(this._imageModelDropdownOutsideClick);
+		this._imageModelDropdownOutsideClick = this._registerOutsideClickClose(this._imageModelDropdownEl, this._imageModelDropdownTrigger, () => this._closeImageModelDropdown());
+	}
+
+protected override _closeImageModelDropdown(): void {
+		this._disposeOutsideClick(this._imageModelDropdownOutsideClick);
+		this._imageModelDropdownOutsideClick = null;
+		if (this._imageModelDropdownEl) {
+			this._imageModelDropdownEl.remove();
+			this._imageModelDropdownEl = null;
+		}
+		if (this._imageModelDropdownTrigger) { this._imageModelDropdownTrigger.classList.remove('open'); }
+		this._imageModelDropdownTrigger = null;
 	}
 
 protected override _renderHistoryOverlay(): void {

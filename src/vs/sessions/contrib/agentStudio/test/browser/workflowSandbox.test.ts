@@ -71,10 +71,18 @@ suite('workflow sandbox (node host)', () => {
 			const r = await sb.run(type, { text: 'hello', prompt: 'hello' }, 'scan-' + type);
 			if (r.status === 'success') { success++; } else { error++; }
 		}
-		// 与 2026-09-04 探针一致的基线：3 success / 220 非 success，总 223
-		assert.strictEqual(sb.specs.length, 223, `specs=${sb.specs.length}`);
-		assert.ok(success >= 3, `success=${success}`);
-		assert.strictEqual(success + error, 223, 'every node must return a status');
+		// ★ 基线更新（2026-09-11）：223 → 220。2026-09-04 探针基线为 223；
+		//   此后 **Vox 口播视频节点迁出 webview**（Vox.DirectorStage / Vox.ScriptStage
+		//   的本地 pipeline 已删除，执行改走 electron-main IPC：controller 的
+		//   vox.run → ipcRenderer vscode:voxRun），其 stage spec 不再注册 —— 属**刻意
+		//   移除**，非意外丢失。本用例的真实意图是「每个 spec 都能返回状态、不挂起」，
+		//   具体数量仅作数量回归哨兵，故随实现演进同步。
+		const SPEC_COUNT = 220;
+		assert.strictEqual(sb.specs.length, SPEC_COUNT, `specs=${sb.specs.length}`);
+		// success 基线 3 → 2：原 3 个「本地即可成功」的 spec 中，Vox.ScriptStage
+		// （本地生成 beats.json 文本，无需后端）随 Vox 迁 IPC 一并移除。
+		assert.ok(success >= 2, `success=${success}`);
+		assert.strictEqual(success + error, SPEC_COUNT, 'every node must return a status');
 	});
 
 	// ── runGraph：多节点 + 上下游联动 ───────────────────────────────────────

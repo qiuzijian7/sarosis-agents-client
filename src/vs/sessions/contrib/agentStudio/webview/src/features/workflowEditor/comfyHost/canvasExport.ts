@@ -26,7 +26,7 @@
  *  设计文档：doc/Dynamic-Workflow-Integration-Design.md §5.3 M4a。
  *--------------------------------------------------------------------------------------------*/
 
-import { buildParallelExecutionPlan, type ExecutionEdgeLike, type ExecutionNodeLike } from './executionGraph';
+import { buildParallelExecutionPlan, resolveStartScope, type ExecutionEdgeLike, type ExecutionNodeLike } from './executionGraph';
 
 // 类型判定与 workflowRun.ts 同源（字符串比较内联，避免拖入其重运行时依赖）。
 // ★ P1 后节点 type 统一为命名空间形态（`Saros.*`）：palette 直接产出、
@@ -206,9 +206,20 @@ export function exportCanvasToWorkflowScript(input: CanvasExportInput): CanvasEx
 	const isExportable = (type: string): boolean =>
 		isOrchestrationNodeType(type) || type.startsWith('ComfyTV.') || type.startsWith('Comfy.');
 
-	const plan = buildParallelExecutionPlan(nodes, edges, isExportable);
+	// W7「从 Start 开始执行」：图含已编排的 Saros.Start → 只导出其作用域内的节点
+	// （可达闭包 + 数据依赖补全）。无 Start / Start 未编排（无出边或只连 End）→
+	// 导出全图（存量图零迁移）。这让「▶ 运行」的脚本路径与全图 Run、headless
+	// （workflowExecutionService 强制 Start）三者入口语义一致。
+	const startScope = resolveStartScope(nodes, edges);
+	const plan = buildParallelExecutionPlan(nodes, edges, isExportable, startScope.scope);
 	if (plan.hasCycle) {
 		throw new Error('画布包含环，无法导出为脚本（动态工作流按 DAG 拓扑执行）');
+	}
+	if (startScope.degraded) {
+		warnings.push('Saros.Start 未连接业务节点（无出边或只连 End）—— 已按全图导出；把 Start 连到首个业务节点即可精确控制入口');
+	}
+	if (plan.outOfScope.length > 0) {
+		warnings.push(`${plan.outOfScope.length} 个节点未接入 Start，已排除在本次执行外（从 Start 连线即可纳入）`);
 	}
 
 	type Step = { id: string; type: string; upstreams: string[] };

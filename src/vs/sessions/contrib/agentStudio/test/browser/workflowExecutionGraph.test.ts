@@ -11,6 +11,8 @@ import {
 	computeExecutionOrder,
 	collectUpstreamNodeIds,
 	buildExecutionPlan,
+	buildParallelExecutionPlan,
+	splitLayerByWriters,
 	type ExecutionNodeLike,
 	type ExecutionEdgeLike,
 } from '../../webview/src/features/workflowEditor/comfyHost/executionGraph.js';
@@ -224,5 +226,123 @@ suite('executionGraph', () => {
 			const plan = buildExecutionPlan(nodes, edges, () => true);
 			assert.strictEqual(plan.hasCycle, true);
 		});
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildParallelExecutionPlan — 并行分层 + P0① 写者分层
+// （此前该函数**零测试**；本节同时补上基础分层覆盖）
+// ─────────────────────────────────────────────────────────────────────────────
+suite('buildParallelExecutionPlan — 写者分层（P0①）', () => {
+
+	const allExec = () => true;
+
+	test('基线分层：无依赖节点同层；diamond 分三层；未传 isWriteStep 不拆', () => {
+		const flat = buildParallelExecutionPlan([{ id: 'a' }, { id: 'b' }, { id: 'c' }], [], allExec);
+		assert.strictEqual(flat.layers.length, 1);
+		assert.deepStrictEqual(flat.layers[0].map(s => s.id), ['a', 'b', 'c']);
+		assert.deepStrictEqual(flat.serializedWriters, [], '缺省不拆分（存量行为不变）');
+
+		const diamond = buildParallelExecutionPlan(
+			[{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
+			[
+				{ source: 'a', target: 'b' }, { source: 'a', target: 'c' },
+				{ source: 'b', target: 'd' }, { source: 'c', target: 'd' },
+			],
+			allExec,
+		);
+		assert.deepStrictEqual(diamond.layers.map(l => l.map(s => s.id)), [['a'], ['b', 'c'], ['d']]);
+	});
+
+	test('★ 同层两个写者 → 各占一层（写者不并发）', () => {
+		const nodes: ExecutionNodeLike[] = [
+			{ id: 'w1', type: 'Saros.Agent' },
+			{ id: 'w2', type: 'Saros.Agent' },
+			{ id: 'r1', type: 'Saros.Prompt' },
+		];
+		const plan = buildParallelExecutionPlan(nodes, [], allExec, null, undefined, s => s.id !== 'r1');
+		assert.deepStrictEqual(plan.layers.map(l => l.map(s => s.id)), [['w1'], ['w2'], ['r1']]);
+		assert.deepStrictEqual(plan.serializedWriters, ['w1', 'w2'], '被串行化的写者应可观测');
+	});
+
+	test('★ 只读节点仍整批并发（并行探索零回归）', () => {
+		const nodes: ExecutionNodeLike[] = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+		const plan = buildParallelExecutionPlan(nodes, [], allExec, null, undefined, () => false);
+		assert.strictEqual(plan.layers.length, 1, '全只读 → 层数不变');
+		assert.strictEqual(plan.layers[0].length, 3);
+		assert.deepStrictEqual(plan.serializedWriters, []);
+	});
+
+	test('读写混合保持原有顺序（遇写者即切分，确定性优先）', () => {
+		const nodes: ExecutionNodeLike[] = [{ id: 'r1' }, { id: 'w1' }, { id: 'r2' }, { id: 'w2' }];
+		const plan = buildParallelExecutionPlan(nodes, [], allExec, null, undefined, s => s.id.startsWith('w'));
+		assert.deepStrictEqual(plan.layers.map(l => l.map(s => s.id)), [['r1'], ['w1'], ['r2'], ['w2']]);
+	});
+
+	test('跨层依赖不受影响：同层写者拆开后仍在共同上游之后', () => {
+		const nodes: ExecutionNodeLike[] = [{ id: 'root' }, { id: 'w1' }, { id: 'w2' }];
+		const edges: ExecutionEdgeLike[] = [
+			{ source: 'root', target: 'w1' },
+			{ source: 'root', target: 'w2' },
+		];
+		const plan = buildParallelExecutionPlan(nodes, edges, allExec, null, undefined, () => true);
+		assert.deepStrictEqual(plan.layers.map(l => l.map(s => s.id)), [['root'], ['w1'], ['w2']]);
+		assert.strictEqual(plan.layers[0][0].id, 'root', '上游必须仍在最前');
+	});
+
+	test('写者本已独占一层 → 不额外增层', () => {
+		const nodes: ExecutionNodeLike[] = [{ id: 'r' }, { id: 'w' }];
+		const plan = buildParallelExecutionPlan(nodes, [{ source: 'r', target: 'w' }], allExec, null, undefined, s => s.id === 'w');
+		assert.deepStrictEqual(plan.layers.map(l => l.map(s => s.id)), [['r'], ['w']]);
+		assert.deepStrictEqual(plan.serializedWriters, ['w']);
+	});
+
+	test('不可执行节点被 skipped，且不参与拆分', () => {
+		const nodes: ExecutionNodeLike[] = [
+			{ id: 'g', type: 'Saros.Group' },
+			{ id: 'w1', type: 'Saros.Agent' },
+			{ id: 'w2', type: 'Saros.Agent' },
+		];
+		const plan = buildParallelExecutionPlan(nodes, [], t => t !== 'Saros.Group', null, undefined, () => true);
+		assert.deepStrictEqual(plan.skipped, ['g']);
+		assert.deepStrictEqual(plan.layers.map(l => l.map(s => s.id)), [['w1'], ['w2']]);
+	});
+
+	test('作用域外节点不参与拆分（outOfScope）', () => {
+		const nodes: ExecutionNodeLike[] = [{ id: 'w1' }, { id: 'w2' }, { id: 'outside' }];
+		const plan = buildParallelExecutionPlan(nodes, [], allExec, new Set(['w1', 'w2']), undefined, () => true);
+		assert.deepStrictEqual(plan.outOfScope, ['outside']);
+		assert.deepStrictEqual(plan.layers.map(l => l.map(s => s.id)), [['w1'], ['w2']]);
+	});
+
+	test('环路：layers 与 serializedWriters 均为空', () => {
+		const plan = buildParallelExecutionPlan(
+			[{ id: 'a' }, { id: 'b' }],
+			[{ source: 'a', target: 'b' }, { source: 'b', target: 'a' }],
+			allExec, null, undefined, () => true,
+		);
+		assert.strictEqual(plan.hasCycle, true);
+		assert.deepStrictEqual(plan.layers, []);
+		assert.deepStrictEqual(plan.serializedWriters, []);
+	});
+
+	test('splitLayerByWriters：纯函数边界（空层 / 全读 / 全写 / 单元素）', () => {
+		const mk = (id: string) => ({ id, type: 't', upstreams: [], flowUpstreams: [] });
+		assert.deepStrictEqual(splitLayerByWriters([], () => true), []);
+		assert.deepStrictEqual(
+			splitLayerByWriters([mk('a'), mk('b')], () => false).map(l => l.map(s => s.id)),
+			[['a', 'b']],
+		);
+		assert.deepStrictEqual(
+			splitLayerByWriters([mk('a'), mk('b')], () => true).map(l => l.map(s => s.id)),
+			[['a'], ['b']],
+		);
+		assert.deepStrictEqual(
+			splitLayerByWriters([mk('a')], () => true).map(l => l.map(s => s.id)),
+			[['a']],
+		);
+		const collected: string[] = [];
+		splitLayerByWriters([mk('a'), mk('b')], s => s.id === 'a', collected);
+		assert.deepStrictEqual(collected, ['a']);
 	});
 });

@@ -262,7 +262,10 @@ async function main(): Promise<void> {
 	document.body.setAttribute('data-vt-ready', 'true');
 	document.body.setAttribute('data-vt-scenarios', String(scenarios.length));
 	document.body.setAttribute('data-vt-blocked-requests', String(netGuard.blocked.length));
-	document.body.setAttribute('data-vt-bridge-calls', String(bridge.calls.length));
+	// ★ installBridgeMock() 返回的就是 **calls 数组**（bridgeStub 返回 stub.__calls），
+	//   旧代码写成 bridge.calls.length → 永远 undefined → 画廊挂载尾部 fatal，
+	//   导致 visual.spec 从未跑通过画廊（既有 bug，2026-09-09 修复）。
+	document.body.setAttribute('data-vt-bridge-calls', String(bridge.length));
 }
 
 /**

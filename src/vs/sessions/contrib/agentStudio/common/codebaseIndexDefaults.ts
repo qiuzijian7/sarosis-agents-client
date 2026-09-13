@@ -59,6 +59,125 @@ export const UNREAL_EXCLUDE_DIRS: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * 排除档位（2026-09-09，配置项 `saros.codebaseGraph.excludeProfile`）。
+ *
+ * 背景：`COMMON_EXCLUDE_DIRS` 里的 `test` / `tests` / `docs` / `scripts` / `resources`
+ * / `cli` / `extensions` 属**源码可读但价值存疑**的目录——排除它们会让测试/脚本代码
+ * 无法被检索（Find Symbol / Open File 找不到测试里的符号）。但全量索引这些目录会
+ * 显著拉长索引时间。故做成档位，由用户按仓库取舍。
+ *
+ * - `balanced`（默认，兼容现状）：全部排除，索引最快。
+ * - `full`：保留测试/文档/脚本等源码目录，只排除依赖与构建产物 —— 覆盖完整、索引更慢。
+ */
+export const EXCLUDE_PROFILES = {
+	/** 两档共有的「必排除」：依赖、版本控制、构建产物、缓存、IDE 配置。 */
+	core: [
+		'node_modules', '.git', '.worktrees',
+		'build', 'out', 'out-build', 'out-test', 'out-vscode', 'dist', 'target', 'deploy-package', 'coverage',
+		'.next', '.nuxt', '__pycache__', '.cache',
+		'tmp', 'temp', 'enc_temp_folder',
+		'.vscode-test', '.codebase-memory', '.sarosworkspace',
+		'.vscode', '.idea', '.vs', '.vscode-server', '.ugs',
+		'generated-images', '_removed_extensions',
+	],
+	/** balanced 档额外排除：源码可读但索引价值存疑的目录（测试/文档/脚本/资源）。 */
+	balancedOnly: [
+		'test', 'tests', 'resources', 'docs', 'doc', 'scripts', 'dev', 'extensions', 'cli', 'e2e',
+	],
+} as const;
+
+/** 按档位取排除目录清单。 */
+export function excludeDirsForProfile(profile: 'balanced' | 'full'): readonly string[] {
+	return profile === 'full'
+		? EXCLUDE_PROFILES.core
+		: [...EXCLUDE_PROFILES.core, ...EXCLUDE_PROFILES.balancedOnly];
+}
+
+/** 逐文件索引结果状态（下沉到 common，供 store/service/测试共用）。 */
+export type FileCoverageStatus = 'indexed' | 'skipped' | 'parse_error' | 'timeout' | 'partial';
+
+/**
+ * 解析后**是否应记录哈希基线**（把 service 内的策略抽为可测纯函数，2026-09-09）。
+ *
+ * 背景：哈希基线的语义必须是「成功处理过」。旧实现无论成败都记 → 解析大面积失败后
+ * 失败被永久固化（6000 文件永不重试，图只剩被编辑过的文件）。
+ *
+ * - `parse_error` / `timeout`：可恢复的失败 → **不记**（下轮 watcher 重报后重试）；
+ *   失败累计达到 retryMax 才记，防止「失败文件每轮都重报」的翻烧饼。计数是会话级内存
+ *   的，实例重启清零 —— 环境修复（如 wasm 可用）后重启即自愈。
+ * - 其余（indexed / partial / skipped）：记哈希。skipped 属防护类（不支持的扩展名、
+ *   超大文件、minified），永远不会成功，必须记基线否则每轮重报。
+ *
+ * @param failCount 已含本次在内的累计失败次数
+ */
+export function shouldRecordHashAfterParse(status: FileCoverageStatus, failCount: number, retryMax: number = 3): boolean {
+	if (status === 'parse_error' || status === 'timeout') {
+		return failCount >= retryMax;
+	}
+	return true;
+}
+
+/**
+ * 目录名是否命中排除集（纯函数，2026-09-09）。
+ *
+ * 语义：**按目录名精确匹配**（不含路径），且**大小写不敏感**（Windows 与 Linux 仓库
+ * 目录大小写不一致很常见，如 `Build` vs `build`）。
+ *
+ * 抽出目的：`_scanDir` 的遍历逻辑（尤其 keepDirs 例外下钻）后续要拆出 service，
+ * 先把这段最容易出错的匹配语义做成可测纯函数，作为搬迁的回归锚点。
+ *
+ * @param name 目录/文件**名**（非路径）
+ * @param excludeDirs 排除目录名集合（大小写任意）
+ */
+/**
+ * 参与索引的扩展名 → tree-sitter wasm 语言名（2026-09-09 从 codebaseGraphService 下沉，
+ * 供 service 与 CodebaseGraphScanner 共用）。**未列出的扩展名不参与索引**。
+ */
+export const EXTENSION_TO_WASM_LANG: Record<string, string> = {
+	'.ts': 'typescript',
+	'.tsx': 'tsx',
+	'.mts': 'typescript',
+	'.cts': 'typescript',
+	'.js': 'javascript',
+	'.jsx': 'javascript',
+	'.mjs': 'javascript',
+	'.py': 'python',
+	'.go': 'go',
+	'.rs': 'rust',
+	'.java': 'java',
+	'.rb': 'ruby',
+	'.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp', '.h': 'cpp', '.hpp': 'cpp', '.hxx': 'cpp',
+	'.cs': 'c-sharp',
+	'.php': 'php',
+};
+
+export function matchesExcludeDir(name: string, excludeDirs: Set<string>): boolean {
+	if (excludeDirs.size === 0) { return false; }
+	if (excludeDirs.has(name)) { return true; }
+	const lower = name.toLowerCase();
+	for (const d of excludeDirs) {
+		if (d.toLowerCase() === lower) { return true; }
+	}
+	return false;
+}
+
+/**
+ * 判定 filePath 是否为绝对路径（图内 filePath 契约要求为**项目相对路径**）。
+ *
+ * 契约背景（2026-09-09）：Worker 内 walkAST 把传入的 filePath 原样写进节点，
+ * 增量解析曾误传绝对路径（`g:\...`）→ 图里混入绝对路径，OpenFileModal 用
+ * `joinPath(root, abs)` 拼出错误 URI 静默打不开。生产路径已修，此处用于
+ * **运行时契约检测**（store.upsertNode 统计 → 健康度暴露），防回归。
+ */
+export function isAbsoluteGraphPath(p: string): boolean {
+	if (!p) { return false; }
+	// Windows: C:\ / C:/ ；UNC: \\server\share
+	if (/^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\\\')) { return true; }
+	// POSIX 绝对路径（相对路径不会以 / 开头）
+	return p.startsWith('/');
+}
+
+/**
  * 合并若干排除目录列表，按大小写不敏感去重并保持首次出现顺序。
  */
 export function mergeExcludeDirs(...lists: readonly (readonly string[] | undefined)[]): string[] {
@@ -126,3 +245,29 @@ export function parseCbmIgnore(content: string): string[] {
 	}
 	return mergeExcludeDirs(out);
 }
+
+export const AST_TO_NODE_TYPE: Record<string, string> = {
+	'function_declaration': 'function',
+	'function_definition': 'function',
+	'function_item': 'function',
+	'method_definition': 'function',
+	'method_declaration': 'function',
+	'constructor_declaration': 'function',
+	'destructor_declaration': 'function',
+	'class_declaration': 'class',
+	'class_definition': 'class',
+	'class_specifier': 'class',
+	'impl_item': 'class',
+	'struct_specifier': 'class',
+	'interface_declaration': 'interface',
+	'type_alias_declaration': 'interface',
+	'trait_item': 'interface',
+	'protocol_declaration': 'interface',
+	'enum_declaration': 'enum',
+	'enum_item': 'enum',
+	'enum_specifier': 'enum',
+	'variable_declarator': 'variable',
+	'global_variable_declaration': 'variable',
+	'const_item': 'variable',
+	'static_item': 'variable',
+};

@@ -33,6 +33,14 @@ export const SAROS_NODE_TYPES = new Set<string>([
 	'Saros.ModelImageGen',
 	'Saros.ProviderPicker',
 	'Saros.Subflow',
+	// ★ 补齐（2026-09-11）：`Saros.Merge` / `Saros.Loop` / `Saros.Parallel` 在
+	//   sarosLiteGraphNodes.ts 均有真实 LiteGraph 类（且有 spec / 执行器），但此
+	//   白名单漏登 → 会被画布过滤器判为「未知」而丢弃。
+	//   守卫测试（workflowComfyCanvasNodeFilter.test.ts「every sarosNodeConfig has a
+	//   LiteGraph class name」）此前因 import 拼写错误整文件无法运行，故长期未暴露。
+	'Saros.Merge',
+	'Saros.Loop',
+	'Saros.Parallel',
 ]);
 
 /** Node types the LiteGraph engine can render meaningfully.

@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>文档列表 — vssaros KB Mockup</title>
+<link rel="stylesheet" href="kb-mockup.css">
+<!--
+  页面说明（对应交付要求 4）：
+  · 功能模块：工具栏（搜索/筛选/排序）/ 批量操作条 / 文档表格（10 条）/ 分页 / 加载骨架示例
+  · 对应框架组件：
+      - 列表行点击        → KbNoteEditorInput 打开 KbBlocksEditorPane
+      - 状态徽章          → 对应 KB 管线状态机：已索引 / 导入中(索引队列) / 待审核(kbReviewStore) / 索引失败(Lint 报错)
+      - 批量删除/重新索引 → knowledgeBaseView 导入控制器的队列 API（静态稿仅展示交互态）
+      - 排序/筛选         → kbVaultRecallTools 查询参数的 UI 映射
+  · 无法静态呈现的交互均以 [交互注释] 标注（见源码中 [交互注释] 行）。
+-->
+<style>
+	.kb-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+	.kb-toolbar .kb-searchbox { width: 220px; }
+	.kb-count-hint { font-size: var(--kb-fs-xs); color: var(--kb-fg-dim); }
+
+	/* 批量操作条：选中行后出现（示例固定展示，勾选 2 行）*/
+	.kb-bulkbar {
+		display: flex; align-items: center; gap: 8px;
+		padding: 6px 10px; margin-bottom: 10px;
+		background: var(--kb-accent-bg);
+		border: 1px solid var(--kb-accent-border);
+		border-radius: var(--kb-radius);
+		color: var(--kb-accent-fg); font-size: var(--kb-fs-sm);
+	}
+	.kb-bulkbar .kb-btn { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.18); color: var(--kb-accent-fg); }
+	.kb-bulkbar .kb-btn:hover { background: rgba(255,255,255,.16); }
+	.kb-bulkbar .kb-btn.kb-btn-danger2 { color: #ffb4ae; }
+
+	.kb-title-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+	.kb-title-cell a { color: var(--kb-fg-strong); font-weight: 500; }
+	.kb-title-cell a:hover { color: var(--kb-link); }
+	.kb-title-cell .kb-subline { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+	.kb-doc-ico { display: inline-flex; width: 15px; height: 15px; color: var(--kb-fg-dim); flex-shrink: 0; }
+	.kb-doc-ico svg { width: 15px; height: 15px; }
+
+	.kb-cell-actions { display: none; gap: 2px; }
+	kb-row:hover .kb-cell-actions, tr:hover .kb-cell-actions { display: inline-flex; }
+
+	/* 复选框 */
+	.kb-checkbox { width: 14px; height: 14px; accent-color: var(--kb-accent-border); cursor: pointer; }
+
+	/* skeleton 加载占位示例区 */
+	.kb-skel-demo td { padding: 9px 10px; }
+</style>
+</head>
+<body>
+<div class="kb-app">
+
+	<header class="kb-topbar">
+		<span class="kb-title">
+			<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8 1a3.5 3.5 0 0 0-3.5 3.5V5H4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-.5V4.5A3.5 3.5 0 0 0 8 1Zm2.5 4h-5V4.5a2.5 2.5 0 0 1 5 0V5Z"/></svg>
+			Saros Agent Studio · 知识库
+		</span>
+		<span class="kb-spacer"></span>
+		<label class="kb-searchbox">
+			<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+			<input type="text" placeholder="检索知识库…">
+			<kbd>Ctrl K</kbd>
+		</label>
+		<button class="kb-iconbtn kb-tip" data-tip="通知（3 条未读）">
+			<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a1 1 0 0 1 1 1v.6A4.5 4.5 0 0 1 12.5 7v3l1.2 1.8a.7.7 0 0 1-.6 1.2H3a.7.7 0 0 1-.6-1.2L3.5 10V7A4.5 4.5 0 0 1 7 2.6V2a1 1 0 0 1 1-1Zm-1.7 12h3.4a1.7 1.7 0 0 1-3.4 0Z"/></svg>
+		</button>
+		<span class="kb-badge kb-badge-blue">张工 · 管理员</span>
+	</header>
+
+	<aside class="kb-sidebar">
+		<div class="kb-section">工作区 <span class="kb-count">个人 Vault</span></div>
+		<a class="kb-nav" href="index.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5 1.5 4.6V8c0 3.4 2.8 5.9 6.5 6.5 3.7-.6 6.5-3.1 6.5-6.5V4.6L8 1.5Z"/></svg></span>
+			<span class="kb-nav-label">知识库首页</span>
+		</a>
+		<a class="kb-nav is-active" href="documents.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.6L9.9 1.5H4Zm5.5 1.7 2.8 2.8H9.5V3.2Z"/></svg></span>
+			<span class="kb-nav-label">文档列表</span>
+			<span class="kb-badge">128</span>
+		</a>
+		<a class="kb-nav" href="search.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg></span>
+			<span class="kb-nav-label">搜索</span>
+		</a>
+		<a class="kb-nav" href="categories.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.5A1.5 1.5 0 0 1 3 2h3.2l1.4 1.5H13A1.5 1.5 0 0 1 14.5 5v7A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V3.5Z"/></svg></span>
+			<span class="kb-nav-label">分类 / 标签</span>
+		</a>
+		<a class="kb-nav" href="entry-edit.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></span>
+			<span class="kb-nav-label">条目编辑器</span>
+		</a>
+		<div class="kb-nav-group">管理</div>
+		<a class="kb-nav" href="admin.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a2.6 2.6 0 0 1 1.3 4.9l.8 4.6a1 1 0 0 1-.3.9l-1.5 1.4a.4.4 0 0 1-.6 0L6.2 11.4a1 1 0 0 1-.3-.9l.8-4.6A2.6 2.6 0 0 1 8 1Z"/></svg></span>
+			<span class="kb-nav-label">权限与用户</span>
+		</a>
+		<a class="kb-nav" href="document-detail.html">
+			<span class="kb-nav-ico"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 3A1.5 1.5 0 0 1 4 1.5h8A1.5 1.5 0 0 1 13.5 3v10A1.5 1.5 0 0 1 12 14.5H4A1.5 1.5 0 0 1 2.5 13V3Z"/></svg></span>
+			<span class="kb-nav-label">文档详情示例</span>
+		</a>
+	</aside>
+
+	<main class="kb-main">
+		<nav class="kb-crumb" style="margin-bottom:10px">
+			<span>工作区</span><span class="kb-crumb-sep">›</span>
+			<span>知识库</span><span class="kb-crumb-sep">›</span>
+			<span class="kb-crumb-here">文档列表</span>
+		</nav>
+
+		<div class="kb-panel-head" style="border:1px solid var(--kb-border);border-radius:var(--kb-radius-lg) var(--kb-radius-lg) 0 0">
+			<h2>全部文档 <span class="kb-count-hint">共 128 条 · 当前筛选 10 条</span></h2>
+			<span class="kb-spacer"></span>
+			<!-- [交互注释] 「新建条目」在真实实现中创建草稿并跳转 entry-edit.html；无写入权限时按钮置 disabled，悬浮提示「需要 Vault 写入权限」 -->
+			<button class="kb-btn">新建条目</button>
+			<button class="kb-btn kb-btn-primary">
+				<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M9.5 1.5 14 6 9.5 10.5V8H6V5h3.5V1.5ZM2 7h2v6h8v-2h2v3.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V7Z"/></svg>
+				导入资料
+			</button>
+		</div>
+
+		<!-- 工具栏：筛选 + 排序 -->
+		<div class="kb-toolbar" style="padding:10px 12px;border:1px solid var(--kb-border);border-top:none">
+			<label class="kb-searchbox">
+				<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M10.7 9.3A5 5 0 1 0 9.3 10.7l3.5 3.5 1.4-1.4-3.5-3.5ZM6.5 10a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+				<input type="text" placeholder="在结果中筛选标题…">
+			</label>
+			<!-- [交互注释] 筛选条件变更即时触发列表重查（防抖 300ms）；请求期间表格主体切换为 skeleton 占位 -->
+			<select class="kb-select">
+				<option>笔记本：全部</option>
+				<option selected>Agent Studio 架构设计</option>
+				<option>会议纪要 · 2026 Q3</option>
+				<option>竞品调研 · NotebookLM</option>
+			</select>
+			<select class="kb-select">
+				<option>状态：全部</option>
+				<option>已索引</option>
+				<option>待审核</option>
+				<option>索引失败</option>
+			</select>
+			<select class="kb-select">
+				<option>排序：最近更新</option>
+				<option>创建时间</option>
+				<option>标题 A→Z</option>
+				<option>引用次数</option>
+			</select>
+			<!-- [交互注释] 点击清空全部筛选并重置分页到第 1 页 -->
+			<button class="kb-btn kb-btn-ghost kb-btn-sm">清空筛选</button>
+			<span style="flex:1"></span>
+			<span class="kb-count-hint">10 / 页</span>
+		</div>
+
+		<!-- 批量操作条（勾选行后出现；示例固定展示勾选 2 行的状态）-->
+		<div class="kb-bulkbar">
+			<b>已选 2 项</b>
+			<span style="opacity:.7">·</span>
+			<!-- [交互注释] 批量操作走确认弹窗（二次确认）；执行中按钮 is-busy，完成后 toast + 列表局部刷新 -->
+			<button class="kb-btn kb-btn-sm">重新索引</button>
+			<button class="kb-btn kb-btn-sm">移动到笔记本…</button>
+			<button class="kb-btn kb-btn-sm">添加标签…</button>
+			<button class="kb-btn kb-btn-sm kb-btn-danger2">删除</button>
+			<span style="flex:1"></span>
+			<button class="kb-btn kb-btn-ghost kb-btn-sm">取消选择</button>
+		</div>
+
+		<div class="kb-table-wrap" style="border-top:none;border-radius:0 0 var(--kb-radius-lg) var(--kb-radius-lg)">
+			<table class="kb-table">
+				<thead>
+					<tr>
+						<th style="width:34px"><input type="checkbox" class="kb-checkbox" checked></th>
+						<th>标题 <span style="color:var(--kb-fg-dim)">↓</span></th>
+						<th class="kb-col-opt">笔记本</th>
+						<th>状态</th>
+						<th class="kb-col-opt kb-num">分块</th>
+						<th class="kb-col-opt kb-num">大小</th>
+						<th class="kb-num">更新时间</th>
+						<th style="width:90px">操作</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr class="is-selected">
+						<td><input type="checkbox" class="kb-checkbox" checked></td>
+						<td><div class="kb-title-cell">
+							<a href="document-detail.html">Workbench 与 webview 双轨架构决策记录（ADR-018）</a>
+							<span class="kb-subline"><span class="kb-tag">架构</span><span class="kb-tag">ADR</span></span>
+						</div></td>
+						<td class="kb-col-opt">Agent Studio 架构设计</td>
+						<td><span class="kb-badge kb-badge-green">已索引</span></td>
+						<td class="kb-col-opt kb-num">42</td>
+						<td class="kb-col-opt kb-num">86 KB</td>
+						<td class="kb-num">2 小时前</td>
+						<td><span class="kb-cell-actions">
+							<a class="kb-iconbtn kb-tip" data-tip="编辑" href="entry-edit.html"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></a>
+							<button class="kb-iconbtn kb-tip" data-tip="更多"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></button>
+						</span></td>
+					</tr>
+					<tr class="is-selected">
+						<td><input type="checkbox" class="kb-checkbox" checked></td>
+						<td><div class="kb-title-cell">
+							<a href="document-detail.html">esbuild.kbblocks 构建链路与 IIFE 打包策略</a>
+							<span class="kb-subline"><span class="kb-tag">构建</span></span>
+						</div></td>
+						<td class="kb-col-opt">Agent Studio 架构设计</td>
+						<td><span class="kb-badge kb-badge-green">已索引</span></td>
+						<td class="kb-col-opt kb-num">18</td>
+						<td class="kb-col-opt kb-num">31 KB</td>
+						<td class="kb-num">5 小时前</td>
+						<td><span class="kb-cell-actions">
+							<a class="kb-iconbtn kb-tip" data-tip="编辑" href="entry-edit.html"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></a>
+							<button class="kb-iconbtn kb-tip" data-tip="更多"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></button>
+						</span></td>
+					</tr>
+					<tr>
+						<td><input type="checkbox" class="kb-checkbox"></td>
+						<td><div class="kb-title-cell">
+							<a href="document-detail.html">Q3 第 11 周评审会纪要：KB 检索性能优化</a>
+							<span class="kb-subline"><span class="kb-tag">纪要</span><span class="kb-badge kb-badge-blue">自动摘要已生成</span></span>
+						</div></td>
+						<td class="kb-col-opt">会议纪要 · 2026 Q3</td>
+						<td><span class="kb-badge kb-badge-blue">导入中</span></td>
+						<td class="kb-col-opt kb-num">7 / 12</td>
+						<td class="kb-col-opt kb-num">54 KB</td>
+						<td class="kb-num">昨天 17:42</td>
+						<td><span class="kb-cell-actions">
+							<button class="kb-iconbtn kb-tip" data-tip="查看队列"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v1.5H2V3Zm0 4.2h12v1.5H2V7.2ZM2 11.5h8V13H2v-1.5Z"/></svg></button>
+							<button class="kb-iconbtn kb-tip" data-tip="更多"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></button>
+						</span></td>
+					</tr>
+					<tr>
+						<td><input type="checkbox" class="kb-checkbox"></td>
+						<td><div class="kb-title-cell">
+							<a href="document-detail.html">NotebookLM Audio Overview 机制拆解与借鉴点</a>
+							<span class="kb-subline"><span class="kb-tag">调研</span><span class="kb-tag">竞品</span></span>
+						</div></td>
+						<td class="kb-col-opt">竞品调研 · NotebookLM</td>
+						<td><span class="kb-badge kb-badge-green">已索引</span></td>
+						<td class="kb-col-opt kb-num">26</td>
+						<td class="kb-col-opt kb-num">47 KB</td>
+						<td class="kb-num">3 天前</td>
+						<td><span class="kb-cell-actions">
+							<a class="kb-iconbtn kb-tip" data-tip="编辑" href="entry-edit.html"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></a>
+							<button class="kb-iconbtn kb-tip" data-tip="更多"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></button>
+						</span></td>
+					</tr>
+					<tr>
+						<td><input type="checkbox" class="kb-checkbox"></td>
+						<td><div class="kb-title-cell">
+							<a href="document-detail.html">CSS 设计 token 规范：kbblocks 变量表（v3 草案）</a>
+							<span class="kb-subline"><span class="kb-tag">规范</span><span class="kb-badge kb-badge-amber">待审核</span></span>
+						</div></td>
+						<td class="kb-col-opt">前端规范手册</td>
+						<td><span class="kb-badge kb-badge-amber">待审核</span></td>
+						<td class="kb-col-opt kb-num">11</td>
+						<td class="kb-col-opt kb-num">22 KB</td>
+						<td class="kb-num">4 天前</td>
+						<td><span class="kb-cell-actions">
+							<a class="kb-iconbtn kb-tip" data-tip="审核" href="entry-edit.html"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M6.2 13.6 2 9.4l1.4-1.4 2.8 2.8 6.4-6.4L14 5.8l-7.8 7.8Z"/></svg></a>
+							<button class="kb-iconbtn kb-tip" data-tip="更多"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></button>
+						</span></td>
+					</tr>
+					<tr>
+						<td><input type="checkbox" class="kb-checkbox"></td>
+						<td><div class="kb-title-cell">
+							<a href="document-detail.html">线上事故 INC-20260831：索引队列积压复盘</a>
+							<span class="kb-subline"><span class="kb-tag">复盘</span></span>
+						</div></td>
+						<td class="kb-col-opt">故障复盘库</td>
+						<td><span class="kb-badge kb-badge-green">已索引</span></td>
+						<td class="kb-col-opt kb-num">15</td>
+						<td class="kb-col-opt kb-num">39 KB</td>
+						<td class="kb-num">上周</td>
+						<td><span class="kb-cell-actions">
+							<a class="kb-iconbtn kb-tip" data-tip="编辑" href="entry-edit.html"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></a>
+							<button class="kb-iconbtn kb-tip" data-tip="更多"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></button>
+						</span></td>
+					</tr>
+					<tr>
+						<td><input type="checkbox" class="kb-checkbox"></td>
+						<td><div class="kb-title-cell">
+							<a href="document-detail.html">剪藏：RAG 引用溯源的五种前端呈现方式</a>
+							<span class="kb-subline"><span class="kb-tag">剪藏</span><span class="kb-badge">来源：web.blog</span></span>
+						</div></td>
+						<td class="kb-col-opt">剪藏 · 技术文章</td>
+						<td><span class="kb-badge kb-badge-green">已索引</span></td>
+						<td class="kb-col-opt kb-num">9</td>
+						<td class="kb-col-opt kb-num">18 KB</td>
+						<td class="kb-num">上周</td>
+						<td><span class="kb-cell-actions">
+							<a class="kb-iconbtn kb-tip" data-tip="编辑" href="entry-edit.html"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></a>
+							<button class="kb-iconbtn kb-tip" data-tip="更多"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></button>
+						</span></td>
+					</tr>
+					<tr>
+						<td><input type="checkbox" class="kb-checkbox"></td>
+						<td><div class="kb-title-cell">
+							<a href="document-detail.html">Obsidian 迁移手册：wikilink 批量重写规则</a>
+							<span class="kb-subline"><span class="kb-tag">迁移</span></span>
+						</div></td>
+						<td class="kb-col-opt">Agent Studio 架构设计</td>
+						<td><span class="kb-badge kb-badge-red">索引失败</span></td>
+						<td class="kb-col-opt kb-num">0</td>
+						<td class="kb-col-opt kb-num">64 KB</td>
+						<td class="kb-num">08-28</td>
+						<td><span class="kb-cell-actions">
+							<button class="kb-iconbtn kb-tip" data-tip="查看错误"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5 15 14H1L8 1.5Zm0 4a.8.8 0 0 0-.8.8v2.9a.8.8 0 0 0 1.6 0V6.3A.8.8 0 0 0 8 5.5Zm0 5.9a.9.9 0 1 0 0 1.8.9.9 0 0 0 0-1.8Z"/></svg></button>
+							<button class="kb-iconbtn kb-tip" data-tip="重试"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 2.5a5.5 5.5 0 1 0 5.5 5.5H12A4 4 0 1 1 8 4v2.3L11.5 3 8 -.3V2.5Z" transform="translate(0 .3)"/></svg></button>
+						</span></td>
+					</tr>
+					<tr>
+						<td><input type="checkbox" class="kb-checkbox"></td>
+						<td><div class="kb-title-cell">
+							<a href="document-detail.html">kb_search 混合检索打分公式与调参记录</a>
+							<span class="kb-subline"><span class="kb-tag">检索</span><span class="kb-tag">ADR</span></span>
+						</div></td>
+						<td class="kb-col-opt">Agent Studio 架构设计</td>
+						<td><span class="kb-badge kb-badge-green">已索引</span></td>
+						<td class="kb-col-opt kb-num">23</td>
+						<td class="kb-col-opt kb-num">44 KB</td>
+						<td class="kb-num">08-22</td>
+						<td><span class="kb-cell-actions">
+							<a class="kb-iconbtn kb-tip" data-tip="编辑" href="entry-edit.html"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.3 1.6a1.7 1.7 0 0 1 2.4 0l.7.7a1.7 1.7 0 0 1 0 2.4l-8 8L2.5 13.5l.8-3.9 8-8Z"/></svg></a>
+							<button class="kb-iconbtn kb-tip" data-tip="更多"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></button>
+						</span></td>
+					</tr>
+					<tr>
+						<td><input type="checkbox" class="kb-checkbox"></td>
+						<td><div class="kb-title-cell">
+							<a href="document-detail.html">用户访谈逐字稿：知识管理痛点（受访者 P07）</a>
+							<span class="kb-subline"><span class="kb-tag">访谈</span><span class="kb-badge kb-badge-amber">待审核</span></span>
+						</div></td>
+						<td class="kb-col-opt">会议纪要 · 2026 Q3</td>
+						<td><span class="kb-badge kb-badge-amber">待审核</span></td>
+						<td class="kb-col-opt kb-num">31</td>
+						<td class="kb-col-opt kb-num">128 KB</td>
+						<td class="kb-num">08-19</td>
+						<td><span class="kb-cell-actions">
+							<a class="kb-iconbtn kb-tip" data-tip="审核" href="entry-edit.html"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M6.2 13.6 2 9.4l1.4-1.4 2.8 2.8 6.4-6.4L14 5.8l-7.8 7.8Z"/></svg></a>
+							<button class="kb-iconbtn kb-tip" data-tip="更多"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></button>
+						</span></td>
+					</tr>
+
+					<!-- ── 加载中占位效果示例（请求进行时的表格形态，静态稿演示 2 行）── -->
+					<tr class="kb-skel-demo kb-skeleton">
+						<td></td><td><div class="kb-skel-line" style="width:70%"></div></td>
+						<td class="kb-col-opt"><div class="kb-skel-line" style="width:80%"></div></td>
+						<td><div class="kb-skel-line" style="width:48px"></div></td>
+						<td class="kb-col-opt kb-num"><div class="kb-skel-line" style="width:24px"></div></td>
+						<td class="kb-col-opt kb-num"><div class="kb-skel-line" style="width:40px"></div></td>
+						<td class="kb-num"><div class="kb-skel-line" style="width:52px"></div></td>
+						<td></td>
+					</tr>
+					<tr class="kb-skel-demo kb-skeleton">
+						<td></td><td><div class="kb-skel-line" style="width:55%"></div></td>
+						<td class="kb-col-opt"><div class="kb-skel-line" style="width:65%"></div></td>
+						<td><div class="kb-skel-line" style="width:48px"></div></td>
+						<td class="kb-col-opt kb-num"><div class="kb-skel-line" style="width:24px"></div></td>
+						<td class="kb-col-opt kb-num"><div class="kb-skel-line" style="width:40px"></div></td>
+						<td class="kb-num"><div class="kb-skel-line" style="width:52px"></div></td>
+						<td></td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+
+		<!-- 分页 -->
+		<div class="kb-pager">
+			<span class="kb-page-info">第 1–10 条 / 共 128 条</span>
+			<button class="kb-page" disabled>‹</button>
+			<button class="kb-page is-current">1</button>
+			<button class="kb-page">2</button>
+			<button class="kb-page">3</button>
+			<button class="kb-page">…</button>
+			<button class="kb-page">13</button>
+			<button class="kb-page">›</button>
+		</div>
+	</main>
+</div>
+</body>
+</html>

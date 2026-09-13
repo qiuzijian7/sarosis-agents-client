@@ -113,6 +113,18 @@ export function compressSynthetic(content: string, metadata?: Record<string, unk
 }
 
 /**
+ * R6（2026-09-09）：LLM 调用失败的一次性告警——配置了 BASE_URL/KEY 但请求失败时，
+ * 压缩质量静默降级为 synthetic，用户无从知晓（「降级必须有出口」同 R1/[mem-summary] 精神）。
+ * 模块级只警告一次，避免 sweep 周期刷屏。
+ */
+let _llmFailureWarned = false;
+function warnLlmFailure(reason: string): void {
+	if (_llmFailureWarned) return;
+	_llmFailureWarned = true;
+	console.warn(`[AgentMemory] LLM compression unavailable (${reason}) — falling back to synthetic. Check AGENTMEMORY_LLM_BASE_URL / AGENTMEMORY_LLM_API_KEY / AGENTMEMORY_LLM_MODEL.`);
+}
+
+/**
  * LLM compression — optional, requires OPENAI_BASE_URL.
  * Falls back to synthetic if LLM unavailable.
  */
@@ -151,6 +163,7 @@ export async function compressWithLLM(
 		});
 
 		if (!response.ok) {
+			warnLlmFailure(`HTTP ${response.status}`);
 			return compressSynthetic(content, metadata);
 		}
 
@@ -170,8 +183,9 @@ export async function compressWithLLM(
 				importance: typeof parsed.importance === 'number' ? parsed.importance : calculateImportance(content, metadata),
 			};
 		}
-	} catch {
-		// LLM call failed → synthetic fallback
+	} catch (err) {
+		// LLM call failed → synthetic fallback（R6：一次性告警，失败可见）
+		warnLlmFailure(err instanceof Error ? err.message : String(err));
 	}
 
 	return compressSynthetic(content, metadata);

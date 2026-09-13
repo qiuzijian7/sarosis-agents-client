@@ -143,14 +143,24 @@ suite('Agent Studio - TOF Auth Service', () => {
 		const configService = createMockConfigService({});
 		// 模拟 TofAuthService._getConfig 的默认值逻辑
 		const paasid = configService.getValue('sessions.agentStudio.tof.paasid') || 'sls_mcp_app';
-		const siteBaseUrl = configService.getValue('sessions.agentStudio.tof.siteBaseUrl') || 'http://vssaros.woa.com';
+		const siteBaseUrl = configService.getValue('sessions.agentStudio.tof.siteBaseUrl') || 'http://saroasis-mcp.woa.com';
 		const gatewayBaseUrl = configService.getValue('sessions.agentStudio.tof.gatewayBaseUrl') || 'http://21.169.46.116:8080';
 		const timeout = configService.getValue('sessions.agentStudio.tof.loginTimeout') || 180;
 
 		assert.strictEqual(paasid, 'sls_mcp_app');
-		assert.strictEqual(siteBaseUrl, 'http://vssaros.woa.com');
+		assert.strictEqual(siteBaseUrl, 'http://saroasis-mcp.woa.com');
 		assert.strictEqual(gatewayBaseUrl, 'http://21.169.46.116:8080');
 		assert.strictEqual(timeout, 180);
+	});
+
+	test('★ TOF 默认站点常量 — 锁定为 saroasis-mcp.woa.com（DNS 可解析）', async () => {
+		// 2026-09-10 事故：workbench 侧默认值曾与扩展侧漂移（vssaros.woa.com 无 DNS 记录），
+		// 且 workbench 注册优先 → 未配置环境登录必失败。此测试锁定单一事实源的具体值，
+		// 任何人改默认域名都必须同步改这里（有意为之的「改不动」）。
+		const constants = await import('../../common/constants.js');
+		assert.strictEqual(constants.TOF_DEFAULT_SITE_BASE_URL, 'http://saroasis-mcp.woa.com');
+		assert.ok(!constants.TOF_DEFAULT_SITE_BASE_URL.includes('vssaros.woa.com'),
+			'默认站点不得再指向已失效的 vssaros.woa.com（DNS NXDOMAIN）');
 	});
 
 	test('Mock 服务 — 配置读取自定义值', () => {
@@ -186,7 +196,7 @@ suite('Agent Studio - TOF Auth Service', () => {
 
 	test('TOF signin URL — 包含所有必需参数', () => {
 		const paasid = 'sls_mcp_app';
-		const siteBaseUrl = 'http://vssaros.woa.com';
+		const siteBaseUrl = 'http://saroasis-mcp.woa.com';
 		const callbackPath = '/api/v1/auth/tof/callback';
 		const port = 12345;
 		const state = 'abc123';
@@ -198,16 +208,20 @@ suite('Agent Studio - TOF Auth Service', () => {
 		assert.ok(signinUrl.includes('passport.woa.com'));
 		assert.ok(signinUrl.includes('oauth=true'));
 		assert.ok(signinUrl.includes(`appkey=${paasid}`));
-		assert.ok(signinUrl.includes(`cb_port=${port}`));
-		assert.ok(signinUrl.includes(`state=${state}`));
+		// ⚠ 2026-09-10 修正存量错误断言：gwCallback 整体经 encodeURIComponent 放进 `url=`
+		// 参数，内部 `=` 变成 %3D —— 直接 includes(`cb_port=${port}`) 恒为 false。
+		// 须先解码再检查（此前该断言一直是红的，属存量测试缺陷）。
+		const decodedSigninUrl = decodeURIComponent(signinUrl);
+		assert.ok(decodedSigninUrl.includes(`cb_port=${port}`), 'decode 后应含 cb_port');
+		assert.ok(decodedSigninUrl.includes(`state=${state}`), 'decode 后应含 state');
 		assert.ok(signinUrl.includes(encodeURIComponent(callbackPath)));
 	});
 
 	test('TOF signin URL — siteBaseUrl 尾部斜杠被去除', () => {
-		const siteBaseUrl = 'http://vssaros.woa.com/';
+		const siteBaseUrl = 'http://saroasis-mcp.woa.com/';
 		const callbackPath = '/api/v1/auth/tof/callback';
 		const gwCallback = `${siteBaseUrl.replace(/\/$/, '')}${callbackPath}`;
-		assert.strictEqual(gwCallback, 'http://vssaros.woa.com/api/v1/auth/tof/callback');
+		assert.strictEqual(gwCallback, 'http://saroasis-mcp.woa.com/api/v1/auth/tof/callback');
 	});
 
 	// ─── whoami 响应解析测试 ───────────────────────────────────

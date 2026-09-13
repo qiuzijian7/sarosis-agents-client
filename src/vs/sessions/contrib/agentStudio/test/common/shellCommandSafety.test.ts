@@ -207,6 +207,36 @@ suite('shellCommandSafety', () => {
 			safe('npm outdated');
 			safe('yarn why pkg');
 		});
+		test('★ P1 两级子命令：git 的只读孙命令放行（2026-09-12）', () => {
+			// 这些子命令本身有副作用（stash/worktree 会改工作区），但下列孙命令只读
+			safe('git stash list');
+			safe('git stash show');
+			safe('git worktree list');
+			safe('git submodule status');
+			safe('git submodule summary');
+			safe('git bisect log');
+		});
+		test('★★ P1 控制组 A：有副作用的孙命令仍必须审批', () => {
+			needs('git stash pop');
+			needs('git stash apply');
+			needs('git stash drop');
+			needs('git stash push -m x');
+			needs('git worktree add ../x');
+			needs('git worktree remove ../x');
+			needs('git submodule update --init');
+			needs('git bisect start');
+			needs('git bisect reset');
+		});
+		test('★★ P1 控制组 B：两级表不放开一层（裸子命令仍拒）', () => {
+			needs('git stash');
+			needs('git worktree');
+			needs('git submodule');
+			needs('git bisect');
+		});
+		test('★★ P1 控制组 C：`{` 命中 BLOCKING_SHELL_TOKENS → fail-closed 仍审批', () => {
+			// `stash@{0}` 里的 `{` 属脚本块元字符，白名单快捷通道直接失效
+			needs('git stash show stash@{0}');
+		});
 	});
 
 	suite('★ 审批：未知命令（保守默认）', () => {

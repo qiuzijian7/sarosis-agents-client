@@ -1,6 +1,6 @@
 import { $, append } from '../../../base/browser/dom.js';
 import { renderMarkdown, MarkdownRenderOptions } from '../../../base/browser/markdownRenderer.js';
-import { IDisposable } from '../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable } from '../../../base/common/lifecycle.js';
 import type { IMarkdownString } from '../../../base/common/htmlContent.js';
 import { IAgentChatMessage, IMessagePart, IThinkingMessagePart } from './agentChatTypes.js';
 import { _patchNestedMarkdown, AgentChatPanelBase } from './agentChatPanel.base.js';
@@ -8,6 +8,9 @@ import { AgentChatPanelDrawioCard } from './agentChatPanel.drawioCard.js';
 
 // Feature: markdown. Extracted from AgentChatPanelBase.
 export class AgentChatPanelMarkdown extends AgentChatPanelDrawioCard {
+
+/** 单块 Markdown 渲染的字符上限（超出则按行分片，见 _renderMarkdownSafe）。 */
+private static readonly _MD_CHUNK_MAX_CHARS = 512 * 1024;
 
 protected override _cleanupMarkdownDisposables(root: HTMLElement): void {
 		const toRemove: HTMLElement[] = [];
@@ -42,7 +45,7 @@ protected override _renderMarkdownContent(parent: HTMLElement, content: string, 
 		}
 
 		// renderMarkdown returns a disposable that must be managed
-		const disposable = renderMarkdown(md, options, parent);
+		const disposable = this._renderMarkdownSafe(md, options, parent);
 		this._markdownDisposables.set(parent, disposable);
 
 		// Intercept clicks on http(s) links so they open in the editor area
@@ -51,6 +54,101 @@ protected override _renderMarkdownContent(parent: HTMLElement, content: string, 
 		// including those added during streaming updates.
 		this._attachLinkInterceptor(parent);
 		this._linkifyPlainText(parent);
+	}
+
+	/**
+	 * ★ 2026-09-11：超长 content 分片 + 异常兜底渲染。
+	 *
+	 * **事故**（用户「切换会话后，带有图片消息显示错误」/ 日志 1789133432350）：
+	 * workflow 收尾把**全部**媒体快照的 data URI 内联成 Markdown 图片
+	 * （`agentDriverService.ts` 的 `![输出 N](data:image/jpeg;base64,…)`），
+	 * 42 张 × 数百 KB ≈ **8.4MB 单条 content**。`renderMarkdown` 内部
+	 * `marked.parse` 处理超长单行触发 `RangeError: Maximum call stack size
+	 * exceeded`（实测 8.4MB 必现，栈顶 `lheading` 正则）——而
+	 * `markdownRenderer.ts:288` 的 parse 与本方法**都没有 try/catch**，
+	 * 异常直接冒泡 → 整条消息渲染中断（用户看到的是兜底/残破内容）。
+	 *
+	 * **为何「流式正常、切换会话才错」**：流式走 `_tryIncrementalMarkdownRender`
+	 * 的 frozen/tail **分段**渲染（每段仅几 KB）侥幸不溢出；切换会话重载历史走
+	 * `_renderMarkdownContent` **全量**渲染才暴露。
+	 *
+	 * 两道保护（对**已落盘的历史脏数据**同样生效）：
+	 *  ① **分片**：超过 `_MD_CHUNK_MAX_CHARS` 时按**行**切块逐块渲染。
+	 *     行内不切，保证 `![alt](url)`、围栏等语法完整。
+	 *  ② **兜底**：某块渲染抛错 → 该块降级为纯文本，不冒泡中断整条消息。
+	 */
+	private _renderMarkdownSafe(md: IMarkdownString, options: MarkdownRenderOptions, parent: HTMLElement): IDisposable {
+		const store = new DisposableStore();
+		const value = md.value ?? '';
+		if (value.length <= AgentChatPanelMarkdown._MD_CHUNK_MAX_CHARS) {
+			store.add(this._renderMarkdownChunk(md, options, parent));
+			return store;
+		}
+		const lines = value.split('\n');
+		let buf: string[] = [];
+		let bufLen = 0;
+		const flush = () => {
+			if (buf.length === 0) { return; }
+			store.add(this._renderMarkdownChunk({ ...md, value: buf.join('\n') }, options, parent));
+			buf = [];
+			bufLen = 0;
+		};
+		for (const rawLine of lines) {
+			// ★ 2026-09-12：单行自身超阈值（如一张巨图的 base64）**按字符再切**。
+			// 原实现让该行独占一块并注释「仍可能溢出，由 _renderMarkdownChunk 兜底」——
+			// 但兜底会把**整块**降级为纯文本，用户看到一大段 base64 原文。
+			// 现按字符切碎（优先在 `)` 处切，尽量不破坏 `![alt](url)`），
+			// 使单块必然低于 marked 的栈溢出阈值；即便某段语法被切断，
+			// 也只退化为该段文本，不影响其余内容。
+			const pieces = AgentChatPanelMarkdown._splitOversizedLine(rawLine, AgentChatPanelMarkdown._MD_CHUNK_MAX_CHARS);
+			for (const line of pieces) {
+				if (bufLen > 0 && bufLen + line.length > AgentChatPanelMarkdown._MD_CHUNK_MAX_CHARS) { flush(); }
+				buf.push(line);
+				bufLen += line.length + 1;
+			}
+		}
+		flush();
+		return store;
+	}
+
+	/**
+	 * ★ 2026-09-12：把「单行超阈值」拆成多个 ≤ maxChars 的片段。
+	 *
+	 * 切点优先取 `)` 之后（图片/链接 `![alt](url)` 的语法边界，切在边界后不破坏该段）；
+	 * 退而在 maxChars 处硬切。硬切会让被切断的那段 Markdown 退化为纯文本显示——
+	 * 这是**有意的降级**：宁可让一张超长图显示为文本，也不能让 `marked.parse`
+	 * 栈溢出把整条消息的渲染打掉（日志 1789133432350 事故）。
+	 */
+	private static _splitOversizedLine(line: string, maxChars: number): string[] {
+		if (line.length <= maxChars) { return [line]; }
+		const out: string[] = [];
+		let start = 0;
+		while (start < line.length) {
+			let end = Math.min(start + maxChars, line.length);
+			if (end < line.length) {
+				// 优先在 `)` 后切（且不能把块切得太小，否则碎片过多）
+				const paren = line.lastIndexOf(')', end);
+				if (paren > start + maxChars / 2) { end = paren + 1; }
+			}
+			out.push(line.slice(start, end));
+			start = end;
+		}
+		return out;
+	}
+
+	/** 渲染单块；失败则降级为纯文本（不冒泡，避免一条脏数据毁掉整条消息的渲染）。 */
+	private _renderMarkdownChunk(md: IMarkdownString, options: MarkdownRenderOptions, parent: HTMLElement): IDisposable {
+		try {
+			return renderMarkdown(md, options, parent);
+		} catch (err) {
+			this._logService.warn(
+				'[AgentChatPanel] renderMarkdown failed (likely oversized markdown), falling back to plain text:',
+				err,
+			);
+			const fallback = append(parent, $('div.message-content.md-render-fallback'));
+			fallback.textContent = md.value;
+			return { dispose: () => { /* no-op */ } };
+		}
 	}
 
 protected override _linkifyPlainText(parent: HTMLElement): void {
@@ -220,6 +318,26 @@ protected override _resetIncrementalMd(container: HTMLElement): void {
 
 	protected override _tryIncrementalMarkdownRender(container: HTMLElement, newContent: string): boolean {
 	let state = this._incMdState.get(container);
+
+	// ★★ 2026-09-12：**孤儿守卫**（把一类静默失效变成自愈 + 告警）★★
+	//
+	// `state.tailEl` 必须仍在 container 内。若某调用方清空了容器 DOM 却忘了先调
+	// `_resetIncrementalMd`，tailEl 会脱离 DOM —— 此后本方法会把新内容渲染进那个
+	// **孤儿节点**并**返回 true**：调用方（scheduler）据此同步基线、后续帧因"内容未变"
+	// 跳过 → **UI 永远停在首帧**，且因为没走全量替换，`md:incremental-failed`
+	// 一条都不会有（日志 1788662336134 的 thinking 卡事故正是此形态，当年因"所有
+	// 日志都正常"而三次修复未找到根因）。
+	//
+	// 这里直接判定 state 失效 → 走下面的重建分支（`container.replaceChildren()` 重建骨架），
+	// 保证**无论谁漏了 reset，渲染都不会静默失败**；同时告警留痕，便于发现新的漏 reset 点。
+	if (state && (!state.tailEl.isConnected || state.tailEl.parentNode !== container)) {
+		this._logService.warn(
+			'[AgentChatPanel] incremental markdown state orphaned (container DOM was cleared without _resetIncrementalMd) — rebuilding. ' +
+			'Caller missed the reset; historical case: statusCards.ts _renderThinkingCardBody (log 1788662336134).',
+		);
+		this._resetIncrementalMd(container);
+		state = undefined;
+	}
 
 	// 内容被改写（非严格追加）→ 按**分歧点位置**决定「重渲 tail」还是「全量重建」。
 	//

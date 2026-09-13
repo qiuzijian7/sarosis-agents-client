@@ -107,6 +107,23 @@ export interface IStoredWorkflow {
 	updatedAt?: string;
 	/** v5a: workflow-level breakpoints (node IDs). Persisted to the host JSON. */
 	breakpoints?: string[];
+	// ─── 发布元信息（2026-09-11 补）────────────────────────────────────────
+	// 本接口是 host 侧 `agentStudio/common/workflowStorage.ts::IStoredWorkflow`
+	// 的**手写子集副本**（webview 不能直接引用 common —— 那份依赖 platform 的
+	// URI 等类型，webview tsconfig 无法解析）。
+	//
+	// ★ 缺失字段会**静默降级为索引签名 `unknown`**：导出白名单里写
+	// `base.tags && base.tags.length` 时，`unknown` 经 `&&` 真值收窄成 `{}`
+	// → `Property 'length' does not exist on type '{}'`（实测 TS2339）。
+	// 凡 webview 需要**读取**的 host 字段，必须在此显式声明，不能靠索引签名兜底。
+	version?: string;
+	category?: string;
+	author?: string;
+	visibility?: 'public' | 'private';
+	tags?: string[];
+	useGuide?: string;
+	source?: string;
+	isActive?: boolean;
 	[key: string]: unknown;
 }
 

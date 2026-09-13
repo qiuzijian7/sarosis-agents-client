@@ -13,6 +13,7 @@ import {
 } from './mediaAssets';
 import { formatBytes, assetFileName } from './mediaGalleryUtils';
 import { ASSET_DRAG_MIME } from './comfyHost/actionSpawn';
+import { parseDataUrl } from './comfyHost/mediaDataUrl';
 import { pickFolderDialog } from '../../bridge/messageClient';
 
 function readFileAsBase64(file: File): Promise<string> {
@@ -232,12 +233,16 @@ export function MediaGallery({ workflowId, onClose }: { workflowId: string; onCl
 	};
 
 	// 懒解析本地镜像的 webview URL（http/data URL 直接可用）
+	// ★ video 类型不自动解析（2026-09-11「媒体库视频黑块」）：mp4 落盘资产的
+	//   mediaGetAsDataUrl 是几 MB 的 base64——几十条视频全量解析既卡死列表又
+	//   让 <video> 加载巨 dataURL 失败（黑块）。改为**点击预览**按需解析单条。
 	React.useEffect(() => {
 		let cancelled = false;
 		(async () => {
 			const pending: Array<[MediaAsset, string | null]> = [];
 			for (const a of items) {
 				if (a.id in urls) { continue; }
+				if (a.kind === 'video' && !/^(https?|data):/i.test(a.ref)) { continue; }   // 点击预览按需解析
 				if (/^(https?|data):/i.test(a.ref)) { pending.push([a, a.ref]); continue; }
 				if (a.filePath) {
 					try {
@@ -422,6 +427,31 @@ export function MediaGallery({ workflowId, onClose }: { workflowId: string; onCl
 												) : (
 													<img src={url} alt={assetFileName(a)} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
 												)
+											) : a.kind === 'video' ? (
+												// ★ 视频未解析占位（2026-09-11）：点击才按需 dataURL 解析
+												//（几 MB mp4 全量自动解析会卡死列表 + video 加载失败黑块）。
+												<div
+													title="点击加载视频预览"
+													onClick={ev => {
+														ev.stopPropagation();
+														void mediaGetAsDataUrl(a.id).then(u => {
+															// ★ 改走 **blob URL**（2026-09-12 修「点击后变黑」）：几 MB 的 mp4
+															//   data URL 直接给 <video> 会加载失败 → 黑块 ✗；blob URL 可靠 ✓
+															//   且 CSP 的 media-src 已放行 blob: ✓。
+															const parsed = u ? parseDataUrl(u) : null;
+															const src: string | null = parsed
+																? URL.createObjectURL(new Blob([parsed.bytes as unknown as BlobPart], { type: parsed.mime }))
+																: u;
+															setUrls(prev => ({ ...prev, [a.id]: src }));
+														}).catch(() => {
+															setUrls(prev => ({ ...prev, [a.id]: null }));
+														});
+													}}
+													style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', gap: 4, cursor: 'pointer', color: 'var(--vscode-descriptionForeground)' }}
+												>
+													<span style={{ fontSize: 26 }}>🎬</span>
+													<span style={{ fontSize: 9 }}>点击预览</span>
+												</div>
 											) : (
 												<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', fontSize: 10, color: 'var(--vscode-descriptionForeground)' }}>不可用</div>
 											)}

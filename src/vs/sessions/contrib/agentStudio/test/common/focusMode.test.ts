@@ -124,17 +124,23 @@ suite('FocusMode — detectFocusModeWithProbe', () => {
 	});
 
 	test('multiple code signals in single folder are all detected', async () => {
+		// ★ 条目名**不带尾斜杠** —— 这是 `IFileProbe.listFolder` 的契约：真实实现是
+		// `agentOSService` 的 `(stat.children ?? []).map(c => c.name)`，返回 `'.git'`
+		// 而非 `'.git/'`。原测试数据写成 `'.git/'`，导致 `matchMarker` 的
+		// `files.includes('.git')` 不命中 → 信号只有 2 个（package.json + tsconfig.json）
+		// 却断言 ≥3（长期红，2026-09-11 修正为符合契约的数据）。
 		const probe = new MockFileProbe(new Map([
-			['/workspace/fullstack', ['package.json', 'tsconfig.json', '.git/', 'README.md']],
+			['/workspace/fullstack', ['package.json', 'tsconfig.json', '.git', 'README.md']],
 		]));
 		const result = await detectFocusModeWithProbe(['/workspace/fullstack'], probe);
 		assert.strictEqual(result.mode, 'focus');
-		assert.ok(result.detectedSignals.length >= 3, 'should detect multiple signals');
+		assert.ok(result.detectedSignals.length >= 3,
+			`should detect multiple signals, got: ${result.detectedSignals.join(', ')}`);
 	});
 
 	test('Saros workspace detected (vssaros.config.json)', async () => {
 		const probe = new MockFileProbe(new Map([
-			['/workspace/vssaros-app', ['vssaros.config.json', 'agents/']],
+			['/workspace/vssaros-app', ['vssaros.config.json', 'agents']],
 		]));
 		const result = await detectFocusModeWithProbe(['/workspace/vssaros-app'], probe);
 		assert.strictEqual(result.mode, 'focus');

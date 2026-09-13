@@ -22,6 +22,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import type { IWorkflow } from './crewTeam.js';
+import type { IWorkflowSessionMeta } from './workflowSessions.js';
 
 // ------------------------------------------------------------------------------------------------
 // 扩展工作流数据模型 — 增加 Agent 绑定字段 + 节点图（ReactFlow 编辑器用）
@@ -97,6 +98,19 @@ export const enum WorkflowNodeType {
 	Comfy = 'comfy',
 	/** ComfyTV 风格媒体 stage 节点 */
 	ComfyStage = 'comfyStage',
+	/**
+	 * 动态工作流脚本节点（P1-4 范式统一入口，2026-09-09）：
+	 * 在 DAG 里内联执行一段 Dynamic Workflow 脚本（复用 executeWorkflowScript /
+	 * WorkflowEngine），把「脚本」收敛为 DAG 的一种节点，用户只面对一种范式。
+	 */
+	Script = 'script',
+	/**
+	 * ComfyTV Picker 家族（ImagePicker/VideoPicker/AudioPicker）—— **调试预览节点**
+	 * （2026-09-10 用户需求）：本身没有 Run 行为（webview 侧 isPickerNode 同样定义为
+	 * no-Run），未连线时不应执行、不应报错。执行侧只把**上游节点产生的媒体快照**
+	 * 汇总到自己身上，供工作流卡渲染缩略图（等价于 debug 探针）。
+	 */
+	Picker = 'picker',
 }
 
 /** 节点画布位置 */
@@ -236,6 +250,29 @@ export interface IWorkflowStorageService {
 	 */
 	listWorkflows(workspaceId?: string): Promise<IStoredWorkflow[]>;
 
+	/**
+	 * 工作流 Session（2026-09-11 用户需求）：列举某工作流的所有 session。
+	 * 存储于 `{workflowsDir}/{workflowId}/sessions.json`。
+	 */
+	listWorkflowSessions(workflowId: string): Promise<IWorkflowSessionMeta[]>;
+	/**
+	 * 取/建「聊天 session ↔ 工作流 session」绑定：同一聊天 session 复用同一工作流
+	 * session（隔离各自生成的内容）；未绑定则新建一个。
+	 */
+	getOrCreateWorkflowSession(workflowId: string, chatSessionId?: string): Promise<IWorkflowSessionMeta>;
+	/** 显式新建一个工作流 session。 */
+	createWorkflowSession(workflowId: string, name?: string, chatSessionId?: string): Promise<IWorkflowSessionMeta>;
+	/** 更新 session 的最近使用信息（runCount / updatedAt / lastRunAt）。 */
+	touchWorkflowSession(workflowId: string, sessionId: string): Promise<void>;
+	/**
+	 * 重命名 session（2026-09-11 用户需求）：仅改显示名 `name`。
+	 * 不改 id（产物隔离 key 前缀）也不改 updatedAt（列表顺序）。
+	 * @returns 是否实际发生变更（名字为空或未变化时 false）
+	 */
+	renameWorkflowSession(workflowId: string, sessionId: string, name: string): Promise<boolean>;
+	/** 该 session 的隔离产物目录（`{workflowId}/sessions/{sessionId}/`）。 */
+	getWorkflowSessionDir(workflowId: string, sessionId: string): Promise<URI | undefined>;
+
 	/** 读取单个工作流。 */
 	getWorkflow(id: string, workspaceId?: string): Promise<IStoredWorkflow | undefined>;
 
@@ -252,6 +289,20 @@ export interface IWorkflowStorageService {
 		/** Optional slug — when provided, the workflow ID becomes `wf-{slug}`. Otherwise auto-generated from name. */
 		slug?: string;
 	}, workspaceId?: string): Promise<IStoredWorkflow>;
+
+	/**
+	 * 从**工作流 JSON 文本**导入（本地文件导入，2026-09-11）。
+	 *
+	 * 与 `createWorkflow` 的区别：接受完整导出文件（含 nodes / connections /
+	 * description / presetId 等），内部完成「解析 → 校验 → id 冲突消解 → 落盘」，
+	 * 并把非致命问题（字段类型不符、无节点等）以 `warnings` 返回供 UI 提示。
+	 *
+	 * ★ id 冲突时**绝不覆盖**已有工作流 —— 生成 `-imported-N` 后缀。
+	 *   需要覆盖语义的调用方请走 `updateWorkflow`。
+	 *
+	 * @throws 文件为空 / JSON 非法 / 非工作流结构（消息面向用户，可直接展示）
+	 */
+	importWorkflowJson(text: string): Promise<{ workflow: IStoredWorkflow; warnings: string[] }>;
 
 	/**
 	 * 更新工作流（合并字段）并写回文件。

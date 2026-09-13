@@ -145,7 +145,10 @@ suite('RepoOverviewProvider - Utility Logic', () => {
 
 	test('parses branch name from git HEAD ref format', () => {
 		const headContent = 'ref: refs/heads/feature/my-branch\n';
-		const match = headContent.match(/^ref: refs\/heads\/(.+)$/);
+		// ★ 修正（2026-09-11）：JS 的 `$`（**不带 `m` 标志**）只匹配**输入末尾**，
+		//   **不会**像 Python 那样匹配「末尾换行之前」→ 原正则对带 `\n` 的内容恒为
+		//   null。`.git/HEAD` 的实际读取也会先 trim，这里对齐该做法。
+		const match = headContent.trim().match(/^ref: refs\/heads\/(.+)$/);
 		assert.ok(match);
 		assert.strictEqual(match[1], 'feature/my-branch');
 	});

@@ -1,5 +1,6 @@
 # Build outputs
 out/
+out-test/
 out-build/
 out-vscode/
 dist/

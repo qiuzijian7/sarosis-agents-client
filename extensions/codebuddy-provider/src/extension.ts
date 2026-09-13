@@ -783,18 +783,60 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 
 		let modelConfigs: IModelConfig[] | undefined;
 
-		// Primary source: fetch models dynamically from the CodeBuddy /v3/config API.
-		// This replaces manual model.json configuration — the server is the source of truth.
-		const accessToken = await this._auth.getAccessToken();
-		if (accessToken) {
-			const apiModels = await fetchModelsFromConfigApi(accessToken.trim(), serverUrl, timeoutMs);
-			if (apiModels && apiModels.length > 0) {
-				modelConfigs = apiModels;
-				console.log(`[CodeBuddy] Using ${modelConfigs.length} models from /v3/config API`);
-				// Persist the dynamically-fetched models into the `codebuddy.models`
-				// configuration so they are visible/inspectable in settings and serve
-				// as an offline fallback. Only write when the content actually changed.
-				await persistModelsToConfig(config, apiModels);
+		// ── Stale-while-revalidate ────────────────────────────────────────────
+		// 目标：模型列表绝不被 /v3/config 的慢响应阻塞。实测该接口 524 时要 31s+
+		// （timeoutMs 默认 60s × retries=1 → 两次尝试）。旧实现在缓存过期后每次都
+		// 同步等这个请求，且 `if (!_modelsCache)` 只在缓存为 null 时补写，导致缓存
+		// 一旦过期就永远停留在"过期"状态 → 此后每一次刷新模型列表都硬卡 30s+。
+		//
+		// 新策略：有缓存就立即返回（哪怕已过期），同时在后台刷新；只有"首次、
+		// 手上完全没数据"时才同步等待。刷新失败时续期旧缓存（负缓存），避免每轮
+		// 都去打一个已知不可用的服务端。
+		const cacheAgeMs = _modelsCache ? Date.now() - _modelsCache.fetchedAt : Number.POSITIVE_INFINITY;
+		const isStale = !_modelsCache || cacheAgeMs >= MODELS_CACHE_TTL_MS;
+
+		if (_modelsCache && _modelsCache.models.length > 0) {
+			modelConfigs = _modelsCache.models;
+			console.log(`[CodeBuddy] Serving ${modelConfigs.length} models from cache (age=${cacheAgeMs}ms${isStale ? ', STALE — refresh in background' : ''})`);
+		}
+
+		if (isStale) {
+			const refreshModels = async (): Promise<void> => {
+				if (this._auth.authStatus === 'logged-out') { return; }
+				const token = await this._auth.getAccessToken();
+				if (!token) { return; }
+				try {
+					const apiModels = await fetchModelsFromConfigApi(token.trim(), serverUrl, timeoutMs);
+					if (apiModels && apiModels.length > 0) {
+						// fetchModelsFromConfigApi 内部已写 _modelsCache（含完整
+						// reasoning/temperature/maxOutputTokens）。
+						console.log(`[CodeBuddy] Refresh OK — ${apiModels.length} models from /v3/config API`);
+						// Persist so they're inspectable in settings + usable offline.
+						await persistModelsToConfig(config, apiModels);
+						// 让 VS Code 重新拉取，拿到刚刷新的数据（此时缓存已新鲜，
+						// 下次调用直接命中缓存，不会递归刷新）。
+						this._onDidChange.fire();
+						return;
+					}
+				} catch (err) {
+					console.warn(`[CodeBuddy] Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+				}
+				// 失败（524/超时/网络）：续期旧缓存，下一轮才重试。
+				if (_modelsCache) {
+					_modelsCache = { models: _modelsCache.models, fetchedAt: Date.now() };
+					console.log(`[CodeBuddy] Negative-cache: keeping ${_modelsCache.models.length} stale models for another ${MODELS_CACHE_TTL_MS}ms`);
+				}
+			};
+
+			if (modelConfigs) {
+				// 有数据可展示 → 后台刷新，绝不阻塞本次返回
+				void refreshModels();
+			} else {
+				// 首次调用、完全没有数据 → 必须同步等一次
+				await refreshModels();
+				if (_modelsCache && _modelsCache.models.length > 0) {
+					modelConfigs = _modelsCache.models;
+				}
 			}
 		}
 
@@ -814,20 +856,13 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 				console.log(`[CodeBuddy] Fallback: /v3/config and model.json unavailable, using models config / defaults`);
 				modelConfigs = await loadModelsFromConfig(config);
 			}
+
+			// 兜底数据也写进缓存：这样 body 组装时 getServerModelConfig /
+			// getServerModelReasoningDefaults 能命中，且下一轮直接返回、不再卡顿。
+			_modelsCache = { models: modelConfigs, fetchedAt: Date.now() };
 		}
 
 		console.log(`[CodeBuddy] provideLanguageModelChatInformation returning ${modelConfigs.length} models:`, modelConfigs.map(m => m.id));
-
-		// 确保 _modelsCache 在 fallback 路径下也被填充：
-		// /v3/config 成功时 fetchModelsFromConfigApi 内部已写缓存（含完整 reasoning/
-		// temperature/maxOutputTokens）；但 model.json / config 兜底路径不经过那里，
-		// 若不补写，body 组装时 getServerModelConfig / getServerModelReasoningDefaults
-		// 会全部落空 → 退回硬编码默认。这里仅在缓存为空时补写，避免覆盖更权威的
-		// 服务端数据。
-		if (!_modelsCache) {
-			_modelsCache = { models: modelConfigs, fetchedAt: Date.now() };
-			console.log(`[CodeBuddy] Seeded _modelsCache from fallback path with ${modelConfigs.length} models`);
-		}
 
 		return modelConfigs.map(modelConfig =>
 			createModelInfo(

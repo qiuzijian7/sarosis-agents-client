@@ -172,6 +172,68 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 */
 	private static readonly COMPACT_RESULT_TRUNCATE = 280;
 	/**
+	 * ★ 2026-09-12（P1 内存）：**活跃会话桶**的估算字节软上限。超过即对中段
+	 * tool result 做三段式压缩（同 LRU 淘汰时的 P2 策略）。
+	 *
+	 * 由来：LRU 只淘汰**整条**会话桶，活跃桶内的消息**无界累积** —— 正是
+	 * 2026-07-13「每发一条消息内存持续增长直至崩溃」的疑点（见
+	 * `_estimateMessageBytes` 上方 OOM 诊断注释）。取 48MB 是权衡：低于此值
+	 * 不值得改写用户可见内容（压缩会把中段 tool result 截到 280 字符）。
+	 */
+	private static readonly ACTIVE_BUCKET_SOFT_LIMIT_BYTES = 48 * 1024 * 1024;
+	/**
+	 * ★ 2026-09-12：活跃桶压缩检查的最小间隔。检查本身是 O(n) 扫字节（绝不
+	 * `JSON.stringify`，避免 OOM 时翻倍分配），故按时间节流，避免每次批量落盘都扫。
+	 */
+	private static readonly ACTIVE_COMPACT_MIN_INTERVAL_MS = 60_000;
+	/** 上次活跃桶压缩检查的时间戳（见 ACTIVE_COMPACT_MIN_INTERVAL_MS）。 */
+	private _lastActiveCompactAt = 0;
+	/**
+	 * ★ 2026-09-12：清理时**保留**的单张 data URI 上限（字符数）。
+	 *
+	 * 超过此值的图片不再内联，替换为指向工作流卡片的占位。
+	 *
+	 * ⚠ 2026-09-12 二次修正：原值 `200 * 1024`（与写入侧 `agentDriverService.ts` 的
+	 * `INLINE_MEDIA_MAX_BYTES` 对齐）**太大** —— 用户报「切换会话后仍显示图片码」，
+	 * 实测那段 GIF base64 只有 **~2KB**，远低于 200KB → **根本没被清理**。
+	 * 现降到 1KB：工作流输出的图不会这么小（卡片已完整展示），而 1KB 以上的 base64
+	 * 内联在聊天流里没有任何价值。
+	 *
+	 * 同时**移除**了原先的 `INLINE_MEDIA_CLEANUP_MIN_TEXT`（512KB 文本门槛）——
+	 * 那个门槛让「只含一小段图片码」的消息**整条被跳过**，正是漏网主因。
+	 * 快速路径改为 `text.includes('data:')`：绝大多数消息不含 data:，一次 native
+	 * 子串扫描（微秒级）即可跳过，无需长度门槛。
+	 */
+	private static readonly INLINE_MEDIA_KEEP_MAX_URI = 1024;
+	/**
+	 * ★ 2026-09-12：存量批量清理的**标记文件名**（放在 chat-history 根目录）。
+	 *
+	 * 一次性存量清理跑完后写入，之后启动直接跳过——避免「无 data URI 的大文件」
+	 * （如巨型 ToolResult payload）每次启动都被读一遍做无谓检查。
+	 * 带版本后缀：清理规则变化时换新标记名即可再跑一轮。
+	 *
+	 * ★ v1 → v2（2026-09-12）：匹配规则放宽 + 保留阈值 200KB → 1KB（见
+	 *   `INLINE_MEDIA_KEEP_MAX_URI`）。v1 的判据会把「~2KB 的图片码」当成无需清理，
+	 *   所以**必须换名**——否则已写过 v1 标记的机器上，新规则永远不会被执行。
+	 */
+	private static readonly BULK_CLEANUP_MARKER = '.inline-media-cleanup-v2';
+	/** 批量清理的启动延迟（ms）——避开首屏渲染的 I/O 高峰。 */
+	private static readonly BULK_CLEANUP_DELAY_MS = 15000;
+	/** 批量清理的文件大小预筛阈值（字节）——只有超过此值的会话文件才值得解析。 */
+	private static readonly BULK_CLEANUP_MIN_FILE_BYTES = 2 * 1024 * 1024;
+	/** 批量清理单次最多处理的文件数——避免启动后跑成长期任务。 */
+	private static readonly BULK_CLEANUP_MAX_FILES = 200;
+	/**
+	 * 批量清理跳过「最近修改」文件的窗口（ms）。
+	 *
+	 * 防竞态：mtime 在此窗口内的会话文件可能正被活跃会话写入（内存权威 → 落盘），
+	 * 批量清理的「读-改-写」会与之打架。跳过它们不影响最终收敛——用户下次**打开**
+	 * 该会话时由 `_loadFromSessionFile` 的惰性清理兜住。
+	 */
+	private static readonly BULK_CLEANUP_SKIP_RECENT_MS = 5 * 60 * 1000;
+	/** 批量清理是否已调度（`_ensureHistoryLoaded` 可能被并发调用）。 */
+	private _bulkCleanupScheduled = false;
+	/**
 	 * P4: IPC-time three-segment tool-result truncation applied inside
 	 * `_toDriverMessages`.  Every prior message the renderer ships to ext
 	 * host is squeezed through this shape:
@@ -237,6 +299,23 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	);
 	readonly onDidChangeAgentSessions: Event<{ agentId: string }> =
 		this._onDidChangeAgentSessionsEmitter.event;
+
+	/**
+	 * ★ 2026-09-12：**会话被删除**的专门事件（携带被删 sessionId）。
+	 *
+	 * 为何不复用 `onDidChangeAgentSessions`：后者 payload 只有 agentId，且在每次
+	 * messageCount 变化时都会 fire（一个 turn 50 条消息 = 50 次）。订阅方想知道
+	 * 「我正在显示的会话被删了」就得每次去查会话列表 —— 噪音大且昂贵。
+	 *
+	 * 事故（日志 20260912T102833）：删除由**会话历史视图**发起时，聊天面板自己的
+	 * `onDeleteSession` 回调根本不会被调用 → pane 的 `_currentSessionId` 仍指向已删
+	 * 会话 → 下次发消息 `getHistory: 0 msgs` + `Auto-rename failed: Session not found`。
+	 */
+	private readonly _onDidDeleteAgentSessionEmitter = this._register(
+		new Emitter<{ agentId: string; sessionId: string }>(),
+	);
+	readonly onDidDeleteAgentSession: Event<{ agentId: string; sessionId: string }> =
+		this._onDidDeleteAgentSessionEmitter.event;
 
 	private readonly _onDidStreamDeltaEmitter = this._register(
 		new Emitter<{ agentId: string; sessionId: string; delta: IChatStreamDelta }>(),
@@ -651,6 +730,48 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	}
 
 	/**
+	 * ★ 2026-09-12（P1 内存）：**活跃会话桶**的中段压缩。
+	 *
+	 * 原实现只在 LRU 淘汰**整桶**时压缩（`_evictLruBucket` → `_compactMessagesForEviction`），
+	 * 活跃桶内的消息因此**无界累积** —— 这正是 2026-07-13「每发一条消息内存持续增长
+	 * 直至崩溃」的疑点（见 `_estimateMessageBytes` 上方 OOM 诊断注释：「LRU 只淘汰整条
+	 * 会话桶，不裁剪活跃会话内的消息，且 ToolMessage.result 原样留存」）。
+	 *
+	 * 现补：活跃桶估算字节超 `ACTIVE_BUCKET_SOFT_LIMIT_BYTES` 时，复用 LRU 同款
+	 * 三段式压缩（保护头 `COMPACT_PROTECT_HEAD` / 尾 `COMPACT_PROTECT_TAIL`，只压中段），
+	 * 并落盘使磁盘同样收敛。
+	 *
+	 * 触发条件刻意保守：① 只在超软上限时动作（否则不改写用户可见内容）；
+	 * ② 按 `ACTIVE_COMPACT_MIN_INTERVAL_MS` 节流（估算字节是 O(n) 扫描）。
+	 */
+	private async _compactActiveBucketIfNeeded(agentId: string, sessionId?: string): Promise<void> {
+		const now = Date.now();
+		if (now - this._lastActiveCompactAt < AgentChatService.ACTIVE_COMPACT_MIN_INTERVAL_MS) { return; }
+		this._lastActiveCompactAt = now;
+
+		const messages = this._historyCache.get(this._cacheKey(agentId, sessionId));
+		if (!messages || messages.length < AgentChatService.COMPACT_MIN_MESSAGES) { return; }
+
+		let bytes = 0;
+		for (const m of messages) { bytes += AgentChatService._estimateMessageBytes(m); }
+		if (bytes < AgentChatService.ACTIVE_BUCKET_SOFT_LIMIT_BYTES) { return; }
+
+		const truncated = this._compactMessagesForEviction(messages);
+		if (truncated <= 0) { return; }
+
+		this.logService.info(
+			`[AgentChatService][P1] Compacted ${truncated} middle-segment tool result(s) in ACTIVE bucket ` +
+			`${agentId}::${sessionId ?? '(noSession)'} (est ${Math.round(bytes / 1024 / 1024)}MB > soft limit ` +
+			`${AgentChatService.ACTIVE_BUCKET_SOFT_LIMIT_BYTES / 1024 / 1024}MB, head=${AgentChatService.COMPACT_PROTECT_HEAD} tail=${AgentChatService.COMPACT_PROTECT_TAIL})`,
+		);
+		await this._persistToSessionFile(agentId, sessionId, messages).catch((err) =>
+			this.logService.warn(
+				`[AgentChatService][P1] persist after active-bucket compaction failed: ${err instanceof Error ? err.message : err}`,
+			),
+		);
+	}
+
+	/**
 	 * P2: Compact a session's message history before eviction.
 	 *
 	 * Three-segment compaction (aligns with ContextManager.compressContext):
@@ -961,6 +1082,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			return;
 		}
 		this._historyLoaded = true;
+		// ★ 2026-09-12：调度存量历史批量清理（延迟执行，不阻塞启动路径；详见方法注释）。
+		//   放在此处而非方法末尾：末尾有「无 global history 文件即 return」的早退分支，
+		//   而批量清理只依赖 chat-history 目录，与 global history 文件是否存在无关。
+		this._scheduleBulkInlineMediaCleanup();
 		try {
 			const uri = this._getHistoryFileUri();
 			if (!(await this.fileService.exists(uri))) {
@@ -1093,13 +1218,256 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			const messages = JSON.parse(content.value.toString()) as ChatMessage[];
 			// P1: resolve externalised tool result refs (from prior LRU eviction)
 			const resolved = await this._resolveToolResultRefs(agentId, sessionId, messages);
-			if (resolved > 0) {
+			// ★ 2026-09-12：存量历史脏数据清理 —— 移除内联的超长 data URI（详见方法注释）。
+			//   放在「会话文件刚出磁盘」这一唯一收口：此处 messages 就是该文件的全部内容
+			//   （不含 getHistory 里 merge 进来的跨会话 system 消息），回写即精确修正本文件。
+			const scrubbed = this._scrubOversizedInlineMedia(messages);
+			if (scrubbed.replaced > 0) {
+				this.logService.info(
+					`[AgentChatService] Scrubbed ${scrubbed.replaced} oversized inline data URI(s) ` +
+					`(${(scrubbed.freedBytes / 1024 / 1024).toFixed(1)}MB) from ${agentId}::${sessionId} — ` +
+					`images remain available in workflow cards.`,
+				);
+			}
+			if (resolved > 0 || scrubbed.replaced > 0) {
 				// Write back resolved messages so next load is fast (no sidecar I/O)
 				await this._persistToSessionFile(agentId, sessionId, messages).catch(() => { });
 			}
 			return messages;
 		} catch {
 			return [];
+		}
+	}
+
+	/**
+	 * ★ 2026-09-12：存量历史脏数据清理 —— 移除已落盘消息里**内联的超长 data URI**。
+	 *
+	 * **背景**（日志 1789133432350）：`agentDriverService` 曾把 workflow 的全部媒体快照
+	 * 内联成 `![输出 N](data:image/jpeg;base64,…)`，42 张 ≈ **8.4MB 单条 content**。
+	 * 这既触发过 `marked.parse` 栈溢出（已由 `agentChatPanel.markdown.ts` 的
+	 * `_renderMarkdownSafe` 分片兜底修复），也让**历史文件本身**巨大（每条数十 MB JSON）
+	 * ——拖慢加载/解析、白占磁盘。
+	 *
+	 * 写入侧已改为「单张 ≤200KB 且总数 ≤4」（`agentDriverService.ts`），不再产生新巨物；
+	 * 本方法负责**存量收敛**：会话文件从磁盘读入时扫一遍，把超限的大图内联替换为一行
+	 * 占位，随后由调用方回写落盘。
+	 *
+	 * **为何可安全替换**：这些内联 base64 是**冗余副本** —— 媒体本身已由工作流卡片的
+	 * snapshot 机制完整展示，移除不丢信息。
+	 *
+	 * 成本：快速路径是 `text.includes('data:')`（native 子串扫描，微秒级）——绝大多数
+	 * 消息不含 data: 直接跳过；清理一次后文本不再含长 URI，后续加载自然零成本。
+	 */
+	private _scrubOversizedInlineMedia(messages: ChatMessage[]): { replaced: number; freedBytes: number } {
+		let replaced = 0;
+		let freedBytes = 0;
+		const scrub = (text: string): string => {
+			const PH_PREFIX = '📎 ';
+			// 精简文案（2026-09-12）：原「（图片已由工作流卡片展示，历史记录中不再内联）」
+			// 太长 —— 63 条折叠成一行后仍然啰嗦。
+			const PH_SUFFIX = '（见上方工作流卡片）';
+			/**
+			 * 判断某行是否为「媒体占位」。
+			 *
+			 * ⚠ 必须**宽松**（只认前缀 + 含「工作流卡片」），不能用 `endsWith(PH_SUFFIX)`：
+			 *   老版本写进历史的占位用的是**长文案**（「图片已由工作流卡片展示，历史记录中
+			 *   不再内联」），严格后缀匹配会让它们**永远折叠不了**（正是用户第二次截图里
+			 *   那片糊在一起的三列占位）。
+			 */
+			const isPlaceholder = (line: string): boolean =>
+				line.startsWith(PH_PREFIX) && line.includes('工作流卡片');
+
+			// ① 清理内联 base64 图片。
+			//
+			// 快速路径：绝大多数消息不含 data:（native 子串扫描，微秒级）。
+			// ⚠ 折叠（②）**不能**挂在这个快速路径后面 —— 上次清理过的历史里已经没有
+			//   `data:` 了，但仍需要折叠（否则 63 条占位永远排成一片）。
+			//
+			// 宽松匹配（2026-09-12 二次修正）—— 事故现场的实际数据比标准 Markdown
+			// 图片语法更松散，原严格正则 `/!\[([^\]]*)\]\((data:[^)\s]+)\)/` 完全匹配
+			// 不到，于是图片码原样显示给用户：
+			//   `[输出 32]` + 换行 + `(data:image/gif;base64,...`
+			// 四处放宽：① `!` 可选（前缀曾被吃掉）；② `]` 与 `(` 之间允许空白/换行；
+			// ③ `(` 与 `data:` 之间允许空白；④ URI 与 `)` 之间允许空白
+			// （实测：`...base64,AAAA )` 若不放开这一处会**完全匹配不到**）。
+			// alt 上限 80 字符、URI 下限 64 字符 —— 避免误伤普通文本里的 data: 提及。
+			// `[^)\s]` 保证 URI 内不含空白 → `\s*` 只吃空白，无回溯风险。
+			let out = text;
+			if (text.includes('data:')) {
+				out = text.replace(
+					/!?\[([^\]]{0,80})\]\s*\(\s*(data:[^)\s]{64,})\s*\)/g,
+					(whole, alt: string, uri: string) => {
+						if (uri.length <= AgentChatService.INLINE_MEDIA_KEEP_MAX_URI) { return whole; }
+						replaced++;
+						freedBytes += uri.length;
+						return `${PH_PREFIX}${alt || '输出'}${PH_SUFFIX}`;
+					},
+				);
+			}
+
+			// ② 折叠：把**连续多个**占位合并为一行摘要。
+			//
+			// 事故现场（2026-09-12 用户截图）：一条消息里有 63 个输出 → 逐项占位会排出
+			// 63 条一模一样的啰嗦文案（排成三列糊成一片），比原来的图片码还难读。
+			// 这些占位在原始数据里是 `\n` 分隔（`agentDriverService` 用 join('\n')），
+			// Markdown 单换行渲染成软换行 → 视觉上连排，所以按行折叠即可命中。
+			//
+			// 单个占位**原样保留**（保留编号，信息不丢）；连续 ≥2 个才折叠成计数摘要。
+			// 折叠也 `replaced++`：让调用方知道「有改动」从而回写落盘（否则已清理过的
+			// 历史永远不会被折叠、也永远不会写回）。
+			if (!out.includes(PH_PREFIX)) { return out; }
+			const merged: string[] = [];
+			let run = 0;
+			let firstLine = '';
+			const flushRun = () => {
+				if (run === 0) { return; }
+				if (run === 1) {
+					merged.push(firstLine);		// 单个：保留编号
+				} else {
+					merged.push(`${PH_PREFIX}${run} 个输出${PH_SUFFIX}`);
+					replaced++;
+				}
+				run = 0;
+				firstLine = '';
+			};
+			for (const line of out.split('\n')) {
+				const t = line.trim();
+				if (isPlaceholder(t)) {
+					if (run === 0) { firstLine = line; }
+					run++;
+					continue;
+				}
+				flushRun();
+				merged.push(line);
+			}
+			flushRun();
+
+			// ③ 整条清空判据（2026-09-12，用户反馈「已完成 42 个输出」也重复）：
+			//   清理/折叠后若「除媒体占位外，只剩 `已完成 N 个输出` 这类状态文案」，
+			//   则整条视为**纯媒体汇报** → 清空。
+			//
+			//   目的：让历史里那种「已完成 42 个输出 + 63 条占位」的独立文本消息彻底消失
+			//   （`getHistory` 的空消息过滤会丢弃 content 为空且无 parts 的消息）。
+			//   工作流卡片在**另一条**消息里，不受影响。
+			//
+			//   与生成侧对齐：`agentDriverService` 现在有卡片时也不再发这段文本。
+			const residue = merged
+				.filter(l => !isPlaceholder(l.trim()))
+				.join('\n')
+				.replace(/已完成\s*\d+\s*个输出/g, '')
+				.trim();
+			if (residue.length === 0) {
+				replaced++;		// 计入「有改动」→ 触发调用方回写落盘
+				return '';
+			}
+			return merged.join('\n');
+		};
+		for (const m of messages) {
+			const anyM = m as unknown as Record<string, unknown>;
+			if (typeof anyM['content'] === 'string') {
+				const next = scrub(anyM['content']);
+				if (next !== anyM['content']) { anyM['content'] = next; }
+			}
+			if (Array.isArray(anyM['parts'])) {
+				for (const p of anyM['parts'] as Array<Record<string, unknown>>) {
+					if (typeof p?.['text'] === 'string') {
+						const next = scrub(p['text']);
+						if (next !== p['text']) { p['text'] = next; }
+					}
+				}
+			}
+		}
+		return { replaced, freedBytes };
+	}
+
+	/**
+	 * ★ 2026-09-12：调度**存量历史批量清理**（一次性、延迟、幂等）。
+	 *
+	 * **为何需要**：`_loadFromSessionFile` 的惰性清理只在用户**打开**某会话时生效——
+	 * 历史里那些**再也不会被打开**的旧会话仍占着磁盘（每条数十 MB JSON）。
+	 *
+	 * **幂等**：跑完在 chat-history 根目录写标记文件（`BULK_CLEANUP_MARKER`），之后
+	 * 启动直接跳过。不用「按文件大小判断」代替标记，是因为巨型 ToolResult payload
+	 * 这类**无 data URI 的大文件**会每次启动都被白读一遍。
+	 */
+	private _scheduleBulkInlineMediaCleanup(): void {
+		if (this._bulkCleanupScheduled) { return; }
+		this._bulkCleanupScheduled = true;
+		setTimeout(() => { void this._runBulkInlineMediaCleanup(); }, AgentChatService.BULK_CLEANUP_DELAY_MS);
+	}
+
+	/**
+	 * 遍历 chat-history/{agentId}/sessions/*.json，清理内联的超长 data URI。
+	 *
+	 * 三层成本控制：① 延迟 15s 执行，避开首屏 I/O；② `stat.size` 预筛（< 2MB 直接跳过，
+	 * 不读文件）；③ 单次处理上限（`BULK_CLEANUP_MAX_FILES`）。单文件失败不影响其余。
+	 */
+	private async _runBulkInlineMediaCleanup(): Promise<void> {
+		try {
+			const root = this._getChatHistoryRoot();
+			if (!(await this.fileService.exists(root))) { return; }
+			const markerUri = URI.joinPath(root, AgentChatService.BULK_CLEANUP_MARKER);
+			if (await this.fileService.exists(markerUri)) { return; }	// 已跑过
+
+			// resolveMetadata: 预筛与竞态防护依赖 size/mtime，而它们只在
+			// IFileStatWithMetadata 上（裸 IFileStat 不含）。
+			const rootStat = await this.fileService.resolve(root, { resolveMetadata: true });
+			let scanned = 0;			// 遍历到的 .json 总数
+			let processed = 0;			// 实际解析过的大文件数（受上限约束）
+			let cleanedFiles = 0;		// 有清理动作的文件数
+			let totalReplaced = 0;
+			let totalFreed = 0;
+
+			for (const agentEntry of rootStat.children ?? []) {
+				if (!agentEntry.isDirectory) { continue; }
+				if (processed >= AgentChatService.BULK_CLEANUP_MAX_FILES) { break; }
+				const sessionsDir = URI.joinPath(agentEntry.resource, 'sessions');
+				let dirStat;
+				try {
+					if (!(await this.fileService.exists(sessionsDir))) { continue; }
+					dirStat = await this.fileService.resolve(sessionsDir, { resolveMetadata: true });
+				} catch { continue; }
+				for (const f of dirStat.children ?? []) {
+					if (processed >= AgentChatService.BULK_CLEANUP_MAX_FILES) { break; }
+					if (f.isDirectory || !f.name.endsWith('.json')) { continue; }
+					scanned++;
+					// 大小预筛：stat 已带 size，避免为小文件付解析成本。
+					if ((f.size ?? 0) < AgentChatService.BULK_CLEANUP_MIN_FILE_BYTES) { continue; }
+					// 竞态防护：最近修改过的文件可能正被活跃会话使用，跳过（详见常量注释）。
+					if (f.mtime && Date.now() - f.mtime < AgentChatService.BULK_CLEANUP_SKIP_RECENT_MS) { continue; }
+					processed++;
+					try {
+						const content = await this.fileService.readFile(f.resource);
+						const messages = JSON.parse(content.value.toString()) as ChatMessage[];
+						const scrubbed = this._scrubOversizedInlineMedia(messages);
+						if (scrubbed.replaced > 0) {
+							await this.fileService.writeFile(
+								f.resource,
+								VSBuffer.fromString(JSON.stringify(messages, null, 2)),
+							);
+							cleanedFiles++;
+							totalReplaced += scrubbed.replaced;
+							totalFreed += scrubbed.freedBytes;
+						}
+					} catch { /* 单文件失败不影响其余 */ }
+				}
+			}
+
+			if (totalReplaced > 0) {
+				this.logService.info(
+					`[AgentChatService] Bulk inline-media cleanup: scrubbed ${totalReplaced} oversized data URI(s) ` +
+					`(${(totalFreed / 1024 / 1024).toFixed(1)}MB) across ${cleanedFiles} session file(s) ` +
+					`(scanned ${scanned}, parsed ${processed}).`,
+				);
+			} else {
+				this.logService.trace(
+					`[AgentChatService] Bulk inline-media cleanup: scanned ${scanned}, parsed ${processed}, nothing to scrub.`,
+				);
+			}
+			// 写标记：无论是否有清理都写，避免每次启动重扫。
+			await this.fileService.writeFile(markerUri, VSBuffer.fromString(new Date().toISOString()));
+		} catch (err) {
+			this.logService.warn('[AgentChatService] Bulk inline-media cleanup failed:', err);
 		}
 	}
 
@@ -1111,15 +1479,24 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		try {
 			const paths = await this._resolveAgentPaths(agentId);
 			if (!(await this.fileService.exists(paths.indexUri))) {
-				return [];
+				// ★ 2026-09-12：索引文件不存在 ≠ 没有会话 —— 可能是索引丢失。
+				//   见 _recoverSessionIndexFromDir 的事故说明。
+				return await this._recoverSessionIndexFromDir(agentId, 'missing');
 			}
 			const content = await this.fileService.readFile(paths.indexUri);
 			const text = content.value.toString();
-			// Empty / whitespace-only file → treat as an empty index without alarming
-			// the user. This is the state left behind by a killed/corrupted write and
-			// is recovered by the next _updateSessionIndex, so it is not an error.
+			// ★ 2026-09-12 修正：原实现把空文件当「合法空索引」，并注释称
+			//   「由下次 _updateSessionIndex 恢复」——**该假设是错的**：
+			//   ① `_updateSessionIndex` 只在该会话**首次 append** 时 push，不会重建
+			//      已丢失的条目；
+			//   ② 本函数返回的 `[]` 会被 `_getSessionIndexForWrite` 设为内存**写权威**，
+			//      之后任何一次 flush 都把空数组写回磁盘 → 空状态被固化 → **永久丢失**。
+			//   事故（日志 20260912T145937）：sessions.json 变空后重启，聊天框读到
+			//   「0 sessions」→ 新建空会话 → 用户看到历史会话全部消失；而会话文件其实
+			//   还在 sessions/ 目录里（SessionHistoryView 扫目录仍列得出）。
+			//   现在：缺失 / 空 / 损坏 一律尝试从目录重建。
 			if (text.trim().length === 0) {
-				return [];
+				return await this._recoverSessionIndexFromDir(agentId, 'empty');
 			}
 			const parsed = JSON.parse(text) as AgentSessionMeta[];
 			// 2026-08-20：原先每次读盘都 info 一行，turn 内连刷 50+ 次（日志
@@ -1133,8 +1510,57 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			return parsed;
 		} catch (err) {
 			this.logService.warn(`[AgentChatService] _readSessionIndex(${agentId}) error:`, err);
+			// ★ JSON 损坏（半截写入等）同样走重建，而不是返回空索引。
+			return await this._recoverSessionIndexFromDir(agentId, 'corrupt');
+		}
+	}
+
+	/**
+	 * ★ 2026-09-12：索引 缺失/为空/损坏 时的**自愈** —— 从 `sessions/` 目录重建。
+	 *
+	 * **为何需要**：`getOrCreateActiveSession` 只信任 `sessions.json`，而
+	 * `SessionHistoryView._discoverAgentIds` 是**扫目录**的。索引一丢，聊天框就认为
+	 * 「无会话」并新建空会话，历史列表却仍列得出会话 —— 用户看到「聊天框空白 / 历史消失」。
+	 * 会话文件本身通常还在（丢的只是索引），所以重建即可**全量恢复**。
+	 *
+	 * 代价可控：只在索引异常时触发（正常路径**不**扫目录）；重建结果立即写回，
+	 * 之后走正常路径。
+	 *
+	 * `messageCount` 置 0 而不读每个会话文件 —— 避免为几十 MB 的历史付解析成本；
+	 * 该会话下次 append 时由 `_updateSessionIndex` 刷新为真实值。名称同理无法恢复
+	 * （名称只存在于索引里），用日期兜底并保留原始 id。
+	 */
+	private async _recoverSessionIndexFromDir(
+		agentId: string,
+		cause: 'missing' | 'empty' | 'corrupt',
+	): Promise<AgentSessionMeta[]> {
+		const rebuilt: AgentSessionMeta[] = [];
+		try {
+			const paths = await this._resolveAgentPaths(agentId);
+			if (await this.fileService.exists(paths.sessionsDirUri)) {
+				const stat = await this.fileService.resolve(paths.sessionsDirUri, { resolveMetadata: true });
+				for (const f of stat.children ?? []) {
+					if (f.isDirectory || !f.name.endsWith('.json')) { continue; }
+					const id = f.name.slice(0, -'.json'.length);
+					// 只认会话文件（sessionId 形如 sess_xxx），排除目录里的杂项 json。
+					if (!id.startsWith('sess_')) { continue; }
+					const d = f.mtime ? new Date(f.mtime) : new Date();
+					const ts = d.toISOString();
+					rebuilt.push({ id, name: `Session ${d.toLocaleString()}`, createdAt: ts, updatedAt: ts, messageCount: 0 });
+				}
+			}
+		} catch (err) {
+			this.logService.warn(`[AgentChatService] _recoverSessionIndexFromDir(${agentId}) failed:`, err);
 			return [];
 		}
+		if (rebuilt.length === 0) { return []; }
+		this.logService.warn(
+			`[AgentChatService] Session index ${cause} for ${agentId} — rebuilt ${rebuilt.length} ` +
+			`entry(ies) from session files (history preserved; names/messageCount reset until next append).`,
+		);
+		// 写回：让后续读取走正常路径，并让磁盘索引恢复一致。
+		void this._writeSessionIndexQueued(agentId, rebuilt).catch(() => { });
+		return rebuilt;
 	}
 
 	/**
@@ -1226,7 +1652,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// 写盘用快照：await 期间内存数组可能被后续 append 继续修改（JSON.stringify
 		// 不是原子的），拷一份保证本次写出的是自洽状态。
 		const snapshot = index.map(e => ({ ...e }));
-		const run = prev.catch(() => { }).then(() => this._writeSessionIndex(agentId, snapshot));
+		// ★ 2026-09-11：改用**带硬超时**的写盘。超时必须发生在**链上的 promise 内**
+		// （而非仅 await 端）——否则单次 writeFile 挂起会让 `prev` 永不 settle，
+		// 队列里所有后续写永久排队（运行期 index 更新整体停摆）。
+		const run = prev.catch(() => { }).then(() => this._writeSessionIndexWithTimeout(agentId, snapshot));
 		this._sessionIndexWriteQueue.set(agentId, run);
 		try {
 			await run;
@@ -1234,6 +1663,46 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			if (this._sessionIndexWriteQueue.get(agentId) === run) {
 				this._sessionIndexWriteQueue.delete(agentId);
 			}
+		}
+	}
+
+	/** 单次 index 写盘的硬超时（2026-09-11）。超时只放弃等待，不 reject。 */
+	private static readonly SESSION_INDEX_WRITE_TIMEOUT_MS = 5_000;
+
+	/**
+	 * 带硬超时的写盘（2026-09-11）。
+	 *
+	 * 为什么需要：`_writeSessionIndex` 的 try/catch 只能兜**异常**，兜不住
+	 * **挂起**（shutdown 半销毁、磁盘/杀毒锁、网络盘 —— writeFile 可能永不
+	 * resolve）。而本方法处于 per-agent 串行队列的链上，一旦挂起，队列里
+	 * 后续所有写入永久排队（不止影响关闭：运行期 messageCount/updatedAt 更新
+	 * 全部停摆，index 静默陈旧）。
+	 *
+	 * 超时语义（务实取舍）：
+	 *  - 只放弃**等待**，不取消底层写（JS 无法强杀 in-flight IO）；迟到的写仍可能
+	 *    落盘 —— 理论上存在「旧快照晚到覆盖新快照」的窗口，但受影响字段
+	 *    （messageCount/updatedAt）由下一次 flush 自愈，且顺序错乱概率远低于
+	 *    「队列永久死锁」的代价。
+	 *  - 超时**必须 resolve**（不能 reject）：队列 `prev.catch().then()` 依赖
+	 *    settle 才能推进，reject 虽也被 catch 但会多打一条错误日志、语义上也
+	 *    不该把「慢」当「失败」。
+	 */
+	private async _writeSessionIndexWithTimeout(agentId: string, index: AgentSessionMeta[]): Promise<void> {
+		const WRITE = 'write';
+		const TIMEOUT = 'timeout';
+		const t0 = Date.now();
+		const winner = await Promise.race([
+			this._writeSessionIndex(agentId, index).then(() => WRITE),
+			new Promise<string>(resolve => setTimeout(() => resolve(TIMEOUT), AgentChatService.SESSION_INDEX_WRITE_TIMEOUT_MS)),
+		]);
+		if (winner === TIMEOUT) {
+			this.logService.warn(
+				`[AgentChatService] session index write TIMEOUT after ${AgentChatService.SESSION_INDEX_WRITE_TIMEOUT_MS}ms ` +
+				`(agent=${agentId}) — queue slot released so later writes are not blocked; the in-flight write may still land late`
+			);
+		} else if (Date.now() - t0 > 2000) {
+			// 慢但未超时：留痕便于排查磁盘性能问题（正常应 <100ms）。
+			this.logService.info(`[AgentChatService] session index write slow: ${Date.now() - t0}ms (agent=${agentId})`);
 		}
 	}
 
@@ -1358,6 +1827,110 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		);
 	}
 
+	/**
+	 * 批量追加多条消息（2026-09-11）—— 把 N 次全量落盘合并为 1 次。
+	 *
+	 * 为什么需要（真实事故，日志 20260911T193945）：
+	 * `appendMessage` **每次**调用都做三件全量 IO ——
+	 *   ① `_persistGlobalHistory()`：序列化 `_historyCache` 里的**所有会话**；
+	 *   ② `_persistToSessionFile()`：序列化**整个会话**；
+	 *   ③ `_updateSessionIndex()`；
+	 * 且 ①② 都用 `JSON.stringify(..., null, 2)`（**带缩进**，体积更大）。
+	 *
+	 * 而 `sendMessage` 的 finalization 原本是**逐条** `await appendMessage(...)`：
+	 * 一个 62 轮迭代的 turn（`iters=62 calls=65`）会产生 62 条 assistant 消息
+	 * → **62 次全量序列化 + 写盘** → 渲染进程被同步阻塞到日志停滞 2.5 分钟以上
+	 * （用户表现为「app 卡死」；日志停在 `starting finalization`，
+	 * `Persisted N assistant turn message(s)` 从未出现）。
+	 *
+	 * 本方法把 N 条合并为**一次** cache 变更 + **一次**落盘，语义与逐条调用一致：
+	 *  - 保持顺序（push 顺序 = `builtMessages` 顺序 = 因果顺序）；
+	 *  - 末尾同 id 仍做 REPLACE 而非 push（与 `appendMessage` 的流式去重一致）；
+	 *  - 跨会话隔离守卫照旧（无 `agentSessionId` 的非 system 消息丢弃并告警）；
+	 *  - `MemSnap` 诊断从 N 条合并为 1 条（顺带消除日志风暴）。
+	 */
+	async appendMessagesBatch(agentId: string, msgs: readonly ChatMessage[]): Promise<void> {
+		if (msgs.length === 0) {
+			return;
+		}
+		await this._ensureHistoryLoaded();
+
+		// 按 sessionId 分组：不同会话必须各自落盘（实际绝大多数只有一个分组）。
+		const bySession = new Map<string, ChatMessage[]>();
+		let dropped = 0;
+		for (const m of msgs) {
+			if (!m.agentSessionId && m.role !== 'system') {
+				dropped++;
+				continue;
+			}
+			const k = m.agentSessionId ?? '';
+			const bucket = bySession.get(k);
+			if (bucket) {
+				bucket.push(m);
+			} else {
+				bySession.set(k, [m]);
+			}
+		}
+		if (dropped > 0) {
+			this.logService.warn(
+				`[AgentChatService] appendMessagesBatch: dropped ${dropped} message(s) without agentSessionId for ${agentId} (cross-session leakage guard)`,
+			);
+		}
+		if (bySession.size === 0) {
+			// 全部被丢弃 → **不产生任何写盘**（含全局历史）。
+			// 空写同样是全量序列化 + 落盘，白白阻塞渲染进程。
+			return;
+		}
+
+		let totalBytes = 0;
+		for (const [sid, batch] of bySession) {
+			const key = this._cacheKey(agentId, sid || undefined);
+			let messages = this._historyCache.get(key);
+			if (!messages) {
+				messages = [];
+				this._historyCache.set(key, messages);
+				this._touchBucket(key);
+				await this._evictIfNeeded();
+			} else {
+				this._touchBucket(key);
+			}
+			for (const m of batch) {
+				const tail = messages[messages.length - 1];
+				if (tail && tail.id === m.id) {
+					messages[messages.length - 1] = m;
+				} else {
+					messages.push(m);
+				}
+				totalBytes += AgentChatService._estimateMessageBytes(m);
+			}
+			// ★ 每个会话只落盘一次（原逐条路径在这里会执行 batch.length 次）。
+			this._persistToSessionFile(agentId, sid || undefined, messages).catch((err) =>
+				this.logService.error(
+					"[AgentChatService] Session file persist failed:",
+					err,
+				),
+			);
+		}
+
+		// ★ 全局历史只写一次（原逐条路径会执行 msgs.length 次）。
+		this._persistGlobalHistory().catch((err) =>
+			this.logService.error("[AgentChatService] Global persist failed:", err),
+		);
+
+		this._logMemSnapshot('append-batch', {
+			agentId,
+			sessionId: msgs[0]?.agentSessionId,
+			role: msgs[0]?.role,
+			msgBytes: totalBytes,
+		});
+
+		// ★ 2026-09-12（P1 内存）：活跃桶超软上限 → 中段压缩（详见方法注释）。
+		//   fire-and-forget：内存治理不应阻塞落盘主路径；内部自带时间节流与超限告警。
+		for (const [sid] of bySession) {
+			void this._compactActiveBucketIfNeeded(agentId, sid || undefined);
+		}
+	}
+
 	// ─── Public: updateMessage ─────────────────────────────────────────────
 	/**
 	 * Update an existing message in cache + session file.
@@ -1468,8 +2041,36 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			}
 		}
 
+		// ★ 历史空消息过滤（2026-09-11 用户反馈「重启后多出一条空白消息」）：
+		//   已落盘的历史不受新「空回合守卫」影响（那只管新消息）——这里兜底清理：
+		//   无文本/无 parts/无任何卡片字段的 assistant 消息（工作流工具回合的空产出，
+		//   如 `content:"" parts:[] progress:[生成中 97%]`）不参与渲染。
+		//   注意必须**保留**携带 workflowExecutions / askUsers / collectVariables 的
+		//   卡片消息（它们同样可能 content 为空，但有实际渲染内容）。
+		const beforeFilter = (messages || []).length;
+		messages = (messages || []).filter(m => {
+			if (m.role !== 'assistant') { return true; }
+			if (typeof m.content === 'string' && m.content.trim()) { return true; }
+			const anyMsg = m as unknown as Record<string, unknown>;
+			// 有实际渲染载体的（卡片/工具/思考/交互）一律保留。
+			if (Array.isArray(anyMsg['parts']) && (anyMsg['parts'] as unknown[]).length > 0) { return true; }
+			if (Array.isArray(anyMsg['toolCalls']) && (anyMsg['toolCalls'] as unknown[]).length > 0) { return true; }
+			if (anyMsg['thinking']) { return true; }
+			for (const k of ['confirmation', 'questions', 'todos', 'collectVariables', 'workflowExecutions', 'askUsers', 'workflowEvents', 'references', 'subAgents']) {
+				const v = anyMsg[k];
+				if (v === undefined || v === null) { continue; }
+				if (Array.isArray(v) ? v.length > 0 : typeof v === 'object' ? Object.keys(v as object).length > 0 : !!v) {
+					return true;
+				}
+			}
+			// 无任何可见内容（如只有 progress 的工作流空回合）→ 过滤。
+			return false;
+		});
+		const droppedInvisible = beforeFilter - (messages || []).length;
+
 		this.logService.info(
-			`[AgentChatService] getHistory: ${(messages || []).length} msgs for ${key}`,
+			`[AgentChatService] getHistory: ${(messages || []).length} msgs for ${key}` +
+			(droppedInvisible > 0 ? ` (dropped ${droppedInvisible} invisible assistant msg)` : ''),
 		);
 		return messages || [];
 	}
@@ -2392,18 +2993,18 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				);
 			}
 
-			// 顺序持久化（保持磁盘顺序 = 因果顺序）
-			for (const msg of builtMessages) {
-					await this.appendMessage(agentId, msg).catch((err) =>
-						this.logService.error(
-							"[AgentChatService] Failed to persist assistant turn message:",
-							err,
-						),
-					);
-				}
-				this.logService.info(
-					`[AgentChatService] Persisted ${builtMessages.length} assistant turn message(s) under turnId=${turnId} (Hermes-style boundary)`,
-				);
+			// ★ 2026-09-11 改为**批量落盘**（原为逐条 `await appendMessage`）：
+			// `appendMessage` **每次**都会全量重写（`_persistGlobalHistory` 序列化
+			// **所有会话**、`_persistToSessionFile` 序列化**整个会话**，且都带
+			// `null, 2` 缩进）。62 轮迭代的 turn 会触发 62 次全量序列化 + 写盘 →
+			// 实测把渲染进程阻塞到日志停滞 2.5 分钟以上（用户表现为「app 卡死」；
+			// 日志 20260911T193945 的 `iters=62 calls=65`，停在 `starting finalization`
+			// 后再无输出，`Persisted N ...` 从未出现）。批量后为一次 cache 变更 +
+			// 一次落盘，**保持顺序 = 因果顺序**，语义不变。
+			await this.appendMessagesBatch(agentId, builtMessages);
+			this.logService.info(
+				`[AgentChatService] Persisted ${builtMessages.length} assistant turn message(s) under turnId=${turnId} (Hermes-style boundary, batched)`,
+			);
 				// 返回最后一条（其 content 为最终总结，供 configHtmlService 解析）
 				chatMessage = builtMessages[builtMessages.length - 1];
 		} else {
@@ -2457,12 +3058,31 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					tokenUsage: sharedTokenUsage,
 				};
 
-				this.appendMessage(agentId, chatMessage).catch((err) =>
-					this.logService.error(
-						"[AgentChatService] Failed to persist assistant message:",
-						err,
-					),
-				);
+				// ★ 空回合守卫（2026-09-11 用户反馈「重启后聊天框多出一条空白消息」）：
+				//   工作流工具回合的 LLM 流可能**无任何文本产出**（内容由工作流卡接管），
+				//   此时 content='' + parts=[]，只有 progress（工作流进度）——落盘后重启
+				//   渲染成空气泡（实测 msg_1789091041933_su9ckco：
+				//   `content:"" parts:[] progress:[{id:'wf-...-progress',content:'生成中 97%'}]`）。
+				//   progress 由工作流卡自行管理，独立消息无渲染价值 → 无可见内容则跳过落盘。
+				const hasVisibleContent = !!(fullContent && fullContent.trim())
+					|| (Array.isArray(toolCalls) && toolCalls.length > 0)
+					|| !!fullThinking
+					|| !!confirmation || !!questions || !!todos
+					|| (Array.isArray(references) && references.length > 0)
+					|| (_streamingParts && _streamingParts.length > 0);
+				if (hasVisibleContent) {
+					this.appendMessage(agentId, chatMessage).catch((err) =>
+						this.logService.error(
+							"[AgentChatService] Failed to persist assistant message:",
+							err,
+						),
+					);
+				} else {
+					this.logService.info(
+						`[AgentChatService] skip persisting empty assistant turn id=${chatMessage.id} ` +
+						`(progress=${Array.isArray(progress) ? progress.length : 0}) — 无可见内容，避免重启后出现空气泡`,
+					);
+				}
 			}
 
 			return chatMessage;
@@ -2804,6 +3424,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			`[AgentChatService] Deleted session ${sessionId} for ${agentId}`,
 		);
 		this._onDidChangeAgentSessionsEmitter.fire({ agentId });
+		// ★ 2026-09-12：专门通知「被删的是哪个会话」，让正显示它的聊天面板能切走
+		//   （删除可能由历史视图 / 会话浏览器发起，面板自身回调不会被调用）。
+		this._onDidDeleteAgentSessionEmitter.fire({ agentId, sessionId });
 	}
 
 	/**

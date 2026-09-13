@@ -70,5 +70,13 @@ export function extractAttachmentIds(text: string): string[] {
  * image data is delivered through the structured `attachments` channel.
  */
 export function stripAttachmentHyperlinks(text: string): string {
-	return text.replace(ATTACHMENT_LINK_RE, '').trim();
+	// ★ 空白收敛（2026-09-11）：直接删除链接会留下**双空格**（链接两侧各一个）——
+	//   `'请分析 [📄 f](saros-attachment://x) 谢谢'` → `'请分析  谢谢'`。
+	//   这里把「链接 + 两侧空白」整体收敛为**一个**空格；若链接**紧邻文字**
+	//   （如中文标点 `看这个[link]。`），则不插空格直接删除，避免凭空多出空格。
+	//   契约见 test/browser/chatInputAttachmentHyperlink.test.ts。
+	const re = new RegExp(`([ \\t]*)${ATTACHMENT_LINK_RE.source}([ \\t]*)`, 'g');
+	return text
+		.replace(re, (_m: string, before: string, after: string) => (before || after ? ' ' : ''))
+		.trim();
 }

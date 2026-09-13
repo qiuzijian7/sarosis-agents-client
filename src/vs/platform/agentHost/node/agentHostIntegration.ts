@@ -6,34 +6,22 @@
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { IAgentService } from '../common/agentService.js';
 import { IContextCompressionService } from '../common/contextCompression.js';
-import { IMemoryService } from '../common/memoryService.js';
 import { ILogService } from '../../log/common/log.js';
 
 /**
  * Agent Host Integration module that wires together:
  * - IAgentService (event source)
  * - IContextCompressionService (auto-compression on turn complete)
- * - IMemoryService (memory sync on turn complete, prefetch on message send)
  *
- * This is the main integration point for the Session & Context Enhancement framework.
- *
- * Usage:
- * ```typescript
- * const integration = new AgentHostIntegration(
- *   agentService,
- *   contextCompressionService,
- *   memoryService,
- *   logService,
- *   sessionStore,
- * );
- * // Automatically listens to events and triggers compression/memory operations
- * ```
+ * P2-12（2026-09-09）：IMemoryService 已删除（agentHost 记忆栈从未接入主链路，
+ * 产品记忆由 sessions/agentStudio 的 AgentMemory 网关承担——见
+ * sessions/contrib/agentStudio/browser/agentMemoryInjection.ts）。
+ * 本类收敛为「自动压缩触发器」单一职责。
  */
 export class AgentHostIntegration extends Disposable {
 	constructor(
 		@IAgentService private readonly agentService: IAgentService,
 		@IContextCompressionService private readonly compressionService: IContextCompressionService,
-		@IMemoryService private readonly memoryService: IMemoryService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
@@ -80,7 +68,7 @@ export class AgentHostIntegration extends Disposable {
 		switch (action.type) {
 			case 'session/turnComplete':
 			case 'turnComplete':
-				await this._onTurnComplete(sessionId, action);
+				await this._onTurnComplete(sessionId);
 				break;
 
 			case 'session/ready':
@@ -127,22 +115,12 @@ export class AgentHostIntegration extends Disposable {
 
 	private async _onSessionReady(sessionId: string): Promise<void> {
 		this.logService.debug('[AgentHostIntegration] Session ready', sessionId);
-
-		try {
-			await this.memoryService.initialize(sessionId);
-		} catch (err) {
-			this.logService.error('[AgentHostIntegration] Failed to initialize memory service', err);
-		}
+		// P2-12: memory initialize 已随 agentHost 记忆栈删除
 	}
 
-	private async _onTurnComplete(sessionId: string, action: Record<string, unknown>): Promise<void> {
+	private async _onTurnComplete(sessionId: string): Promise<void> {
 		this.logService.debug('[AgentHostIntegration] Turn complete', sessionId);
-
-		// Run compression check and memory sync in parallel
-		await Promise.all([
-			this._maybeCompress(sessionId),
-			this._syncMemory(sessionId, action),
-		]);
+		await this._maybeCompress(sessionId);
 	}
 
 	private async _maybeCompress(sessionId: string): Promise<void> {
@@ -164,74 +142,14 @@ export class AgentHostIntegration extends Disposable {
 		}
 	}
 
-	private async _syncMemory(sessionId: string, action: Record<string, unknown>): Promise<void> {
-		try {
-			// Extract user message and assistant response from the action
-			const userMessage = this._extractUserMessage(action);
-			const assistantResponse = this._extractAssistantResponse(action);
-
-			if (userMessage && assistantResponse) {
-				await this.memoryService.syncTurn(sessionId, userMessage, assistantResponse);
-			}
-		} catch (err) {
-			this.logService.error('[AgentHostIntegration] Memory sync failed', err);
-		}
-	}
-
 	private async _onSessionClosed(sessionId: string): Promise<void> {
 		this.logService.debug('[AgentHostIntegration] Session closed', sessionId);
 
 		try {
-			await this.memoryService.onSessionSwitch('');
-			// Also reset compression state
+			// Reset compression state
 			this.compressionService.resetState(sessionId);
 		} catch (err) {
 			this.logService.error('[AgentHostIntegration] Failed to handle session close', err);
 		}
-	}
-
-	// ── Public API for Prefetch (call before sending message) ─────────
-
-	/**
-	 * Call this before sending a message to inject memory context.
-	 * Returns the memory context string to prepend to the message.
-	 */
-	async prefetchMemoryContext(sessionId: string, userMessage: string): Promise<string> {
-		try {
-			return await this.memoryService.prefetch(sessionId, userMessage);
-		} catch (err) {
-			this.logService.error('[AgentHostIntegration] Prefetch failed', err);
-			return '';
-		}
-	}
-
-	/**
-	 * Queue prefetch for the next turn (non-blocking).
-	 */
-	queuePrefetch(sessionId: string, userMessage: string): void {
-		this.memoryService.queuePrefetch(sessionId, userMessage);
-	}
-
-	// ── Private Helpers ─────────────────────────────────────────
-
-	private _extractUserMessage(action: Record<string, unknown>): string | undefined {
-		// Try to extract user message from action
-		// This depends on the actual action structure
-		const turns = action['turns'] as Array<{ role: string; content: string }> | undefined;
-		if (turns) {
-			const userTurn = turns.reverse().find(t => t.role === 'user');
-			return userTurn?.content;
-		}
-		return undefined;
-	}
-
-	private _extractAssistantResponse(action: Record<string, unknown>): string | undefined {
-		// Try to extract assistant response from action
-		const turns = action['turns'] as Array<{ role: string; content: string }> | undefined;
-		if (turns) {
-			const assistantTurn = turns.reverse().find(t => t.role === 'assistant');
-			return assistantTurn?.content;
-		}
-		return undefined;
 	}
 }

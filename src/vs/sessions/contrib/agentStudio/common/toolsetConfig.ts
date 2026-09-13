@@ -72,8 +72,24 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		'skill_manage',
 		'session_search', 'execute_code', 'delegate_task',
 		'read_skill', 'list_skills',
-			// Mermaid 图示 — core Always 优先级确保 LLM 可调用
+			// 图示渲染（Mermaid / Draw.io）— core Always 优先级确保 LLM 可调用。
+			// ★ 2026-09-11：drawio 与 mermaid 同源 —— 若不在 core 登记，会落进
+			// `utility`（Low）而被 focus 模式整条剔除（工具即使有真实 handler，
+			// LLM 仍永远看不到；`image_gen` 曾踩同一个坑，见下方 image_gen 注释）。
 			'rendermermaiddiagram',
+			'renderdrawiodiagram',
+			// ★ 2026-09-11：图像分析（vision_analyze）与 image_generate 同为「用户
+			// 显式意图」（用户发图/截图后要求解读），不属于按项目信号推荐的代码类
+			// 工具集 —— 不登记会落 `utility` 而被 focus 模式整条剔除（同 image_gen
+			// 的历史坑；该工具此前正是「有 stub 定义、无 handler」的半成品）。
+			'vision_analyze',
+			// ★ 2026-09-11：媒体生成（视频 / 语音）—— 同为「用户显式意图」（用户
+			// 要求生成视频/配音），与 image_generate 一样需要 Always 豁免；它们此前
+			// 也是「有 stub 定义、无 handler」的半成品。
+			'video_generate', 'text_to_speech',
+			// ★ 2026-09-11：定时任务（cronjob）—— 用户显式要求「每天/每周…」，同属
+			// 显式意图，需 Always 豁免（此前也是「有 stub 定义、无 handler」的半成品）。
+			'cronjob',
 			'clarify', // 2026-07-13: 用户交互核心工具（LLM 向用户提问并等待选择），归入 core 避免被 utility 路径过滤掉
 			// ── codebase graph tools: Always priority — 代码检索优先走结构化索引 ──
 			'search_graph', 'query_graph', 'trace_path',
@@ -81,16 +97,20 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 			'index_repository', 'index_status', 'list_projects',
 			'delete_project', 'detect_changes', 'ingest_traces',
 			'manage_adr',
+			// ★ 2026-09-11 补：同族遗漏的 3 个（都定义在 `codebaseTools.ts`，
+			// 与上面同属 codebase graph 家族）—— 此前无任何 toolset 匹配 →
+			// 落进 `utility` → focus 模式被整条剔除（与 renderMermaidDiagram /
+			// image_gen 落入 utility 的历史坑同源）。
+			'check_index_coverage', 'export_artifact', 'import_artifact',
 		],
 		deferrable: false,
 	},
-	{
-		id: 'mcp-bridge',
-		label: 'MCP Bridge',
-		priority: ToolsetPriority.Always,
-		prefixes: ['mcp_tool_'],
-		deferrable: false,
-	},
+	// ★ 2026-09-11 删除 `mcp-bridge` toolset（死配置）：
+	//   它靠 `prefixes: ['mcp_tool_']` 匹配 —— 而该前缀的工具**已不存在**
+	//   （桥接早已统一为单套 `tool_search` / `tool_describe` / `tool_call`，
+	//   见 toolSearchAssembler 的"统一单套桥接"注释）→ 本 toolset 永不匹配任何工具。
+	//   连带影响已同步清理：`CORE_TOOLSET_IDS` 移除该项、`delegationTools` 的子代理
+	//   默认 toolset 列表移除该项、`schemaCorrector.test.ts` 的断言移除。
 	{
 		id: 'mcp',
 		label: 'MCP Tools',
@@ -164,14 +184,25 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		id: 'kanban',
 		label: 'Kanban',
 		priority: ToolsetPriority.Low,
-		prefixes: ['kanban_'],
+		// ★ 2026-09-11 补 `web_recipe_` 前缀与 `web_scrape_to_board`。
+		// 这 4 个工具定义在 `kanbanTools.ts`（`web_scrape_to_board` 的描述即
+		// 「automatically create a kanban board populated with the tasks found
+		// on that page」），却因不带 `kanban_` 前缀而**无任何 toolset 匹配**
+		// → 落进 `utility`（归类错误：UI 分组与 tool_search scope 过滤都不对）。
+		prefixes: ['kanban_', 'web_recipe_'],
+		exactNames: ['web_scrape_to_board'],
 		deferrable: true,
 	},
 	{
 		id: 'canvas',
 		label: 'Canvas',
 		priority: ToolsetPriority.Low,
-		prefixes: ['mindmap_'],
+		// ★ 2026-09-11 补 `canvas_` 前缀。此前只有 `mindmap_` —— toolset 名为
+		// canvas 却匹配不到任何 `canvas_*` 工具（7 个：apply_ops / generate /
+		// get_task_status / get_state / reverse_prompt / undo / redo），它们
+		// 全部落进 `utility`。canvas 与 mindmap 同族（画布功能由 mindmap 演进
+		// 而来，两者都要求「workflow 画布已打开」）。
+		prefixes: ['mindmap_', 'canvas_'],
 		deferrable: true,
 	},
 	{
@@ -180,6 +211,24 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		priority: ToolsetPriority.Low,
 		prefixes: [],
 		deferrable: true,
+	},
+	{
+		// ★ 2026-09-10：图片生成工具集。
+		//
+		// 必须显式定义，否则 `getToolsetForTool('image_generate')` 无匹配 →
+		// 落进 `utility`（Low）→ 被 focus 模式过滤整条剔除（Step3a 只保留
+		// 「推荐 toolset / 桥接 / core / Always」）→ 工具虽注册真实 handler，
+		// LLM 仍永远看不到（与 renderMermaidDiagram 落入 utility 的历史坑同源）。
+		//
+		// priority 取 Always 的理由：图片生成是用户在聊天框**显式选定图片模型**后的
+		// 直接意图，不属于「按项目信号推荐的代码类工具集」——focus 推荐列表天然
+		// 不会包含它，只能靠 Always 豁免。该集仅 1 个工具，schema 开销可忽略。
+		id: 'image_gen',
+		label: 'Image Generation',
+		priority: ToolsetPriority.Always,
+		prefixes: [],
+		exactNames: ['image_generate'],
+		deferrable: false,
 	},
 ];
 
@@ -253,14 +302,12 @@ export function isDynamicToolset(toolsetId: string): boolean {
 }
 
 // ─── 默认启用的 toolset ─────────────────────────────────────────────────
-
-/**
- * 默认启用的 toolset 列表（Agent 未配置 enabledToolsets 时使用）。
- * 不包含 deferrable=true 的 toolset（它们按名额填充或折叠为桥接）。
- */
-export const DEFAULT_ENABLED_TOOLSETS: readonly string[] = TOOLSET_DEFINITIONS
-	.filter(t => t.priority === ToolsetPriority.Always || t.priority === ToolsetPriority.High)
-	.map(t => t.id);
+// ★ 2026-09-11 删除 `DEFAULT_ENABLED_TOOLSETS`（死代码 + 误导）：
+//   全仓**零消费**（含 extensions/webview），且其注释声称的语义
+//   （「Agent 未配置 enabledToolsets 时使用」）与实际实现**不符** ——
+//   `agentToolAssembly` 在 `agentToolsets` 为空时走的是 **focus 模式**
+//   （Step 3a，见 `focusMode.ts` 的 `CODING_FOCUS_TOOLSETS`），并非使用该列表。
+//   保留它只会让后人以为「未配置时存在一份默认 toolset 清单」。
 
 // ─── 桥接工具名称 ────────────────────────────────────────────────────────
 
@@ -304,8 +351,11 @@ export const CORE_TOOLS: ReadonlySet<string> = new Set([
 	// 技能调用 — 任何 Agent 都需要
 	'skill_manage',
 	'read_skill', 'list_skills',
-	// Mermaid 图示 — 图表渲染
+	// 图示渲染 — 图表渲染（Mermaid / Draw.io，二者同源，2026-09-11 补齐 drawio）
 	'rendermermaiddiagram',
+	'renderdrawiodiagram',
+	// 图像分析 / 媒体生成 / 定时任务（2026-09-11 补：与 image_generate 同为用户显式意图，需 Always 豁免）
+	'vision_analyze', 'video_generate', 'text_to_speech', 'cronjob',
 	// 浏览器（用于 LLM 看到浏览器工具但实际被沙箱限制时仍可调用基础导航）
 	'browser_navigate', 'browser_snapshot', 'browser_click',
 	'browser_type', 'browser_scroll', 'browser_back',
@@ -319,7 +369,7 @@ export const CORE_TOOLS: ReadonlySet<string> = new Set([
 
 /** 核心工具的 toolset 集合（用于批量检查） */
 export const CORE_TOOLSET_IDS: ReadonlySet<string> = new Set([
-	'core', 'mcp-bridge', 'tool-search',
+	'core', 'tool-search',
 ]);
 
 /**

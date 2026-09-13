@@ -33,7 +33,10 @@ import { runInstantNode } from './instantExecutor.js';
 import { isVideoToGifNode, EMOJI_GIF_PARAMS } from './videoToGif.js';
 import { isRemoveBgNode } from './removeBg.js';
 import { runRemoveBgNode } from './removeBgExecutor.js';
-import { runVideoToGifNode, convertVideoToGif, convertVideoToTransparentGif, blobToDataUrl, dataUrlToBlob } from './videoToGifExecutor.js';
+import {
+	runVideoToGifNode, convertVideoToGif, convertVideoToTransparentGif, blobToDataUrl, dataUrlToBlob,
+	chromaKeyFrame, autoSampleChromaKeyRgba, parseChromaAlgo, firstFrameThumbDataUrl, type ChromaKeyAlgo,
+} from './videoToGifExecutor.js';
 import { isRelightNode } from './relightEditor.js';
 import { runRelightNode } from './relightExecutor.js';
 import { isPosterNode } from './posterEditor.js';
@@ -141,19 +144,400 @@ import {
 	extractJsonArray,
 	parseEmojiCellArray,
 	splitEmojiPrompts,
-	localizeImageRef,
 } from './workflowRunShared.js';
-import { compositeImageOnChroma, ANIMATED_EMOJI_GREEN_SUFFIX } from './chromaCompose.js';
+import { compositeImageOnChroma, buildAnimatedEmojiVideoPrompt } from './chromaCompose.js';
 import { ASSET_REFS_PROP } from './assetRefs.js';
 
 // ★ 转动态表情包执行器（runAnimatedEmoji）。
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 三阶段管线（2026-09-12）：① 生成视频 → ② 视频抠像 → ③ GIF 输出。
+//
+// 由来：原实现把「生成视频 → 抠像 → 编码 GIF」压在**一次运行**里——用户既看不到
+// 抠像结果，也不能只调 GIF 参数（改回环/帧率必须重跑整条视频链）。先拆成两阶段
+// （2026-09-11），再按用户要求把「生成视频」独立出来（2026-09-12）：
+//   阶段①（run_scope='video'）：生成绿幕视频 → 归档 port='video'。不抠像、不编码。
+//   阶段②（run_scope='matte'）：读 port='video' → 抠像 → 归档 port='matte'
+//     （透明 PNG + 抠像参数凭据 meta.matte*）。不生成视频、不编码 GIF。
+//   阶段③（run_scope='gif'）  ：读 port='video' + **阶段② 固化的抠像参数**
+//     → 编码透明 GIF（port='output'）。纯编码，秒级，可反复调 GIF 参数。
+//   完整链路（run_scope='all'/'cell'）＝ ①+②+③ 顺序跑（保持一键出图）。
+//   rematte ＝ ②+③（跳过视频生成；UI 入口已移除，协议保留）。
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** 阶段标识：'video' = 只跑①；'matte' = 只跑②；'gif' = 只跑③；'all' = ①+②+③。 */
+export type AnimatedEmojiStage = 'video' | 'matte' | 'gif' | 'all';
+
+/** 归档端口：'video' = 绿幕原片（阶段①中间产物）、'matte' = 抠像结果、'output' = 最终 GIF。 */
+export type AnimatedEmojiPort = 'video' | 'matte' | 'output';
+
+/**
+ * **输入指纹**（2026-09-12 用户需求「输入新的一批图片时，阶段 1-2-3 的预览应同步
+ * 更新为新的」）：归档产物时把「该格输入图指纹」写进 `meta.srcSig`；读取侧
+ * （nodeCard）比对当前上游输入指纹，不一致 → 该格产物视为**过期**、不再展示
+ * → 预览自动回落到新输入原图。
+ *
+ * 算法刻意用 `长度 + 头 24 + 尾 24`（O(1)）而不是全串哈希：data URL 常达数 MB，
+ * 每次渲染全量哈希会卡（9 格 × 每次 store 变更）。不同批次的图在长度或头尾必有
+ * 差异，足够判别；同一图重算结果稳定（不误判）。
+ */
+export function emojiInputSig(ref: string | undefined): string {
+	if (!ref) { return ''; }
+	return `${ref.length}:${ref.slice(0, 24)}:${ref.slice(-24)}`;
+}
+
+/**
+ * 取**第 cellIndex 格**的输入指纹（读取侧 nodeCard 与写入侧执行器必须同算法）。
+ *
+ * ★ 回退到第 0 个：上游是「图集整图」（1 张 → 本地切分成 N 格）时 `refs` 只有
+ *   1 项，此时**全部格共用同一来源**——按 `refs[cellIndex]` 取会让第 1..N-1 格
+ *   拿不到指纹（→ 换批检测对它们失效）。两条路径都必须走这个入口，否则写入与
+ *   读取的指纹口径不一致（格 0 误判过期）。
+ */
+export function emojiInputSigFor(refs: readonly string[], cellIndex: number): string {
+	return emojiInputSig(refs[cellIndex] ?? refs[0]);
+}
+
+/**
+ * 腾讯云 COS **签名 URL 是否已过期**（2026-09-12）。
+ *
+ * 签名 URL 形如 `…?q-sign-time=<start>;<end>&q-signature=…`（秒级 Unix 时间），
+ * 默认有效期约 2 小时 —— 过期后拉取必 403 ✗（用户实测：阶段③ 编码 GIF 时报
+ * `net.fetchAsDataUrl: HTTP 403`，整节点失败）。
+ *
+ * 非签名 URL / 解析失败 → **保守返回 false**（不判过期，交给实际拉取结果）✓。
+ */
+export function isExpiredSignedUrl(url: string | undefined, now = Date.now()): boolean {
+	if (!url) { return false; }
+	const m = /[?&]q-sign-time=(\d+);(\d+)/i.exec(url);
+	if (!m) { return false; }
+	const end = Number(m[2]);
+	return Number.isFinite(end) && end > 0 && end * 1000 < now;
+}
+
+/** '#RRGGBB' → {r,g,b}；非法回退纯绿（与编辑器同款兜底）。 */
+function parseHexRgb(hex: string): { r: number; g: number; b: number } {
+	const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+	if (!m) { return { r: 0, g: 255, b: 0 }; }
+	const v = m[1];
+	return { r: parseInt(v.slice(0, 2), 16), g: parseInt(v.slice(2, 4), 16), b: parseInt(v.slice(4, 6), 16) };
+}
+
+/**
+ * 解析选格协议（**唯一入口**，勿在分支内重复实现）：`cell_indices`（JSON 数组 /
+ * 逗号分隔，0-based）优先，回退 `selected_index`（1-based 单格）。
+ *
+ * 返回 `null` = **未指定**（调用方按「全部」处理）——刻意不返回 `[0]`：若把
+ * 「未指定」当成第 0 格，阶段② 在未选格时只会处理一格（实测语义陷阱）。
+ */
+function parseCellIndices(raw: unknown, selectedIndex: unknown): number[] | null {
+	let indices: number[] = [];
+	if (typeof raw === 'string' && raw.trim()) {
+		try {
+			const arr = JSON.parse(raw) as unknown;
+			if (Array.isArray(arr)) { indices = arr.map(Number).filter(n => Number.isInteger(n)); }
+		} catch {
+			indices = raw.split(',').map(s => Number(s.trim())).filter(n => Number.isInteger(n));
+		}
+	}
+	if (indices.length === 0) {
+		const si = Math.trunc(Number(selectedIndex));
+		if (Number.isFinite(si) && si >= 1) { return [si - 1]; }
+		return null;
+	}
+	return [...new Set(indices)].filter(i => i >= 0);
+}
+
+/**
+ * 阶段① 产物：从绿幕视频抽**中段一帧** → 抠像 → 透明 PNG。
+ *
+ * 为什么取中段而非首帧：首帧常被「首帧一致性」替换为静态贴纸，边缘质量不具
+ * 代表性；中段帧才是运动中最难抠的形态。
+ * 失败返回 null（不阻断主链路——抠像结果预览属增强，缺失时降级为绿幕原片预览）。
+ */
+async function computeMattePreview(
+	videoRef: string,
+	chroma: { color: string; similarity: number; smoothness: number },
+	algo: ChromaKeyAlgo,
+	fetchImpl: typeof fetch,
+): Promise<{ dataUrl: string; width: number; height: number } | null> {
+	let objectUrl = '';
+	const video = document.createElement('video');
+	try {
+		const blob = /^data:/i.test(videoRef) ? dataUrlToBlob(videoRef) : await (await fetchImpl(videoRef)).blob();
+		objectUrl = URL.createObjectURL(blob);
+		video.muted = true;
+		video.playsInline = true;
+		video.preload = 'auto';
+		video.src = objectUrl;
+		await new Promise<void>((res, rej) => {
+			video.onloadeddata = () => res();
+			video.onerror = () => rej(new Error('视频解码失败'));
+		});
+		const sw = video.videoWidth || 0;
+		const sh = video.videoHeight || 0;
+		if (sw <= 0 || sh <= 0) { return null; }
+		const scale = Math.min(1, 240 / Math.max(sw, sh));
+		const w = Math.max(1, Math.round(sw * scale));
+		const h = Math.max(1, Math.round(sh * scale));
+		const dur = Number.isFinite(video.duration) ? video.duration : 0;
+		if (dur > 0.2) {
+			await new Promise<void>((res) => {
+				video.onseeked = () => res();
+				video.currentTime = Math.min(dur * 0.5, Math.max(0, dur - 0.05));
+			});
+		}
+		const cv = document.createElement('canvas');
+		cv.width = w;
+		cv.height = h;
+		const ctx = cv.getContext('2d', { willReadFrequently: true });
+		if (!ctx) { return null; }
+		ctx.imageSmoothingQuality = 'high';
+		ctx.drawImage(video, 0, 0, w, h);
+		const rgba = new Uint8Array(ctx.getImageData(0, 0, w, h).data.buffer.slice(0));
+		const key = chroma.color === 'auto' ? autoSampleChromaKeyRgba(rgba, w, h) : parseHexRgb(chroma.color);
+		// softAlpha：预览是 PNG（8-bit 灰阶透明）——显示即真抗锯齿（GIF 链路仍 1-bit）。
+		// ★ greenDominance:90（2026-09-12 用户实测「边缘的冒泡被错误的抠图」）：
+		//   缺省 = max(18, band*0.35)（smoothness 0.25 时约 38）对**浅色/白色**元素过狠 ——
+		//   半透明泡泡/高光叠在绿幕上像素偏绿（gExcess 可达 ~55）→ 被「绿色优势扩展
+		//   清除」误删 ✗。GIF 编码链路（convertVideoToTransparentGif）早已传 90，
+		//   归档抠像预览此前漏传 ⇒ 预览与产物不一致 ✗✗。现与产物同参 ✓。
+		chromaKeyFrame(rgba, key, chroma.similarity, chroma.smoothness, algo, { boxFilterDistance: true, softAlpha: true, greenDominance: 90 });
+		ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer), w, h), 0, 0);
+		return { dataUrl: cv.toDataURL('image/png'), width: w, height: h };
+	} catch {
+		return null;
+	} finally {
+		try { video.removeAttribute('src'); video.load(); } catch { /* ignore */ }
+		if (objectUrl) { URL.revokeObjectURL(objectUrl); }
+	}
+}
+
+/** 单格「视频 → GIF」：doKey → 透明 GIF；否则带背景 GIF。阶段①②共用（勿重复实现）。 */
+async function convertCellVideoToGif(opts: {
+	videoRef: string;
+	values: Record<string, unknown>;
+	chroma: { color: string; similarity: number; smoothness: number };
+	algo: ChromaKeyAlgo;
+	fps: number;
+	durationS: number;
+	maxKb: number;
+	doKey: boolean;
+	fetchImpl: typeof fetch;
+	firstFrameOverride?: string;
+	onProgress?: (value: number) => void;
+}): Promise<{ media: MediaRef; bytes: number; overLimit: boolean }> {
+	const gifValues = {
+		...EMOJI_GIF_PARAMS,
+		fps: opts.fps,
+		max_width: 240,
+		max_frames: opts.durationS * opts.fps,
+		end_s: opts.durationS,
+		chroma_algo: opts.algo,
+		// ★ 透传「首尾回环混合」开关（2026-09-12 修 bug）：gifValues 此前只来自
+		//   EMOJI_GIF_PARAMS（**不含 loop_blend**）→ 编码侧恒 `undefined !== false`
+		//   = 永远混合 → 编辑器里的「首尾平滑」开关**完全无效** ✗（用户关不掉，
+		//   大动作时只能忍受尾帧叠影）。现按节点 widget 值透传 ✓。
+		loop_blend: opts.values?.loop_blend !== false,
+	};
+	if (opts.doKey) {
+		const gif = await convertVideoToTransparentGif(
+			opts.videoRef, gifValues,
+			{ color: opts.chroma.color, similarity: opts.chroma.similarity, smoothness: opts.chroma.smoothness },
+			opts.fetchImpl, (p) => opts.onProgress?.(p.value ?? 0), opts.maxKb * 1024,
+			opts.firstFrameOverride,
+		);
+		const overLimit = gif.bytes > opts.maxKb * 1024;
+		const ref = await blobToDataUrl(gif.gifBlob);
+		// ★ 首帧缩略图（2026-09-13）：随条目落 `meta.thumb` —— 聊天卡的**落盘副本**用它
+		//   替代数百 KB 的 GIF data URL，使「重启后也能看全 9 张」（见 firstFrameThumbDataUrl
+		//   注释）。失败返回 '' → 不写该键，落盘回退用原图 ✓（不阻断主链路）。
+		const thumb = await firstFrameThumbDataUrl(ref);
+		return {
+			media: {
+				kind: 'image',
+				ref,
+				meta: {
+					mime: 'image/gif',
+					gifFrames: String(gif.frames),
+					gifSize: `${gif.width}x${gif.height}`,
+					gifDelayCs: String(gif.delayCs),
+					bytes: String(gif.bytes),
+					compressLevel: String(gif.level),
+					...(thumb ? { thumb } : {}),
+					...(overLimit ? { overLimit: '1' } : {}),
+				},
+			},
+			bytes: gif.bytes,
+			overLimit,
+		};
+	}
+	const gif = await convertVideoToGif(
+		opts.videoRef, gifValues, opts.fetchImpl, (p) => opts.onProgress?.(p.value ?? 0),
+	);
+	const ref = await blobToDataUrl(gif.gifBlob);
+	const thumb = await firstFrameThumbDataUrl(ref);
+	return {
+		media: {
+			kind: 'image',
+			ref,
+			meta: {
+				mime: 'image/gif',
+				gifFrames: String(gif.frames),
+				gifSize: `${gif.width}x${gif.height}`,
+				gifDelayCs: String(gif.delayCs),
+				matte: '0',
+				...(thumb ? { thumb } : {}),
+			},
+		},
+		bytes: gif.gifBlob.size,
+		overLimit: false,
+	};
+}
+
+/**
+ * 归档阶段① 抠像结果（`port='matte'`）：透明 PNG + **抠像参数凭据**。
+ *
+ * 用途：① 编辑器阶段② 预览窗口 / 聊天卡「视频抠像」阶段的可见产物；
+ * ② 阶段③「GIF 输出」按 `meta.matte*` **沿用阶段② 固化的抠像参数**（三阶段语义：
+ * 阶段③ 只是把阶段② 的抠像结果编码成 GIF，不再改抠像）。
+ * 失败静默（抠像结果预览属增强，GIF 才是最终产物，不得因它阻断主链路）。
+ */
+async function archiveMatteResult(
+	store: NodeExecutionInput['store'],
+	snapKey: string,
+	cellIndex: number,
+	srcVideo: string,
+	chroma: { color: string; similarity: number; smoothness: number },
+	algo: ChromaKeyAlgo,
+	fetchImpl: typeof fetch,
+	/** 该格**输入图指纹**（换批检测，见 emojiInputSig）；缺省不写（向后兼容）。 */
+	srcSig?: string,
+	/**
+	 * 归档时间戳（ms）。缺省 `Date.now()`。
+	 * ★ 阶段③ 自动补齐 matte 时必须传**本格 GIF 的 `gifStamp`** —— 卡片用
+	 *   「matteStamp > gifStamp」判定「② 比 ③ 新 → GIF 过期」，若 ③ 自己刷新的
+	 *   matte 带了更晚的时间戳，刚生成的 GIF 会被立刻误判过期 ✗。
+	 */
+	stamp?: number,
+): Promise<void> {
+	try {
+		const preview = await computeMattePreview(srcVideo, chroma, algo, fetchImpl);
+		if (!preview) { return; }
+		const media: MediaRef = {
+			kind: 'image',
+			ref: preview.dataUrl,
+			meta: {
+				mime: 'image/png',
+				matteResult: '1',
+				cellIndex: String(cellIndex),
+				matteSig: `${chroma.similarity}|${chroma.smoothness}|${algo}|${chroma.color}`,
+				// ★ 归档时间戳（2026-09-12）：③ 预览据此判断「② 之后 GIF 是否过期」
+				//   （比签名比对更普适：参数没变也照样能识别「② 刚重跑过」）。
+				matteStamp: String(stamp ?? Date.now()),
+				matteColor: chroma.color,
+				matteSimilarity: String(chroma.similarity),
+				matteSmoothness: String(chroma.smoothness),
+				matteAlgo: algo,
+				matteSize: `${preview.width}x${preview.height}`,
+				...(srcSig ? { srcSig } : {}),
+			},
+		};
+		// ★ 替换**最新**那条（同 ③ 的 output：卡片按 index 最大取值，替换最旧会留下
+		//   「旧媒体 + 更大 index」的孤儿条目把新结果顶掉 ✗）。
+		const sameCell = store.byNode(snapKey).filter(e =>
+			e.port === 'matte' && Number(e.media.meta?.cellIndex ?? -1) === cellIndex);
+		const prev = sameCell.length > 0
+			? sameCell.reduce((a, b) => ((b.index ?? 0) > (a.index ?? 0) ? b : a))
+			: undefined;
+		if (prev && store.replaceByKey(prev.key, media, {
+			importEntry: { nodeId: snapKey, port: 'matte', key: prev.key, media, index: prev.index },
+		})) { return; }
+		store.put({ nodeId: snapKey, port: 'matte', key: `cell${cellIndex}`, media });
+	} catch { /* 抠像结果归档失败不阻断主链路 */ }
+}
+
+/** 媒体库本地副本索引缓存（一次运行内复用，避免每格重复 IPC）。 */
+type VideoLibCache = { map: Map<string, string> | null };
+
+/**
+ * 媒体库「视频」本地副本索引（ref → assetId）。
+ * ★ 用途：provider 产物是 COS 签名 URL（q-sign-time 2h）——过期后 403，
+ *   而 collectAsset 已把同 ref 落盘媒体库 → 按 ref 精确匹配回退本地副本。
+ */
+async function ensureVideoLib(cache: VideoLibCache): Promise<Map<string, string>> {
+	if (cache.map) { return cache.map; }
+	const map = new Map<string, string>();
+	try {
+		const lib = await mediaList({ kind: 'video', limit: 500 });
+		for (const a of lib.items) {
+			if (!a.isDeleted && a.filePath && a.ref) { map.set(a.ref, a.id); }
+		}
+	} catch { /* 媒体库不可用 → 回退原 URL 链路 */ }
+	cache.map = map;
+	return map;
+}
+
+/**
+ * 取某格**已归档的绿幕视频**（`port='video'`，meta.cellIndex 匹配，取最新），
+ * 并对「外网签名 URL 过期」做本地副本兜底。返回 '' = 该格还没有视频。
+ *
+ * ★ 阶段②（抠像）与 rematte 共用此入口 —— 两者的「取视频」语义必须一致
+ *   （否则一个能重抠、另一个报 403，属平行路径漂移）。
+ */
+async function resolveArchivedVideo(
+	store: NodeExecutionInput['store'],
+	snapKey: string,
+	cellIndex: number,
+	libCache: VideoLibCache,
+): Promise<string> {
+	const vids = store.byNode(snapKey).filter(e =>
+		e.port === 'video' && e.media.kind === 'video'
+		&& Number(e.media.meta?.cellIndex ?? -1) === cellIndex);
+	let src = vids[vids.length - 1]?.media.ref ?? '';
+	if (!src) { return ''; }
+	if (/^https?:/i.test(src) && !/^https?:\/\/(127\.0\.0\.1|localhost)([:/]|$)/i.test(src)) {
+		const lib = await ensureVideoLib(libCache);
+		const assetId = lib.get(src);
+		if (assetId) {
+			const local = await mediaGetAsDataUrl(assetId);
+			if (local) {
+				src = local;
+				// eslint-disable-next-line no-console
+				console.warn(`[AnimatedEmoji] cell ${cellIndex}: 外网视频 URL 不可用，改用媒体库本地副本 (${assetId})`);
+			}
+		}
+	}
+	return src;
+}
+
+/** 取某格绿幕视频归档时记录的**输入指纹**（换批检测用；缺省 = 旧数据，不参与判定）。 */
+function archivedVideoSig(store: NodeExecutionInput['store'], snapKey: string, cellIndex: number): string | undefined {
+	const vids = store.byNode(snapKey).filter(e =>
+		e.port === 'video' && e.media.kind === 'video'
+		&& Number(e.media.meta?.cellIndex ?? -1) === cellIndex);
+	const sig = vids[vids.length - 1]?.media.meta?.srcSig;
+	return typeof sig === 'string' && sig ? sig : undefined;
+}
 
 export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<SingleNodeRunResult> {
 	const { nodeId, values, store, onProgress } = input;
 	const snapKey = input.snapshotKey ?? nodeId;
 	const empty: SingleNodeRunResult = { promptId: '', status: 'error', entries: [] };
+	// ★ 阶段解析（2026-09-12 三阶段拆分，见文件头注释）：
+	//   'video' = 只跑阶段①（生成绿幕视频）；'matte' = 只跑阶段②（抠像，不生成视频）；
+	//   'gif' = 只跑阶段③（转 GIF）；'rematte' = ②+③；
+	//   其余（'all'/'cell'/缺省）= 完整链路 ①+②+③。
+	const runScopeRaw = String(values.run_scope ?? '');
+	// ★ 用 `let`（2026-09-12）：下方「阶段作用域残留保护」可能把 ②/③-only 回落成完整链路。
+	let stageVideoOnly = runScopeRaw === 'video';
+	let stageMatteOnly = runScopeRaw === 'matte';
+	let stageGifOnly = runScopeRaw === 'gif';
+	/** 是否需要「生成视频」能力（阶段① 与完整链路需要；②/③ 只读本节点快照）。 */
+	const needsVideoGen = !stageMatteOnly && !stageGifOnly;
 	const send = input.sendVideoGen;
-	if (!send) {
+	// ②/③ 不生成视频 → 不要求 videogen 通道（否则「只抠像 / 只转 GIF」被无谓拦住）。
+	if (!send && needsVideoGen) {
 		return { ...empty, error: 'Provider 视频生成通道未注入（videogen.generate）' };
 	}
 	// provider/model 解析（与 runProviderVideo 同序：① 显式 widget → ② 上游 Picker）
@@ -163,15 +547,17 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 	let modelId = typeof values.videoModel === 'string' && values.videoModel
 		? values.videoModel
 		: typeof values.modelId === 'string' ? values.modelId : '';
-	const picker = providerId && modelId
-		? undefined
-		: collectUpstreamProviderConfig(input.store, input.upstreams);
-	if (picker) {
-		providerId = providerId || picker.providerId;
-		modelId = modelId || picker.modelId;
-	}
-	if (!providerId || !modelId) {
-		return { ...empty, error: '请先在节点设置中选择 Provider 和视频生成模型' };
+	if (needsVideoGen) {
+		const picker = providerId && modelId
+			? undefined
+			: collectUpstreamProviderConfig(input.store, input.upstreams);
+		if (picker) {
+			providerId = providerId || picker.providerId;
+			modelId = modelId || picker.modelId;
+		}
+		if (!providerId || !modelId) {
+			return { ...empty, error: '请先在节点设置中选择 Provider 和视频生成模型' };
+		}
 	}
 	// 参考图：① 显式 imageInput（单图，优先）→ ② 上游 IMAGE 快照。上游传入
 	// **多张**图时自动拼贴成 m×n 图集（行列与切分 grid_rows×grid_cols 对齐）：
@@ -207,28 +593,24 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 	// 图集（composeImageGridOnChroma 写入）——单图输入时自动按其行列拆分，
 	// 消除「手动把 grid_rows×grid_cols 对齐图集」的易错步骤。
 	//
-	// ★ 端口精确路由（2026-09-02）：静态表情包节点 byNode 里**同时**存在
-	//   独立表情格（images 口）与图集 entry（image 口，meta.sheet='1'）——
-	//   快照不按 port 过滤，二者混在同一列表。按 inbound 边的 **sourceHandle**
-	//   （源输出口名）决定消费语义：
-	//     - 连 'image' 口 → **仅引用图集整图**（单图路径，meta 行列自动拆分）
-	//     - 连 'images' 口 / 无 handle（存量图）→ 独立格（多图拼贴），sheet 兜底
+	// ★ 消费口径（2026-09-12 统一）：静态表情包节点 byNode 里**同时**存在独立表情格
+	//   （images 口）与图集 entry（image 口，meta.sheet='1'）——快照不按 port 过滤。
+	//   统一为「**独立格优先，无独立格才回退图集整图**」：
+	//     · 与 nodeCard（「引用」缩略图区 / 预览「原图」档）**完全同序同源** ✓
+	//       （此前执行器按 sourceHandle 区分、图集口只吃图集 ✗ → 产物与「引用」
+	//        看到的图可能对不上，用户实测反馈）；
+	//     · 永远用**最新**内容（图集可能滞后于独立格——用户在静态表情包里改过某格时，
+	//       image 口图集不会同步重建）。
+	//   图集整图仅作兜底：上游只产出图集（如重裁 recrop）时按其行列本地切分成单格。
 	let upstreamSheetGrid: { rows: number; cols: number; margin: number } | undefined;
 	let upstreamSheetRef = '';
 	// ★ 逐格模式的每格动作描述（2026-09-07）：上游单格快照的 meta.cellPrompt
 	//   （静态表情包生成时随格归档）→ 逐格视频生成的 prompt 组装输入。
 	const cellPromptByRef = new Map<string, string>();
 	{
-		// upstream uid → 该连线源端口（同 uid 多条边时取第一条有 handle 的）
-		const handleByUid = new Map<string, string>();
-		for (const b of input.inbound ?? []) {
-			if (b.source && b.sourceHandle && !handleByUid.has(b.source)) { handleByUid.set(b.source, b.sourceHandle); }
-		}
 		const cellRefs: string[] = [];
-		let anyCellSource = false;
 		if (input.store && input.upstreams?.length) {
 			for (const uid of input.upstreams) {
-				const portWanted = handleByUid.get(uid); // 'image' | 'images' | undefined（存量图/非表情节点）
 				// ★ latestRoundOf：只取「最新一轮」格子——快照按次**追加**不清理，
 				//   byNode 会把 EmojiStage 历史轮全混进来（9 旧 + 16 新 → 计数膨胀，
 				//   拼贴图集也把废格拼进去）。
@@ -240,18 +622,25 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 						upstreamSheetGrid = { rows: round.sheet.rows, cols: round.sheet.cols, margin: round.sheet.margin };
 					}
 				}
+				// ★ 独立格优先（2026-09-12 统一口径，修「预览与输入端口引用不匹配」）：
+				//   此前 `sourceHandle === 'image'` 且上游有图集时走 `sheetOnly` —— 只消费
+				//   图集整图、跳过独立格。但 **nodeCard（「引用」缩略图区 / 预览的「原图」档）
+				//   一直是「独立格优先、无格才回退图集」** ✗ → 两边口径不一致：
+				//   · 执行器按**图集**切格生成产物（图集可能是**旧版**——例如用户在静态
+				//     表情包里改过某格，图集不会同步重建 ✗）；
+				//   · 卡片「引用」却显示**最新独立格** ✓
+				//   ⇒ 产物与「引用」看到的图对不上 ✗（用户实测反馈）。
+				//   现统一为「**独立格优先，无独立格才回退图集**」——与 nodeCard 完全同序，
+				//   保证「预览产物 ↔ 引用缩略图」逐格同源 ✓，且永远用最新内容 ✓。
+				//   （`sheetOnly` 的原始动机是「图集与独立格内容重复，别喂两份」——现在只取
+				//   一份，重复问题不存在 ✓。）
 				for (const e of round.cells) {
-					// 连的是 image 口 → 该上游只消费图集（格跳过）
-					if (portWanted === 'image') { continue; }
 					if (!cellRefs.includes(e.media.ref)) {
 						cellRefs.push(e.media.ref);
 						const cp = e.media.meta?.cellPrompt;
 						if (typeof cp === 'string' && cp.trim()) { cellPromptByRef.set(e.media.ref, cp.trim()); }
 					}
 				}
-				// 连的是 image 口 → 该上游只消费图集
-				if (portWanted === 'image' && round.sheet) { upstreamImageRefs.push(round.sheet.entry.media.ref); }
-				if (portWanted === 'images' || portWanted === undefined) { anyCellSource = true; }
 			}
 		}
 		if (upstreamImageRefs.length === 0) {
@@ -259,7 +648,6 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 			// 有独立格用独立格（多图拼贴），否则图集整图。
 			if (cellRefs.length > 0) { upstreamImageRefs.push(...cellRefs); }
 			else if (upstreamSheetRef) { upstreamImageRefs.push(upstreamSheetRef); }
-			void anyCellSource;
 		}
 	}
 
@@ -271,7 +659,8 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 	if (typeof values.imageInput === 'string' && values.imageInput) {
 		upstreamImageRefs.splice(0, upstreamImageRefs.length, values.imageInput);
 	}
-	if (upstreamImageRefs.length === 0) {
+	// ★ 阶段②/③ 不依赖上游（只读本节点快照）→ 不因「无上游参考图」被拦。
+	if (upstreamImageRefs.length === 0 && needsVideoGen) {
 		return { ...empty, error: '动态表情包制作需要上游参考图输入（请先连接并运行一个图像节点）。' };
 	}
 	// prompt：动作描述可选（图生视频以参考图为主体）——① 显式 widget ② 上游
@@ -285,15 +674,17 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 	//   （否则视频模型仍会把背景画成绿幕）。
 	const chromaSimilarity = chromaEnabled && Number.isFinite(Number(values.chroma_similarity)) ? Number(values.chroma_similarity) : 0;
 	const chromaSmoothness = chromaEnabled && Number.isFinite(Number(values.chroma_smoothness)) ? Number(values.chroma_smoothness) : 0;
+	// ★ 抠像算法（2026-09-08）：统一在此解析（此前分支各自 parseChromaAlgo，易漏传）。
+	const chromaAlgo = parseChromaAlgo(values.chroma_algo);
 	const fps = Math.max(6, Math.min(15, Math.round(Number(values.fps) || 12)));
 	const maxKb = Math.max(100, Math.min(2000, Math.round(Number(values.max_kb) || 500)));
 	const durationS = Math.max(2, Math.min(5, Math.round(Number(values.duration_s) || 3)));
-	// 后缀以 ', ' 开头——rawPrompt 为空时去掉前导逗号（避免「， solid pure…」）
+	// ★ 提示词后缀的组装**统一收敛**到 `buildAnimatedEmojiVideoPrompt`
+	//   （chromaCompose.ts）：全局动作 + 该格动作 + 不透明约束（恒定）+ 绿幕约束
+	//   （仅开抠像）。此前这里还留着一份「整图集一次生成」时代的 `prompt` 变量，
+	//   逐格路线（2026-09-07）后已无消费方 → 删除，避免两处后缀口径漂移 ✗。
 	// ★ 网格约束后缀（ANIMATED_EMOJI_GRID_SUFFIX）随整图切格路线一并移除：
 	//   逐格生成无需「格间不越界」约束。
-	const prompt = rawPrompt
-		? `${rawPrompt}${chromaEnabled ? ANIMATED_EMOJI_GREEN_SUFFIX : ''}`
-		: (chromaEnabled ? ANIMATED_EMOJI_GREEN_SUFFIX.slice(2) : '');
 
 	// ── 逐格任务表（两渠道共用）：上游独立格直用；上游 sheet 整图先本地切格。──
 	type EmojiCellJob = { ref: string; cellIndex: number; cellPrompt?: string };
@@ -317,6 +708,19 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 			});
 		}
 	}
+	/**
+	 * 取该格**真正的输入图**（首帧一致性用）。
+	 *
+	 * ★ 不能用裸 `upstreamImageRefs[cellIndex]`（2026-09-12 修「转成 GIF 后首帧重影」）：
+	 *   上游是**图集整图**时数组只有 1 项 → `[i]` 对 i≥1 全是 `undefined` → 那些格
+	 *   的 GIF **拿不到参考图** → 第 0 帧退化成**视频首帧**（I2V 模型首帧相对输入图
+	 *   常带漂移/重影）→ 实测「只有第 0 格正常、其余格首帧重影」✗。
+	 *   `jobs[i].ref` 是①真正喂给视频模型的那张单格图（图集路径已本地切分）✓。
+	 *   刻意**不回退 `refs[0]`**：图集模式下那是整版拼贴图，当单格参考图是错的 ✗。
+	 */
+	const emojiCellSeedRef = (cellIndex: number): string =>
+		jobs[cellIndex]?.ref ?? upstreamImageRefs[cellIndex] ?? '';
+
 	// ★ 重新抠图+GIF（2026-09-08）：网格 ⟳ 语义改为「**跳过视频生成**」——用该格
 	//   已归档的绿幕视频按**当前抠像参数**直接重跑 抠像 → 透明 GIF。调参迭代从
 	//   分钟级（重新生成视频）降到秒级。必须放在 jobs 空检查之前（不依赖上游，
@@ -325,20 +729,8 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 		if (!doKey) {
 			return { ...empty, error: '重新抠图需要开启「绿幕抠像」+「抠像」（当前关闭，无绿可抠）。' };
 		}
-		let indices: number[] = [];
-		const rawMulti = values.cell_indices;
-		if (typeof rawMulti === 'string' && rawMulti.trim()) {
-			try {
-				const arr = JSON.parse(rawMulti) as unknown;
-				if (Array.isArray(arr)) { indices = arr.map(Number).filter(n => Number.isInteger(n)); }
-			} catch {
-				indices = rawMulti.split(',').map(s => Number(s.trim())).filter(n => Number.isInteger(n));
-			}
-		}
-		if (indices.length === 0) {
-			indices = [Math.trunc(Number(values.selected_index) || 1) - 1];
-		}
-		const valid = [...new Set(indices)].filter(i => i >= 0);
+		const picked = parseCellIndices(values.cell_indices, values.selected_index);
+		const valid = picked === null ? [] : picked.filter(i => i >= 0);
 		if (valid.length === 0) {
 			return { ...empty, error: '重新抠图失败：未选中任何格子。' };
 		}
@@ -347,58 +739,38 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 		const entriesLocal: MediaSnapshotEntry[] = [];
 		const failures: string[] = [];
 		const per = 92 / valid.length;
-		// ★ 媒体库本地副本索引（2026-09-08 一次性预取）：collectAsset 已把 provider
-		//   原片以原始 URL 为 ref 落盘媒体库——ref 为外网签名 URL（会过期 403）时
-		//   优先回退本地副本（ref 精确匹配）。循环外查一次避免每格重复 IPC。
-		let videoLibByRef: Map<string, string> | null = null;
-		const ensureVideoLib = async (): Promise<Map<string, string>> => {
-			if (videoLibByRef) { return videoLibByRef; }
-			const map = new Map<string, string>();
-			try {
-				const lib = await mediaList({ kind: 'video', limit: 500 });
-				for (const a of lib.items) {
-					if (!a.isDeleted && a.filePath && a.ref) { map.set(a.ref, a.id); }
-				}
-			} catch { /* 媒体库不可用 → 回退原 URL 链路 */ }
-			videoLibByRef = map;
-			return map;
-		};
+		// ★ 媒体库本地副本索引（一次性预取，见 resolveArchivedVideo 注释）
+		const libCache: VideoLibCache = { map: null };
 		for (let ji = 0; ji < valid.length; ji++) {
 			const cellIndex = valid[ji];
 			const base = 4 + per * ji;
-			onProgress?.({ progress: base });
-			// 该格已归档的绿幕视频（port='video'，meta.cellIndex 匹配，取最新）
-			const vids = store.byNode(snapKey).filter(e =>
-				e.port === 'video' && e.media.kind === 'video'
-				&& Number(e.media.meta?.cellIndex ?? -1) === cellIndex);
-			let srcVideo = vids[vids.length - 1]?.media.ref ?? '';
+			onProgress?.({ progress: base, message: `阶段② 视频抠像（重抠）· 格 ${cellIndex + 1}（${ji + 1}/${valid.length}）` });
+			const srcVideo = await resolveArchivedVideo(store, snapKey, cellIndex, libCache);
 			if (!srcVideo) {
-				failures.push(`格 ${cellIndex + 1}：没有已生成的视频（请先完整生成一次）`);
+				failures.push(`格 ${cellIndex + 1}：没有已生成的视频（请先执行阶段① 生成视频）`);
 				continue;
-			}
-			// ★ 外网签名 URL 过期兜底（2026-09-08）：403 的根因是 COS q-sign-time
-			//   2h 时效——collectAsset 已把同 ref 落盘媒体库，优先用本地副本。
-			if (/^https?:/i.test(srcVideo) && !/^https?:\/\/(127\.0\.0\.1|localhost)([:/]|$)/i.test(srcVideo)) {
-				const lib = await ensureVideoLib();
-				const assetId = lib.get(srcVideo);
-				if (assetId) {
-					const local = await mediaGetAsDataUrl(assetId);
-					if (local) {
-						srcVideo = local;
-						// eslint-disable-next-line no-console
-						console.warn(`[AnimatedEmoji] rematte cell ${cellIndex}: 外网 URL 不可用，改用媒体库本地副本 (${assetId})`);
-					}
-				}
 			}
 			try {
 				const t0 = Date.now();
+				// ★ 首帧一致性（2026-09-12 修「首帧重影」）：重抠路径此前**完全没传**
+				//   参考图 → GIF 第 0 帧 = 视频首帧（I2V 模型首帧相对输入图常有漂移/
+				//   重影）→ 用户实测「转成 GIF 后首帧出现重影」✗。补上与主链路同源
+				//   的参考图（该格真正的输入图 → 绿底合成 → 抠像替换第 0 帧）。
+				let rematteSeed: string | undefined;
+				const seedRef = emojiCellSeedRef(cellIndex);
+				if (doKey && chromaEnabled && seedRef) {
+					try { rematteSeed = await compositeImageOnChroma(seedRef, chromaComposite, fetchImpl); } catch { rematteSeed = undefined; }
+				}
 				const gif = await convertVideoToTransparentGif(
 					srcVideo,
-					{ ...EMOJI_GIF_PARAMS, fps, max_width: 240, max_frames: durationS * fps, end_s: durationS, chroma_algo: String(values.chroma_algo ?? 'rgb') },
+					// ★ loop_blend 同样按 widget 值透传（同 convertCellVideoToGif 的修复：
+					//   不透传 = 开关失效 = 用户关不掉尾帧叠影）。
+					{ ...EMOJI_GIF_PARAMS, loop_blend: values.loop_blend !== false, fps, max_width: 240, max_frames: durationS * fps, end_s: durationS, chroma_algo: String(values.chroma_algo ?? 'rgb') },
 					{ color: chromaColor, similarity: chromaSimilarity, smoothness: chromaSmoothness },
 					fetchImpl,
 					(p) => onProgress?.({ progress: base + (p.value ?? 0) / 100 * per }),
 					maxKb * 1024,
+					rematteSeed,
 				);
 				const overLimit = gif.bytes > maxKb * 1024;
 				const media: MediaRef = {
@@ -415,6 +787,7 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 						perCell: '1',
 						rematte: '1',
 						...(overLimit ? { overLimit: '1' } : {}),
+						...(archivedVideoSig(store, snapKey, cellIndex) ? { srcSig: archivedVideoSig(store, snapKey, cellIndex)! } : {}),
 					},
 				};
 				// 原地替换优先（同主循环 replaceOrPut 语义：按 cellIndex 匹配旧 image 条目）
@@ -429,6 +802,10 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 				} else {
 					store.put({ nodeId: snapKey, port: 'output', key: `cell${cellIndex}`, media });
 				}
+				// 阶段① 抠像结果归档（重抠也要刷新 → 阶段② 沿用最新参数）
+				await archiveMatteResult(store, snapKey, cellIndex, srcVideo,
+					{ color: chromaColor, similarity: chromaSimilarity, smoothness: chromaSmoothness },
+					chromaAlgo, fetchImpl, archivedVideoSig(store, snapKey, cellIndex));
 				entriesLocal.push({
 					nodeId: snapKey, port: 'output', key: `cell${cellIndex}`, media, index: cellIndex,
 				});
@@ -447,36 +824,330 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 		return { promptId: '', status: 'success', entries: entriesLocal, durationMs: 0 };
 	}
 
+	// ★ 阶段②「视频抠像」（2026-09-12 三阶段拆分）：**不生成视频、不编码 GIF**——
+	//   读阶段① 归档的绿幕原片（port='video'）→ 按当前抠像参数抠像 → 归档抠像结果
+	//   （port='matte'：透明 PNG + 参数凭据）。秒级，可反复调抠像参数。
+	//   必须放在 `jobs.length === 0` 检查之前：本阶段不依赖上游参考图。
+	if (stageMatteOnly) {
+		if (!doKey) {
+			return { ...empty, error: '阶段②「视频抠像」需要开启「绿幕合成」+「抠像」（当前关闭，无绿可抠）。' };
+		}
+		// cellIndex → 绿幕视频（含其**输入指纹** `srcSig`：阶段② 产物继承它，使
+		// 换批检测在 ①②③ 三处口径一致 —— 见 emojiInputSig）
+		const videoCells = new Map<number, { ref: string; sig?: string }>();
+		for (const e of store.byNode(snapKey)) {
+			if (e.port !== 'video' || e.media.kind !== 'video' || !e.media.ref) { continue; }
+			const idx = Number(e.media.meta?.cellIndex ?? -1);
+			if (idx >= 0) {
+				const sig = e.media.meta?.srcSig;
+				videoCells.set(idx, { ref: e.media.ref, ...(typeof sig === 'string' && sig ? { sig } : {}) });
+			}
+		}
+		const wanted = parseCellIndices(values.cell_indices, values.selected_index);
+		const targetCells = wanted === null
+			? [...videoCells.keys()].sort((a, b) => a - b)
+			: wanted.filter(i => videoCells.has(i));
+		const missing = wanted === null ? [] : wanted.filter(i => !videoCells.has(i));
+		if (targetCells.length === 0) {
+			return { ...empty, error: '阶段②「视频抠像」没有可处理的格子：请先执行阶段①「生成视频」。' };
+		}
+		// eslint-disable-next-line no-console
+		console.warn(`[AnimatedEmoji] 阶段② 视频抠像 → 格 ${targetCells.map(i => i + 1).join(',')}（sim=${chromaSimilarity} smooth=${chromaSmoothness} algo=${chromaAlgo}）`);
+		const entriesLocal: MediaSnapshotEntry[] = [];
+		const failures: string[] = missing.map(i => `格 ${i + 1}：缺少阶段① 绿幕视频`);
+		const per = 92 / targetCells.length;
+		const libCache: VideoLibCache = { map: null };
+		try {
+			for (let ji = 0; ji < targetCells.length; ji++) {
+				const cellIndex = targetCells[ji];
+				const base = 4 + per * ji;
+				onProgress?.({ progress: base, message: `阶段② 视频抠像 · 格 ${cellIndex + 1}（${ji + 1}/${targetCells.length}）` });
+				try {
+					const srcVideo = await resolveArchivedVideo(store, snapKey, cellIndex, libCache);
+					if (!srcVideo) {
+						failures.push(`格 ${cellIndex + 1}：缺少阶段① 绿幕视频`);
+						continue;
+					}
+					await archiveMatteResult(store, snapKey, cellIndex, srcVideo,
+						{ color: chromaColor, similarity: chromaSimilarity, smoothness: chromaSmoothness },
+						chromaAlgo, fetchImpl, videoCells.get(cellIndex)?.sig);
+					// archiveMatteResult 内部静默兜底 → 用「是否真有归档」判定成败
+					const matteEntry = store.byNode(snapKey).find(e =>
+						e.port === 'matte' && Number(e.media.meta?.cellIndex ?? -1) === cellIndex);
+					if (!matteEntry) {
+						failures.push(`格 ${cellIndex + 1}：抠像结果归档失败（视频解码失败？）`);
+						continue;
+					}
+					entriesLocal.push(matteEntry);
+					onProgress?.({ progress: base + per, message: `阶段② 视频抠像 · 格 ${cellIndex + 1} 完成` });
+				} catch (cellErr) {
+					const cm = cellErr instanceof Error ? cellErr.message : String(cellErr);
+					if (input.signal?.aborted || /AbortError/i.test(cm)) { throw cellErr; }
+					failures.push(`格 ${cellIndex + 1}：${cm}`);
+				}
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (input.signal?.aborted || /AbortError/i.test(msg)) {
+				return { promptId: '', status: 'canceled', error: '已取消', entries: [] };
+			}
+			return { ...empty, error: `阶段② 视频抠像失败：${msg}` };
+		}
+		if (entriesLocal.length === 0) {
+			return { ...empty, error: `阶段② 视频抠像失败：${failures.join('；')}` };
+		}
+		onProgress?.({ progress: 100, message: '阶段② 视频抠像完成' });
+		const note = failures.length > 0
+			? `（${entriesLocal.length}/${targetCells.length + missing.length} 格成功；失败：${failures.join('；')}）`
+			: '';
+		// eslint-disable-next-line no-console
+		console.warn(`[AnimatedEmoji] 阶段② 完成: ${entriesLocal.length} 格${note}`);
+		return {
+			promptId: '', status: 'success', entries: entriesLocal, durationMs: 0,
+			...(note ? { error: note } : {}),
+		};
+	}
+
+	// ★★ 阶段作用域**残留**保护（2026-09-12 用户报障：在工作流工具卡片里整链运行时，
+	//   AnimatedEmoji 直接进阶段③、拿**几小时前的旧原片**去编码 → COS 签名已过期
+	//   → `net.fetchAsDataUrl: HTTP 403` → 整个节点失败 ✗✗）。
+	//   根因：`run_scope` 是**编辑器交互**概念，却被 `runStage()`（AnimatedEmojiEditor）
+	//   持久化进节点属性 ✗ —— 用户早先点过「③ 生成 GIF」，之后从聊天卡片 / ▶ 整链运行时
+	//   执行器仍读到 'gif' ⇒ **只跑③** ✗（用旧原片，必然过期）。
+	//   判定「残留」= ②/③-only **且**已归档原片**全部不可用**（缺失 / 签名已过期 /
+	//   输入已更换）。此时回落**完整链路 ①+②+③** ✓（用户在整链场景的真实意图就是
+	//   「把动态表情做出来」✓）；编辑器里点「③」时原片是刚生成的、必然可用 ✓ 不受影响。
+	if (stageGifOnly || stageMatteOnly) {
+		const vids = store.byNode(snapKey).filter(e => e.port === 'video' && e.media.kind === 'video' && !!e.media.ref);
+		const usable = vids.length > 0 && vids.some(e => {
+			if (isExpiredSignedUrl(e.media.ref)) { return false; }
+			const ci = Number(e.media.meta?.cellIndex ?? -1);
+			const sig = typeof e.media.meta?.srcSig === 'string' ? e.media.meta.srcSig : '';
+			// 无指纹（旧数据）/ 无上游可对比 → 不判过期（与卡片换批检测同口径 ✓）
+			if (!sig || ci < 0 || upstreamImageRefs.length === 0) { return true; }
+			return sig === emojiInputSigFor(upstreamImageRefs, ci);
+		});
+		if (!usable) {
+			if (!send) { return { ...empty, error: 'Provider 视频生成通道未注入（videogen.generate）' }; }
+			// eslint-disable-next-line no-console
+			console.warn(`[AnimatedEmoji] run_scope=${runScopeRaw} 为残留（原片缺失/签名过期/输入已更换）→ 自动回落完整链路 ①+②+③`);
+			stageGifOnly = false;
+			stageMatteOnly = false;
+		}
+	}
+
+	// ★ 阶段③「GIF 输出」（2026-09-11 两阶段拆分）：**不生成视频、不重新抠像**——
+	//   直接取阶段① 归档的绿幕原片（port='video'）+ **当前**抠像参数 → 编码透明
+	//   GIF（port='output'），并顺手把阶段② 的抠像结果刷成同一组参数。
+	//   纯编码，秒级；调 GIF 参数（回环/帧率/上限）无需重跑视频链。
+	//   必须放在 `jobs.length === 0` 检查之前：本阶段不依赖上游参考图。
+	if (stageGifOnly) {
+		if (!gifEnabled) {
+			return { ...empty, error: '阶段③「GIF 输出」已关闭（GIF 输出开关为关）：当前产物即阶段① 的视频。' };
+		}
+		const videoCells = new Map<number, string>();
+		/** 该格绿幕视频的输入指纹（写进 GIF meta → 换批检测口径与 ①② 一致）。 */
+		const videoSigByCell = new Map<number, string>();
+		const matteMetaByCell = new Map<number, Record<string, string>>();
+		for (const e of store.byNode(snapKey)) {
+			const idx = Number(e.media.meta?.cellIndex ?? -1);
+			if (idx < 0 || !e.media.ref) { continue; }
+			if (e.port === 'video' && e.media.kind === 'video') {
+				videoCells.set(idx, e.media.ref);
+				const sig = e.media.meta?.srcSig;
+				if (typeof sig === 'string' && sig) { videoSigByCell.set(idx, sig); }
+			}
+			if (e.port === 'matte') { matteMetaByCell.set(idx, (e.media.meta ?? {}) as Record<string, string>); }
+		}
+		const wanted = parseCellIndices(values.cell_indices, values.selected_index);
+		const targetCells = wanted === null
+			? [...videoCells.keys()].sort((a, b) => a - b)
+			: wanted.filter(i => videoCells.has(i));
+		const missing = wanted === null ? [] : wanted.filter(i => !videoCells.has(i));
+		if (targetCells.length === 0) {
+			return {
+				...empty,
+				error: '阶段③「GIF 输出」没有可转换的格子：请先执行阶段①「生成视频」。',
+			};
+		}
+		// eslint-disable-next-line no-console
+		console.warn(`[AnimatedEmoji] 阶段③ GIF 输出 → 格 ${targetCells.map(i => i + 1).join(',')}（用当前抠像参数：sim=${chromaSimilarity} smooth=${chromaSmoothness} algo=${chromaAlgo}）`);
+		const entriesLocal: MediaSnapshotEntry[] = [];
+		const failures: string[] = missing.map(i => `格 ${i + 1}：缺少阶段① 绿幕视频`);
+		try {
+			const per = 92 / targetCells.length;
+			for (let ji = 0; ji < targetCells.length; ji++) {
+				const cellIndex = targetCells[ji];
+				const base = 4 + per * ji;
+				const srcVideo = videoCells.get(cellIndex)!;
+				// 本格本次生成的时间戳（GIF 与「③ 顺手补齐的 matte」共用同一值 —— 见
+				// archiveMatteResult 的 stamp 说明：否则刚生成的 GIF 会被误判过期）。
+				const gifStampMs = Date.now();
+				const mm = matteMetaByCell.get(cellIndex);
+				// ★★ 抠像参数以**当前 widget 值**为准（2026-09-12 修「点击 ③ 生成 GIF
+				//   后预览没有更新」）：此前优先取阶段② 固化的 `matte*` —— 用户改了
+				//   ② 页签的抠像参数后点 ③，GIF 仍按**旧参数**编码（输入/参数都没变 →
+				//   产物字节完全相同 → 预览看起来「没更新」✗，且无从解释）。
+				//   现语义 = 「③ 用**现在**的抠像参数把绿幕原片编成 GIF」，与 ② 页签
+				//   里正在预览的参数一致；`mm` 仅在 widget 缺省时兜底。
+				//   下方 auto-fill 会把 matte 归档刷新成同一组参数 → ② 页签随之对齐
+				//   （③ 有图 ⟹ ② 有同源抠像结果，两页签永不打架）。
+				const chromaForGif = {
+					color: chromaColor || (typeof mm?.matteColor === 'string' ? mm.matteColor : ''),
+					similarity: Number.isFinite(chromaSimilarity) ? chromaSimilarity : Number(mm?.matteSimilarity ?? 0),
+					smoothness: Number.isFinite(chromaSmoothness) ? chromaSmoothness : Number(mm?.matteSmoothness ?? 0),
+				};
+				const algoForGif = chromaAlgo;   // 当前算法（入口已统一 parseChromaAlgo）
+				const doKeyForGif = chromaEnabled && matteEnabled;
+				onProgress?.({ progress: base, message: `阶段③ GIF 输出 · 格 ${cellIndex + 1}（${ji + 1}/${targetCells.length}）` });
+				// 首帧一致性：取**该格真正的输入图**（见 emojiCellSeedRef —— 裸
+				// `upstreamImageRefs[cellIndex]` 在图集模式下对 i≥1 恒为 undefined，
+				// 那些格的 GIF 第 0 帧会退化成视频首帧 = 首帧重影 ✗）。
+				let seedForGif: string | undefined;
+				const upstreamSeed = emojiCellSeedRef(cellIndex);
+				if (doKeyForGif && chromaEnabled && upstreamSeed) {
+					try { seedForGif = await compositeImageOnChroma(upstreamSeed, chromaComposite, fetchImpl); } catch { seedForGif = undefined; }
+				}
+				try {
+					const { media, overLimit } = await convertCellVideoToGif({
+						videoRef: srcVideo,
+						values,
+						chroma: chromaForGif,
+						algo: algoForGif,
+						fps,
+						durationS,
+						maxKb,
+						doKey: doKeyForGif,
+						fetchImpl,
+						firstFrameOverride: seedForGif,
+						onProgress: (v) => onProgress?.({ progress: base + (v / 100) * per * 0.9 }),
+					});
+					const finalMedia: MediaRef = {
+						...media,
+						meta: {
+							...(media.meta ?? {}),
+							cellIndex: String(cellIndex),
+							perCell: '1',
+							stage2: '1',
+							// ★ 生成时间戳（2026-09-12）：参数/输入都没变时 GIF 字节可能**完全
+							//   相同** → 卡片 `<img src>` 不变 → 浏览器不重解码 → 用户看到
+							//   「点了 ③ 但预览没更新」✗。带上时间戳后，卡片用它作 React key
+							//   强制重挂 `<img>`（动画重播）+ 头部显示「更新于 hh:mm:ss」。
+							gifStamp: String(gifStampMs),
+							// ★ 本 GIF 所依据的**抠像参数签名**（格式同 matte 的 `matteSig`）：
+							//   卡片据此判断「② 之后 GIF 是否已过期」——② 用不同参数重跑后
+							//   签名不等 → ③ 预览回落到**新的抠像结果** + 角标「待重转 GIF」
+							//   （用户实测「执行完抠像后 GIF 预览没更新图片」：此前 ③ 一直
+							//   显示旧 GIF，② 的新抠像结果被盖住 ✗）。
+							gifFromMatteSig: `${chromaForGif.similarity}|${chromaForGif.smoothness}|${algoForGif}|${chromaForGif.color}`,
+							// ★ 本 GIF 所依据的**绿幕原片指纹**（emojiInputSig：长度+头尾，
+							//   O(1)）：① 重新生成视频后原片变了，即使抠像参数没变、连输入
+							//   图都没变（`srcSig` 一样），这张 GIF 也已经过期 → 卡片据此
+							//   判定「待重转」，不再傻乎乎显示旧 GIF ✗。
+							gifFromVideoSig: emojiInputSig(srcVideo),
+							backend,
+							...(backend === 'comfyui'
+								? { provider: 'comfyui', model: String(values.workflow ?? '') }
+								: { provider: providerId, model: modelId }),
+							// 继承绿幕视频的输入指纹（换批检测口径与 ①② 一致）
+							...(videoSigByCell.has(cellIndex) ? { srcSig: videoSigByCell.get(cellIndex)! } : {}),
+						},
+					};
+					// 原地替换优先（按 cellIndex 匹配旧 output 条目）。
+					// ★ 必须替换**最新**的那条（index 最大），不是 `find` 的第一条（byNode
+					//   按 index 升序 → 第一条是最旧的）：卡片侧 `latestOutputs` 的按格去重
+					//   取 **index 最大** 者 → 替换最旧条目会留下一条「旧媒体 + 更大 index」
+					//   的孤儿条目，把新 GIF 顶掉 ✗（预览看起来没更新）。
+					const sameCell = store.byNode(snapKey).filter(e =>
+						e.port === 'output' && e.media.kind === 'image'
+						&& Number(e.media.meta?.cellIndex ?? -1) === cellIndex);
+					const prev = sameCell.length > 0
+						? sameCell.reduce((a, b) => ((b.index ?? 0) > (a.index ?? 0) ? b : a))
+						: undefined;
+					if (prev && store.replaceByKey(prev.key, finalMedia, {
+						importEntry: { nodeId: snapKey, port: 'output', key: prev.key, media: finalMedia, index: prev.index },
+					})) {
+						// eslint-disable-next-line no-console
+						console.warn(`[AnimatedEmoji] 阶段③ cell ${cellIndex} 原地替换 (key=${prev.key}, 其余同格旧条目 ${sameCell.length - 1} 条保留待去重)`);
+					} else {
+						store.put({ nodeId: snapKey, port: 'output', key: `cell${cellIndex}`, media: finalMedia });
+					}
+					entriesLocal.push({ nodeId: snapKey, port: 'output', key: `cell${cellIndex}`, media: finalMedia, index: cellIndex });
+					// ★ 顺手补齐阶段② 的抠像结果（2026-09-12 修「② 与 ③ 预览不一致」）：
+					//   阶段③ **不依赖**阶段② 的产物（缺抠像参数凭据时用当前参数兜底），
+					//   因此会出现「③ 已有 N 格 GIF、② 只有 M 格抠像结果」的错位状态
+					//   ——② 页签对没跑过②的格回落到「输入原图」，与 ③ 的 GIF 观感
+					//   完全不同（用户实测反馈「视频抠像里的表情包和 GIF 输出里的不一致」）。
+					//   这里用**本格 GIF 实际使用的参数**把缺失（或参数已变）的抠像结果
+					//   补上 → 「③ 有图 ⟹ ② 必有同源抠像结果」，两个页签同格同源。
+					//   失败静默（archiveMatteResult 内部已兜底，不阻断 GIF 主链路）。
+					if (doKeyForGif) {
+						const wantSig = `${chromaForGif.similarity}|${chromaForGif.smoothness}|${algoForGif}|${chromaForGif.color}`;
+						const hasMatte = store.byNode(snapKey).some(e =>
+							e.port === 'matte' && Number(e.media.meta?.cellIndex ?? -1) === cellIndex
+							&& e.media.meta?.matteSig === wantSig);
+						if (!hasMatte) {
+							await archiveMatteResult(store, snapKey, cellIndex, srcVideo,
+								chromaForGif, algoForGif, fetchImpl, videoSigByCell.get(cellIndex),
+								// ★ 传本格 GIF 的时间戳：这次刷新是 ③ 自己做的，不该被
+								//   当成「② 比 ③ 新」→ 否则刚生成的 GIF 立刻显示「待重转」✗
+								gifStampMs);
+						}
+					}
+					onProgress?.({ progress: base + per, message: `阶段③ GIF 输出 · 格 ${cellIndex + 1} 完成${overLimit ? '（超限）' : ''}` });
+				} catch (cellErr) {
+					const cm = cellErr instanceof Error ? cellErr.message : String(cellErr);
+					if (input.signal?.aborted || /AbortError/i.test(cm)) { throw cellErr; }
+					failures.push(`格 ${cellIndex + 1}：${cm}`);
+				}
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (input.signal?.aborted || /AbortError/i.test(msg)) {
+				return { promptId: '', status: 'canceled', error: '已取消', entries: [] };
+			}
+			return { ...empty, error: `阶段③ GIF 输出失败：${msg}` };
+		}
+		if (entriesLocal.length === 0) {
+			return { ...empty, error: `阶段③ GIF 输出失败：${failures.join('；')}` };
+		}
+		onProgress?.({ progress: 100, message: '阶段③ GIF 输出完成' });
+		const note = failures.length > 0
+			? `（${entriesLocal.length}/${targetCells.length + missing.length} 格成功；失败：${failures.join('；')}）`
+			: '';
+		// eslint-disable-next-line no-console
+		console.warn(`[AnimatedEmoji] 阶段③ 完成: ${entriesLocal.length} 格${note}`);
+		return {
+			promptId: '', status: 'success', entries: entriesLocal, durationMs: 0,
+			...(note ? { error: note } : {}),
+		};
+	}
+
 	if (jobs.length === 0) {
 		return { ...empty, error: '没有可生成动态视频的表情格：请先在上游生成表情包（单格或图集）。' };
 	}
 
-	// ★ 选格重生成（2026-09-08，对齐静态表情包交互）：编辑器网格多选 →
-	//   run_scope='cell' + cell_indices（JSON 数组或逗号分隔，0-based）；
-	//   兼容旧 selected_index（1-based 单格）。cellIndex 保留原索引 → 归档
-	//   按 meta.cellIndex 原地替换（replaceOrPut），其余格快照不受影响。
-	if (String(values.run_scope ?? '') === 'cell') {
-		let indices: number[] = [];
-		const rawMulti = values.cell_indices;
-		if (typeof rawMulti === 'string' && rawMulti.trim()) {
-			try {
-				const arr = JSON.parse(rawMulti) as unknown;
-				if (Array.isArray(arr)) { indices = arr.map(Number).filter(n => Number.isInteger(n)); }
-			} catch {
-				indices = rawMulti.split(',').map(s => Number(s.trim())).filter(n => Number.isInteger(n));
+	// ★ 选格（2026-09-08，对齐静态表情包交互；2026-09-11 扩展到阶段①）：
+	//   run_scope='cell'（完整链路选格）与 run_scope='matte'（阶段① 选格）共用同一
+	//   选格协议：cell_indices（JSON 数组或逗号分隔，0-based）优先，回退
+	//   selected_index（1-based 单格）。cellIndex 保留原索引 → 归档按 meta.cellIndex
+	//   原地替换（replaceOrPut），其余格快照不受影响。
+	//   **未指定** → 阶段① 跑全部格；'cell' 必须显式选格（否则报错，避免误跑全量）。
+	if (runScopeRaw === 'cell' || stageVideoOnly) {
+		const picked = parseCellIndices(values.cell_indices, values.selected_index);
+		if (picked === null) {
+			if (runScopeRaw === 'cell') {
+				return { ...empty, error: '选格重生成失败：未选中任何格子。' };
 			}
+		} else {
+			const valid = picked.filter(i => i < jobs.length);
+			if (valid.length === 0) {
+				return { ...empty, error: `选格失败：选中格超出范围（共 ${jobs.length} 格），请重新选择。` };
+			}
+			// eslint-disable-next-line no-console
+			console.warn(`[AnimatedEmoji] run_scope=${runScopeRaw} → 只处理格 ${valid.map(i => i + 1).join(',')}/${jobs.length}`);
+			jobs = valid.map(i => jobs[i]);
 		}
-		if (indices.length === 0) {
-			// 旧协议：selected_index（1-based 单格）
-			indices = [Math.trunc(Number(values.selected_index) || 1) - 1];
-		}
-		const valid = [...new Set(indices)].filter(i => i >= 0 && i < jobs.length);
-		if (valid.length === 0) {
-			return { ...empty, error: `选格重生成失败：选中格超出范围（共 ${jobs.length} 格），请重新选择。` };
-		}
-		// eslint-disable-next-line no-console
-		console.warn(`[AnimatedEmoji] run_scope=cell → 只重生成格 ${valid.map(i => i + 1).join(',')}/${jobs.length}`);
-		jobs = valid.map(i => jobs[i]);
 	}
 
 	// ★ 每格动作覆盖（2026-09-07）：编辑器逐格填写的动作描述（cell_actions JSON
@@ -529,18 +1200,23 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 				const job = jobs[ji];
 				const base = 4 + per * ji;
 				const cellT0 = Date.now();
-				onProgress?.({ progress: base });
+				// 该格输入图指纹（写进本格全部产物 meta.srcSig，供换批检测）。
+				// ★ 必须与 nodeCard 的读取口径一致（emojiInputSigFor，含图集回退）。
+				const cellSig = emojiInputSigFor(upstreamImageRefs, job.cellIndex);
+				onProgress?.({ progress: base, message: `阶段① 生成视频 · 格 ${job.cellIndex + 1}（${ji + 1}/${jobs.length}）生成中…` });
 				// eslint-disable-next-line no-console
 				console.warn(`[AnimatedEmoji] cell ${job.cellIndex} start (${ji + 1}/${jobs.length}) prompt="${(job.cellPrompt ?? rawPrompt ?? '').slice(0, 80)}"`);
 				try {
 					// ① 单格绿底合成（chroma 关闭 → 原图直喂）
 					const seedCell = chromaEnabled ? await compositeImageOnChroma(job.ref, chromaComposite, fetchImpl) : job.ref;
-					// ② 单格视频（1:1 方形、768P；prompt = 全局动作描述 + 该格动作描述 + 绿幕约束）
+					// ② 单格视频（1:1 方形、768P；prompt = 全局动作 + 该格动作 + 不透明约束 + 绿幕约束）
+					//   ★ 不透明约束（ANIMATED_EMOJI_OPAQUE_SUFFIX）恒定追加（2026-09-12
+					//     用户需求「视频中，不要有半透明效果」）：半透明元素叠在绿幕上时
+					//     抠像**数学上欠定**（一个方程两个未知数）→ 经典 keyer 直接删掉 ✗、
+					//     反混合只能勉强恢复且低 alpha 区放大压缩噪声 ✗、GIF 更是 1-bit
+					//     alpha 表达不了 ✗ ⇒ 必须在生成源头要求「实心不透明」✓。
 					const cellPrompt = typeof job.cellPrompt === 'string' ? job.cellPrompt.trim() : '';
-					const promptParts = [rawPrompt, cellPrompt].filter(Boolean);
-					const cellPromptFull = promptParts.length
-						? `${promptParts.join(', ')}${chromaEnabled ? ANIMATED_EMOJI_GREEN_SUFFIX : ''}`
-						: (chromaEnabled ? ANIMATED_EMOJI_GREEN_SUFFIX.slice(2) : '');
+					const cellPromptFull = buildAnimatedEmojiVideoPrompt(rawPrompt, cellPrompt, chromaEnabled);
 					onProgress?.({ progress: base + per * 0.05 });
 					let cellVideoUrl = '';
 					if (backend === 'comfyui') {
@@ -581,7 +1257,9 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 							throw new Error('ComfyUI 视频工作流完成但未取到视频（检查工作流的 video 输出）。');
 						}
 					} else {
-						const resp = await raceAbort(send({
+						// send 非空已由函数开头守卫保证（`!send && !stageGifOnly` 已 return；
+						// 阶段② 在本分支之前已返回）——此处 `!` 仅为让 TS 收窄。
+						const resp = await raceAbort(send!({
 							providerId,
 							modelId,
 							prompt: cellPromptFull,
@@ -600,13 +1278,30 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 					//   死链。归档前拉成本地 dataURL（失败静默回退原 URL），后续抠像/
 					//   归档/⟳ 全用本地数据。comfyui 渠道（127.0.0.1）原样返回零开销。
 					cellVideoUrl = await localizeImageRef(cellVideoUrl);
-					// ③ 输出管线（2026-09-08 三开关解耦）：
-					//    gifEnabled=false → 直接以生成视频为产物（绿幕开=绿幕原片 /
-					//    关=原背景视频），不转 GIF；
-					//    gifEnabled && doKey → 抠像 → 透明 GIF（≤max_kb 压缩迭代）；
-					//    gifEnabled && !doKey → 带背景 GIF（不抠像，convertVideoToGif）。
+					// ★ 固化失败告警（2026-09-12 日志实证）：仍为 http(s) 说明原片**没能落成本地
+					//   data URL**（COS 签名 URL 拉取失败）⇒ 约 2h 后签名过期，阶段②/③ 抠像与
+					//   GIF 编码都会 403 失败（用户实测：阶段③ 报 `net.fetchAsDataUrl: HTTP 403`）✗。
+					//   此处提前告警，把问题定位在**生成时刻**，而不是几小时后才暴露 ✗。
+					if (/^https?:/i.test(cellVideoUrl)) {
+						// eslint-disable-next-line no-console
+						console.warn(`[AnimatedEmoji] cell ${job.cellIndex} 原片未固化（仍为外网 URL，约 2h 后失效 → ②/③ 将失败）：${cellVideoUrl.slice(0, 120)}…`);
+					}
+					// ③ 输出管线（2026-09-12 三阶段拆分）：
+					//    阶段①：绿幕原片（port='video'）；
+					//    阶段②：抠像结果（port='matte'：透明 PNG + 抠像参数凭据）；
+					//    阶段③：抠像结果编码为透明 GIF（port='output'）。
+					//    stage_video_only → 只做①；gif_enable=false → ①+②，产物即视频。
+					if (doKey && !stageVideoOnly) {
+						onProgress?.({ progress: base + per * 0.7, message: `阶段② 视频抠像 · 格 ${job.cellIndex + 1}（${ji + 1}/${jobs.length}）` });
+						await archiveMatteResult(store, snapKey, job.cellIndex, cellVideoUrl,
+							{ color: chromaColor, similarity: chromaSimilarity, smoothness: chromaSmoothness },
+							chromaAlgo, fetchImpl, cellSig);
+					}
 					let media: MediaRef;
-					if (!gifEnabled) {
+					if (stageVideoOnly || !gifEnabled) {
+						// 阶段① 只跑 / 视频直出：产物 = 生成的视频（绿幕开=绿幕原片，
+						// 关=原背景视频）。阶段① 归档到 port='video'（② 的输入），
+						// 视频直出模式归档到 port='output'（它就是最终产物）。
 						media = {
 							kind: 'video',
 							ref: cellVideoUrl,
@@ -617,63 +1312,34 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 									? { provider: 'comfyui', model: workflowName }
 									: { provider: providerId, model: modelId }),
 								perCell: '1',
+								...(stageVideoOnly ? { stage1: '1' } : {}),
 								...(chromaEnabled ? { greenScreen: '1' } : { matte: '0' }),
 								...(cellPrompt ? { cellPrompt } : {}),
-							},
-						};
-					} else if (doKey) {
-						const gif = await convertVideoToTransparentGif(
-							cellVideoUrl,
-							// ★ chroma_algo 必须随 values 传入（2026-09-08 修复）：转换内部
-							//   parseChromaAlgo(values.chroma_algo) —— 此前漏传导致「算法」
-							//   下拉全链路失效（恒回退 rgb）。
-							{ ...EMOJI_GIF_PARAMS, fps, max_width: 240, max_frames: durationS * fps, end_s: durationS, chroma_algo: String(values.chroma_algo ?? 'rgb') },
-							{ color: chromaColor, similarity: chromaSimilarity, smoothness: chromaSmoothness },
-							fetchImpl,
-							(p) => onProgress?.({ progress: base + per * 0.8 + (p.value ?? 0) / 100 * per * 0.15 }),
-							maxKb * 1024,
-							// ★ 首帧一致性（2026-09-07）：以参考图（已绿底合成）替换视频首帧
-							// → GIF 第 0 帧 = 输入静态贴纸（视频模型首帧常漂移）。
-							seedCell,
-						);
-						const gifDataUrl = await blobToDataUrl(gif.gifBlob);
-						const overLimit = gif.bytes > maxKb * 1024;
-						media = {
-							kind: 'image',
-							ref: gifDataUrl,
-							meta: {
-								mime: 'image/gif',
-								gifFrames: String(gif.frames),
-								gifSize: `${gif.width}x${gif.height}`,
-								gifDelayCs: String(gif.delayCs),
-								bytes: String(gif.bytes),
-								compressLevel: String(gif.level),
-								cellIndex: String(job.cellIndex),
-								...(cellPrompt ? { cellPrompt } : {}),
-								backend,
-								...(backend === 'comfyui'
-									? { provider: 'comfyui', model: workflowName }
-									: { provider: providerId, model: modelId }),
-								perCell: '1',
-								...(overLimit ? { overLimit: '1' } : {}),
+								srcSig: cellSig,
 							},
 						};
 					} else {
-						// 抠像关闭（或绿幕关闭无绿可抠）→ 带背景 GIF
-						const gif = await convertVideoToGif(
-							cellVideoUrl,
-							{ ...EMOJI_GIF_PARAMS, fps, max_width: 240, max_frames: durationS * fps, end_s: durationS },
+						// 阶段③：抠像结果 → GIF（doKey=false 时自动走带背景 GIF）。
+						onProgress?.({ progress: base + per * 0.75, message: `阶段③ GIF 输出 · 格 ${job.cellIndex + 1}（${ji + 1}/${jobs.length}）` });
+						const gifRes = await convertCellVideoToGif({
+							videoRef: cellVideoUrl,
+							values,
+							chroma: { color: chromaColor, similarity: chromaSimilarity, smoothness: chromaSmoothness },
+							algo: chromaAlgo,
+							fps,
+							durationS,
+							maxKb,
+							doKey,
 							fetchImpl,
-							(p) => onProgress?.({ progress: base + per * 0.8 + (p.value ?? 0) / 100 * per * 0.15 }),
-							);
-							media = {
-							kind: 'image',
-							ref: await blobToDataUrl(gif.gifBlob),
+							// ★ 首帧一致性（2026-09-07）：以参考图（已绿底合成）替换视频首帧
+							// → GIF 第 0 帧 = 输入静态贴纸（视频模型首帧常漂移）。
+							firstFrameOverride: seedCell,
+							onProgress: (v) => onProgress?.({ progress: base + per * 0.75 + (v / 100) * per * 0.2 }),
+						});
+						media = {
+							...gifRes.media,
 							meta: {
-								mime: 'image/gif',
-								gifFrames: String(gif.frames),
-								gifSize: `${gif.width}x${gif.height}`,
-								gifDelayCs: String(gif.delayCs),
+								...(gifRes.media.meta ?? {}),
 								cellIndex: String(job.cellIndex),
 								...(cellPrompt ? { cellPrompt } : {}),
 								backend,
@@ -681,7 +1347,8 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 									? { provider: 'comfyui', model: workflowName }
 									: { provider: providerId, model: modelId }),
 								perCell: '1',
-								matte: '0',
+								...(gifRes.overLimit ? { overLimit: '1' } : {}),
+								srcSig: cellSig,
 							},
 						};
 					}
@@ -710,20 +1377,28 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 					}
 					store.put({ nodeId: snapKey, port, key: `cell${job.cellIndex}`, media });
 				};
-				// 绿幕 mp4 诊断归档：仅在 GIF 输出模式（mp4 只是中间产物）时保留；
-				// 视频直出模式（gif_enable=false）mp4 本身就是 output，不重复归档。
-				if (gifEnabled) {
-					replaceOrPut('video', {
-						kind: 'video', ref: cellVideoUrl,
-						meta: {
-							...(chromaEnabled ? { greenScreen: '1' } : {}),
-							provider: providerId, model: modelId, cellIndex: String(job.cellIndex),
-						},
-					});
-				}
-				replaceOrPut('output', media);
+				if (stageVideoOnly) {
+					// 阶段①：产物归档到 port='video'（阶段② 的输入 / rematte 的来源）。
+					replaceOrPut('video', media);
+					entriesLocal.push({ nodeId: snapKey, port: 'video', key: `cell${job.cellIndex}`, media, index: entriesLocal.length });
+					onProgress?.({ progress: base + per, message: `阶段① 生成视频 · 格 ${job.cellIndex + 1} 完成` });
+				} else {
+					// 绿幕 mp4 诊断归档：仅在 GIF 输出模式（mp4 只是中间产物）时保留；
+					// 视频直出模式（gif_enable=false）mp4 本身就是 output，不重复归档。
+					if (gifEnabled) {
+						replaceOrPut('video', {
+							kind: 'video', ref: cellVideoUrl,
+							meta: {
+								...(chromaEnabled ? { greenScreen: '1' } : {}),
+								provider: providerId, model: modelId, cellIndex: String(job.cellIndex),
+								srcSig: cellSig,
+							},
+						});
+					}
+					replaceOrPut('output', media);
 					entriesLocal.push({ nodeId: snapKey, port: 'output', key: '', media, index: entriesLocal.length });
-					onProgress?.({ progress: base + per });
+					onProgress?.({ progress: base + per, message: `阶段③ GIF 输出 · 格 ${job.cellIndex + 1} 完成` });
+				}
 				} catch (cellErr) {
 					const cm = cellErr instanceof Error ? cellErr.message : String(cellErr);
 					// 取消立即上抛（其余格不再继续）；普通失败记录后继续下一格

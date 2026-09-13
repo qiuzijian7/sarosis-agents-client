@@ -122,7 +122,9 @@ export class TofAuthenticationProvider implements vscode.AuthenticationProvider,
 		return {
 			paasid: cfg.get<string>('paasid') || 'sls_mcp_app',
 			// 必须与 workbench 侧 agentStudio.contribution.ts 注册的 default 一致
-		siteBaseUrl: cfg.get<string>('siteBaseUrl') || 'http://vssaros.woa.com',
+			// （2026-09-10：统一为 saroasis-mcp.woa.com —— 旧的 vssaros.woa.com 已无 DNS 记录，
+			//  曾导致「登录后回调 This site can't be reached」）
+		siteBaseUrl: cfg.get<string>('siteBaseUrl') || 'http://saroasis-mcp.woa.com',
 			gatewayBaseUrl: cfg.get<string>('gatewayBaseUrl') || 'http://21.169.46.116:8080',
 			timeoutSeconds: cfg.get<number>('loginTimeout') || 180,
 		};
