@@ -24,6 +24,12 @@ function Copy-IfMissing($rel, $repoRel, $sentinel) {
 }
 Copy-IfMissing "extensions\agent-studio\out" "extensions\agent-studio\out" "extension.js"
 Copy-IfMissing "node_modules\typescript" "node_modules\typescript" "package.json"
+# 2026-09-15：codebase 图谱解析 Worker 池按**运行时路径**读该模块
+# （`codebaseGraphParserPool._initPool` → `<appRoot>/node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter.js`），
+# 缺则 `Worker pool init failed … fallback to main thread` ⇒ 18 万节点索引改在渲染主线程解析（UI 冻结）。
+# 它从不被静态 import（字符串路径），gulp 的依赖拷贝曾漏掉它 —— 发布包 2.2.26032-saros 实测缺失。
+# install-deps.ps1（5.4）只保障**源码树** node_modules，产物侧需在此与 strip-before-pack.mjs 双重兜底。
+Copy-IfMissing "node_modules\@vscode\tree-sitter-wasm" "node_modules\@vscode\tree-sitter-wasm" "wasm\tree-sitter.js"
 
 $required = @(
   "node_modules\@vscode\ripgrep\bin\rg.exe",
@@ -32,6 +38,7 @@ $required = @(
   "extensions\tof-authentication\out\extension.js",
   "extensions\agent-studio\out\extension.js",
   "node_modules\typescript\package.json",
+  "node_modules\@vscode\tree-sitter-wasm\wasm\tree-sitter.js",
   "out\vs\sessions\contrib\agentStudio\browser\views\knowledgeBase\kbWorker.js",
   "out\vs\sessions\sessions.desktop.main.js",
   "out\vs\sessions\contrib\agentStudio\webview\media\kbblocks.js"

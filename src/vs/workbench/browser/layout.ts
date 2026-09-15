@@ -1732,7 +1732,11 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 				return Math.max(280, this.stateModel.getInitializationValue(LayoutStateKeys.SIDEBAR_SIZE));
 			})(),
 			panelVisible: false,
-			titleBarHeight: this.titleBarPartView.minimumHeight,
+			// ⚠ 必须安全读取：本方法是 `expandAgentsSidebarContent()` /
+			// `onDidChangeContentCollapsed` 监听器**算宽度前的必经之路**，
+			// 一旦 `titleBarPartView` 不可用就抛异常 ⇒ 两个调用点的 resize 全被跳过
+			// ⇒「字段改了、宽度纹丝不动」。这是本轮实测到的失败模式。
+			titleBarHeight: this.titleBarPartView?.minimumHeight ?? 0,
 		};
 	}
 
@@ -1801,18 +1805,41 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		}
 
 		sidebar.setContentCollapsed(false);
-
 		sidebar.setContentCollapsed(false);
 		this.agentsSidebarContentExpanded = true;
 
+		// ⚠ `getAgentsLayoutState()` 会读 `titleBarPartView.minimumHeight` 等 view 引用，
+		// 任一不可用就会**抛异常**；而它恰好挡在 resize 之前 ⇒ 异常会让 resize 整个跳过，
+		// 但 `setContentCollapsed(false)` 已经执行完（字段已改）⇒ 症状正是「宽度纹丝不动」。
+		let targetWidth = 450;
+		try {
+			targetWidth = this.getAgentsLayoutState().sidebarExpandedWidth;
+		} catch (err) {
+			this.logService.error(`[Layout] expandAgentsSidebarContent 计算展开宽抛异常: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+		}
 		const current = this.workbenchGrid.getViewSize(this.sideBarPartView);
 		this.workbenchGrid.resizeView(this.sideBarPartView, {
-			width: this.getAgentsLayoutState().sidebarExpandedWidth,
+			width: targetWidth,
 			height: current.height,
 		});
 
 		this.relayoutHostedActivityBar();
 		this.relayoutAgentsSidebarPart();
+
+		// ★ 展开后必须确保内容区**真的显示了某个 composite**。
+		// 折叠/隐藏路径可能已把当前 composite 隐藏掉，而本方法只 resize 宽度 ⇒
+		// 会得到一个「变宽的空容器」—— 用户看到的正是「点图标没反应 / 展不开」
+		// （其实宽度变了，但一片空白）。与 `sessions/browser/workbench.ts`
+		// `_setSideBarHiddenInner()` 注释里记录的同类症状同源。
+		// ⚠ 优先恢复用户上次的选择；兜底用 `getAgentsSidebarDefaultContainerId()`
+		//   （agents 布局 override 成 `agentStudio.workspace`，见 agentLayoutWorkbench.ts）。
+		if (!this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Sidebar)) {
+			const viewletToOpen = this.paneCompositeService.getLastActivePaneCompositeId(ViewContainerLocation.Sidebar)
+				?? this.getAgentsSidebarDefaultContainerId();
+			if (viewletToOpen) {
+				this.paneCompositeService.openPaneComposite(viewletToOpen, ViewContainerLocation.Sidebar);
+			}
+		}
 
 		// ── ★★ 再补一帧（2026-09-15，修「侧栏底部留白」）──────────────────────
 		// 上面两次重排发生在**首次布局过程中**（本方法由 `createWorkbenchLayout()`
@@ -1929,7 +1956,6 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			width: 48,
 			height: current.height,
 		});
-
 		// ★ 折叠后同样要重排托管的 activity bar，否则图标条会停在旧尺寸 ⇒
 		// 11 个条目被挤进溢出菜单（用户看到"activitybar 图标丢失"）。
 		this.relayoutHostedActivityBar();
@@ -2161,6 +2187,21 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 					if (sessionsSidebar.contentCollapsed) {
 						// 折叠态：展开 ✓（打开该视图）
 						sessionsSidebar.toggleContent?.();
+						// ★★ 关键：**不能只依赖 `onDidChangeContentCollapsed` 监听器**。
+						// 实测（2026-09-15）：该事件在本布局下**没有生效的订阅者** ——
+						// `toggleContent()` 只切了字段与 DOM class，**grid 宽度纹丝不动**
+						// ⇒ 用户症状「折叠后点其他图标，sideview 展不开」（日志里
+						// 只有 `setContentCollapsed(false)`，其后没有任何 resize 记录）。
+						// 这里直接补一次 resize，等价 `expandAgentsSidebarContent()` 的核心动作。
+						try {
+							const expandW = this.getAgentsLayoutState().sidebarExpandedWidth;
+							this.agentsSidebarContentExpanded = true;
+							this.workbenchGrid.resizeView(this.sideBarPartView, { width: expandW, height: 1000 });
+							this.relayoutAgentsSidebarPart();
+							this.relayoutHostedActivityBar();
+						} catch (err) {
+							this.logService.error(`[Layout]   折叠态展开补 resize 失败: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+						}
 					} else if (id !== undefined && activeId === id) {
 						// 展开态 + 点的就是当前容器 ⇒ **折叠** ✓，
 						// 且**不再往下传**（否则会把内容区重新展开 ✗）。
@@ -2203,7 +2244,14 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		if (sessionsSidebar?.onDidChangeContentCollapsed && typeof sessionsSidebar.onDidChangeContentCollapsed.event === 'function') {
 			sessionsSidebar.onDidChangeContentCollapsed.event((collapsed: boolean) => {
 				this.agentsSidebarContentExpanded = !collapsed;
-				const width = collapsed ? 48 : this.getAgentsLayoutState().sidebarExpandedWidth;
+				// ⚠ 同 `expandAgentsSidebarContent()`：`getAgentsLayoutState()` 可能抛，
+				// 而它挡在 resize 之前 ⇒ 抛了就只剩「字段改了、宽度没动」。
+				let width = 48;
+				try {
+					width = collapsed ? 48 : this.getAgentsLayoutState().sidebarExpandedWidth;
+				} catch (err) {
+					this.logService.error(`[Layout] onDidChangeContentCollapsed 计算宽度抛异常: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+				}
 				try {
 					this.workbenchGrid.resizeView(this.sideBarPartView, { width, height: 1000 });
 				} catch { /* grid 未就绪 */ }

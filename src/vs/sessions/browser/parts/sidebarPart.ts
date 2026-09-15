@@ -222,11 +222,53 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	 * a viewlet icon is clicked while the sidebar is collapsed.
 	 */
 	override async openPaneComposite(id?: string, focus?: boolean): Promise<import('../../../workbench/browser/panecomposite.js').PaneComposite | undefined> {
-		// Auto-expand content panel when user clicks an activity bar icon
-		if (this._contentCollapsed) {
-			this.setContentCollapsed(false);
+		// ★ 补回「点当前活动图标 = 折叠」的 toggle 语义。
+		//
+		// 上游 toggle 逻辑写在 `paneCompositeBar.ts` 的 `ViewContainerActivityAction.run()` 里，
+		// 但那段**只对 `part === Parts.ACTIVITYBAR_PART` 生效**；会话布局把 composite bar 挂在
+		// SIDEBAR_PART 上（见 getCompositeBarPosition 的说明）⇒ 那段代码永远走不到。
+		// 结果：已展开时点当前活动图标会落到 core 的 `openPaneComposite(id)`，而它对
+		// 「id === 当前活动项」是**早退**（认为已经打开了）⇒ 用户看到的就是「点了毫无反应」。
+		if (id && !this._contentCollapsed && this.getActivePaneComposite()?.getId() === id) {
+			this.layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
+			// 折叠后原 composite 已不可用 ⇒ 与「未打开」一致地返回 undefined
+			return undefined;
 		}
+		// Auto-expand content panel when user clicks an activity bar icon
+		this.expandContent();
 		return super.openPaneComposite(id, focus);
+	}
+
+	/**
+	 * 展开侧栏内容区（幂等）。供「点击活动栏图标」这条路径调用。
+	 *
+	 * 为什么不只调 setContentCollapsed(false)：
+	 *  ① **字段与 DOM 可能漂移**：折叠可以由 `setPartHidden` 拦截、布局恢复等多条路径触发，
+	 *     它们未必都同步 `_contentCollapsed`。只信字段时，若字段已是 `false`（"以为展开着"），
+	 *     `setContentCollapsed` 会因幂等判据**直接 return** ⇒ 用户点了图标毫无反应。
+	 *     所以这里以「字段 或 DOM class」任一为折叠判据。
+	 *  ② Workbench 侧 `partVisibility.sidebar` 可能已被 `handleSidebarContentCollapsed`
+	 *     同步成 `true` ⇒ `setPartHidden(false)` 会走早退分支什么都不做；两个都调才稳。
+	 */
+	private expandContent(): void {
+		const container = this.getContainer();
+		const domCollapsed = !!container?.classList.contains(SIDEBAR_CONTENT_COLLAPSED_CLASS);
+		if (!this._contentCollapsed && !domCollapsed) { return; }	// 已经展开，无需处理
+
+		// ★ 无条件下发「展开」，**不**用字段做条件。
+		// 字段（`_contentCollapsed`）与 grid 真实宽度**可能漂移**：曾出现
+		// 「字段=false（以为已展开）但宽度仍停在 48」的情形，此时若按字段跳过，
+		// 用户点图标就会「展不开」（`setPartHidden(false)` 是幂等的，重复调用无害）。
+		this.layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
+		// setContentCollapsed 幂等 ⇒ 字段已为 false 时它不会动 DOM，所以这里再兜一次。
+		this.setContentCollapsed(false);
+		const after = this.getContainer();
+		if (after?.classList.contains(SIDEBAR_CONTENT_COLLAPSED_CLASS)) {
+			after.classList.remove(SIDEBAR_CONTENT_COLLAPSED_CLASS);
+			after.classList.add(SIDEBAR_CONTENT_EXPANDED_CLASS);
+			this.sidebarContentVisibleContextKey.set(true);
+			this._onDidChangeContentCollapsed.fire(false);
+		}
 	}
 
 	protected override createTitleArea(parent: HTMLElement): HTMLElement | undefined {
@@ -1815,9 +1857,36 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		const norm = (p: string) => p.replace(/[/\\]+$/, '').replace(/\\/g, '/').toLowerCase();
 
 		for (const ws of this._workspaces) {
-			// ① 只处理「一点 root 信息都没有」的目录态记录。文件态由 `_fixWorkspaceFilePaths` 负责。
-			if (!ws.path || ws.codeWorkspacePath || (ws.relatedFolders ?? []).length > 0) { continue; }
-			if (hasWorkspaceFileExtension(ws.path)) { continue; }
+			// `path` 本身是文件的记录由 `_fixWorkspaceFilePaths()` 负责。
+			if (!ws.path || hasWorkspaceFileExtension(ws.path)) { continue; }
+
+			// ── 情形 A：**已有**工作区文件身份 ⇒ 用文件**校正 `path`**（自愈被写坏的记录）──
+			//
+			// 2026-09-15 20:41 实测：窗口的 `configuration` 曾是**过期值**（见
+			// `configurationService.doReplaceWorkspaceFoldersInMemory` 的注释），反向投影据此把
+			// `path=f:\GR_qiuzijian_main\S1Game` 写进了本仓的记录（跨工作区污染）。`codeWorkspacePath`
+			// 因 `updateWorkspace` 是展开赋值而存活 ⇒ 出现「主 root 指向 S1Game、身份却是本仓的
+			// `.code-workspace`」的自相矛盾态。以**文件**为准把 `path` 校正回来。
+			//
+			// ⚠ 只动 `path`，**不碰 `relatedFolders`** —— 后者可能含用户手动关联的目录
+			// （`addRelatedFolder`），强制覆盖会销毁用户数据；且 root 解析已改为
+			// 「`codeWorkspacePath` 优先」（见 `_resolveWorkspaceRoots`），不依赖它。
+			if (ws.codeWorkspacePath && hasWorkspaceFileExtension(ws.codeWorkspacePath)) {
+				try {
+					const result = await this._resolveCodeWorkspaceFolders(URI.file(ws.codeWorkspacePath), fileService);
+					if (result.primaryPath && norm(result.primaryPath) !== norm(ws.path)) {
+						this._diag(`recover: fixing primary root | target=${ws.id} path=${ws.path} → ${result.primaryPath} (authority=${ws.codeWorkspacePath})`);
+						const updated = await this._wsAgentStudioService.updateWorkspace(ws.id, { path: result.primaryPath });
+						ws.path = updated.path;
+					}
+				} catch (err) {
+					this._diag(`recover: primary-root fix failed for ${ws.id}: ${err instanceof Error ? err.message : String(err)}`);
+				}
+				continue;
+			}
+
+			// ── 情形 B：完全没有 root 信息 ⇒ 发现「与目录同名」的工作区文件（原自愈通道）──
+			if (ws.codeWorkspacePath || (ws.relatedFolders ?? []).length > 0) { continue; }
 
 			// ② 与目录同名的 `.code-workspace`。
 			const dirName = ws.path.replace(/[/\\]+$/, '').split(/[/\\]/).pop();

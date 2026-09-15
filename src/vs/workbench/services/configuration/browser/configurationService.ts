@@ -310,6 +310,26 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 		}
 
 		await this.updateWorkspaceConfiguration(newFolders, this.workspaceConfiguration.getConfiguration(), false);
+
+		// ★★★ [Saros] 2026-09-15：**清掉过期的工作区文件标识**。
+		//
+		// `updateWorkspaceConfiguration()` 只换 `workspace.folders`（见其内 `this.workspace.folders = …`），
+		// **不碰 `workspace.configuration`** ⇒ 从「文件态工作区」切到「无文件工作区」（如 S1Game）后，
+		// 窗口仍自称「在旧的那个 `.code-workspace` 上」⇒ `getWorkspace().configuration` 是**过期值**。
+		//
+		// 实测后果（2026-09-15 20:41 日志，用户报「切换工作区后 app 卡死」）：
+		//   · `matchWorkspaceIdentity()` 第 ① 级判据（两边文件相同 ⇒ 同一个工作区）被过期文件路径骗到
+		//     ⇒ 切到 S1Game（f: 两个根）后**仍匹配成 sarosis 的记录**；
+		//   · 反向投影随即把 `path=f:\…\S1Game` + `relatedFolders=[UE5EA]` **写进 sarosis 记录**
+		//     —— 正是 09-14 那类跨工作区污染；
+		//   · 随后「游标对齐」又把 active workspace **切回** sarosis ⇒ 来回翻转
+		//     ⇒ 反复触发 CodebaseGraph 全量图谱重载（单项目 6.8s~21.6s）⇒ 表现为卡死。
+		//
+		// 语义上也是对的：folder 列表被原地换成**另一组**之后，窗口不再对应任何工作区文件。
+		// （清掉后 `getWorkbenchState()` 落到「多根但无配置 ⇒ WORKSPACE」分支，行为不变。）
+		if (this.workspace.configuration) {
+			this.workspace.configuration = null;
+		}
 	}
 
 	public isInsideWorkspace(resource: URI): boolean {

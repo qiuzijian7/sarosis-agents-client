@@ -16,7 +16,7 @@ import { findUpstreamImageRef } from './imageGenBackend.js';
 import { isComfyViewRef, resolveLoadImageImageRef, type BridgeFetchLike } from './imageGenToComfyBridge.js';
 import { dataUrlToBlob, blobToDataUrl } from './videoToGifExecutor.js';
 import { sendRequest } from '../../../bridge/messageClient.js';
-import { mediaGet, resolveAssetUrl } from '../mediaAssets.js';
+import { mediaGet, mediaGetAsDataUrl, mediaImport, resolveAssetUrl } from '../mediaAssets.js';
 
 export function withRemoteProxyFetch(fetchImpl: typeof fetch, opts?: { forceProxy?: boolean }): typeof fetch {
 	/**
@@ -90,33 +90,89 @@ export function withRemoteProxyFetch(fetchImpl: typeof fetch, opts?: { forceProx
  *   则「重新抠图」（⟳）在签名过期后 403 失败、原片预览黑屏。mp4 几 MB dataURL
  *   可接受（3s 768P ≈ 2-5MB）。
  */
-export async function localizeImageRef(ref: string): Promise<string> {
+export async function localizeImageRef(
+	ref: string,
+	opts?: { label?: string; kind?: 'image' | 'video' },
+): Promise<string> {
 	if (!ref || !/^https?:\/\//i.test(ref)) { return ref; }
-	const tryFetch = async (u: string): Promise<string | null> => {
+	const label = opts?.label ?? 'ref';
+	/** 归一失败时**带原因**返回（旧实现 `catch { return null }` 把原因吞了 ⇒
+	 *  「为什么没固化」只能靠几小时后的 403 反推 ✗）。 */
+	const tryFetch = async (u: string): Promise<{ dataUrl: string } | { err: string }> => {
 		try {
 			// ★ forceProxy（2026-09-08）：外网 URL 在 webview CSP 下直连 100% 被拦
 			//   （connect-src 只放行本机）——先直连只会每次刷两行 CSP 报错 + 白等
 			//   一跳，直接走 host 代理。
 			const resp = await withRemoteProxyFetch(fetch, { forceProxy: true })(u);
-			if (!resp.ok) { return null; }
+			if (!resp.ok) { return { err: `HTTP ${resp.status}` }; }
 			const blob = await resp.blob();
-			if (!blob.type.startsWith('image/') && !blob.type.startsWith('video/')) { return null; }
-			return await blobToDataUrl(blob);
-		} catch {
-			return null;
+			if (!blob.type.startsWith('image/') && !blob.type.startsWith('video/')) {
+				return { err: `content-type=${blob.type || 'unknown'}` };
+			}
+			return { dataUrl: await blobToDataUrl(blob) };
+		} catch (e) {
+			return { err: e instanceof Error ? e.message : String(e) };
 		}
 	};
-	const direct = await tryFetch(ref);
-	if (direct) { return direct; }
+	/** 同一 URL 重试一次（大文件网络抖动很常见；500ms 退避）。 */
+	const tryFetchTwice = async (u: string): Promise<{ dataUrl: string } | { err: string }> => {
+		const a = await tryFetch(u);
+		if ('dataUrl' in a) { return a; }
+		await new Promise(r => setTimeout(r, 500));
+		const b = await tryFetch(u);
+		return 'dataUrl' in b ? b : { err: `${a.err}；重试后 ${b.err}` };
+	};
+	const first = await tryFetchTwice(ref);
+	if ('dataUrl' in first) { return first.dataUrl; }
 	// ★ 内网 COS 域名换公网 alias 重试一次（2026-09-12，见 publicCosAlias）：
 	//   provider 返回 `…cos-internal…` 时 host 代理**必然失败** ✗ → 归档退回原始
 	//   签名 URL → 签名过期后「原片加载失败」（用户实测：视频生成过、重启后播不了）✗。
 	const alias = publicCosAlias(ref);
+	let aliasErr = '';
 	if (alias !== ref) {
 		const viaAlias = await tryFetch(alias);
-		if (viaAlias) { return viaAlias; }
+		if ('dataUrl' in viaAlias) { return viaAlias.dataUrl; }
+		aliasErr = `；公网 alias 亦失败：${viaAlias.err}`;
 	}
+	// ★★ 落盘回退（2026-09-15，修「cell N 原片未固化 → ②/③ 将失败」）：
+	//   host 代理的 binary 路径有 **4MB 上限**（`vscode:webFetch`）且大视频经 base64
+	//   往返代价高；媒体库 `importAsset` 的 http(s) 分支是**直接下载落盘**
+	//   （无 4MB 上限、30s 超时），落盘文件**不过期** ⇒ 后续阶段②/③ 与重跑都不再
+	//   依赖签名 URL ✓。只在上面都失败时才走（不给正常产物制造重复媒体条目）。
+	const viaDisk = await localizeViaMediaStore(alias, opts?.kind ?? 'image');
+	if (viaDisk) { return viaDisk; }
+	// ★ 失败必须留痕（纪律：外部拉取一律「超时 + 留痕」）——此前全静默 ⇒
+	//   用户几小时后才在阶段②/③ 看到 403，且不知道是"当时就没拉下来" ✗。
+	// eslint-disable-next-line no-console
+	console.warn(
+		`[localizeRef] ${label} 固化失败（host 代理：${first.err}${aliasErr}；媒体库落盘亦失败）` +
+		`，回退原始签名 URL（约 2h 后 403）：${ref.slice(0, 140)}`,
+	);
 	return ref;
+}
+
+/**
+ * 经**媒体库**固化远程 ref（`importAsset` 的 http(s) 分支会在主进程直接下载落盘，
+ * 无 4MB 上限）→ 读回 data URL 作为自包含引用。
+ *
+ * 返回 null = 未落盘（下载失败）或读文件失败 —— 此时**不得**把纯引用当成功 ✗。
+ */
+async function localizeViaMediaStore(ref: string, kind: 'image' | 'video'): Promise<string | null> {
+	if (!/^https?:\/\//i.test(ref)) { return null; }
+	try {
+		// ⚠ 超时必须 > host 侧的下载超时（30s）+ 写盘，否则会在下载完成前先超时。
+		const asset = await mediaImport({ ref, kind }, 90_000);
+		// 无 filePath ⇒ 主进程下载失败、只留了纯引用（仍带签名时效）⇒ 不算固化成功。
+		if (!asset?.id || !asset.filePath) { return null; }
+		const dataUrl = await mediaGetAsDataUrl(asset.id);
+		if (dataUrl) {
+			// eslint-disable-next-line no-console
+			console.info(`[localizeRef] 经媒体库落盘固化成功（asset=${asset.id}，${Math.round((asset.sizeBytes ?? 0) / 1024)}KB）`);
+		}
+		return dataUrl;
+	} catch {
+		return null;
+	}
 }
 
 /**

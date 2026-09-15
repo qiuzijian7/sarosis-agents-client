@@ -172,7 +172,14 @@ export class CodebaseGraphParserPool {
 			this._logService.info('[CodebaseGraph]', `Worker pool ready: ${this._parserWorkers.length}/${poolSize} workers`);
 			return true;
 		} catch (err: any) {
-			this._logService.warn('[CodebaseGraph]', `Worker pool init failed: ${err?.message || err}, fallback to main thread`);
+			const _msg = err?.message || String(err);
+			// 「资源读不到」几乎一定是**打包问题**（模块没进安装包），不是偶发运行时错误 ——
+			// 必须给出可操作提示，否则只剩一句通用 warn，用户无从知道是安装包缺 tree-sitter 资源。
+			// 2026-09-15 实测：已发布包 `resources/app/node_modules/@vscode/` 缺 tree-sitter-wasm
+			// ⇒ 本 catch 命中 ⇒ 18 万节点索引回退 renderer 主线程解析（UI 冻结）。
+			const _missing = /Unable to resolve nonexistent file|ENOENT|Cannot find module/i.test(_msg);
+			this._logService.warn('[CodebaseGraph]', `Worker pool init failed: ${_msg}, fallback to main thread`
+				+ (_missing ? '（★ 资源缺失——多为安装包未包含 @vscode/tree-sitter-wasm；见 build/saros/strip-before-pack.mjs 的关键构件校验）' : ''));
 			return false;
 		}
 	}

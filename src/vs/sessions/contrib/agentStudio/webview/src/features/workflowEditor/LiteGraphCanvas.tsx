@@ -1440,13 +1440,19 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				// DOM-card "消失" 诊断：spec 未命中时卡片会被跳过（canvas 参数 widget
 				// 仍由 arrange() 绘制 → 表现为"参数还在、DOM 卡片消失"）。打点定位。
 				if (!spec) {
-						warnOnce(`spec-miss:${nodeId}:${type}`,
-							'[syncOverlay] spec miss ' + JSON.stringify({ nodeId, type, liteType: props['__liteType'], nType: n.type }));
+						// ★ 默认静默（2026-09-15 降噪，与 `__sarosLayoutDebug` 同约定）：
+						//   需要在 DevTools 执行 `globalThis.__syncOverlayDebug = true` 才输出。
+						if ((globalThis as { __syncOverlayDebug?: boolean }).__syncOverlayDebug) {
+							warnOnce(`spec-miss:${nodeId}:${type}`,
+								'[syncOverlay] spec miss ' + JSON.stringify({ nodeId, type, liteType: props['__liteType'], nType: n.type }));
+						}
 					} else if (type.startsWith('Saros.')) {
 						// 编排节点被守卫跳过时打点：定位「某类节点参数 UI 缺失」。
 						// 若这里出现 Saros.Agent 等，说明该类型未登记进 ORCH_RICH_NODE_TYPES。
-						warnOnce(`orch-skip:${nodeId}:${type}`,
-							'[syncOverlay] orch node skipped (no DOM card) ' + JSON.stringify({ nodeId, type, kind: spec.kind, isOrchRich }));
+						if ((globalThis as { __syncOverlayDebug?: boolean }).__syncOverlayDebug) {
+							warnOnce(`orch-skip:${nodeId}:${type}`,
+								'[syncOverlay] orch node skipped (no DOM card) ' + JSON.stringify({ nodeId, type, kind: spec.kind, isOrchRich }));
+						}
 					}
 				continue;
 				}
@@ -2353,11 +2359,23 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		try {
 			syncStoreToGraph(graph, nodes, edges, graph._groups.map(g => g.serialize()), canvasInstanceRef.current);
 		} finally {
-				setTimeout(() => { suppressStoreSync.current = false; }, 0);
-			}
+			setTimeout(() => { suppressStoreSync.current = false; }, 0);
+		}
+		} else if (syncStoreDataToGraph(graph, nodes as Array<{ id: string; data?: Record<string, unknown> }>)) {
+		// ★ data-only 同步（2026-09-15 修「聊天卡勾选选择器候选 → 画布节点不实时同步」）：
+		//   本 effect 原来只在**节点/边集合**变化时才动 graph（属性变更刻意跳过，避免
+		//   configure() 重建节点丢掉拖动状态与 userHeight）。但「聊天卡勾选」这条外部
+		//   路径（host canvas op `select_picker_refs` → 预处理成 `update_node`）**只写
+		//   store 的 node.data** ✗ ⇒
+		//     ① 卡片读的是挂载期 `meta`（源自 node.properties）→ 高亮不刷新；
+		//     ② 下一次 `syncGraphToStore`（graph.on_change）会用**旧 properties** 把 store
+		//        刚写入的选中态覆盖回去 ⇒ 选择「静默丢失」（永久不同步）。
+		//   这里做**纯属性合并**（不 rebuild、不 configure），让两个方向的真源一致；
+		//   卡片侧的实时刷新由 `nodeCard` 的 store 订阅负责（见该处注释）。
+		graph.setDirtyCanvas?.(true, true);
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [nodes, edges]);
+		}, [nodes, edges]);
 
 	// ── double click on node → open card editor ────────────────────────────
 	React.useEffect(() => {
@@ -2910,6 +2928,45 @@ function repairLinksAfterConfigure(graph: LGraph): void {
 		// eslint-disable-next-line no-console
 		console.warn(`[repairLinksAfterConfigure] registered ${repaired} slot-link references across ${entries.length} links`);
 	}
+}
+
+/**
+ * store → graph 的**纯属性**同步（不 rebuild）：把 store 节点 `data` 的标量值合并进
+ * 对应 LiteGraph 节点的 `properties`。返回是否发生了写入。
+ *
+ * ★ 为什么需要（2026-09-15「聊天卡勾选选择器候选 → 画布节点不实时同步」）：
+ *   `syncStoreToGraph` 是**全量** `configure()` 重建（会重置 userHeight / 选中 / widget
+ *   实例），只能在「节点/边集合变化」时用；而外部路径（host 的 canvas op
+ *   `select_picker_refs` / `update_node`）**只写 store 的 `node.data`** ⇒
+ *   `node.properties` 与 store 漂移 ⇒ 卡片（读 properties 派生的 meta）看不到，
+ *   且下一次 `syncGraphToStore` 会用旧 properties 把 store 的选择覆盖回去 ✗。
+ *
+ * ⚠ 只合并 `data` 里**非 `__` 前缀**的键：`__sarosId` / `__liteType` / `__stageUid`
+ *   等是画布内部身份字段，绝不能被 store 数据覆盖。
+ */
+function syncStoreDataToGraph(
+	graph: LGraph,
+	storeNodes: Array<{ id: string; data?: Record<string, unknown> }>,
+): boolean {
+	const bySarosId = new Map<string, LGraphNode>();
+	for (const n of graph._nodes) {
+		const sid = String((n.properties as Record<string, unknown> | undefined)?.['__sarosId'] ?? n.id);
+		bySarosId.set(sid, n);
+	}
+	let changed = false;
+	for (const sn of storeNodes) {
+		const data = sn.data;
+		if (!data) { continue; }
+		const gn = bySarosId.get(sn.id);
+		if (!gn) { continue; }
+		const props = (gn.properties ?? {}) as Record<string, unknown>;
+		for (const key of Object.keys(data)) {
+			if (key.startsWith('__')) { continue; }
+			const next = data[key];
+			if (props[key] !== next) { props[key] = next; changed = true; }
+		}
+	}
+	return changed;
 }
 
 /** Store → graph: configure from workflow JSON via the adapter. */

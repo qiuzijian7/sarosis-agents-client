@@ -20,6 +20,7 @@
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { isAbsoluteGraphPath } from '../common/codebaseIndexDefaults.js';
+import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
 
 /**
  * 解析 searchCode / get_code_snippet 读取文件时用的 URI。
@@ -491,10 +492,13 @@ export class CodebaseGraphStore {
 	 * 全量副本，降低大图内存峰值。
 	 */
 	async rebuildBM25(onProgress?: (done: number, total: number) => void, force: boolean = false): Promise<void> {
-		// 每 1000 节点让出主线程一次（旧值 5000：12.4w 节点只让出 25 次，
-		// 单次连续占用仍足以造成可感知冻结）。1000 是「让出开销 vs 响应性」的折中：
-		// 单节点建索引为微秒级，让出一次的宏任务开销相对可控。
-		const YIELD_EVERY = 1000;
+		// ★ 2026-09-15：让出策略从**固定每 1000 节点**（更早是 5000）改为**按时间预算**
+		// （`SLICE_BUDGET_MS` = 8ms，见 `common/asyncSlice.ts`）。
+		//
+		// 为什么固定条数不够：单节点建索引是微秒级，但单次连续占用会随「节点文本长度 /
+		// 机器快慢」浮动 —— 大节点（长签名、长 filePath）或慢机器下 1000 个也能累到几十毫秒
+		// ⇒ 用户看到的是可感知的抽搐式卡顿。时间预算则自动适配。
+		let sliceStart = performance.now();
 
 		// ── 增量模式：只处理脏集 ──
 		if (!force) {
@@ -515,19 +519,22 @@ export class CodebaseGraphStore {
 			for (const id of removed) {
 				if (this._bm25DirtyAdded.has(id)) { continue; }
 				this._bm25.removeDocument(id);
-				if (++done % YIELD_EVERY === 0) {
+				if ((++done % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
 					if (onProgress) { onProgress(done, removed.length + added.length); }
-					await new Promise<void>(resolve => setTimeout(resolve, 0));
+					await yieldToEventLoop();
+					sliceStart = performance.now();
 				}
 			}
+			sliceStart = performance.now();
 			for (const id of added) {
 				const n = this._nodes.get(id);
 				if (!n) { continue; } // 节点在 defer 期间又被删掉了
 				this._bm25.removeDocument(id); // 幂等：先清旧文档再重新加入（更新场景）
 				this._bm25.addDocument(id, this._buildBM25Text(n));
-				if (++done % YIELD_EVERY === 0) {
+				if ((++done % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
 					if (onProgress) { onProgress(done, removed.length + added.length); }
-					await new Promise<void>(resolve => setTimeout(resolve, 0));
+					await yieldToEventLoop();
+					sliceStart = performance.now();
 				}
 			}
 			if (onProgress) { onProgress(done, removed.length + added.length); }
@@ -540,11 +547,13 @@ export class CodebaseGraphStore {
 		this._bm25.clear();
 		const total = this._nodes.size;
 		let done = 0;
+		sliceStart = performance.now();
 		for (const n of this._nodes.values()) {
 			this._bm25.addDocument(n.id, this._buildBM25Text(n));
-			if (++done % YIELD_EVERY === 0) {
+			if ((++done % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
 				if (onProgress) { onProgress(done, total); }
-				await new Promise<void>(resolve => setTimeout(resolve, 0));
+				await yieldToEventLoop();
+				sliceStart = performance.now();
 			}
 		}
 		if (onProgress) { onProgress(total, total); }
@@ -1372,6 +1381,13 @@ export class CodebaseGraphStore {
 		const idMap = new Map<number, number>();
 
 		// Restore nodes (batched, remapped)
+		//
+		// ★ 2026-09-15：让出策略从「每 BATCH_SIZE（8000）项之后一次」改为**按时间预算**
+		// （`SLICE_BUDGET_MS` = 8ms，见 `common/asyncSlice.ts`）。原因：固定 8000 项在
+		// 大图（节点带长 filePath / 签名）或慢机器下，**单批连续占用可达 50~150ms**
+		// ⇒ 用户观感是「切换工作区时整窗一顿一顿」（实测 UE5EA 87.6 万节点）。
+		// 批边界保留（用于 onProgress 粒度），但让出发生在批**内**。
+		let sliceStart = performance.now();
 		for (let i = 0; i < nodes.length; i += BATCH_SIZE) {
 			const end = Math.min(i + BATCH_SIZE, nodes.length);
 			for (let j = i; j < end; j++) {
@@ -1402,12 +1418,17 @@ export class CodebaseGraphStore {
 				labelArr.push(newId);
 				this._nodesByLabel.set(labelKey, labelArr);
 				stats.nodesAdded++;
+				if ((j % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+					await yieldToEventLoop();
+					sliceStart = performance.now();
+				}
 			}
 			if (onProgress) { onProgress(end, totalItems); }
-			await new Promise<void>(resolve => setTimeout(resolve, 0));
 		}
 
 		// Restore edges (batched, remapped source/target；跳过悬空边与重复边)
+		// 同上：批内按时间预算让出（重置基准，避免沿用上一段的残留时间戳）。
+		sliceStart = performance.now();
 		for (let i = 0; i < edges.length; i += BATCH_SIZE) {
 			const end = Math.min(i + BATCH_SIZE, edges.length);
 			for (let j = i; j < end; j++) {
@@ -1430,9 +1451,12 @@ export class CodebaseGraphStore {
 				inArr.push(newId);
 				this._inEdges.set(newTarget, inArr);
 				stats.edgesAdded++;
+				if ((j % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+					await yieldToEventLoop();
+					sliceStart = performance.now();
+				}
 			}
 			if (onProgress) { onProgress(nodes.length + end, totalItems); }
-			await new Promise<void>(resolve => setTimeout(resolve, 0));
 		}
 
 		// Restore file hashes (project override)

@@ -472,7 +472,17 @@ export function AnimatedEmojiEditor({
   //   · gifCells=0 而 staleCells 非空 → 全部被换批剔除（预览回落输入原图，看起来
   //     「怎么跑都不变」——因为原图本来就不变）；
   //   · gifCells>0 且 stale=false → 显示的就是最新 GIF（若图没变，说明产物字节相同）。
+  //   ★ 默认静默（2026-09-15）：需排查时在 DevTools 执行
+  //     `globalThis.__animatedEmojiDiag = true` 即恢复（原来无条件 `console.warn`
+  //     带 React 调用栈，会被误读成"程序报错"）。
   React.useEffect(() => {
+    // ★ 默认静默（2026-09-15）：这条诊断原来用 `console.warn` 每 2s 打一次 ⇒
+    //   在 DevTools 里表现为**带 React 调用栈的黄色 Warning**（`console.warn` 在
+    //   passive effect 里执行 → Chrome 记录整条 commit 栈：`commitHookEffectListMount`
+    //   → `flushPassiveEffects` …）⇒ 被误认为"程序报警/出错" ✗（用户实测困惑）。
+    //   它本身只是**数据源自检**（见下方各字段用途），排查「③ 跑完不更新」时极有用，
+    //   故不删除 —— 改为按需开启：DevTools 执行 `globalThis.__animatedEmojiDiag = true`。
+    if (!(globalThis as { __animatedEmojiDiag?: boolean }).__animatedEmojiDiag) { return; }
     const now = Date.now();
     if (now - _emojiDiagAt < 2000) { return; }
     _emojiDiagAt = now;

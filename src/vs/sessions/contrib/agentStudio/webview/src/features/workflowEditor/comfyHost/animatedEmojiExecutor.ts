@@ -1277,14 +1277,17 @@ export async function runAnimatedEmoji(input: NodeExecutionInput): Promise<Singl
 					//   过期——不固化则签名过期后 ⟳ 重新抠图 403、原片预览黑屏、媒体库
 					//   死链。归档前拉成本地 dataURL（失败静默回退原 URL），后续抠像/
 					//   归档/⟳ 全用本地数据。comfyui 渠道（127.0.0.1）原样返回零开销。
-					cellVideoUrl = await localizeImageRef(cellVideoUrl);
+					cellVideoUrl = await localizeImageRef(cellVideoUrl, {
+						label: `AnimatedEmoji cell${job.cellIndex} 绿幕原片`,
+						kind: 'video',
+					});
 					// ★ 固化失败告警（2026-09-12 日志实证）：仍为 http(s) 说明原片**没能落成本地
 					//   data URL**（COS 签名 URL 拉取失败）⇒ 约 2h 后签名过期，阶段②/③ 抠像与
 					//   GIF 编码都会 403 失败（用户实测：阶段③ 报 `net.fetchAsDataUrl: HTTP 403`）✗。
 					//   此处提前告警，把问题定位在**生成时刻**，而不是几小时后才暴露 ✗。
 					if (/^https?:/i.test(cellVideoUrl)) {
 						// eslint-disable-next-line no-console
-						console.warn(`[AnimatedEmoji] cell ${job.cellIndex} 原片未固化（仍为外网 URL，约 2h 后失效 → ②/③ 将失败）：${cellVideoUrl.slice(0, 120)}…`);
+						console.warn(`[AnimatedEmoji] cell ${job.cellIndex} 原片未固化（仍为外网 URL，约 2h 后失效 → ②/③ 将失败；先看同段上方的 [localizeRef] 一行，那里有 host 代理 / 公网 alias / 媒体库落盘三条路径的**具体失败原因**）：${cellVideoUrl.slice(0, 120)}…`);
 					}
 					// ③ 输出管线（2026-09-12 三阶段拆分）：
 					//    阶段①：绿幕原片（port='video'）；

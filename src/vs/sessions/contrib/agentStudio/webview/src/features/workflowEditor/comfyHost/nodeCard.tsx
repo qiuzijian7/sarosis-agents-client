@@ -1226,9 +1226,17 @@ function PickerPoolGrid({ entries, selectedIndices, selectedRefs, poolScope, onP
 				</div>
 			)}
 			{images.map((e, i) => {
+				// ★ 上游视图也认 ref（2026-09-15）：`selected_indices` 里的序号是
+				//   «池内下标»，而「聊天卡勾选 → 画布同步」的 ref **可能解析不出序号**
+				//   （池与候选不同源/顺序不同 ⇒ `buildPickerSelectionPatch` 按约定
+				//   **不写序号**，见 canvasOps.ts）⇒ 只比序号会**整批漏高亮** ✗
+				//   （用户实测：聊天卡选了 9 张，画布网格只亮 3 个）。
+				//   `directRefs` 是**精确 ref 匹配**，与序号互为补集 ⇒ 取并集：
+				//   · 画布点选 → 序号 + ref 都写了（主路径，行为不变）；
+				//   · 外部同步 → 序号可能缺，ref 兜底 ✓。
 				const isSelected = poolScope === 'all'
 					? selectedRefs.has(e.media.ref)
-					: selectedIndices.has(i);
+					: (selectedIndices.has(i) || selectedRefs.has(e.media.ref));
 				return (
 					<div
 						key={e.key}
@@ -2423,12 +2431,30 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 		() => (meta.isPicker ? mergeImagePool(poolScope === 'all' ? allImageOutputs : pickerOutputs) : []),
 		[meta.isPicker, poolScope, pickerOutputs, allImageOutputs],
 	);
+	// ★ 实时订阅 store 的 node.data（2026-09-15 修「聊天卡勾选 picker 候选 → 画布节点
+	//   不实时同步」）。`meta` 是**挂载期**由 `getNodeCardMeta(spec, props)` 冻结的快照，
+	//   而外部写入（host canvas op `select_picker_refs` → `applyCanvasOpsToStore`）只写
+	//   store 的 `node.data`、**不 remount 卡片** ⇒ 高亮永远停在旧值 ✗。订阅 store 后
+	//   `setNodes` 立即触发重渲染（selector 返回标量，其余节点的写入不会误触发）。
+	const livePickerSel = useWorkflowEditorStore(s => {
+		const d = s.nodes.find(n => n.id === nodeId)?.data as Record<string, unknown> | undefined;
+		const v = d?.['selected_indices'];
+		return typeof v === 'string' ? v : undefined;
+	});
+	const livePickerRefs = useWorkflowEditorStore(s => {
+		const d = s.nodes.find(n => n.id === nodeId)?.data as Record<string, unknown> | undefined;
+		const v = d?.['directRefs'];
+		return typeof v === 'string' ? v : undefined;
+	});
 	// ── picker 多选（2026-09-12 用户需求「多选图片时 UI 要有多选状态」）──────
-	// 读取顺序：本地草稿（刚点完，立即高亮）→ meta 透传（重挂载后从 properties
-	// 恢复）→ 旧字段 `selected_index` / `directRef`（**向后兼容**：老工作流只存
-	// 了单张，按「单选 = 只选中那一张」解释）。
-	const pickerSelIndicesRaw = (controlDrafts['selected_indices'] ?? meta.pickerSelectedIndices ?? '') as string;
-	const pickerDirectRefsRaw = (controlDrafts['directRefs'] ?? meta.pickerDirectRefs ?? '') as string;
+	// 读取顺序：store node.data（**真源**，外部改选实时跟手）→ 本地草稿（刚点完的乐观值）
+	// → meta 透传（重挂载后从 properties 恢复）→ 旧字段 `selected_index` / `directRef`
+	// （**向后兼容**：老工作流只存了单张，按「单选 = 只选中那一张」解释）。
+	// ⚠ store 值必须放在草稿**之前**：先画布点选（草稿有值）再由聊天卡改选时，草稿会
+	//   一直压住新值 ⇒ 又变成"不同步" ✗。store 由两条写路径共同维护（画布 `wf-node-control`
+	//   → `applyNodeControl`；外部 canvas op → `applyCanvasOpsToStore`），故它总是最新 ✓。
+	const pickerSelIndicesRaw = (livePickerSel ?? controlDrafts['selected_indices'] ?? meta.pickerSelectedIndices ?? '') as string;
+	const pickerDirectRefsRaw = (livePickerRefs ?? controlDrafts['directRefs'] ?? meta.pickerDirectRefs ?? '') as string;
 	/** 当前选中项（ComfyTV selected_index，1-based）。执行器兜底 / 旧数据兼容用。 */
 	const selectedIndex = React.useMemo(() => {
 		if (!meta.isPicker) { return 1; }
@@ -2507,21 +2533,39 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId, stageUid
 			publishPickerSel(patch);
 			return;
 		}
-		const next = pickerSelectedIndices.includes(poolIndexZeroBased)
-			? pickerSelectedIndices.filter(i => i !== poolIndexZeroBased)
-			: [...pickerSelectedIndices, poolIndexZeroBased].sort((a, b) => a - b);
-		// ★★ 必须**同步写 ref 数组**（与序号同源）：下游（画布物化 / runPickerNode）
-		//   优先读 `directRefs`；若这里只写序号，`directRefs` 会停留在**旧值**
-		//   （如聊天卡上次同步的 3 张 / 上一次 'all' 视图的选择）→ 下游按旧 refs 输出
-		//   → 用户实证「节点选了 8 张，右侧下游引用只有 3 张」✗。
-		const nextRefs = next
-			.map(i => pickerPool[i]?.media.ref)
-			.filter((r): r is string => typeof r === 'string' && r.length > 0);
+		const targetEntry = pickerPool[poolIndexZeroBased];
+		const targetRef = targetEntry?.media.ref;
+		const hasTargetRef = typeof targetRef === 'string' && targetRef.length > 0;
+		// ★★ 「视觉选中」= **序号命中 ∪ ref 命中**（与网格 `isSelected` 同判据，2026-09-15）：
+		//   外部同步（聊天卡勾选）写进来的 ref **可能解析不出池内序号**（池与候选不同源 /
+		//   顺序不同 ⇒ `buildPickerSelectionPatch` 按「绝不猜序号」约定不写序号）⇒
+		//   只比序号会让「点一下取消」**首次无效** ✗（用户实测：聊天卡选 9 张、画布只亮 3 个）。
+		const visualSelected = pickerSelectedIndices.includes(poolIndexZeroBased)
+			|| (hasTargetRef && pickerSelectedRefs.includes(targetRef));
+		// ★★ 增删一律以 **ref 集合**为准（`directRefs` 才是下游唯一认的字段：画布物化 /
+		//   runPickerNode；`selected_indices` 只是本视图的高亮辅助）——否则取消一张就会把
+		//   「解析不出序号的那些 ref」整批丢掉（refs 缩水 ⇒ 下游只输出其中几张）✗。
+		//   旧数据（只有 `selected_index`、没有 refs）先用「序号 → ref」补齐一次，否则
+		//   refs 为空会让第一次点击被判成「未选中」→ 取消不掉 ✗。
+		const baseRefs = pickerSelectedRefs.length > 0
+			? pickerSelectedRefs
+			: pickerSelectedIndices
+				.map(i => pickerPool[i]?.media.ref)
+				.filter((r): r is string => typeof r === 'string' && r.length > 0);
+		const nextRefs = visualSelected
+			? baseRefs.filter(r => r !== targetRef)
+			: (hasTargetRef ? Array.from(new Set([...baseRefs, targetRef])) : [...baseRefs]);
+		// 序号 = ref 在池内的下标（解析不出的 ref **不写序号**，与 canvasOps 同约定）
+		const nextIndices = [...new Set(
+			nextRefs.map(r => pickerPool.findIndex(e => e.media.ref === r)).filter(i => i >= 0),
+		)].sort((a, b) => a - b);
+		const firstRef = nextRefs[0] ?? '';
+		const firstIdx = firstRef ? pickerPool.findIndex(e => e.media.ref === firstRef) : -1;
 		const patch = {
-			selected_indices: next.length > 0 ? JSON.stringify(next) : '',
-			selected_index: next.length > 0 ? next[0] + 1 : 1,
+			selected_indices: nextIndices.length > 0 ? JSON.stringify(nextIndices) : '',
+			selected_index: firstIdx >= 0 ? firstIdx + 1 : 1,
 			directRefs: nextRefs.length > 0 ? JSON.stringify(nextRefs) : '',
-			directRef: nextRefs[0] ?? '',
+			directRef: firstRef,
 		};
 		commitControls(patch);
 		// ★ 点选即发布（见 publishPickerSel 注释）：picker 无运行按钮，不在这里

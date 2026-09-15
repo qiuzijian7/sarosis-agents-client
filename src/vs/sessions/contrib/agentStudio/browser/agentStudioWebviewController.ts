@@ -5,7 +5,7 @@
 
 
 /* eslint-disable local/code-no-unexternalized-strings */
-import { Disposable } from "../../../../base/common/lifecycle.js";
+import { Disposable, DisposableStore } from "../../../../base/common/lifecycle.js";
 import {
 	IWebviewElement,
 	IWebviewService,
@@ -612,15 +612,18 @@ export class AgentStudioWebviewController extends Disposable {
 			this.logService.info(`[AS-DIAG] HOT PATH — panelType=${this.panelType}, initialData type=${typeof this.initialData}, value=${JSON.stringify(this.initialData)?.substring(0, 500)}`);
 
 			// CRITICAL: iframes cannot be re-parented without losing state (Chromium
-			// limitation). Use absolute-position overlay: keep the pool container on
-			// document.body and position it precisely over our panel container.
-			// Layer discipline: the overlay must NEVER compete with VS Code UI —
-			// keep z-index at 1 (above the plain container content, below VS Code
-			// parts like the sidebar/panel which use higher z-indexes) and clip
-			// the iframe so it can never bleed outside its mirrored rect.
+			// limitation). Use a positioned overlay that mirrors our panel container.
+			// Layer discipline (2026-09-15 修正): the overlay lives INSIDE
+			// `.monaco-workbench` (see agentStudioWebviewPool._createWarmInstance),
+			// so its z-index competes **in the same stacking context** as VS Code's own
+			// floating UI (dialog / quick input, 2500+). Keep it at 1: above the plain
+			// panel container (auto) and below every VS Code part/floating layer ✓.
 			const poolContainer = pooled.container;
 			this._poolContainer = poolContainer;
-			poolContainer.style.position = 'absolute';
+			// `fixed`（不是 `absolute`）：容器挂在 `.monaco-workbench`（`position:relative`）内部
+			// ⇒ absolute 会相对它定位 ✗；fixed 的 containing block 是视口 ⇒ 与
+			// `container.getBoundingClientRect()` 的坐标系一致 ✓（workbench 从 0,0 起满窗）。
+			poolContainer.style.position = 'fixed';
 			poolContainer.style.overflow = 'hidden';
 			poolContainer.style.zIndex = '1';
 			poolContainer.removeAttribute('data-agent-studio-pool');
@@ -774,14 +777,21 @@ export class AgentStudioWebviewController extends Disposable {
 		const targetDoc = this.container.ownerDocument;
 		const targetWindow = targetDoc.defaultView as CodeWindow;
 		const coldOverlay = targetDoc.createElement('div');
-		coldOverlay.style.position = 'absolute';
+		// `fixed`（不是 `absolute`）：容器挂在 `.monaco-workbench`（`position:relative`）内部
+		// ⇒ absolute 会相对它定位 ✗；fixed 相对视口 ⇒ 与 `getBoundingClientRect()` 同坐标系 ✓。
+		coldOverlay.style.position = 'fixed';
 		// Keep the overlay beneath VS Code parts (sidebar/panel/editor chrome)
 		// so it can never visually mask unrelated UI; it only needs to cover
 		// the panel container itself (which sits at layer 0/auto).
 		coldOverlay.style.zIndex = '1';
 		coldOverlay.style.overflow = 'hidden';
 		coldOverlay.setAttribute('data-agent-studio-overlay', 'cold');
-		targetDoc.body.appendChild(coldOverlay);
+		// ★ 挂 `.monaco-workbench` 内部而不是 `document.body`（2026-09-15 层级事故）：
+		//   body 下 overlay 与 workbench 根容器**同层（z-index 都是 1）且 DOM 更靠后**
+		//   ⇒ 压住整个 workbench ⇒ 其内部浮层（dialog / quick input，2500+）一律被遮 ✗
+		//   （用户实证：`Ctrl+Shift+O` 的对话框被画布 webview 遮住左半）。
+		//   挂进 workbench ⇒ 与那些浮层同处一个 stacking context ⇒ z-index=1 自然让位 ✓。
+		(targetDoc.querySelector('.monaco-workbench') ?? targetDoc.body).appendChild(coldOverlay);
 
 		const coldSyncLayout = () => {
 			const rect = this.container.getBoundingClientRect();
@@ -945,7 +955,10 @@ export class AgentStudioWebviewController extends Disposable {
 		window.addEventListener('error', function(e) {
 			console.error('[AS-EARLY] Script error:', e.message, e.filename, e.lineno);
 		});
-		console.log('[AS-EARLY] Inline script executed, panelType=' + window.__AGENT_STUDIO_PANEL_TYPE__);
+		// ★ 降噪（2026-09-15）：改 debug（DevTools 默认不显示 verbose，也不再刷进 app log）。
+		//   需要时把 webview DevTools 的 Log level 调到 Verbose 即可；启动链路本身仍由
+		//   __AS_PERF_INLINE_TS__ / __AS_BUNDLE_LOADED__ 承载，功能不受影响。
+		console.debug('[AS-EARLY] Inline script executed, panelType=' + window.__AGENT_STUDIO_PANEL_TYPE__);
 		// Perf: when the webview actually started executing the injected HTML.
 		// Gap from __AS_PERF_HTML_TS__ ≈ webview element creation + HTML transport.
 		window.__AS_PERF_INLINE_TS__ = Date.now();
@@ -4686,8 +4699,16 @@ export class AgentStudioWebviewController extends Disposable {
 				url,
 				method: 'GET',
 				binary: true,
-			}) as { ok?: boolean; status?: number; base64?: string; contentType?: string; error?: string };
+			}) as { ok?: boolean; status?: number; base64?: string; contentType?: string; error?: string; truncated?: boolean; totalBytes?: number };
 			if (result?.error) { return { error: result.error }; }
+			// ★ 主进程 binary 上限 4MB：**截断必须显式失败**（2026-09-15）——
+			//   否则调用方拿到残缺 dataURL（mp4 头完好、尾部缺失）当成"固化成功"，
+			//   直到抠像 / 编码阶段才炸，且离根因很远 ✗。显式报错后上层会走
+			//   「媒体库落盘」回退（无 4MB 限制、落盘后不过期）。
+			if (result?.truncated) {
+				const mb = Math.round((result.totalBytes ?? 0) / 1024 / 1024 * 10) / 10;
+				return { error: `net.fetchAsDataUrl: 响应 ${mb}MB 超过二进制 4MB 上限（已中止，避免静默截断损坏媒体）` };
+			}
 			const status = result.status ?? 0;
 			const base64 = result.base64 ?? '';
 			if (status < 200 || status >= 300 || !base64) {
@@ -5505,7 +5526,7 @@ export class AgentStudioWebviewController extends Disposable {
 			const pkg = await this.marketplaceService.getPackage(payload.workflowId);
 			serverVersion = pkg.latestVersion;
 		} catch {
-			// 商城中无此工作流（404 等）
+			// 商城中无此工作流（404 等）—— 属正常路径，不记日志
 		}
 		if (!localVersion && !serverVersion) { return { state: 'unpublished' }; }
 		if (localVersion && serverVersion) {
@@ -5521,29 +5542,48 @@ export class AgentStudioWebviewController extends Disposable {
 	 * 单行工具栏（v2）：打开发布 modal。RPC 等待 modal 关闭（发布成功或取消）后返回，
 	 * webview 侧随后重新查询 publishState 刷新 pill。
 	 */
-	private _handleWorkflowPublish(payload: { workflowId: string }): Promise<{ ok: boolean; version?: string; cancelled?: boolean }> {
+	private _handleWorkflowPublish(payload: { workflowId: string }): Promise<{ ok: boolean; version?: string; cancelled?: boolean; error?: string }> {
 		return (async () => {
 			const wf = await this.workflowStorageService.getWorkflow(payload.workflowId);
 			if (!wf) {
+				// 异常路径（正常不会发生）⇒ 留痕：画布侧只会显示一行"发布已取消"。
+				this.logService.warn(`[AgentStudioWebviewController] workflow.publish: 未找到工作流 ${payload?.workflowId ?? '(空)'} ⇒ 返回 cancelled（弹窗不会出现）`);
 				return { ok: false, cancelled: true } as const;
 			}
 			const modal = this.instantiationService.createInstance(WorkflowPublishModal, wf);
-			return new Promise<{ ok: boolean; version?: string; cancelled?: boolean }>(resolve => {
+			return new Promise<{ ok: boolean; version?: string; cancelled?: boolean; error?: string }>(resolve => {
 				let settled = false;
-				const done = (r: { ok: boolean; version?: string; cancelled?: boolean }) => {
+				const done = (r: { ok: boolean; version?: string; cancelled?: boolean; error?: string }) => {
 					if (settled) { return; }
 					settled = true;
 					resolve(r);
 				};
-				const publishSub = modal.onDidPublish(published => {
+				// ★★ 两个订阅都收进 store（2026-09-15，修 `[LEAKED DISPOSABLE]`）。
+				// 泄漏栈：`toDisposable`（`base/common/lifecycle.ts:406`）←
+				// `WorkflowPublishModal.onDidClose`（`event.ts:1295`）← 本方法 ✓
+				// 成因：`onDidClose` 的返回值此前**被丢弃** ✗ —— 同一函数里 `onDidPublish`
+				// 却有 `publishSub` 持有并 dispose ✓，前后不一致 ✓。
+				// `Event` 订阅内部走 `toDisposable(...)` ⇒ **返回值丢了就是泄漏** ✗
+				// （见 MEMORY.md 第 21 条 ✓）。
+				const subs = new DisposableStore();
+				subs.add(modal.onDidPublish(published => {
+					this.logService.info(`[AgentStudioWebviewController] workflow.publish: 发布成功 v${published.version ?? '(无版本号)'}`);
 					done({ ok: true, version: published.version });
-				});
-				modal.onDidClose(() => {
-					publishSub.dispose();
+				}));
+				subs.add(modal.onDidClose(() => {
+					subs.dispose(); // 一次性的关闭事件 ⇒ 在此释放全部订阅 ✓
 					modal.dispose();
 					done({ ok: false, cancelled: true });
-				});
-				modal.show();
+				}));
+				try {
+					modal.show();
+				} catch (err) {
+					// 显式失败而不是让异常冒泡成"未知错误"：webview 会把 message 显示出来。
+					this.logService.error('[AgentStudioWebviewController] workflow.publish: 弹窗显示失败', err);
+					subs.dispose();
+					modal.dispose();
+					done({ ok: false, cancelled: false, error: err instanceof Error ? err.message : String(err) });
+				}
 			});
 		})();
 	}

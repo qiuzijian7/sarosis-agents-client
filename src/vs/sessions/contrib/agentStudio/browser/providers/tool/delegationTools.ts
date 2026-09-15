@@ -373,6 +373,10 @@ async function _ensureGraphReadyForExplore(ctx: DelegationToolContext): Promise<
 		// 竞态守卫：启动时 bootstrap 的 loadGraphMerge 可能仍在加载大图谱，
 		// 期间误判"无图"会对全部 folder 触发全量重建（曾致每次会话必重建）
 		await graph.whenGraphLoaded();
+		// ★ 2026-09-15（方案 C）：子代理要用图 ⇒ 先补上**被延迟的**非主 root 大图。
+		// 必须早于下面的「无图 ⇒ 对**全部** folder 建索引」判断 —— 否则会绕开延迟加载
+		// 直接触发一次全量重建（正是要避免的重活）。
+		await graph.ensureDeferredGraphsLoaded('delegate_task preflight');
 		if (graph.hasGraphData()) { return true; }
 		// 尝试从 SQLite 磁盘回载（Phase 2f 后端启用时免重建）
 		if (await graph.tryLoadFromSqlite()) { return true; }

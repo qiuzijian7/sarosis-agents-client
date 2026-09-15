@@ -2335,7 +2335,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 	private layoutMobileSidebar(): void {
 		const sidebarContainer = this.getContainer(mainWindow, Parts.SIDEBAR_PART);
-		const sidebarPart = this.getPart(Parts.SIDEBAR_PART);
+		// ⚠ 同 `_setSideBarHiddenInner`：`this.getPart()` 在找不到 part 时**抛异常**，
+		// 而本方法正是折叠链的收尾步骤 ⇒ 一抛就让折叠中途中断。改用 `this.parts.get()`。
+		const sidebarPart = this.parts.get(Parts.SIDEBAR_PART);
 		if (!sidebarContainer) {
 			return;
 		}
@@ -2361,7 +2363,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		const topBarHeight = this.mobileTopBarElement?.offsetHeight ?? 48;
 		const drawerWidth = this._mainContainerDimension.width;
 		const drawerHeight = Math.max(0, this._mainContainerDimension.height - topBarHeight);
-		sidebarPart.layout(drawerWidth, drawerHeight, topBarHeight, 0);
+		sidebarPart?.layout(drawerWidth, drawerHeight, topBarHeight, 0);
 	}
 
 	private handleContainerDidLayout(container: HTMLElement, dimension: IDimension): void {
@@ -2522,6 +2524,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	}
 
 	async setPartHidden(hidden: boolean, part: Parts): Promise<void> {
+		// ⚠ 关键埋点：证明「activitybar 侧发的 setPartHidden 是否真的抵达本 Workbench」。
+		// 若点图标后这里没有输出，说明 `ViewContainerActivityAction.layoutService`
+		// 指向的不是本实例（它打出的 layoutServiceCls 会指出真身）——
+		// 那种情况下后面所有 setSideBarHidden 埋点都不会亮，属另一条故障链。
+		this.logService.info(`[Workbench] setPartHidden(hidden=${hidden}, part=${String(part)}) 抵达`);
 		switch (part) {
 			case Parts.SIDEBAR_PART:
 				this.setSideBarHidden(hidden);
@@ -2605,18 +2612,42 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		}
 	}
 
-	private setSideBarHidden(hidden: boolean): void {
-		if (this.partVisibility.sidebar === !hidden) {
-			return;
-		}
+	/** `setSideBarHidden` 的重入保护（见该方法说明）。 */
+	private _inSetSideBarHidden = false;
 
+	private setSideBarHidden(hidden: boolean): void {
+		// 重入保护：`hideActivePaneComposite()` 内部会回调 `layoutService.setPartHidden(true, SIDEBAR_PART)`，
+		// 而会话布局里 `isVisible(SIDEBAR_PART)` 恒为 true ⇒ 会重进本方法（递归）。
+		// 原实现靠「状态已一致就早退」隐式终止递归 —— 但那个早退会连带跳过
+		// 「恢复被隐藏的 pane composite」这一必要副作用，所以改为显式重入保护。
+		if (this._inSetSideBarHidden) { return; }
+		this._inSetSideBarHidden = true;
+		try {
+			this._setSideBarHiddenInner(hidden);
+		} finally {
+			this._inSetSideBarHidden = false;
+		}
+	}
+
+	private _setSideBarHiddenInner(hidden: boolean): void {
+		// ⚠ 这里**不能**因「状态已一致」而早退。
+		// `partVisibility.sidebar` 与真实 DOM / 内容可能漂移：折叠可由 setPartHidden 拦截、
+		// 布局恢复等多条路径造成，且 `handleSidebarContentCollapsed` 会回写该字段。
+		// 一旦字段已是目标值，早退会让「点活动栏图标展开」这条路径**只把空容器撑宽**、
+		// 却不恢复被 hideActivePaneComposite 隐藏掉的面板 —— 用户实测症状正是
+		// 「宽度变了但一片空白」。所以这里改为幂等执行全部步骤。
 		this.partVisibility.sidebar = !hidden;
 
 		// [Sarosis] The sidebar (activity bar) is always visible in the grid.
 		// "Hidden" now means the content panel is collapsed, not the entire sidebar.
 		// We toggle the content panel via SidebarPart.setContentCollapsed()
 		// instead of removing the sidebar from the grid.
-		const sidebarPart = this.getPart(Parts.SIDEBAR_PART);
+		// ⚠ 用 `this.parts.get()` 而非 `this.getPart()`：二者不同！
+		// `this.getPart()` 走 grid/registry 查找，找不到时**抛 `Unknown part`**；
+		// 本文件其他地方（applyRestoredLayoutPreferences / saveLayoutPreferences）
+		// 一律用 `this.parts.get()`。之前这里用 `getPart()` 会让整条折叠链
+		// 在异常中中断 —— 表现为「点已激活图标想折叠，侧栏毫无反应」。
+		const sidebarPart = this.parts.get(Parts.SIDEBAR_PART);
 		if (sidebarPart instanceof SidebarPart) {
 			sidebarPart.setContentCollapsed(hidden);
 		}
@@ -2636,6 +2667,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		}
 
 		this.layoutMobileSidebar();
+
 	}
 
 	/**

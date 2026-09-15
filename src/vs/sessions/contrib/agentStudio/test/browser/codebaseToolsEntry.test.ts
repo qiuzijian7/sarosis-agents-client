@@ -36,6 +36,9 @@ function makeCtx(serviceOverrides: Record<string, unknown> = {}, ctxOverrides: R
 		hasGraphDataAsync: async () => true,
 		tryLoadFromSqlite: async () => true,
 		whenGraphLoaded: async () => { /* 竞态守卫桩：测试环境图谱同步就绪 */ },
+		// 方案 C（2026-09-15）：工具预检会先补「被延迟的非主 root 大图」。
+		// 测试环境无延迟项 ⇒ 空操作桩（真实实现在 codebaseGraphService.ensureDeferredGraphsLoaded）。
+		ensureDeferredGraphsLoaded: async () => { /* 无待加载项 */ },
 		hasProjectData: () => true,
 		getTotalNodeCount: () => 1,
 		getEdges: () => [],

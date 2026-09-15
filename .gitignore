@@ -273,3 +273,20 @@ deepseek-*.html
 
 # 测试面板的本地执行历史（flaky / 耗时基线）—— 个人数据，不入库
 src/vs/sessions/contrib/agentStudio/test/browser/.test-history.json
+1020
+sarosis-agents-client.code-workspace.bak-20260914
+.sarosworkspace/workspace.json
+docs/codebuddy-vs-saros-comparison.html
+resources/.agents/skills/analysis/.usage.json
+resources/.agents/skills/be-concise/.usage.json
+resources/.agents/skills/code-review/.usage.json
+src/vs/sessions/contrib/agentStudio/webview/src/features/workflowEditor/comfyHost/fix8.mjs
+src/vs/sessions/contrib/agentStudio/webview/src/features/workflowEditor/comfyHost/split-registry.mjs
+tools/archive/one-off-migrations/batch1.ts
+tools/archive/one-off-migrations/final-clean.ts
+tools/archive/one-off-migrations/full-clean.ts
+tools/archive/one-off-migrations/migrate-store.ts
+tools/archive/one-off-migrations/pass1.ts
+tools/archive/one-off-migrations/pass2.ts
+tools/archive/one-off-migrations/phase2.ts
+tools/archive/one-off-migrations/rename-employeeId.ts

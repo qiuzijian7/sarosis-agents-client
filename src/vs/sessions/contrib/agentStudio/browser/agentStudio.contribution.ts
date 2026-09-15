@@ -385,6 +385,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: 'balanced',
 			description: localize('agentStudio.codebaseGraph.excludeProfile', "Codebase 图谱的目录排除档位。切换后需重新索引才会生效。"),
 		},
+		'saros.codebaseGraph.deferLargeNonPrimaryRootsMB': {
+			type: 'number',
+			default: 5,
+			description: localize('agentStudio.codebaseGraph.deferLargeNonPrimaryRootsMB', "非主 root（工作区 folders[1..]，即 relatedFolders）的图谱超过此大小（MB）时，**不在打开工作区时加载**，改为首次真正用到 codebase 能力（codebase 工具 / 子代理预检）时再加载。设为 0 关闭延迟（保持旧行为：打开工作区即加载全部）。用途：避免「切到含超大图谱的多根工作区时整个窗口卡死」——实测 UE5EA 图谱 24.6MB（87.6 万节点）需数十秒同步解压；而默认检索作用域只到主 root，非主图在「打开工作区」这一刻并不必要。小图（~0MB）照常加载，检索完整性不受影响。"),
+		},
 		'sessions.agentStudio.tools.autoApproveReadOnlyCommands': {
 			type: 'boolean',
 			default: true,

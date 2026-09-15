@@ -16,9 +16,7 @@
 
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { ILogService } from '../../../../platform/log/common/log.js';
 import { localize2 } from '../../../../nls.js';
-import { ICodebaseGraphService } from './codebaseGraphService.js';
 import { KeyMod, KeyCode } from '../../../../base/common/keyCodes.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { ClassHierarchyModal } from './widgets/classHierarchyModal.js';
@@ -41,15 +39,13 @@ registerAction2(class ShowClassHierarchyAction extends Action2 {
 	}
 
 	run(accessor: ServicesAccessor): void {
-		const graphService = accessor.get(ICodebaseGraphService);
 		const editorService = accessor.get(IEditorService);
 		const instantiationService = accessor.get(IInstantiationService);
-		const logService = accessor.get(ILogService);
 
-		if (!graphService.hasGraphData()) {
-			logService.info('[CodebaseGraph]', 'Class Hierarchy requested but graph has no data yet');
-			return;
-		}
+		// 2026-09-15（用户要求）：**不再以 `hasGraphData()` 为前提** —— 旧实现无图时静默 return
+		// （只打一条 info 日志），用户按 Alt+Shift+G 完全没反应。现在无条件打开模态；
+		// 「无图则自动建图 + 在 UI 内显示进度/失败原因」由 ClassHierarchyModal 内的
+		// `ensureGraphForUi()` 负责（见 widgets/codebaseGraphAutoBuild.ts）。
 
 		// 取光标位置的单词作为根类
 		let initialQuery: string | undefined;

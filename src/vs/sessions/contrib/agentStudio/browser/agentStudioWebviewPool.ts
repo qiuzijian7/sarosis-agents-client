@@ -239,7 +239,16 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 		container.style.overflow = 'hidden';
 		container.style.zIndex = '10'; // Ensure overlay visibility when activated
 		container.setAttribute('data-agent-studio-pool', 'warming');
-		document.body.appendChild(container);
+		// ★ 挂到 **workbench 根容器内部**，不要挂 `document.body`（2026-09-15 层级事故）：
+		//   body 的子元素只有 `.monaco-workbench`（`position:relative; z-index:1`）与本 overlay
+		//   （z-index:1）—— 两者**同层**且 overlay 在 DOM 更靠后 ⇒ overlay 压住**整个 workbench**
+		//   ⇒ workbench 内部的所有浮层（dialog / quick input，z-index 2500+ 但在**另一个
+		//   stacking context** 内）都盖不过它 ✗（用户实证：`Ctrl+Shift+O` 弹出的对话框被画布
+		//   webview 遮住左半 ✗）。
+		//   挂进 workbench 后，overlay 与那些浮层同处一个 stacking context ⇒ z-index=1
+		//   自然让位于 2500+ 的浮层 ✓，同时仍盖得住自己的 panel 容器（z-index auto）✓。
+		//   ⚠ 挂载点只能在**创建时**决定（iframe 不能 reparent ✗）—— 激活时不要再移动 ✓。
+		(document.querySelector('.monaco-workbench') ?? document.body).appendChild(container);
 
 		// Create webview with same params as real chat panel
 		const webview = this.webviewService.createWebviewElement({

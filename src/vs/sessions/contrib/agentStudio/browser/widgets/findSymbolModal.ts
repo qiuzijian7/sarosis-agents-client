@@ -26,7 +26,11 @@ import { ICodebaseGraphService, GraphNode } from '../codebaseGraphService.js';
 import { NON_SYMBOL_NODE_TYPES } from '../../common/codebaseIndexDefaults.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { ITextEditorOptions } from '../../../../../platform/editor/common/editor.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { ICodebaseMemoryMcpService } from '../codebaseMemoryMcpService.js';
 import { CodebaseGraphModal } from './codebaseGraphModal.js';
+import { ensureGraphForUi } from './codebaseGraphAutoBuild.js';
 
 const NODE_TYPE_CODICON: Record<string, string> = {
 	'function': '$(symbol-method)',
@@ -55,6 +59,11 @@ export class FindSymbolModal {
 	constructor(
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
 		@IEditorService private readonly _editorService: IEditorService,
+		// 2026-09-15：无图时自动建图需要读用户索引配置（cbmService）+ 兜底解析索引根
+		// （workspaceService）；日志用于「为什么没建成」这类问题的现场排查。
+		@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
+		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
+		@ILogService private readonly _logService: ILogService,
 	) {
 	}
 
@@ -85,6 +94,22 @@ export class FindSymbolModal {
 		this._disposables.add({ dispose: () => document.removeEventListener('keydown', docKeyHandler, true) });
 		// 用初始 query（光标单词）触发首次搜索
 		this._scheduleSearch();
+		// 2026-09-15（用户要求）：**无图也照常打开 UI**。以前 `FindGraphSymbolAction.run` 在
+		// `hasGraphData()` 上静默 return —— 连这个模态都不弹，用户只看到「按 Alt+Shift+S 没反应」。
+		// 现在：无图则自动建图 + 在提示条实时显示进度，建好自动重跑搜索。
+		void ensureGraphForUi(
+			{
+				graphService: this._graphService,
+				cbmService: this._cbmService,
+				workspaceService: this._workspaceService,
+				logService: this._logService,
+			},
+			{
+				setNotice: (text, kind) => this._modal?.setNotice(text, kind),
+				refresh: () => this._scheduleSearch(),
+			},
+			this._disposables,
+		);
 	}
 
 	private _renderBody(root: HTMLElement): void {
@@ -230,6 +255,18 @@ export class FindSymbolModal {
 				this._table.appendChild(warn);
 				return; // 空结果：无需渲染表头/行
 			}
+			// 普通空结果（2026-09-15）：区分三种情况 —— 此前都是**纯空白表格**，用户无法判断
+			// 是「自己还没输入」「符号不存在」还是「图谱根本没建」。
+			const tip = dom.$('div');
+			const typed = this._searchInput.value.trim();
+			tip.textContent = !typed
+				? '输入符号名开始搜索（支持 class: / method: / var: / enum: / interface: 前缀）。'
+				: (this._graphService.hasGraphData()
+					? `没有匹配「${typed}」的符号。`
+					: '代码图谱尚无数据 —— 见上方提示（正在自动构建时，完成后会自动重新搜索）。');
+			tip.style.cssText = 'padding:10px 12px;color:var(--vscode-descriptionForeground);';
+			this._table.appendChild(tip);
+			return;
 		}
 
 		// 表头

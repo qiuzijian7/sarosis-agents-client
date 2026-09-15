@@ -3,12 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CodeBuddy vs Saros Agent Studio — 提示词与工具对比报告</title>
+<title>CodeBuddy vs WorkBuddy vs Saros Agent Studio — 提示词与工具三方对比报告</title>
 <style>
   :root{
     --bg:#0f1117; --panel:#171a23; --panel2:#1d212c; --line:#2a2f3d;
     --fg:#e6e9ef; --dim:#9aa3b2; --mut:#6b7482;
-    --cb:#8b5cf6; --saros:#22b8cf; --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
+    --cb:#8b5cf6; --saros:#22b8cf; --wb:#f59e0b;
+    --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
     --mono:'JetBrains Mono','Cascadia Code',Consolas,'SF Mono',Menlo,monospace;
   }
   *{box-sizing:border-box}
@@ -37,6 +38,7 @@
   }
   .chip.cb{color:#c4b5fd;border-color:rgba(139,92,246,.4);background:rgba(139,92,246,.09)}
   .chip.sr{color:#7fdcec;border-color:rgba(34,184,207,.4);background:rgba(34,184,207,.09)}
+  .chip.wb{color:#fcd34d;border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.09)}
 
   h2{
     font-size:19px;margin:46px 0 16px;padding-bottom:11px;
@@ -73,11 +75,13 @@
   .t-diff{background:rgba(251,191,36,.14);color:var(--warn);border:1px solid rgba(251,191,36,.35)}
 
   .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));margin:18px 0}
+  .grid3{display:grid;gap:15px;grid-template-columns:repeat(auto-fit,minmax(272px,1fr));margin:18px 0}
   .card{
     background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:19px 21px;
   }
   .card.cb{border-left:3px solid var(--cb)}
   .card.sr{border-left:3px solid var(--saros)}
+  .card.wb{border-left:3px solid var(--wb)}
   .card h4{margin:0 0 12px;font-size:14px;display:flex;align-items:center;gap:9px}
   .card ul{margin:0;padding-left:19px;color:#c3cad6;font-size:13.5px}
   .card li{margin:6px 0}
@@ -107,6 +111,7 @@
   }
   .bar-tag.cb{color:#a78bfa}
   .bar-tag.sr{color:#22b8cf}
+  .bar-tag.wb{color:#f59e0b}
   /* 关键修复：轨道必须是 flex 容器，且以 flex-basis:0 建立确定宽度基准，
      否则内部百分比宽条在部分引擎下无法解析 → 塌陷为 0 宽度（不可见） */
   .bar-track{
@@ -118,6 +123,7 @@
   .bar-fill{display:block;height:100%;border-radius:3px}
   .bar-fill.cb{background:linear-gradient(90deg,#7c3aed,#a78bfa)}
   .bar-fill.sr{background:linear-gradient(90deg,#0e7490,#22b8cf)}
+  .bar-fill.wb{background:linear-gradient(90deg,#b45309,#fcd34d)}
   .bar-val{
     width:46px;flex-shrink:0;text-align:right;
     font-family:var(--mono);font-size:12px;color:var(--dim);
@@ -135,6 +141,7 @@
   .stat .k{color:var(--mut);font-size:11.5px;margin-top:5px;text-transform:uppercase;letter-spacing:.5px}
   .stat.cb .v{color:#a78bfa}
   .stat.sr .v{color:#22b8cf}
+  .stat.wb .v{color:#f59e0b}
   .stat.n .v{color:#e6e9ef}
 
   blockquote{
@@ -155,11 +162,12 @@
 <div class="wrap">
 
 <header class="hero">
-  <h1>CodeBuddy vs Saros Agent Studio</h1>
-  <div class="sub">系统提示词与工具集差异分析报告 · 生成于 2026-09-15</div>
+  <h1>CodeBuddy · WorkBuddy · Saros Agent Studio</h1>
+  <div class="sub">系统提示词与工具集三方差异分析报告 · 更新于 2026-09-15</div>
   <div class="chips">
     <span class="chip cb">A 侧 · CodeBuddy（Deepseek-V4.1-Flash）</span>
-    <span class="chip sr">B 侧 · Saros Claw / Agent Studio（vssaros）</span>
+    <span class="chip wb">B 侧 · WorkBuddy（Claude-Opus-5）</span>
+    <span class="chip sr">C 侧 · Saros Claw / Agent Studio（vssaros）</span>
     <span class="chip">数据源：E:\Downloads\新文件6.txt + 本项目源码</span>
   </div>
 </header>
@@ -167,53 +175,79 @@
 <!-- ================= 执行摘要 ================= -->
 <h2><span class="idx">01</span>执行摘要</h2>
 
-<p>两侧本质上都是 <b>「代码 Agent 的系统提示词 + 工具协议」</b>，且共享同一套设计基因（反幻觉、并行工具调用、子代理委派、内容安全边界）。但二者的<b>工程化路径截然不同</b>：</p>
+<p>三者本质上都是 <b>「通用 Agent 的系统提示词 + 工具协议」</b>，且共享同一套设计基因（反幻觉、并行工具调用、子代理委派、内容安全边界）。但三者的<b>产品定位与工程化路径截然不同</b>：</p>
 
-<div class="grid">
+<div class="grid3">
   <div class="card cb">
     <h4>🔷 CodeBuddy — 单体式、指令密集</h4>
     <ul>
-      <li>提示词为 <b>单一巨型文本块</b>，约 220 行，用 XML 标签分区（<code>&lt;communication&gt;</code>、<code>&lt;tool_calling&gt;</code> 等）</li>
+      <li>定位：<b>IDE 内结对编程</b></li>
+      <li>提示词为 <b>单一巨型文本块</b>，约 220 行，用 XML 标签分区</li>
       <li>工具集为 <b>固定枚举 + JSON Schema 内联</b>，全部直接下发</li>
       <li>强调「极度简洁」：<i>"minimize output tokens as much as possible"</i></li>
-      <li>有独立的 <b>automations（定时任务）</b>与 <b>working memory（Markdown 文件）</b>机制</li>
-      <li>明确的代码引用格式规范 <code>```12:15:file.tsx</code></li>
+      <li>有 <b>automations</b> 与 <b>working memory（Markdown 文件）</b>机制</li>
+      <li>明确代码引用格式 <code>```12:15:file.tsx</code></li>
+    </ul>
+  </div>
+  <div class="card wb">
+    <h4>🟠 WorkBuddy — 交付导向、结果呈现强制化</h4>
+    <ul>
+      <li>定位：<b>通用任务执行 + 文档交付</b>（非纯编码）</li>
+      <li>提示词约 <b>370 行</b>，XML 分区 + <b>强制结果呈现协议</b></li>
+      <li><b>三层记忆体系</b>：云端 profile / 用户级 / 工作区级</li>
+      <li>独有 <b>Visualizer</b>（<code>read_me</code> + <code>show_widget</code>）流式内联可视化</li>
+      <li>独有 <b>个人文件安全</b>章节（桌面/下载目录 8 条硬规则）</li>
+      <li>专家（Expert）/ 连接器（Connector）/ 插件生态</li>
+      <li>托管运行时隔离（managed python / node）</li>
     </ul>
   </div>
   <div class="card sr">
     <h4>🔶 Saros Claw — 分层式、条件化装配</h4>
     <ul>
-      <li>提示词 <b>拆成常量段落</b>，由 <code>systemPromptComposer.ts</code> 按 <b>stable / context / volatile 三层</b>组装</li>
-      <li>工具集为 <b>toolset 优先级注册表</b>（Always/High/Medium/Low）+ <b>可折叠进 <code>tool_search</code> 桥接</b></li>
+      <li>定位：<b>代码 Agent 工作台</b>（Agent Studio）</li>
+      <li>提示词 <b>拆成常量段落</b>，按 <b>stable / context / volatile 三层</b>组装</li>
+      <li>工具集为 <b>toolset 优先级注册表</b> + <b>可折叠进 <code>tool_search</code></b></li>
       <li>按 <b>模型族动态注入</b>格式指令与工具使用强制约束</li>
-      <li>强调 <b>「Act, don't describe」</b>——工具调用强制显式执行</li>
-      <li>拥有<b>代码知识图谱</b>工具族（<code>search_graph</code> / <code>query_graph</code> / <code>trace_path</code>）</li>
+      <li>强调 <b>「Act, don't describe」</b></li>
+      <li>独有<b>代码知识图谱</b>工具族</li>
     </ul>
   </div>
 </div>
 
 <div class="callout good">
   <b>核心结论：</b>CodeBuddy 是「<b>把提示词写给模型看</b>」——文本密度高、容错靠指令；
+  WorkBuddy 是「<b>把提示词当产品契约</b>」——用强制协议保证交付物可见、可下载、可复用；
   Saros 是「<b>把提示词当运行时资源装配</b>」——分层缓存、条件注入、按需发现工具。
-  前者胜在<b>直给、低门槛</b>，后者胜在 <b>token 经济性与可扩展性</b>。
+  三者分别代表<b>指令密集</b>、<b>流程强制</b>、<b>运行时装配</b>三种范式。
+</div>
+
+<div class="callout">
+  <b>三者的定位差异决定了提示词重心：</b>
+  CodeBuddy 与 Saros 同为<b>编码 Agent</b>，所以提示词大量着墨于代码风格、检索策略、行号剥离；
+  WorkBuddy 是<b>通用交付 Agent</b>，所以提示词的重心在「<b>成果如何呈现给用户</b>」（<code>present_files</code>、Visualizer、outputs 目录），
+  对代码风格几乎不作要求。比较时须留意这一<b>不可直接对齐</b>的维度。
 </div>
 
 <!-- ================= 量化对比 ================= -->
 <h2><span class="idx">02</span>量化对比概览</h2>
 
 <div class="stat-grid">
-  <div class="stat cb"><div class="v">~220</div><div class="k">提示词行数（CodeBuddy）</div></div>
-  <div class="stat sr"><div class="v">~330</div><div class="k">提示词行数（Saros）</div></div>
-  <div class="stat cb"><div class="v">固定</div><div class="k">工具下发策略 CB</div></div>
-  <div class="stat sr"><div class="v">分级+折叠</div><div class="k">工具下发策略 Saros</div></div>
-  <div class="stat n"><div class="v">6</div><div class="k">共同的安全边界条数</div></div>
-  <div class="stat sr"><div class="v">8+</div><div class="k">Saros 独有的图谱工具</div></div>
+  <div class="stat cb"><div class="v">~220</div><div class="k">提示词行数 CodeBuddy</div></div>
+  <div class="stat wb"><div class="v">~370</div><div class="k">提示词行数 WorkBuddy</div></div>
+  <div class="stat sr"><div class="v">~330</div><div class="k">提示词行数 Saros</div></div>
+  <div class="stat cb"><div class="v">固定</div><div class="k">工具下发 CB</div></div>
+  <div class="stat wb"><div class="v">固定</div><div class="k">工具下发 WB</div></div>
+  <div class="stat sr"><div class="v">分级+折叠</div><div class="k">工具下发 Saros</div></div>
+  <div class="stat n"><div class="v">3</div><div class="k">记忆层级（仅 WorkBuddy）</div></div>
+  <div class="stat n"><div class="v">8+</div><div class="k">Saros 独有图谱工具</div></div>
 </div>
 
 <h3>提示词关注维度分布</h3>
 <p style="font-size:12.5px;color:var(--mut);margin:-4px 0 16px">
-  定性评估（基于各章节 token 占比的观察估计，非精确 token 统计）。
-  <span style="color:#a78bfa">■</span> CodeBuddy　<span style="color:#22b8cf">■</span> Saros Claw
+  定性评估（基于各章节文本占比的观察估计，非精确 token 统计）。
+  <span style="color:#a78bfa">■</span> CodeBuddy　
+  <span style="color:#f59e0b">■</span> WorkBuddy　
+  <span style="color:#22b8cf">■</span> Saros Claw
 </p>
 
 <div class="bar-group">
@@ -222,6 +256,11 @@
     <span class="bar-tag cb">CB</span>
     <span class="bar-track"><span class="bar-fill cb" style="width:62%"></span></span>
     <span class="bar-val">62%</span>
+  </div>
+  <div class="bar-line">
+    <span class="bar-tag wb">WB</span>
+    <span class="bar-track"><span class="bar-fill wb" style="width:34%"></span></span>
+    <span class="bar-val">34%</span>
   </div>
   <div class="bar-line">
     <span class="bar-tag sr">SR</span>
@@ -238,6 +277,11 @@
     <span class="bar-val">30%</span>
   </div>
   <div class="bar-line">
+    <span class="bar-tag wb">WB</span>
+    <span class="bar-track"><span class="bar-fill wb" style="width:22%"></span></span>
+    <span class="bar-val">22%</span>
+  </div>
+  <div class="bar-line">
     <span class="bar-tag sr">SR</span>
     <span class="bar-track"><span class="bar-fill sr" style="width:35%"></span></span>
     <span class="bar-val">35%</span>
@@ -245,11 +289,16 @@
 </div>
 
 <div class="bar-group">
-  <div class="bar-title">环境 / 运行时上下文 <span class="delta">SR 领先 +17</span></div>
+  <div class="bar-title">环境 / 运行时上下文 <span class="delta">WB 领先 +42</span></div>
   <div class="bar-line">
     <span class="bar-tag cb">CB</span>
     <span class="bar-track"><span class="bar-fill cb" style="width:8%"></span></span>
     <span class="bar-val">8%</span>
+  </div>
+  <div class="bar-line">
+    <span class="bar-tag wb">WB</span>
+    <span class="bar-track"><span class="bar-fill wb" style="width:50%"></span></span>
+    <span class="bar-val">50%</span>
   </div>
   <div class="bar-line">
     <span class="bar-tag sr">SR</span>
@@ -258,80 +307,166 @@
   </div>
 </div>
 
+<div class="bar-group">
+  <div class="bar-title">交付 / 呈现协议 <span class="delta">WB 独占维度</span></div>
+  <div class="bar-line">
+    <span class="bar-tag cb">CB</span>
+    <span class="bar-track"><span class="bar-fill cb" style="width:3%"></span></span>
+    <span class="bar-val">3%</span>
+  </div>
+  <div class="bar-line">
+    <span class="bar-tag wb">WB</span>
+    <span class="bar-track"><span class="bar-fill wb" style="width:55%"></span></span>
+    <span class="bar-val">55%</span>
+  </div>
+  <div class="bar-line">
+    <span class="bar-tag sr">SR</span>
+    <span class="bar-track"><span class="bar-fill sr" style="width:6%"></span></span>
+    <span class="bar-val">6%</span>
+  </div>
+</div>
+
 <div class="bar-scale"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+
+<div class="callout warn">
+  <b>关于「交付 / 呈现协议」维度：</b>这是 WorkBuddy 的<b>结构性独有</b>维度。
+  它在提示词中用了四个独立章节（<code>&lt;agent_loop&gt;</code> 第 7 步、<code>&lt;result_presentation&gt;</code>、
+  <code>&lt;sharing_files&gt;</code>、<code>&lt;final_answer_instructions&gt;</code>）反复强制
+  「任务完成必须调用 <code>present_files</code>」。
+  CodeBuddy 与 Saros 均无此机制——二者的产物直接留在工作区，不强制"呈现"步骤。
+</div>
 
 <!-- ================= 提示词结构对比 ================= -->
 <h2><span class="idx">03</span>系统提示词结构对比</h2>
 
 <table>
-<thead><tr><th class="col-n">#</th><th>结构维度</th><th>CodeBuddy</th><th>Saros Claw</th><th class="col-d">判定</th></tr></thead>
+<thead><tr><th class="col-n">#</th><th>结构维度</th><th>CodeBuddy</th><th>WorkBuddy</th><th>Saros Claw</th><th class="col-d">判定</th></tr></thead>
 <tbody>
 <tr><td class="col-n">1</td><td><b>组织方式</b></td>
-  <td>单体文本 + XML 标签分区<br><code>&lt;communication&gt;</code> <code>&lt;tool_calling&gt;</code> <code>&lt;automations&gt;</code></td>
+  <td>单体文本 + XML 标签分区<br><code>&lt;communication&gt;</code> <code>&lt;tool_calling&gt;</code></td>
+  <td>单体文本 + XML 标签分区（约 40 个章节）<br>比 CB 更细分，含 <code>&lt;agent_loop&gt;</code> 显式步骤编号</td>
   <td>常量段落 + 三层装配<br><code>stable / context / volatile</code></td>
   <td><span class="tag t-diff">架构差异</span></td></tr>
 
 <tr><td class="col-n">2</td><td><b>缓存友好度</b></td>
   <td>未提及 prompt cache；整块随会话下发</td>
-  <td>显式设计：<code>composeFrozenPrefix()</code> 冻结前缀命中 provider cache，易变层单独成消息</td>
+  <td>未提及 prompt cache；但把<b>可变内容下沉到文件</b>（记忆、browser 状态），主体稳定</td>
+  <td>显式设计：<code>composeFrozenPrefix()</code> 冻结前缀命中 provider cache</td>
   <td><span class="tag t-win">Saros 优</span></td></tr>
 
 <tr><td class="col-n">3</td><td><b>条件化</b></td>
   <td>几乎无条件化，全部静态</td>
-  <td>按<b>模型族</b>注入格式指令（<code>buildToolCallFormatDirective</code>）与输出格式规则</td>
-  <td><span class="tag t-win">Saros 优</span></td></tr>
+  <td>部分动态：<code>&lt;user_info&gt;</code>（OS / IDE 主题 / 工作目录）与 <code>&lt;binary_context&gt;</code> 运行时注入</td>
+  <td>按<b>模型族</b>注入格式指令（<code>buildToolCallFormatDirective</code>）</td>
+  <td><span class="tag t-diff">WB/SR 各有</span></td></tr>
 
 <tr><td class="col-n">4</td><td><b>工具清单</b></td>
   <td>工具名 + 完整 JSON Schema 内联在提示词尾部</td>
-  <td>仅下发<b>排序后的工具名清单</b>（<code>buildCompactToolSection</code>），Schema 走 function-calling 通道</td>
+  <td>工具名 + 完整 JSON Schema 内联（约 96KB，<b>三者中最大</b>）</td>
+  <td>仅下发<b>排序后的工具名清单</b>，Schema 走 function-calling 通道</td>
   <td><span class="tag t-win">Saros 优</span></td></tr>
 
 <tr><td class="col-n">5</td><td><b>人物设定</b></td>
   <td>"powered by <b>Deepseek-V4.1-Flash</b>"，明示底层模型</td>
-  <td>明示<b>不冒充</b>其他模型/品牌，身份为 Saros Agent Studio（Identity 章节）</td>
-  <td><span class="tag t-diff">取向相反</span></td></tr>
+  <td>"This conversation is powered by <b>Claude-Opus-5</b>"，明示底层模型，且以"你能做什么"能力清单开篇</td>
+  <td>明示<b>不冒充</b>其他模型/品牌，身份为 Saros Agent Studio</td>
+  <td><span class="tag t-diff">取向不同</span></td></tr>
 
 <tr><td class="col-n">6</td><td><b>输出风格</b></td>
   <td><b>极简主义</b>：多次强调 "minimize output tokens"、"avoid emojis"</td>
-  <td>「简洁但完整」；允许 emoji（📊 ⚡ 用于章节标记）</td>
+  <td><b>硬上限</b>：<i>"Never overwhelm the user with answers that are over 50-70 lines long"</i></td>
+  <td>「简洁但完整」；允许 emoji 用于章节标记</td>
   <td><span class="tag t-diff">风格差异</span></td></tr>
 
 <tr><td class="col-n">7</td><td><b>进度反馈</b></td>
   <td>无明确要求</td>
-  <td><b>强制</b>：每批工具调用前/后需 1–3 句进度叙述（<code>_PROGRESS_UPDATES_SECTION</code>）</td>
-  <td><span class="tag t-win">Saros 独有</span></td></tr>
+  <td>无强制进度叙述；但有 <b>TaskCreate/TaskUpdate</b> 状态机要求（≥3 步时用）</td>
+  <td><b>强制</b>：每批工具调用前/后需 1–3 句进度叙述</td>
+  <td><span class="tag t-win">SR 独有</span></td></tr>
 
 <tr><td class="col-n">8</td><td><b>反幻觉</b></td>
-  <td>分散在 <code>&lt;making_code_changes&gt;</code> 中（如"不要循环修 linter 超 3 次"）</td>
+  <td>分散在 <code>&lt;making_code_changes&gt;</code>（如"不要循环修 linter 超 3 次"）</td>
+  <td>较弱：主要靠 <i>"Never use placeholders or guess missing parameters"</i> 单条</td>
   <td><b>独立 6 条硬规则</b>章节，明确禁止「未调用工具却声称已完成」</td>
   <td><span class="tag t-win">Saros 强</span></td></tr>
 
 <tr><td class="col-n">9</td><td><b>行号处理</b></td>
   <td><code>&lt;inline_line_numbers&gt;</code>：<code>LINE_NUMBER:CONTENT</code>，6 字符右对齐</td>
-  <td>同规则，格式为 <code>1234: code</code>，6 字符右对齐</td>
-  <td><span class="tag t-eq">一致</span></td></tr>
+  <td><span style="color:var(--bad)">不适用</span>（非编码定位，无行号剥离规则）</td>
+  <td>同 CB 规则，格式为 <code>1234: code</code>，6 字符右对齐</td>
+  <td><span class="tag t-eq">CB≡SR</span></td></tr>
 
 <tr><td class="col-n">10</td><td><b>安全边界</b></td>
-  <td><code>&lt;content_policy&gt;</code>，6 条 + 固定的拒答话术模板</td>
-  <td>Operating Boundaries 四节（Content Policy / Confidentiality / Safety / Identity），表述几乎逐字相同</td>
-  <td><span class="tag t-eq">高度同源</span></td></tr>
+  <td><code>&lt;content_policy&gt;</code>，6 条 + 固定拒答话术模板</td>
+  <td><code>&lt;content_policy&gt;</code>，5 条（含港澳台表述规范 + 未成年人保护），<b>措辞与 CB/SR 不同源</b></td>
+  <td>Operating Boundaries 四节，表述与 CB 几乎逐字相同</td>
+  <td><span class="tag t-diff">WB 独立谱系</span></td></tr>
 
 <tr><td class="col-n">11</td><td><b>环境上下文</b></td>
   <td>未注入 OS / Shell 信息</td>
-  <td>明确 <b>Windows + Git Bash (POSIX)</b>，并警告 PowerShell cmdlet 不可用</td>
-  <td><span class="tag t-win">Saros 独有</span></td></tr>
+  <td><b>最完整</b>：<code>&lt;user_info&gt;</code>（OS/Shell/IDE 主题/日期）+ <code>&lt;binary_context&gt;</code>（python/node 绝对路径 + 隔离规则）</td>
+  <td>明确 <b>Windows + Git Bash (POSIX)</b>，警告 PowerShell cmdlet 不可用</td>
+  <td><span class="tag t-win">WB 最全</span></td></tr>
 
 <tr><td class="col-n">12</td><td><b>代码风格规范</b></td>
   <td>仅「添加必要 import」「不要输出超长 hash」</td>
+  <td><span style="color:var(--bad)">无</span>（通用交付 Agent，不约束代码风格）</td>
   <td><b>完整 Code Style 章节</b>：命名、guard clause、类型注解、注释原则、格式</td>
   <td><span class="tag t-win">Saros 强</span></td></tr>
+
+<tr><td class="col-n">13</td><td><b>交付呈现协议</b></td>
+  <td>无（产物留在工作区）</td>
+  <td><b>强制且多层</b>：<code>present_files</code> 必须作为 turn 内<b>最后一个工具调用</b>；含 outputs 目录约定 + 批量呈现要求</td>
+  <td>无（产物留在工作区）</td>
+  <td><span class="tag t-win">WB 独有</span></td></tr>
+
+<tr><td class="col-n">14</td><td><b>可视化能力</b></td>
+  <td>无专用机制</td>
+  <td><b>Visualizer</b>（<code>read_me</code> + <code>show_widget</code>）：流式内联 SVG/HTML，<b>鼓励主动使用</b>（教学类请求"Always use"）</td>
+  <td><code>renderMermaidDiagram</code> / <code>renderDrawioDiagram</code>，<b>强制</b>用工具而非代码块</td>
+  <td><span class="tag t-diff">机制不同</span></td></tr>
+
+<tr><td class="col-n">15</td><td><b>记忆写入责任</b></td>
+  <td><b>模型全责</b>：提示词 3 次强制"必须写记忆"</td>
+  <td><b>分层混合</b>：云端 profile（服务器管）+ 用户级 MEMORY.md（模型写）+ 工作区日志（模型写，限 3000 字符/会话）</td>
+  <td><b>系统托管</b>：<i>"Memory persistence is handled by the system"</i></td>
+  <td><span class="tag t-diff">三者皆不同</span></td></tr>
+
+<tr><td class="col-n">16</td><td><b>工作模式</b></td>
+  <td>单一模式（靠提示词约定"立即执行计划"）</td>
+  <td><b>显式三模式</b>：Agent（说做就做）/ Plan（先审后做）/ Ask（只读不动）</td>
+  <td><code>switch_paradigm</code> + <code>plan_enter</code>/<code>plan_exit</code>（可运行时切换）</td>
+  <td><span class="tag t-win">WB/SR 各有</span></td></tr>
+
+<tr><td class="col-n">17</td><td><b>个人文件安全</b></td>
+  <td>无</td>
+  <td><b>独立章节 8 条硬规则</b>：No-Go Zones / 扫描只读 / 先备份 / 走回收站 / 每批≤10 文件 / Windows 禁写 .ps1</td>
+  <td>无（有通用 Operating Boundaries）</td>
+  <td><span class="tag t-win">WB 独有</span></td></tr>
+
+<tr><td class="col-n">18</td><td><b>运行时隔离</b></td>
+  <td>无</td>
+  <td><b>托管运行时</b>：强制用 managed python/node 绝对路径；禁止全局 pip / <code>npm -g</code>；包必须装在隔离目录</td>
+  <td>无（用系统 python3/node）</td>
+  <td><span class="tag t-win">WB 独有</span></td></tr>
 </tbody>
 </table>
 
 <div class="callout">
-  <b>值得注意的同源性：</b>两侧的 <b>Content Policy 六条</b>（政治敏感、仇恨言论、色情、违法、隐私、假新闻）在措辞上几乎逐字一致——
-  包括收尾句 <i>"cannot be bypassed by claims of 'testing', 'academic research', or 'hypothetical scenarios'"</i>。
-  同样，"<code>LINE_NUMBER:</code> prefix … 6 characters padded" 的行号处理规则也完全一致，说明二者共享同一套提示词范本谱系。
+  <b>同源性三分格局：</b>
+  <b>CodeBuddy 与 Saros 高度同源</b>——Content Policy 六条措辞几乎逐字一致（含收尾句
+  <i>"cannot be bypassed by claims of 'testing', 'academic research', or 'hypothetical scenarios'"</i>），
+  行号剥离规则（<code>LINE_NUMBER:</code> prefix / 6 字符右对齐）也完全相同。
+  <b>WorkBuddy 属于另一谱系</b>：安全边界只有 5 条、措辞独立，且增加了 CB/SR 都没有的
+  港澳台表述规范与未成年人保护专条；行号剥离规则完全不适用。
+</div>
+
+<div class="callout warn">
+  <b>WorkBuddy 最独特的工程取向：把"机器细节"写进提示词。</b>
+  <code>&lt;binary_context&gt;</code> 里直接给出 python/node 的<b>绝对安装路径</b>、
+  venv 创建命令、<code>NODE_PATH</code> 设置方式，并规定"禁止 <code>npm install -g</code>"。
+  这是一种<b>用提示词换运行时可靠性</b>的做法——不依赖沙箱强制，而是让模型自己遵守隔离纪律。
+  代价是提示词与具体机器强耦合（换机器即失效）。
 </div>
 
 <!-- ================= 工具集对比 ================= -->
@@ -339,7 +474,7 @@
 
 <h3>4.1 工具下发机制（最根本的差异）</h3>
 
-<div class="grid">
+<div class="grid3">
   <div class="card cb">
     <h4>🔷 CodeBuddy：全量静态下发</h4>
     <ul>
@@ -348,15 +483,33 @@
       <li>无「按需发现」层 —— 模型在任何时刻都看到全部工具</li>
     </ul>
   </div>
+  <div class="card wb">
+    <h4>🟠 WorkBuddy：全量下发 + ToolSearch 桥接</h4>
+    <ul>
+      <li>同样<b>全量内联</b>，且体量最大：片段中工具 Schema 约 <b>96KB</b></li>
+      <li>同时提供 <code>ToolSearch</code> + <code>toolName</code>/<code>params</code> 调用形态（见 <code>automation_update</code> 后的 schema 片段）</li>
+      <li>工具族极广，跨编码 / 文档 / 可视化 / 专家 / 连接器</li>
+      <li>大量能力<b>不内置而走 Skill</b>：<code>agent-browser</code>、<code>find-skills</code>、Office 系列</li>
+      <li>MCP 在 <code>~/.workbuddy/mcp.json</code>，需用户手动 "Trust" 才生效</li>
+    </ul>
+  </div>
   <div class="card sr">
     <h4>🔶 Saros：注册表 + 分级 + 桥接发现</h4>
     <ul>
       <li><code>TOOLSET_DEFINITIONS</code> 按 <b>优先级</b>注册（Always / High / Medium / Low）</li>
-      <li><code>deferrable</code> 标记的工具可<b>折叠进 <code>tool_search</code></b>，不占用每次请求的 schema 预算</li>
+      <li><code>deferrable</code> 标记的工具可<b>折叠进 <code>tool_search</code></b></li>
       <li>MCP 工具<b>完全不内联</b>，走 <code>tool_search → tool_describe → tool_call</code> 三步桥接</li>
       <li>工具清单段落带 <b>缓存键</b>（含 focus / toolset / 模型族签名）</li>
     </ul>
   </div>
+</div>
+
+<div class="callout warn">
+  <b>工具下发策略的两种极端。</b>
+  CodeBuddy 与 WorkBuddy 都走「<b>全量内联</b>」路线，其中 WorkBuddy 的 Schema 体量最大（约 96KB）；
+  Saros 走「<b>只给名字 + 按需发现</b>」路线。
+  值得注意：WorkBuddy 虽已提供 <code>ToolSearch</code> 工具，但<b>同时仍把全部 Schema 内联</b>——
+  桥接层存在却未被用作省 token 的手段，这与 Saros 把 <code>tool_search</code> 当作<b>折叠机制</b>的定位不同。
 </div>
 
 <blockquote class="src">
@@ -374,93 +527,147 @@ memory toolset（Medium，<code>deferrable: true</code>）→ 可折叠，节省
 <h3>4.2 能力覆盖对照</h3>
 
 <table>
-<thead><tr><th class="col-n">#</th><th>能力域</th><th>CodeBuddy 工具</th><th>Saros Claw 工具</th><th class="col-d">判定</th></tr></thead>
+<thead><tr><th class="col-n">#</th><th>能力域</th><th>CodeBuddy 工具</th><th>WorkBuddy 工具</th><th>Saros Claw 工具</th><th class="col-d">判定</th></tr></thead>
 <tbody>
 <tr><td class="col-n">1</td><td>文件读写</td>
   <td><code>read_file</code> <code>write_to_file</code> <code>replace_in_file</code> <code>list_dir</code> <code>search_file</code></td>
+  <td><code>Read</code> <code>Write</code> <code>Edit</code> <code>Glob</code> <code>Grep</code>（提示词点名偏好这些专用工具）</td>
   <td><code>file_read</code> <code>file_write</code> <code>patch</code> <code>search_files</code></td>
-  <td><span class="tag t-eq">等效</span></td></tr>
+  <td><span class="tag t-eq">三家等效</span></td></tr>
 
 <tr><td class="col-n">2</td><td>文本/语义检索</td>
-  <td><code>search_content</code> <code>codebase_search</code> <code>lsp</code>（documentSymbol / workspaceSymbol / goToDefinition / findReferences）</td>
+  <td><code>search_content</code> <code>codebase_search</code> <code>lsp</code>（documentSymbol / goToDefinition / findReferences）</td>
+  <td><code>Grep</code> <code>Glob</code> + <b>Agent(Explore)</b> 子代理降低上下文占用</td>
   <td><code>search_code</code> <code>search_graph</code> <code>query_graph</code> <code>trace_path</code> <code>get_code_snippet</code></td>
   <td><span class="tag t-win">Saros 强</span></td></tr>
 
 <tr><td class="col-n">3</td><td><b>代码知识图谱</b></td>
   <td><span style="color:var(--bad)">无</span></td>
+  <td><span style="color:var(--bad)">无</span></td>
   <td><code>index_repository</code> <code>index_status</code> <code>get_architecture</code> <code>detect_changes</code> <code>ingest_traces</code> <code>export_artifact</code> <code>import_artifact</code> <code>check_index_coverage</code></td>
-  <td><span class="tag t-win">Saros 独有</span></td></tr>
+  <td><span class="tag t-win">Saros 独占</span></td></tr>
 
 <tr><td class="col-n">4</td><td>子代理委派</td>
   <td><code>Task</code>（code-explorer 子代理，内部含 lsp/search/read 组合）</td>
+  <td><code>Agent</code> 工具（<code>Explore</code> 等 subagent，提示词建议用于广域探索）</td>
   <td><code>delegate_task</code>（batch，最多 5 并行）+ <code>new_agent</code>（持久化 agent 定义）</td>
   <td><span class="tag t-win">Saros 强</span></td></tr>
 
 <tr><td class="col-n">5</td><td>任务规划</td>
   <td>无独立工具（靠提示词约定"立即执行计划"）</td>
+  <td><code>TaskCreate</code> <code>TaskGet</code> <code>TaskUpdate</code> <code>TaskList</code>（≥3 步时强制使用）</td>
   <td><code>update_plan</code> <code>plan_register</code> <code>plan_enter</code> <code>plan_exit</code> <code>plan_explore</code> <code>switch_paradigm</code></td>
-  <td><span class="tag t-win">Saros 独有</span></td></tr>
+  <td><span class="tag t-win">WB/SR 皆强</span></td></tr>
 
 <tr><td class="col-n">6</td><td>定时任务</td>
   <td><code>automation_update</code>（TOML + SQLite，<code>rrule</code> / <code>scheduleType</code> / <code>validFrom</code>）</td>
+  <td><code>automation_update</code>（同源 schema：<code>mode</code> / <code>rrule</code> / <code>scheduleType</code> / <code>scheduledAt</code> / <code>cwds</code>）</td>
   <td><code>cronjob</code>（cron 表达式，create/list/pause/resume/remove/history）</td>
-  <td><span class="tag t-eq">等效（实现不同）</span></td></tr>
+  <td><span class="tag t-eq">CB≡WB</span></td></tr>
 
 <tr><td class="col-n">7</td><td>跨会话记忆</td>
-  <td><b>文件式</b>：<code>.codebuddy/memory/YYYY-MM-DD.md</code> + <code>MEMORY.md</code>，靠 <code>replace_in_file</code> 追加，<b>每轮结束强制写</b></td>
+  <td><b>文件式</b>：<code>.codebuddy/memory/YYYY-MM-DD.md</code> + <code>MEMORY.md</code>，每轮结束强制写</td>
+  <td><b>三层制</b>：云端 profile（只读）+ <code>~/.workbuddy/MEMORY.md</code>（4000 字符）+ 工作区日志/MEMORY（3000 字符），另有 <code>conversation_search</code></td>
   <td><b>系统式</b>：<code>memory_list</code> + <code>session_search</code>；记忆由系统自动持久化</td>
-  <td><span class="tag t-diff">机制迥异</span></td></tr>
+  <td><span class="tag t-win">WB 最完备</span></td></tr>
 
 <tr><td class="col-n">8</td><td>技能系统</td>
   <td><code>use_skill</code>，技能展开为完整 prompt</td>
-  <td><code>read_skill</code> <code>list_skills</code> <code>skill_manage</code>；区分 prompt 型与 <b>workflow 型（可执行）</b></td>
-  <td><span class="tag t-win">Saros 细</span></td></tr>
+  <td><code>Skill</code> + <code>SkillManage</code>；<b>强制积累/反思/纠正</b>三大纪律；分用户级 / 项目级；安装前强制安全审计（P0/P1/P2）</td>
+  <td><code>read_skill</code> <code>list_skills</code> <code>skill_manage</code>；区分 prompt 型与 workflow 型</td>
+  <td><span class="tag t-win">WB 最严</span></td></tr>
 
 <tr><td class="col-n">9</td><td>网络检索</td>
   <td><code>WebFetch</code>（仅用于查 CodeBuddy 官方文档）</td>
-  <td><code>web_search</code> <code>web_extract</code> + <b>anysearch 技能优先</b>策略（含失败回退规定）</td>
-  <td><span class="tag t-win">Saros 强</span></td></tr>
+  <td><code>WebFetch</code>（查 WorkBuddy 文档；遇重定向需用新 URL 重发）</td>
+  <td><code>web_search</code> <code>web_extract</code> + anysearch 技能优先策略（含失败回退规定）</td>
+  <td><span class="tag t-win">Saros 广</span></td></tr>
 
 <tr><td class="col-n">10</td><td>命令执行</td>
   <td><code>execute_command</code>（未在片段中完整出现，按生态推断）</td>
-  <td><code>execute_code</code> + <code>terminal</code>（含 Git Bash / PowerShell 方言约束说明）</td>
+  <td><code>Bash</code>（提示词点名）+ 托管运行时绝对路径约束</td>
+  <td><code>execute_code</code> + <code>terminal</code>（含 Git Bash / PowerShell 方言约束）</td>
   <td><span class="tag t-eq">等效</span></td></tr>
 
 <tr><td class="col-n">11</td><td>图表渲染</td>
   <td><span style="color:var(--bad)">无专用工具</span></td>
-  <td><code>renderMermaidDiagram</code> <code>renderDrawioDiagram</code>（<b>强制</b>用工具而非代码块输出）</td>
-  <td><span class="tag t-win">Saros 独有</span></td></tr>
+  <td><b>Visualizer</b>：<code>read_me</code>（加载 diagram/mockup/interactive/chart/art 模块）+ <code>show_widget</code>（流式内联 SVG/HTML）</td>
+  <td><code>renderMermaidDiagram</code> <code>renderDrawioDiagram</code>（强制用工具而非代码块）</td>
+  <td><span class="tag t-win">WB 更丰富</span></td></tr>
 
-<tr><td class="col-n">12</td><td>多模态</td>
+<tr><td class="col-n">12</td><td>文件交付呈现</td>
   <td>无</td>
-  <td><code>vision_analyze</code> <code>image_generate</code> <code>video_generate</code> <code>text_to_speech</code></td>
-  <td><span class="tag t-win">Saros 独有</span></td></tr>
+  <td><code>present_files</code>（<b>强制</b>为 turn 内最后一个调用；HTML 自动开预览面板；支持 localhost URL）</td>
+  <td>无</td>
+  <td><span class="tag t-win">WB 独占</span></td></tr>
 
-<tr><td class="col-n">13</td><td>交互澄清</td>
+<tr><td class="col-n">13</td><td>多模态</td>
+  <td>无</td>
+  <td><code>ImageGen</code>（文生图/图生图）+ <code>VideoGen</code>（文生视频/图生视频）+ multimodal skill（文生 3D）</td>
+  <td><code>vision_analyze</code> <code>image_generate</code> <code>video_generate</code> <code>text_to_speech</code></td>
+  <td><span class="tag t-diff">WB 多 3D，SR 多视觉理解与 TTS</span></td></tr>
+
+<tr><td class="col-n">14</td><td>交互澄清</td>
   <td>靠自然语言追问</td>
+  <td>靠自然语言追问（<code>&lt;asking_questions&gt;</code> 章节约定）；hook 反馈视为用户输入</td>
   <td><code>clarify</code>（结构化多问题表单）</td>
   <td><span class="tag t-win">Saros 独有</span></td></tr>
 
-<tr><td class="col-n">14</td><td>MCP 集成</td>
-  <td>提示词明确提到 "install an MCP server"，但无统一发现层</td>
+<tr><td class="col-n">15</td><td>MCP 集成</td>
+  <td>提示词提到可安装 MCP server，无统一发现层</td>
+  <td>写 <code>~/.workbuddy/mcp.json</code>；<b>需用户手动 "Trust" 才生效</b>；提示词禁止自行启动 server</td>
   <td>统一三步桥接 <code>tool_search</code> → <code>tool_describe</code> → <code>tool_call</code></td>
   <td><span class="tag t-win">Saros 优</span></td></tr>
 
-<tr><td class="col-n">15</td><td>工作流编排</td>
+<tr><td class="col-n">16</td><td>办公文档</td>
+  <td>无专门工具</td>
+  <td><b>Office 技能路由</b>：<code>tencent-docs-routing</code> → <code>tencent-docx</code> / <code>tencent-pptx</code> / <code>tencent-docs-sheet-generation</code> / <code>sheetagent</code> / <code>local-office-edit</code>；明确禁止用通用文件工具或 Python 库直接处理</td>
+  <td>无（可自行生成 html/md）</td>
+  <td><span class="tag t-win">WB 独占</span></td></tr>
+
+<tr><td class="col-n">17</td><td>浏览器自动化</td>
   <td>无</td>
+  <td><b>强制走 skill</b>：涉及浏览器操作必须先加载 <code>agent-browser</code> 技能</td>
+  <td>无专用工具（可经 MCP 桥接）</td>
+  <td><span class="tag t-win">WB 独占</span></td></tr>
+
+<tr><td class="col-n">18</td><td>专家 / 连接器生态</td>
+  <td>无</td>
+  <td><b>100+ 领域专家</b> + Connector/Expert 插件推荐（<code>search_plugins</code> + <code>suggest_plugin_install</code>，最多 3 个候选卡片）</td>
+  <td>无</td>
+  <td><span class="tag t-win">WB 独占</span></td></tr>
+
+<tr><td class="col-n">19</td><td>工作流编排</td>
+  <td>无</td>
+  <td>无（靠 <code>TaskCreate</code> 系列近似）</td>
   <td><code>workflow</code>（脚本化扇出）+ <code>workflow_apply</code> / <code>workflow_get</code> / <code>workflow_list</code> / <code>workflow_get_schema</code></td>
-  <td><span class="tag t-win">Saros 独有</span></td></tr>
+  <td><span class="tag t-win">Saros 独占</span></td></tr>
+
+<tr><td class="col-n">20</td><td>运行时安装</td>
+  <td>无</td>
+  <td><code>install_binary</code>（版本不兼容时自动安装所需 runtime）</td>
+  <td>无</td>
+  <td><span class="tag t-win">WB 独占</span></td></tr>
 </tbody>
 </table>
 
 <h3>4.3 并行工具调用策略对比</h3>
 
-<div class="grid">
+<div class="grid3">
   <div class="card cb">
     <h4>🔷 CodeBuddy：强推并行，几乎无例外</h4>
     <blockquote style="margin:0">"<b>DEFAULT TO PARALLEL</b>: Unless you have a specific reason why operations MUST be sequential … always execute multiple tools simultaneously. This is not just an optimization - it's the expected behavior."</blockquote>
     <p style="font-size:13.2px;color:var(--dim);margin:12px 0 0">
       主张：批量读、批量搜、独立编辑全部同批。<b>没有区分"真并行"与"批处理"</b>，也<b>未说明 token 成本</b>。
+    </p>
+  </div>
+  <div class="card wb">
+    <h4>🟠 WorkBuddy：条件式并行，措辞务实</h4>
+    <blockquote style="margin:0">"If tool calls are independent, run them in parallel; if one depends on another, run them sequentially."</blockquote>
+    <p style="font-size:13.2px;color:var(--dim);margin:12px 0 0">
+      主张：<b>按依赖关系</b>决定并行与否，表述最简洁克制。
+      同时提示 <i>"If the user asks for tools to run in parallel, send multiple independent tool calls in a single response"</i>——
+      <b>把并行作为可选能力而非默认行为</b>。同样未说明批处理与真并发的技术区别。
     </p>
   </div>
   <div class="card sr">
@@ -474,22 +681,27 @@ memory toolset（Medium，<code>deferrable: true</code>）→ 可折叠，节省
 </div>
 
 <div class="callout warn">
-  <b>这是最有价值的差异点。</b>CodeBuddy 的表述更简洁有力，适合驱动模型行为；
-  Saros 的表述在<b>技术准确性</b>上更进一步——它明确划清了「同批调用」与「并发执行」的界限，
-  避免模型误以为一次发 5 个调用就是 5 路并发，从而在需要真并行的场景主动走子代理。
+  <b>三家并行策略形成清晰梯度：</b>
+  <b>CodeBuddy</b>「默认必须并行」（最强推动）→
+  <b>WorkBuddy</b>「有依赖就串行」（务实中立）→
+  <b>Saros</b>「批处理省往返、真并行走子代理」（技术最精确）。
+  只有 Saros 明确划清了「同批调用」与「并发执行」的界限，
+  避免模型误以为一次发 5 个调用就是 5 路并发。三家中 <b>CodeBuddy 的表述最激进，也最容易让模型高估并行收益</b>。
 </div>
 
 <h3>4.4 子代理（Sub-Agent）设计对比</h3>
 
 <table>
-<thead><tr><th class="col-n">#</th><th>维度</th><th>CodeBuddy</th><th>Saros Claw</th></tr></thead>
+<thead><tr><th class="col-n">#</th><th>维度</th><th>CodeBuddy</th><th>WorkBuddy</th><th>Saros Claw</th></tr></thead>
 <tbody>
-<tr><td class="col-n">1</td><td>调用入口</td><td><code>Task</code> 工具</td><td><code>delegate_task</code>（支持 <code>tasks:[...]</code> 批量，≤5）</td></tr>
-<tr><td class="col-n">2</td><td>可用角色</td><td><code>code-explorer</code>（单一）</td><td><code>code-explorer</code> / <code>researcher</code> / <code>data</code>（三类，且明确"只有这 3 个"）</td></tr>
-<tr><td class="col-n">3</td><td>底层检索</td><td>LSP 作索引（<code>documentSymbol</code> → <code>goToDefinition</code>）+ 文本/文件搜索兜底</td><td>代码知识图谱（<code>search_graph</code> / <code>query_graph</code>）+ grep 兜底</td></tr>
-<tr><td class="col-n">4</td><td>防误用</td><td>说明适用场景，未列反向清单</td><td><b>双清单</b>：「When to use」+「When NOT to use」，并给正/反例</td></tr>
-<tr><td class="col-n">5</td><td>防过度拆分</td><td>未提及</td><td>明确警告："<b>DEFAULT: use a SINGLE task</b>"，并给出 ❌ 反例</td></tr>
-<tr><td class="col-n">6</td><td>子代理提示词</td><td>未在片段中体现独立前缀</td><td><code>GLOBAL_SYSTEM_PREFIX_SUBAGENT</code> 独立前缀，<b>移除委派导向段落以防递归委派</b></td></tr>
+<tr><td class="col-n">1</td><td>调用入口</td><td><code>Task</code> 工具</td><td><code>Agent</code> 工具（<code>Explore</code> 等 subagent 类型）</td><td><code>delegate_task</code>（支持 <code>tasks:[...]</code> 批量，≤5）</td></tr>
+<tr><td class="col-n">2</td><td>可用角色</td><td><code>code-explorer</code>（单一）</td><td>按 subagent 类型选择（<code>Explore</code> 为广域探索）</td><td><code>code-explorer</code> / <code>researcher</code> / <code>data</code>（明确"只有这 3 个"）</td></tr>
+<tr><td class="col-n">3</td><td>底层检索</td><td>LSP 作索引（<code>documentSymbol</code> → <code>goToDefinition</code>）+ 文本/文件搜索兜底</td><td><code>Grep</code> / <code>Glob</code> 文件检索</td><td>代码知识图谱（<code>search_graph</code> / <code>query_graph</code>）+ grep 兜底</td></tr>
+<tr><td class="col-n">4</td><td>防误用</td><td>说明适用场景，未列反向清单</td><td>仅说明用途（"reduce context usage"），未列反向清单</td><td><b>双清单</b>：「When to use」+「When NOT to use」，并给正/反例</td></tr>
+<tr><td class="col-n">5</td><td>防过度拆分</td><td>未提及</td><td>未提及</td><td>明确警告："<b>DEFAULT: use a SINGLE task</b>"，并给出 ❌ 反例</td></tr>
+<tr><td class="col-n">6</td><td>子代理提示词</td><td>未在片段中体现独立前缀</td><td>未在片段中体现独立前缀（有 Agent / subagent 分层）</td><td><code>GLOBAL_SYSTEM_PREFIX_SUBAGENT</code> 独立前缀，<b>移除委派导向段落以防递归委派</b></td></tr>
+<tr><td class="col-n">7</td><td>单次上限</td><td>未明确</td><td>未明确</td><td>明确 <b>≤5 并行</b>，并警告"do not over-delegate"</td></tr>
+<tr><td class="col-n">8</td><td>持久化角色</td><td>无</td><td>有 <b>Expert / Expert Team</b> 概念（领域专家，非检索型子代理）</td><td><code>new_agent</code> 可创建<b>持久化 agent 定义</b>并复用</td></tr>
 </tbody>
 </table>
 
@@ -497,47 +709,77 @@ memory toolset（Medium，<code>deferrable: true</code>）→ 可折叠，节省
 <h2><span class="idx">05</span>设计哲学差异</h2>
 
 <table>
-<thead><tr><th>哲学维度</th><th>CodeBuddy</th><th>Saros Claw</th></tr></thead>
+<thead><tr><th>哲学维度</th><th>CodeBuddy</th><th>WorkBuddy</th><th>Saros Claw</th></tr></thead>
 <tbody>
 <tr>
   <td><b>提示词的定位</b></td>
   <td>一次写就的<b>静态说明书</b>——所有约束同时在场，靠模型自行取舍</td>
+  <td><b>产品契约</b>——用强制协议保证交付物对用户可见（present_files）</td>
   <td><b>可编程的运行时资源</b>——分段、分层、按模型族条件装配</td>
 </tr>
 <tr>
   <td><b>工具与提示词的关系</b></td>
   <td>工具 Schema <b>嵌入提示词</b>，二者强耦合</td>
-  <td>工具清单与 Schema <b>解耦</b>：提示词只给名字，Schema 走 FC 通道</td>
+  <td>工具 Schema <b>嵌入提示词</b>（体量最大，约 96KB）</td>
+  <td>工具清单与 Schema <b>解耦</b>：只给名字，Schema 走 FC 通道</td>
 </tr>
 <tr>
   <td><b>对模型能力的假设</b></td>
   <td>假设模型会犯格式错 → 反复强调输出格式、行号剥离、并行偏好</td>
-  <td>假设模型有能力选择正确工具 → 提供 <code>tool_search</code> 发现层与「何时不用」反向清单</td>
+  <td>假设模型会遗漏"呈现"步骤 → 四处反复强制 <code>present_files</code></td>
+  <td>假设模型有能力选择正确工具 → 提供发现层与「何时不用」反向清单</td>
 </tr>
 <tr>
   <td><b>上下文预算观</b></td>
-  <td>已关注输出 token（"minimize output tokens"），但输入侧未做裁剪</td>
+  <td>关注<b>输出</b> token（"minimize output tokens"），输入侧未裁剪</td>
+  <td>关注<b>输出</b>长度（50–70 行硬上限）+ 记忆字符配额（4000/3000），输入侧未裁剪</td>
   <td>输入侧同步优化：可折叠工具集、缓存键、冻结前缀</td>
 </tr>
 <tr>
   <td><b>可扩展性路径</b></td>
   <td>新增能力 → 修改提示词 + 添加工具定义</td>
+  <td>新增能力 → <b>做成 Skill</b>（还要求模型自动积累/纠正技能）</td>
   <td>新增能力 → 注册 toolset + 常量段落，<b>不影响既有缓存签名</b></td>
 </tr>
 <tr>
   <td><b>记忆的归属</b></td>
-  <td>交给<b>模型自己</b>用文件工具维护（提示词里反复强调"MUST write memory"）</td>
-  <td>交给<b>运行时系统</b>管理（提示词明确："Memory persistence is handled by the system"）</td>
+  <td>交给<b>模型自己</b>用文件工具维护（3 次强调"MUST write memory"）</td>
+  <td><b>三层分工</b>：云端（服务器）/ 用户级（模型写）/ 工作区（模型写，有字符上限）</td>
+  <td>交给<b>运行时系统</b>管理（<i>"Memory persistence is handled by the system"</i>）</td>
+</tr>
+<tr>
+  <td><b>交付责任边界</b></td>
+  <td>产物落在工作区即完成</td>
+  <td>产物<b>必须显式呈现</b>——不调用 <code>present_files</code> 视为未完成任务</td>
+  <td>产物落在工作区即完成（由用户自行查看）</td>
+</tr>
+<tr>
+  <td><b>安全观</b></td>
+  <td>内容层（content_policy）+ 局部操作约束</td>
+  <td>内容层 + <b>数据资产层</b>（个人文件 8 条）+ <b>供应链层</b>（技能安装 P0/P1/P2 审计）</td>
+  <td>内容层 + 身份层 + 可信度层（反幻觉 6 条）</td>
 </tr>
 </tbody>
 </table>
 
 <div class="callout">
-  <b>记忆机制这一条尤其值得注意。</b>CodeBuddy 把跨会话记忆的<b>正确性责任压给模型</b>——提示词出现三次强制写记忆的指令
-  （<i>"before ending your turn"</i>、<i>"NEVER skip this"</i>）。这是一种<b>脆弱但透明</b>的设计：
-  记忆对用户可见可编辑，但漏写就会丢上下文。
-  Saros 反过来把责任交给运行时，模型只需调用 <code>memory_list</code> / <code>session_search</code> 读取，
-  <b>更可靠，但用户不可直接干预</b>。
+  <b>记忆机制这一条值得展开——三家给出三种答案。</b>
+  <b>CodeBuddy</b> 把跨会话记忆的<b>正确性责任全压给模型</b>（提示词出现三次强制写记忆的指令：
+  <i>"before ending your turn"</i>、<i>"NEVER skip this"</i>）。脆弱但透明：记忆对用户可见可编辑，漏写即丢上下文。
+  <b>WorkBuddy</b> 做了<b>三层分工 + 字符配额</b>，是三者中设计最精细的：
+  云端 profile 由服务器维护（模型只读）、用户级 MEMORY.md 限 4000 字符、工作区日志限 3000 字符，
+  并额外提供 <code>conversation_search</code> 做历史检索——<b>用配额强制"记忆必须精炼"</b>。
+  <b>Saros</b> 反过来把责任交给运行时，模型只需调用 <code>memory_list</code> / <code>session_search</code> 读取，
+  更可靠，但用户不可直接干预。
+</div>
+
+<div class="callout warn">
+  <b>WorkBuddy 的「交付责任边界」是其最根本的产品假设。</b>
+  它不把「文件已写入磁盘」当作完成——<b>「用户能看到文件」才算完成</b>。
+  这解释了为什么它用四个章节反复强调 <code>present_files</code>，
+  甚至规定「必须作为 turn 内最后一个工具调用」。
+  这是<b>面向非技术用户</b>的设计：用户可能不知道 outputs 目录在哪。
+  相比之下 CodeBuddy 与 Saros 面向开发者，默认用户有能力自己查看工作区。
 </div>
 
 <!-- ================= 优势与风险 ================= -->
@@ -550,6 +792,7 @@ memory toolset（Medium，<code>deferrable: true</code>）→ 可折叠，节省
 <tr><td><span class="tag t-eq">优势</span></td><td>指令密度高、直给</td><td>XML 标签分区让模型易于定位规则，无需理解装配逻辑</td></tr>
 <tr><td><span class="tag t-eq">优势</span></td><td>输出极简导向明确</td><td>反复强调 token 经济，适合成本敏感场景</td></tr>
 <tr><td><span class="tag t-eq">优势</span></td><td>Automations 设计完整</td><td><code>scheduleType</code> / <code>rrule</code> / <code>validFrom</code> / <code>validUntil</code> 语义完备，支持一次性任务</td></tr>
+<tr><td><span class="tag t-eq">优势</span></td><td>并行推动力最强</td><td>"DEFAULT TO PARALLEL" 表述直接有力，实际执行效率导向明确</td></tr>
 <tr><td><span class="tag t-bad" style="background:rgba(248,113,113,.14);color:var(--bad);border:1px solid rgba(248,113,113,.35)">风险</span></td>
   <td>输入 token 无裁剪</td><td>全量工具 Schema 内联，工具数量增长时成本线性上升</td></tr>
 <tr><td><span class="tag t-bad" style="background:rgba(248,113,113,.14);color:var(--bad);border:1px solid rgba(248,113,113,.35)">风险</span></td>
@@ -561,6 +804,29 @@ memory toolset（Medium，<code>deferrable: true</code>）→ 可折叠，节省
 </tbody>
 </table>
 
+<h3>WorkBuddy</h3>
+<table>
+<thead><tr><th class="col-d">类型</th><th>条目</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><span class="tag t-eq">优势</span></td><td>交付闭环最完整</td><td><code>present_files</code> 强制协议 + outputs 目录约定 + HTML 自动预览，<b>保证用户一定看得到产物</b></td></tr>
+<tr><td><span class="tag t-eq">优势</span></td><td>记忆体系最精细</td><td>三层分工 + 字符配额（4000/3000）+ <code>conversation_search</code>，兼顾自动学习与人工可编辑</td></tr>
+<tr><td><span class="tag t-eq">优势</span></td><td>安全纵深最深</td><td>内容层 + <b>个人文件 8 条硬规则</b>（No-Go Zones / 扫描只读 / 先备份 / 走回收站）+ 技能安装 P0/P1/P2 审计</td></tr>
+<tr><td><span class="tag t-eq">优势</span></td><td>运行时隔离纪律明确</td><td>托管 python/node 绝对路径 + 禁止全局安装，<b>保护用户环境不被污染</b></td></tr>
+<tr><td><span class="tag t-eq">优势</span></td><td>Visualizer 主动性强</td><td>教学类请求"Always use"，且要求 widget 间插 prose，形成可视化叙事</td></tr>
+<tr><td><span class="tag t-eq">优势</span></td><td>生态最丰富</td><td>100+ 专家 + Connector/Expert 推荐 + Office 技能路由 + <code>find-skills</code> 兜底</td></tr>
+<tr><td><span class="tag t-bad" style="background:rgba(248,113,113,.14);color:var(--bad);border:1px solid rgba(248,113,113,.35)">风险</span></td>
+  <td>提示词与机器强耦合</td><td><code>&lt;binary_context&gt;</code> 硬编码本机 python/node 绝对路径与工作目录，<b>换机即失效</b>，且暴露用户名</td></tr>
+<tr><td><span class="tag t-bad" style="background:rgba(248,113,113,.14);color:var(--bad);border:1px solid rgba(248,113,113,.35)">风险</span></td>
+  <td>Schema 体量最大</td><td>工具定义约 96KB 内联，虽已有 <code>ToolSearch</code> 却未用于省 token</td></tr>
+<tr><td><span class="tag t-bad" style="background:rgba(248,113,113,.14);color:var(--bad);border:1px solid rgba(248,113,113,.35)">风险</span></td>
+  <td>技能强制条款过重</td><td>「积累/反思/纠正」三大纪律 + 「禁止未经 find-skills 就说做不到」，<b>易导致为满足条款而制造无价值产物</b>（技能churn）</td></tr>
+<tr><td><span class="tag t-bad" style="background:rgba(248,113,113,.14);color:var(--bad);border:1px solid rgba(248,113,113,.35)">风险</span></td>
+  <td>无代码风格与检索规范</td><td>面向通用交付，不含行号剥离、代码风格、图谱检索等编码 Agent 规范</td></tr>
+<tr><td><span class="tag t-warn" style="background:rgba(251,191,36,.14);color:var(--warn);border:1px solid rgba(251,191,36,.35)">风险</span></td>
+  <td>反幻觉约束较弱</td><td>仅"不要用占位符/不要猜参数"单条，无 Saros 级别的独立硬规则章节</td></tr>
+</tbody>
+</table>
+
 <h3>Saros Claw</h3>
 <table>
 <thead><tr><th class="col-d">类型</th><th>条目</th><th>说明</th></tr></thead>
@@ -569,6 +835,7 @@ memory toolset（Medium，<code>deferrable: true</code>）→ 可折叠，节省
 <tr><td><span class="tag t-eq">优势</span></td><td>工具集成本可控</td><td><code>deferrable</code> 折叠机制，源码注释显示为其节省约 3–4k token/请求</td></tr>
 <tr><td><span class="tag t-eq">优势</span></td><td>代码图谱能力独有</td><td>结构化检索优于纯文本 grep，对大型仓库（UE/Unity）噪声抑制明显</td></tr>
 <tr><td><span class="tag t-eq">优势</span></td><td>反幻觉规则显式且强硬</td><td>独立 6 条，直接封堵「假装已完成」这一高频失效模式</td></tr>
+<tr><td><span class="tag t-eq">优势</span></td><td>并行表述技术上最准确</td><td>明确区分批处理与真并发，并给出 token 成本动因</td></tr>
 <tr><td><span class="tag t-warn" style="background:rgba(251,191,36,.14);color:var(--warn);border:1px solid rgba(251,191,36,.35)">风险</span></td>
   <td>提示词体量偏大</td><td>~330 行，含大量环境/工具细节，可能稀释关键指令的注意力权重</td></tr>
 <tr><td><span class="tag t-warn" style="background:rgba(251,191,36,.14);color:var(--warn);border:1px solid rgba(251,191,36,.35)">风险</span></td>
@@ -576,7 +843,11 @@ memory toolset（Medium，<code>deferrable: true</code>）→ 可折叠，节省
 <tr><td><span class="tag t-warn" style="background:rgba(251,191,36,.14);color:var(--warn);border:1px solid rgba(251,191,36,.35)">风险</span></td>
   <td>toolset 注册易踩「分类遗漏」坑</td><td>源码注释记录了多次「未登记 → 落入 utility → focus 模式整条剔除」的历史坑（<code>image_gen</code>、<code>vision_analyze</code>、<code>video_generate</code>、<code>cronjob</code> 均曾中招）</td></tr>
 <tr><td><span class="tag t-warn" style="background:rgba(251,191,36,.14);color:var(--warn);border:1px solid rgba(251,191,36,.35)">风险</span></td>
-  <td>输出简洁度要求弱于 CB</td><td>未设「minimize output tokens」级别的强约束，长回答风险更高</td></tr>
+  <td>输出简洁度要求弱于 CB/WB</td><td>未设 "minimize output tokens" 或 50–70 行上限级别的强约束</td></tr>
+<tr><td><span class="tag t-warn" style="background:rgba(251,191,36,.14);color:var(--warn);border:1px solid rgba(251,191,36,.35)">风险</span></td>
+  <td>无个人文件安全专章</td><td>WorkBuddy 的 No-Go Zones / 扫描只读 / 先备份等 8 条，Saros 缺失对应硬约束</td></tr>
+<tr><td><span class="tag t-warn" style="background:rgba(251,191,36,.14);color:var(--warn);border:1px solid rgba(251,191,36,.35)">风险</span></td>
+  <td>无交付呈现机制</td><td>产物落在工作区即结束，无 <code>present_files</code> 类"确保用户看到"的协议</td></tr>
 </tbody>
 </table>
 
@@ -601,44 +872,95 @@ memory toolset（Medium，<code>deferrable: true</code>）→ 可折叠，节省
 </tbody>
 </table>
 
-<h3>CodeBuddy 可向 Saros 借鉴</h3>
+<h3>Saros 可向 WorkBuddy 借鉴</h3>
+<table>
+<thead><tr><th class="col-n">#</th><th>建议</th><th>理由与落点</th></tr></thead>
+<tbody>
+<tr><td class="col-n">1</td><td>补<b>个人文件安全</b>专章（最高优先级建议）</td>
+  <td>Saros 有 <code>execute_code</code> / <code>terminal</code> 全权访问能力，却无 WorkBuddy 级别的
+      No-Go Zones、扫描只读、先备份、走回收站、每批≤10 文件的硬约束。<b>这是实质性安全缺口</b>。</td></tr>
+<tr><td class="col-n">2</td><td>考虑<b>交付呈现</b>机制</td>
+  <td>WorkBuddy 的 <code>present_files</code> 保证产物可见。Saros 可在报告/图表类产物上引入等价的
+      "必须显式告知产物路径"要求，降低用户找不到文件的情况。</td></tr>
+<tr><td class="col-n">3</td><td>记忆<b>字符配额</b></td>
+  <td>WorkBuddy 用 4000/3000 字符上限强制记忆精炼，避免记忆无限膨胀。Saros 的
+      <code>memory_list</code> 目前无明确体积约束。</td></tr>
+<tr><td class="col-n">4</td><td>技能安装<b>安全审计</b></td>
+  <td>WorkBuddy 在安装技能前强制跑 <code>skills-security-check</code> 并做 P0/P1/P2 分级。
+      Saros 的 <code>skill_manage</code> 支持 create/edit，无等价审计流程。</td></tr>
+<tr><td class="col-n">5</td><td>运行时<b>隔离纪律</b></td>
+  <td>WorkBuddy 禁止 <code>pip install</code> 全局安装、禁止 <code>npm install -g</code>，包必须装进隔离目录。
+      Saros 可考虑类似约定，避免污染用户环境。</td></tr>
+<tr><td class="col-n">6</td><td>不采纳：技能强制积累条款</td>
+  <td>WorkBuddy 的「8+ 次工具调用后 MUST 保存技能」「发现任何问题 MUST 立即修改」纪律过重，
+      实测易产生无价值技能churn。Saros 当前按需创建更克制，建议保持。</td></tr>
+</tbody>
+</table>
+
+<h3>WorkBuddy 可向 Saros / CodeBuddy 借鉴</h3>
 <table>
 <thead><tr><th class="col-n">#</th><th>建议</th><th>理由与落点</th></tr></thead>
 <tbody>
 <tr><td class="col-n">1</td><td>工具 Schema <b>移出提示词</b></td>
-  <td>改为仅下发工具名清单 + function-calling Schema 通道，大幅降低输入 token 与增长斜率。</td></tr>
+  <td>约 96KB 内联是三家最大。既然已有 <code>ToolSearch</code>，应把非高频工具折叠进去，
+      而非全量内联。</td></tr>
 <tr><td class="col-n">2</td><td>引入<b>提示词分层缓存</b></td>
-  <td>拆出稳定前缀命中 provider prompt cache，把环境/状态类信息放入易变层。</td></tr>
-<tr><td class="col-n">3</td><td>修正并行表述</td>
-  <td>区分「同批调用省往返」与「子代理真并发」，避免模型高估批处理收益。</td></tr>
-<tr><td class="col-n">4</td><td>记忆写入门槛<b>从模型转向运行时</b></td>
-  <td>当前提示词三次强制写记忆，属于把系统正确性压给模型；可改为运行时自动持久化，
-      模型仅负责读写接口调用。</td></tr>
-<tr><td class="col-n">5</td><td>补充<b>子代理反向清单</b></td>
-  <td>Saros 的「When NOT to use」+ 单任务默认策略，能有效抑制过度拆分导致的超时。</td></tr>
+  <td>参考 Saros 的冻结前缀设计，把 <code>&lt;binary_context&gt;</code> 等机器相关细节移出稳定层。</td></tr>
+<tr><td class="col-n">3</td><td><b>机器细节外部化</b></td>
+  <td><code>&lt;binary_context&gt;</code> 硬编码绝对路径与用户名，应改为配置文件或环境变量注入，
+      避免换机失效与信息泄露。</td></tr>
+<tr><td class="col-n">4</td><td>补<b>反幻觉硬规则</b></td>
+  <td>参考 Saros 的 6 条独立规则（尤其"未调用工具不得声称已完成"），
+      弥补当前仅有"不要占位符"单条的不足。</td></tr>
+<tr><td class="col-n">5</td><td>并行表述<b>技术澄清</b></td>
+  <td>参考 Saros 明确区分批处理与真并发，避免模型高估同批调用的并发收益。</td></tr>
+<tr><td class="col-n">6</td><td>技能纪律<b>降级为建议</b></td>
+  <td>「MUST 保存技能 / MUST 立即修改」等强制条款建议改为按需触发，
+      减少无价值产物；同时保留其"技能过时即负债"的正确判断。</td></tr>
 </tbody>
 </table>
 
 <!-- ================= 结论 ================= -->
 <h2><span class="idx">08</span>结论</h2>
 
-<p>这不是「谁更好」的问题，而是<b>两种工程阶段的取舍</b>：</p>
+<p>这不是「谁更好」的问题，而是<b>三种产品定位下的不同取舍</b>：</p>
 
 <table>
 <thead><tr><th>如果关注…</th><th>更优选择</th><th>原因</th></tr></thead>
 <tbody>
 <tr><td>快速上线、行为可控</td><td><b>CodeBuddy 路线</b></td><td>静态提示词无需装配基础设施，规则直观可读，调试成本低</td></tr>
 <tr><td>token 成本、规模化</td><td><b>Saros 路线</b></td><td>分层装配 + 工具折叠 + 缓存，成本随能力增长更平缓</td></tr>
-<tr><td>大型代码库理解</td><td><b>Saros</b></td><td>代码知识图谱（<code>search_graph</code> / <code>trace_path</code>）优于纯文本 + LSP 检索</td></tr>
-<tr><td>输出简练</td><td><b>CodeBuddy</b></td><td>token 经济性指令更硬性、更早、更反复地出现</td></tr>
-<tr><td>可扩展能力接入</td><td><b>Saros</b></td><td>toolset 注册 + 统一 MCP 桥接，新增工具不需改动提示词主体</td></tr>
+<tr><td>大型代码库理解</td><td><b>Saros</b></td><td>代码知识图谱（<code>search_graph</code> / <code>trace_path</code>）优于纯文本 + LSP 检索，且三家唯一</td></tr>
+<tr><td>输出简练</td><td><b>CodeBuddy</b> / <b>WorkBuddy</b></td><td>CB 有 token 经济性指令；WB 有 50–70 行硬上限</td></tr>
+<tr><td>交付物可见性</td><td><b>WorkBuddy</b></td><td>唯一强制 <code>present_files</code>，保证用户看得到产物</td></tr>
+<tr><td>非技术用户 / 办公场景</td><td><b>WorkBuddy</b></td><td>Office 技能路由 + 专家生态 + 可视化，编码非其重心</td></tr>
+<tr><td>本地文件安全</td><td><b>WorkBuddy</b></td><td>唯一有个人文件 8 条硬规则；CB/SR 均缺</td></tr>
+<tr><td>记忆设计精细度</td><td><b>WorkBuddy</b></td><td>三层分工 + 字符配额，兼顾自动学习与人工可编辑</td></tr>
+<tr><td>能力扩展的工程性</td><td><b>Saros</b></td><td>toolset 注册 + 统一 MCP 桥接，新增工具无需改动提示词主体</td></tr>
+<tr><td>反幻觉严格度</td><td><b>Saros</b></td><td>唯一有独立 6 条硬规则章节</td></tr>
 </tbody>
 </table>
 
 <div class="callout good">
-  <b>一句话总结：</b>CodeBuddy 把提示词当作<b>给模型的说明书</b>，Saros 把提示词当作<b>给运行时装配的资源</b>。
-  二者共享同一套安全边界与行号规范谱系，但在 token 经济性、条件化程度与工具发现机制上走了完全不同的路线。
-  <b>理想形态</b>可能是两者的交集：Saros 的装配架构 + CodeBuddy 的输出简洁约束与量化规则边界。
+  <b>一句话总结：</b>
+  <b>CodeBuddy</b> 把提示词当作<b>给模型的说明书</b>（指令密集，推动力强）；
+  <b>WorkBuddy</b> 把提示词当作<b>产品契约</b>（强制交付闭环、安全纵深、生态路由）；
+  <b>Saros</b> 把提示词当作<b>给运行时装配的资源</b>（分层缓存、按需发现、结构化检索）。
+</div>
+
+<div class="callout">
+  <b>三方互补关系最清晰的地方：</b>
+  在「安全」这一个维度上，三家的覆盖<b>互不重叠</b>——
+  CodeBuddy 管<b>内容安全</b>（policy），WorkBuddy 管<b>数据资产安全</b>（个人文件），
+  Saros 管<b>输出可信度</b>（反幻觉）。
+  任何一家单独看都有缺口，这也解释了为什么横向对比本身就是有价值的工程输入。
+</div>
+
+<div class="callout warn">
+  <b>本次对比最值得 Saros 立刻行动的一条：</b>
+  Saros 拥有 <code>execute_code</code> / <code>terminal</code> 的完整文件系统权限，
+  却没有 WorkBuddy 那套「个人目录 No-Go Zones + 扫描只读 + 先备份 + 走回收站」的硬约束。
+  这是三者中<b>唯一一处"能力越强、约束越弱"的不匹配</b>，建议优先补齐。
 </div>
 
 <hr class="hr">
@@ -648,34 +970,41 @@ memory toolset（Medium，<code>deferrable: true</code>）→ 可折叠，节省
 <thead><tr><th>侧</th><th>来源</th><th>说明</th></tr></thead>
 <tbody>
 <tr><td><span class="chip cb" style="font-size:11px">A 侧</span></td>
-  <td><code>E:\Downloads\新文件6.txt</code></td>
-  <td>918 行。第 1–221 行为 CodeBuddy 提示词正文与工具定义片段（第 221 行在 <code>search_file</code> 定义中途截断，故工具清单为<b>部分可见</b>）</td></tr>
-<tr><td><span class="chip sr" style="font-size:11px">B 侧</span></td>
+  <td><code>E:\Downloads\新文件6.txt</code> 第 1–221 行</td>
+  <td>CodeBuddy 提示词正文与工具定义片段。<b>第 221 行在 <code>search_file</code> 定义中途截断</b>，故工具清单为部分可见</td></tr>
+<tr><td><span class="chip wb" style="font-size:11px">B 侧</span></td>
+  <td><code>E:\Downloads\新文件6.txt</code> 第 922–1444 行</td>
+  <td>WorkBuddy 提示词完整正文（约 370 行）+ 工具 schema 片段。本段完整未截断（仅记忆行 1440 起被字符上限截断）</td></tr>
+<tr><td><span class="chip sr" style="font-size:11px">C 侧</span></td>
   <td><code>src/vs/sessions/contrib/agentStudio/common/toolsetConfig.ts</code></td>
   <td>54 行起 <code>TOOLSET_DEFINITIONS</code>，工具注册主表（已实读 50–199 行）</td></tr>
-<tr><td><span class="chip sr" style="font-size:11px">B 侧</span></td>
+<tr><td><span class="chip sr" style="font-size:11px">C 侧</span></td>
   <td><code>src/vs/sessions/contrib/agentStudio/common/systemPromptComposer.ts</code></td>
   <td>32/44/55/63/82 行导出符号；82–116 行 <code>buildCompactToolSection()</code> 全文（已实读）</td></tr>
-<tr><td><span class="chip sr" style="font-size:11px">B 侧</span></td>
+<tr><td><span class="chip sr" style="font-size:11px">C 侧</span></td>
   <td><code>src/vs/sessions/contrib/agentStudio/common/chatModeConfig.ts</code></td>
   <td><code>GLOBAL_SYSTEM_PREFIX</code> / <code>GLOBAL_SYSTEM_SUFFIX</code> / 各段落常量（经代码探查定位）</td></tr>
-<tr><td><span class="chip sr" style="font-size:11px">B 侧</span></td>
+<tr><td><span class="chip sr" style="font-size:11px">C 侧</span></td>
   <td><code>src/vs/sessions/contrib/agentStudio/browser/agentOSService.ts</code></td>
   <td>415–442 行 <code>TOOL_USE_ENFORCEMENT_MODELS</code> / <code>TOOL_USE_ENFORCEMENT_GUIDANCE</code>（已实读）</td></tr>
-<tr><td><span class="chip sr" style="font-size:11px">B 侧</span></td>
+<tr><td><span class="chip sr" style="font-size:11px">C 侧</span></td>
   <td><code>src/vs/sessions/contrib/agentStudio/browser/agentTurnExecutor.ts</code></td>
   <td>324–338 行：按模型族条件追加 enforcement 引导（已实读）</td></tr>
 </tbody>
 </table>
 
 <p style="font-size:12.8px;color:var(--mut);margin-top:16px">
-  <b>方法学说明：</b>A 侧工具清单受原始文件截断所限（<code>search_file</code> 定义处中断），
-  故对比表中 CodeBuddy 侧的工具名部分基于片段中已出现的工具与生态常识推断，已在上表标注「部分可见」。
-  B 侧所有结论均直接读取上述源码文件获得，未使用推测。
+  <b>方法学说明：</b>
+  <b>A 侧（CodeBuddy）</b>工具清单受原始文件截断所限（<code>search_file</code> 定义处中断），
+  故对比表中 CodeBuddy 侧的工具名部分基于片段中已出现的工具与生态常识推断，已标注「部分可见」。
+  <b>B 侧（WorkBuddy）</b>提示词正文完整可读（922–1444 行无截断），仅有记忆块尾部受字符上限影响；
+  报告中 WorkBuddy 的工具名（<code>Read</code> / <code>Edit</code> / <code>present_files</code> / <code>ImageGen</code> /
+  <code>VideoGen</code> / <code>TaskCreate</code> / <code>SkillManage</code> 等）<b>均直接来自提示词正文的显式命名</b>，未使用推测。
+  <b>C 侧（Saros）</b>所有结论均直接读取上述源码文件获得，未使用推测。
 </p>
 
 <footer>
-  CodeBuddy vs Saros Agent Studio — 提示词与工具差异报告 · 2026-09-15<br>
+  CodeBuddy · WorkBuddy · Saros Agent Studio — 提示词与工具三方差异报告 · 2026-09-15<br>
   本报告基于静态代码与提示词文本分析，不含运行时行为验证
 </footer>
 

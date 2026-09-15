@@ -22,9 +22,13 @@ import { renderLabelWithIcons } from '../../../../../base/browser/ui/iconLabel/i
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import { basename as pathBasename } from '../../../../../base/common/path.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { ICodebaseGraphService } from '../codebaseGraphService.js';
+import { ICodebaseMemoryMcpService } from '../codebaseMemoryMcpService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { CodebaseGraphModal } from './codebaseGraphModal.js';
+import { ensureGraphForUi } from './codebaseGraphAutoBuild.js';
 
 interface IFileItem {
 	filePath: string;
@@ -69,6 +73,11 @@ export class OpenFileModal {
 	constructor(
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
 		@IEditorService private readonly _editorService: IEditorService,
+		// 2026-09-15：无图时自动建图需要读用户索引配置（cbmService）+ 兜底解析索引根
+		// （workspaceService）；日志用于「为什么没建成」这类问题的现场排查。
+		@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
+		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
+		@ILogService private readonly _logService: ILogService,
 	) {
 	}
 
@@ -92,6 +101,22 @@ export class OpenFileModal {
 			onDispose: () => this._disposables.dispose(),
 		});
 		void this._loadFiles();
+		// 2026-09-15（用户要求）：**无图也照常打开 UI**。以前 `OpenGraphFileAction.run` 在
+		// `hasGraphData()` 上静默 return —— 连这个模态都不弹，用户只看到「按 Alt+Shift+O 没反应」。
+		// 现在：无图则自动建图 + 在提示条实时显示进度，建好自动刷新列表。
+		void ensureGraphForUi(
+			{
+				graphService: this._graphService,
+				cbmService: this._cbmService,
+				workspaceService: this._workspaceService,
+				logService: this._logService,
+			},
+			{
+				setNotice: (text, kind) => this._modal?.setNotice(text, kind),
+				refresh: () => { void this._loadFiles(); },
+			},
+			this._disposables,
+		);
 	}
 
 	private async _loadFiles(): Promise<void> {
@@ -207,6 +232,15 @@ export class OpenFileModal {
 				this._table.appendChild(warn);
 				return;
 			}
+			// 普通空态（2026-09-15）：说明是「真的没有」还是「图谱还没建好」——
+			// 此前两种情况都是**纯空白表格**，用户只能猜。
+			const tip = dom.$('div');
+			tip.textContent = this._graphService.hasGraphData()
+				? '没有匹配的文件。'
+				: '代码图谱尚无数据 —— 见上方提示（正在自动构建时，完成后会自动刷新列表）。';
+			tip.style.cssText = 'padding:10px 12px;color:var(--vscode-descriptionForeground);';
+			this._table.appendChild(tip);
+			return;
 		}
 
 		// 表头

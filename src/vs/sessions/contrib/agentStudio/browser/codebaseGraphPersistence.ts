@@ -31,6 +31,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioLogService } from './agentStudioLogService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
 
 // Legacy format header (for backward compatibility)
 const LEGACY_MAGIC = 0x43424d47;  // "CBMG" = CodeBase Memory Graph
@@ -55,8 +56,19 @@ interface ArtifactMeta {
 // 「按顶层数组元素逐个 JSON.parse 并分批让出主线程」，消除启动加载图谱时
 // 因单次同步解析几十万节点/边而卡死 UI 的问题。
 // 各元素仍用原生 JSON.parse 保证正确性；仅把「整段 parse」拆成小块并 yield。
+//
+// ★ 2026-09-15：让出频率从**固定条数**（原每 2000 个元素）改为**时间预算**
+// （`SLICE_BUDGET_MS` = 8ms，见 `common/asyncSlice.ts`）—— 固定条数在「元素大 /
+// 机器慢」时单次连续占用仍可达几十~上百毫秒，表现为可感知的抽搐式卡顿。
 // ---------------------------------------------------------------------------
-const PARSE_YIELD_EVERY = 2000;
+
+/**
+ * 进度文案的最小推送间隔（ms）。
+ *
+ * 让出已按 8ms 预算细化 ⇒ 解析/合并过程中「每让出一次就报一次」会到每秒上百次，
+ * 把 UI（提示条）刷爆。250ms 足够让人**看到在动**，又不会成负担。
+ */
+const PROGRESS_THROTTLE_MS = 250;
 
 function _isWs(code: number): boolean {
 	return code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d;
@@ -108,13 +120,20 @@ function _skipJsonValue(json: string, start: number): number {
 	return i;
 }
 
-/** 遍历数组内的每个顶层元素，元素子串回调 cb。逗号分隔符即切分，嵌套结构由 _skipJsonValue 处理；每 PARSE_YIELD_EVERY 个元素让出主线程。 */
+/**
+ * 遍历数组内的每个顶层元素，元素子串回调 cb。逗号分隔符即切分，嵌套结构由 `_skipJsonValue` 处理。
+ *
+ * ★ 2026-09-15：让出策略从「每 `PARSE_YIELD_EVERY`（2000）个元素」改为**按时间预算**
+ * （`SLICE_BUDGET_MS`，见 `common/asyncSlice.ts`）—— 固定条数在「元素大 / 机器慢」时
+ * 单次连续占用仍可达几十~上百毫秒，表现为可感知的抽搐式卡顿。
+ */
 async function _forEachArrayElement(
 	json: string, openIdx: number, closeIdx: number,
 	cb: (elem: string) => (Promise<void> | void),
 ): Promise<void> {
 	let i = openIdx + 1;
 	let count = 0;
+	let sliceStart = performance.now();
 	while (i < closeIdx) {
 		while (i < closeIdx && (_isWs(json.charCodeAt(i)) || json.charCodeAt(i) === 0x2c /* , */)) { i++; }
 		if (i >= closeIdx) { break; }
@@ -122,8 +141,9 @@ async function _forEachArrayElement(
 		const eEnd = _skipJsonValue(json, i);
 		await cb(json.slice(i, eEnd));
 		i = eEnd;
-		if (++count % PARSE_YIELD_EVERY === 0) {
-			await new Promise<void>(r => setTimeout(r, 0));
+		if ((++count % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+			await yieldToEventLoop();
+			sliceStart = performance.now();
 		}
 	}
 }
@@ -131,8 +151,12 @@ async function _forEachArrayElement(
 /**
  * 增量解析图谱 JSON，返回与旧 _readData 同形的 data 对象，但在解析 nodes/edges/fileHashes
  * 时逐个元素解析并分批让出主线程，避免单次同步 JSON.parse 卡死 UI。
+ *
+ * @param onProgress 解析进度的**文案回调**（2026-09-15，方案 ⑥）：大图解析要几十秒，
+ *        只给「正在读取并解析制品…」一句会让用户以为卡死 ⇒ 这里给出「已解析 N 节点 / M 边」。
+ *        节流由调用方负责（每 yield 一次就回调一次会到每秒上百次）。
  */
-async function _parseGraphStreaming(json: string): Promise<any> {
+async function _parseGraphStreaming(json: string, onProgress?: (nodes: number, edges: number) => void): Promise<any> {
 	const data: any = {
 		nodes: [], edges: [], fileHashes: [],
 		bm25: undefined, layout: [], nextNodeId: 1, nextEdgeId: 1,
@@ -160,14 +184,20 @@ async function _parseGraphStreaming(json: string): Promise<any> {
 		switch (key) {
 			case 'nodes':
 				if (json.charCodeAt(vStart) === 0x5b /* [ */) {
-					await _forEachArrayElement(json, vStart, vEnd, (e) => { data.nodes.push(JSON.parse(e)); });
+					await _forEachArrayElement(json, vStart, vEnd, (e) => {
+						data.nodes.push(JSON.parse(e));
+						onProgress?.(data.nodes.length, data.edges.length);
+					});
 				} else {
 					data.nodes = undefined; // 非数组 → 交给 _validateGraphData 拒绝
 				}
 				break;
 			case 'edges':
 				if (json.charCodeAt(vStart) === 0x5b /* [ */) {
-					await _forEachArrayElement(json, vStart, vEnd, (e) => { data.edges.push(JSON.parse(e)); });
+					await _forEachArrayElement(json, vStart, vEnd, (e) => {
+						data.edges.push(JSON.parse(e));
+						onProgress?.(data.nodes.length, data.edges.length);
+					});
 				} else {
 					data.edges = undefined;
 				}
@@ -312,15 +342,27 @@ export class GraphPersistence {
 	 * 合并加载：把 sourcePath 的图谱【追加】到 store（不清空），用于多 folder 工作区。
 	 * @param projectOverride 覆盖合并进来的所有节点/边的项目名（确保各 folder 项目名唯一）。
 	 */
-	async loadMerge(store: CodebaseGraphStore, sourcePath: string, projectOverride?: string): Promise<boolean> {
+	async loadMerge(store: CodebaseGraphStore, sourcePath: string, projectOverride?: string, onProgress?: (line: string) => void): Promise<boolean> {
+		// 进度节流（方案 ⑥）：解析/合并已按 8ms 时间预算切片 ⇒ 每让出一次都推 UI 会到每秒上百次。
+		let lastReportAt = 0;
+		const report = (line: string, force = false): void => {
+			if (!onProgress) { return; }
+			const now = performance.now();
+			if (!force && now - lastReportAt < PROGRESS_THROTTLE_MS) { return; }
+			lastReportAt = now;
+			onProgress(line);
+		};
+
 		const json = await this._readJsonText(sourcePath);
 		if (!json) { return false; }
-		const data = await _parseGraphStreaming(json);
+		report('已解压，正在解析节点/边…', true);
+		const data = await _parseGraphStreaming(json, (nodes, edges) => report(`解析中：${nodes} 节点 / ${edges} 边`));
 		// 路径格式迁移：旧版本多 folder 下非 folders[0] 的文件路径/QN/哈希键被存成绝对路径
 		this._normalizeLoadedPaths(data, sourcePath);
+		report('正在校验并写入内存图谱…', true);
 		// 导入前完整性校验（合并路径同样适用）
 		if (!await this._validateGraphData(data, sourcePath)) { return false; }
-		const stats = await store.mergeFromJSONAsync(data, projectOverride);
+		const stats = await store.mergeFromJSONAsync(data, projectOverride, (loaded, total) => report(`写入内存图谱：${loaded}/${total}`));
 		// 重复合并必须**可见**（2026-09-15）：实测制品 49.6% 节点是重复的，而旧实现完全静默。
 		if (stats.nodesSkipped > 0 || stats.edgesSkipped > 0) {
 			this._logService?.warn('[GraphPersistence]', `[loadMerge] deduped ${stats.nodesSkipped} duplicate node(s) / ${stats.edgesSkipped} duplicate edge(s) from ${sourcePath} — artifact had repeats or was merged twice (kept ${stats.nodesAdded} new node(s), ${stats.edgesAdded} new edge(s))`);

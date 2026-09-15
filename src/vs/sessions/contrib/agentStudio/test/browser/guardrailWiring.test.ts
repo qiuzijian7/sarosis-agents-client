@@ -716,4 +716,118 @@ suite('护栏接线不变量（源码级）', () => {
 			+ '多 folder 下永远只刷新第一个 folder，且每轮增量都白跑一次',
 		);
 	});
+
+	// ── ㉒ 无图也必须打开 UI：自动建图 + UI 内提示（不得再静默 return）──────────────
+	//
+	// 背景（2026-09-15 用户要求）：Find Symbol（Alt+Shift+S）/ Open File（Alt+Shift+O）以前
+	// `run()` 首行就是 `if (!graphService.hasGraphData()) { logService.info(...); return; }`
+	// —— 图谱没构建时**连模态都不弹**，用户只看到「按快捷键没反应」。现在要求：
+	//   ① 无条件打开 UI；② 无图时自动触发建图；③ 在 UI 内显示提示（进度/结果/失败原因）。
+	//
+	// ⚠ 断言只用**单行 needle**（本仓源码 CRLF，多行 needle 里的 `\n` 匹配不上）。
+	test('★★ 无图也必须打开 UI：自动建图 + UI 内提示（不得再静默 return）', () => {
+		const autoRel = 'browser/widgets/codebaseGraphAutoBuild.ts';
+
+		// ① 共用自动建图模块：就绪判定必须用**异步**版（内部 await whenGraphLoaded，
+		//    否则启动期 loadGraphMerge 的 10~40s 里会假报「无数据」）
+		assertWired(autoRel, 'export async function ensureGraphForUi(', '共用自动建图入口');
+		assertWired(autoRel, 'ready = await graphService.hasGraphDataAsync();', '就绪判定用异步版（含 whenGraphLoaded）');
+		assertWired(autoRel, 'if (graphService.isIndexing) {', '已在索引中则只显示进度、不重复发起');
+		// ② 用户配置与 bootstrap 同口径（ensureConfigReady → getIndexConfig；projectName=basename）
+		assertWired(autoRel, 'await cbmService.ensureConfigReady();', '读用户配置前先等配置就绪');
+		assertWired(autoRel, 'userConfig = cbmService.getIndexConfig();', '读用户索引配置');
+		assertWired(autoRel, "projectName: basename(rootPath) || '_default',", 'projectName 用 folder basename');
+		// ③ 真的发起索引 + 把进度/结果写进 UI
+		assertWired(autoRel, 'const result = await graphService.indexWorkspace(rootPath, config);', '自动触发建图');
+		assertWired(autoRel, 'graphService.onDidIndexProgress(line => host.setNotice(', '索引进度实时进 UI');
+		assertWired(autoRel, 'graphService.onDidIndexComplete(result => {', '索引完成回调进 UI');
+		// ④ 失败必须**可读**（含索引锁被其他窗口占用 —— 不是故障，但必须说清）
+		assertWired(autoRel, "'未打开工作区文件夹，无法构建代码图谱", '无工作区要说明');
+		assertWired(autoRel, '另一个窗口正在构建该工作区的代码图谱', '索引锁被占用要说明');
+		assertWired(autoRel, '/locked/i.test(msg)', '识别 Index already locked');
+
+		// ⑤ 模态要能挂提示条（内容区顶部，搜索框之前）
+		assertWired('browser/widgets/codebaseGraphModal.ts', 'setNotice(text: string, kind:', '通知条 API');
+		assertWired('browser/widgets/codebaseGraphModal.ts', 'this._body.insertBefore(this._noticeEl, this._body.firstChild);', '提示条插在内容区顶部');
+
+		// ⑥ 两个模态都必须接上自动建图，并在建好后刷新自己的列表
+		assertWired('browser/widgets/findSymbolModal.ts', 'ensureGraphForUi(', 'Find Symbol 接自动建图');
+		assertWired('browser/widgets/findSymbolModal.ts', 'refresh: () => this._scheduleSearch(),', 'Find Symbol 建好后重跑搜索');
+		assertWired('browser/widgets/openFileModal.ts', 'ensureGraphForUi(', 'Open File 接自动建图');
+		assertWired('browser/widgets/openFileModal.ts', 'refresh: () => { void this._loadFiles(); },', 'Open File 建好后重载列表');
+		// ⑦ 空态必须能区分「没有匹配」与「图谱还没就绪」（此前是纯空白表格）
+		assertWired('browser/widgets/findSymbolModal.ts', '没有匹配「', 'Find Symbol 空态提示');
+		assertWired('browser/widgets/openFileModal.ts', '代码图谱尚无数据 —— 见上方提示', 'Open File 空态提示');
+
+		// ⑧ 命令入口：无条件打开（保留原有实例化）
+		assertWired('browser/codebaseGraphFindSymbol.contribution.ts', 'instantiationService.createInstance(FindSymbolModal).open(initialQuery);', 'Find Symbol 无条件打开');
+		assertWired('browser/codebaseGraphVaxSearch.contribution.ts', 'await instantiationService.createInstance(OpenFileModal).open();', 'Open File 无条件打开');
+		assertWired('browser/codebaseGraphClassHierarchy.contribution.ts', 'instantiationService.createInstance(ClassHierarchyModal).open(initialQuery);', 'Class Hierarchy 无条件打开');
+		assertWired('browser/widgets/classHierarchyModal.ts', 'ensureGraphForUi(', 'Class Hierarchy 接自动建图');
+
+		// ⑨ 三条 **QuickPick** 命令（无模态载体 ⇒ 用一条可更新的通知承载提示）
+		//    + refresh 去重（`onDidIndexComplete` 与 `indexWorkspace` resolve 双触发 ⇒ 否则弹两个 picker）
+		assertWired(autoRel, 'export function makeNotificationHost(', '通知宿主（非模态入口用）');
+		assertWired(autoRel, 'handle.updateMessage(text', '通知可更新（不刷屏）');
+		assertWired(autoRel, 'let refreshed = false;', 'refresh 去重');
+		const vaxRel = 'browser/codebaseGraphVaxSearch.contribution.ts';
+		assertWired(vaxRel, 'makeNotificationHost(accessor.get(INotificationService)', 'QuickPick 命令用通知承载提示');
+		for (const cmd of ['sarosis.findGraphReferences', 'sarosis.gotoGraphImplementation', 'sarosis.listGraphMethods']) {
+			assertWired(vaxRel, `executeCommand('${cmd}')`, `建好后重跑 ${cmd}`);
+		}
+
+		// ⑩ 「加载/构建中」也要显示 codebase 状态并提示等待（2026-09-15 用户要求）
+		//    ★ 加载状态此前**完全没暴露**：`_graphLoadingCount` 是私有、加载也不发
+		//    `onDidIndexProgress`（只写日志）⇒ UI 拿不到任何进展，大图那几十秒提示条会停在
+		//    第一句上，用户以为卡死。
+		const svcRel = 'browser/codebaseGraphService.ts';
+		assertWired(svcRel, 'readonly isGraphLoading: boolean;', '接口暴露加载状态');
+		assertWired(svcRel, 'readonly onDidGraphLoadProgress: Event<string>;', '接口暴露加载进展事件');
+		assertWired(svcRel, 'get isGraphLoading(): boolean { return this._graphLoadingCount > 0; }', '加载状态取自 _graphLoadingCount');
+		assertWired(svcRel, 'this._onDidGraphLoadProgress.fire(', '加载阶段真的发进展');
+		// UI 侧：订阅加载进展 + 等待循环 + 「请稍候」文案
+		assertWired(autoRel, 'graphService.onDidGraphLoadProgress(line => host.setNotice(', 'UI 订阅加载进展');
+		assertWired(autoRel, 'await _waitWhileBusy(graphService, host, disposables);', '进入等待循环');
+		assertWired(autoRel, 'await graphService.whenGraphLoaded(BUSY_TICK_MS);', '加载用 whenGraphLoaded 轮询');
+		assertWired(autoRel, 'setTimeout(resolve, BUSY_TICK_MS)', '补 sleep 防空转烧 CPU');
+		assertWired(autoRel, '请稍候', '文案提示用户等待');
+		// ★ 不变量：「加载/构建中」的等待分支必须**早于**自动建图 —— 加载期间 `hasGraphData()` 必为
+		//   false，顺序反了就会在加载中再发起一次全量索引（与加载抢 store、双倍开销）。
+		const autoSrc = stripAllComments(autoRel);
+		const iWait = autoSrc.indexOf('if (graphService.isGraphLoading || graphService.isIndexing) {');
+		const iBuild = autoSrc.indexOf('await graphService.indexWorkspace(rootPath, config)');
+		assert.ok(
+			iWait >= 0 && iBuild > iWait,
+			'[自动建图] 「加载/构建中」的等待分支必须排在自动建图之前 —— 否则加载期间会再触发一次全量索引',
+		);
+
+		// 负向：不得退回「以 hasGraphData() 为前提的静默 return」
+		// （负向断言必须先剥注释 —— 说明里正引用了旧写法，见 ⑯ 的假失败教训）
+		for (const rel of [
+			'browser/codebaseGraphFindSymbol.contribution.ts',
+			'browser/codebaseGraphClassHierarchy.contribution.ts',
+		]) {
+			assert.ok(
+				!stripAllComments(rel).includes('hasGraphData'),
+				`[${rel}] 不得再以 hasGraphData() 为提前返回条件 —— 无图时必须照常打开 UI 并自动建图`,
+			);
+		}
+		// 四个入口的旧「无图静默 return」日志分支必须全部消失
+		// （Open File / Find Symbol / Class Hierarchy 三个模态 + vaxSearch 里三条 QuickPick）
+		for (const rel of [
+			'browser/codebaseGraphFindSymbol.contribution.ts',
+			'browser/codebaseGraphVaxSearch.contribution.ts',
+			'browser/codebaseGraphClassHierarchy.contribution.ts',
+		]) {
+			const code = stripAllComments(rel);
+			assert.ok(
+				!code.includes('requested but graph has no data'),
+				`[${rel}] 不得退回「无图静默 return」的旧日志分支 —— 用户只会看到快捷键没反应`,
+			);
+			assert.ok(
+				!code.includes('ABORT: graph has no data'),
+				`[${rel}] 不得退回「无图静默 return」的旧日志分支（ABORT 形态）`,
+			);
+		}
+	});
 });

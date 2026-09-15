@@ -65,6 +65,11 @@
 	background: var(--vscode-titleBar-activeBackground, #333);
 	border-bottom: 1px solid var(--vscode-panel-border);
 	position: relative;
+	/* z-index 必须显式声明：下拉菜单的遮罩层是 z-index:299 的 fixed 元素，
+	   与工具栏处于同一层叠上下文。若此处 z-index:auto（不参与比较），
+	   遮罩会盖住菜单项、吞掉 click，表现为「点发布没反应」。
+	   设 301 → 工具栏整体（含菜单）位于遮罩之上。 */
+	z-index: 301;
 	flex-shrink: 0;
 	overflow: visible;
 }
@@ -244,6 +249,14 @@
 .wft-mi-head {
 	font-size: 10px; color: var(--vscode-descriptionForeground);
 	text-transform: uppercase; letter-spacing: 0.8px; padding: 5px 10px 3px;
+}
+
+/* 菜单内的说明性提示（非可点击项）：用于「无可用发布操作」等状态反馈，
+   避免菜单项被条件渲染隐藏后变成空菜单、让用户误以为按钮失灵。 */
+.wft-mi-note {
+	font-size: 11px; line-height: 1.5; color: var(--vscode-descriptionForeground);
+	padding: 6px 10px; background: rgba(128,128,128,0.08); border-radius: 4px;
+	margin: 2px 0; white-space: normal;
 }
 
 /* 下拉内删除二次确认 */

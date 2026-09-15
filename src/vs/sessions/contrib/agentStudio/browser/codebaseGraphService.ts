@@ -14,7 +14,7 @@
  * 5. 3D Graph Viewer 直接调用 API 获取数据（无 MCP stdio 开销）
  */
 
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -217,6 +217,20 @@ export interface ICodebaseGraphService {
 	readonly onDidIndexComplete: Event<IIndexResult>;
 	readonly isIndexing: boolean;
 
+	/**
+	 * 是否正在**加载/合并**图谱制品（`loadGraphMerge` 进行中；启动期大图实测 10~40s）。
+	 *
+	 * 2026-09-15 新增。UI（Find Symbol / Open File / 类继承 / 三个 QuickPick 命令）在用户打开
+	 * 那一刻若正处于加载中，必须显示「正在加载，请稍候」并**等它结束** —— 因为加载期间
+	 * `isIndexing === false` 且 `hasGraphData() === false`（数据还没进 store），
+	 * 不做区分就会误判「无图」而**在加载中再发起一次全量索引**（与加载抢 store，双重开销）。
+	 *
+	 * 注：`onDidIndexProgress` 只覆盖索引路径，加载必须单独暴露（见 `onDidGraphLoadProgress`）。
+	 */
+	readonly isGraphLoading: boolean;
+	/** 图谱**加载/合并**的阶段进展（文案行）。与索引的 `onDidIndexProgress` 语义分开。 */
+	readonly onDidGraphLoadProgress: Event<string>;
+
 	indexWorkspace(rootPath: string, config: IIndexConfig, token?: CancellationToken): Promise<IIndexResult>;
 	cancelIndex(): void;
 	startWatching(rootPath: string, extraExcludeDirs?: readonly string[], keepDirs?: readonly string[]): void;
@@ -245,6 +259,29 @@ export interface ICodebaseGraphService {
 	/** 按 rootPath 判断对应 folder 的项目是否已有节点数据（多 folder 逐个守卫用）。 */
 	hasProjectData(rootPath: string): boolean;
 
+	// ── 非主 root 大图的**延迟加载**（2026-09-15 用户裁决方案 C）────────────────────
+	//
+	// 背景：`codebaseGraphBootstrap._bootstrap()` 原本无条件加载**所有** folder 的图，
+	// 而图谱解压/反序列化是 CPU/内存密集的同步重活（实测 sarosis 8.2MB ⇒ 21.6s/17.9 万节点、
+	// UE5EA 24.6MB ⇒ 数十秒/87.6 万节点）⇒ 切到含大图非主 root 的工作区会整窗卡死数十秒。
+	// 但默认检索作用域只到主 root（`_resolveActiveProject()` 取 folders 顺序里第一个有映射的项目）
+	// ⇒ 非主图在「打开工作区」这一刻并不必要 ⇒ 延迟到**真正用到**时再加载。
+
+	/**
+	 * 注册「按需加载器」—— 由 `codebaseGraphBootstrap` 注入（只有它知道 folder 顺序、
+	 * `_readyFolders` 状态与被延迟的集合）。返回 disposable 用于注销。
+	 */
+	registerDeferredGraphLoader(loader: (reason: string) => Promise<void>): IDisposable;
+
+	/**
+	 * 触发「被延迟加载的图谱」—— 供**真正要用图**的路径调用
+	 * （codebase 工具预检 `ensureGraph()` / 子代理预检 `_ensureGraphReadyForExplore()`）。
+	 *
+	 * 幂等：没有待加载项时是空操作；进行中复用同一 promise。
+	 * 失败只 warn（**绝不**退化成全量重建 —— 见 `_bootstrap()` 里同名教训）。
+	 */
+	ensureDeferredGraphsLoaded(reason: string): Promise<void>;
+
 	/** Export the current graph as a compressed artifact (graph.db.zst + artifact.json) for team sharing. opts.slim 默认 true（剔除可重建的 bm25/layout）。 */
 	exportArtifact(targetPath: string, opts?: { slim?: boolean }): Promise<{ size: number; nodeCount: number; edgeCount: number }>;
 	/** Import a compressed artifact (graph.db.zst / graph.db.gz / graph.json) and replace the current graph. */
@@ -258,6 +295,15 @@ export interface ICodebaseGraphService {
 	getTotalEdgeCount(): number;
 	hasGraphData(): boolean;
 	getTotalNodeCount(): number;
+
+	/**
+	 * 指定项目在内存 store 中的节点数。
+	 *
+	 * ★ 2026-09-15（用户日志 `vscode-app-1789480447320.log`）：用于区分「**加载成功但为空**」——
+	 * 被落盘竞态写坏的制品**仍能成功解压成一张空图**，`loadGraphMerge` 返回 `true`，
+	 * 若据此直接标记「已就绪」，该 folder 就**永远不会重建** ✗。
+	 */
+	getProjectNodeCount(project: string): number;
 
 	/** Phase 2c async overloads — 当 `saros.codebaseGraph.sqliteBackend` 启用时走 SQLite 后端 */
 	getVisualizationNodesAsync(offset: number, limit: number): Promise<{ nodes: VisualizationNode[]; total: number }>;
@@ -780,6 +826,16 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private _isIndexing = false;
 	get isIndexing(): boolean { return this._isIndexing; }
 
+	/**
+	 * 图谱加载/合并的阶段进展（2026-09-15 新增，供 UI 显示「正在加载…请稍候」）。
+	 * 与 `_onDidIndexProgress` 分开：那条语义是「索引」，这条是「读制品/合并/重建 BM25/同步 SQLite」。
+	 */
+	private readonly _onDidGraphLoadProgress = this._register(new Emitter<string>());
+	readonly onDidGraphLoadProgress: Event<string> = this._onDidGraphLoadProgress.event;
+
+	/** `loadGraphMerge` 进行中（`_graphLoadingCount > 0`）。UI 用它区分「加载中」与「真无图」。 */
+	get isGraphLoading(): boolean { return this._graphLoadingCount > 0; }
+
 	private _indexCts?: CancellationTokenSource;
 	private _indexLocked = false;
 
@@ -880,7 +936,21 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// 既污染检索口径（`_projectName` / 项目收敛），也是「UI 卡死」的既有根因。
 		// 注：并发 loadGraphMerge 的「迟到者」由 `_loadGraphMergeImpl` 的完成守卫单独兜住。
 		this._register(this._workspaceService.onDidChangeWorkspaceFolders(() => {
-			this._pruneForeignProjects('workspace folders changed');
+			// ★★ 2026-09-15（用户报「切换工作区时 app 卡住」）：**推迟到本次事件派发之后再修剪**。
+			//
+			// 本处理器是在 `onDidChangeWorkspaceFolders` 的**同步派发**里被调用的（异常栈可见
+			// `_pruneForeignProjects ← (anonymous) ← _deliver ← fire ← updateWorkspaceAndInitializeConfiguration`），
+			// 而修剪要 `deleteProject` 掉**不属于新工作区的全部项目** —— 实测一次切换丢 176836 个节点
+			// （`[prune] dropped non-workspace project(s): sarosis-agents-client(176836), ...`），
+			// 这轮节点/边/BM25/QN/文件哈希清理**直接把切换 UI 卡住**。
+			//
+			// 修剪只做两件不影响切换正确性的事：回收内存 + 停掉旧 watcher ⇒ 挪到下一个任务即可。
+			// `setTimeout(0)` 会让出当前同步派发 ⇒ 切换本身的「换 folder / 刷新 sideview / 重算配置」
+			// 先跑完，用户先看到界面切过去，而不是先卡住。
+			//
+			// ⚠ 仍遗留：单次 `deleteProject`（17.6 万节点）本身是同步重活，只是被挪到了切换之后。
+			//    彻底解法要让 store 的删除分片让出主线程（独立项）。
+			setTimeout(() => this._pruneForeignProjects('workspace folders changed'), 0);
 		}));
 	}
 
@@ -2197,6 +2267,33 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			const artifactFile = URI.joinPath(graphDir, 'graph.db.zst');
 			try {
 			const persistence = new GraphPersistence(this._fileService, this._logService);
+
+			// ★★★ 2026-09-15（**把用户 8.2MB 索引写成 99 字节**的数据丢失事故）：
+			// 「要保存的子图是 0 节点」**不等于**「图谱是空的」——它意味着本会话此刻**不知道**
+			// 这个项目的内容（项目已被 `_pruneForeignProjects` 删掉、或尚未加载）。
+			// 此时**必须直接放弃写盘**，否则就是用空图覆盖磁盘上完好的制品。
+			//
+			// 实测事故（用户日志 `vscode-app-1789480089965.log`，21:47:32）：
+			//   ① 增量索引结束 → `_scheduleSaveGraph(root, 'sarosis-agents-client')` 排入 30s 防抖；
+			//   ② 用户切走工作区 → `_pruneForeignProjects` 把该项目从 store 删掉（`store nodes=0`）；
+			//   ③ **那个定时器随后才触发** → 本方法拿到 0 节点 → 把 99 字节写进
+			//      `.codebase-memory/graph.db.zst`（原 8.2MB / 176620 节点 ⇒ 索引被毁）。
+			// 原因：原先的 sanity check **在 save 之后**才跑，而且只在 `totalCount > 0` 时告警
+			// （针对"节点项目标记错位"）；本例 `totalCount === 0`（store 全空）
+			// ⇒ **守卫沉默、照写不误** ✗。
+			//
+			// ⚠ 守卫必须在 `save` **之前** —— `persistence.save` 落地即覆盖，事后无法挽回。
+			// ⚠ 副作用（期望的）：原本「项目标记错位致空制品 + 无限重建循环」那条路径，
+			//   现在变成「跳过写盘、保留旧制品」——比写空图好得多。
+			const savedCount = project ? this._graph.store.getNodeCount(project) : this._graph.nodeCount;
+			const totalCount = this._graph.store.getNodeCount();
+			if (savedCount === 0) {
+				this._logService.warn('[CodebaseGraph]',
+					`Graph save SKIPPED (refusing to overwrite a good artifact with an empty graph) | ` +
+					`artifact=${artifactFile.fsPath} project=${project ?? 'all'} savedNodes=0 storeNodes=${totalCount}`);
+				return;
+			}
+
 			let lastLoggedMB = 0;
 			await persistence.save(this._graph.store, artifactFile.fsPath, project, { slim: true }, (writtenMB) => {
 				// 每 32MB 报一次保存进度（避免大图谱保存期间 UI 看似假死）
@@ -2205,12 +2302,6 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 					this._onDidIndexProgress.fire(`💾 保存图谱: ${writtenMB.toFixed(0)} MB...`);
 				}
 			});
-			const savedCount = project ? this._graph.store.getNodeCount(project) : this._graph.nodeCount;
-			// 防御性告警：项目计数为 0 但 store 非空 → 节点项目标记与保存项目不一致（曾致无限重建循环）
-			const totalCount = this._graph.store.getNodeCount();
-			if (savedCount === 0 && totalCount > 0) {
-				this._logService.warn('[CodebaseGraph]', `Graph save sanity check FAILED: 0 nodes for project=${project} but store holds ${totalCount} total nodes — node project-tag mismatch, saved artifact will be EMPTY`);
-			}
 			this._logService.info('[CodebaseGraph]', `Graph saved: ${artifactFile.fsPath} (project=${project ?? 'all'}, ${savedCount} nodes)`);
 			// 记录 zst 全量落盘时刻，作为增量路径节流基准（ZST_SAVE_MIN_INTERVAL_MS）
 			this._lastZstSaveAt = Date.now();
@@ -2346,6 +2437,29 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			if (!this._isRootInCurrentWorkspace(this._normalizeRoot(root))) {
 				if (this._graphWatcher.unwatch(root) > 0) { unwatched.push(root); }
 			}
+		}
+
+		// ①b ★★★ 2026-09-15（**数据丢失事故的源头**）：**先取消这些 root 已排队的延迟落盘**。
+		//
+		// 增量索引结束时 `_scheduleSaveGraph(rootPath, project)` 会排入一个 30s 防抖定时器；
+		// 若期间用户切走工作区，下面第 ② 步会把该项目从 store 删掉，而**那个定时器随后才触发**
+		// ⇒ `_saveGraph` 拿到的子图已是 0 节点 ⇒ 用空图覆盖磁盘上完好的制品
+		// （实测：8.2MB / 176620 节点的 `graph.db.zst` 被改写成 **99 字节**）。
+		// ⇒ 必须在删数据**之前**把定时器拆掉。（`_saveGraph` 里另有一道「空子图不写盘」的守卫兜底。）
+		//
+		// 判据用 **root 是否仍在当前工作区**，而不是项目名：`_pendingSaves` 的 `project` 可能
+		// 为 `undefined`（全量保存），只有 root 可靠。
+		const cancelled: string[] = [];
+		for (const [key, pending] of [...this._pendingSaves]) {
+			if (!this._isRootInCurrentWorkspace(key)) {
+				clearTimeout(pending.timer);
+				this._pendingSaves.delete(key);
+				cancelled.push(pending.rootPath);
+			}
+		}
+		if (cancelled.length > 0) {
+			this._logService.info('[CodebaseGraph]',
+				`[prune] cancelled ${cancelled.length} queued graph save(s) for roots that left the workspace: ${cancelled.join(', ')}`);
 		}
 
 		// ② 丢弃内存 store 中不属于当前工作区的项目。
@@ -3321,6 +3435,14 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		return this._graph.nodeCount;
 	}
 
+	/**
+	 * 指定项目的节点数（见接口注释：用于区分「加载成功但为空」）。
+	 * 与 `hasGraphData()` 里 `this._graph.store.getNodeCount(proj)` 同一口径。
+	 */
+	getProjectNodeCount(project: string): number {
+		return this._graph.store.getNodeCount(project);
+	}
+
 	// ─── Visualization Data (pre-computed layout + colors + sizes) ───────
 
 	/** FNV-1a hash (matches codebase-memory-mcp layout3d.c) */
@@ -3598,6 +3720,11 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private _graphLoadingCount = 0;
 	private _graphLoadingWaiters: (() => void)[] = [];
 
+	/** 由 `codebaseGraphBootstrap` 注入的「按需加载被延迟图谱」回调（见 `registerDeferredGraphLoader`）。 */
+	private _deferredGraphLoader: ((reason: string) => Promise<void>) | undefined;
+	/** 进行中的延迟加载（去重，见 `ensureDeferredGraphsLoaded`）。 */
+	private _deferredGraphLoadPromise: Promise<void> | undefined;
+
 	async whenGraphLoaded(timeoutMs: number = 120000): Promise<void> {
 		if (this._graphLoadingCount === 0) { return; }
 		await Promise.race([
@@ -3616,6 +3743,37 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		const norm = this._normalizeRoot(rootPath);
 		const project = this._rootProjectMap.get(norm) || this._basename(norm) || '_default';
 		return this._graph.store.getNodeCount(project) > 0;
+	}
+
+	// ── 非主 root 大图的延迟加载（2026-09-15 用户裁决方案 C）──────────────────────
+
+	registerDeferredGraphLoader(loader: (reason: string) => Promise<void>): IDisposable {
+		this._deferredGraphLoader = loader;
+		return toDisposable(() => {
+			// 只清理自己 —— 避免后来者被前一个的 dispose 清掉。
+			if (this._deferredGraphLoader === loader) {
+				this._deferredGraphLoader = undefined;
+			}
+		});
+	}
+
+	async ensureDeferredGraphsLoaded(reason: string): Promise<void> {
+		if (!this._deferredGraphLoader) { return; }
+		// 进行中复用同一 promise（与 `_loadingFolders` 同一教训：别重复发起重量级加载）。
+		if (this._deferredGraphLoadPromise) { return this._deferredGraphLoadPromise; }
+		const loader = this._deferredGraphLoader;
+		this._deferredGraphLoadPromise = (async () => {
+			try {
+				this._logService.info(`[CodebaseGraph] ensureDeferredGraphsLoaded (${reason})`);
+				await loader(reason);
+			} catch (err) {
+				// 失败只 warn：延迟加载是「让检索更完整」的便利，绝不能因此让查询路径失败。
+				this._logService.warn('[CodebaseGraph] ensureDeferredGraphsLoaded failed:', err);
+			} finally {
+				this._deferredGraphLoadPromise = undefined;
+			}
+		})();
+		return this._deferredGraphLoadPromise;
 	}
 
 	async hasGraphDataAsync(): Promise<boolean> {
@@ -5293,10 +5451,27 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		const persistence = new GraphPersistence(this._fileService, this._logService);
 		for (const p of candidates) {
 			try {
-				const loaded = await persistence.loadMerge(this._graph.store, p, projectOverride);
+				// 2026-09-15：加载阶段也要让 UI 有状态可显示（解压 + 流式解析 + 路径迁移 = 大图数秒~数十秒）
+				const label = this._basename(p);
+				this._onDidGraphLoadProgress.fire(`正在读取并解析制品 ${label}（大图需数十秒）`);
+				// 方案 ⑥（2026-09-15）：把阶段**内**的百分比也推给 UI —— 大图时一条
+				// 「正在读取并解析制品…」要挂几十秒，用户会以为卡死（节流在 persistence 内做）。
+				const loaded = await persistence.loadMerge(
+					this._graph.store, p, projectOverride,
+					line => this._onDidGraphLoadProgress.fire(`${label}：${line}`),
+				);
 				if (loaded) {
 					// force=true：合并加载无脏集，增量模式会空转
-				if (rebuildBM25) { await this._graph.store.rebuildBM25(undefined, true); }
+				// 2026-09-15：BM25 重建是合并后的第二个重活（全量倒排），也要让 UI 显示出来
+				if (rebuildBM25) {
+					this._onDidGraphLoadProgress.fire('正在重建全文索引（BM25）…');
+					// 同样要节流：rebuildBM25 每次让出都会回调 ⇒ 按「每 2 万节点一条」推送。
+					await this._graph.store.rebuildBM25((done, total) => {
+						if (total > 0 && (done % 20000 === 0 || done === total)) {
+							this._onDidGraphLoadProgress.fire(`重建全文索引（BM25）：${done}/${total}`);
+						}
+					}, true);
+				}
 					// 从文件路径推导 rootPath 并注册到 _rootProjectMap（多 folder 项目名解析）
 					const graphDirIdx = p.lastIndexOf('/.codebase-memory/') >= 0 ? p.lastIndexOf('/.codebase-memory/')
 						: p.lastIndexOf('\\.codebase-memory\\');
@@ -5329,7 +5504,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 						try {
 							const existingProjects = await this._sqliteBackend.listProjects();
 							if (!existingProjects.some(pj => pj.name === proj)) {
-								this._logService.info('[CodebaseGraph]', `SQLite missing project "${proj}" — syncing loaded graph...`);
+								this._onDidGraphLoadProgress.fire(`正在把项目 "${proj}" 同步到 SQLite（首次加载一次性）…`);
+							this._logService.info('[CodebaseGraph]', `SQLite missing project "${proj}" — syncing loaded graph...`);
 								await this._syncGraphToSqlite(proj);
 							} else {
 								this._logService.info('[CodebaseGraph]', `SQLite already has project "${proj}" — skip sync`);

@@ -36,6 +36,10 @@ import { ITextEditorOptions } from '../../../../platform/editor/common/editor.js
 import { basename } from '../../../../base/common/path.js';
 import { OpenFileModal } from './widgets/openFileModal.js';
 import { ImplementationsModal } from './widgets/implementationsModal.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { ICodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
+import { ensureGraphForUi, makeNotificationHost } from './widgets/codebaseGraphAutoBuild.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { SearchCommandIds } from '../../../../workbench/contrib/search/common/constants.js';
 import { ISearchService, QueryType, resultIsMatch, type ITextQuery, type ISearchComplete } from '../../../../workbench/services/search/common/search.js';
@@ -211,16 +215,12 @@ registerAction2(class OpenGraphFileAction extends Action2 {
 	}
 
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const graphService = accessor.get(ICodebaseGraphService);
 		const instantiationService = accessor.get(IInstantiationService);
-		const logService = accessor.get(ILogService);
 
-		if (!graphService.hasGraphData()) {
-			logService.info('[CodebaseGraph]', 'Open File requested but graph has no data');
-			return;
-		}
-
-		// 打开类 VS 的 Open File in Solution 模态对话框（标题/三列表格/搜索/复选框/OK/Cancel）
+		// 2026-09-15（用户要求）：**不再以 `hasGraphData()` 为前提** —— 旧实现无图时静默 return
+		// （只打一条 info 日志），用户按 Alt+Shift+O 只看到「没反应」。
+		// 现在无条件打开模态；「无图则自动建图 + 在 UI 内显示进度/失败原因」由 OpenFileModal
+		// 内的 `ensureGraphForUi()` 负责（见 widgets/codebaseGraphAutoBuild.ts）。
 		await instantiationService.createInstance(OpenFileModal).open();
 	}
 });
@@ -253,8 +253,28 @@ registerAction2(class FindGraphReferencesAction extends Action2 {
 		const quickInputService = accessor.get(IQuickInputService);
 		const logService = accessor.get(ILogService);
 
+		// 2026-09-15（用户要求）：**不再静默 return** —— 旧实现无图时只打一条 info 日志，用户按
+		// Shift+Alt+F 完全没反应。现在：用一条可更新的通知说明状态 + 自动建图，建好后**重跑本命令**
+		// （不改动下方函数体，避免整段重缩进）。
 		if (!graphService.hasGraphData()) {
-			logService.info('[CodebaseGraph]', 'Find References requested but graph has no data');
+			const store = new DisposableStore();
+			const commandService = accessor.get(ICommandService);
+			void ensureGraphForUi(
+				{
+					graphService,
+					cbmService: accessor.get(ICodebaseMemoryMcpService),
+					workspaceService: accessor.get(IWorkspaceContextService),
+					logService,
+				},
+				makeNotificationHost(accessor.get(INotificationService), () => {
+					// 延到下一个宏任务：不在 Emitter 回调里同步 dispose 本 store（监听列表正被迭代）
+					setTimeout(() => {
+						store.dispose();
+						void commandService.executeCommand('sarosis.findGraphReferences');
+					}, 0);
+				}),
+				store,
+			);
 			return;
 		}
 		const word = getActiveWord(editorService);
@@ -336,8 +356,26 @@ registerAction2(class GotoGraphImplementationAction extends Action2 {
 
 		logService.info(TAG, 'run() entered');
 
+		// 2026-09-15（用户要求）：不再静默 return（Alt+G 无图时以前完全没反应）——
+		// 通知说明状态 + 自动建图，建好后重跑本命令。
 		if (!graphService.hasGraphData()) {
-			logService.info(TAG, 'ABORT: graph has no data');
+			const store = new DisposableStore();
+			const commandService = accessor.get(ICommandService);
+			void ensureGraphForUi(
+				{
+					graphService,
+					cbmService: accessor.get(ICodebaseMemoryMcpService),
+					workspaceService: accessor.get(IWorkspaceContextService),
+					logService,
+				},
+				makeNotificationHost(accessor.get(INotificationService), () => {
+					setTimeout(() => {
+						store.dispose();
+						void commandService.executeCommand('sarosis.gotoGraphImplementation');
+					}, 0);
+				}),
+				store,
+			);
 			return;
 		}
 		const word = getActiveWord(editorService);
@@ -523,8 +561,26 @@ registerAction2(class ListGraphMethodsAction extends Action2 {
 
 		logService.info(TAG, 'run() entered');
 
+		// 2026-09-15（用户要求）：不再静默 return（Alt+M 无图时以前完全没反应）——
+		// 通知说明状态 + 自动建图，建好后重跑本命令。
 		if (!graphService.hasGraphData()) {
-			logService.info(TAG, 'ABORT: graph has no data');
+			const store = new DisposableStore();
+			const commandService = accessor.get(ICommandService);
+			void ensureGraphForUi(
+				{
+					graphService,
+					cbmService: accessor.get(ICodebaseMemoryMcpService),
+					workspaceService: accessor.get(IWorkspaceContextService),
+					logService,
+				},
+				makeNotificationHost(accessor.get(INotificationService), () => {
+					setTimeout(() => {
+						store.dispose();
+						void commandService.executeCommand('sarosis.listGraphMethods');
+					}, 0);
+				}),
+				store,
+			);
 			return;
 		}
 		const editor = editorService.activeTextEditorControl as ICodeEditor;

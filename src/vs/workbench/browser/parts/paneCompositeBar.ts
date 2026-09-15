@@ -793,6 +793,7 @@ class ViewContainerActivityAction extends CompositeBarAction {
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IActivityService private readonly activityService: IActivityService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super(compositeBarActionItem);
 		this.updateActivity();
@@ -836,10 +837,26 @@ class ViewContainerActivityAction extends CompositeBarAction {
 						this.paneCompositePart.openPaneComposite(this.compositeBarActionItem.id, focus);
 						break;
 					case 'toggle':
-					default:
-						// Hide sidebar if selected viewlet already visible
-						this.layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
+					default: {
+						// ★ [Saros] agents 布局：`isVisible(SIDEBAR_PART)` 在本布局里**恒为 true**
+						// （48px 图标条永不隐藏；`Layout.setPartHidden()` 每次都会把
+						//  `LayoutStateKeys.SIDEBAR_HIDDEN` 重置回 false）⇒ 上游这段
+						// 「点当前活动图标 ⇒ 隐藏侧栏」的 toggle 分支**每次都命中**，
+						// 且**每次传的都是 `hidden = true`** ⇒ 侧栏只能被折叠，
+						// **永远无法再用图标把它展开**。
+						// 用户症状：折叠之后再点同一个图标「毫无反应」（实为在原地重复折叠）。
+						// 修法：按内容区的真实折叠态取反，使其成为真正的 toggle。
+						// ⚠ 鸭子类型读取：本文件属上游层，不便 import sessions 的侧栏类型；
+						//   非 sessions 侧栏没有该属性 ⇒ `undefined` ⇒ 退回上游原行为（恒折叠）✓。
+						const collapsed = (this.paneCompositePart as unknown as { contentCollapsed?: boolean }).contentCollapsed;
+						const nextHidden = typeof collapsed === 'boolean' ? !collapsed : true;
+						try {
+							await this.layoutService.setPartHidden(nextHidden, Parts.SIDEBAR_PART);
+						} catch (err) {
+							this.logService.error(`[activitybar] TOGGLE <- setPartHidden 抛异常: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+						}
 						break;
+					}
 				}
 
 				return;

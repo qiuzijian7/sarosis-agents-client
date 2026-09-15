@@ -339,6 +339,11 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		// 竞态守卫：启动时 bootstrap 的 loadGraphMerge 可能仍在进行中，
 		// 大图谱（10w+ 节点）加载需数十秒——期间判"无数据"会误导 LLM 触发全量重建
 		await ctx.codebaseGraphService.whenGraphLoaded();
+		// ★ 2026-09-15（方案 C）：这里是「**真正要用图**」的入口 ⇒ 把**被延迟的**非主 root
+		// 大图补上（打开工作区时故意没加载，见 codebaseGraphBootstrap）。必须放在
+		// `hasGraphData()` 判定**之前** —— 否则跨项目检索会缺数据，且后续 `tryLoadFromSqlite`
+		// 失败时可能触发全量重建（延迟加载的初衷就是避免这种重活）。
+		await ctx.codebaseGraphService.ensureDeferredGraphsLoaded('codebase tool preflight');
 		if (!ctx.codebaseGraphService.hasGraphData()) {
 			// Phase 2f：内存 store 为空时，从 SQLite 按需加载（仅当 sqliteBackend 启用时生效）
 			if (!await ctx.codebaseGraphService.tryLoadFromSqlite()) {

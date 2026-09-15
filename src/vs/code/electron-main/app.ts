@@ -853,13 +853,21 @@ export class CodeApplication extends Disposable {
 		//   非 binary 调用路径（web_search / prompt / history JSON）保持原样。
 		if (payload?.binary) {
 			const buf = Buffer.from(await response.arrayBuffer());
+			// ★ 4MB 上限 + **截断标记**（2026-09-15）：
+			//   此前是**静默** `subarray(0, 4MB)` ⇒ 调用方拿到"看似成功"的残缺 dataURL
+			//   （mp4 头完好、尾部缺失）⇒ 抠像 / GIF 编码 / 视频解码阶段才失败，
+			//   报错点离根因很远 ✗（用户实测：AnimatedEmoji 原片"固化成功"但②/③ 仍失败）。
+			//   现在把 `truncated` / `totalBytes` 一并回传，由上层显式判失败并走落盘回退。
+			const cap = 4 * 1024 * 1024;
 			return {
 				ok: response.ok,
 				status: response.status,
 				statusText: response.statusText,
 				// 4MB cap 与文本路径一致（ComfyUI 单张预览图远小于此）。
-				base64: buf.subarray(0, 4 * 1024 * 1024).toString('base64'),
+				base64: buf.subarray(0, cap).toString('base64'),
 				contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+				truncated: buf.byteLength > cap,
+				totalBytes: buf.byteLength,
 			};
 		}
 

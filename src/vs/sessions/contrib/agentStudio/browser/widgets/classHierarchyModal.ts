@@ -21,7 +21,11 @@ import { localize } from '../../../../../nls.js';
 import { ICodebaseGraphService, IClassHierarchyNode } from '../codebaseGraphService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { ITextEditorOptions } from '../../../../../platform/editor/common/editor.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { ICodebaseMemoryMcpService } from '../codebaseMemoryMcpService.js';
 import { CodebaseGraphModal } from './codebaseGraphModal.js';
+import { ensureGraphForUi } from './codebaseGraphAutoBuild.js';
 
 type Direction = 'bases' | 'derived' | 'both';
 
@@ -39,6 +43,11 @@ export class ClassHierarchyModal {
 	constructor(
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
 		@IEditorService private readonly _editorService: IEditorService,
+		// 2026-09-15：无图时自动建图需要读用户索引配置（cbmService）+ 兜底解析索引根
+		// （workspaceService）；日志用于「为什么没建成」这类问题的现场排查。
+		@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
+		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
+		@ILogService private readonly _logService: ILogService,
 	) {
 	}
 
@@ -65,6 +74,28 @@ export class ClassHierarchyModal {
 			// _treeEl 在 renderBody 里创建，等下一帧再填充提示
 			setTimeout(() => this._setHint(localize('sarosis.classHierarchy.noWord', 'Place the cursor on a class name and press Alt+Shift+G, or type a class name in the search box above.')), 0);
 		}
+		// 2026-09-15（用户要求）：**无图也照常打开 UI**。`ShowClassHierarchyAction.run` 以前在
+		// `hasGraphData()` 上静默 return —— 连这个模态都不弹，用户按 Alt+Shift+G 只看到「没反应」。
+		// 现在：无图则自动建图 + 提示条显示进度，建好后自动重查（有查询词）或提示可输入。
+		void ensureGraphForUi(
+			{
+				graphService: this._graphService,
+				cbmService: this._cbmService,
+				workspaceService: this._workspaceService,
+				logService: this._logService,
+			},
+			{
+				setNotice: (text, kind) => this._modal?.setNotice(text, kind),
+				refresh: () => {
+					if (this._query) {
+						void this._load();
+					} else {
+						this._setHint(localize('sarosis.classHierarchy.readyNoQuery', '代码图谱已就绪 —— 输入类名，或把光标放在类名上再按 Alt+Shift+G。'));
+					}
+				},
+			},
+			this._disposables,
+		);
 	}
 
 	private _renderBody(body: HTMLElement): void {

@@ -17,6 +17,7 @@ import { INotificationService } from '../../../../../platform/notification/commo
 import { IDialogService, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { $, clearNode } from '../../../../../base/browser/dom.js';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { joinPath } from '../../../../../base/common/resources.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
@@ -31,8 +32,6 @@ import { WorkflowEditorInput } from '../workflowEditorInput.js';
 import { WorkflowMarketEditorInput } from '../workflowMarketEditorInput.js';
 import { IMarketplaceService } from '../../common/marketplace.js';
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
-import { ITofAuthService } from '../../common/tofAuth.js';
-import { IWorkflowVersionService } from '../../common/workflowVersionTypes.js';
 import { WorkflowPublishModal } from '../workflowPublishModal.js';
 import { applySavedOrder, CardDragSorter, CardOrderStore, CardPinStore, showCardContextMenu } from './cardItemBehaviors.js';
 import { buildWorkflowExportJson, workflowExportFileName } from '../workflow/workflowFileExport.js';
@@ -82,8 +81,6 @@ export class WorkflowViewPane extends ViewPane {
 		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@IStorageService private readonly storageService: IStorageService,
-		@ITofAuthService private readonly tofAuthService: ITofAuthService,
-		@IWorkflowVersionService private readonly workflowVersionService: IWorkflowVersionService,
 		@IDialogService private readonly dialogService: IDialogService,
 		// 本地文件导入工作流（2026-09-11）：文件选择对话框 + 读文件。
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
@@ -411,15 +408,18 @@ export class WorkflowViewPane extends ViewPane {
 
 	/** 上传工作流到商城（复用发布 Modal） */
 	private _handleUpload(wf: IStoredWorkflow): void {
-		const modal = new WorkflowPublishModal(
-			wf,
-			this.marketplaceService,
-			this.notificationService,
-			this.workflowStorage,
-			this.tofAuthService,
-			this.workflowVersionService,
-		);
-		modal.onDidPublish(() => { void this._reload(); });
+		// ★ 改走 `instantiationService`（2026-09-15）：此前是**直接 `new`** 并手工传 6 个服务 ✗ ——
+		//   `WorkflowPublishModal` 的构造器一旦新增依赖（本次为诊断加了 `ILogService`）这里就
+		//   编译失败（`TS2554: Expected 7 arguments, but got 6`）。`createInstance` 自动注入服务、
+		//   只传非服务参数（wf）✓，此后构造器加依赖不再波及调用方。
+		// ★ 同时做「模态自清 + 订阅释放」（`[LEAKED DISPOSABLE]` 来源）：modal 是 Disposable，
+		//   `onDidPublish` / `onDidClose` 的订阅返回值也必须持有 —— 统一收进 store，
+		//   在 `onDidClose`（点 X / Esc / 遮罩 / 取消都会触发）时一次性释放 ✓。
+		const modal = this.instantiationService.createInstance(WorkflowPublishModal, wf);
+		const store = new DisposableStore();
+		store.add(modal);
+		store.add(modal.onDidPublish(() => { void this._reload(); }));
+		store.add(modal.onDidClose(() => { store.dispose(); }));
 		modal.show();
 	}
 

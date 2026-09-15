@@ -311,3 +311,40 @@ export function planForeignProjectPrune(
 	const keep = new Set(workspaceProjects);
 	return storeProjects.filter(p => !keep.has(p));
 }
+
+/**
+ * 是否应**延迟加载**某 folder 的图谱（2026-09-15 用户裁决「方案 C」）。
+ *
+ * 背景：`codebaseGraphBootstrap._bootstrap()` 原本无条件加载**所有** folder 的图，
+ * 而图谱解压/反序列化是 CPU/内存密集的**同步**重活 —— 实测：
+ *   · `sarosis-agents-client` 8.2MB ⇒ 21.6s / 17.9 万节点
+ *   · `S1Game` 7MB ⇒ 6.8s / 16 万节点
+ *   · **`UE5EA`（S1Game 工作区的非主 root）24.6MB ⇒ 数十秒 / 87.6 万节点**
+ * ⇒ 每次切到「含大图非主 root」的工作区都整窗卡死数十秒（用户报「切换工作区后 app 卡死」）。
+ *
+ * 但**默认检索作用域只到主 root**（`_resolveActiveProject()` 按 folder 顺序取第一个有映射的
+ * 项目；`searchGraphAsync` 用 `params.project ?? _projectName`）⇒ 非主图在「打开工作区」
+ * 这一刻并不必要 ⇒ 延迟到**真正用到**时（codebase 工具 / 子代理预检会调
+ * `ensureDeferredGraphsLoaded()`）再加载。
+ *
+ * 纯函数（bootstrap 是 DI 贡献类、无法单测；判据下沉到这里锁死语义）。
+ *
+ * @param folderIndex 该 folder 在工作区 `folders` 中的下标（**0 = 主 root，永不延迟**）
+ * @param artifactSizeBytes `graph.db.zst` 的字节数（文件不存在/读不到时传 0）
+ * @param deferLargeNonPrimaryRootsMB 设置值（MB）；**<= 0 表示关闭延迟**（保持旧行为）
+ * @param alreadyDeferred 该 folder 是否已在延迟集合里（幂等：一旦延迟就保持）
+ */
+export function shouldDeferGraphLoad(
+	folderIndex: number,
+	artifactSizeBytes: number,
+	deferLargeNonPrimaryRootsMB: number,
+	alreadyDeferred = false,
+): boolean {
+	// 幂等优先：已延迟的直接保持，避免每次 folder 事件又 stat 一遍并可能改判。
+	if (alreadyDeferred) { return true; }
+	// 关闭延迟 ⇒ 旧行为（打开工作区即加载全部）。
+	if (deferLargeNonPrimaryRootsMB <= 0) { return false; }
+	// 主 root 永不延迟 —— 它就是默认检索作用域，延迟它等于让首次查询缺数据。
+	if (folderIndex <= 0) { return false; }
+	return artifactSizeBytes > deferLargeNonPrimaryRootsMB * 1024 * 1024;
+}

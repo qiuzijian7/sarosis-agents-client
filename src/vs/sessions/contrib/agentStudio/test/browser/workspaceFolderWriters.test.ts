@@ -579,19 +579,34 @@ suite('SidebarPart 布局 — 「底部留白」不变量（2026-09-15）', () =
 		const src = stripComments(fs.readFileSync(SIDEBAR, 'utf8'));
 		const idx = src.indexOf('layoutContents(width: number, height: number)');
 		assert.ok(idx > 0, 'SidebarPart 必须覆写 layoutContents() 来纠正 contentSize');
-		const body = src.slice(idx, idx + 1400);
+		const body = src.slice(idx, idx + 2000);
+		// ★ 2026-09-15 校准：原先断言「只在展开态纠正（`_contentCollapsed`）」，
+		// 但源码随后**刻意删掉了**那个提前 return —— 真机实测该守卫会让纠正**从不执行**
+		// （`PartLayout.layout()` 写的偏小值成为最终值 ⇒ 底部留白 70px 复发）。
+		// 折叠态无需特殊对待：那时 `.content` 本就 `display:none`，纠正高度没有视觉影响。
+		// ⇒ 现在的正确不变量是「**不得**因折叠态提前 return」。
+		const layoutBody = src.slice(idx, idx + 900);
 		assert.ok(
-			body.includes('_contentCollapsed'),
-			'只在**展开态**纠正（折叠态 .content 本就 display:none）',
+			!layoutBody.includes('if (this._contentCollapsed)') || !layoutBody.includes('return result;'),
+			'不得因折叠态提前 return —— 那会让下面的 contentSize 纠正从不执行（实测回归）',
 		);
 		assert.ok(
-			body.includes('new Dimension(width, height)'),
-			'展开态 contentSize 必须是**整个部件高度**（图标条在侧列，不参与纵向分配）',
+			body.includes('new Dimension(width, contentHeight)'),
+			'contentSize 必须用**实测高度**，不得直接用入参 height',
 		);
 		assert.ok(
 			body.includes('size(this.contentArea'),
 			'必须同时覆盖 PartLayout 刚内联上去的偏小高度',
 		);
+		// ★ 2026-09-15 校准（源码随后改成"从 DOM 实测反推"）：入参 `height` 是**内容区高度**
+		// （已减去标题区）⇒ 直接拿它当"部件满高"会算出 1287（部件实高 1325），留白照旧。
+		// 现在必须用**矩形相减**（`offsetTop` 会被 offsetParent 带偏，实测拿到 ~70 ✗）。
+		assert.ok(body.includes('getBoundingClientRect()'), '必须用 DOM 矩形实测反推真实可用高度');
+		assert.ok(
+			body.includes('partRect.bottom - contentRect.top'),
+			'必须用矩形相减（用 offsetTop 会被 offsetParent 带偏 ⇒ 等于没修）',
+		);
+		assert.ok(body.includes('height + result.titleSize.height'), 'DOM 未就绪时必须有兜底（把标题区加回来）');
 	});
 });
 
@@ -800,6 +815,79 @@ suite('工作区下拉框重构不变量（2026-09-15）', () => {
 		);
 		// 键盘高亮必须与 hover 同视觉。
 		assert.ok(css.includes('.ws-dropdown-item.kb'), '必须为键盘高亮定义样式');
+	});
+});
+
+suite('切换工作区污染（2026-09-15 20:41 事故）', () => {
+
+	const SIDEBAR = path.join(process.cwd(), SESSIONS, 'browser/parts/sidebarPart.ts');
+	const CONFIG_SVC = path.join(process.cwd(), 'src/vs/workbench/services/configuration/browser/configurationService.ts');
+
+	function stripAllComments(src: string): string {
+		return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+	}
+
+	function bodyOf(src: string, definition: string): string {
+		const idx = src.indexOf(definition);
+		assert.ok(idx > 0, `应能找到定义：${definition}`);
+		const after = idx + definition.length;
+		const nextMember = src.slice(after).search(/\n\t(?:private |protected |public )?(?:static )?(?:readonly )?(?:async )?[A-Za-z_$][\w$]*\s*[(:<]/);
+		return nextMember >= 0 ? src.slice(idx, after + nextMember) : src.slice(idx);
+	}
+
+	test('★★★ 内存内换 folder 后必须**清掉过期的 workspace.configuration**', () => {
+		// `updateWorkspaceConfiguration()` 只换 `workspace.folders`，不碰 `configuration`
+		// ⇒ 从文件态工作区切到「无文件工作区」后，窗口仍自称在旧工作区文件上
+		// ⇒ `matchWorkspaceIdentity()` 第 ① 级判据被过期路径骗到 ⇒ 反向投影把新工作区的
+		// root 写进旧记录（跨工作区污染）+ 游标对齐把 active 切回去（来回翻转 ⇒ 图谱反复重载 ⇒ 卡死）。
+		const src = stripAllComments(fs.readFileSync(CONFIG_SVC, 'utf8'));
+		const body = bodyOf(src, 'private async doReplaceWorkspaceFoldersInMemory');
+		const updateAt = body.indexOf('updateWorkspaceConfiguration(');
+		const clearAt = body.indexOf('this.workspace.configuration = null');
+		assert.ok(updateAt > 0, '应能找到 updateWorkspaceConfiguration 调用');
+		assert.ok(clearAt > 0, '必须在换 folder 之后清掉 configuration —— 否则窗口身份是过期值');
+		assert.ok(clearAt > updateAt, '清理必须发生在 updateWorkspaceConfiguration **之后**');
+	});
+
+	test('★★★ 自愈通道必须能用**文件**校正被写坏的 `path`', () => {
+		// 20:41 实测：反向投影把 `path=f:\…\S1Game` 写进了本仓记录，
+		// 而 `codeWorkspacePath` 因展开赋值存活 ⇒ 记录自相矛盾。以文件为准校正。
+		const src = stripAllComments(fs.readFileSync(SIDEBAR, 'utf8'));
+		const body = bodyOf(src, 'private async _recoverWorkspaceFileIdentity(): Promise<void>');
+		assert.ok(body.includes('fixing primary root'), '必须有「以文件校正 path」的分支');
+		assert.ok(
+			body.includes('updateWorkspace(ws.id, { path: result.primaryPath })'),
+			'必须把文件解析出的主 root 写回记录',
+		);
+
+		// ⚠ 该分支**不得**碰 `relatedFolders` —— 它可能含用户手动关联的目录
+		// （`addRelatedFolder`），强制覆盖会销毁用户数据；且 root 解析已改为文件优先，不依赖它。
+		// 切片必须**止于该分支自己的 `continue;`** —— 多切一点就会吃到下一个分支（情形 B 会用
+		// relatedFolders），那是断言写错而不是实现违规（本轮实测踩到）。
+		const fixAt = body.indexOf('fixing primary root');
+		const branchEnd = body.indexOf('continue;', fixAt);
+		assert.ok(branchEnd > fixAt, '应能找到该分支的结束点');
+		const branch = body.slice(fixAt, branchEnd);
+		assert.ok(
+			!branch.includes('relatedFolders'),
+			'校正 path 的分支不得触碰 relatedFolders（可能含用户手动关联的目录）',
+		);
+	});
+
+	test('★★ 不得靠「加严身份匹配」来兜这个洞（会误伤启动早期 folders 为空的窗口）', () => {
+		// 曾在 `matchWorkspaceIdentity` 第 ① 级（两边文件相同）上加「folder 必须相交」的想法，
+		// 但启动早期窗口可能 **configuration 已就绪而 folders 还没应用** ⇒ 相交判定为假
+		// ⇒ 身份匹配失败 ⇒ P0 的启动解析/投影全废。故修在**状态源头**（上面那条），不动判据。
+		const policy = stripAllComments(
+			fs.readFileSync(path.join(process.cwd(), SESSIONS, 'contrib/agentStudio/common/workspaceFolderSyncPolicy.ts'), 'utf8'),
+		);
+		const idx = policy.indexOf('export function matchWorkspaceIdentity(');
+		assert.ok(idx > 0, '应能找到 matchWorkspaceIdentity');
+		const body = policy.slice(idx, idx + 1400);
+		assert.ok(
+			!body.includes('folderPaths.length === 0'),
+			'不得在判据里加「folders 为空就不算同一个工作区」—— 启动早期会误伤',
+		);
 	});
 });
 

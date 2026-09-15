@@ -98,7 +98,14 @@ export class WorkflowPublishModal extends Disposable {
 	background: rgba(0,0,0,0.55);
 	backdrop-filter: blur(6px);
 	display: flex; align-items: center; justify-content: center;
-	z-index: 10000; font-size: 13px;
+	/* ★ max-int（2026-09-15，原 10000）：Agent Studio 的 webview 是**独立 iframe 覆盖层**
+	   （参见 sessions/browser/workbench.ts 里「把 webview 覆盖层 iframe 抬到浮窗
+	   z-index:5000 之上」的历史修复）——画布 webview 的层可能被抬得更高，
+	   而本 overlay 挂在 document.body，若 10000 < 画布 iframe 的层就被**整块盖住**
+	   ⇒ 用户看到的就是「点发布没反应」✗。
+	   发布弹窗是 host 侧最高优先级的一次性交互 ⇒ 直接取 max-int 压过一切
+	   （show() 末尾的自检日志会打印「中心点命中谁 / 被遮挡=…」，可据此定论）。 */
+	z-index: 2147483647; font-size: 13px;
 }
 .wpm-modal {
 	background: var(--vscode-sideBar-background, #181825);

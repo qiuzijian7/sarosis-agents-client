@@ -1733,17 +1733,33 @@ const handleExecute = useCallback(async () => {
 		try {
 			const r = await sendRequest('workflow.publishState', { workflowId }) as PublishState;
 			setPublishState(r ?? null);
-		} catch { setPublishState(null); }
+		} catch (err) {
+			setPublishState(null);
+			// ★ 失败留痕（保留）：查询失败时发布菜单只显示"查询失败"占位，
+			//   不留一笔就无法区分「真没发布过」与「状态查询挂了」✗。
+			// eslint-disable-next-line no-console
+			console.warn('[WorkflowEditor] publishState 查询失败（发布菜单会显示"查询失败"占位）：', err);
+		}
 	}, [workflowId]);
 	useEffect(() => { void refreshPublishState(); }, [refreshPublishState, loaded]);
 
 	const handlePublish = useCallback(async () => {
-		if (!workflowId) { return; }
+		if (!workflowId) {
+			setValidationMsg('发布中止：画布尚未绑定工作流（workflowId 为空）');
+			return;
+		}
 		setOpenMenu(null);
 		try {
-			const r = await sendRequest('workflow.publish', { workflowId }, 600_000) as { ok: boolean; version?: string };
-			setValidationMsg(r?.ok ? `✓ 已发布 v${r.version ?? ''}` : '已取消发布');
-		} catch { setValidationMsg('发布失败'); }
+			const r = await sendRequest('workflow.publish', { workflowId }, 600_000) as { ok: boolean; version?: string; cancelled?: boolean; error?: string };
+			setValidationMsg(r?.ok
+				? `✓ 已发布 v${r.version ?? ''}`
+				: (r?.cancelled ? '发布已取消（未完成上传）' : `发布失败：${r?.error ?? '未知原因'}`));
+		} catch (err) {
+			// ★ 失败留痕（保留）：超时 / host 未响应 / 弹窗流程抛错必须有据可查。
+			// eslint-disable-next-line no-console
+			console.error('[WorkflowEditor] 发布请求异常（超时 / host 未响应 / 弹窗流程抛错）：', err);
+			setValidationMsg(`发布失败：${err instanceof Error ? err.message : String(err)}`);
+		}
 		void refreshPublishState();
 	}, [workflowId, refreshPublishState]);
 
@@ -1905,6 +1921,35 @@ const handleExecute = useCallback(async () => {
 		return () => window.removeEventListener('keydown', handler);
 	}, []);
 
+	// ★ 工具栏点击落点探针（2026-09-15「点发布没反应」取证；**按需开启**，默认静默）：
+	//   开启方式：DevTools 执行 `globalThis.__wfClickProbe = true`（与 `__sarosLayoutDebug` 同约定）。
+	//   本次已用它定论：`target=BUTTON.wft-btn text="⬆ 发布 ▾"` + 紧随 `发布菜单：打开
+	//   （publishState=unpublished）` ⇒ **点击正常到达，不是 UI 层级/遮挡问题** ✓。
+	//   只在 pointerdown **落在 `.wft-bar` 矩形内**时打印**真实 target**（capture 阶段，
+	//   先于任何 React/业务 handler）⇒ 一次点击即可二分定位：
+	//     · **完全没有这条日志** ⇒ 事件根本没进 webview（host 层有元素盖在画布顶部，
+	//       或 webview iframe 定位偏了）；此时 host 侧也不会有 `workflow.publish` 请求；
+	//     · 有日志但 `target` 不是按钮（如 `DIV.wft-...`/`INPUT...`）⇒ webview 内部被
+	//       遮挡，日志里的 class 直接就是遮挡元素；
+	//     · `target=BUTTON.wft-btn` 且仍无业务日志 ⇒ 事件正常到达，问题在 handler 内部。
+	//   ⚠ 级别用 `warn`（不是 info）：实测只有 warn/error 一定被转发进 app log
+	//     （`[WorkflowEditor] publishState 跳过` 就是 warn ✓）；info 有可能不落盘 ✗。
+	useEffect(() => {
+		if (!(globalThis as { __wfClickProbe?: boolean }).__wfClickProbe) { return; }
+		const onDown = (e: PointerEvent) => {
+			const bar = document.querySelector('.wft-bar');
+			if (!bar) { return; }
+			const r = bar.getBoundingClientRect();
+			if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) { return; }
+			const t = e.target as HTMLElement | null;
+			const desc = t ? `${t.tagName}${t.className ? '.' + String(t.className).trim().split(/\s+/).join('.') : ''}` : 'null';
+			// eslint-disable-next-line no-console
+			console.warn(`[wfClickProbe] 工具栏区域 pointerdown → target=${desc} text="${(t?.textContent ?? '').trim().slice(0, 20)}" at(${Math.round(e.clientX)},${Math.round(e.clientY)})`);
+		};
+		window.addEventListener('pointerdown', onDown, true);
+		return () => window.removeEventListener('pointerdown', onDown, true);
+	}, []);
+
 	const handleCopyScript = useCallback(async () => {
 		try {
 			await navigator.clipboard.writeText(projectedScript);
@@ -2059,8 +2104,29 @@ const handleExecute = useCallback(async () => {
 
 						{/* 发布 ▾（原顶栏：上传/升级/版本历史/删除） */}
 						<div className="wft-dd">
-							<button className="wft-btn" title="发布 / 版本 / 删除" onClick={() => { setOpenMenu(m => m === 'publish' ? null : 'publish'); setDeleteConfirm(false); }}>
-								⬆ 发布 <span className="caret">▾</span>
+							{/* ★ 主按钮 = **直接执行发布**（2026-09-15 修「点发布没反应」）：
+							   日志实证（`[wfClickProbe] target=BUTTON.wft-btn text="⬆ 发布 ▾"` + 紧随
+							   `发布菜单：打开（publishState=unpublished workflowId=wf-test1）`）说明
+							   点击**正常到达**、菜单也**正常打开** —— 用户报的"没反应"真因是：
+							   这个按钮原先**只展开菜单**，真正动作藏在菜单项「上传发布 / 上传更新」里，
+							   用户点了主按钮看到菜单后没有继续点菜单项 ⇒ 感觉"点了没反应" ✗。
+							   现语义：主按钮按发布状态**直接动作**（未发布/已修改 → 上传；商城更新 → 升级），
+							   无动作可做时才展开菜单；右侧独立 caret 始终展开菜单
+							   （版本历史 / 删除工作流仍在那里）。 */}
+							<button className="wft-btn" title="发布（未发布 → 上传发布；商城有新版 → 升级）" onClick={() => {
+								const st = publishState?.state;
+								setDeleteConfirm(false);
+								if (st === 'unpublished' || st === 'localModified') { void handlePublish(); return; }
+								if (st === 'serverNewer') { void handleUpgrade(); return; }
+								setOpenMenu(m => m === 'publish' ? null : 'publish');
+							}}>
+								⬆ 发布
+							</button>
+							<button className="wft-btn icon" title="更多（版本历史 / 删除工作流）" onClick={() => {
+								setOpenMenu(m => m === 'publish' ? null : 'publish');
+								setDeleteConfirm(false);
+							}}>
+								<span className="caret">▾</span>
 							</button>
 							{openMenu === 'publish' && (
 								<div className="wft-menu right">
@@ -2079,6 +2145,19 @@ const handleExecute = useCallback(async () => {
 										<button className="wft-mi" onClick={() => void handleUpgrade()}>
 											<span className="mi-icon">⬆</span><span className="mi-label">升级到 v{publishState.serverVersion}<span className="mi-hint">从商城下载最新版</span></span>
 										</button>
+									)}
+									{/* ★ 无可用发布操作时给显式反馈（2026-09-12 修用户反馈「点发布没反应」）：
+									    此前 publishState 为 null（后端查询失败）/ upToDate / serverOnly 时，
+									    三个发布项全部不渲染 → 菜单只剩「版本历史 / 删除」，用户以为按钮坏了。
+									    这里把「为什么没有发布项」直接显示出来，避免纯静默。 */}
+									{(!publishState || publishState.state === 'upToDate' || publishState.state === 'serverOnly') && (
+										<div className="wft-mi-note">
+											{!publishState
+												? '发布状态查询失败，请检查登录状态后重试'
+												: publishState.state === 'upToDate'
+													? `已是最新 v${publishState.localVersion ?? ''}，无需发布`
+													: `商城已有 v${publishState.serverVersion ?? ''}，本地无版本号`}
+										</div>
 									)}
 									<div className="wft-mi-sep" />
 									<button className="wft-mi" onClick={handleVersionHistory}>
@@ -2990,7 +3069,13 @@ export function applyCanvasOpsToStore(
 		for (const po of pickerOps) {
 			const refs = Array.isArray(po.refs) ? (po.refs as string[]) : [];
 			const node = model.nodes.find(n => n.id === String(po.node ?? ''));
-			if (!node || refs.length === 0) { continue; }
+			if (!node || refs.length === 0) {
+				// 静默跳过 = 「画布完全没反应」最难排查的形态 ⇒ 必须留痕。
+				// （节点未找到：host 给的 nodeId 与画布 id 不一致 / 该画布没这个节点；
+				//   refs 为空：卡片侧没有选中任何候选。）
+				console.warn(`[WorkflowEditor] select_picker_refs 跳过：node=${String(po.node ?? '')} 节点${node ? '已找到' : '未找到'} refs=${refs.length}`);
+				continue;
+			}
 			// ★★ 池顺序必须与**画布卡片网格 / 物化**完全一致（2026-09-12 修用户实测
 			//   「聊天框选中的图像和工作流节点中同步显示的选中图像不一致」）：
 			//   卡片池 = `mergeImagePool(pickerOutputs)`（**新图在前** + 去重），
@@ -3007,6 +3092,15 @@ export function applyCanvasOpsToStore(
 			}
 			const poolRefs = mergeImagePool(raw).map(e => e.media.ref);
 			const patch = buildPickerSelectionPatch(refs, poolRefs);
+			// ★ 诊断（2026-09-15）：`selected_indices` 只在 ref **能在上游池里解析出序号**时
+			//   才写（见 buildPickerSelectionPatch 的「绝不猜序号」约定）⇒「聊天卡选了 N 张、
+			//   画布网格只高亮 M 个」要么是池内容/顺序不一致，要么是卡片处在「全部」视图
+			//   （那种视图靠 `directRefs` 按 ref 命中）。把两个空间的交集打出来，一眼可判。
+			let hit = 0;
+			if (typeof patch.selected_indices === 'string') {
+				try { hit = (JSON.parse(patch.selected_indices) as number[]).length; } catch { hit = -1; }
+			}
+			console.info(`[WorkflowEditor] select_picker_refs → node=${node.id} refs=${refs.length} pool=${poolRefs.length} 序号命中=${hit} selected_index=${patch.selected_index ?? '-'} directRefsLen=${refs.length}`);
 			if (Object.keys(patch).length > 0) {
 				preOps.push({ op: 'update_node', node: node.id, patch });
 			}

@@ -201,6 +201,8 @@ try {
 // === 5. 关键构件校验与自愈（2026-08-05，生产事故 1785894964584） ===
 // rg.exe 缺失 → 内容搜索降级慢速 walk；agentmemory dist 缺失 → 能力插件 404；
 // kbWorker.js 缺失 → KB worker 404 回退主线程。缺任何一样都不得出包。
+// 2026-09-15 追加：@vscode/tree-sitter-wasm 缺失 → codebase 图谱解析回退 renderer
+// 主线程（大仓库索引期间 UI 冻结），且运行时只有一条 WARN —— 见下面 2.6。
 console.log('\n🩺 [关键构件] 校验与自愈:');
 const repoRoot = path.resolve(__dirname, '../..');
 let criticalMissing = 0;
@@ -262,6 +264,24 @@ ensureDir(
 	'resources/app/node_modules/typescript',
 	'node_modules/typescript',
 	'package.json',
+);
+
+// 2.6) @vscode/tree-sitter-wasm（2026-09-15，用户报「vssaros.exe 报错」）：
+//    codebase 图谱的解析 Worker 池按**运行时路径**读取本模块
+//    （`codebaseGraphParserPool._initPool` → `FileAccess.asFileUri('<appRoot>/node_modules/@vscode/tree-sitter-wasm/wasm/…')`：
+//     `tree-sitter.js` + `tree-sitter.wasm` + 各语言 `tree-sitter-*.wasm`）。
+//    读不到 ⇒ `Worker pool init failed … fallback to main thread`
+//    ⇒ 18 万节点的索引改在 **renderer 主线程**解析（UI 冻结），而日志里只有一条 WARN。
+//    ⚠ 该模块**从不被静态 import**（`importAMDNodeModule('@vscode/tree-sitter-wasm', 'wasm/tree-sitter.js')`
+//    是字符串路径），静态依赖图 / bundler externals **看不见它** ⇒ 必须在打包阶段显式保证落位
+//    （与 kbWorker.js / rg.exe / better_sqlite3.node 同一类「关键构件」）。
+//    实测已发布包 `2.2.26032-saros` 就缺它：`resources/app/node_modules/@vscode/` 只有 13 个包、
+//    没有 tree-sitter-wasm（而该包自己的 package.json 已声明 `@vscode/tree-sitter-wasm: ^0.3.1`）。
+ensureDir(
+	'@vscode/tree-sitter-wasm',
+	'resources/app/node_modules/@vscode/tree-sitter-wasm',
+	'node_modules/@vscode/tree-sitter-wasm',
+	'wasm/tree-sitter.js',
 );
 
 // 3) kbWorker.js（KB 内核 Worker 按 URL 加载；bundle 不产出 per-file 时需独立入口）

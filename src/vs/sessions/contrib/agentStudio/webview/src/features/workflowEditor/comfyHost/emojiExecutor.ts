@@ -318,7 +318,7 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 		//   伪装成图集等分切割（几何错位）。普通图改走参考图（见 upstreamSheet
 		//   声明处的回填），落到下方正常生成分支。
 		if (upstreamSheetRef && upstreamSheet.isSheetFull) {
-			sheetRef = await localizeImageRef(upstreamSheetRef);
+			sheetRef = await localizeImageRef(upstreamSheetRef, { label: 'EmojiStage 上游图集直通', kind: 'image' });
 			cellPromptList = [];
 			// 整图归档（port 'sheet'，meta.sheetFull='1'）：与自生成分支同契约，
 			// 本节点输出 sheet 口（sheetFull 归档）供下一级 EmojiStage 直通连线。
@@ -344,7 +344,7 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 			sheetRef = sheetEntry.media.ref;
 			// ★ 历史归档可能是未本地化的远程签名 URL（旧版本写入/本地化失败回退）：
 			//   recrop 前先本地化（幂等，data URL 原样返回），重裁产物不再续写过期 URL。
-			sheetRef = await localizeImageRef(sheetRef);
+			sheetRef = await localizeImageRef(sheetRef, { label: 'EmojiStage 重裁基底图集', kind: 'image' });
 			// eslint-disable-next-line no-console
 			console.warn(`[EmojiStage] recrop base=${isSheetFullMeta(sheetEntry.media.meta) ? 'sheetFull' : 'mergedSheet'} rows/cols=${rows}x${cols} cellCrops=${JSON.stringify(cellCrops)} ref=${sheetRef.slice(0, 40)}…`);
 			// 保留上次各格 prompt 元数据（recrop 不改内容只改裁剪）
@@ -401,7 +401,7 @@ export async function runEmojiStageGrid(input: NodeExecutionInput): Promise<Sing
 				}
 				// ★ 归档前本地化：provider 签名 URL 有时效（COS 2h），直接归档 →
 				//   重启后 403「llm 原图消失」。拉取转 data URL 固化（失败保留原 ref）。
-				sheetRef = await localizeImageRef(sheetRef);
+				sheetRef = await localizeImageRef(sheetRef, { label: 'EmojiStage 生成图集', kind: 'image' });
 				signal?.throwIfAborted();
 			} else {
 				// ComfyUI 渠道：**模型驱动组装**（2026-09-04「任意模型」）——不再按

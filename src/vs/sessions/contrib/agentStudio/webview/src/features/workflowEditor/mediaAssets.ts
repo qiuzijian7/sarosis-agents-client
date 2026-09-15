@@ -54,8 +54,10 @@ export interface MediaListResult {
 	readonly items: MediaAsset[];
 }
 
-export async function mediaImport(req: MediaImportRequest): Promise<MediaAsset> {
-	return sendRequest<MediaImportRequest, MediaAsset>('media.import', req);
+/** 导入资产。`timeoutMs` 供**远程 ref 落盘**场景放宽（host 下载 30s 超时 + 写盘，
+ *  默认请求超时可能先到 ⇒ 误报失败；见 workflowRunShared.localizeViaMediaStore）。 */
+export async function mediaImport(req: MediaImportRequest, timeoutMs?: number): Promise<MediaAsset> {
+	return sendRequest<MediaImportRequest, MediaAsset>('media.import', req, timeoutMs);
 }
 
 export async function mediaList(filter: MediaListFilter = {}): Promise<MediaListResult> {

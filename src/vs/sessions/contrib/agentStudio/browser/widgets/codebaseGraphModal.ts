@@ -41,6 +41,8 @@ export class CodebaseGraphModal implements IDisposable {
 	private _dialog!: HTMLElement;
 	private _body!: HTMLElement;
 	private _hintEl!: HTMLElement;
+	/** 内容区顶部的通知条（无图自动建图 / 进度 / 失败原因），见 `setNotice`。 */
+	private _noticeEl?: HTMLElement;
 	private _disposables = new DisposableStore();
 	private _okBtn!: HTMLButtonElement;
 	private _cancelBtn!: HTMLButtonElement;
@@ -167,6 +169,42 @@ export class CodebaseGraphModal implements IDisposable {
 
 		// 自动聚焦
 		setTimeout(() => this._body.querySelector<HTMLInputElement>('input[data-modal-initial-focus]')?.focus(), 30);
+	}
+
+	/**
+	 * 在内容区**顶部**显示/更新一条通知条（2026-09-15 新增）。
+	 *
+	 * 用途：Find Symbol / Open File 现在**无图也会打开**（不再静默 return），需要在 UI 内说明
+	 * 状态 —— 「正在自动构建代码图谱」+ `onDidIndexProgress` 的进度行、构建结果、失败原因等。
+	 * 传空串即隐藏（保持布局不跳动：元素保留、只切 display）。
+	 */
+	setNotice(text: string, kind: 'info' | 'progress' | 'success' | 'warn' | 'error' = 'info'): void {
+		if (!this._noticeEl) {
+			this._noticeEl = dom.$('div.codebase-graph-modal-notice');
+			this._noticeEl.style.cssText = 'flex:0 0 auto;display:none;margin:10px 12px 0;padding:6px 10px;'
+				+ 'border-radius:2px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;';
+			// 插到内容区最前（搜索框之前），保证提示先于列表被看到
+			this._body.insertBefore(this._noticeEl, this._body.firstChild);
+		}
+		this._noticeEl.style.display = text ? 'block' : 'none';
+		this._noticeEl.textContent = text;
+		const border = {
+			info: 'var(--vscode-focusBorder)',
+			progress: 'var(--vscode-focusBorder)',
+			success: 'var(--vscode-testing-iconPassed, var(--vscode-charts-green, var(--vscode-focusBorder)))',
+			warn: 'var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground))',
+			error: 'var(--vscode-inputValidation-errorBorder, var(--vscode-editorError-foreground))',
+		}[kind];
+		const background = {
+			info: 'var(--vscode-editorWidget-background)',
+			progress: 'var(--vscode-editorWidget-background)',
+			success: 'var(--vscode-editorWidget-background)',
+			warn: 'var(--vscode-inputValidation-warningBackground)',
+			error: 'var(--vscode-inputValidation-errorBackground)',
+		}[kind];
+		this._noticeEl.style.borderLeft = '3px solid ' + border;
+		this._noticeEl.style.background = background;
+		this._noticeEl.style.color = 'var(--vscode-editorWidget-foreground)';
 	}
 
 	private _close(reason: 'ok' | 'cancel'): void {
