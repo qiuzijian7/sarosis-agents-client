@@ -810,7 +810,8 @@ export class EncodingOracle extends Disposable implements IResourceEncodings {
 
 		// Folder Settings
 		this.contextService.getWorkspace().folders.forEach(folder => {
-			defaultEncodingOverrides.push({ parent: joinPath(folder.uri, '.vscode'), encoding: UTF8 });
+			// ★ [Saros] folder 级配置文件目录 = `.sarosworkspace/`（不读 `.vscode/`）
+			defaultEncodingOverrides.push({ parent: joinPath(folder.uri, '.sarosworkspace'), encoding: UTF8 });
 		});
 
 		return defaultEncodingOverrides;

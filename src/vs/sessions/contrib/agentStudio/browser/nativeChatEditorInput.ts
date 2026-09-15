@@ -200,6 +200,23 @@ export class NativeChatEditorInput extends EditorInput {
 	}
 
 	/**
+	 * Update only the session name shown as the tab label, keeping agentId and
+	 * sessionId untouched. Used when a rename originates elsewhere (e.g. the
+	 * session history sidebar) and the open editor must follow the change.
+	 *
+	 * @param sessionName The new session name, or `null`/empty to fall back to
+	 * the current tab label (no-op when nothing would change).
+	 */
+	setSessionName(sessionName: string | null | undefined): void {
+		const nextName = sessionName || this._name;
+		if (this._name === nextName) {
+			return;
+		}
+		this._name = nextName;
+		(this as any)._onDidChangeLabel.fire();
+	}
+
+	/**
 	 * Update the tab status indicator. Fires {@link EditorInput.onDidChangeLabel}
 	 * so VS Code redraws the tab label (re-applying extra classes) — which in
 	 * turn re-evaluates {@link getLabelExtraClasses} and the CSS status dot.

@@ -8,7 +8,7 @@ import './media/style.css';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../base/common/lifecycle.js';
 import { Emitter, Event, setGlobalLeakWarningThreshold } from '../../base/common/event.js';
 import { getActiveDocument, getActiveElement, getClientArea, getWindowId, getWindows, IDimension, isAncestorUsingFlowTo, isHTMLElement, size, Dimension, runWhenWindowIdle, addDisposableListener, EventType } from '../../base/browser/dom.js';
-import { DeferredPromise, RunOnceScheduler } from '../../base/common/async.js';
+import { DeferredPromise, IntervalTimer, RunOnceScheduler } from '../../base/common/async.js';
 import { isFullscreen, onDidChangeFullscreen, isChrome, isFirefox, isSafari } from '../../base/browser/browser.js';
 import { mark } from '../../base/common/performance.js';
 import { onUnexpectedError, setUnexpectedErrorHandler } from '../../base/common/errors.js';
@@ -16,9 +16,10 @@ import { isWindows, isLinux, isWeb, isNative, isMacintosh } from '../../base/com
 import { Parts, Position, PanelAlignment, IWorkbenchLayoutService, SINGLE_WINDOW_PARTS, MULTI_WINDOW_PARTS, IPartVisibilityChangeEvent } from '../../workbench/services/layout/browser/layoutService.js';
 import { ILayoutOffsetInfo } from '../../platform/layout/browser/layoutService.js';
 import { Part } from '../../workbench/browser/part.js';
-import { Direction, ISerializableView, ISerializedGrid, ISerializedLeafNode, ISerializedNode, IViewSize, Orientation, SerializableGrid } from '../../base/browser/ui/grid/grid.js';
+import { Direction, ISerializableView, ISerializedGrid, IViewSize, Orientation, SerializableGrid } from '../../base/browser/ui/grid/grid.js';
 import { DEFAULT_CUSTOM_TITLEBAR_HEIGHT } from '../../platform/window/common/window.js';
-import { IEditorGroupsService, IEditorGroup } from '../../workbench/services/editor/common/editorGroupsService.js';
+import { createAgentsLayoutGridDescriptor } from './layoutProfile.js';
+import { IEditorGroupsService, IEditorGroup, IEditorGroupsContainer, EditorGroupLayout } from '../../workbench/services/editor/common/editorGroupsService.js';
 import { EditorParts as SessionsEditorParts } from './parts/editorParts.js';
 import { IEditorService } from '../../workbench/services/editor/common/editorService.js';
 import { IPaneCompositePartService } from '../../workbench/services/panecomposite/browser/panecomposite.js';
@@ -43,7 +44,7 @@ import { setHoverDelegateFactory } from '../../base/browser/ui/hover/hoverDelega
 import { setBaseLayerHoverDelegate } from '../../base/browser/ui/hover/hoverDelegate2.js';
 import { Registry } from '../../platform/registry/common/platform.js';
 import { IWorkbenchContributionsRegistry, Extensions as WorkbenchExtensions } from '../../workbench/common/contributions.js';
-import { IEditorFactoryRegistry, EditorExtensions } from '../../workbench/common/editor.js';
+import { IEditorFactoryRegistry, EditorExtensions, GroupModelChangeKind } from '../../workbench/common/editor.js';
 import { setARIAContainer } from '../../base/browser/ui/aria/aria.js';
 import { FontMeasurements } from '../../editor/browser/config/fontMeasurements.js';
 import { createBareFontInfoFromRawSettings } from '../../editor/common/config/fontInfoFromSettings.js';
@@ -120,6 +121,17 @@ interface IPartVisibilityState {
 
 interface IAgentChatLayoutState {
 	groupCount: number;
+	/**
+	 * ★ 2026-09-15：各编辑器组的宽度比例，`agentPart.getLayout()` 的原样快照
+	 * （`{ orientation, groups: [{ size }] }`，size 为比例）。恢复时用
+	 * `applyLayout()` 回放 sash 位置。
+	 *
+	 * 旧版本只存 groupCount/groupIndex ⇒ 重启后各组等宽，用户手动拖出来的
+	 * 分屏比例丢失。该字段缺省（旧状态）时退回等宽，不影响数量与内容恢复。
+	 */
+	layout?: EditorGroupLayout;
+	/** 上次激活的 group 下标；恢复后聚焦它，避免焦点落到第一个聊天框。 */
+	activeGroupIndex?: number;
 	editors: Array<{
 		chatId: string;
 		agentId?: string;
@@ -375,6 +387,41 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	/** Storage service reference for layout persistence operations. */
 	private _storageService: IStorageService | undefined;
 
+	/**
+	 * 聊天框布局是否已"确定"（恢复完毕或已按默认布局初始化）。
+	 *
+	 * `_storeAgentChatLayout` 只在此标志为 true 后才会写盘。原因：启动早期
+	 * Agent 区还只有空的 canvas group，而 `onWillSaveState` 会在窗口失焦时
+	 * 随时触发 —— 若此时写盘，会把「空布局」覆盖到待恢复的状态上，等于每次
+	 * 启动都自毁上次的布局（这是把保存时机放宽到 blur/flush 后必须配的守卫）。
+	 */
+	private _agentChatLayoutReady = false;
+
+	/**
+	 * 上次写盘的状态串（既是「无变化则跳过写盘」的比较基准，也是唯一可靠的
+	 * 「本会话是否已落盘过」判据 —— 出问题时靠日志里的 store/restore 两条记录定位）。
+	 */
+	private _lastStoredAgentChatLayout: string | undefined;
+
+	/**
+	 * 诊断日志去重集合（`[Sarosis][AgentChatLayout]` 专用）。
+	 *
+	 * 为什么需要：写盘/恢复路径上有多个**静默早退**分支（storageService 未注入、
+	 * agentPart 未创建、布局未就绪…），而定期保存每 20s 会调用一次 —— 若每个早退都
+	 * 无脑打日志会刷屏。这里按「原因」去重：**每种原因只打一次**，既能一眼看出
+	 * 卡在哪一步，又不会淹没有效信息。
+	 */
+	private readonly _agentChatLayoutDiagLogged = new Set<string>();
+
+	/** 诊断日志（同一 key 只打一次）。 */
+	private _logAgentChatLayoutOnce(key: string, message: string): void {
+		if (this._agentChatLayoutDiagLogged.has(key)) {
+			return;
+		}
+		this._agentChatLayoutDiagLogged.add(key);
+		this.logService.info(`[Sarosis][AgentChatLayout] ${message}`);
+	}
+
 	//#endregion
 
 	//#region Services
@@ -609,6 +656,10 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	private registerListeners(lifecycleService: ILifecycleService, storageService: IStorageService, configurationService: IConfigurationService, hostService: IHostService, dialogService: IDialogService): void {
 		// Keep a reference for layout persistence helpers used later.
 		this._storageService = storageService;
+		// 诊断：确认存储服务确实注入 —— 若这里是 MISSING，布局持久化整条链路
+		// （store/restore 都先判 `!storageService` 静默早退）会**完全失效且无任何日志**，
+		// 这正是「重启后聊天框没恢复原样」最可能的静默死法。
+		this.logService.info(`[Sarosis][AgentChatLayout] wiring: IStorageService=${storageService ? 'OK' : 'MISSING'}（工作台初始化阶段，早于 restore）`);
 
 		// Command: close the mobile sidebar drawer (no-op outside phone layout).
 		// Routes through the proper close path so the mobile nav/history stack
@@ -644,14 +695,28 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this._register(lifecycleService.onWillShutdown(() => this.storeLayoutPreferences(storageService)));
 
 		// [Sarosis] Persist the Agent Chat editor layout (groups, chatIds,
-		// agent/session ids) so it survives window reloads. Saved on shutdown
-		// and also on storage flush so crashes do not lose the layout.
-		this._register(storageService.onWillSaveState(e => {
-			if (e.reason === WillSaveStateReason.SHUTDOWN) {
-				this._storeAgentChatLayout();
-			}
-		}));
+		// agent/session ids, sash 比例) so it survives window reloads.
+		//
+		// ★ 2026-09-15：不再限定 `WillSaveStateReason.SHUTDOWN`（失焦/flush 也会带
+		// reason=NONE），但**实测这条并不足以保证落盘**：dev 实例整个会话期间
+		// workspace 存储一次都没被写过（`state.vscdb` 的 mtime 停在启动时刻），而重启
+		// 走的是 dev 脚本 / 任务管理器**强杀** ⇒ 既无 blur-flush，也无 SHUTDOWN flush。
+		// ⇒ 真正的兜底是下面的 20s 定期保存（配合「变更即写」）。
+		this._register(storageService.onWillSaveState(() => this._storeAgentChatLayout()));
 		this._register(lifecycleService.onWillShutdown(() => this._storeAgentChatLayout()));
+
+		// ★★ 2026-09-15 关键修复：定期兜底保存聊天框布局。
+		//
+		// 现象（用户报「重启 app 后聊天框 group 数量不对」）：盘上**根本没有**
+		// `vssaros.agentChatLayout.v1`（实测 dev 实例的 workspaceStorage 各目录查无此键）
+		// ⇒ 每次启动都退回默认单 Chat（1 个 group）。
+		// 根因：布局只在「storage flush」时写，而本应用的重启流程（dev 脚本强杀 /
+		// 任务管理器结束进程）既不触发 blur-flush，也走不到 SHUTDOWN flush
+		// ⇒ 等于「永远不保存」。
+		// 修法：每 20s 检查一次，**仅在内容变化时**写盘（`_storeAgentChatLayout`
+		// 内部用 `_lastStoredAgentChatLayout` 比较，无变化时零开销）。
+		const layoutAutoSave = this._register(new IntervalTimer());
+		layoutAutoSave.cancelAndSet(() => this._storeAgentChatLayout(), 20_000);
 
 		// Lifecycle
 		// ★ ShutdownTimeline（2026-09-07，用户报「点击关闭无反应」）：关闭链路分三层——
@@ -1648,6 +1713,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// default single Chat tab.
 		const savedLayout = this._restoreAgentChatLayout();
 		const shouldRestoreLayout = savedLayout && savedLayout.editors.length > 0;
+		// 诊断：恢复决策（与 `_restoreAgentChatLayout` 内的日志配对，可一眼看出
+		// 「读到了但被判定为不可用」这种情况 —— 例如 editors 为空）。
+		this.logService.info(`[Sarosis][AgentChatLayout] restore decision: found=${!!savedLayout} editors=${savedLayout?.editors.length ?? 0} groupCount=${savedLayout?.groupCount ?? 0} → ${shouldRestoreLayout ? 'RESTORE saved layout' : 'fall back to default single Chat'}`);
 
 		if (shouldRestoreLayout) {
 			const groups: IEditorGroup[] = [canvasGroup];
@@ -1671,8 +1739,37 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				targetGroup.openEditor(input, { pinned: true, sticky: savedLayout!.groupCount === 1 });
 			}
 
-			// Clear the persisted layout so it is applied only once.
-			this._storageService?.remove(Workbench.AGENT_CHAT_LAYOUT_KEY, StorageScope.WORKSPACE);
+			// ── 恢复各组宽度（sash 位置）─────────────────────────────────
+			// `getLayout()`/`applyLayout()` 是严格对称的一对（getLayout 返回
+			// 根节点的 groups，applyLayout 用同一结构重建 grid），单行分屏与
+			// 嵌套分屏都能原样回放。
+			// ⚠ 只在「组数一致」时回放：applyLayout 在数量不一致时会合并/新建
+			// group（editorPart.ts:492-503），那会破坏刚按 groupIndex 摆好的
+			// 聊天框。数量一致时它只重建比例，不动已有 group。
+			const savedGrid = savedLayout!.layout;
+			if (savedGrid && Array.isArray(savedGrid.groups) && savedGrid.groups.length === groups.length) {
+				try {
+					agentPart.applyLayout(savedGrid);
+				} catch (e) {
+					this.logService.warn('[Sarosis][AgentEditor] applyLayout(saved chat layout) failed', e);
+				}
+			}
+
+			// 聚焦上次激活的聊天框（否则焦点总是落在第一个 group）。
+			const savedActiveIndex = savedLayout!.activeGroupIndex;
+			if (typeof savedActiveIndex === 'number' && savedActiveIndex >= 0 && savedActiveIndex < groups.length) {
+				groups[savedActiveIndex].focus();
+			}
+
+			// ★ 2026-09-15：恢复完成后**回写**，不再删除。
+			// 旧实现恢复成功后立刻 `remove`（注释 "applied only once"），于是
+			// 「恢复成功 → 进程被强杀 / 非正常退出（没走到 SHUTDOWN 保存）」的
+			// 下一次启动就无状态可读 ⇒ 直接退回默认单 Chat 布局。用户看到的
+			// 现象正是「聊天框数量和布局没保留」。回写后磁盘状态恒等于当前界面
+			// 状态，任意时刻被杀都能恢复；用户若关闭聊天框，防抖保存会把新的
+			// （更少的）状态写回，语义不变。
+			this._agentChatLayoutReady = true; // 恢复完成 → 允许写盘
+			this._storeAgentChatLayout();
 		} else {
 			// ── Single Chat layout (every launch) ────────────────────────────
 			// The Agent part is created with `restorePreviousState: false`, so it
@@ -1701,11 +1798,75 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			}
 
 			leftGroup.focus();
+			// 默认单 Chat 布局同样是"已确定"状态：此后允许写盘（内容为
+			// editors=[]，与界面一致），用户关闭聊天框时也能如实反映。
+			this._agentChatLayoutReady = true;
 		}
 
 		// Guard groups added later within the agent part (user splits).
 		this._register(agentPart.onDidAddGroup(newGroup => {
 			installCloseGuard(newGroup);
+		}));
+
+		// 诊断：恢复/初始化**结束后**界面的真实形态（与上面 store 日志里的
+		// groupCount 对比，即可判断「存了 N 个但只恢复出 M 个」这类问题）。
+		this.logService.info(`[Sarosis][AgentChatLayout] layout settled: groups=${agentPart.groups.length} chatEditors=${agentPart.groups.reduce((n, g) => n + g.editors.filter(e => e instanceof NativeChatEditorInput).length, 0)}`);
+
+		// ── 聊天框布局变更 → 节流落盘 ────────────────────────────────────
+		// 结构变化（分屏增删/移动、聊天框开关、拖动 sash）即触发一次 800ms
+		// 防抖保存，让磁盘状态紧跟界面 —— 用户改完布局后被强杀也不会丢。
+		//
+		// 刻意放在恢复块**之后**注册：恢复过程自身会触发 addGroup/openEditor
+		// 等事件，若此时已挂监听，防抖回调可能在恢复只完成一半时把「残缺状态」
+		// 写回磁盘。恢复完成后已显式回写一次完整状态，故此后监听是安全的。
+		const scheduleLayoutSave = this._register(new RunOnceScheduler(() => this._storeAgentChatLayout(), 800));
+		const onLayoutDirty = () => scheduleLayoutSave.schedule();
+		this._register(agentPart.onDidAddGroup(onLayoutDirty));
+		this._register(agentPart.onDidRemoveGroup(onLayoutDirty));
+		this._register(agentPart.onDidMoveGroup(onLayoutDirty));
+		this._register(agentPart.onDidChangeGroupIndex(onLayoutDirty));
+		this._register(agentPart.onDidChangeGroupMaximized(onLayoutDirty));
+		// sash 拖动（组宽度变化）—— 由 AgentEditorPart 从 grid 的 onDidChange 转出。
+		this._register(agentPart.onDidChangeGroupSizes(onLayoutDirty));
+
+		// 注意：**不**监听 onDidChangeActiveGroup —— 激活哪个聊天框只影响恢复后
+		// 的聚焦目标，会在失焦/退出 flush 时随状态一并保存，没必要为每次点击
+		// 聊天框都写一次盘。
+		//
+		// group 是动态增删的，逐个跟踪其模型变化（开/关/移动聊天框）。
+		const trackedGroupListeners = new Map<IEditorGroup, IDisposable>();
+		const trackGroupLayout = (group: IEditorGroup) => {
+			if (trackedGroupListeners.has(group)) {
+				return;
+			}
+			const listener = group.onDidModelChange(e => {
+				// 只响应「聊天框集合/位置变了」：EDITOR_ACTIVE（切换页签）、
+				// EDITOR_LABEL（改名）、EDITOR_DIRTY 等不改变持久化的布局，
+				// 若一并触发就退化成"每次点击都写盘"。
+				switch (e.kind) {
+					case GroupModelChangeKind.EDITOR_OPEN:
+					case GroupModelChangeKind.EDITOR_CLOSE:
+					case GroupModelChangeKind.EDITOR_MOVE:
+					case GroupModelChangeKind.EDITOR_PIN:
+					case GroupModelChangeKind.EDITOR_STICKY:
+						onLayoutDirty();
+						break;
+					default:
+						break;
+				}
+			});
+			trackedGroupListeners.set(group, listener);
+			this._register(listener);
+		};
+		for (const g of agentPart.groups) {
+			trackGroupLayout(g);
+		}
+		this._register(agentPart.onDidAddGroup(g => trackGroupLayout(g)));
+		this._register(toDisposable(() => {
+			for (const listener of trackedGroupListeners.values()) {
+				listener.dispose();
+			}
+			trackedGroupListeners.clear();
 		}));
 	}
 
@@ -1797,10 +1958,21 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	// editor metadata) to workspace storage so it can be restored after a
 	// window reload. Also saves an empty layout when no chat editors are
 	// present, ensuring closed chats stay closed on restart.
-	private _storeAgentChatLayout(): void {
+	private _storeAgentChatLayout(force = false): void {
 		const storageService = this._storageService;
 		const agentPart = (this.editorGroupService as SessionsEditorParts | undefined)?.agentPart;
-		if (!storageService || !agentPart) {
+		if (!storageService) {
+			// ⚠ 静默早退是排查黑洞：这里必须留痕（原因去重，只打一次）。
+			this._logAgentChatLayoutOnce('store-no-storage', 'store SKIPPED: IStorageService 未注入（this._storageService 为 undefined）⇒ 布局永远不会落盘');
+			return;
+		}
+		if (!agentPart) {
+			this._logAgentChatLayoutOnce('store-no-agentpart', 'store SKIPPED: agentPart 未创建（editorGroupService 尚未就绪）');
+			return;
+		}
+		// 布局尚未确定（恢复/初始化进行中）→ 不写，避免用空布局覆盖待恢复状态。
+		if (!this._agentChatLayoutReady) {
+			this._logAgentChatLayoutOnce('store-not-ready', 'store SKIPPED: 布局尚未就绪（_agentChatLayoutReady=false ⇒ 恢复流程未走到"已确定"那一步，见 restore 日志）');
 			return;
 		}
 
@@ -1823,34 +1995,89 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 		const state: IAgentChatLayoutState = {
 			groupCount: groups.length,
+			// ★ 2026-09-15：补存 sash 位置（各组宽度比例）与激活组 —— 见
+			// IAgentChatLayoutState.layout 注释（旧实现重启后各组等宽）。
+			layout: this._captureAgentGroupLayout(agentPart),
+			activeGroupIndex: (() => {
+				const index = groups.indexOf(agentPart.activeGroup);
+				return index >= 0 ? index : undefined;
+			})(),
 			editors
 		};
+		const json = JSON.stringify(state);
+
+		// 与上次写盘内容一致 → 跳过。定期兜底保存（见 registerListeners 的
+		// layoutAutoSave）会频繁调用本方法，靠这个比较做到「无变化零开销」。
+		if (!force && json === this._lastStoredAgentChatLayout) {
+			return;
+		}
+		this._lastStoredAgentChatLayout = json;
+
 		storageService.store(
 			Workbench.AGENT_CHAT_LAYOUT_KEY,
-			JSON.stringify(state),
+			json,
 			StorageScope.WORKSPACE,
 			StorageTarget.MACHINE
 		);
+		// 诊断用：布局持久化长期「静默」，出问题只能靠日志判断是「没存」还是「没恢复」。
+		this.logService.info(`[Sarosis][AgentChatLayout] store: groupCount=${state.groupCount} editors=${editors.length} active=${state.activeGroupIndex ?? '-'} sizes=${state.layout ? 'yes' : 'no'} force=${force}`);
+	}
+
+	/**
+	 * [Saros] 捕获 Agent 区各组宽度比例（`getLayout()` 原样快照）。
+	 *
+	 * grid 尚未创建时 `getLayout()` 内部会走 `gridWidget.serialize()` 抛错
+	 * （`setGroupOrientation` 同样显式判断 `!this.gridWidget`，见
+	 * editorPart.ts:465-474），因此兜底返回 undefined ⇒ 恢复端退回等宽，
+	 * 不影响聊天框数量与 session 内容恢复。
+	 */
+	private _captureAgentGroupLayout(agentPart: IEditorGroupsContainer): EditorGroupLayout | undefined {
+		try {
+			return agentPart.getLayout();
+		} catch {
+			return undefined;
+		}
 	}
 
 	// [Sarosis] Read the persisted Agent Chat layout from workspace storage,
 	// if any. Returns undefined when the key is missing or malformed.
 	private _restoreAgentChatLayout(): IAgentChatLayoutState | undefined {
+		// ★ 入口日志：本函数**必然**在启动时被调用一次（`_openAgentStudioEditors`）。
+		// 只要日志里看不到这一行，就说明**根本没走到恢复流程**（而不是"没存"）——
+		// 这是区分两类故障的第一分叉点。
+		this.logService.info('[Sarosis][AgentChatLayout] restore: ENTER (_restoreAgentChatLayout called)');
 		const storageService = this._storageService;
 		if (!storageService) {
+			this.logService.warn('[Sarosis][AgentChatLayout] restore: ABORT — IStorageService 未注入（this._storageService 为 undefined）');
 			return undefined;
 		}
 		const raw = storageService.get(Workbench.AGENT_CHAT_LAYOUT_KEY, StorageScope.WORKSPACE);
 		if (!raw) {
+			// 诊断用：区分「没存」与「没恢复」——这是排查「重启后 group 数量不对」的
+			// 第一分叉点（2026-09-15 实测：本应用常被强杀，走的正是这一支）。
+			this.logService.info('[Sarosis][AgentChatLayout] restore: no persisted state → fall back to default single Chat layout');
 			return undefined;
 		}
 		try {
 			const parsed = JSON.parse(raw) as IAgentChatLayoutState;
 			if (parsed && typeof parsed.groupCount === 'number' && Array.isArray(parsed.editors)) {
+				// layout / activeGroupIndex 是 v1 之后追加的可选字段：形状不对时
+				// 就地丢弃（退回等宽 / 不聚焦），而不是让整份状态失效 —— 数量与
+				// session 内容的恢复不该被这两个"锦上添花"的字段拖累。
+				if (parsed.layout && !Array.isArray(parsed.layout.groups)) {
+					parsed.layout = undefined;
+				}
+				if (typeof parsed.activeGroupIndex !== 'number') {
+					parsed.activeGroupIndex = undefined;
+				}
+				// 记住读到的原始串：恢复后回写时内容未变即可跳过写盘。
+				this._lastStoredAgentChatLayout = raw;
+				this.logService.info(`[Sarosis][AgentChatLayout] restore: groupCount=${parsed.groupCount} editors=${parsed.editors.length} sizes=${parsed.layout ? 'yes' : 'no'} active=${parsed.activeGroupIndex ?? '-'}`);
 				return parsed;
 			}
-		} catch {
-			/* ignore malformed state */
+			this.logService.warn(`[Sarosis][AgentChatLayout] restore: malformed state ignored (${raw.slice(0, 200)})`);
+		} catch (e) {
+			this.logService.warn('[Sarosis][AgentChatLayout] restore: JSON.parse failed', e);
 		}
 		return undefined;
 	}
@@ -1998,100 +2225,30 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	 *       └─ Agent editor [width=agentEditorWidth]
 	 */
 	private createDesktopGridDescriptor(width: number, height: number): ISerializedGrid {
-
-		// [Sarosis] Sidebar width is dynamic:
-		const sideBarSize = this.partVisibility.sidebar
-			? this._sidebarExpandedWidth
-			: 48;
-		const titleBarHeight = DEFAULT_CUSTOM_TITLEBAR_HEIGHT;
-
-		// Sizing rules
-		const agentEditorWidth = Math.max(480, Math.round(width / 2));
-		const editorWidth = Math.max(320, width - sideBarSize - agentEditorWidth);
-
-		// Panel sizing: 30% of the content height (below editor), hidden by default
-		const contentHeight = height - titleBarHeight;
-		const panelHeight = this.isPanelVisible ? Math.round(contentHeight * 0.35) : 0;
-
-		// ── TitleBar: full-width top row ──
-		const titleBarNode: ISerializedLeafNode = {
-			type: 'leaf',
-			data: { type: Parts.TITLEBAR_PART },
-			size: titleBarHeight,
-			visible: true
-		};
-
-		// ── Sidebar ──
-		// [Sarosis] The sidebar node is ALWAYS visible in the grid — the
-		// 48px activity-bar icon strip never collapses. `partVisibility.sidebar`
-		// only means "content panel expanded vs collapsed", which is expressed
-		// by `sideBarSize` (expanded width vs 48) plus the CSS classes
-		// sidebar-content-collapsed/expanded — never by hiding the grid node.
-		// Previously `visible: this.partVisibility.sidebar` removed the whole
-		// sidebar from the grid whenever a previous session persisted a
-		// collapsed state (sessions.layout.sidebarVisible=false), making the
-		// left sidebar completely invisible on restart.
-		const sideBarNode: ISerializedLeafNode = {
-			type: 'leaf',
-			data: { type: Parts.SIDEBAR_PART },
-			size: sideBarSize,
-			visible: true
-		};
-
-		// ── File Editor ──
-		const editorNode: ISerializedLeafNode = {
-			type: 'leaf',
-			data: { type: Parts.EDITOR_PART },
-			size: Math.max(0, contentHeight - panelHeight),
-			visible: true
-		};
-
-		// ── Panel (Output / Debug Console / Terminal) ──
-		const panelNode: ISerializedLeafNode = {
-			type: 'leaf',
-			data: { type: Parts.PANEL_PART },
-			size: panelHeight,
-			visible: this.isPanelVisible
-		};
-
-		// ── Editor Column (VERTICAL): Editor | Panel ──
-		const editorColumnNode: ISerializedNode = {
-			type: 'branch',
-			data: [editorNode, panelNode],
-			size: editorWidth
-		};
-
-		// ── Agent Editor ──
-		const agentEditorNode: ISerializedLeafNode = {
-			type: 'leaf',
-			data: { type: Parts.AGENT_EDITOR_PART },
-			size: agentEditorWidth,
-			visible: true
-		};
-
-		// ── Content row (HORIZONTAL): Sidebar | EditorColumn | Agent editor ──
-		const contentRow: ISerializedNode = {
-			type: 'branch',
-			data: [sideBarNode, editorColumnNode, agentEditorNode],
-			size: Math.max(0, contentHeight)
-		};
-
-		// ── Root (VERTICAL): TitleBar | contentRow ──
-		const result: ISerializedGrid = {
-			root: {
-				type: 'branch',
-				size: height,
-				data: [
-					titleBarNode,
-					contentRow
-				]
-			},
-			orientation: Orientation.VERTICAL,
+		// ★ 布局本体已抽成**纯函数**（`browser/layoutProfile.ts`），这里只做状态到参数的映射。
+		//
+		// 抽出的目的：让「IDE 底座 + Agent 布局」方案能把**同一套** grid 复用到标准 workbench，
+		// 而不必复制粘贴（复制出来的第二份必然漂移）。行为与抽取前逐字一致。
+		return createAgentsLayoutGridDescriptor({
 			width,
-			height
-		};
-
-		return result;
+			height,
+			// ⚠ `partVisibility.sidebar` 的语义是「侧栏**内容区**是否展开」，不是「侧栏是否可见」——
+			// 48px 图标条永不折叠，grid 里的侧栏节点始终 visible（见 layoutProfile.ts 的说明）。
+			sidebarContentExpanded: this.partVisibility.sidebar,
+			sidebarExpandedWidth: this._sidebarExpandedWidth,
+			panelVisible: this.isPanelVisible,
+			// 环境常量注入 —— 让 `layoutProfile.ts` 零运行时 import（否则它 import 的
+			// `grid.js` / `layoutService.js` 在加载期引用 `window`，纯函数就无法单测）。
+			partIds: {
+				titleBar: Parts.TITLEBAR_PART,
+				sidebar: Parts.SIDEBAR_PART,
+				editor: Parts.EDITOR_PART,
+				panel: Parts.PANEL_PART,
+				agentEditor: Parts.AGENT_EDITOR_PART,
+			},
+			verticalOrientation: Orientation.VERTICAL,
+			titleBarHeight: DEFAULT_CUSTOM_TITLEBAR_HEIGHT,
+		});
 	}
 
 	//#endregion

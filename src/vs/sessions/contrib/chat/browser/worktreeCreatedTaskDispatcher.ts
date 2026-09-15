@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable, DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../base/common/observable.js';
 import { isEqual } from '../../../../base/common/resources.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -100,8 +100,24 @@ export class WorktreeCreatedTaskDispatcher extends Disposable implements IWorkbe
 		// then dispatch once and stop watching. We use a local "dispatched"
 		// flag because the fork's observable reader does not expose
 		// `reader.dispose()` like upstream.
+		//
+		// ★★ 2026-09-15 修 TDZ（**这是个真 bug，曾让本模块完全失效**）：
+		// 原写法是 `const autorunDisposable = autorun(reader => { … autorunDisposable.dispose(); })`
+		// —— 但 `autorun()` 的回调是**同步执行**的（`AutorunObserver` 构造函数里立刻 `_run()`），
+		// 那一刻 `autorunDisposable` 还在 TDZ（`const` 尚未初始化）
+		// ⇒ `ReferenceError: Cannot access 'autorunDisposable' before initialization`。
+		//
+		// 更隐蔽的是**报错被吞**：`_run()` 把回调异常交给 `onBugIndicatingError`（仅记日志），
+		// 于是表现为「派发静默不发生」而不是崩溃 —— 单元测试里 20 个用例全挂，
+		// 真机上只会看到任务没被创建。
+		//
+		// 修法：把「停止观察」的载体换成**在 autorun 之前就已初始化**的 `DisposableStore`。
+		// 回调里 `watchStore.clear()` 即安全地停掉自己 —— 该实现支持运行中 dispose
+		// （`AutorunObserver.dispose()` 幂等、无「运行中禁止」守卫，`_run` 的 finally
+		// 也显式检查 `_disposed`）。
 		let dispatched = false;
-		const autorunDisposable: IDisposable = autorun(reader => {
+		const watchStore = store.add(new DisposableStore());
+		watchStore.add(autorun(reader => {
 			if (dispatched) {
 				return;
 			}
@@ -121,10 +137,10 @@ export class WorktreeCreatedTaskDispatcher extends Disposable implements IWorkbe
 			}
 			dispatched = true;
 			// Stop watching for further workspace changes now that we've dispatched.
-			autorunDisposable.dispose();
+			// （`watchStore` 在 autorun 之前已初始化 ⇒ 无 TDZ，同步/异步派发都成立。）
+			watchStore.clear();
 			this._dispatchWorktreeCreatedTasks(session, taskHandles);
-		});
-		store.add(autorunDisposable);
+		}));
 
 		// When the session is archived, stop any long-running tasks that were
 		// started by the dispatcher (e.g. `npm run watch`).

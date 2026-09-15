@@ -18,7 +18,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { IWorkbenchExtensionManagementService } from '../../../services/extensionManagement/common/extensionManagement.js';
 
-const WORKSPACE_EXTENSIONS_FOLDER = '.vscode/extensions';
+// ★ [Saros] 工作区级扩展目录 = `.sarosworkspace/extensions`（不读 `.vscode/`）
+const WORKSPACE_EXTENSIONS_FOLDER = '.sarosworkspace/extensions';
 
 export class WorkspaceRecommendations extends ExtensionRecommendations {
 

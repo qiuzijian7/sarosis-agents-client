@@ -11,7 +11,20 @@ import { Event } from '../../../../base/common/event.js';
 import { ResourceMap } from '../../../../base/common/map.js';
 import { IAnyWorkspaceIdentifier } from '../../../../platform/workspace/common/workspace.js';
 
-export const FOLDER_CONFIG_FOLDER_NAME = '.vscode';
+/**
+ * ★ [Saros] 工作区（folder）级配置目录 —— 本产品**不读** VS Code 的 `.vscode/`，
+ * 统一用自己的工作区数据目录 `.sarosworkspace/`（与 agentStudio 的
+ * `WORKSPACE_DATA_DIR` 同源，agents / workflows / checkpoints / tasks 都在其中）。
+ *
+ * 这一行是「folder 级配置放在哪」的**唯一真源**，它同时派生出：
+ *   `<folder>/.sarosworkspace/settings.json`（folder 级设置，见 FOLDER_SETTINGS_PATH）
+ *   `<folder>/.sarosworkspace/{tasks,launch,mcp}.json`（见下方 WORKSPACE_STANDALONE_CONFIGURATIONS）
+ *
+ * ⚠ 不要为了「兼容只认 .vscode 的第三方扩展」改回去：本产品的定位就是
+ * 「不读工作区 `.vscode/`」（安全理由见 `sessions/services/configuration/browser/configurationService.ts`
+ * 的「方案 C」说明：`.vscode/` 在**工作区内、模型可写**，读它等于让被约束者改写约束）。
+ */
+export const FOLDER_CONFIG_FOLDER_NAME = '.sarosworkspace';
 export const FOLDER_SETTINGS_NAME = 'settings';
 export const FOLDER_SETTINGS_PATH = `${FOLDER_CONFIG_FOLDER_NAME}/${FOLDER_SETTINGS_NAME}.json`;
 

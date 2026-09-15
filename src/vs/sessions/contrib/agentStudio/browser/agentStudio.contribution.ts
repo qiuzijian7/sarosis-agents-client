@@ -3,14 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable, type IDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, type IDisposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
-import { IConfigurationRegistry, Extensions as ConfigurationExtensions } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { IConfigurationRegistry, Extensions as ConfigurationExtensions, ConfigurationScope } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensions as ViewExtensions, WindowEnablement } from '../../../../workbench/common/views.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
@@ -23,10 +23,10 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { Action2, registerAction2, MenuId } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { ActiveEditorContext, IsAuxiliaryWindowContext } from '../../../../workbench/common/contextkeys.js';
+import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
+import { AuxChatSessionSideView } from '../../sessionHistory/browser/auxChatSessionSideView.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { KeyMod, KeyCode } from '../../../../base/common/keyCodes.js';
-import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 
 // Codebase-Memory-MCP bootstrap — auto-detect, install, and start on app launch.
 // Side-effect import: the module self-registers a workbench contribution.
@@ -226,6 +226,9 @@ import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 
 import { KnowledgeBaseViewPane } from './views/knowledgeBaseView.js';
+// 资料库 activitybar 徽标聚合（知识库 / 代码库 / 记忆的构建与新增提示）。
+// 该模块在文件末尾自行 registerWorkbenchContribution2，这里只需副作用引入。
+import './libraryActivityBadge.js';
 import { KbBlocksEditorPane } from './kbBlocksEditorPane.js';
 import { KbNoteEditorInput } from './kbNoteEditorInput.js';
 import { KnowledgeBaseGraphEditorPane } from './kbGraphEditorPane.js';
@@ -262,6 +265,8 @@ import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
 import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
 import { CodebaseMemoryDetailEditorPane } from './codebaseMemoryDetailEditorPane.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
+import { MediaGalleryEditorPane } from './mediaGalleryEditorPane.js';
+import { MediaGalleryEditorInput } from './mediaGalleryEditorInput.js';
 import { CodebaseGraphViewerEditorPane } from './codebaseGraphViewerEditorPane.js';
 import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
 import { CodebaseIndexEditorPane } from './codebaseIndexEditorPane.js';
@@ -295,7 +300,8 @@ import { ISelfEvolutionService } from '../common/selfEvolution.js';
 import { SelfEvolutionService } from './selfEvolutionService.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
-import { IEditorGroupsService, IEditorGroup, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorGroupsService, IEditorPart, IAuxiliaryEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 // 2026-09-05：图表预览改走 HtmlPreviewEditorInput（内存 HTML 通道），
 // UntitledTextEditorService / UntitledTextEditorInput 不再被使用，import 已移除。
 
@@ -347,8 +353,21 @@ function channelConfigProperties(): Record<string, any> {
 	return props;
 }
 
+// ★★ Agent Studio 的配置**一律不受工作区设置影响**（`ConfigurationScope.MACHINE`）。
+//
+// 语义：`MACHINE` = 「只能在本地/远端**用户设置**里配置」⇒ 工作区 `.vscode/settings.json`
+// 与 folder 级的值**天然被忽略**。这是「本项目不读工作区 `.vscode/`」这条安全规则在
+// **标准 IDE 底座**下的等价实现 —— 标准窗口的 `IConfigurationService` 必读工作区设置，
+// 无法像 sessions 窗口那样靠"不加载 folder 配置"来隔离，只能靠 scope。
+//
+// 为什么不用 `APPLICATION`：它的语义是「只能在**默认 profile** 的用户设置里配置」，
+// 而 agents 窗口跑在**独立的 agents profile** 下（`isAgentsWindowProfile`），
+// 用 APPLICATION 会让用户在 agents 窗口里设的值读不到 —— 是个静默失效的坑。
+//
+// 代价：这些设置在 Settings UI 里不再按 folder 分组显示（本来也不该），且不参与 Settings Sync。
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'sessions',
+	scope: ConfigurationScope.MACHINE,
 	properties: {
 		...channelConfigProperties(),
 		'saros.codebaseGraph.sqliteBackend': {
@@ -684,6 +703,17 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			maximum: 1000000,
 			description: localize('agentStudio.skills.maxSkillsPromptChars', "单个 turn 注入的 skill **完整正文**字符总预算（约 4 字符 = 1 token）。超出者降级为摘要。默认 48000（约 12k tokens，占 200k 上下文的 ~6%）。"),
 		},
+		'sessions.agentStudio.workspace.folderSync': {
+			type: 'string',
+			enum: ['window-drives-registry', 'registry-drives-window', 'off'],
+			default: 'window-drives-registry',
+			enumDescriptions: [
+				'窗口是真源：`.code-workspace` / 打开的文件夹决定文件夹列表，变化后写回 Agent Studio 工作区记录（默认，与原生 VS Code 一致）。',
+				'旧行为（仅回滚用）：Agent Studio 工作区记录是真源，投影成窗口文件夹列表 —— 会让用户手写的多根 `.code-workspace` 被裁成单根。',
+				'关闭同步（排障用）：两侧互不影响。',
+			],
+			description: localize('agentStudio.workspace.folderSync', "工作区文件夹列表的同步方向。默认 window-drives-registry（窗口为真源）；仅在排查问题时才切回 registry-drives-window。"),
+		},
 	},
 });
 
@@ -693,6 +723,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'agentStudio',
 	title: localize('agentStudio', "Agent Studio"),
+	// 见文件上方 `id: 'sessions'` 处对 `MACHINE` scope 的说明（不受工作区设置影响）。
+	scope: ConfigurationScope.MACHINE,
 	properties: {
 		[AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING]: {
 			type: 'string',
@@ -721,6 +753,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'sarosis.comfyui',
 	title: localize('sarosis.comfyui', "ComfyUI 启动"),
+	// 见文件上方 `id: 'sessions'` 处对 `MACHINE` scope 的说明（不受工作区设置影响）。
+	scope: ConfigurationScope.MACHINE,
 	properties: {
 		'sarosis.comfyui.pythonPath': {
 			type: 'string', default: '',
@@ -736,6 +770,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'sarosis.canvas',
 	title: localize('sarosis.canvas', "思维导图编辑器"),
+	// 见文件上方 `id: 'sessions'` 处对 `MACHINE` scope 的说明（不受工作区设置影响）。
+	scope: ConfigurationScope.MACHINE,
 	properties: {
 		'sarosis.canvas.autoLayout': {
 			type: 'boolean', default: false,
@@ -1094,6 +1130,18 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(CodebaseMemoryDetailEditorInput)
+	]
+);
+
+// Register MediaGalleryEditorPane — 完整的媒体库画廊（数据源 = 工作流媒体库）。
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		MediaGalleryEditorPane,
+		MediaGalleryEditorPane.ID,
+		localize('mediaGalleryEditor', "Media Gallery"),
+	),
+	[
+		new SyncDescriptor(MediaGalleryEditorInput)
 	]
 );
 
@@ -1518,8 +1566,12 @@ registerAction2(class extends Action2 {
 
 		logService.info(`[agentStudio.addToChat] Triggered. lastFocusedPane=${pane ? `pane#${pane.paneId}` : 'null'}, argType=${URI.isUri(resourceOrEntry) ? 'URI' : 'entry'}`);
 
-		if (!pane) {
-			logService.warn('[agentStudio.addToChat] No focused NativeChatEditorPane found. User may not have clicked on an Agent Chat tab yet.');
+		// ★ 2026-09-15：`lastFocusedPane` 是跨 pane 静态引用，关闭聊天框独立窗口
+		// 会销毁其中的 pane。dispose 侧已做移交（见 NativeChatEditorPane.dispose），
+		// 这里再判一次 `isDisposed()` 作为兜底：宁可提示「未找到」，也不要把加文件
+		// 动作打到已销毁的 pane 上（表现为静默失效）。
+		if (!NativeChatEditorPane.isLivePane(pane)) {
+			logService.warn('[agentStudio.addToChat] No live focused NativeChatEditorPane found. User may not have clicked on an Agent Chat tab yet.');
 			return;
 		}
 
@@ -1752,246 +1804,207 @@ registerAction2(class extends Action2 {
 });
 
 // ─── Pop Out Chat Window ───────────────────────────────────────────────
-// Renders as an icon button in the editor title bar (top-right), but ONLY
-// when the active editor is the Agent Chat editor (either the React webview
-// AgentStudioEditorPane with panelType='chat', or the native NativeChatEditorPane).
+// Triggered from the **app title bar** (top-right, next to 反馈 / Panel / 折叠 —
+// see `sessions/browser/parts/titlebarPart.ts`). It used to be an icon button in
+// the chat editor's title bar; 2026-09-15（用户要求）moved to the title bar.
 //
-// Implementation (方案 2 — Independent BrowserWindow):
-// Delegates to the built-in `workbench.action.moveEditorToNewWindow` command,
-// which opens an independent OS-level Electron BrowserWindow and moves the
-// active editor into it. The new window has its own native window controls
-// (min/max/close), completely escaping the stacking-context / OS-overlay
-// constraints of the main window's titlebar — no DOM-level z-index conflicts.
-// Closing the standalone window automatically returns the editor to the main
-// window's editor group.
+// Implementation: opens an independent OS-level Electron BrowserWindow
+// (auxiliary editor part, with the session-list side view on its left) and
+// puts **one brand-new blank chat box** in it — it does NOT move the main
+// window's chat tabs out, and does NOT clone their conversation either.
+//
+// ★ 2026-09-15（用户要求）：主窗口**完全不动** ——
+//   ① 不再把原聊天 tab 移出去（旧实现 moveEditors ⇒ 主窗口聊天框被清空）；
+//   ② 不再隐藏右侧栏 / 顶部三个按钮（旧实现 setPartHidden +
+//      `#agent-studio-titlebar-toggle-container` display:none）；
+//   ③ 独立窗口里也**不 clone** 主窗口的会话（用户明确要求「全新的空白聊天」）
+//      ⇒ 与主窗口零共享（会话锁 / 流式 claim / 历史文件都不共用），
+//      因此关闭独立窗口不可能影响主窗口的聊天框区域。
 registerAction2(class extends Action2 {
 	constructor() {
-		const chatEditorActive = ContextKeyExpr.or(
-			ActiveEditorContext.isEqualTo('workbench.editor.agentStudio'),
-			ActiveEditorContext.isEqualTo('workbench.editor.nativeChat'),
-		);
 		super({
 			id: 'agentStudio.popoutChat',
 			title: localize2('agentStudio.popoutChat', 'Pop Out Chat to New Window'),
 			f1: false,
 			icon: Codicon.linkExternal,
-			menu: [{
-				id: MenuId.EditorTitle,
-				// 独立聊天窗口（aux window）隐藏 popout 按钮——已在外弹，无需再弹。
-				when: ContextKeyExpr.and(chatEditorActive, IsAuxiliaryWindowContext.toNegated()),
-				group: 'navigation',
-				order: -1,
-			}],
-			precondition: chatEditorActive,
+			// ★ 2026-09-15（用户要求）：入口从「聊天编辑器标题栏」(MenuId.EditorTitle)
+			// **移到 app 顶部标题栏**（见 `sessions/browser/parts/titlebarPart.ts` 的
+			// `#agent-studio-titlebar-toggle-container`）。因此这里不再注册菜单项，
+			// 也去掉 `precondition` —— 标题栏按钮是全局的，不受「当前活动编辑器是否为
+			// 聊天」约束；`run()` 对非聊天上下文同样安全（继承不到 agentId 时开空白聊天）。
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const editorGroupsService = accessor.get(IEditorGroupsService);
-		const layoutService = accessor.get(IWorkbenchLayoutService);
+		const editorService = accessor.get(IEditorService);
+		const instantiationService = accessor.get(IInstantiationService);
+		const auxiliaryWindowService = accessor.get(IAuxiliaryWindowService);
 
-		// 收集所有聊天编辑器 tab（支持多 group 多聊天窗口）。
-		// 记录每个 editor 所在 group 的序号（0-based），用于 pop out 时在
-		// aux window 中重建等量 group、pop in 时按 groupIndex 精确恢复分屏。
-		const chatEditors: EditorInput[] = [];
-		const editorToGroupIndex = new Map<EditorInput, number>();
-		let groupCount = 0;
-		for (const group of editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
-			let hasChatInGroup = false;
-			for (const ed of group.editors) {
-				if (
-					(ed instanceof AgentStudioEditorInput && ed.panelType === 'chat') ||
-					ed instanceof NativeChatEditorInput
-				) {
-					chatEditors.push(ed);
-					editorToGroupIndex.set(ed, groupCount);
-					hasChatInGroup = true;
-				}
-			}
-			if (hasChatInGroup) {
-				groupCount++;
-			}
-		}
+		// 继承「被点击的那个聊天框」的 agent：独立窗口直接就是同一个 agent 的
+		// **空白**对话，用户不必再选一次 agent（会话内容仍是全新的）。
+		const activeEditor = editorService.activeEditor;
+		const sourceAgentId = activeEditor instanceof NativeChatEditorInput ? activeEditor.agentId : undefined;
 
-		if (chatEditors.length === 0) {
-			return;
-		}
-
-		const isNativeChat = chatEditors.some(ed => ed instanceof NativeChatEditorInput);
+		// [Saros] 独立窗口左侧的「会话侧栏」（可拖拽调宽 / 可折叠），复用主窗口
+		// 左侧栏的会话列表面板。提到 try 外声明，便于失败路径释放。
+		let sideView: AuxChatSessionSideView | undefined;
 
 		try {
-			// Open an auxiliary BrowserWindow and recreate the multi-group layout.
-			// **修复**: 旧实现把所有聊天 editor 移进 aux window 的同一个 group，
-			// 破坏了原有的分屏结构。新实现按 groupIndex 在 aux window 中重建等量 group。
-			const auxPart = await editorGroupsService.createAuxiliaryEditorPart();
-			const auxGroups = [auxPart.activeGroup];
-			for (let i = 1; i < groupCount; i++) {
-				const g = auxPart.addGroup(auxGroups[auxGroups.length - 1], 3 /* GroupDirection.RIGHT */);
-				if (g) { auxGroups.push(g); }
-			}
-			// 将每个聊天 editor 从源 group 移到 aux window 中对应的 group
-			NativeChatEditorInput.beginForceMove();
-			try {
-				for (const editor of chatEditors) {
-					const gi = editorToGroupIndex.get(editor) ?? 0;
-					const targetAuxGroup = auxGroups[Math.min(gi, auxGroups.length - 1)];
-					for (const srcGroup of editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
-						if (srcGroup.editors.includes(editor)) {
-							srcGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], targetAuxGroup);
-							break;
-						}
-					}
-				}
-			} finally {
-				NativeChatEditorInput.endForceMove();
-			}
+			sideView = instantiationService.createInstance(AuxChatSessionSideView);
+			const auxPart = await editorGroupsService.createAuxiliaryEditorPart({ sideView });
+			sideView.setTargetPart(auxPart);
 
-			// Hide the Agent editor (right column) after popping out
-			layoutService.setPartHidden(true, Parts.AGENT_EDITOR_PART);
-
-			// Hide the titlebar toggle buttons (right column is gone, they're useless)
-			const toggleContainer = mainWindow.document.getElementById('agent-studio-titlebar-toggle-container');
-			if (toggleContainer) {
-				toggleContainer.style.display = 'none';
-			}
-
-			// 保存挪出的所有编辑器快照（含 groupIndex），用于 aux window 关闭后
-			// 按 groupIndex 精确恢复分屏布局。
-			const movedEditors = chatEditors.map(ed => {
-				const gi = editorToGroupIndex.get(ed) ?? 0;
-				if (ed instanceof NativeChatEditorInput) {
-					return { chatId: ed.chatId, agentId: ed.agentId, sessionId: ed.sessionId, name: ed.name, groupIndex: gi };
-				}
-				return { chatId: (ed as any).panelType || 'chat', agentId: undefined, sessionId: undefined, name: 'Agent Chat', groupIndex: gi };
-			});
-
-			// When the auxiliary window is closed, re-show the Agent editor,
-			// restore titlebar toggle buttons, then proactively move the ORIGINAL
-			// EditorInput instances back into agentPart (preserving _runtimeState),
-			// before dispatching reopen-chat for layout fine-tuning.
+			// ★ 2026-09-15（用户确认）：**不 clone** —— 独立窗口里只开**一个全新的
+			// 空白聊天**（既不搬走主窗口的会话，也不复制它的内容）。
 			//
-			// **修复**: 旧实现只派发事件不主动 move，依赖 VS Code 自动 move back。
-			// 但 NativeChatEditorInput 是瞬态的（无 serializer），VS Code 可能直接丢弃，
-			// 导致 pop in handler 走 NativeChatEditorInput.create() 创建全新实例，
-			// 新实例 _runtimeState = undefined → pane 内容空白。
-			// 新实现主动 moveEditors 原实例回 agentPart 对应 group，保留聊天状态。
-			auxPart.onWillDispose(() => {
-				layoutService.setPartHidden(false, Parts.AGENT_EDITOR_PART);
+			//   · chatId 由 `create()` 自动生成 ⇒ 独立 tab；
+			//   · `sessionId` 传 undefined ⇒ pane 判为「新页签」
+			//     （`_isFreshChatTab()`，见 nativeChatEditorPane.ts）并创建
+			//     **独立新会话** ⇒ 界面空白；
+			//   · 与主窗口**零共享**（不共用 session ⇒ 会话锁 / 流式 claim /
+			//     历史文件都不共享，关窗时不可能波及主窗口的聊天框）；
+			//   · 主窗口**完全不动**（不移动 tab、不隐藏右侧栏、不动顶部三个按钮，
+			//     旧实现这三件事都做了）。
+			//
+			// 只开一个（不再按主窗口的分屏数量镜像）：独立窗口的语义是「再给一个
+			// 空白聊天窗口」，同时开好几个空白框没有意义。
+			const fresh = NativeChatEditorInput.create(undefined, sourceAgentId);
+			await auxPart.activeGroup.openEditor(fresh, { pinned: true });
 
-				const tc = mainWindow.document.getElementById('agent-studio-titlebar-toggle-container');
-				if (tc) {
-					tc.style.display = '';
-				}
+			// ★ 2026-09-15：关窗前先把窗口里那个聊天自己关掉（保证主窗口零影响）。
+			//
+			// 上游语义是「关闭 aux 窗口 = 把窗口里的编辑器**移回主窗口**」
+			// （auxiliaryEditorPart.ts:269-284 注释明说；实现是
+			// `doClose(true)` → 先同步 `closeAllEditors({excludeConfirming:true})`，
+			// 再把剩下的 merge 进 **File 区** 并 `targetGroup.focus()`）。
+			// 只读的聊天本会被那步同步关掉、merge 自然空转，但这里再提前关一次，
+			// 使「关窗时 aux 各组必然为空」成为**不依赖上游时序**的硬保证
+			// ⇒ 主窗口（含聊天框区域）不会被 merge / 被 focus / 被重新布局。
+			// ★★ 事件订阅必须收进 store 并释放（2026-09-15，修 `[LEAKED DISPOSABLE]`）。
+			// 泄漏栈：`toDisposable`（`lifecycle.ts:406`）← `NativeAuxiliaryWindow.onBeforeUnload`
+			// / `AuxiliaryEditorPartImpl.onWillDispose`（`event.ts:1295`）← 本方法 ✓
+			// —— 两个订阅的返回值此前**直接被丢弃** ✗ ⇒ `toDisposable` 造的 Disposable 无人持有
+			// ⇒ GC 时被 `GCBasedDisposableTracker` 报出 ✓。
+			// ⚠ 释放时机选 `onWillDispose`（aux part 的**终结事件** ✓）：
+			// 在它的回调里 dispose 整个 store ⇒ 两个监听器一起释放 ✓。
+			// ⚠ **不**在 `onBeforeUnload` 里提前释放 —— 那会把 `onWillDispose` 监听器也解掉 ✗
+			// ⇒ 下面的 `sideView?.dispose()` 就永远不会执行 ✗（行为回归）。
+			const auxListeners = new DisposableStore();
 
-				// ① 在 agentPart 上按 groupIndex 创建目标 groups
-				const agentPart = getAgentPart(editorGroupsService);
-				const baseGroup = agentPart?.activeGroup ?? editorGroupsService.activeGroup;
-				const targetGroups: IEditorGroup[] = [baseGroup];
-				for (let i = 1; i < groupCount; i++) {
-					const g = editorGroupsService.addGroup(targetGroups[targetGroups.length - 1], 3 /* GroupDirection.RIGHT */);
-					if (g) { targetGroups.push(g); }
-				}
-
-				// ② 主动把原 EditorInput 实例从 aux groups（或任何其他 part）移回
-				//    agentPart 对应的 targetGroups[groupIndex]。
-				//    原实例携带 _runtimeState（messages / 流式状态），是内容保留的关键。
-				for (const editor of chatEditors) {
-					const gi = editorToGroupIndex.get(editor) ?? 0;
-					const target = targetGroups[Math.min(gi, targetGroups.length - 1)];
-					const chatId = (editor as NativeChatEditorInput).chatId;
-
-					// 检查 target group 是否已有相同 editor（防止重复创建）
-					const alreadyInTarget = target.editors.some(e => editor.matches(e));
-					if (alreadyInTarget) {
-						continue;
+			const auxWindow = auxiliaryWindowService.getWindow(auxPart.windowId);
+			// ⚠ `getWindow()` 可能返回 undefined ⇒ 不能直接 `store.add(undefined)`（会抛 ✗）
+			if (auxWindow) {
+				auxListeners.add(auxWindow.onBeforeUnload(() => {
+					for (const group of [...auxPart.groups]) {
+						group.closeAllEditors({ excludeConfirming: true });
 					}
+				}));
+			}
 
-					// 找到 editor 当前所在的 group（aux window 或已被 VS Code 自动 move back）
-					let sourceGroup: IEditorGroup | undefined;
-					for (const part of editorGroupsService.parts) {
-						for (const g of part.groups) {
-							if (g.editors.includes(editor)) {
-								sourceGroup = g;
-								break;
-							}
-						}
-						if (sourceGroup) { break; }
-					}
-					if (sourceGroup && sourceGroup !== target) {
-						sourceGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], target);
-					} else if (!sourceGroup) {
-						// aux 已销毁 editor 实例 — VS Code 已通过 onBeforeUnload 自动移回 editor
-						// 但自动移回可能尚未完成，延迟检查后再决定是否创建新实例
-						const chatIdToCheck = chatId;
-						const targetGroupToCheck = target;
-						const snap = movedEditors.find(s => s.chatId === (editor as any).chatId);
-						setTimeout(() => {
-							// 检查所有 groups 是否已有相同 chatId 的 editor（VS Code 自动移回的结果）
-							let existingEditor: NativeChatEditorInput | undefined;
-							for (const part of editorGroupsService.parts) {
-								for (const g of part.groups) {
-									for (const e of g.editors) {
-										if (e instanceof NativeChatEditorInput && e.chatId === chatIdToCheck) {
-											existingEditor = e;
-											break;
-										}
-									}
-									if (existingEditor) { break; }
-								}
-								if (existingEditor) { break; }
-							}
-							if (existingEditor) {
-								return;
-							}
-							// 真正找不到 editor — fallback 用快照 create 新实例（内容会丢失）
-							if (snap) {
-								const input = NativeChatEditorInput.create(
-									snap.chatId, snap.agentId, snap.sessionId, snap.name,
-								);
-								targetGroupToCheck.openEditor(input, { pinned: true });
-							}
-						}, 100); // 延迟 100ms 让 VS Code 自动移回完成
-					}
-				}
-
-				// ③ 派发 reopen-chat 事件让 workbench 做布局微调（清理多余 group 等）
-				requestAnimationFrame(() => {
-					mainWindow.document.dispatchEvent(new CustomEvent('agent-studio:reopen-chat', {
-						detail: { isNativeChat, editors: movedEditors, groupCount }
-					}));
-				});
-			});
+			// When the auxiliary window is closed, only release the side view.
+			//
+			// ★ 2026-09-15：不再需要「恢复右侧栏 / 恢复顶部按钮 / 把原实例搬回
+			// agentPart / 派发 reopen-chat」这一整套收尾 —— 本次弹窗全程没有动过
+			// 主窗口（没 move 编辑器、没隐藏任何 part），没有东西需要还原。
+			// 至于独立窗口里那个新建的空白聊天：关闭 aux 窗口走
+			// `AuxiliaryEditorPart.close()` → `doClose(true)`
+			// （auxiliaryEditorPart.ts:518-536），会先
+			// `closeAllEditors({ excludeConfirming: true })` 把它**直接关闭**，
+			// 不会 merge 回主窗口 ⇒ 主窗口不会多出聊天框。
+			auxListeners.add(auxPart.onWillDispose(() => {
+				// ★ 先释放上面两个订阅（本事件是 aux part 的终结事件 ✓，之后不再需要它们 ✓）
+				auxListeners.dispose();
+				// [Saros] 独立窗口关闭 ⇒ 释放左侧会话侧栏（含其内部面板）
+				sideView?.dispose();
+			}));
 		} catch {
 			// Last-resort fallback: dispatch the legacy in-window overlay event
 			// (kept for backward compatibility with the older floating-overlay impl).
+			sideView?.dispose();
 			mainWindow.document.dispatchEvent(new CustomEvent('agent-studio:popout-chat'));
 		}
 	}
 });
 
-// ── 编辑器标题栏 "+" 新建聊天按钮（popout 按钮左侧）──────────────────────
-// 与 agentStudio.popoutChat 同属 MenuId.EditorTitle / navigation 组，
-// order: -2 比 popout 的 order: -1 更小 → 渲染在 popout 按钮左侧。
-// 点击后在当前活跃 session 中新建一个 chat。
+// ── 自动给「聊天独立窗口」挂上会话侧栏 ──────────────────────────────────
+//
+// 为什么需要：`agentStudio.popoutChat` 只能在**创建窗口时**传入 sideView，而聊天
+// 独立窗口还有另外两条创建路径拿不到该参数 ——
+//   ① `AUX_WINDOW_GROUP`（会话右键 "Open in New Window"，
+//      见 `sessionsViewPane.openInNewWindow`）
+//   ② 拖拽聊天 tab 出窗口（`editorTabsControl.maybeCreateAuxiliaryEditorPartAt`）
+// 这些窗口此前只有聊天区、没有左侧会话列表。这里统一补挂：只要某个 auxiliary
+// window 里出现了聊天编辑器，就挂上 `AuxChatSessionSideView`（已挂的窗口跳过）。
+class AuxChatSideViewContribution extends Disposable implements IWorkbenchContribution {
+
+	static readonly ID = 'sessions.auxChatSideViewAutoAttach';
+
+	/** 已创建的 auxiliary editor part（该事件只对 aux 窗口触发）。 */
+	private readonly _auxParts = new Set<IAuxiliaryEditorPart>();
+	private _debounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+	constructor(
+		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
+		@IEditorService private readonly editorService: IEditorService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@ILogService private readonly logService: ILogService,
+	) {
+		super();
+
+		this._register(this.editorGroupsService.onDidCreateAuxiliaryEditorPart(part => {
+			this._auxParts.add(part);
+			const disposeListener = part.onWillDispose(() => {
+				this._auxParts.delete(part);
+				disposeListener.dispose();
+			});
+			this._register(disposeListener);
+			this._attachIfChatWindow(part);
+		}));
+
+		// 窗口创建时通常是空的（编辑器随后才被 move 进来）⇒ 等编辑器出现再补挂。
+		this._register(this.editorService.onDidVisibleEditorsChange(() => {
+			if (this._debounceTimer) { clearTimeout(this._debounceTimer); }
+			this._debounceTimer = setTimeout(() => {
+				this._debounceTimer = undefined;
+				for (const part of this._auxParts) {
+					this._attachIfChatWindow(part);
+				}
+			}, 300);
+		}));
+	}
+
+	private _attachIfChatWindow(part: IAuxiliaryEditorPart): void {
+		try {
+			if (part.sideView) {
+				return; // 创建时已传入（popoutChat 路径）
+			}
+			const hasChat = part.groups.some(group => group.editors.some(editor => editor instanceof NativeChatEditorInput));
+			if (!hasChat) {
+				return;
+			}
+			part.setSideView(this.instantiationService.createInstance(AuxChatSessionSideView));
+			this.logService.info('[AuxChatSideView] attached session side view to auxiliary chat window');
+		} catch (err) {
+			this.logService.warn('[AuxChatSideView] failed to attach session side view:', err);
+		}
+	}
+}
+
+registerWorkbenchContribution2(AuxChatSideViewContribution.ID, AuxChatSideViewContribution, WorkbenchPhase.AfterRestored);
+
+// ── app 顶部标题栏「新建聊天」按钮 ──────────────────────────────────────
+// 用户要求（2026-09-15）：把原先在「聊天编辑器标题栏」的 `+` 按钮**移到 app 顶部
+// 标题栏**（见 `sessions/browser/parts/titlebarPart.ts` 的
+// `#agent-studio-titlebar-toggle-container`，与 popout 按钮相邻）。
+// 命令仍在此注册，标题栏按钮按 id 调用 ⇒ 不再注册 MenuId.EditorTitle 菜单项，
+// 也去掉 `precondition`（全局入口不依赖「当前活动编辑器是聊天」）。
 registerAction2(class extends Action2 {
 	constructor() {
-		const chatEditorActive = ContextKeyExpr.or(
-			ActiveEditorContext.isEqualTo('workbench.editor.agentStudio'),
-			ActiveEditorContext.isEqualTo('workbench.editor.nativeChat'),
-		);
 		super({
 			id: 'agentStudio.newChatInEditor',
 			title: localize2('agentStudio.newChatInEditor', '新建聊天'),
 			f1: false,
 			icon: Codicon.add,
-			menu: [{
-				id: MenuId.EditorTitle,
-				// 独立聊天窗口（aux window）隐藏 group 内「+ 新建聊天」按钮——改由
-				// 该窗口标题栏（最小化按钮左侧）的「新建聊天 Group」按钮负责新建 group。
-				when: ContextKeyExpr.and(chatEditorActive, IsAuxiliaryWindowContext.toNegated()),
-				group: 'navigation',
-				order: -2,
-			}],
-			precondition: chatEditorActive,
 		});
 	}
 	run(accessor: ServicesAccessor): void {

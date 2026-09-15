@@ -6,7 +6,7 @@
 import { Event } from '../../../../base/common/event.js';
 import { IObservable } from '../../../../base/common/observable.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { IWorktreeDetail, ICreateWorktreeInfo, IWorktreeInfoOptions, IWorktreeInfo, WorktreeStatus, IWorktreeStateEvent } from './worktreeTypes.js';
+import { IWorktreeDetail, ICreateWorktreeInfo, IWorktreeInfoOptions, IWorktreeInfo, WorktreeStatus, IWorktreeStateEvent, IWorktreeCleanupCandidate, IWorktreeCleanupOptions, IWorktreeCleanupResult } from './worktreeTypes.js';
 
 export const IWorktreeService = createDecorator<IWorktreeService>('worktreeService');
 
@@ -115,6 +115,52 @@ export interface IWorktreeService {
 	 */
 	pruneWorktrees(repoPath: string): Promise<void>;
 
+	// ─── Lock / Unlock（★ 2026-09-15 补）────────────────────────────
+	//
+	// `locked` 此前**只解析不操作**：UI 已经能显示锁定图标与 `WorktreeIsLocked`
+	// 上下文键，但没有任何入口能真的上锁。补上这半边。
+	//
+	// 语义（git 原生）：被 lock 的 worktree **不会**被 `git worktree prune` 回收，
+	// 也不会被 `git worktree remove` 删除（除非 --force）。用于保护"正在被某个
+	// 长任务使用、但目录暂时看起来是空的/不可达的"工作树 —— 例如网络盘、或
+	// 正在被另一台机器挂着的目录。
+
+	/**
+	 * 给 worktree 上锁（`git worktree lock`），使其不被 `prune` 回收。
+	 * @param worktreePath worktree 绝对路径
+	 * @param reason 可选的锁定理由（`--reason`，会出现在 `git worktree list` 输出里）
+	 */
+	lockWorktree(worktreePath: string, reason?: string): Promise<void>;
+
+	/** 解除 worktree 的锁（`git worktree unlock`）。 */
+	unlockWorktree(worktreePath: string): Promise<void>;
+
+	// ─── Cleanup（★ 2026-09-15 补）──────────────────────────────────
+
+	/**
+	 * **只读**扫描清理候选：陈旧 worktree + 孤儿分支。
+	 *
+	 * 本方法**不做任何修改**。删除必须由调用方在用户确认后调 {@link cleanupWorktrees}。
+	 *
+	 * 判据（两条都要求「**没有未推送提交**」—— 那是会丢的真实工作）：
+	 *   · `stale-worktree`：非主树、未锁定、无未推送提交，且目录 mtime 早于阈值；
+	 *   · `orphan-branch`：在 {@link WORKTREE_BRANCH_PREFIX} 命名空间内、没有任何
+	 *     worktree 占用它、且无未推送提交（历史 bug 导致删 worktree 时分支没被删，
+	 *     这类分支会只增不减）。
+	 *
+	 * @param repoPath git 仓库根
+	 * @param options.staleAfterMs 陈旧阈值，默认 {@link DEFAULT_STALE_WORKTREE_MS}（14 天）
+	 */
+	listCleanupCandidates(repoPath: string, options?: IWorktreeCleanupOptions): Promise<IWorktreeCleanupCandidate[]>;
+
+	/**
+	 * 执行清理（对给定候选逐个删除）。
+	 *
+	 * ⚠ **必须由用户确认后调用** —— 本方法自身不做二次确认。
+	 * 逐个执行、失败不中断（结果里 `removed` / `failed` 分开返回）。
+	 */
+	cleanupWorktrees(repoPath: string, candidates: readonly IWorktreeCleanupCandidate[]): Promise<IWorktreeCleanupResult>;
+
 	/**
 	 * Launch the worktree's VsSaros instance ("debug" the worktree): compile
 	 * the worktree's out/ (transpile-client) then start a dev-mode instance
@@ -211,6 +257,18 @@ export interface IWorktreeService {
 	 * Quick check without full diff - uses `git status --porcelain`.
 	 */
 	hasUncommittedChanges(worktreePath: string): Promise<boolean>;
+
+	/**
+	 * ★ 该 worktree 是否有**未推送到任何 remote** 的提交。
+	 *
+	 * 用于「删 worktree 时要不要连带删分支」的判据 —— 与 hermes-agent-studio 一致：
+	 * **未推送的提交 = 会丢的真实工作**，此时保留分支（只删工作目录）；已推送的才删。
+	 *
+	 * 实现：`git log --oneline HEAD --not --remotes`（无输出 ⇒ 全部已推送）。
+	 * ⚠ 仓库**没有任何 remote** 时该命令不会排除任何提交 ⇒ 恒为 true ⇒ 分支只增不减。
+	 *   那种情况下不存在"推送"这个去处，故显式返回 false。
+	 */
+	hasUnpushedCommits(worktreePath: string): Promise<boolean>;
 
 	// ─── Checkpoint lifecycle (VS Code compatible) ─────────────────
 

@@ -259,6 +259,78 @@
 	padding-top: 4px;
 }
 
+/* ===== Hide the icon strip scrollbar ===== */
+/* [Saros] 48px 的竖条放不下滚动条 —— 一条可见滚动条会吃掉图标宽度。
+ * 滚动能力保留（滚轮/键盘仍可滚），只隐藏滚动条本身。
+ * 覆盖三处可能的滚动容器：header（overflow-y:auto 在这里）、
+ * composite-bar-container、以及被领养进来的 activitybar 部件。 */
+.agent-sessions-workbench .part.sidebar > .composite.header-or-footer,
+.agent-sessions-workbench .part.sidebar .composite-bar-container,
+.agent-sessions-workbench .part.sidebar .part.activitybar {
+	scrollbar-width: none; /* Firefox */
+	-ms-overflow-style: none; /* 旧 Edge */
+}
+
+.agent-sessions-workbench .part.sidebar > .composite.header-or-footer::-webkit-scrollbar,
+.agent-sessions-workbench .part.sidebar .composite-bar-container::-webkit-scrollbar,
+.agent-sessions-workbench .part.sidebar .part.activitybar::-webkit-scrollbar {
+	display: none;
+	width: 0;
+	height: 0;
+}
+
+/* ===== Unify the icon strip background with the theme background ===== */
+/* [Saros] 图标条底色不一致的根因是**三方各取一套色**：
+ *   ① 领养进来的 activitybar 部件 —— 内联 `background-color`，
+ *      取自 `activityBar.background`（`workbench/common/theme.ts:390`，回退硬编码
+ *      `#333333`）；
+ *   ② 侧栏本体 —— `sideBar.background`（同上 `:608`，回退 `#252526`）；
+ *   ③ `.sidebar-footer` —— 又反过来取 activityBar 背景（见本文件下方规则 ✓）。
+ * 三者在**未显式定义上述变量的主题**下必然分叉（`#333` vs `#252526`），
+ * 表现为图标条与侧栏之间出现可见色块边界 ✗。
+ *
+ * 修法：在 agents 布局内把①③统一钉到 `sideBar.background` —— 图标条已被领养进侧栏、
+ * 与侧栏同属一列，取侧栏色才语义正确 ✓。
+ * ⚠ 用 `!important` 是因为①是**内联样式**（`activitybarPart.ts:186`
+ * `container.style.backgroundColor = …`），普通选择器优先级压不过内联声明。
+ * ⚠ 作用域限定在 `.agent-sessions-workbench` 下 ⇒ **不影响标准 IDE 窗口** ✓。 */
+.agent-sessions-workbench .part.sidebar .part.activitybar {
+	background-color: var(--vscode-sideBar-background) !important;
+}
+
+/* 图标条内的条目容器（`.composite-bar`）本身也可能带一层底色，一并抹平，
+ * 否则 unify 后仍会露出第二条色带 ✗。 */
+.agent-sessions-workbench .part.sidebar .part.activitybar .composite-bar,
+.agent-sessions-workbench .part.sidebar .part.activitybar .composite-bar-container {
+	background-color: transparent;
+}
+
+/* ===== Titlebar app icon — agents window brand logo ===== */
+/* [Saros] 标准层不给 `.window-appicon` 任何样式（全仓无该选择器的 CSS ✓）⇒
+ * 标题栏左上角一直显示 product icon theme 的默认 workbench 图标
+ * （VS Code 原版蓝色 logo ✗），与桌面图标（resources/win32/code.ico ✓）不一致。
+ * 这里**只在 agents 窗口**（根上有 `.agent-sessions-workbench` ✓）挂品牌 SVG
+ * `.agents/saros-logo.svg`（已复制到
+ * src/vs/workbench/browser/parts/titlebar/media/saros-logo.svg，与本规则的
+ * 相对路径 4 级上跳对齐 ✓），**不影响标准 IDE 窗口** ✓。 */
+.agent-sessions-workbench .part.titlebar a.window-appicon {
+	width: 18px;
+	height: 18px;
+	flex: 0 0 auto;
+	margin: 0 8px 0 10px;
+	background: url('../../../../workbench/browser/parts/titlebar/media/saros-logo.svg') center / contain no-repeat;
+}
+
+/* ===== Hide the sidebar's OWN composite bar (always empty in agents layout) ===== */
+/* [Saros] 侧栏自己那条 `.composite-bar`（"Active View Switcher"）在 agents 布局里
+ * **始终为空**（11 个条目在领养进来的 activitybar 部件里 ✓，前置 70 ✓），
+ * 但它 + `.activity-bar-separator` 会在领养部件**上方**占一条空白 ✗
+ * （用户报"activitybar 顶部留白" ✓）。真机 DOM 确认其 actions-container 为空 ✓。 */
+.agent-sessions-workbench .part.sidebar .composite-bar-container > .composite-bar,
+.agent-sessions-workbench .part.sidebar .activity-bar-separator {
+	display: none !important;
+}
+
 /* ===== Composite bar container inside header ===== */
 
 .agent-sessions-workbench .part.sidebar .composite-bar-container {
@@ -387,6 +459,13 @@
 	margin-top: auto;
 	flex-shrink: 0;
 	width: 48px;
+	/* [Saros] 显式底色，**两种状态保持一致** ✓。
+	 * 展开态下 footer 是 `position: absolute` 盖在图标条那一列上（见下方规则 ✓）。
+	 * ★ 2026-09-15（配色统一）：改为取 `sideBar.background` —— 此前取
+	 * `activityBar.background`，与「图标条已统一到侧栏色」的改动（见本文件
+	 * 上方 Unify 区块 ✓）相冲突，会让 footer 变成整列里唯一的异色块 ✗。
+	 * 图标条 / 侧栏 / footer 现同源，折叠与展开两态亦然 ✓。 */
+	background-color: var(--vscode-sideBar-background);
 }
 
 /* Make the toolbar stack actions vertically in the footer */
@@ -485,4 +564,194 @@
 .agent-sessions-workbench .part.sidebar > .header-or-footer.footer > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.checked.clicked:focus .active-item-indicator:before {
 	border-bottom-color: transparent !important;
 	border: none !important;
+}
+
+/* ============================================================================
+ * 工作区下拉框 — 重构（2026-09-15）
+ *
+ * 设计目标（只改信息层次与状态表达，不改数据语义）：
+ *   ① 区分「本窗口正在打开」与「仅注册表选中」—— 这两者会错配，此前 UI 完全无法区分；
+ *   ② 露出多根数量 / `.code-workspace` 来源 / worktree 绑定（都来自已有字段）；
+ *   ③ 路径可读（原先 10px + opacity .7，且从头截断会把最有辨识度的尾段目录名切掉）；
+ *   ④ 搜索按需（原先 2 条记录也常驻一整行）；
+ *   ⑤ 删除更谨慎（破坏性动作不该紧贴 ✓ 常驻）。
+ *
+ * ⚠ 刻意**不做**「切换会重载窗口」提示：`_switchWorkspace` 现在优先走原生
+ * `enterWorkspace` 与内存内 folder 替换，两条路径都**不重载**；只有拿不到接缝时
+ * 才回退 `openWindow`。把它标出来会是误导。
+ * ========================================================================== */
+
+/* ── 触发器上的多根徽标 ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-selector-roots {
+	flex: 0 0 auto;
+	font-size: 9px;
+	line-height: 14px;
+	padding: 0 4px;
+	border-radius: 3px;
+	background: var(--vscode-badge-background, rgba(255, 255, 255, 0.12));
+	color: var(--vscode-badge-foreground, inherit);
+	opacity: 0.85;
+}
+
+/* ── 面板头部：标题 + 搜索开关 ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	border-bottom: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border));
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-head-title {
+	font-size: 10px;
+	letter-spacing: 0.07em;
+	text-transform: uppercase;
+	color: var(--vscode-descriptionForeground);
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-search-toggle {
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	font-size: 12px;
+	padding: 1px 4px;
+	border-radius: 3px;
+	line-height: 1;
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-search-toggle:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+/* ── 分组标题 ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-group-title {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 6px 10px 3px;
+	font-size: 10px;
+	letter-spacing: 0.07em;
+	text-transform: uppercase;
+	color: var(--vscode-descriptionForeground);
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-group-title.ws-group-window {
+	color: var(--vscode-charts-green, var(--vscode-descriptionForeground));
+}
+
+/* ── 列表项 ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-item {
+	display: flex;
+	align-items: flex-start;
+	gap: 7px;
+	padding: 5px 10px 5px 11px;
+	cursor: pointer;
+}
+/* 键盘导航高亮与 hover 同一视觉（键盘用户必须看得见当前行） */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-item.kb {
+	background-color: var(--vscode-list-hoverBackground, var(--vscode-toolbar-hoverBackground));
+}
+
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-item-mark {
+	flex: 0 0 13px;
+	font-size: 11px;
+	line-height: 17px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-item.open-here .ws-item-mark {
+	color: var(--vscode-charts-green, #89d185);
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-item.active .ws-item-mark {
+	color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-item-body {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-item-row1 {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	flex-wrap: wrap;
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-item-name {
+	font-size: 12px;
+	font-weight: 500;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* ── 徽标 ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-chip {
+	font-size: 9px;
+	line-height: 14px;
+	padding: 0 4px;
+	border-radius: 3px;
+	white-space: nowrap;
+	background: var(--vscode-badge-background, rgba(255, 255, 255, 0.12));
+	color: var(--vscode-descriptionForeground);
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-chip-file {
+	color: var(--vscode-textLink-foreground, #3794ff);
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-chip-worktree {
+	color: var(--vscode-charts-green, #89d185);
+}
+
+/* ── 路径：中间截断（保留尾段目录名 —— 那才是辨识度最高的部分）──
+ * `direction: rtl` + `text-align: left` 让溢出发生在**左侧**，
+ * 于是 `g:\a\b\c\sarosis-agents-client` 会显示成 `…\c\sarosis-agents-client`。 */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-item-path {
+	display: block;
+	margin-top: 1px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	direction: rtl;
+	text-align: left;
+}
+
+/* ── 行内动作（删除）：仅 hover / 键盘高亮时出现 ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-item-actions {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 3px;
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-delete-btn {
+	display: none;
+	border: none;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+	font-size: 12px;
+	padding: 1px 3px;
+	border-radius: 3px;
+	line-height: 1;
+	opacity: 0.6;
+}
+
+/* ── 底部动作：图标 + 文案，并用副标签消歧（单根 / 多根）── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-open-folder-btn,
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-open-file-btn {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	border: none;
+	background: transparent;
+	color: var(--vscode-textLink-foreground, #3794ff);
+	cursor: pointer;
+	font-size: 12px;
+	padding: 4px 8px;
+	border-radius: 4px;
+	text-align: left;
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-open-hint {
+	margin-left: auto;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
 }

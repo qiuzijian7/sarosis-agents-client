@@ -312,4 +312,50 @@ suite('CodebaseGraphWatcher keepDirs exception (2026-08-03)', () => {
 	});
 });
 
+suite('CodebaseGraphWatcher unwatch / getWatchedRoots (2026-09-15)', () => {
+	// 背景：工作区原地切换（`replaceWorkspaceFoldersInMemory`，不 reload renderer）后，
+	// 旧 folder 的监听根必须停止轮询 —— 否则它每轮仍会检测变更并 fire 事件，
+	// graphService 会为「已 prune 的跨工作区项目」再跑增量索引，把数据重建回来。
+
+	test('getWatchedRoots 返回原始路径；unwatch 按归一化路径移除且幂等', () => {
+		const watcher = new CodebaseGraphWatcher(makeFs({}) as any, makeLog() as any);
+		watcher.start('/proj', makeStore([]) as any, 'P', EXTS);
+		watcher.start('/other', makeStore([]) as any, 'Q', EXTS);
+		assert.deepStrictEqual(watcher.getWatchedRoots(), ['/proj', '/other']);
+
+		// 分隔符 / 大小写 / 尾斜杠不同也必须能匹配（服务侧传的是工作区 folder 的原始 fsPath）
+		assert.strictEqual(watcher.unwatch('\\PROJ\\'), 1);
+		assert.deepStrictEqual(watcher.getWatchedRoots(), ['/other']);
+		assert.strictEqual(watcher.unwatch('/proj'), 0, '幂等：已移除的根再移除返回 0');
+		watcher.dispose();
+	});
+
+	test('unwatch 丢弃该根的待发去抖变更（不再 fire）', async () => {
+		const files = { 'src/a.ts': { mtime: 100, size: 10 } };
+		const events: any[] = [];
+		const watcher = new CodebaseGraphWatcher(makeFs(files) as any, makeLog() as any);
+		watcher.onDidChange(e => events.push(e));
+		watcher.start(ROOT, makeStore([]) as any, 'P', EXTS);
+
+		await (watcher as any)._poll((watcher as any)._roots[0]); // 产生变更 → 进入去抖静默期
+		assert.strictEqual((watcher as any)._pendingChanges.size, 1, '变更应先进入待发集');
+
+		watcher.unwatch(ROOT);
+		flushDebounce(watcher); // 若待发未清，这里就会把事件放出去
+		assert.strictEqual(events.length, 0, 'unwatch 后不得再 fire 已移除根的变更');
+		watcher.dispose();
+	});
+
+	test('移除全部根后停止轮询（不再空转自调度）', () => {
+		const watcher = new CodebaseGraphWatcher(makeFs({}) as any, makeLog() as any);
+		watcher.start('/proj', makeStore([]) as any, 'P', EXTS);
+		assert.ok((watcher as any)._pollTimer, 'start 后应有轮询定时器');
+
+		watcher.unwatch('/proj');
+		assert.strictEqual((watcher as any)._pollTimer, null, '无根时定时器必须被清掉');
+		assert.strictEqual((watcher as any)._started, false, '无根时视为未启动');
+		watcher.dispose();
+	});
+});
+
 export {};

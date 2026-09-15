@@ -12,6 +12,29 @@ import { TERMINAL_BACKGROUND_COLOR } from '../workbench/contrib/terminal/common/
 
 import '../workbench/api/browser/extensionHost.contribution.js';
 import '../workbench/browser/workbench.contribution.js';
+
+// ★ [Saros] `zenMode` 配置的**唯一注册处**（`:21` 是模块级 IIFE
+// `registerZenModeConfiguration()` ⇒ 只要被 import 就会注册）。
+//
+// ⚠ **必须显式列进来**：本文件是**手写的精选贡献清单**，不是
+// `workbench.common.main.js` 那种全量入口 —— 所以"上游某文件 import 了它"
+// **不等于**"我们也 import 了它"。这一点我判断错过一次：当时看编译产物
+// `workbench.desktop.main.js → workbench.common.main.js → workbench.zenMode.contribution.js`
+// 就认定"链上有"，但那份链**不是**本清单的链路。
+//
+// 不引它的后果（真机 + 日志双重确认）：`Layout.restoreParts()` 里
+// `getZenModeConfiguration(this.configurationService).restore` 抛
+// `Cannot read properties of undefined (reading 'restore')`
+// ⇒ `restoreParts()` **中断** ⇒ 其后的 zen mode 恢复 / 编辑器居中 /
+// `Promises.settled(layoutReadyPromises)` 收尾**全被跳过**。
+// 真机表现：侧栏永远停在 48px（`AgentLayoutWorkbench.restoreParts()` 里那句
+// 原本写在 `await super` 之后 ⇒ 被一起跳过；现已用 `try/finally` 兜住，
+// 但上游那半截收尾仍然是丢的）。
+//
+// 诊断证据（`[Saros][zenModeDiag]`，走 `ILogService` 落在 `renderer.log`）：
+// 注册表属性总数 **1519**（提取正常）、`zenMode*` 为空、
+// 91 个配置节点里**没有 `zenMode`**、`excluded` 里也没有。
+import '../workbench/browser/workbench.zenMode.contribution.js';
 import { agentsPanelBackground } from './common/theme.js';
 
 getColorRegistry().updateDefaultColor(PANEL_BACKGROUND, agentsPanelBackground);
@@ -26,7 +49,22 @@ import '../workbench/browser/actions/textInputActions.js';
 import '../workbench/browser/actions/developerActions.js';
 import '../workbench/browser/actions/helpActions.js';
 import '../workbench/browser/actions/listCommands.js';
-// import '../workbench/browser/actions/layoutActions.js';
+// ★ [Saros] 方案 B1：放开标准 `layoutActions.js`。
+//
+// 它原先被注释掉，因为 sessions 有自己的 `./browser/layoutActions.js`（见下方
+// `//#region --- sessions contributions`）。两者**可以共存**，已逐项核对：
+// - **action id 不冲突**：sessions 那三个全带 `agent` 前缀
+//   （`workbench.action.agentToggleSidebarVisibility` /
+//   `...agentToggleSecondarySidebarVisibility` / `...agentTogglePanelVisibility`），
+//   标准版是 `workbench.action.toggle*` ⇒ `registerAction2` 不会重复注册抛错。
+// - **图标 id 不冲突**：sessions 用 `agent-panel-close` / `agent-sidebar-toggle-*`，
+//   标准版用 `fullscreen` / `centerLayoutIcon` / `zenMode`。
+//
+// ⚠ 它**不是** `zenMode` 配置的注册处 —— 那个在
+// `workbench/browser/workbench.zenMode.contribution.ts`（`registerConfiguration({ id: 'zenMode' })`），
+// 且已由 `workbench.common.main.ts:12` 引入。所以放开本行**不会**修掉
+// `getZenModeConfiguration(...).restore` 那个 ERR —— **真机验证：放开后 ERR 依旧、栈不变**。
+import '../workbench/browser/actions/layoutActions.js';
 import '../workbench/browser/actions/navigationActions.js';
 import '../workbench/browser/actions/windowActions.js';
 import '../workbench/browser/actions/workspaceActions.js';
@@ -53,8 +91,16 @@ import './contrib/agentStudio/browser/agentCapabilitiesExtensionPoint.js';
 //#region --- workbench parts
 
 import '../workbench/browser/parts/editor/editor.contribution.js';
-// import '../workbench/browser/parts/editor/editorParts.js';
-// import '../workbench/browser/parts/paneCompositePartService.js';
+// ★ [Saros] 方案 B1：改用**标准**的 editorParts / paneCompositePartService。
+//
+// 这两行原本被注释掉，改由下方 `//#region --- sessions contributions` 里的
+// `./browser/parts/editorParts.js` / `./browser/paneCompositePartService.js` 覆盖
+// （`registerSingleton` 后注册者胜出 —— 见 `agentEditorParts.ts` 文件头的说明）。
+//
+// agents 窗口现在跑在**标准底座**上（`sessions.desktop.main.ts` → `agentLayoutDesktopMain`），
+// 这两处 sessions 覆盖必须撤掉，否则 sessions 版会把标准版顶掉，"标准底座"就落空了。
+import '../workbench/browser/parts/editor/editorParts.js';
+import '../workbench/browser/parts/paneCompositePartService.js';
 import '../workbench/browser/parts/banner/bannerPart.js';
 import '../workbench/browser/parts/statusbar/statusbarPart.js';
 
@@ -113,6 +159,17 @@ import '../workbench/services/workingCopy/common/workingCopyService.js';
 import '../workbench/services/workingCopy/common/workingCopyFileService.js';
 import '../workbench/services/workingCopy/common/workingCopyEditorService.js';
 import '../workbench/services/filesConfiguration/common/filesConfigurationService.js';
+// ★ [Saros] 方案 B1：`IWorkspaceEditingService` 必须显式引入标准实现。
+//
+// sessions 侧它是由 `SessionsWorkspaceContextService` **兼任**的
+// （`sessions.main.ts:336` `serviceCollection.set(IWorkspaceEditingService, workspaceContextService)`），
+// 而标准 `DesktopMain` 只把 `WorkspaceService` 注册成 `IWorkspaceContextService` +
+// `IWorkbenchConfigurationService`，**不含** editing。
+//
+// 缺它的后果远超"某条贡献失败"：`sessions.sourceControlWorkspaceSync`、
+// `sessions.agentStudio.workspaceFolderSync`、`ChatSessionStore`、`MainThreadWorkspace`
+// 全部创建失败 ⇒ 扩展宿主客户建不起来（`Missing proxy instance MainThreadChatAgents2`）。
+import '../workbench/services/workspaces/browser/workspaceEditingService.js';
 import '../workbench/services/views/browser/viewDescriptorService.js';
 import '../workbench/services/views/browser/viewsService.js';
 import '../workbench/services/quickinput/browser/quickInputService.js';
@@ -454,8 +511,17 @@ import '../workbench/contrib/opener/browser/opener.contribution.js';
 
 //#region --- sessions contributions
 
+// ★ [Saros] 方案 B1：**只**撤掉 `./browser/parts/editorParts.js`。
+//
+// 它覆盖 `IEditorGroupsService`，而 agents 窗口必须让标准 `AgentEditorParts` 生效
+// （否则 `Parts.AGENT_EDITOR_PART` 没有宿主，agents grid 解不出来）。
+//
+// `./browser/paneCompositePartService.js` **必须保留**：它是标准版的**超集**
+// （Panel/Sidebar/AuxiliaryBar **+ ChatBar**），与"标准底座"并不冲突。撤掉它会让
+// `sessions/contrib/chat` 的 `RegisterChatViewContainerContribution` 往
+// `ViewContainerLocation.ChatBar` 注册容器时，在标准 `PaneCompositePartService`
+// 的 `getPartByLocation()` 上断言失败（首次真机验证已确认）。
 import './browser/paneCompositePartService.js';
-import './browser/parts/editorParts.js';
 import './browser/parts/menubar.contribution.js';
 import './browser/layoutActions.js';
 
@@ -472,6 +538,10 @@ import './contrib/sessions/browser/customizationsToolbar.contribution.js';
 import './contrib/changes/browser/changes.contribution.js';
 import './contrib/layout/browser/layout.contribution.js';
 import './contrib/codeReview/browser/codeReview.contributions.js';
+// ★ [Saros] folder 列表的唯一写入者（方案 B' Step 2）—— 必须**先于**任何消费者注册。
+// 消费者：`sourceControl.contribution`（SCM 多仓）、`agentStudio/workspaceFolderSync`（反向投影）。
+// 不变量由 `agentStudio/test/browser/workspaceFolderWriters.test.ts` 用源码级断言钉住。
+import './contrib/workspace/browser/workspaceFolderRouterImpl.js';
 import './contrib/worktree/browser/worktree.contribution.js'; // Service registration must come before files.contribution which imports worktree views
 import './contrib/files/browser/files.contribution.js'; // Unified Explorer: registers both Files + Worktree views
 import './contrib/sourceControl/browser/sourceControl.contribution.js'; // Custom Source Control panel with worktree integration

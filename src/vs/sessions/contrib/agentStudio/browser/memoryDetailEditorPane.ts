@@ -221,8 +221,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 			.md-filter-chip.active { background: var(--vscode-focusBorder, #3794ff); color: white; border-color: var(--vscode-focusBorder, #3794ff); }
 			.md-search { margin-left: auto; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 4px 10px; color: var(--vscode-input-foreground); font-size: 12px; width: 200px; outline: none; }
 			/* Memory list */
+			/* 滚动条统一由 sessions 全局样式提供（此处不再单独定义宽度/颜色） */
 			.md-list { flex: 1; overflow-y: auto; padding: 12px 20px; }
-			.md-list::-webkit-scrollbar { width: 6px; } .md-list::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.3); border-radius: 3px; }
 			/* Memory card */
 			.md-card { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
 			.md-card-header { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid rgba(128,128,128,0.06); cursor: pointer; }
@@ -246,7 +246,6 @@ export class MemoryDetailEditorPane extends EditorPane {
 			.md-content-box { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; }
 			.md-card.expanded .md-content-box { max-height: 500px; }
 			.md-content { padding: 12px 14px; max-height: 440px; overflow-y: auto; font-size: 13px; line-height: 1.6; color: var(--vscode-foreground); }
-			.md-content::-webkit-scrollbar { width: 4px; } .md-content::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.2); border-radius: 2px; }
 			/* markdown */
 			.md-content h1 { font-size: 16px; font-weight: 600; margin: 8px 0 4px; }
 			.md-content h2 { font-size: 14px; font-weight: 600; margin: 8px 0 4px; }

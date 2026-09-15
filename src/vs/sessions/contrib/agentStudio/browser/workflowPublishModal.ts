@@ -141,9 +141,7 @@ export class WorkflowPublishModal extends Disposable {
 	padding: 18px 20px; overflow-y: auto; flex: 1;
 	display: flex; flex-direction: column; gap: 16px;
 }
-.wpm-body::-webkit-scrollbar { width: 6px; }
-.wpm-body::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, #45475a); border-radius: 3px; }
-.wpm-body::-webkit-scrollbar-track { background: transparent; }
+/* 滚动条统一由 sessions 全局样式提供（.wpm-body 不再单独定义） */
 
 /* Preview Card */
 .wpm-preview {

@@ -638,21 +638,17 @@ export class PresetAgentViewPane extends ViewPane {
 		roleEl.textContent = preset.role;
 		body.appendChild(roleEl);
 
-		// Skill chips (always visible, compact)
-		if ((preset.skills?.length ?? 0) > 0) {
-			const skillsEl = $('div.preset-skills');
-			for (const skill of preset.skills!.slice(0, 3)) {
-				const chip = $('span.skill-chip');
-				chip.textContent = skill;
-				skillsEl.appendChild(chip);
-			}
-			if ((preset.skills?.length ?? 0) > 3) {
-				const more = $('span.skill-chip');
-				more.textContent = `+${(preset.skills?.length ?? 0) - 3}`;
-				more.classList.add('more');
-				skillsEl.appendChild(more);
-			}
-			body.appendChild(skillsEl);
+		// ★★ [Saros] 技能**不再逐条铺 chip** ✗ —— 原来会换行成两排、还带 `+N` 角标，
+		// 把卡片撑到 ~110px（与 mockup 的「精简 item」不符 ✗）。
+		// 改为在第 2 行末尾追加**计数** ⇒ 卡片固定两行（~48px ✓，与
+		// `.codebuddy/mockups/agent-preset-item.html` 的 After 一致 ✓）。
+		// 具体技能明细放到 hover 提示里（不占版面 ✓）。
+		const skillCount = preset.skills?.length ?? 0;
+		if (skillCount > 0) {
+			const caps = $('span.preset-caps');
+			caps.textContent = ` · ${skillCount} 项能力`;
+			caps.title = preset.skills!.join('、');
+			roleEl.appendChild(caps);
 		}
 		card.appendChild(body);
 

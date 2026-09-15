@@ -27,8 +27,6 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { ICodebaseGraphService, IClassHierarchyNode } from '../codebaseGraphService.js';
-import { URI } from '../../../../../base/common/uri.js';
-import { joinPath } from '../../../../../base/common/resources.js';
 import { ITextEditorOptions } from '../../../../../platform/editor/common/editor.js';
 
 type Direction = 'bases' | 'derived' | 'both';
@@ -200,18 +198,17 @@ export class ClassHierarchyViewPane extends ViewPane {
 
 	private async _openNode(node: IClassHierarchyNode): Promise<void> {
 		const g = node.node as any;
-		if (!g.filePath || !g.startLine) { return; }
-		const roots = this._graphService.getProjectRoots();
-		const root = roots[g.project ?? '_default'];
-		if (!root) { return; }
-		const uri = joinPath(URI.file(root), g.filePath);
-		const line = Math.max(0, g.startLine - 1);
+		// 2026-09-15：统一走 service 级解析器（root 三级回退 + 行号缺省 + 未命中告警）。
+		// 原实现 `if (!g.filePath || !g.startLine) return;` + 单 root —— 与 Find Symbol 同族的静默失败
+		// （本视图的跳转入口就是**双击**，正是用户报障的形态）。
+		const loc = await this._graphService.resolveNodeLocation(g);
+		if (!loc) { return; }
 		const options: ITextEditorOptions = {
-			selection: { startLineNumber: line + 1, startColumn: 1, endLineNumber: line + 1, endColumn: 1 },
+			selection: { startLineNumber: loc.line, startColumn: 1, endLineNumber: loc.line, endColumn: 1 },
 			revealIfOpened: true,
 			pinned: false,
 		};
-		await this._editorService.openEditor({ resource: uri, options });
+		await this._editorService.openEditor({ resource: loc.uri, options });
 	}
 
 	override dispose(): void {

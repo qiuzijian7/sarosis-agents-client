@@ -598,11 +598,39 @@ export class CodeApplication extends Disposable {
 
 		// Git execution handler: allows renderer processes to execute git commands
 		// via the main process (which has access to child_process).
-		validatedIpcMain.handle('vscode:execGit', async (event, cwd: string, args: string[]) => {
+		//
+		// ★ 2026-09-15 新增两个可选参数：
+		//
+		// ① `env` —— **白名单**环境变量（目前仅 `GIT_INDEX_FILE`）。
+		//    用途：worktree checkpoint 需要「用**隔离索引**快照工作树」：
+		//    `git add -A` + `write-tree` 必须写到**另一个**索引文件，否则 `add -A`
+		//    会把用户所有改动都 stage 掉（改坏真实暂存区）。
+		//    为什么白名单而非任意 env：这是 renderer → main 的通道，只放行确实需要的键，
+		//    避免变成通用的「设置任意环境变量」能力。
+		//
+		// ② `timeoutMs` —— 覆盖默认 30s，**钳制在 [1s, 600s]**。
+		//    必要性（实测）：`add -A` 用全新索引时必须**逐文件**计算 hash 才能与旧索引比较，
+		//    大仓（本仓 src/vs 规模）可能超过 30s；`git worktree add` 在大仓上同样可能超时
+		//    （上游 agentHost 给的是 180s，见 `agentHostGitService.ts` 的 `_runGit` 调用）。
+		//    超时过短会把**本来会成功**的操作杀掉，并留下半成品。
+		const GIT_ENV_WHITELIST = new Set(['GIT_INDEX_FILE']);
+		validatedIpcMain.handle('vscode:execGit', async (event, cwd: string, args: string[], env?: Record<string, string>, timeoutMs?: number) => {
+			const extraEnv: Record<string, string> = {};
+			if (env && typeof env === 'object') {
+				for (const key of Object.keys(env)) {
+					if (GIT_ENV_WHITELIST.has(key) && typeof env[key] === 'string') {
+						extraEnv[key] = env[key];
+					}
+				}
+			}
+			const effectiveTimeoutMs = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs)
+				? Math.min(600_000, Math.max(1_000, timeoutMs))
+				: 30_000;
+
 			return new Promise<{ success: boolean; stdout: string; stderr: string; exitCode: number }>((resolve) => {
 				const child = spawn('git', args, {
 					cwd,
-					env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+					env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...extraEnv },
 					windowsHide: true,
 				});
 
@@ -610,15 +638,16 @@ export class CodeApplication extends Disposable {
 				let stderr = '';
 				let settled = false;
 
-				// Timeout: kill the process after 30 seconds to prevent indefinite hanging
-				// (e.g. git waiting for auth, network issues with remote refs)
+				// Timeout: kill the process to prevent indefinite hanging
+				// (e.g. git waiting for auth, network issues with remote refs).
+				// 默认 30s；调用方可通过第 5 个参数放宽（见上方 `effectiveTimeoutMs`）。
 				const timeoutHandle = setTimeout(() => {
 					if (!settled) {
 						settled = true;
 						try { child.kill('SIGKILL'); } catch { /* ignore */ }
-						resolve({ success: false, stdout, stderr: stderr + '\n[timeout: git process killed after 30s]', exitCode: -1 });
+						resolve({ success: false, stdout, stderr: stderr + `\n[timeout: git process killed after ${effectiveTimeoutMs}ms]`, exitCode: -1 });
 					}
-				}, 30000);
+				}, effectiveTimeoutMs);
 
 				child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
 				child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });

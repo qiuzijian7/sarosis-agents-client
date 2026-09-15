@@ -107,6 +107,14 @@ export const enum WorktreeCommands {
 	Remove = 'sessions.worktree.remove',
 	Prune = 'sessions.worktree.prune',
 	Reset = 'sessions.worktree.reset',
+	/** ★ 2026-09-15：`git worktree lock` —— 保护 worktree 不被 `prune` 回收。 */
+	Lock = 'sessions.worktree.lock',
+	/** ★ 2026-09-15：解除 `lock`。 */
+	Unlock = 'sessions.worktree.unlock',
+	/** ★ 2026-09-15：扫描并清理陈旧 worktree / 孤儿分支（**先列候选再确认**，不自动删）。 */
+	Cleanup = 'sessions.worktree.cleanup',
+	/** ★ 2026-09-15：从该 worktree 的 checkpoint 列表里选一个回滚（先列后确认）。 */
+	RollbackCheckpoint = 'sessions.worktree.rollbackCheckpoint',
 }
 
 export const enum WorktreeContextKeys {
@@ -116,6 +124,98 @@ export const enum WorktreeContextKeys {
 	WorktreeIsDetached = 'sessions.worktree.isDetached',
 	WorktreeIsLocked = 'sessions.worktree.isLocked',
 	WorktreeIsPrunable = 'sessions.worktree.isPrunable',
+}
+
+/**
+ * ★ 本仓自建 worktree 分支的命名空间。
+ *
+ * `makeWorktreeInfo()` 建的分支默认是 `<前缀><slug>`。提成常量是因为它曾经**漂移过**：
+ * `removeWorktree()` 里删分支时写死了另一个前缀（`opencode/<name>`），
+ * 于是分支从来没被删掉过（只增不减）。清理「孤儿分支」也必须用同一常量，
+ * 否则又会扫错集合。
+ */
+export const WORKTREE_BRANCH_PREFIX = 'worktree/';
+
+// ─── Cleanup（陈旧 worktree / 孤儿分支）─────────────────────────────────────
+
+/** 清理候选的种类。 */
+export type WorktreeCleanupKind = 'stale-worktree' | 'orphan-branch';
+
+/**
+ * 一条**清理候选**。
+ *
+ * ⚠ 这是**只读扫描**的结果，不代表已经被删除 —— 删除必须由用户确认后单独触发。
+ * 本仓的 worktree 是用户长期资产（不是 hermes 那种一次性的），按龄自动删会销毁用户工作。
+ */
+export interface IWorktreeCleanupCandidate {
+	readonly kind: WorktreeCleanupKind;
+	/** worktree 目录（仅 `stale-worktree`）。 */
+	readonly path?: string;
+	/** 分支名（两种 kind 都可能有）。 */
+	readonly branch?: string;
+	/** 目录最后修改时间（ms epoch），用于展示「多久没动过」。 */
+	readonly lastModifiedMs?: number;
+	/** 被列为候选的**理由**（直接展示给用户，必须能自解释）。 */
+	readonly reason: string;
+}
+
+export interface IWorktreeCleanupOptions {
+	/** 超过这个时长未被修改的 worktree 才列为候选。默认 14 天。 */
+	readonly staleAfterMs?: number;
+}
+
+/** 清理结果：成功与失败分开返回，避免「部分失败」被吞掉。 */
+export interface IWorktreeCleanupResult {
+	readonly removed: readonly string[];
+	readonly failed: readonly { readonly target: string; readonly error: string }[];
+}
+
+/** `listCleanupCandidates()` 的默认陈旧阈值：14 天。 */
+export const DEFAULT_STALE_WORKTREE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * ★ 2026-09-15：创建 worktree 时是否把新分支推到 `origin`。
+ *
+ * ── 为什么默认 **false** ──────────────────────────────────────────────
+ * 原实现无条件 `git push -u origin <branch>`。但 worktree 的定位是**实验性隔离**：
+ *   · 推分支是**远端可见的副作用**（团队成员会看到一堆 `worktree/*` 分支）；
+ *   · 可能**触发 CI**（按分支 push 触发的流水线会被这些实验分支反复打爆）；
+ *   · 而"想分享/备份"是少数场景，且用户随时可以自己 push。
+ * ⇒ 远端副作用应当**显式选择**（opt-in），而不是创建 worktree 的默认行为。
+ * 与上游 agentHost 一致：那边**从不 push**（只 `worktree add`）。
+ */
+export const WORKTREE_PUSH_BRANCH_ON_CREATE_SETTING = 'sessions.worktree.pushBranchOnCreate';
+
+/** 见 {@link WORKTREE_PUSH_BRANCH_ON_CREATE_SETTING}：默认不推送。 */
+export const DEFAULT_WORKTREE_PUSH_BRANCH_ON_CREATE = false;
+
+/**
+ * ★ 2026-09-15：创建 worktree 时，新分支的**起点**。
+ *
+ * - `current`（**默认**）：沿用 git 默认 —— 从主仓**当前 HEAD** 建分支。
+ *   保留既有行为（不制造惊喜），且"从我正在做的事继续"通常正是用户想要的。
+ * - `default`：从 `origin/<默认分支>`（无远端时退回本地默认分支）建 —— 与上游 agentHost 一致
+ *   （`copilotAgent` 用 `origin/<base>` 作 start point）。
+ *
+ * ⚠ 为什么要做成可配置：两种语义都说得通，但**不能同时**成立 ——
+ *   · 从当前 HEAD 建 ⇒ 新 worktree 会带上当前分支的未推送状态；
+ *   · `resetWorktree()` 却是重置到**默认分支** ⇒ 创建与重置的基准不一致。
+ * 让用户显式选，比替用户猜好。
+ */
+export type WorktreeBaseBranchMode = 'current' | 'default';
+
+/** 设置键：新分支起点。 */
+export const WORKTREE_BASE_BRANCH_SETTING = 'sessions.worktree.baseBranchOnCreate';
+
+/** 见 {@link WORKTREE_BASE_BRANCH_SETTING}：默认保留 git 原行为（当前 HEAD）。 */
+export const DEFAULT_WORKTREE_BASE_BRANCH: WorktreeBaseBranchMode = 'current';
+
+/**
+ * 把设置值收敛成合法模式。**未知值一律回落默认**（不抛错）——
+ * 同步/创建路径不该因为一个拼错的设置而失败。
+ */
+export function resolveWorktreeBaseBranchMode(raw: unknown): WorktreeBaseBranchMode {
+	return raw === 'default' ? 'default' : DEFAULT_WORKTREE_BASE_BRANCH;
 }
 
 // ─── Two-phase creation (opencode pattern) ──────────────────────────────────

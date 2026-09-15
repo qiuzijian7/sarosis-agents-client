@@ -2129,10 +2129,24 @@ private readonly _sandboxGuard: SandboxGuard;
 		const allTools: IToolDefinition[] = [];
 		for (const provider of allProviders) {
 			if (!provider) { continue; }
-			if ('getAllToolDefinitions' in provider && typeof (provider as any).getAllToolDefinitions === 'function') {
-				allTools.push(...await (provider as any).getAllToolDefinitions(agentId));
-			} else {
-				allTools.push(...await provider.listTools(agentId));
+			// 2026-09-15 加固：单 provider 挂住不得拖死整个工具目录
+			//（原实现既无 try/catch 也无超时 ⇒ 与本次卡死事故同一类隐患）。
+			try {
+				if ('getAllToolDefinitions' in provider && typeof (provider as any).getAllToolDefinitions === 'function') {
+					allTools.push(...await this._withTimeout<IToolDefinition[]>(
+						(provider as any).getAllToolDefinitions(agentId),
+						AgentOSService.PROVIDER_LIST_TOOLS_TIMEOUT_MS,
+						`${provider.id}.getAllToolDefinitions`,
+					));
+				} else {
+					allTools.push(...await this._withTimeout(
+						provider.listTools(agentId),
+						AgentOSService.PROVIDER_LIST_TOOLS_TIMEOUT_MS,
+						`${provider.id}.listTools`,
+					));
+				}
+			} catch (err) {
+				this._logService.warn(`[AgentOS] listAllToolsWithState: provider "${provider.id}" failed/timeout — skipped`, err);
 			}
 		}
 
@@ -2995,8 +3009,68 @@ private readonly _sandboxGuard: SandboxGuard;
 		return ctrl.signal;
 	}
 
+	/** listTools 单 provider 硬超时（2026-09-15 卡死事故加固，见下方 preflight 注释）。 */
+	private static readonly PROVIDER_LIST_TOOLS_TIMEOUT_MS = 5000;
+
+	/**
+	 * 给「可能永不 settle 的 provider 调用」加硬超时。
+	 * 超时即 reject，由调用方 catch 记日志 —— 目的：绝不再出现「静默永久 await」。
+	 * （2026-09-15 实测：agent 在 iter=10 决定调用 2 个 search_code 后永久静默 ——
+	 *  渲染进程 JS 空闲、日志停在 executor 的 Diag 行、`Executing tool` 从未出现，
+	 *  整段窗口**没有任何日志**，导致卡死无法定位。）
+	 */
+	private _withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			const handle = setTimeout(() => reject(new Error(`timeout after ${ms}ms (${label})`)), ms);
+			promise.then(
+				value => { clearTimeout(handle); resolve(value); },
+				err => { clearTimeout(handle); reject(err); },
+			);
+		});
+	}
+
+	/**
+	 * 收集所有 provider 的工具定义（**单 provider 硬超时 + 全部留痕**）。
+	 *
+	 * 串行（`_executeToolCalls`）与并行（`_executeToolCallsParallelStreaming`）两条执行路径
+	 * 共用本方法 —— 它们原先各自持有一份「`await provider.listTools()` + 空 catch」的
+	 * 静默副本，任一 provider 不 settle 就会永久挂住且零日志（2026-09-15 实测事故）。
+	 */
+	private async _collectToolDefinitions(agentId: string, phase: string): Promise<IToolDefinition[]> {
+		const startedAt = Date.now();
+		const providers = this._slotRegistry.getToolProviders();
+		const out: IToolDefinition[] = [];
+		for (const provider of providers) {
+			const providerStartedAt = Date.now();
+			try {
+				const tools = await this._withTimeout(
+					provider.listTools(agentId),
+					AgentOSService.PROVIDER_LIST_TOOLS_TIMEOUT_MS,
+					`${provider.id}.listTools`,
+				);
+				out.push(...tools);
+				const elapsed = Date.now() - providerStartedAt;
+				// 正常 provider 是同步返回（<5ms）⇒ 只在慢调用时打 info，避免每轮刷屏
+				if (elapsed > 200) {
+					this._logService.info(`[AgentOS] listTools "${provider.id}": ${tools.length} tool(s) (${elapsed}ms)`);
+				}
+			} catch (err) {
+				// 超时/异常 ⇒ 跳过该 provider，但**必须留痕**：旧的静默 catch 正是
+				// 「卡死时一条日志都没有」的根因之一。
+				this._logService.warn(`[AgentOS] listTools "${provider.id}" failed/timeout after ${Date.now() - providerStartedAt}ms — provider skipped`, err);
+			}
+		}
+		this._logService.info(`[AgentOS] tool preflight (${phase}) done: ${providers.length} provider(s) → ${out.length} tool definition(s) (${Date.now() - startedAt}ms)`);
+		return out;
+	}
+
 	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext, agentSessionId?: string): Promise<Array<{ toolCallId: string; content: any; success: boolean; metadata?: Record<string, unknown> }>> {
 		const results: Array<{ toolCallId: string; content: any; success: boolean; metadata?: Record<string, unknown> }> = [];
+
+		// ★ 面包屑（2026-09-15）：这是「executor 决定工具调用」→「逐条执行」之间**第一段**
+		// 可观测信号。若下次卡死时看不到本行 ⇒ 卡点在 executor 侧（Diag 行之后、调用本方法
+		// 之前），与这里的 provider preflight 无关 —— 一眼可判，不必再全链路排查。
+		this._logService.info(`[AgentOS] _executeToolCalls: begin — ${toolCalls.length} call(s) [${toolCalls.map(tc => tc.name).join(',')}] agentId=${agentId}`);
 
 		// ─── Dashboard 统计：工具调用计数 ──
 		// P8: 同时收集文件路径用于下一轮 enrich
@@ -3028,14 +3102,9 @@ private readonly _sandboxGuard: SandboxGuard;
 		// 也能真正复位。
 		this._propagateParentWorktree(worktreePath);
 
-		// Pre-collect all available tools and build lookup structures
-		const allAvailableTools: IToolDefinition[] = [];
-		for (const provider of this._slotRegistry.getToolProviders()) {
-			try {
-				const tools = await provider.listTools(agentId);
-				allAvailableTools.push(...tools);
-			} catch { /* ignore */ }
-		}
+		// Pre-collect all available tools and build lookup structures.
+		// 2026-09-15：改为带「单 provider 硬超时 + 留痕」的共享实现（见 _collectToolDefinitions）。
+		const allAvailableTools: IToolDefinition[] = await this._collectToolDefinitions(agentId, 'serial');
 		const availableToolNames = allAvailableTools.map(t => t.name);
 		const validNameSet = buildValidToolNameSet(allAvailableTools);
 		const schemaMap = buildToolSchemaMap(allAvailableTools);
@@ -3327,7 +3396,12 @@ private readonly _sandboxGuard: SandboxGuard;
 				for (const provider of toolProviders) {
 					if (provider === _execKnown) { continue; }
 					try {
-						const tools = await provider.listTools(agentId);
+						// 2026-09-15 加固：单 provider 挂住不得静默拖死工具执行（加硬超时）
+						const tools = await this._withTimeout(
+							provider.listTools(agentId),
+							AgentOSService.PROVIDER_LIST_TOOLS_TIMEOUT_MS,
+							`${provider.id}.listTools`,
+						);
 						if (tools.some(t => t.name === targetToolName)) {
 							// 使用带超时保护的执行
 							const result: IToolResult = await executeWithRetryAndTimeout(
@@ -3416,19 +3490,17 @@ private readonly _sandboxGuard: SandboxGuard;
 	 * Skipped entries (validation failures) are yielded synchronously up
 	 * front so the UI can mark them done immediately.
 	 */ public async *_executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext, agentSessionId?: string): AsyncGenerator<{ toolCallId: string; content: any; success: boolean; metadata?: Record<string, unknown> }, void, unknown> {
+		// ★ 面包屑（2026-09-15）：并行路径的「开始执行」信号，作用同串行路径的同名日志。
+		this._logService.info(`[AgentOS] _executeToolCallsParallelStreaming: begin — ${toolCalls.length} call(s) [${toolCalls.map(tc => tc.name).join(',')}] agentId=${agentId}`);
+
 		// v17: same as the serial path — push the worktree down to tool providers
 		// (e.g. BuiltinToolProvider) so sub-agents inherit it.
 		// 无条件调用（含 undefined 复位），理由同串行路径，见 _propagateParentWorktree。
 		this._propagateParentWorktree(worktreePath);
 
-		// Pre-collect all available tools and build lookup structures
-		const allAvailableTools: IToolDefinition[] = [];
-		for (const provider of this._slotRegistry.getToolProviders()) {
-			try {
-				const tools = await provider.listTools(agentId);
-				allAvailableTools.push(...tools);
-			} catch { /* ignore */ }
-		}
+		// Pre-collect all available tools and build lookup structures.
+		// 2026-09-15：改为带「单 provider 硬超时 + 留痕」的共享实现（见 _collectToolDefinitions）。
+		const allAvailableTools: IToolDefinition[] = await this._collectToolDefinitions(agentId, 'parallel');
 		const availableToolNames = allAvailableTools.map(t => t.name);
 		const validNameSet = buildValidToolNameSet(allAvailableTools);
 		const schemaMap = buildToolSchemaMap(allAvailableTools);
@@ -3625,7 +3697,12 @@ private readonly _sandboxGuard: SandboxGuard;
 				// 掩盖真正的执行错误——对齐串行路径 4483-4497 的修复）。
 				let tools: IToolDefinition[];
 				try {
-					tools = await provider.listTools(agentId);
+					// 2026-09-15 加固：加硬超时（超时按「此 provider 不可用」处理，与原 catch 语义一致）
+					tools = await this._withTimeout(
+						provider.listTools(agentId),
+						AgentOSService.PROVIDER_LIST_TOOLS_TIMEOUT_MS,
+						`${provider.id}.listTools`,
+					);
 				} catch {
 					continue;
 				}

@@ -365,13 +365,7 @@ export class TasksViewPane extends ViewPane {
 	overflow-x: hidden;
 	padding: 2px 0;
 }
-.tasks-list-scroll::-webkit-scrollbar {
-	width: 4px;
-}
-.tasks-list-scroll::-webkit-scrollbar-thumb {
-	background: var(--vscode-scrollbarSlider-background);
-	border-radius: 2px;
-}
+/* 滚动条统一由 sessions 全局样式提供（.tasks-list-scroll 不再单独定义） */
 
 .tasks-count {
 	font-size: 10px;

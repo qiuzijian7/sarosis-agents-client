@@ -695,6 +695,22 @@ export interface Workspace {
 	 * 区别于常规工作区目录（relatedFolders）与 ~/.saros 内部目录。
 	 */
 	sandboxRoots?: string[];
+	/**
+	 * ★ [Saros] 该工作区来源的 `.code-workspace` **文件**路径（若来自文件）。
+	 *
+	 * ── 为什么要单独存 ────────────────────────────────────────────────
+	 * `path` 被设计为**目录**（folders[0]，为了让 `.sarosworkspace` 落在真实目录里），
+	 * 于是「这个工作区源自哪个 .code-workspace 文件」这条信息就丢了 —— 但它很关键：
+	 *
+	 *   · 该文件里的 `settings`（`files.exclude` / `search.exclude` / …）只有当
+	 *     **窗口的工作区就是这个文件**时才会原生生效（2026-09-15 实测：窗口是
+	 *     FOLDER 态时 `node_modules`/`out`/`.codebuddy` 全都可见）；
+	 *   · 切换工作区时要用 `IWorkspaceEditingService.enterWorkspace(该文件)`
+	 *     原生进入（**不重载窗口**），比纯内存替换更完整。
+	 *
+	 * 持久化在 `workspaces.json`（schemaless JSON，新增字段向后兼容）。
+	 */
+	codeWorkspacePath?: string;
 }
 
 /**
@@ -728,6 +744,21 @@ export function migrateWorkspace(raw: any): Workspace {
 	if (!Array.isArray(raw.agents)) {
 		raw.agents = [];
 	}
+
+	// ★★ P0 身份回填（2026-09-15）：历史记录把 `.code-workspace` **文件**路径存在了 `path` 里
+	// （见 `Workspace.codeWorkspacePath` 的注释：`path` 后来被定义为目录）。
+	// 这里把那条信息**显式化**到 `codeWorkspacePath`，让「工作区身份」在数据层就可见。
+	//
+	// ⚠ 刻意**不**动 `path`、也不读文件解析 folders：
+	//   · 本函数是**纯归一化**（读取期、无 I/O），读文件解析会把纯函数变成异步 + 有副作用；
+	//   · 改 `path` 会破坏既有引用（`relatedFolders` 的基准目录、`.sarosworkspace` 位置）。
+	// 匹配侧另有 legacy 回落（`recordCodeWorkspacePath()`），所以**不做回填也不会错**，
+	// 回填只是让数据自解释 + 后续写入自然带上该字段。
+	if (!raw.codeWorkspacePath && typeof raw.path === 'string'
+		&& raw.path.toLowerCase().endsWith('.code-workspace')) {
+		raw.codeWorkspacePath = raw.path;
+	}
+
 	return raw as Workspace;
 }
 

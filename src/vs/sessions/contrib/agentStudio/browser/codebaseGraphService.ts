@@ -50,7 +50,7 @@ import { linkConfigToCode } from './codebaseGraphConfigLink.js';
 import { TraceIngester } from './codebaseGraphTraces.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher, CodebaseGraphChangeEvent } from './codebaseGraphWatcher.js';
 import { CodebaseGraphIncrementalIndexer } from './codebaseGraphIncremental.js';
-import { shouldRecordHashAfterParse, EXTENSION_TO_WASM_LANG, AST_TO_NODE_TYPE } from '../common/codebaseIndexDefaults.js';
+import { shouldRecordHashAfterParse, EXTENSION_TO_WASM_LANG, AST_TO_NODE_TYPE, planForeignProjectPrune } from '../common/codebaseIndexDefaults.js';
 import { CodebaseGraphExcludeResolver } from './codebaseGraphExcludeResolver.js';
 import { CodebaseGraphScanner } from './codebaseGraphScanner.js';
 import { CodebaseGraphParserPool } from './codebaseGraphParserPool.js';
@@ -131,6 +131,22 @@ export interface IIndexResult {
 		nodesExtracted: number;
 		edgesExtracted: number;
 	};
+	/**
+	 * 本次索引的 root（2026-09-15）。
+	 *
+	 * ★ 多 folder 工作区下**必须**是「刚索引的那个 folder」——订阅方
+	 * （`codebaseGraphBootstrap` 的 `onDidIndexComplete`）据此决定刷新哪个 root 的 watcher；
+	 * 它原先用 `folders[0]`（`_primaryFolder()`）⇒ 索引 folder B 却只刷新 folder A 的 watcher，
+	 * B 的排除集（`.cbmignore` 刚被写入）永不生效（与 `_onWatcherChange` / `_resolveActiveProject`
+	 * 同一条「用 folders[0] 代替事件所属 root」的教训）。
+	 */
+	rootPath?: string;
+	/**
+	 * 全量 / 增量（2026-09-15）。
+	 * 增量由 **watcher 自己**触发（watcher 必然已存在、排除集未变）⇒ 订阅方**不需要**刷新 watcher，
+	 * 否则每轮增量都会重跑一次 `_excludeResolver.resolve()` + 替换 root 条目 + 两条日志。
+	 */
+	kind?: 'full' | 'incremental';
 }
 
 /** 单文件索引覆盖率状态（对标 C 的 parse_partial/skipped/not_indexed） */
@@ -295,6 +311,22 @@ export interface ICodebaseGraphService {
 		namePattern?: string;
 		label?: string;
 		filePattern?: string;
+		/**
+		 * 需要排除的节点类型（**非符号**容器/桩节点，2026-09-15）。
+		 * 约定值见 `common/codebaseIndexDefaults.ts` 的 `NON_SYMBOL_NODE_TYPES`。
+		 * 语义：**下推到 SQL**（否则 `LIMIT` 已先把符号挤掉，见 `searchNodes` 注释），
+		 * 内存回退路径与 renderer 后置过滤再各兜一层。比较大小写不敏感。
+		 */
+		excludeTypes?: readonly string[];
+		/**
+		 * 只匹配 `name` 列（**符号名检索**，2026-09-15）。
+		 *
+		 * 为什么需要：QN = `<相对文件路径>::<符号名>`，不限定字段时搜 `test` 会命中 QN 里的
+		 * `…/classifyLLM.test.ts` ⇒ Find Symbol 返回 `MockClassifyLLM`（用户截图报障）。
+		 * 语义：下推到 SQL（`nameOnly` 时**跳过 FTS 直接走 `name LIKE`** —— FTS 是词元匹配，
+		 * `testHelper` 会被漏掉），内存路径同口径过滤，renderer 再兜一层。
+		 */
+		nameOnly?: boolean;
 		limit?: number;
 		offset?: number;
 		sortBy?: 'name' | 'inDegree' | 'outDegree' | 'degree';
@@ -316,6 +348,22 @@ export interface ICodebaseGraphService {
 		namePattern?: string;
 		label?: string;
 		filePattern?: string;
+		/**
+		 * 需要排除的节点类型（**非符号**容器/桩节点，2026-09-15）。
+		 * 约定值见 `common/codebaseIndexDefaults.ts` 的 `NON_SYMBOL_NODE_TYPES`。
+		 * 语义：**下推到 SQL**（否则 `LIMIT` 已先把符号挤掉，见 `searchNodes` 注释），
+		 * 内存回退路径与 renderer 后置过滤再各兜一层。比较大小写不敏感。
+		 */
+		excludeTypes?: readonly string[];
+		/**
+		 * 只匹配 `name` 列（**符号名检索**，2026-09-15）。
+		 *
+		 * 为什么需要：QN = `<相对文件路径>::<符号名>`，不限定字段时搜 `test` 会命中 QN 里的
+		 * `…/classifyLLM.test.ts` ⇒ Find Symbol 返回 `MockClassifyLLM`（用户截图报障）。
+		 * 语义：下推到 SQL（`nameOnly` 时**跳过 FTS 直接走 `name LIKE`** —— FTS 是词元匹配，
+		 * `testHelper` 会被漏掉），内存路径同口径过滤，renderer 再兜一层。
+		 */
+		nameOnly?: boolean;
 		limit?: number;
 		offset?: number;
 		sortBy?: 'name' | 'inDegree' | 'outDegree' | 'degree';
@@ -363,6 +411,19 @@ export interface ICodebaseGraphService {
 	deleteProject(name: string): void;
 	/** project → 索引根路径（rootPath）映射，来自 _rootProjectMap 反转；供工具输出把项目相对 filePath 还原为绝对路径。 */
 	getProjectRoots(): Record<string, string>;
+
+	/**
+	 * 把图谱节点的 root 相对 `filePath` 解析为**真实存在**的绝对 URI + 1-based 行号。
+	 *
+	 * 所有「从图谱节点跳到源码」的入口（Find Symbol / Class Hierarchy / Open File /
+	 * Goto Implementation / 语言特性 provider）都必须走这里，不要再各自拼串。
+	 *
+	 * @param node       至少要有 `filePath`；`startLine` 缺失时行号回落 1
+	 *                   （图谱里 `label='file'` 的 stub 节点本来就没有行号）
+	 * @param opts.quiet true = 未命中不告警（语言特性 provider 逐节点探测，跳过属正常路径）
+	 * @returns 命中的 `{ uri, line }`；索引陈旧 / 文件已删时返回 undefined
+	 */
+	resolveNodeLocation(node: { name?: string; filePath?: string; project?: string; startLine?: number }, opts?: { quiet?: boolean }): Promise<{ uri: URI; line: number } | undefined>;
 
 	detectChanges(opts?: { since?: string; baseBranch?: string; impactAnalysis?: boolean; scope?: string; depth?: number }): Promise<any>;
 
@@ -811,6 +872,16 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		this._register(this._graphWatcher.onDidChange(e =>
 			void this._onWatcherChange(e).catch(err =>
 				this._logService.error('[CodebaseGraph]', 'Watcher change handler failed:', err))));
+
+		// 工作区 folder 集合变化 ⇒ 丢弃不属于当前工作区的项目数据（2026-09-15）。
+		// 背景：工作区切换走 `replaceWorkspaceFoldersInMemory()`（**不 reload renderer**，见
+		// WorkspaceSwitch 日志），而本服务是**窗口内单例** ⇒ 旧工作区的图会永久驻留内存
+		// （实测同窗口 3 个工作区共 1,119,421 节点：S1Game 34 万 + UE5EA 78 万 + 本仓），
+		// 既污染检索口径（`_projectName` / 项目收敛），也是「UI 卡死」的既有根因。
+		// 注：并发 loadGraphMerge 的「迟到者」由 `_loadGraphMergeImpl` 的完成守卫单独兜住。
+		this._register(this._workspaceService.onDidChangeWorkspaceFolders(() => {
+			this._pruneForeignProjects('workspace folders changed');
+		}));
 	}
 
 	/**
@@ -1028,15 +1099,23 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private async _loadGraphFromSqlite(): Promise<boolean> {
 		if (!this._sqliteBackendEnabled) { return false; }
 		const store = this._graph.store;
-		const project = this._projectName;
+		// 用「当前工作区项目」而不是 `_projectName`：后者可能被并发 merge 钉在别的工作区上
+		// （见 `_resolveActiveProject`），会让下面的空图守卫与节点归属判断全部错位。
+		const project = this._resolveActiveProject();
 
 		if (store.getNodeCount(project) > 0) { return true; }
 
 		const tStart = Date.now();
-		// 多 folder 支持：加载全部项目节点（不再限制当前项目）。
-		// 使 query_graph / trace_path / get_architecture 等内存工具也能跨项目工作。
+		// 多 folder 支持：加载当前工作区的**全部**项目（不限单项目，使 query_graph /
+		// trace_path / get_architecture 等内存工具能跨 folder 工作）。
+		// ⚠ 2026-09-15 修：旧实现直接 `listProjects()` **全量**加载 —— 主进程 SQLite 是跨工作区
+		// 共享的持久层，里面还留着历史工作区的项目（实测 S1Game 34 万 + UE5EA 78 万），
+		// 全灌进内存既污染检索，也是 UI 卡死的根因。现按当前工作区 folder 收敛。
 		const allProjects = await this._sqliteBackend.listProjects();
-		const projectsToLoad = allProjects.length > 0 ? allProjects.map(p => p.name) : [project];
+		const wsProjects = this._workspaceProjects();
+		const projectsToLoad = wsProjects.length > 0
+			? allProjects.map(p => p.name).filter(n => wsProjects.includes(n))
+			: [project];
 		const allNodes: GraphNode[] = [];
 		for (const p of projectsToLoad) {
 			const nodes = await this._sqliteBackend.getAllNodes(p);
@@ -1250,7 +1329,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		this._pendingCallEdges = [];
 
 		if (this._isIndexing) {
-			return { success: false, message: '索引正在进行中，请稍候...' };
+			return { success: false, message: '索引正在进行中，请稍候...', rootPath, kind: 'full' };
 		}
 
 		this._isIndexing = true;
@@ -1261,16 +1340,24 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			releaseLock = await this._lockIndex(rootPath);
 		} catch (lockErr) {
 			this._isIndexing = false;
-			return { success: false, message: lockErr instanceof Error ? lockErr.message : '索引已被锁定，请稍候...' };
+			return { success: false, message: lockErr instanceof Error ? lockErr.message : '索引已被锁定，请稍候...', rootPath, kind: 'full' };
 		}
 
 		try {
 		this._onDidIndexProgress.fire('▶ 开始索引工作区...');
 		// 多 folder：projectName 优先（每 folder 唯一），回退 subPath，再回退 basename，最后 '_default'。
-		this._projectName = config.projectName || config.subPath || this._basename(rootPath) || '_default';
-		this._rootProjectMap.set(this._normalizeRoot(rootPath), this._projectName);
+		//
+		// 2026-09-15：本轮索引的 project 捕获为**局部常量**，方法体内一律用它（不再读 `this._projectName`）。
+		// 原因：`_projectName` 是可变字段，而一轮全量索引要跑数分钟——期间 bootstrap 的
+		// `loadGraphMerge`（大图 10~40s）、工作区切换（`_pruneForeignProjects`）或 viewer 的
+		// `_autoDetectProjectName` 都可能把它改成别的工作区的项目 ⇒ 本轮的 post-pass / 文件哈希 /
+		// 落盘会按错误项目过滤：边被静默丢弃、制品内容错位（`_saveGraph` 的 sanity check 只能事后告警）。
+		// 注：helper 方法内部仍读该字段 ⇒ 由 `_setProjectNameUnlessIndexing()` 保证索引期间不被改写。
+		const projectName = config.projectName || config.subPath || this._basename(rootPath) || '_default';
+		this._projectName = projectName;
+		this._rootProjectMap.set(this._normalizeRoot(rootPath), projectName);
 		// P0 修复：解析产出的节点/边必须打上真实项目名，否则 post-passes 与按项目保存全部落空
-		this._graph.setActiveProject(this._projectName);
+		this._graph.setActiveProject(projectName);
 		this._indexCoverage = new Map(); // 重置逐文件覆盖率记录
 
 
@@ -1289,7 +1376,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			this._onDidIndexProgress.fire(`📁 找到 ${filesScanned} 个源文件`);
 
 			if (cts.token.isCancellationRequested) {
-				return { success: false, message: '索引已取消', duration: 0 };
+				return { success: false, message: '索引已取消', duration: 0, rootPath, kind: 'full' };
 			}
 
 		// 2. Parse files
@@ -1328,24 +1415,24 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			const langName = EXTENSION_TO_WASM_LANG[ext];
 			// 跳过文件也必须记录哈希——否则 watcher 每轮轮询都会把它们报为 "added"，
 			// 形成永不收敛的脏集（配合增量→重启 watcher→再触发 的循环，即每 30s 一次空增量）
-			if (!langName) { this._recordCoverage(relPath, 'skipped', `unsupported extension .${ext}`); await this._recordFileHash(this._projectName, relPath, filePath); continue; }
+			if (!langName) { this._recordCoverage(relPath, 'skipped', `unsupported extension .${ext}`); await this._recordFileHash(projectName, relPath, filePath); continue; }
 
 			// 主线程读取文件内容 (async I/O)
 			let source: string;
 			try {
 				const content = await this._fileService.readFile(URI.file(filePath));
 				source = content.value.toString();
-			} catch { this._recordCoverage(relPath, 'skipped', 'read failed'); await this._recordFileHash(this._projectName, relPath, filePath); continue; }
-				if (source.length > MAX_FILE_SIZE) { this._recordCoverage(relPath, 'skipped', `file too large (${source.length} > ${MAX_FILE_SIZE})`); await this._recordFileHash(this._projectName, relPath, filePath); continue; }
+			} catch { this._recordCoverage(relPath, 'skipped', 'read failed'); await this._recordFileHash(projectName, relPath, filePath); continue; }
+				if (source.length > MAX_FILE_SIZE) { this._recordCoverage(relPath, 'skipped', `file too large (${source.length} > ${MAX_FILE_SIZE})`); await this._recordFileHash(projectName, relPath, filePath); continue; }
 				// 跳过超长行文件（minified/生成代码会导致 tree-sitter 挂起）
-				if (source.indexOf('\n', 0) === -1 && source.length > 50000) { this._recordCoverage(relPath, 'skipped', 'single-line file > 50KB (minified?)'); await this._recordFileHash(this._projectName, relPath, filePath); continue; } // 单行超 50K
+				if (source.indexOf('\n', 0) === -1 && source.length > 50000) { this._recordCoverage(relPath, 'skipped', 'single-line file > 50KB (minified?)'); await this._recordFileHash(projectName, relPath, filePath); continue; } // 单行超 50K
 				// 快速检测最长行（只检查前 100 行，避免开销）
 				let maxLineLen = 0;
 				const lines = source.split('\n');
 				const checkLines = Math.min(lines.length, 100);
 				for (let li = 0; li < checkLines; li++) { if (lines[li].length > maxLineLen) { maxLineLen = lines[li].length; } }
 				// 防护类 skipped（永不可解析）必须记哈希——否则 watcher 每轮重报 added 翻烧饼
-				if (maxLineLen > MAX_LINE_LENGTH) { this._recordCoverage(relPath, 'skipped', `line too long (${maxLineLen} > ${MAX_LINE_LENGTH})`); await this._recordFileHash(this._projectName, relPath, filePath); continue; }
+				if (maxLineLen > MAX_LINE_LENGTH) { this._recordCoverage(relPath, 'skipped', `line too long (${maxLineLen} > ${MAX_LINE_LENGTH})`); await this._recordFileHash(projectName, relPath, filePath); continue; }
 
 				// 诊断日志：每 500 文件记录当前解析路径，便于定位卡死文件
 				if (idx % 500 === 0) {
@@ -1380,7 +1467,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 				// 记录文件哈希（mtime+size），供增量重索引分类使用。
 				// parse_error/timeout 不记（重试，见 _recordHashAfterParse）——否则失败固化。
-				await this._recordHashAfterParse(this._projectName, relPath, filePath, result.status);
+				await this._recordHashAfterParse(projectName, relPath, filePath, result.status);
 
 				if (idx % 50 === 0) {
 						const pct = Math.round(idx / filesScanned * 100);
@@ -1430,7 +1517,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			// 记录逐文件覆盖率（indexed/partial/parse_error/timeout/skipped）
 			this._recordCoverage(relPath, result.status, result.reason, result.nodes.length);
 			// 记录文件哈希（mtime+size），供增量重索引分类使用。parse_error/timeout 不记（重试）。
-			await this._recordHashAfterParse(this._projectName, relPath, filePath, result.status);
+			await this._recordHashAfterParse(projectName, relPath, filePath, result.status);
 			if (i > 0 && i % YIELD_INTERVAL === 0) {
 					await new Promise<void>(resolve => setTimeout(resolve, 0));
 				}
@@ -1485,13 +1572,13 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			if (enableExtended) {
 				this._onDidIndexProgress.fire('🧠 跨文件 LSP 类型推断...');
 				this._lspResolver = new LspCrossResolver();
-				this._lspResolver.buildDefIndex(this._graph.store, this._projectName);
+				this._lspResolver.buildDefIndex(this._graph.store, projectName);
 			}
 
 			// 6. Community detection (Leiden) — always run (used by get_architecture)
 			this._onDidIndexProgress.fire('🏘️ 社区检测 (Leiden)...');
 			try {
-				const leidenResult = await runMultiLevelLeiden(this._graph.store, this._projectName, 1.0, 5);
+				const leidenResult = await runMultiLevelLeiden(this._graph.store, projectName, 1.0, 5);
 				this._logService.info('[CodebaseGraph]', `Leiden: ${leidenResult.communities.size} communities`);
 			} catch (err: any) {
 				this._logService.debug('[CodebaseGraph]', `Leiden failed: ${err?.message || err}`);
@@ -1514,14 +1601,14 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				this._logService.info('[CodebaseGraph]', 'Post-index: config linking starting...');
 				try {
 					const configFileNodes = this._graph.store.getAllNodes().filter(n =>
-						n.project === this._projectName && n.filePath && (
+						n.project === projectName && n.filePath && (
 							n.filePath.endsWith('.env') || n.filePath.endsWith('.yaml') ||
 							n.filePath.endsWith('.yml') || n.filePath.endsWith('.toml') ||
 							n.filePath.endsWith('package.json') || n.filePath.endsWith('go.mod')
 						)
 					);
 					const configPaths = [...new Set(configFileNodes.map(n => n.filePath!).filter(Boolean))];
-					const configLinks = linkConfigToCode(this._graph.store, this._projectName, configPaths);
+					const configLinks = linkConfigToCode(this._graph.store, projectName, configPaths);
 					if (configLinks.length > 0) {
 						this._logService.info('[CodebaseGraph]', `Config link: ${configLinks.length} links`);
 					}
@@ -1553,9 +1640,11 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			// 若延迟任务稍后 firing 会重复写同一制品（且内容更旧或更新，竞态）。
 			this._cancelPendingSave(rootPath);
 			// 串行化：等待任何正在跑的落盘结束，避免两个 save 同时写同一个 .tmp 制品
+			// 2026-09-15：project 用本轮局部常量（原为 `this._projectName`，索引期间可能被
+			// 别的工作区的 merge 改写 ⇒ 制品内容错位甚至为空）。
 			this._savingGraph = this._savingGraph.then(
-				() => this._saveGraph(rootPath, this._projectName),
-				() => this._saveGraph(rootPath, this._projectName),
+				() => this._saveGraph(rootPath, projectName),
+				() => this._saveGraph(rootPath, projectName),
 			);
 			await this._savingGraph;
 
@@ -1566,7 +1655,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		if (this._sqliteBackendEnabled) {
 			this._onDidIndexProgress.fire('💾 同步到 SQLite 后端...');
 			try {
-				await this._syncGraphToSqlite();
+				// 显式传本轮 project（`_syncGraphToSqlite()` 缺省读 `this._projectName`，同上有被改写风险）
+				await this._syncGraphToSqlite(projectName);
 			} catch (err) {
 				this._logService.error('[CodebaseGraph]', 'SQLite sync failed:', err);
 			}
@@ -1580,6 +1670,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				message: `索引完成: ${filesScanned} 文件, ${nodesExtracted} 节点, ${edgesExtracted} 边`,
 				duration,
 				stats: { filesScanned, nodesExtracted, edgesExtracted },
+				rootPath,
+				kind: 'full',
 			};
 			this._onDidIndexProgress.fire(`✓ ${result.message} (${duration}s)`);
 			this._onDidIndexComplete.fire(result);
@@ -1590,7 +1682,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			const msg = cts.token.isCancellationRequested
 				? `索引已取消 (${duration}s)`
 				: `索引失败: ${err.message || String(err)}`;
-			const result: IIndexResult = { success: false, message: msg, duration };
+			const result: IIndexResult = { success: false, message: msg, duration, rootPath, kind: 'full' };
 			this._onDidIndexProgress.fire(`✗ ${msg}`);
 			this._onDidIndexComplete.fire(result);
 			return result;
@@ -1625,6 +1717,13 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// watcher 扫描与索引扫描使用同一套目录排除（否则 Intermediate/ 等目录每轮误报全量 added）。
 		// 排除集解析含异步探测（.cbmignore / workspace exclude 配置），故 start 延后到解析完成。
 		void this._excludeResolver.resolve(rootPath, extraExcludeDirs).then(excludeDirs => {
+			// 2026-09-15：排除集解析是异步的（含 .cbmignore / 工作区配置探测）。若期间用户切走了
+			// 工作区，这个 root 已不属于本窗口 ⇒ **不要**注册 watcher（否则它会一直轮询并 fire
+			// 变更，把已 prune 的跨工作区数据重建回来）。
+			if (!this._isRootInCurrentWorkspace(this._normalizeRoot(rootPath))) {
+				this._logService.info('[CodebaseGraph]', `Skipped starting watcher for ${rootPath} — no longer part of the current workspace`);
+				return;
+			}
 			const keep = keepDirs?.length ? [...keepDirs] : undefined;
 			// 记录生效范围：增量索引 / git-head 全量重建复用同一口径（防幻影变更翻烧饼）
 			this._watchScopeCache.set(this._normalizeRoot(rootPath), { excludeDirs, keepDirs: keep });
@@ -1639,6 +1738,13 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// 用事件携带的 rootPath（多 root 监听下 _watchRootPath 单字段会串 folder——
 		// 曾致 UE5EA 的变更集在 S1Game 上跑增量，真正的脏集永不收敛、每 30s 空转）
 		const rootPath = e.rootPath || this._watchRootPath;
+		// 2026-09-15：工作区已切走时（原地切换不 reload renderer），旧 root 的 watcher 可能还有
+		// **已 fire 未处理**的变更事件（去抖窗口 2s）——必须丢弃：否则增量索引会为已 prune 的
+		// 项目重新建数据，与 `_pruneForeignProjects` 形成互相抵消的循环。
+		if (rootPath && !this._isRootInCurrentWorkspace(this._normalizeRoot(rootPath))) {
+			this._logService.info('[CodebaseGraph]', `Ignoring watcher change for ${rootPath} — no longer part of the current workspace`);
+			return;
+		}
 		if (e.type === 'git-head') {
 			this._logService.info('[CodebaseGraph]', `[TRACE] watcher git-head changed → indexWorkspace: ${rootPath}`);
 			this._logService.info('[CodebaseGraph]', 'Git HEAD changed, running full re-index...');
@@ -1680,9 +1786,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		token?: CancellationToken,
 		changeSet?: { added: string[]; modified: string[]; deleted: string[] },
 	): Promise<IIndexResult> {
-		if (!rootPath) { return { success: false, message: '未指定监听根路径' }; }
+		if (!rootPath) { return { success: false, message: '未指定监听根路径', kind: 'incremental' }; }
 		if (this._isIndexing) {
-			return { success: false, message: '索引正在进行中，跳过增量索引' };
+			return { success: false, message: '索引正在进行中，跳过增量索引', rootPath, kind: 'incremental' };
 		}
 
 		const cts = new CancellationTokenSource(token);
@@ -1709,7 +1815,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			releaseLock = await this._lockIndex(rootPath);
 		} catch (lockErr) {
 			this._isIndexing = false;
-			return { success: false, message: lockErr instanceof Error ? lockErr.message : '索引已被锁定，跳过增量索引' };
+			return { success: false, message: lockErr instanceof Error ? lockErr.message : '索引已被锁定，跳过增量索引', rootPath, kind: 'incremental' };
 		}
 
 		try {
@@ -1792,6 +1898,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 					message: noChangeMsg,
 					duration,
 					stats: { filesScanned: absFiles.length, nodesExtracted: 0, edgesExtracted: 0 },
+					rootPath,
+					kind: 'incremental',
 				};
 				this._onDidIndexComplete.fire(noChangeResult);
 				return noChangeResult;
@@ -1973,6 +2081,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				message,
 				duration,
 				stats: { filesScanned: absFiles.length, nodesExtracted, edgesExtracted },
+				rootPath,
+				kind: 'incremental',
 			};
 			this._onDidIndexComplete.fire(result);
 			return result;
@@ -1982,7 +2092,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			this._logService.error('[CodebaseGraph]', `增量索引失败 stack:\n${err?.stack || '(no stack)'}`);
 			const msg = `增量索引失败: ${err?.message || String(err)} (files: ${changedFilesBrief || 'unknown'})`;
 			this._onDidIndexProgress.fire(`✗ ${msg}`);
-			return { success: false, message: msg, duration: 0 };
+			return { success: false, message: msg, duration: 0, rootPath, kind: 'incremental' };
 		} finally {
 			this._isIndexing = false;
 			this._indexCts?.dispose();
@@ -2137,6 +2247,139 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	/** 归一化 rootPath 作为 _rootProjectMap 的键（去尾分隔符、统一为 /、小写盘符）。 */
 	private _normalizeRoot(p: string): string {
 		return p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+	}
+
+	/**
+	 * 解析「当前活跃项目」= 当前工作区 folders[0] 对应的项目名。
+	 *
+	 * 2026-09-15 修（用户报「当前工作区是 sarosis，却按 S1Game 检索」）：
+	 * `_projectName` 原先是「**首个完成的 loadGraphMerge** 胜」（`if (_projectName === '_default')`），
+	 * 而工作区切换走 `replaceWorkspaceFoldersInMemory()`（**不 reload**，见 WorkspaceSwitch 日志）
+	 * ⇒ 同一个 renderer 里多个工作区的图**并发**合并进同一 store，先完成者把 `_projectName`
+	 * 永久钉住。实测时间线（日志 20260915T132615）：
+	 *   13:26:23 切到 sarosis（merge 启动，21.6s 才完成）
+	 *   13:26:30 切到 S1Game+UE5EA（merge 启动，11.0s 就完成）
+	 *   13:26:42 S1Game 先完成 ⇒ `_projectName = "S1Game"`
+	 *   13:26:45 sarosis 完成 ⇒ 因 `_projectName !== '_default'` **不再更新**
+	 * 后果：`searchGraphAsync` 的 `params.project ?? this._projectName` 收敛到 S1Game，
+	 * 把 sqlite 跨项目搜回的 89 条 sarosis 命中全部丢弃（find symbol 0 结果）。
+	 *
+	 * 判据顺序：`_rootProjectMap`（真实索引/加载过的映射）→ folder 目录名（与 bootstrap 的
+	 * `projectOverride = _basename(folder)` 口径一致，解决「映射尚未建立」的窗口期）→ fallback。
+	 */
+	private _resolveActiveProject(fallback?: string): string {
+		const folders = this._workspaceService.getWorkspace().folders;
+		for (const f of folders) {
+			const mapped = this._rootProjectMap.get(this._normalizeRoot(f.uri.fsPath));
+			if (mapped) { return mapped; }
+		}
+		const first = folders[0];
+		if (first) {
+			const byName = this._basename(first.uri.fsPath);
+			if (byName) { return byName; }
+		}
+		return fallback ?? this._projectName;
+	}
+
+	/**
+	 * 改写 `_projectName`，但**全量索引进行中时拒绝**（2026-09-15）。
+	 *
+	 * 为什么需要：`indexWorkspace` 的 post-passes（`_matchCallsToDefinitions` /
+	 * `_matchInheritsToDefinitions` / `_matchUsageEdgesToDefinitions` / `_propagateInterprocedural` /
+	 * `_runSimilarityPass` / `_runExtendedPasses`）内部仍直接读 `this._projectName`。
+	 * 一轮全量索引要跑数分钟，期间 bootstrap 的 `loadGraphMerge`（大图 10~40s，**极易重叠**）、
+	 * 工作区切换或 viewer 的 `_autoDetectProjectName` 若改写它 ⇒ 这些 pass 产出的边会被打上
+	 * 错误的 project，随后被 `_saveGraph(projectName)` 过滤掉 ⇒ **CALLS/克隆/Leiden 边静默丢失**。
+	 *
+	 * 索引内**直接**读点已改成本轮局部常量 `projectName`（见 `indexWorkspace`），本方法覆盖
+	 * helper 内部读点这一残余面。索引结束后无需补偿：查询缺省值一律走 `_resolveActiveProject()`
+	 * （不依赖本字段），下一次 index/merge 会把它重新对齐。
+	 */
+	private _setProjectNameUnlessIndexing(project: string): void {
+		if (!project) { return; }
+		if (this._isIndexing) {
+			this._logService.debug('[CodebaseGraph]', `[projectName] deferred "${project}" — full/incremental index in progress (keeping "${this._projectName}")`);
+			return;
+		}
+		this._projectName = project;
+	}
+
+	/** 当前工作区各 folder 对应的项目名（`_rootProjectMap` 优先，缺失时回落目录名）。 */
+	private _workspaceProjects(): string[] {
+		const out: string[] = [];
+		for (const f of this._workspaceService.getWorkspace().folders) {
+			const name = this._rootProjectMap.get(this._normalizeRoot(f.uri.fsPath)) || this._basename(f.uri.fsPath);
+			if (name && !out.includes(name)) { out.push(name); }
+		}
+		return out;
+	}
+
+	/**
+	 * 归一化 rootPath 是否仍属于当前工作区。
+	 * 无工作区（启动早期 / 空窗口）时返回 true —— 宁可不判断，也不误删。
+	 */
+	private _isRootInCurrentWorkspace(normRoot: string): boolean {
+		const folders = this._workspaceService.getWorkspace().folders;
+		if (folders.length === 0) { return true; }
+		return folders.some(f => this._normalizeRoot(f.uri.fsPath) === normRoot);
+	}
+
+	/**
+	 * 丢弃**不属于当前工作区**的项目数据（2026-09-15，用户报「工作区是 sarosis 却按 S1Game 检索」）。
+	 *
+	 * 为什么需要：本服务是窗口内单例，而工作区切换走 `replaceWorkspaceFoldersInMemory()`
+	 * （不 reload renderer）⇒ 旧工作区的图永久驻留内存。实测同窗口 3 个工作区共 111.9 万节点，
+	 * 直接后果有二：① `_projectName` / `searchGraphAsync` 的项目收敛指向别的项目；
+	 * ② 巨量堆 + 每 folder 一个 watcher，是「UI 卡死」的既有根因。
+	 *
+	 * **只动内存**：主进程 SQLite 是跨工作区共享的持久层，其数据保留（下次切回该工作区可直接复用，
+	 * 无需重建）。同时收敛 `_rootProjectMap`（否则 `_resolveActiveProject` 仍会指向已丢弃的项目）。
+	 *
+	 * @returns 被丢弃的项目名（含节点数），供日志/诊断
+	 */
+	private _pruneForeignProjects(reason: string): string[] {
+		// ① 先停掉已不属于本工作区的 watcher 根。顺序很重要：watcher 每轮（5~60s）会检测变更并
+		//    fire 事件，`_onWatcherChange` 会为「已丢弃的项目」再跑增量索引，把刚清掉的数据
+		//    **重新建回来**（与 prune 互相抵消）。所以必须先断掉事件源，再清数据。
+		const unwatched: string[] = [];
+		for (const root of this._graphWatcher.getWatchedRoots()) {
+			if (!this._isRootInCurrentWorkspace(this._normalizeRoot(root))) {
+				if (this._graphWatcher.unwatch(root) > 0) { unwatched.push(root); }
+			}
+		}
+
+		// ② 丢弃内存 store 中不属于当前工作区的项目。
+		//    判据下沉为纯函数（`planForeignProjectPrune`，有单测）：无工作区 ⇒ 返回空 ⇒ 不误删。
+		const keep = this._workspaceProjects();
+		const projects = this._graph.store.listProjects();
+		const victims = planForeignProjectPrune(projects.map(p => p.name), keep);
+		const nodeCounts = new Map(projects.map(p => [p.name, p.nodeCount]));
+		const dropped: string[] = [];
+		for (const name of victims) {
+			try {
+				this.deleteProject(name); // 含 store 清理（节点/边/BM25/QN/文件哈希）+ cypher/semantic 引擎失效
+				this._sqliteEmptyProjects.delete(name);
+				dropped.push(`${name}(${nodeCounts.get(name) ?? 0})`);
+			} catch (err: any) {
+				this._logService.warn('[CodebaseGraph]', `[prune] deleteProject "${name}" failed: ${err?.message || err}`);
+			}
+		}
+
+		// ③ 映射同步收敛：否则 `_resolveActiveProject` 会继续指向已丢弃的项目
+		const keepSet = new Set(keep);
+		for (const [root, proj] of [...this._rootProjectMap]) {
+			if (!keepSet.has(proj)) { this._rootProjectMap.delete(root); }
+		}
+
+		if (dropped.length > 0 || unwatched.length > 0) {
+			// 索引进行中时不改写字段（见 `_setProjectNameUnlessIndexing`）；日志用实时解析值，避免打印陈旧字段
+			const activeProject = this._resolveActiveProject();
+			this._setProjectNameUnlessIndexing(activeProject);
+			this._logService.warn('[CodebaseGraph]', `[prune] dropped non-workspace project(s): ${dropped.join(', ') || '(none)'}` +
+				`${unwatched.length > 0 ? `; stopped watching: ${unwatched.join(', ')}` : ''}` +
+				` (reason=${reason}); store nodes=${this._graph.nodeCount}, project="${activeProject}"`);
+		}
+		return dropped;
 	}
 
 	// ─── Tree-sitter Parsing ────────────────────────────────────────────────
@@ -3743,12 +3986,16 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		this._lastSqliteFreshnessCheckAt = now;
 		try {
 			const sqliteCount = await this._sqliteBackend!.getNodeCount(project);
-			const memCount = this._graph.store.getNodeCount();
+			// 2026-09-15：两侧都按**同一个 project** 计数。旧实现用 store 的**总数**（全项目），
+			// 多 folder / 多工作区残留时该比值毫无意义 —— 用户日志里
+			// `sqlite=160857 memory=1119421 (project="S1Game")` 就是这个口径错配的产物。
+			const memCount = this._graph.store.getNodeCount(project);
 			const lagging = sqliteCount === 0 || (memCount > 1000 && sqliteCount < memCount * 0.5);
 			if (lagging) {
 				this._logService.warn('[CodebaseGraph]', `[sqlite-freshness] sqlite lags behind memory: sqlite=${sqliteCount} memory=${memCount} (project="${project}") — using in-memory for this query, syncing in background`);
 				this._sqliteEmptyProjects.delete(project); // 同步完成后应重新走 SQLite 路径
-				void this._syncGraphToSqlite().catch(err =>
+				// 显式传本次判定的 project：缺省读 `this._projectName` 会同步**别的**项目（判定与动作不一致）
+				void this._syncGraphToSqlite(project).catch(err =>
 					this._logService.debug('[CodebaseGraph]', `[sqlite-freshness] background sync failed: ${err}`));
 				return false; // 本次别查 SQLite：它的数据是陈旧/残缺的
 			}
@@ -4116,6 +4363,22 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		namePattern?: string;
 		label?: string;
 		filePattern?: string;
+		/**
+		 * 需要排除的节点类型（**非符号**容器/桩节点，2026-09-15）。
+		 * 约定值见 `common/codebaseIndexDefaults.ts` 的 `NON_SYMBOL_NODE_TYPES`。
+		 * 语义：**下推到 SQL**（否则 `LIMIT` 已先把符号挤掉，见 `searchNodes` 注释），
+		 * 内存回退路径与 renderer 后置过滤再各兜一层。比较大小写不敏感。
+		 */
+		excludeTypes?: readonly string[];
+		/**
+		 * 只匹配 `name` 列（**符号名检索**，2026-09-15）。
+		 *
+		 * 为什么需要：QN = `<相对文件路径>::<符号名>`，不限定字段时搜 `test` 会命中 QN 里的
+		 * `…/classifyLLM.test.ts` ⇒ Find Symbol 返回 `MockClassifyLLM`（用户截图报障）。
+		 * 语义：下推到 SQL（`nameOnly` 时**跳过 FTS 直接走 `name LIKE`** —— FTS 是词元匹配，
+		 * `testHelper` 会被漏掉），内存路径同口径过滤，renderer 再兜一层。
+		 */
+		nameOnly?: boolean;
 		limit?: number;
 		offset?: number;
 		sortBy?: 'name' | 'inDegree' | 'outDegree' | 'degree';
@@ -4135,6 +4398,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			project: params.project || undefined,
 			query: params.query,
 			namePattern: effectiveFilePattern ? undefined : params.namePattern,
+			// 符号名检索（2026-09-15）：只匹配 name，不匹配 QN（QN 里含文件路径）
+			nameOnly: params.nameOnly,
 			label: effectiveLabel,
 			filePattern: effectiveFilePattern,
 			limit: params.limit,
@@ -4148,9 +4413,20 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			relType: params.relType,
 		});
 		const graphStore = this._graph;
+		let nodes = result.nodes.map((n: any) => graphStore['_nodeToGraphNode'](n)) as GraphNode[];
+		let total = result.total;
+		// 类型排除（与 SQLite 路径同口径，2026-09-15）：内存回退路径也必须滤掉非符号节点，
+		// 否则「sqlite 不可用 / 空库」时 Find Symbol 又变回满屏文件名。
+		// ⚠ `store.search` 已按 limit 分页 ⇒ 被排除项在**页外**无法统计，`total` 只能退化为
+		// 「本页过滤后的条数」；未传 `excludeTypes` 时保持原 total 语义不变。
+		if (params.excludeTypes?.length) {
+			const ex = new Set(params.excludeTypes.map(t => t.toLowerCase()));
+			nodes = nodes.filter(n => !ex.has((n.type ?? '').toLowerCase()));
+			total = nodes.length;
+		}
 		return {
-			nodes: result.nodes.map((n: any) => graphStore['_nodeToGraphNode'](n)),
-			total: result.total,
+			nodes,
+			total,
 			scores: result.scores ? Object.fromEntries(result.scores) : undefined,
 			hasMore: result.hasMore,
 		};
@@ -4191,6 +4467,22 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		namePattern?: string;
 		label?: string;
 		filePattern?: string;
+		/**
+		 * 需要排除的节点类型（**非符号**容器/桩节点，2026-09-15）。
+		 * 约定值见 `common/codebaseIndexDefaults.ts` 的 `NON_SYMBOL_NODE_TYPES`。
+		 * 语义：**下推到 SQL**（否则 `LIMIT` 已先把符号挤掉，见 `searchNodes` 注释），
+		 * 内存回退路径与 renderer 后置过滤再各兜一层。比较大小写不敏感。
+		 */
+		excludeTypes?: readonly string[];
+		/**
+		 * 只匹配 `name` 列（**符号名检索**，2026-09-15）。
+		 *
+		 * 为什么需要：QN = `<相对文件路径>::<符号名>`，不限定字段时搜 `test` 会命中 QN 里的
+		 * `…/classifyLLM.test.ts` ⇒ Find Symbol 返回 `MockClassifyLLM`（用户截图报障）。
+		 * 语义：下推到 SQL（`nameOnly` 时**跳过 FTS 直接走 `name LIKE`** —— FTS 是词元匹配，
+		 * `testHelper` 会被漏掉），内存路径同口径过滤，renderer 再兜一层。
+		 */
+		nameOnly?: boolean;
 		limit?: number;
 		offset?: number;
 		sortBy?: 'name' | 'inDegree' | 'outDegree' | 'degree';
@@ -4228,7 +4520,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// 由本校验完全覆盖——其判定含 `sqliteCount === 0`（空库即落后），且修复了标记
 		// 永久残留的问题（同步成功/落后检测均会清除）。空库场景最多多一次无效 IPC
 		// （60s 节流内），换得「标记残留 → 永远查内存」这类状态机缺陷的消失。
-		if (!await this._ensureSqliteFreshness(params.project ?? this._projectName)) {
+		// 项目默认值一律取「当前工作区 folders[0] 对应的项目」——不能用 `_projectName`：
+		// 原地切换工作区时并发 merge 会把它钉在别的工作区的项目上（见 _resolveActiveProject 注释）。
+		const _wsProject = params.project ?? this._resolveActiveProject();
+		if (!await this._ensureSqliteFreshness(_wsProject)) {
 			return this.searchGraph(params);
 		}
 		const limit = params.limit ?? 200;
@@ -4244,9 +4539,15 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			if (needle) {
 				// 文本检索走主进程 FTS5/LIKE（label=file 的语义交给下方 filePattern 过滤）
 				const nodeType = params.label && params.label !== 'file' ? params.label : undefined;
-				candidates = await this._sqliteBackend!.searchNodes(needle, nodeType, candidateCap);
+				// 2026-09-15：project **下推到 SQL**（第 4 参）。此前不带 project ⇒ 跨全库取前 N 条，
+				// 候选池被历史工作区的项目占满（实测 needle="test" 的 231 条全是 S1Game:148 +
+				// UE5EA:83，本项目命中不进池），下方 wantProject 收敛后恒为 0（Find Symbol 搜不到东西）。
+				// excludeTypes（第 5 参）同理下推：`label='file'` 的桩节点会把符号挤出 LIMIT。
+				// nameOnly（第 6 参）：只匹配 name 列 —— 否则 QN 里的文件路径会命中
+				// （搜 "test" 返回 `…/classifyLLM.test.ts::MockClassifyLLM`）。
+				candidates = await this._sqliteBackend!.searchNodes(needle, nodeType, candidateCap, _wsProject, params.excludeTypes, params.nameOnly);
 			} else {
-				candidates = await this._sqliteBackend!.getAllNodes(params.project ?? this._projectName, candidateCap);
+				candidates = await this._sqliteBackend!.getAllNodes(_wsProject, candidateCap);
 			}
 		} catch (err) {
 			// sqlite 后端不可用（打包版缺原生模块等）→ 回退内存图（图已从 gzip 加载时仍可用）
@@ -4285,7 +4586,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// 收敛后模型只看到 0 命中，反而更难判断是「不存在」还是「不在本项目」。
 		let _crossProjectOnly: { project: string; count: number }[] | undefined;
 		if (needle) {
-			const wantProject = params.project ?? this._projectName;
+			const wantProject = _wsProject;
 			if (wantProject) {
 				const inProject = nodes.filter(n => !n.project || n.project === wantProject);
 				if (inProject.length !== nodes.length) {
@@ -4304,6 +4605,32 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 					);
 				}
 				nodes = inProject;
+			}
+		}
+
+		// 类型排除（**兜底**，2026-09-15）：正常已在 SQL 层排除（第 5 参，见 `searchNodes` 注释）。
+		// 这里再滤一遍，因为「renderer 已更新、主进程未重启」时旧 main 进程会**静默忽略**该参数
+		// （IPC 是位置参数转发）⇒ 只靠 SQL 会让用户以为修复无效（"搜 test 还是满屏文件名"）。
+		// 候选 ≤ 数百条，代价可忽略；命中说明 SQL 层没生效，故打 info 便于定位。
+		if (params.excludeTypes?.length) {
+			const ex = new Set(params.excludeTypes.map(t => t.toLowerCase()));
+			const _beforeEx = nodes.length;
+			nodes = nodes.filter(n => !ex.has((n.type ?? '').toLowerCase()));
+			if (_beforeEx !== nodes.length) {
+				this._logService.info(`[CodebaseGraph] [searchGraphAsync] excluded ${_beforeEx - nodes.length} non-symbol node(s) in renderer (types=${params.excludeTypes.join('/')}) — SQL-level exclusion inactive? main process may need a full restart`);
+			}
+		}
+
+		// 符号名收敛（**兜底**，2026-09-15）：`nameOnly` 正常已在 SQL 层限定 `name` 列（第 6 参）。
+		// 这里再滤一遍，同样为兜住「renderer 已更新、主进程未重启」——否则搜 `test` 仍会看到
+		// `MockClassifyLLM`（QN 里含 `…/classifyLLM.test.ts`），用户会以为没修好。
+		// 判据与 SQL 层一致：`name` 的大小写不敏感**子串**（needle 与 SQL 用的同一个）。
+		if (params.nameOnly && needle) {
+			const lowerNeedle = needle.toLowerCase();
+			const _beforeName = nodes.length;
+			nodes = nodes.filter(n => (n.name ?? '').toLowerCase().includes(lowerNeedle));
+			if (_beforeName !== nodes.length) {
+				this._logService.info(`[CodebaseGraph] [searchGraphAsync] nameOnly filtered ${_beforeName - nodes.length} node(s) matched only via QN/filePath for "${needle}" — SQL-level name restriction inactive? main process may need a full restart`);
 			}
 		}
 
@@ -4528,6 +4855,62 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		this._graph.store.deleteProject(name);
 		this._cypherEngine = undefined;
 		this._semanticSearch = undefined;
+	}
+
+	/**
+	 * 把图谱节点的 root 相对 `filePath` 解析为**真实存在**的绝对 URI + 1-based 行号。
+	 *
+	 * 2026-09-15 新增（用户报「Find Symbol 双击 item 无法跳转」后**统一**）：
+	 * 此前 5 处跳转各自手写「project root + 相对路径」拼串，**每一处都会静默失败**——
+	 *  ① 只认 `getProjectRoots()[node.project]` **一项**（project 名对不上就直接放弃）；
+	 *  ② 把 `node.startLine` 当成「可跳转」的前提，而图谱里**最常见的一类命中没有行号**
+	 *     —— `addEdge()` 为 CONTAINS 边实体化的 `label='file'` stub 节点只写
+	 *     `filePath`/`qualifiedName`/`name`（搜文件名命中的正是它们）；
+	 *  ③ `joinPath` 是 **posix** 语义 ⇒ `filePath` 含 `\` 时会拼出「文件名里带 `\`」的坏 URI。
+	 *
+	 * 候选顺序（取第一个 `exists()` 的）：
+	 *   ① 该节点 project 的直拼 root（多 folder 下同名相对路径优先归它）
+	 *   ② 其余**已注册** root（`_rootProjectMap`，覆盖索引根 ≠ 工作区 folder 的情形）
+	 *   ③ `_resolveSearchFileCandidates()`（工作区各 folder 探测 + 绝对路径直解）
+	 * 全都不存在才返回 undefined（索引陈旧 / 文件已删）。
+	 */
+	async resolveNodeLocation(node: { name?: string; filePath?: string; project?: string; startLine?: number }, opts?: { quiet?: boolean }): Promise<{ uri: URI; line: number } | undefined> {
+		if (!node.filePath) { return undefined; }
+		const line = Math.max(1, node.startLine ?? 1);
+		const candidates = this._nodeFileCandidates(node.filePath, node.project);
+		for (const uri of candidates) {
+			try {
+				if (await this._fileService.exists(uri)) { return { uri, line }; }
+			} catch { /* 该候选不可用 → 试下一个 */ }
+		}
+		if (!opts?.quiet) {
+			this._logService.warn('[CodebaseGraph]', `[resolveNodeLocation] file not found: "${node.filePath}"${node.name ? ` (node="${node.name}")` : ''} project="${node.project ?? '-'}" — tried ${candidates.length} candidate(s); stale index or file deleted?`);
+		}
+		return undefined;
+	}
+
+	/**
+	 * `resolveNodeLocation` 的候选 URI 列表（按优先级去重）。
+	 * 绝对路径（盘符 / 前导 `/`、`\`）无需拼根，交给 `_resolveSearchFileCandidates` 直解
+	 * ——其内部已含「工作区各 folder 依次探测」。
+	 */
+	private _nodeFileCandidates(filePath: string, project?: string): URI[] {
+		const out: URI[] = [];
+		const seen = new Set<string>();
+		const push = (u: URI) => {
+			const k = u.fsPath.replace(/\\/g, '/').toLowerCase();
+			if (!seen.has(k)) { seen.add(k); out.push(u); }
+		};
+		if (!/^([a-zA-Z]:[\\/]|[\\/])/.test(filePath)) {
+			// 拼法与 `_searchFileCandidatesWithProject` 一致：去尾分隔符 + 归一为正斜杠
+			const rel = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+			const roots = this.getProjectRoots();
+			const prefer = project ? roots[project] : undefined;
+			if (prefer) { push(URI.file(prefer.replace(/[\\/]+$/, '') + '/' + rel)); }
+			for (const r of Object.values(roots)) { push(URI.file(r.replace(/[\\/]+$/, '') + '/' + rel)); }
+		}
+		for (const u of this._resolveSearchFileCandidates(filePath)) { push(u); }
+		return out;
 	}
 
 	// ─── Change Detection ─────────────────────────────────────────────────
@@ -4810,7 +5193,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				// 选节点数最多的项目
 				projects.sort((a, b) => b.nodeCount - a.nodeCount);
 				const detected = projects[0].name;
-				this._projectName = detected;
+				this._setProjectNameUnlessIndexing(detected);
 				this._logService.info('[CodebaseGraph]', `[loadGraph] auto-detected projectName="${detected}" (${projects[0].nodeCount} nodes, ${projects.length} project(s) total)`);
 			}
 		} catch (err: any) {
@@ -4889,6 +5272,17 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 	private async _loadGraphMergeImpl(sourcePath: string, projectOverride?: string, rebuildBM25: boolean = true): Promise<boolean> {
 		const tStart = Date.now();
+		// 快速路径（2026-09-15）：进入时就已不属于当前工作区 ⇒ 连解析都省掉。
+		// 合并大图要 10~40s，而工作区切换只需一秒；没有这道闸，一次「切过去又切回来」
+		// 就会把别的工作区的巨图完整读进内存（下面完成处的守卫只能事后丢弃）。
+		{
+			const idx = sourcePath.lastIndexOf('/.codebase-memory/') >= 0 ? sourcePath.lastIndexOf('/.codebase-memory/')
+				: sourcePath.lastIndexOf('\\.codebase-memory\\');
+			if (idx > 0 && !this._isRootInCurrentWorkspace(this._normalizeRoot(sourcePath.substring(0, idx)))) {
+				this._logService.info('[CodebaseGraph]', `[loadGraphMerge] skipped ${sourcePath} — root is not part of the current workspace`);
+				return false;
+			}
+		}
 		const candidates = [sourcePath];
 		if (sourcePath.endsWith('.json')) {
 			candidates.push(sourcePath.replace(/\.json$/, '.db.zst'), sourcePath.replace(/\.json$/, '.db.gz'));
@@ -4909,10 +5303,25 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				if (graphDirIdx > 0) {
 					const rootPath = this._normalizeRoot(p.substring(0, graphDirIdx));
 					const proj = projectOverride || this._basename(rootPath) || '_default';
-					this._rootProjectMap.set(rootPath, proj);
-					if (this._projectName === '_default') {
-						this._projectName = proj;  // 首个加载的 project 改为默认
+					// 2026-09-15：合并是异步重活（大图 10~40s）。若期间用户已切走工作区，这份图就
+					// 属于「别的窗口内容」——**必须立刻丢弃**：否则它会以「后完成者」身份驻留内存并
+					// 污染检索（实测切到 S1Game+UE5EA 后 11s 完成、sarosis 的 21.6s 完成，
+					// S1Game 反而成了 store 里最大的项目）。bootstrap 会据此走「制品存在但加载失败」
+					// 分支 ⇒ 跳过自动索引（不会误触发全量重建）。
+					if (!this._isRootInCurrentWorkspace(rootPath)) {
+						try { this.deleteProject(proj); } catch (err: any) {
+							this._logService.warn('[CodebaseGraph]', `[loadGraphMerge] discard-cleanup failed for "${proj}": ${err?.message || err}`);
+						}
+						this._logService.warn('[CodebaseGraph]', `[loadGraphMerge] discarded ${p} as project="${proj}" — root is no longer part of the current workspace (${Date.now() - tStart}ms)`);
+						return false;
 					}
+					this._rootProjectMap.set(rootPath, proj);
+					// 2026-09-15 修：原为「首个完成的 merge 胜」⇒ 同一窗口原地切换工作区时
+					// （replaceWorkspaceFoldersInMemory，不 reload）并发 merge 会按**完成顺序**
+					// 抢注 `_projectName`（实测 S1Game 11s 抢在 sarosis 21.6s 之前），此后所有
+					// 以 `_projectName` 为默认项目的查询都指向别的项目。改为以当前工作区为准。
+					// 索引进行中则不改写（见 `_setProjectNameUnlessIndexing`）。
+					this._setProjectNameUnlessIndexing(this._resolveActiveProject(this._projectName === '_default' ? proj : this._projectName));
 					this._logService.info('[CodebaseGraph]', `[loadGraphMerge] merged ${p} as project="${projectOverride ?? '(original)'}" (${Date.now() - tStart}ms), store nodes=${this._graph.nodeCount}`);
 					// gzip 加载后若 SQLite 无该 project 数据则同步一次（幂等：listProjects 检查，
 					// 避免每次启动全量重建；首次加载才同步，一次性成本）

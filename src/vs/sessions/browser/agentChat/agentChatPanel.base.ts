@@ -1458,6 +1458,15 @@ updateMessage(
 				updates.confirmation === undefined &&
 				updates.tokenUsage === undefined
 			);
+			// 诊断：在数据链汇合处记录到达 reducer 的用量字段形态。
+			// 与 delegateCards 的 [MetaDiag] render 对照，即可判定抹除发生在上游
+			// （此处已是 undefined）还是渲染层（此处有值、render 无 DOM）。
+			if ((globalThis as { __SAROSIS_META_DIAG?: boolean }).__SAROSIS_META_DIAG && updates.subAgents) {
+				this._logService.info(
+					`[MetaDiag] delta msgId=${m.id} only=${subagentDataOnly} n=${updates.subAgents.length} `
+					+ `| ${JSON.stringify((updates.subAgents as ISubAgentData[]).map(s => ({ id: s.id, st: s.status, tk: s.tokensUsed ?? null, cr: s.creditUsed ?? null })))}`
+				);
+			}
 			if (subagentDataOnly) {
 				this._updateSubAgentCardsInPlace(idx, m);
 				return;

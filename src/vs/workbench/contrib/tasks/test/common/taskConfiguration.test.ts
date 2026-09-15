@@ -201,7 +201,7 @@ class CustomTaskBuilder {
 		this.commandBuilder = new CommandConfigurationBuilder(this, command);
 		this.result = new Tasks.CustomTask(
 			name,
-			{ kind: Tasks.TaskSourceKind.Workspace, label: 'workspace', config: { workspaceFolder: workspaceFolder, element: undefined, index: -1, file: '.vscode/tasks.json' } },
+			{ kind: Tasks.TaskSourceKind.Workspace, label: 'workspace', config: { workspaceFolder: workspaceFolder, element: undefined, index: -1, file: '.sarosworkspace/tasks.json' } },
 			name,
 			Tasks.CUSTOMIZED_TASK_TYPE,
 			this.commandBuilder.result,

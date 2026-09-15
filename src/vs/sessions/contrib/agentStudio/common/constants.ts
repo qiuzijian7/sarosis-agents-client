@@ -159,6 +159,8 @@ export const AGENT_STUDIO_WORKFLOW_VIEW_ID = 'agentStudio.workflowView';
 export const AGENT_STUDIO_CHANNEL_VIEW_ID = 'agentStudio.channelView';
 export const AGENT_STUDIO_WIKI_VIEW_ID = 'agentStudio.wikiView';
 export const AGENT_STUDIO_KB_VIEW_ID = 'agentStudio.knowledgeBaseView';
+/** 左侧栏「资料库」视图容器 id —— 也是 activitybar 资料库徽标的挂载点。 */
+export const AGENT_STUDIO_KB_VIEW_CONTAINER_ID = 'agentStudio.knowledgeBase';
 export const AGENT_STUDIO_CLASS_HIERARCHY_VIEW_ID = 'agentStudio.classHierarchyView';
 export const AGENT_STUDIO_REFERENCES_VIEW_ID = 'agentStudio.referencesView';
 export const AGENT_STUDIO_WIKI_ROOT_SETTING = 'agentStudio.wiki.root';

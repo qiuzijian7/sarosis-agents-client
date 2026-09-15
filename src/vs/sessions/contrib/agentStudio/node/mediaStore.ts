@@ -10,25 +10,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
+import { loadBetterSqlite3 } from './betterSqlite3.js';
 
-// ⚠ 主进程编译产物是 **ESM**（package.json `"type": "module"`），ESM scope 里没有
-// `require` —— 裸 `require('better-sqlite3')` 会抛
-// `ReferenceError: require is not defined in ES module scope`，被下面的 catch 吞掉
-// 后 Database 恒为 null，于是所有媒体库命令都报 "media store unavailable"。
-// 必须用 createRequire，与图谱的 `@vscode/sqlite3`、gitVersionEngine 等既有范式一致。
-const nodeRequire = createRequire(import.meta.url);
+// 主进程方可用 better-sqlite3；不可用 → 抛明确错误（构造时）。
+// ⚠ 壳加载成功 ≠ 能用：原生绑定（better_sqlite3.node）由 betterSqlite3.ts 显式解析
+// 并通过 `nativeBinding` 传入 —— 打包产物里它可能只落在 node_modules.asar.unpacked
+// 下，而 bindings 默认只查包内 build/Release（2026-09-14 "media store unavailable" 事故根因）。
+const { Database, nativeBinding, diagnostic: SQLITE_DIAGNOSTIC } = loadBetterSqlite3();
 
-// 主进程方可用 better-sqlite3；不可用 → 抛明确错误（构造时）
-let Database: any;
-try {
-	// better-sqlite3 是 CJS 模块，require 直接返回构造函数本身（无 .default）。
-	// 注意：esbuild/TS 的 `import X from 'better-sqlite3'` 会转成 `({ default: X } = require(...))`，
-	// 对 CJS 模块解构 .default 会得到 undefined，故这里用直接赋值。
-	Database = nodeRequire('better-sqlite3');
-} catch {
-	Database = null;
-}
+/** 供 channel 层拼错误信息（安装包缺原生绑定时便于定位）。 */
+export const BETTER_SQLITE3_DIAGNOSTIC = SQLITE_DIAGNOSTIC;
 
 // ── SQLite 抽象（便于测试注入 node:sqlite 等真实 SQL 引擎）──────────────
 export interface SqliteStatement {
@@ -62,6 +53,7 @@ export interface MediaRow {
 	is_deleted: number;
 	board: string | null;
 	favorite: number;
+	tags: string | null;
 }
 
 const CREATE_TABLE = `
@@ -80,7 +72,8 @@ CREATE TABLE IF NOT EXISTS media_asset (
   size_bytes  INTEGER,
   is_deleted  INTEGER DEFAULT 0,
   board       TEXT,
-  favorite    INTEGER DEFAULT 0
+  favorite    INTEGER DEFAULT 0,
+  tags        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_media_node  ON media_asset(node_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_media_wf    ON media_asset(workflow_id, created_at);
@@ -96,13 +89,26 @@ export class MediaStore {
 	) {
 		const factory: DatabaseFactory = dbFactory ?? ((rootDir) => {
 			if (!Database) {
-				throw new Error('better-sqlite3 is unavailable — media store cannot open');
+				throw new Error(`better-sqlite3 is unavailable — media store cannot open (${SQLITE_DIAGNOSTIC})`);
 			}
-			return new Database(path.join(rootDir, 'media.db')) as unknown as SqliteDatabase;
+			return new Database(path.join(rootDir, 'media.db'), nativeBinding ? { nativeBinding } : {}) as unknown as SqliteDatabase;
 		});
 		fs.mkdirSync(opts.rootDir, { recursive: true });
 		this.db = factory(opts.rootDir);
 		this.db.exec(CREATE_TABLE);
+		this._migrate();
+	}
+
+	/**
+	 * 轻量迁移：`CREATE TABLE IF NOT EXISTS` **不会给已存在的旧库补列** ⇒
+	 * 新增列必须逐列探测后 ALTER（SQLite 的 ADD COLUMN 是 O(1) 元数据操作）。
+	 */
+	private _migrate(): void {
+		const cols = this.db.prepare('PRAGMA table_info(media_asset)').all() as Array<{ name: string }>;
+		const has = (n: string) => cols.some(c => c.name === n);
+		if (!has('tags')) {
+			this.db.exec('ALTER TABLE media_asset ADD COLUMN tags TEXT');
+		}
 	}
 
 	/** 当前媒体库根目录（绝对路径，供 UI 展示/编辑）。 */
@@ -180,6 +186,8 @@ export class MediaStore {
 		query?: string;
 		board?: string;
 		favorite?: boolean;
+		/** 精确匹配某个标签（JSON 数组元素级匹配）。 */
+		tag?: string;
 		includeDeleted?: boolean;
 		limit?: number;
 		offset?: number;
@@ -193,6 +201,8 @@ export class MediaStore {
 		if (filter.board !== undefined) { where.push('board IS ' + (filter.board ? '?' : 'NULL')); if (filter.board) { params.push(filter.board); } }
 		if (filter.favorite) { where.push('favorite = 1'); }
 		if (filter.query) { where.push('(file_name LIKE ? OR ref LIKE ? OR meta_json LIKE ?)'); const q = `%${filter.query}%`; params.push(q, q, q); }
+		// 标签：tags 存 JSON 数组字符串 ⇒ 用 `%"tag"%` 精确匹配元素，避免子串误命中
+		if (filter.tag) { where.push('tags LIKE ?'); params.push(tagLikePattern(filter.tag)); }
 
 		const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 		const limit = Math.min(Math.max(filter.limit ?? 100, 1), 500);
@@ -262,6 +272,35 @@ export class MediaStore {
 
 	async setBoard(id: string, board: string | null): Promise<void> {
 		this.db.prepare('UPDATE media_asset SET board = ? WHERE id = ?').run(board, id);
+	}
+
+	/**
+	 * 本地化：把「仅 URL 引用」的资产**下载并落盘**到媒体库目录。
+	 *
+	 * ⚠ 与 `importAsset` 的关系：**导入时已经会自动本地化**（`_downloadRemoteToFile`，
+	 *   30s 超时）。本方法不是"新增能力"，而是给**当时下载失败、以纯引用残留**的资产
+	 *   一次重试机会 —— 那类资产在 CSP 不放行 `http:` 的当下显示不出来。
+	 *   因此这里复用同一个下载实现，避免两套下载/扩展名推断逻辑漂移。
+	 *
+	 * 幂等：已落盘（file_path 存在且文件在盘上）或非 http(s) 引用 ⇒ 原样返回，不重复下载。
+	 */
+	async localize(id: string): Promise<any> {
+		const row = this.db.prepare('SELECT * FROM media_asset WHERE id = ?').get(id) as MediaRow | undefined;
+		if (!row) { throw new Error(`media asset not found: ${id}`); }
+		if (row.file_path && fs.existsSync(row.file_path)) { return this._toAsset(row); }
+		const url = row.ref;
+		if (!/^https?:\/\//i.test(url)) {
+			throw new Error(`asset is not a remote reference: ${url}`);
+		}
+		const fallbackExt = row.kind === 'video' ? 'mp4' : row.kind === 'audio' ? 'mp3' : 'png';
+		const downloaded = await this._downloadRemoteToFile(row.id, url, fallbackExt);
+		if (!downloaded) {
+			throw new Error(`download failed: ${url}`);
+		}
+		this.db.prepare(
+			'UPDATE media_asset SET file_path = ?, file_name = ?, size_bytes = ? WHERE id = ?'
+		).run(downloaded.filePath, downloaded.fileName, downloaded.sizeBytes, id);
+		return this.get(id);
 	}
 
 	// ─── 配额 / 清理（P2）──────────────────────────────────────────────
@@ -454,6 +493,57 @@ export class MediaStore {
 			isDeleted: !!r.is_deleted,
 			board: r.board ?? undefined,
 			favorite: !!r.favorite,
+			tags: parseTags(r.tags),
 		};
 	}
+
+	// ─── 标签（tags）──────────────────────────────────────────────────
+
+	/** 覆写资产的标签集合（去重 + 去空白；空数组即清空）。 */
+	async setTags(id: string, tags: string[]): Promise<void> {
+		this.db.prepare('UPDATE media_asset SET tags = ? WHERE id = ?').run(serializeTags(tags), id);
+	}
+
+	/** 列出全部已使用过的标签（仅未删除资产），按出现次数降序。 */
+	async listTags(): Promise<string[]> {
+		const rows = this.db.prepare(
+			'SELECT tags FROM media_asset WHERE is_deleted = 0 AND tags IS NOT NULL'
+		).all() as Array<{ tags: string | null }>;
+		const counts = new Map<string, number>();
+		for (const r of rows) {
+			for (const t of parseTags(r.tags)) {
+				counts.set(t, (counts.get(t) ?? 0) + 1);
+			}
+		}
+		return Array.from(counts.entries())
+			.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+			.map(([t]) => t);
+	}
+}
+
+/** 标签序列化为 JSON 数组字符串（保持稳定顺序，便于 LIKE 命中）。 */
+function serializeTags(tags: readonly string[]): string | null {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const raw of tags) {
+		const t = raw.trim();
+		if (!t || seen.has(t)) { continue; }
+		seen.add(t);
+		out.push(t);
+	}
+	return out.length ? JSON.stringify(out) : null;
+}
+
+/** 反序列化标签（脏数据一律退化为空数组，不让列表渲染炸掉）。 */
+function parseTags(raw: string | null | undefined): string[] {
+	if (!raw) { return []; }
+	try {
+		const v = JSON.parse(raw);
+		return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+	} catch { return []; }
+}
+
+/** 单标签的 SQL LIKE 判据（JSON 数组里精确匹配一个元素）。 */
+export function tagLikePattern(tag: string): string {
+	return `%"${tag.replace(/"/g, '""')}"%`;
 }

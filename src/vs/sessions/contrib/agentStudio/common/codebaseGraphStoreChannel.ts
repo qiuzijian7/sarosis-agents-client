@@ -57,7 +57,24 @@ export interface ICodebaseGraphSqliteBackend {
 	getNode(id: number): Promise<GraphNode | undefined>;
 	getNodeByQN(project: string, qn: string): Promise<GraphNode | undefined>;
 	getNodesByFile(project: string, filePath: string): Promise<GraphNode[]>;
-	searchNodes(query: string, nodeType?: string, limit?: number): Promise<GraphNode[]>;
+	/**
+	 * 全文/子串检索。`project` 传入时**下推到 SQL** 限定单项目（2026-09-15）——
+	 * 缺省跨全部项目：SQLite 是跨工作区共享的持久层，跨库检索会让**候选池被历史工作区
+	 * 的项目占满**（实测 needle="test" 的 231 条候选全是 S1Game/UE5EA，本项目命中不进池），
+	 * 调用方（`searchGraphAsync`）必须传当前工作区的 project。
+	 *
+	 * @param excludeTypes 需要排除的节点类型（**非符号**容器/桩节点，2026-09-15）。
+	 *   同样必须**下推到 SQL**：只在 renderer 后置过滤的话，`LIMIT` 已经先把符号丢掉了
+	 *   —— Find Symbol 搜 `test` 时 200 条候选被 `label='file'` 的 `*.test.ts` 桩节点占满，
+	 *   真正的符号根本不进池（与 project 完全同一条教训）。比较大小写不敏感。
+	 *   约定值见 `common/codebaseIndexDefaults.ts` 的 `NON_SYMBOL_NODE_TYPES`。
+	 *
+	 * @param nameOnly 只匹配 `name` 列（**符号名检索**，2026-09-15）。FTS 索引含
+	 *   `qualified_name`/`file_path`/`body` ⇒ 不限定列时搜 `test` 会命中 QN 里的
+	 *   `…/classifyLLM.test.ts`（返回 `MockClassifyLLM`，用户截图报障）。
+	 *   实现上会**跳过 FTS 直接走 `name LIKE`**（FTS 是词元匹配，`testHelper` 会被漏掉）。
+	 */
+	searchNodes(query: string, nodeType?: string, limit?: number, project?: string, excludeTypes?: readonly string[], nameOnly?: boolean): Promise<GraphNode[]>;
 	semanticSearch(query: string, limit?: number): Promise<{ node: GraphNode; score: number }[]>;
 	getEdges(nodeId?: number, offset?: number, limit?: number): Promise<GraphEdge[]>;
 	getTotalNodeCount(project?: string): Promise<number>;

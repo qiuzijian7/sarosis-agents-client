@@ -662,7 +662,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		'.git', '.github', '.hub', '.archive', '.venv', 'venv',
 		'node_modules', 'site-packages', '__pycache__', '.tox',
 		'.nox', '.pytest_cache', '.mypy_cache', '.ruff_cache',
-		'out', 'dist', 'build', '.vscode', '.codebuddy',
+		'out', 'dist', 'build', '.vscode', '.sarosworkspace', '.codebuddy',
 	]);
 
 	/**

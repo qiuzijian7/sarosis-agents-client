@@ -27,10 +27,7 @@ import { IOpenerService } from '../../../../../platform/opener/common/opener.js'
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
-import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ICodebaseGraphService, GraphNode } from '../codebaseGraphService.js';
-import { URI } from '../../../../../base/common/uri.js';
-import { joinPath } from '../../../../../base/common/resources.js';
 import { ITextEditorOptions } from '../../../../../platform/editor/common/editor.js';
 
 type AccessFilter = 'all' | 'read' | 'write';
@@ -64,7 +61,6 @@ export class ReferencesResultViewPane extends ViewPane {
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
 		@IEditorService private readonly _editorService: IEditorService,
-		@IFileService private readonly _fileService: IFileService,
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
@@ -215,21 +211,17 @@ export class ReferencesResultViewPane extends ViewPane {
 	}
 
 	private async _openNode(node: GraphNode): Promise<void> {
-		if (!node.filePath || !node.startLine) { return; }
-		const roots = this._graphService.getProjectRoots();
-		const root = roots[node.project ?? '_default'];
-		if (!root) { return; }
-		const uri = joinPath(URI.file(root), node.filePath);
-		try {
-			if (!await this._fileService.exists(uri)) { return; }
-		} catch { return; }
-		const line = Math.max(0, node.startLine - 1);
+		// 2026-09-15：统一走 service 级解析器（root 三级回退 + 行号缺省 + 未命中告警）。
+		// 原实现 `if (!node.filePath || !node.startLine) return;` + 单 root —— 与 Find Symbol
+		// 同族的静默失败（本视图双击行即跳转，用户报障的形态一致）。
+		const loc = await this._graphService.resolveNodeLocation(node);
+		if (!loc) { return; }
 		const options: ITextEditorOptions = {
-			selection: { startLineNumber: line + 1, startColumn: 1, endLineNumber: line + 1, endColumn: 1 },
+			selection: { startLineNumber: loc.line, startColumn: 1, endLineNumber: loc.line, endColumn: 1 },
 			revealIfOpened: true,
 			pinned: false,
 		};
-		await this._editorService.openEditor({ resource: uri, options });
+		await this._editorService.openEditor({ resource: loc.uri, options });
 	}
 
 	override dispose(): void {

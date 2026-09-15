@@ -111,57 +111,79 @@ export class QuickAccessController extends Disposable implements IQuickAccessCon
 		// and adjust the filtering to exclude the prefix from filtering
 		const disposables = new DisposableStore();
 		const picker = disposables.add(this.quickInputService.createQuickPick({ useSeparators: true }));
-		picker.value = value;
-		this.adjustValueSelection(picker, descriptor, options);
-		picker.placeholder = options?.placeholder ?? descriptor?.placeholder;
-		picker.quickNavigate = options?.quickNavigateConfiguration;
-		picker.hideInput = !!picker.quickNavigate && !visibleQuickAccess; // only hide input if there was no picker opened already
-		if (typeof options?.itemActivation === 'number' || options?.quickNavigateConfiguration) {
-			picker.itemActivation = options?.itemActivation ?? ItemActivation.SECOND /* quick nav is always second */;
-		}
-		picker.contextKey = descriptor?.contextKey;
-		picker.filterValue = (value: string) => value.substring(descriptor ? descriptor.prefix.length : 0);
 
 		// Pick mode: setup a promise that can be resolved
 		// with the selected items and prevent execution
 		let pickPromise: DeferredPromise<IQuickPickItem[]> | undefined = undefined;
-		if (pick) {
-			pickPromise = new DeferredPromise<IQuickPickItem[]>();
-			disposables.add(Event.once(picker.onWillAccept)(e => {
-				e.veto();
-				picker.hide();
-			}));
-		}
 
-		// Register listeners
-		disposables.add(this.registerPickerListeners(picker, provider, descriptor, value, options));
+		// ── ★★ [Saros] 保证「异常也不会泄漏」（2026-09-15，修 [LEAKED DISPOSABLE]）──────
+		// 背景：`disposables`（上面这个 store）**没有父级** —— `setParent` 只对 `add()`
+		// 进去的**子**对象生效，store 自身不在任何 store 里 ⇒ 它的释放**完全依赖**
+		// 下面 `picker.onDidHide` 里那一次 `disposables.dispose()`。
+		// 而 `picker.show()` 在**最后**才调用 ⇒ 只要它之前的任何一步抛异常
+		// （例如 `disposables.add(provider.provide(...))` 拿到 `undefined` 时 `add` 会抛），
+		// `onDidHide` **永不触发** ⇒ 该 store 及其中的 picker / 监听器**永久泄漏** ✗。
+		// 泄漏由 `GCBasedDisposableTracker` 在 GC 时以
+		// `[LEAKED DISPOSABLE] … at QuickAccessController.doShowOrPick (quickAccess.ts:112)`
+		// 报出（`base/common/lifecycle.ts:52`，dev 诊断 ✓）。
+		//
+		// 修法：把 `picker.show()` 之前的全部装配放进 try ⇒ 失败时**主动释放**再原样抛出。
+		// ⚠ 故意**不吞异常**：抛出后由上游 `CommandService` 记录，这样「真正的异常」
+		// 不会被「泄漏」这个次生现象掩盖 ✗（此前它完全静默，无从定位 ✓）。
+		try {
+			picker.value = value;
+			this.adjustValueSelection(picker, descriptor, options);
+			picker.placeholder = options?.placeholder ?? descriptor?.placeholder;
+			picker.quickNavigate = options?.quickNavigateConfiguration;
+			picker.hideInput = !!picker.quickNavigate && !visibleQuickAccess; // only hide input if there was no picker opened already
+			if (typeof options?.itemActivation === 'number' || options?.quickNavigateConfiguration) {
+				picker.itemActivation = options?.itemActivation ?? ItemActivation.SECOND /* quick nav is always second */;
+			}
+			picker.contextKey = descriptor?.contextKey;
+			picker.filterValue = (value: string) => value.substring(descriptor ? descriptor.prefix.length : 0);
 
-		// Ask provider to fill the picker as needed if we have one
-		// and pass over a cancellation token that will indicate when
-		// the picker is hiding without a pick being made.
-		const cts = disposables.add(new CancellationTokenSource());
-		if (provider) {
-			disposables.add(provider.provide(picker, cts.token, options?.providerOptions));
-		}
-
-		// Finally, trigger disposal and cancellation when the picker
-		// hides depending on items selected or not.
-		Event.once(picker.onDidHide)(() => {
-			if (picker.selectedItems.length === 0) {
-				cts.cancel();
+			if (pick) {
+				pickPromise = new DeferredPromise<IQuickPickItem[]>();
+				disposables.add(Event.once(picker.onWillAccept)(e => {
+					e.veto();
+					picker.hide();
+				}));
 			}
 
-			// Start to dispose once picker hides
+			// Register listeners
+			disposables.add(this.registerPickerListeners(picker, provider, descriptor, value, options));
+
+			// Ask provider to fill the picker as needed if we have one
+			// and pass over a cancellation token that will indicate when
+			// the picker is hiding without a pick being made.
+			const cts = disposables.add(new CancellationTokenSource());
+			if (provider) {
+				disposables.add(provider.provide(picker, cts.token, options?.providerOptions));
+			}
+
+			// Finally, trigger disposal and cancellation when the picker
+			// hides depending on items selected or not.
+			Event.once(picker.onDidHide)(() => {
+				if (picker.selectedItems.length === 0) {
+					cts.cancel();
+				}
+
+				// Start to dispose once picker hides
+				disposables.dispose();
+
+				// Resolve pick promise with selected items
+				pickPromise?.complete(picker.selectedItems.slice(0));
+			});
+
+			// Finally, show the picker. This is important because a provider
+			// may not call this and then our disposables would leak that rely
+			// on the onDidHide event.
+			picker.show();
+		} catch (error) {
+			// 释放（幂等：已 dispose 的 store 再次 dispose 是 no-op ✓）
 			disposables.dispose();
-
-			// Resolve pick promise with selected items
-			pickPromise?.complete(picker.selectedItems.slice(0));
-		});
-
-		// Finally, show the picker. This is important because a provider
-		// may not call this and then our disposables would leak that rely
-		// on the onDidHide event.
-		picker.show();
+			throw error;
+		}
 
 		// If the previous picker had a selection and the value is unchanged, we should set that in the new picker.
 		if (visibleSelection && visibleValue === value) {

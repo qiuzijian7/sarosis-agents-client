@@ -1,6 +1,6 @@
 ﻿import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
-import { IToolCall, ISubAgentData } from './agentChatTypes.js';
-import { formatSubAgentTask, cleanTracePreview, filterChildSubAgents } from './subAgentCardUtils.js';
+import { IToolCall, ISubAgentData, ISubAgentToolTrace } from './agentChatTypes.js';
+import { formatSubAgentTask, cleanTracePreview, shortenTraceDetail, filterChildSubAgents } from './subAgentCardUtils.js';
 import { AgentChatPanelFileCards } from './agentChatPanel.fileCards.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
 
@@ -388,6 +388,26 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		}
 		const tokTotal = tokIn + tokOut;
 
+		// ── 诊断（定位「执行完成后 token/积分 UI 消失」）──────────────────────
+		// 逐子代理打印原始字段而非聚合值：聚合为 0 时无法区分「字段缺失」与
+		// 「字段存在但值为 0」，只有原始形态能指向数据链的断点。
+		if ((globalThis as { __SAROSIS_META_DIAG?: boolean }).__SAROSIS_META_DIAG) {
+			const perSub = subsForTokens.map(s => ({
+				id: s.id,
+				status: s.status,
+				hasTokens: s.tokensUsed != null,
+				tok: s.tokensUsed ? `${s.tokensUsed.input}/${s.tokensUsed.output}` : null,
+				credits: typeof s.creditUsed === 'number' ? s.creditUsed : null,
+				startedAt: typeof s.startedAt === 'number' ? s.startedAt : null,
+				completedAt: typeof s.completedAt === 'number' ? s.completedAt : null,
+			}));
+			this._logService.info(
+				`[MetaDiag] tool=${tc.id} status=${tc.status} subs=${subsForTokens.length} `
+				+ `dur=${delegateDuration ?? 'null'} tok=${tokTotal} credit=${creditTotal} `
+				+ `| ${JSON.stringify(perSub)}`
+			);
+		}
+
 
 		// 展开体：单个可滚动列表（任务指令 / 执行列表 / 执行结果）
 		const body = append(wrapper, $('.tool-header-children'));
@@ -435,8 +455,11 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 				append(li, $('span.du-step-name')).textContent = this._getToolTitle(t.name, undefined, t.name, false);
 				const raw = t.args ?? t.result;
 				if (raw != null) {
-				append(li, $('span.du-step-detail')).textContent = cleanTracePreview(
-					typeof raw === 'string' ? raw : JSON.stringify(raw), 4000);
+				// 行内只放单行短摘要（CSS ellipsis 收尾）。原先传 4000 预算会把整段
+				// 参数/结果铺进 DOM，虽被 CSS 裁掉不可见，但文本节点仍是多行，
+				// 与「执行列表每行一条」的单行语义不符，也白白撑大 DOM。
+				append(li, $('span.du-step-detail')).textContent = shortenTraceDetail(
+					typeof raw === 'string' ? raw : JSON.stringify(raw));
 				}
 			}
 		} else if (isRunning) {
@@ -552,8 +575,24 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 				crEl.textContent = `💳 ${creditTotal.toFixed(2)}`;
 				crEl.title = `积分消耗：${creditTotal.toFixed(2)}`;
 			}
-			// 三项都无数据 → 移除空行，避免卡片底部多一条空白
-			if (!meta.firstChild) { meta.remove(); }
+			// ★ 用户需求：耗时/积分/token 三项**常驻**，子代理执行完毕后依旧显示。
+			//   此前「三项皆无 → meta.remove()」会让整行消失（数据链某环缺值即触发），
+			//   用户观感为「执行完成后统计 UI 丢失」。现改为：缺值项退化为占位符并保留
+			//   元素与 tooltip 位置，行本身不再被移除，避免统计区在使用过程中闪没。
+			if (!meta.firstChild) {
+				const ph = append(meta, $('span.dlg-meta-item.dlg-meta-empty'));
+				ph.textContent = '—';
+				ph.title = '暂未获取到资源消耗数据';
+			}
+			// 诊断：记录本次实际产出的 DOM 项数。与上方 [MetaDiag] 的聚合值对照，
+			// 可判定「UI 缺失」是数据未到位（聚合为 0）还是渲染分支被跳过（DOM 数不符）。
+			if ((globalThis as { __SAROSIS_META_DIAG?: boolean }).__SAROSIS_META_DIAG) {
+				this._logService.info(
+					`[MetaDiag] render tool=${tc.id} domItems=${meta.childElementCount} `
+					+ `dur=${typeof delegateDuration === 'number'} tok=${tokTotal > 0} credit=${creditTotal > 0} `
+					+ `text="${(meta.textContent ?? '').trim()}"`
+				);
+			}
 		}
 
 		return wrapper;
@@ -690,6 +729,24 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		return this._formatDuration(ms);
 	}
 
+	/**
+	 * 拼装 trace 行的 hover tip（原生 `title`，多行）。
+	 *
+	 * 2026-09-15：执行列表要求每步单行展示，完整内容移入 hover tip。tip 里
+	 * 同时给出工具名、状态与完整 args/result —— 因为行内是 ellipsis 截断态，
+	 * 用户只能靠 tip 看到全文。
+	 */
+	protected _buildTraceHoverTip(trace: ISubAgentToolTrace, fullDetail: string): string {
+		const statusLabel = trace.status === 'error' ? '失败'
+			: trace.status === 'running' ? '运行中' : '完成';
+		const toolTitle = this._getToolTitle(trace.name, undefined, trace.name, false);
+		const lines = [`${toolTitle}（${trace.name}） · ${statusLabel}`];
+		if (fullDetail) {
+			lines.push('', fullDetail);
+		}
+		return lines.join('\n');
+	}
+
 	protected override _createSubAgentCard(sa: ISubAgentData): HTMLElement {
 		const isRunning = sa.status === 'running';
 		const isDone = sa.status === 'done';
@@ -784,17 +841,23 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 					icon.textContent = t.status === 'error' ? '✗' : t.status === 'running' ? '⏳' : '✓';
 					const nameEl = append(item, $('span.subagent-card-trace-name'));
 					nameEl.textContent = this._getToolTitle(t.name, undefined, t.name, false);
-			if (t.args || t.result) {
-				const detail = append(item, $('span.subagent-card-trace-detail'));
-				const raw = t.args ?? t.result;
-				// 2026-07-27：统一走 cleanTracePreview（解包 [{"type":"text"}] 协议包装、
-				// results/files 数组提取文件路径摘要）——原直接 slice 会显示
-				// `[{"type":"text","text":"{\"res` 包装残骸或 results=[…] 折叠态。
-				const rawStr = typeof raw === 'string' ? raw
-					: raw === null || raw === undefined ? ''
-					: JSON.stringify(raw);
-				detail.textContent = cleanTracePreview(rawStr, 4000);
-			}
+					if (t.args || t.result) {
+						const detail = append(item, $('span.subagent-card-trace-detail'));
+						const raw = t.args ?? t.result;
+						// 2026-07-27：统一走 cleanTracePreview（解包 [{"type":"text"}] 协议包装、
+						// results/files 数组提取文件路径摘要）——原直接 slice 会显示
+						// `[{"type":"text","text":"{\"res` 包装残骸或 results=[…] 折叠态。
+						const rawStr = typeof raw === 'string' ? raw
+							: raw === null || raw === undefined ? ''
+							: JSON.stringify(raw);
+						const full = cleanTracePreview(rawStr, 4000);
+						// 行内只放单行短摘要（CSS ellipsis 收尾），完整参数/结果走 hover tip，
+						// 避免把 4000 字符铺进 190px 的滚动列表。
+						detail.textContent = shortenTraceDetail(rawStr);
+						const tip = this._buildTraceHoverTip(t, full);
+						detail.title = tip;
+						item.title = tip;
+					}
 				}
 			};
 			renderTraceList();
@@ -824,6 +887,9 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		}
 
 		// ── Footer ──
+		// 2026-09-15（用户需求）：footer 常驻 —— subagent 执行完毕后卡片会切到 .collapsed，
+		// 此前 CSS 连 footer 一起 display:none，导致卡片一旦折叠就看不到执行统计。
+		// 现折叠只收起 .subagent-card-body，footer 内的统计行始终保留。
 		const saFooter = append(saCard, $('.subagent-card-footer'));
 		const traceCount = sa.toolTraces?.length ?? 0;
 		const doneCount = sa.toolTraces?.filter(t => t.status === 'done').length ?? 0;

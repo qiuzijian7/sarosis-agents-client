@@ -120,8 +120,11 @@ protected _openSessionContextMenu(e: MouseEvent): void {
 
 	renameItem.addEventListener('click', (ev) => {
 		ev.stopPropagation();
+		// 先取出锚点矩形，再关菜单——菜单一旦移除，renameItem 就脱离了文档，
+		// getBoundingClientRect() 会退化为全 0，输入框将被定位到视口左上角。
+		const anchorRect = renameItem.getBoundingClientRect();
 		this._closeSessionContextMenu();
-		this._openSessionRenameOverlay(sessionId, sessionName ?? undefined, renameItem);
+		this._openSessionRenameOverlay(sessionId, sessionName ?? undefined, anchorRect);
 	});
 
 	menuEl.appendChild(renameItem);
@@ -147,18 +150,17 @@ protected _closeSessionContextMenu(): void {
  * 在「重命名」菜单项处就地展开 input 浮层，回车确认 / Esc 取消。
  * 直接调用宿主注入的 onRenameSession 回调上报新名称。
  */
-protected _openSessionRenameOverlay(sessionId: string, sessionName: string | undefined, anchor: HTMLElement): void {
+protected _openSessionRenameOverlay(sessionId: string, sessionName: string | undefined, anchorRect: DOMRect): void {
+	const doc = mainWindow.document;
 	const input = $('input.chat-session-rename-input') as HTMLInputElement;
 	input.type = 'text';
 	input.value = sessionName ?? '';
 	input.placeholder = '输入新的会话名称';
 	input.maxLength = 120;
 
-	const rect = anchor.getBoundingClientRect();
-	const doc = anchor.ownerDocument;
 	input.style.position = 'fixed';
-	input.style.left = `${rect.left}px`;
-	input.style.top = `${rect.bottom + 4}px`;
+	input.style.left = `${anchorRect.left}px`;
+	input.style.top = `${anchorRect.bottom + 4}px`;
 	input.style.zIndex = '1001';
 	input.style.minWidth = '180px';
 
@@ -166,15 +168,28 @@ protected _openSessionRenameOverlay(sessionId: string, sessionName: string | und
 	input.focus();
 	input.select();
 
-	const commit = () => {
-		const newName = input.value.trim();
+	let committed = false;
+	const teardown = () => {
 		const disposables = this._sessionRenameOverlayDisposables;
 		this._sessionRenameOverlayDisposables = null;
 		disposables?.forEach(d => d.dispose());
 		input.remove();
+	};
+
+	const commit = () => {
+		if (committed) { return; }
+		committed = true;
+		const newName = input.value.trim();
+		teardown();
 		if (newName && newName !== sessionName) {
 			this._onRenameSession?.(sessionId, newName);
 		}
+	};
+
+	const cancel = () => {
+		if (committed) { return; }
+		committed = true;
+		teardown();
 	};
 
 	const onKeyDown = (ev: KeyboardEvent) => {
@@ -183,18 +198,27 @@ protected _openSessionRenameOverlay(sessionId: string, sessionName: string | und
 			commit();
 		} else if (ev.key === 'Escape') {
 			ev.preventDefault();
-			const disposables = this._sessionRenameOverlayDisposables;
-			this._sessionRenameOverlayDisposables = null;
-			disposables?.forEach(d => d.dispose());
-			input.remove();
+			cancel();
 		}
 	};
 
 	const onBlur = () => commit();
 
-	const d1 = addDisposableListener(input, EventType.KEY_DOWN, onKeyDown);
-	const d2 = addDisposableListener(input, EventType.BLUR, onBlur);
-	this._sessionRenameOverlayDisposables = [d1, d2];
+	// blur 监听必须延到下一轮事件循环再挂。点击「重命名」时，菜单会在本次
+	// click 中同步移除，被点的节点随之脱离文档、焦点回落到 body，从而对刚
+	// 创建的 input 立刻触发一次 blur；若此刻已挂上 onBlur=commit，输入框会在
+	// 同一事件轮内被创建又移除，用户永远看不到它。
+	const deferred: IDisposable[] = [];
+	this._sessionRenameOverlayDisposables = deferred;
+	deferred.push(addDisposableListener(input, EventType.KEY_DOWN, onKeyDown));
+	queueMicrotask(() => {
+		if (committed) { return; }
+		deferred.push(addDisposableListener(input, EventType.BLUR, onBlur));
+		if (doc.activeElement !== input) {
+			// 挂载期间焦点已丢失（如菜单移除的余波），无需再等待一次 blur。
+			commit();
+		}
+	});
 }
 
 protected override _getWorktreeLabel(): string {

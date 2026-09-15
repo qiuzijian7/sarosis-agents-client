@@ -104,6 +104,25 @@ export interface GraphEdge {
 	properties?: Record<string, any>;
 }
 
+/**
+ * `mergeFromJSONAsync` 的合并统计（2026-09-15）。
+ *
+ * 为什么要把「跳过数」暴露出来：重复节点曾长期**完全静默**——
+ * 实测本仓制品 `graph.db.zst` 里 358,887 个节点去重后只有 180,753（**49.6% 冗余**，每条 qn 出现 2 次），
+ * 成因是同一制品被重复合并（bootstrap 并发 / 工作区切换），而旧实现无条件 `_nextNodeId++` 追加。
+ * 后果链：内存项目节点数翻倍 → `_ensureSqliteFreshness` 恒判「sqlite 落后」（36 万 vs 17.6 万）
+ * → 每次查询都触发全量重同步 → 查询与写事务竞争（实测单次检索 2.3s 且候选残缺）。
+ * 故合并必须幂等，且**跳过数要能被调用方记进日志**。
+ */
+export interface IGraphMergeStats {
+	/** 实际新增的节点数 */
+	nodesAdded: number;
+	/** 因 `(project, qualifiedName)` 已存在而**跳过**的节点数（重复合并 / 制品自带重复） */
+	nodesSkipped: number;
+	edgesAdded: number;
+	edgesSkipped: number;
+}
+
 export interface FileHash {
 	project: string;
 	relPath: string;
@@ -116,6 +135,14 @@ export interface SearchParams {
 	project?: string;
 	query?: string;            // (P0) BM25 全文搜索 — 自然语言查询, 驼峰分词感知
 	namePattern?: string;     // regex
+	/**
+	 * 只匹配 `name`（不匹配 `qualifiedName`），2026-09-15。
+	 *
+	 * 为什么需要：QN 形如 `<相对文件路径>::<符号名>` ⇒ 或匹配会把**文件路径里的词**也算命中
+	 * —— Find Symbol 搜 `test` 会返回 `classifyLLM.test.ts::MockClassifyLLM`（用户截图报障）。
+	 * 注意这是**符号名检索**的语义（Find Symbol）；`search_graph` 的 `query` 走 BM25 路径不受影响。
+	 */
+	nameOnly?: boolean;
 	qnPattern?: string;       // (P1) qualified name regex
 	label?: string;            // node type filter
 	excludeLabels?: string[];  // (P1) exclude these node types
@@ -887,9 +914,13 @@ export class CodebaseGraphStore {
 		if (!skipName && params.namePattern) {
 			const flags = params.caseSensitive ? '' : 'i';
 			const regex = new RegExp(params.namePattern, flags);
-			candidates = candidates.filter(n =>
-				regex.test(n.name) || (n.qualifiedName && regex.test(n.qualifiedName))
-			);
+			// nameOnly（2026-09-15）：**只**匹配符号名 —— 否则 QN 里的文件路径会命中
+			// （QN = `<相对路径>::<符号名>`，搜 "test" 会返回 `…/classifyLLM.test.ts::MockClassifyLLM`）。
+			candidates = params.nameOnly
+				? candidates.filter(n => regex.test(n.name))
+				: candidates.filter(n =>
+					regex.test(n.name) || (n.qualifiedName && regex.test(n.qualifiedName))
+				);
 		}
 
 		// Qualified name pattern filter (P1)
@@ -1326,12 +1357,16 @@ export class CodebaseGraphStore {
 	 * @param data 反序列化的图数据
 	 * @param projectOverride 若提供，覆盖所有 node/edge/fileHash 的 project 字段（区分不同 folder）
 	 * 注意：BM25 不在此恢复（node-id 已重映射），调用方须在合并全部 folder 后统一 rebuildBM25()。
+	 *
+	 * **幂等（2026-09-15 修，见 IGraphMergeStats 注释）**：同 `(project, qualifiedName)` 已存在的
+	 * 节点**复用既有 id 并跳过新增**（边因此仍指向既有节点，不产生悬空）；重复边由 `_edgeDedup` 拦下。
 	 */
-	async mergeFromJSONAsync(data: any, projectOverride?: string, onProgress?: (loaded: number, total: number) => void): Promise<void> {
+	async mergeFromJSONAsync(data: any, projectOverride?: string, onProgress?: (loaded: number, total: number) => void): Promise<IGraphMergeStats> {
 		const BATCH_SIZE = 8000;
 		const nodes = data.nodes || [];
 		const edges = data.edges || [];
 		const totalItems = nodes.length + edges.length;
+		const stats: IGraphMergeStats = { nodesAdded: 0, nodesSkipped: 0, edgesAdded: 0, edgesSkipped: 0 };
 
 		// 旧 id → 新 id 重映射表
 		const idMap = new Map<number, number>();
@@ -1341,9 +1376,18 @@ export class CodebaseGraphStore {
 			const end = Math.min(i + BATCH_SIZE, nodes.length);
 			for (let j = i; j < end; j++) {
 				const src = nodes[j];
+				const project = projectOverride ?? src.project;
+				// 幂等闸门：同 (project, qn) 已存在 ⇒ 复用其 id、跳过新增（qn 为空时不做判定，
+				// 否则多条空 qn 会被误判成重复）。
+				const qn = src.qualifiedName;
+				const existingId = qn ? this._nodesByQN.get(`${project}:${qn}`) : undefined;
+				if (existingId !== undefined) {
+					idMap.set(src.id, existingId);
+					stats.nodesSkipped++;
+					continue;
+				}
 				const newId = this._nextNodeId++;
 				idMap.set(src.id, newId);
-				const project = projectOverride ?? src.project;
 				const node: GraphNode = { ...src, id: newId, project };
 				this._nodes.set(newId, node);
 				this._nodesByQN.set(`${project}:${node.qualifiedName}`, newId);
@@ -1357,12 +1401,13 @@ export class CodebaseGraphStore {
 				const labelArr = this._nodesByLabel.get(labelKey) || [];
 				labelArr.push(newId);
 				this._nodesByLabel.set(labelKey, labelArr);
+				stats.nodesAdded++;
 			}
 			if (onProgress) { onProgress(end, totalItems); }
 			await new Promise<void>(resolve => setTimeout(resolve, 0));
 		}
 
-		// Restore edges (batched, remapped source/target；跳过悬空边)
+		// Restore edges (batched, remapped source/target；跳过悬空边与重复边)
 		for (let i = 0; i < edges.length; i += BATCH_SIZE) {
 			const end = Math.min(i + BATCH_SIZE, edges.length);
 			for (let j = i; j < end; j++) {
@@ -1370,17 +1415,21 @@ export class CodebaseGraphStore {
 				const newSource = idMap.get(src.sourceId);
 				const newTarget = idMap.get(src.targetId);
 				if (newSource === undefined || newTarget === undefined) { continue; }
+				// 与 insertEdge 同口径去重（旧实现直接写 `_edges` 绕过它 ⇒ 重复合并会让边翻倍）
+				const dedupKey = `${newSource}:${newTarget}:${src.type}`;
+				if (this._edgeDedup.has(dedupKey)) { stats.edgesSkipped++; continue; }
+				this._edgeDedup.add(dedupKey);
 				const newId = this._nextEdgeId++;
 				const project = projectOverride ?? src.project;
 				const edge: GraphEdge = { ...src, id: newId, sourceId: newSource, targetId: newTarget, project };
 				this._edges.set(newId, edge);
-				this._edgeDedup.add(`${newSource}:${newTarget}:${edge.type}`);
 				const outArr = this._outEdges.get(newSource) || [];
 				outArr.push(newId);
 				this._outEdges.set(newSource, outArr);
 				const inArr = this._inEdges.get(newTarget) || [];
 				inArr.push(newId);
 				this._inEdges.set(newTarget, inArr);
+				stats.edgesAdded++;
 			}
 			if (onProgress) { onProgress(nodes.length + end, totalItems); }
 			await new Promise<void>(resolve => setTimeout(resolve, 0));
@@ -1399,6 +1448,7 @@ export class CodebaseGraphStore {
 				if (newId !== undefined) { this._layout.set(newId, pos); }
 			}
 		}
+		return stats;
 	}
 
 	// ─── Transaction / Checkpoint / Integrity (对标 SQLite WAL) ──────────

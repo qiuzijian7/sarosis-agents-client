@@ -17,6 +17,22 @@ import './workbench.common.main.js';
 //#endregion
 
 
+//#region --- [Saros] singleton overrides (must come AFTER workbench.common.main) ---
+//
+// `registerSingleton` 只 push 不查重，`ServiceCollection` 是 Map ⇒ 后注册者胜出。
+// 所以凡是「覆盖 common 里已注册的 singleton」都必须放在本行之后，放进
+// `workbench.common.main.ts` 里反而会因为同文件内的相对顺序而失效。
+//
+// `AgentEditorParts`：让标准窗口的 `IEditorGroupsService` 多挂一个
+// `Parts.AGENT_EDITOR_PART`（IDE 底座 + Agent 布局的 grid 需要它有实例）。
+// 它不覆写 `createMainEditorPart()`，标准窗口编辑器行为不变。
+// 桌面专属：Agent 布局目前只面向桌面窗口，不进 web bundle。
+
+import '../sessions/browser/parts/agentEditorParts.js';
+
+//#endregion
+
+
 //#region --- workbench (desktop main)
 
 import './electron-browser/desktop.main.js';

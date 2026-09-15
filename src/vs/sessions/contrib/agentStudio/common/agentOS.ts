@@ -65,6 +65,21 @@ export interface ISubAgentCardSnapshot {
 	/** 子代理开始/结束时间（epoch ms），供 UI 计算时长（卡片时间 chip 与页脚统计）。 */
 	readonly startedAt?: number;
 	readonly completedAt?: number;
+	/**
+	 * ★ 2026-09-13：**累计** token 用量（input/output），执行过程中实时更新。
+	 *
+	 * 与 UI 侧 `ISubAgentData.tokensUsed` 同形（本快照刻意与 UI 结构对齐，见本文件顶部注释）。
+	 * ⚠ 终态快照会**整体替换**实时快照 ⇒ 终态必须回填本字段，否则表现为
+	 * 「执行完成后 token/积分 UI 消失」（delegationTools 的终态 flush 已按此处理）。
+	 */
+	readonly tokensUsed?: { input: number; output: number };
+	/** ★ 2026-09-13：累计积分消耗（网关 `usage.credit`），与 `tokensUsed` 完全平行。 */
+	readonly creditUsed?: number;
+	/**
+	 * 该子代理**不单独建卡**：内容内嵌在父工具卡（delegate_task / workflow run）中。
+	 * 由 delegationTools / workflowExecutor 传入；UI 侧目前未读取，属预留契约。
+	 */
+	readonly skipSubAgentCard?: boolean;
 }
 
 /**

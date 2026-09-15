@@ -52,8 +52,16 @@ function stripComments(src: string): string {
 	// 实测把 `toolExecutionGuard.ts` 从 39896 字符砍到 **21315** —— 代码被整段吃掉，
 	// 正向断言随之失败。行注释规则不跨行，没有这个风险。
 	//
-	// 已知残留：**块注释**里提到的标识符仍会让正向断言「看起来」通过。
-	// 这比「误吃代码导致断言乱报」可接受得多。
+	// 已知残留（**两个方向**都要知道）：
+	//   · **正向**断言：块注释里提到某个标识符，会让断言「看起来」通过；
+	//   · **负向**断言（「不得出现 X」）：块注释里**提到 X 本身**会让断言**假失败**
+	//     —— 2026-09-15 实测：`sidebarPart.ts` 一段 `/** … */` 的说明写了「不重载窗口」，
+	//     导致「不得出现『重载窗口』文案」这条断言挂掉（代码里其实已经没有该文案）。
+	// 前者比后者更常见，而两者都比「误吃代码导致断言乱报」可接受得多，故共用实现保持不变。
+	//
+	// ★ 需要**负向**断言时：在**该套件内**用更严的局部版本（先剥块注释再剥行注释），
+	// 不要改这个共用函数 —— 例如 `workspaceFolderWriters.test.ts` 里的 `stripAllComments`。
+	// 局部版本的风险（可能吃代码）由该套件的断言自己承担，影响面被限制在套件内。
 	return src.replace(/^[ \t]*\/\/.*$/gm, '');
 }
 
@@ -61,6 +69,18 @@ function readSource(rel: string): string {
 	const abs = path.join(process.cwd(), AGENT_STUDIO, rel);
 	assert.ok(fs.existsSync(abs), `源码文件不存在（路径基准变了？）：${abs}`);
 	return stripComments(fs.readFileSync(abs, 'utf8'));
+}
+
+/**
+ * 更严的剥离：先剥块注释再剥行注释 —— **仅**用于负向断言（「不得出现 X」）。
+ *
+ * 共用的 `stripComments` 刻意只剥整行 `//`（见其「已知残留」），而源码的块注释说明里
+ * 常常**正引用了旧写法** —— 本套件 ⑯ 就被自己写的「旧实现首行是 if (!node.filePath ||
+ * !node.startLine)」骗过一次（负向断言假失败）。局部版本「可能吃代码」的风险由本套件自担。
+ */
+function stripAllComments(rel: string): string {
+	const abs = path.join(process.cwd(), AGENT_STUDIO, rel);
+	return fs.readFileSync(abs, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
 }
 
 /** 断言某文件里出现了某个调用 —— 即「这条路径确实接了该护栏」。 */
@@ -331,6 +351,369 @@ suite('护栏接线不变量（源码级）', () => {
 			gate < autoApprove,
 			'受保护路径判定必须在自动放行分支**之前**求值 —— 否则自动放行会先 return true，'
 			+ '`isProtected` 永不生效，fail-closed 承诺落空',
+		);
+	});
+
+	// ── ⑬ 图谱「本轮 project」不得依赖可变字段 `this._projectName` ──────────────
+	//
+	// 背景（2026-09-15，用户报「工作区是 sarosis 却按 S1Game 检索」的同一族缺陷）：
+	// `CodebaseGraphService` 是**窗口内单例**，而一轮**全量索引要跑数分钟**。期间
+	// bootstrap 的 `loadGraphMerge`（大图 10~40s，极易重叠）、工作区切换
+	// （`_pruneForeignProjects`）或 viewer 的 `_autoDetectProjectName` 都可能改写
+	// `this._projectName`。若索引体内读该字段，本轮的 post-pass / 文件哈希 / 落盘就会
+	// 按**别的项目**过滤 ⇒ CALLS/克隆/Leiden 边被静默丢弃、`graph.db.zst` 内容错位
+	// （`_saveGraph` 的 sanity check 只能事后告警，制品已被写坏）。
+	//
+	// 修法 = 两条一起才完整：
+	//   A. 索引体内一律用本轮局部常量 `projectName`（含 `_saveGraph` / `_syncGraphToSqlite`）；
+	//   B. helper 内部仍读该字段 ⇒ 外部改写必须走 `_setProjectNameUnlessIndexing()`（索引期间拒绝）。
+	// 本用例把这两条钉死：谁把任一处改回直接读字段，当场失败。
+	test('★★ 全量索引的 project 必须用本轮局部常量，且外部改写必须经守卫', () => {
+		const rel = 'browser/codebaseGraphService.ts';
+		const src = readSource(rel);
+
+		// A. 索引体：局部常量 + 落盘/同步/activeProject 都用它
+		assertWired(rel, "const projectName = config.projectName || config.subPath || this._basename(rootPath) || '_default';", '本轮 project 的局部常量');
+		assertWired(rel, 'this._graph.setActiveProject(projectName);', '节点/边标记用本轮 project');
+		assertWired(rel, 'this._saveGraph(rootPath, projectName)', '制品落盘用本轮 project');
+		assertWired(rel, 'await this._syncGraphToSqlite(projectName);', 'SQLite 同步用本轮 project');
+		assertWired(rel, '_recordHashAfterParse(projectName, relPath, filePath, result.status);', '文件哈希用本轮 project');
+		assertWired(rel, 'this._recordFileHash(projectName, relPath, filePath);', '跳过类哈希用本轮 project');
+
+		// A（负向）：落盘/同步不得退回可变字段
+		assert.ok(
+			!src.includes('this._saveGraph(rootPath, this._projectName)'),
+			`[图谱 project 归属] ${rel} 的 _saveGraph 不得再传 this._projectName —— `
+			+ '索引期间该字段可能被别的工作区的 merge 改写，制品会被写成别的项目的子图（甚至为空）',
+		);
+		assert.ok(
+			!src.includes('await this._syncGraphToSqlite();'),
+			`[图谱 project 归属] ${rel} 的 _syncGraphToSqlite() 不得省略 project 参数 —— `
+			+ '缺省会读 this._projectName，同上有被改写风险',
+		);
+		assert.ok(
+			!src.includes('_recordHashAfterParse(this._projectName'),
+			`[图谱 project 归属] ${rel} 的哈希记录不得再读 this._projectName`,
+		);
+
+		// B. 外部改写路径必须走守卫（索引期间拒绝改写）
+		assertWired(rel, 'private _setProjectNameUnlessIndexing(project: string): void {', '守卫定义');
+		assertWired(rel, 'this._setProjectNameUnlessIndexing(detected);', '_autoDetectProjectName 接线');
+		assertWired(rel, 'this._setProjectNameUnlessIndexing(this._resolveActiveProject(', '_loadGraphMergeImpl 接线');
+		assertWired(rel, 'this._setProjectNameUnlessIndexing(activeProject);', '_pruneForeignProjects 接线');
+		assert.ok(
+			src.includes('if (this._isIndexing) {') && src.includes('_logService.debug'),
+			`[图谱 project 归属] ${rel} 的守卫必须在索引进行中**拒绝**改写（否则 B 条形同虚设）`,
+		);
+
+		// B（负向）：三处外部改写不得绕过守卫直接赋值
+		assert.ok(
+			!src.includes('this._projectName = detected;'),
+			`[图谱 project 归属] ${rel} 的 _autoDetectProjectName 不得直接赋值 this._projectName`,
+		);
+		assert.ok(
+			!src.includes('this._projectName = this._resolveActiveProject('),
+			`[图谱 project 归属] ${rel} 不得直接赋值 this._projectName（merge/prune 都要走守卫）`,
+		);
+	});
+
+	// ── ⑭ 图谱候选检索的 project 过滤必须**下推到 SQL**（跨 IPC 四文件接线）────────
+	//
+	// 背景（2026-09-15 用户日志）：SQLite 文件是**跨工作区共享**的持久层
+	// （`<userData>/codebase-graph/graph.db`），里面留着历史工作区的项目（S1Game 34 万 + UE5EA…）。
+	// `searchNodes` 原先不带 project ⇒ 跨全库按 bm25 取前 N 条，**候选池被外来项目占满**
+	// （实测 needle="test" 的 231 条全是 S1Game:148 + UE5EA:83，本项目命中根本没进池），
+	// renderer 侧再按 project 收敛 ⇒ 结果恒为 0（「Find Symbol 搜不到任何东西」）。
+	//
+	// 这类改动**极易只改一半**（SQL 加了过滤但 IPC 没透传 / renderer 没传参 ⇒ 静默回到旧行为），
+	// 且行为缺陷只在「SQLite 里有别的工作区数据」时才显形 ⇒ 必须用源码级断言把四段接线一起钉死。
+	test('★★ 图谱候选检索的 project 过滤必须下推到 SQL（四段接线缺一不可）', () => {
+		// ① SQL：FTS 路径（JOIN 别名 n）与 LIKE 路径（单表）各自带上 project 条件
+		assertWired('node/codebaseGraphSqliteStore.ts', 'AND n.project = ?', 'FTS 路径的 project 过滤');
+		assertWired('node/codebaseGraphSqliteStore.ts', 'AND project = ?', 'LIKE 路径的 project 过滤');
+		// 注：只匹配到 project 参数为止（不带右括号）—— 后续再加参数（如 excludeTypes）时
+		// 不会把这条断言打破（2026-09-15 加第 5 参时实测踩过）。
+		assertWired('node/codebaseGraphSqliteStore.ts', 'async searchNodes(query: string, nodeType?: string, limit = 200, project?: string', 'store 侧签名');
+		// ② IPC 契约：renderer 侧接口必须暴露第 4 参
+		assertWired('common/codebaseGraphStoreChannel.ts', 'searchNodes(query: string, nodeType?: string, limit?: number, project?: string', 'IPC 契约签名');
+		// ③ 主进程 channel：必须把第 4 参透传（漏了 ⇒ 过滤永远拿不到值）
+		assertWired('electron-main/codebaseGraphStoreChannel.ts', "args![3] as string | undefined", '主进程透传第 4 参');
+		// ④ renderer 调用点：必须传当前工作区的 project（同样只匹配到该参数为止）
+		assertWired('browser/codebaseGraphService.ts', 'searchNodes(needle, nodeType, candidateCap, _wsProject', 'renderer 传 project');
+
+		// 负向：不得退回「不带 project」的跨库候选检索（否则候选池又会被外来项目占满）
+		const svc = readSource('browser/codebaseGraphService.ts');
+		assert.ok(
+			!svc.includes('searchNodes(needle, nodeType, candidateCap)'),
+			'[图谱候选检索] 不得退回不带 project 的 searchNodes —— 跨库候选会被历史工作区的项目占满，收敛后恒为 0',
+		);
+	});
+
+	// ── ⑮ 合并加载必须幂等 + bootstrap 必须防「同一 folder 并发重复加载」────────────
+	//
+	// 背景（2026-09-15 实测）：同一制品被合并两次（13:26:45 / 13:26:53 两行同样的
+	// `merged ...sarosis...`），而旧实现无条件 `_nextNodeId++` 追加 ⇒ 节点翻倍。
+	// 实测制品 `graph.db.zst`：358,887 节点 / 去重后 180,753 ⇒ **49.6% 冗余**。
+	// 后果链：内存项目节点数翻倍 → `_ensureSqliteFreshness` 恒判「sqlite 落后」（36 万 vs 17.6 万）
+	// → 每次查询都触发全量重同步 → 查询与写事务竞争（实测单次检索 2.3s 且候选残缺 231 条）。
+	//
+	// 两道防线缺一不可：① **源头**：bootstrap 登记「加载中」的 folder（否则 10~40s 的加载窗口内
+	// 任何重入都会重复发起）；② **兜底**：合并本身幂等（同 project+qn 复用既有 id 并跳过）。
+	test('★★ 图谱合并必须幂等，且 bootstrap 必须防重复加载（否则节点翻倍）', () => {
+		const storeRel = 'browser/codebaseGraphStore.ts';
+		assertWired(storeRel, 'async mergeFromJSONAsync(data: any, projectOverride?: string, onProgress?: (loaded: number, total: number) => void): Promise<IGraphMergeStats>', '合并返回统计（跳过数必须可见）');
+		assertWired(storeRel, 'const existingId = qn ? this._nodesByQN.get(`${project}:${qn}`) : undefined;', '幂等闸门（同 qn 复用既有 id）');
+		assertWired(storeRel, 'stats.nodesSkipped++;', '跳过计数');
+		// 负向：不得再无条件追加节点（`const newId = this._nextNodeId++;` 必须出现在幂等闸门之后）
+		const storeSrc = readSource(storeRel);
+		const gate = storeSrc.indexOf('const existingId = qn ? this._nodesByQN.get(');
+		const alloc = storeSrc.indexOf('const newId = this._nextNodeId++;', gate >= 0 ? gate : 0);
+		assert.ok(gate >= 0 && alloc > gate, '幂等闸门必须早于 id 分配 —— 否则重复合并仍会翻倍');
+
+		const bootRel = 'browser/codebaseGraphBootstrap.ts';
+		assertWired(bootRel, 'private readonly _loadingFolders = new Set<string>();', '在途 folder 集合');
+		assertWired(bootRel, '!this._loadingFolders.has(key)', 'toLoad 过滤在途 folder');
+		assertWired(bootRel, 'this._loadingFolders.add(key);', '加载前登记');
+		assertWired(bootRel, 'this._loadingFolders.delete(key);', '加载后清理（finally）');
+	});
+
+	// ── ⑯ 图谱节点跳转：必须统一走 resolveNodeLocation（2026-09-15）────────────
+	//
+	// 背景（用户报「双击 item 无法跳转打开对应的文件」）：
+	// 此前 **7 处**跳转各自手写「project root + 相对路径」，每一处都带两个静默失败点：
+	//  ① 只认 `getProjectRoots()[node.project]` **一项** —— 该映射的 value 来自
+	//     `_rootProjectMap`（**小写 + 正斜杠**），project 名对不上就静默放弃；
+	//  ② 把 `startLine` 当成可跳转前提，而图谱里**最常见的一类命中没有行号** ——
+	//     `CodebaseGraphService.addEdge()` 为 CONTAINS 边实体化的 `label='file'` stub
+	//     节点（只写 filePath/qualifiedName/name）。搜 `test` 命中的 `*.test.ts` 全是
+	//     这类节点；Definition 列尾部那个多余的 `:` 就是 `${filePath}:${startLine ?? ''}`
+	//     留下的痕迹 ⇒ 双击**恒静默返回**；
+	//  ③ 附带：`joinPath` 是 posix 语义，filePath 含 `\` 时拼出「文件名里带 \」的坏 URI。
+	// 现统一到 `ICodebaseGraphService.resolveNodeLocation()`（三级回退 + 行号缺省 + 未命中告警），
+	// 本用例钉住「7 处都必须委派、不许再各自拼 root」。
+	test('★★ 图谱节点跳转必须统一走 resolveNodeLocation（7 处不得再各自拼 root）', () => {
+		const svcRel = 'browser/codebaseGraphService.ts';
+		// 解析器本体：三级回退 + 行号缺省 + 未命中告警
+		assertWired(svcRel, 'async resolveNodeLocation(', 'service 级解析器');
+		assertWired(svcRel, 'const line = Math.max(1, node.startLine ?? 1);', '行号缺省落第 1 行');
+		assertWired(svcRel, 'file not found: "${node.filePath}"', '未命中要告警（不再静默）');
+		assertWired(svcRel, 'if (prefer) { push(URI.file(prefer.replace(/[\\\\/]+$/, \'\') + \'/\' + rel)); }', '① 该节点 project 直拼');
+		assertWired(svcRel, 'for (const r of Object.values(roots)) { push(URI.file(r.replace(/[\\\\/]+$/, \'\') + \'/\' + rel)); }', '② 其余已注册 root 兜底');
+		assertWired(svcRel, 'for (const u of this._resolveSearchFileCandidates(filePath)) { push(u); }', '③ 工作区各 folder（含绝对路径直解）');
+
+		// 7 处跳转入口必须全部委派，且不得再手拼 root
+		const jumpSites = [
+			'browser/widgets/findSymbolModal.ts',
+			'browser/widgets/classHierarchyModal.ts',
+			'browser/widgets/openFileModal.ts',
+			'browser/views/classHierarchyView.ts',
+			'browser/views/referencesResultView.ts',
+			'browser/codebaseGraphVaxSearch.contribution.ts',
+			'browser/codebaseGraphLanguageFeatures.contribution.ts',
+		];
+		for (const rel of jumpSites) {
+			assertWired(rel, 'resolveNodeLocation(', '必须委派给统一解析器');
+			const code = stripAllComments(rel);
+			assert.ok(
+				!/roots\[[^\]]*\?\?\s*'_default'\]/.test(code),
+				`[${rel}] 不得只解析单个 project root —— project 名对不上就静默失败，必须走 resolveNodeLocation`,
+			);
+			assert.ok(
+				!code.includes('joinPath(URI.file(root)'),
+				`[${rel}] 不得再手拼 joinPath(root, filePath) —— 必须走 resolveNodeLocation`,
+			);
+		}
+
+		// 负向：跳转入口不得把 startLine / line 当作可跳转前提
+		// （图谱 `label='file'` stub 节点没有行号，会让最常见的命中「双击无反应」）
+		for (const rel of [
+			'browser/widgets/findSymbolModal.ts',
+			'browser/widgets/classHierarchyModal.ts',
+			'browser/views/classHierarchyView.ts',
+			'browser/views/referencesResultView.ts',
+			'browser/widgets/implementationsModal.ts',
+		]) {
+			const code = stripAllComments(rel);
+			assert.ok(
+				!/!\s*(node|g|n)\.startLine\s*\)/.test(code),
+				`[${rel}] 不得以 startLine 缺失作为提前返回条件 —— file 节点没有行号`,
+			);
+			assert.ok(
+				!/!\s*(it|node)\.line\s*\)/.test(code),
+				`[${rel}] 不得以 line 缺失作为提前返回条件 —— 会让无行号候选双击无反应`,
+			);
+		}
+	});
+
+	// ── ⑰ 「搜符号」必须排除 file 桩节点，且排除条件下推到 SQL ──────────────────
+	//
+	// 背景（2026-09-15 用户截图）：Find Symbol 搜 `test` 时 200 条候选里大半是
+	// `label='file'` 的 CONTAINS 桩节点（`toolArgsJson.test.ts`、`kbBlocksCodec.test.ts` …）
+	// —— 它们是 `addEdge()` 为让 CONTAINS 边不悬空而实体化的**文件名桩**，不是符号，
+	// 却把真正的 `variable`/`function` 挤出 `LIMIT`（截图里可见的 6 条只有 2 条真符号）。
+	//
+	// 与 ⑭（project 过滤）**完全同一条教训**：过滤必须**下推到 SQL** —— 只在 renderer 后置
+	// 过滤时，`LIMIT` 已经先把符号丢掉了。故同样按「四段接线」钉死；另外 renderer 必须保留
+	// 一层后置兜底：IPC 是位置参数转发，「renderer 已更新、主进程未重启」时旧 main 会**静默
+	// 忽略**第 5 参（只靠 SQL 会让用户以为修复无效）。
+	test('★★ 「搜符号」必须排除 file 桩节点，且排除条件下推到 SQL（四段接线 + 兜底）', () => {
+		// ⓪ 常量：黑名单而非白名单（索引器新增类型默认仍可见，白名单会静默藏掉新类型）
+		assertWired('common/codebaseIndexDefaults.ts', "export const NON_SYMBOL_NODE_TYPES: readonly string[] = ['file', 'folder', 'project'];", '非符号类型常量');
+		// ① SQL：FTS（JOIN 别名 n）与 LIKE（单表）两条路径各自带排除条件
+		assertWired('node/codebaseGraphSqliteStore.ts', 'AND lower(n.type) NOT IN (', 'FTS 路径的排除条件');
+		assertWired('node/codebaseGraphSqliteStore.ts', 'AND lower(type) NOT IN (', 'LIKE 路径的排除条件');
+		// ★ 声明了过滤条件还必须**真的拼进 SQL**（半接线的经典形态：算了不用）
+		assertWired('node/codebaseGraphSqliteStore.ts', '${typeFilter}${projFilterFts}${exFilterFts}', 'FTS SQL 拼上排除');
+		assertWired('node/codebaseGraphSqliteStore.ts', '${typeFilter}${projFilterLike}${exFilterLike}', 'LIKE SQL 拼上排除');
+		// ② IPC 契约：第 5 参
+		assertWired('common/codebaseGraphStoreChannel.ts', 'excludeTypes?: readonly string[]', 'IPC 契约第 5 参');
+		// ③ 主进程 channel：必须透传第 5 参（漏了 ⇒ SQL 层过滤永远拿不到值）
+		assertWired('electron-main/codebaseGraphStoreChannel.ts', 'args![4] as readonly string[] | undefined', '主进程透传第 5 参');
+		// ④ renderer：调用点透传 + 参数契约 + 后置兜底（主进程未重启）
+		// 注：断言**不带右括号** —— 后续再加参数（如 nameOnly）时不会误报（本文件已踩过两次）
+		assertWired('browser/codebaseGraphService.ts', 'searchNodes(needle, nodeType, candidateCap, _wsProject, params.excludeTypes', 'renderer 传 excludeTypes');
+		assertWired('browser/codebaseGraphService.ts', 'non-symbol node(s) in renderer', 'renderer 后置兜底');
+		// ⑤ 调用方：Find Symbol 必须真的传常量（否则四段接线等于没接上）
+		assertWired('browser/widgets/findSymbolModal.ts', 'excludeTypes: NON_SYMBOL_NODE_TYPES,', 'Find Symbol 传常量');
+
+		// 负向：不得退回「不带 excludeTypes」的候选检索（截图那个形态会立刻回归）
+		const svc = readSource('browser/codebaseGraphService.ts');
+		assert.ok(
+			!svc.includes('searchNodes(needle, nodeType, candidateCap, _wsProject);'),
+			'[图谱候选检索] 不得退回不带 excludeTypes 的 searchNodes —— 候选池会被文件名桩节点占满',
+		);
+	});
+
+	// ── ⑱ 「搜符号」必须只匹配 name 列（QN 里的文件路径不得命中）────────────────
+	//
+	// 背景（2026-09-15 用户截图）：Find Symbol 搜 `test` 返回 `MockClassifyLLM`。
+	// QN = `<相对文件路径>::<符号名>`，而 FTS 索引了 `name, qualified_name, file_path, body`
+	// ⇒ `MATCH "test"` 命中了 `…/knowledge/classifyLLM.test.ts`。内存路径的 `namePattern`
+	// 同样是 `name || qualifiedName` 的或匹配 ⇒ 两条路径都要收口。
+	//
+	// ★ 实现要点：`nameOnly` 时**跳过 FTS 直接走 `name LIKE`** —— FTS 是**词元**匹配，
+	// 加 `name:` 列过滤后只命中词元恰为 `test` 的名字，`testHelper` 反而漏掉
+	// （真实 SQL 用例 `nameOnly is a substring match` 钉住这一点，别"优化"成 FTS 列过滤）。
+	test('★★ 「搜符号」必须只匹配 name 列（QN 里的文件路径不得命中）', () => {
+		// ① SQL：nameOnly 跳过 FTS + LIKE 只匹配 name
+		assertWired('node/codebaseGraphSqliteStore.ts', 'if (!nameOnly) {', 'nameOnly 时跳过 FTS');
+		assertWired('node/codebaseGraphSqliteStore.ts', 'const likeWhere = nameOnly ? `name LIKE ?` : `(name LIKE ? OR qualified_name LIKE ?)`;', 'LIKE 只匹配 name');
+		// ② IPC 契约 + ③ 主进程透传第 6 参
+		assertWired('common/codebaseGraphStoreChannel.ts', 'nameOnly?: boolean', 'IPC 契约第 6 参');
+		assertWired('electron-main/codebaseGraphStoreChannel.ts', 'args![5] as boolean | undefined', '主进程透传第 6 参');
+		// ④ renderer：SQL 调用点透传 + 后置兜底（主进程未重启）
+		assertWired('browser/codebaseGraphService.ts', 'params.excludeTypes, params.nameOnly)', 'renderer 传 nameOnly');
+		assertWired('browser/codebaseGraphService.ts', 'matched only via QN/filePath for', 'renderer 后置兜底');
+		// ④b 内存回退路径同口径
+		assertWired('browser/codebaseGraphStore.ts', 'params.nameOnly', '内存 store 同口径');
+		// ⑤ 调用方：Find Symbol 必须传
+		assertWired('browser/widgets/findSymbolModal.ts', 'nameOnly: true,', 'Find Symbol 传 nameOnly');
+
+		// 负向：内存 store 不得只剩「name || qualifiedName」的或匹配（QN 里的路径会重新命中）
+		const storeSrc = stripAllComments('browser/codebaseGraphStore.ts');
+		assert.ok(
+			storeSrc.includes('? candidates.filter(n => regex.test(n.name))'),
+			'[图谱符号名检索] 内存 store 必须保留 nameOnly 分支（只测 name）',
+		);
+	});
+
+	// ── ⑲ 「配置已加载」不得用 `_workspaceFileConfig === null` 当哨兵 ──────────────
+	//
+	// 背景（2026-09-15 用户日志）：启动阶段 `_initWorkspaceFileConfig: starting` 连续出现 3 遍
+	// （3 个 folder 各自 auto-index 读配置），每次都以
+	// `sarosis-agents-client.code-workspace has no codebase-memory key` 结束。
+	// 根因：`_doInitWorkspaceFileConfig` 在「文件里没有该 key」这条**正常路径**上什么都不赋值，
+	// 而 `ensureConfigReady()` 却用 `_workspaceFileConfig === null` 判断「还没加载」——
+	// 于是**每次调用都重跑整个加载**（列 root 的 89 个子项 + 读 4.4KB + JSONC 解析 +
+	// 300 字符 preview 日志），且并发调用之间没有 in-flight 去重。
+	test('★★ 「配置已加载」不得用 _workspaceFileConfig === null 当哨兵（会无限重载）', () => {
+		const rel = 'browser/codebaseMemoryMcpService.ts';
+		const src = stripAllComments(rel);
+
+		// 正向：独立「已尝试加载」标记 + finally 置位 + 工作区变化时重置
+		assertWired(rel, 'private _workspaceFileConfigLoaded = false;', '独立「已尝试加载」标记');
+		assertWired(rel, 'if (this._workspaceFileConfigLoaded) { return; }', 'ensureConfigReady 用该标记判断');
+		assertWired(rel, 'this._workspaceFileConfigLoaded = true;', '加载完成后置位');
+		assertWired(rel, 'this._workspaceFileConfigLoaded = false;', '工作区变化时重置');
+		assert.ok(
+			src.includes('} finally {'),
+			'[配置加载] 置位必须放 finally —— 异常路径不置位仍会无限重试',
+		);
+
+		// 负向：判据不得退回 null 哨兵（「没有 key」这条正常路径会让它恒为 null）
+		assert.ok(
+			!src.includes('if (this._workspaceFileConfig === null) {'),
+			'[配置加载] 不得用 `_workspaceFileConfig === null` 判断「是否已加载」—— '
+			+ '文件里没有 codebase-memory key 时它永远是 null，会让每次调用都重跑完整加载',
+		);
+	});
+
+	// ── ⑳ PanelPart 内容高度必须钳到 ≥0（否则 -12 一路传下去）──────────────
+	//
+	// 背景（2026-09-15 用户日志）：切换右侧栏时打出
+	// `[PanelPart] layout height<=0: height=0` → `[PaneCompositePart] … height=-12`
+	// → `[CompositePart] … titleSize=-12, contentSize=0x2108`。
+	// 根因：agents 布局建 panel 就是 `size: 0`（panel 折叠），grid 传 `height=0`，
+	// 而 `layout()` 里 `0 - MARGIN_BOTTOM(10) - borderTotal(2)` = **-12** 未钳位就往下传。
+	// 同时那批 `[Saros Debug]` 探针（`_inspectWidthChain`：7 次 getBoundingClientRect +
+	// getComputedStyle = **强制同步重排**，再输出 20 行 JSON）**无条件挂在每次 layout 上**。
+	test('★★ PanelPart 内容高度必须钳到 ≥0，且布局探针默认关闭', () => {
+		// ⚠ 本文件在 agentStudio **之外** ⇒ 不能用 readSource/assertWired（它们以 AGENT_STUDIO 为基准）
+		const abs = path.join(process.cwd(), 'src/vs/sessions/browser/parts/panelPart.ts');
+		assert.ok(fs.existsSync(abs), `源码文件不存在（路径基准变了？）：${abs}`);
+		const raw = fs.readFileSync(abs, 'utf8');
+		const src = stripComments(raw);
+
+		// 正向：钳位 + 探针开关
+		assert.ok(
+			src.includes('const contentHeight = Math.max(0, height - PanelPart.MARGIN_BOTTOM - borderTotal);'),
+			'[PanelPart] 内容高度必须钳到 ≥0',
+		);
+		assert.ok(src.includes('const PANEL_LAYOUT_DEBUG = false;'), '[PanelPart] 布局探针必须默认关闭');
+		assert.ok(src.includes('if (PANEL_LAYOUT_DEBUG) {'), '[PanelPart] 探针必须受开关控制');
+
+		// 负向：先剥块注释（说明文字里引用了旧写法，否则假失败）
+		const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+		assert.ok(
+			!code.includes('height - PanelPart.MARGIN_BOTTOM - borderTotal,'),
+			'[PanelPart] 不得把未钳位的高度传给 super.layout —— panel 折叠时 height=0 会算出 -12，'
+			+ '一路传到 PaneCompositePart/CompositePart（titleSize=-12、contentSize=0x2108）',
+		);
+		assert.ok(
+			!/^\t{2}setTimeout\(\(\) => this\._inspectWidthChain\(width\), 200\);/m.test(code),
+			'[PanelPart] 尺寸链探针不得无条件执行 —— 它做 7 次 getBoundingClientRect + getComputedStyle'
+			+ '（强制同步重排）并输出 20 行 JSON，必须受 PANEL_LAYOUT_DEBUG 控制',
+		);
+	});
+
+	// ── ㉑ 索引完成回调必须按「刚索引的 root」刷新 watcher，且增量不刷新 ──────────
+	//
+	// 背景（2026-09-15 用户日志）：每轮**增量索引**完成后都紧跟
+	// `[exclude] …` + `Starting graph watcher …` + `Watching …` 三条。
+	// 根因：`onDidIndexComplete` 回调无条件 `_startWatching(this._primaryFolder())` ——
+	//   ① 增量由 watcher 自己触发（watcher 必然已存在、排除集未变）⇒ 纯重复：重跑
+	//      `_excludeResolver.resolve()`（读 .cbmignore + 工作区配置）+ 替换 root 条目 + 三条日志；
+	//   ② `_primaryFolder()` 是 `folders[0]` ⇒ 多 folder 下**永远只刷新第一个 folder** 的 watcher，
+	//      而真正可能改了排除集（索引会写 `.cbmignore`）的那个 folder 永不刷新。
+	//      ★ 与 `_onWatcherChange`（用事件携带的 `e.rootPath`）/ `_resolveActiveProject`
+	//      是同一条教训：**别用 folders[0] 代替事件所属 root**。
+	test('★★ 索引完成回调必须按「刚索引的 root」刷新 watcher，且增量不刷新', () => {
+		const bootRel = 'browser/codebaseGraphBootstrap.ts';
+		assertWired(bootRel, "if (result.kind === 'incremental') { return; }", '增量不刷新 watcher');
+		assertWired(bootRel, 'this._startWatching(result.rootPath || this._primaryFolder())', '按刚索引的 root 刷新');
+		// 服务侧必须真的把 root/kind 填进结果（否则上面的判断恒为 undefined）
+		assertWired('browser/codebaseGraphService.ts', 'rootPath?: string;', 'IIndexResult 带 rootPath');
+		assertWired('browser/codebaseGraphService.ts', "kind: 'full',", '全量结果带 kind');
+		assertWired('browser/codebaseGraphService.ts', "kind: 'incremental',", '增量结果带 kind');
+		// ⚠ 断言**只用单行 needle**：本仓源码是 CRLF，多行 needle 里的 `\n` 永远匹配不上
+		// （实测 `'rootPath,\n\t\t\t\tkind: …'` 假失败过一次）。
+
+		// 负向：不得退回「无条件用 folders[0] 刷新」
+		const bootSrc = stripAllComments(bootRel);
+		assert.ok(
+			!bootSrc.includes('void this._startWatching(this._primaryFolder());'),
+			'[图谱 watcher] 不得无条件用 `_primaryFolder()`（folders[0]）刷新 watcher —— '
+			+ '多 folder 下永远只刷新第一个 folder，且每轮增量都白跑一次',
 		);
 	});
 });

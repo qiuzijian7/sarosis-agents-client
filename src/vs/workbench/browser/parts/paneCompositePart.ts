@@ -491,21 +491,16 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 	}
 
 	async openPaneComposite(id?: string, focus?: boolean): Promise<PaneComposite | undefined> {
-		console.log('[PaneCompositePart] openPaneComposite called, id:', id, 'focus:', focus);
 		if (typeof id === 'string' && this.getPaneComposite(id)) {
-			console.log('[PaneCompositePart] openPaneComposite: descriptor found, calling doOpenPaneComposite');
 			return this.doOpenPaneComposite(id, focus);
 		}
 
-		console.log('[PaneCompositePart] openPaneComposite: descriptor NOT found, waiting for extensions');
 		await this.extensionService.whenInstalledExtensionsRegistered();
 
 		if (typeof id === 'string' && this.getPaneComposite(id)) {
-			console.log('[PaneCompositePart] openPaneComposite: descriptor found after wait, calling doOpenPaneComposite');
 			return this.doOpenPaneComposite(id, focus);
 		}
 
-		console.log('[PaneCompositePart] openPaneComposite: returning undefined');
 		return undefined;
 	}
 
@@ -597,8 +592,12 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 
 		this.contentDimension = new Dimension(width, height);
 
-		// Debug: trace sidebar layout
-		console.log(`[PaneCompositePart] layout: partId=${this.partId}, width=${width}, height=${height}, top=${top}, left=${left}`);
+		// ★ 布局日志改为**按需开启**（2026-09-15 精简）：与 `CompositePart.layout` 同理 ——
+		// 它是排查几何量的关键诊断 ✓，但每次布局都打会刷屏 ✗
+		// ⇒ 需要时在 DevTools 执行 `globalThis.__sarosLayoutDebug = true` 打开 ✓。
+		if ((globalThis as { __sarosLayoutDebug?: boolean }).__sarosLayoutDebug) {
+			console.log(`[PaneCompositePart] layout: partId=${this.partId}, width=${width}, height=${height}, top=${top}, left=${left}`);
+		}
 
 		// Layout contents
 		super.layout(this.contentDimension.width, this.contentDimension.height, top, left);

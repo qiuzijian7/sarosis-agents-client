@@ -275,6 +275,22 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 	private editorPartView!: ISerializableView;
 	private statusBarPartView!: ISerializableView;
 
+	/**
+	 * ★ [Saros] agents 布局：右侧「Agent Editor」栏的网格视图。
+	 *
+	 * 标准 `viewMap` 里没有 `AGENT_EDITOR_PART`（它由子类
+	 * `createAdditionalPartViews()` 注入，见 `agentLayoutWorkbench.ts`），
+	 * 所以这里单独存一份，供 `toggleAgentsRightColumn()` 操作。
+	 * 标准 IDE 窗口下恒为 `undefined` ⇒ 相关方法直接返回。
+	 */
+	private agentsEditorPartView: ISerializableView | undefined;
+
+	/** ★ [Saros] agents 右栏是否处于折叠态（配合 `agentsEditorPartView` 使用）。 */
+	protected agentsRightColumnCollapsed = false;
+
+	/** ★ [Saros] agents 右栏折叠前记住的宽度（展开时恢复）。 */
+	private agentsRightColumnWidth = 0;
+
 	private environmentService!: IBrowserWorkbenchEnvironmentService;
 	private extensionService!: IExtensionService;
 	private configurationService!: IConfigurationService;
@@ -763,7 +779,14 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 		// Sidebar View Container To Restore
 		if (this.isVisible(Parts.SIDEBAR_PART)) {
-			let viewContainerToRestore = this.storageService.get(SidebarPart.activeViewletSettingsKey, StorageScope.WORKSPACE, this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Sidebar)?.id);
+			let viewContainerToRestore = this.storageService.get(
+			SidebarPart.activeViewletSettingsKey,
+			StorageScope.WORKSPACE,
+			// ★ [Saros] agents 布局可换掉这个 **fallback**。它只在"storage 里没有记录
+			// （用户从没选过侧栏容器）"时才生效 ⇒ 不抢用户已有的选择。
+			// 默认返回 `undefined` ⇒ 标准 IDE 窗口行为完全不变。
+			this.getAgentsSidebarDefaultContainerId() ?? this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Sidebar)?.id,
+		);
 			if (
 				!this.environmentService.isBuilt ||
 				lifecycleService.startupKind === StartupKind.ReloadedWindow ||
@@ -786,7 +809,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		}
 
 		// Panel View Container To Restore
-		if (this.isVisible(Parts.PANEL_PART)) {
+		if (this.shouldRestorePanelViewContainer() && this.isVisible(Parts.PANEL_PART)) {
 			const viewContainerToRestore = this.storageService.get(PanelPart.activePanelSettingsKey, StorageScope.WORKSPACE, this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Panel)?.id);
 
 			if (viewContainerToRestore) {
@@ -1344,7 +1367,22 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			case Parts.EDITOR_PART:
 				return !this.stateModel.getRuntimeValue(LayoutStateKeys.EDITOR_HIDDEN);
 			case Parts.BANNER_PART:
-				return this.initialized ? this.workbenchGrid.isViewVisible(this.bannerPartView) : false;
+				if (!this.initialized) {
+					return false;
+				}
+				try {
+					return this.workbenchGrid.isViewVisible(this.bannerPartView);
+				} catch {
+					// ★ [Saros] agents 布局的 grid 描述符（`sessions/browser/layoutProfile.ts`）
+					// 里**没有** banner 视图（agents 三栏不需要它），而 `isViewVisible` 内部的
+					// `getViewLocation` 对"不在 grid 里的 view"是**抛错**（不是返回 false）。
+					// 这条 getter 被 `computeContainerOffset()`（→ `activeContainerOffset`）调用，
+					// 而 `QuickInputService.createController()` 在**参数**里读
+					// `host.activeContainerOffset.quickPickTop` ⇒ 抛错会让 quick input
+					// **永远创建不出来**（症状：Ctrl+P / Ctrl+Shift+P 顶部无输入框）。
+					// 语义上"不在 grid 里"即不可见 ⇒ false。
+					return false;
+				}
 			default:
 				return false; // any other part cannot be hidden
 		}
@@ -1600,11 +1638,475 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		this.workbenchGrid.setViewVisible(this.statusBarPartView, !hidden);
 	}
 
+	/**
+	 * ★ [Saros] 额外 part 视图的注入点。
+	 *
+	 * 默认返回空对象 —— 标准 IDE 窗口的行为**完全不变**。
+	 *
+	 * 「IDE 底座 + Agent 布局」需要把 agents 那套 grid 复用到标准 workbench，
+	 * 而 agents grid 引用了 `Parts.AGENT_EDITOR_PART`，标准 `viewMap` 里没有它。
+	 *
+	 * ★ 时序：本方法在 `viewMap` 组装**之前**被调用，这正是子类**触发额外 part
+	 * 实例化**的时机 —— `Part` 基类构造函数会自动
+	 * `layoutService.registerPart(this)`（`workbench/browser/part.ts:60`），
+	 * 所以「实例化」就等于「注册」。若把实例化推迟到 `createGridDescriptor()`
+	 * 里就太晚了：那时 `viewMap` 已建好，`fromJSON` 取到 `undefined`，
+	 * `SerializableGrid.deserialize` 会直接抛错（开不了窗）。
+	 */
+	protected createAdditionalPartViews(): Record<string, ISerializableView> {
+		return {};
+	}
+
+	/**
+	 * ★ [Saros] 该部件是否要渲染 / 是否存在 —— 默认 `true`，标准窗口行为不变。
+	 *
+	 * 供"布局里没有某个标准部件"的子类使用（agents 布局没有 activity bar）。
+	 *
+	 * ⚠ `getPart()` 对未注册的部件会**抛错**（不是返回 `undefined`），所以凡是
+	 * "某部件可能不存在"的地方都必须**先问本方法、再取部件**。已知两处：
+	 * `createWorkbenchLayout()` 与 `Workbench.renderWorkbench()`。
+	 */
+	protected shouldRenderPart(_id: Parts): boolean {
+		return true;
+	}
+
+	/**
+	 * ★ [Saros] agents 布局所需的运行时状态快照。
+	 *
+	 * 由 `Layout` 自己提供，**不让子类去碰** `stateModel` / `titleBarPartView` /
+	 * `_mainContainerDimension`：这些成员在这里本来就在作用域内，对子类却未必可见，
+	 * 而且子类还得额外 import `LayoutStateKeys`。子类只需要把它 spread 进
+	 * `createAgentsLayoutGridDescriptor()`。
+	 *
+	 * 各项语义（与标准 grid 的取法保持一致）：
+	 * - `sidebarContentExpanded`：侧栏**内容区**是否展开（不是"侧栏是否可见"）。
+	 * - `sidebarExpandedWidth`：展开后的宽度；折叠态由纯函数按图标条宽度处理。
+	 * - `panelVisible`：面板是否可见。
+	 * - `titleBarHeight`：取部件 `minimumHeight` —— 标准 `createGridDescriptor()`
+	 *   用的就是这个（见下方同名方法）。
+	 */
+	protected getAgentsLayoutState(): {
+		width: number;
+		height: number;
+		sidebarContentExpanded: boolean;
+		sidebarExpandedWidth: number;
+		panelVisible: boolean;
+		titleBarHeight: number;
+	} {
+		return {
+			width: this._mainContainerDimension.width,
+			height: this._mainContainerDimension.height,
+			// ★★ agents 布局的**默认**：侧栏展开、panel 隐藏 —— 与 agents 窗口一致。
+			// 正确布局（真机对比截图确认）是 `Sidebar(展开) | Editor(空) | AgentEditor(聊天)`，
+			// 底部**没有** panel。
+			//
+			// ⚠ 这里**故意不读**标准 `LayoutStateKeys.SIDEBAR_HIDDEN / PANEL_HIDDEN`：
+			// 那套持久化属于**标准 IDE 窗口**的用法（panel 常开、侧栏常收），照搬过来会得到
+			// 正好相反的外观（侧栏只剩 48px 图标条 + panel 占满左列）—— 实测踩过。
+			//
+			// ⚠ 已知代价（待做）：重启后侧栏/panel 会回到 agents 默认，**不保留**用户上次的
+			// 折叠状态。正确做法是像 sessions 窗口那样用**自己的持久化 key**
+			// （`sessions/browser/workbench.ts` 的 `LAYOUT_SIDEBAR_VISIBLE_KEY` /
+			// `LAYOUT_SIDEBAR_EXPANDED_WIDTH_KEY` / `LAYOUT_EDITOR_MAXIMIZED_KEY`），
+			// 而不是复用标准 `LayoutStateKeys`。
+			// ★ 由 `expandAgentsSidebarContent()` / `collapseAgentsSidebarContent()` 维护。
+			sidebarContentExpanded: this.agentsSidebarContentExpanded,
+			// ★★ [Saros] agents 布局：侧栏展开宽**默认取最大值**。
+			//
+			// 取 `sideBarPartView.maximumWidth` —— sessions 侧栏在**展开态**把它定义为
+			// `EXPANDED_MAX_WIDTH = 450`（`sessions/browser/parts/sidebarPart.ts:89` ✓；
+			// 折叠态则 min === max === 48 ✓）。用它而不是写死 450 ⇒ 常量改了自动跟随 ✓。
+			//
+			// ⚠ 仍可**向左拖窄**：sash 只受 `minimumWidth`（`EXPANDED_MIN_WIDTH = 170` ✓）
+			// 限制 ✓ —— 本项只决定"展开时给多宽"这个**初值** ✓。
+			//
+			// ⚠ 不能直接用 `SIDEBAR_SIZE` 的持久化值：标准窗口把它按"侧栏**收起**"存过
+			// （≈48px），拿来做**展开**宽度 ⇒ 侧栏展开后仍是 48px 窄条（真机踩过 ✗）。
+			sidebarExpandedWidth: (() => {
+				const max = this.sideBarPartView?.maximumWidth;
+				// > 48 是为了排除**折叠态**（那时 min === max === 48 ✗，取了就等于没展开 ✗）。
+				if (typeof max === 'number' && Number.isFinite(max) && max > 48) {
+					return max;
+				}
+				// 兜底：部件未就绪 / 不是 sessions 侧栏 ⇒ 旧逻辑 ✓
+				return Math.max(280, this.stateModel.getInitializationValue(LayoutStateKeys.SIDEBAR_SIZE));
+			})(),
+			panelVisible: false,
+			titleBarHeight: this.titleBarPartView.minimumHeight,
+		};
+	}
+
+	/**
+	 * ★ [Saros] agents 布局：侧栏在**用户从没选过容器**时要打开的视图容器 id。
+	 *
+	 * 默认 `undefined` ⇒ 用标准逻辑（`getDefaultViewContainer(Sidebar)`，
+	 * 在标准底座里是 **Explorer**）⇒ 标准 IDE 窗口行为不变。
+	 *
+	 * 为什么需要这个接缝：`initializeLayoutState()` 里侧栏的"待恢复容器"是
+	 * `storageService.get(activeViewlet, …, getDefaultViewContainer(Sidebar)?.id)`，
+	 * 而"IDE 底座 + Agent 布局"要的侧栏不是 Explorer ⇒ 必须能换掉那个 fallback。
+	 *
+	 * ⚠ 只换 fallback：storage 里有值（用户选过）时仍以用户选择为准。
+	 */
+	protected getAgentsSidebarDefaultContainerId(): string | undefined {
+		return undefined;
+	}
+
+	/**
+	 * ★ [Saros] agents 布局：**是否恢复 panel 的默认视图容器**。
+	 *
+	 * 默认 `true` ⇒ 标准 IDE 窗口行为不变。
+	 *
+	 * 「IDE 底座 + Agent 布局」需要 `false`，理由是**时序**：
+	 * 1. `initializeLayoutState()` 会在这里记下 `containerToRestore.panel`；
+	 * 2. `restoreParts()` 里的"Restore Panel"任务是推进 `layoutReadyPromises` 的
+	 *    **fire-and-forget**（`await` 不到）⇒ 它会在 `restoreParts()` 返回**之后**才
+	 *    `openViewContainer(Panel, …)`，从而**把 panel 显示出来**，
+	 *    覆盖 agents grid 里的 `panelVisible: false`（真机症状：`OUTPUT / DEBUG CONSOLE /
+	 *    TERMINAL` 出现在窗口左上角）。
+	 *
+	 * ⚠ 所以"在 `restoreParts()` 之后 `setPartHidden(true, PANEL_PART)`"**不可靠**
+	 * （隐藏早于显示）；必须在**源头**就不记录这个待恢复项 —— 那样第 2 步会直接 return。
+	 */
+	protected shouldRestorePanelViewContainer(): boolean {
+		return true;
+	}
+
+	/**
+	 * ★ [Saros] agents 布局：展开 sessions 侧栏的**内容区**。
+	 *
+	 * 背景：sessions 的 `SidebarPart` 有两态 —— **折叠**（只有 48px 图标条）与
+	 * **展开**（图标条 + 内容区并排），由它自己的 `setContentCollapsed()` 切换
+	 * （`sessions/browser/parts/sidebarPart.ts:265`）。默认是折叠的，
+	 * 于是 agents 布局里侧栏只有 48px（真机几何量：`48×254`，
+	 * `classes` 含 `sidebar-content-collapsed`）。
+	 *
+	 * ⚠ 光调 `setContentCollapsed(false)` **不够**：它的注释写着
+	 * "Fire event so the workbench can resize the grid" —— 也就是说 grid 的宽度是由
+	 * **sessions 的 Workbench** 监听那个事件后去 resize 的。我们继承的是**标准** Workbench，
+	 * 没有那个监听 ⇒ 内容区展开了但仍被 48px 的 grid 节点裁掉。所以这里**自己 resize**。
+	 *
+	 * ⚠ 用**结构化鸭子类型**而不是 import sessions 类型：本文件是上游层，
+	 * import sessions 会破坏分层；而标准 `SidebarPart` 没有 `setContentCollapsed`
+	 * ⇒ `typeof !== 'function'` 时直接返回，**标准 IDE 窗口零影响**。
+	 */
+	protected expandAgentsSidebarContent(): void {
+		const sidebar = this.sideBarPartView as unknown as { setContentCollapsed?: (collapsed: boolean) => void };
+		if (typeof sidebar.setContentCollapsed !== 'function') {
+			return;
+		}
+		// ★ grid 未建（createWorkbenchLayout 早期）时不能动网格 ✗
+		if (!this.workbenchGrid) {
+			return;
+		}
+
+		sidebar.setContentCollapsed(false);
+
+		sidebar.setContentCollapsed(false);
+		this.agentsSidebarContentExpanded = true;
+
+		const current = this.workbenchGrid.getViewSize(this.sideBarPartView);
+		this.workbenchGrid.resizeView(this.sideBarPartView, {
+			width: this.getAgentsLayoutState().sidebarExpandedWidth,
+			height: current.height,
+		});
+
+		this.relayoutHostedActivityBar();
+		this.relayoutAgentsSidebarPart();
+
+		// ── ★★ 再补一帧（2026-09-15，修「侧栏底部留白」）──────────────────────
+		// 上面两次重排发生在**首次布局过程中**（本方法由 `createWorkbenchLayout()`
+		// 在 grid 建好前调用 ✓），此时标题区 / 页脚尚未参与布局 ⇒ `Part.layout()`
+		// 会把内容区高度算成 **1287**（真机实测 ✓），而容器最终是 **1325** ✗
+		// ⇒ 侧栏底部空出 38px ✓（DOM 证据：`.part.sidebar > .content` 与内层
+		//   `.split-view-view` 的 inline height 都停在 1287 ✓）。
+		// 且**之后没有任何人再调侧栏的 `layout()`** ⇒ 该旧值一直留着 ✗
+		// （启动态没有展开/折叠动作，走不到上面的重排 ✓）。
+		// ⇒ 延到**下一帧**（几何量已稳定）再排一次即可 ✓，且只做一次 ✓。
+		if (!this.agentsSidebarStartupRelayoutScheduled) {
+			this.agentsSidebarStartupRelayoutScheduled = true;
+			requestAnimationFrame(() => {
+				try {
+					this.relayoutAgentsSidebarPart();
+					this.relayoutHostedActivityBar();
+				} catch { /* 窗口已关 / grid 未就绪 */ }
+			});
+		}
+	}
+
+	/**
+	 * ★★ [Saros] agents 布局：用 grid 的**新尺寸**重跑侧栏部件的 `layout()`。
+	 *
+	 * ⚠ 为什么必须显式做：`resizeView()` 改的是 **grid 节点尺寸**，而侧栏内部
+	 * （`AbstractPaneCompositePart` → 视图容器 → 树）的高度由 **`Part.layout()`
+	 * 的入参**决定。点图标自动展开这条路径上没人用**新**尺寸调它
+	 * ⇒ 视图容器沿用旧高度 ⇒ 真机症状：**文件树只有一小块、下方大片空白**
+	 * （Explorer 截断在 ~90px；而 `.content` 实测满高 1325 ✓ ⇒ 不是容器的错 ✗）。
+	 *
+	 * 取值用 `getViewSize()`（**resize 之后**的真实值 ✓），而不是我们传进去的
+	 * `height: 1000` 那个占位值 ✗。
+	 */
+	protected relayoutAgentsSidebarPart(): void {
+		try {
+			const size = this.workbenchGrid.getViewSize(this.sideBarPartView);
+			if (size.width > 0 && size.height > 0) {
+				this.sideBarPartView.layout(size.width, size.height, 0, 0);
+			}
+		} catch { /* grid 未就绪 */ }
+	}
+
+	/**
+	 * ★★ [Saros] agents 布局：重排**被侧栏托管的 activity bar**。
+	 *
+	 * ⚠ 为什么必须显式做：activity bar 的 DOM 由 sessions 侧栏托管
+	 * （`agentEditorParts.createActivityBarPart(sidebarPart)`），而它**不在 grid 里**
+	 * —— `createGridDescriptor()` 里是**刻意**不挂 `ACTIVITYBAR_PART` 的
+	 * （挂进去会被 grid 排成 0×0，把条目压没）。⇒ **没有任何 grid 会去布局它**。
+	 *
+	 * sessions 窗口靠 `handleSidebarContentCollapsed()` 之后的**容器整体重排**刷新它
+	 * （`sessions/browser/workbench.ts:2424-2460`）；我们继承标准底座，没有那条链路
+	 * ⇒ 折叠/展开后它停在**旧尺寸** ⇒ 真机症状：**11 个条目全被挤进溢出菜单**
+	 * （条里只剩 "Additional Views"），用户看到的就是「**activitybar 图标丢失**」。
+	 *
+	 * ⚠ 高度**不能取 `clientHeight`**：在 `createWorkbenchLayout()` 那一刻它是 **0**
+	 * ⇒ 传 0 正是上面那个症状的成因（本仓踩过一次，见 `agentLayoutWorkbench.ts` 的注释）。
+	 * 这里取侧栏节点的**真实高度**。
+	 */
+	protected relayoutHostedActivityBar(): void {
+		if (!this.activityBarPartView) {
+			return;
+		}
+
+		const height = this.workbenchGrid.getViewSize(this.sideBarPartView).height;
+		if (height <= 0) {
+			return;
+		}
+
+		try {
+			this.activityBarPartView.layout(48, height, 0, 0);
+		} catch { /* 部件未创建 / 标准窗口下忽略 */ }
+	}
+
+	/**
+	 * ★★ [Saros] agents 布局：**折叠** sessions 侧栏的**内容区**
+	 * （`expandAgentsSidebarContent()` 的对称操作）。
+	 *
+	 * 「折叠」= 只留 **48px activity bar 图标条**，**不是**把侧栏藏掉 ——
+	 * 这是 sessions 侧栏的设计（`sessions/browser/parts/sidebarPart.ts:58-68`）：
+	 * > Collapsed: Only the 48px-wide activity bar icon strip is visible.
+	 * > The activity bar icon strip is **ALWAYS** visible (it never collapses).
+	 *
+	 * ⚠ 为什么必须单独有这个方法：标准 `Layout.setPartHidden(true, SIDEBAR_PART)`
+	 * → `setSideBarHidden(true)` 会把**整个侧栏**（含图标条）从 grid 里隐掉 ⇒
+	 * 真机症状「点左上角收缩按钮后 activity bar 也一起没了」。
+	 *
+	 * sessions 窗口之所以没这个问题，是因为它把这条路径**拦截**成"切内容区折叠态"
+	 * （`sessions/browser/layoutActions.ts:31-33` 原话：
+	 * "Uses setPartHidden which routes to the sessions workbench's setSideBarHidden(),
+	 *  which in turn toggles the content panel collapsed state **rather than hiding
+	 *  the entire sidebar**"）。我们继承**标准** `Workbench` ⇒ 没有那层拦截 ⇒ 在此补。
+	 */
+	protected collapseAgentsSidebarContent(): void {
+		const sidebar = this.sideBarPartView as unknown as { setContentCollapsed?: (collapsed: boolean) => void };
+		if (typeof sidebar.setContentCollapsed !== 'function') {
+			return;
+		}
+		// ★ grid 未建时不能动网格 ✗（同 expandAgentsSidebarContent ✓）
+		if (!this.workbenchGrid) {
+			return;
+		}
+
+		sidebar.setContentCollapsed(true);
+		this.agentsSidebarContentExpanded = false;
+
+		// ⚠ 必须自己 resize（同 `expandAgentsSidebarContent()` 的说明）：
+		// `setContentCollapsed()` 只切状态，grid 宽度是 sessions 的 Workbench
+		// 监听事件后去改的，标准底座没有那个监听。
+		// ⚠ 宽度用字面量 48 = `SIDEBAR_COLLAPSED_WIDTH`（`sessions/browser/layoutProfile.ts`）——
+		// 本文件是**上游层**，import sessions 会破坏分层。
+		const current = this.workbenchGrid.getViewSize(this.sideBarPartView);
+		this.workbenchGrid.resizeView(this.sideBarPartView, {
+			width: 48,
+			height: current.height,
+		});
+
+		// ★ 折叠后同样要重排托管的 activity bar，否则图标条会停在旧尺寸 ⇒
+		// 11 个条目被挤进溢出菜单（用户看到"activitybar 图标丢失"）。
+		this.relayoutHostedActivityBar();
+	}
+
+	/**
+	 * ★★ [Saros] agents 布局：`SIDEBAR_PART` 的「隐藏」是否应解释为「折叠内容区」。
+	 *
+	 * 默认 `false` ⇒ **标准 IDE 窗口行为完全不变**（照旧整条侧栏隐藏）。
+	 * 「IDE 底座 + Agent 布局」返回 `true` ⇒ 左上角收缩按钮变成
+	 * **保留 activity bar、只折叠 side view**（见 `collapseAgentsSidebarContent()`）。
+	 */
+	protected shouldCollapseAgentsSidebarInsteadOfHiding(): boolean {
+		return false;
+	}
+
+	/** ★ [Saros] agents 侧栏内容区当前是否展开（`getAgentsLayoutState()` 读它）。 */
+	protected agentsSidebarContentExpanded = true;
+
+	/**
+	 * ★ [Saros] 启动后的「补一帧重排」是否已排期（只做一次 ✓）。
+	 * 见 `expandAgentsSidebarContent()` 末尾：首次布局过程中算出的内容区高度是**旧值**
+	 * （1287 vs 容器 1325）⇒ 必须在几何量稳定后再排一次，否则侧栏底部留白 ✗。
+	 */
+	protected agentsSidebarStartupRelayoutScheduled = false;
+
+	/**
+	 * ★★ [Saros] agents 布局：切换**右侧 `AGENT_EDITOR_PART`（Agent Studio 栏）**的
+	 * 显示/隐藏 —— 即标题栏 "Toggle Sidebar Content" 按钮（`codicon-layout-sidebar-left`，
+	 * 派发 `agent-studio:toggle-right-column`）的动作。
+	 *
+	 * ── 为什么需要这个方法 ───────────────────────────────────────────
+	 * 标准 `setPartHidden()` 的 `switch` **没有** `AGENT_EDITOR_PART` 分支
+	 * （它只处理 8 个标准部件），而 `workbenchGrid` 是 `private` ⇒ 只有 `Layout`
+	 * 自身能操作网格。所以这里提供一个受保护接缝，供子类
+	 * （`AgentLayoutWorkbench`）在事件回调里调用。
+	 *
+	 * ⚠ 标准 IDE 窗口下 `agentsEditorPartView` 为 `undefined` ⇒ 直接返回，
+	 * **行为零影响**。
+	 *
+	 * ⚠ 宽度用 `getViewSize()` 记、`resizeView()` 还原（不写死），
+	 * 与 sessions 版 `toggle-right-column`（`sessions/browser/workbench.ts:1291-1300`）语义一致。
+	 */
+	protected toggleAgentsRightColumn(): void {
+		const view = this.agentsEditorPartView;
+		if (!view || !this.workbenchGrid) {
+			return; // 非 agents 布局，或网格尚未就绪
+		}
+
+		try {
+			if (this.agentsRightColumnCollapsed) {
+				// 展开：恢复折叠前的宽度。
+				this.workbenchGrid.setViewVisible(view, true);
+				if (this.agentsRightColumnWidth > 0) {
+					this.workbenchGrid.resizeView(view, { width: this.agentsRightColumnWidth, height: 1000 });
+				}
+				this.agentsRightColumnCollapsed = false;
+			} else {
+				// 折叠：先记住当前宽度，再隐藏。
+				this.agentsRightColumnWidth = this.workbenchGrid.getViewSize(view).width;
+				this.workbenchGrid.setViewVisible(view, false);
+				this.agentsRightColumnCollapsed = true;
+			}
+		} catch { /* grid 未就绪 */ }
+	}
+
+	/**
+	 * ★★ [Saros] agents 布局：切换**底部 `PANEL_PART`（Output / Debug Console /
+	 * Terminal）**的显示/隐藏 —— 即标题栏 "Toggle Panel" 按钮（`codicon-panel-bottom`，
+	 * 派发 `agent-studio:toggle-panel`）的动作。
+	 *
+	 * ── 为什么不能只用标准 `setPartHidden()` ─────────────────────────────
+	 * 标准 `setPanelHidden()`（`layout.ts:2507`）在"显示"分支里**只**做两件事：
+	 * 1. `workbenchGrid.setViewVisible(panelPartView, true)`；
+	 * 2. 若当前**没有** active pane composite，才 `openViewContainer(...)`。
+	 * 它**从不恢复 panel 的高度**。而 agents 布局建 panel 时是
+	 * `size: 0, visible: false`（`sessions/browser/layoutProfile.ts:141,172-173`），
+	 * 且启动时 `agentLayoutWorkbench.ts:444-459` 又给 `panelPart.element` 设了
+	 * inline `display: none`。⇒ 只 `setViewVisible(true)` 的话，grid 认为 panel
+	 * 可见但把它布局成**高度 0**，再加 DOM 的 inline 遮挡 ⇒ 真机症状：
+	 * **点了按钮毫无视觉变化**（下方什么也没出现）。
+	 *
+	 * sessions 版为此在 `workbench.ts:2333-2375` 专门做了 ① 35% 高度恢复 与
+	 * ② 显式打开容器 两步。本方法把这些语义移到 `Layout` 内部（因为
+	 * `workbenchGrid` / `panelPartView` 都是 `private`，子类拿不到），
+	 * 供子类 `AgentLayoutWorkbench` 在事件回调里调用。
+	 *
+	 * ⚠ 标准 IDE 窗口下 `panelPartView` 未初始化时直接返回，**行为零影响**。
+	 */
+	protected async toggleAgentsPanelVisibility(): Promise<void> {
+		if (!this.workbenchGrid || !this.panelPartView) {
+			return; // 网格尚未就绪 / 非 panel 布局
+		}
+
+		const willBeVisible = !this.isVisible(Parts.PANEL_PART);
+
+		try {
+			// 1. 网格可见性 + `PANEL_HIDDEN` class（等价于标准 setPanelHidden 的前半段）。
+			this.workbenchGrid.setViewVisible(this.panelPartView, willBeVisible);
+			if (willBeVisible) {
+				this.mainContainer.classList.remove(LayoutClasses.PANEL_HIDDEN);
+			} else {
+				this.mainContainer.classList.add(LayoutClasses.PANEL_HIDDEN);
+			}
+			this.stateModel.setRuntimeValue(LayoutStateKeys.PANEL_HIDDEN, !willBeVisible);
+
+			// 2. 隐藏：收起当前 active composite，并清空 DOM（保留 inline display:none）。
+			if (!willBeVisible) {
+				if (this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Panel)) {
+					this.paneCompositeService.hideActivePaneComposite(ViewContainerLocation.Panel);
+				}
+				const hiddenElement = this.getPart(Parts.PANEL_PART).element;
+				if (hiddenElement) {
+					hiddenElement.style.display = 'none';
+				}
+				return;
+			}
+
+			// 3. 显示：先清掉启动时设置（且 grid 永不清理）的 inline `display: none`，
+			//    否则 panel 即使"网格可见"仍被 DOM 挡住。
+			const panelElement = this.getPart(Parts.PANEL_PART).element;
+			if (panelElement) {
+				panelElement.style.display = '';
+			}
+
+			// 4. 恢复高度：panel 是以 size=0 建的，setViewVisible 不会给它尺寸。
+			const contentHeight = this._mainContainerDimension.height - this.getAgentsLayoutState().titleBarHeight;
+			const targetPanelHeight = Math.round(contentHeight * 0.35);
+			this.workbenchGrid.resizeView(this.panelPartView, {
+				width: this.workbenchGrid.getViewSize(this.panelPartView).width,
+				height: targetPanelHeight,
+			});
+
+			// 5. 确保有一个 pane composite 打开：panel 隐藏时 active composite 会被清空，
+			//    若不显式打开，panel 有高度但内容区是空白。
+			if (!this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Panel)) {
+				const lastActive = this.paneCompositeService.getLastActivePaneCompositeId(ViewContainerLocation.Panel);
+				const panelToOpen = lastActive
+					?? this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Panel)?.id
+					?? this.paneCompositeService.getPaneCompositeIds(ViewContainerLocation.Panel).at(0);
+				if (panelToOpen) {
+					await this.openViewContainer(ViewContainerLocation.Panel, panelToOpen, true);
+					// composite 打开后布局会变化，再补一次高度，避免被压回 0。
+					this.workbenchGrid.resizeView(this.panelPartView, {
+						width: this.workbenchGrid.getViewSize(this.panelPartView).width,
+						height: targetPanelHeight,
+					});
+
+					// 再排一帧兜底：composite 首帧渲染会再次触发布局，可能把高度压回 0
+					// （sessions 版 `workbench.ts:2364-2373` 踩过同样的坑）。
+					requestAnimationFrame(() => {
+						try {
+							if (this.workbenchGrid.getViewSize(this.panelPartView).height < 100) {
+								this.workbenchGrid.resizeView(this.panelPartView, {
+									width: this.workbenchGrid.getViewSize(this.panelPartView).width,
+									height: targetPanelHeight,
+								});
+							}
+						} catch { /* grid 未就绪 */ }
+					});
+				}
+			}
+		} catch { /* grid 未就绪 */ }
+	}
+
 	protected createWorkbenchLayout(): void {
+		// ★ [Saros] 额外 part 视图（默认空对象）。必须放在**任何 `getPart()` 之前** ——
+		// 这一步是子类**注册额外 part** 的时机（`Part` 基类构造即 `layoutService.registerPart`），
+		// 而下面马上就会 `getPart(...)`，未注册的部件会让它**抛错**。
+		const additionalPartViews = this.createAdditionalPartViews();
+
 		const titleBar = this.getPart(Parts.TITLEBAR_PART);
 		const bannerPart = this.getPart(Parts.BANNER_PART);
 		const editorPart = this.getPart(Parts.EDITOR_PART);
-		const activityBar = this.getPart(Parts.ACTIVITYBAR_PART);
+		// ★ [Saros] 某些布局（agents）没有 activity bar。`getPart()` 对未注册的部件是
+		// **抛错**（不是返回 undefined），所以必须先问 `shouldRenderPart()` 再取。
+		const activityBar = this.shouldRenderPart(Parts.ACTIVITYBAR_PART) ? this.getPart(Parts.ACTIVITYBAR_PART) : undefined;
 		const panelPart = this.getPart(Parts.PANEL_PART);
 		const auxiliaryBarPart = this.getPart(Parts.AUXILIARYBAR_PART);
 		const sideBar = this.getPart(Parts.SIDEBAR_PART);
@@ -1614,12 +2116,111 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		this.titleBarPartView = titleBar;
 		this.bannerPartView = bannerPart;
 		this.sideBarPartView = sideBar;
-		this.activityBarPartView = activityBar;
+
+		// ★★ [Saros] agents 布局：**在首次布局之前**就把侧栏内容区展开。
+		//
+		// ── 为什么必须在这个时机（而不是 `restoreParts()` 之后）────────────
+		// sessions 的 `SidebarPart` **默认就是折叠态**
+		// （`_contentCollapsed = true`，`sidebarPart.ts:113`；`create()` 里还会
+		//  `classList.add(SIDEBAR_CONTENT_COLLAPSED_CLASS)`，`:198`）。
+		// 而 `ActionBar` 的 overflow 判定是**单向**的：首次测量时放不下 ⇒
+		// 条目全部移入溢出菜单 ⇒ 之后**不会自动回来**（真机症状：11 个容器图标全不见，
+		// 条里 0 条目、高度塌成 13px）。
+		//
+		// 启动期这条链是：侧栏默认折叠 ⇒ `create()` 加上折叠类 ⇒ 首次布局时
+		// `ActionBar` 在折叠态下测量 ⇒ **11 个条目全进溢出菜单** ✗
+		// ⇒ 之后我们（在 `restoreParts()` 里）再展开到 300px 也**救不回来** ✗
+		// （实测：重启后与折叠后**症状完全相同** ⇒ 是同一个机制）。
+		//
+		// 所以要在 `createWorkbenchLayout()` 里、**网格首次布局之前**就把类切到展开态，
+		// 让第一次测量发生在展开态 ⇒ 条目正常入条 ✓。
+		//
+		// ⚠ 只对 agents 布局生效（开关默认 false ⇒ 标准 IDE 窗口零影响）。
+		// ⚠ 这里不 resize 网格（那由 `expandAgentsSidebarContent()` 负责）——
+		// 本方法运行时 `workbenchGrid` 还没建好。
+		if (this.shouldCollapseAgentsSidebarInsteadOfHiding()) {
+			// ★★ 允许**点当前图标 ⇒ 折叠内容区**（用户要求 ✓）。
+			//
+			// 原实现只有 `setContentCollapsed(false)`（展开 ✓）⇒ 再点同一图标**毫无反应** ✗，
+			// 只能靠左上角收缩按钮收起 ✗。这里改为：点**当前已激活**的容器时调
+			// `toggleContent()`（= 折叠 ✓），点**其它**容器时保持展开 ✓。
+			//
+			// ⚠ 用**结构化鸭子类型**（本文件是上游层，不能 import sessions 类型 ✗）；
+			//   非 sessions 侧栏没有这些方法 ⇒ 整体跳过 ⇒ **标准 IDE 窗口零影响** ✓。
+			// ⚠ 只在 `shouldCollapseAgentsSidebarInsteadOfHiding()` 开启时生效
+			//   ⇒ **sessions 窗口行为不变** ✓（它有自己的 openPaneComposite ✓）。
+			const sessionsSidebar = this.sideBarPartView as unknown as {
+				contentCollapsed?: boolean;
+				toggleContent?: () => void;
+				openPaneComposite?: (id?: string, focus?: boolean) => Promise<unknown>;
+			};
+			if (typeof sessionsSidebar.openPaneComposite === 'function') {
+				const originalOpen = sessionsSidebar.openPaneComposite.bind(sessionsSidebar);
+				sessionsSidebar.openPaneComposite = async (id?: string, focus?: boolean) => {
+					const activeId = (sessionsSidebar as unknown as { getActiveCompositeId?: () => string | undefined }).getActiveCompositeId?.();
+					if (sessionsSidebar.contentCollapsed) {
+						// 折叠态：展开 ✓（打开该视图）
+						sessionsSidebar.toggleContent?.();
+					} else if (id !== undefined && activeId === id) {
+						// 展开态 + 点的就是当前容器 ⇒ **折叠** ✓，
+						// 且**不再往下传**（否则会把内容区重新展开 ✗）。
+						sessionsSidebar.toggleContent?.();
+						return undefined;
+					}
+					return originalOpen(id, focus);
+				};
+			}
+
+			const sidebarForEarlyExpand = this.sideBarPartView as unknown as { setContentCollapsed?: (collapsed: boolean) => void };
+			if (typeof sidebarForEarlyExpand.setContentCollapsed === 'function') {
+				sidebarForEarlyExpand.setContentCollapsed(false);
+				this.agentsSidebarContentExpanded = true;
+			}
+			// ⚠⚠ 此处 **不能** 调 `setPartHidden()`：它会被我们的拦截转去
+			// `expandAgentsSidebarContent()` → `workbenchGrid.getViewSize()` ✗
+			// 而 `workbenchGrid` 要到本方法**后面**才创建 ⇒ 必崩
+			// （`Cannot read properties of undefined (reading 'getViewSize')` ✗ 真机踩过 ✓）。
+			//
+			// ★★★ 但**状态必须在这里就纠正**：`isVisible(SIDEBAR_PART)` 读
+			// `SIDEBAR_HIDDEN`（`:1341-1342`），而标准窗口可能把它持久化成 `true` ✗
+			// ⇒ `AbstractPaneCompositePart.layout()` 开头早退 ⇒ 侧栏内部**永不布局**
+			// ⇒ 视图停在 120px ✗。只写状态、不碰网格 ⇒ 安全 ✓。
+			this.stateModel.setRuntimeValue(LayoutStateKeys.SIDEBAR_HIDDEN, false);
+		}
+
+		// ★★ 补 sessions 缺的第 ④ 步：监听侧栏**内容折叠事件**并 resize 网格。
+		//
+		// sessions 的 Workbench 有这个监听（`sessions/browser/workbench.ts:1946` →
+		// `handleSidebarContentCollapsed` ✓）；而 sessions 侧栏**点图标自动展开**走的正是
+		// `openPaneComposite()` → `setContentCollapsed(false)`（`sidebarPart.ts:212-214` ✓）
+		// ⇒ 没有监听时，展开只切了 CSS 类，**网格与内部布局都不跟进** ✗
+		// ⇒ 真机症状：视图高度/宽度停留在旧尺寸（Skills/SCM 视图被截断、不铺满 ✓）。
+		//
+		// 等价 sessions 版 handler 的核心（前置 60 的 ④）：collapsed ? 48 : 展开宽 ✓。
+		const sessionsSidebar = this.sideBarPartView as unknown as {
+			onDidChangeContentCollapsed?: { event: (listener: (collapsed: boolean) => void) => { dispose?: () => void } };
+		};
+		if (sessionsSidebar?.onDidChangeContentCollapsed && typeof sessionsSidebar.onDidChangeContentCollapsed.event === 'function') {
+			sessionsSidebar.onDidChangeContentCollapsed.event((collapsed: boolean) => {
+				this.agentsSidebarContentExpanded = !collapsed;
+				const width = collapsed ? 48 : this.getAgentsLayoutState().sidebarExpandedWidth;
+				try {
+					this.workbenchGrid.resizeView(this.sideBarPartView, { width, height: 1000 });
+				} catch { /* grid 未就绪 */ }
+				this.relayoutHostedActivityBar();
+				this.relayoutAgentsSidebarPart();
+			});
+		}
+
+		if (activityBar) {
+			this.activityBarPartView = activityBar;
+		}
 		this.editorPartView = editorPart;
 		this.panelPartView = panelPart;
 		this.auxiliaryBarPartView = auxiliaryBarPart;
 		this.statusBarPartView = statusBar;
 
+		// ★ [Saros] `additionalPartViews` 已在方法开头取得（必须在 `getPart()` 之前）。
 		const viewMap: Record<string, ISerializableView> = {
 			[Parts.ACTIVITYBAR_PART]: this.activityBarPartView,
 			[Parts.BANNER_PART]: this.bannerPartView,
@@ -1628,8 +2229,13 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			[Parts.PANEL_PART]: this.panelPartView,
 			[Parts.SIDEBAR_PART]: this.sideBarPartView,
 			[Parts.STATUSBAR_PART]: this.statusBarPartView,
-			[Parts.AUXILIARYBAR_PART]: this.auxiliaryBarPartView
+			[Parts.AUXILIARYBAR_PART]: this.auxiliaryBarPartView,
+			...additionalPartViews
 		};
+
+		// ★ [Saros] 记住 agents 右栏（`AGENT_EDITOR_PART`）的网格视图，供
+		// `toggleAgentsRightColumn()` 使用。标准 `viewMap` 里没有它 ⇒ 标准窗口为 undefined。
+		this.agentsEditorPartView = additionalPartViews[Parts.AGENT_EDITOR_PART];
 
 		const fromJSON = ({ type }: { type: Parts }) => viewMap[type];
 		const workbenchGrid = SerializableGrid.deserialize(
@@ -1643,7 +2249,12 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		this.workbenchGrid = workbenchGrid;
 		this.workbenchGrid.edgeSnapping = this.state.runtime.mainWindowFullscreen;
 
-		for (const part of [titleBar, editorPart, activityBar, panelPart, sideBar, statusBar, auxiliaryBarPart, bannerPart]) {
+		// ★ [Saros] 缺失的部件（activity bar）不进监听列表。
+		const partsForVisibilityListeners: Part[] = [titleBar, editorPart, panelPart, sideBar, statusBar, auxiliaryBarPart, bannerPart];
+		if (activityBar) {
+			partsForVisibilityListeners.push(activityBar);
+		}
+		for (const part of partsForVisibilityListeners) {
 			this._register(part.onDidVisibilityChange(visible => {
 				if (!this.inMaximizedAuxiliaryBarTransition) {
 
@@ -1846,7 +2457,12 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 	}
 
 	private setBannerHidden(hidden: boolean): void {
-		this.workbenchGrid.setViewVisible(this.bannerPartView, !hidden);
+		try {
+			this.workbenchGrid.setViewVisible(this.bannerPartView, !hidden);
+		} catch {
+			// ★ [Saros] agents 布局的 grid 描述符里没有 banner 视图（同 `isVisible()` 的说明），
+			// `setViewVisible` 同样会抛 "View not found"；banner 在该布局下不存在 ⇒ 忽略。
+		}
 	}
 
 	private setEditorHidden(hidden: boolean): void {
@@ -2282,6 +2898,22 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			case Parts.ACTIVITYBAR_PART:
 				return this.setActivityBarHidden(hidden);
 			case Parts.SIDEBAR_PART:
+				// ★★ [Saros] agents 布局：把「隐藏侧栏」解释为「折叠内容区」
+				// —— **保留 48px activity bar**，只收起 side view。
+				// 标准 IDE 窗口走下面的原路径（开关默认 false）。
+				if (this.shouldCollapseAgentsSidebarInsteadOfHiding()) {
+					// ★★★ **必须同步 `SIDEBAR_HIDDEN` 状态**，否则一切白搭：
+					// `isVisible(SIDEBAR_PART)` 读的就是它（本文件 `:1341-1342`），
+					// 而 `AbstractPaneCompositePart.layout()` 开头
+					// `if (!isVisible(partId)) return;` ✗ ⇒ **侧栏部件永远不布局**
+					// ⇒ 内部 split-view 保持初始 **120px** ⇒ 视图被截断 ✗
+					// （实锤：dev 日志里 `partId=workbench.parts.sidebar` 的 layout 行**始终 0** ✗）。
+					//
+					// ⚠ agents 布局里侧栏**永远可见**（48px 图标条不折叠 ✓），
+					// 所以这里恒置 `SIDEBAR_HIDDEN = false` ✓ —— "隐藏"只作用于内容区 ✓。
+					this.stateModel.setRuntimeValue(LayoutStateKeys.SIDEBAR_HIDDEN, false);
+					return hidden ? this.collapseAgentsSidebarContent() : this.expandAgentsSidebarContent();
+				}
 				return this.setSideBarHidden(hidden);
 			case Parts.EDITOR_PART:
 				return this.setEditorHidden(hidden);
@@ -2598,7 +3230,22 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		return result;
 	}
 
-	private createGridDescriptor(): ISerializedGrid {
+	/**
+	 * Build the workbench grid descriptor.
+	 *
+	 * ★ [Saros] `protected`（原为 `private`）—— 为了允许子类**替换布局**。
+	 *
+	 * 「IDE 底座 + Agent 布局」方案要把 agents 窗口那套 grid（`TitleBar / Sidebar /
+	 * EditorColumn / AgentEditor`，纯函数在 `sessions/browser/layoutProfile.ts`）
+	 * 复用到标准 workbench。接法就是覆写本方法 —— 这也是两边**唯一**的结构接缝：
+	 * 标准侧与 sessions 侧的 `createGridDescriptor(): ISerializedGrid` 同名同形
+	 * （`Workbench extends Layout`）。
+	 *
+	 * 覆写者必须同时保证 grid 引用的每个 `Parts.*` 都有部件实例：
+	 * `createWorkbenchLayout()` 用 `viewMap[type]` 解析节点，取到 `undefined` 会让
+	 * `SerializableGrid.deserialize` 直接失败（不是"部件不显示"，是崩）。
+	 */
+	protected createGridDescriptor(): ISerializedGrid {
 		const { width, height } = this._mainContainerDimension;
 		const sideBarSize = this.stateModel.getInitializationValue(LayoutStateKeys.SIDEBAR_SIZE);
 		const auxiliaryBarSize = this.stateModel.getInitializationValue(LayoutStateKeys.AUXILIARYBAR_SIZE);

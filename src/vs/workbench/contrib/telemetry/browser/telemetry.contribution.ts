@@ -200,10 +200,11 @@ export class TelemetryContribution extends Disposable implements IWorkbenchContr
 		// Check for workspace settings file
 		const folders = this.contextService.getWorkspace().folders;
 		for (const folder of folders) {
-			if (isEqualOrParent(resource, folder.toResource('.vscode'))) {
+			// ★ [Saros] 工作区配置文件目录 = `.sarosworkspace/`（不读 `.vscode/`）
+			if (isEqualOrParent(resource, folder.toResource('.sarosworkspace'))) {
 				const filename = basename(resource);
 				if (TelemetryContribution.ALLOWLIST_WORKSPACE_JSON.indexOf(filename) > -1) {
-					return `.vscode/${filename}`;
+					return `.sarosworkspace/${filename}`;
 				}
 			}
 		}

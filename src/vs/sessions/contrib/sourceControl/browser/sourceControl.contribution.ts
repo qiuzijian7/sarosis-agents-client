@@ -29,16 +29,21 @@ import { SCMRepositoriesViewPane } from '../../../../workbench/contrib/scm/brows
 import { SCMHistoryViewPane } from '../../../../workbench/contrib/scm/browser/scmHistoryViewPane.js';
 import { ISCMViewService, ISCMService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
+import { IWorkspaceFolderRouter } from '../../workspace/common/workspaceFolderRouter.js';
+import {
+	resolveSyncDirection,
+	WORKSPACE_FOLDER_SYNC_DIRECTION_SETTING,
+} from '../../agentStudio/common/workspaceFolderSyncPolicy.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IAgentStudioService } from '../../agentStudio/common/agentStudio.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { WorktreeViewPane } from '../../worktree/browser/worktreeView.js';
-import { WorktreeCommands, WorktreeContextKeys } from '../../worktree/common/worktreeTypes.js';
+import { WorktreeCommands } from '../../worktree/common/worktreeTypes.js';
+import { WorktreeItemType } from '../../worktree/browser/worktreeDataProvider.js';
 import { IsPhoneLayoutContext } from '../../../common/contextkeys.js';
-import { folderListsMatch, mergeWorkspaceFolders } from '../common/workspaceFolderMerge.js';
 
 import { SourceControlViewPaneContainer } from './sourceControlViewPaneContainer.js';
 
@@ -210,7 +215,8 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 	constructor(
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
-		@IWorkspaceEditingService private readonly workspaceEditingService: IWorkspaceEditingService,
+		@IWorkspaceFolderRouter private readonly workspaceFolderRouter: IWorkspaceFolderRouter,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
 		@IFileService private readonly fileService: IFileService,
 		@IContextKeyService contextKeyService: IContextKeyService,
@@ -326,17 +332,6 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 		}
 	}
 
-	/**
-	 * Merge SCM target roots into the current folder list (see
-	 * `mergeWorkspaceFolders` for the ordering and de-duplication rules).
-	 */
-	private _mergeWorkspaceFolders(
-		currentFolders: readonly { readonly uri: URI; readonly name: string }[],
-		targets: readonly { uri: URI; name: string }[],
-	): { uri: URI; name: string }[] {
-		return mergeWorkspaceFolders(currentFolders, targets);
-	}
-
 	private async _syncWorkspaceFolder(workspaceId: string): Promise<void> {
 		const workspace = await this.agentStudioService.getWorkspace(workspaceId);
 		if (!workspace) {
@@ -401,34 +396,27 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 			console.warn('[SourceControlWorkspaceSync] Failed to mark workspace roots as trusted:', err);
 		}
 
-		const currentFolders = this.workspaceContextService.getWorkspace().folders;
-
 		const targetUris = targets.map(t => t.uri);
 
-		// Merge the active workspace's roots INTO the current folder list instead of
-		// replacing it. A user-opened `.code-workspace` may declare several folders
-		// (multi-root); clobbering the list with a single workspace's roots collapses
-		// the explorer to that one folder. Existing folders keep their position and
-		// new roots are appended.
-		const mergedFolders = this._mergeWorkspaceFolders(currentFolders, targets);
-
-		// Skip the folder update if the current root set already matches the merged set
-		// (same length, same order, same URIs) — avoids redundant churn & git re-scan.
-		const sameAsCurrent = folderListsMatch(currentFolders, mergedFolders);
-		if (sameAsCurrent) {
-			await this._updateGitContextKey();
-			this._pruneVisibleRepositories(targetUris);
-			return;
-		}
-
-		try {
-			if (currentFolders.length === 0) {
-				await this.workspaceEditingService.addFolders(mergedFolders, true);
-			} else {
-				await this.workspaceEditingService.updateFolders(0, currentFolders.length, mergedFolders, true);
-			}
-		} catch (err) {
-			console.warn('[SourceControlWorkspaceSync] Failed to sync workspace folders:', err);
+		// ★★ 2026-09-14 修订（方案 B' Step 1 的补丁，**血的教训**）：
+		//
+		// 「窗口是真源」时，SCM 同步**不得**再把 registry 的 root 注入 folder 列表。
+		//
+		// 事故复盘：本方法由 `onDidChangeActiveWorkspace` 驱动，而注入用的是**追加式**合并
+		// （只加不减）。于是切到 `VsSaros_S1Game` 工作区时把它的 root（含 87.6 万节点的 UE5EA）
+		// 追加进窗口，切回来时**从不移除** ⇒ folder 列表单向膨胀；而标准 `WorkspaceService`
+		// 的 `updateFolders` **会落盘** ⇒ 用户手写的 `.code-workspace` 被回写成 5 个 folder
+		// （实测 22:28:33），再被反向投影固化进 registry 的 `relatedFolders`。
+		// 这正是历史事故「跨工作区污染 → renderer 堆 2.6GB 卡死」的复现路径。
+		//
+		// 新语义：**切换 Agent Studio 工作区 = 打开那个工作区**（`projectBarPart` 走
+		// `hostService.openWindow`，用户 2026-09-14 裁决为复用当前窗口），而不是往当前窗口
+		// 追加 root。所以这里只保留「按窗口现有 folder 做 SCM 投影」的职责：
+		// trust（上方已做，git 扩展开仓库的前置）+ prune（下方，隐藏非本工作区的仓库）。
+		//
+		// 旧方向（`registry-drives-window`）保留注入，否则回滚后 SCM 会看不到仓库。
+		if (resolveSyncDirection(this.configurationService.getValue(WORKSPACE_FOLDER_SYNC_DIRECTION_SETTING)) === 'registry-drives-window') {
+			await this.workspaceFolderRouter.ensureFolders(targets, 'scm-workspace-sync');
 		}
 
 		// After folder sync, update git context key
@@ -577,10 +565,25 @@ const WT_NOT_MAIN = ContextKeyExpr.and(
 	WT_WHEN,
 	ContextKeyExpr.regex('viewItem', /^(?!.*worktreeMain).*$/i)
 );
-const WT_RESET_WHEN = ContextKeyExpr.and(
-	WT_WHEN,
-	ContextKeyExpr.notEquals(WorktreeContextKeys.WorktreeIsMain, true),
-);
+/**
+ * ★ 2026-09-15 修正：原先用 `ContextKeyExpr.notEquals(WorktreeContextKeys.WorktreeIsMain, true)`，
+ * 但该键**全仓只声明、从未绑定**（`worktreeDataProvider` 只绑了 `HasWorktrees` / `WorktreeCount`）
+ * ⇒ `notEquals(undefined, true)` 恒为 true ⇒ **Reset 菜单对主工作树也显示**。
+ * 主工作树上执行 Reset = 对主 checkout 做 `reset --hard` + `clean -ffdx`（opencode 明确禁止），
+ * 属破坏性误操作。改用真正可用的机制：`viewItem` = 树项的 `contextValue`
+ * （见 `WorktreeItemType`），与上面的 `WT_NOT_MAIN` 同一手法。
+ */
+const WT_RESET_WHEN = WT_NOT_MAIN;
+
+/**
+ * 精确匹配某个树项类型（`WorktreeItem.contextValue`）。
+ *
+ * ⚠ 必须走 `viewItem`：`WorktreeContextKeys` 里的 `WorktreeIsMain/IsDetached/IsLocked/IsPrunable`
+ * 都**没有绑定**，用它们写 when 会让菜单永不出现（或恒出现）。
+ */
+const wtItemIs = (type: WorktreeItemType) => ContextKeyExpr.and(WT_WHEN, ContextKeyExpr.equals('viewItem', type));
+const WT_ITEM_BRANCH = wtItemIs(WorktreeItemType.WorktreeBranch);
+const WT_ITEM_LOCKED = wtItemIs(WorktreeItemType.WorktreeLocked);
 
 // Refresh
 MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
@@ -644,4 +647,42 @@ MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
 	when: WT_RESET_WHEN,
 	group: '2_worktree',
 	order: 5,
+});
+
+// Rollback to Checkpoint（★ 2026-09-15）—— 与「Create Checkpoint」成对：
+// 此前只有创建、没有回滚（`rollbackToCheckpoint` 无任何可达调用点）。
+MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
+	command: { id: WorktreeCommands.RollbackCheckpoint, title: localize2('worktreeRollbackCheckpoint', 'Rollback Worktree to Checkpoint…'), icon: Codicon.history },
+	when: WT_RESET_WHEN,
+	group: '2_worktree',
+	order: 6,
+});
+
+// ─── Lock / Unlock（★ 2026-09-15）─────────────────────────────────────────────
+//
+// 二者互斥：只有「普通分支树」能上锁，只有「已锁定树」能解锁。
+// 判据用 `viewItem`（树项的 `contextValue`）—— 见上方 `wtItemIs` 的说明。
+
+// Lock
+MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
+	command: { id: WorktreeCommands.Lock, title: localize2('worktreeLock', 'Lock Worktree'), icon: Codicon.lock },
+	when: WT_ITEM_BRANCH,
+	group: '2_worktree',
+	order: 10,
+});
+
+// Unlock
+MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
+	command: { id: WorktreeCommands.Unlock, title: localize2('worktreeUnlock', 'Unlock Worktree'), icon: Codicon.unlock },
+	when: WT_ITEM_LOCKED,
+	group: '2_worktree',
+	order: 10,
+});
+
+// Clean Up Stale Worktrees（视图标题栏；进的是"要删什么先列出来"的确认流程）
+MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+	command: { id: WorktreeCommands.Cleanup, title: localize2('worktreeCleanup', 'Clean Up Stale Worktrees…') },
+	when: WT_WHEN,
+	group: '2_worktree',
+	order: 20,
 });

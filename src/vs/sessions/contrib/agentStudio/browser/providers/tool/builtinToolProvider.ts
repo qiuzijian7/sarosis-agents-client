@@ -543,6 +543,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			register: (d) => this.register(d),
 			agentOS: this.agentOS,
 			logService: this.logService,
+			// 记忆新增 → activitybar「资料库」徽标提示（见 libraryActivityBadge.ts）
+			agentStudioService: this.studioService,
 		};
 		registerMemoryTools(ctx);
 	}

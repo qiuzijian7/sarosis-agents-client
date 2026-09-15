@@ -113,6 +113,158 @@ describe('CodebaseGraphSqliteStore.searchNodes (FTS5-first + LIKE fallback)' + (
 		assert.ok(rows.length <= 3, `expected <= 3 rows, got ${rows.length}`);
 		await store.close();
 	});
+
+	// ── project 过滤下推（2026-09-15）─────────────────────────────────────
+	// 背景：SQLite 文件是**跨工作区共享**的持久层（<userData>/codebase-graph/graph.db），
+	// 里面留着历史工作区的项目。旧实现不带 project ⇒ 跨全库取前 N 条，候选池被外来项目占满，
+	// renderer 侧再收敛 ⇒ 结果恒为 0（用户实测 needle="test" 的 231 条全是 S1Game:148 + UE5EA:83）。
+
+	itOrSkip('project filter is pushed down (FTS path)', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('proj-fts.db'));
+		await store.upsertNode(makeNode('test', { qualifiedName: 'mine::test' }));
+		await store.upsertNode({ ...makeNode('test', { qualifiedName: 's1::test' }), project: 'S1Game' });
+		await store.upsertNode({ ...makeNode('test', { qualifiedName: 'ue::test' }), project: 'UE5EA' });
+
+		const all = await store.searchNodes('test');
+		assert.strictEqual(all.length, 3, `不带 project 应跨库命中 3 条，实际 ${all.length}`);
+
+		const mine = await store.searchNodes('test', undefined, 100, PROJECT);
+		assert.strictEqual(mine.length, 1, `带 project 应只命中本项目 1 条，实际 ${mine.length}`);
+		assert.strictEqual(mine[0].project, PROJECT);
+		await store.close();
+	});
+
+	itOrSkip('project filter is pushed down (LIKE fallback path)', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('proj-like.db'));
+		await store.upsertNode(makeNode('MyHandler', { qualifiedName: 'mine::MyHandler' }));
+		await store.upsertNode({ ...makeNode('MyHandler', { qualifiedName: 's1::MyHandler' }), project: 'S1Game' });
+
+		// "Handle" 不是独立词元 → FTS 无命中 → 走 LIKE 兜底；project 过滤必须同样生效
+		const mine = await store.searchNodes('Handle', undefined, 100, PROJECT);
+		assert.deepStrictEqual(mine.map(r => r.qualifiedName), ['mine::MyHandler']);
+		await store.close();
+	});
+
+	itOrSkip('★ 回归：外来项目不得占满候选池（cap 很小时本项目仍须命中）', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('proj-cap.db'));
+		// 模拟用户现场：残留的历史工作区项目在 "test" 上命中远多于本项目
+		for (let i = 0; i < 20; i++) {
+			await store.upsertNode({ ...makeNode('test', { qualifiedName: `s1::test${i}`, inDegree: 100 + i }), project: 'S1Game' });
+		}
+		for (let i = 0; i < 20; i++) {
+			await store.upsertNode({ ...makeNode('test', { qualifiedName: `ue::test${i}`, inDegree: 100 + i }), project: 'UE5EA' });
+		}
+		await store.upsertNode(makeNode('test', { qualifiedName: 'mine::test', inDegree: 1 }));
+
+		// 旧行为：cap=5 的候选全被外来项目占满 ⇒ 收敛后 0 结果（Find Symbol 搜不到任何东西）
+		const withProject = await store.searchNodes('test', undefined, 5, PROJECT);
+		assert.strictEqual(withProject.length, 1, `cap=5 时本项目应命中 1 条，实际 ${withProject.length}`);
+		assert.strictEqual(withProject[0].project, PROJECT);
+		await store.close();
+	});
+
+	// ── 非符号类型排除下推（2026-09-15，用户截图）───────────────────────────
+	// 背景：Find Symbol 搜 `test` 时 200 条候选里大半是 `label='file'` 的 CONTAINS 桩节点
+	// （`toolArgsJson.test.ts` 等**文件名**），把真正的 variable/function 挤出 LIMIT
+	// （截图里 6 条可见结果只有 2 条真符号）。与 project 同一条教训：**只在 renderer
+	// 后置过滤没用** —— LIMIT 已经先把符号丢掉了，必须下推到 SQL。
+
+	itOrSkip('excludeTypes is pushed down (FTS path), case-insensitive', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('ex-type-fts.db'));
+		await store.upsertNode(makeNode('test', { label: 'file', type: 'file', qualifiedName: 'src/a.test.ts', filePath: 'src/a.test.ts' }));
+		await store.upsertNode(makeNode('test', { label: 'variable', type: 'variable', qualifiedName: 'src/a.ts::test' }));
+		// 外来项目：同时验证 project 与 excludeTypes **两个下推条件同时生效**（占位符顺序）
+		await store.upsertNode({ ...makeNode('test', { label: 'variable', type: 'variable', qualifiedName: 's1::test' }), project: 'S1Game' });
+
+		const all = await store.searchNodes('test');
+		assert.strictEqual(all.length, 3, `不带过滤应命中 file + 2 variable 共 3 条，实际 ${JSON.stringify(all.map(r => r.type))}`);
+
+		// 传大写 'FILE' 也必须生效 —— 图里 `file`（addEdge 桩）与 `File`（架构视图）并存，
+		// SQL 侧用 lower() 比较，调用方大小写不敏感
+		const filtered = await store.searchNodes('test', undefined, 100, undefined, ['FILE']);
+		assert.strictEqual(filtered.length, 2, `排除 file 后应只剩 2 个 variable，实际 ${JSON.stringify(filtered.map(r => [r.name, r.type]))}`);
+		assert.ok(filtered.every(r => r.type === 'variable'));
+
+		// ★ project + excludeTypes 同时下推：两组占位符的顺序必须与 SQL 一致
+		// （错位是这类「拼 SQL」改动最经典的缺陷形态）
+		const both = await store.searchNodes('test', undefined, 100, PROJECT, ['file']);
+		assert.strictEqual(both.length, 1, `project + excludeTypes 同时生效时应只剩本仓 variable，实际 ${JSON.stringify(both.map(r => [r.name, r.project, r.type]))}`);
+		assert.strictEqual(both[0].project, PROJECT);
+		assert.strictEqual(both[0].type, 'variable');
+		await store.close();
+	});
+
+	itOrSkip('excludeTypes is pushed down (LIKE fallback path)', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('ex-type-like.db'));
+		await store.upsertNode(makeNode('myTestFile.ts', { label: 'file', type: 'file', qualifiedName: 'src/myTestFile.ts', filePath: 'src/myTestFile.ts' }));
+		await store.upsertNode(makeNode('myTestHelper', { label: 'function', type: 'function', qualifiedName: 'src/a.ts::myTestHelper' }));
+
+		// "TestH" 不是独立词元 → FTS 无命中 → LIKE 兜底；排除条件必须同样生效
+		const filtered = await store.searchNodes('TestH', undefined, 100, undefined, ['file']);
+		assert.deepStrictEqual(filtered.map(r => r.name), ['myTestHelper']);
+		await store.close();
+	});
+
+	itOrSkip('★ 回归：file 桩节点不得占满候选池（cap 很小时真符号仍须命中）', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('ex-type-cap.db'));
+		// 模拟用户现场：命中同一词的文件名桩节点远多于真符号（且连接度更高）
+		for (let i = 0; i < 30; i++) {
+			await store.upsertNode(makeNode('test', { label: 'file', type: 'file', qualifiedName: `src/f${i}.test.ts`, filePath: `src/f${i}.test.ts`, inDegree: 100 + i }));
+		}
+		await store.upsertNode(makeNode('testHelper', { label: 'variable', type: 'variable', qualifiedName: 'src/a.ts::testHelper', inDegree: 1 }));
+
+		// 旧行为：cap=5 的候选全被 file 桩节点占满 ⇒ Find Symbol 只看到文件名（用户截图）
+		const rows = await store.searchNodes('test', undefined, 5, undefined, ['file']);
+		assert.strictEqual(rows.length, 1, `cap=5 且排除 file 后应只剩真符号，实际 ${JSON.stringify(rows.map(r => r.name))}`);
+		assert.strictEqual(rows[0].name, 'testHelper');
+		await store.close();
+	});
+
+	// ── 符号名检索 nameOnly（2026-09-15，用户截图）─────────────────────────
+	// 背景：Find Symbol 搜 `test` 返回 `MockClassifyLLM` —— QN 形如 `<相对文件路径>::<符号名>`，
+	// 而 FTS 索引了 qualified_name/file_path/body ⇒ 路径里的 `classifyLLM.test.ts` 也算命中。
+	// `nameOnly` 只匹配 `name` 列，且**跳过 FTS 走 LIKE 子串**（FTS 是词元匹配，`testHelper`
+	// 会被漏掉 —— 见第二个用例，防止有人把它「优化」成 FTS 列过滤）。
+
+	itOrSkip('nameOnly matches the name column only (QN/filePath must not match)', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('name-only.db'));
+		// 用户截图里的那个类：QN 里含 "test"（文件名），符号名本身不含
+		await store.upsertNode(makeNode('MockClassifyLLM', {
+			label: 'class', type: 'class',
+			qualifiedName: 'src/knowledge/classifyLLM.test.ts::MockClassifyLLM',
+			filePath: 'src/knowledge/classifyLLM.test.ts',
+		}));
+		// 名字里真的含 "test"
+		await store.upsertNode(makeNode('testHelper', { label: 'variable', type: 'variable', qualifiedName: 'src/a.ts::testHelper', filePath: 'src/a.ts' }));
+
+		// 旧口径（FTS 跨 name/QN/file_path/body）：只命中 QN 里的路径 —— 正是用户看到的现象
+		const loose = await store.searchNodes('test');
+		assert.deepStrictEqual(loose.map(r => r.name), ['MockClassifyLLM'], `旧口径应只命中 QN 里的路径命中，实际 ${JSON.stringify(loose.map(r => r.name))}`);
+
+		// nameOnly：只剩名字里真的含 test 的那条
+		const strict = await store.searchNodes('test', undefined, 100, undefined, undefined, true);
+		assert.deepStrictEqual(strict.map(r => r.name), ['testHelper']);
+		await store.close();
+	});
+
+	itOrSkip('nameOnly is a substring match (FTS token match would miss testHelper)', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('name-only-substr.db'));
+		await store.upsertNode(makeNode('testHelper', { label: 'function', type: 'function', qualifiedName: 'src/a.ts::testHelper' }));
+		await store.upsertNode(makeNode('MyTestRunner', { label: 'class', type: 'class', qualifiedName: 'src/b.ts::MyTestRunner' }));
+
+		// 词元匹配只会命中词元恰为 test 的名字 ⇒ `testHelper`/`MyTestRunner` 都会漏
+		const rows = await store.searchNodes('test', undefined, 100, undefined, undefined, true);
+		assert.deepStrictEqual(rows.map(r => r.name).sort(), ['MyTestRunner', 'testHelper']);
+		await store.close();
+	});
 });
 
 describe('CodebaseGraphSqliteStore.grepContent (main-process streaming grep)' + (dbAvailable ? '' : ' [SKIPPED: better-sqlite3 not installed]'), () => {

@@ -21,7 +21,10 @@ import { IJSONEditingService, IJSONValue } from '../../configuration/common/json
 import { ResourceMap } from '../../../../base/common/map.js';
 import { IWorkbenchEnvironmentService } from '../../environment/common/environmentService.js';
 
-export const EXTENSIONS_CONFIG = '.vscode/extensions.json';
+// ★ [Saros] 工作区扩展推荐文件 —— 本产品统一用 `.sarosworkspace/`（见
+// `workbench/services/configuration/common/configuration.ts` 的 FOLDER_CONFIG_FOLDER_NAME），
+// **不读**工作区 `.vscode/`。
+export const EXTENSIONS_CONFIG = '.sarosworkspace/extensions.json';
 
 export interface IExtensionsConfigContent {
 	recommendations?: string[];

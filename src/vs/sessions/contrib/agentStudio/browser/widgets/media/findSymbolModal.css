@@ -1,0 +1,85 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Sarosis. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/**
+ * Find Symbol 模态样式（`widgets/findSymbolModal.ts`）。
+ *
+ * 为什么需要独立 CSS 文件（2026-09-15）：
+ *   1. **滚动条**：该模态此前全用内联 style，`overflow:auto` 拿到的是**原生**滚动条
+ *      （Windows 下粗、带箭头，与 workbench 其它区域明显不一致）。workbench 侧**没有**
+ *      全局 `::-webkit-scrollbar` 规则（VS Code 只在 `.monaco-scrollable-element` 里自绘滑块），
+ *      故这里显式补一份「通用样式」——取值与 webview 侧 `styles/globals.css` 的
+ *      “Scrollbar (match VS Code)” 一节保持一致（8px + `--vscode-scrollbarSlider-*` 三态）。
+ *   2. **Definition 列两行布局**：首行「类型 + 名称 + 连接号」、次行文件路径。
+ *      内联 style 无法表达 `::-webkit-scrollbar` 这类伪元素，2 行结构也放在这里更清晰。
+ *
+ * 选择器用 `.codebase-graph-modal`（通用模态容器）⇒ 其它复用该模态的对话框
+ * （Open File / Class Hierarchy / Implementations）的滚动条一并统一，无需各自重复声明。
+ */
+
+/* ─── 滚动条：与 VS Code 通用样式一致 ─────────────────────────────────────── */
+
+.codebase-graph-modal,
+.find-symbol-table {
+	/* Firefox */
+	scrollbar-width: thin;
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+.codebase-graph-modal::-webkit-scrollbar,
+.find-symbol-table::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+.codebase-graph-modal::-webkit-scrollbar-track,
+.find-symbol-table::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.codebase-graph-modal::-webkit-scrollbar-thumb,
+.find-symbol-table::-webkit-scrollbar-thumb {
+	background-color: var(--vscode-scrollbarSlider-background);
+	border-radius: 4px;
+}
+
+.codebase-graph-modal::-webkit-scrollbar-thumb:hover,
+.find-symbol-table::-webkit-scrollbar-thumb:hover {
+	background-color: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+.codebase-graph-modal::-webkit-scrollbar-thumb:active,
+.find-symbol-table::-webkit-scrollbar-thumb:active {
+	background-color: var(--vscode-scrollbarSlider-activeBackground);
+}
+
+.codebase-graph-modal::-webkit-scrollbar-corner,
+.find-symbol-table::-webkit-scrollbar-corner {
+	background: transparent;
+}
+
+/* ─── Definition 列：固定两行（首行名称 + 连接号 / 次行文件路径）────────────── */
+
+.find-symbol-def {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* 首行：类型 + 符号名 + 连接号（分隔符留在首行末尾，与次行路径形成两行结构） */
+.find-symbol-def-head {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* 次行：文件路径（:行号）；完整值另挂 title，过长时从右侧省略 */
+.find-symbol-def-path {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	opacity: 0.85;
+}

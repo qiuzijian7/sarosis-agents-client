@@ -1371,7 +1371,9 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 		for (const saOld of saOldList) {
 			const id = saOld.getAttribute('data-sa-id');
 			if (!id) { continue; }
-			const saNew = newCard.querySelector(`.sa[data-sa-id="${CSS.escape(id)}"]`) as HTMLElement | null;
+			// 选择器必须是 .subagent-card —— data-sa-id 只设在卡片根上（delegateCards:729），
+			// 历史写法 `.sa` 永不匹配（全库无 class="sa" 元素），整个函数静默空转。
+			const saNew = newCard.querySelector(`.subagent-card[data-sa-id="${CSS.escape(id)}"]`) as HTMLElement | null;
 			if (!saNew) { continue; }
 			// title：移栽旧节点到新卡，避免 shimmer 动画每批重启
 			const titleOld = saOld.querySelector('.subagent-card-title') as HTMLElement | null;
@@ -1413,7 +1415,17 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 	 */
 	private _computeDelegateDynamicSig(tc: IToolCall): string {
 		const subs = filterChildSubAgents(tc.subAgents as any, tc.id);
-		return subs.map((s: any) => `${s.id}:${s.status}:${(s.toolTraces?.length ?? 0)}`).join('|');
+		// 签名必须覆盖卡片**渲染所依赖的全部动态数据**，否则完成后的终值 flush 会
+		// 因签名与旧卡相同而被 line 1517 的「无变化即跳过」拦截，导致 footer 的
+		// 「⚡ token / 💳 积分」停留在倒数第二个 turn 的数字或整行丢失。
+		// 除 id/status/步数外，tokens/credits 同样参与渲染（delegateCards 聚合后写
+		// 入 .dlg-meta-row），故一并纳入。
+		return subs.map((s: any) => {
+			const tok = s.tokensUsed;
+			const tokSig = tok ? `${tok.input}/${tok.output}` : '';
+			const creditSig = typeof s.creditUsed === 'number' ? String(s.creditUsed) : '';
+			return `${s.id}:${s.status}:${(s.toolTraces?.length ?? 0)}:${tokSig}:${creditSig}`;
+		}).join('|');
 	}
 
 	/**
@@ -2936,9 +2948,6 @@ protected override _openUserEditOverlay(msg: IAgentChatMessage): void {
 		// Toolbar — 与底部 composer toolbar 完全一致
 		const toolbar = append(composer, $(".chat-user-edit-toolbar"));
 		const leftTools = append(toolbar, $("span.chat-user-edit-toolbar-left"));
-		const attachBtn = this._appendEditToolbarBtn(leftTools, { title: "上传附件", svgPath: "M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" });
-		this._register(addDisposableListener(attachBtn, EventType.CLICK, (e) => { e.stopPropagation(); this._fileInput?.click(); }));
-		this._register(addDisposableListener(this._appendEditToolbarBtn(leftTools, { title: "语音输入", svgPath: "M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8" }), EventType.CLICK, (e) => e.stopPropagation()));
 		append(leftTools, $(".chat-user-edit-toolbar-divider"));
 		// ChatMode 指示（2026-08-21）：编辑气泡内只**显示**当前模式，不提供切换
 		// —— 模式是会话级意图档位，应在底部主输入框统一切换；在编辑气泡里再放一个

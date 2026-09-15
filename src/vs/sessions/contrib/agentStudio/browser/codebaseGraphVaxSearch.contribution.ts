@@ -29,7 +29,6 @@ import { ITextModel } from '../../../../editor/common/model.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { ICodebaseGraphService, GraphNode } from './codebaseGraphService.js';
 import { URI } from '../../../../base/common/uri.js';
-import { joinPath } from '../../../../base/common/resources.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { KeyMod, KeyCode } from '../../../../base/common/keyCodes.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
@@ -54,18 +53,10 @@ async function openAtLine(editorService: IEditorService, uri: URI, line: number 
 	await editorService.openEditor({ resource: uri, options });
 }
 
-/** 用图谱 project roots 把相对 filePath 还原为绝对 URI（stale 索引时不存在则跳过）。 */
-async function resolveUri(graphService: ICodebaseGraphService, fileService: IFileService, node: { filePath?: string; project?: string }): Promise<URI | undefined> {
-	if (!node.filePath) { return undefined; }
-	const roots = graphService.getProjectRoots();
-	const root = roots[node.project ?? '_default'];
-	if (!root) { return undefined; }
-	const uri = joinPath(URI.file(root), node.filePath);
-	try {
-		if (!await fileService.exists(uri)) { return undefined; }
-	} catch { return undefined; }
-	return uri;
-}
+// 2026-09-15：「project root + 相对路径」的解析已统一到
+// `ICodebaseGraphService.resolveNodeLocation()`（root 三级回退 + 行号缺省 + 未命中告警），
+// 本文件原先的 `resolveUri()` 私有助手已删除 —— 它只认 `roots[node.project]` 一项，
+// project 名对不上就静默丢掉候选（同一族的静默失败）。
 
 /** 取当前活动编辑器光标处的单词（VAX 检索命令的公共入口）。 */
 function getActiveWord(editorService: IEditorService): string | undefined {
@@ -259,7 +250,6 @@ registerAction2(class FindGraphReferencesAction extends Action2 {
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const graphService = accessor.get(ICodebaseGraphService);
 		const editorService = accessor.get(IEditorService);
-		const fileService = accessor.get(IFileService);
 		const quickInputService = accessor.get(IQuickInputService);
 		const logService = accessor.get(ILogService);
 
@@ -289,24 +279,28 @@ registerAction2(class FindGraphReferencesAction extends Action2 {
 		const items: IRefPickItem[] = [];
 		const seen = new Set<string>();
 		for (const r of refs) {
-			const uri = await resolveUri(graphService, fileService, r.node);
-			if (!uri) { continue; }
-			const key = `${uri.toString()}:${r.node.startLine ?? ''}`;
+			// 统一走 service 级解析器（2026-09-15）；逐条探测未命中属正常路径 ⇒ quiet
+			const loc = await graphService.resolveNodeLocation(r.node, { quiet: true });
+			if (!loc) { continue; }
+			const key = `${loc.uri.toString()}:${loc.line}`;
 			if (seen.has(key)) { continue; }
 			seen.add(key);
 			items.push({
 				label: `$(references) ${r.node.name}`,
 				description: `${r.edgeType} (${r.access})`,
-				detail: r.node.filePath ? `${r.node.filePath}:${r.node.startLine ?? ''}` : r.node.qualifiedName,
-				uri,
-				line: r.node.startLine,
+				// 无行号的节点（`label='file'` stub）只显示路径，不留尾随 `:`
+				detail: r.node.filePath ? (r.node.startLine ? `${r.node.filePath}:${r.node.startLine}` : r.node.filePath) : r.node.qualifiedName,
+				uri: loc.uri,
+				line: loc.line,
 			});
 		}
 		picker.items = items;
 		logService.info('[CodebaseGraph:FindRefs]', `showing picker with ${items.length} references`);
 		disposables.add(picker.onDidAccept(async () => {
 			const picked = picker.selectedItems[0];
-			if (picked?.uri && picked.line) {
+			// 2026-09-15：不再要求 `picked.line` —— 无行号候选以前按回车/双击**毫无反应**；
+			// openAtLine 自身已按 `Math.max(1, line ?? 1)` 处理缺省。
+			if (picked?.uri) {
 				await openAtLine(editorService, picked.uri, picked.line);
 			}
 			disposables.dispose();
@@ -420,13 +414,14 @@ registerAction2(class GotoGraphImplementationAction extends Action2 {
 		// 图谱候选 → picker 项
 		const items: IRefPickItem[] = [];
 		for (const c of candidates) {
-			const uri = await resolveUri(graphService, fileService, c.node);
+			const loc = await graphService.resolveNodeLocation(c.node, { quiet: true });
 			items.push({
 				label: `$(type-hierarchy-sub) ${c.node.name}`,
 				description: c.via,
-				detail: c.node.filePath ? `${c.node.filePath}:${c.node.startLine ?? ''}` : c.node.qualifiedName,
-				uri,
-				line: c.node.startLine,
+				// 无行号的节点只显示路径，不留尾随 `:`
+				detail: c.node.filePath ? (c.node.startLine ? `${c.node.filePath}:${c.node.startLine}` : c.node.filePath) : c.node.qualifiedName,
+				uri: loc?.uri,
+				line: loc?.line,
 			});
 		}
 
@@ -523,7 +518,6 @@ registerAction2(class ListGraphMethodsAction extends Action2 {
 		const graphService = accessor.get(ICodebaseGraphService);
 		const quickInputService = accessor.get(IQuickInputService);
 		const editorService = accessor.get(IEditorService);
-		const fileService = accessor.get(IFileService);
 		const logService = accessor.get(ILogService);
 		const TAG = '[CodebaseGraph:ListMethods]';
 
@@ -573,13 +567,13 @@ registerAction2(class ListGraphMethodsAction extends Action2 {
 
 		const items: IRefPickItem[] = [];
 		for (const node of nodes) {
-			const uri = await resolveUri(graphService, fileService, node);
+			const loc = await graphService.resolveNodeLocation(node, { quiet: true });
 			items.push({
 				label: `$(symbol-method) ${node.name}`,
 				description: `line ${node.startLine ?? ''}`,
 				detail: node.type,
-				uri,
-				line: node.startLine,
+				uri: loc?.uri,
+				line: loc?.line,
 			});
 		}
 		picker.items = items;
@@ -587,7 +581,8 @@ registerAction2(class ListGraphMethodsAction extends Action2 {
 
 		disposables.add(picker.onDidAccept(async () => {
 			const [sel] = picker.selectedItems;
-			if (sel?.uri && sel.line) {
+			// 同上：无行号候选也应能打开（openAtLine 处理缺省）
+			if (sel?.uri) {
 				await openAtLine(editorService, sel.uri, sel.line);
 			}
 			picker.hide();

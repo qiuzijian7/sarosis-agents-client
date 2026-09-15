@@ -98,6 +98,22 @@ export interface IWorkflowDirectRunProgress {
 	readonly stageUid?: string;
 }
 
+/**
+ * 资料库活动通知：知识库 / 代码库 / 记忆三处的「构建中」与「有新增」统一上报，
+ * 由左侧栏「资料库」图标上的徽标聚合显示。
+ *
+ * 背景：资料库 sideview 是三合一（资料 / 记忆 / 代码），但 activitybar 只有一枚图标 ——
+ * 用户没打开该 sideview 时无法感知后台正在构建、或有新内容落库。
+ */
+export interface ILibraryBadgeRequest {
+	/** 活动来源。 */
+	readonly source: 'kb' | 'codebase' | 'memory';
+	/** building=进行中（转圈）；new=有新内容待查看（数字徽标）；idle=该来源活动结束（清除）。 */
+	readonly kind: 'building' | 'new' | 'idle';
+	/** kind='new' 时的新增条目数；聚合后显示为数字徽标。 */
+	readonly count?: number;
+}
+
 export const IAgentStudioService =
 	createDecorator<IAgentStudioService>("agentStudioService");
 
@@ -122,8 +138,15 @@ export interface IAgentStudioService {
 	readonly onDidWorkflowDirectRunProgress: Event<IWorkflowDirectRunProgress>;
 	/** Request the KB view to refresh its tree (e.g. after background KB agent import completes). */
 	requestKbRefresh(): void;
+	/** 上报资料库活动（构建中 / 有新增 / 结束），驱动 activitybar「资料库」徽标。 */
+	requestLibraryBadge(request: ILibraryBadgeRequest): void;
 	/** Fired when the KB view should refresh (e.g. after background KB agent import). */
 	readonly onDidRequestKbRefresh: Event<void>;
+	/**
+	 * Fired when 知识库 / 代码库 / 记忆 有构建或新增活动。
+	 * 由 activitybar「资料库」图标的徽标聚合消费（见 libraryActivityBadge.ts）。
+	 */
+	readonly onDidRequestLibraryBadge: Event<ILibraryBadgeRequest>;
 	/** Fired when agents change (custom agent CRUD). */
 	readonly onDidChangeAgents: Event<void>;
 	/**
@@ -245,6 +268,34 @@ export interface IAgentStudioService {
 	 * workspaces at all.
 	 */
 	resolveDefaultActiveWorkspaceId(): Promise<string | null>;
+
+	/**
+	 * ★★ P0（2026-09-15）：确保存在一条**身份与当前窗口一致**的工作区记录。
+	 *
+	 * ── 为什么必需 ──────────────────────────────────────────────────────
+	 * `resolveDefaultActiveWorkspaceId()` 在「按身份找不到记录」时会兜底到
+	 * 「第一个有 `path` 的记录」—— 那是一条**无关**记录，于是 agent / 会话会被写到
+	 * 别的项目下（表现为 "Agent has no workspace directory"，或数据悄悄落到另一个仓库）。
+	 * 本方法补上这个缺口：窗口非空但没有对应记录时，**按窗口身份建一条**。
+	 *
+	 * 幂等：已存在匹配记录则直接返回它（不新建、不写盘）。
+	 * 空窗口（既无工作区文件、又无 root）**不建**记录。
+	 *
+	 * ⚠ 参数用**结构类型**而非 import `workspaceFolderSyncPolicy.js` 的类型：
+	 * 本文件属 `sessions/common`，不应反向依赖 `sessions/contrib/*`。
+	 * 结构上等同该模块的 `IWorkspaceIdentity` / `IRegistryProjection`。
+	 */
+	ensureWorkspaceForWindow(
+		identity: {
+			readonly codeWorkspacePath?: string;
+			readonly primaryFolderPath?: string;
+			readonly folderPaths: readonly string[];
+		},
+		projection: {
+			readonly path: string | undefined;
+			readonly relatedFolders: readonly { readonly path: string; readonly name: string }[];
+		},
+	): Promise<Workspace | undefined>;
 
 	// Connections
 	getConnections(workspaceId: string): Promise<Connection[]>;

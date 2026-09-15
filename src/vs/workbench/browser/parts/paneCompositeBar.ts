@@ -31,6 +31,7 @@ import { GestureEvent } from '../../../base/browser/touch.js';
 import { IPaneCompositePart } from './paneCompositePart.js';
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
 import { IViewsService } from '../../services/views/common/viewsService.js';
+import { ILogService } from '../../../platform/log/common/log.js';
 
 interface IPlaceholderViewContainer {
 	readonly id: string;
@@ -117,9 +118,15 @@ export class PaneCompositeBar extends Disposable {
 			() => this.compositeBar.getCompositeBarItems(),
 		);
 
-		console.log('[PaneCompositeBar] Constructor - location:', this.location);
-		console.log('[PaneCompositeBar] Constructor - cachedViewContainers:', this.cachedViewContainers);
-		console.log('[PaneCompositeBar] Constructor - getViewContainers():', this.getViewContainers());
+		// ⚠ 这几条诊断**必须走 `ILogService`**：裸 `console.log` 只进 DevTools，
+		// **不落 `renderer.log`**（前置步骤 34 已证）⇒ 自动化脚本读不到、只能人工贴。
+		//
+		// ⚠ 不新增构造函数参数：`ActivitybarPart` 有一处手动 `super(...)` 转发、
+		// `PaneCompositePart.createCompositeBar()` 用 `createInstance(PaneCompositeBar, …)`，
+		// 加参数会把这两处的 arity 检查弄坏（TS2554）。改用已有的 `instantiationService` 取。
+		const log = this.instantiationService.invokeFunction(accessor => accessor.get(ILogService));
+		const barTag = `[PaneCompositeBar][${String(this.part)}]`;
+		log.info(`${barTag} ctor location=${this.location} cached=${this.cachedViewContainers.length} getViewContainers=${this.getViewContainers().length} ids=${this.getViewContainers().map(v => v.id).join(',')}`);
 
 		const cachedItems = this.cachedViewContainers
 			.map(container => ({
@@ -129,13 +136,13 @@ export class PaneCompositeBar extends Disposable {
 				order: container.order,
 				pinned: container.pinned,
 			}));
-		console.log('[PaneCompositeBar] Constructor - cachedItems:', cachedItems);
+		log.info(`${barTag} ctor cachedItems=${cachedItems.length} visible=${cachedItems.filter(i => i.visible).length}`);
 
 		this.compositeBar = this.createCompositeBar(cachedItems);
-		console.log('[PaneCompositeBar] Constructor - compositeBar items after create:', this.compositeBar.getCompositeBarItems());
+		log.info(`${barTag} ctor items after create=${this.compositeBar.getCompositeBarItems().length}`);
 
 		this.onDidRegisterViewContainers(this.getViewContainers());
-		console.log('[PaneCompositeBar] Constructor - compositeBar items after onDidRegisterViewContainers:', this.compositeBar.getCompositeBarItems());
+		log.info(`${barTag} ctor items after onDidRegisterViewContainers=${this.compositeBar.getCompositeBarItems().length}`);
 
 		this.registerListeners();
 	}

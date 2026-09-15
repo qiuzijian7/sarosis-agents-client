@@ -14,7 +14,17 @@ import { IWorkspaceTrustManagementService } from '../../../../platform/workspace
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import {
+	isProjectionUnchanged,
+	matchWorkspaceIdentity,
+	projectFoldersToRegistry,
+	resolveSyncDirection,
+	workspaceIdentityFromWindow,
+	WORKSPACE_FOLDER_SYNC_DIRECTION_SETTING,
+	type WorkspaceFolderSyncDirection,
+} from '../common/workspaceFolderSyncPolicy.js';
 
 export type WorkspaceFolderDescriptor = { uri: URI; name: string };
 
@@ -98,6 +108,13 @@ export class WorkspaceFolderSyncContribution extends Disposable implements IWork
 
 	static readonly ID = 'sessions.agentStudio.workspaceFolderSync';
 
+	/**
+	 * 反向投影的**重入锁** —— 写 registry 可能（经由其它监听者）间接引发 folder 事件，
+	 * 没有它会自激循环。与 `isProjectionUnchanged` 的幂等比较是两道**互补**的闸门：
+	 * 锁防「同一轮内递归」，幂等比较防「不同轮之间反复写同样的值」。
+	 */
+	private _projectingToRegistry = false;
+
 	constructor(
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IWorkspaceEditingService private readonly workspaceEditingService: IWorkspaceEditingService,
@@ -106,6 +123,7 @@ export class WorkspaceFolderSyncContribution extends Disposable implements IWork
 		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
 		@IFileService private readonly fileService: IFileService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
@@ -113,6 +131,7 @@ export class WorkspaceFolderSyncContribution extends Disposable implements IWork
 		const initialCtxFolders = this.workspaceContextService.getWorkspace().folders;
 		this.logService.info(
 			`[WorkspaceFolderSync] contribution constructed | ` +
+			`direction=${this._direction()} | ` +
 			`inMemoryActiveId=${this.agentStudioService.getActiveWorkspaceId() ?? 'undefined'} | ` +
 			`initialContextFolderCount=${initialCtxFolders.length}`,
 		);
@@ -123,15 +142,36 @@ export class WorkspaceFolderSyncContribution extends Disposable implements IWork
 		// Trace raw workspace context changes so we can see exactly when
 		// the native folders mutate.
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(e => {
+			// ★ 诊断：这是**原生 Explorer 唯一认的刷新触发点**。此事件不来 ⇒ sideview 必然不刷新。
+			// 打出变更前后的完整 folder 列表，便于与 `[WorkspaceSwitch]` 行对照时间戳。
+			const roots = this.workspaceContextService.getWorkspace().folders.map(f => f.uri.fsPath);
 			this.logService.info(
 				`[WorkspaceFolderSync] onDidChangeWorkspaceFolders | ` +
-				`added=${e.added.length} removed=${e.removed.length}`,
+				`added=${e.added.length} removed=${e.removed.length} | ` +
+				`now folders=${roots.length} [${roots.join(' | ')}]`,
 			);
+			// ★ 方案 B' Step 1：窗口是真源 ⇒ folder 变化后写回 registry。
+			void this._projectWindowFoldersToRegistry();
 		}));
+
+		// ★ 启动时也投影一次 —— 窗口打开 `.code-workspace` 时 folder 列表在
+		// contribution 构造**之前**就已就绪（`SessionsWorkspaceContextService.initialize()` /
+		// 标准 `WorkspaceService.initialize()` 都在服务图组装阶段完成），
+		// 不会再触发 `onDidChangeWorkspaceFolders` ⇒ 只靠事件会漏掉「首次打开」。
+		void this._projectWindowFoldersToRegistry();
 
 		// Sync on every active workspace switch
 		this._register(this.agentStudioService.onDidChangeActiveWorkspace((workspaceId: string | undefined) => {
-			this.logService.info(`[WorkspaceFolderSync] onDidChangeActiveWorkspace fired | workspaceId=${workspaceId}`);
+			// ★ 诊断核心行：切换后**窗口 folder 是否随之变化**是 sideview 刷不刷新的唯一判据。
+			// 若这里的 folders 列表与切换前完全一致 ⇒ 原生侧无变化可刷 ⇒ 问题在「切换入口
+			// 没有真的换工作区」，而非 Explorer 的刷新逻辑。
+			const ws = this.workspaceContextService.getWorkspace();
+			const roots = ws.folders.map(f => f.uri.fsPath);
+			this.logService.info(
+				`[WorkspaceFolderSync] onDidChangeActiveWorkspace fired | workspaceId=${workspaceId} | ` +
+				`window config=${ws.configuration?.fsPath ?? '<none>'} folders=${roots.length} [${roots.join(' | ')}] ` +
+				`| direction=${this._direction()}`,
+			);
 			void this._syncWorkspaceFolder(workspaceId);
 		}));
 
@@ -181,11 +221,200 @@ export class WorkspaceFolderSyncContribution extends Disposable implements IWork
 	}
 
 	/**
+	 * 当前的 folder 同步方向（每次读设置，便于运行时切换排障）。
+	 * 判据是纯函数 `resolveSyncDirection`，非法值回落默认。
+	 */
+	private _direction(): WorkspaceFolderSyncDirection {
+		return resolveSyncDirection(this.configurationService.getValue(WORKSPACE_FOLDER_SYNC_DIRECTION_SETTING));
+	}
+
+	/**
+	 * ★★ 方案 B' Step 1 的核心：**窗口 → registry** 反向投影。
+	 *
+	 * 窗口当前的 folder 列表（由 `.code-workspace` / 打开的文件夹决定）是真源，
+	 * 把它写回 Agent Studio 的工作区记录（`path` + `relatedFolders`）。
+	 *
+	 * ── 为什么这是"结构性"防污染 ─────────────────────────────────────
+	 * 旧方向（registry → 窗口）必须靠 `replace` / `union` 分支判断「该不该保留现有 folder」，
+	 * 判错就会把**别的工作区**的 root 带进来（实测事故：UE5EA 87.6 万节点图谱 →
+	 * renderer 2.6GB 卡死）。反向之后**不存在** registry → 窗口的写路径，
+	 * 所以污染在物理上不可能发生 —— 不再依赖任何分支判对。
+	 *
+	 * 三道闸门（缺一会写盘风暴 / 自激循环）：
+	 *   ① 方向不是 `window-drives-registry` → 直接返回；
+	 *   ② `_projectingToRegistry` 重入锁 —— 写 registry 可能间接触发 folder 事件；
+	 *   ③ `isProjectionUnchanged` 幂等比较 —— 与现值一致则不写。
+	 *
+	 * 失败只 warn：它是「让 Agent Studio 跟上窗口」的便利同步，
+	 * 绝不能影响窗口本身（folder 列表已经是对的）。
+	 */
+	private async _projectWindowFoldersToRegistry(): Promise<void> {
+		if (this._direction() !== 'window-drives-registry') {
+			return;
+		}
+		if (this._projectingToRegistry) {
+			return;
+		}
+
+		this._projectingToRegistry = true;
+		try {
+			// ★★★ 2026-09-15：**读窗口状态的唯一入口**，写盘前必须再调一次。
+			//
+			// ── 为什么不能只在入口读一次（这是个真实的数据丢失事故）─────────────
+			// 下面的 `ensureWorkspaceForWindow()` / `getWorkspace()` / `updateWorkspace()`
+			// 全是**异步 I/O**，期间窗口 folder 完全可能变化 —— 而「启动补根」
+			// （`sidebarPart._applyActiveWorkspaceRootsOnStartup()`）恰好就发生在这个窗口期。
+			//
+			// 实测（2026-09-15 12:21，用户报「工作区 sideview 未显示多根目录」）：
+			//   ① 构造期调用本方法，入口读到的是**启动时的 1 根**快照；
+			//   ② await 期间启动补根把窗口从 1 根扩成 3 根（`from=1 to=3` ✓）；
+			//   ③ 本方法醒来后拿**过期快照**写盘 ⇒ 记录的 `relatedFolders` 被抹成 `[]`；
+			//   ④ 重启后 `_resolveWorkspaceRoots()` 只解析出 1 个 root ⇒ 多根**永久丢失**。
+			// 日志铁证：`reverse (window→registry) | relatedFolders=0` 紧跟
+			// `onDidChangeWorkspaceFolders | now folders=3` 之后。
+			//
+			// 教训：**「读—await—写」之间必须重读，或带上版本校验**。
+			// 单纯"入口读一次、结尾用同一个变量"在异步 I/O 面前等于用旧状态覆盖新状态。
+			const readWindow = () => {
+				const ws = this.workspaceContextService.getWorkspace();
+				const folders = ws.folders;
+				return {
+					projection: projectFoldersToRegistry(folders.map(f => ({ fsPath: f.uri.fsPath, name: f.name }))),
+					identity: workspaceIdentityFromWindow(ws.configuration?.fsPath, folders.map(f => f.uri.fsPath)),
+				};
+			};
+			const first = readWindow();
+			const { projection, identity } = first;
+
+			// ★★ P0 收口点：先确保存在一条**身份与当前窗口一致**的记录。
+			//
+			// 为什么必须在取 `activeWorkspaceId` **之前**做：
+			// 那个游标可能指向一条与当前窗口**无关**的记录（`resolveDefaultActiveWorkspaceId()`
+			// 会兜底选「第一个有 path 的记录」）—— 而下面的身份守卫会把它拦掉 ⇒
+			// 结果就是「记录永远不同步」（用户报的多根丢失、记录不更新）。
+			// upsert 之后，「有没有记录」与「是不是这个窗口」变成同一个问题。
+			const ensured = await this.agentStudioService.ensureWorkspaceForWindow(identity, projection);
+
+			const workspaceId = ensured?.id ?? this.agentStudioService.getActiveWorkspaceId();
+			if (!workspaceId) {
+				// 空窗口且没有活动工作区 —— 没有可投影的东西（等用户打开工作区）。
+				return;
+			}
+
+			const workspace = ensured ?? await this.agentStudioService.getWorkspace(workspaceId);
+			if (!workspace) {
+				this.logService.warn(`[WorkspaceFolderSync] reverse: workspace not found: ${workspaceId}`);
+				return;
+			}
+
+			// 记录已确认与窗口一致，但 registry 游标可能还指着别处 ⇒ 对齐游标，
+			// 否则下次启动 `resolveDefaultActiveWorkspaceId()` 的 in-memory 分支仍会拿到错的。
+			if (ensured && this.agentStudioService.getActiveWorkspaceId() !== ensured.id) {
+				await this.agentStudioService.setActiveWorkspace(ensured.id);
+			}
+
+			// ★★ 工作区身份守卫（2026-09-14 事故后新增；2026-09-15 P0 升级为**完整身份匹配**）。
+			//
+			// 只有当这条记录**确实就是当前窗口**时才允许投影 —— 判据见
+			// {@link matchWorkspaceIdentity}：工作区文件 > 主 root > root 集合（顺序不敏感）。
+			//
+			// 为什么必需：`activeWorkspaceId` 只是 registry 里的一个游标，与「窗口打开的东西」
+			// 没有强制对应（`resolveDefaultActiveWorkspaceId()` 会兜底选一条）。无守卫就会把
+			// A 窗口的 folder 写进 B 工作区的 `relatedFolders`（09-14 实测：另一个工作区的
+			// UE5EA 有 87.6 万节点，被写进来后 renderer 堆到 2.6GB 卡死）。
+			//
+			// ★ P0 升级点（**这是旧守卫的真 bug**）：旧版只比「窗口主 root == 记录 `path`」，
+			// 当记录的 `path` 是 `.code-workspace` **文件**时二者永不相等 ⇒ 守卫**恒跳过** ⇒
+			// 记录永远不同步、重启后多根丢失（用户报「多项目工作区只显示一个目录」的另一半原因）。
+			// 现在走完整身份匹配，文件态 / 目录态两种记录都能对上。
+			//
+			// ★★★ 写盘前**重新读一次**窗口状态（原因见上方 `readWindow` 的说明）。
+			// 这里之后的所有判断与写入都必须用 `fresh`，不得再用入口的 `projection` / `identity`。
+			const fresh = readWindow();
+			const rootsOf = (p: { readonly path: string | undefined; readonly relatedFolders: readonly unknown[] }) =>
+				(p.path ? 1 : 0) + p.relatedFolders.length;
+			if (fresh.projection.path !== first.projection.path
+				|| rootsOf(fresh.projection) !== rootsOf(first.projection)) {
+				// 这条日志本该在 2026-09-15 的事故里出现 —— 它一句话就能指出「快照过期」。
+				this.logService.info(
+					`[WorkspaceFolderSync] reverse: window changed during await — using FRESH snapshot | ` +
+					`before=roots(${rootsOf(first.projection)}) after=roots(${rootsOf(fresh.projection)})`,
+				);
+			}
+
+			// 跳过时**只记日志不报错** —— 投影是便利功能，绝不能影响窗口。
+			const identityMatch = matchWorkspaceIdentity(workspace, fresh.identity);
+			if (identityMatch === 'none') {
+				this.logService.info(
+					`[WorkspaceFolderSync] reverse skipped (identity mismatch) | ` +
+					`windowFile=${fresh.identity.codeWorkspacePath ?? '<none>'} | ` +
+					`windowRoots=${fresh.identity.folderPaths.length} [${fresh.identity.folderPaths.join(' | ')}] | ` +
+					`registryId=${workspaceId} registryPath=${workspace.path ?? '<none>'}`,
+				);
+				return;
+			}
+			this.logService.info(`[WorkspaceFolderSync] reverse identity matched by ${identityMatch}`);
+
+			if (isProjectionUnchanged(fresh.projection, workspace)) {
+				return;
+			}
+
+			this.logService.info(
+				`[WorkspaceFolderSync] reverse (window→registry) | workspaceId=${workspaceId} | ` +
+				`path=${fresh.projection.path ?? '<none>'} | relatedFolders=${fresh.projection.relatedFolders.length}`,
+			);
+
+			// `RelatedFolder.addedAt` 是必填的 ISO 时间戳。**沿用既有条目的值**，
+			// 只给新出现的 folder 打当前时间 —— 否则每次投影都会刷新全部时间戳，
+			// 「何时关联」这个信息就永久丢失了（且会让 registry 的 diff 永远非空）。
+			const existingAddedAt = new Map(
+				(workspace.relatedFolders ?? []).map(f => [f.path.replace(/\\/g, '/').toLowerCase(), f.addedAt]),
+			);
+			const now = new Date().toISOString();
+			await this.agentStudioService.updateWorkspace(workspaceId, {
+				path: fresh.projection.path,
+				relatedFolders: fresh.projection.relatedFolders.map(f => ({
+					path: f.path,
+					name: f.name,
+					addedAt: existingAddedAt.get(f.path.replace(/\\/g, '/').toLowerCase()) ?? now,
+				})),
+			});
+		} catch (err) {
+			this.logService.warn('[WorkspaceFolderSync] reverse projection failed:', err);
+		} finally {
+			this._projectingToRegistry = false;
+		}
+	}
+
+	/**
 	 * Resolve the active workspace's filesystem roots and update the VS Code
 	 * native workspace folders. The native Explorer picks up the change
 	 * automatically via {@link IWorkspaceContextService.onDidChangeWorkspaceFolders}.
+	 *
+	 * ⚠ 这是**旧方向**（registry → 窗口）。方案 B' Step 1 起默认不再走这条路
+	 * （见 `_direction()`）；保留它只为「设置切回 `registry-drives-window` 即可回滚」。
+	 * 新逻辑请写在 `_projectWindowFoldersToRegistry()` 里。
 	 */
 	private async _syncWorkspaceFolder(workspaceId: string | undefined): Promise<void> {
+		const direction = this._direction();
+		if (direction !== 'registry-drives-window') {
+			// 新方向下，切换活动工作区**既不改窗口 folder，也不投影回 registry**。
+			//
+			// ★★ 为什么不能在这里投影（2026-09-14 实测事故，务必保留此注释）：
+			// 本方法由 `onDidChangeActiveWorkspace` 驱动 —— 此刻 `activeWorkspaceId` 已是**新**工作区，
+			// 但窗口的 folder 列表仍是**上一个**工作区的内容（folder 变化要么不会发生，
+			// 要么晚于本事件）。在这里投影 = 把「旧工作区的 root」写进「新工作区的记录」。
+			// 实测日志：切到 `sarosis-agents-client-uf2z3` 的同一毫秒就写入了
+			// `relatedFolders=4`（含另一个工作区的 S1Game / UE5EA）—— registry 被跨工作区污染。
+			//
+			// 正确时机只有两个（见构造函数）：① 窗口启动后一次；② `onDidChangeWorkspaceFolders`
+			// —— 即「用户真的改了 folder」。切换工作区**不属于**这两者。
+			this.logService.info(
+				`[WorkspaceFolderSync] _syncWorkspaceFolder skipped (direction=${direction}) | workspaceId=${workspaceId ?? 'undefined'}`,
+			);
+			return;
+		}
+
 		this.logService.info(`[WorkspaceFolderSync] _syncWorkspaceFolder START | workspaceId=${workspaceId ?? 'undefined'}`);
 
 		if (!workspaceId) {

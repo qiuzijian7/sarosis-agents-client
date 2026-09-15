@@ -12,6 +12,7 @@ import {
 	mergeExcludeDirs,
 	extractExcludeDirNames,
 	parseCbmIgnore,
+	planForeignProjectPrune,
 } from '../../common/codebaseIndexDefaults.js';
 
 suite('Codebase — IndexDefaults', () => {
@@ -107,6 +108,34 @@ suite('Codebase — IndexDefaults', () => {
 
 		test('空内容 → 空列表', () => {
 			assert.deepStrictEqual(parseCbmIgnore(''), []);
+		});
+	});
+
+	suite('planForeignProjectPrune（跨工作区污染，2026-09-15）', () => {
+
+		test('丢弃不属于当前工作区的项目（实测 S1Game/UE5EA 场景）', () => {
+			const store = ['S1Game', 'UE5EA', 'sarosis-agents-client'];
+			assert.deepStrictEqual(
+				planForeignProjectPrune(store, ['sarosis-agents-client']),
+				['S1Game', 'UE5EA'],
+			);
+		});
+
+		test('多 folder 工作区：本工作区的全部项目都保留', () => {
+			const store = ['sarosis-agents-client', 'Saros-agents-pocket', 'saros-marketplace', 'S1Game'];
+			assert.deepStrictEqual(
+				planForeignProjectPrune(store, ['sarosis-agents-client', 'Saros-agents-pocket', 'saros-marketplace']),
+				['S1Game'],
+			);
+		});
+
+		test('★ 无工作区（空窗口/启动早期）⇒ 一个都不删', () => {
+			assert.deepStrictEqual(planForeignProjectPrune(['S1Game', 'UE5EA'], []), []);
+		});
+
+		test('store 里没有多余项目 ⇒ 空列表（幂等）', () => {
+			assert.deepStrictEqual(planForeignProjectPrune(['a'], ['a', 'b']), []);
+			assert.deepStrictEqual(planForeignProjectPrune([], ['a']), []);
 		});
 	});
 });

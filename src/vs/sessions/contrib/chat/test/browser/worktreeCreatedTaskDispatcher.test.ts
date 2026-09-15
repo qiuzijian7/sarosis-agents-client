@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -414,5 +416,85 @@ suite('WorktreeCreatedTaskDispatcher', () => {
 		await new Promise(r => setTimeout(r, 10));
 
 		assert.strictEqual(runTaskCalls.length, 1, 'should dispatch non-agent-host session even when config is disabled');
+	});
+});
+
+/**
+ * ★★ 系统性守卫（2026-09-15）：`const X = autorun(...)` 回调里调用 `X.dispose()` 的 **TDZ 反模式**。
+ *
+ * 为什么放在这里：本文件上面那 15 个用例之所以曾**全挂**，根因就是 `_trackSession` 里的这个写法
+ * —— `autorun()` 的回调是**同步执行**的（`AutorunObserver` 构造函数末尾立刻 `_run()`），
+ * 那一刻 `const X` 仍在 TDZ ⇒ `ReferenceError: Cannot access 'X' before initialization`。
+ *
+ * 为什么必须**扫源码**而不是再写个单测：异常被 `_run()` 交给 `onBugIndicatingError`
+ * **吞掉**（只记日志），所以真机表现不是崩溃，而是「功能静默不发生」——
+ * 单元测试测不到「某条回调路径没被执行」，只有源码级断言能钉住。
+ *
+ * 正确写法（二选一，见 `base/common/observableInternal/utils/utilsCancellation.ts:35`
+ * 的上游范例）：
+ *   ① 用一个**在 autorun 之前就已初始化**的 `DisposableStore`，回调里 `store.clear()`；
+ *   ② 或保留 `let` 标志位，首次同步执行时置位、之后（异步）再 dispose。
+ */
+suite('TDZ 反模式守卫 — sessions 层不得自引用 dispose', () => {
+
+	/**
+	 * 去注释 —— 源码级扫描必须只看**代码**。
+	 *
+	 * ⚠ 本断言第一版就被**自己的说明文字**骗了：注释里引用了那个反模式的原写法，
+	 * 于是扫出一个"命中"。这与 `guardrailWiring.test.ts` 记过的是同一个坑
+	 * （注释让正向断言假通过、让负向断言假失败）。
+	 * 实现刻意简单（不求完美）：先剥块注释，再剥行注释（带前导字符守卫，避免把
+	 * `https://…` 里的 `//` 当注释起点）。
+	 */
+	function stripComments(src: string): string {
+		return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+	}
+
+	/** 扫 `src/vs/sessions` 下所有 .ts。 */
+	function scanSelfDisposingAutorun(): string[] {
+		const root = path.join(process.cwd(), 'src/vs/sessions');
+		const hits: string[] = [];
+
+		const walk = (dir: string): void => {
+			for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+				const full = path.join(dir, entry.name);
+				if (entry.isDirectory()) {
+					walk(full);
+				} else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
+					const src = stripComments(fs.readFileSync(full, 'utf8'));
+					const declRe = /(?:const|let)\s+(\w+)\s*(?::\s*[^=]+)?=\s*autorun\s*\(/g;
+					let m: RegExpExecArray | null;
+					while ((m = declRe.exec(src)) !== null) {
+						const name = m[1];
+						// 取「括号配平」的回调体
+						let i = declRe.lastIndex - 1;
+						let depth = 0;
+						let end = -1;
+						for (; i < src.length; i++) {
+							if (src[i] === '(') { depth++; }
+							else if (src[i] === ')') { depth--; if (depth === 0) { end = i; break; } }
+						}
+						if (end < 0) { continue; }
+						const body = src.slice(declRe.lastIndex, end);
+						if (new RegExp(`\\b${name}\\s*\\.\\s*dispose\\s*\\(`).test(body)) {
+							hits.push(`${path.relative(process.cwd(), full)}: const ${name} = autorun(...) 内部调用 ${name}.dispose()`);
+						}
+					}
+				}
+			}
+		};
+		walk(root);
+		return hits;
+	}
+
+	test('★★★ sessions 层不得出现「autorun 回调自引用 dispose」（TDZ + 异常被吞）', () => {
+		const hits = scanSelfDisposingAutorun();
+		assert.deepStrictEqual(
+			hits,
+			[],
+			'发现 TDZ 反模式：autorun 首次回调是同步执行的，此时 const 尚未初始化 ⇒ '
+			+ 'ReferenceError 且被 onBugIndicatingError 吞掉（功能静默失效）。'
+			+ '改用「先建 DisposableStore 再 add autorun」或首次执行置位标志：\n  ' + hits.join('\n  '),
+		);
 	});
 });

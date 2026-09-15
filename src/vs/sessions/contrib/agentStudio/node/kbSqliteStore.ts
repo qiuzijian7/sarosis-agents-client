@@ -5,23 +5,12 @@
  *  但在同一个 db 文件中使用不同的表前缀（`kb_*`）。
  *--------------------------------------------------------------------------------------------*/
 
-import { createRequire } from 'node:module';
+import { loadBetterSqlite3 } from './betterSqlite3.js';
 
-// ⚠ 主进程编译产物是 **ESM**，ESM scope 无 `require`：裸 `require('better-sqlite3')`
-// 会抛 `ReferenceError: require is not defined in ES module scope`，被 catch 吞掉后
-// Database 恒为 null → KbSqliteStore.open() 永远抛错。必须用 createRequire。
-const nodeRequire = createRequire(import.meta.url);
-
-// 主进程方能加载 better-sqlite3（@vscode/sqlite3 API 不兼容，不可回退）
-let Database: any;
-try {
-	// better-sqlite3 是 CJS 模块，require 直接返回构造函数本身（无 .default）。
-	// 注意：esbuild/TS 的 `import X from 'better-sqlite3'` 会转成 `({ default: X } = require(...))`，
-	// 对 CJS 模块解构 .default 会得到 undefined，故这里用直接赋值。
-	Database = nodeRequire('better-sqlite3');
-} catch {
-	// better-sqlite3 不可用 → KbSqliteStore.open() 会抛明确错误
-}
+// 主进程方能加载 better-sqlite3（@vscode/sqlite3 API 不兼容，不可回退）。
+// ⚠ 壳加载成功 ≠ 能用：原生绑定由 betterSqlite3.ts 显式解析后经 `nativeBinding` 传入
+// （打包产物里它可能只落在 node_modules.asar.unpacked 下）。
+const { Database, nativeBinding, diagnostic: SQLITE_DIAGNOSTIC } = loadBetterSqlite3();
 
 export interface IKbStoreDoc {
 	uri: string;
@@ -79,12 +68,13 @@ export class KbSqliteStore {
 
 	open(dbPath: string, opts?: { readOnly?: boolean }): void {
 		if (!Database) {
-			throw new Error('better-sqlite3 not available — KbSqliteStore requires Electron main process');
+			throw new Error(`better-sqlite3 not available — KbSqliteStore requires Electron main process (${SQLITE_DIAGNOSTIC})`);
 		}
 		if (this._opened) { this.close(); }
 
 		this._db = new Database(dbPath, {
 			readonly: !!opts?.readOnly,
+			...(nativeBinding ? { nativeBinding } : {}),
 		});
 
 		// 启用 WAL + mmap 以降低锁竞争

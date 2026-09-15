@@ -368,7 +368,17 @@ export class WorkspaceTrustManagementService extends Disposable implements IWork
 			return { trusted: true, uri };
 		}
 
-		// Agent sessions workspace file is always trusted
+		// ★ [Saros] 内置兜底工作区容器（`<userData>/User/agent-sessions.code-workspace`）恒可信。
+		//
+		// **不是**「agents 窗口的工作区都可信」—— 它只针对这一个**由产品自己管理**的容器文件：
+		// 该文件位于 userData 下、内容恒为 `{"folders": []}`，不含任何用户代码。
+		//
+		// 为什么不能删（2026-09-14 核实）：`getWorkspaceUris()` 会把 `configuration` 计入
+		// 信任判定（条件是 `isSavedWorkspace`，而 userData 下的文件正属于 saved），
+		// 所以删掉这一分支会让**既有用户**启动即进入受限模式（Restricted Mode）。
+		//
+		// 方案 B' Step 3 之后它对新用户天然失效：新窗口是 EMPTY 态或用户自己的
+		// 工作区/文件夹，`configuration` 不再指向这个兜底文件 ⇒ 走正常信任判定。
 		if (this.uriIdentityService.extUri.isEqual(uri, this.environmentService.agentSessionsWorkspace)) {
 			return { trusted: true, uri };
 		}

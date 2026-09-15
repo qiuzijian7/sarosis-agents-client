@@ -312,6 +312,20 @@ export abstract class ViewPane extends Pane implements IView {
 
 	private static readonly AlwaysShowActionsConfig = 'workbench.view.alwaysShowHeaderActions';
 
+	/**
+	 * [Saros] Whether the given view id belongs to a *synthetic* view pane — a pane that
+	 * reuses `ViewPane` rendering but is deliberately never registered in a view container,
+	 * because its host puts it somewhere else (e.g. `sessions.auxChatSideView.pane` is mounted
+	 * directly as an auxiliary window side view).
+	 *
+	 * Such panes must not be reported as missing a container model: they are wired correctly.
+	 * The `.pane` suffix is the convention every synthetic pane follows, since a real view id
+	 * always resolves to a container through the view descriptor registry.
+	 */
+	static isSyntheticViewPaneId(viewId: string): boolean {
+		return viewId.endsWith('.pane');
+	}
+
 	private _onDidFocus = this._register(new Emitter<void>());
 	readonly onDidFocus: Event<void> = this._onDidFocus.event;
 
@@ -476,6 +490,11 @@ export abstract class ViewPane extends Pane implements IView {
 		const viewContainerModel = this.viewDescriptorService.getViewContainerByViewId(this.id);
 		if (viewContainerModel) {
 			this._register(this.viewDescriptorService.getViewContainerModel(viewContainerModel).onDidChangeContainerInfo(({ title }) => this.updateTitle(this.title)));
+		} else if (ViewPane.isSyntheticViewPaneId(this.id)) {
+			// [Saros] Synthetic view panes are hosted outside any ViewPaneContainer on purpose
+			// (e.g. `sessions.auxChatSideView.pane`, which is mounted directly as an auxiliary
+			// window side view). They render their own title, so the container-info subscription
+			// is simply not applicable here — not a wiring mistake, hence no error log.
 		} else {
 			console.error(`View container model not found for view ${this.id}`);
 		}

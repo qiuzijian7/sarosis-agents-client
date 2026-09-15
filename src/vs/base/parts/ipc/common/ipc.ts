@@ -7,7 +7,6 @@ import { getRandomElement } from '../../../common/arrays.js';
 import { CancelablePromise, createCancelablePromise, timeout } from '../../../common/async.js';
 import { VSBuffer } from '../../../common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../common/cancellation.js';
-import { memoize } from '../../../common/decorators.js';
 import { CancellationError, ErrorNoTelemetry } from '../../../common/errors.js';
 import { Emitter, Event, EventMultiplexer, Relay } from '../../../common/event.js';
 import { createSingleCallFunction } from '../../../common/functional.js';
@@ -617,8 +616,13 @@ export class ChannelClient implements IChannelClient, IDisposable {
 				doRequest();
 			} else {
 				uninitializedPromise = createCancelablePromise(_ => this.whenInitialized());
-				uninitializedPromise.then(() => {
-					uninitializedPromise = null;
+				this.pendingInitializationPromises.add(uninitializedPromise);
+				const initialization = uninitializedPromise;
+				initialization.then(() => {
+					this.pendingInitializationPromises.delete(initialization);
+					if (uninitializedPromise === initialization) {
+						uninitializedPromise = null;
+					}
 					doRequest();
 				});
 			}
@@ -668,8 +672,13 @@ export class ChannelClient implements IChannelClient, IDisposable {
 					doRequest();
 				} else {
 					uninitializedPromise = createCancelablePromise(_ => this.whenInitialized());
-					uninitializedPromise.then(() => {
-						uninitializedPromise = null;
+					this.pendingInitializationPromises.add(uninitializedPromise);
+					const initialization = uninitializedPromise;
+					initialization.then(() => {
+						this.pendingInitializationPromises.delete(initialization);
+						if (uninitializedPromise === initialization) {
+							uninitializedPromise = null;
+						}
 						doRequest();
 					});
 				}
@@ -759,9 +768,30 @@ export class ChannelClient implements IChannelClient, IDisposable {
 		handler?.(response);
 	}
 
-	@memoize
-	get onDidInitializePromise(): Promise<void> {
-		return Event.toPromise(this.onDidInitialize);
+	/**
+	 * Promise that resolves when this client has processed the initialize
+	 * response. The underlying listener registered on `onDidInitialize` is
+	 * owned by this client and released in {@link dispose} via
+	 * `_onDidInitialize.dispose()`; it therefore must NOT be memoized into a
+	 * promise that outlives every caller, otherwise the disposable created by
+	 * `Event.toPromise` is never released.
+	 */
+	private _onDidInitializePromise: CancelablePromise<void> | undefined;
+	private readonly _onDidInitializePromiseStore = new DisposableStore();
+
+	/**
+	 * Promises that are waiting for `onDidInitialize` before their request can
+	 * be sent. Each of them registers a listener on `onDidInitializePromise`;
+	 * they must be cancelled on {@link dispose} so that listener is released
+	 * even when initialization never completes.
+	 */
+	private readonly pendingInitializationPromises = new Set<CancelablePromise<void>>();
+
+	private get onDidInitializePromise(): CancelablePromise<void> {
+		if (!this._onDidInitializePromise) {
+			this._onDidInitializePromise = Event.toPromise(this.onDidInitialize, this._onDidInitializePromiseStore);
+		}
+		return this._onDidInitializePromise;
 	}
 
 	private whenInitialized(): Promise<void> {
@@ -780,6 +810,14 @@ export class ChannelClient implements IChannelClient, IDisposable {
 		}
 		dispose(this.activeRequests.values());
 		this.activeRequests.clear();
+		// Cancel every request that is still waiting for initialization so the
+		// listeners they registered on `onDidInitializePromise` are released.
+		for (const pendingInitialization of this.pendingInitializationPromises) {
+			pendingInitialization.cancel();
+		}
+		this.pendingInitializationPromises.clear();
+		this._onDidInitializePromiseStore.dispose();
+		this._onDidInitializePromise = undefined;
 		this._onDidInitialize.dispose();
 	}
 }

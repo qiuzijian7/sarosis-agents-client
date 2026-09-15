@@ -183,7 +183,7 @@ interface IWorktreeInfo { name: string; branch?: string; directory: string; }
 
 **fork 独有能力**：
 1. **Worktree 树视图 UI**：在侧边栏展示所有 worktree，支持创建/删除/打开/重置/修剪操作
-2. **Checkpoint 系统**：对 worktree 做 snapshot/restore（基于 git `captureWorkingTreeAsTree` + `commitTree` + `updateRef`）
+2. **Checkpoint 系统**：⚠ **见下方 §6 勘误 —— 本节原先声称「基于 git `captureWorkingTreeAsTree` + `commitTree` + `updateRef`」是错的**，那是**上游**的做法。本项目实际只有 `rev-parse HEAD` + `update-ref`
 3. **选中状态**：`selectedWorktree` observable 驱动 Changes 视图
 4. **工作区适配器**：`WorktreeAdapterService` 适配 workspace folder 管理
 5. **两阶段创建**：兼容 opencode 的 `IWorktreeInfoOptions` → `IWorktreeInfo` 模式
@@ -281,13 +281,45 @@ async computeFileDiffsBetweenRefs(...): Promise<readonly ISessionFileDiff[] | un
 
 ### 本项目（fork）
 
-有独立的 `IWorktreeCheckpointService` + 两套实现：
-- `browser/worktreeCheckpointServiceImpl.ts` — Browser 端
-- `node/worktreeCheckpointServiceImpl.ts` — Node 端
+有独立的 `IWorktreeCheckpointService`（`common/worktreeCheckpointService.ts`）+ 一套 browser 实现
+（`browser/worktreeCheckpointServiceImpl.ts`；原 `node/` 版实现已删除，其唯一优点「ref 存在性显式判定」
+已被合并进 browser 版，见该文件 `:108-118` 注释）。
 
-还有 `worktreeCheckpointCommands.ts` 注册 checkpoint 相关命令。
+### ⚠⚠ 勘误（2026-09-15 实测，**本节原描述完全错误**）
 
-**差异**：fork 把 checkpoint 从 git service 中提取为独立服务，有 UI 命令入口。
+原文写「基于 git `captureWorkingTreeAsTree` + `commitTree` + `updateRef`」—— 那是**上游**的做法，
+被误写成了本项目的。**本项目的实际实现只有两条命令**：
+
+```ts
+// browser/worktreeCheckpointServiceImpl.ts:31-36（baseline，post-turn 同构见 :51-56）
+const headCommit = await this.execGit(worktreePath, ['rev-parse', 'HEAD']);
+const refName = `refs/vssaros/checkpoints/${sessionId}/baseline`;
+await this.execGit(worktreePath, ['update-ref', refName, headCommit.trim()]);
+```
+
+**⇒ 只记录 `HEAD` 的 commit hash，完全不捕获工作树。** 由此产生三个后果（都是事实推论，非猜测）：
+
+1. **checkpoint 之间无法区分**：agent 改文件通常**不 commit** ⇒ `HEAD` 不动 ⇒ 一次会话里
+   `baseline` 与所有 `request-<id>` 指向**同一个 commit**。
+2. **回滚会销毁工作**：`rollbackToCheckpoint()`（`:104-133`）用 `git reset --hard <ref>`，
+   而该 ref 就是 HEAD ⇒ 净效果 = **丢弃 agent 的全部未提交改动**，且 checkpoint 里
+   **没有任何东西可供恢复**。
+3. **每轮对话都在做无意义的写 ref**：`notifyRequestStart` / `notifyRequestComplete` 已接到真实
+   agent 生命周期（`copilotChatSessionsProvider.ts:1750-1790`、
+   `sarosLocalAgentHostSessionsProvider.ts:217-231`）。
+
+**正确做法（上游已有，可直接对齐）**：临时 `GIT_INDEX_FILE` → `add -A` → `write-tree`
+→ `commit-tree`（悬挂 commit，不动 HEAD/分支）→ `update-ref`。这样才真正快照了未提交改动，
+且回滚可用 `read-tree` + `checkout-index`（或 `restore --source=<ref>`）而**不需要** `reset --hard`。
+
+另注：`browser/worktreeCheckpointCommands.ts` 注册的 4 条命令（`worktree.createCheckpoint` /
+`rollbackToCheckpoint` / `listCheckpoints` / `deleteCheckpoints`）其入口
+`registerWorktreeCheckpointContributions()`（`worktreeCheckpoint.contribution.ts:11`）
+**全仓只有定义、无任何调用点** ⇒ 这 4 条命令是**死代码**。
+Worktree 视图里的 "Create Checkpoint" 按钮（`worktreeView.ts:119-126`）走的是另一条路，
+且传的 `sessionId = item.path`（`:746` 自带 `TODO: integrate with actual session lifecycle`）。
+
+**差异**：fork 把 checkpoint 提成独立服务并加了 UI 入口，但**核心捕获能力弱于上游**（只记 hash vs 真快照）。
 
 ---
 

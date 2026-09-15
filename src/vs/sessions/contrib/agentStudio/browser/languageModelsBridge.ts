@@ -695,6 +695,17 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		// Debug: write request payload to local file if switch is enabled
 		this._debugWriteRequest(modelId, messages, options, context);
 
+		// ── ★ 面包屑（2026-09-15 卡死事故）：`chat() called`（:638）到首次产出之间
+		// 原本**只有 trace 级日志**（:708/:788/:797），默认级别下全部不可见
+		// ⇒ 真机卡死时日志停在 `chat() called` 后就**再无输出**，无法判断
+		// 「预处理没跑完」还是「扩展/网关没回」✗。
+		// 这里补一条 info 级面包屑，配合下面提升为 info 的发送/回包两行，
+		// 把整段静默窗口切成 4 段（called → preflight → sending → response），
+		// 下次卡死可**直接定位**到具体一段。
+		this._logService.info(
+			`[LMBridge] preflight done — normalized=${normalizedMessages.length}, guarded=${guardedMessages.length}, lm=${lmMessages.length}, tools=${options.tools?.length ?? 0} → calling extension`,
+		);
+
 		// 将 options 传递给 sendChatRequest，以便扩展可以访问 tools 等配置
 		// 注意：systemPrompt 已经在 _toLanguageModelMessages 中处理，不应重复传递
 		const requestOptions: any = {
@@ -785,7 +796,9 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			// 否则消费者会看到重复文本（pre-content 死亡才透明重试）。
 			let yieldedContent = false;
 			try {
-				this._logService.trace(`[LMBridge] sendChatRequest: sending (modelId=${modelId}, msgCount=${lmMessages.length})${attempt > 1 ? ` attempt=${attempt}/${LM_BRIDGE_RETRY_MAX_ATTEMPTS}` : ''}`);
+				// ★ trace → info（2026-09-15 卡死事故）：这一行是「请求已交给扩展」的唯一标志，
+				// 卡死时若看不到它 ⇒ 问题在**扩展侧/IPC**；看得到 ⇒ 在**网关/网络** ✗。
+				this._logService.info(`[LMBridge] sendChatRequest: sending (modelId=${modelId}, msgCount=${lmMessages.length})${attempt > 1 ? ` attempt=${attempt}/${LM_BRIDGE_RETRY_MAX_ATTEMPTS}` : ''}`);
 				const t0_sendRequest = Date.now();
 				const response = await this._lmService.sendChatRequest(
 					modelId,
@@ -794,7 +807,9 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 					requestOptions,
 					attemptCts.token,
 				);
-				this._logService.trace(`[LMBridge] sendChatRequest: response received in ${Date.now() - t0_sendRequest}ms, starting stream iteration`);
+				// ★ trace → info（同上）：这一行给出「扩展侧往返耗时」，
+				// 与 preflight/sending 一起把静默窗口切成 4 段。
+				this._logService.info(`[LMBridge] sendChatRequest: response received in ${Date.now() - t0_sendRequest}ms, starting stream iteration`);
 
 				let capturedResponseId: string | undefined;
 				let capturedFinishReason: string | undefined;

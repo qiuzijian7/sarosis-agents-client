@@ -23,10 +23,7 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import { basename as pathBasename } from '../../../../../base/common/path.js';
 import { ICodebaseGraphService } from '../codebaseGraphService.js';
-import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
-import { URI } from '../../../../../base/common/uri.js';
-import { joinPath } from '../../../../../base/common/resources.js';
 import { CodebaseGraphModal } from './codebaseGraphModal.js';
 
 interface IFileItem {
@@ -71,7 +68,6 @@ export class OpenFileModal {
 
 	constructor(
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
-		@IFileService private readonly _fileService: IFileService,
 		@IEditorService private readonly _editorService: IEditorService,
 	) {
 	}
@@ -83,6 +79,17 @@ export class OpenFileModal {
 			height: 520,
 			renderBody: (body) => this._renderBody(body),
 			onOk: () => { void this._accept(); },
+			// ★★ 关闭时释放本类持有的 `_disposables`（2026-09-15，修 `[LEAKED DISPOSABLE]`）。
+			// 泄漏栈：`new DisposableStore` ← `new OpenFileModal (openFileModal.ts:65)`
+			// ← `createInstance(OpenFileModal)` ← `OpenGraphFileAction.run`
+			// （`codebaseGraphVaxSearch.contribution.ts:224`）。
+			// 成因：调用方 `await createInstance(OpenFileModal).open()` **裸创建、无 owner** ✗，
+			// 而 `open()` 是**立即返回**的（modal 异步打开 ✓）⇒ 调用方**无法**在之后 dispose ✗
+			// ⇒ 那个 store（含搜索框/键盘/表格等一堆监听器 ✓）永不释放 ✓。
+			// 修法：`CodebaseGraphModal` 本就提供 `onDispose`（点 X / Esc / Cancel / 遮罩点击都会触发 ✓，
+			// 见 `codebaseGraphModal.ts:35/185`）⇒ 在这里接上自己的 store ✓
+			// ⇒ 模态关闭即释放 ✓，**调用方无需改动** ✓。
+			onDispose: () => this._disposables.dispose(),
 		});
 		void this._loadFiles();
 	}
@@ -282,15 +289,15 @@ export class OpenFileModal {
 	private async _accept(): Promise<void> {
 		const file = this._rows[this._selectedIndex];
 		if (!file) { this._modal?.dispose(); return; }
-		const roots = this._graphService.getProjectRoots();
-		const root = roots[file.project ?? '_default'];
-		if (!root) { this._modal?.dispose(); return; }
-		const uri = joinPath(URI.file(root), file.filePath);
-		try {
-			if (await this._fileService.exists(uri)) {
-				await this._editorService.openEditor({ resource: uri });
-			}
-		} catch { /* stale */ }
+		// 2026-09-15：统一走 service 级解析器。原实现只认 `roots[file.project]` **一项**
+		// （project 名对不上就静默什么都不做），且 `joinPath(root, 绝对路径)` 会拼出坏 URI
+		// —— 正是 codebaseIndexDefaults 里那条「filePath 混入绝对路径 ⇒ 静默打不开」契约。
+		const loc = await this._graphService.resolveNodeLocation({ name: file.name, filePath: file.filePath, project: file.project });
+		if (loc) {
+			try {
+				await this._editorService.openEditor({ resource: loc.uri });
+			} catch { /* stale */ }
+		}
 		this._modal?.dispose();
 	}
 

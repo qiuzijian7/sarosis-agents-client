@@ -68,6 +68,43 @@ suite('codebaseGraph contracts (2026-09-09 regressions)', () => {
 		assert.strictEqual(hits.nodes[0].filePath, 'src/vs/sessions/contrib/agentStudio/webview/instantNodes.ts');
 	});
 
+	// ── 契约 4：合并加载必须幂等（2026-09-15）────────────────────────────
+	// 背景：同一制品被重复合并（bootstrap 并发 / 工作区切换）时，旧实现无条件 `_nextNodeId++`
+	// 追加 ⇒ 节点翻倍。实测本仓 `graph.db.zst` 358,887 节点去重后仅 180,753（**49.6% 冗余**）。
+	test('★ mergeFromJSONAsync 幂等：同一制品重复合并不得新增节点/边', async () => {
+		const store = new CodebaseGraphStore();
+		const data = {
+			nodes: [
+				{ id: 1, project: PROJECT, label: 'function', name: 'a', qualifiedName: 'f.ts::a', filePath: 'f.ts' },
+				{ id: 2, project: PROJECT, label: 'function', name: 'b', qualifiedName: 'f.ts::b', filePath: 'f.ts' },
+			],
+			edges: [{ id: 1, project: PROJECT, sourceId: 1, targetId: 2, type: 'CALLS' }],
+		};
+		await store.mergeFromJSONAsync(data);
+		assert.strictEqual(store.getNodeCount(), 2);
+		assert.strictEqual(store.getEdgeCount(), 1);
+
+		// 再合并同一份数据（等价于 13:26 那次「同一 zst 合并两次」）
+		const stats = await store.mergeFromJSONAsync(data);
+		assert.strictEqual(store.getNodeCount(), 2, '重复合并不得新增节点（旧实现会翻倍）');
+		assert.strictEqual(store.getEdgeCount(), 1, '重复合并不得新增边');
+		assert.deepStrictEqual(stats, { nodesAdded: 0, nodesSkipped: 2, edgesAdded: 0, edgesSkipped: 1 });
+	});
+
+	test('★ 制品自带重复 ⇒ 加载即自愈（同一 qn 出现两次只留一个节点）', async () => {
+		const store = new CodebaseGraphStore();
+		const dup = { project: PROJECT, label: 'function', name: 'a', qualifiedName: 'f.ts::a', filePath: 'f.ts' };
+		await store.mergeFromJSONAsync({
+			nodes: [
+				{ id: 1, ...dup },
+				{ id: 2, ...dup },                                                   // 制品里的第二份
+				{ id: 3, ...dup, name: 'b', qualifiedName: 'f.ts::b' },
+			],
+			edges: [],
+		});
+		assert.strictEqual(store.getNodeCount(), 2, '重复 qn 只应保留一个节点');
+	});
+
 	// ── 契约 3：失败不得固化为「已索引」（哈希基线语义 = 成功处理过）──────
 	test('file hash baseline only counts successfully processed files', () => {
 		const store = new CodebaseGraphStore();

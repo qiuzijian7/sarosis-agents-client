@@ -643,7 +643,9 @@ class Launch extends AbstractLaunch implements ILaunch {
 	}
 
 	get uri(): uri {
-		return resources.joinPath(this.workspace.uri, '/.vscode/launch.json');
+		// ★ [Saros] 工作区级 launch.json 落 `.sarosworkspace/`（见
+		// `workbench/services/configuration/common/configuration.ts` 的 FOLDER_CONFIG_FOLDER_NAME）。
+		return resources.joinPath(this.workspace.uri, '/.sarosworkspace/launch.json');
 	}
 
 	get name(): string {
@@ -673,7 +675,7 @@ class Launch extends AbstractLaunch implements ILaunch {
 			try {
 				await this.textFileService.write(resource, content);
 			} catch (error) {
-				throw new Error(nls.localize('DebugConfig.failed', "Unable to create 'launch.json' file inside the '.vscode' folder ({0}).", error.message));
+				throw new Error(nls.localize('DebugConfig.failed', "Unable to create 'launch.json' file inside the '.sarosworkspace' folder ({0}).", error.message));
 			}
 		}
 

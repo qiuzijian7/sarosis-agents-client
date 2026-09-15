@@ -433,15 +433,15 @@ export class SnippetsService implements ISnippetsService {
 	}
 
 	private async _initWorkspaceFolderSnippets(workspace: IWorkspace, bucket: DisposableStore): Promise<any> {
-		// ★ agents 窗口不读 `<folder>/.vscode/*.code-snippets`（用户 2026-09-13 定规「方案 C」：
-		// 本项目不读不写工作区 `.vscode/`）。该目录在**工作区内、模型可写** —— 读它等于让工作区
-		// 内容往补全里注入文本（低危，但与其他 `.vscode/` 源同源，一并关掉才不出现"只堵一半"）。
-		// 标准窗口保持 VS Code 原生语义。
+		// ★ agents 窗口不读 `<folder>/*.code-snippets`（用户 2026-09-13 定规「方案 C」：
+		// 本项目不读不写工作区配置目录）。该目录在**工作区内、模型可写** —— 读它等于让工作区
+		// 内容往补全里注入文本（低危，但与其他工作区配置源同源，一并关掉才不出现"只堵一半"）。
+		// 标准窗口保持 VS Code 原生语义（目录名已统一为 `.sarosworkspace/`）。
 		if (this._workbenchEnvironmentService.isSessionsWindow) {
 			return;
 		}
 		const promises = workspace.folders.map(async folder => {
-			const snippetFolder = folder.toResource('.vscode');
+			const snippetFolder = folder.toResource('.sarosworkspace');
 			const value = await this._fileService.exists(snippetFolder);
 			if (value) {
 				this._initFolderSnippets(SnippetSource.Workspace, snippetFolder, bucket);

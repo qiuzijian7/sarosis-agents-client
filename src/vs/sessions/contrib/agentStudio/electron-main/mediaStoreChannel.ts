@@ -23,6 +23,8 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 	// 避免与 Disposable._store 字段名碰撞（TS2416 + TS4114）——与 CodebaseGraphStoreChannel._sqliteStore 对齐
 	private _mediaStore: MediaStore | null;
 	private _rootDir: string;
+	/** 构造失败原因（better-sqlite3 原生绑定缺失等），透传给 renderer 便于定位。 */
+	private _initError: string | undefined;
 
 	constructor(
 		defaultRootDir: string,
@@ -35,7 +37,8 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 		try {
 			store = new MediaStore({ rootDir: this._rootDir });
 		} catch (err: any) {
-			this._log('error', `MediaStore init failed: ${err?.message || String(err)}`);
+			this._initError = err?.message || String(err);
+			this._log('error', `MediaStore init failed: ${this._initError}`);
 		}
 		this._mediaStore = store;
 	}
@@ -90,7 +93,7 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 
 	async call(_ctx: TContext, command: string, args?: any[]): Promise<any> {
 		if (!this._mediaStore) {
-			throw new Error('media store unavailable (better-sqlite3 failed to load)');
+			throw new Error(`media store unavailable (better-sqlite3 failed to load)${this._initError ? `: ${this._initError}` : ''}`);
 		}
 		try {
 			switch (command) {
@@ -116,6 +119,13 @@ export class MediaStoreChannel<TContext> extends Disposable implements IServerCh
 				case 'setBoard':
 					await this._mediaStore.setBoard(String(args?.[0] ?? ''), args?.[1] == null ? null : String(args[1]));
 					return undefined;
+				case 'setTags':
+					await this._mediaStore.setTags(String(args?.[0] ?? ''), Array.isArray(args?.[1]) ? (args[1] as string[]) : []);
+					return undefined;
+				case 'listTags':
+					return this._mediaStore.listTags();
+				case 'localize':
+					return this._mediaStore.localize(String(args?.[0] ?? ''));
 				case 'stats':
 					return this._mediaStore.stats();
 				case 'purgeDeleted':

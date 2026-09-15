@@ -19,7 +19,7 @@ import { basename, join, normalize, posix } from '../../../base/common/path.js';
 import { getMarks, mark } from '../../../base/common/performance.js';
 import { INodeProcess, IProcessEnvironment, isMacintosh, isWindows, OS } from '../../../base/common/platform.js';
 import { cwd } from '../../../base/common/process.js';
-import { extUriBiasedIgnorePathCase, isEqual, isEqualAuthority, normalizePath, originalFSPath, removeTrailingPathSeparator } from '../../../base/common/resources.js';
+import { extUriBiasedIgnorePathCase, isEqualAuthority, normalizePath, originalFSPath, removeTrailingPathSeparator } from '../../../base/common/resources.js';
 import { assertReturnsDefined } from '../../../base/common/types.js';
 import { URI } from '../../../base/common/uri.js';
 import { getNLSLanguage, getNLSMessages, localize } from '../../../nls.js';
@@ -307,13 +307,20 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 	}
 
 	private async ensureAgentsWindow(openConfig: IOpenConfiguration): Promise<IOpenConfiguration> {
-		// A user may launch the agents app with an explicit `.code-workspace`
-		// (double-click, `--folder-uri`, or a positional CLI arg). In that case the
-		// declared folders must win over the default agents workspace, otherwise the
-		// multi-root file would never reach the sessions window (which reads
-		// `configuration.workspace`). Fall back to the fixed agents workspace when
-		// no workspace file was supplied.
+		// ★★ 方案 B' Step 3：agents 窗口支持 VS Code 的**三态**
+		// （EMPTY / 单文件夹 / 多根工作区），不再强制塞一个工作区文件。
+		//
+		// 判定顺序（越显式越优先）：
+		//   ① 调用方显式请求了工作区文件 → 打开它并**记住**；
+		//   ② 调用方显式请求了文件夹（`--folder-uri` / 位置参数）→ **原样放行**给 `open()`，
+		//      由标准流程按「单文件夹工作区」处理；
+		//   ③ 无任何请求 → 复用「上次用户指定的工作区/文件夹」；
+		//   ④ 仍无 → **空窗口**（EMPTY 态），除非用户显式配置了默认工作区文件。
+		//
+		// 旧行为（每次都塞 `agent-sessions.code-workspace`）的问题：窗口恒为 WORKSPACE 态，
+		// 所以必须维护一个硬编码兜底文件，而它又不认识用户手写的多根 folder。
 		const requestedWorkspaceUri = this._findRequestedWorkspaceFile(openConfig);
+		const hasExplicitFolderRequest = this._hasExplicitFolderRequest(openConfig);
 
 		// ── DIAGNOSTIC: why did the agents window pick the fallback file? ──
 		// `_findRequestedWorkspaceFile` scans three sources in order and returns
@@ -322,6 +329,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		this.logService.info(
 			'[windowsManager][diag] ensureAgentsWindow | '
 			+ `requestedWorkspaceUri=${requestedWorkspaceUri?.fsPath ?? 'undefined'} | `
+			+ `hasExplicitFolderRequest=${hasExplicitFolderRequest} | `
 			+ `cli._=${JSON.stringify(openConfig.cli?._ ?? null)} | `
 			+ `cli.folder-uri=${JSON.stringify(openConfig.cli?.['folder-uri'] ?? null)} | `
 			+ `urisToOpen=${JSON.stringify((openConfig.urisToOpen ?? []).map(u => isWorkspaceToOpen(u) ? u.workspaceUri.fsPath : (isFolderToOpen(u) ? u.folderUri.fsPath : String(u))))} | `
@@ -331,8 +339,51 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 		if (requestedWorkspaceUri && await this.fileService.exists(requestedWorkspaceUri)) {
 			this.logService.info(`[windowsManager] agents window opening user workspace: ${requestedWorkspaceUri.fsPath}`);
+			await this._rememberUserWorkspaceFile(requestedWorkspaceUri);
 			return {
 				urisToOpen: [{ workspaceUri: requestedWorkspaceUri }],
+				userEnv: openConfig.userEnv,
+				cli: openConfig.cli,
+				// ★ 用户**显式**打开的工作区要进「最近打开」（方案 B' Step 3）——
+				// 这是用户自救的唯一入口：任何时候都能从 Open Recent 切回来。
+				// 自动恢复的路径（remembered / 兜底）仍保持 `true`，避免污染历史。
+				noRecentEntry: false,
+				context: openConfig.context,
+				contextWindowId: openConfig.contextWindowId,
+				initialStartup: openConfig.initialStartup,
+				forceNewWindow: true,
+			};
+		}
+
+		// ② 显式请求了文件夹 → 原样放行（单文件夹工作区，与原生 VS Code 一致）。
+		//    刻意**不**包装成工作区文件：那会让 `WorkbenchState` 恒为 WORKSPACE，
+		//    「关闭文件夹」「另存为工作区」等原生动作全部失去意义。
+		if (hasExplicitFolderRequest) {
+			this.logService.info('[windowsManager] agents window opening requested folder(s) as-is (single-folder workspace)');
+			await this._rememberExplicitFolderRequest(openConfig);
+			return openConfig;
+		}
+
+		// ③ 没有显式请求时，复用「用户上次指定的工作区/文件夹」，
+		//    而不是硬编码的内置兜底文件 `agent-sessions.code-workspace`。
+		//
+		// 为什么：兜底文件是 Agent Studio「工作区模型」的载体 —— 它本身会被
+		// `WorkspaceFolderSync` 反复清成 `{"folders": []}`，**不认识**用户在
+		// `.code-workspace` 里手写的多根 folder，所以无参数启动（F5 / 任务栏 / 双击应用）
+		// 时永远只有一个根。用户既然指定过，后续启动就应该回到它。
+		//
+		// 前提（不得破坏）：`environmentService.agentSessionsWorkspace` 必须继续指向
+		// **内置兜底文件** —— `WorkspaceFolderSync._isFallbackWorkspaceFile()` 靠这个
+		// 身份区分「用户文件」与「兜底文件」（后者走 replace）。若反过来把用户文件当作
+		// 兜底，多根会立刻失效、且兜底清理逻辑会把用户的 folders 清空。
+		const remembered = await this._readRememberedWorkspaceFile();
+		if (remembered && await this.fileService.exists(remembered)) {
+			const isWorkspaceFile = hasWorkspaceFileExtension(remembered.fsPath);
+			this.logService.info(
+				`[windowsManager] agents window reopening remembered ${isWorkspaceFile ? 'workspace' : 'folder'}: ${remembered.fsPath}`,
+			);
+			return {
+				urisToOpen: [isWorkspaceFile ? { workspaceUri: remembered } : { folderUri: remembered }],
 				userEnv: openConfig.userEnv,
 				cli: openConfig.cli,
 				noRecentEntry: true,
@@ -343,25 +394,31 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			};
 		}
 
+		// ④ 什么都没有 → **空窗口**（EMPTY 态）。
+		//
+		// 兜底工作区文件已降级为**可选**：只有当它已经存在于磁盘上时才沿用
+		// （兼容老用户的既有布局/存储作用域），**不再主动创建**。
+		// 新用户拿到的是原生的空窗口 + 欢迎页 + 「打开文件夹」入口。
 		const agentSessionsWorkspaceUri = this.environmentMainService.agentSessionsWorkspace;
-		if (!agentSessionsWorkspaceUri) {
-			throw new Error('Agents workspace is not configured');
+		if (agentSessionsWorkspaceUri && await this.fileService.exists(agentSessionsWorkspaceUri)) {
+			this.logService.info(
+				`[windowsManager][diag] reusing pre-existing fallback workspace file | ${agentSessionsWorkspaceUri.fsPath}`,
+			);
+			return {
+				urisToOpen: [{ workspaceUri: agentSessionsWorkspaceUri }],
+				userEnv: openConfig.userEnv,
+				cli: openConfig.cli,
+				noRecentEntry: true,
+				context: openConfig.context,
+				contextWindowId: openConfig.contextWindowId,
+				initialStartup: openConfig.initialStartup,
+				forceNewWindow: true,
+			};
 		}
 
-		// Ensure the workspace file exists
-		const workspaceExists = await this.fileService.exists(agentSessionsWorkspaceUri);
-		if (!workspaceExists) {
-			const emptyWorkspaceContent = JSON.stringify({ folders: [] }, null, '\t');
-			await this.fileService.writeFile(agentSessionsWorkspaceUri, VSBuffer.fromString(emptyWorkspaceContent));
-		}
-
-		this.logService.info(
-			`[windowsManager][diag] falling back to agents workspace | ${agentSessionsWorkspaceUri.fsPath} ` +
-			`| existedOnDisk=${workspaceExists}`,
-		);
-
+		this.logService.info('[windowsManager][diag] no workspace requested/remembered → opening EMPTY agents window');
 		return {
-			urisToOpen: [{ workspaceUri: agentSessionsWorkspaceUri }],
+			urisToOpen: [],
 			userEnv: openConfig.userEnv,
 			cli: openConfig.cli,
 			noRecentEntry: true,
@@ -370,6 +427,52 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			initialStartup: openConfig.initialStartup,
 			forceNewWindow: true,
 		};
+	}
+
+	/**
+	 * 调用方是否**显式请求打开某个文件夹**（而非工作区文件）。
+	 *
+	 * 命中即「单文件夹工作区」，`ensureAgentsWindow` 会把 openConfig **原样放行** ——
+	 * 由标准 `open()` 流程处理，这样 `WorkbenchState` 才会是 `FOLDER` 而不是 `WORKSPACE`。
+	 *
+	 * ⚠ 不看位置参数（`cli._`）：dev 链的第一个位置参数是 **Electron 的 app 路径**
+	 * （`scripts/code.bat` 传 `%CD%`），把它当成"要打开的文件夹"会让 F5 每次都把
+	 * 仓库根当工作区打开 —— 2026-09-14 实测踩过。工作区文件那条路径有扩展名可辨识，
+	 * 文件夹没有，因此这里只认**结构化**来源（`urisToOpen` / `--folder-uri`）。
+	 */
+	private _hasExplicitFolderRequest(openConfig: IOpenConfiguration): boolean {
+		for (const openable of openConfig.urisToOpen ?? []) {
+			if (isFolderToOpen(openable) && !hasWorkspaceFileExtension(openable.folderUri.fsPath)) {
+				return true;
+			}
+		}
+		for (const raw of openConfig.cli?.['folder-uri'] ?? []) {
+			const uri = this._safeParseUri(raw);
+			if (uri && !hasWorkspaceFileExtension(uri.fsPath)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * 记住显式请求的**文件夹**（与工作区文件共用一份记忆），
+	 * 这样下次无参数启动能回到同一个位置。取第一个文件夹即可。
+	 */
+	private async _rememberExplicitFolderRequest(openConfig: IOpenConfiguration): Promise<void> {
+		for (const openable of openConfig.urisToOpen ?? []) {
+			if (isFolderToOpen(openable) && !hasWorkspaceFileExtension(openable.folderUri.fsPath)) {
+				await this._rememberUserWorkspaceFile(openable.folderUri);
+				return;
+			}
+		}
+		for (const raw of openConfig.cli?.['folder-uri'] ?? []) {
+			const uri = this._safeParseUri(raw);
+			if (uri && !hasWorkspaceFileExtension(uri.fsPath)) {
+				await this._rememberUserWorkspaceFile(uri);
+				return;
+			}
+		}
 	}
 
 	/**
@@ -437,6 +540,66 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 		const fsPath = raw.trim();
 		return fsPath ? URI.file(fsPath) : undefined;
+	}
+
+	/**
+	 * Where the user's last explicitly-opened workspace **or folder** is remembered.
+	 *
+	 * 放在 `appSettingsHome`（= `<userData>/User`）下：与 settings/keybindings 同级，
+	 * 属于「用户级」数据，且不落在工作区内（工作区内的文件对模型可写，不能作为
+	 * 「下次打开哪个工作区」的真源）。
+	 *
+	 * ⚠ 键名叫 `workspace` 但值**也可能是文件夹路径**（方案 B' Step 3 起支持单文件夹态）——
+	 * 读取方按 `hasWorkspaceFileExtension()` 分流成 `workspaceUri` / `folderUri`。
+	 * 保留旧键名是为了兼容已写盘的数据。
+	 */
+	private _rememberedWorkspaceFileLocation(): URI {
+		return URI.joinPath(this.environmentMainService.appSettingsHome, 'last-user-workspace.json');
+	}
+
+	/**
+	 * Persist the user-specified `.code-workspace` so a later launch without any
+	 * workspace argument (F5 / taskbar / double-click) reopens the same multi-root
+	 * workspace instead of the built-in `agent-sessions.code-workspace` fallback.
+	 *
+	 * 写盘前先比对，避免无谓的磁盘写入与 watcher 抖动。失败只 warn —— 它只是
+	 * 「记住上次选择」的便利功能，绝不能影响本次开窗。
+	 */
+	private async _rememberUserWorkspaceFile(workspaceUri: URI): Promise<void> {
+		const target = this._rememberedWorkspaceFileLocation();
+		const content = JSON.stringify({ workspace: workspaceUri.fsPath }, null, '\t');
+		try {
+			const existing = await this.fileService.readFile(target).then(r => r.value.toString(), () => undefined);
+			if (existing === content) {
+				return;
+			}
+			await this.fileService.writeFile(target, VSBuffer.fromString(content));
+			this.logService.info(`[windowsManager] remembered user workspace file: ${workspaceUri.fsPath}`);
+		} catch (err) {
+			this.logService.warn('[windowsManager] Failed to remember user workspace file:', err);
+		}
+	}
+
+	/**
+	 * Read back {@link _rememberUserWorkspaceFile}'s result.
+	 *
+	 * 解析失败 / 文件不存在 → `undefined`（调用方回落到内置兜底），**不抛错**：
+	 * 这只是「上次选择」的提示，不是必须成功的前置条件。
+	 */
+	private async _readRememberedWorkspaceFile(): Promise<URI | undefined> {
+		const target = this._rememberedWorkspaceFileLocation();
+		try {
+			if (!await this.fileService.exists(target)) {
+				return undefined;
+			}
+			const raw = (await this.fileService.readFile(target)).value.toString();
+			const parsed = JSON.parse(raw) as { workspace?: unknown };
+			const fsPath = typeof parsed?.workspace === 'string' ? parsed.workspace.trim() : '';
+			return fsPath ? URI.file(fsPath) : undefined;
+		} catch (err) {
+			this.logService.warn('[windowsManager] Failed to read remembered workspace file:', err);
+			return undefined;
+		}
 	}
 
 
@@ -1715,7 +1878,21 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 			cssModules: this.cssDevelopmentService.isEnabled ? await this.cssDevelopmentService.getCssModules() : undefined,
 
-			isSessionsWindow: isWorkspaceIdentifier(options.workspace) && isEqual(options.workspace.configPath, this.environmentMainService.agentSessionsWorkspace),
+			// ★★ 本应用**始终**运行在 agents 模式下（`code/electron-main/main.ts:108`
+			// 无条件设置 `isEmbeddedApp = true`），所以这里**不能**再用「工作区 ==
+			// 内置兜底文件 `agent-sessions.code-workspace`」来判定。
+			//
+			// 为什么：`isSessionsWindow` 直接决定窗口加载哪份 HTML/入口
+			// （`windowImpl.ts:1212`：true → `sessions.html` → `sessions.desktop.main.js`
+			// → Agent 布局 + sessions 贡献；false → `workbench.html` → 标准 VS Code
+			// 工作台），并且决定用哪个 profile（本文件 `:1930` → `isAgentsWindowProfile`）。
+			// 用旧判据时，用户以**自己的 `.code-workspace`** 打开窗口 ⇒ 该标志变 false
+			// ⇒ 窗口退化成标准 VS Code 界面（欢迎页 + 原生活动栏），sessions 侧贡献
+			// （`WorkspaceFolderSync` 等）整层不加载。
+			//
+			// 判据统一到「是否 agents 应用」这一件事上：多根工作区（用户文件）与
+			// 兜底文件都是 agents 窗口，只是工作区来源不同。
+			isSessionsWindow: !!(process as INodeProcess).isEmbeddedApp,
 		};
 
 		// New window

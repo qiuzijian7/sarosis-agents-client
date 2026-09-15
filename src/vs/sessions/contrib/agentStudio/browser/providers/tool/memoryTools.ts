@@ -20,11 +20,14 @@
 import type { IAgentOSService } from '../../../common/agentOS.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
+import type { IAgentStudioService } from '../../../common/agentStudio.js';
 
 export interface MemoryToolContext {
 	register(registration: IBuiltinToolRegistration): void;
 	agentOS: IAgentOSService;
 	logService: ILogService;
+	/** 可选：记忆新增时上报 activitybar「资料库」徽标（未提供则静默跳过）。 */
+	agentStudioService?: IAgentStudioService;
 }
 
 /**
@@ -120,6 +123,7 @@ export function registerMemoryTools(ctx: MemoryToolContext): void {
 					importance: 8,
 					metadata: { slot_id: slotId, source: 'llm_slot_edit', ...(sessionId ? { sessionId } : {}) },
 				});
+					ctx.agentStudioService?.requestLibraryBadge({ source: 'memory', kind: 'new', count: 1 });
 					return [{ type: 'text', text: `Slot "${slotId}" updated: ${content.slice(0, 100)}` }];
 				} catch (err) {
 					ctx.logService.warn('[BuiltinTools] memory_remember slot write failed:', err);
@@ -143,6 +147,7 @@ export function registerMemoryTools(ctx: MemoryToolContext): void {
 
 			try {
 				await memProvider.writeMemory(agentId, entry);
+				ctx.agentStudioService?.requestLibraryBadge({ source: 'memory', kind: 'new', count: 1 });
 				return [{ type: 'text', text: `Memory saved (${memType}, importance=${importance}): ${content.slice(0, 100)}` }];
 			} catch (err) {
 				ctx.logService.warn('[BuiltinTools] memory_remember: provider write failed:', err);

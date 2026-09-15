@@ -32,6 +32,19 @@ import { IConfigurationService } from '../../../platform/configuration/common/co
 import { Extensions } from '../../../workbench/browser/panecomposite.js';
 
 /**
+ * 布局调试探针开关（2026-09-15）。
+ *
+ * 排查「panel / 侧栏的高度与宽度分配」类问题时改成 `true`：打印每次 layout 的
+ * 尺寸链快照（`_inspectWidthChain`）、`create()` 时注册的 composite 列表、
+ * 以及 `height <= 0` 的调用栈。
+ *
+ * ⚠ **默认必须关闭**：`_inspectWidthChain` 会做 7 次 `getBoundingClientRect()` +
+ * 多次 `getComputedStyle()`（**强制同步重排**）并输出 20 行 JSON，而它挂在
+ * **每次 layout** 上 —— 实测一次「切换右侧栏」就刷出上百行日志 + 多次强制重排。
+ */
+const PANEL_LAYOUT_DEBUG = false;
+
+/**
  * Panel part specifically for agent sessions workbench.
  * This is a simplified version of the PanelPart for agent session contexts.
  */
@@ -74,15 +87,17 @@ export class PanelPart extends AbstractPaneCompositePart {
 
 	override async create(parent: HTMLElement): Promise<void> {
 		const result = await super.create(parent);
-		// [Saros Debug] Log registered composites and composite bar state
-		const composites = this.getPaneComposites();
-		console.log('[PanelPart] Registered pane composites:', composites.map(c => ({ id: c.id, name: c.name, order: c.order })));
-		const compositeBar = (this as any).paneCompositeBar?.value;
-		if (compositeBar) {
-			const items = compositeBar.getItems?.() ?? [];
-			console.log('[PanelPart] CompositeBar visible items:', items.map((i: any) => i.id));
-		} else {
-			console.log('[PanelPart] CompositeBar not created');
+		if (PANEL_LAYOUT_DEBUG) {
+			// [Saros Debug] Log registered composites and composite bar state（默认关闭）
+			const composites = this.getPaneComposites();
+			console.log('[PanelPart] Registered pane composites:', composites.map(c => ({ id: c.id, name: c.name, order: c.order })));
+			const compositeBar = (this as any).paneCompositeBar?.value;
+			if (compositeBar) {
+				const items = compositeBar.getItems?.() ?? [];
+				console.log('[PanelPart] CompositeBar visible items:', items.map((i: any) => i.id));
+			} else {
+				console.log('[PanelPart] CompositeBar not created');
+			}
 		}
 		return result;
 	}
@@ -191,25 +206,35 @@ export class PanelPart extends AbstractPaneCompositePart {
 		}
 
 		// [Saros Debug] Trace when layout receives height <= 0
-		if (height <= 0) {
+		// ⚠ `height <= 0` 是 panel 折叠时的**正常**输入（见下方 contentHeight 的钳位注释）——
+		// 之前无条件 `console.trace` 会让「每次切换右侧栏」都打两整段调用栈。
+		if (PANEL_LAYOUT_DEBUG && height <= 0) {
 			console.trace(`[PanelPart] layout height<=0: height=${height}, width=${width}, top=${top}, left=${left}`);
 		}
 
 		// Layout content with reduced dimensions to account for visual margins and border
 		const borderTotal = 2; // 1px border on each side
 		const marginLeft = this.layoutService.isVisible(Parts.SIDEBAR_PART) ? 0 : PanelPart.MARGIN_LEFT;
+		// 内容高度**钳到 ≥ 0**（2026-09-15）：
+		// agents 布局建 panel 时就是 `size: 0`（`layoutProfile.ts`），panel 折叠状态下
+		// grid 会传 `height=0` —— 而 `0 - MARGIN_BOTTOM(10) - borderTotal(2)` 会算出 **-12**
+		// 并一路传给 `PaneCompositePart` → `CompositePart`（实测 `titleSize=-12`、
+		// `contentSize=0x2108`）。负高度没有任何意义，只在每次布局里产生一批坏值 + 诊断噪音。
+		const contentHeight = Math.max(0, height - PanelPart.MARGIN_BOTTOM - borderTotal);
 		// 右侧不再留 MARGIN_RIGHT，让内容铺满到右边框
 		super.layout(
 			width - marginLeft - borderTotal,
-			height - PanelPart.MARGIN_BOTTOM - borderTotal,
+			contentHeight,
 			top, left
 		);
 
 		// Restore the full grid-allocated dimensions so that Part.relayout() works correctly.
 		Part.prototype.layout.call(this, width, height, top, left);
 
-		// [Saros Debug] Inspect width chain after layout settles
-		setTimeout(() => this._inspectWidthChain(width), 200);
+		if (PANEL_LAYOUT_DEBUG) {
+			// [Saros Debug] Inspect width chain after layout settles（默认关闭，见开关注释）
+			setTimeout(() => this._inspectWidthChain(width), 200);
+		}
 	}
 
 	private _inspectWidthChain(gridWidth: number): void {

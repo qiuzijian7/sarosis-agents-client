@@ -18,7 +18,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult, IWorkflowDirectRunStart, IWorkflowDirectRunResult, IWorkflowDirectRunProgress } from '../../../common/agentStudioService.js';
+import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult, IWorkflowDirectRunStart, IWorkflowDirectRunResult, IWorkflowDirectRunProgress, ILibraryBadgeRequest } from '../../../common/agentStudioService.js';
 import { classifyContentViaSchema, safeSchemaFallback, SchemaClassifyResult } from './knowledge/classifier.js';
 import { DEFAULT_KB_SCHEMA, IKBSchema, loadKbSchema } from './knowledge/kbSchema.js';
 import { resolveChatModel, isChatProviderConfigured, resolveConfiguredChatProviderId, createAgentOsChatModel, ResolveChatModelOpts } from './knowledge/knowledgeAdapters.js';
@@ -27,6 +27,7 @@ import { IAgentOSService } from '../common/agentOS.js';
 import type { IChatModel } from './knowledge/llm.js';
 import { KB_FALLBACK_PROVIDER } from './knowledge/builtinEmbeddingProvider.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome, getLegacyRoot } from '../common/sarosPaths.js';
+import { findWorkspaceByIdentity, workspaceIdentityFromWindow, IWorkspaceIdentity } from '../common/workspaceFolderSyncPolicy.js';
 import type { Agent, AgentBinding, Workspace, Connection, AgentStudioSession, WorkspaceLayout } from '../../../common/agentStudioTypes.js';
 import { ITofAuthService } from '../common/tofAuth.js';
 import { IAgentVersionService } from '../common/agentVersionTypes.js';
@@ -56,6 +57,15 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	/** Runtime-only active workspace id (persisted as lastActive via setActiveWorkspace). */
 	private _activeWorkspaceId: string | undefined;
 
+	/**
+	 * ★ workspaceId → 数据目录 URI 缓存（2026-09-15）。
+	 * 见 `_getWorkspaceDataUri()`：该方法是**每次工具执行**都会走到热路径，
+	 * 原实现每次都读 `workspaces.json` ✗。失效由 `_writeJsonFile()` **一处统一负责**
+	 * （写入 `DATA_FILE_WORKSPACES` 即清空 ✓）—— 不在 8 个写点逐处加，
+	 * 那样极易漏 ✗。
+	 */
+	private readonly _workspaceDataUriCache = new Map<string, URI>();
+
 	private readonly _onDidChangeSessions = this._register(new Emitter<void>());
 	readonly onDidChangeSessions: Event<void> = this._onDidChangeSessions.event;
 
@@ -79,6 +89,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	private readonly _onDidRequestKbRefresh = this._register(new Emitter<void>());
 	readonly onDidRequestKbRefresh: Event<void> = this._onDidRequestKbRefresh.event;
+
+	private readonly _onDidRequestLibraryBadge = this._register(new Emitter<ILibraryBadgeRequest>());
+	readonly onDidRequestLibraryBadge: Event<ILibraryBadgeRequest> = this._onDidRequestLibraryBadge.event;
 
 	private readonly _onDidChangeWorktreeState = this._register(new Emitter<{ workspaceId: string; status: string; message?: string }>());
 	readonly onDidChangeWorktreeState: Event<{ workspaceId: string; status: string; message?: string }> = this._onDidChangeWorktreeState.event;
@@ -118,7 +131,15 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	/** Request the KB view to refresh (e.g. after background agent import completes). */
 	requestKbRefresh(): void {
+		// 后台导入完成 ⇒ activitybar 徽标提示「有新增」。
+		// 在服务层上报（而非视图内），因为资料库 sideview 此时可能根本没打开 —— 徽标的意义正在于此。
+		this._onDidRequestLibraryBadge.fire({ source: 'kb', kind: 'new', count: 1 });
 		this._onDidRequestKbRefresh.fire();
+	}
+
+	/** 上报资料库活动（构建中 / 有新增 / 结束），驱动 activitybar「资料库」徽标。 */
+	requestLibraryBadge(request: ILibraryBadgeRequest): void {
+		this._onDidRequestLibraryBadge.fire(request);
 	}
 
 	private _globalDataUri: URI | undefined;
@@ -301,20 +322,24 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 *   3. Global fallback       → `{globalDataUri}/` or `{globalDataUri}/{workspaceId}/`
 	 */
 	private async _resolveDataUri(workspaceId?: string): Promise<URI> {
+		// ★ 热路径日志降噪（2026-09-15）：本方法在**每次工具执行**时都会被调用，
+		// 三处分支原本都打 info ⇒ 与 `_getWorkspaceDataUri` 成对刷屏 ✗
+		// （真机日志里一次工具调用就打 4 行）。结果本身可由调用方按需查看，
+		// 故一律降到 trace ✓。
 		if (workspaceId) {
 			const result = await this._getWorkspaceDataUri(workspaceId);
-			this.logService.info(`[AgentStudio] _resolveDataUri(workspaceId=${workspaceId}) -> ${result.toString()}`);
+			this.logService.trace(`[AgentStudio] _resolveDataUri(workspaceId=${workspaceId}) -> ${result.toString()}`);
 			return result;
 		}
 		// No workspaceId — try to use the currently open VS Code folder
 		const folderUri = this._getFirstWorkspaceFolderUri();
 		if (folderUri) {
 			const result = URI.joinPath(folderUri, WORKSPACE_DATA_DIR);
-			this.logService.info(`[AgentStudio] _resolveDataUri(no workspaceId, folder=${folderUri.toString()}) -> ${result.toString()}`);
+			this.logService.trace(`[AgentStudio] _resolveDataUri(no workspaceId, folder=${folderUri.toString()}) -> ${result.toString()}`);
 			return result;
 		}
 		const result = this._getGlobalDataUri();
-		this.logService.info(`[AgentStudio] _resolveDataUri(no workspaceId, no folder) -> ${result.toString()}`);
+		this.logService.trace(`[AgentStudio] _resolveDataUri(no workspaceId, no folder) -> ${result.toString()}`);
 		return result;
 	}
 
@@ -440,17 +465,36 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 * Otherwise falls back to `globalDataUri/{workspaceId}/`.
 	 */
 	private async _getWorkspaceDataUri(workspaceId: string): Promise<URI> {
+		// ★ 缓存（2026-09-15）：本方法原本**每次调用都读一遍 workspaces.json** ✗，
+		// 而调用链是 `_resolveDataUri` ← **每次工具执行**都走 ⇒ 一次 agent 回合里
+		// 会重复读盘几十次 ✓（真机日志里 `_getWorkspaceDataUri` 与 `_resolveDataUri`
+		// 成对刷屏 ✓）。workspaceId → URI 是**纯函数结果**，缓存安全 ✓。
+		const cached = this._workspaceDataUriCache.get(workspaceId);
+		if (cached) {
+			return cached;
+		}
+
 		const workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
 		const ws = workspaces.find(w => w.id === workspaceId);
+		let result: URI;
 		if (ws?.path) {
-			const result = URI.joinPath(URI.file(ws.path), WORKSPACE_DATA_DIR);
-			this.logService.info(`[AgentStudio] _getWorkspaceDataUri(${workspaceId}) -> ${result.toString()} (workspace has path)`);
-			return result;
+			result = URI.joinPath(URI.file(ws.path), WORKSPACE_DATA_DIR);
+			this.logService.trace(`[AgentStudio] _getWorkspaceDataUri(${workspaceId}) -> ${result.toString()} (workspace has path)`);
+		} else {
+			// Fallback: store in global directory under workspace ID
+			result = URI.joinPath(this._getGlobalDataUri(), workspaceId);
+			this.logService.trace(`[AgentStudio] _getWorkspaceDataUri(${workspaceId}) -> ${result.toString()} (workspace not found or no path, fallback)`);
 		}
-		// Fallback: store in global directory under workspace ID
-		const result = URI.joinPath(this._getGlobalDataUri(), workspaceId);
-		this.logService.info(`[AgentStudio] _getWorkspaceDataUri(${workspaceId}) -> ${result.toString()} (workspace not found or no path, fallback)`);
+		this._workspaceDataUriCache.set(workspaceId, result);
 		return result;
+	}
+
+	/**
+	 * ★ 清空 workspace 数据目录缓存 —— 工作区被增删改（path 变化）后必须调用，
+	 * 否则会一直用旧的 `.sarosworkspace` 路径 ✗（缓存正确性的唯一前提）。
+	 */
+	private _invalidateWorkspaceDataUriCache(): void {
+		this._workspaceDataUriCache.clear();
 	}
 
 	private async _ensureDir(dirUri: URI): Promise<void> {
@@ -484,6 +528,15 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const uri = URI.joinPath(dirUri, filename);
 		const content = VSBuffer.fromString(JSON.stringify(data, null, 2));
 		await this.fileService.writeFile(uri, content);
+
+		// ★ 缓存失效的**唯一入口**（2026-09-15）：workspaces.json 一旦被写，
+		// workspaceId → 数据目录 URI 的映射可能已变（尤其 path）⇒ 必须清空，
+		// 否则会一直用旧路径 ✗。
+		// ⚠ 放在这里而不是 8 个写点：那些写点里只有 create/update/delete 会改 path，
+		// 但**逐个加极易漏**（本文件对 DATA_FILE_WORKSPACES 的写入有 8 处）✗。
+		if (filename === DATA_FILE_WORKSPACES) {
+			this._invalidateWorkspaceDataUriCache();
+		}
 	}
 
 	/**
@@ -1441,21 +1494,55 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	/**
-	 * Reverse-lookup the `workspaceId` for the VS Code folder the user
-	 * currently has open. Reads workspaces.json and matches by normalised
-	 * absolute path. Returns `undefined` if no folder is open or no
-	 * matching workspace record exists.
+	 * 当前窗口的**工作区身份**（工作区文件 + 全部 root）。
+	 *
+	 * 这是 P0 的核心概念：把「这条 registry 记录是不是这个窗口」变成一次纯函数调用，
+	 * 取代此前「靠 `activeWorkspaceId` 游标 + 各种兜底猜测」的脆弱做法。
+	 */
+	private _currentWindowIdentity(): IWorkspaceIdentity {
+		const ws = this.workspaceContextService.getWorkspace();
+		return workspaceIdentityFromWindow(
+			ws.configuration?.fsPath,
+			ws.folders.map(f => f.uri.fsPath),
+		);
+	}
+
+	/**
+	 * Reverse-lookup the `workspaceId` for the VS Code workspace the user
+	 * currently has open. Returns `undefined` when the window matches no record
+	 * (callers then fall through to their own fallbacks — we deliberately do
+	 * **not** guess here).
+	 *
+	 * ★★ 2026-09-15（P0）重写：原先只比 `w.path === folders[0]`，导致
+	 * **记录 `path` 是 `.code-workspace` 文件时永不匹配**（文件路径 ≠ 目录），
+	 * 于是 `resolveDefaultActiveWorkspaceId()` 掉到「第一个有 path 的记录」兜底 ⇒
+	 * 选到无关记录 ⇒ 反向投影把 A 窗口的 folder 写进 B 工作区（09-14 跨工作区污染），
+	 * 且每次重启都丢多根。
+	 *
+	 * 现在走 {@link findWorkspaceByIdentity} 三级判据（工作区文件 > 主 root >
+	 * root 集合），并**记下匹配依据**（`match=`），排障时一眼可判。
 	 */
 	private async _inferWorkspaceIdFromActiveFolder(): Promise<string | undefined> {
-		const folderUri = this._getFirstWorkspaceFolderUri();
-		if (!folderUri) { return undefined; }
+		const identity = this._currentWindowIdentity();
+		if (!identity.codeWorkspacePath && !identity.primaryFolderPath) {
+			// 空工作区（EMPTY 态）：没有任何可匹配的东西，交给调用方的兜底分支。
+			return undefined;
+		}
 		try {
 			const workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
-			const targetPath = folderUri.fsPath;
-			const norm = (p: string) => p.replace(/[\\/]+$/, '').toLowerCase();
-			const targetNorm = norm(targetPath);
-			const match = workspaces.find(w => w.path && norm(w.path) === targetNorm);
-			return match?.id;
+			const found = findWorkspaceByIdentity(workspaces, identity);
+			if (!found) {
+				this.logService.info(
+					`[AgentStudio] _inferWorkspaceIdFromActiveFolder: no match | ` +
+					`windowFile=${identity.codeWorkspacePath ?? '<none>'} | ` +
+					`roots=${identity.folderPaths.length} [${identity.folderPaths.join(' | ')}]`,
+				);
+				return undefined;
+			}
+			this.logService.info(
+				`[AgentStudio] _inferWorkspaceIdFromActiveFolder: matched by ${found.match} → ${found.record.id}`,
+			);
+			return found.record.id;
 		} catch (err) {
 			this.logService.warn(`[AgentStudio] _inferWorkspaceIdFromActiveFolder failed: ${err instanceof Error ? err.message : String(err)}`);
 			return undefined;
@@ -1655,6 +1742,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			connections: data.connections || [],
 			layout: data.layout,
 			filesExclude: data.filesExclude,
+			codeWorkspacePath: data.codeWorkspacePath,
 			createdAt: now,
 			updatedAt: now,
 		};
@@ -1940,6 +2028,118 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		// (5) No path-bound workspace exists — preserve legacy behaviour.
 		this.logService.warn(`[AgentStudio] resolveDefaultActiveWorkspaceId: no path-bound workspace exists; falling back to workspaces[0]=${workspaces[0].id}`);
 		return workspaces[0].id;
+	}
+
+	/**
+	 * ★★ P0（2026-09-15）：确保存在一条**身份与当前窗口一致**的工作区记录。
+	 *
+	 * ── 为什么必需 ──────────────────────────────────────────────────────
+	 * `resolveDefaultActiveWorkspaceId()` 在「按身份找不到记录」时会兜底到
+	 * 「第一个有 `path` 的记录」（第 (4) 步）—— 那是一条**无关**记录，于是 agent / 会话
+	 * 会被写到别的项目下。本方法补上这个缺口：窗口非空但没有对应记录时**按窗口身份建一条**。
+	 *
+	 * 这同时是「记录」与「窗口」两个概念的**收口点**：
+	 *   建记录 → 写 `path`（主 root）+ `codeWorkspacePath`（身份）+ `relatedFolders`（其余 root）
+	 *   ⇒ 下次启动 `_inferWorkspaceIdFromActiveFolder()` 能**按身份精确命中**，
+	 *     不再依赖任何兜底猜测。
+	 *
+	 * 幂等：已存在匹配记录则直接返回（不新建、不写盘）。空窗口不建。
+	 */
+	async ensureWorkspaceForWindow(
+		identity: IWorkspaceIdentity,
+		projection: { readonly path: string | undefined; readonly relatedFolders: readonly { readonly path: string; readonly name: string }[] },
+	): Promise<Workspace | undefined> {
+		// 空窗口（既无工作区文件、又无 root）没有任何可绑定的东西 —— 不建记录。
+		if (!identity.codeWorkspacePath && identity.folderPaths.length === 0) {
+			return undefined;
+		}
+		// 没有主 root 的记录无法承载 agent 数据目录，建出来只会变成"path-less 陷阱"
+		// （`resolveDefaultActiveWorkspaceId` 明确会跳过这类记录）。
+		if (!projection.path) {
+			return undefined;
+		}
+
+		let workspaces: Workspace[];
+		try {
+			workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
+		} catch (err) {
+			this.logService.warn(`[AgentStudio] ensureWorkspaceForWindow: read failed: ${err instanceof Error ? err.message : String(err)}`);
+			return undefined;
+		}
+
+		const found = findWorkspaceByIdentity(workspaces, identity);
+		if (found) {
+			this.logService.info(
+				`[AgentStudio] ensureWorkspaceForWindow: existing record matched by ${found.match} → ${found.record.id}`,
+			);
+
+			// ★★★ 身份回填（2026-09-15，修「多根永久丢失」）：
+			// 命中的记录若**还不知道自己源自哪个 `.code-workspace` 文件**、而当前窗口知道
+			// ⇒ 补写 `codeWorkspacePath`。
+			//
+			// ── 为什么这条回填是必需的 ────────────────────────────────────────
+			// `_resolveWorkspaceRoots()` 只有两条推导路径：
+			//   ① `path` 是 `.code-workspace` **文件** ⇒ 解析文件拿全部 root；
+			//   ② 否则 = `[path] + relatedFolders`。
+			// 记录缺 `codeWorkspacePath` 时只剩路径 ② —— 一旦 `relatedFolders` 被任何一次
+			// **窄化写**抹掉（例如启动期窗口只有 1 根时的反向投影），多根就**永久无法恢复**：
+			// 记录不知道那个声明了 3 个根的文件在哪，谁也无法把它找回来。
+			//
+			// 用户 2026-09-15 报的「工作区 sideview 未显示多根目录」正是这个终局状态。
+			// 补上这条回填后，只要窗口曾经以该文件打开过一次，身份就永久留在数据里 ⇒
+			// 即使 root 集合再被窄化，下次也能从文件重建。
+			//
+			// 幂等：仅当记录**缺**该字段且窗口**有**该字段时才写一次。
+			if (identity.codeWorkspacePath && !found.record.codeWorkspacePath) {
+				try {
+					const updated = await this.updateWorkspace(found.record.id, {
+						codeWorkspacePath: identity.codeWorkspacePath,
+					});
+					this.logService.info(
+						`[AgentStudio] ensureWorkspaceForWindow: backfilled codeWorkspacePath → ${identity.codeWorkspacePath}`,
+					);
+					return updated;
+				} catch (err) {
+					// 回填失败不影响本次调用 —— 身份匹配已经成功，返回原记录即可。
+					this.logService.warn(
+						`[AgentStudio] ensureWorkspaceForWindow: backfill codeWorkspacePath failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			}
+			return found.record;
+		}
+
+		// 名称：优先工作区文件名（多根时更能表达"这是哪个工作区"），否则主 root 目录名。
+		const wsFileName = identity.codeWorkspacePath
+			? identity.codeWorkspacePath.replace(/\\/g, '/').split('/').pop()?.replace(/\.code-workspace$/i, '')
+			: undefined;
+		const dirName = projection.path.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
+		const name = wsFileName || dirName || 'Workspace';
+
+		const now = new Date().toISOString();
+		const workspace: Workspace = {
+			id: this._generateId(name),
+			name,
+			path: projection.path,
+			// ★ 身份显式化：把「这个工作区源自哪个 .code-workspace 文件」写进数据，
+			// 后续匹配、切换、删除都不再需要靠路径形态猜。
+			codeWorkspacePath: identity.codeWorkspacePath,
+			relatedFolders: projection.relatedFolders.map(f => ({ path: f.path, name: f.name, addedAt: now })),
+			agents: [],
+			connections: [],
+			createdAt: now,
+			updatedAt: now,
+		};
+
+		workspaces.push(workspace);
+		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
+		this.logService.info(
+			`[AgentStudio] ensureWorkspaceForWindow: created ${workspace.id} | ` +
+			`file=${identity.codeWorkspacePath ?? '<none>'} | roots=${1 + workspace.relatedFolders.length}`,
+		);
+		this._onDidChangeWorkspace.fire(workspace.id);
+		this._fireWorkspaceLifecycle(WorkspaceLifecycleEvent.Created, workspace);
+		return workspace;
 	}
 
 	async setActiveWorkspace(workspaceId: string | undefined): Promise<void> {

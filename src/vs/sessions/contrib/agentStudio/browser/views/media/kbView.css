@@ -146,9 +146,10 @@
 }
 
 /* ── Scroll area ── */
-.kb-scroll { flex: 1; overflow-y: auto; }
-.kb-scroll::-webkit-scrollbar { width: 10px; }
-.kb-scroll::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, #424242); border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
+/* tabIndex=-1 + focus() 会让浏览器绘制默认聚焦框（曾表现为面板中央一大片蓝框）⇒ 显式去掉。 */
+.kb-scroll, .kb-panel-content { flex: 1; overflow-y: auto; outline: none; min-height: 0; }
+
+/* 滚动条统一由 sessions 全局样式提供（sessions/browser/media/style.css），此处不再单独定义。 */
 
 /* ── Section (库 / 笔记) ── */
 .kb-section { border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border)); }
@@ -159,8 +160,9 @@
 	font-weight: 600; color: var(--vscode-foreground);
 	user-select: none; cursor: pointer;
 }
-.kb-section-header .kb-arrow { font-size: 10px; color: var(--vscode-descriptionForeground); transition: .15s; }
-.kb-section:not(.open) .kb-section-header .kb-arrow { transform: rotate(-90deg); }
+/* 折叠箭头统一为 codicon-chevron-right：折叠态不旋转（指向右），展开态旋转 90°（指向下）。 */
+.kb-section-header .kb-arrow { font-size: 12px; color: var(--vscode-descriptionForeground); transition: transform .15s; flex-shrink: 0; }
+.kb-section.open .kb-section-header .kb-arrow { transform: rotate(90deg); }
 .kb-section-header .kb-title { flex: 1; display: flex; align-items: center; gap: 6px; }
 .kb-section-header .kb-count {
 	font-size: 10px;
@@ -397,8 +399,8 @@
 	padding: 4px 10px; cursor: pointer; user-select: none; border-radius: 4px; margin: 1px 4px;
 }
 .kb-tag-group-head:hover { background: var(--vscode-list-hoverBackground); }
-.kb-tag-group-head .kb-arrow { font-size: 10px; color: var(--vscode-descriptionForeground); transition: .15s; width: 12px; }
-.kb-tag-group:not(.open) .kb-arrow { transform: rotate(-90deg); }
+.kb-tag-group-head .kb-arrow { font-size: 12px; color: var(--vscode-descriptionForeground); transition: transform .15s; width: 12px; }
+.kb-tag-group.open .kb-arrow { transform: rotate(90deg); }
 .kb-tag-group-name {
 	flex: 1; font-size: 12px; color: var(--vscode-textLink-foreground, #3794ff);
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -776,20 +778,295 @@
 .kb-linked-ws .kb-children { padding-left: 18px; border-left: 1px solid var(--vscode-panel-border, #444); margin: 2px 0; }
 .kb-linked-ws .kb-children .kb-node { padding-left: 4px; }
 
-/* ── 记忆库 Section ── */
-.kb-mem-header:hover {
-	background: var(--vscode-toolbar-hoverBackground, #252525) !important;
+/* ══════════════════════════════════════════════════════════
+   2026-09-15 重构：顶部 Tab（资料 / 记忆 / 代码）
+   取代原「文件树 + 记忆库 section + 代码库 section」纵向堆叠 ——
+   三段常驻会让空态也占满侧栏，并把文件树挤成一条缝。
+   ══════════════════════════════════════════════════════════ */
+
+.kb-tabs {
+	display: flex;
+	align-items: stretch;
+	flex-shrink: 0;
+	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+}
+.kb-tab {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	height: 30px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	user-select: none;
+	border-bottom: 1px solid transparent;
+}
+.kb-tab:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
+.kb-tab.active {
+	color: var(--vscode-foreground);
+	border-bottom-color: var(--vscode-focusBorder, #007acc);
+	font-weight: 600;
+}
+.kb-tab .codicon { font-size: 13px; }
+
+/* Tab 面板：同一时刻只显示激活项（display 切换，不销毁 DOM ⇒ 滚动/展开/搜索态得以保留）。 */
+.kb-panel { display: none; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.kb-panel.active { display: flex; }
+
+/* 面板工具条（记忆 / 代码面板顶部） */
+.kb-panel-bar {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 0 4px 0 10px;
+	height: 30px;
+	flex-shrink: 0;
+	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+}
+.kb-panel-bar-label {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: .5px;
+	font-weight: 600;
+	opacity: .8;
 }
 
-/* ── 拖拽分隔条 hover ── */
-.kb-drag-handle:hover {
-	background: var(--vscode-focusBorder, #007acc) !important;
-}
-
-/* ── 记忆库入口块 ── */
-.kb-mem-entry {
+/* 通用「入口卡片」：记忆库 / 代码库的单一入口。
+   原先这两处用内联 style 写死 #1e1e1e / #2a2a2a，不跟主题 ⇒ 下沉到此处并改用主题变量。 */
+.kb-entry {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 6px 8px;
+	padding: 10px 12px;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 12px;
+	background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+	border: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
 	transition: background .1s, border-color .1s;
 }
+.kb-entry:hover { border-color: var(--vscode-focusBorder, #007acc); }
+.kb-entry-icon { font-size: 16px; flex-shrink: 0; color: var(--vscode-icon-foreground); }
+.kb-entry-text { flex: 1; min-width: 0; }
+.kb-entry-title { color: var(--vscode-foreground); }
+.kb-entry-meta { font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 2px; }
+.kb-entry-arrow { flex-shrink: 0; font-size: 14px; color: var(--vscode-descriptionForeground); }
+
+/* 记忆库固定槽位概览 */
+.kb-mem-list { padding: 4px 0; }
+.kb-mem-slots { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; }
+.kb-slot-chip {
+	font-size: 9px;
+	padding: 2px 6px;
+	border-radius: 3px;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-badge-background, rgba(128,128,128,.18));
+}
+
+/* ── codicon 尺寸校准（统一字形大小，避免继承字号导致忽大忽小） ── */
+.kb-hbtn, .kb-abtn { font-size: 14px; }
+.kb-node .kb-act { font-size: 13px; }
+.kb-node .kb-ficon.codicon { display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.kb-search-box > .codicon-search { font-size: 12px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+.kb-tag-search .kb-search-box > .codicon-search { font-size: 11px; }
+.kb-vault-select .kb-caret { font-size: 12px; }
+.kb-sug .s-ico { font-size: 12px; }
+.kb-bl-ic { font-size: 12px; }
+.kb-vault-menu .kb-opt .codicon { font-size: 13px; }
+.kb-dropdown .kb-opt .codicon { font-size: 13px; }
+.kb-section-toolbar .kb-tool-btn {
+	width: 20px; height: 20px;
+	display: flex; align-items: center; justify-content: center;
+	border-radius: 3px; cursor: pointer;
+	color: var(--vscode-icon-foreground); opacity: .8; font-size: 13px;
+}
+.kb-section-toolbar .kb-tool-btn:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); opacity: 1; }
+
+/* ══════════════════════════════════════════════════════════
+   2026-09-15：记忆 / 代码 Tab 的信息区（统计 + 分区标题 + 状态行）
+   原先这两个 Tab 只有一个入口卡片，大片留白且看不到任何规模数据。
+   ══════════════════════════════════════════════════════════ */
+
+.kb-stats { padding: 8px 10px 4px; }
+
+.kb-stats-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	padding: 6px 2px;
+}
+
+/* 头部大数字：记忆总数 / 图谱体积 */
+.kb-stat-hero {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	padding: 2px 2px 8px;
+}
+.kb-stat-hero-num {
+	font-size: 20px;
+	font-weight: 600;
+	line-height: 1;
+	color: var(--vscode-foreground);
+}
+.kb-stat-hero-label { font-size: 11px; color: var(--vscode-descriptionForeground); }
+
+/* 计数格子：自适应列宽 */
+.kb-stat-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
+	gap: 4px;
+	margin-bottom: 6px;
+}
+.kb-stat-cell {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-width: 0;
+	padding: 5px 7px;
+	border-radius: 4px;
+	background: var(--vscode-editorWidget-background, rgba(128,128,128,.08));
+	border: 1px solid var(--vscode-panel-border, transparent);
+}
+.kb-stat-cell.zero { opacity: .55; }
+.kb-stat-num {
+	font-size: 13px;
+	font-weight: 600;
+	line-height: 1.2;
+	color: var(--vscode-foreground);
+}
+.kb-stat-label {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.kb-stat-sub {
+	margin: 2px 2px 4px;
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: .5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.kb-stat-meta {
+	padding: 2px;
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	word-break: break-all;
+}
+
+/* 代码库状态行（索引中高亮） */
+.kb-code-status {
+	margin: 6px 2px 0;
+	padding: 4px 8px;
+	border-radius: 3px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-editorWidget-background, rgba(128,128,128,.08));
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.kb-code-status.busy { color: var(--vscode-textLink-foreground, #3794ff); }
+
+/* 侧栏内的小分区（如「固定槽位」） */
+.kb-side-section { padding: 2px 0 6px; }
+.kb-side-section-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 10px;
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: .5px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+}
+.kb-side-section-head .kb-spacer { flex: 1; }
+.kb-side-section-head .kb-count {
+	font-size: 10px;
+	padding: 0 6px;
+	border-radius: 10px;
+	background: var(--vscode-badge-background, rgba(128,128,128,.2));
+	color: var(--vscode-badge-foreground);
+}
+
+/* 代码库日志：只读 textarea（可滚动看完整行，不再被单行省略号截断） */
+.kb-log {
+	display: block;
+	width: calc(100% - 16px);
+	height: 140px;
+	margin: 0 8px;
+	box-sizing: border-box;
+	padding: 6px 8px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+	background: var(--vscode-input-background);
+	color: var(--vscode-foreground);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11px;
+	line-height: 1.5;
+	white-space: pre;
+	overflow: auto;
+	resize: none;          /* 只读展示：不允许拖动改尺寸 */
+	outline: none;
+}
+.kb-log:focus { border-color: var(--vscode-focusBorder); }
+.kb-log-clear { flex-shrink: 0; cursor: pointer; font-size: 12px; opacity: .7; padding: 0 2px; }
+.kb-log-clear:hover { opacity: 1; }
+
+/* ── 媒体库 Tab：最近资产列表（数据源 = 工作流媒体库） ── */
+.kb-media-list { padding: 0 0 8px; }
+.kb-media-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 10px;
+	cursor: pointer;
+}
+.kb-media-item:hover { background: var(--vscode-list-hoverBackground); }
+.kb-media-thumb {
+	width: 34px;
+	height: 34px;
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 3px;
+	overflow: hidden;
+	background: var(--vscode-editorWidget-background, rgba(128,128,128,.12));
+	color: var(--vscode-descriptionForeground);
+	font-size: 15px;
+}
+.kb-media-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.kb-media-text { flex: 1; min-width: 0; }
+.kb-media-name {
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.kb-media-meta {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.kb-media-open {
+	flex-shrink: 0;
+	font-size: 12px;
+	opacity: 0;
+	color: var(--vscode-descriptionForeground);
+}
+.kb-media-item:hover .kb-media-open { opacity: .85; }
 
 
 

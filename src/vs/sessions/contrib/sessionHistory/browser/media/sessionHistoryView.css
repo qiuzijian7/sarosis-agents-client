@@ -194,15 +194,27 @@
 /* ========== Session Item ========== */
 .session-history-item {
 	user-select: none;
+	/* 选中态左侧指示条（::before）的定位基准 */
+	position: relative;
 }
 
+/* 键盘导航焦点：item 可聚焦（F2 重命名），聚焦环需可见 */
+.session-history-item:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder, #007fd4);
+	outline-offset: -1px;
+}
+
+/* ── 精简两行布局（2026-09-15 重构，用户选定方案 A）─────────────────────
+   行 1：箭头 + 标题（+ open 小字）
+   行 2：状态点 + agent 名 · 相对时间 ……… 计数（右对齐）
+   右侧：rename / delete（常驻占位，hover 才可见 ⇒ 标题宽度不抖动） */
 .session-history-item-header {
 	display: flex;
 	align-items: center;
-	padding: 5px 8px 5px 12px;
-	height: 34px;
+	padding: 4px 8px;
+	min-height: 40px;
 	cursor: pointer;
-	gap: 6px;
+	gap: 4px;
 	transition: background 0.1s;
 }
 
@@ -214,15 +226,16 @@
 	background: var(--vscode-list-activeSelectionBackground, #37373d);
 }
 
-/* Pin marker */
+/* Pin marker（内联 SVG；替换原 📌 emoji —— 窄侧栏 emoji 会渲染成方块） */
 .session-history-pin {
-	font-size: 10px;
+	display: flex;
+	align-items: center;
 	flex-shrink: 0;
-	opacity: 0.8;
-	filter: grayscale(0.2);
+	color: #d7ba7d;
+	opacity: 0.9;
 }
 
-/* Status dot — color determined by agent via --agent-color CSS var */
+/* Status dot — 无运行状态时由 --agent-color 决定颜色 */
 .session-history-status-dot {
 	width: 8px;
 	height: 8px;
@@ -237,10 +250,47 @@
 	opacity: 0.4;
 }
 
+/* 无运行状态 + chat 已打开：保留原有「点亮」语义 */
 .session-history-status-dot.open {
 	background: var(--agent-color, #4ec9b0);
 	opacity: 1;
 	box-shadow: 0 0 4px var(--agent-color, rgba(78, 201, 176, 0.5));
+}
+
+/* ── 运行指示灯四态（2026-09-15 用户需求）────────────────────────────────
+   running 绿闪 · awaiting 黄闪 · done 白常亮（查看后熄灭）· error 红常亮 */
+.session-history-status-dot.run-running {
+	background: #3fb950;
+	opacity: 1;
+	animation: shDotPulse 1.1s ease-in-out infinite;
+}
+
+.session-history-status-dot.run-awaiting {
+	background: #d7a521;
+	opacity: 1;
+	animation: shDotPulse 0.75s ease-in-out infinite;
+}
+
+.session-history-status-dot.run-done {
+	background: #e6e6e6;
+	opacity: 1;
+	box-shadow: 0 0 4px rgba(230, 230, 230, 0.55);
+}
+
+/* 已查看 ⇒ 白点熄灭（用 visibility 保留占位，避免同行文字位移） */
+.session-history-status-dot.run-done.is-read {
+	visibility: hidden;
+}
+
+.session-history-status-dot.run-error {
+	background: #f85149;
+	opacity: 1;
+	box-shadow: 0 0 4px rgba(248, 81, 73, 0.5);
+}
+
+@keyframes shDotPulse {
+	0%, 100% { opacity: 1; transform: scale(1); }
+	50% { opacity: 0.35; transform: scale(0.82); }
 }
 
 /* Expand arrow */
@@ -256,7 +306,11 @@
 	transition: transform 0.15s;
 }
 
-/* Session Info */
+.session-history-item:hover .session-history-expand-arrow {
+	color: var(--vscode-foreground, #cccccc);
+}
+
+/* Session Info（两行） */
 .session-history-info {
 	flex: 1;
 	min-width: 0;
@@ -265,57 +319,92 @@
 	gap: 1px;
 }
 
+.session-history-title-line {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
 .session-history-title {
+	flex: 0 1 auto;
+	min-width: 0;
 	font-size: 13px;
+	line-height: 17px;
 	color: var(--vscode-foreground);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	line-height: 1.2;
 }
 
-.session-history-meta {
+.session-history-sub-line {
 	display: flex;
-	gap: 8px;
+	align-items: center;
+	gap: 5px;
+	min-width: 0;
 	font-size: 11px;
+	line-height: 15px;
 	color: var(--vscode-descriptionForeground, #6e6e6e);
-	white-space: nowrap;
-	overflow: hidden;
 }
 
-.session-history-agent-badge {
-	display: inline-flex;
-	align-items: center;
-	gap: 3px;
-	padding: 1px 6px 1px 4px;
-	background: var(--vscode-badge-background, #4d4d4d);
-	border-radius: 3px;
-	border-left: 2px solid var(--agent-color, transparent);
-	font-size: 11px;
-	color: var(--vscode-foreground, #cccccc);
+.session-history-agent-name {
+	color: var(--vscode-descriptionForeground, #9d9d9d);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	max-width: 100%;
+	max-width: 110px;
 }
 
-/* Session count */
-.session-history-count {
-	font-size: 11px;
+.session-history-sep {
 	color: var(--vscode-descriptionForeground, #6e6e6e);
-	background: var(--vscode-badge-background, #4d4d4d);
-	padding: 1px 6px;
-	border-radius: 10px;
+	opacity: 0.6;
+}
+
+.session-history-time {
+	font-variant-numeric: tabular-nums;
 	flex-shrink: 0;
 }
 
-/* Open tag */
+.session-history-sub-right {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+/* 右侧操作组（常驻占位；hover / 选中才可见 ⇒ 标题宽度不抖动） */
+.session-history-actions {
+	display: flex;
+	align-items: center;
+	gap: 1px;
+	flex-shrink: 0;
+}
+
+.session-history-actions .session-history-rename-btn,
+.session-history-actions .session-history-delete-btn {
+	visibility: hidden;
+}
+
+.session-history-item-header:hover .session-history-actions .session-history-rename-btn,
+.session-history-item-header:hover .session-history-actions .session-history-delete-btn,
+.session-history-item.selected .session-history-actions .session-history-rename-btn,
+.session-history-item.selected .session-history-actions .session-history-delete-btn {
+	visibility: visible;
+}
+
+/* Session count（去 badge 化：灰色小字；0 由 TS 侧不渲染） */
+.session-history-count {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	font-variant-numeric: tabular-nums;
+	flex-shrink: 0;
+}
+
+/* Open 标记（原 `● open` 徽章 ⇒ 绿色小字，省宽） */
 .session-history-open-tag {
 	font-size: 10px;
 	color: #4ec9b0;
-	background: rgba(78, 201, 176, 0.12);
-	padding: 0 4px;
-	border-radius: 3px;
 	flex-shrink: 0;
 	white-space: nowrap;
 }
@@ -545,14 +634,10 @@
 	background: transparent;
 	color: var(--vscode-descriptionForeground, #6e6e6e);
 	cursor: pointer;
-	opacity: 0;
-	transition: opacity 0.15s, background 0.15s, color 0.15s;
+	transition: background 0.15s, color 0.15s;
 	flex-shrink: 0;
 }
-
-.session-history-item-header:hover .session-history-rename-btn {
-	opacity: 1;
-}
+/* 可见性统一由 .session-history-actions 的 visibility 规则控制（常驻占位） */
 
 .session-history-rename-btn:hover {
 	background: var(--vscode-toolbar-hoverBackground, #2d2d30);
@@ -571,4 +656,54 @@
 	outline: none;
 	padding: 1px 4px;
 	margin: 0;
+}
+
+/* ===== Multi-selection ===== */
+/* 选中态与展开态正交：展开用背景，选中用左侧指示条 + 更亮的背景 */
+.session-history-item.selected > .session-history-item-header {
+	background: var(--vscode-list-activeSelectionBackground, #37373d);
+	color: var(--vscode-list-activeSelectionForeground, inherit);
+}
+
+.session-history-item.selected > .session-history-item-header:hover {
+	background: var(--vscode-list-activeSelectionBackground, #37373d);
+}
+
+.session-history-item.selected::before {
+	content: '';
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 2px;
+	background: var(--vscode-focusBorder, #007fd4);
+	pointer-events: none;
+}
+
+/* ===== Delete button ===== */
+.session-history-delete-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s;
+	flex-shrink: 0;
+}
+/* 可见性统一由 .session-history-actions 的 visibility 规则控制（常驻占位） */
+
+.session-history-delete-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground, #2d2d30);
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+/* 多选时（点击会删掉整个选中集合）保持常显的警示色 */
+.session-history-delete-btn.multi {
+	color: var(--vscode-errorForeground, #f48771);
+	opacity: 1;
 }

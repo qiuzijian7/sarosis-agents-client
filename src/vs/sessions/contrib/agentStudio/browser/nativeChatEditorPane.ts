@@ -108,6 +108,25 @@ export class NativeChatEditorPane extends EditorPane {
 	 */
 	static lastFocusedPane: NativeChatEditorPane | null = null;
 
+	/**
+	 * ★ 2026-09-15：存活 pane 列表（构造时入列、dispose 时出列）。
+	 *
+	 * 用途：`lastFocusedPane` 是**跨 pane 静态**引用，而「关闭聊天框独立窗口」会
+	 * 销毁其中的 pane —— 若不清算，该静态字段会继续指向**已销毁**的 pane，主窗口
+	 * 的「Add to Chat」等外部动作就被路由到死 pane 上（静默失效，表现为主窗口
+	 * 聊天框的加文件功能失灵）。dispose 时据此挑一个仍存活的 pane 接管。
+	 * 取**最后一个**存活项 ≈ 最近创建的那个（主窗口的 pane 通常早于独立窗口创建）。
+	 */
+	private static readonly _livePanes: NativeChatEditorPane[] = [];
+
+	/**
+	 * 该 pane 是否仍存活。给跨窗口引用 `lastFocusedPane` 的调用方做失效判定用
+	 * （`Disposable` 不暴露 `isDisposed()`，故以存活列表为准）。
+	 */
+	static isLivePane(pane: NativeChatEditorPane | null | undefined): pane is NativeChatEditorPane {
+		return !!pane && NativeChatEditorPane._livePanes.includes(pane);
+	}
+
 	private _container: HTMLElement | undefined;
 	private _chatPanel: IChatPanel | undefined;
 	/** 多实例调试：每个 pane 的唯一标识（递增计数器），用于日志区分。 */
@@ -131,6 +150,22 @@ export class NativeChatEditorPane extends EditorPane {
 	 * 发送开始 → add；done/error → delete。
 	 */
 	private static readonly _sharedLocalSendSessions = new Set<string>();
+
+	/**
+	 * ★ 2026-09-15：会话锁的**跨 pane 引用计数**（`${agentId}::${sessionId}`
+	 * → 正在显示该 session 的 pane 集合）。
+	 *
+	 * 为什么需要：`AgentChatService` 是**每实例单例**，只持有一把会话锁
+	 * （单个 `_sessionLockUri` + 单个 token），而 `releaseSessionLock()` 会
+	 * **无条件删掉锁文件并停掉 30s 心跳**。于是「多个 pane 显示同一 session」
+	 * （复制式 popout / 同 session 多开聊天框）时，任一 pane 的 dispose 都会把
+	 * **其它 pane 仍在用的锁**一并释放 —— 后果：主窗口的聊天框静默失去锁，
+	 * 另一个 `--instance` 可趁虚接管该 session，主窗口下次 `_updateSessionLock()`
+	 * 时被判为只读（发送被拦截 + 弹告警）。
+	 *
+	 * 这里记录持有者集合：只有集合空了才真正 `releaseSessionLock()`。
+	 */
+	private static readonly _sessionLockHolders = new Map<string, Set<NativeChatEditorPane>>();
 
 	/**
 	 * 本 pane 正在进行本地发送的 sessionId（`''` 表示无 session 的本地发送）。
@@ -205,6 +240,9 @@ export class NativeChatEditorPane extends EditorPane {
 	 * _sendMessageInternal 拦截发送并提示，防止双写覆盖聊天历史。
 	 */
 	private _sessionReadOnly = false;
+
+	/** 本 pane 在 `_sessionLockHolders` 中登记的 key（undefined = 未登记/不持有）。 */
+	private _sessionLockKey: string | undefined;
 
 	// ─── Per-agent input area state persistence keys ─────────────────────────
 	// Store chatMode / provider / model / composerText per agent so switching
@@ -439,6 +477,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, _storageService);
+		NativeChatEditorPane._livePanes.push(this);
 		this._installSanitizeTraceSink();
 		this._installInterruptedStreamPersist(lifecycleService);
 	}
@@ -6001,8 +6040,28 @@ override dispose(): void {
 		this._composerDraftTimer = null;
 		this._saveComposerDraft();
 	}
-	// 释放会话锁（多开）：窗口关闭后另一实例可接管编辑
-	void this._chatService.releaseSessionLock().catch(() => { /* ignore */ });
+	// 释放会话锁（多开）：窗口关闭后另一实例可接管编辑。
+	// ★ 2026-09-15：改为**引用计数**式释放 —— 只有本实例已无其它 pane 显示
+	// 同一 session 时才真正删锁。否则「关闭聊天框独立窗口」会把主窗口那个
+	// 仍在显示同一 session 的聊天框的锁一起删掉（该 pane 静默失锁 ⇒ 另一个
+	// `--instance` 可接管 ⇒ 主窗口下次检查时被判只读）。这正是「关闭独立窗口
+	// 不要影响主窗口聊天框」要求下必须修掉的一环。
+	this._trackSessionLock(undefined);
+
+	// ★ 2026-09-15：清算跨 pane 静态引用。关闭独立窗口会销毁其中的 pane，
+	// 若不清算，`lastFocusedPane` 会继续指向已销毁的 pane ⇒ 主窗口聊天框的
+	// 「Add to Chat」等外部动作被路由到死 pane 上（静默失效）。交回给仍存活的
+	// 另一个 pane（取最后入列者 ≈ 最近创建，通常是主窗口的那个）。
+	const liveIndex = NativeChatEditorPane._livePanes.indexOf(this);
+	if (liveIndex >= 0) {
+		NativeChatEditorPane._livePanes.splice(liveIndex, 1);
+	}
+	if (NativeChatEditorPane.lastFocusedPane === this) {
+		NativeChatEditorPane.lastFocusedPane = NativeChatEditorPane._livePanes.length > 0
+			? NativeChatEditorPane._livePanes[NativeChatEditorPane._livePanes.length - 1]
+			: null;
+		this._logService.info(`[NativeChatEditorPane#${this._paneId}] dispose → lastFocusedPane handed over to ${NativeChatEditorPane.lastFocusedPane ? `pane#${NativeChatEditorPane.lastFocusedPane._paneId}` : 'null'}`);
+	}
 	this._chatPanel = undefined;
 	this._isInitialized = false;
 	super.dispose();
@@ -6018,19 +6077,96 @@ private async _updateSessionLock(): Promise<void> {
 	const sessionId = this._currentSessionId;
 	if (!agentId || !sessionId) {
 		this._sessionReadOnly = false;
-		await this._chatService.releaseSessionLock().catch(() => { /* ignore */ });
+		// ★ 2026-09-15：不再直接 releaseSessionLock()。本 pane 只是暂时没有
+		// session，而同实例很可能还有别的 pane 在显示某个 session（复制式
+		// popout / 多开聊天框）—— 直接释放会把**它们的锁**一起删掉。
+		// 交给引用计数决定是否真释放（旧 key 迁移后无人持有才释放）。
+		this._trackSessionLock(undefined);
 		return;
 	}
+
+	const lockKey = `${agentId}::${sessionId}`;
+
+	// ★ 同实例已有别的 pane 显示同一 session ⇒ 锁已经在本实例手上，无需重复抢。
+	// （`tryAcquireSessionLock` 会**先删旧锁文件再写新锁**，重复抢会制造一个
+	//  「锁文件短暂缺失」的窗口，让另一个实例有机可乘。）
+	if (this._hasSiblingLockHolder(lockKey)) {
+		this._trackSessionLock(lockKey);
+		this._sessionReadOnly = false;
+		return;
+	}
+
 	const res = await this._chatService.tryAcquireSessionLock(agentId, sessionId);
 	if (!res.acquired) {
+		// 另一实例持有 ⇒ 本 pane 不是持有者，**不登记**（dispose 时也就不会误释放别人的锁）。
+		this._trackSessionLock(undefined);
 		this._sessionReadOnly = true;
 		this._notificationService.notify({
 			severity: Severity.Warning,
 			message: `会话正在另一个实例${res.holderInstanceId ? `（实例 ${res.holderInstanceId}）` : ''}中编辑，当前窗口为只读。`,
 		});
 		this._logService.warn(`[NativeChatEditorPane] session ${sessionId} locked by instance ${res.holderInstanceId ?? '?'} → read-only`);
-	} else if (this._sessionReadOnly) {
-		this._sessionReadOnly = false;
+	} else {
+		this._trackSessionLock(lockKey);
+		if (this._sessionReadOnly) {
+			this._sessionReadOnly = false;
+		}
 	}
+}
+
+/**
+ * 把本 pane 的会话锁持有登记从旧 key 迁移到新 key（引用计数）。
+ *
+ * - 旧 key 迁移后若已无任何 pane 持有 ⇒ 才真正 `releaseSessionLock()`；
+ * - `key === undefined` ⇒ 仅解除本 pane 的登记（「暂时无 session」与 dispose 都走这里）。
+ *
+ * 调用方：`_updateSessionLock()`（每次会话激活）与 `dispose()`。
+ */
+private _trackSessionLock(key: string | undefined): void {
+	const previous = this._sessionLockKey;
+	if (previous === key) {
+		return;
+	}
+	this._sessionLockKey = key;
+
+	if (previous) {
+		const holders = NativeChatEditorPane._sessionLockHolders.get(previous);
+		holders?.delete(this);
+		const noHolderLeft = !!holders && holders.size === 0;
+		if (noHolderLeft) {
+			NativeChatEditorPane._sessionLockHolders.delete(previous);
+			// ⚠ 只有「本 pane 不再持有任何 session」（key === undefined）时才真正释放。
+			// 切到**另一个** session 时，调用方 `_updateSessionLock()` 已经通过
+			// `tryAcquireSessionLock` 把服务端的锁换成新 session 了（该服务只持有
+			// 一把锁）——此时再 release 会把**刚拿到的新锁**删掉。
+			if (key === undefined) {
+				// 本实例已无 pane 显示该 session ⇒ 交还锁，另一实例可接管编辑
+				void this._chatService.releaseSessionLock().catch(() => { /* ignore */ });
+			}
+		}
+	}
+
+	if (key) {
+		let holders = NativeChatEditorPane._sessionLockHolders.get(key);
+		if (!holders) {
+			holders = new Set<NativeChatEditorPane>();
+			NativeChatEditorPane._sessionLockHolders.set(key, holders);
+		}
+		holders.add(this);
+	}
+}
+
+/** 本实例是否已有**其它** pane 在显示该 session（有 ⇒ 无需重复抢锁）。 */
+private _hasSiblingLockHolder(key: string): boolean {
+	const holders = NativeChatEditorPane._sessionLockHolders.get(key);
+	if (!holders) {
+		return false;
+	}
+	for (const pane of holders) {
+		if (pane !== this) {
+			return true;
+		}
+	}
+	return false;
 }
 }

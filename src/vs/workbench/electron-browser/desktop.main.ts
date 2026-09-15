@@ -126,7 +126,8 @@ export class DesktopMain extends Disposable {
 		this.applyWindowZoomLevel(services.configurationService);
 
 		// Create Workbench
-		const workbench = new Workbench(mainWindow.document.body, {
+		const WorkbenchCtor = this.getWorkbenchConstructor();
+		const workbench = new WorkbenchCtor(mainWindow.document.body, {
 			extraClasses: this.getExtraClasses(),
 			resetLayout: this.configuration['disable-layout-restore'] === true
 		}, services.serviceCollection, services.logService);
@@ -359,7 +360,18 @@ export class DesktopMain extends Disposable {
 		return toWorkspaceIdentifier(this.configuration.backupPath, environmentService.isExtensionDevelopment);
 	}
 
-	private async createWorkspaceService(
+	/**
+	 * ★ [Saros] `protected`（原为 `private`）—— 「IDE 底座 + Agent 布局」方案要覆写它。
+	 *
+	 * 本方法返回的**同一个** `WorkspaceService` 会被同时注册成两个 id：
+	 * `IWorkspaceContextService` 与 `IWorkbenchConfigurationService`（见 `initServices()`）。
+	 * 而方案 C 的配置隔离（不读 `<folder>/.vscode/settings.json`、也不往那里写）目前只存在于
+	 * sessions 侧的 `ConfigurationService` 里 —— 它随 `SessionsMain` 的服务图一起被换掉。
+	 *
+	 * 覆写本方法是把那套隔离**搬回标准底座**的**唯一**接缝：一处覆写即同时保住
+	 * workspace context 与 configuration 两侧的行为。
+	 */
+	protected async createWorkspaceService(
 		workspace: IAnyWorkspaceIdentifier,
 		environmentService: INativeWorkbenchEnvironmentService,
 		userDataProfileService: IUserDataProfileService,
@@ -410,6 +422,25 @@ export class DesktopMain extends Disposable {
 
 			return keyboardLayoutService;
 		}
+	}
+
+	/**
+	 * ★ [Saros] Workbench 实现的**选择点** —— 默认返回 upstream 的 `Workbench`。
+	 *
+	 * 桌面侧原本是硬编码 `new Workbench(...)`（`web.main.ts:257` 早就有同款工厂钩子）。
+	 * 「IDE 底座 + Agent 布局」靠它把标准窗口换成 `AgentLayoutWorkbench`：**复用标准
+	 * Workbench 的 services 与启动流程，只替换布局与额外 part**。
+	 *
+	 * ★ 为什么返回**构造器**而不是**实例**：`configuration` 与 `getExtraClasses()`
+	 * 都是本类的 `private`，子类拿不到 ⇒ 若让子类自己 `new`，它就没法复刻
+	 * `extraClasses` / `resetLayout` 这些选项，只能靠"复制粘贴 + 日后漂移"。
+	 * 返回构造器则选项仍由本类拼装，子类只换实现。
+	 *
+	 * ⚠ 子类只应改变布局，不应改变服务图：parent / `serviceCollection` /
+	 * `logService` 全部由本类原样透传，子类无法也不应干预。
+	 */
+	protected getWorkbenchConstructor(): typeof Workbench {
+		return Workbench;
 	}
 }
 

@@ -351,8 +351,21 @@ export class Workbench extends Layout {
 			{ id: Parts.EDITOR_PART, role: 'main', classes: ['editor'], options: { restorePreviousState: this.willRestoreEditors() } },
 			{ id: Parts.PANEL_PART, role: 'none', classes: ['panel', 'basepanel', positionToString(this.getPanelPosition())] },
 			{ id: Parts.AUXILIARYBAR_PART, role: 'none', classes: ['auxiliarybar', 'basepanel', this.getSideBarPosition() === Position.LEFT ? 'right' : 'left'] },
-			{ id: Parts.STATUSBAR_PART, role: 'status', classes: ['statusbar'] }
+			{ id: Parts.STATUSBAR_PART, role: 'status', classes: ['statusbar'] },
+
+			// ★ [Saros] 子类可追加部件（agents 布局的 `AGENT_EDITOR_PART`）。
+			...this.getAdditionalPartsToRender()
 		]) {
+			// ★ [Saros] 子类可跳过自己布局里没有的部件。
+			//
+			// `getPart()` 对未注册的部件**抛错**（不是返回 undefined），所以
+			// "跳过"必须发生在这里。agents 布局没有 activity bar（图标条并入了
+			// sidebar 部件），不跳过就会在启动时抛 `Unknown part ...activitybar`
+			// 并中断整个 startup（连带 `createWorkbenchLayout()` 都不执行）。
+			if (!this.shouldRenderPart(id)) {
+				continue;
+			}
+
 			const partContainer = this.createPart(id, role, classes);
 
 			mark(`code/willCreatePart/${id}`);
@@ -365,6 +378,20 @@ export class Workbench extends Layout {
 
 		// Add Workbench to DOM
 		this.parent.appendChild(this.mainContainer);
+	}
+
+	/**
+	 * ★ [Saros] 追加要渲染的部件 —— 默认空数组，标准窗口行为不变。
+	 *
+	 * ⚠ 这里是**唯一**调用 `part.create(parent)` 的地方（`renderWorkbench()`），
+	 * 而 `EditorPart` 的内部 grid 正是在 `create()` 里建立的 ⇒ 只把部件
+	 * `registerPart`/`createInstance` 而不经此列表渲染，grid 解出来时会拿到一个
+	 * 未初始化的视图（`onDidChange` getter 读 undefined）而崩。
+	 *
+	 * `id` 必须保持 `Parts` 类型（不能放宽成 `string`），否则 `getPart(id)` 编译不过。
+	 */
+	protected getAdditionalPartsToRender(): { id: Parts; role: string; classes: string[]; options?: { restorePreviousState?: boolean } }[] {
+		return [];
 	}
 
 	private createPart(id: string, role: string, classes: string[]): HTMLElement {

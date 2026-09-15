@@ -84,6 +84,20 @@ export function cleanTracePreview(raw: string, maxLen: number): string {
 	return s.length > maxLen ? s.slice(0, maxLen - 1) + '…' : s;
 }
 
+/** 行内（单行）trace 摘要的字符预算——与 hover tip 的完整内容区分。 */
+export const TRACE_ROW_SINGLE_LINE_MAX = 120;
+
+/**
+ * 生成 trace 行的**单行**摘要（配合 CSS ellipsis 使用）。
+ *
+ * 与 hover tip 的分工：行内只给「一眼可辨」的短摘要，完整参数/结果放 tip。
+ * 因此这里用一个远小于 tip 的预算，并且**不再追加省略号**——截断处由 CSS
+ * `text-overflow: ellipsis` 视觉补全（若在此加 `…`，字符会与 UI 省略号叠加）。
+ */
+export function shortenTraceDetail(raw: string): string {
+	return cleanTracePreview(raw, TRACE_ROW_SINGLE_LINE_MAX).replace(/…$/, '');
+}
+
 // ── 动态表情包三阶段（画布 Saros.AnimatedEmoji）─────────────────────────────
 /**
  * 阶段链定义：与执行器 `run_scope`（video/matte/gif）及快照归档 port

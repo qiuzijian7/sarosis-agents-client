@@ -254,10 +254,14 @@ protected override _renderHeader(): void {
 			}),
 		);
 
-		// 2. New session (+)
+		// 2. New session —— 图标 = 气泡（左下）+ 右上角小加号。
+		// 2026-09-15 用户选定（备选对照页 `.codebuddy/mockups/new-chat-icon-options.html` 方案 F）：
+		// 纯加号（原 `M12 5v14M5 12h14`）与「新建任何东西」无区分；气泡给"聊天"语义，
+		// 加号独立在右上角 ⇒ 15px 显示下两个形状仍能分辨（内嵌加号会糊成一团）。
+		// 仍需保持与相邻按钮同一套描边风格（viewBox 24 / stroke 2 / round，见 _appendHeaderActionBtn）。
 		const newBtn = this._appendHeaderActionBtn(actions, {
 			title: '新建会话',
-			svgPath: 'M12 5v14M5 12h14',
+			svgPath: 'M16 15a2 2 0 0 1-2 2H7l-3 3V8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2zM19.5 2.25v3.5M17.75 4h3.5',
 		});
 		this._register(
 			addDisposableListener(newBtn, EventType.CLICK, () => {

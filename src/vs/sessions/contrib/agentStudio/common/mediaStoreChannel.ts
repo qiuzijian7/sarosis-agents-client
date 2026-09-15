@@ -38,6 +38,8 @@ export interface MediaAsset {
 	readonly isDeleted: boolean;
 	readonly board?: string;
 	readonly favorite: boolean;
+	/** 用户标签（去重后的字符串集合；无标签时缺省）。 */
+	readonly tags?: readonly string[];
 	/** 本地镜像文件的绝对路径（仅已落盘资产；其余为 URL 引用） */
 	readonly filePath?: string;
 }
@@ -67,6 +69,8 @@ export interface MediaListFilter {
 	query?: string;
 	board?: string;
 	favorite?: boolean;
+	/** 精确匹配某个标签（JSON 数组元素级匹配，非子串）。 */
+	tag?: string;
 	/** 默认 false：画廊只列未删除资产 */
 	includeDeleted?: boolean;
 	limit?: number;
@@ -108,6 +112,15 @@ export interface IMediaBackend {
 	restore(id: string): Promise<void>;
 	setFavorite(id: string, favorite: boolean): Promise<void>;
 	setBoard(id: string, board: string | null): Promise<void>;
+	/** 覆写资产的标签集合（空数组即清空）。 */
+	setTags(id: string, tags: string[]): Promise<void>;
+	/**
+	 * 本地化：把「仅 URL 引用」的资产下载并落盘到媒体库目录，返回更新后的记录。
+	 * 幂等：已落盘 / 非 http(s) 引用 ⇒ 原样返回。
+	 */
+	localize(id: string): Promise<MediaAsset>;
+	/** 列出全部已使用的标签（按出现次数降序）。 */
+	listTags(): Promise<string[]>;
 	stats(): Promise<MediaStats>;
 	/** 物理删除回收站资产（行 + 文件），返回清理数。 */
 	purgeDeleted(): Promise<{ count: number; freedBytes: number }>;

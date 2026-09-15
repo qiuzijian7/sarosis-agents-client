@@ -178,7 +178,7 @@ suite('SessionsTasksService', () => {
 	// --- getSessionTasks ---
 
 	test('getSessionTasks returns tasks with inAgents: true from worktree', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
 			makeTask('lint', 'npm run lint', false),
@@ -209,7 +209,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('getSessionTasks reads from repository when no worktree', async () => {
-		const repoTasksUri = URI.parse('file:///repo/.vscode/tasks.json');
+		const repoTasksUri = URI.parse('file:///repo/.sarosworkspace/agent-tasks.json');
 		fileContents.set(repoTasksUri.toString(), tasksJsonContent([
 			makeTask('serve', 'npm run serve', true),
 			makeTask('lint', 'npm run lint', false),
@@ -225,7 +225,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('getSessionTasks does not re-read files on repeated calls for the same folder', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		const userTasksUri = URI.from({ scheme: userSettingsUri.scheme, path: '/user/tasks.json' });
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
@@ -262,7 +262,7 @@ suite('SessionsTasksService', () => {
 	// --- getNonSessionTasks ---
 
 	test('getNonSessionTasks returns only tasks without inAgents', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
 			makeTask('lint', 'npm run lint', false),
@@ -280,7 +280,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('getNonSessionTasks reads from repository when no worktree', async () => {
-		const repoTasksUri = URI.parse('file:///repo/.vscode/tasks.json');
+		const repoTasksUri = URI.parse('file:///repo/.sarosworkspace/agent-tasks.json');
 		fileContents.set(repoTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
 			makeTask('lint', 'npm run lint', false),
@@ -295,7 +295,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('getNonSessionTasks preserves the source target for workspace and user tasks', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		const userTasksUri = URI.from({ scheme: userSettingsUri.scheme, path: '/user/tasks.json' });
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('workspaceTask', 'npm run workspace'),
@@ -340,7 +340,7 @@ suite('SessionsTasksService', () => {
 	// --- addTaskToSessions ---
 
 	test('addTaskToSessions writes inAgents: true to the matching task index', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build'),
 			makeTask('test', 'npm test'),
@@ -355,7 +355,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('addTaskToSessions does nothing when task label not found', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build'),
 		]));
@@ -367,7 +367,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('addTaskToSessions writes to repository and does not commit when no worktree', async () => {
-		const repoTasksUri = URI.parse('file:///repo/.vscode/tasks.json');
+		const repoTasksUri = URI.parse('file:///repo/.sarosworkspace/agent-tasks.json');
 		fileContents.set(repoTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build'),
 			makeTask('test', 'npm test'),
@@ -382,7 +382,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('addTaskToSessions updates runOptions when provided', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build'),
 		]));
@@ -397,7 +397,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('addTaskToSessions clears runOptions when default is requested', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			{ ...makeTask('build', 'npm run build'), runOptions: { runOn: 'worktreeCreated' } },
 		]));
@@ -414,7 +414,7 @@ suite('SessionsTasksService', () => {
 	// --- createAndAddTask ---
 
 	test('createAndAddTask writes new task with inAgents: true', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('existing', 'echo hi'),
 		]));
@@ -434,7 +434,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('createAndAddTask writes to repository and does not commit when no worktree', async () => {
-		const repoTasksUri = URI.parse('file:///repo/.vscode/tasks.json');
+		const repoTasksUri = URI.parse('file:///repo/.sarosworkspace/agent-tasks.json');
 		fileContents.set(repoTasksUri.toString(), tasksJsonContent([
 			makeTask('existing', 'echo hi'),
 		]));
@@ -453,7 +453,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('createAndAddTask writes worktreeCreated run option when requested', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([]));
 
 		const session = makeSession({ worktree: worktreeUri, repository: repoUri });
@@ -467,7 +467,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('createAndAddTask writes a custom label when provided', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([]));
 
 		const session = makeSession({ worktree: worktreeUri, repository: repoUri });
@@ -484,7 +484,7 @@ suite('SessionsTasksService', () => {
 	// --- removeTask ---
 
 	test('removeTask deletes the matching task entry', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
 			makeTask('test', 'npm test', true),
@@ -507,7 +507,7 @@ suite('SessionsTasksService', () => {
 	// --- updateTask ---
 
 	test('updateTask replaces an existing task in place', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
 			makeTask('test', 'npm test', true),
@@ -539,7 +539,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('updateTask moves a task between workspace and user storage', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		const userTasksUri = URI.from({ scheme: userSettingsUri.scheme, path: '/user/tasks.json' });
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
@@ -602,7 +602,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('updateTask keeps the pinned task in sync when the label changes', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
 		]));
@@ -620,7 +620,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('removeTask clears the pinned task when deleting the pinned entry', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
 		]));
@@ -687,7 +687,7 @@ suite('SessionsTasksService', () => {
 	// --- getSessionTasksOnce / getAllTasks ---
 
 	test('getSessionTasksOnce returns inAgents tasks from both workspace and user targets', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
 			makeTask('lint', 'npm run lint', false),
@@ -707,7 +707,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('getSessionTasksOnce does not touch the shared sessionTasks observable', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
 		]));
@@ -728,7 +728,7 @@ suite('SessionsTasksService', () => {
 	});
 
 	test('getAllTasks returns all tasks regardless of inAgents flag', async () => {
-		const worktreeTasksUri = URI.parse('file:///worktree/.vscode/tasks.json');
+		const worktreeTasksUri = URI.parse('file:///worktree/.sarosworkspace/agent-tasks.json');
 		fileContents.set(worktreeTasksUri.toString(), tasksJsonContent([
 			makeTask('build', 'npm run build', true),
 			makeTask('lint', 'npm run lint', false),

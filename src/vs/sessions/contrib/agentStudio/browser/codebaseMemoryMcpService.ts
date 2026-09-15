@@ -146,6 +146,16 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 
 	// Fallback config loaded from .code-workspace files on initialization
 	private _workspaceFileConfig: Partial<IIndexConfig> | null = null;
+	/**
+	 * 「**已尝试加载**」标记（2026-09-15 修）。
+	 *
+	 * ★ **不能用 `_workspaceFileConfig === null` 代替**：`.code-workspace` 里没有
+	 * `codebase-memory` key 时（本仓就是这种）它**永远是 null** ⇒ `ensureConfigReady()`
+	 * 每次调用都重跑整个加载 —— 列 root 的 89 个子项 + 读 4.4KB + JSONC 解析 +
+	 * 300 字符 preview 日志。实测启动阶段被打 3 次（3 个 folder 各自 auto-index 读配置），
+	 * 之后每次渲染「代码库索引」面板还会再来一次（用户日志里同一段连续出现 3 遍）。
+	 */
+	private _workspaceFileConfigLoaded = false;
 	private _workspaceConfigReady: Promise<void>;
 
 	constructor(
@@ -177,6 +187,7 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => {
 			this.logService.info('[CodebaseMemory] workspace folders changed, reloading .code-workspace config');
 			this._workspaceFileConfig = null; // 清空旧配置
+			this._workspaceFileConfigLoaded = false; // 允许 ensureConfigReady 重新加载
 			this._workspaceConfigReady = this._initWorkspaceFileConfig();
 		}));
 
@@ -186,24 +197,39 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 
 	/** 确保 .code-workspace 配置已加载完成。在 UI 面板中读取配置前调用。 */
 	async ensureConfigReady(): Promise<void> {
-		await this._workspaceConfigReady;
-		// 如果首次加载时没有工作区（启动时），则补一次加载
-		if (this._workspaceFileConfig === null) {
-			const folders = this.workspaceContextService.getWorkspace().folders;
-			if (folders.length > 0) {
-				this.logService.info('[CodebaseMemory] ensureConfigReady: workspace now available, retrying config load');
-				this._workspaceConfigReady = this._initWorkspaceFileConfig();
-				await this._workspaceConfigReady;
-			}
+		// 循环 + 复用 in-flight promise：多个调用方（面板渲染 / 每个 folder 的 auto-index）
+		// 可能同时进来，若各自触发一次重试就会**并发重复加载**同一个文件。
+		for (;;) {
+			const inFlight = this._workspaceConfigReady;
+			await inFlight;
+			// 判据是「**已尝试加载**」而不是 `_workspaceFileConfig === null`
+			// —— 后者在「.code-workspace 里没有 codebase-memory key」时永远为 null，
+			// 会让本方法每次调用都重跑一次完整加载（见 `_workspaceFileConfigLoaded` 注释）。
+			if (this._workspaceFileConfigLoaded) { return; }
+			// 首次加载时还没有工作区（应用启动即实例化本服务）→ 此时无法读取，等下次调用
+			if (this.workspaceContextService.getWorkspace().folders.length === 0) { return; }
+			this.logService.info('[CodebaseMemory] ensureConfigReady: workspace now available, retrying config load');
+			this._workspaceConfigReady = this._initWorkspaceFileConfig();
 		}
 	}
 
 	/**
-/**
 	 * 异步加载工作区 .code-workspace 文件中的 codebase-memory 配置。
 	 * 仅在 workspace storage 中没有已保存配置时作为回退使用。
+	 *
+	 * 包装层：**无论「读到配置 / 文件里没有 key / 读取失败」，都置位
+	 * `_workspaceFileConfigLoaded`**（放 finally，异常路径也置位）——
+	 * 否则「没有 key」这条正常路径会让 `ensureConfigReady()` 无限重试。
 	 */
 	private async _initWorkspaceFileConfig(): Promise<void> {
+		try {
+			await this._doInitWorkspaceFileConfig();
+		} finally {
+			this._workspaceFileConfigLoaded = true;
+		}
+	}
+
+	private async _doInitWorkspaceFileConfig(): Promise<void> {
 		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: starting');
 		const folders = this.workspaceContextService.getWorkspace().folders;
 		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: folders.length=' + folders.length);
@@ -265,7 +291,9 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 				const content = await this.fileService.readFile(wsFile.resource);
 				const text = content.value.toString();
 				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: file size=' + text.length + ' bytes');
-				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: file preview: ' + text.substring(0, 300));
+				// preview 降级为 trace：300 字符 + 换行会把 info 日志撑成多行，
+				// 排查时反而淹没关键行（与上方 children 明细同一口径：info 只记数量）。
+				this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: file preview: ' + text.substring(0, 300));
 				// VS Code .code-workspace 是 JSONC（支持注释 + 尾逗号），严格 JSON.parse 会
 				// 在含注释时失败（日志 2026-08-09: Expected property name or '}' in JSON at position 104）。
 				// 用 vs/base/common/json 的容错解析器（默认允许注释与尾逗号）。

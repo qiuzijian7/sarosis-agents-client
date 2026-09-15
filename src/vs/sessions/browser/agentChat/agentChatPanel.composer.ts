@@ -188,7 +188,7 @@ protected override _renderInputArea(): void {
 	);
 
 
-		// Hidden file input (for attach button + paste)
+		// Hidden file input — feeds the shared _addFiles pipeline (drag & drop / paste)
 		this._fileInput = append(this._container, $("input.chat-file-input")) as HTMLInputElement;
 		this._fileInput.type = "file";
 		this._fileInput.multiple = true;
@@ -205,24 +205,48 @@ protected override _renderInputArea(): void {
 		const dragOverlay = append(this._container, $('.chat-drag-overlay'));
 		dragOverlay.style.display = 'none';
 		let dragCounter = 0;
+		const hideDragOverlay = () => {
+			dragCounter = 0;
+			dragOverlay.style.display = 'none';
+		};
+		/**
+		 * 只有「从聊天框之外拖入文件」才点亮遮罩。
+		 *
+		 * 面板内部也存在可拖拽元素（任务队列 `.tbp-task-item`），它们挂在同一个
+		 * `.chat-container` 上，其 dragenter 会冒泡到这里。若不做类型判定，
+		 * 拖动任务项就会误显示「拖放文件」遮罩。内部拖拽只写入 'text/plain'，
+		 * 故以 'Files' 是否存在作为唯一判据。
+		 */
+		const isFileDrag = (e: DragEvent): boolean => {
+			const types = e.dataTransfer?.types;
+			if (!types) { return false; }
+			return Array.from(types).indexOf('Files') !== -1;
+		};
 		this._register(addDisposableListener(this._container, 'dragenter', (e: DragEvent) => {
+			if (!isFileDrag(e)) { return; }
 			e.preventDefault();
 			dragCounter++;
 			dragOverlay.style.display = 'flex';
 		}));
 		this._register(addDisposableListener(this._container, 'dragover', (e: DragEvent) => {
+			if (!isFileDrag(e)) { return; }
 			e.preventDefault();
 			if (e.dataTransfer) { e.dataTransfer.dropEffect = 'copy'; }
 		}));
 		this._register(addDisposableListener(this._container, 'dragleave', () => {
 			dragCounter--;
-			if (dragCounter <= 0) { dragCounter = 0; dragOverlay.style.display = 'none'; }
+			if (dragCounter <= 0) { hideDragOverlay(); }
+		}));
+		// dragend 兜底：拖拽在面板外结束时不会有配对的 dragleave，
+		// 计数器会残留导致遮罩卡住不消失。
+		this._register(addDisposableListener(this._container, 'dragend', () => {
+			hideDragOverlay();
 		}));
 		this._register(addDisposableListener(this._container, 'drop', (e: DragEvent) => {
+			if (!isFileDrag(e)) { return; }
 			e.preventDefault();
 			e.stopPropagation();
-			dragCounter = 0;
-			dragOverlay.style.display = 'none';
+			hideDragOverlay();
 			const dt = e.dataTransfer;
 			if (!dt) { return; }
 			// 1. 文件夹拖放：出于安全浏览器不暴露目录内容（dt.files 为空），
@@ -497,27 +521,6 @@ protected override _renderInputArea(): void {
 		// Toolbar
 		const toolbar = append(composerBox, $(".chat-composer-toolbar"));
 		const leftToolbar = append(toolbar, $(".chat-toolbar-left"));
-
-		// Attach button — triggers file input dialog
-		const attachBtn = this._appendToolbarBtn(leftToolbar, {
-			title: "上传附件",
-			svgPath:
-				"M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13",
-		});
-		this._register(addDisposableListener(attachBtn, EventType.CLICK, (e) => {
-			e.stopPropagation();
-			this._fileInput?.click();
-		}));
-
-		// Voice button
-		this._appendToolbarBtn(leftToolbar, {
-			title: "语音输入",
-			svgPath:
-				"M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8",
-		});
-
-		// Divider
-		append(leftToolbar, $(".chat-toolbar-divider"));
 
 		// ChatMode 下拉框（2026-08-21，替代旧的「干活/纯聊」布尔开关）：
 		// Craft / Ask / Plan 三档，仅 Plan 档位向 LLM 暴露 plan_* 工具。

@@ -119,9 +119,9 @@ const CSS_TEXT = `
 .cbm-lang-badge.go { background: rgba(128,160,255,0.15); color: #80a0ff; }
 .cbm-lang-badge.rs { background: rgba(206,145,120,0.15); color: #ce9178; }
 .cbm-lang-badge.other { background: rgba(197,134,192,0.15); color: #c586c0; }
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--vscode-widget-border); border-radius: 3px; }
+/* 滚动条不再单独定义：统一由 sessions 全局样式（sessions/browser/media/style.css）提供。
+   这里曾写**无前缀**的 ::-webkit-scrollbar { width: 6px }，那是全局覆盖 ⇒
+   会把整个窗口的原生滚动条都压成 6px 细条（媒体库那根细白条的真凶）。 */
 `;
 
 export class CodebaseMemoryDetailEditorPane extends EditorPane {

@@ -130,8 +130,6 @@ export abstract class CompositePart<T extends Composite, MementoType extends obj
 	}
 
 	private doOpenComposite(id: string, focus: boolean = false): Composite | undefined {
-		console.log('[CompositePart] doOpenComposite called, id:', id, 'focus:', focus, 'element exists:', !!this.element);
-
 		// Use a generated token to avoid race conditions from long running promises
 		const currentCompositeOpenToken = defaultGenerator.nextId();
 		this.currentCompositeOpenToken = currentCompositeOpenToken;
@@ -146,11 +144,9 @@ export abstract class CompositePart<T extends Composite, MementoType extends obj
 
 		// Create composite
 		const composite = this.createComposite(id, true);
-		console.log('[CompositePart] doOpenComposite: composite created, id:', composite?.getId(), 'token match:', this.currentCompositeOpenToken === currentCompositeOpenToken);
 
 		// Check if another composite opened meanwhile and return in that case
 		if ((this.currentCompositeOpenToken !== currentCompositeOpenToken) || (this.activeComposite && this.activeComposite.getId() !== composite.getId())) {
-			console.log('[CompositePart] doOpenComposite: token mismatch, returning undefined');
 			return undefined;
 		}
 
@@ -218,8 +214,6 @@ export abstract class CompositePart<T extends Composite, MementoType extends obj
 	}
 
 	protected showComposite(composite: Composite): void {
-		console.log('[CompositePart] showComposite called, id:', composite.getId());
-
 		// Remember Composite
 		this.activeComposite = composite;
 
@@ -523,8 +517,14 @@ export abstract class CompositePart<T extends Composite, MementoType extends obj
 		const layoutResult = super.layoutContents(width, height);
 		this.contentAreaSize = Dimension.lift(layoutResult.contentSize);
 
-		// Debug: trace layout dimensions
-		console.log(`[CompositePart] layout: width=${width}, height=${height}, titleSize=${layoutResult.titleSize.height}, headerSize=${layoutResult.headerSize.height}, footerSize=${layoutResult.footerSize.height}, contentSize=${this.contentAreaSize.height}x${this.contentAreaSize.width}, compositeId=${this.activeComposite?.getId()}`);
+		// ★ 布局日志改为**按需开启**（2026-09-15 精简）。
+		// 这条是排查「几何量不对」的**关键诊断** ✓ —— 修「侧栏底部留白」正是靠它定位到
+		// `contentSize` 被 `PartLayout` 白扣 35px（title/header 各 35 ✓，见 MEMORY.md 第 19 条）✓。
+		// 但它**每次布局都打** ✗（窗口缩放 / 折叠展开 / 侧栏重排都会触发 ⇒ 刷屏 ✓）
+		// ⇒ 默认静默；需要时在 DevTools 执行 `globalThis.__sarosLayoutDebug = true` 即可恢复 ✓。
+		if ((globalThis as { __sarosLayoutDebug?: boolean }).__sarosLayoutDebug) {
+			console.log(`[CompositePart] layout: width=${width}, height=${height}, titleSize=${layoutResult.titleSize.height}, headerSize=${layoutResult.headerSize.height}, footerSize=${layoutResult.footerSize.height}, contentSize=${this.contentAreaSize.height}x${this.contentAreaSize.width}, compositeId=${this.activeComposite?.getId()}`);
+		}
 
 		// Layout composite
 		this.activeComposite?.layout(this.contentAreaSize);

@@ -44,8 +44,24 @@ export interface IWorktreeCheckpointService {
 	getCheckpoints(sessionId: string, worktreePath: string): Promise<readonly IWorktreeCheckpoint[]>;
 
 	/**
+	 * ★ 2026-09-15：列出**该 worktree 上所有** checkpoint（不限 session）。
+	 *
+	 * 为什么需要它：{@link getCheckpoints} 要求调用方**已知 sessionId**，而 Worktree 视图
+	 * 并不知道（视图里创建 checkpoint 时用的是 `sessionId = item.path` 这个占位，
+	 * 见 `worktreeView.ts` 的 TODO）。用户想从 UI 选一个还原点，就必须能**按 worktree 反查**。
+	 *
+	 * ref 形态 `refs/vssaros/checkpoints/<sessionId>/<name>` ⇒ 从 ref 名解析出 sessionId
+	 * 填进 {@link IWorktreeCheckpoint.sessionId}。
+	 */
+	listCheckpointsForWorktree(worktreePath: string): Promise<readonly IWorktreeCheckpoint[]>;
+
+	/**
 	 * Roll back a worktree to a specific checkpoint.
-	 * Uses `git reset --hard` to restore the checkpoint state.
+	 *
+	 * ★ 2026-09-15 实现变更：**不再用 `git reset --hard`**（那会移动 HEAD/当前分支，且不还原
+	 * 快照里的未跟踪文件），改用
+	 * `git restore --source=<ref> --worktree --staged -- .` —— 还原工作树与暂存区，
+	 * 但**不动 HEAD / 分支**。
 	 *
 	 * @param worktreePath The worktree path
 	 * @param checkpointRef The checkpoint ref (e.g., "refs/vssaros/checkpoints/{sessionId}/baseline")
@@ -73,4 +89,10 @@ export interface IWorktreeCheckpoint {
 	timestamp: number;
 	/** Whether this is a baseline checkpoint */
 	isBaseline: boolean;
+	/**
+	 * ★ 2026-09-15：该 checkpoint 所属的 session id（从 ref 名解析）。
+	 * 由 {@link IWorktreeCheckpointService.listCheckpointsForWorktree} 填充 ——
+	 * 按 worktree 反查时，多条记录可能来自不同 session，UI 需要能区分。
+	 */
+	sessionId?: string;
 }

@@ -952,3 +952,28 @@
 		opacity: 1;
 	}
 }
+
+/* ── 全局滚动条：统一为 VS Code 观感 ──────────────────────────────────
+   原生 `overflow: auto` 容器**不会**继承 monaco 的自定义滚动条（那是 `.scrollbar`
+   元素，靠 JS 维护），所以必须在这里给 webkit 伪元素兜底。
+
+   ⚠ 各 pane 请勿再写**无前缀**的 `::-webkit-scrollbar` —— 那是全局覆盖，
+     会污染整个窗口（曾有一个 pane 写死 6px，把全窗口的原生滚动条都压成细白条）。
+     需要特化时请带容器类前缀。 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, .4));
+	border-radius: 5px;
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, .7));
+	background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:active {
+	background: var(--vscode-scrollbarSlider-activeBackground, rgba(191, 191, 191, .4));
+	background-clip: padding-box;
+}
+::-webkit-scrollbar-corner { background: transparent; }

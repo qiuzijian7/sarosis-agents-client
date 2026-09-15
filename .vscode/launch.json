@@ -260,7 +260,11 @@
 			"linux": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
-			"port": 9334,
+			// [Saros] 同样从 9334 改到 **9335**（与 `Launch VS Code Agents Internal` 一致）。
+			// 原因：F5 会**重复上一次选的配置**，而 9334 上留着一个残留监听
+			// （`netstat` LISTENING 但 `wmic` 查该 PID 已 `No Instance(s) Available`）。
+			// 两条都改到 9335 ⇒ 无论 F5 跑哪条，报错端口都能指出它跑的是哪条配置。
+			"port": 9335,
 			"timeout": 0,
 			"env": {
 				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
@@ -271,7 +275,7 @@
 			"killBehavior": "polite",
 			"runtimeArgs": [
 				"--inspect=5875",
-				"--remote-debugging-port=9334",
+				"--remote-debugging-port=9335",
 				"--no-cached-data",
 				"--open-devtools",
 				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
@@ -308,7 +312,12 @@
 			"linux": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
-			"port": 9334,
+			// [Saros] 端口从 9334 改成 **9335**：9334 上留着一个**残留监听**
+			// （`netstat` 显示 LISTENING，但 `wmic` 查该 PID 已 `No Instance(s) Available`），
+			// 会让 F5 报 `Could not connect to debug target at http://localhost:9334:
+			// Could not find any debuggable target`。
+			// ⚠ 注意另一条配置 `Launch VS Code Internal` 仍在用 9334，两者**不要共用**。
+			"port": 9335,
 			"timeout": 0,
 			"env": {
 				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
@@ -319,7 +328,7 @@
 			"killBehavior": "forceful",
 			"runtimeArgs": [
 				"--inspect=5875",
-				"--remote-debugging-port=9334",
+				"--remote-debugging-port=9335",
 				"--no-cached-data",
 				"--open-devtools",
 				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",

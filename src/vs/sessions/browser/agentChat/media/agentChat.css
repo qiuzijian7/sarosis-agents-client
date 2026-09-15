@@ -835,7 +835,9 @@
 	border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.15));
 	border-radius: 8px;
 	overflow: hidden;
-	margin: 6px 14px;
+	/* 下边距 2px（原 6px）：任务队列紧邻输入框，两者之间的空隙由
+	   .chat-input-area 的 padding-top(10px) 提供，此处再叠加 6px 会显得过松。 */
+	margin: 6px 14px 2px;
 	transition: max-height 0.25s ease;
 	flex-shrink: 0;
 	max-height: 340px;
@@ -2366,16 +2368,25 @@
 .subagent-card.enhanced .subagent-card-trace-list {
 	display: flex; flex-direction: column; gap: 3px;
 }
+/* 2026-09-15：`.enhanced` 分支同样收敛为单行 + ellipsis（与下方 mockup 版保持一致），
+   完整内容经 hover tip 展示。 */
 .subagent-card.enhanced .subagent-card-trace-item {
-	display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+	display: flex; align-items: center; gap: 8px;
 	font-size: 12px; line-height: 1.5;
+	white-space: nowrap; overflow: hidden;
 }
 .subagent-card.enhanced .subagent-card-trace-name {
 	color: var(--ec-text-primary, #e6edf3); font-weight: 500;
 	font-family: var(--vscode-editor-font-family, 'Cascadia Code', monospace);
+	flex: 0 0 auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis;
+}
+.subagent-card.enhanced .subagent-card-trace-detail {
+	flex: 1 1 auto; min-width: 0;
+	white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .subagent-card.enhanced .subagent-card-trace-meta {
 	color: var(--ec-text-muted, #6e7681); font-size: 11px;
+	flex: 0 0 auto;
 }
 .subagent-card.enhanced .subagent-card-progress {
 	margin: 0 0 8px; font-size: 12px; font-style: italic;
@@ -2388,8 +2399,8 @@
 .subagent-card.enhanced .subagent-exec-summary { font-size: 11.5px; color: var(--ec-text-secondary, #8b949e); white-space: nowrap; }
 .subagent-card.enhanced .subagent-exec-summary-label { font-weight: 500; color: var(--ec-text-muted, #484f58); }
 .subagent-card.enhanced .subagent-exec-stat { color: var(--ec-text-primary, #e6edf3); font-weight: 500; }
-.subagent-card.enhanced.collapsed .subagent-card-body,
-.subagent-card.enhanced.collapsed .subagent-card-footer { display: none; }
+/* 2026-09-15：与 mockup 版保持一致 —— 折叠时 footer（exec-summary 统计）常驻。 */
+.subagent-card.enhanced.collapsed .subagent-card-body { display: none; }
 @keyframes subagent-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
 /* ── Refreshed Sub-Agent Card (mockup redesign) ── */
@@ -2457,8 +2468,11 @@
 /* ── Body ── */
 .subagent-card .subagent-card-body { display: none; }
 .subagent-card.expanded .subagent-card-body { display: block; padding: 6px 12px 10px; }
-.subagent-card.collapsed .subagent-card-body,
-.subagent-card.collapsed .subagent-card-footer { display: none; }
+/* 2026-09-15（用户需求）：折叠只收起 body，footer 始终保留 ——
+   subagent 执行完毕后卡片默认进入 .collapsed，此前连 footer 一起隐藏，
+   导致「耗时 / token / 积分」在任务结束的瞬间消失，用户无法回看消耗。
+   footer 现含 .subagent-card-stats 与「处理中」指示，均需常驻。 */
+.subagent-card.collapsed .subagent-card-body { display: none; }
 
 /* Tool trace */
 .subagent-card .subagent-card-trace {
@@ -2480,17 +2494,27 @@
 .subagent-card .subagent-card-trace-list::-webkit-scrollbar-thumb { background: var(--ec-border, #313244); border-radius: 4px; }
 .subagent-card .subagent-card-trace-list::-webkit-scrollbar-thumb:hover { background: #45475a; }
 .subagent-card .subagent-card-trace-list::-webkit-scrollbar-track { background: transparent; }
-.subagent-card .subagent-card-trace-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.subagent-card .subagent-card-trace-icon { font-size: 10px; width: 12px; text-align: center; flex-shrink: 0; color: #a6e3a1; }
-.subagent-card.running .subagent-card-trace-icon { color: #f9e2af; }
-.subagent-card.error .subagent-card-trace-icon { color: #f38ba8; }
-.subagent-card .subagent-card-trace-name {
+/* 2026-09-15：执行列表每条工具调用强制**单行**展示（超出 ellipsis），
+   完整参数/结果改由 hover tip（原生 title）呈现，见 delegateCards._buildTraceHoverTip。 */
+.subagent-card .subagent-card-trace-item {
+	display: flex; align-items: center; gap: 6px; font-size: 12px;
+	white-space: nowrap; overflow: hidden;
+}
+.subagent-card .subagent-card-trace-item .subagent-card-trace-icon { font-size: 10px; width: 12px; text-align: center; flex-shrink: 0; color: #a6e3a1; }
+.subagent-card.running .subagent-card-trace-item .subagent-card-trace-icon { color: #f9e2af; }
+.subagent-card.error .subagent-card-trace-item .subagent-card-trace-icon { color: #f38ba8; }
+/* 工具名不参与收缩：它是本行唯一稳定的辨识信息，收缩后行内只剩省略号。 */
+.subagent-card .subagent-card-trace-item .subagent-card-trace-name {
 	color: var(--ec-text-primary, #cdd6f4); font-weight: 500; white-space: nowrap;
+	flex: 0 0 auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis;
 }
-.subagent-card .subagent-card-trace-detail {
+/* 详情占满剩余宽度，单行 + ellipsis 收尾。 */
+.subagent-card .subagent-card-trace-item .subagent-card-trace-detail {
 	color: var(--ec-text-muted, #6c7086); font-size: 11px;
-	flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-all;
+	flex: 1 1 auto; min-width: 0;
+	white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.subagent-card .subagent-card-trace-item:hover { background: rgba(110,132,155,0.10); border-radius: 3px; }
 .subagent-card .subagent-card-trace-more {
 	font-size: 11px; color: var(--ec-text-link, #89b4fa); cursor: pointer;
 	padding: 2px 4px; user-select: none;
@@ -3208,12 +3232,14 @@
 /* 图标紧贴左侧，无多余缩进 */
 .tool-card-skill .tool-header { padding-left: 6px; }
 .tool-card-skill .tool-header-left { margin-left: 0; }
-/* 图标顶头对齐，使其与标题首行顶部对齐 */
-.tool-card-skill .tool-header-row { align-items: flex-start; }
+/* 2026-09-15：原先这里把 row 与 icon 都改成 flex-start（“图标顶头对齐，使其与标题
+   首行顶部对齐”）——那是给**多行标题**写的。但标题现在是
+   `white-space: nowrap` 单行截断，行高由 `.tool-header-row { min-height: 24px }`
+   撑开 ⇒ flex-start 会让图标与文字整体贴顶，用户反馈「文字和图标没有垂直居中」✗。
+   故删除覆盖，回落到通用 `.tool-header-row/-left/-icon` 的 `align-items: center` ✓。
+   仅保留 `line-height: 1`（emoji 图标自带额外行距，收紧后与文字光学对齐）。 */
 .tool-card-skill .tool-header-icon {
-	align-self: flex-start;
 	line-height: 1;
-	margin-top: 1px;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -3369,12 +3395,12 @@
    ═══════════════════════════════════════════════════════════ */
 /* 容器纵向布局：header 在上，展开 body 在下 */
 .tool-card-delegate { display: flex; flex-direction: column; }
-/* 图标顶头对齐，使其与标题首行顶部对齐 */
-.tool-card-delegate .tool-header-row { align-items: flex-start; }
+/* 2026-09-15：与 skill 卡同因同修 —— 原「图标顶头对齐」是给多行标题写的，
+   但 `.tool-header-title` 现为 nowrap 单行 + `.tool-header-row` 有 min-height:24px
+   ⇒ flex-start 会让图标/文字整体贴顶（同批用户反馈「不垂直居中」）。回落到通用居中。
+   （下方 `.tool-card-mermaid` 的 center 覆盖因此变成冗余但无害，保留以防回归。） */
 .tool-card-delegate .tool-header-icon {
-	align-self: flex-start;
 	line-height: 1;
-	margin-top: 1px;
 }
 /* Mermaid 卡：标题单行，header 行垂直居中（delegate 默认 flex-start 会使其偏上，
    右侧「在新编辑器打开」按钮加入后高度差更明显）。2026-09-05 用户反馈。 */
@@ -3484,6 +3510,8 @@
 	flex-wrap: wrap;
 }
 .tool-card-delegate .dlg-meta-item { white-space: nowrap; }
+/* 占位态：三项资源消耗均未取到数据时保留行，仅弱化显示，避免统计区整行消失。 */
+.tool-card-delegate .dlg-meta-item.dlg-meta-empty { opacity: 0.45; }
 
 /* 状态 pill（复用 void 配色语义，带 vscode 回退） */
 .status-pill {
@@ -3571,13 +3599,17 @@
 /* ② 执行列表（扁平工具步骤时间线） */
 .du-steps { list-style: none; position: relative; padding-left: 14px; }
 .du-steps::before { content: ''; position: absolute; left: 4px; top: 6px; bottom: 6px; width: 1px; background: var(--void-border-3, rgba(128,128,128,.25)); }
-.du-step { position: relative; display: flex; align-items: baseline; gap: 9px; padding: 3px 0; font-size: 11.5px; line-height: 1.45; }
+/* 强制单行：`nowrap` 阻止换行，`overflow:hidden`+`ellipsis` 负责收尾。
+   align-items 由 baseline 改为 center —— 行内只剩单行文本时 baseline 会让
+   名字与详情的字面高度不一致，视觉上出现细微错位。 */
+.du-step { position: relative; display: flex; align-items: center; gap: 9px; padding: 3px 0; font-size: 11.5px; line-height: 1.45; }
 .du-step::before { content: ''; position: absolute; left: -14px; top: 8px; width: 7px; height: 7px; border-radius: 50%; background: var(--void-fg-4, var(--vscode-descriptionForeground)); border: 1.5px solid var(--void-bg-3, #1e1e1e); }
 .du-step.ok::before { background: var(--void-success, #4ec9b0); }
 .du-step.running::before { background: var(--void-warn, #cca700); animation: delegate-pulse 1.1s ease-in-out infinite; }
 .du-step.fail::before { background: var(--void-error, #f14c4c); }
-.du-step-name { color: var(--void-fg-2); font-weight: 600; flex-shrink: 0; }
-.du-step-detail { color: var(--void-fg-4, var(--vscode-descriptionForeground)); font-family: ui-monospace, Consolas, monospace; font-size: 11px; flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-all; }
+/* 工具名固定不收缩（本行唯一稳定辨识信息），详情占满剩余宽度并单行省略。 */
+.du-step-name { color: var(--void-fg-2); font-weight: 600; flex: 0 0 auto; max-width: 45%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.du-step-detail { color: var(--void-fg-4, var(--vscode-descriptionForeground)); font-family: ui-monospace, Consolas, monospace; font-size: 11px; flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ③ 执行结果（子代理实际 output 文本） */
 .du-results { padding: 2px 0; }
@@ -9140,6 +9172,27 @@
 }
 
 .chat-history-item-rename-input:focus {
+	border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+/* 页签右键「重命名」浮层输入框。
+   该元素由 JS 以 position:fixed 挂在 document.body 上，只有定位内联样式，
+   若不给宽高/背景/描边，在透明背景下等于不可见。样式对齐上方
+   .chat-history-item-rename-input，保持两处重命名交互观感一致。 */
+.chat-session-rename-input {
+	box-sizing: border-box;
+	min-width: 200px;
+	font-size: 13px;
+	padding: 4px 8px;
+	color: var(--as-fg-primary, var(--vscode-foreground, #cccccc));
+	background: var(--as-bg-input, var(--vscode-input-background, #3c3c3c));
+	border: 1px solid var(--vscode-input-border, rgba(255, 255, 255, 0.12));
+	border-radius: 4px;
+	outline: none;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.chat-session-rename-input:focus {
 	border-color: var(--vscode-focusBorder, #007fd4);
 }
 

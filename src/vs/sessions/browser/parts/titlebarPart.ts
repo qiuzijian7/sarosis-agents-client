@@ -32,6 +32,8 @@ import { MenuId } from '../../../platform/actions/common/actions.js';
 import { Menus } from '../menus.js';
 import { CustomMenubarControl } from '../../../workbench/browser/parts/titlebar/menubarControl.js';
 import { IOpenerService } from '../../../platform/opener/common/opener.js';
+import { ICommandService } from '../../../platform/commands/common/commands.js';
+import { ILogService } from '../../../platform/log/common/log.js';
 import { URI } from '../../../base/common/uri.js';
 import { IWorkbenchEnvironmentService } from '../../../workbench/services/environment/common/environmentService.js';
 
@@ -135,6 +137,24 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		this.openerService.open(URI.parse('https://www.tapd.cn/tapd_fe/30076258/storywall'));
 	}
 
+	/**
+	 * 执行一个 Agent Studio 命令（标题栏按钮入口：新建聊天 / 弹出独立窗口）。
+	 *
+	 * 用 `instantiationService.invokeFunction` **现取** `ICommandService`，而不是加构造
+	 * 参数 —— 本类有子类（Native / Auxiliary titlebar），加参数会连带改所有
+	 * `super(...)` 调用；标题栏按钮点击是低频路径，现取成本可忽略。
+	 * 失败必须留痕（否则表现为「点了没反应」，无从排查）。
+	 */
+	private _runAgentStudioCommand(commandId: string): void {
+		void this.instantiationService.invokeFunction(async accessor => {
+			try {
+				await accessor.get(ICommandService).executeCommand(commandId);
+			} catch (err) {
+				accessor.get(ILogService).error(`[Titlebar] failed to run command '${commandId}'`, err);
+			}
+		});
+	}
+
 	private registerListeners(targetWindowId: number): void {
 		this._register(this.hostService.onDidChangeFocus(focused => focused ? this.onFocus() : this.onBlur()));
 		this._register(this.hostService.onDidChangeActiveWindow(windowId => windowId === targetWindowId ? this.onFocus() : this.onBlur()));
@@ -223,6 +243,33 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		if (primaryWindowControlsLocation === 'right' && this._showTitlebarToggles) {
 				const toggleContainer = append(this.rightContent, $('div.titlebar-toggle-container'));
 				toggleContainer.id = 'agent-studio-titlebar-toggle-container';
+
+				// ── [Saros 2026-09-15] 聊天操作按钮：新建聊天 / 弹出独立窗口 ──
+				// 用户要求把这两个按钮从「聊天编辑器标题栏」**移到 app 顶部标题栏**
+				// （与反馈 / Panel / 折叠同一区域）。命令仍在 agentStudio.contribution.ts
+				// 注册（`agentStudio.newChatInEditor` / `agentStudio.popoutChat`），这里只做
+				// 入口 —— 两者都不要求「当前活动编辑器是聊天」，所以放在全局标题栏始终可用。
+				const newChatBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
+				newChatBtn.classList.add('codicon', 'codicon-add');
+				newChatBtn.title = '新建聊天';
+				newChatBtn.setAttribute('aria-label', '新建聊天');
+				newChatBtn.addEventListener('click', (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					this._runAgentStudioCommand('agentStudio.newChatInEditor');
+				});
+
+				const popoutBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
+				popoutBtn.classList.add('codicon', 'codicon-link-external');
+				popoutBtn.title = '弹出独立窗口';
+				popoutBtn.setAttribute('aria-label', '弹出独立窗口');
+				// 与后面「反馈」按钮拉开距离，避免两组按钮挤成一团
+				popoutBtn.style.marginRight = '8px';
+				popoutBtn.addEventListener('click', (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					this._runAgentStudioCommand('agentStudio.popoutChat');
+				});
 
 				// 反馈按钮 — opens logs folder in OS file explorer + TAPD feedback page
 				const feedbackBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));

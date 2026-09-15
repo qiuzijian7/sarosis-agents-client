@@ -320,7 +320,11 @@ export class GraphPersistence {
 		this._normalizeLoadedPaths(data, sourcePath);
 		// 导入前完整性校验（合并路径同样适用）
 		if (!await this._validateGraphData(data, sourcePath)) { return false; }
-		await store.mergeFromJSONAsync(data, projectOverride);
+		const stats = await store.mergeFromJSONAsync(data, projectOverride);
+		// 重复合并必须**可见**（2026-09-15）：实测制品 49.6% 节点是重复的，而旧实现完全静默。
+		if (stats.nodesSkipped > 0 || stats.edgesSkipped > 0) {
+			this._logService?.warn('[GraphPersistence]', `[loadMerge] deduped ${stats.nodesSkipped} duplicate node(s) / ${stats.edgesSkipped} duplicate edge(s) from ${sourcePath} — artifact had repeats or was merged twice (kept ${stats.nodesAdded} new node(s), ${stats.edgesAdded} new edge(s))`);
+		}
 		return true;
 	}
 

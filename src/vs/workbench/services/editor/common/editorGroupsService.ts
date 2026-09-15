@@ -509,7 +509,52 @@ export interface IEditorPart extends IEditorGroupsContainer {
 	isLayoutCentered(): boolean;
 }
 
+/**
+ * [Saros] Optional left side view for an auxiliary editor part (auxiliary window).
+ *
+ * The auxiliary window normally only contains the editor area. This extension
+ * point lets a caller (currently the Agent Studio "pop out chat" flow) render a
+ * side bar next to the editor inside the standalone window.
+ *
+ * The owner of the side view keeps full control over its chrome (header, sash,
+ * collapse state, persistence) and only reports its current width here; the
+ * auxiliary editor part is responsible for making room for it during layout.
+ */
+export interface IAuxiliaryEditorSideView {
+
+	/** Root element of the side view (created in the main window document). */
+	readonly element: unknown /* HTMLElement */;
+
+	/** Current width in CSS pixels; `0` while collapsed. */
+	readonly width: number;
+
+	/**
+	 * Lay out the side view into the given area. `top` is the vertical offset
+	 * (e.g. below a custom title bar) and `left` is the horizontal offset.
+	 */
+	layout(width: number, height: number, top: number, left: number): void;
+
+	/** Fired when `width` changes so the auxiliary window can re-layout. */
+	readonly onDidChange: Event<void>;
+}
+
 export interface IAuxiliaryEditorPart extends IEditorPart {
+
+	/**
+	 * [Saros] Left side view currently rendered in this auxiliary window, if any.
+	 */
+	readonly sideView: IAuxiliaryEditorSideView | undefined;
+
+	/**
+	 * [Saros] Attach, replace or remove the left side view at runtime.
+	 *
+	 * `createAuxiliaryEditorPart({ sideView })` can only pass it **at creation
+	 * time**, but chat windows are also created through paths that cannot supply
+	 * that option (`AUX_WINDOW_GROUP` from "Open in New Window", dragging a chat
+	 * tab out of the window, …). Those windows get their session side bar
+	 * attached afterwards through this method.
+	 */
+	setSideView(sideView: IAuxiliaryEditorSideView | undefined): void;
 
 	/**
 	 * Close this auxiliary editor part after moving all
@@ -666,8 +711,11 @@ export interface IEditorGroupsService extends IEditorGroupsContainer {
 	/**
 	 * Opens a new window with a full editor part instantiated
 	 * in there at the optional position and size on screen.
+	 *
+	 * [Saros] Pass `sideView` to also render a left side bar inside the
+	 * auxiliary window (see {@link IAuxiliaryEditorSideView}).
 	 */
-	createAuxiliaryEditorPart(options?: { bounds?: Partial<IRectangle>; compact?: boolean; alwaysOnTop?: boolean }): Promise<IAuxiliaryEditorPart>;
+	createAuxiliaryEditorPart(options?: { bounds?: Partial<IRectangle>; compact?: boolean; alwaysOnTop?: boolean; sideView?: IAuxiliaryEditorSideView }): Promise<IAuxiliaryEditorPart>;
 
 	/**
 	 * Creates a modal editor part that shows in a modal overlay

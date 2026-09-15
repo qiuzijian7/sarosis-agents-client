@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Session Sideview 抖动 — 修复前后对比</title>
+<style>
+  :root {
+    --bg: #181818; --fg: #ccc; --fg-dim: #8a8a8a;
+    --hover: #2a2d2e; --accent: #0078d4; --border: #2b2b2b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px; background: #0d0d0d; color: #ddd;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  h2 { margin: 0 0 4px; font-size: 16px; }
+  .sub { margin: 0 0 18px; font-size: 12px; color: #888; line-height: 1.6; }
+  .sub code { background: #1e1e1e; padding: 1px 5px; border-radius: 3px; color: #9cdcfe; }
+
+  .cols { display: flex; gap: 24px; flex-wrap: wrap; }
+  .col { flex: 0 0 300px; }
+  .col h3 { margin: 0 0 8px; font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+  .tag { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 9px; }
+  .tag.bad  { background: rgba(243,139,168,.16); color: #f38ba8; }
+  .tag.good { background: rgba(166,227,161,.16); color: #a6e3a1; }
+
+  /* 模拟 session-history-list */
+  .session-history-list {
+    height: 260px; overflow-y: auto; overflow-x: hidden;
+    padding: 4px 0; background: var(--bg);
+    border: 1px solid #333; border-radius: 5px;
+    scrollbar-width: thin;
+  }
+  .session-history-item { user-select: none; }
+  .item-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; cursor: pointer; border-radius: 4px;
+  }
+  .item-header:hover { background: var(--hover); }
+  .item-title { flex: 1; min-width: 0; font-size: 12.5px; color: var(--fg);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item-count { font-size: 10.5px; color: var(--fg-dim); flex: 0 0 auto; }
+
+  /* "Loading sessions..." 占位：padding 40px 是真实 CSS 取值 */
+  .session-history-empty {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 40px 20px; text-align: center;
+    color: #6e6e6e; gap: 8px; font-size: 13px;
+  }
+
+  .bar {
+    margin-top: 10px; height: 44px; background: #141414;
+    border: 1px solid #333; border-radius: 5px; position: relative; overflow: hidden;
+  }
+  .bar-label { position: absolute; inset: 0; display: flex; align-items: center;
+    padding: 0 10px; font-size: 10.5px; color: #777; font-family: ui-monospace, monospace; }
+  .bar .state { position: absolute; top: 0; bottom: 0; }
+  .state.loading { background: rgba(243,139,168,.35); }
+  .state.content { background: rgba(166,227,161,.35); }
+  .state.empty   { background: rgba(249,226,175,.35); }
+
+  .legend { margin-top: 12px; font-size: 10.5px; color: #888; line-height: 1.9; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+    margin-right: 6px; vertical-align: middle; }
+
+  .actions { margin: 0 0 16px; }
+  button {
+    background: #0078d4; color: #fff; border: 0; padding: 7px 16px;
+    border-radius: 5px; font-size: 12px; cursor: pointer; margin-right: 8px;
+    font-family: inherit;
+  }
+  button.alt { background: #3a3a3a; }
+  .timeline { font-size: 11px; color: #999; margin-top: 8px; font-family: ui-monospace, monospace;
+    white-space: pre-wrap; max-height: 130px; overflow-y: auto; background: #141414;
+    padding: 8px; border-radius: 5px; border: 1px solid #2a2a2a; }
+</style>
+</head>
+<body>
+
+<h2>Session Sideview 抖动 — 修复前后对照</h2>
+<p class="sub">
+  发送消息 → <code>onDidChangeAgentSessions</code>（300ms 防抖）→ <code>_loadSessions()</code>。
+  修复前每次都在列表顶部插入 <code>"Loading sessions..."</code> 占位（<code>padding:40px</code>），
+  随后 <code>_applyFiltersIncremental</code> 跨帧 rAF 回填 → 列表高度「崩塌 → 回弹」。
+</p>
+
+<div class="actions">
+  <button onclick="runScenario('before')">▶ 播放：修复前</button>
+  <button class="alt" onclick="runScenario('after')">▶ 播放：修复后</button>
+  <button class="alt" onclick="scrollMid()">↓ 先滚到列表中段再播放</button>
+</div>
+
+<div class="cols">
+  <div class="col">
+    <h3>修复前 <span class="tag bad">BEFORE</span></h3>
+    <div class="session-history-list" id="list-before"></div>
+    <div class="bar"><div class="bar-label">列表内容状态</div><div class="state" id="state-before" style="width:0"></div></div>
+    <div class="timeline" id="log-before">（点击「播放：修复前」）</div>
+  </div>
+
+  <div class="col">
+    <h3>修复后 <span class="tag good">AFTER</span></h3>
+    <div class="session-history-list" id="list-after"></div>
+    <div class="bar"><div class="bar-label">列表内容状态</div><div class="state" id="state-after" style="width:0"></div></div>
+    <div class="timeline" id="log-after">（点击「播放：修复后」）</div>
+  </div>
+</div>
+
+<div class="legend">
+  <i style="background:rgba(243,139,168,.5)"></i>Loading 占位态（列表被清空）
+  <i style="background:rgba(249,226,175,.5)"></i>空容器（跨帧回填间隙）
+  <i style="background:rgba(166,227,161,.5)"></i>内容就绪
+</div>
+
+<script>
+const SESSION_COUNT = 12;
+const sessions = Array.from({ length: SESSION_COUNT }, (_, i) => ({
+  name: i === 0 ? '当前对话（刚发送消息）' : `历史会话 ${i}`,
+  count: i === 0 ? 5 : 20 - i,
+}));
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function renderItems(container, scrollTop) {
+  container.innerHTML = '';
+  for (const s of sessions) {
+    const item = document.createElement('div');
+    item.className = 'session-history-item';
+    item.innerHTML = `<div class="item-header">
+      <span class="item-title">${s.name}</span>
+      <span class="item-count">${s.count}</span>
+    </div>`;
+    container.appendChild(item);
+  }
+  container.scrollTop = scrollTop ?? 0;
+}
+
+function renderLoading(container) {
+  container.innerHTML = '<div class="session-history-empty">Loading sessions...</div>';
+}
+
+function setState(id, kind, widthPct) {
+  const el = document.getElementById(id);
+  el.className = 'state ' + kind;
+  el.style.width = widthPct + '%';
+}
+
+let scrollTops = { before: 0, after: 0 };
+
+function scrollMid() {
+  ['before', 'after'].forEach(k => {
+    const l = document.getElementById('list-' + k);
+    l.scrollTop = Math.floor(l.scrollHeight * 0.45);
+    scrollTops[k] = l.scrollTop;
+  });
+}
+
+/* ── 修复前：清空 → Loading 占位 → 跨帧回填，且滚动位置丢失 ── */
+async function runBefore() {
+  const list = document.getElementById('list-before');
+  const log = document.getElementById('log-before');
+  const saved = list.scrollTop;
+  log.textContent = `t=0ms    发送消息\n`;
+  setState('state-before', 'content', 100);
+  await sleep(320);
+
+  log.textContent += `t=300ms  onDidChangeAgentSessions → _loadSessions()\n`;
+  renderLoading(list);                       // ← clearNode + "Loading sessions..."
+  setState('state-before', 'loading', 100);
+  log.textContent += `t=305ms  列表被清空 → 仅剩 40px 占位（高度崩塌）\n`;
+  await sleep(420);
+
+  log.textContent += `t=720ms  _applyFiltersIncremental() 再次 clearNode\n`;
+  list.innerHTML = '';
+  setState('state-before', 'empty', 100);
+  log.textContent += `t=725ms  空容器（至少 1 帧）\n`;
+  await sleep(120);
+
+  // 分批 rAF 回填 20 个/帧 → 12 个一帧，但仍有回填间歇
+  for (let i = 0; i < sessions.length; i += 6) {
+    await sleep(90);
+    const chunk = sessions.slice(i, i + 6);
+    for (const s of chunk) {
+      const item = document.createElement('div');
+      item.className = 'session-history-item';
+      item.innerHTML = `<div class="item-header">
+        <span class="item-title">${s.name}</span>
+        <span class="item-count">${s.count}</span>
+      </div>`;
+      list.appendChild(item);
+    }
+    setState('state-before', 'content', 30 + (i / sessions.length) * 70);
+    log.textContent += `t=${800 + i * 15}ms  回填 ${chunk.length} 项\n`;
+  }
+  setState('state-before', 'content', 100);
+  log.textContent += `\n⚠ scrollTop: ${saved} → ${list.scrollTop}（位置丢失）`;
+  list.scrollTop = 0;
+}
+
+/* ── 修复后：silent 刷新，不清空、不占位、同帧还原滚动位置 ── */
+async function runAfter() {
+  const list = document.getElementById('list-after');
+  const log = document.getElementById('log-after');
+  const saved = list.scrollTop;
+  setState('state-after', 'content', 100);
+  log.textContent = `t=0ms    发送消息\n`;
+  await sleep(320);
+
+  log.textContent += `t=300ms  onDidChangeAgentSessions → _loadSessions({silent:true})\n`;
+  log.textContent += `t=305ms  跳过 loading 占位（列表保持原内容）\n`;
+  await sleep(420);
+
+  log.textContent += `t=720ms  _applyFiltersIncremental({silent:true})\n`;
+  renderItems(list, saved);                  // ← 同帧清空+重建+还原
+  setState('state-after', 'content', 100);
+  log.textContent += `t=721ms  同步整帧重建 + scrollTop 还原\n`;
+  log.textContent += `\n✓ scrollTop: ${saved} → ${list.scrollTop}（保持一致）`;
+}
+
+function runScenario(kind) {
+  if (kind === 'before') { runBefore(); } else { runAfter(); }
+}
+
+/* 初始渲染 */
+window.addEventListener('load', () => {
+  renderItems(document.getElementById('list-before'), 0);
+  renderItems(document.getElementById('list-after'), 0);
+  scrollTops.before = document.getElementById('list-before').scrollTop;
+  scrollTops.after = document.getElementById('list-after').scrollTop;
+});
+</script>
+
+</body>
+</html>

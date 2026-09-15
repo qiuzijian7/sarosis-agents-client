@@ -20,8 +20,6 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import { ICodebaseGraphService, IClassHierarchyNode } from '../codebaseGraphService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
-import { URI } from '../../../../../base/common/uri.js';
-import { joinPath } from '../../../../../base/common/resources.js';
 import { ITextEditorOptions } from '../../../../../platform/editor/common/editor.js';
 import { CodebaseGraphModal } from './codebaseGraphModal.js';
 
@@ -53,6 +51,12 @@ export class ClassHierarchyModal {
 			height: 520,
 			renderBody: (body) => this._renderBody(body),
 			okText: localize('sarosis.classHierarchy.close', 'Close'),
+			// ★★ 关闭时释放 `_disposables`（2026-09-15，修 `[LEAKED DISPOSABLE]`）。
+			// 本类是同一族的 4 个 modal 中**唯一漏了**这一行的 ✗
+			// （`implementationsModal.ts:55` 与 `findSymbolModal.ts:68` 都有 ✓）。
+			// 调用方 `createInstance(ClassHierarchyModal).open(...)` 是**裸创建** ✗，
+			// 而 `open()` 立即返回 ⇒ 调用方无法回收 ✗ ⇒ 必须由模态关闭时自清 ✓。
+			onDispose: () => this.dispose(),
 		});
 		// 打开即查（光标词）；无词则显示提示
 		if (this._query) {
@@ -199,19 +203,16 @@ export class ClassHierarchyModal {
 
 	private async _openNode(node: IClassHierarchyNode): Promise<void> {
 		const g = node.node as any;
-		if (g.filePath && g.startLine) {
-			const roots = this._graphService.getProjectRoots();
-			const root = roots[g.project ?? '_default'];
-			if (root) {
-				const uri = joinPath(URI.file(root), g.filePath);
-				const line = Math.max(0, g.startLine - 1);
-				const options: ITextEditorOptions = {
-					selection: { startLineNumber: line + 1, startColumn: 1, endLineNumber: line + 1, endColumn: 1 },
-					revealIfOpened: true,
-					pinned: false,
-				};
-				await this._editorService.openEditor({ resource: uri, options });
-			}
+		// 2026-09-15：统一走 service 级解析器（root 三级回退 + 行号缺省 + 未命中告警）。
+		// 原实现 `if (g.filePath && g.startLine)` + 单 root —— 与 Find Symbol 同族的静默失败。
+		const loc = await this._graphService.resolveNodeLocation(g);
+		if (loc) {
+			const options: ITextEditorOptions = {
+				selection: { startLineNumber: loc.line, startColumn: 1, endLineNumber: loc.line, endColumn: 1 },
+				revealIfOpened: true,
+				pinned: false,
+			};
+			await this._editorService.openEditor({ resource: loc.uri, options });
 		}
 		// 跳转（或无定义信息）后关闭对话框，回到编辑器上下文
 		this.dispose();

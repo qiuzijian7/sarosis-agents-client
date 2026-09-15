@@ -140,6 +140,22 @@ export function defaultBrowserWindowOptions(accessor: ServicesAccessor, windowSt
 		minWidth: WindowMinimumSize.WIDTH,
 		minHeight: WindowMinimumSize.HEIGHT,
 		title: productService.nameLong,
+		// ★ [Saros] **显式设置窗口图标** ⇒ 修「任务栏显示通用图标」✗。
+		//
+		// 机制：Windows 的任务栏（分组）按钮取的是**窗口图标（WM_SETICON）**，
+		// 不是界面里的 SVG ✓。dev 下跑的 `.build/electron/VsSaros.exe` 是**下载的 Electron 改名**，
+		// 内嵌图标 = Electron 默认 ✗ ⇒ 不设这里就一直显示通用图标 ✗。
+		// 品牌图标已就位：`resources/win32/code.ico`（与 `sessions.ico` MD5 相同 ✓）。
+		//
+		// ⚠ 路径用 `appRoot`（运行时仓库根 ✓）；取不到就留空 ⇒ 回退到 exe 内嵌图标，不报错 ✓。
+		icon: (() => {
+			try {
+				const img = electron.nativeImage.createFromPath(`${environmentMainService.appRoot}/resources/win32/code.ico`);
+				return img.isEmpty() ? undefined : img;
+			} catch {
+				return undefined;
+			}
+		})(),
 		show: windowState.mode !== WindowMode.Maximized && windowState.mode !== WindowMode.Fullscreen, // reduce flicker by showing later
 		x: windowState.x,
 		y: windowState.y,

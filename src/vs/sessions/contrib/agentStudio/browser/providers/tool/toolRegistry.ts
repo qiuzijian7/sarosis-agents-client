@@ -45,6 +45,14 @@ export class ToolRegistry {
 	private readonly _onDidChangeTools = new Emitter<void>();
 	readonly onDidChangeTools: Event<void> = this._onDidChangeTools.event;
 
+	// ★ 性能（2026-09-15）：`getAllToolDefinitions()` 位于 **agent loop 每轮**的热路径上
+	// （经 `listAllToolsWithState` ⇒ 97 个工具），原实现**每次都以 info 级**打一行
+	// ⇒ 长循环里日志刷屏 ✗（与 `_getWorkspaceDataUri` 是同一类问题）。
+	// 这里记住上次输出的两个特征值，只在**结果变化**时打 info —— 保留「工具集变动」
+	// 这个真正有用的诊断信号（如 `tools refreshed 36 → 38`），其余降到 trace ✓。
+	private _lastLoggedToolCount = -1;
+	private _lastLoggedRegisteredCount = -1;
+
 	constructor(private readonly logService: ILogService) { }
 
 	register(descriptor: IBuiltinToolRegistration): IDisposable {
@@ -115,7 +123,14 @@ export class ToolRegistry {
 			const toolset = t.definition.toolset ?? getToolsetForTool(name);
 			out.push({ ...t.definition, toolset });
 		}
-		this.logService.info(`[BuiltinTools] getAllToolDefinitions: ${out.length} tools (skipped ${stubCount} stubs, ${unavailableCount} unavailable), total registered=${this._tools.size}`);
+		// ★ 热路径日志降噪（见字段注释）：仅当「可用工具数」或「注册总数」变化时才打 info。
+		if (out.length !== this._lastLoggedToolCount || this._tools.size !== this._lastLoggedRegisteredCount) {
+			this._lastLoggedToolCount = out.length;
+			this._lastLoggedRegisteredCount = this._tools.size;
+			this.logService.info(`[BuiltinTools] getAllToolDefinitions: ${out.length} tools (skipped ${stubCount} stubs, ${unavailableCount} unavailable), total registered=${this._tools.size}`);
+		} else {
+			this.logService.trace(`[BuiltinTools] getAllToolDefinitions: ${out.length} tools (unchanged, hot path — suppressed)`);
+		}
 		return out;
 	}
 

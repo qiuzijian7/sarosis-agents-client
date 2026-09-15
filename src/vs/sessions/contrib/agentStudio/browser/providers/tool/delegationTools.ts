@@ -771,6 +771,10 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 							parentToolCallId,
 							toolTraces,
 							startedAt: finalCard?.startedAt, completedAt: finalCard?.completedAt,
+							// 终态快照会整体替换实时快照；缺这两个字段即抹掉执行期
+							// 已累积的用量，表现为「执行完成后 token/积分 UI 消失」。
+							tokensUsed: finalCard?.tokensUsed ? { ...finalCard.tokensUsed } : undefined,
+							creditUsed: finalCard?.creditUsed,
 						}],
 					});
 
@@ -827,6 +831,10 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 						parentToolCallId,
 						toolTraces,
 						startedAt: card?.startedAt, completedAt: card?.completedAt,
+						// 同单任务路径：终态快照须回填用量，否则并行批次完成后
+						// 每个子代理的 token/积分都会被清空。
+						tokensUsed: card?.tokensUsed ? { ...card.tokensUsed } : undefined,
+						creditUsed: card?.creditUsed,
 						skipSubAgentCard: true,
 					};
 				});

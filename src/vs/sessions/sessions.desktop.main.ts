@@ -19,7 +19,10 @@ import './sessions.common.main.js';
 
 //#region --- workbench (sessions desktop main)
 
-import './electron-browser/sessions.main.js';
+// ★ [Saros] 方案 B1：agents 窗口的窗口实现从 sessions 的 `SessionsMain` 换成
+// `AgentLayoutDesktopMain`（继承**标准** `DesktopMain`，只换布局 + 配置隔离）。
+// 贡献清单仍走 `./sessions.common.main.js`（见文件首），只是其中两处 parts 覆盖已撤掉。
+import './electron-browser/agentLayoutDesktopMain.js';
 import '../workbench/electron-browser/desktop.contribution.js';
 
 //#endregion
@@ -231,4 +234,4 @@ import './contrib/tunnelHost/electron-browser/tunnelHost.contribution.js';
 
 //#endregion
 
-export { main } from './electron-browser/sessions.main.js';
+export { main } from './electron-browser/agentLayoutDesktopMain.js';

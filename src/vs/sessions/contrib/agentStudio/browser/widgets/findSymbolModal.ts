@@ -16,15 +16,15 @@
  * 数据源：ICodebaseGraphService.searchGraphAsync + getCodeSnippet（Definition 列第一行源码预览）
  */
 
+import './media/findSymbolModal.css';
+
 import * as dom from '../../../../../base/browser/dom.js';
 import { renderLabelWithIcons } from '../../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import { ICodebaseGraphService, GraphNode } from '../codebaseGraphService.js';
-import { IFileService } from '../../../../../platform/files/common/files.js';
+import { NON_SYMBOL_NODE_TYPES } from '../../common/codebaseIndexDefaults.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
-import { URI } from '../../../../../base/common/uri.js';
-import { joinPath } from '../../../../../base/common/resources.js';
 import { ITextEditorOptions } from '../../../../../platform/editor/common/editor.js';
 import { CodebaseGraphModal } from './codebaseGraphModal.js';
 
@@ -54,7 +54,6 @@ export class FindSymbolModal {
 
 	constructor(
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
-		@IFileService private readonly _fileService: IFileService,
 		@IEditorService private readonly _editorService: IEditorService,
 	) {
 	}
@@ -107,7 +106,7 @@ export class FindSymbolModal {
 		root.appendChild(this._titleHint);
 
 		// 表格
-		this._table = dom.$('div');
+		this._table = dom.$('div.find-symbol-table');
 		this._table.style.cssText = 'flex:1 1 auto;overflow:auto;border-top:1px solid var(--vscode-editorWidget-border);border-bottom:1px solid var(--vscode-editorWidget-border);';
 		root.appendChild(this._table);
 
@@ -177,6 +176,14 @@ export class FindSymbolModal {
 			namePattern: query,
 			label: labelFilter,
 			limit: 200,
+			// 2026-09-15（用户截图）：Find Symbol 是**符号**检索，必须排除 `label='file'` 的
+			// CONTAINS 桩节点 —— 否则 200 条候选被 `toolArgsJson.test.ts` 这类**文件名**命中占满，
+			// 真正的 `variable`/`function` 被挤出 LIMIT（搜 "test" 时几乎只剩文件名）。
+			excludeTypes: NON_SYMBOL_NODE_TYPES,
+			// 2026-09-15（用户截图）：搜的是**符号名**，必须只匹配 `name` 列 —— 否则 QN 里的
+			// 文件路径会命中（QN = `<相对路径>::<符号名>`，搜 `test` 会返回
+			// `…/knowledge/classifyLLM.test.ts::MockClassifyLLM`）。
+			nameOnly: true,
 		});
 		if (token !== this._searchToken) { return; }
 		// 「当前 solution」= 当前工作区所有已注册项目（getProjectRoots 键集合）。
@@ -261,11 +268,23 @@ export class FindSymbolModal {
 			symbolCell.appendChild(name);
 			row.appendChild(symbolCell);
 
-			const defCell = dom.$('div');
-			defCell.style.cssText = 'flex:1;min-width:0;white-space:normal;word-break:break-all;color:var(--vscode-descriptionForeground);';
-			// Definition 列：使用节点类型 + name + 文件位置作为轻量预览
-			// （不做完整 source preview 以避免 N+1 IO，保持模态响应性）
-			defCell.textContent = `${n.type ?? n.label ?? ''} ${n.name}` + (n.filePath ? `  —  ${n.filePath}:${n.startLine ?? ''}` : '');
+			const defCell = dom.$('div.find-symbol-def');
+			// Definition 列：**固定两行**（2026-09-15 用户要求）
+			//   首行 = 类型 + 符号名 + 连接号（分隔符留在首行末尾）
+			//   次行 = 文件路径（:行号），完整值挂 title
+			// 旧实现把整串拼在一行、`word-break:break-all` ⇒ 路径被从任意字符处硬折，
+			// 一屏里几行的断点还各不相同，很难扫读（用户截图）。样式见 media/findSymbolModal.css。
+			// （仍不做完整 source preview：避免 N+1 IO，保持模态响应性）
+			const defHead = dom.$('div.find-symbol-def-head');
+			const headText = `${n.type ?? n.label ?? ''} ${n.name}`.trim();
+			defHead.textContent = headText + (n.filePath ? '  —  ' : '');
+			defHead.title = headText;
+			const defPath = dom.$('div.find-symbol-def-path');
+			const pathText = n.filePath ? `${n.filePath}${n.startLine ? `:${n.startLine}` : ''}` : '';
+			defPath.textContent = pathText;
+			if (pathText) { defPath.title = pathText; }
+			defCell.appendChild(defHead);
+			defCell.appendChild(defPath);
 			row.appendChild(defCell);
 
 			row.addEventListener('click', () => this._selectIndex(i));
@@ -304,21 +323,18 @@ export class FindSymbolModal {
 	}
 
 	private async _openNode(node: GraphNode): Promise<void> {
-		if (!node.filePath || !node.startLine) { return; }
-		const roots = this._graphService.getProjectRoots();
-		const root = roots[(node as any).project ?? '_default'];
-		if (!root) { return; }
-		const uri = joinPath(URI.file(root), node.filePath);
-		try {
-			if (!await this._fileService.exists(uri)) { return; }
-		} catch { return; }
-		const line = Math.max(0, node.startLine - 1);
+		// 2026-09-15：统一走 service 级解析器（root 三级回退 + 行号缺省 + 未命中告警）。
+		// 原先本文件手拼 root 有两个静默失败点：把 `startLine` 当可跳转前提（而图谱里
+		// `label='file'` 的 stub 节点没有行号 ⇒ 最常见的命中双击无反应），以及只认
+		// `getProjectRoots()[node.project]` 一项。完整缺陷说明见 `resolveNodeLocation`。
+		const loc = await this._graphService.resolveNodeLocation(node);
+		if (!loc) { return; } // 未命中的原因由 service 告警（含 node 名 / project / filePath）
 		const options: ITextEditorOptions = {
-			selection: { startLineNumber: line + 1, startColumn: 1, endLineNumber: line + 1, endColumn: 1 },
+			selection: { startLineNumber: loc.line, startColumn: 1, endLineNumber: loc.line, endColumn: 1 },
 			revealIfOpened: true,
 			pinned: false,
 		};
-		await this._editorService.openEditor({ resource: uri, options });
+		await this._editorService.openEditor({ resource: loc.uri, options });
 	}
 
 	dispose(): void {

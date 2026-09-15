@@ -70,9 +70,15 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 	private initRemoteUserConfigurationBarrier: Barrier;
 	private completeWorkspaceBarrier: Barrier;
 	private readonly configurationCache: IConfigurationCache;
-	private _configuration: Configuration;
+
+	// ★ [Saros] `_configuration` / `defaultConfiguration` 由 `private` 改为 `protected`：
+	// 「IDE 底座 + Agent 布局」需要一个 `WorkspaceService` 子类来承接方案 C 的配置隔离
+	// （不读 `<folder>/.vscode/settings.json`，见 `sessions/services/configuration/`）。
+	// 这两者原本对子类不可见，隔离（尤其是 `updateValue` 的写侧与默认值覆写）就无从实现。
+	// 覆写入口是 `desktop.main.ts` 的 `createWorkspaceService()`。
+	protected _configuration: Configuration;
 	private initialized: boolean = false;
-	private readonly defaultConfiguration: DefaultConfiguration;
+	protected readonly defaultConfiguration: DefaultConfiguration;
 	private readonly policyConfiguration: IPolicyConfiguration;
 	private applicationConfiguration: ApplicationConfiguration | null = null;
 	private readonly applicationConfigurationDisposables: DisposableStore;
@@ -129,7 +135,7 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 		this.defaultConfiguration = this._register(new DefaultConfiguration(userDataProfileService.currentProfile.id, configurationCache, environmentService, logService));
 		this.policyConfiguration = policyService instanceof NullPolicyService ? new NullPolicyConfiguration() : this._register(new PolicyConfiguration(this.defaultConfiguration, policyService, logService));
 		this.configurationCache = configurationCache;
-		this._configuration = new Configuration(this.defaultConfiguration.configurationModel, this.policyConfiguration.configurationModel, ConfigurationModel.createEmptyModel(logService), ConfigurationModel.createEmptyModel(logService), ConfigurationModel.createEmptyModel(logService), ConfigurationModel.createEmptyModel(logService), new ResourceMap(), ConfigurationModel.createEmptyModel(logService), new ResourceMap<ConfigurationModel>(), this.workspace, logService);
+		this._configuration = this.createConfiguration(this.defaultConfiguration.configurationModel, this.policyConfiguration.configurationModel, ConfigurationModel.createEmptyModel(logService), ConfigurationModel.createEmptyModel(logService), ConfigurationModel.createEmptyModel(logService), ConfigurationModel.createEmptyModel(logService), new ResourceMap(), ConfigurationModel.createEmptyModel(logService), new ResourceMap<ConfigurationModel>(), logService);
 		this.applicationConfigurationDisposables = this._register(new DisposableStore());
 		this.createApplicationConfiguration();
 		this.localUserConfiguration = this._register(new UserConfiguration(userDataProfileService.currentProfile.settingsResource, userDataProfileService.currentProfile.tasksResource, userDataProfileService.currentProfile.mcpResource, { scopes: getLocalUserConfigurationScopes(userDataProfileService.currentProfile, !!remoteAuthority) }, fileService, uriIdentityService, logService));
@@ -158,6 +164,32 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 		this._register(userDataProfileService.onDidChangeCurrentProfile(e => this.onUserDataProfileChanged(e)));
 
 		this.workspaceEditingQueue = new Queue<void>();
+	}
+
+	/**
+	 * ★ [Saros] `Configuration` 的构造点 —— 抽成 `protected`，让子类能替换配置模型的装配。
+	 *
+	 * 这是**方案 C 第 4 条**（folder 配置模型恒空 ⇒ 不读 `<folder>/.vscode/settings.json`）
+	 * 的**唯一**接入点：`Configuration` 的两处构造原本都硬编码在方法体里
+	 * （构造器内、以及本类的 `initialize()`），子类拦不到。
+	 *
+	 * ⚠ `workspace` 由本方法自己补上（它是 `Configuration` 的第 10 个参数），调用方不必传。
+	 * ⚠ 本方法会从**构造器**里被调用 ⇒ 覆写者**不得依赖自身字段**（那一刻尚未初始化）。
+	 * 这也正是它只接收"模型"参数、不接收任何实例状态的原因。
+	 */
+	protected createConfiguration(
+		defaults: ConfigurationModel,
+		policy: ConfigurationModel,
+		application: ConfigurationModel,
+		localUser: ConfigurationModel,
+		remoteUser: ConfigurationModel,
+		workspaceConfiguration: ConfigurationModel,
+		folders: ResourceMap<ConfigurationModel>,
+		memoryConfiguration: ConfigurationModel,
+		memoryConfigurationByResource: ResourceMap<ConfigurationModel>,
+		logService: ILogService
+	): Configuration {
+		return new Configuration(defaults, policy, application, localUser, remoteUser, workspaceConfiguration, folders, memoryConfiguration, memoryConfigurationByResource, this.workspace, logService);
 	}
 
 	private createApplicationConfiguration(): void {
@@ -192,6 +224,18 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 			return WorkbenchState.FOLDER;
 		}
 
+		// ★ [Saros] 多根但**没有**工作区配置文件 —— 等价于「untitled 多根工作区」。
+		//
+		// 上游这里直接落到 EMPTY（语义是"什么都没打开"）。该分支在
+		// `replaceWorkspaceFoldersInMemory()` 出现之前**不可达** ——
+		// `doUpdateFolders()` 在非 WORKSPACE 态会提前 return，所以单文件夹窗口
+		// 永远只有 1 个 folder。而内存内替换会把单文件夹窗口变成多根
+		// ⇒ 落到 EMPTY 会让 `hasWorkspaceData()` 变 false、并让一批按 workbench
+		// state 分流的消费者走"空窗口"路径，与「实际打开了 N 个根」矛盾。
+		if (this.workspace.folders.length > 1) {
+			return WorkbenchState.WORKSPACE;
+		}
+
 		// Empty
 		return WorkbenchState.EMPTY;
 	}
@@ -214,6 +258,58 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 
 	public async updateFolders(foldersToAdd: IWorkspaceFolderCreationData[], foldersToRemove: URI[], index?: number): Promise<void> {
 		return this.workspaceEditingQueue.queue(() => this.doUpdateFolders(foldersToAdd, foldersToRemove, index));
+	}
+
+	/**
+	 * ★★ [Saros] 内存内**整体替换** folder 列表 —— **不写工作区文件、不重载窗口**。
+	 *
+	 * ── 用途 ──────────────────────────────────────────────────────────
+	 * Agent 布局窗口的「切换 Agent Studio 工作区」（用户 2026-09-15 裁决：
+	 * 切换工作区**不要重新加载窗口**）。
+	 *
+	 * ── 为什么不能直接用 `updateFolders()` ────────────────────────────
+	 * VS Code「打开工作区」必然重载窗口，所以"不重载"只能靠原地改 folder 列表。
+	 * 而既有两条通道都不能用：
+	 *   ① 本类 `updateFolders()`（WORKSPACE 态）→ `setFolders()`
+	 *      → `Configuration.setFolders()` → `jsonEditingService.write(configPath)`
+	 *      ⇒ 会把新的 folder 列表**回写到用户手写的 `.code-workspace`**
+	 *      （2026-09-14 事故路径：用户文件被程序改成 5 个 folder ✗）。
+	 *   ② `IWorkspaceEditingService.updateFolders()` 在**单文件夹**窗口下
+	 *      → `includesSingleFolderWorkspace` → `createAndEnterWorkspace()`
+	 *      → `enterWorkspace()` ⇒ **重载窗口** ✗。
+	 *
+	 * ── 实现要点 ──────────────────────────────────────────────────────
+	 * 复用 `updateWorkspaceConfiguration()` —— 它就是 `onWorkspaceConfigurationChanged()`
+	 * 里**真正改 folder 的那一段**（folder 配置模型增删 / will+did 事件 /
+	 * restricted settings），**唯独不含写盘**。同一写法已有先例：
+	 * `validateWorkspaceFoldersAndReload()`。
+	 *
+	 * ⚠ 已知边界（有意保留，见 memory）：`onFoldersChanged()` 会为新 folder
+	 * **加载** `<folder>/.vscode/settings.json`，而 `AgentLayoutWorkspaceService`
+	 * 的「folder 配置模型恒空」隔离只发生在 `Configuration` 装配时
+	 * ⇒ 本方法执行后该隔离对**新加入的 folder** 失效（原生"添加文件夹到工作区"
+	 * 同样如此，非本方法引入）。要彻底闭合需再开一个 folder-config 接缝。
+	 */
+	public async replaceWorkspaceFoldersInMemory(folders: IWorkspaceFolderCreationData[]): Promise<void> {
+		return this.workspaceEditingQueue.queue(() => this.doReplaceWorkspaceFoldersInMemory(folders));
+	}
+
+	private async doReplaceWorkspaceFoldersInMemory(folders: IWorkspaceFolderCreationData[]): Promise<void> {
+		const newFolders = folders.map((folder, index) => new WorkspaceFolder(
+			{
+				uri: folder.uri,
+				name: folder.name || this.uriIdentityService.extUri.basenameOrAuthority(folder.uri),
+				index,
+			},
+			{ uri: folder.uri.toString() },
+		));
+
+		const changes = this.compareFolders(this.workspace.folders, newFolders);
+		if (!changes.added.length && !changes.removed.length && !changes.changed.length) {
+			return; // 幂等：列表未变则什么都不做（切换回同一工作区时走这里）
+		}
+
+		await this.updateWorkspaceConfiguration(newFolders, this.workspaceConfiguration.getConfiguration(), false);
 	}
 
 	public isInsideWorkspace(resource: URI): boolean {
@@ -701,7 +797,7 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 		folderConfigurations.forEach((folderConfiguration, index) => folderConfigurationModels.set(folders[index].uri, folderConfiguration));
 
 		const currentConfiguration = this._configuration;
-		this._configuration = new Configuration(this.defaultConfiguration.configurationModel, this.policyConfiguration.configurationModel, applicationConfigurationModel, userConfigurationModel, remoteUserConfigurationModel, workspaceConfiguration, folderConfigurationModels, ConfigurationModel.createEmptyModel(this.logService), new ResourceMap<ConfigurationModel>(), this.workspace, this.logService);
+		this._configuration = this.createConfiguration(this.defaultConfiguration.configurationModel, this.policyConfiguration.configurationModel, applicationConfigurationModel, userConfigurationModel, remoteUserConfigurationModel, workspaceConfiguration, folderConfigurationModels, ConfigurationModel.createEmptyModel(this.logService), new ResourceMap<ConfigurationModel>(), this.logService);
 
 		this.initialized = true;
 

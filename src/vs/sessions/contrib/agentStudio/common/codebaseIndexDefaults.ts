@@ -246,6 +246,22 @@ export function parseCbmIgnore(content: string): string[] {
 	return mergeExcludeDirs(out);
 }
 
+/**
+ * **非符号**节点类型（容器 / 桩节点）—— 「搜符号」类入口（Find Symbol 等）必须排除它们。
+ *
+ * 2026-09-15（用户截图报障）：Find Symbol 搜 `test` 时 200 条候选里大半是
+ * `label='file'` 的 CONTAINS stub 节点（`toolArgsJson.test.ts`、`kbBlocksCodec.test.ts` …）
+ * —— 它们是 `addEdge()` 为让 CONTAINS 边不悬空而实体化的**文件名桩**，不是符号，
+ * 却把真正的 `variable`/`function` 命中挤出了 LIMIT。
+ *
+ * ★ 为什么用**黑名单**而不是符号白名单：索引器/新语言提取器会不断新增类型
+ * （如 `module`，未来可能的 `macro`/`typedef`），白名单会把新类型**静默藏掉**；
+ * 黑名单只排除「确定不是符号」的容器/桩类型，新类型默认仍然可见。
+ *
+ * 比较时**大小写不敏感**（图里同时存在 `file`（addEdge 桩）与 `File`（架构视图合成））。
+ */
+export const NON_SYMBOL_NODE_TYPES: readonly string[] = ['file', 'folder', 'project'];
+
 export const AST_TO_NODE_TYPE: Record<string, string> = {
 	'function_declaration': 'function',
 	'function_definition': 'function',
@@ -271,3 +287,27 @@ export const AST_TO_NODE_TYPE: Record<string, string> = {
 	'const_item': 'variable',
 	'static_item': 'variable',
 };
+
+/**
+ * 计算「不属于当前工作区、需要从内存图 store 丢弃」的项目（2026-09-15）。
+ *
+ * 背景：`CodebaseGraphService` 是**窗口内单例**，而工作区切换走
+ * `replaceWorkspaceFoldersInMemory()`（**不 reload renderer**）⇒ 旧工作区的图会永久驻留内存。
+ * 实测同窗口 3 个工作区共 1,119,421 节点（S1Game 34 万 + UE5EA 78 万 + 本仓），
+ * 后果：① 检索的项目收敛指向别的工作区（用户报「工作区是 sarosis 却按 S1Game 检索」）；
+ * ② 巨量堆 + 每 folder 一个 watcher ⇒ UI 卡死。
+ *
+ * 纯函数（服务本体依赖 DI、无法单测；判据下沉到这里锁死语义）。
+ *
+ * @param storeProjects 内存 store 当前的项目（只需 name）
+ * @param workspaceProjects 当前工作区各 folder 对应的项目名（空数组 = 无工作区）
+ * @returns 需要丢弃的项目名；**无工作区时返回空数组**（宁可不判断，也不误删）
+ */
+export function planForeignProjectPrune(
+	storeProjects: readonly string[],
+	workspaceProjects: readonly string[],
+): string[] {
+	if (workspaceProjects.length === 0) { return []; }
+	const keep = new Set(workspaceProjects);
+	return storeProjects.filter(p => !keep.has(p));
+}

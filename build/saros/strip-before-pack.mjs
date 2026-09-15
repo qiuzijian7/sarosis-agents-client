@@ -299,6 +299,20 @@ ensureFile(
 	['build/saros/bin/sqlite/better_sqlite3.node'],
 );
 
+// 5.1) ⚠ 同一份绑定还必须落在**真实 node_modules** 下（2026-09-14 生产事故：
+//    media.import 报 "media store unavailable (better-sqlite3 failed to load)"）。
+//    实测已安装产物形态为：resources/app/node_modules 是真实目录（node_modules.asar
+//    是 28 字节空归档 {"files":{}}），此时运行时 require('better-sqlite3') 解析到真实
+//    目录里的 JS 壳，而 better-sqlite3 内部用 `bindings` **只在包内**查
+//    build/Release/better_sqlite3.node —— 该文件仅存在于 asar.unpacked 时必然抛
+//    "Could not locate the bindings file"，被上层 catch 吞掉后就是上面的报错。
+//    运行时已有 betterSqlite3.ts 显式传 nativeBinding 兜底，这里补齐磁盘落位双保险。
+ensureFile(
+	'better-sqlite3/build/Release/better_sqlite3.node (node_modules)',
+	'resources/app/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
+	['build/saros/bin/sqlite/better_sqlite3.node'],
+);
+
 // === 5.5 ffmpeg/ffprobe（vox 口播视频节点可选依赖）===
 // 内置到 resources/saros/bin/，让安装包「默认自带 ffmpeg」。缺失仅警告（不阻断
 // 核心出包，vox 功能会回退提示用户），与 rg.exe 等核心构件区分。

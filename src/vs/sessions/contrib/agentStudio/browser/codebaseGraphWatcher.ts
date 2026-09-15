@@ -129,6 +129,45 @@ export class CodebaseGraphWatcher extends Disposable {
 		this._started = false;
 	}
 
+	/**
+	 * 移除**单个**根目录的监听（2026-09-15）。
+	 *
+	 * 用途：工作区原地切换（`replaceWorkspaceFoldersInMemory`，**不 reload renderer**）后，
+	 * 旧 folder 的根必须停止轮询 —— 否则它每轮（5~60s）仍在检测变更并 fire 事件，
+	 * `graphService._onWatcherChange` 会为「已被 prune 丢弃的项目」再跑一次增量索引，
+	 * 把刚清掉的跨工作区数据**重新建回来**（与 prune 形成互相抵消的循环）。
+	 *
+	 * 同时丢弃该根的**去抖待发**变更（否则移除后仍会 fire 一次）。
+	 *
+	 * @returns 实际移除的根数量（0 = 本来就没在监听）
+	 */
+	unwatch(rootPath: string): number {
+		const norm = this._normalizeRoot(rootPath);
+		const before = this._roots.length;
+		this._roots = this._roots.filter(r => this._normalizeRoot(r.rootPath) !== norm);
+		const pending = this._pendingChanges.get(norm);
+		if (pending) {
+			clearTimeout(pending.timer);
+			this._pendingChanges.delete(norm);
+		}
+		const removed = before - this._roots.length;
+		if (removed > 0) {
+			this._logService.info(LOG_TAG, `Stopped watching ${rootPath}; active roots=${this._roots.length}`);
+			// 没有根了 ⇒ 连轮询定时器一起停（否则会以空数组无限自调度，白烧一个 timer）
+			if (this._roots.length === 0 && this._pollTimer) {
+				clearTimeout(this._pollTimer);
+				this._pollTimer = null;
+				this._started = false;
+			}
+		}
+		return removed;
+	}
+
+	/** 当前正在监听的根目录（原始路径），供工作区切换时做保留/丢弃判定。 */
+	getWatchedRoots(): string[] {
+		return this._roots.map(r => r.rootPath);
+	}
+
 	private _normalizeRoot(p: string): string {
 		return p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
 	}
@@ -257,7 +296,10 @@ export class CodebaseGraphWatcher extends Disposable {
 				}
 			}
 			const sample = (rels: string[]) => rels.slice(0, 5).join(', ');
-			this._logService.info(LOG_TAG, `Changes: +${added.length} ~${modified.length} -${deleted.length}${modDetail} | added≈[${sample(added)}] modified≈[${sample(modified)}] deleted≈[${sample(deleted)}]`);
+			// 前缀带 project/root：本 watcher 是**单实例多 root**（日志里的 `active roots=N`），
+			// 不带前缀时「刚 `Watching A`」紧跟「`Changes: …`」看起来像 A 的变更被算到了 B 上
+			// （实测被误判过一次跨项目串台）。事件本身一直带 `rootPath`（下一行），只是日志缺前缀。
+			this._logService.info(LOG_TAG, `[${project}] Changes: +${added.length} ~${modified.length} -${deleted.length} | root=${rootPath}${modDetail} | added≈[${sample(added)}] modified≈[${sample(modified)}] deleted≈[${sample(deleted)}]`);
 			this._fireChangeDebounced({ type: 'files', rootPath: root.rootPath, added, modified, deleted });
 		} else {
 			root.lastDirtySig = undefined;

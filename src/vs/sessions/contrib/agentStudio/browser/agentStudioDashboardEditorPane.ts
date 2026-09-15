@@ -913,10 +913,11 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 			.agent-studio-dashboard button:hover {
 				opacity: 0.85;
 			}
-			.agent-studio-dashboard::-webkit-scrollbar { width: 8px; }
-			.agent-studio-dashboard::-webkit-scrollbar-track { background: transparent; }
-			.agent-studio-dashboard::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider, #3c3c3c); border-radius: 4px; }
-			.agent-studio-dashboard::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSliderHover, #6b6b6b); }
+			/* 滚动条统一由 sessions 全局样式提供。
+			   注意：这里曾用 --vscode-scrollbarSlider / --vscode-scrollbarSliderHover
+			   —— 这两个变量名**根本不存在**（正确的是 -background / -hoverBackground），
+			   所以一直走的是兜底色。 */
+			.agent-studio-dashboard::-webkit-scrollbar-thumb { background-clip: padding-box; }
 		`;
 		document.head.appendChild(style);
 	}

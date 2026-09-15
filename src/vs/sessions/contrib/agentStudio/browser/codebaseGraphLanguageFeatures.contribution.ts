@@ -19,7 +19,6 @@
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Position } from '../../../../editor/common/core/position.js';
 import { Range } from '../../../../editor/common/core/range.js';
@@ -66,7 +65,6 @@ class CodebaseGraphCppDefinitionProvider implements DefinitionProvider {
 			return undefined;
 		}
 
-		const roots = this.graphService.getProjectRoots();
 		const links: LocationLink[] = [];
 
 		for (const node of nodes) {
@@ -77,15 +75,19 @@ class CodebaseGraphCppDefinitionProvider implements DefinitionProvider {
 			if (node.name !== word || !DEFINITION_NODE_TYPES.has(node.type)) {
 				continue;
 			}
+			// 语言特性要产出 Range ⇒ 必须真有行号（`label='file'` 的 stub 节点不算定义候选）
 			if (!node.filePath || !node.startLine || node.startLine < 1) {
 				continue;
 			}
-			const root = roots[node.project ?? '_default'];
-			if (!root) {
+			// 2026-09-15：统一走 service 级解析器（root 三级回退），不再只认
+			// `getProjectRoots()[node.project]` 一项 —— project 名对不上时原本会静默丢候选。
+			// 逐节点探测，未命中属正常路径 ⇒ quiet（不刷告警）。
+			const loc = await this.graphService.resolveNodeLocation(node, { quiet: true });
+			if (!loc) {
 				continue;
 			}
 
-			const uri = joinPath(URI.file(root), node.filePath);
+			const uri = loc.uri;
 			const col = await this._findWordColumn(uri, node.startLine, word, token);
 			const lineIdx = node.startLine - 1; // 图谱 startLine 为 1-based，编辑器 Range 为 0-based
 			const selectionRange = new Range(lineIdx, col, lineIdx, col + word.length);
@@ -150,17 +152,18 @@ class CodebaseGraphCppReferenceProvider implements ReferenceProvider {
 			return undefined;
 		}
 
-		const roots = this.graphService.getProjectRoots();
 		const locations: Location[] = [];
 		for (const ref of refs) {
 			if (token.isCancellationRequested) {
 				break;
 			}
 			const n = ref.node;
+			// 语言特性要产出 Range ⇒ 必须真有行号
 			if (!n.filePath || !n.startLine || n.startLine < 1) { continue; }
-			const root = roots[n.project ?? '_default'];
-			if (!root) { continue; }
-			const uri = joinPath(URI.file(root), n.filePath);
+			// 2026-09-15：统一走 service 级解析器（root 三级回退）；逐节点探测 ⇒ quiet
+			const loc = await this.graphService.resolveNodeLocation(n, { quiet: true });
+			if (!loc) { continue; }
+			const uri = loc.uri;
 			const lineIdx = n.startLine - 1;
 			const col = await this._findWordColumn(uri, n.startLine, word, token);
 			locations.push({

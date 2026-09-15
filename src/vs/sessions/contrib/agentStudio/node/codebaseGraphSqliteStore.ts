@@ -596,51 +596,94 @@ export class CodebaseGraphSqliteStore {
 	 * 全文/子串检索。
 	 * - 优先 FTS5 MATCH（单/多词均可，bm25 排序）
 	 * - 空结果/异常 → LIKE 子串匹配 name/qualified_name（兜底子串语义）
+	 *
+	 * @param project 传入时**下推到 SQL** 限定单项目（2026-09-15）。
+	 *
+	 * 为什么必须下推（用户日志 2026-09-15）：SQLite 文件是**跨工作区共享**的持久层
+	 * （`<userData>/codebase-graph/graph.db`），里面还留着历史工作区的项目（S1Game 34 万 +
+	 * UE5EA …）。本方法原先不带 project ⇒ 跨全库按 bm25 取前 N 条，**候选池被外来项目占满**
+	 * （实测 needle="test" 的 231 条候选全是 S1Game:148 + UE5EA:83，本项目命中根本没进池），
+	 * renderer 侧再按 project 收敛 ⇒ 结果恒为 0（「Find Symbol 搜不到任何东西」）。
+	 * 过滤下推后：① 结果正确；② bm25 排序集也缩小到本项目（顺带缓解慢查询）。
+	 *
+	 * @param excludeTypes 排除的节点类型（**非符号**容器/桩节点，2026-09-15）。
+	 *   与 project 同理**必须下推**：`label='file'` 的 CONTAINS 桩节点（`*.test.ts` 等）
+	 *   会在 bm25/LIKE 排序里占据大量名额，把真正的符号挤出 `LIMIT` —— 只在 renderer
+	 *   后置过滤已经晚了（Find Symbol 搜 `test` 时 200 条里大半是文件名）。
+	 *   大小写不敏感（图里 `file` 与 `File` 并存）。
+	 *
+	 * @param nameOnly 只匹配 `name` 列（符号名），2026-09-15。
+	 *   两个理由，缺一不可：
+	 *   ① **不该匹配**：FTS 索引了 `name, qualified_name, file_path, body`，`MATCH "test"`
+	 *      会命中 QN 里的 `…/classifyLLM.test.ts` ⇒ 搜 `test` 返回 `MockClassifyLLM`
+	 *      （用户截图报障）；
+	 *   ② **FTS 的语义也不对**：即使加 `name:` 列过滤，FTS 是**词元**匹配 —— 只命中词元恰为
+	 *      `test` 的名字，`testHelper` 反而漏掉；而 Find Symbol 要的是**符号名子串**。
+	 *   ⇒ 故 `nameOnly` 时**跳过 FTS**，直接走 `name LIKE '%q%'`（子串语义，按连接度排序）。
 	 */
-	async searchNodes(query: string, nodeType?: string, limit = 200): Promise<GraphNode[]> {
+	async searchNodes(query: string, nodeType?: string, limit = 200, project?: string, excludeTypes?: readonly string[], nameOnly?: boolean): Promise<GraphNode[]> {
 		const db = this._ensureDb();
 		const q = query.trim();
 		if (!q) { return []; }
 		const typeFilter = nodeType ? ` AND type = ?` : '';
 		const typeArg = nodeType ? [nodeType] : [];
+		// project 过滤：FTS 路径走 JOIN 别名 n；LIKE 路径是单表（无别名）
+		const projArg = project ? [project] : [];
+		const projFilterFts = project ? ` AND n.project = ?` : '';
+		const projFilterLike = project ? ` AND project = ?` : '';
+		// 类型排除（同上：别名差异）。`lower()` 只为兼容 `file`/`File` 两种写法；
+		// type 列本就无索引、LIKE 路径本就是全表扫描，代价可忽略。
+		const exArg = (excludeTypes ?? []).map(t => t.toLowerCase());
+		const exPlaceholders = exArg.map(() => '?').join(',');
+		const exFilterFts = exArg.length > 0 ? ` AND lower(n.type) NOT IN (${exPlaceholders})` : '';
+		const exFilterLike = exArg.length > 0 ? ` AND lower(type) NOT IN (${exPlaceholders})` : '';
 
 	// FTS5 优先（单词同样走 MATCH，bm25 排序；对齐 C 版 bm25() SQL 语义）。
 	// 空结果或 MATCH 异常时退回 LIKE——FTS 按词索引，子串查询（"Handle" 命中
 	// "MyHandler"）必须由 LIKE 兜底。
 	const tFtsStart = Date.now();
 	let ftsRows = 0;
-	let fallbackReason = '';
-	try {
-		const matchExpr = q.split(/\s+/).map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
-		const rows = await dbAll(db,
-			`SELECT n.* FROM nodes_fts f JOIN nodes n ON n.id = f.rowid
-			 WHERE nodes_fts MATCH ? ${typeFilter}
-			 ORDER BY bm25(nodes_fts) LIMIT ?`,
-			[matchExpr, ...typeArg, limit]) as unknown as NodeRow[];
-		if (rows.length) {
-			ftsRows = rows.length;
-			if (Date.now() - tFtsStart > 500) { console.warn(`[searchNodes][diag] FTS hit path slow: ${Date.now() - tFtsStart}ms q="${q.slice(0, 40)}" rows=${rows.length}`); }
-			// [CBSearch] 召回路径追踪：FTS 命中
-			console.warn(`[CBSearch][trace] searchNodes q="${q.slice(0, 60)}" type=${nodeType ?? '-'} path=FTS match="${matchExpr.slice(0, 80)}" rows=${ftsRows} ${Date.now() - tFtsStart}ms`);
-			return rows.map(rowToNode);
-		}
-		fallbackReason = 'fts-zero-hit';
-		// FTS5 无命中 → 退回 LIKE
-	} catch { fallbackReason = 'fts-match-error'; /* MATCH 表达式异常 → 退回 LIKE */ }
+	let fallbackReason = nameOnly ? 'name-only' : '';
+	// nameOnly（符号名检索，2026-09-15）：**跳过 FTS** 直接走 LIKE —— FTS 是**词元**匹配且
+	// 索引了 qualified_name/file_path/body ⇒ ① 会命中 QN 里的文件路径（搜 `test` 返回
+	// `…/classifyLLM.test.ts::MockClassifyLLM`）；② 即使加 `name:` 列过滤，也只命中词元恰为
+	// `test` 的名字，`testHelper` 反而漏掉。而 Find Symbol 要的是**符号名子串**语义。
+	if (!nameOnly) {
+		try {
+			const matchExpr = q.split(/\s+/).map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
+			const rows = await dbAll(db,
+				`SELECT n.* FROM nodes_fts f JOIN nodes n ON n.id = f.rowid
+				 WHERE nodes_fts MATCH ? ${typeFilter}${projFilterFts}${exFilterFts}
+				 ORDER BY bm25(nodes_fts) LIMIT ?`,
+				[matchExpr, ...typeArg, ...projArg, ...exArg, limit]) as unknown as NodeRow[];
+			if (rows.length) {
+				ftsRows = rows.length;
+				if (Date.now() - tFtsStart > 500) { console.warn(`[searchNodes][diag] FTS hit path slow: ${Date.now() - tFtsStart}ms q="${q.slice(0, 40)}" proj=${project ?? '-'} rows=${rows.length}`); }
+				// [CBSearch] 召回路径追踪：FTS 命中
+				console.warn(`[CBSearch][trace] searchNodes q="${q.slice(0, 60)}" type=${nodeType ?? '-'} proj=${project ?? '-'} ex=${exArg.join('/') || '-'} path=FTS match="${matchExpr.slice(0, 80)}" rows=${ftsRows} ${Date.now() - tFtsStart}ms`);
+				return rows.map(rowToNode);
+			}
+			fallbackReason = 'fts-zero-hit';
+			// FTS5 无命中 → 退回 LIKE
+		} catch { fallbackReason = 'fts-match-error'; /* MATCH 表达式异常 → 退回 LIKE */ }
+	}
 	const tFts = Date.now() - tFtsStart;
 
 	const tLikeStart = Date.now();
 	const likeArg = `%${q}%`;
+	// nameOnly：只匹配 `name`（符号名子串）；否则保持「name 或 qualified_name」旧口径
+	const likeWhere = nameOnly ? `name LIKE ?` : `(name LIKE ? OR qualified_name LIKE ?)`;
+	const likeArgs = nameOnly ? [likeArg] : [likeArg, likeArg];
 	const rows = await dbAll(db,
-		`SELECT * FROM nodes WHERE (name LIKE ? OR qualified_name LIKE ?) ${typeFilter}
+		`SELECT * FROM nodes WHERE ${likeWhere} ${typeFilter}${projFilterLike}${exFilterLike}
 		 ORDER BY (in_degree + out_degree) DESC LIMIT ?`,
-		[likeArg, likeArg, ...typeArg, limit]) as unknown as NodeRow[];
+		[...likeArgs, ...typeArg, ...projArg, ...exArg, limit]) as unknown as NodeRow[];
 	const tLike = Date.now() - tLikeStart;
 	// [CBSearch] 召回路径追踪：LIKE 兜底（多词查询注意——LIKE 是整串子串，几乎不命中多词）
-	console.warn(`[CBSearch][trace] searchNodes q="${q.slice(0, 60)}" type=${nodeType ?? '-'} path=LIKE reason=${fallbackReason} like="${likeArg.slice(0, 80)}" rows=${rows.length} FTS=${tFts}ms LIKE=${tLike}ms`);
+	console.warn(`[CBSearch][trace] searchNodes q="${q.slice(0, 60)}" type=${nodeType ?? '-'} proj=${project ?? '-'} ex=${exArg.join('/') || '-'} path=LIKE reason=${fallbackReason} like="${likeArg.slice(0, 80)}" rows=${rows.length} FTS=${tFts}ms LIKE=${tLike}ms`);
 	// diag：LIKE 兜底全表扫描是常见性能瓶颈（FTS 未命中/未索引时触发），单独计时
 	if (tFts > 200 || tLike > 200) {
-		console.warn(`[searchNodes][diag] q="${q.slice(0, 40)}" limit=${limit} FTS=${tFts}ms LIKE=${tLike}ms rows=${rows.length}`);
+		console.warn(`[searchNodes][diag] q="${q.slice(0, 40)}" limit=${limit} proj=${project ?? '-'} FTS=${tFts}ms LIKE=${tLike}ms rows=${rows.length}`);
 	}
 	return rows.map(rowToNode);
 	}

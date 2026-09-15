@@ -34,6 +34,22 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 	private _autoIndexTimer: any;
 	/** 已加载/已索引的 folder（归一化 fsPath） */
 	private readonly _readyFolders = new Set<string>();
+	/**
+	 * **正在加载中**的 folder（归一化 fsPath）。
+	 *
+	 * 2026-09-15 修：`_readyFolders` 只在加载**完成后**才 add，而一次 `loadGraphMerge`
+	 * 要 10~40s（大图）——期间任何再次触发的 `_bootstrap()`（工作区切换、folder 事件）
+	 * 都会把同一 folder **再加载一遍**。实测日志（20260915T132615）：
+	 * ```
+	 * 13:26:45 [loadGraphMerge] merged ...sarosis... store nodes=341560
+	 * 13:26:53 [loadGraphMerge] merged ...sarosis... store nodes=522257   ← 同一制品被合并两次
+	 * ```
+	 * 后果（实测制品 `graph.db.zst` 358,887 节点去重后仅 180,753，**49.6% 冗余**）：
+	 * 内存节点翻倍 → `_ensureSqliteFreshness` 恒判「sqlite 落后」→ 每次查询触发全量重同步
+	 * → 查询与写事务竞争（单次检索 2.3s 且候选残缺）。
+	 * 注：`mergeFromJSONAsync` 现已幂等（同 qn 跳过），此处是**源头**防重复发起（省掉一次解析）。
+	 */
+	private readonly _loadingFolders = new Set<string>();
 	/** 待自动索引的 folder（归一化 fsPath → 原始 fsPath） */
 	private readonly _pendingIndex = new Map<string, string>();
 
@@ -52,13 +68,24 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		}));
 
 		this._register(this._graphService.onDidIndexComplete(result => {
-			if (result.success) {
-				this._logService.info(LOG_TAG, `Auto-index complete: ${result.message}`);
-				// 启动文件监听（增量重索引触发源，P2-#8）
-				void this._startWatching(this._primaryFolder());
-			} else {
+			if (!result.success) {
 				this._logService.warn(LOG_TAG, `Auto-index failed: ${result.message}`);
+				return;
 			}
+			this._logService.info(LOG_TAG, `Auto-index complete: ${result.message}`);
+			// 启动文件监听（增量重索引触发源，P2-#8）
+			//
+			// ① 增量索引由 **watcher 自己**触发（watcher 必然已存在、排除集未变）⇒ **无需**刷新：
+			//    旧实现每轮都重启一次 ⇒ 重跑 `_excludeResolver.resolve()`（读 `.cbmignore` + 工作区配置）
+			//    + 替换 root 条目 + `[exclude]` / `Starting graph watcher` / `Watching` 三条日志。
+			//    用户 2026-09-15 日志里正是「每轮增量完成后紧跟这三条」。
+			if (result.kind === 'incremental') { return; }
+			// ② ★ 用「**刚完成索引的那个 root**」而不是 `_primaryFolder()`（= folders[0]）：
+			//    多 folder 工作区下否则永远只刷新第一个 folder 的 watcher，而真正可能改了排除集
+			//    （索引会写 `.cbmignore`）的那个 folder 的 watcher 永不刷新。
+			//    与 `_onWatcherChange`（用事件携带的 `rootPath`）/ `_resolveActiveProject`
+			//    是同一条教训：「别用 folders[0] 代替事件所属 root」。
+			void this._startWatching(result.rootPath || this._primaryFolder());
 		}));
 
 		// Listen for workspace folder changes
@@ -130,8 +157,11 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		// 索引改由 LLM 在 codebase 工具触发时询问用户后手动发起（见 codebaseTools.noGraphGuidance）。
 		const allowAutoIndex = await this._hasCodeWorkspaceFile();
 
-		// 收集需要合并加载的 folder（不含已 ready 的）
-		const toLoad = folders.filter(f => !this._readyFolders.has(this._normalize(f.uri.fsPath)));
+		// 收集需要合并加载的 folder（不含已 ready 的、也不含**正在加载中**的）
+		const toLoad = folders.filter(f => {
+			const key = this._normalize(f.uri.fsPath);
+			return !this._readyFolders.has(key) && !this._loadingFolders.has(key);
+		});
 
 		for (let i = 0; i < toLoad.length; i++) {
 			const folder = toLoad[i];
@@ -142,15 +172,28 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			// 合并加载；BM25 仅在最后一个 folder 加载后重建一次（避免重复重建开销）
 			const isLast = i === toLoad.length - 1;
 			let loaded = false;
+			this._loadingFolders.add(key);
 			try {
 				loaded = await this._graphService.loadGraphMerge(graphFileUri.fsPath, project, isLast);
-			} catch { /* 读取/解析异常，落入下方区分逻辑 */ }
+			} catch { /* 读取/解析异常，落入下方区分逻辑 */ } finally {
+				this._loadingFolders.delete(key);
+			}
 			if (loaded) {
 				this._logService.info(LOG_TAG, `Loaded existing graph for folder "${project}".`);
 				this._readyFolders.add(key);
 				this._pendingIndex.delete(key);
 				// 多 folder：每个已加载 folder 单独启动监听（增量索引，互不覆盖）
 				await this._startWatching(folder.uri.fsPath);
+				continue;
+			}
+
+			// 2026-09-15：用户可能在合并加载期间就切走了工作区（切换不 reload renderer）——
+			// 此时该 folder 已不属于本窗口，`loadGraphMerge` 会**主动丢弃**它（防跨工作区污染）。
+			// 必须在这里静默跳过，否则会打出「制品存在但加载失败」的**假警报**，把真正原因盖掉。
+			const stillInWorkspace = this._workspaceService.getWorkspace().folders
+				.some(f => this._normalize(f.uri.fsPath) === key);
+			if (!stillInWorkspace) {
+				this._logService.info(LOG_TAG, `Folder "${project}" left the workspace during load — skipping (no auto-index).`);
 				continue;
 			}
 
@@ -233,6 +276,15 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		// 逐 folder 索引（每个 folder 用其目录名作为唯一项目名，避免多 folder 覆盖）
 		const pending = [...this._pendingIndex.entries()];
 		for (const [key, rootPath] of pending) {
+			// 2026-09-15：自动索引有 5s 延迟（AUTO_INDEX_DELAY_MS），期间用户可能已切走工作区
+			// （切换不 reload renderer）⇒ 该 folder 不再属于本窗口，**不得**再为它建图。
+			const stillInWorkspace = this._workspaceService.getWorkspace().folders
+				.some(f => this._normalize(f.uri.fsPath) === key);
+			if (!stillInWorkspace) {
+				this._pendingIndex.delete(key);
+				this._logService.info(LOG_TAG, `Skipped auto-index for "${rootPath}" — left the workspace before the delay elapsed.`);
+				continue;
+			}
 			const project = this._basename(rootPath) || '_default';
 			const config: IIndexConfig = {
 				mode: userConfig?.mode ?? 'fast',

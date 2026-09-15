@@ -1042,11 +1042,7 @@ function injectStyles(): void {
 	flex-direction: column;
 	gap: 14px;
 }
-.native-tb-detail-body::-webkit-scrollbar { width: 6px; }
-.native-tb-detail-body::-webkit-scrollbar-thumb {
-	background: var(--vscode-scrollbarSlider-background);
-	border-radius: 3px;
-}
+/* 滚动条统一由 sessions 全局样式提供（.native-tb-detail-body 不再单独定义） */
 .native-tb-detail-row {
 	display: flex;
 	align-items: center;

@@ -48,6 +48,9 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IRequestService } from '../../../../../platform/request/common/request.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
+import { IAgentOSService } from '../../common/agentOS.js';
+import { createMediaStoreProxy } from '../mediaStoreProxy.js';
+import type { IMediaBackend, MediaAsset, MediaListResult } from '../../common/mediaStoreChannel.js';
 import { IModelSelectorService } from '../../common/modelSelector.js';
 import { CodebaseGraphViewerEditorInput } from '../codebaseGraphViewerEditorInput.js';
 import { KbImportController } from '../kbImportController.js';
@@ -65,11 +68,16 @@ import type { IKbSqliteBackend, IKbSqliteDoc } from '../../common/kbSqliteStoreC
 import { URI } from '../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { $ } from '../../../../../base/browser/dom.js';
-import { safeSetInnerHtml } from '../../../../../base/browser/domSanitize.js';
 import { getIconClasses } from '../../../../../editor/common/services/getIconClasses.js';
 import { IModelService } from '../../../../../editor/common/services/model.js';
 import { ILanguageService } from '../../../../../editor/common/languages/language.js';
 import { Action, IAction, Separator } from '../../../../../base/common/actions.js';
+// ★ 右键菜单的 Action 生命周期（2026-09-15，修 [LEAKED DISPOSABLE]）：
+// 每次右键都会 `new` 一批 `Action`，此前**直接交给 `showContextMenu` 且从不释放** ✗
+// ⇒ 每次右键泄漏十几个 disposable ✗（`GCBasedDisposableTracker` 在 GC 时逐个报
+// `[LEAKED DISPOSABLE] … at KnowledgeBaseViewPane.nodeContextMenu (knowledgeBaseView.ts:35xx)` ✓）。
+// 现统一用 `DisposableStore` 收集，菜单关闭（`showContextMenu` 的 promise settle）即释放 ✓。
+import { DisposableStore, isDisposable } from '../../../../../base/common/lifecycle.js';
 
 import { localize } from '../../../../../nls.js';
 
@@ -99,6 +107,7 @@ import { renderKbSettingsPanel } from './knowledgeBase/kbSettingsPanel.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
 import { MemoryDetailEditorInput } from '../memoryDetailEditorInput.js';
 import { CodebaseMemoryDetailEditorInput } from '../codebaseMemoryDetailEditorInput.js';
+import { MediaGalleryEditorInput } from '../mediaGalleryEditorInput.js';
 import { KbGraphEditorInput } from '../kbGraphEditorInput.js';
 import { CanvasEditorInput } from '../canvasEditor/canvasEditorInput.js';
 import type { IMindmapData } from '../../common/mindmap/mindmapTypes.js';
@@ -109,6 +118,31 @@ import { IKbVectorSearchHit } from './knowledgeBase/kbVectorIndex.js';
 const KB_ROOT_SUBPATH = '.vssaros/knowledge-base';
 const STORAGE_SORT_PREFIX = 'agentStudio.kb.sort.';
 const STORAGE_EXPANDED_PREFIX = 'agentStudio.kb.expanded.';
+
+/**
+ * Episodic 层的 6 个原生类型（与 memoryDetailEditorPane 的 EPISODIC_TYPES 同源）。
+ * 数组顺序即「记忆」Tab 统计格子的展示顺序。
+ */
+const NATIVE_MEMORY_TYPES: readonly string[] = ['pattern', 'fact', 'preference', 'architecture', 'bug', 'workflow'];
+
+/** 「代码」Tab 日志 textarea 的保留行数上限（超出丢弃最老的，避免长会话无限增长）。 */
+const CODE_LOG_MAX_LINES = 500;
+
+/** 资料库 sideview 的顶部 Tab 集合。 */
+type KbTabId = 'kb' | 'mem' | 'code' | 'media';
+
+/** 「媒体库」Tab 列表展示的最近资产条数。 */
+const MEDIA_RECENT_LIMIT = 30;
+
+/** 媒体资产 kind → codicon 类名（非图片类资产的占位图标）。 */
+function mediaKindIcon(kind: string): string {
+	switch (kind) {
+		case 'image': return 'codicon-file-media';
+		case 'video': return 'codicon-device-camera-video';
+		case 'audio': return 'codicon-unmute';
+		default: return 'codicon-file-text';
+	}
+}
 
 
 
@@ -127,13 +161,47 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _settingsBtn!: HTMLElement;
 	private _settingsDD!: HTMLElement;
 
-	/** 记忆库 Section 折叠状态 */
-	private _memSectionCollapsed = false;
-	private _codeSectionCollapsed = false;
-	/** 记忆库 section 的 body 容器 */
+	/**
+	 * 当前激活的顶部 Tab。
+	 * 2026-09-15 重构：原「文件树 + 记忆库 + 代码库」纵向堆叠改为平级 Tab，
+	 * 同一时刻只显示一个面板 ⇒ 空态不再挤压主内容、侧栏不再被常驻区块占满。
+	 */
+	private _activeTab: KbTabId = 'kb';
+	/** Tab 面板容器（key = tab id）。 */
+	private _tabPanels = new Map<KbTabId, HTMLElement>();
+	/** Tab 按钮容器（key = tab id）。 */
+	private _tabButtons = new Map<KbTabId, HTMLElement>();
+	/** 记忆库 Tab 的内容容器（`_renderMemoryList` 的落点）。 */
 	private _memSectionBody?: HTMLElement;
 	/** 记忆库列表容器 */
 	private _memList?: HTMLElement;
+	/** 记忆统计区容器（异步填充：总数 / 分层计数 / 原生类型计数）。 */
+	private _memStatsEl?: HTMLElement;
+	/** 记忆统计的防竞态令牌：每次刷新自增，回填前校验是否最新。 */
+	private _memStatsToken = 0;
+	/** 代码 Tab 的内容容器（统计 + 入口）。 */
+	private _codeStatsBody?: HTMLElement;
+	/** 代码 Tab 的统计区容器（异步填充）。 */
+	private _codeStatsEl?: HTMLElement;
+	/** 代码库索引的实时进度文本（`onDidIndexProgress` 推送，索引中显示）。 */
+	private _codeIndexProgress = '';
+	/** 代码 Tab 的状态行（「已就绪 / 正在索引…」）。 */
+	private _codeStatusEl?: HTMLElement;
+	/** 代码库日志缓冲（只读 textarea 的数据源，带时间戳）。 */
+	private _codeLogLines: string[] = [];
+	/** 代码库日志的只读 textarea。 */
+	private _codeLogEl?: HTMLTextAreaElement;
+
+	/** 媒体库 Tab 的内容容器。 */
+	private _mediaBody?: HTMLElement;
+	/** 媒体库统计区容器（异步填充）。 */
+	private _mediaStatsEl?: HTMLElement;
+	/** 媒体库「最近资产」列表容器。 */
+	private _mediaListEl?: HTMLElement;
+	/** 媒体库「最近资产」条数徽标。 */
+	private _mediaListCountEl?: HTMLElement;
+	/** 媒体资产库后端（懒初始化，经主进程 ProxyChannel）。 */
+	private _mediaBackend?: IMediaBackend;
 
 	private _vaults: IKbVault[] = [];
 	private _activeVault: IKbVault | undefined;
@@ -260,6 +328,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IWorkingCopyFileService private readonly workingCopyFileService: IWorkingCopyFileService,
 		@IUndoRedoService private readonly undoRedoService: IUndoRedoService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@IAgentOSService private readonly _agentOSService: IAgentOSService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._index = new KbFullTextIndex(this.fileService);
@@ -289,6 +358,18 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}));
 		// P3-3：监听 vault 文件变化（外部编辑/外部程序改动），debounce 后刷新 + 重建导航
 		this._register(this.fileService.onDidFilesChange(e => this._onVaultFilesChange(e)));
+		// 代码库索引进度 / 完成 → 追加到「代码」Tab 的日志 textarea，并刷新状态行与统计。
+		this._register(this._codebaseGraphService.onDidIndexProgress(msg => {
+			this._codeIndexProgress = msg;
+			this._appendCodeLog(msg);
+			this._updateCodeStatusLine();
+		}));
+		this._register(this._codebaseGraphService.onDidIndexComplete(() => {
+			this._codeIndexProgress = '';
+			this._appendCodeLog('索引完成');
+			this._updateCodeStatusLine();
+			void this._refreshCodeStats();
+		}));
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -381,34 +462,22 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._body = container;
 		this._body.classList.add('kb-view');
 
-		// ── ═══ 资料库 Section Header ═══ ──
+		// ── ═══ 资料库 Header ═══ ──
 		// 2026-09-11：与左侧栏页签文案保持一致（「知识库」→「资料库」）。
+		// 2026-09-15 重构：图标统一为 codicon（原 emoji / 文字符号 ⟳ 🏗️ ⚙ 与主题字体不一致）。
 		const header = $('div.kb-header');
 		const title = $('span.kb-title');
-		title.textContent = '📚 资料库';
+		const titleIcon = $('span.codicon.codicon-book');
+		const titleText = $('span');
+		titleText.textContent = '资料库';
+		title.replaceChildren(titleIcon, titleText);
 		header.appendChild(title);
 		header.appendChild($('span.kb-spacer'));
-		const graphBtn = $('span.kb-hbtn');
-		graphBtn.textContent = '🕸️'; graphBtn.title = '关系图谱（在中间栏打开）';
-		graphBtn.onclick = () => this._openGraph();
-		header.appendChild(graphBtn);
-		const mindmapBtn = $('span.kb-hbtn');
-		mindmapBtn.textContent = '🧠'; mindmapBtn.title = '思维导图（打开或生成 .canvas）';
-		mindmapBtn.setAttribute('role', 'button');
-		mindmapBtn.setAttribute('aria-label', '思维导图');
-		mindmapBtn.onclick = () => void this._openMindmap();
-		header.appendChild(mindmapBtn);
-		const refreshBtn = $('span.kb-hbtn');
-		refreshBtn.textContent = '⟳'; refreshBtn.title = '刷新';
-		refreshBtn.onclick = () => this.refresh();
-		header.appendChild(refreshBtn);
-		const buildAllBtn = $('span.kb-hbtn');
-		buildAllBtn.textContent = '🏗️'; buildAllBtn.title = '批量构建笔记（将库中所有未处理文件转为笔记）';
-		buildAllBtn.onclick = () => { void this._batchBuildAll(); };
-		header.appendChild(buildAllBtn);
-		const settingsBtn = $('span.kb-hbtn');
-		settingsBtn.textContent = '⚙'; settingsBtn.title = '知识库设置（根目录等）';
-		settingsBtn.onclick = (e) => { e.stopPropagation(); this.toggleSettingsPanel(); };
+		header.appendChild(this._headerBtn('codicon-graph', '关系图谱（在中间栏打开）', () => this._openGraph()));
+		header.appendChild(this._headerBtn('codicon-map', '思维导图（打开或生成 .canvas）', () => void this._openMindmap()));
+		header.appendChild(this._headerBtn('codicon-refresh', '刷新', () => this.refresh()));
+		header.appendChild(this._headerBtn('codicon-tools', '批量构建笔记（将库中所有未处理文件转为笔记）', () => { void this._batchBuildAll(); }));
+		const settingsBtn = this._headerBtn('codicon-settings-gear', '资料库设置（根目录等）', (e) => { e.stopPropagation(); this.toggleSettingsPanel(); });
 		this._settingsBtn = settingsBtn;
 		header.appendChild(settingsBtn);
 		this._body.appendChild(header);
@@ -416,9 +485,33 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// 设置面板（⚙ 下拉）
 		this._settingsDD = $('div.kb-dropdown.kb-settings');
 
-		// ── ═══ 知识库 Body ═══ ──
-		const kbBody = $('div.kb-section-body-main');
-		kbBody.style.cssText = 'flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:120px;';
+		// ── ═══ 顶部 Tab：资料 / 记忆 / 代码 ═══ ──
+		// 2026-09-15 重构：原先「文件树 + 记忆库 + 代码库」纵向堆叠，三段常驻 ⇒
+		// 空态也占满侧栏、主内容被挤压。改为平级 Tab，同一时刻只显示一个面板。
+		const tabs = $('div.kb-tabs');
+		const tabDefs: { id: KbTabId; icon: string; label: string }[] = [
+			{ id: 'kb', icon: 'codicon-library', label: '知识' },
+			{ id: 'mem', icon: 'codicon-database', label: '记忆' },
+			{ id: 'code', icon: 'codicon-code', label: '代码' },
+			{ id: 'media', icon: 'codicon-file-media', label: '媒体库' },
+		];
+		for (const def of tabDefs) {
+			const btn = $('div.kb-tab');
+			const ic = $('span.codicon.' + def.icon);
+			const lb = $('span');
+			lb.textContent = def.label;
+			btn.replaceChildren(ic, lb);
+			btn.title = def.label;
+			btn.setAttribute('role', 'tab');
+			btn.onclick = () => this._switchTab(def.id);
+			this._tabButtons.set(def.id, btn);
+			tabs.appendChild(btn);
+		}
+		this._body.appendChild(tabs);
+
+		// ── ═══ 面板：资料（文件树）═══ ──
+		const kbBody = $('div.kb-panel.kb-panel-kb');
+		this._tabPanels.set('kb', kbBody);
 
 		// Vault switcher
 		this._vaultBar = $('div.kb-vault-bar');
@@ -429,7 +522,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// Search row: 搜索框 + 搜索模式切换 + 排序按钮
 		const searchRow = $('div.kb-search-row');
 		const searchBox = $('div.kb-search-box');
-		safeSetInnerHtml(searchBox, '<span>🔍</span>');
+		searchBox.appendChild($('span.codicon.codicon-search'));
 		const searchInput = document.createElement('input');
 		searchInput.placeholder = '搜索资料库…';
 		searchInput.oninput = () => this.applyFilter(searchInput.value.trim().toLowerCase());
@@ -460,8 +553,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		searchBox.appendChild(modeBtn);
 
 		// 排序按钮
-		const sortBtn = $('span.kb-search-sort-btn');
-		sortBtn.textContent = '↑↓';
+		const sortBtn = $('span.kb-search-sort-btn.codicon.codicon-sort-precedence');
 		sortBtn.title = '排序';
 		sortBtn.onclick = (e) => {
 			e.stopPropagation();
@@ -533,109 +625,61 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			}
 		});
 
-		// ── ═══ 拖拽分隔条 ═══ ──
-		const dragHandle = $('div.kb-drag-handle');
-		dragHandle.style.cssText = 'height:3px;background:#2a2a2a;cursor:row-resize;flex-shrink:0;transition:background .1s;';
-		dragHandle.onmouseenter = () => { dragHandle.style.background = '#094771'; };
-		dragHandle.onmouseleave = () => { dragHandle.style.background = '#2a2a2a'; };
-		dragHandle.title = '拖拽调整知识库 / 记忆库高度';
-		this._body.appendChild(dragHandle);
-
-		// ── ═══ 记忆库 Section ═══ ──
-		const memSection = $('div.kb-mem-section');
-		memSection.style.cssText = 'display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;';
-		this._body.appendChild(memSection);
-
-		// 记忆库 Header（可点击折叠/展开）
-		const memHeader = $('div.kb-mem-header');
-		memHeader.style.cssText = 'display:flex;align-items:center;gap:6px;padding:7px 12px;background:#1e1e1e;cursor:pointer;font-size:12px;font-weight:600;border-bottom:1px solid #2a2a2a;min-height:32px;flex-shrink:0;';
-		memHeader.onclick = () => this._toggleMemorySection(memSection, memHeader);
-		const memArrow = $('span.kb-mem-arrow');
-		memArrow.textContent = '▼';
-		memArrow.style.cssText = 'font-size:9px;transition:transform .15s;color:#888;width:12px;text-align:center;flex-shrink:0;';
-		memHeader.appendChild(memArrow);
-		const memIcon = $('span');
-		memIcon.textContent = '🧠';
-		memIcon.style.cssText = 'font-size:13px;flex-shrink:0;';
-		memHeader.appendChild(memIcon);
-		const memLabel = $('span');
-		memLabel.textContent = '记忆库';
-		memLabel.style.cssText = 'flex:1;color:#e0e0e0;';
-		memHeader.appendChild(memLabel);
-		// 刷新记忆按钮
-		const memRefreshBtn = $('span');
-		memRefreshBtn.textContent = '⟳';
-		memRefreshBtn.title = '刷新记忆库';
-		memRefreshBtn.style.cssText = 'width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px;cursor:pointer;font-size:13px;color:#aaa;flex-shrink:0;';
-		memRefreshBtn.onclick = (e) => { e.stopPropagation(); this._renderMemoryList(); };
-		memHeader.appendChild(memRefreshBtn);
-		memSection.appendChild(memHeader);
-
-		// 记忆库 Body
-		this._memSectionBody = $('div.kb-mem-body');
-		this._memSectionBody.style.cssText = 'flex:1;overflow-y:auto;min-height:60px;';
-		memSection.appendChild(this._memSectionBody);
-
-		// 记忆列表容器
+		// ── ═══ 面板：记忆 ═══ ──
+		// 2026-09-15 重构：记忆库不再是「可折叠 section + 拖拽分隔条」，
+		// 而是独立 Tab 面板（拖拽调整高度在 Tab 形态下已无意义，一并移除）。
+		const memPanel = $('div.kb-panel.kb-panel-mem');
+		this._tabPanels.set('mem', memPanel);
+		// 面板工具条：`_renderMemoryList` 会清空内容容器，故工具条必须是其兄弟节点。
+		const memBar = $('div.kb-panel-bar');
+		const memBarLabel = $('span.kb-panel-bar-label');
+		memBarLabel.textContent = '记忆库';
+		memBar.replaceChildren(memBarLabel, $('span.kb-spacer'),
+			this._headerBtn('codicon-refresh', '刷新记忆库', (e) => { e.stopPropagation(); this._refreshMemoryPanel(); }));
+		memPanel.appendChild(memBar);
+		// 记忆内容容器（`_renderMemoryList` 的落点）
+		const memContent = $('div.kb-panel-content');
+		memPanel.appendChild(memContent);
+		this._memSectionBody = memContent;
+		// 记忆列表容器（由 `_renderMemoryList` 填充）
 		this._memList = $('div.kb-mem-list');
-
-		// 初始状态：记忆库默认展开
 		this._renderMemoryList();
+		this._body.appendChild(memPanel);
 
-		// 拖拽逻辑：记忆库 section 高度可拖拽调整
-		this._setupMemoryDragResize(dragHandle, memSection);
+		// ── ═══ 面板：代码 ═══ ──
+		// 2026-09-15：除入口外补充索引规模统计（节点 / 边 / 最后索引 / 实时状态）。
+		const codePanel = $('div.kb-panel.kb-panel-code');
+		this._tabPanels.set('code', codePanel);
+		const codeBar = $('div.kb-panel-bar');
+		const codeBarLabel = $('span.kb-panel-bar-label');
+		codeBarLabel.textContent = '代码库';
+		codeBar.replaceChildren(codeBarLabel, $('span.kb-spacer'),
+			this._headerBtn('codicon-refresh', '刷新代码库统计', (e) => { e.stopPropagation(); void this._refreshCodeStats(); }));
+		codePanel.appendChild(codeBar);
+		const codeContent = $('div.kb-panel-content');
+		codePanel.appendChild(codeContent);
+		this._codeStatsBody = codeContent;
+		this._renderCodePanel();
+		this._body.appendChild(codePanel);
 
-		// ── ═══ 代码库 Section ═══ ──（独立于记忆库，不参与拖拽；单一入口直达 Codebase Detail Editor Pane）
-		const codebaseSection = $('div.kb-codebase-section');
-		codebaseSection.style.cssText = 'display:flex;flex-direction:column;flex-shrink:0;border-top:1px solid #2a2a2a;';
-		this._body.appendChild(codebaseSection);
+		// ── ═══ 面板：媒体库 ═══ ──
+		// 数据源 = 工作流媒体库（主进程 mediaStore，经 createMediaStoreProxy IPC 代理）。
+		const mediaPanel = $('div.kb-panel.kb-panel-media');
+		this._tabPanels.set('media', mediaPanel);
+		const mediaBar = $('div.kb-panel-bar');
+		const mediaBarLabel = $('span.kb-panel-bar-label');
+		mediaBarLabel.textContent = '媒体库';
+		mediaBar.replaceChildren(mediaBarLabel, $('span.kb-spacer'),
+			this._headerBtn('codicon-refresh', '刷新媒体库', (e) => { e.stopPropagation(); void this._refreshMediaStats(); }));
+		mediaPanel.appendChild(mediaBar);
+		const mediaContent = $('div.kb-panel-content');
+		mediaPanel.appendChild(mediaContent);
+		this._mediaBody = mediaContent;
+		this._renderMediaPanel();
+		this._body.appendChild(mediaPanel);
 
-		const codeHeader = $('div.kb-codebase-header');
-		codeHeader.style.cssText = 'display:flex;align-items:center;gap:6px;padding:7px 12px;background:#1e1e1e;font-size:12px;font-weight:600;border-bottom:1px solid #2a2a2a;min-height:32px;flex-shrink:0;cursor:pointer;';
-		codeHeader.onclick = () => this._toggleCodebaseSection(codebaseSection, codeHeader);
-		codeHeader.onmouseenter = () => { codeHeader.style.background = '#252525'; };
-		codeHeader.onmouseleave = () => { codeHeader.style.background = '#1e1e1e'; };
-		const codeHeaderIcon = $('span');
-		codeHeaderIcon.textContent = '🧬';
-		codeHeaderIcon.style.cssText = 'font-size:13px;flex-shrink:0;';
-		const codeHeaderLabel = $('span');
-		codeHeaderLabel.textContent = '代码库';
-		codeHeaderLabel.style.cssText = 'flex:1;color:#e0e0e0;';
-		const codeArrow = $('span');
-		codeArrow.className = 'kb-code-arrow';
-		codeArrow.textContent = '▼';
-		codeArrow.style.cssText = 'font-size:9px;color:#777;flex-shrink:0;transition:transform .15s;';
-		codeHeader.replaceChildren(codeHeaderIcon, codeHeaderLabel, codeArrow);
-		codebaseSection.appendChild(codeHeader);
-
-		const codeBody = $('div.kb-codebase-body');
-		codeBody.style.cssText = 'padding:4px 0;';
-		const codeEntry = $('div.kb-codebase-entry');
-		codeEntry.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;font-size:12px;margin:4px 8px;border-radius:4px;background:#1e1e1e;border:1px solid #2a2a2a;';
-		codeEntry.onmouseenter = () => { codeEntry.style.background = '#252525'; codeEntry.style.borderColor = '#3a3a3a'; };
-		codeEntry.onmouseleave = () => { codeEntry.style.background = '#1e1e1e'; codeEntry.style.borderColor = '#2a2a2a'; };
-		codeEntry.onclick = () => this._openCodebaseDetailEditor();
-		const ceIcon = $('span');
-		ceIcon.textContent = '🧬';
-		ceIcon.style.cssText = 'font-size:18px;flex-shrink:0;';
-		codeEntry.appendChild(ceIcon);
-		const ceText = $('div');
-		ceText.style.cssText = 'flex:1;min-width:0;';
-		const ceTitle = $('div');
-		ceTitle.textContent = '查看完整代码库';
-		ceTitle.style.cssText = 'color:#ddd;';
-		ceText.appendChild(ceTitle);
-		const ceMeta = $('div');
-		ceMeta.textContent = '点击打开 CodebaseDetailEditorPane';
-		ceMeta.style.cssText = 'font-size:10px;color:#555;margin-top:2px;';
-		ceText.appendChild(ceMeta);
-		codeEntry.appendChild(ceText);
-		const ceArrow = $('span');
-		ceArrow.textContent = '→';
-		ceArrow.style.cssText = 'color:#555;font-size:14px;flex-shrink:0;';
-		codeEntry.appendChild(ceArrow);
-		codeBody.appendChild(codeEntry);
-		codebaseSection.appendChild(codeBody);
+		// 应用初始 Tab（默认「知识」）
+		this._switchTab(this._activeTab);
 
 		// Global click closes popups
 		document.addEventListener('click', this._onGlobalClick);
@@ -659,80 +703,47 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	// ═══════════════════════════════════════════════════════════
-	//  记忆库 Section — 折叠 / 拖拽 / 列表渲染
+	//  Tab 切换 / 通用 DOM 助手
 	// ═══════════════════════════════════════════════════════════
 
-	/** 折叠/展开记忆库 section */
-	private _toggleMemorySection(memSection: HTMLElement, memHeader: HTMLElement): void {
-		this._memSectionCollapsed = !this._memSectionCollapsed;
-		const arrow = memHeader.querySelector('.kb-mem-arrow') as HTMLElement | null;
-		if (this._memSectionCollapsed) {
-			memSection.style.flex = '0 0 auto';
-			if (this._memSectionBody) { this._memSectionBody.style.display = 'none'; }
-			if (arrow) { arrow.style.transform = 'rotate(-90deg)'; }
-			memHeader.style.borderBottom = 'none';
-		} else {
-			memSection.style.flex = '';
-			memSection.style.overflow = 'hidden';
-			if (this._memSectionBody) { this._memSectionBody.style.display = ''; }
-			if (arrow) { arrow.style.transform = 'rotate(0deg)'; }
-			memHeader.style.borderBottom = '1px solid #2a2a2a';
-			// 展开时刷新记忆列表
-			this._renderMemoryList();
-		}
+	/** 构建 header 工具条上的 codicon 按钮（统一尺寸/悬停态，样式见 kbView.css 的 .kb-hbtn）。 */
+	private _headerBtn(icon: string, title: string, onclick: (e: MouseEvent) => void): HTMLElement {
+		const btn = $('span.kb-hbtn.codicon.' + icon);
+		btn.title = title;
+		btn.setAttribute('role', 'button');
+		btn.setAttribute('aria-label', title);
+		btn.onclick = onclick;
+		return btn;
 	}
 
-	/** 折叠/展开代码库 section */
-	private _toggleCodebaseSection(codebaseSection: HTMLElement, codeHeader: HTMLElement): void {
-		this._codeSectionCollapsed = !this._codeSectionCollapsed;
-		const arrow = codeHeader.querySelector('.kb-code-arrow') as HTMLElement | null;
-		const body = codebaseSection.querySelector('.kb-codebase-body') as HTMLElement | null;
-		if (this._codeSectionCollapsed) {
-			if (body) { body.style.display = 'none'; }
-			if (arrow) { arrow.style.transform = 'rotate(-90deg)'; }
-			codeHeader.style.borderBottom = 'none';
-		} else {
-			if (body) { body.style.display = ''; }
-			if (arrow) { arrow.style.transform = 'rotate(0deg)'; }
-			codeHeader.style.borderBottom = '';
-		}
+	/** 折叠箭头（统一 codicon-chevron-right；展开态由 CSS 的 .open 规则旋转 90°）。 */
+	private _arrowEl(extraClass?: string): HTMLElement {
+		const a = $('span.kb-arrow.codicon.codicon-chevron-right');
+		if (extraClass) { a.classList.add(extraClass); }
+		return a;
 	}
 
-	/** 拖拽调整记忆库高度 */
-	private _setupMemoryDragResize(dragHandle: HTMLElement, memSection: HTMLElement): void {
-		let dragging = false;
-		let startY = 0;
-		let startHeight = 0;
-
-		const onMouseDown = (e: MouseEvent) => {
-			dragging = true;
-			startY = e.clientY;
-			startHeight = memSection.getBoundingClientRect().height;
-			dragHandle.style.background = '#3794ff';
-			document.body.style.userSelect = 'none';
-			document.body.style.cursor = 'row-resize';
-			e.preventDefault();
-		};
-
-		const onMouseMove = (e: MouseEvent) => {
-			if (!dragging) { return; }
-			const delta = startY - e.clientY; // 向上拖 = 扩大记忆库
-			const newHeight = Math.max(60, Math.min(startHeight + delta, 600));
-			memSection.style.height = `${newHeight}px`;
-			memSection.style.flex = '0 0 auto';
-		};
-
-		const onMouseUp = () => {
-			if (!dragging) { return; }
-			dragging = false;
-			dragHandle.style.background = '#2a2a2a';
-			document.body.style.userSelect = '';
-			document.body.style.cursor = '';
-		};
-
-		dragHandle.addEventListener('mousedown', onMouseDown);
-		document.addEventListener('mousemove', onMouseMove);
-		document.addEventListener('mouseup', onMouseUp);
+	/**
+	 * 切换顶部 Tab（资料 / 记忆 / 代码）。
+	 * 只切显示态、不销毁面板 ⇒ 文件树滚动位置 / 展开态 / 搜索态切回时保持。
+	 * 记忆面板每次切入都刷新（记忆数据由 MemoryDetailEditorPane 独立维护，可能已变更）。
+	 */
+	private _switchTab(tab: KbTabId): void {
+		this._activeTab = tab;
+		for (const [id, panel] of this._tabPanels) {
+			panel.classList.toggle('active', id === tab);
+		}
+		for (const [id, btn] of this._tabButtons) {
+			btn.classList.toggle('active', id === tab);
+		}
+		if (tab === 'mem') { this._renderMemoryList(); }
+		if (tab === 'code') { void this._refreshCodeStats(); }
+		if (tab === 'media') { void this._refreshMediaStats(); }
+		// 用户已切到该分区 ⇒ 清除对应来源的「有新增」徽标（构建中不受影响，见聚合器）。
+		// 媒体库不在徽标来源内（它没有后台构建活动）。
+		const source: 'kb' | 'codebase' | 'memory' | undefined =
+			tab === 'kb' ? 'kb' : tab === 'mem' ? 'memory' : tab === 'code' ? 'codebase' : undefined;
+		if (source) { this.agentStudioService.requestLibraryBadge({ source, kind: 'idle' }); }
 	}
 
 	/**
@@ -745,53 +756,161 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._memSectionBody.replaceChildren();
 		const list = this._memList;
 		list.replaceChildren();
-		list.style.cssText = 'padding:4px 0;';
 
-		// 点击入口块 — 打开 MemoryDetailEditorPane
-		const entry = $('div.kb-mem-entry');
-		entry.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;font-size:12px;margin:4px 8px;border-radius:4px;background:#1e1e1e;border:1px solid #2a2a2a;';
+		// ── ① 入口置顶：打开 MemoryDetailEditorPane（用户指定的第一顺位动作）──
+		const entry = $('div.kb-entry');
 		entry.onclick = () => this._openMemoryDetailEditor();
-		entry.onmouseenter = () => { entry.style.background = '#252525'; entry.style.borderColor = '#3a3a3a'; };
-		entry.onmouseleave = () => { entry.style.background = '#1e1e1e'; entry.style.borderColor = '#2a2a2a'; };
 
-		const entryIcon = $('span');
-		entryIcon.textContent = '🧠';
-		entryIcon.style.cssText = 'font-size:18px;flex-shrink:0;';
-		entry.appendChild(entryIcon);
+		const entryIcon = $('span.kb-entry-icon.codicon.codicon-database');
 
-		const entryText = $('div');
-		entryText.style.cssText = 'flex:1;min-width:0;';
-		const entryTitle = $('div');
+		const entryText = $('div.kb-entry-text');
+		const entryTitle = $('div.kb-entry-title');
 		entryTitle.textContent = '查看完整记忆';
-		entryTitle.style.cssText = 'color:#ddd;';
-		entryText.appendChild(entryTitle);
-		const entryMeta = $('div');
-		entryMeta.textContent = '点击打开 MemoryDetailEditorPane';
-		entryMeta.style.cssText = 'font-size:10px;color:#555;margin-top:2px;';
-		entryText.appendChild(entryMeta);
-		entry.appendChild(entryText);
+		const entryMeta = $('div.kb-entry-meta');
+		entryMeta.textContent = '打开 MemoryDetailEditorPane';
+		entryText.replaceChildren(entryTitle, entryMeta);
 
-		const entryArrow = $('span');
-		entryArrow.textContent = '→';
-		entryArrow.style.cssText = 'color:#555;font-size:14px;flex-shrink:0;';
-		entry.appendChild(entryArrow);
+		const entryArrow = $('span.kb-entry-arrow.codicon.codicon-arrow-right');
+		entry.replaceChildren(entryIcon, entryText, entryArrow);
 
 		list.appendChild(entry);
 
-		// 固定槽位概览
-		const slotsHint = $('div');
-		slotsHint.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;padding:6px 8px;';
+		// ── ② 统计区：先渲染骨架，再异步回填（只做计数，不渲染 9k+ 条目）──
+		this._memStatsEl = $('div.kb-stats');
+		this._memStatsEl.appendChild(this._statsHint('正在读取记忆统计…'));
+		list.appendChild(this._memStatsEl);
+		void this._loadMemoryStats();
+
+		// ── ③ 固定槽位概览（与 MemoryDetailEditorPane 的 DEFAULT_SLOTS 同源）──
 		const slotNames = ['persona', 'user_preferences', 'tool_guidelines', 'project_context',
 			'guidance', 'pending_items', 'session_patterns', 'self_notes'];
+		const slotsSection = $('div.kb-side-section');
+		const slotsHead = $('div.kb-side-section-head');
+		const slotsLabel = $('span');
+		slotsLabel.textContent = '固定槽位';
+		const slotsCount = $('span.kb-count');
+		slotsCount.textContent = String(slotNames.length);
+		slotsHead.replaceChildren(slotsLabel, slotsCount);
+		slotsSection.appendChild(slotsHead);
+		const slotsHint = $('div.kb-mem-slots');
 		for (const slot of slotNames) {
-			const tag = $('span');
+			const tag = $('span.kb-slot-chip');
 			tag.textContent = slot.replace(/_/g, ' ');
-			tag.style.cssText = 'font-size:9px;background:#222;color:#666;border-radius:3px;padding:2px 6px;';
 			slotsHint.appendChild(tag);
 		}
-		list.appendChild(slotsHint);
+		slotsSection.appendChild(slotsHint);
+		list.appendChild(slotsSection);
 
 		this._memSectionBody.appendChild(list);
+	}
+
+	/** 刷新记忆面板（统计 + 槽位 + 入口）。 */
+	private _refreshMemoryPanel(): void {
+		this._renderMemoryList();
+	}
+
+	/** 统计区提示行（占位 / 空态）。 */
+	private _statsHint(text: string): HTMLElement {
+		const el = $('div.kb-stats-hint');
+		el.textContent = text;
+		return el;
+	}
+
+	/** 单个统计格子（数值 + 标签；0 时灰显）。value 可传已格式化的字符串（如体积）。 */
+	private _statCell(label: string, value: number | string): HTMLElement {
+		const cell = $('div.kb-stat-cell');
+		if (value === 0 || value === '0') { cell.classList.add('zero'); }
+		const n = $('span.kb-stat-num');
+		n.textContent = String(value);
+		const l = $('span.kb-stat-label');
+		l.textContent = label;
+		cell.replaceChildren(n, l);
+		return cell;
+	}
+
+	/**
+	 * 异步加载记忆统计并回填 `_memStatsEl`。
+	 *
+	 * 数据源与 MemoryDetailEditorPane 同源（`IAgentOSService.getActiveMemoryProvider()`），
+	 * 但**只做计数、不渲染条目** —— 侧栏一次性渲染 9k+ 条会直接卡死。
+	 */
+	private async _loadMemoryStats(): Promise<void> {
+		const token = ++this._memStatsToken;
+		const el = this._memStatsEl;
+		if (!el) { return; }
+
+		const mp = this._agentOSService.getActiveMemoryProvider();
+		if (!mp) {
+			el.replaceChildren(this._statsHint('记忆服务未连接（AgentMemory 网关未运行？）'));
+			return;
+		}
+		try {
+			// searchAllAgents 覆盖全部 agent 的 episodic 层；无此能力时退回本 agent 的 searchMemory。
+			// 两条路径返回形状不同（Record<string,unknown> vs IMemoryEntry）⇒ 统一归一化为
+			// { type, agentId }，统计只关心这两个字段。
+			let rows: Array<{ type: string; agentId?: string }>;
+			if (mp.searchAllAgents) {
+				const raw = await mp.searchAllAgents('') ?? [];
+				rows = raw.map(e => {
+					const meta = e['metadata'] as Record<string, unknown> | undefined;
+					const aid = meta?.['agentId'] ?? e['agentId'];
+					return {
+						type: String(e['type'] ?? meta?.['memoryType'] ?? 'working'),
+						agentId: typeof aid === 'string' ? aid : undefined,
+					};
+				});
+			} else if (mp.searchMemory) {
+				const agentId = this.modelSelectorService.getSelectedAgentId() ?? 'default';
+				const raw = await mp.searchMemory(agentId, '') ?? [];
+				rows = raw.map(e => ({
+					type: String(e.type ?? (e.metadata?.['memoryType'] as string) ?? 'working'),
+					agentId: (e.metadata?.['agentId'] as string) ?? agentId,
+				}));
+			} else {
+				el.replaceChildren(this._statsHint('记忆服务不支持统计查询'));
+				return;
+			}
+			// 防竞态：并发刷新时只有最后一次可以落 DOM
+			if (token !== this._memStatsToken || this._memStatsEl !== el) { return; }
+
+			const byType = new Map<string, number>();
+			const agents = new Set<string>();
+			for (const e of rows) {
+				byType.set(e.type, (byType.get(e.type) ?? 0) + 1);
+				if (e.agentId) { agents.add(e.agentId); }
+			}
+			const countOf = (t: string) => byType.get(t) ?? 0;
+			const episodic = NATIVE_MEMORY_TYPES.reduce((sum, t) => sum + countOf(t), 0);
+
+			// 头部：总数 + Agent 数
+			const hero = $('div.kb-stat-hero');
+			const heroNum = $('span.kb-stat-hero-num');
+			heroNum.textContent = String(rows.length);
+			const heroLabel = $('span.kb-stat-hero-label');
+			heroLabel.textContent = agents.size > 0 ? `条记忆 · ${agents.size} 个 Agent` : '条记忆';
+			hero.replaceChildren(heroNum, heroLabel);
+
+			// 四层计数
+			const layerGrid = $('div.kb-stat-grid');
+			const layers: Array<[string, number]> = [
+				['Working', countOf('working')],
+				['Episodic', episodic],
+				['Semantic', countOf('semantic')],
+				['Procedural', countOf('procedural')],
+			];
+			for (const [label, count] of layers) { layerGrid.appendChild(this._statCell(label, count)); }
+
+			// Episodic 原生类型细分
+			const typeLabel = $('div.kb-stat-sub');
+			typeLabel.textContent = 'Episodic 子类型';
+			const typeGrid = $('div.kb-stat-grid');
+			for (const t of NATIVE_MEMORY_TYPES) { typeGrid.appendChild(this._statCell(t, countOf(t))); }
+
+			el.replaceChildren(hero, layerGrid, typeLabel, typeGrid);
+		} catch (err) {
+			this.logService.warn('[KB] memory stats failed', err);
+			if (this._memStatsEl === el) { el.replaceChildren(this._statsHint('读取记忆统计失败')); }
+		}
 	}
 
 	/** 打开「记忆库」编辑器面板（Memory Detail Editor Pane）。 */
@@ -812,6 +931,325 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			void this.editorService.openEditor(input, { pinned: true });
 		} catch (err) {
 			this.logService.error(`[KB] failed to open CodebaseDetailEditorPane: ${err}`);
+		}
+	}
+
+	/** 打开完整的媒体库画廊面板（MediaGalleryEditorPane）。 */
+	private _openMediaGalleryEditor(): void {
+		try {
+			const input = MediaGalleryEditorInput.getOrCreate();
+			void this.editorService.openEditor(input, { pinned: true });
+		} catch (err) {
+			this.logService.error(`[KB] failed to open MediaGalleryEditorPane: ${err}`);
+		}
+	}
+
+	// ═══════════════════════════════════════════════════════════
+	//  代码 Tab — 索引规模统计 + 实时状态
+	// ═══════════════════════════════════════════════════════════
+
+	/** 渲染「代码」面板（统计骨架 + 入口）。 */
+	private _renderCodePanel(): void {
+		const host = this._codeStatsBody;
+		if (!host) { return; }
+		host.replaceChildren();
+
+		// 入口置顶：CodebaseDetailEditorPane（与「记忆」Tab 保持同一信息顺序）
+		const entry = $('div.kb-entry');
+		entry.onclick = () => this._openCodebaseDetailEditor();
+		const icon = $('span.kb-entry-icon.codicon.codicon-code');
+		const text = $('div.kb-entry-text');
+		const title = $('div.kb-entry-title');
+		title.textContent = '查看完整代码库';
+		const meta = $('div.kb-entry-meta');
+		meta.textContent = '打开 CodebaseDetailEditorPane';
+		text.replaceChildren(title, meta);
+		const arrow = $('span.kb-entry-arrow.codicon.codicon-arrow-right');
+		entry.replaceChildren(icon, text, arrow);
+		host.appendChild(entry);
+
+		// 统计骨架（异步回填）
+		const stats = $('div.kb-stats');
+		this._codeStatsEl = stats;
+		stats.appendChild(this._statsHint('正在读取代码图谱…'));
+		host.appendChild(stats);
+
+		// 日志区：只读 textarea（可滚动看完整行，不再被状态行的单行省略号截断）
+		const logSection = $('div.kb-side-section');
+		const logHead = $('div.kb-side-section-head');
+		const logLabel = $('span');
+		logLabel.textContent = '日志';
+		const logClear = $('span.kb-log-clear.codicon.codicon-trash');
+		logClear.title = '清空日志';
+		logClear.onclick = () => { this._codeLogLines = []; this._syncCodeLog(); };
+		logHead.replaceChildren(logLabel, $('span.kb-spacer'), logClear);
+		logSection.appendChild(logHead);
+
+		const ta = document.createElement('textarea');
+		ta.className = 'kb-log';
+		ta.readOnly = true;       // 不可编辑
+		ta.spellcheck = false;
+		ta.wrap = 'off';          // 不折行：横向滚动看完整内容
+		ta.setAttribute('aria-label', '代码库日志');
+		this._codeLogEl = ta;
+		logSection.appendChild(ta);
+		host.appendChild(logSection);
+		this._syncCodeLog();
+
+		void this._refreshCodeStats();
+	}
+
+	/** 把日志缓冲同步到只读 textarea（保持在底部）。 */
+	private _syncCodeLog(): void {
+		const ta = this._codeLogEl;
+		if (!ta) { return; }
+		ta.value = this._codeLogLines.join('\n');
+		ta.scrollTop = ta.scrollHeight;
+	}
+
+	/** 追加一行代码库日志（带时间戳；超过上限丢弃最老的）。 */
+	private _appendCodeLog(message: string): void {
+		this._codeLogLines.push(`[${new Date().toLocaleTimeString()}] ${message}`);
+		if (this._codeLogLines.length > CODE_LOG_MAX_LINES) {
+			this._codeLogLines.splice(0, this._codeLogLines.length - CODE_LOG_MAX_LINES);
+		}
+		this._syncCodeLog();
+	}
+
+	/** 读取代码图谱状态并回填统计区（节点 / 边 / 体积 / 最后索引 / 实时状态）。 */
+	private async _refreshCodeStats(): Promise<void> {
+		const el = this._codeStatsEl;
+		if (!el) { return; }
+		try {
+			const status = await this._codebaseGraphService.getGraphStatus();
+			if (this._codeStatsEl !== el) { return; }
+			if (!status.exists) {
+				el.replaceChildren(this._statsHint('尚未建立代码图谱索引'));
+				return;
+			}
+
+			const hero = $('div.kb-stat-hero');
+			const heroNum = $('span.kb-stat-hero-num');
+			heroNum.textContent = formatSizeCompact(status.size ?? 0);
+			const heroLabel = $('span.kb-stat-hero-label');
+			heroLabel.textContent = '图谱体积';
+			hero.replaceChildren(heroNum, heroLabel);
+
+			const grid = $('div.kb-stat-grid');
+			grid.appendChild(this._statCell('节点', status.nodeCount ?? 0));
+			grid.appendChild(this._statCell('关系边', status.edgeCount ?? 0));
+
+			const meta = $('div.kb-stat-meta');
+			const ts = status.lastModified ? new Date(status.lastModified) : undefined;
+			meta.textContent = ts && !Number.isNaN(ts.getTime()) ? `最后索引：${ts.toLocaleString()}` : '最后索引：—';
+
+			const statusLine = $('div.kb-code-status');
+			this._codeStatusEl = statusLine;
+
+			el.replaceChildren(hero, grid, meta, statusLine);
+			this._updateCodeStatusLine();
+
+			// 首次拿到状态时补一条基线日志（否则 textarea 一直是空的）
+			if (this._codeLogLines.length === 0) {
+				this._appendCodeLog(`图谱就绪：${status.nodeCount ?? 0} 节点 / ${status.edgeCount ?? 0} 关系边`);
+			}
+		} catch (err) {
+			this.logService.warn('[KB] code stats failed', err);
+			if (this._codeStatsEl === el) { el.replaceChildren(this._statsHint('读取代码图谱失败')); }
+		}
+	}
+
+	/** 更新代码库状态行（只放短状态词；详细进度进日志 textarea）。 */
+	private _updateCodeStatusLine(): void {
+		const el = this._codeStatusEl;
+		if (!el) { return; }
+		const busy = this._codebaseGraphService.isIndexing || !!this._codeIndexProgress;
+		el.classList.toggle('busy', busy);
+		el.textContent = busy ? '正在索引…' : '已就绪';
+	}
+
+	// ═══════════════════════════════════════════════════════════
+	//  媒体库 Tab — 数据源 = 工作流媒体库（主进程 mediaStore）
+	// ═══════════════════════════════════════════════════════════
+
+	/** 懒初始化媒体资产库后端（经主进程 ProxyChannel）。 */
+	private _getMediaBackend(): IMediaBackend {
+		if (!this._mediaBackend) {
+			this._mediaBackend = createMediaStoreProxy(this._mainProcessService);
+		}
+		return this._mediaBackend;
+	}
+
+	/** 渲染「媒体库」面板（统计骨架 + 最近资产骨架）。 */
+	private _renderMediaPanel(): void {
+		const host = this._mediaBody;
+		if (!host) { return; }
+		host.replaceChildren();
+
+		// 入口置顶：打开完整媒体库画廊（中间栏 EditorPane，与工作流画布同一份数据）
+		const entry = $('div.kb-entry');
+		entry.onclick = () => this._openMediaGalleryEditor();
+		const entryIcon = $('span.kb-entry-icon.codicon.codicon-file-media');
+		const entryText = $('div.kb-entry-text');
+		const entryTitle = $('div.kb-entry-title');
+		entryTitle.textContent = '查看完整媒体库';
+		const entryMeta = $('div.kb-entry-meta');
+		entryMeta.textContent = '打开 MediaGalleryEditorPane';
+		entryText.replaceChildren(entryTitle, entryMeta);
+		const entryArrow = $('span.kb-entry-arrow.codicon.codicon-arrow-right');
+		entry.replaceChildren(entryIcon, entryText, entryArrow);
+		host.appendChild(entry);
+
+		// 统计骨架（异步回填）
+		const stats = $('div.kb-stats');
+		this._mediaStatsEl = stats;
+		stats.appendChild(this._statsHint('正在读取媒体库…'));
+		host.appendChild(stats);
+
+		// 最近资产列表
+		const listSection = $('div.kb-side-section');
+		const listHead = $('div.kb-side-section-head');
+		const listLabel = $('span');
+		listLabel.textContent = '最近资产';
+		this._mediaListCountEl = $('span.kb-count');
+		this._mediaListCountEl.textContent = '—';
+		listHead.replaceChildren(listLabel, $('span.kb-spacer'), this._mediaListCountEl);
+		listSection.appendChild(listHead);
+		this._mediaListEl = $('div.kb-media-list');
+		listSection.appendChild(this._mediaListEl);
+		host.appendChild(listSection);
+
+		void this._refreshMediaStats();
+	}
+
+	/** 读取媒体库统计 + 最近资产（工作流产出的图片/视频/音频/文本）。 */
+	private async _refreshMediaStats(): Promise<void> {
+		const statsEl = this._mediaStatsEl;
+		if (!statsEl) { return; }
+		try {
+			const backend = this._getMediaBackend();
+			const kinds = ['image', 'video', 'audio', 'text'] as const;
+			const [stats, recent, kindTotals] = await Promise.all([
+				backend.stats(),
+				backend.list({ limit: MEDIA_RECENT_LIMIT }),
+				// 分类计数：用 limit:1 只取 total，避免把全量资产拉过 IPC
+				Promise.all(kinds.map(async k => {
+					try { return (await backend.list({ kind: k, limit: 1 })).total; } catch { return 0; }
+				})),
+			]);
+			if (this._mediaStatsEl !== statsEl) { return; }
+
+			const hero = $('div.kb-stat-hero');
+			const heroNum = $('span.kb-stat-hero-num');
+			heroNum.textContent = String(stats.assetCount);
+			const heroLabel = $('span.kb-stat-hero-label');
+			heroLabel.textContent = `个资产 · ${formatSizeCompact(stats.totalBytes)}`;
+			hero.replaceChildren(heroNum, heroLabel);
+
+			const grid = $('div.kb-stat-grid');
+			kinds.forEach((k, i) => grid.appendChild(this._statCell(k, kindTotals[i])));
+			grid.appendChild(this._statCell('回收站', stats.deletedCount));
+
+			const meta = $('div.kb-stat-meta');
+			meta.textContent = `媒体目录占用：${formatSizeCompact(stats.dirSizeBytes)}`;
+
+			statsEl.replaceChildren(hero, grid, meta);
+			this._renderMediaList(recent);
+		} catch (err) {
+			this.logService.warn('[KB] media stats failed', err);
+			if (this._mediaStatsEl === statsEl) {
+				statsEl.replaceChildren(this._statsHint('读取媒体库失败（媒体存储未就绪？）'));
+			}
+		}
+	}
+
+	/** 渲染「最近资产」列表。 */
+	private _renderMediaList(result: MediaListResult): void {
+		const host = this._mediaListEl;
+		if (!host) { return; }
+		host.replaceChildren();
+		if (this._mediaListCountEl) { this._mediaListCountEl.textContent = String(result.total); }
+		if (result.items.length === 0) {
+			host.appendChild(this._statsHint('暂无媒体资产（工作流产出图片后会出现在这里）'));
+			return;
+		}
+		for (const asset of result.items) {
+			host.appendChild(this._mediaItemEl(asset));
+		}
+	}
+
+	/** 单条媒体资产（缩略图 + 名称 + 元信息；点击打开）。 */
+	private _mediaItemEl(asset: MediaAsset): HTMLElement {
+		const row = $('div.kb-media-item');
+		const label = asset.fileName ?? asset.ref;
+		row.title = label;
+
+		const thumb = $('div.kb-media-thumb');
+		if (asset.kind === 'image') {
+			if (asset.ref.startsWith('data:') || /^https:/i.test(asset.ref)) {
+				// data: / https: 可直接用（CSP 已放行）；http: 不放行 ⇒ 必须先本地化
+				const img = document.createElement('img');
+				img.src = asset.ref;
+				img.alt = '';
+				img.loading = 'lazy';
+				thumb.appendChild(img);
+			} else {
+				// 渲染进程读不到本地文件 ⇒ 走主进程 getAsDataUrl（懒加载，失败不影响列表）
+				void this._fillMediaThumb(thumb, asset.id);
+			}
+		} else {
+			thumb.appendChild($('span.codicon.' + mediaKindIcon(asset.kind)));
+		}
+
+		const text = $('div.kb-media-text');
+		const name = $('div.kb-media-name');
+		name.textContent = label;
+		const meta = $('div.kb-media-meta');
+		const size = asset.sizeBytes ? ` · ${formatSizeCompact(asset.sizeBytes)}` : '';
+		const when = asset.createdAt ? ` · ${new Date(asset.createdAt).toLocaleString()}` : '';
+		const tags = asset.tags?.length ? ` · ${asset.tags.map(t => `#${t}`).join(' ')}` : '';
+		meta.textContent = `${asset.kind}${size}${when}${tags}`;
+		text.replaceChildren(name, meta);
+
+		const open = $('span.kb-media-open.codicon.codicon-link-external');
+		open.title = '打开';
+		open.onclick = (e) => { e.stopPropagation(); void this._openMediaAsset(asset); };
+
+		row.replaceChildren(thumb, text, open);
+		row.onclick = () => void this._openMediaAsset(asset);
+		return row;
+	}
+
+	/** 异步填充缩略图（data URL；未落盘资产退化为图标占位）。 */
+	private async _fillMediaThumb(host: HTMLElement, id: string): Promise<void> {
+		try {
+			const url = await this._getMediaBackend().getAsDataUrl(id);
+			if (!host.isConnected) { return; }
+			if (!url) {
+				// 纯 URL 引用（未落盘）拿不到 data URL ⇒ 用图标占位，避免留白
+				host.replaceChildren($('span.codicon.codicon-file-media'));
+				return;
+			}
+			const img = document.createElement('img');
+			img.src = url;
+			img.alt = '';
+			host.replaceChildren(img);
+		} catch { /* 缩略图失败不阻断列表 */ }
+	}
+
+	/** 打开媒体资产：优先本地落盘文件，否则退回原始引用地址。 */
+	private async _openMediaAsset(asset: MediaAsset): Promise<void> {
+		try {
+			const path = await this._getMediaBackend().getFilePath(asset.id);
+			if (path) {
+				await this.openerService.open(URI.file(path), { openExternal: true });
+				return;
+			}
+			if (asset.ref) {
+				await this.openerService.open(URI.parse(asset.ref), { openExternal: true });
+			}
+		} catch (err) {
+			this.logService.warn('[KB] open media asset failed', err);
 		}
 	}
 
@@ -1139,9 +1577,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		// ── 标题（可折叠） ──
 		const header = $('div.kb-section-header');
-		const arrow = $('span.kb-arrow'); arrow.textContent = '▶';
+		const arrow = this._arrowEl();
 		const title = $('div.kb-title');
-		const cat = $('span.kb-cat'); cat.textContent = '🏷️';
+		const cat = $('span.kb-cat.codicon.codicon-tag');
 		const titleText = $('span'); titleText.textContent = '标签分类';
 		const andBadge = $('span.kb-and-badge'); andBadge.textContent = '交集 AND';
 		const countBadge = $('span.kb-count');
@@ -1158,12 +1596,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// ① 标签搜索（位于分类内部：联想下拉 + 清除，实时过滤分组，不跳转）
 		const searchRow = $('div.kb-tag-search');
 		const box = $('div.kb-search-box');
-		const searchIco = $('span'); searchIco.textContent = '🔍';
+		const searchIco = $('span.codicon.codicon-search');
 		const input = $('input') as HTMLInputElement;
 		input.type = 'text';
 		input.placeholder = '搜索标签…';
 		input.autocomplete = 'off';
-		const clearBtn = $('span.kb-search-clear'); clearBtn.textContent = '✕';
+		const clearBtn = $('span.kb-search-clear.codicon.codicon-close');
 		clearBtn.style.display = 'none';
 		box.append(searchIco, input, clearBtn);
 		searchRow.append(box);
@@ -1213,7 +1651,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				for (const tag of hits) {
 					const cnt = this._index.getAllTags().find(x => x.tag.toLowerCase() === tag.toLowerCase())?.count ?? 0;
 					const s = $('div.kb-sug');
-					const ico = $('span.s-ico'); ico.textContent = '🏷️';
+					const ico = $('span.s-ico.codicon.codicon-tag');
 					const name = $('span.s-name'); name.textContent = `#${tag}`;
 					const kind = $('span.s-kind'); kind.textContent = '标签';
 					const cntEl = $('span.s-cnt'); cntEl.textContent = `${cnt} 篇`;
@@ -1253,7 +1691,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private renderTagGroup(tag: string, count: number, untaggedDocs?: IKbSearchHit[]): HTMLElement {
 		const group = $('div.kb-tag-group');
 		const head = $('div.kb-tag-group-head');
-		const gArrow = $('span.kb-arrow'); gArrow.textContent = '▶';
+		const gArrow = this._arrowEl();
 		const gName = $('span.kb-tag-group-name'); gName.textContent = tag === '无标签' ? '#无标签' : `#${tag}`;
 		const gCount = $('span.kb-count'); gCount.textContent = `${count} 篇`;
 		head.append(gArrow, gName, gCount);
@@ -1295,24 +1733,22 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const select = $('div.kb-vault-select');
 		const name = $('span.kb-vname');
 		name.textContent = this._activeVault?.name ?? '—';
-		const caret = $('span.kb-caret'); caret.textContent = '▼';
+		const caret = $('span.kb-caret.codicon.codicon-chevron-down');
 		select.append(icon, name, caret);
 		select.onclick = (e) => { e.stopPropagation(); this.toggleVaultMenu(); };
 		this._vaultBar.appendChild(select);
 
-		// 「记忆库」按钮：打开 MemoryDetailEditorPane（替代原 activity-bar Memory 入口）
-		const memBtn = $('span.kb-abtn');
-		memBtn.textContent = '🧠';
-		memBtn.title = '记忆库（打开 Memory Detail Editor Pane）';
-		memBtn.style.cssText = 'margin-left:6px;cursor:pointer;';
-		memBtn.onclick = (e) => { e.stopPropagation(); this._openMemoryDetailEditor(); };
+		// 「记忆」按钮：切到「记忆」Tab（记忆数据由 MemoryDetailEditorPane 维护）
+		const memBtn = $('span.kb-abtn.codicon.codicon-database');
+		memBtn.title = '记忆库';
+		memBtn.onclick = (e) => { e.stopPropagation(); this._switchTab('mem'); };
 		this._vaultBar.appendChild(memBtn);
 
-		// 视图切换按钮：文件树 → 标签云 → 最近编辑
+		// 视图切换按钮：文件树 ⇄ 最近编辑
 		const viewBtn = $('span.kb-abtn');
-		const viewLabels: Record<string, string> = { tree: '📂', recent: '🕐' };
+		const viewIcons: Record<string, string> = { tree: 'codicon-folder-opened', recent: 'codicon-history' };
 		const viewTitles: Record<string, string> = { tree: '文件树视图', recent: '最近编辑' };
-		viewBtn.textContent = viewLabels[this._viewMode];
+		viewBtn.className = 'kb-abtn codicon ' + viewIcons[this._viewMode];
 		viewBtn.title = viewTitles[this._viewMode];
 		viewBtn.onclick = () => {
 			const seq: Array<'tree' | 'recent'> = ['tree', 'recent'];
@@ -1322,7 +1758,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		};
 		this._vaultBar.appendChild(viewBtn);
 
-		const newBtn = $('span.kb-abtn'); newBtn.textContent = '＋'; newBtn.title = '新建知识库';
+		const newBtn = $('span.kb-abtn.codicon.codicon-add'); newBtn.title = '新建知识库';
 		newBtn.onclick = async () => {
 		const r = await this.dialogService.input({ message: localize('kb.newVault', '新建知识库名称'), inputs: [{ value: '我的知识库' }] });
 		const name = r.values?.[0]?.trim();
@@ -1330,7 +1766,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		};
 		this._vaultBar.appendChild(newBtn);
 
-		const moreBtn = $('span.kb-abtn'); moreBtn.textContent = '⋯'; moreBtn.title = '更多';
+		const moreBtn = $('span.kb-abtn.codicon.codicon-ellipsis'); moreBtn.title = '更多';
 		moreBtn.onclick = (e) => { e.stopPropagation(); this.toggleVaultMenu(); };
 		this._vaultBar.appendChild(moreBtn);
 
@@ -1354,14 +1790,17 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 		const divider = $('div.kb-divider'); this._vaultMenu.appendChild(divider);
 		const cfg = $('div.kb-opt.add');
-		safeSetInnerHtml(cfg, '<span>＋</span><span>配置文件夹为知识库…</span>');
+		const cfgIcon = $('span.codicon.codicon-add');
+		const cfgText = $('span'); cfgText.textContent = '配置文件夹为知识库…';
+		cfg.replaceChildren(cfgIcon, cfgText);
 		cfg.onclick = (e) => { e.stopPropagation(); this._vaultMenu.classList.remove('show'); void this.configFolderAsVault(); };
 		this._vaultMenu.appendChild(cfg);
 	}
 
 	private vaultMenuItem(v: IKbVault, isOpen: boolean): HTMLElement {
 		const opt = $('div.kb-opt');
-		const check = $('span.kb-check'); check.textContent = (this._activeVault?.id === v.id) ? '✓' : '';
+		const check = $('span.kb-check.codicon');
+		if (this._activeVault?.id === v.id) { check.classList.add('codicon-check'); }
 		const ic = $('span'); ic.textContent = v.icon;
 		const nm = $('span'); nm.textContent = v.name;
 		const path = $('span.kb-path'); path.textContent = v.path;
@@ -1406,7 +1845,16 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			new Action('kb.vaultDelete', '删除', undefined, true, () => { void this.removeVault(v); }),
 		];
 		const anchor = ev ? { x: ev.clientX, y: ev.clientY } : { x: 100, y: 100 };
-		this.contextMenuService.showContextMenu({ getAnchor: () => anchor, getActions: () => actions });
+		// ★ 收集本次菜单创建的 Action，菜单关闭即释放（2026-09-15 修 [LEAKED DISPOSABLE]）
+		// ⚠ `IAction` 在本仓**不继承** `IDisposable` ✗ ⇒ 必须用 `isDisposable()` 守卫 ✓
+		// ⚠ `showContextMenu` 返回 **`void`** ✗（不是 Promise）⇒ 用 delegate 的 `onHide` ✓
+		const store = new DisposableStore();
+		actions.forEach(a => { if (isDisposable(a)) { store.add(a); } });
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => anchor,
+			getActions: () => actions,
+			onHide: () => store.dispose(),
+		});
 	}
 
 	/** P2-1 审核队列入口：列出 .review/ 待审核笔记，支持移回笔记根 / 清空。 */
@@ -1419,7 +1867,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			const name = n.path.split('/').pop() ?? 'note.md';
 			return { label: `↩ 移回：${name}`, run: () => { void this._approveReview(v, name, notesDir); } };
 		});
-		items.push({ label: `🗑 清空审核队列（${notes.length} 篇）`, run: () => { void this._discardAllReview(v); } });
+		items.push({ label: `清空审核队列（${notes.length} 篇）`, run: () => { void this._discardAllReview(v); } });
 		this.showSimpleMenu(items);
 	}
 
@@ -1573,22 +2021,28 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private renderSection(section: KbSection): HTMLElement {
 		const sec = $('div.kb-section');
 		sec.setAttribute('data-section', section);
+		// 分区着色类（CSS 里 .kb-section.sec-library / .sec-notes 决定标题图标色）
+		sec.classList.add(section === 'library' ? 'sec-library' : 'sec-notes');
 
 		const header = $('div.kb-section-header');
-		const arrow = $('span.kb-arrow'); arrow.textContent = '▶';
-		const title = $('span.kb-title'); title.textContent = section === 'library' ? '库' : '笔记';
+		const arrow = this._arrowEl();
+		const title = $('span.kb-title');
+		const secIcon = $('span.kb-cat.codicon.' + (section === 'library' ? 'codicon-library' : 'codicon-note'));
+		const titleText = $('span'); titleText.textContent = section === 'library' ? '库' : '笔记';
+		title.replaceChildren(secIcon, titleText);
 		const count = $('span.kb-count'); count.textContent = '...';
 		const spacer = $('span.kb-section-spacer');
 
 		const toolbar = $('div.kb-section-toolbar');
-		const newFileBtn = $('span.kb-tool-btn'); newFileBtn.textContent = '📄+'; newFileBtn.title = '新建文件';
+		const newFileBtn = $('span.kb-tool-btn.codicon.codicon-new-file'); newFileBtn.title = '新建文件';
 		newFileBtn.onclick = (e) => { e.stopPropagation(); void this.newFile(section); };
-		const newFolderBtn = $('span.kb-tool-btn'); newFolderBtn.textContent = '📁+'; newFolderBtn.title = '新建文件夹';
+		const newFolderBtn = $('span.kb-tool-btn.codicon.codicon-new-folder'); newFolderBtn.title = '新建文件夹';
 		newFolderBtn.onclick = (e) => { e.stopPropagation(); void this.newFolder(section); };
 		toolbar.append(newFileBtn, newFolderBtn);
 
 		header.append(arrow, title, count, spacer, toolbar);
-		header.onclick = () => { sec.classList.toggle('open'); arrow.textContent = sec.classList.contains('open') ? '▼' : '▶'; };
+		// 展开态由 CSS 的 .kb-section.open 规则驱动箭头旋转，不再手改 textContent
+		header.onclick = () => { sec.classList.toggle('open'); };
 		sec.append(header);
 
 		const body = $('div.kb-section-body');
@@ -1867,13 +2321,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		// Actions (hover)
 		const actions = $('div.kb-actions');
-		const newBtn = $('span.kb-act'); newBtn.textContent = '📄'; newBtn.title = '新建文件';
+		const newBtn = $('span.kb-act.codicon.codicon-new-file'); newBtn.title = '新建文件';
 		newBtn.onclick = (e) => { e.stopPropagation(); void this.newFile(node.section, node); };
-		const newFolder = $('span.kb-act'); newFolder.textContent = '📁'; newFolder.title = '新建文件夹';
+		const newFolder = $('span.kb-act.codicon.codicon-new-folder'); newFolder.title = '新建文件夹';
 		newFolder.onclick = (e) => { e.stopPropagation(); void this.newFolder(node.section, node); };
 		const renameBtn = $('span.kb-act'); renameBtn.textContent = '✎'; renameBtn.title = '重命名';
 		renameBtn.onclick = (e) => { e.stopPropagation(); this.startRename(el, node); };
-		const delBtn = $('span.kb-act'); delBtn.textContent = '🗑'; delBtn.title = '删除';
+		const delBtn = $('span.kb-act.codicon.codicon-trash'); delBtn.title = '删除';
 		delBtn.onclick = (e) => { e.stopPropagation(); void this.deleteNode(node); };
 		actions.append(newBtn, newFolder, renameBtn, delBtn);
 		el.appendChild(actions);
@@ -2555,7 +3009,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this.notificationService.warn('Embedding 服务未启用。请在设置中配置模型 Provider。');
 			return;
 		}
-		this.notificationService.info(`🧬 使用模型 ${embCfg.modelId} (${embCfg.dimensions}d) 重新构建向量索引…`);
+		this.notificationService.info(`使用模型 ${embCfg.modelId} (${embCfg.dimensions}d) 重新构建向量索引…`);
+		// activitybar 徽标：全量向量重建可能持续数分钟。
+		this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'building' });
 		try {
 			// 失效现有内核索引，强制全量重建
 			this._kbKernelService.invalidate();
@@ -2563,20 +3019,23 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			const roots = this.buildRoots();
 			if (roots.length === 0) {
 				this.notificationService.warn('没有可索引的目录。');
+				this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
 				return;
 			}
 			await this._kbKernelService.buildVectorIndex(roots);
 			const st = this._kbKernelService.getVectorStatus();
-			this.notificationService.info(`✅ 向量索引重建完成：${st.chunkCount} 个块（维度 ${st.dimensions}）。`);
+			this.notificationService.info(`向量索引重建完成：${st.chunkCount} 个块（维度 ${st.dimensions}）。`);
 			void this._logOp('settings.embedding.rebuild', 'success', {
 				detail: { provider: providerId ?? 'auto', model: embCfg.modelId, dimensions: embCfg.dimensions, chunks: st.chunkCount },
 			});
+			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
 		} catch (err) {
-			this.notificationService.error(`❌ 向量索引重建失败：${String((err as any)?.message ?? err)}`);
+			this.notificationService.error(`向量索引重建失败：${String((err as any)?.message ?? err)}`);
 			void this._logOp('settings.embedding.rebuild', 'failure', {
 				detail: { provider: providerId ?? 'auto', model: embCfg.modelId, dimensions: embCfg.dimensions },
 				error: String(err),
 			});
+			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'idle' });
 		}
 	}
 
@@ -2952,6 +3411,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 后台触发代码图谱（tree-sitter）索引。 */
 	private async _triggerCodebaseIndex(folderPath: string): Promise<void> {
+		// activitybar 徽标：代码索引耗时较长，未打开资料库 sideview 时也要可见。
+		this.agentStudioService.requestLibraryBadge({ source: 'codebase', kind: 'building' });
 		try {
 			const config: IIndexConfig = {
 				mode: 'fast' as IndexMode,
@@ -2959,8 +3420,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				excludeDirs: COMMON_EXCLUDE_DIRS.slice(),
 			};
 			await this._codebaseGraphService.indexWorkspace(folderPath, config);
+			this.agentStudioService.requestLibraryBadge({ source: 'codebase', kind: 'new', count: 1 });
 		} catch (err) {
 			this.logService.warn('[KB] background codebase index failed', err);
+			this.agentStudioService.requestLibraryBadge({ source: 'codebase', kind: 'idle' });
 		}
 	}
 
@@ -3040,13 +3503,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		el.style.paddingLeft = '6px';
 		el.classList.add('dir');
 
-		const icon = $('span.kb-ficon'); icon.textContent = '🔗'; el.appendChild(icon);
+		const icon = $('span.kb-ficon.codicon.codicon-link'); el.appendChild(icon);
 		const name = $('span.kb-name'); name.textContent = `${this.baseName(URI.file(path))}（关联）`; el.appendChild(name);
 
 		const actions = $('div.kb-actions');
 		const openBtn = $('span.kb-act'); openBtn.textContent = '📂'; openBtn.title = '在文件管理器打开';
 		openBtn.onclick = (e) => { e.stopPropagation(); void this.openerService.open(URI.file(path), { openExternal: true }); };
-		const graphBtn = $('span.kb-act'); graphBtn.textContent = '🧬'; graphBtn.title = '代码图谱（索引库）';
+		const graphBtn = $('span.kb-act.codicon.codicon-graph'); graphBtn.title = '代码图谱（索引库）';
 		graphBtn.onclick = (e) => { e.stopPropagation(); const input = new CodebaseIndexEditorInput(path); void this.editorService.openEditor(input, { pinned: true }); };
 		const unlinkBtn = $('span.kb-act'); unlinkBtn.textContent = '🔌'; unlinkBtn.title = '取消关联';
 		unlinkBtn.onclick = (e) => { e.stopPropagation(); void this.unlinkFolder(path); };
@@ -3062,7 +3525,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				new Separator(),
 				new Action('kb.unlink', '取消关联', undefined, true, () => { void this.unlinkFolder(path); }),
 			];
-			this.contextMenuService.showContextMenu({ getAnchor: () => ({ x: e.clientX, y: e.clientY }), getActions: () => actions });
+			// ★ 收集本次菜单创建的 Action，菜单关闭即释放（2026-09-15 修 [LEAKED DISPOSABLE]）
+			const store = new DisposableStore();
+			actions.forEach(a => { if (isDisposable(a)) { store.add(a); } });
+			this.contextMenuService.showContextMenu({
+				getAnchor: () => ({ x: e.clientX, y: e.clientY }),
+				getActions: () => actions,
+				onHide: () => store.dispose(),
+			});
 		};
 		return el;
 	}
@@ -3077,10 +3547,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		parent.style.paddingLeft = '6px';
 		parent.classList.add('dir', 'kb-linked-group');
 
-		const icon = $('span.kb-ficon'); icon.textContent = '🔧'; parent.appendChild(icon);
+		const icon = $('span.kb-ficon.codicon.codicon-chevron-right'); parent.appendChild(icon);
 		const nameEl = $('span.kb-name'); nameEl.textContent = ws.name; parent.appendChild(nameEl);
 
-		const menuBtn = $('span.kb-act'); menuBtn.textContent = '⋯'; menuBtn.title = '操作';
+		const menuBtn = $('span.kb-act.codicon.codicon-ellipsis'); menuBtn.title = '操作';
 		menuBtn.onclick = (e) => { e.stopPropagation(); this._showWsGroupMenu(ws, e); };
 		const actions = $('div.kb-actions');
 		actions.appendChild(menuBtn);
@@ -3096,7 +3566,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// 导入 code-workspace 后自动展开新分组（one-shot）
 		if (this._autoExpandWsGroup === ws.name) {
 			children.style.display = 'block';
-			icon.textContent = '📂';
+			icon.className = 'kb-ficon codicon codicon-chevron-down';
 			this._autoExpandWsGroup = undefined;  // 一次性消费
 			// 自动滚动到新分组可见
 			requestAnimationFrame(() => { parent.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' }); });
@@ -3105,7 +3575,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		parent.onclick = () => {
 			const isOpen = children.style.display !== 'none';
 			children.style.display = isOpen ? 'none' : 'block';
-			icon.textContent = isOpen ? '🔧' : '📂';
+			icon.className = 'kb-ficon codicon ' + (isOpen ? 'codicon-chevron-right' : 'codicon-chevron-down');
 		};
 
 		return parent;
@@ -3141,7 +3611,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			const label = $('div.kb-sort-label'); label.textContent = grp.group; g.appendChild(label);
 			for (const opt of grp.options) {
 				const o = $('div.kb-sort-opt');
-				const ck = $('span.kb-ck'); ck.textContent = this._sortMode === opt.value ? '✓' : '';
+				const ck = $('span.kb-ck.codicon');
+				if (this._sortMode === opt.value) { ck.classList.add('codicon-check'); }
 				const txt = $('span'); txt.textContent = opt.label;
 				o.append(ck, txt);
 				o.onclick = (e) => {
@@ -3196,6 +3667,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			// 标记所有库文件 item 为「构建中」
 			const libNodes = this._scroll.querySelectorAll('.kb-node[data-section="library"]:not(.dir)');
 			libNodes.forEach((n) => { this._setNodeBuilding((n as HTMLElement).dataset.path ?? '', true); });
+			// activitybar 徽标：批量构建是长任务，未打开资料库 sideview 时也要可见。
+			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'building' });
 			try {
 				await KbImportController.buildAllPendingNotes(vaultRoot, {
 					fileService: this.fileService,
@@ -3208,6 +3681,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			} finally {
 				// 清除全部构建中标记（避免刷新后残留）
 				Array.from(this._buildingPaths).forEach(p => this._setNodeBuilding(p, false));
+				// 构建收尾 → 转为「有新增」，提示用户回资料库查看产出
+				this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: 1 });
 			}
 			await this.refreshSection('notes');
 			await this.refreshSection('library');
@@ -3691,9 +4166,15 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				new Action('kb.optimizeCanvasName', '按内容重命名', undefined, true, () => { void this._optimizeMindmapName(node); }),
 			);
 		}
+		// ★★ 收集本次菜单创建的 Action，菜单关闭即释放（2026-09-15 修 [LEAKED DISPOSABLE]）。
+		// 此前直接交给 showContextMenu 且从不释放 ⇒ 每次右键泄漏十几个 disposable ✗
+		// （正是用户控制台里 nodeContextMenu 那一片报告 ✓）。
+		const store = new DisposableStore();
+		actions.forEach(a => { if (isDisposable(a)) { store.add(a); } });
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => ({ x: e.clientX, y: e.clientY }),
 			getActions: () => actions,
+			onHide: () => store.dispose(),
 		});
 	}
 
@@ -3723,9 +4204,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			actions.push(new Separator());
 			actions.push(new Action('kb.mergeCanvas', `合并思维导图 (${canvasFiles.length} 个)`, undefined, true, () => { void this._mergeCanvasFiles(canvasFiles); }));
 		}
+		// ★★ 同 nodeContextMenu：菜单关闭即释放本次创建的 Action（2026-09-15 修 [LEAKED DISPOSABLE]）
+		const store = new DisposableStore();
+		actions.forEach(a => { if (isDisposable(a)) { store.add(a); } });
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => ({ x: e.clientX, y: e.clientY }),
 			getActions: () => actions,
+			onHide: () => store.dispose(),
 		});
 	}
 
@@ -4326,7 +4811,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		el.replaceChildren();
 		const header = $('div.kb-bl-header');
-		header.textContent = '🔗 双链 📦';
+		header.textContent = '双链';
 		el.appendChild(header);
 
 		if (outgoing.length === 0 && back.length === 0 && mentions.length === 0) {
@@ -4340,7 +4825,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			const t = $('div.kb-bl-title'); t.textContent = `出链 (${outgoing.length})`; g.appendChild(t);
 			for (const o of outgoing) {
 				const item = $('div.kb-bl-item');
-				const ic = $('span.kb-bl-ic'); ic.textContent = o.targetUri ? '→' : '⚠'; item.appendChild(ic);
+				const ic = $('span.kb-bl-ic.codicon.' + (o.targetUri ? 'codicon-arrow-right' : 'codicon-warning')); item.appendChild(ic);
 				const lbl = $('span.kb-bl-label'); lbl.textContent = o.label; item.appendChild(lbl);
 				if (o.targetUri) { item.onclick = () => this.openUri(o.targetUri!); }
 				else { item.classList.add('missing'); item.title = '库内未找到该笔记'; }
@@ -4453,7 +4938,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _renderVectorHit(hit: IKbVectorSearchHit): HTMLElement {
 		const el = $('div.kb-search-hit');
 		el.style.borderLeft = '2px solid var(--vscode-textLink-foreground,#3794ff)';
-		const icon = $('span.kb-ficon'); icon.textContent = '🧠'; el.appendChild(icon);
+		const icon = $('span.kb-ficon.codicon.codicon-database'); el.appendChild(icon);
 		const name = $('span.kb-name'); name.textContent = hit.docName; el.appendChild(name);
 		const badge = $('span.kb-hit-badge'); badge.textContent = `${(hit.score * 100).toFixed(0)}%`; el.appendChild(badge);
 		const path = $('span.kb-hit-path');

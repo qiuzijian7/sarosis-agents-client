@@ -424,7 +424,20 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 	}
 
 	private async doResolveAsBinary(): Promise<BinaryEditorModel> {
-		const model = this.instantiationService.createInstance(BinaryEditorModel, this.preferredResource, this.getName());
+		// ★★ [Saros] 归属修正（2026-09-15，修 `[LEAKED DISPOSABLE]`）：
+		// 原实现创建后**既不 `_register` 也不缓存** ✗ ⇒ 这个 `BinaryEditorModel`
+		// （`EditorModel` → `Disposable` ✓）**无人持有、无人释放** ✗
+		// ⇒ 每次「按二进制解析」泄漏一个 ✓（`GCBasedDisposableTracker` 在 GC 时报出 ✓）。
+		// 调用方都不负责回收：`BinaryFileEditor.getContents`（`binaryEditor.ts:51` ✓）
+		// 与 `TextFileEditor.setInput` 路径（binary 回退 ⇒ `doResolveAsText` 的 catch ✓）
+		// 都只是 `await input.resolve()` 取来用 ✓。
+		//
+		// 对齐**同文件** `doResolveAsText` 的归属做法：那里由 `cachedTextFileModelReference`
+		// 持有 ✓，并在 `disposeModelReference()` / input 释放时回收 ✓。
+		// 这里用 `_register` 把 model 挂到 input 上 ⇒ input 释放时一并释放 ✓。
+		// ⚠ 不额外做缓存：`resolve()` 可能被多次调用 ✓，但每个 model 都会被 input 回收 ✓，
+		// 数量有界 ✓；而加缓存会改变「重新解析」的语义 ✗（binary 模型很轻，只记大小 ✓）。
+		const model = this._register(this.instantiationService.createInstance(BinaryEditorModel, this.preferredResource, this.getName()));
 		await model.resolve();
 
 		return model;

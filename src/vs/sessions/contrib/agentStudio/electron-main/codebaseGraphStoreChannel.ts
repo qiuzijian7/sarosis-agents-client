@@ -90,7 +90,10 @@ export class CodebaseGraphStoreChannel<TContext> extends Disposable implements I
 			case 'getNode': return s.getNode(args![0] as number) as unknown as T;
 			case 'getNodeByQN': return s.getNodeByQN(args![0] as string, args![1] as string) as unknown as T;
 			case 'getNodesByFile': return s.getNodesByFile(args![0] as string, args![1] as string) as unknown as T;
-			case 'searchNodes': return s.searchNodes(args![0] as string, args![1] as string | undefined, args![2] as number | undefined) as unknown as T;
+			// project 参数（第 4 位，2026-09-15）：下推到 SQL 限定单项目 —— 见 store 内 searchNodes 注释
+			// excludeTypes 参数（第 5 位，2026-09-15）：下推到 SQL 排除非符号桩节点（同上）
+			// nameOnly 参数（第 6 位，2026-09-15）：只匹配 name 列（符号名检索，同上）
+			case 'searchNodes': return s.searchNodes(args![0] as string, args![1] as string | undefined, args![2] as number | undefined, args![3] as string | undefined, args![4] as readonly string[] | undefined, args![5] as boolean | undefined) as unknown as T;
 			case 'semanticSearch': return s.semanticSearch(args![0] as string, args![1] as number | undefined) as unknown as T;
 			case 'getEdges': return s.getEdges(args![0] as number | undefined, args![1] as number | undefined, args![2] as number | undefined) as unknown as T;
 			case 'getTotalNodeCount': return s.getTotalNodeCount(args![0] as string | undefined) as unknown as T;

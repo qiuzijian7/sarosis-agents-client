@@ -21,7 +21,7 @@ import { EditorPart, IEditorPartUIState } from './editorPart.js';
 import { IAuxiliaryTitlebarPart } from '../titlebar/titlebarPart.js';
 import { WindowTitle } from '../titlebar/windowTitle.js';
 import { IAuxiliaryWindowOpenOptions, IAuxiliaryWindowService } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
-import { GroupDirection, GroupsOrder, IAuxiliaryEditorPart, GroupActivationReason } from '../../../services/editor/common/editorGroupsService.js';
+import { GroupDirection, GroupsOrder, IAuxiliaryEditorPart, GroupActivationReason, IAuxiliaryEditorSideView } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IHostService } from '../../../services/host/browser/host.js';
 import { IWorkbenchLayoutService, Parts, shouldShowCustomTitleBar } from '../../../services/layout/browser/layoutService.js';
@@ -37,6 +37,9 @@ import { GroupIdentifier } from '../../../common/editor.js';
 
 export interface IAuxiliaryEditorPartOpenOptions extends IAuxiliaryWindowOpenOptions {
 	readonly state?: IEditorPartUIState;
+
+	/** [Saros] Optional left side view rendered next to the editor area. */
+	readonly sideView?: IAuxiliaryEditorSideView;
 }
 
 export interface ICreateAuxiliaryEditorPartResult {
@@ -107,6 +110,9 @@ registerAction2(class extends Action2 {
 export class AuxiliaryEditorPart {
 
 	private static STATUS_BAR_VISIBILITY = 'workbench.statusBar.visible';
+
+	/** [Saros] Keep at least this much width for the editor area next to a side view. */
+	private static MIN_EDITOR_WIDTH = 320;
 
 	constructor(
 		private readonly editorPartsView: IEditorPartsView,
@@ -277,6 +283,35 @@ export class AuxiliaryEditorPart {
 			}
 		}));
 
+		// [Saros] Optional left side view (used by the Agent Studio chat windows to
+		// render a session side bar next to the chat). Appended last so it paints
+		// above the editor area; the element positions itself.
+		//
+		// 2026-09-15：从「仅创建时传入」改为**可运行时挂载** —— 聊天窗口也会经
+		// `AUX_WINDOW_GROUP`（会话右键 Open in New Window）或拖拽 tab 出窗口创建，
+		// 那两条路径拿不到 `options.sideView`，需要事后补挂。
+		let sideViewDisposables = disposables.add(new DisposableStore());
+		editorPart.registerSideViewHandler((prev, next) => {
+			sideViewDisposables.dispose();
+			sideViewDisposables = disposables.add(new DisposableStore());
+
+			if (prev) {
+				const prevElement = prev.element as HTMLElement | undefined;
+				prevElement?.remove?.();
+			}
+
+			if (next) {
+				auxiliaryWindow.container.appendChild(next.element as HTMLElement);
+				sideViewDisposables.add(next.onDidChange(() => auxiliaryWindow.layout()));
+			}
+
+			auxiliaryWindow.layout();
+		});
+
+		if (options?.sideView) {
+			editorPart.setSideView(options.sideView);
+		}
+
 		// Layout: specifically `onWillLayout` to have a chance
 		// to build the aux editor part before other components
 		// have a chance to react.
@@ -284,8 +319,23 @@ export class AuxiliaryEditorPart {
 			const titlebarPartHeight = titlebarPart?.height ?? 0;
 			titlebarPart?.layout(dimension.width, titlebarPartHeight, 0, 0);
 
+			// [Saros] Reserve room for the optional left side view; the editor
+			// area is shifted right by the same amount so nothing overlaps.
+			// 读 `editorPart.sideView`（而非创建时的局部变量）以支持运行时挂载。
+			const sideView = editorPart.sideView;
+			const sideViewWidth = sideView ? Math.max(0, Math.min(Math.round(sideView.width), Math.max(0, dimension.width - AuxiliaryEditorPart.MIN_EDITOR_WIDTH))) : 0;
 			const editorPartHeight = dimension.height - computeEditorPartHeightOffset();
-			editorPart.layout(dimension.width, editorPartHeight, titlebarPartHeight, 0);
+			sideView?.layout(sideViewWidth, editorPartHeight, titlebarPartHeight, 0);
+
+			// ⚠ 必须移动**编辑器区容器本身**（2026-09-15「侧栏遮挡聊天框」修复）。
+			// `Grid.layout()` 的 `top`/`left` 只是「传给子 view 的 layout 原点」
+			// （见 base/browser/ui/grid/grid.ts 的注释），**不会移动 grid 容器**。
+			// 旧实现只把 left 交给 grid ⇒ 编辑器内容右移了，但 `.part.editor` 容器
+			// 仍从 x=0 起算宽度 ⇒ 左侧栏（absolute + z-index）把聊天框左侧盖住。
+			// 容器在 create() 里是 `position: relative` ⇒ 这里用 `left` 真正让位，
+			// 同时把 grid 的原点归零，避免「容器 + grid」双重偏移。
+			editorPartContainer.style.left = `${sideViewWidth}px`;
+			editorPart.layout(dimension.width - sideViewWidth, editorPartHeight, titlebarPartHeight, 0);
 
 			statusbarPart.layout(dimension.width, statusbarPart.height, dimension.height - statusbarPart.height, 0);
 		}));
@@ -343,6 +393,33 @@ class AuxiliaryEditorPartImpl extends EditorPart implements IAuxiliaryEditorPart
 	private readonly optionsDisposable = this._register(new MutableDisposable());
 
 	private isCompact = false;
+
+	// ── [Saros] 左侧栏（session side view）─────────────────────────────────
+	/** 当前挂载的左侧栏。 */
+	private _sideView: IAuxiliaryEditorSideView | undefined;
+	/** 由 `AuxiliaryEditorPart.create()` 注入的实际 DOM 挂载/卸载实现。 */
+	private _sideViewHandler: ((prev: IAuxiliaryEditorSideView | undefined, next: IAuxiliaryEditorSideView | undefined) => void) | undefined;
+
+	get sideView(): IAuxiliaryEditorSideView | undefined {
+		return this._sideView;
+	}
+
+	setSideView(sideView: IAuxiliaryEditorSideView | undefined): void {
+		if (this._sideView === sideView) {
+			return;
+		}
+		const prev = this._sideView;
+		this._sideView = sideView;
+		this._sideViewHandler?.(prev, sideView);
+	}
+
+	/**
+	 * [Saros] 由 `AuxiliaryEditorPart.create()` 注入真正的挂载实现 —— 它需要
+	 * 访问 auxiliaryWindow 与 create() 作用域内的 disposables。
+	 */
+	registerSideViewHandler(handler: (prev: IAuxiliaryEditorSideView | undefined, next: IAuxiliaryEditorSideView | undefined) => void): void {
+		this._sideViewHandler = handler;
+	}
 
 	constructor(
 		windowId: number,

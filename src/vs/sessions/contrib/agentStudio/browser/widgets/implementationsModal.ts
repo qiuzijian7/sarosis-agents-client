@@ -173,11 +173,19 @@ export class ImplementationsModal {
 
 	private async _accept(): Promise<void> {
 		const it = this._rows[this._selectedIndex];
-		if (!it?.uri || !it.line) { this._modal?.dispose(); return; }
+		// 2026-09-15：不再把 `it.line` 当作可跳转前提 —— 无行号的候选（图谱 `label='file'`
+		// 节点）以前会被**静默关闭**，用户只看到「双击没反应」。行号缺省落到第 1 行。
+		// 统一解析由 service 的 `resolveNodeLocation` 完成（调用方已把结果填进 `uri`/`line`）。
+		if (!it?.uri) { this._modal?.dispose(); return; }
+		const lineNo = Math.max(1, it.line ?? 1);
 		try {
 			await this._editorService.openEditor({
 				resource: it.uri,
-				options: { selection: { startLineNumber: it.line, startColumn: 1 }, revealIfOpened: true },
+				options: {
+					selection: { startLineNumber: lineNo, startColumn: 1, endLineNumber: lineNo, endColumn: 1 },
+					revealIfOpened: true,
+					pinned: false,
+				},
 			});
 		} catch { /* stale */ }
 		this._modal?.dispose();

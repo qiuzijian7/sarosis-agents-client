@@ -70,9 +70,7 @@ const CSS_TEXT = `
 .mp-cat:hover{border-color:var(--vscode-button-background,#007acc);color:var(--vscode-editor-foreground,#ccc);}
 .mp-cat.active{background:var(--vscode-button-background,#007acc);color:var(--vscode-button-foreground,#fff);border-color:var(--vscode-button-background,#007acc);}
 .mp-grid-scroll{flex:1;overflow-y:auto;}
-.mp-grid-scroll::-webkit-scrollbar{width:8px;}
-.mp-grid-scroll::-webkit-scrollbar-track{background:var(--vscode-editor-background,#1e1e1e);}
-.mp-grid-scroll::-webkit-scrollbar-thumb{background:var(--vscode-panel-border,#3c3c3c);border-radius:4px;}
+/* 滚动条统一由 sessions 全局样式提供 */
 .mp-grid{padding:16px 24px;}
 .mp-section-title{font-size:13px;font-weight:600;color:var(--vscode-editor-foreground,#ccc);margin-bottom:10px;display:flex;align-items:center;gap:6px;}
 .mp-section-title .count{font-size:11px;color:var(--vscode-descriptionForeground,#9d9d9d);font-weight:400;}

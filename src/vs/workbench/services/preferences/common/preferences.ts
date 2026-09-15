@@ -19,6 +19,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { ResolvedKeybindingItem } from '../../../../platform/keybinding/common/resolvedKeybindingItem.js';
 import { DEFAULT_EDITOR_ASSOCIATION, IEditorPane } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
+import { FOLDER_SETTINGS_PATH } from '../../configuration/common/configuration.js';
 import { Settings2EditorModel } from './preferencesModels.js';
 
 export enum SettingValueType {
@@ -347,7 +348,10 @@ export interface IDefineKeybindingEditorContribution extends IEditorContribution
 	showDefineKeybindingWidget(): void;
 }
 
-export const FOLDER_SETTINGS_PATH = '.vscode/settings.json';
+// ★ [Saros] 转发自 `workbench/services/configuration/common/configuration.ts` 的
+// `FOLDER_SETTINGS_PATH`（唯一真源，本产品用 `.sarosworkspace/` 而非 `.vscode/`）。
+// 上游此处原本是**重复定义**的第二个常量 —— 两处同名常量必然漂移，故改为转发。
+export { FOLDER_SETTINGS_PATH };
 export const DEFAULT_SETTINGS_EDITOR_SETTING = 'workbench.settings.openDefaultSettings';
 export const USE_SPLIT_JSON_SETTING = 'workbench.settings.useSplitJSON';
 export const ALWAYS_SHOW_ADVANCED_SETTINGS_SETTING = 'workbench.settings.alwaysShowAdvancedSettings';

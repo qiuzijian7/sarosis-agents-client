@@ -515,24 +515,29 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 	}
 
 	/**
-	 * 工作区级任务落点 —— `<folder>/.sarosworkspace/tasks.json`。
+	 * 工作区级 Agent 任务落点 —— `<folder>/.sarosworkspace/agent-tasks.json`。
 	 *
-	 * ★ 刻意**不**用 `<folder>/.vscode/tasks.json`（用户 2026-09-13 定规：本项目不读不写
-	 * 工作区 `.vscode/`）。这是**安全**问题而非洁癖：该文件在**工作区内、模型可写**，
-	 * 而 tasks.json 能定义**任意命令**，`runOptions.runOn = 'folderOpen'` 更是
-	 * 「打开文件夹即执行」；`.vscode/tasks.json` 同时还是 VS Code 原生任务系统的输入，
-	 * 一份文件被两个执行体消费。
+	 * ★ 为什么**不**与原生任务系统共用文件（这是安全约束，不是洁癖）：
+	 * tasks.json 能定义**任意命令**，`runOptions.runOn = 'folderOpen'` 更是「打开文件夹即执行」。
+	 * 一份文件被两个执行体消费时，Agent（在工作区内写文件）就能借此把任意命令交给**原生任务系统**执行。
 	 *
-	 * 工作区级数据统一落 `.sarosworkspace/`（见 agentStudio `WORKSPACE_DATA_DIR`），
-	 * 与 workflows / checkpoints / agents / sessions 同源。
+	 * ⚠ 2026-09-14 起 `<folder>/.sarosworkspace/tasks.json` 已**成为原生任务系统的文件**
+	 * （folder 级配置目录由 `.vscode/` 统一改成 `.sarosworkspace/`，见
+	 * `workbench/services/configuration/common/configuration.ts` 的 `FOLDER_CONFIG_FOLDER_NAME`）
+	 * ⇒ Agent 任务必须另起文件名，否则刚刚拆开的「两个执行体共用一份文件」会原地复活。
 	 */
 	private _getWorkspaceTasksJsonUri(folder: URI | undefined): URI | undefined {
-		return folder?.path ? joinPath(folder, '.sarosworkspace', 'tasks.json') : undefined;
+		return folder?.path ? joinPath(folder, '.sarosworkspace', 'agent-tasks.json') : undefined;
 	}
 
 	/**
-	 * 一次性迁移：把旧落点 `<folder>/.vscode/tasks.json` 里属于 Agent 会话的条目
-	 * （`inAgents: true`）搬到新落点，之后**永不再读**旧文件。
+	 * 一次性迁移：把旧落点里属于 Agent 会话的条目（`inAgents: true`）搬到新落点，
+	 * 之后**永不再读**旧文件。
+	 *
+	 * 旧落点有两个（按新→旧顺序尝试，取第一个存在的）：
+	 *   ① `<folder>/.sarosworkspace/tasks.json` —— 2026-09-13~09-14 之间的中间落点，
+	 *      现在该路径已归**原生任务系统**（见 `_getWorkspaceTasksJsonUri` 的说明）；
+	 *   ② `<folder>/.vscode/tasks.json` —— 最初的落点（本项目已不读 `.vscode/`）。
 	 *
 	 * 幂等判据是「新文件不存在」—— 迁移成功后新文件必然存在，因此天然只跑一次；
 	 * 旧文件里 `inAgents` 为假的条目属于 VS Code 普通任务，**原样留在原处不动**。
@@ -552,16 +557,25 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 			if (await this._fileService.exists(newUri)) {
 				return;
 			}
-			const legacyUri = joinPath(folder, '.vscode', 'tasks.json');
-			if (!await this._fileService.exists(legacyUri)) {
+			const legacyUris = [
+				joinPath(folder, '.sarosworkspace', 'tasks.json'),
+				joinPath(folder, '.vscode', 'tasks.json'),
+			];
+			for (const legacyUri of legacyUris) {
+				if (!await this._fileService.exists(legacyUri)) {
+					continue;
+				}
+				const legacy = await this._readTasksJson(legacyUri);
+				const agentTasks = (legacy.tasks ?? []).filter(task => !!task.inAgents);
+				if (agentTasks.length === 0) {
+					continue;
+				}
+				await this._jsonEditingService.write(newUri, [
+					{ path: ['version'], value: legacy.version ?? '2.0.0' },
+					{ path: ['tasks'], value: agentTasks },
+				], true);
 				return;
 			}
-			const legacy = await this._readTasksJson(legacyUri);
-			const agentTasks = (legacy.tasks ?? []).filter(task => !!task.inAgents);
-			await this._jsonEditingService.write(newUri, [
-				{ path: ['version'], value: legacy.version ?? '2.0.0' },
-				{ path: ['tasks'], value: agentTasks },
-			], true);
 		} catch { /* 迁移是尽力而为，失败不影响读取 */ }
 	}
 

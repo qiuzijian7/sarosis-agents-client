@@ -1,0 +1,82 @@
+/*---------------------------------------------------------------------------------------------
+ *  Aux Chat Session Side View — styles
+ *
+ *  Chrome for the session side bar inside the standalone (auxiliary) chat
+ *  window. The hosted pane reuses the standard pane-view styling by carrying
+ *  the `monaco-pane-view` class on its body container.
+ *--------------------------------------------------------------------------------------------*/
+
+.saros-aux-side-view {
+	position: absolute;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	box-sizing: border-box;
+	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	border-right: 1px solid var(--vscode-sideBar-border, var(--vscode-editorWidget-border, transparent));
+	z-index: 10;
+}
+
+.saros-aux-side-view-header {
+	display: flex;
+	align-items: center;
+	flex: 0 0 auto;
+	height: 30px;
+	padding: 0 6px 0 12px;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.4px;
+	text-transform: uppercase;
+	color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-foreground));
+	background: var(--vscode-sideBarSectionHeader-background, transparent);
+	border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+}
+
+.saros-aux-side-view-title {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.saros-aux-side-view-collapse {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	margin-left: auto;
+	width: 22px;
+	height: 22px;
+	flex-shrink: 0;
+	border-radius: 4px;
+	cursor: pointer;
+	text-decoration: none;
+	color: var(--vscode-icon-foreground, var(--vscode-foreground));
+}
+
+.saros-aux-side-view-collapse:hover {
+	background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+.saros-aux-side-view-body {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+}
+
+/* Collapsed rail — only the expand affordance stays reachable. */
+.saros-aux-side-view.collapsed .saros-aux-side-view-title {
+	display: none;
+}
+
+.saros-aux-side-view.collapsed .saros-aux-side-view-header {
+	justify-content: center;
+	padding: 0;
+}
+
+.saros-aux-side-view.collapsed .saros-aux-side-view-collapse {
+	margin-left: 0;
+}
+
+/* The hosted pane drops its own header; this side view provides the chrome. */
+.saros-aux-side-view .pane > .pane-header {
+	display: none;
+}

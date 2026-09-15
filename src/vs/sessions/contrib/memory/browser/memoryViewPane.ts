@@ -228,9 +228,8 @@ export class MemoryViewPane extends ViewPane {
 			.mv-activity-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 			.mv-activity-time { font-size: 9px; color: #6a6a6a; flex-shrink: 0; }
 			/* Layers / Memory list */
+			/* 滚动条统一由 sessions 全局样式提供 */
 			.mv-layers { flex: 1; overflow-y: auto; padding: 2px 0; }
-			.mv-layers::-webkit-scrollbar { width: 5px; }
-			.mv-layers::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.3); border-radius: 3px; }
 			/* Memory card */
 			.mv-mem { padding: 4px 10px 4px 24px; border-bottom: 1px solid #2d2d2d; cursor: pointer; transition: background 0.15s; }
 			.mv-mem:hover { background: #333; }
