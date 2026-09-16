@@ -103,8 +103,9 @@ export class CodebaseGraphStoreChannel<TContext> extends Disposable implements I
 			case 'listProjects': return s.listProjects() as unknown as T;
 			case 'getNodeTypes': return s.getNodeTypes(args![0] as string | undefined) as unknown as T;
 			case 'getEdgeTypes': return s.getEdgeTypes(args![0] as string | undefined) as unknown as T;
-			case 'getAllNodes': return s.getAllNodes(args![0] as string | undefined, args![1] as number | undefined, args![2] as number | undefined) as unknown as T;
-			case 'getAllEdges': return s.getAllEdges(args![0] as string | undefined, args![1] as number | undefined, args![2] as number | undefined) as unknown as T;
+			// afterId（第 4 位，2026-09-16）：keyset 分页游标，透传给 SQL 的 `id > ?`（见 store 内注释）
+			case 'getAllNodes': return s.getAllNodes(args![0] as string | undefined, args![1] as number | undefined, args![2] as number | undefined, args![3] as number | undefined) as unknown as T;
+			case 'getAllEdges': return s.getAllEdges(args![0] as string | undefined, args![1] as number | undefined, args![2] as number | undefined, args![3] as number | undefined) as unknown as T;
 			case 'getNodeCount': return s.getNodeCount(args![0] as string | undefined) as unknown as T;
 			case 'getTopNodesByDegree': return s.getTopNodesByDegree(args![0] as string, args![1] as number) as unknown as T;
 			case 'getEdgesBetweenNodes': return s.getEdgesBetweenNodes(args![0] as number[]) as unknown as T;

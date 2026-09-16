@@ -1337,9 +1337,11 @@ protected override _forceRenderAllMessages(): void {
 			sub.classList.add('open');
 
 			// ── 水平约束：视口右侧空间不足 → 向左飞出 ──
+			// 宽度由 CSS 自适应（max-content + min/max 夹取），必须实测 offsetWidth；
+			// 兜底值对齐 CSS 的 min-width，避免首帧测量为 0 时误判飞出方向。
 			const panelRect = (this._chatModelDropdownEl ?? this._imageModelDropdownEl)?.getBoundingClientRect();
 			if (panelRect) {
-				const subWidth = sub.offsetWidth || 250;
+				const subWidth = sub.offsetWidth || 200;
 				sub.classList.toggle('flip-left', panelRect.right + 6 + subWidth > window.innerWidth - 8);
 			}
 

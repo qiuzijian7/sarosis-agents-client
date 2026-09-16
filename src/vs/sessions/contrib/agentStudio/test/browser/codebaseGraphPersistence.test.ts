@@ -13,7 +13,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
-import { GraphPersistence } from '../../browser/codebaseGraphPersistence.js';
+import { GraphPersistence, IArrayParseStats, PARSE_BATCH_ELEMENTS, forEachArrayBatch } from '../../browser/codebaseGraphPersistence.js';
 import { CodebaseGraphStore } from '../../browser/codebaseGraphStore.js';
 
 const PROJECT = 'test';
@@ -263,6 +263,112 @@ suite('GraphPersistence streaming loader (special chars inside strings)', () => 
 		const ok = await p.load(store, TARGET);
 		assert.strictEqual(ok, true);
 		assert.strictEqual(store.getNodeCount(), 5000, 'all 5000 nodes should stream-parse');
+	});
+});
+
+/**
+ * **批量解析**（2026-09-16，用户报「切换工作区卡住」的性能改动）。
+ *
+ * 事故数据：单 folder「解析 JSON」阶段 **10177ms**（合计 12369ms / 共 12372ms 的 merge）。
+ * 旧实现是**逐元素** `json.slice()` + `JSON.parse()`（18 万次小解析），大头是搬运开销；
+ * 改为按 `PARSE_BATCH_ELEMENTS` 一批、一次原生解析。
+ *
+ * ⚠ 风险面全在**批边界**上：切片范围是 `[首个元素起点, 末个元素终点]`，再补外层方括号。
+ * 所以这里把「缩进/换行分隔」「嵌套结构」「字符串里含 `]` `,` `\"` `\\`」「跨多批」「空数组」
+ * 逐项钉住 —— 任何一项错都会静默丢/重元素（数量对不上时才暴露）。
+ */
+suite('forEachArrayBatch — 批量解析（性能改动的不变量）', () => {
+
+	const collect = async (arrayText: string): Promise<{ items: any[]; batches: number[] }> => {
+		const items: any[] = [];
+		const batches: number[] = [];
+		// 传「去掉外层方括号的文本」即可：openIdx 指向 `[`、closeIdx 指向 `]` 之后一位
+		// （与调用方 `vStart` / `vEnd` 同口径 —— 那是 `_skipJsonValue` 给出的值域）
+		await forEachArrayBatch<any>(arrayText, 0, arrayText.length, batch => {
+			batches.push(batch.length);
+			for (const it of batch) { items.push(it); }
+		});
+		return { items, batches };
+	};
+
+	test('★★★ 跨多批 + 缩进换行 + 嵌套 + 特殊字符：必须与原生 JSON.parse 完全一致', async () => {
+		const expected: any[] = [];
+		const total = PARSE_BATCH_ELEMENTS * 2 + 7; // 刻意多出 7 个 ⇒ 末批不满，边界更容易露馅
+		for (let i = 0; i < total; i++) {
+			expected.push({
+				id: i,
+				// 字符串里塞满会干扰扫描器的字符：`]` `,` `"` `\` 与嵌套方括号
+				name: i % 3 === 0 ? `n]${i},x"y\\z[${i}]` : `n${i}`,
+				nested: [i, { k: `v${i}`, arr: [[i]] }],
+			});
+		}
+		// 缩进 + 换行：元素之间不再是紧凑的 `,` —— 切片必须仍然合法 JSON
+		const text = JSON.stringify(expected, null, 1);
+
+		const { items, batches } = await collect(text);
+		assert.deepStrictEqual(items, expected, '批解析结果必须与原生 JSON.parse 逐字段一致');
+		assert.ok(batches.length >= 3, `共 ${total} 个元素 / 每批上限 ${PARSE_BATCH_ELEMENTS} ⇒ 应至少 3 批，实际 ${batches.length}`);
+		for (const n of batches) {
+			assert.ok(n > 0 && n <= PARSE_BATCH_ELEMENTS, `单批元素数必须在 (0, ${PARSE_BATCH_ELEMENTS}]：${n}`);
+		}
+	});
+
+	test('★ 边界形态：空数组 / 单元素 / 前后空白 / 紧凑分隔', async () => {
+		for (const text of ['[]', '[ ]', '[\n]', '[1]', '[ 1 , 2 ]', '[{"a":1},{"b":[2,3]}]']) {
+			const { items } = await collect(text);
+			assert.deepStrictEqual(items, JSON.parse(text), `形态 ${JSON.stringify(text)} 必须与原生一致`);
+		}
+	});
+
+	test('★★ 诊断出参（stats）：必须报准元素数与批数（「解析分解」行的数据源）', async () => {
+		const arrText = JSON.stringify(Array.from({ length: PARSE_BATCH_ELEMENTS + 3 }, (_, i) => ({ id: i })));
+		const stats: IArrayParseStats = { elements: 0, scanMs: 0, parseMs: 0, batches: 0 };
+		let got = 0;
+		await forEachArrayBatch<any>(arrText, 0, arrText.length, items => { got += items.length; }, stats);
+		assert.strictEqual(got, PARSE_BATCH_ELEMENTS + 3);
+		assert.strictEqual(stats.elements, PARSE_BATCH_ELEMENTS + 3, '元素数必须与实际一致（否则「解析分解」行会误导）');
+		assert.strictEqual(stats.batches, 2, '应恰好 2 批（边界 + 末批不满）');
+		assert.ok(stats.scanMs >= 0 && stats.parseMs >= 0, '两类耗时都要有（哪怕极小）');
+	});
+
+	test('★★★ 返回值 = 数组终点：调用方据此**跳过「值边界扫描」**（省掉同一段文本的第二遍扫描）', async () => {
+		// 这一条是 2026-09-16 第二轮优化的安全网：`_parseGraphStreaming` 现在**不再**为
+		// nodes/edges/fileHashes 预先 `_skipJsonValue` 求值边界，而是直接用本函数的返回值推进游标。
+		// 返回值错 1 个字符 ⇒ 后续键全部解析错位（且**不会**报错，只会静默丢数据）。
+		for (const text of ['[]', '[ ]', '[1,2]', '[ 1 , 2 ]', '[{"a":1},{"b":[2,3]}]']) {
+			const end = await forEachArrayBatch<any>(text, 0, text.length, () => { /* 只关心游标 */ });
+			assert.strictEqual(text[end - 1], ']', `返回位置的前一个字符必须是闭合方括号：${JSON.stringify(text)} ⇒ ${end}`);
+			assert.strictEqual(end, text.length, `孤立数组 ⇒ 终点应正好等于文本长度：${JSON.stringify(text)} ⇒ ${end}`);
+		}
+
+		// 真实形态：数组后面还有别的键 ⇒ 用返回的终点继续解析，必须正好落在**分隔逗号**上
+		const json = '{"nodes":[{"id":1},{"id":2}],"edges":[{"id":9}],"fileHashes":[{"relPath":"a","hash":"h"}]}';
+		const vStart = json.indexOf('[', json.indexOf('"nodes"'));
+		let nodes = 0;
+		const end = await forEachArrayBatch<any>(json, vStart, json.length, items => { nodes += items.length; });
+		assert.strictEqual(nodes, 2);
+		assert.strictEqual(json[end], ',', `终点之后必须是分隔逗号（多/少一个字符都会让后续键错位）：…${json.slice(Math.max(0, end - 2), end + 2)}…`);
+	});
+
+	test('★★ 真实载入路径：超过两批且带缩进的制品必须完整（批边界回归）', async () => {
+		const fs = new MemFS();
+		const nodes: any[] = [];
+		const total = PARSE_BATCH_ELEMENTS * 2 + 3;
+		for (let i = 1; i <= total; i++) {
+			nodes.push({ id: i, project: 'x', label: 'Function', name: `fn${i}`, qualifiedName: `fn${i}`, inDegree: 0, outDegree: 0 });
+		}
+		fs.set(TARGET, await gzipText(JSON.stringify(
+			{ nodes, edges: [], fileHashes: [], bm25: null, layout: [], nextNodeId: total + 1, nextEdgeId: 1 },
+			null, 1,
+		)));
+		const p = new GraphPersistence(fs as any, makeLog().log as any);
+		const store = new CodebaseGraphStore();
+		assert.strictEqual(await p.load(store, TARGET), true);
+		assert.strictEqual(store.getNodeCount(), total, '数量必须与外层一致（丢/重都会露馅）');
+		// 批边界两侧逐个点名：首个 / 第 1 批末尾 / 第 2 批开头 / 第 2 批末尾 / 末个
+		for (const id of [1, PARSE_BATCH_ELEMENTS, PARSE_BATCH_ELEMENTS + 1, PARSE_BATCH_ELEMENTS * 2, total]) {
+			assert.ok(store.getNode(id), `批边界附近的节点 ${id} 不得丢或重`);
+		}
 	});
 });
 

@@ -3504,6 +3504,29 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 	}
 
 	/**
+	 * 找出「可以续接」的流式 assistant 消息 —— 句柄被清空、但气泡仍显示在面板里且仍在流式中。
+	 *
+	 * ★★ 2026-09-16：修「一次 LLM 答复被错误拆分成多段气泡」的核心判据。
+	 * 背景与事故链见调用点（`_processDelta` 自愈分支）注释：`_handoffActiveStream()`
+	 * 会因「聊天页签不再显示」（如 LLM 打开 mermaid 预览页签）而清空 `_streamingAssistantId`，
+	 * 旧代码随后 `_initStreamingMessage()` 新建气泡 ⇒ 答复被切段。
+	 *
+	 * 判据刻意收得很紧，宁可不接（新建气泡）也不误接（旧消息被继续追加而错乱）：
+	 *  · **最后一条**消息 —— 流式气泡永远在列表末尾；中间的消息必已收尾；
+	 *  · `role === 'assistant'`；
+	 *  · `isStreaming === true` —— pane 在 done/error 收尾时会置 false，
+	 *    因此「已收尾的上一轮」不会被接上。
+	 */
+	private _recoverableStreamingMessage(): IAgentChatMessage | undefined {
+		const msgs = this._chatPanel?.getMessages() ?? [];
+		const last = msgs[msgs.length - 1] as (IAgentChatMessage & { isStreaming?: boolean }) | undefined;
+		if (last && last.role === 'assistant' && last.isStreaming === true) {
+			return last;
+		}
+		return undefined;
+	}
+
+	/**
 	 * 跨流补发的 tool_result / tool_end 兜底（2026-09-06）。
 	 *
 	 * 工具在所属消息的流结束后才执行，其结果/结束事件常在**下一轮流开头**才到达
@@ -3879,6 +3902,19 @@ private _handleStreamDelta(delta: any): void {
 			const own = subAgents.filter((s: any) => s?.parentToolCallId === tc.id);
 			if (own.length > 0) { tc.subAgents = own; }
 		}
+
+		// ★★ 2026-09-16 诊断（用户报「多 subagent 并行时工具卡片刷新异常」）：
+		// 一眼看出「数据到没到、挂到了哪张卡、有没有卡是空的」。
+		// 两种异常形态都能被这条日志区分：
+		//   ① `attached=[...:0]`（某张卡挂到 0 个子代理）⇒ 分组被并到别的卡（关联错误）；
+		//   ② `groups=2 cards=3` 而某卡为 0 ⇒ 有组没找到目标卡（兜底链也没兜住）。
+		if (delegateTcs.length > 0) {
+			const rows = delegateTcs.map((tc: any) => `${String(tc.id).slice(-6)}:${(tc.subAgents ?? []).length}`);
+			this._logService.info(
+				`[SubAgentAttach] sa=${subAgents.length} groups=${internalGroups.size} cards=${delegateTcs.length} `
+				+ `used=${usedTc.size} attached=[${rows.join(', ')}]`,
+			);
+		}
 	}
 
 	/** 从 delegate_task/plan_explore 工具卡的 args 提取 task 文本（支持 JSON、纯文本、tasks[]）。 */
@@ -3965,12 +4001,39 @@ private _handleStreamDelta(delta: any): void {
 			// 漏入的 delta 不得在新会话里凭空重建流式消息（否则高频重建 → 卡死，
 			// 详见 _streamingAbandoned 字段注释）。
 			if (this._isSending && !isTerminal && !this._streamingAssistantId && !this._streamingAbandoned) {
-				this._initStreamingMessage();
+				// ★★ 2026-09-16：先尝试**续接仍显示中的流式气泡**，接不上才新建
+				// —— 修「一次 LLM 答复被错误拆分成多段气泡」。
+				//
+				// 事故（日志 `vscode-app-1789528831953.log`）：LLM 输出途中调
+				// `renderMermaidDiagram` ⇒ 应用**打开 mermaid 预览页签**（`[MermaidOpenPreview]
+				// opened in editor tab`）⇒ 聊天页签不再显示 ⇒ VS Code 调 `clearInput()` ⇒
+				// `_handoffActiveStream()` 把 `_streamingAssistantId` 清空（**该路径没有日志**）。
+				// 而流仍在跑（`isSending=true`），下一个 text delta 命中本分支 ⇒ 旧实现
+				// `_initStreamingMessage()` **新建**一条 `msg_..._assistant` ⇒ 同一段答复被切成
+				// 两个气泡。实测连续发生两次（`msg_1789527908098` / `msg_1789527911720`，
+				// 新气泡第 28 / 1627 字符开始），用户观感即「一次答复被拆成多段」。
+				//
+				// 判据（`_recoverableStreamingMessage()`）：面板**最后一条** assistant 消息
+				// 仍是 `isStreaming === true` ⇒ 它就是被切段的那条，接回来继续追加正文/工具卡；
+				// 否则说明上一条确已收尾（新 turn 的正常路径由调用方直接 `_initStreamingMessage`，
+				// 不走这里），才新建气泡。
+				const recoverable = this._recoverableStreamingMessage();
+				if (recoverable) {
+					this._streamingAssistantId = recoverable.id;
+					this._streamingAssistantMsg = recoverable;
+					this._logService.info(
+						`[NativeChatEditorPane#${this._paneId}] _processDelta: RE-ADOPTED in-flight assistant msg ` +
+						`${recoverable.id} — continuing the SAME bubble (handle was cleared mid-stream, type=${delta.type})`
+					);
+				} else {
+					this._initStreamingMessage();
+				}
 				assistantId = this._streamingAssistantId;
 				assistantMsg = this._streamingAssistantMsg;
 				this._logService.warn(
 					`[NativeChatEditorPane#${this._paneId}] _processDelta: SELF-HEALED streaming msg ` +
-					`(newId=${assistantId ?? 'null'}, session=${this._currentSessionId}, type=${delta.type})`
+					`(newId=${assistantId ?? 'null'}, adopted=${recoverable ? 'yes' : 'no'}, ` +
+					`session=${this._currentSessionId}, type=${delta.type})`
 				);
 			}
 		}
@@ -5774,6 +5837,15 @@ private _handleStreamDelta(delta: any): void {
 			NativeChatEditorPane._sharedLocalSendSessions.delete(this._currentSessionId);
 		}
 		if (this._streamingAssistantId || this._streamingAssistantMsg) {
+			// ★ 2026-09-16：此路径此前**零日志**，导致「流式途中句柄被清空」只能靠
+			// `_processDelta` 的 MISSING/SELF-HEALED 反推（日志 vscode-app-1789528831953）。
+			// 记下被交接的消息 id 与发送态，便于下次一眼归因（是 popout 真交接，还是
+			// 仅页签被挡住的误清空 —— 后者会让同一条答复另起气泡）。
+			this._logService.info(
+				`[NativeChatEditorPane#${this._paneId}] _handoffActiveStream: releasing streaming msg ` +
+				`${this._streamingAssistantId ?? 'null'} (session=${this._currentSessionId}, ` +
+				`isSending=${this._isSending}, isExternalSend=${this._isExternalSend})`
+			);
 			this._resetStreamingMessage();
 		}
 	}
@@ -6110,6 +6182,16 @@ private async _updateSessionLock(): Promise<void> {
 		this._trackSessionLock(lockKey);
 		if (this._sessionReadOnly) {
 			this._sessionReadOnly = false;
+		}
+		// ★★★ P0-3（2026-09-15）：**加锁过程本身失败**（文件系统异常）⇒ 我们其实**没有**互斥保护。
+		// 继续允许编辑（不把用户锁死在只读里），但必须显式告知：另一窗口若也开着同一会话，
+		// 可能出现对话历史互相覆盖。会话写入已走原子写 ⇒ 最坏是「丢更新」，不会损坏文件。
+		if (res.degraded) {
+			this._notificationService.notify({
+				severity: Severity.Warning,
+				message: `本会话未能加锁（文件系统异常），无法保证与其它窗口互斥：若另一个窗口也在编辑同一会话，对话历史可能互相覆盖。`,
+			});
+			this._logService.warn(`[NativeChatEditorPane] session ${sessionId} lock DEGRADED (no mutual exclusion) — see [AgentChatService] log for the cause`);
 		}
 	}
 }

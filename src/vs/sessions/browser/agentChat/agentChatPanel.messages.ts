@@ -1510,15 +1510,33 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 	 */
 	protected override _updateSubAgentCardsInPlace(_msgIdx: number, msg: IAgentChatMessage): void {
 		const messageEl = this._messagesContainer?.querySelector(`[data-msg-id="${msg.id}"]`) as HTMLElement | null;
-		if (!messageEl) { return; }
+		if (!messageEl) {
+			// ★★ 2026-09-16：原来直接 `return` —— **静默丢弃**了这批 subagent 数据，
+			// 且此后不会有人再补（下一次快照走同一条路径同样找不到 DOM）⇒ 表现为
+			// 「子代理在跑，但某张卡永远只有占位『子 Agent 正在执行任务…』」。
+			// 现在退化为一次整条消息重建（标准渲染路径，元素不存在时会创建）。
+			this._logService.info(`[NativeChatEditorPane] _updateSubAgentCardsInPlace: message DOM missing for ${msg.id} — falling back to full message render`);
+			this._updateMessageDom(_msgIdx, msg);
+			return;
+		}
 		// 子代理执行详情内嵌于 delegate_task / plan_explore 工具卡内（路径 A：tool.subAgents）。
 		// 流式期间 subagent 数据到达时，tc.subAgents 已被 _remapAndAttachSubAgents
 		// 关联到对应工具卡，直接重建受影响工具卡即可（_createToolCallCard → _renderSubAgentsInside）。
 		let rebuiltAny = false;
+		/**
+		 * ★★ 2026-09-16：有 `subAgents`、但在 DOM 里**找不到**对应工具卡的 callId 集合。
+		 *
+		 * 并行多个 delegate 卡时这是关键：旧兜底用 `!rebuiltAny` 判定 ⇒ 只要**有任何一张**
+		 * 卡重建成功，其余「找不到 DOM」的卡就**再也不会**被补齐 ⇒ 那张卡永久停留在占位
+		 * 「子 Agent 正在执行任务…」（用户报「多 subagent 同时执行时卡片刷新异常」）。
+		 * 实测日志 `vscode-app-1789526799009.log`：`msg:subagent-card-missing` **0 次**，
+		 * 而界面确实有卡只有占位 —— 正是被 `rebuiltAny = true` 挡掉的。
+		 */
+		const missingDomCardIds: string[] = [];
 		for (const tc of msg.toolCalls ?? []) {
 			if (!tc.id || !tc.subAgents || tc.subAgents.length === 0) { continue; }
 			const oldCard = messageEl.querySelector(`[data-tool-id="${tc.id}"]`) as HTMLElement | null;
-			if (!oldCard) { continue; }
+			if (!oldCard) { missingDomCardIds.push(tc.id); continue; }
 
 			// 抖动修复：子代理「执行结束后」仍有 subagent_batch 最终数据 flush 到达，
 			// 每次都整卡 replaceWith 会重渲染静态「任务指令」markdown → 卡片内部抖动。
@@ -1578,12 +1596,36 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 			this._pinAfterRestore(newCard, savedScroll);
 			rebuiltAny = true;
 		}
-		// 子代理已到达但对应工具卡尚未渲染（极少见：subagent 先于 delegate tool call 出现）：
-		// 做一次全量重建，由 _createMessageElement 在正确位置创建内嵌子代理卡片。
-		if (!rebuiltAny && msg.subAgents && msg.subAgents.length > 0) {
-			this._rebuildMessageElement(messageEl, msg, 'msg:subagent-card-missing');
+		// 子代理已到达但对应工具卡尚未渲染（subagent 先于 delegate tool call 出现、或该卡
+		// 被 keyed reconciliation 换掉）：做一次全量重建，由 _createMessageElement 在正确
+		// 位置创建内嵌子代理卡片。
+		//
+		// ★ 2026-09-16：判据从 `!rebuiltAny` 改为「**有没有任何卡缺失**」。
+		// 旧判据在并行多 delegate 下有洞：消息里若同时有 A、B 两张 delegate 卡，A 的 DOM
+		// 在、B 的不在（渲染竞态），本轮 A 重建成功 ⇒ rebuiltAny=true ⇒ 兜底不执行 ⇒
+		// B 的 subAgents 被永久丢弃（下一批快照同样找不到 B 的 DOM，同样被 rebuiltAny 挡掉）。
+		const needFallback = missingDomCardIds.length > 0
+			|| (!rebuiltAny && !!msg.subAgents && msg.subAgents.length > 0);
+		if (needFallback) {
+			// 防重建风暴：本方法每 50~100ms 一批快照调用一次。渲染竞态一次重建即可补齐；
+			// 同一批缺失 id 在冷却窗口内只重建一次（持续缺失属别的问题）——避免把整条消息
+			// markdown 反复重建，那正是 2026-07-25「273 次快照致渲染饱和」的事故形态。
+			const fallbackKey = missingDomCardIds.length > 0 ? missingDomCardIds.join(',') : `no-rebuild:${msg.id}`;
+			const now = Date.now();
+			if (fallbackKey !== this._lastSubAgentFallbackKey || now - this._lastSubAgentFallbackAt >= 1000) {
+				this._lastSubAgentFallbackKey = fallbackKey;
+				this._lastSubAgentFallbackAt = now;
+				if (missingDomCardIds.length > 0) {
+					this._logService.info(`[NativeChatEditorPane] subagent cards missing in DOM (${missingDomCardIds.length}): ${missingDomCardIds.slice(0, 4).join(', ')} — rebuilding msg ${msg.id}`);
+				}
+				this._rebuildMessageElement(messageEl, msg, 'msg:subagent-card-missing');
+			}
 		}
 	}
+
+	/** 见 `_updateSubAgentCardsInPlace` 兜底：上次触发整消息重建的缺失卡集合与时刻（防风暴）。 */
+	private _lastSubAgentFallbackKey: string | undefined;
+	private _lastSubAgentFallbackAt = 0;
 
 /**
  * 探测工具卡是否处于「占位态且 args 现已可填」，需要补齐重建一次。

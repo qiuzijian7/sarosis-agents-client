@@ -29,6 +29,9 @@ import { ActionsOrientation } from '../../../base/browser/ui/actionbar/actionbar
 import { HoverPosition } from '../../../base/browser/ui/hover/hoverWidget.js';
 import { IPaneCompositeBarOptions } from '../../../workbench/browser/parts/paneCompositeBar.js';
 import { IMenuService } from '../../../platform/actions/common/actions.js';
+import { ICommandService } from '../../../platform/commands/common/commands.js';
+import { IJSONEditingService } from '../../../workbench/services/configuration/common/jsonEditing.js';
+import { planAppendWorkspaceFolders, normalizeFolderPathForCompare } from '../../contrib/agentStudio/common/workspaceFileFolders.js';
 import { Separator } from '../../../base/common/actions.js';
 import { IHoverService } from '../../../platform/hover/browser/hover.js';
 import { Extensions } from '../../../workbench/browser/panecomposite.js';
@@ -36,14 +39,14 @@ import { Menus } from '../menus.js';
 import { $, append, addDisposableListener, EventType, getWindowId, prepend, clearNode, size, Dimension } from '../../../base/browser/dom.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
 import { ILayoutContentResult } from '../../../workbench/browser/part.js';
-import { IWorkspacesService } from '../../../platform/workspaces/common/workspaces.js';
+import { IWorkspacesService, doParseStoredWorkspace } from '../../../platform/workspaces/common/workspaces.js';
 import { IWorkbenchConfigurationService } from '../../../workbench/services/configuration/common/configuration.js';
 import { HiddenItemStrategy, MenuWorkbenchToolBar } from '../../../platform/actions/browser/toolbar.js';
 import { isFullscreen, onDidChangeFullscreen } from '../../../base/browser/browser.js';
 import { mainWindow } from '../../../base/browser/window.js';
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
 import { hasNativeTitlebar, getTitleBarStyle } from '../../../platform/window/common/window.js';
-import { isMacintosh, isNative } from '../../../base/common/platform.js';
+import { isMacintosh, isNative, isWindows } from '../../../base/common/platform.js';
 import { Emitter } from '../../../base/common/event.js';
 import { SidebarContentVisibleContext } from '../../common/contextkeys.js';
 import { IProductService } from '../../../platform/product/common/productService.js';
@@ -62,6 +65,8 @@ import { planWindowOnDeleteWorkspace, workspaceIdentityFromWindow, matchWorkspac
 import { URI } from '../../../base/common/uri.js';
 import type { Workspace } from '../../contrib/agentStudio/common/types.js';
 import { ICodebaseMemoryMcpService, IIndexConfig } from '../../contrib/agentStudio/browser/codebaseMemoryMcpService.js';
+// ★ 2026-09-16：切换工作区「卡住」诊断（阶段标记 + 主线程看门狗），见该文件头说明。
+import { wsStage } from '../../contrib/agentStudio/browser/wsSwitchDiag.js';
 
 /** CSS class names for sidebar content collapsed/expanded states */
 const SIDEBAR_CONTENT_COLLAPSED_CLASS = 'sidebar-content-collapsed';
@@ -844,6 +849,13 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	 */
 	private async _enterWorkspaceFile(fileUri: URI, entry: string, wsId: string): Promise<boolean> {
 		try {
+			// ★ 2026-09-16 诊断（用户报「每次切换工作区 app 就卡住」）：链路**每一步**都打阶段标记
+			// （见 `wsSwitchDiag.ts`）+ 每一步的耗时。
+			//
+			// 为什么必须这样：用户给的日志**没有时间戳**，而**主线程一旦被同步阻塞，日志自己也写不出去**
+			// ⇒ 日志最后一行只是「阻塞前最后落盘的那条」，事后读不出「卡在哪一步、卡了多久」。
+			// 阶段标记由看门狗在阻塞结束后**补报**，耗时则由这里自己算。
+			wsStage('switch: 检查 .code-workspace 是否存在');
 			const fileService = this.instantiationService.invokeFunction(a => a.get(IFileService));
 			if (!await fileService.exists(fileUri)) {
 				this._diag(`entry=${entry} | warn: workspace file missing, falling back to in-memory replace: ${fileUri.fsPath}`);
@@ -855,9 +867,20 @@ export class SidebarPart extends AbstractPaneCompositePart {
 				configurationService: accessor.get(IWorkbenchConfigurationService),
 			}));
 
+			wsStage('switch: 解析工作区标识（getWorkspaceIdentifier）');
+			const tId = Date.now();
 			const identifier = await workspacesService.getWorkspaceIdentifier(fileUri);
 			this._diag(`entry=${entry} | action=initializeWorkspaceInPlace (no reload / no ext-host restart / no file write) | target=${wsId} file=${fileUri.fsPath}`);
+			this._diag(`entry=${entry} | getWorkspaceIdentifier 完成（${Date.now() - tId}ms）`);
+
+			// ★ 本链上最重的一步：`WorkspaceService.initialize()` 会**整套重算配置模型**，并在
+			// `updateWorkspaceAndInitializeConfiguration()` 里 `fire(onDidChangeWorkspaceFolders)`
+			// —— 所有监听者（CodebaseMemory 重读配置、图谱 bootstrap 清集合+加载、prompts 扫描…）
+			// 都在那一刻被同步唤起（用户日志里紧随其后的正是它们）。
+			wsStage('switch: configurationService.initialize（原地换工作区）');
+			const tInit = Date.now();
 			await configurationService.initialize(identifier);
+			this._diag(`entry=${entry} | initializeWorkspaceInPlace 完成（${Date.now() - tInit}ms）`);
 			return true;
 		} catch (err) {
 			this._diag(`entry=${entry} | warn: in-place workspace switch failed, falling back to in-memory replace: ${err instanceof Error ? err.message : String(err)}`);
@@ -1004,6 +1027,36 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		append(openFileBtn, $('span.ws-open-hint')).textContent = '多根';
 		openFileBtn.title = '打开 .code-workspace 多根工作区文件';
 
+		// ── 工作区编辑动作（★ 2026-09-16：用户要求补齐原生菜单里的三个动作）──
+		//
+		// 三条的**落点刻意不同**，因为本仓对「写用户资产」有硬约束（2026-09-14/15 两次
+		// 「用户资产被程序改坏」事故的定规：sessions 侧不得 `updateFolders/removeFolders`
+		// 回写用户的 `.code-workspace`，见 `_confirmDeleteWorkspace` 的 ⚠⚠ 段）：
+		//   · 「将文件夹添加到工作区…」= **委托原生命令** `workbench.action.addRootFolder`
+		//     —— 会话侧实现是**内存内加根**（`workspaceContextService._doUpdateFolders`），
+		//     **不写用户文件** ✓（这正是那两次事故后刻意留下的行为）；
+		//   · 「复制工作区」= 委托 `workbench.action.duplicateWorkspaceInNewWindow`
+		//     —— 走 `IWorkspacesService.createUntitledWorkspace`（app 自己的 untitled 文件，非用户资产）✓；
+		//   · 「将工作区另存为…」= 原生命令在会话侧是**空壳**（`pickNewWorkspacePath()` 返回
+		//     `undefined` ⇒ 点了没反应 ✗）⇒ 本文件自实现：**只新建**用户选定路径的文件，
+		//     绝不修改任何既有文件 ✓。
+		const editRow = append(dropdown, $('div.ws-dropdown-edit'));
+
+		const addFolderBtn = append(editRow, $('button.ws-edit-btn'));
+		append(addFolderBtn, $('span.codicon.codicon-add'));
+		append(addFolderBtn, $('span')).textContent = '将文件夹添加到工作区…';
+		addFolderBtn.title = '把另一个目录加入**本窗口**的工作区（多根）。只改本窗口，不写任何工作区文件';
+
+		const saveAsBtn = append(editRow, $('button.ws-edit-btn'));
+		append(saveAsBtn, $('span.codicon.codicon-save-as'));
+		append(saveAsBtn, $('span')).textContent = '将工作区另存为…';
+		saveAsBtn.title = '把当前工作区另存为一个**新的** .code-workspace 文件（不修改任何既有文件）';
+
+		const duplicateBtn = append(editRow, $('button.ws-edit-btn'));
+		append(duplicateBtn, $('span.codicon.codicon-copy'));
+		append(duplicateBtn, $('span')).textContent = '复制工作区';
+		duplicateBtn.title = '在新窗口中打开当前工作区的副本（使用 app 自己的临时工作区文件）';
+
 		// ── Events ──
 		this._register(addDisposableListener(button, EventType.CLICK, (e: MouseEvent) => {
 			e.stopPropagation();
@@ -1078,6 +1131,17 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		// ── Open workspace from file button ──
 		this._register(addDisposableListener(openFileBtn, EventType.CLICK, () => {
 			this._openFileAsWorkspace();
+		}));
+
+		// ── 工作区编辑动作（★ 2026-09-16）──
+		this._register(addDisposableListener(addFolderBtn, EventType.CLICK, () => {
+			void this._addFolderToWorkspace();
+		}));
+		this._register(addDisposableListener(saveAsBtn, EventType.CLICK, () => {
+			void this._saveWorkspaceAs();
+		}));
+		this._register(addDisposableListener(duplicateBtn, EventType.CLICK, () => {
+			void this._duplicateWorkspace();
 		}));
 
 		// ── Connect services ──
@@ -1361,7 +1425,12 @@ export class SidebarPart extends AbstractPaneCompositePart {
 
 		const body = append(item, $('div.ws-item-body'));
 		const row1 = append(body, $('div.ws-item-row1'));
-		append(row1, $('span.ws-item-name')).textContent = ws.name;
+		// ★ 2026-09-16：名字在窄列里会**省略**（行1 是 `nowrap`，由名字 `min-width: 0` 吸收
+		// 空间不足 —— 见 `sidebarPart.css` 中 `.ws-item-row1` / `.ws-item-name` 的说明）。
+		// ⇒ 完整值必须能用 hover 读到，与路径同一约定（`pathSpan.title`）。
+		const nameSpan = append(row1, $('span.ws-item-name'));
+		nameSpan.textContent = ws.name;
+		nameSpan.title = ws.name;
 
 		// 徽标：全部来自**已有字段**（无 I/O）。
 		//
@@ -1593,6 +1662,258 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			}
 		} catch (err) {
 			logService.warn('[sidebarPart] failed to clear last-user-workspace.json:', err);
+		}
+	}
+
+	// ── 工作区编辑动作（★ 2026-09-16：补齐原生菜单的三个动作）──────────────
+
+	/**
+	 * 统一的原生命令入口（延后取服务，避免改动 Part 的构造签名 —— 本类既有风格）。
+	 *
+	 * 为什么委托原生命令、而不是直接调 sessions 侧那几个 folder 写入 API（add / update / remove 三个）：
+	 * （⚠ 注释里**不要写出「带接收者」的调用形态** —— `workspaceFolderWriters.test.ts` 的写入点扫描
+	 *   看的是源码文本、且只剥行注释 ⇒ 注释里写上就会把自己登记成「未登记的写入点」✗。）
+	 *   ① 本仓有「folder 列表**唯一写入者**」约束（`workspaceFolderWriters.test.ts` 的
+	 *      `ALLOWED_FOLDER_WRITERS`）—— 在 UI 里新增写入点会被不变量测试拦下，且会把
+	 *      跨工作区污染的旧路径重新引进来 ✗；
+	 *   ② 原生命令自带「选文件夹」对话框与前置条件，且会话侧实现是**内存内改根**
+	 *      （`workspaceContextService._doUpdateFolders`）⇒ **不写用户的 `.code-workspace`** ✓，
+	 *      与 2026-09-14/15 两次「用户资产被程序改坏」事故后的定规一致 ✓。
+	 */
+	private async _runWorkspaceCommand(commandId: string): Promise<void> {
+		this._closeWorkspaceDropdown();
+		try {
+			const commandService = this.instantiationService.invokeFunction(accessor => accessor.get(ICommandService));
+			this._diag(`entry=sidebar-workspace-edit | command=${commandId}`);
+			await commandService.executeCommand(commandId);
+		} catch (err) {
+			// 失败必须可见：静默失败会变成又一次「点了没反应」✗（用户报告过的那类症状）。
+			const message = err instanceof Error ? err.message : String(err);
+			this._diag(`error: command ${commandId} failed: ${message}`);
+			try {
+				this.instantiationService.invokeFunction(accessor => accessor.get(INotificationService))
+					.error(`工作区操作失败（${commandId}）：${message}`);
+			} catch { /* 通知服务不可用不影响主流程 */ }
+		}
+	}
+
+	/**
+	 * 「将文件夹添加到工作区…」= 原生 `addRootFolder`（选目录 + 本窗口内加根）
+	 * **然后按用户 2026-09-16 的裁决把新 root 真正写回原 `.code-workspace`** ✓。
+	 *
+	 * 判据用「窗口 folder 集合的**前后差**」：原生命令的对话框结果不返回给我们，
+	 * 但差集恰好只包含**用户刚加的那些 root** ⇒ 写回时能保证是**纯追加**
+	 * （不碰用户手写的既有 entries ✓ —— 09-14/15 两次事故正是"用窗口列表覆盖文件" ✗）。
+	 */
+	private async _addFolderToWorkspace(): Promise<void> {
+		const caseInsensitive = isWindows || isMacintosh;
+		const before = this._currentWindowFolderPaths();
+
+		await this._runWorkspaceCommand('workbench.action.addRootFolder');
+
+		// 用户在对话框里取消了 ⇒ 前后一致 ⇒ 什么都不做（零副作用 ✓）。
+		const known = new Set(before.map(p => normalizeFolderPathForCompare(p, caseInsensitive)));
+		const added = this._currentWindowFolderPaths()
+			.filter(p => !known.has(normalizeFolderPathForCompare(p, caseInsensitive)));
+		if (added.length === 0) { return; }
+
+		this._diag(`entry=sidebar-add-folder | added=${added.join(', ')}`);
+		await this._persistAddedFoldersToWorkspaceFile(added);
+	}
+
+	/**
+	 * 把新增 root **写回原 `.code-workspace`**（原生语义；用户 2026-09-16 裁决）。
+	 *
+	 * ── 为什么这次不会重演 09-14/15 的「用户资产被改坏」 ─────────────────
+	 * 那两次是**用窗口的 root 列表整体覆盖文件**（手写 entries 被清空 / 3 根裁成 1 根 ✗）。
+	 * 这里走三件「只增不改」的事：
+	 *   ① 先**读**原文件（`doParseStoredWorkspace` = 容错 JSONC 解析，注释也认 ✓）；
+	 *   ② 纯函数 {@link planAppendWorkspaceFolders} **只追加**新增条目，既有条目原样保留 ✓；
+	 *   ③ 用 `IJSONEditingService.write(configPath, [{ path: ['folders'], … }])` —— 那个通道
+	 *      **只改 `folders` 一个 key**，`settings` / `launch` / `tasks` / 注释全部保留 ✓
+	 *      （原生 `StoredWorkspace.setFolders` 用的就是它）。
+	 * 已声明过的路径会被跳过 ⇒ **幂等**，重复点不会把文件写脏 ✓。
+	 *
+	 * ⚠ 只在「记录里确实有用户的工作区文件（`codeWorkspacePath`）」时才动文件；
+	 *   目录型工作区**不写任何文件**，改为把新 root **并进**记录的 `relatedFolders`（union，只增不减 ✓）。
+	 */
+	private async _persistAddedFoldersToWorkspaceFile(addedFolderPaths: readonly string[]): Promise<void> {
+		const caseInsensitive = isWindows || isMacintosh;
+		const record = this._workspaces.find(w => w.id === this._activeWorkspaceId);
+		const configPath = record?.codeWorkspacePath && hasWorkspaceFileExtension(record.codeWorkspacePath)
+			? record.codeWorkspacePath
+			: undefined;
+
+		let svc: { fileService: IFileService; jsonEditing: IJSONEditingService; logService: ILogService; notificationService: INotificationService };
+		try {
+			svc = this.instantiationService.invokeFunction(accessor => ({
+				fileService: accessor.get(IFileService),
+				jsonEditing: accessor.get(IJSONEditingService),
+				logService: accessor.get(ILogService),
+				notificationService: accessor.get(INotificationService),
+			}));
+		} catch {
+			return;
+		}
+
+		if (!record || !configPath) {
+			// 目录型工作区：没有工作区文件可写 ⇒ 记进记录的 relatedFolders（重启由启动补根恢复 ✓）。
+			if (record && this._wsAgentStudioService) {
+				try {
+					const seen = new Set((record.relatedFolders ?? []).map(f => normalizeFolderPathForCompare(f.path, caseInsensitive)));
+					const next = [...(record.relatedFolders ?? [])];
+					for (const p of addedFolderPaths) {
+						const key = normalizeFolderPathForCompare(p, caseInsensitive);
+						if (seen.has(key)) { continue; }
+						seen.add(key);
+						next.push({ path: p, name: this._basenameOf(p), addedAt: new Date().toISOString() });
+					}
+					await this._wsAgentStudioService.updateWorkspace(record.id, { relatedFolders: next });
+					await this._loadWorkspaces();
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					this._diag(`error: record relatedFolders union failed: ${message}`);
+				}
+			}
+			svc.notificationService.info('已将文件夹加入本窗口的工作区。该工作区没有 `.code-workspace` 文件，改动记在了工作区记录里；若想固化到文件，请用「将工作区另存为…」。');
+			return;
+		}
+
+		const configUri = URI.file(configPath);
+		try {
+			const raw = (await svc.fileService.readFile(configUri)).value.toString();
+			const stored = doParseStoredWorkspace(configUri, raw);
+			const { folders, appended } = planAppendWorkspaceFolders(stored.folders ?? [], addedFolderPaths, configPath, caseInsensitive);
+			if (appended.length === 0) {
+				// 文件里已经声明过 ⇒ 幂等：不写盘（避免无意义的时间戳/格式变动）✓
+				this._diag('entry=sidebar-add-folder | nothing to persist (already declared in workspace file)');
+				return;
+			}
+
+			// ★ 只改 `folders` 一个 key —— 其余内容（settings / launch / tasks / 注释）由容错 JSON 编辑器保留 ✓
+			await svc.jsonEditing.write(configUri, [{ path: ['folders'], value: folders }], true);
+			svc.logService.info(`[sidebar] add-folder: wrote ${appended.length} folder(s) into ${configPath}: ${appended.join(', ')}`);
+
+			// 记录同步：root 的权威来源仍是文件 ⇒ 用**文件解析结果**回写记录，让侧栏「N 个根」徽标
+			// 与 WorkspaceViewPane 立刻正确（不是拿窗口视图去写 ⇒ 不构成「窄化写」✓）。
+			await this._syncRecordRootsFromFile(record, configUri, svc.fileService);
+		} catch (err) {
+			// 写回失败必须可见 —— 否则用户以为已持久化，重启后却发现根没了 ✗（静默失败是这类 bug 的温床）。
+			const message = err instanceof Error ? err.message : String(err);
+			this._diag(`error: persist added folders failed: ${message}`);
+			svc.notificationService.error(`已加入本窗口，但写回工作区文件失败：${message}`);
+		}
+	}
+
+	/** 用**文件解析结果**刷新记录的 root 集合（`path` + `relatedFolders`）。 */
+	private async _syncRecordRootsFromFile(record: Workspace, configUri: URI, fileService: IFileService): Promise<void> {
+		if (!this._wsAgentStudioService) { return; }
+		const { primaryPath, extraFolders } = await this._resolveCodeWorkspaceFolders(configUri, fileService);
+		const now = new Date().toISOString();
+		await this._wsAgentStudioService.updateWorkspace(record.id, {
+			path: primaryPath ?? record.path,
+			codeWorkspacePath: configUri.fsPath,
+			relatedFolders: extraFolders.map(f => ({ path: f.path, name: f.name, addedAt: now })),
+		});
+		await this._loadWorkspaces();
+	}
+
+	/** 当前窗口的 root 绝对路径列表（拿不到工作区服务时返回空 ⇒ 调用方按"无变化"处理）。 */
+	private _currentWindowFolderPaths(): string[] {
+		try {
+			return this.instantiationService.invokeFunction(a => a.get(IWorkspaceContextService))
+				.getWorkspace().folders.map(f => f.uri.fsPath);
+		} catch {
+			return [];
+		}
+	}
+
+	private _basenameOf(p: string): string {
+		return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
+	}
+
+	/** 「复制工作区」= 原生 `duplicateWorkspaceInNewWindow`（新窗口打开副本）。 */
+	private async _duplicateWorkspace(): Promise<void> {
+		await this._runWorkspaceCommand('workbench.action.duplicateWorkspaceInNewWindow');
+	}
+
+	/**
+	 * 「将工作区另存为…」——**本仓自实现**（原生命令在会话侧是空壳 ✗：
+	 * `workspaceContextService.pickNewWorkspacePath()` 直接返回 `undefined` ⇒ 点了没反应）。
+	 *
+	 * 铁律：**只创建**用户选定路径的那个**新**文件，**绝不改写任何既有文件** ——
+	 * 后者正是 2026-09-14/15 两次「用户资产被程序改坏」事故的形态 ✗。
+	 * 所以这里**不**走 `IWorkspaceEditingService.saveAndEnterWorkspace()`
+	 * （本仓的标准 `WorkspaceService` 会把 folder 列表**回写**进既有 `.code-workspace` ✗），
+	 * 而是自己写一个全新的文件 ✓。
+	 */
+	private async _saveWorkspaceAs(): Promise<void> {
+		let svc: { fileDialog: IFileDialogService; fileService: IFileService; contextService: IWorkspaceContextService; logService: ILogService; notificationService: INotificationService };
+		try {
+			svc = this.instantiationService.invokeFunction(accessor => ({
+				fileDialog: accessor.get(IFileDialogService),
+				fileService: accessor.get(IFileService),
+				contextService: accessor.get(IWorkspaceContextService),
+				logService: accessor.get(ILogService),
+				notificationService: accessor.get(INotificationService),
+			}));
+		} catch {
+			return;
+		}
+
+		const folders = svc.contextService.getWorkspace().folders;
+		if (folders.length === 0) {
+			this._diag('entry=sidebar-save-as | skipped: this window has no workspace folder');
+			return;
+		}
+
+		this._closeWorkspaceDropdown();
+
+		// 默认位置 = 主根目录旁，文件名取目录名。
+		const primary = folders[0].uri.fsPath;
+		const base = primary.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || 'workspace';
+		let target: URI | undefined;
+		try {
+			target = await svc.fileDialog.showSaveDialog({
+				title: '将工作区另存为',
+				defaultUri: URI.joinPath(folders[0].uri, `${base}.code-workspace`),
+				filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
+			});
+		} catch { /* user cancelled */ }
+		if (!target) { return; }
+
+		// 写**新文件**：folders 用绝对路径（相对路径会随文件位置产生歧义）。
+		try {
+			const content = JSON.stringify({ folders: folders.map(f => ({ path: f.uri.fsPath })) }, null, '\t');
+			await svc.fileService.writeFile(target, VSBuffer.fromString(content));
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			this._diag(`error: save-as write failed: ${message}`);
+			svc.notificationService.error(`工作区另存失败：${message}`);
+			return;
+		}
+		svc.logService.info(`[sidebar] workspace saved as ${target.fsPath} (${folders.length} folder(s))`);
+
+		// 登记进工作区列表：**优先更新当前记录**（本窗口打开的就是这套根 ⇒ 语义与原生一致：
+		// 窗口从此以新文件为身份），没有当前记录时才新建。
+		if (this._wsAgentStudioService) {
+			const name = (target.path.split('/').pop() ?? 'workspace').replace(/\.code-workspace$/i, '') || 'workspace';
+			// `RelatedFolder` 要求 `addedAt`（必填 ISO 时间戳）—— 见 `agentStudioTypes.ts`。
+			const roots = folders.slice(1).map(f => ({ path: f.uri.fsPath, name: f.name, addedAt: new Date().toISOString() }));
+			try {
+				if (this._activeWorkspaceId) {
+					await this._wsAgentStudioService.updateWorkspace(this._activeWorkspaceId, { name, path: primary, codeWorkspacePath: target.fsPath, relatedFolders: roots });
+				} else {
+					const created = await this._wsAgentStudioService.createWorkspace({ name, path: primary, codeWorkspacePath: target.fsPath, relatedFolders: roots });
+					await this._wsAgentStudioService.setActiveWorkspace(created.id);
+				}
+				await this._loadWorkspaces();
+				svc.notificationService.info(`工作区已另存为 ${target.fsPath}`);
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				this._diag(`error: save-as registry update failed: ${message}`);
+				svc.notificationService.warn(`工作区文件已写入，但登记到列表失败：${message}`);
+			}
 		}
 	}
 

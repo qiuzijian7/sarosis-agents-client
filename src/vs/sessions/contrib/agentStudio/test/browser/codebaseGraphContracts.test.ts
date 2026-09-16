@@ -17,7 +17,7 @@ import assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CodebaseGraphStore, GraphNode } from '../../browser/codebaseGraphStore.js';
-import { isAbsoluteGraphPath, excludeDirsForProfile, COMMON_EXCLUDE_DIRS, shouldRecordHashAfterParse, matchesExcludeDir, shouldDeferGraphLoad } from '../../common/codebaseIndexDefaults.js';
+import { isAbsoluteGraphPath, excludeDirsForProfile, COMMON_EXCLUDE_DIRS, shouldRecordHashAfterParse, matchesExcludeDir, shouldDeferGraphLoad, planForeignProjectPrune } from '../../common/codebaseIndexDefaults.js';
 import { SLICE_BUDGET_MS, SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../../common/asyncSlice.js';
 
 const PROJECT = 'test';
@@ -565,5 +565,114 @@ suite('切换工作区时的落盘安全与降卡（2026-09-15）', () => {
 		const svc = readCode(SVC);
 		assert.ok(svc.includes('getProjectNodeCount(project: string): number;'), '接口必须声明 getProjectNodeCount');
 		assert.ok(svc.includes('getProjectNodeCount(project: string): number {'), '必须有实现');
+
+		// ★★★ 2026-09-16：**判据必须是事实（解析成功但 0 节点），不能只比字节数**。
+		// 用户场景：PJDB\S1Game 留下一份 **10KB** 空图（能正常解压、零节点）—— 只比字节数会把它
+		// 归进「≥1KB ⇒ 巨图损坏 ⇒ 跳过自动索引」⇒ 该 folder **既没有图、也永远不会重建** ✗。
+		assert.ok(svc.includes('isLastMergeEmpty(rootPath: string): boolean;'), '接口必须声明 isLastMergeEmpty');
+		assert.ok(svc.includes('isLastMergeEmpty(rootPath: string): boolean {'), '必须有实现');
+		assert.ok(
+			svc.includes('this._emptyArtifactRoots.add(rootPath);'),
+			'「解析成功但 0 节点」必须留下标记 —— 调用方要靠它区分「空制品」与「损坏/巨大的制品」',
+		);
+		assert.ok(
+			svc.includes('treating as NOT loaded (empty / garbage artifact)'),
+			'「解析成功但 0 节点」必须按「未加载」返回 false（否则调用方标记 ready ⇒ 永不重建）',
+		);
+		assert.ok(
+			src.includes('isLastMergeEmpty(') && src.includes('&& !parsedButEmpty)'),
+			'bootstrap 的「跳过 auto-index」必须排除空制品 —— 用事实而不是字节数',
+		);
+	});
+});
+
+/**
+ * 按 **root** 剪枝（2026-09-16 用户报「GR_ 与 PJDB 同名 S1Game 互相污染」）。
+ *
+ * 事故：切到 `D:\GR_\S1Game` 时，内存里那份来自 `D:\PJDB\S1Game` 的 `S1Game`（**同名**）
+ * 被旧判据（只比项目名）判为「属于本工作区」而保留 ⇒ 旧工作区的图继续驻留内存并污染检索。
+ * 修法：判定以 **root** 为准 —— **项目名不是身份**。
+ */
+suite('★ 按 root 剪枝：同名不同 root 必须丢弃', () => {
+
+	const GR = 'd:/gr_/s1game';
+	const PJDB = 'd:/pjdb/s1game';
+	const MAP = (entries: readonly (readonly [string, string])[]) => new Map(entries);
+
+	test('★★★ 旧工作区的同名项目（映射里的 root 不在本工作区）必须丢弃', () => {
+		// 工作区 = GR_\S1Game；内存里那个 S1Game 的 root 映射只指向 PJDB ⇒ 是**外来**的
+		assert.deepStrictEqual(
+			planForeignProjectPrune(['S1Game'], ['S1Game'], MAP([[PJDB, 'S1Game']]), [GR]),
+			['S1Game'],
+			'名字相同也不能保留 —— 身份是 root',
+		);
+	});
+
+	test('★ 本工作区 root 在映射里 ⇒ 保留', () => {
+		assert.deepStrictEqual(
+			planForeignProjectPrune(['S1Game'], ['S1Game'], MAP([[GR, 'S1Game']]), [GR]),
+			[],
+		);
+	});
+
+	test('⚠ 同名跨多个 root（数据已合并）⇒ 保留，由服务侧告警（纯函数无法按 root 拆分）', () => {
+		// store / SQLite 以**项目名**为唯一键 ⇒ 两个 root 同名时两份数据已合并；
+		// 这里若丢弃会把**当前工作区**的数据一起删掉 ⇒ 只能保留 + 告警（见 `[prune] same-name`）。
+		assert.deepStrictEqual(
+			planForeignProjectPrune(['S1Game'], ['S1Game'], MAP([[GR, 'S1Game'], [PJDB, 'S1Game']]), [GR]),
+			[],
+		);
+	});
+
+	test('★ 无 root 信息（_default / 从 SQLite 按名载入）⇒ 退回按名判据（保守，不误删）', () => {
+		assert.deepStrictEqual(
+			planForeignProjectPrune(['S1Game', 'other'], ['S1Game'], MAP([]), [GR]),
+			['other'],
+		);
+		// 完全不给 root 参数 = 旧调用方行为（按名）
+		assert.deepStrictEqual(planForeignProjectPrune(['S1Game', 'other'], ['S1Game']), ['other']);
+	});
+
+	test('★ 无工作区 ⇒ 返回空数组（宁可不判断，也不误删）', () => {
+		assert.deepStrictEqual(planForeignProjectPrune(['S1Game'], [], MAP([[PJDB, 'S1Game']]), [GR]), []);
+		assert.deepStrictEqual(planForeignProjectPrune(['S1Game'], []), []);
+	});
+});
+
+/**
+ * 切换工作区后**按需加载**（2026-09-16，用户报「切工作区卡住」的根因修复）。
+ *
+ * 数据链：切换本身 99~157ms（`initializeWorkspaceInPlace 完成`）；而紧随其后的图谱加载
+ * 3.6~6s（`bootstrap 完成（本轮共 3860ms）` = 解压 240 + 解析 1712 + 写入 store 834 + …），
+ * 期间主线程被切片式占满 ⇒ 看门狗实测 `⚠ 交互延迟 ≈584ms`（点一下要等半秒）。
+ * 修法：切换触发的 `_bootstrap` 传 `deferLoads`，**制品存在就延迟**到「真正要用图」时；
+ * 三个入口（codebase 工具 / 子代理预检 / codebase UI）都必须能触发它。
+ */
+suite('★ 切换后按需加载（不得在切换后立刻加载图谱）', () => {
+
+	const readSrc = (rel: string) => fs.readFileSync(path.join(process.cwd(), rel), 'utf8');
+	const BOOT = 'src/vs/sessions/contrib/agentStudio/browser/codebaseGraphBootstrap.ts';
+	const AUTO = 'src/vs/sessions/contrib/agentStudio/browser/widgets/codebaseGraphAutoBuild.ts';
+
+	test('★★★ 切换触发必须走 deferLoads，且**制品存在才延迟**', () => {
+		const boot = readSrc(BOOT);
+		assert.ok(boot.includes('_bootstrap({ deferLoads: true })'),
+			'folder 变化后的 re-bootstrap 必须传 deferLoads —— 否则切换后仍会跑 3.6~6s 的加载');
+		assert.ok(boot.includes('until first codebase use — workspace switch must stay instant'),
+			'必须留下明确日志（否则日后无法判断「为什么切过去没有图」）');
+		assert.ok(boot.includes('if (wantDeferLoad && sizeBytes > 0)'),
+			'⚠ 必须只在**制品存在**时延迟：制品不存在时延迟会让新 folder **永远不会被索引**');
+		assert.ok(boot.includes('scheduling auto-index'),
+			'「无图 ⇒ 排自动索引」的原路必须仍在（新 folder 靠它被索引）');
+	});
+
+	test('★★★ codebase UI 必须触发按需加载（否则 UI 会误判「无图」而发起全量索引）', () => {
+		const auto = readSrc(AUTO);
+		assert.ok(auto.includes("ensureDeferredGraphsLoaded('codebase UI open')"),
+			'Find Symbol / Open File 打开时必须先触发按需加载');
+		const at = auto.indexOf("ensureDeferredGraphsLoaded('codebase UI open')");
+		const after = auto.indexOf('indexWorkspace(', at);
+		assert.ok(at > 0 && (after === -1 || after > at),
+			'触发按需加载必须**早于** `indexWorkspace(` —— 顺序反了就变成「有制品却全量重建」');
 	});
 });

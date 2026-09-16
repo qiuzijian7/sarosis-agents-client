@@ -33,6 +33,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { ICodebaseGraphService, IIndexConfig as IGraphIndexConfig } from './codebaseGraphService.js';
+// ★ 2026-09-16：切换工作区「卡住」诊断（阶段标记 + 看门狗）——本服务的配置重读在切换链上。
+import { wsStepAsync } from './wsSwitchDiag.js';
 import { COMMON_EXCLUDE_DIRS } from '../common/codebaseIndexDefaults.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -222,8 +224,11 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 	 * 否则「没有 key」这条正常路径会让 `ensureConfigReady()` 无限重试。
 	 */
 	private async _initWorkspaceFileConfig(): Promise<void> {
+		// ★ 2026-09-16 诊断：本方法在**每次工作区 folder 变化**时被重跑，而它位于
+		// `onDidChangeWorkspaceFolders` 的处理链上（用户日志里这段正好在末尾）⇒ 打阶段标记 + 总耗时。
+		// 包一层 `wsStepAsync` 而不在方法内部逐步加计时：内部提前 `return` 分支多，逐个加反而易漏。
 		try {
-			await this._doInitWorkspaceFileConfig();
+			await wsStepAsync(this.logService, 'codebaseMemory: 重读 .code-workspace 配置', () => this._doInitWorkspaceFileConfig());
 		} finally {
 			this._workspaceFileConfigLoaded = true;
 		}

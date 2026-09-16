@@ -24,7 +24,7 @@ import { INotificationService, NotificationPriority, Severity } from '../../../.
 import { IHostService } from '../../host/browser/host.js';
 import { IExtensionBisectService } from './extensionBisect.js';
 import { IWorkspaceTrustManagementService, IWorkspaceTrustRequestService } from '../../../../platform/workspace/common/workspaceTrust.js';
-import { IExtensionManifestPropertiesService } from '../../extensions/common/extensionManifestPropertiesService.js';
+import { IExtensionManifestPropertiesService, SESSIONS_WINDOW_ALLOWED_CONTRIBUTION_POINTS } from '../../extensions/common/extensionManifestPropertiesService.js';
 import { isVirtualWorkspace } from '../../../../platform/workspace/common/virtualWorkspace.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -34,28 +34,25 @@ import { Delayer } from '../../../../base/common/async.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { isWeb } from '../../../../base/common/platform.js';
 import { ChatEntitlementService, IChatEntitlementService } from '../../chat/common/chatEntitlementService.js';
+// VsSaros: 「agents（sessions）窗口的原生扩展策略」判据（纯函数）+ 产品级名单。
+// 设计见 doc/native-extensions-in-agents-window-plan.md（L0/L2）：
+//   declarative（默认）= 上游行为（只放行声明式扩展）；allowlist = 额外放行白名单；all = 除黑名单外全放行。
+// 名单集中在该模块，避免与本文件里的硬编码数组各写一份而漂移。
+import {
+	AGENTS_WINDOW_EXTENSION_AGENT_CONTRIBUTIONS_SETTING,
+	AGENTS_WINDOW_EXTENSION_ALLOWLIST_SETTING,
+	AGENTS_WINDOW_EXTENSION_BLOCKLIST,
+	AGENTS_WINDOW_EXTENSION_MODE_SETTING,
+	isAgentContributingContributionSet,
+	isAllowedToRunInAgentsWindow,
+	resolveAgentsWindowExtensionPolicy,
+} from '../../../../platform/extensionManagement/common/agentsWindowExtensionPolicy.js';
 
 const SOURCE = 'IWorkbenchExtensionEnablementService';
 
 type WorkspaceType = { readonly virtual: boolean; readonly trusted: boolean };
 
 const EXTENSION_UNIFICATION_SETTING = 'chat.extensionUnification.enabled';
-
-// VsSaros: Extensions disabled at the product level because they require
-// GitHub authentication. VsSaros uses TOF auth (sessions.agentStudio.tof)
-// instead, so these extensions only produce GitHubLoginFailed errors.
-const VSSAROS_DISABLED_EXTENSIONS = [
-	'GitHub.copilot',
-	'GitHub.copilot-chat',
-];
-
-// VsSaros: Extensions that must run in the sessions window even though they
-// have executable code (main/browser). Without this, tof-authentication
-// would be disabled by _isDisabledBySessionsWindow, causing
-// "Timed out waiting for authentication provider 'tof' to register".
-const VSSAROS_SESSIONS_WINDOW_REQUIRED_EXTENSIONS = [
-	'saros.tof-authentication',
-];
 
 export class ExtensionEnablementService extends Disposable implements IWorkbenchExtensionEnablementService {
 
@@ -135,6 +132,20 @@ export class ExtensionEnablementService extends Disposable implements IWorkbench
 				if (!extensionUnificationEnabled) {
 					this._extensionUnificationEnabled = false;
 					this._onEnablementChanged.fire(this.extensionsManager.extensions.filter(ext => unificationExtensions.includes(ext.identifier.id.toLowerCase())));
+				}
+			}
+		}));
+
+		// VsSaros: agents 窗口扩展策略变化 ⇒ 重算 enablement。
+		// 该策略改变的是 DisabledByEnvironment（用户**无法**自行覆盖），所以必须由服务主动刷新。
+		// ⚠ 已经启动的扩展宿主不会因此热加载/卸载扩展 ⇒ 真正的生效需要 Reload Window（已在设置项描述里写明）。
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(AGENTS_WINDOW_EXTENSION_MODE_SETTING)
+				|| e.affectsConfiguration(AGENTS_WINDOW_EXTENSION_ALLOWLIST_SETTING)
+				|| e.affectsConfiguration(AGENTS_WINDOW_EXTENSION_AGENT_CONTRIBUTIONS_SETTING)) {
+				if (this.environmentService.isSessionsWindow) {
+					this.logService.info(`[agentsWindowPolicy] changed → mode=${this.configurationService.getValue(AGENTS_WINDOW_EXTENSION_MODE_SETTING)}; enablement recomputed (Reload Window to (un)load extensions)`);
+					this._onEnablementChanged.fire(this.extensionsManager.extensions);
 				}
 			}
 		}));
@@ -516,7 +527,9 @@ export class ExtensionEnablementService extends Disposable implements IWorkbench
 		// VsSaros: Disable GitHub Copilot extensions — VsSaros uses TOF auth
 		// (sessions.agentStudio.tof) instead of GitHub auth. Copilot extensions
 		// require GitHub login which causes GitHubLoginFailed errors.
-		if (VSSAROS_DISABLED_EXTENSIONS.some(id => areSameExtensions({ id }, extension.identifier))) {
+		// 名单集中在 platform/extensionManagement/common/agentsWindowExtensionPolicy.ts
+		// （agents 窗口策略同样以它为最高优先级黑名单）。
+		if (AGENTS_WINDOW_EXTENSION_BLOCKLIST.some(id => areSameExtensions({ id }, extension.identifier))) {
 			return true;
 		}
 
@@ -666,15 +679,38 @@ export class ExtensionEnablementService extends Disposable implements IWorkbench
 			return false;
 		}
 
-		// VsSaros: Some extensions (e.g. tof-authentication) must run in the
-		// sessions window even though they have executable code. Without this
-		// exception, the TOF auth provider would be disabled and login would
-		// time out with "Timed out waiting for authentication provider 'tof'".
-		if (VSSAROS_SESSIONS_WINDOW_REQUIRED_EXTENSIONS.some(id => areSameExtensions({ id }, extension.identifier))) {
-			return false;
+		// VsSaros: 策略判定下沉为纯函数（可单测），见
+		// platform/extensionManagement/common/agentsWindowExtensionPolicy.ts。
+		//   declarative（默认）= 上游行为：只放行**无代码**的声明式扩展
+		//   allowlist        = 声明式 + 白名单（白名单扩展允许带代码）
+		//   all              = 除产品级黑名单外全放行（逃生门）
+		// 产品级 REQUIRED 名单（如 tof-authentication）在任何模式下都放行 ——
+		// 否则 TOF 认证 provider 不会注册，登录超时。
+		const policy = resolveAgentsWindowExtensionPolicy({
+			mode: this.configurationService.getValue(AGENTS_WINDOW_EXTENSION_MODE_SETTING),
+			allowlist: this.configurationService.getValue(AGENTS_WINDOW_EXTENSION_ALLOWLIST_SETTING),
+			allowAgentContributions: this.configurationService.getValue(AGENTS_WINDOW_EXTENSION_AGENT_CONTRIBUTIONS_SETTING),
+		});
+		const isDeclarativeAllowed = this.extensionManifestPropertiesService.canExecuteOnSessionsWindow(extension.manifest);
+		// 「Agent 贡献型扩展」：有代码，但 `contributes` 只含 agentCapabilities / chatPlugins（+ 声明式点）。
+		// 这是本产品「用扩展给 Agent 提供能力/插件」的正式通道（两条桥见策略模块注释），默认放行 ——
+		// 否则 `ExtensionAgentPluginDiscovery` / `AgentCapabilitiesExtensionPointRegistry` 永远收不到贡献。
+		const isAgentContributing = isAgentContributingContributionSet(
+			Object.keys(extension.manifest.contributes ?? {}),
+			SESSIONS_WINDOW_ALLOWED_CONTRIBUTION_POINTS,
+		);
+		const allowed = isAllowedToRunInAgentsWindow(policy, extension.identifier.id, isDeclarativeAllowed, isAgentContributing);
+
+		if (allowed && !isDeclarativeAllowed) {
+			// 罕见且决定性的事件：策略放行了**带代码**的扩展 ⇒ 必须留痕（否则"为什么它能跑"无从追查）。
+			const reason = isAgentContributing ? 'agentContributing' : 'policy';
+			this.logService.info(
+				`[agentsWindowPolicy] extension "${extension.identifier.id}" allowed in sessions window `
+				+ `(reason=${reason}, mode=${policy.mode}, hasCode=${!!(extension.manifest.main || extension.manifest.browser)})`
+			);
 		}
 
-		return !this.extensionManifestPropertiesService.canExecuteOnSessionsWindow(extension.manifest);
+		return !allowed;
 	}
 
 	private _enableExtension(identifier: IExtensionIdentifier): Promise<boolean> {

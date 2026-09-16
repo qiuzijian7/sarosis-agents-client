@@ -8449,7 +8449,13 @@
 	position: absolute;
 	left: calc(100% + 6px);
 	top: -5px;
-	width: 250px;
+	/* 宽度自适应内容：短名（如 Auto、Glm 5.3 Ioa）不再留大片空白，
+	   长名（如 Deepseek V4.1 Flash Ioa）不被 ellipsis 截断。
+	   min-width 保证空态/极短名时面板不成细条；max-width 防止超长名称把面板
+	   顶出视口（配合 .provider-dropdown-name 的 ellipsis 生效）。 */
+	width: max-content;
+	min-width: 200px;
+	max-width: min(360px, calc(100vw - 24px));
 	max-height: 320px;
 	overflow-y: auto;
 	background: #252a33;
@@ -8486,6 +8492,22 @@
 }
 .provider-dropdown-submenu .provider-dropdown-item {
 	font-size: 12px;
+	/* 基类是 width:100%，在 max-content 父容器下会构成内在尺寸循环；
+	   改为 auto，让行宽由内容撑开（面板宽度随最长行自适应）。 */
+	width: auto;
+	/* 自适应宽度下，space-between 会把名称与「视觉」标签推到两端，
+	   短名时产生大段空隙。改为左对齐、名称自然宽度、标签紧随其后。 */
+	justify-content: flex-start;
+}
+/* 名称不再 flex:1 撑满整行；仅在触及 max-width 时才收缩并 ellipsis。 */
+.provider-dropdown-submenu .provider-dropdown-name {
+	flex: 0 1 auto;
+	min-width: 0;
+}
+/* 勾选列固定宽度占位，保证多行名称左边缘对齐（无勾选时也预留同宽）。 */
+.provider-dropdown-submenu .provider-dropdown-check {
+	flex: 0 0 auto;
+	width: 14px;
 }
 .provider-dropdown-submenu::-webkit-scrollbar { width: 4px; }
 .provider-dropdown-submenu::-webkit-scrollbar-track { background: transparent; }

@@ -11,6 +11,8 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IAnyWorkspaceIdentifier } from '../../../../platform/workspace/common/workspace.js';
 import { WorkspaceService } from '../../../../workbench/services/configuration/browser/configurationService.js';
 import { Configuration } from '../../../../workbench/services/configuration/common/configurationModels.js';
+// ★ 2026-09-16：切换工作区「卡住」诊断（阶段标记 + 看门狗）。
+import { wsDiagLog, wsStage } from '../../../contrib/agentStudio/browser/wsSwitchDiag.js';
 
 /**
  * 临时诊断标签 —— `scripts/agent-layout-smoke.mjs` 按它从 `renderer.log` 里抓取。
@@ -118,7 +120,15 @@ export class AgentLayoutWorkspaceService extends WorkspaceService {
 	 * ⇒ 打印时机**早于** `Workbench.startup()` → `restoreParts()`。
 	 */
 	override async initialize(arg: IAnyWorkspaceIdentifier): Promise<void> {
+		// ★ 2026-09-16 诊断（用户报「每次切换工作区 app 就卡住」）：本方法在**每次**原地换工作区时
+		// 被重新调用（见下方说明），而 `super.initialize()` 里要**整套重算配置模型**并
+		// `fire(onDidChangeWorkspaceFolders)` ⇒ 它是「切换卡住」的头号嫌疑。
+		// 打阶段标记（主线程被阻塞时日志写不出去，看门狗会**事后**补报该标记）+ 耗时。
+		// ⚠ 与下方 zenModeDiag 不同：那套只跑首次，这套**每次**都要跑（否则第一次之后的卡住没有记录）。
+		wsStage('config: WorkspaceService.initialize（原地换工作区，重算配置模型）');
+		const tInit = Date.now();
 		await super.initialize(arg);
+		wsDiagLog(this._diagnosticLogService, `configurationService.initialize 完成（${Date.now() - tInit}ms）`);
 
 		// ★ [Saros] 该诊断只在**首次**初始化时跑。
 		//

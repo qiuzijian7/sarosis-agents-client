@@ -242,6 +242,8 @@ interface EdgeRow {
 
 function rowToEdge(r: EdgeRow): GraphEdge {
 	return {
+		// 行 id：仅作 keyset 分页游标（见 GraphEdge.id 注释），调用方不得当 store 边 id 用
+		id: String(r.id),
 		source: String(r.source),
 		target: String(r.target),
 		type: r.type,
@@ -944,16 +946,24 @@ export class CodebaseGraphSqliteStore {
 	/**
 	 * 返回所有节点（可选按 project 过滤，支持分页）。
 	 * 对齐内存 store.getAllNodes() 语义，但加上了分页以避免 IPC 全量传输。
+	 *
+	 * @param afterId **keyset 分页**游标（2026-09-16）：只返回 `id > afterId` 的行，优先于 `offset`。
+	 *   为什么不用 `LIMIT/OFFSET`：大表上 OFFSET 是 **O(offset) 累计** —— 每页都要从头扫过前
+	 *   offset 行（下面 `getAllEdges` 更糟：project 过滤的子查询每页还要重跑一次）⇒ 翻到后面
+	 *   每页都要跳几十万行。本方法按 `id ASC` 稳定有序，用「上一页最后一行的 id」作游标即 O(n) 总量。
 	 */
-	async getAllNodes(project?: string, limit?: number, offset?: number): Promise<GraphNode[]> {
+	async getAllNodes(project?: string, limit?: number, offset?: number, afterId?: number): Promise<GraphNode[]> {
 		const db = this._ensureDb();
-		const filter = project ? 'WHERE project = ?' : '';
-		const args: unknown[] = project ? [project] : [];
-		let sql = `SELECT * FROM nodes ${filter} ORDER BY id ASC`;
+		const where: string[] = [];
+		const args: unknown[] = [];
+		if (project) { where.push('project = ?'); args.push(project); }
+		if (afterId !== undefined) { where.push('id > ?'); args.push(afterId); }
+		let sql = `SELECT * FROM nodes${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY id ASC`;
 		if (limit !== undefined) {
 			sql += ` LIMIT ?`;
 			args.push(limit);
-			if (offset !== undefined) { sql += ` OFFSET ?`; args.push(offset); }
+			// keyset 与 offset 互斥：给了 afterId 就不再跳 offset（两套语义叠加会漏行）
+			if (offset !== undefined && afterId === undefined) { sql += ` OFFSET ?`; args.push(offset); }
 		}
 		const rows = await dbAll(db, sql, args) as unknown as NodeRow[];
 		return rows.map(rowToNode);
@@ -962,25 +972,30 @@ export class CodebaseGraphSqliteStore {
 	/**
 	 * 返回所有边（可选按 project 过滤，仅返回两端节点都在该 project 的边）。
 	 * 对齐内存 store.getAllEdges()，加分页。
+	 *
+	 * @param afterId **keyset 分页**游标（2026-09-16，语义同 `getAllNodes`）：`e.id > afterId`，
+	 *   优先于 `offset`。对边尤其重要：project 过滤是个 `source IN (SELECT id FROM nodes WHERE
+	 *   project=?)` 子查询，`OFFSET` 分页会让它**每页重跑一次**（几十万节点 × 上百页）。
+	 *   返回的 `GraphEdge.id` 即本行的 SQLite 行 id，调用方用它作下一页游标（**仅游标用途**）。
 	 */
-	async getAllEdges(project?: string, limit?: number, offset?: number): Promise<GraphEdge[]> {
+	async getAllEdges(project?: string, limit?: number, offset?: number, afterId?: number): Promise<GraphEdge[]> {
 		const db = this._ensureDb();
+		let sql: string;
+		const args: unknown[] = [];
 		if (project) {
 			const sub = `SELECT id FROM nodes WHERE project = ?`;
-			const args: unknown[] = [project, project];
-			let sql = `SELECT e.* FROM edges e WHERE e.source IN (${sub}) AND e.target IN (${sub}) ORDER BY e.id ASC`;
-			if (limit !== undefined) {
-				sql += ` LIMIT ?`; args.push(limit);
-				if (offset !== undefined) { sql += ` OFFSET ?`; args.push(offset); }
-			}
-			const rows = await dbAll(db, sql, args) as unknown as EdgeRow[];
-			return rows.map(rowToEdge);
+			args.push(project, project);
+			sql = `SELECT e.* FROM edges e WHERE e.source IN (${sub}) AND e.target IN (${sub})`;
+			if (afterId !== undefined) { sql += ` AND e.id > ?`; args.push(afterId); }
+			sql += ` ORDER BY e.id ASC`;
+		} else {
+			sql = `SELECT * FROM edges`;
+			if (afterId !== undefined) { sql += ` WHERE id > ?`; args.push(afterId); }
+			sql += ` ORDER BY id ASC`;
 		}
-		let sql = `SELECT * FROM edges ORDER BY id ASC`;
-		const args: unknown[] = [];
 		if (limit !== undefined) {
 			sql += ` LIMIT ?`; args.push(limit);
-			if (offset !== undefined) { sql += ` OFFSET ?`; args.push(offset); }
+			if (offset !== undefined && afterId === undefined) { sql += ` OFFSET ?`; args.push(offset); }
 		}
 		const rows = await dbAll(db, sql, args) as unknown as EdgeRow[];
 		return rows.map(rowToEdge);

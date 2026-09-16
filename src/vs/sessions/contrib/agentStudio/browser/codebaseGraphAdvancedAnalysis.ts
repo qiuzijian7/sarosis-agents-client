@@ -277,8 +277,10 @@ function executeWithQuery(
 					case 'COUNT': outRow.set(alias, values.length); break;
 					case 'SUM': outRow.set(alias, values.reduce((s: number, v: any) => s + Number(v), 0)); break;
 					case 'AVG': outRow.set(alias, values.length ? values.reduce((s: number, v: any) => s + Number(v), 0) / values.length : 0); break;
-					case 'MIN': outRow.set(alias, values.length ? Math.min(...values.map(Number)) : null); break;
-					case 'MAX': outRow.set(alias, values.length ? Math.max(...values.map(Number)) : null); break;
+					// ⚠ 用 reduce 而非 `Math.min(...arr)`：分组行数可达十万级（整图聚合），
+					// 展开成实参必然 "Maximum call stack size exceeded"（同 service 那处）。
+					case 'MIN': outRow.set(alias, values.length ? values.map(Number).reduce((a, b) => Math.min(a, b)) : null); break;
+					case 'MAX': outRow.set(alias, values.length ? values.map(Number).reduce((a, b) => Math.max(a, b)) : null); break;
 					default: outRow.set(alias, null);
 				}
 			}

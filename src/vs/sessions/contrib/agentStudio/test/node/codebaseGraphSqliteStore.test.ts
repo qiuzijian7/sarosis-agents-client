@@ -349,4 +349,79 @@ describe('CodebaseGraphSqliteStore.grepContent (main-process streaming grep)' + 
 	});
 });
 
+// ── keyset 分页（2026-09-16）──────────────────────────────────────────────────
+// 动机：`_loadGraphFromSqlite()` 必须分页（几十万行不能一次跨 IPC 把主线程冻住），而
+// `LIMIT/OFFSET` 在翻到后面几页时是 **O(offset) 累计**（每页从头跳过前 offset 行；边查询的
+// project 过滤子查询还要每页重跑一次）⇒ 改 keyset（`id > 游标`）。这里钉三件事：
+//   ① 翻页不漏不重；② 与 project 过滤叠加仍正确（边尤其易错）；③ afterId 与 offset 同时给出时
+//   以 keyset 为准（两套语义叠加会漏行）。
+describe('CodebaseGraphSqliteStore keyset paging (getAllNodes / getAllEdges)' + (dbAvailable ? '' : ' [SKIPPED: better-sqlite3 not installed]'), () => {
+
+	itOrSkip('nodes: keyset 翻页不漏不重', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('keyset-nodes.db'));
+		for (let i = 0; i < 25; i++) { await store.upsertNode(makeNode(`n${i}`)); }
+		await store.upsertNode({ ...makeNode('foreign'), project: 'Other' });
+
+		const seen: string[] = [];
+		let cursor: number | undefined;
+		for (;;) {
+			const page = await store.getAllNodes(undefined, 10, undefined, cursor);
+			if (page.length === 0) { break; }
+			for (const n of page) { seen.push(n.name); }
+			cursor = Number(page[page.length - 1].id);
+			if (page.length < 10) { break; }
+		}
+		assert.strictEqual(seen.length, 26, `共应取到 26 个节点，实际 ${seen.length}：${JSON.stringify(seen)}`);
+		assert.strictEqual(new Set(seen).size, 26, 'keyset 翻页不得重复');
+		await store.close();
+	});
+
+	itOrSkip('nodes: project 过滤与 keyset 叠加，且 afterId 优先于 offset', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('keyset-nodes-filter.db'));
+		for (let i = 0; i < 6; i++) { await store.upsertNode(makeNode(`p${i}`)); }
+		for (let i = 0; i < 4; i++) { await store.upsertNode({ ...makeNode(`o${i}`), project: 'Other' }); }
+
+		const mine = await store.getAllNodes(PROJECT, 3, undefined, undefined);
+		assert.strictEqual(mine.length, 3);
+		assert.ok(mine.every(n => n.project === PROJECT), 'project 过滤必须生效');
+
+		// afterId 与 offset 同时给：以 keyset 为准（offset 只是历史参数，叠加会漏行）
+		const after = await store.getAllNodes(PROJECT, 3, 3, Number(mine[2].id));
+		assert.strictEqual(after[0].name, 'p3', `afterId 存在时应忽略 offset，实际首条 ${after[0]?.name}`);
+		await store.close();
+	});
+
+	itOrSkip('edges: keyset 翻页不漏不重 + project 过滤叠加 + 带游标 id', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('keyset-edges.db'));
+		const idA = await store.upsertNode(makeNode('a'));
+		const idB = await store.upsertNode(makeNode('b'));
+		const idF = await store.upsertNode({ ...makeNode('f'), project: 'Other' });
+		const idG = await store.upsertNode({ ...makeNode('g'), project: 'Other' });
+		for (let i = 0; i < 12; i++) {
+			await store.upsertEdge({ source: String(idA), target: String(idB), type: `T${i}`, properties: {} });
+		}
+		await store.upsertEdge({ source: String(idF), target: String(idG), type: 'FOREIGN', properties: {} });
+
+		const types: string[] = [];
+		let cursor: number | undefined;
+		for (;;) {
+			const page = await store.getAllEdges(PROJECT, 5, undefined, cursor);
+			if (page.length === 0) { break; }
+			for (const e of page) {
+				assert.ok(e.id !== undefined, '边必须带回行 id 作分页游标');
+				types.push(e.type);
+			}
+			cursor = Number(page[page.length - 1].id);
+			if (page.length < 5) { break; }
+		}
+		assert.strictEqual(types.length, 12, `本项目应有 12 条边，实际 ${types.length}：${JSON.stringify(types)}`);
+		assert.strictEqual(new Set(types).size, 12, 'keyset 翻页不得重复');
+		assert.ok(!types.includes('FOREIGN'), 'project 过滤必须排除他项目的边');
+		await store.close();
+	});
+});
+
 after(() => cleanup());

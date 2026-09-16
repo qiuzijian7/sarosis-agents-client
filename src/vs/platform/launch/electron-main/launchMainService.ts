@@ -133,7 +133,17 @@ export class LaunchMainService implements ILaunchMainService {
 		// jump list passes the app path as argv[1] (bare electron needs it to load the
 		// app). That path is NOT a folder the user asked to open — drop it so we create
 		// an empty new window, matching the packaged behaviour of `VsSaros.exe -n`.
-		if (!app.isPackaged && args['new-window'] && args._.length === 1) {
+		//
+		// ⚠⚠ 2026-09-16 修：原判据是 `!app.isPackaged`，而它在 dev 下**恒为 true**
+		//（`app.isPackaged` 在「用 `.build/electron/VsSaros.exe <appPath>` 启动」时就已经是 true，
+		//  见 `workspacesHistoryMainService.getNewWindowScriptArgs()` 的同款记录）
+		// ⇒ **这段修复从不生效** ✗ ⇒ app 路径被当成「要打开的文件夹」⇒ 打开的正是**已打开的工作区**
+		// ⇒ 去重后只是聚焦 ⇒ 用户看到「任务栏点了 New Window 没反应」✗✗。
+		//
+		// 现在**只按事实判断**：只有在 `--new-window` 且位置参数恰好等于 app 路径时才丢弃，
+		// 不再依赖 dev/built 判据 —— 语义更精确，且打包版不会误伤
+		//（打包版的 app 路径是 `resources/app`，用户不可能把它当文件夹传进来）。
+		if (args['new-window'] && args._.length === 1) {
 			// Resolve both sides to absolute paths: `app.getAppPath()` can be
 			// relative (e.g. `electron .` in dev), while the forwarded jump-list
 			// arg is the resolved absolute path we registered.
@@ -218,6 +228,10 @@ export class LaunchMainService implements ILaunchMainService {
 					forceNewWindow: true,
 					forceEmpty: true
 				});
+				// ★ 2026-09-16 诊断（排查「任务栏 New Window 没反应」）：
+				// 主进程日志此前**完全看不出**这一步的结果 —— 只有它能回答
+				// 「要求开新窗 → open() 到底有没有产出窗口」（=0 说明被吞在 open 里）。
+				this.logService.info(`[launch][diag] open(forceNewWindow+forceEmpty) returned ${usedWindows.length} window(s)`);
 			}
 
 			// Focus existing window or open if none opened

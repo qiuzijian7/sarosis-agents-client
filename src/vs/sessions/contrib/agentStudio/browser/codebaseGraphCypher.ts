@@ -684,8 +684,10 @@ export class CypherEngine {
 					case 'AVG':
 						row.set(fieldName, groupRows.reduce((s, r) => s + (r.get(item.variable)?.[item.field || ''] || 0), 0) / groupRows.length);
 						break;
-					case 'MIN': row.set(fieldName, Math.min(...groupRows.map(r => r.get(item.variable)?.[item.field || ''] || 0))); break;
-					case 'MAX': row.set(fieldName, Math.max(...groupRows.map(r => r.get(item.variable)?.[item.field || ''] || 0))); break;
+					// ⚠ 用 reduce 而非 `Math.min(...arr)`：Cypher 聚合可能覆盖整图（十万级行），
+					// 展开成实参必然 "Maximum call stack size exceeded"（同 service 那处）。
+					case 'MIN': row.set(fieldName, groupRows.map(r => r.get(item.variable)?.[item.field || ''] || 0).reduce((a, b) => Math.min(a, b), Infinity)); break;
+					case 'MAX': row.set(fieldName, groupRows.map(r => r.get(item.variable)?.[item.field || ''] || 0).reduce((a, b) => Math.max(a, b), -Infinity)); break;
 				}
 			}
 			result.push(row);

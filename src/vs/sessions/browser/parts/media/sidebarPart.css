@@ -166,9 +166,13 @@
 	color: var(--vscode-list-activeSelectionForeground, inherit);
 }
 
-/* ── Dropdown item: show delete button on hover ── */
+/* ── Dropdown item: show delete button on hover ──
+ * ★★★ 2026-09-16（用户报「工作区列表 hover / 非 hover 切换时自动换行」）：
+ * 这里**只能**切 `visibility`，**不能**切 `display` —— 原因见 `.ws-delete-btn` 处的完整说明：
+ * `display: none → inline` 会让按钮在 hover 时**重新占位**（约 20px + 7px gap）
+ * ⇒ `.ws-item-body` 变窄 ⇒ 行1 的徽标被挤到第二行 ⇒ 条目高度跳变 ✗。 */
 .agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-item:hover .ws-delete-btn {
-	display: inline !important;
+	visibility: visible;
 }
 
 /* ── Delete button hover ── */
@@ -672,7 +676,14 @@
 	display: flex;
 	align-items: center;
 	gap: 5px;
-	flex-wrap: wrap;
+	/* ★★★ 2026-09-16（用户报「hover / 非 hover 切换时自动换行」）：**永不换行**。
+	 * 空间不足时由名字自己省略（见 `.ws-item-name { min-width: 0 }`）吸收，
+	 * 而不是把 `3 个根` / `.code-workspace` 这类徽标挤到第二行（那会让条目高度跳变 ✗）。
+	 * 这条与「删除按钮用 visibility 保留占位」是**配套的两半**：缺任何一半，
+	 * 行宽或行内容一变，用户仍会看到徽标换行。 */
+	flex-wrap: nowrap;
+	overflow: hidden;
+	min-width: 0;
 }
 .agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-item-name {
 	font-size: 12px;
@@ -680,6 +691,11 @@
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	/* ★ 必须显式 `min-width: 0`：flex 项默认 `min-width: auto`(= min-content)，
+	 * 对 `nowrap` 文本就等于**整串文字的宽度** ⇒ 它拒绝收缩 ⇒ 徽标被迫换行 ✗。
+	 * 置 0 后它才能先省略自己（省略号 + `title` 兜底）。 */
+	flex: 0 1 auto;
+	min-width: 0;
 }
 
 /* ── 徽标 ── */
@@ -691,6 +707,9 @@
 	white-space: nowrap;
 	background: var(--vscode-badge-background, rgba(255, 255, 255, 0.12));
 	color: var(--vscode-descriptionForeground);
+	/* ★ 2026-09-16：徽标是**固定尺寸**的内容 —— 不参与收缩（否则会被压成省略号），
+	 * 空间不足时让 `.ws-item-name` 去省略（见行1 的 nowrap 说明）。 */
+	flex: 0 0 auto;
 }
 .agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-chip-file {
 	color: var(--vscode-textLink-foreground, #3794ff);
@@ -722,7 +741,17 @@
 	gap: 3px;
 }
 .agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-delete-btn {
-	display: none;
+	/* ★★★ 2026-09-16（用户报「工作区列表 hover / 非 hover 切换时自动换行」）：
+	 * **必须是 `visibility: hidden`，不能是 `display: none`** —— 两者视觉上都是"不显示"，
+	 * 但布局盒的保留与否决定了 hover 时会不会位移：
+	 *   · `display: none` ⇒ hover 变 `inline` 时按钮**重新占位**（约 20px + gap 7px）
+	 *     ⇒ `.ws-item-body` 变窄 ⇒ 行1 的 `.code-workspace` 徽标**被挤到第二行**
+	 *     ⇒ 条目从 2 行变 3 行、文字上下跳动 ✗（用户截图即此）；
+	 *   · `visibility: hidden` ⇒ 布局盒**始终存在**、宽度恒定 ⇒ 两个状态**完全同布局**，
+	 *     只有"是否绘制"变化 ⇒ 不换行、不跳动 ✓。
+	 * 与仓库既有约定一致（`sessionHistoryView.css` 的重命名/删除按钮同样用 visibility）✓。
+	 * ⚠ 不要改回 `display: none`：那会重新引入换行。 */
+	visibility: hidden;
 	border: none;
 	background: transparent;
 	color: inherit;
@@ -734,9 +763,12 @@
 	opacity: 0.6;
 }
 
-/* ── 底部动作：图标 + 文案，并用副标签消歧（单根 / 多根）── */
+/* ── 底部动作：图标 + 文案，并用副标签消歧（单根 / 多根）──
+ * `ws-edit-btn`（★ 2026-09-16 新增的工作区编辑动作）复用同一套视觉，
+ * 只是**纵向排列**（见 `.ws-dropdown-edit`）—— 三条文案较长，横排会挤成一团 ✗。 */
 .agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-open-folder-btn,
-.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-open-file-btn {
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-open-file-btn,
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-edit-btn {
 	display: flex;
 	align-items: center;
 	gap: 6px;
@@ -754,4 +786,13 @@
 	margin-left: auto;
 	font-size: 10px;
 	color: var(--vscode-descriptionForeground);
+}
+
+/* ── 工作区编辑动作区（★ 2026-09-16）：三条纵向排列，与上面「打开…」两条分隔开 ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-edit {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 4px 6px 6px;
+	border-top: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border));
 }

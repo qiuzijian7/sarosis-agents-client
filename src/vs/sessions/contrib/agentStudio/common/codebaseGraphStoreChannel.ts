@@ -86,8 +86,15 @@ export interface ICodebaseGraphSqliteBackend {
 	getEdgeTypes(project?: string): Promise<Record<string, number>>;
 
 	// ── 读（Phase 2b 新增，对齐内存 store API 以支持翻转）──
-	getAllNodes(project?: string, limit?: number, offset?: number): Promise<GraphNode[]>;
-	getAllEdges(project?: string, limit?: number, offset?: number): Promise<GraphEdge[]>;
+	/**
+	 * 分页读节点。
+	 * @param afterId **keyset 游标**（2026-09-16，第 4 参）：只返回 `id > afterId` 的行，优先于
+	 *   `offset`。`LIMIT/OFFSET` 在大表上是 O(offset) 累计（每页从头跳过前 offset 行）⇒ 全量载入
+	 *   必须用 keyset。返回项按 `id ASC` 稳定有序，调用方取**最后一项的 id** 作下一页游标。
+	 */
+	getAllNodes(project?: string, limit?: number, offset?: number, afterId?: number): Promise<GraphNode[]>;
+	/** 分页读边。`afterId` 语义同 `getAllNodes`；返回的 `GraphEdge.id` 是行 id（**仅作游标**）。 */
+	getAllEdges(project?: string, limit?: number, offset?: number, afterId?: number): Promise<GraphEdge[]>;
 	getNodeCount(project?: string): Promise<number>;
 	getTopNodesByDegree(project: string, maxNodes: number): Promise<GraphNode[]>;
 	getEdgesBetweenNodes(ids: number[]): Promise<GraphEdge[]>;

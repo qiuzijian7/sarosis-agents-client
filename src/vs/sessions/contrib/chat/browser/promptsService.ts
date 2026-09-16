@@ -11,6 +11,8 @@ import { PromptsType } from '../../../../workbench/contrib/chat/common/promptSyn
 import { IAgentSkill, IPromptPath, PromptsStorage } from '../../../../workbench/contrib/chat/common/promptSyntax/service/promptsService.js';
 import { PromptsService } from '../../../../workbench/contrib/chat/common/promptSyntax/service/promptsServiceImpl.js';
 import { BUILTIN_STORAGE, IBuiltinPromptPath } from '../common/builtinPromptsStorage.js';
+// ★ 2026-09-16：切换工作区「卡住」诊断（阶段标记 + 看门狗）——用户日志的最后一行正是本文件的 `called`。
+import { wsStage } from '../../agentStudio/browser/wsSwitchDiag.js';
 
 /** URI root for built-in skills bundled with the Agents app. */
 // 技能现在存储在 resources/.agents/skills/ 目录
@@ -128,9 +130,15 @@ export class AgenticPromptsService extends PromptsService {
 	}
 
 	public override async listPromptFiles(type: PromptsType, token: CancellationToken): Promise<readonly IPromptPath[]> {
+		// ★ 2026-09-16 诊断（用户报「切换工作区就卡住」）：**用户日志的最后一行正是这里的 `called`**
+		// ——那之后主线程被卡住、日志再也写不出去。所以这里必须能回答「是本次 prompts 扫描慢，
+		// 还是它之后别人慢」：打阶段标记（供看门狗事后补报）+ 记 `super` 的耗时（文件系统定位器那几路
+		// `listFiles` 才是重活）。
+		const tList = Date.now();
 		this.logger.info(`[AgenticPromptsService] listPromptFiles(type=${type}) called`);
+		wsStage(`prompts: 扫描 prompt 文件（type=${type}）`);
 		const baseResults = await super.listPromptFiles(type, token);
-		this.logger.info(`[AgenticPromptsService] listPromptFiles(type=${type}): baseResults count=${baseResults.length}`);
+		this.logger.info(`[AgenticPromptsService] listPromptFiles(type=${type}): baseResults count=${baseResults.length}（super 耗时 ${Date.now() - tList}ms）`);
 
 		if (type !== PromptsType.skill) {
 			this.logger.info(`[AgenticPromptsService] listPromptFiles(type=${type}): not skill type, returning baseResults`);

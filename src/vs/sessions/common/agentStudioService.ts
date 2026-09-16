@@ -777,7 +777,14 @@ export interface IAgentChatService {
 	 * 尝试获取会话跨实例锁（多开 --instance 同会话双开只读）。
 	 * acquired=false 表示另一实例正在编辑（含持锁实例 ID）；锁过期自动接管。
 	 */
-	tryAcquireSessionLock(agentId: string, sessionId: string): Promise<{ acquired: boolean; holderInstanceId?: string }>;
+	/**
+	 * 尝试获取会话锁（跨窗口/跨实例互斥，防止两处同时编辑同一会话互相覆盖）。
+	 *
+	 * ⚠ `degraded: true` 表示**加锁过程本身失败**（文件系统异常）：调用方仍可继续
+	 * （保留可用性），但**必须让用户看见** —— 此时无法保证互斥，若另一窗口也在编辑同一
+	 * 会话，会退化为「后写覆盖先写」（不再会损坏文件：会话写入已走原子写）。
+	 */
+	tryAcquireSessionLock(agentId: string, sessionId: string): Promise<{ acquired: boolean; holderInstanceId?: string; degraded?: boolean }>;
 
 	/** 释放当前持有的会话锁（仅删自己的锁）。 */
 	releaseSessionLock(): Promise<void>;

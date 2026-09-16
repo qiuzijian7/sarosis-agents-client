@@ -29,7 +29,24 @@ import { createRequire } from 'node:module';
 // `require` —— 裸 `require('better-sqlite3')` 会抛
 // `ReferenceError: require is not defined in ES module scope`。必须用 createRequire，
 // 与图谱的 `@vscode/sqlite3`、gitVersionEngine 等既有范式一致。
-const nodeRequire = createRequire(import.meta.url);
+//
+// ⚠⚠ 但**不能在模块顶层直接 `createRequire(import.meta.url)`**：
+// 在 esbuild 的 **CJS bundle** 下（各 `run-*-tests.mjs` / `run-browser-test.mjs` 等测试 runner）
+// `import.meta.url` 是 `undefined` ⇒ `createRequire(undefined)` 抛
+// `ERR_INVALID_ARG_VALUE`，**在模块加载期就把整个测试文件打挂**
+// （实测 2026-09-15：`workflowComfyMediaStore.test.ts` 因此在此类 runner 下完全跑不起来）。
+// 与 `codebaseGraphSqliteStore.ts:79-80` 的同类处理保持一致：**惰性 + 回退解析基准**。
+function createNodeRequire(): ReturnType<typeof createRequire> {
+	const url = import.meta.url;
+	if (typeof url === 'string' && url.length > 0) {
+		try { return createRequire(url); } catch { /* 落到下方回退 */ }
+	}
+	// 回退：以 cwd 为基准解析（测试 runner 从项目根启动 ⇒ node_modules 可解析）。
+	// 该路径文件无需存在 —— createRequire 只用它推导解析起点。
+	return createRequire(path.join(process.cwd(), 'noop.cjs'));
+}
+
+const nodeRequire = createNodeRequire();
 
 const PACKAGE_NAME = 'better-sqlite3';
 /** 包内标准绑定路径（bindings 默认查找的首选位置）。 */

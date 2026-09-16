@@ -160,13 +160,20 @@ suite('mediaStore (SQL via node:sqlite)', () => {
 
 	test('分页 limit/offset', async () => {
 		const { store } = makeStore();
+		// ⚠ 必须用**立即失败**的地址：`importAsset` 对 `http(s)://` ref 会真的发起下载
+		// （`_downloadRemoteToFile`，见 `mediaStore.ts` 内说明）。原先用 `http://h/...`
+		// （主机不可解析）⇒ DNS/连接悬挂 ⇒ 本用例 10s 超时。该文件此前连模块加载都失败
+		// （`betterSqlite3` 顶层 `createRequire(import.meta.url)`），所以这个坏死用例一直没被发现。
+		// `127.0.0.1:1` 无服务监听 ⇒ 立即 ECONNREFUSED ✓，下载失败后按设计保留 ref 原值 ✓
+		// ⇒ 断言不依赖网络状态、也不再可能挂住。
+		const REF = 'http://127.0.0.1:1';
 		for (let i = 0; i < 5; i++) {
-			await store.importAsset({ ref: `http://h/${i}.png` });
+			await store.importAsset({ ref: `${REF}/${i}.png` });
 		}
 		const page = await store.list({ limit: 2, offset: 1 });
 		assert.strictEqual(page.items.length, 2);
 		assert.strictEqual(page.total, 5);
-		assert.strictEqual(page.items[0].ref, 'http://h/3.png', 'created_at DESC：offset=1 应为第 4 新');
+		assert.strictEqual(page.items[0].ref, `${REF}/3.png`, 'created_at DESC：offset=1 应为第 4 新');
 	});
 
 	test('dbFactory 注入可用；工厂抛错应冒泡', async () => {
@@ -181,6 +188,29 @@ suite('mediaStore (SQL via node:sqlite)', () => {
 			}
 			assert.strictEqual(threw, true, '工厂抛错应冒泡');
 		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('★★★ 打开时必须启用 WAL + busy_timeout（每窗口一个连接 ⇒ 与进程模型无关）', () => {
+		// 背景（2026-09-15）：`kb.db` / `graph.db` 早已补 WAL + busy_timeout，**`media.db` 漏了**
+		// ⇒ 并发写会立即抛 `SQLITE_BUSY`（甚至有损坏库风险）。
+		// 关键：**每个窗口是独立 renderer** ⇒ 同一个 media.db 永远存在多个连接
+		// （切回「单实例多窗口」也如此）⇒ 这两条 PRAGMA 是结构性必需，不是多实例专属。
+		//
+		// ⚠ 必须用**文件库**：内存库（`:memory:`）不支持 WAL（会静默保持 memory）⇒ 断言会假失败。
+		const root = mkdtempSync(path.join(tmpdir(), 'media-pragma-'));
+		const raw = new DatabaseSync(path.join(root, 'media.db'));
+		try {
+			const store = new MediaStore({ rootDir: root }, () => raw as unknown as SqliteDatabase);
+			assert.ok(store, '构造不应抛错（PRAGMA 失败也不应阻塞打开）');
+
+			const mode = raw.prepare('PRAGMA journal_mode').get() as { journal_mode?: string };
+			assert.strictEqual(String(mode.journal_mode).toLowerCase(), 'wal', 'journal_mode 必须是 WAL');
+			const busy = raw.prepare('PRAGMA busy_timeout').get() as { timeout?: number };
+			assert.strictEqual(Number(busy.timeout), 5000, 'busy_timeout 必须是 5000ms（与 kb/graph 一致）');
+		} finally {
+			raw.close();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});

@@ -8,6 +8,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { writeFileAtomicSafe } from '../common/atomicWrite.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -409,7 +410,9 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	private async _writeIndex(sessionDir: URI, checkpoints: IStoredCheckpoint[]): Promise<void> {
 		const indexUri = this._indexUri(sessionDir);
 		const json = JSON.stringify(checkpoints, null, 2);
-		await this.fileService.writeFile(indexUri, VSBuffer.fromString(json));
+		// ★ 2026-09-15：检查点索引/快照是**每次编辑都会覆盖写**且回退时立刻要读 ⇒ 原子写
+		//（半写 ⇒ 该会话的全部检查点无法回退）。详见 `common/atomicWrite.ts`。
+		await writeFileAtomicSafe(this.fileService, indexUri, VSBuffer.fromString(json));
 	}
 
 	// ─── Snapshot read / write ────────────────────────────────────────────────
@@ -417,7 +420,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	private async _writeSnapshot(sessionDir: URI, snapshot: IStoredFileSnapshot): Promise<void> {
 		const uri = this._snapshotUri(sessionDir, snapshot.id);
 		const json = JSON.stringify(snapshot, null, 2);
-		await this.fileService.writeFile(uri, VSBuffer.fromString(json));
+		await writeFileAtomicSafe(this.fileService, uri, VSBuffer.fromString(json));
 	}
 
 	private async _readSnapshot(sessionDir: URI, snapshotId: string): Promise<IStoredFileSnapshot | undefined> {

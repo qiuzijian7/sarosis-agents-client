@@ -29,6 +29,8 @@ import { CodebaseGraphStore } from './codebaseGraphStore.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
+// ★ 2026-09-16：切换工作区「卡住」诊断 —— 本文件的 `loadMerge` 是切换后最重的同步段（分阶段计时见该方法）。
+import { wsStage } from './wsSwitchDiag.js';
 import { IAgentStudioLogService } from './agentStudioLogService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
@@ -53,13 +55,17 @@ interface ArtifactMeta {
 
 // ---------------------------------------------------------------------------
 // 流式加载：把「解压后的整段 JSON 一次性 JSON.parse」改为
-// 「按顶层数组元素逐个 JSON.parse 并分批让出主线程」，消除启动加载图谱时
-// 因单次同步解析几十万节点/边而卡死 UI 的问题。
-// 各元素仍用原生 JSON.parse 保证正确性；仅把「整段 parse」拆成小块并 yield。
+// 「按顶层数组元素**分批** JSON.parse 并让出主线程」，消除启动 / 切换工作区加载
+// 图谱时，因单次同步解析几十万节点/边而卡死 UI 的问题。
 //
 // ★ 2026-09-15：让出频率从**固定条数**（原每 2000 个元素）改为**时间预算**
 // （`SLICE_BUDGET_MS` = 8ms，见 `common/asyncSlice.ts`）—— 固定条数在「元素大 /
 // 机器慢」时单次连续占用仍可达几十~上百毫秒，表现为可感知的抽搐式卡顿。
+//
+// ★ 2026-09-16：在「时间预算」之上再加一层**批**（`PARSE_BATCH_ELEMENTS`）——
+// 真机实测大头不是原生解析本身，而是**逐元素的搬运开销**（每个元素一次 `json.slice()`
+// + 一次 `JSON.parse()` 调用）：一个 folder 的「解析 JSON」阶段 **10177ms**（合计 12369ms）。
+// 按批后同样内容只需几百次调用 ⇒ **语义完全不变，开销直降**。
 // ---------------------------------------------------------------------------
 
 /**
@@ -121,42 +127,126 @@ function _skipJsonValue(json: string, start: number): number {
 }
 
 /**
- * 遍历数组内的每个顶层元素，元素子串回调 cb。逗号分隔符即切分，嵌套结构由 `_skipJsonValue` 处理。
+ * **一批**元素用一次原生 `JSON.parse` 解析的数量上限（2026-09-16）。
  *
- * ★ 2026-09-15：让出策略从「每 `PARSE_YIELD_EVERY`（2000）个元素」改为**按时间预算**
- * （`SLICE_BUDGET_MS`，见 `common/asyncSlice.ts`）—— 固定条数在「元素大 / 机器慢」时
- * 单次连续占用仍可达几十~上百毫秒，表现为可感知的抽搐式卡顿。
+ * ── 为什么要有「批」（用户报「切换工作区卡住」的实测结论）──
+ * 真机实测单 folder 阶段耗时：**解析 JSON = 10177ms** / 合计 12369ms（`[loadMerge] 阶段耗时…`）。
+ * 而旧实现是「**逐元素** `json.slice()` + **逐元素** `JSON.parse()`」——18 万节点 = 18 万次小解析，
+ * 每次都带一次子串分配 + 一次原生调用开销；解析器再快也架不住这种搬运量。
+ * 改为「按批切片 + 一次原生解析」：同样内容只需几百次调用，且原生解析器一次吃下整段文本
+ * ⇒ **纯搬运开销的消除，语义完全不变**（元素之间本来就是 `,` 分隔，补上外层方括号仍是合法数组）。
+ *
+ * 取 512：单批文本约 100KB 量级，原生解析 <1ms（远低于 8ms 切片预算），既摊薄了调用开销，
+ * 又不会让单批撑破预算（超预算时会在让出**之前**先 `flush`）。
  */
-async function _forEachArrayElement(
+export const PARSE_BATCH_ELEMENTS = 512;
+
+/**
+ * 一个顶层数组的解析统计（**诊断用**，2026-09-16）。
+ *
+ * 为什么要有它：`[loadMerge] 阶段耗时` 只报「解析 JSON = 10177ms」这一个总数，
+ * 无法判断时间花在**扫描边界**（纯 `charCodeAt` 循环）还是**原生解析**，也无法判断是
+ * nodes / edges / fileHashes 哪一个（或 `bm25`/`layout` 那种**单次整体 parse**）。
+ * 实测（2026-09-16 基准，180k 节点 / 40.4MB）：扫描 178ms + 逐元素解析 121ms ⇒ 只占 10.2s 的零头，
+ * 说明大头**不在**这条路径上 ⇒ 必须有分解数据才能继续定位（见 `loadMerge` 的「解析分解」行）。
+ */
+export interface IArrayParseStats {
+	/** 已解析元素数。 */
+	elements: number;
+	/** 扫元素边界（`_skipJsonValue`）累计耗时。 */
+	scanMs: number;
+	/** 原生 `JSON.parse` 累计耗时。 */
+	parseMs: number;
+	/** 批次数。 */
+	batches: number;
+}
+
+/**
+ * 遍历数组内的每个顶层元素，**按批**解析后回调 `onBatch`（批内元素顺序与原文一致）。
+ *
+ * 逗号分隔符即切分，嵌套结构由 `_skipJsonValue` 处理。
+ *
+ * ★ 让出策略仍是**按时间预算**（`SLICE_BUDGET_MS`，见 `common/asyncSlice.ts`）—— 固定条数在
+ * 「元素大 / 机器慢」时单次连续占用仍可达几十~上百毫秒，表现为可感知的抽搐式卡顿。
+ * ⚠ 让出**之前**必须先 `flush()`：否则批会跨 yield 越攒越大，单批耗时不再受 512 约束。
+ *
+ * 导出仅为可测（`codebaseGraphPersistence.test.ts` 直接断言边界与特殊字符）。
+ * `stats` 为可选诊断出参（不影响任何行为）。
+ */
+export async function forEachArrayBatch<T>(
 	json: string, openIdx: number, closeIdx: number,
-	cb: (elem: string) => (Promise<void> | void),
-): Promise<void> {
+	onBatch: (items: T[]) => void,
+	stats?: IArrayParseStats,
+): Promise<number> {
 	let i = openIdx + 1;
 	let count = 0;
 	let sliceStart = performance.now();
+	/** 本批**首个元素起点**与**末个元素终点**：`json.slice(start, end)` 即「去掉外层方括号的整批文本」。 */
+	let batchStart = -1;
+	let batchEnd = -1;
+	let batchCount = 0;
+
+	const flush = (): void => {
+		if (batchCount === 0) { return; }
+		// 元素之间原本就是 `,` ⇒ 补上外层方括号即为合法 JSON 数组（首尾空白与缩进都不影响）
+		const t0 = performance.now();
+		const items = JSON.parse(`[${json.slice(batchStart, batchEnd)}]`) as T[];
+		if (stats) { stats.parseMs += performance.now() - t0; stats.batches++; stats.elements += items.length; }
+		batchCount = 0;
+		batchStart = -1;
+		batchEnd = -1;
+		onBatch(items);
+	};
+
 	while (i < closeIdx) {
 		while (i < closeIdx && (_isWs(json.charCodeAt(i)) || json.charCodeAt(i) === 0x2c /* , */)) { i++; }
 		if (i >= closeIdx) { break; }
 		if (json.charCodeAt(i) === 0x5d /* ] */) { break; }
+		const tScan = stats ? performance.now() : 0;
 		const eEnd = _skipJsonValue(json, i);
-		await cb(json.slice(i, eEnd));
+		if (stats) { stats.scanMs += performance.now() - tScan; }
+		if (batchCount === 0) { batchStart = i; }
+		batchEnd = eEnd;
+		batchCount++;
+		count++;
 		i = eEnd;
-		if ((++count % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+		if (batchCount >= PARSE_BATCH_ELEMENTS) { flush(); }
+		if ((count % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+			flush();
 			await yieldToEventLoop();
 			sliceStart = performance.now();
 		}
 	}
+	flush();
+	// 返回**闭合方括号之后**的位置 = 该数组值的终点，调用方据此继续下一个键。
+	// ★ 有了它，调用方就**不必**先对整个数组做一次「值边界扫描」—— 那正是本次优化省掉的那一遍
+	// （实测 141800 节点 / 414285 边那份制品：值边界扫描 489ms + 347ms ≈ **836ms**，
+	//  占「解析 JSON 1712ms」的近一半，纯属把同一段文本扫两遍）。
+	return json.charCodeAt(i) === 0x5d /* ] */ ? i + 1 : i;
 }
 
 /**
  * 增量解析图谱 JSON，返回与旧 _readData 同形的 data 对象，但在解析 nodes/edges/fileHashes
- * 时逐个元素解析并分批让出主线程，避免单次同步 JSON.parse 卡死 UI。
+ * 时**按批**解析（`PARSE_BATCH_ELEMENTS`，2026-09-16）并让出主线程，避免单次同步 JSON.parse
+ * 卡死 UI、也避免逐元素解析的搬运开销。
  *
  * @param onProgress 解析进度的**文案回调**（2026-09-15，方案 ⑥）：大图解析要几十秒，
  *        只给「正在读取并解析制品…」一句会让用户以为卡死 ⇒ 这里给出「已解析 N 节点 / M 边」。
- *        节流由调用方负责（每 yield 一次就回调一次会到每秒上百次）。
+ *        节流由调用方负责（每批回调一次；早期实现是每 yield 一次回调一次，会到每秒上百次）。
+ * @param onStage **分键耗时**回调（2026-09-16，诊断）：逐字段报「边界扫描 / 批量解析 / 单次整体解析」。
+ *        2026-09-16 实测教训：只知道「解析 JSON = 10177ms」这一个总数**找不出**优化点 ——
+ *        基准显示 nodes/edges 那条路的扫描+解析只占零头，而 `bm25`/`layout` 是**单次整体解析**
+ *        （不可切片）⇒ 必须按字段分解才能定位。
  */
-async function _parseGraphStreaming(json: string, onProgress?: (nodes: number, edges: number) => void): Promise<any> {
+async function _parseGraphStreaming(
+	json: string,
+	onProgress?: (nodes: number, edges: number) => void,
+	onStage?: (label: string, ms: number, extra?: string) => void,
+): Promise<any> {
+	/** 分键耗时上报（诊断）。`onStage` 缺省时只多一次 `if`。 */
+	const stage = (label: string, t0: number, extra?: string): void => {
+		if (onStage) { onStage(label, Math.round(performance.now() - t0), extra); }
+	};
 	const data: any = {
 		nodes: [], edges: [], fileHashes: [],
 		bm25: undefined, layout: [], nextNodeId: 1, nextEdgeId: 1,
@@ -179,52 +269,90 @@ async function _parseGraphStreaming(json: string, onProgress?: (nodes: number, e
 		i = keyEnd;
 		while (i < n && (_isWs(json.charCodeAt(i)) || json.charCodeAt(i) === 0x3a /* : */)) { i++; }
 		const vStart = i;
-		const vEnd = _skipJsonValue(json, i);
-		const raw = json.slice(vStart, vEnd);
+		const isArrayValue = json.charCodeAt(vStart) === 0x5b /* [ */;
+		// ★★ 2026-09-16（第二轮优化）：**数组键不做「值边界扫描」**。
+		// `forEachArrayBatch` 的元素扫描本身就会停在 `]` 并返回其后的位置 ⇒ 先整段扫一遍找值边界，
+		// 等于把同一段文本扫两遍。实测（141800 节点 / 414285 边那份制品）：值边界 489ms + 347ms ≈ **836ms**，
+		// 占「解析 JSON 1712ms」的近一半 —— 这就是本轮省掉的那一遍。
+		// 非数组（`bm25` / `layout` / 标量）仍需先扫边界：它们要整段 `json.slice()` 交给 `JSON.parse`。
+		const streamedArray = isArrayValue && (key === 'nodes' || key === 'edges' || key === 'fileHashes');
+		const tValueScan = performance.now();
+		const vEnd = streamedArray ? -1 : _skipJsonValue(json, i);
+		// ★ 值边界的**字符级扫描**也是真金白银（`bm25` / `layout` 这类大对象没有切片，一次扫完）。
+		// 单列出来，避免把它错算进「原生解析」而找错优化方向。
+		const valueScanMs = streamedArray ? 0 : Math.round(performance.now() - tValueScan);
+		const raw = streamedArray ? '' : json.slice(vStart, vEnd);
+		const tKey = performance.now();
+		/** 流式数组的元素终点（由 `forEachArrayBatch` 返回；`-1` = 本键不是流式数组）。 */
+		let streamedEnd = -1;
 		switch (key) {
-			case 'nodes':
-				if (json.charCodeAt(vStart) === 0x5b /* [ */) {
-					await _forEachArrayElement(json, vStart, vEnd, (e) => {
-						data.nodes.push(JSON.parse(e));
+			case 'nodes': {
+				if (isArrayValue) {
+					const st: IArrayParseStats = { elements: 0, scanMs: 0, parseMs: 0, batches: 0 };
+					// 上界传 `json.length`：循环在数组的 `]` 处停下并返回其后位置 ⇒ 无需预先算值边界
+					streamedEnd = await forEachArrayBatch<any>(json, vStart, json.length, (items) => {
+						// 逐个 push（不用 `push(...items)`）：批本身有上限，但避免任何一次性大数组展开
+						for (const it of items) { data.nodes.push(it); }
+						// 进度按**批**上报（旧实现逐元素；节流在调用方 ⇒ 批内逐条上报纯属浪费）
 						onProgress?.(data.nodes.length, data.edges.length);
-					});
+					}, st);
+					stage('nodes', tKey, `${st.elements} 个（元素扫描 ${Math.round(st.scanMs)}ms / 批量解析 ${Math.round(st.parseMs)}ms / ${st.batches} 批；值边界已省）`);
 				} else {
 					data.nodes = undefined; // 非数组 → 交给 _validateGraphData 拒绝
+					stage('nodes', tKey, `⚠ 非数组（值边界 ${valueScanMs}ms）`);
 				}
 				break;
-			case 'edges':
-				if (json.charCodeAt(vStart) === 0x5b /* [ */) {
-					await _forEachArrayElement(json, vStart, vEnd, (e) => {
-						data.edges.push(JSON.parse(e));
+			}
+			case 'edges': {
+				if (isArrayValue) {
+					const st: IArrayParseStats = { elements: 0, scanMs: 0, parseMs: 0, batches: 0 };
+					streamedEnd = await forEachArrayBatch<any>(json, vStart, json.length, (items) => {
+						for (const it of items) { data.edges.push(it); }
 						onProgress?.(data.nodes.length, data.edges.length);
-					});
+					}, st);
+					stage('edges', tKey, `${st.elements} 个（元素扫描 ${Math.round(st.scanMs)}ms / 批量解析 ${Math.round(st.parseMs)}ms / ${st.batches} 批；值边界已省）`);
 				} else {
 					data.edges = undefined;
+					stage('edges', tKey, `⚠ 非数组（值边界 ${valueScanMs}ms）`);
 				}
 				break;
-			case 'fileHashes':
-				if (json.charCodeAt(vStart) === 0x5b /* [ */) {
-					await _forEachArrayElement(json, vStart, vEnd, (e) => { data.fileHashes.push(JSON.parse(e)); });
+			}
+			case 'fileHashes': {
+				if (isArrayValue) {
+					const st: IArrayParseStats = { elements: 0, scanMs: 0, parseMs: 0, batches: 0 };
+					streamedEnd = await forEachArrayBatch<any>(json, vStart, json.length, (items) => {
+						for (const it of items) { data.fileHashes.push(it); }
+					}, st);
+					stage('fileHashes', tKey, `${st.elements} 个（元素扫描 ${Math.round(st.scanMs)}ms / 批量解析 ${Math.round(st.parseMs)}ms / ${st.batches} 批；值边界已省）`);
 				} else {
 					data.fileHashes = undefined;
+					stage('fileHashes', tKey, `⚠ 非数组（值边界 ${valueScanMs}ms）`);
 				}
 				break;
+			}
 			case 'bm25':
 				data.bm25 = JSON.parse(raw);
+				// ⚠ 这一句是**单次整体解析**，无法切片（`bm25` 是对象，不是可逐元素的数组）
+				stage('bm25', tKey, `${(raw.length / 1024 / 1024).toFixed(1)}MB 文本**单次**解析 + 值边界扫描 ${valueScanMs}ms`);
 				break;
 			case 'layout':
 				data.layout = JSON.parse(raw);
+				stage('layout', tKey, `${(raw.length / 1024 / 1024).toFixed(1)}MB 文本**单次**解析 + 值边界扫描 ${valueScanMs}ms`);
 				break;
 			case 'nextNodeId':
 				data.nextNodeId = JSON.parse(raw);
+				stage('nextNodeId', tKey, `值边界 ${valueScanMs}ms`);
 				break;
 			case 'nextEdgeId':
 				data.nextEdgeId = JSON.parse(raw);
+				stage('nextEdgeId', tKey, `值边界 ${valueScanMs}ms`);
 				break;
 			default:
+				stage(key, tKey, `未使用（值边界 ${valueScanMs}ms / ${Math.round(raw.length / 1024)}KB）`);
 				break;
 		}
-		i = vEnd;
+		// 流式数组：终点来自元素扫描（省掉了预扫描）；其余键仍用值边界扫描的结果
+		i = streamedEnd >= 0 ? streamedEnd : vEnd;
 	}
 	return data;
 }
@@ -353,16 +481,59 @@ export class GraphPersistence {
 			onProgress(line);
 		};
 
-		const json = await this._readJsonText(sourcePath);
+		// ★★★ 2026-09-16 诊断（用户报「每次切换工作区 app 就卡住」）：把下面五段**逐段计时**并汇总成一行。
+		//
+		// 为什么必须分段：这五段都是**主线程上的 CPU 重活**，而其中**只有解析与合并**按 8ms 时间预算切片
+		// （见 `_parseGraphStreaming` / `mergeFromJSONAsync`），**解压、路径迁移、完整性校验是整段跑的**。
+		// 旧日志只有调用方那一行 `merged … (5432ms)`（2026-09-15 实测），无法判断该优化哪一段。
+		//
+		// 同时给每段打 `wsStage()`：主线程被阻塞时日志**写不出去**，看门狗（`wsSwitchDiag.ts`）
+		// 会在阻塞结束后把「当时在哪一段」补报出来 —— 这正是定位卡住所需要的。
+		const phases: string[] = [];
+		let phasesTotal = 0;
+		// 制品文件名（日志里用来区分多 folder —— 本类没有 service 的 `_basename`，就地取末段）
+		const label = sourcePath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? sourcePath;
+		const timed = async <T>(name: string, fn: () => T | Promise<T>): Promise<T> => {
+			wsStage(`graph: ${name}（${label}）`);
+			const t0 = Date.now();
+			try {
+				return await fn();
+			} finally {
+				const ms = Date.now() - t0;
+				phasesTotal += ms;
+				phases.push(`${name}=${ms}ms`);
+			}
+		};
+		const logPhases = (note: string): void => {
+			this._logService?.info('[GraphPersistence]', `[loadMerge] 阶段耗时（${label}）：${phases.join(' / ')}｜合计 ${phasesTotal}ms${note}`);
+		};
+
+		const json = await timed('解压制品', () => this._readJsonText(sourcePath));
 		if (!json) { return false; }
 		report('已解压，正在解析节点/边…', true);
-		const data = await _parseGraphStreaming(json, (nodes, edges) => report(`解析中：${nodes} 节点 / ${edges} 边`));
+		// ★ 2026-09-16 诊断：把「解析 JSON」**再分解到字段**（见 `_parseGraphStreaming` 的 `onStage`）。
+		// 动机：只知道总数（实测单 folder 10177ms）时无从下手 —— 基准显示 nodes/edges 那条路
+		// （元素扫描 + 批量解析）只占零头，而 `bm25` / `layout` 是**单次整体解析**（不可切片），
+		// 必须靠这行把两者分开，才能判断该优化哪一边。
+		const parseDetail: string[] = [];
+		const data = await timed('解析 JSON', () => _parseGraphStreaming(
+			json,
+			(nodes, edges) => report(`解析中：${nodes} 节点 / ${edges} 边`),
+			(label2, ms, extra) => parseDetail.push(`${label2}=${ms}ms${extra ? ` 〔${extra}〕` : ''}`),
+		));
+		if (parseDetail.length > 0) {
+			this._logService?.info('[GraphPersistence]', `[loadMerge] 解析分解（${label}）：${parseDetail.join(' / ')}`);
+		}
 		// 路径格式迁移：旧版本多 folder 下非 folders[0] 的文件路径/QN/哈希键被存成绝对路径
-		this._normalizeLoadedPaths(data, sourcePath);
+		await timed('路径迁移', () => this._normalizeLoadedPaths(data, sourcePath));
 		report('正在校验并写入内存图谱…', true);
 		// 导入前完整性校验（合并路径同样适用）
-		if (!await this._validateGraphData(data, sourcePath)) { return false; }
-		const stats = await store.mergeFromJSONAsync(data, projectOverride, (loaded, total) => report(`写入内存图谱：${loaded}/${total}`));
+		if (!await timed('完整性校验', () => this._validateGraphData(data, sourcePath))) {
+			logPhases('｜⚠ 制品未通过校验，已拒绝导入');
+			return false;
+		}
+		const stats = await timed('写入内存 store', () => store.mergeFromJSONAsync(data, projectOverride, (loaded, total) => report(`写入内存图谱：${loaded}/${total}`)));
+		logPhases('');
 		// 重复合并必须**可见**（2026-09-15）：实测制品 49.6% 节点是重复的，而旧实现完全静默。
 		if (stats.nodesSkipped > 0 || stats.edgesSkipped > 0) {
 			this._logService?.warn('[GraphPersistence]', `[loadMerge] deduped ${stats.nodesSkipped} duplicate node(s) / ${stats.edgesSkipped} duplicate edge(s) from ${sourcePath} — artifact had repeats or was merged twice (kept ${stats.nodesAdded} new node(s), ${stats.edgesAdded} new edge(s))`);

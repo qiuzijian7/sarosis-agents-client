@@ -22,12 +22,13 @@ import { deriveMessageParts } from "../common/types.js";
 import type { IChatMessage } from "../common/providers.js";
 import { type IForkContext } from "../common/forkContext.js";
 import { sliceAtCompactionBoundary, truncateToolResultContent, COMPACTION_METADATA_TYPE, type ICompactionBoundaryInfo } from "../common/historyCompaction.js";
-import { IFileService, FileSystemProviderCapabilities } from "../../../../platform/files/common/files.js";
+import { IFileService } from "../../../../platform/files/common/files.js";
 import { IEnvironmentService } from "../../../../platform/environment/common/environment.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
 import { ILifecycleService } from "../../../../workbench/services/lifecycle/common/lifecycle.js";
 import { URI } from "../../../../base/common/uri.js";
 import { VSBuffer } from "../../../../base/common/buffer.js";
+import { writeFileAtomicSafe } from "../common/atomicWrite.js";
 import {
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	DATA_FILE_CHAT_HISTORY,
@@ -547,13 +548,15 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 	private _sessionLockToken: string | undefined;
 	private _sessionLockHeartbeat: ReturnType<typeof setInterval> | undefined;
+	/** 心跳失败只提示一次（P0-3：失败必须可见，但不能每 30s 刷屏）。 */
+	private _sessionLockHeartbeatWarned = false;
 	private _sessionLockUri: URI | undefined;
 
 	/**
 	 * 尝试获取会话锁。返回 acquired=false 时表示另一实例正在编辑（含持锁实例 ID）。
 	 * 锁过期（持有方崩溃 2min）自动接管。
 	 */
-	async tryAcquireSessionLock(agentId: string, sessionId: string): Promise<{ acquired: boolean; holderInstanceId?: string }> {
+	async tryAcquireSessionLock(agentId: string, sessionId: string): Promise<{ acquired: boolean; holderInstanceId?: string; degraded?: boolean }> {
 		try {
 			const { sessionsDirUri } = await this._resolveAgentPaths(agentId);
 			const lockUri = URI.joinPath(sessionsDirUri, `${sessionId}.lock`);
@@ -583,11 +586,35 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			};
 			await writeLock();
 			this._sessionLockUri = lockUri;
-			this._sessionLockHeartbeat = setInterval(() => { void writeLock().catch(() => { /* 心跳失败忽略 */ }); }, 30_000);
+			this._sessionLockHeartbeatWarned = false;
+			this._sessionLockHeartbeat = setInterval(() => {
+				void writeLock().catch(err => {
+					// ★★★ P0-3（2026-09-15）：**心跳失败也不能静默**。
+					// 锁的「新鲜度」由 mtime 决定：连续 2min（`SESSION_LOCK_STALE_MS`）没刷新，
+					// 别的窗口就有权接管 —— 而本窗口**仍在编辑** ⇒ 退化为「双方都以为持有锁」，
+					// 正是这把锁要防的局面。只提示一次，避免每 30s 刷屏。
+					if (!this._sessionLockHeartbeatWarned) {
+						this._sessionLockHeartbeatWarned = true;
+						this.logService.warn(`[AgentChatService] session lock heartbeat failed (another window may take over after 2min): ${err}`);
+					}
+				});
+			}, 30_000);
 			return { acquired: true };
 		} catch (err) {
-			this.logService.warn(`[AgentChatService] tryAcquireSessionLock failed (fail-open): ${err}`);
-			return { acquired: true }; // 文件系统异常时放行，避免锁死用户输入
+			// ★★★ 2026-09-15（P0-3）：**fail-open → fail-visible**。
+			//
+			// 原实现是 `warn('…(fail-open)')` + `return { acquired: true }` —— 即
+			// 「加锁失败就当作拿到了锁，且**不告诉任何人**」✗。后果：用户以为会话受互斥保护，
+			// 实际两个窗口可能同时写同一份对话历史（表现为「消息莫名少了 / 被回退」，且无从归因）。
+			//
+			// 现在：**保留可用性**（文件系统抖动不该把用户锁死在只读里），但把「未加锁」这个事实
+			// 显式返回给上层 ⇒ pane 会弹警告 + 记日志（见 `nativeChatEditorPane._updateSessionLock`）。
+			//
+			// 为什么不是「直接降级只读」：① 此处失败多为瞬时/权限类抖动，而若连锁目录都写不进去、
+			// 会话文件大概率也写不进去（保存时会报错，用户能看到）；② 会话写入已走原子写（P0-2）
+			// ⇒ 最坏结果是「丢更新」，不再是「文件损坏」。**要点是"可见"，不是"禁止"。**
+			this.logService.warn(`[AgentChatService] tryAcquireSessionLock failed — continuing WITHOUT lock (fail-visible): ${err}`);
+			return { acquired: true, degraded: true };
 		}
 	}
 
@@ -1188,10 +1215,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				await this.fileService.createFolder(sessionsDirUri);
 			}
 			const fileUri = this._sessionFileUri(sessionsDirUri, sessionId);
-			await this.fileService.writeFile(
-				fileUri,
-				VSBuffer.fromString(JSON.stringify(messages, null, 2)),
-			);
+			// ★ 2026-09-15：**会话本体**是高频整文件覆盖写、且启动即读 ⇒ 必须原子写。
+			// 此前只有 session index 走了原子写（见 `_writeSessionIndex`），本体反而没有 ——
+			// 半写后果是"对话历史突然读不出来"。详见 `common/atomicWrite.ts`。
+			await writeFileAtomicSafe(this.fileService, fileUri, VSBuffer.fromString(JSON.stringify(messages, null, 2)));
 			await this._updateSessionIndex(agentId, sessionId, messages.length);
 		} catch (err) {
 			this.logService.error(
@@ -1575,11 +1602,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		try {
 			const paths = await this._resolveAgentPaths(agentId);
 			const content = VSBuffer.fromString(JSON.stringify(index, null, 2));
-			if (this.fileService.hasCapability(paths.indexUri, FileSystemProviderCapabilities.FileAtomicWrite)) {
-				await this.fileService.writeFile(paths.indexUri, content, { atomic: { postfix: '.vsctmp' } });
-			} else {
-				await this.fileService.writeFile(paths.indexUri, content);
-			}
+			// 逻辑抽到 `common/atomicWrite.ts`（原先只有这一处记得做原子写，别处都漏了）。
+			await writeFileAtomicSafe(this.fileService, paths.indexUri, content);
 		} catch (err) {
 			this.logService.error(
 				"[AgentChatService] Failed to write session index:",

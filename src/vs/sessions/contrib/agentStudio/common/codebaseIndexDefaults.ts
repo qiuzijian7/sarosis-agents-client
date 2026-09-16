@@ -289,7 +289,7 @@ export const AST_TO_NODE_TYPE: Record<string, string> = {
 };
 
 /**
- * 计算「不属于当前工作区、需要从内存图 store 丢弃」的项目（2026-09-15）。
+ * 计算「不属于当前工作区、需要从内存图 store 丢弃」的项目（2026-09-15；2026-09-16 加 **root 判据**）。
  *
  * 背景：`CodebaseGraphService` 是**窗口内单例**，而工作区切换走
  * `replaceWorkspaceFoldersInMemory()`（**不 reload renderer**）⇒ 旧工作区的图会永久驻留内存。
@@ -297,19 +297,58 @@ export const AST_TO_NODE_TYPE: Record<string, string> = {
  * 后果：① 检索的项目收敛指向别的工作区（用户报「工作区是 sarosis 却按 S1Game 检索」）；
  * ② 巨量堆 + 每 folder 一个 watcher ⇒ UI 卡死。
  *
+ * ★★ 2026-09-16 修（用户报「GR_ 与 PJDB 同名 S1Game 互相污染」）：
+ * **项目名不是身份，root 才是**。旧判据只比名字 ⇒ 切到 `D:\GR_\S1Game` 时，内存里那份来自
+ * `D:\PJDB\S1Game` 的 `S1Game` 因**同名**被判为「属于本工作区」而保留 ⇒ 旧工作区的图继续驻留
+ * 并污染检索（上条事故的「同名变体」）。现在：只要该项目能从映射里查到 root，就**以
+ * 「root 是否属于当前工作区」为准** ⇒ 只有**外来 root** 的同名项目会被丢弃 ✓。
+ *
+ * ⚠ 已知局限（无法在纯函数层解决，见服务侧 `[prune] same-name` 告警）：store / SQLite 的
+ * 项目名是**唯一键**，因此「同一个项目名对应多个 root」（GR_ 与 PJDB 同时被加载过）时，
+ * 两份数据在内存里**已经合并、无法再按 root 拆开** ⇒ 此时保留（不误删当前工作区的数据），
+ * 只告警。彻底修需要「项目名按 root 唯一」（另议）。
+ *
+ * 保守回退（宁可**不删**，与「无工作区 ⇒ 返回空数组」同一条原则）：
+ *   · 项目在映射里查不到 root（如 `_default`、或从 SQLite 按名载入尚未注册 root）⇒ 退回按名判据；
+ *   · 未提供 `workspaceRoots` / `rootProjectMap`（旧调用方）⇒ 全部退回按名判据（行为不变）。
+ *
  * 纯函数（服务本体依赖 DI、无法单测；判据下沉到这里锁死语义）。
  *
  * @param storeProjects 内存 store 当前的项目（只需 name）
  * @param workspaceProjects 当前工作区各 folder 对应的项目名（空数组 = 无工作区）
+ * @param rootProjectMap **归一化 root → 项目名**（service 的 `_rootProjectMap`）
+ * @param workspaceRoots 当前工作区各 folder 的**归一化 root**
  * @returns 需要丢弃的项目名；**无工作区时返回空数组**（宁可不判断，也不误删）
  */
 export function planForeignProjectPrune(
 	storeProjects: readonly string[],
 	workspaceProjects: readonly string[],
+	rootProjectMap?: ReadonlyMap<string, string>,
+	workspaceRoots?: readonly string[],
 ): string[] {
 	if (workspaceProjects.length === 0) { return []; }
-	const keep = new Set(workspaceProjects);
-	return storeProjects.filter(p => !keep.has(p));
+	const keepByName = new Set(workspaceProjects);
+
+	// root 判据：项目名 → 它已知的 root 列表（同名不同目录 ⇒ 一个名字对多个 root）
+	const wsRoots = new Set(workspaceRoots ?? []);
+	const projectRoots = new Map<string, readonly string[]>();
+	if (rootProjectMap) {
+		for (const [root, proj] of rootProjectMap) {
+			const arr = projectRoots.get(proj);
+			if (arr) { (arr as string[]).push(root); } else { projectRoots.set(proj, [root]); }
+		}
+	}
+
+	return storeProjects.filter(p => {
+		if (wsRoots.size > 0) {
+			const roots = projectRoots.get(p);
+			// 有 root 信息 ⇒ 以 root 为准：保留条件是「**任一** root 属于当前工作区」
+			// ⇒ 反过来说，**没有任何** root 属于工作区 = 上一条事故的「同名残留」⇒ 丢弃。
+			if (roots) { return !roots.some(r => wsRoots.has(r)); }
+		}
+		// 无 root 信息（`_default` / 按名载入 / 旧调用方）⇒ 按名（保守）：不在工作区项目名里才丢
+		return !keepByName.has(p);
+	});
 }
 
 /**

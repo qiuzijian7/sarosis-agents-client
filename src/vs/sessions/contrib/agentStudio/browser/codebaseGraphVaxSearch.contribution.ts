@@ -272,7 +272,7 @@ registerAction2(class FindGraphReferencesAction extends Action2 {
 						store.dispose();
 						void commandService.executeCommand('sarosis.findGraphReferences');
 					}, 0);
-				}),
+				}, store),
 				store,
 			);
 			return;
@@ -373,7 +373,7 @@ registerAction2(class GotoGraphImplementationAction extends Action2 {
 						store.dispose();
 						void commandService.executeCommand('sarosis.gotoGraphImplementation');
 					}, 0);
-				}),
+				}, store),
 				store,
 			);
 			return;
@@ -578,7 +578,7 @@ registerAction2(class ListGraphMethodsAction extends Action2 {
 						store.dispose();
 						void commandService.executeCommand('sarosis.listGraphMethods');
 					}, 0);
-				}),
+				}, store),
 				store,
 			);
 			return;

@@ -775,6 +775,21 @@ suite('护栏接线不变量（源码级）', () => {
 		for (const cmd of ['sarosis.findGraphReferences', 'sarosis.gotoGraphImplementation', 'sarosis.listGraphMethods']) {
 			assertWired(vaxRel, `executeCommand('${cmd}')`, `建好后重跑 ${cmd}`);
 		}
+		// ⑨b 通知被用户关闭 ⇒ 释放监听。否则「按了几次快捷键都没图」会累积 store
+		//     （每次一套 index 监听）+ `_waitWhileBusy` 的 500ms 轮询循环；而且用户已明确关掉，
+		//     建图完成后却仍会突然重跑命令（弹一个他没再要的 picker）。
+		assertWired(autoRel, 'handle.onDidClose(', '通知关闭即释放监听');
+		assertWired(autoRel, 'setTimeout(() => disposables?.dispose(), 0);', '延后 dispose（不在 Emitter 回调里同步改监听列表）');
+		assertWired(vaxRel, '}, store),', '三个 QuickPick 入口都把 store 交给通知宿主');
+
+		// ⑨c **空制品**的判据必须是「解析成功但 0 节点」这个**事实**，不能只看字节数。
+		//    用户场景：PJDB\S1Game 留下一份 **10KB** 空图（能解压、零节点），旧判据（只比字节数）
+		//    把它归进「≥1KB ⇒ 巨图损坏 ⇒ 跳过自动索引」⇒ 该 folder 既没有图、也永远不会重建 ✗。
+		assertWired('browser/codebaseGraphService.ts', 'isLastMergeEmpty(rootPath: string): boolean;', 'service 暴露「空制品」事实');
+		assertWired('browser/codebaseGraphService.ts', 'this._emptyArtifactRoots.add(rootPath);', '空合并写入标记');
+		assertWired('browser/codebaseGraphService.ts', 'treating as NOT loaded (empty / garbage artifact)', '空合并不再 return true');
+		assertWired('browser/codebaseGraphBootstrap.ts', 'const parsedButEmpty = this._graphService.isLastMergeEmpty(', 'bootstrap 用事实而非字节数');
+		assertWired('browser/codebaseGraphBootstrap.ts', '&& !parsedButEmpty) {', '空制品不得被「跳过自动索引」拦下');
 
 		// ⑩ 「加载/构建中」也要显示 codebase 状态并提示等待（2026-09-15 用户要求）
 		//    ★ 加载状态此前**完全没暴露**：`_graphLoadingCount` 是私有、加载也不发
@@ -786,7 +801,18 @@ suite('护栏接线不变量（源码级）', () => {
 		assertWired(svcRel, 'get isGraphLoading(): boolean { return this._graphLoadingCount > 0; }', '加载状态取自 _graphLoadingCount');
 		assertWired(svcRel, 'this._onDidGraphLoadProgress.fire(', '加载阶段真的发进展');
 		// UI 侧：订阅加载进展 + 等待循环 + 「请稍候」文案
-		assertWired(autoRel, 'graphService.onDidGraphLoadProgress(line => host.setNotice(', 'UI 订阅加载进展');
+		assertWired(autoRel, 'graphService.onDidGraphLoadProgress(line => {', 'UI **无条件**订阅加载进展');
+		assertWired(autoRel, 'line.startsWith(GRAPH_LOAD_DONE_PREFIX)', 'UI 识别加载终态（清提示 + 刷新）');
+		assertWired(svcRel, 'export const GRAPH_LOAD_DONE_PREFIX', '加载终态前缀常量（两端同一来源）');
+		// SQLite 按需载入（13~32s 的那条重活）此前**完全沉默** ⇒ 必须有进展 + 终态
+		assertWired(svcRel, '正在从 SQLite 载入图谱（', 'SQLite 载入要有进展上报');
+		assertWired(svcRel, '`${GRAPH_LOAD_DONE_PREFIX}（${loadedNodes} 节点 / ${loadedEdges} 边', 'SQLite 载入要发终态行');
+		// 持久层的阶段内百分比必须**真的接到** UI 事件（「送了没接」是半接线的经典形态）
+		assertWired(svcRel, 'line => this._onDidGraphLoadProgress.fire(`${label}：${line}`)', '持久层进度接到 UI 事件');
+		assert.ok(
+			!stripAllComments(svcRel).includes('persistence.loadMerge(this._graph.store, p, projectOverride)'),
+			'[图谱加载] 不得退回 3 参 loadMerge —— 会丢掉持久层的阶段内百分比（大图几十秒无进展）',
+		);
 		assertWired(autoRel, 'await _waitWhileBusy(graphService, host, disposables);', '进入等待循环');
 		assertWired(autoRel, 'await graphService.whenGraphLoaded(BUSY_TICK_MS);', '加载用 whenGraphLoaded 轮询');
 		assertWired(autoRel, 'setTimeout(resolve, BUSY_TICK_MS)', '补 sleep 防空转烧 CPU');
@@ -829,5 +855,138 @@ suite('护栏接线不变量（源码级）', () => {
 				`[${rel}] 不得退回「无图静默 return」的旧日志分支（ABORT 形态）`,
 			);
 		}
+	});
+
+	// ── 会话锁：fail-open → fail-visible（P0-3，2026-09-15）─────────────────────
+	//
+	// 原实现：加锁抛错时 `warn('…(fail-open)')` + `return { acquired: true };`
+	// —— 即「加锁失败就当作拿到了锁，且不告诉任何人」⇒ 用户以为会话受互斥保护，
+	// 实际两个窗口可能同时写同一份对话历史（表现为「消息莫名少了 / 被回退」，无从归因）。
+
+	test('★★★ 会话锁失败必须**可见**：不得再静默放行', () => {
+		assertWired('browser/agentChatService.ts', 'degraded: true', '会话锁 fail-visible');
+		assertWired('browser/agentChatService.ts', 'fail-visible', '日志须标明 fail-visible（便于事后取证）');
+		// ⚠ 不能断言「全文不得出现 `return { acquired: true };`」—— **成功路径**上那正是正确写法
+		//（`await writeLock()` 之后）。要钉的是「**加锁失败**的那条 return 不再静默」：
+		// 以日志行为锚点，检查紧随其后的返回是否带 degraded。
+		const src = readSource('browser/agentChatService.ts');
+		const marker = src.indexOf('fail-visible');
+		assert.ok(marker > 0, '应能找到 fail-visible 日志行');
+		const afterLog = src.slice(marker, marker + 400);
+		assert.ok(afterLog.includes('degraded: true'), '失败分支必须返回 degraded: true');
+		assert.ok(
+			!afterLog.includes('return { acquired: true };'),
+			'失败分支不得再静默放行（必须带 degraded，由上层提示用户）',
+		);
+		// 同一把锁的另一半：**心跳**失败曾静默 `catch(() => {})` —— 连续 2min 不刷新，
+		// 别的窗口即可接管，而本窗口仍在编辑 ⇒ 双方都以为持有锁。必须留可见痕迹。
+		assertWired('browser/agentChatService.ts', 'session lock heartbeat failed', '锁心跳失败必须可见');
+	});
+
+	test('★★★ 上层必须消费 degraded 并**通知用户**（否则等于没改）', () => {
+		assertWired('browser/nativeChatEditorPane.ts', 'res.degraded', 'pane 消费 degraded');
+		assertWired('browser/nativeChatEditorPane.ts', '未能加锁', '必须给出用户可见的警告文案');
+		// 接口必须声明该字段（否则 TS 层读不到语义；此文件在 agentStudio 之外，直接读）。
+		const iface = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/common/agentStudioService.ts'), 'utf8');
+		assert.ok(iface.includes('degraded?: boolean'), '接口必须声明 degraded?: boolean');
+	});
+
+	// ── ㉓ Inno 排除清单必须与 strip 删除清单同步（防「staging 有、EXE 没有」漂移）──────
+	//
+	// 背景（2026-09-16 CI 日志分析）：tree-sitter 缺失**不在构建过程**，而在
+	// `build/win32/code.iss` 的 `[Files] Excludes` —— 它把
+	// `resources\app\node_modules\@vscode\tree-sitter-wasm`（含 `\**`）**显式排除**，
+	// 于是 Inno 根本不把它打进 EXE；而前面四道保障（install-deps §5.4 / strip-before-pack /
+	// verify-staging / generate-exe）**全部只检查暂存目录** ⇒ 一律 [OK]，
+	// 真机却 `.../@vscode/tree-sitter-wasm/wasm/tree-sitter.js  ERR_FILE_NOT_FOUND`。
+	// 该排除自 2026-06-05（`51a552dcdc7`）起一直在 main ⇒ 那之后**每个 EXE 都缺**，
+	// 于是 08-11「fix: CI 保障语法高亮 wasm 进包」与 09-15 的两道新校验**注定无效**（校验盲区）。
+	//
+	// 成因：`.iss` 的 Excludes 是 `strip-before-pack.mjs` 删除清单的**手抄镜像**，两边各写一遍
+	// ⇒ 漂移（tree-sitter-wasm 只在 .iss 里被排除，strip 侧反而在**保障**它）。本用例把两者钉死。
+	test('★★ Inno 排除清单必须与 strip 删除清单同步（防「staging 有、EXE 没有」漂移）', () => {
+		const issSrc = fs.readFileSync(path.join(process.cwd(), 'build/win32/code.iss'), 'utf8');
+		const stripSrc = fs.readFileSync(path.join(process.cwd(), 'build/saros/strip-before-pack.mjs'), 'utf8');
+
+		// strip 真正删除的 node_modules 包（包名取 removeDir 第一个参数，写法与 .iss 同形）
+		const stripDeleted = new Set<string>();
+		for (const m of stripSrc.matchAll(/removeDir\('([^']+)',\s*'resources\/app\/node_modules\//g)) {
+			stripDeleted.add(m[1]);
+		}
+		assert.ok(
+			stripDeleted.size >= 5,
+			`[strip] 只解析到 ${stripDeleted.size} 个被删包 —— strip 写法变了，先修本测试的正则（否则本用例恒真）`,
+		);
+
+		// .iss Excludes 里被排除的 node_modules 包（去 `\**` 后缀、去重）；
+		// 上游自带排除（@github / @microsoft / node-pty / ms-vscode.*）与本仓瘦身清单无关 ⇒ 不参与比对
+		const issExcluded: string[] = [];
+		for (const m of issSrc.matchAll(/\\resources\\app\\node_modules\\([^,;"]+)/g)) {
+			const pkg = m[1].replace(/\\/g, '/').replace(/\/\*\*$/, '');
+			if (/^(@github|@microsoft|node-pty|ms-vscode\.)/.test(pkg)) { continue; }
+			if (!issExcluded.includes(pkg)) { issExcluded.push(pkg); }
+		}
+		assert.ok(issExcluded.length > 0, '[code.iss] 未解析到任何 node_modules 排除项 —— 解析失效，先修本测试');
+
+		// ① 硬断言：运行时按**字符串路径**加载的包绝不能被排除
+		//    （`codebaseGraphParserPool._initPool` → `<appRoot>/node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter.js`）
+		assert.ok(
+			!issExcluded.includes('@vscode/tree-sitter-wasm'),
+			'[code.iss] 不得排除 @vscode/tree-sitter-wasm —— staging 会有（四道校验全 [OK]）但 EXE 里没有，'
+			+ '真机必然 ERR_FILE_NOT_FOUND（2026-09-16 事故根因）',
+		);
+
+		// ② 漂移不变式：.iss 排除的包必须是 strip 也删除的（两条清单必须同源）。
+		//    例外：这两个是**有意**排除、且 strip 侧保留（缺失只降级遥测/策略，不崩）—— 属已知冗余，
+		//    登记在此以免被误判成新漂移；若日后启用遥测/策略功能再重新评估。
+		const INTENTIONAL_ISS_ONLY = ['@vscode/deviceid', '@vscode/policy-watcher'];
+		for (const pkg of issExcluded) {
+			if (INTENTIONAL_ISS_ONLY.includes(pkg)) { continue; }
+			assert.ok(
+				stripDeleted.has(pkg),
+				`[code.iss] 排除了 "${pkg}"，但 strip-before-pack.mjs 不删除它 —— 两条清单已漂移：`
+				+ `staging 会保留该包而 EXE 缺它（正是 tree-sitter 缺包的成因）。`
+				+ `要么从 .iss 的 Excludes 里删掉它，要么在 strip 里一并删除。strip 已删清单：${[...stripDeleted].join(', ')}`,
+			);
+		}
+		// ③ 登记表不得腐烂：写进 INTENTIONAL_ISS_ONLY 的包必须真的还在 .iss 里被排除
+		for (const pkg of INTENTIONAL_ISS_ONLY) {
+			assert.ok(issExcluded.includes(pkg), `[code.iss] 已不再排除 "${pkg}"，请把它从 INTENTIONAL_ISS_ONLY 里删掉`);
+		}
+	});
+
+	// ── ㉔ SQLite 按需载入：keyset 分页 + 时间切片（防主线程长冻结）──────────────────
+	//
+	// 背景（2026-09-16 日志 + 代码核实）：`_loadGraphFromSqlite()` 修掉 `push(...nodes)` 栈溢出后
+	// **仍会卡** —— ① `getAllNodes(p)`/`getAllEdges(p)` 一次全量跨 IPC（主进程 stringify + renderer
+	// **同步** parse，实测 13~32s）；② 两段**无 yield** 的长循环（upsert 34~78 万次，insertEdge
+	// 通常 2~4 倍节点数）。★ 注意那 13~32s 是**抛错之前**的耗时 ⇒ 修栈溢出 ≠ 不卡。
+	// 现改为 keyset 分页（O(n)；`LIMIT/OFFSET` 是 O(offset) 累计）+ 与 `common/asyncSlice` 同口径切片。
+	test('★★ SQLite 按需载入：keyset 分页 + 时间切片（防主线程长冻结）', () => {
+		const svcRel2 = 'browser/codebaseGraphService.ts';
+		assertWired(svcRel2, 'const SQLITE_LOAD_PAGE_SIZE = 5000;', '分页大小常量');
+		assertWired(svcRel2, 'getAllNodes(p, SQLITE_LOAD_PAGE_SIZE, undefined, cursor)', '节点走 keyset 分页');
+		assertWired(svcRel2, 'getAllEdges(p, SQLITE_LOAD_PAGE_SIZE, undefined, cursor)', '边走 keyset 分页');
+		assertWired(svcRel2, 'sliceBudgetExceeded(sliceStart)', '按时间预算判定是否让出');
+		assertWired(svcRel2, 'await yieldToEventLoop();', '超预算即让出主线程');
+		// 四段接线：IPC 契约 → 主进程透传 → SQL keyset → 边带回游标
+		assertWired('common/codebaseGraphStoreChannel.ts', 'getAllNodes(project?: string, limit?: number, offset?: number, afterId?: number): Promise<GraphNode[]>;', 'IPC 契约第 4 参（节点）');
+		assertWired('common/codebaseGraphStoreChannel.ts', 'getAllEdges(project?: string, limit?: number, offset?: number, afterId?: number): Promise<GraphEdge[]>;', 'IPC 契约第 4 参（边）');
+		assertWired('electron-main/codebaseGraphStoreChannel.ts', "case 'getAllNodes': return s.getAllNodes(args![0] as string | undefined, args![1] as number | undefined, args![2] as number | undefined, args![3] as number | undefined)", '主进程透传 afterId');
+		assertWired('node/codebaseGraphSqliteStore.ts', "where.push('id > ?');", 'SQL keyset（节点）');
+		assertWired('node/codebaseGraphSqliteStore.ts', 'AND e.id > ?', 'SQL keyset（边）');
+		assertWired('node/codebaseGraphSqliteStore.ts', 'id: String(r.id),', '边带回行 id 作游标');
+
+		// 负向：不得退回「一次全量拉取 + 无切片长循环」
+		const svcCode = stripAllComments(svcRel2);
+		assert.ok(
+			!svcCode.includes('await this._sqliteBackend.getAllNodes(p);')
+			&& !svcCode.includes('await this._sqliteBackend.getAllEdges(p);'),
+			'[SQLite 载入] 不得退回一次性全量拉取 —— 几十万对象跨 IPC 会在 renderer 同步 parse 卡住十几秒',
+		);
+		assert.ok(
+			!svcCode.includes('allNodes.push(...nodes)'),
+			'[SQLite 载入] 不得退回 `push(...nodes)` —— 数十万实参会抛 Maximum call stack size exceeded',
+		);
 	});
 });

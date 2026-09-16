@@ -26,7 +26,7 @@ import { basename } from '../../../../../base/common/path.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { INotificationHandle, INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
-import { ICodebaseGraphService, IIndexConfig } from '../codebaseGraphService.js';
+import { GRAPH_LOAD_DONE_PREFIX, ICodebaseGraphService, IIndexConfig } from '../codebaseGraphService.js';
 import { ICodebaseMemoryMcpService } from '../codebaseMemoryMcpService.js';
 
 export type GraphNoticeKind = 'info' | 'progress' | 'success' | 'warn' | 'error';
@@ -68,8 +68,29 @@ export async function ensureGraphForUi(
 		host.refresh();
 	};
 
+	// ★ **加载**进展无条件订阅（不只制品合并那条路径）：
+	//   ① `_loadGraphFromSqlite()`（SQLite 按需载入，实测 13~32s —— 正是用户日志里「LLM 输出时
+	//      app 无响应」的那条）也会发进展，且它没有独立完成事件 ⇒ 用终态前缀 `GRAPH_LOAD_DONE_PREFIX`
+	//      告知「已结束」，此时清提示并刷新列表；
+	//   ② 若加载在 UI 打开**之后**才开始（并发工具/延迟加载触发），这里也能让用户看到状态。
+	disposables.add(graphService.onDidGraphLoadProgress(line => {
+		if (line.startsWith(GRAPH_LOAD_DONE_PREFIX)) { host.setNotice(''); refreshOnce(); return; }
+		host.setNotice(`代码图谱正在加载：${line} —— 请稍候…`, 'progress');
+	}));
+
 	// ① 快速路径：内存 store 里已有图 → 直接刷新（不打扰、无 await 抖动）
 	if (graphService.hasGraphData()) { refreshOnce(); return; }
+
+	// ①b ★★★ 2026-09-16：**切换工作区后的图谱是「按需加载」的**（见 bootstrap 的 folder 变化回调：
+	// 加载一次 3.6~6s 且期间交互延迟实测 ≈0.58s ⇒ 不再在切换后立刻加载）。
+	// 「打开 codebase UI」正是「真正要用图」的入口之一 ⇒ 这里主动触发它。
+	// ⚠ 必须**早于**「无图 ⇒ 自动建图」的判断：否则会退化成**全量索引** —— 磁盘上明明有现成制品，
+	// 那既重得多、方向也错（用户日志里 `bootstrap 完成（待索引 0 个 folder）` 正是「有制品」的证据）。
+	// 无待加载项时是空操作（幂等 + 进行中去重，见 `ensureDeferredGraphsLoaded`）。
+	host.setNotice('代码图谱尚未载入内存，正在按需加载（首次使用需几秒）…', 'progress');
+	await graphService.ensureDeferredGraphsLoaded('codebase UI open');
+	if (disposables.isDisposed) { return; } // 模态已被用户关掉 ⇒ 不做后续动作
+	if (graphService.hasGraphData()) { host.setNotice(''); refreshOnce(); return; }
 
 	// ② **加载中 / 构建中**：显示 codebase 状态并**等它结束**（提示用户稍候）。
 	//    ★ 必须排在「未就绪 → 自动建图」之前：加载期间 `isIndexing === false` 且
@@ -153,11 +174,10 @@ export async function ensureGraphForUi(
 }
 
 /**
- * 订阅「**加载** + **构建**」两路进展，实时刷新提示条。监听随模态关闭（或命令回调）释放。
+ * 订阅**构建**进展与完成事件，实时刷新提示条。监听随模态关闭（或命令回调）释放。
  *
- * ★ 加载必须**单独**订阅：`onDidIndexProgress` 只覆盖索引路径，而加载（解压/流式解析/合并/
- * 重建 BM25/同步 SQLite）以前**只写日志**，UI 侧拿不到任何进展 ⇒ 大图那几十秒里提示条会一直
- * 停在第一句上，用户以为卡死（本次需求：加载过程中也要显示 codebase 状态并提示等待）。
+ * ★ 加载进展不在本函数订阅：`ensureGraphForUi` 里**无条件**订阅（见那里的注释）——
+ * 加载可能在 UI 打开之后才开始，挂在这里会漏掉那段窗口；而 `onDidIndexProgress` 只覆盖索引。
  */
 function _attachProgress(
 	graphService: ICodebaseGraphService,
@@ -165,7 +185,6 @@ function _attachProgress(
 	disposables: DisposableStore,
 	onReady: () => void,
 ): void {
-	disposables.add(graphService.onDidGraphLoadProgress(line => host.setNotice(`代码图谱正在加载：${line} —— 请稍候…`, 'progress')));
 	disposables.add(graphService.onDidIndexProgress(line => host.setNotice(`正在构建代码图谱：${line} —— 请稍候…`, 'progress')));
 	disposables.add(graphService.onDidIndexComplete(result => {
 		if (result?.success) {
@@ -220,10 +239,16 @@ async function _waitWhileBusy(
  * 这些命令没有可挂提示条的窗口，通知是唯一合适的通道 ⇒ 用**一条可更新的通知**
  * （`updateMessage` + 无限进度条）承载「正在构建/构建完成/失败」，
  * 构建完成时回调 `onGraphReady`（调用方通常在这里**重跑本命令**，让 picker 直接出数据）。
+ *
+ * @param disposables 调用方的监听 store（可选）。★ 传了才有的保护：**用户手动关掉通知**
+ *   即释放它 —— 否则「按了几次快捷键都没图」的场景会累积 store（每次一套
+ *   `onDidIndexProgress`/`onDidIndexComplete` 监听）与 `_waitWhileBusy` 的 500ms 轮询循环，
+ *   而且用户明确关掉后仍会在建图完成时**突然重跑命令**（弹一个他没再要的 picker）。
  */
 export function makeNotificationHost(
 	notificationService: INotificationService,
 	onGraphReady: () => void,
+	disposables?: DisposableStore,
 ): IGraphNoticeHost {
 	let handle: INotificationHandle | undefined;
 	let progressOn = false;
@@ -239,6 +264,13 @@ export function makeNotificationHost(
 					progress: wantProgress ? { infinite: true } : undefined,
 				});
 				progressOn = wantProgress;
+				if (disposables && !disposables.isDisposed) {
+					const sub = handle.onDidClose(() => {
+						sub.dispose();
+						// 延到下一个宏任务：不在 Emitter 的回调里同步 dispose 监听列表（正在迭代）
+						setTimeout(() => disposables?.dispose(), 0);
+					});
+				}
 				return;
 			}
 			handle.updateSeverity(severity);

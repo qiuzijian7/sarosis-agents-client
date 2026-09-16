@@ -26,6 +26,7 @@ import { ICodebaseGraphService, IIndexConfig } from './codebaseGraphService.js';
 import { ICodebaseMemoryMcpService, IIndexConfig as IUserIndexConfig } from './codebaseMemoryMcpService.js';
 import { URI } from '../../../../base/common/uri.js';
 import { shouldDeferGraphLoad } from '../common/codebaseIndexDefaults.js';
+import { wsStage } from './wsSwitchDiag.js';
 
 const LOG_TAG = '[CodebaseGraph]';
 const AUTO_INDEX_DELAY_MS = 5000; // 5s delay after workspace open
@@ -103,6 +104,11 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 
 		// Listen for workspace folder changes
 		this._register(this._workspaceService.onDidChangeWorkspaceFolders((e: IWorkspaceFoldersChangeEvent) => {
+			// ★ 2026-09-16 诊断：本回调在 `onDidChangeWorkspaceFolders` 的**同步 fire** 里跑
+			// （即 `configurationService.updateWorkspaceAndInitializeConfiguration` 的那一步）⇒
+			// 这里打的任何重活都直接算在「切换耗时」上。阶段标记供看门狗事后补报。
+			wsStage(`switch: folder 变化回调（图谱 bootstrap，+${e.added.length} -${e.removed.length}）`);
+			const tHandler = Date.now();
 			// ★★★ 2026-09-15（用户日志实证）：**必须先忘掉已离开工作区的 folder**。
 			//
 			// 事故（日志 `vscode-app-1789479656705.log`）：窗口从 `S1Game + UE5EA` 切到本仓（3 根）时
@@ -115,20 +121,29 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			//        **UE5EA 的 25MB 巨图**读进内存（它已不属于本窗口）—— 正是方案 C 要避免的重活 ✗。
 			// ⇒ 修剪口径与 prune **保持一致**：只保留当前工作区仍存在的 folder。
 			this._forgetFoldersNotInWorkspace('workspace folders changed');
+			// ★ 2026-09-16 诊断：把「同步部分」的耗时明确打出来 —— 这一步是 `onDidChangeWorkspaceFolders`
+			// **同步链**上的，用户感知的「卡住」就是这条链（图谱加载虽然已推迟到下一个任务，
+			// 但那条任务随后同样跑在主线程上，见 `_bootstrap` 的阶段标记与 loadGraphMerge 耗时）。
+			this._logService.info(LOG_TAG, `folder 变化回调的同步部分完成（${Date.now() - tHandler}ms；图谱加载已推迟到下一个任务）`);
 			if (e.added.length > 0) {
-				// ★★ 2026-09-15（用户报「切换工作区时 app 卡住」）：**推迟到切换本身跑完之后再加载**。
+				// ★★★ 2026-09-16（用户报「切工作区卡住」的实测结论）：**切换后不再立刻加载图谱**，
+				// 改为**按需加载**（首次用到 codebase 时）—— 由 `_bootstrap({ deferLoads: true })` 登记。
 				//
-				// 本轮实测（`vscode-app-1789480089965.log`）：切换后立刻
-				// `[loadGraphMerge] merged ...S1Game (5432ms)`，另有
-				// `GraphPersistence path migration: normalized 29719 absolute paths`
-				// —— 与几乎同时发生的 prune（丢 176836 个节点）叠在一起，就是用户感知的「卡住」。
+				// 历程与数据：
+				//   · 2026-09-15 只把加载 `setTimeout(…, 0)` 推到切换之后 —— 但**加载本身仍在跑**：
+				//     实测一次 3.6~6s（`bootstrap 完成（本轮共 3860ms）` = 解压 240ms + 解析 1712ms
+				//     + 写入 store 834ms + …），期间主线程被**切片式占满** —— 看门狗实测
+				//     `⚠ 交互延迟 … 最慢一次排队 ≈584ms`（用户点一下要等半秒），这正是「卡住」的来源。
+				//   · 而加载**不参与切换的可见结果**（folder / sideview / 配置）⇒ 与方案 C 同一逻辑：
+				//     放到**真正要用图**时再加载。
 				//
-				// 加载只做一件事：把图读进内存。它**不参与切换的可见结果**（folder / sideview / 配置），
-				// 所以推迟到下一个任务：用户先看到界面切过去，而不是先卡住。
-				// 若用户立刻用 codebase 功能，`_loadingFolders` 的记账会让首次使用路径复用同一份加载
-				// （不会重复读盘、也不会读半份）。
+				// 三个「真正要用图」的入口都已覆盖：
+				//   ① codebase 工具预检 `codebaseTools.ensureGraph()` → `ensureDeferredGraphsLoaded()`；
+				//   ② 子代理预检 `delegate_task` → 同上；
+				//   ③ **codebase UI**（Find Symbol / Open File）→ `ensureGraphForUi()` 也会先触发它
+				//      ⚠ 不加这条，UI 会误判「无图」而直接发起**全量索引**（方向完全错、且重得多）。
 				setTimeout(() => {
-					this._bootstrap().catch(err => this._logService.error(LOG_TAG, 'Re-bootstrap failed:', err));
+					this._bootstrap({ deferLoads: true }).catch(err => this._logService.error(LOG_TAG, 'Re-bootstrap failed:', err));
 				}, 0);
 			}
 		}));
@@ -214,7 +229,7 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		return false;
 	}
 
-	private async _bootstrap(): Promise<void> {
+	private async _bootstrap(opts?: { deferLoads?: boolean }): Promise<void> {
 		const folders = this._workspaceService.getWorkspace().folders;
 		if (folders.length === 0) {
 			this._logService.info(LOG_TAG, 'No workspace folder open, skipping.');
@@ -222,6 +237,10 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		}
 
 		this._logService.info(LOG_TAG, `Bootstrapping ${folders.length} workspace folder(s): ${folders.map(f => f.uri.fsPath).join(', ')}`);
+		// ★ 2026-09-16 诊断（用户报「切换工作区就卡住」）：本方法在工作区 folder 变化后被 `setTimeout(…,0)`
+		// 触发，紧接着就是**同步的解压+解析+合并**（实测 5.4s/16 万节点）⇒ 打阶段标记供看门狗事后补报。
+		wsStage(`graph: bootstrap（${folders.length} 个 folder 待检查）`);
+		const tBootstrap = Date.now();
 
 		// 2026-08-19：从文件夹添加工作区（根目录无 .code-workspace 文件）时【禁用自动索引】。
 		// 已有图照常合并加载 + 启动 watcher（增量）；只有「无图」时才走 auto-index，且仅当
@@ -261,10 +280,25 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			// 阈值 0 = 关闭延迟（保持旧行为：打开工作区即加载全部）。
 			const folderIndex = folders.findIndex(f => this._normalize(f.uri.fsPath) === key);
 			const alreadyDeferred = this._deferredFolders.has(key);
-			// 只在「可能延迟」时才去 stat —— 主 root / 关闭延迟时不产生无谓 IO。
-			const sizeBytes = (deferMB > 0 && folderIndex > 0 && !alreadyDeferred)
+			// ★ 2026-09-16：**切换触发**（`deferLoads`）时要**不问大小**地延迟 ⇒ 必须拿到体积；
+			// 其余情况维持原优化（只对「可能被延迟」的 folder 才 stat，避免无谓 IO）。
+			const wantDeferLoad = opts?.deferLoads === true;
+			const sizeBytes = (wantDeferLoad || (deferMB > 0 && folderIndex > 0 && !alreadyDeferred))
 				? await this._sizeBytes(graphFileUri)
 				: 0;
+
+			// ★★★ 2026-09-16（切换触发的按需加载）：**制品存在就延迟**，与大小无关。
+			// 依据见 folder 变化回调处的说明（切换 99~157ms vs 加载 3.6~6s + 交互延迟 ≈0.58s）。
+			// ⚠ 制品**不存在**（`sizeBytes === 0`）时**不能**延迟 —— 必须落到下面「无图 ⇒ 排自动索引」
+			//    的原路，否则新加入工作区的 folder 永远不会被索引。
+			if (wantDeferLoad && sizeBytes > 0) {
+				if (!alreadyDeferred) {
+					this._deferredFolders.set(key, folder.uri.fsPath);
+					this._logService.info(LOG_TAG, `Deferring graph for "${project}" until first codebase use — workspace switch must stay instant (artifact ${(sizeBytes / 1024 / 1024).toFixed(1)} MB).`);
+				}
+				continue;
+			}
+
 			if (shouldDeferGraphLoad(folderIndex, sizeBytes, deferMB, alreadyDeferred)) {
 				this._deferredFolders.set(key, folder.uri.fsPath);
 				if (!alreadyDeferred) {
@@ -277,11 +311,15 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			const isLast = i === toLoad.length - 1;
 			let loaded = false;
 			this._loadingFolders.add(key);
+			// ★ 2026-09-16 诊断：**每个 folder 的加载耗时**单独打一行（旧日志只有 service 内部的
+			// `merged … (Xms)`，看不出「是哪个 folder 慢、以及它相对本轮的其它步骤如何」）。
+			const tFolder = Date.now();
 			try {
 				loaded = await this._graphService.loadGraphMerge(graphFileUri.fsPath, project, isLast);
 			} catch { /* 读取/解析异常，落入下方区分逻辑 */ } finally {
 				this._loadingFolders.delete(key);
 			}
+			this._logService.info(LOG_TAG, `loadGraphMerge("${project}") 返回 ${loaded}，耗时 ${Date.now() - tFolder}ms`);
 			// ★★★ 2026-09-15（用户日志 `vscode-app-1789480447320.log`）：
 			// **「加载成功但 0 节点」必须按「没加载」处理**。
 			//
@@ -293,6 +331,8 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			//
 			// ⇒ 空图不算 ready，让它落到下面「制品存在但加载失败」的分支；
 			//   空制品由 `EMPTY_ARTIFACT_BYTES` 判据**放行** ⇒ 允许 auto-index 把它重建回来 ✓。
+			// 注（2026-09-16）：service 侧现在**自己**就把「解析成功但 0 节点」判为 `false`（并置
+			// `isLastMergeEmpty` 标记）⇒ 下面这段是**双保险**，防止将来有人改动 service 语义而这里失守。
 			const mergedNodes = loaded ? this._graphService.getProjectNodeCount(project) : 0;
 			if (loaded && mergedNodes === 0) {
 				this._logService.warn(LOG_TAG, `Graph for "${project}" merged but the store holds 0 nodes — treating as NOT loaded (empty / truncated artifact).`);
@@ -337,13 +377,24 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			//
 			// 判据：< 1KB 的制品不可能是「过大/损坏/OOM」那一类 —— 那条保护是为几十 MB 的巨图设的。
 			// 小于阈值只可能是**被写坏 / 被截断** ⇒ 应当**允许自动索引**把它重建回来 ✓。
+			//
+			// ★★★ 2026-09-16（用户报「PJDB\S1Game 一份 **10KB** 空图永远不重建」）：
+			// **字节数只是代理，不是判据** —— 落盘竞态写出的空图完全可能是 10KB（能正常解压、零节点），
+			// 只比字节数就会把它归进「巨图损坏 ⇒ 跳过」，于是同样**既没有图、也永远不会重建** ✗。
+			// 现改用**事实**：`isLastMergeEmpty()`（service 在紧邻的 `loadGraphMerge` 里记录
+			// 「解析成功但 0 节点」）⇒ 与文件大小无关地允许重建；
+			// 字节数只保留给「**连解析都没成功**」的碎片 —— 那种情况无法判断内容，只能靠体积论证
+			// 「不可能是巨图」（这条是既有裁决：对超大/损坏图谱反复全量重建远比不加载糟糕）。
 			const EMPTY_ARTIFACT_BYTES = 1024;
-			if (graphFileExists && artifactBytes >= EMPTY_ARTIFACT_BYTES) {
+			const parsedButEmpty = this._graphService.isLastMergeEmpty(folder.uri.fsPath);
+			if (graphFileExists && artifactBytes >= EMPTY_ARTIFACT_BYTES && !parsedButEmpty) {
 				this._logService.warn(LOG_TAG, `Graph artifact exists but failed to load for "${project}" — skipping auto-index to avoid full rescan (artifact may be too large / corrupted / OOM). Use in-memory/sqlite fallback or manually re-index.`);
 				continue;
 			}
 			if (graphFileExists) {
-				this._logService.warn(LOG_TAG, `Graph artifact for "${project}" is effectively EMPTY (${artifactBytes} bytes) and did not load — treating it as missing and allowing re-index.`);
+				this._logService.warn(LOG_TAG, parsedButEmpty
+					? `Graph artifact for "${project}" is a VALID but EMPTY graph (${artifactBytes} bytes, 0 nodes) — treating it as missing and allowing re-index.`
+					: `Graph artifact for "${project}" is effectively EMPTY (${artifactBytes} bytes) and did not load — treating it as missing and allowing re-index.`);
 			}
 
 			// 无既有图谱 → 加入待索引队列。
@@ -369,6 +420,10 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		if (this._pendingIndex.size > 0) {
 			this._scheduleAutoIndex();
 		}
+
+		// ★ 2026-09-16 诊断：本轮 bootstrap 的总耗时（含各 folder 的同步解压/合并）。
+		// 用户报「切换工作区就卡住」时，这一行与上面的「阶段耗时」行一起，能确定「卡的是加载还是别的」。
+		this._logService.info(LOG_TAG, `bootstrap 完成（本轮共 ${Date.now() - tBootstrap}ms；待索引 ${this._pendingIndex.size} 个 folder，图谱加载已推迟 ${AUTO_INDEX_DELAY_MS}ms）`);
 	}
 
 	/** `uri` 的字节数（不存在/读不到 ⇒ 0 ⇒ 判据按"不延迟"处理，保持旧行为）。 */

@@ -1,7 +1,7 @@
 # VsSaros 多实例运行机制：现状分析、横向对比与优化方案
 
-> 状态：**分析 + 设计**（未实施）
-> 日期：2026-09-12
+> 状态：**分析 + 设计**；**§6.2 P3-2 已于 2026-09-15 实施「阶段 1」**（见文末 §9 实施记录）
+> 日期：2026-09-12（§9 实施记录追加于 2026-09-15）
 > 方法：全部结论基于**本仓代码实证**（含行号）；外部项目部分标注为「公开资料 + 通用认知」，与代码实证区分。
 
 ---
@@ -319,3 +319,163 @@ get instanceStateHome(): URI {
 | 原子写能力 | `diskFileSystemProvider.ts:244-250,271-305` |
 | 会话/检查点写入 | `agentChatService.ts:1183-1186`、`checkpointService.ts:276-341` |
 | 设置写入 | `configurationService.ts:202-228` |
+
+---
+
+## 9. 实施记录：阶段 1（2026-09-15）
+
+### 9.1 决策
+**默认切回模型 A（同进程内开新窗口）**，保留模型 C 作为可选逃生门。
+依据即本文 §3.2「共享面 ≫ 拆分面」+ §6.2 P3-2；用户 2026-09-15 裁决「开始执行」。
+
+### 9.2 已实施（4 处改动，全部可回滚）
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `platform/workspaces/electron-main/workspacesHistoryMainService.ts` | 注入 `IConfigurationService`（该服务由 `app.ts` 的 `SyncDescriptor` 注册，无显式 `new` ⇒ 加 DI 参数安全）；Tasks 按模式分支 |
+| 2 | 同上 | 新增 `getNewWindowMode()`：**仅显式 `'instance'` 才多开**；读配置异常一律回落 `'window'`（不能因读配置失败开不出窗口） |
+| 3 | 同上 | 在 `handleWindowsJumpList()` 内监听 `onDidChangeConfiguration` ⇒ **改设置即时重建跳转列表**（无需重启） |
+| 4 | `sessions/contrib/agentStudio/browser/agentStudio.contribution.ts` | 注册 `saros.window.newWindowMode`（`window` \| `instance`，默认 `window`），置于既有 `id: 'sessions'`（`ConfigurationScope.MACHINE`）块 |
+| — | `scripts/new-window.ps1` | **保留**（仅 `'instance'` 模式使用） |
+
+- `'window'` = 上游原形：`program: process.execPath` + `args: '--new-window'` ⇒ 单实例 IPC 转发 ⇒ 已运行实例内开新窗口。
+- `'instance'` = 旧行为（PowerShell 脚本 + 唯一 `--instance <id>`）—— **逃生门**。
+- 测试：`platform/workspaces/test/electron-main/newWindowMode.test.ts`（5 例，钉住默认形态、异常回落、逃生门保留、设置默认值、监听位置）。
+
+### 9.2.1 实施补充（2026-09-15 自查发现，必读）
+**dev（未 built）下原生模式的参数不能照抄上游**：
+- 打包版：`process.execPath --new-window` 就够 —— exe 的默认数据目录就是运行中实例所用者，
+  单实例管道 scope（`sha256(userDataPath)`）一致 ⇒ 转发成功 ✓；
+- **dev**：任务栏项由 explorer 拉起，**不继承** `code.bat` 设的 `VSCODE_DEV=1` ⇒ 新进程会把数据目录
+  算成 `~/.vssaros`（built 形态），而运行中的 dev 实例用 `~/.vssaros-dev` ⇒ **管道名对不上 ⇒ 不转发**，
+  反而**另起一个数据目录不同的实例**（用户视角："任务栏开的窗口里没有我的 agent / 设置 / 工作区"）✗；
+  且 dev 下 electron 二进制需要 **app 路径作为第一个参数**。
+  ⇒ dev 必须传 `"<appPath>" --new-window --user-data-dir "<运行中实例的 userDataPath>"`
+  （实现：`getNativeNewWindowArgs()`）。
+- 顺带确认**无需** `--agents`：`code/electron-main/main.ts:108` **无条件**设
+  `process.isEmbeddedApp = true`，而 `windowsMainService.isSessionsWindow` 就取它
+  ⇒ **任何窗口都是 sessions 窗口**（加载 `sessions.html` / `sessions.desktop.main.js`）✓，
+  所以「同进程新窗口会不会退化成标准编辑器窗口」这个担心**不成立**。
+
+### 9.2.2 实施事故与修复：**agents 窗口把「开新窗」意图替换成「记住的工作区」**（2026-09-16）
+
+现象：切到模型 A 后，任务栏 jump list 的 New Window **点了没反应** ✗（用户报）。
+证据（`main.log`，三条新 diag 一次命中）：
+```
+ensureAgentsWindow | cli._=[] | cli.new-window=true | forceNewWindow=true | forceEmpty=true | urisToOpen=[]
+agents window reopening remembered workspace: …S1Game.code-workspace          ← 意图被替换
+open() after ensureAgentsWindow | forceNewWindow=true | forceEmpty=**false** | urisToOpen=["…S1Game.code-workspace"]
+[launch][diag] open(forceNewWindow+forceEmpty) returned **1** window(s)       ← 只返回了已有窗口
+```
+根因链：① `launchMainService` 为「无位置参数 + `--new-window`」构造
+`open({ forceNewWindow: true, forceEmpty: true })`（= 原生「新的空窗口」语义）；
+② `ensureAgentsWindow()` 的 case ③（复用「记住的工作区」）**替换**配置并**丢掉 `forceEmpty`**；
+③ `open()` 里上游的 `if (windowsOnWorkspace.some(...)) { continue; /* ignore folders that are already open */ }`
+⇒ 该工作区已打开 ⇒ **跳过开窗** ⇒ 返回已有窗口 ⇒ 用户看到「没反应」。
+
+修：`ensureAgentsWindow` 顶部**早退**——显式 `--new-window` 且无显式工作区/文件夹请求时**原样放行**
+（`forceEmpty` + 空 `urisToOpen` ⇒ `getPathsToOpen` 走 `EMPTY_WINDOW` ⇒ `doOpenEmpty(..., true, …)` ⇒ 真开新窗 ✓）。
+启动路径不受影响（此时 `cli.new-window=false`、`forceNewWindow=false`）✓。
+契约测试：`platform/workspaces/test/electron-main/newWindowMode.test.ts`（7 例）。
+
+> ★ 教训：**「默认路径」也要在真机上验一次** —— 这条路径（`--new-window` → agents 窗口）此前从未被走到过，
+> 而它恰好被 fork 的 `ensureAgentsWindow` 覆盖了调用方意图。切换任何入口/默认值后，
+> 必须**按新路径实际点一次**，而不是只看代码/单测通过。
+
+### 9.3 ★★ 关键澄清：**渲染层单例在两种模型下都是「每窗口一份」**
+
+分析时一度把 ②③⑤（会话锁 / 跨窗口静态注册表 / 图谱服务）列为迁移风险，**这个判断需要修正**：
+本文 §2.2 已说明「进程管理器里只有 1 个 main + **N 个 renderer**」——**每个浏览器窗口 = 独立的 renderer 进程**，
+因此 **renderer 侧的模块级静态量与 DI 单例（`AgentChatService`/`CodebaseGraphService`/各类 Registry）
+在模型 A 与模型 C 下同样是「每窗口一份」**，不会因为「同进程」而共享。于是：
+
+| 项 | 模型 A vs C | 结论 |
+|---|---|---|
+| ② 会话/检查点锁 | 渲染层**仍是两个服务实例** ⇒ 仍靠**文件锁**仲裁（JSON + 心跳 + 过期接管） | **不受模型影响**；`fail-open`（P0-3）是既有稳健性项，与本次迁移无关 |
+| ③ 跨窗口静态注册表（`agentStudioWebviewController` 的实例集合等） | 模块静态量属各自 renderer ⇒ **无跨窗口泄漏** | **非风险** |
+| ⑤ CodebaseGraph（窗口内单例 + 主进程共享 SQLite） | 两模型下都是「每窗口一份服务 + 共享主进程 SQLite」 | **不受模型影响**（身份判据已统一到窗口身份） |
+
+**模型 A 真正改变的面**（精确清单）：
+1. **主进程 / shared process / 扩展宿主**：由「每实例一份」变为「全局一份」⇒ 代价=失去崩溃隔离与 ext-host 并行；收益=上游大量「单进程假设」重新成立；
+2. **`state.vscdb` / `globalStorage` / `workspaceStorage` / `Backups` / `logs` / lockfile / IPC handle**：回到上游**默认路径**（不再 `User/instances/<id>/`…）⇒ 这才使 `settings.json` 的**进程内写队列**从"只在单实例内有效"变成**全局有效**（R1 系统性消失）；
+3. 主进程侧的其它单例（`WorkspacesHistoryMainService` 等）恢复「全窗口唯一」⇒ 跳转列表等全局状态不再多份竞争。
+
+### 9.4 审计结论（阶段 1 落地前的两项前置检查）
+- **① globalState 跨窗口广播 = 干净**：sessions 侧仅 2 处 `onDidChangeValue` —— 一处是 **PROFILE** 作用域的侧栏固定项（本就全窗口共享且带校验回退）；一处是 `nativeChatEditorPane`（**APPLICATION** 作用域 + `e.external` 过滤，注释已明写「变更来自另一个窗口 / B 窗口」）。APPLICATION 作用域的所有写入均为「本就全局」的数据（token / kb vaults / editorFontInfo / first-run 标记 / marketplace）。
+- **④ 固定端口 = 干净**：`5600`（ConfigHtml）是**外部**服务，应用只探测 URL 不占端口；`3111`（agentmemory）由**主进程** spawn ⇒ 一进程一个。
+
+### 9.5 验证
+`tsgo` 0 错 ✓；`transpile-client` ✓；产物含新分支 ✓；新增 5 例测试 ✓；既有 8 套件全绿
+（`codebaseGraphContracts` 33 / `codebaseToolsEntry` 38 / `workspaceFolderWriters` 52 /
+`guardrailWiring` 35 / `graphFailureSkip` 10 / `codebaseGraphPersistence` 11 /
+`codebaseGraphWatcher` 15 / `kbGraph` 19）✓。
+
+### 9.6 回滚与残余
+- **回滚**：设置 `saros.window.newWindowMode` = `'instance'` ⇒ 即时生效（无需重新编译）。
+
+#### 9.6.1 P0-1 已实施（2026-09-15）
+`mediaStore._applyPragmas()`：打开 `media.db` 后补 `PRAGMA journal_mode = WAL` + `PRAGMA busy_timeout = 5000`
+（与 `kbSqliteStore` / `codebaseGraphSqliteStore` 对齐）；新增测试断言两条 PRAGMA 生效
+（必须用**文件库**，`:memory:` 不支持 WAL）。
+> ★ **结论修正**：本文 §6.1 把 L4（数据库 PRAGMA）归为「多实例并发」问题，**不准确**——
+> **每个窗口是独立 renderer** ⇒ 同一个 `media.db` **永远存在多个连接**（`kb.db`/`graph.db` 同理），
+> 因此 WAL + busy_timeout 是**结构性必需**，与选模型 A 还是 C 无关。（这也是 §9.3 那条澄清的直接推论。）
+
+#### 9.6.3 P0-2 已实施（2026-09-15）
+新增共享 helper `sessions/contrib/agentStudio/common/atomicWrite.ts`：`writeFileAtomicSafe(fileService, uri, buf)`
+——**先探 `FileSystemProviderCapabilities.FileAtomicWrite`**，支持则
+`writeFile(..., { atomic: { postfix: '.vsctmp' } })`（temp + rename），否则**退回普通写**。
+并让下列**启动即读**的关键 JSON 全部改走它（此前只有 `_writeSessionIndex` 一处做了这件事）：
+
+| 写入点 | 数据 |
+|---|---|
+| `agentChatService._persistToSessionFile` | **会话本体**（高频覆盖写；此前反而没保护） |
+| `agentChatService._writeSessionIndex` | 会话索引（改为复用 helper，去掉内联写法） |
+| `checkpointService._writeIndex` / `_writeSnapshot` | 检查点索引 / 快照 |
+| `agentStudioService._writeJsonFile` | `workspaces.json` / agents 绑定等 |
+
+**勘察时识别的两个风险，落地时的处理**：
+① *能力不足会 throw* ⇒ 由 helper 统一 `hasCapability` 判断，不支持就退回普通写（**绝不因加保护而写失败**）✓；
+② *临时文件会被 watcher 看到* ⇒ 采用 `.vsctmp`（与仓库既有集成测试同后缀），存活时间极短且在 rename 后即不存在；
+   已知 watcher（图谱只认源码扩展名、检查点/会话按目录监听）不受影响 ✓。
+③ *额外发现的取舍（已写入 helper 注释）*：rename 会替换 inode ⇒ 若目标本身是符号链接/硬链接会被打断（Windows 上极少见）；
+   因此**未**对用户源码文件（如检查点回退时写回的用户文件、`settings.json`）启用原子写 ——
+   前者有 symlink/权限归属风险，后者属上游行为且模型 A 下已有进程内写队列串行化。
+`settings.json`（`configurationService.ts`）**刻意不改**，理由同上（上游行为 + 层级跨越 + symlink 风险）。
+
+测试 `test/common/atomicWrite.test.ts`（4 例）：支持能力 ⇒ 必须带 `atomic.postfix`；不支持 ⇒ 必须退回普通写
+（**传 atomic 会 throw**）；探的必须是 `FileAtomicWrite`；三个服务的写入点必须都走 helper 且不再内联 postfix。
+
+#### 9.6.4 P0-3 已实施（2026-09-15，fail-open → **fail-visible**）
+会话锁（`agentChatService.tryAcquireSessionLock` / 心跳）原先有两个**静默失败**点：
+1. **加锁抛错** ⇒ `logService.warn('…(fail-open)')` + `return { acquired: true };` ——
+   即「加锁失败就当作拿到了锁，且**不告诉任何人**」✗ ⇒ 用户以为会话受互斥保护，
+   实际两个窗口可能同时写同一份对话历史（表现为「消息莫名少了 / 被回退」，无从归因）；
+2. **锁心跳失败** ⇒ `catch(() => {})` 完全静默 ✗ ⇒ 连续 2min（`SESSION_LOCK_STALE_MS`）不刷新后
+   别的窗口即可接管，而本窗口**仍在编辑** ⇒ 退化成「双方都以为持有锁」。
+
+**改法（保留可用性，把"没有互斥"这件事显式暴露）**：
+- 接口（`common/agentStudioService.ts`）补 `degraded?: boolean` 语义；
+- 加锁失败 ⇒ 返回 `{ acquired: true, degraded: true }` + 日志标明 `fail-visible`；
+- 心跳失败 ⇒ **只提示一次**的 warn（避免每 30s 刷屏）；
+- 上层 `nativeChatEditorPane._updateSessionLock()` 消费 `degraded` ⇒ 弹 **Warning 通知**
+  （「本会话未能加锁（文件系统异常）……对话历史可能互相覆盖」）。
+
+> ★ **刻意没有改成「直接降级只读」**（本文 §6.2 的原建议）：① 此处失败多为瞬时/权限类抖动，
+> 而若连锁目录都写不进去，会话文件大概率也写不进去（保存时会报错，用户能看到）；
+> ② 会话写入已走原子写（§9.6.3）⇒ 最坏结果是**「丢更新」而非「文件损坏」**。
+> **要点是"可见"，不是"禁止"** —— 这条偏离已在代码注释中写明理由，供后续按痛点再收紧。
+
+#### 9.6.5 残余
+P0-1 / P0-2 / P0-3 **均已实施** ✓。剩下的是观察期结论：
+- 用 `'instance'` 逃生门时仍会承受跨进程面（该模式下 P0 三项的价值反而更高，已具备 ✓）；
+- 遗留目录/锁文件清理（`User/instances/*` 等，属用户数据，需用户确认）；
+- §9.3 提到的代价需在真实使用中确认可接受（崩溃隔离 / ext-host 并行）。
+- **测试基建（本轮顺带发现并修）**：`betterSqlite3` 顶层 `createRequire(import.meta.url)` 在 esbuild CJS
+  bundle 下抛 `ERR_INVALID_ARG_VALUE` ⇒ `workflowComfyMediaStore.test.ts` **长期无法在任何 node runner 下运行**
+  （已改为惰性 + cwd 回退，与该仓 `codebaseGraphSqliteStore.ts:79-80` 同范式）。
+  修好后该套件第一次真正跑起来，随即暴露一个坏死用例：分页测试用 `http://h/...`（主机不可解析）
+  而 `importAsset` 对 http ref **会真的发起下载** ⇒ 悬挂 10s 超时（已改为 `127.0.0.1:1` 立即 ECONNREFUSED）。
+  ⚠ 同类隐患：`http://localhost:8188` 若本机正好跑着 ComfyUI，会真的下载并**改变**那条
+  「URL 引用仅索引，不落盘」断言的语义 ⇒ 建议此类用例统一改用立即失败的地址。
+- **待清理**：`User/instances/*`（4 个，均为 08-09 遗留）、`logs|Backups/instances/*`、`code-w-*.lock`、
+  `code-wtest000.lock` —— 属用户数据，需用户确认后再删（未自动清理）。

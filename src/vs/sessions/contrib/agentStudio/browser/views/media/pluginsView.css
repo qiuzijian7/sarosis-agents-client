@@ -437,3 +437,216 @@
     background: #4ec9b0;
     color: #1e1e1e;
 }
+
+/* ══════════════════════════════════════════════════════════
+   VS CODE EXTENSIONS TAB（原生扩展）
+   ══════════════════════════════════════════════════════════ */
+
+.plugins-extensions-container {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+}
+
+.plugins-extensions-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+/* 计数独占一行（`flex-basis:100%`）——安装按钮与策略徽标在其后，窄侧栏时自动换行 */
+.plugins-ext-count {
+    flex: 1 1 100%;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.plugins-ext-policy {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--vscode-badge-background, #4d4d4d);
+    color: var(--vscode-badge-foreground, #ffffff);
+    cursor: help;
+    flex-shrink: 0;
+}
+
+.plugins-extensions-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.plugins-ext-empty {
+    padding: 20px 4px;
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground, #9d9d9d);
+    text-align: center;
+}
+
+/* 结果分组标题（市场结果 / 商城结果 / 已安装） */
+.plugins-ext-section {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground, #9d9d9d);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 6px 2px 2px 2px;
+    border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+    margin-top: 2px;
+}
+
+/* 提示条（未配置扩展市场 / 搜索失败 / 搜索中） */
+.plugins-ext-notice {
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--vscode-descriptionForeground, #9d9d9d);
+    background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.1));
+    border-left: 3px solid var(--vscode-editorInfo-foreground, #3794ff);
+    padding: 6px 8px;
+    border-radius: 2px;
+}
+
+.plugins-ext-card {
+    background: var(--vscode-sideBar-background, #252526);
+    border: 1px solid var(--vscode-panel-border, #3c3c3c);
+    border-radius: 6px;
+    padding: 10px 12px;
+    transition: border-color 0.15s;
+}
+
+.plugins-ext-card:hover {
+    border-color: var(--vscode-button-background, #007acc);
+    background: var(--vscode-list-hoverBackground, #2a2d2e);
+}
+
+.plugins-ext-card.disabled {
+    opacity: 0.65;
+}
+
+/* 市场（gallery）结果行：与"已安装"行区分（左侧一条强调边） */
+.plugins-ext-card.market {
+    border-left: 3px solid var(--vscode-editorInfo-foreground, #3794ff);
+}
+
+.plugins-ext-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.plugins-ext-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--vscode-foreground);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.plugins-ext-version {
+    font-size: 10px;
+    font-family: monospace;
+    color: var(--vscode-textLink-foreground, #569cd6);
+    flex-shrink: 0;
+}
+
+.plugins-ext-badge {
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+    flex-shrink: 0;
+    background: var(--vscode-badge-background, #4d4d4d);
+    color: var(--vscode-badge-foreground, #ffffff);
+}
+
+.plugins-ext-badge-builtin {
+    background: rgba(86, 156, 214, 0.2);
+    color: var(--vscode-textLink-foreground, #569cd6);
+}
+
+.plugins-ext-badge-env {
+    background: rgba(244, 135, 113, 0.22);
+    color: #f48771;
+}
+
+.plugins-ext-badge-warn {
+    background: rgba(220, 220, 170, 0.2);
+    color: #dcdcaa;
+}
+
+.plugins-ext-badge-off {
+    background: rgba(150, 150, 150, 0.2);
+    color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+.plugins-ext-badge-update {
+    background: rgba(78, 201, 176, 0.2);
+    color: #4ec9b0;
+}
+
+.plugins-ext-meta {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground, #9d9d9d);
+    margin-top: 2px;
+    word-break: break-all;
+}
+
+.plugins-ext-desc {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground, #9d9d9d);
+    line-height: 1.4;
+    margin: 4px 0 8px 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.plugins-ext-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.plugins-ext-btn {
+    padding: 2px 10px;
+    font-size: 11px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    background: var(--vscode-button-secondaryBackground, #3a3d41);
+    color: var(--vscode-button-secondaryForeground, #cccccc);
+    transition: background 0.15s;
+}
+
+.plugins-ext-btn:hover {
+    background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.plugins-ext-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.plugins-ext-btn.danger {
+    background: rgba(244, 135, 113, 0.15);
+    color: #f48771;
+}
+
+.plugins-ext-btn.danger:hover {
+    background: rgba(244, 135, 113, 0.28);
+}

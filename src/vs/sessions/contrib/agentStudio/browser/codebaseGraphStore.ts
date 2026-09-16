@@ -592,7 +592,13 @@ export class CodebaseGraphStore {
 		if (project) {
 			nodes = collect(project);
 		} else {
-			for (const p of this.listProjects()) { nodes.push(...collect(p.name)); }
+			// ⚠⚠ **不能**写 `nodes.push(...collect(p.name))`：`collect` 返回该项目**全部
+			// file 节点**（每文件一个，大仓实测可达数万）⇒ 展开成函数实参必然抛
+			// `Maximum call stack size exceeded`（同 `codebaseGraphService._loadGraphFromSqlite`
+			// 里那处 78 万节点的同类事故，2026-09-16）。
+			for (const p of this.listProjects()) {
+				for (const n of collect(p.name)) { nodes.push(n); }
+			}
 		}
 		if (nodes.length === 0) {
 			const seen = new Set<string>();

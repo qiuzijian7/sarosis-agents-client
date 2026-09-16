@@ -21,7 +21,7 @@ import { PaneCompositeRegistry, Extensions as ViewletExtensions } from '../../br
 import { CustomTreeView, TreeViewPane } from '../../browser/parts/views/treeView.js';
 import { ViewPaneContainer } from '../../browser/parts/views/viewPaneContainer.js';
 import { IWorkbenchContribution, WorkbenchPhase, registerWorkbenchContribution2 } from '../../common/contributions.js';
-import { ICustomViewDescriptor, IViewContainersRegistry, IViewDescriptor, IViewsRegistry, ViewContainer, Extensions as ViewContainerExtensions, ViewContainerLocation } from '../../common/views.js';
+import { ICustomViewDescriptor, IViewContainersRegistry, IViewDescriptor, IViewsRegistry, ViewContainer, Extensions as ViewContainerExtensions, ViewContainerLocation, WindowEnablement } from '../../common/views.js';
 import { VIEWLET_ID as DEBUG } from '../../contrib/debug/common/debug.js';
 import { VIEWLET_ID as EXPLORER } from '../../contrib/files/common/files.js';
 import { VIEWLET_ID as REMOTE } from '../../contrib/remote/browser/remoteExplorer.js';
@@ -30,6 +30,19 @@ import { WebviewViewPane } from '../../contrib/webviewView/browser/webviewViewPa
 import { Extensions as ExtensionFeaturesRegistryExtensions, IExtensionFeatureTableRenderer, IExtensionFeaturesRegistry, IRenderedData, IRowData, ITableData } from '../../services/extensionManagement/common/extensionFeatures.js';
 import { isProposedApiEnabled } from '../../services/extensions/common/extensions.js';
 import { ExtensionMessageCollector, ExtensionsRegistry, IExtensionPoint, IExtensionPointUser } from '../../services/extensions/common/extensionsRegistry.js';
+import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
+import { IExtensionManifestPropertiesService, SESSIONS_WINDOW_ALLOWED_CONTRIBUTION_POINTS } from '../../services/extensions/common/extensionManifestPropertiesService.js';
+import { IWorkbenchEnvironmentService } from '../../services/environment/common/environmentService.js';
+// [Saros] agents 窗口的扩展策略 —— 决定「扩展贡献的视图容器/视图」在该窗口是否可见。
+// 设计见 `doc/native-extensions-in-agents-window-plan.md`（L3）。
+import {
+	AGENTS_WINDOW_EXTENSION_AGENT_CONTRIBUTIONS_SETTING,
+	AGENTS_WINDOW_EXTENSION_ALLOWLIST_SETTING,
+	AGENTS_WINDOW_EXTENSION_MODE_SETTING,
+	isAgentContributingContributionSet,
+	isAllowedToRunInAgentsWindow,
+	resolveAgentsWindowExtensionPolicy,
+} from '../../../platform/extensionManagement/common/agentsWindowExtensionPolicy.js';
 
 export interface IUserFriendlyViewsContainerDescriptor {
 	id: string;
@@ -280,15 +293,67 @@ class ViewsExtensionHandler implements IWorkbenchContribution {
 
 	private viewContainersRegistry: IViewContainersRegistry;
 	private viewsRegistry: IViewsRegistry;
+	/** [Saros] 已留痕的扩展 id —— `resolveExtensionWindowEnablement()` 按视图逐条调用，避免日志刷屏。 */
+	private readonly loggedWindowEnablement = new Set<string>();
 
 	constructor(
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@ILogService private readonly logService: ILogService
+		@ILogService private readonly logService: ILogService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IExtensionManifestPropertiesService private readonly extensionManifestPropertiesService: IExtensionManifestPropertiesService,
 	) {
 		this.viewContainersRegistry = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry);
 		this.viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);
 		this.handleAndRegisterCustomViewContainers();
 		this.handleAndRegisterCustomViews();
+	}
+
+	/**
+	 * [Saros] 计算扩展贡献的**视图容器 / 视图**在 agents（sessions）窗口的 `windowEnablement`。
+	 *
+	 * 为什么需要：上游注册扩展容器/视图时**不设置** `windowEnablement`，而
+	 * `viewDescriptorService.isEnabled()`（`viewDescriptorService.ts:348-353`）在 sessions 窗口只认
+	 * `Sessions | Both` ⇒ 扩展视图在 agents 窗口**恒不可见**（即使扩展已被启用）。
+	 *
+	 * 判据与「扩展能否在 agents 窗口运行」**完全同源**（同一策略纯函数 + 同一上游声明式允许集）——
+	 * 否则会出现「扩展被禁用但它的视图仍占着 activitybar」这种自相矛盾的状态。
+	 *
+	 * @returns `undefined` = 非 agents 窗口 ⇒ **保持上游行为不变**（不写这个字段）
+	 */
+	private resolveExtensionWindowEnablement(extension: IExtensionDescription): WindowEnablement | undefined {
+		if (!this.environmentService.isSessionsWindow) {
+			return undefined;
+		}
+
+		// 内置扩展在 agents 窗口恒启用（与 `ExtensionEnablementService._isDisabledBySessionsWindow` 同口径）。
+		if (extension.isBuiltin) {
+			return WindowEnablement.Both;
+		}
+
+		const policy = resolveAgentsWindowExtensionPolicy({
+			mode: this.configurationService.getValue(AGENTS_WINDOW_EXTENSION_MODE_SETTING),
+			allowlist: this.configurationService.getValue(AGENTS_WINDOW_EXTENSION_ALLOWLIST_SETTING),
+			allowAgentContributions: this.configurationService.getValue(AGENTS_WINDOW_EXTENSION_AGENT_CONTRIBUTIONS_SETTING),
+		});
+		const isDeclarativeAllowed = this.extensionManifestPropertiesService.canExecuteOnSessionsWindow(extension);
+		const isAgentContributing = isAgentContributingContributionSet(
+			Object.keys(extension.contributes ?? {}),
+			SESSIONS_WINDOW_ALLOWED_CONTRIBUTION_POINTS,
+		);
+		const allowed = isAllowedToRunInAgentsWindow(policy, extension.identifier.value, isDeclarativeAllowed, isAgentContributing);
+
+		// 只在「非声明式却被放行」这个**决定性且罕见**的情况下留痕（本方法按视图逐条调用，
+		// 无条件日志会按视图数量刷屏）；每个扩展只打一次。
+		if (allowed && !isDeclarativeAllowed && !this.loggedWindowEnablement.has(extension.identifier.value)) {
+			this.loggedWindowEnablement.add(extension.identifier.value);
+			this.logService.info(
+				`[agentsWindowPolicy] views of extension "${extension.identifier.value}" visible in the agents window `
+				+ `(mode=${policy.mode}, agentContributing=${isAgentContributing})`
+			);
+		}
+
+		return allowed ? WindowEnablement.Both : WindowEnablement.Editor;
 	}
 
 	private handleAndRegisterCustomViewContainers() {
@@ -382,7 +447,7 @@ class ViewsExtensionHandler implements IWorkbenchContribution {
 			const icon = themeIcon || resources.joinPath(extension.extensionLocation, descriptor.icon);
 			const id = `workbench.view.extension.${descriptor.id}`;
 			const title = descriptor.title || id;
-			const viewContainer = this.registerCustomViewContainer(id, title, icon, order++, extension.identifier, location);
+			const viewContainer = this.registerCustomViewContainer(id, title, icon, order++, extension.identifier, location, this.resolveExtensionWindowEnablement(extension));
 
 			// Move those views that belongs to this container
 			if (existingViewContainers.length) {
@@ -400,7 +465,7 @@ class ViewsExtensionHandler implements IWorkbenchContribution {
 		return order;
 	}
 
-	private registerCustomViewContainer(id: string, title: string, icon: URI | ThemeIcon, order: number, extensionId: ExtensionIdentifier | undefined, location: ViewContainerLocation): ViewContainer {
+	private registerCustomViewContainer(id: string, title: string, icon: URI | ThemeIcon, order: number, extensionId: ExtensionIdentifier | undefined, location: ViewContainerLocation, windowEnablement?: WindowEnablement): ViewContainer {
 		let viewContainer = this.viewContainersRegistry.get(id);
 
 		if (!viewContainer) {
@@ -416,6 +481,8 @@ class ViewsExtensionHandler implements IWorkbenchContribution {
 				hideIfEmpty: true,
 				order,
 				icon,
+				// [Saros] agents 窗口里按扩展策略决定是否显示（非 sessions 窗口为 undefined ⇒ 上游行为）。
+				windowEnablement,
 			}, location);
 
 		}
@@ -535,8 +602,10 @@ class ViewsExtensionHandler implements IWorkbenchContribution {
 						hideByDefault: initialVisibility === InitialVisibility.Hidden,
 						workspace: viewContainer?.id === REMOTE ? true : undefined,
 						weight,
-						accessibilityHelpContent
-					};
+						accessibilityHelpContent,
+						// [Saros] 与容器同源：agents 窗口里按扩展策略决定该视图是否可见（非 sessions 窗口为 undefined）。
+						windowEnablement: this.resolveExtensionWindowEnablement(extension.description),
+						};
 
 
 					viewIds.add(viewDescriptor.id);

@@ -13,6 +13,7 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions, ConfigurationScope } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensions as ViewExtensions, WindowEnablement } from '../../../../workbench/common/views.js';
+import { AGENTS_WINDOW_EXTENSION_AGENT_CONTRIBUTIONS_SETTING, AGENTS_WINDOW_EXTENSION_ALLOWLIST_SETTING, AGENTS_WINDOW_EXTENSION_MODE_SETTING } from '../../../../platform/extensionManagement/common/agentsWindowExtensionPolicy.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
 import { IContextKeyService, ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
@@ -275,6 +276,8 @@ import { ICodebaseMemoryMcpService, CodebaseMemoryMcpService } from './codebaseM
 import { ICodebaseGraphService, CodebaseGraphService } from './codebaseGraphService.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher } from './codebaseGraphWatcher.js';
 import './codebaseGraphBootstrap.js';
+// ★ 2026-09-16：切换工作区「卡住」诊断（主线程心跳看门狗 + 阶段标记）。自注册贡献，见 wsSwitchDiag.ts。
+import './wsSwitchDiag.contribution.js';
 // C++ DefinitionProvider（基于图谱，无 LSP 依赖）→ 解锁 Ctrl+点击 / F12 / Peek 跳转。Self-registers.
 import './codebaseGraphLanguageFeatures.contribution.js';
 // Find Symbol（Shift+Alt+S，VAX 风格符号搜索 QuickPick）。Self-registers.
@@ -313,6 +316,18 @@ import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliar
  */
 function getAgentPart(editorGroupsService: IEditorGroupsService): IEditorGroupsService | undefined {
 	return (editorGroupsService as unknown as { agentPart?: IEditorGroupsService }).agentPart;
+}
+
+/**
+ * 中间栏（mainPart）—— 与上面 `getAgentPart` 同风格的结构化取用。
+ *
+ * ★ 2026-09-16：工具卡片里的「查看文件」类跳转**必须**显式落到这里（详见
+ * `openDiagramPreview` 的注释）。sessions 布局：mainPart = 中间栏主编辑器，
+ * agentPart = 右侧聊天区；独立窗口（aux part）下没有 mainPart ⇒ 返回 undefined，
+ * 调用方退回「活动组」（与 `chatEditorIntegration._openInMainColumn` 同口径）。
+ */
+function getMainPart(editorGroupsService: IEditorGroupsService): IEditorGroupsService | undefined {
+	return (editorGroupsService as unknown as { mainPart?: IEditorGroupsService }).mainPart;
 }
 
 // --- Icons -----------------------------------------------------------------------
@@ -370,6 +385,55 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	scope: ConfigurationScope.MACHINE,
 	properties: {
 		...channelConfigProperties(),
+		// ★★★ 2026-09-15：任务栏 jump list 的「New Window」默认回到**原生模型 A（同进程内开新窗口）**。
+		// 依据：`doc/multi-instance-analysis.md` §3.2「共享面 ≫ 拆分面」+ §6.2 P3-2；
+		// 实现见 `platform/workspaces/electron-main/workspacesHistoryMainService.ts` 的 `getNewWindowMode()`。
+		// 'instance' 是**逃生门**（回到从前的独立进程/多开），改完即时重建跳转列表，无需重新编译。
+		'saros.window.newWindowMode': {
+			type: 'string',
+			enum: ['window', 'instance'],
+			enumDescriptions: [
+				localize('saros.window.newWindowMode.window', "原生行为（默认）：在**同一个进程**内开新窗口。所有窗口共享 state.vscdb / 日志 / 备份，跨窗口写入由进程内保护负责（写队列、pane 引用计数、会话锁）。代价：一个窗口崩溃/OOM 会影响全部窗口。"),
+				localize('saros.window.newWindowMode.instance', "独立进程（旧行为）：每次开新窗口都启动一个独立实例（多开）——IPC 单实例锁 / 日志 / 备份 / globalStorage 按实例拆分，但 Agent Studio 数据（agents/skills/会话/检查点/媒体/图谱）仍在共享侧且**无跨进程并发保护**。仅在需要崩溃隔离或并行跑重任务时使用。"),
+			],
+			default: 'window',
+			description: localize('saros.window.newWindowMode', "任务栏跳转列表「New Window」的启动方式：同进程新窗口（VS Code 原生）或独立进程（多开）。"),
+		},
+		// ★ 2026-09-16：agents 窗口的「原生扩展（VS Code 插件）」执行策略 —— 兼容原生插件功能的**总开关**。
+		// 上游默认只放行**声明式**扩展（themes/grammars/languages…），任何带 `main`/`browser` 的第三方扩展
+		// 在 agents 窗口都是 `DisabledByEnvironment`（用户无法自行启用）。这里提供显式放开的口子，
+		// **默认值保持上游行为**（零行为变化）。
+		// 判据（纯函数 + 单测）：`platform/extensionManagement/common/agentsWindowExtensionPolicy.ts`
+		// 生效点：`workbench/services/extensionManagement/browser/extensionEnablementService.ts`
+		// 设计文档：`doc/native-extensions-in-agents-window-plan.md`（L0=本设置，L2=策略，L3=扩展视图可见性）
+		[AGENTS_WINDOW_EXTENSION_MODE_SETTING]: {
+			type: 'string',
+			enum: ['declarative', 'allowlist', 'all'],
+			enumDescriptions: [
+				localize('saros.extensions.agentsWindow.mode.declarative', "声明式（默认）：只放行**无代码**扩展（主题/图标主题/颜色/键位/语法/语言/本地化）——与上游 agents 窗口行为一致。带代码的扩展在 agents 窗口显示为「由环境禁用」，需切到 IDE 窗口使用。"),
+				localize('saros.extensions.agentsWindow.mode.allowlist', "白名单：在声明式基础上，额外放行下述白名单里的扩展（可带代码）。适合只放开少数内网/自研扩展。"),
+				localize('saros.extensions.agentsWindow.mode.all', "全部放行（逃生门）：除产品级黑名单（GitHub Copilot 系列，见 agentsWindowExtensionPolicy.ts 的 BLOCKLIST）外全部启用。代价：agents 窗口启动变慢、内存上升、第三方代码进入窗口（安全面/崩溃面扩大）。"),
+			],
+			default: 'declarative',
+			markdownDescription: localize('saros.extensions.agentsWindow.mode', "agents 窗口允许运行的 VS Code 扩展范围。`declarative`（默认）= 上游行为；`allowlist` = 额外放行白名单；`all` = 除黑名单外全部。\n\n⚠ 改这个设置后已启动的扩展宿主不会热加载/卸载扩展，**需要 Reload Window** 才真正生效（设置本身即时影响扩展的启用状态显示）。"),
+		},
+		[AGENTS_WINDOW_EXTENSION_ALLOWLIST_SETTING]: {
+			type: 'array',
+			items: { type: 'string' },
+			default: [],
+			markdownDescription: localize('saros.extensions.agentsWindow.allowlist', "仅在 `saros.extensions.agentsWindow.mode` = `allowlist` 时生效的扩展白名单。支持 `publisher.name`（精确）、`publisher.*`（出版商前缀）、`*`（全部），大小写不敏感。"),
+		},
+		// ★ 2026-09-16：Agent 贡献型扩展 —— 本产品「用 VS Code 扩展给 Agent 提供能力/插件」的正式通道。
+		// 这类扩展**有代码**（main/browser），但只贡献 `agentCapabilities` / `chatPlugins`（+ 声明式点）：
+		//   · agentCapabilities → AgentCapabilitiesExtensionPointRegistry（sessions/contrib/agentStudio）
+		//   · chatPlugins       → ExtensionAgentPluginDiscovery（workbench/contrib/chat）
+		// 默认放行（否则上面的 agents 窗口规则"有代码一律禁用"会让这两条桥永远收不到贡献）；
+		// 设为 false 可严格维持上游行为（连这类扩展也不放行）。
+		[AGENTS_WINDOW_EXTENSION_AGENT_CONTRIBUTIONS_SETTING]: {
+			type: 'boolean',
+			default: true,
+			markdownDescription: localize('saros.extensions.agentsWindow.allowAgentContributions', "是否放行「Agent 贡献型扩展」：有代码、但只贡献 `agentCapabilities` / `chatPlugins` 的扩展（它们只用于给 Agent 提供模型/记忆/工具等能力或 Agent 插件）。默认开启 —— 这是扩展与 Agent 生态打通的正式通道。关闭后此类扩展在 agents 窗口也会被禁用（严格维持上游「只看声明式扩展」的行为）。"),
+		},
 		'saros.codebaseGraph.sqliteBackend': {
 			type: 'boolean',
 			default: true,
@@ -2531,6 +2595,7 @@ async function openDiagramPreview(
 	contentKey: string,
 ): Promise<void> {
 	const editorService = accessor.get(IEditorService);
+	const editorGroupsService = accessor.get(IEditorGroupsService);
 	const logService = accessor.get(ILogService);
 
 	try {
@@ -2692,8 +2757,26 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 				html,
 			);
 
-			await editorService.openEditor(input, { pinned: true });
-			logService.info('[' + logTag + '] opened in editor tab:', title || '(untitled)');
+			// ★★ 2026-09-16：**必须显式指定目标组 = 中间栏（mainPart）**。
+			//
+			// 工具卡片右上角的「查看文件」链接（`agentChatPanel.mermaidCard.ts:154`
+			// 与 drawioCard 的同名控件）是在**聊天面板内部**被点击的 ⇒ 此刻的
+			// 「活动编辑器组」正是聊天框所在的 agentPart 组 ⇒ 不指定 group 的
+			// `openEditor` 会把预览标签**开进聊天区、覆盖聊天面板**（用户要求：
+			// 「点击查看文件，要求在中间栏文件编辑器中打开，不允许在聊天框窗口中打开」）。
+			//
+			// 与 `chatEditorIntegration._openInMainColumn` / `nativeChatEditorPane._openInMainColumn`
+			// 同口径：sessions 布局下 mainPart = 中间栏主编辑器，agentPart = 右侧聊天区。
+			// 独立窗口（aux part / popout）下没有 mainPart ⇒ 退回旧行为（只能落在该窗口
+			// 的活动组）—— 与 chat 侧两个实现保持一致，避免两套口径分叉。
+			const mainGroup = getMainPart(editorGroupsService)?.activeGroup;
+			if (mainGroup) {
+				await editorService.openEditor(input, { pinned: true }, mainGroup);
+			} else {
+				await editorService.openEditor(input, { pinned: true });
+			}
+			logService.info('[' + logTag + '] opened in editor tab:', title || '(untitled)',
+				mainGroup ? '(target=mainPart 中间栏)' : '(target=activeGroup — 无 mainPart，独立窗口)');
 		} catch (err) {
 			logService.error('[' + logTag + '] failed:', err instanceof Error ? err.message : String(err));
 		}

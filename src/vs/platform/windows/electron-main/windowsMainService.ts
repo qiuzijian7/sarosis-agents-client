@@ -332,10 +332,41 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			+ `hasExplicitFolderRequest=${hasExplicitFolderRequest} | `
 			+ `cli._=${JSON.stringify(openConfig.cli?._ ?? null)} | `
 			+ `cli.folder-uri=${JSON.stringify(openConfig.cli?.['folder-uri'] ?? null)} | `
+			// ★ 2026-09-16 补：排查「任务栏 New Window 没反应」时发现本行**漏了最关键的三个字段** ——
+			// 没有它们就无法区分「`--new-window` 根本没传到主进程」与「传到了但被下面的分支覆盖」✗。
+			+ `cli.new-window=${String(openConfig.cli?.['new-window'] ?? false)} | `
+			+ `forceNewWindow=${String(openConfig.forceNewWindow ?? false)} | `
+			+ `forceEmpty=${String(openConfig.forceEmpty ?? false)} | `
+			+ `context=${openConfig.context} | `
 			+ `urisToOpen=${JSON.stringify((openConfig.urisToOpen ?? []).map(u => isWorkspaceToOpen(u) ? u.workspaceUri.fsPath : (isFolderToOpen(u) ? u.folderUri.fsPath : String(u))))} | `
 			+ `isEmbeddedApp=${(process as INodeProcess).isEmbeddedApp} | `
 			+ `fallback=${this.environmentMainService.agentSessionsWorkspace?.fsPath ?? 'undefined'}`,
 		);
+
+		// ★★★ 2026-09-16：**显式「开新窗口」的请求必须原样放行**（用户报「任务栏点 New Window 没反应」的根因）。
+		//
+		// 语义：调用方 `launchMainService.startOpenWindow` 对「无位置参数 + `--new-window`」构造的是
+		// `open({ forceNewWindow: true, forceEmpty: true })` —— 即「开一个**新的空窗口**」（VS Code 原生语义）。
+		// 但下面的 case ③ 会把它**替换**成「记住的工作区」并**丢掉 `forceEmpty`**，于是：
+		//   · 那个工作区通常**已在当前窗口打开** ⇒ `open()` 里的
+		//     `if (windowsOnWorkspace.some(...)) { continue; /* ignore folders that are already open */ }`
+		//     （本文件 :961）直接**跳过开窗**，只把已有窗口计入结果；
+		//   · 实测日志（`20260916T100505\main.log`）：
+		//     `cli.new-window=true | forceNewWindow=true | forceEmpty=true | urisToOpen=[]`
+		//     → `reopening remembered workspace: …S1Game.code-workspace`（forceEmpty 变 false）
+		//     → `[launch][diag] open(forceNewWindow+forceEmpty) returned **1** window(s)`（就是原来那个）
+		//     ⇒ 用户看到的就是「点了没反应」✗✗。
+		//
+		// 原样放行后：`open()` 的 `getPathsToOpen` 走 `openConfig.forceEmpty ⇒ pathsToOpen = [EMPTY_WINDOW]`
+		// ⇒ `doOpenEmpty(openConfig, forceNewWindow /* =true */, …)` ⇒ 真正开出一个新的空窗口 ✓（= 原生行为）。
+		//
+		// ⚠ 仅在「**没有**显式工作区/文件夹请求」时生效 —— 带 `--new-window <folder>` 时仍按 case ② 打开它；
+		// ⚠ 启动路径不受影响：那时 `cli.new-window=false` 且 `forceNewWindow=false`（日志可证）
+		//    ⇒ 仍走 case ③「恢复上次工作区」✓。
+		if (openConfig.cli?.['new-window'] && openConfig.forceEmpty && !requestedWorkspaceUri && !hasExplicitFolderRequest) {
+			this.logService.info('[windowsManager] agents window: explicit --new-window without a workspace → opening a NEW EMPTY window (skip remembered-workspace substitution)');
+			return openConfig;
+		}
 
 		if (requestedWorkspaceUri && await this.fileService.exists(requestedWorkspaceUri)) {
 			this.logService.info(`[windowsManager] agents window opening user workspace: ${requestedWorkspaceUri.fsPath}`);
@@ -610,6 +641,15 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		const isAgentsApp = (process as INodeProcess).isEmbeddedApp;
 		if (isAgentsApp) {
 			openConfig = await this.ensureAgentsWindow(openConfig);
+			// ★ 2026-09-16：把「决定开窗的最终意图」打出来 —— 排查「New Window 没反应」时，
+			// 只有这行能回答「ensureAgentsWindow 之后 `open()` 到底打算开新窗还是复用」。
+			this.logService.info(
+				'[windowsManager][diag] open() after ensureAgentsWindow | '
+				+ `forceNewWindow=${String(openConfig.forceNewWindow ?? false)} | `
+				+ `forceEmpty=${String(openConfig.forceEmpty ?? false)} | `
+				+ `forceReuseWindow=${String(openConfig.forceReuseWindow ?? false)} | `
+				+ `urisToOpen=${JSON.stringify((openConfig.urisToOpen ?? []).map(u => isWorkspaceToOpen(u) ? u.workspaceUri.fsPath : (isFolderToOpen(u) ? u.folderUri.fsPath : String(u))))}`,
+			);
 		}
 
 		// Make sure addMode/removeMode is only enabled if we have an active window

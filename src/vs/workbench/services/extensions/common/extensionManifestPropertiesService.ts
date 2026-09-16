@@ -22,7 +22,19 @@ import { isWeb } from '../../../../base/common/platform.js';
 
 export const IExtensionManifestPropertiesService = createDecorator<IExtensionManifestPropertiesService>('extensionManifestPropertiesService');
 
-const SESSIONS_WINDOW_ALLOWED_CONTRIBUTION_POINTS: ReadonlySet<keyof IExtensionContributions> = new Set([
+/**
+ * agents（sessions）窗口里「声明式」贡献点白名单。
+ *
+ * [Saros] 除上游的声明式点外，另加两个 **Agent 桥**贡献点：
+ *   · `agentCapabilities` —— `AgentCapabilitiesExtensionPointRegistry`
+ *   · `chatPlugins`       —— `ExtensionAgentPluginDiscovery`
+ * 这两个点本身是「让扩展给 Agent 提供能力/插件」的通道，属于本产品明确允许的贡献面
+ * （`canExecuteOnSessionsWindow()` 里"有 main/browser 一律 false"仍会挡住带代码的实现，
+ *  该情形由策略 `agentsWindowExtensionPolicy.ts` 的「Agent 贡献型扩展」规则放行）。
+ *
+ * 导出供 `extensionEnablementService` / 策略判据复用（单一真源）。
+ */
+export const SESSIONS_WINDOW_ALLOWED_CONTRIBUTION_POINTS: ReadonlySet<keyof IExtensionContributions> = new Set<keyof IExtensionContributions>([
 	'themes',
 	'iconThemes',
 	'productIconThemes',
@@ -32,6 +44,8 @@ const SESSIONS_WINDOW_ALLOWED_CONTRIBUTION_POINTS: ReadonlySet<keyof IExtensionC
 	'localizations',
 	'grammars',
 	'languages',
+	'agentCapabilities',
+	'chatPlugins',
 ]);
 
 export interface IExtensionManifestPropertiesService {

@@ -17,6 +17,7 @@ import { IStorageService, StorageScope } from '../../../../platform/storage/comm
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { writeFileAtomicSafe } from '../common/atomicWrite.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult, IWorkflowDirectRunStart, IWorkflowDirectRunResult, IWorkflowDirectRunProgress, ILibraryBadgeRequest } from '../../../common/agentStudioService.js';
 import { classifyContentViaSchema, safeSchemaFallback, SchemaClassifyResult } from './knowledge/classifier.js';
@@ -527,7 +528,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		await this._ensureDir(dirUri);
 		const uri = URI.joinPath(dirUri, filename);
 		const content = VSBuffer.fromString(JSON.stringify(data, null, 2));
-		await this.fileService.writeFile(uri, content);
+		// ★ 2026-09-15：`workspaces.json` / agents 绑定等**启动即读**的 JSON 一律原子写
+		//（半写 ⇒ 工作区列表/绑定静默丢失）。详见 `common/atomicWrite.ts`。
+		await writeFileAtomicSafe(this.fileService, uri, content);
 
 		// ★ 缓存失效的**唯一入口**（2026-09-15）：workspaces.json 一旦被写，
 		// workspaceId → 数据目录 URI 的映射可能已变（尤其 path）⇒ 必须清空，

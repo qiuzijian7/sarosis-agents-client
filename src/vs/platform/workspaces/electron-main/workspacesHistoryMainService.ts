@@ -16,6 +16,7 @@ import { basename, extUriBiasedIgnorePathCase, originalFSPath } from '../../../b
 import { URI } from '../../../base/common/uri.js';
 import { Promises } from '../../../base/node/pfs.js';
 import { localize } from '../../../nls.js';
+import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { createDecorator } from '../../instantiation/common/instantiation.js';
 import { ILifecycleMainService, LifecycleMainPhase } from '../../lifecycle/electron-main/lifecycleMainService.js';
 import { ILogService } from '../../log/common/log.js';
@@ -59,7 +60,8 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 		@ILifecycleMainService private readonly lifecycleMainService: ILifecycleMainService,
 		@IApplicationStorageMainService private readonly applicationStorageMainService: IApplicationStorageMainService,
 		@IDialogMainService private readonly dialogMainService: IDialogMainService,
-		@IEnvironmentMainService private readonly environmentMainService: IEnvironmentMainService
+		@IEnvironmentMainService private readonly environmentMainService: IEnvironmentMainService,
+		@IConfigurationService private readonly configurationService: IConfigurationService
 	) {
 		super();
 
@@ -335,6 +337,16 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 
 		await this.updateWindowsJumpList();
 		this._register(this.onDidChangeRecentlyOpened(() => this.updateWindowsJumpList()));
+
+		// ★ 2026-09-15：`saros.window.newWindowMode` 改变后**立即重建**跳转列表 ——
+		// 逃生门（'window' ↔ 'instance'）的意义就是"随时可切"，不该要求重启才生效。
+		// 放在这里（而不是构造期）是为了让该监听只在跳转列表已建立之后存在，
+		// 避免启动早期就因为配置加载而触发一次无谓的重建。
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('saros.window.newWindowMode')) {
+				this.updateWindowsJumpList().catch(err => this.logService.warn('updateWindowsJumpList failed', err));
+			}
+		}));
 	}
 
 	private async updateWindowsJumpList(): Promise<void> {
@@ -345,26 +357,53 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 		const jumpList: JumpListCategory[] = [];
 
 		// Tasks
-		const newWindowArgs = this.getNewWindowScriptArgs();
-		this.logService.info(`updateWindowsJumpList: New Window task args=${newWindowArgs}`);
+		//
+		// ★★★ 2026-09-15：**默认回到原生模型 A（同进程内开新窗口）**。
+		//
+		// 依据（本项目自己的调研 `doc/multi-instance-analysis.md`）：
+		//   · §3.2「**共享面 ≫ 拆分面**」——`--instance` 只拆走了 VSCode 核心可变状态
+		//     （IPC / lockfile / logs / Backups / globalStorage / workspaceStorage），而 Agent Studio
+		//     的全部数据（agents/skills/chat-history/checkpoints/media/kb/graph/workspaces.json/
+		//     settings.json）都落在**共享侧**，且「共享」这个决定从未配套并发保护；
+		//   · **上游代码从不为跨进程并发写做保护**（它假设模型 A）⇒ 模型 C 是在和上游假设对抗，
+		//     后果即 §5.2 的 R1（共享 JSON 丢更新）/ R3（media.db 竞争）/ R4（会话交叉写）。
+		// 切到模型 A 后，既有保护才**真正生效**：`settings.json` 的进程内 Queue、
+		// `AgentChatService` 的 pane 级引用计数、会话锁 —— 都从"单窗口内的局部保护"变成全局保护。
+		//
+		// 代价（§5.1，明确接受）：失去崩溃隔离（一个 renderer / 扩展宿主 OOM 影响全部窗口）
+		// 与 ext-host 并行；但**每个窗口仍是独立 renderer** ⇒ agent 侧并行大部分保留。
+		//
+		// ⚠ 保留逃生门：设 `saros.window.newWindowMode: 'instance'` 即回到从前的独立进程
+		//    （走 `scripts/new-window.ps1`），**无需重新编译**即可回滚。
+		const newWindowMode = this.getNewWindowMode();
+		const newWindowTask: JumpListItem = newWindowMode === 'instance'
+			? {
+				type: 'task',
+				title: localize('newWindow', "New Window"),
+				description: localize('newWindowDesc', "Opens a new window"),
+				// [Saros] 逃生门：启动一个【独立】的 VsSaros 实例（多开），而不是转发给已运行的主实例。
+				// 经 PowerShell 隐藏窗口脚本每次生成唯一 --instance <id>：新进程 IPC 单实例锁/可变状态
+				// 按实例拆分，agents/skills/settings/extensions 共享；agentmemory 网关自动复用 3111
+				// （见 app.ts startAgentMemoryGateway 探活逻辑）。
+				program: join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+				args: this.getNewWindowScriptArgs(),
+				iconPath: process.execPath,
+				iconIndex: 0
+			}
+			: {
+				// 上游原形：直接拉起本 app + `--new-window` ⇒ 走单实例 IPC 转发 ⇒ 在已运行实例内开新窗口。
+				type: 'task',
+				title: localize('newWindow', "New Window"),
+				description: localize('newWindowDesc', "Opens a new window"),
+				program: process.execPath,
+				args: this.getNativeNewWindowArgs(),
+				iconPath: process.execPath,
+				iconIndex: 0
+			};
+		this.logService.info(`updateWindowsJumpList: New Window task mode=${newWindowMode} | args=${String(newWindowTask.args)}`);
 		jumpList.push({
 			type: 'tasks',
-			items: [
-				{
-					type: 'task',
-					title: localize('newWindow', "New Window"),
-					description: localize('newWindowDesc', "Opens a new window"),
-					// [Saros] "New Window" 启动一个【独立】的 VsSaros 实例（多开），
-					// 而不是转发给已运行的主实例。经 PowerShell 隐藏窗口脚本每次生成
-					// 唯一 --instance <id>：新进程 IPC 单实例锁/可变状态按实例拆分，
-					// agents/skills/settings/extensions 共享；agentmemory 网关自动复用
-					// 3111（见 app.ts startAgentMemoryGateway 探活逻辑）。
-					program: join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-					args: newWindowArgs,
-					iconPath: process.execPath,
-					iconIndex: 0
-				}
-			]
+			items: [newWindowTask]
 		});
 
 		// Recent Workspaces
@@ -436,7 +475,59 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 	}
 
 	/**
-	 * [Saros] Jump-list "New Window" 的 PowerShell 启动参数。
+	 * Jump-list「New Window」的启动模式（设置 `saros.window.newWindowMode`）。
+	 *
+	 * - `'window'`（**默认**，2026-09-15 起）：原生模型 A —— `process.execPath --new-window`，
+	 *   走单实例 IPC 转发，在**已运行实例内开新窗口**（共享 state.vscdb / 日志 / 备份）。
+	 * - `'instance'`：模型 C —— 经 `scripts/new-window.ps1` 生成唯一 `--instance <id>`，
+	 *   启动**独立进程**（本项目旧行为，保留作逃生门）。
+	 *
+	 * ⚠ 主进程读的是**用户设置**（该设置注册在 `sessions` 节点、`ConfigurationScope.MACHINE`）；
+	 *   任何异常/非法值一律回落到 `'window'`（= 原生行为）—— 不能因为读配置失败就让用户开不出窗口。
+	 */
+	private getNewWindowMode(): 'window' | 'instance' {
+		try {
+			return this.configurationService.getValue<string>('saros.window.newWindowMode') === 'instance'
+				? 'instance'
+				: 'window';
+		} catch {
+			return 'window';
+		}
+	}
+
+	/**
+	 * 原生「New Window」（模型 A）的启动参数。
+	 *
+	 * ── 打包版 ────────────────────────────────────────────────────────────────
+	 * `--new-window` 足矣：exe 的**默认数据目录**就是运行中实例所用的那个
+	 * ⇒ 单实例管道的 scope（`sha256(userDataPath)`）一致 ⇒ 转发成功 ✓。
+	 * （窗口形态无需额外参数：`main.ts:108` **无条件**设 `process.isEmbeddedApp = true`
+	 *  ⇒ 任何窗口都是 sessions 窗口，`windowsMainService` 据此选 `sessions.html` 入口 ✓。）
+	 *
+	 * ── dev（未 built）**必须补两样** ─────────────────────────────────────────
+	 * 任务栏项由 explorer 拉起，**不继承** `code.bat` 设的 `VSCODE_DEV=1`，于是新进程会：
+	 *   ① 把数据目录算成 `~/.vssaros`（built 形态），而运行中的 dev 实例用的是 `~/.vssaros-dev`
+	 *      ⇒ **单实例管道名对不上 ⇒ 不会转发**，而是**另起一个数据目录完全不同的实例** ✗
+	 *      （用户视角："任务栏开的窗口里没有我的 agent / 设置 / 工作区"）；
+	 *   ② 把 electron 二进制当成"已打包 app"⇒ 找不到应用代码（dev 下必须显式给 app 路径）。
+	 * ⇒ 因此 dev 下要带 `"<appPath>"`（第一个参数）+ `--user-data-dir "<当前实例的数据目录>"`，
+	 *    这样管道 scope 与运行中实例一致 ⇒ 走正常转发 ✓。
+	 *    （不需要 `--agents`：见上，窗口形态由 `isEmbeddedApp` 无条件决定。）
+	 *
+	 * ⚠ 这段与 `getNewWindowScriptArgs()` 的 dev 分支是同一类坑（历史提交 `e14341d6deb` 踩过），
+	 *    改动任一处时请一并检查另一处。
+	 */
+	private getNativeNewWindowArgs(): string {
+		if (this.environmentMainService.isBuilt) {
+			return '--new-window';
+		}
+		const appPath = resolve(app.getAppPath());
+		const userData = this.environmentMainService.userDataPath;
+		return `"${appPath}" --new-window --user-data-dir "${userData}"`;
+	}
+
+	/**
+	 * [Saros] Jump-list "New Window" 的 PowerShell 启动参数（仅 `newWindowMode: 'instance'` 使用）。
 	 *
 	 * 用隐藏窗口的 PowerShell 跑 new-window.ps1，每次点击生成唯一 --instance <id>
 	 * 并启动一个独立的 VsSaros 实例（多开），而不是把请求转发给主实例。

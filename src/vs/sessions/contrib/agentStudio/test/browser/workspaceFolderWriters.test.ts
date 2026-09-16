@@ -793,28 +793,163 @@ suite('工作区下拉框重构不变量（2026-09-15）', () => {
 		assert.ok(body.includes('磁盘文件不动'), '其他记录的 title 必须写明不动磁盘文件');
 	});
 
-	test('★ 路径必须挂 title（做了中间截断，完整值要能读到）', () => {
+	test('★ 名称与路径都必须挂 title（窄列下都会截断，完整值要能读到）', () => {
 		const src = stripAllComments(fs.readFileSync(SIDEBAR, 'utf8'));
 		const body = bodyOf(src, 'private _createWorkspaceItemEl(ws: Workspace, openHere: boolean): void');
 		assert.ok(body.includes('pathSpan.title = ws.path'), '路径必须挂完整值到 title');
+		// ★ 2026-09-16：名字也会省略（行1 `nowrap` + 名字 `min-width: 0` 吸收空间不足）⇒ 同样要兜底。
+		assert.ok(body.includes('nameSpan.title = ws.name'), '名字会省略 ⇒ 必须挂完整值到 title');
 	});
 
-	test('★★ CSS：路径中间截断 + 删除按钮默认隐藏（两条都是"非显然"的实现细节）', () => {
-		const css = fs.readFileSync(CSS, 'utf8');
+	test('★★ CSS：路径中间截断 + 删除按钮**保留占位**的显隐（两条都是"非显然"的实现细节）', () => {
+		// ⚠ 必须先剥掉 CSS 注释：下面要断言「**不得**出现 display: none」，而实现处的注释里
+		// 正好**提到**这个被禁的写法（解释为什么不能用它）⇒ 不剥注释会误报 ✗（首次实测即此）。
+		const css = fs.readFileSync(CSS, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 		// `direction: rtl` 让溢出发生在左侧 ⇒ 保留尾段目录名（辨识度最高的部分）。
 		const pathAt = css.indexOf('.sidebar-toolbar .ws-item-path {');
 		assert.ok(pathAt > 0, '应能找到 .ws-item-path 规则');
 		assert.ok(css.slice(pathAt, pathAt + 400).includes('direction: rtl'), '.ws-item-path 必须用 rtl 做中间截断');
-		// 删除按钮默认隐藏，仅 hover / 键盘高亮时出现。
+
+		// ★★★ 2026-09-16（用户报「工作区列表 hover / 非 hover 切换时自动换行」）：
+		// 删除按钮必须用 **visibility** 显隐（保留布局盒），不能用 `display: none → inline`：
+		// 后者会让按钮在 hover 时**重新占位**（约 20px + gap）⇒ `.ws-item-body` 变窄
+		// ⇒ 行1 的 `.code-workspace` 徽标被挤到第二行 ⇒ 条目高度跳变 ✗。
 		const delAt = css.indexOf('.sidebar-toolbar .ws-delete-btn {');
 		assert.ok(delAt > 0, '应能找到 .ws-delete-btn 规则');
-		assert.ok(css.slice(delAt, delAt + 300).includes('display: none'), '.ws-delete-btn 默认必须隐藏');
+		const delBody = css.slice(delAt, delAt + 1200);
+		assert.ok(delBody.includes('visibility: hidden'), '.ws-delete-btn 默认必须隐藏（用 visibility: hidden 保留占位）');
 		assert.ok(
-			css.includes('.ws-dropdown-item:hover .ws-delete-btn'),
-			'必须保留 hover 显示删除按钮的规则',
+			!/\.ws-delete-btn\s*\{[^}]*display:\s*none/.test(delBody),
+			'不得用 display: none —— hover 时按钮重新占位会导致徽标换行 ✗',
 		);
+		const hovAt = css.indexOf('.ws-dropdown-item:hover .ws-delete-btn');
+		assert.ok(hovAt > 0, '必须保留 hover 显示删除按钮的规则');
+		const hovBody = css.slice(hovAt, hovAt + 240);
+		assert.ok(hovBody.includes('visibility: visible'), 'hover 只允许切 visibility');
+		assert.ok(!hovBody.includes('display:'), 'hover 规则里不得出现 display（会重新引入位移）');
+
 		// 键盘高亮必须与 hover 同视觉。
 		assert.ok(css.includes('.ws-dropdown-item.kb'), '必须为键盘高亮定义样式');
+	});
+
+	test('★★★ 行1 必须**永不换行**：空间不足由名字省略吸收（而不是把徽标挤到第二行）', () => {
+		const css = fs.readFileSync(CSS, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+		const rowAt = css.indexOf('.sidebar-toolbar .ws-item-row1 {');
+		assert.ok(rowAt > 0, '应能找到 .ws-item-row1 规则');
+		assert.ok(
+			css.slice(rowAt, rowAt + 800).includes('flex-wrap: nowrap'),
+			'行1 必须 nowrap —— 这是「hover 切换时徽标换行」的另一个必要条件',
+		);
+		const nameAt = css.indexOf('.sidebar-toolbar .ws-item-name {');
+		assert.ok(nameAt > 0, '应能找到 .ws-item-name 规则');
+		const nameBody = css.slice(nameAt, nameAt + 400);
+		assert.ok(
+			nameBody.includes('min-width: 0'),
+			'名字必须 min-width: 0 —— flex 默认 min-width: auto 会拒绝收缩 ⇒ 徽标被迫换行 ✗',
+		);
+		assert.ok(nameBody.includes('text-overflow: ellipsis'), '名字必须省略号');
+		const chipAt = css.indexOf('.sidebar-toolbar .ws-chip {');
+		assert.ok(chipAt > 0, '应能找到 .ws-chip 规则');
+		assert.ok(
+			css.slice(chipAt, chipAt + 500).includes('flex: 0 0 auto'),
+			'徽标必须固定尺寸（不收缩）—— 否则会被压成省略号而不是保持完整',
+		);
+	});
+
+	// ── ★ 2026-09-16：用户要求补齐原生菜单的三个「工作区编辑」动作 ──────────────
+
+	test('★★★ 两个动作必须**委托原生命令**（UI 层不得自己改 folder 列表）', () => {
+		// 为什么是委托：本仓规定 folder 列表只有**唯一写入者**（见 ALLOWED_FOLDER_WRITERS），
+		// 在 UI 里新增写入点会把跨工作区污染的旧路径重新引进来 ✗。
+		// 另：目标命令必须真的是原生那两条 —— 拼错 id 会变成「点了没反应」✗。
+		const src = stripAllComments(fs.readFileSync(SIDEBAR, 'utf8'));
+		for (const id of ['workbench.action.addRootFolder', 'workbench.action.duplicateWorkspaceInNewWindow']) {
+			assert.ok(src.includes(`'${id}'`), `必须委托原生命令 ${id}`);
+		}
+		for (const label of ['将文件夹添加到工作区…', '复制工作区', '将工作区另存为…']) {
+			assert.ok(src.includes(label), `工作区列表里必须有入口：${label}`);
+		}
+		// 统一入口必须经过 ICommandService（本类既有风格：延后取服务）。
+		assert.ok(src.includes('ICommandService'), '必须通过 ICommandService 执行原生命令');
+		assert.ok(src.includes('executeCommand(commandId)'), '必须有统一的命令执行入口');
+	});
+
+	test('★★★「将工作区另存为…」必须自实现，且**只写用户选定的新文件**', () => {
+		// 原生命令在会话侧是空壳（`pickNewWorkspacePath()` 返回 undefined ⇒ 点了没反应 ✗），
+		// 所以必须自实现；而实现又必须遵守 2026-09-14/15 事故后的定规：
+		// **绝不改既有 `.code-workspace`**（标准 WorkspaceService 会回写 ⇒ 用户资产被改坏 ✗）。
+		const src = stripAllComments(fs.readFileSync(SIDEBAR, 'utf8'));
+		const at = src.indexOf('private async _saveWorkspaceAs(');
+		assert.ok(at > 0, '必须自实现 _saveWorkspaceAs');
+		const body = src.slice(at, at + 3200);
+		assert.ok(body.includes('showSaveDialog('), '路径必须由用户在工作区对话框里选定');
+		assert.ok(/writeFile\(\s*target/.test(body), '只能写 dialog 返回的**新**路径');
+		assert.ok(
+			!/(writeFile|saveAndEnterWorkspace)\([^)]*codeWorkspacePath/.test(body),
+			'绝不能把 folder 列表回写到既有 .code-workspace ✗（2026-09-14/15「用户资产被改坏」事故形态）',
+		);
+		assert.ok(body.includes('codeWorkspacePath: target.fsPath'), '登记记录时让新文件成为该工作区的工作区文件');
+		assert.ok(
+			body.includes('updateWorkspace(') && body.includes('createWorkspace('),
+			'必须登记进工作区列表（有当前记录则更新它，否则新建）',
+		);
+	});
+
+	test('★★ CSS：三条编辑动作必须**纵向**排列（文案长，横排会挤成一团）', () => {
+		const css = fs.readFileSync(CSS, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+		const at = css.indexOf('.ws-dropdown-edit {');
+		assert.ok(at > 0, '应能找到 .ws-dropdown-edit 规则');
+		assert.ok(css.slice(at, at + 300).includes('flex-direction: column'), '三条必须纵向排列');
+		assert.ok(
+			css.includes('.sidebar-toolbar .ws-edit-btn'),
+			'编辑按钮必须复用底部动作按钮的视觉（图标 + 文案）',
+		);
+	});
+
+	test('★★★「将文件夹添加到工作区」的判据必须是「窗口 folder 集合前后差」（只写用户刚加的那些）', () => {
+		// 原生命令的对话框结果不返回给我们 ⇒ 只能靠窗口快照的前后差定位「用户刚加了哪些 root」。
+		// 差集口径是**纯追加**的前提：拿窗口全量 root 写文件就会覆盖用户手写的 entries ✗。
+		const src = stripAllComments(fs.readFileSync(SIDEBAR, 'utf8'));
+		const at = src.indexOf('private async _addFolderToWorkspace(');
+		assert.ok(at > 0, '应有 _addFolderToWorkspace');
+		const body = src.slice(at, at + 1200);
+		assert.ok(body.includes('_currentWindowFolderPaths()'), '必须取窗口 folder 前后快照');
+		const beforeAt = body.indexOf('const before');
+		const cmdAt = body.indexOf('_runWorkspaceCommand(');
+		assert.ok(beforeAt > 0 && cmdAt > 0 && beforeAt < cmdAt, 'before 快照必须在执行命令**之前**');
+		assert.ok(body.includes('_persistAddedFoldersToWorkspaceFile(added)'), '有新增才写回');
+		assert.ok(body.includes('added.length === 0'), '取消选择 ⇒ 无新增 ⇒ 零副作用');
+	});
+
+	test('★★★ 写回必须走「读原文件 → 只增不改 → jsonEditing 的 folders key」，不得整文件覆盖', () => {
+		// 用户 2026-09-16 裁决：加根要真正写回原 `.code-workspace`。
+		// 安全边界（否则重演 09-14/15「用户资产被改坏」✗）：
+		//   ① 先读、用**容错 JSONC** 解析（用户文件里可能有注释）；
+		//   ② 用只增不改的纯函数 {@link planAppendWorkspaceFolders} 合并；
+		//   ③ 只写 `folders` 一个 key（settings / launch / tasks / 注释由编辑器保留）；
+		//   ④ 已声明过 ⇒ 短路不写盘（幂等）。
+		const src = stripAllComments(fs.readFileSync(SIDEBAR, 'utf8'));
+		const at = src.indexOf('private async _persistAddedFoldersToWorkspaceFile(');
+		assert.ok(at > 0, '必须有写回实现');
+		const body = src.slice(at, at + 4200);
+		assert.ok(body.includes('readFile(configUri)'), '必须先读原文件');
+		assert.ok(body.includes('doParseStoredWorkspace('), '必须用容错 JSONC 解析（用户文件可能有注释）');
+		assert.ok(body.includes('planAppendWorkspaceFolders('), '必须走「只增不改」的纯函数');
+		assert.ok(
+			body.includes(`path: ['folders']`),
+			'只能改 folders 这一个 key —— 整文件覆盖会清掉 settings/注释（09-14 事故形态）✗',
+		);
+		assert.ok(!body.includes('writeFile('), '不得整体覆写既有工作区文件（只有「另存为」才写新文件）');
+		assert.ok(body.includes('appended.length === 0'), '已声明过的 root 必须短路，避免无意义写盘');
+		// 目录型工作区（没有 codeWorkspacePath）⇒ 不碰任何文件，改为并进记录（union，只增不减）。
+		assert.ok(
+			body.includes('updateWorkspace(record.id, { relatedFolders: next })'),
+			'没有工作区文件时应把新 root 并进记录的 relatedFolders',
+		);
+		assert.ok(
+			!body.includes('.clear()') && !body.includes('relatedFolders: []'),
+			'并集口径：绝不清空既有 relatedFolders（窄化写 = 2026-09-14 污染事故的形态）✗',
+		);
 	});
 });
 

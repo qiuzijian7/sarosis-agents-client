@@ -51,6 +51,8 @@ import { TraceIngester } from './codebaseGraphTraces.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher, CodebaseGraphChangeEvent } from './codebaseGraphWatcher.js';
 import { CodebaseGraphIncrementalIndexer } from './codebaseGraphIncremental.js';
 import { shouldRecordHashAfterParse, EXTENSION_TO_WASM_LANG, AST_TO_NODE_TYPE, planForeignProjectPrune } from '../common/codebaseIndexDefaults.js';
+import { wsStage } from './wsSwitchDiag.js';
+import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
 import { CodebaseGraphExcludeResolver } from './codebaseGraphExcludeResolver.js';
 import { CodebaseGraphScanner } from './codebaseGraphScanner.js';
 import { CodebaseGraphParserPool } from './codebaseGraphParserPool.js';
@@ -78,6 +80,16 @@ export interface GraphEdge {
 	target: string;
 	type: string;       // CALLS, IMPORTS, DEFINES, CONTAINS_FILE
 	properties?: Record<string, any>;  // 调用边携带 loopDepth 等上下文（#9 过程间传播）
+	/**
+	 * **SQLite 行 id**（2026-09-16 新增；只有 `getAllEdges(…, afterId)` 这条读路径会带回来）。
+	 *
+	 * 用途：keyset 分页游标 —— `LIMIT/OFFSET` 在大表上是 O(offset) 累计（见 store 内注释），
+	 * 改为「上一页最后一行的 id」作游标后是 O(n) 总量。
+	 *
+	 * ⚠ **不要**把它当内存 store 的边 id 用：store 的边 id 由 `insertEdge` 自增分配，
+	 * 与 SQLite 行 id 是两套编号（跨项目加载时直接沿用会撞号）—— 只读作游标。
+	 */
+	id?: string;
 }
 
 export interface GraphData {
@@ -305,6 +317,20 @@ export interface ICodebaseGraphService {
 	 */
 	getProjectNodeCount(project: string): number;
 
+	/**
+	 * 最近一次针对该 root 的 `loadGraphMerge()` 是否**解析成功但结果为空**（0 节点）。
+	 *
+	 * ★ 2026-09-16（用户报「PJDB\S1Game 一份 **10KB** 空图永远不重建」）：
+	 * 调用方要在「**跳过**自动索引（避免对几十 MB 的巨图反复全量重建）」与「**允许**重建
+	 * （制品其实是空的）」之间二选一，而这两种情况的返回值、节点数、**字节数**都可能相同 ——
+	 * 只有解析方（本服务）知道区别：**能解压出内容 ⇒ 制品是空的；解压报错 ⇒ 制品是坏的**。
+	 * 于是把判据从「字节数」这个**代理**换回事实。
+	 *
+	 * ⚠ 契约：只反映**最近一次**针对该 root 的合并结果 ⇒ 必须**紧接在 `loadGraphMerge` 之后**调用；
+	 * 之后任何一次非空合并都会清除该标记。`rootPath` 传该 folder 的根（与构造制品路径时同一来源）。
+	 */
+	isLastMergeEmpty(rootPath: string): boolean;
+
 	/** Phase 2c async overloads — 当 `saros.codebaseGraph.sqliteBackend` 启用时走 SQLite 后端 */
 	getVisualizationNodesAsync(offset: number, limit: number): Promise<{ nodes: VisualizationNode[]; total: number }>;
 	getVisualizationEdgesAsync(nodeIds: Set<string>, offset: number, limit: number): Promise<GraphEdge[]>;
@@ -483,6 +509,26 @@ export interface ICodebaseGraphService {
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
+
+/**
+ * `_loadGraphFromSqlite()` 的分页大小（单次 IPC 负载行数，2026-09-16）。
+ *
+ * 取 5000：单批 upsert/insertEdge 约 5~20ms（正好在 8ms 切片预算附近，会被 `yieldToEventLoop`
+ * 切掉），且单条 IPC 消息控制在 MB 级 —— 大了则单批处理时间长，小了则往返次数太多。
+ */
+const SQLITE_LOAD_PAGE_SIZE = 5000;
+
+/**
+ * `onDidGraphLoadProgress` 的**终态行**前缀（2026-09-16）。
+ *
+ * 语义：UI 收到以它开头的行 = 「本次加载已结束」，可清掉「正在加载… 请稍候」提示并刷新列表。
+ * 为什么用前缀约定而不加一个新事件：该事件已被 merge / BM25 / SQLite 同步等多处消费，改事件
+ * 类型会牵动全部消费点；而常量**两端同一个来源**，不会退化成各写一遍的魔法字符串。
+ *
+ * 目前只有 `_loadGraphFromSqlite()`（SQLite 按需载入，实测 13~32s —— 正是「LLM 输出时 app
+ * 无响应」那条）会发终态行；制品合并路径（`loadGraphMerge`）有 `isGraphLoading` 状态可判。
+ */
+export const GRAPH_LOAD_DONE_PREFIX = '✅ 图谱加载完成';
 
 // EXTENSION_TO_WASM_LANG 已下沉到 common/codebaseIndexDefaults.js（service 与 Scanner 共用）
 
@@ -855,6 +901,11 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private _projectName = '_default';
 	/** 多 folder：归一化 rootPath → 项目名，供增量索引/监听/保存按 folder 解析正确的 project。 */
 	private _rootProjectMap = new Map<string, string>();
+	/**
+	 * **解析成功但 0 节点**的 root（归一化）。见接口注释 `isLastMergeEmpty`：
+	 * bootstrap 需要它把「空制品」与「损坏/超大的制品」区分开 —— 前者允许重建，后者跳过。
+	 */
+	private readonly _emptyArtifactRoots = new Set<string>();
 	/** 累积的调用边（虚拟目标 call:<name>），索引后由 _matchCallsToDefinitions 解析为真实 CALLS 边（#9） */
 	private _pendingCallEdges: { source: string; callee: string; loopDepth: number }[] = [];
 	/** 累积的继承边（虚拟目标 inherits:/implements:<baseName>），索引后由 _matchInheritsToDefinitions 解析为真实 INHERITS/IMPLEMENTS 边 */
@@ -1186,69 +1237,189 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		const projectsToLoad = wsProjects.length > 0
 			? allProjects.map(p => p.name).filter(n => wsProjects.includes(n))
 			: [project];
-		const allNodes: GraphNode[] = [];
-		for (const p of projectsToLoad) {
-			const nodes = await this._sqliteBackend.getAllNodes(p);
-			allNodes.push(...nodes);
-		}
-		const nodes = allNodes;
-		if (nodes.length === 0) { return false; }
+		// 2026-09-16：这条重活此前**完全沉默**（只有结束时一条 info 日志）⇒ 用户面对的是
+		// 「按了没反应/界面卡住」。现在全程上报，UI 可显示「正在加载…请稍候」。
+		this._onDidGraphLoadProgress.fire(`正在从 SQLite 载入图谱（${projectsToLoad.length} 个项目：${projectsToLoad.slice(0, 3).join(', ')}${projectsToLoad.length > 3 ? ' …' : ''}）…`);
 
+		// ── 分页 + 时间切片（2026-09-16）─────────────────────────────────────────
+		// 旧实现一次 `getAllNodes(p)` **全量**跨 IPC（几十万对象：主进程 stringify + renderer
+		// **同步** parse），随后是一段**无 yield** 的 upsert / insertEdge 长循环 ⇒ 主线程冻结
+		// 十几~三十几秒（用户日志实测 13~32s；注意那是**抛错之前**的耗时 —— 所以修掉
+		// `push(...)` 的栈溢出并**不等于**不卡）。
+		// 现改为 keyset 分页（`id > 游标`，O(n)；`LIMIT/OFFSET` 是 O(offset) 累计）+ 8ms 切片让出。
 		store.setDeferBM25(true);
-
-		// 还原节点（SQLite rowid → 内存 store id，保持一致）
 		let maxId = 0;
-		for (const node of nodes) {
-			const id = Number(node.id);
-			if (id > maxId) { maxId = id; }
-			store.upsertNode({
-				id,
-				project: node.project || project,
-				label: node.label || node.type || '',
-				name: node.name,
-				qualifiedName: node.qualifiedName || node.name,
-				filePath: node.filePath,
-				startLine: node.startLine,
-				endLine: node.endLine,
-				properties: node.properties || {},
-			});
-		}
-		// 更新 _nextNodeId 避免后续自动分配冲突
-		(store as any)._nextNodeId = maxId + 1;
-
-		// 还原边（SQLite source/target 已是整数 id，与节点一致）
-		// 多 folder：同样加载全部项目的边
+		let loadedNodes = 0;
+		let loadedEdges = 0;
 		for (const p of projectsToLoad) {
-			const edges = await this._sqliteBackend.getAllEdges(p);
-			for (const e of edges) {
-				store.insertEdge({
-					project: p,
-					sourceId: Number(e.source),
-					targetId: Number(e.target),
-					type: e.type,
-					properties: e.properties || {},
-				});
+			let cursor: number | undefined;
+			let sliceStart = performance.now();
+			for (;;) {
+				// ⚠ 绝不要再写 `allNodes.push(...batch)`：单项目节点可达数十万（UE5EA 78 万 /
+				// S1Game 34 万 / 本仓 17.6 万），展开成函数实参会直接抛
+				// `Maximum call stack size exceeded`（V8 实参上限约 6~12 万）——
+				// 这正是 2026-09-16 用户日志 `20260916T102421` 的根因。逐条处理即可，无数量上限。
+				const batch = await this._sqliteBackend.getAllNodes(p, SQLITE_LOAD_PAGE_SIZE, undefined, cursor);
+				if (batch.length === 0) { break; }
+				for (const node of batch) {
+					const id = Number(node.id);
+					if (id > maxId) { maxId = id; }
+					// 还原节点（SQLite rowid → 内存 store id，保持一致）
+					store.upsertNode({
+						id,
+						project: node.project || project,
+						label: node.label || node.type || '',
+						name: node.name,
+						qualifiedName: node.qualifiedName || node.name,
+						filePath: node.filePath,
+						startLine: node.startLine,
+						endLine: node.endLine,
+						properties: node.properties || {},
+					});
+					loadedNodes++;
+					if ((loadedNodes % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+						await yieldToEventLoop();
+						sliceStart = performance.now();
+					}
+				}
+				cursor = Number(batch[batch.length - 1].id);
+				if (batch.length < SQLITE_LOAD_PAGE_SIZE) { break; }
+				this._onDidGraphLoadProgress.fire(`已载入项目 "${p}"：${loadedNodes} 节点…`);
 			}
 		}
+		if (loadedNodes === 0) { store.setDeferBM25(false); return false; }
+		// 更新 _nextNodeId 避免后续自动分配冲突
+		(store as any)._nextNodeId = maxId + 1;
+		this._onDidGraphLoadProgress.fire(`节点已还原（${loadedNodes} 个），正在载入边…`);
+
+		// 还原边（SQLite source/target 已是整数 id，与节点一致）；多 folder：加载全部项目的边
+		for (const p of projectsToLoad) {
+			let cursor: number | undefined;
+			let sliceStart = performance.now();
+			for (;;) {
+				const batch = await this._sqliteBackend.getAllEdges(p, SQLITE_LOAD_PAGE_SIZE, undefined, cursor);
+				if (batch.length === 0) { break; }
+				for (const e of batch) {
+					store.insertEdge({
+						project: p,
+						sourceId: Number(e.source),
+						targetId: Number(e.target),
+						type: e.type,
+						properties: e.properties || {},
+					});
+					loadedEdges++;
+					if ((loadedEdges % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+						await yieldToEventLoop();
+						sliceStart = performance.now();
+					}
+				}
+				// 游标 = 本页最后一行的 **SQLite 行 id**（只作游标；不能当 store 边 id 传进
+				// insertEdge —— 两套编号，见 GraphEdge.id 注释）。缺 id 时无法继续分页 ⇒ 跳出防死循环。
+				const lastId = batch[batch.length - 1].id;
+				if (lastId === undefined) { break; }
+				cursor = Number(lastId);
+				if (batch.length < SQLITE_LOAD_PAGE_SIZE) { break; }
+				this._onDidGraphLoadProgress.fire(`已载入项目 "${p}"：${loadedEdges} 边…`);
+			}
+		}
+		this._onDidGraphLoadProgress.fire(`边已还原（${loadedEdges} 条），正在重建全文索引…`);
 
 		store.setDeferBM25(false);
 		// force=true：加载路径无脏集，增量模式会空转使 BM25 为空
 		await store.rebuildBM25(undefined, true);
 
 		const dur = Date.now() - tStart;
-		this._logService.info('[CodebaseGraph]', `_loadGraphFromSqlite: ${nodes.length} nodes + edges loaded (${projectsToLoad.length} projects) in ${dur}ms`);
+		// 终态行（前缀常量）：UI 据此清掉「正在加载…」提示并刷新列表（本路径没有独立完成事件）
+		this._onDidGraphLoadProgress.fire(`${GRAPH_LOAD_DONE_PREFIX}（${loadedNodes} 节点 / ${loadedEdges} 边，${dur}ms）`);
+		this._logService.info('[CodebaseGraph]', `_loadGraphFromSqlite: ${loadedNodes} nodes + ${loadedEdges} edges loaded (${projectsToLoad.length} projects) in ${dur}ms`);
 		return true;
 	}
 
 	/**
 	 * Phase 2f 公开入口：确保内存 store 中有图数据可用。
 	 * 当 `_sqliteBackendEnabled` 时从 SQLite 按需加载；否则检查原有内存 store。
+	 *
+	 * ★★ 2026-09-16：**失败记忆 + 退避**（修「LLM 输出时 app 反复无响应」）。
+	 *
+	 * ## 为什么必须有
+	 *
+	 * `_loadGraphFromSqlite()` 是**同步 CPU/内存重活**（几十万节点读入内存 + `rebuildBM25`
+	 * 全量重建）。而所有「要用图」的工具（`index_status` / `get_architecture` / `search_graph` /
+	 * `delegate_task` 图预检…）都走 `codebaseTools.ensureGraph()`：
+	 * ```ts
+	 * await whenGraphLoaded();
+	 * await ensureDeferredGraphsLoaded(...);          // 取走并清空集合 ⇒ 只会跑一次
+	 * if (!hasGraphData()) { if (!await tryLoadFromSqlite()) return false; }   // ← 这里会反复跑
+	 * ```
+	 * 内存 store 为空时（制品损坏 / 图被 prune / 本次尚未加载），**每次工具调用都会重跑
+	 * 一次这份重活**；一旦它失败（实测 `Maximum call stack size exceeded`），下一次调用
+	 * 又从头再来 —— 用户日志 `20260916T102421` 实证：`index_status` 在 10:34~10:45 反复
+	 * FAILED **13.6s / 16.5s / 25.2s / 29.5s / 30.2s / 32.4s**，期间 renderer 主线程被同步
+	 * 阻塞 ⇒ 并发的 `file_read` **全部等满 60s 超时**（9 次），表现就是「LLM 输出过程中
+	 * app 短暂无响应」。
+	 *
+	 * ⚠ 关键事实：**同步**重活**无法**被 `Promise.race(timeout)` / `setTimeout` 抢占 ——
+	 * 计时器回调要等 JS 让出主线程才会执行。所以对这条路径，唯一有效的止血手段是
+	 * **不要再试**（把损失从"每次调用几十秒"限制为"最多一两次"），而不是加超时。
+	 *
+	 * 语义：失败达上限 / 处于退避窗口内 ⇒ **快速返回 false**（调用方 `ensureGraph()` 会
+	 * 走 `noGraphGuidance()` 给出可执行指引），不再触发重活。成功即清零；
+	 * 工作区切换（`_pruneForeignProjects`）也会清零，避免误伤"换个工作区就好了"的场景。
 	 */
 	async tryLoadFromSqlite(): Promise<boolean> {
 		if (!this._sqliteBackendEnabled) {
 			return this._graph.nodeCount > 0;
 		}
-		return this._loadGraphFromSqlite();
+		if (this._sqliteLoadFailures >= CodebaseGraphService.SQLITE_LOAD_MAX_FAILURES) {
+			if (!this._sqliteLoadGaveUpLogged) {
+				this._sqliteLoadGaveUpLogged = true;
+				this._logService.warn('[CodebaseGraph]', `tryLoadFromSqlite: 已放弃本会话的按需加载（连续失败 ${this._sqliteLoadFailures} 次，最后一次: ${this._sqliteLoadLastError ?? 'unknown'}）` +
+					'—— 不再重跑数十秒同步重活；切换工作区或重新索引可重置');
+			}
+			return this._graph.nodeCount > 0;
+		}
+		if (this._sqliteLoadFailures > 0
+			&& Date.now() - this._sqliteLoadLastFailureAt < CodebaseGraphService.SQLITE_LOAD_BACKOFF_MS) {
+			return this._graph.nodeCount > 0;
+		}
+
+		const t0 = Date.now();
+		try {
+			const ok = await this._loadGraphFromSqlite();
+			if (ok && this._graph.nodeCount > 0) {
+				this._sqliteLoadFailures = 0;
+				this._sqliteLoadLastError = undefined;
+			} else {
+				// 「成功但 0 节点」同样要记：否则下一次调用还会再跑一遍同样的空活
+				this._noteSqliteLoadFailure(`load returned ${ok ? 'true but 0 nodes' : 'false'}`);
+			}
+			return ok;
+		} catch (err) {
+			this._noteSqliteLoadFailure(err);
+			// 首次失败**如实抛出**（保留真实错误给调用方与日志，便于定位爆栈点）；
+			// 下一次调用会被上面的失败记忆拦成快速返回。
+			throw err;
+		} finally {
+			const dur = Date.now() - t0;
+			// 耗时入日志：这条重活此前没有耗时记录，导致"反复卡 30s"只能靠时间戳推断。
+			if (dur > 1000) {
+				this._logService.warn('[CodebaseGraph]', `tryLoadFromSqlite took ${dur}ms (attempt ${this._sqliteLoadFailures + 1}/${CodebaseGraphService.SQLITE_LOAD_MAX_FAILURES})`);
+			}
+		}
+	}
+
+	private _noteSqliteLoadFailure(err: unknown): void {
+		this._sqliteLoadFailures++;
+		this._sqliteLoadLastFailureAt = Date.now();
+		this._sqliteLoadLastError = err instanceof Error ? err.message : String(err);
+		this._logService.warn('[CodebaseGraph]', `tryLoadFromSqlite failed (${this._sqliteLoadFailures}/${CodebaseGraphService.SQLITE_LOAD_MAX_FAILURES}): ${this._sqliteLoadLastError}`);
+	}
+
+	/** 见 `tryLoadFromSqlite` 注释：工作区切换时重置失败记忆（新工作区可能是另一份健康的图）。 */
+	private _resetSqliteLoadFailures(): void {
+		this._sqliteLoadFailures = 0;
+		this._sqliteLoadLastError = undefined;
+		this._sqliteLoadGaveUpLogged = false;
 	}
 
 	tryLockIndex(): boolean {
@@ -2429,6 +2600,15 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 * @returns 被丢弃的项目名（含节点数），供日志/诊断
 	 */
 	private _pruneForeignProjects(reason: string): string[] {
+		// ★ 2026-09-16 诊断（用户报「切换工作区就卡住」）：本方法是**同步删数据**（实测一次丢
+		// 176836 个节点 —— store 清理 + BM25/QN/文件哈希 + cypher/semantic 引擎失效），
+		// 与紧随其后的图谱加载叠在一起就是用户感知的卡住。打阶段标记 + 总耗时。
+		wsStage(`graph: prune 外来项目（删 store 数据，reason=${reason}）`);
+		const tPrune = Date.now();
+		// ★ 2026-09-16：工作区变了 ⇒ 重置「按需加载失败记忆」。
+		// 新工作区可能是另一份健康的图，不该继承上一个工作区的失败退避 —— 否则用户
+		// "换个工作区"却会发现图功能仍然不可用（见 `tryLoadFromSqlite` 的注释）。
+		this._resetSqliteLoadFailures();
 		// ① 先停掉已不属于本工作区的 watcher 根。顺序很重要：watcher 每轮（5~60s）会检测变更并
 		//    fire 事件，`_onWatcherChange` 会为「已丢弃的项目」再跑增量索引，把刚清掉的数据
 		//    **重新建回来**（与 prune 互相抵消）。所以必须先断掉事件源，再清数据。
@@ -2464,9 +2644,12 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		// ② 丢弃内存 store 中不属于当前工作区的项目。
 		//    判据下沉为纯函数（`planForeignProjectPrune`，有单测）：无工作区 ⇒ 返回空 ⇒ 不误删。
+		//    ★ 2026-09-16：判据从「项目名」升级为「**root**」（用户报同名 S1Game 互相污染）——
+		//    切到 D:\GR_\S1Game 时，内存里来自 D:\PJDB\S1Game 的同名项目必须被丢弃。
 		const keep = this._workspaceProjects();
 		const projects = this._graph.store.listProjects();
-		const victims = planForeignProjectPrune(projects.map(p => p.name), keep);
+		const wsRoots = this._workspaceService.getWorkspace().folders.map(f => this._normalizeRoot(f.uri.fsPath));
+		const victims = planForeignProjectPrune(projects.map(p => p.name), keep, this._rootProjectMap, wsRoots);
 		const nodeCounts = new Map(projects.map(p => [p.name, p.nodeCount]));
 		const dropped: string[] = [];
 		for (const name of victims) {
@@ -2479,20 +2662,52 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			}
 		}
 
-		// ③ 映射同步收敛：否则 `_resolveActiveProject` 会继续指向已丢弃的项目
-		const keepSet = new Set(keep);
-		for (const [root, proj] of [...this._rootProjectMap]) {
-			if (!keepSet.has(proj)) { this._rootProjectMap.delete(root); }
+		// ③ **同名多 root 的残留告警**（2026-09-16）：store / SQLite 以**项目名**为唯一键，
+		// 所以「一个项目名对应多个 root」（GR_\S1Game 与 PJDB\S1Game 都被加载过）时，两份数据在
+		// 内存里已经合并、无法再按 root 拆开 ⇒ 这里只**告警**（不擅自丢弃 —— 那会把当前工作区的
+		// 数据一起删掉）。用户视角的症状是「检索结果串进了另一个同名工程的内容」，看到此告警
+		// 即可确认；彻底修需要「项目名按 root 唯一」。
+		// ⚠ 必须在 ④ 删映射**之前**统计：否则外来 root 的痕迹已被抹掉，永远统计不到。
+		const wsRootSet = new Set(wsRoots);
+		const sameNameMixed: string[] = [];
+		if (wsRootSet.size > 0) {
+			for (const p of projects.map(x => x.name)) {
+				if (!keep.includes(p)) { continue; } // 已被丢弃 ⇒ 无残留问题
+				const roots = [...this._rootProjectMap].filter(([, proj]) => proj === p).map(([r]) => r);
+				const foreign = roots.filter(r => !wsRootSet.has(r));
+				if (foreign.length > 0) { sameNameMixed.push(`${p}(外: ${foreign.join(', ')})`); }
+			}
 		}
 
-		if (dropped.length > 0 || unwatched.length > 0) {
+		// ④ 映射同步收敛：丢掉**根已不属于当前工作区**的映射。
+		// ★ 2026-09-16：原判据是「项目名不在 keep 里」（`!keepSet.has(proj)`）—— 同名不同 root 时，
+		// 旧工作区（PJDB\S1Game）的映射会因名字恰好也是当前工作区的项目名而被**保留** ✗，
+		// 于是它以「已注册」的身份继续参与 ② 的 root 判据、并让 `_resolveActiveProject` 有歧义。
+		// 改为以**根**为准（与 ② 同一把尺子）。
+		const droppedMappings: string[] = [];
+		for (const [root, proj] of [...this._rootProjectMap]) {
+			if (!wsRootSet.has(root)) {
+				this._rootProjectMap.delete(root);
+				droppedMappings.push(`${proj}@${root}`);
+			}
+		}
+
+		if (sameNameMixed.length > 0) {
+			this._logService.warn('[CodebaseGraph]', `[prune] same-name project(s) span multiple roots — data already merged under one project key, cannot split by root: ${sameNameMixed.join('; ')}`);
+		}
+
+		if (dropped.length > 0 || unwatched.length > 0 || droppedMappings.length > 0) {
 			// 索引进行中时不改写字段（见 `_setProjectNameUnlessIndexing`）；日志用实时解析值，避免打印陈旧字段
 			const activeProject = this._resolveActiveProject();
 			this._setProjectNameUnlessIndexing(activeProject);
 			this._logService.warn('[CodebaseGraph]', `[prune] dropped non-workspace project(s): ${dropped.join(', ') || '(none)'}` +
 				`${unwatched.length > 0 ? `; stopped watching: ${unwatched.join(', ')}` : ''}` +
+				`${droppedMappings.length > 0 ? `; pruned stale root mapping(s): ${droppedMappings.join(', ')}` : ''}` +
 				` (reason=${reason}); store nodes=${this._graph.nodeCount}, project="${activeProject}"`);
 		}
+		// ★ 2026-09-16 诊断：本方法**总是**报耗时（含「什么都没丢」的快路径）——
+		// 否则「切换卡住」时无法区分「prune 慢」与「prune 很快、是别处慢」。
+		this._logService.info('[CodebaseGraph]', `[prune] 完成（${Date.now() - tPrune}ms）：丢弃 ${dropped.length} 个项目、后续延迟保存 ${cancelled.length} 个、过期映射 ${droppedMappings.length} 个（reason=${reason}）`);
 		return dropped;
 	}
 
@@ -3443,6 +3658,11 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		return this._graph.store.getNodeCount(project);
 	}
 
+	/** 见接口注释（标记由 `_loadGraphMergeImpl` 写入 / 清除）。 */
+	isLastMergeEmpty(rootPath: string): boolean {
+		return this._emptyArtifactRoots.has(this._normalizeRoot(rootPath));
+	}
+
 	// ─── Visualization Data (pre-computed layout + colors + sizes) ───────
 
 	/** FNV-1a hash (matches codebase-memory-mcp layout3d.c) */
@@ -3714,6 +3934,24 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		}
 		return [...seen.entries()].map(([filePath, proj]) => ({ filePath, project: proj }));
 	}
+
+	// ─── 按需加载（tryLoadFromSqlite）的失败记忆 ─────────────────────────────
+	//
+	// 见 `tryLoadFromSqlite` 的注释：该路径是同步重活（几十万节点 + BM25 重建，实测 13~32s），
+	// 失败后若不加记忆，**每次用图工具调用都会重跑一遍** ⇒ UI 反复整窗卡死 + 并发工具 60s 超时。
+	/** 连续失败次数（成功即清零）。 */
+	private _sqliteLoadFailures = 0;
+	/** 最近一次失败时刻（用于退避窗口）。 */
+	private _sqliteLoadLastFailureAt = 0;
+	/** 最近一次失败原因（便于日志/排查，不参与逻辑）。 */
+	private _sqliteLoadLastError: string | undefined;
+	/** 「已放弃」只记一次日志，避免每次工具调用都刷屏。 */
+	private _sqliteLoadGaveUpLogged = false;
+
+	/** 本会话最多尝试几次（含成功前的失败）；超过即快速失败，不再重跑重活。 */
+	private static readonly SQLITE_LOAD_MAX_FAILURES = 2;
+	/** 失败后的退避窗口：窗口内直接快速失败。 */
+	private static readonly SQLITE_LOAD_BACKOFF_MS = 5 * 60_000;
 
 	// ─── 图谱加载竞态守卫（启动 loadGraphMerge 与 LLM 工具调用之间的竞争） ───
 
@@ -5464,6 +5702,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 					// force=true：合并加载无脏集，增量模式会空转
 				// 2026-09-15：BM25 重建是合并后的第二个重活（全量倒排），也要让 UI 显示出来
 				if (rebuildBM25) {
+					// ★ 2026-09-16 诊断：BM25 全量重建是**合并之后的第二个重活**（倒排全量重算），
+					// 也是主线程上的同步段之一 ⇒ 打阶段标记（供看门狗事后补报）+ 记耗时。
+					wsStage(`graph: 重建 BM25（${this._basename(p)}）`);
+					const tBm25 = Date.now();
 					this._onDidGraphLoadProgress.fire('正在重建全文索引（BM25）…');
 					// 同样要节流：rebuildBM25 每次让出都会回调 ⇒ 按「每 2 万节点一条」推送。
 					await this._graph.store.rebuildBM25((done, total) => {
@@ -5471,6 +5713,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 							this._onDidGraphLoadProgress.fire(`重建全文索引（BM25）：${done}/${total}`);
 						}
 					}, true);
+					this._logService.info('[CodebaseGraph]', `[loadGraphMerge] BM25 重建完成（${Date.now() - tBm25}ms）`);
 				}
 					// 从文件路径推导 rootPath 并注册到 _rootProjectMap（多 folder 项目名解析）
 					const graphDirIdx = p.lastIndexOf('/.codebase-memory/') >= 0 ? p.lastIndexOf('/.codebase-memory/')
@@ -5490,6 +5733,19 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 						this._logService.warn('[CodebaseGraph]', `[loadGraphMerge] discarded ${p} as project="${proj}" — root is no longer part of the current workspace (${Date.now() - tStart}ms)`);
 						return false;
 					}
+					// ★★★ 2026-09-16（用户报「PJDB\S1Game 一份 **10KB** 空图永远不重建」）：
+					// **解析成功但 0 节点 = 制品是空的**（不是「有图」）⇒ 视为未加载**并留下标记**。
+					// 旧实现在这里直接 `return true` 并打印 `merged ..., store nodes=0`（日志实证），
+					// 调用方据此 `_readyFolders.add()` ⇒ 该 folder **既没有图、也永远不会重建** ✗
+					// （"制品在，却什么都没有"）。标记供 `isLastMergeEmpty()` 读取：调用方要靠它把
+					// 「空制品（允许重建）」与「损坏/几十 MB 的巨图（跳过重建）」分开，而不是猜字节数。
+					const mergedNodes = this._graph.store.getNodeCount(proj);
+					if (mergedNodes === 0) {
+						this._emptyArtifactRoots.add(rootPath);
+						this._logService.warn('[CodebaseGraph]', `[loadGraphMerge] ${p} parsed OK but yields 0 nodes for project "${proj}" (${Date.now() - tStart}ms) — treating as NOT loaded (empty / garbage artifact).`);
+						return false;
+					}
+					this._emptyArtifactRoots.delete(rootPath);
 					this._rootProjectMap.set(rootPath, proj);
 					// 2026-09-15 修：原为「首个完成的 merge 胜」⇒ 同一窗口原地切换工作区时
 					// （replaceWorkspaceFoldersInMemory，不 reload）并发 merge 会按**完成顺序**

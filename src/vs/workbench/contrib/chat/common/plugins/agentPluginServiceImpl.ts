@@ -20,7 +20,7 @@ import {
 } from '../../../../../base/common/resources.js';
 import { hasKey } from '../../../../../base/common/types.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { ICommandService } from '../../../../../platform/commands/common/commands.js';
+import { IExtensionsWorkbenchService } from '../../../extensions/common/extensions.js';
 import { ConfigurationTarget, getConfigValueInTarget, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -883,7 +883,7 @@ export class ExtensionAgentPluginDiscovery extends AbstractAgentPluginDiscovery 
 	private readonly _whenKeys = new Set<string>();
 
 	constructor(
-		@ICommandService private readonly _commandService: ICommandService,
+		@IExtensionsWorkbenchService private readonly _extensionsWorkbenchService: IExtensionsWorkbenchService,
 		@IContextKeyService private readonly _contextKeyService: IContextKeyService,
 		@IDialogService private readonly _dialogService: IDialogService,
 		@IFileService fileService: IFileService,
@@ -996,8 +996,28 @@ export class ExtensionAgentPluginDiscovery extends AbstractAgentPluginDiscovery 
 		const { confirmed } = await this._dialogService.confirm({
 			message: localize('uninstallExtensionForPlugin', "This plugin is provided by the extension '{0}'. Do you want to uninstall the extension?", extensionId),
 		});
-		if (confirmed) {
-			await this._commandService.executeCommand('workbench.extensions.uninstallExtension', extensionId);
+		if (!confirmed) {
+			return;
+		}
+
+		// ★ [Saros] 这里**不能**用 `workbench.extensions.uninstallExtension` 命令：
+		// 该命令由 `contrib/extensions/browser/extensions.contribution.ts` 注册，而 agents 窗口是
+		// 手写精选清单（`sessions.common.main.ts`）**不引入**该文件 ⇒ 命令在 agents 窗口不存在，
+		// `executeCommand` 只会静默失败（用户看到"点删除没反应"）。
+		// 改走服务层：`IExtensionsWorkbenchService` 在**两个窗口都已注册**（IDE 窗口由 extensions.contribution
+		// 注册，agents 窗口由 sessions.common.main.ts 注册）。
+		const extension = this._extensionsWorkbenchService.local.find(
+			ext => ext.identifier.id.toLowerCase() === extensionId.toLowerCase()
+		);
+		if (!extension) {
+			this._logService.warn(`[ExtensionAgentPluginDiscovery] cannot uninstall '${extensionId}': not found in IExtensionsWorkbenchService.local`);
+			return;
+		}
+		try {
+			await this._extensionsWorkbenchService.uninstall(extension);
+			this._logService.info(`[ExtensionAgentPluginDiscovery] uninstalled extension '${extensionId}' (was providing Agent plugin(s))`);
+		} catch (err) {
+			this._logService.error(`[ExtensionAgentPluginDiscovery] uninstall '${extensionId}' failed`, err);
 		}
 	}
 }

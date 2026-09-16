@@ -207,6 +207,22 @@ export interface IChatFileContribution {
 	readonly sessionTypes?: readonly string[];
 }
 
+/**
+ * [Saros] `contributes.agentCapabilities` —— 由 sessions 层注册的扩展点
+ * （`sessions/contrib/agentStudio/browser/agentCapabilitiesExtensionPoint.ts`）。
+ *
+ * 为什么类型放在 platform：agents 窗口的扩展启用判定
+ * （`extensionManifestPropertiesService`：这个贡献点是否允许在 sessions 窗口运行）
+ * 需要 `keyof IExtensionContributions` 里有这个名字；platform 不能反向依赖 sessions，
+ * 故此处只保留**结构**，运行时校验仍由 sessions 的扩展点 jsonSchema 负责。
+ */
+export interface IAgentCapabilityContribution {
+	/** 能力槽位：model / memory / tool / planning / execution / retrieval / kanban */
+	readonly capability: string;
+	readonly provider: string;
+	readonly priority?: number;
+}
+
 export interface IExtensionContributions {
 	commands?: ICommand[];
 	configuration?: any;
@@ -239,6 +255,8 @@ export interface IExtensionContributions {
 	readonly chatAgents?: ReadonlyArray<IChatFileContribution>;
 	readonly chatSkills?: ReadonlyArray<IChatFileContribution>;
 	readonly chatPlugins?: ReadonlyArray<IChatFileContribution>;
+	/** [Saros] Agent 能力提供者（model / memory / tool / planning / execution / retrieval / kanban）。 */
+	readonly agentCapabilities?: ReadonlyArray<IAgentCapabilityContribution>;
 	readonly languageModelTools?: ReadonlyArray<IToolContribution>;
 	readonly languageModelToolSets?: ReadonlyArray<IToolSetContribution>;
 	readonly mcpServerDefinitionProviders?: ReadonlyArray<IMcpCollectionContribution>;

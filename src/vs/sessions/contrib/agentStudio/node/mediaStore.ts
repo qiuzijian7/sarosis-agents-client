@@ -95,8 +95,30 @@ export class MediaStore {
 		});
 		fs.mkdirSync(opts.rootDir, { recursive: true });
 		this.db = factory(opts.rootDir);
+		this._applyPragmas();
 		this.db.exec(CREATE_TABLE);
 		this._migrate();
+	}
+
+	/**
+	 * PRAGMA 与 `kbSqliteStore` / `codebaseGraphSqliteStore` **对齐**（2026-09-15）。
+	 *
+	 * ── 为什么 media.db 也需要（与「单实例 / 多实例」无关）────────────────────────
+	 * **每个窗口是一个独立 renderer** ⇒ 工程里永远存在**多个到 `media.db` 的连接**
+	 * （每个窗口一个），哪怕切回「单实例多窗口」（模型 A）也一样。此前只有 kb/graph
+	 * 补了 PRAGMA，media 漏了 ⇒ 并发写会立刻抛 `SQLITE_BUSY`（甚至留下损坏库）：
+	 *   · `journal_mode = WAL`：多连接并发读 + 单写者，不再读写互斥；崩溃恢复更稳；
+	 *   · `busy_timeout = 5000`：抢不到锁时**等待 5s** 而不是立即失败。
+	 *
+	 * ⚠ 走 `exec` 而非 `pragma()`：本文件的 `SqliteDatabase` 接口只声明了 `exec`/`prepare`
+	 *   （测试用 fake 实现也只需满足这两条）；`PRAGMA` 的返回值用 `exec` 会被忽略，正合所需。
+	 * ⚠ PRAGMA 失败不能阻塞打开（只读介质等极端情况）—— 降级为旧行为即可。
+	 */
+	private _applyPragmas(): void {
+		try {
+			this.db.exec('PRAGMA journal_mode = WAL');
+			this.db.exec('PRAGMA busy_timeout = 5000');
+		} catch { /* 忽略：降级为无 PRAGMA 的旧行为，不影响可用性 */ }
 	}
 
 	/**
