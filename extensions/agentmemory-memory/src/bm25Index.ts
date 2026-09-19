@@ -208,29 +208,50 @@ export class BM25Index {
 
 	/** 序列化为 JSON string — 对齐 agentmemory SearchIndex.serialize() 格式 */
 	serialize(): string {
-		const payload: any = {
+		return JSON.stringify(this.serializePayload());
+	}
+
+	/**
+	 * P0-2（2026-09-19）：payload 形态独立出来，供网关把**多个 agent 的索引**聚合进同一份
+	 * 缓存制品（若在网关侧对 `serialize()` 的字符串再 `JSON.stringify`，会二次转义 ⇒ 体积翻倍）。
+	 */
+	serializePayload(): any {
+		return {
 			v: 2,
 			entries: Array.from(this.entries.entries()),
 			inverted: Array.from(this.invertedIndex.entries()).map(([k, v]) => [k, Array.from(v)]),
 			docTerms: Array.from(this.docTermCounts.entries()).map(([k, v]) => [k, Array.from(v.entries())]),
 			totalDocLength: this.totalDocLength,
 		};
-		return JSON.stringify(payload);
 	}
 
 	/** 反序列化 — 对齐 agentmemory SearchIndex.deserialize()，带容错 */
 	deserialize(json: string): boolean {
 		try {
-			const data = JSON.parse(json);
+			return this.deserializePayload(JSON.parse(json));
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * 见 serializePayload。
+	 * ★ 形状校验从严：三张表缺任何一张都返回 false（不半加载）。旧实现只查 `v`，遇到「只有 v 的
+	 *   残缺制品」会 `clear()` 后返回 true ⇒ 得到一个**空索引却被标记为加载成功**的索引
+	 *   （即纪律「加载成功 ≠ 有数据」）。
+	 */
+	deserializePayload(data: any): boolean {
+		try {
 			if (!data || data.v !== 2) return false;
+			if (!Array.isArray(data.entries) || !Array.isArray(data.inverted) || !Array.isArray(data.docTerms)) return false;
 			this.clear();
-			for (const [id, entry] of data.entries || []) {
-				this.entries.set(id, { id: entry.id || id, termCount: entry.termCount ?? 0 });
+			for (const [id, entry] of data.entries) {
+				this.entries.set(id, { id: entry?.id || id, termCount: entry?.termCount ?? 0 });
 			}
-			for (const [term, ids] of data.inverted || []) {
+			for (const [term, ids] of data.inverted) {
 				this.invertedIndex.set(term, new Set(ids || []));
 			}
-			for (const [id, pairs] of data.docTerms || []) {
+			for (const [id, pairs] of data.docTerms) {
 				this.docTermCounts.set(id, new Map(pairs || []));
 			}
 			this.totalDocLength = data.totalDocLength ?? 0;

@@ -41,6 +41,15 @@ import http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+	INDEX_CACHE_VERSION,
+	BM25_CACHE_FILE,
+	VECTOR_CACHE_FILE,
+	readCacheFile,
+	writeCacheFile,
+	validateCache,
+	nextSaveDelayMs,
+} from './indexCache.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -373,6 +382,8 @@ function flushAllItems(items) {
 // PUT/DELETE of a mem:memories:<agentId> value we update it incrementally.
 let BM25Ctor = null;
 let VectorCtor = null;
+/** P0-1（2026-09-19）：真语义 embedding 函数（与 VectorCtor 同源取；未加载则 null ⇒ 只走 trigram）。 */
+let EmbedFn = null;
 const indexByAgent = new Map();
 const vectorIndexByAgent = new Map();
 
@@ -420,7 +431,9 @@ async function resolveVectorModule() {
 			const mod = await import(pathToFileURL(c).href);
 			VectorCtor = mod.VectorIndex || (mod.default && mod.default.VectorIndex) || mod.default;
 			if (VectorCtor) {
-				emit('info', `${TAG} ✅ VectorIndex loaded from ${c}`);
+				// P0-1：一并取出真语义 embed（可用性由 getPipeline 内部判；不可用时 embed 返回 null）
+				if (typeof mod.embed === 'function') { EmbedFn = mod.embed; }
+				emit('info', `${TAG} ✅ VectorIndex loaded from ${c} (embed=${typeof EmbedFn === 'function' ? 'yes' : 'no'})`);
 				return;
 			}
 		} catch (err) {
@@ -430,6 +443,137 @@ async function resolveVectorModule() {
 	emit('warn', `${TAG} vectorIndex module not found; /search vector branch disabled (BM25-only).`);
 }
 
+// ── P0-1（2026-09-19）：真语义 embedding 的宿主侧适配 ────────────────────
+// 背景（探针实测）：包默认入口 require('sharp')（本仓 node_modules 里装坏 ⇒ pipeline 恒不可用），
+// 改走 dist 的 web/WASM 构建（不 require sharp、自带 ort-wasm-*.wasm）；而 web 构建还需要
+// ① `self` 全局（扩展侧补）② **用 fetch 读文件** ⇒ Node 的 fetch 不支持 file:// ⇒ 在这里拦一层，
+// 否则本地模型加载报 "fetch failed"。模型资产改为**预下载**（Node fetch 不走系统代理，实测拉不到）。
+const AM_EXT_ROOT = process.env['AGENTMEMORY_EXT_ROOT']
+	|| path.join(__dirname, '..', '..', 'agentmemory-memory');
+
+/** 注入模型 / wasm 目录（扩展侧只读 env；renderer 读不到 env，故只对本进程有效）。 */
+function setupEmbeddingPaths() {
+	try {
+		if (!process.env['AGENTMEMORY_MODEL_DIR']) {
+			const home = process.env.HOME || process.env.USERPROFILE || '.';
+			process.env['AGENTMEMORY_MODEL_DIR'] = path.join(home, '.agentmemory-models');
+		}
+		// ⚠ @xenova 会把 `localModelPath` 当 **URL 前缀**去 fetch：给裸 Windows 路径
+		// （`C:/Users/...`）会直接 "fetch failed"。所以额外注入 file:// 形式（扩展侧优先用它）。
+		if (!process.env['AGENTMEMORY_MODEL_URL']) {
+			process.env['AGENTMEMORY_MODEL_URL'] = pathToFileURL(process.env['AGENTMEMORY_MODEL_DIR']).href;
+		}
+		if (!process.env['AGENTMEMORY_WASM_DIR']) {
+			const wasmDir = path.join(AM_EXT_ROOT, 'node_modules', '@xenova', 'transformers', 'dist');
+			process.env['AGENTMEMORY_WASM_DIR'] = pathToFileURL(wasmDir).href + '/';
+		}
+		emit('log', `${TAG} embedding paths: modelDir=${process.env['AGENTMEMORY_MODEL_DIR']} wasmDir=${process.env['AGENTMEMORY_WASM_DIR']}`);
+	} catch (err) {
+		emit('warn', `${TAG} setupEmbeddingPaths failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+let _fileFetchShimInstalled = false;
+/** 让 `fetch('file://...')` 可读本地文件（@xenova 的 web 构建读模型/词表走这条路）。 */
+function installFileFetchShim() {
+	if (_fileFetchShimInstalled) return;
+	_fileFetchShimInstalled = true;
+	const origFetch = globalThis.fetch.bind(globalThis);
+	globalThis.fetch = async (input, init) => {
+		try {
+			const href = typeof input === 'string' ? input
+				: input instanceof URL ? input.href
+					: (input && typeof input.url === 'string') ? input.url : '';
+			// 兼容三种形态：file:// URL、裸盘符路径（C:/x）、POSIX 绝对路径（/x）——
+			// @xenova 在不同分支里可能直接传裸路径，这类 fetch 本来必然失败，拦下来读文件是纯增强。
+			const isFileLike = href.startsWith('file://') || /^[A-Za-z]:[\\/]/.test(href) || href.startsWith('/');
+			if (isFileLike) {
+				const fsPath = href.startsWith('file://') ? fileURLToPath(href) : href;
+				const body = await fs.promises.readFile(fsPath);
+				// ⚠ .wasm 必须给 application/wasm：ONNX Runtime 走 `WebAssembly.instantiateStreaming`，
+				// 错误的 Content-Type 会让它拒绝（或退化成非流式并失败）。
+				const isWasm = /\.wasm$/i.test(fsPath);
+				return new Response(body, {
+					status: 200,
+					headers: { 'Content-Type': isWasm ? 'application/wasm' : 'application/octet-stream' },
+				});
+			}
+		} catch { /* 落到原 fetch：让真实错误浮出来，而不是被 shim 吞掉 */ }
+		return origFetch(input, init);
+	};
+}
+
+/** 用 trigram 把某 agent 的向量索引重建回来（model 构建全失败时的回退，避免"空索引 + mode=model"）。 */
+function rebuildAgentVectorIndexTrigram(agentId, items) {
+	const vi = getAgentVectorIndex(agentId);
+	if (!vi) return 0;
+	vi.clear();
+	for (const it of items) { vi.addText(it.id, it.content); }
+	return vi.size;
+}
+
+/**
+ * P0-1：可选的后台「真语义向量」构建。
+ *
+ * **默认关闭**（`AGENTMEMORY_MODEL_EMBEDDING=on` 才跑）：WASM 单条推理数十毫秒 ⇒ 上万条要十几分钟，
+ * 不能让所有用户默认承担；而 trigram 伪向量至少「查询与库同源」，不会给错结果。
+ *
+ * 关键约束：`VectorIndex._mode` 是**实例级单值**（trigram 与 model 的余弦得分不可比）⇒ 必须
+ * **逐 agent 先 clear 再全量写 model 向量**（原子切换），失败则该 agent 回退 trigram。
+ * 完成后落盘（P0-2）⇒ 下次启动直接从制品恢复 model 向量，不必重算。
+ */
+async function buildModelVectorsIfEnabled() {
+	if (process.env['AGENTMEMORY_MODEL_EMBEDDING'] !== 'on') return;
+	if (typeof EmbedFn !== 'function') {
+		emit('warn', `${TAG} [model-vectors] AGENTMEMORY_MODEL_EMBEDDING=on 但 embed() 未加载（检查 modelDir/wasmDir 与模型文件是否齐）`);
+		return;
+	}
+	const t0 = Date.now();
+	let built = 0, failed = 0, done = 0;
+	try {
+		for (const scope of allMemoryScopes()) {
+			const agentId = scope.slice('mem:memories:'.length);
+			const items = [];
+			for (const val of Object.values(listAll(scope))) {
+				try {
+					const obj = JSON.parse(val);
+					if (obj && obj.content && obj.isLatest !== false && obj.deleted !== true) {
+						items.push({ id: obj.id || '', content: obj.content });
+					}
+				} catch { /* skip */ }
+			}
+			if (items.length === 0) continue;
+			const vi = getAgentVectorIndex(agentId);
+			if (!vi) continue;
+			vi.clear(); // 原子切换：先清掉 trigram，避免两种语义空间混存
+			let ok = 0;
+			for (let i = 0; i < items.length; i++) {
+				try {
+					const vec = await EmbedFn(items[i].content);
+					if (vec && vec.length > 0) { vi.addModelVector(items[i].id, vec); ok++; }
+					else { failed++; }
+				} catch { failed++; }
+				if ((i + 1) % 20 === 0) { await new Promise(r => setImmediate(r)); } // 让出事件循环（单线程网关）
+				if ((i + 1) % 250 === 0) {
+					emit('log', `${TAG} [model-vectors] ${agentId}: ${i + 1}/${items.length} built=${ok} mode=${vi.mode}`);
+				}
+			}
+			if (vi.size === 0) {
+				const back = rebuildAgentVectorIndexTrigram(agentId, items);
+				emit('warn', `${TAG} [model-vectors] ${agentId}: 0 vector built ⇒ 回退 trigram（${back} doc）`);
+			} else {
+				done++;
+				emit('log', `${TAG} [model-vectors] ${agentId}: ${vi.size} doc in model mode (failed=${items.length - ok})`);
+			}
+			built += ok;
+		}
+		void saveIndexCache('model-vectors');
+		emit('log', `${TAG} [model-vectors] done: ${built} vector(s) across ${done} agent(s), failed=${failed}, ${Date.now() - t0}ms`);
+	} catch (err) {
+		emit('warn', `${TAG} [model-vectors] aborted: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
 // ─── 向量 index getter ──────────────────────────────────────────
 // 注：VectorCtor 由启动时的 await resolveVectorModule() 预加载（main()）。
 // 此处不再懒加载（async 无法在同步 getter 中 await），未加载则退化为 null → BM25-only。
@@ -437,7 +581,10 @@ const getAgentVectorIndex = (agentId) => {
 	let vi = vectorIndexByAgent.get(agentId);
 	if (!vi) {
 		if (!VectorCtor) { return null; }
-		vi = new VectorCtor({ useTrigramFallback: true });
+		// 注：此前传的是 `{ useTrigramFallback: true }`，但 VectorIndex 的构造签名是
+		// `constructor(maxDocs?: number)` —— 对象会被 `Number.isFinite` 拒绝 ⇒ 一直走默认值。
+		// 行为无变化（默认仍是 trigram），但别让它看起来像一个不存在的开关。
+		vi = new VectorCtor();
 		vectorIndexByAgent.set(agentId, vi);
 	}
 	return vi;
@@ -476,6 +623,7 @@ function indexMemoryPut(scope, key, bodyText) {
 		const idx = getAgentIndex(agentId);
 		if (obj.isLatest === false || obj.deleted === true) idx.remove(id);
 		else idx.add(id, obj.content);
+		markIndexDirty(); // P0-2：索引内容已变 ⇒ 排队落盘
 	} catch { /* not a memory object */ }
 }
 
@@ -483,7 +631,7 @@ function indexMemoryDelete(scope, key, removedId) {
 	const m = /^mem:memories:(.+)$/.exec(scope);
 	if (!m || !BM25Ctor) return;
 	const idx = getAgentIndex(m[1]);
-	if (idx) idx.remove(removedId || key);
+	if (idx) { idx.remove(removedId || key); markIndexDirty(); }
 }
 
 // ── 向量索引同步（与 BM25 一起保持 Incremental） ──────────────
@@ -497,7 +645,14 @@ function indexMemoryPutVector(scope, key, body) {
 		const content = obj.content || obj.text || obj.summary || '';
 		if (!content) return;
 		const vi = getAgentVectorIndex(m[1]);
-		if (vi) { vi.addText(obj.id, content); }  // trigram 同步 embedding（无需 transformers）
+		if (!vi) return;
+		// 2026-09-19：与 BM25 路径**对齐 isLatest/deleted 语义**。此前增量写向量时不做此判断，
+		// 而被 supersede 取代的旧条目只在 BM25 侧被移出 ⇒ 它仍能从**向量通道**被召回
+		//（重建后消失、增量时残留 —— 双写不一致）。演练实测：3 条相似记忆 supersede 后
+		// BM25=1 doc 而 vector=3 doc。
+		if (obj.isLatest === false || obj.deleted === true) { vi.remove(obj.id); markIndexDirty(); return; }
+		vi.addText(obj.id, content);  // trigram 同步 embedding（无需 transformers）
+		markIndexDirty();
 	} catch { /* not a memory object */ }
 }
 
@@ -510,6 +665,7 @@ function indexMemoryDeleteVector(scope, key, removedId) {
 		// VectorIndex may not expose remove; skip if abs sent
 		if (vi && removedId && typeof vi.remove === 'function') {
 			vi.remove(removedId);
+			markIndexDirty();
 		}
 	} catch { /* not a memory object */ }
 }
@@ -649,9 +805,16 @@ function listScopesByPrefix(prefix) {
 }
 
 async function rebuildIndexesFromKV() {
-	if (!BM25Ctor) return;
+	rebuildBm25IndexesFromKV();
+	rebuildVectorIndexesOnly();
+}
+
+/** 全量重建 BM25（逐 agent 一个索引实例）。返回文档数。 */
+function rebuildBm25IndexesFromKV() {
+	if (!BM25Ctor) return 0;
 	let total = 0;
 	try {
+		indexByAgent.clear(); // scope 已消失的 agent 不能留下残留索引
 		const scopes = allMemoryScopes();
 		for (const scope of scopes) {
 			const agentId = scope.slice('mem:memories:'.length);
@@ -672,31 +835,250 @@ async function rebuildIndexesFromKV() {
 	} catch (err) {
 		emit('warn', `${TAG} index rebuild partial: ${err instanceof Error ? err.message : String(err)}`);
 	}
+	return total;
+}
 
-	// 并行重建向量索引（trigram fallback，无模型依赖）
-	if (VectorCtor) {
-		let viTotal = 0;
-		try {
-			const scopes = allMemoryScopes();
-			for (const scope of scopes) {
-				const agentId = scope.slice('mem:memories:'.length);
-				const vi = getAgentVectorIndex(agentId);
-				if (!vi) continue;
-				if (typeof vi.clear === 'function') vi.clear();
-				const all = listAll(scope);
-				for (const val of Object.values(all)) {
-					try {
-						const obj = JSON.parse(val);
-						if (obj && obj.content && obj.isLatest !== false && obj.deleted !== true) {
-							vi.addText(obj.id || '', obj.content);
-							viTotal++;
-						}
-					} catch { /* skip */ }
-				}
+/** 全量重建向量索引（trigram fallback，无模型依赖，纯 CPU）。 */
+function rebuildVectorIndexesOnly() {
+	if (!VectorCtor) return 0;
+	let viTotal = 0;
+	try {
+		vectorIndexByAgent.clear();
+		const scopes = allMemoryScopes();
+		for (const scope of scopes) {
+			const agentId = scope.slice('mem:memories:'.length);
+			const vi = getAgentVectorIndex(agentId);
+			if (!vi) continue;
+			if (typeof vi.clear === 'function') vi.clear();
+			const all = listAll(scope);
+			for (const val of Object.values(all)) {
+				try {
+					const obj = JSON.parse(val);
+					if (obj && obj.content && obj.isLatest !== false && obj.deleted !== true) {
+						vi.addText(obj.id || '', obj.content);
+						viTotal++;
+					}
+				} catch { /* skip */ }
 			}
-			emit('log', `${TAG} rebuilt vector index: ${viTotal} doc(s) across ${scopes.length} agent(s) (trigram fallback)`);
-		} catch (err) { emit('warn', `${TAG} vector index rebuild failed: ${err instanceof Error ? err.message : String(err)}`); }
+		}
+		emit('log', `${TAG} rebuilt vector index: ${viTotal} doc(s) across ${scopes.length} agent(s) (trigram fallback)`);
+	} catch (err) { emit('warn', `${TAG} vector index rebuild failed: ${err instanceof Error ? err.message : String(err)}`); }
+	return viTotal;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P0-2（2026-09-19）：索引制品缓存 —— 冷启动从「全量重建 4.2s」降为「读制品」
+//
+// 制品与判据详见 ./indexCache.mjs 顶部说明。这里只放"接进网关"的部分：
+//   · 启动：tryLoadIndexCache() 命中 ⇒ 跳过重建；未命中 ⇒ 重建 + 立即落盘建缓存
+//   · 运行：任何索引变更（入 InProcessKV 写/删）⇒ markIndexDirty() 排队落盘（节流）
+//   · 退出：shutdown 时**同步**落盘一次（异步的活不到进程结束）
+// ═══════════════════════════════════════════════════════════════════════════
+const INDEX_SAVE_THROTTLE_MS = (() => {
+	const n = Number(process.env['AGENTMEMORY_INDEX_SAVE_THROTTLE_MS']);
+	return Number.isFinite(n) && n >= 0 ? n : 30_000;
+})();
+const INDEX_SAVE_MAX_DELAY_MS = (() => {
+	const n = Number(process.env['AGENTMEMORY_INDEX_SAVE_MAX_DELAY_MS']);
+	return Number.isFinite(n) && n > 0 ? n : 5 * 60_000;
+})();
+let _indexCacheCtx = null;
+let _indexSaveTimer = null;
+let _indexDirtySince = 0;
+
+function setIndexCacheCtx(ctx) { _indexCacheCtx = ctx; }
+
+/**
+ * KV 指纹：rows 覆盖删除、maxUpdatedAt 覆盖写入/更新、sumLen 覆盖「同毫秒改写同长度值」。
+ * 取不到指纹返回 null（⇒ 制品判为不可用 ⇒ 重建，宁可慢也不可用错索引）。
+ */
+function kvFingerprint() {
+	try {
+		if (backendKind === 'sqlite' && db) {
+			const r = db.prepare(
+				'SELECT COUNT(*) AS rows, IFNULL(MAX(updated_at), 0) AS maxUpdatedAt, IFNULL(SUM(LENGTH(value)), 0) AS sumLen FROM kv_store'
+			).get();
+			return { rows: Number(r?.rows ?? 0), maxUpdatedAt: Number(r?.maxUpdatedAt ?? 0), sumLen: Number(r?.sumLen ?? 0) };
+		}
+		let rows = 0, sumLen = 0;
+		for (const m of store.values()) {
+			for (const v of m.values()) { rows++; sumLen += typeof v === 'string' ? v.length : 0; }
+		}
+		return { rows, maxUpdatedAt: 0, sumLen };
+	} catch (err) {
+		emit('warn', `${TAG} kv fingerprint failed: ${err instanceof Error ? err.message : String(err)}`);
+		return null;
 	}
+}
+
+/** 汇总将要落盘的制品内容（async / sync 两条路径共用）。返回 null 表示"不该落盘"。 */
+function collectIndexCachePayload() {
+	const fp = kvFingerprint();
+	if (!fp) return null;
+	const bm25Agents = {};
+	let bm25Docs = 0;
+	for (const [agentId, idx] of indexByAgent) {
+		if (!idx || idx.size === 0) continue;
+		bm25Agents[agentId] = idx.serializePayload();
+		bm25Docs += idx.size;
+	}
+	// ★ 空索引绝不落盘：它会把一份可用制品覆盖成"加载成功但检索为空"
+	//   （「本会话此刻不知道它」≠「它是空的」—— CodebaseGraph 99 字节空图事故同型）
+	if (bm25Docs === 0) return null;
+
+	const vecAgents = {};
+	let vecDocs = 0, vecMode = 'trigram';
+	for (const [agentId, vi] of vectorIndexByAgent) {
+		if (!vi || vi.size === 0) continue;
+		vecAgents[agentId] = vi.exportVectors();
+		vecMode = vi.mode;
+		vecDocs += vi.size;
+	}
+
+	return {
+		fp, bm25Docs, bm25Agents, vecDocs, vecMode, vecAgents,
+		bm25Obj: { version: INDEX_CACHE_VERSION, fingerprint: fp, builtAt: Date.now(), docs: bm25Docs, agents: bm25Agents },
+		vectorObj: vecDocs > 0
+			? { version: INDEX_CACHE_VERSION, fingerprint: fp, builtAt: Date.now(), docs: vecDocs, mode: vecMode, agents: vecAgents }
+			: null,
+	};
+}
+
+/** 落盘（异步 gzip，避免阻塞网关事件循环）。并发调用会被合并/重排，避免两次写同一制品。 */
+let _indexSaveInFlight = false;
+async function saveIndexCache(reason) {
+	const ctx = _indexCacheCtx;
+	if (!ctx) return;
+	if (_indexSaveInFlight) {
+		// 已有落盘在飞：稍后重试一次（不丢 dirty —— `_indexDirtySince` 保持非 0）
+		if (!_indexSaveTimer) {
+			_indexSaveTimer = setTimeout(() => {
+				_indexSaveTimer = null;
+				void saveIndexCache(reason + ':retry');
+			}, 1000);
+			_indexSaveTimer.unref?.();
+		}
+		return;
+	}
+	_indexSaveInFlight = true;
+	const t0 = Date.now();
+	try {
+		const p = collectIndexCachePayload();
+		if (!p) {
+			emit('warn', `${TAG} index cache save skipped (${reason}): 0 doc or no fingerprint — 拒绝覆盖可能完好的制品`);
+			return;
+		}
+		await writeCacheFile(ctx.bm25File(), p.bm25Obj);
+		if (p.vectorObj) await writeCacheFile(ctx.vectorFile(), p.vectorObj);
+		_indexDirtySince = 0;
+		emit('log', `${TAG} index cache saved (${reason}) in ${Date.now() - t0}ms: bm25=${p.bm25Docs} doc/${Object.keys(p.bm25Agents).length} agent(s), vector=${p.vecDocs} doc (mode=${p.vecMode})`);
+	} catch (err) {
+		emit('warn', `${TAG} index cache save failed (${reason}): ${err instanceof Error ? err.message : String(err)}`);
+	} finally {
+		_indexSaveInFlight = false;
+	}
+}
+
+/** 落盘（同步）—— 仅供 shutdown；异步版本在进程退出前根本轮不到。 */
+function saveIndexCacheSync(reason) {
+	const ctx = _indexCacheCtx;
+	if (!ctx) return;
+	const t0 = Date.now();
+	try {
+		const p = collectIndexCachePayload();
+		if (!p) { emit('warn', `${TAG} index cache save skipped (${reason}): 0 doc or no fingerprint`); return; }
+		writeCacheFile(ctx.bm25File(), p.bm25Obj, { sync: true });
+		if (p.vectorObj) writeCacheFile(ctx.vectorFile(), p.vectorObj, { sync: true });
+		emit('log', `${TAG} index cache saved (${reason}, sync) in ${Date.now() - t0}ms: bm25=${p.bm25Docs} doc, vector=${p.vecDocs} doc`);
+	} catch (err) {
+		emit('warn', `${TAG} index cache save failed (${reason}): ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+/**
+ * 从制品恢复。返回 `{ bm25, vector }` —— **两者独立**：向量缺失只需重建向量
+ * （trigram 重建是纯 CPU、很快），不必因此丢掉已经可用的 BM25。
+ */
+function tryLoadIndexCache() {
+	const ctx = _indexCacheCtx;
+	const result = { bm25: false, vector: false };
+	if (!ctx) return result;
+	const t0 = Date.now();
+	const fp = ctx.fingerprint();
+	let meta = null;
+	try {
+		meta = readCacheFile(ctx.bm25File());
+	} catch (err) {
+		emit('warn', `${TAG} index cache unreadable (${err instanceof Error ? err.message : String(err)}) — full rebuild`);
+		return result;
+	}
+	if (!meta) { emit('log', `${TAG} index cache absent — full rebuild`); return result; }
+	const verdict = validateCache(meta, fp, INDEX_CACHE_VERSION);
+	if (!verdict.ok) { emit('log', `${TAG} index cache stale — full rebuild (${verdict.reason})`); return result; }
+
+	let docs = 0, agents = 0;
+	for (const [agentId, payload] of Object.entries(meta.agents)) {
+		const idx = getAgentIndex(agentId);
+		if (idx && idx.deserializePayload(payload) && idx.size > 0) { docs += idx.size; agents++; }
+	}
+	// ★ 「加载成功 ≠ 有数据」：解压/解析都成功但一条都没有 ⇒ 仍然重建
+	if (docs === 0) { emit('warn', `${TAG} index cache loaded but EMPTY — full rebuild`); return result; }
+	result.bm25 = true;
+
+	try {
+		const vmeta = readCacheFile(ctx.vectorFile());
+		if (!vmeta) {
+			emit('log', `${TAG} vector cache absent — will rebuild vectors`);
+		} else {
+			const vverdict = validateCache(vmeta, fp, INDEX_CACHE_VERSION);
+			if (!vverdict.ok) {
+				emit('log', `${TAG} vector cache stale (${vverdict.reason}) — will rebuild vectors`);
+			} else if (!vmeta.mode) {
+				emit('log', `${TAG} vector cache has no mode field — will rebuild vectors`);
+			} else {
+				let vdocs = 0;
+				for (const [agentId, vectors] of Object.entries(vmeta.agents)) {
+					const vi = getAgentVectorIndex(agentId);
+					if (!vi || !Array.isArray(vectors)) continue;
+					vi.setMode(vmeta.mode); // 查询向量必须与库内向量同源
+					vi.importVectors(vectors);
+					vdocs += vi.size;
+				}
+				result.vector = vdocs > 0;
+				if (!result.vector) { emit('warn', `${TAG} vector cache loaded but EMPTY — will rebuild vectors`); }
+			}
+		}
+	} catch (err) {
+		emit('warn', `${TAG} vector cache load failed (${err instanceof Error ? err.message : String(err)}) — will rebuild vectors`);
+	}
+
+	emit('log', `${TAG} index cache loaded in ${Date.now() - t0}ms: bm25=${docs} doc across ${agents} agent(s), vector=${result.vector ? 'restored' : 'missing'}`);
+	return result;
+}
+
+/**
+ * 索引变更后排队落盘。语义 = **节流**（首个变更排定一次，后续变更**不重置**计时器）：
+ * 若用经典防抖，"每 10s 写一条记忆"就会让落盘永远不触发（=「只在 shutdown 保存」的变体）。
+ * 超过 `INDEX_SAVE_MAX_DELAY_MS` 的待发落盘立即执行。
+ */
+function markIndexDirty() {
+	if (!_indexCacheCtx) return;
+	const now = Date.now();
+	if (!_indexDirtySince) { _indexDirtySince = now; }
+	if (_indexSaveTimer) {
+		if (now - _indexDirtySince >= INDEX_SAVE_MAX_DELAY_MS) {
+			clearTimeout(_indexSaveTimer);
+			_indexSaveTimer = null;
+			void saveIndexCache('max-delay');
+		}
+		return;
+	}
+	const delay = nextSaveDelayMs(_indexDirtySince, now, { debounceMs: INDEX_SAVE_THROTTLE_MS, maxDelayMs: INDEX_SAVE_MAX_DELAY_MS });
+	_indexSaveTimer = setTimeout(() => {
+		_indexSaveTimer = null;
+		void saveIndexCache('throttle');
+	}, delay);
+	_indexSaveTimer.unref?.();
 }
 
 // ── A4（2026-09-10）：孤儿/超期数据剪枝（防容量再次失控）─────────────
@@ -786,8 +1168,27 @@ async function main() {
 	// Plan C: load the BM25 index module (from the sibling agentmemory-memory
 	// extension's compiled output) and rebuild the in-process index from KV.
 	BM25Ctor = await resolveBm25Module();
+	installFileFetchShim(); // P0-1：@xenova 的 web 构建用 fetch 读本地模型文件（Node 不支持 file://）
+	setupEmbeddingPaths();  // P0-1：注入 modelDir / wasmDir（扩展侧只读 env）
 	await resolveVectorModule();  // 先加载向量索引模块，再重建（否则 VectorCtor 恒 null）
-	await rebuildIndexesFromKV();
+
+	// P0-2（2026-09-19）：先试制品缓存，未命中才全量重建（重建后立即建缓存）。
+	// 判据与制品格式 ⇒ ./indexCache.mjs。这里只负责"接进启动流程"。
+	setIndexCacheCtx({
+		fingerprint: kvFingerprint,
+		bm25File: () => path.join(dataDir, 'index', BM25_CACHE_FILE),
+		vectorFile: () => path.join(dataDir, 'index', VECTOR_CACHE_FILE),
+	});
+	const indexCache = tryLoadIndexCache();
+	if (!indexCache.bm25) { rebuildBm25IndexesFromKV(); }
+	if (!indexCache.vector) { rebuildVectorIndexesOnly(); }
+	if (!indexCache.bm25 || !indexCache.vector) {
+		void saveIndexCache(indexCache.bm25 ? 'initial-vector-build' : 'initial-build');
+	}
+
+	// P0-1（**默认关闭**，`AGENTMEMORY_MODEL_EMBEDDING=on` 才跑）：后台构建真语义向量。
+	// 不 await —— 启动可用性不受影响（BM25 已就绪）；完成后原子切换 mode 并落盘。
+	void buildModelVectorsIfEnabled();
 	// A4：启动即剪枝一次（subagent 遗留/旧格式巨型键），之后每 24h 由 sweep 触发
 	pruneOrphanData(true);
 
@@ -1328,6 +1729,9 @@ async function main() {
 		emit('log', `${TAG} received ${sig}, shutting down... (pending writes: ${pendingWrites})`);
 		setTimeout(() => {
 			try {
+				// P0-2：索引制品必须在 db.close() **之前**落盘（指纹要查 kv_store）；
+				// 且必须走同步版——异步的 await 在 process.exit 前根本轮不到。
+				saveIndexCacheSync('shutdown');
 				if (backendKind === 'js-kv') persistJsStore();
 				if (db) db.close();
 				emit('log', `${TAG} database closed cleanly`);
