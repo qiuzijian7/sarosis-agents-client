@@ -3,7 +3,7 @@ import { IToolCall, ISubAgentData, ISubAgentToolTrace } from './agentChatTypes.j
 import { formatSubAgentTask, cleanTracePreview, shortenTraceDetail, filterChildSubAgents } from './subAgentCardUtils.js';
 import { AgentChatPanelFileCards } from './agentChatPanel.fileCards.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
-import { appendFooterPill, formatCreditAmount, formatTokenCount } from './agentChatPanel.footerPills.js';
+import { appendFooterPill, formatCreditAmount, formatDurationMs, formatTokenCount } from './agentChatPanel.footerPills.js';
 
 /** 自 agentChatPanel.toolCards.ts 抽离（上帝对象拆分）。继承链见继承父类。 */
 export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCards {
@@ -1078,6 +1078,14 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 			// 2026-09-18：与主气泡同步——去掉「处理中」文字，仅留 spinner；
 			// tokens / 积分改为与完成态同款 pill（图标 + 数字）。
 			append(procWrap, $('span.chat-footer-processing-spinner.loading-spinner'));
+			// ★ 2026-09-19：补上**耗时**（运行中：now − startedAt ✓）—— 此前这里只有 tokens/积分、
+			// 而主气泡只有耗时 ✗ ⇒ 同一聊天框两处"处理中"展示的信息不一致（用户要求统一 ✓）
+			if (typeof sa.startedAt === 'number' && sa.startedAt > 0) {
+				appendFooterPill(procWrap, 'duration', formatDurationMs(Date.now() - sa.startedAt), {
+					valueClass: 'chat-footer-processing-elapsed',
+					live: true,
+				});
+			}
 			// 2026-09-17：与主气泡「处理中」一致的实时用量展示。
 			// 数据源为子代理快照字段（sa.tokensUsed / sa.creditUsed），而非
 			// msg.tokenUsage——两者由不同链路注入，不可混用。
@@ -1085,13 +1093,17 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 			const saCredit = (sa as { creditUsed?: number }).creditUsed;
 			if (typeof saTotal === 'number' && saTotal > 0) {
 				// ★ 2026-09-18 统一：走 `appendFooterPill()`（与主气泡处理中/完成态同源 ✓）
+				// ★ 2026-09-19：补 `live: true` ⇒ 与主气泡、与自身耗时项一致地显示"进行中"态 ✓
+				//（`agentChat.css` 的 `.chat-footer-pill.live`：蓝色描边 + 图标呼吸 ✓）
 				appendFooterPill(procWrap, 'tokens', formatTokenCount(saTotal), {
 					valueClass: 'chat-footer-processing-tokens',
+					live: true,
 				});
 			}
 			if (typeof saCredit === 'number') {
 				appendFooterPill(procWrap, 'credit', formatCreditAmount(saCredit), {
 					valueClass: 'chat-footer-processing-credit',
+					live: true,
 				});
 			}
 			procWrap.style.marginLeft = 'auto';

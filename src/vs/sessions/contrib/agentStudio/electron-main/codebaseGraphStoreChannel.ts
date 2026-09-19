@@ -122,6 +122,8 @@ export class CodebaseGraphStoreChannel<TContext> extends Disposable implements I
 			case 'deleteProject': return s.deleteProject(args![0] as string, args![1] as { keepFileHashes?: boolean } | undefined) as unknown as T;
 			case 'deleteNodesByFile': return s.deleteNodesByFile(args![0] as string, args![1] as string) as unknown as T;
 			case 'checkpoint': return s.checkpoint() as unknown as T;
+			// 显式维护：归还 freelist + 切 INCREMENTAL（阻塞数秒~数十秒，见 store 注释）
+			case 'reclaimSpace': return s.reclaimSpace(args?.[0] as { force?: boolean; migrateToIncremental?: boolean } | undefined) as unknown as T;
 			// ★ 2026-09-18（P1-1 第二步）：导出 SQLite 快照制品（VACUUM INTO）—— 载入端可跳过 JSON 解析
 			case 'exportSnapshot': return s.exportSnapshot(args![0] as string) as unknown as T;
 			// ─── ★★★ 2026-09-18（P1-1 步骤3）：按**任意路径**的只读快照实例分页读取 ───────────
@@ -151,6 +153,16 @@ export class CodebaseGraphStoreChannel<TContext> extends Disposable implements I
 			case 'getAllNodes': return s.getAllNodes(args![0] as string | undefined, args![1] as number | undefined, args![2] as number | undefined, args![3] as number | undefined) as unknown as T;
 			case 'getAllEdges': return s.getAllEdges(args![0] as string | undefined, args![1] as number | undefined, args![2] as number | undefined, args![3] as number | undefined) as unknown as T;
 			case 'getNodeCount': return s.getNodeCount(args![0] as string | undefined) as unknown as T;
+			// ★★ 2026-09-19（增量追平）：⚠ **本行是补上的** —— 真机验证时抓到的真 bug：
+			// 只加了契约 + store 实现、漏了本分发器 ⇒ 运行期抛 `invalid call: getMaxNodeId` ✗
+			// ⇒ renderer 静默降级回全量（128s）⇒ 优化等于没做 ✗✗。
+			// 教训：这套「接口 → 分发器 → 实现」是**四方**一致（还有 ProxyChannel 的订阅侧），不是三方。
+			case 'getMaxNodeId': return s.getMaxNodeId(args![0] as string) as unknown as T;
+			// ★★ 2026-09-19（P0-1）：显式事务三方法 —— **四方一致**（契约 → 本分发器 → 实现 → 客户端 ✗✗，
+			//   今天已抓过一次「只加契约+实现、漏了分发器」的真 bug ✓，这次一次到位 ✓）。
+			case 'beginProjectSync': return s.beginProjectSync(args![0] as string) as unknown as T;
+			case 'commitProjectSync': return s.commitProjectSync(args![0] as string) as unknown as T;
+			case 'abortProjectSync': return s.abortProjectSync(args![0] as string) as unknown as T;
 			case 'getTopNodesByDegree': return s.getTopNodesByDegree(args![0] as string, args![1] as number) as unknown as T;
 			case 'getEdgesBetweenNodes': return s.getEdgesBetweenNodes(args![0] as number[]) as unknown as T;
 			case 'getEdgesBySource': return s.getEdgesBySource(args![0] as number) as unknown as T;

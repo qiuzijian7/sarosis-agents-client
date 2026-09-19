@@ -560,7 +560,9 @@ export const SHELL_APPROVAL_SHAPE_GUIDANCE =
 	// test/common/shellCommandSafety.test.ts 有守卫用例断言「guidance 原话必须真的
 	// 出现在 SHELL_APPROVAL_SHAPE_GUIDANCE 里」。补 `bash -c` 是因为下方正则同样命中
 	// `bash -c`，文案窄于判据就会重演「模型照描述做却被判违规」。
-	+ ' So: pass "cwd" rather than `cd X && Y`; never wrap in `powershell -Command` / `bash -c` (you are ALREADY in a shell);'
+	+ ' So: pass "cwd" rather than `cd X && Y`; never start a command with a long `sleep` as a blocking wait (it burns a whole turn)'
+	+ ' — for a long job use background:true (returns a taskId) and poll with action:"poll";'
+	+ ' never wrap in `powershell -Command` / `bash -c` (you are ALREADY in a shell);'
 	+ ' and to inspect a file use file_read (with limit:1 for line count + size) instead of shell counting.';
 
 /**
@@ -597,7 +599,16 @@ export type AntiGuidanceRule =
 	/** 对应「to inspect a file use file_read (with limit:1) instead of shell counting」。 */
 	| 'shell-line-counting'
 	/** 对应「pass "cwd" rather than `cd X && Y`」。 */
-	| 'leading-cd';
+	| 'leading-cd'
+	/**
+	 * 对应「never start a command with a long `sleep` as a blocking wait (it burns a whole turn)」。
+	 *
+	 * ★ 2026-09-19 新增。真机证据（外部日志 `vscode-app-1789813310143.log`）：agent 用
+	 * `sleep 200; …` **轮询**等一个长任务，9 轮就撞满 1800s 的工具超时 ⇒ **一个 turn 白等 30 分钟** ✗✗。
+	 * 参照 Claude Code：它把「long leading `sleep`」**直接禁掉**（工具描述里明写 blocked ✗）；
+	 * 我们取更温和的一档：**确定性夹短**（见 `tryClampLeadingSleep`）⇒ 语义不变（还是轮询，只是更勤 ✓）。
+	 */
+	| 'long-leading-sleep';
 
 export interface IAntiGuidanceFinding {
 	readonly rule: AntiGuidanceRule;
@@ -639,6 +650,34 @@ const LINE_COUNTING_RES: ReadonlyArray<RegExp> = [
 /** 以 `cd <dir> &&|;` 开头 —— 应该用 cwd 参数。 */
 const LEADING_CD_RE = /^\s*cd\s+[^\n&;|]+(?:&&|;)/i;
 
+/** 超过它就算「长 leading sleep」。真机病根是 200s × 9 轮 ≈ 1800s ✗；30s 留足"等一会儿"的正当用法 ✓。 */
+export const SLEEP_CLAMP_THRESHOLD_S = 30;
+/** 夹到多少秒：短到不再白占一个 turn，长到仍能覆盖大多数"等它一下"的场景 ✓。 */
+export const SLEEP_CLAMP_TO_S = 15;
+
+/**
+ * **以 `sleep <时长><单位?>` 开头**，且后面跟着**分隔符**（`;` `&&` `||` `|`）或**直接结束**。
+ *
+ * 捕获组：① 数字 ② 单位（`s/m/h/d`，`sleep` 支持后缀 ✓）③ **分隔符（含其前导空白）及其后全部命令**。
+ * ⚠ 第 ③ 组必须把**分隔符连同它前面的空白**一起吃进来：否则 `sleep 300 && x` 会改写成
+ * `sleep 15&& x`（空格被前面的 `\s*` 吃掉 ✗ —— 本次由单测抓到 ✓）。同理丢掉 `;` 会变成
+ * `sleep 15 echo x` ⇒ **命令语义全变** ✗✗。
+ * ⚠ 必须要求「分隔符或结束」：否则 `sleep 200foo` 也会命中并写出 `sleep 15foo` ✗。
+ */
+const LEADING_SLEEP_CAPTURE_RE = /^\s*sleep\s+(\d+(?:\.\d+)?)([smhd]?)(\s*[;&|][\s\S]*|\s*)$/i;
+
+/** `sleep` 时长换算成秒（支持 `s/m/h/d` 后缀 ✓；非法输入按 0 ✓）。 */
+function sleepSecondsOf(num: string, unit?: string): number {
+	const v = Number(num);
+	if (!Number.isFinite(v) || v <= 0) { return 0; }
+	switch ((unit ?? '').toLowerCase()) {
+		case 'm': return v * 60;
+		case 'h': return v * 3600;
+		case 'd': return v * 86400;
+		default: return v;
+	}
+}
+
 const GUIDANCE_QUOTES: Readonly<Record<AntiGuidanceRule, { guidance: string; suggestion: string }>> = {
 	'interpreter-wrapper': {
 		guidance: 'never wrap in `powershell -Command` / `bash -c` (you are ALREADY in a shell)',
@@ -651,6 +690,14 @@ const GUIDANCE_QUOTES: Readonly<Record<AntiGuidanceRule, { guidance: string; sug
 	'leading-cd': {
 		guidance: 'pass "cwd" rather than `cd X && Y`',
 		suggestion: 'move the directory into the tool\'s "cwd" argument and drop the leading cd',
+	},
+	'long-leading-sleep': {
+		// ★★ 2026-09-19 修正指向：execute_code **已有** `background:true`（返回 taskId）+ `action:"poll"|"kill"`
+		//（schema 见 compatibilityTools.ts:496-498 ✓）—— 别再教模型"缩短轮询" ✗，要教它**走后台通道** ✓✓。
+		//（外部日志 `vscode-app-1789813310143.log` 的病根正是「有这功能却没人告诉模型」：它用
+		//  `sleep 200; …` 前景轮询 9 轮 ⇒ 撞满 1800s 超时，一个 turn 白等 30 分钟 ✗✗。）
+		guidance: 'never start a command with a long `sleep` as a blocking wait (it burns a whole turn)',
+		suggestion: 'for a long job use execute_code with background:true (returns a taskId), then poll via action:"poll" — never a blocking sleep',
 	},
 };
 
@@ -695,6 +742,15 @@ export function detectAntiGuidanceCommand(command: string): IAntiGuidanceFinding
 
 	const cd = LEADING_CD_RE.exec(cmd);
 	if (cd) { out.push(finding('leading-cd', cd[0])); }
+
+	// ★ 2026-09-19：长 leading sleep（阻塞式等待）—— 只报**超过阈值**的，短 sleep 属正当用法 ✓
+	// ⚠ `cd X && sleep 200; …` 这种**叠加形态**（真机那条病根正是它 ✗）在 cmd 上看不是"开头 sleep"，
+	// 故先剥掉可改写的 cd 前缀再判断（判据与执行侧的改写链保持一致 ✓）。
+	const sleepProbe = (cd ? tryRewriteLeadingCd(cmd)?.command : undefined) ?? cmd;
+	const sl = LEADING_SLEEP_CAPTURE_RE.exec(sleepProbe);
+	if (sl && sleepSecondsOf(sl[1], sl[2]) > SLEEP_CLAMP_THRESHOLD_S) {
+		out.push(finding('long-leading-sleep', sl[0].trim().slice(0, 60)));
+	}
 
 	return out;
 }
@@ -784,6 +840,62 @@ export function tryRewriteLeadingCd(command: string, currentCwd?: string): ILead
 export function formatLeadingCdRewriteLog(toolName: string, rw: ILeadingCdRewrite): string {
 	const clip = (s: string) => (s.length > 160 ? `${s.slice(0, 160)}…` : s);
 	return `[AntiGuidance] ${toolName}: auto-rewrote leading cd → cwd="${rw.cwd}" (pass "cwd" rather than \`cd X && Y\`)\n`
+		+ `  before: ${clip(rw.original)}\n`
+		+ `  after:  ${clip(rw.command)}`;
+}
+
+// ─── 长 leading sleep 自动夹短（2026-09-19，②「长任务等待」第一刀）────────────
+
+/** 长 leading sleep 的夹短结果。 */
+export interface ISleepClampRewrite {
+	/** 夹短后的命令（**分隔符与其余部分逐字保留** ✓）。 */
+	command: string;
+	/** 改写前的原始命令（日志用）。 */
+	original: string;
+	/** 原本要睡多少秒。 */
+	requestedSeconds: number;
+	/** 实际夹到多少秒。 */
+	clampedSeconds: number;
+}
+
+/**
+ * 把**开头的**长 `sleep`（> `SLEEP_CLAMP_THRESHOLD_S`）夹到 `SLEEP_CLAMP_TO_S`。
+ *
+ * ## 为什么是「夹短」而不是「拒绝」（与 Claude Code 的**刻意分歧** ✓）
+ * Claude Code 直接**禁掉** long leading `sleep`（工具描述明写 blocked ✗）—— 那要求 harness 有
+ * 「后台任务 + 完成通知」这套原语来承接（它确实有 ✓）。我们**还没有** ⇒ 此刻硬拒会让模型
+ * 无路可走 ✗（只能反复试错或放弃）。而**夹短**是：
+ *   · **确定性**（不依赖语义，只动开头那一个 token ✓）；
+ *   · **零语义变化**（仍是"等一下再看" ⇒ 模型行为与预期一致 ✓）；
+ *   · **直接消灭病根**（真机 9 轮 × 200s = 1800s ✗ ⇒ 变成 9 轮 × 15s ≈ 135s ✓✓，
+ *     且轮询更密 ⇒ 长任务一完成就能被看到 ✓）。
+ *
+ * ⚠ 2026-09-19 **修正**：真解**已经存在** ✓✓ —— `execute_code` 早就有 `background:true`（返回 `taskId`）
+ * + `action:"poll"|"kill"`（见 `compatibilityTools.ts` 的 schema :496-498 ✓）。**缺的不是功能，而是「让模型
+ * 知道用它」** ✗ —— 故本函数的职责更新为：**止血**（把超长 sleep 夹到 15s ✓）+ **引导**（文案/suggestion
+ * 一律指向那条既有后台通道 ✓✓）。真正的"完成时通知"（idle 间隙投递）仍是一个可选的后续增强 ✓。
+ */
+export function tryClampLeadingSleep(command: string): ISleepClampRewrite | undefined {
+	const cmd = (command ?? '').trim();
+	if (!cmd) { return undefined; }
+	const m = LEADING_SLEEP_CAPTURE_RE.exec(cmd);
+	if (!m) { return undefined; }
+	const requested = sleepSecondsOf(m[1], m[2]);
+	if (requested <= SLEEP_CLAMP_THRESHOLD_S) { return undefined; }
+	const rest = m[3] ?? '';
+	return {
+		command: `sleep ${SLEEP_CLAMP_TO_S}${rest}`,
+		original: cmd,
+		requestedSeconds: requested,
+		clampedSeconds: SLEEP_CLAMP_TO_S,
+	};
+}
+
+/** 渲染 sleep 夹短日志（首行沿用 `[AntiGuidance]` 前缀，便于同一 grep 统计改写量 ✓）。 */
+export function formatSleepClampLog(toolName: string, rw: ISleepClampRewrite): string {
+	const clip = (s: string) => (s.length > 160 ? `${s.slice(0, 160)}…` : s);
+	return `[AntiGuidance] ${toolName}: auto-clamped leading sleep ${rw.requestedSeconds}s → ${rw.clampedSeconds}s`
+		+ ` (never start a command with a long \`sleep\` as a blocking wait (it burns a whole turn))\n`
 		+ `  before: ${clip(rw.original)}\n`
 		+ `  after:  ${clip(rw.command)}`;
 }

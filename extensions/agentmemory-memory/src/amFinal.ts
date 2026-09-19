@@ -8,6 +8,8 @@
 import type { StateKV } from './stateKV.js';
 import { KV, generateId } from './amSchema.js';
 import type { Memory, Lesson } from './amTypes.js';
+import { generateAnswerPrompt } from './answerGen.js';
+import { isLlmConfigured, callChatCompletion } from './compressor.js';
 
 // ─── 1. Cascade Update（agentmemory cascade.ts）────────────────────────────
 
@@ -255,6 +257,39 @@ export async function smartSearch(kv: StateKV, agentId: string,
 		}
 	}
 	return results.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+/** LLM 答案生成的 system prompt（与 `generateAnswerPrompt` 的 user prompt 配合）。 */
+const ANSWER_GENERATION_SYSTEM = `You are a memory-grounded assistant. Answer the user's question using ONLY the provided context (memory / search results).
+Rules:
+- Use only information from the provided context
+- If the context doesn't contain relevant information, say "I don't have enough information to answer this"
+- Cite sources by their index number [1], [2], etc.
+- Be concise and direct`;
+
+/**
+ * P2-4（2026-09-19）：smart-search + LLM 答案生成（检索 → 直接生成答案）。
+ *
+ * 流程：`smartSearch` 拿结果 → `generateAnswerPrompt` 生成结构化 prompt → `callChatCompletion` 调 LLM。
+ * 未配 LLM（`isLlmConfigured()` 为 false）或无结果 ⇒ 返回 `{ skipped: true, reason }`（调用方回退纯检索）。
+ * 复用 P0-3 的 LLM 配置（`AGENTMEMORY_LLM_*` env 或 BYOK 注入）。
+ */
+export async function smartSearchWithAnswer(
+	kv: StateKV, agentId: string, query: string, limit: number = 10,
+): Promise<
+	| { answer: string; sources: Array<{ id: string; content: string; score: number; source: string; type?: string }>; contextSummary: string }
+	| { skipped: true; reason: string }
+> {
+	const results = await smartSearch(kv, agentId, query, limit);
+	if (results.length === 0) { return { skipped: true, reason: 'no search results' }; }
+	if (!isLlmConfigured()) { return { skipped: true, reason: 'llm not configured' }; }
+	const { prompt, contextSummary } = generateAnswerPrompt({
+		query,
+		searchResults: results.map(r => ({ content: r.content, score: r.score, source: r.source })),
+	});
+	const answer = await callChatCompletion(ANSWER_GENERATION_SYSTEM, prompt, 1500);
+	if (!answer) { return { skipped: true, reason: 'llm unavailable' }; }
+	return { answer, sources: results, contextSummary };
 }
 
 // ─── 14. Recent Searches（agentmemory 搜索历史）────────────────────────────

@@ -11,6 +11,7 @@ import {
 	isShellToolWithCommandArg, ShellCommandSafety,
 	detectAntiGuidanceCommand, formatAntiGuidanceLog, SHELL_APPROVAL_SHAPE_GUIDANCE,
 	shellApprovalGuidance, tryRewriteLeadingCd, formatLeadingCdRewriteLog,
+	tryClampLeadingSleep, formatSleepClampLog, SLEEP_CLAMP_THRESHOLD_S, SLEEP_CLAMP_TO_S,
 } from '../../common/shellCommandSafety.js';
 
 /**
@@ -373,7 +374,12 @@ suite('shellCommandSafety', () => {
 
 		test('★ 文案与检测同源：guidance 原话必须真的出现在 GUIDANCE 文案里', () => {
 			// 这条断言让「改文案忘改检测」立刻暴露
-			for (const f of detectAntiGuidanceCommand('cd x && powershell -Command "(gc y).Count"')) {
+			// ★ 2026-09-19：把 sleep 用例也纳进来 —— 新规则同样受这条纪律约束 ✓
+			for (const _cmd of [
+				'cd x && powershell -Command "(gc y).Count"',
+				'sleep 200; echo polling',
+			])
+			for (const f of detectAntiGuidanceCommand(_cmd)) {
 				assert.ok(
 					SHELL_APPROVAL_SHAPE_GUIDANCE.includes(f.guidance),
 					`rule=${f.rule} 的 guidance 未出现在 SHELL_APPROVAL_SHAPE_GUIDANCE 中: ${f.guidance}`,
@@ -385,6 +391,16 @@ suite('shellCommandSafety', () => {
 			const long = `powershell -Command "${'x'.repeat(500)}"`;
 			const f = detectAntiGuidanceCommand(long).find(x => x.rule === 'interpreter-wrapper')!;
 			assert.ok(f.matched.length <= 121, `实际 ${f.matched.length}`);
+		});
+
+		test('★★ 长 leading sleep 命中（2026-09-19：真机「白等 30 分钟」的病根）', () => {
+			assert.ok(rules('sleep 200; echo poll').includes('long-leading-sleep'));
+			// ⚠ 真机那条是**叠加形态** `cd X && sleep 200; …` ⇒ 必须先剥 cd 再判断（否则漏报 ✗）
+			assert.ok(rules('cd x && sleep 200; echo poll').includes('long-leading-sleep'), 'cd 叠加形态也要认 ✓');
+			// 放行控制组与命中同等重要：短 sleep 是正当用法，误报会让日志失去价值 ✗
+			assert.deepStrictEqual(rules('sleep 5; echo x'), [], '短 sleep 不该报');
+			assert.deepStrictEqual(rules('sleep 10 && make'), [], '短 sleep + && 不该报');
+			assert.deepStrictEqual(rules(`sleep ${SLEEP_CLAMP_THRESHOLD_S}; x`), [], '等于阈值不报（判据是「严格大于」✓）');
 		});
 	});
 
@@ -553,5 +569,49 @@ suite('shellCommandSafety — shellApprovalGuidance 按审批开关生成', () =
 
 	test('★ 审批关闭 → 返回空串（整段不下发）', () => {
 		assert.strictEqual(shellApprovalGuidance(false), '', '关闭审批时不得下发「打断执行」的后果指引');
+	});
+});
+
+// ── ★ 长 leading sleep 夹短（2026-09-19，②「长任务等待」第一刀）─────────────
+//
+// 真机病根：`cd <repo> && sleep 200; …` 轮询 9 轮 ≈ 1800s ⇒ 一个 turn 白等 30 分钟 ✗✗。
+// 本套件钉住三条：① 只夹"长"的 ② **分隔符与其余部分逐字保留**（否则命令语义全变 ✗✗）
+// ③ 不误伤（短 sleep / 非开头 / 无分隔符的畸形写法）✓
+
+suite('tryClampLeadingSleep — 长 leading sleep 自动夹短（2026-09-19）', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('★★ 夹短并**逐字保留**分隔符与其余命令（`;` / `&&` / 行尾 三种）', () => {
+		const a = tryClampLeadingSleep('sleep 200; echo hi')!;
+		assert.strictEqual(a.command, `sleep ${SLEEP_CLAMP_TO_S}; echo hi`, '丢掉 `;` 会让命令语义全变 ✗');
+		assert.strictEqual(a.requestedSeconds, 200);
+		assert.strictEqual(a.clampedSeconds, SLEEP_CLAMP_TO_S);
+
+		const b = tryClampLeadingSleep('sleep 300 && npm run build')!;
+		assert.strictEqual(b.command, `sleep ${SLEEP_CLAMP_TO_S} && npm run build`);
+
+		const c = tryClampLeadingSleep('sleep 600')!;
+		assert.strictEqual(c.command, `sleep ${SLEEP_CLAMP_TO_S}`);
+	});
+
+	test('★ 支持单位后缀（`5m` / `1h`）并正确换算成秒', () => {
+		assert.strictEqual(tryClampLeadingSleep('sleep 5m; x')!.requestedSeconds, 300);
+		assert.strictEqual(tryClampLeadingSleep('sleep 1h; x')!.requestedSeconds, 3600);
+	});
+
+	test('不误伤：阈值内 / 非开头 / 无分隔符的畸形写法', () => {
+		assert.strictEqual(tryClampLeadingSleep(`sleep ${SLEEP_CLAMP_THRESHOLD_S}; x`), undefined, '阈值内不夹');
+		assert.strictEqual(tryClampLeadingSleep('echo sleep 200'), undefined, '不是开头不算');
+		assert.strictEqual(tryClampLeadingSleep('sleep 200foo'), undefined,
+			'没有分隔符 ⇒ 不能认（否则会写出 `sleep 15foo` ✗✗）');
+		assert.strictEqual(tryClampLeadingSleep(''), undefined);
+	});
+
+	test('★ 改写日志带 before/after（与 [AntiGuidance] 同前缀，便于同一 grep 统计 ✓）', () => {
+		const rw = tryClampLeadingSleep('sleep 200; echo hi')!;
+		const log = formatSleepClampLog('execute_code', rw);
+		assert.ok(log.startsWith(`[AntiGuidance] execute_code: auto-clamped leading sleep 200s → ${SLEEP_CLAMP_TO_S}s`), log);
+		assert.ok(log.includes('before:') && log.includes('after:'), `日志要能对账：${log}`);
 	});
 });

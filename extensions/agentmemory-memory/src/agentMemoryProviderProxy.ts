@@ -54,10 +54,13 @@ export class AgentMemoryProviderProxy {
 			//    `AGENTMEMORY_URL` 并不保证（见 serverConfig 的优先级说明）⇒ 靠实测探测兜底，
 			//    命中即 `setResolvedServerBase()` 锁定，后续所有调用都走对地址。
 			const backoffMs = [0, 700, 1500, 3000];
-			const candidates = serverBaseCandidates();
 			for (const delay of backoffMs) {
 				if (delay > 0) { await new Promise<void>(r => setTimeout(r, delay)); }
-				for (const base of candidates) {
+				// ★ 每轮**重新取**候选，不能提前取快照：宿主的 dataDir 认领是异步的，实测比扩展
+				//   activate 晚 ~1.6s 才写 `globalThis.__SAROS_AGENTMEMORY_URL__`。提前取快照会让
+				//   注入**永远看不到** ⇒ 只能靠 `[3111, 3112]` 硬猜，而 3111 上有异己网关时
+				//   （`checkHealth` 只看响应码）会**先猜错并锁定**，正是端口隔离要防的跨环境串味。
+				for (const base of serverBaseCandidates()) {
 					if (await checkHealth(base)) {
 						setResolvedServerBase(base);
 						this._markGateway(true, 'probe');
@@ -505,8 +508,10 @@ export class AgentMemoryProviderProxy {
 
 	// ─── 同步桩（保持 IMemoryProvider 同步签名，本地返回空默认）────
 	// R4（2026-09-09）：getTimeline / getAuditSummary / traceProvenance 三个
-	// 假成功桩改为异步转发（getHookStats 模式）——getAuditSummary 是 V2 引擎
-	// 真实现（读 AuditLog，UI 审计页签消费），proxy 返回假 0 使页签恒显示 0 条。
+	// 假成功桩改为异步转发（getHookStats 模式）。
+	// ⚠ 注释修正（2026-09-19 P2-1）：此处原记「proxy 返回假 0 使页签恒显示 0 条」**已过时** ——
+	//   下方 `getAuditSummary` / `getAuditLog` 均已改为**异步转发**（`this._call('getAuditSummary'/'getAuditLog')`），
+	//   审计页签（`memoryDetailEditorPane` 的 `_renderAuditView`）已能正常显示数据。
 	// 接口签名已改 union（sync | Promise），调用方 instanceof Promise 分流。
 	getTimeline(agentId: string): Promise<Array<Record<string, unknown>>> {
 		return this._call('getTimeline', agentId).then((r: any) => r ?? []);

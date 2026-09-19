@@ -17,6 +17,8 @@
  *        src/vs/sessions/browser/agentChat/agentChatPanel.footerPills.test.ts
  */
 import assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
 	appendFooterPill,
 	formatCreditAmount,
@@ -113,5 +115,228 @@ suite('用量药丸统一入口 appendFooterPill（2026-09-18）', () => {
 		popup = pill;
 		// 返回值即药丸；此处直接断言父子关系可用（避免误返回数值节点导致浮层挂错位置）
 		assert.strictEqual(popup.children[1].textContent, '12,345', '返回值必须是药丸，而非数值节点');
+	});
+});
+
+// ─── 处理中态 + 标签（2026-09-19）──────────────────────────────────────────
+
+/**
+ * 背景（用户 2026-09-19 报）：「处理中 UI 要增加 积分 / tokens / 耗时，并且聊天框各个位置的
+ * 积分、tokens、耗时**图标要保持一致**」。
+ *
+ * 当时的事实是：
+ *   · 主气泡**完成态**手搓 DOM（`图标 + 标签 + ：值`，且冒号一处全角一处半角 ✗）；
+ *   · 委派卡**完成态**走 `appendFooterPill`（`图标 + 值`，无标签 ✗）；
+ *   · 主气泡**处理中**只有 `spinner + 处理中 + 耗时`（**没有图标** ✗✗）；
+ *   · 子代理**处理中**只有 `spinner + tokens + 积分`（**没有耗时** ✗）。
+ * ⇒ 四处形态互不相同 ✓。收敛后：**图标/类名/数字格式只有一份** ✓，
+ *   处理中共三项且都带 `live`（"进行中"视觉）✓。
+ *
+ * 本 suite 钉住新增的两个可选项，防止后人再"就地拼 DOM"✗。
+ */
+suite('处理中态与标签（2026-09-19）', () => {
+
+	test('★★★ live 选项：处理中药丸必须带 live 类（蓝色描边 + 图标呼吸，与完成态区分）', () => {
+		const h = host();
+		const d = appendFooterPill(h, 'duration', '1m 27s', { valueClass: 'chat-footer-processing-elapsed', live: true });
+		const t = appendFooterPill(h, 'tokens', '12,345', { valueClass: 'chat-footer-processing-tokens', live: true });
+		const c = appendFooterPill(h, 'credit', '0.42', { valueClass: 'chat-footer-processing-credit', live: true });
+		for (const pill of [d, t, c]) {
+			assert.ok(pill.classList.contains('live'), '处理中药丸必须带 live 类（否则与完成态无法区分）');
+			assert.ok(pill.classList.contains('chat-footer-pill'), 'live 不改变基础形态');
+		}
+		// 图标仍必须是统一口径（用户明确要求"各个位置图标一致"）
+		const iconOf = (el: HTMLElement): string => (el.querySelector('.chat-footer-pill-icon') as HTMLElement | null)?.className ?? '';
+		assert.ok(iconOf(d).includes('codicon-watch'), '耗时图标必须仍是 codicon-watch');
+		assert.ok(iconOf(t).includes('codicon-clippy'), 'token 图标必须仍是 codicon-clippy');
+		assert.ok(iconOf(c).includes('codicon-credit-card'), '积分图标必须仍是 codicon-credit-card');
+	});
+
+	test('★★★ 不带 live 时不得出现 live 类（完成态不能被画成"进行中"）', () => {
+		const h = host();
+		assert.ok(!appendFooterPill(h, 'duration', '4.5s').classList.contains('live'));
+		assert.ok(!appendFooterPill(h, 'tokens', '1').classList.contains('live'));
+		assert.ok(!appendFooterPill(h, 'credit', '0.00').classList.contains('live'));
+	});
+
+	test('★★★ withLabel：标签为「耗时：/Tokens：/积分：」，且数值节点里**不得再带冒号**', () => {
+		const h = host();
+		const d = appendFooterPill(h, 'duration', '4.5s', { withLabel: true });
+		const t = appendFooterPill(h, 'tokens', '12,345', { withLabel: true });
+		const c = appendFooterPill(h, 'credit', '0.42', { withLabel: true });
+		// 结构：图标 + 标签 + 数值（三个子节点）
+		assert.strictEqual(d.children.length, 3, 'withLabel 时结构应为「图标 + 标签 + 数值」');
+		const labelOf = (el: HTMLElement): string => (el.querySelector('.chat-footer-pill-label') as HTMLElement | null)?.textContent ?? '';
+		assert.strictEqual(labelOf(d), '耗时：');
+		assert.strictEqual(labelOf(t), 'Tokens：');
+		assert.strictEqual(labelOf(c), '积分：');
+		// ⚠ 关键：冒号只在标签里，数值节点保持纯数字（此前一处 `：0.42` 一处 `: 12,345` ✗ ⇒ 无法核对）
+		const valueOf = (el: HTMLElement): string => (el.querySelector('.chat-footer-pill-value') as HTMLElement | null)?.textContent ?? '';
+		assert.strictEqual(valueOf(d), '4.5s');
+		assert.strictEqual(valueOf(t), '12,345');
+		assert.strictEqual(valueOf(c), '0.42');
+	});
+
+	test('★★ 处理中组合用法（valueClass + live）在 DOM 上同时成立', () => {
+		const h = host();
+		const pill = appendFooterPill(h, 'duration', '9s', { valueClass: 'chat-footer-processing-elapsed', live: true });
+		const value = pill.querySelector('.chat-footer-pill-value') as HTMLElement | null;
+		assert.ok(value, '必须有数值节点');
+		assert.ok(value!.classList.contains('chat-footer-processing-elapsed'), '抗抖动类必须挂在数值节点上');
+		assert.ok(pill.classList.contains('live'), 'live 必须挂在药丸本体上');
+	});
+});
+
+// ─── 三类药丸的顺序不变量（2026-09-19）──────────────────────────────────────
+
+/**
+ * 用户要求：「保证 积分、tokens、耗时 三个 UI 的**顺序在各个位置保持不变**」✓。
+ *
+ * 为什么必须由**构建入口**排序，而不是各调用点按顺序写 ✗：
+ *   `tokens` / `积分` 是**流式陆续到达**的 ⇒ 谁先创建不确定 ✗；
+ *   若只靠"先 append 的先在左" ⇒ 同一行会在运行中**换位** ✗✗。
+ * 故 `appendFooterPill` 按 `PILL_ORDER`（耗时 0 → tokens 1 → 积分 2 ✓）**插入到正确位置** ✓，
+ * 与调用顺序、数据到达顺序都无关 ✓。本 suite 就把这条钉住 ✓。
+ */
+suite('三类药丸顺序不变量（2026-09-19）', () => {
+
+	/** 取容器里药丸的顺序（按种类类名；非三类记为 other）。 */
+	const orderOf = (h: HTMLElement): string[] => {
+		const kinds = ['duration-item', 'tokens-item', 'credit-item'];
+		return Array.from(h.children)
+			.filter(c => c.classList.contains('chat-footer-pill'))
+			.map(c => kinds.find(k => c.classList.contains(k)) ?? 'other');
+	};
+
+	test('★★★ 乱序创建 ⇒ DOM 顺序恒为 耗时 → Tokens → 积分', () => {
+		const h = host();
+		// 刻意按「倒序 + 跳序」创建：积分 → 耗时 → tokens（最坏情形 ✓）
+		appendFooterPill(h, 'credit', '0.42');
+		appendFooterPill(h, 'duration', '4.5s');
+		appendFooterPill(h, 'tokens', '12,345');
+		assert.deepStrictEqual(orderOf(h), ['duration-item', 'tokens-item', 'credit-item'],
+			'顺序必须由构建入口决定，与创建顺序无关 ✗');
+	});
+
+	test('★★★ 处理中实时场景：先有耗时，tokens/积分随后到达 ⇒ 仍为正序', () => {
+		const h = host();
+		appendFooterPill(h, 'duration', '9s', { valueClass: 'chat-footer-processing-elapsed', live: true });
+		assert.deepStrictEqual(orderOf(h), ['duration-item']);
+		// 数据陆续到达（真实顺序：usage delta 先给 tokens，再给积分 ✓）
+		appendFooterPill(h, 'tokens', '12,345', { valueClass: 'chat-footer-processing-tokens', live: true });
+		appendFooterPill(h, 'credit', '0.42', { valueClass: 'chat-footer-processing-credit', live: true });
+		assert.deepStrictEqual(orderOf(h), ['duration-item', 'tokens-item', 'credit-item'],
+			'流式到达后不得换位 ✗（这正是"顺序不稳定"的根因 ✓）');
+	});
+
+	test('★★★ 反向到达（积分先于 tokens 到达）也必须归位', () => {
+		const h = host();
+		appendFooterPill(h, 'duration', '9s');
+		appendFooterPill(h, 'credit', '0.42');   // 积分先到（某些网关可能只先给积分 ✓）
+		appendFooterPill(h, 'tokens', '12,345'); // tokens 后到 ⇒ 必须插到积分**前面** ✓
+		assert.deepStrictEqual(orderOf(h), ['duration-item', 'tokens-item', 'credit-item']);
+	});
+
+	test('★★ 非本约定的子元素不受影响（复制按钮 / 分隔线在前，「已中断」恒在最后）', () => {
+		const h = host();
+		const copy = document.createElement('button'); copy.className = 'chat-msg-copy-btn'; h.appendChild(copy);
+		const sep = document.createElement('div'); sep.className = 'chat-bubble-footer-sep'; h.appendChild(sep);
+		const interrupted = document.createElement('span');
+		interrupted.className = 'chat-bubble-footer-item chat-footer-pill interrupted-item';
+		h.appendChild(interrupted);
+		// 刻意在「已中断」**之后**才建三类药丸（现实代码是之前建 ✓）⇒ 也必须插到它前面 ✓
+		appendFooterPill(h, 'credit', '0.1');
+		appendFooterPill(h, 'duration', '1s');
+		assert.strictEqual(h.children[0], copy, '复制按钮位置不动');
+		assert.strictEqual(h.children[1], sep, '分隔线位置不动');
+		assert.strictEqual(h.children[h.children.length - 1], interrupted, '「已中断」必须恒在最后 ✓');
+		// ⚠ orderOf 会把「已中断」记为 other（它不是三类之一 ✓）⇒ 期望里要带上它 ✓，
+		//   而且要排在最后 —— 这正是"非三类药丸视为最大顺序"的**行为证据** ✓
+		assert.deepStrictEqual(orderOf(h), ['duration-item', 'credit-item', 'other']);
+	});
+
+	test('★★ 缺中间项时插入仍正确（只建耗时 + 积分）', () => {
+		const h = host();
+		appendFooterPill(h, 'credit', '0.42');
+		appendFooterPill(h, 'duration', '4.5s');
+		assert.deepStrictEqual(orderOf(h), ['duration-item', 'credit-item']);
+	});
+});
+
+// ─── 配色不变量：三类药丸必须**黑白灰**（2026-09-19，用户截图要求）────────────
+
+/**
+ * 背景（用户截图）：处理中的三药丸 `18.8s / 58,200 / 0.66` 是**蓝色** ✗，
+ * 要求「统一 tokens、积分、耗时的 UI 样式（黑白灰）」✓。
+ *
+ * 蓝色的**唯一来源**是两个"被当中性色用"的主题强调色 ✗：
+ *   · `--vscode-progressBar-background`（**进度条填充色**，真机里是蓝色 ✗、且不透明 ✓）—— 曾用于 live 态；
+ *   · `--vscode-focusBorder`（焦点蓝 ✗）—— 曾用于 hover 描边。
+ * 修法：配色**单点**收敛到 `.chat-bubble-footer-item.chat-footer-pill` 上的 `--pill-*` 变量，
+ * 全部由 `--vscode-foreground` 按百分比混出灰阶 ✓
+ * （深色主题 foreground=白 ⇒ 白/灰 ✓；浅色主题 foreground=黑 ⇒ 黑/灰 ✓ = "黑白灰" ✓✓）。
+ * 三类药丸 × 四个展示位（主气泡完成态/处理中、委派卡、子代理 ✓）因此**自动同色** ✓。
+ *
+ * 真实计算色已用「**真实 CSS + 真实主题变量**」的预览页核过（15/15 全部 GRAY ✓，
+ * 教训见 MEMORY：预览页不注入主题变量会命中 fallback ⇒ 掩盖真机问题 ✗）；
+ * 这里只能做**源码级**断言，锁住"结构不漂移"（不引入蓝色变量、不出现按种类的颜色规则 ✓）。
+ */
+suite('用量药丸配色：黑白灰不变量（2026-09-19）', () => {
+
+	const CSS_REL = 'src/vs/sessions/browser/agentChat/media/agentChat.css';
+
+	/** 读仓库内文件（测试从仓库根跑 ⇒ 路径相对 cwd ✓，与 `wsSwitchDiag.test.ts` 的 read 同法 ✓）。 */
+	const readFile = (rel: string): string => {
+		const abs = path.join(process.cwd(), rel);
+		assert.ok(fs.existsSync(abs), `源码不存在（路径基准变了？）：${abs}`);
+		return fs.readFileSync(abs, 'utf8');
+	};
+
+	/** 取「药丸区块」：pill 基础规则 → live 呼吸动画（中间只夹着 interrupted 块 ✓）。
+	 *  ⚠ 刻意**不含**其后的 spinner 规则 ✓ —— 蓝色 spinner 是「进行中」信号，不属这三类用量 ✓。 */
+	const pillSection = (): string => {
+		const css = readFile(CSS_REL);
+		const marker = css.indexOf('── Pill 样式 badge');
+		// ⚠ 起点要**回退到注释开头** ✓ —— 否则切片从注释中间开始，`stripComments` 匹配不到那个
+		//   `/*` ⇒ 注释内容会被当成"活代码"，测试假红 ✗（首次运行就踩了这个坑 ✓）。
+		const start = css.lastIndexOf('/*', marker);
+		const end = css.indexOf('@keyframes footer-pill-live-pulse');
+		assert.ok(start > 0 && end > start, '定位不到药丸区块（注释被改动？）');
+		return css.slice(start, end);
+	};
+
+	/** 去掉 CSS 注释 ⇒ 只对**活代码**做断言 ✓（注释里会刻意提到"不能用的蓝色变量"作为教训 ✓）。 */
+	const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+	test('★★★ 配色必须由 --pill-* 单点定义，且基准是 --vscode-foreground（⇒ 灰阶 ✓）', () => {
+		const s = stripComments(pillSection());
+		assert.ok(s.includes('--pill-fg: var(--vscode-foreground'), '配色基准必须是 foreground（深色=白、浅色=黑 ⇒ 黑白灰 ✓）');
+		for (const v of ['--pill-border:', '--pill-border-strong:', '--pill-bg:', '--pill-bg-strong:']) {
+			assert.ok(s.includes(v), `缺少 ${v} —— 三类药丸靠这组变量保持一致 ✗`);
+		}
+	});
+
+	test('★★★ 药丸区块内不得出现蓝色主题变量（progressBar-background / focusBorder ✗）', () => {
+		// ⚠ 只查**活代码**：注释里提到这两个变量是**刻意保留的教训** ✓（"为何不能用它当底色"），
+		//   若连注释一起查 ⇒ 测试会红 ✗（首次运行即如此 ✓）。这条与 composerHeight 回归同一原则：
+		//   「注释可以解释、活代码不行」✓
+		const code = stripComments(pillSection());
+		assert.ok(!code.includes('progressBar-background'), 'live 态不得再用"进度条蓝" ✗（用户要求黑白灰）');
+		assert.ok(!code.includes('focusBorder'), 'hover 描边不得再用"焦点蓝" ✗（用户要求黑白灰）');
+	});
+
+	test('★★ live 与 hover 都复用 --pill-*（不得各自写死颜色 ✗），且保留呼吸动画', () => {
+		const s = stripComments(pillSection());
+		assert.ok(s.includes('.chat-footer-pill.live {'), 'live 规则必须存在（"进行中"信号 ✓）');
+		assert.ok(s.includes('border-color: var(--pill-border-strong)'), 'live 应是"加深一档灰"，而不是换色 ✗');
+		assert.ok(s.includes('background: var(--pill-bg-strong)'), 'live 背景同理必须是灰 ✓');
+		assert.ok(s.includes('animation: footer-pill-live-pulse'), 'live 的"进行中"信号保留图标呼吸 ✓');
+	});
+
+	test('★ 三类不得有各自的颜色规则（duration / tokens / credit 必须共用同一套 ✓）', () => {
+		const s = stripComments(pillSection());
+		for (const cls of ['.duration-item', '.tokens-item', '.credit-item']) {
+			assert.ok(!s.includes(cls), `${cls} 不应出现在配色区块（三类配色必须完全一致 ✗）`);
+		}
 	});
 });

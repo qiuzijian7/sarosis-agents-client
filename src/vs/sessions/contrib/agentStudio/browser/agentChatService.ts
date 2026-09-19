@@ -106,6 +106,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	declare readonly _serviceBrand: undefined;
 
 	private readonly _activeStreams = new Map<string, AbortController>();
+	/**
+	 * ★★★ 2026-09-19（用户选择"主流做法"✓）：**优雅停止**的标记集合（按 streamKey ✓）。
+	 *
+	 * 语义（对齐 OpenHands **pause** ✓ / Vercel AI SDK 的 `onAbort({steps})` 自行持久化 ✓）：
+	 *   用户第一次点 Stop ⇒ **不立即切断**当前 LLM 请求 ✓ —— 让它跑完当前 iteration，
+	 *   到 `assistant_turn` 边界（= 当前 iteration 的权威文本已确定 ✓）才硬中止 ✓
+	 *   ⇒ **已生成的内容（含其 tokens/credit ✓）照常到达并落盘** ✓✓，只砍掉**后续** iteration ✗；
+	 *   用户第二次点 Stop ⇒ 立即硬中止 ✓。
+	 * ⚠ 生命周期：回合开始与 finalize 都要 `delete(streamKey)` ✓（避免泄漏到下一回合 ✗）。
+	 */
+	private readonly _gracefulStopRequested = new Set<string>();
 	private readonly logService: ILogService;
 	private readonly driverService: IAgentDriverService;
 	private readonly fileService: IFileService;
@@ -2181,19 +2192,36 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		return URI.joinPath(sessionsDirUri, `${sessionId}.draft.json`);
 	}
 
-	async saveInterruptedDraft(agentId: string, sessionId: string, content: string): Promise<void> {
+	async saveInterruptedDraft(agentId: string, sessionId: string, content: string, opts?: { quiet?: boolean }): Promise<void> {
 		try {
 			const uri = await this._getDraftUri(agentId, sessionId);
 			await this.fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify({
 				content,
 				savedAt: Date.now(),
 			})));
-			this.logService.info(
-				`[AgentChatService] saved interrupted draft (${content.length} chars) for ${agentId}/${sessionId}`,
-			);
+			// ★ 2026-09-19：journal 模式（流式期间 ~2s 一笔 ✓）必须静默，否则日志刷屏 ✗；
+			//   关停兜底（onWillShutdown ✓）保持 info（它证明"关闭时真的救了内容" ✓）。
+			if (!opts?.quiet) {
+				this.logService.info(
+					`[AgentChatService] saved interrupted draft (${content.length} chars) for ${agentId}/${sessionId}`,
+				);
+			}
 		} catch (err) {
 			this.logService.error('[AgentChatService] Failed to save interrupted draft:', err);
 		}
+	}
+
+	/**
+	 * ★★ 2026-09-19：流式草稿的**正常完成清理** ✓。
+	 * 流式期间有 journal 定期写草稿（崩溃保命 ✓ —— 对齐 Cline 的 write-through /
+	 * OpenCode 的按 part 落盘 ✓）；若 loop **正常结束**（内容已由 finalization 落盘 ✓），
+	 * 草稿必须删除 —— 否则下次 getHistory 会把**已落盘的内容**再注入一遍「已中断」消息 ✗。
+	 */
+	async clearInterruptedDraft(agentId: string, sessionId: string): Promise<void> {
+		try {
+			const uri = await this._getDraftUri(agentId, sessionId);
+			if (await this.fileService.exists(uri)) { await this.fileService.del(uri); }
+		} catch { /* 删不掉 → 下次消费时按一次性草稿处理（最坏多一条"已中断"消息，可接受 ✓） */ }
 	}
 
 	/** 读取并**删除**草稿（消费一次，避免重复合并）。无草稿返回 undefined。 */
@@ -2542,6 +2570,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				`This is the service-layer safety net for edit-resend / reentrant sends.`
 			);
 			this.cancelStream(agentId, options.agentSessionId);
+			this._gracefulStopRequested.delete(streamKey);	// ★ 2026-09-19：新回合 ⇒ 清掉上一回合的优雅停止标记（防泄漏 ✓）
 		}
 
 		const controller = new AbortController();
@@ -2627,6 +2656,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			);
 
 			if (!alreadyPersisted || options.source === 'task') {
+				// ★★ 2026-09-19（用户实测：重启后气泡里的代码片段 pill 丢失 ✗✓）：
+				// 附件此前只透传给 LLM（options.attachments ✓）却**不落盘** ⇒ 重启后丢 ✗。
+				// 只持久化**可恢复**的附件：文本片段/日志/文件引用（data 小 ✓）；
+				// 图片**刻意不存**（base64 会吹大会话文件 ✗，且没 data 恢复出来也是坏 pill ✗
+				// —— 维持既有行为：图片重启后本就不恢复 ✓）。
+				const persistableAttachments = options.attachments?.filter(a => a.type !== 'image');
 				const userMessage: ChatMessage = {
 					id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 					role: 'user',
@@ -2636,6 +2671,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					timestamp: new Date().toISOString(),
 					source: options.source,
 					taskCard: options.taskCard,
+					attachments: persistableAttachments && persistableAttachments.length > 0 ? persistableAttachments : undefined,
 				};
 				console.info(`[TaskPromptCard] sendMessage → appendMessage id=${userMessage.id} source=${options.source ?? 'user'} alreadyPersisted=${alreadyPersisted}`);
 				this.appendMessage(agentId, userMessage).catch(err =>
@@ -2710,6 +2746,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				_deltaCount++;
 				if (controller.signal.aborted) {
 					break;
+				}
+				// ★★★ 2026-09-19（主流做法 ✓）：优雅停止 —— 用户点过 Stop ⇒ 不再立即切 ✓；
+				//   到 `assistant_turn` 边界（= 当前 iteration 的权威文本已确定 ✓）才 abort ✓。
+				//   ⚠ 这里**不 break**：让本条 delta 走完快照 ✓（`assistant_turn` 的处理在后面 ✓），
+				//     下一轮迭代会被上面的 `controller.signal.aborted` 挡下 ⇒ 砍掉的是**后续** iteration ✗，
+				//     当前 iteration 的文本（含 tokens/credit ✓）照常到达并落盘 ✓✓。
+				if (this._gracefulStopRequested.has(streamKey) && (delta as any).type === 'assistant_turn') {
+					this.logService.info(
+						`[AgentChatService] ⏹ 优雅停止：已到 assistant_turn 边界 ⇒ 现在中止（当前 iteration 已跑完 ✓）`,
+					);
+					controller.abort();
 				}
 				if (delta.type === "text" && delta.content) {
 					_fullContentChunks.push(delta.content);
@@ -2936,6 +2983,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			}
 
 			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${(performance.now() - tStream).toFixed(0)}ms`);
+			// ★ 2026-09-19：本次 sendMessage 结束 ⇒ 清掉优雅停止标记（防泄漏到下一回合 ✗）
+			this._gracefulStopRequested.delete(streamKey);
 
 			// 用户点击 Stop → cancelStream 调用 controller.abort() → for-await break。
 			// 此时 done/error delta 尚未被 stream 发射，UI 不会收到 setSending(false)。
@@ -3171,6 +3220,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					|| !!confirmation || !!questions || !!todos
 					|| (Array.isArray(references) && references.length > 0)
 					|| (_streamingParts && _streamingParts.length > 0);
+				// ★ 2026-09-19（主流做法 ✓）：**用户取消 ⇒ 已生成内容照常落盘**（guard 已保证 ✓），
+				//   但必须打上「已中断」标记 —— 否则用户分不清"完整回答"与"被截断的回答" ✗
+				//   （无内容的占位分支在后面另有专门处理 ✓，这里覆盖的是**有内容**的情形 ✓）。
+				if (controller.signal.aborted || this._gracefulStopRequested.has(streamKey)) {
+					chatMessage.metadata = { ...(chatMessage.metadata as Record<string, unknown> | undefined ?? {}), streamInterrupted: true };
+				}
 				if (hasVisibleContent) {
 					this.appendMessage(agentId, chatMessage).catch((err) =>
 						this.logService.error(
@@ -3178,10 +3233,46 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 							err,
 						),
 					);
+				} else if (controller.signal.aborted) {
+					// ★★★ 2026-09-19（用户报「llm 消息丢失」真机取证 ✓）：**用户取消 + 无可见内容**
+					// ⇒ 不再**静默丢弃** ✗，而是落一条**自解释的占位** ✓。
+					// 证据链（`vscode-app-1789792320170.log` 同一轮 ✓）：
+					//   `Stream aborted by user` → `[PartsDiag] DONE partsLen=0 isCanceled=true parts=[]`
+					//   → `skip persisting empty assistant turn`（**本分支** ✓）
+					//   → 而服务端同刻报 `[SSE-Diag] usage completion_tokens=1119 / usage.credit=27.2` ✗✗
+					// ⇒ 用户"付了费、却连一条痕迹都没有" ✓ ⇒ 表现为「消息丢了」✓✓。
+					//
+					// ⚠ 为什么以 `controller.signal.aborted` 作为条件（而不是无条件落盘 ✗）：原守卫是为挡
+					//   「**工作流工具回合无文本**」的空气泡 ✓ —— 那种情况**不是取消** ✓ ⇒ 只有"用户显式取消"
+					//   才补占位：既消灭"无痕丢失"，又**不动**原来的空气泡防护 ✓✓。
+					chatMessage.content = `⏹ 本轮已取消：未收到内容输出（期间收到 ${_deltaCount} 个事件，`
+						+ `耗时约 ${Math.round((performance.now() - tStream) / 1000)}s）。`
+						+ `如已计费，请对照同时刻的 [SSE-Diag] usage。`;
+					// `parts` 必须同步给（UI 优先按 parts 渲染 ✓；留空会渲染成空白 ✗）—— 复用同一派生函数 ✓
+					chatMessage.parts = deriveMessageParts({ role: 'assistant', content: chatMessage.content, toolCalls: undefined });
+					// 复用既有约定：`metadata.streamInterrupted` ⇒ UI 会打出「已中断」标记 ✓（见 `:2216` ✓）
+					chatMessage.metadata = { streamInterrupted: true };
+					this.logService.warn(
+						`[AgentChatService] ⚠ 已取消且无可见内容 ⇒ 落一条占位（避免"消息零痕迹"✗）：` +
+						`id=${chatMessage.id} deltas=${_deltaCount} contentLen=${fullContent.length} ` +
+						`thinkingLen=${fullThinking ? fullThinking.length : 0} ` +
+						`toolCalls=${Array.isArray(toolCalls) ? toolCalls.length : 0} parts=${_streamingParts.length} ` +
+						`elapsedMs=${Math.round(performance.now() - tStream)} —— 若同刻 usage/credit 非零 ⇒ 属"付费但无内容" ✓`,
+					);
+					this.appendMessage(agentId, chatMessage).catch((err) =>
+						this.logService.error(
+							"[AgentChatService] Failed to persist canceled placeholder message:",
+							err,
+						),
+					);
 				} else {
-					this.logService.info(
-						`[AgentChatService] skip persisting empty assistant turn id=${chatMessage.id} ` +
-						`(progress=${Array.isArray(progress) ? progress.length : 0}) — 无可见内容，避免重启后出现空气泡`,
+					// ★ 2026-09-19：级别 `info` → **`warn`** 并补上关键计数 ✓ —— 这条曾经是纯静默的：
+					//   真机上"付费却没内容"只留下这一行 info ✗ ⇒ 排查时极易漏掉 ✓。
+					this.logService.warn(
+						`[AgentChatService] ⚠ 未落盘：本轮无可见内容（id=${chatMessage.id}、` +
+						`progress=${Array.isArray(progress) ? progress.length : 0}、deltas=${_deltaCount}、` +
+						`contentLen=${fullContent.length}、aborted=${controller.signal.aborted}）` +
+						`—— 工作流工具回合属**正常**情况 ✓；若同时见到 usage/credit 非零 ⇒ 属"付费但无内容"，需排查 ✓`,
 					);
 				}
 			}
@@ -3403,6 +3494,19 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			: agentId;
 		const controller = this._activeStreams.get(streamKey);
 		if (controller) {
+			// ★★★ 2026-09-19（用户选择"主流做法"✓）：**优雅停止** —— 第一次点 Stop **不立即切断** ✓
+			// （否则落在「服务端已产出（计费 ✓）但本地未收到」窗口时 = "付费零痕迹" ✗✗，
+			//  见 `_gracefulStopRequested` 的注释 ✓）。⇒ 立标记、把决定权交给流式循环的边界处 ✓；
+			// 第二次点 Stop ⇒ 立即硬中止 ✓（用户要"现在就停"的逃生口 ✓）。
+			if (!this._gracefulStopRequested.has(streamKey)) {
+				this._gracefulStopRequested.add(streamKey);
+				this.logService.info(
+					`[AgentChatService] ⏸ 优雅停止：不切断当前请求，等当前 iteration 跑完在边界处停止 ✓（再次点击 = 立即停 ✓）`,
+				);
+				return;
+			}
+			// 第二次点 Stop ⇒ 硬中止 ✓
+			this._gracefulStopRequested.delete(streamKey);
 			controller.abort();
 			this._activeStreams.delete(streamKey);
 		}

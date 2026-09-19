@@ -21,6 +21,7 @@ import { StateKV } from './stateKV.js';
 import { getProfile } from './amPipeline.js';
 import { listPinnedSlots, renderPinnedContext } from './amSlots.js';
 import { cascadeUpdate } from './amFinal.js';
+import { stripPrivateData, stripPrivateDataDeep } from './privacyFilter.js';
 
 // 延迟导入（避免循环依赖）
 // Plan C: getter 可能返回网关 HTTP 代理（search 为异步），故用最小接口而非
@@ -235,6 +236,10 @@ export async function remember(
 	ttlDays?: number, project?: string, idOverride?: string,
 ): Promise<{ success: boolean; id?: string; action?: string; error?: string }> {
 	if (!content?.trim()) return { success: false, error: 'content is required' };
+	// P0-2（2026-09-19）：记忆落盘前剥离敏感信息（api key / token / password / Bearer / x-tai-identity 等）。
+	//   指纹去重 / Jaccard 冲突检测 / 写入都用**过滤后**的 content —— 否则同一份敏感内容会被
+	//   指纹去重拦在"第二次写入"，但**第一次已入库**的敏感内容仍留在库里（过滤就失去了意义）。
+	content = stripPrivateData(content);
 	// agentmemory 原生类型原样落库——不再做 4-Tier→fact 的坍缩/路由；仅空值兜底 fact。
 	const memType = (type && type.trim()) ? type : 'fact';
 	const now = new Date().toISOString();
@@ -1266,12 +1271,15 @@ export async function observe(
 	}
 	const id = generateId('obs');
 	const now = new Date().toISOString();
+	// P0-2（2026-09-19）：观察数据落盘前剥离敏感信息 —— 工具输入/输出（`payload.data` 的 key 不固定，
+	//   如 command/args/output/stderr）可能含 key/token，只能逐值递归过滤。
+	const safeData = stripPrivateDataDeep(payload.data ?? {});
 	const obs: Observation = {
 		id,
 		sessionId: payload.sessionId,
 		hookType: payload.hookType,
 		timestamp: payload.timestamp,
-		data: payload.data ?? {},
+		data: safeData,
 		createdAt: now,
 		agentId: payload.agentId || agentId,
 		// 写入时持久化标题/重要性（buildContext 重要观察块 importance≥5 筛选的输入；

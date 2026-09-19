@@ -92,16 +92,54 @@ export const WS_LATENCY_WINDOW_MS = 5000;
 
 let _stage = 'startup（尚未进入任何被标记的阶段）';
 let _stageSince = Date.now();
+/** 末个**已结束**阶段的名字与结束时刻（由 `wsStageEnd()` 维护 ✓）。 */
+let _lastStage = '';
+let _lastStageEndedAt = 0;
+/** 「当前没有进行中的阶段」的表示（须能被 `wsStageText()` 识别 ✓）。 */
+const STAGE_IDLE = '（无进行中阶段）';
+/**
+ * ★ 2026-09-19：阶段"持续"超过它就**显式警告**（几乎必是漏了 `wsStageEnd()` 的陈旧阶段 ✓）。
+ * 取值依据：观测到的**真实**阶段最长是秒级（载入各段 0.05–3s、BM25 9s 级）⇒ 120s 有 40× 余量，
+ * 不会误报；而真机那次陈旧阶段是 **143s / 1884s** ⇒ 必被拦下 ✓。
+ */
+const STAGE_STALE_WARN_S = 120;
 
 /**
  * 记下「当前处于哪一步」。**只写两个模块级变量，不落盘** ⇒ 可以放在热路径上。
  *
  * 约定：名字里带上「谁 + 在做什么」（如 `graph: 加载 "S1Game" 的图谱（同步解压）`），
  * 因为看门狗只会把**这个名字**原样打出来，它得自己说明问题。
+ *
+ * ⚠ 成对使用：结束时要调 `wsStageEnd()`，否则这个阶段会**一直"当前"下去** ✗（见它的注释）。
  */
 export function wsStage(name: string): void {
 	_stage = name;
 	_stageSince = Date.now();
+}
+
+/**
+ * ★★ 2026-09-19 新增：**结束当前阶段**。
+ *
+ * 为什么必须有（真机教训，外部日志 `vscode-app-1789813310143.log`）：
+ * `wsStage()` 原本**只设不清** ⇒ 一个阶段的标记会一直"当前"下去，直到下一次有人设新阶段 ——
+ * 而 `graph: 写入内存 store（graph.db.zst）` 这类阶段**一次载入只设一次**，于是日志里出现
+ * `…（已持续 143s / 1884s）` ✗✗，期间**所有**主线程阻塞都被归因到它头上 ⇒ 仪器**自信地骗人** ✓✓
+ * （那份日志里 **9/9** 次慢焦点全指向它，而它**自测**只有 `[阻塞47ms]` ✗）。
+ * ⚠ 关键区别：`idle` 只是"不知道"；**陈旧阶段名是"知道错了"** ⇒ 会把人骗去优化一个无辜的子系统 ✗✗。
+ *
+ * 用法（与 `wsStage` 成对，务必放 `finally`）：
+ * ```ts
+ * wsStage('graph: 写入内存 store');
+ * try { … } finally { wsStageEnd('graph: 写入内存 store'); }
+ * ```
+ * 结束后阶段名变为「无进行中阶段；末个「…」结束于 Ns 前」✓ —— 既不冒充"正在跑"，
+ * 又保留"刚才在跑谁"的线索（阻塞刚结束、正要报告时仍有用 ✓）。
+ */
+export function wsStageEnd(name?: string): void {
+	_lastStage = name ?? _stage;
+	_lastStageEndedAt = Date.now();
+	_stage = STAGE_IDLE;
+	_stageSince = _lastStageEndedAt;
 }
 
 /** 当前阶段名（供其它诊断补上下文）。 */
@@ -112,6 +150,36 @@ export function wsStageName(): string {
 /** 当前阶段已持续多少毫秒（看门狗用它区分「卡在阶段入口」与「阶段里卡久了」）。 */
 export function wsStageAge(now: number = Date.now()): number {
 	return now - _stageSince;
+}
+
+/** 末个已结束阶段的信息（`endedAgoMs < 0` 表示本次会话还没有任何阶段结束过 ✓）。 */
+export function wsStageLast(): { name: string; endedAgoMs: number } {
+	return { name: _lastStage, endedAgoMs: _lastStageEndedAt ? Date.now() - _lastStageEndedAt : -1 };
+}
+
+/**
+ * ★★ 阶段名的**展示文本**（唯一真源 ✓）：看门狗日志、焦点埋点（经全局钩子）都用它。
+ *
+ * 关键区分（这就是本次修复的可见效果 ✓）：
+ *   · **进行中** ⇒ `名字（已持续 Ns）`；
+ *   · **已结束** ⇒ `（无进行中阶段；末个「名字」结束于 Ns 前）` ✗✓ —— 读日志的人不会再把它
+ *     当成"正在跑的东西"去优化 ✓。
+ */
+export function wsStageText(): string {
+	if (_stage === STAGE_IDLE) {
+		const last = wsStageLast();
+		return last.endedAgoMs >= 0
+			? `（无进行中阶段；末个「${last.name}」结束于 ${Math.round(last.endedAgoMs / 1000)}s 前）`
+			: STAGE_IDLE;
+	}
+	const ageSec = Math.round(wsStageAge() / 1000);
+	// ★★ 兜底（2026-09-19）：**陈旧阶段**的显式警告 —— 不改全部调用点也能防止再次被骗 ✓。
+	// 真机教训：`wsStage()` 只要有一处忘了配对结束，该名字就会"持续"到下次有人设新阶段
+	// （实测 143s / 1884s ✗✗），而日志读起来完全像是"它正在跑" ⇒ 会把优化引向无辜子系统 ✗。
+	// 判据：任何**真实**阶段都远短于此（观测最长秒级）⇒ 超过即几乎必是"未成对结束" ✓。
+	return ageSec >= STAGE_STALE_WARN_S
+		? `${_stage}（已持续 ${ageSec}s ⚠ 超过 ${STAGE_STALE_WARN_S}s ⇒ **很可能没成对调 wsStageEnd()** 的陈旧阶段，别据此归因 ✗）`
+		: `${_stage}（已持续 ${ageSec}s）`;
 }
 
 /**
@@ -140,6 +208,27 @@ export function takeMaxBlockMs(): number {
 	const v = _maxBlockMs;
 	_maxBlockMs = 0;
 	return v;
+}
+
+/**
+ * ★★ 2026-09-19：「可命名序列」开始时**丢掉陈旧累积**（不读、直接清零）。
+ *
+ * 为什么必须有它（真机取证，数字**自相矛盾** ✗✗）：`_maxBlockMs` 是**全局累加器**，
+ * 只在有人读的时候才清零 ⇒ 若两次读取之间隔了很久（上一次读取可能属于**另一个消费者**、
+ * 且发生在几秒甚至几分钟前），那么"序列的第一段"读到的其实是**那段更长窗口里的最大值** ✗。
+ * 真机症状：`解压制品=537ms[阻塞2999ms]` —— 段本身只有 537ms，却报 2999ms 连续阻塞，
+ * **物理上不可能**（连续阻塞不可能长于所在窗口 ✓）⇒ 一眼可判「这个数字是揽了旧账」✗。
+ * ⇒ 结论：**序列开头不清零，则 `[阻塞Nms]` 的第一段不可信** ✗。
+ *
+ * 调用口径：在**每个可命名序列的第一步之前**调用一次（一次 `loadMerge`、一次增量索引 ✓）。
+ * ⚠ 本仓现有**两个消费者**（`codebaseGraphPersistence.loadMerge` 的 `timed` 与
+ *   `codebaseGraphService` 增量索引的 `_seg`），而 `_maxBlockMs` 只有一个 ⇒ 仍会互抢：
+ *   · 两者都在序列开头清零 ⇒ **序列内**的段间归属正确 ✓；
+ *   · **跨序列交错**（一个在跑、另一个插进来读）仍会失真 ✗ ⇒ 排期决策时优先采信
+ *     「同一序列内自洽的数字」——`阻塞 ≤ 段耗时` 是自洽的必要条件 ✓。
+ */
+export function resetMaxBlockMs(): void {
+	_maxBlockMs = 0;
 }
 
 /** 诊断输出：**任何异常都吞掉** —— 诊断绝不能影响主流程。 */
@@ -254,6 +343,18 @@ export function startMainThreadWatchdog(logService: ILogService, options: IWatch
 	let reports = 0;
 	/** 连续阻塞的累计时长（跨多个心跳周期）：只在恢复时清零，供「恢复」行报总时长。 */
 	let blockedAccum = 0;
+
+	// ★★ 2026-09-19：把「当前阶段名」发布到 **globalThis**，供 `focusTrace`（browser 层 ✗ 不能反向
+	// import 本目录）读取。为什么不放 `wsSwitchDiag.contribution.ts` ✗：真机日志反复出现
+	// 「（未注册阶段提供者）」✓，查证是那个贡献文件里加的注册**被外部回退**了 ✗（该目录今日被
+	// 并行会话覆盖多次 ✓）。而本函数**一定**会被调用 —— 日志里的 `[WsSwitchDiag] ⚠ 交互延迟…`
+	// 就是它打的 ✓ ⇒ 放这里最稳 ✓✓。
+	// （`focusTrace._currentStage()` **优先**读这个全局钩子 ✓；它跨模块实例共享 ⇒ 同时免疫
+	//  "同一模块被加载成两个实例"的问题 ✓）
+	try {
+		(globalThis as unknown as { __SAROSIS_WS_STAGE__?: () => string }).__SAROSIS_WS_STAGE__ =
+			() => wsStageText();
+	} catch { /* 只读 globalThis 的宿主环境 ⇒ 忽略 ✓ */ }
 
 	// ② 排队延迟探针的窗口状态
 	let latencyWindowStart = Date.now();

@@ -89,6 +89,16 @@ export interface IKbNativeKernelService {
 
 	/** Re-embed only chunks whose provider tag mismatches the active provider (provider switch). */
 	rebuildVectorStale(): Promise<number>;
+
+	/**
+	 * P1-5 选择性删除：文档/目录删除后即时从 FTS 与向量索引剔除。
+	 * @param docIds 文档/目录的 URI 字符串（uri.toString()；目录按前缀匹配其下文档）。
+	 * @returns 移除的向量块总数。
+	 */
+	removeDocuments(docIds: string[]): Promise<number>;
+
+	/** P1-4 隐式双链建议：向量相似但尚未建链的笔记（需向量索引已构建）。 */
+	suggestLinks(docId: string, topK?: number, minScore?: number): Promise<IKbVectorSearchHit[]>;
 }
 
 export class KbNativeKernelService extends Disposable implements IKbNativeKernelService {
@@ -271,5 +281,20 @@ export class KbNativeKernelService extends Disposable implements IKbNativeKernel
 	async rebuildVectorStale(): Promise<number> {
 		const kernel = this._ensureKernel();
 		return kernel.rebuildVectorStale();
+	}
+
+	async removeDocuments(docIds: string[]): Promise<number> {
+		// 内核未构建时索引为空，无可清理（下次构建自然一致）。
+		if (!this._kernel || !this._kernel.isBuilt) { return 0; }
+		let removed = 0;
+		for (const id of docIds) {
+			try { removed += this._kernel.removeDocFromIndexes(URI.parse(id)).vectorRemoved; } catch { /* skip 单个失败 */ }
+		}
+		return removed;
+	}
+
+	async suggestLinks(docId: string, topK?: number, minScore?: number): Promise<IKbVectorSearchHit[]> {
+		if (!this._kernel || !this._kernel.isBuilt) { return []; }
+		return this._kernel.suggestLinks(docId, topK, minScore);
 	}
 }

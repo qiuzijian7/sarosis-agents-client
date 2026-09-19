@@ -36,6 +36,7 @@ import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/m
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { detectGitBash } from './providers/tool/gitBashProvider.js';
+import { execBackgroundNotifier } from './providers/tool/execBackgroundNotify.js';
 import { resolveShellDialect } from '../common/shellDialect.js';
 import { restoreRunState } from '../common/agentRunState.js';
 import type { AgentRunState, AgentRunStateSnapshot } from '../common/agentRunState.js';
@@ -314,6 +315,21 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	) {
 		super();
 		this._logService = logService;
+		// ★★ 2026-09-19：后台任务完成 ⇒ 注入为 **steering 消息**（**转次间隙送达**，不打断当前轮 ✓✓，
+		// 对齐 Claude Code 的 <task-notification>）。盯守/事件在工具层（`execBackgroundNotify.ts`，
+		// 它握着 `_execCodeControl` ✓）⇒ 这里只**订阅** ✓；投递通道 = 既有 `enqueueSteeringMessage` ✓。
+		this._register(execBackgroundNotifier.onDidFinishBackgroundTask(ev => {
+			const statusText = ev.status === 'killed' ? '已被终止' : `已完成（exit ${ev.exitCode ?? '?'}）`;
+			const tail = ev.stdoutTail.trim()
+				? `\n输出尾巴：\n\`\`\`\n${ev.stdoutTail}\n\`\`\``
+				: '（无 stdout 输出）';
+			this.enqueueSteeringMessage(
+				ev.agentId,
+				`[后台任务${ev.status === 'killed' ? '终止' : '完成'}] execute_code task ${ev.taskId} ${statusText}（用时 ${Math.round(ev.elapsedMs / 1000)}s）。${tail}`,
+				'execute_code',
+			);
+			this._logService.info(`[AgentDriver] background task finished → steering enqueued: taskId=${ev.taskId} status=${ev.status} agentId=${ev.agentId}`);
+		}));
 		// 按配置初始化顶层 turn 并发信号量（默认 4，可在设置中调整）
 		this._turnSemaphore = new TurnConcurrencySemaphore(this._readTurnConcurrencyLimit());
 

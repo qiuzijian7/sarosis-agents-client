@@ -41,6 +41,7 @@ import http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import {
 	INDEX_CACHE_VERSION,
 	BM25_CACHE_FILE,
@@ -384,8 +385,16 @@ let BM25Ctor = null;
 let VectorCtor = null;
 /** P0-1（2026-09-19）：真语义 embedding 函数（与 VectorCtor 同源取；未加载则 null ⇒ 只走 trigram）。 */
 let EmbedFn = null;
+/** P1-1：`getEmbeddingProviderInfo`（vectorIndex.js 导出）—— 当前生效的 embedding provider（供 indexCache 记录/对比）。 */
+let ProviderInfoFn = null;
 const indexByAgent = new Map();
 const vectorIndexByAgent = new Map();
+/**
+ * 待增量构建的 model 向量 id 集合（启动时从 model 制品恢复后记录，`buildModelVectorsIfEnabled` 消费）。
+ * 语义 = 「库有但向量索引没有」的 id —— 可能是新写入的记忆，或上次构建被中断留下的缺口。
+ * key = agentId，value = Set<id>。启动时清空，构建完对应 agent 后删除。
+ */
+const _pendingModelVectorIds = new Map();
 
 async function resolveBm25Module() {
 	const extRoot = process.env['AGENTMEMORY_EXT_ROOT'];
@@ -433,7 +442,9 @@ async function resolveVectorModule() {
 			if (VectorCtor) {
 				// P0-1：一并取出真语义 embed（可用性由 getPipeline 内部判；不可用时 embed 返回 null）
 				if (typeof mod.embed === 'function') { EmbedFn = mod.embed; }
-				emit('info', `${TAG} ✅ VectorIndex loaded from ${c} (embed=${typeof EmbedFn === 'function' ? 'yes' : 'no'})`);
+				// P1-1：一并取出 embedding provider 信息（供 indexCache 记录/对比 —— 切换 provider ⇒ 全量重建）
+				if (typeof mod.getEmbeddingProviderInfo === 'function') { ProviderInfoFn = mod.getEmbeddingProviderInfo; }
+				emit('info', `${TAG} ✅ VectorIndex loaded from ${c} (embed=${typeof EmbedFn === 'function' ? 'yes' : 'no'}, providerInfo=${typeof ProviderInfoFn === 'function' ? 'yes' : 'no'})`);
 				return;
 			}
 		} catch (err) {
@@ -513,21 +524,85 @@ function rebuildAgentVectorIndexTrigram(agentId, items) {
 }
 
 /**
- * P0-1：可选的后台「真语义向量」构建。
+ * P0-1：后台「真语义向量」构建（**默认开启**，2026-09-19 落地）。
  *
- * **默认关闭**（`AGENTMEMORY_MODEL_EMBEDDING=on` 才跑）：WASM 单条推理数十毫秒 ⇒ 上万条要十几分钟，
- * 不能让所有用户默认承担；而 trigram 伪向量至少「查询与库同源」，不会给错结果。
+ * 决策：改为默认开（显式 `AGENTMEMORY_MODEL_EMBEDDING=off` 才关）。理由：① 模型已可自动下载
+ * （xenova 首次 `EmbedFn` 调用触发，落 `cacheDir`，下次直接命中；默认走 hf-mirror.com）；② 下载
+ * 与构建都在**后台**（本函数被 `void` 调用，不阻塞网关就绪与首轮可用），构建期间向量流仍是
+ * trigram ⇒ 体验零变化；③ trigram 伪向量只能"查询与库同源"，检索质量远低于真语义（上游实测
+ * LongMemEval R@5：BM25+真向量 95.2% vs BM25-only 86.2%，**向量贡献 +9pp**）。
+ *
+ * 失败路径（全部自动回退 trigram，不报错）：模型下载失败 / pipeline 初始化失败 /
+ * 某 agent 构建出 0 条向量。
  *
  * 关键约束：`VectorIndex._mode` 是**实例级单值**（trigram 与 model 的余弦得分不可比）⇒ 必须
  * **逐 agent 先 clear 再全量写 model 向量**（原子切换），失败则该 agent 回退 trigram。
  * 完成后落盘（P0-2）⇒ 下次启动直接从制品恢复 model 向量，不必重算。
  */
+// ─── P2-3：Model Vectors Worker（真语义向量构建搬出主线程）────────────────
+/**
+ * 常驻 Worker（model 向量构建搬出主线程，P2-3 2026-09-19）。
+ * 背景：model 向量构建 ~240s（10033 doc）在**主线程**执行 ⇒ 阻塞 `/provider` 响应
+ * （renderer 5s 超时误判风险）。搬进 Worker ⇒ 主线程只处理 HTTP 请求。
+ * Worker 独立打开 SQLite（readonly，WAL 多连接读安全）+ 常驻复用模型加载；
+ * 主线程逐 agent 串行发任务（`await` 完成再下一个）。
+ * Worker spawn 失败 ⇒ 永久标记（`_modelVectorsWorkerFailed`）⇒ 回退主线程构建。
+ */
+let _modelVectorsWorker = null;
+let _modelVectorsWorkerFailed = false;
+function getModelVectorsWorker() {
+	if (_modelVectorsWorker || _modelVectorsWorkerFailed) { return _modelVectorsWorker; }
+	try {
+		_modelVectorsWorker = new Worker(new URL('./modelVectorsWorker.mjs', import.meta.url), {
+			workerData: {
+				// ⚠ dataDir 是 resolveDataDir() 的局部变量（main() 里遮蔽）⇒ 模块级函数访问不到 ⇒ 直接调用 resolveDataDir()
+				dbPath: path.join(resolveDataDir(), 'state_store.db'),
+				extRoot: process.env['AGENTMEMORY_EXT_ROOT'],
+			},
+		});
+		_modelVectorsWorker.on('message', (msg) => {
+			if (msg.type === 'log') { emit('log', `${TAG} [worker] ${msg.msg}`); }
+			else if (msg.type === 'warn') { emit('warn', `${TAG} [worker] ${msg.msg}`); }
+			else if (msg.type === 'progress') { emit('log', `${TAG} [worker] ${msg.agentId}: ${msg.built}/${msg.total}`); }
+		});
+		_modelVectorsWorker.on('error', (err) => {
+			emit('warn', `${TAG} [worker] error: ${err.message}`);
+		});
+		emit('log', `${TAG} [worker] spawned（model vectors 构建搬出主线程）`);
+	} catch (err) {
+		emit('warn', `${TAG} [worker] spawn failed（回退主线程构建）: ${err instanceof Error ? err.message : String(err)}`);
+		_modelVectorsWorkerFailed = true;
+		_modelVectorsWorker = null;
+	}
+	return _modelVectorsWorker;
+}
+
+/** 向 Worker 发任务并等完成（带超时；Worker 不可用时返回 null ⇒ 调用方回退主线程）。 */
+function buildInWorker(agentId, scope, pendingIds) {
+	return new Promise((resolve) => {
+		const worker = getModelVectorsWorker();
+		if (!worker) { resolve(null); return; }
+		const onMsg = (msg) => {
+			if (msg.type === 'done' && msg.agentId === agentId) {
+				worker.off('message', onMsg);
+				resolve(msg);
+			}
+		};
+		worker.on('message', onMsg);
+		worker.postMessage({ type: 'build', agentId, scope, pendingIds });
+		// 超时保护（单个 agent 最长 5 分钟）
+		setTimeout(() => { worker.off('message', onMsg); resolve({ type: 'done', agentId, error: 'worker timeout' }); }, 300_000);
+	});
+}
+
 async function buildModelVectorsIfEnabled() {
-	if (process.env['AGENTMEMORY_MODEL_EMBEDDING'] !== 'on') return;
+	if (process.env['AGENTMEMORY_MODEL_EMBEDDING'] === 'off') return;
 	if (typeof EmbedFn !== 'function') {
-		emit('warn', `${TAG} [model-vectors] AGENTMEMORY_MODEL_EMBEDDING=on 但 embed() 未加载（检查 modelDir/wasmDir 与模型文件是否齐）`);
+		emit('warn', `${TAG} [model-vectors] 真语义 embedding 默认开但 embed() 未加载（检查 modelDir/wasmDir 与模型文件是否齐；如需关闭请设 AGENTMEMORY_MODEL_EMBEDDING=off）`);
 		return;
 	}
+	// P2-3：Worker 优先（搬出主线程）；Worker 不可用则回退主线程构建（下方原逻辑）。
+	const useWorker = getModelVectorsWorker() !== null;
 	const t0 = Date.now();
 	let built = 0, failed = 0, done = 0;
 	try {
@@ -545,6 +620,58 @@ async function buildModelVectorsIfEnabled() {
 			if (items.length === 0) continue;
 			const vi = getAgentVectorIndex(agentId);
 			if (!vi) continue;
+
+			// ─── P2-3：Worker 优先（搬出主线程；成功则 continue，失败落到下方主线程回退）───
+			if (useWorker) {
+				const wPending = _pendingModelVectorIds.get(agentId);
+				const isIncremental = vi.mode === 'model';
+				const pendingIds = isIncremental && wPending ? [...wPending] : undefined;
+				const result = await buildInWorker(agentId, scope, pendingIds);
+				if (result && !result.error && Array.isArray(result.vectors) && result.vectors.length > 0) {
+					if (!isIncremental) { vi.clear(); } // 全量切换：清掉 trigram（原子切换，避免两种语义空间混存）
+					vi.importVectors(result.vectors);
+					vi.setMode('model');
+					if (wPending) { _pendingModelVectorIds.delete(agentId); }
+					done++;
+					built += result.built ?? result.vectors.length;
+					emit('log', `${TAG} [model-vectors] ${agentId}: ${result.vectors.length} doc in model mode (worker, failed=${result.failed ?? 0})`);
+					continue;
+				}
+				if (result?.error) {
+					emit('warn', `${TAG} [model-vectors] ${agentId}: worker failed (${result.error}) ⇒ 回退主线程构建`);
+				}
+				// Worker 失败/空 ⇒ 落到下方主线程回退（原逻辑）
+			}
+
+			// ★ 增量路径：model 制品已恢复（mode=model 且有 pending 记录）⇒ 只构建「库有但向量没有」的 id，
+			//   **不 clear、不重算已有的**（全量 ~240s → 增量通常 <1s）。这是让"默认开启"可落地的关键：
+			//   否则每次启动（库有写入 ⇒ 指纹 stale）都要重新全量构建 4 分钟。
+			const pending = _pendingModelVectorIds.get(agentId);
+			// ★ model 制品已恢复 ⇒ **绝不走全量**（否则每次都重新构建，把"恢复"变成"重建"，全量路径的
+			//   `vi.clear()` 会丢掉刚恢复的向量）。pending 空 ⇒ 无需构建；pending 非空 ⇒ 增量补齐。
+			if (vi.mode === 'model') {
+				if (pending && pending.size > 0) {
+					const toBuild = items.filter(it => pending.has(it.id));
+					let ok = 0;
+					for (let i = 0; i < toBuild.length; i++) {
+						try {
+							const vec = await EmbedFn(toBuild[i].content);
+							if (vec && vec.length > 0) { vi.addModelVector(toBuild[i].id, vec); ok++; }
+							else { failed++; }
+						} catch { failed++; }
+						if ((i + 1) % 20 === 0) { await new Promise(r => setImmediate(r)); }
+					}
+					_pendingModelVectorIds.delete(agentId);
+					built += ok;
+					emit('log', `${TAG} [model-vectors] ${agentId}: 增量 +${ok} doc（库 ${items.length} / 向量 ${vi.size}）failed=${toBuild.length - ok}`);
+				} else {
+					emit('log', `${TAG} [model-vectors] ${agentId}: model 制品已恢复（${vi.size} doc），无需构建`);
+				}
+				done++;
+				continue;
+			}
+
+			// 全量路径（首次切换 trigram → model，或 model 制品为空/不存在）。
 			vi.clear(); // 原子切换：先清掉 trigram，避免两种语义空间混存
 			let ok = 0;
 			for (let i = 0; i < items.length; i++) {
@@ -911,6 +1038,11 @@ function kvFingerprint() {
 	}
 }
 
+/** 当前生效的 embedding provider（供 indexCache 记录/对比；未启用远端 provider 时为 null ⇒ 记为 'local'）。 */
+function currentEmbeddingProvider() {
+	try { return typeof ProviderInfoFn === 'function' ? ProviderInfoFn() : null; } catch { return null; }
+}
+
 /** 汇总将要落盘的制品内容（async / sync 两条路径共用）。返回 null 表示"不该落盘"。 */
 function collectIndexCachePayload() {
 	const fp = kvFingerprint();
@@ -939,7 +1071,7 @@ function collectIndexCachePayload() {
 		fp, bm25Docs, bm25Agents, vecDocs, vecMode, vecAgents,
 		bm25Obj: { version: INDEX_CACHE_VERSION, fingerprint: fp, builtAt: Date.now(), docs: bm25Docs, agents: bm25Agents },
 		vectorObj: vecDocs > 0
-			? { version: INDEX_CACHE_VERSION, fingerprint: fp, builtAt: Date.now(), docs: vecDocs, mode: vecMode, agents: vecAgents }
+			? { version: INDEX_CACHE_VERSION, fingerprint: fp, builtAt: Date.now(), docs: vecDocs, mode: vecMode, provider: currentEmbeddingProvider(), agents: vecAgents }
 			: null,
 	};
 }
@@ -1002,6 +1134,8 @@ function saveIndexCacheSync(reason) {
 function tryLoadIndexCache() {
 	const ctx = _indexCacheCtx;
 	const result = { bm25: false, vector: false };
+	_pendingModelVectorIds.clear(); // 每次启动重置（上次中断可能残留）
+	let docs = 0, agents = 0; // BM25 恢复统计（vector 判定之后统一打日志用，须在函数作用域）
 	if (!ctx) return result;
 	const t0 = Date.now();
 	const fp = ctx.fingerprint();
@@ -1010,31 +1144,75 @@ function tryLoadIndexCache() {
 		meta = readCacheFile(ctx.bm25File());
 	} catch (err) {
 		emit('warn', `${TAG} index cache unreadable (${err instanceof Error ? err.message : String(err)}) — full rebuild`);
-		return result;
 	}
-	if (!meta) { emit('log', `${TAG} index cache absent — full rebuild`); return result; }
-	const verdict = validateCache(meta, fp, INDEX_CACHE_VERSION);
-	if (!verdict.ok) { emit('log', `${TAG} index cache stale — full rebuild (${verdict.reason})`); return result; }
-
-	let docs = 0, agents = 0;
-	for (const [agentId, payload] of Object.entries(meta.agents)) {
-		const idx = getAgentIndex(agentId);
-		if (idx && idx.deserializePayload(payload) && idx.size > 0) { docs += idx.size; agents++; }
+	if (!meta) {
+		emit('log', `${TAG} index cache absent — full rebuild`);
+	} else {
+		const verdict = validateCache(meta, fp, INDEX_CACHE_VERSION);
+		if (verdict.ok) {
+			for (const [agentId, payload] of Object.entries(meta.agents)) {
+				const idx = getAgentIndex(agentId);
+				if (idx && idx.deserializePayload(payload) && idx.size > 0) { docs += idx.size; agents++; }
+			}
+			// ★ 「加载成功 ≠ 有数据」：解压/解析都成功但一条都没有 ⇒ 仍然重建
+			if (docs === 0) { emit('warn', `${TAG} index cache loaded but EMPTY — full rebuild`); }
+			else { result.bm25 = true; }
+		} else {
+			emit('log', `${TAG} index cache stale — full rebuild (${verdict.reason})`);
+		}
 	}
-	// ★ 「加载成功 ≠ 有数据」：解压/解析都成功但一条都没有 ⇒ 仍然重建
-	if (docs === 0) { emit('warn', `${TAG} index cache loaded but EMPTY — full rebuild`); return result; }
-	result.bm25 = true;
+	// ★★ vector 部分**独立**判定（**不随 BM25 的 unreadable/absent/stale 而跳过**）：
+	//   BM25 全量重建便宜（~2.5s），可接受全量；model 向量全量重建 ~240s，**必须**独立于指纹，
+	//   靠"按 id 集合增量"恢复 —— 否则每次启动（库有写入 ⇒ 指纹 stale）都要重新全量构建 4 分钟。
 
 	try {
 		const vmeta = readCacheFile(ctx.vectorFile());
 		if (!vmeta) {
 			emit('log', `${TAG} vector cache absent — will rebuild vectors`);
+		} else if (vmeta.mode === 'model' && vmeta.agents && typeof vmeta.agents === 'object') {
+			// P1-1：provider 一致性检查 —— 切换 provider（如本地 xenova → openrouter）⇒ 维度变化 ⇒
+			//   制品向量与新查询向量**不同维度**（余弦得分无意义）⇒ **全量重建**（不走增量）。
+			const cacheProvider = vmeta.provider ?? null;
+			const nowProvider = currentEmbeddingProvider();
+			if ((cacheProvider?.name ?? 'local') === (nowProvider?.name ?? 'local')) {
+				// ★ model 制品与 BM25 指纹**解耦**（重建成本 ~240s vs ~2.5s，指纹对它太贵）：
+				//   直接加载（不看指纹），按 id 集合做增量 —— 库有/制品无 ⇒ 记入 `_pendingModelVectorIds`
+				//   待 `buildModelVectorsIfEnabled` 增量补齐；库无/制品有 ⇒ 移除（该记忆已删除）。
+				//   已存在 id 的内容不变（记忆写入是 append-only：supersede 也是新建 id）。
+				//   关键是 **result.vector = true** ⇒ 启动流程不会再触发 `rebuildVectorIndexesOnly()` 的全量 trigram 重建。
+				let vdocs = 0, pendingTotal = 0;
+				for (const [agentId, vectors] of Object.entries(vmeta.agents)) {
+					const vi = getAgentVectorIndex(agentId);
+					if (!vi || !Array.isArray(vectors)) continue;
+					vi.setMode('model');
+					const currentIds = new Set(Object.keys(listAll(`mem:memories:${agentId}`)));
+					if (currentIds.size === 0) {
+						// 制品里有这个 agent 但库里已无 ⇒ 清空其向量，**不记 pending** —— 那些记忆已不存在，
+						// 否则会把"已删除 agent 的向量"误报成"待构建"（实测 pending=439 全来自这类残留）。
+						vi.clear();
+						continue;
+					}
+					const imported = vi.importVectors(vectors);
+					const cachedIds = new Set();
+					for (const entry of vectors) {
+						cachedIds.add(entry.id);
+						if (!currentIds.has(entry.id)) { vi.remove(entry.id); }
+					}
+					const missing = [];
+					for (const id of currentIds) { if (!cachedIds.has(id)) { missing.push(id); } }
+					if (missing.length > 0) { _pendingModelVectorIds.set(agentId, new Set(missing)); pendingTotal += missing.length; }
+					vdocs += imported;
+				}
+				result.vector = true;
+				emit('log', `${TAG} vector model cache loaded: ${vdocs} doc restored, ${pendingTotal} pending（增量构建）`);
+			} else {
+				emit('log', `${TAG} vector provider changed (cache=${cacheProvider?.name ?? 'local'}, now=${nowProvider?.name ?? 'local'}) — full rebuild`);
+			}
 		} else {
+			// 老制品（trigram 或无 mode）⇒ 按指纹判定（同 BM25；trigram 重建便宜，可接受全量）。
 			const vverdict = validateCache(vmeta, fp, INDEX_CACHE_VERSION);
 			if (!vverdict.ok) {
 				emit('log', `${TAG} vector cache stale (${vverdict.reason}) — will rebuild vectors`);
-			} else if (!vmeta.mode) {
-				emit('log', `${TAG} vector cache has no mode field — will rebuild vectors`);
 			} else {
 				let vdocs = 0;
 				for (const [agentId, vectors] of Object.entries(vmeta.agents)) {
@@ -1186,7 +1364,7 @@ async function main() {
 		void saveIndexCache(indexCache.bm25 ? 'initial-vector-build' : 'initial-build');
 	}
 
-	// P0-1（**默认关闭**，`AGENTMEMORY_MODEL_EMBEDDING=on` 才跑）：后台构建真语义向量。
+	// P0-1（**默认开启**，`AGENTMEMORY_MODEL_EMBEDDING=off` 才关）：后台构建真语义向量。
 	// 不 await —— 启动可用性不受影响（BM25 已就绪）；完成后原子切换 mode 并落盘。
 	void buildModelVectorsIfEnabled();
 	// A4：启动即剪枝一次（subagent 遗留/旧格式巨型键），之后每 24h 由 sweep 触发

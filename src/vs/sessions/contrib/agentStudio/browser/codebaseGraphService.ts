@@ -14,7 +14,7 @@
  * 5. 3D Graph Viewer 直接调用 API 获取数据（无 MCP stdio 开销）
  */
 
-import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -37,7 +37,10 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { createCodebaseGraphSqliteBackend } from './codebaseGraphStoreProxy.js';
+import { createCodebaseGraphIndexChannel } from './codebaseGraphIndexProxy.js';
+import type { ICodebaseGraphIndexChannel } from '../common/codebaseGraphIndexChannel.js';
 import type { ICodebaseGraphSqliteBackend } from '../common/codebaseGraphStoreChannel.js';
+import { IUtilityProcessWorkerWorkbenchService } from '../../../../workbench/services/utilityProcess/electron-browser/utilityProcessWorkerWorkbenchService.js';
 import { LspCrossResolver } from './codebaseGraphLsp.js';
 import { extractInherits } from './codebaseGraphQueries.js';
 import { INDEX_LOCK_FILENAME, INDEX_LOCK_HEARTBEAT_MS, createIndexLockToken, isIndexLockStale, parseIndexLock, serializeIndexLock } from './codebaseIndexLock.js';
@@ -51,7 +54,7 @@ import { TraceIngester } from './codebaseGraphTraces.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher, CodebaseGraphChangeEvent } from './codebaseGraphWatcher.js';
 import { CodebaseGraphIncrementalIndexer } from './codebaseGraphIncremental.js';
 import { shouldRecordHashAfterParse, EXTENSION_TO_WASM_LANG, AST_TO_NODE_TYPE, planForeignProjectPrune } from '../common/codebaseIndexDefaults.js';
-import { takeMaxBlockMs, wsStage } from './wsSwitchDiag.js';
+import { resetMaxBlockMs, takeMaxBlockMs, wsStage, wsStageEnd } from './wsSwitchDiag.js';
 import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
 import { CodebaseGraphExcludeResolver } from './codebaseGraphExcludeResolver.js';
 import { CodebaseGraphScanner } from './codebaseGraphScanner.js';
@@ -601,6 +604,15 @@ const SAVE_DEBOUNCE_MS = 30000;
 const ZST_SAVE_MIN_INTERVAL_MS = 30 * 60 * 1000;
 
 /**
+ * ★★ 2026-09-19：**全量 SQLite 同步**的最小重试间隔（冷却）。
+ *
+ * 为什么需要：`_syncGraphToSqlite` 实测 **82s**（180115 节点 + 522085 边，走 IPC + FTS 逐批插入）。
+ * 它现在由「载入路径」与「查询期 freshness」两处**按需**触发 ⇒ 若判据在失败/竞态后仍反复成立，
+ * 就会每次都付 82s ✗。冷却 + 「同步中」守卫一起把损失限制为「最多每 5 分钟一次、且不并发」✓。
+ */
+const FULL_SYNC_MIN_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
  * 延迟落盘的**最长等待**上限（ms）。
  *
  * 纯 debounce 有饥饿问题：持续保存文件时每次都重置窗口，落盘被无限推迟，
@@ -975,6 +987,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@IUtilityProcessWorkerWorkbenchService private readonly _utilityProcessWorkerService: IUtilityProcessWorkerWorkbenchService,
 	) {
 		super();
 		this._excludeResolver = this._instantiationService.createInstance(CodebaseGraphExcludeResolver);
@@ -987,6 +1000,25 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// Phase 2 接线：经主进程代理的 SQLite 后端（默认不启用；见 `_sqliteBackendEnabled`）。
 		// renderer sandbox 不能加载原生模块，SQLite 宿主在 main 进程，这里只是透明代理。
 		this._sqliteBackend = createCodebaseGraphSqliteBackend(this._mainProcessService);
+
+		// ★★★ 2026-09-19（P2-1 Step 3「方案 B」**探活**）：证明 renderer **能起索引 worker 并取到通道**。
+		//
+		// 与 Step 2 的差别（重要）：那条路径是 renderer → **main 进程**宿主（现已被否定并删除 ✗ ——
+		// main 侧 `createWorker` 是「窗口请求的服务端」，不提供 client channel）。
+		// 现在走框架既定用法：renderer 自己 `createWorker` 直连 utility process（同 `watcherClient.ts` ✓）。
+		// ⇒ 本探活是**唯一**能证明「进程能起 + 入口模块被解析 + 通道名一致」的证据 ✓。
+		// ⚠ 代价：会在启动时真起一个 utility process（这正是 Phase 1 想要的那个进程 ✓）；
+		//   入口模块是诚实桩（`runIndex` 返回 not implemented）⇒ **不触发任何索引** ✓，对索引行为零影响。
+		// ⚠ 失败必须**响亮**：起不来/通道名漂移都会让这里 reject，绝不能静默（本仓反复踩过"静默"✗）。
+		this._indexWorkerDisposables = this._register(new DisposableStore());
+		this._indexChannel = createCodebaseGraphIndexChannel(
+			this._utilityProcessWorkerService,
+			this._logService,
+			this._indexWorkerDisposables,
+		);
+		void this._indexChannel.isRunning('_probe')
+			.then(ok => this._logService.info('[CodebaseGraph]', `[index-channel] 探活 OK：isRunning=${ok}（P2-1 Step 3：索引 utility process 直连已连通；编排尚未搬迁）`))
+			.catch(err => this._logService.warn('[CodebaseGraph]', `[index-channel] 探活失败：${err?.message || err}（索引 worker 未启动/通道未连通 ✗）`));
 
 		// 文件监听 → 增量重索引（P2-#8）。事件仅在 startWatching() 调用 start() 后产生。
 		this._register(this._graphWatcher.onDidChange(e =>
@@ -1026,6 +1058,19 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private readonly _sqliteBackend: ICodebaseGraphSqliteBackend;
 
 	/**
+	 * ★ 2026-09-19（P2-1 Step 3）：渲染侧持有的**索引通道**（直连索引 utility process，方案 B ✓）。
+	 * 惰性建进程 ⇒ 构造它本身零成本；真正起 worker 的是第一次方法调用（当前只有构造期的探活 ✓）。
+	 */
+	private readonly _indexChannel: ICodebaseGraphIndexChannel;
+
+	/**
+	 * 索引 worker 句柄的归属（窗口销毁时随之终止 ✓）。
+	 * 用 `DisposableStore` 而不是直接 `_register(worker)`：worker 是**惰性**创建的，
+	 * 外部无法在构造期拿到它 ⇒ 只能把「容器」交出去，由代理在创建后往里塞 ✓。
+	 */
+	private readonly _indexWorkerDisposables: DisposableStore;
+
+	/**
 	 * 主进程 SQLite 后端是否启用：**默认开启**。
 	 * 仅显式设置 `saros.codebaseGraph.sqliteBackend=false` 才会关闭；
 	 * 未配置或显式 true 均启用（搜索/查询走 FTS5 索引，避免内存全量扫描）。
@@ -1050,6 +1095,102 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	}
 
 	/**
+	 * ★★★ 2026-09-19：**SQLite 追平的唯一「后台」入口**（带「同步中」守卫 + 冷却）。
+	 * 真正干活的是 `_catchUpSqlite`（**先增量 → 仍落后才退回全量** ✓）；本方法只管
+	 * 「何时跑 / 同一项目同时只跑一个 / 失败后多久才允许再试」。
+	 *
+	 * 为什么要它（实测）：`_syncGraphToSqlite` 全量同步 **82s**（180115 节点 + 522085 边，
+	 * 走 IPC + FTS 逐批插入）。它此前有两个触发点 —— 载入路径（`await` ✗ 把启动卡到 **91.6s**）
+	 * 与查询期 `_ensureSqliteFreshness`（fire-and-forget，但**没有守卫**）：
+	 *   · 载入路径 **绝不能 await** —— 载入只需要内存 store（已就绪 ✓），DB 是**查询侧**的东西；
+	 *   · 无守卫 ⇒ 两条链路可**并发**对同一项目做 `deleteProject + 批量插入` ⇒ 互相覆盖 ✗✗
+	 *     （且与 `_runIncrementalIndex` 的增量补丁并发时同样有覆盖风险 ✗）。
+	 *
+	 * 语义：同一 project **同时只跑一个**；距上次尝试不足 `FULL_SYNC_MIN_INTERVAL_MS` 则跳过（冷却）；
+	 * 起止/失败**都打日志**（不静默 ✗），失败保留给下一次触发重试（自愈 ✓）。
+	 * ⚠ 失败的代价被冷却限制为「最坏每 5 分钟一次」——这是刻意的：宁可慢追平，也不要 82s 反复卡 ✗。
+	 */
+	private _scheduleSqliteCatchUp(project: string, reason: string): void {
+		if (!this._sqliteBackendEnabled) { return; }
+		if (this._sqliteCatchUpInFlight.has(project)) {
+			this._logService.info('[CodebaseGraph]', `[sqlite-sync] "${project}" 已有追平任务在跑 ⇒ 本次跳过（触发原因：${reason}）`);
+			return;
+		}
+		const since = Date.now() - (this._sqliteCatchUpLastAttemptAt.get(project) ?? 0);
+		if (since < FULL_SYNC_MIN_INTERVAL_MS) {
+			this._logService.info('[CodebaseGraph]', `[sqlite-sync] "${project}" 距上次尝试仅 ${Math.round(since / 1000)}s（冷却 ${FULL_SYNC_MIN_INTERVAL_MS / 1000}s）⇒ 本次跳过（触发原因：${reason}）`);
+			return;
+		}
+		this._sqliteCatchUpLastAttemptAt.set(project, Date.now());
+		this._sqliteCatchUpInFlight.add(project);
+		const t0 = Date.now();
+		this._logService.info('[CodebaseGraph]', `[sqlite-sync] 开始**后台**追平 "${project}"（原因：${reason}）—— 先试增量、仍落后才全量；不阻塞载入 ✓`);
+		void this._catchUpSqlite(project).then(how => {
+			this._logService.info('[CodebaseGraph]', `[sqlite-sync] 后台追平完成 "${project}"（方式=${how}，${Math.round((Date.now() - t0) / 1000)}s）`);
+		}).catch((err: any) => {
+			this._logService.warn('[CodebaseGraph]', `[sqlite-sync] 后台追平失败 "${project}"（${Math.round((Date.now() - t0) / 1000)}s；下次载入/查询会重试）：${err?.message || err}`);
+		}).finally(() => {
+			this._sqliteCatchUpInFlight.delete(project);
+		});
+	}
+
+	/**
+	 * ★★★ 2026-09-19（**两步式追平**）：先增量（秒级），仅当增量不适用 / 仍落后才退回全量（实测 **128s** ✗）。
+	 *
+	 * ① 增量：内存节点 id **单调递增**，而全量同步是**按内存 id 显式写入**的
+	 *    （正确性前提见 `_syncIncrementalToSqlite` 头部 ✓）⇒ **DB 缺的节点 = 内存里 id > DB 的 max 那批** ✓
+	 *    ⇒ 只需一次标量查询（`getMaxNodeId`）+ 按文件走既有补丁路径，**不必** `deleteProject` + 重插整项目 ✓✓。
+	 * ② 复核：增量补完**必须再数一次** —— 缺的也可能是 id ≤ max 的（补丁删了却没能插上 ✗），
+	 *    只有仍落后（超容差）才退回全量 ✓（两步式，别只信一步）。
+	 * ③ 保护：漂移文件占比 > 20% 时**直接走全量**（按文件逐个补已不比整体重插划算 ✗）。
+	 */
+	private async _catchUpSqlite(project: string): Promise<'incremental' | 'full'> {
+		const expected = this._graph.store.getNodeCount(project);
+		try {
+			const maxId = await this._sqliteBackend.getMaxNodeId(project);
+			if (maxId > 0) {
+				// 单趟遍历同时收集两类信息：① id > maxId 的缺失节点及其文件 ② 本项目全部文件（做分母）
+				const missingFiles = new Set<string>();
+				const allFiles = new Set<string>();
+				let missingNodes = 0;
+				for (const n of this._graph.store.getAllNodes()) {
+					if (n.project !== project) { continue; }
+					if (n.filePath) { allFiles.add(n.filePath); }
+					if (typeof n.id === 'number' && n.id > maxId) {
+						missingNodes++;
+						if (n.filePath) { missingFiles.add(n.filePath); }
+					}
+				}
+				const share = allFiles.size > 0 ? missingFiles.size / allFiles.size : 1;
+				if (missingNodes > 0 && missingFiles.size > 0 && share <= 0.2) {
+					this._logService.info('[CodebaseGraph]', `[sqlite-sync] 增量追平 "${project}"：maxId=${maxId}，缺 ${missingNodes} 节点 / ${missingFiles.size} 文件（占 ${(share * 100).toFixed(1)}%）⇒ 走按文件补丁`);
+					await this._syncIncrementalToSqlite(project, [...missingFiles]);
+					const after = await this._sqliteBackend.getNodeCount(project);
+					// 容差与载入判据同口径（并发增量索引可能又插了新的 ⇒ 不必要求严格相等 ✓）
+					const tol = Math.max(2000, Math.floor(expected * 0.02));
+					if (after + tol >= expected) {
+						return 'incremental';
+					}
+					this._logService.info('[CodebaseGraph]', `[sqlite-sync] 增量追平后仍落后 "${project}"（sqlite=${after} < 期望 ${expected}，超容差 ${tol}）⇒ 退回全量 ✗`);
+				} else {
+					this._logService.info('[CodebaseGraph]', `[sqlite-sync] 增量追平不适用 "${project}"（缺 ${missingNodes} 节点 / ${missingFiles.size} 文件，占 ${(share * 100).toFixed(1)}% > 20% 或无可补文件）⇒ 直接全量 ✗`);
+				}
+			} else {
+				this._logService.info('[CodebaseGraph]', `[sqlite-sync] "${project}" 在 SQLite 里无该项目节点（maxId=0）⇒ 走全量（首次同步）`);
+			}
+		} catch (err: any) {
+			this._logService.warn('[CodebaseGraph]', `[sqlite-sync] 增量追平失败（退回全量）"${project}"：${err?.message || err}`);
+		}
+		await this._syncGraphToSqlite(project);
+		return 'full';
+	}
+
+	/** 追平任务「同步中」守卫（按项目）—— 见 `_scheduleSqliteCatchUp` ✓。 */
+	private readonly _sqliteCatchUpInFlight = new Set<string>();
+	/** 上次**尝试**追平的时刻（按项目）—— 冷却用，见 `FULL_SYNC_MIN_INTERVAL_MS` ✓。 */
+	private readonly _sqliteCatchUpLastAttemptAt = new Map<string, number>();
+
+	/**
 	 * Phase 2b 核心：将内存 store 的完整图数据批量复制到主进程 SQLite。
 	 * 在 indexWorkspace 末尾调用（当 `saros.codebaseGraph.sqliteBackend` 启用时）；
 	 * 也可传 projectOverride 同步指定项目（如 gzip 加载的 UE5EA）。
@@ -1068,10 +1209,19 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		if (nodes.length === 0) { return; }
 
-		// 幂等同步：内存 id 空间是会话级序号，跨会话重插会撞 UNIQUE(project, qualified_name)
-		// （旧 id 空间残留，upsert 冲突目标仅 id 主键）——先按项目清除旧数据再写入。
-		// keepFileHashes：保留增量索引哈希，否则下次启动全量重解析。
-		await this._sqliteBackend.deleteProject(project, { keepFileHashes: true });
+		// ★★★ 2026-09-19（P0-1）：全量同步**原子化** —— 包进**跨 IPC 显式事务**（begin→…→commit；错 ⇒ abort）。
+		// ⇒ 崩在中间 = **DB 原样** ✓✓（此前逐批各自 COMMIT ⇒ 崩在 delete 与 insert 之间 ⇒ 项目残缺 ✗）。
+		// ⚠ 事务存续期其它写入（如并发增量补丁）会**加入**本事务 ✗ —— 最坏随 abort 回滚（落后由追平补 ✓），
+		//   不结构性损坏 ✓（机制与风险见 `node/codebaseGraphSqliteStore.ts` 的显式事务头注 ✓）。
+		// ⚠ 事务里**不做 checkpoint**（WAL checkpoint 在打开的写事务里被拒 ✗）⇒ 改到 commit 之后 ✓。
+		await this._sqliteBackend.beginProjectSync(project);
+		let __committed = false;
+		try {
+			// 幂等同步：内存 id 空间是会话级序号，跨会话重插会撞 UNIQUE(project, qualified_name)
+			// （旧 id 空间残留，upsert 冲突目标仅 id 主键）——先按项目清除旧数据再写入。
+			// keepFileHashes：保留增量索引哈希，否则下次启动全量重解析。
+			// ⚠（P0-1 缩进说明：本 try 块内部**未重排缩进**，以把原子化 diff 控在最小 ✓ —— 勿据此推断层级 ✗）
+			await this._sqliteBackend.deleteProject(project, { keepFileHashes: true });
 
 		const BATCH = 5000;
 		const tStart = Date.now();
@@ -1154,6 +1304,18 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		this._logService.info('[CodebaseGraph]', `SQLite sync done: ${nodes.length} nodes + ${edges.length} edges in ${dur}ms`);
 		// sqlite 已填充 → 清除「空库」标记，让 searchGraphAsync 恢复走 FTS5 快路径。
 		this._sqliteEmptyProjects.delete(project);
+
+			await this._sqliteBackend.commitProjectSync(project);
+			__committed = true;
+		} finally {
+			if (__committed) {
+				// ★ 提交后才 checkpoint：WAL checkpoint 在打开的写事务里会被拒（SQLITE_BUSY ✗）。
+				await this._sqliteBackend.checkpoint();
+			} else {
+				// 异常路径 ⇒ 回滚（不掩盖原始错误 ✓）；幂等 ✓。
+				try { await this._sqliteBackend.abortProjectSync(project); } catch { /* ignore */ }
+			}
+		}
 
 		// 注意：SQLite 默认开启后【不】自动释放内存 store——
 		// GotoImpl/ListMethods 等同步路径依赖 hasGraphData()/searchGraph() 的内存数据，
@@ -1524,6 +1686,40 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private _indexLockToken: string | undefined;
 	private _indexLockHeartbeat: ReturnType<typeof setInterval> | undefined;
 
+	// ── P2-2 诊断轨迹（内存趋势）─────────────────────────────────────────────
+	/** 内存/诊断轨迹的采样定时器（惰性启动，见 `_ensureMemTrajectorySampler`）。 */
+	private _memTrajectoryTimer: ReturnType<typeof setInterval> | undefined;
+	/** 上次采样时的堆占用（用于「只在增长足够多时才打印」的判据）。 */
+	private _memTrajectoryLastUsed = 0;
+
+	/**
+	 * ★★★ 2026-09-19（P2-2 诊断轨迹）：**轻量**周期采样 —— 只打日志，**不新建 NDJSON/文件写入器**。
+	 *
+	 * 为什么不做成 CBM 的 `trajectory.ndjson`（5s 采样 + 8MB 轮转）：那要引入文件写入 + 轮转 + 路径管理 ✗，
+	 * 而本仓**宿主本身就会轮转 `renderer.log`** ⇒ 用日志即可得到等价的趋势源 ✓（把机制成本降到最低）。
+	 *
+	 * 生命周期：**首次真正使用图谱时惰性启动**（从不用图谱的工作区不起定时器 ✓），`dispose()` 里清理
+	 * （照抄 `_indexLockHeartbeat` 的三段式）。
+	 * 打印策略：**仅当堆增长 ≥ 32MB 才打一条** —— 否则每 5 分钟一条「没变化」的纯噪音 ✗
+	 * （这条教训来自本会话刚修的内存告警：那次也是判据没考虑"本来就这么大"）。
+	 */
+	private _ensureMemTrajectorySampler(): void {
+		if (this._memTrajectoryTimer) { return; }
+		this._memTrajectoryLastUsed = this._graphMemoryUsedBytes().usedBytes;
+		this._memTrajectoryTimer = setInterval(() => {
+			try {
+				const { usedBytes, source } = this._graphMemoryUsedBytes();
+				const growth = usedBytes - this._memTrajectoryLastUsed;
+				if (growth < 32 * 1048576) { return; }   // 波动/噪声不打印，趋势要看「持续爬升」
+				this._memTrajectoryLastUsed = usedBytes;
+				this._logService.info('[CodebaseGraph]', `[mem-trajectory] 堆 ${(usedBytes / 1048576).toFixed(0)}MB`
+					+ `（较上次采样 +${(growth / 1048576).toFixed(0)}MB；来源=${source}）`
+					+ `｜nodes=${this._graph.store.getNodeCount()} edges=${this._graph.store.getEdgeCount()}`
+					+ `｜预算=${(this._graphMemoryBudgetBytes() / 1048576).toFixed(0)}MB —— 若持续爬升请带此行反馈`);
+			} catch { /* 采样失败绝不影响主流程 */ }
+		}, 5 * 60 * 1000);
+	}
+
 	/**
 	 * 获取 `<root>/.codebase-memory/index.lock` 跨进程文件锁。
 	 * 新鲜锁属其他实例 → 抛错；锁过期（持有方崩溃）→ 接管；同实例残留锁（进程重启/上次中断）→ 覆盖接管。
@@ -1648,6 +1844,12 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 	/** 每轮索引的「内存超预算」只告警一次（防刷屏）；见 `_reportGraphMemory`。 */
 	private _memBudgetWarned = false;
+	/**
+	 * 本轮索引**起点**的堆占用（字节）。★ 2026-09-19 修正：判据改用**增量**，
+	 * 因为绝对堆占用包含了编辑器/扩展/webview 等与图谱无关的部分 ✗（本机静止即 556MB，
+	 * 越过了 512MB 默认档 ⇒ 每轮一开场就误报超预算）。
+	 */
+	private _memBaselineBytes = 0;
 
 	/**
 	 * ★★★ 2026-09-19（P1-5 内存预算）：图谱内存预算（字节）。
@@ -1687,14 +1889,24 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 * 「有问题但没人知道」✗。返回 `已用/上限` 文本供对账行使用（返回文本与是否告警**无关** ✓）。
 	 */
 	private _reportGraphMemory(stage: string): string {
+		// ★ 2026-09-19（P2-2）：惰性启动内存趋势采样 —— 首个用到图谱的阶段即开始（见 `_ensureMemTrajectorySampler`）
+		this._ensureMemTrajectorySampler();
 		const budget = this._graphMemoryBudgetBytes();
 		const { usedBytes, source } = this._graphMemoryUsedBytes();
-		const usedMb = usedBytes / 1048576;
-		const budgetMb = budget / 1048576;
-		const text = `${usedMb.toFixed(0)}MB/${budgetMb.toFixed(0)}MB`;
-		if (usedBytes > budget && !this._memBudgetWarned) {
+		// ★★★ 2026-09-19 修正（运行实例实测踩到）：判据必须是**本轮索引内的增量**，不是绝对堆占用。
+		// 旧口径拿「整个 renderer 堆」去比「图谱预算」⇒ 本机静止堆已 556MB、越过默认档 512MB，
+		// 于是**每轮索引一开场就报超预算**（日志 12:58:16 实测 ✗）＝纯噪音。
+		// 现在：基线 = 本轮起始堆；`增长 = 当前 - 基线` ⇒ 这个阈值才代表「本次索引吃掉的」✓。
+		// （基线为 0 时只报文本、不判警告 —— 那些调用点没有基线可比，强行比会重演误报 ✗）
+		const baseline = this._memBaselineBytes;
+		const growthBytes = baseline > 0 ? Math.max(0, usedBytes - baseline) : 0;
+		const mb = (n: number): string => (n / 1048576).toFixed(0);
+		const text = baseline > 0
+			? `本轮+${mb(growthBytes)}MB / 上限${mb(budget)}MB（堆 ${mb(usedBytes)}MB，基线 ${mb(baseline)}MB）`
+			: `堆 ${mb(usedBytes)}MB / 上限${mb(budget)}MB（无基线，不判超限）`;
+		if (baseline > 0 && growthBytes > budget && !this._memBudgetWarned) {
 			this._memBudgetWarned = true;
-			this._logService.warn('[CodebaseGraph]', `★ 内存超预算（${text} @ 阶段「${stage}」，来源=${source}）`
+			this._logService.warn('[CodebaseGraph]', `★ 本轮索引内存增长超预算（${text} @ 阶段「${stage}」，来源=${source}）`
 				+ ` ⇒ 索引已进入内存压力区。可重建结构（内存 BM25 / layout）按需重建、不常驻；`
 				+ `若要放宽请调 \`saros.codebaseGraph.memoryBudgetMb\`（0=自动按设备分档）✓`);
 		}
@@ -2186,6 +2398,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// 故逐段计时，完成时输出一条对账行：各段之和应≈总耗时，差额即未被埋点覆盖的开销。
 		let _segStart = startTime;
 		const _segMarks: string[] = [];
+		// ★★ 2026-09-19：序列开头**丢掉陈旧累积** —— 否则 `_seg` 的第一段（`获取索引锁`）会把
+		// 「自上次读取以来」的全局最大阻塞揽下来 ✗（`_maxBlockMs` 是全局累加器、只在被读时清零；
+		// 上一次读取可能属于另一个消费者 `loadMerge` 的 `timed`，且发生在更早）。见 `resetMaxBlockMs` 说明。
+		resetMaxBlockMs();
 		const _seg = (name: string): void => {
 			const now = Date.now();
 			// ★ 2026-09-19：段耗时（含 await）**不等于**主线程被占 ⇒ 一并记「该段内最长连续占用」
@@ -2199,6 +2415,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			this._reportGraphMemory(name);
 		};
 		this._memBudgetWarned = false;   // 每轮重置「只告警一次」闸（见 `_reportGraphMemory`）
+		// ★ 2026-09-19：同时记录本轮**基线堆** —— 判据是「本轮增长」而非绝对堆占用（见 `_memBaselineBytes`）
+		this._memBaselineBytes = this._graphMemoryUsedBytes().usedBytes;
 		this._isIndexing = true;
 		this._indexCts = cts;
 
@@ -4607,9 +4825,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			if (lagging) {
 				this._logService.warn('[CodebaseGraph]', `[sqlite-freshness] sqlite lags behind memory: sqlite=${sqliteCount} memory=${memCount} (project="${project}") — using in-memory for this query, syncing in background`);
 				this._sqliteEmptyProjects.delete(project); // 同步完成后应重新走 SQLite 路径
-				// 显式传本次判定的 project：缺省读 `this._projectName` 会同步**别的**项目（判定与动作不一致）
-				void this._syncGraphToSqlite(project).catch(err =>
-					this._logService.debug('[CodebaseGraph]', `[sqlite-freshness] background sync failed: ${err}`));
+				// ★ 2026-09-19：改走**统一的后台入口** —— 旧写法直接 fire-and-forget 且**没有守卫**，
+				// 会和载入路径的全量同步**并发**对同一项目做 delete+insert ⇒ 互相覆盖 ✗。
+				// 现在两处共用「同步中」守卫 + 冷却（见 `_scheduleSqliteCatchUp` → `_catchUpSqlite` ✓）。
+				this._scheduleSqliteCatchUp(project, 'freshness-lagging');
 				return false; // 本次别查 SQLite：它的数据是陈旧/残缺的
 			}
 		} catch (err) {
@@ -6005,6 +6224,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 						}
 					}, true);
 					this._logService.info('[CodebaseGraph]', `[loadGraphMerge] BM25 重建完成（${Date.now() - tBm25}ms）`);
+					// ★★ 2026-09-19：**成对结束阶段**（不加这行，本阶段会一直"当前"到**下次载入** ✗）。
+					// 这正是"陈旧阶段名"最典型的形态：一次载入设一次 ⇒ 之后几小时里，
+					// 所有主线程阻塞都会被算到「重建 BM25」头上 ✗（外部日志实测同类现象「已持续 1884s」）。
+					wsStageEnd();
 				}
 					// 从文件路径推导 rootPath 并注册到 _rootProjectMap（多 folder 项目名解析）
 					const graphDirIdx = p.lastIndexOf('/.codebase-memory/') >= 0 ? p.lastIndexOf('/.codebase-memory/')
@@ -6050,14 +6273,43 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 					if (this._sqliteBackendEnabled && proj !== '_default') {
 						try {
 							const existingProjects = await this._sqliteBackend.listProjects();
-							if (!existingProjects.some(pj => pj.name === proj)) {
-								this._onDidGraphLoadProgress.fire(`正在把项目 "${proj}" 同步到 SQLite（首次加载一次性）…`);
-							this._logService.info('[CodebaseGraph]', `SQLite missing project "${proj}" — syncing loaded graph...`);
-								await this._syncGraphToSqlite(proj);
+							// ★★★ 2026-09-19（② 加固）：「**存在**」≠「**可用**」—— 旧判据只看名字：
+							// 若 SQLite 里该项目存在但节点为 0/残缺（同步半途失败、曾被清空），会被判成
+							// 「already has project ⇒ skip sync」✗ ⇒ 之后所有查询都落到 `_ensureSqliteFreshness`
+							// 的滞后分支（实机日志 `sqlite returned 0 candidates → falling back` 反复出现，
+							// 每次都要靠后台全量同步兜底）。现在：名字存在**且**节点数 > 0 才算可用；
+							// 否则照常同步（自愈 ✓），并把「存在但为空」这一异常**写明**在进度与日志里（不静默 ✗）。
+							const named = existingProjects.some(pj => pj.name === proj);
+							const usableCount = named ? await this._sqliteBackend.getNodeCount(proj) : 0;
+							// ★★★ 2026-09-19（第三次收紧：「存在且 >0」**仍不等于可用**）：
+							// 实测 `SQLite already has project "sarosis-agents-client" (167810 nodes) — skip sync`，
+							// 而制品/内存里是 **180115**（差 1.2 万节点）却因「存在且非空」被跳过 ⇒ **永不追平** ✗✗。
+							// 后果是**正确性**问题：检索/查询看到的是**残缺**的图（少 1.2 万节点的符号查不到）✗；
+							// 连锁后果：`canSkipArtifactParse` 要求 `sqlite ≥ artifact` ⇒ 恒为 false ⇒
+							// 每次载入都要解析 JSON 制品（实测 2.4–4.3s = 「切工作区卡死」的主因段）✗。
+							// ⇒ 判据再收紧一档：**落后**（`usableCount < 本次载入的节点数`）即视为不可用 ⇒ 重新同步自愈 ✓。
+							const expectedCount = this._graph.store.getNodeCount(proj);
+							// ★★ 2026-09-19（实测补充）：**加容差** —— 首次实现是「任何落后都全量重同步」，
+							// 结果实机出现「只落后 **170 节点**」也触发了 **82s 全量重同步** ✗✗（日志
+							// `is behind (179957 < 180127)`）。小漂移本来就该由 `_runIncrementalIndex` 的
+							// 增量补丁按文件收敛 ✓ ⇒ 只对**大**落后自愈：`> max(2000, 2% expected)`。
+							// ⚠ 小落后仍**写明日志**（不静默 ✗）—— 否则「检索少几个符号」没人知道。
+							const lag = Math.max(0, expectedCount - usableCount);
+							const behindTolerance = Math.max(2000, Math.floor(expectedCount * 0.02));
+							const behind = usableCount > 0 && lag > behindTolerance;
+							if (!named || usableCount === 0 || behind) {
+								const why = !named ? '首次加载' : (usableCount === 0 ? '存在但为 0 节点' : `落后 ${lag} 节点（> 容差 ${behindTolerance}）`);
+								this._logService.info('[CodebaseGraph]', `SQLite ${!named ? 'missing' : (usableCount === 0 ? 'has EMPTY' : `is behind (${usableCount} < ${expectedCount}, lag ${lag} > 容差 ${behindTolerance})`)} project "${proj}" — 转后台全量同步（**不阻塞载入** ✓）`);
+								// ★★★ 2026-09-19：**绝不 await** —— 全量同步实测 82s，await 会把载入拖到 91.6s ✗✗
+								// （实机：`loadGraphMerge("sarosis-agents-client") 返回 true，耗时 91648ms`）。
+								// 载入只需要内存 store（此时已就绪 ✓）；DB 是**查询侧**资源 ⇒ 交给统一的后台入口
+								// （带「同步中」守卫 + 冷却，避免与 freshness / 增量补丁并发覆盖 ✗）。
+								this._onDidGraphLoadProgress.fire(`后台把项目 "${proj}" 追平到 SQLite（${why}）…`);
+								this._scheduleSqliteCatchUp(proj, why);
 							} else {
-								this._logService.info('[CodebaseGraph]', `SQLite already has project "${proj}" — skip sync`);
+								this._logService.info('[CodebaseGraph]', `SQLite already has project "${proj}" (${usableCount} nodes${lag > 0 ? `，仅落后 ${lag} 节点（≤ 容差 ${behindTolerance}，交给增量补丁收敛）` : ''}) — skip sync`);
 							}
-						} catch (err: any) {
+							} catch (err: any) {
 							this._logService.warn('[CodebaseGraph]', `SQLite load-sync check failed: ${err?.message || err}`);
 						}
 					}
@@ -6121,6 +6373,11 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 	override dispose(): void {
 		this._disposeWorkers();
+		// ★ 2026-09-19（P2-2）：停内存轨迹采样（与 `_indexLockHeartbeat` 同一套清理式，幂等 ✓）
+		if (this._memTrajectoryTimer) {
+			clearInterval(this._memTrajectoryTimer);
+			this._memTrajectoryTimer = undefined;
+		}
 		// 强制落盘延迟窗口内未完成的保存：否则窗口内的索引结果丢失，
 		// 下次启动会加载旧制品（最坏后果是重新索引，但能避免就避免）。
 		// dispose 是同步的，落盘是异步——fire-and-forget（进程退出前尽量完成）。

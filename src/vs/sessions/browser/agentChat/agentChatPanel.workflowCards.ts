@@ -1106,14 +1106,20 @@ export abstract class AgentChatPanelWorkflowCards extends AgentChatPanelDelegate
 				// Use renderMarkdown with parent element to track disposable lifecycle
 				const prevDisposable = this._markdownDisposables.get(out);
 				if (prevDisposable) { prevDisposable.dispose(); }
-				this._markdownDisposables.set(out, renderMarkdown(md, undefined, out));
+				// ★ 2026-09-19（DOM 密度）：原来传 `undefined` ⇒ 走 `renderMarkdown` 的**默认**代码块渲染器，
+				// 它会用 Monaco tokenizer 把代码块拆成**成千个 span**（子代理输出的 JSON/代码动辄上百行 ⇒
+				// 单张卡数千节点，是「≈5592 节点/条」的候选主因之一 ✗）。
+				// 统一改用面板自己的廉价渲染器（`codeBlockRendererSync`：整块**一个文本节点** ✓），
+				// 与主消息路径口径一致；`true` = 流式语义（未闭合围栏自动补全，否则会漏出裸文本 ✗）。
+				this._markdownDisposables.set(out, renderMarkdown(md, this._getMarkdownOptions(true), out));
 			} else if (isDone && (sa.output || sa.streamedText)) {
 				const out = append(nodeBody, $('.node-output.done'));
 				const text = sa.output || sa.streamedText || '';
 				const md: IMarkdownString = { value: text, isTrusted: true, supportHtml: true };
 				const prevDisposable = this._markdownDisposables.get(out);
 				if (prevDisposable) { prevDisposable.dispose(); }
-				this._markdownDisposables.set(out, renderMarkdown(md, undefined, out));
+				// 同上一处：默认渲染器会 tokenize（节点爆炸）⇒ 用面板的廉价渲染器（已完成 ⇒ 非流式语义 ✓）。
+				this._markdownDisposables.set(out, renderMarkdown(md, this._getMarkdownOptions(false), out));
 			} else if (isError && sa.error) {
 				const out = append(nodeBody, $('.node-output.error'));
 				out.textContent = sa.error;

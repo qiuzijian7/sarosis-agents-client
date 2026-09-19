@@ -3,6 +3,11 @@ name: obsidian-markdown
 description: Create and edit Obsidian Flavored Markdown with wikilinks, embeds, callouts, properties, and other Obsidian-specific syntax. Use when working with .md files in Obsidian, or when the user mentions wikilinks, callouts, frontmatter, tags, embeds, or Obsidian notes.
 ---
 
+<!-- 同步指针：本技能是「通用 Obsidian 语法」参考；本项目知识库（KB）笔记的格式约定
+     （frontmatter 必备字段 type/title/created、sources/status 由管线管理、[[title]] 双链口径）
+     的单一真源 = src/vs/sessions/contrib/agentStudio/browser/knowledge/obsidianNoteFormat.ts
+     的 KB_NOTE_FORMAT_RULES（kbImportController Stage2 提示词即由它生成）。修改格式约定时两边同步。 -->
+
 # Obsidian Flavored Markdown Skill
 
 Create and edit valid Obsidian Flavored Markdown. Obsidian extends CommonMark and GFM with wikilinks, embeds, callouts, properties, comments, and other syntax. This skill covers only Obsidian-specific extensions -- standard Markdown (headings, bold, italic, lists, quotes, code blocks, tables) is assumed knowledge.

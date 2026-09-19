@@ -1,0 +1,203 @@
+{
+  "mode": "bm25",
+  "questions": 10,
+  "recall_any_at_5": 1,
+  "recall_any_at_10": 1,
+  "recall_any_at_20": 1,
+  "ndcg_at_10": 1,
+  "mrr": 1,
+  "per_type": {
+    "single-session-user": {
+      "count": 10,
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1
+    }
+  },
+  "per_question": [
+    {
+      "question_id": "q0",
+      "question_type": "single-session-user",
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1,
+      "recall_any_at_20": 1,
+      "ndcg_at_10": 1,
+      "mrr": 1,
+      "retrieved_session_ids": [
+        "session-0-gold",
+        "session-0-distractor-0",
+        "session-0-distractor-1",
+        "session-0-distractor-2",
+        "session-0-distractor-3"
+      ],
+      "gold_session_ids": [
+        "session-0-gold"
+      ]
+    },
+    {
+      "question_id": "q1",
+      "question_type": "single-session-user",
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1,
+      "recall_any_at_20": 1,
+      "ndcg_at_10": 1,
+      "mrr": 1,
+      "retrieved_session_ids": [
+        "session-1-gold",
+        "session-1-distractor-2",
+        "session-1-distractor-3",
+        "session-1-distractor-0",
+        "session-1-distractor-1"
+      ],
+      "gold_session_ids": [
+        "session-1-gold"
+      ]
+    },
+    {
+      "question_id": "q2",
+      "question_type": "single-session-user",
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1,
+      "recall_any_at_20": 1,
+      "ndcg_at_10": 1,
+      "mrr": 1,
+      "retrieved_session_ids": [
+        "session-2-gold"
+      ],
+      "gold_session_ids": [
+        "session-2-gold"
+      ]
+    },
+    {
+      "question_id": "q3",
+      "question_type": "single-session-user",
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1,
+      "recall_any_at_20": 1,
+      "ndcg_at_10": 1,
+      "mrr": 1,
+      "retrieved_session_ids": [
+        "session-3-gold",
+        "session-3-distractor-1",
+        "session-3-distractor-0",
+        "session-3-distractor-2"
+      ],
+      "gold_session_ids": [
+        "session-3-gold"
+      ]
+    },
+    {
+      "question_id": "q4",
+      "question_type": "single-session-user",
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1,
+      "recall_any_at_20": 1,
+      "ndcg_at_10": 1,
+      "mrr": 1,
+      "retrieved_session_ids": [
+        "session-4-gold",
+        "session-4-distractor-0",
+        "session-4-distractor-1",
+        "session-4-distractor-2",
+        "session-4-distractor-3"
+      ],
+      "gold_session_ids": [
+        "session-4-gold"
+      ]
+    },
+    {
+      "question_id": "q5",
+      "question_type": "single-session-user",
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1,
+      "recall_any_at_20": 1,
+      "ndcg_at_10": 1,
+      "mrr": 1,
+      "retrieved_session_ids": [
+        "session-5-gold",
+        "session-5-distractor-1",
+        "session-5-distractor-2",
+        "session-5-distractor-3",
+        "session-5-distractor-0"
+      ],
+      "gold_session_ids": [
+        "session-5-gold"
+      ]
+    },
+    {
+      "question_id": "q6",
+      "question_type": "single-session-user",
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1,
+      "recall_any_at_20": 1,
+      "ndcg_at_10": 1,
+      "mrr": 1,
+      "retrieved_session_ids": [
+        "session-6-gold",
+        "session-6-distractor-2",
+        "session-6-distractor-3",
+        "session-6-distractor-0",
+        "session-6-distractor-1"
+      ],
+      "gold_session_ids": [
+        "session-6-gold"
+      ]
+    },
+    {
+      "question_id": "q7",
+      "question_type": "single-session-user",
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1,
+      "recall_any_at_20": 1,
+      "ndcg_at_10": 1,
+      "mrr": 1,
+      "retrieved_session_ids": [
+        "session-7-gold",
+        "session-7-distractor-3",
+        "session-7-distractor-0",
+        "session-7-distractor-1",
+        "session-7-distractor-2"
+      ],
+      "gold_session_ids": [
+        "session-7-gold"
+      ]
+    },
+    {
+      "question_id": "q8",
+      "question_type": "single-session-user",
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1,
+      "recall_any_at_20": 1,
+      "ndcg_at_10": 1,
+      "mrr": 1,
+      "retrieved_session_ids": [
+        "session-8-gold",
+        "session-8-distractor-0",
+        "session-8-distractor-2",
+        "session-8-distractor-1",
+        "session-8-distractor-3"
+      ],
+      "gold_session_ids": [
+        "session-8-gold"
+      ]
+    },
+    {
+      "question_id": "q9",
+      "question_type": "single-session-user",
+      "recall_any_at_5": 1,
+      "recall_any_at_10": 1,
+      "recall_any_at_20": 1,
+      "ndcg_at_10": 1,
+      "mrr": 1,
+      "retrieved_session_ids": [
+        "session-9-gold",
+        "session-9-distractor-1",
+        "session-9-distractor-3",
+        "session-9-distractor-0",
+        "session-9-distractor-2"
+      ],
+      "gold_session_ids": [
+        "session-9-gold"
+      ]
+    }
+  ]
+}

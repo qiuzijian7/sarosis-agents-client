@@ -71,11 +71,16 @@ export function buildProceduralExtractionPrompt(
 
 // ─── 门控 ───────────────────────────────────────────────────────────────────
 
-/** LLM consolidation 门控：CONSOLIDATION_ENABLED=true 且 LLM 已配置（对齐原版） */
+/**
+ * LLM consolidation 门控：**默认启用**（`CONSOLIDATION_ENABLED=false` 才显式关），
+ * 且 LLM 已配置（`AGENTMEMORY_LLM_BASE_URL`/`AGENTMEMORY_LLM_API_KEY`）。
+ * 决策（2026-09-19 P0-3）：用户一旦配了 LLM（env 或 BYOK 注入）就自动启用，不再要求显式开关；
+ * 未配 LLM 的用户不受影响（`isLlmConfigured()` 为 false ⇒ 回退确定性路径）。
+ */
 export function isConsolidationLlmEnabled(): boolean {
 	try {
 		const raw = typeof process !== 'undefined' ? process.env['CONSOLIDATION_ENABLED'] : undefined;
-		return raw === 'true' && isLlmConfigured();
+		return raw !== 'false' && isLlmConfigured();
 	} catch {
 		return false;
 	}

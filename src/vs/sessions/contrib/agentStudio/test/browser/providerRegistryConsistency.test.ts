@@ -25,6 +25,8 @@
  */
 
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import { BUILTIN_PROVIDER_IDENTITIES } from '../../common/providerCatalog.js';
 import { BUILTIN_BYOK_PROVIDERS } from '../../browser/builtInBYOKModelProvider.js';
 
@@ -81,6 +83,45 @@ suite('Provider 注册表一致性（单一数据源）', () => {
 		assert.ok(
 			BUILTIN_PROVIDER_IDENTITIES.some(i => i.id === 'custom'),
 			'custom 应作为内置 provider 注册（此前仅在功能侧存在）',
+		);
+	});
+
+	/**
+	 * UI 注册表的守卫（源码文本断言）。
+	 *
+	 * 为什么不用 import：providerView.ts 依赖 DOM / workbench 服务，在 Node 测试环境中
+	 * 无法加载（`window is not defined`）。但「UI 侧不得自行硬编码身份字段」这条不变量
+	 * 必须被守住 —— 上述 gemini 漂移正是这样产生的。故退而断言源码文本。
+	 *
+	 * 路径解析：测试被打包进临时 .cjs，`__dirname` 指向临时目录，故从 cwd（仓库根）解析。
+	 */
+	const providerViewSourcePath = path.resolve(
+		process.cwd(),
+		'src/vs/sessions/contrib/agentStudio/browser/views/providerView.ts',
+	);
+
+	test('★ UI 注册表不得硬编码 defaultBaseUrl（必须派生自身份目录）', () => {
+		const source = fs.readFileSync(providerViewSourcePath, 'utf8');
+		const start = source.indexOf('export const PROVIDER_DEFINITIONS');
+		assert.ok(start >= 0, '未找到 PROVIDER_DEFINITIONS 定义');
+		const block = source.slice(start, source.indexOf('\n});', start));
+
+		const offenders = block.match(/defaultBaseUrl:\s*['"`]https?:[^'"`]*['"`]/g);
+		assert.strictEqual(
+			offenders, null,
+			`PROVIDER_DEFINITIONS 内出现硬编码 defaultBaseUrl：${offenders?.join(', ')}\n` +
+			'身份字段（含 defaultBaseUrl）必须从 BUILTIN_PROVIDER_IDENTITIES 派生 —— ' +
+			'硬编码会导致「UI 连通性测试的端点」与「聊天真实使用的端点」漂移。',
+		);
+	});
+
+	test('★ UI 注册表与身份目录的 id 集合必须一致（含 custom，此前缺失）', () => {
+		const source = fs.readFileSync(providerViewSourcePath, 'utf8');
+		// 派生写法：PROVIDER_DEFINITIONS 直接由身份目录 map 得到，id 集合天然一致。
+		assert.ok(
+			/export const PROVIDER_DEFINITIONS:[\s\S]{0,120}?BUILTIN_PROVIDER_IDENTITIES\.map\(/.test(source),
+			'PROVIDER_DEFINITIONS 必须由 BUILTIN_PROVIDER_IDENTITIES.map(...) 派生；' +
+			'若改回手写数组，UI 侧会再次漏掉 custom 等 provider。',
 		);
 	});
 

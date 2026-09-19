@@ -2644,17 +2644,26 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			void this._logOp('node.delete', 'failure', { target: node.uri.fsPath, detail: { section: node.section }, error: String(err) });
 		}
 		this._expandedFolders.delete(node.path);
-		// 删除后同步清理关系图谱与搜索索引：in-memory 图谱 / FTS 内核索引不会随文件删除自动剔除，
-		// 否则已删文档会残留在「关系图谱」节点、搜索结果、反链与 @提及 中（频繁删除后尤为明显）。
-		// invalidate() 让内核下次全量重建走 _reconcile 剔除已删文件，markSearchDirty() 触发该重建（防抖合并频繁删除）。
-		this._nativeKernel?.invalidate();
-		this.markSearchDirty();
+		this._purgeDeletedNodesFromIndexes([node]);
 		// 增量移除（对齐 Explorer：仅移除被删节点的 DOM，不整段重建，消除抖动）
 		this._removeNodeFromDom(node);
 		if (cascadeDeleted > 0) {
 			// 级联删除的笔记文件位于另一分区，整段重建一次（不影响当前分区视图）
 			await this.refreshSection('notes');
 		}
+	}
+
+	/**
+	 * 删除后索引清理（P1-5 选择性删除，对齐 LightRAG selective deletion）：
+	 *  - removeDocuments：FTS + 向量索引即时剔除（目录按前缀匹配其下文档），
+	 *    避免语义/全文检索命中幽灵文档；
+	 *  - invalidate + markSearchDirty：图谱/提及/搜索下次重建兜底（防抖合并频繁删除）。
+	 * 永久删除与批量删除路径此前缺这一步（删除后搜索/图谱残留），统一走这里补齐。
+	 */
+	private _purgeDeletedNodesFromIndexes(nodes: IKbNode[]): void {
+		void this._kbKernelService.removeDocuments(nodes.map(n => n.uri.toString()));
+		this._nativeKernel?.invalidate();
+		this.markSearchDirty();
 	}
 
 	/** 永久删除（对齐 Explorer Shift+Delete / Delete Permanently）：不经过回收站，二次确认。 */
@@ -2680,6 +2689,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this.notificationService.warn(String(err));
 		}
 		this._expandedFolders.delete(node.path);
+		this._purgeDeletedNodesFromIndexes([node]);
 		// 增量移除（对齐 Explorer：仅移除被删节点的 DOM，不整段重建，消除抖动）
 		this._removeNodeFromDom(node);
 		if (cascadeDeleted > 0) { await this.refreshSection('notes'); }
@@ -3714,6 +3724,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				this.logService.warn(`[KB] batchDelete failed for ${node.name}: ${err}`);
 			}
 		}
+		this._purgeDeletedNodesFromIndexes(nodes);
 		this._domSelectedPaths.clear();
 		this._domLastSelectedPath = null;
 		this.notificationService.info(localize('kb.batchDeleted', '已删除 {0} 项', nodes.length));
@@ -3738,6 +3749,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				this.logService.warn(`[KB] batchDeletePermanent failed for ${node.name}: ${err}`);
 			}
 		}
+		this._purgeDeletedNodesFromIndexes(nodes);
 		this._domSelectedPaths.clear();
 		this._domLastSelectedPath = null;
 		this.notificationService.info(localize('kb.batchDeletedPerm', '已永久删除 {0} 项', nodes.length));

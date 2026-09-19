@@ -59,6 +59,19 @@ export interface ICodebaseGraphSqliteBackend {
 	exportSnapshot(targetPath: string): Promise<{ nodeCount: number; edgeCount: number }>;
 	clear(): Promise<void>;
 	deleteProject(project: string, opts?: { keepFileHashes?: boolean }): Promise<void>;
+
+	/**
+	 * **按需**空间回收（2026-09-19）：归还 SQLite freelist 并把库切到 `auto_vacuum=INCREMENTAL`。
+	 *
+	 * ⚠ 会在**宿主线程**（主进程）阻塞数秒~数十秒（全量 VACUUM）⇒ 只允许由显式维护动作调用，
+	 *   不得挂在启动/索引路径上。低于阈值（freelist < 64MB）时默认跳过，返回 `skipped`。
+	 */
+	reclaimSpace(opts?: { force?: boolean; migrateToIncremental?: boolean }): Promise<{
+		skipped?: 'below-threshold';
+		beforeMb: number; afterMb: number; freedMb: number;
+		freelistBeforeMb: number; freelistAfterMb: number;
+		autoVacuumBefore: number; autoVacuumAfter: number;
+	}>;
 	/** 删除单文件所有节点/边/FTS（增量索引补丁用，替代全量重建），返回被删节点 id。 */
 	deleteNodesByFile(project: string, filePath: string): Promise<number[]>;
 
@@ -117,6 +130,27 @@ export interface ICodebaseGraphSqliteBackend {
 	/** 释放某个快照的只读实例（载入收尾时调用；不调用也不会立刻泄漏 —— 下次同路径会复用同一实例）。 */
 	closeSnapshot(dbPath: string): Promise<void>;
 	getNodeCount(project?: string): Promise<number>;
+	/**
+	 * ★★ 2026-09-19（**增量追平**）：本项目在 SQLite 里的**最大节点 id**（空表 / 无该项目 ⇒ 0）。
+	 *
+	 * 用途：内存 store 的节点 id **单调递增**，而全量同步（`_syncGraphToSqlite`）是**用内存 id 显式写入**的
+	 * （见 `_syncIncrementalToSqlite` 头部的正确性前提 ✓）⇒ 「DB 里缺的节点」必然是 **id 大于 DB 现有 max**
+	 * 的那一批 ✓。于是追平只需：一次标量查询 → 在内存里筛出 id > max 的节点 → **按文件**走既有增量补丁，
+	 * 而不必 `deleteProject` + 重插整项目（实测全量 **128s** ✗✗）。
+	 * ⚠ 若 DB 缺的是 **id ≤ max** 的节点（补丁删了却没插上就崩），本值**看不出来** ⇒ 调用方必须
+	 * **补后再核一次节点数**，仍落后才回退全量 ✓（两步式，别只信一步）。
+	 */
+	getMaxNodeId(project: string): Promise<number>;
+	/**
+	 * ★★ 2026-09-19（P0-1）：**显式跨调用事务**（全量同步原子化）——
+	 * `begin → deleteProject → 逐批 upsert → commit`；任一步抛错 ⇒ `abort`（ROLLBACK）。
+	 * ⇒ 崩在中间 = **DB 原样** ✓✓（此前逐批各自 COMMIT ⇒ 崩在中间 = 项目残缺 ✗）。
+	 * 三者**必须成对**（begin 之后必有 commit/abort ✓）。语义与风险见 store 头注 ✓。
+	 */
+	beginProjectSync(project: string): Promise<void>;
+	commitProjectSync(project: string): Promise<void>;
+	/** 回滚显式事务（幂等 ✓）。 */
+	abortProjectSync(project: string): Promise<void>;
 	getTopNodesByDegree(project: string, maxNodes: number): Promise<GraphNode[]>;
 	getEdgesBetweenNodes(ids: number[]): Promise<GraphEdge[]>;
 	getEdgesBySource(nodeId: number): Promise<GraphEdge[]>;

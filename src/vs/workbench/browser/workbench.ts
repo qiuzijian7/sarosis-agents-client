@@ -34,6 +34,7 @@ import { createBareFontInfoFromRawSettings } from '../../editor/common/config/fo
 import { ILogService } from '../../platform/log/common/log.js';
 import { toErrorMessage } from '../../base/common/errorMessage.js';
 import { WorkbenchContextKeysHandler } from './contextkeys.js';
+import { startRenderHeartbeat } from './renderHeartbeat.js';
 import { coalesce } from '../../base/common/arrays.js';
 import { InstantiationService } from '../../platform/instantiation/common/instantiationService.js';
 import { Layout } from './layout.js';
@@ -138,6 +139,10 @@ export class Workbench extends Layout {
 			const instantiationService = this.initServices(this.serviceCollection);
 
 			instantiationService.invokeFunction(accessor => {
+				// ★ 2026-09-19（app 卡死取证）：**渲染进程心跳**，与主进程 `mainHeartbeat` 配对。
+				// 主进程心跳已证明"卡死不在主进程"，而窗口侧 JS 线程被占 / 合成器停摆**都不会**
+				// 体现在主进程心跳里 ⇒ 这里补窗口侧的秒级脉搏（判读法与噪音控制在模块头）。
+				this._register(startRenderHeartbeat(accessor.get(ILogService)));
 				const lifecycleService = accessor.get(ILifecycleService);
 				const storageService = accessor.get(IStorageService);
 				const configurationService = accessor.get(IConfigurationService);

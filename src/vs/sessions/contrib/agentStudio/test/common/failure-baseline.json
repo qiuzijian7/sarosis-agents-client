@@ -1,0 +1,56 @@
+{
+  "_comment": "既存失败用例基线（2026-09-19 归档）。这些失败在建立基线时就已存在，与后续重构无关。新增失败不在本清单内 -> 立即判失败。修好一个就删一行。",
+  "_howToRefresh": "node src/vs/sessions/contrib/agentStudio/test/common/run-all-common-tests.mjs 然后比对 '✗ N 个套件未通过' 段落",
+  "_baselineTotals": {
+    "passing": 1780,
+    "failing": 20,
+    "suites": 81
+  },
+  "failingSuites": {
+    "agentRunState": {
+      "file": "test/common/agentRunState.test.ts",
+      "failing": 4,
+      "cases": [
+        "AgentRunState - reducer (reducer 化 Step 1)"
+      ]
+    },
+    "contextCompression": {
+      "file": "test/common/contextCompression.test.ts",
+      "failing": 4,
+      "cases": [
+        "Agent Studio - Context Compression (Hermes 三段式)"
+      ]
+    },
+    "planTaskFieldContract": {
+      "file": "test/common/planTaskFieldContract.test.ts",
+      "failing": 3,
+      "cases": [
+        "Plan task field contract"
+      ]
+    },
+    "resilience": {
+      "file": "test/common/resilience.test.ts",
+      "failing": 1,
+      "cases": [
+        "computeAdaptiveFirstTokenTimeout"
+      ]
+    },
+    "toolExtraction": {
+      "file": "test/common/toolExtraction.test.ts",
+      "failing": 1,
+      "cases": [
+        "Agent Studio - Tool Call Extraction"
+      ]
+    },
+    "toolSearchAssembler": {
+      "file": "test/common/toolSearchAssembler.test.ts",
+      "failing": 7,
+      "cases": [
+        "ToolSearchAssembler — isDeferrableTool",
+        "ToolSearchAssembler — classifyTools",
+        "ToolSearchAssembler — assembleToolDefs",
+        "ToolSearchAssembler — scopedDeferrableNames"
+      ]
+    }
+  }
+}

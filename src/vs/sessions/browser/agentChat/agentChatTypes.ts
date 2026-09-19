@@ -553,6 +553,10 @@ export function adaptPersistedChatMessage(m: any): IAgentChatMessage | null {
 		// Without this, the field is dropped during adaptation and the card
 		// only shows for live messages, not reloaded ones.
 		taskCard: m.taskCard,
+		// ★★ 2026-09-19：附件随历史**回灌**（否则重启后气泡丢代码片段 pill ✗✓ ——
+		// 持久化侧见 `ChatMessage.attachments` ✓）。持久化时已过滤图片 ⇒ 这里都是
+		// 可恢复的文本类附件 ✓；`kind` 随对象回来 ⇒ 恢复后仍是「代码片段」pill ✓。
+		attachments: Array.isArray(m.attachments) ? m.attachments : undefined,
 	};
 }
 

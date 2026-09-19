@@ -26,6 +26,7 @@ import { ProxyChannel } from '../../base/parts/ipc/common/ipc.js';
 import { Client as NodeIPCClient } from '../../base/parts/ipc/common/ipc.net.js';
 import { connect as nodeIPCConnect, serve as nodeIPCServe, Server as NodeIPCServer, XDG_RUNTIME_DIR } from '../../base/parts/ipc/node/ipc.net.js';
 import { CodeApplication } from './app.js';
+import { startMainHeartbeat } from './mainHeartbeat.js';
 import { localize } from '../../nls.js';
 import { IConfigurationService } from '../../platform/configuration/common/configuration.js';
 import { ConfigurationService } from '../../platform/configuration/common/configurationService.js';
@@ -193,6 +194,14 @@ class CodeMain {
 			disposables.add(registerDevConsoleLogForwarder(logService));
 		}
 		services.set(ILogService, logService);
+
+		// ★ 2026-09-19（app 卡死取证）：**主进程 JS 线程心跳**。
+		// 为什么必须有：两次卡死都只能定位到"主进程被同步阻塞（CPU≈0）"这一层 ——
+		// 当时唯一的高频参照是 agentmemory 网关的 **5 分钟**周期 sweep，只能把阻塞时刻
+		// 夹逼到 5 分钟窗口。本心跳把这个精度提到 5s：**定时器不触发 = 线程被占住**，
+		// 日志里出现时间戳断层，断层起点即"最后一次可用"。
+		// 判读方法与环境开关（SAROSIS_MAIN_HEARTBEAT / …_MS）见 `mainHeartbeat.ts` 模块头。
+		disposables.add(startMainHeartbeat(logService));
 
 		// Files
 		const fileService = new FileService(logService);

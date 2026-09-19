@@ -704,6 +704,12 @@ export interface IChatAttachmentSend {
 	readonly isPasted?: boolean;
 	/** 文件夹附件的系统路径（type === 'folder' 时存在） */
 	readonly filePath?: string;
+	/**
+	 * ★ 2026-09-19：文本片段种类（`'snippet' | 'log'` ✓）。
+	 * 此前类型上没声明（运行时对象其实带着 ✓ —— 面板侧 `as` 转换不剥离 ✗），
+	 * 导致**持久化层不知道该保留它** ⇒ 重启后恢复的片段退化成普通文件 pill ✗。
+	 */
+	readonly kind?: 'snippet' | 'log';
 }
 
 /**
@@ -813,7 +819,12 @@ export interface IAgentChatService {
 	 *
 	 * 草稿在下次 getHistory 时被消费：补进返回列表并异步落进 session 历史。
 	 */
-	saveInterruptedDraft(agentId: string, sessionId: string, content: string): Promise<void>;
+	saveInterruptedDraft(agentId: string, sessionId: string, content: string, opts?: { quiet?: boolean }): Promise<void>;
+	/**
+	 * ★ 2026-09-19：流式 journal 草稿的**正常完成清理** ✓（流式期间每 ~2s 覆盖写草稿保命；
+	 * loop 结束后内容已由 finalization 落盘 ⇒ 草稿必须删除，否则下次 getHistory 重复注入 ✗）。
+	 */
+	clearInterruptedDraft(agentId: string, sessionId: string): Promise<void>;
 
 	/**
 	 * Update an existing message in the chat history (by id) and persist.

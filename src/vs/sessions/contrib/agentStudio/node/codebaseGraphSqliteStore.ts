@@ -369,6 +369,16 @@ export class CodebaseGraphSqliteStore {
 		// 页面缓存（负数表示 KiB）：-131072 = 128 MiB
 		await dbExec(this.db, 'PRAGMA cache_size = -131072');
 		await dbExec(this.db, 'PRAGMA foreign_keys = OFF');
+		// ── 空间回收策略（2026-09-19 实测）──────────────────────────────────────
+		// `auto_vacuum` 默认 0(NONE)：DELETE 释放的页进 freelist 后**永不归还**。
+		// 实测本机 1.5GB 图谱库：`freelist_count = 128964 页 = 503.9MB ≈ 33.2%` 是死页
+		// （`page_count 388197 / 有效 1012MB`）——磁盘白占，且页缓存命中率下降。
+		// 设为 INCREMENTAL 后可用 `PRAGMA incremental_vacuum(N)` **分小步**归还（毫秒级，
+		// 才能在删除后顺带做），而全量 `VACUUM` 只放在显式维护入口（见 `reclaimSpace()`）。
+		// ⚠ 本 PRAGMA **只对新建库生效**：必须早于任何建表（此处正是 migrations 之前 ✓）。
+		//   存量库（auto_vacuum=0）必须"先置 INCREMENTAL + 再 VACUUM"才会切换过去
+		//   —— 这正是 `reclaimSpace()` 做的事（一次性把历史 freelist 与模式一起解决）。
+		try { await dbExec(this.db, 'PRAGMA auto_vacuum = INCREMENTAL'); } catch { /* 只读库等场景忽略 */ }
 
 		await this._runMigrations();
 		this._ready = true;
@@ -418,21 +428,98 @@ export class CodebaseGraphSqliteStore {
 
 	// ─── Write path ───────────────────────────────────────────────────────
 
+	// ★★ 2026-09-19（P0-1 地基）：事务**可重入 + 串行化**。
+	/** 是否已处于外层事务中（重入时**直接加入**，不再 BEGIN/COMMIT ✗ —— 裸 BEGIN 嵌套必报错 ✗✗）。 */
+	private _txActive = false;
+	/** 逻辑上独立的事务**尾接排队**（否则并发 IPC 调用会把 BEGIN/await 交错 ✗✗）。 */
+	private _writeQueue: Promise<void> = Promise.resolve();
+
 	/**
 	 * 批量写入包装：在事务内执行，百万级节点也不会逐条 fsync。
 	 * 回调里可多次调用 upsertNode / upsertEdge 等。
+	 *
+	 * ★★ 2026-09-19（P0-1 地基）：**可重入 + 串行化** —— 这是后面「全量同步原子化」的前提 ✓。
+	 *   · **重入**：嵌套的 `transaction()` **直接加入**外层事务（不再 BEGIN/COMMIT ✗ ——
+	 *     裸 BEGIN 嵌套必抛「cannot start a transaction within a transaction」✗✗）。
+	 *     （JS 单线程 + 嵌套只发生在外层 fn 的 await 里 ⇒ 用布尔就够 ✓，无需计数 ✓。）
+	 *   · **串行化**：两个**逻辑上独立**的事务经 `_writeQueue` **尾接排队** ✓
+	 *     （否则并发 IPC 调用会把 `BEGIN` 与 `await fn()` 交错 ✗✗ —— A 已 BEGIN、B 又来 BEGIN ⇒ 报错 ✗）。
+	 * ⚠ 队列本身**不因**单个事务失败而中断（下一棒照常 ✓）。
 	 */
 	async transaction<T>(fn: () => Promise<T>): Promise<T> {
+		if (this._txActive) {
+			// 已在外层事务里 ⇒ 直接执行（语义 = 加入外层，随外层一起 COMMIT/ROLLBACK ✓）
+			return fn();
+		}
+		const run = async (): Promise<T> => {
+			const db = this._ensureDb();
+			this._txActive = true;
+			await dbExec(db, 'BEGIN');
+			try {
+				const r = await fn();
+				await dbExec(db, 'COMMIT');
+				return r;
+			} catch (err) {
+				// ROLLBACK 失败不掩盖原始错误 ✓
+				try { await dbExec(db, 'ROLLBACK'); } catch { /* ignore */ }
+				throw err;
+			} finally {
+				this._txActive = false;
+			}
+		};
+		const p = this._writeQueue.then(run, run);
+		this._writeQueue = p.then(() => undefined, () => undefined);
+		return p;
+	}
+
+	// ─── ★★ 2026-09-19（P0-1）：显式跨调用事务（全量同步原子化）───────────
+	//
+	// 背景：全量同步 = `deleteProject` + N 批 upsert，**逐批各自 COMMIT** ⇒ 崩在中间 = 项目残缺 ✗
+	// （追平能修 ✓，但修之前查询看到的是残缺 ✗）。改为：包进一个**跨多次 IPC 调用**的显式事务
+	// （begin → … → commit；错 ⇒ abort）⇒ 崩在中间 = **DB 原样** ✓✓。
+	//
+	// 机制：begin ⇒ 卡住 `_writeQueue`（直到 commit/abort 才放行下一棒 ✓）+ BEGIN +
+	// `_txActive=true` ⇒ 期间的 `transaction()` **直接加入**（重入 ✓，见上）。本 DB 单进程写入
+	// （主进程唯一写者 ✓）⇒ 显式事务存续期只可能有「同步自己」与「并发增量补丁」两类写入
+	// 加入 ✗ —— 后者最坏随 abort 回滚（落后由追平补 ✓），**不会结构性损坏** ✓。
+	//
+	// ⚠ 事务存续期**别做 `checkpoint()`**：WAL checkpoint 在打开的写事务里会被拒（SQLITE_BUSY ✗）
+	// —— renderer 的全量同步已改为**提交后**再 checkpoint ✓（中途的批次 checkpoint 会被 catch 容忍 ✓）。
+	private _explicitTx = false;
+	private _releaseWriteLock: (() => void) | undefined;
+
+	/** 开始显式事务（同一时刻只允许一个 ✗；全量同步原子化用 ✓）。 */
+	async beginProjectSync(project: string): Promise<void> {
+		if (this._explicitTx) { throw new Error(`beginProjectSync: 已有进行中的显式事务（不得嵌套 ✗）project=${project}`); }
+		await this._writeQueue;  // 轮到我 ✓
+		// 卡住写队列：直到 commit/abort 才放行下一棒 ✓
+		this._writeQueue = new Promise<void>(r => { this._releaseWriteLock = r; });
 		const db = this._ensureDb();
 		await dbExec(db, 'BEGIN');
-		try {
-			const r = await fn();
-			await dbExec(db, 'COMMIT');
-			return r;
-		} catch (err) {
-			await dbExec(db, 'ROLLBACK');
-			throw err;
-		}
+		this._txActive = true;
+		this._explicitTx = true;
+	}
+
+	/** 提交显式事务并放行写队列 ✓。 */
+	async commitProjectSync(project: string): Promise<void> {
+		if (!this._explicitTx) { throw new Error(`commitProjectSync: 没有进行中的显式事务 ✗ project=${project}`); }
+		const db = this._ensureDb();
+		await dbExec(db, 'COMMIT');
+		this._txActive = false;
+		this._explicitTx = false;
+		this._releaseWriteLock?.();
+		this._releaseWriteLock = undefined;
+	}
+
+	/** 回滚显式事务并放行写队列（幂等 ✓：没有进行中的事务 ⇒ 直接返回 ✓）。 */
+	async abortProjectSync(project: string): Promise<void> {
+		if (!this._explicitTx) { return; }
+		const db = this._ensureDb();
+		try { await dbExec(db, 'ROLLBACK'); } catch { /* ROLLBACK 失败不掩盖原始错误 ✓ */ }
+		this._txActive = false;
+		this._explicitTx = false;
+		this._releaseWriteLock?.();
+		this._releaseWriteLock = undefined;
 	}
 
 	/**
@@ -557,6 +644,19 @@ export class CodebaseGraphSqliteStore {
 		return row ? safeParseJSON(row.data_json as string) : undefined;
 	}
 
+	/**
+	 * ★★ 2026-09-19（**增量追平**）：本项目最大节点 id（空表 / 无该项目 ⇒ 0）。
+	 *
+	 * 供 renderer 判断「DB 缺了哪些文件」—— 内存节点 id 单调递增 + 全量同步按内存 id 显式写入
+	 * ⇒ 缺失的都是 id > max 的那批 ✓（语义与注意点见 `ICodebaseGraphSqliteBackend.getMaxNodeId` ✓）。
+	 */
+	async getMaxNodeId(project: string): Promise<number> {
+		const db = this._ensureDb();
+		const row = await dbGet(db, `SELECT MAX(id) AS maxId FROM nodes WHERE project = ?`, [project]);
+		const v = row ? Number((row as { maxId?: number | null }).maxId) : 0;
+		return Number.isFinite(v) && v > 0 ? v : 0;
+	}
+
 	async setLayout(nodeId: number, x: number, y: number, z: number): Promise<void> {
 		const db = this._ensureDb();
 		await dbRun(db,
@@ -582,6 +682,67 @@ export class CodebaseGraphSqliteStore {
 		} catch {
 			try { await dbExec(db, `PRAGMA wal_checkpoint(PASSIVE)`); } catch { /* 忙则跳过 */ }
 		}
+	}
+
+	/** 页统计（MB 由调用方按 pageSize 换算；只读 PRAGMA，毫秒级）。 */
+	private async _pageStats(): Promise<{ pageSize: number; pageCount: number; freelist: number }> {
+		const db = this._ensureDb();
+		const pageSize = ((await dbGet(db, 'PRAGMA page_size', []))?.page_size as number | undefined) ?? 0;
+		const pageCount = ((await dbGet(db, 'PRAGMA page_count', []))?.page_count as number | undefined) ?? 0;
+		const freelist = ((await dbGet(db, 'PRAGMA freelist_count', []))?.freelist_count as number | undefined) ?? 0;
+		return { pageSize, pageCount, freelist };
+	}
+
+	/**
+	 * **按需**空间回收（2026-09-19）—— 维护入口，**绝不自动跑在热路径上**。
+	 *
+	 * 做两件事，且刻意合并成一次动作：
+	 *   ① `PRAGMA auto_vacuum = INCREMENTAL`：让**后续**删除的小步回收（`incremental_vacuum`）生效；
+	 *   ② 全量 `VACUUM`：归还历史 freelist **且**令 ① 真正切换（SQLite 的既定流程）。
+	 *
+	 * ⚠ 代价（调用方必须知情）：全量 VACUUM 对 1-2GB 库会**阻塞所在线程数秒~数十秒**
+	 *   （本 store 的宿主是**主进程**）⇒ 只能由用户/运维在合适的时机显式触发，
+	 *   绝不要挂在启动路径或索引路径上（否则就是我们正在修的那类"卡死"）。
+	 *   临时空间需求 ≈ 库大小（VACUUM 要写一份新库）。
+	 *
+	 * @param opts.force 低于阈值也执行（默认：freelist < 64MB 直接跳过，避免无谓阻塞）
+	 * @param opts.migrateToIncremental 是否顺带切换到 INCREMENTAL（默认 true）
+	 */
+	async reclaimSpace(opts?: { force?: boolean; migrateToIncremental?: boolean }): Promise<{
+		skipped?: 'below-threshold';
+		beforeMb: number; afterMb: number; freedMb: number;
+		freelistBeforeMb: number; freelistAfterMb: number;
+		autoVacuumBefore: number; autoVacuumAfter: number;
+	}> {
+		const db = this._ensureDb();
+		const mb = (stats: { pageSize: number; pageCount: number }, pages: number) =>
+			Math.round((stats.pageSize * pages) / 1048576);
+		const before = await this._pageStats();
+		const autoVacuumBefore = ((await dbGet(db, 'PRAGMA auto_vacuum', []))?.auto_vacuum as number | undefined) ?? 0;
+		const freelistBeforeMb = mb(before, before.freelist);
+		const MIN_RECLAIM_MB = 64;
+		if (!opts?.force && freelistBeforeMb < MIN_RECLAIM_MB) {
+			return {
+				skipped: 'below-threshold',
+				beforeMb: mb(before, before.pageCount), afterMb: mb(before, before.pageCount), freedMb: 0,
+				freelistBeforeMb, freelistAfterMb: freelistBeforeMb,
+				autoVacuumBefore, autoVacuumAfter: autoVacuumBefore,
+			};
+		}
+		if (opts?.migrateToIncremental !== false) {
+			// 必须早于 VACUUM（否则不生效）；存量库借此一次性切换
+			await dbExec(db, 'PRAGMA auto_vacuum = INCREMENTAL');
+		}
+		await dbExec(db, 'VACUUM');
+		try { await dbExec(db, `PRAGMA wal_checkpoint(TRUNCATE)`); } catch { /* 忙则跳过 */ }
+		const after = await this._pageStats();
+		const autoVacuumAfter = ((await dbGet(db, 'PRAGMA auto_vacuum', []))?.auto_vacuum as number | undefined) ?? 0;
+		return {
+			beforeMb: mb(before, before.pageCount), afterMb: mb(after, after.pageCount),
+			freedMb: mb(before, before.pageCount) - mb(after, after.pageCount),
+			freelistBeforeMb, freelistAfterMb: mb(after, after.freelist),
+			autoVacuumBefore, autoVacuumAfter,
+		};
 	}
 
 	/** 清空全部图数据（保留表结构） */

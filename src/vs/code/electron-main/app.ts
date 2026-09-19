@@ -696,7 +696,14 @@ export class CodeApplication extends Disposable {
 					try { handle.child.kill('SIGKILL'); } catch { /* ignore */ }
 				}
 				_bgExecs.delete(payload.taskId!);
-				return { success: true, stdout: handle.stdoutCollector.decode(handle.localEncoding), stderr: handle.stderrCollector.decode(handle.localEncoding), exitCode: handle.exitCode, killed: true };
+				// ★ 2026-09-19（日志 1789813310143 取证）：**必须回 `done: true`**。
+				// 渲染侧 `compatibilityTools` 的 poll/kill 文案只看 `ctrl.done`
+				// （`ctrl.done ? 'finished' : 'still running'`）—— 此处原先只回 `killed: true`
+				// ⇒ kill **实际成功**（settled 已置、句柄已删、taskkill /T /F 已执行），
+				// 模型却收到「still running (exit -1)」，据此判定「kill 未立即生效（execFileSync
+				// 阻塞中）」并开始**修一个不存在的 sync I/O 阻塞**（同一会话连续 20+ 轮被带偏）。
+				// 这是典型的「**控制面回假信号 ⇒ agent 追错方向**」，与本仓「绝不静默/失真上报」相悖。
+				return { success: true, done: true, stdout: handle.stdoutCollector.decode(handle.localEncoding), stderr: handle.stderrCollector.decode(handle.localEncoding), exitCode: handle.exitCode, killed: true };
 			}
 			// poll：返回当前累积输出 + 完成状态（不阻塞等待结束）
 			return { success: !handle.settled, stdout: handle.stdoutCollector.decode(handle.localEncoding), stderr: handle.stderrCollector.decode(handle.localEncoding), exitCode: handle.exitCode, done: handle.settled };
@@ -753,11 +760,14 @@ export class CodeApplication extends Disposable {
 			child.stdout?.on('data', (data: Buffer) => stdoutCollector.push(data));
 			child.stderr?.on('data', (data: Buffer) => stderrCollector.push(data));
 			const handle: IBgExecHandle = { child, stdoutCollector, stderrCollector, localEncoding, settled: false, exitCode: -1, timeoutHandle: undefined };
+			// 宽限落定定时器：见下方 `child.on('exit')` 的注释；统一由 `finish` 清理（幂等）。
+			let settleGraceHandle: ReturnType<typeof setTimeout> | undefined;
 			const finish = (r: { success: boolean; stdout: string; stderr: string; exitCode: number }) => {
 				if (handle.settled) { return; }
 				handle.settled = true;
 				handle.exitCode = r.exitCode;
 				if (handle.timeoutHandle) { clearTimeout(handle.timeoutHandle); }
+				if (settleGraceHandle) { clearTimeout(settleGraceHandle); }
 				onDone?.(r);
 			};
 			// timeoutMs=0 表示不限时：不安装 kill timer，进程跑到自己结束为止。
@@ -785,6 +795,26 @@ export class CodeApplication extends Disposable {
 
 			child.on('close', (code) => {
 				finish({ success: code === 0, stdout: stdoutCollector.decode(localEncoding), stderr: stderrCollector.decode(localEncoding), exitCode: code ?? -1 });
+			});
+
+			// ── 2026-09-19（日志 1789813310143 取证）：**子进程已退出，但管道没关** ⇒ `close` 永不触发 ──
+			// 现象（该日志里的实测）：`[execute_code poll] task … — still running (exit -1)` 无限重复，
+			// 而同一条命令 `tasklist //FI "IMAGENAME eq node.exe"` 显示**没有任何 node.exe** ——
+			// 子进程早没了，控制面却永远报"在跑"；agent 因此写下「矛盾点：后台任务 still running，
+			// 但无 node.exe 进程」并被引向"修 sync I/O"的错误方向。
+			// 成因：`close` 的语义是「进程退出 **且** stdout/stderr 全部 EOF」。只要有**孙进程**
+			// （或 reparent 的守护进程、shell 包装层）继承了这两个管道，EOF 就永不到来；而
+			// `timeoutMs = 0`（不限时，2026-08-29 的既定行为）时**没有任何兜底定时器** ⇒
+			// 句柄永远 `settled=false` / `exitCode=-1`。
+			// 处理：`exit`（进程真的没了）后给管道 1s 宽限期，用**已收到的输出**落定；
+			// 若 1s 内 `close` 到达，以 close 的完整输出为准（`finish` 幂等、先到先得）。
+			// ⚠ 刻意**不**改 `timeoutMs=0` 的"不限时"语义（那是 08-29 的既定裁定）——
+			// 本修复只保证"任务不结束"不再等于"永远无法上报"。
+			child.on('exit', (code) => {
+				if (handle.settled || settleGraceHandle) { return; }
+				settleGraceHandle = setTimeout(() => {
+					finish({ success: code === 0, stdout: stdoutCollector.decode(localEncoding), stderr: stderrCollector.decode(localEncoding), exitCode: code ?? -1 });
+				}, 1000);
 			});
 			return handle;
 		};
@@ -958,6 +988,8 @@ export class CodeApplication extends Disposable {
 
 		// 端口必须在**任何窗口创建之前**确定并注入渲染侧（渲染进程继承主进程环境变量）
 		this._initAgentMemoryEndpoint();
+		// BYOK → AGENTMEMORY_LLM_*（供网关 LLM 压缩；同样需在窗口/网关创建前注入）
+		this._initAgentMemoryLlm();
 
 		// Make sure we associate the program with the app user model id
 		// This will help Windows to associate the running program with
@@ -1781,6 +1813,28 @@ export class CodeApplication extends Disposable {
 			accessor.get(ILoggerService),
 		);
 		mainProcessElectronServer.registerChannel(CODEBASE_GRAPH_STORE_CHANNEL, graphStoreChannel);
+		// ★ 2026-09-19（实测：1.5GB 图谱库中 503.9MB≈33% 是 freelist 死页）：**显式维护入口**。
+		// 为什么做成"手动 + 主进程全局函数"而不是自动：
+		//   · 全量 `VACUUM` 会阻塞主线程数秒~数十秒（1-2GB 库），**绝不能**放进启动/索引路径
+		//     —— 那正是本次在排查的"卡死"形态；
+		//   · 需要用户/运维在方便时触发（例如刚删掉一个不再需要的大项目之后）。
+		// 用法（主进程 devtools / CDP `Runtime.evaluate`）：`await __SAROSIS_GRAPH_RECLAIM()`
+		//   `__SAROSIS_GRAPH_RECLAIM({ force: true })` 可无视 64MB 阈值强制跑一次。
+		(globalThis as unknown as Record<string, unknown>)['__SAROSIS_GRAPH_RECLAIM'] = async (
+			opts?: { force?: boolean; migrateToIncremental?: boolean },
+		) => {
+			const logger = accessor.get(ILoggerService).getLogger('codebase-graph');
+			const t0 = Date.now();
+			logger?.info(`[graph-maintain] reclaimSpace 开始（VACUUM 会阻塞主线程，用时取决于库大小）…`);
+			try {
+				const stats = await graphStoreChannel.call(undefined as never, 'reclaimSpace', [opts]);
+				logger?.info(`[graph-maintain] 完成：${JSON.stringify(stats)}（耗时 ${Date.now() - t0}ms）`);
+				return stats;
+			} catch (err) {
+				logger?.error(`[graph-maintain] 失败：${(err as Error)?.message ?? String(err)}（耗时 ${Date.now() - t0}ms）`);
+				throw err;
+			}
+		};
 
 		// ★ 2026-09-19（P2-1 Step 3）：**这里曾注册过「图谱索引通道」宿主，现已移除** ✗。
 		// 原因：索引编排要跑在 **utility process**，而 main 侧的 `createWorker` 是「服务某个窗口请求的
@@ -2402,6 +2456,60 @@ export class CodeApplication extends Disposable {
 		// isBuilt（= !VSCODE_DEV，见 platform/environment/common/environmentService.ts）是 dev / 打包 的
 		// 正确判据（**不能**用 app.isPackaged）。
 		return this.environmentMainService.isBuilt ? 3111 : 3112;
+	}
+
+	/**
+	 * P0-3（2026-09-19）：把 BYOK 配置注入 `AGENTMEMORY_LLM_*` env（供网关的 LLM 压缩使用）。
+	 *
+	 * 背景：agentmemory 的 LLM 压缩/固化（`consolidationLlm` / `compressor`）只读
+	 * `AGENTMEMORY_LLM_BASE_URL`/`AGENTMEMORY_LLM_API_KEY` env，而 BYOK 的配置在 VS Code settings
+	 * （`sessions.agentStudio.provider.<id>.apiKey`）⇒ 两者不通 ⇒ 用户配了 BYOK 也不会启用 LLM 压缩。
+	 * 本方法在 startup 时读第一个已配置的 BYOK provider（OpenAI 兼容，按优先级降序，排除 anthropic），
+	 * 注入 env ⇒ 网关 spawn 时继承 ⇒ `isLlmConfigured()` 为 true ⇒ `isConsolidationLlmEnabled()` 默认启用。
+	 * ⚠ 必须在创建第一个窗口/网关之前调用（与 `_initAgentMemoryEndpoint()` 同位置）。
+	 * ⚠ anthropic 被排除：`openAICompatible: false`（`callChatCompletion` 用 OpenAI 兼容格式）。
+	 */
+	private _initAgentMemoryLlm(): void {
+		try {
+			if (process.env['AGENTMEMORY_LLM_API_KEY']) {
+				this.logService.debug('[agentmemory-llm] AGENTMEMORY_LLM_API_KEY 已显式设置，跳过 BYOK 注入');
+				return;
+			}
+			// OpenAI 兼容 BYOK provider（按优先级降序；anthropic 不兼容，排除）
+			const candidates: Array<{ id: string; defaultBaseUrl: string }> = [
+				{ id: 'openrouter', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
+				{ id: 'gemini', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
+				{ id: 'nous', defaultBaseUrl: 'https://api.nous.com/v1' },
+				{ id: 'ollama', defaultBaseUrl: 'http://localhost:11434' },
+				{ id: 'main', defaultBaseUrl: '' },
+			];
+			for (const c of candidates) {
+				const apiKey = (this.configurationService.getValue<string>(`sessions.agentStudio.provider.${c.id}.apiKey`) || '').trim();
+				if (!apiKey) continue;
+				const baseUrl = (this.configurationService.getValue<string>(`sessions.agentStudio.provider.${c.id}.baseUrl`) || c.defaultBaseUrl || '').trim();
+				if (!baseUrl) continue;
+				process.env['AGENTMEMORY_LLM_BASE_URL'] = baseUrl;
+				process.env['AGENTMEMORY_LLM_API_KEY'] = apiKey;
+				// P1-1（2026-09-19）：同时注入 **embedding** env（复用 BYOK apiKey ⇒ 远端 embedding provider 自动启用）。
+				//   openrouter/ollama 是 OpenAI 兼容 ⇒ 走 `OpenAIEmbeddingProvider`；gemini 走 `GeminiEmbeddingProvider`。
+				//   模型可用 `OPENAI_EMBEDDING_MODEL` / `GEMINI_EMBEDDING_MODEL` env 覆盖（满足"检查 model 的配置"）。
+				if (c.id === 'openrouter') {
+					process.env['OPENAI_API_KEY'] = apiKey;
+					process.env['OPENAI_BASE_URL'] = baseUrl;
+					if (!process.env['OPENAI_EMBEDDING_MODEL']) { process.env['OPENAI_EMBEDDING_MODEL'] = 'openai/text-embedding-3-small'; }
+				} else if (c.id === 'gemini') {
+					process.env['GEMINI_API_KEY'] = apiKey;
+				} else if (c.id === 'ollama') {
+					process.env['OPENAI_BASE_URL'] = baseUrl; // ollama 无 key，OpenAI 兼容端点
+					if (!process.env['OPENAI_EMBEDDING_MODEL']) { process.env['OPENAI_EMBEDDING_MODEL'] = 'nomic-embed-text'; }
+				}
+				this.logService.info(`[agentmemory-llm] 已从 BYOK(${c.id}) 注入 AGENTMEMORY_LLM_* + embedding env（baseUrl=${baseUrl}）⇒ LLM 压缩 + 远端 embedding 默认启用`);
+				return;
+			}
+			this.logService.debug('[agentmemory-llm] 未检测到已配置的 BYOK provider ⇒ LLM 压缩保持关闭（synthetic 降级）');
+		} catch (err) {
+			this.logService.warn(`[agentmemory-llm] BYOK 注入失败（已忽略）: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	/** Windows 路径大小写不敏感且分隔符可能不一致 ⇒ 归一化后再比较。 */

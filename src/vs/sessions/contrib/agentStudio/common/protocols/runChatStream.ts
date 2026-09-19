@@ -21,15 +21,9 @@
  */
 
 import type { IModelDelta } from '../providers.js';
-import { AnthropicStreamState } from '../llmBridge.js';
 import type { ParseMode } from './chatProtocol.js';
-import {
-	extractJsonPayload,
-	extractUsage,
-	parseContentFromJson,
-	processRemainingBuffer,
-	parseFullJsonFallback,
-} from './sseParsers.js';
+import { resolveStreamParser, type IStreamParser } from './protocolRegistry.js';
+import { extractJsonPayload } from './sseParsers.js';
 
 // ─── 重试配置（两端共用）──────────────────────────────────────────────────────
 
@@ -95,6 +89,8 @@ export interface ChatStreamHooks {
 export interface ChatStreamInput {
 	readonly url: string;
 	readonly apiKey: string;
+	/** 目标模型 id —— 供 `onResponseBodyComplete` 记录之用，不参与请求构造。 */
+	readonly modelId: string;
 	readonly body: Record<string, unknown>;
 	/** 附加请求头（如会话 id 头）；会覆盖同名默认头。 */
 	readonly extraHeaders?: Record<string, string>;
@@ -170,8 +166,7 @@ export async function* runChatStream(
 	const prefix = hooks.errorPrefix ?? '';
 	const { signal } = input;
 
-	const parseMode = input.parseMode ?? 'sse-openai';
-	const anthropicState = parseMode === 'sse-anthropic' ? new AnthropicStreamState() : undefined;
+	const parser = resolveStreamParser(input.parseMode, hooks.onCacheHit);
 	const headers = buildHeaders(input);
 	const body = JSON.stringify(input.body);
 
@@ -201,7 +196,7 @@ export async function* runChatStream(
 
 		if (response.ok) {
 			onHealth('healthy');
-			yield* readStream(response, anthropicState, body, hooks);
+			yield* readStream(response, parser, input.modelId, hooks);
 			return;
 		}
 
@@ -247,8 +242,8 @@ export async function* runChatStream(
  */
 async function* readStream(
 	response: Response,
-	anthropicState: AnthropicStreamState | undefined,
-	requestBody: string,
+	parser: IStreamParser,
+	modelId: string,
 	hooks: ChatStreamHooks,
 ): AsyncGenerator<IModelDelta, void, unknown> {
 	const log: LogFn = hooks.log ?? (() => { });
@@ -307,36 +302,28 @@ async function* readStream(
 						capturedResponseId = parsed.id;
 					}
 
-					// 原生 Anthropic SSE：走专用解析器，不触碰 OpenAI 兼容路径
-					if (anthropicState) {
-						yield* anthropicState.push(parsed);
-						continue;
-					}
-
-					const usageDelta = extractUsage(parsed, hooks.onCacheHit);
-					if (usageDelta) { yield usageDelta; }
-
-					const content = parsed.choices?.[0]?.delta || parsed.choices?.[0]?.message;
-					if (!content) {
-						const finishReason = parsed.choices?.[0]?.finish_reason;
-						if (finishReason) { capturedFinishReason = finishReason; }
-						continue;
-					}
-					yield* parseContentFromJson(content);
+					// 协议分派交给解析器实例（查表所得）：
+					//   sse-openai   → usage + content
+					//   sse-anthropic→ content_block_* 状态机
+					// finish_reason 在此捕获：它可能出现在没有 content 的 chunk 里，
+					// 而 done 由 readStream 组装（parser.producesDone === false）。
+					const finishReason = parsed.choices?.[0]?.finish_reason;
+					if (finishReason) { capturedFinishReason = finishReason; }
+					yield* parser.push(parsed);
 				} catch {
 					log('warn', `malformed JSON line: ${jsonPayload.slice(0, 200)}`);
 				}
 			}
 		}
 
-		const remainingDeltas = processRemainingBuffer(buffer, anthropicState);
+		const remainingDeltas = parser.finishBuffer(buffer);
 		if (remainingDeltas.length > 0) { sseDataFound = true; }
 		yield* remainingDeltas;
 
 		// 兜底：整个响应体不是 SSE（如网关退化为整段 JSON）
 		if (!sseDataFound && fullBodyForFallback.trim()) {
 			log('info', `no streaming data found, trying full JSON fallback (bodyLen=${fullBodyForFallback.length})`);
-			yield* parseFullJsonFallback(fullBodyForFallback, anthropicState);
+			yield* parser.finishFullBody(fullBodyForFallback);
 		}
 	} catch (streamErr) {
 		log('error', `stream read error: ${streamErr}`);
@@ -344,13 +331,17 @@ async function* readStream(
 		yield { type: 'error', error: `${hooks.errorPrefix ?? ''}Stream error — ${streamErr}` };
 	} finally {
 		// 抓包对齐：无论流正常结束还是抛错，都要落响应日志
-		hooks.onResponseBodyComplete?.(responseChunks, requestBody);
-		// 原生 Anthropic：工具块在此统一 flush，done 携带 responseId / stop_reason
-		if (anthropicState) {
-			yield* anthropicState.finish();
+		hooks.onResponseBodyComplete?.(responseChunks, modelId);
+
+		// 自行产出 done 的协议（Anthropic：需携带 stop_reason / response_id，
+		// 由状态机收尾时统一产出；其工具块也在此 flush）。
+		if (parser.producesDone) {
+			yield* parser.end();
 			return;
 		}
 
+		// 其余协议：done 由本函数组装 —— responseId / finish_reason 可能分散在
+		// 多个 chunk 中，只有这里持有完整视图。
 		const doneDeltaBase: IModelDelta = capturedResponseId
 			? { type: 'done', responseId: capturedResponseId }
 			: { type: 'done' };

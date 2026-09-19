@@ -386,7 +386,13 @@ export class VoxLaunchChannel extends Disposable {
 			const hasFfmpeg = (() => {
 				if (ffmpeg) { return true; }
 				try {
-					execSync('ffmpeg -version', { stdio: 'ignore' });
+					// ★ 2026-09-19（卡死取证）：**必须带 timeout**。
+					// `execSync` 默认 `timeout: 0` = 永不超时 —— 它是**主进程**里唯一一处
+					// "无限期同步等待外部进程"的调用：ffmpeg 一旦不返回（设备/驱动/网络盘等异常），
+					// 主进程 JS 线程会被永久占住（CPU≈0、日志停、整窗卡死，与 09-19 两次卡死同指纹）。
+					// 5s 是探测用途的宽松上界；超时抛错由下方 catch 兜住 ⇒ 降级为 `hasFfmpeg: false`
+					// （**如实报"没检测到"而不是静默卡死**，也是本仓"不静默削弱"的一贯要求）。
+					execSync('ffmpeg -version', { stdio: 'ignore', timeout: 5000, windowsHide: true });
 					return true;
 				} catch { return false; }
 			})();

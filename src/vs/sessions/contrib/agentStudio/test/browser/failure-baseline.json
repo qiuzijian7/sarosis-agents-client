@@ -1,0 +1,30 @@
+{
+  "_comment": "既存失败基线（2026-09-19 归档）。这些失败在建立基线时就已存在，与后续重构无关。新增失败不在本清单内 -> 立即判失败。修好一个就删一行。",
+  "_howToRefresh": "node src/vs/sessions/contrib/agentStudio/test/browser/run-all-browser-tests.mjs 然后比对 '✗ N 个套件未通过' 段落",
+  "_baselineTotals": {
+    "passing": 4472,
+    "failing": 19,
+    "runtimeCrashed": 6,
+    "built": 276
+  },
+  "_environmentCrashesNote": "以下 6 个套件依赖浏览器宿主环境（window/document/vssarosBridge），在纯 Node 下无法加载。原聚合 runner 把它们混进单进程 mocha，属于静默漏测；分片 runner 后改为显式暴露。它们需要 jsdom 或宿主注入才能真正执行，属独立课题，不计入功能回归。",
+  "environmentCrashes": [
+    "scheduleViewRenderer (window is not defined)",
+    "workflowAskUser (vssarosBridge not initialised)",
+    "workflowGenerateFlow (vssarosBridge not initialised)",
+    "workflowLoopNode (vssarosBridge not initialised)",
+    "workflowMediaAssets (vssarosBridge not initialised)",
+    "workflowPasteImage (vssarosBridge not initialised)"
+  ],
+  "failingSuites": {
+    "agentChatRefreshLog": { "failing": 1 },
+    "chatWorkspaceAuthority": { "failing": 4 },
+    "codebaseGraphStoreMemory": { "failing": 6 },
+    "dagSchedulerAssignee": { "failing": 2 },
+    "kbImportController": { "failing": 1 },
+    "multiChatWindow": { "failing": 1 },
+    "protocolConsolidation": { "failing": 1 },
+    "sessionsConfigIsolation": { "failing": 2 },
+    "workflowNodeTypeNormalize": { "failing": 1 }
+  }
+}

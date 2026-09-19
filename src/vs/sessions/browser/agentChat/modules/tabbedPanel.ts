@@ -10,6 +10,7 @@ import { $, append, addDisposableListener, EventType } from '../../../../base/br
 import type {
 	IQueueItem,
 	IQueuePill,
+	IChatAttachment,
 } from '../agentChatTypes.js';
 
 /**
@@ -45,13 +46,20 @@ export interface ITabbedPanelContext {
 	readonly container: HTMLElement;
 	readonly textarea: HTMLElement | null;
 	readonly isSending: boolean;
-	readonly onSendMessage: (text: string) => void;
+	/**
+	 * ★ 2026-09-19：**必须带 `attachments`** —— 队列项把附件存在 `item.metadata.attachments` ✓
+	 *（入队时收集，见 `agentChatPanel.send.ts`），此前这里只收 `text` ✗ ⇒ 发出去的排队消息
+	 * **丢掉全部附件**（代码片段 / 图片 / 文件 ✓）⇒ 用户报「输入框里的代码片段没有发送给 llm」✓
+	 * （最常见的入队场景就是"LLM 输出中发送"⇒ 命中率极高 ✗）。
+	 */
+	readonly onSendMessage: (text: string, attachments?: IChatAttachment[]) => void;
 	/**
 	 * 插队立即发送：中断当前 LLM 输出，把该任务直接发出去（不再重新入队）。
 	 * 由队列项的「↑」按钮调用 —— 该按钮只在 `isSending` 为 true 时可见，
 	 * 此时 `onSendMessage` 会命中「入队」分支而永不发送，故必须走此专用通路。
+	 * ★ 同上：也必须带上 `attachments` ✓。
 	 */
-	readonly onInterruptAndSend?: (text: string) => void;
+	readonly onInterruptAndSend?: (text: string, attachments?: IChatAttachment[]) => void;
 	readonly agentId?: string;
 	readonly onOpenCompressionDetail?: ((data: Record<string, unknown>) => void) | null;
 	readonly onOpenMemoryDetail?: ((agentId: string, memoryType?: string, contentPreview?: string) => void) | null;
@@ -167,7 +175,10 @@ export class TabbedPanelManager extends Disposable {
 		if (idx < 0) { return; }
 		const item = this._items[idx];
 		this.update(item.id, { status: 'executing' });
-		this.ctx.onSendMessage(item.content);
+		// ★ 2026-09-19 修复：把该队列项的**附件一起发出去** ✓（此前只发 `content` ✗ ⇒ 附件全丢 ✓）
+		// ⚠ `metadata` 在 `IQueueItem` 里是宽类型 ⇒ 需断言 ✓（数据源见 `agentChatPanel.send.ts`：
+		//   入队前收集的 `this._attachments.slice()` ✓）
+		this.ctx.onSendMessage(item.content, item.metadata?.attachments as IChatAttachment[] | undefined);
 		this.update(item.id, { status: 'done' });
 		setTimeout(() => {
 			this.remove(item.id);
@@ -363,7 +374,8 @@ export class TabbedPanelManager extends Disposable {
 			sendBtn.title = '插队立即发送（会中断当前输出）';
 			sendBtn.addEventListener('click', (e) => {
 				e.stopPropagation();
-				this.ctx.onInterruptAndSend?.(item.content);
+				// ★ 2026-09-19：同上，插队发送也必须带上附件 ✓（否则同样是"代码片段没给模型" ✓）
+				this.ctx.onInterruptAndSend?.(item.content, item.metadata?.attachments as IChatAttachment[] | undefined);
 				this.remove(item.id);
 			});
 			actions.appendChild(sendBtn);

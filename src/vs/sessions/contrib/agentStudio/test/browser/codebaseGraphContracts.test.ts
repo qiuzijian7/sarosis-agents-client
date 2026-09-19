@@ -676,3 +676,259 @@ suite('★ 切换后按需加载（不得在切换后立刻加载图谱）', () 
 			'触发按需加载必须**早于** `indexWorkspace(` —— 顺序反了就变成「有制品却全量重建」');
 	});
 });
+
+/**
+ * ★★★ 图谱**关键不变量**（2026-09-19 合并重建）。
+ *
+ * 为什么单独一个套件：这些不变量是近期若干真实事故的**唯一守门人**，但此前分散的断言
+ * 被并发改动整体覆盖过一次（contracts 56 → 40）⇒ 修复全变成"纸面的" ✗。
+ * 每条都对应一次实测事故，改动前请先确认"当初为什么加"。
+ */
+suite('★★★ 图谱关键不变量（勿回退）', () => {
+	const stripC4 = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+	const read4 = (rel: string) => stripC4(fs.readFileSync(path.join(process.cwd(), rel), 'utf8'));
+	const B = 'src/vs/sessions/contrib/agentStudio/browser/';
+	const N = 'src/vs/sessions/contrib/agentStudio/node/';
+
+	test('① 读了的图谱配置必须**注册**（否则用户改不了、永远拿默认值）', () => {
+		const c = fs.readFileSync(path.join(process.cwd(), B + 'agentStudio.contribution.ts'), 'utf8');
+		for (const key of ['sqliteBackend', 'artifactFormat', 'memoryBudgetMb', 'excludeProfile']) {
+			assert.ok(c.includes(`saros.codebaseGraph.${key}`),
+				`设置 ${key} 必须注册 —— 曾因注册被覆盖导致 SQLite 快照档不可用（代码在读、界面里却没有）✗`);
+		}
+	});
+
+	test('② FTS5 不得在全量同步收尾做整库重建', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		assert.ok(!svc.includes('this._sqliteBackend.rebuildFTS()'),
+			'FTS 已随批量写逐节点建好 ⇒ 收尾 `rebuild` 是整库重索引（大仓上最贵的一段）✗');
+	});
+
+	test('③ 内存判据必须是**本轮增量**（不得回到绝对堆占用）', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		assert.ok(svc.includes('_memBaselineBytes'), '必须有「本轮基线」字段');
+		assert.ok(svc.includes('growthBytes'),
+			'必须按「当前 − 基线」判超限 —— 拿整个 renderer 堆比预算会让每轮索引一开场就误报 ✗');
+	});
+
+	test('④ 解析并行度不得硬顶 4（须用满 hc-1，且保留防内存峰值上限）', () => {
+		const p = read4(B + 'codebaseGraphParserPool.ts');
+		assert.ok(p.includes('Math.min(16, hc - 1)'), '必须用 (hc-1)，并保留上限 16');
+		assert.ok(!/Math\.min\(4, ?Math\.max\(1, ?\(navigator\.hardwareConcurrency/.test(p),
+			'不得回退成硬顶 4 —— 8/16 核机器上白白限速解析 ✗');
+	});
+
+	test('⑤ SQLite 载入同步判据须看**节点数**（「存在」≠「可用」，且「非空」≠「不落后」）', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		assert.ok(svc.includes('usableCount'), '必须核对节点数，否则「存在但 0 节点」会被 skip sync ✗');
+		assert.ok(svc.includes('has EMPTY'), '「存在但为空」必须写明在日志里（不得静默跳过同步 ✗）');
+		// ★ 2026-09-19 实测补充：只判「存在且 >0」**仍不够** —— 真机出现
+		// `already has project "…" (167810 nodes) — skip sync` 而制品是 **180115**（差 1.2 万）⇒ **永不追平** ✗✗
+		// ⇒ ①检索看到残缺图（正确性问题）②`canSkipArtifactParse`（要求 sqlite ≥ artifact）恒 false
+		//   ⇒ 每次载入都要解析 JSON 制品（2.4–4.3s，「切工作区卡死」主因段）。
+		assert.ok(svc.includes('const expectedCount = this._graph.store.getNodeCount(proj)'),
+			'必须取「本次载入的节点数」作为期望值 —— 否则无从判断落后 ✗');
+		// ★ 2026-09-19 实测补充（**容差**）：首版「任何落后都全量重同步」在实机让「只落后 170 节点」
+		// 触发了 **82s 全量重同步** ✗✗ ⇒ 小漂移应交给**增量补丁**按文件收敛，只对大落后自愈。
+		assert.ok(svc.includes('const behindTolerance = Math.max(2000, Math.floor(expectedCount * 0.02))'),
+			'必须有落后**容差**（max(2000, 2%)）—— 否则小漂移也会付 82s 全量重同步 ✗');
+		assert.ok(/const behind = usableCount > 0 && lag > behindTolerance/.test(svc),
+			'「落后」判据须用容差：lag > behindTolerance 才算不可用并重新同步（自愈 ✓）');
+		assert.ok(svc.includes('is behind (') && svc.includes('仅落后'),
+			'大落后（is behind）与**小落后（≤容差）**都必须写明数字，不得静默 ✗');
+	});
+
+	/**
+	 * ⑪ 为什么值得钉：全量同步实测 **82–134s**（180115 节点 + 522085 边，IPC + FTS 逐批插入）。
+	 * 它一度由**载入路径 `await`** 触发 ⇒ 实机 `loadGraphMerge(...) 耗时 91648ms` ✗✗（切工作区/开窗口卡死）。
+	 * 现在统一走「后台入口」：带「同步中」守卫（防两条链路并发 delete+insert 互相覆盖）与冷却
+	 * （防失败后每次载入都反复付上百秒）✓。
+	 */
+	test('⑪ SQLite 追平必须**后台**跑：载入路径不得 await，且要有守卫 + 冷却', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		assert.ok(svc.includes('_scheduleSqliteCatchUp'),
+			'必须走统一的后台入口（否则两处触发点各自 fire-and-forget ⇒ 并发覆盖 ✗）');
+		assert.ok(svc.includes('_sqliteCatchUpInFlight'),
+			'必须有「同步中」守卫 —— 同一 project 同时只跑一个追平任务 ✗');
+		assert.ok(/FULL_SYNC_MIN_INTERVAL_MS\s*=\s*5 \* 60 \* 1000/.test(svc),
+			'必须有冷却（5 分钟）—— 否则追平失败后每次载入都再付上百秒 ✗');
+		assert.ok(!svc.includes('await this._syncGraphToSqlite(proj);'),
+			'载入路径**不得 await** 全量同步 —— 实机把载入拖到 91.6s ✗✗（载入只需要内存 store ✓）');
+		assert.ok(svc.split('_scheduleSqliteCatchUp(').length - 1 >= 3,
+			'载入路径与 freshness 两处触发点都必须改走该入口（+1 处定义）');
+	});
+
+	/**
+	 * ⑫ 为什么值得钉：全量重同步实测 **128s**（`deleteProject` + 重插 180k 节点 + 522k 边 + FTS）。
+	 * 而「DB 缺了哪些节点」其实有**确定性特征**：内存 id **单调递增**，且全量同步是**按内存 id 显式写入**的
+	 * ⇒ 缺的都是 `id > DB 的 max` 那批 ⇒ 一次标量查询 + 复用按文件补丁即可追平（秒级）✓✓。
+	 * 这层优化若被回退（比如有人删掉 `getMaxNodeId` 直接走全量），就会**静默**回到 128s ✗ ⇒ 必须钉住。
+	 */
+	test('⑫ 落后追平必须**先增量**（maxNodeId → 按文件补丁），仍落后才退回全量', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		const chan = read4('src/vs/sessions/contrib/agentStudio/common/codebaseGraphStoreChannel.ts');
+		const nodeStore = read4(N + 'codebaseGraphSqliteStore.ts');
+		assert.ok(chan.includes('getMaxNodeId'), '契约必须暴露 getMaxNodeId（追平的判据来源）');
+		// ★★★ 真机验证抓到的真 bug（2026-09-19）：只加「契约 + 实现」漏了**主进程分发器** ⇒
+		// 运行期 `CodebaseGraphStoreChannel: invalid call: getMaxNodeId` ⇒ renderer **静默**降级回全量（128s）✗✗
+		// ⇒ 这套链路是「契约 → 分发器 → 实现 →（ProxyChannel 客户端）」**四方**一致，不是三方 ✗。
+		assert.ok(read4('src/vs/sessions/contrib/agentStudio/electron-main/codebaseGraphStoreChannel.ts').includes("case 'getMaxNodeId':"),
+			'主进程 channel 分发器必须补 case —— 漏了会 invalid call，且失败被吞成"降级回全量"（优化静默失效 ✗✗）');
+		assert.ok(nodeStore.includes('MAX(id) AS maxId'),
+			'主进程实现必须用 MAX(id) 算标量（别把整表拉回 renderer ✗）');
+		assert.ok(svc.includes('_catchUpSqlite'), '必须有两步式追平入口（先增量 → 仍落后才全量）');
+		assert.ok(svc.includes('this._sqliteBackend.getMaxNodeId(project)'),
+			'增量追平必须用 getMaxNodeId 定位缺失批次');
+		assert.ok(svc.includes('await this._syncIncrementalToSqlite(project, [...missingFiles])'),
+			'增量追平必须**复用**按文件补丁（别另写一份 ✗）');
+		assert.ok(/after \+ tol >= expected/.test(svc) && svc.includes('退回全量'),
+			'补完必须**再核一次**节点数：仍超容差才退回全量（缺 id ≤ max 的情况只能靠它兜 ✗）');
+		assert.ok(/share <= 0\.2/.test(svc),
+			'漂移文件占比 > 20% 必须直接走全量 —— 逐个补已不比整体重插划算 ✗');
+	});
+
+	/**
+	 * ⑬ 为什么值得钉：全量同步原子化是**四方链路 + 一个成对纪律**，任何一方缺位都会**静默退化成
+	 * 非原子**（崩在中间 = 项目残缺 ✗✗，而追平只能在下一次载入才补 ✗）。本套件把「契约/分发器/
+	 * 实现/客户端**四方都在** + begin/commit/abort 成对 + abort 在 finally」钉死 ✓。
+	 * （今天已抓过一次「只加契约+实现、漏了分发器」的真 bug ⇒ 这里**一次到位** ✓✓。）
+	 */
+	test('⑬ P0-1 全量同步必须**原子化**：begin/commit/abort 成对且四方一致', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		const chan = read4('src/vs/sessions/contrib/agentStudio/common/codebaseGraphStoreChannel.ts');
+		const host = read4('src/vs/sessions/contrib/agentStudio/electron-main/codebaseGraphStoreChannel.ts');
+		const store = read4(N + 'codebaseGraphSqliteStore.ts');
+		for (const m of ['beginProjectSync', 'commitProjectSync', 'abortProjectSync']) {
+			assert.ok(chan.includes(`${m}(`), `契约必须声明 ${m}`);
+			assert.ok(host.includes(`case '${m}':`), `分发器必须有 ${m} 的 case（漏了会 invalid call ✗✗）`);
+			assert.ok(store.includes(`${m}(`), `store 必须实现 ${m}`);
+		}
+		assert.ok(svc.includes('beginProjectSync(project)'), '全量同步必须**开**显式事务 ✓');
+		assert.ok(svc.includes('commitProjectSync(project)'), '全量同步必须**提交** ✓');
+		assert.ok(svc.includes('abortProjectSync(project)'), '失败必须**回滚** ✓（否则崩在中间 = 项目残缺 ✗✗）');
+		assert.ok(/finally\s*\{[\s\S]*abortProjectSync/.test(svc), 'abort 必须在 finally 里（异常路径也要回滚 ✓）');
+		// 事务存续期不得 checkpoint（WAL checkpoint 在打开的写事务里被拒 ✗）。
+		// ⚠ 断言**基于代码**而非注释 —— `read4` 是**剥注释**读法 ✗✗（注释里的字样会被剥掉 ⇒ 假红 ✗，
+		//   本条正是踩了它 ✗✓）：断言「commit 之后的代码里仍有 checkpoint()」✓。
+		const commitIdx = svc.indexOf('commitProjectSync(project)');
+		assert.ok(commitIdx > 0, '全量同步必须 commit ✓');
+		assert.ok(svc.slice(commitIdx).includes('checkpoint()'), 'commit 之后必须仍有 checkpoint（事务内的会被拒 ✗）');
+	});
+
+	test('⑥ 驼峰分词 + 两步 BM25（含截断兜底）必须仍在', () => {
+		const st = read4(N + 'codebaseGraphSqliteStore.ts');
+		assert.ok(st.includes('camelSplitTokens'), '驼峰分词（对齐 CBM camel_split）不能丢');
+		assert.ok(st.includes('rowid AS rid'), '两步 BM25 的「内层纯 FTS」不能丢（否则 WAND 提前终止失效）');
+		assert.ok(st.includes('two-step truncated'), '候选被截断时必须有精确兜底查询（宁慢不丢）');
+	});
+
+	test('⑦ SQLite 快照档：失败必须**回退写 JSON 并告警**（不得留空/半截制品）', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		// ① 快照必须核对节点数 —— 否则会写出「成功的空快照」（比不写更糟 ✗）
+		assert.ok(svc.includes('snapshot node count mismatch'), '快照必须核对节点数（空/半截快照不可信）');
+		// ② 失败必须响亮告警并说明会回退（静默会让用户以为快照档正在生效 ✗）
+		assert.ok(/SQLite 快照导出失败（将回退写 JSON 制品）/.test(svc),
+			'快照失败必须 WARN 且写明「将回退写 JSON 制品」—— 这是切档后唯一的安全网');
+		// ③ 回退条件必须覆盖「快照未成功」，否则 sqlite 档失败时两份制品都没有
+		assert.ok(svc.includes("if (artifactFormat !== 'sqlite' || !snapshotOk)"),
+			'回退条件必须含 `!snapshotOk`（否则 sqlite 档导出失败 ⇒ 磁盘上什么都不剩 ✗）');
+		// ④ 原子落盘：先 .tmp 再 move（半写制品会误导 canSkipArtifactParse 的判据）
+		assert.ok(svc.includes("const tmpPath = snapPath + '.tmp'") && svc.includes('this._fileService.move('),
+			'快照必须先写 .tmp 再 move（原子）');
+	});
+
+	test('⑧ 内存趋势采样：只在增长时打印 + dispose 必须清理定时器', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		assert.ok(svc.includes('_ensureMemTrajectorySampler()'), '必须有**惰性**启动的采样器（不为从不看图的工作区起定时器）');
+		assert.ok(svc.includes('mem-trajectory'), '必须有一条可 grep 的趋势行（这是趋势的唯一数据源）');
+		assert.ok(/growth < 32 \* 1048576/.test(svc),
+			'必须只在增长超阈值时打印 —— 否则每 5 分钟一条「没变化」的纯噪音 ✗（本会话刚犯过同类错）');
+		assert.ok(svc.includes('clearInterval(this._memTrajectoryTimer)'), 'dispose 必须清理定时器（否则泄漏 ✗）');
+	});
+
+	test('⑨ P2-1 索引通道：契约 / worker 入口 / renderer 代理**三方一致**（方案 B：worker 直连）', () => {
+		const base = 'src/vs/sessions/contrib/agentStudio/';
+		// ⚠ 三方**都必须剥注释**再断言：这三份文件的 header 里**刻意**写着反面例子
+		//（「曾用 mainProcessService.getChannel」「曾是本地字面量 'index'」「原草案是回调式 onProgress」）
+		// ⇒ 不剥注释的负向断言必然假红 ✗（本仓第 N 次踩这条，见 footerPills「黑白灰」套件的同款教训 ✓）
+		const contract = read4(base + 'common/codebaseGraphIndexChannel.ts');
+		const worker = read4(base + 'node/codebaseGraphIndexWorkerMain.ts');
+		const proxy = read4(base + 'browser/codebaseGraphIndexProxy.ts');
+
+		// ① 方法集一致：契约声明 / 入口实现，任一漏一个都是运行期「不是函数」✗
+		// ⚠ 代理侧**不再手写四方法转发** —— 它把整个服务交给 `ProxyChannel.toService` 透明代理
+		//（方法集由契约保证 ✓）。代理侧要钉的是另外两条形状约束（见 ③），
+		// 四方法的**行为**覆盖在 `test/browser/codebaseGraphIndexProxy.test.ts`（6 条，走真实 IPC 往返 ✓）。
+		for (const m of ['runIndex', 'cancel', 'isRunning', 'getProgress']) {
+			assert.ok(contract.includes(`${m}(`), `契约必须声明 ${m}`);
+			assert.ok(worker.includes(`${m}(`), `worker 入口的服务必须实现 ${m} —— 漏了调用时才炸 ✗`);
+		}
+
+		// ② worker **身份单点定义**，两侧都从它取（漂移会静默拿到 undefined ✗）
+		assert.ok(contract.includes('CODEBASE_GRAPH_INDEX_WORKER'), '契约必须导出 worker 身份常量');
+		assert.ok(contract.includes("channel: 'index'"), '常量里必须写清入口模块注册的通道名');
+		assert.ok(worker.includes('CODEBASE_GRAPH_INDEX_WORKER.channel'),
+			'入口模块必须复用契约里的通道名 —— 两边各写一份，漂移后取通道得到 undefined 且**不报错** ✗');
+		assert.ok(worker.includes('ProxyChannel.fromService'),
+			'入口模块必须用 ProxyChannel.fromService 把服务暴露成 channel（照抄 watcherMain ✓）');
+
+		// ③ 代理必须是**方案 B（worker 直连）**，且不得回退到主进程通道
+		assert.ok(proxy.includes('createWorker('),
+			'代理必须用 utilityProcessWorkerWorkbenchService.createWorker 起进程（框架既定客户端用法 ✓）');
+		assert.ok(proxy.includes('ProxyChannel.toService<ICodebaseGraphIndexChannel>'), '代理必须用 ProxyChannel 透明转发');
+		assert.ok(proxy.includes('CODEBASE_GRAPH_INDEX_WORKER'),
+			'代理必须复用 worker 身份常量（不得硬编码 moduleId / 通道名字符串 ✗）');
+		assert.ok(!proxy.includes('mainProcessService'),
+			'不得回退成「经主进程通道取代理」✗ —— main 侧 createWorker 是窗口服务端，不提供 client channel');
+		assert.ok(!/\bCODEBASE_GRAPH_INDEX_CHANNEL\b/.test(contract),
+			'旧的 main 进程通道名常量应已删除 —— 留着是死代码，且会误导后人以为还有一条 renderer→main 路径 ✗');
+		// 负向：不得回退成回调式推送 —— ProxyChannel 只做请求/响应（写代理时踩到并修正的坑 ✓）
+		assert.ok(!/\bonProgress\s*\(/.test(contract), '不得回退成回调式 onProgress（ProxyChannel 不支持宿主推送 ✗）');
+
+		// ④ ★★ 钉住两个「看起来对、实测**全部调用永久挂起**」的写法（详见代理文件头的「坑 1 / 坑 2」）
+		//  坑 1：代理是 `ProxyChannel.toService` 的返回值 = **Proxy**，它的 `get` 陷阱对**任意**字符串键
+		//        都返回函数（**包括 `then`** ✗）⇒ 一旦被 **Promise 决议过程**碰到（如 async 函数 return 它），
+		//        会被当 thenable 采纳 ⇒ 调 `then` ⇒ 宿主抛 `Method not found: then` ⇒ 而 then 的返回值
+		//        没人看 ⇒ **外层 promise 永不结算** ⇒ 所有调用挂起且不报错 ✗✗（实测：6 条用例全超时 50s）。
+		assert.ok(!/async\s*\(\s*\)\s*=>\s*[\s\S]{0,160}ProxyChannel\.toService/.test(proxy),
+			'不得用 async 箭头包装 toService —— then 陷阱会让**所有调用永久挂起**、且不报错也不超时 ✗✗');
+		assert.ok(proxy.includes('return ProxyChannel.toService<ICodebaseGraphIndexChannel>('),
+			'必须在**同步**路径 return toService(...)（配合上一条，保证不被当成 thenable ✗）');
+		//  坑 2：`getDelayedChannel(getWorker().then(...))` 会在**构造期**就调用 getWorker() ✗
+		//        ⇒ ①惰性失效（打开窗口就起进程）；②启动失败变成**无人处理的 rejection**。
+		//        ⇒ 取通道必须写成**函数**，只在第一次方法调用时才真跑 ✓。
+		assert.ok(!/getDelayedChannel\(\s*getWorker\(\)/.test(proxy),
+			'不得在构造期求值 getWorker()（惰性失效 + 未处理 rejection ✗）—— 取通道必须写成函数');
+		assert.ok(proxy.includes('const getChannel = ()'),
+			'取通道必须写成**函数式惰性**（构造零成本、首次调用才起进程 ✓）');
+		// ⚠ 写成 `call:` / `listen:`（属性定义形态）—— 用 `call(` 会**假红**（实参括号在 `:` 之后 ✗，
+		// 我第一次就写错了；「我的模式写错」是本仓高频坑 ✓）。
+		assert.ok(/\bcall\s*:/.test(proxy) && /\blisten\s*:/.test(proxy),
+			'延迟通道必须补全 IChannel 的 call / listen 两个形状（缺 listen 会在取事件时炸 ✗）');
+	});
+
+	/**
+	 * ⑩ 为什么值得钉：`[阻塞Nms]` 是**排期决策的唯一依据**（本轮就是靠它推翻了"克隆检测/边匹配是首块"✗），
+	 * 而它的采集有个**静默失真**：`_maxBlockMs` 是模块级全局累加器、**只在被读时清零**
+	 * ⇒ 两次读取之间的**任何**时间窗里的最大阻塞都会算到"下一个读取者"头上 ✗。
+	 * 真机症状（一眼可判）：`解压制品=537ms[阻塞2999ms]` —— 段只有 537ms 却报 2999ms 连续阻塞，
+	 * **物理上不可能**（连续阻塞不可能长于所在窗口 ✓）。根因就是本仓有**两个**读取者
+	 * （`loadMerge` 的 `timed` 与增量索引的 `_seg`）而没有任何一处清零 ✗✗。
+	 */
+	test('⑩ `[阻塞Nms]` 的每个消费者都必须在**序列开头**清零（否则读数是旧账，会误导排期）', () => {
+		const diag = read4(B + 'wsSwitchDiag.ts');
+		assert.ok(diag.includes('export function resetMaxBlockMs'),
+			'必须导出 resetMaxBlockMs —— 把「丢掉陈旧累积」做成显式接口，而不是让每个消费者自己猜 ✓');
+		assert.ok(/export function resetMaxBlockMs\(\): void \{\s*_maxBlockMs = 0;/.test(diag),
+			'resetMaxBlockMs 必须是「直接清零」✗ 不得先读走 —— 读走等于把旧账记到自己头上 ✗');
+
+		// 「**有 take 就必须有 reset**」：两个消费者都要在序列开头清零
+		for (const rel of [B + 'codebaseGraphPersistence.ts', B + 'codebaseGraphService.ts']) {
+			const src = read4(rel);
+			assert.ok(src.includes('takeMaxBlockMs()'), `${rel} 应按段读取阻塞值`);
+			assert.ok(src.includes('resetMaxBlockMs()'),
+				`${rel} 必须在序列开头调用 resetMaxBlockMs() —— 否则本序列第一段会揽下` +
+				'「自上次读取以来」的全局最大阻塞（真机：`解压制品=537ms[阻塞2999ms]` 物理上不可能 ✗✗）');
+		}
+	});
+});

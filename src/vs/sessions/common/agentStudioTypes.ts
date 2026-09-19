@@ -5,6 +5,10 @@
 
 // --- Shared Types for Agent Studio ---
 
+// ⚠ 仅 **type** 导入（运行时会被擦除 ⇒ 不构成模块循环 ✓）：
+// `agentStudioService.ts` 反向 import 本文件的 ChatMessage ✓。
+import type { IChatAttachmentSend } from './agentStudioService.js';
+
 // ─── Agent Interop Types (aligned with VS Code ICustomAgent) ─────────────────
 
 /**
@@ -916,6 +920,15 @@ export interface ChatMessage {
 	 *  Task messages skip de-duplication in appendMessage (P2-7 fix). */
 	source?: 'user' | 'task';
 	content: string;
+	/**
+	 * ★★ 2026-09-19（用户实测：**重启后**气泡里的代码片段 pill 丢失 ✗✓）：
+	 * 用户消息携带的附件（代码片段 / 日志 / 文件引用 ✓）此前只在发送时透传给 LLM
+	 * （`IChatSendOptions.attachments` ✓）却**从不落盘** ⇒ 重启后气泡丢 pill ✗。
+	 * 持久化规则（`agentChatService.sendMessage` 侧）：**图片不存**（base64 会吹大
+	 * 会话文件 ✗，且恢复后没 data 也是坏 pill ✗ —— 维持既有行为 ✓）；
+	 * 只存可恢复的文本类附件（含 `kind` ⇒ 恢复后仍是「代码片段」pill 而不是文件名 ✓）。
+	 */
+	attachments?: IChatAttachmentSend[];
 	/** Agent 实例 ID。 */
 	agentId?: string;
 	/** Workspace Session (Fork) ID */

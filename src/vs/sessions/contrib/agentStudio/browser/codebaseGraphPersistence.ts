@@ -30,7 +30,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 // ★ 2026-09-16：切换工作区「卡住」诊断 —— 本文件的 `loadMerge` 是切换后最重的同步段（分阶段计时见该方法）。
-import { takeMaxBlockMs, wsStage } from './wsSwitchDiag.js';
+import { resetMaxBlockMs, takeMaxBlockMs, wsStage, wsStageEnd } from './wsSwitchDiag.js';
 import { IAgentStudioLogService } from './agentStudioLogService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
@@ -537,6 +537,11 @@ export class GraphPersistence {
 		// 会在阻塞结束后把「当时在哪一段」补报出来 —— 这正是定位卡住所需要的。
 		const phases: string[] = [];
 		let phasesTotal = 0;
+		// ★★ 2026-09-19：序列开头**丢掉陈旧累积** —— 否则本序列第一段会把「自上次读取以来」
+		// （可能是另一个消费者在几秒/几分钟前读走的）的全局最大阻塞揽在自己身上 ✗，
+		// 真机症状即 `解压制品=537ms[阻塞2999ms]`（物理上不可能 ✓）。见 `resetMaxBlockMs` 的说明。
+		resetMaxBlockMs();
+
 		// 制品文件名（日志里用来区分多 folder —— 本类没有 service 的 `_basename`，就地取末段）
 		const label = sourcePath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? sourcePath;
 		// ★★ 2026-09-19：每段同时记「**该段内主线程最长连续占用**」（`takeMaxBlockMs()` 读+清零 ✓）。
@@ -556,6 +561,12 @@ export class GraphPersistence {
 				const blockMs = Math.round(takeMaxBlockMs());
 				phasesTotal += ms;
 				phases.push(`${name}=${ms}ms${blockMs > 12 ? `[阻塞${blockMs}ms]` : ''}`);
+				// ★★ 2026-09-19：**必须成对结束阶段**（不带参数 ⇒ 记录"当时真正在跑的那个"，
+				// 若段内又设了子阶段（如 `_parseGraphStreaming` 的 onStage）也能如实记下 ✓）。
+				// 不加这行的真机后果：`graph: 写入内存 store（graph.db.zst）` 会一直"当前"到**下次载入**
+				// ⇒ 日志写成「已持续 143s / 1884s」✗✗，期间**所有**主线程阻塞都被归因到它 ✗
+				//（外部日志 9/9 次慢焦点全指向它，而它自测只有 47ms ✗）。
+				wsStageEnd();
 			}
 		};
 		const logPhases = (note: string): void => {

@@ -43,9 +43,4 @@ export class GraphStrategy implements IAgentLoopStrategy {
 	prepareIteration(_ctx: PreLoopContext, _budget: IterationBudget): IterationPlan {
 		return {};
 	}
-
-	/** 不适用（图模式不进入 ReAct 循环） */
-	shouldTerminate(_ctx: PreLoopContext, _budget: IterationBudget): boolean {
-		return true;
-	}
 }

@@ -40,3 +40,19 @@ migrateVectorIndex / projectResolver / tokenBudget / summarize / slidingWindow /
 
 若 P1-6 决断选择「接入远端 embedding」，从本目录恢复
 `embeddingProviders.ts` + 5 个 provider + `noopProvider.ts`（接口 `EmbeddingProvider` 在 noopProvider 中定义）。
+
+## 已恢复（2026-09-19，P1-1 / P1-4）
+
+以下文件已从本目录恢复回 `src/`（**不再属于影子模块**）：
+
+| 文件 | 恢复批次 | 状态 |
+|---|---|---|
+| `noopProvider.ts` | P1-1 | ✅ 已接入（`embeddingProviders.ts` 依赖其接口） |
+| `openaiEmbedding.ts` | P1-1 | ✅ 已接入（OpenAI 兼容：openai/openrouter/ollama/azure） |
+| `geminiEmbedding.ts` | P1-1 | ✅ 已接入（gemini-embedding-001） |
+| `tokenBudget.ts` | P1-4 | ⚠️ 文件恢复，**未接线** —— `buildContext()` 的预算填充（`amFunctions.ts:629-639`）已覆盖等价功能，不需要重构 |
+| `chunking.ts` | P1-4 | ⚠️ 文件恢复，**未接线** —— 本项目无大文档分块场景（观测级无 chunking），待有场景再接入 |
+| `provenance.ts` | P1-4 | ⚠️ 文件恢复，**未接线** —— 需改固化管线记录来源 + 持久化（当前内存态），待办 |
+
+未恢复（仍在 `_unused/`）：`embeddingProviders.ts`（被 `src/embeddingProviders.ts` 的改造版取代）、
+`cohereEmbedding.ts` / `voyageEmbedding.ts` / `clipEmbedding.ts`（按需恢复）。

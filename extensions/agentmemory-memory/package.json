@@ -31,7 +31,10 @@
 	"scripts": {
 		"compile": "tsc -p ./tsconfig.json && node -e \"require('fs').writeFileSync('out/package.json','{\\\"type\\\":\\\"module\\\"}')\"",
 		"watch": "tsc -watch -p ./tsconfig.json",
-		"test:unit": "tsc -p tsconfig.test.json && node scripts/run-unit-tests.mjs"
+		"test:unit": "tsc -p tsconfig.test.json && node scripts/run-unit-tests.mjs",
+		"bench:load": "node ../../node_modules/esbuild/bin/esbuild benchmark/load-100k.ts --bundle --platform=node --format=esm --outfile=benchmark/dist/load-100k.mjs && node benchmark/dist/load-100k.mjs",
+		"bench:cold-start": "node ../../node_modules/esbuild/bin/esbuild benchmark/cold-start.ts --bundle --platform=node --format=esm --outfile=benchmark/dist/cold-start.mjs && node benchmark/dist/cold-start.mjs",
+		"bench:longmemeval": "node ../../node_modules/esbuild/bin/esbuild benchmark/longmemeval-bench.ts --bundle --platform=node --format=esm --outfile=benchmark/dist/longmemeval-bench.mjs && node benchmark/dist/longmemeval-bench.mjs"
 	},
 	"dependencies": {
 		"vssaros": "file:../.."

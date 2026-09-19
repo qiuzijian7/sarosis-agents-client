@@ -40,6 +40,17 @@ export class HermesReActStrategy implements IAgentLoopStrategy {
 	readonly paradigm: AgentParadigm = 'budgeted-react';
 
 	/**
+	 * 预算低位提醒是否已注入（每个 turn 仅一次）。
+	 *
+	 * ⚠ 刻意**不复用** `budget.isGraceArmed()` 做去重：`classifyBudgetGate`
+	 * （`common/loopGate.ts:96`）对 `isGraceArmed` 直接返回 `'continue'`，而
+	 * `consumeGrace()` 在生产代码中无调用点 —— 一旦 arm 就永久放行预算门控，
+	 * 12 轮预算的 turn 会一路跑满 `MAX_TOOL_ITERATIONS`(100)。
+	 * 即「发一条提醒顺带关闭了预算约束」。故去重必须用策略自有状态。
+	 */
+	private _budgetLowReminderInjected = false;
+
+	/**
 	 * preLoop 钩子：不执行预分析器，直接进入 ReAct 主循环。
 	 *
 	 * 策略行为通过系统提示词中的 <strategy_guidance> 段落注入 LLM 上下文，
@@ -61,24 +72,14 @@ export class HermesReActStrategy implements IAgentLoopStrategy {
 	prepareIteration(_ctx: PreLoopContext, budget: IterationBudget): IterationPlan {
 		let reminderMessage: string | undefined;
 		const ratio = budget.maxIterations > 0 ? budget.remaining / budget.maxIterations : 0;
-		if (ratio <= BUDGET_LOW_RATIO && !budget.isGraceUsed()) {
-			// 仅注入一次：arm 后由主循环在预算耗尽那圈消费，避免重复提醒
-			if (!budget.isGraceArmed()) {
-				budget.armGraceCall();
-			}
+		if (ratio <= BUDGET_LOW_RATIO && !this._budgetLowReminderInjected) {
+			// 仅注入一次：由策略自有标志去重（不可借 grace，见字段注释）
+			this._budgetLowReminderInjected = true;
 			reminderMessage =
 				`<system-reminder>迭代预算即将耗尽（剩余 ${budget.remaining}/${budget.maxIterations}）。` +
 				`请基于已有发现整理并产出最终响应，不再发起新的工具调用。若已无工具可调用，直接给出结论。</system-reminder>`;
 		}
 		return { toolDefs: _ctx.toolDefs, reminderMessage };
-	}
-
-	/** 预算耗尽（无 grace 余量）即终止主循环 */
-	shouldTerminate(_ctx: PreLoopContext, budget: IterationBudget): boolean {
-		if (!budget.hasRemaining() && !budget.isGraceArmed()) {
-			return true;
-		}
-		return false;
 	}
 
 	/**

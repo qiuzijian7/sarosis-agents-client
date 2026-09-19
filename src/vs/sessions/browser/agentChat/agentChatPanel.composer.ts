@@ -15,7 +15,11 @@ import {
 
 /** 内部剪贴板格式：选区含 chip 时用自定义 MIME 保存结构化内容（文本+技能+附件），
  *  粘贴时据此恢复 chip，避免 contenteditable=false 的 chip 被浏览器序列化成纯文本。 */
-const COMPOSER_CLIPBOARD_MIME = 'application/vnd.vssaros-composer';
+// ★ 2026-09-19：剪贴板**格式契约**已抽到独立轻量模块（`agentChatPanel.composerClipboard.ts` ✓）——
+// 这条格式的写端有**两处**（composer 内部复制/剪切 ✓、**消息气泡的复制按钮** ✓），读端在粘贴分支 ✓；
+// 一旦漂移**不会报错、只会静默退化**（粘贴回来 pill 又丢 ✗）⇒ 必须共用一份定义 ✓，
+// 且能被**不依赖 DOM** 的单测锁住 ✓（原先写在本文里，会让单测被迫 import 整个面板模块链 ✗）。
+import { COMPOSER_CLIPBOARD_MIME } from './agentChatPanel.composerClipboard.js';
 
 /** 选区剪贴板片段：文本 / 技能 chip / 附件（图片）chip。 */
 interface IComposerClipSegment {
@@ -31,6 +35,14 @@ interface IComposerClipSegment {
 	attType?: 'image' | 'file' | 'folder';
 	isPasted?: boolean;
 	filePath?: string;
+	/**
+	 * ★ 2026-09-19 补：文本片段种类（`'snippet' | 'log'` ✓）。
+	 *
+	 * 之前漏了它 ✗ ⇒ 代码片段复制/粘贴回来后，chip 会退化成**普通文件**（显示文件名
+	 * `code-snippet.txt` 而不是「代码片段」✓，图标与名称都不对 ✗）。
+	 * 内容（`data` ✓）一直都在，丢的只是"这是什么"这层语义 ✓。
+	 */
+	kind?: 'snippet' | 'log';
 }
 
 /**
@@ -441,8 +453,11 @@ protected override _renderInputArea(): void {
 							this._closeSlashMenu();
 						} else if (this._mentionEl) {
 							this._closeMentionMenu();
-						} else if (this._isSending && this._onCancelExecution) {
-							this._onCancelExecution();
+						} else if (this._isSending) {
+							// ⚠ `_onCancelExecution` 是否注入由 `_requestCancelExecution()` 内部守卫 ✓
+							// （类型把它声明成必有，但 `:826` 注释明说"未注入时回退为普通发送" ✗ —
+							//  在此再查一次会触发 TS2774「恒真」✗ ⇒ 守卫收进统一入口 ✓）
+							this._requestCancelExecution();
 						}
 						return;
 					}
@@ -675,7 +690,7 @@ protected override _renderInputArea(): void {
 				if (this._getComposerText().trim() || this._attachments.length > 0) {
 					this._handleSendMessage();
 					} else {
-						this._onCancelExecution();
+						this._requestCancelExecution();
 					}
 				} else {
 					this._handleSendMessage();
@@ -839,8 +854,48 @@ protected override _appendToolbarBtn(
 		return btn;
 	}
 
-protected override _renderSendButtonSvg(): void {
+	/** ★ 2026-09-19：优雅停止待办态（`true` ⇒ 已点一次 Stop，等服务在边界处收尾 ✓）。 */
+	private _gracefulStopPending = false;
+
+	/**
+	 * 请求取消（**统一入口**：按钮点击 ✓ / Escape ✓）。
+	 *
+	 * ★ 2026-09-19：服务端的**第一次**取消是「优雅停止」（等当前 iteration 跑完 ⇒ 已生成内容不丢 ✓，
+	 * 见 `agentChatService._gracefulStopRequested` ✓）—— 但它会让用户误以为"点了没反应" ✗。
+	 * ⇒ 立刻给出**可感知**反馈：按钮脉冲 + 处理中指示旁的小条 ✓。
+	 */
+	private _requestCancelExecution(): void {
+		if (!this._onCancelExecution) { return; }
+		this._markGracefulStopPending();
+		this._onCancelExecution();
+	}
+
+	/**
+	 * 优雅停止态的可感知反馈（幂等 ✓）。
+	 * 清除：`_renderSendButtonSvg()` 在 `_isSending=false` 时复位 ✓（turn 完成 / 硬停都会到 ✓）；
+	 * 小条随「处理中」指示一起在 turn 结束时移除 ✓。
+	 */
+	private _markGracefulStopPending(): void {
+		this._gracefulStopPending = true;
+		if (this._sendBtn) {
+			this._sendBtn.classList.add('chat-stopping-circle');
+			this._sendBtn.title = '正在停止：等当前这一步跑完（再次点击 = 立即停）';
+		}
+		// 处理中指示旁加小条（幂等 ✓；turn 结束移除整个指示时一并带走 ✓）
+		// ⚠ 泛型 `<HTMLElement>` 不能省 ✗ —— `append()` 的形参是 `HTMLElement`，而裸
+		//   `querySelector` 返回 `Element` ⇒ TS2769（实测 ✓）
+		const proc = this._messagesContainer?.querySelector<HTMLElement>('.chat-footer-processing');
+		if (proc && !proc.querySelector('.chat-footer-stopping')) {
+			const chip = append(proc, $('span.chat-footer-stopping'));
+			chip.textContent = '正在停止…（再点 = 立即停）';
+		}
+	}
+
+	protected override _renderSendButtonSvg(): void {
 		clearNode(this._sendBtn);
+		// ★ 2026-09-19：优雅停止态复位 —— turn 结束（`_isSending=false`）⇒ 撤掉"正在停止"脉冲 ✓
+		this._gracefulStopPending = this._gracefulStopPending && this._isSending;
+		this._sendBtn.classList.toggle('chat-stopping-circle', this._gracefulStopPending);
 		const hasInput = !!(this._getComposerText().trim() || this._attachments.length > 0);
 		const isQueueing = this._isSending && hasInput;
 
@@ -2409,6 +2464,9 @@ protected override _insertTextAtCaret(text: string): void {
 					segments.push({
 						type: 'attachment', attId, name: att.name, mimeType: att.mimeType,
 						data: att.data, size: att.size, attType: att.type, isPasted: att.isPasted, filePath: att.filePath,
+						// ★ 2026-09-19：带上 `kind` ⇒ 片段在复制/粘贴后仍是「代码片段 / 日志片段」✓
+						// （漏了它就退化成普通文件 chip ✗，虽然内容 `data` 不丢 ✓）
+						kind: att.kind,
 					});
 					hasChip = true;
 				}
@@ -2470,6 +2528,8 @@ protected override _insertTextAtCaret(text: string): void {
 					size: seg.size ?? 0,
 					isPasted: true,
 					filePath: seg.filePath,
+					// ★ 2026-09-19：还原片段语义（缺它则 chip 显示成普通文件 ✗）
+					kind: seg.kind,
 				};
 				this._attachments.push(att);
 				if (!lastWasChip) { frag.appendChild(this._ownerDocument.createTextNode(' ')); }

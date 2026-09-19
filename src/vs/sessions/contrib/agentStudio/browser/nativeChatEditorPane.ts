@@ -521,7 +521,21 @@ export class NativeChatEditorPane extends EditorPane {
 	 * 不产生重复：流正常结束后 _streamingAssistantId 被清空且 _isSending=false，
 	 * 判定不成立；此时内容由服务端正常 append。
 	 */
+	// ── 流式草稿 journal（★★★ 2026-09-19：崩溃保命 —— 对齐 Cline/OpenCode 的增量落盘 ✓）──
+	// 痛点（用户实测）：流式途中 app 被关/崩溃 ⇒ onWillShutdown **可能根本没跑**
+	// （kill / OOM / 断电 ✗）⇒ 半截输出全丢 ✗ —— 旧机制只在「优雅关闭」时救一次 ✗。
+	// 对齐开源：Cline 每次消息更新即写盘（write-through ✓）、OpenCode 按 part 逐条落盘
+	// （事件溯源 ✓）⇒ 崩溃最多丢几秒。此处：流式期间**每 ≥2s 覆盖写一次小草稿文件**
+	// （+ 停笔 1.5s 尾部补一笔 ✓）；loop 正常结束时清除 ✓；崩溃 ⇒ 草稿留存 ⇒
+	// 重启 getHistory 当「已中断」消息注入 ✓（既有消费链 `_consumeInterruptedDraft`，不动 ✓）。
+	private _draftJournalLastAt = 0;
+	private _draftJournalTimer: ReturnType<typeof setTimeout> | undefined;
+
 	private _installInterruptedStreamPersist(lifecycleService: ILifecycleService): void {
+		// journal 的尾部定时器随 pane 释放 ✓
+		this._register(toDisposable(() => {
+			if (this._draftJournalTimer) { clearTimeout(this._draftJournalTimer); this._draftJournalTimer = undefined; }
+		}));
 		// 关闭尝试打点（2026-09-06「关闭 app 按钮不生效」排查）：
 		// 若点了关闭却连这条都没有 → 事件根本没到 pane，与本落盘逻辑无关；
 		// 若有 onBeforeShutdown 但没有 onWillShutdown → 被别处 veto 卡住。
@@ -608,6 +622,41 @@ export class NativeChatEditorPane extends EditorPane {
 		} finally {
 			if (timer !== undefined) { clearTimeout(timer); }
 		}
+	}
+
+	/** 流式 journal 挂钩（text delta 后调用）：节流 ≥2s 一笔 + 停笔 1.5s 尾部补一笔 ✓。 */
+	private _journalStreamingDraft(): void {
+		const now = Date.now();
+		if (now - this._draftJournalLastAt >= 2000) {
+			this._draftJournalLastAt = now;
+			this._writeStreamingDraftNow();
+		}
+		// 尾部补一笔：覆盖"最后一次节流之后又来了小段就停笔"的尾巴 ✓
+		if (this._draftJournalTimer) { clearTimeout(this._draftJournalTimer); }
+		this._draftJournalTimer = setTimeout(() => {
+			this._draftJournalTimer = undefined;
+			this._draftJournalLastAt = Date.now();
+			this._writeStreamingDraftNow();
+		}, 1500);
+	}
+
+	private _writeStreamingDraftNow(): void {
+		const msg = this._streamingAssistantMsg;
+		const agentId = this._currentAgentId;
+		const sessionId = this._currentSessionId;
+		if (!msg || !this._isSending || !agentId || !sessionId) { return; }
+		const text = (msg.content ?? '').trim();
+		if (!text) { return; }
+		// quiet：2s 一笔是常态，逐笔打 info 会刷屏 ✗（关停兜底那笔仍打 ✓）
+		void this._chatService.saveInterruptedDraft(agentId, sessionId, text, { quiet: true });
+	}
+
+	/** 流正常结束（loop 完成/失败收尾）：清掉 journal 草稿 + 尾部定时器（内容已落盘 ⇒ 草稿是过期物 ✗）。 */
+	private _clearStreamingDraft(sessionId: string | null | undefined): void {
+		if (this._draftJournalTimer) { clearTimeout(this._draftJournalTimer); this._draftJournalTimer = undefined; }
+		const agentId = this._currentAgentId;
+		if (!agentId || !sessionId) { return; }
+		void this._chatService.clearInterruptedDraft(agentId, sessionId);
 	}
 
 	// ─── 外部 http(s) 链接：系统浏览器打开 ─────────────────────────────
@@ -806,7 +855,9 @@ export class NativeChatEditorPane extends EditorPane {
 			// 任务队列「↑ 插队立即发送」：中断当前流式输出，把排队的该条任务立刻发出。
 			// 复刻 _handleEditMessage 的既有模式 —— cancelStream → setSending(false)（不触发 executeNext，
 			// 避免排空队列与随后的直接发送竞态）→ 直接走 _sendMessageInternal 派发。
-			onInterruptAndSend: async (text: string) => {
+			// ★ 2026-09-19：接收并透传 `attachments` ✓（排队的消息此前只带 text ⇒ 附件全丢 ✗，
+			//   用户报「输入框里的代码片段没有发送给 llm」✓）
+			onInterruptAndSend: async (text: string, attachments?: IChatAttachment[]) => {
 				try {
 					const agentId = this._currentAgentId ?? 'claw';
 					const sessionId = this._currentSessionId ?? undefined;
@@ -829,7 +880,7 @@ export class NativeChatEditorPane extends EditorPane {
 						});
 					}
 					// 3) 把排队的该条任务立刻发出（绕过队列直接派发）
-					await this._sendMessageInternal?.(text);
+					await this._sendMessageInternal?.(text, undefined, attachments);
 				} catch (err) {
 					this._logService.warn('[NativeChatEditorPane] onInterruptAndSend failed', err);
 				}
@@ -997,6 +1048,9 @@ export class NativeChatEditorPane extends EditorPane {
 					this._chatPanel?.setSending(false);
 					this._isSending = false;
 					this._resetStreamingMessage();
+					// ★ 2026-09-19：流式 journal 草稿同理 —— 内容已由 finalization 落盘 ✓，
+					//   不删会让下次 getHistory 把同一内容再注入一条「已中断」消息 ✗。
+					this._clearStreamingDraft(sentSessionId);
 					// 2026-09-11：流已结束（内容已由 finalization 落盘），清掉该会话可能残留的
 					// 后台缓冲——否则下次切回会回放一份过期快照，与 getHistory 的落盘内容重复。
 					if (sentSessionId) {
@@ -1013,6 +1067,8 @@ export class NativeChatEditorPane extends EditorPane {
 					this._isSending = false;
 					this._isExternalSend = false;
 					this._resetStreamingMessage();
+					// ★ 2026-09-19：失败收尾同样清 journal 草稿（错误信息已落盘 ✓，草稿是过期物 ✗）
+					this._clearStreamingDraft(sentSessionId);
 					// ★ 2026-09-13：外部流结束 —— 清掉快照。外部发送路径拿不到 sessionId
 					//   （delta 只带 agentId/sessionId，pane 未持有），而同一 pane 同时只可能
 					//   有一个流 → 直接 clear 既安全又不会残留（否则下次切回会插回已落盘的旧对象）。
@@ -4068,6 +4124,9 @@ private _handleStreamDelta(delta: any): void {
 					isThinking: false,
 					streamPhase: 'llm_streaming',
 				});
+				// ★★★ 2026-09-19：journal 一笔（崩溃保命 ✓）—— 流式途中进程死掉时，
+				// 重启后最多丢最后 ~2s 的输出（对齐 Cline write-through / OpenCode 逐 part 落盘 ✓）
+				this._journalStreamingDraft();
 					// P0: 跟踪文本→工具→文本的时间顺序。
 					// text part 只保存「当前段」文本，而非全量 content——否则工具后的
 					// 新 text part 会重复包含工具前的文本，导致同一段文本在工具卡前后

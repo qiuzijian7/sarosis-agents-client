@@ -51,6 +51,17 @@ export const FOCUS_TRACE_SLOW_MS = 50;
 /** 焦点事件后多久内继续收集 mark（防长时间运行下数组无界）。 */
 const TRACE_WINDOW_MS = 2000;
 
+/**
+ * ★ 2026-09-19：慢焦点后的**回访报**延迟（ms）。
+ *
+ * 为什么必须"回访"而不是在汇总行里报 ✗：汇总发生在**首次可绘制的那一刻**（第一帧 ✓），
+ * 而那时探针（25ms 定时器）与 rAF 帧表**都还没跑过** ✓ —— 真机连续多份日志里那行永远是
+ * 「探针 0 次、rAF 1 帧」✗，一度被我误读成"没阻塞" ✗✗。故错开一段时间再看：
+ * 它直接回答「**主线程何时才有空**（= 被占住多久）」「之后帧是否恢复」✓✓。
+ * 800ms 的取值：足够覆盖真机观察到的 200~400ms 阻塞 ✓，又不至于让日志太晚出现 ✓。
+ */
+const LATE_REPORT_MS = 800;
+
 /** 最近多少次焦点记录保留在内存（供 dump）。 */
 const MAX_RECORDS = 20;
 
@@ -94,6 +105,12 @@ class FocusTrace {
 	private _rafTicks = 0;
 	private _lastRafAt = 0;
 	private _maxRafGap = 0;
+	/** 本轮焦点里**第一个**探针回调实际跑到的时刻（`performance.now()`；0=还没跑 ✓）。
+	 *  它就是"主线程什么时候才有空"的最佳证据 ✓（真机日志里汇总行永远写不出它 ✗ —— 见 `_lateReport` ✓）。 */
+	private _firstTickAt = 0;
+	/** 回访定时器 + 「上一轮汇总是否被判为慢」 —— 只有慢的那轮才值得再打一行回访 ✓（控制日志量 ✓）。 */
+	private _lateTimer: ReturnType<typeof setTimeout> | undefined;
+	private _lastSlowFlush = false;
 	private _marks: IFocusMark[] = [];
 	private _longTasks: string[] = [];
 	private _records: IFocusRecord[] = [];
@@ -194,6 +211,12 @@ class FocusTrace {
 		this._startLongTaskObserver();
 		this._startBlockProbe(gen);
 		this._startRafMeter(gen);
+		// ★★ 2026-09-19：**回访报**（见 `_lateReport` 的注释）——
+		// 汇总行必然写「探针 0 次 / rAF 1 帧」✗（因为汇总在**第一帧**就发生了 ✓，而探针与帧表正是
+		// 被阻塞期压住的那两个东西 ✓）。真机连续多份日志都是这个数字 ✓ —— 它不是"没阻塞"，
+		// 而是"它们还没轮到跑" ✓。故在焦点后 `LATE_REPORT_MS` 再回访一次：给出
+		// **主线程何时才有空（= 被占住多久）**、之后的帧是否恢复 ✓✓。
+		this._scheduleLateReport(gen);
 		// ★ 核心指标：等到本窗口"能画第一帧"为止 —— 这中间的等待就是用户感知的卡顿 ✓
 		// 用 rAF + 超时兜底（rAF 在窗口不可见时不触发 ✗，本仓踩过 ✓）
 		void Promise.race([
@@ -215,7 +238,10 @@ class FocusTrace {
 	}
 
 	private _flush(queueDelay: number): void {
-		this._stopBlockProbe();
+		// ★ 2026-09-19：**不再**在这里停探针/帧表 ✗ —— `_flush` 发生在**第一帧**，而那时探针与帧表
+		// 恰恰**还没来得及跑**（被测的阻塞期就是它俩缺席的那段 ✓）⇒ 提前停掉等于把唯一证据扔掉 ✗。
+		// 现在它们跑到 `TRACE_WINDOW_MS` 或换代为止 ✓，结果由 `_lateReport()`（焦点后
+		// `LATE_REPORT_MS`）单独打一行 ✓。
 		const rec: IFocusRecord = {
 			at: Date.now(),
 			queueDelay,
@@ -227,6 +253,8 @@ class FocusTrace {
 		while (this._records.length > MAX_RECORDS) { this._records.shift(); }
 
 		const slow = queueDelay >= FOCUS_TRACE_SLOW_MS;
+		// 回访报只对"慢"的那轮输出 ✓（控制日志量；正常轮次没有任何诊断价值 ✓）
+		this._lastSlowFlush = slow;
 		if (!slow && !this._verbose) {
 			// 不慢 ⇒ 一行简报即可（低频事件，仍然保留可见性 ✓）
 			this._log(`${FOCUS_TRACE_TAG} window 获得焦点 → 首次可绘制 +${Math.round(queueDelay)}ms（正常）`);
@@ -281,11 +309,12 @@ class FocusTrace {
 					// rAF 帧间隔小 ⇒ 画面其实在流畅地画 ✗ ⇒ 探针没跑 ≠ 主线程被占（可能只是定时器被降优先级/节流）
 					this._log(`${FOCUS_TRACE_TAG}   ⇒ 探针未跑（${ticks} 次）但 **rAF 很流畅**（${raf} 帧、最大帧间仅 ${gap}ms）⇒ 说明**不是主线程被占住**，而是本环境对定时器降优先级/节流 ⇒ 本次探针数字**不可信** ✗ ⇒ 请以「阶段：」行 + [WsSwitchDiag] 交互延迟为判据 ✓`);
 				} else {
-					// ★ 2026-09-19 修正：`raf === 1`（只有触发 flush 的那一帧）**不代表"流畅"** ✗ ——
-					// 帧数 <3 时根本量不出帧间隔（`gap` 恒为 0 ✗），只能说明"这段时间没画第 2 帧"。
-					// 此时最可能的原因是**单个长任务**占住主线程（定时器与下一帧都排不进去 ✓），
-					// 但**不能仅凭本行断言** ⇒ 明写"无法判断"，并指向看门狗的「交互延迟 + 阶段名」✓
-					this._log(`${FOCUS_TRACE_TAG}   ⇒ 探针启动后 0 次、rAF 仅 ${raf} 帧（量不出帧间隔）⇒ **本行无法判断** ✗ —— 但注意：等待 ${Math.round(queueDelay)}ms 却连一个 25ms 定时器都没跑成，最常见是**单个长任务**占住主线程 ✓ ⇒ 请核对同一时刻的 \`[WsSwitchDiag]\` 交互延迟（它会给出**耗时 + 阶段名**，例：\`≈2039ms（阶段=graph: 写入内存 store）\` ✓）`);
+					// ★ 2026-09-19 第二次修正：`raf === 1`（只有触发 flush 的那一帧）**不代表"流畅"** ✗，
+					// 也**不该在本行下任何结论** ✗ —— 汇总本身发生在**第一帧** ✓，而探针与帧表正是
+					// 被阻塞期压住的那两个东西 ✓ ⇒ 此刻读到的计数**必然是 0 次 / 1 帧** ✗
+					// （真机连续多份日志都写着这两个数字 ✓ —— 它既不是"没阻塞"也不是"量不出"，
+					//  而是"它们还没轮到跑" ✓）。真正的答案在**紧随其后的回访行**（`_lateReport` ✓）。
+					this._log(`${FOCUS_TRACE_TAG}   ⇒ 此刻探针 ${ticks} 次、rAF ${raf} 帧 —— **这与"是否阻塞"无关** ✗（汇总发生在第一帧 ⇒ 探针根本还没轮到跑 ✓）⇒ **请看紧随其后的「回访」行**：它给出「主线程何时才有空（≈ 被占住多久）/ 之后的帧是否恢复正常」✓（若无「回访」行 ⇒ 说明本轮其实不慢 ✓）`);
 				}
 			} else if (block >= 50) {
 				this._log(`${FOCUS_TRACE_TAG}   ⇒ 探针实测本窗口主线程最长被占 ${block}ms（≈ 用户等待的 ${Math.round(queueDelay)}ms）⇒ **就是本窗口在忙** ✓ ⇒ 按上面的 LoAF/阶段行定位；若「阶段：」为 idle ⇒ 是**未打阶段名**的那段活在跑（补 wsStage() 即可）✓`);
@@ -296,6 +325,39 @@ class FocusTrace {
 		// ★ 无 longtask/LoAF 记录也要说出来：否则读者会误以为"没有长任务" ✗
 		if (slow && this._longTasks.length === 0) {
 			this._log(`${FOCUS_TRACE_TAG}   （本次未采集到 longtask/LoAF 条目 —— 本环境可能未支持该 entryType ⇒ 请以上面「主线程最长占用」与「阶段：」两行为判据 ✓）`);
+		}
+	}
+
+	/** 安排回访报（见 `LATE_REPORT_MS` 注释 ✓；换代/已被取代则静默 ✓）。 */
+	private _scheduleLateReport(gen: number): void {
+		if (this._lateTimer !== undefined) { clearTimeout(this._lateTimer); }
+		this._lateTimer = setTimeout(() => {
+			this._lateTimer = undefined;
+			this._lateReport(gen);
+		}, LATE_REPORT_MS);
+	}
+
+	/**
+	 * ★★ 回访报：焦点后 `LATE_REPORT_MS` 再读一次探针/帧表 —— 回答「主线程被占住多久、何时恢复」。
+	 *
+	 * 这是慢焦点日志里**唯一能定性的数字** ✓：汇总行写在第一帧，那时探针与帧表都还没跑过 ✗
+	 * （所以它永远写「0 次 / 1 帧」，与是否阻塞无关 ✓）；这里读到的是**阻塞结束后**的真实累计：
+	 *   · `第 1 个探针在 +Xms 才跑到` ⇒ 主线程直到 X 才有空 ⇒ **阻塞期 ≈ X ms** ✓✓（最有用的一个数）；
+	 *   · `rAF N 帧 / 最大帧间 Gms` ⇒ 之后是否恢复流畅、有没有第二次卡顿 ✓；
+	 *   · 800ms 内探针仍 0 次 ⇒ 窗口不可见/被节流 ✗（不可据此判断），或存在 >0.8s 的长任务 ✓。
+	 */
+	private _lateReport(gen: number): void {
+		if (gen !== this._focusGen || this._focusAt <= 0) { return; } // 已被新焦点取代 ⇒ 静默 ✓
+		if (!this._lastSlowFlush && !this._verbose) { return; }       // 只对"慢"的轮次输出 ✓（控日志量）
+		this._stopBlockProbe();
+		const rel = (t: number): string => `+${Math.round(t - this._focusAt)}ms`;
+		const firstTick = this._firstTickAt > 0 ? rel(this._firstTickAt) : '一直没跑';
+		this._log(`${FOCUS_TRACE_TAG}   ⏱ 回访（焦点后 ${LATE_REPORT_MS}ms）：第 1 个探针在 ${firstTick} 才跑到（本应每 25ms 一次）/ 探针共 ${this._probeTicks} 次 / rAF ${this._rafTicks} 帧、最大帧间 ${Math.round(this._maxRafGap)}ms${this._probeThrottled > 0 ? `（另有 ${this._probeThrottled} 次探针因窗口不可见被节流 ✓）` : ''}`);
+		if (this._firstTickAt > 0) {
+			const stall = Math.round(this._firstTickAt - this._focusAt);
+			this._log(`${FOCUS_TRACE_TAG}   ⏱ ⇒ 主线程直到 ${firstTick} 才有空（首个 25ms 定时器被推迟 ${stall}ms）⇒ **这 ${stall}ms 主线程确实被占住** ✓✓ ⇒ 用同一时刻的 \`[WsSwitchDiag]\`（含**阶段名**）/ \`[CodebaseGraph]\` 找那段活 ✓；若它报 idle ⇒ 那段活**没打阶段名**（补 wsStage() ✓）`);
+		} else {
+			this._log(`${FOCUS_TRACE_TAG}   ⏱ ⇒ ${LATE_REPORT_MS}ms 内探针一次都没跑 ⇒ 要么窗口不可见/被节流 ✗（此时 rAF 也应停 ⇒ 交叉判定 ✓），要么存在 >${LATE_REPORT_MS}ms 的长任务 ✓ ⇒ 请以 \`[WsSwitchDiag]\` 的交互延迟（耗时 + 阶段名）为准 ✓`);
 		}
 	}
 
@@ -317,9 +379,13 @@ class FocusTrace {
 					if (performance.now() - this._focusAt > TRACE_WINDOW_MS) { continue; }
 					const dur = Math.round(e.duration ?? 0);
 					const renderStart = e.renderStart ?? 0;
-					// renderStart 是相对帧起点的偏移 ⇒ 之前是脚本时间、之后是样式/布局/绘制 ✓
-					const scriptMs = renderStart > 0 ? Math.round(renderStart) : undefined;
-					const renderMs = renderStart > 0 ? Math.round(dur - renderStart) : undefined;
+					const entryStart = e.startTime ?? 0;
+					// ★★ 2026-09-19 修正（真机日志打出 `脚本≈3642ms / 样式布局绘制≈-3561ms` ✗✓）：
+					// `renderStart` / `styleAndLayoutStart` 是**相对 timeOrigin 的时间戳** ✗，
+					// **不是**相对本条目起点的偏移 ⇒ 必须减去 `e.startTime` 才是"脚本阶段耗时" ✓；
+					// 否则 `dur - renderStart` 必然算成负数 ✓。再夹一次 `max(0,…)` 兜底 ⇒ 永不打印负值 ✓。
+					const scriptMs = renderStart > 0 ? Math.round(Math.max(0, renderStart - entryStart)) : undefined;
+					const renderMs = scriptMs !== undefined ? Math.round(Math.max(0, dur - scriptMs)) : undefined;
 					const top = (e.scripts ?? []).slice(0, 3)
 						.map(s => `${s.invoker ?? '?'}${s.sourceFunctionName ? `:${s.sourceFunctionName}` : ''}@${(s.sourceURL ?? '?').split('/').slice(-2).join('/')} ${Math.round(s.duration ?? 0)}ms`)
 						.join(' ｜ ');
@@ -363,7 +429,12 @@ class FocusTrace {
 		this._lastRafAt = 0;
 		this._maxRafGap = 0;
 		const step = (): void => {
-			if (gen !== this._focusGen || this._flushed || this._focusAt <= 0) { return; }
+			// ★★ 2026-09-19 修正：**不许**因 `_flushed` 而停 ✗✗ ——
+			// `_flush` 是在**第一帧**触发的 ✓，若这里也看 `_flushed`，那么帧表**必然只记到 1 帧** ✗
+			// （真机日志连续多份都写着「rAF 1 帧、最大帧间 0ms」✓ —— 那不是"量不出"，是我自己
+			// 让它第一帧就退出了 ✗✓，于是这个交叉验证形同虚设 ✗）。
+			// 现在改为：只受「代」与 `TRACE_WINDOW_MS` 约束 ⇒ 能量到**阻塞期之后的帧间隔** ✓✓
+			if (gen !== this._focusGen || this._focusAt <= 0) { return; }
 			const now = performance.now();
 			if (this._lastRafAt > 0) {
 				const gap = now - this._lastRafAt;
@@ -401,12 +472,17 @@ class FocusTrace {
 		this._stopBlockProbe(); // ★ 清掉上一轮遗留的定时器（否则快速连切时会串到新窗口的计数里 ✗）
 		this._probeAt = performance.now();
 		this._probeStartAt = this._probeAt;
+		// ★★ 2026-09-19 修正：`_firstTickAt` 必须**随探针一起重置** ✗✗ ——
+		// 真机日志里回访行打印出 `第 1 个探针在 +-189ms 才跑到`（**负值** ✗✓）：
+		// 上一轮焦点的首次 tick 时间被沿用 ⇒ `_firstTickAt - _focusAt < 0` ✓。
+		this._firstTickAt = 0;
 		this._maxBlockInTrace = 0;
 		this._probeTicks = 0;
 		this._probeThrottled = 0;
 		const tick = (): void => {
 			if (gen !== this._focusGen) { return; } // 已被新焦点取代 ⇒ 停止 ✗
 			const now = performance.now();
+			if (this._firstTickAt === 0) { this._firstTickAt = now; } // ★ 记「主线程何时才有空」✓
 			const late = now - this._probeAt - FocusTrace.BLOCK_PROBE_MS;
 			const visible = typeof document === 'undefined' || document.visibilityState === 'visible';
 			if (visible) {
@@ -416,7 +492,9 @@ class FocusTrace {
 			}
 			this._probeTicks++;
 			this._probeAt = now;
-			if (this._flushed || this._focusAt <= 0 || now - this._focusAt > TRACE_WINDOW_MS) {
+			// ★★ 2026-09-19 修正：同 rAF 表 —— 不再因 `_flushed` 停 ✗（`_flush` 发生在第一帧，
+			// 那时探针**本来就没跑过** ⇒ 提前停掉等于放弃唯一的证据 ✓）。改为只受代/窗口约束 ✓。
+			if (this._focusAt <= 0 || now - this._focusAt > TRACE_WINDOW_MS) {
 				this._probeTimer = undefined;
 				return;
 			}

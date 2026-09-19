@@ -96,6 +96,12 @@ interface QueryMetric {
 	hitAt1: number;
 	recallAt5: number;
 	recallAt10: number;
+	/** P1-3：Precision@K（前 K 个结果中相关的占比；单 target ⇒ recall@K / K）。 */
+	precisionAt5: number;
+	precisionAt10: number;
+	/** P1-3：NDCG@K（归一化折损累计增益 —— 越靠前得分越高，binary relevance ⇒ 1/log2(rank+2)）。 */
+	ndcgAt5: number;
+	ndcgAt10: number;
 	mrr: number;
 	latencyMs: number;
 }
@@ -142,6 +148,12 @@ async function runScale(kv: MockStateKV, noiseCount: number, seed: number): Prom
 				hitAt1: rank === 0 ? 1 : 0,
 				recallAt5: rank >= 0 && rank < 5 ? 1 : 0,
 				recallAt10: rank >= 0 && rank < 10 ? 1 : 0,
+				// P1-3：Precision@K（单 target ⇒ 前 K 命中则 1/K）
+				precisionAt5: (rank >= 0 && rank < 5 ? 1 : 0) / 5,
+				precisionAt10: (rank >= 0 && rank < 10 ? 1 : 0) / 10,
+				// P1-3：NDCG@K（binary relevance：target 在 rank ⇒ 1/log2(rank+2)；IDCG@K = 1/log2(2) = 1）
+				ndcgAt5: rank >= 0 && rank < 5 ? 1 / Math.log2(rank + 2) : 0,
+				ndcgAt10: rank >= 0 && rank < 10 ? 1 / Math.log2(rank + 2) : 0,
 				mrr: rank >= 0 ? 1 / (rank + 1) : 0,
 				latencyMs,
 			});
@@ -167,6 +179,10 @@ export async function run(): Promise<void> {
 		const hit1 = avg(metrics.map(m => m.hitAt1));
 		const r5 = avg(metrics.map(m => m.recallAt5));
 		const r10 = avg(metrics.map(m => m.recallAt10));
+		const p5 = avg(metrics.map(m => m.precisionAt5));
+		const p10 = avg(metrics.map(m => m.precisionAt10));
+		const ndcg5 = avg(metrics.map(m => m.ndcgAt5));
+		const ndcg10 = avg(metrics.map(m => m.ndcgAt10));
 		const mrr = avg(metrics.map(m => m.mrr));
 		const lat = metrics.map(m => m.latencyMs).sort((a, b) => a - b);
 		const p50 = lat[Math.floor(lat.length * 0.5)] ?? 0;
@@ -174,10 +190,13 @@ export async function run(): Promise<void> {
 		worstHit10 = Math.min(worstHit10, r10);
 		(report['scales'] as Record<string, unknown>)[`noise_${noise}`] = {
 			noise, hit_at_1: +hit1.toFixed(3), recall_at_5: +r5.toFixed(3), recall_at_10: +r10.toFixed(3),
+			precision_at_5: +p5.toFixed(3), precision_at_10: +p10.toFixed(3),
+			ndcg_at_5: +ndcg5.toFixed(3), ndcg_at_10: +ndcg10.toFixed(3),
 			mrr: +mrr.toFixed(3), latency_p50_ms: +p50.toFixed(2), latency_p90_ms: +p90.toFixed(2), seed_ms: +seedMs.toFixed(0),
 		};
 		console.log(`\n  corpus=${TARGETS.length} targets + ${noise} noise (seed ${seedMs.toFixed(0)}ms)`);
 		console.log(`    hit@1=${hit1.toFixed(2)}  recall@5=${r5.toFixed(2)}  recall@10=${r10.toFixed(2)}  MRR=${mrr.toFixed(3)}`);
+		console.log(`    P@5=${p5.toFixed(3)}  P@10=${p10.toFixed(3)}  NDCG@5=${ndcg5.toFixed(3)}  NDCG@10=${ndcg10.toFixed(3)}`);
 		console.log(`    latency p50=${p50.toFixed(2)}ms  p90=${p90.toFixed(2)}ms`);
 	}
 

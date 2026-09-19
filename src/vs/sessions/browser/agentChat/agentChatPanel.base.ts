@@ -9,6 +9,7 @@ import type { ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlC
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { ILogService } from '../../../platform/log/common/log.js';
 import { MarkdownRenderOptions } from '../../../base/browser/markdownRenderer.js';
+import { decideDomTrim, describeDensityOverBudget, DOM_TRIM_LIMITS, withProtectedRange } from './domBudgetDecision.js';
 import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, IImageModelGroup, HeaderPanelType, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowPickerSelect, ILiveWorkflowNodeInteraction, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, IPlanTaskCard, OrchestrationPlan, PlanTask, AgentStatus } from './agentChatTypes.js';
 // ChatMode removed — replaced by chatOnly boolean toggle
 import type { IChatPanel } from './iChatPanel.js';
@@ -561,10 +562,26 @@ protected _lazyLoadRemaining = 0;
 // 对策：**保留一个以视口为中心的 DOM 窗口** ✓，超出的从**离视口最远**的一端卸载 ✓
 //  （数据始终留在 `_messages` ✓，滚回去按需重建 ✓）；
 //  卸载由既有 `_domDisposalObserver` 自动释放 `_markdownDisposables` ✓（设施现成 ✓）。
-/** DOM 中消息元素数上限（超出即卸载远端 ✓）。 */
-protected static readonly DOM_MESSAGE_LIMIT = 120;
+/**
+ * 阈值**单点定义在 `domBudgetDecision.ts`**（纯模块，可单测）——
+ * 这里只做别名，避免「面板里一份、判据里一份」漂移 ✗。
+ *
+ * ⚠ 2026-09-19 卡死取证后的判据升级：**只看条数不够** —— 真机 117 条消息就 12.1 万节点
+ * （均值 ≈1000 节点/条：长代码块 + 工具卡 + 高亮 span）⇒ 条数上限 120 永不触发 ✗。
+ * 现在同时看**页面节点预算**（见 `decideDomTrim`）。
+ */
+protected static readonly DOM_MESSAGE_LIMIT = DOM_TRIM_LIMITS.messageLimit;
 /** 视口上下各保留的缓冲条数（防止轻微滚动就反复重建 ✓）。 */
-protected static readonly DOM_MESSAGE_KEEP = 24;
+protected static readonly DOM_MESSAGE_KEEP = DOM_TRIM_LIMITS.messageKeep;
+/**
+ * 「DOM 节点预算」周期体检间隔（ms）。
+ *
+ * 裁剪原本只在「新增消息 / 懒加载插入 / 跳转」时安排 ✗ —— 而冻结发生在**流式过程**中
+ * （每次 delta 全量重写气泡，节点数一路爬升，上述触发点一次都不来）⇒ 必须有独立体检。
+ */
+private static readonly DOM_BUDGET_CHECK_INTERVAL_MS = 8000;
+/** 周期体检定时器句柄（流式期开启、空闲即停 ✓）。 */
+private _domBudgetWatchTimer: number | null = null;
 private _trimScheduled = false;
 	// 集中式 detached-DOM 资源释放观察器（在 _renderMessagesArea 中 setup）。
 	// 任何消息/part 子树被移除时，释放其 _markdownDisposables，避免 detached 子树被
@@ -808,7 +825,7 @@ protected readonly _onSendMessage: (text: string, explicitSkillIds?: string[], a
  * 队列项本就只在输出中产生，用 `_onSendMessage` 只会把它删了又新建。
  * 由宿主注入（需要 `cancelStream`，面板层拿不到）。未注入时回退为普通发送。
  */
-protected readonly _onInterruptAndSend?: (text: string) => void;
+protected readonly _onInterruptAndSend?: (text: string, attachments?: IChatAttachment[]) => void;
 
 protected readonly _onCancelExecution: () => void;
 	/**
@@ -976,8 +993,8 @@ protected readonly _importedKbFileToolIds = new Set<string>();
 
 constructor(opts: {
 		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => void;
-		/** 插队立即发送（任务队列「↑」）：中断当前流后直接发送，绕开入队分支。 */
-		onInterruptAndSend?: (text: string) => void;
+		/** 插队立即发送（任务队列「↑」）：中断当前流后直接发送，绕开入队分支。★ 同上需带 attachments ✓ */
+		onInterruptAndSend?: (text: string, attachments?: IChatAttachment[]) => void;
 		onCancelExecution: () => void;
 		onSkipCurrentTool?: () => void;
 		onToggleCollapse: () => void;
@@ -1160,11 +1177,15 @@ constructor(opts: {
 			get container() { return self._container; },
 			get textarea() { return self._textarea ?? null; },
 			get isSending() { return self._isSending; },
-			onSendMessage: (text) => { self._onSendMessage?.(text); },
+			// ★ 2026-09-19：**必须把 attachments 一起转发** ✗ —— 队列项（含"LLM 输出中发送"的排队消息）
+			//   把附件存在 `metadata.attachments` ✓，此前这里只转发 `text` ✗ ⇒ 附件被静默丢弃 ✓，
+			//   表现为「输入框里的代码片段没有发送给 llm」✓（`_onSendMessage` 的第二个参数是
+			//   `explicitSkillIds`，附件是**第三个** ✓）
+			onSendMessage: (text, attachments) => { self._onSendMessage?.(text, undefined, attachments); },
 			// 插队发送委托给宿主面板：中断当前流需要 `cancelStream`（位于
 			// nativeChatEditorPane 层，面板本身拿不到）。宿主实现为
 			// cancelStream → setSending(false,{triggerExecuteNext:false}) → 直接发送。
-			onInterruptAndSend: (text) => { self._onInterruptAndSend?.(text); },
+			onInterruptAndSend: (text, attachments) => { self._onInterruptAndSend?.(text, attachments); },
 			get agentId() { return self._agent?.id; },
 			get onOpenCompressionDetail() { return self._onOpenCompressionDetail; },
 			get onOpenMemoryDetail() { return self._onOpenMemoryDetail; },
@@ -1809,6 +1830,28 @@ protected _findMessageElementById(id: string): HTMLElement | null {
 	}
 
 	/**
+	 * 「**不得卸载**」的尾部下标（★ 2026-09-19 修「LLM 长执行中气泡突然消失」✓）。
+	 *
+	 * 两条，都是**常数条**（≤2）⇒ 不会抵消裁剪的收益 ✓：
+	 *   ① **最后一条已渲染消息** —— 正在流式 / 刚输出完的那条通常就是它 ✓（最直接 ✓）；
+	 *   ② **最后一条 assistant**（按数据 `_messages` 找，再映射回 DOM 下标 ✓）——
+	 *      兜住"尾部恰好是系统/用户消息"的情况 ✓。
+	 *
+	 * ⚠ 只保护**尾部**、不保护"当前视口外的一切" ✗ —— 否则裁剪就失去意义了 ✓。
+	 */
+	private _protectedTailIndexes(els: HTMLElement[]): number[] {
+		const out: number[] = [];
+		if (els.length > 0) { out.push(els.length - 1); }
+		for (let i = this._messages.length - 1; i >= 0; i--) {
+			if (this._messages[i].role !== 'assistant') { continue; }
+			const idx = els.findIndex(el => el.getAttribute('data-msg-id') === this._messages[i].id);
+			if (idx >= 0) { out.push(idx); }
+			break;
+		}
+		return out;
+	}
+
+	/**
 	 * ★★★ 2026-09-19：安排一次「DOM 窗口裁剪」（节流 + 空闲执行 ✓）。
 	 * 调用时机：新增消息 ✓、懒加载插入一块 ✓、强制全渲染后 ✓、跳转到历史消息后 ✓。
 	 */
@@ -1841,7 +1884,18 @@ protected _findMessageElementById(id: string): HTMLElement | null {
 		const container = this._messagesContainer;
 		if (!container) { return; }
 		const els = this._renderedMessageElements();
-		if (els.length <= AgentChatPanelBase.DOM_MESSAGE_LIMIT) { return; }
+		// ★ 2026-09-19（app 卡死取证）：判据从「条数」升级为「条数 **or 页面节点预算**」。
+		// 真机 117 条消息就 12.1 万节点（均值 ≈1000 节点/条）⇒ 旧判据（条数 > 120）恒不触发 ✗，
+		// 节点一路涨到看门狗的 12 万死亡区 ⇒ 布局/重排把渲染主线程拖死 ⇒ 整窗卡死。
+		const nodeCount = this._countDocumentNodes();
+		const decision = decideDomTrim(els.length, nodeCount);
+		if (!decision.shouldTrim) { return; }
+		if (decision.reason === 'node-budget') {
+			this._logService.warn(
+				`[AgentChatPanel] DOM 预算超限 ⇒ 提前裁剪：nodes=${nodeCount} > ${DOM_TRIM_LIMITS.nodeBudget}` +
+				`（messages=${els.length}，保留缓冲 ${decision.keepBuffer} 条，phase=${this._streamPhase}）`,
+			);
+		}
 
 		// ① 找可见区间（offsetTop 相对 container ✓；仅在超限时做一次，可接受 ✓）
 		const viewTop = container.scrollTop;
@@ -1859,13 +1913,34 @@ protected _findMessageElementById(id: string): HTMLElement | null {
 			if (el.offsetTop <= viewBottom) { lastVisible = i; break; }
 		}
 
-		// ② 期望保留区间 = 可见区间 ± 缓冲 ✓
-		const keepFrom = Math.max(0, firstVisible - AgentChatPanelBase.DOM_MESSAGE_KEEP);
-		const keepTo = Math.min(els.length - 1, lastVisible + AgentChatPanelBase.DOM_MESSAGE_KEEP);
+		// ② 期望保留区间 = 可见区间 ± 缓冲 ✓（缓冲随判定来源变：预算触发时更激进 ✓）
+		const rawFrom = Math.max(0, firstVisible - decision.keepBuffer);
+		const rawTo = Math.min(els.length - 1, lastVisible + decision.keepBuffer);
+		// ★★★ 2026-09-19 修「LLM 长时间执行中气泡 UI 突然消失」✗✗（用户报）：
+		// 复现链（代码 + 真机日志 ✓）：长执行期间用户**滚上去看历史**或**搜索跳到旧消息** ✓
+		// —— `dropdowns.ts:1155` 是「跳转完成后**立刻**裁剪」✓ —— 此时保留窗口只覆盖**视口中段** ✓
+		// ⇒ 尾部整条被 `el.remove()` ✗ ⇒ **正在执行的那条 assistant 气泡从 DOM 消失** ✓
+		// （数据 `_messages` 没丢 ✓，但不重渲染就回不来 ⇒ 用户看到的就是"气泡突然没了" ✓）。
+		// ⇒ 把「不得卸载」的尾部下标并进窗口 ✓（只扩大 ✓，见 `withProtectedRange` ✓）。
+		const protectIdx = this._protectedTailIndexes(els);
+		const win = withProtectedRange(rawFrom, rawTo, els.length, protectIdx);
+		const keepFrom = win.keepFrom;
+		const keepTo = win.keepTo;
+		if (keepFrom !== rawFrom || keepTo !== rawTo) {
+			// 只在**确实扩大**了窗口时留痕 ✓（下次日志里可直接核实保护是否生效 ✓）
+			this._logService.info(
+				`[AgentChatPanel] 裁剪窗口并入保护尾部：视口 ${rawFrom}..${rawTo} → ${keepFrom}..${keepTo}`
+				+ `（保护 idx=${protectIdx.join(',') || '-'}）⇒ 不卸载正在执行的气泡 ✓`,
+			);
+		}
 
 		const removeAbove = els.slice(0, keepFrom);
 		const removeBelow = els.slice(keepTo + 1);
-		if (removeAbove.length === 0 && removeBelow.length === 0) { return; }
+		if (removeAbove.length === 0 && removeBelow.length === 0) {
+			// 无可卸载（可视窗口本身已短）⇒ 若仍超预算，直接给出「单条密度」结论 ✓
+			this._reportDomDensityIfOverBudget();
+			return;
+		}
 
 		// ③ 卸载 + 补偿 scrollTop（上方被删 ⇒ 内容变短 ⇒ scrollTop 要同量减少 ✓）
 		const prevScrollHeight = container.scrollHeight;
@@ -1889,7 +1964,103 @@ protected _findMessageElementById(id: string): HTMLElement | null {
 			}
 		}
 
+		// ⑤ 裁剪后复核：仍超预算 ⇒ 说明「单条消息节点密度」是主因（留痕，供后续折叠立项）
+		this._reportDomDensityIfOverBudget();
 		this._scrollbar.refreshScrollMarkers();
+	}
+
+	/**
+	 * 页面总节点数（与 `AgentChatService` 的 MemSnap **同一口径** ⇒ 指标可比 ✓）。
+	 * ⚠ O(节点数)：只在裁剪与周期体检里调，别放进逐 delta 的热路径 ✗。
+	 */
+	protected _countDocumentNodes(): number {
+		try {
+			return this._container.ownerDocument.getElementsByTagName('*').length;
+		} catch {
+			return 0;
+		}
+	}
+
+	/** 裁剪后仍超预算 ⇒ 落一条**可见的**密度结论（`null` 时静默 ✓）。 */
+	private _reportDomDensityIfOverBudget(): void {
+		const note = describeDensityOverBudget(this._countDocumentNodes(), this._renderedMessageElements().length);
+		if (note) {
+			this._logService.warn(note);
+			// ★ 2026-09-19：光知道「≈5592 节点/条」无法行动 —— 必须点名**重在哪**。
+			this._logDensityBreakdown();
+		}
+	}
+
+	/**
+	 * 「单条消息太重」的**构成点名**（2026-09-19）。
+	 *
+	 * ## 为什么需要
+	 * 实测（12:57:59）裁剪到 11 条消息后仍 61.5k 节点（≈5592 节点/条），但**猜不出重在哪**：
+	 * 排查过程中已证伪两个想当然的假设 ✗ ——
+	 *   ① "大代码块的高亮 span"✗：`codeBlockRendererSync` 用的是 `codeEl.textContent = code`
+	 *      （**整块一个文本节点**，无 token span）⇒ 代码块大小与节点数无关 ✓；
+	 *   ② "工具卡的 markdown 结果"✗：同样走 `_renderMarkdownSafe`，无逐行建 DOM ✓。
+	 * ⇒ 只能**实测**：把 top-3 最重消息 + 各自内部 top-5 `tag.class` 打进日志。
+	 *
+	 * ## 代价与触发条件
+	 * O(渲染中节点数) 且只在**已超预算**时调用（罕见）⇒ 可接受；
+	 * 不在逐 delta 热路径上 ✓。
+	 */
+	private _logDensityBreakdown(): void {
+		try {
+			const rows = this._renderedMessageElements()
+				.map(el => ({ id: el.getAttribute('data-msg-id') ?? '?', nodes: el.getElementsByTagName('*').length + 1, el }))
+				.sort((a, b) => b.nodes - a.nodes)
+				.slice(0, 3);
+			const total = this._countDocumentNodes();
+			for (const row of rows) {
+				const byClass = new Map<string, number>();
+				for (const d of Array.from(row.el.getElementsByTagName('*'))) {
+					const cn = typeof d.className === 'string' ? d.className.split(' ')[0] : '';
+					const key = d.tagName.toLowerCase() + (cn ? '.' + cn : '');
+					byClass.set(key, (byClass.get(key) ?? 0) + 1);
+				}
+				const top = [...byClass.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
+					.map(([k, v]) => `${k}:${v}`).join(' , ');
+				this._logService.warn(
+					`[AgentChatPanel] 密度点名：msg=${row.id} 占 ${row.nodes} 节点（页面共 ${total}）；`
+					+ `内部 top：${top}`,
+				);
+			}
+		} catch (err) {
+			// 诊断绝不影响主流程
+			this._logService.warn('[AgentChatPanel] density breakdown failed:', err);
+		}
+	}
+
+	/**
+	 * ★ 2026-09-19：开启「DOM 节点预算」周期体检（流式期）。
+	 *
+	 * 必要性：裁剪只在「新增消息 / 懒加载插入 / 跳转」时被安排，而**冻结发生在流式过程中**
+	 * —— 每次 delta 全量重写气泡（实测 `content_replace/41ms`）时节点数持续爬升，
+	 * 上述触发点一次都不来 ⇒ 直到撞 12 万死亡区 ✗。本体检独立于触发点，早于死亡区动手。
+	 */
+	protected _ensureDomBudgetWatch(): void {
+		if (this._domBudgetWatchTimer !== null) { return; }
+		this._domBudgetWatchTimer = window.setInterval(() => {
+			if (!this._messagesContainer) { return; }
+			const nodes = this._countDocumentNodes();
+			if (nodes > DOM_TRIM_LIMITS.nodeBudget) {
+				this._logService.warn(
+					`[AgentChatPanel] DOM 体检：nodes=${nodes} > budget=${DOM_TRIM_LIMITS.nodeBudget}` +
+					`（phase=${this._streamPhase}）— 安排裁剪`,
+				);
+				this._scheduleTrimDistantMessages();
+			}
+		}, AgentChatPanelBase.DOM_BUDGET_CHECK_INTERVAL_MS);
+	}
+
+	/** 停止周期体检（空闲 / 销毁时 ✓ —— 别让一个 O(n) 计数在后台常驻空跑 ✗）。 */
+	protected _stopDomBudgetWatch(): void {
+		if (this._domBudgetWatchTimer !== null) {
+			clearInterval(this._domBudgetWatchTimer);
+			this._domBudgetWatchTimer = null;
+		}
 	}
 
 protected _schedulePostStreamScroll(): void {
@@ -1909,6 +2080,9 @@ protected _schedulePostStreamScroll(): void {
 
 setStreamPhase(phase: StreamPhase): void {
 		this._streamPhase = phase;
+		// ★ 2026-09-19：流式期开启「DOM 节点预算」周期体检（空闲即停 ⇒ 不让 O(节点数) 计数常驻空跑 ✓）。
+		// 冻结发生在流式过程中，而裁剪的原触发点（新增消息/懒加载/跳转）在那期间一次都不来 ⇒ 必须独立体检。
+		if (phase === 'idle') { this._stopDomBudgetWatch(); } else { this._ensureDomBudgetWatch(); }
 		// streamPhase 变化影响 context usage 计算（空闲/流式/真值 三层逻辑）
 		this._updateContextRing();
 	}
@@ -2328,7 +2502,7 @@ protected _openUserEditOverlay(msg: IAgentChatMessage): void  { throw new Error(
 
 protected _renderEditContextUsageRing(parent: HTMLElement): void  { throw new Error('[moved-to-feature] _renderEditContextUsageRing'); }
 
-protected async _copyToClipboard(text: string): Promise<boolean>  { throw new Error('[moved-to-feature] _copyToClipboard'); }
+protected async _copyToClipboard(text: string, attachments?: IChatAttachment[]): Promise<boolean>  { throw new Error('[moved-to-feature] _copyToClipboard'); }
 
 protected _cleanupMarkdownDisposables(root: HTMLElement): void  { throw new Error('[moved-to-feature] _cleanupMarkdownDisposables'); }
 
@@ -2658,6 +2832,8 @@ override dispose(): void {
 		this._loadingPillEl = null;
 		// 清理「处理中」已耗时刷新定时器，避免面板销毁后回调仍操作已移除的 DOM
 		if (this._processingElapsedTimer !== null) { clearInterval(this._processingElapsedTimer); this._processingElapsedTimer = null; }
+		// 清理「DOM 节点预算」周期体检（同上：销毁后不得再计数/排裁剪）
+		this._stopDomBudgetWatch();
 
 		// Dispose all markdown disposables to avoid leakage
 		for (const disposable of this._markdownDisposables.values()) {

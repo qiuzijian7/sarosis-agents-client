@@ -194,6 +194,35 @@ export class KbNativeKernel extends Disposable {
 		this._built = false;
 	}
 
+	/**
+	 * P1-5 选择性删除（对齐 LightRAG selective deletion）：文档/目录删除后
+	 * 即时从 FTS 与向量索引剔除，避免语义/全文检索命中幽灵文档。
+	 * 图谱与提及索引由 invalidate() 后的下次重建兜底（低频操作，不即时清理）。
+	 * @returns 移除的向量块数（FTS 删除无计数）。
+	 */
+	removeDocFromIndexes(uri: URI): { vectorRemoved: number } {
+		this._index.removeDoc(uri);
+		let vectorRemoved = this._vector.removeDoc(uri.toString());
+		vectorRemoved += this._vector.removeDocsUnder(uri.toString());
+		return { vectorRemoved };
+	}
+
+	/**
+	 * P1-4 隐式双链建议：向量相似但尚未建立 [[双链]]（出链/反链均无）的笔记。
+	 * 纯本地向量运算（不需 embedding provider）；索引未构建时返回 []。
+	 */
+	suggestLinks(docId: string, topK = 5, minScore = 0.72): IKbVectorSearchHit[] {
+		if (!this._built) { return []; }
+		const similar = this._vector.findSimilarDocs(docId, topK * 3, minScore);
+		if (similar.length === 0) { return []; }
+		const linked = new Set<string>();
+		for (const l of this._graph.outgoingLinks(docId)) {
+			if (l.targetUri) { linked.add(l.targetUri.toString()); }
+		}
+		for (const b of this._graph.backlinks(docId)) { linked.add(b.uri.toString()); }
+		return similar.filter(s => !linked.has(s.docId)).slice(0, topK);
+	}
+
 	/** Expose indexed docs from the FTS index (zero-copy from memory). */
 	allDocs(): { uri: URI; name: string; section: string; mtime: number; size: number; text: string }[] {
 		return this._index.allDocs();

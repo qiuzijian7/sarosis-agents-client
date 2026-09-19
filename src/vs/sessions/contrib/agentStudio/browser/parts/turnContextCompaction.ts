@@ -40,6 +40,8 @@
 
 import type { IAgentTurnRequest, IChatStreamDelta, IToolDefinition } from '../../common/providers.js';
 import type { AgentAction, AgentRunMessage, AgentRunState } from '../../common/agentRunState.js';
+import { asGenerator } from '../../common/turnEmit.js';
+import type { TurnEventSink } from '../../common/turnEmit.js';
 import { compactMessages, stripSyntheticSidecars } from '../../common/agentRunState.js';
 import { COMPRESSION_COOLDOWN_MS } from '../../common/turnLoopConstants.js';
 import { ContextManager } from '../../common/contextManager.js';
@@ -560,13 +562,26 @@ async function rebuildCheckpointIfExtreme(
 /**
  * 按需压缩本轮上下文。
  *
+ * ⚠ 形态说明（turnEmit 采用 — 首个样本）
+ * ────────────────────────────────────────────────────────────────────────────
+ * 本函数原为 `async function*`，体内 3 处裸 `yield` 直接发射 `IChatStreamDelta`。
+ * 现改为**回调解耦形态**：主体是普通 `async function`，事件经注入的 `emit`
+ * 发射 —— 与 pi 的 `runLoop(..., emit: AgentEventSink, ...) => Promise<void>`
+ * 同形（见 `common/turnEmit.ts` 头注释）。
+ *
+ * 收益：主体不再是生成器，可直接 `export` 单测并断言事件序列，无需驱动整条
+ * 主循环。既有调用方经下方 `compactContextIfNeeded` 的 `asGenerator` 包装
+ * 零改动 —— 事件保序与背压语义由 `asGenerator` 保证。
+ *
+ * @param emit 事件接收端。**必须 await**（背压依赖它，见 turnEmit 语义保证 2）。
  * @param force 溢出恢复专用 —— 绕过阈值/消息数/冷却/防抖判定强制压缩。
  */
-export async function* compactContextIfNeeded(
+export async function compactContextIfNeededImpl(
+	emit: TurnEventSink,
 	deps: IContextCompactionDeps,
 	state: IContextCompactionState,
 	force?: boolean,
-): AsyncGenerator<IChatStreamDelta> {
+): Promise<void> {
 	const { host, request, contextManager, compressionWindow } = deps;
 
 	// ── 压力与 KV 缓存状态（第 1-4 级共用）──
@@ -634,7 +649,7 @@ export async function* compactContextIfNeeded(
 		if (willCompress) {
 			enteredCompressingPhase = true;
 			state.dispatchRunState({ type: 'SET_PHASE', phase: 'compressing' });
-			yield { type: 'phase_change', phase: state.runState().phase };
+			await emit({ type: 'phase_change', phase: state.runState().phase } as IChatStreamDelta);
 		}
 
 		try {
@@ -760,7 +775,7 @@ export async function* compactContextIfNeeded(
 		await rebuildCheckpointIfExtreme(deps, state);
 
 		const afterText = formatMessagesSequential(state.messages());
-		yield {
+		await emit({
 			type: 'context_compacted',
 			compactedInputTokens: host._estimateMessagesTokens(state.messages()),
 			compressionOriginalCount: originalMessageCount,
@@ -770,7 +785,7 @@ export async function* compactContextIfNeeded(
 			compressionBeforeText: beforeText,
 			compressionAfterText: afterText,
 			compressionSummary: compressionResult.summary || '',
-		} as IChatStreamDelta;
+		} as IChatStreamDelta);
 
 		// ⚠ 行为等价性注记（期 2 迁出时发现的既有缺陷，**刻意保持原样**）：
 		//
@@ -784,8 +799,23 @@ export async function* compactContextIfNeeded(
 		// 独立变更，附带一条覆盖「进入 compressing 但未压缩」的回归测试。
 		if (enteredCompressingPhase) {
 			state.dispatchRunState({ type: 'SET_PHASE', phase: 'llm_streaming' });
-			yield { type: 'phase_change', phase: state.runState().phase };
+			await emit({ type: 'phase_change', phase: state.runState().phase } as IChatStreamDelta);
 		}
 	}
+}
+
+/**
+ * 既有调用方的零改动入口 —— 把上面回调解耦的主体适配回 `AsyncGenerator`。
+ *
+ * 事件保序/背压/返回值透传由 `asGenerator` 保证（见 `common/turnEmit.ts`）。
+ * 需要单测主体逻辑时，直接调 `compactContextIfNeededImpl` 并注入 mock emit，
+ * 断言事件序列即可 —— 不必经由本包装、更不必驱动主循环。
+ */
+export function compactContextIfNeeded(
+	deps: IContextCompactionDeps,
+	state: IContextCompactionState,
+	force?: boolean,
+): AsyncGenerator<IChatStreamDelta> {
+	return asGenerator<void>(emit => compactContextIfNeededImpl(emit, deps, state, force));
 }
 

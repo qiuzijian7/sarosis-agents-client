@@ -18,21 +18,15 @@ import { IKeybindingService } from '../../../../../platform/keybinding/common/ke
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import {
-	AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY,
-	AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL,
-	AGENT_STUDIO_PROVIDER_NOUS_API_KEY,
-	AGENT_STUDIO_PROVIDER_NOUS_BASE_URL,
-	AGENT_STUDIO_PROVIDER_GEMINI_API_KEY,
-	AGENT_STUDIO_PROVIDER_GEMINI_BASE_URL,
-	AGENT_STUDIO_PROVIDER_ANTHROPIC_API_KEY,
-	AGENT_STUDIO_PROVIDER_ANTHROPIC_BASE_URL,
-	AGENT_STUDIO_PROVIDER_MAIN_API_KEY,
-	AGENT_STUDIO_PROVIDER_MAIN_BASE_URL,
-	AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY,
-	AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL,
 	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
 	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
 } from '../../common/constants.js';
+// ★ 2026-09-19：provider 身份字段的**唯一来源**（补齐本批改动的最后一步）。
+// 背景：同一批改动已把身份目录抽到 `common/providerCatalog.ts`，并让 `PROVIDER_DEFINITIONS`
+// 从这里派生；但「删掉已迁移的 12 个 `AGENT_STUDIO_PROVIDER_*` 导入 + 补本导入」这一步
+// **从未执行**（发起它的会话在 iter=5 冻结，见 `_executeToolCalls: begin` 后无 `Executing tool`）
+// ⇒ 留下 TS6133 ×12 + TS2304（`BUILTIN_PROVIDER_IDENTITIES` 未定义）+ TS7006（连带隐式 any）。
+import { BUILTIN_PROVIDER_IDENTITIES } from '../../common/providerCatalog.js';
 
 // ─── Provider Definitions ────────────────────────────────────────────────────
 
@@ -48,74 +42,49 @@ export interface ProviderDefinition {
 	isBuiltin: boolean;
 }
 
-export const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
-	{
-		id: 'openrouter',
-		name: 'OpenRouter',
-		icon: 'OR',
-		iconColor: '#1E88E5',
-		apiKeySetting: AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY,
-		baseUrlSetting: AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL,
-		defaultBaseUrl: 'https://openrouter.ai/api/v1',
-		description: 'Access multiple AI models through OpenRouter',
+/**
+ * UI 侧专有的展示字段（图标 / 描述）。
+ *
+ * 身份字段（id / name / 配置键 / defaultBaseUrl）**不在此处**，一律从
+ * `common/providerCatalog.ts` 的 `BUILTIN_PROVIDER_IDENTITIES` 派生 —— 见
+ * {@link PROVIDER_DEFINITIONS} 下方的派生逻辑。这么做的原因：defaultBaseUrl
+ * 同时驱动设置页的连通性测试（本文件 :1230 / :1280），一旦与运行时注册表
+ * 漂移，就会出现「UI 测试报错、聊天实际可用」的错配。
+ */
+const PROVIDER_UI_METADATA: Record<string, { icon: string; iconColor: string; description: string }> = {
+	openrouter: { icon: 'OR', iconColor: '#1E88E5', description: 'Access multiple AI models through OpenRouter' },
+	nous: { icon: 'N', iconColor: '#FF6B6B', description: 'Nous AI platform' },
+	gemini: { icon: 'G', iconColor: '#8B5CF6', description: 'Google Gemini AI models' },
+	anthropic: { icon: 'A', iconColor: '#D97757', description: 'Anthropic Claude models' },
+	ollama: { icon: '🦙', iconColor: '#6B4F3D', description: 'Local AI models via Ollama' },
+	main: { icon: 'M', iconColor: '#10B981', description: 'Primary custom provider endpoint' },
+	custom: { icon: 'C', iconColor: '#6B7280', description: 'User-defined OpenAI / Anthropic compatible endpoint' },
+};
+
+/**
+ * 设置 UI 的 provider 列表 —— 由身份目录派生，不硬编码身份字段。
+ *
+ * 顺序、id、name、配置键、defaultBaseUrl 全部取自 `BUILTIN_PROVIDER_IDENTITIES`；
+ * 本文件只补 UI 专有的 icon / iconColor / description。
+ */
+export const PROVIDER_DEFINITIONS: ProviderDefinition[] = BUILTIN_PROVIDER_IDENTITIES.map(identity => {
+	const meta = PROVIDER_UI_METADATA[identity.id] ?? {
+		icon: identity.name.slice(0, 2).toUpperCase(),
+		iconColor: '#6B7280',
+		description: identity.name,
+	};
+	return {
+		id: identity.id,
+		name: identity.name,
+		icon: meta.icon,
+		iconColor: meta.iconColor,
+		apiKeySetting: identity.apiKeyConfigKey,
+		baseUrlSetting: identity.baseUrlConfigKey,
+		defaultBaseUrl: identity.defaultBaseUrl,
+		description: meta.description,
 		isBuiltin: true,
-	},
-	{
-		id: 'nous',
-		name: 'Nous',
-		icon: 'N',
-		iconColor: '#FF6B6B',
-		apiKeySetting: AGENT_STUDIO_PROVIDER_NOUS_API_KEY,
-		baseUrlSetting: AGENT_STUDIO_PROVIDER_NOUS_BASE_URL,
-		defaultBaseUrl: 'https://api.nous.com/v1',
-		description: 'Nous AI platform',
-		isBuiltin: true,
-	},
-	{
-		id: 'gemini',
-		name: 'Gemini',
-		icon: 'G',
-		iconColor: '#8B5CF6',
-		apiKeySetting: AGENT_STUDIO_PROVIDER_GEMINI_API_KEY,
-		baseUrlSetting: AGENT_STUDIO_PROVIDER_GEMINI_BASE_URL,
-		defaultBaseUrl: 'https://generativelanguage.googleapis.com',
-		description: 'Google Gemini AI models',
-		isBuiltin: true,
-	},
-	{
-		id: 'anthropic',
-		name: 'Anthropic',
-		icon: 'A',
-		iconColor: '#D97757',
-		apiKeySetting: AGENT_STUDIO_PROVIDER_ANTHROPIC_API_KEY,
-		baseUrlSetting: AGENT_STUDIO_PROVIDER_ANTHROPIC_BASE_URL,
-		defaultBaseUrl: 'https://api.anthropic.com',
-		description: 'Anthropic Claude models',
-		isBuiltin: true,
-	},
-	{
-		id: 'ollama',
-		name: 'Ollama',
-		icon: '🦙',
-		iconColor: '#6B4F3D',
-		apiKeySetting: AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY,
-		baseUrlSetting: AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL,
-		defaultBaseUrl: 'http://localhost:11434',
-		description: 'Local AI models via Ollama',
-		isBuiltin: true,
-	},
-	{
-		id: 'main',
-		name: 'Main',
-		icon: 'M',
-		iconColor: '#10B981',
-		apiKeySetting: AGENT_STUDIO_PROVIDER_MAIN_API_KEY,
-		baseUrlSetting: AGENT_STUDIO_PROVIDER_MAIN_BASE_URL,
-		defaultBaseUrl: '',
-		description: 'Primary custom provider endpoint',
-		isBuiltin: true,
-	},
-];
+	};
+});
 
 const AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING = 'sessions.agentStudio.provider.customProviders';
 

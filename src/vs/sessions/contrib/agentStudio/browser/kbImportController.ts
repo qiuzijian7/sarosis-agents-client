@@ -32,14 +32,20 @@ import { IKBSchema, loadKbSchema, buildSchemaPromptText, sanitizeKbTopic } from 
 import type { SchemaClassifyResult } from './knowledge/classifier.js';
 import { buildFileBlockPrompt, parseFileBlocks } from '../common/fileBlockParser.js';
 import { enrichWikilinks } from './knowledge/enrichWikilinks.js';
+import { KB_NOTE_FORMAT_RULES } from './knowledge/obsidianNoteFormat.js';
+import { summarizeCommunities } from './knowledge/communitySummaries.js';
+import { refreshTopicOverviews } from './knowledge/topicOverviews.js';
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
-/** Stage 2 系统提示词：让 LLM 按 FILE 块格式一次产出多个 Markdown 笔记，落入源文件所在目录。 */
+/**
+ * Stage 2 系统提示词：让 LLM 按 FILE 块格式一次产出多个 Markdown 笔记，落入源文件所在目录。
+ * 笔记格式约定（frontmatter/双链/callout）的唯一真源 = KB_NOTE_FORMAT_RULES
+ * （knowledge/obsidianNoteFormat.ts，与内置技能 obsidian-markdown 互为同步指针）。
+ */
 const STAGE2_SYSTEM = '你是一位笔记撰写助手。依据规划将素材落盘为结构化 Markdown 笔记。'
-	+ '每个文件必须包含 YAML frontmatter（type / title / created）。'
+	+ KB_NOTE_FORMAT_RULES
 	+ '使用 ---FILE: 相对路径 --- 语法一次产出多个文件，路径相对于源文件所在目录。'
-	+ '在相关笔记正文里，用 [[其他笔记的 title]] 语法引用本批次相关笔记，建立双链（关系图谱依赖这些链接）。'
 	+ '只输出 FILE 块，不要额外解释。';
 
 // ─── 主类 ────────────────────────────────────────────────────────────────────
@@ -345,7 +351,8 @@ export class KbImportController extends Disposable {
 			await KbImportController._injectSourcesIntoFiles(fileService, written, relFromLib);
 			// P2-2 确定性补链：对本次新写笔记扫描全库标题互链（零 LLM 成本），增强图谱连通性
 			await KbImportController._enrichNewNotes(fileService, libDir, written, logService);
-			await KbImportController.maintainKbNavigation(fileService, libDir);
+			// 传入 chatModel ⇒ insights.md 附带社区语义摘要（指纹缓存，失败回退纯列表）
+			await KbImportController.maintainKbNavigation(fileService, libDir, chatModel);
 			// P0-1 去抽象化门控：派生类笔记按 distinct sources 数决定 pending/active
 			const gate = await KbImportController.applyDeabstractionGating(fileService, libDir);
 			logService.info(`[KbImportController] de-abstraction gating: ${gate.active} active, ${gate.pending} pending`);
@@ -1030,13 +1037,17 @@ export class KbImportController extends Disposable {
 
 	// ─── 静态方法：导航维护 ──────────────────────────────────────────────────
 
-	/** 统一维护入口：index + overview + insights */
-	static async maintainKbNavigation(fileService: IFileService, notesDir: URI): Promise<void> {
+	/** 统一维护入口：index + overview + insights。传入 chatModel 时 insights 附带社区语义摘要 + 各目录 `.overview.md` 中间层。 */
+	static async maintainKbNavigation(fileService: IFileService, notesDir: URI, chatModel?: IChatModel): Promise<void> {
 		await Promise.all([
 			KbImportController.maintainKbIndex(fileService, notesDir),
 			KbImportController.maintainKbOverview(fileService, notesDir),
 		]);
-		await KbImportController.maintainKbInsights(fileService, notesDir);
+		await KbImportController.maintainKbInsights(fileService, notesDir, chatModel);
+		// P1-3 目录摘要中间层（仅构建路径传 chatModel 时；freshness ≥10% 才重算，内部不抛）
+		if (chatModel) {
+			await refreshTopicOverviews(fileService, notesDir, chatModel);
+		}
 	}
 
 	static async maintainKbIndex(fileService: IFileService, notesDir: URI): Promise<void> {
@@ -1110,7 +1121,7 @@ export class KbImportController extends Disposable {
 		await KbImportController._writeIfChanged(fileService, overviewUri, out.join('\n'));
 	}
 
-	static async maintainKbInsights(fileService: IFileService, notesDir: URI): Promise<void> {
+	static async maintainKbInsights(fileService: IFileService, notesDir: URI, chatModel?: IChatModel): Promise<void> {
 		const notes = await KbImportController._collectMdFiles(fileService, notesDir, KbImportController.SYS_INDEX_FILES);
 		if (notes.length === 0) {
 			const empty = [
@@ -1145,12 +1156,24 @@ export class KbImportController extends Disposable {
 
 		const communityResult = detectCommunities([...nodes], edges);
 		const communityEntries = [...communityResult.communities.entries()];
+
+		// P0-2 社区语义摘要（对齐 GraphRAG community reports）：仅当调用方提供 chatModel 时启用，
+		// 缓存按成员指纹命中，失败回退纯成员列表（summarizeCommunities 内部不抛）。
+		const summaries = await summarizeCommunities(
+			fileService,
+			notesDir,
+			communityEntries.map(([id, members]) => ({ id, members })),
+			chatModel,
+		);
+
 		const out: string[] = [
 			'# 知识图谱洞察', '',
 			`> ${notes.length} 篇笔记，${edges.length} 条链接，${communityEntries.length} 个社区。`, '',
 		];
 		for (const [cid, comNodes] of communityEntries) {
-			out.push(`## 社区 ${cid}（${comNodes.length} 节点）`);
+			const s = summaries.get(cid);
+			out.push(`## 社区 ${cid}（${comNodes.length} 节点）${s?.topic ? `：${s.topic}` : ''}`);
+			if (s?.summary) { out.push(`> ${s.summary.replace(/\n+/g, ' ')}`, ''); }
 			for (const nd of comNodes.slice(0, 20)) { out.push(`- [[${nd}]]`); }
 			if (comNodes.length > 20) { out.push(`- ... 还有 ${comNodes.length - 20} 个节点`); }
 			out.push('');

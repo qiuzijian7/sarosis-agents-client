@@ -714,6 +714,8 @@ export class AgentMemoryProviderV2 {
 	async diskSizeCleanup(agentId: string) { await this._ensureServer(); return fin.diskSizeCleanup(this._kv, agentId); }
 	imageQuotaCleanup(agentId: string) { return fin.imageQuotaCleanup(agentId); }
 	async smartSearch(agentId: string, query: string, limit?: number) { await this._ensureServer(); return fin.smartSearch(this._kv, agentId, query, limit); }
+	/** P2-4（2026-09-19）：smart-search + LLM 答案生成（检索 → 直接生成答案；未配 LLM 或无结果时返回 `{ skipped: true, reason }`）。 */
+	async smartSearchWithAnswer(agentId: string, query: string, limit?: number) { await this._ensureServer(); return fin.smartSearchWithAnswer(this._kv, agentId, query, limit); }
 	async recentSearchesAdd(agentId: string, query: string, resultCount: number) { await this._ensureServer(); return fin.recentSearchesAdd(this._kv, agentId, query, resultCount); }
 	async recentSearchesGet(agentId: string, limit?: number) { await this._ensureServer(); return fin.recentSearchesGet(this._kv, agentId, limit); }
 	/** mem::diagnostic::recent-searches-sweep：按窗口与上限修剪搜索历史 */

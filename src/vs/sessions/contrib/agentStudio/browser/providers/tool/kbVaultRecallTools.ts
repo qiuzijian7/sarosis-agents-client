@@ -227,4 +227,80 @@ export function registerKbVaultRecallTools(ctx: KbVaultRecallContext): void {
 			};
 		},
 	});
+
+	// P1-4 隐式双链建议：语义相似但尚未建立 [[双链]] 的笔记（纯本地向量运算）。
+	ctx.register({
+		definition: {
+			name: 'kb_suggest_links',
+			category: 'knowledge',
+			description:
+				'为指定笔记发现「语义相似但尚未建立 [[双链]]」的其他知识库笔记（隐式关联建议）。' +
+				'基于已构建的 RAG 向量索引做纯本地相似度计算，并自动排除已有出链/反链的笔记。' +
+				'适用于整理笔记、完善知识图谱连通性；需要先构建向量索引。',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					docUri: {
+						type: 'string',
+						description: '笔记的 URI（file://...，可由 kb_search 结果的 uri 字段获得）。',
+					},
+					limit: {
+						type: 'number',
+						description: `返回条数上限，默认 5，最大 ${MAX_LIMIT}。`,
+					},
+					minScore: {
+						type: 'number',
+						description: 'cosine 相似度阈值 [0,1]，默认 0.72；调高则更严格。',
+					},
+				},
+				required: ['docUri'],
+			},
+		},
+		handler: async (args) => {
+			const docUri = String(args?.docUri ?? '').trim();
+			if (!docUri) {
+				return text('kb_suggest_links 需要非空的 docUri 参数。');
+			}
+			if (!ctx.kernelService.hasActiveVault()) {
+				return text(
+					'当前没有已打开的知识库（Vault），无法生成建议。\n' +
+					'请先在侧边栏「知识库」视图中打开或创建一个知识库。'
+				);
+			}
+			const status = ctx.kernelService.getVectorStatus();
+			if (!status?.built) {
+				return text(
+					'向量索引尚未构建，无法生成隐式关联建议。\n' +
+					'请先在「知识库」视图中构建 RAG 向量索引，或使用 kb_search 做关键词检索。'
+				);
+			}
+			const limit = clampLimit(args?.limit ?? 5);
+			const minScore = typeof args?.minScore === 'number' && Number.isFinite(args.minScore)
+				? Math.min(Math.max(args.minScore, 0), 1)
+				: undefined;
+			try {
+				const hits = await ctx.kernelService.suggestLinks(docUri, limit, minScore);
+				if (!hits.length) {
+					return text(`未找到与「${docUri}」语义相似且尚未链接的笔记（可降低 minScore 重试）。`);
+				}
+				const lines: string[] = [`笔记「${docUri}」的隐式关联建议（语义相似但尚未建立双链），命中 ${hits.length} 条：`];
+				hits.forEach((h, i) => {
+					lines.push('');
+					lines.push(`${i + 1}. ${h.docName}  score=${h.score.toFixed(3)}`);
+					lines.push(`   uri: ${h.docId}`);
+					const snip = trimSnippet(h.text);
+					if (snip) { lines.push(`   ${snip}`); }
+				});
+				lines.push('');
+				lines.push('建议：在笔记正文中以 [[笔记名]] 形式补充双链，可增强知识图谱连通性。');
+				return {
+					content: text(lines.join('\n')),
+					details: { docUri, count: hits.length, hits },
+				};
+			} catch (err) {
+				ctx.logService.warn('[kb_suggest_links] failed', err);
+				return text('隐式关联建议生成失败，请稍后重试。');
+			}
+		},
+	});
 }

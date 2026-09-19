@@ -175,10 +175,16 @@ export class MainProcessModelProvider extends BuiltInBYOKModelProvider {
 			return;
 		}
 
-		const chatPath = this._definition.chatEndpointPath || 'chat/completions';
-		const url = `${baseUrl.replace(/\/+$/, '')}/${chatPath.replace(/^\/+/, '')}`;
-
-		const body = this._buildRequestBody(modelId, messages, options, context);
+		// 与直连路径共用同一构造器（此前 url 拼接 + body 构造在此另写一份）。
+		const built = this._requestBuilder().build({
+			modelId,
+			messages,
+			options,
+			context,
+			baseUrl,
+			chatEndpointPath: this._definition.chatEndpointPath,
+		});
+		const { url, body } = built;
 
 		const idHeaders: Record<string, string> = {};
 		if (context?.conversationId ?? context?.sessionId) {

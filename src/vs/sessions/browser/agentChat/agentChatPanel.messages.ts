@@ -1,6 +1,12 @@
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
+// ★ 2026-09-19：用量药丸（耗时 / tokens / 积分）统一走这一入口 —— 此前本文件**手搓 DOM** ✗，
+// 与委派卡的写法分叉（图标相同但类名/标签/冒号宽度不同 ✓）⇒ 用户报「各个位置图标不一致」✓
+import { appendFooterPill, formatCreditAmount, formatTokenCount, type FooterPillKind } from './agentChatPanel.footerPills.js';
 import { mainWindow } from '../../../base/browser/window.js';
-import { IAgentChatMessage, IToolCall, ITextMessagePart, IThinkingMessagePart, IMessagePart, IConfirmationData, CHAT_MODE_UI } from './agentChatTypes.js';
+import { IAgentChatMessage, IToolCall, ITextMessagePart, IThinkingMessagePart, IMessagePart, IConfirmationData, IChatAttachment, CHAT_MODE_UI } from './agentChatTypes.js';
+// ★ 2026-09-19：气泡「复制」需要写 composer 的**富剪贴板**格式（否则粘贴回来 pill 全丢 ✗）。
+//   格式定义在**轻量模块**里（不放 composer.ts：那边会拖进整个面板模块链 ✓）
+import { buildComposerClipboardFromMessage } from './agentChatPanel.composerClipboard.js';
 import { buildKeyedParts, lastTextPartKey, queryPartElements, PART_KEY_ATTR, IKeyedPart } from './agentChatPanel.keyedParts.js';
 import { AgentChatPanelDropdowns } from './agentChatPanel.dropdowns.js';
 import { filterChildSubAgents } from './subAgentCardUtils.js';
@@ -1934,8 +1940,6 @@ protected override _createMessageElement(msg: IAgentChatMessage): HTMLElement {
 				const contentEl = append(bubble, $('.message-content'));
 				this._renderUserContent(contentEl, msg.content);
 			}
-			// Hover action buttons: edit / copy / undo (Void-style, shown below-bubble on hover)
-			this._addMessageActionButtons(bubble, msg);
 		} else if (!isUser && msg.parts && msg.parts.length > 0) {
 			// 阶段E：有序 parts 是渲染唯一真相 —— 按数组顺序遍历，
 			// 文本段→markdown，工具段→工具卡。结构上不可能错位（取代 textPosition）。
@@ -1967,6 +1971,14 @@ protected override _createMessageElement(msg: IAgentChatMessage): HTMLElement {
 				console.info(`[PartsDiag] _createMessageElement → TOOL-CALLS-ONLY msgId=${msg.id} toolCalls=${msg.toolCalls.length} [${tcNames}]`);
 			}
 			this._appendToolCallsWithPhaseGroups(bubble, msg.toolCalls, msg.streamPhase);
+		}
+
+		// ★★ 2026-09-19（用户实测：「仅有代码片段」的用户气泡没有 编辑/复制/回撤 按钮 ✗✓）：
+		// 动作按钮此前挂在 `if (isUser && msg.content)` 分支**内** ⇒ 纯片段/纯图片消息
+		// （content 为空、只有 attachments ✓）**永远挂不上** ✗。⇒ 移出门控：
+		// **有文本或有附件**就挂 ✓（assistant 侧维持原状：仅回撤、且需 checkpoint ✓）。
+		if (isUser && (msg.content || (msg.attachments && msg.attachments.length > 0))) {
+			this._addMessageActionButtons(bubble, msg);
 		}
 
 	// Assistant hover actions: 仅「回撤改动」（checkpoint 存在时才创建容器，避免空 hover 目标）。
@@ -2204,25 +2216,28 @@ protected override _createFooter(msg: IAgentChatMessage): HTMLElement {
 		append(footer, $(".chat-bubble-footer-sep"));
 
 		// ── 积分（pill 样式，$ 图标 + 积分 + 数值）──
+		// ★ 2026-09-19：**本方法里的书写顺序不再决定显示顺序** ✓ —— 三者的先后由
+		// `footerPills.ts` 的 `PILL_ORDER`（耗时 → Tokens → 积分 ✓）统一决定，
+		// `appendFooterPill()` 会按它把药丸插到正确位置 ⇒ 各处顺序恒一致 ✓
+		//（用户要求「保证积分、tokens、耗时三个 UI 的顺序在各个位置保持不变」✓）。
+		// ⚠ 所以**不要**为了"看起来顺"而调整这里的调用顺序 ✗（改了也不影响结果 ✓），
+		//   要改顺序只改 `PILL_ORDER` 一处 ✓。
 		// 2026-07-27：即使 credit 为 0（网关未计费/免费额度）也展示占位，
 		// 不再要求 >0——避免用户误以为"没有显示"是 bug。
 		if (msg.tokenUsage?.credit !== undefined) {
-			const scoreWrap = append(footer, $("span.chat-bubble-footer-item.chat-footer-pill"));
-			// $ 图标（圆形 $）
-			append(scoreWrap, $('span.chat-footer-pill-icon.codicon.codicon-credit-card'));
-		append(scoreWrap, $('span.chat-footer-pill-label', undefined, '积分'));
-		append(scoreWrap, $('span.chat-footer-pill-value', undefined, `：${msg.tokenUsage.credit.toFixed(2)}`));
+			// ★ 2026-09-19：改走**唯一构建入口** `appendFooterPill()`（此前这里手搓 DOM ✗ ⇒ 与委派卡
+			// 的图标/类名/数字格式三处各自的写法分叉 ✓，用户报「各个位置图标不一致」✓）
+			appendFooterPill(footer, 'credit', formatCreditAmount(msg.tokenUsage.credit), { withLabel: true });
 		}
 
 		// ── Tokens（pill 样式 + tokens-popup 详情）──
 		if (msg.tokenUsage?.total !== undefined && msg.tokenUsage.total > 0) {
-			const tokenWrap = append(footer, $("span.chat-bubble-footer-item.chat-footer-pill.tokens-item"));
-			// clipboard 图标
-			append(tokenWrap, $('span.chat-footer-pill-icon.codicon.codicon-clippy'));
-			append(tokenWrap, $('span.chat-footer-pill-label', undefined, 'Tokens'));
-			append(tokenWrap, $('span.chat-footer-pill-value', undefined, `: ${msg.tokenUsage.total.toLocaleString()}`));
-			// 信息小图标，提示 hover 查看明细
-			append(tokenWrap, $('span.chat-footer-pill-info.codicon.codicon-info'));
+			// ★ 2026-09-19：同上，走唯一入口（`withInfoIcon` 负责 ⓘ ✓；返回值仍是 pill 本身 ⇒
+			// 下面的明细浮层照样挂在它内部 ✓）
+			const tokenWrap = appendFooterPill(footer, 'tokens', formatTokenCount(msg.tokenUsage.total), {
+				withLabel: true,
+				withInfoIcon: true,
+			});
 
 			// ── Token 消耗明细 Popup ──
 			const tu = msg.tokenUsage;
@@ -2324,10 +2339,8 @@ protected override _createFooter(msg: IAgentChatMessage): HTMLElement {
 			? (msg.metadata.durationMs as number)
 			: 0;
 		if (durMs > 0) {
-			const durWrap = append(footer, $("span.chat-bubble-footer-item.chat-footer-pill.duration-item"));
-			append(durWrap, $('span.chat-footer-pill-icon.codicon.codicon-watch'));
-			append(durWrap, $('span.chat-footer-pill-label', undefined, '耗时'));
-			append(durWrap, $('span.chat-footer-pill-value', undefined, `: ${this._formatDuration(durMs)}`));
+			// ★ 2026-09-19：同上，走唯一入口 ✓
+			appendFooterPill(footer, 'duration', this._formatDuration(durMs), { withLabel: true });
 		}
 
 		// ── 「已中断」标记（2026-09-06）──
@@ -2672,10 +2685,65 @@ protected _createProcessingIndicator(msg: IAgentChatMessage): HTMLElement | null
 		append(wrap, $('span.streaming-cursor'));
 	}
 	append(wrap, $('span.chat-footer-processing-spinner.loading-spinner'));
-	append(wrap, $('span.chat-footer-processing-label', undefined, '处理中'));
-	append(wrap, $('span.chat-footer-processing-elapsed',
-		undefined, this._formatProcessingElapsed(msg)));
+	// ★ 2026-09-19（用户要求「移除处理中文字」✓）：不再渲染「处理中」文字。
+	//   · 与 CSS 注释里的**既有设计**一致 ✓（`agentChat.css` 的 `.chat-footer-processing` 段：
+	//     "内部改为 spinner + 三个 .chat-footer-pill.live"、"去掉「处理中」文字后唯一的
+	//     进行中视觉信号来自 live 态" ✓）—— 即：**spinner + 蓝色描边/呼吸的 live 药丸**本身
+	//     就表达了"进行中"，再写一遍文字是冗余 ✓；
+	//   · 原类 `.chat-footer-processing-label` **全仓仅此一处使用、且没有任何 CSS 规则** ✗
+	//     ⇒ 删除后不留死样式 ✓（已确认无其它引用 ✓）。
+	// ★ 处理中期间同时给出**耗时 / tokens / 积分**三项，且与完成态**同一构建入口**
+	//（`appendFooterPill` ✓）⇒ 图标、类名、数字格式在聊天框各处一致 ✓✓
+	this._syncProcessingUsagePills(wrap, msg);
 	return wrap;
+}
+
+/**
+ * ★ 2026-09-19：幂等同步「处理中」的三项用量药丸（**耗时 / tokens / 积分**）。
+ *
+ * 为什么是「同步」而不是「创建」：
+ *   · 耗时**每秒都在变** ⇒ 由 ticker 复用本方法刷新 ✓（纯文本赋值，不重建 DOM ✓）；
+ *   · tokens / 积分是**流式陆续到达**的（首个 usage delta 之前根本没有数据 ✓）⇒ 数据一到就补建 ✓；
+ *     否则用户会看到"处理中先只有耗时，跑一会儿才冒出 tokens"的漂移 ✗；
+ *   · 处理中容器本身可能被移除重建（`_ensurePhaseIndicator` ✓）⇒ 幂等、可重复调用 ✓。
+ *
+ * 与**完成态**共用 `appendFooterPill()` ✓ ⇒ 图标（watch / clippy / credit-card）、类名、数字格式
+ * 三处**同源** ✓（用户报「各个位置的积分、tokens、耗时图标不一致」✓）。
+ * `live: true` 给出"进行中"信号：**灰阶加深一档 + 图标呼吸** ✓
+ * （★ 2026-09-19：原为"蓝色描边"，用户要求三药丸统一**黑白灰** ⇒ 已改为灰阶，见
+ * `agentChat.css` 的 `.chat-footer-pill.live` ✓；真正的进行中主信号是左侧 spinner ✓）。
+ */
+protected _syncProcessingUsagePills(wrap: HTMLElement, msg: IAgentChatMessage): void {
+	// ① 耗时（恒有 ✓）
+	this._upsertProcessingPill(wrap, 'duration', 'chat-footer-processing-elapsed', this._formatProcessingElapsed(msg));
+	// ② tokens（有数据才显示 ✓）
+	const tu = msg.tokenUsage;
+	const tokens = tu?.total !== undefined && tu.total > 0 ? tu.total : undefined;
+	if (tokens !== undefined) {
+		this._upsertProcessingPill(wrap, 'tokens', 'chat-footer-processing-tokens', formatTokenCount(tokens));
+	}
+	// ③ 积分（有数据才显示 ✓）
+	// ⚠ 主消息的积分只在 `tokenUsage.credit` 上（`creditUsed` 是 **ISubAgentData** 的字段 ✗，
+	//   两者属不同链路，不可混用 —— 委派卡那侧才读 `sa.creditUsed` ✓）
+	const credit = tu?.credit;
+	if (typeof credit === 'number') {
+		this._upsertProcessingPill(wrap, 'credit', 'chat-footer-processing-credit', formatCreditAmount(credit));
+	}
+}
+
+/**
+ * 处理中药丸的「有则更新、无则追加」。
+ *
+ * 定位用 `.chat-footer-pill-value.<valueClass>`（`valueClass` 是稳定的抗抖动类名 ✓，
+ * 见 `footerPills.ts` 的约定第 3 条）；更新只做 `textContent` 赋值 ⇒ 不重建 DOM、不打断动画 ✓。
+ */
+private _upsertProcessingPill(wrap: HTMLElement, kind: FooterPillKind, valueClass: string, text: string): void {
+	const existing = wrap.querySelector(`.chat-footer-pill-value.${valueClass}`) as HTMLElement | null;
+	if (existing) {
+		if (existing.textContent !== text) { existing.textContent = text; }
+		return;
+	}
+	appendFooterPill(wrap, kind, text, { valueClass, live: true });
 }
 
 /** 幂等同步「处理中」指示到占位区：存在则跳过（零 DOM 写入），缺失则补建。
@@ -2754,10 +2822,12 @@ protected _tickProcessingElapsed(): void {
 	// 残留 pill 排在 DOM 前面），会把【旧 pill 刷成新消息的耗时】（日志 1788354663563
 	// 中残留 pill 显示「8ms」正是该错配）。限定在 last 自己的消息元素内查询后，
 	// 即使出现残留 pill 也不会被错误刷新（显示陈旧值反而便于发现问题）。
-	const el = this._findMessageElementById(last.id)
-		?.querySelector('.chat-footer-processing-elapsed') as HTMLElement | null;
-	if (!el) { return; }
-	el.textContent = this._formatProcessingElapsed(last);
+	const msgEl = this._findMessageElementById(last.id);
+	// ★ 2026-09-19：改为在**处理中容器**内同步**全部三项**（耗时 / tokens / 积分）✓
+	// —— 耗时每秒刷新 ✓，tokens/积分到达后**补建** ✓（此前只刷耗时 ⇒ 另两项要等整条重建才出现 ✗）
+	const wrap = msgEl?.querySelector('.chat-footer-processing') as HTMLElement | null;
+	if (!wrap) { return; }
+	this._syncProcessingUsagePills(wrap, last);
 }
 
 protected override _toggleNodeCollapse(
@@ -2804,7 +2874,8 @@ protected override _addMessageActionButtons(container: HTMLElement, msg: IAgentC
 			copyBtn.appendChild(copySvg);
 			this._register(addDisposableListener(copyBtn, EventType.CLICK, async (e) => {
 				e.stopPropagation();
-				const ok = await this._copyToClipboard(msg.content);
+				// ★ 2026-09-19：把该消息的**附件一起写进剪贴板** ✓（否则粘贴回来 pill 全丢 ✗）
+				const ok = await this._copyToClipboard(msg.content, msg.attachments);
 				if (ok) {
 					// 替换为对号图标
 					copyBtn.removeChild(copySvg);
@@ -3186,9 +3257,29 @@ protected override _renderEditContextUsageRing(parent: HTMLElement): void {
 		ringEl.appendChild(svg);
 	}
 
-protected override async _copyToClipboard(text: string): Promise<boolean> {
-		// Try modern Clipboard API first
-		if (navigator.clipboard?.writeText) {
+protected override async _copyToClipboard(text: string, attachments?: IChatAttachment[]): Promise<boolean> {
+	// ★★ 2026-09-19（用户报「用户气泡点复制 → 粘贴到输入框，图片等 pill 丢失」✓）：
+	//   带附件时**必须**连自定义 MIME 一起写 ✓ —— 输入框的粘贴分支优先读它并重建 chip ✓
+	//  （见 composer 的 `_restoreComposerPaste` ✓），只写纯文本就必然丢 pill ✗。
+	//   ⚠ 自定义 MIME 无法经 `navigator.clipboard.writeText` 写入 ✗ ⇒ 用「临时 copy 事件 +
+	//     `execCommand('copy')`」同步写（与 composer 内部复制同一手法 ✓，是写任意 MIME 的唯一可靠方式 ✓）。
+	if (attachments && attachments.length > 0) {
+		try {
+			const payload = buildComposerClipboardFromMessage(text, attachments);
+			const doc = this._ownerDocument;
+			const onCopy = (ce: ClipboardEvent) => {
+				ce.clipboardData?.setData('text/plain', payload.text);
+				ce.clipboardData?.setData(payload.mime, payload.json);
+				ce.preventDefault();
+			};
+			doc.addEventListener('copy', onCopy as EventListener, true);
+			const ok = doc.execCommand('copy');
+			doc.removeEventListener('copy', onCopy as EventListener, true);
+			if (ok) { return true; }
+		} catch { /* 任一步失败 ⇒ 退回下面的纯文本路径 ✓ */ }
+	}
+	// Try modern Clipboard API first
+	if (navigator.clipboard?.writeText) {
 			try {
 				await navigator.clipboard.writeText(text);
 				return true;

@@ -10,6 +10,14 @@
  *    （dev 的记忆读写落进生产库）。现规则：**安装版 3111 / dev 3112**。
  *    ⚠ 本文件的端口规则必须与主进程 `CodeApplication._resolveAgentMemoryPort()` **保持一致**；
  *      主进程是唯一真源，两个工程的代码无法共享 ⇒ 改一处必须改另一处。
+ *
+ *  ★ 渲染侧怎么知道自己是哪个端口（2026-09-19 真机实测后定为 dataDir 认领）：
+ *    渲染进程里**没有 `process`**（CDP 实测 `hasProcess:false`）⇒ 主进程写在
+ *    `process.env.AGENTMEMORY_URL` 的端口**读不到**；`env['VSCODE_DEV']` 同理读不到，
+ *    依赖它的推导分支也是死的。因此由宿主（`agentStudio.contribution.ts` 的
+ *    `_injectAgentMemoryEndpoint()`）探测 `/health` 的 `dataDir`，与**本窗口 userDataPath**
+ *    比对后写 `globalThis.__SAROS_AGENTMEMORY_URL__`；属于其他数据目录的地址写进
+ *    `globalThis.__SAROS_AGENTMEMORY_FOREIGN__`，本文件把它们**从候选中剔除**。
  *--------------------------------------------------------------------------------------------*/
 
 const DEFAULT_HTTP_URL = 'http://127.0.0.1:3111';
@@ -29,15 +37,34 @@ export function setResolvedServerBase(url: string): void {
 }
 
 /**
+ * 宿主注入的网关地址（见文件头「渲染侧怎么知道自己是哪个端口」）。
+ * 这是渲染侧**唯一**能真正拿到端口的通道，故优先级仅次于"实测探测锁定"。
+ */
+function hostInjectedUrl(): string | null {
+	const v = (globalThis as { __SAROS_AGENTMEMORY_URL__?: unknown }).__SAROS_AGENTMEMORY_URL__;
+	return typeof v === 'string' && v.length > 0 ? v.replace(/\/+$/, '') : null;
+}
+
+/** 宿主探到的「属于其他数据目录」的地址：本窗口必须**排除**，否则会读写到另一形态的库。 */
+function hostForeignBases(): Set<string> {
+	const v = (globalThis as { __SAROS_AGENTMEMORY_FOREIGN__?: unknown }).__SAROS_AGENTMEMORY_FOREIGN__;
+	const list = Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+	return new Set(list.map(x => x.replace(/\/+$/, '')));
+}
+
+/**
  * HTTP KV server 地址。优先级：
  *   ⓪ 实测探测锁定的地址（最强证据）
- *   ① `AGENTMEMORY_URL` —— 主进程注入（`electron-main/app.ts` 的 `_initAgentMemoryEndpoint()`
- *      在**窗口创建前**写 `process.env`，渲染进程继承；读不到时自动落下一级）
- *   ② 按 `VSCODE_DEV` 自行推导（与主进程 `isBuilt` 同源）
- *   ③ 3111（安装版默认）
+ *   ① 宿主按 dataDir 认领后注入的地址（`__SAROS_AGENTMEMORY_URL__`）—— 渲染侧的正常路径
+ *   ② `AGENTMEMORY_URL`（`process.env`；渲染进程通常没有 `process` ⇒ 实际很少命中，
+ *      保留以兼容扩展宿主/Node 等有 `process` 的环境，以及测试）
+ *   ③ 按 `VSCODE_DEV` 推导（同上，渲染侧一般读不到）
+ *   ④ 3111（安装版默认）
  */
 export function serverBase(): string {
 	if (_resolvedBase) return _resolvedBase;
+	const host = hostInjectedUrl();
+	if (host) return host;
 	const env = (globalThis as { process?: { env?: Record<string, string> } })?.process?.env;
 	const envUrl = env?.['AGENTMEMORY_URL'];
 	if (typeof envUrl === 'string' && envUrl.length > 0) return envUrl.replace(/\/+$/, '');
@@ -48,16 +75,25 @@ export function serverBase(): string {
 /**
  * 候选基址（按可信度排序，已去重）：供探测失败时逐个尝试。
  *
- * ⚠ **显式配置时只返回它自己**：`AGENTMEMORY_URL` 一旦被设置（主进程注入，或测试/用户指定），
- * 说明地址是明确给定的 ⇒ 绝不再去猜别的端口 —— 否则会连到**另一个形态**的网关
- * （dev 窗口连上安装版的库 = 跨环境串味，正是端口隔离要解决的问题）。
- * 只有在「没有任何显式配置」时才用推导值 + 另一个端口兜底。
+ * ⚠ **一旦地址被"明确给定"就只返回它自己**，绝不再猜别的端口 —— 否则会连到
+ * **另一个形态**的网关（dev 连上安装版的库 = 跨环境串味，正是端口隔离要解决的问题）。
+ * "明确给定"的两种情形：
+ *   ① 宿主按 dataDir 认领成功（`__SAROS_AGENTMEMORY_URL__`）；
+ *   ② `AGENTMEMORY_URL` 被显式设置（测试/用户指定）。
+ * 只有在「毫无信息」时才退回"推导值 + 另一端口"兜底，且**剔除已确认属于其他数据目录的地址**
+ * （宿主在认领失败时仍会留下 `__SAROS_AGENTMEMORY_FOREIGN__` —— 例如本窗口网关还在启动，
+ *  而安装版的网关已在 3111 监听，此时宁可探测失败也**不能**去连 3111）。
  */
 export function serverBaseCandidates(): string[] {
+	const host = hostInjectedUrl();
+	if (host) return [host];
 	const env = (globalThis as { process?: { env?: Record<string, string> } })?.process?.env;
 	const explicit = env?.['AGENTMEMORY_URL'];
 	if (typeof explicit === 'string' && explicit.length > 0) return [explicit.replace(/\/+$/, '')];
-	return [...new Set([serverBase(), DEV_HTTP_URL, DEFAULT_HTTP_URL])];
+	const foreign = hostForeignBases();
+	const list = [...new Set([serverBase(), DEV_HTTP_URL, DEFAULT_HTTP_URL])].filter(u => !foreign.has(u));
+	// 极端情况（两个端口都被判为异己）⇒ 至少留一个探测目标，否则扩展会永久 fast-fail。
+	return list.length > 0 ? list : [serverBase()];
 }
 
 /**

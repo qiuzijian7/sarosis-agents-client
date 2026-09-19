@@ -322,6 +322,55 @@ export class KbVectorIndex {
 		return hits.slice(0, topK);
 	}
 
+	/**
+	 * P1-4 隐式关联发现：基于已存向量找与指定文档语义相似的其他文档。
+	 * 文档级得分 = 双方块两两 cosine 的 max（任一块高度相似即视为相关）。
+	 * 纯本地向量运算（不需要 embedding provider）；未构建 / 该文档无块时返回 []。
+	 */
+	findSimilarDocs(docId: string, topK = 5, minScore = 0.72): IKbVectorSearchHit[] {
+		if (!this._built || this._chunks.length === 0) { return []; }
+		const srcChunks = this._chunks.filter(c => c.docId === docId);
+		if (srcChunks.length === 0) { return []; }
+		const best = new Map<string, IKbVectorSearchHit>();
+		for (const c of this._chunks) {
+			if (c.docId === docId) { continue; }
+			let score = 0;
+			for (const s of srcChunks) {
+				if (s.vector.length !== c.vector.length) { continue; }
+				const sim = cosineSimilarity(s.vector, c.vector);
+				if (sim > score) { score = sim; }
+			}
+			if (score < minScore) { continue; }
+			const prev = best.get(c.docId);
+			if (!prev || score > prev.score) {
+				best.set(c.docId, { chunkId: c.id, docId: c.docId, docName: c.docName, section: c.section, text: c.text, score });
+			}
+		}
+		return [...best.values()].sort((a, b) => b.score - a.score).slice(0, topK);
+	}
+
+	// -----------------------------------------------------------------------
+	// 选择性删除（P1-5，对齐 LightRAG selective deletion）
+	// -----------------------------------------------------------------------
+
+	/** 移除指定文档的全部向量块与元信息。返回移除的块数。 */
+	removeDoc(docId: string): number {
+		const before = this._chunks.length;
+		this._removeDocChunks(docId);
+		return before - this._chunks.length;
+	}
+
+	/** 移除 docId 以指定 URI 前缀（目录）开头的全部文档块。返回移除的块数。 */
+	removeDocsUnder(dirUriPrefix: string): number {
+		const prefix = dirUriPrefix.endsWith('/') ? dirUriPrefix : dirUriPrefix + '/';
+		const before = this._chunks.length;
+		this._chunks = this._chunks.filter(c => !c.docId.startsWith(prefix));
+		for (const id of [...this._docMeta.keys()]) {
+			if (id.startsWith(prefix)) { this._docMeta.delete(id); }
+		}
+		return before - this._chunks.length;
+	}
+
 	// -----------------------------------------------------------------------
 	// 持久化 / 导入导出（.kbrag.json）
 	// -----------------------------------------------------------------------

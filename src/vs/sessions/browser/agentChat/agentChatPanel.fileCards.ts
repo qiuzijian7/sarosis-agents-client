@@ -7,6 +7,63 @@ import { createSvgIcon, FILE_ICON_D, ERROR_ICON_D } from './agentChatPanel.toolC
 import { parseToolArgsLoose } from './toolArgsJson.js';
 import { IDisposable } from '../../../base/common/lifecycle.js';
 import { onTerminalLiveOutput, getTerminalLiveOutput, clearTerminalLiveOutput } from './terminalLiveOutput.js';
+import { LINE_FOLD_LIMITS, planLineFold, planNextChunk } from './lineFoldPlan.js';
+
+/**
+ * 渲染一组「逐行输出」（终端 stdout / stderr ✓）：**首尾保留 + 中间逐批展开** ✓。
+ *
+ * ★ 2026-09-19（DOM 预算取证 ✓）：每行 3 个节点（行 / 前缀 / 文本 ✓），真机单条输出 264~422 行 ✗
+ * ⇒ 单卡上千节点 ✓，多条累积到「页面 **10.6 万**节点」⇒ 触发窗口裁剪、布局变慢 ✓
+ * （日志：`DOM 预算超限 ⇒ 提前裁剪：nodes=106324 > 40000` ✓）。
+ * 阈值与展开策略见 `lineFoldPlan.ts` ✓（≤160 行完全无感 ✓；超长时开头=命令概览、结尾=成败结论 ✓）。
+ *
+ * 放在**模块级**（而非类方法 ✓）的理由：便于单测用源码断言钉住 ✓，且不依赖面板实例 ✓。
+ * `register` 由调用方传 `d => this._register(d)`（登记逐批展开按钮的监听 ✓）。
+ */
+export function renderFoldedOutputLines(
+	host: HTMLElement,
+	lines: readonly string[],
+	prefix: string,
+	klass: string,
+	register: (disposable: IDisposable) => void,
+): void {
+	const makeRow = (parent: HTMLElement, text: string): HTMLElement => {
+		const row = append(parent, $('div.terminal-output-line.' + klass));
+		append(row, $('span.terminal-output-prefix')).textContent = prefix;
+		append(row, $('span.terminal-output-text')).textContent = text.length > 0 ? text : '\u00A0';
+		return row;
+	};
+	const plan = planLineFold(lines.length);
+	if (!plan.folded) {
+		for (const l of lines) { makeRow(host, l); }
+		return;
+	}
+	// ① 头部（命令概览 / 文件头 ✓）
+	for (let i = 0; i < plan.headEnd; i++) { makeRow(host, lines[i]); }
+	// ② 中间区（**未渲染**）：先放"展开入口"，后续批次插到它**之前** ⇒ 顺序与原文一致 ✓
+	const mid = append(host, $('div.terminal-output-mid'));
+	const foldRow = append(mid, $('div.terminal-output-fold')) as HTMLElement;
+	let hiddenFrom = plan.headEnd;
+	const hiddenTo = plan.tailStart;
+	const updateFold = (): void => {
+		const remain = hiddenTo - hiddenFrom;
+		if (remain <= 0) { foldRow.remove(); return; }	// 全部展开 ⇒ 撤掉入口 ✓
+		foldRow.textContent = `… 中间还有 ${remain} 行，点击展开下一批（每次 ${Math.min(remain, LINE_FOLD_LIMITS.chunk)} 行）`;
+	};
+	updateFold();
+	register(addDisposableListener(foldRow, EventType.CLICK, (e) => {
+		e.stopPropagation();
+		// 逐批展开：DOM 只随**用户点击**增长 ✓（刻意不做"一次全展开"✗ —— 那等于把问题搬回来 ✓）
+		const next = planNextChunk(hiddenFrom, hiddenTo);
+		for (let i = next.start; i < next.end; i++) {
+			mid.insertBefore(makeRow(mid, lines[i]), foldRow);
+		}
+		hiddenFrom = next.end;
+		updateFold();
+	}));
+	// ③ 尾部（成败结论 / diff 尾部 ✓）
+	for (let i = plan.tailStart; i < lines.length; i++) { makeRow(host, lines[i]); }
+}
 
 /**
  * 拆分 shell 命令的提示符前缀，用于终端卡片的命令行高亮显示。
@@ -133,9 +190,19 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 		//   按钮侧 `flex:0 0 auto; nowrap`（永不收缩）⇒ 同行但互不侵占 ✓
 		//   （曾因此把两者改成两行，见 agentChat.css `.write-file-header` 的注释。）
 		const right = append(headerEl, $('.tool-header-right'));
-		// 查看文件按钮（始终显示）
+		// ★★ 2026-09-19（用户报「文本允许占满 title，按钮不挤占文本空间」）：
+		//   下面两个按钮是 **hover 才显形** 的（`opacity: 0` ✓），但它们此前是
+		//   `.tool-header-right` 的**流内子元素** ✗，而该容器是 `flex: 0 0 auto` ⇒
+		//   **不 hover 时也一直占着约 170px** ✗✗（看不见、却实打实地把标题挤窄 ✓）——
+		//   正是用户两张截图的差异来源 ✓（② 右侧一大段空白 + 标题被截 ✓）。
+		//   现改为挂到 `headerEl` 下的**绝对定位容器** ✓ ⇒ 它们**完全不参与宽度分配**，
+		//   标题可一路占满到「始终可见」的折叠按钮之前 ✓✓；hover 时按钮浮在标题尾部
+		//   （CSS 给它们不透明底避免糊字 ✓，并且**只在 hover 时接收点击** ✓）。
+		//   ⚠ 已确认全仓没有代码按选择器查找这两个按钮 ✓（只通过这里返回的引用使用 ✓）
+		const hoverActions = append(headerEl, $('span.write-file-hover-actions'));
+		// 查看文件按钮（hover 显形）
 		if (this._onOpenFile && filePath && !isRunning) {
-			const viewLink = append(right, $('button.tool-view-file-link'));
+			const viewLink = append(hoverActions, $('button.tool-view-file-link'));
 			viewLink.textContent = '查看文件';
 			viewLink.title = `在编辑器中打开 ${filePath}`;
 			this._register(addDisposableListener(viewLink, EventType.CLICK, (e) => {
@@ -146,7 +213,7 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 		// 「导入知识库」按钮：自动执行(入口落盘到库)+抽取(构建笔记)
 		if (this._onImportFileToKnowledgeBase && filePath && !isRunning) {
 			const kbImported = !!tc.id && this._importedKbFileToolIds.has(tc.id);
-			const kbBtn = append(right, $('button.tool-import-kb-link')) as HTMLButtonElement;
+			const kbBtn = append(hoverActions, $('button.tool-import-kb-link')) as HTMLButtonElement;
 			kbBtn.textContent = kbImported ? '已导入知识库' : '导入知识库';
 			kbBtn.title = kbImported ? '已导入知识库' : `将 ${filePath} 导入知识库（入口+抽取）`;
 			if (kbImported) { kbBtn.classList.add('tool-import-kb-done'); kbBtn.disabled = true; }
@@ -174,6 +241,13 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 			}));
 		}
 
+			// ★★★ 2026-09-19（DOM 预算取证 ✓）：正文**延后构建** —— 本卡**默认折叠** ✓（见下方 `expanded` ✓），
+			// 但原实现**无条件**逐行建 diff DOM（行 + marker + content ✓）⇒ 折叠着也吃几百节点 ✗
+			// （真机密度点名：`div.write-file-diff-line:166` + `span.write-file-diff-marker:166` ✓）。
+			// 做法：折叠态把内容建在**游离容器**里（不在 document 中 ⇒ 不计入页面节点、不参与布局 ✓），
+			// 首次展开时**整体搬进** `innerBox` ⇒ 最终 DOM 与"直接构建"**逐字节一致** ✓（无额外包裹层 ✓）。
+			let renderBodyOnce: (() => void) | undefined;
+
 			// 展开/折叠 toggle 按钮（chevron-down SVG，旋转 180° 表示展开态）
 			const collapseBtn = append(right, $('button.tool-collapse-btn')) as HTMLButtonElement;
 			collapseBtn.title = '展开/折叠';
@@ -185,6 +259,8 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 					this._toolCallExpandState.set(tc.id, true);
 					chevron.classList.add('tool-header-chevron-expanded');
 					collapseBtn.classList.add('tool-collapse-expanded');
+					renderBodyOnce?.();		// ★ 首次展开 ⇒ 此刻才把正文搬进 DOM ✓
+					renderBodyOnce = undefined;
 				} else {
 					this._toolCallExpandState.set(tc.id, false);
 					chevron.classList.remove('tool-header-chevron-expanded');
@@ -229,7 +305,10 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 					collapseBtn.classList.add('tool-collapse-expanded');
 				}
 			} else if (tc.result) {
-				const diffBlock = append(innerBox, $('.write-file-diff-block'));
+				// ★ 折叠态 ⇒ 先建在**游离容器**（不进 document ✓）；展开态 ⇒ 直接进 innerBox ✓
+				const deferred = expanded ? undefined : body.ownerDocument.createElement('div');
+				const hostBox = deferred ?? innerBox;
+				const diffBlock = append(hostBox, $('.write-file-diff-block'));
 				if (diffStats.lines && diffStats.lines.length > 0) {
 					// 大文件封顶：只渲染前 MAX_DIFF_LINES 行，避免一次性构建上万 DOM 节点卡住主线程。
 					// 完整内容通过右上角「查看文件」在编辑器中打开。
@@ -250,6 +329,12 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 					// 退化为纯文本预览
 					const pre = append(diffBlock, $('.write-file-diff-content'));
 					pre.textContent = this._normalizeToolResultText(tc.result);
+				}
+				if (deferred) {
+					// 首次展开：把游离内容**整体搬进** innerBox（顺序与直接构建完全一致 ✓）
+					renderBodyOnce = () => {
+						while (deferred.firstChild) { innerBox.appendChild(deferred.firstChild); }
+					};
 				}
 			}
 
@@ -608,6 +693,13 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 					: (isRunning ? '执行中…' : '（无命令）');
 			}
 
+			// ★★★ 2026-09-19（DOM 预算取证 ✓）：正文**延后构建** —— 本卡执行完**默认折叠** ✓
+			// （`expanded = userChoice ?? (isRunning && !tc.result)` ✓），但原实现**无条件**把输出
+			// 每行建成 3 个节点 ✗（真机单条 264~422 行 ⇒ 折叠着也吃 ~1200 节点 ✓）= 「页面 10.6 万
+			// 节点」的主要来源 ✓。⇒ 折叠态建在**游离容器**（不进 document ⇒ 不计页面节点/不布局 ✓），
+			// 首次展开时整体搬进 `innerBox` ⇒ 最终 DOM 与原来**逐字节一致** ✓。
+			let renderBodyOnce: (() => void) | undefined;
+
 			// 点击标题区域（chevron + 两行文本）展开/折叠，但不拦截内部按钮点击
 			this._register(addDisposableListener(titleContainer, EventType.CLICK, (e) => {
 				if ((e.target as HTMLElement)?.closest?.('button')) { return; }
@@ -616,6 +708,8 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				if (isExpanded) {
 					this._toolCallExpandState.set(tc.id, true);
 					chevron.classList.add('tool-header-chevron-expanded');
+					renderBodyOnce?.();		// ★ 首次展开 ⇒ 此刻才把正文搬进 DOM ✓
+					renderBodyOnce = undefined;
 				} else {
 					this._toolCallExpandState.set(tc.id, false);
 					chevron.classList.remove('tool-header-chevron-expanded');
@@ -737,7 +831,10 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				// ★ 2026-08-21 重构：每行加 `> ` 前缀（等宽字体 + 缩进），对齐截图样式。
 				// tc.result 是 agentOS 层包出来的 [{type:"text",text:"..."}] 协议外壳，
 				// 先剥掉再渲染。stderr 行用 `! ` 前缀 + warning 色。
-				const output = append(innerBox, $('.terminal-output-block'));
+				// ★ 折叠态 ⇒ 游离容器（不进 document ✓）；展开态 ⇒ 直接进 innerBox ✓
+				const deferred = expanded ? undefined : body.ownerDocument.createElement('div');
+				const hostBox = deferred ?? innerBox;
+				const output = append(hostBox, $('.terminal-output-block'));
 				if (isError) { output.classList.add('terminal-output-error'); }
 				const resultText = this._normalizeToolResultText(tc.result);
 				const stderrText = tc.error ? this._normalizeToolResultText(tc.error) : '';
@@ -747,17 +844,13 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				if (stdoutLines.length === 1 && stdoutLines[0] === '' && stderrLines.length === 0) {
 					stdoutLines.push('（无输出）');
 				}
-				const renderLines = (lines: string[], prefix: string, klass: string) => {
-					for (const line of lines) {
-						const row = append(output, $('div.terminal-output-line.' + klass));
-						append(row, $('span.terminal-output-prefix')).textContent = prefix;
-						append(row, $('span.terminal-output-text')).textContent = line.length > 0 ? line : '\u00A0';
-					}
-				};
-				renderLines(stdoutLines, '> ', 'stdout');
-				if (stderrLines.length) { renderLines(stderrLines, '! ', 'stderr'); }
+				// ★★ 2026-09-19：改走 `renderFoldedOutputLines()` —— 首尾保留 + 中间**逐批展开** ✓
+				// （每行 3 节点 ✗、真机单条 264~422 行 ⇒ 这是 DOM 预算的主要来源 ✓；
+				//  阈值 `LINE_FOLD_LIMITS`：≤160 行完全无感 ✓，超长时开头=概览、结尾=成败 ✓）
+				renderFoldedOutputLines(output, stdoutLines, '> ', 'stdout', d => this._register(d));
+				if (stderrLines.length) { renderFoldedOutputLines(output, stderrLines, '! ', 'stderr', d => this._register(d)); }
 				// exit bar：exit code + 输出统计
-				const exitBar = append(innerBox, $('.terminal-exit-bar'));
+				const exitBar = append(hostBox, $('.terminal-exit-bar'));
 				if (typeof tc.exitCode === 'number') {
 					const ec = append(exitBar, $('span.terminal-exit-tag'));
 					ec.textContent = `exit code ${tc.exitCode}`;
@@ -765,6 +858,12 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				}
 				const lineCount = stdoutLines.length + stderrLines.length;
 				append(exitBar, $('span.terminal-exit-meta')).textContent = `${lineCount} 行输出`;
+				if (deferred) {
+					// 首次展开：把游离内容**整体搬进** innerBox（顺序与直接构建完全一致 ✓）
+					renderBodyOnce = () => {
+						while (deferred.firstChild) { innerBox.appendChild(deferred.firstChild); }
+					};
+				}
 			}
 
 			// 错误详情（无 result 时的折叠错误面板，保留旧逻辑）

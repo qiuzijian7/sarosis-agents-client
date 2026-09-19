@@ -130,8 +130,16 @@ export function parseToolCall(toolCall: any): { id: string; name: string; argume
 	return (toolName || toolArgs) ? { id: toolId, name: toolName, arguments: toolArgs } : null;
 }
 
-/** 处理流结束后 buffer 中残留的最后一个（未以换行结尾的）数据块。 */
-export function processRemainingBuffer(buffer: string, anthropicState?: AnthropicStreamState): IModelDelta[] {
+/**
+ * 处理流结束后 buffer 中残留的最后一个（未以换行结尾的）数据块。
+ *
+ * @param onCacheHit 缓存命中回调，透传给 usage 解析（渲染进程侧用于打 KV-cache 日志）。
+ */
+export function processRemainingBuffer(
+	buffer: string,
+	anthropicState?: AnthropicStreamState,
+	onCacheHit?: (cachedTokens: number, inputTokens: number | undefined) => void,
+): IModelDelta[] {
 	const deltas: IModelDelta[] = [];
 	const trimmed = buffer.trim();
 	if (!trimmed) {
@@ -151,7 +159,7 @@ export function processRemainingBuffer(buffer: string, anthropicState?: Anthropi
 		if (content) {
 			deltas.push(...parseContentFromJson(content));
 		}
-		const usageDelta = extractUsage(parsed);
+		const usageDelta = extractUsage(parsed, onCacheHit);
 		if (usageDelta) {
 			deltas.push(usageDelta);
 		}
@@ -161,8 +169,18 @@ export function processRemainingBuffer(buffer: string, anthropicState?: Anthropi
 	return deltas;
 }
 
-/** 整段响应体（非流式）兜底解析，用于对端返回单个 JSON 而非 SSE 流的情况。 */
-export function parseFullJsonFallback(fullBody: string, anthropicState?: AnthropicStreamState): IModelDelta[] {
+/**
+ * 整段响应体（非流式）兜底解析，用于对端返回单个 JSON 而非 SSE 流的情况。
+ *
+ * @param onCacheHit 缓存命中回调，透传给 usage 解析。
+ * @param onParseError 解析失败时的诊断回调（渲染进程侧据此记录网关返回了什么）。
+ */
+export function parseFullJsonFallback(
+	fullBody: string,
+	anthropicState?: AnthropicStreamState,
+	onCacheHit?: (cachedTokens: number, inputTokens: number | undefined) => void,
+	onParseError?: (err: unknown) => void,
+): IModelDelta[] {
 	const deltas: IModelDelta[] = [];
 	try {
 		const parsed = JSON.parse(fullBody);
@@ -170,7 +188,7 @@ export function parseFullJsonFallback(fullBody: string, anthropicState?: Anthrop
 			deltas.push(...anthropicState.push(parsed));
 			return deltas;
 		}
-		const usageDelta = extractUsage(parsed);
+		const usageDelta = extractUsage(parsed, onCacheHit);
 		if (usageDelta) {
 			deltas.push(usageDelta);
 		}
@@ -178,7 +196,8 @@ export function parseFullJsonFallback(fullBody: string, anthropicState?: Anthrop
 		if (message) {
 			deltas.push(...parseContentFromJson(message));
 		}
-	} catch {
+	} catch (parseErr) {
+		onParseError?.(parseErr);
 		// 无法解析为 JSON —— 兜底为纯文本（排除 HTML 错误页与超大响应体）
 		const rawTrimmed = fullBody.trim();
 		if (rawTrimmed.length > 0 && rawTrimmed.length < 100000 && !rawTrimmed.startsWith('<')) {

@@ -40,6 +40,14 @@ import {
 	type IImageGenBridgeParams,
 	type LogFn,
 } from '../common/llmBridge.js';
+// 协议解析收敛到 common 单一实现（此前本文件与 renderer 各有私有拷贝，三份逐行重复）。
+import {
+	extractJsonPayload,
+	extractUsage,
+	parseContentFromJson,
+	parseFullJsonFallback,
+	processRemainingBuffer,
+} from '../common/protocols/sseParsers.js';
 
 // ─── 重试配置 ────────────────────────────────────────────────────────────────
 
@@ -152,7 +160,7 @@ export async function* streamChatCompletions(params: IChatStreamParams): AsyncGe
 					for (const line of lines) {
 						const trimmed = line.trim();
 						if (!trimmed) { continue; }
-						const jsonPayload = _extractJsonPayload(trimmed);
+						const jsonPayload = extractJsonPayload(trimmed);
 						if (jsonPayload === null) { continue; }
 						if (jsonPayload === '[DONE]') {
 							sseDataFound = true;
@@ -173,7 +181,7 @@ export async function* streamChatCompletions(params: IChatStreamParams): AsyncGe
 								continue;
 							}
 
-							const usageDelta = _extractUsage(parsed);
+							const usageDelta = extractUsage(parsed);
 							if (usageDelta) { yield usageDelta; }
 							const content = parsed.choices?.[0]?.delta || parsed.choices?.[0]?.message;
 							if (!content) {
@@ -181,7 +189,7 @@ export async function* streamChatCompletions(params: IChatStreamParams): AsyncGe
 								if (finishReason) { capturedFinishReason = finishReason; }
 								continue;
 							}
-							for (const d of _parseContentFromJson(content)) {
+							for (const d of parseContentFromJson(content)) {
 								yield d;
 							}
 						} catch {
@@ -190,13 +198,13 @@ export async function* streamChatCompletions(params: IChatStreamParams): AsyncGe
 					}
 				}
 
-			const remainingDeltas = _processRemainingBuffer(buffer, anthropicState);
+			const remainingDeltas = processRemainingBuffer(buffer, anthropicState);
 			if (remainingDeltas.length > 0) { sseDataFound = true; }
 			for (const d of remainingDeltas) { yield d; }
 
 			if (!sseDataFound && fullBodyForFallback.trim()) {
 				log('info', `[vssaros-llm] no streaming data found, trying full JSON fallback`);
-				for (const d of _parseFullJsonFallback(fullBodyForFallback, anthropicState)) {
+				for (const d of parseFullJsonFallback(fullBodyForFallback, anthropicState)) {
 					yield d;
 				}
 			}
@@ -593,114 +601,6 @@ function _delay(ms: number): AsyncGenerator<IModelDelta, void, unknown> {
 	return (async function* () {
 		await new Promise(resolve => setTimeout(resolve, ms));
 	})();
-}
-
-function _extractJsonPayload(trimmed: string): string | null {
-	if (trimmed.startsWith('data:')) {
-		const payload = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed.slice(5);
-		return payload === '[DONE]' ? '[DONE]' : payload;
-	}
-	if (trimmed.startsWith('{')) { return trimmed; }
-	return null;
-}
-
-function _extractUsage(parsed: any): IModelDelta | null {
-	if (!parsed.usage) { return null; }
-	const u = parsed.usage;
-	const cachedTokens = u.prompt_tokens_details?.cached_tokens ?? u.cache_read_input_tokens ?? undefined;
-	const cacheWriteTokens = u.cache_creation_input_tokens ?? undefined;
-	const inputTokens = u.prompt_tokens ?? u.input_tokens ?? undefined;
-	const outputTokens = u.completion_tokens ?? u.output_tokens ?? undefined;
-	// Reasoning tokens：OpenAI/OpenRouter 在 completion_tokens_details.reasoning_tokens，
-	// 部分网关直接给 reasoning_tokens（对齐子代理 subagentTokenCollector 口径）。
-	const reasoning = u.completion_tokens_details?.reasoning_tokens ?? u.reasoning_tokens ?? undefined;
-	if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined || cacheWriteTokens !== undefined || reasoning !== undefined) {
-		return { type: 'usage', usage: { inputTokens, outputTokens, cachedTokens, cacheWriteTokens, reasoning } };
-	}
-	return null;
-}
-
-function _parseContentFromJson(content: any): IModelDelta[] {
-	const deltas: IModelDelta[] = [];
-	let reasoningContent = content.reasoning_content ?? content.thinking ?? content.reasoning;
-	let actualContent = content.content;
-	if (actualContent && typeof actualContent === 'string') {
-		const thinkMatch = /<(think|thinking)>([\s\S]*?)<\/\1>/i.exec(actualContent);
-		if (thinkMatch) {
-			reasoningContent = reasoningContent || thinkMatch[2].trim();
-			actualContent = actualContent.replace(thinkMatch[0], '').trim();
-		}
-	}
-	if (reasoningContent) { deltas.push({ type: 'thinking', content: reasoningContent }); }
-	if (actualContent) { deltas.push({ type: 'text', content: actualContent }); }
-	if (content.tool_calls) {
-		for (const tc of content.tool_calls) {
-			const parsed = _parseToolCall(tc);
-			if (parsed) { deltas.push({ type: 'tool_call', toolCall: parsed }); }
-		}
-	}
-	return deltas;
-}
-
-function _parseToolCall(tc: any): { id: string; name: string; arguments: string } | null {
-	let toolId = tc.id || '';
-	let toolName = '';
-	let toolArgs = '';
-	if (tc.function) {
-		toolName = tc.function.name || '';
-		toolArgs = tc.function.arguments || '';
-	} else if (tc.name) {
-		toolName = tc.name;
-		const rawArgs = tc.arguments ?? tc.input ?? tc.args;
-		toolArgs = typeof rawArgs === 'string' ? rawArgs
-			: typeof rawArgs === 'object' ? JSON.stringify(rawArgs)
-				: '';
-		if (!toolId) { toolId = tc.tool_use_id || tc.toolUseId || ''; }
-	}
-	return (toolName || toolArgs) ? { id: toolId, name: toolName, arguments: toolArgs } : null;
-}
-
-function _processRemainingBuffer(buffer: string, anthropicState?: AnthropicStreamState): IModelDelta[] {
-	const deltas: IModelDelta[] = [];
-	const trimmed = buffer.trim();
-	if (!trimmed) { return deltas; }
-	const jsonPayload = _extractJsonPayload(trimmed);
-	if (!jsonPayload || jsonPayload === '[DONE]') { return deltas; }
-	try {
-		const parsed = JSON.parse(jsonPayload);
-		if (anthropicState) {
-			deltas.push(...anthropicState.push(parsed));
-			return deltas;
-		}
-		const content = parsed.choices?.[0]?.delta || parsed.choices?.[0]?.message;
-		if (content) { deltas.push(..._parseContentFromJson(content)); }
-		const usageDelta = _extractUsage(parsed);
-		if (usageDelta) { deltas.push(usageDelta); }
-	} catch {
-		// ignore trailing partial
-	}
-	return deltas;
-}
-
-function _parseFullJsonFallback(fullBody: string, anthropicState?: AnthropicStreamState): IModelDelta[] {
-	const deltas: IModelDelta[] = [];
-	try {
-		const parsed = JSON.parse(fullBody);
-		if (anthropicState) {
-			deltas.push(...anthropicState.push(parsed));
-			return deltas;
-		}
-		const usageDelta = _extractUsage(parsed);
-		if (usageDelta) { deltas.push(usageDelta); }
-		const message = parsed.choices?.[0]?.message;
-		if (message) { deltas.push(..._parseContentFromJson(message)); }
-	} catch (parseErr) {
-		const rawTrimmed = fullBody.trim();
-		if (rawTrimmed.length > 0 && rawTrimmed.length < 100000 && !rawTrimmed.startsWith('<')) {
-			deltas.push({ type: 'text', content: rawTrimmed });
-		}
-	}
-	return deltas;
 }
 
 function _inferCapabilities(m: any): ModelCapability[] {

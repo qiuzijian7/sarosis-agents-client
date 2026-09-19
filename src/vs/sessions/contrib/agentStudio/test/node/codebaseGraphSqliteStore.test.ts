@@ -424,4 +424,67 @@ describe('CodebaseGraphSqliteStore keyset paging (getAllNodes / getAllEdges)' + 
 	});
 });
 
+// ── ★★ 2026-09-19（P0-1 地基）：transaction() 可重入 + 串行化 ────────────────
+//
+// 这是后面「全量同步原子化」的前提：全量同步 = `deleteProject` + N 批 upsert，**各自的**
+// `transaction()` 若不能重入/串行，就无法包成一个**大事务**（裸 BEGIN 嵌套必报错 ✗✗，
+// 且并发 IPC 调用会把 BEGIN 交错 ✗✗）。本套件把两条钉住 ✓。
+describe('CodebaseGraphSqliteStore.transaction — 可重入 + 串行化（2026-09-19）' + (dbAvailable ? '' : ' [SKIPPED]'), () => {
+
+	itOrSkip('★ 嵌套 transaction 直接加入外层（不再报「transaction within a transaction」✗✗）', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('tx-nest.db'));
+		await store.transaction(async () => {
+			await store.upsertNode(makeNode('Outer'));
+			await store.transaction(async () => {
+				await store.upsertNode(makeNode('Inner'));
+			});
+		});
+		assert.strictEqual(await store.getNodeCount(PROJECT), 2, '内层写入应随外层一起提交 ✓');
+		await store.close();
+	});
+
+	itOrSkip('★ 内层抛错 ⇒ 整个事务回滚（**原子性** ✓：外层已写的也不留 ✓✓）', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('tx-rollback.db'));
+		await assert.rejects(
+			store.transaction(async () => {
+				await store.upsertNode(makeNode('WillRollback'));
+				await store.transaction(async () => {
+					await store.upsertNode(makeNode('Inner2'));
+					throw new Error('boom');
+				});
+			}),
+			/boom/,
+		);
+		assert.strictEqual(await store.getNodeCount(PROJECT), 0, '内层失败必须回滚整个事务（含外层已写的）✓✓');
+		await store.close();
+	});
+
+	itOrSkip('★ 两个独立事务**串行**（不交错 BEGIN ✗✗）且失败不阻塞下一棒 ✓', async () => {
+		const store = new CodebaseGraphSqliteStore();
+		await store.open(tempDb('tx-serial.db'));
+		const order: string[] = [];
+		const slow = store.transaction(async () => {
+			order.push('A-begin');
+			await store.upsertNode(makeNode('A'));
+			await new Promise(r => setTimeout(r, 30));
+			order.push('A-end');
+		});
+		const fast = store.transaction(async () => {
+			order.push('B-begin');
+			await store.upsertNode(makeNode('B'));
+			order.push('B-end');
+		});
+		await Promise.all([slow, fast]);
+		assert.deepStrictEqual(order, ['A-begin', 'A-end', 'B-begin', 'B-end'], `交错顺序：${order.join(' → ')}`);
+		assert.strictEqual(await store.getNodeCount(PROJECT), 2);
+
+		await assert.rejects(store.transaction(async () => { throw new Error('x'); }), /x/);
+		await store.transaction(async () => { await store.upsertNode(makeNode('C')); });
+		assert.strictEqual(await store.getNodeCount(PROJECT), 3, '前一棒失败不该卡住后续事务 ✓');
+		await store.close();
+	});
+});
+
 after(() => cleanup());

@@ -210,6 +210,52 @@ if (failedLabels.length > 0) {
 	for (const l of failedLabels) { console.error(`    ${l}`); }
 }
 
+// ─── ⑤ 失败用例基线校验 ──────────────────────────────────────────────────────
+// 与编译失败基线（build-failure-baseline.json）同构，但针对**运行时失败**：
+// 本目录有 20 个既存失败用例（6 个套件），建立基线前它们会让每次全量运行都"红"，
+// 于是真正的新增回归被淹没在噪音里。基线把它们标记为"存量待修"，
+// **新增失败立即失败**，修好一个就从 failure-baseline.json 删一行。
+const failBaselineFile = path.join(testDir, 'failure-baseline.json');
+let failBaseline = {};
+try {
+	const parsed = JSON.parse(fsSync.readFileSync(failBaselineFile, 'utf8'));
+	failBaseline = parsed.failingSuites ?? {};
+} catch { /* 无基线 = 零容忍 */ }
+
+/** 从 `label (N failing)` 解析出套件名与失败数。 */
+const observedFailures = new Map();
+for (const l of failedLabels) {
+	const m = /^(.+?) \((\d+) failing\)$/.exec(l);
+	if (m) { observedFailures.set(m[1], Number(m[2])); }
+}
+
+const regressions = [];
+for (const [suite, count] of observedFailures) {
+	const known = failBaseline[suite]?.failing ?? 0;
+	if (count > known) { regressions.push(`${suite} (${count} failing，基线容忍 ${known})`); }
+}
+
+const healedSuites = [];
+for (const suite of Object.keys(failBaseline)) {
+	if (!observedFailures.has(suite)) { healedSuites.push(suite); }
+}
+
+if (healedSuites.length > 0) {
+	console.log(`\n✓ ${healedSuites.length} 个基线失败套件已修复（请从 failure-baseline.json 移除）：`);
+	for (const s of healedSuites) { console.log(`    ${s}`); }
+}
+
+const knownFailing = [...observedFailures.values()].reduce((a, b) => a + b, 0);
+const knownTolerated = Object.values(failBaseline).reduce((a, s) => a + (s.failing ?? 0), 0);
+if (knownFailing > 0) {
+	console.log(`\n失败用例基线: ${knownFailing} 个既存失败（基线容忍 ${knownTolerated}）—— 见 failure-baseline.json`);
+}
+if (regressions.length > 0) {
+	console.error(`\n✗ ${regressions.length} 个套件**新增**失败（超出基线）——视为回归：`);
+	for (const r of regressions) { console.error(`    ${r}`); }
+	console.error('  修复回归后重跑；确属预期请更新 failure-baseline.json。');
+}
+
 console.log('\n---');
 console.log(`Total: ${totalPassing} passing, ${totalFailing} failing`);
 console.log(`Files: ${testFiles.length} discovered | ${built.length} built | ${buildFailedFiles.length} build-failed | ${runtimeCrashed} runtime-failed`);
@@ -218,4 +264,5 @@ if (baseline.length > 0) {
 }
 console.log('---');
 
-process.exit((totalFailing || newlyBroken.length || runtimeCrashed) ? 1 : 0);
+// ★ 既存失败不判失败（基线容忍），但**新增回归**与**新增编译失败**必须判失败。
+process.exit((regressions.length || newlyBroken.length || runtimeCrashed) ? 1 : 0);

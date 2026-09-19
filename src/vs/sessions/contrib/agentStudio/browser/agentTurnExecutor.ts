@@ -12,6 +12,12 @@ import { runIterationGate, computeForkContext } from './turnIterationGate.js';
 import { handlePlanModeTools } from './parts/turnPlanModeTools.js';
 import type { IPlanModeToolsHost } from './parts/turnPlanModeTools.js';
 import { compactContextIfNeeded } from './parts/turnContextCompaction.js';
+import {
+	TRIVIAL_BLOCKED_TOOLS,
+	extractUserText,
+	getToolFailureRecoveryHint,
+	isTrivialRequest,
+} from './parts/turnRequestTriage.js';
 import { runPostIterationCleanup } from './parts/turnPostIteration.js';
 import type {
 	IPostIterationDeps,
@@ -116,6 +122,8 @@ import {
 	formatAntiGuidanceLog,
 	tryRewriteLeadingCd,
 	formatLeadingCdRewriteLog,
+	tryClampLeadingSleep,
+	formatSleepClampLog,
 } from '../common/shellCommandSafety.js';
 import {
 	formatGuardrailFiredLog,
@@ -264,85 +272,6 @@ interface ITurnContext {
 	 *   4. 执行工具调用，将结果反馈给模型
 	 *   5. 循环直到模型不再调用工具或达到最大迭代次数
 	 */
-
-	/** 工具失败恢复提示（借鉴 Hermes-Agent _tool_failure_recovery_hint）。 */
-	function getToolFailureRecoveryHint(toolName: string): string | null {
-		const hints: Record<string, string> = {
-			terminal: 'For terminal failures, try a diagnostic command first (e.g., `pwd && ls`), ' +
-				'then use an absolute path, a simpler command, or a different tool such as file_read/patch.',
-			search_files: 'Search returned no results. Try a narrower directory, a simpler pattern, ' +
-				'or use search_graph / query_graph to explore code by structure instead of by text.',
-			file_read: 'File read failed. Check the path exists with file_list, or try search_graph ' +
-				'to locate the file by its function/class names.',
-			file_write: 'File write failed. Verify the parent directory exists, check write permissions, ' +
-				'or try patch for targeted edits instead of full rewrites.',
-			patch: 'Patch failed. The search text may not match exactly — try reading the file first ' +
-				'to verify the current content, then use a smaller or more unique search string.',
-			file_list: 'Directory listing failed. Check the path exists with `pwd` or an absolute path.',
-			index_repository: 'Indexing failed. The workspace may already have a graph loaded — ' +
-				'check index_status first, or try a different mode (fast/moderate/full).',
-			search_graph: 'Graph search returned no results. Try a wider name pattern, a different label filter, ' +
-				'or check index_status to verify the graph is loaded.',
-		};
-		return hints[toolName] ?? null;
-	}
-
-	/**
-	 * 轻量/会话型请求快速判定：用于阻止对明显非任务消息（"test1"、问候、纯确认）
-	 * 触发代码库深度探索与图谱构建。仅匹配明确的问候/测试/确认短语，并额外排除含
-	 * 代码/任务信号的消息，避免误伤真实任务。
-	 */
-	const TRIVIAL_BLOCKED_TOOLS = [
-		'search_graph', 'query_graph', 'search_code', 'get_architecture',
-		'trace_path', 'get_code_snippet', 'index_repository',
-		'search_files', 'read_skill', 'list_skills',
-		'delegate_task', 'transfer_to_agent', 'plan_explore',
-	];
-
-	function _extractUserText(request: any): string {
-		const msgs = request?.messages || [];
-		const userMsgs = msgs.filter((m: any) => m?.role === 'user');
-		const last = userMsgs[userMsgs.length - 1];
-		if (!last) { return ''; }
-		return typeof last.content === 'string' ? last.content : '';
-	}
-
-	function _isTrivialRequest(raw: string): boolean {
-		if (!raw) { return true; }
-		// 去掉可能的 agent 选择前缀（如 "gr test1" → "test1"）
-		let text = raw.trim();
-		const stripped = text.replace(/^[A-Za-z0-9_\-]+\s+/, '');
-		if (stripped.length > 0 && stripped.length < text.length) {
-			text = stripped;
-		}
-		if (text.length === 0 || text.length > 40) { return false; }
-		// ⚠ 中文词条一律**不能**用 `\b` 收尾：`\b` 是 ASCII 单词边界，只在 `\w`
-		// （[A-Za-z0-9_]）与非 `\w` 的交界处成立。CJK 字符本身不属于 `\w`，
-		// 所以 `/^你好\b/` 对 "你好" 恒为 false —— 2026-09-18 实测该行所有中文
-		// 条目（你好/您好/在吗/好的/收到/明白/了解/谢谢…）全部从未命中过，
-		// 中文问候因此一直在触发完整探索工具集与图谱构建。
-		// 这里改用「串尾或后接非中文字符」作为等价边界。
-		const CJK_END = '(?![\\u4e00-\\u9fa5])';
-		const trivialPatterns = [
-			/^test\d*$/i,
-			/^测试\d*$/i,
-			/^(hi|hello|hey|yo|hiya)\b/i,
-			new RegExp(`^(你好|您好|在吗|在不在|有人吗)${CJK_END}`),
-			/^(ok|okay|thanks|thank you|thx)\b/i,
-			new RegExp(`^(好的|收到|明白|了解|谢谢)${CJK_END}`),
-			/^(t|t1|t2|t3)\b/i,
-		];
-		if (!trivialPatterns.some(p => p.test(text))) { return false; }
-		// 含代码/任务信号 → 不是 trivial。
-		// 同上：中文信号词（优化/修复/分析…）不能夹在 `\b` 之间，否则永不命中。
-		// 故拆成两条：ASCII 词用 `\b` 保证整词匹配，中文词直接子串匹配。
-		const asciiSignals = /\b(gc|bug|fix|impl|implement|optim|analyze|refactor|function|class|module|code|file|read|write|search|graph|why|how|deploy|build|run|create|add|update|delete|generate|config|init|install|set|start|stop|show|list|get)\b/i;
-		const cjkSignals = /(优化|修复|实现|分析|函数|模块|代码|文件|读|写|查|搜索|图谱|原理|怎么|如何|构建|运行|创建|添加|更新|删除|生成|配置|初始化|安装|设置|启动|停止|显示|列出|获取)/;
-		if (asciiSignals.test(text) || cjkSignals.test(text)) { return false; }
-		// 含路径/扩展名 → 不是 trivial
-		if (/[\\/]|\.\w{1,6}\b/.test(text)) { return false; }
-		return true;
-	}
 
 	/**
 	 * 按 `agentId` 从 Agent 注册表取当前 Agent 配置。
@@ -729,7 +658,7 @@ interface ITurnContext {
 		}
 		// 轻量请求快速通道：对明显非任务的简短消息（如 "test1"/问候/确认），
 		// 阻止进入代码库深度探索，也不触发图谱构建/重索引 —— 直接回答即可。
-		const trivialRequest = _isTrivialRequest(_extractUserText(request));
+		const trivialRequest = isTrivialRequest(extractUserText(request));
 		if (trivialRequest) {
 			host._logService.info('[AgentOS] trivial request detected — will restrict exploration tools');
 		}
@@ -3221,13 +3150,35 @@ interface ITurnContext {
 							typeof (_a as any)?.cwd === 'string' ? (_a as any).cwd : undefined,
 						);
 						if (_rw) {
-							const _nextArgs = { ...(_a as any), command: _rw.command, cwd: _rw.cwd };
+							// ★★ 2026-09-19：cd 改写之后**接着**夹长 sleep —— 真机那条病根命令正是
+							// `cd <repo> && sleep 200; …`（两种形态叠在一起 ✗），只做 cd 改写会**漏掉**它 ✗。
+							const _rwSleep = tryClampLeadingSleep(_rw.command);
+							const _nextArgs = { ...(_a as any), command: _rwSleep ? _rwSleep.command : _rw.command, cwd: _rw.cwd };
 							// arguments 可能是 string（协议层）或 object（内部），分别写回；
 							// tc 字段为 readonly → map 产生新对象覆盖（同废弃名归一化写法）。
 							effectiveToolCalls = effectiveToolCalls.map(t => t === _tc
 								? { ...t, arguments: _isStrArgs ? JSON.stringify(_nextArgs) : _nextArgs }
 								: t);
 							host._logService.info(formatLeadingCdRewriteLog(_tc.name, _rw));
+							if (_rwSleep) {
+								// 日志里保留**完整原始命令**（含被去掉的 cd 前缀）⇒ 与 AntiGuidance 的 before 同口径 ✓
+								host._logService.info(formatSleepClampLog(_tc.name, { ..._rwSleep, original: _rw.original }));
+							}
+							_auditMark('antiGuidanceRewritten', (_audit.watermarks.get('antiGuidanceRewritten')?.max ?? 0) + 1, 0, _tc.name);
+							continue;
+						}
+						// ★★ 2026-09-19（②「长任务等待」第一刀）：**长 leading sleep 夹短**。
+						// 真机证据（外部日志 `vscode-app-1789813310143.log`）：agent 用 `sleep 200; …` **轮询**
+						// 等长任务，9 轮撞满 1800s 工具超时 ⇒ **一个 turn 白等 30 分钟** ✗✗。
+						// 夹到 15s 后**语义不变**（还是"等一下再看"✓），但 wall-time 从 30min 降到分钟级、
+						// 且轮询更密 ⇒ 长任务一完成就能被看到 ✓✓。详见 `tryClampLeadingSleep` 的说明。
+						const _sl = tryClampLeadingSleep(_cmd);
+						if (_sl) {
+							const _slArgs = { ...(_a as any), command: _sl.command };
+							effectiveToolCalls = effectiveToolCalls.map(t => t === _tc
+								? { ...t, arguments: _isStrArgs ? JSON.stringify(_slArgs) : _slArgs }
+								: t);
+							host._logService.info(formatSleepClampLog(_tc.name, _sl));
 							_auditMark('antiGuidanceRewritten', (_audit.watermarks.get('antiGuidanceRewritten')?.max ?? 0) + 1, 0, _tc.name);
 							continue;
 						}

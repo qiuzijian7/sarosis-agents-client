@@ -45,6 +45,32 @@ const PILL_ITEM_CLASS: Record<FooterPillKind, string> = {
 	credit: 'credit-item',
 };
 
+/**
+ * ★ 2026-09-19：三类药丸的**唯一顺序约定**（用户要求「三个 UI 的顺序在各个位置保持不变」✓）。
+ *
+ * 取值依据：**三处已是一致**（主气泡处理中 / 委派卡完成态 / 子代理处理中 ✓）+ 用户处理中截图里
+ * 看到的就是 `耗时 → Tokens → 积分` ✓；只有**主气泡完成态**是反的（积分在最前 ✗）⇒ 以多数为准 ✓。
+ *
+ * 为什么要"由构建入口排序"而不是"各调用点按顺序写" ✗：
+ *   `tokens` / `积分` 是**流式陆续到达**的（首个 usage delta 之前没有数据 ✓）⇒ 谁先创建**不确定** ✗；
+ *   若只靠"先 append 的先在左" ⇒ 同一行在不同时刻会**换位** ✗✗。
+ *   ⇒ 本入口按 `PILL_ORDER` **插入到正确位置** ✓（见 `appendFooterPill` 的实现），
+ *     与调用顺序、到达顺序**都无关** ✓✓。
+ */
+const PILL_ORDER: Record<FooterPillKind, number> = {
+	duration: 0,
+	tokens: 1,
+	credit: 2,
+};
+
+/**
+ * **不属**三类约定、但参与排序的"尾部药丸"类名（顺序视为最大 ⇒ 永远排在三者之后 ✓）。
+ *
+ * 目前只有「已中断」（`_createFooter` 里手搓的 `.interrupted-item` ✓）。显式列出来的原因：
+ * 它的位置原本完全依赖"恰好最后创建" ✗ —— 一旦有人提前创建或复用，就会插到三类中间 ✗。
+ */
+const TRAILING_ITEM_CLASSES = ['interrupted-item'] as const;
+
 /** 默认 tooltip 文案。 */
 const PILL_TITLE: Record<FooterPillKind, string> = {
 	duration: '耗时',
@@ -90,6 +116,19 @@ export interface IFooterPillOptions {
 	title?: string;
 	/** 追加 hover 提示图标（`ⓘ`，提示有明细浮层）。 */
 	withInfoIcon?: boolean;
+	/**
+	 * ★ 2026-09-19：加 `live` 类 = **处理中**态（蓝色描边 + 图标呼吸 ✓，见
+	 * `agentChat.css` 的 `.chat-footer-pill.live`）—— 与完成态（静止）在视觉上区分 ✓。
+	 * 处理中的三个 pill（耗时 / tokens / 积分）**都要带**，否则"进行中"的信号会不一致 ✗。
+	 */
+	live?: boolean;
+	/**
+	 * ★ 2026-09-19：显示种类标签（`耗时：` / `Tokens：` / `积分：`）。
+	 *
+	 * 背景：主气泡完成态一直带标签、而委派卡不带 ✗ ⇒ 同一聊天框里两种形态。
+	 * 收敛到本入口后，调用方**只声明要不要标签** ✓，图标/类名/数字格式不会分叉 ✓。
+	 */
+	withLabel?: boolean;
 }
 
 /**
@@ -107,9 +146,14 @@ export function appendFooterPill(
 	valueText: string,
 	options: IFooterPillOptions = {},
 ): HTMLElement {
-	const pill = append(parent, $(`span.chat-bubble-footer-item.chat-footer-pill.${PILL_ITEM_CLASS[kind]}`));
+	// ⚠ 刻意**不在这里 append**：先建好、最后按 `PILL_ORDER` 插到正确位置 ✓（见 `_insertPillInOrder`）
+	const pill = $(`span.chat-bubble-footer-item.chat-footer-pill.${PILL_ITEM_CLASS[kind]}${options.live ? '.live' : ''}`);
 	pill.title = options.title ?? PILL_TITLE[kind];
 	append(pill, $(`span.chat-footer-pill-icon.codicon.${PILL_ICON[kind]}`));
+	// 标签（可选）：统一用**全角冒号**（此前主气泡里 `：` 与 `: ` 混用 ✗）
+	if (options.withLabel) {
+		append(pill, $('span.chat-footer-pill-label', undefined, `${PILL_TITLE[kind]}：`));
+	}
 	append(
 		pill,
 		$(`span.chat-footer-pill-value${options.valueClass ? `.${options.valueClass}` : ''}`, undefined, valueText),
@@ -117,5 +161,37 @@ export function appendFooterPill(
 	if (options.withInfoIcon) {
 		append(pill, $('span.chat-footer-pill-info.codicon.codicon-info'));
 	}
+	_insertPillInOrder(parent, pill, kind);
 	return pill;
+}
+
+/**
+ * 按 `PILL_ORDER` 把 `pill` 插进 `parent` 的**正确位置**（顺序不变量见 `PILL_ORDER` 注释 ✓）。
+ *
+ * 规则：**插到第一个「顺序比我靠后」的同类药丸之前** ✓；没有更靠后的 ⇒ 追加到末尾 ✓。
+ *
+ * ⚠ 只与**同类兄弟**（带已知 `*-item` 类名的 `.chat-footer-pill` ✓）比较：
+ *   `parent` 里还可能有别的子元素 —— 复制按钮、`.chat-bubble-footer-sep` 分隔线、
+ *   以及 `interrupted-item`（"已中断"，不属本三类约定 ✓）—— 它们**不参与排序、位置不动** ✓。
+ *
+ * ⚠ 用 `:scope >` 只取**直接子元素** ✓：药丸内部还有 `.chat-footer-pill-icon` 等后代，
+ *   不加限定会把后代也算进来 ✗。
+ */
+function _insertPillInOrder(parent: HTMLElement, pill: HTMLElement, kind: FooterPillKind): void {
+	const myOrder = PILL_ORDER[kind];
+	const knownKinds = Object.keys(PILL_ITEM_CLASS) as FooterPillKind[];
+	const siblings = Array.from(parent.querySelectorAll(':scope > .chat-footer-pill'));
+	for (const sib of siblings) {
+		const sibKind = knownKinds.find(k => sib.classList.contains(PILL_ITEM_CLASS[k]));
+		// 非三类约定的药丸（如「已中断」）视为**排到最后** ✓：
+		// 否则它们的相对位置取决于"谁先创建" ✗（当前代码恰好最后建 ✓，但很脆弱 ✗）
+		const sibOrder = sibKind !== undefined
+			? PILL_ORDER[sibKind]
+			: (TRAILING_ITEM_CLASSES.some(c => sib.classList.contains(c)) ? Number.MAX_SAFE_INTEGER : undefined);
+		if (sibOrder !== undefined && sibOrder > myOrder) {
+			parent.insertBefore(pill, sib);
+			return;
+		}
+	}
+	parent.appendChild(pill);
 }

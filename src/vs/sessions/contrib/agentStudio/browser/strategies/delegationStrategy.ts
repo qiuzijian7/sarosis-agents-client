@@ -90,9 +90,4 @@ export class DelegationStrategy implements IAgentLoopStrategy {
 		);
 		return { toolDefs: supervisorTools };
 	}
-
-	/** 委托模式不基于预算终止——由 LLM 决定何时完成 */
-	shouldTerminate(_ctx: PreLoopContext, _budget: IterationBudget): boolean {
-		return false;
-	}
 }

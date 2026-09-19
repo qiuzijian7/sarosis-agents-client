@@ -555,10 +555,32 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 	/**
 	 * Parse a CLI argument into a resource URI. Values may be a `file://` URL, a
 	 * `vscode-remote://` URL, or a bare filesystem path.
+	 *
+	 * ★★ 2026-09-19 修（真机事故）：**Windows 盘符绝对路径必须先拦住** ——
+	 * `URI.parse('g:\\SarosWorkspace\\…\\x.code-workspace')` 会把 `g:` 当成 **URI scheme**
+	 * （`uri.js` 的 scheme 组是 `([^:/?#]+?)`）⇒ 得到 `scheme='g'`、`path='\\SarosWorkspace\\…'`
+	 * ⇒ 下面的 `uri.scheme !== Schemas.file` 分支把它**原样返回**，于是 `uri.fsPath` **丢掉了盘符** ✗✗。
+	 * 下游后果（实测栈）：`WindowsMainService.ensureAgentsWindow → FileService.exists(...)`
+	 * 报 `Unable to resolve filesystem provider with relative file path 'g:\\…'`
+	 * ⇒ **agents 窗口根本打不开、应用启动即整体退出** ✗（`ShutdownTimeline` 里 onWillShutdown 紧跟着这条错误）。
+	 * ⚠ 影响面：`--agents <绝对路径>.code-workspace` 这条**文档化的 F5 启动方式**（见 `.vscode/launch.json`
+	 * 「Launch VS Code Agents Internal」）在 Windows 上**恒失败** ✗ ⇒ 只能用「无参启动走兜底工作区」绕过。
+	 * 判据：盘符形态是 `^[a-zA-Z]:[\\/]`（**恰好一个字母** + 冒号 + 分隔符）—— 这样 `file:///…`、
+	 * `vscode-remote://…`（多字母 scheme）都不会被误判 ✓；相对路径（无 `:`）也不会 ✓。
 	 */
 	private _safeParseUri(raw: string): URI | undefined {
+		const value = raw.trim();
+		if (!value) {
+			return undefined;
+		}
+
+		// ★ 盘符路径：绝不能交给 `URI.parse`（见上面的说明 ✗）
+		if (/^[a-zA-Z]:[\\/]/.test(value)) {
+			return URI.file(value);
+		}
+
 		try {
-			const uri = URI.parse(raw);
+			const uri = URI.parse(value);
 			if (uri.scheme && uri.scheme !== Schemas.file) {
 				return uri;
 			}
@@ -569,8 +591,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			// not a URL — fall through to path handling
 		}
 
-		const fsPath = raw.trim();
-		return fsPath ? URI.file(fsPath) : undefined;
+		return URI.file(value);
 	}
 
 	/**

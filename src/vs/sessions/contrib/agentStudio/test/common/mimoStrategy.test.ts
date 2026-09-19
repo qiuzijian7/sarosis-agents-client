@@ -5,6 +5,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IterationBudget } from '../../common/iterationBudget.js';
+import { classifyIterationStop } from '../../common/turnStopGate.js';
 import {
 	setParadigmOverride, getParadigmOverride, clearParadigmOverride,
 	SWITCHABLE_PARADIGMS,
@@ -81,7 +82,6 @@ suite('MiMoStrategy — paradigm identity + 主会话 TaskGate', () => {
 
 	test('继承 Hermes：预算门控与委托记账照常工作', async () => {
 		const s = new MiMoStrategy();
-		const budget = new IterationBudget(50);
 		// 探索计数追踪（继承自 Hermes）
 		const gen = s.interceptToolCall(stubPreLoopContext('a'), { name: 'search_files' });
 		await gen.next();
@@ -89,10 +89,32 @@ suite('MiMoStrategy — paradigm identity + 主会话 TaskGate', () => {
 		const gen2 = s.interceptToolCall(stubPreLoopContext('a'), { name: 'delegate_task' });
 		await gen2.next();
 		assert.ok((s as any).takeDelegationRound(), '委托轮 refund 记账必须继承生效');
-		// 预算门控（继承）
+		// 预算门控：`shouldTerminate` 已于 2026-09 从 IAgentLoopStrategy 移除
+		// （职责归 `common/turnStopGate.ts` 的 classifyIterationStop，见
+		// `common/turnHookBus.ts:17`）。策略不得再带该成员 —— 该约束由
+		// `test/browser/agentTurnExecutorBehavior.test.ts:9085` 的契约守护锁定。
+		// 这里改为验证真正生效的裁决路径：预算耗尽 + 收尾轮已跑过 → stop。
+		assert.strictEqual(
+			typeof (s as unknown as Record<string, unknown>).shouldTerminate,
+			'undefined',
+			'策略不得复活 shouldTerminate（旧语义会在绕过 skipMainLoop 的路径上首轮即终止）',
+		);
 		const almostEmpty = new IterationBudget(2);
 		almostEmpty.consume(2);
-		assert.strictEqual(s.shouldTerminate(stubPreLoopContext('a'), almostEmpty), true, '预算耗尽应终止');
+		assert.strictEqual(
+			classifyIterationStop(
+				{
+					iteration: 3,
+					hasRemainingBudget: almostEmpty.hasRemaining(),
+					isGraceArmed: almostEmpty.isGraceArmed(),
+					wrapUpDone: true,
+					wrapUpForced: false,
+				},
+				{ maxToolIterations: 100 },
+			).kind,
+			'stop',
+			'预算耗尽且收尾轮已跑过 → 必须 stop',
+		);
 	});
 
 	test('beforeTerminate：任务板未接线 → allow（失败开放退化为 Hermes）', async () => {

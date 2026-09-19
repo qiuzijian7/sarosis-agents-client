@@ -14,11 +14,16 @@ import {
 	ModelCapability, IModelCapabilityConfig,
 	IImageGenParams, IImageGenResult,
 } from '../common/providers.js';
-import { MessageFormatConverter } from '../common/adapters/messageFormatConverter.js';
 import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING } from '../common/constants.js';
 import { join } from '../../../../base/common/path.js';
 import type { CustomProviderData } from './views/providerView.js';
 import { inferImageGen } from '../common/llmBridge.js';
+// 协议解析与编排均收敛到 common 单一实现（此前本文件与 node 侧各有私有拷贝）。
+// 请求构造同样下沉到 common（与响应侧解析器对称）：url / body / parseMode 一次产出。
+import { createRequestBuilder } from '../common/protocols/requestBuilder.js';
+import type { IRequestBuilder } from '../common/protocols/chatProtocol.js';
+// 编排（重试退避 → 读流 → 解析 → 收尾 done）与主进程路径共用同一实现。
+import { runChatStream } from '../common/protocols/runChatStream.js';
 
 /**
  * Safe access to Node.js require() in Electron renderer.
@@ -151,16 +156,16 @@ export function customProviderDataToDefinition(cp: CustomProviderData): IBYOKPro
 	};
 }
 
-// ─── Retry Configuration ────────────────────────────────────────────────────
+// ─── Stream Configuration ───────────────────────────────────────────────────
 
-/** HTTP status codes that are retriable with exponential backoff. */
-const RETRIABLE_STATUS_CODES = new Set([429, 500, 502, 503]);
-
-/** Default maximum number of retry attempts for retriable errors. */
-const DEFAULT_MAX_RETRIES = 3;
-
-/** Base delay in ms for exponential backoff (first retry = 1s, second = 2s, third = 4s). */
-const BASE_RETRY_DELAY_MS = 1000;
+/**
+ * 单次流式请求的整体超时（含连接与读流）。
+ *
+ * 重试策略（次数 / 退避 / 可重试状态码）已随编排下沉到
+ * `common/protocols/runChatStream.ts`，此处只保留传输层超时 —— 它属于
+ * 「直连路径的 fetch 语义」，与主进程侧的 signal 联动是各自注入的差异点。
+ */
+const DEFAULT_STREAM_TIMEOUT_MS = 300_000;
 
 // ─── Built-in BYOK Model Provider ──────────────────────────────────────────
 
@@ -479,17 +484,24 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			return;
 		}
 
-		const chatPath = this._definition.chatEndpointPath || 'chat/completions';
-		const url = `${baseUrl.replace(/\/+$/, '')}/${chatPath.replace(/^\/+/, '')}`;
+		// 请求构造下沉到 common 的 RequestBuilder（与响应侧解析器对称）：
+		// url / body / parseMode 一次产出，主进程侧复用同一实现。
+		const built = this._requestBuilder().build({
+			modelId,
+			messages,
+			options,
+			context,
+			baseUrl,
+			chatEndpointPath: this._definition.chatEndpointPath,
+		});
+		const { url, body } = built;
 
-		// 原生 Anthropic SSE 解析状态（仅 responseFormat==='anthropic' 时使用，
-		// 不触碰 OpenAI 兼容路径）。
-		const isAnthropicStream = this._definition.responseFormat === 'anthropic';
-		const anthropicState = isAnthropicStream ? new AnthropicStreamState() : undefined;
+		// ★ 2026-09-19：**不再在本文件创建 anthropic 解析状态** ✗ ——
+		// 解析状态与编排都归 `runChatStream`（common ✓）内部持有 ✓，
+		// 本文件只把 `built.parseMode` 经 hooks 传下去即可 ✓。
+		// （原 `isAnthropicStream` / `anthropicState` 是重构残留 ⇒ 触发 TS6133 ✗）
 
 		this._logService.info(`[BYOK:${this.id}] _streamChat: url=${url}, model=${modelId}, messages=${messages.length}`);
-
-		const body = this._buildRequestBody(modelId, messages, options, context);
 
 		// Debug: write request body to local file if switch is enabled
 		this._debugWriteRequest(body);
@@ -503,428 +515,65 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			idHeaders['X-Conversation-Request-ID'] = context.requestId;
 		}
 
-		const response = yield* this._sendRequestWithRetry(url, apiKey, body, idHeaders);
-		if (!response) { return; }
-
-		const reader = response.body?.getReader();
-		if (!reader) {
-			this._logService.error(`[BYOK:${this.id}] _streamChat: No response body`);
-			yield { type: 'error', error: `${this.name}: No response body` };
-			return;
-		}
-
-		const decoder = new TextDecoder();
-		let buffer = '';
-		let yieldCount = 0;
-		let sseDataFound = false;
-		let fullBodyForFallback = '';
-		let chunkCount = 0;
-		// 抓包对齐：收集所有 SSE chunk 用于响应日志
-		let sseChunks: string[] = [];
-		// 抓包对齐：捕获响应流 chunk 的 id（每个 chunk 的 id 相同），
-		// 它 = 下一次请求的 previous_response_id，随 done 回传给 agentOS。
-		let capturedResponseId: string | undefined;
-		// 捕获本轮结束原因（OpenAI finish_reason / Anthropic stop_reason 经网关映射），
-		// 随 done delta 上抛给 agentOS 做"未完成轮"结构判定（对齐 OpenClaw）。
-		let capturedFinishReason: string | undefined;
+		// 编排（重试退避 → 读流 → 解析 → 收尾 done）下沉到 common 单一实现，
+		// 与主进程路径共用；两端差异全部经 hooks 注入。
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), DEFAULT_STREAM_TIMEOUT_MS);
 
 		try {
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) {
-					this._logService.info(`[BYOK:${this.id}] _streamChat: reader done, total yields=${yieldCount}, sseFound=${sseDataFound}, chunks=${chunkCount}`);
-					break;
-				}
-
-				const chunk = decoder.decode(value, { stream: true });
-				chunkCount++;
-				// 抓包对齐：收集每个 SSE chunk 用于响应日志
-				sseChunks.push(chunk);
-				if (chunkCount <= 3) {
-					this._logService.info(`[BYOK:${this.id}] _streamChat: chunk[${chunkCount}] (${chunk.length} bytes): ${JSON.stringify(chunk.slice(0, 300))}`);
-				}
-				buffer += chunk;
-				fullBodyForFallback += chunk;
-
-				const lines = buffer.split('\n');
-				buffer = lines.pop() || '';
-
-				for (const line of lines) {
-					const trimmed = line.trim();
-					if (!trimmed) { continue; }
-
-					const jsonPayload = this._extractJsonPayload(trimmed);
-					if (jsonPayload === null) { continue; }
-					if (jsonPayload === '[DONE]') {
-						sseDataFound = true;
-						this._logService.info(`[BYOK:${this.id}] _streamChat: received [DONE]`);
-						continue;
-					}
-
-					try {
-						const parsed = JSON.parse(jsonPayload);
-						sseDataFound = true;
-
-						// 抓包对齐：捕获响应流 chunk 的 id（= 下一次 previous_response_id）
-						if (typeof parsed.id === 'string' && parsed.id) {
-							capturedResponseId = parsed.id;
-						}
-
-						// 原生 Anthropic SSE：走专用解析器（不影响 OpenAI 兼容路径）
-						if (isAnthropicStream && anthropicState) {
-							const anthropicDeltas = anthropicState.push(parsed);
-							for (const d of anthropicDeltas) {
-								yieldCount++;
-								yield d;
-							}
-							continue;
-						}
-
-						// Extract token usage
-						const usageDelta = this._extractUsage(parsed);
-						if (usageDelta) {
-							yieldCount++;
-							yield usageDelta;
-						}
-
-						// Parse content (text / thinking / tool_calls)
-						const content = parsed.choices?.[0]?.delta || parsed.choices?.[0]?.message;
-						if (!content) {
-							const finishReason = parsed.choices?.[0]?.finish_reason;
-							if (finishReason) {
-								capturedFinishReason = finishReason;
-								this._logService.info(`[BYOK:${this.id}] _streamChat: finish_reason=${finishReason}`);
-							}
-							continue;
-						}
-
-						const contentDeltas = this._parseContentFromJson(content);
-						for (const d of contentDeltas) {
-							yieldCount++;
-							yield d;
-						}
-					} catch {
-						this._logService.warn(`[BYOK:${this.id}] _streamChat: malformed JSON line: ${jsonPayload.slice(0, 200)}`);
-					}
-				}
-			}
-
-			// Process remaining buffer
-			const remainingDeltas = this._processRemainingBuffer(buffer, anthropicState);
-			if (remainingDeltas.length > 0) {
-				sseDataFound = true;
-			}
-			for (const d of remainingDeltas) {
-				yieldCount++;
-				yield d;
-			}
-
-			// Fallback: parse entire body as non-streaming JSON response
-			if (!sseDataFound && fullBodyForFallback.trim()) {
-				this._logService.info(`[BYOK:${this.id}] _streamChat: no streaming data found, trying full JSON fallback (bodyLen=${fullBodyForFallback.length})`);
-				const fallbackDeltas = this._parseFullJsonFallback(fullBodyForFallback, anthropicState);
-				for (const d of fallbackDeltas) {
-					yieldCount++;
-					yield d;
-				}
-			}
-
-			// Mark healthy after successful stream
-			this._updateHealthStatus('healthy');
-		} catch (streamErr) {
-			this._logService.error(`[BYOK:${this.id}] _streamChat: stream read error:`, streamErr);
-			this._updateHealthStatus('degraded');
-			yield { type: 'error', error: `${this.name}: Stream error — ${streamErr}` };
+			yield* runChatStream(
+				{
+					url,
+					apiKey,
+					modelId,
+					body,
+					extraHeaders: idHeaders,
+					signal: controller.signal,
+					auth: this._definition.apiKeyHeader === 'x-api-key' ? 'x-api-key' : 'bearer',
+					anthropicVersion: this._definition.anthropicVersion,
+					parseMode: built.parseMode,
+				},
+				{
+					// 直连侧传输：注入超时 signal 的裸 fetch（主进程侧另有 300s + 外部 signal 联动）。
+					transport: request => fetch(request.url, {
+						method: 'POST',
+						headers: request.headers,
+						body: request.body,
+						signal: request.signal,
+					}),
+					log: (level, message) => this._logService[level](`[BYOK:${this.id}] _streamChat: ${message}`),
+					onHealth: status => this._updateHealthStatus(status),
+					onCacheHit: this._logCacheHit,
+					errorPrefix: `${this.name}: `,
+					onResponseBodyComplete: (chunks, completedModelId) => {
+						void this._debugWriteResponse([...chunks], completedModelId);
+					},
+				},
+			);
 		} finally {
-			// 抓包对齐：流结束后写入响应日志
-			this._debugWriteResponse(sseChunks, body.model as string);
-			this._logService.info(`[BYOK:${this.id}] _streamChat: finally block, yielding done (yields=${yieldCount}, responseId=${capturedResponseId ?? '(none)'})`);
-
-			// 原生 Anthropic：工具块已在 content_block_stop / finish() 中 flush，
-			// 这里统一产出收尾 done（携带 responseId / stop_reason）。
-			if (isAnthropicStream && anthropicState) {
-				for (const d of anthropicState.finish()) {
-					yieldCount++;
-					yield d;
-				}
-				return;
-			}
-
-			const doneDeltaBase: IModelDelta = capturedResponseId
-				? { type: 'done', responseId: capturedResponseId }
-				: { type: 'done' };
-			const doneDelta: IModelDelta = capturedFinishReason
-				? { ...doneDeltaBase, finishReason: capturedFinishReason }
-				: doneDeltaBase;
-			yield doneDelta;
+			clearTimeout(timeoutId);
 		}
 	}
 
 	// ─── Extracted Helper Methods ─────────────────────────────────────
 
 	/**
-	 * Build the request body for the chat completions API.
+	 * 绑定本 provider 协议特征的请求构造器（实现见 `common/protocols/requestBuilder.ts`）。
+	 *
+	 * 每次现建而非缓存实例：`RequestBuilder` 无可变状态，构造成本可忽略，
+	 * 而缓存会引入「definition 变了但 builder 没重建」的失效风险。
+	 * `getModel` 传函数而非模型数组，使动态变更的 `_models` 每次查询都取最新。
 	 */
-	protected _buildRequestBody(
-		modelId: string,
-		messages: IChatMessage[],
-		options: IModelOptions,
-		context?: IChatContext,
-	): Record<string, unknown> {
-		// 原生 Anthropic Messages API（/v1/messages）：使用 Anthropic 原生请求体格式
-		if (this._definition.responseFormat === 'anthropic') {
-			return this._buildAnthropicRequestBody(modelId, messages, options, context);
-		}
-
-		const body: Record<string, unknown> = {
-			model: modelId,
-			messages: MessageFormatConverter.toOpenAI(messages, {
+	protected _requestBuilder(): IRequestBuilder {
+		return createRequestBuilder(
+			{
+				responseFormat: this._definition.responseFormat,
 				isAnthropic: this._definition.isAnthropic,
-				tools: options.tools,
-				capabilityConfig: undefined, // BYOK provider 统一使用 OpenAI 兼容格式
-				// Fork 前缀缓存（请求构造端接 ForkContext）：透传 agent 冻结 system + 父级
-				// ForkContext，使构造端能在冻结前缀边界注入 cache_control 断点（Anthropic 兼容）。
-				systemPrompt: options.systemPrompt,
-				forkContext: options.forkContext,
-			}),
-			stream: true,
-		};
-		// 抓包对齐：注入 previous_response_id（= 上一次响应流 chunk 的 id），
-		// 让服务端按响应链衔接上下文。由 agentOS 经 IChatContext 下传。
-		if (context?.previousResponseId) {
-			body.previous_response_id = context.previousResponseId;
-		}
-		if (options.temperature !== undefined) {
-			body.temperature = options.temperature;
-		}
-		if (options.maxTokens !== undefined) {
-			body.max_tokens = options.maxTokens;
-		}
-		if (options.tools && options.tools.length > 0) {
-			// Fork 前缀缓存：Anthropic 兼容时把最后一个工具定义也打上 cache 断点，
-			// 使 system + tools 共同构成父/子 fork 共享的冻结缓存前缀。
-			body.tools = MessageFormatConverter.toOpenAIToolDefinitions(
-				options.tools,
-				options.forkContext,
-				this._definition.isAnthropic,
-				options.systemPrompt,
-			);
-			// 透传上层（agent loop 续跑兜底）指定的 tool_choice；默认 'auto'。
-			// 'required' 用于强制模型在续跑这一轮必须调用工具，治"宣告意图却不动手"。
-			body.tool_choice = options.toolChoice ?? 'auto';
-			const mcpToolCount = options.tools.filter(t => t.category?.startsWith('mcp:')).length;
-			this._logService.info(
-				`[BYOK:${this.id}] _streamChat: sending ${options.tools.length} tools ` +
-				`(MCP: ${mcpToolCount}, builtin: ${options.tools.length - mcpToolCount}) ` +
-				`with tool_choice=${body.tool_choice}\n` +
-				`  tool names: [${options.tools.map(t => t.name).join(', ')}]`
-			);
-		} else {
-			// 无工具面：正常路径不设 tool_choice（'auto'/'required' 在没有 tools 时
-			// 无意义，部分网关还会校验报错）。唯一例外是收尾轮的 'none' ——
-			// 它是「禁止调用工具」的协议级声明，与空工具面构成双保险
-			// （对齐 MiMo-Code 的 toolChoice:"none"）。
-			if (options.toolChoice === 'none') {
-				body.tool_choice = 'none';
-				this._logService.info(`[BYOK:${this.id}] _streamChat: NO tools + tool_choice='none' (final wrap-up round — model must answer from gathered context)`);
-			} else {
-				this._logService.warn(`[BYOK:${this.id}] _streamChat: NO tools in request (options.tools is empty or undefined)`);
-			}
-		}
-
-		// ── Thinking / Reasoning 参数注入 ─────────────────────────────
-		// 按模型 capabilityConfig.reasoningType 决定 API 形态（参考 void）：
-		//   - 'effort-slider'（OpenAI o 系列 / xAI / DeepSeek）→ reasoning_effort: 'low'|'medium'|'high'
-		//   - 'budget-slider' + Anthropic 兼容 → thinking: { type: 'enabled', budget_tokens: N }
-		//   - 'budget-slider' + OpenAI 兼容 → 退化为 reasoning_effort（按 budget 粗分档）
-		if (options.reasoning?.enabled) {
-			const model = this._models.find(m => m.id === modelId);
-			const reasoningType = model?.capabilityConfig?.reasoningType;
-			const effort = options.reasoning.effort;
-			const budget = options.reasoning.budget;
-
-			if (this._definition.isAnthropic || reasoningType === 'budget-slider') {
-				if (budget && budget > 0) {
-					// Anthropic 原生 extended thinking
-					body.thinking = { type: 'enabled', budget_tokens: budget };
-					this._logService.info(`[BYOK:${this.id}] reasoning: thinking budget_tokens=${budget}`);
-				} else if (effort) {
-					body.reasoning_effort = effort;
-					this._logService.info(`[BYOK:${this.id}] reasoning: reasoning_effort=${effort}`);
-				}
-			} else {
-				// OpenAI o 系列 / DeepSeek / 其它 OpenAI 兼容：reasoning_effort
-				body.reasoning_effort = effort
-					?? (budget != null ? (budget >= 6144 ? 'high' : budget >= 3072 ? 'medium' : 'low') : 'medium');
-				this._logService.info(`[BYOK:${this.id}] reasoning: reasoning_effort=${body.reasoning_effort}`);
-			}
-		}
-		return body;
-	}
-
-	/**
-	 * Build a native Anthropic Messages API request body (`/v1/messages`).
-	 * System prompt is a separate top-level `system` field; messages/tools use
-	 * Anthropic content-block format; `max_tokens` is required by the API.
-	 */
-	private _buildAnthropicRequestBody(
-		modelId: string,
-		messages: IChatMessage[],
-		options: IModelOptions,
-		context?: IChatContext,
-	): Record<string, unknown> {
-		const { messages: anthropicMsgs, systemPrompt } = MessageFormatConverter.toAnthropic(messages, {
-			systemPrompt: options.systemPrompt,
-			tools: options.tools,
-			forkContext: options.forkContext,
-		});
-
-		const body: Record<string, unknown> = {
-			model: modelId,
-			// Anthropic requires max_tokens; default to a sane value when not provided.
-			max_tokens: options.maxTokens ?? 8192,
-			stream: true,
-		};
-		if (systemPrompt) {
-			body.system = systemPrompt;
-		}
-		body.messages = anthropicMsgs;
-
-		// 抓包对齐：注入 previous_response_id（与 OpenAI 路径一致）
-		if (context?.previousResponseId) {
-			body.previous_response_id = context.previousResponseId;
-		}
-		if (options.temperature !== undefined) {
-			body.temperature = options.temperature;
-		}
-		if (options.tools && options.tools.length > 0) {
-			body.tools = MessageFormatConverter.toAnthropicToolDefinitions(
-				options.tools,
-				options.forkContext,
-				true,
-				options.systemPrompt,
-			);
-		}
-
-		// ── Thinking / Reasoning 参数注入（Anthropic 原生 extended thinking）──
-		if (options.reasoning?.enabled) {
-			const budget = options.reasoning.budget;
-			if (budget && budget > 0) {
-				body.thinking = { type: 'enabled', budget_tokens: budget };
-				this._logService.info(`[BYOK:${this.id}] reasoning: thinking budget_tokens=${budget}`);
-			}
-		}
-		return body;
-	}
-
-	/**
-	 * Send the HTTP request with automatic retry for retriable status codes.
-	 * Uses exponential backoff: 1s → 2s → 4s between retries.
-	 * Yields error deltas on failure. Returns the Response on success, or null.
-	 */
-	private async *_sendRequestWithRetry(
-		url: string,
-		apiKey: string,
-		body: Record<string, unknown>,
-		extraHeaders?: Record<string, string>,
-	): AsyncGenerator<IModelDelta, Response | null, unknown> {
-		let lastError: string = '';
-
-		for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES; attempt++) {
-			// Attempt the fetch
-			let response: Response;
-			try {
-				if (attempt > 0) {
-					this._logService.info(`[BYOK:${this.id}] _sendRequestWithRetry: attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES + 1}`);
-				}
-				const headers: Record<string, string> = {
-					'Content-Type': 'application/json',
-					...(extraHeaders ?? {}),
-				};
-				if (apiKey) {
-					if (this._definition.apiKeyHeader === 'x-api-key') {
-						headers['x-api-key'] = apiKey;
-						headers['anthropic-version'] = this._definition.anthropicVersion || '2023-06-01';
-					} else {
-						headers['Authorization'] = `Bearer ${apiKey}`;
-					}
-				}
-				const controller = new AbortController();
-				const timeoutId = setTimeout(() => controller.abort(), 300_000);
-				try {
-					response = await fetch(url, {
-						method: 'POST',
-						headers,
-						body: JSON.stringify(body),
-						signal: controller.signal,
-					});
-				} finally {
-					clearTimeout(timeoutId);
-				}
-				this._logService.info(`[BYOK:${this.id}] _streamChat: response status=${response.status} ${response.statusText}`);
-			} catch (err) {
-				this._logService.error(`[BYOK:${this.id}] _streamChat: fetch error:`, err);
-				this._updateHealthStatus('unhealthy');
-
-				// Network errors are retriable
-				if (attempt < DEFAULT_MAX_RETRIES) {
-					const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
-					this._logService.info(`[BYOK:${this.id}] _sendRequestWithRetry: network error, retrying in ${delayMs}ms...`);
-					yield* this._delay(delayMs);
-					continue;
-				}
-				yield { type: 'error', error: `${this.name}: Network error — ${err}` };
-				return null;
-			}
-
-			// Successful response
-			if (response.ok) {
-				this._updateHealthStatus('healthy');
-				return response;
-			}
-
-			// Non-retriable error (e.g. 401, 403, 404)
-			if (!RETRIABLE_STATUS_CODES.has(response.status)) {
-				const text = await response.text().catch(() => '');
-				this._logService.error(`[BYOK:${this.id}] _streamChat: HTTP error (non-retriable): ${response.status} — ${text.slice(0, 500)}`);
-				this._updateHealthStatus('unhealthy');
-				yield { type: 'error', error: `${this.name}: ${response.status} ${response.statusText} — ${text.slice(0, 500)}` };
-				return null;
-			}
-
-			// Retriable error (429, 500, 502, 503)
-			const text = await response.text().catch(() => '');
-			lastError = `${response.status} ${response.statusText} — ${text.slice(0, 500)}`;
-			this._logService.warn(`[BYOK:${this.id}] _streamChat: HTTP error (retriable): ${lastError}`);
-
-			if (attempt < DEFAULT_MAX_RETRIES) {
-				// Respect Retry-After header for 429, otherwise use exponential backoff
-				let delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
-				const retryAfter = response.headers.get('Retry-After');
-				if (retryAfter) {
-					const parsed = parseInt(retryAfter, 10);
-					if (!isNaN(parsed) && parsed > 0) {
-						delayMs = parsed * 1000; // Retry-After is in seconds
-					}
-				}
-				this._logService.info(`[BYOK:${this.id}] _sendRequestWithRetry: retrying in ${delayMs}ms (attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES})`);
-				this._updateHealthStatus('degraded');
-				yield* this._delay(delayMs);
-			}
-		}
-
-		// All retries exhausted
-		this._updateHealthStatus('unhealthy');
-		this._logService.error(`[BYOK:${this.id}] _sendRequestWithRetry: all retries exhausted, last error: ${lastError}`);
-		yield { type: 'error', error: `${this.name}: ${lastError}` };
-		return null;
-	}
-
-	/**
-	 * Simple async delay generator that yields nothing (keeps the stream alive).
-	 */
-	private async *_delay(ms: number): AsyncGenerator<IModelDelta, void, unknown> {
-		await new Promise(resolve => setTimeout(resolve, ms));
+				getModel: modelId => this._models.find(m => m.id === modelId),
+			},
+			(level, message) => this._logService[level](message),
+			this.id,
+		);
 	}
 
 	/**
@@ -1038,193 +687,20 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 	}
 
 	/**
-	 * Extract the JSON payload string from a single SSE/NDJSON line.
-	 * Returns null for unrecognized lines, or the string '[DONE]' for SSE termination.
+	 * KV-cache 命中的日志回调，注入给 common 侧的 usage 解析。
+	 *
+	 * 箭头函数绑定实例：`extractUsage(parsed, cb)` 会以普通函数方式调用它，
+	 * 传裸方法引用会丢失 `this`。
 	 */
-	private _extractJsonPayload(trimmed: string): string | null {
-		if (trimmed.startsWith('data:')) {
-			const payload = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed.slice(5);
-			return payload === '[DONE]' ? '[DONE]' : payload;
-		}
-		if (trimmed.startsWith('{')) {
-			return trimmed;
-		}
-		return null;
-	}
+	private readonly _logCacheHit = (cachedTokens: number, inputTokens: number | undefined): void => {
+		this._logService.info(`[BYOK:${this.id}] KV Cache hit: cached=${cachedTokens} / input=${inputTokens ?? '?'} tokens`);
+	};
 
-	/**
-	 * Extract token usage from a parsed SSE/NDJSON chunk.
-	 * Returns a usage delta if meaningful data is found, otherwise null.
-	 */
-	private _extractUsage(parsed: any): IModelDelta | null {
-		if (!parsed.usage) { return null; }
-		const u = parsed.usage;
-		const cachedTokens =
-			u.prompt_tokens_details?.cached_tokens ??
-			u.cache_read_input_tokens ??
-			undefined;
-		const cacheWriteTokens =
-			u.cache_creation_input_tokens ?? undefined;
-		const inputTokens = u.prompt_tokens ?? u.input_tokens ?? undefined;
-		const outputTokens = u.completion_tokens ?? u.output_tokens ?? undefined;
-		if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined || cacheWriteTokens !== undefined) {
-			if (cachedTokens !== undefined) {
-				this._logService.info(`[BYOK:${this.id}] KV Cache hit: cached=${cachedTokens} / input=${inputTokens ?? '?'} tokens`);
-			}
-			return {
-				type: 'usage',
-				usage: { inputTokens, outputTokens, cachedTokens, cacheWriteTokens },
-			};
-		}
-		return null;
-	}
-
-	/**
-	 * Parse content (text, thinking, tool_calls) from a delta or message object.
-	 * Returns an array of deltas to yield.
-	 */
-	private _parseContentFromJson(content: any): IModelDelta[] {
-		const deltas: IModelDelta[] = [];
-
-		// Handle reasoning/thinking content
-		let reasoningContent = content.reasoning_content ?? content.thinking ?? content.reasoning;
-		let actualContent = content.content;
-
-		// Parse <think|thinking> tags from content (DeepSeek/QwQ/qwen style via Ollama)
-		if (actualContent && typeof actualContent === 'string') {
-			const thinkMatch = /<(think|thinking)>([\s\S]*?)<\/\1>/i.exec(actualContent);
-			if (thinkMatch) {
-				reasoningContent = reasoningContent || thinkMatch[2].trim();
-				actualContent = actualContent.replace(thinkMatch[0], '').trim();
-			}
-		}
-
-		if (reasoningContent) {
-			deltas.push({ type: 'thinking', content: reasoningContent });
-		}
-		if (actualContent) {
-			deltas.push({ type: 'text', content: actualContent });
-		}
-
-		// Handle tool calls — support multiple formats:
-		// 1. OpenAI standard: tool_calls[].function.{name, arguments}
-		// 2. Anthropic via proxy: tool_calls[].{name, input/arguments}
-		// 3. Some proxies: tool_calls[].{id, name, arguments} (flat)
-		if (content.tool_calls) {
-			for (const tc of content.tool_calls) {
-				const parsed = this._parseToolCall(tc);
-				if (parsed) {
-					deltas.push({ type: 'tool_call', toolCall: parsed });
-				}
-			}
-		}
-
-		return deltas;
-	}
-
-	/**
-	 * Parse a single tool call object from various provider formats.
-	 */
-	private _parseToolCall(tc: any): { id: string; name: string; arguments: string } | null {
-		let toolId = tc.id || '';
-		let toolName = '';
-		let toolArgs = '';
-
-		if (tc.function) {
-			// Standard OpenAI format
-			toolName = tc.function.name || '';
-			toolArgs = tc.function.arguments || '';
-		} else if (tc.name) {
-			// Anthropic / flat format: name at top level
-			toolName = tc.name;
-			const rawArgs = tc.arguments ?? tc.input ?? tc.args;
-			toolArgs = typeof rawArgs === 'string' ? rawArgs
-				: typeof rawArgs === 'object' ? JSON.stringify(rawArgs)
-				: '';
-			if (!toolId) { toolId = tc.tool_use_id || tc.toolUseId || ''; }
-		}
-
-		return (toolName || toolArgs) ? { id: toolId, name: toolName, arguments: toolArgs } : null;
-	}
-
-	/**
-	 * Process the remaining buffer at the end of a stream.
-	 * Returns an array of deltas to yield.
-	 */
-	private _processRemainingBuffer(buffer: string, anthropicState?: AnthropicStreamState): IModelDelta[] {
-		const deltas: IModelDelta[] = [];
-		const trimmed = buffer.trim();
-		if (!trimmed) { return deltas; }
-
-		const jsonPayload = this._extractJsonPayload(trimmed);
-		if (!jsonPayload || jsonPayload === '[DONE]') { return deltas; }
-
-		try {
-			const parsed = JSON.parse(jsonPayload);
-			if (anthropicState) {
-				deltas.push(...anthropicState.push(parsed));
-				return deltas;
-			}
-			const content = parsed.choices?.[0]?.delta || parsed.choices?.[0]?.message;
-			if (content) {
-				deltas.push(...this._parseContentFromJson(content));
-			}
-			// Also check for usage in the final chunk
-			const usageDelta = this._extractUsage(parsed);
-			if (usageDelta) {
-				deltas.push(usageDelta);
-			}
-		} catch {
-			// Ignore trailing partial data
-		}
-
-		return deltas;
-	}
-
-	/**
-	 * Fallback parser for non-streaming responses: parse the entire body as JSON.
-	 * Returns an array of deltas to yield.
-	 */
-	private _parseFullJsonFallback(fullBody: string, anthropicState?: AnthropicStreamState): IModelDelta[] {
-		const deltas: IModelDelta[] = [];
-		try {
-			const parsed = JSON.parse(fullBody);
-
-			if (anthropicState) {
-				deltas.push(...anthropicState.push(parsed));
-				return deltas;
-			}
-
-			// Extract usage from non-streaming response
-			const usageDelta = this._extractUsage(parsed);
-			if (usageDelta) {
-				deltas.push(usageDelta);
-				const usage = (usageDelta as any).usage;
-				if (usage?.cachedTokens !== undefined) {
-					this._logService.info(`[BYOK:${this.id}] KV Cache hit (fallback): cached=${usage.cachedTokens} / input=${usage.inputTokens ?? '?'} tokens`);
-				}
-			}
-
-			const message = parsed.choices?.[0]?.message;
-			if (message) {
-				deltas.push(...this._parseContentFromJson(message));
-			}
-		} catch (parseErr) {
-			this._logService.warn(`[BYOK:${this.id}] _streamChat: JSON fallback parse failed: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
-			// Last resort: if it looks like plain text content, yield it
-			const rawTrimmed = fullBody.trim();
-			if (rawTrimmed.length > 0 && rawTrimmed.length < 100000 && !rawTrimmed.startsWith('<')) {
-				deltas.push({ type: 'text', content: rawTrimmed });
-			}
-		}
-		return deltas;
-	}
 }
 
 // ─── Anthropic native SSE parser ────────────────────────────────────────────
 // AnthropicStreamState 定义在 ../common/llmBridge.js（renderer 与主进程共享）。
 
-import { AnthropicStreamState } from '../common/llmBridge.js';
 
 // ─── Built-in Provider Definitions ──────────────────────────────────────────
 

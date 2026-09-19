@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	detectUnixOnlyCommand,
@@ -657,5 +659,83 @@ suite('executeCodeGuards — 源码写入护栏：mockup 原型目录例外', ()
 		assert.ok(
 			detectScriptSourceWrite(`node -e "require('fs').writeFileSync('docs/research/a.md','x')"`),
 			'docs/research/ 无 mockup 段，仍拦');
+	});
+});
+
+// ─── ★★★ execute_code 运行期直播（2026-09-19 用户报「terminal 卡片执行中没有输出」）───────────
+
+/**
+ * 背景（真机截图 ✓）：execute_code 卡片跑了 **28m57s**，直播区**只有一个光标** ✗。
+ * 根因：execute_code 主进程 spawn 是**单次缓冲**（invoke 一把梭 ✗）⇒ 卡片订阅的旁路
+ * （`terminalLiveOutput` ✓）**只有 terminal(PTY) 工具会写** ✓ ⇒ execute_code 永远空 ✗。
+ *
+ * 修法（本 suite 钉住的**接线不变量** ✓）：
+ * ① handler 必须接收 `toolCallId`（dispatch 本来就传第 5 参 ✓）；
+ * ② 两个 `_execCodeSandbox` 调用点都必须**往下传**；
+ * ③ 前台执行必须改走「**后台 spawn + 轮询**」并 `appendTerminalLiveOutput`；
+ * ④ 增量切片必须有多字节边界保护（`0xFFFD` ✓）；
+ * ⑤ 主进程不回 taskId 时**必须降级为原前台路径**（行为与改造前一致 ✓）。
+ */
+suite('execute_code 运行期直播（后台 spawn + 轮询接线）', () => {
+
+	const REL = 'src/vs/sessions/contrib/agentStudio/browser/providers/tool/compatibilityTools.ts';
+
+	const readSrc = (): string => {
+		const abs = path.join(process.cwd(), REL);
+		assert.ok(fs.existsSync(abs), `源码不存在（路径基准变了？）：${abs}`);
+		return fs.readFileSync(abs, 'utf8');
+	};
+
+	test('★★★ handler 必须接收 toolCallId 并**两处都**传进 _execCodeSandbox（漏传 ⇒ 直播空转 ✗）', () => {
+		const src = readSrc();
+		assert.ok(src.includes("handler: async (args, _signal, _agentId, _sessionId, toolCallId) => {"),
+			'execute_code handler 必须接收第 5 参 toolCallId（dispatch 本来就传 ✓）');
+		const forwards = src.split('background, toolCallId,').length - 1;
+		assert.ok(forwards >= 2, `_execCodeSandbox 的两个调用点（主路径 + shell 降级重跑）都要传（实际 ${forwards} 处 ✗）`);
+	});
+
+	test('★★★ 前台执行必须走「后台 spawn + 轮询」并喂旁路（单次缓冲 ⇒ 结构上不可能直播 ✗）', () => {
+		const src = readSrc();
+		assert.ok(src.includes('_execCodeForegroundWithLiveOutput('), '必须有直播前台实现 ✓');
+		assert.ok(src.includes('background: true'), '后台 spawn（复用主进程 background 原语 ✓）');
+		assert.ok(src.includes("_execCodeControl(taskId, 'poll')"), '轮询（复用主进程 poll 原语 ✓）');
+		assert.ok(src.includes('appendTerminalLiveOutput(toolCallId, delta)'),
+			'增量必须喂给 terminalLiveOutput 旁路（否则卡片还是空 ✗）');
+		assert.ok(src.includes('LIVE_POLL_MS'), '必须有轮询间隔常量 ✓');
+	});
+
+	test('★★ 增量切片必须有多字节边界保护（半个字符 ⇒ 直播区孤立 � ✗）', () => {
+		const src = readSrc();
+		assert.ok(src.includes('_liveDelta('), '必须有增量切片函数 ✓');
+		assert.ok(src.includes('0xFFFD'), '必须处理 U+FFFD 边界（累计字节重解码会切半个多字节字符 ✗）');
+	});
+
+	test('★★ 主进程不回 taskId 必须降级为原前台路径（热更新期行为不变 ✓）', () => {
+		const src = readSrc();
+		assert.ok(src.includes('if (!started.taskId)'), '必须有 taskId 缺失的降级分支 ✓');
+		// 降级分支里的调用**不带** background ⇒ 即原前台语义 ✓
+		assert.ok(src.includes('降级为原前台路径') || src.includes('原前台单次调用'),
+			'降级必须回到原前台单次调用（行为与改造前逐字节一致 ✓）');
+	});
+
+	test('★ 轮询异常必须杀掉后台任务（不让它变孤儿 ✗）', () => {
+		const src = readSrc();
+		assert.ok(src.includes("await _execCodeControl(taskId, 'kill')"),
+			'catch 分支必须先 kill（后台任务没有前台超时兜底 ✗）');
+	});
+
+	test('★★★ 轮询中途失败必须「返回失败结果」而非向上抛（否则触发整命令重跑 ✗✗）', () => {
+		// 2026-09-19 自查发现的隐患：`_execCodeSandbox` 的 catch 把任何异常当成「主进程通道
+		// 不可用」⇒ 走 child_process fallback **重跑整条命令** ✗ —— background spawn 已成功
+		// 之后的轮询失败若也抛 ⇒ 7 分钟的构建会被从头再跑 ✗。⇒ helper 必须返回失败结果 ✓。
+		const src = readSrc();
+		assert.ok(src.includes('[live-poll] execute_code 直播轮询失败'),
+			'catch 分支必须返回失败结果（[live-poll] …），而不是 throw ✗');
+	});
+
+	test('★★ 必须有有界心跳（否则「命令安静」与「直播死了」无法区分 ✗ —— 用户报「卡片卡住」时无法自证）', () => {
+		const src = readSrc();
+		assert.ok(src.includes('LIVE_HEARTBEAT_MS'), '必须有心跳间隔常量 ✓');
+		assert.ok(src.includes('execute_code live: taskId='), '必须有 start/done/heartbeat 日志行（[CompatTools] execute_code live: ✓）');
 	});
 });

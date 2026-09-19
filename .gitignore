@@ -292,3 +292,7 @@ tools/archive/one-off-migrations/phase2.ts
 tools/archive/one-off-migrations/rename-employeeId.ts
 
 _codex_probe/*
+
+# Benchmark results (agentmemory-memory)
+extensions/agentmemory-memory/benchmark/results/
+extensions/agentmemory-memory/benchmark/dist/

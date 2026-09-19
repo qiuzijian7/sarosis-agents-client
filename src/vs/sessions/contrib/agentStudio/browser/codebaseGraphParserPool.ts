@@ -193,7 +193,16 @@ export class CodebaseGraphParserPool {
 			this._workerLangWasms = langWasms;
 
 			// 5. 创建 Worker 池
-			const poolSize = Math.min(4, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+			// ★★★ 2026-09-19（P0-4 性能）：并行度**不再硬顶 4**。
+			//
+			// 旧实现 `Math.min(4, Math.max(1, hc - 1))`：在 8/16 核工作站上把解析阶段**人为限速到 4 路**
+			// （CBM 用全核，见其 `system_info.c:300`）⇒ 解析是**每文件独立**的纯计算任务，吞吐近似随核数线性，
+			// 这个 4 就是纯粹的浪费 ✗。现改为「用满 (核数 - 1)」，只保留一个**防内存峰值**的上限：
+			// 每个 worker 都独持 tree-sitter runtime + 语言 wasm 副本（随语言数增长），32/64 核机器上无上限会打爆内存 ✗。
+			// 上限取 16：覆盖常见工作站（8/12/16 核）而不失控；`-1` 留给主线程（解析期间的 UI 与收尾工作）。
+			// ⚠ 若要支持用户调参：把 16 换成配置项读取即可（本类当前**只注入 ILogService**，为它改构造签名不值得 ✗）。
+			const hc = navigator.hardwareConcurrency || 4;
+			const poolSize = Math.max(1, Math.min(16, hc - 1));
 			const initPromises: Promise<Worker | null>[] = [];
 			for (let i = 0; i < poolSize; i++) {
 				initPromises.push(this._createAndInitWorker(workerUrl, tsWasmBytes, langWasms));
@@ -206,7 +215,8 @@ export class CodebaseGraphParserPool {
 				return false;
 			}
 			for (const w of this._parserWorkers) { this._attachWorkerSelfHealing(w); }
-			this._logService.info('[CodebaseGraph]', `Worker pool ready: ${this._parserWorkers.length}/${poolSize} workers`);
+			// 日志带上 hc 与上限：回答「为什么这批机器是 N 路」——旧日志只报数字，事后无法判断是限速还是核数少 ✗
+			this._logService.info('[CodebaseGraph]', `Worker pool ready: ${this._parserWorkers.length}/${poolSize} workers（hc=${hc}，上限=16）`);
 			return true;
 		} catch (err: any) {
 			const _msg = err?.message || String(err);

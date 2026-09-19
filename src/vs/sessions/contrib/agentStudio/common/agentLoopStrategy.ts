@@ -111,12 +111,6 @@ export interface IAgentLoopStrategy {
 	interceptToolCall?(ctx: PreLoopContext, call: { name: string; args?: any }): AsyncGenerator<IChatStreamDelta, InterceptResult>;
 
 	/**
-	 * 判定是否终止主循环（默认由 inner loop 判定：无 tool_call 即终止）。
-	 * 策略可在此注入预算门控等终止条件。
-	 */
-	shouldTerminate?(ctx: PreLoopContext, budget: IterationBudget): boolean;
-
-	/**
 	 * 主循环在「无工具调用且计划队列已空、即将正常结束」前调用（MiMo 主会话
 	 * TaskGate 的挂载点）。返回 allow=false 且带 nudgeMessage 时，主循环把
 	 * nudgeMessage 作为 user 消息注入并继续迭代（策略自行用重入计数封顶）。

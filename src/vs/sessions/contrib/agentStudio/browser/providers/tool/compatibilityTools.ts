@@ -22,6 +22,7 @@ import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDAN
 import { buildEditedRegionContext, computeInsert } from '../../../common/patchMatcher.js';
 import { runExecOutputPipeline } from './execOutputPipeline.js';
 import { ProcessOutputCollector } from '../../../common/processOutputDecoder.js';
+import { appendTerminalLiveOutput } from '../../../../../browser/agentChat/terminalLiveOutput.js';
 import { decideOutputSpill, spillFileName, spillNoticeMessage, selectSpillFilesToDelete } from './execOutputSpill.js';
 import { resolveSarosPath, userDataRootFromPath, SarosPath } from '../../../common/sarosPaths.js';
 import { shellPlatformGuidance, windowsDualShellGuidance } from './shellPlatformPrompt.js';
@@ -29,6 +30,7 @@ import { resolveShellDialect } from '../../../common/shellDialect.js';
 import { annotateCommandFailure, annotateMaskedSuccess, renderFailureHint } from './commandFailureHints.js';
 import { detectGitBash, coreutilsDir, invalidateGitBashCache } from './gitBashProvider.js';
 import { shellPreflightRejection } from './shellPreflightGuards.js';
+import { execBackgroundNotifier } from './execBackgroundNotify.js';
 import { sensitiveWriteRejection } from './sensitivePaths.js';
 import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 import { computePatch } from '../../../common/patchMatcher.js';
@@ -500,7 +502,7 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			},
 			category: 'terminal', source: ctx.id, securityLevel: ToolSecurityLevel.Dangerous,
 		},
-		handler: async (args) => {
+		handler: async (args, _signal, _agentId, _sessionId, toolCallId) => {
 			// 后台执行控制面（P0-2）：poll / kill 已启动的后台任务，无需 command。
 			const action = typeof args['action'] === 'string' ? args['action'] : undefined;
 			const taskId = typeof args['taskId'] === 'string' ? args['taskId'] : undefined;
@@ -508,10 +510,16 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			if (action === 'poll' || action === 'kill') {
 				if (!taskId) { throw new NonRetryableToolError(`execute_code ${action} requires "taskId"`); }
 				const ctrl = await _execCodeControl(taskId, action);
-				const status = ctrl.done ? 'finished' : 'still running';
+				// ⚠ 2026-09-19（日志 1789813310143 取证）：判据曾是 `ctrl.done ? 'finished' : 'still running'`，
+				// 而主进程 kill 分支**不回 `done`** ⇒ kill 成功也显示 "still running (exit -1)"，
+				// 把 agent 误导去修一个不存在的 sync I/O 阻塞（见 app.ts kill 分支注释）。
+				// 此处**双保险**：`killed` 也算结束并如实标"已杀"（两侧任一漏改都不会再产出假信号）；
+				// 且被杀的任务没有可信 exit code，就不再打印 `(exit -1)` 免得又被读成"进程还在"。
+				const status = ctrl.killed ? 'killed' : (ctrl.done ? 'finished' : 'still running');
+				const exitInfo = ctrl.killed ? '' : ` (exit ${ctrl.exitCode ?? -1})`;
 				const out = ctrl.stdout ? `\n${ctrl.stdout}` : '';
 				const err = ctrl.stderr ? `\n[stderr]${ctrl.stderr}` : '';
-				return text(`[execute_code ${action}] task ${taskId} — ${status} (exit ${ctrl.exitCode ?? -1})${out}${err}`);
+				return text(`[execute_code ${action}] task ${taskId} — ${status}${exitInfo}${out}${err}`);
 			}
 			// base64 免转义通道（2026-09-06，同日升级）：双剥实证 —— 模型正确写
 			// '\\u'（JSON 层正确），但 spawn(command, {shell}) 让命令**再经 shell
@@ -733,7 +741,7 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 		let result = await _execCodeSandbox(
 			effectiveCommand, cwd, timeoutSec * 1000, ctx.logService, heredoc,
 			gitBash ? { shell: gitBash.bashPath, pathPrefix: coreutilsDir(gitBash) } : undefined,
-			background,
+			background, toolCallId,
 		);
 
 		// ── ENOENT 归因诊断 + shell 降级重跑（2026-09-07，日志 1788757547227）──
@@ -758,7 +766,7 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				invalidateGitBashCache();
 				ctx.logService.warn(`[CompatTools] execute_code: shell executable missing (${gitBash.bashPath}) — retrying once with native Windows shell`);
 				const retried = await _execCodeSandbox(
-					effectiveCommand, cwd, timeoutSec * 1000, ctx.logService, heredoc, undefined, background,
+					effectiveCommand, cwd, timeoutSec * 1000, ctx.logService, heredoc, undefined, background, toolCallId,
 				);
 				if (retried.success || !/ENOENT/i.test(retried.stderr)) {
 					result = retried;
@@ -773,6 +781,16 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 		}
 		// 后台执行：spawn 即返回，不阻塞当前轮（P0-2）
 		if (result.background && result.taskId) {
+			// ★★ 2026-09-19：**完成通知**（补齐「没人拉也能送达」✗✓）：登记盯守 ⇒ 任务完成时
+			// driver 会把结果注入为 steering 消息（**转次间隙送达**，不打断当前轮 ✓✓）。
+			// ⚠ 模型**仍可**主动 action:"poll"（两条通道并存 ✓）；盯守只是补上**被动送达** ✓。
+			//   幂等（同一 taskId 只盯一次 ✓）+ 有预算（默认 15 分钟 ✗ 不永盯）—— 三条不变量见
+			//   `execBackgroundNotify.ts` 头部与其单测 ✓。
+			// ⚠ steering 投递需要一个真实的 agentId ⇒ 缺失时**不盯守**（此时也没有可投递的对象 ✓，
+			//   模型仍可 action:"poll" ✓ —— 两条通道并存 ✓）。
+			if (_agentId) {
+				execBackgroundNotifier.watch(result.taskId, _agentId, _sessionId, (id) => _execCodeControl(id, 'poll'));
+			}
 			return text(
 				`[execute_code] launched in BACKGROUND — taskId=${result.taskId}\n` +
 				`Poll output: execute_code({ action: "poll", taskId: "${result.taskId}" })\n` +
@@ -914,12 +932,24 @@ interface IExecCodeResult { success: boolean; stdout: string; stderr: string; ex
  * 调用 CLI——从根上避免相对路径 + cwd 解析问题。
  */
 
-async function _execCodeSandbox(command: string, cwd: string | undefined, timeoutMs: number, logService: ILogService, heredoc?: { interpreter: string; script: string }, shellExec?: { shell: string; pathPrefix: string }, background?: boolean): Promise<IExecCodeResult> {
+async function _execCodeSandbox(command: string, cwd: string | undefined, timeoutMs: number, logService: ILogService, heredoc?: { interpreter: string; script: string }, shellExec?: { shell: string; pathPrefix: string }, background?: boolean, toolCallId?: string): Promise<IExecCodeResult> {
 	// 优先：主进程 vscode:execCode（Electron 桌面，主进程 child_process.spawn，见 app.ts）。
 	const vscodeBridge = (globalThis as any).vscode;
 	if (vscodeBridge?.ipcRenderer?.invoke) {
 		try {
 			logService.trace(`[CompatTools] execute_code via main-process vscode:execCode: ${command}${shellExec ? ` (shell=${shellExec.shell})` : ''}${background ? ' [background]' : ''}`);
+			// ★★★ 2026-09-19（用户报「terminal 工具卡片执行过程中没有输出内容」真机截图 ✓）：
+			//   execute_code 的主进程 spawn 是**单次缓冲** ⇒ 运行期**结构上不可能**有输出 ✗ ——
+			//   卡片直播区订阅的旁路（`terminalLiveOutput` ✓）只有 **terminal(PTY)** 工具会写 ✓
+			//   ⇒ execute_code 卡片直播区**永远只剩一个光标** ✗✓（截图：28m57s 无输出 ✓）。
+			//   修法：前台执行改走「**后台 spawn + 轮询**」✓ —— 复用现成的 background/poll
+			//   机制（`app.ts` 的 `payload.background` ✓ 与 `action:'poll'` ✓），
+			//   把增量输出喂给**同一条**旁路 ✓；最终结果（success/stdout/stderr/exitCode）语义不变 ✓。
+			if (toolCallId && !background) {
+				return await _execCodeForegroundWithLiveOutput(
+					command, cwd, timeoutMs, heredoc, shellExec, toolCallId, vscodeBridge, logService,
+				);
+			}
 			return await vscodeBridge.ipcRenderer.invoke('vscode:execCode', heredoc
 				? { script: heredoc.script, interpreter: heredoc.interpreter, cwd, timeoutMs }
 				: { command, cwd, timeoutMs, shell: shellExec?.shell, pathPrefix: shellExec?.pathPrefix, background }) as IExecCodeResult;
@@ -945,6 +975,100 @@ async function _execCodeControl(taskId: string, action: 'poll' | 'kill'): Promis
 		}
 	}
 	return { success: false, stdout: '', stderr: 'execute_code control requires main-process channel', exitCode: -1 };
+}
+
+/**
+ * ★★★ 前台执行 + **运行期直播**（2026-09-19 修「terminal 工具卡片执行中没有输出内容」✓）。
+ *
+ * 背景：execute_code 的主进程 spawn 是**单次缓冲**（`ipcRenderer.invoke` 一把梭 ✗）⇒ 卡片直播区
+ * 订阅的旁路（`terminalLiveOutput` ✓）永远等不到数据 ✗ —— 它原本只有 terminal(PTY) 工具会写 ✓。
+ *
+ * 做法：**后台 spawn + 轮询** ✓ —— 完全复用主进程现成的两个原语（`payload.background` ⇒ 立刻回
+ * `taskId` ✓；`action:'poll'` ⇒ 返回**累计**输出 + `done` ✓），把增量切片喂给同一条旁路 ✓。
+ * 最终结果（success / stdout / stderr / exitCode）与原前台路径**完全一致** ✓ —— 只是多了直播 ✓。
+ *
+ * 主进程不回 `taskId`（旧产物 ✗）时**降级为原前台路径** ⇒ 行为与改造前逐字节一致 ✓。
+ */
+async function _execCodeForegroundWithLiveOutput(
+	command: string,
+	cwd: string | undefined,
+	timeoutMs: number,
+	heredoc: { interpreter: string; script: string } | undefined,
+	shellExec: { shell: string; pathPrefix: string } | undefined,
+	toolCallId: string,
+	vscodeBridge: { ipcRenderer: { invoke: (channel: string, payload: unknown) => Promise<unknown> } },
+	logService: ILogService,
+): Promise<IExecCodeResult> {
+	const started = await vscodeBridge.ipcRenderer.invoke('vscode:execCode', heredoc
+		? { script: heredoc.script, interpreter: heredoc.interpreter, cwd, timeoutMs, background: true }
+		: { command, cwd, timeoutMs, shell: shellExec?.shell, pathPrefix: shellExec?.pathPrefix, background: true },
+	) as IExecCodeResult & { taskId?: string };
+	if (!started.taskId) {
+		// 旧版主进程 handler（热更新前 ✗）⇒ 降级：原前台单次调用（行为与改造前完全一致 ✓）
+		return await vscodeBridge.ipcRenderer.invoke('vscode:execCode', heredoc
+			? { script: heredoc.script, interpreter: heredoc.interpreter, cwd, timeoutMs }
+			: { command, cwd, timeoutMs, shell: shellExec?.shell, pathPrefix: shellExec?.pathPrefix }) as IExecCodeResult;
+	}
+	const taskId = started.taskId;
+	// 轮询间隔：1s 级足够（卡片是"看着在动"，不是逐字跟读 ✓）；不叠加日志 ✓
+	const LIVE_POLL_MS = 900;
+	// ★ 心跳节拍（2026-09-19，用户报「卡片输出过程卡住」✓）：**每 ~30s 一行 info** ✓ ——
+	// 否则日志里看不到"直播循环是否活着" ⇒ 「命令真的没输出」与「直播死了」无法区分 ✗✓
+	// （那次真机：LLM 故意跑"安静命令 + 完成标记" ⇒ 空卡是**预期** ✓，但链路无法自证 ✗）。
+	const LIVE_HEARTBEAT_MS = 30_000;
+	const startedAt = Date.now();
+	let lastHeartbeatAt = 0;
+	let pollCount = 0;
+	let stdoutLen = 0;
+	let stderrLen = 0;
+	logService.info(`[CompatTools] execute_code live: taskId=${taskId} background spawn started (poll=${LIVE_POLL_MS}ms, heartbeat=${LIVE_HEARTBEAT_MS / 1000}s) — 命令若无输出属正常（安静命令/重定向 ✓），卡住时看心跳行`);
+	try {
+		for (;;) {
+			await new Promise(resolve => setTimeout(resolve, LIVE_POLL_MS));
+			const poll = await _execCodeControl(taskId, 'poll');
+			pollCount++;
+			const stdout = poll.stdout ?? '';
+			const stderr = poll.stderr ?? '';
+			if (stdout.length > stdoutLen) {
+				const delta = _liveDelta(stdout, stdoutLen);
+				stdoutLen = stdout.length;
+				appendTerminalLiveOutput(toolCallId, delta);
+			}
+			if (stderr.length > stderrLen) {
+				const delta = _liveDelta(stderr, stderrLen);
+				stderrLen = stderr.length;
+				appendTerminalLiveOutput(toolCallId, delta);
+			}
+			// 心跳：证明"循环活着 + 主进程确实在累积（或不累积）输出" ✓ —— 判"卡住"的第一证据 ✓
+			if (!poll.done && Date.now() - lastHeartbeatAt >= LIVE_HEARTBEAT_MS) {
+				lastHeartbeatAt = Date.now();
+				logService.info(`[CompatTools] execute_code live: taskId=${taskId} heartbeat — polls=${pollCount} elapsed=${Math.round((Date.now() - startedAt) / 1000)}s stdout=${stdout.length}c stderr=${stderr.length}c still running（若多次心跳字符数恒 0 ⇒ 命令本就安静 ✓；若心跳停了 ⇒ 直播循环死了 ✗）`);
+			}
+			if (poll.done) {
+				logService.info(`[CompatTools] execute_code live: taskId=${taskId} done — elapsed=${Math.round((Date.now() - startedAt) / 1000)}s exit=${poll.exitCode ?? -1} stdout=${stdout.length}c stderr=${stderr.length}c polls=${pollCount}`);
+				return { success: (poll.exitCode ?? -1) === 0, stdout, stderr, exitCode: poll.exitCode ?? -1 };
+			}
+		}
+	} catch (err) {
+		// ★★ 2026-09-19 修我上一版的隐患：**返回失败结果而不是抛** ✗ —— 此处已越过
+		// 「background spawn 成功」这一点：若向上抛，`_execCodeSandbox` 的 catch 会误以为
+		// 「主进程通道不可用」而**触发整命令重跑**（child_process fallback ✗✓ ——
+		// 7 分钟的构建会被从头再跑一遍 ✗✗）。轮询中途失败 = 工具失败，不是通道失败 ✓。
+		// 仍先 kill（**不让任务变孤儿** ✗ —— 后台任务不会被前台超时回收 ✗）。
+		try { await _execCodeControl(taskId, 'kill'); } catch { /* ignore */ }
+		return { success: false, stdout: '', stderr: `[live-poll] execute_code 直播轮询失败（后台任务已终止）：${err}`, exitCode: -1 };
+	}
+}
+
+/**
+ * 增量切片（解码边界保护 ✗）：主进程每次 poll 都对**累计字节**重新解码 ✓ ⇒ 某个多字节字符
+ * 可能恰在上次的末尾被切成半个（显示为 U+FFFD `�`）⇒ 若上个片段以 `�` 结尾，**回退一字符**
+ * 再切 ⇒ 那个字符会在下一轮以完整形态重发 ✓（否则直播区会永久留一个孤立的 `�` ✗）。
+ */
+function _liveDelta(full: string, prevLen: number): string {
+	let from = prevLen;
+	if (from > 0 && full.charCodeAt(from - 1) === 0xFFFD) { from -= 1; }
+	return full.slice(from);
 }
 
 function _execCodeNodeFallback(command: string, cwd: string | undefined, timeoutMs: number, heredoc?: { interpreter: string; script: string }, shellExec?: { shell: string; pathPrefix: string }): Promise<IExecCodeResult> {

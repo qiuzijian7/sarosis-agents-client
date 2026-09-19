@@ -439,6 +439,26 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			description: localize('agentStudio.codebaseGraph.sqliteBackend', "Codebase 图谱查询/搜索默认走主进程 SQLite（FTS5）后端，避免内存全量扫描。默认开启；设为 false 关闭后回退内存 store。"),
 		},
+		// ⚠⚠ 2026-09-19 恢复（并发改动把这两条注册覆盖掉了 ⇒ 代码里 `getValue('saros.codebaseGraph.artifactFormat')`
+		// / `getValue('saros.codebaseGraph.memoryBudgetMb')` 仍在读，但**设置项不存在** ⇒ 用户无法发现/修改、
+		// 且永远拿到默认值（SQLite 快照档变成不可用）✗。契约测试要钉住「读了的配置必须注册」。
+		'saros.codebaseGraph.artifactFormat': {
+			type: 'string',
+			enum: ['json', 'sqlite', 'both'],
+			enumDescriptions: [
+				localize('agentStudio.codebaseGraph.artifactFormat.json', "JSON（默认，与既有行为完全一致）：`.codebase-memory/graph.db.zst` 是 gzip 压缩的 JSON。载入时必须解析 JSON（大图单 folder 数秒），但格式自解释、便于人工排查。"),
+				localize('agentStudio.codebaseGraph.artifactFormat.sqlite', "SQLite 快照（更快）：`.codebase-memory/graph.db.sqlite` 由主进程 `VACUUM INTO` 直接产出 ⇒ 保存时 renderer **不再序列化整张图**；载入时按页取数、**完全不解析 JSON**。适合本机使用；若要提交给队友共享，对方需使用支持该格式的版本。"),
+				localize('agentStudio.codebaseGraph.artifactFormat.both', "两份都写：迁移/共享过渡期使用（读仍可走 JSON 路径，同时产出快照）。"),
+			],
+			default: 'json',
+			description: localize('agentStudio.codebaseGraph.artifactFormat', "Codebase 图谱**制品**（`.codebase-memory/`）的写出格式。默认 `json` 保持既有行为；改为 `sqlite` 后保存由主进程 `VACUUM INTO` 直接产出快照（renderer 不再做全图 gzip+JSON 序列化），载入也改为分页读取（完全不解析 JSON）。**切换后下一次索引/保存生效**。"),
+		},
+		'saros.codebaseGraph.memoryBudgetMb': {
+			type: 'number',
+			default: 0,
+			minimum: 0,
+			markdownDescription: localize('agentStudio.codebaseGraph.memoryBudgetMb', "Codebase 图谱的**单轮内存增长预算**（MB）—— 判据是「**本轮索引期间堆的增长量**」而非绝对占用（renderer 静止堆本就包含编辑器/扩展/webview，用绝对值会每轮误报 ✗）。`0` = 自动按设备内存分档（≤4GB→256 / ≤8GB→512 / 更大→768）。超预算时：① 索引阶段对账行会带上「本轮+XMB / 上限YMB（堆…，基线…）」（便于定位是哪一段吃掉内存）；② 单条**响亮告警**（绝不静默）+ 提示如何放宽。对齐 C 版 `mem.c` 的内存预算思想 —— 本仓检索已由主进程 SQLite/FTS5 承担，内存里可重建的结构（BM25/layout）按需重建而不常驻。"),
+		},
 		'saros.codebaseGraph.excludeProfile': {
 			type: 'string',
 			enum: ['balanced', 'full'],
@@ -2990,6 +3010,8 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 
 	private readonly _activatedPlugins = new Map<string, IAgentCapabilityPlugin>();
 	private _extensionPointRegistry: AgentCapabilitiesExtensionPointRegistry | undefined;
+	/** 网关地址认领的完成信号（见 `_injectAgentMemoryEndpoint()`）。两条插件激活路径都要 await 它。 */
+	private _agentMemoryEndpointReady: Promise<void> | undefined;
 
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -2997,6 +3019,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 		@ILogService private readonly logService: ILogService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 	) {
 		super();
 
@@ -3004,6 +3027,9 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			return;
 		}
 
+		// ★ 与插件激活**并行**尽早启动「网关地址认领」。两条激活路径在真正 activate 插件前
+		//   都会 await 它 —— agentmemory 走的是 Source 2（Extension Point），只 await Source 1 挡不住。
+		this._agentMemoryEndpointReady = this._injectAgentMemoryEndpoint();
 		// Source 1: built-in plugins from build-time manifest
 		this._activateBuiltInPlugins();
 		// Source 2: third-party plugins via VS Code Extension Point
@@ -3052,8 +3078,10 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			// 记忆统一入口：SessionMemoryProvider 已废弃，本 provider 是唯一
 			// 记忆来源（扩展 activate 时以 priority=1000 注册）。
 			//
-			// agentmemory server 由主进程 startAgentMemoryGateway() 启动，
-			// 监听 127.0.0.1:3111 (III_REST_PORT)。
+			// agentmemory server 由主进程 startAgentMemoryGateway() 启动；端口**不再写死**
+			// 3111 —— 主进程 `_resolveAgentMemoryPort()` 按 app 形态派生（安装版 3111 / dev 3112）。
+			// 渲染侧**读不到 process.env**（渲染进程无 process）⇒ 由本文件的
+			// `_injectAgentMemoryEndpoint()` 按 dataDir 认领后写 `globalThis.__SAROS_AGENTMEMORY_URL__`。
 			id: 'agentmemory-memory',
 			name: 'AgentMemory',
 			version: '1.0.0',
@@ -3070,7 +3098,75 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 
 	// --- Source 1: Built-in plugins (build-time manifest) -------------------
 
+	/**
+	 * 把本窗口应使用的 agentmemory 网关地址**注入渲染侧**（2026-09-19 真机验证后落地）。
+	 *
+	 * 背景：渲染进程里**没有 `process`**（CDP 实测 workbench 渲染上下文 `hasProcess:false`）
+	 * ⇒ 主进程写在 `process.env.AGENTMEMORY_URL` 的端口**渲染侧根本读不到**；且
+	 * `INativeEnvironmentService.isBuilt`（= `!env['VSCODE_DEV']`）在渲染侧**恒为 true**
+	 * ⇒ 「按 dev 推导端口」这条兜底同样是死的。于是渲染侧只能"逐个端口猜"，而只要
+	 * 另一个形态（安装版 3111）在监听，dev 就会**先猜中它并锁定它** ⇒ 跨环境串味。
+	 *
+	 * 解法：**不猜端口，按数据目录认领** —— 本窗口的 `userDataPath` 决定它该连哪份数据。
+	 *   · 探到 `dataDir` 与本窗口一致 ⇒ 写 `__SAROS_AGENTMEMORY_URL__`（扩展优先使用它）
+	 *   · 探到 `dataDir` 与本窗口**不一致** ⇒ 记入 `__SAROS_AGENTMEMORY_FOREIGN__`
+	 *     （扩展会把这些地址**从候选里排除** —— 宁可探测失败也不连错库）
+	 * ⚠ 与主进程 `_probeOrSpawnAgentMemoryGateway()` 的 dataDir 比对**同源**，语义一致。
+	 * ⚠ 必须在 capability plugin（agentmemory 扩展）`activate()` **之前**完成，故由
+	 *   `_activateBuiltInPlugins()` 开头 `await`。探测失败（网关仍在重建索引 ~4s）不算错：
+	 *   此刻除异己外没有别的候选，扩展侧退避探测自然会命中自己的网关。
+	 */
+	private async _injectAgentMemoryEndpoint(): Promise<void> {
+		const g = globalThis as {
+			__SAROS_AGENTMEMORY_URL__?: string;
+			__SAROS_AGENTMEMORY_FOREIGN__?: string[];
+		};
+		if (typeof g.__SAROS_AGENTMEMORY_URL__ === 'string' && g.__SAROS_AGENTMEMORY_URL__.length > 0) {
+			return; // 本窗口只注入一次
+		}
+		const userDataPath = (this.environmentService as INativeEnvironmentService).userDataPath;
+		const wantDataDir = this._normalizeFsPath(`${userDataPath}/.agentmemory`);
+		const foreign: string[] = [];
+		// 候选端口与主进程 `_resolveAgentMemoryPort()` 同规则：安装版 3111 / dev 3112。
+		for (const base of ['http://127.0.0.1:3111', 'http://127.0.0.1:3112']) {
+			try {
+				const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(1200) });
+				if (!res.ok) {
+					continue;
+				}
+				const body = await res.json() as { dataDir?: string };
+				if (typeof body?.dataDir !== 'string' || body.dataDir.length === 0) {
+					continue;
+				}
+				if (this._normalizeFsPath(body.dataDir) === wantDataDir) {
+					g.__SAROS_AGENTMEMORY_URL__ = base;
+					g.__SAROS_AGENTMEMORY_FOREIGN__ = foreign;
+					this.logService.info(`[AgentMemory] 网关地址已认领: ${base}（dataDir 与本窗口一致: ${body.dataDir}）`);
+					return;
+				}
+				foreign.push(base);
+				this.logService.warn(
+					`[AgentMemory] ${base} 上的网关属于**其他数据目录**（${body.dataDir}），本窗口是 ${wantDataDir} `
+					+ '⇒ 排除该地址（避免记忆读写串到另一形态的库）',
+				);
+			} catch { /* 端口空闲 / 超时 ⇒ 只是还没起来，不算异己 */ }
+		}
+		g.__SAROS_AGENTMEMORY_FOREIGN__ = foreign;
+		this.logService.info(
+			`[AgentMemory] 暂未认领到网关（本窗口 dataDir=${wantDataDir}；已排除 ${foreign.length} 个异己地址）—— 交由扩展侧候选探测`,
+		);
+	}
+
+	/** Windows 路径大小写不敏感、分隔符可能混用 ⇒ 归一化后比较（同主进程 `_isSamePath`）。 */
+	private _normalizeFsPath(p: string): string {
+		return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+	}
+
 	private async _activateBuiltInPlugins(): Promise<void> {
+		// 必须等注入完成（constructor 里已启动）—— ⚠ 这里**不要**再调一次
+		// `_injectAgentMemoryEndpoint()`：那会多跑一轮 /health 探测（实测表现为
+		// "已认领"日志出现两次）。两条激活路径统一 await 同一个 Promise。
+		await this._agentMemoryEndpointReady;
 		this.logService.info(
 			`[AgentCapabilityPlugins][Diag] _activateBuiltInPlugins() start; manifestModule=${AgentCapabilityPluginContribution.MANIFEST_MODULE}`,
 		);
@@ -3291,6 +3387,11 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	}
 
 	private async _activateFromExtensionPoint(resolved: IResolvedCapabilityPlugin): Promise<void> {
+		// ★ 与 Source 1 同理：扩展 activate() 里会**立刻**探活，此刻"禁连地址（异己数据目录）"
+		//   必须已经写在 globalThis 上。实测教训（2026-09-19）：原先只把 await 放在 Source 1，
+		//   而 agentmemory 由本路径激活 ⇒ 扩展 17:08:42.6 已开始激活、注入 17:08:44.2 才完成，
+		//   靠扩展侧退避重试才侥幸连对 3112（若 3111 上有健康网关就会先连错并锁定）。
+		await this._agentMemoryEndpointReady;
 		this.logService.info(
 			`[AgentCapabilityPlugins][Diag] ExtensionPoint activate -- id=${resolved.extensionId} `
 			+ `path=${resolved.extensionPath} mainModule=${resolved.mainModule || '<empty>'}`,

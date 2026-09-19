@@ -6056,16 +6056,37 @@
 	opacity: 0.85;
 }
 
-/* ── Pill 样式 badge（积分/Tokens/耗时）── */
+/* ── Pill 样式 badge（积分/Tokens/耗时）──
+   ★★ 2026-09-19：三类药丸统一为**黑白灰**（用户要求「统一 tokens、积分、耗时的 UI 样式（黑白灰）」✓）。
+
+   统一方式 = **配色单点定义**：下面这组 `--pill-*` 变量只在此处声明一次 ✓ ⇒
+   **三类**（duration / tokens / credit ✓）× **四个展示位**
+   （主气泡完成态 / 主气泡处理中 / 委派卡 / 子代理 ✓，全部走 `appendFooterPill()` ✓）
+   自动取到**完全相同**的颜色 ✓ —— 不必逐个展示位去改 ✗。
+
+   ⚠ 刻意**不再使用**这两个主题变量（它们才是之前"看起来是蓝色"的来源 ✗）：
+     · `--vscode-focusBorder`  → 在真实主题里是**蓝色强调色** ✗（曾用于 hover 描边 ✓）；
+     · `--vscode-progressBar-background` → **进度条填充色**，同样是蓝色 ✗（曾用于 live 态 ✓）。
+   统一改为从 `--vscode-foreground` 按百分比混出灰阶 ✓：
+   深色主题下它是白 ⇒ 得到白/灰 ✓；浅色主题下它是黑 ⇒ 得到黑/灰 ✓（= 用户要的"黑白灰" ✓✓）。
+   ⚠ `.interrupted-item`（「已中断」）**有意保留警示色** ✓ —— 它不是这三类用量，语义是"内容不完整" ✓。 */
 .chat-bubble-footer-item.chat-footer-pill {
+	/* ── 唯一配色来源（改配色只改这里 ✓）── */
+	--pill-fg: var(--vscode-foreground, #ccc);
+	--pill-fg-soft: var(--vscode-descriptionForeground, #aaa);
+	--pill-border: color-mix(in srgb, var(--pill-fg) 22%, transparent);
+	--pill-border-strong: color-mix(in srgb, var(--pill-fg) 36%, transparent);
+	--pill-bg: color-mix(in srgb, var(--pill-fg) 6%, transparent);
+	--pill-bg-strong: color-mix(in srgb, var(--pill-fg) 11%, transparent);
+
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
 	padding: 4px 9px;
-	border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25));
+	border: 1px solid var(--pill-border);
 	border-radius: 14px;
-	background: var(--vscode-editorWidget-background, rgba(255,255,255,0.03));
-	color: var(--vscode-foreground, #ccc);
+	background: var(--pill-bg);
+	color: var(--pill-fg);
 	opacity: 0.9;
 	font-size: 11px;
 	line-height: 1.2;
@@ -6074,8 +6095,9 @@
 }
 .chat-bubble-footer-item.chat-footer-pill:hover {
 	opacity: 1;
-	background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
-	border-color: var(--vscode-focusBorder, rgba(128,128,128,0.5));
+	background: var(--pill-bg-strong);
+	/* 同色系加深（**灰色**），而非 focusBorder 蓝 ✗ */
+	border-color: var(--pill-border-strong);
 }
 .chat-footer-pill-icon {
 	font-size: 12px;
@@ -6122,19 +6144,25 @@
 	flex-shrink: 0;
 }
 
-/* ── live 态 pill（2026-09-18）──
-   处理中期间：数值仍在累计，用蓝色描边 + 图标呼吸与完成态（静止）区分。
-   这是去掉「处理中」文字后唯一的「进行中」视觉信号来源之一。 */
+/* ── live 态 pill（2026-09-18 建 / ★ 2026-09-19 改为灰阶）──
+   处理中期间数值仍在累计。原设计用**蓝色描边 + 图标呼吸**与完成态区分 ✗，
+   但用户要求三类药丸统一为**黑白灰** ✓ ⇒ live 现在只做两件事：
+     · 灰阶**加深一档**（`--pill-border-strong` / `--pill-bg-strong` ✓，仍是灰、**不是蓝** ✓）；
+     · 图标呼吸动画 ✓ —— 真正的"进行中"主信号是左侧的 spinner ✓。
+   ⚠ 必须保留的教训（勿重犯）：`--vscode-progressBar-background` 是**进度条填充色**，
+   在真实主题里**不透明** ✗ ⇒ 曾拿它直接当 `background`、而图标/文字又用**同一个**变量
+   ⇒ **蓝底蓝字 = 实心蓝块**（用户截图：三个"空药丸" ✗✗）。
+   结论：**主题强调色不要当"中性底色/描边"用** ✓；中性色一律从 `--vscode-foreground` 按比例混 ✓。 */
 .chat-bubble-footer-item.chat-footer-pill.live {
-	border-color: var(--vscode-progressBar-background, rgba(60, 130, 246, 0.5));
-	background: var(--vscode-progressBar-background, rgba(60, 130, 246, 0.08));
+	border-color: var(--pill-border-strong);
+	background: var(--pill-bg-strong);
 }
 .chat-bubble-footer-item.chat-footer-pill.live .chat-footer-pill-icon {
-	color: var(--vscode-progressBar-background, #4a9eff);
+	color: var(--pill-fg);
 	animation: footer-pill-live-pulse 1.6s ease-in-out infinite;
 }
 .chat-bubble-footer-item.chat-footer-pill.live .chat-footer-pill-value {
-	color: var(--vscode-progressBar-background, #4a9eff);
+	color: var(--pill-fg);
 }
 @keyframes footer-pill-live-pulse {
 	0%, 100% { opacity: 0.9; }
@@ -7388,6 +7416,34 @@
 .chat-send-circle.chat-queue-circle:hover {
 	background: var(--ec-accent-hover, #79c0ff) !important;
 	transform: scale(1.08);
+}
+
+/* 「正在停止」态（★ 2026-09-19，优雅停止的用户提示 ✓）：
+   第一次点 Stop ⇒ 服务端走**优雅停止**（等当前 iteration 跑完 ✓），用户可能误以为"点了没反应" ✗
+   ⇒ 按钮进入**灰阶脉冲** + tooltip（见 `_markGracefulStopPending` ✓）。
+   刻意用**灰**而非强调色 ✓（对齐"黑白灰"的用量药丸约定 ✓），以便与「立即停（红）」「排队（蓝）」区分 ✓。 */
+.chat-send-circle.chat-stopping-circle {
+	background: color-mix(in srgb, var(--vscode-foreground, #ccc) 45%, transparent) !important;
+	animation: cancel-pulse 1.1s ease-in-out infinite;
+}
+.chat-send-circle.chat-stopping-circle:hover {
+	background: color-mix(in srgb, var(--vscode-foreground, #ccc) 60%, transparent) !important;
+}
+
+/* 处理中指示旁的「正在停止」小条（见 `_markGracefulStopPending` ✓）：
+   随「处理中」指示一起在 turn 结束时移除 ✓；复用药丸的中性灰 ✓。 */
+.chat-footer-stopping {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 11px;
+	line-height: 1.2;
+	color: var(--vscode-foreground, #ccc);
+	opacity: 0.9;
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground, #ccc) 30%, transparent);
+	border-radius: 12px;
+	padding: 3px 8px;
+	animation: footer-pill-live-pulse 1.6s ease-in-out infinite;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -12560,6 +12616,24 @@
 	padding: 6px 12px 8px 10px;
 }
 
+/* ── 逐行输出的「折叠区」（★ 2026-09-19，DOM 预算修复 ✓）──────────────────────
+   由 `lineFoldPlan.ts` + `renderFoldedOutputLines()` 使用：超长输出只渲染**首 head 行 + 尾 tail 行**，
+   中间未渲染的部分留在 `.terminal-output-mid` 里，点击 `.terminal-output-fold` **逐批**展开 ✓
+   （每批 300 行 ⇒ DOM 只随用户点击增长 ✓✓；节点数从"每行 3 个"的无限增长变为有上限 ✓）。
+
+   `display: contents` 是刻意的 ✓：本包装层**不应产生盒子** —— 否则它自己会变成一个块级盒子，
+   当 `.terminal-output-block` 将来改成 flex 列容器时，行会被塞进这个盒子内 ⇒ `gap`/对齐失效 ✗
+   （现在 block 布局下两种写法视觉相同 ✓，但这样写更稳 ✓）。 */
+.terminal-output-mid { display: contents; }
+.terminal-output-fold {
+	cursor: pointer;
+	user-select: none;
+	font-style: italic;
+	opacity: 0.75;
+	color: var(--vscode-descriptionForeground, #aaa);
+}
+.terminal-output-fold:hover { opacity: 1; text-decoration: underline; }
+
 /* 2026-08-21：每行 stdout/stderr 单独 div，> 前缀对齐截图样式 */
 .terminal-output-line {
 	display: flex;
@@ -12867,6 +12941,37 @@
 .write-file-header .tool-import-kb-link { flex: 0 0 auto; white-space: nowrap; }
 /* `+N -N` 属关键信息，不参与收缩（否则窄卡片下会先被省略掉） */
 .write-file-header .write-file-diff-stats { flex: 0 0 auto; }
+
+/* ── hover 按钮「浮层化」（2026-09-19）─────────────────────────────────
+   用户报「patch 卡片中，文本允许占满 title，按钮不挤占文本空间」✓。
+   病根：`查看文件` / `导入知识库` 是 **hover 才显形**（`.tool-view-file-link { opacity: 0 }` ✓），
+   但它们是 `.tool-header-right` 的**流内子元素** ✗，而该容器 `flex: 0 0 auto` ⇒
+   **不 hover 时也一直占着约 170px** ✗✗（看不见却挤窄标题 ✓ 与截图完全吻合）。
+   ⇒ 把这两个按钮放进 `headerEl` 下的**绝对定位容器**：不参与宽度分配 ✓，
+     标题可占满到「始终可见」的折叠按钮之前 ✓；hover 时按钮浮在标题尾部 ✓。
+   ⚠ 三个必须点（缺一就会出问题）：
+     ① 锚点：`.write-file-header { position: relative }` ✓；
+     ② `right: 26px` 让开右侧**始终可见**的折叠按钮（`.tool-collapse-btn` ✓）；
+     ③ `pointer-events`：`opacity: 0` 的元素**仍会接收点击** ✗ ⇒ 隐藏时必须 `none`，
+        hover 时才恢复 ⇒ 否则标题尾部会被两个"看不见的按钮"挡住点击 ✗✗。 */
+.write-file-header { position: relative; }
+.write-file-header .write-file-hover-actions {
+	position: absolute;
+	right: 26px;
+	top: 50%;
+	transform: translateY(-50%);
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	pointer-events: none;
+}
+.write-file-header:hover .write-file-hover-actions { pointer-events: auto; }
+/* 浮层压在标题尾部 ⇒ 需要**不透明底**，否则与文件名文字糊在一起（按钮原本是 transparent ✗） */
+.write-file-header .write-file-hover-actions .tool-view-file-link,
+.write-file-header .write-file-hover-actions .tool-import-kb-link {
+	background: var(--vscode-editor-background, #1e1e1e);
+	margin-right: 0;
+}
 .write-file-tool-card > .tool-header-children { order: 2; }
 
 /* 写文件卡片：隐藏 title 前端 chevron（标题文本即可点击） */

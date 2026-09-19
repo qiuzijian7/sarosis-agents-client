@@ -6,6 +6,9 @@
  *  首次使用时自动下载 ONNX 模型 (~25MB), 之后完全离线
  *--------------------------------------------------------------------------------------------*/
 
+import { createEmbeddingProvider } from './embeddingProviders.js';
+import type { EmbeddingProvider } from './noopProvider.js';
+
 export interface VectorSearchResult {
 	id: string;
 	score: number;
@@ -161,7 +164,39 @@ export function getEmbeddingDiagnostics(): { available: boolean; loading: boolea
 	};
 }
 
+// ─── P1-1：远端 embedding provider（2026-09-19 从 `_unused/` 恢复）──────────────
+// 懒加载 + 缓存；创建失败则永久标记不可用（避免每次 embed 都重复尝试）。
+let _remoteProvider: EmbeddingProvider | null | undefined = undefined;
+function getRemoteEmbeddingProvider(): EmbeddingProvider | null {
+	if (_remoteProvider !== undefined) { return _remoteProvider; }
+	try {
+		_remoteProvider = createEmbeddingProvider();
+		if (_remoteProvider) {
+			console.log(`[AgentMemory] 远端 embedding provider 已启用: ${_remoteProvider.name} (${_remoteProvider.dimensions} 维)`);
+		}
+	} catch (err) {
+		console.warn(`[AgentMemory] 远端 embedding provider 创建失败（回退本地 xenova）: ${err instanceof Error ? err.message : String(err)}`);
+		_remoteProvider = null;
+	}
+	return _remoteProvider;
+}
+
+/** 当前生效的 embedding provider 信息（供 indexCache 记录/对比 —— 切换 provider ⇒ 维度变化 ⇒ 全量重建）。 */
+export function getEmbeddingProviderInfo(): { name: string; dimensions: number } | null {
+	const p = getRemoteEmbeddingProvider();
+	return p ? { name: p.name, dimensions: p.dimensions } : null;
+}
+
 export async function embed(text: string): Promise<Float32Array | null> {
+	// P1-1：优先远端 embedding provider（BYOK 配置 / OPENAI_API_KEY 等），质量更高；
+	// 无配置则本地 xenova（离线）；都失败则 null（trigram 兜底）。
+	const provider = getRemoteEmbeddingProvider();
+	if (provider) {
+		try {
+			const vec = await provider.embed(text);
+			if (vec) { return vec instanceof Float32Array ? vec : new Float32Array(vec); }
+		} catch { /* 远端失败（网络/quota/超时）⇒ 回退本地 xenova */ }
+	}
 	try {
 		const extractor = await getPipeline();
 		if (!extractor) return null;

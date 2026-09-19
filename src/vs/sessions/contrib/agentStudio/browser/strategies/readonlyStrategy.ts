@@ -81,9 +81,4 @@ export class ReadonlyStrategy implements IAgentLoopStrategy {
 			hardPermission: (tool: string) => WRITE_TOOLS.has(tool),
 		};
 	}
-
-	/** 只读模式无限迭代：不基于预算终止（由 LLM 自然结束） */
-	shouldTerminate(_ctx: PreLoopContext, _budget: IterationBudget): boolean {
-		return false;
-	}
 }
