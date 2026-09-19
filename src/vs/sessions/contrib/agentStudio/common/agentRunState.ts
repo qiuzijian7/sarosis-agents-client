@@ -65,12 +65,11 @@ export const RUN_STATE_LIMITS = {
 	ARGUMENT_CHURN_THRESHOLD: 5,
 } as const;
 
-/** AgentOS reducer 化灰度开关默认值（Step 4）。
- * 当前已全量落地 reducer 路径（Step 1~3 把 messages 写入与控制变量全部收口进 reduceRunState），
- * 故默认 'reducer'。回滚 = 翻此常量回 'legacy' 并恢复对应 legacy 代码
- * （legacy 路径已在 Step 2/3 收口后移除，仅留此开关位作为可观测 / 回滚锚点）。
- * 未来若需 per-session 覆盖，可在 IAgentTurnRequest 增加 reducerMode 字段并经此透传。 */
-export const AGENT_OS_DEFAULT_REDUCER_MODE: 'legacy' | 'reducer' = 'reducer';
+/** AgentOS 运行时状态由纯 reducer（reduceRunState）驱动。
+ * Step 1~3 已把 messages 写入与控制变量全部收口进 reduceRunState，
+ * legacy（闭包直写）路径随之移除，不再保留双模开关 —— 任何「翻开关回滚」
+ * 都是假的安全网，因为被回滚到的代码已不存在。回滚只能靠 git。
+ * 未来若需 per-session 覆盖，应重新引入显式字段并经 createInitialRunState 透传。 */
 
 /** 文件修改类工具名集合（loop 内 FILE_MODIFICATION_TOOLS，触发反思阶段） */
 export const FILE_MODIFICATION_TOOLS = new Set([
@@ -123,6 +122,179 @@ export interface IToolCallHistoryEntry {
 	readonly streakKey?: string;
 }
 
+/**
+ * 跨轮护栏计数（P0-a-3 收口）。
+ *
+ * 三组「连续 N 轮出现同一退化行为」的计数，各自带一个「提醒已发」的 latch。
+ * latch 存在的意义是避免每轮重复注入 —— 反复注入既污染 provider 前缀缓存，
+ * 又会被模型忽略（见 agentTurnExecutor 内各处注释记录的事故日志）。
+ */
+export interface AgentGuardrailCounters {
+	/** 连续只用文本搜索（未触及结构搜索工具）的轮数 */
+	textSearchStreak: number;
+	/** 文本搜索软上限提醒是否已注入（注入后 streak 不清零，硬上限仍可达） */
+	textSearchSoftReminderSent: boolean;
+	/** 连续「每轮只请求 1 个只读工具」的轮数 */
+	singleToolStreak: number;
+	/** 连续「整轮工具调用全被循环检测拦下」的轮数 */
+	allBlockedStreak: number;
+	/** 零进展强提醒是否已注入（同 latch 语义：只发一次） */
+	allBlockedReminderSent: boolean;
+}
+
+/**
+ * 收尾轮门控状态（P0-a-5 收口）。
+ *
+ * 与 AgentGuardrailCounters 的区别：后者是「连续 N 轮」的计数，本组是
+ * 「本轮是否已进入/已执行收尾」的布尔门控。二者语义不同，不可合并。
+ *
+ * ⚠ done 与 forced 不可合并（原代码注释已强调）：
+ *   · forced —— **指令意图**：「要求进入收尾轮」。由循环体多处触发
+ *     （零进展 / 文本搜索硬上限 / 迭代硬上限），循环头读取后据此禁工具。
+ *   · done   —— **事实记录**：「收尾轮已执行过」。循环头在收尾轮结束时置位，
+ *     仅用于循环尾的诊断日志，说明模型确实获得了无工具的一轮来收尾。
+ * 合并会导致「本轮没强制收尾」与「收尾轮尚未执行」被混为一谈。
+ *
+ * 为什么必须收进 state：forced 是**循环体写、循环头读**的跨阶段状态。
+ * 循环体一旦抽成独立函数（P0-b 目标），闭包共享即断，故需显式承载。
+ */
+export interface AgentWrapUpState {
+	/** 已执行过收尾轮（事实记录，仅用于收尾日志） */
+	done: boolean;
+	/** 要求进入收尾轮（指令意图，循环头据此禁用工具） */
+	forced: boolean;
+	/** 因零进展 / 文本搜索触发的「原因专属」收尾提醒已注入 */
+	reasonReminderInjected: boolean;
+	/** 因撞迭代硬上限触发的收尾提醒已注入（与上一项语义不同，不可合并） */
+	hardLimitReminderInjected: boolean;
+	/** 预算低位预警已注入 */
+	budgetLowWarned: boolean;
+}
+
+/** 收尾门控的初始值。 */
+export function createInitialWrapUpState(): AgentWrapUpState {
+	return {
+		done: false,
+		forced: false,
+		reasonReminderInjected: false,
+		hardLimitReminderInjected: false,
+		budgetLowWarned: false,
+	};
+}
+
+/**
+ * 轮次重试预算（P0-b 从 agentTurnExecutor 闭包收口而来）。
+ *
+ * 这 5 个计数器原先散落为 turn 级闭包 `let`，语义都是「单次 turn 内累计的上限额度」——
+ * 与 guardrails（模型行为倾向）不同，它们是**执行层重试预算**：达到上限即放弃续跑。
+ *
+ * ⚠ 收口理由与 guardrails 相同：这些计数是**循环体写、后续轮次读**的跨 iteration 状态。
+ * 一旦把循环体抽成独立函数（P0-b 目标），闭包共享即断，故需显式承载。
+ * 它们与「turn 级节流器」的区别：节流器（如 _lastPromptBudgetTotal）跨 turn 存活会
+ * 造成语义错位，故刻意不收口；而重试预算本就是「单次 turn 内」语义，随 runState 落盘
+ * 只是把它显式化，不改变生命周期（runState 每个 turn 重建）。
+ */
+export interface AgentRetryCounters {
+	/** 只出推理无正文，续跑次数（上限见 DEFAULT_REASONING_ONLY_RETRY_LIMIT）。 */
+	reasoningOnly: number;
+	/** 空响应（无文本无工具）续跑次数。 */
+	emptyResponse: number;
+	/** 输出被 length 截断续跑次数。 */
+	lengthTruncated: number;
+	/** 尾部结构截断（finishReason=stop 但末行没写完）续写次数（上限见 DEFAULT_TRUNCATED_TEXT_RETRY_LIMIT）。 */
+	truncatedText: number;
+	/**
+	 * 工具调用在协议层丢失（finish_reason=tool_calls 但 0 tool call）续跑次数。
+	 *
+	 * ⚠ 语义：只增不减，**重试成功后不重置** —— 上限是「单次 turn 内总额度」，
+	 * 而非「连续失败次数」。例：丢失→重试成功→再丢失，第二次的 attempt 是 2 而非 1。
+	 */
+	toolCallLost: number;
+	/** 瞬态错误（SSE 超时 / 网络 / 429 / 5xx）重试次数。 */
+	transientError: number;
+	/** 首 token 超时（冷启动）有界重试次数（预热优化）。 */
+	firstTokenTimeout: number;
+}
+
+/** 轮次重试预算初始值（全部归零）。 */
+export function createInitialRetryCounters(): AgentRetryCounters {
+	return {
+		reasoningOnly: 0,
+		emptyResponse: 0,
+		lengthTruncated: 0,
+		truncatedText: 0,
+		toolCallLost: 0,
+		transientError: 0,
+		firstTokenTimeout: 0,
+	};
+}
+
+/**
+ * 从 checkpoint 的原始值窄化重试预算：逐字段校验类型与有限性，非法字段回落到 base。
+ * 与 normalizeGuardrailCounters 同姿态 —— 旧快照缺字段或字段写坏都不应崩。
+ * 额外校验 Number.isFinite：NaN / Infinity 会让 `count >= LIMIT` 判定失真。
+ */
+export function normalizeRetryCounters(raw: unknown, base: AgentRetryCounters): AgentRetryCounters {
+	if (!isPlainObject(raw)) { return { ...base }; }
+	const source = raw as Record<string, unknown>;
+	const num = (v: unknown, fallback: number): number =>
+		(typeof v === 'number' && Number.isFinite(v) && v >= 0) ? v : fallback;
+	return {
+		reasoningOnly: num(source.reasoningOnly, base.reasoningOnly),
+		emptyResponse: num(source.emptyResponse, base.emptyResponse),
+		lengthTruncated: num(source.lengthTruncated, base.lengthTruncated),
+		truncatedText: num(source.truncatedText, base.truncatedText),
+		toolCallLost: num(source.toolCallLost, base.toolCallLost),
+		transientError: num(source.transientError, base.transientError),
+		firstTokenTimeout: num(source.firstTokenTimeout, base.firstTokenTimeout),
+	};
+}
+
+/**
+ * 从 checkpoint 的原始值窄化收尾门控：逐字段校验类型，非法字段回落到 base。
+ * 与 normalizeGuardrailCounters 同姿态 —— 旧快照缺字段或字段写坏都不应崩。
+ */
+export function normalizeWrapUpState(raw: unknown, base: AgentWrapUpState): AgentWrapUpState {
+	if (!isPlainObject(raw)) { return { ...base }; }
+	const source = raw as Record<string, unknown>;
+	return {
+		done: typeof source.done === 'boolean' ? source.done : base.done,
+		forced: typeof source.forced === 'boolean' ? source.forced : base.forced,
+		reasonReminderInjected: typeof source.reasonReminderInjected === 'boolean' ? source.reasonReminderInjected : base.reasonReminderInjected,
+		hardLimitReminderInjected: typeof source.hardLimitReminderInjected === 'boolean' ? source.hardLimitReminderInjected : base.hardLimitReminderInjected,
+		budgetLowWarned: typeof source.budgetLowWarned === 'boolean' ? source.budgetLowWarned : base.budgetLowWarned,
+	};
+}
+
+/** 护栏计数的初始值（全部归零）。 */
+export function createInitialGuardrailCounters(): AgentGuardrailCounters {
+	return {
+		textSearchStreak: 0,
+		textSearchSoftReminderSent: false,
+		singleToolStreak: 0,
+		allBlockedStreak: 0,
+		allBlockedReminderSent: false,
+	};
+}
+/**
+ * 从 checkpoint 的原始值窄化护栏计数：逐字段校验类型，非法字段回落到 base。
+ * 旧版本 checkpoint 不含该字段（raw 为 undefined）时整体回落。
+ */
+export function normalizeGuardrailCounters(
+	raw: unknown,
+	base: AgentGuardrailCounters,
+): AgentGuardrailCounters {
+	if (!isPlainObject(raw)) { return { ...base }; }
+	const source = raw as Record<string, unknown>;
+	return {
+		textSearchStreak: typeof source.textSearchStreak === 'number' ? source.textSearchStreak : base.textSearchStreak,
+		textSearchSoftReminderSent: typeof source.textSearchSoftReminderSent === 'boolean' ? source.textSearchSoftReminderSent : base.textSearchSoftReminderSent,
+		singleToolStreak: typeof source.singleToolStreak === 'number' ? source.singleToolStreak : base.singleToolStreak,
+		allBlockedStreak: typeof source.allBlockedStreak === 'number' ? source.allBlockedStreak : base.allBlockedStreak,
+		allBlockedReminderSent: typeof source.allBlockedReminderSent === 'boolean' ? source.allBlockedReminderSent : base.allBlockedReminderSent,
+	};
+}
+
 // ─── State schema ──────────────────────────────────────────────────
 export interface AgentRunState {
 	/** 主对话线程（reducer: append / compact） */
@@ -133,6 +305,36 @@ export interface AgentRunState {
 	phase: StreamPhase;
 	/** 非法工具名尝试次数（invalid-tool 熔断） */
 	invalidToolNameCount: number;
+	/**
+	 * 跨轮护栏计数（P0-a-3 从 agentTurnExecutor 闭包收口而来）。
+	 *
+	 * 这些计数原先散落为循环内 `let`，跨 iteration 累积：
+	 *   · textSearchStreak —— 连续只用文本搜索、未触及结构搜索工具
+	 *   · singleToolStreak —— 连续多轮「每轮只请求 1 个只读工具」
+	 *   · allBlockedStreak —— 连续多轮「整轮工具调用全被循环检测拦下」
+	 * 收进 state 后，护栏判定可在快照上复现与单测，不再依赖闭包存活期。
+	 *
+	 * ── runState 收口边界（P0-a 结论，新增字段前必读）──────────────
+	 * 判据：该状态跨 turn 存活后语义是否仍然成立。
+	 *
+	 * 【应收口】跨 turn 有意义的「模型行为倾向」——某个模型在持续做错事，
+	 * 这个倾向不因新 turn 开始而消失。例如 guardrails 各计数、wrapUp 门控、
+	 * work、messages。
+	 *
+	 * 【不应收口】节流器与重试预算 —— 其语义边界就是「当前这一次执行」，
+	 * 跨 turn 存活会造成语义错位（比闭包双写更隐蔽）：
+	 *   · _lastPromptBudgetTotal     —— 收口后次 turn 首次上报被吞掉
+	 *   · _terminalEmptyOutputCount  —— 带着上轮计数继续累计，误触发收尾
+	 *   · _softBudgetNextReminderAtMs—— 锚在上轮 _turnStartedAt，节流失效
+	 *   · _xmlToolLeakAttempts       —— 跨轮累计使新 turn 一开局即超限
+	 *   · _wrapUpInsertIdx           —— 纯轮内临时值，每次注入前重算
+	 * 这些留在 executeAgentTurnDirect 的 turn 级闭包中，天然每 turn 重置。
+	 */
+	guardrails: AgentGuardrailCounters;
+	/** 收尾轮门控（P0-a-5 收口）。 */
+	wrapUp: AgentWrapUpState;
+	/** 轮次重试预算（P0-b 收口）。 */
+	retry: AgentRetryCounters;
 	/** 反思阶段已触发次数 */
 	reflectCount: number;
 	/** 是否执行过文件修改类工具（触发反思的前提） */
@@ -145,8 +347,6 @@ export interface AgentRunState {
 	endedToolIds: string[];
 	/** 上一轮真实 prompt token（跨 turn 持久化的压缩判定依据） */
 	lastRealPromptTokens: number;
-	/** 灰度模式标记 */
-	reducerMode: 'legacy' | 'reducer';
 	/** ChatMode-independent mutable plan/work runtime state. */
 	work: AgentWorkState;
 	/** 多 agent 图运行时子状态（supervisor / AgentCommand(goto)）。单 agent 为 undefined。 */
@@ -158,7 +358,27 @@ export interface AgentRunState {
 	preExploreDone: boolean;
 	/** pre-explore 结果文本（resume 时回填 messages） */
 	preExploreResult?: string;
-	/** 循环快照时 messages 数组的完整副本（resume 时作为初始 messages） */
+	/**
+	 * 循环消息的**兼容镜像**（与 `messages` 同步写入，见 reducer 的 `SET_LOOP_MESSAGES`）。
+	 *
+	 * 历史：P0-a-2 之前本字段是循环消息的唯一真实载体，`messages` 恒为空数组。
+	 * P0-a-2 的调用点迁移只改了名字（`messages.push` → `syncMessages()`），底层仍在写
+	 * 本字段 —— 形成「名字写 messages、实际写 loopMessages」的隐蔽分叉，直到复核才被发现。
+	 * 现已重定向：`messages` 为真相源，本字段同步镜像。
+	 *
+	 * 保留原因：`executeAgentTurnDirect` 的恢复分支需读取它来兼容历史旧快照，
+	 * 否则旧断点续跑会丢失全部对话历史。
+	 *
+	 * 删除条件（需同时满足，缺一不可）：
+	 *   1. 无残留旧快照 —— 检查用户 workspace storage 中 `agentStudio.turnCheckpoint.*`
+	 *      是否仍存在 `messages === []` 且 `loopMessages` 非空的条目；
+	 *   2. 已加版本门槛 —— `restoreRunState` 对旧版本快照显式丢弃或迁移，
+	 *      使旧快照不再进入恢复路径。
+	 * ⚠ 在此之前删除会导致旧断点续跑**静默丢失全部对话历史**（不报错，模型直接失忆）。
+	 *
+	 * 另注：快照落盘是节流的（每 3 轮一次），且存储无 TTL —— 旧格式条目不会自行消亡，
+	 * 故第 1 条无法靠"等一段时间"自然满足。
+	 */
 	loopMessages?: AgentRunMessage[];
 	/** V3: 本次运行使用的范式（resume 时据此重建同一策略，避免范式漂移 R3） */
 	paradigm?: AgentParadigm;
@@ -179,6 +399,16 @@ export type AgentAction =
 	| { type: 'SET_LAST_PROMPT_TOKENS'; value: number }
 	| { type: 'MARK_FILE_MODIFIED' }
 	| { type: 'WORK_EVENT'; event: AgentWorkEvent }
+	/**
+	 * 护栏计数更新（P0-a-3）：按 patch 做部分覆盖，未提及的字段保持原值。
+	 * 用 patch 而非整对象替换，是为了让调用点只表达「我改了哪个计数」，
+	 * 避免整对象覆盖时漏字段导致计数被静默清零。
+	 */
+	| { type: 'PATCH_GUARDRAILS'; patch: Partial<AgentGuardrailCounters> }
+	/** 收尾门控部分更新（P0-a-5）；语义同 PATCH_GUARDRAILS。 */
+	| { type: 'PATCH_WRAP_UP'; patch: Partial<AgentWrapUpState> }
+	/** 轮次重试预算部分更新（P0-b）；语义同 PATCH_GUARDRAILS。 */
+	| { type: 'PATCH_RETRY'; patch: Partial<AgentRetryCounters> }
 	// ─── V3: 单 agent 断点续跑 ────────────────────────────────────
 	| { type: 'SAVE_BUDGET'; snapshot: BudgetSnapshot }
 	| { type: 'SET_PRE_EXPLORE'; done: boolean; result?: string }
@@ -201,7 +431,6 @@ export interface CreateInitialRunStateRequest {
 	readonly messages?: ReadonlyArray<AgentRunMessage>;
 	/** 跨 turn 持久化的上一轮真实 prompt token（可选，默认 0） */
 	readonly lastRealPromptTokens?: number;
-	readonly reducerMode?: 'legacy' | 'reducer';
 	readonly workState?: AgentWorkState;
 	/** 多 agent 图运行时初始子状态（可选：图模式由 Step C 解释器注入，单 agent 省略 → undefined） */
 	readonly graphRunState?: AgentGraphRunState;
@@ -221,14 +450,16 @@ export function createInitialRunState(request: CreateInitialRunStateRequest): Ag
 		iteration: 0,
 		phase: 'idle',
 		invalidToolNameCount: 0,
+		guardrails: createInitialGuardrailCounters(),
+		wrapUp: createInitialWrapUpState(),
 		reflectCount: 0,
 		hasModifiedFiles: false,
 		toolCallHistory: [],
 		startedToolIds: [],
 		endedToolIds: [],
 		lastRealPromptTokens: request.lastRealPromptTokens ?? 0,
-		reducerMode: request.reducerMode ?? AGENT_OS_DEFAULT_REDUCER_MODE,
 		work: request.workState ?? createInitialWorkState(),
+		retry: createInitialRetryCounters(),
 		graph: request.graphRunState,
 		// V3 defaults
 		budgetSnapshot: undefined,
@@ -494,6 +725,15 @@ export function reduceRunState(state: AgentRunState, action: AgentAction): Agent
 		case 'WORK_EVENT':
 			return { ...state, work: reduceWorkState(state.work, action.event) };
 
+		case 'PATCH_GUARDRAILS':
+			return { ...state, guardrails: { ...state.guardrails, ...action.patch } };
+
+		case 'PATCH_WRAP_UP':
+			return { ...state, wrapUp: { ...state.wrapUp, ...action.patch } };
+
+		case 'PATCH_RETRY':
+			return { ...state, retry: { ...state.retry, ...action.patch } };
+
 		// ─── V3: 单 agent 断点续跑 ──────────────────────────────────
 		case 'SAVE_BUDGET':
 			return { ...state, budgetSnapshot: { ...action.snapshot } };
@@ -506,7 +746,14 @@ export function reduceRunState(state: AgentRunState, action: AgentAction): Agent
 			};
 
 		case 'SET_LOOP_MESSAGES':
-			return { ...state, loopMessages: [...action.messages] };
+			// P0-a-2 修正：过去此处只写 loopMessages，导致 runState.messages 恒为空数组 ——
+			// 表现为「名字写 messages、实际写 loopMessages」的隐蔽分叉，快照里的 messages
+			// 一直是空壳。现在 messages 是真身，loopMessages 仅作旧快照恢复用的兼容镜像。
+			return {
+				...state,
+				messages: [...action.messages],
+				loopMessages: [...action.messages],
+			};
 
 		case 'SET_PARADIGM':
 			return { ...state, paradigm: action.paradigm };
@@ -857,10 +1104,18 @@ export interface ITaggedIdXmlHit {
  *   · 本函数是**溯源**用的宽扫描（认任何 `<名称:ID>` 形状），求**不漏**——
  *     已知变体只有 tool_calls/arg_key/arg_value/tool_sep，但不能假设只有这些，
  *     溯源阶段漏掉未知变体等于白扫。
- * 二者用途相反，宽扫描的结果**不可**用于拦截/改写，仅供日志。
+ * 二者用途相反：**宽扫描的结果不得直接当作「已确认泄漏」**（它认任何 `<名称:ID>` 形状）。
  *
- * ID 限定为「6+ 位十六进制」或「纯数字」——这是模型序列化调用时生成的调用 ID
- * 特征，可滤掉 `<http:8080>` 之类正常文本。
+ * ⚠ 2026-09-16 更正：原注释有两处与实现不符，按事实改写 ——
+ *   ① 原文称 ID 限定为「6+ 位十六进制 / 纯数字」**可滤掉** `http:8080` 之类正常文本：
+ *      **不成立** —— `http` 是合法标签名、`8080` 命中 `\d+` ⇒ 它会被匹配；
+ *   ② 原文称本「不可用于改写」：实际紧随其后的 `stripTaggedIdXmlTags` 就是用它改写，
+ *      且 `assistantVisibleText` 的展示清洗**刻意**按形态整体剥离（其注释：逐个枚举
+ *      标签名永远追不上模型的新变体，`tool_sep` 正是漏掉的那个）。
+ *   ⇒ **保留宽剥离是刻意的**：形状本身就是 priming 源（模型模仿的是形状，不是某个名字），
+ *      ToolResult 回灌路径（2026-09-16）与助手文本展示路径都按此口径。已知代价 =
+ *      极少数 `<名称:数字>` 正常文本也会被换成占位符；可接受，因为占位符明确写着
+ *      「此处有一段 XML 形式的工具调用写法，已移除」，属可见替换而非静默篡改。
  */
 const TAGGED_ID_SCAN_RE = /<\s*\/?\s*([A-Za-z_][\w.-]*)\s*:\s*([0-9a-fA-F]{6,}|\d+)\s*>/g;
 
@@ -1020,6 +1275,106 @@ export const DEFAULT_LENGTH_TRUNCATED_RETRY_LIMIT = 2;
 export const DEFAULT_TOOL_CALL_LOST_RETRY_LIMIT = 3;
 
 /**
+ * 尾部**结构**截断（finishReason=stop 但末行明显没写完）续写次数上限。
+ *
+ * 取 1（其他类是 2）：本判据是**结构启发式**，存在误判可能（见 `detectTruncatedTail`
+ * 的「已知代价」）⇒ 只给一次机会，误判时最多多花一轮；而 `length` 是 provider 的
+ * 权威信号（模型确实被输出上限截住），保留 2 次。
+ */
+export const DEFAULT_TRUNCATED_TEXT_RETRY_LIMIT = 1;
+
+/**
+ * 尾部「明显没写完」的结构判据（2026-09-18）。
+ *
+ * ## 为什么需要
+ * 上游会**在没有截断信号的情况下提前收尾**。实证（用户报「llm 显示的信息尾部被截断」，
+ * 会话 `sess_mu3n6ll4_kahic6` 的 msg `…_4_4x2yz`）：
+ *   · 落盘与 UI 的文本都停在 `…防止下一轮再按陈旧计划做重复劳动。\n\n## 剩`；
+ *   · 我方剥离前的原始 delta 也停在同一处（`[AgentDriver] RAW model output … tail="…## 剩"`）；
+ *   · provider 侧 SSE 抓包 `[345] finish_reason:"stop"` 紧跟最后一个内容块
+ *     （`outputTokens=345`，离输出上限极远）。
+ * ⇒ 三方一致：**上游自己停了**，不是我方丢包/渲染截断。而 `classifyIncompleteTurn`
+ * 对这种轮次只能判 `complete`（有可见文本 + stop）⇒ 用户看到半句话，我方不做任何补救。
+ *
+ * ## 判据的性质（务必保持）
+ * 只看**结构**：末尾是不是「刚开始写就断了」的 Markdown 片段。刻意**不**做
+ * 「像不像是总结/承诺/未完成的意图」这类自然语言语义判断（本模块既有纪律）。
+ *
+ * ## 规则（任一命中即视为截断）
+ *   1. `unclosed-code-fence` —— ``` / ~~~ 围栏计数为奇数（开了没关）；
+ *   2. `dangling-heading`     —— 末行是 `#{1,6}` + 至多 1 个可见字符（如 `## 剩`）；
+ *   3. `dangling-list-marker` —— 末行只有列表/引用标记（`-` / `1.` / `>` …）；
+ *   4. `dangling-table-rule`  —— 末行是表格分隔行（`|---|`）—— 表头写了、行还没写。
+ *
+ * ## 已知代价（刻意接受，故上限只有 1 次）
+ * 极少数「完整答复的末行恰好是 1 字标题 / 空列表项 / 未闭合围栏示例」会被误判 ⇒
+ * 触发**一次**续写；续写指令明确要求「不要重写已有内容」。相比「半句话静默交付」，可接受。
+ */
+export type TruncatedTailReason =
+	| 'unclosed-code-fence'
+	| 'dangling-heading'
+	| 'dangling-list-marker'
+	| 'dangling-table-rule';
+
+export function detectTruncatedTail(text: string): TruncatedTailReason | null {
+	if (!text) { return null; }
+	const body = text.replace(/\s+$/, '');
+	if (!body) { return null; }
+	const lines = body.split('\n');
+
+	// ① 未闭合围栏：整段计数（截断可能把闭合围栏切掉，或只留下半个标记）
+	let fences = 0;
+	for (const line of lines) {
+		if (/^\s{0,3}(?:```|~~~)/.test(line)) { fences++; }
+	}
+	if (fences % 2 === 1) { return 'unclosed-code-fence'; }
+
+	// 末行判据：取最后一个非空行
+	let last = '';
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (lines[i].trim().length > 0) { last = lines[i].trim(); break; }
+	}
+	if (!last) { return null; }
+	// ② 悬空标题：`##` 后至多 1 个字符（本次事故正是 `## 剩`）
+	if (/^#{1,6}[ \t]*\S?$/.test(last)) { return 'dangling-heading'; }
+	// ③ 悬空列表 / 引用标记
+	if (/^(?:[-*+]|\d{1,3}[.)]|>)[ \t]*$/.test(last)) { return 'dangling-list-marker'; }
+	// ④ 表格分隔行（`|---|` / `|:--:|`）落在末行 = 表格还没开始写
+	if (last.includes('|') && /^\|?[\s:|-]*-[\s:|-]*\|?$/.test(last)) { return 'dangling-table-rule'; }
+	return null;
+}
+
+/**
+ * 尾部截断的**续写**指令（刻意不复用 `resolveRecoveryInstruction` 那套「无进展」阶梯）。
+ *
+ * 与前四类的本质差别：那几类要模型**换一种做法**（去调工具 / 给结论），文案以
+ * 「NO PROGRESS … you MUST …」开头；本类是「你写得好，只是被中断了」——若照搬那套文案，
+ * 模型会以为自己做错了而**重来一遍**，结果是把半截答复丢掉、整段重写
+ * （用户看到的仍是「同一段内容被重放」，与 2026-08 那次 reflect 措辞事故同族）。
+ * 故此处明确三条：从中断处继续 / 不要重写 / 若其实已写完就回一行 DONE（可自证结束）。
+ */
+export function resolveTruncatedTextContinuationInstruction(attempt: number = 1): string {
+	const lines = [
+		'<system-reminder>',
+		'Your previous reply was cut off mid-way — the text stops in the middle of a structure',
+		'(e.g. right after a heading marker, or inside an unclosed code fence).',
+		'Continue EXACTLY from where it stopped:',
+		'- Do NOT restart, and do NOT repeat or re-summarize anything you already wrote.',
+		'- Do NOT apologize or explain what happened; just resume the remaining content.',
+		'- Keep the same formatting/structure you were using.',
+		'If the reply was in fact already complete, reply with the single short line: DONE',
+		'</system-reminder>',
+	];
+	if (attempt >= 2) {
+		lines.splice(
+			lines.length - 1, 0,
+			'LAST CHANCE — another incomplete reply ends this turn immediately.',
+		);
+	}
+	return lines.join('\n');
+}
+
+/**
  * 恢复阶梯：根据 kind + attempt 返回第1次(soft remind)或第2次(final chance)的注入文本。
  * 第3次及以上由调用方 hard halt（不再注入指令，直接超限结束）。
  * attempt 从 1 开始（第1次=used+1）。
@@ -1149,7 +1504,14 @@ export function isContextOverflowError(error: unknown): boolean {
  * 'tool_calls'（模型声明已发出工具调用），但本轮实际未收到任何 tool call。
  * 典型成因见 extensions/codebuddy-provider 的 delta.content 提前 return 遮蔽同帧
  * tool_calls（日志 1787882646767）。此时模型意图未完成，必须续跑而非判 complete。 */
-export type IncompleteTurnKind = 'complete' | 'length' | 'tool-call-lost' | 'reasoning-only' | 'empty' | 'filtered' | 'failed';
+/**
+ * `truncated-text`（2026-09-18 新增，判据见 `detectTruncatedTail`）：**有可见文本**
+ * 但末行处于「刚开始写就断了」的 Markdown 结构 —— 上游以 `finish_reason=stop` 提前收尾
+ * 的典型形态（实证见 `detectTruncatedTail` 注释）。与前几类的关键差别：本轮文本是
+ * **有效产物**（不是空响应/幻觉/过渡话术）⇒ 续写时**不得** `discard_prior_text`，
+ * 指令是「从中断处接着写」而非「换个做法」（见 `resolveTruncatedTextContinuationInstruction`）。
+ */
+export type IncompleteTurnKind = 'complete' | 'length' | 'tool-call-lost' | 'truncated-text' | 'reasoning-only' | 'empty' | 'filtered' | 'failed';
 
 export interface ClassifyIncompleteTurnParams {
 	/** provider 本轮结束原因（finish_reason / stop_reason），可能缺省 */
@@ -1178,11 +1540,20 @@ export function classifyIncompleteTurn(params: ClassifyIncompleteTurnParams): In
 	if (params.finishReason === 'tool_calls' && !params.hasToolCalls) {
 		return 'tool-call-lost';
 	}
-	if (params.hasVisibleText) { return 'complete'; }
+	// ── finishReason 权威信号（★ 2026-09-18 顺序修正）────────────────────
+	// `length` / `max_tokens` 是 provider 明确宣告「模型没写完、被输出上限截住」。
+	// 它必须**先于** hasVisibleText 判定 —— 旧顺序把「有可见文本」一律当完成，
+	// 于是「写了半篇就被截断」这种最典型的截断永远判 complete：
+	// `DEFAULT_LENGTH_TRUNCATED_RETRY_LIMIT` 那套续跑阶梯成了死代码，而
+	// `languageModelsBridge` 里捕获 finish_reason 的注释写明用途正是
+	// 「使 classifyIncompleteTurn 能检测 length 截断」⇒ 注释承诺被实现顺序废掉。
+	// ⚠ 调用方约束：`length` **可能伴随可见文本** ⇒ 续写时不得 `discard_prior_text`
+	//   （见 `incompleteTurnDiscardReason`），否则半篇答复会被丢掉让模型重写。
 	const fr = params.finishReason;
+	if (fr === 'length' || fr === 'max_tokens' || fr === 'max_completion_tokens') { return 'length'; }
+	if (params.hasVisibleText) { return 'complete'; }
 	if (fr === 'content_filter' || fr === 'content-filter') { return 'filtered'; }
 	if (fr === 'error') { return 'failed'; }
-	if (fr === 'length' || fr === 'max_tokens' || fr === 'max_completion_tokens') { return 'length'; }
 	if (params.hasThinking) { return 'reasoning-only'; }
 	return 'empty';
 }
@@ -1196,6 +1567,8 @@ export function classifyIncompleteTurn(params: ClassifyIncompleteTurnParams): In
 export function resolveIncompleteTurnRetryInstruction(kind: IncompleteTurnKind, attempt?: number): string | null {
 	switch (kind) {
 		case 'length': return resolveRecoveryInstruction('length', attempt ?? 1);
+	// 尾部截断：**不是**「无进展」阶梯（那套文案会让模型重写整段），见该函数注释。
+	case 'truncated-text': return resolveTruncatedTextContinuationInstruction(attempt ?? 1);
 		case 'reasoning-only': return resolveRecoveryInstruction('reasoning-only', attempt ?? 1);
 		case 'empty': return resolveRecoveryInstruction('empty', attempt ?? 1);
 		// 工具调用丢失：模型声明要调工具但一个都没送达 → 语义等同「未推进」，
@@ -1206,8 +1579,17 @@ export function resolveIncompleteTurnRetryInstruction(kind: IncompleteTurnKind, 
 	}
 }
 
-export function incompleteTurnDiscardReason(kind: IncompleteTurnKind): 'unfinished-intent' | 'empty-recovery' | 'filtered' | 'failed' {
+export function incompleteTurnDiscardReason(
+	kind: IncompleteTurnKind,
+): 'unfinished-intent' | 'empty-recovery' | 'filtered' | 'failed' | undefined {
 	switch (kind) {
+		// ★ 2026-09-18：`length` / `truncated-text` 一律**保留**本轮文本（返回 undefined）。
+		// 这两类的可见文本是**有效产物**（只是没写完）：丢弃会让模型把整段重写完
+		// （用户看到同一段内容被重放），并把用户眼前已显示的内容清空；而它们的续跑
+		// 指令本就写着「从中断处继续、不要从头再来」。
+		case 'length':
+		case 'truncated-text':
+			return undefined;
 		case 'filtered': return 'filtered';
 		case 'failed': return 'failed';
 		case 'reasoning-only': return 'empty-recovery';
@@ -1220,6 +1602,7 @@ export function incompleteTurnRetryLimit(kind: IncompleteTurnKind): number {
 		case 'reasoning-only': return DEFAULT_REASONING_ONLY_RETRY_LIMIT;
 		case 'empty': return DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT;
 		case 'length': return DEFAULT_LENGTH_TRUNCATED_RETRY_LIMIT;
+		case 'truncated-text': return DEFAULT_TRUNCATED_TEXT_RETRY_LIMIT;
 		case 'tool-call-lost': return DEFAULT_TOOL_CALL_LOST_RETRY_LIMIT;
 		default: return 0;
 	}
@@ -1252,6 +1635,10 @@ export function incompleteTurnUserNotice(
 		case 'length':
 			return '⚠️ 回复被长度上限截断，且续写至上限后仍不完整。\n\n建议：精简问题或拆分任务后重试。' +
 				(finishReason ? `\n\n（finishReason=${finishReason}）` : '');
+		case 'truncated-text':
+			return '⚠️ 上一条回复在写到一半时被上游提前结束（模型侧 stop，非长度上限），' +
+				'已自动接着写但仍未补全。\n\n建议：回一句「继续」让它接着写，或把问题拆小后重问。' +
+				(finishReason ? `\n\n（finishReason=${finishReason}）` : '');
 		case 'reasoning-only':
 			return '⚠️ 模型只产出了思考过程、未给出可见答复（已自动重试至上限）。\n\n建议：换个说法重试，或切换模型。' +
 				(finishReason ? `\n\n（finishReason=${finishReason}）` : '');
@@ -1272,6 +1659,27 @@ export function incompleteTurnUserNotice(
  *  v3: 新增 budgetSnapshot / preExploreDone / preExploreResult / loopMessages（单 agent 断点续跑）
  *      含可选 paradigm 字段（R3：resume 时重建同一策略，避免范式漂移） */
 export const AGENT_RUN_STATE_VERSION = 3;
+
+/**
+ * 恢复失败的分类（供调用方决策：记日志、丢弃、还是按新会话继续）。
+ *
+ * 之所以返回**分类**而不是布尔：调用方需要区分「没有 checkpoint」与
+ * 「checkpoint 存在但格式不可用」—— 前者是常态（新会话），后者是数据问题，
+ * 静默吞掉会让旧格式快照永久滞留且无人知晓。
+ */
+export type AgentRunStateRestoreFailure =
+	/** 不是对象 / 无 state 字段 */
+	| 'malformed'
+	/** version 高于本版本（未来格式，拒绝） */
+	| 'version-too-new';
+
+export interface AgentRunStateRestoreResult {
+	readonly state: AgentRunState;
+	/** 成功时为 undefined；失败时为分类，调用方据此决定是否记日志 / 清理 */
+	readonly failure?: AgentRunStateRestoreFailure;
+	/** 失败时携带原始 version（仅诊断用），无法解析时为 undefined */
+	readonly sourceVersion?: number;
+}
 
 export interface AgentRunStateSnapshot {
 	/** 快照格式版本 */
@@ -1302,24 +1710,35 @@ export function snapshotRunState(state: AgentRunState): AgentRunStateSnapshot {
  * - 快照形态下未知 / 过高 version → 回退初始（forward-compat 留口）。
  * - 部分字段缺失 / 类型不符 → 用 createInitialRunState 默认值补全，保证返回可安全消费。
  */
-function extractRawState(input: unknown): Record<string, unknown> | undefined {
-	if (!isPlainObject(input)) { return undefined; }
+function extractRawState(input: unknown): { raw?: Record<string, unknown>; failure?: AgentRunStateRestoreFailure; sourceVersion?: number } {
+	if (!isPlainObject(input)) { return { failure: 'malformed' }; }
 	// 快照形态 { version, state }
 	if (isPlainObject((input as Record<string, unknown>).state)) {
 		const v = (input as Partial<AgentRunStateSnapshot>).version;
 		if (typeof v === 'number' && v > AGENT_RUN_STATE_VERSION) {
-			return undefined; // 未知 / 过高版本 → 拒绝
+			return { failure: 'version-too-new', sourceVersion: v }; // 未知 / 过高版本 → 拒绝
 		}
-		return (input as Record<string, unknown>).state as Record<string, unknown>;
+		return { raw: (input as Record<string, unknown>).state as Record<string, unknown>, sourceVersion: v };
 	}
 	// 裸 AgentRunState（或 partial state）
-	return input as Record<string, unknown>;
+	return { raw: input as Record<string, unknown> };
 }
 
 export function restoreRunState(input: unknown): AgentRunState {
-	const raw = extractRawState(input);
-	if (!raw) { return createInitialRunState({}); }
-	return normalizeRunState(raw as Partial<AgentRunState>);
+	return restoreRunStateDetailed(input).state;
+}
+
+/**
+ * 同 `restoreRunState`，但额外返回失败分类（见 `AgentRunStateRestoreFailure`）。
+ * 需要区分「无 checkpoint」与「checkpoint 格式不可用」的调用方用这个版本。
+ * 两者共用同一实现，保证行为一致 —— 不要各自复制一份解析逻辑。
+ */
+export function restoreRunStateDetailed(input: unknown): AgentRunStateRestoreResult {
+	const { raw, failure, sourceVersion } = extractRawState(input);
+	if (!raw) {
+		return { state: createInitialRunState({}), failure: failure ?? 'malformed', sourceVersion };
+	}
+	return { state: normalizeRunState(raw as Partial<AgentRunState>), sourceVersion };
 }
 
 const VALID_PHASES: ReadonlyArray<StreamPhase> = [
@@ -1356,13 +1775,19 @@ function normalizeRunState(raw: Partial<AgentRunState>): AgentRunState {
 		iteration: typeof raw.iteration === 'number' ? raw.iteration : base.iteration,
 		phase,
 		invalidToolNameCount: typeof raw.invalidToolNameCount === 'number' ? raw.invalidToolNameCount : base.invalidToolNameCount,
+		// 逐字段窄化而非整体 `...raw.guardrails`：旧 checkpoint 无此字段（须回落默认），
+		// 且部分字段写坏的快照不应污染其余计数。
+		guardrails: normalizeGuardrailCounters(raw.guardrails, base.guardrails),
+		// 同姿态：旧 checkpoint 无 wrapUp 字段，须回落默认而非透传 undefined。
+		wrapUp: normalizeWrapUpState(raw.wrapUp, base.wrapUp),
+		// 同姿态：旧 checkpoint 无 retry 字段，须回落默认而非透传 undefined。
+		retry: normalizeRetryCounters(raw.retry, base.retry),
 		reflectCount: typeof raw.reflectCount === 'number' ? raw.reflectCount : base.reflectCount,
 		hasModifiedFiles: typeof raw.hasModifiedFiles === 'boolean' ? raw.hasModifiedFiles : base.hasModifiedFiles,
 		toolCallHistory: Array.isArray(raw.toolCallHistory) ? (raw.toolCallHistory as AgentRunState['toolCallHistory']) : base.toolCallHistory,
 		startedToolIds: Array.isArray(raw.startedToolIds) ? raw.startedToolIds : base.startedToolIds,
 		endedToolIds: Array.isArray(raw.endedToolIds) ? raw.endedToolIds : base.endedToolIds,
 		lastRealPromptTokens: typeof raw.lastRealPromptTokens === 'number' ? raw.lastRealPromptTokens : base.lastRealPromptTokens,
-		reducerMode: raw.reducerMode === 'legacy' || raw.reducerMode === 'reducer' ? raw.reducerMode : base.reducerMode,
 		work: isPlainObject(raw.work)
 			? {
 				mode: raw.work.mode === 'plan' ? 'plan' : 'work',

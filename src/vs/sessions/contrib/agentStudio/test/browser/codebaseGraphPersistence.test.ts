@@ -13,7 +13,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
-import { GraphPersistence, IArrayParseStats, PARSE_BATCH_ELEMENTS, forEachArrayBatch } from '../../browser/codebaseGraphPersistence.js';
+import { GraphPersistence, IArrayParseStats, PARSE_BATCH_ELEMENTS, PARSE_BATCH_MAX_ELEMENTS, forEachArrayBatch } from '../../browser/codebaseGraphPersistence.js';
 import { CodebaseGraphStore } from '../../browser/codebaseGraphStore.js';
 
 const PROJECT = 'test';
@@ -307,9 +307,13 @@ suite('forEachArrayBatch — 批量解析（性能改动的不变量）', () => 
 
 		const { items, batches } = await collect(text);
 		assert.deepStrictEqual(items, expected, '批解析结果必须与原生 JSON.parse 逐字段一致');
-		assert.ok(batches.length >= 3, `共 ${total} 个元素 / 每批上限 ${PARSE_BATCH_ELEMENTS} ⇒ 应至少 3 批，实际 ${batches.length}`);
+		// 2026-09-18 起批大小自适应（PARSE_BATCH_ELEMENTS 是下限，上限
+		// PARSE_BATCH_MAX_ELEMENTS）：解析快时 batchLimit 会翻倍，批数因此不是
+		// 纯除法结果。这里只锚定「多批」这一不变量 —— 真正的契约是元素完整一致
+		//（见上一行），以及任一批都不得越过自适应上限。
+		assert.ok(batches.length >= 2, `共 ${total} 个元素 ⇒ 应分多批，实际 ${batches.length}`);
 		for (const n of batches) {
-			assert.ok(n > 0 && n <= PARSE_BATCH_ELEMENTS, `单批元素数必须在 (0, ${PARSE_BATCH_ELEMENTS}]：${n}`);
+			assert.ok(n > 0 && n <= PARSE_BATCH_MAX_ELEMENTS, `单批元素数必须在 (0, ${PARSE_BATCH_MAX_ELEMENTS}]：${n}`);
 		}
 	});
 

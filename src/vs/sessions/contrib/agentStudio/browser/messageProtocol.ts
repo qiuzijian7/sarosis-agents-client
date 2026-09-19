@@ -27,6 +27,7 @@ export type RequestType =
 	| 'agents.selected'
 	| 'agents.getLastSelected'
 	| 'agents.openSettings'
+	| 'agents.steeringMessage'
 	| 'workspace.list'
 	| 'workspace.get'
 	| 'workspace.create'

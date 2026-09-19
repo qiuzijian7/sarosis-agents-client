@@ -193,6 +193,36 @@ export const graphStoreMigrations: readonly IGraphStoreMigration[] = [
 	},
 ];
 
+/**
+ * ★★ 2026-09-18（对齐 CBM 的自定义分词 `cbm_camel_split`）：把标识符按
+ * camelCase / PascalCase / 连续大写（缩略词）/ 下划线边界**拆成词元**，用于追加进 FTS body。
+ *
+ * 为什么必须做：FTS5 默认 `unicode61` 分词器**不拆驼峰** ⇒ `UpdateCloudClient` 在倒排里是
+ * **一个**词元 ⇒ 搜 `cloud`、`Update Cloud` 在 FTS 路径上**零命中**，只能退回
+ * `LIKE '%cloud%'` 全表扫描（正是「检索偏慢 + 召回奇怪」的来源之一 ✗）。
+ * CBM 靠 C 侧注册 FTS5 自定义分词器解决；本仓没有原生分词器能力，改为
+ * 「**写入时把拆分结果一并塞进 body**」—— 效果等价（都让倒排里出现 `cloud` 这个词元 ✓），
+ * 且**不改查询侧语义**（查询仍按 `"词元"` 匹配，未被拆的原名照样命中 ✓）。
+ *
+ * 例：`UpdateCloudClient` → `Update Cloud Client`；`HTTPServer` → `HTTP Server`；
+ * `getUserID` → `get User ID`；`Assets/S1Game/PlayerController.cpp` → `Assets S1Game PlayerController cpp`。
+ *
+ * ⚠ 只对**标识符类**字段调用（name / qualifiedName / filePath）—— 不碰 docstring：
+ *   自然语言本就被 unicode61 正常分词，且那些字段体积大，拆它们只会让索引膨胀 ✗。
+ */
+function camelSplitTokens(ident: string): string {
+	if (!ident) { return ''; }
+	const out: string[] = [];
+	for (const part of ident.split(/[^A-Za-z0-9]+/)) {
+		if (!part) { continue; }
+		// 两处边界：① 小写/数字 → 大写（fooBar）；② 连续大写 → 大写+小写 的拐点（HTTPServer）
+		for (const t of part.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').split(' ')) {
+			if (t.length >= 2) { out.push(t); }   // 丢弃单字符词元（`i`/`n` 之类，纯噪音）
+		}
+	}
+	return out.join(' ');
+}
+
 // ---- Row → GraphNode 映射 ----
 
 interface NodeRow {
@@ -297,6 +327,29 @@ export class CodebaseGraphSqliteStore {
 
 	get ready(): boolean { return this._ready; }
 	get dbPath(): string { return this._dbPath; }
+
+	/**
+	 * ★★★ 2026-09-18（P1-1 第二步）：导出「**SQLite 快照**」制品（`VACUUM INTO`）。
+	 *
+	 * 为什么用 `VACUUM INTO` 而不是拷贝文件：`VACUUM INTO` 产出的是一份**已整理、无 WAL 残留**的
+	 * 单文件副本（拷贝活库会撕裂 WAL、拿不到一致快照 ✗）。
+	 * ⚠ SQLite 规定目标文件**必须不存在** ⇒ 调用方负责先删/用临时名，再原子改名。
+	 * 载入端拿到它即可直接 `open(path, { readOnly: true })` 分页取数 ⇒ **完全不解析 JSON** ✓
+	 * （真机「解析 JSON」3 folder ≈ 7320ms 就此归零）。
+	 */
+	async exportSnapshot(targetPath: string): Promise<{ nodeCount: number; edgeCount: number }> {
+		// ⚠ `db` 是可选类型（store 未 open 时为 undefined）⇒ 必须守卫，否则整个调用链会静默传 undefined 给驱动 ✗
+		const db = this.db;
+		if (!db) { throw new Error('exportSnapshot: database is not open'); }
+		// 路径里的单引号要按 SQL 字面量转义（Windows 路径含 ' 的极端情况）
+		await dbExec(db, `VACUUM INTO '${targetPath.replace(/'/g, "''")}'`);
+		const nodeRows = await dbAll(db, 'SELECT COUNT(*) AS c FROM nodes', []);
+		const edgeRows = await dbAll(db, 'SELECT COUNT(*) AS c FROM edges', []);
+		return {
+			nodeCount: Number(nodeRows[0]?.c ?? 0),
+			edgeCount: Number(edgeRows[0]?.c ?? 0),
+		};
+	}
 
 	async open(dbPath: string, opts: IGraphStoreOpenOptions = {}): Promise<void> {
 		this._dbPath = dbPath;
@@ -448,6 +501,10 @@ export class CodebaseGraphSqliteStore {
 	private _buildFTSBody(node: GraphNode): string {
 		const parts: string[] = [node.name, node.qualifiedName ?? ''];
 		if (node.filePath) { parts.push(node.filePath); }
+		// ★★ 2026-09-18：追加**标识符拆分词元**（见 `camelSplitTokens`）—— 让 `cloud` 这类
+		// **词元级**查询能命中 `UpdateCloudClient`（旧实现只能靠 `LIKE '%cloud%'` 全表扫描兜底 ✗）。
+		const split = camelSplitTokens([node.name, node.qualifiedName ?? '', node.filePath ?? ''].join(' '));
+		if (split) { parts.push(split); }
 		if (node.properties) {
 			const keys = ['signature', 'docstring', 'returnType', 'paramTypes', 'return_type', 'param_types', 'doc'];
 			for (const k of keys) {
@@ -653,16 +710,46 @@ export class CodebaseGraphSqliteStore {
 	if (!nameOnly) {
 		try {
 			const matchExpr = q.split(/\s+/).map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
-			const rows = await dbAll(db,
-				`SELECT n.* FROM nodes_fts f JOIN nodes n ON n.id = f.rowid
-				 WHERE nodes_fts MATCH ? ${typeFilter}${projFilterFts}${exFilterFts}
-				 ORDER BY bm25(nodes_fts) LIMIT ?`,
-				[matchExpr, ...typeArg, ...projArg, ...exArg, limit]) as unknown as NodeRow[];
+			// ★★★ 2026-09-18（对齐 CBM `mcp.c` 的**两步 BM25**）：**内层纯 FTS 取候选 → 外层再 join+过滤**。
+			//
+			// 旧实现是单条「JOIN + WHERE(type/project/exclude) + ORDER BY bm25 LIMIT ?」⇒ FTS5 必须
+			// 持续产出按 bm25 排序的行、**直到凑够 limit 条通过过滤的**，等于把整条倒排链都打了分
+			// （WAND / MaxScore 的提前终止被过滤条件屏蔽 ✗）。两步后内层只有 FTS ⇒ 提前终止生效 ✓。
+			//
+			// ⚠ 正确性保护（宁慢不丢）：内层候选**被截断**（= 达到上限）且过滤后不足 limit 条时，
+			// **退回原单条 SQL** 求精确结果；未截断时两步结果与旧实现**逐条等价**（含 bm25 顺序，
+			// 见下面按 `ids` 顺序还原）。
+			const candLimit = Math.max(2000, limit * 8);
+			const cands = await dbAll(db,
+				`SELECT rowid AS rid FROM nodes_fts WHERE nodes_fts MATCH ? ORDER BY bm25(nodes_fts) LIMIT ?`,
+				[matchExpr, candLimit]) as unknown as { rid: number }[];
+			let rows: NodeRow[] = [];
+			const truncated = cands.length >= candLimit;
+			if (cands.length > 0) {
+				const ids = cands.map(c => Number(c.rid));
+				const ph = ids.map(() => '?').join(',');
+				// 外层：单表（无别名）⇒ 复用为 LIKE 路径构建的无别名过滤片段 ✓
+				const outer = await dbAll(db,
+					`SELECT * FROM nodes WHERE id IN (${ph})${typeFilter}${projFilterLike}${exFilterLike}`,
+					[...ids, ...typeArg, ...projArg, ...exArg]) as unknown as NodeRow[];
+				// 还原内层 bm25 顺序（`IN` 不保证顺序）
+				const byId = new Map(outer.map(r => [Number((r as { id?: number }).id), r]));
+				rows = ids.map(id => byId.get(id)).filter((r): r is NodeRow => !!r);
+			}
+			if (truncated && rows.length < limit) {
+				// 候选可能被截断 ⇒ 用原精确查询兜底（语义与改动前完全一致）
+				rows = await dbAll(db,
+					`SELECT n.* FROM nodes_fts f JOIN nodes n ON n.id = f.rowid
+					 WHERE nodes_fts MATCH ? ${typeFilter}${projFilterFts}${exFilterFts}
+					 ORDER BY bm25(nodes_fts) LIMIT ?`,
+					[matchExpr, ...typeArg, ...projArg, ...exArg, limit]) as unknown as NodeRow[];
+				console.warn(`[CBSearch][trace] searchNodes two-step truncated (cands=${cands.length}) ⇒ exact fallback rows=${rows.length}`);
+			}
 			if (rows.length) {
 				ftsRows = rows.length;
 				if (Date.now() - tFtsStart > 500) { console.warn(`[searchNodes][diag] FTS hit path slow: ${Date.now() - tFtsStart}ms q="${q.slice(0, 40)}" proj=${project ?? '-'} rows=${rows.length}`); }
 				// [CBSearch] 召回路径追踪：FTS 命中
-				console.warn(`[CBSearch][trace] searchNodes q="${q.slice(0, 60)}" type=${nodeType ?? '-'} proj=${project ?? '-'} ex=${exArg.join('/') || '-'} path=FTS match="${matchExpr.slice(0, 80)}" rows=${ftsRows} ${Date.now() - tFtsStart}ms`);
+				console.warn(`[CBSearch][trace] searchNodes q="${q.slice(0, 60)}" type=${nodeType ?? '-'} proj=${project ?? '-'} ex=${exArg.join('/') || '-'} path=FTS(two-step) match="${matchExpr.slice(0, 80)}" cands=${cands.length} rows=${ftsRows} ${Date.now() - tFtsStart}ms`);
 				return rows.map(rowToNode);
 			}
 			fallbackReason = 'fts-zero-hit';

@@ -35,6 +35,41 @@ export class CodebaseGraphStoreChannel<TContext> extends Disposable implements I
 	private _opened?: Promise<void>;
 	private readonly _dbPath: string;
 
+	/**
+	 * ★★★ 2026-09-18（P1-1 步骤3）：**按路径**打开/缓存「只读快照」实例。
+	 *
+	 * 用途：读取队友共享的制品 / 新机器冷启动时的 `graph.db.sqlite` —— 它不是本机缓存库，
+	 * 必须另开实例（只有主进程有原生 SQLite 模块）。语义与缓存库那套读取方法完全一致 ✓
+	 * （复用同一个 `CodebaseGraphSqliteStore` 类，`open(path, { readOnly: true })` ⇒ `?mode=ro` ✓）。
+	 */
+	private readonly _snapshotStores = new Map<string, Promise<CodebaseGraphSqliteStore>>();
+
+	/** 同一路径只打开一次；**打开失败不进缓存**（否则一个坏路径会让后续重试全部立刻失败 ✗）。 */
+	private _snapshotStore(dbPath: string): Promise<CodebaseGraphSqliteStore> {
+		let pending = this._snapshotStores.get(dbPath);
+		if (!pending) {
+			pending = (async () => {
+				const store = new CodebaseGraphSqliteStore();
+				await store.open(dbPath, { readOnly: true });
+				return store;
+			})();
+			pending.catch(() => { this._snapshotStores.delete(dbPath); });
+			this._snapshotStores.set(dbPath, pending);
+		}
+		return pending;
+	}
+
+	/** 释放只读快照实例（载入收尾调用）。 */
+	private async _closeSnapshot(dbPath: string): Promise<void> {
+		const pending = this._snapshotStores.get(dbPath);
+		if (!pending) { return; }
+		this._snapshotStores.delete(dbPath);
+		try {
+			const store = await pending;
+			await store.close();
+		} catch { /* 打不开的实例无需关闭 */ }
+	}
+
 	// 注：本宿主在 app.ts 手动构造（非 DI 容器），故 logger 以位置参数传入，不使用 @ILoggerService 装饰器。
 	constructor(
 		dbPath: string,
@@ -87,6 +122,15 @@ export class CodebaseGraphStoreChannel<TContext> extends Disposable implements I
 			case 'deleteProject': return s.deleteProject(args![0] as string, args![1] as { keepFileHashes?: boolean } | undefined) as unknown as T;
 			case 'deleteNodesByFile': return s.deleteNodesByFile(args![0] as string, args![1] as string) as unknown as T;
 			case 'checkpoint': return s.checkpoint() as unknown as T;
+			// ★ 2026-09-18（P1-1 第二步）：导出 SQLite 快照制品（VACUUM INTO）—— 载入端可跳过 JSON 解析
+			case 'exportSnapshot': return s.exportSnapshot(args![0] as string) as unknown as T;
+			// ─── ★★★ 2026-09-18（P1-1 步骤3）：按**任意路径**的只读快照实例分页读取 ───────────
+			// 参数顺序统一为「dbPath 优先，其后与缓存库那套同名方法一一对应」✓
+			case 'snapshotListProjects': return this._snapshotStore(args![0] as string).then(x => x.listProjects()) as unknown as T;
+			case 'snapshotGetTotalNodeCount': return this._snapshotStore(args![0] as string).then(x => x.getTotalNodeCount(args![1] as string | undefined)) as unknown as T;
+			case 'snapshotGetAllNodes': return this._snapshotStore(args![0] as string).then(x => x.getAllNodes(args![1] as string | undefined, args![2] as number | undefined, args![3] as number | undefined, args![4] as number | undefined)) as unknown as T;
+			case 'snapshotGetAllEdges': return this._snapshotStore(args![0] as string).then(x => x.getAllEdges(args![1] as string | undefined, args![2] as number | undefined, args![3] as number | undefined, args![4] as number | undefined)) as unknown as T;
+			case 'closeSnapshot': return this._closeSnapshot(args![0] as string) as unknown as T;
 			case 'getNode': return s.getNode(args![0] as number) as unknown as T;
 			case 'getNodeByQN': return s.getNodeByQN(args![0] as string, args![1] as string) as unknown as T;
 			case 'getNodesByFile': return s.getNodesByFile(args![0] as string, args![1] as string) as unknown as T;

@@ -310,7 +310,53 @@ export class CodebaseGraphStore {
 	// Edge storage
 	private _edges: Map<number, GraphEdge> = new Map();
 	private _nextEdgeId = 1;
-	private _edgeDedup: Set<string> = new Set();  // "sourceId:targetId:type" for O(1) dedup
+	/**
+	 * ★★★ 2026-09-18（**堆优化重做**）：**数值键**边去重表。
+	 *
+	 * 原实现是 `Set<string>`，每条边都要新建一个 `"sourceId:targetId:type"` 字符串 ⇒
+	 * 用户堆快照里 **Set 表 ~10MB + 键字符串 ~20MB**（合计约 30MB 纯实现开销 ✗）。
+	 * 现改为 `sourceId → Set<targetId * EDGE_TYPE_SPACE + typeId>`：键是数字 ⇒ **零字符串分配** ✓。
+	 *
+	 * ⚠ 契约不变：`insertEdge` 与 `mergeFromJSONAsync` 必须**同口径**去重
+	 * （历史缺陷：merge 直接写 `_edges` 绕过去重 ⇒ 重复合并让边翻倍 ✗）⇒ 两处都走 `_edgeDedupAdd` ✓。
+	 */
+	private _edgeDedup: Map<number, Set<number>> = new Map();
+	/** 边类型 → 数值 id（首次见到时分配；窗口内唯一即可，与持久化无关）。 */
+	private _edgeTypeIds: Map<string, number> = new Map();
+	/** 数值键的类型空间：`targetId * EDGE_TYPE_SPACE + typeId`（targetId 可达百万 ⇒ 2^40，JS number 精确 ✓）。 */
+	private static readonly EDGE_TYPE_SPACE = 1 << 20;
+
+	/** 边类型的数值 id —— 取代「为去重键拼字符串」的分配 ✓。 */
+	private _edgeTypeIdOf(type: string): number {
+		let id = this._edgeTypeIds.get(type);
+		if (id === undefined) { id = this._edgeTypeIds.size; this._edgeTypeIds.set(type, id); }
+		return id;
+	}
+
+	/** 打包数值键：`sourceId → (targetId, typeId)`。 */
+	private _edgeKey(targetId: number, typeId: number): number {
+		return targetId * CodebaseGraphStore.EDGE_TYPE_SPACE + typeId;
+	}
+
+	/** 去重表查询（`true` = 该边已存在，调用方应跳过）。 */
+	private _edgeDedupHas(sourceId: number, targetId: number, type: string): boolean {
+		return this._edgeDedup.get(sourceId)?.has(this._edgeKey(targetId, this._edgeTypeIdOf(type))) === true;
+	}
+
+	/** 去重表登记（**幂等**；顺带保证 source 子表存在）。 */
+	private _edgeDedupAdd(sourceId: number, targetId: number, type: string): void {
+		let set = this._edgeDedup.get(sourceId);
+		if (!set) { set = new Set<number>(); this._edgeDedup.set(sourceId, set); }
+		set.add(this._edgeKey(targetId, this._edgeTypeIdOf(type)));
+	}
+
+	/** 去重表移除（删边用）；子表空时一并删掉 source 键，避免无界堆积 ✗。 */
+	private _edgeDedupDelete(sourceId: number, targetId: number, type: string): void {
+		const set = this._edgeDedup.get(sourceId);
+		if (!set) { return; }
+		set.delete(this._edgeKey(targetId, this._edgeTypeIdOf(type)));
+		if (set.size === 0) { this._edgeDedup.delete(sourceId); }
+	}
 
 	// Multi-level indices
 	private _nodesByQN: Map<string, number> = new Map();       // project:qualifiedName → nodeId
@@ -326,6 +372,23 @@ export class CodebaseGraphStore {
 	private _bm25: BM25Index = new BM25Index();
 	// 延迟 BM25 索引：批量写入时跳过逐条 addDocument，最后一次性重建
 	private _deferBM25 = false;
+
+	/**
+	 * ★★★ 2026-09-18（P0 性能）：**BM25 处于「载入时已跳过、待按需构建」状态**。
+	 *
+	 * 背景（真机实测）：sqlite/FTS5 后端默认启用（`_sqliteBackendEnabled`），检索走
+	 * `_sqliteBackend.searchNodes`（FTS5）；内存倒排**只在回退路径**上被用到。但载入制品 /
+	 * 从 SQLite 按需载入 / 全量索引收尾时，旧实现**无条件**全量重建内存倒排 ⇒ 真机
+	 * `BM25 重建=9137ms`、期间看门狗报 `⛔ 主线程阻塞 ≈2393ms`，且每条路径都付一遍 ✗✗。
+	 *
+	 * 现在：载入/索引只置本标记；首次真要**自由文本**检索时才按需重建（`_rebuildBM25OrDefer` /
+	 * `_ensureInMemoryBm25`），且同步入口在标记期间**降级为子串扫描**（见 `search()`）——
+	 * 绝不静默返回空结果 ✗。
+	 *
+	 * 契约：置位 = 载入/索引路径；`rebuildBM25()` **成功**后清除（异常保留，索引可能只建一半）；
+	 * 只用 `namePattern`（正则）/ `label`（标签索引）的检索**不经** BM25 ⇒ 与本标记无关。
+	 */
+	private _bm25Deferred = false;
 	/**
 	 * Defer 期间累积的 BM25 脏集：需（重新）建索引的节点 id + 需移除的节点 id。
 	 *
@@ -477,6 +540,41 @@ export class CodebaseGraphStore {
 		this._deferBM25 = defer;
 	}
 
+	/** 见 `_bm25Deferred` 字段注释：标记「载入/索引时跳过全量重建 ⇒ 自由文本检索前需按需重建」。 */
+	markBM25Deferred(): void {
+		this._bm25Deferred = true;
+	}
+
+	/** 见 `_bm25Deferred` 字段注释。 */
+	get isBM25Deferred(): boolean {
+		return this._bm25Deferred;
+	}
+
+	/**
+	 * ★ 2026-09-18（P0 性能）：`_bm25` 处于「待按需重建」时，`search({query})` 的**降级打分** ——
+	 * 子串扫描 name/qualifiedName，按命中强度给分（不阻塞、不建索引）。
+	 *
+	 * 为什么必须降级而不是返回空：同步 `search()` 一旦静默 0 结果，调用方无法区分「真没有」
+	 * 与「索引还没建」✗（本仓已多次栽在这类静默失效上）。生产侧自由文本检索实际都走
+	 * `CodebaseGraphService.searchGraphAsync` 的 FTS5 路径，本降级只服务同步兜底调用。
+	 */
+	private _degradedSubstringScores(query: string, limit: number): Map<number, number> {
+		const q = query.toLowerCase();
+		const scores = new Map<number, number>();
+		if (!q) { return scores; }
+		for (const n of this._nodes.values()) {
+			const name = (n.name || '').toLowerCase();
+			const qn = (n.qualifiedName || '').toLowerCase();
+			let s = 0;
+			if (name === q) { s = 100; } else if (name.startsWith(q)) { s = 50; } else if (name.includes(q)) { s = 20; }
+			if (qn.includes(q)) { s += 5; }
+			if (s > 0) { scores.set(n.id, s); }
+		}
+		if (scores.size <= limit) { return scores; }
+		// 与 BM25 路径的 oversample 口径一致：只留得分最高的 limit 条
+		return new Map([...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit));
+	}
+
 	/**
 	 * 批量重建 / 增量刷新 BM25 索引（在 setDeferBM25(true) ... 写入 ... 之后调用）。
 	 *
@@ -492,6 +590,18 @@ export class CodebaseGraphStore {
 	 * 全量副本，降低大图内存峰值。
 	 */
 	async rebuildBM25(onProgress?: (done: number, total: number) => void, force: boolean = false): Promise<void> {
+		// ★ 2026-09-18（P0 性能）：**公开壳 + 私有实现** —— 本体有 3 处出口（增量空转 / 增量完成 /
+		// 全量完成）⇒ 用一处 try/catch 统一收口「建成即解除待按需重建标记」，避免逐出口补漏 ✗。
+		try {
+			await this._rebuildBM25Impl(onProgress, force);
+			// 仅在**成功**时解除（见 `_bm25Deferred`）；异常时索引可能只建了一半，仍视为「待建」。
+			this._bm25Deferred = false;
+		} catch (err) {
+			throw err;
+		}
+	}
+
+	private async _rebuildBM25Impl(onProgress?: (done: number, total: number) => void, force: boolean = false): Promise<void> {
 		// ★ 2026-09-15：让出策略从**固定每 1000 节点**（更早是 5000）改为**按时间预算**
 		// （`SLICE_BUDGET_MS` = 8ms，见 `common/asyncSlice.ts`）。
 		//
@@ -701,9 +811,8 @@ export class CodebaseGraphStore {
 	// ─── Edge Operations ───────────────────────────────────────────────────
 
 	insertEdge(edge: Omit<GraphEdge, 'id'> & { id?: number }): GraphEdge | null {
-		const dedupKey = `${edge.sourceId}:${edge.targetId}:${edge.type}`;
-		if (this._edgeDedup.has(dedupKey)) { return null; }  // Skip duplicate
-		this._edgeDedup.add(dedupKey);
+		if (this._edgeDedupHas(edge.sourceId, edge.targetId, edge.type)) { return null; }  // Skip duplicate
+		this._edgeDedupAdd(edge.sourceId, edge.targetId, edge.type);
 
 		const id = edge.id ?? this._nextEdgeId++;
 		const newEdge: GraphEdge = { ...edge, id };
@@ -739,7 +848,7 @@ export class CodebaseGraphStore {
 	private _deleteEdge(edgeId: number): void {
 		const edge = this._edges.get(edgeId);
 		if (!edge) { return; }
-		this._edgeDedup.delete(`${edge.sourceId}:${edge.targetId}:${edge.type}`);
+		this._edgeDedupDelete(edge.sourceId, edge.targetId, edge.type);
 		this._edges.delete(edgeId);
 
 		// Update degree
@@ -793,7 +902,11 @@ export class CodebaseGraphStore {
 			const limit = params.limit ?? 200;
 			// 如有 filePattern，多抽样以补偿后过滤损失
 			const oversample = params.filePattern ? limit * 10 : limit * 3;
-			const bm25Scores = this._bm25.search(params.query.trim(), oversample);
+			// ★ 2026-09-18（P0 性能）：倒排可能处于「载入时跳过、待按需构建」状态（见 `_bm25Deferred`）
+			// ⇒ 本同步入口**降级为子串扫描**，绝不静默返回空结果（理由见 `_degradedSubstringScores`）。
+			const bm25Scores = this._bm25Deferred
+				? this._degradedSubstringScores(params.query.trim(), oversample)
+				: this._bm25.search(params.query.trim(), oversample);
 
 			// filePattern regex (如已提供)
 			let fileRegex: RegExp | undefined;
@@ -1172,6 +1285,7 @@ export class CodebaseGraphStore {
 		this._nodes.clear();
 		this._edges.clear();
 		this._edgeDedup.clear();
+		this._edgeTypeIds.clear();   // ★ 数值键重做：类型 id 也随之复位（否则跨 clear 无界增长 ✗）
 		this._nodesByQN.clear();
 		this._nodesByFile.clear();
 		this._nodesByLabel.clear();
@@ -1271,7 +1385,7 @@ export class CodebaseGraphStore {
 		// Restore edges
 		for (const edge of data.edges || []) {
 			this._edges.set(edge.id, edge);
-			this._edgeDedup.add(`${edge.sourceId}:${edge.targetId}:${edge.type}`);
+			this._edgeDedupAdd(edge.sourceId, edge.targetId, edge.type);
 			const outArr = this._outEdges.get(edge.sourceId) || [];
 			outArr.push(edge.id);
 			this._outEdges.set(edge.sourceId, outArr);
@@ -1338,7 +1452,7 @@ export class CodebaseGraphStore {
 			for (let j = i; j < end; j++) {
 				const edge = edges[j];
 				this._edges.set(edge.id, edge);
-				this._edgeDedup.add(`${edge.sourceId}:${edge.targetId}:${edge.type}`);
+				this._edgeDedupAdd(edge.sourceId, edge.targetId, edge.type);
 				const outArr = this._outEdges.get(edge.sourceId) || [];
 				outArr.push(edge.id);
 				this._outEdges.set(edge.sourceId, outArr);
@@ -1443,9 +1557,9 @@ export class CodebaseGraphStore {
 				const newTarget = idMap.get(src.targetId);
 				if (newSource === undefined || newTarget === undefined) { continue; }
 				// 与 insertEdge 同口径去重（旧实现直接写 `_edges` 绕过它 ⇒ 重复合并会让边翻倍）
-				const dedupKey = `${newSource}:${newTarget}:${src.type}`;
-				if (this._edgeDedup.has(dedupKey)) { stats.edgesSkipped++; continue; }
-				this._edgeDedup.add(dedupKey);
+				// ★ 2026-09-18 数值键重做后仍必须走**同一对 helper**（否则两条路径口径会再次分叉 ✗）
+				if (this._edgeDedupHas(newSource, newTarget, src.type)) { stats.edgesSkipped++; continue; }
+				this._edgeDedupAdd(newSource, newTarget, src.type);
 				const newId = this._nextEdgeId++;
 				const project = projectOverride ?? src.project;
 				const edge: GraphEdge = { ...src, id: newId, sourceId: newSource, targetId: newTarget, project };

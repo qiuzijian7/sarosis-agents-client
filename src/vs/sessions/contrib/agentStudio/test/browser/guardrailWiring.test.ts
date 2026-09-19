@@ -158,7 +158,15 @@ suite('护栏接线不变量（源码级）', () => {
 	// ── ⑥ 只读档位（plan/ask）的硬权限必须挂在所有执行路径 ──────────────
 	test('★★ 硬权限挂在「工具列表 + 本地执行 + bridge 展开」三处', () => {
 		assertWired('browser/agentToolAssembly.ts', 'applyHardPermission(', '工具列表过滤（模型看不到被禁工具）');
-		assertWired('browser/agentTurnExecutor.ts', 'isToolCallDeniedByHardPermission(', '本地执行路径');
+		// ⚠ 2026-09-19：锚点从 `isToolCallDeniedByHardPermission(` 改为
+		// `isToolCallDeniedByTurnPolicy(` —— p0-1 重构把硬权限与范式策略合并为一个
+		// 组合函数（common/toolPermission.ts:171 内部首行即调
+		// `isToolCallDeniedByHardPermission`，硬权限护栏未被绕过）。
+		// 「本地执行路径」这一断言意图不变：执行前必须过权限判定。
+		assertWired('browser/agentTurnExecutor.ts', 'isToolCallDeniedByTurnPolicy(', '本地执行路径');
+		// 上一条只证明 executor 调了组合函数；这里补一道**不可绕过**的守卫：
+		// 组合函数体内必须真正调用硬权限判定，否则「合并」会变成「悄悄移除」。
+		assertWired('common/toolPermission.ts', 'isToolCallDeniedByHardPermission(toolName, policy)', '组合函数内的硬权限真源');
 		assertWired('browser/agentOSService.ts', 'isToolHardDenied(', 'bridge 工具展开路径');
 	});
 

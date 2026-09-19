@@ -60,6 +60,7 @@ import type { AgentStudioPanelType } from "../common/constants.js";
 import { WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_STUDIO_WEBVIEW_ORIGIN } from "../common/constants.js";
 import { IModelSelectorService } from "../common/modelSelector.js";
 import { IAgentOSService } from "../common/agentOS.js";
+import { IAgentDriverService } from "../common/agentDriver.js";
 import { IWorktreeService } from "../../worktree/common/worktreeService.js";
 import type { IToolApprovalHandler, IToolApprovalRequest } from "../common/providers.js";
 import { ToolApprovalDecision } from "../common/providers.js";
@@ -1226,6 +1227,22 @@ export class AgentStudioWebviewController extends Disposable {
 					);
 				}
 				return this.agentStudioService.deleteAgent(agentId);
+			}
+			case "agents.steeringMessage": {
+				// 运行中 steering：webview 在 stream 活跃时补充的用户输入。
+				// agentId 与 content 缺一不可 —— 缺 agentId 无法定位交付队列，
+				// 缺 content 会入队一条空消息并在下一轮污染上下文。
+				const agentId = (p as Record<string, unknown>).agentId as string | undefined;
+				const content = (p as Record<string, unknown>).content as string | undefined;
+				if (!agentId || !content) {
+					this.logService.warn('[AgentStudioWebviewController] agents.steeringMessage 缺少 agentId 或 content，已丢弃');
+					return undefined;
+				}
+				// 惰性获取 driver：构造期注入会与 workflowExecutionService 的
+				// scriptExecutionDelegate 构成 DI 环（见本文件 setScriptExecutionDelegate 处注释）。
+				const steeringDriver = this.instantiationService.invokeFunction((accessor) =>
+					accessor.get(IAgentDriverService));
+				return steeringDriver.enqueueSteeringMessage(agentId, content);
 			}
 			case "agents.getLastSelected":
 				return { agentId: await this.agentStudioService.getLastSelectedAgentId() };

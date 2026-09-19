@@ -24,6 +24,7 @@ import type {
 	IContextUsage,
 	ICheckpointInfo,
 	OrchestrationPlan,
+	AgentStatus,
 } from '../agentChatTypes.js';
 import type { IChatPanel, IChatPanelCallbacks } from '../iChatPanel.js';
 import { createAnsiThemeFromCssVars, type AnsiTheme } from './ansiTheme.js';
@@ -530,6 +531,18 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 
 	getAgent(): IAgentInfo | null {
 		return this._agent;
+	}
+
+	patchAgent(agent: IAgentInfo): void {
+		// TUI 面板无 header 渲染，仅需替换字段
+		if (!this._agent || this._agent.id !== agent.id) { return; }
+		this._agent = agent;
+	}
+
+	setAgentStatus(status: AgentStatus): void {
+		// TUI 面板无状态圆点；仅记录字段，保持与 Chat 面板一致的实体语义。
+		if (!this._agent || this._agent.status === status) { return; }
+		this._agent = { ...this._agent, status };
 	}
 
 	setAvailableAgents(_agents: IAgentInfo[]): void { /* no-op */ }

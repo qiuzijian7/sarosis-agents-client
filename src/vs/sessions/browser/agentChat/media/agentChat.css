@@ -892,8 +892,38 @@
      - executing → 行背景泛红（.tbp-task-item.tbp-task-executing）
      - done      → 文字删除线 + 半透明（.tbp-task-item.tbp-task-done）
    对应的 span 已从 tabbedPanel.ts 的 _createTaskItemEl 中移除。 */
+/* ── 队列项主栏 + pills（2026-09-18，用户需求：队列里也要显示 pill）──────────────
+   主栏是**列**布局：上内容、下 pills ⇒ pills 自动换行，且不与右侧操作按钮争宽 ✓ */
+.tbp-task-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.tbp-task-pills { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.tbp-task-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 100%;
+	padding: 0 6px;
+	border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+	border-radius: 10px;
+	background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.03));
+	font-size: 10px;
+	line-height: 1.6;
+	white-space: nowrap;
+	opacity: 0.95;
+}
+.tbp-task-pill-icon { font-size: 10px; opacity: 0.9; }
+/* 名称过长时省略（`max-width` 兜住列宽 ✓）；meta 永不省略（几个字就能读完 ✓） */
+.tbp-task-pill-label { overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+.tbp-task-pill-meta { opacity: 0.65; font-size: 9px; }
+/* 形态配色：与 composer 内 chip 的语义一致（图片=蓝 / 片段=青 / 技能工作流=黄 ✓） */
+.tbp-task-pill-image { border-color: rgba(96, 165, 250, 0.5); }
+.tbp-task-pill-snippet,
+.tbp-task-pill-log { border-color: rgba(78, 201, 176, 0.45); }
+.tbp-task-pill-skill,
+.tbp-task-pill-workflow { border-color: rgba(234, 179, 8, 0.45); }
+
 .tbp-task-content {
-	flex: 1; line-height: 1.4; min-width: 0;
+	/* ⚠ 覆盖：主栏是**列**布局 ⇒ 原 `flex:1` 会变成"纵向拉伸"✗，这里改成不伸缩 ✓ */
+	flex: 0 0 auto; line-height: 1.4; min-width: 0;
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .tbp-task-item.tbp-task-done .tbp-task-content { text-decoration: line-through; }
@@ -2066,6 +2096,57 @@
 .inline-attachment-chip-remove:hover {
 	opacity: 1;
 	background: rgba(255,255,255,0.12);
+}
+
+/* 2026-09-18：代码 / 日志片段 chip 的行数元信息 */
+.inline-attachment-chip-meta {
+	margin-left: 2px;
+	font-size: 10px;
+	opacity: 0.6;
+	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+}
+
+/* 2026-09-18：悬停片段 chip 时显示的文本预览浮层（图片版见 .inline-attachment-thumb-tip） */
+.inline-attachment-snippet-tip {
+	position: fixed;
+	z-index: 10000;
+	max-width: 420px;
+	padding: 7px 9px;
+	background: var(--vscode-editorWidget-background, #252526);
+	border: 1px solid var(--ec-border-secondary, rgba(128,128,128,0.3));
+	border-radius: 8px;
+	box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+	pointer-events: none; /* 不拦截鼠标，避免遮挡后触发 mouseleave */
+}
+.inline-attachment-snippet-tip-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-foreground, #ccc);
+	margin-bottom: 5px;
+}
+.inline-attachment-snippet-tip-meta {
+	font-weight: 400;
+	font-size: 10px;
+	color: var(--ec-text-muted);
+}
+.inline-attachment-snippet-tip-pre {
+	margin: 0;
+	max-height: 170px;
+	overflow: hidden;
+	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
+	font-size: 10.5px;
+	line-height: 1.45;
+	color: var(--vscode-foreground, #d4d4d4);
+	white-space: pre;
+	overflow-x: auto;
+	background: var(--vscode-editor-background, rgba(0,0,0,0.25));
+	border-radius: 4px;
+	padding: 6px 8px;
 }
 
 /* 悬停图片 chip 时显示的缩略图浮层 */
@@ -5932,12 +6013,17 @@
 	padding-bottom: 5px;
 }
 .chat-loading-pill .loading-spinner {
+	/* ★ 2026-09-18：显式 inline-block —— 原来靠「flex 子项被 blockify」才转得起来 ✗，
+	   一旦不再作为 flex 子项渲染，`transform: rotate()` 会被静默忽略 ✗（详见下方
+	   .chat-footer-processing-spinner.loading-spinner 的注释 ✓）。 */
+	display: inline-block;
 	flex: 0 0 auto;
 	width: 12px;
 	height: 12px;
 	border: 2px solid rgba(255, 255, 255, 0.4);
 	border-top-color: #fff;
 	border-radius: 50%;
+	transform-origin: center center;
 	animation: phase-spin 0.8s linear infinite;
 }
 
@@ -6022,41 +6108,134 @@
 
 /* ── 「处理中」状态（2026-08-29）──
    替代原全局 chat-loading-pill 药丸：内嵌到 LLM 气泡 footer 最右侧
-   （JS 侧设 margin-left:auto 推到右侧），显示 spinner + 「处理中」+ 已耗时。 */
-.chat-bubble-footer-item.chat-footer-processing {
+   （JS 侧设 margin-left:auto 推到右侧）。
+   2026-09-18：本元素降级为**纯排布容器**（不再是 pill 本体）——
+   内部改为「spinner + 三个 .chat-footer-pill.live」，与完成态同款 pill 对齐。
+   故去掉自身的边框/背景/圆角，避免外层药丸套内层药丸的双层描边。 */
+.chat-footer-processing {
 	display: inline-flex;
 	align-items: center;
 	gap: 5px;
-	padding: 4px 9px;
-	border: 1px solid var(--vscode-progressBar-background, rgba(60, 130, 246, 0.5));
-	border-radius: 14px;
-	background: var(--vscode-editorWidget-background, rgba(255,255,255,0.03));
-	color: var(--vscode-foreground, #ccc);
 	font-size: 11px;
 	line-height: 1.2;
 	white-space: nowrap;
 	flex-shrink: 0;
-	opacity: 0.95;
 }
-.chat-footer-processing-label {
+
+/* ── live 态 pill（2026-09-18）──
+   处理中期间：数值仍在累计，用蓝色描边 + 图标呼吸与完成态（静止）区分。
+   这是去掉「处理中」文字后唯一的「进行中」视觉信号来源之一。 */
+.chat-bubble-footer-item.chat-footer-pill.live {
+	border-color: var(--vscode-progressBar-background, rgba(60, 130, 246, 0.5));
+	background: var(--vscode-progressBar-background, rgba(60, 130, 246, 0.08));
+}
+.chat-bubble-footer-item.chat-footer-pill.live .chat-footer-pill-icon {
 	color: var(--vscode-progressBar-background, #4a9eff);
-	font-weight: 500;
+	animation: footer-pill-live-pulse 1.6s ease-in-out infinite;
 }
+.chat-bubble-footer-item.chat-footer-pill.live .chat-footer-pill-value {
+	color: var(--vscode-progressBar-background, #4a9eff);
+}
+@keyframes footer-pill-live-pulse {
+	0%, 100% { opacity: 0.9; }
+	50% { opacity: 0.4; }
+}
+/* 2026-09-18：「处理中」文字标签已移除，此规则随 DOM 一并废弃保留仅为历史兼容。 */
 .chat-footer-processing-elapsed {
 	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
-	color: var(--vscode-descriptionForeground, #aaa);
-	/* 等宽 + 固定最小宽度：秒数从 9s→10s 时不会引起 footer 抖动 */
+	/* 等宽 + 固定最小宽度：秒数从 9s→10s 时不会引起 footer 抖动。
+	   2026-09-18：现为 pill 内的 .chat-footer-pill-value，min-width 仍保留防抖。 */
 	min-width: 34px;
 	text-align: right;
 }
-/* spinner 跟随前景色（原药丸里的 .loading-spinner 硬编码白边，此处需深色主题可读） */
+/* 2026-09-17：处理中期间的累计用量（tokens / 积分），与已耗时同级展示。
+   2026-09-18：改挂到 .chat-footer-pill-value 上（见上），`·` 分隔符已随
+   纯文本方案一并移除，故 .chat-footer-processing-sep 不再有 DOM 使用。 */
+.chat-footer-processing-tokens,
+.chat-footer-processing-credit {
+	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
+}
+/* 等宽数字 + 固定最小宽度：用量位数增长时不引起 pill 抖动 */
+.chat-footer-processing-tokens {
+	font-variant-numeric: tabular-nums;
+	min-width: 44px;
+	text-align: right;
+}
+.chat-footer-processing-credit {
+	font-variant-numeric: tabular-nums;
+	min-width: 34px;
+	text-align: right;
+}
+/* spinner 跟随前景色（原药丸里的 .loading-spinner 硬编码白边，此处需深色主题可读）
+   ── ★★★ 2026-09-18（用户反馈「处理中前面的圈要转」✗→✓）──
+   原来**缺 `display`** ✗：`span` 默认 `display: inline` ✓，而 `transform` 对
+   **inline（非替换）元素是无效的** ✗✓ —— 所以 `animation: phase-spin` 一直在跑 ✓、
+   但 `rotate()` 被浏览器**直接忽略** ✗ ⇒ 视觉上就是**一个静止的圆环** ✓✓
+   （`width/height` 同理不生效 ✗，环的大小只能靠 border 撑 ✓）。
+   旧实现「碰巧能转」纯属偶然 ✓：那时它挂在 `.chat-loading-pill`（flex 容器 ✓）里，
+   flex 子项会被 **blockify** ⇒ transform 生效 ✓；一旦父容器布局变化就**静默失效** ✗✓。
+   ⇒ 必须显式 `display: inline-block` ✓，让旋转**不依赖父容器布局** ✓。
+   `transform-origin: center center` ✓ 防抖动（同 codicon-spin 的做法 ✓）。 */
+/* ── 处理中 spinner：彗尾式旋转（2026-09-18 用户要求「让『在转』更明显」）──
+   改动前的问题（用户反馈）：2px 细边框 + **单个亮弧**（只有 `border-top-color` 上色），
+   在 10px 尺寸下旋转**方向感很弱** ⇒ 看起来像"没动" ✗。
+   现在：
+     ① 10px → 12px、环 2px → 3px：小尺寸下笔画更实，动起来更醒 ✓
+     ② 亮弧 → **彗尾**（`::after` 用 `conic-gradient` 由 head 满色渐变到 tail 透明，
+        再 `mask` 挖空中心成环）⇒ "头在哪、往哪转"一眼可见 ✓✓
+     ③ **兜底**：不支持 `mask` 的环境不加 `::after`（保持细环 + 单亮弧，等价于原样式）✓
+   ⚠ 旋转依赖 `display: inline-block` **不可删** ✗：`transform` 对 `inline`（非替换）元素
+     是**无效**的 ⇒ 父容器一旦不是 flex（不再 blockify），这个圈会静默变成静止圆环 ✗
+     （本仓已踩过该坑，见下方 reduced-motion 注释）。 */
 .chat-footer-processing-spinner.loading-spinner {
-	width: 10px;
-	height: 10px;
-	border: 2px solid var(--vscode-progressBar-background, rgba(60, 130, 246, 0.35));
+	position: relative;
+	display: inline-block;
+	width: 12px;
+	height: 12px;
+	border: 3px solid var(--vscode-progressBar-background, rgba(60, 130, 246, 0.35));
 	border-top-color: var(--vscode-progressBar-background, #4a9eff);
 	border-radius: 50%;
+	transform-origin: center center;
 	animation: phase-spin 0.8s linear infinite;
+}
+/* 彗尾：仅在支持 mask 时启用（否则会渲染成"实心圆饼"✗，见上面兜底说明） */
+@supports ((mask: radial-gradient(#000, #000)) or (-webkit-mask: radial-gradient(#000, #000))) {
+	/* 底环转为极淡的整环（避免与彗尾叠加成"双环"✗） */
+	.chat-footer-processing-spinner.loading-spinner {
+		border-color: color-mix(in srgb, var(--vscode-progressBar-background, #4a9eff) 18%, transparent);
+	}
+	.chat-footer-processing-spinner.loading-spinner::after {
+		content: '';
+		position: absolute;
+		/* 相对 padding box 定位 ⇒ -3px 正好对齐外层 3px 边框（与 box-sizing 无关 ✓） */
+		inset: -3px;
+		border-radius: 50%;
+		/* 彗尾：0°(head) 满色 → 逆时针逐渐淡出 ⇒ 旋转时方向感明确 ✓ */
+		background: conic-gradient(
+			from 0deg,
+			var(--vscode-progressBar-background, #4a9eff) 0deg,
+			color-mix(in srgb, var(--vscode-progressBar-background, #4a9eff) 55%, transparent) 90deg,
+			color-mix(in srgb, var(--vscode-progressBar-background, #4a9eff) 22%, transparent) 190deg,
+			color-mix(in srgb, var(--vscode-progressBar-background, #4a9eff) 6%, transparent) 300deg,
+			transparent 360deg
+		);
+		/* 挖空中心 ⇒ 得到"弧"而非"饼" */
+		-webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 3px));
+		mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 3px));
+		/* 不必单独动画：::after 随宿主一起旋转 ✓（重复加动画会双重叠加 ✗） */
+	}
+}
+
+/* ★ 2026-09-18（用户要求）：**reduced-motion 下仍保持旋转**。
+   理由：它是**状态指示**——用户靠它判断"还在处理中"，停了就等于丢掉一个状态信号 ✗；
+   而本仓对终端光标的处理方向**相反**（`.terminal-live-cursor` 是纯装饰 ⇒ 停滞 ✓），
+   两者理由不同，不可互相套用 ✗。
+   用 `!important` 是刻意的：它要能顶住将来可能出现的"全局动画抑制"规则
+   （例如 `* { animation: none !important }` 之类 ✗），否则本例外会静默失效 ✗。 */
+@media (prefers-reduced-motion: reduce) {
+	.chat-footer-processing-spinner.loading-spinner {
+		animation: phase-spin 0.8s linear infinite !important;
+	}
 }
 .chat-footer-pill-info {
 	font-size: 11px;
@@ -6070,6 +6249,25 @@
 	font-size: 11px;
 	line-height: 1;
 	opacity: 0.7;
+}
+
+/* ── delegate 工具卡底部的用量行（耗时 / token / 积分，2026-09-18 统一）──────────
+   本行原先只有一个 `div.dlg-meta-row` + `span.dlg-meta-item`，而 `.dlg-meta-*`
+   在样式表里**一条规则都没有** ✗ ⇒ 那几个数字是浏览器默认样式（与主气泡的 pill 完全不同 ✗）。
+   现在行内改挂统一的 `.chat-bubble-footer-item.chat-footer-pill`（见 agentChatPanel.footerPills.ts ✓），
+   这里只负责**排布**：与卡片左内边距对齐、紧凑间距、可换行（窄卡片不溢出 ✓）。
+   `.dlg-meta-empty` 是「三项都还没拿到数据」时的占位符（保持行不消失 ✓）。 */
+.dlg-meta-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 8px 6px;
+}
+.dlg-meta-empty {
+	font-size: 11px;
+	opacity: 0.6;
+	padding: 0 4px;
 }
 
 /* Legacy time token (kept for backward compat with user messages if needed) */
@@ -10774,6 +10972,91 @@
 	max-width: 60%;
 }
 .tool-card-plan .plan-phase-lock { color: var(--vscode-charts-yellow, #cca700); font-size: 11px; }
+
+/* ── plan_register 注册卡（2026-09-17）────────────────────────────────
+   渲染 `agentChatPanel.delegateCards.ts::_createPlanRegisterCard`。
+   语义：把**有序任务队列**写进本 turn 的执行队列（主循环每轮自动推进，见
+   `common/planQueueRegistry.ts`）⇒ 视觉重点是「顺序」与「起始任务」，
+   而不是步骤完成度（那是 update_plan / plan-phase-steps 的职责）。
+   壳沿用 .tool-card-plan（中性），内部用主题色区分语义：
+   起始任务 = 蓝（与 .plan-phase .current 同色系）；交付物 = 青；降级/参数错 = 黄/红。 */
+.tool-card-plan .plan-register-meta {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	padding-bottom: 6px;
+	border-bottom: 1px dashed var(--vscode-widgetBorder, rgba(128,128,128,.25));
+}
+.tool-card-plan .plan-register-list {
+	list-style: none;
+	margin: 0; padding: 0;
+	display: flex; flex-direction: column; gap: 6px;
+}
+.tool-card-plan .plan-register-item {
+	display: flex; align-items: flex-start; gap: 8px;
+	font-size: 12px;
+	padding: 4px 6px;
+	border-radius: 4px;
+	background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+}
+/* 起始任务：左侧色条 + 蓝底，一眼看出"队列从这项开始" */
+.tool-card-plan .plan-register-item:first-child {
+	background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 10%, transparent);
+	box-shadow: inset 2px 0 0 var(--vscode-charts-blue, #3794ff);
+}
+.tool-card-plan .plan-register-idx {
+	flex-shrink: 0;
+	width: 18px; height: 18px;
+	border-radius: 50%;
+	display: inline-flex; align-items: center; justify-content: center;
+	font-size: 10px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	border: 1px solid var(--vscode-widgetBorder, rgba(128,128,128,.35));
+	color: var(--vscode-descriptionForeground);
+}
+.tool-card-plan .plan-register-item:first-child .plan-register-idx {
+	border-color: var(--vscode-charts-blue, #3794ff);
+	color: var(--vscode-charts-blue, #3794ff);
+}
+.tool-card-plan .plan-register-main {
+	flex: 1; min-width: 0;
+	display: flex; flex-direction: column; gap: 2px;
+}
+.tool-card-plan .plan-register-title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tool-card-plan .plan-register-title { color: var(--vscode-foreground); font-weight: 500; overflow-wrap: anywhere; }
+.tool-card-plan .plan-register-start {
+	flex-shrink: 0;
+	font-size: 10px;
+	padding: 0 5px;
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 18%, transparent);
+	color: var(--vscode-charts-blue, #3794ff);
+}
+.tool-card-plan .plan-register-desc {
+	color: var(--vscode-descriptionForeground);
+	font-size: 11.5px;
+	overflow-wrap: anywhere;
+}
+.tool-card-plan .plan-register-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 1px; }
+.tool-card-plan .plan-register-chip {
+	font-size: 10.5px;
+	padding: 0 6px;
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+	color: var(--vscode-descriptionForeground);
+	max-width: 100%;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tool-card-plan .plan-register-chip.plan-register-deliverable { color: var(--vscode-charts-green, #4ec9b0); }
+.tool-card-plan .plan-register-chip.plan-register-files { font-family: var(--vscode-editor-font-family, monospace); }
+.tool-card-plan .plan-register-more { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.tool-card-plan .plan-register-warn {
+	margin-top: 6px; padding-top: 6px;
+	border-top: 1px dashed var(--vscode-widgetBorder, rgba(128,128,128,.25));
+	font-size: 11px;
+	color: var(--vscode-charts-yellow, #cca700);
+	overflow-wrap: anywhere;
+}
+.tool-card-plan .plan-register-warn-err { color: var(--vscode-charts-red, #f14c4c); }
 .tool-card-plan .plan-phase-lock.approved { color: var(--vscode-charts-green, #4ec9b0); }
 
 /* update_plan：进度条占位（running 无步骤时） */
@@ -12024,7 +12307,18 @@
 	font-weight: 500;
 	color: var(--vscode-textLink-foreground, #60a5fa);
 	margin-left: 4px;
+	/* 2026-09-17：宽度不足时文件名自身收缩并省略，而不是把右侧按钮挤出可视区，
+	   也不是把文字硬裁成乱码。配合父级 min-width:0 生效。 */
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
+
+/* 2026-09-17：语言标签与修改标记是次要信息，文件名优先保留空间。
+   前者不放大也不收缩，后者在空间极度紧张时可收缩（避免挤掉文件名）。 */
+.write-file-lang { flex-shrink: 0; }
+.write-file-modified { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 已修改标记 */
 .write-file-modified {
@@ -12513,6 +12807,66 @@
 /* 写文件卡片：视觉顺序调整（title 在上，content 在下）*/
 .write-file-tool-card { display: flex; flex-direction: column; }
 .write-file-tool-card > .tool-header { order: 1; }
+
+/* ★ 2026-09-18（改回一行）：标题与右侧按钮**同一行显示**（用户要求：patch 卡片「文字和按钮在一行」）。
+   同日早些时候曾为「窄卡片标题被按钮挤成省略号」改成两行（column）；本次一行化**保留那条教训**，
+   用「明确分工」取代"谁都能缩"（这才是当初出问题的根因 ✗）：
+     · 标题侧  `flex: 1 1 auto; min-width: 0` ⇒ 宽度不足时**只在行内省略**（可缩到 0，不溢出）；
+     · 按钮侧  `flex: 0 0 auto; white-space: nowrap` ⇒ **永不收缩**，不会被标题挤掉 ✓
+   ⇒ 同行但互不侵占：先满足不可缩的按钮，剩余宽度全给标题（超出即省略号）✓
+   结构（不变）：
+     .write-file-header (row)
+       ├── .tool-header-row      → 标题（lang / 文件名 / 修改标记 / +N -N）
+       └── .tool-header-right    → 按钮（查看文件 / 导入知识库 / 展开折叠 ⌄） */
+.write-file-tool-card.write-file-tool-card .write-file-header {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 6px;
+	height: auto;
+	/* 标题的省略在行内完成；按钮侧不缩 ⇒ 不会溢出 ⇒ 可安全裁剪 */
+	overflow: hidden;
+	/* ★ 极窄卡片（标题连下限都放不下）时允许按钮区**折到次行**，
+	   而不是把标题压成空白、也不是把按钮裁掉 —— 正常宽度下永远不会折行 ✓ */
+	flex-wrap: wrap;
+	row-gap: 2px;
+}
+.write-file-header .tool-header-row {
+	/* ⚠ 必须是 `flex-basis: 0`（不是 `auto`）：折行判断用的是**flex base size**，
+	   用 `auto` 时基准 = 标题**内容**宽度 ⇒ 文件名一长就先折行（实测 660px 卡片也折 ✗）；
+	   用 `0%` 时基准 0，折行只取决于按钮区宽度 ⇒ 正常宽度**恒为一行** ✓✓
+	   标题实际宽度 = 卡片宽 − 按钮区宽，超出即省略号 ✓ */
+	flex: 1 1 0%;
+	min-width: 0;
+	gap: 0;
+}
+/* 标题侧：可收缩（唯一允许省略的一方） */
+.write-file-header .tool-header-left { flex: 1 1 auto; min-width: 0; }
+.write-file-header .tool-header-title-container {
+	flex: 1 1 auto;
+	/* ⚠ 下限（≈ 语言标签 + 文件名省略 + diff 统计）：不给下限时 flex 会把"最长的那个"
+	   （文件名，`min-width:0`）压到 0 宽度 ⇒ 窄卡片下文件名**整个消失**（只留 TS 和 +N -N，
+	   实测复现）✗。配合上面的 `flex-wrap: wrap`：放不下时按钮区折行，文件名始终可读 ✓ */
+	min-width: 96px;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+/* 文件名：允许省略但**不得消失**（配合容器下限；5ch ≈ 5 字符 + 省略号） */
+.write-file-header .write-file-name { min-width: 5ch; }
+/* 按钮侧：同行靠右、**永不收缩**、**不换行**（换行就等于回到两行，违背本次要求） */
+.write-file-header .tool-header-right {
+	flex: 0 0 auto;
+	margin-left: auto;
+	white-space: nowrap;
+	flex-wrap: nowrap;
+	justify-content: flex-end;
+	gap: 6px;
+}
+.write-file-header .tool-view-file-link,
+.write-file-header .tool-import-kb-link { flex: 0 0 auto; white-space: nowrap; }
+/* `+N -N` 属关键信息，不参与收缩（否则窄卡片下会先被省略掉） */
+.write-file-header .write-file-diff-stats { flex: 0 0 auto; }
 .write-file-tool-card > .tool-header-children { order: 2; }
 
 /* 写文件卡片：隐藏 title 前端 chevron（标题文本即可点击） */

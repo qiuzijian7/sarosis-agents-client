@@ -27,6 +27,8 @@ import { GLOBAL_SYSTEM_SUFFIX, GLOBAL_SYSTEM_PREFIX, getStrategyGuidance } from 
 import { getParadigmOverride } from '../common/paradigmOverride.js';
 import { joinSections, composeFrozenPrefix, composeVolatileMessage, buildCompactToolSection, type ISystemPromptTiers } from '../common/systemPromptComposer.js';
 import { detectModelFamily } from '../common/modelFamilyPrompt.js';
+import { createDeliveryQueue } from '../common/deliveryQueue.js';
+import type { DeliveryQueue } from '../common/deliveryQueue.js';
 import { snapshotPromptPrefix, diffPromptPrefix, formatPromptPrefixLog, type IPromptPrefixSnapshot } from '../common/promptDiagnostics.js';
 import { isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -195,10 +197,56 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		return lock;
 	}
 
-	/** 释放所有 per-(workspace,agent) 互斥锁表，避免长期多 workspace 切换累积。 */
+	/**
+	 * 运行中 steering 的交付队列（per-agent）。
+	 *
+	 * 用户在 turn 执行期间补充输入时不打断当前轮次，而是入队；主循环每轮
+	 * iteration 顶部的门控段经 `injectSteeringMessages` 领取并注入（lease/ack/
+	 * release 三段式，见 `common/deliveryQueue.ts`）。
+	 *
+	 * 懒建：只有投递过 steering 的 agent 才占队列（见 `_getSteeringQueue`）。
+	 */
+	private readonly _steeringQueues = new Map<string, DeliveryQueue>();
+
+	/** 释放 per-(workspace,agent) 互斥锁与 steering 队列，避免长期多 workspace 切换累积。 */
 	public override dispose(): void {
 		this._bindingWriteLocks.clear();
+		this._steeringQueues.clear();
 		super.dispose();
+	}
+
+	/**
+	 * 入队一条运行中 steering 消息。见 `IAgentDriverService.enqueueSteeringMessage`。
+	 */
+	public enqueueSteeringMessage(agentId: string, content: string, from: string = 'user'): string | undefined {
+		if (!content) {
+			return undefined;
+		}
+		const queue = this._getSteeringQueue(agentId);
+		const item = queue.enqueue({
+			id: `steer-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+			from,
+			to: agentId,
+			content,
+			metadata: { kind: 'steering' },
+		});
+		this._logService.info(`[AgentDriver] steering enqueued: agentId=${agentId}, from=${from}, id=${item.id}`);
+		return item.id;
+	}
+
+	/**
+	 * 取 agent 的 steering 队列；缺失时创建。
+	 *
+	 * 懒建而非 eager 预建：只有真正投递过 steering 的 agent 才占一个队列，
+	 * 避免为一个仅执行过普通 turn 的 agent 留下空队列。
+	 */
+	private _getSteeringQueue(agentId: string): DeliveryQueue {
+		let queue = this._steeringQueues.get(agentId);
+		if (!queue) {
+			queue = createDeliveryQueue();
+			this._steeringQueues.set(agentId, queue);
+		}
+		return queue;
 	}
 
 	/**
@@ -664,6 +712,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	try {
 		this._updateTurnStatus(turnId, AgentTurnStatus.Running);
 		this._logService.info(`[AgentDriver] executeTurn START: agentId=${request.agentId}, sessionId=${request.sessionId ?? 'none'}, messages=${request.messages.length}, turnId=${turnId}`);
+
+		// turn 起点回收陈旧 steering 租约：上一个 turn 若在注入途中崩溃/被强杀，
+		// 消息会永久卡在 in_progress 且无任何报错。挂在 turn 边界（而非每轮
+		// iteration）是因为「上一轮崩了 → 下一轮开头先捞回来」正是所需的语义。
+		const reclaimed = this._getSteeringQueue(request.agentId).reclaimStale();
+		if (reclaimed > 0) {
+			this._logService.warn(`[AgentDriver] reclaimed ${reclaimed} stale steering lease(s) for agentId=${request.agentId}`);
+		}
 
 		// ── 工作流模式：/workflow <id>（/wf、bare /{wf-xxx}）触发 ──
 		// 控制权从自由 LLM 循环移交给工作流 DAG：跳过 Memory/Prompt 组装，

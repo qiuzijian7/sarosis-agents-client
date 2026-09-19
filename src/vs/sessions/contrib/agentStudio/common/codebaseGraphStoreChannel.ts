@@ -48,6 +48,15 @@ export interface ICodebaseGraphSqliteBackend {
 	rebuildFTS(): Promise<void>;
 	/** WAL checkpoint（压缩 WAL，防读变慢） */
 	checkpoint(): Promise<void>;
+	/**
+	 * ★★★ 2026-09-18（P1-1 第二步）：把当前图库导出为「**SQLite 快照**」制品（`VACUUM INTO` 到 targetPath）。
+	 *
+	 * 动机：制品格式是 gzip + JSON ⇒ 载入端必须**解析 JSON**（真机 3 folder ≈ **7320ms**）。而 SQLite
+	 * 快照可被直接打开、按页取出 ⇒ 载入端**完全不解析 JSON** ✓。
+	 * ⚠ 仅主进程能做（renderer 没有原生模块）；`targetPath` **必须不存在**（SQLite 规定）⇒ 调用方
+	 * 写临时名再原子改名；失败必须可回退（旧的 JSON 制品路径保持不变）。
+	 */
+	exportSnapshot(targetPath: string): Promise<{ nodeCount: number; edgeCount: number }>;
 	clear(): Promise<void>;
 	deleteProject(project: string, opts?: { keepFileHashes?: boolean }): Promise<void>;
 	/** 删除单文件所有节点/边/FTS（增量索引补丁用，替代全量重建），返回被删节点 id。 */
@@ -95,6 +104,18 @@ export interface ICodebaseGraphSqliteBackend {
 	getAllNodes(project?: string, limit?: number, offset?: number, afterId?: number): Promise<GraphNode[]>;
 	/** 分页读边。`afterId` 语义同 `getAllNodes`；返回的 `GraphEdge.id` 是行 id（**仅作游标**）。 */
 	getAllEdges(project?: string, limit?: number, offset?: number, afterId?: number): Promise<GraphEdge[]>;
+
+	// ─── ★★★ 2026-09-18（P1-1 步骤3）：**任意 SQLite 快照路径**的只读分页读取 ──────────────
+	// 为什么要单独一组方法：上面那些读取方法都只作用于「本机缓存库」（host 里那一个 store 实例）；
+	// 而「队友共享的制品 / 新机器冷启动」要读的是**用户目录里的 `graph.db.sqlite` 快照** ⇒
+	// 必须按路径**另开一个只读实例**（renderer 没有原生模块，只能在主进程做）。
+	// 语义与上面四个方法**逐一对应**（分页游标 `afterId` 口径也相同）。
+	snapshotListProjects(dbPath: string): Promise<{ name: string; nodeCount: number; edgeCount: number }[]>;
+	snapshotGetTotalNodeCount(dbPath: string, project?: string): Promise<number>;
+	snapshotGetAllNodes(dbPath: string, project?: string, limit?: number, offset?: number, afterId?: number): Promise<GraphNode[]>;
+	snapshotGetAllEdges(dbPath: string, project?: string, limit?: number, offset?: number, afterId?: number): Promise<GraphEdge[]>;
+	/** 释放某个快照的只读实例（载入收尾时调用；不调用也不会立刻泄漏 —— 下次同路径会复用同一实例）。 */
+	closeSnapshot(dbPath: string): Promise<void>;
 	getNodeCount(project?: string): Promise<number>;
 	getTopNodesByDegree(project: string, maxNodes: number): Promise<GraphNode[]>;
 	getEdgesBetweenNodes(ids: number[]): Promise<GraphEdge[]>;

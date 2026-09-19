@@ -8,6 +8,7 @@ import type { ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlC
 import type {
 	IAgentChatMessage,
 	IAgentInfo,
+	AgentStatus,
 	IProviderInfo,
 	IModelInfo,
 	IImageModelGroup,
@@ -153,6 +154,22 @@ export interface IChatPanel extends IDisposable {
 	// ── Agent / providers ──
 	setAgent(agent: IAgentInfo | null): void;
 	getAgent(): IAgentInfo | null;
+	/**
+	 * 就地更新当前 agent 的定义字段（icon / name / role…）并只重绘 header，
+	 * 不重建消息区/输入区。
+	 *
+	 * 与 setAgent 的区别：setAgent 会 _render() 全量重建面板（clearNode + 重建
+	 * 消息列表），滚动位置与阅读状态都会丢失。当变更只是「Agent 设置页改了图标」
+	 * 这类定义字段时，用本方法即可，代价最小。
+	 */
+	patchAgent(agent: IAgentInfo): void;
+	/**
+	 * 更新当前 agent 的运行状态（驱动 header 头像右下角状态圆点）。
+	 *
+	 * 比 `patchAgent()` 轻量得多：只改圆点颜色 + 角色行的状态文案，
+	 * 不重建 header。发送链路每次开始/结束各调用一次，故必须是廉价操作。
+	 */
+	setAgentStatus(status: AgentStatus): void;
 	setAvailableAgents(agents: IAgentInfo[]): void;
 	setProviders(providers: IProviderInfo[]): void;
 	setModels(models: IModelInfo[]): void;

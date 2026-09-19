@@ -82,6 +82,26 @@ export interface AgentSessionMeta {
  *   (workspace/.sarosworkspace/agents/{agentId}/sessions/)
  *   is automatically copied to the global location.
  */
+/**
+ * 是否允许对该会话执行自动命名。
+ *
+ * 自动命名会覆盖会话名，因此用户手动命名过的会话必须让路；否则用户改的名字
+ * 会在下一次自动命名时被静默冲掉（见 sessionAutoRename.test.ts 的回归）。
+ *
+ * @param nameIsCustom   该会话名是否由用户手动指定
+ * @param historyLength  该会话已有历史消息条数
+ */
+export function shouldAutoRenameSession(
+	nameIsCustom: boolean,
+	historyLength: number,
+): boolean {
+	if (nameIsCustom) {
+		return false;
+	}
+	return historyLength === 0;
+}
+
+
 export class AgentChatService extends Disposable implements IAgentChatService {
 	declare readonly _serviceBrand: undefined;
 
@@ -1096,12 +1116,67 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				? ` | append role=${ctx.role} +${ctx.msgBytes ?? 0}B (${((ctx.msgBytes ?? 0) / 1024).toFixed(1)}KiB)`
 				: '';
 
-			this.logService.info(
-				`[MemSnap][${tag}] heap=${heapUsed}/${heapTotal}MB rss=${rss}MB ext=${ext}MB${limitTag} | ` +
+			// ★★★ 2026-09-19：**必须同时统计 DOM 规模** ✓ —— 否则发现不了真正的爆点 ✗
+			//
+			// 真机取证（2026-09-19 卡死事故 ✓）：
+			//   renderer 进程 RSS = **3.4GB** ✗ 而 V8 **JS 堆只有 600MB** ✓
+			//   ⇒ 差值 ~2.8GB **不在 JS 堆里** ✓，而在 **DOM / 渲染层** ✗✓
+			// 而 renderer 里 `process.memoryUsage()` **不可用** ✗（上面已回退到 `performance.memory`
+			// ⇒ **只有 JS 堆** ✗）⇒ 只看 heap 永远看不到真凶 ✗✓。
+			// 因此这里补上「页面节点总数 + 聊天消息元素数」✓ —— 这才是能**提前预警**卡死的指标 ✓。
+			let domNodes = -1;
+			let domMsgs = -1;
+			try {
+				// O(全部节点)：30s 一次的诊断采样，可接受 ✓（绝不在热路径调用 ✗）
+				domNodes = document.getElementsByTagName('*').length;
+				domMsgs = document.querySelectorAll('[data-msg-id]').length;
+			} catch { /* 非 DOM 环境（单测/Node）忽略 */ }
+
+			const domInfo = domNodes >= 0 ? ` | dom nodes=${domNodes} msgs=${domMsgs}` : '';
+			const line = `[MemSnap][${tag}] heap=${heapUsed}/${heapTotal}MB rss=${rss}MB ext=${ext}MB${limitTag} | ` +
 				`cache buckets=${this._historyCache.size} sessBuckets=${this._countSessionBuckets()} totalMsgs=${totalMsgs} | ` +
-				`active[${activeKey}] msgs=${activeMsgs} bytes=${mb(activeBytes)}MB${appendInfo}`,
-			);
+				`active[${activeKey}] msgs=${activeMsgs} bytes=${mb(activeBytes)}MB${appendInfo}${domInfo}`;
+
+			// 阈值升级：DOM 规模失控是「app 卡死」的**直接前兆** ✓（信息级日志会被忽略 ✗）
+			if (domNodes >= AgentChatService.DOM_ERROR_NODES) {
+				this.logService.error(`${line} ⚠⚠ DOM 节点数 ${domNodes} 超危险阈值 ${AgentChatService.DOM_ERROR_NODES} —— 主线程即将被布局/重排拖死（真机 3.4GB 事故前兆 ✓）`);
+			} else if (domNodes >= AgentChatService.DOM_WARN_NODES) {
+				this.logService.warn(`${line} ⚠ DOM 节点数 ${domNodes} 偏高（>${AgentChatService.DOM_WARN_NODES}）`);
+			} else {
+				this.logService.info(line);
+			}
 		} catch { /* 诊断绝不能打断主流程 */ }
+	}
+
+	// ─── 内存/DOM 周期监护（2026-09-19）────────────────────────────────────
+	//
+	// 背景（真机 ✓）：`MemSnap` 原来只在 **3 个事件点**打点 ✗
+	// （send-start ✓ / append-batch ✓ / send-done ✓），而卡死那次**整份日志只有 2 条** ✗✓
+	// ⇒ 内存从正常涨到 RSS 3.4GB 的**全过程零记录** ✗ ⇒ 事后无法归因 ✓。
+	// 现在补一个 **30s 周期采样** ✓；只在「有活跃流」或「DOM 越过警戒线」时输出 ✓ ⇒ 不刷屏 ✓。
+
+	/** DOM 节点数警戒线（典型聊天面板约 2–5k 节点 / 30 条消息 ✓）。 */
+	private static readonly DOM_WARN_NODES = 60_000;
+	/** DOM 节点数危险线（真机 1675 条消息全量入 DOM 时远超此值 ✗）。 */
+	private static readonly DOM_ERROR_NODES = 120_000;
+
+	private _memWatchTimer: number | null = null;
+
+	/** 惰性启动周期监护（幂等 ✓，首次 sendMessage 时调用 ✓）。 */
+	private _startMemWatch(): void {
+		if (this._memWatchTimer !== null) { return; }
+		this._memWatchTimer = window.setInterval(() => {
+			let domNodes: number;
+			try {
+				domNodes = document.getElementsByTagName('*').length;
+			} catch { return; }
+			const busy = this._activeStreams.size > 0;
+			if (!busy && domNodes < AgentChatService.DOM_WARN_NODES) {
+				// 空闲且 DOM 健康 ⇒ 采样丢弃（不产生日志）✓
+				return;
+			}
+			this._logMemSnapshot(busy ? 'tick' : 'tick-idle');
+		}, 30_000);
 	}
 
 	private async _ensureHistoryLoaded(): Promise<void> {
@@ -2435,6 +2510,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		);
 		// OOM 诊断：发送前基线快照（heap + 活跃桶留存）
 		this._logMemSnapshot('send-start', { agentId, sessionId: options.agentSessionId });
+		// ★ 2026-09-19：顺带启动周期监护 ✓（幂等 ✓）—— 长会话内存涨势从此**过程可见** ✓
+		this._startMemWatch();
 
 		const streamKey = options.agentSessionId
 			? `${agentId}::${options.agentSessionId}`
@@ -3139,6 +3216,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 */
 	override dispose(): void {
 		this._memoryEventUnsub?.();
+		// ★ 2026-09-19：停掉周期内存监护，避免宿主销毁后回调仍在跑 ✓
+		if (this._memWatchTimer !== null) { window.clearInterval(this._memWatchTimer); this._memWatchTimer = null; }
 		this._memoryEventUnsub = null;
 		// 兜底落盘：清掉待触发的防抖定时器，把仍 dirty 的 index 同步写出。
 		// dispose 不能 await，故 fire-and-forget（写队列自身串行，不会撕裂 JSON）。

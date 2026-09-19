@@ -108,6 +108,9 @@ export interface IChatAttachment {
 	isPasted?: boolean;
 	/** 原始文件路径 / 文件夹路径（点击附件时在编辑器中打开，或交给 agent 操作） */
 	filePath?: string;
+	/** 2026-09-18：文本片段种类，仅影响 chip 图标/名称/预览标题，不改变发送内容。
+	 *  可选——既有构造点（文件/图片/文件夹/addTextContext）不受影响。 */
+	kind?: 'snippet' | 'log';
 }
 
 /** Sub-agent spawned during a conversation turn */
@@ -743,6 +746,30 @@ export interface IQueueItem {
 	readonly status?: 'pending' | 'executing' | 'done' | 'failed';
 	/** 可选元数据（attach/file/agentId 等） */
 	readonly metadata?: Record<string, unknown>;
+	/**
+	 * ★ 2026-09-18（用户需求）：**队列项随附的 pill** —— 代码片段 / 图片 / 文件 / 技能 / 工作流 ✓。
+	 *
+	 * 为什么需要：入队时原来只留 `content`（纯文本）✗，附件甚至被压成一句
+	 * `[2 个附件]` ✗ ⇒ 用户排完队**看不出这条里带了什么** ✓（需要显示 pill）。
+	 */
+	readonly pills?: ReadonlyArray<IQueuePill>;
+}
+
+/**
+ * 队列项上的 pill（**展示用**最小结构）。
+ *
+ * ⚠ 刻意不复用 `IChatAttachment` ✗：pill 里还有 skill / workflow 这类**不是附件**的内联 chip ✓
+ * ⇒ 需要一个能同时表达二者的结构 ✓。
+ * ⚠ 它只承载"显示什么"，**不承载"发什么"** —— 发送仍走原有的 text/attachments 通路 ✓
+ * （因此本字段缺失/不完整不会影响发送行为 ✓）。
+ */
+export interface IQueuePill {
+	/** 形态：决定图标与配色 ✓ */
+	readonly kind: 'file' | 'image' | 'folder' | 'snippet' | 'log' | 'skill' | 'workflow';
+	/** 主文案（文件名 / 片段名 / 技能名 …）✓ */
+	readonly label: string;
+	/** 次要信息（大小 / 行数 …）✓ */
+	readonly meta?: string;
 }
 
 /** 队列项操作类型 */

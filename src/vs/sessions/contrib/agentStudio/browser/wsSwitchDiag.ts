@@ -114,6 +114,34 @@ export function wsStageAge(now: number = Date.now()): number {
 	return now - _stageSince;
 }
 
+/**
+ * 「本窗口主线程最长一次被占住」的**真实**累加器（毫秒）。
+ *
+ * ★ 2026-09-18：为什么需要它 —— `asyncSlice.takeMaxSliceMs()` **只在切片循环调用
+ * `sliceBudgetExceeded()` 时被喂** ⇒ 它只能看见**切片内部**的单次占用 ✗。真机实测：
+ * 给增量索引各阶段接上它后 8 个阶段**一个阻塞标记都没打** ✗，而同期看门狗却报
+ * `交互延迟 ≈585ms` ✓ ⇒ 典型**假阴性**（那些阶段根本不走 `sliceBudgetExceeded` ✓）。
+ *
+ * 本值改由**看门狗自己**喂（它本来就在测两件真东西）：
+ *   · 心跳漂移 `drift`（定时器晚到多久 ⇒ 连续阻塞 ✓）；
+ *   · 排队延迟 `delay`（`setTimeout(0)` 多久被跑到 ⇒ **切片式饱和也测得到** ✓✓）。
+ * 取两者最大值累加 ⇒ 覆盖两种形态 ✓。
+ *
+ * 调用口径（读 + **清零**，同 `takeMaxSliceMs` ✓）：在一段可命名工作的边界读一次，即得
+ * 「该段内主线程最长被占多久」⇒ 与段总耗时（含 await）一起看，才能区分
+ * 「**真占主线程**」与「只是在等 worker/磁盘」✗✓（后者耗时高但不卡交互）。
+ *
+ * ⚠ 读值清零 ⇒ 多个消费者会互相"抢"，**同一窗口只应有一个消费者** ✓。
+ */
+let _maxBlockMs = 0;
+
+/** 读取并清零「最长一次主线程占用」（口径见 `_maxBlockMs` ✓）。 */
+export function takeMaxBlockMs(): number {
+	const v = _maxBlockMs;
+	_maxBlockMs = 0;
+	return v;
+}
+
 /** 诊断输出：**任何异常都吞掉** —— 诊断绝不能影响主流程。 */
 export function wsDiagLog(logService: ILogService | undefined, msg: string): void {
 	try {
@@ -245,6 +273,8 @@ export function startMainThreadWatchdog(logService: ILogService, options: IWatch
 			const delay = Date.now() - probeStart;
 			latencySamples++;
 			if (delay > latencyMax) { latencyMax = delay; }
+			// ★ 真阻塞累加（排队延迟版）：连"切片式饱和"也测得到（漂移法对它是盲的 ✓）
+			if (delay > _maxBlockMs) { _maxBlockMs = delay; }
 		}, 0);
 
 		// 窗口结算（先结算再判阻塞：结算本身不该被下面的 `return` 跳过）
@@ -258,6 +288,8 @@ export function startMainThreadWatchdog(logService: ILogService, options: IWatch
 			latencySamples = 0;
 		}
 
+		// ★ 真阻塞累加（漂移版）：连续阻塞会被它抓到 ✓
+		if (drift > _maxBlockMs) { _maxBlockMs = drift; }
 		if (drift >= thresholdMs) {
 			blockedAccum += drift;
 			if (reports < maxReports) {

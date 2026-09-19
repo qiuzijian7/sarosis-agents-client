@@ -1,44 +1,83 @@
 ﻿import {
 	IModelProvider, IModelSelection, IModelOptions,
+	IModelDelta,
 	IMemoryProvider,
 	IAgentTurnRequest, IChatStreamDelta,
 	IToolDefinition, IToolCallInfo,
 	ISandboxViolationInfo,
 } from '../common/providers.js';
-import { withStreamTimeout, computeAdaptiveFirstTokenTimeout } from '../common/resilience.js';
-import { buildBuildSwitchReminder, buildPlanSystemReminder } from '../common/chatModeConfig.js';
-import { isToolCallDeniedByHardPermission } from '../common/toolPermission.js';
-import { findClarifySignal } from '../common/turnSignals.js';
-import { generatePlanPath, isPlanFileWriteCall } from '../common/planFile.js';
+import { isToolCallDeniedByTurnPolicy } from '../common/toolPermission.js';
+import type { DeliveryQueue } from '../common/deliveryQueue.js';
+import { runIterationGate, computeForkContext } from './turnIterationGate.js';
+import { handlePlanModeTools } from './parts/turnPlanModeTools.js';
+import type { IPlanModeToolsHost } from './parts/turnPlanModeTools.js';
+import { compactContextIfNeeded } from './parts/turnContextCompaction.js';
+import { runPostIterationCleanup } from './parts/turnPostIteration.js';
+import type {
+	IPostIterationDeps,
+	IPostIterationHookBus,
+	IPostIterationHost,
+	IPostIterationState,
+} from './parts/turnPostIteration.js';
+import type {
+	IContextCompactionDeps,
+	IContextCompactionHost,
+	IContextCompactionManager,
+	IContextCompactionState,
+} from './parts/turnContextCompaction.js';
+import type { ITurnHost, ITurnInitHost } from './turnHost.js';
+import type { Agent } from '../../../common/agentStudioTypes.js';
+import {
+	COMPRESSION_COOLDOWN_MS,
+	DEFAULT_BUDGET_MAX,
+	FILE_MODIFICATION_TOOLS,
+	MAX_CONSECUTIVE_TOOL_FAILURES,
+	MAX_REFLECT_ITERATIONS,
+	MAX_TEXT_SEARCH_STREAK,
+	MAX_TEXT_SEARCH_STREAK_HARD,
+	MAX_TOOL_ITERATIONS,
+	TOOL_USE_ENFORCEMENT_GUIDANCE,
+} from '../common/turnLoopConstants.js';
+import { buildTurnLlmStream, handleTurnStreamError } from './turnLlmStream.js';
+import {
+	classifyTurnDelta,
+	isDoneWithFinishReason,
+	isErrorDelta,
+	isTextDelta,
+	isThinkingDelta,
+	isToolCallDelta,
+	isUsageDelta,
+} from './turnDeltaDispatch.js';
+import { classifyAllBlockedStreak, classifyPingPong } from '../common/turnStopGate.js';
+import { failToolCallsFromTruncatedMessage, isTruncatedByOutputLimit, finalizeToolCall } from './turnToolExecution.js';
+import type {
+	ITurnToolCall, ITurnToolResult, ISandboxResolution, IToolFinalizationDeps,
+} from './turnToolExecution.js';
+import { TurnHookBus } from '../common/turnHookBus.js';
+import { registerMemoryProviderHooks } from './turnHookWiring.js';
+import { isPlanFileWriteCall } from '../common/planFile.js';
 import { filterPlanExclusiveTools } from '../common/chatModeConfig.js';
 import { join as pathJoin } from '../../../../base/common/path.js';
 import {
 	createInitialWorkState,
-	parsePlanDocument,
-	reduceWorkState,
 	resolveRequestWorkMode,
 	type ParsedPlanTask,
 } from '../common/workMode.js';
 import {
 	appendMessages,
 	insertMessages,
-	compactMessages,
-	stripSyntheticSidecars,
 	createInitialRunState,
 	reduceRunState,
-	snapshotRunState,
+	type AgentGuardrailCounters,
+	type AgentWrapUpState,
+	type AgentRetryCounters,
 	detectToolCallLoop,
 	classifyIncompleteTurn,
+	detectTruncatedTail,
 	resolveIncompleteTurnRetryInstruction,
 	incompleteTurnDiscardReason,
 	incompleteTurnRetryLimit,
 	incompleteTurnUserNotice,
-	isTransientStreamError,
-	isContextOverflowError,
-	TRANSIENT_ERROR_MAX_RETRIES,
-	TRANSIENT_ERROR_BASE_DELAY_MS,
-	TRANSIENT_ERROR_BACKOFF_FACTOR,
-	TRANSIENT_ERROR_MAX_DELAY_MS,
 	type AgentRunMessage,
 	type AgentRunState,
 	detectXmlToolCallLeak,
@@ -49,6 +88,7 @@ import {
 	RUN_STATE_LIMITS,
 	locateTaggedIdXmlTags,
 	stripTaggedIdXmlTags,
+	type AgentAction,
 } from '../common/agentRunState.js';
 import {
 	computeStreakKey,
@@ -62,16 +102,14 @@ import {
 	buildHandoffCommand,
 	applyCommandToState,
 } from '../common/agentGraph.js';
-import { buildForkContext, prefixCacheAligned } from '../common/forkContext.js';
 // 工具结果里的图像项：剥离出来改走 role:'user'（tool 消息的 contentParts 三家 provider 都不读）
 import {
 	splitToolResultImages, buildToolImageMessage, toolImageOmittedNote, resolveSupportsImages,
 } from '../common/toolResultImages.js';
 import { deriveAskRoutingContext } from '../common/askRouting.js';
-import { isBridgeTool, getToolsetForTool } from '../common/toolsetConfig.js';
-import { buildPromptBudgetReport, formatPromptBudgetLog, shouldEmitBudgetReport } from '../common/promptBudget.js';
+import { isBridgeTool } from '../common/toolsetConfig.js';
 import { needsToolUseEnforcement, detectModelFamily } from '../common/modelFamilyPrompt.js';
-import { formatEnrichmentLog, probeToolGuidance, formatToolSchemaDiagLog } from '../common/promptDiagnostics.js';
+import { formatEnrichmentLog } from '../common/promptDiagnostics.js';
 import {
 	isShellToolWithCommandArg,
 	detectAntiGuidanceCommand,
@@ -80,7 +118,7 @@ import {
 	formatLeadingCdRewriteLog,
 } from '../common/shellCommandSafety.js';
 import {
-	buildToolAuditReport, formatToolAuditLog, formatGuardrailFiredLog,
+	formatGuardrailFiredLog,
 	type IToolCallRecord,
 } from '../common/toolAuditReport.js';
 import {
@@ -88,25 +126,15 @@ import {
 	formatExplorationFindings,
 } from '../common/preLoopOrchestrator.js';
 import { registerPlanQueueHandle } from '../common/planQueueRegistry.js';
-
-/**
- * 已对「API 请求中 0 个 MCP 工具」警告过的会话（2026-09-05）。
- * 未配置/未连接 MCP 是稳态而非逐轮异常——同会话只 warn 一次，后续降级 info，
- * 避免日志刷屏（实测单会话 23 条重复警告）。
- */
-const _noMcpWarnedSessions = new Set<string>();
 import { getParadigmOverride, setParadigmOverride } from '../common/paradigmOverride.js';
 import {
 	toolConsecutiveFailureReminder,
 	terminalEmptyOutputReminder,
 	textWithoutToolsReminder,
-	softBudgetWrapUpReminder,
-	hardLimitWrapUpReminder,
 	allToolCallsBlockedReminder,
 	allBlockedWrapUpReminder,
 	ALL_BLOCKED_ESCALATE_AT,
 	ALL_BLOCKED_WRAPUP_AT,
-	budgetLowWarning,
 	preferGraphSearchReminder,
 	stopSearchingReportReminder,
 	textSearchLoopWrapUpReminder,
@@ -124,6 +152,14 @@ import {
 	STRUCTURAL_SEARCH_TOOL_NAMES,
 	TEXT_SEARCH_TOOL_NAMES,
 } from '../common/searchToolGroups.js';
+import {
+	logToolAuditSummary,
+	storeTurnObservationsAtEnd,
+} from './parts/turnFinalization.js';
+import {
+	emitPromptBudgetReport,
+	logToolsSentToLlm,
+} from './parts/turnRequestDiagnostics.js';
 
 import {
 	deduplicateToolCalls,
@@ -135,50 +171,66 @@ import {
 	StreamingToolCallAssembler,
 	PHANTOM_TOOL_NAMES,
 	repairToolName,
-	MAX_INVALID_TOOL_RETRIES,
 	MAX_TOOL_CALL_ARGUMENT_BUFFER_BYTES,
 	isParallelSafeReadOnlyTool,
 } from './toolCallUtils.js';
 import {
-	sanitizeAssistantVisibleText,
 	sanitizeToolResultText,
 	isEntirelyToolCallContent,
-	addSanitizeTraceSink,
 } from '../common/assistantVisibleText.js';
-
-/**
- * 带 trace 的 sanitize：把「哪个剥离阶段删了什么」打到 host 日志。
- *
- * 多个剥离阶段用了锚定文本末尾的正则（`$` 无 `m` flag），一旦误命中正文里的
- * 常见词（`Action:` / `[TOOL_CALL]` / `<function>` 等），会删除「从这里到文本
- * 末尾」的全部内容 —— 即用户看到的「消息尾部被截断」。此处在调用期间临时安装
- * sink（用完即卸），既拿到分阶段 trace，又不长期占用全局接收器。
- */
-function sanitizeWithTrace(text: string, host: { _logService: { warn(msg: string): void } }): string {
-	const log = host._logService;
-	const dispose = addSanitizeTraceSink(e => {
-		log.warn(
-			`[SanitizeTrace] stage=${e.stage} profile=${e.profile} ` +
-			`len ${e.beforeLen}→${e.afterLen} (removed=${e.removedLen}) atOffset=${e.atOffset}\n` +
-			`  removedSnippet="${e.removedSnippet.replace(/\n/g, '\\n')}"\n` +
-			`  afterTail="${e.afterTail.replace(/\n/g, '\\n')}"`
-		);
-	});
-	try {
-		return sanitizeAssistantVisibleText(text, 'streaming');
-	} finally {
-		dispose();
-	}
-}
 import { buildDurableContextSystemMessage } from '../common/durableContextMiddleware.js';
 import { AGUIChatMessageBuilder } from '../common/adapters/aguiAdapter.js';
 import { ContextManager, RETRIEVAL_COMPACTION_ENABLED, RETRIEVAL_BUDGET_RATIO } from '../common/contextManager.js';
 import { injectMemoryContext, isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { getLastMcpServerStats } from './agentToolAssembly.js';
-import type { ChatMessage } from '../common/types.js';
 import { IterationBudget } from '../common/iterationBudget.js';
+import { createTurnLoopState } from '../common/turnLoopState.js';
 import { AgentLoopStrategyFactory } from './agentLoopStrategyFactory.js';
 import type { PreLoopContext, AgentParadigm } from '../common/agentLoopStrategy.js';
+import {
+	sanitizeWithTrace,
+	tagTraceScanRequest,
+	tagTraceScanToolResult,
+	isMultiTargetChurnTool,
+	estimateToolsSchemaTokens,
+	groupToolSchemaCosts,
+	buildCheckpointSnapshot,
+} from './parts/turnHelpers.js';
+
+/**
+ * 转导出（barrel re-export）。
+ *
+ * `test/browser/agentTurnExecutorHelpers.test.ts` 从**本文件**路径 import
+ * `buildCheckpointSnapshot` 并有 6 个断言，直接搬走会断链。此处保住原有测试
+ * 入口，不是重复实现。
+ */
+export { buildCheckpointSnapshot };
+
+/**
+ * 范式 → 策略的解析工厂，模块级单例。
+ *
+ * 语义等价于此前的 `host._strategyFactory` 懒挂（`if (!host._strategyFactory) …`）：
+ * `host` 是进程内单例服务，那次懒挂实际就是「一个进程一个工厂」。改为模块常量
+ * 后行为不变，但少了一处往 `any` 宿主上凭空写字段的操作 —— `_strategyFactory`
+ * 在 `AgentOSService` 上**从未声明过**，仅靠 `host: any` 才没被 tsc 拦下。
+ *
+ * 工厂本身持有可变状态（`register()` 可覆盖某范式的实现），故必须复用同一实例，
+ * 不能每轮 new。而**策略实例**仍是 per-turn 的：`resolve()` 每次调用都 new 一个，
+ * 多聊天框/多 session 的预算与循环状态因此天然隔离。
+ */
+const strategyFactory = new AgentLoopStrategyFactory();
+
+/**
+ * 已对「API 请求中 0 个 MCP 工具」警告过的会话（2026-09-05）。
+ * 未配置/未连接 MCP 是稳态而非逐轮异常——同会话只 warn 一次，后续降级 info，
+ * 避免日志刷屏（实测单会话 23 条重复警告）。
+ */
+const _noMcpWarnedSessions = new Set<string>();
+
+
+
+
+
 
 // MCP 工具不直发 schema（会导致 API 400），仅通过 tool_search 桥接发现。
 // 系统提示词（agentDriverService.ts）中已有 MCP 工具摘要指引。
@@ -214,7 +266,7 @@ interface ITurnContext {
 	 */
 
 	/** 工具失败恢复提示（借鉴 Hermes-Agent _tool_failure_recovery_hint）。 */
-	function getToolFailureRecoveryHint(host: any, toolName: string): string | null {
+	function getToolFailureRecoveryHint(toolName: string): string | null {
 		const hints: Record<string, string> = {
 			terminal: 'For terminal failures, try a diagnostic command first (e.g., `pwd && ls`), ' +
 				'then use an absolute path, a simpler command, or a different tool such as file_read/patch.',
@@ -264,28 +316,62 @@ interface ITurnContext {
 			text = stripped;
 		}
 		if (text.length === 0 || text.length > 40) { return false; }
+		// ⚠ 中文词条一律**不能**用 `\b` 收尾：`\b` 是 ASCII 单词边界，只在 `\w`
+		// （[A-Za-z0-9_]）与非 `\w` 的交界处成立。CJK 字符本身不属于 `\w`，
+		// 所以 `/^你好\b/` 对 "你好" 恒为 false —— 2026-09-18 实测该行所有中文
+		// 条目（你好/您好/在吗/好的/收到/明白/了解/谢谢…）全部从未命中过，
+		// 中文问候因此一直在触发完整探索工具集与图谱构建。
+		// 这里改用「串尾或后接非中文字符」作为等价边界。
+		const CJK_END = '(?![\\u4e00-\\u9fa5])';
 		const trivialPatterns = [
 			/^test\d*$/i,
 			/^测试\d*$/i,
 			/^(hi|hello|hey|yo|hiya)\b/i,
-			/^(你好|您好|在吗|在不在|有人吗)\b/,
-			/^(ok|okay|好的|收到|明白|了解|谢谢|thanks|thank you|thx)\b/i,
+			new RegExp(`^(你好|您好|在吗|在不在|有人吗)${CJK_END}`),
+			/^(ok|okay|thanks|thank you|thx)\b/i,
+			new RegExp(`^(好的|收到|明白|了解|谢谢)${CJK_END}`),
 			/^(t|t1|t2|t3)\b/i,
 		];
 		if (!trivialPatterns.some(p => p.test(text))) { return false; }
-		// 含代码/任务信号 → 不是 trivial
-		const codeSignals = /\b(gc|bug|fix|impl|implement|optim|优化|修复|实现|分析|analyze|refactor|函数|function|class|模块|module|代码|code|文件|file|读|read|写|write|查|search|搜索|图谱|graph|原理|怎么|如何|why|how|deploy|构建|build|运行|run|创建|create|添加|add|更新|update|删除|delete|生成|generate|配置|config|初始化|init|安装|install|设置|set|启动|start|停止|stop|显示|show|列出|list|获取|get)\b/i;
-		if (codeSignals.test(text)) { return false; }
+		// 含代码/任务信号 → 不是 trivial。
+		// 同上：中文信号词（优化/修复/分析…）不能夹在 `\b` 之间，否则永不命中。
+		// 故拆成两条：ASCII 词用 `\b` 保证整词匹配，中文词直接子串匹配。
+		const asciiSignals = /\b(gc|bug|fix|impl|implement|optim|analyze|refactor|function|class|module|code|file|read|write|search|graph|why|how|deploy|build|run|create|add|update|delete|generate|config|init|install|set|start|stop|show|list|get)\b/i;
+		const cjkSignals = /(优化|修复|实现|分析|函数|模块|代码|文件|读|写|查|搜索|图谱|原理|怎么|如何|构建|运行|创建|添加|更新|删除|生成|配置|初始化|安装|设置|启动|停止|显示|列出|获取)/;
+		if (asciiSignals.test(text) || cjkSignals.test(text)) { return false; }
 		// 含路径/扩展名 → 不是 trivial
 		if (/[\\/]|\.\w{1,6}\b/.test(text)) { return false; }
 		return true;
 	}
 
 	/**
+	 * 按 `agentId` 从 Agent 注册表取当前 Agent 配置。
+	 *
+	 * 修复历史缺陷：此处原为 `host._currentAgent`，但该成员在 `AgentOSService` 上
+	 * **从未声明过**，仅靠 `host: any` 才没被 tsc 拦下 —— 运行时恒为 `undefined`，
+	 * 导致 `enrichWithStats` 的 `ctx.agent` 一直为空，
+	 * `SystemReminderTagProvider`（`builtinTagProviders.ts:319`）永远无法给只读
+	 * agent 追加「This is a read-only agent」提醒。
+	 *
+	 * 静默降级路径与注册表本身一致：`_studioService` 未注入 / 查不到 id 时返回
+	 * `undefined`，与 `ctx.agent?: Agent` 的可选语义吻合，调用方无需额外判空。
+	 */
+	function resolveCurrentAgent(host: ITurnInitHost, agentId: string | undefined): Agent | undefined {
+		if (!agentId) { return undefined; }
+		try {
+			const agents = host._configReaderDeps.getAgentsSync();
+			return agents?.find((candidate: Agent) => candidate.id === agentId);
+		} catch {
+			// 注册表读取失败不应打断整轮富化 —— 退化为「无 agent 上下文」。
+			return undefined;
+		}
+	}
+
+	/**
 	 * Turn setup — model provider check, tool collection, message init, memory injection.
 	 * Yields memory_injected deltas. Returns undefined to signal early exit.
 	 */
-	async function* initTurnContext(host: any, request: IAgentTurnRequest): AsyncGenerator<IChatStreamDelta, ITurnContext | undefined> {
+	async function* initTurnContext(host: ITurnInitHost, request: IAgentTurnRequest): AsyncGenerator<IChatStreamDelta, ITurnContext | undefined> {
 		const modelProvider = host._getActiveModelProvider();
 		if (!modelProvider) {
 			host._logService.warn('[AgentOS] No ModelProvider available');
@@ -336,7 +422,7 @@ interface ITurnContext {
 		if (effectiveSystemPrompt) {
 			const needsEnforcement = needsToolUseEnforcement(selection?.modelId);
 			if (needsEnforcement && !effectiveSystemPrompt.includes('TOOL_USE_ENFORCEMENT')) {
-				effectiveSystemPrompt = `${effectiveSystemPrompt}\n\n${host.constructor.TOOL_USE_ENFORCEMENT_GUIDANCE}`;
+				effectiveSystemPrompt = `${effectiveSystemPrompt}\n\n${TOOL_USE_ENFORCEMENT_GUIDANCE}`;
 				host._logService.info(`[AgentOS] Appended tool-use enforcement guidance for model ${selection.modelId} (family=${detectModelFamily(selection?.modelId)})`);
 			}
 			// Plan 模式强制指令已移至 per-iteration <system-reminder> 注入（下方 agent loop 内）。
@@ -512,7 +598,7 @@ interface ITurnContext {
 					// 「provider 坏了」，8 个标签任一失效都是无声的。
 					const enrichResult = await host._userMessageEnricher.enrichWithStats(
 						messages[lastUserIdx].content as string,
-						{ request, agent: host._currentAgent },
+						{ request, agent: resolveCurrentAgent(host, request.agentId) },
 					);
 					const enriched = enrichResult.enriched;
 					messages = messages.slice(); // shallow copy 后修改，避免污染 request.messages 引用
@@ -539,127 +625,21 @@ interface ITurnContext {
 	return { modelProvider, selection, enabledTools, messages, memoryProvider, effectiveSystemPrompt };
 }
 
-// ─── [TagTrace] `<tag:id>` 伪标签溯源 ──────────────────────────────
-// 为什么要有这套日志：这类标签**理论上不该出现** —— 全仓无生成代码、系统提示词
-// 反而禁止 XML 工具标签、横向对比 openclaw / Hermes-Agent / opencode 三家也都**没有**
-// 处理该格式的逻辑（它们的正则都不认 `:id` 后缀）。既然不是通用模型行为，就必然有
-// 特定来源。此前一直在「处理症状」（剥离/检测/提醒），却从未定位源头，故补三处切面，
-// 用**二分法**把成因收敛到两种之一：
-//   · 请求侧有、响应侧有 → PRIMING：模型看见了才模仿，源头是工具结果/历史/记忆/skill；
-//   · 请求侧无、响应侧有 → 模型自发（训练格式残留），只能靠提醒+剥离兜底。
-// 两种成因治理方式完全不同，不分清就会一直治标。
-
-/**
- * 切面 1：扫描**即将发给 LLM 的请求**，报告标签首次出现在第几条消息、什么角色。
- * 命中即强烈提示 priming（模型在下轮看到后就会模仿）。
- */
-function _tagTraceScanRequest(messages: ReadonlyArray<any>, iteration: number, host: any): void {
-	try {
-		let firstIdx = -1;
-		let firstRole = '';
-		let firstSnippet = '';
-		const allHits: string[] = [];
-		for (let i = 0; i < messages.length; i++) {
-			const c = messages[i]?.content;
-			if (typeof c !== 'string' || !c) { continue; }
-			const hits = locateTaggedIdXmlTags(c, 2);
-			if (hits.length === 0) { continue; }
-			if (firstIdx < 0) {
-				firstIdx = i;
-				firstRole = String(messages[i]?.role ?? '?');
-				firstSnippet = hits[0].snippet;
-			}
-			for (const h of hits) { allHits.push(`m${i}/${h.tag}:${h.id}@${h.index}`); }
-		}
-		if (allHits.length === 0) { return; }
-		host._logService.warn(
-			`[AgentOS][TagTrace] REQUEST-SIDE tags iter=${iteration} ` +
-			`firstAt=msg[${firstIdx}](role=${firstRole}) total=${allHits.length} ` +
-			`hits=[${allHits.slice(0, 6).join(', ')}] → PRIMING suspected ` +
-			`snippet=${JSON.stringify(firstSnippet).slice(0, 220)}`
-		);
-	} catch {
-		// 诊断日志绝不阻断请求
-	}
-}
-
-/**
- * 切面 3：扫描**工具回灌结果**。工具输出是 priming 最常见的载体 —— 模型读到
- * 文件/日志里含此类标签后会在下一轮模仿（Hermes 亦记录过同类现象，见
- * `conversation_loop.py::_invalid_tool_name_error_content`）。
- */
-function _tagTraceScanToolResult(resultText: string, toolName: string, iteration: number, host: any): void {
-	try {
-		if (!resultText) { return; }
-		const hits = locateTaggedIdXmlTags(resultText, 2);
-		if (hits.length === 0) { return; }
-		host._logService.warn(
-			`[AgentOS][TagTrace] TOOL-RESULT tags iter=${iteration} tool=${toolName} ` +
-			`len=${resultText.length} hits=[${hits.map(h => `${h.tag}:${h.id}@${h.index}`).join(', ')}] ` +
-			`snippet=${JSON.stringify(hits[0].snippet).slice(0, 220)}`
-		);
-	} catch {
-		// 诊断日志绝不阻断请求
-	}
-}
-
-/**
- * 工具 schema 的固定 token 开销粗估（纯函数，无副作用）。
- *
- * 压缩触发判定（无真实 usage 时计入 effectiveTokens）与 promptOverhead 诊断
- * **必须共用此函数** —— 早前这段逻辑内联在 `_compressContextIfNeeded` 的闭包里，
- * 请求发出点拿不到，若在那里另写一份就会出现两套口径互相漂移。
- */
-function estimateToolsSchemaTokens(tools: ReadonlyArray<any>): number {
-	let total = 0;
-	try {
-		for (const t of tools) {
-			const schemaStr = JSON.stringify({ name: t.name, description: t.description, parameters: (t as any).inputSchema ?? (t as any).schema ?? undefined });
-			if (schemaStr) { total += Math.ceil(schemaStr.length / 4); }
-		}
-	} catch (e) {
-		return 0; // 序列化失败不阻断压缩
-	}
-	return total;
-}
-
-/**
- * 把 tools schema 开销按 toolset 归因（供 [PromptBudget] 预算表）。
- *
- * ⚠ 逐工具调用 `estimateToolsSchemaTokens([t])` 而非另写公式：该函数本身就是
- * 「逐工具累加」，故分组求和**恰好等于**整体调用结果，预算表里 tools 各行之和
- * 与压缩判定用的 `toolsSchemaTokens` 严格一致，不会出现两套口径。
- *
- * 归因价值实证：core toolset 的 prefixes 曾误含 `memory_`，把 16 个 memory_* 工具
- * 抢进不可折叠层、白烧 ~4k schema token —— 有了 `tools:core` 这一行的异常占比，
- * 这类事故不必再靠人工读源码发现。
- */
-function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
-	groups: Array<{ name: string; tokens: number; count: number }>;
-	costs: Array<{ name: string; tokens: number }>;
-} {
-	const groups = new Map<string, { tokens: number; count: number }>();
-	const costs: Array<{ name: string; tokens: number }> = [];
-	for (const t of tools) {
-		const name = typeof t?.name === 'string' ? t.name : '(unnamed)';
-		const tokens = estimateToolsSchemaTokens([t]);
-		costs.push({ name, tokens });
-		// MCP 工具的 category 形如 `mcp:<server>`，与内置 toolset 分开统计更有诊断价值。
-		const category = typeof t?.category === 'string' ? t.category : '';
-		const key = category.startsWith('mcp:') ? category : (t?.toolset || getToolsetForTool(name));
-		const g = groups.get(key) ?? { tokens: 0, count: 0 };
-		g.tokens += tokens;
-		g.count += 1;
-		groups.set(key, g);
-	}
-	return {
-		groups: [...groups].map(([name, g]) => ({ name, tokens: g.tokens, count: g.count })),
-		costs,
-	};
-}
+// ─── 模块级纯函数：见 `parts/turnHelpers.ts` ─────
+// sanitizeWithTrace / tagTraceScanRequest / tagTraceScanToolResult /
+// isMultiTargetChurnTool / estimateToolsSchemaTokens / buildCheckpointSnapshot /
+// groupToolSchemaCosts —— 全部迁至 `parts/turnHelpers.ts`（不捕获闭包上文，可单测）。
 
 
-	export async function* executeAgentTurnDirect(host: any, request: IAgentTurnRequest): AsyncGenerator<IChatStreamDelta, AgentCommand | undefined> {
+
+
+
+
+
+
+
+
+	export async function* executeAgentTurnDirect(host: ITurnHost, request: IAgentTurnRequest, steeringQueue?: DeliveryQueue): AsyncGenerator<IChatStreamDelta, AgentCommand | undefined> {
 		// chatOnly 开关：开启时禁用写文件工具，React 范式下额外禁用 delegate_task
 		const chatOnly = !!request.chatOnly;
 		// ── 本 turn 缓存命中率基线（2026-08-21，日志 1787315962316）──────────────
@@ -672,7 +652,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// ── [PromptBudget] 上报节流基线（turn 局部）────────────────────────────
 		// 声明在 turn 函数体内而非 host 字段：天然实现「每 turn 首次必打」，
 		// 无需额外的重置逻辑，也不会跨 turn 泄漏状态。
-		let _lastPromptBudgetTotal = 0;
+		// 刻意**不收口**进 runState —— 见 agentRunState.ts「runState 收口边界」。
 		// 诊断：软预算收尾提醒是否送达（日志 1785325929739 子代理 404s 超时未触发）
 		if (request.subAgent?.background) {
 			host._logService.info(
@@ -684,16 +664,39 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// 统一推导入口（resolveRequestWorkMode）：显式 workMode 优先（跨 turn 由
 	// agentDriverService 按 session 恢复），缺失时按 chatMode==='plan' fallback。
 	// 与 agentOSService._resolveHardPermission 共用 —— 权限层与状态机永不分裂。
-	let workState = createInitialWorkState(resolveRequestWorkMode(request.chatMode, request.workMode));
-
 		// Plan state is mirrored into AgentRunState for checkpoint compatibility.
-		let planFilePath: string | undefined = workState.planFilePath;
+		//
+		// ⚠ 声明位置上移（2026-09-16，workState 收口）：`runState` 此前声明在下方约 80 行处，
+		// 但 planFilePath 与 preLoop 上下文（loopCtx.workState）都在更早的前置阶段就要读它。
+		// workState 闭包变量删除后，那些读点必须指向这里，故本声明提前到其首位读点之前。
+		// 此前靠闭包 `let workState` 与 runState.work 各存一份绕开了顺序问题 —— 那正是双写分叉的来源。
+		let runState: AgentRunState = createInitialRunState({
+			lastRealPromptTokens: host._lastRealPromptTokensByAgent.get(host._turnKey(request.agentId, request.sessionId)) ?? 0,
+			workState: createInitialWorkState(resolveRequestWorkMode(request.chatMode, request.workMode)),
+			// messages 种子留空：真实种子在上下文构建完成后写入（见下方 `let messages = ...` 处），
+			// 因为此处 ctx / checkpoint 恢复值都尚未就绪，强行读取会引入声明顺序问题。
+		});
+		let planFilePath: string | undefined = runState.work.planFilePath;
 		let planEnterCalled = false;
 		let planExitCalled = false;
 
 	const ctx = yield* initTurnContext(host, request);
 	if (!ctx) { return undefined; }
 	const { modelProvider, selection, memoryProvider } = ctx;
+	// ─── 钩子总线（2026-09-17：拍板「总线是唯一分发面」后接线）─────────────
+	// 此前本 turn 的钩子分发有两套：策略钩子（IAgentLoopStrategy）+ 未类型化的
+	// `memoryProvider.triggerHook`（裸 string 钩子名，散落 4 个文件）。总线统一
+	// 工具级钩子的分发：调用点只认识 TurnHookName 联合类型，拼错即编译失败。
+	// provider 转发的 fire-and-forget 语义由 turnHookWiring 保持（不阻塞主循环）。
+	const hookBus = new TurnHookBus((hookName, error) => {
+		host._logService.warn(`[AgentOS] Hook "${hookName}" failed: ${error.message}`);
+	});
+	const disposeMemoryHooks = registerMemoryProviderHooks(
+		hookBus,
+		memoryProvider,
+		{ agentId: request.agentId, sessionId: request.sessionId || '' },
+		message => host._logService.warn(message),
+	);
 	// 实际发送的冻结前缀（含 model 相关 enforcement）——fork 指纹与 modelOptions 统一基于本值
 	const effectiveSystemPrompt = ctx.effectiveSystemPrompt;
 	let enabledTools = ctx.enabledTools;
@@ -730,7 +733,76 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		if (trivialRequest) {
 			host._logService.info('[AgentOS] trivial request detected — will restrict exploration tools');
 		}
-		let messages = ctx.messages;
+		/**
+		 * checkpoint 恢复的 loop messages；作为 runState.messages 的种子（优先于 ctx.messages）。
+		 *
+		 * ⚠ 求值必须发生在下方 `let messages = (restoredMessages ?? ctx.messages)` 之前。
+		 * 2026-09-17 修：此前该变量在 :824 声明、:831 被消费，而真正的赋值在约 190 行
+		 * 之后的 resumeFrom 恢复块里 —— 消费时恒为 undefined，断点续跑**静默丢弃**
+		 * 全部恢复出来的历史消息（不报错，模型直接失忆），恢复日志却照常打印
+		 * "restored N messages"，使故障从日志上完全不可见。
+		 * 现改为在消费点之前就地求值，`restoredMessages` 成为 const。
+		 */
+		const restoredMessages: AgentRunMessage[] | undefined = ((): AgentRunMessage[] | undefined => {
+			// 优先 state.messages，回落 state.loopMessages：
+			//   · 新快照（P0-a-2 之后）—— runState.messages 已是真相源，由 snapshotRunState 一并落盘。
+			//   · 旧快照（P0-a-2 之前）—— runState.messages 从未被写入（恒为空数组），
+			//     真实消息只在 loopMessages 里，故必须保留该回落分支，否则旧断点续跑会丢全部历史。
+			const resumeState = request.resumeFrom;
+			const persisted = (resumeState?.messages && resumeState.messages.length > 0)
+				? resumeState.messages
+				: resumeState?.loopMessages;
+			if (!persisted || persisted.length === 0) { return undefined; }
+			const source = (resumeState?.messages && resumeState.messages.length > 0) ? 'messages' : 'loopMessages(legacy)';
+			host._logService.info(`[AgentOS] Resume: restored ${persisted.length} messages (from ${source})`);
+			return [...persisted];
+		})();
+	// messages 的唯一真相源是 runState.messages（P0-a-2 收口）。
+	// ⚠ 复核实录：SET_LOOP_MESSAGES 过去只写 state.loopMessages，导致 runState.messages
+	// 恒为空数组 —— 调用点名字改了、字段没改，属隐蔽分叉。该 action 已修正为写 messages
+	// 并同步镜像 loopMessages（见 agentRunState.ts reducer）。
+	// 此处是**种子写入点**：checkpoint 恢复 > 上下文构建结果。
+	// `messages` 局部变量只是别名，不是独立存储 —— 每次重绑定后由 syncMessages() 回写 runState。
+	let messages = (restoredMessages ?? ctx.messages) as AgentRunMessage[];
+	runState = reduceRunState(runState, { type: 'SET_LOOP_MESSAGES', messages });
+	/**
+	 * 把 messages 的当前值同步回 runState（单一真相源）。
+	 * 每处 `messages = <expr>` 之后调用一次。
+	 *
+	 * 采用「赋值 + 同步」而非 setMessages(expr) 包装：本文件有大量跨行 appendMessages 调用
+	 * （`messages = appendMessages(messages, {` … `});`），包成函数调用需在正确的收尾行补右括号，
+	 * 机械改写极易错位；追加一行调用则是无歧义、可逐处 review 的。
+	 */
+	const syncMessages = (): void => {
+		runState = reduceRunState(runState, { type: 'SET_LOOP_MESSAGES', messages });
+	};
+
+	/** 读护栏计数（P0-a-3：跨轮状态单一真相源在 runState.guardrails）。 */
+	const guardrails = (): AgentGuardrailCounters => runState.guardrails;
+
+	/**
+	 * 部分更新护栏计数。用 patch 语义（而非整对象覆盖）确保调用点只表达
+	 * 「我改了哪个计数」，避免漏字段把其它计数静默清零。
+	 */
+	const patchGuardrails = (patch: Partial<AgentGuardrailCounters>): void => {
+		runState = reduceRunState(runState, { type: 'PATCH_GUARDRAILS', patch });
+	};
+
+	/** 读收尾门控（P0-a-5：单一真相源在 runState.wrapUp）。 */
+	const wrapUp = (): AgentWrapUpState => runState.wrapUp;
+
+	/** 部分更新收尾门控；patch 语义同 patchGuardrails（未提及字段保持原值）。 */
+	const patchWrapUp = (patch: Partial<AgentWrapUpState>): void => {
+		runState = reduceRunState(runState, { type: 'PATCH_WRAP_UP', patch });
+	};
+
+	/** 读轮次重试预算（P0-b：单一真相源在 runState.retry）。 */
+	const retry = (): AgentRetryCounters => runState.retry;
+
+	/** 部分更新重试预算；patch 语义同 patchGuardrails（未提及字段保持原值）。 */
+	const patchRetry = (patch: Partial<AgentRetryCounters>): void => {
+		runState = reduceRunState(runState, { type: 'PATCH_RETRY', patch });
+	};
 
 				// ─── 3. Agent Loop（带工具执行） ─────────────────────────
 		// 复用 executeAgentTurn 建立的 per-turn AbortController（多窗口取消隔离）。
@@ -747,13 +819,12 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		host._approvalService.reset(); // 新会话重置审批记忆
 		// 子代理（background）不限轮数（2026-07-25 用户决策：子代理只受 180s 工具活动
 	// 超时约束）；主代理保持 MAX_TOOL_ITERATIONS 兜底。1000 仅为失控保险丝。
-	const MAX_TOOL_ITERATIONS = request.subAgent?.background
+	const maxToolIterations = request.subAgent?.background
 		? 1000
-		: host.constructor.MAX_TOOL_ITERATIONS;
+		: MAX_TOOL_ITERATIONS;
 	// ─── AgentLoop 策略 + 预算门控（默认 Hermes-ReAct 范式）──
 	// 策略实例 per-turn 创建（resolve 每次 new），保证多聊天框/多 session 预算与状态隔离。
 	// 范式解析链：运行时覆盖（switch_paradigm 工具写入，turn 边界生效）> request.paradigm（Agent 配置）
-	if (!host._strategyFactory) { host._strategyFactory = new AgentLoopStrategyFactory(); }
 	// ─── V3: resume 时从 checkpoint 重建范式覆盖（R3：避免范式漂移）──
 	// 新进程/新会话下 paradigmOverride 内存注册表为空，需从落盘 checkpoint.paradigm
 	// 回填，使 resume 复用中断前完全一致的范式，而非回退到 agent 配置/默认。
@@ -763,22 +834,28 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 	}
 	const paradigmOverride = getParadigmOverride(request.agentId);
 	const resolvedParadigm = (paradigmOverride ?? request.paradigm) as AgentParadigm;
-	const strategy = host._strategyFactory.resolve(
+	const strategy = strategyFactory.resolve(
 		request,
 		resolvedParadigm,
 	);
 	if (paradigmOverride && paradigmOverride !== request.paradigm) {
 		host._logService.info(`[AgentOS] Paradigm override active: ${paradigmOverride} (config: ${String(request.paradigm ?? 'unset')})`);
 	}
-		const budgetMaxTotal = request.budgetMaxTotal ?? (host.constructor.DEFAULT_BUDGET_MAX ?? 90);
+		const budgetMaxTotal = request.budgetMaxTotal ?? DEFAULT_BUDGET_MAX;
 		let budget = new IterationBudget(budgetMaxTotal);
-		let iteration = 0;
+		const loopState = createTurnLoopState();
 
 	// ─── 编排前置层：策略 preLoop（LLM 决策 explore → 并行探索 → 计划队列）──
 	// 由 AgentLoop 策略的 preLoop 钩子接管，范式差异由策略实现（budgeted-react=LLM 决策+并行探索，
 	// plan-explore=plan_enter 等）。主循环只负责接收计划队列与探索结果并注入 messages。
 	let planTasks: ParsedPlanTask[] = [];
 	let currentTaskIdx = 0;
+
+	// ─── 策略请求跳过 ReAct 主循环 ────────────────────────────────────────
+	// 由 preLoop 返回的 `PreLoopResultMeta.skipMainLoop` 置位（消费点见 :1055）。
+	// 语义：该范式（当前唯一使用者为 GraphStrategy）自己已完成全部执行，
+	// 主循环不应再发起任何 provider 迭代，直接进入收尾。
+	let strategySkipMainLoop = false;
 
 	// ─── 计划队列工具注册（方案1：plan_register → 本 turn 执行队列）────────
 	// LLM 在调研后调用 plan_register 把有序任务列表写入本队列（闭包直接改写
@@ -862,19 +939,26 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		budget = IterationBudget.restore(restored.budgetSnapshot);
 		host._logService.info(`[AgentOS] Resume: restored budget (consumed=${restored.budgetSnapshot.consumed}/${restored.budgetSnapshot.maxIterations})`);
 	}
-	if (restored?.loopMessages && restored.loopMessages.length > 0) {
-		messages = [...restored.loopMessages];
-		host._logService.info(`[AgentOS] Resume: restored ${messages.length} loop messages`);
-	}
+	// checkpoint 消息恢复已上移至 `restoredMessages` 的声明处（约 :833）——
+	// 它必须在 `let messages = (restoredMessages ?? ctx.messages)` 之前求值，
+	// 留在这里会晚于消费点、恢复结果被静默丢弃。
 	if (typeof restored?.iteration === 'number' && restored.iteration > 0) {
-		iteration = restored.iteration;
-		host._logService.info(`[AgentOS] Resume: restored iteration=${iteration}`);
+		loopState.iteration = restored.iteration;
+		host._logService.info(`[AgentOS] Resume: restored iteration=${loopState.iteration}`);
 	}
 	if (restored?.preExploreDone) {
 		resumePreExploreDone = true;
 		resumePreExploreResult = restored.preExploreResult;
 		host._logService.info('[AgentOS] Resume: preExplore already done, will skip preLoop');
 	}
+	// ⚠ 这里**故意不恢复 `restored.phase`** —— 快照里有该字段，但它对续跑不可用。
+	// checkpoint 每 3 轮才落盘（`:2383` 的 `iteration % 3 === 0`），故恢复出的 phase
+	// 最多陈旧 3 轮，无法回答「这批工具究竟执行了没有」。若据 phase === 'tool_executing'
+	// 跳过 LLM 直接执行工具，会**重复执行副作用工具**（写文件 / 跑命令 / 发请求）。
+	// 现状「重跑整轮」只多烧 token、无正确性损失，是有意的安全取舍。
+	// 要改必须先让 checkpoint 每轮落盘并记录工具批次的 settled 状态 ——
+	// 见 `.design/agentloop-pi-alignment-refactor.md` 阶段 5（已评估并否决）。
+	// 守护：`test/browser/turnHostContract.test.ts` 断言本块不出现 `restored.phase`。
 
 	// ⚠️ 仅顶层 turn 触发（subagent 的 agentId 以 'subagent-' 开头），避免递归触发 preLoop → 又派 subagent → 爆炸
 	if (resumePreExploreDone) {
@@ -885,18 +969,40 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			const loopCtx: PreLoopContext = {
 				host, request, chatMode: chatOnly ? 'chatOnly' : '', modelProvider,
 				modelId: selection?.modelId ?? '', selection,
-				messages, signal: turnAbortSignal, budget, workState,
+				messages, signal: turnAbortSignal, budget, workState: runState.work,
 				toolDefs: enabledTools, iteration: 0,
 			};
 			const meta = yield* strategy.preLoop(loopCtx);
+			// ⚠ 策略写 messages 靠 loopCtx.messages 引用；但 preLoop 前刚做过 `let messages = ctx.messages`，
+			// 此时 messages 与 ctx.messages 仍是同一数组 —— 策略的原地 push 对双方可见。
+			// 收口后必须在策略返回后显式重新对齐一次，否则本文件后续的 messages 重绑定
+			// （compactMessages / sanitizeToolPairs 等）会静默丢弃策略追加的消息。
+			// P0-a-2 改造后循环内不再原地 push，此处是唯一的「策略原地写」入口。
+			if (loopCtx.messages !== messages) {
+				messages = loopCtx.messages as typeof messages;
+				syncMessages();
+			}
 			if (meta) {
 				planTasks = meta.planTasks ?? [];
+				// ─── skipMainLoop 消费（2026-09-16 修：此前声明即死字段）──────────
+				// `PreLoopResultMeta.skipMainLoop`（agentLoopStrategy.ts:106）由
+				// GraphStrategy.preLoop（graphStrategy.ts:39）返回 true，语义是
+				// 「本范式已完成全部工作，不进 ReAct 循环」。但此处原先只读
+				// planTasks / findings，该字段**从未被消费** —— graph 范式因此照样
+				// 跑完整 ReAct 主循环，与策略声明直接矛盾。
+				// 现落实为：置标志 → 跳过 while 主循环 → 直接走收尾。
+				if (meta.skipMainLoop === true) {
+					strategySkipMainLoop = true;
+					host._logService.info('[AgentOS] Strategy preLoop requested skipMainLoop — bypassing ReAct loop');
+				}
 				if (meta.findings) {
-					messages.push({ role: 'system', content: formatExplorationFindings(meta.findings) });
+					messages = appendMessages(messages, { role: 'system', content: formatExplorationFindings(meta.findings) });
+					syncMessages();
 				}
 				if (planTasks.length > 0) {
 					host._logService.info(`[AgentOS] Strategy preLoop: ${planTasks.length} tasks planned`);
-					messages.push({ role: 'system', content: formatCurrentTaskReminder(planTasks[0], 0, planTasks.length) });
+					messages = appendMessages(messages, { role: 'system', content: formatCurrentTaskReminder(planTasks[0], 0, planTasks.length) });
+					syncMessages();
 				}
 			}
 		} catch (err) {
@@ -908,35 +1014,26 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 	}
 
 	// ─── 未完成轮安全续跑计数器（对齐 OpenClaw attempt-scoped 重试）──────
-		// 声明为 loop 局部：单次 turn 内跨 iteration 累计，达到上限即放弃续跑。
-		// 不进 runState（与 iteration 同为 graph runtime 局部量），但受次数上限保护，
-		// 不会形成无限循环。
-		let reasoningOnlyRetryAttempts = 0;
-		let emptyResponseRetryAttempts = 0;
-		let lengthTruncatedRetryAttempts = 0;
-		// 工具调用在协议层丢失（finish_reason=tool_calls 但 0 tool call）续跑计数器。
-		// ⚠ 语义：只增不减，**重试成功后不重置** —— 上限是「单次 turn 内总额度」，
-		// 而非「连续失败次数」。例：丢失→重试成功→再丢失，第二次的 attempt 是 2 而非 1。
-		// （上限值见 DEFAULT_TOOL_CALL_LOST_RETRY_LIMIT。）
-		let toolCallLostRetryAttempts = 0;
-		// 维度 3：瞬态错误（SSE 超时/网络/429/5xx）重试计数器，单次 turn 内累计
-		let transientErrorRetries = 0;
-		// 维度 4：首 token 超时（冷启动）有界重试计数器，单次 turn 内累计（预热优化，见下方 catch 分支）
-		let firstTokenTimeoutRetries = 0;
-		const FIRST_TOKEN_TIMEOUT_MAX_RETRIES = 1;
-		const FIRST_TOKEN_TIMEOUT_RETRY_DELAY_MS = 500;
-		// 本轮 provider 结束原因（finish_reason / stop_reason），每轮迭代重置。
-		let lastFinishReason: string | undefined;
+	// P0-b：重试预算已收口进 runState.retry（跨 iteration 状态单一真相源）。
+	// 读写经由 retry() / patchRetry()。语义见 AgentRetryCounters 定义处注释。
+	// 本轮 provider 结束原因（finish_reason / stop_reason），每轮迭代重置。
+	let lastFinishReason: string | undefined;
 
-		// ─── 工具失败连续计数（对齐 Hermes-Agent `_tool_failure_recovery_hint` 的增强版）──
-		// 追踪同一工具的连续失败次数。达到阈值时注入 <system-reminder> 引导 LLM
+	// ─── 工具失败连续计数（对齐 Hermes-Agent `_tool_failure_recovery_hint` 的增强版）──
+	/*
+
+	// ─── 工具失败连续计数（对齐 Hermes-Agent `_tool_failure_recovery_hint` 的增强版）──		const FIRST_TOKEN_TIMEOUT_MAX_RETRIES = 1;
+		const FIRST_TOKEN_TIMEOUT_RETRY_DELAY_MS = 500;
+	*/
+
+	// ─── 工具失败连续计数（对齐 Hermes-Agent `_tool_failure_recovery_hint` 的增强版）──
+	// 追踪同一工具的连续失败次数。达到阈值时注入 <system-reminder> 引导 LLM
 		// 仔细阅读错误消息并换策略，避免盲目重试消耗迭代（详见日志：skill_create 名称缺失×3）。
 		// 按工具名分组；任意工具成功后或调用 change 时全局清零。
 		const _toolConsecutiveFailures = new Map<string, number>();
-		const MAX_CONSECUTIVE_TOOL_FAILURES = host.constructor.MAX_CONSECUTIVE_TOOL_FAILURES;
 
 		// ─── terminal 连续空输出计数（(no output) 不是工具错误，不会进入 _toolConsecutiveFailures）──
-		let _terminalEmptyOutputCount = 0;
+		// 刻意**不收口**进 runState：语义是「本轮内连续」，跨 turn 恢复会带着上轮计数继续累计。
 		const MAX_TERMINAL_EMPTY_OUTPUT = 3;
 
 		// ─── 软预算收尾提醒（wall-clock，周期重复）──────────────────────────
@@ -948,29 +1045,25 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// （300s 首次提醒后仍空转到 434s 才 salvage），故超阈值后按周期重复提醒。
 		const _turnStartedAt = Date.now();
 		// 下一次允许注入软预算提醒的 elapsedMs 阈值（0 = 首次超预算即触发）。
-		let _softBudgetNextReminderAtMs = 0;
+		// 刻意**不收口**进 runState：锚在本轮 _turnStartedAt 的墙钟阈值，
+		// 跨 turn 恢复会让新 turn 的 elapsed 与上一轮的阈值比较，节流失效。
 		// 软预算提醒重复注入周期（ms）——避免每轮刷屏，只在超预算后周期性重提。
 		const SOFT_BUDGET_REMINDER_REFIRE_MS = 60_000;
 
 		// ─── 文本搜索连击（search_graph 引导，数据驱动分组见 searchToolGroups）──
 		// 连续使用 search_files（grep 类）成功而未触及结构搜索工具时注入一次
 		// 引导；结构工具一用即清零，注入后也清零避免每轮刷屏。
-		let _textSearchStreak = 0;
-		const MAX_TEXT_SEARCH_STREAK = host.constructor.MAX_TEXT_SEARCH_STREAK;
-		// 硬上限：纯文本搜索连击失控时强制收尾轮（打断死循环）。默认 2× 软上限，可由
-		// host.constructor.MAX_TEXT_SEARCH_STREAK_HARD 覆盖调参。
-		const MAX_TEXT_SEARCH_STREAK_HARD =
-			(typeof (host.constructor as any).MAX_TEXT_SEARCH_STREAK_HARD === 'number')
-				? (host.constructor as any).MAX_TEXT_SEARCH_STREAK_HARD
-				: MAX_TEXT_SEARCH_STREAK * 2;
+		// P0-a-3：计数已收口进 runState.guardrails（跨轮状态单一真相源），
+		// 此处仅保留阈值常量。读写经由 guardrails() / patchGuardrails()。
+		// 阈值（软/硬）来自 common/turnLoopConstants.ts，见文件顶部 import。
 		// 软上限提醒只注入一次（避免每轮刷屏）；streak 不在此清零，以便硬上限仍可达。
-		let _textSearchSoftReminderSent = false;
+		// P0-a-3：已收口进 runState.guardrails.textSearchSoftReminderSent。
 
 		// ─── 单只读工具连击（批量并行引导，2026-08-21 日志 1787302409958）──────
 		// 连续多轮「每轮只请求 1 个只读工具」→ 注入批量并行提醒。实测该会话
 		// ITER 20-36 连续 17 轮单工具串行，浪费约 11 轮 LLM 往返（每轮重传
 		// 27k-60k tokens prompt，是最贵的开销，而这些搜索仅需 100-800ms）。
-		let _singleToolStreak = 0;
+		// P0-a-3：singleToolStreak 已收口进 runState.guardrails。
 		// 最近连击轮次实际用到的工具名（去重，保序），让提醒具体可信。
 		const _singleToolStreakNames: string[] = [];
 		const MAX_SINGLE_TOOL_STREAK = 4;
@@ -980,9 +1073,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// ── 零进展空转治理（2026-08-22，日志 1787377582459）────────────────────
 		// 「整轮工具调用全部被循环检测拦下」的连续轮数。达阈值后升级干预：
 		// 先注入强提醒，再强制收尾轮。见 loopReminders.ALL_BLOCKED_* 常量。
-		let _allBlockedStreak = 0;
-		/** 强提醒只发一次 —— 反复注入会污染前缀缓存且被模型进一步忽略。 */
-		let _allBlockedReminderSent = false;
+		// P0-a-3：allBlockedStreak / allBlockedReminderSent 已收口进 runState.guardrails。
 
 		// ─── XML 文本工具调用泄漏（模型未走 native function call）──────────────
 		// 模型把工具调用写成 XML 纯文本（<tool_calls:xxx> / <arg_key:xxx>）时，本系统
@@ -991,7 +1082,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// 实测表现为聊天框堆满工具解析错误 UI。
 		// 对策：上限内丢弃泄漏文本 + 注入「该格式不执行」指令并续跑，让模型改用
 		// native function call；超限则交回常规 incomplete-turn 流程收尾，避免无限重试。
-		let _xmlToolLeakAttempts = 0;
+		// 刻意**不收口**进 runState：这是「本轮重试预算」，跨轮累计会让新 turn 一开局即超限。
 		/** 与其他 incomplete-turn 重试上限对齐（见 agentRunState 的 DEFAULT_*_RETRY_LIMIT）。 */
 		const XML_TOOL_LEAK_RETRY_LIMIT = 2;
 
@@ -1040,24 +1131,19 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		const _guardrailBlocked = new Map<string, IToolGuardrailDecision>();
 
 		// ─── AgentRunState（reducer 化 Step 3）────────────────────────────────
-		// 跨 iteration 的业务状态（非法工具名计数 / 续跑计数 / 反思计数 / 文件修改标记 /
-		// 强制 tool_choice 标志 / 工具调用历史 等）统一收口进不可变 reducer，
-		// 取代原先散落的 `let` 控制变量。messages 仍由 loop 局部 `let messages` 管理
-		// （Step 2 已收口写入），将在 Step 5 并入此 state 做 snapshot。
-		// iteration 作为 while 循环步进计数器保留为 loop 局部（对齐 LangGraph：
-		// step 计数属 graph runtime，不进 state schema）。
+		// ⚠ 本处原为 `runState` 的声明点，已上移至 turn 起点（约 :692）——
+		// planFilePath 与 preLoop 上下文都在此处之前就要读 runState.work。
+		// 此处只保留说明；iteration 作为 while 循环步进计数器仍为 loop 局部
+		// （对齐 LangGraph：step 计数属 graph runtime，不进 state schema）。
 		// 真实 prompt token 按 agentId::sessionId 双键隔离，避免同 agent 多 session
 		// 并行时压缩触发估算互相污染。
-		let runState: AgentRunState = createInitialRunState({
-			lastRealPromptTokens: host._lastRealPromptTokensByAgent.get(host._turnKey(request.agentId, request.sessionId)) ?? 0,
-			workState,
-		});
 
 		// ─── V3: 回填 resume preExplore / 本轮 preExplore 状态到 runState ──
 		if (resumePreExploreDone) {
 			runState = reduceRunState(runState, { type: 'SET_PRE_EXPLORE', done: true, result: resumePreExploreResult });
 			if (resumePreExploreResult) {
-				messages.push({ role: 'system', content: formatExplorationFindings(resumePreExploreResult) });
+				messages = appendMessages(messages, { role: 'system', content: formatExplorationFindings(resumePreExploreResult) });
+				syncMessages();
 			}
 		} else if (_preExploreResultStr !== undefined) {
 			runState = reduceRunState(runState, { type: 'SET_PRE_EXPLORE', done: true, result: _preExploreResultStr });
@@ -1071,9 +1157,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// ─── Plan-Execute-Reflect 反思阶段跟踪 ───────────────────
 		// 当 LLM 完成工具调用并给出最终回复后，注入反思提示让它检查是否有遗漏。
 		// 参考 OpenSearch ML Commons 的 PLAN_EXECUTE_AND_REFLECT 模式。
-		const MAX_REFLECT_ITERATIONS = host.constructor.MAX_REFLECT_ITERATIONS;
-		// 文件修改类工具名集合 — 仅在这些工具被使用后才触发反思
-		const FILE_MODIFICATION_TOOLS = host.constructor.FILE_MODIFICATION_TOOLS;
+		// 反思开关与文件修改类工具名集合来自 common/turnLoopConstants.ts（见顶部 import）。
 
 		// ─── 上下文压缩初始化（对齐 ExecutionProvider Path 2）──────────
 		// Direct Mode 之前完全没有压缩，消息数一路增长直到撑爆上下文窗口。
@@ -1121,6 +1205,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					);
 					if (r && r.context.trim()) {
 						messages = host._injectRetrievalSystemMessage(messages, r.context, r.source);
+						syncMessages();
 						host._logService.info(
 							`[AgentOS][Retrieval] injected retrieved context at turn start ` +
 							`(source=${r.source}, ~${Math.ceil(r.context.length / 3)} tokens) for agent ${request.agentId}`
@@ -1150,747 +1235,90 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// 策略可覆盖的「本轮工具面」：delegation 范式会把主循环限制为
 		// supervisor 工具（delegate_task / new_agent / plan…），所有执行工具交由
 		// sub-agent。该覆盖在每轮「重新收集工具」之后再次应用，避免被全量列表冲掉。
-		let _iterationToolDefs: any[] | undefined;
 
 		// P1: 上一轮 LLM 响应回传的真实 prompt token（provider usage，含 cache）。
 		// compressContext 优先用它判定，取代低估的 char/4 粗估。首轮=0 自动退回粗估。
 		// 上一轮真实 prompt token 由 runState.lastRealPromptTokens 承载（初始值取自实例字段，
 		// 跨 turn 持久化，不再每轮归零）。
 
-	// ─── 上下文压缩闭包（2026-07-27 自主循环提取，~360 行）──────────────────
-	// 每轮迭代开头执行：廉价剪枝 → 工具结果去重 → 消息数硬上限 → Hermes 三段式压缩。
-	// 闭包捕获 messages/runState/host/compressionWindow/contextManager/turnAbortSignal，
-	// 通过 yield 发出 phase_change / context_compacted delta。
-	// force 参数（P0-1 溢出恢复）：溢出 400 时服务端 maxInputTokens 可能小于本地
-	// window×0.3，常规触发判定会误 skip；force=true 透传 contextManager.compressContext
-	// 的 force 参数，绕过阈值/消息数/冷却/防抖判定强制压缩（仅溢出恢复路径使用）。
+	// ─── 上下文压缩段（已迁出 → parts/turnContextCompaction.ts）─────────────
+	// 每轮迭代开头执行的四级阶梯：廉价剪枝 → 工具结果去重 → 消息数硬上限 →
+	// Hermes 三段式压缩。此处仅保留把闭包捕获变量桥接为 deps/state 的薄委托。
+	//
+	// force（P0-1 溢出恢复）：溢出 400 时服务端 maxInputTokens 可能小于本地
+	// window×0.3，常规触发判定会误 skip；force=true 绕过阈值/消息数/冷却/防抖
+	// 判定强制压缩（仅溢出恢复路径使用）。
 	async function* _compressContextIfNeeded(force?: boolean): AsyncGenerator<IChatStreamDelta> {
-		// P3: 廉价逐轮剪枝（无 LLM、不丢消息）—— 仅对最近 CHEAP_PRUNE_RECENT_KEEP 条之外的
-		// 旧 tool 输出做处理。对齐 MiMo prune.ts：累积预算保护(PRUNE_PROTECT=40K) +
-		// 受保护工具白名单(skill/memory/...) + 压力>=2 时硬清除(占位符)而非仅截断。
-		// P1(cache-cold 门控，对齐 MiMo isCacheCold)：低/中压力(<2)时若距上次
-		// assistant 响应 < PRUNE_CACHE_TTL_MS（KV 缓存仍热），跳过剪枝——改写历史
-		// 前缀会使已付费的 prompt cache 失效；高压(>=2)防溢出优先，强制剪枝。
-		// ── P3/P4 共享的压力与 KV 缓存状态（提升到块外供 P4 门控复用）──
-		// _cacheCold：距上次 assistant 响应 > PRUNE_CACHE_TTL_MS(5min) 视为缓存已冷，
-		// 此后改写历史前缀不再浪费已付费的 prompt cache；_pressure>=2 防溢出优先。
-		const _estTok = host._estimateMessagesTokens(messages);
-		const _pressure = ContextManager.getPressureLevel(
-			runState.lastRealPromptTokens || _estTok, compressionWindow);
-		const _lastAssistantAt = host._lastAssistantAtByAgent.get(host._turnKey(request.agentId, request.sessionId)) ?? 0;
-		const _cacheCold = _lastAssistantAt === 0
-			|| (Date.now() - _lastAssistantAt) > ContextManager.PRUNE_CACHE_TTL_MS;
-		{
-			if (_pressure >= 2 || _cacheCold) {
-				messages = ContextManager.pruneOldToolOutputs(
-					messages as unknown as ReadonlyArray<ChatMessage>,
-					ContextManager.CHEAP_PRUNE_RECENT_KEEP,
-					_pressure
-				) as unknown as typeof messages;
-			}
-		}
-
-		// ── P4: 工具结果去重（Layer 4 修复；2026-08-18 缓存门控）──────────────────────
-		// ReAct 循环中同一文件/搜索常被多轮重复读取，相同 tool 结果
-		// 在对话历史中反复出现。此处对连续的相同 tool 结果做去重：
-		// 保留最近一次，更早的替换为简短引用标记。
-		// 门控（对齐 Hermes rearm 纪律；日志 1787021037798 断崖5：Dedup 原地改写
-		// 历史中间内容 → 前缀在该点断链，尾段连续 4 次去重对应 55% 命中）：缓存热
-		// 且压力低时跳过——去重省的 token 远不抵前缀失效损失；压力>=2（防溢出）
-		// 或缓存已冷（KV 缓存注定失效）时才执行。
-		if (_pressure >= 2 || _cacheCold) {
-			const MAX_TOOL_RESULT_SNIPPET = 200;
-			let dedupCount = 0;
-			for (let i = messages.length - 1; i >= 0; i--) {
-				const msg = messages[i];
-				if (msg?.role !== 'tool' || !msg.toolCallId) continue;
-				const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-				if (!content || content.length < 50) continue; // 太短不值得去重
-				// 向前查找相同内容的更早 tool 结果（同一 toolCallId 不重复）
-				for (let j = i - 1; j >= 0; j--) {
-					const prev = messages[j];
-					if (prev?.role !== 'tool' || !prev.toolCallId) continue;
-					if (prev.toolCallId === msg.toolCallId) continue;
-					const prevContent = typeof prev.content === 'string' ? prev.content : JSON.stringify(prev.content);
-					if (prevContent === content) {
-						// 找到相同结果：替换更早的为引用标记
-						const snippet = content.substring(0, MAX_TOOL_RESULT_SNIPPET);
-						messages[j] = {
-							...prev,
-							content: `[Same tool result as call ${msg.toolCallId} — content identical, deduplicated. Preview: ${snippet}...]`,
-						};
-						dedupCount++;
-						break; // 只替换最近一个重复
-					}
-				}
-			}
-			if (dedupCount > 0) {
-				host._logService.info(`[AgentOS][Dedup] Replaced ${dedupCount} duplicate tool results with references`);
-			}
-		}
-
-		// ── P5: 历史消息数量硬上限（Layer 3 修复；2026-08-18 缓存友好重构）────────────────
-		// 旧版：条数>60 即刻从头删——消息数上限先于 token 压缩阈值触发时（60 条仅
-		// 40-50k token，未到 60k 压缩线），每轮「长回 63 → 删到 61」头部滑动，前缀
-		// 反复断链（日志 1787021037798 断崖1/3：命中率 98%→6.7%，~280k miss tokens）。
-		// 新版（对齐 opencode/deepseek-harness「纯 token 驱动」+ Hermes「断点节流」）：
-		//  ① 超限只挂 pending，优先交给后面的三段式压缩——压缩是显式接受的一次性
-		//     断链，且带 cooldown/防抖，一个会话只做一次；
-		//  ② 压缩被 cooldown/阈值拒绝时，仅 token 压力>=1 时才删头兜底（低压力说明
-		//     条数多源于消息碎而非 token 大，删头得不偿失）；
-		//  ③ 删头兜底带 rearm runway（对齐 Hermes）：自上次删头以来 token 增量须
-		//     ≥ HARD_PRUNE_REARM_TOKENS，杜绝逐轮头部滑动。
-		let hardPrunePending = false;
-		{
-			// ⚠ 发送副本纪律（2026-08-19 架构修正，对齐 Hermes
-			// agent_runtime_helpers.py:1372「Runs on the per-call api_messages copy only.
-			// The stored conversation history is never mutated」）：
-			// synthetic sidecar 的剥离**只用于计数**，绝不回写权威 messages。
-			//
-			// 此前这里写的是 `messages = stripSyntheticSidecars(messages)`，回写把
-			// 控制流分支（reflect / plan-queue / TaskGate nudge）刚 append 到末尾的
-			// synthetic user 边界在下一轮开头删除，导致 messages 以 assistant 结尾
-			// → IOA 网关 400 code 11133 invalid_parameter_value（param 为空）。
-			//
-			// 真正的剥离统一由发送线收口层完成（common/adapters/wireMessagePipeline.ts
-			// buildWireMessages，接入 MessageFormatConverter 三入口，覆盖全部 provider），
-			// 那里同时保护尾部 sidecar 并保证 user/tool 结尾。
-			const effectiveMessageCount = stripSyntheticSidecars(messages).length;
-			const HARD_MAX_MESSAGES = 60;
-			if (effectiveMessageCount > HARD_MAX_MESSAGES) {
-				hardPrunePending = true;
-				host._logService.info(
-					`[AgentOS][HardPrune] pending: messages=${effectiveMessageCount} (excl. synthetic sidecars; raw=${messages.length}) > cap=${HARD_MAX_MESSAGES} — deferring to compression (cache prefix preserved this turn)`
-				);
-			}
-		}
-
-		// ─── Hermes 三段式压缩（LLM 摘要 + checkpoint 重建兜底）──────────
-		{
-			const compressionStartTime = Date.now();
-			const originalMessageCount = messages.length;
-			const originalEstimatedTokens = host._estimateMessagesTokens(messages);
-			host._logService.info(
-				`[AgentOS][Compression] BEFORE: messages=${originalMessageCount}, ` +
-				`estimatedTokens=${originalEstimatedTokens}, compressionWindow=${compressionWindow}, ` +
-				`lastRealPromptTokens=${runState.lastRealPromptTokens}`
-			);
-
-			// 跨消息冷却期检查（ContextManager 每次新建，冷却期需在 AgentOSService 层持久化）
-			let compressionResult;
-			// 本轮是否真的把 UI 切进过 'compressing'（决定末尾是否需要切回 llm_streaming）
-			let enteredCompressingPhase = false;
-			// P1-2（对齐 Hermes est_tools_tokens_rough）：估算工具 schema 的固定 token 开销，
-			// 无真实 usage 时计入触发判定，避免 60+ 工具定义导致请求规模被严重低估而压缩
-			// 滞后（日志 1786432061200 HTTP 400 code 11133）。
-			// ⚠ 提到冷却分支**之前**声明：willAttemptCompression（UI 门控）与
-			// compressContext 都要用它，且两处必须传同一值，否则门控与实际判定漂移。
-			// 纯计算无副作用，提前算不改变任何行为。
-			// 实现已抽为模块级 estimateToolsSchemaTokens（请求发出点的 promptOverhead
-			// 诊断共用同一函数，避免两套口径）。
-			const toolsSchemaTokens = estimateToolsSchemaTokens(enabledTools as ReadonlyArray<any>);
-			const cooldownElapsed = host._lastCompressionTime > 0
-				? Date.now() - host._lastCompressionTime
-				: Infinity;
-			if (cooldownElapsed < host.constructor.COMPRESSION_COOLDOWN_MS) {
-				host._logService.info(
-					`[AgentOS][Compression] COOLDOWN: ${Math.round((host.constructor.COMPRESSION_COOLDOWN_MS - cooldownElapsed) / 1000)}s remaining, skipping`
-				);
-				compressionResult = {
-					originalMessageCount: messages.length,
-					compressedMessageCount: messages.length,
-					summary: '',
-					compressedMessages: [...messages] as unknown as ChatMessage[],
-					metadata: { compressionRatio: 1.0, skipped: 'cooldown' },
-				};
-			} else {
-				// ★ P3（2026-08-21，事故 1787282838177）：在 **await compressContext 之前**
-				// 就把 UI 切到「正在压缩上下文」——摘要 LLM 挂起恰好发生在 compressContext
-				// 内部，若把 phase 发在压缩完成后（原实现在 `if (didCompress)` 里），
-				// 那行永远执行不到，用户看到的仍是「正在思考中」，无法判断该等还是该停。
-				//
-				// ⚠ 但**必须先确认本轮真会压缩**（2026-08-21 二次修正，日志 1787286581849）：
-				// 冷却期只是众多前置条件之一。首版把 phase 发在「冷却期已过」的 else 分支里，
-				// 而该日志 12 轮全部 `skipped=below_token_threshold`
-				// （effectiveTokens 25959→29422，阈值 38400 从未达标），却每轮都发了
-				// compressing → UI 每轮闪一次「正在压缩上下文...」→ 用户误以为频繁压缩。
-				// （首版注释里"25ms delta 缓冲会合并、用户无感"的假设是错的：
-				//  _ensurePhaseIndicator 是立即 DOM 操作，不经缓冲。）
-				//
-				// willAttemptCompression 与 compressContext 共用 _evaluateTrigger 判据
-				// （唯一真源），杜绝 UI 门控与实际行为漂移。
-				const willCompress = contextManager.willAttemptCompression(
-					messages as unknown as ReadonlyArray<ChatMessage>,
-					undefined,
-					compressionWindow,
-					runState.lastRealPromptTokens,
-					toolsSchemaTokens > 0 ? toolsSchemaTokens : undefined,
-					force === true ? true : undefined,
-				);
-				if (willCompress) {
-					enteredCompressingPhase = true;
-					runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'compressing' });
-					yield { type: 'phase_change', phase: runState.phase };
-				}
-				try {
-					// Pre-compact injection callback — passed into compressContext
-					// so injected memories are part of the compressed result.
-					const memProviderForInject = host.getActiveMemoryProvider();
-					const preCompactInject = memProviderForInject?.onPreCompact
-						? (ctx: { agentId: string; sessionId: string; messages: Array<{ role: string; content: string; timestamp: number }>; tokensSaved: number; contextWindow: number }) => {
-							const injectBudget = Math.min(
-								Math.max(Math.floor(ctx.tokensSaved * 0.1), 500),
-								Math.floor(ctx.contextWindow * 0.05),
-								2000,
-							);
-							return memProviderForInject.onPreCompact!(ctx.agentId, ctx.sessionId, ctx.messages, injectBudget);
-						}
-						: undefined;
-					// 检索式上下文回调（对齐 agentmemory mem::context）：从记忆系统
-					// 取回相关上下文替代同步 LLM 摘要。仅在 AgentMemory 可用时提供，
-					// 否则 compressContext 回退到原有 LLM 摘要路径（零行为变更）。
-					const memProviderForRetrieve = memProviderForInject;
-					const retrieveContext = (memProviderForRetrieve && (memProviderForRetrieve as any).recallFormatted)
-						? (r: any) => host._retrieveCompactionContext(memProviderForRetrieve as any, r)
-						: undefined;
-					// toolsSchemaTokens 已在冷却分支之前算好（UI 门控与本次调用共用同一值）
-					compressionResult = await contextManager.compressContext(
-						messages as unknown as ReadonlyArray<ChatMessage>,
-						undefined,
-						compressionWindow,
-						runState.lastRealPromptTokens,
-						preCompactInject as any,
-						retrieveContext as any,
-						toolsSchemaTokens > 0 ? toolsSchemaTokens : undefined,
-						force === true ? true : undefined
-					);
-				} catch (compressionError) {
-					host._logService.error(
-						`[AgentOS][Compression] EXCEPTION during compressContext: ` +
-						`${compressionError instanceof Error ? compressionError.message : String(compressionError)}`,
-						compressionError
-					);
-					compressionResult = {
-						originalMessageCount: messages.length,
-						compressedMessageCount: messages.length,
-						summary: '',
-						compressedMessages: [...messages] as unknown as ChatMessage[],
-						metadata: { compressionRatio: 1.0, skipped: 'exception', error: String(compressionError) },
-					};
-				}
-			}
-			const didCompress = compressionResult.compressedMessageCount < compressionResult.originalMessageCount;
-			const compressionDurationMs = Date.now() - compressionStartTime;
-			const cmpMeta = compressionResult.metadata ?? {};
-			// ── P5 兜底（2026-08-18）：条数超限但压缩未执行 → rearm 门控下的删头 ──
-			// 压缩成功时条数必然大幅下降，pending 自然消化；压缩被 cooldown/阈值/
-			// 防抖拒绝时，仅在 token 压力>=1 且通过 rearm runway（自上次删头以来
-			// token 增量 ≥ 20k，约为压缩阈值的 1/3，对齐 Hermes「等 prompt 长满一个
-			// trigger 规模增量才允许下次裁剪」）时才删头，杜绝逐轮头部滑动断链。
-			if (hardPrunePending && !didCompress) {
-				const HARD_MAX_MESSAGES = 60;
-				const HARD_PRUNE_REARM_TOKENS = 20_000;
-				const currentTokens = runState.lastRealPromptTokens || host._estimateMessagesTokens(messages);
-				const sinceLastPrune = currentTokens - host._lastHardPruneBaselineTokens;
-				const rearmOk = host._lastHardPruneBaselineTokens === 0 || sinceLastPrune >= HARD_PRUNE_REARM_TOKENS;
-				if (!rearmOk) {
-					host._logService.info(
-						`[AgentOS][HardPrune] rearm-gated: token delta ${sinceLastPrune} < ${HARD_PRUNE_REARM_TOKENS} ` +
-						`since last prune — skipping head drop (cache prefix preserved)`
-					);
-				} else if (_pressure >= 1) {
-					const systemMsgs = messages.filter((m: any) => m.role === 'system');
-					const nonSystem = messages.filter((m: any) => m.role !== 'system');
-					const keepCount = HARD_MAX_MESSAGES - systemMsgs.length;
-					if (nonSystem.length > keepCount && keepCount > 0) {
-						const beforePruneCount = messages.length;
-						const dropped = nonSystem.slice(0, nonSystem.length - keepCount);
-						const kept = nonSystem.slice(nonSystem.length - keepCount);
-						const placeholder: any = {
-							role: 'system',
-							content: `[Context truncated: ${dropped.length} earlier messages removed to fit context window. ` +
-								`The conversation contained ${dropped.filter((m: any) => m.role === 'user').length} user messages, ` +
-								`${dropped.filter((m: any) => m.role === 'assistant').length} assistant responses, ` +
-								`${dropped.filter((m: any) => m.role === 'tool').length} tool results.]`,
-						};
-						messages = [...systemMsgs, placeholder, ...kept] as typeof messages;
-						host._lastHardPruneBaselineTokens = currentTokens;
-						host._logService.warn(
-							`[AgentOS][HardPrune] messages ${beforePruneCount} → ${messages.length} ` +
-							`(dropped ${dropped.length} oldest, hard cap=${HARD_MAX_MESSAGES}, ` +
-							`pressure=${_pressure}, rearm baseline=${currentTokens})`
-						);
-					}
-				} else {
-					host._logService.info(
-						`[AgentOS][HardPrune] skipped: pressure=${_pressure} < 1 — token 远未到压缩线，` +
-						`条数超限源于消息碎，保留完整前缀（cache preserved）`
-					);
-				}
-			}
-			// 日志分级（2026-09-05）：didCompress=true（成功动作）与 below_* 常态跳过 → info；
-			// 其他 skip 原因（anti_thrashing 等防抖）→ warn（真信号）。此前 skip 一律 warn，
-			// below_token_threshold 每轮刷 WARN，用户误判为异常。
-			const _cmpSkipped = String(cmpMeta.skipped ?? '');
-			const logFn = (!didCompress && !_cmpSkipped.startsWith('below_'))
-				? host._logService.warn.bind(host._logService)
-				: host._logService.info.bind(host._logService);
-			logFn(
-				`[AgentOS][Compression] didCompress=${didCompress} ` +
-				`skipped=${JSON.stringify(cmpMeta.skipped ?? null)} ` +
-				`tokenSource=${cmpMeta.tokenSource ?? 'n/a'} ` +
-				`effectiveTokens=${cmpMeta.effectiveTokens ?? 'n/a'} ` +
-				`realPromptTokens=${cmpMeta.realPromptTokens ?? 'n/a'} ` +
-				`estimatedTokens=${cmpMeta.estimatedTokens ?? 'n/a'} ` +
-				`toolsSchemaTokens=${cmpMeta.toolsSchemaTokens ?? 'n/a'} ` +
-				`thresholdTokens=${cmpMeta.thresholdTokens ?? 'n/a'} ` +
-				`effectiveWindow=${cmpMeta.effectiveWindow ?? 'n/a'} ` +
-				`compressionWindow=${compressionWindow} ` +
-				`messageCount=${cmpMeta.messageCount ?? messages.length} ` +
-				`minMessagesToCompress=${cmpMeta.minMessagesToCompress ?? 'n/a'} ` +
-				`ineffectiveCompressionCount=${cmpMeta.ineffectiveCompressionCount ?? 'n/a'} ` +
-				`compressionThreshold=${cmpMeta.compressionThreshold ?? 'n/a'}`
-			);
-			// ─── Dashboard 统计：压缩指标累积 ──
-			if (didCompress) {
-				host._compressionCount++;
-				const before = (cmpMeta.estimatedTokens as number) ?? 0;
-				const after = (cmpMeta.estimatedTokensAfter as number) ?? 0;
-				const savingRatio = before > 0 ? (before - after) / before : 0;
-				if (savingRatio < 0.1) {
-					host._compressionIneffectiveCount++;
-				}
-				host._compressionBeforeTokens += before;
-				host._compressionAfterTokens += after;
-				host._scheduleSave();
-			}
-			if (didCompress) {
-				host._lastCompressionTime = Date.now();
-				// phase='compressing' 已在 await compressContext **之前**发出（见上方 P3 注释），
-				// 此处不再重复 yield —— 压缩块末尾会无条件切回 'llm_streaming'。
-				// 捕获压缩前后文本（用于详情编辑器对比显示）
-				// 消息级别截断：只在消息边界截断，避免在消息块中间切断导致公共后缀匹配失败
-				const fmtBlock = (m: any) => `[${m.role ?? 'unknown'}] ${(typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')).slice(0, 300)}`;
-				const MAX_TEXT_LEN = 50000;
-				// afterText：压缩后消息数少，直接顺序拼接即可
-				const fmtListSequential = (msgs: any[]): string => {
-					const blocks: string[] = [];
-					let totalLen = 0;
-					for (const m of msgs) {
-						const block = fmtBlock(m);
-						if (totalLen + block.length + 2 > MAX_TEXT_LEN && blocks.length > 0) { break; }
-						blocks.push(block);
-						totalLen += block.length + 2;
-					}
-					return blocks.join('\n\n');
-				};
-				// beforeText：原始消息可能很多（400+条），必须用"头尾保留+中间截断"策略
-				// 否则从头截断会丢失尾部消息，导致 _computeStructuredDiff 公共后缀匹配失败
-				const fmtListBefore = (msgs: any[]): string => {
-					const allBlocks: string[] = [];
-					let totalLen = 0;
-					for (const m of msgs) {
-						const block = fmtBlock(m);
-						allBlocks.push(block);
-						totalLen += block.length + 2;
-					}
-					// 未超限则直接返回
-					if (totalLen <= MAX_TEXT_LEN) { return allBlocks.join('\n\n'); }
-					// 超限时：保留头尾，截断中间
-					// 头部占一半预算，尾部占一半预算
-					const halfBudget = Math.floor(MAX_TEXT_LEN / 2);
-					const headBlocks: string[] = [];
-					let headLen = 0;
-					for (const block of allBlocks) {
-						if (headLen + block.length + 2 > halfBudget && headBlocks.length > 0) { break; }
-						headBlocks.push(block);
-						headLen += block.length + 2;
-					}
-					const tailBlocks: string[] = [];
-					let tailLen = 0;
-					for (let i = allBlocks.length - 1; i >= headBlocks.length; i--) {
-						const block = allBlocks[i];
-						if (tailLen + block.length + 2 > halfBudget && tailBlocks.length > 0) { break; }
-						tailBlocks.unshift(block);
-						tailLen += block.length + 2;
-					}
-					const omitted = allBlocks.length - headBlocks.length - tailBlocks.length;
-					const parts = [...headBlocks];
-					if (omitted > 0) {
-						parts.push(`[... 省略 ${omitted} 条消息 ...]`);
-					}
-					parts.push(...tailBlocks);
-					return parts.join('\n\n');
-				};
-				const beforeText = fmtListBefore(messages);
-				// 收口到 compactMessages reducer（不可变换底），保留单点便于后续加 size guard / token 计费
-				messages = compactMessages(messages, compressionResult.compressedMessages as unknown as AgentRunMessage[]) as any[];
-
-				// Calculate compression metrics (needed by P4 injection budget and P0 summary write)
-				const compressedEstimatedTokens = host._estimateMessagesTokens(messages);
-				const tokensSaved = originalEstimatedTokens - compressedEstimatedTokens;
-				const savePercent = originalEstimatedTokens > 0
-					? Math.round(tokensSaved / originalEstimatedTokens * 100)
-					: 0;
-				host._logService.info(
-					`[AgentOS][Compression] AFTER: messages=${compressionResult.compressedMessageCount}, ` +
-					`estimatedTokens=${compressedEstimatedTokens}, saved=${tokensSaved} (${savePercent}%), ` +
-					`duration=${compressionDurationMs}ms`
-				);
-
-				// ── P0: 压缩摘要写入记忆 ──────────────────────────────────────
-				// 压缩摘要是宝贵的 Episodic (L1) 记忆，记录了"这段对话讲了什么"，
-				// 应该持久化到 memory 中供后续会话召回。
-				if (didCompress && compressionResult.summary && compressionResult.summary.length > 10) {
-					const memProviderForSummary = host.getActiveMemoryProvider();
-					if (memProviderForSummary) {
-						const summaryTs = Date.now();
-						void (async () => {
-							try {
-							await memProviderForSummary.writeMemory(request.agentId, {
-								id: `compression-${summaryTs}`,
-								type: 'fact',
-								content: `[Context Compressed] ${compressionResult.summary}`,
-								metadata: {
-									memoryType: 'fact',
-									source: 'context_compression',
-										originalCount: compressionResult.originalMessageCount,
-										compressedCount: compressionResult.compressedMessageCount,
-										tokensSaved,
-										savePercent,
-										workspaceId: host._currentWorkspaceId,
-										sessionId: request.sessionId,
-										noticeId: `compression-${summaryTs}`,
-									},
-									timestamp: summaryTs,
-								});
-								host._logService.info(
-									`[AgentOS][Compression] Summary written to memory: ${compressionResult.summary.length} chars`
-								);
-							} catch (e) {
-								host._logService.warn(`[AgentOS][Compression] Failed to write summary to memory: ${e instanceof Error ? e.message : String(e)}`);
-							}
-						})();
-					}
-				}
-
-				// ── P4: Checkpoint 无损重建（极端压力兜底）────────────────────
-				// 当压力 ≥85% 窗口时，检查点重建比常规压缩更激进：
-				// 不调 LLM，复用既有摘要作为"检查点"，丢弃全部旧消息，只保留极短尾段。
-				{
-					const postCompressTokens = host._estimateMessagesTokens(messages);
-					const postPressure = ContextManager.getPressureLevel(postCompressTokens, compressionWindow);
-					if (postPressure >= 3 && postCompressTokens > compressionWindow * 0.85) {
-						host._logService.warn(
-							`[AgentOS][Checkpoint] EXTREME pressure (${(postCompressTokens / compressionWindow * 100).toFixed(0)}%), ` +
-							`trying checkpoint rebuild (no LLM, aggressive cut)`
-						);
-						const checkpointResult = await contextManager.compressCheckpoint(
-							messages as unknown as ReadonlyArray<ChatMessage>,
-							compressionWindow,
-						);
-						const ckMeta = checkpointResult.metadata ?? {};
-						if (checkpointResult.compressedMessageCount < checkpointResult.originalMessageCount) {
-							messages = compactMessages(messages, checkpointResult.compressedMessages as unknown as AgentRunMessage[]) as any[];
-							host._logService.warn(
-								`[AgentOS][Checkpoint] REBUILT: ` +
-								`from ${checkpointResult.originalMessageCount}→${checkpointResult.compressedMessageCount} messages, ` +
-								`saved ${ckMeta.tokensSaved ?? 'n/a'} tokens, no LLM`
-							);
-						} else {
-							host._logService.warn(
-								`[AgentOS][Checkpoint] SKIPPED: ${ckMeta.skipped ?? 'no_saving'}`
-							);
-						}
-					}
-				}
-
-				const afterText = fmtListSequential(messages);
-				const finalEstimatedTokens = host._estimateMessagesTokens(messages);
-				yield {
-					type: 'context_compacted',
-					compactedInputTokens: finalEstimatedTokens,
-					compressionOriginalCount: originalMessageCount,
-					compressionCompressedCount: compressionResult.compressedMessageCount,
-					compressionTokensSaved: tokensSaved,
-					compressionDurationMs,
-					compressionBeforeText: beforeText,
-					compressionAfterText: afterText,
-					compressionSummary: compressionResult.summary || '',
-				} as IChatStreamDelta;
-				// 压缩恢复后显式置 phase 再广播，与 SET_PHASE('compressing') 同源。
-			// ⚠ 只在**确实进入过** compressing 时才切回：未压缩的轮次根本没改过 phase，
-			// 无条件切回会把当前 phase 强写成 llm_streaming（隐性耦合，且在
-			// 「本轮跳过压缩」的常见路径上每轮多发一条无意义 delta）。
-			if (enteredCompressingPhase) {
-				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'llm_streaming' });
-				yield { type: 'phase_change', phase: runState.phase };
-			}
-		}
+		const deps: IContextCompactionDeps = {
+			host: host as unknown as IContextCompactionHost,
+			request,
+			contextManager: contextManager as unknown as IContextCompactionManager,
+			compressionWindow,
+			// getter：MCP 工具可能中途就绪，快照会让 schema token 估算停留在首轮口径。
+			enabledTools: () => enabledTools,
+			estimateToolsSchemaTokens,
+		};
+		const state: IContextCompactionState = {
+			messages: () => messages,
+			setMessages: next => { messages = next; },
+			syncMessages,
+			runState: () => runState,
+			dispatchRunState: action => { runState = reduceRunState(runState, action); },
+			hardPrunePending: () => loopState.hardPrunePending,
+			setHardPrunePending: next => { loopState.hardPrunePending = next; },
+		};
+		yield* compactContextIfNeeded(deps, state, force);
 	}
-}
 
 	// ─── Plan 模式处理闭包（2026-07-27 自主循环提取，~225 行）──────────────────
 	// plan_explore / plan_enter / plan_exit 拦截器：工作模式切换 + 计划文件管理 +
 	// 用户审批 + DAG 编排。参数传递循环局部变量（effectiveToolCalls/toolResults/endedToolIds），
 	// 闭包捕获 messages/runState/workState/planFilePath/planEnterCalled/planExitCalled/host/request。
 	// 返回 'done' 表示 plan_exit 编排完成（主循环应 return）；undefined 表示继续。
+	/**
+	 * Plan 模式控制工具拦截 —— 实现已迁至 `parts/turnPlanModeTools.ts`。
+	 *
+	 * 这里保留一层薄委托而非让调用点直接引用 Part：Part 需读写 5 个 turn 局部
+	 * 可变量（`runState` / `messages` / `planFilePath` / `planEnterCalled` /
+	 * `planExitCalled`），闭包是当前唯一能同时读到它们最新值、又能把新值写回的
+	 * 位置。getter/setter 形式的 state 面把这份耦合显式化，等 L2 驱动层落地后
+	 * 由 `ITurnPartContext` 统一承载。
+	 */
 	async function* _handlePlanModeTools(
 		effectiveToolCalls: any[],
 		toolResults: any[],
 		endedToolIds: Set<string>,
 	): AsyncGenerator<IChatStreamDelta, 'done' | undefined> {
-		// ─── plan_explore + subagent card injection ──
-		const planExploreCall = effectiveToolCalls.find(tc => tc.name === 'plan_explore');
-		if (planExploreCall) {
-			// P1: enforce that plan_explore only runs in plan workMode.
-			// If the LLM calls plan_explore without plan_enter, auto-enter.
-			if (workState.mode !== 'plan') {
-				host._logService.info(`[AgentOS] plan_explore auto-entering plan workMode (enforcement)`);
-				workState = reduceWorkState(workState, { type: 'ENTER_PLAN' });
-				runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'ENTER_PLAN' } });
-				yield { type: 'work_mode_changed', workMode: 'plan' };
-				// Generate plan file path if not set
-				if (!planFilePath) {
-					const sarosRoot = host._getSarosRoot?.() ?? '';
-					const allUserMsgs = (request.messages || []).filter((m: any) => m.role === 'user');
-					const lastUserMsg = allUserMsgs[allUserMsgs.length - 1];
-					const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : '';
-					planFilePath = generatePlanPath(sarosRoot, userText);
-					workState = reduceWorkState(workState, { type: 'SET_PLAN_FILE', planFilePath });
-					runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'SET_PLAN_FILE', planFilePath } });
-					try {
-						await host._writePlanFile(planFilePath, `# Plan\n*Auto-created by plan_explore enforcement*\n\n## Goal\n\n\n## Tasks\n\n`);
-					} catch { /* best-effort */ }
-				}
-				// 阶段卡：auto-enter 完成（P1 done，P2 探索进行中）+ 计划文件路径
-				yield { type: 'work_mode_changed', workMode: 'plan', planPhase: { currentStep: 1, planFilePath } };
-			}
-			host._logService.info(`[AgentOS] plan_explore called — parallel exploration launched`);
-
-				// Extract subagent data from tool result for chat panel SubAgentCards
-				const exploreResult = toolResults.find(r => r.toolCallId === planExploreCall.id);
-				if (exploreResult?.content) {
-					try {
-						const contentText = Array.isArray(exploreResult.content)
-							? exploreResult.content.map((c: any) => c.text || '').join('')
-							: String(exploreResult.content);
-						const parsed = JSON.parse(contentText);
-						if (parsed.subagentData && Array.isArray(parsed.subagentData)) {
-							yield {
-								type: 'subagent_batch' as any,
-								subagentData: parsed.subagentData,
-								toolCallId: planExploreCall.id,
-							};
-						}
-					} catch { /* parse failure — subagent data not available */ }
-						}
-					// 阶段卡：探索结果已返回（P2 并行探索 done，P3 方案设计 current）
-					yield { type: 'work_mode_changed', workMode: 'plan', planPhase: { currentStep: 2 } };
-		}
-
-		// ─── plan_enter: enter the internal read-only WorkMode ─────────────
-		// Both Plan and Craft policies may enter planning;
-		// their only behavioral difference is the approval gate at plan_exit.
-		const planEnterCall = effectiveToolCalls.find((tc: any) => tc.name === 'plan_enter');
-		if (planEnterCall && !planEnterCalled) {
-			planEnterCalled = true;
-			workState = reduceWorkState(workState, { type: 'ENTER_PLAN' });
-			runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'ENTER_PLAN' } });
-			yield { type: 'work_mode_changed', workMode: 'plan' };
-
-			const sarosRoot = host._getSarosRoot?.() ?? '';
-			const allUserMsgs = (request.messages || []).filter((m: any) => m.role === 'user');
-			const lastUserMsg = allUserMsgs[allUserMsgs.length - 1];
-			const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : '';
-			planFilePath = generatePlanPath(sarosRoot, userText);
-			workState = reduceWorkState(workState, { type: 'SET_PLAN_FILE', planFilePath });
-			runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'SET_PLAN_FILE', planFilePath } });
-
-			// 阶段卡：plan_enter 完成（P1 理解需求 done，P2 并行探索 current）+ 计划文件路径
-			yield { type: 'work_mode_changed', workMode: 'plan', planPhase: { currentStep: 1, planFilePath } };
-
-			try {
-				const initialContent = `# Plan: ${(userText || 'Untitled').slice(0, 80)}\n\n` +
-					`*Created: ${new Date().toISOString()}*\n\n` +
-					`## Goal\n\n` +
-					`## Exploration Findings\n\n` +
-					`## Tasks\n\n` +
-					`### Task 1: <title>\n` +
-					`- Description: <self-contained implementation task and acceptance criteria>\n` +
-					`- Files: <comma-separated paths>\n` +
-					`- Dependencies: none\n` +
-					`- Complexity: medium\n\n` +
-					`## Verification\n`;
-				await host._writePlanFile(planFilePath, initialContent);
-				host._logService.info(`[AgentOS] plan_enter — workMode=plan, plan file created at ${planFilePath}`);
-			} catch (createErr) {
-				host._logService.warn(`[AgentOS] plan_enter could not create plan file: ${createErr instanceof Error ? createErr.message : String(createErr)}`);
-			}
-
-			messages = appendMessages(messages, {
-				role: 'tool',
-				content: `Entered internal plan work mode. Plan file: ${planFilePath}. Follow: explore → design → review → write structured tasks → plan_exit.`,
-				toolCallId: planEnterCall.id,
-			});
-			// P0: 拦截器必须显式 yield tool_result + tool_end，否则 UI 端 tool_start 无对应 end → 触发 orphan 清理
-			yield {
-				type: 'tool_result',
-				content: sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({
-					note: `Entered internal plan work mode. Plan file: ${planFilePath}.`,
-				}))),
-				toolCallId: planEnterCall.id,
-			};
-			yield { type: 'tool_end', toolCallId: planEnterCall.id, success: true };
-			endedToolIds.add(planEnterCall.id);
-		}
-
-		// ─── plan_exit: policy gate → WorkMode switch → DAG subagent fan-out ──
-		const planExitCall = effectiveToolCalls.find((tc: any) => tc.name === 'plan_exit');
-		if (planExitCall && workState.mode === 'plan' && !planExitCalled) {
-			try {
-				const exitArgs = typeof planExitCall.arguments === 'string'
-					? JSON.parse(planExitCall.arguments) : planExitCall.arguments;
-				if (exitArgs?.plan_file) { planFilePath = String(exitArgs.plan_file); }
-			} catch { /* use the path established by plan_enter */ }
-
-			let planMarkdown = '';
-			if (planFilePath) {
-				planMarkdown = await host._readPlanFile(planFilePath);
-			}
-			const parsedPlan = parsePlanDocument(planMarkdown);
-			const executableTasks = parsedPlan.tasks.filter(task => task.title !== '<title>' && !task.title.includes('<'));
-			if (!planFilePath || !planMarkdown.trim() || executableTasks.length === 0) {
-				const invalidResult = !planFilePath
-					? 'Plan exit blocked: no plan file is associated with this work cycle. Call plan_enter first.'
-					: `Plan exit blocked: ${planFilePath} must contain at least one structured task under "## Tasks".`;
-				host._logService.warn(`[AgentOS] plan_exit rejected invalid plan: file=${planFilePath ?? '(none)'}, tasks=${executableTasks.length}`);
-				messages = appendMessages(messages, { role: 'tool', content: invalidResult, toolCallId: planExitCall.id });
-				yield { type: 'tool_result', content: sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ note: invalidResult }))), toolCallId: planExitCall.id };
-				yield { type: 'tool_end', toolCallId: planExitCall.id, success: false };
-				endedToolIds.add(planExitCall.id);
-				return undefined;
-			}
-
-			// 2026-08 决策：plan_exit 默认直通执行（审批走 orchestration 的 plan-approval
-			// 确认卡片，不随 ChatMode 开关）。原 planExitRequiresApproval() 恒 false 已删
-			// （workMode.ts 有恢复指引）；下方 REQUEST_APPROVAL 分支结构完整保留，
-			// 如需恢复「退出前弹用户审批」改为 true 即可。
-			const shouldAskUser: boolean = false;
-			// 阶段卡：计划文件解析出有效 tasks（P4 撰写计划 done，P5 提交执行 current）
-			yield { type: 'work_mode_changed', workMode: 'plan', planPhase: { currentStep: 4 } };
-			host._logService.info(`[AgentOS] plan_exit — approval=${shouldAskUser}, tasks=${executableTasks.length}`);
-			let approved = !shouldAskUser;
-			if (shouldAskUser) {
-				workState = reduceWorkState(workState, { type: 'REQUEST_APPROVAL' });
-				runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'REQUEST_APPROVAL' } });
-				const confirmationId = `plan-exit-${request.sessionId ?? 's'}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-				yield {
-					type: 'confirmation',
-					confirmationData: {
-						id: confirmationId,
-						type: 'plan-approval' as const,
-						title: 'Plan Complete — Execute in Parallel?',
-						message: `The plan contains ${executableTasks.length} task(s). Approve parallel subagent execution?`,
-						detail: `Plan file: ${planFilePath}`,
-						planSummary: parsedPlan.summary,
-						tasks: executableTasks,
-						buttons: [
-							{ id: 'approve', label: 'Approve & Execute', primary: true },
-							{ id: 'reject', label: 'Keep Planning', danger: true },
-						],
-						status: 'pending' as const,
-					} as any,
-				};
-				const decision = await host._awaitPlanApproval(confirmationId);
-				approved = decision === 'approved';
-				yield {
-					type: 'confirmation_resolved',
-					confirmationId,
-					confirmationStatus: approved ? 'approved' : 'rejected',
-				};
-			}
-
-			if (!approved) {
-				workState = reduceWorkState(workState, { type: 'REJECT_PLAN' });
-				runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'REJECT_PLAN' } });
-				messages = appendMessages(messages, {
-					role: 'tool',
-					content: 'The user rejected execution. Stay in plan work mode and refine the existing plan.',
-					toolCallId: planExitCall.id,
-				});
-				yield { type: 'tool_result', content: sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ note: 'User rejected execution. Stay in plan work mode.' }))), toolCallId: planExitCall.id };
-				yield { type: 'tool_end', toolCallId: planExitCall.id, success: false };
-				endedToolIds.add(planExitCall.id);
-				return undefined;
-			}
-
-			planExitCalled = true;
-			// P0: reset planEnterCalled so subsequent plan_explore calls can auto-enter again.
-			// Without this, plan_enter auto-enter (line 2015) only fires once per turn.
-			planEnterCalled = false;
-			workState = reduceWorkState(workState, shouldAskUser ? { type: 'APPROVE_PLAN' } : { type: 'START_DISPATCH' });
-			runState = reduceRunState(runState, {
-				type: 'WORK_EVENT',
-				event: shouldAskUser ? { type: 'APPROVE_PLAN' } : { type: 'START_DISPATCH' },
-			});
-			// 阶段卡：批准/直通 → 规划全流程完成（P5 done，阶段卡定格完成态）
-			yield { type: 'work_mode_changed', workMode: 'work', planPhase: { completedAt: Date.now() } };
-			messages = appendMessages(messages, { role: 'system', content: buildBuildSwitchReminder(planFilePath) });
-			messages = appendMessages(messages, {
-				role: 'tool',
-				content: `${shouldAskUser ? 'User approved' : 'Craft policy auto-approved'} the plan. Dispatching ${executableTasks.length} task(s) through the orchestration DAG.`,
-				toolCallId: planExitCall.id,
-			});
-
-			workState = reduceWorkState(workState, { type: 'START_EXECUTION' });
-			runState = reduceRunState(runState, { type: 'WORK_EVENT', event: { type: 'START_EXECUTION' } });
-			// P1: idempotency key prevents duplicate Plan creation on replay/retry.
-			const idempotencyKey = `plan-exit-${request.sessionId ?? 's'}-${planExitCall.id}`;
-			yield* host._orchestratePlan(
-				request,
-				{ plan_summary: parsedPlan.summary, next_mode: 'work', idempotencyKey },
-				executableTasks,
-				planExitCall.id,
-			);
-			// P0: 拦截器必须显式 yield tool_result + tool_end，否则 UI 端 tool_start 无对应 end → 触发 orphan 清理
-			yield {
-				type: 'tool_result',
-				content: sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({
-					note: `${shouldAskUser ? 'User approved' : 'Craft policy auto-approved'} the plan. Dispatching ${executableTasks.length} task(s).`,
-				}))),
-				toolCallId: planExitCall.id,
-			};
-			yield { type: 'tool_end', toolCallId: planExitCall.id, success: true };
-			endedToolIds.add(planExitCall.id);
-			yield { type: 'done' };
-			return 'done';
-		} else if (planExitCall) {
-			// P0: plan_exit called outside plan mode → return clear error instead of
-			// silently ignoring (which caused the LLM to retry 56+ times per turn).
-			const reason = planExitCalled
-				? 'plan_exit was already processed this turn. Tasks are being dispatched — wait for results.'
-				: 'plan_exit only works in plan mode (after plan_enter). Call plan_enter first to enter plan mode, then plan_explore, then plan_exit ONCE.';
-			messages = appendMessages(messages, {
-				role: 'tool',
-				content: reason,
-				toolCallId: planExitCall.id,
-			});
-			yield { type: 'tool_result', content: sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ note: reason }))), toolCallId: planExitCall.id };
-			yield { type: 'tool_end', toolCallId: planExitCall.id, success: false };
-			endedToolIds.add(planExitCall.id);
-		}
-		return undefined;
+		return yield* handlePlanModeTools(
+			{ host: host as unknown as IPlanModeToolsHost, request },
+			{
+				messages: () => messages,
+				setMessages: (next: AgentRunMessage[]) => { messages = next; },
+				syncMessages,
+				runState: () => runState,
+				dispatchRunState: (action: AgentAction) => { runState = reduceRunState(runState, action); },
+				planFilePath: () => planFilePath,
+				setPlanFilePath: (next: string | undefined) => { planFilePath = next; },
+				planEnterCalled: () => planEnterCalled,
+				setPlanEnterCalled: (next: boolean) => { planEnterCalled = next; },
+				planExitCalled: () => planExitCalled,
+				setPlanExitCalled: (next: boolean) => { planExitCalled = next; },
+			},
+			effectiveToolCalls,
+			toolResults,
+			endedToolIds,
+		);
 	}
 
-	// ─── 后处理闭包（2026-07-28 自主循环提取，~170 行）──────────────────
+
+	// ─── 后处理段（已迁出 → parts/turnPostIteration.ts）────────────────────
 	// 每轮迭代末尾执行：delegation ledger 更新 → memory hooks → orphan tool reconcile →
 	// guardrail（all tools failed）→ shouldTerminateToolBatch → codebase memory 工具检测 →
 	// memory capture → budget consume → checkpoint 持久化。
-	// 参数传递循环局部变量（toolResults/localExecutedCalls/effectiveToolCalls/startedToolIds/endedToolIds/
-	// trimmedAssistantContent/memoryProvider/iteration），闭包捕获 messages/runState/host/request/
-	// strategy/budget/resolvedParadigm。
-	// 返回 'done' 表示提前结束（all tools failed 或 terminate=true）；undefined 表示继续。
+	// 返回 'done' 表示提前结束；undefined 表示继续。
+	//
+	// `buildCheckpointSnapshot` 经 deps 注入而非由 Part 直接 import：其真源在本文件，
+	// Part 反向 import 会形成循环依赖。
 	async function* _postIterationCleanup(
 		toolResults: any[],
 		localExecutedCalls: any[],
@@ -1901,221 +1329,34 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		memoryProvider: any,
 		iteration: number,
 	): AsyncGenerator<IChatStreamDelta, 'done' | undefined> {
-		// ─── Update Delegation Ledger with tool results（借鉴 deer-flow）──────
-		for (const tr of toolResults) {
-			const tc = localExecutedCalls.find((c: any) => c.id === tr.toolCallId);
-			if (!tc || !host._subagentLimitMw.isDelegationCall(tc)) { continue; }
-
-			const resultText = typeof tr.content === 'string'
-				? tr.content
-				: (tr.content?.text ?? (tr.content?.error ? `Error: ${tr.content.error}` : JSON.stringify(tr.content ?? '')));
-
-			if (tr.success) {
-				host._delegationLedger.markCompleted(tc.id, resultText);
-			} else {
-				host._delegationLedger.markFailed(tc.id, resultText);
-			}
-		}
-
-		// Persist updated ledger into durable context so it survives
-		// summarization compression on the next round.
-		host._durableContext.updateFromLedger(host._delegationLedger.getAllEntries());
-
-		// ── Hook: post_tool_use / post_tool_failure ───────────────────
-		if (memoryProvider?.triggerHook) {
-			for (const tr of toolResults) {
-				const tc = localExecutedCalls.find((c: any) => c.id === tr.toolCallId);
-				memoryProvider.triggerHook(tr.success ? 'post_tool_use' : 'post_tool_failure', {
-					agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
-					toolName: tc?.name ?? '', toolCallId: tr.toolCallId,
-					toolResult: typeof tr.content === 'string' ? tr.content.slice(0, 2000) : JSON.stringify(tr.content ?? '').slice(0, 2000),
-					error: tr.success ? undefined : (typeof tr.content === 'string' ? tr.content.slice(0, 2000) : JSON.stringify(tr.content ?? '').slice(0, 2000)),
-				}).catch(() => { });
-			}
-		}
-
-		// ─── Reconcile: emit synthetic tool_end for any orphaned tool_start ──
-		// IDs that received tool_start but never tool_end (lost via dedup,
-		// phantom filter, missing provider, or any other early-return path)
-		// must be terminated, otherwise their webview tool cards will spin
-		// forever. We emit success=false so users can see they did not run.
-		for (const orphanId of startedToolIds) {
-			if (!endedToolIds.has(orphanId)) {
-				host._logService.warn(`[AgentOS] Orphaned tool_start without tool_end: ${orphanId} — emitting synthetic tool_result + tool_end (success=false)`);
-				const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ note: '工具未执行（可能已被过滤、去重或无匹配的 provider）' })));
-				yield {
-					type: 'tool_result',
-					content: orphanResultStr,
-					toolCallId: orphanId,
-				};
-				yield {
-					type: 'tool_end',
-					toolCallId: orphanId,
-					success: false,
-				};
-				endedToolIds.add(orphanId);
-			}
-		}
-
-		// ─── Guardrail: too many failed tool calls → break ──────
-		const failedCount = toolResults.filter(r => !r.success).length;
-		if (failedCount === toolResults.length && toolResults.length > 0) {
-			// All tools failed — check if they are "tool not found" errors
-			const allNotFound = toolResults.every(r => {
-				const content = JSON.stringify(r.content);
-				return content.includes('does not exist') || content.includes('not available');
-			});
-			if (allNotFound) {
-				runState = reduceRunState(runState, { type: 'INVALID_TOOL_NAME' });
-				if (runState.invalidToolNameCount >= MAX_INVALID_TOOL_RETRIES) {
-					host._logService.warn(`[AgentOS] Too many invalid tool name attempts (${runState.invalidToolNameCount}), ending loop`);
-					yield { type: 'done' };
-					return 'done';
-				}
-			}
-		}
-
-		// ─── shouldTerminateToolBatch（借鉴 OpenClaw）──────────────
-		// 所有工具返回 terminate=true 时提前结束 agent loop
-		// 当前 Saros 的 IToolResult 没有 terminate 字段，但预留接口
-		// 为将来扩展（如 "任务已完成"信号工具）做准备
-		if (toolResults.length > 0 && toolResults.every(r => (r as any).terminate === true)) {
-			host._logService.info(`[AgentOS] All ${toolResults.length} tool results signaled terminate — ending loop early`);
-			yield { type: 'done' };
-			return 'done';
-		}
-
-		// ─── clarify 信号：问题已抛给用户，必须结束 turn 等回答 ──────────
-		// P0（2026-08-21，日志 1787289570191）：`clarify` 的闭环此前**只有两端**——
-		// 工具注册（coreTools.ts）+ UI 澄清卡片（agentChatPanel.toolCards.ts，
-		// 提交后经 onClarifySubmit → _sendMessageInternal 作为新消息开启下一 turn），
-		// 而 agent loop 对 clarify 零引用 → 模型提问后 loop 继续跑，但用户回答
-		// 尚未到达，模型只能空转：该日志 14 轮里 5 轮（36%）纯浪费，最后模型
-		// 自救 "I'll stop here rather than loop on..."。
-		//
-		// ⚠ 用 `some`（findClarifySignal 命中即终止）而非上面 terminate 的 `every`：
-		// 问题一旦渲染，本 turn 已失去继续意义 —— 同批次其他工具结果模型也用不上。
-		// 要求"全部工具都 terminate"会让 `clarify + file_read` 混合批次继续空转，
-		// 正是本次事故形态。
-		//
-		// 终止方式与「无工具调用」路径一致（yield done + return 'done'）：turn 正常
-		// 收尾，用户看到澄清卡片，回答后自然开启新 turn。不用 abort/error ——
-		// 这是**预期内**的协作暂停，不是异常。
-		if (toolResults.length > 0) {
-			const clarifySignal = findClarifySignal(
-				toolResults,
-				(id) => localExecutedCalls.find((c: any) => c.id === id)?.name,
-			);
-			if (clarifySignal) {
-				host._logService.info(
-					`[AgentOS] clarify signal detected (toolCallId=${clarifySignal.toolCallId}, ` +
-					`questions=${clarifySignal.questionCount}) — ending turn to await the user's answer`
-				);
-				// 与结束路径对齐：显式置 idle，供 checkpoint / UI 读取正确终态
-				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'idle' });
-				yield { type: 'phase_change', phase: runState.phase };
-				yield { type: 'done' };
-				return 'done';
-			}
-		}
-
-		// ─── codebase memory 工具调用检测 ──────────────────────────────────
-		// 当 LLM 调用 codebase-memory MCP 工具时，yield codebase_operation 事件
-		// 供前端系统消息面板显示
-		for (const tc of effectiveToolCalls) {
-			if (tc.name.includes('codebase') || tc.name.includes('index_repository') ||
-				tc.name.includes('search_graph') || tc.name.includes('search_code') ||
-				tc.name.includes('trace_path') || tc.name.includes('get_architecture') ||
-				tc.name.includes('detect_changes') || tc.name.includes('list_projects')) {
-				const opMap: Record<string, string> = {
-					index_repository: 'index', search_graph: 'graph', search_code: 'search',
-					trace_path: 'trace', get_architecture: 'graph', detect_changes: 'changes',
-					list_projects: 'index', get_code_snippet: 'search', index_status: 'index',
-				};
-				let op = 'search';
-				for (const [key, val] of Object.entries(opMap)) {
-					if (tc.name.includes(key)) { op = val; break; }
-				}
-				// 解析工具参数，供前端显示详细内容
-				let argsSummary = '';
-				try {
-					const args = typeof tc.arguments === 'string' ? JSON.parse(tc.arguments) : tc.arguments;
-					if (args) {
-						const parts: string[] = [];
-						for (const [k, v] of Object.entries(args)) {
-							const valStr = typeof v === 'string' ? v : JSON.stringify(v);
-							parts.push(`${k}: ${valStr.length > 100 ? valStr.slice(0, 100) + '...' : valStr}`);
-						}
-						argsSummary = parts.join(', ');
-					}
-				} catch { /* ignore parse errors */ }
-				yield {
-					type: 'codebase_operation' as any,
-					content: tc.name,
-					metadata: { operation: op, toolName: tc.name, args: argsSummary },
-				} as any;
-			}
-		}
-
-		// ─── per-iteration memory capture（W1，2026-07-26 §16 日志实证修复）───
-		// 此前每迭代 writeMemory(type=working) 直写长期层：子代理 40+ 迭代即
-		// 洪泛 40+ 条过程性内容进 core memory（§11 分层改造的漏网通道）。
-		// 改道 observe 会话暂存层（mem:obs，便宜 KV set + 滑动窗口 + 阈值压缩）——
-		// 保留中断安全的增量捕获，不再污染长期层；assistant 消息本体由
-		// storeTurnObservations 在 turn 边界捕获（含去重）。同时删除每迭代的
-		// 「Working 写入中」噪音 UI 卡片。
-		const memProvider = host.getActiveMemoryProvider();
-		if (memProvider && (trimmedAssistantContent || toolResults.length > 0)) {
-			const iterContent = (trimmedAssistantContent || 'Tool execution completed') + (toolResults.length > 0
-				? ` [工具: ${effectiveToolCalls.map((tc: any) => tc.name).join(', ')}]`
-				: '');
-			void memProvider.observe?.(request.agentId, {
-				sessionId: request.sessionId || '',
-				hookType: 'turn_observation',
-				timestamp: new Date().toISOString(),
-				data: {
-					content: iterContent.slice(0, 2000),
-					role: 'assistant',
-					toolCalls: effectiveToolCalls.length,
-					toolResults: toolResults.length,
-					iteration,
-				},
-			}).catch(() => { /* fire-and-forget */ });
-		}
-
-		// ─── 预算消耗（Hermes 范式：每轮 consume；委托轮 refund 不耗父预算）──
-		if (strategy && (strategy as any).takeDelegationRound && (strategy as any).takeDelegationRound()) {
-			budget.refund(1);
-		} else {
-			budget.consume(1);
-		}
-
-		// ─── V3: 每轮持久化 checkpoint（单 agent 断点续跑）──
-		// 在 budget consume 后立即落盘，确保中断恢复时 budget 状态为最新。
-		// checkpointSink 由 agentDriverService 注入（workspace storage），异步 fire-and-forget 不阻塞循环。
-		if (request.checkpointSink && iteration % 3 === 0) {
-			try {
-				const budgetSnap = budget.snapshot();
-				const snapState = reduceRunState(runState, { type: 'SAVE_BUDGET', snapshot: budgetSnap });
-				const snapWithMessages = reduceRunState(snapState, { type: 'SET_LOOP_MESSAGES', messages: messages as AgentRunMessage[] });
-				const snapWithParadigm = reduceRunState(snapWithMessages, { type: 'SET_PARADIGM', paradigm: resolvedParadigm });
-				const snapFull = { ...snapWithParadigm, iteration }; // iteration 由 while 维护，不经 runState reducer
-				const snapshot = snapshotRunState(snapFull);
-				void (async () => {
-					try { await request.checkpointSink!(snapshot); }
-					catch (ckErr) { host._logService?.warn?.('' + (ckErr instanceof Error ? ckErr.message : ckErr)); }
-				})();
-			} catch (snapshotErr) {
-				host._logService?.warn?.('[AgentOS] Checkpoint snapshot failed: ' + (snapshotErr instanceof Error ? snapshotErr.message : String(snapshotErr)));
-			}
-		}
-		return undefined;
+		const deps: IPostIterationDeps = {
+			host: host as unknown as IPostIterationHost,
+			hookBus: hookBus as unknown as IPostIterationHookBus,
+			request,
+			budget,
+			strategy: strategy as unknown as { takeDelegationRound?(): boolean } | undefined,
+			resolvedParadigm,
+			buildCheckpointSnapshot,
+		};
+		const state: IPostIterationState = {
+			messages: () => messages,
+			runState: () => runState,
+			dispatchRunState: action => { runState = reduceRunState(runState, action); },
+		};
+		return yield* runPostIterationCleanup(deps, state, {
+			toolResults,
+			localExecutedCalls,
+			effectiveToolCalls,
+			startedToolIds,
+			endedToolIds,
+			trimmedAssistantContent,
+			iteration,
+		});
 	}
 
 	// P0-1（2026-08-11，日志 1786432061200）：上下文溢出反应式压缩重试标志。
 	// 流调用抛 HTTP 400 code 11133 / invalid_parameter_value 时，仅允许触发一次
 	// 「强制压缩 + 自动重试」；重试后仍失败则走原有 error 路径结束（防死循环）。
-	let overflowCompressionDone = false;
 
 	// ─── 迭代硬上限 / 预算耗尽的「收尾轮」（2026-08-20）────────────────────────
 	// 此前撞上限只 `yield done` 就结束，导致：末轮发起的工具调用（尤其 delegate_task）
@@ -2124,151 +1365,40 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 	// 现额外允许跑一轮「禁用工具、仅输出结论」的收尾轮：循环上限 +1，该轮把
 	// _iterationToolDefs 置空并注入 hardLimitWrapUpReminder（该 reminder 早已写好但
 	// 一直无生产引用，仅测试在用）。预算耗尽路径同样先转收尾轮再硬停。
-	const HARD_STOP_ITERATIONS = MAX_TOOL_ITERATIONS + 1;
-	/** 收尾轮是否已执行（防止重复收尾 / 收尾后仍继续循环）。 */
-	let _wrapUpRoundDone = false;
-	/** 预算耗尽等非「撞上限」原因请求提前收尾。 */
-	let _forceWrapUpRound = false;
-	/**
-	 * 收尾提醒是否已由「触发原因方」注入过（如零进展空转注入了
-	 * allBlockedWrapUpReminder）。置位后收尾轮不再叠加 hardLimitWrapUpReminder，
-	 * 避免出现「你已用满 100 轮」这类与事实矛盾的措辞。
-	 */
-	let _wrapUpReminderAlreadyInjected = false;
-	/**
-	 * 硬上限收尾提醒是否已注入（**本开关负责**的那一条）。
-	 *
-	 * ⚠ 与 `_wrapUpReminderAlreadyInjected` 语义不同，不可合并：后者表示「触发原因方
-	 * （零进展空转 / 文本搜索超限）**已注入过**贴合真实原因的提醒」，置位后本开关的
-	 * 提醒**不再叠加**；前者表示「本开关自己的提醒已注入过」。
-	 *
-	 * 缺了它会重复注入：wrap-up **可能连续多轮**（日志 1788006127437 实证 iteration
-	 * 7/8/9 连跑 3 轮），而 `_wrapUpReminderAlreadyInjected` 仅在零进展 / 文本搜索
-	 * 路径置位 —— 硬上限路径下它恒为 false，导致每轮 wrap-up 都再塞一条同样的提醒，
-	 * 既污染上下文又打断前缀缓存。
-	 */
-	let _hardLimitReminderInjected = false;
-	/** 临近预算预警是否已注入（只提醒一次，避免每轮刷屏）。 */
-	let _budgetLowWarned = false;
+	const HARD_STOP_ITERATIONS = maxToolIterations + 1;
+	// P0-a-5：收尾门控（done / forced / reasonReminderInjected /
+	// hardLimitReminderInjected / budgetLowWarned）
+	// 已收口进 runState.wrapUp，经 wrapUp() / patchWrapUp() 读写。
+	// ⚠ done 与 forced 的语义区分见 AgentWrapUpState 定义处注释，不可合并。
 	/** 剩余轮次 <= 该值时注入临近预算预警（够模型收一次尾，又不至于过早悲观）。 */
 	const BUDGET_LOW_REMAINING_THRESHOLD = 3;
 
-	while (iteration < HARD_STOP_ITERATIONS) {
-		iteration++;
-		// ─── V3: 显式 abort 检查点（每轮顶检查，不在迭代间隙期等待）──
-		if (turnAbortSignal.aborted) {
-			host._logService.warn(`[AgentOS] Turn aborted at iteration ${iteration} — stopping loop`);
-			break;
-		}
-		// ─── 预算门控（Hermes 范式核心：IterationBudget）──
-		// 预算耗尽且无 grace 余量 → 请求收尾轮；收尾轮已跑过则硬停。
-		if (!budget.hasRemaining() && !budget.isGraceArmed()) {
-			if (_wrapUpRoundDone) {
-				host._logService.warn(`[AgentOS] Iteration budget exhausted (${budget.getSummary()}) — stopping loop (wrap-up round already done)`);
-				break;
-			}
-			host._logService.warn(`[AgentOS] Iteration budget exhausted (${budget.getSummary()}) — entering final wrap-up round (tools disabled)`);
-			_forceWrapUpRound = true;
-		}
+	while (!strategySkipMainLoop && loopState.iteration < HARD_STOP_ITERATIONS) {
+		loopState.iteration++;
+		// ─── 每轮门控段（abort / steering / 预算 / 收尾 / 策略 prepareIteration）──
+		// 抽出至 turnIterationGate.ts：本段内 messages 重绑定 6 次、enabledTools 2 次，
+		// 且策略会原地改写 messages 数组，故经「回调 + accessor」回写而非返回值。
+		// 返回 shouldBreak=true 时对应原 break（abort 或预算硬停）。
+		const _gate = runIterationGate(
+			{
+				host, request, loopState, budget, strategy, steeringQueue, turnAbortSignal,
+				modelProvider, selection, chatOnly, trivialRequest, workState: runState.work,
+				turnStartedAt: _turnStartedAt,
+			},
+			{
+				messages: () => messages,
+				setMessages: (next) => { messages = next; syncMessages(); },
+				enabledTools: () => enabledTools,
+				setEnabledTools: (next) => { enabledTools = next; },
+				wrapUp,
+				patchWrapUp,
+			},
+			maxToolIterations,
+			SOFT_BUDGET_REMINDER_REFIRE_MS,
+			BUDGET_LOW_REMAINING_THRESHOLD,
+		);
+		if (_gate.shouldBreak) { break; }
 
-		// ─── 收尾轮判定：撞硬上限（iteration 超出 MAX）或预算耗尽请求 ──
-		const _isWrapUpRound = _forceWrapUpRound || iteration > MAX_TOOL_ITERATIONS;
-		if (_isWrapUpRound) {
-			host._logService.info(
-				`[AgentOS][Diag] wrap-up trigger: iter=${iteration} force=${_forceWrapUpRound} ` +
-				`overMax=${iteration > MAX_TOOL_ITERATIONS} budget=${budget.getSummary()} ` +
-				`grace=${budget.isGraceArmed()}`,
-			);
-			_wrapUpRoundDone = true;
-			host._logService.warn(
-				`[AgentOS] FINAL WRAP-UP ROUND (iteration ${iteration}, max ${MAX_TOOL_ITERATIONS}) — ` +
-				`tools DISABLED, model must produce final answer from gathered context` +
-				(_wrapUpReminderAlreadyInjected ? ' (reason-specific reminder already injected)' : '')
-			);
-			// ⚠ 2026-08-22：零进展空转路径已注入过 `allBlockedWrapUpReminder`，此处不可
-			// 再叠加 `hardLimitWrapUpReminder(MAX_TOOL_ITERATIONS)` —— 后者会告诉模型
-			// 「你已用满 100 轮」，而实际只跑了 5 轮（零进展提前收尾），**措辞与事实
-			// 矛盾会让模型困惑**（它可能据此判断上下文已被截断而放弃作答）。
-			// 收尾的三重保障（工具置空 / toolChoice:'none' / 提醒）仍完整，只是提醒
-			// 换成了贴合真实原因的那一条。
-			if (!_wrapUpReminderAlreadyInjected && !_hardLimitReminderInjected) {
-				// ─── 收尾提醒的注入方式：system 消息 + 紧贴冻结前缀 ────────────
-				// 改前是 `messages.push({ role: 'user', ... })` —— 两个问题：
-				//   ① **角色错配**：冲突指令（stable 层「需要工具时 emit a NATIVE
-				//      function call」）在 **system** 里，而纠正它的提醒却是 **user**
-				//      消息。模型对 system 的遵循权重高于 user，靠 user 消息末尾那句
-				//      "overrides ALL other instructions" 去压 system 指令，胜算很低。
-				//   ② **位置太远**：push 到末尾 = 淹没在全部对话历史之后；而冲突指令在
-				//      开头。两者相隔整段历史，模型很难把它们关联成"后者覆盖前者"。
-				// 改为：system 角色 + 插入在所有前置 system 消息之后（复用 330 行
-				// volatile 层的同款插入模式），使其**紧贴**冻结前缀中的冲突指令。
-				// 这不打断前缀缓存 —— 冻结前缀仍是最长公共前缀，本条只是其后的增量。
-				const _wrapUpContent = hardLimitWrapUpReminder(MAX_TOOL_ITERATIONS);
-				let _wrapUpInsertIdx = 0;
-				for (let i = 0; i < messages.length; i++) {
-					if (messages[i]?.role === 'system') { _wrapUpInsertIdx = i + 1; } else { break; }
-				}
-				messages = insertMessages(messages, _wrapUpInsertIdx, { role: 'system', content: _wrapUpContent });
-				_hardLimitReminderInjected = true;
-				host._logService.info(
-					`[AgentOS] Wrap-up reminder injected as SYSTEM tier at idx=${_wrapUpInsertIdx} ` +
-					`(adjacent to frozen prefix, ${_wrapUpContent.length} chars)`,
-				);
-			}
-			// 空数组（非 undefined）：下方 `if (_iterationToolDefs)` 判定为 truthy，
-			// 从而把 enabledTools 覆盖为空 → provider 收不到任何工具，模型无法再调用。
-			_iterationToolDefs = [];
-		} else if (!_budgetLowWarned) {
-			// ─── 临近预算预警（只注入一次）──
-			// 让模型知道剩余轮次，避免在末轮启动 delegate_task 这类结果无人消费的昂贵操作。
-			const _remaining = MAX_TOOL_ITERATIONS - iteration + 1;
-			if (_remaining <= BUDGET_LOW_REMAINING_THRESHOLD) {
-				_budgetLowWarned = true;
-				host._logService.warn(`[AgentOS] Iteration budget low (${_remaining}/${MAX_TOOL_ITERATIONS} remaining) — injecting warning`);
-				messages.push({ role: 'user', content: budgetLowWarning(_remaining, MAX_TOOL_ITERATIONS) });
-			}
-		}
-		// ─── 软预算收尾提醒（超阈值首次注入；之后每 REFIRE 周期重复，不打断执行）──
-		if (request.softDeadlineMs && request.softDeadlineMs > 0) {
-			const _elapsedMs = Date.now() - _turnStartedAt;
-			if (_elapsedMs >= request.softDeadlineMs && _elapsedMs >= _softBudgetNextReminderAtMs) {
-				_softBudgetNextReminderAtMs = _elapsedMs + SOFT_BUDGET_REMINDER_REFIRE_MS;
-				const agentTag = request.subAgent?.background ? `[subAgent:${request.agentId}]` : '[main]';
-				host._logService.warn(
-					`[AgentOS] ${agentTag} Soft budget exceeded (${Math.round(_elapsedMs / 1000)}s >= ${Math.round(request.softDeadlineMs / 1000)}s) — injecting wrap-up reminder`
-				);
-				messages.push({
-					role: 'user',
-					content: softBudgetWrapUpReminder(Math.round(_elapsedMs / 1000), Math.round(request.softDeadlineMs / 1000)),
-				});
-			}
-		} else if (request.subAgent?.background && iteration === 1) {
-			// 诊断：子代理首轮却无 softDeadlineMs — 说明 unifiedSubAgentDispatch 链路未送达
-			host._logService.warn(
-				`[AgentOS] [subAgent:${request.agentId}] softDeadlineMs is NOT set — ` +
-				`wrap-up reminder will NOT be injected. Check unifiedSubAgentDispatch request construction.`,
-			);
-		}
-		// ─── 策略：本轮准备（预算低时注入「整理总结」提醒）──
-		{
-			let _strategyReminder: string | undefined;
-			if (strategy?.prepareIteration) {
-				const sp = strategy.prepareIteration({
-					host, request, chatMode: String(chatOnly), modelProvider, modelId: selection?.modelId, selection,
-					messages, signal: turnAbortSignal, budget, workState, toolDefs: enabledTools, iteration,
-				}, budget);
-				_strategyReminder = sp.reminderMessage;
-				// 捕获策略对本轮工具面的覆盖（如 delegation 范式限制 supervisor 工具）。
-				// 仅当策略显式返回 toolDefs 时才覆盖；其余范式返回 undefined → 沿用全工具。
-				// 收尾轮例外：工具面必须保持为空，否则策略（如 delegation 返回 supervisor
-				// 工具集）会把 `_iterationToolDefs = []` 冲掉，模型又能调 delegate_task。
-				if (sp.toolDefs && !_isWrapUpRound) { _iterationToolDefs = sp.toolDefs; }
-			}
-			// MiMo-Code 处理方式：策略级 reminder 统一作为 user 消息注入
-			// （synthetic user part），而非 system 角色 —— 避免破坏 system 前缀缓存，
-			// 与 beforeTerminate 的 nudgeMessage（亦为 user 角色）保持一致。
-			if (_strategyReminder) { messages.push({ role: 'user', content: _strategyReminder }); }
-		}
 			// 每轮迭代重置上一轮的 finishReason（仅当前轮有效）
 			lastFinishReason = undefined;
 		// 每轮进入 LLM 推理前显式置 phase=llm_streaming（对齐 UI 广播，
@@ -2285,10 +1415,10 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		yield { type: 'phase_change', phase: runState.phase };
 			// Yield to the event loop every 5 iterations to prevent UI freeze
 			// during long-running agent loops (P2-6 fix).
-			if (iteration % 5 === 0) {
+			if (loopState.iteration % 5 === 0) {
 				await new Promise<void>(r => setTimeout(r, 0));
 			}
-			host._logService.info(`[AgentOS] Direct mode iteration ${iteration}/${MAX_TOOL_ITERATIONS}`);
+			host._logService.info(`[AgentOS] Direct mode iteration ${loopState.iteration}/${maxToolIterations}`);
 
 			yield* _compressContextIfNeeded();
 
@@ -2297,20 +1427,20 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			// MCP 服务器可能在 agent loop 进行中才完成连接并暴露工具。
 			// 每轮迭代重新收集确保新可用的 MCP 工具被纳入 LLM 请求。
 			// 首轮使用循环前已收集（含等待）的 enabledTools；后续轮次刷新。
-			if (iteration > 1) {
+			if (loopState.iteration > 1) {
 				const refreshed = await host._getEnabledTools(request.agentId, request.agentGraph, request.toolsetsOverride,
-					host._resolveHardPermissionForWorkMode?.(workState.mode) ?? host._resolveHardPermission(request), request.excludedTools, request.allowedTools);
+					host._resolveHardPermissionForWorkMode?.(runState.work.mode) ?? host._resolveHardPermission(request), request.excludedTools, request.allowedTools);
 				if (refreshed.length !== enabledTools.length) {
 					const newMcp = refreshed.filter((t: any) => t.category?.startsWith('mcp:')).map((t: any) => t.name);
-					host._logService.info(`[AgentOS] Iteration ${iteration}: tools refreshed ${enabledTools.length} → ${refreshed.length} (MCP: [${newMcp.join(', ')}])`);
+					host._logService.info(`[AgentOS] Iteration ${loopState.iteration}: tools refreshed ${enabledTools.length} → ${refreshed.length} (MCP: [${newMcp.join(', ')}])`);
 				}
 				enabledTools = refreshed;
 			}
 
 			// 策略工具面覆盖（delegation 范式：主循环仅 supervisor 工具）。
 			// 必须在「每轮重新收集工具」之后应用，否则会被全量工具列表冲掉。
-			if (_iterationToolDefs) {
-				enabledTools = _iterationToolDefs;
+			if (loopState.iterationToolDefs) {
+				enabledTools = loopState.iterationToolDefs;
 			}
 
 			// trivial 请求：每轮剔除重探索/委托/技能类工具，避免无意义深度探索与图谱构建
@@ -2327,50 +1457,13 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			// 计算本请求自身的冻结前缀（system + tools），并与父级 ForkContext 比对对齐。
 			// 对齐时请求构造端（MessageFormatConverter + BYOK provider）会在该前缀边界
 			// 注入 cache_control 断点 → 命中父级已写入的 prompt cache（而非重计费稳定大前缀）。
-		// 冻结前缀指纹统一基于 effectiveSystemPrompt（实际发送的第一条 system 消息，
-		// 含 model 相关 enforcement）——保证指纹、缓存断点、modelOptions 三者字节一致。
-		const currentFork = buildForkContext(effectiveSystemPrompt ?? '', enabledTools);
-		// 回填父级冻结前缀：优先 request.forkContext（turn 入口已回填 / 子 agent 从父级继承），
-		// 否则回退到「上一轮迭代」存下的同会话冻结前缀。这样首次 turn 内从第 2 轮工具迭代起
-		// 即与第 1 轮对齐 → 请求构造端注入 cache_control 断点 → 命中 prompt cache。
-		// 注意顺序：先读旧值（上一轮）再写新值，否则会自对齐（恒 true）。
-		const parentFork = request.forkContext
-			?? (request.sessionId ? host._lastForkContextBySession.get(request.sessionId) : undefined);
-		if (request.sessionId) {
-			host._lastForkContextBySession.set(request.sessionId, currentFork);
-		}
-		const forkAligned = prefixCacheAligned(parentFork, effectiveSystemPrompt ?? '', enabledTools);
-		// ── 归因：aligned=false 时区分「system 变了」还是「tools 变了」（2026-08-22）──
-		// 原日志只有 aligned + 两个指纹值 —— 缓存断了完全不知道该去查提示词还是查工具集。
-		// 这里在**不对齐时**额外拆两维：system 单独取指纹、tools 单独取指纹（工具名 diff
-		// 直接给出增删项）。刻意只在 !aligned 时计算，对齐路径零额外开销。
-		let forkReason = '';
-		if (!forkAligned && parentFork) {
-			const sysSame = parentFork.systemPrompt === (effectiveSystemPrompt ?? '');
-			const parentNames = parentFork.tools.map((t: { name: string }) => t.name).sort();
-			const childNames = [...enabledTools].map((t: any) => t.name).sort();
-			const added = childNames.filter((n: string) => !parentNames.includes(n));
-			const removed = parentNames.filter((n: string) => !childNames.includes(n));
-			const toolsSetSame = added.length === 0 && removed.length === 0;
-			const parts: string[] = [];
-			parts.push(sysSame ? 'system=same' : `system=CHANGED(${parentFork.systemPrompt.length}→${(effectiveSystemPrompt ?? '').length} chars)`);
-			if (!toolsSetSame) {
-				parts.push(`tools=SET_CHANGED(${parentNames.length}→${childNames.length}` +
-					`${added.length ? ` +[${added.slice(0, 8).join(',')}]` : ''}` +
-					`${removed.length ? ` -[${removed.slice(0, 8).join(',')}]` : ''})`);
-			} else if (sysSame) {
-				// 两边工具名集合相同、system 也相同，指纹却不同 → 只能是某个工具的
-				// description / inputSchema 变了（指纹含这两项）。这类漂移最隐蔽。
-				parts.push('tools=SCHEMA_CHANGED(same names, different description/inputSchema)');
-			} else {
-				parts.push('tools=same');
-			}
-			forkReason = ` reason=[${parts.join(' ')}]`;
-		}
-		host._logService.info(
-			`[AgentOS] Fork prefix-cache: aligned=${forkAligned} ` +
-			`parentFp=${parentFork?.toolsFingerprint ?? '(none)'} ` +
-			`childFp=${currentFork.toolsFingerprint} session=${request.sessionId ?? '(none)'}${forkReason}`,
+		// 抽出至 turnIterationGate.ts：纯计算 + 一次 map 写入 + 一条诊断日志，
+		// 返回 parentFork 供下方请求构建回填（含「先读旧值再写新值」的顺序约束）。
+		const parentFork = computeForkContext(
+			host,
+			request,
+			effectiveSystemPrompt,
+			enabledTools,
 		);
 
 		// 构建模型选项（注入工具 + ForkContext）
@@ -2387,7 +1480,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				// 只靠 ① 的隐患：provider 对「tools 字段缺失」的行为未定义（有的忽略、
 				// 有的仍按上一轮缓存的工具面推理）；'none' 是 OpenAI/Anthropic 都明确
 				// 支持的语义，模型侧收到的是「禁止调用」而非「没有可调用的」。
-				toolChoice: _isWrapUpRound ? 'none' : undefined,
+				toolChoice: _gate.isWrapUpRound ? 'none' : undefined,
 				stop: request.options?.stop,
 				// 思考/推理配置：由聊天输入框 thinking UI 控件透传至此，
 				// 各 model provider 据此映射到原生 API 参数（thinking/thinkingConfig/reasoning_effort）。
@@ -2458,53 +1551,22 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			const _toolsSchemaAtRequest = estimateToolsSchemaTokens(enabledTools as ReadonlyArray<any>);
 
 			// ── [PromptBudget] 提示词预算表（P1，对齐 Hermes `prompt-size`）──────────
-			// promptOverhead 只回答「一共多大」；预算表回答「**谁**在吃 context」：
-			// 冻结前缀按 driver 登记的命名段归因、注入型 system 消息按来源分类、
-			// tools schema 按 toolset 聚合 + 列出最贵的几个工具。
-			// 节流：每 turn 首次必打 + 之后仅总量漂移 ≥15% 再打（见 shouldEmitBudgetReport），
-			// 避免每个 iteration 刷 10 行；刻意不挂配置开关。
-			try {
-				const _toolCost = groupToolSchemaCosts(enabledTools as ReadonlyArray<any>);
-				const _budget = buildPromptBudgetReport({
-					messages: messages as any,
-					messagesTokens: _estAtRequest,
-					frozenPrefixSegments: request.promptSegments,
-					toolGroups: _toolCost.groups,
-					toolCosts: _toolCost.costs,
-					contextWindow: compressionWindow,
-				});
-				if (shouldEmitBudgetReport(_budget.totalTokens, _lastPromptBudgetTotal)) {
-					const _note = _lastPromptBudgetTotal > 0
-						? `drift from ${_lastPromptBudgetTotal}`
-						: `turn baseline`;
-					host._logService.info(formatPromptBudgetLog(_budget, _note));
-					_lastPromptBudgetTotal = _budget.totalTokens;
-
-					// ── [ToolSchemaDiag] 关键引导文案是否真的送达模型（2026-08-22）──────
-					// 与预算表同频（每 turn 首次 + 显著漂移时），避免每轮刷屏。
-					// 用途：模型不遵守 description 时，先用这条排除「文案没进 schema /
-					// 被截断 / 工具被折叠成桥接」三种情形，再判定是「模型不听」。
-					// 此前只能靠 toolsSchemaTokens 差值间接推断（13509→13912），
-					// 既要人工换算、也定位不到具体哪个工具。
-					const _probes = probeToolGuidance(
-					enabledTools as ReadonlyArray<{ name?: string; description?: string }>,
-					// 审批关闭时 approvalShape 探针的引导段本就不下发（见
-					// compatibilityTools.shellApprovalGuidance），探针标 skipped 不算缺陷。
-					typeof host._isToolCallConfirmationEnabled === 'function'
-						? host._isToolCallConfirmationEnabled()
-						: true,
-				);
-					const _schemaDiag = formatToolSchemaDiagLog(_probes, (enabledTools as unknown[]).length, _toolsSchemaAtRequest);
-					if (_schemaDiag.level === 'warn') {
-						host._logService.warn(_schemaDiag.text);
-					} else {
-						host._logService.info(_schemaDiag.text);
-					}
-				}
-			} catch (budgetError) {
-				// 诊断失败绝不阻断请求
-				host._logService.warn('[PromptBudget] failed to build report:', budgetError);
-			}
+			// 实现已迁出至 parts/turnRequestDiagnostics.ts（纯日志，失败不阻断请求）。
+			emitPromptBudgetReport({
+				logService: host._logService,
+				messages,
+				messagesTokens: _estAtRequest,
+				toolsSchemaTokens: _toolsSchemaAtRequest,
+				frozenPrefixSegments: request.promptSegments,
+				contextWindow: compressionWindow,
+				enabledTools: enabledTools as ReadonlyArray<unknown>,
+				groupToolSchemaCosts: (tools) => groupToolSchemaCosts(tools as ReadonlyArray<any>),
+				lastPromptBudgetTotal: loopState.lastPromptBudgetTotal,
+				onReported: (totalTokens) => { loopState.lastPromptBudgetTotal = totalTokens; },
+				isToolCallConfirmationEnabled: typeof host._isToolCallConfirmationEnabled === 'function'
+					? host._isToolCallConfirmationEnabled()
+					: true,
+			});
 
 			// ─── [TagTrace] `<tag:id>` 伪标签溯源 · 请求侧扫描 ──────────────
 			// 二分定位的决定性切面：发给模型的请求里**是否已经存在**这类标签。
@@ -2514,43 +1576,22 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			//     只能靠提醒 + 剥离兜底。
 			// 两种成因治理方式完全不同，不分清就会一直治标。故此处逐条消息扫描并
 			// 报出**首次出现的位置与角色**，直接指向源头。
-			_tagTraceScanRequest(messages, iteration, host);
+			tagTraceScanRequest(messages, loopState.iteration, host);
 
 			host._logService.info(`[AgentOS] Calling modelProvider.chat(modelId=${selection.modelId}, messages=${messages.length}, tools=${enabledTools.length}) convId=${conversationId} reqId=${requestId} prevRespId=${previousResponseId ?? '(none/provider-managed)'}`);
 
 			// ─── 诊断：列出实际发送给 LLM 的所有工具名 ──────────────────
-			if (enabledTools.length > 0) {
-				const mcpToolsSent = enabledTools.filter((t: any) => t.category?.startsWith('mcp:'));
-				const builtinToolsSent = enabledTools.filter((t: any) => !t.category?.startsWith('mcp:'));
-				host._logService.info(
-					`[AgentOS] TOOLS SENT TO LLM: ${enabledTools.length} total\n` +
-					`  MCP tools (${mcpToolsSent.length}): [${mcpToolsSent.map((t: any) => t.name).join(', ')}]\n` +
-					`  Builtin tools (${builtinToolsSent.length}): [${builtinToolsSent.map((t: any) => t.name).join(', ')}]`
-				);
-				if (mcpToolsSent.length === 0) {
-					// 会话级一次性（2026-09-05，日志 1788591795446）：未配置/未连接 MCP 是
-					// 稳态而非逐轮异常，此前每 turn warn 一条（实测 23 条）——同会话只警告
-					// 一次，后续降级 info。
-					const sessKey = request.sessionId || request.agentId || 'unknown';
-					if (!_noMcpWarnedSessions.has(sessKey)) {
-						_noMcpWarnedSessions.add(sessKey);
-						// ★ 2026-09-07：旧文案「not connected or configured」把两种成因
-						// 混为一谈，实测误导（日志 1788767675940：comfy-mcp 已连接、
-						// 39 个工具已发现，实为被 agent 工具集裁掉，却被读成连不上）。
-						// 现按「连接层面是否检测到 MCP 服务器」分叉，两句的处置完全不同。
-						const stats = getLastMcpServerStats();
-						const reason = stats
-							? `MCP tools excluded by agent toolset — servers connected: [${stats.servers.join(', ')}] with ${stats.toolCount} tool(s) available but none enabled for this agent (add 'mcp:<server>' to the agent's tools, or enable the MCP toolset)`
-							: `MCP servers not connected or configured — no MCP tool was discovered in this session`;
-						host._logService.warn(`[AgentOS] ⚠ NO MCP TOOLS in API request — ${reason} (won't warn again this session; ${builtinToolsSent.length} builtin tools unaffected)`);
-					} else {
-						host._logService.info(`[AgentOS] NO MCP TOOLS in API request (session already warned once)`);
-					}
-				}
-			} else {
-				host._logService.warn(`[AgentOS] ⚠ NO TOOLS at all in API request!`);
-			}
-
+			// 实现（含「无 MCP 工具」的子代理/首次/后续三分叉）已迁出至
+			// parts/turnRequestDiagnostics.ts。
+			logToolsSentToLlm({
+				logService: host._logService,
+				enabledTools: enabledTools as ReadonlyArray<{ name?: string; category?: string }>,
+				isSubAgent: !!request.subAgent,
+				agentId: request.agentId,
+				sessionId: request.sessionId,
+				noMcpWarnedSessions: _noMcpWarnedSessions,
+				getLastMcpServerStats,
+			});
 			// 收集模型响应
 			let assistantContent = '';
 			let thinkingContent = '';
@@ -2589,6 +1630,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				// 无失配时保持等价，不改变正常流程）。
 				const _beforePairGuard = messages.length;
 				messages = ContextManager.sanitizeToolPairs(messages);
+				syncMessages();
 				if (messages.length !== _beforePairGuard) {
 					host._logService.warn(`[AgentOS] Tool-pair guard: dropped ${_beforePairGuard - messages.length} orphan/dangling tool message(s) before send (${_beforePairGuard} → ${messages.length})`);
 				}
@@ -2606,7 +1648,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						: -1;
 				host._logService.debug(
 					`[AgentOS][Diag] PRE-CHAT snapshot | ` +
-						`iter=${iteration} model=${selection.modelId} convId=${conversationId} reqId=${requestId} | ` +
+						`iter=${loopState.iteration} model=${selection.modelId} convId=${conversationId} reqId=${requestId} | ` +
 						`msgs=${messages.length} enabledTools=${enabledTools.length} | ` +
 						`estTokens=${_est} realPromptTokens=${_real} compressionWindow=${compressionWindow} | ` +
 						`pressure=${_pressure}/3 (${compressionWindow > 0 ? Math.round((_real || _est) / compressionWindow * 100) : 0}%) | ` +
@@ -2625,65 +1667,43 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			//     system 前缀缓存（fork 指纹基于首条 system + tools，不受末尾消息影响）
 			// 仅主代理注入：plan 子代理（explore）继承的是只读权限天花板，
 			// 不应收到「写计划文件 + plan_exit」的 5 阶段指令。
-			const messagesForLlm = (workState.mode === 'plan' && !request.subAgent)
-				? appendMessages(messages, { role: 'system', content: buildPlanSystemReminder(planFilePath) })
-				: messages;
-			const rawStream = modelProvider.chat(selection.modelId, messagesForLlm, modelOptions, context);
-				// 流式 idle 超时：模型静默挂起（无 delta 心跳超过阈值）时抛 TimeoutError，
-				// 由下方 catch 重新抛出并触发 _executeWithFallback 的备用模型切换（对齐 LangGraph TimeoutPolicy）。
-				// ─── 自适应首 token 超时（方案 B）────────────────────────────
-				// 固定 45s 对大 prompt 冷缓存请求过紧（实测 hy3-ioa 34k tokens TTFB 46.4s，
-				// 被误杀后 1.4s 网关实际正常返回）。prefill 耗时与 prompt 大小正相关，
-				// 按估算 token 数阶梯放宽（>16k 每 8k +15s，封顶 115s < HTTP 120s）。
-				// 取本轮粗估与上轮真实 prompt_tokens 的较大者，避免粗估低估导致宽限不足。
-				const _estPromptTok = Math.max(
-					host._estimateMessagesTokens(messages),
-					runState.lastRealPromptTokens ?? 0,
-				);
-				const _baseFirstTok = host._modelStreamTimeoutPolicy.firstTokenTimeout ?? 45_000;
-				const _adaptiveFirstTok = computeAdaptiveFirstTokenTimeout(_estPromptTok, _baseFirstTok);
-				const _callTimeoutPolicy = _adaptiveFirstTok !== _baseFirstTok
-					? { ...host._modelStreamTimeoutPolicy, firstTokenTimeout: _adaptiveFirstTok }
-					: host._modelStreamTimeoutPolicy;
-				if (_adaptiveFirstTok !== _baseFirstTok) {
-					host._logService.info(
-						`[AgentOS] Adaptive first-token timeout: ${_baseFirstTok}ms → ${_adaptiveFirstTok}ms (estPromptTokens=${_estPromptTok})`,
-					);
-				}
-				const stream = withStreamTimeout(rawStream, _callTimeoutPolicy, {
-					signal: host._loopAbortController?.signal,
-					log: (lvl, msg) => {
-						if (lvl === 'error') { host._logService.error(msg); }
-						else if (lvl === 'warn') { host._logService.warn(msg); }
-						else { host._logService.info(msg); }
-					},
-				});
-				let _firstDeltaReceived = false;
-				// ─── 诊断：per-delta 类型追踪 + heartbeat ─────────────────────
-				// 区分 text/reasoning/tool_call/usage/done 等 delta 类型并分别计数，
-				// 追踪"上一次文本 delta 距今多久"（流式 idle 监测），
-				// 定期 heartbeat 帮助事后还原"中断时刻"的流进度。
-				let _totalDeltas = 0;
-				let _textDeltas = 0;
-				let _textBytes = 0;
-				let _reasoningDeltas = 0;
-				let _reasoningBytes = 0;
-				let _toolCallDeltas = 0;
-				let _usageDeltas = 0;
-				let _otherDeltas = 0;
-				let _lastTextDeltaAt = 0;
-				let _lastReasoningDeltaAt = 0;
-				let _lastDeltaType = '';
-				let _lastHeartbeatAt = Date.now();
-				const _heartbeatMs = 5000;
-				// ── 诊断：per-delta 时间线（定位"46s 空窗"类问题）─────────────────
-				// 记录每个 delta 的时间戳 + 类型 + 内容预览，用于事后还原流的节奏。
-				// 完整记录（不截断数量），仅在 stream-end 时输出，避免逐 delta 打日志。
-				const _deltaTimeline: string[] = [];
-				let _prevDeltaAt = 0;
-				for await (const delta of stream) {
-					_totalDeltas++;
-					_lastDeltaType = String(delta.type ?? 'unknown');
+			const { stream } = buildTurnLlmStream({
+				host,
+				modelProvider,
+				selection,
+				modelOptions,
+				context,
+				isSubAgent: !!request.subAgent,
+				workMode: runState.work.mode,
+				planFilePath,
+				messages: () => messages,
+				lastRealPromptTokens: runState.lastRealPromptTokens,
+			});
+			let _firstDeltaReceived = false;
+			// ─── 诊断：per-delta 类型追踪 + heartbeat ─────────────────────
+			// 区分 text/reasoning/tool_call/usage/done 等 delta 类型并分别计数，
+			// 追踪"上一次文本 delta 距今多久"（流式 idle 监测），
+			// 定期 heartbeat 帮助事后还原"中断时刻"的流进度。
+			let _totalDeltas = 0;
+			let _textDeltas = 0;
+			let _textBytes = 0;
+			let _reasoningDeltas = 0;
+			let _reasoningBytes = 0;
+			let _toolCallDeltas = 0;
+			let _usageDeltas = 0;
+			let _otherDeltas = 0;
+			let _lastTextDeltaAt = 0;
+			let _lastReasoningDeltaAt = 0;
+			let _lastDeltaType = '';
+			let _lastHeartbeatAt = Date.now();
+			const _heartbeatMs = 5000;
+			// ── 诊断：per-delta 时间线（定位"46s 空窗"类问题）─────────────────
+			// 记录每个 delta 的时间戳 + 类型 + 内容预览，用于事后还原流的节奏。
+			// 完整记录（不截断数量），仅在 stream-end 时输出，避免逐 delta 打日志。
+			const _deltaTimeline: string[] = [];
+			let _prevDeltaAt = 0;
+			for await (const delta of stream as AsyncIterable<IModelDelta>) {
+					_lastDeltaType = classifyTurnDelta(delta);
 					const _deltaAt = Date.now();
 					// ── GAP 检测：>10s 的 delta 间空窗（定位"模型在等什么"）──
 					if (_prevDeltaAt > 0 && _deltaAt - _prevDeltaAt > 10_000) {
@@ -2705,7 +1725,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						// `textLen=0, toolCalls=0`，用户侧只看到"发消息完全没反应"，而日志里
 						// 只有一个光秃秃的 `type=error`，没有任何原因，排查只能靠模型 A/B 对比。
 						// 故此处必须把 error 内容完整落盘（截断以防超大 payload）。
-						if (delta.type === 'error') {
+						if (isErrorDelta(delta)) {
 							let _errDump = '';
 							try {
 								_errDump = JSON.stringify(delta).slice(0, 1000);
@@ -2722,13 +1742,13 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					{
 						const _elapsed = _deltaAt - t0_modelCall;
 						let _preview = '';
-						if (delta.type === 'text' && delta.content) {
+						if (isTextDelta(delta)) {
 							_preview = `"${String(delta.content).slice(0, 80)}"`;
-						} else if (delta.type === 'thinking' && (delta as any).content) {
-							_preview = `"${String((delta as any).content).slice(0, 80)}"`;
-						} else if (delta.type === 'tool_call' && delta.toolCall) {
+						} else if (isThinkingDelta(delta)) {
+							_preview = `"${String(delta.content).slice(0, 80)}"`;
+						} else if (isToolCallDelta(delta)) {
 							_preview = `name=${delta.toolCall.name ?? '(cont)'}`;
-						} else if (delta.type === 'usage' && delta.usage) {
+						} else if (isUsageDelta(delta)) {
 							const u = delta.usage;
 							_preview = `in=${u.inputTokens ?? 0} out=${u.outputTokens ?? 0} cached=${u.cachedTokens ?? 0}`;
 							_lastUsageDelta = u; // 保留供 POST-CHAT 输出
@@ -2741,7 +1761,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 								`textSoFar=${_textDeltas}(${_textBytes}B) reasoningSoFar=${_reasoningDeltas}(${_reasoningBytes}B) | ` +
 								`elapsed=${Math.round(_elapsed / 1000)}s`
 							);
-						} else if (delta.type === 'done') {
+						} else if (isDoneWithFinishReason(delta)) {
 							_preview = `finishReason=${delta.finishReason ?? '(none)'}`;
 							// ── 关键诊断：done delta 到达时立即记录 finishReason ──
 						host._logService.debug(
@@ -2754,17 +1774,17 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					}
 					// 按 delta 类型分类计数 + 时间戳
 					// IChatStreamDelta.type 联合：'text' | 'thinking' | 'tool_call' | 'usage' | 'error' | 'done'
-					if (delta.type === 'text' && delta.content) {
+					if (isTextDelta(delta)) {
 						_textDeltas++;
 						_textBytes += (delta.content as string).length;
 						_lastTextDeltaAt = Date.now();
-					} else if (delta.type === 'thinking' && (delta as any).content) {
+					} else if (isThinkingDelta(delta)) {
 						_reasoningDeltas++;
-						_reasoningBytes += String((delta as any).content).length;
+						_reasoningBytes += String(delta.content).length;
 						_lastReasoningDeltaAt = Date.now();
-					} else if (delta.type === 'tool_call') {
+					} else if (isToolCallDelta(delta)) {
 						_toolCallDeltas++;
-					} else if (delta.type === 'usage') {
+					} else if (isUsageDelta(delta)) {
 						_usageDeltas++;
 					} else {
 						_otherDeltas++;
@@ -2797,7 +1817,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					// ─── P1: 截获真实 prompt token，供下一轮 compressContext 优先判定 ──
 					// 完整 prompt = inputTokens + 缓存读 + 缓存写（缓存 token 同样占窗口）。
 					// 捕获后同步写入实例字段，跨 turn 持久化；下一轮 L1390 直接读取。
-					if (delta.type === 'usage' && delta.usage) {
+					if (isUsageDelta(delta)) {
 						const u = delta.usage;
 						// 真实 prompt token 口径归一（2026-08-17，日志 1786981850420）：
 						// OpenAI / DeepSeek 语义下 `prompt_tokens` 已是**完整输入量**，
@@ -2877,14 +1897,14 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					// 收集完整的助手消息数据
 					// ─── 捕获 provider 本轮结束原因（finish_reason / stop_reason）──
 					// 供后续"未完成轮"结构判定（对齐 OpenClaw，无文本意图识别）。
-					if (delta.type === 'done' && delta.finishReason) {
+					if (isDoneWithFinishReason(delta)) {
 						lastFinishReason = delta.finishReason;
 					}
-					if (delta.type === 'text' && delta.content) {
+					if (isTextDelta(delta)) {
 						_assistantChunks.push(delta.content);
-					} else if (delta.type === 'thinking' && delta.content) {
+					} else if (isThinkingDelta(delta)) {
 						_thinkingChunks.push(delta.content);
-					} else if (delta.type === 'tool_call' && delta.toolCall) {
+					} else if (isToolCallDelta(delta)) {
 						const tc = delta.toolCall;
 						if (tc.name) {
 							// New tool call (first chunk) — finalize previous if any
@@ -2944,8 +1964,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						// 故这里必须同时接受字符串与对象（对象则序列化后下发）。
 						if (
 							(adapted as any).type === 'tool_start' &&
-							delta.type === 'tool_call' &&
-							delta.toolCall &&
+							isToolCallDelta(delta) &&
 							delta.toolCall.name
 						) {
 							const _rawArgs = delta.toolCall.arguments;
@@ -3005,95 +2024,22 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					}
 				}
 			} catch (error) {
-				// 模型调用失败：显式置 phase=error（进 runState，供异常路径 checkpoint 读取）
-				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'error' });
-				// ── 维度 3：瞬态错误重试（对齐 MiMo persistentRetrySchedule）────────
-				// SSE 超时 / 网络中断 / HTTP 429/5xx 等瞬态错误用指数退避重试，
-				// 避免 1 次瞬时抖动就中止整轮对话。TimeoutError 仍向上抛（触发 fallback 模型切换）。
-				const isTimeout = error instanceof DOMException && error.name === 'TimeoutError';
-				if (!isTimeout && isTransientStreamError(error) && transientErrorRetries < TRANSIENT_ERROR_MAX_RETRIES) {
-					transientErrorRetries++;
-					const delay = Math.min(
-						TRANSIENT_ERROR_BASE_DELAY_MS * Math.pow(TRANSIENT_ERROR_BACKOFF_FACTOR, transientErrorRetries - 1),
-						TRANSIENT_ERROR_MAX_DELAY_MS
-					);
-					host._logService.warn(
-						`[AgentOS] Transient stream error on iteration ${iteration}, ` +
-						`retrying in ${delay}ms (attempt ${transientErrorRetries}/${TRANSIENT_ERROR_MAX_RETRIES}): ` +
-						`${error instanceof Error ? error.message : String(error)}`
-					);
-					await new Promise(r => setTimeout(r, delay));
-					continue;  // 回到 while loop 重试
-				}
-				// ── P0-1: 上下文溢出反应式压缩 + 自动重试（对齐 Hermes/OpenClaw）────
-				// HTTP 400 code 11133 / invalid_parameter_value / context_length_exceeded 等
-				// 溢出错误：先强制压缩当前消息，再用压缩产物重发一次，而非直接结束 turn。
-				// 触发前提：非 timeout、确认为溢出错误、且本次 turn 尚未做过溢出压缩。
-				// 压缩后 messages 更新为紧凑产物；若重试仍失败，第二次落入 error 分支正常结束。
-				if (
-					!isTimeout &&
-					isContextOverflowError(error) &&
-					!overflowCompressionDone
-				) {
-					overflowCompressionDone = true;
-					// 剥离最后一条失败的 assistant 消息（对齐 OpenClaw removeLastAssistantMessage），
-					// 避免把「触发 400 的悬空 tool_calls」留在压缩输入里再次污染。
-					if (messages.length > 0) {
-						const last = messages[messages.length - 1];
-						if (last && (last as any).role === 'assistant' && Array.isArray((last as any).toolCalls) && (last as any).toolCalls.length > 0) {
-							messages = messages.slice(0, -1) as typeof messages;
-							host._logService.warn(
-								`[AgentOS] Overflow recovery: dropped trailing assistant tool_calls message before re-compression`
-							);
-						}
-					}
-					// 强制压缩（force=true）：绕过 token 阈值/消息数下限/冷却/防抖判定，
-					// 因为溢出 400 时服务端 maxInputTokens 可能小于本地 window×0.3，
-					// 常规触发判定会误判为 below_token_threshold 而 skip。
-					host._logService.warn(
-						`[AgentOS] Context overflow detected (${error instanceof Error ? error.message.slice(0, 160) : String(error)}) — ` +
-						`force-compressing + retry (overflowCompressionDone=${overflowCompressionDone})`
-					);
-					yield* _compressContextIfNeeded(true);
+				const _catchDisposition = yield* handleTurnStreamError(error, {
+					host,
+					request,
+					loopState,
+					messages: () => messages,
+					setMessages: next => { messages = next; },
+					syncMessages,
+					retry,
+					patchRetry,
+					compressContext: _compressContextIfNeeded,
+					startedToolIds,
+					endedToolIds,
+					setPhaseError: () => { runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'error' }); },
+				});
+				if (_catchDisposition.kind === 'retry') {
 					continue;
-				}
-				host._logService.error(`[AgentOS] Model call failed on iteration ${iteration}:`, error);
-				// ── 首 token 超时（冷启动）有界重试（预热优化）──────────────
-				// 网关/模型实例冷启动时 TTFT 可远超预期 prefill（实测 hy3-ioa 冷启动 TTFT≈86s
-				// 被首 token 预算误杀，但流最终会在 86s 正常返回）。第一次请求本身就把网关
-				// "预热"，重试通常立即恢复（见 agentModelAccess 恢复提示「网关预热后通常立即恢复」）。
-				// 仅对「首 token 前」超时重试（idle 超时=中途静默挂起，重试无意义），有界 1 次，
-				// 用尽后仍向上抛触发 _executeWithFallback 切换备用模型（保持既有 fallback 行为）。
-				const isFirstTokenTimeout = isTimeout && /first-token/.test(error.message ?? '');
-				if (isFirstTokenTimeout && firstTokenTimeoutRetries < FIRST_TOKEN_TIMEOUT_MAX_RETRIES) {
-					firstTokenTimeoutRetries++;
-					host._logService.warn(
-						`[AgentOS] First-token timeout (cold-start?) on iteration ${iteration}, ` +
-						`retrying same model (attempt ${firstTokenTimeoutRetries}/${FIRST_TOKEN_TIMEOUT_MAX_RETRIES}) — ` +
-						`gateway usually warms up after first request: ${error instanceof Error ? error.message : String(error)}`
-					);
-					await new Promise(r => setTimeout(r, FIRST_TOKEN_TIMEOUT_RETRY_DELAY_MS));
-					continue;
-				}
-				// 流式 idle 超时（模型静默挂起）：作为硬失败向上抛出，
-				// 经由 runAgentLoop → _executeWithFallback 切换到备用模型（对齐 LangGraph TimeoutPolicy）。
-				if (isTimeout) {
-					throw error;
-				}
-				// 如果是第一次迭代失败，尝试 fallback
-				if (iteration === 1) {
-					yield { type: 'error', content: `Model call failed: ${error instanceof Error ? error.message : String(error)}` };
-				}
-				// Reconcile any tool_start that was emitted during streaming before
-				// the model call failed — webview must not be left with spinners.
-				for (const orphanId of startedToolIds) {
-					if (!endedToolIds.has(orphanId)) {
-						host._logService.warn(`[AgentOS] Orphaned tool_start after model error: ${orphanId} — emitting synthetic tool_result + tool_end`);
-						const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ error: 'Model call failed before tool could execute' })));
-						yield { type: 'tool_result', content: orphanResultStr, toolCallId: orphanId };
-						yield { type: 'tool_end', toolCallId: orphanId, success: false };
-						endedToolIds.add(orphanId);
-					}
 				}
 				break;
 			}
@@ -3122,7 +2068,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				const _respHits = locateTaggedIdXmlTags(assistantContent, 3);
 				if (_respHits.length > 0) {
 					host._logService.warn(
-						`[AgentOS][TagTrace] RESPONSE-SIDE tags iter=${iteration} textLen=${assistantContent.length} ` +
+						`[AgentOS][TagTrace] RESPONSE-SIDE tags iter=${loopState.iteration} textLen=${assistantContent.length} ` +
 						`toolsSent=${enabledTools.length} finishReason=${lastFinishReason ?? 'n/a'} ` +
 						`hits=[${_respHits.map(h => `${h.tag}:${h.id}@${h.index}`).join(', ')}] ` +
 						`snippet=${JSON.stringify(_respHits[0].snippet).slice(0, 240)}`
@@ -3140,7 +2086,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					: -1;
 				host._logService.warn(
 					`[AgentOS] Model returned empty response — no text and no tool calls. ` +
-					`Snapshot: iter=${iteration} msgs=${messages.length} estTokens=${_est} ` +
+					`Snapshot: iter=${loopState.iteration} msgs=${messages.length} estTokens=${_est} ` +
 					`realPromptTokens=${_real} compressionWindow=${compressionWindow} ` +
 					`pressure=${_pressure}/3 (${compressionWindow > 0 ? Math.round((_real || _est) / compressionWindow * 100) : 0}%) ` +
 					`lastCompressionAt=${_sinceCompress >= 0 ? _sinceCompress + 's ago' : 'never'} ` +
@@ -3164,7 +2110,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				// ─── 无论提取是否成功，都必须 sanitize ──────────────────────
 				// 日志 1788016519843 实证：白名单守卫（待办 2）阻止了提取（extracted=[]），
 				// 但也**连带跳过了整个 sanitize 分支**（3043-3057），导致含伪 XML 标签的
-				// 文本原封不动进入 UI 显示路径 —— 用户在聊天框中直接看到 `<tool_calls:6124c78e>` 等。
+				// 文本原封不动进入 UI 显示路径 —— 用户在聊天框中直接看到 `<tool_calls:HEXID>` 等。
 				// 故 sanitize 必须无条件执行，与提取结果解耦。
 				const hasXmlShape = /<\s*(?:tool_calls?|function_calls?|tool_use|invoke|tool|arg_key|arg_value|parameter|tool_sep)\b[^>]*>/i.test(assistantContent)
 					|| locateTaggedIdXmlTags(assistantContent, 1).length > 0;
@@ -3320,7 +2266,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				? `extracted(${effectiveToolCalls.length})`
 				: 'none';
 		host._logService.info(
-			`[AgentOS][Diag] iter=${iteration} toolSource=${_toolSource} ` +
+			`[AgentOS][Diag] iter=${loopState.iteration} toolSource=${_toolSource} ` +
 			`native=${assistantToolCalls.length} extracted=${effectiveToolCalls.length - (assistantToolCalls.length > 0 ? 0 : effectiveToolCalls.length)} ` +
 			`final=${effectiveToolCalls.length} names=[${effectiveToolCalls.map((tc: any) => tc.name).join(',')}]`,
 		);
@@ -3355,12 +2301,15 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			effectiveToolCalls = effectiveToolCalls.filter(tc => tc.name !== TRANSFER_TO_AGENT_TOOL);
 		}
 
-		// ─── 策略钩子接线：interceptToolCall（观测语义）─────────────────────
-		// 原休眠钩子：策略在此追踪每个工具调用 —— HermesReAct 用它做委托记账
+		// ─── 策略钩子接线：interceptToolCall（纯观测）───────────────────────
+		// 策略在此追踪每个即将执行的工具调用 —— HermesReAct 用它做委托记账
 		// （_delegationRound → 循环末 refund）与探索调用计数（超阈值注入强制
-		// 委托提醒）。当前仅支持观测语义（handled=false），返回值不消费；
-		// 若未来需要"策略消费工具调用"（handled=true / terminate），需在此
-		// 补齐 tool 消息回填后再跳过执行，避免历史中留下孤儿 tool_call。
+		// 委托提醒）。钩子返回 void：策略**不能**消费或阻断调用。
+		//
+		// 契约曾是 `InterceptResult { handled, terminate }`，2026-09-17 收窄为
+		// void。`handled: true` 跳过执行器就没有 tool 消息回填，历史里会留下
+		// 孤儿 tool_call_id，下一轮请求即协议错误；要阻断工具请用
+		// `prepareIteration` 在调用生成**之前**收窄工具面。
 		if (strategy?.interceptToolCall && effectiveToolCalls.length > 0) {
 			for (const tc of effectiveToolCalls) {
 				let parsedArgs: any;
@@ -3370,8 +2319,8 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				yield* strategy.interceptToolCall({
 					host, request, chatMode: String(chatOnly), modelProvider,
 					modelId: selection?.modelId ?? '', selection,
-					messages, signal: turnAbortSignal, budget, workState,
-					toolDefs: enabledTools, iteration,
+					messages, signal: turnAbortSignal, budget, workState: runState.work,
+					toolDefs: enabledTools, iteration: loopState.iteration,
 				}, { name: tc.name, args: parsedArgs });
 			}
 		}
@@ -3382,13 +2331,13 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			// （即用户看到的"发送空消息给 llm"）。纯空白且无工具调用时不入历史。
 			const trimmedAssistantContent = assistantContent.trim();
 			// ─── [DIAG] assistant 文本诊断（定位 XML 泄漏 / 纯文本无工具调用 / 提取失败）──
-			// 截图显示 iteration 12 出现 <tool_calls:6124c78e> 等伪 XML 标签但日志中完全无痕迹，
+			// 截图显示 iteration 12 出现 `<tool_calls:HEXID>` 等伪 XML 标签但日志中完全无痕迹，
 			// 说明此前日志粒度不够：没有记录 assistant 原始文本、XML 检测结果、提取器输出。
 			const _diagTextPreview = trimmedAssistantContent.length > 120
 				? trimmedAssistantContent.slice(0, 60) + '…[' + trimmedAssistantContent.length + 'c]…' + trimmedAssistantContent.slice(-40)
 				: trimmedAssistantContent;
 			host._logService.info(
-				`[AgentOS][Diag] iter=${iteration} assistant textLen=${trimmedAssistantContent.length} ` +
+				`[AgentOS][Diag] iter=${loopState.iteration} assistant textLen=${trimmedAssistantContent.length} ` +
 				`toolCalls=${effectiveToolCalls.length} preview=${JSON.stringify(_diagTextPreview).slice(0, 200)}`,
 			);
 			// ─── XML 文本工具调用泄漏判定 ──────────────────────────────────────
@@ -3400,8 +2349,8 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			const xmlToolLeak = effectiveToolCalls.length === 0 && detectXmlToolCallLeak(trimmedAssistantContent);
 			if (xmlToolLeak) {
 				host._logService.warn(
-					`[AgentOS][Diag] ⚠ XML-TOOL-LEAK detected iter=${iteration} ` +
-					`textLen=${trimmedAssistantContent.length} attempt=${_xmlToolLeakAttempts}/${XML_TOOL_LEAK_RETRY_LIMIT} ` +
+					`[AgentOS][Diag] ⚠ XML-TOOL-LEAK detected iter=${loopState.iteration} ` +
+					`textLen=${trimmedAssistantContent.length} attempt=${loopState.xmlToolLeakAttempts}/${XML_TOOL_LEAK_RETRY_LIMIT} ` +
 					`preview=${JSON.stringify(_diagTextPreview).slice(0, 200)}`,
 				);
 			}
@@ -3422,6 +2371,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					assistantMessage.toolCalls = effectiveToolCalls;
 				}
 				messages = appendMessages(messages, assistantMessage);
+				syncMessages();
 
 				// ─── Hermes-style 消息边界事件（治本根因修复）─────────────────
 				// 把"本 iteration 的 assistant 边界"显式告知下游持久化层，让 chatService
@@ -3432,7 +2382,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					type: 'assistant_turn' as any,
 					content: trimmedAssistantContent,
 					metadata: {
-						turnIndex: iteration,
+						turnIndex: loopState.iteration,
 						toolCallIds: effectiveToolCalls.map((tc: any) => tc.id),
 					},
 				};
@@ -3447,17 +2397,18 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				//   上限内 —— 丢弃泄漏文本（已在上方跳过入库）+ 注入纠正指令 + 续跑纠正；
 				//   超限   —— 说明该模型不会用 native function call，交回常规 incomplete-turn 收尾。
 				if (xmlToolLeak) {
-					if (_xmlToolLeakAttempts < XML_TOOL_LEAK_RETRY_LIMIT) {
-						_xmlToolLeakAttempts++;
+					if (loopState.xmlToolLeakAttempts < XML_TOOL_LEAK_RETRY_LIMIT) {
+						loopState.xmlToolLeakAttempts++;
 						host._logService.warn(
 							`[AgentOS] ⚠ XML-TOOL-LEAK: model emitted tool call as XML text, which is NOT executed ` +
-							`(attempt=${_xmlToolLeakAttempts}/${XML_TOOL_LEAK_RETRY_LIMIT}, textLen=${trimmedAssistantContent.length}) — ` +
+							`(attempt=${loopState.xmlToolLeakAttempts}/${XML_TOOL_LEAK_RETRY_LIMIT}, textLen=${trimmedAssistantContent.length}) — ` +
 							`discarding leaked text and instructing native function call`,
 						);
 						// 通知 UI 清掉已流式渲染出的泄漏文本（webview 收到后清空 buffer）
 						yield { type: 'discard_prior_text', metadata: { reason: 'xml-tool-call-leak' } };
 						// 注入纠正指令作为下一轮 user 边界
 						messages = appendMessages(messages, { role: 'user', content: xmlToolCallLeakReminder() });
+						syncMessages();
 						continue;
 					}
 					host._logService.warn(
@@ -3478,28 +2429,43 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				// 超限则丢弃空/幻觉文本后正常结束。有可见文本（正常终轮）不触发。
 				const hasVisibleText = trimmedAssistantContent.length > 0;
 				const hasThinking = !!thinkingContent && thinkingContent.trim().length > 0;
-				const incompleteKind = classifyIncompleteTurn({
+				let incompleteKind = classifyIncompleteTurn({
 					finishReason: lastFinishReason,
 					hasVisibleText,
 					hasThinking,
 					hasToolCalls: false,
 				});
+				// ─── 尾部结构截断补位（2026-09-18，用户报「llm 显示的信息尾部被截断」）──
+				// `finishReason=stop` 也可能是**上游提前收尾**：模型写到一半就停，provider 却报
+				// stop（实证：文本停在 `## 剩`、outputTokens=345 远低于上限，provider SSE 抓包
+				// 确认 stop 紧跟最后一个内容块）⇒ `classifyIncompleteTurn` 只能判 complete，
+				// 用户看到半句话而我方不做任何动作。此处用**结构**判据补位（不读语义，
+				// 与 XML 泄漏检测同姿态：都在 classifyIncompleteTurn 之外、之前/之后补）。
+				let _tailTruncation: string | null = null;
+				if (incompleteKind === 'complete' && hasVisibleText) {
+					_tailTruncation = detectTruncatedTail(trimmedAssistantContent);
+					if (_tailTruncation) { incompleteKind = 'truncated-text'; }
+				}
 				const used =
-					incompleteKind === 'reasoning-only' ? reasoningOnlyRetryAttempts
-						: incompleteKind === 'length' ? lengthTruncatedRetryAttempts
-							: incompleteKind === 'tool-call-lost' ? toolCallLostRetryAttempts
-								: emptyResponseRetryAttempts;
+					incompleteKind === 'reasoning-only' ? retry().reasoningOnly
+						: incompleteKind === 'length' ? retry().lengthTruncated
+							: incompleteKind === 'truncated-text' ? retry().truncatedText
+								: incompleteKind === 'tool-call-lost' ? retry().toolCallLost
+									: retry().emptyResponse;
 				// 维度 2+4：按 attempt 获取升级阶梯指令（L1 soft remind / L2 final chance）
 				const retryInstruction = resolveIncompleteTurnRetryInstruction(incompleteKind, used + 1);
 				if (retryInstruction && incompleteKind !== 'complete') {
 					const limit = incompleteTurnRetryLimit(incompleteKind);
 					if (used < limit) {
-							if (incompleteKind === 'reasoning-only') { reasoningOnlyRetryAttempts++; }
-						else if (incompleteKind === 'length') { lengthTruncatedRetryAttempts++; }
-						else if (incompleteKind === 'tool-call-lost') { toolCallLostRetryAttempts++; }
-						else { emptyResponseRetryAttempts++; }
+							if (incompleteKind === 'reasoning-only') { patchRetry({ reasoningOnly: retry().reasoningOnly + 1 }); }
+						else if (incompleteKind === 'length') { patchRetry({ lengthTruncated: retry().lengthTruncated + 1 }); }
+						else if (incompleteKind === 'truncated-text') { patchRetry({ truncatedText: retry().truncatedText + 1 }); }
+						else if (incompleteKind === 'tool-call-lost') { patchRetry({ toolCallLost: retry().toolCallLost + 1 }); }
+						else { patchRetry({ emptyResponse: retry().emptyResponse + 1 }); }
 						host._logService.warn(
-							`[AgentOS] Incomplete turn detected (kind=${incompleteKind}, finishReason=${lastFinishReason ?? 'n/a'}, attempt=${used + 1}/${limit}) — safe retry`,
+							`[AgentOS] Incomplete turn detected (kind=${incompleteKind}, finishReason=${lastFinishReason ?? 'n/a'}, attempt=${used + 1}/${limit}` +
+							`${_tailTruncation ? `, tailTruncation=${_tailTruncation}` : ''}` +
+							`${hasVisibleText ? `, partialTextLen=${trimmedAssistantContent.length} (kept, not discarded)` : ''}) — safe retry`,
 						);
 						if (incompleteKind === 'tool-call-lost') {
 							// 协议层缺陷信号：模型声明发了工具调用但一个都没送达。
@@ -3523,8 +2489,14 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 								`in the provider→renderer mapping — check codebuddy-provider SSE delta handling.`,
 							);
 						}
-						// 丢弃本轮空/幻觉文本，避免污染历史（对齐 discard_prior_text 基础设施）
-						yield { type: 'discard_prior_text', metadata: { reason: incompleteTurnDiscardReason(incompleteKind) } };
+						// 丢弃本轮空/幻觉文本，避免污染历史（对齐 discard_prior_text 基础设施）。
+						// ⚠ `incompleteTurnDiscardReason` 对 `length` / `truncated-text` 返回
+						// undefined = **刻意保留**（半截文本是有效产物；丢弃会让模型重写整段、
+						// 并把用户眼前已显示的内容清空）。见该函数注释。
+						const _discardRetry = incompleteTurnDiscardReason(incompleteKind);
+						if (_discardRetry) {
+							yield { type: 'discard_prior_text', metadata: { reason: _discardRetry } };
+						}
 						// ─── 上下文压力 >90% 时空回复 → 冷却旁路，强制下轮压缩 ───
 						// fetch failed / HTTP 400 导致 empty response 时，超大 prompt(>90% window)
 						// 会被 cooldown 锁住无法压缩。重复用相同过大 prompt 重试必再次失败。
@@ -3535,10 +2507,10 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							if (compressionWindow > 0 && effectiveTokens > compressionWindow * 0.9) {
 								const cooldownMs = host._lastCompressionTime > 0
 									? Date.now() - host._lastCompressionTime : Infinity;
-								if (cooldownMs < host.constructor.COMPRESSION_COOLDOWN_MS) {
+								if (cooldownMs < COMPRESSION_COOLDOWN_MS) {
 									host._logService.warn(
 										`[AgentOS] Incomplete turn + high pressure (${Math.round(effectiveTokens / compressionWindow * 100)}%): ` +
-										`bypassing compression cooldown (${Math.round(cooldownMs / 1000)}s elapsed, needed ${host.constructor.COMPRESSION_COOLDOWN_MS / 1000}s)`
+										`bypassing compression cooldown (${Math.round(cooldownMs / 1000)}s elapsed, needed ${COMPRESSION_COOLDOWN_MS / 1000}s)`
 									);
 									host._lastCompressionTime = 0;
 								}
@@ -3546,6 +2518,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						}
 						// 注入续跑指令作为下一轮 user 边界，让模型产出可见答案 / 真正动手
 						messages = appendMessages(messages, { role: 'user', content: retryInstruction });
+						syncMessages();
 						continue;
 					}
 					host._logService.warn(
@@ -3556,8 +2529,13 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						// 透传给 executeAgentTurn 的 finally —— 抑制「✅ 任务执行完毕」成功通知，
 						// 避免对无有效产出的 turn 误报完成。
 						if (request.turnOutcome) { request.turnOutcome.incompleteExhausted = true; }
-						// 超限：丢弃空/幻觉文本后正常结束，避免把污染内容喂回模型
-					yield { type: 'discard_prior_text', metadata: { reason: incompleteTurnDiscardReason(incompleteKind) } };
+						// 超限：丢弃空/幻觉文本后正常结束，避免把污染内容喂回模型。
+						// ⚠ 同上一分支：`length` / `truncated-text` 返回 undefined ⇒ 保留半截文本，
+						// 只补一条可见说明（下面的 notice），用户至少能看到「为什么这里是半句」。
+						const _discardExhausted = incompleteTurnDiscardReason(incompleteKind);
+						if (_discardExhausted) {
+							yield { type: 'discard_prior_text', metadata: { reason: _discardExhausted } };
+						}
 					// 2026-08-29（日志 1787969405928）：重试用尽后此前是**完全静默**地结束 ——
 					// UI 只剩一个空的 assistant 气泡，用户主观感受就是「发消息没反应 / 卡住」。
 					// 实测事故：模型 hy4-dev 不在网关 allow-list，首个 delta 即 type=error，
@@ -3582,14 +2560,15 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				if (
 					incompleteKind === 'complete' &&
 					hasVisibleText &&
-					emptyResponseRetryAttempts > 0 &&
-					emptyResponseRetryAttempts < incompleteTurnRetryLimit('empty')
+					retry().emptyResponse > 0 &&
+					retry().emptyResponse < incompleteTurnRetryLimit('empty')
 				) {
-					emptyResponseRetryAttempts++;
+					patchRetry({ emptyResponse: retry().emptyResponse + 1 });
 					host._logService.warn(
-						`[AgentOS] Text-without-tools in retry context (emptyRetryAtt=${emptyResponseRetryAttempts}/${incompleteTurnRetryLimit('empty')}, textLen=${trimmedAssistantContent.length}) — injecting tool-action reminder`,
+						`[AgentOS] Text-without-tools in retry context (emptyRetryAtt=${retry().emptyResponse}/${incompleteTurnRetryLimit('empty')}, textLen=${trimmedAssistantContent.length}) — injecting tool-action reminder`,
 					);
 					messages = appendMessages(messages, { role: 'user', content: textWithoutToolsReminder() });
+					syncMessages();
 					continue;
 				}
 
@@ -3630,6 +2609,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						synthetic: true,
 						sidecar: 'reflection',
 					});
+					syncMessages();
 					continue; // 进入反思迭代
 				}
 
@@ -3645,6 +2625,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					synthetic: true,
 					sidecar: 'plan',
 				});
+				syncMessages();
 				continue;
 			}
 
@@ -3656,12 +2637,13 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					const term = await strategy.beforeTerminate({
 					host, request, chatMode: String(chatOnly), modelProvider,
 					modelId: selection?.modelId ?? '', selection,
-					messages, signal: turnAbortSignal, budget, workState,
-					toolDefs: enabledTools, iteration, trivialRequest,
+					messages, signal: turnAbortSignal, budget, workState: runState.work,
+					toolDefs: enabledTools, iteration: loopState.iteration, trivialRequest,
 				}, budget);
 					if (!term.allow && term.nudgeMessage) {
 						host._logService.info('[AgentOS] beforeTerminate veto: injecting reentry nudge and continuing');
 						messages = appendMessages(messages, { role: 'user', content: term.nudgeMessage, synthetic: true, sidecar: 'nudge' });
+						syncMessages();
 						continue;
 					}
 				} catch (gateErr) {
@@ -3726,6 +2708,49 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			? []
 			: effectiveToolCalls.filter(tc => tc.serverExecuted !== true);
 
+			// ─── 输出上限截断保护（2026-09-17 接线）─────────────────────────
+			// assistant 消息撞输出 token 上限（finishReason=length/max_tokens）时仍可能
+			// 带出工具调用：流式参数由「尽力而为」的 JSON 抢救解析器收尾，因此这些调用
+			// 的参数**可能解析通过、校验通过，但内容静默不完整** —— 例如 patch 的
+			// `replace` 被截掉后半段、execute_code 的 command 少了尾部管道。执行它们
+			// 会造成真实的错误写入，比不执行严重得多。
+			//
+			// 判据与失败结果构造复用 `turnToolExecution.ts`（provider 对该 reason 的
+			// 拼写不统一，`length` / `max_tokens` 都表示同一件事，判据必须只有一处）。
+			//
+			// 位置约束：必须在 `serverExecutedCalls` 处理与白名单/去重过滤**之前**，
+			// 即所有执行路径的唯一上游。放在 `:3835` 之后会漏掉控制工具分支。
+			if (isTruncatedByOutputLimit(lastFinishReason) && localExecutedCalls.length > 0) {
+				host._logService.warn(
+					`[AgentOS] Response truncated by output limit (finishReason=${lastFinishReason}) with `
+					+ `${localExecutedCalls.length} tool call(s) — failing them all instead of executing `
+					+ `possibly-truncated arguments: ${localExecutedCalls.map((c: any) => c.name).join(', ')}`,
+				);
+				for (const outcome of failToolCallsFromTruncatedMessage(localExecutedCalls)) {
+					// `createErrorToolResult` 的 content 已是纯 string（turnToolExecution.ts:109），
+					// 故只做长度限制与净化，**不过** `safeStringifyToolResult` —— 那会把字符串
+					// 再 JSON 编码一层，模型读到的就是带转义引号的 `"..."`。
+					const truncatedText = sanitizeToolResultText(
+						limitToolResultSize(String(outcome.result.content)),
+					);
+					messages = appendMessages(messages, {
+						role: 'tool',
+						content: truncatedText,
+						toolCallId: outcome.call.id,
+					});
+					yield { type: 'tool_result', content: truncatedText, toolCallId: outcome.call.id };
+					yield { type: 'tool_end', toolCallId: outcome.call.id, success: false };
+					// 登记到 endedToolIds：`:2142` 的孤儿补偿会为「有 tool_start 却无
+					// tool_end」的 ID 再补一次合成事件。不登记就会重复发 tool_end
+					// （实测本用例曾断言到 2 次），UI 侧计数与卡片状态都会错。
+					endedToolIds.add(outcome.call.id);
+				}
+				syncMessages();
+				// 不 break：模型需要看到这批失败原因，才能在下一轮用完整参数重发。
+				// 清空后续执行面，跳过本轮所有实际执行路径。
+				localExecutedCalls = [];
+			}
+
 
 			/**
 			 * 将工具失败恢复提示追加到结果文本中。
@@ -3734,7 +2759,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			const appendRecoveryHint = (resultStr: string, toolCallId: string): string => {
 				const tc = localExecutedCalls.find((c: any) => c.id === toolCallId);
 				if (!tc) { return resultStr; }
-				const hint = getToolFailureRecoveryHint(host, tc.name);
+				const hint = getToolFailureRecoveryHint(tc.name);
 				if (!hint) { return resultStr; }
 				return resultStr + `\n\n[Hint: ${hint}]`;
 			}
@@ -3757,6 +2782,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							content: serverResultStr,
 							toolCallId: tc.id,
 						});
+						syncMessages();
 					}
 					yield {
 						type: 'tool_result',
@@ -3807,7 +2833,12 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// tries to call it, gets a clear "blocked" error — learns not to retry.
 		// Exception: writes to plan files (plans/*.md) are allowed.
 		// WorkMode is mutable via plan_enter/plan_exit; ChatMode remains stable.
-		const hardPerm = host._resolveHardPermissionForWorkMode?.(workState.mode) ?? host._resolveHardPermission(request);
+		const hardPerm = host._resolveHardPermissionForWorkMode?.(runState.work.mode) ?? host._resolveHardPermission(request);
+		// 策略级硬权限谓词（`IterationPlan.hardPermission`，由 turnIterationGate 每轮捕获）。
+		// 与 hardPerm 是**两个独立来源**：前者按 workMode（plan），后者按范式
+		// （readonly 的写工具黑名单）。二者形状不同，统一判据见
+		// `isToolCallDeniedByTurnPolicy`；任一拦截即拦截。
+		const strategyPerm = loopState.iterationHardPermission;
 
 		// ─── Control tools (plan_enter/plan_exit): skip normal handler ───
 		// These are intercepted below; running the placeholder handler + the
@@ -3816,11 +2847,12 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// Remove control tools from local execution — will be processed by interceptors below
 		localExecutedCalls = localExecutedCalls.filter(tc => !controlToolNames.has(tc.name));
 
-		if (hardPerm && localExecutedCalls.length > 0) {
+		if ((hardPerm || strategyPerm) && localExecutedCalls.length > 0) {
 			const deniedCalls: any[] = [];
 			const allowedCalls: any[] = [];
+			const denialReasons = new Map<string, { reason: string; source: 'policy' | 'strategy' }>();
 			for (const tc of localExecutedCalls) {
-				const denial = isToolCallDeniedByHardPermission(tc.name, hardPerm);
+				const denial = isToolCallDeniedByTurnPolicy(tc.name, hardPerm, strategyPerm);
 				if (denial.denied) {
 					// 计划文件豁免：写 <sarosRoot>/plans/*.md 是 plan 模式的本职动作。
 					// ⚠ 2026-08-21（日志 1787294819356）此处原先手写工具名列表
@@ -3829,25 +2861,40 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					// 文件 → plan_exit 恒因 tasks=0 被拒 → 死锁（模型最终 clarify 求助）。
 					// 现统一走 isPlanFileWriteCall（含 patch + planRoot 三重安全校验），
 					// 与审批层共用同一判据，避免两处各写一份必然漂移。
+					//
+					// ⚠ 豁免只对 policy（plan 模式）来源成立：readonly 范式的语义是
+					// 「什么都不写」，写计划文件同样必须拦 —— 否则策略拦截被豁免绕过。
 					let isPlanFileWrite = false;
-					try {
-						const args = typeof tc.arguments === 'string' ? JSON.parse(tc.arguments) : tc.arguments;
-						const planRoot = pathJoin(host._getSarosRoot?.() ?? '', 'plans');
-						isPlanFileWrite = isPlanFileWriteCall(tc.name, args, planRoot);
-					} catch { /* parse failure → not a plan file */ }
+					if (denial.source === 'policy') {
+						try {
+							const args = typeof tc.arguments === 'string' ? JSON.parse(tc.arguments) : tc.arguments;
+							const planRoot = pathJoin(host._getSarosRoot?.() ?? '', 'plans');
+							isPlanFileWrite = isPlanFileWriteCall(tc.name, args, planRoot);
+						} catch { /* parse failure → not a plan file */ }
+					}
 					if (isPlanFileWrite) {
 						allowedCalls.push(tc);
 					} else {
 						deniedCalls.push(tc);
+						denialReasons.set(tc.id, {
+							reason: denial.reason ?? 'denied by hard permission',
+							source: denial.source ?? 'policy',
+						});
 					}
 				} else {
 					allowedCalls.push(tc);
 				}
 			}
 			if (deniedCalls.length > 0) {
-				host._logService.info(`[AgentOS] hardPermission blocked ${deniedCalls.length} tool(s) in workMode=${workState.mode}: ${deniedCalls.map((tc: any) => tc.name).join(', ')}`);
+				host._logService.info(`[AgentOS] hardPermission blocked ${deniedCalls.length} tool(s) in workMode=${runState.work.mode}: ${deniedCalls.map((tc: any) => tc.name).join(', ')}`);
 				for (const tc of deniedCalls) {
-					const blockMsg = `Tool "${tc.name}" is blocked: ${hardPerm.reason}. In plan work mode, you can only read files and write the plan file. Complete the structured plan, then call plan_exit.`;
+					// 文案按来源分流：plan 模式给「写计划文件 → plan_exit」的出路；
+					// 策略拦截（readonly 范式）没有出路可给，只能说明范式限制 ——
+					// 沿用 plan 文案会诱导模型反复重试写文件，制造无进展循环。
+					const denialInfo = denialReasons.get(tc.id);
+					const blockMsg = denialInfo?.source === 'strategy'
+						? `Tool "${tc.name}" is blocked: ${denialInfo.reason}. This agent runs in a read-only paradigm — write/execute tools are unavailable for the whole turn. Report findings instead of attempting modifications.`
+						: `Tool "${tc.name}" is blocked: ${denialInfo?.reason ?? hardPerm?.reason}. In plan work mode, you can only read files and write the plan file. Complete the structured plan, then call plan_exit.`;
 					toolResults.push({
 						toolCallId: tc.id,
 						content: { error: blockMsg },
@@ -3858,6 +2905,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						content: blockMsg,
 						toolCallId: tc.id,
 					});
+					syncMessages();
 					yield { type: 'tool_result', content: blockMsg, toolCallId: tc.id };
 					yield { type: 'tool_end', toolCallId: tc.id, success: false };
 					endedToolIds.add(tc.id);
@@ -3873,9 +2921,13 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				// detectToolCallLoop 只看「同一签名重复」；ping-pong 是两个不同调用来回切换，
 				// 单看每个签名都不重复 → 被完全漏检。故在此对本批**整批判定一次**。
 				// 仅当 noProgressEvidence（两侧结果各自稳定）才拦截；结果在变说明仍在推进。
+				//
+				// 判定收口到 `turnStopGate.classifyPingPong`（纯函数，三出口 none /
+				// allow-changing / block-batch）；此处只负责文案与日志两个副作用。
 				let _pingPongMsg: string | undefined;
 				const _pingPong = detectToolCallPingPong(runState.toolCallHistory);
-				if (_pingPong.pingPong && _pingPong.noProgressEvidence) {
+				const _pingPongVerdict = classifyPingPong(_pingPong.pingPong, _pingPong.noProgressEvidence);
+				if (_pingPongVerdict.kind === 'block-batch') {
 					_pingPongMsg =
 						`Blocked: ping-pong loop between "${_pingPong.toolA}" and "${_pingPong.toolB}" ` +
 						`(${_pingPong.length} alternating calls) with identical results on both sides. ` +
@@ -3885,7 +2937,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						`[AgentOS] Ping-pong loop: ${_pingPong.toolA} <-> ${_pingPong.toolB} ` +
 						`(${_pingPong.length} alternating calls, stable results both sides) — blocking entire batch`,
 					);
-				} else if (_pingPong.pingPong) {
+				} else if (_pingPongVerdict.kind === 'allow-changing') {
 					host._logService.warn(
 						`[AgentOS] Ping-pong pattern: ${_pingPong.toolA} <-> ${_pingPong.toolB} ` +
 						`(${_pingPong.length} calls) but results still changing — allowing`,
@@ -3942,7 +2994,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					// 为被阻止的工具生成错误结果
 					const blockedCalls = localExecutedCalls.filter(tc => !filteredCalls.includes(tc));
 					host._logService.info(
-						`[AgentOS][Diag] iter=${iteration} blockSummary: total=${localExecutedCalls.length} ` +
+						`[AgentOS][Diag] iter=${loopState.iteration} blockSummary: total=${localExecutedCalls.length} ` +
 						`allowed=${filteredCalls.length} blocked=${blockedCalls.length} ` +
 						`reasons={pingPong=${!!_pingPongMsg},loop=${blockedCalls.length - (!!_pingPongMsg ? 0 : (blockedCalls.length > 0 ? 1 : 0))},guardrail=${_guardrailBlocked.size}} ` +
 						`blockedNames=[${blockedCalls.map((tc: any) => tc.name).join(',')}]`,
@@ -3990,7 +3042,8 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 						//   ① 首次/第 1 次   —— 仅回填 tool result（保持原行为，给模型自纠机会）
 						//   ② 连续 ≥2 次     —— 注入「整轮无进展」强提醒（单工具级提醒此时已被忽略）
 						//   ③ 连续 ≥4 次     —— 禁用工具 + 强制收尾轮，避免烧到 100 轮
-						_allBlockedStreak++;
+						patchGuardrails({ allBlockedStreak: guardrails().allBlockedStreak + 1 });
+						const _allBlockedStreak = guardrails().allBlockedStreak;
 						host._logService.warn(
 							`[AgentOS] All ${localExecutedCalls.length} tool calls blocked by loop detection ` +
 							`(consecutive zero-progress turns: ${_allBlockedStreak})`,
@@ -3999,10 +3052,20 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							localExecutedCalls[0]?.name);
 						for (const tr of toolResults) {
 							messages = appendMessages(messages, { role: 'tool', content: (tr.content[0] as any)?.text ?? '', toolCallId: tr.toolCallId });
+							syncMessages();
 						}
 						const _blockedNames = [...new Set(localExecutedCalls.map(tc => tc.name))].join(', ');
-						if (_allBlockedStreak >= ALL_BLOCKED_WRAPUP_AT) {
-							// ③ 强制收尾：**复用既有的 `_forceWrapUpRound` 机制**（本文件 1905
+						// 三档升级的**判定**收口到 turnStopGate（classifyAllBlockedStreak）；
+						// 日志 / 审计 / 消息注入 / patchWrapUp 等副作用保留原地。
+						// ⚠ 不可换成聚合的 classifyGuardrailStreak：它的 textSearch 硬上限
+						// 分支排在最前，此处 textSearchStreak 可能非零 → reason/hint 会跑偏。
+						const _allBlockedVerdict = classifyAllBlockedStreak(
+							_allBlockedStreak,
+							guardrails().allBlockedReminderSent,
+							{ reminderAfter: ALL_BLOCKED_ESCALATE_AT, wrapUpAfter: ALL_BLOCKED_WRAPUP_AT },
+						);
+						if (_allBlockedVerdict.decision.kind === 'wrap-up') {
+							// ③ 强制收尾：**复用既有的 wrap-up 机制**（wrapUp().forced
 							// 行同一开关），它已经做齐三重保障：`_iterationToolDefs = []` →
 							// enabledTools 置空 → 再叠加 `toolChoice: 'none'`。
 							// ⚠ 不要另造一个「禁工具」标志 —— 那必然与这套漂移。
@@ -4012,27 +3075,51 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							host._logService.warn(`[AgentOS] Zero-progress streak hit ${_allBlockedStreak} — forcing wrap-up round (tools disabled)`);
 							_auditFired('allToolCallsBlocked', ALL_BLOCKED_WRAPUP_AT);
 							messages = appendMessages(messages, { role: 'system', content: allBlockedWrapUpReminder(_allBlockedStreak) });
-							_wrapUpReminderAlreadyInjected = true;
-							_forceWrapUpRound = true;
-						} else if (_allBlockedStreak >= ALL_BLOCKED_ESCALATE_AT && !_allBlockedReminderSent) {
+							syncMessages();
+							patchWrapUp({ reasonReminderInjected: true, forced: true });
+						} else if (_allBlockedVerdict.reminders.includes('all-blocked-strong')) {
 							// ② 强提醒只注入一次 —— 反复注入会污染前缀缓存且被模型进一步忽略。
-							_allBlockedReminderSent = true;
+							patchGuardrails({ allBlockedReminderSent: true });
 							messages = appendMessages(messages, { role: 'system', content: allToolCallsBlockedReminder(_allBlockedStreak, _blockedNames) });
+							syncMessages();
 						}
 						continue;
 					}
 					// 有工具真正执行 → 零进展连击清零（与其它 streak 计数器同姿态）。
-					_allBlockedStreak = 0;
-					_allBlockedReminderSent = false;
+					patchGuardrails({ allBlockedStreak: 0, allBlockedReminderSent: false });
 					localExecutedCalls = filteredCalls;
 				}
-				// ── Hook: pre_tool_use ────────────────────────────────────────
-				if (memoryProvider?.triggerHook) {
+				// ── Hook: before_tool（经总线分发；provider 的 pre_tool_use 由
+				//    turnHookWiring 注册为 handler 并保持 fire-and-forget）──────
+				// ⚠ before_tool 是 fail-closed 钩子：handler 抛错 → TurnHookGateError
+				// → 该工具不得执行。当前唯一 handler（memory 转发）绝不抛错，故实际
+				// 走不到拦截分支；此处仍完整处理，避免将来新增 handler 时静默放行。
+				if (hookBus.has('before_tool')) {
+					const blockedCallIds = new Set<string>();
 					for (const tc of localExecutedCalls) {
-						memoryProvider.triggerHook('pre_tool_use', {
-							agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
-							toolName: tc.name, toolCallId: tc.id,
-						}).catch(() => { });
+						try {
+							const gate = await hookBus.runWithGate('before_tool', {
+								toolCallId: tc.id, toolName: tc.name, args: tc.arguments,
+							});
+							if (gate?.block) {
+								blockedCallIds.add(tc.id);
+								host._logService.warn(
+									`[AgentOS] Tool "${tc.name}" blocked by before_tool hook: ${gate.block.reason}`,
+								);
+							}
+						} catch (error) {
+							// TurnHookGateError = 权限钩子自身崩了。fail-closed 语义要求
+							// 拒绝执行，而非当作「无意见」放行。
+							blockedCallIds.add(tc.id);
+							host._logService.error(
+								`[AgentOS] before_tool gate failed for "${tc.name}" — refusing execution: ${String(error)}`,
+							);
+						}
+					}
+					if (blockedCallIds.size > 0) {
+						localExecutedCalls = localExecutedCalls.filter(
+							(tc: any) => !blockedCallIds.has(tc.id),
+						);
 					}
 				}
 				// 进入工具执行前显式置 phase=tool_executing（对齐 UI 广播，phase 进 runState 供 checkpoint 读取）
@@ -4067,7 +3154,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					if (_reasonStreak >= REASON_STREAK_TRIGGER_COUNT) {
 						host._logService.warn(
 							`[AgentOS] Reasoning streak detected: identical thinking for ${_reasonStreak} consecutive rounds ` +
-							`(iter=${iteration}) — injecting recovery guidance`,
+							`(iter=${loopState.iteration}) — injecting recovery guidance`,
 						);
 						_auditFired('reasonStreak', REASON_STREAK_TRIGGER_COUNT);
 						_pendingBatchReminders.push(reasonStreakReminder(_reasonStreak));
@@ -4082,12 +3169,24 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				{
 					const _churn = detectArgumentChurn(runState.toolCallHistory);
 					if (_churn.churn) {
-						host._logService.warn(
-							`[AgentOS] Argument churn detected: "${_churn.toolName}" called ${_churn.length} times ` +
-							`in a row with ${_churn.distinctArgs} different arguments (iter=${iteration}) — injecting recovery guidance`,
-						);
-						_auditFired('argumentChurn', RUN_STATE_LIMITS.ARGUMENT_CHURN_THRESHOLD);
-						_pendingBatchReminders.push(argumentChurnReminder(_churn.toolName ?? 'tool', _churn.length));
+						const _churnTool = _churn.toolName ?? 'tool';
+						if (isMultiTargetChurnTool(_churnTool)) {
+							// ★ 2026-09-16：多目标工具只留痕、不注入引导（判据与理由见
+							// `isMultiTargetChurnTool`）。刻意用 info 且**不** `_auditFired` ——
+							// 审计水位只登记「真的出手过」的护栏，否则报告里的 argumentChurn
+							// 会显示成「触发了却没生效」。
+							host._logService.info(
+								`[AgentOS][Diag] Argument churn (multi-target tool, guidance suppressed): "${_churnTool}" ` +
+								`called ${_churn.length} times in a row with ${_churn.distinctArgs} different arguments (iter=${loopState.iteration})`,
+							);
+						} else {
+							host._logService.warn(
+								`[AgentOS] Argument churn detected: "${_churnTool}" called ${_churn.length} times ` +
+								`in a row with ${_churn.distinctArgs} different arguments (iter=${loopState.iteration}) — injecting recovery guidance`,
+							);
+							_auditFired('argumentChurn', RUN_STATE_LIMITS.ARGUMENT_CHURN_THRESHOLD);
+							_pendingBatchReminders.push(argumentChurnReminder(_churnTool, _churn.length));
+						}
 					}
 				}
 
@@ -4148,8 +3247,9 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					const _onlyOne = effectiveToolCalls.length === 1;
 					const _soleName = _onlyOne ? effectiveToolCalls[0]?.name : undefined;
 					const _isSingleReadOnly = !!_soleName && isParallelSafeReadOnlyTool(_soleName);
-					const _adv = advanceSingleToolStreak(_singleToolStreak, _isSingleReadOnly, MAX_SINGLE_TOOL_STREAK);
-					_singleToolStreak = _adv.streak;
+					const _adv = advanceSingleToolStreak(guardrails().singleToolStreak, _isSingleReadOnly, MAX_SINGLE_TOOL_STREAK);
+					patchGuardrails({ singleToolStreak: _adv.streak });
+					const _singleToolStreak = _adv.streak;
 					if (_isSingleReadOnly && _soleName) {
 						if (!_singleToolStreakNames.includes(_soleName)) { _singleToolStreakNames.push(_soleName); }
 					} else {
@@ -4177,7 +3277,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		try {
 			// P1: 审批路由上下文（MiMo decideAskRouting）。在工具执行循环所在闭包内派生，
 			// 因为 request.subAgent 在该作用域可见；若放在外层块声明则无法穿透到此处（TS2304）。
-			const askRouting = deriveAskRoutingContext(request.subAgent, undefined, workState.mode);
+			const askRouting = deriveAskRoutingContext(request.subAgent, undefined, runState.work.mode);
 
 			// ★★ 2026-09-13：主模型是否支持**图片输入** —— 必须在闭包**外**解析：
 			// `_processToolResult` 是**同步** generator（不能用 `await`），能力值由闭包捕获。
@@ -4187,8 +3287,75 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 			// 故每轮一次的成本可忽略；失败一律 false（fail-closed：不发图）。
 			const _turnSupportsImages = await resolveSupportsImages(modelProvider, selection?.modelId);
 
-			// ─── 工具结果后处理（并行/串行共用，2026-07-27 消除 ~80 行重复）──
-			// 从 toolResult 提取公共逻辑：连续失败追踪、terminal 空输出检测、
+			// ─── 沙箱确认 → 收尾（三条路径共用，2026-09-17 收口到 turnToolExecution）──
+			// 原先 headSerial（`:4593`）与 serial（`:4660`）各内联约 25 行逐字重复的
+			// 「违规判定 → 弹卡片 → 等决策 → 重执行」，而**并行路径完全没有这段** ——
+			// 同一个沙箱违规走并行路径时用户拿不到确认卡片，工具直接失败。这是名单式
+			// 重复实现必然产生的行为分叉，现由 `finalizeToolCall` 单点承载。
+			//
+			// `_resolveSandbox` 是 async generator 而非 async 函数：必须先把确认卡片
+			// yield 给 UI，**再**阻塞等用户点按钮。若返回 Promise，卡片只会在决策之后
+			// 才到达 UI，用户面对的是一个永远等不到卡片的暂停。
+			async function* _resolveSandbox(
+				call: ITurnToolCall,
+				result: ITurnToolResult,
+			): AsyncGenerator<IChatStreamDelta, ISandboxResolution, void> {
+				const violation = (result as { metadata?: { sandboxViolation?: ISandboxViolationInfo } })
+					.metadata!.sandboxViolation!;
+				const confirmationId = `sandbox-${result.toolCallId}-${Date.now().toString(36)}`;
+				const card = host._buildSandboxConfirmationCard(call.name, violation);
+				card.id = confirmationId;
+				// 关联工具调用 ID：写文件等工具卡片内嵌询问按钮时匹配用
+				card.toolCallId = result.toolCallId;
+				yield { type: 'confirmation', confirmationData: card };
+				const decision = await host._awaitSandboxConfirmation(confirmationId);
+				yield {
+					type: 'confirmation_resolved',
+					confirmationId,
+					confirmationStatus: host._mapDecisionToCardStatus(decision),
+				};
+				// 重执行必须拿到**原始调用**（含真实 arguments）。配不回原调用时
+				// 一律不重执行、保留原失败结果 —— 与原三条路径的 `if (tc)` 同义。
+				// 绝不可用兜底造的空 `arguments` 去重执行：那会以空参数真实调用工具，
+				// 比不重执行危险得多。
+				const original = _findCall(result.toolCallId);
+				const reExecuted = original
+					? await host._reExecuteAfterSandbox(
+						original, request.agentId, request.worktreePath,
+						turnAbortSignal, decision, violation,
+					)
+					: undefined;
+				return { decision, reExecuted };
+			}
+
+			// 三条路径共用的收尾依赖。`observe` 归位到此处，保证并行路径与串行路径的
+			// 观测口完全一致（原先三处各自拼一次 toolName 反查）。
+			const _finalizeDeps: IToolFinalizationDeps<IChatStreamDelta> = {
+				isSandboxViolation: r => !r.success && host._isSandboxViolation(r as any),
+				resolveSandbox: _resolveSandbox,
+				observe: (call, result) => host._observeToolResult(
+					request.agentId, { ...result, toolName: call.name }, request.sessionId,
+				),
+			};
+
+			/** 按 toolCallId 配回原始调用；配不上返回 undefined（不伪造）。 */
+			function _findCall(toolCallId: string): IToolCallInfo | undefined {
+				return localExecutedCalls.find((c: any) => c.id === toolCallId);
+			}
+
+			/**
+			 * 供 observe / 后处理使用的调用视图 —— 只需要 `name`。
+			 *
+			 * 配不回原调用时退化为以 toolCallId 充当名字：与原三条路径的
+			 * `?? 'unknown'` / `?? toolResult.toolCallId` 兜底同义。
+			 * ⚠ 此兜底**不可**用于沙箱重执行（`arguments` 是空的），见 `_resolveSandbox`。
+			 */
+			function _callOf(result: { toolCallId: string }): ITurnToolCall {
+				return _findCall(result.toolCallId) ?? {
+					id: result.toolCallId, name: result.toolCallId, arguments: {},
+				};
+			}
+
 			// 消息追加、tool_result/tool_end yield。闭包捕获 messages / _toolConsecutiveFailures /
 			// _terminalEmptyOutputCount / endedToolIds，返回更新后的 messages。
 			function* _processToolResult(toolResult: { toolCallId: string; content: any; success: boolean; metadata?: { executionTimeMs?: number } }, toolName: string): Generator<IChatStreamDelta> {
@@ -4200,24 +3367,22 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					const _trRaw = toolResult.content && typeof toolResult.content === 'string'
 						? toolResult.content
 						: safeStringifyToolResult(toolResult.content);
-					_tagTraceScanToolResult(_trRaw, toolName, iteration, host);
+					tagTraceScanToolResult(_trRaw, toolName, loopState.iteration, host);
 				}
 				// ─── 切断跨会话传播：剥离伪标签后再回灌 ──────────────────────
 				// 工具结果是这类标签**跨会话扩散的载体**（日志 1788011997897 实证）：
 				// SubAgent 的 delegate_task 结果带着 `tool_calls:6124c78e` 回灌主会话后，
 				// 会驻留在 `msg[7](role=tool)` 里，此后**每一轮**都随请求重新发给模型
 				// （iter=2..7 次次命中 PRIMING suspected），污染持续放大。
-				// 故必须在此处（回灌前）剥离 —— 放在扫描之后，保证 TagTrace 仍能记录原始情况。
-				if (typeof toolResult.content === 'string' && toolResult.content) {
-					const _stripped = stripTaggedIdXmlTags(toolResult.content);
-					if (_stripped !== toolResult.content) {
-						host._logService.info(
-							`[AgentOS][TagTrace] stripped tagged-id XML from tool result ` +
-							`(tool=${toolName}, iter=${iteration}) before feeding it back to the model`,
-						);
-						toolResult.content = _stripped;
-					}
-				}
+				// 故必须在回灌前剥离 —— 放在扫描之后，保证 TagTrace 仍能记录原始情况。
+				//
+				// ⚠ 2026-09-16 修正（日志 20260916T130827）：剥离**下移到 `rawStr` 构造处**。
+				// 原实现在此处只处理 `typeof content === 'string'`，而内建工具（`coreTools.ts`
+				// 的 `text()` ⇒ `IToolResultContent[]`）与 MCP 工具返回的都是**内容块数组**
+				// ⇒ 该条件恒 false ⇒ 本护栏对**几乎所有工具是空操作**：日志里
+				// `<tool_calls:HEXID>` 于 iter=2 被 TagTrace 记下后，iter=3 仍原样出现在
+				// `msg[9](role=tool)@1515`，且全日志**无一条** "stripped tagged-id" info。
+				// 只在「最终回灌字符串」上剥离，才能同时覆盖字符串与数组两种 content 形态。
 				if (!toolResult.success) {
 					_toolConsecutiveFailures.set(toolName, (_toolConsecutiveFailures.get(toolName) ?? 0) + 1);
 					_auditMark('consecutiveFail', _toolConsecutiveFailures.get(toolName) ?? 0, MAX_CONSECUTIVE_TOOL_FAILURES, toolName);
@@ -4238,18 +3403,18 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							? toolResult.content
 							: safeStringifyToolResult(toolResult.content);
 						if (rawText === '(no output)' || rawText.trim() === '') {
-							_terminalEmptyOutputCount++;
-							_auditMark('terminalEmptyOutput', _terminalEmptyOutputCount, MAX_TERMINAL_EMPTY_OUTPUT, 'terminal');
-							if (_terminalEmptyOutputCount >= MAX_TERMINAL_EMPTY_OUTPUT) {
+							loopState.terminalEmptyOutputCount++;
+							_auditMark('terminalEmptyOutput', loopState.terminalEmptyOutputCount, MAX_TERMINAL_EMPTY_OUTPUT, 'terminal');
+							if (loopState.terminalEmptyOutputCount >= MAX_TERMINAL_EMPTY_OUTPUT) {
 								host._logService.warn(
-									formatGuardrailFiredLog('terminalEmptyOutput', _terminalEmptyOutputCount, MAX_TERMINAL_EMPTY_OUTPUT, 'terminal returned (no output) consecutively'),
+									formatGuardrailFiredLog('terminalEmptyOutput', loopState.terminalEmptyOutputCount, MAX_TERMINAL_EMPTY_OUTPUT, 'terminal returned (no output) consecutively'),
 								);
 								_auditFired('terminalEmptyOutput', MAX_TERMINAL_EMPTY_OUTPUT);
 								// 延迟注入（保证 tool result 序列连续紧邻）
 								_pendingBatchReminders.push(terminalEmptyOutputReminder());
 							}
 						} else {
-							_terminalEmptyOutputCount = 0;
+							loopState.terminalEmptyOutputCount = 0;
 						}
 					}
 					// 文本/文件名搜索连击护栏：
@@ -4257,12 +3422,12 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					//  • 纯文本搜索连击累计。软上限（MAX_TEXT_SEARCH_STREAK）注入一次强引导
 					//    （停止搜索 / 改用结构工具 / 直接汇报），**不在此清零**以便硬上限可达。
 					//  • 硬上限（MAX_TEXT_SEARCH_STREAK_HARD）连击失控：强制收尾轮
-					//    （复用 _forceWrapUpRound：禁用工具，模型必须基于已收集信息产出结论）。
+					//    （复用 wrap-up 机制：禁用工具，模型必须基于已收集信息产出结论）。
 					if (STRUCTURAL_SEARCH_TOOL_NAMES.has(toolName)) {
-						_textSearchStreak = 0;
-						_textSearchSoftReminderSent = false;
+						patchGuardrails({ textSearchStreak: 0, textSearchSoftReminderSent: false });
 					} else if (TEXT_SEARCH_TOOL_NAMES.has(toolName)) {
-						_textSearchStreak++;
+						patchGuardrails({ textSearchStreak: guardrails().textSearchStreak + 1 });
+						const _textSearchStreak = guardrails().textSearchStreak;
 						_auditMark('textSearchStreak', _textSearchStreak, MAX_TEXT_SEARCH_STREAK, toolName);
 						if (_textSearchStreak >= MAX_TEXT_SEARCH_STREAK_HARD) {
 							// ③ 硬上限：打断纯搜索死循环，强制收尾轮。
@@ -4271,10 +3436,10 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							);
 							_auditFired('textSearchStreak', MAX_TEXT_SEARCH_STREAK_HARD);
 							messages = appendMessages(messages, { role: 'system', content: textSearchLoopWrapUpReminder(_textSearchStreak) });
-							_wrapUpReminderAlreadyInjected = true;
-							_forceWrapUpRound = true;
-							_textSearchStreak = 0;
-						} else if (_textSearchStreak >= MAX_TEXT_SEARCH_STREAK && !_textSearchSoftReminderSent) {
+							syncMessages();
+							patchWrapUp({ reasonReminderInjected: true, forced: true });
+							patchGuardrails({ textSearchStreak: 0 });
+						} else if (_textSearchStreak >= MAX_TEXT_SEARCH_STREAK && !guardrails().textSearchSoftReminderSent) {
 							// ① 软上限：注入一次强引导。结构工具可用则推结构工具，否则要求直接停搜汇报。
 							const _structuralAvailable = enabledTools
 								.filter(t => STRUCTURAL_SEARCH_TOOL_NAMES.has(t.name))
@@ -4290,7 +3455,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 									? preferGraphSearchReminder(_textSearchStreak, _structuralAvailable.join(', '))
 									: stopSearchingReportReminder(_textSearchStreak),
 							);
-							_textSearchSoftReminderSent = true;
+							patchGuardrails({ textSearchSoftReminderSent: true });
 						}
 					}
 				}
@@ -4310,14 +3475,14 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					);
 					_audit.records.push({
 						name: toolName,
-						iteration,
+						iteration: loopState.iteration,
 						ok: toolResult.success,
 						ms: toolResult.metadata?.executionTimeMs ?? 0,
 						outputBytes: _auditText.length,
 						empty: _isEmpty,
 						argsKey: _audit.argsKeyById.get(toolResult.toolCallId),
 					});
-					_audit.iterations = iteration;
+					_audit.iterations = loopState.iteration;
 				}
 				// ★★ 2026-09-13：工具结果里的**图像项**必须与文本分开处理。
 				//
@@ -4332,7 +3497,17 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				// 详见 `common/toolResultImages` 头注释。
 				const _imgSplit = splitToolResultImages(toolResult.content);
 				const _imgSupported = _imgSplit.images.length > 0 && _turnSupportsImages;
-				const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(_imgSplit.text)))
+				// [TagTrace] 回灌前剥离 `<tag:id>` 伪标签 —— 这里是**唯一**同时覆盖
+				// 「字符串 content」与「内容块数组 content」的位置（见上方修正说明）。
+				const _payloadText = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(_imgSplit.text)));
+				const _payloadStripped = stripTaggedIdXmlTags(_payloadText);
+				if (_payloadStripped !== _payloadText) {
+					host._logService.info(
+						`[AgentOS][TagTrace] stripped tagged-id XML from tool result ` +
+						`(tool=${toolName}, iter=${loopState.iteration}) before feeding it back to the model`,
+					);
+				}
+				const rawStr = _payloadStripped
 					// 不支持图片时，**必须让模型知道「有图但没附上」**（静默削弱是本项目一贯要避免的）
 					+ (_imgSplit.images.length > 0 && !_imgSupported
 						? toolImageOmittedNote(toolName, _imgSplit.images.length)
@@ -4356,12 +3531,12 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					);
 				}
 				// halt = 「退出主循环」的信号（见 toolGuardrailController.ts:19 契约）。
-				// 复用既有 _forceWrapUpRound 收尾机制（同 4198 行 textSearchStreak 的处理）：
+				// 复用既有 wrap-up 收尾机制（同 4198 行 textSearchStreak 的处理）：
 				// 置位后本轮禁工具、强制模型基于已收集信息产出结论，避免同工具被无限重试。
 				// 此前仅记 warn 日志而不置位，halt 决策形同虚设 —— 这正是
 				// same_tool_failure 信号「检出却不生效」的最后一处断点。
 				if (_after.action === 'halt') {
-					_forceWrapUpRound = true;
+					patchWrapUp({ forced: true });
 					_auditFired('guardrailHalt', _after.count ?? 0);
 				}
 
@@ -4384,6 +3559,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					content: resultStr,
 					toolCallId: toolResult.toolCallId,
 				});
+				syncMessages();
 				// 图像另走一条 `role:'user'` 消息（只有该分支读 `contentParts`，
 				// 三家 provider 都会转成各自的图像格式）。**只在主模型支持图片时发**，
 				// 否则会 400；不支持时上面已用文本说明「有图但没附上」。
@@ -4393,6 +3569,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					// 而 `toolResultImages` 只依赖 `common/providers` 的 `IChatMessage` ——
 					// 两者结构兼容，此处显式收窄即可（不把窄化类型反向引入公共模块）。
 					if (_imgMsg) { messages = appendMessages(messages, _imgMsg as unknown as AgentRunMessage); }
+					syncMessages();
 				}
 				yield { type: 'tool_result', content: resultStr, toolCallId: toolResult.toolCallId };
 				yield { type: 'tool_end', toolCallId: toolResult.toolCallId, success: toolResult.success };
@@ -4415,33 +3592,13 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 				host._clearSandboxBypassRoots(); // fresh-dispatch 边界：清空上一批次遗留的 AllowOnce 放行根，避免重执行放行泄漏到本批工具调用
 				const headSerial = await host._executeToolCalls(_headCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting, request.sessionId);
 				for (const toolResult of headSerial) {
-					const sr = toolResult as unknown as { toolCallId: string; content: any; success: boolean; metadata?: { sandboxViolation?: ISandboxViolationInfo } };
-					let finalResult = toolResult;
-					if (!sr.success && host._isSandboxViolation(sr) && !handledSandboxIds.has(sr.toolCallId)) {
-						handledSandboxIds.add(sr.toolCallId);
-						const v = sr.metadata!.sandboxViolation!;
-						const tc = localExecutedCalls.find((c: any) => c.id === toolResult.toolCallId);
-						const toolName = tc?.name ?? toolResult.toolCallId;
-						const confirmationId = `sandbox-${toolResult.toolCallId}-${Date.now().toString(36)}`;
-						const cf = host._buildSandboxConfirmationCard(toolName, v);
-						cf.id = confirmationId;
-						// 关联工具调用 ID：写文件等工具卡片内嵌询问按钮时匹配用
-						cf.toolCallId = toolResult.toolCallId;
-						yield { type: 'confirmation', confirmationData: cf };
-						const decision = await host._awaitSandboxConfirmation(confirmationId);
-						yield {
-							type: 'confirmation_resolved',
-							confirmationId,
-							confirmationStatus: host._mapDecisionToCardStatus(decision),
-						};
-						if (tc) {
-							finalResult = await host._reExecuteAfterSandbox(tc, request.agentId, request.worktreePath, turnAbortSignal, decision, v);
-						}
-					}
-					toolResults.push(finalResult);
-					host._observeToolResult(request.agentId, { ...finalResult, toolName: localExecutedCalls.find((c: any) => c.id === finalResult.toolCallId)?.name }, request.sessionId);
-					const _hname = localExecutedCalls.find((c: any) => c.id === finalResult.toolCallId)?.name ?? 'unknown';
-					yield* _processToolResult(finalResult, _hname);
+					const outcome = yield* finalizeToolCall(
+						{ call: _callOf(toolResult), result: toolResult as unknown as ITurnToolResult },
+						_finalizeDeps,
+						handledSandboxIds,
+					);
+					toolResults.push(outcome.result as any);
+					yield* _processToolResult(outcome.result as any, outcome.call.name);
 				}
 				// 剩余 delegate_task 子集交给下方并行路径并发执行。
 				_parallelCalls = _delegateSubset;
@@ -4457,12 +3614,17 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					host._clearSandboxBypassRoots(); // fresh-dispatch 边界：清空上一批次遗留的 AllowOnce 放行根，避免重执行放行泄漏到本批工具调用
 					for await (const toolResult of host._executeToolCallsParallelStreaming(_parallelCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting, request.sessionId)) {
 					_executedToolIds.add(toolResult.toolCallId);
-					toolResults.push(toolResult);
-					// R1: per-tool-call observe (对齐 agentmemory PostToolUse Hook → mem::observe)
-					host._observeToolResult(request.agentId, { ...toolResult, toolName: localExecutedCalls.find((c: any) => c.id === toolResult.toolCallId)?.name }, request.sessionId);
+					// 2026-09-17：本路径此前**没有**沙箱确认段 —— 并行批次里的写工具
+					// 撞沙箱时用户拿不到确认卡片，工具直接失败；同样的调用走串行路径
+					// 却会弹卡片。经 finalizeToolCall 收口后三条路径行为一致。
+					const outcome = yield* finalizeToolCall(
+						{ call: _callOf(toolResult), result: toolResult as unknown as ITurnToolResult },
+						_finalizeDeps,
+						handledSandboxIds,
+					);
+					toolResults.push(outcome.result as any);
 							// ── 工具结果后处理（连续失败追踪 + terminal 空输出 + 消息追加 + tool_result/tool_end）──
-							const _tname = localExecutedCalls.find((c: any) => c.id === toolResult.toolCallId)?.name ?? 'unknown';
-							yield* _processToolResult(toolResult, _tname);
+							yield* _processToolResult(outcome.result as any, outcome.call.name);
 						}
 						} finally {
 							// P0: 无论并行执行是否被中断，确保所有 tool_start 都有对应 tool_end。
@@ -4486,38 +3648,15 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							// 工具因安全沙箱限制失败时，暂停 agent loop，向原生 chat
 							// 弹出确认卡片，等待用户决策（允许本次 / 允许此工作区 /
 							// 改用建议路径 / 取消），再按决策重执行或保留失败。
-							const sr = toolResult as unknown as { toolCallId: string; content: any; success: boolean; metadata?: { sandboxViolation?: ISandboxViolationInfo } };
-							let finalResult = toolResult;
-							if (!sr.success && host._isSandboxViolation(sr) && !handledSandboxIds.has(sr.toolCallId)) {
-								handledSandboxIds.add(sr.toolCallId);
-								const v = sr.metadata!.sandboxViolation!;
-								const tc = localExecutedCalls.find((c: any) => c.id === toolResult.toolCallId);
-								const toolName = tc?.name ?? toolResult.toolCallId;
-						const confirmationId = `sandbox-${toolResult.toolCallId}-${Date.now().toString(36)}`;
-						const cf = host._buildSandboxConfirmationCard(toolName, v);
-						cf.id = confirmationId;
-						// 关联工具调用 ID：写文件等工具卡片内嵌询问按钮时匹配用
-						cf.toolCallId = toolResult.toolCallId;
-						// 渲染确认卡片（原生 pane 的 _processDelta 处理 confirmation delta）
-						yield { type: 'confirmation', confirmationData: cf };
-						const decision = await host._awaitSandboxConfirmation(confirmationId);
-								yield {
-									type: 'confirmation_resolved',
-									confirmationId,
-									confirmationStatus: host._mapDecisionToCardStatus(decision),
-								};
-								if (tc) {
-									finalResult = await host._reExecuteAfterSandbox(
-										tc, request.agentId, request.worktreePath, turnAbortSignal, decision, v,
-									);
-								}
-							}
-						toolResults.push(finalResult);
-						// R1: per-tool-call observe
-						host._observeToolResult(request.agentId, { ...finalResult, toolName: localExecutedCalls.find((c: any) => c.id === finalResult.toolCallId)?.name }, request.sessionId);
+							// 实现见 `_resolveSandbox` + `finalizeToolCall`（三路径共用）。
+							const outcome = yield* finalizeToolCall(
+								{ call: _callOf(toolResult), result: toolResult as unknown as ITurnToolResult },
+								_finalizeDeps,
+								handledSandboxIds,
+							);
+						toolResults.push(outcome.result as any);
 							// ── 工具结果后处理（连续失败追踪 + terminal 空输出 + 消息追加 + tool_result/tool_end）──
-							const _stname = localExecutedCalls.find((c: any) => c.id === finalResult.toolCallId)?.name ?? 'unknown';
-							yield* _processToolResult(finalResult, _stname);
+							yield* _processToolResult(outcome.result as any, outcome.call.name);
 						}
 					}
 				} catch (execErr) {
@@ -4538,6 +3677,7 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 							content: resultStr,
 							toolCallId: tc.id,
 						});
+						syncMessages();
 						yield { type: 'tool_result', content: resultStr, toolCallId: tc.id };
 						yield { type: 'tool_end', toolCallId: tc.id, success: false };
 						endedToolIds.add(tc.id);
@@ -4552,36 +3692,33 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 					);
 					for (const _rem of _pendingBatchReminders) {
 						messages = appendMessages(messages, { role: 'user', content: _rem });
+						syncMessages();
 					}
 					_pendingBatchReminders.length = 0;
 				}
 			} // end if (localExecutedCalls.length > 0)
 			const planResult = yield* _handlePlanModeTools(effectiveToolCalls, toolResults, endedToolIds);
 			if (planResult === 'done') { return undefined; }
-			const postResult = yield* _postIterationCleanup(toolResults, localExecutedCalls, effectiveToolCalls, startedToolIds, endedToolIds, trimmedAssistantContent, memoryProvider, iteration);
+			const postResult = yield* _postIterationCleanup(toolResults, localExecutedCalls, effectiveToolCalls, startedToolIds, endedToolIds, trimmedAssistantContent, memoryProvider, loopState.iteration);
 			if (postResult === 'done') { break; }
 		} // end while
 
-		// ─── 每轮 turn 结束：把本轮新增对话增量外置到记忆（延续检索式上下文，
-		// 而非只在压缩时才外置），供后续 turn 检索取回，逐步累积历史上下文。──
-		// fire-and-forget：写入供「后续」turn 使用，绝不应阻塞本 turn 收尾——
-		// 多迭代 turn（如 22 步子代理）会产生 ~40 条增量消息，串行 await 网关写
-		// （IPC 往返 50-500ms/条）会在 turn 末造成数秒~分钟级卡死；网关不可达时
-		// 更糟（2026-07-25 日志实证：turn 末 writeMemory 洪泛 300+ 条阻塞收尾）。
-		// 注意：storeTurnObservations 内部先 seen.add(hash) 再写，后台写入期间
-		// 下一 turn 的 turn-start 外置不会重复写同内容。
-		if (RETRIEVAL_COMPACTION_ENABLED) {
-			const rpEnd = host.getActiveMemoryProvider();
-			if (rpEnd && (rpEnd as any).recallFormatted) {
-				void host._storeTurnObservations(rpEnd, request.agentId ?? 'default', request.sessionId ?? '', messages)
-					.catch(() => { /* 单条失败已在内部吞掉；此处兜底防 unhandled rejection */ });
-			}
-		}
+		// ─── 每轮 turn 结束：把本轮新增对话增量外置到记忆 ──────────────────
+		// 实现已迁出至 parts/turnFinalization.ts（fire-and-forget，绝不阻塞收尾）。
+		storeTurnObservationsAtEnd({
+			retrievalCompactionEnabled: RETRIEVAL_COMPACTION_ENABLED,
+			getActiveMemoryProvider: () => host.getActiveMemoryProvider(),
+			storeTurnObservations: (provider, agentId, sessionId, msgs) =>
+				host._storeTurnObservations(provider as any, agentId, sessionId, msgs as any[]),
+			agentId: request.agentId,
+			sessionId: request.sessionId,
+			messages,
+		});
 
-		if (iteration >= MAX_TOOL_ITERATIONS) {
+		if (loopState.iteration >= maxToolIterations) {
 			host._logService.warn(
-				`[AgentOS] Reached max tool iterations (${MAX_TOOL_ITERATIONS})` +
-				`${_wrapUpRoundDone ? ' — final wrap-up round was executed (model had a tool-free round to conclude)' : ' — WITHOUT a wrap-up round (aborted or errored out early)'}`
+				`[AgentOS] Reached max tool iterations (${maxToolIterations})` +
+				`${wrapUp().done ? ' — final wrap-up round was executed (model had a tool-free round to conclude)' : ' — WITHOUT a wrap-up round (aborted or errored out early)'}`
 			);
 			yield { type: 'done' };
 		}
@@ -4589,63 +3726,21 @@ function groupToolSchemaCosts(tools: ReadonlyArray<any>): {
 		// 注销计划队列句柄（覆盖正常结束/异常/generator return 全部退出路径）。
 		_unregisterPlanQueue();
 
+		// 注销本 turn 注册的钩子 handler。与 _unregisterPlanQueue 同姿态放在
+		// finally：hookBus 虽是 turn 局部对象（随 turn 一起被 GC），但 handler
+		// 闭包持有 memoryProvider 引用，abort / 异常路径下显式解绑更可预期。
+		disposeMemoryHooks();
+
 		// ── [ToolAudit] SUMMARY（2026-08-22）──────────────────────────────────
 		// 放在 finally：**必须覆盖 abort / 异常 / generator return 全部退出路径** ——
 		// 「工具用得不合理」的 turn 恰恰最常以中断收尾（撞硬超时、用户取消），
 		// 只在正常结束处打就会漏掉最该看的那些。
-		// 与 [FullRefresh] SUMMARY 同姿态：默认输出、不挂开关；只有存在告警
-		// （空结果率高 / 重复读 / 形态异常）才 warn，纯成本分布用 info。
-		try {
-			if (_audit.records.length > 0) {
-				const _auditReport = buildToolAuditReport({
-					records: _audit.records,
-					iterations: _audit.iterations,
-					wallMs: Date.now() - _audit.startedAt,
-					turnId: request.sessionId,
-					maxSingleToolStreak: _audit.maxSingleToolStreak,
-					singleToolStreakThreshold: _audit.singleToolStreakThreshold,
-					parallelizableInStreak: [..._audit.streakNames],
-					// 判据复用：探索类 = searchToolGroups 的两类**纯粹搜索**集合
-					// （TEXT ∪ STRUCTURAL，其文件头注释即「本表决定探索策略引导」）。
-					// 只读判定复用 isParallelSafeReadOnlyTool。绝不在审计模块另建工具分类表。
-					//
-					// ⚠⚠ 2026-08-22 两轮实证修正「探索」的边界（先后各犯一次方向相反的错误）：
-					//   · 初版含 `isParallelSafeReadOnlyTool` —— 它把 `file_read` 也算了进来，
-					//     而「改完读文件确认」是收敛的**表现**，不是「探索不收敛」；
-					//   · 中版再叠 `execute_code` / `terminal`（为抓 1787373914386 里
-					//     「python3 逐行试探」的绕过）—— 却把「npx tsc / git diff」这类
-					//     验证也算成探索。
-					// 实测（日志 1787381220642）「修改 webview 代码」任务后期是
-					//   patch×7 + file_read(确认) + execute_code(tsc 验证)，被误报为
-					//   `late-phase-exploration: 74% (14/19)` —— 该 turn 其实是健康的。
-					//
-					// 结论：`file_read` / `execute_code` / `terminal` 有**双重语义**
-					// （探索 vs 验证），按工具名无法区分，硬算必误伤。故「探索不收敛」
-					// 只统计语义纯粹的搜索工具：
-					//   - 搜索工具 = 只搜新信息，不存在「验证」语义 → 不会误报；
-					//   - 「python 试探」的空转危害已由 `allBlocked` 零进展治理覆盖
-					//     （1787377582459 修），不必再靠 late-phase 去抓；
-					//   - 「python 试探」的串行浪费本就不适合「并行提醒」缓解（验证命令
-					//     常有依赖顺序），late-phase 对它的价值本就有限。
-					// 注意 isReadOnlyTool 保持 isParallelSafeReadOnlyTool 不变（写类重复
-					// 是合法迭代，计入 dup 会误报）。
-					isExplorationTool: (n) => TEXT_SEARCH_TOOL_NAMES.has(n) || STRUCTURAL_SEARCH_TOOL_NAMES.has(n),
-					isReadOnlyTool: (n) => isParallelSafeReadOnlyTool(n),
-					guardrails: [..._audit.watermarks].map(([name, w]) => ({
-						name, max: w.max, threshold: w.threshold, fired: w.fired, hot: w.hot,
-					})),
-				});
-				const _auditLog = formatToolAuditLog(_auditReport);
-				if (_auditLog.level === 'warn') {
-					host._logService.warn(_auditLog.text);
-				} else {
-					host._logService.info(_auditLog.text);
-				}
-			}
-		} catch (auditError) {
-			// 诊断绝不阻断 turn 收尾
-			host._logService.warn('[ToolAudit] failed to build summary:', auditError);
-		}
+		// 实现（含探索/只读判据的实证注释）已迁出至 parts/turnFinalization.ts。
+		logToolAuditSummary({
+			audit: _audit,
+			logService: host._logService,
+			turnId: request.sessionId,
+		});
 	}
 		// 显式 return undefined：generator TReturn = AgentCommand | undefined，
 		// 覆盖函数末尾自然结束路径（对齐 TS7030 要求所有路径返回值）。

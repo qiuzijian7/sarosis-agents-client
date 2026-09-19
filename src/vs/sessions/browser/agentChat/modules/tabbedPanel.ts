@@ -9,7 +9,22 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { $, append, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
 import type {
 	IQueueItem,
+	IQueuePill,
 } from '../agentChatTypes.js';
+
+/**
+ * 队列 pill 的图标（与 composer 内 chip 的语义一致 ✓；未知形态退化为圆点 ✓）。
+ * 用 emoji 而非 codicon：本区域与 composer chip 一样属"轻量标记"⇒ 无需字体依赖 ✓。
+ */
+const QUEUE_PILL_ICON: Record<IQueuePill['kind'], string> = {
+	file: '📄',
+	image: '🖼',
+	folder: '📁',
+	snippet: '🧩',
+	log: '📜',
+	skill: '⚡',
+	workflow: '🧭',
+};
 
 // ── System message types ────────────────────────────────────────────────────
 export interface ISystemMsg {
@@ -314,11 +329,26 @@ export class TabbedPanelManager extends Disposable {
 		//     - done      → 文字删除线 + 半透明（.tbp-task-done）
 		//   对应的 `.tbp-task-status` CSS 规则已同步删除。
 
-		// Content
+		// Content（★ 2026-09-18：内容与 pills 一起放进「主栏」⇒ 不与右侧操作按钮争宽 ✗）
+		const main = document.createElement('div');
+		main.className = 'tbp-task-main';
+
 		const content = document.createElement('span');
 		content.className = 'tbp-task-content';
 		content.textContent = item.content;
-		row.appendChild(content);
+		main.appendChild(content);
+
+		// ★ 2026-09-18（用户需求）：**队列里也要显示 pill** ✓（代码片段 / 图片 / 文件 / 技能 / 工作流）
+		if (item.pills && item.pills.length > 0) {
+			const pillsRow = document.createElement('div');
+			pillsRow.className = 'tbp-task-pills';
+			for (const pill of item.pills) {
+				pillsRow.appendChild(this._createQueuePillEl(pill));
+			}
+			main.appendChild(pillsRow);
+		}
+
+		row.appendChild(main);
 
 		// Actions (only for pending)
 		if (status === 'pending') {
@@ -367,6 +397,36 @@ export class TabbedPanelManager extends Disposable {
 		}
 
 		return row;
+	}
+
+	/**
+	 * 队列项上的单个 pill（★ 2026-09-18 用户需求：队列里也要显示代码片段/图片/文件等 ✓）。
+	 *
+	 * 结构刻意与 composer 内的 chip 一致（图标 + 名称 + 可选 meta ✓）⇒ 用户排完队
+	 * 看到的 pill 与他在输入框里看到的**是同一套语义** ✓。
+	 */
+	private _createQueuePillEl(pill: IQueuePill): HTMLElement {
+		const chip = document.createElement('span');
+		chip.className = `tbp-task-pill tbp-task-pill-${pill.kind}`;
+
+		const icon = document.createElement('span');
+		icon.className = 'tbp-task-pill-icon';
+		icon.textContent = QUEUE_PILL_ICON[pill.kind] ?? '•';
+		chip.appendChild(icon);
+
+		const label = document.createElement('span');
+		label.className = 'tbp-task-pill-label';
+		label.textContent = pill.label;
+		label.title = pill.meta ? `${pill.label}（${pill.meta}）` : pill.label;
+		chip.appendChild(label);
+
+		if (pill.meta) {
+			const meta = document.createElement('span');
+			meta.className = 'tbp-task-pill-meta';
+			meta.textContent = pill.meta;
+			chip.appendChild(meta);
+		}
+		return chip;
 	}
 
 	// ── System message list ──

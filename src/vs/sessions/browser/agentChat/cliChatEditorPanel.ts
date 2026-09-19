@@ -24,6 +24,7 @@ import type {
 	IContextUsage,
 	ICheckpointInfo,
 	OrchestrationPlan,
+	AgentStatus,
 } from "./agentChatTypes.js";
 import type { IChatPanel, IChatPanelCallbacks } from "./iChatPanel.js";
 
@@ -205,6 +206,19 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 
 	getAgent(): IAgentInfo | null {
 		return this._agent;
+	}
+
+	patchAgent(agent: IAgentInfo): void {
+		// CLI 面板没有图形化 header，直接替换字段即可（定义变更只影响 prompt meta 行）
+		if (!this._agent || this._agent.id !== agent.id) { return; }
+		this._agent = agent;
+		this._renderPromptMeta();
+	}
+
+	setAgentStatus(status: AgentStatus): void {
+		// CLI 面板无状态圆点；仅记录字段，避免与 Chat 面板的 agent 实体状态脱节。
+		if (!this._agent || this._agent.status === status) { return; }
+		this._agent = { ...this._agent, status };
 	}
 
 	setAvailableAgents(_agents: IAgentInfo[]): void {

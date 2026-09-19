@@ -4,10 +4,11 @@ import { DisposableStore, IDisposable } from '../../../base/common/lifecycle.js'
 import type { IMarkdownString } from '../../../base/common/htmlContent.js';
 import { IAgentChatMessage, IMessagePart, IThinkingMessagePart } from './agentChatTypes.js';
 import { _patchNestedMarkdown, AgentChatPanelBase } from './agentChatPanel.base.js';
-import { AgentChatPanelDrawioCard } from './agentChatPanel.drawioCard.js';
+import { AgentChatPanelUnrealCard } from './agentChatPanel.unrealCard.js';
+import { chatPerf } from './agentChatPanel.perf.js';
 
 // Feature: markdown. Extracted from AgentChatPanelBase.
-export class AgentChatPanelMarkdown extends AgentChatPanelDrawioCard {
+export class AgentChatPanelMarkdown extends AgentChatPanelUnrealCard {
 
 /** 单块 Markdown 渲染的字符上限（超出则按行分片，见 _renderMarkdownSafe）。 */
 private static readonly _MD_CHUNK_MAX_CHARS = 512 * 1024;
@@ -26,6 +27,12 @@ protected override _cleanupMarkdownDisposables(root: HTMLElement): void {
 	}
 
 protected override _renderMarkdownContent(parent: HTMLElement, content: string, isStreaming: boolean = false): void {
+	// ★ 2026-09-18 性能埋点：markdown 渲染是消息构建里**最不可控**的一块
+	//（`marked.parse` + DOM 生成 + linkify），也是长消息最慢段的高概率候选。
+	// 本方法是**单出口**（无内部 return）⇒ start/end 即可，不必用壳+实现 ✓
+	// ⚠ detail 只取 `content.length`：content 可能达 8MB（内联图片 data URI 事故），
+	//   绝不能入 detail ✗
+	const tMd = chatPerf.start();
 	// 预处理：嵌套 markdown 代码块围栏冲突（移植自 Continue patchNestedMarkdown）。
 		// 模型返回 ```markdown 代码块内含 ``` 时，VS Code renderMarkdown 的围栏解析
 		// 会错位 → 内层代码块泄漏为正文。把外层 ```markdown``` 的围栏转成 ~~~ 避免冲突。
@@ -54,7 +61,8 @@ protected override _renderMarkdownContent(parent: HTMLElement, content: string, 
 		// including those added during streaming updates.
 		this._attachLinkInterceptor(parent);
 		this._linkifyPlainText(parent);
-	}
+		chatPerf.end('markdown.render', tMd, `len=${content.length} stream=${isStreaming ? 'y' : 'n'}`);
+		}
 
 	/**
 	 * ★ 2026-09-11：超长 content 分片 + 异常兜底渲染。
@@ -639,7 +647,19 @@ protected override _attachLinkInterceptor(parent: HTMLElement): void {
 	}
 
 protected override _renderPartsContent(bubble: HTMLElement, parts: readonly IMessagePart[], isStreaming: boolean, hostMsg?: IAgentChatMessage): void {
-		// ── Diag: 进入时输出 parts 概览 ──
+	// ★ 2026-09-18 性能埋点：**parts 遍历**是消息构建的主干（本方法内部逐 part 建 text 段 /
+	// 工具卡 / thinking 卡 / 子代理卡 ⇒ 其成本 ≈ markdown + 全部卡片之和）。
+	// 它有内部 return ⇒ 用「公开壳 + 私有实现」一处覆盖全部出口 ✓
+	// 与 `parts.render.*` 子标签（`markdown.render` / `card.create.*`）配合，可把最慢消息拆到段 ✓
+	return chatPerf.span(
+		'parts.render',
+		() => this._renderPartsContentImpl(bubble, parts, isStreaming, hostMsg),
+		`msg=${hostMsg?.id ?? ''} parts=${parts.length} stream=${isStreaming ? 'y' : 'n'}`,
+	);
+}
+
+private _renderPartsContentImpl(bubble: HTMLElement, parts: readonly IMessagePart[], isStreaming: boolean, hostMsg?: IAgentChatMessage): void {
+	// ── Diag: 进入时输出 parts 概览 ──
 		if ((window as any).__SAROSIS_PARTS_DIAG) {
 			const partsSummary = (parts as readonly any[]).map((p: any, i: number) => {
 				if (p.kind === 'text') return `[${i}] text len=${p.text.length}`;

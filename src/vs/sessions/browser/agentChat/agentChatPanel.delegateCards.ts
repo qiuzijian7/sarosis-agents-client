@@ -3,6 +3,7 @@ import { IToolCall, ISubAgentData, ISubAgentToolTrace } from './agentChatTypes.j
 import { formatSubAgentTask, cleanTracePreview, shortenTraceDetail, filterChildSubAgents } from './subAgentCardUtils.js';
 import { AgentChatPanelFileCards } from './agentChatPanel.fileCards.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
+import { appendFooterPill, formatCreditAmount, formatTokenCount } from './agentChatPanel.footerPills.js';
 
 /** 自 agentChatPanel.toolCards.ts 抽离（上帝对象拆分）。继承链见继承父类。 */
 export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCards {
@@ -266,6 +267,165 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 			const isExpanded = body.classList.toggle('tool-header-children-expanded');
 			const chev = titleContainer.querySelector('.tool-header-chevron');
 			if (chev) { chev.classList.toggle('tool-header-chevron-expanded', isExpanded); }
+			if (tc.id) { this._toolCallExpandState.set(tc.id, isExpanded); }
+		});
+
+		return wrapper;
+	}
+
+	/**
+	 * plan_register 定制卡片 —— **计划队列注册**（有序任务列表）。
+	 *
+	 * ## 为什么要独立卡片（而不复用 `_createPlanWorkflowCard`）
+	 * `update_plan` 是**软追踪**（仅 UI 卡片，状态由模型自己维护），而 `plan_register`
+	 * 把任务写进**本 turn 的执行队列**：主循环在每轮无工具调用时自动推进队列并注入
+	 * CURRENT TASK 提醒（见 `common/planQueueRegistry.ts` 与
+	 * `compatibilityTools.ts:114-117` 的工具注释）。因此这张卡的价值在**顺序**：
+	 * 让用户一眼看清「接下来会依次做什么、从哪一项开始」，而不是一堆步骤的完成度。
+	 *
+	 * ## 数据源
+	 * - **参数是唯一真源**：`args.tasks = [{ title, description, deliverable?, files? }]`
+	 *   （`compatibilityTools.ts:122-141` 的 inputSchema）。流式中参数可能仍是截断
+	 *   JSON ⇒ 一律走 `parseToolArgsLoose` 宽松修复链（同其它卡片）。
+	 * - **结果文本只用来区分三种结局**（`compatibilityTools.ts:155-164`）：
+	 *   · `✅ Registered N tasks…`（正常入队）
+	 *   · `No active execution queue…`（无活动 turn 队列 —— **降级**：需按序手动执行）
+	 *   · `Error: …`（参数无效）
+	 */
+	protected override _createPlanRegisterCard(tc: IToolCall, key: string): HTMLElement {
+		const isRunning = tc.status === 'running';
+		const isErr = tc.status === 'error';
+
+		let statusClass = 'tool-card-success';
+		if (isErr) { statusClass = 'tool-card-error'; }
+		else if (isRunning) { statusClass = 'tool-card-running'; }
+
+		// Void 统一壳（与 _createPlanWorkflowCard 同一套类，CSS 见 media/agentChat.css）
+		const wrapper = $(`.tool-header-wrapper.${statusClass}.tool-card-plan.plan-register-card`);
+		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
+
+		const header = append(wrapper, $('.tool-header'));
+		const row = append(header, $('.tool-header-row'));
+
+		// ── 左侧：chevron + 图标 + 标题 ──
+		const left = append(row, $('.tool-header-left'));
+		const titleContainer = append(left, $('.tool-header-title-container.tool-header-title-clickable'));
+		this._svgChevron(titleContainer, 'tool-header-chevron', 14);
+
+		append(titleContainer, $('span.tool-header-icon')).textContent =
+			isRunning ? '🗂️' : (isErr ? '🗂️❌' : '🗂️✅');
+
+		const titleEl = append(titleContainer, $('span.tool-header-title'));
+		titleEl.textContent = '注册计划队列';
+		if (isRunning) { titleEl.classList.add('shimmer'); }
+
+		const right = append(row, $('span.tool-header-right'));
+
+		// ── 任务列表：从**参数**解析（宽松修复链；纯函数、无副作用）──
+		const args: any = parseToolArgsLoose(tc.args);
+		const tasks: Array<{ title: string; description?: string; deliverable?: string; files?: string[] }> =
+			Array.isArray(args?.tasks)
+				? (args.tasks as unknown[]).map((t: any) => ({
+					title: String(t?.title ?? '').trim(),
+					description: typeof t?.description === 'string' ? t.description.trim() : undefined,
+					deliverable: typeof t?.deliverable === 'string' ? t.deliverable.trim() : undefined,
+					files: Array.isArray(t?.files) ? (t['files'] as unknown[]).map(String) : undefined,
+				})).filter((t: { title: string }) => t.title.length > 0)
+				: [];
+
+		// ── 结局判定（body 与右侧 pill 共用；**参数错优先于结果文本**）──
+		// ⚠ 顺序即优先级：若把「参数侧为空」放到结果分支之后，它会落进"已入库"的
+		// else，显示成『已写入本 turn 的执行队列』—— 把失败说成成功（本卡片定制
+		// 要消除的正是这类误读）。
+		const resultText = this._normalizeToolResultText(tc.result);
+		const isParamError = !isRunning && (isErr || tasks.length === 0);
+		// 工具自身的降级分支（compatibilityTools.ts:158-161）：无活动 turn 队列
+		// （非 agent loop 上下文）⇒ 任务清单只回给了模型，需要按序手动执行。
+		const isDegraded = !isRunning && !isParamError && /No active execution queue/i.test(resultText);
+
+		// ── body（dropdown）：默认展开 —— 顺序信息就是这张卡的全部价值 ──
+		const body = append(header, $('.tool-header-children'));
+		const chev = titleContainer.querySelector('.tool-header-chevron');
+		const defaultExpanded = !!(this._toolCallExpandState.get(tc.id) ?? true);
+		if (defaultExpanded) {
+			body.classList.add('tool-header-children-expanded');
+			chev?.classList.add('tool-header-chevron-expanded');
+			if (tc.id) { this._toolCallExpandState.set(tc.id, true); }
+		} else if (tc.id) {
+			this._toolCallExpandState.set(tc.id, false);
+		}
+
+		const MAX_TASKS_SHOWN = 12;
+		if (tasks.length > 0) {
+			append(body, $('.plan-register-meta')).textContent =
+				`共 ${tasks.length} 项任务 · 严格按序执行（完成一项并停止调用工具后自动推进）`;
+			const list = append(body, $('ol.plan-register-list'));
+			tasks.slice(0, MAX_TASKS_SHOWN).forEach((t, i) => {
+				const item = append(list, $('li.plan-register-item'));
+				append(item, $('span.plan-register-idx')).textContent = String(i + 1);
+
+				const main = append(item, $('div.plan-register-main'));
+				const titleRow = append(main, $('div.plan-register-title-row'));
+				append(titleRow, $('span.plan-register-title')).textContent = t.title;
+				if (i === 0) {
+					// 队列从第 0 项开始（compatibilityTools.ts:162 `setPlan` 后立即注入
+					// **首个任务**的 CURRENT TASK 提醒）⇒ 标注「起始任务」而非笼统「当前」，
+					// 因为卡片无法得知后续推进到了第几项，不该假装知道。
+					const start = append(titleRow, $('span.plan-register-start'));
+					start.textContent = '起始任务';
+					start.title = '队列从这一项开始；完成并停止调用工具后自动推进到下一项';
+				}
+				if (t.description) {
+					append(main, $('div.plan-register-desc')).textContent = t.description.slice(0, 160);
+				}
+				const chips = append(main, $('div.plan-register-chips'));
+				if (t.deliverable) {
+					append(chips, $('span.plan-register-chip.plan-register-deliverable')).textContent =
+						`交付物：${t.deliverable.slice(0, 60)}`;
+				}
+				if (t.files && t.files.length > 0) {
+					const names = t.files.slice(0, 3).map(f => f.split(/[\\/]/).pop() || f);
+					const more = t.files.length > 3 ? ` +${t.files.length - 3}` : '';
+					const chip = append(chips, $('span.plan-register-chip.plan-register-files'));
+					chip.textContent = `文件：${names.join(', ')}${more}`;
+					chip.title = t.files.join('\n');
+				}
+			});
+			if (tasks.length > MAX_TASKS_SHOWN) {
+				append(body, $('.plan-register-more')).textContent = `… 其余 ${tasks.length - MAX_TASKS_SHOWN} 项已省略`;
+			}
+		} else if (isRunning) {
+			append(body, $('.plan-progress')).textContent = '⏳ 正在注册计划队列...';
+		}
+
+		// ── 结局：只区分「参数错 / 降级 / 入库」三种，不做多余猜测 ──
+		if (isParamError) {
+			const errEl = append(body, $('.plan-register-warn.plan-register-warn-err'));
+			errEl.textContent = '⚠ 未注册任何任务：至少需要 1 项带 title 的任务';
+		} else if (isDegraded) {
+			// 必须显式提示，否则卡片外观与"已入队"一模一样（本次定制要消除的误读）。
+			const warn = append(body, $('.plan-register-warn'));
+			warn.textContent = '⚠ 当前没有活动执行队列（非 agent loop 上下文）—— 任务清单只回给了模型，需按上述顺序手动推进';
+		} else if (!isRunning) {
+			const summary = append(body, $('.plan-result-summary'));
+			const lines = resultText.split('\n').filter(l => l.trim());
+			summary.textContent = lines.slice(0, 2).join(' | ').slice(0, 240)
+				|| `已写入本 turn 的执行队列（${tasks.length} 项，按序自动推进）`;
+		}
+
+		right.textContent = isRunning ? '注册中…'
+			: isParamError ? '未注册'
+				: isDegraded ? '未入队（无执行队列）'
+					: `已注册 ${tasks.length} 项`;
+		if (typeof tc.duration === 'number') {
+			append(right, $('span.tool-header-duration')).textContent = this._formatDuration(tc.duration);
+		}
+
+		// 点击标题折叠/展开（与 searchCard / planWorkflow 一致）
+		titleContainer.addEventListener('click', () => {
+			const isExpanded = body.classList.toggle('tool-header-children-expanded');
+			const chevron = titleContainer.querySelector('.tool-header-chevron');
+			if (chevron) { chevron.classList.toggle('tool-header-chevron-expanded', isExpanded); }
 			if (tc.id) { this._toolCallExpandState.set(tc.id, isExpanded); }
 		});
 
@@ -561,19 +721,25 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		//   三项各自独立判空：无数据不渲染（不占位、不显示 0）。
 		{
 			const meta = append(wrapper, $('div.dlg-meta-row'));
+			// ★★ 2026-09-18 统一（用户要求「统一 token、耗时、积分显示样式」）：
+			//   此前这里是**唯一没跟上统一风格**的地方 —— 用 emoji 文本 `⏱ / ⚡ / 💳`
+			//   + `12.3k` 缩写，而 `.dlg-meta-item` 在 CSS 里**一条规则都没有** ✗
+			//   ⇒ 与主气泡/子代理卡的 `pill + codicon` 完全不同 ✗。
+			//   现全部走 `appendFooterPill()`：图标、类名、数字格式与其它展示位**同源** ✓
+			//   （token 由 `12.3k` 改为千分位全量 —— 三处口径一致且可核对 ✓）
+			//   `valueClass` 传空：本行是静态值（完成后不再变），无需抗抖动的 min-width ✓
 			if (typeof delegateDuration === 'number') {
-				append(meta, $('span.dlg-meta-item')).textContent = `⏱ ${this._formatDuration(delegateDuration)}`;
+				appendFooterPill(meta, 'duration', this._formatDuration(delegateDuration));
 			}
 			if (tokTotal > 0) {
-				const fmtTok = (n: number): string => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-				const tokEl = append(meta, $('span.dlg-meta-item'));
-				tokEl.textContent = `⚡ ${fmtTok(tokTotal)}`;
-				tokEl.title = `token 消耗：输入 ${tokIn.toLocaleString()} / 输出 ${tokOut.toLocaleString()} / 合计 ${tokTotal.toLocaleString()}`;
+				appendFooterPill(meta, 'tokens', formatTokenCount(tokTotal), {
+					title: `token 消耗：输入 ${tokIn.toLocaleString()} / 输出 ${tokOut.toLocaleString()} / 合计 ${tokTotal.toLocaleString()}`,
+				});
 			}
 			if (creditTotal > 0) {
-				const crEl = append(meta, $('span.dlg-meta-item'));
-				crEl.textContent = `💳 ${creditTotal.toFixed(2)}`;
-				crEl.title = `积分消耗：${creditTotal.toFixed(2)}`;
+				appendFooterPill(meta, 'credit', formatCreditAmount(creditTotal), {
+					title: `积分消耗：${formatCreditAmount(creditTotal)}`,
+				});
 			}
 			// ★ 用户需求：耗时/积分/token 三项**常驻**，子代理执行完毕后依旧显示。
 			//   此前「三项皆无 → meta.remove()」会让整行消失（数据链某环缺值即触发），
@@ -909,8 +1075,25 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		// 此处复用同款样式（.chat-footer-processing），挂到 footer 最右侧。
 		if (this._isSending && sa.status === 'running') {
 			const procWrap = append(saFooter, $('span.chat-footer-processing.sa-processing-indicator'));
+			// 2026-09-18：与主气泡同步——去掉「处理中」文字，仅留 spinner；
+			// tokens / 积分改为与完成态同款 pill（图标 + 数字）。
 			append(procWrap, $('span.chat-footer-processing-spinner.loading-spinner'));
-			append(procWrap, $('span.chat-footer-processing-label', undefined, '处理中'));
+			// 2026-09-17：与主气泡「处理中」一致的实时用量展示。
+			// 数据源为子代理快照字段（sa.tokensUsed / sa.creditUsed），而非
+			// msg.tokenUsage——两者由不同链路注入，不可混用。
+			const saTotal = (sa as { tokensUsed?: { total?: number } }).tokensUsed?.total;
+			const saCredit = (sa as { creditUsed?: number }).creditUsed;
+			if (typeof saTotal === 'number' && saTotal > 0) {
+				// ★ 2026-09-18 统一：走 `appendFooterPill()`（与主气泡处理中/完成态同源 ✓）
+				appendFooterPill(procWrap, 'tokens', formatTokenCount(saTotal), {
+					valueClass: 'chat-footer-processing-tokens',
+				});
+			}
+			if (typeof saCredit === 'number') {
+				appendFooterPill(procWrap, 'credit', formatCreditAmount(saCredit), {
+					valueClass: 'chat-footer-processing-credit',
+				});
+			}
 			procWrap.style.marginLeft = 'auto';
 			procWrap.dataset.saId = sa.id;
 		}

@@ -363,7 +363,18 @@ self.onmessage = async function(e) {
   } else if (msg.type === 'parse') {
     try {
       const lang = languages[msg.langName];
-      if (!lang) { self.postMessage({ type: 'parse-result', id: msg.id, nodes: [], edges: [] }); return; }
+      if (!lang) {
+        // ★★★ 2026-09-18（用户报「C++ 项目检索不到内容：535 个 .cpp/.h 全部 0 节点」）：**缺 grammar
+        // 绝不能静默返回空结果**。旧实现（用户实测 failed=0、日志一片绿）：
+        //   postMessage({ ..., nodes: [], edges: [] })   ← 不带 error/status
+        // ⇒ 调用方（pool.parse）据此判为「indexed（0 节点）」⇒ 索引摘要 indexed=535 failed=0、
+        //   制品被写成空图，用户只看到「尚无数据」，无从判断是「这目录没代码」还是「解析器没工作」。
+        // 带上 error + noGrammar 后：pool 记为 parse_error（failed++），service 会打「缺 grammar」告警。
+        self.postMessage({ type: 'parse-result', id: msg.id, nodes: [], edges: [], noGrammar: true,
+          error: 'no tree-sitter grammar loaded for language "' + msg.langName
+            + '" (missing tree-sitter-' + msg.langName + '.wasm — usually the install package omitted this language asset)' });
+        return;
+      }
       let parser = parserCache[msg.langName];
       if (!parser) { parser = new Parser(); parser.setLanguage(lang); parserCache[msg.langName] = parser; }
       const tree = parser.parse(msg.source);

@@ -323,6 +323,58 @@ protected override _renderHeader(): void {
 	);
 	}
 
+/**
+ * 轻量刷新 header：只替换 header 元素本身，不触碰消息区/输入区。
+ *
+ * 存在的理由：外部（Agent 设置页）修改了 agent 的 icon/name 后，
+ * NativeChatEditorPane 需要把变更同步到已打开的聊天框。而 setAgent() →
+ * _render() 会 clearNode 整个容器并重建消息列表，代价是滚动位置丢失 +
+ * 消息闪烁，对一个「只改了图标」的变更来说完全不可接受。
+ *
+ * 因此这里只做：移除旧 header → 用当前 _agent 重新 append 一个新 header。
+ * 消息区 DOM 完全不动。
+ */
+protected override _refreshHeaderOnly(): void {
+	if (!this._agent) { return; }
+	const oldHeader = this._container.querySelector('.chat-header');
+	if (!oldHeader) {
+		// 没有 header（如空状态）→ 交给 _render 完整重建
+		this._render();
+		return;
+	}
+	oldHeader.remove();
+	this._agentSelectorTrigger = null;
+	this._renderHeader();
+}
+
+/**
+ * 就地更新 agent 运行状态圆点（含角色行的状态文案），不重建 header。
+ *
+ * 为什么不用 `patchAgent()`：后者走 `_refreshHeaderOnly()` → 移除旧 header +
+ * 完整 `_renderHeader()`，对「只换圆点颜色」这种每次发送/结束都会发生的高频
+ * 变更过重，且会让下拉触发器等引用失效。这里直接改已渲染节点。
+ *
+ * 状态映射（2026-09-18 简化）：发送中 = working（绿·呼吸），其余一律 idle（灰）。
+ */
+protected override _refreshAgentStatusDot(status: AgentStatus): void {
+	const dot = this._container.querySelector<HTMLElement>(".chat-header-status-dot");
+	if (!dot) {
+		// header 尚未渲染（空状态）→ 无需更新，下次 _renderHeader 会用新 status
+		return;
+	}
+	const statusInfo = STATUS_MAP[status] || STATUS_MAP[AgentStatus.Idle];
+	dot.style.backgroundColor = statusInfo.dot;
+	dot.classList.toggle("animated", statusInfo.animated);
+
+	// 角色行文案是 `${role} · ${statusLabel}`，状态变化需同步，
+	// 否则圆点已变绿、文字还写着「空闲」。
+	const roleEl = this._container.querySelector<HTMLElement>(".chat-header-role");
+	if (roleEl && this._agent?.role) {
+		const roleText = this._agent.role.split(/[，,]/)[0] || "";
+		roleEl.textContent = `${roleText} · ${statusInfo.label}`;
+	}
+}
+
 protected override _updateHeaderSelectors(): void {
 		// 切换工作区/worktree 后轻量刷新 header 里两个选择器的 label（不重建 header）
 		if (this._workspaceTrigger) {

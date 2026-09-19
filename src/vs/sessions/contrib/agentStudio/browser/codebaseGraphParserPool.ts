@@ -46,6 +46,18 @@ export class CodebaseGraphParserPool {
 	private _workerTsWasm: Uint8Array | undefined;
 	private _workerLangWasms: Record<string, Uint8Array> | undefined;
 
+	/**
+	 * ★★★ 2026-09-18（用户报「C++ 项目检索不到内容」）：**读取失败的语言名**（如 `['cpp']`）。
+	 *
+	 * 旧实现在读 `tree-sitter-<lang>.wasm` 失败时用「catch 空吞 + 一句 skip-unavailable 注释」**静默吞掉**，
+	 * 只报一句不带语言名的 `N langs` ⇒ 缺 cpp grammar 时：所有 `.cpp/.h` 解析不出任何符号、
+	 * `failed=0`、日志一片绿、图谱为空 ✗✗（用户只能猜）。
+	 * 现在：逐语言记名 + 响亮告警，并暴露给上层（`CodebaseGraphService` 的「0 个符号」告警会直接点名）。
+	 */
+	private _missingLanguages: string[] = [];
+	/** 读取**成功**的语言名（诊断用：与 `missingLanguages` 一起给出完整画面）。 */
+	private _loadedLanguages: string[] = [];
+
 	constructor(
 		private readonly _buildWorkerCode: (tsJsContent: string) => string,
 		@IFileService private readonly _fileService: IFileService,
@@ -56,6 +68,16 @@ export class CodebaseGraphParserPool {
 	/** 已就绪的 Worker 列表（空 = 不可用，调用方应 fallback 主线程）。 */
 	get workers(): readonly Worker[] {
 		return this._parserWorkers;
+	}
+
+	/** 读取失败的 grammar 语言名（空 = 全部成功）。见 `_missingLanguages`。 */
+	get missingLanguages(): readonly string[] {
+		return this._missingLanguages;
+	}
+
+	/** 读取成功的 grammar 语言名。见 `_missingLanguages`。 */
+	get loadedLanguages(): readonly string[] {
+		return this._loadedLanguages;
 	}
 
 	/** 初始化池（幂等：并发调用共享同一个 init promise）。失败返回 false。 */
@@ -133,15 +155,30 @@ export class CodebaseGraphParserPool {
 			const tsWasmBytes = new Uint8Array((await this._fileService.readFile(tsWasmUri)).value.buffer);
 
 			// 3. 读取各语言的 WASM 文件
+			// ★★★ 2026-09-18（用户报「C++ 项目 535 个文件全部 0 节点」）：**不许静默吞掉读取失败**。
+			// 旧实现是 `catch { /* skip unavailable */ }` + 一句**不带语言名**的 `N langs` —— 于是缺 cpp
+			// grammar 时全部 `.cpp/.h` 解析不出符号、`failed=0`、日志一片绿 ✗✗（用户只能看到「尚无数据」）。
 			const langWasms: Record<string, Uint8Array> = {};
+			const langFailures: string[] = [];
+			this._missingLanguages = [];
+			this._loadedLanguages = [];
 			const langs = [...new Set(Object.values(EXTENSION_TO_WASM_LANG))];
 			for (const lang of langs) {
 				try {
 					const uri = FileAccess.asFileUri(`${wasmDir}/tree-sitter-${lang}.wasm`);
 					langWasms[lang] = new Uint8Array((await this._fileService.readFile(uri)).value.buffer);
-				} catch { /* skip unavailable */ }
+				} catch (err: any) {
+					langFailures.push(`${lang}(${err?.message || err})`);
+				}
 			}
-			this._logService.info('[CodebaseGraph]', `Worker pool: loaded tree-sitter.js (${tsJsContent.length}B), runtime WASM (${tsWasmBytes.length}B), ${Object.keys(langWasms).length} langs`);
+			this._loadedLanguages = Object.keys(langWasms);
+			this._missingLanguages = langFailures.map(f => f.substring(0, f.indexOf('(')));
+			this._logService.info('[CodebaseGraph]', `Worker pool: loaded tree-sitter.js (${tsJsContent.length}B), runtime WASM (${tsWasmBytes.length}B), ${this._loadedLanguages.length}/${langs.length} langs (${this._loadedLanguages.join(', ') || 'none'})`);
+			if (langFailures.length > 0) {
+				// 响亮告警：逐条点名 + 指向打包校验（这条日志就是「检索不到内容」的直接答案）
+				this._logService.warn('[CodebaseGraph]', `Worker pool: ${langFailures.length}/${langs.length} 个语言的 tree-sitter wasm **读取失败** ⇒ 这些语言的**所有**源文件都将解析不出符号（「检索不到内容 / 0 节点」的根因，属构建/打包缺陷）：${langFailures.join(', ')}` +
+					'（★ 多为安装包未包含 @vscode/tree-sitter-wasm 的对应语言文件；见 build/saros/strip-before-pack.mjs 的关键构件校验）');
+			}
 
 			// 4. 构建 Worker 代码 (AMD shim + tree-sitter.js + 解析逻辑)
 			const workerCode = this._buildWorkerCode(tsJsContent);

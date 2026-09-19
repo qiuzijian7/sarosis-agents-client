@@ -1,6 +1,7 @@
 import { Disposable, DisposableStore } from '../../../base/common/lifecycle.js';
 import { addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import type { IAgentChatMessage } from './agentChatTypes.js';
+import { chatPerf } from './agentChatPanel.perf.js';
 
 /**
  * Explicit contract the ScrollbarController needs from the owning chat panel.
@@ -53,6 +54,8 @@ export class ScrollbarController extends Disposable {
 	/** 内容脏标记：仅当消息容器 DOM 真变化时才读 scrollHeight 钉底（见 _streamContentObserver）。 */
 	private _streamContentDirty = true;
 	private _streamContentObserver: MutationObserver | undefined;
+	/** `scheduleRefreshScrollMarkers()` 的待执行句柄（rAF 合并，见该方法注释）。 */
+	private _refreshMarkersRaf: number | null = null;
 
 	constructor(private readonly _host: IScrollbarHost) {
 		super();
@@ -62,6 +65,7 @@ export class ScrollbarController extends Disposable {
 		if (this._streamScrollRaf !== null) { cancelAnimationFrame(this._streamScrollRaf); this._streamScrollRaf = null; }
 		if (this._scrollbarUpdateRaf !== null) { cancelAnimationFrame(this._scrollbarUpdateRaf); this._scrollbarUpdateRaf = null; }
 		if (this._pendingScrollToBottomRaf !== null) { cancelAnimationFrame(this._pendingScrollToBottomRaf); this._pendingScrollToBottomRaf = null; }
+		if (this._refreshMarkersRaf !== null) { cancelAnimationFrame(this._refreshMarkersRaf); this._refreshMarkersRaf = null; }
 		this._streamContentObserver?.disconnect();
 		this._streamContentObserver = undefined;
 		super.dispose();
@@ -159,6 +163,18 @@ export class ScrollbarController extends Disposable {
 	}
 
 	refreshScrollMarkers(): void {
+		// ★ 2026-09-18 性能埋点：把埋点**下沉到定义处**（原先只在 `_renderMessages` 的调用点量）——
+		// 这样 rAF 合并版、懒加载 chunk、CLI 模式重算等**所有调用点**都被计入 ✓
+		// 实测（日志 1789724924165）：本方法单次 **535~602ms**，是首屏卡顿的头号来源 ✗
+		// 它有内部早退（无 custom/el/track、trackHeight<=0）⇒ 用「公开壳 + 私有实现」覆盖全部出口 ✓
+		return chatPerf.span(
+			'scrollbar.refreshMarkers',
+			() => this._refreshScrollMarkersImpl(),
+			`msgs=${this._host.messages.length}`,
+		);
+	}
+
+	private _refreshScrollMarkersImpl(): void {
 		const custom = this._host.customScrollbar;
 		const el = this._host.messagesContainer;
 		const track = this._host.scrollbarTrack;
@@ -171,14 +187,41 @@ export class ScrollbarController extends Disposable {
 		const trackHeight = track.offsetHeight;
 		if (trackHeight <= 0 || el.scrollHeight <= 0) { return; }
 
+		// 2026-09-17 性能修复：原实现每个 user 消息都做
+		//   ① el.querySelector(`[data-msg-id=...]`) —— 属性选择器全子树扫描
+		//   ② msgEl.offsetTop                     —— 强制同步布局
+		// 且 ② 与紧随其后的 appendChild(写) 逐轮交错，导致第 i 轮读完布局马上
+		// 被自己写脏，第 i+1 轮再读时触发整容器 reflow。N 条 user 消息 ⇒ N 次
+		// 强制重排，滚动条标记越多越慢（用户报「历史多了发消息就卡」）。
+		//
+		// 现改为两阶段：先一次性读取全部 user 消息元素与几何（只读，浏览器合并
+		// 为一次布局），离开读阶段后再统一创建/插入标记（只写）。读→写不再交错。
+		const scrollHeight = el.scrollHeight;
+		// 单次查询建立 id → 元素索引，替代 N 次属性选择器扫描。
+		// 仅索引已渲染的 .chat-message（历史懒加载时未渲染的消息自然缺席，
+		// 与原实现 querySelector 返回 null 后 continue 的行为一致）。
+		const elementById = new Map<string, HTMLElement>();
+		for (const msgEl of Array.from(el.querySelectorAll<HTMLElement>('.chat-message[data-msg-id]'))) {
+			const id = msgEl.dataset.msgId;
+			if (id) { elementById.set(id, msgEl); }
+		}
+
+		// ── 阶段一：只读，收集 (消息, markerTop) ──
+		const pendingMarkers: Array<{ msg: IAgentChatMessage; markerTop: number }> = [];
 		for (const msg of this._host.messages) {
 			if (msg.role !== 'user') { continue; }
-			const msgEl = el.querySelector(`[data-msg-id="${msg.id}"]`) as HTMLElement | null;
+			const msgEl = elementById.get(msg.id);
 			if (!msgEl) { continue; }
 
-			const msgRatio = msgEl.offsetTop / el.scrollHeight;
-			const markerTop = msgRatio * trackHeight;
+			const msgRatio = msgEl.offsetTop / scrollHeight;
+			pendingMarkers.push({ msg, markerTop: msgRatio * trackHeight });
+		}
 
+		// ── 阶段二：只写，批量创建并插入标记 ──
+		// 用 DocumentFragment 一次性挂载，避免 N 次 appendChild 各自触发
+		// MutationObserver 回调与样式重算。
+		const markerFragment = document.createDocumentFragment();
+		for (const { msg, markerTop } of pendingMarkers) {
 			const marker = document.createElement('div');
 			marker.className = 'chat-scroll-marker';
 			marker.style.top = `${markerTop}px`;
@@ -210,11 +253,38 @@ export class ScrollbarController extends Disposable {
 				}),
 			);
 
-			custom.appendChild(marker);
+			markerFragment.appendChild(marker);
+		}
+
+		// 一次性挂载全部标记（单次 DOM 写）
+		if (markerFragment.childNodes.length > 0) {
+			custom.appendChild(markerFragment);
 		}
 
 		// Also update thumb (content may have changed scrollHeight)
 		this.updateScrollbarThumb();
+	}
+
+	/**
+	 * ★ 2026-09-18：rAF 合并版 {@link refreshScrollMarkers}。
+	 *
+	 * 与同步版的区别只在"何时做"：同一帧内的多次请求合并成一次。
+	 *
+	 * 背景（用户报「多聊天框切换聊天框输入框卡顿」）：`addMessage()` 每新增一条消息
+	 * 都同步调一次 `refreshScrollMarkers()`，而它的成本是 **O(消息区 DOM)**：
+	 * 一次 `querySelectorAll('.chat-message[data-msg-id]')` + 每条 user 消息一个
+	 * marker 元素（3 个事件监听器）+ 一次 layout 读取 + `updateScrollbarThumb()`。
+	 * 流式期间 `addMessage` 是**成簇**到达的（工具卡 / 子代理卡连续插入），
+	 * 多聊天框并存时这些成本会叠加在同一主线程上 ⇒ 交互（点击/切换）被排在队尾。
+	 *
+	 * 需要"立刻反映"的场合（如跳转到某条消息后）仍应直接调同步版。
+	 */
+	scheduleRefreshScrollMarkers(): void {
+		if (this._refreshMarkersRaf !== null) { return; }
+		this._refreshMarkersRaf = requestAnimationFrame(() => {
+			this._refreshMarkersRaf = null;
+			this.refreshScrollMarkers();
+		});
 	}
 
 	updateScrollBadge(): void {

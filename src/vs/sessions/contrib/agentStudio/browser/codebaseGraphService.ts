@@ -51,7 +51,7 @@ import { TraceIngester } from './codebaseGraphTraces.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher, CodebaseGraphChangeEvent } from './codebaseGraphWatcher.js';
 import { CodebaseGraphIncrementalIndexer } from './codebaseGraphIncremental.js';
 import { shouldRecordHashAfterParse, EXTENSION_TO_WASM_LANG, AST_TO_NODE_TYPE, planForeignProjectPrune } from '../common/codebaseIndexDefaults.js';
-import { wsStage } from './wsSwitchDiag.js';
+import { takeMaxBlockMs, wsStage } from './wsSwitchDiag.js';
 import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
 import { CodebaseGraphExcludeResolver } from './codebaseGraphExcludeResolver.js';
 import { CodebaseGraphScanner } from './codebaseGraphScanner.js';
@@ -260,6 +260,19 @@ export interface ICodebaseGraphService {
 	 * @param rebuildBM25 合并完成后是否重建 BM25（多 folder 建议全部合并后仅最后一次重建）
 	 */
 	loadGraphMerge(sourcePath: string, projectOverride?: string, rebuildBM25?: boolean): Promise<boolean>;
+
+	/**
+	 * ★★★ 2026-09-18（P1-1）：「制品解析可跳过」判据（实现见 `CodebaseGraphService.canSkipArtifactParse`）。
+	 * 主进程 SQLite 已有该项目、且节点数 **≥** `artifact.json` 的 `node_count` ⇒ 返回 true；
+	 * 拿不到计数 / 判据异常 ⇒ **false**（保守：照旧解析制品）。
+	 */
+	canSkipArtifactParse(project: string, graphFilePath: string): Promise<boolean>;
+
+	/**
+	 * ★★★ 2026-09-18（P1-1 步骤3）：从 **SQLite 快照制品**（队友共享 / 新机器冷启动）分页载入内存 store。
+	 * 与原产物（gzip+JSON）相比**完全不解析 JSON** ✓；载入收尾释放只读快照实例。
+	 */
+	loadSnapshotArtifact(dbPath: string): Promise<boolean>;
 
 	/**
 	 * 等待所有进行中的图谱加载（loadGraphMerge）完成后再返回（带超时保护）。
@@ -1119,8 +1132,21 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			}
 		}
 
-		// 重建 FTS5
-		await this._sqliteBackend.rebuildFTS();
+		// ★★★ 2026-09-18（P0 性能）：**删除这里的全量 FTS5 重建** —— 经查证它是**纯重复劳动**。
+		//
+		// 旧实现在此处调 `rebuildFTS()`（`INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')`），
+		// 语义 = 「把整个 nodes 表重读一遍 + 重建整棵倒排索引」。但：
+		//   ① 上面的 `upsertNodesBatch`（service:1097）→ `upsertNode` **逐节点**已写好 FTS
+		//      （`_upsertFTS`，见 node/codebaseGraphSqliteStore.ts:433 / 448-469）；
+		//   ② 本方法开头 `deleteProject`（:1074）也已清掉本项目的 FTS 行
+		//      （store:566，且在删 nodes:569 **之前**，满足 external content 的删除语义）；
+		// ⇒ 这里重建出来的索引与「什么都不做」**逐条相同**，代价却是整库重索引 ✗✗
+		//   （大仓上正是同步收尾最贵的一段；同 BM25 那次一样属"重复劳动"型浪费）。
+		//
+		// 一致性依据（勿绕过）：批量写必走 `upsertNode` ⇒ 必调 `_upsertFTS`；
+		// `_upsertFTS` 失败会先 DELETE+INSERT 重试、再失败即抛（不静默缺行）。
+		// `rebuildFTS()` 仍保留，供整库修复/手工导入等场景显式调用。
+		// ⚠ 将来若出现「批量写 nodes 但不走 upsertNode」的新路径，必须回来重新评估此处。
 		// 重建后 WAL checkpoint（TRUNCATE）压缩 WAL——否则大同步后 WAL 达数百 MB，读查询要合并 WAL 显著变慢
 		await this._sqliteBackend.checkpoint();
 
@@ -1146,7 +1172,6 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private async _syncIncrementalToSqlite(project: string, changedRels: string[]): Promise<void> {
 		if (!this._sqliteBackendEnabled || changedRels.length === 0) { return; }
 		const store = this._graph.store;
-		const changedSet = new Set(changedRels);
 		const tStart = Date.now();
 		try {
 			// 1. 删除变更文件的旧节点/边/FTS（sqlite 侧，含其他文件指向变更节点的边）
@@ -1156,8 +1181,18 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			// 2. 收集变更文件的内存节点（显式 id = 内存 id，与 sqlite id 保持一致）
 			const nodes: GraphNode[] = [];
 			const changedNodeIds = new Set<number>();
-			for (const n of store.getAllNodes()) {
-				if (n.project === project && n.filePath && changedSet.has(n.filePath)) {
+			// ★★ 2026-09-18 性能修复（**2026-09-19 重放** —— 本文件今日被并行会话覆盖过一次 ✗）：
+			// **按文件索引取节点**，不再全图遍历 ✗✗
+			// 旧实现 `for (const n of store.getAllNodes())` + `changedSet.has(n.filePath)`
+			// ⇒ 每轮增量都要**扫完整张图**（真机 181,014 节点 ✗），成本 ∝ **图规模**、
+			// 与「这次改了几个文件」无关 ✗ —— 这正是该段耗时剧烈波动的原因：
+			//   · 1 个文件 → 197 / 250ms；3 个文件 → 503ms；同一轮 551 节点 → **1622ms** ✗
+			// 改用 `findNodesByFile(project, rel)`（走 `_nodesByFile` 索引 ⇒ O(该文件节点数) ✓）。
+			// 语义等价（同 project + 同 filePath ⇒ 同一批节点 ✓）；⚠ `new Set()` 不能省 ✗：
+			// 调用方传的是 `[...deleted, ...modified, ...added]`（可能同路径重复 ✓），
+			// 旧实现的 `changedSet` 顺带去重 ✓，直接遍历会让同一节点 push 多次（日志与批量翻倍 ✗）
+			for (const rel of new Set(changedRels)) {
+				for (const n of store.findNodesByFile(project, rel)) {
 					nodes.push({
 						id: String(n.id),
 						name: n.name,
@@ -1203,6 +1238,24 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	}
 
 	/**
+	 * ★★★ 2026-09-18（P1-1 步骤3）：从 **SQLite 快照制品**载入（供「队友共享制品 / 新机器冷启动」用）。
+	 *
+	 * 与既有 JSON 制品路径的区别：**完全不解析 JSON** —— 由主进程按路径开一个**只读**实例，
+	 * 按 keyset 分页把节点/边送过来（分页 + 8ms 切片 + 进度上报全复用 `_loadGraphFromSqlite`）✓。
+	 * 载入收尾释放只读实例（`closeSnapshot`），避免长期占 fd / 页缓存。
+	 *
+	 * ⚠ 不改变「谁权威」：这只是一种**载入来源**，内存 store 的语义与其它路径一致 ✓；
+	 *   缓存库与本机 SQLite 的关系、漂移自愈等均由既有机制负责，本方法不参与 ✓。
+	 */
+	async loadSnapshotArtifact(dbPath: string): Promise<boolean> {
+		try {
+			return await this._loadGraphFromSqlite({ snapshotDbPath: dbPath });
+		} finally {
+			try { await this._sqliteBackend.closeSnapshot(dbPath); } catch { /* 未打开过则无需关闭 */ }
+		}
+	}
+
+	/**
 	 * 注意：历史上有"同步后自动释放内存 store（_freeInMemoryStore）"以腾出 V8 堆。
 	 * SQLite 默认开启后【不】自动释放——GotoImpl/ListMethods 等同步路径依赖
 	 * hasGraphData()/searchGraph() 的内存数据，释放会让图谱在这些入口"消失"。
@@ -1217,8 +1270,29 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 * 仅在使用者显式调用分析工具时触发（ensureGraph），首次加载后 store 保持 populated，
 	 * 后续调用不重复加载。交互式读路径（viz/search/node）继续走 async SQLite 重载。
 	 */
-	private async _loadGraphFromSqlite(): Promise<boolean> {
+	private async _loadGraphFromSqlite(opts?: { snapshotDbPath?: string }): Promise<boolean> {
 		if (!this._sqliteBackendEnabled) { return false; }
+		// ★★★ 2026-09-18（P1-1 步骤3）：**「从哪个 db 载入」参数化** ——
+		//   · 不传 `snapshotDbPath`：读**本机缓存库**（原行为，零变化 ✓）；
+		//   · 传了：读**只读快照制品**（队友共享 / 新机器冷启动）—— 主进程按路径另开只读实例
+		//     （`snapshot*` 那组 IPC，见 host 的 `_snapshotStore`）。
+		// 两条路**分页语义完全相同**（同一个 store 类 + 同一套 keyset 游标）⇒ 下面的循环只换 backend ✓
+		const snap = opts?.snapshotDbPath;
+		const backend = snap
+			? {
+				listProjects: () => this._sqliteBackend.snapshotListProjects(snap),
+				getAllNodes: (p: string, limit: number, offset: number | undefined, afterId: number | undefined) =>
+					this._sqliteBackend.snapshotGetAllNodes(snap, p, limit, offset, afterId),
+				getAllEdges: (p: string, limit: number, offset: number | undefined, afterId: number | undefined) =>
+					this._sqliteBackend.snapshotGetAllEdges(snap, p, limit, offset, afterId),
+			}
+			: {
+				listProjects: () => this._sqliteBackend.listProjects(),
+				getAllNodes: (p: string, limit: number, offset: number | undefined, afterId: number | undefined) =>
+					this._sqliteBackend.getAllNodes(p, limit, offset, afterId),
+				getAllEdges: (p: string, limit: number, offset: number | undefined, afterId: number | undefined) =>
+					this._sqliteBackend.getAllEdges(p, limit, offset, afterId),
+			};
 		const store = this._graph.store;
 		// 用「当前工作区项目」而不是 `_projectName`：后者可能被并发 merge 钉在别的工作区上
 		// （见 `_resolveActiveProject`），会让下面的空图守卫与节点归属判断全部错位。
@@ -1232,7 +1306,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// ⚠ 2026-09-15 修：旧实现直接 `listProjects()` **全量**加载 —— 主进程 SQLite 是跨工作区
 		// 共享的持久层，里面还留着历史工作区的项目（实测 S1Game 34 万 + UE5EA 78 万），
 		// 全灌进内存既污染检索，也是 UI 卡死的根因。现按当前工作区 folder 收敛。
-		const allProjects = await this._sqliteBackend.listProjects();
+		const allProjects = await backend.listProjects();
 		const wsProjects = this._workspaceProjects();
 		const projectsToLoad = wsProjects.length > 0
 			? allProjects.map(p => p.name).filter(n => wsProjects.includes(n))
@@ -1259,7 +1333,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				// S1Game 34 万 / 本仓 17.6 万），展开成函数实参会直接抛
 				// `Maximum call stack size exceeded`（V8 实参上限约 6~12 万）——
 				// 这正是 2026-09-16 用户日志 `20260916T102421` 的根因。逐条处理即可，无数量上限。
-				const batch = await this._sqliteBackend.getAllNodes(p, SQLITE_LOAD_PAGE_SIZE, undefined, cursor);
+				const batch = await backend.getAllNodes(p, SQLITE_LOAD_PAGE_SIZE, undefined, cursor);
 				if (batch.length === 0) { break; }
 				for (const node of batch) {
 					const id = Number(node.id);
@@ -1297,7 +1371,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			let cursor: number | undefined;
 			let sliceStart = performance.now();
 			for (;;) {
-				const batch = await this._sqliteBackend.getAllEdges(p, SQLITE_LOAD_PAGE_SIZE, undefined, cursor);
+				const batch = await backend.getAllEdges(p, SQLITE_LOAD_PAGE_SIZE, undefined, cursor);
 				if (batch.length === 0) { break; }
 				for (const e of batch) {
 					store.insertEdge({
@@ -1326,7 +1400,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		store.setDeferBM25(false);
 		// force=true：加载路径无脏集，增量模式会空转使 BM25 为空
-		await store.rebuildBM25(undefined, true);
+		// ★ 2026-09-18（P0 性能收口）：本方法**只在** `_sqliteBackendEnabled` 时可达（见开头）⇒
+		// 检索由 FTS5 提供、内存倒排为纯灾备 ⇒ 不再无条件重建（这条是「按需载入」路径，会被多次
+		// 触发，每次都白付 9s 级主线程重建 ✗）。见 `_rebuildBM25OrDefer`。
+		await this._rebuildBM25OrDefer(`SQLite 按需载入（${loadedNodes} 节点 / ${loadedEdges} 边）`);
 
 		const dur = Date.now() - tStart;
 		// 终态行（前缀常量）：UI 据此清掉「正在加载…」提示并刷新列表（本路径没有独立完成事件）
@@ -1518,7 +1595,20 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 */
 	/** 初始化池（委托 CodebaseGraphParserPool；失败返回 false → 调用方 fallback 主线程）。 */
 	private async _ensureWorkerPool(): Promise<boolean> {
-		return this._parserPool.ensure();
+		// ★★★ 2026-09-18（用户报「C++ 项目检索不到内容」）：**缺 grammar 必须在索引开始前就点名** ——
+		// 否则这些语言的源文件注定解析出 0 个符号，而用户只会看到「检索不到内容」：
+		// 实测 535 个 .cpp/.h 全部 0 节点、`failed=0`、日志一片绿 ✗（旧实现把这些记成 `indexed`）。
+		// 消费 `missingLanguages`（池子在读取 wasm 失败时逐语言记名，见 `CodebaseGraphParserPool`）。
+		return this._parserPool.ensure().then(ready => {
+			const missing = this._parserPool.missingLanguages;
+			if (missing.length > 0) {
+				this._logService.warn('[CodebaseGraph]',
+					`本次索引缺少 ${missing.length} 个语言的 tree-sitter grammar：${missing.join(', ')}` +
+					` —— 这些语言的源文件**本次会解析出 0 个符号**（属构建/打包缺陷，不是「该目录没有代码」）；` +
+					`已加载：${this._parserPool.loadedLanguages.join(', ') || 'none'}`);
+			}
+			return ready;
+		});
 	}
 
 	/**
@@ -1555,6 +1645,61 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	}
 
 	// ─── Main Index Method ──────────────────────────────────────────────
+
+	/** 每轮索引的「内存超预算」只告警一次（防刷屏）；见 `_reportGraphMemory`。 */
+	private _memBudgetWarned = false;
+
+	/**
+	 * ★★★ 2026-09-19（P1-5 内存预算）：图谱内存预算（字节）。
+	 *
+	 * 对齐 CBM `mem.c:184-247` 的 RAM 分档**思想**（不搬其预算引擎/准入屏障那套复杂度）：
+	 * 先看配置，未设则按设备内存分档。配置项是**权威旋钮**（`saros.codebaseGraph.memoryBudgetMb`，
+	 * 0 = 自动）—— 因为 renderer 侧只能拿到 `navigator.deviceMemory`（Chromium，粒度粗且封顶 8 ✗）。
+	 */
+	private _graphMemoryBudgetBytes(): number {
+		const cfgMb = this._configurationService.getValue<number>('saros.codebaseGraph.memoryBudgetMb') ?? 0;
+		if (cfgMb > 0) { return cfgMb * 1024 * 1024; }
+		const devGb = (navigator as unknown as { deviceMemory?: number }).deviceMemory ?? 0;
+		const tierMb = devGb > 0 ? (devGb <= 4 ? 256 : devGb <= 8 ? 512 : 768) : 512;
+		return tierMb * 1024 * 1024;
+	}
+
+	/**
+	 * 现用内存估算。优先 Chromium `performance.memory.usedJSHeapSize`（Electron renderer 可用，
+	 * 注意它是**整个 renderer 堆**而非图谱独占 ⇒ 只作量级判据 ✓）；拿不到时退化到规模估算。
+	 * ⚠ 两者都**不是精确账**，用途是「超预算即响亮告警」，不是计费 —— 别拿它做精确断言。
+	 */
+	private _graphMemoryUsedBytes(): { usedBytes: number; source: string } {
+		const m = (performance as unknown as { memory?: { usedJSHeapSize?: number } }).memory;
+		if (m && typeof m.usedJSHeapSize === 'number' && m.usedJSHeapSize > 0) {
+			return { usedBytes: m.usedJSHeapSize, source: 'usedJSHeapSize(整个 renderer 堆)' };
+		}
+		// 退化路径：按规模粗估（口径取自本仓堆快照的量级，仅作参考 ✗ 不精确）
+		const nodes = this._graph.store.getNodeCount();
+		const edges = this._graph.store.getEdgeCount();
+		return { usedBytes: nodes * 200 + edges * 80, source: '规模粗估(节点/边)' };
+	}
+
+	/**
+	 * **阶段边界**的内存检查（挂进 `_seg`，覆盖增量索引的每个阶段）。
+	 *
+	 * 契约：**超预算必须响亮告警**（每轮一次，防刷屏）—— 本仓「静默 0 / 静默降级」类事故的共同教训是
+	 * 「有问题但没人知道」✗。返回 `已用/上限` 文本供对账行使用（返回文本与是否告警**无关** ✓）。
+	 */
+	private _reportGraphMemory(stage: string): string {
+		const budget = this._graphMemoryBudgetBytes();
+		const { usedBytes, source } = this._graphMemoryUsedBytes();
+		const usedMb = usedBytes / 1048576;
+		const budgetMb = budget / 1048576;
+		const text = `${usedMb.toFixed(0)}MB/${budgetMb.toFixed(0)}MB`;
+		if (usedBytes > budget && !this._memBudgetWarned) {
+			this._memBudgetWarned = true;
+			this._logService.warn('[CodebaseGraph]', `★ 内存超预算（${text} @ 阶段「${stage}」，来源=${source}）`
+				+ ` ⇒ 索引已进入内存压力区。可重建结构（内存 BM25 / layout）按需重建、不常驻；`
+				+ `若要放宽请调 \`saros.codebaseGraph.memoryBudgetMb\`（0=自动按设备分档）✓`);
+		}
+		return text;
+	}
 
 	async indexWorkspace(rootPath: string, config: IIndexConfig, token?: CancellationToken): Promise<IIndexResult> {
 		// [TRACE] 追踪 indexWorkspace 的所有调用入口，帮助定位"启动时总是自动重新索引"的来源
@@ -1770,15 +1915,15 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		// 批量重建 BM25 索引
 		this._graph.store.setDeferBM25(false);
-		this._onDidIndexProgress.fire(`📝 构建 BM25 索引 (${nodesExtracted} 节点)...`);
-		await new Promise<void>(resolve => setTimeout(resolve, 0));
 		// 时间切片重建（async，内部每 1000 节点 yield，避免大图冻结 UI）。
 		// force=true：全量索引是整图从零构建，按全图口径重建（进度分母也才是全图节点数）
-		await this._graph.store.rebuildBM25((done, total) => {
+		// ★ 2026-09-18（P0 性能收口）：检索走 FTS5 时**不建**内存倒排 —— 否则每次全量索引
+		// 都要在主线程白付一次 9s 级重建（进度条也会显示一段用户并不需要的等待）。见 `_rebuildBM25OrDefer`。
+		await this._rebuildBM25OrDefer(`全量索引收尾（${nodesExtracted} 节点）`, (done, total) => {
 			if (done % 50000 === 0 || done === total) {
 				this._onDidIndexProgress.fire(`📝 BM25 索引: ${done}/${total}...`);
 			}
-		}, true);
+		});
 
 			// 3. Match calls to definitions
 			this._onDidIndexProgress.fire('🔗 匹配调用关系...');
@@ -2043,9 +2188,17 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		const _segMarks: string[] = [];
 		const _seg = (name: string): void => {
 			const now = Date.now();
-			_segMarks.push(`${name}=${now - _segStart}ms`);
+			// ★ 2026-09-19：段耗时（含 await）**不等于**主线程被占 ⇒ 一并记「该段内最长连续占用」
+			//（`takeMaxBlockMs()` 读+清零，由看门狗喂 ✓）。⚠ 别用 `asyncSlice.takeMaxSliceMs()`：
+			// 它只在切片循环被喂 ⇒ 这些阶段多数不走切片 ⇒ 必然假阴性 ✗（实测 8 段全无标记 ✗）
+			const blockMs = Math.round(takeMaxBlockMs());
+			_segMarks.push(`${name}=${now - _segStart}ms${blockMs > 12 ? `[阻塞${blockMs}ms]` : ''}`);
 			_segStart = now;
+			// ★ 2026-09-19（P1-5）：**阶段边界**顺带做内存检查（超预算即在**出现问题的那个阶段**告警，
+			// 而不是结束后让用户去猜是哪一段吃掉了内存 ✗）。成本仅一次 `performance.memory` 读取 ✓
+			this._reportGraphMemory(name);
 		};
+		this._memBudgetWarned = false;   // 每轮重置「只告警一次」闸（见 `_reportGraphMemory`）
 		this._isIndexing = true;
 		this._indexCts = cts;
 
@@ -2260,9 +2413,18 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			this._graph.store.setDeferBM25(false);
 			// 增量模式（force=false）：只刷新 defer 期间累积的脏集（本次变更的节点），
 			// 而非 clear() + 遍历全图 12.4w 节点——这是增量索引卡顿的最大单点之一。
-			await this._graph.store.rebuildBM25();
-			this._graph.store.checkpoint();
-			_seg('BM25增量重建+checkpoint');
+			// ★ 2026-09-18（P0 性能收口）：检索走 FTS5 时内存倒排**无人查询**（同步 searchGraph
+			// 无外部调用者，见 `_rebuildBM25OrDefer`）⇒ 增量维护也一并跳过：脏集留待「按需全量重建」
+			// 时被 `force=true` 统一消化（它开头就 `clear()` 脏集，不会无界增长）。
+			// ⚠ 这里**不**置「按需重建」标记 —— 若此前已按需建好，置标记会让它下次白重建一遍 ✗。
+			if (this._sqliteBackendEnabled) {
+				this._graph.store.checkpoint();
+				_seg('BM25跳过(FTS5)+checkpoint');
+			} else {
+				await this._graph.store.rebuildBM25();
+				this._graph.store.checkpoint();
+				_seg('BM25增量重建+checkpoint');
+			}
 
 			// 增量克隆检测：只对本次重解析的新节点做「新节点 vs 全量」配对（insertEdge
 			// 按端点去重，天然幂等）。旧实现 `_runSimilarityPass()` 无参全量扫 12.4w 节点
@@ -2304,7 +2466,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			// （如 deleteByFile 循环、文件哈希 stat、进度事件派发等）。
 			const _totalMs = Date.now() - startTime;
 			const _sumMs = _segMarks.reduce((acc, m) => acc + parseInt(m.slice(m.lastIndexOf('=') + 1), 10), 0);
-			this._logService.info('[CodebaseGraph]', `增量索引阶段耗时: ${_segMarks.join(' | ')} | 合计=${_sumMs}ms / 总=${_totalMs}ms / 未覆盖=${_totalMs - _sumMs}ms`);
+			this._logService.info('[CodebaseGraph]', `增量索引阶段耗时: ${_segMarks.join(' | ')} | 合计=${_sumMs}ms / 总=${_totalMs}ms / 未覆盖=${_totalMs - _sumMs}ms | 内存=${this._reportGraphMemory('增量索引收尾')}`);
 			// 0 节点诊断：仅在实际发生时输出，避免正常路径噪音。
 			if (_zeroNodeFiles.length > 0) {
 				this._logService.info('[CodebaseGraph]', `增量解析 0 节点文件 ${_zeroNodeFiles.length}/${toParseRel.length}: ${_zeroNodeFiles.slice(0, 5).join(', ')}${_zeroNodeFiles.length > 5 ? ` ...(另${_zeroNodeFiles.length - 5}个)` : ''}`);
@@ -2465,14 +2627,69 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				return;
 			}
 
-			let lastLoggedMB = 0;
-			await persistence.save(this._graph.store, artifactFile.fsPath, project, { slim: true }, (writtenMB) => {
-				// 每 32MB 报一次保存进度（避免大图谱保存期间 UI 看似假死）
-				if (writtenMB - lastLoggedMB >= 32) {
-					lastLoggedMB = writtenMB;
-					this._onDidIndexProgress.fire(`💾 保存图谱: ${writtenMB.toFixed(0)} MB...`);
+			// ★★★ 2026-09-18（P1-1 第二步+）：制品写出策略 = `saros.codebaseGraph.artifactFormat`
+			//   · `'json'`（**默认** —— 行为与改动前**完全一致**，随时可回退 ✓）：流式 gzip+JSON，
+			//     代价是 renderer 主线程要序列化整张图（大图数秒 + 内存峰值 ✗）；
+			//   · `'sqlite'`：**只写 SQLite 快照**（主进程 `VACUUM INTO` ⇒ renderer **零序列化** ✓）；
+			//   · `'both'`：两份都写（迁移期用；读侧仍走既有 JSON 路径）。
+			// ⚠ 顺序是「先快照 → **校验节点数** → 再决定跳过 JSON」：快照失败 / 计数不符 ⇒ **回退写 JSON** ✓
+			//   （绝不允许因为省时间而留下一个空的/半截的制品 —— 本仓有过 99 字节毁图的先例 ✗）。
+			// ⚠⚠ `artifact.json`（含 `node_count`）**无论如何都要写**：它是 P1-1 步骤 1
+			//   `canSkipArtifactParse()` 的**唯一数据源**，漏写会让「SQLite 不落后 ⇒ 不解析制品」直接失效 ✗。
+			const artifactFormat = this._configurationService.getValue<string>('saros.codebaseGraph.artifactFormat') ?? 'json';
+			const wantSnapshot = this._sqliteBackendEnabled && (artifactFormat === 'sqlite' || artifactFormat === 'both');
+			const snapPath = artifactFile.fsPath.replace(/graph\.db\.\w+$/, 'graph.db.sqlite');
+			let snapshotOk = false;
+			const expectedNodes = savedCount;
+			const expectedEdges = project ? this._graph.store.getEdgeCount(project) : this._graph.store.getEdgeCount();
+			if (wantSnapshot) {
+				const tmpPath = snapPath + '.tmp';
+				try {
+					// VACUUM INTO 要求目标文件**不存在**（SQLite 规定）
+					try { await this._fileService.del(URI.file(tmpPath)); } catch { /* 不存在即可 */ }
+					const snap = await this._sqliteBackend.exportSnapshot(tmpPath);
+					// ★ 校验：快照必须真的装下本次要保存的规模，否则不许跳过 JSON 写盘
+					if (snap.nodeCount <= 0 || snap.nodeCount < expectedNodes) {
+						throw new Error(`snapshot node count mismatch: snapshot=${snap.nodeCount} expected>=${expectedNodes}`);
+					}
+					await this._fileService.move(URI.file(tmpPath), URI.file(snapPath), true);
+					snapshotOk = true;
+					this._logService.info('[CodebaseGraph]', `SQLite 快照制品已写出：${snapPath}（${snap.nodeCount} 节点 / ${snap.edgeCount} 边，${artifactFormat} 档）`);
+				} catch (err: any) {
+					this._logService.warn('[CodebaseGraph]', `SQLite 快照导出失败（将回退写 JSON 制品）：${err?.message || err}`);
 				}
-			});
+			}
+
+			if (artifactFormat !== 'sqlite' || !snapshotOk) {
+				let lastLoggedMB = 0;
+				await persistence.save(this._graph.store, artifactFile.fsPath, project, { slim: true }, (writtenMB) => {
+					// 每 32MB 报一次保存进度（避免大图谱保存期间 UI 看似假死）
+					if (writtenMB - lastLoggedMB >= 32) {
+						lastLoggedMB = writtenMB;
+						this._onDidIndexProgress.fire(`💾 保存图谱: ${writtenMB.toFixed(0)} MB...`);
+					}
+				});
+			} else {
+				this._logService.info('[CodebaseGraph]', `跳过 JSON 制品序列化（artifactFormat=sqlite 且快照已校验）—— renderer 不再做全图 gzip+JSON ✓`);
+			}
+
+			// ★★ `artifact.json` 必须**两条路径都写**（它是 `canSkipArtifactParse` 的唯一数据源，见上）。
+			// 原子写（先 .tmp 再改名）：它是「是否跳过解析」的判据，半写会误导判断 ✗。
+			try {
+				const metaPath = artifactFile.fsPath.replace(/graph\.db\.\w+$/, 'artifact.json');
+				const metaTmp = metaPath + '.tmp';
+				const meta = {
+					node_count: expectedNodes,
+					edge_count: expectedEdges,
+					format: snapshotOk && artifactFormat !== 'json' ? 'sqlite-snapshot' : 'gzip-json',
+					saved_at: Date.now(),
+					project: project ?? null,
+				};
+				await this._fileService.writeFile(URI.file(metaTmp), VSBuffer.fromString(JSON.stringify(meta, null, 2)));
+				await this._fileService.move(URI.file(metaTmp), URI.file(metaPath), true);
+			} catch (err: any) {
+				this._logService.warn('[CodebaseGraph]', `artifact.json 写出失败（会让下次载入保守地回到解析路径）：${err?.message || err}`);
+			}
 			this._logService.info('[CodebaseGraph]', `Graph saved: ${artifactFile.fsPath} (project=${project ?? 'all'}, ${savedCount} nodes)`);
 			// 记录 zst 全量落盘时刻，作为增量路径节流基准（ZST_SAVE_MIN_INTERVAL_MS）
 			this._lastZstSaveAt = Date.now();
@@ -5616,7 +5833,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			try {
 				this._logService.info('[CodebaseGraph]', `[loadGraph] trying: ${p}`);
 				const persistence = new GraphPersistence(this._fileService, this._logService);
-				const loaded = await persistence.load(this._graph.store, p);
+				// ★ 2026-09-18：同 `_loadGraphMergeImpl` —— 检索走 FTS5 时跳过内存倒排重建（按需重建）
+				const loaded = await persistence.load(this._graph.store, p, { skipBm25: this._sqliteBackendEnabled });
 				if (loaded) {
 					this._logService.info('[CodebaseGraph]', `[loadGraph] loaded ${p} (${Date.now() - tStart}ms), store nodes=${this._graph.nodeCount}`);
 					this._autoDetectProjectName();
@@ -5653,6 +5871,69 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 * 合并加载：把 sourcePath 的图追加到当前内存 store（不清空），用于多 folder 工作区。
 	 * 各 folder 的 graph.db.zst 独立持久化，启动时依次合并进同一 store（ID 重映射 + 项目名覆盖）。
 	 */
+	/**
+	 * ★★★ 2026-09-18（P0 性能）**收口**：只有「内存检索是主路径」时才全量重建内存倒排。
+	 *
+	 * 为什么这条开关可以安全生效（已核实的事实，勿凭感觉推翻）：
+	 *   · 自由文本检索（`SearchParams.query`）的**唯一**生产消费者是 `searchGraphAsync`；
+	 *     同步 `searchGraph()` **无任何外部调用者**（trace / lsp / cypher / 兄弟节点
+	 *     全部只传 `namePattern`（正则）或 `label`（标签索引）⇒ 不经 BM25）；
+	 *   · 即使有同步调用，`CodebaseGraphStore.search()` 在标记期间会**降级为子串扫描**
+	 *     （见 `_degradedSubstringScores`）⇒ 不会静默返回 0 结果 ✗；
+	 *   · `_sqliteBackendEnabled`（默认 true）时检索走主进程 FTS5 ⇒ 内存倒排为**纯灾备**。
+	 * ⇒ 与其在**每条载入/索引路径**上无条件付 9s 级全量重建（真机 9137ms / ⛔2393ms），
+	 *   不如统一置「按需重建」标记（见 `CodebaseGraphStore._bm25Deferred`）。
+	 *
+	 * @returns 是否真的执行了重建（`false` = 已置标记、由首次回退内存检索时按需建）
+	 */
+	private async _rebuildBM25OrDefer(reason: string, onProgress?: (done: number, total: number) => void): Promise<boolean> {
+		if (this._sqliteBackendEnabled) {
+			this._graph.store.markBM25Deferred();
+			this._logService.info('[CodebaseGraph]', `跳过内存 BM25 重建（检索走 FTS5）⇒ 已置「按需重建」标记：${reason}`);
+			return false;
+		}
+		await this._graph.store.rebuildBM25(onProgress, true);
+		return true;
+	}
+
+	/**
+	 * ★★★ 2026-09-18（P1-1）：「**制品解析可跳过**」判据 —— 主进程 SQLite 已有该项目、且**不比制品旧**。
+	 *
+	 * 动机：载入制品的「解析 JSON」是加载路径上最后一笔整段重活（真机 3 folder ≈ **7320ms**）。
+	 * 而本仓每次全量索引/增量补丁都会把图同步进主进程 SQLite（`nodes_fts` 同步维护）⇒
+	 * **默认配置下 SQLite 已经持有同一份图** ⇒ 再解析一遍 gzip+JSON 多数时候是白付 ✗。
+	 *
+	 * 判据（保守，宁可多解析一次也不许用落后数据）：
+	 *   · `_sqliteBackendEnabled` 且 SQLite 的**节点数 ≥ `artifact.json` 记录的 node_count**；
+	 *   · 拿不到 `artifact.json` / 计数非法 / 任何异常 ⇒ **返回 false**（照旧解析）✓。
+	 * 跳过后的数据来源：首次真正用到图时走 `tryLoadFromSqlite()`（主进程分页载入 + 进度 + 失败退避，
+	 * 见 `_loadGraphFromSqlite`）✓ —— 不是「不加载」，只是**推迟到需要时**、并换一条更便宜的路。
+	 *
+	 * @param project 项目名（= folder basename，与 SQLite 的 project 口径一致）
+	 * @param graphFilePath 制品路径（用来同目录定位 `artifact.json`）
+	 */
+	async canSkipArtifactParse(project: string, graphFilePath: string): Promise<boolean> {
+		if (!this._sqliteBackendEnabled) { return false; }
+		try {
+			// artifact.json 与制品同目录（`<root>/.codebase-memory/`），键为 snake_case：node_count / edge_count
+			const metaPath = graphFilePath.replace(/graph\.db\.\w+$/, 'artifact.json');
+			let artifactNodes = 0;
+			try {
+				const raw = (await this._fileService.readFile(URI.file(metaPath))).value.toString();
+				artifactNodes = Number((JSON.parse(raw) as { node_count?: number })?.node_count) || 0;
+			} catch { /* 无 artifact.json（老制品）⇒ 无法证明 SQLite 不落后 ⇒ 保守返回 false */ }
+			if (artifactNodes <= 0) { return false; }
+			const sqliteNodes = await this._sqliteBackend.getTotalNodeCount(project);
+			if (sqliteNodes >= artifactNodes) { return true; }
+			this._logService.info('[CodebaseGraph]', `[canSkipArtifactParse] "${project}" 的 SQLite 节点数落后（sqlite=${sqliteNodes} < artifact=${artifactNodes}）⇒ 本次仍解析制品`);
+			return false;
+		} catch (err: any) {
+			// 判据本身出错 ⇒ 保守按「不可跳过」处理（绝不能让跳过路径建立在未知状态上 ✗）
+			this._logService.warn('[CodebaseGraph]', `[canSkipArtifactParse] "${project}" 判据失败，按不可跳过处理: ${err?.message || err}`);
+			return false;
+		}
+	}
+
 	async loadGraphMerge(sourcePath: string, projectOverride?: string, rebuildBM25: boolean = true): Promise<boolean> {
 		this._graphLoadingCount++;
 		try {
@@ -5694,14 +5975,24 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				this._onDidGraphLoadProgress.fire(`正在读取并解析制品 ${label}（大图需数十秒）`);
 				// 方案 ⑥（2026-09-15）：把阶段**内**的百分比也推给 UI —— 大图时一条
 				// 「正在读取并解析制品…」要挂几十秒，用户会以为卡死（节流在 persistence 内做）。
+				// ★★★ 2026-09-18（P0 性能）：检索由 FTS5 提供时（`_sqliteBackendEnabled` 默认 true），
+				// 载入**不再重建内存倒排** —— 它只在灾备回退路径上被用到（真机 `BM25 重建=9137ms` /
+				// `⛔主线程阻塞 ≈2393ms`，3 folder 每次加载都付一遍 ✗）。改为置「待按需重建」标记
+				// （见 `CodebaseGraphStore._bm25Deferred`）。
+				const ftsServesSearch = this._sqliteBackendEnabled;
 				const loaded = await persistence.loadMerge(
 					this._graph.store, p, projectOverride,
 					line => this._onDidGraphLoadProgress.fire(`${label}：${line}`),
+					{ skipBm25: ftsServesSearch },
 				);
 				if (loaded) {
 					// force=true：合并加载无脏集，增量模式会空转
 				// 2026-09-15：BM25 重建是合并后的第二个重活（全量倒排），也要让 UI 显示出来
-				if (rebuildBM25) {
+				if (rebuildBM25 && ftsServesSearch) {
+					// 跳过必须**可见**（否则「这次为什么快」与「检索为什么仍可用」都无从判断）。
+					this._logService.info('[CodebaseGraph]', `[loadGraphMerge] 跳过内存 BM25 重建（检索走主进程 FTS5）⇒ 已置「按需重建」标记：仅当回退到内存检索时才构建`);
+				}
+				if (rebuildBM25 && !ftsServesSearch) {
 					// ★ 2026-09-16 诊断：BM25 全量重建是**合并之后的第二个重活**（倒排全量重算），
 					// 也是主线程上的同步段之一 ⇒ 打阶段标记（供看门狗事后补报）+ 记耗时。
 					wsStage(`graph: 重建 BM25（${this._basename(p)}）`);

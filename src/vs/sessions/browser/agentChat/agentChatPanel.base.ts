@@ -9,7 +9,7 @@ import type { ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlC
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { ILogService } from '../../../platform/log/common/log.js';
 import { MarkdownRenderOptions } from '../../../base/browser/markdownRenderer.js';
-import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, IImageModelGroup, HeaderPanelType, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowPickerSelect, ILiveWorkflowNodeInteraction, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, IPlanTaskCard, OrchestrationPlan, PlanTask } from './agentChatTypes.js';
+import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, IImageModelGroup, HeaderPanelType, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowPickerSelect, ILiveWorkflowNodeInteraction, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, IPlanTaskCard, OrchestrationPlan, PlanTask, AgentStatus } from './agentChatTypes.js';
 // ChatMode removed — replaced by chatOnly boolean toggle
 import type { IChatPanel } from './iChatPanel.js';
 import { TabbedPanelManager } from './modules/tabbedPanel.js';
@@ -176,6 +176,9 @@ export const TOOL_MERMAID_TOOLS = new Set(['rendermermaiddiagram', 'mermaid_rend
 
 /** Draw.io 图示族（renderDrawioDiagram 等，需专用渲染卡片；mxGraphModel 只读预览） */
 export const TOOL_DRAWIO_TOOLS = new Set(['renderDrawioDiagram', 'renderdrawiodiagram', 'drawio_render', 'render_diagram']);
+
+/** Unreal Engine 工具（unreal_*，BunnySeek bridge）。 */
+export const TOOL_UNREAL_TOOLS = new Set(['unreal_run_command', 'unreal_exec', 'unreal_query', 'unreal_editor_command', 'unreal_console_command', 'unreal_get_actors', 'unreal_get_asset_info', 'unreal_screenshot']);
 
 export function _patchNestedMarkdown(source: string): string {
 	// 2026-09-11 快速路径：不含 ``` 直接返回。超长媒体 content（单条可达 8MB 的
@@ -543,8 +546,26 @@ protected _streamingUpdateRaf: number | null = null;
 
 
 protected _lazyLoadObserver: IntersectionObserver | null = null;
-	// 懒加载剩余可加载的历史消息数（供裁剪时重锚定懒加载）
-	protected _lazyLoadRemaining = 0;
+// 懒加载剩余可加载的历史消息数（供裁剪时重锚定懒加载）
+protected _lazyLoadRemaining = 0;
+
+// ── ★★★ 2026-09-19：DOM 消息窗口（根治「app 卡死」）────────────────────
+//
+// 背景（真机 ✓）：渲染进程 RSS 涨到 **3.4GB** ✗ 而 JS 堆只有 **600MB** ✓
+// ⇒ 大头在 **DOM** 侧 ✓✓。机制（`_setupLazyLoad` ✓）：
+//   新块插在 `firstEl` **之前** ✗ ⇒ `firstEl` 被不断下推却仍停在视口内 ✗
+//   ⇒ IntersectionObserver（`rootMargin: 200px` ✓）**持续触发** ✗ ⇒ 分块加载一路
+//   把**整段历史**（真机 1675 条 ✓）全部搬进 DOM ✗；且**全程没有任何卸载** ✗✓
+// ⇒ 长会话 = DOM 单调增长 ⇒ 主线程被布局/重排拖死（用户表现：卡死 ✓）。
+//
+// 对策：**保留一个以视口为中心的 DOM 窗口** ✓，超出的从**离视口最远**的一端卸载 ✓
+//  （数据始终留在 `_messages` ✓，滚回去按需重建 ✓）；
+//  卸载由既有 `_domDisposalObserver` 自动释放 `_markdownDisposables` ✓（设施现成 ✓）。
+/** DOM 中消息元素数上限（超出即卸载远端 ✓）。 */
+protected static readonly DOM_MESSAGE_LIMIT = 120;
+/** 视口上下各保留的缓冲条数（防止轻微滚动就反复重建 ✓）。 */
+protected static readonly DOM_MESSAGE_KEEP = 24;
+private _trimScheduled = false;
 	// 集中式 detached-DOM 资源释放观察器（在 _renderMessagesArea 中 setup）。
 	// 任何消息/part 子树被移除时，释放其 _markdownDisposables，避免 detached 子树被
 	// map 引用而无法 GC（7G 内存泄漏的根因：keyed-reconcile 删残留、全量重建、setMessages 清空）。
@@ -734,6 +755,24 @@ protected _userHasAdjustedHeight = false;
 protected _slashMenuEl: HTMLElement | null = null;
 
 protected _slashMenuIndex = 0;
+
+/** `/` 斜杠菜单收起后的延迟定时器（用于「先隐藏、后销毁」）。
+ *  单例 timer：重复触发时先清旧的，避免多个 pending 定时器竞态。 */
+protected _slashMenuTimer: number | null = null;
+
+/** 高度基线估算缓存（key = 输入内容指纹，value = 估算出的目标高度）。
+ *  内容未变时直接复用，跳过整段 DOM 测量。 */
+protected _baselineEstimateCache: { key: string; value: number } | null = null;
+
+/** 输入框高度刷新用的 rAF 句柄（0 / undefined 表示无 pending 帧）。
+ *  合帧节流：同一帧内多次请求只跑一次测量。 */
+protected _composerHeightRaf: number = 0;
+
+/** 上一次写入的输入框高度。用于「高度未变则跳过写回」的短路判断。 */
+protected _lastComposerHeight = 0;
+
+/** 输入框击键耗时采样缓冲（每 50 条 flush 一次，避免逐次刷屏）。 */
+protected _composerDiagSamples: Array<{ total: number; segments: Record<string, number> }> = [];
 
 /** 工作流参数表单面板（点击 workflow chip 弹出）。 */
 protected _workflowParamsEl: HTMLElement | null = null;
@@ -1163,6 +1202,47 @@ getAgent(): IAgentInfo | null {
 		return this._agent;
 	}
 
+/**
+ * 就地更新当前 agent 的定义字段（icon / name / role…）并只重绘 header。
+ *
+ * 与 `setAgent` 的区别：`setAgent` 会 `_render()` 全量重建面板（清空消息区），
+ * 滚动位置与阅读状态都会丢失。仅当变更属于「Agent 设置页改了图标」这类定义字段时，
+ * 用本方法即可，代价最小。
+ */
+patchAgent(agent: IAgentInfo): void {
+	this._agent = agent;
+	this._agentLoadedOnce = true;
+	this._refreshHeaderOnly();
+}
+
+/**
+ * 更新当前 agent 的运行状态（驱动 header 头像右下角状态圆点）。
+ *
+ * 比 `patchAgent()` 轻量得多：只改圆点颜色 + 角色行状态文案，不重建 header。
+ * 发送链路每次开始/结束各调用一次，故必须是廉价操作。
+ */
+setAgentStatus(status: AgentStatus): void {
+	this._agentStatus = status;
+	this._refreshAgentStatusDot(status);
+}
+
+/** 当前 agent 运行状态（发送中 = working，其余 = idle）。 */
+protected _agentStatus: AgentStatus = AgentStatus.Idle;
+
+/** 底层是否仍有活跃流（含收尾窗口）。用于入队判断，避免打断未收尾的流。 */
+protected _isStreamActive = false;
+
+/** 只重绘 header（不重建消息区 / 输入区）。子类覆盖。 */
+protected _refreshHeaderOnly(): void {
+	// 默认实现：无 header 的场景（CLI 面板等）无需刷新。
+}
+
+/** 刷新 header 状态圆点。子类覆盖。 */
+protected _refreshAgentStatusDot(_status: AgentStatus): void {
+	// 默认实现：无 header 的场景无需刷新。
+}
+
+
 setAvailableAgents(agents: IAgentInfo[]): void {
 		this._availableAgents = agents;
 		// Re-render tabs to reflect the new list of available agents
@@ -1238,6 +1318,8 @@ addMessage(message: IAgentChatMessage): void {
 		this._scrollbar.scrollToBottom(true);
 		// 刷新滚动条用户消息标记
 		this._scrollbar.refreshScrollMarkers();
+		// ★ 2026-09-19：新增消息后安排 DOM 窗口裁剪（长会话不再无限增长 ✓）
+		this._scheduleTrimDistantMessages();
 	}
 
 addCompressionNotice(info: {
@@ -1718,6 +1800,96 @@ setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): vo
 protected _findMessageElementById(id: string): HTMLElement | null {
 		if (!this._messagesContainer) { return null; }
 		return this._messagesContainer.querySelector(`[data-msg-id="${id}"]`);
+	}
+
+	/** 容器内当前**已渲染**的消息元素（按 DOM 顺序 ✓，跳过药丸等非消息子元素 ✓）。 */
+	protected _renderedMessageElements(): HTMLElement[] {
+		if (!this._messagesContainer) { return []; }
+		return Array.from(this._messagesContainer.querySelectorAll<HTMLElement>('[data-msg-id]'));
+	}
+
+	/**
+	 * ★★★ 2026-09-19：安排一次「DOM 窗口裁剪」（节流 + 空闲执行 ✓）。
+	 * 调用时机：新增消息 ✓、懒加载插入一块 ✓、强制全渲染后 ✓、跳转到历史消息后 ✓。
+	 */
+	protected _scheduleTrimDistantMessages(): void {
+		if (this._trimScheduled) { return; }
+		this._trimScheduled = true;
+		const run = () => {
+			this._trimScheduled = false;
+			this._trimDistantMessages();
+		};
+		// 空闲时机执行 ⇒ 绝不与流式渲染 / 布局争主线程 ✓（无 requestIdleCallback 时退化为 setTimeout ✓）
+		const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+		if (typeof ric === 'function') { ric(run); } else { window.setTimeout(run, 200); }
+	}
+
+	/**
+	 * ★★★ 2026-09-19：把 DOM 中的消息裁剪成「以视口为中心的窗口」✓。
+	 *
+	 * 为什么不能只加"上限条数"✗：用户可能停在**任意位置**（含跳转到的历史处 ✓）
+	 * ⇒ 必须按**离视口的距离**卸载 ✓，否则会删掉用户正在看的内容 ✗✓。
+	 *
+	 * 安全性 ✓：
+	 *  - `_messages`（数据）**完全不动** ✓ ⇒ 滚回去/跳回去都能重建 ✓；
+	 *  - 卸载走 `_domDisposalObserver` ✓ ⇒ markdown disposables 自动释放 ✓；
+	 *  - 若卸载了**顶部**，则按新的首元素**重锚**懒加载 ✓（`_setupLazyLoad` ✓）
+	 *    —— 否则上游还有未渲染的消息，用户再也滚不出来 ✗✓；
+	 *  - 卸载前后补偿 `scrollTop` ✓（与插入侧 `_setupLazyLoad` 的做法对称 ✓）。
+	 */
+	protected _trimDistantMessages(): void {
+		const container = this._messagesContainer;
+		if (!container) { return; }
+		const els = this._renderedMessageElements();
+		if (els.length <= AgentChatPanelBase.DOM_MESSAGE_LIMIT) { return; }
+
+		// ① 找可见区间（offsetTop 相对 container ✓；仅在超限时做一次，可接受 ✓）
+		const viewTop = container.scrollTop;
+		const viewBottom = viewTop + container.clientHeight;
+		let firstVisible = 0;
+		let lastVisible = els.length - 1;
+		for (let i = 0; i < els.length; i++) {
+			const el = els[i];
+			const elTop = el.offsetTop;
+			const elBottom = elTop + el.offsetHeight;
+			if (elBottom >= viewTop) { firstVisible = i; break; }
+		}
+		for (let i = els.length - 1; i >= 0; i--) {
+			const el = els[i];
+			if (el.offsetTop <= viewBottom) { lastVisible = i; break; }
+		}
+
+		// ② 期望保留区间 = 可见区间 ± 缓冲 ✓
+		const keepFrom = Math.max(0, firstVisible - AgentChatPanelBase.DOM_MESSAGE_KEEP);
+		const keepTo = Math.min(els.length - 1, lastVisible + AgentChatPanelBase.DOM_MESSAGE_KEEP);
+
+		const removeAbove = els.slice(0, keepFrom);
+		const removeBelow = els.slice(keepTo + 1);
+		if (removeAbove.length === 0 && removeBelow.length === 0) { return; }
+
+		// ③ 卸载 + 补偿 scrollTop（上方被删 ⇒ 内容变短 ⇒ scrollTop 要同量减少 ✓）
+		const prevScrollHeight = container.scrollHeight;
+		const prevScrollTop = container.scrollTop;
+		for (const el of removeAbove) { el.remove(); }
+		for (const el of removeBelow) { el.remove(); }
+		const removedHeight = prevScrollHeight - container.scrollHeight;
+		if (removeAbove.length > 0 && removedHeight > 0) {
+			container.scrollTop = Math.max(0, prevScrollTop - removedHeight);
+		}
+
+		// ④ 顶部被删 ⇒ 按新首元素重锚懒加载（否则上游历史再也滚不出来 ✗）
+		// ⚠ 用 `_renderedMessageElements()[0]` 而非子类的 `_firstMessageElement()` ✗
+		// （后者在基类上不可见 ✓；这里语义等价且零耦合 ✓）
+		if (removeAbove.length > 0) {
+			const newFirst = this._renderedMessageElements()[0] ?? null;
+			const newFirstId = newFirst?.getAttribute('data-msg-id') ?? '';
+			const idx = newFirstId ? this._messages.findIndex(m => m.id === newFirstId) : -1;
+			if (newFirst && idx > 0) {
+				this._setupLazyLoad(newFirst, idx);
+			}
+		}
+
+		this._scrollbar.refreshScrollMarkers();
 	}
 
 protected _schedulePostStreamScroll(): void {

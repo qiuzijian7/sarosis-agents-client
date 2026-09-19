@@ -1290,11 +1290,19 @@ export const useChatStore = create<ChatState>((set, get) => {
 			// ── 解析 slash 命令：/skill <id>、/workflow|/wf <id>、bare /{wf-xxx} ──
 			const { explicitSkillIds, workflowTrigger } = parseSlashCommands(message);
 
-			// ── Auto-cancel current stream if still running (VS Code Copilot Chat
-			// "steering" pattern: sending a new message interrupts the current one) ──
+			// ── 运行中 steering：stream 活跃时补充输入不打断当前 turn ──
+			// 与「取消重发」不同：steering 消息进入交付队列，由主循环每轮 iteration
+			// 顶部注入，下一轮生效 —— 当前 turn 已产生的中间成果不会丢失。
+			// 若此处退回 cancelStream()，消息刚入队 turn 就被取消，steering 语义失效。
 			if (isPhaseActive(streamState?.phase)) {
-				console.log('[ChatStore] sendMessage: auto-cancelling active stream before sending new message');
-				get().cancelStream();
+				console.log('[ChatStore] sendMessage: stream active, delivering as steering message');
+				void sendRequest('agents.steeringMessage', {
+					agentId: activeAgentId,
+					content: message,
+				}).catch((err: unknown) => {
+					console.warn('[ChatStore] steering delivery failed', err);
+				});
+				return;
 			}
 
 			const sessionName = message.trim().substring(0, 30);

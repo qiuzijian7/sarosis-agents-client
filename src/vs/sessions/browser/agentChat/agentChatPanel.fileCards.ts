@@ -127,7 +127,12 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 			}));
 
 		// 右侧：状态图标 + 「查看文件」按钮
-		const right = append(row, $('.tool-header-right'));
+		// ★ 2026-09-18（改回一行）：按钮区与标题**同处一行**（用户要求「文字和按钮在一行显示」）。
+		//   注意它仍挂在 `headerEl` 下、与 `.tool-header-row` 平级 —— 靠 CSS 的**明确分工**
+		//   避免重演旧问题：标题侧 `flex:1 1 auto; min-width:0`（只在行内省略），
+		//   按钮侧 `flex:0 0 auto; nowrap`（永不收缩）⇒ 同行但互不侵占 ✓
+		//   （曾因此把两者改成两行，见 agentChat.css `.write-file-header` 的注释。）
+		const right = append(headerEl, $('.tool-header-right'));
 		// 查看文件按钮（始终显示）
 		if (this._onOpenFile && filePath && !isRunning) {
 			const viewLink = append(right, $('button.tool-view-file-link'));

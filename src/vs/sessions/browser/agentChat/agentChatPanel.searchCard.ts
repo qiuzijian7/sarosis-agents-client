@@ -1,5 +1,6 @@
 import { $, append } from '../../../base/browser/dom.js';
 import { IToolCall } from './agentChatTypes.js';
+import { chatPerf } from './agentChatPanel.perf.js';
 import { parseSearchResultItems, parseToonGraphData, parseToonTraceData, type SearchResultItem, type ToonGraphData, type ToonTraceData } from './agentChatPanel.searchResultParse.js';
 import { AgentChatPanelConfirmCards } from './agentChatPanel.confirmCards.js';
 import { createSvgIcon, SEARCH_ICON_D, toolCardStatusClass } from './agentChatPanel.toolCards.js';
@@ -17,6 +18,9 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 	 * 使用原生 DOM，零 innerHTML。
 	 */
 	protected override _createSearchToolCard(tc: IToolCall, key: string): HTMLElement {
+		// ★ 2026-09-18 性能埋点：本卡是「大历史 setMessages 1s」的头号嫌疑（建卡即渲染 body，
+		// 真机实测 192 张卡 × 全量 body）⇒ 计时以便复测确认是否已消除 ✓
+		const tCard = chatPerf.start();
 		// ★ 2026-09-07 修复「搜索卡永远显示『正在搜索…』/ 内容为空」（日志 1788711707227）：
 		// 数据层完全正常（PartsDiag：10 success，toolStarts=11/toolResults=10/tool_end=10，
 		// 零 dropped），但 DOM 永远停在建卡那一刻的 running 占位。
@@ -123,69 +127,107 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 
 		// ── 结果区域（固定高度，内部滚动）──
 		const resultsArea = append(wrapper, $('.search-results-area'));
-		// TOON 卡片：外层不滚动（内层 .toon-table-wrap 已有 overflow-y: auto）
-		if (tc.result && !isRunning) {
-			const raw = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
-			const resultText = this._toolResultText(raw);
-			if (resultText.startsWith('TOON ')) { resultsArea.classList.add('toon-card'); }
-		}
-		// 始终可展开（无结果时展示 "没有找到匹配结果" 占位，不再让卡片 "死了"）
-		if (tc.result && !isRunning) {
-			const raw = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
-			const resultText = this._toolResultText(raw);
-			// 渲染埋点（2026-09-06「搜索卡片内容为空」排查）：静态分支全自洽，需运行时
-			// 数据判明 result 实际形态/长度/解析产物。走 _logService（落 vscode-app 日志，
-			// console.info 不进日志文件——首版埋点通道选错的教训）。
-			this._logService.info(`[SearchCard] render body key=${key} resultType=${typeof tc.result} rawLen=${raw.length} parsedLen=${resultText.length} head="${resultText.slice(0, 60).replace(/\n/g, ' ')}"`);
 
-			// TOON 格式富卡片渲染（search_graph / trace_path）
-			if (this._tryRenderToonCard(resultsArea, resultText, key)) {
-				// rendered
-			} else {
-				const items = this._parseSearchResultItems(resultText, key);
-				if (items && items.length > 0) {
-					const list = append(resultsArea, $('ul.search-result-list'));
-					const displayItems = items.slice(0, 200);
-					for (const item of displayItems) {
-						const li = append(list, $('li.search-result-item'));
-						this._renderSearchResultItem(li, item);
-					}
-					if (items.length > 200) {
-						const more = append(resultsArea, $('.search-more'));
-						more.textContent = `... 还有 ${items.length - 200} 条结果`;
-					}
+		// ★★ 2026-09-18：**结果体延迟到「首次展开」才构建** —— 修「打开大历史会话时单次
+		//    `setMessages` 就要 1s」。
+		//
+		// 为什么：本卡**默认折叠**（文件头注释：默认折叠，只显示搜索栏 + 匹配数摘要），
+		// 折叠态下结果区不可见（CSS：`.tool-card-search.expanded { height: 320px; }`，
+		// 折叠时无高度）。而旧实现**在建卡那一刻就无条件构建整个 body** ——
+		// 最多 200 个 `<li>`（`items.slice(0, 200)`）或整张 TOON 卡，全部是用户**看不到**的工作 ✗✗
+		//
+		// 真机证据（`vscode-app-1789723324679.log`）：
+		//   `[AgentChatPanel] setMessages: total=925 render=1033.4ms`
+		//   同窗口 `[SearchCard] render body` **227 次**（unique 192）⇒ 这 1s 里绝大部分是
+		//   构建折叠卡的 body ✗；而首屏只渲染最后 30 条消息（`_renderMessages` 有懒加载 ✓），
+		//   所以优化点不在"渲染更少消息"，而在"每条消息别做无用功"。
+		//
+		// 语义：折叠卡只建壳；body 在 ①用户点开 或 ②建卡后下一帧检测到已展开（如运行中卡片）
+		//   时才真正渲染 ✓ 展开行为与渲染结果与旧实现完全一致（只是时机推迟）。
+		let bodyRendered = false;
+		const renderBody = (): void => {
+			// TOON 卡片：外层不滚动（内层 .toon-table-wrap 已有 overflow-y: auto）
+			if (tc.result && !isRunning) {
+				const raw = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
+				const resultText = this._toolResultText(raw);
+				if (resultText.startsWith('TOON ')) { resultsArea.classList.add('toon-card'); }
+			}
+			// 始终可展开（无结果时展示 "没有找到匹配结果" 占位，不再让卡片 "死了"）
+			if (tc.result && !isRunning) {
+				const raw = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
+				const resultText = this._toolResultText(raw);
+				// 渲染埋点（2026-09-06「搜索卡片内容为空」排查）：静态分支全自洽，需运行时
+				// 数据判明 result 实际形态/长度/解析产物。走 _logService（落 vscode-app 日志，
+				// console.info 不进日志文件——首版埋点通道选错的教训）。
+				this._logService.info(`[SearchCard] render body key=${key} resultType=${typeof tc.result} rawLen=${raw.length} parsedLen=${resultText.length} head="${resultText.slice(0, 60).replace(/\n/g, ' ')}"`);
+
+				// TOON 格式富卡片渲染（search_graph / trace_path）
+				if (this._tryRenderToonCard(resultsArea, resultText, key)) {
+					// rendered
 				} else {
-					// 无结构化结果：尝试原始文本预览，否则显示 "没有找到匹配结果"
-					const lines = resultText.split('\n').filter(l => l.trim()).slice(0, 8);
-					this._logService.info(`[SearchCard] branch=${lines.length > 0 ? 'text-preview' : 'no-match-placeholder'} key=${key} lines=${lines.length}`);
-					if (lines.length > 0) {
-						const preview = append(resultsArea, $('.search-text-preview'));
-						preview.textContent = lines.join('\n').slice(0, 600);
+					const items = this._parseSearchResultItems(resultText, key);
+					if (items && items.length > 0) {
+						const list = append(resultsArea, $('ul.search-result-list'));
+						const displayItems = items.slice(0, 200);
+						for (const item of displayItems) {
+							const li = append(list, $('li.search-result-item'));
+							this._renderSearchResultItem(li, item);
+						}
+						if (items.length > 200) {
+							const more = append(resultsArea, $('.search-more'));
+							more.textContent = `... 还有 ${items.length - 200} 条结果`;
+						}
 					} else {
-						const noMatch = append(resultsArea, $('.search-no-match'));
-						noMatch.textContent = '没有找到匹配结果';
+						// 无结构化结果：尝试原始文本预览，否则显示 "没有找到匹配结果"
+						const lines = resultText.split('\n').filter(l => l.trim()).slice(0, 8);
+						this._logService.info(`[SearchCard] branch=${lines.length > 0 ? 'text-preview' : 'no-match-placeholder'} key=${key} lines=${lines.length}`);
+						if (lines.length > 0) {
+							const preview = append(resultsArea, $('.search-text-preview'));
+							preview.textContent = lines.join('\n').slice(0, 600);
+						} else {
+							const noMatch = append(resultsArea, $('.search-no-match'));
+							noMatch.textContent = '没有找到匹配结果';
+						}
 					}
 				}
+			} else if (isRunning) {
+				this._logService.info(`[SearchCard] branch=running-placeholder key=${key} resultType=${typeof tc.result}`);
+				const progress = append(resultsArea, $('.search-progress'));
+				progress.textContent = '\u23F3 正在搜索...'; // ⏳
+			} else {
+				// 兜底占位（2026-09-06「工具卡内容为空」）：status 非 running 且 result
+				// 为空——多为「结果在下一轮流开头补发」的窗口期或下发链路异常。卡片任何
+				// 状态下都不得是纯空白容器。
+				this._logService.info(`[SearchCard] branch=awaiting-result key=${key} status=${tc.status}`);
+				const wait = append(resultsArea, $('.search-progress'));
+				wait.textContent = '\u23F3 等待工具结果…';
 			}
-		} else if (isRunning) {
-			this._logService.info(`[SearchCard] branch=running-placeholder key=${key} resultType=${typeof tc.result}`);
-			const progress = append(resultsArea, $('.search-progress'));
-			progress.textContent = '\u23F3 正在搜索...'; // ⏳
+		};
+		/** 幂等：只渲染一次（展开 → 折叠 → 再展开不重建，避免重复插 DOM）。 */
+		const ensureBody = (): void => {
+			if (bodyRendered) { return; }
+			bodyRendered = true;
+			renderBody();
+		};
+
+		if (isRunning) {
+			// 运行中卡片默认展开，且 body 只是一个占位符（成本可忽略）⇒ 立即渲染，避免闪空
+			ensureBody();
 		} else {
-			// 兜底占位（2026-09-06「工具卡内容为空」）：status 非 running 且 result
-			// 为空——多为「结果在下一轮流开头补发」的窗口期或下发链路异常。卡片任何
-			// 状态下都不得是纯空白容器。
-			this._logService.info(`[SearchCard] branch=awaiting-result key=${key} status=${tc.status}`);
-			const wait = append(resultsArea, $('.search-progress'));
-			wait.textContent = '\u23F3 等待工具结果…';
+			// 建卡时还不知道最终展开态（`_createToolCallCard` 在本方法返回后才决定并加类）⇒ 下一帧复查
+			requestAnimationFrame(() => {
+				if (wrapper.classList.contains('expanded')) { ensureBody(); }
+			});
 		}
 
 		// 始终可展开
 		header.addEventListener('click', () => {
 			const isExpanded = wrapper.classList.toggle('expanded');
 			chevron.classList.toggle('expanded', isExpanded);
+			if (isExpanded) { ensureBody(); }	// ★ 首次展开时才真正构建 body（见上方长注释）
 		});
 
+		chatPerf.end('card.create.search', tCard, `key=${key} tool=${tc.id ?? ''} status=${tc.status} len=${typeof tc.result === 'string' ? tc.result.length : 0}`);
 		return wrapper;
 	}
 

@@ -1,5 +1,6 @@
 import { $, append } from '../../../base/browser/dom.js';
 import { IToolCall } from './agentChatTypes.js';
+import { chatPerf } from './agentChatPanel.perf.js';
 import { AgentChatPanelSearchCard } from './agentChatPanel.searchCard.js';
 import { createSvgIcon, SEARCH_ICON_D, parseToolArgs, toolCardStatusClass } from './agentChatPanel.toolCards.js';
 
@@ -221,6 +222,8 @@ export abstract class AgentChatPanelWebCard extends AgentChatPanelSearchCard {
 	 * 展开体用 markdown 渲染（## 标题 / 编号 **加粗标题** / URL / 摘要），链接可点击。
 	 */
 	protected _createWebSearchCard(tc: IToolCall): HTMLElement {
+		// ★ 2026-09-18 性能埋点：与 searchCard 同族（建卡即 markdown 渲染 body）⇒ 计时以便复测 ✓
+		const tCard = chatPerf.start();
 		// data-tool-id + 状态类：同 searchCard（2026-09-07）
 		const wrapper = $(`.tool-card.${toolCardStatusClass(tc.status)}.tool-card-search.tool-card-web-search`);
 		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
@@ -274,22 +277,45 @@ export abstract class AgentChatPanelWebCard extends AgentChatPanelSearchCard {
 
 		// ── 结果区域（markdown 渲染）──
 		const resultsArea = append(wrapper, $('.search-results-area'));
-		if (tc.result && !isRunning) {
-			const raw = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
-			const resultText = this._toolResultText(raw);
-			const mdBody = append(resultsArea, $('.search-web-md-body'));
-			this._renderMarkdownContent(mdBody, resultText, false);
-		} else if (isRunning) {
-			const progress = append(resultsArea, $('.search-progress'));
-			progress.textContent = '⏳ 正在搜索...';
+
+		// ★★ 2026-09-18：与 `agentChatPanel.searchCard.ts::_createSearchToolCard` **同一修复** ——
+		// 展开体（这里是一次 **markdown 渲染**，比 search 卡的列表构建更贵）改为**首次展开才构建**。
+		// 本卡同样默认折叠（`.tool-card-search.expanded { height: 320px; }`，折叠时结果区不可见）
+		// ⇒ 旧实现建卡即渲染 markdown，全是用户看不到的工作 ✗（真机证据见 searchCard 的长注释）。
+		let bodyRendered = false;
+		const renderBody = (): void => {
+			if (tc.result && !isRunning) {
+				const raw = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
+				const resultText = this._toolResultText(raw);
+				const mdBody = append(resultsArea, $('.search-web-md-body'));
+				this._renderMarkdownContent(mdBody, resultText, false);
+			} else if (isRunning) {
+				const progress = append(resultsArea, $('.search-progress'));
+				progress.textContent = '⏳ 正在搜索...';
+			}
+		};
+		const ensureBody = (): void => {
+			if (bodyRendered) { return; }
+			bodyRendered = true;
+			renderBody();
+		};
+
+		if (isRunning) {
+			ensureBody();	// 运行中默认展开且 body 只是占位符 ⇒ 立即渲染
+		} else {
+			requestAnimationFrame(() => {
+				if (wrapper.classList.contains('expanded')) { ensureBody(); }
+			});
 		}
 
 		// 始终可展开
 		header.addEventListener('click', () => {
 			const isExpanded = wrapper.classList.toggle('expanded');
 			chevron.classList.toggle('expanded', isExpanded);
+			if (isExpanded) { ensureBody(); }	// ★ 首次展开才真正渲染 markdown
 		});
 
+		chatPerf.end('card.create.websearch', tCard, `tool=${tc.id ?? ''} status=${tc.status} len=${typeof tc.result === 'string' ? tc.result.length : 0}`);
 		return wrapper;
 	}
 

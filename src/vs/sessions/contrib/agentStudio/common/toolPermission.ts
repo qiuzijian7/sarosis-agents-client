@@ -141,4 +141,41 @@ export function isToolCallDeniedByHardPermission(
 	return { denied: false };
 }
 
+/**
+ * 本轮工具调用的**统一硬权限判据**：合并两个来源的拦截意图。
+ *
+ *  - `policy`（`IHardPermissionPolicy`，模式表）——由 workMode 驱动，
+ *    来源 `agentOSService._resolveHardPermissionForWorkMode`（plan 模式）。
+ *  - `strategyCheck`（谓词）——由范式策略驱动，来源
+ *    `IterationPlan.hardPermission`（如 `readonlyStrategy` 的写工具黑名单）。
+ *
+ * 为什么需要这个函数：两个来源**形状不同**（模式表 vs 谓词），此前执行器只认
+ * 前者，导致策略侧的 `hardPermission` 被 `turnIterationGate` 静默丢弃 ——
+ * readonly 范式只剩 schema 层过滤（`toolDefs`），运行时零拦截。模型一旦调用
+ * 不在本轮工具面里的写工具名（历史里出现过、或凭记忆幻觉），就会**真实执行**。
+ * 与 plan 模式的双层拦截（schema `applyHardPermission` + 运行时判据）不对等。
+ *
+ * `source` 用于让调用方区分文案与豁免：计划文件豁免（`plans/*.md`）只对
+ * `policy` 来源成立 —— readonly 范式的语义是「什么都不写」，写计划文件同样拦。
+ */
+export function isToolCallDeniedByTurnPolicy(
+	toolName: string,
+	policy: IHardPermissionPolicy | undefined,
+	strategyCheck?: (tool: string) => boolean,
+): { denied: boolean; reason?: string; source?: 'policy' | 'strategy' } {
+	// 无条件放行：检索/只读工具不受任何来源限制（含策略谓词）——
+	// 只读代理的本职就是检索，策略黑名单不该误伤白名单读工具。
+	if (isAlwaysPermittedRetrievalTool(toolName)) {
+		return { denied: false };
+	}
+	const byPolicy = isToolCallDeniedByHardPermission(toolName, policy);
+	if (byPolicy.denied) {
+		return { ...byPolicy, source: 'policy' };
+	}
+	if (strategyCheck?.(toolName)) {
+		return { denied: true, reason: 'denied by loop strategy (paradigm restriction)', source: 'strategy' };
+	}
+	return { denied: false };
+}
+
 export type { IToolDefinition };

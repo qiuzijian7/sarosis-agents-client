@@ -30,7 +30,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 // ★ 2026-09-16：切换工作区「卡住」诊断 —— 本文件的 `loadMerge` 是切换后最重的同步段（分阶段计时见该方法）。
-import { wsStage } from './wsSwitchDiag.js';
+import { takeMaxBlockMs, wsStage } from './wsSwitchDiag.js';
 import { IAgentStudioLogService } from './agentStudioLogService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
@@ -142,6 +142,21 @@ function _skipJsonValue(json: string, start: number): number {
 export const PARSE_BATCH_ELEMENTS = 512;
 
 /**
+ * ★★★ 2026-09-18（P0 性能）：批量解析的**自适应批上限**（配合 `PARSE_BATCH_ELEMENTS` 作下限）。
+ *
+ * 问题：批固定 512 时，一份 14 万节点 / 41 万边的制品要上千次 `JSON.parse` + `slice` + 回调 ——
+ * 这些**每次批都要付的固定开销**在「解析 JSON」里占比可观（真机 3 folder ≈ 7320ms），
+ * 而单批 512 个元素的 `JSON.parse` 实测只有零点几毫秒 ⇒ 批明显偏小。
+ *
+ * 但不能直接调大：批越大，**单次连续占用**越长（`SLICE_BUDGET_MS = 8ms` 是 UI 卡顿的防线）。
+ * ⇒ 用**实测本批解析耗时**自适应（见 `forEachArrayBatch` 的 `flush`）：
+ *   · 本批 `parseMs < 4` ⇒ 下次翻倍（摊薄固定开销，上限本常量）；
+ *   · 本批 `parseMs ≥ 8` ⇒ 下次减半（不低于 `PARSE_BATCH_ELEMENTS`），把单次切片压回预算内。
+ * 效果可由现有诊断直接验证：`stage('nodes', …)` 里的「批量解析 Xms / N 批」。
+ */
+export const PARSE_BATCH_MAX_ELEMENTS = 4096;
+
+/**
  * 一个顶层数组的解析统计（**诊断用**，2026-09-16）。
  *
  * 为什么要有它：`[loadMerge] 阶段耗时` 只报「解析 JSON = 10177ms」这一个总数，
@@ -185,13 +200,23 @@ export async function forEachArrayBatch<T>(
 	let batchStart = -1;
 	let batchEnd = -1;
 	let batchCount = 0;
+	/** 自适应批大小（见 `PARSE_BATCH_MAX_ELEMENTS`）：初始为下限，按实测单批耗时放大/缩小。 */
+	let batchLimit = PARSE_BATCH_ELEMENTS;
 
 	const flush = (): void => {
 		if (batchCount === 0) { return; }
 		// 元素之间原本就是 `,` ⇒ 补上外层方括号即为合法 JSON 数组（首尾空白与缩进都不影响）
 		const t0 = performance.now();
 		const items = JSON.parse(`[${json.slice(batchStart, batchEnd)}]`) as T[];
-		if (stats) { stats.parseMs += performance.now() - t0; stats.batches++; stats.elements += items.length; }
+		const parseMs = performance.now() - t0;
+		if (stats) { stats.parseMs += parseMs; stats.batches++; stats.elements += items.length; }
+		// ★★★ 2026-09-18（P0 性能）：自适应批大小 —— 太快就放大（摊薄每批的固定开销），
+		// 太慢就缩小（守住 `SLICE_BUDGET_MS = 8ms` 的单次连续占用预算）。见 `PARSE_BATCH_MAX_ELEMENTS`。
+		if (parseMs < 4 && batchLimit < PARSE_BATCH_MAX_ELEMENTS) {
+			batchLimit = Math.min(PARSE_BATCH_MAX_ELEMENTS, batchLimit * 2);
+		} else if (parseMs >= 8 && batchLimit > PARSE_BATCH_ELEMENTS) {
+			batchLimit = Math.max(PARSE_BATCH_ELEMENTS, batchLimit >> 1);
+		}
 		batchCount = 0;
 		batchStart = -1;
 		batchEnd = -1;
@@ -210,7 +235,7 @@ export async function forEachArrayBatch<T>(
 		batchCount++;
 		count++;
 		i = eEnd;
-		if (batchCount >= PARSE_BATCH_ELEMENTS) { flush(); }
+		if (batchCount >= batchLimit) { flush(); }
 		if ((count % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
 			flush();
 			await yieldToEventLoop();
@@ -242,6 +267,7 @@ async function _parseGraphStreaming(
 	json: string,
 	onProgress?: (nodes: number, edges: number) => void,
 	onStage?: (label: string, ms: number, extra?: string) => void,
+	opts?: { skipBm25?: boolean },
 ): Promise<any> {
 	/** 分键耗时上报（诊断）。`onStage` 缺省时只多一次 `if`。 */
 	const stage = (label: string, t0: number, extra?: string): void => {
@@ -331,9 +357,15 @@ async function _parseGraphStreaming(
 				break;
 			}
 			case 'bm25':
-				data.bm25 = JSON.parse(raw);
-				// ⚠ 这一句是**单次整体解析**，无法切片（`bm25` 是对象，不是可逐元素的数组）
-				stage('bm25', tKey, `${(raw.length / 1024 / 1024).toFixed(1)}MB 文本**单次**解析 + 值边界扫描 ${valueScanMs}ms`);
+				// ★★★ 2026-09-18（P0 性能）：调用方声明「检索由 FTS5 提供」时**连解析都跳过** ——
+				// legacy 全量档制品里的 bm25 可达数 MB，而它是**不可切片的单次整体 parse**。
+				if (opts?.skipBm25) {
+					stage('bm25', tKey, `${(raw.length / 1024 / 1024).toFixed(1)}MB **跳过解析**（检索走 FTS5，内存倒排改为按需重建）`);
+				} else {
+					data.bm25 = JSON.parse(raw);
+					// ⚠ 这一句是**单次整体解析**，无法切片（`bm25` 是对象，不是可逐元素的数组）
+					stage('bm25', tKey, `${(raw.length / 1024 / 1024).toFixed(1)}MB 文本**单次**解析 + 值边界扫描 ${valueScanMs}ms`);
+				}
 				break;
 			case 'layout':
 				data.layout = JSON.parse(raw);
@@ -368,8 +400,13 @@ export class GraphPersistence {
 	 * Writes graph.db.zst (pure gzip stream, no header) + artifact.json (metadata).
 	 * Uses atomic write (write to .tmp, then rename).
 	 * @param opts.slim 双档导出之 slim 档（对齐 C 手动导出 drop indexes + VACUUM）：
-	 *   剔除可重建的 bm25 倒排与 layout 3D 坐标 → 制品显著缩小；加载侧自动重建 BM25。
-	 *   自动保存/watcher 路径不传（全量保真，对齐 C watcher 档）。
+	 *   剔除可重建的 bm25 倒排与 layout 3D 坐标 → 制品显著缩小。
+	 *   ⚠ 2026-09-18 更正（原注释称「自动保存/watcher 路径不传、全量保真」**与代码不符**，曾误导排查）：
+	 *   **当前所有落盘路径都是 slim 档** —— 自动保存 `codebaseGraphService` 的
+	 *   `persistence.save(..., { slim: true }, ...)`、`exportArtifact` 默认 `slim = true`（`?? true`）。
+	 *   ⇒ 制品里**本就没有** bm25/layout；因此**不需要**「加载侧一律重建倒排」，是否重建改由
+	 *   `load()/loadMerge()` 的 `opts.skipBm25`（= 检索是否由 FTS5 提供）决定，
+	 *   见 `CodebaseGraphStore._bm25Deferred` 的契约。
 	 */
 	async save(store: CodebaseGraphStore, targetPath: string, project?: string, opts?: { slim?: boolean }, onProgress?: (writtenMB: number) => void): Promise<void> {
 		// Yield before heavy operation to let UI update
@@ -449,15 +486,24 @@ export class GraphPersistence {
 	 * Supports: pure gzip stream (new), CBMG header (legacy), plain JSON (fallback).
 	 * Uses async chunked loading to avoid UI freeze.
 	 */
-	async load(store: CodebaseGraphStore, sourcePath: string): Promise<boolean> {
+	async load(store: CodebaseGraphStore, sourcePath: string, opts?: { skipBm25?: boolean }): Promise<boolean> {
 		const json = await this._readJsonText(sourcePath);
 		if (!json) { return false; }
-		const data = await _parseGraphStreaming(json);
-		this._normalizeLoadedPaths(data, sourcePath);
+		const data = await _parseGraphStreaming(json, undefined, undefined, opts);
+		// ★ 2026-09-18：本方法已改为 async（内部按 8ms 预算让出）⇒ 必须 await，否则校验会与迁移并发
+		await this._normalizeLoadedPaths(data, sourcePath);
 		// 导入前完整性校验（对齐 C 版 cbm_store_check_integrity_deep 的导入门）
 		if (!await this._validateGraphData(data, sourcePath)) { return false; }
 		// Async chunked loading to avoid UI freeze
 		await store.fromJSONAsync(data);
+		// ★★★ 2026-09-18（P0 性能）：调用方声明「检索由 FTS5 提供」（`opts.skipBm25`）⇒ **不再全量重建**
+		// 内存倒排，只置「待按需重建」标记（见 `CodebaseGraphStore._bm25Deferred`）：真机此处
+		// `BM25 重建=9137ms` / `⛔主线程阻塞 ≈2393ms`，而默认检索走主进程 FTS5 ⇒ 多数时候白付 ✗。
+		if (opts?.skipBm25 && (data.nodes?.length ?? 0) > 0) {
+			store.markBM25Deferred();
+			this._logService?.info('[GraphPersistence]', `[load] 跳过内存 BM25 重建（检索走 FTS5）⇒ 已置「按需重建」标记：${sourcePath}`);
+			return true;
+		}
 		// slim 档制品（无 bm25）→ 加载后重建倒排，否则 search_graph query 静默无结果。
 		// force=true：加载路径无脏集，增量模式（默认）会空转导致索引仍为空。
 		if (!data.bm25 && (data.nodes?.length ?? 0) > 0) {
@@ -470,7 +516,7 @@ export class GraphPersistence {
 	 * 合并加载：把 sourcePath 的图谱【追加】到 store（不清空），用于多 folder 工作区。
 	 * @param projectOverride 覆盖合并进来的所有节点/边的项目名（确保各 folder 项目名唯一）。
 	 */
-	async loadMerge(store: CodebaseGraphStore, sourcePath: string, projectOverride?: string, onProgress?: (line: string) => void): Promise<boolean> {
+	async loadMerge(store: CodebaseGraphStore, sourcePath: string, projectOverride?: string, onProgress?: (line: string) => void, opts?: { skipBm25?: boolean }): Promise<boolean> {
 		// 进度节流（方案 ⑥）：解析/合并已按 8ms 时间预算切片 ⇒ 每让出一次都推 UI 会到每秒上百次。
 		let lastReportAt = 0;
 		const report = (line: string, force = false): void => {
@@ -493,6 +539,13 @@ export class GraphPersistence {
 		let phasesTotal = 0;
 		// 制品文件名（日志里用来区分多 folder —— 本类没有 service 的 `_basename`，就地取末段）
 		const label = sourcePath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? sourcePath;
+		// ★★ 2026-09-19：每段同时记「**该段内主线程最长连续占用**」（`takeMaxBlockMs()` 读+清零 ✓）。
+		// 动机（真机日志）：看门狗报 `交互延迟 ≈2039ms（阶段=graph: 写入内存 store（graph.db.zst））` ✗，
+		// 但这个阶段名只能说明"当时在跑这一步"——**阶段耗时（含 await）≠ 主线程被占** ✗：
+		// `写 store` / `解析 JSON` 这类阶段可能大量在等 IO / worker / GC。
+		// 有了 `[阻塞Nms]` 才能区分「**真的占住主线程**」与「只是慢」✓✓
+		// （与增量索引 `_seg` 同口径 ✓；注意**不能**用 `asyncSlice.takeMaxSliceMs()`：
+		//   它只在切片循环里被喂 ⇒ 这些阶段多数不走切片 ⇒ 必然假阴性 ✗）
 		const timed = async <T>(name: string, fn: () => T | Promise<T>): Promise<T> => {
 			wsStage(`graph: ${name}（${label}）`);
 			const t0 = Date.now();
@@ -500,8 +553,9 @@ export class GraphPersistence {
 				return await fn();
 			} finally {
 				const ms = Date.now() - t0;
+				const blockMs = Math.round(takeMaxBlockMs());
 				phasesTotal += ms;
-				phases.push(`${name}=${ms}ms`);
+				phases.push(`${name}=${ms}ms${blockMs > 12 ? `[阻塞${blockMs}ms]` : ''}`);
 			}
 		};
 		const logPhases = (note: string): void => {
@@ -520,6 +574,7 @@ export class GraphPersistence {
 			json,
 			(nodes, edges) => report(`解析中：${nodes} 节点 / ${edges} 边`),
 			(label2, ms, extra) => parseDetail.push(`${label2}=${ms}ms${extra ? ` 〔${extra}〕` : ''}`),
+			opts,
 		));
 		if (parseDetail.length > 0) {
 			this._logService?.info('[GraphPersistence]', `[loadMerge] 解析分解（${label}）：${parseDetail.join(' / ')}`);
@@ -533,6 +588,13 @@ export class GraphPersistence {
 			return false;
 		}
 		const stats = await timed('写入内存 store', () => store.mergeFromJSONAsync(data, projectOverride, (loaded, total) => report(`写入内存图谱：${loaded}/${total}`)));
+		// ★★★ 2026-09-18（P0 性能）：本类**不在合并路径重建 BM25**（重建在 service 侧，且是 3 folder 里
+		// 最贵的一段：真机 9137ms / ⛔主线程阻塞 2393ms）。调用方声明「检索走 FTS5」时只置
+		// 「待按需重建」标记 ⇒ 省下每次加载都白付的这笔钱 ✓（契约见 `CodebaseGraphStore._bm25Deferred`）。
+		if (opts?.skipBm25) {
+			store.markBM25Deferred();
+			phases.push('BM25=跳过（按需重建）');
+		}
 		logPhases('');
 		// 重复合并必须**可见**（2026-09-15）：实测制品 49.6% 节点是重复的，而旧实现完全静默。
 		if (stats.nodesSkipped > 0 || stats.edgesSkipped > 0) {
@@ -547,7 +609,7 @@ export class GraphPersistence {
 	 * watcher 的 root-relative 键永远匹配不上（每轮误报全量变更），
 	 * 重索引时新旧格式并存产生重复节点。加载时统一归一化为 root 相对路径。
 	 */
-	private _normalizeLoadedPaths(data: any, sourcePath: string): void {
+	private async _normalizeLoadedPaths(data: any, sourcePath: string): Promise<void> {
 		// graph.db.zst 位于 <root>/.codebase-memory/ → root 为上两级目录
 		const norm = sourcePath.replace(/\\/g, '/');
 		const parts = norm.split('/');
@@ -558,7 +620,13 @@ export class GraphPersistence {
 			const n = p.replace(/\\/g, '/');
 			return n.toLowerCase().startsWith(prefix) ? n.substring(prefix.length) : n;
 		};
+		// ★★★ 2026-09-18（P0 性能）：本段原为**整段跑**的 O(节点+哈希) 全量扫描（十几万节点 ⇒
+		// 主线程连续占用数百 ms，看门狗会报 `⛔ 主线程阻塞`）。BM25 收口后，它与「完整性校验」
+		// 是加载路径上**仅剩的不可切片**重活 ⇒ 同样按 `SLICE_BUDGET_MS = 8ms` 预算让出。
+		// ⚠ 语义零变化：`data` 是本次载入的局部对象，让出期间不会被别人改。
+		let sliceStart = performance.now();
 		let migrated = 0;
+		let scanned = 0;
 		for (const nd of data.nodes ?? []) {
 			if (typeof nd.filePath === 'string') {
 				const s = strip(nd.filePath);
@@ -566,12 +634,20 @@ export class GraphPersistence {
 				nd.filePath = s;
 			}
 			if (typeof nd.qualifiedName === 'string') { nd.qualifiedName = strip(nd.qualifiedName); }
+			if ((++scanned % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+				await yieldToEventLoop();
+				sliceStart = performance.now();
+			}
 		}
 		for (const h of data.fileHashes ?? []) {
 			if (typeof h.relPath === 'string') {
 				const s = strip(h.relPath);
 				if (s !== h.relPath) { migrated++; }
 				h.relPath = s;
+			}
+			if ((++scanned % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+				await yieldToEventLoop();
+				sliceStart = performance.now();
 			}
 		}
 		if (migrated > 0) {
@@ -594,6 +670,10 @@ export class GraphPersistence {
 		const edgeArr = (data.edges ?? []) as any[];
 
 		const nodeIds = new Set<number>();
+		// ★★★ 2026-09-18（P0 性能）：本函数是**整段跑**的 O(节点+边) 全量扫描（十几万节点 + 数十万边，
+		// 实测数百 ms 连续占用主线程）。BM25 收口后，它与「路径迁移」是加载路径上仅剩的不可切片重活
+		// ⇒ 同样按 `SLICE_BUDGET_MS = 8ms` 让出（语义零变化：只在本函数的局部数组上读）。
+		let sliceStart = performance.now();
 		for (let i = 0; i < nodeArr.length; i++) {
 			const n = nodeArr[i];
 			if (!n || typeof n.id !== 'number' || typeof n.name !== 'string' || typeof n.project !== 'string') {
@@ -601,6 +681,10 @@ export class GraphPersistence {
 				return false;
 			}
 			nodeIds.add(n.id);
+			if ((i % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+				await yieldToEventLoop();
+				sliceStart = performance.now();
+			}
 		}
 		let dangling = 0;
 		let containsDangling = 0;
@@ -609,6 +693,11 @@ export class GraphPersistence {
 			if (!e || typeof e.id !== 'number' || typeof e.sourceId !== 'number' || typeof e.targetId !== 'number' || typeof e.type !== 'string') {
 				this._logService?.warn('[GraphPersistence]', `artifact integrity check failed: bad edge at index ${i}`);
 				return false;
+			}
+			// ★ 切片让出（超预算就还给 UI 一帧；判定结果与不分片时完全一致）
+			if ((i % SLICE_CHECK_EVERY) === 0 && sliceBudgetExceeded(sliceStart)) {
+				await yieldToEventLoop();
+				sliceStart = performance.now();
 			}
 			if (!nodeIds.has(e.sourceId) || !nodeIds.has(e.targetId)) {
 				// CONTAINS 边的 source 是历史格式中的"文件路径伪节点"（旧版本不实体化 file 节点），

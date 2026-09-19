@@ -290,3 +290,5 @@ tools/archive/one-off-migrations/pass1.ts
 tools/archive/one-off-migrations/pass2.ts
 tools/archive/one-off-migrations/phase2.ts
 tools/archive/one-off-migrations/rename-employeeId.ts
+
+_codex_probe/*

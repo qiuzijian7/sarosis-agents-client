@@ -1,6 +1,8 @@
 import { $, append, clearNode, addDisposableListener, addStandardDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { IChatAttachment, IContextUsage, CHAT_MODE_UI } from './agentChatTypes.js';
 import { renderContextUsageRing } from './modules/contextRing.js';
+import { chatPerf } from './agentChatPanel.perf.js';
+import { focusTrace } from './focusTrace.js';
 import { AgentChatPanelMarkdown } from './agentChatPanel.markdown.js';
 import {
 	filterWorkflowItems,
@@ -29,6 +31,17 @@ interface IComposerClipSegment {
 	attType?: 'image' | 'file' | 'folder';
 	isPasted?: boolean;
 	filePath?: string;
+}
+
+/**
+ * 一帧输入性能采样器（见 `_startComposerDiag`）。
+ *
+ * `mark(name)` 结算「上一个打点到现在」的耗时并归入 name 段；
+ * `end()` 结算总耗时后压入样本数组，重复调用无副作用。
+ */
+interface IComposerDiagFrame {
+	mark(name: string): void;
+	end(): void;
 }
 
 // Feature: composer. Extracted from AgentChatPanelBase.
@@ -95,6 +108,14 @@ protected override _renderInputArea(): void {
 		// 流式输出过程中不再禁用输入框——用户可继续输入新消息排队
 		// this._textarea.disabled = this._isSending;  ← 已移除
 
+		// ★ 2026-09-18 焦点轨迹埋点（用户报「多窗口切换到输入框卡顿」）：
+		//   这里记录**输入框真正拿到焦点**的时刻 ⇒ 与窗口 focus 事件对比，
+		//   差值就是用户"点了输入框却没反应"的**感知延迟** ✓
+		//   （focusin 用捕获阶段 ✓：即使输入框内部有子元素先收到事件也能命中 ✓）
+		this._register(addDisposableListener(this._textarea, 'focusin', () => {
+			focusTrace.mark('input.focusin', 'composer');
+		}, true));
+
 		// 防御修复：流式期间 DOM 更新可能破坏 contentEditable 状态。
 		// 每次用户点击/mousedown 显式确保 contentEditable=true + tabIndex=0。
 		this._register(addDisposableListener(this._textarea, EventType.MOUSE_DOWN, () => {
@@ -125,21 +146,24 @@ protected override _renderInputArea(): void {
 		this._register(
 			addDisposableListener(this._textarea, EventType.INPUT, () => {
 				const t = this._textarea;
-				// 保存消息区滚动位置：输入框高度变化会挤压 flex 布局的消息区，
-				// 浏览器自动调整 scrollTop 导致滚动条跳动。保存后恢复即可避免。
-				const savedScrollTop = this._messagesContainer?.scrollTop ?? 0;
-				t.style.height = "auto";
-				const maxAllowed = 320;
-				const newHeight = this._userHasAdjustedHeight
-					? Math.min(Math.max(t.scrollHeight, this._resizeMaxH), maxAllowed)
-					: Math.min(t.scrollHeight, this._resizeMaxH);
-				t.style.height = newHeight + "px";
-				if (this._messagesContainer && this._messagesContainer.scrollTop !== savedScrollTop) {
-					this._messagesContainer.scrollTop = savedScrollTop;
-				}
+				// ★ 2026-09-18 性能埋点：`window.__SAROSIS_COMPOSER_DIAG = true` 开启。
+				//   分段计时定位「打字卡顿」的剩余来源；关闭时仅多一次布尔读取。
+				const _cd = this._startComposerDiag();
+
+				// ★ 2026-09-18 性能修复（用户报告「打字特别卡顿」）：
+				//   原先此处同步执行 保存消息区 scrollTop → style.height='auto'
+				//   → 读 scrollHeight → 写 height → 恢复 scrollTop，
+				//   是典型的 read-write-read 交错，会强制浏览器同步布局（layout thrash）；
+				//   且因为同时读写了【消息区】的 scrollTop，重排成本随消息区 DOM
+				//   体积增长 —— 表现为「聊得越久越卡」。
+				//   现把高度测量与滚动恢复整体移入 rAF：一帧内只做一次，
+				//   且不再位于击键的同步路径上。
+				this._scheduleComposerHeightSync();
+				_cd?.mark('heightScheduled');
 
 				// 获取纯文本（排除内联附件芯片内容）
 				const val = this._getComposerText();
+				_cd?.mark('getText');
 
 				// Detect /skill /command patterns — show slash menu
 				// 允许 `-`（工作流 id 形如 wf-xxx），使 `/wf-` 输入过程中菜单持续显示。
@@ -152,19 +176,24 @@ protected override _renderInputArea(): void {
 					t.setAttribute('data-slash-command', slashMatch[1]);
 					const filter = slashMatch[1];
 					if (this._slashMenuEl) {
-						this._renderSlashMenuItems(filter);
+						// ★ 2026-09-18：菜单已打开 → 重渲染走防抖。
+						//   连续输入 `/w` `/wf` `/wf-` 只会在停顿后渲染一次。
+						this._scheduleSlashMenuRender(filter);
 					} else {
+						// 首次打开必须立即执行，否则菜单出现延迟会让输入有滞后感。
 						this._openSlashMenu(filter);
 					}
 				} else {
 					t.style.color = '';
 					t.removeAttribute('data-slash-command');
+					this._cancelSlashMenuRender();
 					this._closeSlashMenu();
 				}
 
 				// P0-2: @mention 文件搜索检测
 				const cursorPos = this._getCaretOffset();
 				const beforeCursor = val.slice(0, cursorPos);
+				_cd?.mark('caretOffset');
 				const atMatch = beforeCursor.match(/@(\w[^\s]*)$/);
 				if (atMatch && this._onSearchFiles) {
 					const query = atMatch[1];
@@ -184,6 +213,7 @@ protected override _renderInputArea(): void {
 
 			// 草稿持久化钩子（per-session，pane 侧 debounce 落 localStorage）
 			this._onComposerTextChange?.(val);
+			_cd?.end();
 		}),
 	);
 
@@ -260,20 +290,12 @@ protected override _renderInputArea(): void {
 				this._addFiles(Array.from(dt.files), false);
 			} else if (folderPaths.length === 0) {
 				// 3. 代码/文本拖放（从编辑器选中代码拖入）
+				// 2026-09-18：改为复用 _addTextSnippetAttachment，与粘贴分支共用
+				// 同一判定/构建/图标链路（原实现硬编码 code-snippet.txt，日志片段
+				// 也被标成代码，且与粘贴行为不一致）。
 				const text = dt.getData('text/plain');
 				if (text && text.trim().length > 0) {
-					const att: IChatAttachment = {
-						id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-						type: 'file',
-						name: `code-snippet.txt`,
-						mimeType: 'text/plain',
-						data: text,
-						size: text.length,
-						isPasted: false,
-					};
-					this._attachments.push(att);
-					this._renderAttachmentPreviews();
-					this._insertInlineAttachmentChip(att);
+					this._addTextSnippetAttachment(text, this._classifyTextSnippet(text));
 				}
 			}
 		}));
@@ -343,7 +365,14 @@ protected override _renderInputArea(): void {
 				if (html) { plain = html.replace(/<[^>]+>/g, ''); }
 			}
 			if (plain) {
-				this._insertTextAtCaret(plain);
+				// 2026-09-18：长片段（代码 / 日志）折叠为 chip，避免整段塞进
+				// 输入框把其撑高、与提问文字混在一起难以阅读。
+				// 与下方拖放代码分支共用 _addTextSnippetAttachment，行为一致。
+				if (this._shouldFoldTextToChip(plain)) {
+					this._addTextSnippetAttachment(plain, this._classifyTextSnippet(plain));
+				} else {
+					this._insertTextAtCaret(plain);
+				}
 			}
 		}));
 
@@ -970,6 +999,33 @@ protected override _scheduleMentionSearch(query: string): void {
 				}
 			} catch { /* ignore */ }
 		}, 300) as unknown as number;
+	}
+
+	/**
+	 * 防抖重渲染 slash 菜单（80ms）。
+	 *
+	 * 首次打开由 `_openSlashMenu` 立即完成；本方法只服务于「菜单已打开、
+	 * 过滤词继续变化」的场景 —— 此时全量重建菜单 DOM 若每次击键都做，
+	 * 连续快速输入会重建多次而用户只看得到最后一次。
+	 */
+	private _scheduleSlashMenuRender(filter: string): void {
+		this._cancelSlashMenuRender();
+		this._slashMenuTimer = window.setTimeout(() => {
+			this._slashMenuTimer = null;
+			this._renderSlashMenuItems(filter);
+		}, 80) as unknown as number;
+	}
+
+	/**
+	 * 取消待执行的 slash 菜单重渲染。
+	 *
+	 * 菜单关闭时必须调用，否则一个已排程的渲染会在关闭后又把菜单建回来。
+	 */
+	private _cancelSlashMenuRender(): void {
+		if (this._slashMenuTimer !== null) {
+			clearTimeout(this._slashMenuTimer);
+			this._slashMenuTimer = null;
+		}
 	}
 
 	protected override _openMentionMenu(): void {
@@ -1702,7 +1758,19 @@ protected override _computeInputBaselineTokens(): number {
 				return m.tokenUsage.total;
 			}
 		}
-		// 无真实 usage（新对话或首条消息）：降级为逐条字符估算
+		// 无真实 usage（新对话或首条消息）：降级为逐条字符估算。
+		// 2026-09-17 性能修复：该分支对**全部消息的完整文本**做 length 扫描
+		// （content + thinking + 每个 toolCall 的 args/result/name），而
+		// _computeContextUsage 在每次 _updateMessageDom 时都会被调用（流式期间
+		// 每个 delta 一次）⇒ 历史越长每帧越慢（用户报「历史多了发消息卡顿」）。
+		// 估算结果只依赖消息集合本身，故按「消息数 + 末条 id（内容变更时 id 不变
+		// 但长度/内容会变，故叠加末条内容长度）+ 最后一条的文本指纹」做缓存，
+		// 命中则直接复用，避免重复扫描全部历史。
+		const cacheKey = this._buildBaselineEstimateCacheKey();
+		if (this._baselineEstimateCache?.key === cacheKey) {
+			return this._baselineEstimateCache.value;
+		}
+
 		let total = 0;
 		for (const m of this._messages) {
 			total += this._estimateTokens(m.content);
@@ -1715,7 +1783,24 @@ protected override _computeInputBaselineTokens(): number {
 				}
 			}
 		}
+		this._baselineEstimateCache = { key: cacheKey, value: total };
 		return total;
+	}
+
+	/**
+	 * 为「逐条字符估算」构建缓存键。
+	 *
+	 * 仅凭 messages.length 不足以保证结果不变：同一条消息在流式期间会被就地
+	 * 更新（content 增长、toolCalls 追加），此时长度与 id 都不变。因此额外纳入
+	 * 最后一条消息的文本量（content + thinking + toolCalls 数）作为变更信号。
+	 * 成本 O(1)（只读最后一条 + toolCalls 长度），远低于全量扫描。
+	 */
+	private _buildBaselineEstimateCacheKey(): string {
+		const count = this._messages.length;
+		if (count === 0) { return '0'; }
+		const last = this._messages[count - 1];
+		const toolCallCount = Array.isArray(last.toolCalls) ? last.toolCalls.length : 0;
+		return `${count}|${last.id}|${last.content?.length ?? 0}|${last.thinking?.length ?? 0}|${toolCallCount}`;
 	}
 
 protected override _computeContextUsage(): IContextUsage | null {
@@ -1846,6 +1931,172 @@ protected override _renderInlineAttachmentChips(): void {
 		if (this._attachments.length) { this._focusComposerEnd(); }
 	}
 
+	/**
+	 * 排程一次输入框高度同步（rAF 合并，同一帧内多次输入只执行一次）。
+	 *
+	 * 拆成独立方法的原因见 `agentChatPanel.base.ts` 中 `_composerHeightRaf` 的注释：
+	 * 高度测量会强制同步布局，绝不能留在击键的同步路径上。
+	 */
+protected _scheduleComposerHeightSync(): void {
+	if (this._composerHeightRaf) { return; }
+	this._composerHeightRaf = requestAnimationFrame(() => {
+		this._composerHeightRaf = 0;
+		// ★ 2026-09-18 性能埋点：`_applyComposerHeight` 会**读写消息区 scrollTop**
+		//（成本 ∝ 消息区 DOM 体积）⇒ 计时以便确认它在大历史会话里是否仍是可感知成本 ✓
+		chatPerf.span('composer.applyHeight', () => this._applyComposerHeight());
+	});
+}
+
+	/**
+	 * 按内容高度自适应输入框（含消息区滚动位置补偿）。
+	 *
+	 * 读取顺序刻意保持「先写 auto、再读 scrollHeight」——这是测量
+	 * `scrollHeight` 的必要手段（否则读到的是当前固定高度）。但与旧实现
+	 * 的区别是：它现在只在 rAF 回调里跑，一帧至多一次，不再每次击键都触发。
+	 */
+protected _applyComposerHeight(): void {
+		const t = this._textarea;
+		if (!t) { return; }
+
+		// 保存消息区滚动位置：输入框高度变化会挤压 flex 布局的消息区，
+		// 浏览器自动调整 scrollTop 导致滚动条跳动。保存后恢复即可避免。
+		const savedScrollTop = this._messagesContainer?.scrollTop ?? 0;
+
+		t.style.height = 'auto';
+		const measured = t.scrollHeight;
+		const target = this._computeComposerHeight(measured);
+
+		// ★★ 2026-09-18 修复（用户报「输入文本时高度会被自动调整成 1 行」✗）：
+		//   上面 `height='auto'` 是测量 `scrollHeight` 的必要手段 ✓（元素有固定高度时
+		//   `scrollHeight` 会返回"固定高度"而不是内容高度 ⇒ 不重置就量不到真实内容高 ✓），
+		//   但它**把 inline 高度清空了** ✗ —— 于是这一步的写回是**必需**的，绝不是冗余优化 ✗。
+		//   旧代码写成「只有 `target !== _lastComposerHeight` 才写回」✗✗，于是当**目标高度没变**
+		//   时直接跳过 ⇒ inline 高度**永久停在 `auto`** ⇒ 塌成内容高度（**1 行** ✓✓）。
+		//   触发条件（与用户现象完全吻合）：用户拖高过输入框 / localStorage 恢复过高度 ⇒
+		//   `_userHasAdjustedHeight=true` ⇒ `target = min(max(内容高, 拖动高), 320)` = **拖动高**；
+		//   而"打字"通常不改变内容高度 ⇒ `target` 恒等于上次值 ⇒ **每次击键都跳过写回** ✗
+		//   ⇒ 输入框塌成 1 行且不恢复 ✓（CSS 无 transition ⇒ 瞬间塌 ✓，与真机现象一致 ✓）
+		//   修法：**无条件写回**（把值设成同一个 px 不会触发额外重排：`auto` 那次已经弄脏布局，
+		//   同一任务内写回只合并为一次 layout ✓）。
+		const heightChanged = target !== this._lastComposerHeight;
+		t.style.height = target + 'px';
+		this._lastComposerHeight = target;
+
+		// ★★ 2026-09-19 性能修复：**只在高度真的变了**时才去动消息区的滚动位置。
+		// 下面那句读 `_messagesContainer.scrollTop` 会**强制一次同步布局** ✗，而上一行刚写完
+		// `height` 已把布局弄脏 ⇒ 这一次 layout 是**整文档级**的。真机实测（日志 `[ChatPerf]`）：
+		//   `composer.applyHeight ×174 total=11766ms avg=67.6ms max=83ms` ✗✗（每次击键 ~68ms！）
+		//   同时 `[MemSnap] dom nodes=106137`（93 条消息 ⇒ ~1140 节点/条 ✗）⇒ layout 成本 ∝ DOM ✓。
+		// 逻辑依据：**高度没变 ⇒ 消息区尺寸也不可能变 ⇒ 浏览器不会自动调整它的 scrollTop**
+		//   ⇒ 既不需要读、也不需要恢复 ✓ ⇒ 常见情形（打字不换行、高度不变）**省掉一次全文档 layout** ✓✓
+		if (heightChanged && this._messagesContainer && this._messagesContainer.scrollTop !== savedScrollTop) {
+			this._messagesContainer.scrollTop = savedScrollTop;
+		}
+	}
+
+	/**
+	 * 由内容高度计算输入框目标高度（唯一实现，供 composer / send 复用）。
+	 *
+	 * 用户手动拖拽过高度时，其设定值作为下限生效（`Math.max`），
+	 * 避免输入内容变少后输入框塌回默认高度。
+	 */
+protected _computeComposerHeight(contentHeight: number): number {
+		const maxAllowed = 320;
+		return this._userHasAdjustedHeight
+			? Math.min(Math.max(contentHeight, this._resizeMaxH), maxAllowed)
+			: Math.min(contentHeight, this._resizeMaxH);
+	}
+	/**
+	 * 开启一次输入框性能采样（仅当 `window.__SAROSIS_COMPOSER_DIAG` 为真）。
+	 *
+	 * 用于实测「打字卡顿」的剩余来源 —— 把一次击键的同步耗时拆成若干阶段，
+	 * 累积后按样本数输出统计，避免逐次击键刷屏。
+	 *
+	 * 关闭时返回 null，调用方用 `_cd?.mark(...)` 的可选链，开销仅一次布尔读取。
+	 *
+	 * 用法（DevTools Console）：
+	 *   window.__SAROSIS_COMPOSER_DIAG = true    // 开启采样
+	 *   window.__SAROSIS_COMPOSER_DIAG = false   // 关闭并打印最终汇总
+	 *   window.__SAROSIS_COMPOSER_DIAG_DUMP()    // 手动打印并清零当前汇总
+	 */
+private _startComposerDiag(): IComposerDiagFrame | null {
+		if (!(this._ownerWindow as any).__SAROSIS_COMPOSER_DIAG) {
+			// 关闭瞬间若仍有累积样本，打印汇总后清零，便于「测完即关」。
+			if (this._composerDiagSamples.length > 0) { this._flushComposerDiag(); }
+			return null;
+		}
+		return this._newComposerDiagFrame();
+	}
+
+	/**
+	 * 构造一帧采样器。分段边界由调用方通过 `mark(name)` 打点，
+	 * `end()` 计算总耗时与各段耗时后压入样本数组。
+	 */
+private _newComposerDiagFrame(): IComposerDiagFrame {
+		const t0 = performance.now();
+		let last = t0;
+		const segments: Record<string, number> = {};
+		let ended = false;
+
+		return {
+			mark: (name: string) => {
+				const now = performance.now();
+				segments[name] = (segments[name] ?? 0) + (now - last);
+				last = now;
+			},
+			end: () => {
+				if (ended) { return; }
+				ended = true;
+				const total = performance.now() - t0;
+				segments['__total'] = total;
+				this._composerDiagSamples.push({ total, segments });
+				// 每 50 次击键汇总一次，避免逐次刷屏淹没日志。
+				if (this._composerDiagSamples.length >= 50) { this._flushComposerDiag(); }
+			},
+		};
+	}
+
+	/**
+	 * 汇总并打印采样结果，然后清零。
+	 *
+	 * 输出各阶段的 avg / max，以及超过 16ms（一帧预算）的样本占比 ——
+	 * 后者直接对应「能感知到的卡顿」。
+	 */
+private _flushComposerDiag(): void {
+		const samples = this._composerDiagSamples;
+		this._composerDiagSamples = [];
+		if (samples.length === 0) { return; }
+
+		const totals = samples.map(s => s.total);
+		const avgTotal = totals.reduce((a, b) => a + b, 0) / totals.length;
+		const maxTotal = Math.max(...totals);
+		const overFrame = totals.filter(t => t > 16).length;
+
+		const stageNames = new Set<string>();
+		for (const s of samples) { for (const k of Object.keys(s.segments)) { stageNames.add(k); } }
+		const stageStats: Record<string, { avg: number; max: number }> = {};
+		for (const name of stageNames) {
+			const vals = samples.map(s => s.segments[name] ?? 0);
+			stageStats[name] = {
+				avg: vals.reduce((a, b) => a + b, 0) / vals.length,
+				max: Math.max(...vals),
+			};
+		}
+
+		console.info(
+			`[ComposerDiag] samples=${samples.length} ` +
+			`total avg=${avgTotal.toFixed(2)}ms max=${maxTotal.toFixed(2)}ms ` +
+			`over16ms=${overFrame}/${samples.length} (${((overFrame / samples.length) * 100).toFixed(1)}%)`,
+		);
+		const rows = Object.entries(stageStats)
+			.sort((a, b) => b[1].avg - a[1].avg)
+			.map(([name, st]) => ({ 阶段: name, 'avg(ms)': +st.avg.toFixed(3), 'max(ms)': +st.max.toFixed(3) }));
+		console.table(rows);
+	}
+
+
+
+
 protected override _getComposerText(): string {
 		const root = this._textarea;
 		if (!root) { return ''; }
@@ -1925,13 +2176,11 @@ protected override _setComposerText(text: string): void {
 				if (seg) { root.appendChild(this._ownerDocument.createTextNode(seg)); }
 			}
 		}
-		// 重新计算高度，避免多行时被截断
+		// 重新计算高度，避免多行时被截断（复用统一实现，见 _computeComposerHeight）
 		root.style.height = 'auto';
-		const maxAllowed = 320;
-		const newHeight = this._userHasAdjustedHeight
-			? Math.min(Math.max(root.scrollHeight, this._resizeMaxH), maxAllowed)
-			: Math.min(root.scrollHeight, this._resizeMaxH);
+		const newHeight = this._computeComposerHeight(root.scrollHeight);
 		root.style.height = newHeight + 'px';
+		this._lastComposerHeight = newHeight;
 		// 更新字符计数器
 		this._updateCharCounter(text);
 		// 文本被程序性改写（草稿恢复 / 优化回填 / 发送后清空）时同步优化按钮态
@@ -1950,21 +2199,46 @@ protected override _getCaretOffset(): number {
 		const sel = this._ownerWindow?.getSelection();
 		if (!sel || sel.rangeCount === 0) { return 0; }
 		const range = sel.getRangeAt(0);
-		const pre = range.cloneRange();
-		pre.selectNodeContents(root);
-		pre.setEnd(range.endContainer, range.endOffset);
+		// 光标不在输入框内 → 偏移无意义（也避免下面的 comparePoint 抛错）。
+		if (!root.contains(range.endContainer)) { return 0; }
+
+		// ★ 2026-09-18 性能修复：原实现用
+		//     pre.selectNodeContents(root) + pre.setEnd(...) + pre.cloneContents()
+		//   再遍历克隆结果累加长度 —— `cloneContents()` 会【深拷贝整段 DOM 子树】，
+		//   只为算出一个字符偏移量。输入框内文本越长，每次击键的分配与拷贝越贵。
+		//
+		//   现改用 TreeWalker 顺序遍历文本节点，用 `comparePoint` 判断该节点是否
+		//   位于光标之前 —— 零拷贝、零中间 DOM 分配。
+		//   注意 chip（inline-attachment/skill/workflow）不贡献偏移量，与旧实现一致。
 		let offset = 0;
-		pre.cloneContents().childNodes.forEach((n) => {
-			if (n.nodeType === Node.TEXT_NODE) {
-				offset += (n.textContent ?? '').length;
-			} else if (n.nodeType === Node.ELEMENT_NODE) {
-				const el = n as HTMLElement;
-				if (!el.classList.contains('inline-attachment-chip') && !el.classList.contains('inline-skill-chip') && !el.classList.contains('inline-workflow-chip')) {
-					offset += (el.textContent ?? '').length;
-				}
+		const walker = this._ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+		let node = walker.nextNode();
+		while (node) {
+			if (node === range.endContainer) {
+				// 光标就落在本文本节点内 → 加上节点内偏移后结束
+				return offset + range.endOffset;
 			}
-		});
+			// comparePoint < 0 表示该节点起点在光标之前
+			if (range.comparePoint(node, 0) < 0 && !this._isChipTextNode(node)) {
+				offset += (node.textContent ?? '').length;
+			}
+			node = walker.nextNode();
+		}
 		return offset;
+	}
+
+	/**
+	 * 判断文本节点是否属于 chip（内联附件 / skill / workflow）。
+	 *
+	 * chip 在 `_getComposerText` 中以整体标记形式贡献文本，不按字符计入光标偏移，
+	 * 故 `_getCaretOffset` 必须跳过它们的内部文本节点，保持与旧实现语义一致。
+	 */
+private _isChipTextNode(node: Node): boolean {
+		const parent = node.parentElement;
+		if (!parent) { return false; }
+		return parent.classList.contains('inline-attachment-chip')
+			|| parent.classList.contains('inline-skill-chip')
+			|| parent.classList.contains('inline-workflow-chip');
 	}
 
 protected override _focusComposerEnd(): void {

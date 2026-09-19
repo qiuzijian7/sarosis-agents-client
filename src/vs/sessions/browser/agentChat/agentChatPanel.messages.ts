@@ -329,6 +329,9 @@ protected override _setupLazyLoad(firstEl: HTMLElement, remainingCount: number):
 		this._lazyLoadRemaining = remainingCount;
 		const CHUNK = 20;
 		let nextEnd = remainingCount;
+		// ★ 2026-09-19：observer 需在 `loadChunk` 之后创建，但 `loadChunk` 内部要重锚它
+		// ⇒ 先声明、后赋值 ✓（`loadChunk` 只在 observer 建好之后才会被调用 ✓，无 TDZ 风险 ✓）
+		let observer: IntersectionObserver | null = null;
 
 		const loadChunk = () => {
 			if (!firstEl.isConnected || nextEnd <= 0) { return; }
@@ -353,9 +356,12 @@ protected override _setupLazyLoad(firstEl: HTMLElement, remainingCount: number):
 			this._lazyLoadRemaining = nextEnd;
 			// 刷新滚动条标记——消息插入后 offsetTop 全部偏移，旧标记位置失效
 			this._scrollbar.refreshScrollMarkers();
+			// ★ 2026-09-19：插入后**必须重锚**（见下方 observeTop 说明 ✓），并安排窗口裁剪 ✓
+			observeTop();
+			this._scheduleTrimDistantMessages();
 		};
 
-		const observer = new IntersectionObserver((entries) => {
+		observer = new IntersectionObserver((entries) => {
 			if (entries[0]?.isIntersecting && nextEnd > 0) {
 				loadChunk();
 			}
@@ -364,7 +370,21 @@ protected override _setupLazyLoad(firstEl: HTMLElement, remainingCount: number):
 			threshold: 0.1,
 			rootMargin: '200px 0px 0px 0px', // 提前 200px 预加载
 		});
-		observer.observe(firstEl);
+		// ★★★ 2026-09-19（「app 卡死」根治）：**每次插入后都要重锚到"当前最上面那条"** ✗✓
+		//
+		// 原实现只 `observe(firstEl)` —— 那是**最初那一个**元素 ✗，而新块是插在它**之前**的 ✓
+		// ⇒ 它被不断往下推、却始终停在视口内 ✗ ⇒ observer **持续触发** ✗✓
+		// ⇒ 分块加载一路把**整段历史**全搬进 DOM ✗（真机：单会话 1675 条、渲染进程 RSS **3.4GB** ✓，
+		//   而 JS 堆仅 600MB ✓ ⇒ 全在 DOM 侧 ✓）⇒ 主线程被布局/重排拖死 = 用户看到的「卡死」✓。
+		// 重锚后语义正确 ✓：只有当**顶部那条**进入视口时才继续加载 ✓；
+		// 已达最顶端（`_messages[0]` 就在顶部）时不再 observe ✓ ⇒ 不会再无限加载 ✓。
+		const observeTop = () => {
+			observer?.disconnect();
+			// 优先取"最上面的消息元素" ✓；极端时序下退回调用方传入的 firstEl ✓
+			const top = this._firstMessageElement() ?? (firstEl.isConnected ? firstEl : null);
+			if (top && nextEnd > 0) { observer?.observe(top); }
+		};
+		observeTop();
 		// P2: 存储到字段，下次 setMessages 时断开
 		this._lazyLoadObserver = observer;
 	}

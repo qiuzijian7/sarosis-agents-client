@@ -210,6 +210,7 @@ import {
 import { SandboxGuard } from './agentSandboxGuard.js';
 import { getEnabledTools, type ToolAssemblyDeps } from './agentToolAssembly.js';
 import { executeAgentTurnDirect } from './agentTurnExecutor.js';
+import type { ITurnHost } from './turnHost.js';
 import { isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { UserMessageEnricher } from './messageEnrichment/userMessageEnricher.js';
 import { createBuiltinTagProviders, WorkingMemoryTagProvider } from './messageEnrichment/builtinTagProviders.js';
@@ -2564,8 +2565,13 @@ private readonly _sandboxGuard: SandboxGuard;
 		if (!request.checkpointSink) { return; }
 		try {
 			// Write null/empty checkpoint to signal "no active run".
+			// ★ 2026-09-19：原来传了 `{ reducerMode: 'reducer' }` ✗ —— 该字段在
+			// `CreateInitialRunStateRequest`（agentRunState.ts:427 ✓）里**不存在**，
+			// 且全仓无第二处使用 ✓ ⇒ 是凭想象写的字段 ✓（TS2353 ✗）。
+			// 这里语义只是「造一个**空的**初始 state」当作终止检查点 ✓
+			//（见上方注释 "null/empty checkpoint" ✓）⇒ 无需任何参数 ✓。
 			const terminalSnapshot: AgentRunStateSnapshot = snapshotRunState(
-				createInitialRunState({ reducerMode: 'reducer' })
+				createInitialRunState({})
 			);
 			await request.checkpointSink(terminalSnapshot as any);
 			this._logService.info('[AgentOS] runAgentGraph: terminal checkpoint written');
@@ -2615,7 +2621,10 @@ private readonly _sandboxGuard: SandboxGuard;
 	 * Turn executor — delegates to agentTurnExecutor.ts (core Agent Loop)。
 	 */
 	private async *_executeWithFallbackDirectly(request: IAgentTurnRequest): AsyncGenerator<IChatStreamDelta, AgentCommand | undefined> {
-		yield* executeAgentTurnDirect(this, request);
+		// 唯一一处不安全转型（单点收口，见 turnHostContract.test.ts）：宿主 26 个
+		// 成员是 private，而 TS 的 private 不参与结构类型匹配，直接传 this 会报
+		// TS2345。把转型收敛在这里，executor 内的 host._xxx 访问才能获得完整检查。
+		yield* executeAgentTurnDirect(this as unknown as ITurnHost, request);
 		return undefined;
 	}
 

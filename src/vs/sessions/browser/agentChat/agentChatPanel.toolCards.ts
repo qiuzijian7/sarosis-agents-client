@@ -1,8 +1,9 @@
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { IAgentChatMessage, IToolCall, IChatAttachment, IPlanTaskCard, IConfirmationData } from './agentChatTypes.js';
-import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST_TOOLS, TOOL_CODEBASE_TOOLS, READ_FILE_KEYS, TOOL_PLAN_TOOLS, TOOL_DELEGATE_TOOLS, TOOL_SEARCH_TOOLS, TOOL_WEB_TOOLS, TOOL_SKILL_TOOLS, TOOL_MERMAID_TOOLS, TOOL_DRAWIO_TOOLS } from './agentChatPanel.base.js';
+import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST_TOOLS, TOOL_CODEBASE_TOOLS, READ_FILE_KEYS, TOOL_PLAN_TOOLS, TOOL_DELEGATE_TOOLS, TOOL_SEARCH_TOOLS, TOOL_WEB_TOOLS, TOOL_SKILL_TOOLS, TOOL_MERMAID_TOOLS, TOOL_DRAWIO_TOOLS, TOOL_UNREAL_TOOLS } from './agentChatPanel.base.js';
 import { parseInlineWorkflowArgs } from './agentChatPanel.workflowChip.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
+import { chatPerf } from './agentChatPanel.perf.js';
 
 /**
  * 解析 tc.args —— 兼容 string(JSON) / object / undefined 三种形态。
@@ -445,6 +446,15 @@ protected _createPlanWorkflowCard(tc: IToolCall, key: string): HTMLElement {
 	throw new Error('[moved-to-feature] _createPlanWorkflowCard');
 }
 
+/**
+ * plan_register 定制卡片（计划队列注册）。
+ * 已抽取到 agentChatPanel.delegateCards.ts（计划族卡片集中在那里）；
+ * 保留 stub 供 dispatcher `_createToolCallCardCore` 调用，运行时由子类 override 提供实现。
+ */
+protected _createPlanRegisterCard(tc: IToolCall, key: string): HTMLElement {
+	throw new Error('[moved-to-feature] _createPlanRegisterCard');
+}
+
 protected _createDelegateTaskCard(tc: IToolCall, key: string): HTMLElement {
 	throw new Error('[moved-to-feature] _createDelegateTaskCard');
 }
@@ -480,9 +490,19 @@ protected _createWebToolCard(tc: IToolCall, key: string): HTMLElement {
  * 于是 terminal 审批时卡片里什么按钮都没有（本次修复的直接现象）。
  */
 protected override _createToolCallCard(tc: IToolCall, confirmation?: IConfirmationData): HTMLElement {
-	const card = this._createToolCallCardCore(tc, confirmation);
-	this._appendToolApprovalSection(card, tc);
-	return card;
+	// ★ 2026-09-18 性能埋点：这是**全部工具卡族**的统一入口（dispatcher 到 delegate/terminal/list/codebase
+	// 等各家族 + 审批区），单出口 ⇒ 用 `span` 一处覆盖所有族 ✓
+	// 动机：工具卡构建是 `setMessages`/`addMessage` 里最重的一块（真机 `render.messages` 中最慢一条
+	// 常是带 N 张卡的 assistant）—— 有了它就能区分"是搜索卡贵还是终端卡贵"✓
+	return chatPerf.span(
+		'card.create.tool',
+		() => {
+			const card = this._createToolCallCardCore(tc, confirmation);
+			this._appendToolApprovalSection(card, tc);
+			return card;
+		},
+		`tool=${tc.name ?? ''} id=${tc.id ?? ''} status=${tc.status} confirm=${confirmation ? 'y' : 'n'}`,
+	);
 }
 
 /**
@@ -620,6 +640,15 @@ private _createToolCallCardCore(tc: IToolCall, confirmation?: IConfirmationData)
 			return this._createReadFileCard(tc, key);
 		}
 
+		// ── plan_register：**计划队列注册**定制卡片（2026-09-17）──
+		// 刻意**不并入** TOOL_PLAN_TOOLS：那一族走 `_createPlanWorkflowCard`（按
+		// plan_explore/plan_enter/plan_exit/update_plan 分支渲染），而 plan_register
+		// 的语义是「写入本 turn 的执行队列」，卡片要突出**顺序**与**起始任务**，
+		// 形态与那四张都不同 ⇒ 独立分支 + 独立构建函数（实现见 delegateCards）。
+		if (key === 'plan_register') {
+			return this._createPlanRegisterCard(tc, key);
+		}
+
 		// ── 计划编排：探索/进入/退出 ──
 		if (TOOL_PLAN_TOOLS.has(key)) {
 			return this._createPlanWorkflowCard(tc, key);
@@ -653,6 +682,11 @@ private _createToolCallCardCore(tc: IToolCall, confirmation?: IConfirmationData)
 		// ── Draw.io 图示（renderDrawioDiagram）──
 		if (TOOL_DRAWIO_TOOLS.has(key)) {
 			return this._createDrawioCard(tc, key);
+		}
+
+		// ── Unreal Engine（unreal_*，BunnySeek bridge）──
+		if (TOOL_UNREAL_TOOLS.has(key)) {
+			return this._createUnrealToolCard(tc, key);
 		}
 
 		// fallback - 通用工具卡片
@@ -1229,6 +1263,14 @@ protected _createDrawioCard(tc: IToolCall, key: string): HTMLElement {
 	throw new Error('[moved-to-feature] _createDrawioCard');
 }
 
+/**
+ * Unreal Engine 工具卡片 — 已抽取到 agentChatPanel.unrealCard.ts（AgentChatPanelUnrealCard）。
+ * 保留 stub 供 dispatcher `_createToolCallCard` 调用；运行时由子类 override 提供实现。
+ */
+protected _createUnrealToolCard(tc: IToolCall, key: string): HTMLElement {
+	throw new Error('[moved-to-feature] _createUnrealToolCard');
+}
+
 
 
 
@@ -1720,13 +1762,21 @@ protected override _createAttachmentChipNode(att: IChatAttachment): HTMLElement 
 
 		const icon = document.createElement('span');
 		icon.className = 'inline-attachment-chip-icon';
-		icon.textContent = att.type === 'image' ? '\u{1F4F7}' : att.type === 'folder' ? '\u{1F4C1}' : '\u{1F4C4}';
+		icon.textContent = this._attachmentChipIcon(att);
 		chip.appendChild(icon);
 
 		const label = document.createElement('span');
 		label.className = 'inline-attachment-chip-label';
-		label.textContent = att.name;
+		label.textContent = this._attachmentChipLabel(att);
 		chip.appendChild(label);
+
+		// 代码 / 日志片段：追加行数，便于一眼看出折叠量
+		if (att.kind && att.data) {
+			const meta = document.createElement('span');
+			meta.className = 'inline-attachment-chip-meta';
+			meta.textContent = `${att.data.split(/\r\n|\r|\n/).length} 行`;
+			chip.appendChild(meta);
+		}
 
 		const removeBtn = document.createElement('span');
 		removeBtn.className = 'inline-attachment-chip-remove';
@@ -1766,8 +1816,111 @@ protected override _createAttachmentChipNode(att: IChatAttachment): HTMLElement 
 			}));
 			this._register(addDisposableListener(chip, EventType.MOUSE_LEAVE, () => this._hideImageTooltip()));
 		}
+		if (att.kind && att.data) {
+			// hover 时显示片段前 12 行预览（文本版 tooltip，与图片 tooltip 互斥）
+			this._register(addDisposableListener(chip, EventType.MOUSE_ENTER, () => {
+				if ((chip.querySelector('.inline-attachment-chip-remove') as HTMLElement)?.matches(':hover')) { return; }
+				this._showSnippetTooltip(att, chip);
+			}));
+			this._register(addDisposableListener(chip, EventType.MOUSE_LEAVE, () => this._hideImageTooltip()));
+		}
 		return chip;
 	}
+
+/** chip 图标：片段类型（代码 &lt;/&gt; / 日志 📋）优先于资源类型（📷 / 📁 / 📄）。 */
+protected _attachmentChipIcon(att: IChatAttachment): string {
+	if (att.kind === 'log') { return '\u{1F4CB}'; }
+	if (att.kind === 'snippet') { return '\u{1F4DD}'; }
+	return att.type === 'image' ? '\u{1F4F7}' : att.type === 'folder' ? '\u{1F4C1}' : '\u{1F4C4}';
+}
+
+/** chip 名称：片段统一显示为「代码片段 / 日志片段」，
+ *  而不是底层文件名 code-snippet.txt——后者对用户无意义。 */
+protected _attachmentChipLabel(att: IChatAttachment): string {
+	if (att.kind === 'log') { return '日志片段'; }
+	if (att.kind === 'snippet') { return '代码片段'; }
+	return att.name;
+}
+
+/** 粘贴/拖入的长文本是否应折叠为 chip。
+ *  阈值：>3 行 或 >200 字符。低于阈值（一句话、URL、短引用）保持原文插入，
+ *  避免"把用户的一句话包成 chip"这种过度包装。 */
+protected _shouldFoldTextToChip(text: string): boolean {
+	const trimmed = text.trim();
+	if (!trimmed) { return false; }
+	const lineCount = trimmed.split(/\r\n|\r|\n/).length;
+	return lineCount > 3 || trimmed.length > 200;
+}
+
+/** 从文本特征判定片段种类：日志 vs 代码。仅影响 chip 图标与名称。 */
+protected _classifyTextSnippet(text: string): 'log' | 'snippet' {
+	// 日志特征：堆栈帧 `at xxx:行:列`、ISO 时间戳、常见日志级别前缀。
+	if (/\bat\s+\S+:\d+:\d+/.test(text)
+		|| /^\s*\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/m.test(text)
+		|| /^\s*(ERROR|WARN|WARNING|INFO|DEBUG|FATAL|TRACE)\b/m.test(text)) {
+		return 'log';
+	}
+	return 'snippet';
+}
+
+/** 把长文本（代码 / 日志片段）建成附件并插入 chip。
+ *  粘贴分支与拖放分支（composer.ts）共用本方法，保证两条路径行为一致。
+ *  复用 type:'file' + mimeType:'text/plain'——与既有 addTextContext 同链路，
+ *  无需扩展 IChatAttachment.type，序列化与发送端零改动。 */
+protected _addTextSnippetAttachment(text: string, kind: 'log' | 'snippet'): void {
+	const att: IChatAttachment = {
+		id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+		type: 'file',
+		name: kind === 'log' ? 'log-snippet.txt' : 'code-snippet.txt',
+		mimeType: 'text/plain',
+		// 原文直存（与 addTextContext 一致），非 base64——文本附件在发送端
+		// 不经 data: URL 解码，写 base64 反而会让模型收到乱码。
+		data: text,
+		size: text.length,
+		isPasted: true,
+		kind,
+	};
+	this._attachments.push(att);
+	this._renderAttachmentPreviews();
+	this._insertInlineAttachmentChip(att);
+}
+
+/** chip hover 预览（代码 / 日志片段）。图片走 _showImageTooltip，此处为文本版。 */
+protected _showSnippetTooltip(att: IChatAttachment, chip: HTMLElement): void {
+	if (!att.data) { return; }
+	this._hideImageTooltip();
+
+	const tip = this._createEl('div');
+	tip.className = 'inline-attachment-snippet-tip';
+
+	const head = this._createEl('div');
+	head.className = 'inline-attachment-snippet-tip-head';
+	head.textContent = att.kind === 'log' ? '日志片段' : '代码片段';
+	const lineCount = att.data.split(/\r\n|\r|\n/).length;
+	const meta = this._createEl('span');
+	meta.className = 'inline-attachment-snippet-tip-meta';
+	meta.textContent = `${lineCount} 行 · ${att.data.length} 字符`;
+	head.appendChild(meta);
+	tip.appendChild(head);
+
+	const pre = this._createEl('pre');
+	pre.className = 'inline-attachment-snippet-tip-pre';
+	// 上限 12 行：足以判断片段内容，又不至于盖住输入框
+	pre.textContent = att.data.split(/\r\n|\r|\n/).slice(0, 12).join('\n');
+	tip.appendChild(pre);
+
+	this._imageTooltip = tip;
+	this._ownerDocument.body.appendChild(tip);
+
+	const rect = chip.getBoundingClientRect();
+	const tipRect = tip.getBoundingClientRect();
+	let left = rect.left + rect.width / 2 - tipRect.width / 2;
+	let top = rect.top - tipRect.height - 8;
+	left = Math.max(8, Math.min(left, window.innerWidth - tipRect.width - 8));
+	if (top < 8) { top = rect.bottom + 8; }
+	tip.style.left = `${Math.round(left)}px`;
+	tip.style.top = `${Math.round(top)}px`;
+}
 }
 
 // ── 纯函数工具（由 subAgentCardUtils.ts 导入 + 重新导出）────────────────

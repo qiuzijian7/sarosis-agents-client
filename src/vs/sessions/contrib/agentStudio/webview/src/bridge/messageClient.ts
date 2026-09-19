@@ -211,6 +211,7 @@ export type RequestType =
 	| 'agents.selected'
 	| 'agents.getLastSelected'
 	| 'agents.openSettings'
+	| 'agents.steeringMessage'
 	| 'orchestration.approveWithoutExecute'
 	| 'orchestration.approveTask'
 	| 'orchestration.rejectTask'

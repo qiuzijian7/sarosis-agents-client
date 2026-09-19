@@ -1,10 +1,85 @@
 import { $, append } from '../../../base/browser/dom.js';
-import { OrchestrationPlan, PlanTask } from './agentChatTypes.js';
+import { OrchestrationPlan, PlanTask, type IChatAttachment, type IQueuePill } from './agentChatTypes.js';
 import { AgentChatPanelAttachments } from './agentChatPanel.attachments.js';
 import { buildWorkflowTrigger, extractTextAfterWorkflowMark, parseInlineWorkflowArgs } from './agentChatPanel.workflowChip.js';
 
+/**
+ * 判定「此刻发送的消息是否应当入队（而非直接发送）」。
+ *
+ * 抽为纯函数以便单测锁定该契约 —— 这里的 `isStreamActive` 与 `isSending` 的
+ * 或关系是「流式中连打两条消息，第二条打断第一条」的修复核心：
+ * `isSending` 是 UI 状态，会在取消后立即复位，而底层流仍可能收尾中；
+ * 只看它就会漏判，导致第二条走发送路径并打断第一条。
+ *
+ * @param isSending      面板 UI 状态：已知正在发送中
+ * @param isStreamActive 服务层查询：底层是否仍有活跃流（回调可缺省 = 未接入服务层）
+ */
+export function shouldQueueOutgoingMessage(
+	isSending: boolean,
+	isStreamActive?: () => boolean,
+): boolean {
+	if (isSending) {
+		return true;
+	}
+	return isStreamActive?.() === true;
+}
+
 // Feature: send. Extracted from AgentChatPanelBase.
 export class AgentChatPanelSend extends AgentChatPanelAttachments {
+
+	/**
+	 * ★ 2026-09-18（用户需求）：收集"当前输入区里的 pill"，供**队列项**展示 ✓。
+	 *
+	 * 数据来源与 composer 的发送逻辑**同源** ✓（避免两处口径分叉 ✗）：
+	 *   · 附件（文件 / 图片 / 文件夹 / 代码片段（`kind='snippet'`）/ 日志（`kind='log'`））⇒ `this._attachments`
+	 *   · 内联 chip（技能 / 工作流）⇒ **DOM 为唯一真源**（与 `_getSkillChipIds` 同一约定 ✓）
+	 *
+	 * ⚠ 必须在清空输入区（`_setComposerText('')`）与 `_attachments = []` **之前**调用 ✓
+	 *   —— 之后 DOM chip 与附件数组都没了 ✗。
+	 * ⚠ 这里只产出**展示数据** ⇒ 不参与发送 ✗；发送仍走原有 text/attachments 通路 ✓。
+	 */
+	private _collectQueuePills(): IQueuePill[] {
+		const pills: IQueuePill[] = [];
+
+		// ── 附件 ──
+		for (const att of this._attachments) {
+			const kind: IQueuePill['kind'] =
+				att.type === 'image' ? 'image'
+					: att.type === 'folder' ? 'folder'
+						: att.kind === 'snippet' ? 'snippet'
+							: att.kind === 'log' ? 'log'
+								: 'file';
+			pills.push({ kind, label: att.name, meta: this._queuePillMeta(att) });
+		}
+
+		// ── 内联 chip（技能 / 工作流）──
+		const root = this._textarea;
+		if (root) {
+			root.querySelectorAll<HTMLElement>('.inline-skill-chip').forEach(el => {
+				const label = el.querySelector('.inline-skill-chip-name')?.textContent?.trim();
+				pills.push({ kind: 'skill', label: label || el.dataset.skillId || 'skill' });
+			});
+			root.querySelectorAll<HTMLElement>('.inline-workflow-chip').forEach(el => {
+				const label = el.querySelector('.inline-workflow-chip-name')?.textContent?.trim();
+				pills.push({ kind: 'workflow', label: label || 'workflow' });
+			});
+		}
+
+		return pills;
+	}
+
+	/** pill 的次要信息：片段/日志给行数，文件/图片给大小，文件夹不给 ✓（与 composer chip 口径一致 ✓）。 */
+	private _queuePillMeta(att: IChatAttachment): string | undefined {
+		if ((att.kind === 'snippet' || att.kind === 'log') && typeof att.data === 'string') {
+			return `${att.data.split(/\r\n|\r|\n/).length} 行`;
+		}
+		if (att.type === 'folder') { return undefined; }
+		if (typeof att.size === 'number' && att.size > 0) {
+			const kb = att.size / 1024;
+			return kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(kb))} KB`;
+		}
+		return undefined;
+	}
 
 protected override _handleSendMessage(): void {
 		// 从 contentEditable 中提取纯文本（排除内联芯片元素）
@@ -15,13 +90,36 @@ protected override _handleSendMessage(): void {
 		}
 
 		// LLM 正在输出中 → 消息入队（排队等待执行）
-		if (this._isSending) {
+		//
+		// ⚠️ 2026-09-18：判定必须同时看**服务层的真实流状态**，不能只看 `_isSending`。
+		//
+		// 根因（「流式中连打两条，第二条打断第一条」）：`_isSending` 是 UI 状态，
+		// 在 `onInterruptAndSend` / `cancelStream()` 之后会被立即复位为 false，
+		// 而底层流要到下一次 `for await` 迭代才 break、`finally` 才收尾。这段
+		// 「已取消、未收尾」的窗口期内 `_isSending === false` 但流仍在跑 ——
+		// 第二条消息读到 false，跳过入队直接走发送路径 → 再次 cancelStream，
+		// 把还没收尾的第一条彻底打断。
+		//
+		// 改为「UI 状态 or 服务层有活跃流」：只要底层还有流（含收尾窗口），就排队。
+		if (shouldQueueOutgoingMessage(this._isSending, () => this._isStreamActive)) {
 			const queueId = `queue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			// ★ 2026-09-18（用户需求）：入队时把 pill（代码片段 / 图片 / 文件 / 技能 / 工作流）
+			//   一并带上 ⇒ 队列行也能显示它们 ✓（原来只留纯文本，附件还被压成 `[2 个附件]` ✗）。
+			//   ⚠ 必须在下面清空 `_attachments` **之前**收集 ✓。
+			const queuePills = this._collectQueuePills();
+			// ⚠ 必须在清空输入区（`_setComposerText('')`）**之前**收集 ✓ —— 内联 chip 的 DOM 会被一起清掉 ✗
 			this._tabbedPanel.add({
 				id: queueId,
-				content: text || (hasAttachments ? `[${this._attachments.length} 个附件]` : ''),
+				// 有 pill 时不再退化成 `[N 个附件]` 文案（pill 已经把它们表达清楚 ✓）；
+				// 纯附件、无文本时 content 允许为空 ⇒ 队列行只剩 pill（比重排一行文案更准 ✓）。
+				content: text || (queuePills.length > 0 ? '' : (hasAttachments ? `[${this._attachments.length} 个附件]` : '')),
 				timestamp: Date.now(),
 				status: 'pending',
+				pills: queuePills.length > 0 ? queuePills : undefined,
+				// ★ 顺带留一份附件**引用**（数组浅拷贝 ⇒ 字符串是共享引用，几乎不增内存 ✓）：
+				//   当前仅用于展示 ✓，但「插队发送 / 移回输入框编辑」目前只传 `content` ✗
+				//   ⇒ 有这份数据后，后续把附件一起带过去只需改回调，不必再动入队点 ✓
+				metadata: { attachments: this._attachments.slice() },
 			});
 
 		// 清空输入框（保持当前高度不变，避免排队时输入框塌缩）
@@ -60,13 +158,9 @@ protected override _handleSendMessage(): void {
 	const attachments = this._attachments.length > 0 ? this._attachments.slice() : undefined;
 
 		// Clear composer content and skill chips
+		// 高度重算由 _setComposerText 内部统一完成（见 _computeComposerHeight），
+		// 此处原先的重复计算已移除以避免二次强制重排。
 		this._setComposerText('');
-		this._textarea.style.height = "auto";
-		const maxAllowed = 320;
-		const newHeight = this._userHasAdjustedHeight
-			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
-			: Math.min(this._textarea.scrollHeight, this._resizeMaxH);
-	this._textarea.style.height = newHeight + 'px';
 
 	// Clear attachments (inline chips already cleared by _setComposerText)
 	this._attachments = [];

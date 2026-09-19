@@ -1150,6 +1150,9 @@ protected override _scrollToMessage(messageId: string): void {
 		mainWindow.setTimeout(() => el.classList.remove('chat-message-flash'), 1200);
 		// 跳转后刷新标记位置
 		this._scrollbar.refreshScrollMarkers();
+		// ★ 2026-09-19：跳转往往走 `_forceRenderAllMessages`（全渲染 ✗）⇒ 跳完立刻裁剪 ✓。
+		// 目标已 `scrollIntoView({ block: 'center' })` ✓ ⇒ 处于保留窗口中心 ✓ 不会被裁掉 ✓。
+		this._scheduleTrimDistantMessages();
 	}
 
 protected override _forceRenderAllMessages(): void {
@@ -1182,6 +1185,9 @@ protected override _forceRenderAllMessages(): void {
 			this._lazyLoadObserver.disconnect();
 			this._lazyLoadObserver = null;
 		}
+		// ★ 2026-09-19：本方法会**一次性把全部消息插入 DOM** ✗（搜索跳转才走这条 ✓）
+		// ⇒ 必须立刻安排窗口裁剪 ✓，否则长会话一跳到旧消息就把 DOM 撑爆 ✓
+		this._scheduleTrimDistantMessages();
 	}
 
 	protected override _openModeDropdown(customTrigger?: HTMLElement | null): void {

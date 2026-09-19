@@ -139,13 +139,21 @@ protected override _createReadOnlyAttachmentChip(att: IChatAttachment): HTMLElem
 
 		const icon = this._createEl('span');
 		icon.className = 'inline-attachment-chip-icon';
-		icon.textContent = att.type === 'image' ? '\u{1F4F7}' : att.type === 'folder' ? '\u{1F4C1}' : '\u{1F4C4}';
+		icon.textContent = this._attachmentChipIcon(att);
 		chip.appendChild(icon);
 
 		const label = this._createEl('span');
 		label.className = 'inline-attachment-chip-label';
-		label.textContent = att.name;
+		label.textContent = this._attachmentChipLabel(att);
 		chip.appendChild(label);
+
+		// 代码 / 日志片段：追加行数（与可编辑 chip 一致）
+		if (att.kind && att.data) {
+			const meta = this._createEl('span');
+			meta.className = 'inline-attachment-chip-meta';
+			meta.textContent = `${att.data.split(/\r\n|\r|\n/).length} 行`;
+			chip.appendChild(meta);
+		}
 
 		// 点击 chip：有系统路径的资源在文件编辑器中打开；图片（含无路径的粘贴图）
 		// 回退到 lightbox；文件夹除外（无对应资源可打开）。
@@ -161,6 +169,12 @@ protected override _createReadOnlyAttachmentChip(att: IChatAttachment): HTMLElem
 		if (att.type === 'image' && att.data) {
 			this._register(addDisposableListener(chip, EventType.MOUSE_ENTER, () => {
 				this._showImageTooltip(att, chip);
+			}));
+			this._register(addDisposableListener(chip, EventType.MOUSE_LEAVE, () => this._hideImageTooltip()));
+		}
+		if (att.kind && att.data) {
+			this._register(addDisposableListener(chip, EventType.MOUSE_ENTER, () => {
+				this._showSnippetTooltip(att, chip);
 			}));
 			this._register(addDisposableListener(chip, EventType.MOUSE_LEAVE, () => this._hideImageTooltip()));
 		}

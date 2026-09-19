@@ -68,6 +68,24 @@ export interface IAgentDriverService {
 	 * 获取当前活跃的 Memory Provider（供 chatService 订阅其 lifecycle 事件）
 	 */
 	getActiveMemoryProvider(): IMemoryProvider | undefined;
+
+	/**
+	 * 入队一条运行中 steering 消息（用户在 turn 执行期间补充的输入）。
+	 *
+	 * 与 `executeTurn` 的新请求不同，steering **不打断**当前轮次：消息进入 per-agent
+	 * 交付队列，由主循环每轮 iteration 顶部的门控段注入（见 `common/loopGate.ts`
+	 * 的 `injectSteeringMessages`）。因此用户在 stream 活跃时补充的输入会在
+	 * **下一轮**生效，而当前轮次已产生的中间成果不会丢失。
+	 *
+	 * 声明在接口上而非仅实现类上：controller 需经 DI 边界调用，绕过接口会使
+	 * webview → controller → driver 的投递链在 DI 处断开。
+	 *
+	 * @param agentId 目标 agent（同时作为队列的交付目标）
+	 * @param content 用户补充的文本内容
+	 * @param from 来源标记，默认 `'user'`；子任务/子 agent 可传自己的 id 以区分来源
+	 * @returns 入队后的交付项 id；队列不可用时返回 undefined
+	 */
+	enqueueSteeringMessage(agentId: string, content: string, from?: string): string | undefined;
 }
 
 export const enum AgentTurnStatus {
