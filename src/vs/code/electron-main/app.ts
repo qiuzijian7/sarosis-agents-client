@@ -956,6 +956,9 @@ export class CodeApplication extends Disposable {
 		this.logService.debug(`from: ${this.environmentMainService.appRoot}`);
 		this.logService.debug('args:', this.environmentMainService.args);
 
+		// 端口必须在**任何窗口创建之前**确定并注入渲染侧（渲染进程继承主进程环境变量）
+		this._initAgentMemoryEndpoint();
+
 		// Make sure we associate the program with the app user model id
 		// This will help Windows to associate the running program with
 		// any shortcut that is pinned to the taskbar and prevent showing
@@ -1779,6 +1782,15 @@ export class CodeApplication extends Disposable {
 		);
 		mainProcessElectronServer.registerChannel(CODEBASE_GRAPH_STORE_CHANNEL, graphStoreChannel);
 
+		// ★ 2026-09-19（P2-1 Step 3）：**这里曾注册过「图谱索引通道」宿主，现已移除** ✗。
+		// 原因：索引编排要跑在 **utility process**，而 main 侧的 `createWorker` 是「服务某个窗口请求的
+		// **服务端**」（参数含 `reply.windowId`、返回值只有终止信息，**不提供 client channel** ✗）
+		// ⇒ 「renderer → main → main 委托 worker」这条路走不通（曾被定为方案 A，读实现后否定）。
+		// 现行形态：**renderer 自己起索引进程** ✓ —— `utilityProcessWorkerWorkbenchService.createWorker(...)`
+		// （见 `sessions/contrib/agentStudio/browser/codebaseGraphIndexProxy.ts` 与契约 header 的「方案 B」）。
+		// ⚠ 不要因为「图**存储**通道是在这里注册的」就顺手把索引通道也加回来 ——
+		//   那等于把 CPU 密集的索引编排放回**窗口管理与 IPC 共享的**主进程，会冻结主进程 ✗✗。
+
 		// AgentStudio KB：全文检索存储宿主在主进程（FTS5，根治大库 OOM）。
 		const kbStoreChannel = new KbSqliteStoreChannel(
 			join(this.environmentMainService.userDataPath, 'kb-sqlite', 'kb.db'),
@@ -2319,30 +2331,119 @@ export class CodeApplication extends Disposable {
 				return;
 			}
 
-			// 多开（--instance <id>）：网关端口固定 3111，第二个实例的 spawn 会
-			// EADDRINUSE 失败。改为先探活——端口已被占用且数据目录相同（共享
-			// userDataPath → 同一 .agentmemory 数据），则直接复用既有网关。
-			if (this.environmentMainService.instanceId) {
-				void this._probeOrSpawnAgentMemoryGateway(hostPath);
-				return;
-			}
+			// 端口全局唯一，而「dev 版（~/.vssaros-dev）」与「安装版（~/.vssaros）」是两个独立
+			// app 形态、各有一份数据目录 —— 同时运行时后启动的一方必然 EADDRINUSE 崩溃
+			// （2026-09-16 实测：dev 网关启动 2.9s 后 exit code=1，stderr = listen EADDRINUSE，
+			// 此后该窗口永无自有网关，只能静默连上对方的网关 ⇒ 记忆跨环境串味）。
+			// ⇒ 无条件先探活：
+			//   · 可达且 dataDir 相同 → 复用（同形态多窗口）
+			//   · 可达但 dataDir 不同 → 复用 + **显式警告**（不再静默）
+			//   · 不可达 → spawn 自己的
+			void this._probeOrSpawnAgentMemoryGateway(hostPath);
 
-			this._spawnAgentMemoryGateway(hostPath);
+			// 退出时清掉自愈计时器，避免 shutdown 过程中又拉起一个网关子进程
+			this._register(this.lifecycleMainService.onWillShutdown(() => this._stopAgentMemoryGatewayRetry()));
 		} catch (err) {
 			this.logService.error(`[agentmemory-gateway] 启动逻辑异常（已忽略）: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
-	/** 多开实例：探活 3111 端口，已被占用则复用既有网关，否则 spawn 自己的。 */
+	/** 探活本进程端口：已被占用则复用既有网关（并校验数据目录是否一致），否则 spawn 自己的。 */
 	private async _probeOrSpawnAgentMemoryGateway(hostPath: string): Promise<void> {
+		const port = process.env['AGENTMEMORY_PORT'] ?? '3111';
+		const localDataDir = process.env['AGENTMEMORY_DATA_DIR'] ?? join(this.environmentMainService.userDataPath, '.agentmemory');
 		try {
-			const res = await net.fetch('http://127.0.0.1:3111/health', { signal: AbortSignal.timeout(1500) });
+			const res = await net.fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) });
 			if (res.ok) {
-				this.logService.info(`[agentmemory-gateway] 多开实例（id=${this.environmentMainService.instanceId}）：3111 已被占用，复用既有网关（数据目录共享）`);
+				let remoteDataDir: string | undefined;
+				try { remoteDataDir = ((await res.json()) as { dataDir?: string })?.dataDir; } catch { /* 旧版网关无 json body */ }
+				const same = remoteDataDir !== undefined && this._isSamePath(remoteDataDir, localDataDir);
+				if (remoteDataDir !== undefined && !same) {
+					this.logService.warn(
+						`[agentmemory-gateway] 端口 ${port} 已被**其他数据目录**的网关占用：远端 dataDir=${remoteDataDir}，本窗口 dataDir=${localDataDir}。`
+						+ '本窗口将复用远端网关 —— 记忆读写会落到远端数据目录（跨环境共享）。'
+						+ '如需隔离，请为不同环境设置不同的 AGENTMEMORY_PORT。'
+					);
+				} else {
+					this.logService.info(`[agentmemory-gateway] 端口 ${port} 已被占用（dataDir=${remoteDataDir ?? '未知'}），复用既有网关`);
+				}
+				this._agentMemoryGatewayRetryCount = 0; // 已有可用网关 ⇒ 自愈计数归零
 				return;
 			}
-	} catch { /* 探活失败 → 端口空闲，继续 spawn */ }
+		} catch { /* 探活失败 → 端口空闲，继续 spawn */ }
 		this._spawnAgentMemoryGateway(hostPath);
+	}
+
+	/**
+	 * 确定本进程的 agentmemory 网关端口，并把结果**注入渲染侧**（2026-09-16 用户裁决）。
+	 *
+	 * 规则（两侧必须一致；渲染侧见 `extensions/agentmemory-memory/src/serverConfig.ts`）：
+	 *   · 安装版 → 3111（保持既有行为不变，零迁移）
+	 *   · dev    → 3112
+	 *   · `AGENTMEMORY_PORT` 显式设置时优先
+	 *
+	 * 注入通道：`process.env.AGENTMEMORY_URL` —— 渲染进程继承主进程环境变量，而渲染侧
+	 * `serverBase()` 优先读它（另有「按 `VSCODE_DEV` 推导」与「实测探测」两级兜底）。
+	 * ⚠ **必须在创建第一个窗口之前调用**（否则该窗口的渲染进程继承不到）。
+	 */
+	private _initAgentMemoryEndpoint(): void {
+		const port = this._resolveAgentMemoryPort();
+		process.env['AGENTMEMORY_PORT'] = String(port);
+		if (!process.env['AGENTMEMORY_URL']) {
+			process.env['AGENTMEMORY_URL'] = `http://127.0.0.1:${port}`;
+		}
+		this.logService.info(`[agentmemory-gateway] 端口确定: ${port}（isBuilt=${this.environmentMainService.isBuilt}；渲染侧经 AGENTMEMORY_URL 继承，可用 AGENTMEMORY_PORT 覆盖）`);
+	}
+
+	/** 端口规则见 `_initAgentMemoryEndpoint()`；本方法是**唯一真源**。 */
+	private _resolveAgentMemoryPort(): number {
+		const explicit = Number.parseInt(process.env['AGENTMEMORY_PORT'] ?? '', 10);
+		if (Number.isInteger(explicit) && explicit > 0 && explicit < 65536) { return explicit; }
+		// isBuilt（= !VSCODE_DEV，见 platform/environment/common/environmentService.ts）是 dev / 打包 的
+		// 正确判据（**不能**用 app.isPackaged）。
+		return this.environmentMainService.isBuilt ? 3111 : 3112;
+	}
+
+	/** Windows 路径大小写不敏感且分隔符可能不一致 ⇒ 归一化后再比较。 */
+	private _isSamePath(a: string, b: string): boolean {
+		const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+		return norm(a) === norm(b);
+	}
+
+	/** 自愈重试状态：只在「子进程异常退出」时推进；成功复用/重新拉起后归零。 */
+	private _agentMemoryGatewayRetryCount = 0;
+	private _agentMemoryGatewayRetryTimer: ReturnType<typeof setTimeout> | undefined;
+	private static readonly AGENTMEMORY_GATEWAY_RETRY_DELAYS_MS = [3_000, 10_000, 30_000, 60_000];
+
+	/**
+	 * 网关于进程异常退出后的自愈。
+	 *
+	 * 背景（用户日志实测）：dev 窗口启动时若端口被安装版占用 ⇒ EADDRINUSE ⇒ 子进程 code=1 退出，
+	 * 此后**从不重试** ⇒ 对方退出后端口长期空置、该窗口记忆调用连续 80 分钟全部
+	 * `ERR_CONNECTION_REFUSED`，直到对方实例重启才「偶然」恢复。
+	 * ⇒ 必须有人负责把释放出来的端口重新拿起：退避重试，且每次都**先探活**
+	 * （期间若已被别的实例拉起就直接复用，不会再造端口冲突）。
+	 */
+	private _scheduleAgentMemoryGatewayRetry(hostPath: string): void {
+		const delays = CodeApplication.AGENTMEMORY_GATEWAY_RETRY_DELAYS_MS;
+		if (this._agentMemoryGatewayRetryCount >= delays.length) {
+			this.logService.warn(`[agentmemory-gateway] 自愈重试 ${delays.length} 次仍未成功，放弃（本窗口记忆降级；如需换端口请设置 AGENTMEMORY_PORT）。`);
+			return;
+		}
+		const delay = delays[this._agentMemoryGatewayRetryCount];
+		this._agentMemoryGatewayRetryCount++;
+		this._agentMemoryGatewayRetryTimer = setTimeout(() => {
+			this._agentMemoryGatewayRetryTimer = undefined;
+			this.logService.info(`[agentmemory-gateway] 自愈重试 #${this._agentMemoryGatewayRetryCount}（延迟 ${delay}ms）…`);
+			void this._probeOrSpawnAgentMemoryGateway(hostPath);
+		}, delay);
+	}
+
+	private _stopAgentMemoryGatewayRetry(): void {
+		if (this._agentMemoryGatewayRetryTimer !== undefined) {
+			clearTimeout(this._agentMemoryGatewayRetryTimer);
+			this._agentMemoryGatewayRetryTimer = undefined;
+		}
 	}
 
 	/** spawn agentmemory 网关子进程（单实例或多开且端口空闲时调用）。 */
@@ -2416,7 +2517,19 @@ export class CodeApplication extends Disposable {
 			});
 
 			childProc.on('exit', (code, signal) => {
-				this.logService.info(`[agentmemory-gateway] 子进程退出: code=${code} signal=${signal}`);
+				// 非零退出 = 网关不可用（本窗口此后只能降级或复用他实例网关）⇒ 必须是 warning，
+				// 否则「子进程退出: code=1」会淹没在 info 里，用户只看得到 renderer 侧那条没有任何原因的
+				// "gateway UNREACHABLE"。
+				if (code !== 0 && signal === null) {
+					this.logService.warn(
+						`[agentmemory-gateway] 子进程异常退出: code=${code}（详见上方 [agentmemory-gateway/stderr] 行；`
+						+ '最常见原因是端口被另一实例占用 EADDRINUSE，此时本窗口无自有网关，记忆读写会复用/降级到其他实例的网关）'
+					);
+					// 自愈：占端口的一方退出后端口会释放，必须有人重新拿起它
+					this._scheduleAgentMemoryGatewayRetry(hostPath);
+				} else {
+					this.logService.info(`[agentmemory-gateway] 子进程退出: code=${code} signal=${signal}`);
+				}
 			});
 
 			childProc.on('error', (err) => {

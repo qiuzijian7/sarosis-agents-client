@@ -15,7 +15,7 @@
  *  「AgentMemoryProviderV2 不在插件中实现」的重构目标。
  *--------------------------------------------------------------------------------------------*/
 
-import { serverBase, REQUEST_TIMEOUT_MS, checkHealth } from './serverConfig.js';
+import { serverBase, serverBaseCandidates, setResolvedServerBase, REQUEST_TIMEOUT_MS, checkHealth } from './serverConfig.js';
 
 /** 极简日志口（与 ILogService 子集兼容；缺省回退 console——capability-plugin
  *  上下文可能不提供 logService）。R9（2026-09-10）：日志必须能进 VS Code 日志
@@ -33,7 +33,12 @@ export class AgentMemoryProviderProxy {
 
 	private _log: MemoryProxyLogger;
 	private _handlers = new Map<string, Set<(...args: any[]) => void>>();
-	private _providerBase = `${serverBase()}/provider`;
+	/**
+	 * `/provider` 前缀 —— 必须**动态取**（getter，不能是构造期常量）：
+	 * `probeGateway()` 探测成功后会锁定基址（见 `setResolvedServerBase`），
+	 * 若在构造期定值，锁定后的调用仍会打到旧地址。
+	 */
+	private get _providerBase(): string { return `${serverBase()}/provider`; }
 
 	/**
 	 * R9（2026-09-10）：启动探活——注册后主动打一次健康状态行，
@@ -42,16 +47,29 @@ export class AgentMemoryProviderProxy {
 	 */
 	probeGateway(): void {
 		void (async () => {
-			const up = await checkHealth();
-			if (up) {
-				this._markGateway(true, 'probe');
-				this._log.info?.(`[AgentMemory] gateway reachable at ${serverBase()} — memory enabled`);
-			} else {
-				// 启动期探活失败=确定不可达，直接判 down（不等"连续 2 次"去抖）+ 挂恢复探测
-				if (this._gatewayUp === undefined) { this._gatewayUp = false; }
-				this._startRecoveryProbe();
-				this._log.warn?.(`[AgentMemory] gateway UNREACHABLE at ${serverBase()} — memory will return empty defaults and queue writes. Check: main-process log for '[agentmemory-gateway]' (spawn/skip reason) and whether port 3111 is LISTENING.`);
+			// ★ 启动探活（2026-09-19 恢复 + 增强）：两件事一起做 ——
+			// ① **退避重试**：本探活在扩展 activate 时立即执行，而网关子进程此刻刚被 spawn，
+			//    还要重建索引（实测 4.3s / 178.9MB db）才 listen ⇒ 单次探测必然误报 UNREACHABLE。
+			// ② **候选地址逐个尝试**：端口隔离后 dev=3112 / 安装版=3111，而渲染侧能否读到
+			//    `AGENTMEMORY_URL` 并不保证（见 serverConfig 的优先级说明）⇒ 靠实测探测兜底，
+			//    命中即 `setResolvedServerBase()` 锁定，后续所有调用都走对地址。
+			const backoffMs = [0, 700, 1500, 3000];
+			const candidates = serverBaseCandidates();
+			for (const delay of backoffMs) {
+				if (delay > 0) { await new Promise<void>(r => setTimeout(r, delay)); }
+				for (const base of candidates) {
+					if (await checkHealth(base)) {
+						setResolvedServerBase(base);
+						this._markGateway(true, 'probe');
+						this._log.info?.(`[AgentMemory] gateway reachable at ${serverBase()} — memory enabled`);
+						return;
+					}
+				}
 			}
+			// 启动期探活失败=确定不可达，直接判 down（不等"连续 2 次"去抖）+ 挂恢复探测
+			if (this._gatewayUp === undefined) { this._gatewayUp = false; }
+			this._startRecoveryProbe();
+			this._log.warn?.(`[AgentMemory] gateway UNREACHABLE at ${serverBase()} — memory will return empty defaults and queue writes. Check: main-process log for '[agentmemory-gateway]' (spawn/skip reason) and whether ${serverBase()} is LISTENING.`);
 		})();
 	}
 
@@ -87,7 +105,9 @@ export class AgentMemoryProviderProxy {
 	/** P1-11（2026-09-11）：down 后的周期恢复探测——此前一旦判 down，除非下一次记忆调用
 	 *  恰好成功，状态永远 offline、写队列永远不重放（用户日志实测：UNREACHABLE 后会话
 	 *  再无调用，挂到进程退出）。30s 间隔 checkHealth 开销可忽略。 */
-	private _recoveryTimer: ReturnType<typeof setInterval> | undefined;
+	private _recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 首次恢复探测更快：缩短「down 判定早于网关 listen」造成的降级窗口（实测原实现要等 82s）。 */
+	private static readonly RECOVERY_PROBE_FIRST_MS = 5_000;
 	private static readonly RECOVERY_PROBE_MS = 30_000;
 
 	private _on(event: string, handler: (...args: any[]) => void): () => void {
@@ -122,32 +142,39 @@ export class AgentMemoryProviderProxy {
 		const count = isTimeout ? this._consecutiveTimeouts : this._consecutiveNetErrors;
 		if (this._gatewayUp === false || count < threshold) { return; }
 		this._gatewayUp = false;
-		this._log.warn?.(`[AgentMemory] gateway UNREACHABLE — memory calls return empty defaults, writes queued for retry (failed: ${method}${isTimeout ? ', timeouts' : ''}). Check port 3111 and the main-process log for '[agentmemory-gateway]'.`);
+		this._log.warn?.(`[AgentMemory] gateway UNREACHABLE — memory calls return empty defaults, writes queued for retry (failed: ${method}${isTimeout ? ', timeouts' : ''}). Check ${serverBase()} and the main-process log for '[agentmemory-gateway]'.`);
 		this._startRecoveryProbe();
 	}
 
 	/** P1-11：down 后每 30s 探活一次，恢复时立刻重连 + 重放写队列（不等下一次记忆调用）。 */
 	private _startRecoveryProbe(): void {
 		if (this._recoveryTimer !== undefined) { return; }
-		this._recoveryTimer = setInterval(() => {
-			void (async () => {
-				if (this._gatewayUp !== false) { this._stopRecoveryProbe(); return; }
-				try {
-					const up = await checkHealth();
-					if (up) {
-						this._stopRecoveryProbe();
-						this._markGateway(true, 'recovery-probe');
-						this._log.info?.(`[AgentMemory] gateway recovered — resuming memory calls and flushing ${this._writeQueue.length} queued write(s)`);
-						void this._flushWriteQueue();
-					}
-				} catch { /* 下轮继续探测 */ }
-			})();
-		}, AgentMemoryProviderProxy.RECOVERY_PROBE_MS);
-		// Node 测试环境：不阻止进程退出（renderer 环境无 unref，特性检测）
-		(this._recoveryTimer as unknown as { unref?: () => void })?.unref?.();
+		const tick = (delayMs: number): void => {
+			this._recoveryTimer = setTimeout(() => {
+				void (async () => {
+					if (this._gatewayUp !== false) { this._stopRecoveryProbe(); return; }
+					try {
+						const up = await checkHealth();
+						if (up) {
+							this._stopRecoveryProbe();
+							this._markGateway(true, 'recovery-probe');
+							this._log.info?.(`[AgentMemory] gateway recovered — resuming memory calls and flushing ${this._writeQueue.length} queued write(s)`);
+							void this._flushWriteQueue();
+							return;
+						}
+					} catch { /* 下轮继续探测 */ }
+					tick(AgentMemoryProviderProxy.RECOVERY_PROBE_MS);
+				})();
+			}, delayMs);
+			// Node 测试环境：不阻止进程退出（renderer 环境无 unref，特性检测）
+			(this._recoveryTimer as unknown as { unref?: () => void })?.unref?.();
+		};
+		// 改用 setTimeout 链：原 `setInterval(30s)` 的首个触发点在 30s 后，叠加渲染进程定时器
+		// 节流后实测「14:30:16 判 down → 14:31:38 才 recovered（82s）」，而网关其实 4.3s 后就绪。
+		tick(AgentMemoryProviderProxy.RECOVERY_PROBE_FIRST_MS);
 	}
 	private _stopRecoveryProbe(): void {
-		if (this._recoveryTimer !== undefined) { clearInterval(this._recoveryTimer); this._recoveryTimer = undefined; }
+		if (this._recoveryTimer !== undefined) { clearTimeout(this._recoveryTimer); this._recoveryTimer = undefined; }
 	}
 
 	/** 通用转发：POST /provider/<method> { args }，返回解析后的 JSON 或 null。
@@ -160,6 +187,10 @@ export class AgentMemoryProviderProxy {
 	 *    标记 up 并打方法级 warn，绝不误报 UNREACHABLE。
 	 */
 	async _call(method: string, ...args: any[]): Promise<any> {
+		// **已判 down ⇒ 快速失败，不发包**（2026-09-19）：此前每个记忆调用（observe / triggerHook /
+		// onTaskCompleted … 一轮对话几十次）都会真的发 HTTP：① 浏览器层刷 `ERR_CONNECTION_REFUSED`（无法抑制）
+		// ② 本模块每次再 warn 一行 ③ 命中 5s 超时的情况要白等。恢复交给 `_startRecoveryProbe()`。
+		if (this._gatewayUp === false) { return null; }
 		// 冷启动（本 renderer 生命周期内从未成功连过）多给 2 次机会；
 		// 已连通过的网关瞬态失败沿用原有"连续 2 次才判 down"去抖，不加重试
 		// （避免真宕机时每调用 5s×3 = 15s 悬挂）。

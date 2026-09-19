@@ -32,8 +32,10 @@ suite('proxyHealth — 网关健康状态（X8）', () => {
 	test('探活失败（端口不可达）→ offline，供 UI 显示告警条', async () => {
 		const p = new AgentMemoryProviderProxy();
 		p.probeGateway();
-		// 探活是 fire-and-forget：轮询等待状态迁移（连接拒绝通常立即返回）
-		for (let i = 0; i < 50; i++) {
+		// 探活是 fire-and-forget：轮询等待状态迁移。
+		// 2026-09-19：探活改为**退避重试**（0/700/1500/3000ms）⇒ 判 down 最快要 ~5.2s，
+		// 轮询上限必须大于该窗口（原 2.5s 会提前断言，把"还没探完"读成失败）。
+		for (let i = 0; i < 240; i++) {
 			if (p.getHealthStatus().status !== 'unknown') { break; }
 			await new Promise(r => setTimeout(r, 50));
 		}
@@ -53,7 +55,8 @@ suite('proxyHealth — 网关健康状态（X8）', () => {
 		const log = new MockLog();
 		const p = new AgentMemoryProviderProxy(log);
 		p.probeGateway();
-		for (let i = 0; i < 50; i++) {
+		// 2026-09-19：同上一用例 —— 失败告警要等退避序列（~5.2s）跑完才打。
+		for (let i = 0; i < 240; i++) {
 			if (log.msgs.length > 0) { break; }
 			await new Promise(r => setTimeout(r, 50));
 		}
