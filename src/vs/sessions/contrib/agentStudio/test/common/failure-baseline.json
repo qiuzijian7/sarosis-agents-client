@@ -2,9 +2,9 @@
   "_comment": "既存失败用例基线（2026-09-19 归档）。这些失败在建立基线时就已存在，与后续重构无关。新增失败不在本清单内 -> 立即判失败。修好一个就删一行。",
   "_howToRefresh": "node src/vs/sessions/contrib/agentStudio/test/common/run-all-common-tests.mjs 然后比对 '✗ N 个套件未通过' 段落",
   "_baselineTotals": {
-    "passing": 1780,
+    "passing": 1789,
     "failing": 20,
-    "suites": 81
+    "suites": 82
   },
   "failingSuites": {
     "agentRunState": {
@@ -12,7 +12,8 @@
       "failing": 4,
       "cases": [
         "AgentRunState - reducer (reducer 化 Step 1)"
-      ]
+      ],
+      "cause": "2026-09-20 排查：① 3 例断言 state.reducerMode==='reducer'（L87/L102/L735），但该字段在 common/agentRunState.ts 全文 0 处出现，且 browser/agentOSService.ts:2665-2667 注释已明确记录它「在 CreateInitialRunStateRequest 里不存在、全仓无第二处使用 ⇒ 凭想象写的字段（TS2353）」⇒ 实现侧已弃用，测试侧待裁决；② 1 例断言 incompleteTurnDiscardReason('length')==='unfinished-intent'（L505），但实现自 2026-09-18 起有意返回 undefined（保留本轮文本，见 agentRunState.ts:1586-1592 注释）。⇒ 两种读法（测试陈旧 / Step 1 未落地）都可能，属该面负责人在飞工作，勿单方面改测试。"
     },
     "contextCompression": {
       "file": "test/common/contextCompression.test.ts",
@@ -33,15 +34,6 @@
       "failing": 1,
       "cases": [
         "computeAdaptiveFirstTokenTimeout"
-      ]
-    },
-    "shellCommandSafety": {
-      "file": "test/common/shellCommandSafety.test.ts",
-      "failing": 1,
-      "_kind": "aggregate-pollution",
-      "_note": "★ 非本套件缺陷 —— 单独跑（esbuild bundle + mocha --ui tdd）为 81 passing / 0 failing。仅在聚合 run-all 里报 1 failing，成因是 ensureNoDisposablesAreLeakedInTestSuite 在单进程 mocha 中捕获到**前序套件泄漏的 disposable** 并误报到本套件。2026-09-19 诊断确认。",
-      "cases": [
-        "（聚合环境污染，非固定用例名）"
       ]
     },
     "toolExtraction": {

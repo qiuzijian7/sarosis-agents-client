@@ -384,7 +384,11 @@ suite('护栏接线不变量（源码级）', () => {
 		assertWired(rel, "const projectName = config.projectName || config.subPath || this._basename(rootPath) || '_default';", '本轮 project 的局部常量');
 		assertWired(rel, 'this._graph.setActiveProject(projectName);', '节点/边标记用本轮 project');
 		assertWired(rel, 'this._saveGraph(rootPath, projectName)', '制品落盘用本轮 project');
-		assertWired(rel, 'await this._syncGraphToSqlite(projectName);', 'SQLite 同步用本轮 project');
+		// ★ 2026-09-20 形态更新：该调用已被包进「全局串行化」包装器
+		//（`_runSerializedSqliteSync(() => …)`，P0-1 原子化改造 ⇒ 避免与后台追平并发开两个写事务 ✗）。
+		// 护栏的**语义**没变：参数仍必须是本轮局部常量 `projectName` ⇒ 接受包装形态，
+		// 但绝不接受「省略参数」或「直接读 this._projectName」（下面两条负向断言照旧 ✓）。
+		assertWired(rel, 'this._syncGraphToSqlite(projectName)', 'SQLite 同步用本轮 project（允许被串行化包装器包住 ✓）');
 		assertWired(rel, '_recordHashAfterParse(projectName, relPath, filePath, result.status);', '文件哈希用本轮 project');
 		assertWired(rel, 'this._recordFileHash(projectName, relPath, filePath);', '跳过类哈希用本轮 project');
 
@@ -654,6 +658,38 @@ suite('护栏接线不变量（源码级）', () => {
 			'[配置加载] 不得用 `_workspaceFileConfig === null` 判断「是否已加载」—— '
 			+ '文件里没有 codebase-memory key 时它永远是 null，会让每次调用都重跑完整加载',
 		);
+	});
+
+	// ── ⑳ 多根窗口读配置必须**只读** `workspace.configuration`，不得再扫 folders[0] ──
+	//
+	// 背景（2026-09-20 用户日志）：`codebaseMemory: 重读 .code-workspace 配置` 实测 **961ms**
+	// （前一天 559ms），且伴两次交互排队警告（497/719ms）。大头是
+	// `resolve(folders[0] 根目录)`（本仓 93 个子项 ⇒ IPC 往返 + 93 次 stat）+ 没 key 后的二次扫描，
+	// 又落在启动拥挤期（await 要给图谱 JSON 解析等长任务排队 ✗✗）。
+	// 而用 .code-workspace 打开的窗口，`workspace.configuration` **就是**用户打开的那个文件 ——
+	// 读它一次即可；VS Code 自己也只读打开的那个文件。扫 folders[0] 还可能读到**另一个**
+	// 同名文件（配置来源错了都不知道 ✗）。
+	// 若哪天有人把「没 key 就回退扫描」加回来，961ms 会**静默**回归 ⇒ 钉住。
+	test('★★ 多根窗口（configuration 非空）读工作区配置必须读完即止，不得回退扫 folders[0]', () => {
+		const rel = 'browser/codebaseMemoryMcpService.ts';
+		const src = stripAllComments(rel);
+
+		// 正向：快路径存在，且读完直接 return（不再碰 resolve 根目录）
+		const fastIdx = src.indexOf('if (ws.configuration) {');
+		assert.ok(fastIdx >= 0, '[配置加载] 必须有 workspace.configuration 快路径');
+		const fastBlock = src.slice(fastIdx, fastIdx + 400);
+		assert.ok(
+			/await this\._tryReadWorkspaceFileConfig\(ws\.configuration\);\s*return;/.test(fastBlock),
+			'[配置加载] 快路径必须读完即止（return）—— 回退扫描会把 961ms 的 resolve 根目录带回来',
+		);
+
+		// 负向：resolve 根目录只允许出现在 configuration === null 的旧路径（即必须晚于快路径 return）
+		const resolveIdx = src.indexOf('this.fileService.resolve(rootUri)');
+		assert.ok(resolveIdx > fastIdx, '[配置加载] resolve(rootUri) 必须在快路径之后（= 仅单文件夹窗口可达）');
+
+		// 读 + 解析 + 应用逻辑必须抽成共用方法（快/旧两路复用一份，防漂移）
+		assertWired(rel, 'private async _tryReadWorkspaceFileConfig(wsFileUri: URI): Promise<boolean>',
+			'读 + 解析 + 应用抽成共用方法');
 	});
 
 	// ── ⑳ PanelPart 内容高度必须钳到 ≥0（否则 -12 一路传下去）──────────────

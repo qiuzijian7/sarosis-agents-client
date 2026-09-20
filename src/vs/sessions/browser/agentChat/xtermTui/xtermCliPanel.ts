@@ -4,6 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import "../media/xterm-cli.css";
+// xterm.js 基础样式（.xterm / .xterm-screen / .xterm-viewport 定位规则）。
+// 官方 terminal 在 terminal.contribution.ts:30 加载同一份；CLI 面板此前只加载了
+// 自己的 xterm-cli.css，缺失基础规则会导致字符网格定位与尺寸错乱。
+import "../../../../workbench/contrib/terminal/browser/media/xterm.css";
 import type { Terminal as XtermTerminalType } from '@xterm/xterm';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { addDisposableListener, EventType } from '../../../../base/browser/dom.js';
@@ -37,6 +41,78 @@ import {
 	type ToolCallInfo,
 	type ThinkingInfo,
 } from './toolTreeRenderer.js';
+
+// ── 字体与单元格尺寸 ──────────────────────────────────────────────────
+// xterm.js 把 fontFamily 直接写入 canvas 的 ctx.font，canvas **不解析 CSS 变量**
+// （`var(--vscode-editor-font-family)` 会被整串丢弃 → 字体回退 → 字符宽度测量
+// 失准 → 换行错位）。因此这里必须是真实字体名栈，不能用 var()。
+const CLI_FONT_FAMILY = "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, 'Courier New', monospace";
+const CLI_FONT_SIZE = 12;
+const CLI_LINE_HEIGHT = 1.0;
+
+/** 从 CSS 变量读取一个颜色值（返回 undefined 表示未定义） */
+function readCssColor(name: string): string | undefined {
+	if (typeof document === 'undefined') { return undefined; }
+	const raw = getComputedStyle(document.body).getPropertyValue(name).trim();
+	return raw || undefined;
+}
+
+/**
+ * 把 VS Code 的 CSS 变量映射为 xterm 的 ITheme。
+ * 缺失的变量由 xterm 用自身默认值兜底，因此这里只给出读到的键。
+ */
+function readXtermThemeFromCssVars(): Record<string, string> {
+	const theme: Record<string, string> = {};
+	const background = readCssColor('--vscode-editor-background');
+	const foreground = readCssColor('--vscode-editor-foreground');
+	if (background) { theme['background'] = background; }
+	if (foreground) { theme['foreground'] = foreground; }
+	const selection = readCssColor('--vscode-editor-selectionBackground');
+	if (selection) { theme['selectionBackground'] = selection; }
+	const cursor = readCssColor('--vscode-terminalCursor-foreground') ?? readCssColor('--vscode-editorCursor-foreground');
+	if (cursor) { theme['cursor'] = cursor; }
+	return theme;
+}
+
+/**
+ * 实际测量等宽字符单元格尺寸。
+ * 此前硬编码 charWidth=7.2 / lineHeight=14，一旦字体回退就完全失准 → 换行错位。
+ */
+function measureCell(host: HTMLElement): { width: number; height: number } {
+	const probe = document.createElement('span');
+	probe.style.position = 'absolute';
+	probe.style.visibility = 'hidden';
+	probe.style.whiteSpace = 'pre';
+	probe.style.fontFamily = CLI_FONT_FAMILY;
+	probe.style.fontSize = `${CLI_FONT_SIZE}px`;
+	probe.style.lineHeight = `${CLI_LINE_HEIGHT}`;
+	probe.style.letterSpacing = '0';
+	probe.textContent = 'M'.repeat(100);
+	host.appendChild(probe);
+	const rect = probe.getBoundingClientRect();
+	probe.remove();
+	return {
+		width: rect.width > 0 ? rect.width / 100 : 7.2,
+		height: rect.height > 0 ? rect.height : 14,
+	};
+}
+
+/**
+ * 统计一段 ANSI 文本渲染后实际占据的行数（按 cols 计算自动换行）。
+ *
+ * 关键：高度必须由**内容**推导，不能读 `term.buffer.active.length` —— 后者由
+ * 上一次的 rows 决定，用它反推高度会形成「每次重算都收缩一轮」的恶性循环，
+ * 最终撞上 min-height 下限，表现为面板底部大片空白。
+ */
+function countRenderedLines(ansi: string, cols: number): number {
+	const ESCAPE_RE = /\u001b\[[0-9;]*[A-Za-z]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+	let total = 0;
+	for (const line of ansi.split('\r\n')) {
+		const visible = line.replace(ESCAPE_RE, '');
+		total += Math.max(1, Math.ceil(visible.length / Math.max(1, cols)));
+	}
+	return total;
+}
 
 /**
  * xterm.js-based CLI chat panel — renders LLM content in a real terminal
@@ -83,6 +159,10 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 
 	// ── xterm layout ──
 	private _cols = 80;
+	/** 实测的等宽单元格尺寸（缓存，避免每次布局都插入探针测量） */
+	private _cellMetrics: { width: number; height: number } | undefined;
+	/** 当前内容渲染后占据的逻辑行数（由 countRenderedLines 推导） */
+	private _contentLines = 1;
 
 	// ── Spinner ──
 	private _spinnerFrame = SPINNER_FRAMES[0]!;
@@ -143,9 +223,9 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 		// Hermes-Agent 纯 ANSI 渲染器中不控制这些属性，
 		// 但我们用 xterm.js 必须显式设置
 		this._terminal = new Terminal({
-			fontFamily: 'var(--vscode-editor-font-family, JetBrains Mono, monospace)',
-			fontSize: 12,
-			lineHeight: 1.0,
+			fontFamily: CLI_FONT_FAMILY,
+			fontSize: CLI_FONT_SIZE,
+			lineHeight: CLI_LINE_HEIGHT,
 			letterSpacing: 0,
 			cursorBlink: false,
 			cursorStyle: 'bar',
@@ -153,10 +233,8 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 			scrollback: 5000,
 			convertEol: true,
 			allowProposedApi: true,
-			theme: {
-				background: '#1e1e1e',
-				foreground: '#d4d4d4',
-			},
+			// 主题跟随 VS Code（此前硬编码 #1e1e1e/#d4d4d4，亮色主题下文字不可见）
+			theme: readXtermThemeFromCssVars(),
 		});
 		this._terminal.open(this._terminalEl);
 
@@ -222,8 +300,12 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 		// 对齐 Hermes-Agent 的最小化间距策略：
 		// fontSize=12px，等宽字符约 7.2px 宽（12 * 0.6）
 		// lineHeight=1.0，行高约 12px + cell padding
-		const charWidth = 7.2;
-		const lineHeightEstimate = 14; // 12px font * 1.0 + 2px cell padding
+		// 单元格尺寸实测（只测一次并缓存），不再硬编码 7.2 / 14
+		if (!this._cellMetrics) {
+			this._cellMetrics = measureCell(this._terminalEl);
+		}
+		const charWidth = this._cellMetrics.width;
+		const lineHeightEstimate = this._cellMetrics.height;
 		const padding = 20; // 左右 padding 4px*2 + scrollbar 12px
 
 		const cols = Math.max(20, Math.floor((rect.width - padding) / charWidth));
@@ -259,16 +341,12 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 				return;
 			}
 
-			const term = this._terminal;
-			let contentLines = 1;
-			if (term) {
-				try {
-					contentLines = term.buffer.active.length;
-				} catch { /* ignore */ }
-			}
-
-			const lineHeight = 14;  // 12px font * 1.0 lineHeight + 2px cell padding
-			const contentHeight = contentLines * lineHeight + 12;
+			// 内容行数由「将要写入/已写入的 ANSI 文本」推导，而非读取
+			// term.buffer.active.length —— 后者由上一轮的 rows 决定，用它反推
+			// 会让高度每重算一次就收缩一轮，最终撞上 min-height 下限（大片空白）。
+			const cellHeight = this._cellMetrics?.height ?? 14;
+			const contentLines = Math.max(1, this._contentLines);
+			const contentHeight = contentLines * cellHeight + 12;
 			const newHeight = Math.max(40, Math.min(contentHeight, wrapperHeight));
 
 			this._terminalEl.style.height = `${newHeight}px`;
@@ -404,7 +482,11 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 			}
 		}
 
-		term.write(parts.join(''), () => {
+		const payload = parts.join('');
+		// 先用「即将写入的文本」算出逻辑行数，再写 —— 高度推导不依赖 xterm buffer，
+		// 因此不会随每次重算而收缩（修复底部大片空白）。
+		this._contentLines = countRenderedLines(payload, Math.max(20, this._cols - 3));
+		term.write(payload, () => {
 			// 渲染完成后重新计算 xterm 容器高度，让内容贴底显示
 			// 使用 _recomputeLayout() 等待 DOM 布局稳定（避免 wrapperHeight=0 的问题）
 			this._recomputeLayout();

@@ -1,0 +1,201 @@
+{
+  "name": "saros-agents-pocket",
+  "displayName": "Saros Pocket",
+  "publisher": "saros",
+  "version": "0.1.0",
+  "description": "把 VsSaros 装进你的口袋：VsSaros 原生扩展，手机扫码即远程同步访问电脑上的 VsSaros（局域网 + 公网，实时同屏）。",
+  "type": "module",
+  "license": "GPL-2.0",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.95.0",
+    "node": ">=18"
+  },
+  "main": "./extension.js",
+  "categories": [
+    "Other",
+    "Remote"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "sarosPocket.openPanel",
+        "title": "Saros Pocket: 打开访问面板"
+      },
+      {
+        "command": "sarosPocket.openApp",
+        "title": "Saros Pocket: 打开随身 App（与 VsSaros 通信）"
+      },
+      {
+        "command": "sarosPocket.copyAppUrl",
+        "title": "Saros Pocket: 复制 App 地址"
+      },
+      {
+        "command": "sarosPocket.openScreen",
+        "title": "Saros Pocket: 远程查看 VsSaros 桌面（屏幕）"
+      },
+      {
+        "command": "sarosPocket.startTunnel",
+        "title": "Saros Pocket: 开启公网访问"
+      },
+      {
+        "command": "sarosPocket.stopTunnel",
+        "title": "Saros Pocket: 关闭公网访问"
+      },
+      {
+        "command": "sarosPocket.toggleLan",
+        "title": "Saros Pocket: 切换局域网访问"
+      },
+      {
+        "command": "sarosPocket.openSettings",
+        "title": "Saros Pocket: 设置"
+      },
+      {
+        "command": "sarosPocket.reset",
+        "title": "Saros Pocket: 恢复出厂设置"
+      }
+    ],
+    "configuration": {
+      "title": "Saros Pocket",
+      "properties": {
+        "sarosPocket.upstreamPort": {
+          "type": "number",
+          "default": 8000,
+          "description": "VsSaros server/web 模式监听端口（server-main 默认 8000）。"
+        },
+        "sarosPocket.connectionToken": {
+          "type": "string",
+          "default": "",
+          "description": "VsSaros 连接令牌（?tkn=）。留空则自动读取 <userDataDir>/token。"
+        },
+        "sarosPocket.userDataDir": {
+          "type": "string",
+          "default": "",
+          "description": "VsSaros 用户数据目录（用于自动读取连接令牌）。留空则自动探测常见位置。"
+        },
+        "sarosPocket.proxyPort": {
+          "type": "number",
+          "default": 3081,
+          "description": "Pocket 反向代理监听端口（0.0.0.0 绑定，供手机/公网访问）。"
+        },
+        "sarosPocket.launchPublicOnStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "扩展激活时自动开启公网隧道（cloudflared）。"
+        },
+        "sarosPocket.chatModel": {
+          "type": "string",
+          "default": "",
+          "description": "Pocket App 默认使用的模型 ID（留空 = 用 VsSaros 里第一个可用模型）。"
+        },
+        "sarosPocket.chatSystemPrompt": {
+          "type": "string",
+          "default": "你是 VsSaros 的随身助手，回答请简洁、可直接在手机上阅读。",
+          "description": "Pocket App 对话时的系统提示词（仅作用于 App 内的模型直连，不影响 VsSaros 的 Agent）。"
+        },
+        "sarosPocket.agentCommand": {
+          "type": "string",
+          "default": "workbench.action.chat.open",
+          "description": "「交给 Agent」时执行的命令：把消息送进 VsSaros 自己的 Agent 会话。"
+        },
+        "sarosPocket.agentMode": {
+          "type": "string",
+          "default": "agent",
+          "description": "「交给 Agent」时使用的聊天模式（agent / ask / edit）。"
+        },
+        "sarosPocket.allowedCommands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "workbench.action.files.save",
+            "workbench.action.files.saveAll",
+            "workbench.action.closeActiveEditor"
+          ],
+          "description": "允许 Pocket App 远程触发的 VsSaros 命令白名单（精确匹配；sarosPocket.* 始终允许）。"
+        },
+        "sarosPocket.allowFileWrite": {
+          "type": "boolean",
+          "default": false,
+          "description": "允许 Pocket App 写入工作区文件（默认关闭；读/浏览始终可用）。"
+        },
+        "sarosPocket.allowTerminal": {
+          "type": "boolean",
+          "default": false,
+          "description": "允许 Pocket App 向 VsSaros 终端发送文本（默认关闭，风险自负）。"
+        },
+        "sarosPocket.allowAgentControl": {
+          "type": "boolean",
+          "default": false,
+          "description": "允许 Pocket App 向真实 VsSaros Agent 会话发消息或中止会话（默认关闭：这会驱动 Agent 改代码）。"
+        },
+        "sarosPocket.fileRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Pocket App 文件浏览的根目录（留空 = 用当前工作区第一个文件夹）。"
+        },
+        "sarosPocket.maxFileBytes": {
+          "type": "number",
+          "default": 262144,
+          "description": "Pocket App 单次读取文件的上限（字节，默认 256 KB）。"
+        },
+        "sarosPocket.desktopEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "允许远程查看本机桌面画面（含 VsSaros 桌面版窗口）。关闭后画面流与截图不可用。"
+        },
+        "sarosPocket.desktopMode": {
+          "type": "string",
+          "enum": [
+            "window",
+            "screen"
+          ],
+          "default": "window",
+          "description": "画面采集范围：window = 只抓 VsSaros 窗口；screen = 整个屏幕。"
+        },
+        "sarosPocket.desktopProcessName": {
+          "type": "string",
+          "default": "vssaros",
+          "description": "desktopMode=window 时按进程名定位窗口（默认 vssaros）。"
+        },
+        "sarosPocket.desktopFps": {
+          "type": "number",
+          "default": 4,
+          "description": "画面帧率（1-15）。越高越流畅，带宽与 CPU 占用也越高。"
+        },
+        "sarosPocket.desktopQuality": {
+          "type": "number",
+          "default": 55,
+          "description": "画面 JPEG 质量（10-95）。"
+        },
+        "sarosPocket.desktopScale": {
+          "type": "number",
+          "default": 0.5,
+          "description": "画面缩放（0.2-1）。手机上看 0.5 通常够用。"
+        },
+        "sarosPocket.desktopMonitor": {
+          "type": "number",
+          "default": -1,
+          "description": "desktopMode=screen 时采集第几块屏（-1 = 主屏）。"
+        },
+        "sarosPocket.allowDesktopInput": {
+          "type": "boolean",
+          "default": false,
+          "description": "允许从手机远程操作本机鼠标/键盘（仅 Windows）。默认关闭，开启后请自行承担风险。"
+        }
+      }
+    },
+    "chatPlugins": [
+      {
+        "path": "./plugin"
+      }
+    ]
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}

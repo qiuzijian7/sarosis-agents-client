@@ -38,8 +38,10 @@ const PILL_ICON: Record<FooterPillKind, string> = {
 	credit: 'codicon-credit-card',
 };
 
-/** 种类专用类名（CSS 与既有 DOM 查询都依赖它，**不可随意改名** ✗）。 */
-const PILL_ITEM_CLASS: Record<FooterPillKind, string> = {
+/** 种类专用类名（CSS 与既有 DOM 查询都依赖它，**不可随意改名** ✗）。
+ *  ★ 2026-09-20：改为 **export** —— 完成态 footer 的"药丸补建"判定（`_refreshDoneUsagePills` ✓）
+ *  也要按同一真源查"某类药丸是否已存在" ✓（避免各调用点写死类名字符串 ✗）。 */
+export const PILL_ITEM_CLASS: Record<FooterPillKind, string> = {
 	duration: 'duration-item',
 	tokens: 'tokens-item',
 	credit: 'credit-item',

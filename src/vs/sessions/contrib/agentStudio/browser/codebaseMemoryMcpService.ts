@@ -235,16 +235,30 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 	}
 
 	private async _doInitWorkspaceFileConfig(): Promise<void> {
-		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: starting');
-		const folders = this.workspaceContextService.getWorkspace().folders;
-		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: folders.length=' + folders.length);
+		const ws = this.workspaceContextService.getWorkspace();
+		const folders = ws.folders;
+		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: starting (folders=' + folders.length + ')');
 		if (folders.length === 0) {
 			this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: no workspace folders, abort');
 			return;
 		}
 
+		// ★★ 2026-09-20（961ms 优化）：用 .code-workspace 打开的窗口（本仓即此形态 ✓），
+		// `workspace.configuration` **直接指向用户打开的那个工作区文件** —— **只读它、读完即止**：
+		// ① 快：整个调用缩成**一次 5KB 读**；省掉 resolve(folders[0] 根目录)（93 个子项 ⇒
+		//    IPC 往返 + 93 次 stat ✗）、过滤、以及「没 key 再扫一遍」的第二次全量 ✗
+		//    —— 实测 961ms 的大头就是这套（且落在启动拥挤期，await 还要给主线程长任务排队 ✗✗）；
+		// ② 更正确：用户打开的工作区文件才是权威来源。VS Code 自己也**只**读打开的那个文件；
+		//    旧代码扫 folders[0] 的根 ⇒ 可能读到**另一个**同名文件（配置来源错了都不知道 ✗）。
+		// 仅当 `configuration === null`（单文件夹窗口、没有工作区文件）才走下面的旧扫描 ✓。
+		if (ws.configuration) {
+			this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: via workspace.configuration=' + ws.configuration.fsPath);
+			await this._tryReadWorkspaceFileConfig(ws.configuration);
+			return;
+		}
+
 		const rootUri = folders[0].uri;
-		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: rootUri=' + rootUri.fsPath);
+		this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: scanning rootUri=' + rootUri.fsPath);
 		const rootStat = await this.fileService.resolve(rootUri);
 		if (!rootStat.children) {
 			this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: rootStat has no children, abort');
@@ -253,89 +267,94 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 
 		// 顶层文件列表可能极长（大工作区数百项），全量拼进 info 日志会膨胀日志体积、
 		// 拖慢序列化与落盘（曾出现 "root has 390 children: ..." 超长单行）。
-		// 仅 info 记总数，详细列表降级为 trace 并截断前 50 项。
+		// 仅 trace 记总数与前 50 项明细（2026-09-20 起连总数也降为 trace：
+		// 本方法每次启动都跑，这些步骤日志从未用于判读，只会淹没关键行 ✓）。
 		const childNames = rootStat.children.map(function(c) { return c.name; });
-		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: root has ' + rootStat.children.length + ' children');
 		const MAX_SHOWN = 50;
 		const shown = childNames.slice(0, MAX_SHOWN).join(', ');
 		const suffix = childNames.length > MAX_SHOWN ? ' …(+' + (childNames.length - MAX_SHOWN) + ' more)' : '';
-		this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: children = ' + shown + suffix);
+		this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: root has ' + rootStat.children.length + ' children = ' + shown + suffix);
 
-		const wsFiles = rootStat.children.filter(function(c) {
+		const wsFileUris: URI[] = rootStat.children.filter(function(c) {
 			return !c.isDirectory && c.name.toLowerCase().endsWith('.code-workspace');
-		});
-		const wsNames = wsFiles.map(function(f) { return f.name; }).join(', ');
-		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: found ' + wsFiles.length + ' .code-workspace file(s) in root: ' + wsNames);
+		}).map(function(c) { return c.resource; });
+		this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: found ' + wsFileUris.length + ' .code-workspace file(s) in root');
 
-		if (wsFiles.length === 0) {
-			this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: no .code-workspace in root, scanning subdirs');
+		if (wsFileUris.length === 0) {
+			this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: no .code-workspace in root, scanning subdirs');
 			for (const c of rootStat.children) {
 				if (!c.isDirectory) { continue; }
 				if (c.name === 'node_modules' || c.name === '.git' || c.name === '.codebase-memory') { continue; }
 				try {
 					const subStat = await this.fileService.resolve(c.resource);
-					const subWsFiles = (subStat.children || []).filter(function(sub) {
-						return !sub.isDirectory && sub.name.toLowerCase().endsWith('.code-workspace');
-					});
-					if (subWsFiles.length > 0) {
-						const subNames = subWsFiles.map(function(f) { return f.name; }).join(', ');
-						this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: found ' + subWsFiles.length + ' .code-workspace file(s) in subdir ' + c.name + ': ' + subNames);
-						wsFiles.push.apply(wsFiles, subWsFiles);
+					for (const sub of (subStat.children || [])) {
+						if (!sub.isDirectory && sub.name.toLowerCase().endsWith('.code-workspace')) {
+							this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: found .code-workspace in subdir ' + c.name + ': ' + sub.name);
+							wsFileUris.push(sub.resource);
+						}
 					}
 				} catch (e) { /* skip unreadable subdirs */ }
 			}
-			if (wsFiles.length === 0) {
+			if (wsFileUris.length === 0) {
 				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: no .code-workspace files found anywhere');
 				return;
 			}
 		}
 
-		for (const wsFile of wsFiles) {
-			try {
-				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: reading ' + wsFile.resource.fsPath);
-				const content = await this.fileService.readFile(wsFile.resource);
-				const text = content.value.toString();
-				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: file size=' + text.length + ' bytes');
-				// preview 降级为 trace：300 字符 + 换行会把 info 日志撑成多行，
-				// 排查时反而淹没关键行（与上方 children 明细同一口径：info 只记数量）。
-				this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: file preview: ' + text.substring(0, 300));
-				// VS Code .code-workspace 是 JSONC（支持注释 + 尾逗号），严格 JSON.parse 会
-				// 在含注释时失败（日志 2026-08-09: Expected property name or '}' in JSON at position 104）。
-				// 用 vs/base/common/json 的容错解析器（默认允许注释与尾逗号）。
-				const parseErrors: ParseError[] = [];
-				const parsed = parseJsonc(text, parseErrors);
-				if (parseErrors.length > 0) {
-					this.logService.warn('[CodebaseMemory] _initWorkspaceFileConfig: JSONC parse had ' + parseErrors.length +
-						' error(s) (tolerated): ' + parseErrors.map(e => `@${e.offset}:${e.error}`).join(', '));
-				}
+		for (const wsFileUri of wsFileUris) {
+			if (await this._tryReadWorkspaceFileConfig(wsFileUri)) { return; }
+		}
+		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: no codebase-memory key in any .code-workspace (checked top-level and settings.codebase-memory)');
+	}
 
-				const topLevelKeys = Object.keys(parsed);
-				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: top-level keys in ' + wsFile.name + ': ' + topLevelKeys.join(', '));
-
-				// codebase-memory 配置可能位于顶层，也可能嵌套在 settings 下
-				// （VS Code .code-workspace 惯例把自定义配置放在 settings 中）。
-				// 为兼容旧文件，同时支持两种位置。
-				const cbmConfig = (parsed && parsed['codebase-memory'])
-					|| (parsed && parsed.settings && parsed.settings['codebase-memory']);
-				if (cbmConfig && typeof cbmConfig === 'object') {
-					this._workspaceFileConfig = {
-						mode: cbmConfig.mode || 'fast',
-						excludeDirs: Array.isArray(cbmConfig.excludeDirs) ? cbmConfig.excludeDirs : undefined,
-						keepDirs: Array.isArray(cbmConfig.keepDirs) ? cbmConfig.keepDirs : undefined,
-						// subPath 此前漏读：getIndexConfig() 的 .code-workspace 回退分支读 wsCfg.subPath，
-						// 但这里从不赋值 → 在 .code-workspace 里配「索引路径」永远无效（只能走索引面板）。
-						subPath: typeof cbmConfig.subPath === 'string' ? cbmConfig.subPath : undefined,
-					};
-					const excl = (this._workspaceFileConfig.excludeDirs || []).join(', ');
-					const keep = (this._workspaceFileConfig.keepDirs || []).join(', ');
-					this.logService.info('[CodebaseMemory] Loaded codebase-memory config from ' + wsFile.name + ': mode=' + this._workspaceFileConfig.mode + ', excludeDirs=[' + excl + '], keepDirs=[' + keep + '], subPath=' + (this._workspaceFileConfig.subPath || '(none)'));
-					return;
-				} else {
-					this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: ' + wsFile.name + ' has no codebase-memory key (checked top-level and settings.codebase-memory)');
-				}
-			} catch (err) {
-				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: error reading ' + wsFile.name + ': ' + (err && err.message ? err.message : err));
+	/**
+	 * 读一个 `.code-workspace` 文件并尝试应用其中的 codebase-memory 配置。
+	 * @returns `true` = 找到并已应用（调用方应停止继续找）；`false` = 没有 key / 读失败（继续找下一个）。
+	 *
+	 * ★ 2026-09-20 抽出：「快路径（`workspace.configuration` 直指文件）」与「旧扫描路径」共用，
+	 * 避免同一段「读 + JSONC 解析 + 应用」逻辑写两份后漂移 ✗。
+	 */
+	private async _tryReadWorkspaceFileConfig(wsFileUri: URI): Promise<boolean> {
+		const fileName = wsFileUri.path.split('/').pop() || wsFileUri.fsPath;
+		try {
+			this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: reading ' + wsFileUri.fsPath);
+			const content = await this.fileService.readFile(wsFileUri);
+			const text = content.value.toString();
+			this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: ' + fileName + ' size=' + text.length + ' bytes, preview: ' + text.substring(0, 300));
+			// VS Code .code-workspace 是 JSONC（支持注释 + 尾逗号），严格 JSON.parse 会
+			// 在含注释时失败（日志 2026-08-09: Expected property name or '}' in JSON at position 104）。
+			// 用 vs/base/common/json 的容错解析器（默认允许注释与尾逗号）。
+			const parseErrors: ParseError[] = [];
+			const parsed = parseJsonc(text, parseErrors);
+			if (parseErrors.length > 0) {
+				this.logService.warn('[CodebaseMemory] _initWorkspaceFileConfig: JSONC parse had ' + parseErrors.length +
+					' error(s) (tolerated): ' + parseErrors.map(e => `@${e.offset}:${e.error}`).join(', '));
 			}
+
+			// codebase-memory 配置可能位于顶层，也可能嵌套在 settings 下
+			// （VS Code .code-workspace 惯例把自定义配置放在 settings 中）。
+			// 为兼容旧文件，同时支持两种位置。
+			const cbmConfig = (parsed && parsed['codebase-memory'])
+				|| (parsed && parsed.settings && parsed.settings['codebase-memory']);
+			if (cbmConfig && typeof cbmConfig === 'object') {
+				this._workspaceFileConfig = {
+					mode: cbmConfig.mode || 'fast',
+					excludeDirs: Array.isArray(cbmConfig.excludeDirs) ? cbmConfig.excludeDirs : undefined,
+					keepDirs: Array.isArray(cbmConfig.keepDirs) ? cbmConfig.keepDirs : undefined,
+					// subPath 此前漏读：getIndexConfig() 的 .code-workspace 回退分支读 wsCfg.subPath，
+					// 但这里从不赋值 → 在 .code-workspace 里配「索引路径」永远无效（只能走索引面板）。
+					subPath: typeof cbmConfig.subPath === 'string' ? cbmConfig.subPath : undefined,
+				};
+				const excl = (this._workspaceFileConfig.excludeDirs || []).join(', ');
+				const keep = (this._workspaceFileConfig.keepDirs || []).join(', ');
+				this.logService.info('[CodebaseMemory] Loaded codebase-memory config from ' + fileName + ': mode=' + this._workspaceFileConfig.mode + ', excludeDirs=[' + excl + '], keepDirs=[' + keep + '], subPath=' + (this._workspaceFileConfig.subPath || '(none)'));
+				return true;
+			}
+			this.logService.trace('[CodebaseMemory] _initWorkspaceFileConfig: ' + fileName + ' has no codebase-memory key');
+			return false;
+		} catch (err) {
+			this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: error reading ' + fileName + ': ' + (err && (err as Error).message ? (err as Error).message : err));
+			return false;
 		}
 	}
 

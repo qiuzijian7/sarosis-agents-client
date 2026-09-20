@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>聊天框 TUI 显示切换 — 调研报告</title>
+<style>
+:root{
+  --bg:#1e1e1e; --bg2:#252526; --bg3:#2d2d30; --bg4:#333333;
+  --border:#3c3c3c; --fg:#cccccc; --fg-dim:#8c8c8c; --fg-bright:#ffffff;
+  --accent:#007acc; --green:#4ec9b0; --term-green:#0dbc79; --yellow:#dcdcaa;
+  --orange:#ce9178; --purple:#c586c0; --blue:#569cd6; --red:#f14c4c;
+  --mono:'Cascadia Code','Consolas','SFMono-Regular','Menlo',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:'Segoe UI',-apple-system,'Microsoft YaHei',sans-serif;line-height:1.6;padding:32px 20px}
+.wrap{max-width:1180px;margin:0 auto}
+h1{font-size:26px;color:var(--fg-bright);font-weight:600;margin-bottom:6px}
+.sub{color:var(--fg-dim);font-size:13px;margin-bottom:24px}
+h2{font-size:19px;color:var(--fg-bright);font-weight:600;margin:34px 0 14px;padding-bottom:7px;border-bottom:1px solid var(--border)}
+h3{font-size:15px;color:var(--fg-bright);font-weight:600;margin:20px 0 9px}
+p{margin-bottom:11px;font-size:14px}
+code{font-family:var(--mono);background:var(--bg3);padding:1.5px 5px;border-radius:3px;font-size:12.5px;color:var(--orange)}
+pre{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:13px 15px;overflow-x:auto;margin:11px 0;font-family:var(--mono);font-size:12.5px;line-height:1.65}
+pre .k{color:var(--blue)}pre .s{color:var(--orange)}pre .c{color:#6a9955}pre .f{color:var(--yellow)}pre .t{color:var(--green)}
+
+.verdict{background:linear-gradient(90deg,rgba(14,180,120,.13),rgba(14,180,120,.02));border:1px solid rgba(14,180,120,.4);border-left:4px solid var(--term-green);border-radius:7px;padding:17px 20px;margin-bottom:26px}
+.verdict .big{font-size:17px;color:var(--fg-bright);font-weight:600;margin-bottom:7px}
+.verdict .big b{color:var(--term-green)}
+.verdict p{margin-bottom:5px;font-size:13.5px}
+.verdict p:last-child{margin-bottom:0}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:18px 0}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px 18px}
+.card h4{font-size:13.5px;color:var(--term-green);margin-bottom:9px;font-weight:600}
+.card ul{list-style:none;font-size:13px}
+.card li{padding:4px 0 4px 16px;position:relative}
+.card li:before{content:'▸';position:absolute;left:0;color:var(--accent)}
+.card li b{color:var(--fg-bright);font-weight:600}
+
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}
+th{background:var(--bg3);color:var(--fg-bright);text-align:left;padding:9px 12px;font-weight:600;border:1px solid var(--border)}
+td{padding:9px 12px;border:1px solid var(--border);vertical-align:top}
+tr:nth-child(even) td{background:rgba(255,255,255,.016)}
+td.y{color:var(--term-green)}td.n{color:var(--red)}td.p{color:var(--yellow)}
+
+/* ── Mockup: VS Code window chrome ── */
+.vscode{background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin:16px 0;box-shadow:0 8px 28px rgba(0,0,0,.45)}
+.vs-title{background:var(--bg3);border-bottom:1px solid var(--border);display:flex;align-items:center;height:34px;padding:0 12px;gap:9px}
+.vs-title .dots{display:flex;gap:6px}
+.vs-title .dots i{width:11px;height:11px;border-radius:50%;display:block}
+.d1{background:#ff5f56}.d2{background:#ffbd2e}.d3{background:#27c93f}
+.vs-title .tab{background:var(--bg);border:1px solid var(--border);border-bottom:none;border-radius:5px 5px 0 0;padding:5px 15px;font-size:11.5px;color:var(--fg-bright);margin-top:5px;height:28px;display:flex;align-items:center;gap:6px}
+.vs-title .tab .badge{background:var(--accent);color:#fff;font-size:9px;padding:1px 5px;border-radius:8px;font-weight:600;letter-spacing:.3px}
+.vs-title .tab.cli .badge{background:var(--term-green);color:#0b2b1e}
+.vs-body{display:flex;height:430px}
+.vs-act{width:46px;background:var(--bg3);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding-top:9px;gap:15px}
+.vs-act i{width:23px;height:23px;opacity:.42;display:block;border-radius:4px;background:var(--fg-dim)}
+.vs-act i.on{opacity:1;background:var(--accent)}
+.vs-main{flex:1;display:flex;flex-direction:column;min-width:0}
+.vs-edtab{background:var(--bg2);border-bottom:1px solid var(--border);height:34px;display:flex;align-items:center;padding:0 12px;font-size:11.5px;color:var(--fg-dim);gap:8px;justify-content:space-between}
+.vs-edtab .l{display:flex;align-items:center;gap:7px}
+.vs-edtab .r{display:flex;align-items:center;gap:9px}
+.kbd{font-family:var(--mono);background:var(--bg4);border:1px solid #4a4a4a;border-bottom-width:2px;border-radius:4px;padding:1.5px 6px;font-size:10.5px;color:var(--fg)}
+
+/* ── Mode A: rich bubbles ── */
+.rich{flex:1;overflow-y:auto;padding:15px;display:flex;flex-direction:column;gap:13px}
+.bubble{max-width:88%;padding:10px 13px;border-radius:9px;font-size:12.5px;line-height:1.62}
+.bubble.user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:3px}
+.bubble.agent{align-self:flex-start;background:var(--bg3);border:1px solid var(--border);border-bottom-left-radius:3px}
+.bubble .who{font-size:10.5px;opacity:.72;margin-bottom:4px;font-weight:600;letter-spacing:.2px}
+.bubble p{margin:0 0 7px;font-size:12.5px}
+.bubble p:last-child{margin-bottom:0}
+.card-inline{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:9px 11px;margin-top:8px}
+.card-inline .ch{font-size:11px;color:var(--green);font-weight:600;margin-bottom:5px;display:flex;align-items:center;gap:5px}
+.mermaid-box{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:11px;margin-top:8px;text-align:center;color:var(--fg-dim);font-size:11px}
+.mermaid-box svg{width:100%;height:74px}
+.tool-chip{display:inline-flex;align-items:center;gap:5px;background:rgba(78,201,176,.1);border:1px solid rgba(78,201,176,.3);border-radius:5px;padding:3px 8px;font-size:11px;color:var(--green);margin-top:7px;font-family:var(--mono)}
+.composer{border-top:1px solid var(--border);padding:11px 13px;background:var(--bg2)}
+.composer .box{background:var(--bg3);border:1px solid var(--border);border-radius:7px;padding:9px 11px;font-size:12px;color:var(--fg-dim);min-height:52px;display:flex;flex-direction:column;justify-content:space-between}
+.composer .row{display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--fg-dim);margin-top:7px}
+.composer .row .send{background:var(--accent);color:#fff;border-radius:5px;padding:3px 11px;font-weight:600;font-size:11px}
+
+/* ── Mode B: CLI / xterm ── */
+.cli{flex:1;overflow-y:auto;padding:0;background:#161616;font-family:var(--mono);font-size:12px;line-height:1.55}
+.cli-in{padding:11px 13px;white-space:pre-wrap;word-break:break-word}
+.cli .u{color:var(--term-green);font-weight:700}
+.cli .prompt{color:var(--term-green)}
+.cli .as{color:var(--fg)}
+.cli .dim{color:#6e7681}
+.cli .cy{color:var(--purple)}
+.cli .yl{color:var(--yellow)}
+.cli .bl{color:var(--blue)}
+.cli .gr{color:var(--term-green)}
+.cli .tree{color:#6e7681}
+.cli .spin{color:var(--yellow)}
+.cli code{background:rgba(255,255,255,.055);color:var(--orange);padding:0 4px;border-radius:2px;font-size:11.5px}
+.cli-status{border-top:1px solid var(--border);background:var(--bg3);padding:5px 13px;font-family:var(--mono);font-size:10.5px;color:var(--fg-dim);display:flex;gap:15px}
+.cli-status b{color:var(--term-green)}
+.cli-composer{border-top:1px solid var(--border);background:#161616;padding:9px 13px;display:flex;align-items:center;gap:8px;font-family:var(--mono)}
+.cli-composer .p{color:var(--term-green);font-size:12.5px;font-weight:700}
+.cli-composer input{font-family:var(--mono)}
+.cli-composer input{background:transparent;border:none;color:var(--fg);font-size:12.5px;flex:1;outline:none}
+.cli-composer .cur{width:7px;height:15px;background:var(--term-green);animation:bk .95s step-end infinite}
+@keyframes bk{50%{opacity:0}}
+
+/* toggle demo */
+.toggle-demo{display:flex;align-items:center;justify-content:center;gap:22px;padding:22px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin:16px 0}
+.td-side{text-align:center;flex:1}
+.td-side .lb{font-size:12.5px;font-weight:600;margin-top:9px}
+.td-side.a .lb{color:var(--blue)}.td-side.b .lb{color:var(--term-green)}
+.td-box{height:82px;border-radius:6px;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;overflow:hidden}
+.td-box.a{background:var(--bg3);color:var(--fg-dim)}
+.td-box.b{background:#161616;color:var(--term-green);font-family:var(--mono)}
+.td-arrow{font-size:23px;color:var(--fg-dim);animation:sl 1.6s ease-in-out infinite}
+@keyframes sl{0%,100%{transform:translateX(0);opacity:.45}50%{transform:translateX(5px);opacity:1}}
+.td-key{text-align:center;margin-top:13px;font-size:12px;color:var(--fg-dim)}
+
+.flow{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:18px;margin:16px 0}
+.flow-step{display:flex;gap:13px;padding:9px 0;border-bottom:1px dashed var(--border);align-items:flex-start}
+.flow-step:last-child{border-bottom:none}
+.flow-n{width:25px;height:25px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0}
+.flow-c{flex:1}
+.flow-c b{color:var(--fg-bright);font-size:13px}
+.flow-c div{font-size:12.5px;color:var(--fg-dim);margin-top:2px}
+.flow-c code{font-size:11.5px}
+
+.note{background:rgba(206,145,120,.09);border:1px solid rgba(206,145,120,.35);border-left:3px solid var(--orange);border-radius:6px;padding:13px 16px;margin:14px 0;font-size:13px}
+.note b{color:var(--orange)}
+.ok{background:rgba(78,201,176,.09);border:1px solid rgba(78,201,176,.3);border-left:3px solid var(--green);border-radius:6px;padding:13px 16px;margin:14px 0;font-size:13px}
+.ok b{color:var(--green)}
+.foot{margin-top:40px;padding-top:16px;border-top:1px solid var(--border);color:var(--fg-dim);font-size:12px;text-align:center}
+.foot code{font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>聊天框切换 TUI 显示 — 调研报告</h1>
+<div class="sub">项目：sarosis-agents-client (<code>vssaros</code> v2.2.26037) · 生成于 2026-09-20 · 全部结论基于源码实测</div>
+
+<div class="verdict">
+  <div class="big">结论：<b>已经支持，且已完整实现</b> —— 不是「能否」，而是「已上线」</div>
+  <p>项目内已存在 <code>xterm.js</code> 驱动的 TUI 聊天面板 <code>XtermCliPanel</code>，并通过命令 <code>agentStudio.toggleCliStyle</code>（<b>Ctrl/Cmd + Shift + L</b>）在富文本气泡模式与 CLI 模式间实时切换，会话状态与布局均会持久化。</p>
+  <p>我之前答复中「缺渲染器抽象 / 需半天工作量」的判断<b>不成立</b>——那是在未读 <code>nativeChatEditorPane.ts</code> 时的误判。此处更正。</p>
+</div>
+
+<h2>1. 核心结论速览</h2>
+<table>
+<tr><th style="width:26%">问题</th><th>答案</th><th style="width:24%">证据</th></tr>
+<tr><td>能否切换 TUI 显示？</td><td class="y">能，已实现</td><td><code>nativeChatEditorPane.ts:867-869</code></td></tr>
+<tr><td>切换入口？</td><td>命令面板「切换 CLI 风格」/ 编辑器标题右键菜单 / 快捷键</td><td><code>agentStudio.contribution.ts:2261-2277</code></td></tr>
+<tr><td>快捷键</td><td><b>Ctrl/Cmd + Shift + L</b></td><td><code>:2271-2274</code></td></tr>
+<tr><td>TUI 是真终端模拟器吗？</td><td class="y">是，xterm.js 字符网格渲染</td><td><code>xtermCliPanel.ts:63</code></td></tr>
+<tr><td>切换后消息会丢吗？</td><td class="y">不会，状态保存→重建→回放</td><td><code>:5833-5854</code></td></tr>
+<tr><td>是否持久化？</td><td class="y">是，随编辑器布局保存/恢复</td><td><code>nativeChatEditorInput.ts:131,244</code></td></tr>
+<tr><td>输入框还是 TUI？</td><td class="p">保留 HTML textarea（刻意设计）</td><td><code>xtermCliPanel.ts:48,55-57</code></td></tr>
+</table>
+
+<h2>2. 架构：两套面板，一个接口</h2>
+<p>关键设计是 <code>IChatPanel</code> 接口 —— 两种渲染器实现同一契约，上层 <code>NativeChatEditorPane</code> 完全无感知。</p>
+
+<pre><span class="c">// nativeChatEditorPane.ts:863-869</span>
+<span class="c">// Choose panel type based on cliMode.</span>
+<span class="c">// - XtermCliPanel: xterm.js-based TUI rendering (true terminal emulator)</span>
+<span class="c">// - AgentChatPanel: rich bubble UI (default)</span>
+<span class="c">// Both implement IChatPanel so the rest of the pane code is agnostic.</span>
+<span class="k">const</span> useCliPanel = <span class="k">this</span>.input <span class="k">instanceof</span> <span class="t">NativeChatEditorInput</span> &amp;&amp; <span class="k">this</span>.input.cliMode;
+<span class="k">const</span> PanelCtor = useCliPanel ? <span class="t">XtermCliPanel</span> : <span class="t">AgentChatPanel</span>;
+<span class="k">this</span>._chatPanel = <span class="k">this</span>._register(<span class="k">new</span> <span class="t">PanelCtor</span>({ ... }));</pre>
+
+<div class="grid">
+  <div class="card">
+    <h4>模式 A — AgentChatPanel（默认）</h4>
+    <ul>
+      <li>富文本<b>气泡 UI</b>（DOM）</li>
+      <li>继承链组合：<code>Panel → Header → Send → … → Base</code></li>
+      <li>支持富卡片：mermaid / drawio / kanban / 搜索结果 / 确认卡</li>
+      <li>文件：<code>agentChatPanel.base.ts</code> 等 14 个</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>模式 B — XtermCliPanel（CLI）</h4>
+    <ul>
+      <li><b>xterm.js 真实终端模拟器</b>，ANSI 渲染</li>
+      <li>Markdown → ANSI：<code>mdToAnsi.ts</code></li>
+      <li>代码高亮：<code>syntaxHighlight.ts</code></li>
+      <li>工具树渲染：<code>toolTreeRenderer.ts</code></li>
+      <li>主题适配：<code>ansiTheme.ts</code> + <code>xterm-cli.css</code></li>
+    </ul>
+  </div>
+</div>
+
+<p>其内部分层（取自源码注释 <code>xtermCliPanel.ts:50-58</code>）：</p>
+<pre>┌──────────────────────────────────────┐
+│  xterm.js Terminal (output)          │   ← 真终端，ANSI
+│  markdown → ANSI → terminal.write()  │
+├──────────────────────────────────────┤
+│  HTML textarea (input)               │   ← 保留 DOM（刻意）
+├──────────────────────────────────────┤
+│  DOM status bar                      │
+└──────────────────────────────────────┘</pre>
+
+<div class="ok"><b>输入区保留 textarea 是有意为之</b>（<code>xtermCliPanel.ts:48</code>）：注释写明 "The input area and status bar remain as DOM elements for better UX (textarea, keyboard handling)"。即「输出 TUI 化、输入仍走原生」，兼顾终端观感与中文 IME / 多行编辑体验。</div>
+
+<h2>3. Mockup — 两种模式对照</h2>
+
+<h3>模式 A：富文本气泡（默认）</h3>
+<div class="vscode">
+  <div class="vs-title">
+    <div class="dots"><i class="d1"></i><i class="d2"></i><i class="d3"></i></div>
+    <div class="tab">💬 Agent Studio <span class="badge">BUBBLE</span></div>
+  </div>
+  <div class="vs-body">
+    <div class="vs-act"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+    <div class="vs-main">
+      <div class="vs-edtab">
+        <div class="l">📄 nativeChat · claw · session-8f2a</div>
+        <div class="r"><span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">L</span> 切换 CLI</div>
+      </div>
+      <div class="rich">
+        <div class="bubble user">
+          <div class="who">你</div>
+          <p>帮我看下这个仓库的 provider 分层，画个图</p>
+        </div>
+        <div class="bubble agent">
+          <div class="who">Claw · claude-sonnet-4</div>
+          <p>已分析 <code>packages/ai/src/providers</code>，共 40 个 builtin provider，分为 4 层：</p>
+          <div class="mermaid-box">
+            <svg viewBox="0 0 300 74" xmlns="http://www.w3.org/2000/svg">
+              <rect x="8" y="6" width="72" height="24" rx="4" fill="#2d2d30" stroke="#4ec9b0"/>
+              <text x="44" y="21" font-size="8" fill="#4ec9b0" text-anchor="middle">leaf</text>
+              <rect x="114" y="6" width="72" height="24" rx="4" fill="#2d2d30" stroke="#569cd6"/>
+              <text x="150" y="21" font-size="8" fill="#569cd6" text-anchor="middle">capability</text>
+              <rect x="220" y="6" width="72" height="24" rx="4" fill="#2d2d30" stroke="#ce9178"/>
+              <text x="256" y="21" font-size="8" fill="#ce9178" text-anchor="middle">runtime</text>
+              <line x1="80" y1="18" x2="114" y2="18" stroke="#6e7681" stroke-width="1"/>
+              <line x1="186" y1="18" x2="220" y2="18" stroke="#6e7681" stroke-width="1"/>
+              <rect x="114" y="48" width="72" height="22" rx="4" fill="#2d2d30" stroke="#c586c0"/>
+              <text x="150" y="62" font-size="8" fill="#c586c0" text-anchor="middle">product</text>
+              <line x1="150" y1="30" x2="150" y2="48" stroke="#6e7681" stroke-width="1"/>
+            </svg>
+          </div>
+          <div class="tool-chip">✓ 读取 12 个文件 · 2.4s</div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="box">
+          <span>输入消息，/ 唤起命令，@ 引用文件…</span>
+          <div class="row"><span>claude-sonnet-4 · 上下文 42%</span><span class="send">发送 ⏎</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>模式 B：CLI / TUI（xterm.js）</h3>
+<div class="vscode">
+  <div class="vs-title">
+    <div class="dots"><i class="d1"></i><i class="d2"></i><i class="d3"></i></div>
+    <div class="tab cli">🖥️ Agent Studio <span class="badge">CLI</span></div>
+  </div>
+  <div class="vs-body">
+    <div class="vs-act"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+    <div class="vs-main">
+      <div class="vs-edtab">
+        <div class="l">📄 nativeChat · claw · session-8f2a</div>
+        <div class="r"><span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">L</span> 切换气泡</div>
+      </div>
+      <div class="cli">
+        <div class="cli-in"><span class="dim">┌─ </span><span class="gr">claw</span><span class="dim"> · claude-sonnet-4 · session-8f2a ─────────────────</span>
+<span class="dim">│</span>
+<span class="prompt">❯ </span><span class="u">帮我看下这个仓库的 provider 分层，画个图</span>
+<span class="dim">│</span>
+<span class="cy">⏺</span> <span class="as">已分析 </span><code>packages/ai/src/providers</code><span class="as">，共 </span><span class="yl">40</span><span class="as"> 个 builtin provider：</span>
+<span class="dim">│</span>
+<span class="tree">  ├─ </span><span class="gr">leaf</span><span class="dim">        </span><span class="as">chord · telemetry · tui</span>
+<span class="tree">  ├─ </span><span class="bl">capability</span><span class="dim">   </span><span class="as">ai · protocol</span>
+<span class="tree">  ├─ </span><span class="cy">runtime</span><span class="dim">      </span><span class="as">agent · server · client</span>
+<span class="tree">  └─ </span><span class="purple">product</span><span class="dim">      </span><span class="as">coding-agent</span>
+<span class="dim">│</span>
+<span class="tree">  ⎿ </span><span class="dim">Read</span> <span class="as">12 files</span><span class="dim"> (2.4s)</span>
+<span class="dim">│</span>
+<span class="spin">⠋ </span><span class="dim">generating…</span></div>
+      </div>
+      <div class="cli-status">
+        <span><b>●</b> streaming</span><span>ctx 42%</span><span>tok 1,284</span><span>2.4s</span>
+      </div>
+      <div class="cli-composer">
+        <span class="p">❯</span><input value="" placeholder="输入消息…"><span class="cur"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note"><b>Mockup 说明</b>：以上为按源码渲染逻辑手工还原的示意（非截图）。真机 CLI 下 Markdown 经 <code>mdToAnsi.ts</code> 转成带 ANSI 色的文本，代码块走 <code>syntaxHighlight.ts</code>，工具调用走 <code>toolTreeRenderer.ts</code> 的树形 + <code>SPINNER_FRAMES</code> 动画。</div>
+
+<h2>4. 切换是怎么发生的</h2>
+<div class="toggle-demo">
+  <div class="td-side a"><div class="td-box a">富文本气泡<br>AgentChatPanel</div><div class="lb">bubble 模式</div></div>
+  <div class="td-arrow">⇄</div>
+  <div class="td-side b"><div class="td-box b">❯ xterm.js<br>ANSI 字符网格</div><div class="lb">CLI 模式</div></div>
+</div>
+<div class="td-key">触发：<span class="kbd">Ctrl</span>/<span class="kbd">Cmd</span> + <span class="kbd">Shift</span> + <span class="kbd">L</span> &nbsp;·&nbsp; 或命令面板搜「切换 CLI 风格」&nbsp;·&nbsp; 或编辑器标题右键菜单</div>
+
+<div class="flow">
+  <h3 style="margin-top:0">切换时序（<code>_syncPanelType</code>，<code>:5833-5854</code>）</h3>
+  <div class="flow-step"><div class="flow-n">1</div><div class="flow-c"><b>比对当前面板类型</b><div><code>currentIsCli = this._chatPanel instanceof XtermCliPanel</code>；若与期望一致则直接返回（幂等）</div></div></div>
+  <div class="flow-step"><div class="flow-n">2</div><div class="flow-c"><b>保存运行时状态</b><div><code>getMessages()</code> / <code>getAgent()</code> / <code>_streamPhase</code> / <code>_isSending</code></div></div></div>
+  <div class="flow-step"><div class="flow-n">3</div><div class="flow-c"><b>销毁旧面板 + 清空容器</b><div><code>dispose()</code> → <code>clearNode(this._container)</code> → <code>_isInitialized = false</code></div></div></div>
+  <div class="flow-step"><div class="flow-n">4</div><div class="flow-c"><b>按新 cliMode 重建面板</b><div><code>_initChatPanel()</code> → <code>new (cliMode ? XtermCliPanel : AgentChatPanel)(…)</code></div></div></div>
+  <div class="flow-step"><div class="flow-n">5</div><div class="flow-c"><b>回放状态</b><div>消息、agent、streamPhase 恢复 → 会话连续，不丢上下文</div></div></div>
+  <div class="flow-step"><div class="flow-n">6</div><div class="flow-c"><b>持久化到布局</b><div><code>NativeChatEditorInput.setCliMode()</code> → 序列化 <code>cliMode</code> 字段</div></div></div>
+</div>
+
+<pre><span class="c">// agentStudio.contribution.ts:2260-2277 —— 命令注册</span>
+<span class="k">super</span>({
+  id: <span class="s">'agentStudio.toggleCliStyle'</span>,
+  title: localize2(<span class="s">'agentStudio.toggleCliStyle'</span>, <span class="s">'切换 CLI 风格'</span>),
+  f1: <span class="k">true</span>,                              <span class="c">// 出现在命令面板</span>
+  category: localize2(<span class="s">'agentStudio.category'</span>, <span class="s">'Agent Studio'</span>),
+  menu: [{ id: <span class="t">MenuId</span>.EditorTitleContext, when: chatEditorActive,
+           group: <span class="s">'2_agentStudio'</span>, order: <span class="s">1</span> }],
+  keybinding: {
+    weight: <span class="s">200</span>,
+    primary: <span class="t">KeyMod</span>.CtrlCmd | <span class="t">KeyMod</span>.Shift | <span class="t">KeyCode</span>.KeyL,   <span class="c">// Ctrl/Cmd+Shift+L</span>
+    when: chatEditorActive,
+  },
+  precondition: chatEditorActive,
+});</pre>
+
+<h2>5. 持久化：重启后仍记得</h2>
+<p><code>cliMode</code> 不是临时开关，而是随 <b>编辑器布局</b> 一起保存/恢复的：</p>
+<table>
+<tr><th style="width:30%">位置</th><th>作用</th></tr>
+<tr><td><code>nativeChatEditorInput.ts:131</code></td><td>字段 <code>private _cliMode = false</code></td></tr>
+<tr><td><code>:239-247</code></td><td><code>get cliMode()</code> / <code>setCliMode()</code></td></tr>
+<tr><td><code>:280</code></td><td>序列化成 <code>cliMode</code> 字段</td></tr>
+<tr><td><code>agentStudio.contribution.ts:2343-2351</code></td><td>反序列化：<code>if (data.cliMode) input.setCliMode(true)</code></td></tr>
+<tr><td><code>workbench.ts:1735-1736</code></td><td>布局恢复时还原 CLI 态</td></tr>
+<tr><td><code>agentLayoutWorkbench.ts:511-512</code></td><td>多编辑器组同样生效</td></tr>
+</table>
+<p>即：<b>每个聊天标签页可独立记忆自己的显示模式</b>，可以在一个组用气泡、另一个组用 CLI。</p>
+
+<h2>6. 能力对照：气泡 vs CLI</h2>
+<table>
+<tr><th style="width:24%">能力</th><th style="width:38%">气泡模式</th><th>CLI 模式</th></tr>
+<tr><td>Markdown</td><td class="y">原生富文本</td><td class="y">转 ANSI（<code>mdToAnsi.ts</code>）</td></tr>
+<tr><td>代码高亮</td><td class="y">Shiki/高亮器</td><td class="y"><code>syntaxHighlight.ts</code></td></tr>
+<tr><td>工具调用树</td><td class="y">卡片 + chip</td><td class="y"><code>toolTreeRenderer.ts</code></td></tr>
+<tr><td>流式输出</td><td class="y">DOM 增量</td><td class="y"><code>terminal.write()</code> 增量</td></tr>
+<tr><td>spinner 动画</td><td class="y">CSS</td><td class="y"><code>SPINNER_FRAMES</code></td></tr>
+<tr><td>Mermaid 图</td><td class="y">SVG 渲染卡片</td><td class="n">降级为文本/树形</td></tr>
+<tr><td>Draw.io 卡</td><td class="y">专用卡片</td><td class="n">无等价物</td></tr>
+<tr><td>Kanban / 状态卡</td><td class="y">专用卡片</td><td class="n">无等价物</td></tr>
+<tr><td>确认卡（危险操作）</td><td class="y">按钮交互</td><td class="p">需键盘确认</td></tr>
+<tr><td>输入体验</td><td class="y">textarea（IME 友好）</td><td class="y">同为 textarea（刻意保留）</td></tr>
+<tr><td>可复制/选中</td><td class="y">DOM 选择</td><td class="y">终端选择</td></tr>
+</table>
+
+<div class="note"><b>唯一实质代价：富卡片降级。</b>气泡模式下的 mermaid / drawio / kanban / 搜索结果卡片在 CLI 模式没有等价渲染，会退化为文本或树形。这是「终端字符网格」的固有限制，非缺陷。若某条消息强依赖图形，应留在气泡模式。</div>
+
+<h2>7. 更正与遗留不确定项</h2>
+<h3>对我此前答复的更正</h3>
+<div class="note">
+我此前基于部分检索判断「TUI 渲染器已写好，但缺渲染接口抽象、需接 xtermTui、需加切换开关，约半天工作量」——<b>该判断错误</b>。<br>
+事实：① <code>IChatPanel</code> 接口抽象<b>已存在</b>；② <code>XtermCliPanel</code> <b>已接线</b>到 <code>nativeChatEditorPane</code>；③ 切换命令与快捷键<b>已注册</b>。三者均非待办，而是已完成代码。错误源于我未读 <code>nativeChatEditorPane.ts</code> 的面板选择与同步逻辑。
+</div>
+
+<h3>仍未核实（诚实声明）</h3>
+<ul class="card" style="list-style:none">
+<li style="padding-left:16px;position:relative"><span style="position:absolute;left:0;color:var(--accent)">▸</span><code>xtermCliPanel.ts</code> 全文 771 行，我仅读前 80 行；<b>富卡片在 CLI 下的具体降级行为</b>（是忽略、转文本还是报错）<b>未实证</b>，需读 <code>renderMarkdownToAnsi</code> 对该类节点的处理</li>
+<li style="padding-left:16px;position:relative"><span style="position:absolute;left:0;color:var(--accent)">▸</span>CLI 模式下 <b>中文 / CJK 宽度对齐</b>是否正确（xterm 需 east-asian-width 处理），未实测</li>
+<li style="padding-left:16px;position:relative"><span style="position:absolute;left:0;color:var(--accent)">▸</span>快捷键 <b>Ctrl+Shift+L 是否与其它命令冲突</b>，未查全局 keybinding 表</li>
+<li style="padding-left:16px;position:relative"><span style="position:absolute;left:0;color:var(--accent)">▸</span><b>实际运行截图</b>未获取（当前环境无 GUI 实例），mockup 为按源码逻辑还原</li>
+</ul>
+
+<h2>8. 建议</h2>
+<div class="grid">
+  <div class="card"><h4>立即可做</h4><ul>
+    <li>直接用 <b>Ctrl/Cmd+Shift+L</b> 体验，无需改代码</li>
+    <li>若默认想要 CLI：在 <code>nativeChatEditorInput.ts:131</code> 把 <code>_cliMode</code> 初值改为 <code>true</code></li>
+  </ul></div>
+  <div class="card"><h4>值得补的</h4><ul>
+    <li>CLI 下 <b>mermaid 降级为 ASCII 图</b>（<code>toolTreeRenderer</code> 风格）而非纯文本</li>
+    <li>确认卡在 CLI 下应提示 <code>y/N</code> 键盘确认，避免悬空</li>
+    <li>验证 CJK 宽度对齐</li>
+  </ul></div>
+</div>
+
+<div class="foot">
+sarosis-agents-client · <code>vssaros</code> v2.2.26037 · 报告生成 2026-09-20<br>
+证据文件：<code>nativeChatEditorPane.ts</code> · <code>agentStudio.contribution.ts</code> · <code>nativeChatEditorInput.ts</code> · <code>xtermTui/xtermCliPanel.ts</code> · <code>iChatPanel.ts</code>
+</div>
+
+</div>
+</body>
+</html>

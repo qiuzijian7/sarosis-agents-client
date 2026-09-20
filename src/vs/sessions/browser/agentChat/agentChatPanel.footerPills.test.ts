@@ -340,3 +340,80 @@ suite('用量药丸配色：黑白灰不变量（2026-09-19）', () => {
 		}
 	});
 });
+
+// ─── 零值可见性：0 是真实读数，不是"没数据"（2026-09-20，用户要求）──────────────
+
+/**
+ * 用户要求：「运行时右下角的 耗时/积分/token UI 中，**当积分为 0 时，也要显示 token 和积分**」✓。
+ * 口径：字段 **undefined** = 没数据（不显示 ✓）；字段 **= 0** = 真实读数（**必须显示** ✓）——
+ * 与积分侧 07-27 的既有裁定一致（`credit !== undefined` 即显示 ✓）。
+ * 修前：tokens 两处门控是 `total > 0` ✗（处理中 + 完成态都吞 0 ✗）。
+ */
+suite('用量药丸零值可见性（2026-09-20）', () => {
+
+	const MSG_REL = 'src/vs/sessions/browser/agentChat/agentChatPanel.messages.ts';
+	const readMsg = (): string => {
+		const abs = path.join(process.cwd(), MSG_REL);
+		assert.ok(fs.existsSync(abs), `源码不存在（路径基准变了？）：${abs}`);
+		return fs.readFileSync(abs, 'utf8');
+	};
+	/** 去掉块/行注释 ⇒ 只对活代码断言 ✓（注释里会刻意保留旧写法作教训 ✓）。 */
+	const strip = (s: string): string => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+	test('★★★ 处理中 tokens/积分必须**常驻**（数据未到显示 0 占位 ✗ 不再消失）', () => {
+		// 2026-09-20 二次反馈：usage delta 是「每个 LLM 轮次末块」才发 ⇒ 第一轮没跑完
+		// 就没有数据 ⇒ 旧「有数据才显示」口径下 runtime 只有耗时 ✗。⇒ 处理中常驻 ✓。
+		const code = strip(readMsg());
+		assert.ok(code.includes('formatTokenCount(tu?.total ?? 0)'),
+			'处理中 tokens 必须 0 占位常驻（tu?.total ?? 0 ✗）');
+		assert.ok(code.includes('formatCreditAmount(tu?.credit ?? 0)'),
+			'处理中积分必须 0 占位常驻（tu?.credit ?? 0 ✗）');
+		assert.ok(!code.includes('tu.total !== undefined && tu.total > 0'),
+			'处理中 tokens 不得再有 > 0 门控 ✗');
+	});
+
+	test('★★★ 完成态 tokens 门控保持「字段存在即显示」（不得再要 total > 0 ✗）', () => {
+		const code = strip(readMsg());
+		assert.ok(!code.includes('msg.tokenUsage?.total !== undefined && msg.tokenUsage.total > 0'),
+			'完成态 tokens 又出现了 > 0 门控 ⇒ credit=0 时 tokens pill 会消失 ✗');
+	});
+
+	test('★★ 完成态积分门控保持「存在即显示」（防回退 ✓）；处理中常驻不误伤完成态 ✓', () => {
+		const code = strip(readMsg());
+		assert.ok(code.includes('msg.tokenUsage?.credit !== undefined'),
+			'完成态积分必须是 !== undefined（0 也显示 ✓）');
+		// 处理中常驻只应改 `_syncProcessingUsagePills` ✓ —— 完成态构建不得被 0 占位 ✗
+		assert.ok(!code.includes('formatCreditAmount(msg.tokenUsage.credit ?? 0)'),
+			'完成态积分不得改成 0 占位（无 credit 字段的旧消息不该冒出 pill ✗）');
+	});
+
+	test('★★★ 完成态必须有「用量药丸补建」（usage 晚于 done ⇒ footer 需重刷 ✗）', () => {
+		// 2026-09-20 截图：完成态只有「耗时: 57.2S」✗，而处理中正常 ✓ ——
+		// 因为完成态 footer 只创建一次、之后 tokenUsage 更新不重建 footer ✗✓。
+		const base = strip(fs.readFileSync(path.join(process.cwd(),
+			'src/vs/sessions/browser/agentChat/agentChatPanel.base.ts'), 'utf8'));
+		assert.ok(base.includes('this._refreshDoneUsagePills(m)'),
+			'updateMessage 必须在 tokenUsage 更新时触发补建 ✗');
+		assert.ok(base.includes('if (updates.tokenUsage !== undefined)'),
+			'补建必须以 tokenUsage 更新为触发条件 ✓');
+		const msg = strip(readMsg());
+		assert.ok(msg.includes('protected override _refreshDoneUsagePills('),
+			'messages 侧必须实现补建 ✓');
+		assert.ok(msg.includes('bubble.appendChild(this._createFooter(msg))'),
+			'补建必须复用唯一构建入口 _createFooter（否则 DOM/顺序/浮层会分叉 ✗）');
+	});
+
+	test('★★★ 子代理处理中 tokens/积分同样**常驻**（2026-09-20 截图：1m33s 只有耗时 ✗）', () => {
+		const abs = path.join(process.cwd(),
+			'src/vs/sessions/browser/agentChat/agentChatPanel.delegateCards.ts');
+		assert.ok(fs.existsSync(abs), `源码不存在：${abs}`);
+		const code = strip(fs.readFileSync(abs, 'utf8'));
+		// 与主气泡同口径：undefined / 0 都显示 0 ✓（数据到达后随重渲染覆盖 ✓）
+		assert.ok(code.includes('formatTokenCount(typeof saTotal === \'number\' ? saTotal : 0)'),
+			'子代理处理中 tokens 必须 0 占位常驻 ✗');
+		assert.ok(code.includes('formatCreditAmount(typeof saCredit === \'number\' ? saCredit : 0)'),
+			'子代理处理中积分必须 0 占位常驻 ✗');
+		assert.ok(!code.includes('typeof saTotal === \'number\' && saTotal > 0'),
+			'子代理 tokens 不得再有 > 0 门控 ✗');
+	});
+});

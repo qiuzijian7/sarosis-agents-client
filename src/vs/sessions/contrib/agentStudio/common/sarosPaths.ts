@@ -15,6 +15,8 @@
 
 import { URI } from '../../../../base/common/uri.js';
 import { joinPath } from '../../../../base/common/resources.js';
+import type { IFileService } from '../../../../platform/files/common/files.js';
+import type { ILogService } from '../../../../platform/log/common/log.js';
 
 // ─── Directory name constants ────────────────────────────────────────────────
 
@@ -150,4 +152,83 @@ export function userDataRootFromRoamingHome(userRoamingDataHome: URI): URI {
  */
 export function userDataRootFromPath(userDataPath: string): URI {
 	return URI.file(userDataPath);
+}
+
+// ─── Agent Studio service data root（2026-09-20 统一） ────────────────────────
+
+/**
+ * Resolve the Agent Studio service data root directory.
+ *
+ * Single entry point for the service-level JSON stores (`taskboard.json`,
+ * `boards.json`, `boardlinks.json`, `orchestration-plans.json`, `swarms.json`,
+ * `delegations.json`, …).
+ *
+ * - `sessions.agentStudio.dataPath` set → that directory（自定义行为不变）。
+ * - Otherwise the VS Code user data root（`~/.vssaros/`，dev 为 `~/.vssaros-dev/`），
+ *   与 `AgentStudioService` 的 `workspaces.json` / `sessions.json` 同根
+ *   ⇒ 天然获得 dev/prod 隔离。
+ *
+ * ⚠ 已废弃旧约定：`userHome + .agent-studio/data`（2026-09-20 用户指正）——
+ * 它脱离 `.vssaros/` 根且 dev/prod 共用同一目录。新代码一律走本函数。
+ */
+export function resolveAgentStudioDataRoot(customPath: string | undefined, userRoamingDataHome: URI): URI {
+	return customPath ? URI.file(customPath) : userDataRootFromRoamingHome(userRoamingDataHome);
+}
+
+/**
+ * One-time best-effort migration of service data files from the legacy
+ * `~/.agent-studio/data/` directory to the unified data root.
+ *
+ * Copies only when the target does not exist（绝不覆盖新数据），重跑天然幂等。
+ * 仅在默认落盘根下调用（自定义 dataPath 时用户已显式指定目录，不做隐式迁移）。
+ * Fire-and-forget 或 await 均可；错误只记日志。
+ *
+ * @param userHome - 用户主目录（`INativeEnvironmentService.userHome`）
+ * @param targetRoot - 统一后的数据根（`resolveAgentStudioDataRoot` 的返回值）
+ * @param entries - 旧数据目录下的文件/目录名（目录会递归复制）
+ */
+export async function migrateLegacyAgentStudioData(
+	fileService: IFileService,
+	logService: ILogService,
+	userHome: URI,
+	targetRoot: URI,
+	entries: readonly string[],
+): Promise<void> {
+	try {
+		const legacyDir = joinPath(userHome, '.agent-studio', 'data');
+		if (!(await fileService.exists(legacyDir))) {
+			return;
+		}
+		for (const entry of entries) {
+			const from = joinPath(legacyDir, entry);
+			const to = joinPath(targetRoot, entry);
+			try {
+				if (!(await fileService.exists(from)) || (await fileService.exists(to))) {
+					continue;
+				}
+				await copyTree(fileService, from, to);
+				logService.info(`[sarosPaths] Migrated legacy Agent Studio data '${entry}' (~/.agent-studio/data → ${targetRoot.path})`);
+			} catch (err) {
+				logService.warn(`[sarosPaths] Failed to migrate legacy data entry '${entry}': ${err}`);
+			}
+		}
+	} catch (err) {
+		logService.debug(`[sarosPaths] Legacy Agent Studio data dir not accessible: ${err}`);
+	}
+}
+
+/** 跨 provider 安全的递归复制（read + write，经 fileService 总线，不用 provider 级 copy）。 */
+async function copyTree(fileService: IFileService, from: URI, to: URI): Promise<void> {
+	const stat = await fileService.resolve(from);
+	if (stat.isDirectory) {
+		if (!(await fileService.exists(to))) {
+			await fileService.createFolder(to);
+		}
+		for (const child of stat.children ?? []) {
+			await copyTree(fileService, child.resource, joinPath(to, child.name));
+		}
+	} else {
+		const content = await fileService.readFile(from);
+		await fileService.writeFile(to, content.value);
+	}
 }

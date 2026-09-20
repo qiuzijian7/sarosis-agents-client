@@ -7,7 +7,7 @@ import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { isLinux, isMacintosh, isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { resolveWorkspacePath } from '../../common/workspacePathResolver.js';
+import { resolveWorkspacePath, normalizeMsysDrivePath } from '../../common/workspacePathResolver.js';
 
 /**
  * 把解析后的路径归一化为与平台无关的 posix 风格 path，便于跨平台稳定断言。
@@ -188,6 +188,48 @@ suite('workspacePathResolver - resolveWorkspacePath', () => {
 		const worktree = '/workspace/repo/.worktrees/feat-x';
 		// 主仓目录在 worktree 之外 —— 独占沙箱下必须拒绝。
 		const r = resolveWorkspacePath('/workspace/repo/src/main.ts', [worktree]);
+		assert.strictEqual(r.isAllowed, false);
+	});
+});
+
+// ─── MSYS / Git-Bash 盘符路径归一化（2026-09-20，日志实证 `/g/...` 三连败） ───
+// 模型在 git bash 终端看到 `/g/CustomWorkspaces/...` 后原样喂给 file_read；
+// Windows 语义下 `/g/x` 被解析成「当前盘:\g\x」→ 必然 ENOENT → 猜路径死循环。
+
+suite('workspacePathResolver - MSYS 盘符路径归一化', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('normalizeMsysDrivePath: Windows 下 `/g/repo/x` → `g:/repo/x`', () => {
+		if (!isWindows) { return; }
+		assert.strictEqual(normalizeMsysDrivePath('/g/repo/x'), 'g:/repo/x');
+		assert.strictEqual(normalizeMsysDrivePath('/C/Users/a'), 'C:/Users/a');
+		assert.strictEqual(normalizeMsysDrivePath('/g'), 'g:/');
+	});
+
+	test('normalizeMsysDrivePath: 非盘符形态一律不动（/tmp/x、G:/x、相对路径）', () => {
+		if (!isWindows) { return; }
+		assert.strictEqual(normalizeMsysDrivePath('/tmp/x'), '/tmp/x');
+		assert.strictEqual(normalizeMsysDrivePath('/gg/repo'), '/gg/repo');
+		assert.strictEqual(normalizeMsysDrivePath('G:/repo/x'), 'G:/repo/x');
+		assert.strictEqual(normalizeMsysDrivePath('src/a.ts'), 'src/a.ts');
+	});
+
+	test('normalizeMsysDrivePath: 非 Windows 平台一律不动（/g 是合法 posix 绝对路径）', () => {
+		if (isWindows) { return; }
+		assert.strictEqual(normalizeMsysDrivePath('/g/repo/x'), '/g/repo/x');
+	});
+
+	test('resolveWorkspacePath: 归一化后的路径参与沙箱边界判定（Windows）', () => {
+		if (!isWindows) { return; }
+		const r = resolveWorkspacePath('/g/workspace/repo/a.ts', ['g:/workspace/repo']);
+		assert.strictEqual(r.isAllowed, true, '归一化后应命中允许根（URI.file 归一化盘符大小写 ✓）');
+		assert.strictEqual(normPath(r.resolvedPath), '/g:/workspace/repo/a.ts');
+	});
+
+	test('resolveWorkspacePath: 归一化后越界仍拒绝（Windows）', () => {
+		if (!isWindows) { return; }
+		const r = resolveWorkspacePath('/g/other/repo/a.ts', ['g:/workspace/repo']);
 		assert.strictEqual(r.isAllowed, false);
 	});
 });

@@ -17,6 +17,7 @@ import type {
 	SemanticMemory, ProceduralMemory, Insight,
 } from './amTypes.js';
 import { KV, generateId, fingerprintId, jaccardSimilarity, estimateTokens } from './amSchema.js';
+import { readEnv } from './amEnv.js';
 import { StateKV } from './stateKV.js';
 import { getProfile } from './amPipeline.js';
 import { listPinnedSlots, renderPinnedContext } from './amSlots.js';
@@ -323,7 +324,7 @@ const DIVERSIFY_MAX_PER_SESSION = 3;
 /** Graph 流权重：AGENTMEMORY_GRAPH_WEIGHT 覆盖（=0 关闭 graph 流） */
 function graphStreamWeight(): number {
 	try {
-		const raw = typeof process !== 'undefined' ? process.env['AGENTMEMORY_GRAPH_WEIGHT'] : undefined;
+		const raw = readEnv('AGENTMEMORY_GRAPH_WEIGHT');
 		if (raw === undefined) { return GRAPH_WEIGHT_DEFAULT; }
 		const w = Number(raw);
 		return Number.isFinite(w) && w > 0 ? w : 0;
@@ -334,7 +335,7 @@ function graphStreamWeight(): number {
  *  默认用 rerankSimple（确定性关键词覆盖，零依赖）——网关无 xenova 时
  *  原版 rerank() 会降级为原始顺序，rerankSimple 是严格更优的确定性回退。 */
 function isRerankEnabled(): boolean {
-	try { return (typeof process !== 'undefined' ? process.env['AGENTMEMORY_RERANK'] : undefined) !== 'false'; } catch { return true; }
+	try { return readEnv('AGENTMEMORY_RERANK') !== 'false'; } catch { return true; }
 }
 
 /** diversifyBySession（对齐原版 hybrid-search.ts:106-148，≤3/session）。

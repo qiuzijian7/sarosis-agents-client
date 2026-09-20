@@ -29,6 +29,8 @@ interface KbInitData {
 	markdown?: string;
 	workspaceFiles?: { uri: string; name: string }[];
 	currentFilePath?: string;
+	/** 文档目录的 asWebviewUri 前缀（宿主注入；相对路径图片经它加载）。 */
+	assetBaseUri?: string;
 	/** When set (from a `[[note#heading]]` jump), scroll here after first render. */
 	heading?: string;
 }
@@ -54,6 +56,7 @@ export function KbMarkdownApp(): React.ReactElement {
 	const diskContent = init?.markdown ?? '';
 	const workspaceFiles = init?.workspaceFiles ?? [];
 	const currentFilePath = init?.currentFilePath ?? docId;
+	const assetBaseUri = init?.assetBaseUri;
 
 	// ── Double-buffer state (aligned with Glyph's FileState) ──────────────
 	const [content, setContent] = useState(diskContent);          // last-known disk content
@@ -240,6 +243,7 @@ export function KbMarkdownApp(): React.ReactElement {
 					onOpenRelativeFile={onOpenRelativeFile}
 					onOpenExternal={onOpenExternal}
 					onToggleTask={onToggleTask}
+					assetBaseUri={assetBaseUri}
 				/>
 			</div>
 		</div>
@@ -387,6 +391,7 @@ export function KbMarkdownApp(): React.ReactElement {
 													onOpenRelativeFile={onOpenRelativeFile}
 													onOpenExternal={onOpenExternal}
 													onToggleTask={onToggleTask}
+													assetBaseUri={assetBaseUri}
 												/>
 											</div>
 										</div>

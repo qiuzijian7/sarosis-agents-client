@@ -609,6 +609,11 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 			// 现优先用真实 toolCallId；极端情况（调用方未透传）才回退旧假 id。
 			const parentToolCallId = toolCallId
 				|| `delegate_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+			// 诊断（2026-09-20）：走假 id 回退 = 卡片关联必然失败（渲染侧严格相等过滤），
+			// 直接点名（用户报「subagent 无工具卡片/无执行内容」时先查这条）。
+			if (!toolCallId) {
+				ctx.logService.warn('[delegate_task] toolCallId 未透传 —— parentToolCallId 回退为本地假 id，子代理卡片将无法关联（渲染侧按真实 callId 严格匹配）');
+			}
 			const cardMap = new Map<string, MutableCardState>();
 			let batchGroupId = parentToolCallId;
 			let flushTimer: ReturnType<typeof setTimeout> | undefined;

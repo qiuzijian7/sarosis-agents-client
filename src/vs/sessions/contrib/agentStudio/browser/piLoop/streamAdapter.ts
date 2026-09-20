@@ -21,6 +21,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { IChatContext, IChatMessage, IModelDelta, IModelOptions, IModelProvider, IToolDefinition } from '../../common/providers.js';
+import { markChatMessagesDerived } from '../../common/providers.js';
 import type {
 	AssistantContent,
 	AssistantMessage,
@@ -33,6 +34,7 @@ import type {
 	TextContent,
 	ThinkingContent,
 	ToolCallContent,
+	ToolResultMessage,
 } from './types.js';
 
 /** 本仓 provider 无法提供的模型元信息，由调用方补齐。 */
@@ -292,15 +294,30 @@ function mapFinishReason(finishReason: string | undefined): AssistantMessage['st
 
 /** 把 pi 的 transcript 消息转为本仓的 `IChatMessage[]`。 */
 export function convertToChatMessages(messages: readonly Message[]): IChatMessage[] {
-	return messages.map(convertOneMessage);
+	// ★ 2026-09-20：本函数产出的是**派生的一次性副本**（每次调用新建数组，与内核
+	// transcript 无引用关系）⇒ 打标，供 `LMBridge` 的发送前守卫跳过「回写历史」
+	// 这一无效动作并如实记日志（详见 providers.ts 的 CHAT_MESSAGES_DERIVED 注释）。
+	return markChatMessagesDerived(messages.map(convertOneMessage));
 }
 
 /** 单条消息转换。 */
 function convertOneMessage(message: Message): IChatMessage {
 	const role = message.role === 'toolResult' ? 'tool' : message.role;
 
+	// ★★ 2026-09-20 契约修复（真机报文取证 vscode-app-1789900477124）：
+	// pi `toolResult` → 本仓 `tool` 消息时**必须携带 `toolCallId`**。此前漏传导致
+	// 下游 `ContextManager.sanitizeToolPairs` 的 respondedIds 恒为空 ⇒ 每轮把 assistant
+	// 的 tool_calls 全部剥离、网关收到「61 条 tool_call_id 为空串的孤儿工具结果 +
+	// 0 条带 tool_calls 的 assistant」⇒ 模型失去「调用→结果」因果；严格网关
+	// （OpenAI/Azure/Anthropic）会直接 400，仅 IOA 容忍掩盖。
+	const toolCallId = message.role === 'toolResult'
+		? (message as ToolResultMessage).toolCallId
+		: undefined;
+
 	if (typeof message.content === 'string') {
-		return { role, content: message.content };
+		return toolCallId
+			? { role, content: message.content, toolCallId }
+			: { role, content: message.content };
 	}
 
 	const textParts: string[] = [];
@@ -331,6 +348,9 @@ function convertOneMessage(message: Message): IChatMessage {
 	}
 
 	const result: IChatMessage = { role, content: textParts.join('') };
+	if (toolCallId) {
+		(result as Mutable<IChatMessage>).toolCallId = toolCallId;
+	}
 	if (toolCalls.length > 0) {
 		(result as Mutable<IChatMessage>).toolCalls = toolCalls;
 	}
@@ -357,6 +377,10 @@ function buildModelOptions(
 		}
 		if (streamOptions.thinkingLevel !== undefined) {
 			merged.reasoningEffort = streamOptions.thinkingLevel;
+		}
+		// toolChoice 直通（撞顶收尾轮的禁工具语义依赖它，对齐 executor:1428 `toolChoice:'none'`）
+		if (streamOptions['toolChoice'] !== undefined) {
+			merged['toolChoice'] = streamOptions['toolChoice'];
 		}
 	}
 	return merged as IModelOptions;

@@ -34,7 +34,7 @@ import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { IListService, WorkbenchList } from '../../../../platform/list/browser/listService.js';
 import { isSCMRepository } from './util.js';
 import { SCMHistoryViewPane } from './scmHistoryViewPane.js';
-import { RemoteNameContext, ResourceContextKey } from '../../../common/contextkeys.js';
+import { RemoteNameContext, ResourceContextKey, IsSessionsWindowContext } from '../../../common/contextkeys.js';
 import { AccessibleViewRegistry } from '../../../../platform/accessibility/browser/accessibleViewRegistry.js';
 import { SCMAccessibilityHelp } from './scmAccessibilityHelp.js';
 import { EditorContextKeys } from '../../../../editor/common/editorContextKeys.js';
@@ -62,7 +62,12 @@ const viewContainer = Registry.as<IViewContainersRegistry>(ViewContainerExtensio
 	alwaysUseContainerInfo: true,
 	order: 2,
 	hideIfEmpty: true,
-	windowEnablement: WindowEnablement.Editor,
+	// [Saros] The agent sessions window reuses this container as-is (no fork, no
+	// custom view ids) so that every core SCM menu, badge, accessibility help and
+	// progress indicator keeps working there; sessions only contributes the extra
+	// "Worktrees" view. `Both` is a superset of `Editor`, so the editor window is
+	// unaffected.
+	windowEnablement: WindowEnablement.Both,
 }, ViewContainerLocation.Sidebar, { doNotRegisterOpenCommand: true });
 
 const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);
@@ -70,7 +75,9 @@ const containerTitle = localize('source control view', "Source Control");
 
 viewsRegistry.registerViewWelcomeContent(VIEW_PANE_ID, {
 	content: localize('no open repo', "No source control providers registered."),
-	when: 'default'
+	// [Saros] the sessions window registers its own welcome texts below (in
+	// sessions/contrib/sourceControl) — don't stack this one on top of them.
+	when: IsSessionsWindowContext.negate()
 });
 
 viewsRegistry.registerViewWelcomeContent(VIEW_PANE_ID, {
@@ -101,7 +108,9 @@ viewsRegistry.registerViews([{
 	order: 0,
 	when: ContextKeyExpr.and(ContextKeyExpr.has('scm.providerCount'), ContextKeyExpr.notEquals('scm.providerCount', 0)),
 	// readonly when = ContextKeyExpr.or(ContextKeyExpr.equals('config.scm.alwaysShowProviders', true), ContextKeyExpr.and(ContextKeyExpr.notEquals('scm.providerCount', 0), ContextKeyExpr.notEquals('scm.providerCount', 1)));
-	containerIcon: sourceControlViewIcon
+	containerIcon: sourceControlViewIcon,
+	// [Saros] see the container comment above: also enabled in the sessions window.
+	windowEnablement: WindowEnablement.Both
 }], viewContainer);
 
 viewsRegistry.registerViews([{
@@ -143,7 +152,9 @@ viewsRegistry.registerViews([{
 		ContextKeyExpr.has('scm.historyProviderCount'),
 		ContextKeyExpr.notEquals('scm.historyProviderCount', 0),
 	),
-	containerIcon: sourceControlViewIcon
+	containerIcon: sourceControlViewIcon,
+	// [Saros] see the container comment above: also enabled in the sessions window.
+	windowEnablement: WindowEnablement.Both
 }], viewContainer);
 
 Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench)

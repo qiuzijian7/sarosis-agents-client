@@ -9,6 +9,7 @@
 import type { StateKV } from './stateKV.js';
 import { KV, generateId } from './amSchema.js';
 import type { Memory, Lesson, SemanticMemory, ProceduralMemory } from './amTypes.js';
+import { readEnv } from './amEnv.js';
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
 
@@ -224,7 +225,7 @@ export async function isAllowedMeshUrl(urlStr: string): Promise<boolean> {
 		const parsed = new URL(urlStr);
 		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { return false; }
 		if (parsed.username || parsed.password) { return false; }
-		const allowLocal = (typeof process !== 'undefined' ? process.env['AGENTMEMORY_MESH_ALLOW_LOCAL'] : undefined) === 'true';
+		const allowLocal = readEnv('AGENTMEMORY_MESH_ALLOW_LOCAL') === 'true';
 		const host = parsed.hostname.toLowerCase();
 		let isLocal = host === 'localhost';
 		if (!isLocal) {
@@ -372,7 +373,7 @@ export async function meshSync(
 	kv: StateKV, agentId: string,
 	opts?: { peerId?: string; scopes?: string[]; direction?: 'push' | 'pull' | 'both' },
 ): Promise<{ success: boolean; results?: Array<{ peerId: string; peerName: string; pushed: number; pulled: number; errors: string[] }>; error?: string }> {
-	const secret = typeof process !== 'undefined' ? process.env['AGENTMEMORY_SECRET'] : undefined;
+	const secret = readEnv('AGENTMEMORY_SECRET');
 	if (!secret) {
 		return { success: false, error: 'mesh sync requires AGENTMEMORY_SECRET' };
 	}

@@ -1,15 +1,20 @@
 /*---------------------------------------------------------------------------------------------
  *  AgentStudio Source Control Contribution
  *
- *  Registers a custom Source Control panel for the Sessions window that combines:
- *  1. SCM Changes view (reuses native SCMViewPane — shares ISCMService data)
- *  2. SCM Repositories view (reuses native SCMRepositoriesViewPane)
- *  3. Worktree view (reuses WorktreeViewPane)
+ *  The Sessions window reuses the VS Code source control panel AS-IS: the native
+ *  `workbench.view.scm` container and its Changes / Repositories / Graph views
+ *  are simply enabled for this window (WindowEnablement.Both — see
+ *  workbench/contrib/scm/browser/scm.contribution.ts). Nothing is forked, so all
+ *  core SCM behaviour keeps working unchanged: the View & Sort menu, the pending
+ *  changes count badge, accessibility help, progress locations and the scm.*
+ *  settings are all bound to the native view ids.
  *
- *  Also syncs the VS Code workspace folders when the active AgentStudio workspace
- *  changes, so the SCM panel always reflects the correct git repository.
+ *  This contribution therefore adds exactly one thing to the panel: the
+ *  Worktrees view (+ its menus).
  *
- *  The native Source Control panel is NOT modified.
+ *  It also owns the sessions-specific workspace sync (workspace trust injection
+ *  + repository scoping), which the native panel does not need because a normal
+ *  window never swaps its folders at runtime.
  *--------------------------------------------------------------------------------------------*/
 
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -18,16 +23,13 @@ import { MenuId, MenuRegistry } from '../../../../platform/actions/common/action
 import { IContextKey, IContextKeyService, ContextKeyExpr, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensions as ViewContainerExtensions, WindowEnablement } from '../../../../workbench/common/views.js';
-import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+import { IViewContainersRegistry, IViewDescriptorService, IViewsRegistry, Extensions as ViewContainerExtensions, WindowEnablement } from '../../../../workbench/common/views.js';
+import { IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { SCMViewPane, ContextKeys } from '../../../../workbench/contrib/scm/browser/scmViewPane.js';
-import { SCMRepositoriesViewPane } from '../../../../workbench/contrib/scm/browser/scmRepositoriesViewPane.js';
-import { SCMHistoryViewPane } from '../../../../workbench/contrib/scm/browser/scmHistoryViewPane.js';
-import { ISCMViewService, ISCMService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { VIEWLET_ID, VIEW_PANE_ID, REPOSITORIES_VIEW_PANE_ID, ISCMViewService, ISCMService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceFolderRouter } from '../../workspace/common/workspaceFolderRouter.js';
 import {
@@ -45,46 +47,20 @@ import { WorktreeCommands } from '../../worktree/common/worktreeTypes.js';
 import { WorktreeItemType } from '../../worktree/browser/worktreeDataProvider.js';
 import { IsPhoneLayoutContext } from '../../../common/contextkeys.js';
 
-import { SourceControlViewPaneContainer } from './sourceControlViewPaneContainer.js';
+// ─── View IDs ────────────────────────────────────────────────────────────────
 
-// ─── View Container & View IDs ────────────────────────────────────────────────
-
-export const SESSIONS_SOURCE_CONTROL_CONTAINER_ID = 'sessions.sourceControl.container';
-export const SESSIONS_SCM_CHANGES_VIEW_ID = 'sessions.scm.changes';
-export const SESSIONS_SCM_REPOSITORIES_VIEW_ID = 'sessions.scm.repositories';
+/**
+ * The single view the Sessions window adds to the native Source Control panel.
+ *
+ * ⚠ Do NOT fork the native views (Changes / Repositories / Graph) under sessions
+ * ids: every core SCM menu, count badge, accessibility help provider and progress
+ * location is bound to `workbench.scm*`, so a fork silently loses all of them.
+ */
 export const SESSIONS_SCM_WORKTREE_VIEW_ID = 'sessions.scm.worktrees';
-export const SESSIONS_SCM_GRAPH_VIEW_ID = 'sessions.scm.graph';
 
 // ─── Context Keys ────────────────────────────────────────────────────────────
 /** Whether the active workspace's directory contains a .git folder */
 export const SessionsHasGitRepo = new RawContextKey<boolean>('sessions.hasGitRepo', false, localize('sessionsHasGitRepo', 'Whether the active workspace has a git repository'));
-
-// ─── Icons ────────────────────────────────────────────────────────────────────
-
-const sourceControlViewIcon = registerIcon('sessions-source-control-view-icon', Codicon.sourceControl, localize2('sessionsSourceControlViewIcon', 'View icon of the Source Control view in the sessions window.').value);
-
-// ─── Register View Container ──────────────────────────────────────────────────
-
-const viewContainerRegistry = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry);
-
-const sourceControlViewContainer = viewContainerRegistry.registerViewContainer({
-	id: SESSIONS_SOURCE_CONTROL_CONTAINER_ID,
-	title: localize2('agentStudioSourceControl', 'Source Control'),
-	icon: sourceControlViewIcon,
-	order: 30,
-	ctorDescriptor: new SyncDescriptor(SourceControlViewPaneContainer),
-	storageId: SESSIONS_SOURCE_CONTROL_CONTAINER_ID,
-	alwaysUseContainerInfo: true,
-	hideIfEmpty: true,
-	openCommandActionDescriptor: {
-		id: SESSIONS_SOURCE_CONTROL_CONTAINER_ID,
-		title: localize2('agentStudioSourceControl', 'Source Control'),
-		mnemonicTitle: localize({ key: 'miAgentStudioSourceControl', comment: ['&& denotes a mnemonic'] }, 'Source &&Control'),
-		keybindings: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyG },
-		order: 30,
-	},
-	windowEnablement: WindowEnablement.Sessions,
-}, ViewContainerLocation.Sidebar);
 
 // ─── Register Views ───────────────────────────────────────────────────────────
 
@@ -94,41 +70,18 @@ class RegisterSourceControlViewsContribution implements IWorkbenchContribution {
 
 	constructor() {
 		const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);
+		const viewContainerRegistry = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry);
 		const containerTitle = localize('agentStudioSourceControl', 'Source Control');
 
-		// ── Repositories view (hidden by default, like native) ──
-		viewsRegistry.registerViews([{
-			id: SESSIONS_SCM_REPOSITORIES_VIEW_ID,
-			containerTitle,
-			name: localize2('scmRepositories', 'Repositories'),
-			singleViewPaneContainerTitle: localize('sourceControlRepositories', 'Source Control Repositories'),
-			ctorDescriptor: new SyncDescriptor(SCMRepositoriesViewPane),
-			canToggleVisibility: true,
-			hideByDefault: true,
-			canMoveView: false,
-			weight: 20,
-			order: 0,
-			when: ContextKeyExpr.and(ContextKeyExpr.has('scm.providerCount'), ContextKeyExpr.notEquals('scm.providerCount', 0)),
-			containerIcon: sourceControlViewIcon,
-			windowEnablement: WindowEnablement.Sessions,
-		}], sourceControlViewContainer);
+		// The native Source Control container. `sessions.common.main.ts` imports
+		// `workbench/contrib/scm/browser/scm.contribution.js` before this file, so
+		// the container is always registered by the time this runs.
+		const sourceControlViewContainer = viewContainerRegistry.get(VIEWLET_ID);
+		if (!sourceControlViewContainer) {
+			return;
+		}
 
-		// ── Changes view (primary view — same as native SCM) ──
-		viewsRegistry.registerViews([{
-			id: SESSIONS_SCM_CHANGES_VIEW_ID,
-			containerTitle,
-			name: localize2('scmChanges', 'Changes'),
-			singleViewPaneContainerTitle: containerTitle,
-			ctorDescriptor: new SyncDescriptor(SCMViewPane),
-			canToggleVisibility: true,
-			canMoveView: false,
-			weight: 40,
-			order: 1,
-			containerIcon: sourceControlViewIcon,
-			windowEnablement: WindowEnablement.Sessions,
-		}], sourceControlViewContainer);
-
-		// ── Worktree view ──
+		// ── Worktree view: the only view the Sessions window adds ──
 		viewsRegistry.registerViews([{
 			id: SESSIONS_SCM_WORKTREE_VIEW_ID,
 			containerTitle,
@@ -145,42 +98,21 @@ class RegisterSourceControlViewsContribution implements IWorkbenchContribution {
 			windowEnablement: WindowEnablement.Sessions,
 		}], sourceControlViewContainer);
 
-		// ── Graph view (commit history) ──
-		viewsRegistry.registerViews([{
-			id: SESSIONS_SCM_GRAPH_VIEW_ID,
-			containerTitle,
-			name: localize2('scmGraph', 'Graph'),
-			singleViewPaneContainerTitle: localize('sourceControlGraph', 'Source Control Graph'),
-			ctorDescriptor: new SyncDescriptor(SCMHistoryViewPane),
-			canToggleVisibility: true,
-			canMoveView: false,
-			weight: 40,
-			order: 3,
-			when: ContextKeyExpr.and(
-				ContextKeyExpr.has('scm.historyProviderCount'),
-				ContextKeyExpr.notEquals('scm.historyProviderCount', 0),
-			),
-			containerIcon: sourceControlViewIcon,
-			windowEnablement: WindowEnablement.Sessions,
-		}], sourceControlViewContainer);
-
-		// ── View welcome content for Graph view ──
-		viewsRegistry.registerViewWelcomeContent(SESSIONS_SCM_GRAPH_VIEW_ID, {
-			content: localize('noHistoryItems', 'The selected source control provider does not have any source control history items.'),
-			when: ContextKeys.SCMHistoryItemCount.isEqualTo(0)
-		});
-
-		// ── View welcome content for Changes view ──
+		// ── Welcome content: sessions flavour of the native Changes view ──
+		// Scoped to IsSessionsWindowContext so the editor window keeps the native
+		// welcome texts (the native 'default' one is negated the same way).
+		//
 		// No workspace selected at all
-		viewsRegistry.registerViewWelcomeContent(SESSIONS_SCM_CHANGES_VIEW_ID, {
+		viewsRegistry.registerViewWelcomeContent(VIEW_PANE_ID, {
 			content: localize('noWorkspaceSourceControl', 'No workspace selected\n\nSelect a workspace in the toolbar above to view its source control status.'),
-			when: ContextKeyExpr.equals('sessions.hasGitRepo', false)
+			when: ContextKeyExpr.and(IsSessionsWindowContext, ContextKeyExpr.equals('sessions.hasGitRepo', false))
 		});
 
 		// No git repo in the active workspace
-		viewsRegistry.registerViewWelcomeContent(SESSIONS_SCM_CHANGES_VIEW_ID, {
+		viewsRegistry.registerViewWelcomeContent(VIEW_PANE_ID, {
 			content: localize('noGitInWorkspace', 'No Git repository found\n\nThe current workspace directory does not contain a `.git` folder. Open a workspace with a Git repository to see source control changes here.'),
 			when: ContextKeyExpr.and(
+				IsSessionsWindowContext,
 				SessionsHasGitRepo,
 				ContextKeyExpr.notEquals('scm.providerCount', undefined),
 				ContextKeyExpr.equals('scm.providerCount', 0),
@@ -190,6 +122,46 @@ class RegisterSourceControlViewsContribution implements IWorkbenchContribution {
 }
 
 registerWorkbenchContribution2(RegisterSourceControlViewsContribution.ID, RegisterSourceControlViewsContribution, WorkbenchPhase.BlockStartup);
+
+// ─── View visibility defaults ────────────────────────────────────────────────
+// The native Repositories view is `hideByDefault: true` and its visibility lives
+// under the container's `storageId`. The sessions window used to run its own
+// container (`sessions.sourceControl.container`) and now reuses the native one
+// (`workbench.scm.views.state`), so a previously enabled Repositories view
+// silently disappeared. A sessions window is multi-repository by design (every
+// related folder of a workspace is its own git root), so show it once.
+//
+// Applied only once: afterwards the user's own choice wins.
+
+const SESSIONS_REPOSITORIES_VISIBLE_APPLIED_KEY = 'sessions.scm.repositoriesVisibleApplied';
+
+class SessionsSCMViewVisibilityContribution implements IWorkbenchContribution {
+
+	static readonly ID = 'sessions.scmViewVisibility';
+
+	constructor(
+		@IViewDescriptorService private readonly viewDescriptorService: IViewDescriptorService,
+		@IStorageService private readonly storageService: IStorageService,
+	) {
+		if (this.storageService.getBoolean(SESSIONS_REPOSITORIES_VISIBLE_APPLIED_KEY, StorageScope.PROFILE, false)) {
+			return;
+		}
+
+		const container = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry).get(VIEWLET_ID);
+		if (!container) {
+			return;
+		}
+
+		const model = this.viewDescriptorService.getViewContainerModel(container);
+		if (!model.isVisible(REPOSITORIES_VIEW_PANE_ID)) {
+			model.setVisible(REPOSITORIES_VIEW_PANE_ID, true);
+		}
+
+		this.storageService.store(SESSIONS_REPOSITORIES_VISIBLE_APPLIED_KEY, true, StorageScope.PROFILE, StorageTarget.USER);
+	}
+}
+
+registerWorkbenchContribution2(SessionsSCMViewVisibilityContribution.ID, SessionsSCMViewVisibilityContribution, WorkbenchPhase.AfterRestored);
 
 // ─── Workspace Folder Sync ─────────────────────────────────────────────────
 // When the user switches the active workspace in the AgentStudio toolbar,

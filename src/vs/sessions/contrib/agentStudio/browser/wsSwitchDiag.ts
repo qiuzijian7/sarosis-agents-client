@@ -251,6 +251,9 @@ export function wsStep<T>(logService: ILogService | undefined, name: string, fn:
 		return fn();
 	} finally {
 		wsDiagLog(logService, `${name} 完成（${Date.now() - t0}ms）`);
+		// ★ 2026-09-20：成对结束（与 codebaseGraphPersistence.timed 同一修 ✓）——
+		// 否则这个阶段会「一直当前」到下个阶段被设 ✗（陈旧阶段真机教训见 wsStageEnd 注释）。
+		wsStageEnd(name);
 	}
 }
 
@@ -262,6 +265,10 @@ export async function wsStepAsync<T>(logService: ILogService | undefined, name: 
 		return await fn();
 	} finally {
 		wsDiagLog(logService, `${name} 完成（${Date.now() - t0}ms）`);
+		// ★ 2026-09-20：成对结束（同上 ✓）。⚠ 本步的 await 可能排队在别人的长任务后面
+		// （启动拥挤期实测「重读 .code-workspace 配置」961ms，其中大部分不是它自己的活 ✗）——
+		// 结束时**如实**收尾，别让自己的名字替别人继续背锅 ✓。
+		wsStageEnd(name);
 	}
 }
 

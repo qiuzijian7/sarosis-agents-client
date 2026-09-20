@@ -256,7 +256,9 @@ export function registerKbVaultRecallTools(ctx: KbVaultRecallContext): void {
 				'摘要由笔记构建管线自动维护（freshness ≥10% 才重算）；尚未生成摘要的目录不出现在结果中。',
 			inputSchema: {
 				type: 'object',
-				properties: {},
+				// 与 codebaseTools / workflowTools 等一致的 `_no_params` 约定：
+				// 空 properties {} 会触发 IOA 兼容层 sanitize 警告（自动修复但每轮打日志）。
+				properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } },
 			},
 		},
 		handler: async () => {

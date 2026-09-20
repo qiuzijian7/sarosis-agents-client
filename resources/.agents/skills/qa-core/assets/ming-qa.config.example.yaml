@@ -1,0 +1,55 @@
+version: "1.0"
+baseBranch: "main"
+branch:
+  pattern: "feature/ming-qa-{slug}"
+llm:
+  baseUrlEnv: "QA_AGENT_LLM_BASE_URL"
+  apiKeyEnv: "QA_AGENT_LLM_API_KEY"
+  # 留空则不启用多模型交叉审查；填你自己的 OpenAI 兼容网关地址后生效
+  defaultBaseUrl: ""
+  models:
+    - "gpt-5.4"
+    - "claude-sonnet-5"
+    - "deepseek-v4-pro"
+  timeoutSeconds: 120
+qualityGates:
+  maxRepairLoops: 5
+  coverage:
+    lines: 80
+    branches: 70
+    functions: 80
+    newCode: 90
+commands:
+  unit: []
+  api: []
+  integration: []
+  e2e: []
+  review: []
+repair:
+  allowedPaths: []
+  deniedPaths:
+    - ".qa-agent/**"
+    - ".github/**"
+accounts:
+  file: ".qa-agent/local/accounts.local.json"
+  exampleFile: ".qa-agent/fixtures/accounts.example.json"
+services:
+  file: ".qa-agent/local/services.local.json"
+  exampleFile: ".qa-agent/fixtures/services.example.json"
+database:
+  mysqlMcp:
+    serverName: "mysql_mcp"
+    source: ".mcp.json"
+    requiredFor:
+      - "integration"
+      - "e2e"
+toolchain:
+  autoInstall: false      # 必需工具（Playwright/MySQL MCP）缺失时：true=自动安装后继续，false=询问用户
+  installRetryMax: 2      # 自动安装失败重试上限（仅网络/超时重试；权限/冲突/已知bug立即交回用户）
+reports:
+  outputDir: ".qa-agent/reports"
+  keepHistory: true
+notify:
+  # 报告质量告警的 webhook 地址，留空则不发送任何通知（默认留空，不发任何数据）。
+  # 兼容企业微信 / 钉钉群机器人；Slack、飞书需经转换网关，详见 docs/configuration.md
+  webhook: ""

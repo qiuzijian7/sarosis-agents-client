@@ -201,7 +201,10 @@ export class KbBlocksEditorPane extends EditorPane {
 			return;
 		}
 
-		const localResourceRoots = this._mediaCandidates();
+		// 图文显示：把「当前笔记所在目录」加入资源根，webview 内的相对路径图片
+		// （![](x.png) / ![[x.png]]）经 asWebviewUri 前缀（init.assetBaseUri）加载。
+		const docDir = this._currentResource ? URI.joinPath(this._currentResource, '..') : undefined;
+		const localResourceRoots = docDir ? [...this._mediaCandidates(), docDir] : this._mediaCandidates();
 
 		this._webview = this._webviewService.createWebviewElement({
 			title: 'Markdown KB',
@@ -563,6 +566,8 @@ export class KbBlocksEditorPane extends EditorPane {
 			markdown: this._currentMarkdown,
 			workspaceFiles: this._workspaceFiles,
 			currentFilePath: this._currentFilePath,
+			// 图文显示：文档目录的 webview URI 前缀（webview 侧拼接相对图片路径）
+			...(this._currentResource ? { assetBaseUri: asWebviewUri(URI.joinPath(this._currentResource, '..')).toString() } : {}),
 			...(this._pendingHeading ? { heading: this._pendingHeading } : {}),
 		});
 

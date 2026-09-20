@@ -9,6 +9,8 @@
 import { isToolCallDeniedByTurnPolicy } from '../common/toolPermission.js';
 import type { DeliveryQueue } from '../common/deliveryQueue.js';
 import { isPiKernelEnabled, piKernelSupports, runPiKernelTurn } from './piLoop/piTurnKernel.js';
+import { runPiKernelTurnInProc } from './piLoop/proc/runPiKernelTurnInProc.js';
+import { getKernelProcTransportFactory } from './piLoop/proc/procTransportRegistry.js';
 import { runIterationGate, computeForkContext } from './turnIterationGate.js';
 import { handlePlanModeTools } from './parts/turnPlanModeTools.js';
 import type { IPlanModeToolsHost } from './parts/turnPlanModeTools.js';
@@ -665,16 +667,43 @@ interface ITurnContext {
 		if (trivialRequest) {
 			host._logService.info('[AgentOS] trivial request detected — will restrict exploration tools');
 		}
-		// ─── pi 内核门控分流（2026-09-20，doc/agentloop-pi-core-redesign.md §5 P1 的门控实现）──
-		// 默认 legacy。`window.__SAROSIS_PI_KERNEL = true`（或 env SAROSIS_PI_KERNEL=1）后，
-		// 受支持形态（非 plan / 非 chatOnly / 非断点续跑 / 非子代理）的**内核**改由 piLoop 驱动，
-		// 输出契约不变（IChatStreamDelta）⇒ UI/会话/审批零改动；不支持形态自动回落 legacy。
-		// ⚠ 双跑为准入：`__SAROSIS_PI_RUN` 现场对拍 + 现有测试族全绿之前，不得翻转默认值。
+		// ─── pi 内核门控分流（2026-09-20 E2 已翻转：默认 piLoop 内核驱动）──────────────
+		// 全形态（plan/resume/subAgent/chatOnly）当日均已接入 ⇒ 正常请求一律走 pi 内核，
+		// 输出契约不变（IChatStreamDelta）⇒ UI/会话/审批零改动。
+		// 显式回落 legacy：`window.__SAROSIS_PI_KERNEL = false` 或 env SAROSIS_PI_KERNEL=0
+		// （排障逃生门；legacy 主循环代码仍保留在下方）。
 		// 插入点刻意选在「initTurnContext 成功 + 工具门控（plan-exclusive/chatOnly/trivial）
 		// 已应用」之后：pi 路径直接消费最终 enabledTools 与已注入记忆的 ctx.messages。
 		if (isPiKernelEnabled() && piKernelSupports(request)) {
+			// 进程隔离档（P1）：子代理声明 isolation_level='process' ⇒ 内核跑隔离体，
+			// 工具/模型经 RPC 回本进程（审批链不断）。传输未注册（无头/测试环境）⇒
+			// 回落进程内档 + warn，不报错不打断。
+			const wantProc = request.subAgent?.isolationLevel === 'process';
+			const procFactory = wantProc ? getKernelProcTransportFactory() : undefined;
+			if (procFactory) {
+				// ⚠ 只包裹「取隔离体」：fork 失败（产物缺失/权限/FD 耗尽）在此捕获后回落进程内档
+				// （此前直接 yield* 会让整 turn 崩）。**绝不把 yield* 包进 try** —— 那会连流中途的
+				// 真错误一起吞掉并回落，已上屏的 delta 会被重复产出。
+				let transport: Awaited<ReturnType<typeof procFactory>> | undefined;
+				try {
+					transport = await procFactory();
+				} catch (procErr) {
+					host._logService.warn(
+						'[AgentOS] process 隔离体启动失败 ⇒ 回落进程内档：'
+						+ (procErr instanceof Error ? procErr.message : String(procErr)),
+					);
+				}
+				if (transport) {
+					host._logService.info(`[AgentOS] pi-kernel gate ON（process 隔离档）：agentId=${request.agentId}`);
+					yield* runPiKernelTurnInProc(host, request, { modelProvider, selection, enabledTools, messages: ctx.messages, steeringQueue }, { transport });
+					return undefined;
+				}
+			}
+			if (wantProc) {
+				host._logService.warn('[AgentOS] isolation_level=process 但传输工厂未注册 ⇒ 回落进程内档');
+			}
 			host._logService.info(`[AgentOS] pi-kernel gate ON：本 turn 由 piLoop 内核驱动（agentId=${request.agentId}）`);
-			yield* runPiKernelTurn(host, request, { modelProvider, selection, enabledTools, messages: ctx.messages });
+			yield* runPiKernelTurn(host, request, { modelProvider, selection, enabledTools, messages: ctx.messages, steeringQueue });
 			return undefined;
 		}
 		/**

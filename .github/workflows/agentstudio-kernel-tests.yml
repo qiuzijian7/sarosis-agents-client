@@ -1,0 +1,73 @@
+# AgentStudio pi 内核契约套件（2026-09-20，方案「阶段 0 · 矩阵接 CI」）
+#
+# 独立 workflow（不并入 pr.yml 扇出）：piLoop 迁移期的专项准入门。
+# 触发面收窄到 sessions contrib 路径，避免全仓 PR 都跑这套重测试。
+#
+# 套件构成（与本地对拍纪律一致）：
+#   · piLoop.test.ts            —— pi 复刻内核行为（20 例）
+#   · piTurnKernel.test.ts      —— 真路径驱动器（护栏/引导/plan/checkpoint，30 例）
+#   · piLoopDualRunMatrix.test.ts —— 对拍矩阵 15 形态（pi vs legacy 金标准）
+#   · piLoopDualRun.test.ts     —— 对拍全局（3 例）
+#   · turnHostContract.test.ts  —— 宿主窄接口契约（7 例）
+#   · agentSteeringWiring.test.ts —— legacy steering 接线（5 例，防回归）
+#
+# 这些 runner 自带 esbuild 打包，直接吃 TS 源码，无需先 transpile。
+name: agentstudio-kernel-tests
+
+on:
+  pull_request:
+    paths:
+      - 'src/vs/sessions/**'
+      - '.github/workflows/agentstudio-kernel-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vs/sessions/**'
+
+jobs:
+  pi-kernel-suites:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: pi kernel contract suites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runner = 'src/vs/sessions/contrib/agentStudio/test/browser/run-browser-test.mjs'
+          $suites = @(
+            'piLoop.test.ts',
+            'piTurnKernel.test.ts',
+            'piLoopDualRunMatrix.test.ts',
+            'piLoopDualRun.test.ts',
+            'turnHostContract.test.ts',
+            'agentSteeringWiring.test.ts',
+            'sessionEventShadowLog.test.ts'
+          )
+          foreach ($s in $suites) {
+            Write-Host "=== $s ==="
+            node --max-old-space-size=8192 $runner "src/vs/sessions/contrib/agentStudio/test/browser/$s"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Legacy admission suite (agentTurnExecutorBehavior)
+        shell: pwsh
+        run: |
+          node --max-old-space-size=8192 src/vs/sessions/contrib/agentStudio/test/browser/run-browser-test.mjs src/vs/sessions/contrib/agentStudio/test/browser/agentTurnExecutorBehavior.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # common 侧全量（82 文件；自带 failure-baseline.json 容忍机制 —— 超基线即非零退出）
+      - name: agentStudio common suites (all, baseline-gated)
+        shell: pwsh
+        run: |
+          node --max-old-space-size=8192 src/vs/sessions/contrib/agentStudio/test/common/run-all-common-tests.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

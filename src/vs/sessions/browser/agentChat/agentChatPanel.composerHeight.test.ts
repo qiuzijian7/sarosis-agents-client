@@ -130,3 +130,36 @@ suite('输入框自适应高度 — 顺序不变量（2026-09-18）', () => {
 		);
 	});
 });
+
+// ─── ★★★ CLI/TUI 面板滚动不变量（2026-09-20 用户报：内容显示不全 / 无法滚动 / 无滚动条）──
+
+/**
+ * 症状三连（用户截图 ✓）：内容被裁在底部 ✗、滚不动 ✗、看不到滚动条 ✗ —— **同源** ✓：
+ *
+ * `.cli-messages-scroll { flex: 1; overflow-y: auto }` **缺 `min-height: 0`** ✗ ——
+ * 弹性列里的 flex 子项默认 `min-height: auto` ⇒ 会被内容**撑高而不收缩** ✗ ⇒
+ * `overflow-y: auto` **永不触发** ✓；父级 `.cli-chat-panel` 的 `overflow: hidden`
+ * 再把超出部分直接裁掉 ⇒ 三个症状同时出现 ✓✓。
+ */
+suite('CLI/TUI 面板滚动不变量（2026-09-20）', () => {
+
+	const CSS_REL = 'src/vs/sessions/browser/agentChat/media/cli-chat.css';
+	const readCss = (): string => fs.readFileSync(path.join(process.cwd(), CSS_REL), 'utf8');
+
+	test('★★★ 消息滚动区必须能收缩（flex 列内 overflow:auto ⇒ 必须配 min-height:0 ✗）', () => {
+		const css = readCss();
+		const m = css.match(/\.cli-messages-scroll\s*\{([\s\S]*?)\}/);
+		assert.ok(m, '找不到 .cli-messages-scroll 规则 ✗');
+		const body = m![1];
+		assert.ok(/overflow-y:\s*auto/.test(body), '滚动区必须 overflow-y: auto ✓');
+		assert.ok(/min-height:\s*0/.test(body),
+			'缺 min-height: 0 ⇒ flex 子项被内容撑高、overflow 永不触发 ⇒ 显示不全且滚不动 ✗✗');
+	});
+
+	test('★★ 滚动条必须可见（预留槽位 + VS Code 标准滑轨色 ✓）', () => {
+		const css = readCss();
+		assert.ok(/scrollbar-gutter:\s*stable/.test(css), '必须预留滚动条槽位（否则滚动条时有时无 ✗）');
+		assert.ok(css.includes('--vscode-scrollbarSlider-background'),
+			'滑轨必须用 VS Code 标准变量（此前 --cli-border 对比度偏低 ✗）');
+	});
+});

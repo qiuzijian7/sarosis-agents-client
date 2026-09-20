@@ -43,31 +43,46 @@
 	height: 100%;
 	display: flex;
 	flex-direction: column;
+	/* ★ 2026-09-20：自身也要能收缩（否则它同样会被内容撑高 ⇒ 子级 overflow 失效 ✗） */
+	min-height: 0;
 	overflow: hidden;
 	background: var(--cli-bg);
 	color: var(--cli-fg);
 }
 
-/* ── Messages scroll area ── */
+/* ── Messages scroll area ──
+   ★★ 2026-09-20（用户报 TUI 风格「内容显示不全 / 无法向下滚动 / 没有滚动条」✗✓）：
+   **必须 `min-height: 0`** ✗ —— 弹性列里的 flex 子项默认 `min-height: auto` ⇒ 会被内容
+   撑高而**不收缩** ⇒ `overflow-y: auto` **永不触发** ✓；父级 `.cli-chat-panel` 的
+   `overflow: hidden` 再把超出部分直接裁掉 ⇒ 三个症状同时出现 ✓✓（同源 ✗）。
+   ⚠ 这是 flexbox 经典陷阱，凡「flex 列内 + overflow:auto」的容器都要带 `min-height: 0` ✓。 */
 .cli-messages-scroll {
-	flex: 1;
+	flex: 1 1 auto;
+	min-height: 0;
 	overflow-y: auto;
 	overflow-x: hidden;
 	scrollbar-width: thin;
 	scrollbar-color: var(--cli-border) transparent;
+	/* 预留滚动条槽位 ⇒ 滚动条**始终可见**、内容变化时不来回抖动 ✓ */
+	scrollbar-gutter: stable;
 }
 
 .cli-messages-scroll::-webkit-scrollbar {
-	width: 6px;
+	width: 8px;
 }
 
 .cli-messages-scroll::-webkit-scrollbar-track {
 	background: transparent;
 }
 
+/* 用 VS Code 标准滚动条变量 ⇒ 与编辑器其它区域观感一致、且对比度足够（此前用 --cli-border ✗ 偏淡） */
 .cli-messages-scroll::-webkit-scrollbar-thumb {
-	background: var(--cli-border);
-	border-radius: 3px;
+	background: var(--vscode-scrollbarSlider-background, var(--cli-border));
+	border-radius: 4px;
+}
+
+.cli-messages-scroll::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground, var(--cli-border));
 }
 
 /* ── Messages container ── */

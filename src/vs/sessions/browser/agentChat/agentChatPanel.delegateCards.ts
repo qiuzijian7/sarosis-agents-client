@@ -587,6 +587,20 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 			scroll.scrollTop = scroll.scrollHeight;
 		});
 
+		// ★★ 2026-09-20 视口延迟构建（性能，真机取证）：
+		//   本卡**默认展开**，旧实现建卡即渲染三段正文 —— 任务指令（≤4000 字 markdown）
+		//   + 执行列表（每步一行）+ 执行结果（每子代理 ≤4000 字）。真机
+		//   `render.createMessageElement=52.4ms | parts=12 tools=8`（含 delegate×4）即此类；
+		//   而首屏/session 切换时**绝大多数卡片并不在视口内** ⇒ 白白占用主线程 ✗。
+		//   现改为三者任一先到才构建：① 运行中（实时过程是用户最想看的，且此时正文很小）；
+		//   ② 进入视口（rootMargin 200px 预取）；③ 用户手动展开（toggle 兜底）。
+		//   与 search/web 卡的「首次展开才建 body」同源思路，只是判据换成"可见性"，
+		//   因为本卡默认展开 ⇒ 不能只靠展开事件。
+		let bodyRendered = false;
+		const renderBody = (): void => {
+			if (bodyRendered) { return; }
+			bodyRendered = true;
+
 		// ① 任务指令
 		if (instruction) {
 			const sec = append(scroll, $('div.du-sec'));
@@ -682,14 +696,31 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 			}
 		}
 
-		// ── 点击展开/折叠（并记忆状态，跨流式重建保持）──
-		const toggle = () => {
-			const nowExpanded = body.classList.toggle('tool-header-children-expanded');
-			chevron.classList.toggle('tool-header-chevron-expanded', nowExpanded);
-			if (tc.id) { this._toolCallExpandState.set(tc.id, nowExpanded); }
-			// 展开后将内部可滚动容器（.delegate-scroll）钉底，初始展示最新内容
-			if (nowExpanded) { this._pinAllScrollableBodiesToBottom(body); }
-		};
+		// 延迟构建完成后补一次置底：构建前内容为空，早先的 rAF pin 无内容可钉（见上）
+		if (body.classList.contains('tool-header-children-expanded')) {
+			this._markProgrammaticPinWrite(scroll);
+			scroll.scrollTop = scroll.scrollHeight;
+		}
+	};
+
+	// 触发时机：运行中 ⇒ 立即（用户要实时看执行过程）；否则 ⇒ 进入视口才构建 ✓
+	if (isRunning) {
+		renderBody();
+	} else {
+		this._renderWhenCardVisible(scroll, renderBody);
+	}
+
+	// ── 点击展开/折叠（并记忆状态，跨流式重建保持）──
+	const toggle = () => {
+		const nowExpanded = body.classList.toggle('tool-header-children-expanded');
+		chevron.classList.toggle('tool-header-chevron-expanded', nowExpanded);
+		if (tc.id) { this._toolCallExpandState.set(tc.id, nowExpanded); }
+		// 展开后将内部可滚动容器（.delegate-scroll）钉底，初始展示最新内容
+		if (nowExpanded) {
+			renderBody();	// ★ 用户展开 ⇒ 若尚未构建则此刻构建（视口兜底，保证有内容 ✓）
+			this._pinAllScrollableBodiesToBottom(body);
+		}
+	};
 		this._register(addDisposableListener(titleContainer, EventType.CLICK, (e) => {
 			if ((e.target as HTMLElement)?.closest?.('button')) { return; }
 			e.stopPropagation();
@@ -1089,23 +1120,23 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 			// 2026-09-17：与主气泡「处理中」一致的实时用量展示。
 			// 数据源为子代理快照字段（sa.tokensUsed / sa.creditUsed），而非
 			// msg.tokenUsage——两者由不同链路注入，不可混用。
+			// ★★ 2026-09-20：与主气泡处理中**同口径 —— tokens/积分常驻（0 占位 ✓）**：
+			// 子代理用量快照要等子代理回报才有 ✗ ⇒ 旧门控（tokens 需 >0、credit 需已回报 ✗）
+			// 下 runtime 前半段只有耗时 ✗（用户截图：1m33s 只有耗时 ✗）。
+			// undefined / 0 都显示 0 ✓；数据到达后随重渲染覆盖为真实值 ✓；
+			// 完成态 meta 行（:721 注释）仍保持「无数据不渲染」的既定设计 ✓ 不动。
 			const saTotal = (sa as { tokensUsed?: { total?: number } }).tokensUsed?.total;
 			const saCredit = (sa as { creditUsed?: number }).creditUsed;
-			if (typeof saTotal === 'number' && saTotal > 0) {
-				// ★ 2026-09-18 统一：走 `appendFooterPill()`（与主气泡处理中/完成态同源 ✓）
-				// ★ 2026-09-19：补 `live: true` ⇒ 与主气泡、与自身耗时项一致地显示"进行中"态 ✓
-				//（`agentChat.css` 的 `.chat-footer-pill.live`：蓝色描边 + 图标呼吸 ✓）
-				appendFooterPill(procWrap, 'tokens', formatTokenCount(saTotal), {
-					valueClass: 'chat-footer-processing-tokens',
-					live: true,
-				});
-			}
-			if (typeof saCredit === 'number') {
-				appendFooterPill(procWrap, 'credit', formatCreditAmount(saCredit), {
-					valueClass: 'chat-footer-processing-credit',
-					live: true,
-				});
-			}
+			// ★ 2026-09-18 统一：走 `appendFooterPill()`（与主气泡处理中/完成态同源 ✓）
+			// ★ 2026-09-19：`live: true` ⇒ 与主气泡、与自身耗时项一致地显示"进行中"态 ✓
+			appendFooterPill(procWrap, 'tokens', formatTokenCount(typeof saTotal === 'number' ? saTotal : 0), {
+				valueClass: 'chat-footer-processing-tokens',
+				live: true,
+			});
+			appendFooterPill(procWrap, 'credit', formatCreditAmount(typeof saCredit === 'number' ? saCredit : 0), {
+				valueClass: 'chat-footer-processing-credit',
+				live: true,
+			});
 			procWrap.style.marginLeft = 'auto';
 			procWrap.dataset.saId = sa.id;
 		}

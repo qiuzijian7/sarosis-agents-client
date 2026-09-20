@@ -621,6 +621,15 @@ const FULL_SYNC_MIN_INTERVAL_MS = 5 * 60 * 1000;
  */
 const SAVE_MAX_DEFER_MS = 120000;
 
+/**
+ * ★ 2026-09-20（方案 B：有检索在飞 ⇒ 推迟落盘）：被推迟后的重试间隔（ms）。
+ *
+ * 取值权衡：太长 ⇒ 检索结束后制品迟迟不更新；太短 ⇒ 连续检索时反复空转（每次只是判断一下，
+ * 成本极低，但仍无意义）。1.5s 既能跟上「连续检索之间的间隙」，又不会忙等 ✓。
+ * ⚠ 它**不延长**既有上限：总推迟仍受 `SAVE_MAX_DEFER_MS` 约束（见 `_fireSaveOrDefer` ✓）。
+ */
+const SAVE_DEFER_BY_SEARCH_MS = 1500;
+
 // ─── GraphStore (legacy compatibility wrapper) ─────────────────────────────
 
 class GraphStore {
@@ -1181,7 +1190,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		} catch (err: any) {
 			this._logService.warn('[CodebaseGraph]', `[sqlite-sync] 增量追平失败（退回全量）"${project}"：${err?.message || err}`);
 		}
-		await this._syncGraphToSqlite(project);
+		// 全局串行：显式事务一次只能一个（详见 `_sqliteSyncChain` 注释）
+		await this._runSerializedSqliteSync(() => this._syncGraphToSqlite(project));
 		return 'full';
 	}
 
@@ -1189,6 +1199,26 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private readonly _sqliteCatchUpInFlight = new Set<string>();
 	/** 上次**尝试**追平的时刻（按项目）—— 冷却用，见 `FULL_SYNC_MIN_INTERVAL_MS` ✓。 */
 	private readonly _sqliteCatchUpLastAttemptAt = new Map<string, number>();
+
+	/**
+	 * ★ 2026-09-20（多根工作区竞态）：SQLite 的**显式事务是整个 DB 一把**
+	 * （`node/codebaseGraphSqliteStore.ts` 的 `_explicitTx`），而调用方是**按项目**调度的
+	 * ——`_sqliteCatchUpInFlight` 只挡「同一项目」并发 ⇒ 两个不同项目同时全量同步时，
+	 * 后到的 `beginProjectSync` 必撞「已有进行中的显式事务（不得嵌套 ✗）」而整体失败，
+	 * 表现为 WARN `后台追平失败`（实测：工作区含第二个小项目时，它的追平常与主仓
+	 * 数十秒的全量同步重叠，1s 就失败，然后吃 5 分钟冷却）。
+	 *
+	 * 修法：**调用侧全局串行**（排队），而不是放宽 store 的嵌套断言 ——
+	 * 真正的嵌套仍然是 bug，断言要留着才能暴露 ✓。
+	 */
+	private _sqliteSyncChain: Promise<void> = Promise.resolve();
+
+	/** 把一次「会用显式事务」的同步排进全局串行链（前一棒失败也要继续，不打断链 ✓）。 */
+	private _runSerializedSqliteSync<T>(fn: () => Promise<T>): Promise<T> {
+		const run = this._sqliteSyncChain.then(fn, fn);
+		this._sqliteSyncChain = run.then(() => undefined, () => undefined);
+		return run;
+	}
 
 	/**
 	 * Phase 2b 核心：将内存 store 的完整图数据批量复制到主进程 SQLite。
@@ -1209,6 +1239,41 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		if (nodes.length === 0) { return; }
 
+		// ★★★ 2026-09-20（真机 P0）：**(project, qualified_name) 去重 —— 否则整批 abort** ✗✗
+		//
+		// 真机证据（用户日志 2026-09-20）：全量同步跑 **84s** 后抛
+		// `SQLITE_CONSTRAINT_UNIQUE: UNIQUE constraint failed: nodes.project, nodes.qualified_name`
+		// ⇒ `upsertNodesBatch` 整批回滚 ⇒ DB **永远落后**，且「下次载入/查询会重试」⇒ **每窗白付 84s** ✗✗✗。
+		// 根因：DB 侧 `UNIQUE(project, qualified_name)`，而内存里存在**同 (project, qualified_name)
+		// 但不同 id** 的节点（重解析泄漏 / 同名符号 ✗）；显式 id 的 upsert 只处理 `ON CONFLICT(id)`
+		// ⇒ 撞 qualified_name 时无解 ✗（SQLite 一条 INSERT 只能有一个冲突目标）。
+		//
+		// 手法：**保留 id 最大（最新）的那条**（与 store 侧兜底同语义 ✓ —— 重解析泄漏时旧的那条是陈旧的 ✗），
+		// 并把被丢掉节点的 id **重映射**到幸存者（否则那些边会指向不存在的行 ⇒ 悬空边 ✗✗）。
+		// 顺带打点：`重复数 > 0` 就是「内存里存在重复」的硬证据 ⇒ 值得追重解析泄漏 ✓。
+		const byQualifiedName = new Map<string, (typeof nodes)[number]>();
+		/** 被去重丢掉的节点 id → 幸存节点 id（供边重映射 ✓）。 */
+		const remapDroppedNodeId = new Map<number, number>();
+		let duplicateNodes = 0;
+		for (const n of nodes) {
+			const key = `${n.project} ${n.qualifiedName ?? ''}`;
+			const prev = byQualifiedName.get(key);
+			if (!prev) { byQualifiedName.set(key, n); continue; }
+			duplicateNodes++;
+			const prevId = typeof prev.id === 'number' ? prev.id : -1;
+			const curId = typeof n.id === 'number' ? n.id : -1;
+			if (curId > prevId) {
+				byQualifiedName.set(key, n);
+				if (prevId >= 0 && curId >= 0) { remapDroppedNodeId.set(prevId, curId); }
+			} else if (prevId >= 0 && curId >= 0) { remapDroppedNodeId.set(curId, prevId); }
+		}
+		const syncNodes = duplicateNodes > 0 ? [...byQualifiedName.values()] : nodes;
+		if (duplicateNodes > 0) {
+			this._logService.warn('[CodebaseGraph]', `[sqlite-sync] "${project}" 内存里有 ${duplicateNodes} 个重复 (project, qualified_name) 节点`
+				+ `（181k 中）⇒ 已按「保留最新 id」去重 + 边重映射，避免撞 UNIQUE 使整批 abort（84s 白跑 ✗）；`
+				+ `若该数持续增长 ⇒ 查重解析是否漏删旧节点 ✗`);
+		}
+
 		// ★★★ 2026-09-19（P0-1）：全量同步**原子化** —— 包进**跨 IPC 显式事务**（begin→…→commit；错 ⇒ abort）。
 		// ⇒ 崩在中间 = **DB 原样** ✓✓（此前逐批各自 COMMIT ⇒ 崩在 delete 与 insert 之间 ⇒ 项目残缺 ✗）。
 		// ⚠ 事务存续期其它写入（如并发增量补丁）会**加入**本事务 ✗ —— 最坏随 abort 回滚（落后由追平补 ✓），
@@ -1226,9 +1291,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		const BATCH = 5000;
 		const tStart = Date.now();
 
-		// ── 节点 ──
-		for (let i = 0; i < nodes.length; i += BATCH) {
-			const chunk = nodes.slice(i, i + BATCH);
+		// ── 节点 ──（用**去重后**的 syncNodes ✓）
+		for (let i = 0; i < syncNodes.length; i += BATCH) {
+			const chunk = syncNodes.slice(i, i + BATCH);
 			// 将内存 store 的 StoreNode 转换为 GraphNode 格式，带上 numeric id
 			const graphNodes = chunk.map(n => ({
 				id: String(n.id),
@@ -1245,9 +1310,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				properties: n.properties,
 			}));
 			await this._sqliteBackend.upsertNodesBatch(graphNodes);
-			if ((i + BATCH) % 50000 === 0 || i + BATCH >= nodes.length) {
-				const done = Math.min(i + BATCH, nodes.length);
-				this._logService.info('[CodebaseGraph]', `SQLite sync nodes: ${done}/${nodes.length}`);
+			if ((i + BATCH) % 50000 === 0 || i + BATCH >= syncNodes.length) {
+				const done = Math.min(i + BATCH, syncNodes.length);
+				this._logService.info('[CodebaseGraph]', `SQLite sync nodes: ${done}/${syncNodes.length}`);
 				this._onDidIndexProgress.fire(`💾 同步 SQLite: ${done}/${nodes.length} 节点...`);
 			}
 			// 分批 checkpoint：防止 WAL 膨胀到数百 MB（读查询需合并 WAL 会显著变慢）
@@ -1263,14 +1328,19 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		// ── 边 ──
 		for (let i = 0; i < edges.length; i += BATCH) {
 			const chunk = edges.slice(i, i + BATCH);
-			const edgePayloads = chunk.map(e => ({
-				source: String(e.sourceId),
-				target: String(e.targetId),
-				type: e.type,
-				sourceId: e.sourceId,
-				targetId: e.targetId,
-				properties: e.properties,
-			}));
+			const edgePayloads = chunk.map(e => {
+				// ★ 2026-09-20：端点若因去重被丢掉 ⇒ 重映射到幸存节点（否则边指向不存在的行 ⇒ 悬空 ✗）
+				const sid = (typeof e.sourceId === 'number' ? remapDroppedNodeId.get(e.sourceId) : undefined) ?? e.sourceId;
+				const tid = (typeof e.targetId === 'number' ? remapDroppedNodeId.get(e.targetId) : undefined) ?? e.targetId;
+				return {
+					source: String(sid),
+					target: String(tid),
+					type: e.type,
+					sourceId: sid,
+					targetId: tid,
+					properties: e.properties,
+				};
+			});
 			await this._sqliteBackend.upsertEdgesBatch(edgePayloads);
 			if ((i + BATCH) % 50000 === 0 || i + BATCH >= edges.length) {
 				const done = Math.min(i + BATCH, edges.length);
@@ -2254,7 +2324,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			this._onDidIndexProgress.fire('💾 同步到 SQLite 后端...');
 			try {
 				// 显式传本轮 project（`_syncGraphToSqlite()` 缺省读 `this._projectName`，同上有被改写风险）
-				await this._syncGraphToSqlite(projectName);
+				// 全局串行：正在跑的后台追平若已开了显式事务，这里排队等它结束
+				await this._runSerializedSqliteSync(() => this._syncGraphToSqlite(projectName));
 			} catch (err) {
 				this._logService.error('[CodebaseGraph]', 'SQLite sync failed:', err);
 			}
@@ -2736,20 +2807,72 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	/** 上次 zst 全量落盘时刻（节流基准，见 ZST_SAVE_MIN_INTERVAL_MS）。 */
 	private _lastZstSaveAt = 0;
 
+	// ─── 检索让路（2026-09-20，方案 B）───────────────────────────────────────
+	/** 正在飞的 `searchGraphAsync` 数（>0 ⇒ 不启动 zst 全量落盘，见 `searchGraphAsync` 注释）。 */
+	private _searchesInFlight = 0;
+	/** 因「有检索在飞」被推迟的落盘（归一化 root 集合）⇒ 检索结束后由 `_flushSavesDeferredBySearch` 补跑 ✓。 */
+	private readonly _savesDeferredBySearch = new Set<string>();
+	/** 被推迟后的重试定时器（按归一化 root），防止重复排 ✓。 */
+	private readonly _saveRetryTimers = new Map<string, any>();
+
+	/**
+	 * 落盘的**唯一出口**（延时到期 / 饥饿到期 / 检索结束后补跑都走它 ✓）。
+	 *
+	 * 让路规则：`_searchesInFlight > 0` 且**未到饥饿上限** ⇒ 不启动，登记 + 稍后重试
+	 * （间隔 `SAVE_DEFER_BY_SEARCH_MS`）。饥饿上限沿用既有 `SAVE_MAX_DEFER_MS`
+	 * ⇒ **连续检索流也不会把落盘无限推迟** ✓（数据安全边界不变 ✓）。
+	 */
+	private _fireSaveOrDefer(key: string, rootPath: string, project?: string): void {
+		const pending = this._pendingSaves.get(key);
+		const first = pending?.firstRequestedAt ?? Date.now();
+		const starved = (Date.now() - first) >= SAVE_MAX_DEFER_MS;
+		if (this._searchesInFlight > 0 && !starved) {
+			this._savesDeferredBySearch.add(key);
+			if (!this._saveRetryTimers.has(key)) {
+				const t = setTimeout(() => {
+					this._saveRetryTimers.delete(key);
+					this._fireSaveOrDefer(key, rootPath, project);
+				}, SAVE_DEFER_BY_SEARCH_MS);
+				this._saveRetryTimers.set(key, t);
+			}
+			return;
+		}
+		this._savesDeferredBySearch.delete(key);
+		const retry = this._saveRetryTimers.get(key);
+		if (retry) { clearTimeout(retry); this._saveRetryTimers.delete(key); }
+		if (pending) { clearTimeout(pending.timer); this._pendingSaves.delete(key); }
+		if (this._searchesInFlight > 0) {
+			// 到点了但检索还在飞 ⇒ 记一行（饥饿保护已判过 ⇒ 必然是 starved 才走到这里）
+			this._logService.info('[CodebaseGraph]', `[save-defer] "${rootPath}" 已达饥饿上限 ${SAVE_MAX_DEFER_MS}ms ⇒ 即使有检索在飞也强制落盘 ✓（数据安全优先）`);
+		}
+		this._savingGraph = this._savingGraph.then(
+			() => this._saveGraph(rootPath, project),
+			() => this._saveGraph(rootPath, project),
+		);
+	}
+
+	/** 检索全部结束 ⇒ 立刻补跑被推迟的落盘（不等重试定时器，缩短空窗 ✓）。 */
+	private _flushSavesDeferredBySearch(): void {
+		if (this._savesDeferredBySearch.size === 0) { return; }
+		for (const key of [...this._savesDeferredBySearch]) {
+			const pending = this._pendingSaves.get(key);
+			if (!pending) { this._savesDeferredBySearch.delete(key); continue; }
+			const retry = this._saveRetryTimers.get(key);
+			if (retry) { clearTimeout(retry); this._saveRetryTimers.delete(key); }
+			this._fireSaveOrDefer(key, pending.rootPath, pending.project);
+		}
+	}
+
 	private _scheduleSaveGraph(rootPath: string, project?: string): void {
 		const key = this._normalizeRoot(rootPath);
 		const pending = this._pendingSaves.get(key);
 		const now = Date.now();
 
 		// 饥饿保护：持续有变更时每次都重置窗口会让落盘无限推迟。
-		// 距首次请求已超过 SAVE_MAX_DEFER_MS → 不再等待，立即落盘。
+		// 距首次请求已超过 SAVE_MAX_DEFER_MS → 不再等待，立即落盘（仍经让路判据 ✓）。
 		if (pending && (now - pending.firstRequestedAt) >= SAVE_MAX_DEFER_MS) {
 			clearTimeout(pending.timer);
-			this._pendingSaves.delete(key);
-			this._savingGraph = this._savingGraph.then(
-				() => this._saveGraph(rootPath, project),
-				() => this._saveGraph(rootPath, project),
-			);
+			this._fireSaveOrDefer(key, rootPath, project);
 			return;
 		}
 
@@ -2763,11 +2886,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		const remaining = Math.max(0, SAVE_MAX_DEFER_MS - (now - firstRequestedAt));
 		const delay = Math.min(SAVE_DEBOUNCE_MS, remaining);
 		const timer = setTimeout(() => {
-			this._pendingSaves.delete(key);
-			this._savingGraph = this._savingGraph.then(
-				() => this._saveGraph(rootPath, project),
-				() => this._saveGraph(rootPath, project),
-			);
+			// ★ 2026-09-20：到期不直接落盘 ⇒ 经 `_fireSaveOrDefer` 让路判据（有检索在飞则推迟 ✓）
+			this._fireSaveOrDefer(key, rootPath, project);
 		}, delay);
 		this._pendingSaves.set(key, { rootPath, project, timer, firstRequestedAt });
 	}
@@ -2780,6 +2900,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			clearTimeout(pending.timer);
 			this._pendingSaves.delete(key);
 		}
+		// ★ 2026-09-20：连带清掉「检索让路」的重试定时器与登记（否则取消后仍会补跑一次 ✗）
+		const retry = this._saveRetryTimers.get(key);
+		if (retry) { clearTimeout(retry); this._saveRetryTimers.delete(key); }
+		this._savesDeferredBySearch.delete(key);
 	}
 
 	/**
@@ -2796,6 +2920,11 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		for (const [key, pending] of [...this._pendingSaves.entries()]) {
 			clearTimeout(pending.timer);
 			this._pendingSaves.delete(key);
+			// ★ 2026-09-20：本路径**无条件**落盘（dispose/显式刷新要保数据，不受"检索让路"约束 ✓），
+			// 但必须撤掉让路登记与重试定时器 ⇒ 否则稍后又补跑一次重复落盘 ✗。
+			const retry = this._saveRetryTimers.get(key);
+			if (retry) { clearTimeout(retry); this._saveRetryTimers.delete(key); }
+			this._savesDeferredBySearch.delete(key);
 			const rootPath = pending.rootPath;
 			this._savingGraph = this._savingGraph.then(
 				() => this._saveGraph(rootPath, pending.project),
@@ -5293,7 +5422,29 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 * 排序近似说明：query 模式沿用 SQLite bm25 顺序（未叠加内存路径的 structural
 	 * boosting 加权）；namePattern/LIKE 模式按连接度排序（与 node store SQL 一致）。
 	 */
-	async searchGraphAsync(params: {
+	/**
+	 * ★★ 2026-09-20（B：**有检索在飞 ⇒ 推迟 zst 全量落盘**）—— 薄包装，只数「在飞检索数」。
+	 *
+	 * 真机证据（日志 `vscode-app-1789908435552.log`）：`💾 保存图谱: 96 MB…` 前后检索
+	 * `sqlite fetch slow: 2387ms`（共 2503ms）—— 而**空闲库**上同一检索的三条 SQL 全是毫秒级
+	 * （LIKE 125–142ms / FTS 内层 2ms / 外层 2ms）⇒ 慢的是**与落盘争用主线程/DB 的等待** ✗✓。
+	 * ⇒ 落盘（96MB 序列化 + gzip，与变更集大小无关）**不在检索期间启动**；检索结束后立刻补跑 ✓。
+	 *
+	 * ⚠ 数据安全：推迟**不越过**既有饥饿上限（见 `_fireSaveOrDefer` 里的 starved 判据）
+	 * ⇒ 连续检索流也不会让落盘无限推迟 ✓。
+	 */
+	async searchGraphAsync(params: Parameters<CodebaseGraphService['_searchGraphAsyncImpl']>[0])
+		: Promise<Awaited<ReturnType<CodebaseGraphService['_searchGraphAsyncImpl']>>> {
+		this._searchesInFlight++;
+		try {
+			return await this._searchGraphAsyncImpl(params);
+		} finally {
+			this._searchesInFlight--;
+			if (this._searchesInFlight === 0) { this._flushSavesDeferredBySearch(); }
+		}
+	}
+
+	private async _searchGraphAsyncImpl(params: {
 		project?: string;
 		query?: string;
 		namePattern?: string;
@@ -6378,6 +6529,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			clearInterval(this._memTrajectoryTimer);
 			this._memTrajectoryTimer = undefined;
 		}
+		// ★ 2026-09-20：清掉「检索让路」的重试定时器（否则 dispose 后仍会触发落盘 ✗）
+		for (const t of this._saveRetryTimers.values()) { clearTimeout(t); }
+		this._saveRetryTimers.clear();
+		this._savesDeferredBySearch.clear();
 		// 强制落盘延迟窗口内未完成的保存：否则窗口内的索引结果丢失，
 		// 下次启动会加载旧制品（最坏后果是重新索引，但能避免就避免）。
 		// dispose 是同步的，落盘是异步——fire-and-forget（进程退出前尽量完成）。

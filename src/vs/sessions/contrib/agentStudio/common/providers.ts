@@ -489,6 +489,38 @@ export interface IChatMessage {
 	readonly toolCallId?: string;
 }
 
+/**
+ * 「派生发送副本」标记（★★ 2026-09-20，日志 vscode-app-1789900477124 取证）：
+ *
+ * `IModelProvider.chat()` 的 `messages` 参数有两种来源，语义完全不同：
+ *   ① **真实历史数组**（legacy 路径：直接传 agentTurnExecutor 的历史引用）
+ *      ⇒ 发送前守卫（`LMBridge` 的 sanitize 回写）**原地 splice 即持久生效**；
+ *   ② **派生的一次性副本**（pi 路径：`convertToChatMessages` 由 transcript 形态转换而来）
+ *      ⇒ 同一份 splice 只收益于本次调用，内核 transcript 毫无变化：孤儿下一轮原样复发，
+ *        而旧日志却会谎报「orphan fix persisted ✗」并误导排障（本仓 2026-09-20 实测：
+ *        每轮固定剥 6-7 条 + 声称已持久化，实际真因在转换层漏字段）。
+ *
+ * 约定：派生副本的产出方用 `markChatMessagesDerived()` 打标；守卫侧用
+ * `isChatMessagesDerived()` 判定，对派生副本**跳过无意义的回写**并如实说明日志。
+ */
+export const CHAT_MESSAGES_DERIVED = Symbol.for('saros.agentStudio.chatMessagesDerived');
+
+/** 标记一个派生的一次性消息数组（见 CHAT_MESSAGES_DERIVED）。失败时退化为不标记（行为同修复前）。 */
+export function markChatMessagesDerived(messages: IChatMessage[]): IChatMessage[] {
+	try {
+		Object.defineProperty(messages, CHAT_MESSAGES_DERIVED, {
+			value: true, enumerable: false, configurable: true, writable: false,
+		});
+	} catch { /* 冻结/代理数组等极端情况：按「可回写」对待，不改变既有行为 */ }
+	return messages;
+}
+
+/** 判定是否为派生的一次性消息数组。 */
+export function isChatMessagesDerived(messages: unknown): boolean {
+	return Array.isArray(messages)
+		&& (messages as unknown as Record<PropertyKey, unknown>)[CHAT_MESSAGES_DERIVED] === true;
+}
+
 export interface IToolCallInfo {
 	readonly id: string;
 	readonly name: string;
@@ -1452,9 +1484,16 @@ export interface IAgentTurnRequest {
 	 * 前台主 agent / 用户直接会话省略 → undefined（审批走交互确认，行为不变）。
 	 */
 	readonly subAgent?: {
-		readonly type: 'explore' | 'general' | 'scout';
-		readonly background: boolean;
-	};
+	  readonly type: 'explore' | 'general' | 'scout';
+	  readonly background: boolean;
+	  /**
+	  * 隔离档（unifiedSubAgentDispatch 的 SubAgentIsolationLevel 值域：
+	  * 'subagent'|'peer'|'process'）。'process' ⇒ 内核跑 utilityProcess 隔离体
+	  * （piLoop/proc/；工具/模型 RPC 回本进程，审批链不断）。
+	  * string 而非引入类型：避免 common/providers 与 dispatch 模块的循环依赖。
+	  */
+	  readonly isolationLevel?: string;
+	  };
 	/**
 	 * Per-turn 结果标记（side-channel，2026-08-29）。由 executeAgentTurn 创建并随
 	 * request 透传给 agentTurnExecutor；executor 在「重试耗尽、对话被迫结束」

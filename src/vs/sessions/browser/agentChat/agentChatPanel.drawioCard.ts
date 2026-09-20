@@ -1,7 +1,7 @@
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { createTrustedTypesPolicy } from '../../../base/browser/trustedTypes.js';
 import { IToolCall } from './agentChatTypes.js';
-import { AgentChatPanelMermaidCard } from './agentChatPanel.mermaidCard.js';
+import { AgentChatPanelMermaidCard, detectDiagramTheme } from './agentChatPanel.mermaidCard.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
 
 // 工作台启用了 Trusted Types：渲染好的 SVG 字符串需转成 TrustedHTML 才能赋给
@@ -233,9 +233,8 @@ export abstract class AgentChatPanelDrawioCard extends AgentChatPanelMermaidCard
 		}
 
 		try {
-			const bodyCls = this._container.ownerDocument.body.classList;
-			const isDark = bodyCls.contains('vs-dark') || bodyCls.contains('hc-black')
-				|| bodyCls.contains('vscode-dark') || bodyCls.contains('vscode-high-contrast');
+			// ★ 2026-09-20：与 mermaid 卡同款鲁棒主题探测 ✓（body 类名缺失 ⇒ 白色渲染 ✗）
+			const isDark = detectDiagramTheme(this._container) === 'dark';
 			const svg = await cmd('_agentStudio.renderDrawioSvg', markup, isDark ? 'dark' : 'default');
 			if (typeof svg === 'string' && svg.indexOf('<svg') !== -1) {
 				const safeSvg = this._sanitizeMermaidSvg(svg);

@@ -1,7 +1,8 @@
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
+import { markRenderActivity } from '../../../base/common/renderActivityTrace.js';
 // ★ 2026-09-19：用量药丸（耗时 / tokens / 积分）统一走这一入口 —— 此前本文件**手搓 DOM** ✗，
 // 与委派卡的写法分叉（图标相同但类名/标签/冒号宽度不同 ✓）⇒ 用户报「各个位置图标不一致」✓
-import { appendFooterPill, formatCreditAmount, formatTokenCount, type FooterPillKind } from './agentChatPanel.footerPills.js';
+import { appendFooterPill, formatCreditAmount, formatTokenCount, PILL_ITEM_CLASS, type FooterPillKind } from './agentChatPanel.footerPills.js';
 import { mainWindow } from '../../../base/browser/window.js';
 import { IAgentChatMessage, IToolCall, ITextMessagePart, IThinkingMessagePart, IMessagePart, IConfirmationData, IChatAttachment, CHAT_MODE_UI } from './agentChatTypes.js';
 // ★ 2026-09-19：气泡「复制」需要写 composer 的**富剪贴板**格式（否则粘贴回来 pill 全丢 ✗）。
@@ -15,6 +16,9 @@ import { shouldPreserveExpandedAcrossRebuild, shouldPersistExpandState } from '.
 
 import { needsArgsDrivenRebuild } from './toolCardArgsRefresh.js';
 import type { FullRefreshSource } from './agentChatPanel.refreshLog.js';
+// ★ 2026-09-20：函数级性能埋点（见 perf 模块头注释）。本文件是「session 切换/首屏」
+// 的耗时大头（`setMessages` 的 render 段），此前**无埋点** ⇒ 无法归因 539ms 级长任务。
+import { chatPerf } from './agentChatPanel.perf.js';
 
 /** P5b：_updateMessageDom 责任链上下文（预计算的结构标志，供各 rule 共享）。 */
 interface IMsgUpdateCtx {
@@ -268,66 +272,93 @@ protected override _renderMessagesArea(): void {
 	}
 
 protected override _renderMessages(): void {
-		if (!this._messagesContainer) { return; }
-		if ((window as unknown as Record<string, unknown>).__SAROSIS_SCROLL_DIAG) {
-			const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
-			console.debug(`[ScrollDiag] _renderMessages count=${this._messages.length} _wasLoading=${this._wasLoading} caller: ${diagStack}`);
+	if (!this._messagesContainer) { return; }
+	if ((window as unknown as Record<string, unknown>).__SAROSIS_SCROLL_DIAG) {
+		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
+		console.debug(`[ScrollDiag] _renderMessages count=${this._messages.length} _wasLoading=${this._wasLoading} caller: ${diagStack}`);
+	}
+	// ★ 2026-09-20 埋点：本函数此前是**唯一没有函数级耗时**的大头 —— 用户实测
+	//   `setMessages total=736 render=539.5ms`（LONG_TASK 591/563ms）无法归因到段内。
+	//   总耗时 + 四段（清理旧 DOM / 建卡 / 懒加载锚定 / 标记）各自打点，
+	//   下次卡顿可直接看出是哪一段（配合 chatPerf 的 ≥50ms 单点行与 30s 汇总）。
+	// ★ 同日再补**活动标记**：LONG_TASK 之前只会报 `因=[(无标记)]`（真机 775ms 无从归因），
+	//   本函数是首屏/session 切换的最大占用者 ⇒ 打常量 tag（零分配），心跳可直接写成
+	//   `因=[render-messages×1]`（见 base/common/renderActivityTrace.ts 的判读约定）。
+	markRenderActivity('render-messages');
+	const tRenderTotal = chatPerf.start();
+	// Clean up all markdown disposables before clearing the DOM,
+	// to prevent renderMarkdown disposable leaks across setMessages calls.
+	const tCleanup = chatPerf.start();
+	this._cleanupMarkdownDisposables(this._messagesContainer);
+	// P2: 断开旧的懒加载 observer
+	if (this._lazyLoadObserver) {
+		this._lazyLoadObserver.disconnect();
+		this._lazyLoadObserver = null;
+	}
+	clearNode(this._messagesContainer);
+	chatPerf.end('render.clearPrevDom', tCleanup, `prevMsgs=${this._messages.length}`);
+
+	if (this._messages.length === 0) {
+		const empty = append(this._messagesContainer, $(".chat-messages-empty"));
+		append(empty, $("p", undefined, "还没有消息，开始对话吧"));
+		// clearNode 会连带移除药丸，空态下也要把它挂回去
+		this._repositionLoadingPill();
+		chatPerf.end('render.messages.total', tRenderTotal, `msgs=0`);
+		return;
+	}
+
+	// P2: 懒加载渲染——只渲染最近的 VISIBLE_CHUNK 条消息，
+	// 用户向上滚动时按需加载更早的消息。
+	// 参考 VS Code WorkbenchObjectTree 虚拟化（只渲染可见区域）。
+	const VISIBLE_CHUNK = 30;
+	const total = this._messages.length;
+
+	if (total <= VISIBLE_CHUNK) {
+		// 小列表 — 同步渲染全部
+		const tAppend = chatPerf.start();
+		for (const msg of this._messages) {
+			this._appendMessageDom(msg);
 		}
-		// Clean up all markdown disposables before clearing the DOM,
-		// to prevent renderMarkdown disposable leaks across setMessages calls.
-		this._cleanupMarkdownDisposables(this._messagesContainer);
-		// P2: 断开旧的懒加载 observer
-		if (this._lazyLoadObserver) {
-			this._lazyLoadObserver.disconnect();
-			this._lazyLoadObserver = null;
-		}
-		clearNode(this._messagesContainer);
-
-		if (this._messages.length === 0) {
-			const empty = append(this._messagesContainer, $(".chat-messages-empty"));
-			append(empty, $("p", undefined, "还没有消息，开始对话吧"));
-			// clearNode 会连带移除药丸，空态下也要把它挂回去
-			this._repositionLoadingPill();
-			return;
-		}
-
-		// P2: 懒加载渲染——只渲染最近的 VISIBLE_CHUNK 条消息，
-		// 用户向上滚动时按需加载更早的消息。
-		// 参考 VS Code WorkbenchObjectTree 虚拟化（只渲染可见区域）。
-		const VISIBLE_CHUNK = 30;
-		const total = this._messages.length;
-
-		if (total <= VISIBLE_CHUNK) {
-			// 小列表 — 同步渲染全部
-			for (const msg of this._messages) {
-				this._appendMessageDom(msg);
-			}
-			// clearNode 已移除药丸，渲染完消息后重新挂回末尾
-			this._repositionLoadingPill();
-			return;
-		}
-
-		// 大列表 — 只渲染最后 VISIBLE_CHUNK 条，其余懒加载
-		const firstBatchStart = Math.max(0, total - VISIBLE_CHUNK);
-
-		// 渲染最近的消息
-		for (let i = firstBatchStart; i < total; i++) {
-			this._appendMessageDom(this._messages[i]);
-		}
-
-		// 设置懒加载——观察第一个消息元素，进入视口时加载更多
-		// 药丸可能已被重新挂到末尾，取首元素时需跳过它
-		const firstEl = this._firstMessageElement() ?? this._messagesContainer.firstElementChild as HTMLElement | null;
-		if (firstEl && firstBatchStart > 0) {
-			this._setupLazyLoad(firstEl, firstBatchStart);
-		}
-
+		chatPerf.end('render.appendDom', tAppend, `count=${total}`);
 		// clearNode 已移除药丸，渲染完消息后重新挂回末尾
 		this._repositionLoadingPill();
-
-		// 刷新滚动条用户消息标记
-		this._scrollbar.refreshScrollMarkers();
+		chatPerf.end('render.messages.total', tRenderTotal, `msgs=${total}`);
+		return;
 	}
+
+	// 大列表 — 只渲染最后 VISIBLE_CHUNK 条，其余懒加载
+	const firstBatchStart = Math.max(0, total - VISIBLE_CHUNK);
+
+	// 渲染最近的消息
+	const tAppend = chatPerf.start();
+	for (let i = firstBatchStart; i < total; i++) {
+		this._appendMessageDom(this._messages[i]);
+	}
+	chatPerf.end('render.appendDom', tAppend, `count=${total - firstBatchStart}/total=${total}`);
+
+	// 设置懒加载——观察第一个消息元素，进入视口时加载更多
+	// 药丸可能已被重新挂到末尾，取首元素时需跳过它
+	const firstEl = this._firstMessageElement() ?? this._messagesContainer.firstElementChild as HTMLElement | null;
+	if (firstEl && firstBatchStart > 0) {
+		this._setupLazyLoad(firstEl, firstBatchStart);
+	}
+
+	// clearNode 已移除药丸，渲染完消息后重新挂回末尾
+	this._repositionLoadingPill();
+
+	// ★★ 2026-09-20 性能修复：**去掉同步的 refreshScrollMarkers()** ✗ → rAF 合并版 ✓
+	//   依据（本仓自证 + 实测）：
+	//     ① `scrollbarController.refreshScrollMarkers` 的历史实测为 **535~602ms/次**
+	//        （见该方法内注释，日志 1789724924165），是首屏卡顿头号来源；成本 O(消息区 DOM)。
+	//     ② 它在**刚重建完 DOM 的同一同步块**里跑，此刻布局尚未刷新 ⇒ 读到的是**陈旧布局**
+	//        （本文件 init 路径 :268 与 setCliMode 早已因此改成 rAF 延迟，此处是漏网的一处 ✗）。
+	//     ③ 标记只需"下一帧正确"即可，用户感知不到一帧延迟；而把 500ms 级的同步工作从
+	//        session 切换/首屏的同一长任务里移出，可直接消掉一次 LONG_TASK。
+	//   ⚠ 懒加载 chunk 插入后的同步刷新保留（那里需要立即修正 offsetTop 偏移）。
+	this._scrollbar.scheduleRefreshScrollMarkers();
+
+	chatPerf.end('render.messages.total', tRenderTotal, `msgs=${total}`);
+}
 
 protected override _setupLazyLoad(firstEl: HTMLElement, remainingCount: number): void {
 		// 重锚定时断开旧的懒加载观察器，避免泄漏
@@ -341,6 +372,8 @@ protected override _setupLazyLoad(firstEl: HTMLElement, remainingCount: number):
 
 		const loadChunk = () => {
 			if (!firstEl.isConnected || nextEnd <= 0) { return; }
+			// 活动标记（2026-09-20）：向上滚动加载历史块也是长任务来源，单独可归因 ✓
+			markRenderActivity('lazy-chunk');
 			const nextStart = Math.max(0, nextEnd - CHUNK);
 			const frag = document.createDocumentFragment();
 			for (let i = nextStart; i < nextEnd; i++) {
@@ -421,7 +454,13 @@ protected override _appendMessageDom(msg: IAgentChatMessage): void {
 		this._messagesContainer
 			.querySelectorAll('.chat-message.assistant .chat-bubble .chat-bubble-footer-placeholder')
 			.forEach(ph => ph.remove());
+		// ★ 2026-09-20 埋点（按条）：`render.appendDom` 只给批总量，若单条消息异常重
+		//   （巨型工具卡/超长 markdown/子代理卡）需要**定位到具体 msgId** ⇒ 这里带 id 记录，
+		//   单条 ≥50ms 会立刻打一行（详见 perf 模块约定：detail 必须含可定位 id）。
+		const tCreate = chatPerf.start();
 		const el = this._createMessageElement(msg);
+		chatPerf.end('render.createMessageElement', tCreate,
+			`msg=${msg.id} parts=${msg.parts?.length ?? 0} tools=${msg.toolCalls?.length ?? 0}`);
 		// 药丸可见时插入到它前面，保持药丸始终位于消息流末尾
 		const pill = this._loadingPillEl;
 		if (pill && pill.parentNode === this._messagesContainer) {
@@ -431,7 +470,7 @@ protected override _appendMessageDom(msg: IAgentChatMessage): void {
 		}
 		// 内存护栏：长会话实时 append 时裁剪最旧消息，避免全部堆积进 DOM（7G 根因之一）
 		this._trimRenderedMessages();
-	}
+		}
 
 	/** 取容器中第一个真正的消息元素，跳过加载药丸。
 	 *  药丸常驻末尾，但重渲染顺序不保证，锚点定位不应选中它。 */
@@ -477,7 +516,9 @@ protected override _appendMessageDom(msg: IAgentChatMessage): void {
 	}
 
 protected override _updateMessageDom(idx: number, msg: IAgentChatMessage): void {
-	if (!this._messagesContainer) { return; }
+		// 归因标记（常数、零分配）：LONG_TASK 行会把它拼成 `因=[umd×N]`（见 base/common/renderActivityTrace.ts）
+		markRenderActivity('umd');
+		if (!this._messagesContainer) { return; }
 	// P2: 使用 data-msg-id 查找元素，解除 idx → children[idx] 硬绑定。
 	// 懒加载场景下 DOM 顺序与 _messages 数组顺序可能不一致（老消息后插入）。
 	// ★ 分诊埋点 #5（2026-09-06）：_updateMessageDom 是否每帧被调用 + 关键判据现场。
@@ -1535,6 +1576,7 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 	 * 故重建对应工具卡即可刷新内嵌子代理（_createToolCallCard → _renderSubAgentsInside）。
 	 */
 	protected override _updateSubAgentCardsInPlace(_msgIdx: number, msg: IAgentChatMessage): void {
+		markRenderActivity('subagent-cards');
 		const messageEl = this._messagesContainer?.querySelector(`[data-msg-id="${msg.id}"]`) as HTMLElement | null;
 		if (!messageEl) {
 			// ★★ 2026-09-16：原来直接 `return` —— **静默丢弃**了这批 subagent 数据，
@@ -2231,7 +2273,10 @@ protected override _createFooter(msg: IAgentChatMessage): HTMLElement {
 		}
 
 		// ── Tokens（pill 样式 + tokens-popup 详情）──
-		if (msg.tokenUsage?.total !== undefined && msg.tokenUsage.total > 0) {
+		// ★ 2026-09-20：与积分同口径 —— **字段存在即显示，含 0** ✓
+		// （用户要求「当积分为 0 时，也要显示 token 和积分的 UI」✓；
+		// 0 是真实读数，不是"没数据" ✗；没数据 = `total === undefined` ✓）。
+		if (msg.tokenUsage?.total !== undefined) {
 			// ★ 2026-09-19：同上，走唯一入口（`withInfoIcon` 负责 ⓘ ✓；返回值仍是 pill 本身 ⇒
 			// 下面的明细浮层照样挂在它内部 ✓）
 			const tokenWrap = appendFooterPill(footer, 'tokens', formatTokenCount(msg.tokenUsage.total), {
@@ -2716,19 +2761,19 @@ protected _createProcessingIndicator(msg: IAgentChatMessage): HTMLElement | null
 protected _syncProcessingUsagePills(wrap: HTMLElement, msg: IAgentChatMessage): void {
 	// ① 耗时（恒有 ✓）
 	this._upsertProcessingPill(wrap, 'duration', 'chat-footer-processing-elapsed', this._formatProcessingElapsed(msg));
-	// ② tokens（有数据才显示 ✓）
+	// ② tokens（★★ 处理中**常驻** ✓ —— 2026-09-20 用户要求：runtime 也要显示 tokens/积分 UI ✓）
+	// 数据未到（tokenUsage undefined ✓）时显示 0 占位；首个 usage delta 到达后由
+	// ticker（每秒 ✓）以真实值覆盖 ✓。
+	// ⚠ 为什么"跑了一会儿还只有耗时"不是丢数据 ✗：usage delta 是**每个 LLM 轮次的末块**
+	//   才发（见 nativeChatEditorPane `case 'usage'` 注释 ✓）⇒ 第一轮没跑完就没有数据 ✓。
+	//   完成态**不受此影响**（仍按「字段存在才显示」✓，见下方 done 构建 ✓）。
 	const tu = msg.tokenUsage;
-	const tokens = tu?.total !== undefined && tu.total > 0 ? tu.total : undefined;
-	if (tokens !== undefined) {
-		this._upsertProcessingPill(wrap, 'tokens', 'chat-footer-processing-tokens', formatTokenCount(tokens));
-	}
-	// ③ 积分（有数据才显示 ✓）
+	this._upsertProcessingPill(wrap, 'tokens', 'chat-footer-processing-tokens', formatTokenCount(tu?.total ?? 0));
+	// ③ 积分（同上常驻 ✓）
 	// ⚠ 主消息的积分只在 `tokenUsage.credit` 上（`creditUsed` 是 **ISubAgentData** 的字段 ✗，
-	//   两者属不同链路，不可混用 —— 委派卡那侧才读 `sa.creditUsed` ✓）
-	const credit = tu?.credit;
-	if (typeof credit === 'number') {
-		this._upsertProcessingPill(wrap, 'credit', 'chat-footer-processing-credit', formatCreditAmount(credit));
-	}
+	//   两者属不同链路，不可混用 —— 委派卡那侧才读 `sa.creditUsed` ✓）。
+	//   credit=0 是真实读数（免费/未计费 ✓）、undefined=尚未收到 ✓ —— 处理中都显示 0.00 ✓。
+	this._upsertProcessingPill(wrap, 'credit', 'chat-footer-processing-credit', formatCreditAmount(tu?.credit ?? 0));
 }
 
 /**
@@ -2828,6 +2873,35 @@ protected _tickProcessingElapsed(): void {
 	const wrap = msgEl?.querySelector('.chat-footer-processing') as HTMLElement | null;
 	if (!wrap) { return; }
 	this._syncProcessingUsagePills(wrap, last);
+}
+
+/**
+ * ★★★ 2026-09-20：完成态 footer 的用量药丸**补建**（幂等 ✓）。
+ *
+ * 根因（用户截图：完成态只有 `耗时: 57.2S` ✗）：完成态 footer 只在流结束时创建**一次**
+ * （见 `_ensureLastBubbleFooter` ✓），而 usage delta 可能**晚于** done 抵达 ✗ ⇒ 创建时
+ * `msg.tokenUsage` 还是 undefined ✗；此后 `updateMessage(id,{tokenUsage})` 只改数据、
+ * 不重建 footer ✗ ⇒ tokens/积分 pill 永不出现 ✓。
+ *（处理中为何正常 ✓：那里有每秒 ticker 反复 upsert ✓ —— 两处机制不同 ✗。）
+ *
+ * 做法：只在「**有数据但 pill 缺失**」时**重建 footer** ✓ —— 复用 `_createFooter()`
+ *（唯一构建入口 ✓：复制按钮 / 分隔线 / 三 pill 顺序 / tokens 明细浮层全部同源 ✓）；
+ * 无缺项则零动作 ✓。
+ */
+protected override _refreshDoneUsagePills(msg: IAgentChatMessage): void {
+	if (msg.isStreaming || !msg.tokenUsage) { return; }   // 处理中归 ticker 管 ✓；无数据不动作 ✓
+	const msgEl = this._findMessageElementById(msg.id);
+	const bubble = msgEl?.querySelector('.chat-bubble');
+	if (!bubble) { return; }
+	const footer = bubble.querySelector('.chat-bubble-footer') as HTMLElement | null;
+	if (!footer) { return; }
+	const has = (kind: FooterPillKind): boolean =>
+		!!footer.querySelector(`.chat-footer-pill.${PILL_ITEM_CLASS[kind]}`);
+	const needTokens = msg.tokenUsage.total !== undefined && !has('tokens');
+	const needCredit = msg.tokenUsage.credit !== undefined && !has('credit');
+	if (!needTokens && !needCredit) { return; }
+	footer.remove();
+	bubble.appendChild(this._createFooter(msg));
 }
 
 protected override _toggleNodeCollapse(

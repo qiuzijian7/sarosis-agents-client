@@ -1,4 +1,5 @@
 import { $, append, addDisposableListener, EventType, clearNode } from '../../../base/browser/dom.js';
+import { markRenderActivity } from '../../../base/common/renderActivityTrace.js';
 import { IToolCall } from './agentChatTypes.js';
 import { AgentChatPanelWebCard } from './agentChatPanel.webCard.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
@@ -22,6 +23,41 @@ function _svgIntrinsicSize(svg: string): { width: number; height: number } | und
 		return { width: parseFloat(vb[3]), height: parseFloat(vb[4]) };
 	}
 	return undefined;
+}
+
+/**
+ * ★★ 2026-09-20：图表渲染主题探测（mermaid 卡 / mermaid fence 兜底 / drawio 卡 / 预览标签**共用** ✓）。
+ *
+ * 痛点（用户截图：暗色聊天里的 mermaid 卡整块**白色** ✗）：旧判定只看 `body.classList`
+ * 有没有 `vs-dark` 等类 ✗ —— 该判定可能为 **false**（主题类不一定挂在 body 上、或类名不同 ✗）
+ * ⇒ `theme='default'` ⇒ 渲染**亮色** SVG，且 `renderChart` 会把预览面板**显式刷成 #ffffff** ✗✓。
+ *
+ * 修法：类名只是**快路径** ✓；不确定时读 **body 的实际计算背景色**做亮度判定
+ * （`lum = 0.299R + 0.587G + 0.114B < 128` ⇒ 暗色 ✓ —— 背景色不会骗人 ✓）；
+ * 拿不到颜色默认暗色（本聊天 UI 以暗色为主 ✓）。
+ * 打一行 `[DiagramTheme]` 诊断（bodyClass + bg + 结论 ✓）—— 下次日志可直接归因 ✓。
+ */
+export function detectDiagramTheme(container: HTMLElement): 'dark' | 'default' {
+	const doc = container.ownerDocument;
+	const bodyCls = doc.body.classList;
+	let theme: 'dark' | 'default' =
+		(bodyCls.contains('vs-dark') || bodyCls.contains('hc-black')
+			|| bodyCls.contains('vscode-dark') || bodyCls.contains('vscode-high-contrast'))
+			? 'dark'
+			: (bodyCls.contains('vs') || bodyCls.contains('hc-light')) ? 'default' : 'dark';
+	let bg = 'n/a';
+	if (bodyCls.value.trim() === '' || (!bodyCls.contains('vs-dark') && !bodyCls.contains('vs') && !bodyCls.contains('hc-black') && !bodyCls.contains('hc-light'))) {
+		// 一个主题类都没命中 ⇒ 类名判定不可信 ✗ ⇒ 用实际背景色复核 ✓
+		const view = doc.defaultView;
+		bg = view ? view.getComputedStyle(doc.body).backgroundColor : 'n/a';
+		const m = bg.match(/-?\d+(?:\.\d+)?/g);
+		if (m && m.length >= 3) {
+			const lum = (Number(m[0]) * 299 + Number(m[1]) * 587 + Number(m[2]) * 114) / 1000;
+			theme = lum < 128 ? 'dark' : 'default';
+		}
+	}
+	try { console.info(`[DiagramTheme] bodyClass="${bodyCls.value}" bg=${bg} → ${theme}`); } catch { /* ignore */ }
+	return theme;
 }
 
 /**
@@ -277,10 +313,9 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 			let currentSvg = '';
 			let zoom = 1; // 1 = fit 卡片宽度
 			let baseMaxWidth = 0; // 渲染后从 svg 的 style.max-width 解析的自然宽度（px）
-			const bodyCls = this._container.ownerDocument.body.classList;
-			const ideIsDark = bodyCls.contains('vs-dark') || bodyCls.contains('hc-black')
-				|| bodyCls.contains('vscode-dark') || bodyCls.contains('vscode-high-contrast');
-			currentTheme = ideIsDark ? 'dark' : 'default';
+			// ★ 2026-09-20：改用鲁棒探测 ✗ —— body 类名可能缺失 ⇒ 旧判定 false ⇒
+			// 亮色渲染 + 面板被刷成 #ffffff（用户截图：卡片整块白 ✗✓），见 detectDiagramTheme 注释 ✓
+			currentTheme = detectDiagramTheme(this._container);
 
 			// 主题切换按钮（图标随当前主题变：暗色渲染中显示 ☀ = 切到亮色）
 			const themeBtn = mkIconBtn([], '切换亮/暗主题');
@@ -357,6 +392,9 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 			// 深色，切到亮色主题后黑字在深底上几乎不可见（= 用户看到的「未生效」）。
 			// 故背景必须随渲染主题联动。
 			const renderChart = async (theme: 'dark' | 'default') => {
+				// 活动标记（2026-09-20）：mermaid 渲染单次实测 69.8ms（card.create.tool），
+				// 是"无标记长任务"的候选源之一 ⇒ 打常量 tag 供 LONG_TASK 归因 ✓
+				markRenderActivity('mermaid');
 				previewPanel.style.background = theme === 'dark' ? 'var(--void-bg-1,#14171c)' : '#ffffff';
 				console.info(`[MermaidCard] renderChart start theme=${theme} markupLen=${fullMarkup.length} attached=${previewPanel.isConnected}`);
 				clearNode(previewPanel);
@@ -410,7 +448,11 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 			}));
 
 			// 首次渲染（跟随 IDE 主题）
-			void renderChart(currentTheme);
+			// ★★ 2026-09-20 视口延迟（性能）：改为「进入视口才渲染」——首屏/session 切换
+			//   时一次性建 N 张图表卡会同步排队 N 次 mermaid 渲染（实测 69.8ms/次，叠加成
+			//   LONG_TASK），而用户往往只看到最后几条 ⇒ 未看到的图表不必付这份成本。
+			//   主题按钮的**用户主动重渲**仍走直连（见上方 click 监听），不受影响 ✓。
+			this._renderWhenCardVisible(previewPanel, () => void renderChart(currentTheme));
 		}
 
 		// ── Tool-call-level error ──
@@ -456,6 +498,8 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 		loadingEl: HTMLElement,
 		copySvgBtn?: HTMLButtonElement,
 	): Promise<void> {
+		// 活动标记（2026-09-20）：markdown 代码块（```mermaid）的轻量预览路径同为重渲染点 ✓
+		markRenderActivity('mermaid');
 		const cmd = this._onExecuteCommand;
 		if (!cmd) {
 			loadingEl.textContent = 'Mermaid 渲染不可用';
@@ -463,9 +507,8 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 		}
 
 		try {
-			const bodyCls = this._container.ownerDocument.body.classList;
-			const isDark = bodyCls.contains('vs-dark') || bodyCls.contains('hc-black')
-				|| bodyCls.contains('vscode-dark') || bodyCls.contains('vscode-high-contrast');
+			// ★ 2026-09-20：同上，鲁棒主题探测 ✓
+			const isDark = detectDiagramTheme(this._container) === 'dark';
 			const svg = await cmd('_agentStudio.renderMermaidSvg', markup.replace(/\\n/g, '\n'), isDark ? 'dark' : 'default');
 			if (typeof svg === 'string' && svg.indexOf('<svg') !== -1) {
 				const safeSvg = this._sanitizeMermaidSvg(svg);
@@ -533,4 +576,5 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 		errEl.appendChild(document.createTextNode(shortMsg));
 		previewPanel.appendChild(errEl);
 	}
+
 }

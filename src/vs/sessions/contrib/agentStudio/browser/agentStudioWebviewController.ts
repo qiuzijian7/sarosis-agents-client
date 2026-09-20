@@ -1647,6 +1647,9 @@ export class AgentStudioWebviewController extends Disposable {
 					(p.agentId) as string,
 					p.sessionId as string,
 					p.name as string,
+					// ★ 2026-09-20：透传 `userInitiated` —— webview 的重命名 UI 传 true（服务端
+					// 据此打 `userRenamed` 标记），「首条消息自动命名」不传 ⇒ 不覆盖用户起的名字。
+					{ userInitiated: p.userInitiated === true },
 				);
 			case "agentSession.delete":
 				return (this.agentChatService as any).deleteAgentSession(

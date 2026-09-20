@@ -35,6 +35,11 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { URI } from '../../../../base/common/uri.js';
+import { joinPath } from '../../../../base/common/resources.js';
+import { AGENT_STUDIO_DATA_PATH_SETTING } from '../common/constants.js';
+import { SessionEventShadowLog } from './sessionEventShadowLog.js';
 import { detectGitBash } from './providers/tool/gitBashProvider.js';
 import { execBackgroundNotifier } from './providers/tool/execBackgroundNotify.js';
 import { resolveShellDialect } from '../common/shellDialect.js';
@@ -681,6 +686,42 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		} catch (err) {
 			this._logService.warn(`[AgentDriver] failed to save turn checkpoint for session ${sessionId}: ${err}`);
 		}
+		// B1 影子写（append-only JSONL，只写不读，默认关）——见 sessionEventShadowLog.ts 头注释
+		try {
+			this._getShadowLog()?.appendCheckpoint(sessionId, snapshot);
+		} catch { /* 影子设施绝不阻断 */ }
+	}
+
+	/**
+	 * B1 影子日志器（方案主线 B · 事件溯源验证体）——懒初始化。
+	 * fileService/environmentService 经 invokeFunction 懒取（不在构造器加依赖，
+	 * 避免影响既有 DI 装配与手工 new 的单测；同款先例见 :913 的 detectGitBash 段）。
+	 */
+	private _shadowLog: SessionEventShadowLog | undefined | null;
+	private _getShadowLog(): SessionEventShadowLog | undefined {
+		if (this._shadowLog === undefined) {
+			try {
+				const fileService = this._instantiationService.invokeFunction(accessor => accessor.get(IFileService));
+				const environmentService = this._instantiationService.invokeFunction(accessor => accessor.get(INativeEnvironmentService));
+				// 数据根与 chat-history 同约定（agentChatService._getGlobalDataUri）：
+				// 自定义设置优先；否则 `userRoamingDataHome/agent-studio/`（= 产品的
+				// `~/.vssaros/agent-studio/`，dev 为 `~/.vssaros-dev/agent-studio/`）。
+				// 落盘约定：服务数据统一走 sarosPaths.resolveAgentStudioDataRoot（~/.vssaros/ 根，
+				// 2026-09-20 统一）；shadow 日志目录保持 User/agent-studio/shadow/ 现状不动。
+				const customPath = this._configurationService.getValue<string>(AGENT_STUDIO_DATA_PATH_SETTING);
+				const globalDataUri = customPath ? URI.file(customPath) : joinPath(environmentService.userRoamingDataHome, 'agent-studio');
+				this._shadowLog = new SessionEventShadowLog({
+					fileService,
+					shadowDirUri: joinPath(globalDataUri, 'shadow'),
+					log: m => this._logService.info(m),
+					logWarn: m => this._logService.warn(m),
+				});
+			} catch (err) {
+				this._logService.warn(`[AgentDriver] shadow log 初始化失败（禁用）: ${err instanceof Error ? err.message : String(err)}`);
+				this._shadowLog = null;
+			}
+		}
+		return this._shadowLog ?? undefined;
 	}
 
 	/**
@@ -696,6 +737,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		} catch (err) {
 			this._logService.warn(`[AgentDriver] failed to clear turn checkpoint for session ${sessionId}: ${err}`);
 		}
+		// B1 影子写终止标记（turn-complete）
+		try {
+			this._getShadowLog()?.markTurnComplete(sessionId);
+		} catch { /* 影子设施绝不阻断 */ }
 	}
 
 	// ─── 统一执行入口 ─────────────────────────────────────
@@ -2017,6 +2062,17 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		// content 字段单独用 wrapUserQuery 包装，二者保持一致、不重复包装。
 		const wrappedUserText = wrapUserQuery(message);
 		const contentParts = buildUserContentParts(message, options.attachments);
+		// ★ 2026-09-20 可观测（用户报「发送代码片段 llm 好像没收到」✓，真机日志里**无法**区分
+		//   "没有附件"与"附件被下游丢弃" ✗）：有附件必须留痕 ✓ ——
+		//   本条出现而模型仍看不到片段 ⇒ 查 pi 侧转换（`piLoop/kernelMessages` ✓ 已修 ✓）。
+		if (options.attachments?.length) {
+			const textBlocks = (contentParts ?? []).filter(p => p.type === 'text').length;
+			this._logService.info(
+				`[AgentDriver] user attachments: n=${options.attachments.length} `
+				+ `(kinds=${options.attachments.map(a => a.kind ?? a.type).join(',')}) `
+				+ `→ contentParts=${contentParts?.length ?? 0} (textBlocks=${textBlocks}) messageLen=${message.length}`,
+			);
+		}
 
 		const userMessage: import('../common/providers.js').IChatMessage = {
 			role: 'user',

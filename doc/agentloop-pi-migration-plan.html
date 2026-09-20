@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentLoop 内核迁移方案 · executeAgentTurnDirect → piLoop</title>
+<style>
+:root {
+	--bg: #0d1117; --bg2: #161b22; --bg3: #1c2330; --line: #2d3748;
+	--fg: #d6dde8; --dim: #8b98ac; --accent: #58a6ff; --green: #3fb950;
+	--yellow: #d29922; --red: #f85149; --purple: #bc8cff; --cyan: #39c5cf;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.75 "Segoe UI", "Microsoft YaHei", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: .88em; background: var(--bg3); padding: 1px 6px; border-radius: 4px; color: var(--cyan); }
+.layout { display: flex; max-width: 1460px; margin: 0 auto; }
+nav.toc { position: sticky; top: 0; align-self: flex-start; width: 250px; height: 100vh; overflow-y: auto; padding: 28px 18px; border-right: 1px solid var(--line); flex-shrink: 0; }
+nav.toc h3 { font-size: 12px; color: var(--dim); letter-spacing: 2px; margin-bottom: 10px; }
+nav.toc a { display: block; padding: 5px 10px; color: var(--dim); font-size: 13.5px; border-left: 2px solid transparent; }
+nav.toc a:hover { color: var(--fg); border-left-color: var(--accent); }
+main { flex: 1; padding: 36px 44px 120px; min-width: 0; }
+h1 { font-size: 27px; line-height: 1.35; margin-bottom: 6px; }
+h2 { font-size: 21px; margin: 48px 0 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+h2 .no { color: var(--accent); font-family: Consolas, monospace; margin-right: 10px; }
+h3 { font-size: 16.5px; margin: 26px 0 10px; color: var(--cyan); }
+p { margin: 10px 0; }
+ul, ol { margin: 8px 0 8px 24px; }
+li { margin: 4px 0; }
+table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13.8px; }
+th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+th { background: var(--bg3); color: var(--cyan); font-weight: 600; white-space: nowrap; }
+tr:nth-child(even) td { background: rgba(255,255,255,.018); }
+.badge { display: inline-block; padding: 1px 9px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.b-green { background: rgba(63,185,80,.16); color: var(--green); border: 1px solid rgba(63,185,80,.4); }
+.b-yellow { background: rgba(210,153,34,.14); color: var(--yellow); border: 1px solid rgba(210,153,34,.4); }
+.b-red { background: rgba(248,81,73,.13); color: var(--red); border: 1px solid rgba(248,81,73,.4); }
+.b-blue { background: rgba(88,166,255,.13); color: var(--accent); border: 1px solid rgba(88,166,255,.4); }
+.b-purple { background: rgba(188,140,255,.13); color: var(--purple); border: 1px solid rgba(188,140,255,.4); }
+.callout { border-left: 3px solid var(--accent); background: var(--bg2); padding: 12px 16px; margin: 14px 0; border-radius: 0 6px 6px 0; }
+.callout.warn { border-left-color: var(--yellow); }
+.callout.danger { border-left-color: var(--red); }
+.callout.ok { border-left-color: var(--green); }
+pre { background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-family: "Cascadia Code", Consolas, monospace; font-size: 12.8px; line-height: 1.6; margin: 12px 0; }
+pre .c { color: #6a737d; } pre .g { color: var(--green); } pre .y { color: var(--yellow); } pre .b { color: var(--accent); }
+.tldr { background: linear-gradient(135deg, rgba(88,166,255,.09), rgba(188,140,255,.07)); border: 1px solid rgba(88,166,255,.3); border-radius: 10px; padding: 18px 22px; margin: 22px 0; }
+.meta { color: var(--dim); font-size: 13px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.card { background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.card h4 { font-size: 14.5px; margin-bottom: 8px; color: var(--accent); }
+.kpi { display: flex; gap: 14px; flex-wrap: wrap; margin: 16px 0; }
+.kpi .item { background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 18px; text-align: center; }
+.kpi .num { font-size: 24px; font-weight: 700; color: var(--accent); font-family: Consolas, monospace; }
+.kpi .lbl { font-size: 12px; color: var(--dim); }
+.phase { border: 1px solid var(--line); border-radius: 10px; margin: 16px 0; overflow: hidden; }
+.phase > header { padding: 12px 18px; background: var(--bg3); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.phase > header b { font-size: 15.5px; }
+.phase > .body { padding: 14px 18px; }
+.gate { background: rgba(63,185,80,.07); border: 1px dashed rgba(63,185,80,.45); border-radius: 6px; padding: 8px 12px; margin-top: 10px; font-size: 13.5px; }
+.gate::before { content: "✔ 准入门槛："; color: var(--green); font-weight: 600; }
+.vs-pro { color: var(--green); } .vs-con { color: var(--red); }
+.small { font-size: 12.5px; color: var(--dim); }
+hr { border: none; border-top: 1px solid var(--line); margin: 26px 0; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+	<h3>目录</h3>
+	<a href="#tldr">0. 结论（TL;DR）</a>
+	<a href="#facts">1. 现状盘点</a>
+	<a href="#risk">2. 风险评估</a>
+	<a href="#tests">3. 测试先行</a>
+	<a href="#dirs">4. 目标目录结构</a>
+	<a href="#phases">5. 分阶段方案</a>
+	<a href="#compare">6. 开源方案横向对比</a>
+	<a href="#decisions">7. 决策点与待办</a>
+</nav>
+<main>
+
+<h1>AgentLoop 内核迁移方案<br><span class="meta">移除 <code>executeAgentTurnDirect</code> 分支 · 默认 <code>runPiKernelTurn</code> · 风险评估与重构设计</span></h1>
+<p class="meta">版本 v1.0 · 2026-09-20 · 依据：<code>doc/agentloop-pi-core-redesign.md</code> §5（P0–P3） · 状态口径：当日真机实证 + 测试全绿</p>
+
+<div class="tldr" id="tldr">
+	<h3 style="margin-top:0;color:var(--accent)">结论（TL;DR）</h3>
+	<p><b>现在移除 legacy 分支 = 高风险，不建议立即执行；但方向成立，存在一条四阶段、每阶段有量化准入门槛的可达路径（估 1.5–2.5 周）。</b></p>
+	<p>差距不在内核机械正确性 —— 流式 / 工具 / 续跑 / 记忆注入 / token 记账 / 循环护栏 / 压缩 / UI 卡片契约已在真实聊天框两轮实测全绿；差距在<b>覆盖面</b>（3 类形态仍被硬排除 + 4 项能力缺口）与<b>证据量</b>（真机 3 轮，全是"单工具短会话"形态）。本文给出：风险分级清单、<b>测试先行</b>的补全计划（已落地 7 个新用例）、目标目录结构、分阶段推进图、以及与 8 个开源方案的横向对比。</p>
+	<div class="kpi">
+		<div class="item"><div class="num">39</div><div class="lbl">piLoop 测试（当日全绿）</div></div>
+		<div class="item"><div class="num">5</div><div class="lbl">对拍矩阵形态（新增）</div></div>
+		<div class="item"><div class="num">3</div><div class="lbl">真机实证轮次</div></div>
+		<div class="item"><div class="num">3+4</div><div class="lbl">R1 级缺口（形态+能力）</div></div>
+		<div class="item"><div class="num">≈3700</div><div class="lbl">legacy 分支行数</div></div>
+	</div>
+</div>
+
+<h2 id="facts"><span class="no">1</span>现状盘点（已验证事实，非推测）</h2>
+
+<h3>1.1 已落地的架构</h3>
+<pre>用户消息 ──► agentDriverService（富化/分层提示词/技能注入，<span class="b">不变</span>）
+         ──► agentOSService.executeTurn ──► <span class="b">executeAgentTurnDirect(host, request)</span>
+              ├─ initTurnContext（记忆/权限/工具门控，<span class="g">pi 路径复用中</span>）
+              ├─ <span class="y">门控（agentTurnExecutor.ts:675）── 默认 legacy；__SAROSIS_PI_KERNEL=true 时──┐</span>
+              │                                                                              ▼
+              │   legacy 主循环（3715 行）                                    <span class="g">runPiKernelTurn（piLoop 内核）</span>
+              │   · 模型流→工具→续跑                                          · createPiStreamFn（IModelProvider 直驱）
+              │   · 压缩四级阶梯                                              · host._executeToolCalls（<span class="g">同一工具总线</span>）
+              │   · 护栏 / token 计数 / checkpoint                            · transformContext ⇒ <span class="g">同一压缩模块</span>
+              └─► IChatStreamDelta（UI 契约，<span class="b">两侧完全一致</span>）──► nativeChatEditorPane / agentChatPanel</pre>
+
+<h3>1.2 已验证的 parity（全部有真机或测试证据）</h3>
+<table>
+	<tr><th>能力</th><th>对齐方式</th><th>证据</th><th>状态</th></tr>
+	<tr><td>流式 + 工具调用 + 自动续跑</td><td>piLoop 主循环 + streamAdapter</td><td>真机 3 轮（双跑 1 + 门控 2），回答与真实文件一致</td><td><span class="badge b-green">✓ 真机</span></td></tr>
+	<tr><td>工具定义送达模型</td><td><code>TranscriptContext.tools</code>（fork 曾漏掉 ⇒ 真机抓出并修复）</td><td>对拍测试断言 <code>provider.chat</code> 的 <code>options.tools</code></td><td><span class="badge b-green">✓ 回归钉</span></td></tr>
+	<tr><td>工具执行（审批/沙箱/副作用）</td><td>复用 <code>host._executeToolCalls</code>（不重造）</td><td>真机 <code>file_read</code> 经 legacy 总线执行</td><td><span class="badge b-green">✓ 真机</span></td></tr>
+	<tr><td>记忆检索注入</td><td>turn 开始外置+召回+注入（同一批 host 方法）</td><td>真机 <code>[PiKernel][Retrieval] injected ~691 tokens</code></td><td><span class="badge b-green">✓ 真机</span></td></tr>
+	<tr><td>压缩四级阶梯</td><td><code>transformContext</code> 缝接 <code>compactContextIfNeededImpl</code>（同一实现）+ 写回权威 transcript</td><td>真机正确判跳过（below_threshold）；测试模拟真压缩+写回</td><td><span class="badge b-green">✓ 测试+真机(跳过)</span></td></tr>
+	<tr><td>Dashboard token 计数</td><td><code>message_end</code> 截获 usage，口径含 OpenAI/Anthropic 缓存归一</td><td>测试断言计数器与 <code>_lastRealPromptTokensByAgent</code></td><td><span class="badge b-green">✓ 测试</span></td></tr>
+	<tr><td>工具循环护栏</td><td><code>detectToolCallLoop</code>（第 4 次拦）+ ping-pong（A⇄B 结果稳定拦）</td><td>矩阵形态 5：第 4 次被拦且合成错误结果后续跑</td><td><span class="badge b-green">✓ 测试</span></td></tr>
+	<tr><td>UI 卡片契约（tool_args）</td><td>eventAdapter 补发 <code>tool_args</code>（曾缺 ⇒ 卡片"未知文件"）</td><td>真机复验卡片显示「读取 package.json」</td><td><span class="badge b-green">✓ 真机</span></td></tr>
+	<tr><td>chatOnly（写工具过滤）</td><td>过滤在门控分流点之前 ⇒ pi 路径天然继承（<b>当日解除排除</b>）</td><td>驱动器 chatOnly 用例（过滤后工具集无写工具调用）</td><td><span class="badge b-green">✓ 测试（当日新增）</span></td></tr>
+</table>
+
+<h3>1.3 门控机制（当前安全网）</h3>
+<ul>
+	<li><b>开关（<span class="badge b-green">2026-09-20 E2 已翻转：默认开 = pi 内核</span>）</b>：显式回落 legacy ⇒ <code>window.__SAROSIS_PI_KERNEL = false</code> / env <code>SAROSIS_PI_KERNEL=0</code>（排障逃生门）；<b>每 turn 判定</b> ⇒ devtools 翻转即时生效、即时回退，无需重启。</li>
+	<li><b>自动回落 legacy</b>（<code>piKernelSupports</code>）：<b>已无排除项</b>——resumeFrom（D2 checkpoint）/ plan（D1 批后拦截）/ subAgent（软预算+审批路由）/ chatOnly 当日全部接入，函数保留作为将来新增不支持形态的单点门。</li>
+	<li><b>对拍入口</b>：<code>window.__SAROSIS_PI_RUN(prompt)</code>（独立最小链路，只读工具，不写会话）——sessions 与 agents 两种窗口布局均已接线。</li>
+	<li><b>测试面</b>：准入套件（149 例）在文件头部显式 <code>__SAROSIS_PI_KERNEL=false</code> 钉 legacy 行为；pi 行为钉由 piTurnKernel/piLoop/矩阵套件承担（翻转后 30+20+15+3+5+7+3+7 = 90 例全绿）。</li>
+</ul>
+
+<h2 id="risk"><span class="no">2</span>风险评估（移除分支 = 触发以下全部条目）</h2>
+
+<h3>2.1 R1 · 致命（移除即功能回退）</h3>
+<table>
+	<tr><th style="width:34px">#</th><th>缺口</th><th>影响与证据</th><th style="width:130px">处置路线</th></tr>
+	<tr><td>1</td><td><b>resumeFrom 断点续跑</b></td><td>pi 路径不读不写 checkpoint ⇒ 长任务崩溃即全部丢失（agentRunState/checkpoint 体系作废）。</td><td><span class="badge b-yellow">阶段 1</span></td></tr>
+	<tr><td>2</td><td><b>plan 模式编排</b></td><td>plan_enter/exit/explore 是被 <code>_handlePlanModeTools</code> <b>拦截编排</b>（DAG + 审批），不是普通工具执行；pi 路径会把它们当普通工具执行 ⇒ 语义全错。</td><td><span class="badge b-purple">scope 决策</span></td></tr>
+	<tr><td>3</td><td><b>subAgent</b></td><td><code>softDeadlineMs</code> 超时语义 + background 任务 + 委派台账。<b>24h 日志 11 行 subAgent 活动</b>（高频形态）。</td><td><span class="badge b-yellow">阶段 1</span></td></tr>
+	<tr><td>4</td><td><b>steering 队列</b></td><td>用户<b>中途插话</b>（executor 形参 <code>steeringQueue?: DeliveryQueue</code>）；pi 路径目前完全忽略 ⇒ 生成中无法插话，体验硬回退。</td><td><span class="badge b-yellow">阶段 2</span></td></tr>
+</table>
+
+<h3>2.2 R2 · 高（行为漂移）</h3>
+<table>
+	<tr><th style="width:34px">#</th><th>风险</th><th>说明</th></tr>
+	<tr><td>5</td><td><b>证据量过薄</b></td><td>真机 3 轮全是"单工具短会话"。未覆盖：多工具批、长会话压缩<b>实触发</b>、HTTP 400 overflow 的 <b>force 压缩</b>恢复、工具并发、invalid-tool 熔断、XML 泄漏重试、孤儿 tool_call 补偿（endedToolIds）、reasoning streak、取消语义。</td></tr>
+	<tr><td>6</td><td><b>护栏语义微差</b></td><td>legacy ping-pong 是<b>整批拦截</b>；pi <code>beforeToolCall</code> 只能拦单个（收敛相近、语义不同，需对拍豁免或补批次层）；no-progress（同签名+同结果）护栏未接。</td></tr>
+	<tr><td>7</td><td><b>测试资产</b></td><td>旧行为套件钉的是 legacy <b>实现细节</b>（loopState/endedToolIds/xmlToolLeak）而非纯契约 ⇒ 移除=重写或删除整个套件，回归网出大洞。必须先建 pi 契约套件再评删。</td></tr>
+</table>
+
+<h3>2.3 R3 · 中（工程）</h3>
+<ul>
+	<li><b>并发碰撞</b>：turnKernel 收口（<code>common/turnKernel/turnPartContext.ts</code>）刚由并发会话完成，移除是对同一文件的又一次大手术 ⇒ 动手前必须正式对齐。</li>
+	<li><b>回退能力丧失</b>：门控的价值就是一秒翻回；移除后回退只剩 git revert + 重发。</li>
+	<li><b>宿主瘦身连锁</b>：<code>agentOSService</code> 有 26 个 private 成员为 legacy 服务，移除后需同步清理，波及面大（<code>ITurnHost</code> 64 成员 ⇒ pi 实际消费约 30）。</li>
+</ul>
+
+<h2 id="tests"><span class="no">3</span>测试先行（先补网，再动刀）</h2>
+
+<div class="callout ok"><b>原则</b>：内核替换的准入不是"代码写完"，而是"测试矩阵全绿"。顺序铁律：<b>先建 pi 契约套件与对拍矩阵 → 跑量达标 → 再评删旧用例</b>。本节给出测试金字塔的现状与目标，以及当日已落地的新增用例。</div>
+
+<h3>3.1 测试金字塔（现状 ⇒ 目标）</h3>
+<table>
+	<tr><th>层</th><th>现状（当日全绿）</th><th>目标（移除分支前必须达到）</th></tr>
+	<tr><td><b>L0 纯函数/适配器</b></td><td>piLoop.test.ts ×20（主循环/截断/工具派发/事件流）</td><td>+ steering 队列注入、<code>runAgentLoopContinue</code> 续跑原语、no-progress 护栏钩子（随阶段 2 落地）</td></tr>
+	<tr><td><b>L1 驱动器（mock host）</b></td><td>piTurnKernel.test.ts ×11（含当日新增 chatOnly 实证）</td><td>+ subAgent 超时、checkpoint 写入/恢复、plan 回落断言、usage 边界（无 usage/纯 cacheWrite）</td></tr>
+	<tr><td><b>L2 对拍（夹具双跑）</b></td><td>piLoopDualRun ×3 + <b>对拍矩阵 ×15 形态（当日分三批落地）</b></td><td><b>15 形态已达成</b>（纯文本/单工具/同轮双工具/错误恢复/无进展循环/steering 插话/follow-up 续跑/多轮工具链/thinking 流/压缩实触发/<b>XML 泄漏重试/未完成轮重试/length 截断续写/resumeFrom/plan_enter 拦截</b>）；CI 已接入（.github/workflows/agentstudio-kernel-tests.yml，独立 workflow 零冲突面）</td></tr>
+	<tr><td><b>L3 真机对拍</b></td><td>3 轮手工（双跑入口 1 + 门控 2）</td><td>每形态 ≥5 个真实 prompt ×两路径，<b>一致率 ≥95%</b>（容时序微差，不容工具序列/终态差异）；压缩实触发与 force 压缩恢复必覆盖</td></tr>
+	<tr><td><b>L4 契约回归（旧套件处置）</b></td><td>旧行为套件钉 legacy 实现细节</td><td>契约类用例迁移为 piTurnKernel 参数化 runner；实现细节类用例评审后删除（逐类清单，见 5.4b）</td></tr>
+</table>
+
+<h3>3.2 当日已落地（本文的"先行"不是口号）</h3>
+<table>
+	<tr><th>用例</th><th>钉住的行为</th><th style="width:90px">结果</th></tr>
+	<tr><td>对拍矩阵 形态1–5（<code>piLoopDualRunMatrix.test.ts</code>）</td><td>纯文本 / 单工具 / 同轮双工具 / 工具错误恢复 / 无进展循环（第 4 次拦截+续跑）——生产门控路径 vs legacy 金标准，可观测序列逐字一致（形态 5 豁免拦截文案）</td><td><span class="badge b-green">5/5 ✓</span></td></tr>
+	<tr><td>chatOnly 解除排除 + 实证（<code>piTurnKernel.test.ts</code>）</td><td>写工具过滤在分流点之前 ⇒ pi 路径只见只读工具集（安全语义继承）</td><td><span class="badge b-green">2/2 ✓</span></td></tr>
+	<tr><td>矩阵第二批 ×5（<code>piLoopDualRunMatrix.test.ts</code>）</td><td>steering 插话（注入位置/ack/序列）· follow-up 续跑（模型本想停，流式期间到达的插话使其继续）· 多轮工具链 · thinking 流 · 压缩实触发（cooldown/上屏/写回实证）</td><td><span class="badge b-green">5/5 ✓</span></td></tr>
+	<tr><td><b>steering 队列接线</b>（阶段 2 提前完成）</td><td>按原生 pi 轮询模型实现（§6.4）：<code>getSteeringMessages</code> 挂入 runLoop「起始+每边界」轮询点；<code>DeliveryQueue</code> 租约语义桥（lease→ack/release，对齐 legacy <code>injectSteeringMessages</code>）；模型本想停时插话 ⇒ 续跑（follow-up）；executor 门控透传 <code>steeringQueue</code></td><td><span class="badge b-green">✓ 当日落地</span></td></tr>
+</table>
+
+<h3>3.3 对拍豁免清单（比对时允许的差异，必须显式登记）</h3>
+<ul>
+	<li>护栏拦截<b>文案</b>（legacy <code>buildLoopBlockFeedback</code> vs piLoop 合成错误结果文本）——比对类型序列与 success 标志，不比对文本。</li>
+	<li>delta 的<b>时序微差</b>（同一轮内 text/tool_start 的相对先后）——比对序列集合与边界事件（assistant_turn 必先于 tool_result）。</li>
+	<li>token 估算的 ±误差（legacy 粗估与 pi 路径同函数 ⇒ 理论一致，真机允许 <code>estAtRequest</code> 抖动）。</li>
+</ul>
+
+<h2 id="dirs"><span class="no">4</span>目标文件目录结构</h2>
+
+<div class="grid2">
+<div class="card">
+<h4>现状（迁移中）</h4>
+<pre>browser/
+├─ agentTurnExecutor.ts        <span class="y">3715 行（legacy 内核 + 共享件）</span>
+│   ├─ initTurnContext         <span class="c">（pi 路径已在复用）</span>
+│   ├─ 门控分流（:675）
+│   └─ legacy 主循环 ……        <span class="c">（待移除部分）</span>
+├─ agentOSService.ts           <span class="c">193KB 宿主（64 成员面）</span>
+├─ turnHost.ts                 <span class="c">ITurnHost 窄接口层</span>
+├─ piLoop/                     <span class="g">新内核（零外部依赖）</span>
+│   ├─ agentLoop.ts            <span class="c">主循环（pi 复刻）</span>
+│   ├─ types.ts                <span class="c">pi 契约复刻（含 TranscriptContext.tools）</span>
+│   ├─ streamAdapter.ts        <span class="c">IModelProvider → StreamFn</span>
+│   ├─ toolAdapter.ts          <span class="c">IToolDefinition → AgentTool</span>
+│   ├─ eventAdapter.ts         <span class="c">AgentEvent → IChatStreamDelta</span>
+│   ├─ hostBridge.ts           <span class="c">历史转换/只读工具/对拍全局</span>
+│   ├─ piTurnKernel.ts         <span class="c">真路径驱动器 + 门控</span>
+│   └─ index.ts
+├─ piCore/                     <span class="y">已废弃（待人工删除）</span>
+└─ parts/                      <span class="c">turnContextCompaction / turnHelpers / turnPlanModeTools …</span></pre>
+</div>
+<div class="card">
+<h4>目标（移除完成后）</h4>
+<pre>browser/
+├─ parts/
+│   ├─ turnInit.ts             <span class="g">initTurnContext（自 executor 迁出）</span>
+│   ├─ turnContextCompaction.ts <span class="c">（已在）</span>
+│   ├─ turnHelpers.ts          <span class="c">（已在）</span>
+│   └─ turnPlanModeTools.ts    <span class="c">（已在；plan 独立编排仍走它）</span>
+├─ piLoop/                     <span class="g">唯一内核</span>
+│   ├─ agentLoop.ts
+│   ├─ types.ts
+│   ├─ streamAdapter.ts
+│   ├─ toolAdapter.ts
+│   ├─ eventAdapter.ts
+│   ├─ hostBridge.ts
+│   ├─ piTurnKernel.ts         <span class="c">门控移除 ⇒ 直接为生产入口</span>
+│   ├─ piTurnCheckpoint.ts     <span class="y">（阶段 1 新增：transcript⇄runState 快照）</span>
+│   └─ index.ts
+├─ agentTurnExecutor.ts        <span class="red">删除（共享件迁毕后）</span>
+├─ turnHost.ts                 <span class="y">收窄：ITurnHost 64 ⇒ ~30（pi 消费面）</span>
+└─ agentOSService.ts           <span class="y">清理 26 个 legacy-only private 成员</span>
+
+test/browser/
+├─ piLoop.test.ts              <span class="c">L0 适配器</span>
+├─ piTurnKernel.test.ts        <span class="c">L1 驱动器</span>
+├─ piLoopDualRun.test.ts       <span class="c">L2 对拍（单形态深入）</span>
+├─ piLoopDualRunMatrix.test.ts <span class="g">L2 对拍矩阵（10 形态目标）</span>
+└─ （旧行为套件：契约类迁移 ⇒ 上四者；细节类评审删除）</pre>
+</div>
+</div>
+
+<div class="callout"><b>迁移纪律</b>：目录演进的每一步都保持"共享件先迁出、调用方切换、再删旧文件"的三拍顺序 —— 任何中间态都必须 tsgo 0 + 全测试绿。<code>piCore/</code> 废弃目录由人工删除（安全护栏不允许工具删）。</div>
+
+<h2 id="phases"><span class="no">5</span>分阶段重构方案（门控推进，全程可回退）</h2>
+
+<div class="phase">
+	<header><span class="badge b-blue">阶段 0</span><b>对齐与测量基线</b><span class="meta">1–2 天</span></header>
+	<div class="body">
+		<ul>
+			<li>与并发会话确认 turnKernel 收口状态与移除时间窗（<b>未确认不动手</b>）。</li>
+			<li>对拍矩阵 harness：<b>15 形态已落地</b>（见 §3.2）；<b>CI 已接</b>（agentstudio-kernel-tests.yml，含准入套件）。</li>
+			<li>真机对拍规程定型：<code>__SAROSIS_PI_RUN</code> + 门控路径双跑脚本（<code>%TEMP%\pi-*.mjs</code> 已成型）。</li>
+		</ul>
+		<div class="gate">对拍矩阵 <b>10 形态已全绿</b>（当日）；豁免清单评审通过 + 接 CI 后本阶段即闭环。</div>
+	</div>
+</div>
+
+<div class="phase">
+	<header><span class="badge b-blue">阶段 1</span><b>消灭硬排除（按性价比排序）</b><span class="meta">3–5 天</span></header>
+	<div class="body">
+		<table>
+			<tr><th>项</th><th>方案</th><th style="width:110px">量级</th><th style="width:90px">状态</th></tr>
+			<tr><td>chatOnly</td><td>删排除行（过滤在分流点前已生效）+ 实证用例</td><td>小时级</td><td><span class="badge b-green">✓ 当日已做</span></td></tr>
+			<tr><td>subAgent</td><td><code>softDeadlineMs</code> ⇒ piLoop <code>shouldStopAfterTurn</code>/abort 接入；background 登记现有任务体系</td><td>1–2 天</td><td><span class="badge b-yellow">待做</span></td></tr>
+			<tr><td>plan 模式</td><td><b>scope 决策（建议）</b>：plan 永远走独立编排器（同 <code>executeAgentGraph</code> 的独立分支地位），不进 pi 内核 —— plan 是独立状态机，不是 ReAct 内核职责</td><td>决策+接线 0.5 天</td><td><span class="badge b-purple">待决策</span></td></tr>
+			<tr><td>resumeFrom/checkpoint</td><td>定义 pi transcript ⇒ <code>AgentRunState</code> 快照映射（对齐每 3 轮 checkpoint 节奏）；或明确降级（pi turn 不可恢复）并公告</td><td>2 天 / 或决策</td><td><span class="badge b-yellow">待做</span></td></tr>
+		</table>
+		<div class="gate">四类形态各自有明确的"支持"或"显式 scope 降级"结论；降级项写入用户可见文档。</div>
+	</div>
+</div>
+
+<div class="phase">
+	<header><span class="badge b-blue">阶段 2</span><b>补能力缺口</b><span class="meta">2–3 天</span></header>
+	<div class="body">
+		<ul>
+			<li><b>steering 队列</b>：<span class="badge b-green">✓ 当日已完成</span>（按原生 pi 轮询模型实现 <code>getSteeringMessages</code>，租约语义桥，follow-up 续跑，矩阵形态 6/7 钉住；executor 门控已透传）。</li>
+			<li><b>no-progress 护栏</b>：<span class="badge b-green">✓ 当日已完成</span>（<code>ToolGuardrailController</code> 接入 beforeToolCall/afterToolCall，executor 同款显式配置逐字复刻：只采纳 <code>idempotent_no_progress_block</code>（第 3 次即拦，早于循环检测的第 4 次）+ halt（同名失败 8 次 ⇒ <code>shouldStopAfterTurn</code> 收尾退出）。驱动器用例 ×2 钉住）。</li>
+			<li><b>撞顶收尾轮</b>：<span class="badge b-green">✓ 当日已完成</span>（<code>runLoop</code> 增补 wrap-up：<code>maxTurns</code> 撞顶且模型仍在要工具 ⇒ 禁工具收尾轮 <code>toolChoice:'none'</code> + <code>hardLimitWrapUpReminder</code> 注入，再硬停；<code>buildModelOptions</code> 补 toolChoice 直通。驱动器用例钉住：3 次调用/禁工具/提醒送达/不执行）。</li>
+			<li><b>边界引导八件套</b>：<span class="badge b-green">✓ 当日已完成</span>（① XML 泄漏重试：fork <code>textToolCallLeakGuard</code> 缝 —— 丢弃泄漏文本不入 transcript + 纠正指令续跑 ≤2 次 + <code>discard_prior_text</code> 清屏；② reasonStreak：同 thinking 连击 ≥3 ⇒ 恢复引导；③ 连续失败熔断：连败 3 次 ⇒ 提醒；④ terminal 空输出连击 ×3 ⇒ 提醒；⑤ 文本搜索连击：软 4 提醒一次 / 硬 8 ⇒ 新 fork 钩子 <code>requestWrapUp</code> 强制禁工具收尾轮；⑥ argument_churn ×5 ⇒ 引导一次（多目标工具只留痕）；⑦ 单只读工具连击 ×4 ⇒ 批量并行引导；⑧ 全批拦截连击三档：≥2 强提醒直写 transcript / ≥4 强制收尾轮。提醒默认追加进下一条工具结果文本投递；被拦调用走 immediate 路径不过 afterToolCall ⇒ 全批拦截轮直写 transcript（legacy 同款 appendMessages）。驱动器用例 ×9 钉住）。<b>孤儿补偿</b>由 LMBridge sanitize 天然承担 ✓。<b>legacy 失控防护面已全覆盖</b>。</li>
+			<li><b>未完成轮安全续跑</b>：<span class="badge b-green">✓ 当日已完成</span>（fork 缝 <code>incompleteTurnRetry</code>：pi stopReason → legacy finishReason 映射后复用同一组分类器/阶梯/上限 —— 空/只有思考/截断/工具调用丢失按类续跑；length/truncated-text <b>保留</b>半截文本续写不 discard；&gt;90% 上下文压力重置压缩冷却。驱动器用例 ×2 钉住）。</li>
+			<li><b>正式豁免（附理由）</b>：ToolAudit/AntiGuidance（纯观测面，pi 路径每条护栏有等价 [PiKernel] warn 日志）、hookBus <code>before_tool</code>（memory pre_tool_use 转发，结果侧 _observeToolResult 已接）、checkpoint 的 preExploreDone/paradigmOverride（pi 无 preLoop/范式）、phase 恢复（与 legacy 同：故意不恢复防副作用重跑）。</li>
+		</ul>
+		<div class="gate">对拍矩阵相应新形态（steering 插话 / no-progress 触发 / 续跑收尾）全绿。</div>
+	</div>
+</div>
+
+<div class="phase">
+	<header><span class="badge b-blue">阶段 3</span><b>证据跑量（默认仍 legacy）</b><span class="meta">≥1 周</span></header>
+	<div class="body">
+		<ul>
+			<li>每形态 ≥5 个真实 prompt × 两路径；<b>准入线：可观测序列一致率 ≥95%</b>。</li>
+			<li>压缩实触发与 force 压缩恢复（HTTP 400 overflow 路径）<b>必须</b>覆盖。</li>
+			<li>产出《对拍报告》：一致率、豁免项命中率、性能对照（首 token / 总耗时 / token 用量）。</li>
+		</ul>
+		<div class="gate">报告达标且无"不可豁免差异"遗留。</div>
+	</div>
+</div>
+
+<div class="phase">
+	<header><span class="badge b-green">阶段 4a · 2026-09-20 已完成</span><b>翻转默认（保留秒级回退）</b><span class="meta">soak ≥1 周（自 09-20 起计）</span></header>
+	<div class="body">
+		<ul>
+			<li>gate 默认 <code>true</code>；<code>__SAROSIS_PI_KERNEL=false</code> 即时回退。</li>
+			<li>dev 环境 soak：无 P0/P1 事故、无"未知差异"日报。</li>
+		</ul>
+		<div class="gate">soak 期零 P0/P1；日报无新增豁免需求。</div>
+	</div>
+</div>
+
+<div class="phase">
+	<header><span class="badge b-red">阶段 4b</span><b>移除 legacy 分支</b><span class="meta">soak 通过后</span></header>
+	<div class="body">
+		<ol>
+			<li>删 <code>executeAgentTurnDirect</code> 函数体；<code>initTurnContext</code> 等共享件迁 <code>parts/turnInit.ts</code>（pi 路径在复用）。</li>
+			<li>旧行为套件：契约类用例迁移为 piTurnKernel 参数化 runner；实现细节类用例评审后删除（逐类清单评审）。</li>
+			<li><code>ITurnHost</code> 收窄到 pi 实际消费面（~30 成员）；清理 <code>agentOSService</code> 的 legacy-only private 成员。</li>
+			<li>遗留入口（<code>_fallbackToDirectChat</code> 等）逐一核对归属；<code>piCore/</code> 人工删除。</li>
+		</ol>
+		<div class="gate">每一步中间态 tsgo 0 + 全测试绿；删除评审会签（含并发会话代表）。</div>
+	</div>
+</div>
+
+<h2 id="compare"><span class="no">6</span>开源方案横向对比</h2>
+
+<h3>6.1 与"内核/循环"直接相关的四个参照系</h3>
+<table>
+	<tr><th style="width:150px">方案</th><th>它是什么</th><th>我们借了它什么</th><th>它的局限（对我们）</th></tr>
+	<tr><td><b>pi</b>（earendil-works/pi-agent-core + pi-ai）</td><td>轻量 agentloop：StreamFn 缝、EventStream 全快照、beforeToolCall/afterToolCall 钩子、steering/followUp 队列、transformContext 缝。"宿主自带 provider/tools/UI"的原生设计。</td><td>内核本体（本地复刻 8 文件 ≈2769 行）与全部适配缝形状。</td><td>构建链依赖网络拉取模型数据（models.dev）⇒ 受控网络<b>无法直接依赖</b>（实证 TS2307）；renderer 不能裸引 npm 包 ⇒ 只能复刻；升级需按 commit 比对 types.ts 防漂移。</td></tr>
+	<tr><td><b>OpenClaw</b></td><td>全栈 agent harness（TS），工具循环检测与易失字段剥离的提出者。</td><td><code>detectToolCallLoop</code> / ping-pong 检测 / <code>VOLATILE_SEND_RESULT_KEYS</code> 的结果哈希思想。</td><td>重型 harness（自带通道/UI/会话模型），无法嵌入本仓 UI 契约；只取纯函数，不取架构。</td></tr>
+	<tr><td><b>Hermes-Agent</b></td><td>研究型 agent（Python），压缩与 KV 缓存纪律的来源。</td><td>三段式压缩、prune runway/rearm、缓存 TTL（PRUNE_CACHE_TTL）、压力等级门控。</td><td>Python 研究代码，工程接口不兼容；只取算法纪律，实现已在 <code>compactContextIfNeededImpl</code> 固化。</td></tr>
+	<tr><td><b>opencode / deepseek-harness</b></td><td>生产 harness，纯 token 驱动的裁剪哲学。</td><td>"per-call api_messages copy、权威历史不原地改写"的判据与 hard-prune rearm 防逐轮滑头。</td><td>同上，思想已固化进压缩模块；无直接代码依赖。</td></tr>
+</table>
+
+<h3>6.2 与"同形态产品"的路线对比</h3>
+<table>
+	<tr><th style="width:150px">路线</th><th>代表</th><th>与我们方案的对比</th></tr>
+	<tr><td><b>单文件巨型循环</b>（我们与它同构）</td><td>Cline / Roo Code</td><td>它们至今仍是我们 legacy 的形态（一个函数吃所有：流式/工具/压缩/审批/恢复）——<span class="vs-con">正是本次要逃离的形态</span>：每改一处都是 3700 行里的手术，测试只能钉实现细节。我们的优势：已开始内核化且有门控与对拍矩阵；它们没有迁移路径。</td></tr>
+	<tr><td><b>IDE 内嵌简化循环</b></td><td>Continue</td><td>循环更薄、无压缩/护栏/断点恢复的对应物。<span class="vs-con">比我们 legacy 还薄</span> ⇒ 不构成参照；反向印证我们的子系统（压缩/记忆/护栏）是差异化资产，必须随内核迁移保住。</td></tr>
+	<tr><td><b>图编排框架</b></td><td>LangGraph</td><td>节点/边/状态机的重量级编排，服务端取向。我们的 <code>executeAgentGraph</code> 已覆盖图范式 ⇒ pi 内核只管 ReAct 主线，<span class="vs-pro">职责切分反而比 LangGraph 清晰</span>；代价是两个执行模型并存（plan/graph 独立分支）。</td></tr>
+	<tr><td><b>云编排 SDK</b></td><td>OpenAI Agents SDK</td><td>handoffs/guardrails 原语漂亮但云倾斜、弱本地工具审批/沙箱语义。<span class="vs-con">不满足</span>我们的审批/沙箱/断点恢复硬要求。</td></tr>
+	<tr><td><b>工具协议</b></td><td>MCP</td><td>不是循环方案而是工具协议——我们工具已 MCP 兼容 ⇒ 内核替换对 MCP 面<b>零影响</b>（工具总线原样保留）。</td></tr>
+</table>
+
+<h3>6.3 迁移路线本身的四选一对比</h3>
+<table>
+	<tr><th style="width:190px">路线</th><th>优</th><th>劣</th><th style="width:110px">结论</th></tr>
+	<tr><td><b>① 本方案：适配层 + 本地复刻 + 门控双跑推进</b></td><td class="vs-pro">UI/会话/审批零改动；压缩/记忆/护栏等硬化子系统全部复用；秒级回退；证据门槛推进；真机对拍已抓 3 个真 bug（tools 通道/参数传递/tool_args）证明方法论有效</td><td class="vs-con">fork 防漂移成本（按 commit 比对 types.ts）；迁移期双维护；每一项 legacy 语义都要重证一遍（parity 税）</td><td><span class="badge b-green">采用</span></td></tr>
+	<tr><td>② 全量采用 pi（npm 依赖 + 全套适配）</td><td class="vs-pro">上游持续演进；免去复刻维护</td><td class="vs-con">构建链受控网络不可用（实证）；renderer 不能裸引 npm；仍需为 UI 契约写全部适配器（工作量不比①少）</td><td><span class="badge b-red">否决（实证阻塞）</span></td></tr>
+	<tr><td>③ 维持 legacy（不迁移）</td><td class="vs-pro">零迁移风险</td><td class="vs-con">3715 行巨函数持续恶化；内部不可测试；每次改动都是手术；与 pi 生态扩展绝缘</td><td><span class="badge b-red">否决（慢性失血）</span></td></tr>
+	<tr><td>④ 推倒重写全新内核</td><td class="vs-pro">最干净</td><td class="vs-con">丢掉旧套件编码的全部行为知识（护栏/压缩/孤儿补偿/泄漏重试都是事故换来的）；无对拍基准 ⇒ 风险最高</td><td><span class="badge b-red">否决</span></td></tr>
+</table>
+
+<div class="callout warn"><b>横向总结</b>：与开源世界相比，本仓的独特资产不是"循环"本身（pi/OpenClaw 都有），而是<b>循环周围那圈硬化子系统</b>（四级压缩+KV 纪律、记忆外置/召回、审批/沙箱、断点恢复、UI 卡片契约）——它们是事故喂出来的。任何内核替换方案的成败判据只有一个：<b>这圈子系统是否原样保住</b>。本方案（适配层+门控+对拍）是目前唯一被真机证据证明"保得住"的路线。</div>
+
+<h3>6.4 原生 pi 如何处理这四个能力（<code>G:\CustomWorkspaces\AIProjects\pi</code> 源码实证）</h3>
+<p>我们 fork 的只是 <code>packages/agent/src/agent-loop.ts</code> + <code>types.ts</code>（轻内核）；这四个能力在原生 pi 里<b>全部不在这个内核层</b>——它们的归属恰好给本方案的阶段 1/2 提供了架构判据。</p>
+<table>
+	<tr><th style="width:130px">能力</th><th>原生 pi 的机制（文件实证）</th><th>对我们的判据</th></tr>
+	<tr><td><b>steering 队列</b></td><td><b>内核层、轮询模型</b>：<code>agent-loop.ts:173/203/263</code> —— 宿主提供 <code>config.getSteeringMessages?.()</code> 异步 getter，loop 在①起始（"user may have typed while waiting"）②长准备阶段后（如压缩）③每个 turn 边界 各轮询一次，取到的消息<b>排进下一次模型调用之前</b>推入 transcript；<code>agent.ts:246</code> 的 <code>PendingMessageQueue</code> 默认 <code>one-at-a-time</code> 模式。</td><td><span class="badge b-green">直接可借</span> 模型极简：把我们的 <code>DeliveryQueue</code> 包装成 <code>getSteeringMessages</code> 挂在同一三个轮询点即可（fork 的 config 已有 <code>steeringMode</code> 字段，需补 getter 的轮询调用——阶段 2 工作量确认为 <b>小</b>）。</td></tr>
+	<tr><td><b>plan 模式</b></td><td><b>内核外扩展</b>：<code>packages/coding-agent/examples/extensions/plan-mode/index.ts</code>（390 行）—— 本质是<b>工具集切换</b>（plan 模式只放 read/grep/find/ls/白名单 bash，禁 edit/write）+ 从模型输出提取编号步骤（"Plan:" 段）+ <code>[DONE:n]</code> 标记 + 进度 widget。<b>内核对此一无所知</b>。</td><td><span class="badge b-green">验证 D1 建议</span> pi 官方就是"plan = 独立编排器，不进内核"。我们的 plan 更重（DAG 编排 + 审批 + 计划文件），更不该塞进内核 ⇒ <b>D1 选 (b) 获得原生架构背书</b>。</td></tr>
+	<tr><td><b>subAgent</b></td><td><b>内核外扩展</b>：<code>packages/coding-agent/examples/extensions/subagent/index.ts</code>（1038 行）—— <b>spawn 独立 pi 子进程</b>（<code>node:child_process</code>）换隔离上下文；支持 single / parallel（≤8 任务、并发 4）/ chain（注入 previous）；每任务输出截 50KB；JSON 模式收结构化输出。<b>内核同样一无所知</b>。</td><td><span class="badge b-yellow">模型不同，无可借</span> pi 用<b>进程级隔离</b>，我们用<b>进程内 + <code>softDeadlineMs</code> 轮级超时</b>（更轻、共享宿主服务）。原生没有可抄的超时机制 ⇒ 按原计划把 <code>softDeadlineMs</code> 接 <code>shouldStopAfterTurn</code>/abort（阶段 1），架构上"subAgent 不进内核"与 pi 一致。</td></tr>
+	<tr><td><b>resumeFrom 断点续跑</b></td><td><b>harness 层的会话 DAG</b>：<code>packages/agent/src/harness/session/*</code> + <code>runtime/drive/checkpoint.ts</code> —— append-only 的 entry 日志（<code>MessageEntry</code>/<code>insertEntry</code>/<code>branchTip</code>/<code>chainEntries</code>，类 git 分支模型）；run 是带 intent 的 operation，checkpoint 是被提交的 operation；恢复 = 重放 entry 到分支尖。后端可插拔（<code>packages/session-backends</code>）。</td><td><span class="badge b-yellow">层次不同，映射即可</span> 这是 pi 的<b>生产 harness 层</b>（我们刻意没 fork —— 会话持久化本仓已有 agentRunState 体系）。我们的需求更轻（轮级快照 ⇒ 恢复消息+计数）⇒ <b>D2 选 (a) 轻映射</b>（pi transcript ⇒ AgentRunState 快照），不引 DAG；pi 的 entry-log 是 P2 远期可选项，不是移除 legacy 的前置。</td></tr>
+</table>
+<div class="callout ok"><b>§6.4 的一句话</b>：原生 pi 的架构答案是「<b>内核只做 ReAct 循环；plan/subagent 是扩展；steering 是宿主轮询；续跑是 harness 的会话 DAG</b>」。本方案的取舍与之逐项同构 —— 唯一本质差异是续跑持久化（它用 DAG，我们用轮级快照，映射兼容）。这意味着阶段 1/2 的所有工作都<b>不需要发明新架构</b>，只需按原生边界接线。</div>
+
+<h2 id="decisions"><span class="no">7</span>决策点与待办</h2>
+
+<h3>7.1 需要你拍板的决策</h3>
+<table>
+	<tr><th style="width:34px">#</th><th>决策点</th><th>选项</th><th>建议</th></tr>
+	<tr><td>D1</td><td>plan 模式归属</td><td>(a) pi 内核内移植编排（~225 行闭包）；(b) 独立编排器（同 executeAgentGraph 地位）</td><td><b>(b)</b> —— plan 是独立状态机，不是 ReAct 内核职责；<b>原生 pi 即如此</b>（plan-mode 是 coding-agent 扩展，见 §6.4）</td></tr>
+	<tr><td>D2</td><td>checkpoint 断点续跑</td><td>(a) pi transcript⇄runState 快照映射（~2 天）；(b) 显式降级（pi turn 不可恢复）</td><td><b>(a)</b> —— 长任务场景的硬需求；原生 pi 用会话 DAG（harness 层），我们只需轻映射，不引 DAG（§6.4）；若档期紧可先 (b) 并公告</td></tr>
+	<tr><td>D3</td><td>阶段 3 的一致率阈值</td><td>95% / 98% / 100%（豁免项外）</td><td><b>95%</b> 起步，soak 期视豁免命中率再收紧</td></tr>
+	<tr><td>D4</td><td>旧行为套件处置节奏</td><td>逐类评审 vs 一次性大删</td><td><b>逐类评审</b>，契约类必须先迁移后删除</td></tr>
+</table>
+
+<h3>7.2 待办（按依赖序）</h3>
+<ol>
+	<li><b>与并发会话对齐</b> turnKernel 收口状态与移除时间窗（阶段 0 前置）。</li>
+	<li><s>对拍矩阵扩到 10 形态</s> <b>✓ 当日完成</b>（接 CI + invalid-tool / XML 泄漏形态待补）。</li>
+	<li>subAgent 超时语义接入（阶段 1）。</li>
+	<li>D1/D2 决策落地（阶段 1）。</li>
+	<li><s>steering 队列</s> <b>✓ 当日完成</b>；<s>no-progress 护栏</s> <b>✓ 当日完成</b>；<s>撞顶收尾轮</s> <b>✓ 当日完成</b>（阶段 2 闭环）；<b>边界引导六件套 + subAgent 超时语义 + plan 编排（D1）✓ 当日完成</b>（plan 批后拦截复用 <code>parts/turnPlanModeTools</code> 同一实现，拦截点 = <code>shouldStopAfterTurn</code>，'done' ⇒ turn 结束；<code>piKernelSupports</code> 仅剩 <b>resumeFrom</b> 一个回落形态）。</li>
+	<li><b>D2 checkpoint ✓ 当日完成</b>：resumeFrom 恢复（messages 优先 / loopMessages 回落 + 划痕 runState <code>restoreRunState</code> 安全恢复 + 迭代计数接续扣减）+ 每 3 轮 <code>buildCheckpointSnapshot</code> 落盘（fire-and-forget，对齐 <code>turnPostIteration:441-472</code>）；phase 与 legacy 一样故意不恢复。<b>piKernelSupports 全形态放行</b>（保留函数作未来单点门）。驱动器 26/26 ✓，基线 59 全绿。</li>
+	<li><b>B1 事件溯源影子写 ✓ 当日启动</b>：<code>browser/sessionEventShadowLog.ts</code>（append-only JSONL，checkpoint 消息差量逐行落 <code>~/.vssaros/agent-studio/shadow/turn-events.&lt;sid&gt;.jsonl</code>，默认关 <code>__SAROSIS_EVENT_SHADOW=true</code> 开）+ agentDriverService 两处接线（save/clear）+ 测试 3 例。只写不读，读侧对拍是 B2。</li>
+	<li>真机对拍跑量 ≥1 周（阶段 3）→ 翻转（4a）→ soak → 移除（4b）。</li>
+	<li><code>piCore/</code> 人工删除（安全护栏拦工具删）。</li>
+</ol>
+
+<hr>
+<p class="meta">本文档由当日真机实证与测试基线生成；事实性内容（parity 表 / 真机证据 / 测试计数）以 2026-09-20 的代码与日志为准。对拍脚本族：<code>%TEMP%\pi-*.mjs</code>；门控：<code>window.__SAROSIS_PI_KERNEL</code>；对拍入口：<code>window.__SAROSIS_PI_RUN(prompt)</code>。</p>
+
+</main>
+</div>
+</body>
+</html>

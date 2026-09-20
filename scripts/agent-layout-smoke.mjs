@@ -39,7 +39,8 @@
  *  可选参数：
  *    --timeout=<秒>      等待日志落定的上限（默认 240）
  *    --user-data=<目录>  指定 userData 目录（默认自动探测 `.vssaros-dev` / `.vssaros`）
- *    --tag=<标签>        额外抓取的诊断标签（默认 `[Saros][zenModeDiag]`）
+ *    --tag=<标签>        额外抓取的诊断标签（**默认不抓**；原默认的 `[Saros][zenModeDiag]`
+ *                        已随该临时诊断于 2026-09-20 移除，需要时显式传 --tag）
  *    --keep-open         启动后不自动关闭应用（调试脚本时用）
  *--------------------------------------------------------------------------------------------*/
 
@@ -68,7 +69,9 @@ const DO_BUILD = !hasFlag('no-build') && !PARSE_ONLY;
 const DO_LAUNCH = hasFlag('launch');
 const KEEP_OPEN = hasFlag('keep-open');
 const TIMEOUT_SEC = Number(optValue('timeout', '240'));
-const TAG = optValue('tag', '[Saros][zenModeDiag]');
+// ★ 2026-09-20：默认标签置空 —— 原 `[Saros][zenModeDiag]` 那套临时诊断已从源码移除，
+// 留着默认值会让脚本每次都报「诊断输出：无」，掩掉真正有用的错误/警告。
+const TAG = optValue('tag', '');
 const USER_DATA_OPT = optValue('user-data', undefined);
 
 //#endregion
@@ -450,15 +453,18 @@ async function main() {
 	console.log('');
 	printGroup('当前警告', warns, '•');
 
-	if (diags.length) {
-		console.log('');
-		console.log(`诊断输出（${TAG}）：`);
-		for (const line of diags) {
-			console.log(`  ${line}`);
+	// ★ 2026-09-20：只有显式指定了 --tag 才打印这段（否则 TAG 为空 ⇒ 无意义的一行噪音）
+	if (TAG) {
+		if (diags.length) {
+			console.log('');
+			console.log(`诊断输出（${TAG}）：`);
+			for (const line of diags) {
+				console.log(`  ${line}`);
+			}
+		} else {
+			console.log('');
+			console.log(`诊断输出（${TAG}）：无 —— 若刚加过诊断，检查它是否走了 ILogService（裸 console.log 不落文件）`);
 		}
-	} else {
-		console.log('');
-		console.log(`诊断输出（${TAG}）：无 —— 若刚加过诊断，检查它是否走了 ILogService（裸 console.log 不落文件）`);
 	}
 
 	// ★ 停止条件：与上一轮一字不差 ⇒ 上一轮的修复无效。

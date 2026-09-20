@@ -11,6 +11,7 @@
 import type { MemorySlot, Observation } from './amTypes.js';
 import { KV, generateId } from './amSchema.js';
 import { StateKV } from './stateKV.js';
+import { readEnv } from './amEnv.js';
 
 const DEFAULT_SIZE_LIMIT = 2000;
 
@@ -129,7 +130,7 @@ export async function enrich(kv: StateKV, agentId: string, files: string[], term
  *  移植版 slots 常开故默认开，AGENTMEMORY_REFLECT=false 关闭（刻意的默认值差异）。 */
 export function isReflectEnabled(): boolean {
 	try {
-		return (typeof process !== 'undefined' ? process.env['AGENTMEMORY_REFLECT'] : undefined) !== 'false';
+		return readEnv('AGENTMEMORY_REFLECT') !== 'false';
 	} catch {
 		return true;
 	}

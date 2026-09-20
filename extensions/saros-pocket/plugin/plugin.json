@@ -1,0 +1,70 @@
+{
+  "name": "saros-agents-pocket",
+  "version": "0.1.0",
+  "publisher": "saros",
+  "description": "Saros Pocket —— 用手机远程访问 VsSaros：对话（走 VsSaros 配好的模型）、交给 Agent、看/改工作区文件、看变更 diff、远程查看桌面画面（含远程键鼠，默认关闭）。\n\n入口：命令面板执行 `Saros Pocket: 打开访问面板` 扫码；或在电脑上执行 `Saros Pocket: 打开随身 App`。\n\n安全默认：写文件 / 发终端 / 远程键鼠全部默认关闭；文件操作限制在工作区内；命令只认白名单。",
+  "configuration": {
+    "properties": {
+      "sarosPocket.allowFileWrite": {
+        "type": "boolean",
+        "default": false,
+        "description": "允许 Pocket App 写入工作区文件（默认关闭；读/浏览始终可用）。"
+      },
+      "sarosPocket.allowTerminal": {
+        "type": "boolean",
+        "default": false,
+        "description": "允许 Pocket App 向 VsSaros 终端发送文本（默认关闭，风险自负）。"
+      },
+      "sarosPocket.desktopEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "允许远程查看本机桌面画面（含 VsSaros 桌面版窗口）。关闭后画面流与截图不可用。"
+      },
+      "sarosPocket.desktopMode": {
+        "type": "string",
+        "default": "window",
+        "description": "画面采集范围：window = 只抓 VsSaros 窗口；screen = 整个屏幕。"
+      },
+      "sarosPocket.desktopFps": {
+        "type": "number",
+        "default": 4,
+        "description": "画面帧率（1-15）。越高越流畅，带宽与 CPU 占用也越高。"
+      },
+      "sarosPocket.desktopScale": {
+        "type": "number",
+        "default": 0.5,
+        "description": "画面缩放（0.2-1）。手机上看 0.5 通常够用；App 还会按屏幕宽度再压一档。"
+      },
+      "sarosPocket.desktopQuality": {
+        "type": "number",
+        "default": 55,
+        "description": "画面 JPEG 质量（10-95）。"
+      },
+      "sarosPocket.allowDesktopInput": {
+        "type": "boolean",
+        "default": false,
+        "description": "允许从手机远程操作本机鼠标/键盘（仅 Windows）。默认关闭，开启后请自行承担风险。"
+      },
+      "sarosPocket.chatModel": {
+        "type": "string",
+        "default": "",
+        "description": "Pocket App 默认使用的模型 ID（留空 = 用 VsSaros 里第一个可用模型）。"
+      },
+      "sarosPocket.agentMode": {
+        "type": "string",
+        "default": "agent",
+        "description": "「交给 Agent」时使用的聊天模式（agent / ask / edit）。"
+      },
+      "sarosPocket.fileRoot": {
+        "type": "string",
+        "default": "",
+        "description": "Pocket App 文件浏览的根目录（留空 = 用当前工作区第一个文件夹）。"
+      },
+      "sarosPocket.maxFileBytes": {
+        "type": "number",
+        "default": 262144,
+        "description": "Pocket App 单次读取文件的上限（字节，默认 256 KB）。"
+      }
+    }
+  }
+}

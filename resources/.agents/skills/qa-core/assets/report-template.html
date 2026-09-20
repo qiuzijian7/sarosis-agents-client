@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <style>
+    :root {
+      --ink: #122033;
+      --muted: #64748b;
+      --panel: #ffffff;
+      --line: #dbe7f3;
+      --bg: #eef6f8;
+      --brand: #087f75;
+      --brand-soft: #d9f3ef;
+      --danger: #b42318;
+      --warn: #b7791f;
+      --ok: #087443;
+      --shadow: 0 18px 45px rgba(15, 40, 60, .12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font: 14px/1.55 "Aptos", "Segoe UI", "Noto Sans SC", sans-serif;
+      background:
+        radial-gradient(circle at 10% 0%, rgba(8,127,117,.18), transparent 30%),
+        linear-gradient(135deg, #f8fbff 0%, var(--bg) 45%, #f7fbf8 100%);
+    }
+    .layout { display: grid; grid-template-columns: 250px 1fr; min-height: 100vh; }
+    aside { padding: 28px 22px; background: #142235; color: #d7e7f5; }
+    aside h1 { margin: 0 0 28px; font-size: 22px; letter-spacing: .04em; }
+    aside a { display: block; color: #d7e7f5; text-decoration: none; padding: 11px 12px; border-radius: 10px; margin: 6px 0; }
+    aside a:hover, aside a.active { background: rgba(8,127,117,.45); color: white; }
+    main { padding: 34px; }
+    .hero { margin-bottom: 24px; }
+    .hero h2 { margin: 0; font-size: 34px; }
+    .hero p { color: var(--muted); margin: 8px 0 0; }
+    .grid { display: grid; gap: 16px; }
+    .cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card, section { background: rgba(255,255,255,.88); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
+    .card { padding: 18px; }
+    .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .card .value { font-size: 28px; font-weight: 750; margin-top: 6px; }
+    section { padding: 22px; margin-top: 18px; overflow: hidden; }
+    h3 { margin: 0 0 14px; font-size: 20px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: #496177; background: #f4f8fb; font-weight: 700; }
+    td, th { word-break: break-word; }
+    .badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .P0, .failed, .fail { color: var(--danger); background: #fee4e2; }
+    .P1, .warn, .blocked { color: var(--warn); background: #fef0c7; }
+    .P2, .draft, .skipped { color: #175cd3; background: #dbeafe; }
+    .P3, .passed, .pass { color: var(--ok); background: #d1fadf; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 12px; overflow: auto; }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      aside { position: static; }
+      main { padding: 20px; }
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+      .cards { grid-template-columns: 1fr; }
+      table { font-size: 12px; }
+      th, td { padding: 8px 6px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <h1>QA Agent Report</h1>
+      <a class="active" href="#summary">Summary</a>
+      <a href="#gates">Gates</a>
+      <a href="#cases">Cases</a>
+      <a href="#traceability">Traceability</a>
+      <a href="#provenance">Credibility</a>
+      <a href="#commands">Commands</a>
+      <a href="#review">Review</a>
+    </aside>
+    <main>
+      {{BODY}}
+    </main>
+  </div>
+</body>
+</html>
+

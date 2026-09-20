@@ -52,6 +52,18 @@ export interface AgentSessionMeta {
 	createdAt: string;
 	updatedAt: string;
 	messageCount: number;
+	/**
+	 * ★ 2026-09-20（用户需求）：**这个名字是用户手动起的**。
+	 *
+	 * 首条消息发出去时，`NativeChatEditorPane` / webview `useChatStore` 会把会话名
+	 * 自动改成「消息前 30 字」（因为新会话的占位名是「新对话」，没信息量）。
+	 * 但如果用户已经手动改过名（侧栏铅笔 / 页签 Rename / 聊天框 Rename），
+	 * 那次自动命名就会**把用户起的名字覆盖掉** —— 用户报的正是这个。
+	 *
+	 * 显式字段（而不是去猜「名字像不像自动生成的」——形态判断会随命名规则变化静默失效）：
+	 * 手动改名入口传 `userInitiated` ⇒ 打上本标记；两个自动命名入口先检查它，置位即跳过。
+	 */
+	userRenamed?: boolean;
 	/** External provider session ID (e.g. Knot AG-UI threadId). Captured from stream metadata. */
 	providerSessionId?: string;
 	/**
@@ -2141,13 +2153,37 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// 此处在加载历史时消费它：补进返回列表（用户立即可见）+ 异步写回 session
 		// 文件（持久化）。消费即删除，保证只合并一次。
 		if (sessionId) {
-			const draftMsg = await this._consumeInterruptedDraft(agentId, sessionId);
-			if (draftMsg) {
-				messages = [...(messages || []), draftMsg];
-				this._historyCache.set(key, messages);
-				void this.appendMessage(agentId, draftMsg).catch(err =>
-					this.logService.error('[AgentChatService] Failed to persist recovered interrupted draft:', err),
-				);
+			// ★★ 2026-09-20 活跃流守卫（用户报「LLM 回复被拆成两个气泡」取证修复）：
+			//   journal 草稿在**流式进行中**每 ~2s 被重写（nativeChatEditorPane
+			//   `_journalStreamingDraft`）。无守卫时，流式中途的任何 getHistory
+			//   （sendMessage 内部加载历史 / sessionHistoryView / pane 刷新）都会把
+			//   「活草稿」当崩溃遗物消费并 appendMessage **永久落盘** ⇒ 重复「已中断」
+			//   气泡（实证 sess_mu6wuptt_yywe05 idx 671：草稿 79 字 == 同回合前两条
+			//   iteration 消息文本拼接，逐字相等）。
+			//   活跃流期间跳过消费：草稿留在盘上 —— 流正常结束由 pane 清除；进程真崩溃
+			//   ⇒ 重启后 `_activeStreams` 为空，下次 getHistory 照常消费 ✓。
+			if (this._isBucketOpen(key)) {
+				// 流还活着：草稿是「正在写」的 journal，不是遗物。
+			} else {
+				const draftMsg = await this._consumeInterruptedDraft(agentId, sessionId);
+				if (draftMsg) {
+					// ★ 2026-09-20 去重：回合**正常完成**后草稿也可能因 clear 竞态残留
+					//   （实证 idx 668/669：回合落盘与草稿相差仅 66ms）。尾部连续 assistant
+					//   消息（同回合 per-iteration 组）拼接内容已包含草稿文本 ⇒ 早已正式
+					//   落盘 ⇒ 丢弃（文件已被 _consumeInterruptedDraft 删除，天然不重复）。
+					if (this._isDraftAlreadyPersisted(messages, draftMsg.content)) {
+						this.logService.info(
+							`[AgentChatService] getHistory: skipped stale interrupted draft ` +
+							`(${draftMsg.content.length} chars) for ${key} — content already persisted by completed turn`,
+						);
+					} else {
+						messages = [...(messages || []), draftMsg];
+						this._historyCache.set(key, messages);
+						void this.appendMessage(agentId, draftMsg).catch(err =>
+							this.logService.error('[AgentChatService] Failed to persist recovered interrupted draft:', err),
+						);
+					}
+				}
 			}
 		}
 
@@ -2222,6 +2258,23 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			const uri = await this._getDraftUri(agentId, sessionId);
 			if (await this.fileService.exists(uri)) { await this.fileService.del(uri); }
 		} catch { /* 删不掉 → 下次消费时按一次性草稿处理（最坏多一条"已中断"消息，可接受 ✓） */ }
+	}
+
+	/**
+	 * 草稿去重判定（2026-09-20）：尾部连续 assistant 消息（同一回合的 per-iteration
+	 * 消息组）拼接内容若已包含草稿文本，说明草稿内容早已随回合正式落盘
+	 * （残留的 journal 是 clear 竞态的遗物）⇒ 不应再注入。
+	 */
+	private _isDraftAlreadyPersisted(messages: ChatMessage[] | undefined, draftContent: string): boolean {
+		const draft = draftContent.trim();
+		if (!draft || !messages || messages.length === 0) { return false; }
+		let tail = '';
+		for (let i = messages.length - 1; i >= 0 && tail.length < draft.length; i--) {
+			const m = messages[i];
+			if (m.role !== 'assistant') { break; }
+			if (typeof m.content === 'string' && m.content) { tail = m.content + tail; }
+		}
+		return tail.includes(draft);
 	}
 
 	/** 读取并**删除**草稿（消费一次，避免重复合并）。无草稿返回 undefined。 */
@@ -3534,6 +3587,22 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	}
 
 	/**
+	 * ★ 2026-09-20：该会话的名字是否由**用户手动**起的（见 {@link AgentSessionMeta.userRenamed}）。
+	 *
+	 * 供「首条消息自动命名」在写入前判断 —— 用户已经起过名字就不要再覆盖。
+	 * 走内存权威副本（不 flush、不读盘），因为调用点是发消息热路径。
+	 * 任何异常都返回 `false`（宁可自动命名照旧，也不要让首条消息因查询失败而报错）。
+	 */
+	async isSessionUserRenamed(agentId: string, sessionId: string): Promise<boolean> {
+		try {
+			const index = await this._getSessionIndexForWrite(agentId);
+			return index.find((s) => s.id === sessionId)?.userRenamed === true;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
 	 * Create a new session. Returns the full AgentSessionMeta.
 	 */
 	async createAgentSession(
@@ -3582,6 +3651,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		agentId: string,
 		sessionId: string,
 		newName: string,
+		options?: { userInitiated?: boolean },
 	): Promise<void> {
 		const index = await this._getSessionIndexForWrite(agentId);
 		const entry = index.find((s) => s.id === sessionId);
@@ -3590,6 +3660,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 		entry.name = newName;
 		entry.updatedAt = new Date().toISOString();
+		// ★ 2026-09-20：用户手动命名 ⇒ 打标记，之后「首条消息自动命名」不再覆盖它。
+		// 自动命名入口（NativeChatEditorPane / webview useChatStore）刻意**不传**该选项。
+		if (options?.userInitiated) {
+			entry.userRenamed = true;
+		}
 		this._sessionIndexDirty.add(agentId);
 		await this.flushSessionIndex(agentId);
 		this._onDidChangeAgentSessionsEmitter.fire({ agentId });

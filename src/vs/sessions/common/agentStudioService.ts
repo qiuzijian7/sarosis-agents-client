@@ -847,8 +847,21 @@ export interface IAgentChatService {
 
 	/**
 	 * Rename an agent session.
+	 *
+	 * ★ 2026-09-20：`options.userInitiated` 表示**用户手动命名** ⇒ 会在会话元数据上
+	 * 打 `userRenamed` 标记，之后「首条消息自动命名」不再覆盖它（用户需求：
+	 * 已重命名的 item，执行 agent 后不要被自动改名）。
+	 * 自动命名调用方**不要**传该选项。
 	 */
-	renameAgentSession(agentId: string, sessionId: string, newName: string): Promise<void>;
+	renameAgentSession(agentId: string, sessionId: string, newName: string, options?: { userInitiated?: boolean }): Promise<void>;
+
+	/**
+	 * ★ 2026-09-20：该会话的名字是否由**用户手动**指定（{@link AgentSessionMeta.userRenamed}）。
+	 *
+	 * 「首条消息自动命名」在写入前用它判断 —— 用户已经起过名字就不要覆盖。
+	 * 走会话索引的内存权威副本，不读盘；异常时返回 `false`（不阻塞发消息）。
+	 */
+	isSessionUserRenamed(agentId: string, sessionId: string): Promise<boolean>;
 
 	/**
 	 * Delete an agent session and its message history.

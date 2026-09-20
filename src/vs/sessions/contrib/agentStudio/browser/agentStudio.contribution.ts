@@ -61,6 +61,8 @@ import { IFeedbackService, FeedbackService } from './feedbackService.js';
 import { AgentStudioService } from './agentStudioService.js';
 import { AgentChatService } from './agentChatService.js';
 import { ConfigHtmlService } from './configHtmlService.js';
+// ★ 2026-09-20：图表预览的主题探测共用 mermaidCard 的鲁棒实现 ✓（body 类名缺失 ⇒ 预览白色渲染 ✗）
+import { detectDiagramTheme } from '../../../browser/agentChat/agentChatPanel.mermaidCard.js';
 import { AgentOSService } from './agentOSService.js';
 import { AgentDriverService } from './agentDriverService.js';
 import { ModelSelectorService } from './modelSelectorService.js';
@@ -167,6 +169,7 @@ import {
 	AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING,
+	AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING,
 	AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING,
 	CHANNEL_DEFINITIONS,
 } from '../common/constants.js';
@@ -175,6 +178,8 @@ import { AgentStudioProvider } from './agentStudioProvider.js';
 import { BuiltInBYOKModelProvider, BUILTIN_BYOK_PROVIDERS, customProviderDataToDefinition } from './builtInBYOKModelProvider.js';
 import type { CustomProviderData } from './views/providerView.js';
 import { MainProcessModelProvider } from './mainProcessModelProvider.js';
+import { registerKernelProcTransportFactory } from './piLoop/proc/procTransportRegistry.js';
+import { createIpcProcTransportFactory } from './piLoop/proc/kernelProcTransportOverIpc.js';
 import { IModelsAutoUpdateService, ModelsAutoUpdateService, type IProviderHint } from '../common/modelsAutoUpdate.js';
 import { VSSAROS_LLM_CHANNEL } from '../common/llmBridge.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
@@ -724,7 +729,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[AGENT_STUDIO_DATA_PATH_SETTING]: {
 			type: 'string',
 			default: '',
-			description: localize('agentStudio.dataPath', "Custom data directory path for Agent Studio. Defaults to workspace .agent-studio/data/."),
+			description: localize('agentStudio.dataPath', "Custom data directory path for Agent Studio. Defaults to the user data directory (~/.vssaros/, or ~/.vssaros-dev/ in dev)."),
 		},
 		// --- CLI ---
 		[AGENT_STUDIO_CLI_PATH_SETTING]: {
@@ -838,6 +843,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			minimum: 0,
 			maximum: 100,
 			description: localize('agentStudio.toolSearch.thresholdPct', "auto 模式下触发折叠的阈值：可折叠工具 token 占模型上下文窗口的百分比（0–100）。调小 = 更早折叠（省体积，但模型多一次 tool_search）。默认 10。"),
+		},
+		[AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING]: {
+			type: 'string',
+			default: '',
+			description: localize('agentStudio.unreal.bridgeUrl', "Unreal Engine 工具（unreal_health/exec/build/dump 等）连接的 bridge 基址。留空则回退内置默认 http://127.0.0.1:8765。"),
 		},
 	},
 });
@@ -2420,6 +2430,12 @@ class BYOKProviderContribution extends Disposable implements IWorkbenchContribut
 		// 不阻塞启动：用 setTimeout 推到事件循环尾部
 		setTimeout(() => { this.modelsAutoUpdate.triggerNow().catch(() => { /* 静默 */ }); }, 5_000);
 
+		// 子代理内核进程档（P1）：注册 IPC 传输工厂 ⇒ 门控里 isolation_level='process'
+		// 的子代理把内核放进 utilityProcess 隔离体（见 piLoop/proc/）。
+		if (this.mainProcessService) {
+			registerKernelProcTransportFactory(createIpcProcTransportFactory(this.mainProcessService));
+		}
+
 		// 阶段 1：若主进程 LLM channel 可用，则把网络调用委派到 electron-main，
 		// 否则回退到 renderer 直连的原 BuiltInBYOKModelProvider（web/remote 等）。
 		const useMainProcess = !!this.mainProcessService?.getChannel(VSSAROS_LLM_CHANNEL);
@@ -2625,9 +2641,8 @@ async function openDiagramPreview(
 	const logService = accessor.get(ILogService);
 
 	try {
-		const bodyCls = mainWindow.document.body.classList;
-		const isDark = bodyCls.contains('vs-dark') || bodyCls.contains('hc-black')
-			|| bodyCls.contains('vscode-dark') || bodyCls.contains('vscode-high-contrast');
+		// ★ 2026-09-20：鲁棒主题探测 ✓（同 mermaid/drawio 卡 —— body 类名缺失 ⇒ 白色渲染 ✗）
+		const isDark = detectDiagramTheme(mainWindow.document.body) === 'dark';
 		const svg = await render(isDark ? 'dark' : 'default');
 
 		if (!svg || svg.indexOf('<svg') === -1) {
@@ -3126,10 +3141,24 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 		const g = globalThis as {
 			__SAROS_AGENTMEMORY_URL__?: string;
 			__SAROS_AGENTMEMORY_FOREIGN__?: string[];
+			__SAROS_AGENTMEMORY_INJECT__?: boolean | string;
 		};
 		if (typeof g.__SAROS_AGENTMEMORY_URL__ === 'string' && g.__SAROS_AGENTMEMORY_URL__.length > 0) {
 			return; // 本窗口只注入一次
 		}
+		// 2026-09-20：注入记忆注入开关。渲染进程没有 `globalThis.process`，但 sandbox 暴露了
+		// `globalThis.vscode.process`（见 base/parts/sandbox/electron-browser/globals.ts）⇒ 从那里读
+		// 用户设置的环境变量 `AGENTMEMORY_INJECT_CONTEXT`；读不到则**默认关闭**（与上游一致：
+		// 显式 "true" 才开启，避免默认注入消耗 token）。
+		const sandboxEnv = (globalThis as { vscode?: { process?: { env?: Record<string, string> } } })
+			.vscode?.process?.env;
+		// ⚠ 必须 trim：`set X=true && ...` 在 cmd.exe 下会把空格带进值（实测 "true " ⇒ 判等失败）。
+		const injectEnabled = sandboxEnv?.['AGENTMEMORY_INJECT_CONTEXT']?.trim() === 'true';
+		g.__SAROS_AGENTMEMORY_INJECT__ = injectEnabled;
+		this.logService.info(
+			`[AgentMemory] 记忆注入开关: AGENTMEMORY_INJECT_CONTEXT=${JSON.stringify(sandboxEnv?.['AGENTMEMORY_INJECT_CONTEXT'])} `
+			+ `⇒ __SAROS_AGENTMEMORY_INJECT__=${injectEnabled}`,
+		);
 		const userDataPath = (this.environmentService as INativeEnvironmentService).userDataPath;
 		const wantDataDir = this._normalizeFsPath(`${userDataPath}/.agentmemory`);
 		const foreign: string[] = [];

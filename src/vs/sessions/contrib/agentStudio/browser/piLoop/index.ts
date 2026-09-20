@@ -120,3 +120,6 @@ export type {
 	FinalizedToolCallOutcome,
 	ExecutedToolCallBatch,
 } from './types.js';
+
+// ── 进程隔离（P0 spike；isolation_level:'process' 的载体，P1 接 dispatch）──
+export { runPiKernelTurnInProc, type IPiKernelProcOptions } from './proc/runPiKernelTurnInProc.js';

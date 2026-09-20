@@ -521,11 +521,51 @@ private readonly _sandboxGuard: SandboxGuard;
 	// 节流后的卡片快照，nativeChatEditorPane 订阅并 upsert 到当前流式 assistant 消息。
 	private readonly _onDidSubAgentTrace = this._register(new Emitter<ISubAgentTraceSnapshot>());
 	readonly onDidSubAgentTrace = this._onDidSubAgentTrace.event;
+
+	// ★★ 2026-09-20 快照签名去重 + 日志分级（日志实证 vscode-app-1789898608763）：
+	//   4 子代理并发 ~8 分钟内 fire **1554 次**（日志占全量 ~30%）——生产者虽各有
+	//   100ms 节流（delegationTools scheduleFlush），但多生产者聚合 + 事件驱动下
+	//   仍存在「与上一快照逐字相同」的冗余 fire（progress 心跳/终态回刷等）。
+	//   下游 pane 每次都要合并 → 重挂 → 重渲染卡片（主线程 5338ms 阻塞正落在
+	//   风暴窗口）。此处：① 内容签名逐字相同 ⇒ 直接丢弃（不 fire、不记录）；
+	//   ② info 日志只在「结构签名」（数量/挂载/状态集）变化时打，内容-only
+	//   更新降 trace —— 诊断力保留（挂载异常仍可一眼看出），刷屏消除。
+	private readonly _lastSubAgentTraceContentSig = new Map<string, string>();
+	private readonly _lastSubAgentTraceStructSig = new Map<string, string>();
+
 	fireSubAgentTrace(snapshot: ISubAgentTraceSnapshot): void {
 		const saData = snapshot?.subagentData as any[] | undefined;
 		const cnt = saData?.length ?? 0;
 		const pids = saData?.map(s => s?.parentToolCallId).filter(Boolean) ?? [];
-		this._logService.info(`[fireSubAgentTrace] count=${cnt} parentToolCallIds=[${pids.join(',') || '(none)'}] groupId=${snapshot?.groupId ?? '(none)'}`);
+		const groupId = snapshot?.groupId ?? '(none)';
+
+		// 内容签名：长度 + 尾 8 字符（流式追加场景长度恒增；尾段指纹兜住同长替换）。
+		// 终态翻转由 status/completedAt 覆盖，不会被误吞。
+		const contentSig = (saData ?? []).map(s =>
+			`${s?.id}:${s?.status}:${s?.completedAt ?? ''}` +
+			`:p${s?.progress?.length ?? 0}${(s?.progress ?? '').slice(-8)}` +
+			`:o${s?.output?.length ?? 0}${(s?.output ?? '').slice(-8)}` +
+			`:t${s?.toolTraces?.length ?? 0}` +
+			`:c${s?.creditUsed ?? ''}:${s?.tokensUsed?.input ?? ''}/${s?.tokensUsed?.output ?? ''}`
+		).join('|');
+		if (this._lastSubAgentTraceContentSig.get(groupId) === contentSig) {
+			return; // 与上一快照逐字相同 ⇒ 纯冗余 fire，丢弃
+		}
+		this._lastSubAgentTraceContentSig.set(groupId, contentSig);
+		// groupId 按回合增长，防无界累积
+		if (this._lastSubAgentTraceContentSig.size > 64) {
+			this._lastSubAgentTraceContentSig.delete(this._lastSubAgentTraceContentSig.keys().next().value!);
+			this._lastSubAgentTraceStructSig.delete(this._lastSubAgentTraceStructSig.keys().next().value!);
+		}
+
+		// 结构签名（数量/挂载/状态集）变化才打 info；内容-only 更新降 trace。
+		const structSig = `${cnt}:[${pids.join(',')}]:( ${(saData ?? []).map(s => s?.status).join(',')})`;
+		if (this._lastSubAgentTraceStructSig.get(groupId) !== structSig) {
+			this._lastSubAgentTraceStructSig.set(groupId, structSig);
+			this._logService.info(`[fireSubAgentTrace] count=${cnt} parentToolCallIds=[${pids.join(',') || '(none)'}] groupId=${groupId}`);
+		} else {
+			this._logService.trace(`[fireSubAgentTrace] content-only update groupId=${groupId}`);
+		}
 		this._onDidSubAgentTrace.fire(snapshot);
 	}
 

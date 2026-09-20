@@ -19,6 +19,7 @@
 import type { SemanticMemory, ProceduralMemory, SessionSummary, Memory } from './amTypes.js';
 import { KV, generateId } from './amSchema.js';
 import { StateKV } from './stateKV.js';
+import { readEnv } from './amEnv.js';
 import { callChatCompletion, isLlmConfigured } from './compressor.js';
 
 // ─── 提示词（1:1 复刻原版 prompts/consolidation.ts）─────────────────────────
@@ -79,7 +80,7 @@ export function buildProceduralExtractionPrompt(
  */
 export function isConsolidationLlmEnabled(): boolean {
 	try {
-		const raw = typeof process !== 'undefined' ? process.env['CONSOLIDATION_ENABLED'] : undefined;
+		const raw = readEnv('CONSOLIDATION_ENABLED');
 		return raw !== 'false' && isLlmConfigured();
 	} catch {
 		return false;

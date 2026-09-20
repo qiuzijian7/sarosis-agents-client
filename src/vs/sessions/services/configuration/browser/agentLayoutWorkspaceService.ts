@@ -4,21 +4,13 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { ResourceMap } from '../../../../base/common/map.js';
-import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ConfigurationModel } from '../../../../platform/configuration/common/configurationModels.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IAnyWorkspaceIdentifier } from '../../../../platform/workspace/common/workspace.js';
 import { WorkspaceService } from '../../../../workbench/services/configuration/browser/configurationService.js';
 import { Configuration } from '../../../../workbench/services/configuration/common/configurationModels.js';
 // ★ 2026-09-16：切换工作区「卡住」诊断（阶段标记 + 看门狗）。
 import { wsDiagLog, wsStage } from '../../../contrib/agentStudio/browser/wsSwitchDiag.js';
-
-/**
- * 临时诊断标签 —— `scripts/agent-layout-smoke.mjs` 按它从 `renderer.log` 里抓取。
- * 改这个名字要同步改脚本（脚本有 `--tag` 可覆盖）。
- */
-const DIAG = '[Saros][zenModeDiag]';
 
 /**
  * [Saros] 标准底座（「IDE 底座 + Agent 布局」）使用的 `WorkspaceService`。
@@ -54,9 +46,6 @@ const DIAG = '[Saros][zenModeDiag]';
  *    只读）—— 尚未做。用户定的规则是**读**，故先落读路径。
  */
 export class AgentLayoutWorkspaceService extends WorkspaceService {
-
-	/** zenMode 临时诊断是否已输出过（`initialize()` 可被重复调用，见该方法内说明）。 */
-	private _zenModeDiagDone = false;
 
 	protected override createConfiguration(
 		defaults: ConfigurationModel,
@@ -124,60 +113,19 @@ export class AgentLayoutWorkspaceService extends WorkspaceService {
 		// 被重新调用（见下方说明），而 `super.initialize()` 里要**整套重算配置模型**并
 		// `fire(onDidChangeWorkspaceFolders)` ⇒ 它是「切换卡住」的头号嫌疑。
 		// 打阶段标记（主线程被阻塞时日志写不出去，看门狗会**事后**补报该标记）+ 耗时。
-		// ⚠ 与下方 zenModeDiag 不同：那套只跑首次，这套**每次**都要跑（否则第一次之后的卡住没有记录）。
+		// ⚠ 这套**每次**都要跑（否则第一次之后的卡住没有记录）。
+		// （原「zenModeDiag」那套临时诊断已于 2026-09-20 移除 ✗ —— 它只在首次初始化输出，
+		//   排查 zenMode 属性缺失的使命已完成，留着只会淹日志 ✓）
 		wsStage('config: WorkspaceService.initialize（原地换工作区，重算配置模型）');
 		const tInit = Date.now();
 		await super.initialize(arg);
 		wsDiagLog(this._diagnosticLogService, `configurationService.initialize 完成（${Date.now() - tInit}ms）`);
 
-		// ★ [Saros] 该诊断只在**首次**初始化时跑。
-		//
-		// 2026-09-15：`initialize()` 现在会在**每次切换 Agent Studio 工作区**时被重新调用
+		// ★ 2026-09-20：原「zenModeDiag」临时诊断已移除 ✗。
+		// 它当初用于排查「zenMode.* 属性不在配置注册表里」✓，使命已完成；
+		// 而 `initialize()` 现在会在**每次切换 Agent Studio 工作区**时被重新调用
 		// （`sidebarPart._enterWorkspaceFile()` 走 `configurationService.initialize()` 原地换
-		// 工作区，以拿到 `.code-workspace` 的 settings）。若不守卫，下面 10 行诊断会随每次
-		// 切换重复刷进 renderer.log，既淹没有效日志也让诊断本身失真（看的是"第一次"的状态）。
-		if (this._zenModeDiagDone) {
-			return;
-		}
-		this._zenModeDiagDone = true;
-
-		try {
-			const log = this._diagnosticLogService;
-			const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration);
-			const properties = registry.getConfigurationProperties();
-			const keys = Array.isArray(properties)
-				? properties.map(property => (property as { key?: string }).key ?? '')
-				: Object.keys(properties as object);
-
-			// ★ ① 必须带**总数与前几个样本**：只打 `filter(zenMode*)` 的话，
-			// 「注册表为空 / 我的提取写错 / 注册表有几千条但真没 zenMode」三者都输出 `[]`，
-			// 无法区分（上一版就是这么漏掉的）。
-			log.info(`${DIAG} ① 注册表属性总数 = ${keys.length} | 前 3 个 = ${JSON.stringify(keys.slice(0, 3))}`);
-			log.info(`${DIAG} ①b zenMode* = ${JSON.stringify(keys.filter(key => key.startsWith('zenMode')))}`);
-			log.info(`${DIAG} ② getValue("zenMode.fullScreen") = ${JSON.stringify(this.getValue('zenMode.fullScreen'))}`);
-			log.info(`${DIAG} ③ getValue("zenMode") = ${JSON.stringify(this.getValue('zenMode'))}`);
-			// ④ 只打**形状**，不打整个 JSON —— 默认值模型巨大，上一版被截断到看不见 zenMode。
-			const inspected = this.inspect<unknown>('zenMode') as { defaultConfiguration?: { contents?: Record<string, Record<string, unknown>> } };
-			const contents = inspected?.defaultConfiguration?.contents ?? {};
-			log.info(`${DIAG} ④ defaultConfiguration.contents 语言层 = ${JSON.stringify(Object.keys(contents))} | 各层设置数 = ${JSON.stringify(Object.keys(contents).map(layer => [layer, Object.keys(contents[layer] ?? {}).length]))}`);
-			// ⑤ 叶子键的 inspect —— 直接回答「默认值模型里到底有没有 zenMode.fullScreen」。
-			log.info(`${DIAG} ⑤ inspect("zenMode.fullScreen") = ${JSON.stringify(this.inspect('zenMode.fullScreen'))}`);
-
-			// ★★ ⑥ / ⑦ 是**决定性判别**：①b 已经证明属性不在注册表里，现在要区分两种原因：
-			//   - ⑥「节点不存在」⇒ 那个贡献模块**根本没被求值**（与静态 import 链矛盾，需另查）；
-			//   - ⑥「节点存在」但属性键为空 ⇒ 属性在注册时被
-			//     `configurationRegistry.ts:715` 的 `validateProperty` **静默删掉**
-			//     （`delete properties[key]; continue;`）—— 它只打 console 警告、
-			//     **不落 `renderer.log`**，所以冒烟脚本看不见这类失败。
-			const nodes = registry.getConfigurations();
-			const zenModeNode = nodes.find(node => node.id === 'zenMode');
-			log.info(`${DIAG} ⑥ 配置节点总数 = ${nodes.length} | zenMode 节点 = ${zenModeNode ? '存在' : '不存在'}`);
-			log.info(`${DIAG} ⑥b zenMode 节点里的属性键 = ${JSON.stringify(zenModeNode ? Object.keys(zenModeNode.properties ?? {}) : [])}`);
-			const excluded = (registry as unknown as { getExcludedConfigurationProperties?: () => Record<string, unknown> }).getExcludedConfigurationProperties?.();
-			log.info(`${DIAG} ⑦ excluded 属性里的 zenMode* = ${JSON.stringify(Object.keys(excluded ?? {}).filter(key => key.startsWith('zenMode')))}`);
-		} catch (error) {
-			this._diagnosticLogService.info(`${DIAG} 诊断本身抛错 = ${error}`);
-		}
+		// 工作区），留着只会让日志随每次切换被灌一遍 ✗。
 	}
 
 	/**

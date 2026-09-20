@@ -15,7 +15,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { IChatStreamDelta } from '../../common/providers.js';
-import type { AgentEvent, AgentMessage, AssistantContent, AssistantMessage, AssistantMessageEvent } from './types.js';
+import type { AgentEvent, AgentMessage, AssistantContent, AssistantMessage, AssistantMessageEvent, Usage } from './types.js';
 
 /**
  * 创建一个**有状态**的事件映射器（每次运行一个）。
@@ -35,9 +35,21 @@ export function createPiLoopEventMapper(): (event: AgentEvent) => IChatStreamDel
 			case 'message_update':
 				return mapAssistantMessageEvent(event.assistantMessageEvent, emittedToolStarts);
 
-			case 'message_end':
+			case 'message_end': {
 				// 我方「每个 iteration 一个 assistant_turn」的边界（piLoop 的 message_end 携定稿消息）
-				return isAssistantMessage(event.message) ? [toAssistantTurnDelta(event.message)] : [];
+				if (!isAssistantMessage(event.message)) { return []; }
+				const out: IChatStreamDelta[] = [];
+				// ★★ 2026-09-20 修复「输入框 tokens UI 未更新」（真机日志 vscode-app-1789912013937）：
+				//   pi 路径此前**只**映射 assistant_turn，usage 仅进 host 侧记账
+				//   （piTurnKernel.accumulateUsage）⇒ pane/chatService 收不到 `usage` delta ⇒
+				//   composer 的上下文环（`setStreamUsage`/`setContextUsage`）与消息 tokenUsage
+				//   只有压缩等偶发事件才会动 ✗。legacy 路径是 provider delta 直通，故无此问题。
+				//   现随边界补发 usage delta（**先 usage 后边界**：usage 属于刚定稿的这条消息）。
+				const usageDelta = toUsageDelta(event.message.usage);
+				if (usageDelta) { out.push(usageDelta); }
+				out.push(toAssistantTurnDelta(event.message));
+				return out;
+			}
 
 			case 'tool_execution_update': {
 				const text = extractBlocksText(event.update?.content);
@@ -49,6 +61,10 @@ export function createPiLoopEventMapper(): (event: AgentEvent) => IChatStreamDel
 					{ type: 'tool_result', content: extractBlocksText(event.result?.content), toolCallId: event.toolCallId, toolName: event.toolName } as IChatStreamDelta,
 					{ type: 'tool_end', toolCallId: event.toolCallId, success: !event.isError } as IChatStreamDelta,
 				];
+
+			case 'discard_streamed_text':
+				// XML 泄漏重试等场景：通知 UI 清掉本轮已流式渲染的文本（对齐 legacy discard_prior_text）
+				return [{ type: 'discard_prior_text', metadata: { reason: event.reason } } as IChatStreamDelta];
 
 			case 'agent_end':
 				return [{ type: 'done' } as IChatStreamDelta];
@@ -95,6 +111,33 @@ function toAssistantTurnDelta(message: AssistantMessage): IChatStreamDelta {
 		else if (block.type === 'toolCall') { toolCallIds.push(block.id); }
 	}
 	return { type: 'assistant_turn', content: text, metadata: { toolCallIds } } as IChatStreamDelta;
+}
+
+/**
+ * pi `Usage` → 本仓 `usage` delta（2026-09-20 新增，见 message_end 分支注释）。
+ *
+ * 口径与 host 侧 `accumulateUsage`（piTurnKernel，对齐 legacy executor:1776）**保持一致**：
+ * OpenAI 系 `input` 已含 cache、Anthropic 系不含 ⇒ 以 `input >= cacheRead` 判定归一，
+ * 避免同一份用量在 UI 与 Dashboard 两处算出不同数字 ✗。
+ * 无用量（mock/只读工具轮）⇒ 返回 undefined，不产出空 delta（保持既有测试的 delta 序列 ✓）。
+ */
+function toUsageDelta(usage: Usage | undefined): IChatStreamDelta | undefined {
+	if (!usage) { return undefined; }
+	const cacheRead = usage.cacheRead ?? 0;
+	const rawInput = usage.input ?? 0;
+	const input = rawInput >= cacheRead ? rawInput : rawInput + cacheRead;
+	const output = usage.output ?? 0;
+	if (input <= 0 && output <= 0) { return undefined; }
+	return {
+		type: 'usage',
+		usage: {
+			inputTokens: input,
+			outputTokens: output,
+			totalTokens: input + output,
+			...(cacheRead > 0 ? { cachedTokens: cacheRead } : {}),
+			...(usage.cacheWrite ? { cacheWriteTokens: usage.cacheWrite } : {}),
+		},
+	} as IChatStreamDelta;
 }
 
 // ─── 小件 ───

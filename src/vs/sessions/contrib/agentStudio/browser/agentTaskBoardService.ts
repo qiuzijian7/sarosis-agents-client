@@ -20,12 +20,16 @@ import type { IChatAttachmentSend } from '../../../common/agentStudioService.js'
 import type { TaskBoardRecord, TaskBoard, BoardLink, TaskAttachment } from '../common/types.js';
 import { TaskBoardStatus, TaskSource, DEFAULT_BOARD_ID } from '../common/types.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING } from '../common/constants.js';
+import { resolveAgentStudioDataRoot, migrateLegacyAgentStudioData } from '../common/sarosPaths.js';
 import { SAROS_CLAW_AGENT_ID } from './providers/tool/kanbanTools.js';
 
 const DATA_FILE_TASKBOARD = 'taskboard.json';
 const DATA_FILE_BOARDS = 'boards.json';
 const DATA_FILE_BOARDLINKS = 'boardlinks.json';
 const ATTACHMENTS_DIR = 'attachments';
+
+/** 旧约定目录（~/.agent-studio/data/）中需一次性迁移的条目。 */
+const LEGACY_DATA_ENTRIES = [DATA_FILE_TASKBOARD, DATA_FILE_BOARDS, DATA_FILE_BOARDLINKS, ATTACHMENTS_DIR] as const;
 
 /** Best-effort image MIME lookup from a file extension (for data-URI embedding). */
 function _mimeFromName(name: string): string {
@@ -229,21 +233,25 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		return this._agentStudioService;
 	}
 
+	/** 旧目录迁移 Promise（仅默认落盘根下非空）；读路径开头 await，避免迁移与首读竞争。 */
+	private _legacyMigration: Promise<void> | undefined;
+
 	private _getDataUri(): URI {
 		if (!this._dataUri) {
 			const customPath = this.configurationService.getValue<string>(AGENT_STUDIO_DATA_PATH_SETTING);
-			if (customPath) {
-				this._dataUri = URI.file(customPath);
-			} else {
-				// 使用 environmentService.userHome 替代 process.env（浏览器环境无 process）
-				const homeUri = this.environmentService.userHome;
-				this._dataUri = URI.joinPath(homeUri, '.agent-studio', 'data');
+			// 统一落盘根：~/.vssaros/（dev 为 ~/.vssaros-dev/），与 workspaces.json 同根（sarosPaths 约定）
+			this._dataUri = resolveAgentStudioDataRoot(customPath, this.environmentService.userRoamingDataHome);
+			if (!customPath) {
+				this._legacyMigration = migrateLegacyAgentStudioData(
+					this.fileService, this.logService, this.environmentService.userHome, this._dataUri, LEGACY_DATA_ENTRIES
+				);
 			}
 		}
 		return this._dataUri;
 	}
 
 	private async _readTasks(): Promise<TaskBoardRecord[]> {
+		await this._legacyMigration;
 		if (this._tasksLoaded) {
 			return this._tasksCache ?? [];
 		}
@@ -321,6 +329,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	}
 
 	private async _readBoards(): Promise<TaskBoard[]> {
+		await this._legacyMigration;
 		try {
 			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_BOARDS);
 			const content = await this.fileService.readFile(uri);
@@ -748,6 +757,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	// ─── Board hyperlinks (看板超链接) ───────────────────────────────────
 
 	private async _readBoardLinks(): Promise<BoardLink[]> {
+		await this._legacyMigration;
 		try {
 			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_BOARDLINKS);
 			const content = await this.fileService.readFile(uri);

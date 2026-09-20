@@ -788,6 +788,79 @@ suite('★★★ 图谱关键不变量（勿回退）', () => {
 	});
 
 	/**
+	 * ⑭ 为什么值得钉（**真机 P0，2026-09-20**）：全量同步跑 **84s** 后整批 abort ——
+	 * `SQLITE_CONSTRAINT_UNIQUE: UNIQUE constraint failed: nodes.project, nodes.qualified_name`。
+	 * 根因链：DB 侧有 `UNIQUE(project, qualified_name)`，而显式 id 的 upsert 只有
+	 * `ON CONFLICT(id)`（SQLite 一条 INSERT 只能有一个冲突目标）⇒ 两条**不同 id** 撞同一个
+	 * qualified_name 时**无解** ⇒ `upsertNodesBatch` 整批回滚 ⇒ DB **永远落后**，
+	 * 「下次载入/查询会重试」⇒ **每个窗口白付 84s** ✗✗✗（且增量补丁走同一分支 ⇒ 同样静默失败 ——
+	 * 这正是「DB 怎么落后几千节点」的答案 ✓）。
+	 * ⚠ 它非常**静默**：日志里只有一行 WARN，现象只是"搜索结果略旧" ⇒ 极易被忽略 ✗ ⇒ 必须钉住。
+	 */
+	test('⑭ 全量同步必须对 (project, qualified_name) 去重，且 store 侧必须有 UNIQUE 兜底', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		const nodeStore = read4(N + 'codebaseGraphSqliteStore.ts');
+
+		// ① 渲染侧：下发前去重（否则撞 UNIQUE ⇒ 整批 abort）
+		assert.ok(svc.includes('remapDroppedNodeId') && svc.includes('duplicateNodes'),
+			'全量同步必须按 (project, qualified_name) 去重并统计重复数（否则 84s 整批 abort ✗✗）');
+		assert.ok(svc.includes('const syncNodes = duplicateNodes > 0 ? [...byQualifiedName.values()] : nodes;'),
+			'去重后的集合必须真正用于下发（不是只统计不下发 ✗）');
+		// ② 去重后必须**重映射边的端点** —— 否则被丢掉的节点留下悬空边 ✗✗
+		assert.ok(/remapDroppedNodeId\.get\(e\.sourceId\)/.test(svc) && /remapDroppedNodeId\.get\(e\.targetId\)/.test(svc),
+			'边的 sourceId/targetId 必须重映射到幸存节点（否则悬空边 ✗）');
+		// ③ 去重后日志必须可见（重复数增长 = 重解析泄漏的证据 ✓）
+		assert.ok(svc.includes('个重复 (project, qualified_name) 节点'),
+			'重复数必须打出来 —— 它是「内存里有重复」的唯一可见证据 ✓');
+
+		// ④ store 侧兜底：显式 id 分支必须能识别并化解 UNIQUE(project, qualified_name) 冲突
+		//    （增量补丁不走渲染侧去重 ⇒ 只靠这条兜底 ✗✓）
+		assert.ok(nodeStore.includes('function isUniqueQualifiedNameError'),
+			'store 必须能识别 qualified_name 的 UNIQUE 冲突（窄判据，别把别的错误也兜掉 ✗）');
+		assert.ok(nodeStore.includes('DELETE FROM nodes WHERE project = ? AND qualified_name = ? AND id <> ?'),
+			'冲突时必须删掉占位的那条再插（保留本次的显式 id ⇒ 与内存 id 仍对齐 ✓）');
+		assert.ok(/if \(!isUniqueQualifiedNameError\(err\)\) \{ throw err; \}/.test(nodeStore),
+			'非该冲突的错误必须原样抛出（不能把 IO/其它约束错误也吞掉 ✗）');
+	});
+
+	/**
+	 * ⑮ 为什么值得钉（**2026-09-20，方案 B**）：真机 `💾 保存图谱: 96 MB` 前后，检索报
+	 * `sqlite fetch slow: 2387ms` —— 而空闲库上同一检索的三条 SQL 都是毫秒级
+	 * （LIKE 125–142ms / FTS 内层 2ms / 外层 2ms）⇒ 慢的是**与落盘争用**的等待 ✗✓。
+	 * ⇒ 落盘必须给**在飞的检索**让路。
+	 * ⚠ 但"让路"极易退化成**静默不落盘**（制品停在旧版本 ✗✗）⇒ 三个安全阀一个都不能少：
+	 * ① 唯一出口（所有落盘路径都经 `_fireSaveOrDefer`）② 饥饿上限优先（不得无限推迟）
+	 * ③ 检索结束立刻补跑 + 取消/dispose 时清理重试定时器。
+	 */
+	test('⑮ 检索在飞时推迟 zst 落盘：唯一出口 + 饥饿上限优先 + 补跑/清理齐全', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+
+		// ① 在飞计数：必须用薄包装包住真正的实现（否则每个 return 分支都要记得减 ✗）
+		assert.ok(svc.includes('private async _searchGraphAsyncImpl('), '实现必须改名，由薄包装统一计数');
+		assert.ok(/this\._searchesInFlight\+\+;/.test(svc) && /this\._searchesInFlight--;/.test(svc),
+			'必须成对增减在飞计数');
+		assert.ok(/finally \{[\s\S]{0,120}this\._searchesInFlight--;/.test(svc), '减计数必须放 finally（异常/提前返回也不能漏 ✗）');
+
+		// ② 让路判据 + 唯一出口
+		assert.ok(/if \(this\._searchesInFlight > 0 && !starved\)/.test(svc),
+			'检索在飞且未到饥饿上限 ⇒ 必须推迟落盘');
+		assert.ok(svc.includes('this._fireSaveOrDefer(key, rootPath, project);'),
+			'延时到期也必须经唯一出口（不得直接 _saveGraph ✗）');
+
+		// ③ 数据安全：饥饿上限必须优先于让路（否则连续检索流会让制品永不更新 ✗✗）
+		assert.ok(/const starved = \(Date\.now\(\) - first\) >= SAVE_MAX_DEFER_MS;/.test(svc),
+			'必须有饥饿判据，且以「首个待发请求」计时');
+		assert.ok(/即使有检索在飞也强制落盘/.test(svc), '饥饿到点时必须强制落盘并记日志 ✓');
+
+		// ④ 补跑与清理（缺一 ⇒ 落盘丢失 / dispose 后误触发 ✗）
+		assert.ok(svc.includes('_flushSavesDeferredBySearch'), '检索全部结束必须立刻补跑被推迟的落盘');
+		assert.ok(/SAVE_DEFER_BY_SEARCH_MS/.test(svc), '推迟后必须有重试间隔');
+		assert.ok(svc.includes('_saveRetryTimers'), '重试定时器必须可追踪（取消/dispose 时清理 ✓）');
+		assert.ok(/for \(const t of this\._saveRetryTimers\.values\(\)\) \{ clearTimeout\(t\); \}/.test(svc),
+			'dispose 必须清掉重试定时器（否则 dispose 后仍触发落盘 ✗）');
+	});
+
+	/**
 	 * ⑬ 为什么值得钉：全量同步原子化是**四方链路 + 一个成对纪律**，任何一方缺位都会**静默退化成
 	 * 非原子**（崩在中间 = 项目残缺 ✗✗，而追平只能在下一次载入才补 ✗）。本套件把「契约/分发器/
 	 * 实现/客户端**四方都在** + begin/commit/abort 成对 + abort 在 finally」钉死 ✓。

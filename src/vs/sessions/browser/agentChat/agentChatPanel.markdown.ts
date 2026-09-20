@@ -676,26 +676,49 @@ private _renderPartsContentImpl(bubble: HTMLElement, parts: readonly IMessagePar
 			const p = parts[k];
 			if (p.kind === 'text' && p.text.trim().length > 0) { lastTextIdx = k; }
 		}
+	// ★★ 2026-09-20 按 kind 拆解（回答「那两条超大消息的建卡成本花在哪」）：
+	//   真机证据 —— `render.createMessageElement=58.3ms | parts=127 tools=69` 与
+	//   `parts.render=56.7ms` 几乎相等 ⇒ 成本全在 parts 遍历内；但已有子标签
+	//   （`markdown.render` / `card.create.*`）只给"单次最慢"，无法回答**哪一类段吃掉最多**。
+	//   这里按三类（text/tool/thinking）累加次数与耗时，渲染结束打一行 breakdown：
+	//     `parts.breakdown=56.7ms | msg=… parts=127 text=58/19.4ms tool=66/35.2ms think=3/1.2ms`
+	//   另按 `parts.byKind.<kind>` 单独记录（30s 汇总里即可看出全局主导类别）。
+	//   ⚠ 不用闭包（127 段不做 127 次闭包分配）：显式 start + 每段结束 record ✓。
+	const tBreakdown = chatPerf.start();
+	const kindStat: Record<'text' | 'tool' | 'thinking', { n: number; ms: number }> = {
+		text: { n: 0, ms: 0 }, tool: { n: 0, ms: 0 }, thinking: { n: 0, ms: 0 },
+	};
+	const perPart = (kind: 'text' | 'tool' | 'thinking', t0: number): void => {
+		const ms = performance.now() - t0;
+		kindStat[kind].n++;
+		kindStat[kind].ms += ms;
+		chatPerf.record(`parts.byKind.${kind}`, ms, `msg=${hostMsg?.id ?? ''}`);
+	};
+
 	for (let k = 0; k < parts.length; k++) {
 			const part = parts[k];
 			if (part.kind === 'text') {
 				if (part.text.trim().length === 0) { continue; }
+				const tPart = chatPerf.start();
 				const segEl = append(bubble, $(".message-content.parts-text-segment"));
 				segEl.setAttribute('data-part-key', `text:${hostMsg?.id ?? ''}#t${k}`);
 				if (isStreaming && k === lastTextIdx) {
 					segEl.classList.add('streaming-container');
 				}
 				this._renderMarkdownContent(segEl, part.text, isStreaming);
+				perPart('text', tPart);
 				if ((window as any).__SAROSIS_PARTS_DIAG) {
 					console.info(`[PartsDiag] render parts[${k}] TEXT → append .parts-text-segment, textLen=${part.text.length}, isLastText=${k === lastTextIdx}`);
 				}
 		} else if (part.kind === 'tool') {
 			const toolPart = (part as any).tool;
 			// clarify 工具走专用交互卡片（含选项按钮），否则普通工具卡片
+			const tPart = chatPerf.start();
 			const clarifyCard = this._maybeCreateClarifyCard(toolPart);
 				const renderedCard = clarifyCard ?? this._createToolCallCard(toolPart, this._getToolConfirmation(hostMsg, toolPart?.id));
 				renderedCard.setAttribute('data-part-key', `tool:${toolPart?.id ?? `auto-${k}`}`);
 				bubble.appendChild(renderedCard);
+				perPart('tool', tPart);
 				if ((window as any).__SAROSIS_PARTS_DIAG) {
 					const cardType = clarifyCard ? 'clarify-card' : (toolPart?.name === 'delegate_task' ? 'delegate-card' : 'tool-card');
 					console.info(`[PartsDiag] render parts[${k}] TOOL → append ${cardType} toolName=${toolPart?.name} toolStatus=${toolPart?.status} cardClasses="${(renderedCard as HTMLElement).className?.split(' ').slice(0,3).join(' ')}"`);
@@ -704,6 +727,7 @@ private _renderPartsContentImpl(bubble: HTMLElement, parts: readonly IMessagePar
 				// 2026-07-26 用户要求：thinking 卡片跟随流式发生位置渲染（不固定顶部）。
 				// 每个思考 episode 一张卡；仅最后一个 episode 且仍在流式时显示
 				// 「思考中...」活跃态，其余为完成的「思考过程」。
+				const tPart = chatPerf.start();
 				const isLastEpisode = k === parts.length - 1;
 				const thinkCard = this._createThinkingCard({
 					...hostMsg,
@@ -715,12 +739,19 @@ private _renderPartsContentImpl(bubble: HTMLElement, parts: readonly IMessagePar
 				} as IAgentChatMessage);
 				thinkCard.setAttribute('data-part-key', `thinking:${hostMsg?.id ?? ''}#tk${k}`);
 				bubble.appendChild(thinkCard);
+				perPart('thinking', tPart);
 				if ((window as any).__SAROSIS_PARTS_DIAG) {
 					console.info(`[PartsDiag] render parts[${k}] THINKING → len=${(part as IThinkingMessagePart).text.length}`);
 				}
 			}
 		}
-	}
+
+	chatPerf.record('parts.breakdown', performance.now() - tBreakdown,
+		`msg=${hostMsg?.id ?? ''} parts=${parts.length} ` +
+		`text=${kindStat.text.n}/${kindStat.text.ms.toFixed(1)}ms ` +
+		`tool=${kindStat.tool.n}/${kindStat.tool.ms.toFixed(1)}ms ` +
+		`think=${kindStat.thinking.n}/${kindStat.thinking.ms.toFixed(1)}ms stream=${isStreaming ? 'y' : 'n'}`);
+}
 
 	/**
 	 * 为单个 part 创建 DOM 元素（追加模式用，避免整卡重建导致闪烁）。

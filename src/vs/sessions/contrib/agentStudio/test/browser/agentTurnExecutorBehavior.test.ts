@@ -39,6 +39,12 @@ import { classifyIterationStop } from '../../common/turnStopGate.js';
 import { AgentLoopStrategyFactory } from '../../browser/agentLoopStrategyFactory.js';
 import type { AgentParadigm } from '../../common/agentLoopStrategy.js';
 
+// ── 钉 legacy 路径（2026-09-20 E2 翻转后必须显式关断）────────────────────────
+// 本套件是 legacy 主循环的行为钉（S3 拆分的前置护栏）；E2 后 isPiKernelEnabled()
+// 默认开 ⇒ 不设本标志的话，executeAgentTurnDirect 会在门控分流点走进 pi 内核，
+// 全部用例静默失效（断言的是另一条路径）。pi 路径的行为钉见 piTurnKernel.test.ts。
+(globalThis as { __SAROSIS_PI_KERNEL?: unknown }).__SAROSIS_PI_KERNEL = false;
+
 /** 收集 generator 的全部输出与返回值。 */
 async function drain(
 	gen: AsyncGenerator<IChatStreamDelta, unknown>,

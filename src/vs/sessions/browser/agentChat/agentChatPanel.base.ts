@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import "./media/agentChat.css";
-import { Disposable, IDisposable } from '../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import type { ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlConfig.js';
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { ILogService } from '../../../platform/log/common/log.js';
@@ -1253,6 +1253,41 @@ protected _agentStatus: AgentStatus = AgentStatus.Idle;
 /** 底层是否仍有活跃流（含收尾窗口）。用于入队判断，避免打断未收尾的流。 */
 protected _isStreamActive = false;
 
+/**
+ * 「进入视口才执行」的延迟构建（★★ 2026-09-20 性能，全卡片族共用）。
+ *
+ * 动机（真机取证）：首屏 / session 切换会一次性建出 N 张卡，其中重卡的正文
+ * （子代理执行详情、图表 SVG、长输出…）在用户**根本看不到**时就已付成本 ——
+ * 真机 `render.createMessageElement=58.3ms (parts=127 tools=69)` 与
+ * `52.4ms (delegates×4)` 即此类；长任务归因也长期报「无标记」✗。
+ *
+ * 边界（全部 fail-open，绝不吞内容 ✓）：
+ *   ① 无 `IntersectionObserver`（旧环境 / 测试）⇒ **立即执行**（行为同修复前 ✓）；
+ *   ② 元素在触发前已从文档移除（重建 / 裁剪 / 关会话）⇒ 跳过，省掉整段工作 ✓；
+ *   ③ 观察器纳入面板 disposables ⇒ pane 释放时断开（不泄漏 ✓）；
+ *   ④ 任何异常 ⇒ 回退立即执行（诊断/新 API 失败不影响功能 ✓）。
+ *
+ * @param el     可见性锚定元素
+ * @param render 真正执行构建的回调（至多被调用一次）
+ */
+protected _renderWhenCardVisible(el: HTMLElement, render: () => void): void {
+	try {
+		if (typeof IntersectionObserver === 'undefined') { render(); return; }
+		let done = false;
+		const io = new IntersectionObserver(entries => {
+			if (done || !entries.some(e => e.isIntersecting)) { return; }
+			done = true;
+			io.disconnect();
+			if (!el.isConnected) { return; }
+			render();
+		}, { root: null, rootMargin: '200px 0px 200px 0px', threshold: 0 });
+		io.observe(el);
+		this._register(toDisposable(() => { done = true; io.disconnect(); }));
+	} catch {
+		render();
+	}
+}
+
 /** 只重绘 header（不重建消息区 / 输入区）。子类覆盖。 */
 protected _refreshHeaderOnly(): void {
 	// 默认实现：无 header 的场景（CLI 面板等）无需刷新。
@@ -1498,6 +1533,16 @@ updateMessage(
 		const prevToolSig = (this._messages[idx].toolCalls ?? []).map(t => `${t.id}:${t.status}`).join(',');
 		Object.assign(this._messages[idx], updates);
 		const m = this._messages[idx];
+
+		// ★★ 2026-09-20：完成态 footer 的**用量药丸补建** ✓。
+		// 为什么需要：footer 在流结束时**只创建一次**（`_ensureLastBubbleFooter` ✓），而
+		// usage delta 可能**晚于** done 抵达 ✗ ⇒ 创建那一刻 `msg.tokenUsage` 还是 undefined
+		// ⇒ 完成态只剩「耗时」✗（用户截图：`耗时: 57.2S` ✗）。此后 `updateMessage(id,{tokenUsage})`
+		// 只改数据、**不重建 footer** ✗ ⇒ 两个 pill 永远不出现 ✓。
+		//（处理中为何正常 ✓：那里有每秒 ticker 反复 upsert ✓。）
+		if (updates.tokenUsage !== undefined) {
+			this._refreshDoneUsagePills(m);
+		}
 
 			// ── parts 管理（单一真相：updates.parts > 已有 parts > 重新派生）──
 			// 1. 如果调用方显式提供 parts → 直接使用（流式期间由 _processDelta 维护）
@@ -1817,6 +1862,15 @@ setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): vo
 			bubble.appendChild(this._createFooter(lastAssistant));
 		}
 	}
+
+/**
+ * ★★ 2026-09-20：完成态用量药丸**补建**（基类空实现 ✓，由 messages 侧覆盖 ✓）。
+ *
+ * 为什么需要：完成态 footer 在流结束时**只创建一次**，而 usage delta 可能**晚于** done 抵达 ✗
+ * ⇒ 创建时 `msg.tokenUsage` 还是 undefined ⇒ 完成态只剩「耗时」✗（用户截图：`耗时: 57.2S` ✗）。
+ * 由 `updateMessage()` 在 `updates.tokenUsage` 到达时调用 ✓（幂等、只在缺 pill 时重建 footer ✓）。
+ */
+protected _refreshDoneUsagePills(_msg: IAgentChatMessage): void { /* overridden in feature files */ }
 
 protected _findMessageElementById(id: string): HTMLElement | null {
 		if (!this._messagesContainer) { return null; }

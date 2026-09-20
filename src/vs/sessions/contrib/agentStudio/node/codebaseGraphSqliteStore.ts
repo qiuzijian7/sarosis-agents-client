@@ -225,6 +225,30 @@ function camelSplitTokens(ident: string): string {
 
 // ---- Row → GraphNode 映射 ----
 
+/**
+ * 显式 id 的 upsert 语句（`_syncGraphToSqlite` 全量同步 / 增量补丁都走它 ✓）。
+ *
+ * ⚠ 冲突目标只有 `id` —— **管不到** `UNIQUE(project, qualified_name)` ✗（SQLite 一条 INSERT
+ * 只能有一个 ON CONFLICT 目标）⇒ 撞 qualified_name 时必须由**调用方兜底**（见 `upsertNode` ✓）。
+ */
+const EXPLICIT_ID_UPSERT_SQL =
+	`INSERT INTO nodes (id, project, name, label, type, qualified_name, file_path, start_line, end_line, in_degree, out_degree, properties_json, body)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+	 ON CONFLICT(id) DO UPDATE SET
+	   project=excluded.project, name=excluded.name, label=excluded.label, type=excluded.type,
+	   qualified_name=excluded.qualified_name, file_path=excluded.file_path,
+	   start_line=excluded.start_line, end_line=excluded.end_line,
+	   in_degree=excluded.in_degree, out_degree=excluded.out_degree, properties_json=excluded.properties_json, body=excluded.body`;
+
+/**
+ * ★ 2026-09-20：是否是「`UNIQUE(project, qualified_name)` 撞了」的错误（而非别的约束/IO 错 ✗）。
+ * 判据必须**足够窄**：只有这一种错误才应该用「删占位行再插」来兜，其它一律原样抛出 ✓。
+ */
+function isUniqueQualifiedNameError(err: unknown): boolean {
+	const msg = (err as { message?: string } | undefined)?.message ?? String(err);
+	return /UNIQUE constraint failed:\s*nodes\.project,\s*nodes\.qualified_name/i.test(msg);
+}
+
 interface NodeRow {
 	id: number;
 	project: string;
@@ -537,16 +561,27 @@ export class CodebaseGraphSqliteStore {
 		const explicitId = node.id !== undefined ? Number(node.id) : undefined;
 
 		if (explicitId !== undefined) {
-			await dbRun(db,
-				`INSERT INTO nodes (id, project, name, label, type, qualified_name, file_path, start_line, end_line, in_degree, out_degree, properties_json, body)
-				 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-				 ON CONFLICT(id) DO UPDATE SET
-				   project=excluded.project, name=excluded.name, label=excluded.label, type=excluded.type,
-				   qualified_name=excluded.qualified_name, file_path=excluded.file_path,
-				   start_line=excluded.start_line, end_line=excluded.end_line,
-				   in_degree=excluded.in_degree, out_degree=excluded.out_degree, properties_json=excluded.properties_json, body=excluded.body`,
-				[explicitId, project, node.name, label, type, qn, node.filePath ?? null,
-					node.startLine ?? null, node.endLine ?? null, node.inDegree ?? 0, node.outDegree ?? 0, props, body]);
+			const params = [explicitId, project, node.name, label, type, qn, node.filePath ?? null,
+				node.startLine ?? null, node.endLine ?? null, node.inDegree ?? 0, node.outDegree ?? 0, props, body];
+			try {
+				await dbRun(db, EXPLICIT_ID_UPSERT_SQL, params);
+			} catch (err) {
+				// ★★★ 2026-09-20（真机 P0）：`ON CONFLICT(id)` **管不到** `UNIQUE(project, qualified_name)` ✗
+				// ⇒ 两条**不同 id** 撞同一个 (project, qualified_name) 时整条 INSERT 抛
+				// `SQLITE_CONSTRAINT_UNIQUE: UNIQUE constraint failed: nodes.project, nodes.qualified_name`，
+				// 而 `upsertNodesBatch` 把它包在一个事务里 ⇒ **整批回滚** ✗✗。
+				// 真机后果（用户日志 2026-09-20 18:xx）：全量同步跑 **84s** 后整批 abort ⇒ DB 永远落后，
+				// 且「下次载入/查询会重试」⇒ **每窗都白付 84s** ✗✗✗；增量补丁走同一分支 ⇒ 同样会静默失败
+				// （失败被吞 ⇒ 这正是「DB 怎么落后几千节点」的答案 ✓）。
+				// 兜底：删掉占位的那条（**同 (project, qualified_name) 但不同 id**）再插本次的 ⇒
+				// 语义 = 「后写的赢」，且不破坏显式 id 与内存 id 的对齐 ✓（边的引用仍然有效）。
+				if (!isUniqueQualifiedNameError(err)) { throw err; }
+				await dbRun(db,
+					`DELETE FROM nodes WHERE project = ? AND qualified_name = ? AND id <> ?`,
+					[project, qn, explicitId]);
+				await dbRun(db, `DELETE FROM nodes_fts WHERE rowid = ?`, [explicitId]);
+				await dbRun(db, EXPLICIT_ID_UPSERT_SQL, params);
+			}
 			await this._upsertFTS(explicitId, node);
 			return explicitId;
 		}

@@ -22,6 +22,7 @@ import { ILifecycleService, LifecyclePhase } from '../../../workbench/services/l
 import { LayoutPriority } from '../../../base/browser/ui/grid/grid.js';
 import { assertReturnsDefined } from '../../../base/common/types.js';
 import { IViewDescriptorService, ViewContainerLocation } from '../../../workbench/common/views.js';
+import { VIEWLET_ID } from '../../../workbench/contrib/scm/common/scm.js';
 import { AbstractPaneCompositePart, CompositeBarPosition } from '../../../workbench/browser/parts/paneCompositePart.js';
 
 
@@ -85,6 +86,22 @@ const SIDEBAR_CONTENT_EXPANDED_CLASS = 'sidebar-content-expanded';
  *  - The titlebar toggle button (ToggleSidebarVisibilityAction)
  *  - Clicking any icon in the activity bar (auto-expands to show the viewlet)
  */
+/**
+ * ★ 2026-09-20（**启动即崩**的修复）：「上方分组」的默认顺序提到**模块级常量** ✓。
+ *
+ * 原来 `TOP_GROUP_IDS` 写成 `new Set(SidebarPart.TOP_GROUP_ORDER)` ✗ ——
+ * 在**类自己的静态初始化器里按类名引用自己**，而该绑定此刻仍在 **TDZ** ⇒
+ * `ReferenceError: Cannot access 'SidebarPart' before initialization`
+ * （模块加载阶段直接抛 ✓，整个窗口起不来 ✗✗）。
+ *
+ * 提到模块级后：静态字段仍保留（外部有引用），两边共用同一常量 ⇒ 无 TDZ、无漂移 ✓。
+ */
+const SIDEBAR_TOP_GROUP_ORDER = [
+	'agentStudio.workspace',
+	'agentStudio.search',
+	VIEWLET_ID,  // native Source Control container
+];
+
 export class SidebarPart extends AbstractPaneCompositePart {
 
 	static readonly activeViewletSettingsKey = 'workbench.agentsession.sidebar.activeviewletid';
@@ -109,15 +126,24 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	private static readonly EXPANDED_PREFERRED_WIDTH = 250;
 
 	/**
-	 * View container IDs in the "above-separator" (tools) group.
-	 * Must match the registered view containers whose order is in the
-	 * top group (workspace, search, sourcecontrol: order 10/20/30).
+	 * Default order of the "above-separator" (tools) group: Workspace, Search,
+	 * Source Control. This array — not the containers' `order` — is what pins
+	 * Source Control directly below Search: the native SCM container is registered
+	 * with `order: 2` (near the top in the editor window), which would otherwise
+	 * push it above Workspace in the sessions window.
 	 */
-	private static readonly TOP_GROUP_IDS = new Set([
-		'agentStudio.workspace',
-		'agentStudio.search',
-		'sessions.sourceControl.container',  // SESSIONS_SOURCE_CONTROL_CONTAINER_ID
-	]);
+	/** 见上方模块级 `SIDEBAR_TOP_GROUP_ORDER`（保留本静态字段：外部仍在引用 ✓）。 */
+	private static readonly TOP_GROUP_ORDER = SIDEBAR_TOP_GROUP_ORDER;
+
+	/**
+	 * View container IDs in the "above-separator" (tools) group.
+	 * ⚠ 必须用**模块级常量**构造 ✗ —— 不可写 `SidebarPart.TOP_GROUP_ORDER`
+	 * （静态初始化器内引用类名 ⇒ TDZ ⇒ 启动崩溃 ✗，见 SIDEBAR_TOP_GROUP_ORDER 注释 ✓）。
+	 */
+	private static readonly TOP_GROUP_IDS = new Set(SIDEBAR_TOP_GROUP_ORDER);
+
+	/** The sessions container Source Control used to live in (pre-reuse of the native one). */
+	private static readonly LEGACY_SOURCE_CONTROL_CONTAINER_ID = 'sessions.sourceControl.container';
 
 	private footerContainer: HTMLElement | undefined;
 	private sideBarTitleArea: HTMLElement | undefined;
@@ -216,6 +242,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		// Apply initial collapsed state CSS class
 		parent.classList.add(SIDEBAR_CONTENT_COLLAPSED_CLASS);
 
+		this._ensureDefaultPinOrder();
 		this.createSidebarToolbar(parent);
 		this._injectActivityBarSeparator(parent);
 		this._setupActivityBarDragValidation();
@@ -2377,6 +2404,52 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			// No top-group icons found — place separator at the top
 			actionItems[0].before(this.separatorEl);
 		}
+	}
+
+	/**
+	 * Make sure the activity bar starts with Workspace → Search → Source Control.
+	 *
+	 * The icon order is the *stored* pin order (pinnedViewContainersKey), not the
+	 * containers' `order`. Source Control used to be the sessions-owned container
+	 * (`sessions.sourceControl.container`) and is now the native one, so the stored
+	 * order either still holds the dead id or has no entry for the native one at
+	 * all — in which case CompositeBar falls back to `order` and the native
+	 * container's `order: 2` jumps above Workspace.
+	 *
+	 * Runs once: as soon as the native container appears in the stored order, the
+	 * user's own drag-and-drop is authoritative.
+	 */
+	private _ensureDefaultPinOrder(): void {
+		const key = SidebarPart.pinnedViewContainersKey;
+		const raw = this.storageService.get(key, StorageScope.PROFILE);
+
+		if (raw) {
+			try {
+				const parsed = JSON.parse(raw);
+				if (Array.isArray(parsed) && parsed.some(item => item?.id === VIEWLET_ID)) {
+					return;
+				}
+			} catch {
+				// Unparseable — rebuild below.
+			}
+		}
+
+		let rest: { id: string; pinned: boolean; visible: boolean; order?: number }[] = [];
+		if (raw) {
+			try {
+				const parsed = JSON.parse(raw);
+				if (Array.isArray(parsed)) {
+					rest = parsed.filter((item: { id?: string }) => typeof item?.id === 'string'
+						&& !SidebarPart.TOP_GROUP_IDS.has(item.id)
+						&& item.id !== SidebarPart.LEGACY_SOURCE_CONTROL_CONTAINER_ID);
+				}
+			} catch {
+				rest = [];
+			}
+		}
+
+		const top = SidebarPart.TOP_GROUP_ORDER.map(id => ({ id, pinned: true, visible: true }));
+		this.storageService.store(key, JSON.stringify([...top, ...rest]), StorageScope.PROFILE, StorageTarget.USER);
 	}
 
 	/**

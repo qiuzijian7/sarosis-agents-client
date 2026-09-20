@@ -18,6 +18,7 @@ import { TaskBoardStatus, TaskSource } from '../../../common/types.js';
 import type { IAgentTurnRequest, IChatStreamDelta } from '../../../common/providers.js';
 import { IterationBudget } from '../../../common/iterationBudget.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING } from '../../../common/constants.js';
+import { resolveAgentStudioDataRoot, migrateLegacyAgentStudioData } from '../../../common/sarosPaths.js';
 import {
 	UnifiedSubAgentDispatch,
 	SubAgentType,
@@ -35,7 +36,7 @@ import {
 
 const BLACKBOARD_PREFIX = '[swarm:blackboard]';
 
-/** 持久化文件名（与 taskboard.json 同目录：~/.agent-studio/data/）。 */
+/** 持久化文件名（与 taskboard.json 同目录：~/.vssaros/）。 */
 const DATA_FILE_SWARMS = 'swarms.json';
 
 /** 持久化的磁盘格式：状态快照 + blackboard 一并落盘。 */
@@ -535,13 +536,18 @@ export class SwarmService extends Disposable implements ISwarmService {
 
 	// ─── persistence ──────────────────────────────────────────────────────────
 
+	/** 旧目录迁移 Promise（仅默认落盘根下非空）；读路径开头 await，避免迁移与首读竞争。 */
+	private _legacyMigration: Promise<void> | undefined;
+
 	private _getDataUri(): URI {
 		if (!this._dataUri) {
 			const customPath = this.configurationService.getValue<string>(AGENT_STUDIO_DATA_PATH_SETTING);
-			if (customPath) {
-				this._dataUri = URI.file(customPath);
-			} else {
-				this._dataUri = URI.joinPath(this.environmentService.userHome, '.agent-studio', 'data');
+			// 统一落盘根：~/.vssaros/（dev 为 ~/.vssaros-dev/），废弃 ~/.agent-studio/data（sarosPaths 约定）
+			this._dataUri = resolveAgentStudioDataRoot(customPath, this.environmentService.userRoamingDataHome);
+			if (!customPath) {
+				this._legacyMigration = migrateLegacyAgentStudioData(
+					this.fileService, this.logService, this.environmentService.userHome, this._dataUri, [DATA_FILE_SWARMS]
+				);
 			}
 		}
 		return this._dataUri;
@@ -577,6 +583,7 @@ export class SwarmService extends Disposable implements ISwarmService {
 	 * 但完整保留拓扑与 blackboard 供 UI 查看；终态（done/cancelled/failed）原样恢复。
 	 */
 	private async _restoreFromDisk(): Promise<void> {
+		await this._legacyMigration;
 		try {
 			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_SWARMS);
 			const content = await this.fileService.readFile(uri);

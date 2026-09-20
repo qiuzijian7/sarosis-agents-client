@@ -21,6 +21,16 @@
 /** LLM 消息角色。对应 pi-ai `Message["role"]`。 */
 export type LlmMessageRole = 'user' | 'assistant' | 'toolResult' | 'system';
 
+/** 转录卫生清理结果（AgentLoopConfig.onTranscriptPruned 的载荷；见 kernelTranscriptHygiene.ts）。 */
+export interface ITranscriptPruneResult {
+	/** 摘除的孤儿 tool call 块数。 */
+	readonly prunedCalls: number;
+	/** 摘除的孤儿 tool result 消息数。 */
+	readonly prunedResults: number;
+	/** 因内容清空而整条移除的消息数。 */
+	readonly droppedMessages: number;
+}
+
 /** 文本内容块。 */
 export interface TextContent {
 	readonly type: 'text';
@@ -270,16 +280,18 @@ export interface ToolExecutionEndEvent {
 
 /** agentloop 对外发射的事件联合。 */
 export type AgentEvent =
-	| { readonly type: 'agent_start' }
-	| { readonly type: 'agent_end' }
-	| { readonly type: 'turn_start' }
-	| { readonly type: 'turn_end' }
-	| { readonly type: 'message_start'; readonly message: AgentMessage }
-	| { readonly type: 'message_update'; readonly message: AgentMessage; readonly assistantMessageEvent: AssistantMessageEvent }
-	| { readonly type: 'message_end'; readonly message: AgentMessage }
-	| ToolExecutionStartEvent
-	| ToolExecutionUpdateEvent
-	| ToolExecutionEndEvent;
+  | { readonly type: 'agent_start' }
+  | { readonly type: 'agent_end' }
+  | { readonly type: 'turn_start' }
+  | { readonly type: 'turn_end' }
+  | { readonly type: 'message_start'; readonly message: AgentMessage }
+  | { readonly type: 'message_update'; readonly message: AgentMessage; readonly assistantMessageEvent: AssistantMessageEvent }
+  | { readonly type: 'message_end'; readonly message: AgentMessage }
+  /** （2026-09-20 增补，超出 pi 原版）通知宿主丢弃本轮已流式渲染的文本（XML 泄漏重试等场景；对齐 legacy `discard_prior_text` delta）。 */
+  | { readonly type: 'discard_streamed_text'; readonly reason: string }
+  | ToolExecutionStartEvent
+  | ToolExecutionUpdateEvent
+  | ToolExecutionEndEvent;
 
 /** 事件接收器。可同步或异步；loop 内部会 `await`。 */
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
@@ -321,6 +333,16 @@ export interface AfterToolCallContext {
 export type AfterToolCallResult =
 	| { readonly kind: 'keep' }
 	| { readonly kind: 'replace'; readonly result: AgentToolResult<unknown>; readonly isError?: boolean };
+
+/** 文本工具调用泄漏守卫（见 `AgentLoopConfig.textToolCallLeakGuard`）。 */
+export interface ITextToolCallLeakGuard {
+	/** 检测 assistant 文本里是否有伪 XML 工具调用（如 `<tool_calls:...>`）。 */
+	detect(text: string): boolean;
+	/** 纠正指令文案（作为 user 消息注入后重试一轮）。 */
+	reminder(): string;
+	/** 重试上限（legacy `XML_TOOL_LEAK_RETRY_LIMIT` = 2）。 */
+	readonly retryLimit: number;
+}
 
 /** `shouldStopAfterTurn` 的入参。 */
 export interface ShouldStopAfterTurnContext {
@@ -396,6 +418,15 @@ export interface AgentLoopConfig {
 	/** follow-up 队列注入策略。 */
 	readonly followUpMode?: QueueMode;
 
+	/**
+	* steering 消息轮询（pi `agent-loop.ts:173/203/263` 语义，2026-09-20 补）：
+	* 宿主提供的 getter，loop 在「起始 + 每个 turn 边界」轮询；取到的消息排进
+	* **下一次模型调用之前**推入 transcript（用户插话）；模型本想停（无工具调用）时
+	* 取到 ⇒ 续跑（follow-up 语义）。约定：返回即被无条件消费（lease/ack 由宿主在
+	* getter 内完成——loop 保证同迭代内 drain）。
+	*/
+	readonly getSteeringMessages?: () => Promise<readonly AgentMessage[]> | readonly AgentMessage[];
+
 	/** 静态 API key。与 `getApiKey` 二选一，后者优先（支持过期令牌刷新）。 */
 	readonly apiKey?: string;
 
@@ -414,8 +445,53 @@ export interface AgentLoopConfig {
 
 	/** 单轮结束后的停止判定。返回 true 则终止 agentloop。 */
 	readonly shouldStopAfterTurn?: (
-		context: ShouldStopAfterTurnContext,
+	context: ShouldStopAfterTurnContext,
 	) => Promise<boolean> | boolean;
+
+	/**
+	 * （2026-09-20 增补，超出 pi 原版）
+	 * 转录卫生回调：内核摘除「孤儿 tool 对」后通知宿主（计数用于日志/诊断）。
+	 * 孤儿 = 有 tool_call 无 tool_result（收尾轮跳过执行 / abort 半批 / 历史遗留）
+	 * 或反向；见 kernelTranscriptHygiene.ts 的背景说明。
+	 */
+	readonly onTranscriptPruned?: (result: ITranscriptPruneResult) => void;
+
+
+	/**
+	 * （2026-09-20 增补，超出 pi 原版，对齐 legacy executor:2294-2368）
+	 * 文本形态工具调用泄漏守卫：模型把工具调用写成 XML/伪标签**纯文本**（未走 native
+	 * function call）时，runLoop 在「本轮无工具调用且 detect 命中」时：
+	 *   · 未超限 ⇒ 丢弃泄漏文本（发 `discard_streamed_text`，不入 transcript）+
+	 *     注入 `reminder()` 纠正指令为 user 消息 + 续跑重试；
+	 *   · 超限   ⇒ 发 `discard_streamed_text`（reason 后缀 `-exhausted`）后正常收尾。
+	 * legacy 阈值：`XML_TOOL_LEAK_RETRY_LIMIT = 2`。
+	 */
+	readonly textToolCallLeakGuard?: ITextToolCallLeakGuard;
+
+  /**
+   * （2026-09-20 增补，超出 pi 原版，对齐 legacy `wrapUp.forced` 语义）
+   * 强制收尾轮请求：返回**提醒文案** ⇒ runLoop 立即武装一轮禁工具收尾
+   * （不等 maxTurns 撞顶），文案作为该轮的 user 注入；返回 undefined ⇒ 无请求。
+   * 一次性语义：被消费后宿主应自清。驱动方用于「文本搜索连击硬上限」等
+   * 「打断死循环、强制基于已收集信息收尾」的场景（executor:3400-3410）。
+   */
+readonly requestWrapUp?: () => string | undefined;
+
+  /**
+   * （2026-09-20 增补，超出 pi 原版，对齐 legacy executor:2375-2470「未完成轮安全续跑」）
+   * 一轮流式结束且**无工具调用**时调用（收尾候选轮）。返回 ⇒ 续跑一轮纠正：
+   *   · `discard: true`  ⇒ 本轮 assistant 消息撤出 transcript + 发 `discard_streamed_text`
+   *     （空/幻觉/工具调用丢失 —— 文本无参考价值）；
+   *   · `discard: false` ⇒ **保留**半截文本（length/truncated-text 续写语义：半截是有效产物，
+   *     丢弃会让模型重写整段）；
+   *   · `instruction`    ⇒ 作为 user 消息注入后重试。
+   * 返回 undefined ⇒ 正常收尾。实现方负责按 kind 计数与上限（legacy 每类独立上限）。
+   */
+readonly incompleteTurnRetry?: (message: AssistantMessage) => {
+  readonly instruction: string;
+  readonly discard: boolean;
+  readonly kind: string;
+  } | undefined;
 
 	/** 下一轮开始前的准备。可返回覆盖项以热切换模型/工具。 */
 	readonly prepareNextTurn?: (

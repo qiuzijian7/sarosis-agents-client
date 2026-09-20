@@ -397,30 +397,36 @@ export async function resolveAndCheckWorkspacePathImpl(
 		);
 	}
 
-	// 计算建议路径（2026-09-07 重写，见 computeSuggestedPath）：仅当能定位到
-	// 允许根内真实存在的文件时才建议（建议 = 真实路径）；否则 undefined。
-	const requestedBase = (requestedPath.split(/[\\/]/).pop() || 'file')
-		.replace(/[<>:"/\\|?*]/g, '_');
-	const candidateRoots = allowedRoots.filter(r => {
-		const normalized = r.replace(/\\/g, '/').toLowerCase();
-		// Exclude legacy ~/.saros and the app data root (~/.vssaros) as suggestion targets
-		return !normalized.includes(`/${LEGACY_SAROS_DIR}`) && !normalized.endsWith('/.vssaros') && !normalized.endsWith('/.vssaros-dev');
-	});
-	const suggestedPath = fileService && candidateRoots.length > 0
-		? await computeSuggestedPath(fileService, requestedPath, candidateRoots)
-		: undefined;
-
-	// P2 自动放行的候选根（2026-09-07 二次收紧）：**排除 worktree 根**。
-	// worktree 是主仓的另一份 checkout，同结构文件在两边都存在 → 结构修复的
-	// exists 验证无法区分，静默把编辑重定向到「存在但不是用户想改的那一份」
-	// 是真实误伤。worktree 场景仍可通过 suggestedPath + 确认卡片让用户显式选择
-	//（有人看着），只是不再无声自动放行。
-	const autoRepairRoots = worktreeRoot
-		? candidateRoots.filter(r => r.replace(/\\/g, '/').toLowerCase() !== worktreeRoot.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase())
-		: candidateRoots;
-
+	// ★ 2026-09-20 惰性化（日志实证：file_read 幻觉路径三连败各耗时 ~13.7s）——
+	//   `computeSuggestedPath` 的 basename 回溯会在**每个**候选根下递归 walk
+	//   （≤500 目录 / ≤6 层，逐目录 fileService.resolve IPC），而 `suggestedPath` 的
+	//   唯一消费者是下方 `checkSandbox && !isAllowed` 的抛错分支 —— 读操作
+	//   （checkSandbox=false）算完即弃，纯浪费。移到分支内按需计算后，
+	//   读侧「文件不存在」从 ~13.7s 降为毫秒级 fast-fail。
 	// 仅写/删操作触发沙箱判定，读操作直接返回已解析路径
 	if (checkSandbox && !isAllowed) {
+		// 计算建议路径（2026-09-07 重写，见 computeSuggestedPath）：仅当能定位到
+		// 允许根内真实存在的文件时才建议（建议 = 真实路径）；否则 undefined。
+		const requestedBase = (requestedPath.split(/[\\/]/).pop() || 'file')
+			.replace(/[<>:"/\\|?*]/g, '_');
+		const candidateRoots = allowedRoots.filter(r => {
+			const normalized = r.replace(/\\/g, '/').toLowerCase();
+			// Exclude legacy ~/.saros and the app data root (~/.vssaros) as suggestion targets
+			return !normalized.includes(`/${LEGACY_SAROS_DIR}`) && !normalized.endsWith('/.vssaros') && !normalized.endsWith('/.vssaros-dev');
+		});
+		const suggestedPath = fileService && candidateRoots.length > 0
+			? await computeSuggestedPath(fileService, requestedPath, candidateRoots)
+			: undefined;
+
+		// P2 自动放行的候选根（2026-09-07 二次收紧）：**排除 worktree 根**。
+		// worktree 是主仓的另一份 checkout，同结构文件在两边都存在 → 结构修复的
+		// exists 验证无法区分，静默把编辑重定向到「存在但不是用户想改的那一份」
+		// 是真实误伤。worktree 场景仍可通过 suggestedPath + 确认卡片让用户显式选择
+		//（有人看着），只是不再无声自动放行。
+		const autoRepairRoots = worktreeRoot
+			? candidateRoots.filter(r => r.replace(/\\/g, '/').toLowerCase() !== worktreeRoot.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase())
+			: candidateRoots;
+
 		// ── P2 容错解析前置（2026-09-07，拒绝变自愈）────────────────────
 		// 抛错前先尝试结构修复：路径幻觉（前缀重复等）若修复后落在允许根内且
 		// 文件真实存在，直接放行——省一整轮「拒绝→读建议→重试」往返。

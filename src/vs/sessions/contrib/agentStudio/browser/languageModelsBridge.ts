@@ -61,6 +61,7 @@ import {
 	IAudioGenResult,
 	ModelAuthStatus,
 	ModelCapability,
+	isChatMessagesDerived,
 } from '../common/providers.js';
 
 /**
@@ -665,7 +666,15 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			// 4 轮仅 ~4.7k 命中，~180k miss tokens）。这里原地回写调用方 messages，
 			// 使本地历史与已发送历史一致——孤儿只裁剪一次，对齐 Hermes「持久
 			// transcript 与请求视图 byte-stable」纪律。
-			if (Array.isArray(messages) && sanitizedMessages.length < messages.length) {
+			//
+			// ★★ 2026-09-20 语义纠偏（日志 vscode-app-1789900477124 取证）：本回写
+			//   **只对「真实历史数组」生效**（legacy 路径直接传历史引用 ✓）。pi 路径
+			//   传的是 `convertToChatMessages` 派生的一次性副本 ⇒ 旧代码照样 splice、
+			//   照样打「orphan fix persisted ✗」，实际内核 transcript 毫无变化：孤儿
+			//   下一轮原样复发（实测每轮固定剥 6-7 条），日志把排障引向错误方向。
+			//   现按 CHAT_MESSAGES_DERIVED 标记分流：派生副本跳过无效回写并如实说明。
+			const callerMessagesDerived = isChatMessagesDerived(messages);
+			if (!callerMessagesDerived && Array.isArray(messages) && sanitizedMessages.length < messages.length) {
 				try {
 					messages.splice(0, messages.length, ...(sanitizedMessages as unknown as IAgentChatMessage[]));
 					this._logService.info(
@@ -675,6 +684,12 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				} catch (writeBackErr) {
 					this._logService.warn(`[LMBridge] sanitize write-back failed (non-fatal): ${writeBackErr}`);
 				}
+			} else if (callerMessagesDerived && sanitizedMessages.length < normalizedMessages.length) {
+				this._logService.info(
+					`[LMBridge] sanitize applied to a DERIVED send-copy (${normalizedMessages.length} → ${sanitizedMessages.length}) — ` +
+					`nothing rewritten durably: the caller passed a disposable array (pi adapter convertToChatMessages), ` +
+					`so the same messages will be produced again next call. Fix the producing conversion instead of relying on write-back.`
+				);
 			}
 		}
 		// ── 末尾 user 边界守卫（2026-08-19，日志 1787104763200 HTTP 400 code 11133）──

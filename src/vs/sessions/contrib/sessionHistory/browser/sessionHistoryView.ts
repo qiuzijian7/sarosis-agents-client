@@ -729,7 +729,9 @@ export class SessionHistoryViewPane extends ViewPane {
 			}
 
 			try {
-				await this.chatService.renameAgentSession(info.agentId, info.sessionId, newName);
+				// ★ 2026-09-20：这是**用户手动**改名 ⇒ 传 `userInitiated`，
+				// 服务端会给会话打 `userRenamed` 标记，避免之后被「首条消息自动命名」覆盖。
+				await this.chatService.renameAgentSession(info.agentId, info.sessionId, newName, { userInitiated: true });
 				this.logService.info(`[SessionHistoryView] renamed session ${info.sessionId} to "${newName}"`);
 				// Update local cache so subsequent reloads reflect the change
 				info.sessionName = newName;

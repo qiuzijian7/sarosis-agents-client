@@ -34,6 +34,7 @@ import { topologicalSort, getReadyTasks } from '../common/taskDag.js';
 import { TaskReviewStatus, TaskComment } from '../../../common/agentStudioTypes.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING, AGENT_STUDIO_DEFAULT_AGENT_SETTING, AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING, AGENT_STUDIO_LANGUAGE_SETTING } from '../common/constants.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { resolveAgentStudioDataRoot, migrateLegacyAgentStudioData } from '../common/sarosPaths.js';
 import { TaskDecomposer } from './taskDecomposer.js';
 import { AgentFactory } from './agentFactory.js';
 import { CanvasLayoutEngine } from './canvasLayoutEngine.js';
@@ -223,20 +224,25 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 
 	// ═══ Data Persistence (with simple write lock) ══════════════════════════════
 
+	/** 旧目录迁移 Promise（仅默认落盘根下非空）；读路径开头 await，避免迁移与首读竞争。 */
+	private _legacyMigration: Promise<void> | undefined;
+
 	private _getDataUri(): URI {
 		if (!this._dataUri) {
 			const customPath = this.configurationService.getValue<string>(AGENT_STUDIO_DATA_PATH_SETTING);
-			if (customPath) {
-				this._dataUri = URI.file(customPath);
-			} else {
-				// 默认：~/.agent-studio/data（跨平台兼容）
-				this._dataUri = URI.joinPath((this.environmentService as INativeEnvironmentService).userHome, '.agent-studio', 'data');
+			// 统一落盘根：~/.vssaros/（dev 为 ~/.vssaros-dev/），废弃 ~/.agent-studio/data（sarosPaths 约定）
+			this._dataUri = resolveAgentStudioDataRoot(customPath, this.environmentService.userRoamingDataHome);
+			if (!customPath) {
+				this._legacyMigration = migrateLegacyAgentStudioData(
+					this.fileService, this.logService, (this.environmentService as INativeEnvironmentService).userHome, this._dataUri, [DATA_FILE_ORCHESTRATION]
+				);
 			}
 		}
 		return this._dataUri;
 	}
 
 	private async _readPlans(): Promise<OrchestrationPlan[]> {
+		await this._legacyMigration;
 		try {
 			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_ORCHESTRATION);
 			const content = await this.fileService.readFile(uri);

@@ -167,9 +167,12 @@ import { GitVersionChannel } from '../../sessions/contrib/agentStudio/electron-m
 import { ComfyLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/comfyLaunchChannel.js';
 import { ConfigHtmlServerChannel } from '../../sessions/contrib/agentStudio/electron-main/configHtmlServerChannel.js';
 import { VoxLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/voxLaunchChannel.js';
+import { RemoteControlChannel } from '../../sessions/contrib/agentStudio/electron-main/remoteControlChannel.js';
 import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
 import { MediaStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/mediaStoreChannel.js';
 import { MEDIA_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/mediaStoreChannel.js';
+import { SubAgentKernelProcChannel } from '../../sessions/contrib/agentStudio/electron-main/subAgentKernelProcChannel.js';
+import { SUBAGENT_KERNEL_PROC_CHANNEL } from '../../sessions/contrib/agentStudio/common/subAgentKernelProcChannel.js';
 import { VSSAROS_LLM_CHANNEL } from '../../sessions/contrib/agentStudio/common/llmBridge.js';
 import { IWebContentExtractorService } from '../../platform/webContentExtractor/common/webContentExtractor.js';
 import { NativeWebContentExtractorService } from '../../platform/webContentExtractor/electron-main/webContentExtractorService.js';
@@ -922,6 +925,10 @@ export class CodeApplication extends Disposable {
 	// Vox 口播视频节点（Vox.DirectorStage）本地 pipeline 执行：
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/voxLaunchChannel.ts。
 	this._register(new VoxLaunchChannel(this.logService, this.configurationService));
+
+	// 远程控制（被控端）：屏幕采集 / WebRTC 宿主窗口 / nut-js 驱动级键鼠注入。
+	// 逻辑在 sessions/contrib/agentStudio/electron-main/remoteControlChannel.ts。
+	this._register(new RemoteControlChannel(this.logService));
 
 	// AI 抠图（去背景）2026-09-06 起由 ComfyUI 自定义节点 saros_cutout 执行
 	// （webview 侧 comfyHost/comfyCutout.ts），主进程不再承载 ONNX 推理与模型缓存。
@@ -1867,6 +1874,11 @@ export class CodeApplication extends Disposable {
 			accessor.get(ILoggerService),
 		);
 		mainProcessElectronServer.registerChannel(MEDIA_STORE_CHANNEL, mediaStoreChannel);
+
+		// 子代理内核进程档（P1）：utilityProcess 隔离体的 fork/转发宿主。
+		// 通道只搬消息字节；工具执行/审批/凭证全在 renderer 真宿主（内核 RPC 回源）。
+		const subAgentKernelProcChannel = new SubAgentKernelProcChannel(this.logService);
+		mainProcessElectronServer.registerChannel(SUBAGENT_KERNEL_PROC_CHANNEL, subAgentKernelProcChannel);
 
 
 		// Logger

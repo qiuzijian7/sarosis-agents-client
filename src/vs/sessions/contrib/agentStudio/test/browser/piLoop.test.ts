@@ -18,6 +18,7 @@ import * as assert from 'assert';
 import { runAgentLoop, runAgentLoopContinue } from '../../browser/piLoop/agentLoop.js';
 import { createPiStreamFn, convertToChatMessages } from '../../browser/piLoop/streamAdapter.js';
 import { toAgentTool, toAgentTools } from '../../browser/piLoop/toolAdapter.js';
+import { ContextManager } from '../../common/contextManager.js';
 import type {
 	AgentContext,
 	AgentEvent,
@@ -217,8 +218,11 @@ suite('piLoop — pi agentloop 复刻行为', () => {
 			createScriptedStreamFn((turn) => { turnCount++; return toolTurn(`c${turn}`, 'missing', {}); }),
 		);
 
-		assert.strictEqual(turnCount, 3, '应恰好发起 maxTurns 次模型调用');
-	});
+		// 2026-09-20 起撞顶多一轮**禁工具收尾轮**（对齐 legacy classifyBudgetGate 的 wrap-up
+		// 语义：撞顶直接结束会让末轮工具成果被丢弃）⇒ 3 轮正常 + 1 轮收尾 = 4 次调用。
+		// 硬停语义仍在：收尾轮之后必然终止（本用例若失控会超时挂掉）。
+		assert.strictEqual(turnCount, 4, '应恰好发起 maxTurns 次模型调用 + 1 轮禁工具收尾');
+		});
 
 	test('beforeToolCall 拦截时合成错误结果，不执行工具', async () => {
 		let executed = false;
@@ -524,6 +528,44 @@ suite('piLoop — streamAdapter 契约', () => {
 		assert.strictEqual(converted[0].content, '你好');
 		assert.strictEqual(converted[1].role, 'assistant');
 		assert.strictEqual(converted[1].content, '回复');
+	});
+
+	// ─── toolCallId 契约（2026-09-20 真机报文取证修复）─────────────────────
+	// 事故：pi `toolResult` → 本仓 `tool` 转换漏传 toolCallId ⇒ LMBridge 的
+	// sanitizeToolPairs 的 respondedIds 恒为空 ⇒ 每轮剥离 assistant 的 tool_calls；
+	// 网关收到「tool_call_id 全空串的孤儿工具结果 + 无 tool_calls 的 assistant」
+	// （日志 vscode-app-1789900477124 的 http-debug 末次请求实证：61 tool 全空 id）。
+	test('★★★ toolResult → 必须携带 toolCallId（否则 sanitizeToolPairs 会全量剥离工具对）', () => {
+		const converted = convertToChatMessages([
+			{
+				role: 'assistant',
+				content: [{ type: 'toolCall', id: 'call_1', name: 'file_read', arguments: { path: 'a.ts' } }],
+			} as never,
+			{
+				role: 'toolResult', toolCallId: 'call_1', toolName: 'file_read',
+				content: [{ type: 'text', text: '文件内容' }], isError: false,
+			} as never,
+		]);
+
+		const toolMsg = converted.find(m => m.role === 'tool');
+		assert.ok(toolMsg, 'toolResult 应映射为 role=tool 消息');
+		assert.strictEqual(toolMsg!.toolCallId, 'call_1',
+			'tool 消息必须带 toolCallId（漏传 ⇒ 下游配对判定恒失败 ✗）');
+
+		// 与下游 sanitizeToolPairs 串联验证：配对齐全 ⇒ 一条都不许被剥（本修复的真实回归信号）
+		const sanitized = ContextManager.sanitizeToolPairs(converted as never[]);
+		assert.strictEqual(sanitized.length, converted.length, '配对齐全时不得剥离任何消息 ✗');
+		const asst = sanitized.find((m: never) => (m as { role?: string }).role === 'assistant') as
+			{ toolCalls?: unknown[] } | undefined;
+		assert.strictEqual(asst?.toolCalls?.length, 1, 'assistant 的 tool_calls 必须存活（此前每轮被剥空 ✗）');
+	});
+
+	test('★ toolResult（字符串 content 分支）同样携带 toolCallId', () => {
+		const converted = convertToChatMessages([
+			{ role: 'toolResult', toolCallId: 'call_9', toolName: 'x', content: '纯字符串结果', isError: false } as never,
+		]);
+		assert.strictEqual(converted[0].role, 'tool');
+		assert.strictEqual(converted[0].toolCallId, 'call_9');
 	});
 });
 

@@ -110,6 +110,21 @@ function buildLinkNode(parsed: ParsedWikilink, options: WikilinkPluginOptions): 
 	};
 }
 
+/**
+ * `![[image.png]]`（Obsidian 图片 embed）→ mdast `image` 节点。
+ * url 保留原始相对路径，由 MarkdownContent 的 ImgResolved 经 assetBaseUri 解析加载；
+ * `|300` 形式的尺寸参数经 alt 透传（渲染层可选用）。
+ */
+function buildImageNode(parsed: ParsedWikilink): Node {
+	const alt = parsed.alias ?? parsed.baseTarget.split('/').pop() ?? '';
+	return {
+		type: 'image',
+		url: parsed.baseTarget,
+		alt,
+		data: { hName: 'img', hProperties: { className: ['kb-embed-image'] } },
+	};
+}
+
 function buildEmbedNode(parsed: ParsedWikilink, options: WikilinkPluginOptions): EmbedNode {
 	const resolved = resolveWikilink(parsed.rawTarget, options.workspaceFiles ?? [], options.currentFilePath);
 	const broken = resolved.uri === null;
@@ -160,7 +175,10 @@ const remarkWikilink: Plugin<[WikilinkPluginOptions?]> =
 					replacement.push({ type: 'text', value: value.slice(cursor, match.index) } as TextNode);
 				}
 				const parsed = parseInner(inner);
-				if (bang && !isImageFile(parsed.baseTarget) && parentNode.type === 'paragraph') {
+				// `![[image.png]]` 图片 embed：渲染为 <img>（此前错误地降级为链接，图片永不显示）
+				if (bang && isImageFile(parsed.baseTarget)) {
+					replacement.push(buildImageNode(parsed));
+				} else if (bang && parentNode.type === 'paragraph') {
 					replacement.push(buildEmbedNode(parsed, options));
 				} else {
 					if (bang) replacement.push({ type: 'text', value: '!' } as TextNode);

@@ -53,6 +53,8 @@ interface Scenario {
 	kbStoragePath?: string | undefined;
 	kbDir?: string | undefined;
 	sandboxBypassRoots?: Set<string>;
+	/** 2026-09-20：建议路径惰性化测试用 —— 带调用计数的 fileService mock。 */
+	fileService?: { resolveCalls: () => number; [key: string]: unknown };
 }
 
 function makeDeps(scenario: Scenario): WorkspacePathDeps {
@@ -63,6 +65,7 @@ function makeDeps(scenario: Scenario): WorkspacePathDeps {
 		kbStoragePath = undefined,
 		kbDir = undefined,
 		sandboxBypassRoots = new Set<string>(),
+		fileService = undefined,
 	} = scenario;
 
 	const configurationService: any = {
@@ -112,6 +115,7 @@ function makeDeps(scenario: Scenario): WorkspacePathDeps {
 		logService,
 		sandboxBypassRoots,
 		kbStoragePathKey: KB_STORAGE_PATH_KEY,
+		fileService,
 	};
 }
 
@@ -251,6 +255,43 @@ suite('Workspace Security — worktree 强隔离开关', () => {
 			const outOfBounds = path.join(VSCODE_FOLDER, 'x.ts');
 			const resolved = await resolveAndCheckWorkspacePathImpl(deps, AGENT_ID, outOfBounds, false);
 			assert.strictEqual(resolved, outOfBounds);
+		});
+	});
+
+	// ─── 建议路径惰性化（2026-09-20，日志实证：读侧幻觉路径每次失败耗时 ~13.7s）───
+	// 根因：`computeSuggestedPath` 的 basename 回溯在每个候选根下递归 walk
+	// （≤500 目录 / ≤6 层，逐目录 fileService.resolve IPC），却曾被无条件计算 ——
+	// 读操作（checkSandbox=false）算完即弃，纯浪费。钉住：读侧零 walk，写侧照常建议。
+	suite('建议路径惰性化（读操作不再支付回溯开销）', () => {
+		/** 带计数的 fileService mock：resolve 是回溯 walk 的探针；realpath/exists 保持失败语义。 */
+		const makeCountingFileService = () => {
+			let resolveCalls = 0;
+			return {
+				resolveCalls: () => resolveCalls,
+				resolve: async () => { resolveCalls++; throw new Error('not found (test)'); },
+				exists: async () => false,
+				realpath: async () => { throw new Error('no fs (test)'); },
+			};
+		};
+
+		test('读操作（checkSandbox=false）不触发建议回溯（resolve 零调用）', async () => {
+			const fileService = makeCountingFileService();
+			const deps = makeDeps({ strict: true, fileService });
+			const outOfBounds = path.join(VSCODE_FOLDER, 'ghost', 'missing.ts');
+			const resolved = await resolveAndCheckWorkspacePathImpl(deps, AGENT_ID, outOfBounds, false);
+			assert.strictEqual(resolved, outOfBounds);
+			assert.strictEqual(fileService.resolveCalls(), 0,
+				'读路径不得计算建议路径（suggestedPath 唯一消费者是沙箱抛错分支 ✓）');
+		});
+
+		test('写操作（checkSandbox=true）越界时仍计算建议并抛出 SandboxViolationError', async () => {
+			const fileService = makeCountingFileService();
+			const deps = makeDeps({ strict: true, fileService });
+			const outOfBounds = path.join(VSCODE_FOLDER, 'ghost', 'missing.ts');
+			const err = await expectBlocked(deps, outOfBounds);
+			assert.strictEqual(err.isSandboxViolation, true);
+			assert.ok(fileService.resolveCalls() > 0,
+				'写侧抛错前应照常尝试建议回溯（结构修复 exists 未命中 ⇒ basename 回溯调 resolve ✓）');
 		});
 	});
 });

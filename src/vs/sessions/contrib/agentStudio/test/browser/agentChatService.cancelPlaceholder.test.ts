@@ -149,3 +149,68 @@ suite('流式草稿 journal：崩溃保命 + 正常完成清理（2026-09-19）'
 		assert.ok(svc.includes('await this.fileService.del(uri)'), '消费即删不变 ✓');
 	});
 });
+
+// ─── ★★★ 草稿消费守卫（2026-09-20：「LLM 回复被拆成两个气泡」真机取证修复）─────────────
+
+/**
+ * 取证（sess_mu6wuptt_yywe05 idx 671 + 672-679 ✓）：
+ *   气泡1 = `msg_…_interrupted`（`_consumeInterruptedDraft` 注入，79 字纯文本无 parts/toolCalls）；
+ *   气泡2 = 同一回合的 per-iteration 落盘组（共享 turnId，`_aggregateTurns` 合并）。
+ *   草稿 79 字 == 气泡2 前两条 iteration 文本拼接（逐字相等 ✓）⇒ 草稿是**活流**的 journal。
+ *
+ * 根因：`_consumeInterruptedDraft` 在任何 getHistory 时**无条件消费**（sendMessage 内部
+ * 加载历史 / sessionHistoryView / pane 刷新都会触发），把流式中途的活草稿当崩溃遗物
+ * 落盘 ⇒ 重复「已中断」气泡 ✗。次生：回合正常完成后 journal 尾部写与
+ * `clearInterruptedDraft` 竞态残留（idx 668/669 相差 66ms ✓）⇒ 滞后重复注入 ✗。
+ *
+ * 修法（本 suite 钉住 ✓）：
+ * ① 消费前活跃流守卫：同 agent+session 有活跃流 ⇒ 跳过（草稿留给真崩溃场景 ✓）；
+ * ② 注入前去重：尾部连续 assistant 拼接已含草稿文本 ⇒ 丢弃 ✓；
+ * ③ pane 侧草稿写/删串行链 ⇒ clear 恒排在在飞写之后 ✓。
+ */
+suite('中断草稿消费：活跃流守卫 + 去重 + 写删串行（2026-09-20 双气泡修复）', () => {
+
+	const PANE_REL = 'src/vs/sessions/contrib/agentStudio/browser/nativeChatEditorPane.ts';
+	const SVC_REL = 'src/vs/sessions/contrib/agentStudio/browser/agentChatService.ts';
+	const readSrc = (rel: string): string => fs.readFileSync(path.join(process.cwd(), rel), 'utf8');
+
+	test('★★★ 消费前必须有活跃流守卫（流式中途的 getHistory 不得消费活草稿 ✗）', () => {
+		const src = readSrc(SVC_REL);
+		assert.ok(src.includes('if (this._isBucketOpen(key))'),
+			'getHistory 消费草稿前必须检查活跃流（_isBucketOpen ✓）——否则流式中途的任何 getHistory 都会注入重复 ✗');
+		// 守卫必须在消费调用点之前生效（剥注释后比对相对位置 ✓）
+		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		const guardIdx = code.indexOf('if (this._isBucketOpen(key))');
+		const consumeIdx = code.indexOf('this._consumeInterruptedDraft(agentId, sessionId)', guardIdx);
+		assert.ok(guardIdx !== -1 && consumeIdx !== -1 && consumeIdx > guardIdx,
+			'守卫必须包住所跟的消费调用 ✓');
+	});
+
+	test('★★★ 注入前必须去重（回合已正常落盘的残留草稿不得再注入 ✗）', () => {
+		const src = readSrc(SVC_REL);
+		assert.ok(src.includes('_isDraftAlreadyPersisted('),
+			'必须有草稿去重判定（尾部 assistant 拼接包含草稿 ⇒ 丢弃 ✓）');
+		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		assert.ok(code.includes('skipped stale interrupted draft'),
+			'去重命中必须留可观测日志 ✓');
+		// 去重判定要遍历尾部连续 assistant 段（per-iteration 消息组跨多条 ✓）
+		assert.ok(code.includes("if (m.role !== 'assistant') { break; }"),
+			'去重必须只取尾部连续 assistant 段（遇到 user 即停 ✓）');
+	});
+
+	test('★★★ pane 侧草稿写/删必须串行（clear 不得插在在飞写之前 ✗）', () => {
+		const src = readSrc(PANE_REL);
+		assert.ok(src.includes('_draftWriteChain') && src.includes('_enqueueDraftOp('),
+			'必须有草稿写/删串行链 ✓');
+		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		// journal 写与 clear 都必须入队（不得再裸 void 调用 ✗）
+		assert.ok(code.includes('this._enqueueDraftOp(() => this._chatService.saveInterruptedDraft('),
+			'journal 写入必须走串行链 ✗');
+		assert.ok(code.includes('this._enqueueDraftOp(() => this._chatService.clearInterruptedDraft('),
+			'clear 必须走同一串行链（排在在飞写之后 ✓）');
+		const bareSave = code.split('void this._chatService.saveInterruptedDraft').length - 1;
+		const bareClear = code.split('void this._chatService.clearInterruptedDraft').length - 1;
+		assert.ok(bareSave === 0 && bareClear === 0,
+			`不得再有裸 fire-and-forget 调用（save=${bareSave} / clear=${bareClear} ✗）`);
+	});
+});

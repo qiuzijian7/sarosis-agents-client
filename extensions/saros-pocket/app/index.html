@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="theme-color" content="#0f1115">
+<!-- connect-src 在浏览器内用 'self'（代理同源托管）；Capacitor 打包后页面源是
+     capacitor://localhost，必须放开到 http:/https: 才能连 http://<电脑IP>:3081。
+     由 mobile/sync-web.mjs 在同步时按目标平台改写这条 meta。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' http: https:; font-src 'self'">
+<title>Saros Pocket · VsSaros 随身助手</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!-- 侧边导航轨：横屏 / 平板下替代底部页签。
+     与底部 .tabs 使用完全相同的 .tab + data-view 契约，
+     因此 app.js 的 switchTab() 无需改动即可同时驱动两套导航（见 app.css）。 -->
+<nav class="sidenav" id="sidenav" aria-label="主导航">
+  <button class="tab" data-view="inbox" type="button">
+    <span class="tab-ico" aria-hidden="true">📥</span><span class="tab-text">收件箱</span>
+  </button>
+  <button class="tab" data-view="chat" type="button">
+    <span class="tab-ico" aria-hidden="true">💬</span><span class="tab-text">当前会话</span>
+  </button>
+  <button class="tab" data-view="screen" type="button">
+    <span class="tab-ico" aria-hidden="true">🖥️</span><span class="tab-text">屏幕</span>
+  </button>
+  <button class="tab" data-view="changes" type="button">
+    <span class="tab-ico" aria-hidden="true">🔀</span><span class="tab-text">变更</span>
+  </button>
+  <button class="tab" data-view="status" type="button">
+    <span class="tab-ico" aria-hidden="true">📶</span><span class="tab-text">连接</span>
+  </button>
+  <!-- 文件页是次级跳转（由会话卡片的「浏览文件」进入），与底部 .tabs 一样
+       默认隐藏，只有在 switchTab('files') 触发后才显形，避免主导航多一个常驻项。 -->
+  <button class="tab tab-hidden" data-view="files" type="button">
+    <span class="tab-ico" aria-hidden="true">📁</span><span class="tab-text">文件</span>
+  </button>
+</nav>
+
+<div class="shell">
+<header class="top">
+  <div class="brand">
+    <span class="dot" id="connDot"></span>
+    <div>
+      <div class="title">Saros Pocket</div>
+      <div class="subtitle" id="connText">连接中…</div>
+    </div>
+  </div>
+  <div class="host" id="hostInfo"></div>
+</header>
+
+<main id="views">
+  <!-- 收件箱：会话列表 + 状态徽标 + 筛选芯片（design-spec 2.1 四页签） -->
+  <section class="view" id="view-inbox">
+    <div class="chips" id="sessionChips">
+      <button class="chip active" data-status="all" type="button">全部</button>
+      <button class="chip" data-status="running" type="button">运行中</button>
+      <button class="chip" data-status="waiting" type="button">待授权</button>
+      <button class="chip" data-status="done" type="button">已完成</button>
+      <button class="chip" data-status="failed" type="button">失败</button>
+    </div>
+    <div class="sessions" id="sessionList"></div>
+    <div class="inbox-foot">
+      <button class="ghost small" id="reloadSessions" type="button">刷新</button>
+      <button class="ghost small" id="browseFiles" type="button">浏览文件</button>
+    </div>
+  </section>
+
+  <section class="view hidden" id="view-chat">
+    <div class="chat-bar">
+      <select id="modelSelect" aria-label="模型"></select>
+      <button class="ghost small" id="clearChat" type="button">清空</button>
+    </div>
+    <div class="messages" id="messages"></div>
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="问 VsSaros 点什么…" enterkeyhint="send"></textarea>
+      <div class="composer-actions">
+        <button id="send" type="button">发送</button>
+        <button class="ghost" id="toAgent" type="button" title="把这条消息交给 VsSaros 的 Agent 执行">交给 Agent</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 屏幕：远程查看 VsSaros.exe 的 UI（MJPEG 画面流；键鼠转发需主机显式开启） -->
+  <section class="view hidden" id="view-screen">
+    <div class="screen-bar">
+      <select id="screenMode" aria-label="采集范围">
+        <option value="window">VsSaros 窗口</option>
+        <option value="screen">整个屏幕</option>
+      </select>
+      <select id="screenFps" aria-label="帧率">
+        <option value="1">1 fps</option>
+        <option value="2">2 fps</option>
+        <option value="4" selected>4 fps</option>
+        <option value="6">6 fps</option>
+        <option value="10">10 fps</option>
+      </select>
+      <select id="screenScale" aria-label="清晰度">
+        <option value="0.4">流畅</option>
+        <option value="0.5" selected>标准</option>
+        <option value="0.75">清晰</option>
+        <option value="1">原尺寸</option>
+      </select>
+      <button class="ghost small" id="screenShot" type="button">截图</button>
+      <button class="ghost small" id="screenFull" type="button">全屏</button>
+      <button class="ghost small" id="screenReload" type="button">重连</button>
+    </div>
+    <div class="screen-wrap" id="screenWrap">
+      <img id="screenImg" alt="VsSaros 桌面画面">
+      <div class="screen-hint" id="screenStatus">…</div>
+    </div>
+    <div class="screen-input hidden" id="screenInputBar">
+      <label class="switchline"><input type="checkbox" id="screenInputOn"> 允许远程操作（点击 / 滚轮 / 键盘）</label>
+      <div class="screen-keys">
+        <button class="ghost small" data-key="enter" type="button">Enter</button>
+        <button class="ghost small" data-key="esc" type="button">Esc</button>
+        <button class="ghost small" data-key="ctrl+s" type="button">Ctrl+S</button>
+        <button class="ghost small" data-key="up" type="button">↑</button>
+        <button class="ghost small" data-key="down" type="button">↓</button>
+      </div>
+      <input id="screenText" type="text" placeholder="输入文字，回车发送到 VsSaros">
+    </div>
+  </section>
+
+  <section class="view hidden" id="view-files">
+    <div class="path-bar">
+      <button class="ghost small" id="upDir" type="button">返回</button>
+      <div class="path" id="pathText">/</div>
+      <button class="ghost small" id="reloadFiles" type="button">刷新</button>
+    </div>
+    <div class="entries" id="entries"></div>
+    <div class="file-view hidden" id="fileView">
+      <div class="file-head">
+        <div class="file-name" id="fileName"></div>
+        <div class="file-actions">
+          <button class="ghost small" id="openInEditor" type="button">在 VsSaros 打开</button>
+          <button class="ghost small" id="closeFile" type="button">关闭</button>
+        </div>
+      </div>
+      <pre class="file-body" id="fileBody"></pre>
+    </div>
+  </section>
+
+  <!-- 变更：按文件折叠的 diff（R2 实现；此处先给出空状态与文件浏览入口） -->
+  <section class="view hidden" id="view-changes">
+    <div class="changes-head">
+      <span id="changesTitle">变更</span>
+      <button class="ghost small" id="reloadChanges" type="button">刷新</button>
+    </div>
+    <div class="changes" id="changes"></div>
+  </section>
+
+  <section class="view hidden" id="view-status">
+    <div class="cards" id="statusCards"></div>
+    <div class="events-head">
+      <span>事件流</span>
+      <button class="ghost small" id="clearEvents" type="button">清空</button>
+    </div>
+    <div class="events" id="events"></div>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button class="tab active" data-view="inbox" type="button">收件箱</button>
+  <button class="tab" data-view="chat" type="button">当前会话</button>
+  <button class="tab" data-view="screen" type="button">屏幕</button>
+  <button class="tab" data-view="changes" type="button">变更</button>
+  <button class="tab" data-view="status" type="button">连接</button>
+  <button class="tab tab-hidden" data-view="files" type="button">文件</button>
+</nav>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

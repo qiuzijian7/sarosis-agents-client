@@ -10,6 +10,8 @@ export interface EmbedContextValue {
 	workspaceFiles: WorkspaceFile[];
 	onOpenWikilink?: (uri: string, heading?: string) => void;
 	chain: string[];
+	/** 文档目录的 webview URI 前缀（图片等相对资源解析；嵌套 embed 继承）。 */
+	assetBaseUri?: string;
 }
 
 const EmbedContext = createContext<EmbedContextValue>({ workspaceFiles: [], chain: [] });

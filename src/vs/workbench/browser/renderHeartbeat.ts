@@ -53,6 +53,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { IDisposable, toDisposable } from '../../base/common/lifecycle.js';
+import { formatRenderActivityWindow } from '../../base/common/renderActivityTrace.js';
 import { ILogService } from '../../platform/log/common/log.js';
 
 export const RENDER_HEARTBEAT_TAG = '[RenderHeartbeat]';
@@ -205,9 +206,12 @@ export function startRenderHeartbeat(logService: ILogService, options: IRenderHe
 					if (dur >= longTaskWarnMs && shouldWarn()) {
 						// perf.now 与 Date.now 的偏移换算：给出该长任务的**墙钟开始时刻**
 						const startWall = Date.now() - (performance.now() - entry.startTime);
+						// 归因（2026-09-20）：把时间段内打过标记的热点拼进日志行
+						// （`因=[umd×12, delta:text×40]`）—— 缺它时只能猜是谁占的主线程。
 						logService.warn(
 							`${RENDER_HEARTBEAT_TAG} LONG_TASK ts=${localStamp(Date.now())} 时长=${dur}ms @ts=${localStamp(startWall)}` +
-							`（阈值 ${longTaskWarnMs}ms；本窗口内累计 ${longTaskCount} 次/${longTaskTotalMs}ms）`,
+							`（阈值 ${longTaskWarnMs}ms；本窗口内累计 ${longTaskCount} 次/${longTaskTotalMs}ms）` +
+							` 因=[${formatRenderActivityWindow(startWall, startWall + dur)}]`,
 						);
 					}
 				}

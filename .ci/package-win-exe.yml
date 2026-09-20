@@ -100,5 +100,12 @@ stages:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File deploy-package/scripts/bk-pipeline-upload.ps1'
         shell: powershell
+
+      # ---------- 7.0 创建 Release：changelog + git tag + woa.git/GitHub 双端 ----------
+      - name: 创建 Release (tag + changelog + woa.git/GitHub)
+        with:
+          charsetType: UTF_8
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/create-release.ps1'
+        shell: powershell
 concurrency: {}
 syntax-dialect: INHERIT

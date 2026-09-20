@@ -3379,7 +3379,8 @@
 .tool-card-extract .tool-header-children.tool-header-children-expanded {
 	max-height: 1200px;
 	opacity: 1;
-	padding: 4px 8px 8px 8px;
+	/* ★ 2026-09-20：上间距同样走 `--tool-card-gap`（原 4px ⇒ 与其它卡片的松紧统一 ✓） */
+	padding: var(--tool-card-gap, 2px) 8px 8px 8px;
 }
 .tool-card-extract .tool-header-summary {
 	padding: 2px 8px 4px 28px;
@@ -4724,6 +4725,11 @@
 }
 
 .tool-header-wrapper {
+	/* ★ 2026-09-20：卡内 **title 与下方 content 的间距**统一由这一个变量控制 ✓
+	   （用户反馈「间隔太大」✓）。此前散在两处硬编码（通用 `4px 0`、
+	   `.tool-card-extract` 的 `4px 8px 8px` ⇒ 各卡片松紧不一 ✗）；
+	   要再紧/再松只改这里一行 ✓。 */
+	--tool-card-gap: 2px;
 	margin: 4px 0;
 	max-width: 100%;
 	overflow: hidden;
@@ -4968,7 +4974,8 @@
 .tool-header-children-expanded {
 	max-height: 1200px;
 	opacity: 1;
-	padding: 4px 0;
+	/* ★ 2026-09-20：改为变量（原硬编码 4px ⇒ 收紧到 2px ✓，见 `--tool-card-gap` 注释 ✓） */
+	padding: var(--tool-card-gap, 2px) 0;
 }
 
 /* ── 实时进度条（workflow 直接执行 / ComfyUI 生成等长耗时工具卡）── */

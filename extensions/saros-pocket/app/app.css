@@ -1,0 +1,398 @@
+:root {
+  --bg: #0f1115;
+  --card: #1a1d24;
+  --card2: #14171d;
+  --line: #2a2f3a;
+  --fg: #e6e8ee;
+  --mut: #9aa3b2;
+  --acc: #4f6ef7;
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --err: #ef4444;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ---------- 顶栏 ---------- */
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: calc(env(safe-area-inset-top) + 10px) 14px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card2);
+}
+
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.title { font-size: 15px; font-weight: 600; }
+.subtitle { font-size: 11px; color: var(--mut); }
+.host { font-size: 11px; color: var(--mut); text-align: right; max-width: 45%; word-break: break-all; }
+
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); flex: 0 0 auto; }
+.dot.on { background: var(--ok); }
+.dot.off { background: var(--err); }
+
+/* ---------- 布局骨架 ---------- */
+/* .shell 包住顶栏 + 主区 + 底部页签，横屏/平板下由侧边导航轨在左侧占位。
+   竖屏（默认）下 .sidenav 不显示、.shell 占满，行为与改动前完全一致。 */
+.shell { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.sidenav { display: none; }
+
+/* 侧边导航轨内的页签：默认（横屏窄轨）只显图标，平板宽轨再显文字 */
+.sidenav .tab { flex-direction: column; gap: 3px; padding: 7px 2px 5px; min-height: 0; }
+.sidenav .tab-ico { font-size: 16px; line-height: 1.1; }
+.sidenav .tab-text { font-size: 9px; line-height: 1.1; letter-spacing: .2px; }
+
+/* 「文件」是收件箱页的次级入口：平时不在导航占位置，
+   但一旦 switchTab('files') 把它激活，必须显形，否则用户会「进得去、看不见自己在哪」。 */
+.tab.tab-hidden.active { display: flex; }
+
+/* ---------- 视图 ---------- */
+#views { flex: 1; min-height: 0; display: flex; }
+.view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.hidden { display: none !important; }
+
+/* ---------- 对话 ---------- */
+.chat-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+}
+
+select, textarea, input {
+  font: inherit;
+  color: var(--fg);
+  background: #11141a;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  outline: none;
+}
+
+select { flex: 1; min-width: 0; padding: 7px 8px; font-size: 13px; }
+
+.messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.msg { max-width: 88%; padding: 9px 12px; border-radius: 14px; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+.msg.user { align-self: flex-end; background: var(--acc); color: #fff; border-bottom-right-radius: 4px; }
+.msg.assistant { align-self: flex-start; background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.system { align-self: center; max-width: 100%; background: transparent; color: var(--mut); font-size: 12px; border: 1px dashed var(--line); }
+.msg.error { align-self: flex-start; background: rgba(239, 68, 68, .12); border: 1px solid var(--err); color: #fecaca; }
+.msg.streaming::after { content: "▌"; opacity: .6; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.composer { border-top: 1px solid var(--line); padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--card2); }
+.composer textarea { width: 100%; resize: none; padding: 10px 12px; max-height: 120px; }
+.composer-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+button {
+  font: inherit;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 16px;
+  background: var(--acc);
+  color: #fff;
+  cursor: pointer;
+  min-height: 40px;
+}
+
+button:disabled { opacity: .5; cursor: default; }
+button.ghost { background: transparent; border: 1px solid var(--line); color: var(--fg); }
+button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radius: 8px; }
+.composer-actions #send { flex: 1; }
+
+/* ---------- 文件 ---------- */
+.path-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.path { flex: 1; min-width: 0; font: 12px/1.4 ui-monospace, Menlo, monospace; color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.entries { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0; }
+.entry {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px; border-bottom: 1px solid var(--line);
+  cursor: pointer; font-size: 14px;
+}
+.entry:active { background: var(--card); }
+.entry .kind { width: 18px; text-align: center; color: var(--mut); font-size: 12px; }
+.entry .size { margin-left: auto; font-size: 11px; color: var(--mut); flex: 0 0 auto; }
+
+.file-view { position: absolute; inset: 0; background: var(--bg); display: flex; flex-direction: column; z-index: 5; }
+.file-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.file-name { flex: 1; min-width: 0; font: 12px/1.4 ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.file-body { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 12px; font: 12px/1.6 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+
+/* ---------- 状态 ---------- */
+#view-status { position: relative; }
+.cards { padding: 12px; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); overflow-y: auto; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.card .k { font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: .4px; }
+.card .v { font-size: 14px; margin-top: 4px; word-break: break-all; }
+.card .v.on { color: var(--ok); }
+.card .v.off { color: var(--warn); }
+
+.events-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--mut); }
+.events { flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 12px; font: 11px/1.7 ui-monospace, Menlo, monospace; color: var(--mut); }
+.events .ev { display: flex; gap: 8px; padding: 3px 0; border-bottom: 1px solid rgba(42, 47, 58, .5); }
+.events .ev .t { flex: 0 0 auto; color: var(--acc); }
+
+/* ---------- 收件箱 / 变更（四页签 IA） ---------- */
+.chips { display: flex; gap: 6px; overflow-x: auto; padding: 8px 12px; -webkit-overflow-scrolling: touch; }
+.chip {
+  flex: 0 0 auto; border: 1px solid var(--line); background: transparent; color: var(--mut);
+  border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+}
+.chip.active { background: var(--acc); border-color: var(--acc); color: #fff; }
+
+.sessions, .changes { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+
+.session { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; cursor: pointer; }
+.session:active { background: var(--card2); }
+.session-top { display: flex; align-items: center; gap: 8px; }
+.session-title { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 状态徽标：一眼看出任务处在哪个阶段 */
+.badge { flex: 0 0 auto; font-size: 11px; padding: 2px 7px; border-radius: 999px; border: 1px solid transparent; }
+.badge.running { color: var(--acc); border-color: var(--acc); }
+.badge.waiting { color: var(--warn); border-color: var(--warn); }
+.badge.done { color: var(--ok); border-color: var(--ok); }
+.badge.failed { color: var(--err); border-color: var(--err); }
+.badge.cancelled { color: var(--mut); border-color: var(--mut); }
+
+.session-meta { margin-top: 5px; font-size: 11.5px; color: var(--mut); display: flex; gap: 10px; }
+.session-actions { margin-top: 8px; display: flex; gap: 8px; }
+.session-actions .ghost { padding: 4px 10px; font-size: 12px; }
+.session-preview { margin-top: 4px; font-size: 12px; color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.inbox-foot, .changes-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--mut);
+}
+
+/* 文件页作为次级入口：不在底部导航占位置，但仍可从收件箱切换过来 */
+.tab-hidden { display: none; }
+
+/* ---------- 底部标签 ---------- */
+.tabs { display: flex; border-top: 1px solid var(--line); background: var(--card2); }
+.tab { flex: 1; background: transparent; color: var(--mut); border: none; border-radius: 0; }
+.tab.active { color: var(--fg); box-shadow: inset 0 2px 0 var(--acc); }
+
+.toast {
+  position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%);
+  background: #11141a; border: 1px solid var(--line); color: var(--fg);
+  padding: 8px 14px; border-radius: 10px; font-size: 13px;
+  opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; max-width: 90%;
+}
+.toast.show { opacity: 1; }
+
+.empty { color: var(--mut); font-size: 13px; text-align: center; padding: 24px 12px; }
+
+/* ---------- 屏幕：远程查看 VsSaros.exe 的 UI ---------- */
+.screen-bar { display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.screen-bar select { padding: 6px 8px; font-size: 13px; border-radius: 8px; }
+
+.screen-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  overflow: hidden;
+}
+
+.screen-wrap img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  /* 画面里就是电脑桌面，浏览器不该再帮我们缩放/平滑 */
+  image-rendering: auto;
+  touch-action: none;
+}
+
+.screen-hint {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(17, 20, 26, .78);
+  color: var(--mut);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+  pointer-events: none;
+}
+
+.screen-input { border-top: 1px solid var(--line); padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--card2); }
+.switchline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--mut); }
+.screen-keys { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.screen-keys button { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radius: 8px; }
+.screen-input input[type=text] { width: 100%; margin-top: 8px; padding: 8px 10px; font-size: 13px; border-radius: 8px; }
+
+/* ---------- 变更（diff） ---------- */
+.change { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--card2); }
+.change-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: transparent; border: none; color: var(--fg);
+  padding: 9px 10px; text-align: left; font-size: 12.5px; border-radius: 0;
+}
+.change-badge {
+  flex: none; min-width: 18px; text-align: center; font-size: 11px; font-weight: 700;
+  padding: 1px 5px; border-radius: 5px; background: #3a2f16; color: #ffca6e;
+}
+.change-badge.staged { background: #16332a; color: #6ee7a8; }
+.change-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-stat { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
+.diff-stat i { color: #6ee7a8; font-style: normal; }
+.diff-stat b { color: #ff8b8b; font-weight: 400; margin-left: 5px; }
+/* 手机屏窄：diff 只横向滚动，不换行，避免缩进错乱 */
+.diff {
+  margin: 0; padding: 8px 10px; border-top: 1px solid var(--line);
+  font-size: 11px; line-height: 1.5; white-space: pre;
+  overflow-x: auto; max-height: 50vh; overflow-y: auto;
+  background: #0d1016; color: var(--mut); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.diff.hidden { display: none; }
+/* 展开 diff 后才露出「在编辑器打开」，避免默认态按钮过多 */
+.change-actions { display: none; padding: 0 10px 8px; }
+.change.expanded .change-actions { display: block; }
+
+/* ===================================================================
+   响应式布局：三种形态
+   ① 竖屏手机（默认）：底部页签，单栏 —— 上面所有规则即为该形态
+   ② 手机横放（矮屏 landscape）：纵向是稀缺资源 → 44px 图标导航轨 + 顶栏单行
+   ③ 平板 / iPad 横屏（≥720px 宽）：横纵都宽裕 → 88px 宽轨（图标+文字）+ 三栏
+   =================================================================== */
+
+/* ---------- 形态 ②：手机横放 ---------- */
+/* 判定条件用「宽 > 高 且 高度很矮」，避免误伤平板竖屏 */
+@media (orientation: landscape) and (max-height: 480px) {
+  body { flex-direction: row; }
+
+  /* 44px 图标导航轨：只显图标，省下的横向空间给内容 */
+  .sidenav {
+    display: flex; flex-direction: column; align-items: stretch;
+    flex: 0 0 44px; width: 44px; gap: 2px; padding: 4px 0;
+    border-right: 1px solid var(--line); background: var(--card2);
+    overflow-y: auto;
+  }
+  .sidenav .tab { border-radius: 8px; }
+  .sidenav .tab-text { display: none; }
+  .sidenav .tab.active { background: rgba(79, 110, 247, .16); box-shadow: inset 3px 0 0 var(--acc); }
+
+  /* 底部页签让位给侧边轨 */
+  .tabs { display: none; }
+
+  /* 顶栏压成真单行：brand 内层改横向 flex，标题与副标题同行 */
+  .top { padding: 3px 12px; }
+  .brand > div { display: flex; align-items: baseline; gap: 7px; min-width: 0; overflow: hidden; }
+  .title { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .subtitle { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .subtitle::before { content: "·"; margin-right: 7px; opacity: .5; }
+  .host { font-size: 10px; max-width: 42%; word-break: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 横屏下会话卡片省掉元信息行，让每屏看到更多条 */
+  .session { padding: 7px 10px; }
+  .session-meta { display: none; }
+  .session-preview { display: none; }
+
+  /* 状态页：卡片网格改两列，事件流得到更多高度 */
+  .cards { grid-template-columns: repeat(2, 1fr); padding: 8px; gap: 8px; }
+  .card { padding: 9px; }
+  .card .v { font-size: 13px; }
+
+  /* diff 在矮屏下放宽高度上限，充分利用横屏的横向空间 */
+  .diff { max-height: none; }
+
+  .toast { bottom: 12px; }
+}
+
+/* ---------- 形态 ③：平板 / iPad 横屏 ---------- */
+/* min-height: 481px 是必须的：手机横放（如 844×390）同时满足本查询与形态②，
+   两条规则优先级相同、本条在后面 → 88px 宽轨会覆盖掉 44px 窄轨，
+   把横屏手机上稀缺的横向空间白白吃掉。加下限让两种形态互斥。 */
+@media (min-width: 720px) and (min-height: 481px) and (orientation: landscape) {
+  body { flex-direction: row; }
+
+  /* 88px 宽轨：图标 + 文字都显示 */
+  .sidenav {
+    display: flex; flex-direction: column; align-items: stretch;
+    flex: 0 0 88px; width: 88px; gap: 4px; padding: 10px 0;
+    border-right: 1px solid var(--line); background: var(--card2);
+    overflow-y: auto;
+  }
+  .sidenav .tab { border-radius: 10px; padding: 10px 4px 8px; gap: 5px; }
+  .sidenav .tab-ico { font-size: 20px; }
+  .sidenav .tab-text { display: block; font-size: 11px; }
+  .sidenav .tab.active { background: rgba(79, 110, 247, .16); box-shadow: inset 3px 0 0 var(--acc); }
+
+  .tabs { display: none; }
+
+  /* 顶栏单行 + 更大留白 */
+  .top { padding: 7px 18px; }
+  .brand > div { display: flex; align-items: baseline; gap: 9px; min-width: 0; overflow: hidden; }
+  .title { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .subtitle { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .subtitle::before { content: "·"; margin-right: 9px; opacity: .5; }
+  .host { font-size: 11px; max-width: 46%; word-break: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 宽屏下「一整列拉到底」很浪费：把会话/变更列表改成自适应多列网格。
+     注意这里刻意不做 master-detail —— 当前 DOM 里收件箱与变更页没有
+     独立的详情面板元素，硬造一个右栏只会留下空白。多列铺开才是真实收益。 */
+  .sessions, .changes {
+    display: grid; align-content: start;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    padding: 12px;
+  }
+  /* 展开的变更条目跨满整行，diff 才有足够宽度读 */
+  .change.expanded { grid-column: 1 / -1; }
+
+  /* diff 在大屏下不受 50vh 限制，横向更宽、纵向更从容 */
+  .diff { max-height: none; font-size: 12px; }
+
+  /* 状态页：卡片区与事件流做真实的两栏（这两个元素都真实存在）。
+     用 grid-template-areas 让 cards 占满左列通高，右上为标题、右下为事件流。 */
+  #view-status {
+    display: grid;
+    grid-template-columns: clamp(260px, 38%, 420px) 1fr;
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "cards head" "cards events";
+  }
+  .cards {
+    grid-area: cards;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    align-content: start;
+    border-right: 1px solid var(--line);
+  }
+  #view-status > .events-head { grid-area: head; border-top: none; }
+  #view-status > .events { grid-area: events; padding: 0 16px 12px; }
+
+  .toast { bottom: 16px; }
+}

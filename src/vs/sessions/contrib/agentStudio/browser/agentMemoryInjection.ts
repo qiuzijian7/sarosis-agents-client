@@ -276,9 +276,34 @@ export async function* injectMemoryContext(
  */
 export function isMemoryInjectionEnabled(): boolean {
 	try {
-		return typeof process !== 'undefined'
-			&& process.env?.['AGENTMEMORY_INJECT_CONTEXT'] === 'true';
-	} catch {
+		// 2026-09-20：渲染进程**没有** `globalThis.process`（CDP 实测 hasProcess:false）
+		// ⇒ `process.env` 读不到。但 Electron sandbox 暴露了 `globalThis.vscode.process`
+		// （见 base/parts/sandbox/electron-browser/globals.ts；先例 providers/tool/gitBashProvider.ts:49）
+		// ⇒ 优先从那里读环境变量，用户可用 `AGENTMEMORY_INJECT_CONTEXT=true` 直接开启。
+		// 回退：宿主注入的 `__SAROS_AGENTMEMORY_INJECT__`（`_injectAgentMemoryEndpoint` 写入）。
+		const g = globalThis as {
+			vscode?: { process?: { env?: Record<string, string> } };
+			__SAROS_AGENTMEMORY_INJECT__?: unknown;
+			__SAROS_AGENTMEMORY_INJECT_LOGGED__?: boolean;
+		};
+		const envValue = g.vscode?.process?.env?.['AGENTMEMORY_INJECT_CONTEXT'];
+		const injected = g.__SAROS_AGENTMEMORY_INJECT__;
+		// ⚠ 必须 trim：`set X=true && ...` 在 cmd.exe 下会把空格带进值（实测 "true " ⇒ 判等失败）。
+		const enabled = envValue?.trim() === 'true' || injected === true || (typeof injected === 'string' && injected.trim() === 'true');
+		// 诊断日志（只输出一次，避免刷屏）：定位「记忆注入为何不生效」
+		if (!g.__SAROS_AGENTMEMORY_INJECT_LOGGED__) {
+			g.__SAROS_AGENTMEMORY_INJECT_LOGGED__ = true;
+			console.log(
+				`[AgentOS][MemoryInjection][Diag] isMemoryInjectionEnabled()=${enabled}; `
+				+ `vscode.process.env.AGENTMEMORY_INJECT_CONTEXT=${JSON.stringify(envValue)}; `
+				+ `__SAROS_AGENTMEMORY_INJECT__=${JSON.stringify(injected)}; `
+				+ `hasGlobalProcess=${typeof process !== 'undefined'}; `
+				+ `hasVscodeProcess=${typeof g.vscode?.process !== 'undefined'}`,
+			);
+		}
+		return enabled;
+	} catch (err) {
+		console.log(`[AgentOS][MemoryInjection][Diag] isMemoryInjectionEnabled() threw: ${err instanceof Error ? err.message : String(err)}`);
 		return false;
 	}
 }

@@ -9,6 +9,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { resolveAgentStudioDataRoot, migrateLegacyAgentStudioData } from '../common/sarosPaths.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentDelegationService } from '../common/agentStudio.js';
 import type { IAutoPlanResult } from '../common/agentStudio.js';
@@ -37,6 +39,7 @@ export class AgentDelegationService extends Disposable implements IAgentDelegati
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@ITaskOrchestrationService private readonly taskOrchestrationService: ITaskOrchestrationService,
@@ -46,20 +49,25 @@ export class AgentDelegationService extends Disposable implements IAgentDelegati
 		this._outputParser = new StructuredOutputParser(logService);
 	}
 
+	/** 旧目录迁移 Promise（仅默认落盘根下非空）；读路径开头 await，避免迁移与首读竞争。 */
+	private _legacyMigration: Promise<void> | undefined;
+
 	private _getDataUri(): URI {
 		if (!this._dataUri) {
 			const customPath = this.configurationService.getValue<string>(AGENT_STUDIO_DATA_PATH_SETTING);
-			if (customPath) {
-				this._dataUri = URI.file(customPath);
-			} else {
-				this._dataUri = URI.file(process.env.HOME || process.env.USERPROFILE || '~')
-					.with({ path: `${process.env.HOME || process.env.USERPROFILE || '~'}/.agent-studio/data` });
+			// 统一落盘根：~/.vssaros/（dev 为 ~/.vssaros-dev/），废弃 process.env + ~/.agent-studio/data（sarosPaths 约定）
+			this._dataUri = resolveAgentStudioDataRoot(customPath, this.environmentService.userRoamingDataHome);
+			if (!customPath) {
+				this._legacyMigration = migrateLegacyAgentStudioData(
+					this.fileService, this.logService, this.environmentService.userHome, this._dataUri, [DATA_FILE_DELEGATIONS]
+				);
 			}
 		}
 		return this._dataUri;
 	}
 
 	private async _readDelegations(): Promise<Delegation[]> {
+		await this._legacyMigration;
 		try {
 			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_DELEGATIONS);
 			const content = await this.fileService.readFile(uri);

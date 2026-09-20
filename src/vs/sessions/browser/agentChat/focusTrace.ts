@@ -147,6 +147,20 @@ class FocusTrace {
 		return this._focusAt > 0 ? Math.round(at - this._focusAt) : -1;
 	}
 
+	/**
+	 * ★ 2026-09-20：焦点时刻的 **DOM 节点数**（渲染管线体量的现场值 ✓）。
+	 *
+	 * 为什么需要：真机慢焦点（+215/+300ms）呈现「探针被饿死 ⇒ 主线程真被占 ✓ 但**阶段=idle**、
+	 * LoAF/longtask 本环境采不到 ✗」—— 此时最大的不可见嫌疑是**样式/布局/绘制**（它不产生
+	 * JS 栈 ✗，但会饿死定时器 ✓）。而本窗口 DOM 一度 2.4–4 万节点（`domBudgetDecision` 锯齿 ✓）——
+	 * **DOM 体量是渲染耗时的主变量** ⇒ 把 N 直接打进慢报/回访 ⇒ 下次慢焦点一眼看出
+	 * 「DOM 大 ⇒ 渲染嫌疑上调 / DOM 小 ⇒ 回到 JS 方向」✓，不再靠猜。
+	 * 成本：全量遍历一次（35k 节点约 1–3ms），**不触发布局**（不读几何属性 ✓）⇒ 只在慢路径调用 ✓。
+	 */
+	private _domNodeCount(): number {
+		try { return document.getElementsByTagName('*').length; } catch { return -1; }
+	}
+
 	/** 记录一个时间点（默认档只留在内存，随汇总一起打印 ✓）。 */
 	mark(label: string, detail?: string): void {
 		if (this._focusAt <= 0) { return; }
@@ -264,6 +278,11 @@ class FocusTrace {
 		// ★ 阶段对比：焦点瞬间 → 汇总瞬间（后者通常已是 idle）。字面量里带上具体阶段名，
 		//   才能直接回答"这 387ms 里主线程在跑什么"✓
 		this._log(`${FOCUS_TRACE_TAG}   阶段：焦点时「${this._stageAtFocus}」→ 现在「${_currentStage()}」`);
+		// ★ 2026-09-20：DOM 现场值 —— 「阶段=idle + 探针被饿死」时，渲染管线（样式/布局/绘制）
+		//   是最大嫌疑（它不产生 JS 栈 ✗ 但会饿死定时器 ✓）；DOM 体量是渲染耗时主变量 ⇒ 直接带上 ✓。
+		if (slow) {
+			this._log(`${FOCUS_TRACE_TAG}   现场：DOM=${this._domNodeCount()} 节点（渲染管线体量 ✓）⇒ 若 ≥3万 且探针被饿死 ⇒ **样式/布局嫌疑上调**（查大 DOM 子树，别只查 JS 栈 ✗）；DOM 小 ⇒ 回到 JS/他窗口方向 ✓`);
+		}
 		// ★★ 最关键的一行：**本窗口主线程到底有没有被占住**（自带探针实测，不依赖任何阶段标记 ✗✓）
 		// 同时给出 rAF 帧数 ⇒ 「探针 0 次」时才能分清"真阻塞"与"被节流"✗✓（见 _startRafMeter 注释）
 		this._log(`${FOCUS_TRACE_TAG}   本窗口主线程最长占用 ${Math.round(this._maxBlockInTrace)}ms（探针 ${this._probeTicks} 次${this._probeStartAt > 0 ? `，启动于 +${Math.round(this._probeStartAt - this._focusAt)}ms` : '，**探针未启动**（代码未生效？）'} / rAF ${this._rafTicks} 帧、最大帧间 ${Math.round(this._maxRafGap)}ms${this._probeThrottled > 0 ? `，其中 ${this._probeThrottled} 次探针因窗口不可见被节流已排除` : ''}；可见性=${typeof document !== 'undefined' ? document.visibilityState : 'n/a'}）`);
@@ -352,7 +371,7 @@ class FocusTrace {
 		this._stopBlockProbe();
 		const rel = (t: number): string => `+${Math.round(t - this._focusAt)}ms`;
 		const firstTick = this._firstTickAt > 0 ? rel(this._firstTickAt) : '一直没跑';
-		this._log(`${FOCUS_TRACE_TAG}   ⏱ 回访（焦点后 ${LATE_REPORT_MS}ms）：第 1 个探针在 ${firstTick} 才跑到（本应每 25ms 一次）/ 探针共 ${this._probeTicks} 次 / rAF ${this._rafTicks} 帧、最大帧间 ${Math.round(this._maxRafGap)}ms${this._probeThrottled > 0 ? `（另有 ${this._probeThrottled} 次探针因窗口不可见被节流 ✓）` : ''}`);
+		this._log(`${FOCUS_TRACE_TAG}   ⏱ 回访（焦点后 ${LATE_REPORT_MS}ms）：第 1 个探针在 ${firstTick} 才跑到（本应每 25ms 一次）/ 探针共 ${this._probeTicks} 次 / rAF ${this._rafTicks} 帧、最大帧间 ${Math.round(this._maxRafGap)}ms / DOM=${this._domNodeCount()} 节点${this._probeThrottled > 0 ? `（另有 ${this._probeThrottled} 次探针因窗口不可见被节流 ✓）` : ''}`);
 		if (this._firstTickAt > 0) {
 			const stall = Math.round(this._firstTickAt - this._focusAt);
 			this._log(`${FOCUS_TRACE_TAG}   ⏱ ⇒ 主线程直到 ${firstTick} 才有空（首个 25ms 定时器被推迟 ${stall}ms）⇒ **这 ${stall}ms 主线程确实被占住** ✓✓ ⇒ 用同一时刻的 \`[WsSwitchDiag]\`（含**阶段名**）/ \`[CodebaseGraph]\` 找那段活 ✓；若它报 idle ⇒ 那段活**没打阶段名**（补 wsStage() ✓）`);

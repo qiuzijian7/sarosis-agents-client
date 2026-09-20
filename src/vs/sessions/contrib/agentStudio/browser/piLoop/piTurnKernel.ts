@@ -12,16 +12,54 @@
  *    · 不支持的形态**自动回落 legacy**（`piKernelSupports`）：plan 模式 / chatOnly /
  *      断点续跑（resumeFrom）/ 子代理（subAgent，带 softDeadlineMs 语义，pi 路径暂未接）。
  *
- *  ⚠ 已知缺口（翻转默认值前必须补齐或对拍豁免）：
- *    · 不写宿主 runState / checkpoint（断点续跑由 legacy 承担，resumeFrom ⇒ 回落；
- *      压缩段内部的 runState 是驱动器本地划痕，不落盘）；
- *    · `ToolGuardrailController` 的 no-progress 护栏（同签名+同结果）未接 ——
- *      已接的是 detectToolCallLoop（同签名重复 ≥3）+ ping-pong（A⇄B 交替且结果稳定）。
+ *  ⚠ 已知缺口（正式豁免，附理由；翻转默认值前无需补齐）：
+ *    · **ToolAudit / AntiGuidance**（executor:826-870/3140+）：纯观测面 —— 只记录水位/指纹/
+ *      日志，不影响任何模型可见行为。豁免理由：pi 路径的每条护栏触发都有等价 warn 日志
+ *      （[PiKernel] 前缀可 grep），审计聚合报告是 legacy 的调参基础设施，双跑期以日志为准。
+ *    · **hookBus `before_tool`**（executor:3040+）：唯一 handler 是 memory provider 的
+ *      pre_tool_use 转发（上下文丰富化）。pi 路径经 `_observeToolResult` 仍喂结果侧信号；
+ *      pre 侧缺失只影响记忆系统的细粒度上下文，不改行为。
+ *    · **checkpoint 的 preExploreDone / paradigmOverride** 恢复：preLoop/范式在 pi 路径
+ *      不存在 ⇒ 无恢复对象；phase 与 legacy 一样**故意不恢复**（防副作用工具重跑）。
+ *    · **incomplete-turn 重试的 `tool-call-lost` 诊断增强**（outputTokens 判据日志）未复刻 ——
+ *      纯日志增强，重试行为已对齐。
+ *  D2 已接（2026-09-20）：resumeFrom 恢复（messages 优先/loopMessages 回落 + 划痕
+ *  runState 安全恢复 + 迭代接续扣减）+ 每 3 轮 `buildCheckpointSnapshot` 落盘
+ *  （fire-and-forget，对齐 turnPostIteration:441-472）。
  *  已对齐 legacy 的 parity 项：记忆检索注入（executor:1123-1159）、Dashboard token
- *  计数（executor:1776-1816 口径）、工具循环护栏（executor:2862-2936）、
- *  `_setCurrentModel` 登记（executor:1119）、压缩四级阶梯（parts/turnContextCompaction
- *  同一实现，经 piLoop `transformContext` 缝接入并**写回权威 transcript** —— piLoop
- *  的 transformContext 默认只影响发送副本，而 legacy 压缩改写权威历史，故就地 splice）。
+ *  计数（executor:1776-1816 口径）、工具循环护栏全套（executor:2862-2936 的
+ *  ping-pong/detectToolCallLoop + ToolGuardrailController 的 no-progress/halt，
+ *  executor 同款显式配置）、`_setCurrentModel` 登记（executor:1119）、压缩四级阶梯
+ *  （parts/turnContextCompaction 同一实现，经 piLoop `transformContext` 缝接入并
+ *  **写回权威 transcript** —— piLoop 的 transformContext 默认只影响发送副本，而
+ *  legacy 压缩改写权威历史，故就地 splice）、steering 队列（pi 轮询模型 +
+ *  DeliveryQueue 租约桥，follow-up 续跑）、撞顶收尾轮（maxTurns 撞顶且模型仍在要
+ *  工具 ⇒ 禁工具收尾轮 toolChoice:'none' + hardLimitWrapUpReminder，再硬停）、
+ *  边界引导八件套：XML 泄漏重试（runLoop 缝：丢弃文本不入 transcript + 纠正指令 +
+ *  重试 ≤2 + discard_prior_text 清屏，executor:2294-2368）、reasonStreak（同 thinking
+ *  连击 ≥3 ⇒ 恢复引导，executor:3088-3106；⚠ pi-ai 的 AgentToolCall.arguments 是对象
+ *  非字符串，误按 string 解析会让所有轮 argsHash 全同 ⇒ streak 误报）、连续失败熔断
+ *  （连败 3 次提醒，executor:3352-3363）、terminal 空输出连击（'(no output)' ×3 ⇒
+ *  提醒，executor:3365-3385）、文本搜索连击（软 4 提醒一次 / 硬 8 ⇒ `requestWrapUp`
+ *  强制禁工具收尾轮，executor:3395-3430）、argument_churn（同工具参数各异 ×5 ⇒
+ *  引导一次，多目标工具只留痕，executor:3110-3135）、单只读工具连击（每轮只请求 1 个
+ *  并行安全只读工具 ×4 ⇒ 批量并行引导，executor:3211-3240）、全批拦截连击（一轮全部
+ *  调用被拦 ⇒ 三档：仅回填 / ≥2 强提醒直写 transcript / ≥4 强制收尾轮，executor:2980-3031）、
+ *  未完成轮安全续跑（fork 缝 `incompleteTurnRetry`：空/只有思考/截断/工具调用丢失 ⇒ 按类
+ *  阶梯指令续跑，每类独立上限；length/truncated-text **保留**半截文本续写不 discard；
+ *  >90% 上下文压力重置压缩冷却；executor:2375-2470）
+ *  —— 提醒默认经「追加进下一条工具结果文本」投递（对齐 legacy _pendingBatchReminders
+ *  的"只随工具批次注入"语义）；⚠ 被拦调用走 piLoop 'immediate' 路径**不过 afterToolCall**
+ *  ⇒ 全批拦截轮的强提醒在 shouldStopAfterTurn 直写 transcript（legacy 同款 appendMessages）、
+ *  子代理语义（2026-09-20 接入，`piKernelSupports` 已解除排除）：软预算提醒
+ *  （wall-clock 超 softDeadlineMs ⇒ `softBudgetWrapUpReminder`，60s 周期重提，
+ *  turnIterationGate:256-268）+ 迭代预算 1000（background，executor:765-769）+
+ *  `deriveAskRoutingContext` 审批路由（executor:3247）；180s 工具活动超时在 host
+ *  执行层，天然继承）、plan 编排（D1，2026-09-20 接入，`piKernelSupports` 已解除排除）：
+ *  plan_enter/plan_exit/plan_explore 批后拦截复用 `parts/turnPlanModeTools` 同一实现，
+ *  拦截点 = `shouldStopAfterTurn`（对齐 executor:3667 的批后时序），产出 delta 经
+ *  pending 桥流式上屏，'done' ⇒ 本 turn 结束；messages 经 pi⇄legacy 转换器往返
+ *  （与压缩段同款），work.mode 划痕播种 `resolveRequestWorkMode(chatMode, workMode)`。
  *
  *  ⚠ 系统提示的送达：piLoop 的 `TranscriptContext` **没有** systemPrompt 通道
  *    （`normalizeTranscript` 只透传 messages）—— 系统提示必须以 `role:'system'` 消息
@@ -41,19 +79,26 @@ import type {
 	IToolDefinition,
 } from '../../common/providers.js';
 import {
-	canonicalToolArgsHash,
+	classifyIncompleteTurn,
 	createInitialRunState,
-	detectToolCallLoop,
-	detectToolCallPingPong,
-	hashToolResult,
+	detectTruncatedTail,
+	detectXmlToolCallLeak,
+	incompleteTurnDiscardReason,
+	incompleteTurnRetryLimit,
 	reduceRunState,
+	resolveIncompleteTurnRetryInstruction,
+	restoreRunState,
 	RUN_STATE_LIMITS,
 	type AgentAction,
 	type AgentRunMessage,
+	type IncompleteTurnKind,
 } from '../../common/agentRunState.js';
-import { classifyPingPong } from '../../common/turnStopGate.js';
+import { COMPRESSION_COOLDOWN_MS } from '../../common/turnLoopConstants.js';
+import { xmlToolCallLeakReminder } from '../../common/loopReminders.js';
+import { deriveAskRoutingContext } from '../../common/askRouting.js';
+import { createInitialWorkState, resolveRequestWorkMode } from '../../common/workMode.js';
 import { ContextManager, RETRIEVAL_BUDGET_RATIO, RETRIEVAL_COMPACTION_ENABLED } from '../../common/contextManager.js';
-import { buildLoopBlockFeedback } from '../toolCallUtils.js';
+import type { DeliveryQueue } from '../../common/deliveryQueue.js';
 import {
 	compactContextIfNeededImpl,
 	type IContextCompactionDeps,
@@ -71,37 +116,67 @@ import type {
 	AgentEvent,
 	AgentLoopConfig,
 	AgentMessage,
-	AssistantContent,
 	AssistantMessage,
 	Model,
-	ToolResultMessage,
 } from './types.js';
+import { loopMessagesToPiMessages, piMessagesToLoopMessages } from './kernelMessages.js';
+import { toolResultToText } from './kernelUtils.js';
+import { makeGuardrailHooks } from './kernelGuardrails.js';
+import { createPlanInterception } from './kernelPlan.js';
+import { createCheckpointWriter, resolveResume } from './kernelCheckpoint.js';
+
+// ── 拆出的子模块（2026-09-20，A3：「内核薄、复杂度归钩子」）────────────────
+// kernelUtils（纯小件）/ kernelMessages（pi⇄legacy 转换器）/ kernelGuardrails
+// （护栏+引导族）/ kernelPlan（plan 批后拦截）/ kernelCheckpoint（resume+落盘）。
+// 转换器从本文件 re-export：既有测试/调用方入口不变。
+export { loopMessagesToPiMessages, piMessagesToLoopMessages } from './kernelMessages.js';
 
 // ─────────────────────────── 门控 ───────────────────────────
 
 /**
- * pi 内核开关（**默认关** = legacy）。
- * 运行时切换：`window.__SAROSIS_PI_KERNEL = true`（devtools）或 env `SAROSIS_PI_KERNEL=1`。
+ * pi 内核开关（**2026-09-20 E2 翻转：默认开** = pi 内核驱动）。
+ * 显式回落 legacy：`window.__SAROSIS_PI_KERNEL = false`（devtools）或 env `SAROSIS_PI_KERNEL=0`。
+ * 显式开启（冗余但保留）：`= true` / `=1`。
  * 与 `[MainHeartbeat]`/`[RenderHeartbeat]` 同款运行时门控约定，无需重启 vs 需重启的取舍：
  * 该判定在**每个 turn 开始处**执行 ⇒ devtools 里翻转后立即对下一条消息生效。
+ *
+ * 翻转依据（见 doc/agentloop-pi-migration-plan.html 状态）：双跑矩阵 15 形态全绿、
+ * 准入 149/149 钉住 legacy（套件内显式关断本开关）、护栏六件套/plan/resume/subAgent
+ * 全形态接入（piKernelSupports 恒 true）。
  */
 export function isPiKernelEnabled(): boolean {
 	try {
-		if ((globalThis as unknown as Record<string, unknown>)['__SAROSIS_PI_KERNEL'] === true) { return true; }
+		const flag = (globalThis as unknown as Record<string, unknown>)['__SAROSIS_PI_KERNEL'];
+		if (flag === true) { return true; }
+		if (flag === false) { return false; }
 	} catch { /* ignore */ }
 	try {
 		const proc = (globalThis as unknown as { process?: { env?: Record<string, string | undefined> } }).process;
-		if (proc?.env?.['SAROSIS_PI_KERNEL'] === '1') { return true; }
+		const env = proc?.env?.['SAROSIS_PI_KERNEL'];
+		if (env === '1') { return true; }
+		if (env === '0') { return false; }
 	} catch { /* ignore */ }
-	return false;
+	return true;
 }
 
-/** pi 路径当前支持的 turn 形态；不支持 ⇒ 调用方回落 legacy（不报错、不打断）。 */
+/**
+ * pi 路径当前支持的 turn 形态；不支持 ⇒ 调用方回落 legacy（不报错、不打断）。
+ *
+ * ⚠ chatOnly 于 2026-09-20 **移出排除清单**：executor 的写工具过滤（`agentTurnExecutor.ts`
+ * chatOnly 分支）发生在门控分流点**之前** ⇒ 到达驱动器的 `enabledTools` 已是过滤后的
+ * 安全集合，pi 路径无需任何额外处理即继承该语义（阶段 1 唯一"零成本"项，实证见
+ * `piTurnKernel.test.ts` 的 chatOnly 用例）。
+ */
 export function piKernelSupports(request: IAgentTurnRequest): boolean {
-	if (request.resumeFrom) { return false; }   // 断点续跑：pi 路径不写/不读 checkpoint
-	if (request.chatOnly) { return false; }     // chatOnly 的写工具过滤在门控点之后
-	if (request.chatMode === 'plan') { return false; }  // plan 编排（plan_enter/exit）未接
-	if (request.subAgent) { return false; }     // 子代理带 softDeadlineMs 超时语义，未接
+	// 2026-09-20：全部形态已接入 ——
+	//   · resumeFrom（D2）：checkpoint 恢复（messages 优先/loopMessages 回落）+ 划痕
+	//     runState 安全恢复 + 迭代计数接续 + 每 3 轮快照落盘（request.checkpointSink）；
+	//   · plan（D1）：plan_enter/plan_exit/plan_explore 批后拦截复用 parts/turnPlanModeTools
+	//     同一实现（拦截点 = shouldStopAfterTurn，对齐 executor:3667）；
+	//   · subAgent：softDeadlineMs 软预算提醒（60s 周期重提）+ 迭代预算 1000（background）
+	//     + askRouting 审批路由；180s 工具活动超时在 host 执行层，天然继承。
+	// 保留本函数作为将来新增不支持形态的单点门（返回 true = 全形态支持）。
+	void request;
 	return true;
 }
 
@@ -146,6 +221,19 @@ export interface IPiKernelHost {
 	_retrieveContextOnly(provider: IMemoryProvider, agentId: string, sessionId: string, middle: ReadonlyArray<unknown>, budget: number): Promise<{ context: string; tokens: number; source: string } | null>;
 	_injectRetrievalSystemMessage(messages: unknown[], context: string, source: string): unknown[];
 
+	// ── plan 编排面（D1；parts/turnPlanModeTools 的宿主面，全可选 —— 缺失时 plan 工具
+	//    按普通工具执行并告警，不拦截）──────────────────────────────────────────
+	_getSarosRoot?(): string;
+	_writePlanFile?(path: string, content: string): Promise<void>;
+	_readPlanFile?(path: string): Promise<string>;
+	_awaitPlanApproval?(confirmationId: string): Promise<string>;
+	_orchestratePlan?(
+		request: IAgentTurnRequest,
+		options: { plan_summary: string; next_mode: string; idempotencyKey: string },
+		tasks: unknown[],
+		toolCallId: string,
+	): AsyncGenerator<IChatStreamDelta>;
+
 	// ── 压缩段（parts/turnContextCompaction 的 IContextCompactionHost 面）──
 	_estimateMessagesTokens(messages: readonly unknown[]): number;
 	_lastCompressionTime: number;
@@ -168,6 +256,14 @@ export interface PiKernelTurnDeps {
 	readonly messages: readonly AgentRunMessage[];
 	/** 压缩管理器工厂（默认 `new ContextManager(provider, modelId)`；测试注入 mock）。 */
 	readonly contextManagerFactory?: () => IContextCompactionManager;
+	/**
+	 * steering 队列（用户插话；可选）。缺失时 pi 路径不轮询 —— 与 legacy 不传
+	 * `steeringQueue` 形参等价。注入语义对齐 legacy `injectSteeringMessages`
+	 * （common/loopGate.ts）：lease → 追加成功才 ack；失败 release 归还重试。
+	 */
+	readonly steeringQueue?: DeliveryQueue;
+	/** 迭代上限（默认 RUN_STATE_LIMITS.MAX_TOOL_ITERATIONS=100；测试可传小值验证收尾轮）。 */
+	readonly maxTurns?: number;
 }
 
 // ─────────────────────────── 主驱动 ───────────────────────────
@@ -194,10 +290,16 @@ export async function* runPiKernelTurn(
 	// ── parity（executor:1119）：登记当前模型，供宿主实时查表上下文窗口 ──
 	host._setCurrentModel(deps.modelProvider, deps.selection.modelId);
 
+	// ── resumeFrom 断点续跑（D2，kernelCheckpoint.ts）─────────────────────────
+	// checkpoint 恢复 > 上下文构建结果：messages 优先 / loopMessages 回落；迭代计数接续。
+	// ⚠ phase 与 legacy 一样故意不恢复（防副作用工具重跑）。
+	const restored = request.resumeFrom;
+	const { restoredMessages, restoredIteration } = resolveResume(request, host._logService);
+
 	// ── 记忆检索注入（与 executor:1123-1159 同一语义、同一批 host 方法）──────────
 	// 在 **legacy 形状**的种子上操作（_retrieveContextOnly/_injectRetrievalSystemMessage
 	// 都吃 legacy 消息），注入完成后再转 pi 形状。默认开启（AGENT_OS_RETRIEVAL_COMPACTION=0 关）。
-	let seedMessages: readonly AgentRunMessage[] = deps.messages;
+	let seedMessages: readonly AgentRunMessage[] = restoredMessages ?? deps.messages;
 	if (RETRIEVAL_COMPACTION_ENABLED) {
 		const rp = host.getActiveMemoryProvider();
 		if (rp && typeof (rp as { recallFormatted?: unknown }).recallFormatted === 'function') {
@@ -247,7 +349,14 @@ export async function* runPiKernelTurn(
 	// lastRealPromptTokens（真实值由 accumulateUsage 在每轮 message_end 回填）与 phase。
 	let compactionRunState = createInitialRunState({
 		lastRealPromptTokens: host._lastRealPromptTokensByAgent.get(host._turnKey(request.agentId, request.sessionId)) ?? 0,
+		// plan 编排也读这个划痕的 work.mode —— 初值播种与 legacy 同（executor createInitialRunState 处）
+		workState: createInitialWorkState(resolveRequestWorkMode(request.chatMode, request.workMode)),
 	});
+	// D2：断点续跑 ⇒ 划痕 runState 从快照安全恢复（永不抛错；work.mode/planFilePath/
+	// 计数器随快照回来 —— 对齐 legacy resume 后 runState 接续的语义）。
+	if (restored) {
+		compactionRunState = restoreRunState(restored);
+	}
 	const dispatchCompactionRunState = (action: AgentAction): void => { compactionRunState = reduceRunState(compactionRunState, action); };
 	let hardPrunePending = false;
 	const compactionDeps: IContextCompactionDeps = {
@@ -259,7 +368,10 @@ export async function* runPiKernelTurn(
 		estimateToolsSchemaTokens,
 	};
 
-	const guardrails = makeGuardrailHooks(host);
+	const guardrails = makeGuardrailHooks(host, deps.enabledTools, { softDeadlineMs: request.softDeadlineMs });
+	// 迭代预算基准（background 子代理 1000 / 主代理 100 / 测试缝 deps.maxTurns）——
+	// maxTurns 与 checkpoint 的 budgetSnapshot 共用同一基准，避免两处口径分叉。
+	const baseMaxTurns = deps.maxTurns ?? (request.subAgent?.background ? 1000 : RUN_STATE_LIMITS.MAX_TOOL_ITERATIONS);
 	const context = {
 		messages: loopMessagesToPiMessages(seedMessages),
 		systemPrompt: '', // 见文件头：system 由种子历史携带，此字段在 piLoop 中无通道
@@ -268,11 +380,88 @@ export async function* runPiKernelTurn(
 	const config: AgentLoopConfig = {
 		model,
 		convertToLlm: piLoopConvertToLlm,
-		// 迭代上限与 legacy 对齐（100）—— 护栏（beforeToolCall）之外的失控保险丝。
-		maxTurns: RUN_STATE_LIMITS.MAX_TOOL_ITERATIONS,
-		// 工具护栏（对齐 executor:2862-2936）：同签名重复 + ping-pong 交替 ⇒ 拦。
+		// 迭代上限与 legacy 对齐（executor:765-769）：background 子代理 1000（只受工具活动
+		// 超时约束，1000 仅为失控保险丝）；主代理 100。撞顶后 runLoop 会跑一轮禁工具收尾。
+		// resume 续跑：迭代计数接续（否则每次 resume 白拿整份预算 ⇒ 无限续跑失控）。
+		maxTurns: Math.max(0, baseMaxTurns - restoredIteration),
+		// 工具护栏（对齐 executor:2862-2936 + 护栏控制器）：ping-pong / no-progress /
+		// 同签名循环 ⇒ 拦；同名工具失败 8 次 ⇒ halt（经 shouldStopAfterTurn 收尾退出）。
 		beforeToolCall: guardrails.beforeToolCall,
 		afterToolCall: guardrails.afterToolCall,
+		shouldStopAfterTurn: async (ctx) => {
+			// plan 批后拦截先行（对齐 executor:3667 的时序）；'done' ⇒ 本 turn 结束。
+			// transcript 就地改写（legacy 拦截器同款 messages 重写语义）。
+			if (await planInterception.tryIntercept(ctx.messages as AgentMessage[])) { return true; }
+			return guardrails.shouldStopAfterTurn(ctx);
+		},
+		// XML 文本工具调用泄漏守卫（对齐 executor:2294-2368，重试上限 2）
+		textToolCallLeakGuard: {
+			detect: detectXmlToolCallLeak,
+			reminder: xmlToolCallLeakReminder,
+			retryLimit: 2,
+		},
+		// 强制收尾轮请求（文本搜索连击硬上限等；对齐 legacy wrapUp.forced）
+		requestWrapUp: guardrails.requestWrapUp,
+		// 转录卫生（2026-09-20）：内核摘除孤儿 tool 对后记日志 —— 修复「LMBridge 每轮
+		// 重剥同样孤儿」的实证缺陷（pi 权威 transcript 此前永不清洗）。
+		onTranscriptPruned: r => host._logService.info(
+			`[PiKernel] transcript hygiene: 摘除孤儿 tool call ×${r.prunedCalls} / result ×${r.prunedResults}` +
+			(r.droppedMessages > 0 ? ` / 连带移除消息 ×${r.droppedMessages}` : ''),
+		),
+		// 未完成轮安全续跑（对齐 executor:2375-2470）：pi stopReason → legacy finishReason
+		// 映射后复用同一组分类器/阶梯/上限；>90% 上下文压力时重置压缩冷却（executor:2445-2462）。
+		incompleteTurnRetry: (message: AssistantMessage) => {
+			let text = '';
+			let thinking = '';
+			for (const b of message.content) {
+				const t = (b as { type?: string }).type;
+				if (t === 'text') { text += (b as { text?: string }).text ?? ''; }
+				else if (t === 'thinking') { thinking += (b as { thinking?: string }).thinking ?? ''; }
+			}
+			text = text.trim();
+			const finishReason = message.stopReason === 'length' ? 'length'
+				: message.stopReason === 'toolUse' ? 'tool_calls'
+					: message.stopReason === 'error' ? 'error' : 'stop';
+			let kind: IncompleteTurnKind = classifyIncompleteTurn({
+				finishReason,
+				hasVisibleText: text.length > 0,
+				hasThinking: thinking.trim().length > 0,
+				hasToolCalls: false,
+			});
+			// 尾部结构截断补位（executor:2387-2393）：provider 误报 stop 的半截文本
+			if (kind === 'complete' && text.length > 0 && detectTruncatedTail(text)) {
+				kind = 'truncated-text';
+			}
+			const used = incompleteRetryUsed.get(kind) ?? 0;
+			const limit = incompleteTurnRetryLimit(kind);
+			const instruction = resolveIncompleteTurnRetryInstruction(kind, used + 1);
+			if (!instruction || used >= limit) {
+				if (kind !== 'complete') {
+					host._logService.warn(`[PiKernel] Incomplete turn retries exhausted (kind=${kind}, finishReason=${message.stopReason}, textLen=${text.length}) — ending conversation`);
+				}
+				return undefined;
+			}
+			incompleteRetryUsed.set(kind, used + 1);
+			host._logService.warn(`[PiKernel] Incomplete turn (kind=${kind}, finishReason=${message.stopReason}, attempt=${used + 1}/${limit}${text.length > 0 ? `, partialTextLen=${text.length} (kept, not discarded)` : ''}) — safe retry`);
+			// 上下文压力 >90% ⇒ 重置压缩冷却（超限 prompt 直接重试必再失败，executor:2445-2462）
+			{
+				const estTokens = host._estimateMessagesTokens(piMessagesToLoopMessages(context.messages));
+				const effectiveTokens = compactionRunState.lastRealPromptTokens ?? estTokens;
+				if (compressionWindow > 0 && effectiveTokens > compressionWindow * 0.9) {
+					const cooldownMs = host._lastCompressionTime > 0 ? Date.now() - host._lastCompressionTime : Infinity;
+					if (cooldownMs < COMPRESSION_COOLDOWN_MS) {
+						host._logService.warn(`[PiKernel] Incomplete turn + high pressure (${Math.round(effectiveTokens / compressionWindow * 100)}%): bypassing compression cooldown`);
+						host._lastCompressionTime = 0;
+					}
+				}
+			}
+			// length / truncated-text 保留半截文本（incompleteTurnDiscardReason 返回 undefined）
+			return { instruction, discard: incompleteTurnDiscardReason(kind) !== undefined, kind };
+		},
+		// steering 轮询（pi 语义）：用户插话在「起始 + 每个边界」被取走并注入 transcript。
+		getSteeringMessages: deps.steeringQueue
+			? makeSteeringGetter(host, agentId, deps.steeringQueue, `pi-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)
+			: undefined,
 		transformContext: async (piMessages, _signal) => {
 			let legacy = piMessagesToLoopMessages(piMessages);
 			const state: IContextCompactionState = {
@@ -302,11 +491,34 @@ export async function* runPiKernelTurn(
 	const pending: IChatStreamDelta[] = [];
 	let wake: (() => void) | undefined;
 	const notify = (): void => { const w = wake; wake = undefined; w?.(); };
+	// 未完成轮续跑的按类计数（legacy runState.retry 的驱动器本地等价物）
+	const incompleteRetryUsed = new Map<string, number>();
+	// ── plan 批后拦截（D1，kernelPlan.ts）：trackEvent 挂在 emit 上，
+	//    tryIntercept 挂在 config.shouldStopAfterTurn（= 批后时机）──
+	const planInterception = createPlanInterception({
+		host, request,
+		getRunState: () => compactionRunState,
+		dispatchRunState: dispatchCompactionRunState,
+		pushDelta: delta => { pending.push(delta); notify(); },
+	});
+	// ── checkpoint 落盘（D2，kernelCheckpoint.ts）：每 3 轮快照，fire-and-forget ──
+	const checkpointWriter = createCheckpointWriter({
+		request, host, baseMaxTurns, restoredIteration,
+		getRunState: () => compactionRunState,
+		getTranscript: () => context.messages,
+	});
 	const emit = async (event: AgentEvent): Promise<void> => {
 		// Dashboard token 计数（executor:1776-1816 同款口径）：message_end 携带终态 usage。
 		if (event.type === 'message_end') {
-			accumulateUsage(host, request, (event as { message?: AssistantMessage }).message, dispatchCompactionRunState);
+			const message = (event as { message?: AssistantMessage }).message;
+			accumulateUsage(host, request, message, dispatchCompactionRunState);
+			// reasonStreak 追踪（仅 assistant 工具轮；user 提醒/steering 消息不算）
+			if (message && (message as { role?: string }).role === 'assistant') {
+				guardrails.onAssistantMessageEnd(message);
+			}
 		}
+		planInterception.trackEvent(event);
+		if (event.type === 'turn_end') { checkpointWriter.onTurnEnd(); }
 		for (const delta of mapEvent(event)) { pending.push(delta); }
 		notify();
 	};
@@ -336,117 +548,6 @@ export async function* runPiKernelTurn(
 	host._logService.info(`[PiKernel] turn 完成（${Date.now() - t0}ms）`);
 }
 
-// ─────────────────────────── 种子历史转换 ───────────────────────────
-
-/**
- * legacy 循环消息（`{role, content, reasoning?, toolCalls?}` / `{role:'tool', content, toolCallId}`）
- * → piLoop `AgentMessage[]`。
- *
- * 与 `hostBridge.chatMessagesToPiMessages` 的差别：那个吃 **UI 消息**（`IAgentChatMessage`，
- * `toolCalls[].result` 内嵌），这个吃**循环消息**（tool 结果独立成条、靠 `toolCallId` 回挂）。
- * toolResult 的 `toolName` 由前文 assistant 的 toolCalls 按 id 反查（legacy tool 消息不存名字）。
- * 孤儿 tool 消息（无 toolCallId）丢弃 —— 留着会在下一轮请求构成协议错误（executor:2242 同款教训）。
- */
-export function loopMessagesToPiMessages(messages: readonly AgentRunMessage[]): AgentMessage[] {
-	const toolNameById = new Map<string, string>();
-	const out: AgentMessage[] = [];
-	for (const m of messages) {
-		if (!m || typeof m !== 'object') { continue; }
-		const role = m.role;
-		if (role === 'user' || role === 'system') {
-			out.push({ role, content: asText(m.content), timestamp: Date.now() } as unknown as AgentMessage);
-			continue;
-		}
-		if (role === 'assistant') {
-			const content: AssistantContent[] = [];
-			const reasoning = m['reasoning'];
-			if (typeof reasoning === 'string' && reasoning) { content.push({ type: 'thinking', thinking: reasoning }); }
-			const text = asText(m.content);
-			if (text) { content.push({ type: 'text', text }); }
-			const calls = m['toolCalls'];
-			let callCount = 0;
-			if (Array.isArray(calls)) {
-				for (const raw of calls) {
-					const tc = raw as { id?: unknown; name?: unknown; arguments?: unknown };
-					const id = typeof tc?.id === 'string' ? tc.id : '';
-					const name = typeof tc?.name === 'string' ? tc.name : '';
-					if (!id || !name) { continue; }
-					toolNameById.set(id, name);
-					content.push({ type: 'toolCall', id, name, arguments: parseArgs(tc.arguments) });
-					callCount++;
-				}
-			}
-			out.push({
-				role: 'assistant', content,
-				stopReason: callCount > 0 ? 'toolUse' : 'stop',
-			} as unknown as AssistantMessage as AgentMessage);
-			continue;
-		}
-		if (role === 'tool') {
-			const toolCallId = typeof m['toolCallId'] === 'string' ? m['toolCallId'] as string : '';
-			if (!toolCallId) { continue; }
-			out.push({
-				role: 'toolResult', toolCallId,
-				toolName: toolNameById.get(toolCallId) ?? 'unknown',
-				content: [{ type: 'text', text: asText(m.content) }],
-				isError: false, timestamp: Date.now(),
-			} as ToolResultMessage as unknown as AgentMessage);
-		}
-	}
-	return out;
-}
-
-/**
- * `loopMessagesToPiMessages` 的**逆转换**（pi → legacy）—— 压缩段的输入缝。
- *
- * 保真边界（压缩关注的字段全保真）：role / content 文本 / reasoning / toolCalls
- * （arguments 回 JSON 字符串）/ toolCallId。丢弃：timestamp / usage / stopReason /
- * toolResult 的 toolName（legacy tool 消息本就不存名字）与 isError、pi 自定义消息
- * （不进 LLM 的 UI-only 条目，`piLoopConvertToLlm` 同样过滤它们 ⇒ 口径一致）。
- */
-export function piMessagesToLoopMessages(messages: readonly AgentMessage[]): AgentRunMessage[] {
-	const out: AgentRunMessage[] = [];
-	for (const m of messages) {
-		if (!m || typeof m !== 'object') { continue; }
-		const role = (m as { role?: unknown }).role;
-		if (role === 'user' || role === 'system') {
-			out.push({ role, content: asText((m as { content?: unknown }).content) });
-			continue;
-		}
-		if (role === 'assistant') {
-			const msg: AgentRunMessage = { role: 'assistant', content: '' };
-			const texts: string[] = [];
-			const thinkings: string[] = [];
-			const toolCalls: IToolCallInfo[] = [];
-			const content = (m as { content?: unknown }).content;
-			if (typeof content === 'string') {
-				texts.push(content);
-			} else if (Array.isArray(content)) {
-				for (const block of content as Array<{ type?: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: unknown }>) {
-					if (block?.type === 'text' && typeof block.text === 'string') { texts.push(block.text); }
-					else if (block?.type === 'thinking' && typeof block.thinking === 'string') { thinkings.push(block.thinking); }
-					else if (block?.type === 'toolCall' && block.id && block.name) {
-						toolCalls.push({ id: block.id, name: block.name, arguments: JSON.stringify(block.arguments ?? {}) });
-					}
-				}
-			}
-			msg.content = texts.join('');
-			if (thinkings.length > 0) { msg['reasoning'] = thinkings.join(''); }
-			if (toolCalls.length > 0) { msg['toolCalls'] = toolCalls; }
-			out.push(msg);
-			continue;
-		}
-		if (role === 'toolResult') {
-			const tr = m as { toolCallId?: unknown; content?: unknown };
-			const toolCallId = typeof tr.toolCallId === 'string' ? tr.toolCallId : '';
-			if (!toolCallId) { continue; }
-			out.push({ role: 'tool', content: asText(tr.content), toolCallId });
-		}
-		// 其余 role（customMessage 等 UI-only 条目）：与 piLoopConvertToLlm 同口径丢弃
-	}
-	return out;
-}
-
 // ─────────────────────────── 内部小件 ───────────────────────────
 
 /** 把 piLoop 的工具调用路由进 legacy 工具执行总线（审批/沙箱/副作用全保留）。 */
@@ -463,7 +564,11 @@ function makeHostToolExecutor(host: IPiKernelHost, request: IAgentTurnRequest): 
 		};
 		let results;
 		try {
-			results = await host._executeToolCalls([info], request.agentId ?? '', undefined, signal, undefined, request.sessionId);
+			// 审批路由上下文与 legacy 一致（executor:3247 deriveAskRoutingContext）——
+			// 子代理（background）的审批/权限分流依赖它；chatMode/workMode 两处 legacy 也传
+			// undefined/runState.work.mode（plan 已被门控排除 ⇒ pi 路径恒为 work 语义）。
+			const askRouting = deriveAskRoutingContext(request.subAgent, undefined, undefined);
+			results = await host._executeToolCalls([info], request.agentId ?? '', undefined, signal, askRouting, request.sessionId);
 		} catch (err) {
 			// 不抛回内核：编码为错误工具结果，让模型看到失败并自行恢复（与 legacy 一致）。
 			return { content: `工具执行异常: ${err instanceof Error ? err.message : String(err)}`, isError: true };
@@ -507,93 +612,32 @@ function accumulateUsage(
 }
 
 /**
- * 工具护栏钩子（对齐 executor:2862-2936）：
- *   · `detectToolCallLoop` —— 同签名（name+argsHash）在历史中已出现 ≥3 次 ⇒ 拦（第 4 次起）；
- *   · `detectToolCallPingPong` + `classifyPingPong` —— A⇄B 交替且两侧结果稳定 ⇒ 拦；
- *   · 拦截文案复用 `buildLoopBlockFeedback`（与 legacy 逐字一致）；
- *   · piLoop 的 `blocked` 语义 = 跳过执行并合成错误结果（与 legacy 的合成失败结果同构）。
- * 历史保存在驱动器本地（pi 路径不挂 runState）；resultHash 在 afterToolCall 回填
- * （对齐 RECORD_TOOL_RESULT，供 ping-pong 的 noProgressEvidence）。
- * ⚠ 未接 `ToolGuardrailController` 的 no-progress 护栏 —— 见文件头缺口清单。
+ * steering getter（pi 轮询模型 ⇒ 本仓 DeliveryQueue 租约语义的桥）：
+ * `lease(agentId, leaseId)` 取全部 pending → 转 user 消息 → `ack` 确认交付；
+ * 转换失败则 `release` 归还重试（对齐 legacy `injectSteeringMessages` 的租约纪律）。
+ * ⚠ v1 只支持「全取」（DeliveryQueue.lease 按 enqueue 序返回全部 pending）——
+ * pi 的 `one-at-a-time` 模式需要队列侧部分释放能力，超出当前 DeliveryQueue API。
+ * ⚠ ack 在 getter 内完成：loop 保证同迭代内 drain（见 agentLoop.ts 轮询点注释）；
+ * 若恰在 poll 与 drain 之间 abort，至多丢一批已插话（与 legacy lease→append 同窗同风险）。
  */
-function makeGuardrailHooks(host: IPiKernelHost): {
-	beforeToolCall: NonNullable<AgentLoopConfig['beforeToolCall']>;
-	afterToolCall: NonNullable<AgentLoopConfig['afterToolCall']>;
-} {
-	const history: Array<{ name: string; argsHash: string; resultHash?: string }> = [];
-	return {
-		beforeToolCall: ({ toolCall, args }) => {
-			const name = toolCall.name;
-			const safeArgs = args ?? {};
-			const pp = detectToolCallPingPong(history);
-			const verdict = classifyPingPong(pp.pingPong, pp.noProgressEvidence);
-			if (verdict.kind === 'block-batch') {
-				host._logService.warn(
-					`[PiKernel] Ping-pong loop: ${pp.toolA} <-> ${pp.toolB} ` +
-					`(${pp.length} alternating calls, stable results both sides) — blocking`,
-				);
-				return {
-					kind: 'blocked',
-					reason: `Blocked: ping-pong loop between "${pp.toolA}" and "${pp.toolB}" (${pp.length} alternating calls) with identical results on both sides. Switching between these two calls is making no progress — the information you need is not here. Use a different tool or a different approach, or proceed with the results you already have.`,
-				};
-			}
-			// 与 legacy 同序：先判定（历史不含本次），再无条件记录（executor:2917/2925）
-			const { loop, count } = detectToolCallLoop(history, name, safeArgs);
-			history.push({ name, argsHash: canonicalToolArgsHash(safeArgs) });
-			if (loop) {
-				host._logService.warn(`[PiKernel] Tool call loop detected: "${name}" called ${count} times with same args — blocking`);
-				return { kind: 'blocked', reason: buildLoopBlockFeedback(name, JSON.stringify(safeArgs)) };
-			}
-			return { kind: 'allow' };
-		},
-		afterToolCall: ({ toolCall, result }) => {
-			// 回填 resultHash（对齐 RECORD_TOOL_RESULT；ping-pong 的 noProgressEvidence 依赖它）
-			for (let i = history.length - 1; i >= 0; i--) {
-				const entry = history[i]!;
-				if (entry.name === toolCall.name && entry.resultHash === undefined) {
-					history[i] = { ...entry, resultHash: hashToolResult(toolResultToText((result as { content?: unknown }).content)) };
-					break;
-				}
-			}
-			return { kind: 'keep' };
-		},
+function makeSteeringGetter(
+	host: IPiKernelHost,
+	agentId: string,
+	queue: DeliveryQueue,
+	leaseId: string,
+): () => Promise<readonly AgentMessage[]> {
+	return async () => {
+		const items = queue.lease(agentId, leaseId);
+		if (items.length === 0) { return []; }
+		try {
+			const messages = items.map(item => ({ role: 'user', content: item.content, timestamp: Date.now() } as AgentMessage));
+			queue.ack(items.map(i => i.id));
+			host._logService.info(`[PiKernel] Steering: injected ${items.length} message(s) (ids=${items.map(i => i.id).join(',')})`);
+			return messages;
+		} catch (err) {
+			queue.release(leaseId);
+			host._logService.warn(`[PiKernel] Steering injection failed, lease released for retry: ${err instanceof Error ? err.message : String(err)}`);
+			return [];
+		}
 	};
-}
-
-/** 宿主工具结果（string / 内容块数组 / 任意对象）→ 供 LLM 消费的纯文本。 */
-function toolResultToText(content: unknown): string {
-	if (typeof content === 'string') { return content; }
-	if (Array.isArray(content)) {
-		const parts = content.map(b =>
-			typeof b === 'string' ? b
-				: (b && typeof b === 'object' && typeof (b as { text?: unknown }).text === 'string') ? (b as { text: string }).text
-					: '',
-		).filter(Boolean);
-		if (parts.length > 0) { return parts.join('\n'); }
-	}
-	if (content === undefined || content === null) { return ''; }
-	try { return JSON.stringify(content); } catch { return String(content); }
-}
-
-/** 消息 content（string / 内容块数组）→ 纯文本。 */
-function asText(content: unknown): string {
-	if (typeof content === 'string') { return content; }
-	if (Array.isArray(content)) {
-		return content.map(b =>
-			typeof b === 'string' ? b
-				: (b && typeof b === 'object' && typeof (b as { text?: unknown }).text === 'string') ? (b as { text: string }).text
-					: '',
-		).join('');
-	}
-	return content === undefined || content === null ? '' : String(content);
-}
-
-/** 工具参数（JSON 字符串或已解析对象）→ 对象；失败降级空对象。 */
-function parseArgs(raw: unknown): Record<string, unknown> {
-	if (raw && typeof raw === 'object' && !Array.isArray(raw)) { return raw as Record<string, unknown>; }
-	if (typeof raw !== 'string' || !raw) { return {}; }
-	try {
-		const v: unknown = JSON.parse(raw);
-		return (v && typeof v === 'object' && !Array.isArray(v)) ? v as Record<string, unknown> : {};
-	} catch { return {}; }
 }

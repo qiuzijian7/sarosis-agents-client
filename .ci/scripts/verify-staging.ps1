@@ -30,6 +30,28 @@ Copy-IfMissing "node_modules\typescript" "node_modules\typescript" "package.json
 # 它从不被静态 import（字符串路径），gulp 的依赖拷贝曾漏掉它 —— 发布包 2.2.26032-saros 实测缺失。
 # install-deps.ps1（5.4）只保障**源码树** node_modules，产物侧需在此与 strip-before-pack.mjs 双重兜底。
 Copy-IfMissing "node_modules\@vscode\tree-sitter-wasm" "node_modules\@vscode\tree-sitter-wasm" "wasm\tree-sitter.js"
+# 2026-09-20（用户报「10/11 个语言的 tree-sitter wasm 读取失败」）：上面的 sentinel 只证明
+# `wasm\tree-sitter.js` 在 ✗ —— 不证明**各语言** wasm 在 ✗✗。bundler 只会带上 VS Code 自身引用的
+# 那 7 个（bash/css/ini/powershell/regex/typescript/tree-sitter ✓），agentStudio 图谱按**运行时路径**
+# 读的另 10 个（tsx/javascript/python/go/rust/java/ruby/cpp/c-sharp/php ✗）从不被静态 import ⇒ 被丢 ✗✗。
+# ⇒ 以仓库侧 wasm 目录为准逐文件补齐（不硬编码清单，防漂移 ✓；与 strip-before-pack.mjs 2.6b 同源）。
+$repoWasmDir = Join-Path $repoRoot "node_modules\@vscode\tree-sitter-wasm\wasm"
+if (Test-Path $repoWasmDir) {
+  $stagingWasmDir = Join-Path $appRoot "node_modules\@vscode\tree-sitter-wasm\wasm"
+  $added = 0
+  foreach ($f in (Get-ChildItem $repoWasmDir -Filter *.wasm)) {
+    $dst = Join-Path $stagingWasmDir $f.Name
+    if (-not (Test-Path $dst)) {
+      Copy-Item -Force $f.FullName $dst
+      $added++
+      Write-Host ('  [SELF-HEAL] copied tree-sitter-wasm/wasm/' + $f.Name)
+    }
+  }
+  if ($added -gt 0) { Write-Host ('  [WARN] per-language wasm missing ' + $added + ' (self-healed) — bundler dropped runtime-path-loaded artifacts') }
+} else {
+  Write-Error "repo-side node_modules\@vscode\tree-sitter-wasm\wasm not found — cannot verify per-language wasm"
+  exit 1
+}
 
 $required = @(
   "node_modules\@vscode\ripgrep\bin\rg.exe",
@@ -43,6 +65,13 @@ $required = @(
   "out\vs\sessions\sessions.desktop.main.js",
   "out\vs\sessions\contrib\agentStudio\webview\media\kbblocks.js"
 )
+# 2026-09-20：逐语言 wasm 也进**硬性**清单（sentinel 只证包目录在 ✗ —— 那次安装版缺 10 个语言
+# 照样绿灯放行 ✗✗）。以仓库侧目录为准动态展开（防清单漂移 ✓）。
+if (Test-Path $repoWasmDir) {
+  foreach ($f in (Get-ChildItem $repoWasmDir -Filter *.wasm)) {
+    $required += "node_modules\@vscode\tree-sitter-wasm\wasm\$($f.Name)"
+  }
+}
 $missing = @()
 foreach ($rel in $required) {
   $p = Join-Path $appRoot $rel

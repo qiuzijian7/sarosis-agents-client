@@ -284,6 +284,32 @@ ensureDir(
 	'wasm/tree-sitter.js',
 );
 
+// 2.6b) 逐语言 wasm 也要齐（2026-09-20，用户报「10/11 个语言的 tree-sitter wasm **读取失败**」）：
+//    ensureDir 的 sentinel 只证明 `wasm/tree-sitter.js` 在 ✗ —— 它**不证明各语言 wasm 在** ✗✗。
+//    打包的 bundler 只会带上 **VS Code 自身引用**的那 7 个（bash/css/ini/powershell/regex/typescript/tree-sitter ✓），
+//    而 agentStudio 图谱按**运行时路径**读的另 10 个（tsx/javascript/python/go/rust/java/ruby/cpp/c-sharp/php ✗）
+//    从不被静态 import ⇒ 被丢 ✗✗ ⇒ 装出来只有 `typescript` 能解析、其余语言全「检索不到内容 / 0 节点」✗✗。
+//    ⇒ 以**仓库侧 wasm 目录为准**逐文件补齐（**不硬编码语言清单**，防漂移 ✗✓ —— 包升级带新语言时自动跟随 ✓）。
+{
+	const repoWasmDir = path.join(repoRoot, 'node_modules/@vscode/tree-sitter-wasm/wasm');
+	if (existsSync(repoWasmDir)) {
+		let added = 0;
+		for (const f of readdirSync(repoWasmDir).filter(x => x.endsWith('.wasm'))) {
+			const stagingAbs = path.join(buildDir, `resources/app/node_modules/@vscode/tree-sitter-wasm/wasm/${f}`);
+			if (!existsSync(stagingAbs)) { added++; }
+			ensureFile(
+				`tree-sitter-wasm/wasm/${f}`,
+				`resources/app/node_modules/@vscode/tree-sitter-wasm/wasm/${f}`,
+				[`node_modules/@vscode/tree-sitter-wasm/wasm/${f}`],
+			);
+		}
+		if (added > 0) { console.log(`  ⚠ 逐语言 wasm 缺 ${added} 个（已自愈 ✓）—— 说明 bundler 又丢了对运行时路径加载的构件 ✗`); }
+	} else {
+		console.log('  ❌ 仓库侧 @vscode/tree-sitter-wasm/wasm 目录不存在（无法逐语言校验）');
+		criticalMissing++;
+	}
+}
+
 // 3) kbWorker.js（KB 内核 Worker 按 URL 加载；bundle 不产出 per-file 时需独立入口）
 ensureFile(
 	'kbWorker.js',

@@ -82,7 +82,9 @@ function registerChatTabRename(): void {
 			// 1) Update the editor tab label immediately (session name only).
 			editor.setAgentInfo(editor.name, agentId, sessionId, newName);
 			// 2) Persist the new session name so the webview stays in sync.
-			await chatService.renameAgentSession(agentId, sessionId, newName);
+			// ★ 2026-09-20：这是**用户手动**改名（页签 Rename 命令）⇒ 打 `userRenamed` 标记，
+			// 之后首条消息的自动命名不会覆盖它。
+			await chatService.renameAgentSession(agentId, sessionId, newName, { userInitiated: true });
 		},
 	});
 

@@ -21,7 +21,23 @@
 
 import { URI } from '../../../../base/common/uri.js';
 import * as path from '../../../../base/common/path.js';
+import { isWindows } from '../../../../base/common/platform.js';
 import { extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
+
+/**
+ * MSYS2 / Git-Bash / Cygwin 盘符路径归一化（仅 Windows）：`/g/repo/x` → `g:/repo/x`。
+ *
+ * 场景（2026-09-20 日志实证）：模型在 git bash 终端里看到 `ls /g/CustomWorkspaces/…`
+ * 的输出后，把该形态**原样**喂给 file_read 等工具；而 Windows 语义下 `/g/x` 会被
+ * 解析成「当前盘符:\g\x」→ 必然 ENOENT，模型随后陷入「猜路径 → 失败」循环。
+ * POSIX 上 `/g` 是合法绝对路径，故仅 Windows 启用；`URI.file()` 会再归一化盘符大小写。
+ */
+export function normalizeMsysDrivePath(requestedPath: string): string {
+	if (!isWindows) { return requestedPath; }
+	const m = /^\/([a-zA-Z])(?:\/|$)(.*)$/.exec(requestedPath);
+	if (!m) { return requestedPath; }
+	return `${m[1]}:/${m[2]}`;
+}
 
 export interface IWorkspacePathResolution {
 	/**
@@ -70,6 +86,10 @@ function normalizeRoots(roots: readonly string[]): string[] {
  */
 export function resolveWorkspacePath(requestedPath: string, allowedRoots: readonly string[]): IWorkspacePathResolution {
 	const normalizedRoots = normalizeRoots(allowedRoots);
+
+	// 先归一化 MSYS/Git-Bash 盘符形态（`/g/x` → `g:/x`，仅 Windows 生效），
+	// 否则该类路径会被当作 posix 绝对路径原样穿透到文件系统层必然 ENOENT。
+	requestedPath = normalizeMsysDrivePath(requestedPath);
 
 	// 相对路径基于第一个允许根解析为绝对路径；`path.normalize` 折叠 `..` 段。
 	let resolvedPath = requestedPath;

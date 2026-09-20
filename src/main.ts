@@ -101,6 +101,14 @@ protocol.registerSchemesAsPrivileged([
 	{
 		scheme: 'vscode-file',
 		privileges: { secure: true, standard: true, supportFetchAPI: true, corsEnabled: true, codeCache: true }
+	},
+	{
+		// saros-remote：远程被控的屏幕采集页（remoteControlChannel.ts）。
+		// secure: true ⇒ secure context，否则 getUserMedia 不可用。
+		// ⚠ 必须注册在此处（早于 app ready）——曾放在 remoteControlChannel.ts 顶层，
+		// 但该模块经 app.ts 在 onReady 后才动态加载，启动即崩（2026-09-20 F5 实证）。
+		scheme: 'saros-remote',
+		privileges: { secure: true, standard: true, bypassCSP: true, supportFetchAPI: true }
 	}
 ]);
 

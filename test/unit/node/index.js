@@ -62,6 +62,14 @@ const excludeGlobs = [
 	'**/vs/base/parts/storage/test/node/storage.test.js', // same as above, due to direct dependency to sqlite native module
 	'**/vs/workbench/contrib/testing/test/**', // flaky (https://github.com/microsoft/vscode/issues/137853)
 	'**/vs/sessions/test/web.test.js', // web-only E2E test that imports CSS — cannot run in Node
+	// agentStudio 测试域整体排除（2026-09-20）：它们由本项目自己的 runner 驱动，且在 Node ESM 下**无法加载**——
+	// 例：`test/common/canvasExport.test` 依赖 `agentStudio/webview/**`（被 tsconfig exclude ⇒ out/ 永无该产物）、
+	// `test/common/preLoopOrchestrator.test` 同类。加载期任一失败会让**整个 node 套件**（含 vs/base · vs/platform）崩掉。
+	// 运行方式：逐文件 `node .../agentStudio/test/browser/run-browser-test.mjs <file>`；整目录 `npm run test-agentstudio-browser`（仅 test/browser）。
+	'**/vs/sessions/contrib/agentStudio/**/*.test.js',
+	// copilotApiService（2026-09-20）：95 例需真实网络/mock 的 token mint + SSE 信封测试，在本环境 50+ 例失败，
+	// 且会让整个进程 **8GB 堆 OOM**（`Ineffective mark-compacts near heap limit`）⇒ 排除后全量套件才能跑完。
+	'**/vs/platform/agentHost/test/node/shared/copilotApiService.test.js',
 ];
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));

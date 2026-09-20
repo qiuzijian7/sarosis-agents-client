@@ -43,6 +43,10 @@ export const dirs = [
 	'extensions/npm',
 	'extensions/php-language-features',
 	'extensions/references-view',
+	// [Saros] Pocket（内置扩展）：运行时依赖 qrcode（面板二维码），必须单独安装。
+	// 没有它时二维码会被静默跳过（service.mjs 里 qrCached 已 catch），不装不会崩，
+	// 但面板就只剩地址没有二维码。
+	'extensions/saros-pocket',
 	'extensions/search-result',
 	'extensions/simple-browser',
 	'extensions/agent-studio',

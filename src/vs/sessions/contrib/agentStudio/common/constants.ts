@@ -46,6 +46,11 @@ export const AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING = 'agentStudio.toolSearch.
 /** Tool Search 自动折叠阈值（deferrable 工具 token 占上下文窗口的百分比，0–100）。 */
 export const AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING = 'agentStudio.toolSearch.thresholdPct';
 
+/** Unreal Engine 工具的 bridge 基址。留空回退到内置默认 `http://127.0.0.1:8765`。 */
+export const AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING = 'sessions.agentStudio.unreal.bridgeUrl';
+/** Unreal Engine bridge 内置默认地址（配置留空时使用）。 */
+export const AGENT_STUDIO_UNREAL_BRIDGE_URL_DEFAULT = 'http://127.0.0.1:8765';
+
 // Configuration keys — Driver concurrency
 export const AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING = 'sessions.agentStudio.driver.turnConcurrencyLimit';
 

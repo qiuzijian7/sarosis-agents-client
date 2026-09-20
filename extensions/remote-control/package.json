@@ -1,0 +1,68 @@
+{
+  "name": "remote-control",
+  "version": "0.0.1",
+  "displayName": "Remote Control (被控端)",
+  "description": "将本机 vssaros 暴露为远程桌面被控端，支持 iPad/浏览器远程操控（协议兼容 billd-desk）。",
+  "type": "module",
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "sarosRemote.openPanel",
+        "title": "远程控制：打开被控面板"
+      },
+      {
+        "command": "sarosRemote.start",
+        "title": "远程控制：启动被控"
+      },
+      {
+        "command": "sarosRemote.stop",
+        "title": "远程控制：停止被控"
+      }
+    ],
+    "configuration": {
+      "title": "Remote Control",
+      "properties": {
+        "sarosRemote.signalingUrl": {
+          "type": "string",
+          "default": "wss://srs-pull.hsslive.cn",
+          "description": "信令服务器地址（billd-desk-server 的 wss 地址）"
+        },
+        "sarosRemote.coturnUrl": {
+          "type": "string",
+          "default": "turn:hk.hsslive.cn",
+          "description": "TURN 中继地址（P2P 不通时走中继）"
+        },
+        "sarosRemote.deskUserUuid": {
+          "type": "string",
+          "default": "",
+          "description": "本机设备码；留空则首次启动时自动生成"
+        },
+        "sarosRemote.maxFramerate": {
+          "type": "number",
+          "default": 60,
+          "description": "采集帧率上限"
+        },
+        "sarosRemote.maxBitrate": {
+          "type": "number",
+          "default": 8000,
+          "description": "码率上限（kbps）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./tsconfig.json",
+    "watch": "tsc -watch -p ./tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.125.0",
+    "typescript": "^5.8.2"
+  }
+}

@@ -52,6 +52,11 @@ import {
 	AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING,
 	AGENT_STUDIO_CLI_AUTO_CONNECT_SETTING,
 	AGENT_STUDIO_CLI_SAVE_HISTORY_SETTING,
+	AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING,
+	AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING,
+	AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING,
+	AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING,
+	AGENT_STUDIO_UNREAL_BRIDGE_URL_DEFAULT,
 	CHANNEL_DEFINITIONS,
 	IChannelDefinition,
 	IChannelConfigField,
@@ -136,16 +141,7 @@ const PREFERENCES_SECTIONS: SettingSection[] = [
 			{ key: AGENT_STUDIO_CHECK_UPDATES_SETTING, label: '检查更新', description: '有新版本可用时显示更新提示横幅', type: 'boolean', default: true },
 		],
 	},
-	{
-		id: 'preferences-tools',
-		label: '工具',
-		icon: '🛠️',
-		description: '工具调用审批与执行行为',
-		defaultCollapsed: false,
-		fields: [
-			{ key: 'tools.confirmToolCalls', label: '确认工具调用', description: '关闭后，触发工具审批时不再弹出询问，直接执行工具调用', type: 'boolean', default: true },
-		],
-	},
+	// 注：原「工具」章节已迁移到独立页签「工具配置」（TOOL_SECTIONS），此处不再重复。
 ];
 
 const AUX_PROVIDER_OPTIONS = [
@@ -222,9 +218,62 @@ const DATA_SECTION: SettingSection = {
 	description: '数据目录和工作区设置',
 	defaultCollapsed: true,
 	fields: [
-		{ key: AGENT_STUDIO_DATA_PATH_SETTING, label: '数据目录', description: '自定义 Agent Studio 数据路径，默认使用工作区 .agent-studio/data/', type: 'string', default: '', placeholder: '/path/to/data' },
+		{ key: AGENT_STUDIO_DATA_PATH_SETTING, label: '数据目录', description: '自定义 Agent Studio 数据路径，默认为用户数据目录 ~/.vssaros/（dev 为 ~/.vssaros-dev/）', type: 'string', default: '', placeholder: '/path/to/data' },
 	],
 };
+
+// ─── Tool Sections ──────────────────────────────────────────────────────
+// 内置工具（buildin tool provider）需要配置参数的选项集中在此「工具配置」页签，
+// 避免散落在通用设置里。所有键均已在 agentStudio.contribution.ts 注册到
+// IConfigurationRegistry，改动即时持久化。
+
+const TOOL_SECTIONS: SettingSection[] = [
+	{
+		id: 'tools-approval',
+		label: '工具调用审批',
+		icon: '🛡️',
+		description: '工具执行前的确认与沙箱行为',
+		defaultCollapsed: false,
+		fields: [
+			{ key: 'tools.confirmToolCalls', label: '确认工具调用', description: '开启后，触发工具审批时弹出询问；关闭后直接执行工具调用（系统通知中仍提供全局关闭开关）', type: 'boolean', default: true },
+		],
+	},
+	{
+		id: 'tools-search',
+		label: '工具检索（tool_search）',
+		icon: '🔎',
+		description: '控制工具 schema 是否折叠为按需检索，影响请求体积与模型调用轮次',
+		defaultCollapsed: false,
+		fields: [
+			{ key: AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING, label: '折叠策略', description: 'off = 全部工具 schema 直发；on = 一律走 tool_search 按需发现；auto = 超过阈值才折叠（推荐）', type: 'select', default: 'auto', options: [
+				{ value: 'auto', label: 'Auto（按阈值自动折叠，推荐）' },
+				{ value: 'off', label: 'Off（从不折叠，全部直发）' },
+				{ value: 'on', label: 'On（总是折叠，按需发现）' },
+			] },
+			{ key: AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING, label: '自动折叠阈值 (%)', description: 'auto 模式下，可折叠工具 token 占模型上下文窗口的百分比。调小 = 更早折叠（更省体积，但模型多一次 tool_search）。默认 10', type: 'number', default: 10, min: 0, max: 100 },
+		],
+	},
+	{
+		id: 'tools-unreal',
+		label: 'Unreal Engine 工具',
+		icon: '🎮',
+		description: 'unreal_health / unreal_exec / unreal_build 等工具连接的本地 bridge 服务',
+		defaultCollapsed: false,
+		fields: [
+			{ key: AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING, label: 'Bridge 地址', description: `Unreal bridge 基址。留空回退内置默认 ${AGENT_STUDIO_UNREAL_BRIDGE_URL_DEFAULT}`, type: 'string', default: '', placeholder: AGENT_STUDIO_UNREAL_BRIDGE_URL_DEFAULT },
+		],
+	},
+	{
+		id: 'tools-debug',
+		label: '工具调试日志',
+		icon: '🧾',
+		description: '排查工具注册问题时的日志开关',
+		defaultCollapsed: true,
+		fields: [
+			{ key: AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING, label: 'Dump 工具 schema', description: '在聊天流日志中写入完整工具 schema。默认关闭（仅记 "(N tools)"）以控制日志体积；排查 provider 侧工具注册问题时开启', type: 'boolean', default: false },
+		],
+	},
+];
 
 // ─── Channel Sections (mapped from constants.CHANNEL_DEFINITIONS) ──────
 // 复用既有 _renderCollapsibleSections / _renderFieldRow，配置自动持久化到
@@ -267,6 +316,7 @@ const TOC_ENTRIES: TocEntry[] = [
 	{ id: 'preferences', label: '通用设置', icon: '⚙️', sections: PREFERENCES_SECTIONS },
 	{ id: 'auxiliary', label: '辅助模型', icon: '🧠', sections: AUX_SECTIONS },
 	{ id: 'cli', label: 'CLI 设置', icon: '💻', sections: [CLI_SECTION, DATA_SECTION] },
+	{ id: 'tools', label: '工具配置', icon: '🛠️', sections: TOOL_SECTIONS },
 	{ id: 'channel', label: 'Channel 配置', icon: '📡', sections: CHANNEL_SECTIONS },
 	{
 		id: 'provider',

@@ -12,6 +12,7 @@ import type { IMemoryEntry, IMemoryContext, Memory } from './amTypes.js';
 import { KV } from './amSchema.js';
 import { StateKV } from './stateKV.js';
 import { checkHealth, serverBase, REQUEST_TIMEOUT_MS } from './serverConfig.js';
+import { readEnv } from './amEnv.js';
 import * as fn from './amFunctions.js';
 import * as pipe from './amPipeline.js';
 import * as slots from './amSlots.js';
@@ -96,8 +97,8 @@ const SEARCH_ALL_LIMIT = 1000;
 // 历史曾硬编码 ~/.saros/skills，与渲染进程读取位置不一致，导致引擎写出的
 // SKILL.md 不可见。
 function _skillsDir(): string {
-	const folder = process.env.VSCODE_DEV ? '.vssaros-dev' : '.vssaros';
-	return process.env.AGENTMEMORY_SKILLS_DIR || _path.join(_os.homedir(), folder, 'skills');
+	const folder = readEnv('VSCODE_DEV') ? '.vssaros-dev' : '.vssaros';
+	return readEnv('AGENTMEMORY_SKILLS_DIR') || _path.join(_os.homedir(), folder, 'skills');
 }
 
 export class AgentMemoryProviderV2 {
@@ -307,7 +308,7 @@ export class AgentMemoryProviderV2 {
 				}
 				// D2b（复刻 graph-extract 联动）：AGENTMEMORY_GRAPH_EXTRACTION=true 才开
 				// （对齐原版 GRAPH_EXTRACTION_ENABLED 默认关）；从刚压缩的摘要抽取实体。
-				if (process.env['AGENTMEMORY_GRAPH_EXTRACTION'] === 'true' && summary?.narrative) {
+				if (readEnv('AGENTMEMORY_GRAPH_EXTRACTION') === 'true' && summary?.narrative) {
 					const { graphExtract } = await import('./amPipeline.js');
 					const text = `${summary.title}\n${summary.narrative}\n${summary.keyDecisions.join('; ')}`;
 					await graphExtract(this._kv, agentId, sessionId, text).catch(() => {});

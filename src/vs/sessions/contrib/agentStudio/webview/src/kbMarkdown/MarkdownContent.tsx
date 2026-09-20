@@ -10,6 +10,7 @@ import katex from 'katex';
 import { buildRemarkPlugins, buildRehypePlugins } from './pipeline';
 import { parseFrontmatter } from './frontmatter';
 import { EmbedProvider, useEmbedContext } from './EmbedContext';
+import { resolveAssetSrc } from './assetPath';
 import { LinkComponent } from './components/LinkComponent';
 import { ImageComponent } from './components/ImageComponent';
 import { CodeBlockComponent } from './components/CodeBlockComponent';
@@ -33,7 +34,11 @@ export interface MarkdownContentProps {
 	/** Toggle a GFM task checkbox at the given absolute (1-based) source line. */
 	onToggleTask?: (line: number) => void;
 	showFrontmatter?: boolean;
+	/** 文档目录的 webview URI 前缀（宿主注入）；相对路径图片据此解析（嵌套 embed 经 EmbedContext 继承）。 */
+	assetBaseUri?: string;
 }
+
+// 图文显示：相对路径图片解析逻辑在 ./assetPath.ts（纯函数，可单测）
 
 // Block-level routing for `<div>`: an embed placeholder → EmbedComponent, a
 // KaTeX block → rendered math, everything else → plain div.
@@ -101,6 +106,7 @@ export function MarkdownContent(props: MarkdownContentProps): React.ReactElement
 		onOpenExternal,
 		onToggleTask,
 		showFrontmatter = true,
+		assetBaseUri,
 	} = props;
 
 	const frontmatter = useMemo(
@@ -117,11 +123,13 @@ export function MarkdownContent(props: MarkdownContentProps): React.ReactElement
 		: 0;
 
 	const parentEmbed = useEmbedContext();
+	// 图文显示：嵌套 embed 继承宿主的 assetBaseUri（embed 的笔记与宿主同目录约定）
+	const effectiveAssetBaseUri = assetBaseUri ?? parentEmbed.assetBaseUri;
 	const embedValue = useMemo(() => {
 		const base = parentEmbed.chain;
 		const chain = filePath && !base.includes(filePath) ? [...base, filePath] : base;
-		return { workspaceFiles, onOpenWikilink, chain };
-	}, [parentEmbed.chain, filePath, workspaceFiles, onOpenWikilink]);
+		return { workspaceFiles, onOpenWikilink, chain, assetBaseUri: effectiveAssetBaseUri };
+	}, [parentEmbed.chain, parentEmbed.assetBaseUri, filePath, workspaceFiles, onOpenWikilink, effectiveAssetBaseUri]);
 
 	const remarkPlugins = useMemo(
 		() => buildRemarkPlugins({ workspaceFiles, filePath }),
@@ -163,6 +171,14 @@ export function MarkdownContent(props: MarkdownContentProps): React.ReactElement
 		[onToggleTask],
 	);
 
+	// 图文显示：相对路径图片经 assetBaseUri 解析后再渲染（lightbox 复用同一 src）
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const ImgResolved = useCallback(
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		(p: any) => <ImageComponent {...p} src={resolveAssetSrc(p.src, effectiveAssetBaseUri)} />,
+		[effectiveAssetBaseUri],
+	);
+
 	return (
 		<EmbedProvider value={embedValue}>
 			{frontmatter && <FrontmatterBlock data={frontmatter} />}
@@ -176,7 +192,7 @@ export function MarkdownContent(props: MarkdownContentProps): React.ReactElement
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				components={{
 					a: LinkWithWikilink,
-					img: ImageComponent,
+					img: ImgResolved,
 					pre: CodeBlockComponent,
 					li: TaskListLi,
 					input: TaskCheckboxComp,

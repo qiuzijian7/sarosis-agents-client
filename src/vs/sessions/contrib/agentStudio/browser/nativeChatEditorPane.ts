@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { markRenderActivity } from '../../../../base/common/renderActivityTrace.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -402,6 +403,9 @@ export class NativeChatEditorPane extends EditorPane {
 	 */
 	private _lastDelegateToolCallId: string | undefined;
 
+	/** SubAgentAttach 日志去重签名（2026-09-20）：挂载结果不变时不重复打日志。 */
+	private _lastSubAgentAttachLogSig: string | undefined;
+
 	/** [PerfDiag] 流式性能诊断数据 */
 	private _streamPerf?: {
 		startTime: number;
@@ -532,6 +536,16 @@ export class NativeChatEditorPane extends EditorPane {
 	// 重启 getHistory 当「已中断」消息注入 ✓（既有消费链 `_consumeInterruptedDraft`，不动 ✓）。
 	private _draftJournalLastAt = 0;
 	private _draftJournalTimer: ReturnType<typeof setTimeout> | undefined;
+	// 草稿写/删串行链（2026-09-20）：journal 写入是 fire-and-forget，回合结束时
+	// clear 可能插在「在飞写」之前执行 ⇒ 写落在删后 ⇒ 草稿残留 ⇒ 下次 getHistory
+	// 把已落盘内容再注入一条「已中断」重复消息（实证 sess_mu6wuptt_yywe05
+	// idx 668/669：回合正常落盘与草稿相差仅 66ms）。串行化后 clear 恒排在所有
+	// 先前写入之后执行。
+	private _draftWriteChain: Promise<void> = Promise.resolve();
+
+	private _enqueueDraftOp(op: () => Promise<void>): void {
+		this._draftWriteChain = this._draftWriteChain.catch(() => { /* 单笔失败不阻断后续 */ }).then(op);
+	}
 
 	private _installInterruptedStreamPersist(lifecycleService: ILifecycleService): void {
 		// journal 的尾部定时器随 pane 释放 ✓
@@ -650,7 +664,7 @@ export class NativeChatEditorPane extends EditorPane {
 		const text = (msg.content ?? '').trim();
 		if (!text) { return; }
 		// quiet：2s 一笔是常态，逐笔打 info 会刷屏 ✗（关停兜底那笔仍打 ✓）
-		void this._chatService.saveInterruptedDraft(agentId, sessionId, text, { quiet: true });
+		this._enqueueDraftOp(() => this._chatService.saveInterruptedDraft(agentId, sessionId, text, { quiet: true }));
 	}
 
 	/** 流正常结束（loop 完成/失败收尾）：清掉 journal 草稿 + 尾部定时器（内容已落盘 ⇒ 草稿是过期物 ✗）。 */
@@ -658,7 +672,8 @@ export class NativeChatEditorPane extends EditorPane {
 		if (this._draftJournalTimer) { clearTimeout(this._draftJournalTimer); this._draftJournalTimer = undefined; }
 		const agentId = this._currentAgentId;
 		if (!agentId || !sessionId) { return; }
-		void this._chatService.clearInterruptedDraft(agentId, sessionId);
+		// 走同一串行链 ⇒ 先于它入队的在飞写完成后才删除，杜绝「写落在删后」残留 ✓
+		this._enqueueDraftOp(() => this._chatService.clearInterruptedDraft(agentId, sessionId));
 	}
 
 	// ─── 外部 http(s) 链接：系统浏览器打开 ─────────────────────────────
@@ -928,16 +943,27 @@ export class NativeChatEditorPane extends EditorPane {
 				try {
 					const history = await this._chatService.getHistory(agentId, sessionId);
 					if (!history || history.length === 0) {
-						let autoName = text.trim().substring(0, 30);
-						if (workflowTrigger?.workflowId) {
-							const wfName = await this._workflowStorageService.getWorkflow(workflowTrigger.workflowId)
-								.then(w => w?.name)
-								.catch(() => undefined);
-							autoName = wfName || workflowTrigger.workflowId;
-						}
-						if (autoName) {
-							await this._chatService.renameAgentSession(agentId, sessionId, autoName);
-							this._logService.debug(`[NativeChatEditorPane] Auto-renamed session ${sessionId} to "${autoName}"`);
+						// ★ 2026-09-20（用户需求）：用户**手动改过名**的会话不要再被自动命名覆盖。
+						// 场景：新建会话（占位名「新对话」）→ 用户在侧栏/页签里起名 → 发出第一条
+						// 消息 ⇒ 老逻辑用「消息前 30 字」把它盖掉了。标记见
+						// `AgentChatService.renameAgentSession({ userInitiated })`。
+						const userRenamed = await (this._chatService as unknown as {
+							isSessionUserRenamed?: (a: string, s: string) => Promise<boolean>;
+						}).isSessionUserRenamed?.(agentId, sessionId) === true;
+						if (userRenamed) {
+							this._logService.info(`[NativeChatEditorPane] 跳过自动命名：会话 ${sessionId} 的名字由用户指定`);
+						} else {
+							let autoName = text.trim().substring(0, 30);
+							if (workflowTrigger?.workflowId) {
+								const wfName = await this._workflowStorageService.getWorkflow(workflowTrigger.workflowId)
+									.then(w => w?.name)
+									.catch(() => undefined);
+								autoName = wfName || workflowTrigger.workflowId;
+							}
+							if (autoName) {
+								await this._chatService.renameAgentSession(agentId, sessionId, autoName);
+								this._logService.debug(`[NativeChatEditorPane] Auto-renamed session ${sessionId} to "${autoName}"`);
+							}
 						}
 					}
 				} catch (renameErr) {
@@ -2526,12 +2552,20 @@ export class NativeChatEditorPane extends EditorPane {
 		let _subAgentTraceThrottleTimer: ReturnType<typeof setTimeout> | undefined;
 		let _subAgentTracePendingData: any[] | undefined;
 	this._register(this._agentOSService.onDidSubAgentTrace((snapshot) => {
-		if (!this._chatPanel) { return; }
+		// 诊断（2026-09-20）：用户报「subagent 无工具卡片」时缺落点日志 ⇒ 三态可判。
+		const _traceCount = (snapshot?.subagentData as unknown[] | undefined)?.length ?? 0;
+		if (!this._chatPanel) {
+			this._logService.warn(`[SubAgentCard] trace dropped: 无 chat panel（count=${_traceCount} groupId=${snapshot?.groupId ?? '?'}）`);
+			return;
+		}
 		// 流式记录：subagent 旁路总线快照（与主流 delta 同一文件，便于完整回放）
 		this._streamRecorder?.record({ type: 'subagent_trace', groupId: snapshot?.groupId, subagentData: snapshot?.subagentData });
 		const assistantId = this._streamingAssistantId;
 		const assistantMsg = this._streamingAssistantMsg;
-		if (!assistantId || !assistantMsg) { return; }
+		if (!assistantId || !assistantMsg) {
+			this._logService.warn(`[SubAgentCard] trace dropped: 无流式 assistant 消息（count=${_traceCount}）—— 快照无处挂载`);
+			return;
+		}
 		const saData = snapshot?.subagentData as any[] | undefined;
 		if (!saData || saData.length === 0) { return; }
 
@@ -2554,6 +2588,15 @@ export class NativeChatEditorPane extends EditorPane {
 				asstMsg.subAgents = [...merged.values()];
 				// 将 subagent 数据附加到各自对应的父 delegate_task/plan_explore 工具卡。
 				this._remapAndAttachSubAgents(asstMsg);
+				// 诊断（2026-09-20）：卡片落点日志 —— 「没发射 / 发射了被丢 / 挂载到 0 张卡」
+				// 三态一次可判（attached=0 且 delegateCards=0 ⇒ 父工具卡缺失；
+				// attached=0 且 delegateCards>0 ⇒ callId 关联失败）。
+				{
+					const tcs = ((asstMsg.toolCalls ?? []) as Array<{ id?: string; name?: string }>);
+					const delegateCards = tcs.filter(tc => tc?.name === 'delegate_task' || tc?.name === 'plan_explore' || tc?.name === 'workflow').length;
+					const attached = (asstMsg.subAgents as Array<{ parentToolCallId?: string }>).filter(s => s?.parentToolCallId && tcs.some(tc => tc?.id === s.parentToolCallId)).length;
+					this._logService.info(`[SubAgentCard] trace upsert: subAgents=${asstMsg.subAgents.length} delegateCards=${delegateCards} attached=${attached}`);
+				}
 			// 仅传 subAgents（不带 isStreaming）：走 panel 的轻量原地重建路径
 			// _updateSubAgentCardsInPlace（只重建含 subAgents 的工具卡）。
 			// 若带 isStreaming:true 会落入 isCritical 全量重建——每次 trace 快照
@@ -3728,6 +3771,14 @@ private async _handleCurrentSessionDeleted(agentId: string): Promise<void> {
 
 private _handleStreamDelta(delta: any): void {
 	if (!delta) { return; }
+	// 归因标记（常数、零分配）：长任务日志据此显示 `因=[delta:text×40]`
+	// ⇒ 区分「卡在消费流式文本」还是「卡在重建 DOM」（见 base/common/renderActivityTrace.ts）。
+	switch (delta.type) {
+		case 'text': markRenderActivity('delta:text'); break;
+		case 'thinking': markRenderActivity('delta:thinking'); break;
+		case 'tool_args': markRenderActivity('delta:tool_args'); break;
+		default: markRenderActivity('delta:other'); break;
+	}
 
 	// 流式记录：原始 delta 落盘（缓冲合并前，保真）
 	this._streamRecorder?.record(delta);
@@ -3968,10 +4019,14 @@ private _handleStreamDelta(delta: any): void {
 		//   ② `groups=2 cards=3` 而某卡为 0 ⇒ 有组没找到目标卡（兜底链也没兜住）。
 		if (delegateTcs.length > 0) {
 			const rows = delegateTcs.map((tc: any) => `${String(tc.id).slice(-6)}:${(tc.subAgents ?? []).length}`);
-			this._logService.info(
-				`[SubAgentAttach] sa=${subAgents.length} groups=${internalGroups.size} cards=${delegateTcs.length} `
-				+ `used=${usedTc.size} attached=[${rows.join(', ')}]`,
-			);
+			// ★ 2026-09-20 签名去重（日志实证：映射稳定期同一行被重打 885 次/8min，
+			//   刷屏且每次伴随一次 IPC 落盘）：挂载结果不变 ⇒ 不打。映射异常形态
+			//   （① :0 空挂 ② groups≠cards）必然改变签名 ⇒ 诊断力不损。
+			const sig = `sa=${subAgents.length} groups=${internalGroups.size} cards=${delegateTcs.length} used=${usedTc.size} attached=[${rows.join(', ')}]`;
+			if (sig !== this._lastSubAgentAttachLogSig) {
+				this._lastSubAgentAttachLogSig = sig;
+				this._logService.info(`[SubAgentAttach] ${sig}`);
+			}
 		}
 	}
 
@@ -4813,13 +4868,18 @@ private _handleStreamDelta(delta: any): void {
 			const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: reasoning || undefined, cacheHitRate, credit: creditSeen ? creditSum : undefined, providerId: realProvider, model: realModel };
 				assistantMsg.tokenUsage = tokenUsage;
 				this._chatPanel?.updateMessage(assistantId, { tokenUsage });
+					// ★ 2026-09-20：`setStreamUsage` **移出** `limit > 0` 守卫 ——
+					//   真实 usage 必须无条件送达面板（上下文环的 used 依赖它）。此前若
+					//   模型元信息匹配失败（_currentMaxContextTokens 为空：模型 id/前缀
+					//   不一致、或 provider 未上报 maxInputTokens/contextWindow），连
+					//   基线都无法对齐 ⇒ 用户报「输入框 tokens UI 不更新」✗。
+					this._chatPanel?.setStreamUsage({
+						input: delta.usage.inputTokens ?? 0,
+						output: delta.usage.outputTokens ?? 0,
+						seen: true,
+					});
 					const limit = this._currentMaxContextTokens ?? 0;
 					if (limit > 0) {
-						this._chatPanel?.setStreamUsage({
-							input: delta.usage.inputTokens ?? 0,
-							output: delta.usage.outputTokens ?? 0,
-							seen: true,
-						});
 						// 分母对齐（2026-09-04）：随真值推送压缩判定口径的窗口/阈值
 						// （ContextManager.resolveEffectiveWindowDefault 唯一真源：clamp(窗口,64k,200k)），
 						// UI 环以压缩线为满刻度——大窗口模型不再出现「环 6% 实际 30%」错位。

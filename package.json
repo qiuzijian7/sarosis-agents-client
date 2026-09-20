@@ -1,6 +1,6 @@
 {
   "name": "vssaros",
-  "version": "2.2.26038",
+  "version": "2.2.26039",
   "distro": "adf5d4ef5d36b1829d04e2a6f5255c5344cb0316",
   "author": {
     "name": "Microsoft Corporation"
@@ -17,6 +17,7 @@
     "test-node": "mocha test/unit/node/index.js --delay --ui=tdd --timeout=5000 --exit",
     "test-extension": "vscode-test",
     "test-build-scripts": "cd build && npm run test",
+    "test-agentstudio-common": "node src/vs/sessions/contrib/agentStudio/test/common/run-all-common-tests.mjs",
     "test-agentstudio-browser": "node src/vs/sessions/contrib/agentStudio/test/browser/run-all-browser-tests.mjs",
     "test-agentstudio-panel": "node src/vs/sessions/contrib/agentStudio/test/browser/test-server.mjs",
     "smoke-agent-layout": "node scripts/agent-layout-smoke.mjs",
@@ -165,6 +166,8 @@
     "native-is-elevated": "0.9.0",
     "native-keymap": "^3.3.5",
     "node-pty": "^1.2.0-beta.12",
+    "@nut-tree/nut-js": "^4.2.0",
+    "socket.io-client": "^4.8.1",
     "onnxruntime-web": "^1.22.0",
     "open": "^10.1.2",
     "playwright-core": "1.59.1",
@@ -309,5 +312,10 @@
   },
   "optionalDependencies": {
     "windows-foreground-love": "0.6.1"
+  },
+  "publisher": "saros",
+  "engines": {
+    "vscode": "^1.95.0",
+    "node": ">=18"
   }
 }

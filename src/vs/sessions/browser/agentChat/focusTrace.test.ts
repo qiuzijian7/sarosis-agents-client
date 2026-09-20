@@ -103,6 +103,10 @@ suite('focusTrace —— 焦点轨迹埋点（2026-09-18）', () => {
 
 			const focusLines = cap.lines.filter(l => l.includes(FOCUS_TRACE_TAG));
 			assert.ok(focusLines.some(l => l.includes('test.afterBusy')), '慢焦点必须逐条打印 mark 明细（否则无法定位 ✗）');
+			// ★ 2026-09-20：慢报必须带 DOM 现场值 —— 「阶段=idle + 探针被饿死」时渲染管线是
+			// 最大嫌疑（无 JS 栈 ✗ 但饿死定时器 ✓），DOM 体量是其耗时主变量 ⇒ 没有这行又会回到"靠猜" ✗
+			assert.ok(focusLines.some(l => /现场：DOM=\d+ 节点/.test(l)),
+				`慢焦点必须打印 DOM 现场值（渲染嫌疑的判据 ✓），实际：${focusLines.join(' | ').slice(0, 300)}`);
 		} finally {
 			cap.restore();
 		}

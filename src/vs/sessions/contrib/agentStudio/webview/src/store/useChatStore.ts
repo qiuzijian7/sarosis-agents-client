@@ -440,6 +440,11 @@ export interface AgentSessionInfo {
 	messageCount: number;
 	createdAt: string;
 	updatedAt: string;
+	/**
+	 * ★ 2026-09-20：该名字由**用户手动**指定（见 `AgentSessionMeta.userRenamed`）。
+	 * 置位后「首条消息自动命名」不再覆盖它。
+	 */
+	userRenamed?: boolean;
 	/** External provider session ID (e.g. Knot threadId) */
 	providerSessionId?: string;
 }
@@ -1362,7 +1367,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 							console.error('[ChatStore] Defensive create-fresh-session failed:', err);
 						}
 					} else if (sessionName) {
-						get().renameAgentSession(activeAgentSessionId, sessionName);
+						// ★ 2026-09-20（用户需求）：用户手动改过名的会话，不要再被自动命名覆盖。
+						// 标记由 `AgentChatService.renameAgentSession({ userInitiated: true })` 写入，
+						// 经 `agentSession.list` 回传到这里的 `agentSessions`。
+						const metaForName = get().agentSessions.find(s => s.id === activeAgentSessionId);
+						if (metaForName?.userRenamed) {
+							console.log(
+								`[ChatStore] skip auto-rename: session ${activeAgentSessionId} was named by the user`,
+							);
+						} else {
+							get().renameAgentSession(activeAgentSessionId, sessionName);
+						}
 					}
 				}
 			}

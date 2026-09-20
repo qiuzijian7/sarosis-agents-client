@@ -21,6 +21,7 @@ import { runAgentLoop } from './agentLoop.js';
 import { createPiStreamFn } from './streamAdapter.js';
 import { toAgentTool } from './toolAdapter.js';
 import { createPiLoopEventMapper } from './eventAdapter.js';
+import { parseArgs } from './kernelUtils.js';
 import type { AgentLoopConfig, AgentMessage, AgentTool, AssistantContent, AssistantMessage, Message, Model, ToolResultMessage } from './types.js';
 
 // ─────────────────────────── 历史转换 ───────────────────────────
@@ -167,18 +168,11 @@ export function piLoopConvertToLlm(messages: readonly AgentMessage[]): readonly 
 	}) as Message[];
 }
 
-/**
- * 工具参数归一（JSON 字符串 | 已解析对象 → 对象）。
- * ⚠ 2026-09-20 真机双跑实证：`toAgentTool.execute` 交给 `ToolExecutor` 的
- * `toolCall.arguments` 是**已解析对象**（piLoop 侧已 parse），本函数此前只认字符串
- * ⇒ 一律退化成 `{}` ⇒ 只读工具的 `path` 丢失（`URI.file('')` ⇒ 报"is actually a
- * directory"，模型连试 7 次全败）。对象必须直传（与 `piTurnKernel.parseArgs` 同口径）。
- */
-function parseArgs(argsJson: unknown): Record<string, unknown> {
-	if (argsJson && typeof argsJson === 'object' && !Array.isArray(argsJson)) { return argsJson as Record<string, unknown>; }
-	if (typeof argsJson !== 'string' || !argsJson) { return {}; }
-	try { const v = JSON.parse(argsJson); return (v && typeof v === 'object' && !Array.isArray(v)) ? v as Record<string, unknown> : {}; } catch { return {}; }
-}
+// 工具参数归一已收口到 kernelUtils.parseArgs（2026-09-20 合并重复实现）。
+// ⚠ 历史实证（保留教训）：`toAgentTool.execute` 交给 `ToolExecutor` 的
+// `toolCall.arguments` 是**已解析对象**（piLoop 侧已 parse），只认字符串的实现会一律
+// 退化成 `{}` ⇒ 只读工具的 `path` 丢失（`URI.file('')` ⇒ 报"is actually a directory"，
+// 模型连试 7 次全败）。对象必须直传。
 
 function chatToolCallToPi(tc: unknown): Extract<AssistantContent, { type: 'toolCall' }> | undefined {
 	const t = tc as { id?: string; name?: string };

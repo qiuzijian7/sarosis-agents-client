@@ -19,688 +19,61 @@
  *    combinators instead of hand-rolled Promise.race + retry maps + batching.
  *  - Watchdog disposal and parent-abort unlistening are Scope finalizers —
  *    deterministic cleanup, no manual finally blocks, no dangling timers.
+ *
+ *  拆分进度（A3 同款策略，2026-09-20）：声明族已拆出 —— subAgentModel.ts（类型/权限/标签/
+ *  隔离档/预览）、subAgentLifecycle.ts（实例/事件/退出原因/超时错误），本文件以 `export *`
+ *  转出（调用点零改动）。**下一阶段**（未做，需专门评估）：类内部还聚合了 prompt 组装、
+ *  结果格式化、看门狗/预算派生、并行扇出四簇 —— 建议按 `_buildSystemPrompt`/`_buildMessages`、
+ *  `gateResult` 装配、`StallWatchdog` 接线、`forEachPar` 扇出四刀切，各刀独立可回退。
  *--------------------------------------------------------------------------------------------*/
 
 import { IterationBudget } from './iterationBudget.js';
 import { fork, retry, timeout, forEachPar, FiberInterrupt, InterruptSignal, isFiberInterrupt, type FiberExit, type IFiberContext } from './effectRuntime.js';
-import type { IAgentTurnRequest, IChatStreamDelta, IChatMessage, IModelSelection } from './providers.js';
-import { SubagentTokenCollector, type SubagentTokenUsage } from './subagentTokenCollector.js';
-import { GLOBAL_SYSTEM_SUFFIX, GLOBAL_SYSTEM_PREFIX_SUBAGENT } from './chatModeConfig.js';
-import { composeFrozenPrefix, joinSections } from './systemPromptComposer.js';
-import { buildResponseLanguageDirective } from './responseLanguage.js';
-import { gateResult, extractAcceptanceCriteria, type ISubAgentStructuredResult, type ICompletionGateContext } from './completionGate.js';
-import { injectReturnFormatIntoTask } from './subAgentReturnFormat.js';
-import { wrapUserQuery } from './userQuery.js';
+import type { IAgentTurnRequest, IChatStreamDelta } from './providers.js';
+import { SubagentTokenCollector } from './subagentTokenCollector.js';
+import { gateResult } from './completionGate.js';
 import { decideTaskGate, MAX_TASK_GATE_SUBAGENT_REACT, type IIncompleteTask, type TaskGateDecision } from './taskGate.js';
 import { StallWatchdog } from './stallWatchdog.js';
-import { defaultPostStopDecision, type ISubAgentPostStopHook } from './subAgentHooks.js';
-import { type IForkContext } from './forkContext.js';
+import { defaultPostStopDecision } from './subAgentHooks.js';
+
 import { createWriteExclusionLock, hasWriteCapability, WriteLockAbortedError, type IWriteExclusionLock } from './writeExclusion.js';
-
-// ─── SubAgent Types (inspired by OpenCode's agent types) ──────────────────
-
-/**
- * SubAgent type determines the permission profile and tool access.
- * Aligned with OpenCode's explore/general/scout pattern.
- */
-export const enum SubAgentType {
-	/** Read-only codebase explorer — can search_code/glob/read, cannot edit or execute */
-	Explore = 'explore',
-	/** General-purpose agent — can read and write, but cannot spawn sub-agents */
-	General = 'general',
-	/** External research agent — can clone repos and fetch web, read-only */
-	Scout = 'scout',
-}
-
-/**
- * B：探索型子代理的「真正探索类工具」集合（ground-truth 判定依据）。
- * 覆盖 3 个只读 explore agent 的实际工作面：
- *   - code-explorer：代码图谱/文件/搜索工具
- *   - researcher：web 搜索/抓取
- *   - data：代码执行
- * 不含 index_repository / index_status 等索引管理工具，以及 memory/task 等元工具——
- * explore 子代理只调用了这些，视为"未真正探索"（_buildGateContext 据此降级）。
- */
-const _EXPLORE_REAL_TOOLS: ReadonlySet<string> = new Set([
-	// code-explorer — 代码图谱结构化检索
-	'search_graph', 'query_graph', 'get_code_snippet', 'trace_path',
-	'get_architecture', 'get_graph_schema', 'check_index_coverage',
-	// code-explorer — 文件/文本检索
-	'search_files', 'file_read', 'search_code',
-	// researcher — web 检索
-	'web_search', 'web_extract',
-	// data — 代码执行（terminal 是真实实现；execute_code 是 stub 占位）
-	'terminal',
-]);
-
-/**
- * Tool permission profile for each SubAgent type.
- * Inspired by OpenCode's permission system.
- */
-export const SUB_AGENT_PERMISSIONS: Record<SubAgentType, {
-	readonly canRead: boolean;
-	readonly canWrite: boolean;
-	readonly canExecute: boolean;
-	readonly canWebFetch: boolean;
-	readonly canWebSearch: boolean;
-	readonly canCloneRepo: boolean;
-	readonly canSpawnSubAgent: boolean;
-	readonly allowedToolPatterns: readonly string[];
-	readonly deniedToolPatterns: readonly string[];
-}> = {
-	[SubAgentType.Explore]: {
-		canRead: true,
-		canWrite: false,
-		canExecute: false,
-		canWebFetch: true,
-		canWebSearch: true,
-		canCloneRepo: false,
-		canSpawnSubAgent: false,
-		allowedToolPatterns: ['search_code', 'glob', 'list', 'read', 'webfetch', 'websearch', 'repo_overview'],
-		deniedToolPatterns: ['*'],
-	},
-	[SubAgentType.General]: {
-		canRead: true,
-		canWrite: true,
-		canExecute: true,
-		canWebFetch: true,
-		canWebSearch: true,
-		canCloneRepo: false,
-		canSpawnSubAgent: false,  // P0: 禁止 subagent 嵌套调 subagent
-		allowedToolPatterns: ['*'],
-		deniedToolPatterns: ['todowrite'],
-	},
-	[SubAgentType.Scout]: {
-		canRead: true,
-		canWrite: false,
-		canExecute: false,
-		canWebFetch: true,
-		canWebSearch: true,
-		canCloneRepo: true,
-		canSpawnSubAgent: false,
-		allowedToolPatterns: ['search_code', 'glob', 'list', 'read', 'webfetch', 'websearch', 'repo_overview', 'repo_clone'],
-		deniedToolPatterns: ['*'],
-	},
-};
-
-// ─── SubAgent Type Labels（delegate_task schema 的单一来源 — P2c 动态枚举）──
-// 之前 delegate_task 的 inputSchema.type.enum 与 resolveType 各自硬编码了
-// ['General','Explore','Scout'] 字面量，新增子 agent 类型（如 Critic/Planner）
-// 时极易漏改导致 schema 与运行时漂移。此处集中为唯一来源：
-//   - delegate_task 的 enum / 描述由这里动态生成
-//   - handler 的 label→SubAgentType 反查也由这里完成
-// 新增类型只需在数组追加一项，schema 与路由自动同步。
-export interface ISubAgentTypeLabel {
-	readonly value: SubAgentType;
-	/** 暴露给 LLM 的显示标签（首字母大写，与历史 schema 兼容） */
-	readonly label: string;
-	/** 该角色的权限/用途简述，拼进 schema description */
-	readonly description: string;
-}
-
-export const SUB_AGENT_TYPE_LABELS: ReadonlyArray<ISubAgentTypeLabel> = [
-	{ value: SubAgentType.General, label: 'General', description: 'General-purpose (default) — can read+write+execute for build/edit/review work.' },
-	{ value: SubAgentType.Explore, label: 'Explore', description: 'Read-only investigation / code search — also the batch-mode default.' },
-	{ value: SubAgentType.Scout, label: 'Scout', description: 'Read-only external research — clone repos and fetch web/docs.' },
-];
-
-/** label（大小写不敏感）→ SubAgentType；未知/缺省回退 General。P2c 动态枚举反查。 */
-export function resolveSubAgentTypeLabel(label?: string): SubAgentType {
-	const hit = SUB_AGENT_TYPE_LABELS.find(
-		(t) => t.label.toLowerCase() === (label ?? '').trim().toLowerCase(),
-	);
-	return hit?.value ?? SubAgentType.General;
-}
-
-// ─── SubAgent Isolation Level (P2b 显式两档隔离模型) ─────────────────────
-// 之前系统只有一种隐式的「层级委派」模型——delegate_task / swarm worker 都复用
-// 同一 dispatch，父 turn 的 AbortSignal 无差别级联取消子代 (P3)。但在 multi-agent
-// safety 语境下应显式区分两种隔离档位 (对应 MiMo/AG2 supervisor-subagent vs swarm peer):
-//
-//  - 'subagent' (默认): 层级受控。继承父 worktree、父可注入上下文、父 turn abort
-//    级联取消 (P3)。单向数据流，父完全掌控子生命周期。
-//  - 'peer': 对等独立。peer 之间互不信任，只通过显式注入的 context (blackboard /
-//    SharedMemory) 通信，**不**继承父的敏感上下文/worktree；更重要的是，父自己的
-//    turn 结束 (abort) **不**级联取消 peer —— 父只是派了个对等协作者出去，其生命周期
-//    独立，只有显式的 interruptSubAgent / swarm.cancelSwarm 才能停它。
-//
-// 两档在类型系统与安全契约上显式区分；未来新增隔离档位 (如 'sandbox') 只需在此追加。
-export type SubAgentIsolationLevel = 'subagent' | 'peer';
-
-/** label（大小写不敏感）→ SubAgentIsolationLevel；未知/缺省回退 'subagent'。P2b。 */
-export function resolveIsolationLevel(label?: string): SubAgentIsolationLevel {
-	const v = (label ?? '').trim().toLowerCase();
-	return v === 'peer' ? 'peer' : 'subagent';
-}
-
-// ─── 结构化预览（工具 args/result 的卡片展示）─────────────────────────────
-
-/** 解包 [{"type":"text","text":"…"}] 内容包装 → 拼接内层文本；非包装原样返回。 */
-function unwrapTextWrapper(text: string): string {
-	const t = text.trim();
-	if (!t.startsWith('[')) { return text; }
-	try {
-		const parsed = JSON.parse(t);
-		if (Array.isArray(parsed) && parsed.length > 0
-			&& parsed.every(e => e !== null && typeof e === 'object'
-				&& (e as { type?: unknown }).type === 'text'
-				&& typeof (e as { text?: unknown }).text === 'string')) {
-			return parsed.map(e => (e as { text: string }).text).join('\n');
-		}
-	} catch { /* not JSON */ }
-	return text;
-}
-
-/**
- * 结构化预览截断（模块级导出以便单测；trace 事件的 argsPreview/resultPreview 共用）。
- * 规则：
- * 1. 先解 [{"type":"text","text":…}] 内容包装——否则 >maxLen 的数组结果会走顶层
- *    key 预算，产出 {"0":"{\"type\":\"text\"…}"} 的索引键垃圾，UI 显示成 "0"
- *    （2026-07-26 子代理卡片"搜索内容显示 0"事故）。
- * 2. search_code 类信封（{results:[…]}/{files:[…]}）→ 语义摘要（"N 命中: a.cpp:10, …"）。
- *    2026-07-27 事故：results 数组超预算被折叠成字符串 "[object]"（`[${typeof val}]`
- *    对数组 typeof==='object'），且最终 JSON.stringify 可能超 maxLen 被硬切成无效 JSON，
- *    下游 parse 失败退化为原始乱码——卡片同时出现 4 种样式。
- * 3. 对象 → 顶层 key 保留，value 按预算截断；超预算值类型感知占位
- *    （数组 [N 项]、对象 {M keys}，绝不产出 "[object]"）。
- * 4. 非 text 包装数组 → 元素摘要（前 3 项 + 项数），不泄露索引键。
- * 5. 非 JSON → 纯文本截断。
- */
-export function previewStructured(text: string, maxLen: number): string {
-	if (!text) { return text; }
-	const unwrapped = unwrapTextWrapper(text);
-	// search_code 类信封优先（短负载也摘要——可读性优于原始 JSON）
-	const semantic = _trySummarizeSearchEnvelope(unwrapped, maxLen);
-	if (semantic !== undefined) { return semantic; }
-	if (unwrapped.length <= maxLen) { return unwrapped.trim(); }
-	try {
-		const parsed: unknown = JSON.parse(unwrapped);
-		if (Array.isArray(parsed)) {
-			const parts = parsed.slice(0, 3).map(e => {
-				const s = typeof e === 'string' ? e : JSON.stringify(e);
-				return s.length > 60 ? s.slice(0, 60) + '…' : s;
-			});
-			let out = parts.join(', ');
-			if (parsed.length > 3) { out += `, …(${parsed.length} 项)`; }
-			return out.length > maxLen ? out.slice(0, maxLen) + '…' : out;
-		}
-		if (typeof parsed === 'object' && parsed !== null) {
-			const keys = Object.keys(parsed);
-			const preview: Record<string, unknown> = {};
-			let budget = maxLen - 2;
-			for (const key of keys) {
-				const val = (parsed as Record<string, unknown>)[key];
-				const valStr = typeof val === 'string' ? val : JSON.stringify(val);
-				if (budget <= 0) { preview[key] = '…'; break; }
-				if (valStr.length <= budget) {
-					preview[key] = val;
-					budget -= valStr.length;
-				} else {
-					// 类型感知占位（旧实现 `[${typeof val}]` 对数组产出 "[object]" 垃圾）
-					if (Array.isArray(val)) { preview[key] = `[${val.length} 项]`; }
-					else if (val !== null && typeof val === 'object') { preview[key] = `{${Object.keys(val as Record<string, unknown>).length} keys}`; }
-					else if (typeof val === 'string') { preview[key] = valStr.slice(0, budget) + '…'; }
-					else { preview[key] = val; }
-					budget = 0;
-				}
-			}
-			const result = JSON.stringify(preview);
-			if (result.length > maxLen) {
-				// 不输出硬切的无效 JSON（下游 parse 失败会退化为原始乱码）——降级紧凑 k=v 文本
-				const flat = Object.entries(preview).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' ');
-				return flat.length > maxLen ? flat.slice(0, maxLen - 1) + '…' : flat;
-			}
-			return result;
-		}
-	} catch { /* not JSON, fall through */ }
-	return unwrapped.trim().slice(0, maxLen) + '…';
-}
-
-/**
- * search_code 类结果信封 → 单行语义摘要；非信封返回 undefined。
- * 支持 {results:[{filePath,path,name,lineNo}], total/total_grep_matches} 与
- * {files:[...], total_files} 两种信封（compact/full/files 各 mode 输出）。
- */
-function _trySummarizeSearchEnvelope(text: string, maxLen: number): string | undefined {
-	const t = text.trim();
-	if (!t.startsWith('{')) { return undefined; }
-	let parsed: unknown;
-	try { parsed = JSON.parse(t); } catch { return undefined; }
-	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) { return undefined; }
-	const obj = parsed as Record<string, unknown>;
-	// 路径压缩：保留末两段（UE 路径极长，全路径单项即爆预算）
-	const shortPath = (p: string): string => {
-		const n = p.replace(/\\/g, '/');
-		const parts = n.split('/');
-		return parts.length > 2 ? parts.slice(-2).join('/') : n;
-	};
-	const clip = (out: string): string => out.length > maxLen ? out.slice(0, Math.max(0, maxLen - 1)) + '…' : out;
-	if (Array.isArray(obj['results'])) {
-		const arr = obj['results'] as unknown[];
-		// total_grep_matches（底层命中总数）优先于 total（本次返回条数）——摘要信息量更高
-		const total = typeof obj['total_grep_matches'] === 'number' ? obj['total_grep_matches'] as number
-			: typeof obj['total'] === 'number' ? obj['total'] as number : arr.length;
-		const head = arr.slice(0, 3).map(r => {
-			if (r !== null && typeof r === 'object') {
-				const rec = r as Record<string, unknown>;
-				const fp = rec['filePath'] ?? rec['path'] ?? rec['name'];
-				if (typeof fp === 'string') {
-					return typeof rec['lineNo'] === 'number' ? `${shortPath(fp)}:${rec['lineNo']}` : shortPath(fp);
-				}
-			}
-			return typeof r === 'string' ? r : '';
-		}).filter(Boolean).join(', ');
-		return clip(`${total} 命中${head ? `: ${head}` : ''}${arr.length > 3 || total > arr.length ? ', …' : ''}`);
-	}
-	if (Array.isArray(obj['files'])) {
-		const arr = obj['files'] as unknown[];
-		const total = typeof obj['total_files'] === 'number' ? obj['total_files'] as number : arr.length;
-		const head = arr.slice(0, 3).map(f => typeof f === 'string' ? shortPath(f) : '').filter(Boolean).join(', ');
-		return clip(`${total} 个文件${head ? `: ${head}` : ''}${arr.length > 3 || total > arr.length ? ', …' : ''}`);
-	}
-	return undefined;
-}
-
-// ─── SubAgent Instance Types ─────────────────────────────────────────────
-
-export interface SubAgentOptions {
-	/** SubAgent type — determines tool permissions */
-	readonly type?: SubAgentType;
-	/** Max iterations for this sub-agent (default: derived from parent budget) */
-	readonly maxIterations?: number;
-	/**
-	 * 总时长上限（ms，默认 600_000 = 10min，对齐 MiMo actor timeout_ms）。
-	 * 超时语义（2026-07-26 规则）：走 salvage 部分完成（保留产出 + P1 总结），
-	 * 而非硬失败；0 = 禁用限时（回到「不限总时长」旧规则）。
-	 */
-	readonly timeout?: number;
-	/**
-	 * 软预算（wall-clock，ms）：耗时超过该值时主循环注入一次收尾提醒（不打断
-	 * 执行）。缺省按 timeout×SUBAGENT_SOFT_BUDGET_RATIO 推导；timeout=0 时禁用。
-	 */
-	readonly softDeadlineMs?: number;
-	/** Priority for scheduling (low/medium/high) */
-	readonly priority?: 'low' | 'medium' | 'high';
-	/** Parent's stable ChatMode policy. */
-	readonly parentChatMode?: string;
-	/** Parent's mutable WorkMode; plan subagents inherit the read-only ceiling. */
-	readonly parentWorkMode?: 'plan' | 'work';
-	/** Additional context to inject (e.g., repo_overview output) */
-	readonly context?: string;
-	/** Whether this is a background sub-agent (non-blocking) */
-	readonly background?: boolean;
-	/** Parent session ID for context isolation */
-	readonly parentSessionId?: string;
-	/**
-	 * v17: per-subagent worktree path override. Inherited from the parent
-	 * agent's execution context (set by builtinToolProvider before dispatching
-	 * delegate_task). When set, the subagent's working directory is locked
-	 * to this path (matches `IAgentTurnRequest.worktreePath` semantics).
-	 */
-	readonly worktreePath?: string;
-	/**
-	 * v17: per-subagent toolset scope override. When set, the sub-agent's enabled
-	 * tools are narrowed to ONLY the listed toolsets (plus bridge tools). Lets a
-	 * parent constrain what a delegated sub-agent may do — e.g. an Explore
-	 * sub-agent scoped to ['core'] for read-only investigation. Undefined → no
-	 * narrowing (current behavior preserved).
-	 */
-	readonly toolsets?: string[];
-	/**
-	 * Per-subagent tool-name exclusion — unconditionally hides the listed tools
-	 * from the sub-agent regardless of toolset. E.g. an Explore sub-agent must NOT
-	 * see `index_repository`: the parent pre-builds the graph itself, and letting
-	 * the sub-agent call it makes it stop after "index started" (the "只索引即停"
-	 * premature-stop failure). Flows through to `IAgentTurnRequest.excludedTools`.
-	 */
-	readonly excludedTools?: readonly string[];
-	/**
-	 * v17: per-subagent model override. When set, the sub-agent runs with this
-	 * model selection instead of the session default (matches
-	 * `IAgentTurnRequest.modelOverride` semantics).
-	 */
-	readonly model?: IModelSelection;
-	/**
-	 * P3（2026-07-26，对齐 MiMo output_schema）：要求子代理最终结论为符合该
-	 * JSON Schema 的结构化对象。设置后主执行完成追加一轮禁工具结构化输出
-	 * （轻量校验 required 键，1 次重试），validated 对象序列化为 output；
-	 * 失败回退自由文本（best effort）。
-	 */
-	readonly outputSchema?: Record<string, unknown>;
-	/**
-	 * postStop self-verification hook (MiMo preStop/postStop ReAct). After the main
-	 * execution + Completion Gate, if the result is not a clean success-with-acceptance,
-	 * a verification prompt is appended and one more bounded turn runs.
-	 */
-	readonly postStop?: ISubAgentPostStopHook;
-		/**
-		 * Fork prefix-cache context (MiMo ForkContext). When set, the sub-agent reuses the
-		 * parent's frozen system prompt verbatim so the LLM provider's prompt cache hits.
-		 */
-		readonly forkContext?: IForkContext;
-		/**
-		 * P2b 隔离档位。默认 'subagent'（层级受控，父 turn abort 级联取消、继承父 worktree）。
-		 * 设为 'peer' 表示对等独立 agent：父 turn abort 不级联取消、且不应继承父的敏感
-		 * worktree/上下文（由调用方在 delegationTools / swarm 层据此约束最小权限）。
-		 */
-		readonly isolationLevel?: SubAgentIsolationLevel;
-	/**
-	 * 内置 Agent 身份 id（如 'code-explorer' / 'researcher' / 'data'）。设置后子代理以
-	 * 该内置 Agent 的真实 systemPrompt / tools / model 实例化，而非通用 Explore 折中提示词。
-	 * 由 delegationTools（delegate_task type）/ plan_explore / pre-loop 探索解析后写入。
-	 */
-	readonly agentId?: string;
-	/**
-	 * 子代理系统提示词覆盖。设置后 `_buildSystemPrompt` 用它替换按 `type` 选取的默认提示词
-	 * （仍会拼接全局子代理前后缀）。通常来自内置 Agent 的 `systemPrompt`。
-	 */
-	readonly systemPrompt?: string;
-	/**
-	 * 子代理工具白名单（tool 名集合，通常来自内置 Agent 的 `tools`）。设置后子代理可见工具
-	 * 收敛为「白名单 ∩ 其余门控结果」，作为对内置 Agent 工具面的忠实还原。
-	 * 流向 `IAgentTurnRequest.allowedTools`。
-	 */
-	readonly allowedTools?: readonly string[];
-	}
-
-export interface SubAgentInstance {
-	readonly id: string;
-	readonly parentAgentId: string;
-	readonly type: SubAgentType;
-	readonly task: string;
-	status: SubAgentStatus;
-	readonly budget: IterationBudget;
-	readonly createdAt: number;
-	readonly timeout: number;
-	readonly priority: 'low' | 'medium' | 'high';
-	readonly options: SubAgentOptions;
-	/** P2b 隔离档位（从 options 解析，默认 'subagent'），供 TaskBoard/UI 与中断逻辑区分两档。 */
-	readonly isolationLevel: SubAgentIsolationLevel;
-	result?: SubAgentResult;
-	/** Per-sub-agent token usage collector (inspired by deer-flow SubagentTokenCollector). */
-	readonly tokenCollector: SubagentTokenCollector;
-}
-
-export type SubAgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled';
-
-export interface SubAgentResult {
-	readonly success: boolean;
-	readonly output?: string;
-	readonly error?: string;
-	readonly completedAt: number;
-	/** Execution duration in milliseconds */
-	readonly durationMs?: number;
-	/** Number of API (LLM) calls made */
-	readonly apiCalls?: number;
-	/** Token usage (if available from the LLM response) */
-	readonly tokensUsed?: { input: number; output: number };
-	/** ★ 2026-09-13：累计积分消耗（网关 usage.credit）。 */
-	readonly creditUsed?: number;
-	/** Detailed per-turn token usage (inspired by deer-flow SubagentTokenCollector). */
-	readonly tokenUsage?: SubagentTokenUsage;
-	/** Why the sub-agent stopped executing */
-	readonly exitReason?: SubAgentExitReason;
-	/** Tool call trace — list of tools invoked with their status */
-	readonly toolTrace?: ReadonlyArray<SubAgentToolTraceEntry>;
-	/** Files modified by this sub-agent (for file change coordination) */
-	readonly filesModified?: readonly string[];
-	/** Structured Completion-Gate verdict (MiMo TaskGate) — reliable contract for the parent. */
-	readonly structured?: ISubAgentStructuredResult;
-	}
-
-/** A single tool call trace entry, inspired by Hermes tool_trace. */
-export interface SubAgentToolTraceEntry {
-	readonly toolName: string;
-	readonly status: 'ok' | 'error';
-	/** Approximate size of tool arguments in bytes */
-	readonly argsSizeBytes?: number;
-	/** Approximate size of tool result in bytes */
-	readonly resultSizeBytes?: number;
-	/** Error message (if status === 'error') */
-	readonly error?: string;
-}
-
-/** Internal execution result from _executeWithBudget, carrying metadata for SubAgentResult. */
-interface _ExecResult {
-	readonly output: string;
-	readonly apiCallCount: number;
-	readonly budgetExhausted: boolean;
-	readonly tokensUsed?: { input: number; output: number };
-	/** ★ 2026-09-13：累计积分消耗（网关 usage.credit）。 */
-	readonly creditUsed?: number;
-	readonly toolTrace: SubAgentToolTraceEntry[];
-	/** Files that were modified (written/created) by this sub-agent */
-	readonly filesModified: string[];
-	/** Whether the sub-agent stalled (no progress for idleTimeoutMs) and was aborted. */
-	readonly stalled?: boolean;
-	/** Whether the sub-agent was interrupted (manual interrupt or parent AbortSignal — P3). */
-	readonly interrupted?: boolean;
-}
-
-/** Result of a full sub-agent program (execution + completion gates), settled by the fiber. */
-interface _ProgramResult {
-	readonly execResult: _ExecResult;
-	readonly structured: ISubAgentStructuredResult;
-}
-
-/** Event emitter pre-bound to a specific sub-agent (identity fields filled in). */
-type _BoundEmit = (event: Omit<SubAgentEvent, 'subAgentId' | 'subAgentType' | 'task' | 'parentId' | 'timestamp'> & { type: SubAgentEventType }) => void;
-
-/**
- * Tagged error raised when a sub-agent exceeds its hard timeout cap.
- * A distinct class (not a message substring) so retry policies can match it
- * reliably — timeout is NOT retryable.
- */
-class SubAgentTimeoutError extends Error {
-	constructor(readonly timeoutMs: number) {
-		super(`SubAgent timeout after ${timeoutMs}ms`);
-		this.name = 'SubAgentTimeoutError';
-	}
-}
-
-/**
- * Per-attempt execution control passed to _executeWithBudget.
- * The watchdog and stall flag are attempt-local (a retry gets a fresh set);
- * the interrupt signal is fiber-scoped (shared across attempts).
- */
-interface _AttemptControl {
-	readonly watchdog: StallWatchdog;
-	readonly signal: InterruptSignal;
-	readonly isStalled: () => boolean;
-}
-
-/**
- * 看门狗计活的内容级 delta 类型（2026-07-26 P1，对齐 MiMo chunkTimeout 语义）：
- * 模型产出的任何内容（文本/思考/工具调用装配/工具结果）都算活动；
- * usage/done/phase_change/memory_injected 等帧外事件不算（keep-alive 只证明
- * 连接活着，不证明模型在产出）。
- */
-const _STALL_CONTENT_DELTA_TYPES: ReadonlySet<string> = new Set([
-	'text', 'thinking', 'tool_start', 'tool_args', 'tool_result', 'tool_end',
-	// tool_progress（2026-07-26 治本）：工具参数流式生成的进度信号——
-	// 子代理 file_write 写大文件（10k+ tokens 参数）期间同样续命，
-	// 与主 agent 的 resilience 修复对齐（事故 1785049332701）。
-	'tool_progress',
-]);
-
-/**
- * 子代理软预算比例（2026-07-28）：wall-clock 超过 timeout×该比例时，主循环
- * 注入一次「立即整理发现并收尾」的 system-reminder（不打断执行）。
- * 目的：让长探索任务在硬超时前主动收敛产出（日志 1785224874547：Explore
- * 子代理 78 轮线性探索撞 600s 硬超时、零产出交接）。0.5 = 半程提醒，
- * 给总结留出足够余量。options.softDeadlineMs 可显式覆盖。
- */
-const SUBAGENT_SOFT_BUDGET_RATIO = 0.5;
-
-/**
- * P1 停滞强制总结的用户消息（2026-07-26，对齐 MiMo max-steps.txt 模板语义）：
- * 禁工具（excludedTools:['*']），仅基于已完成工作输出「已完成/未完成/建议」。
- * 保持通用表述（不含项目/场景特化内容）。
- */
-const _STALL_SUMMARY_PROMPT = [
-	'系统检测到执行已停滞（长时间无响应），本轮执行已被终止。',
-	'禁止调用任何工具。请仅基于你目前已经完成的工作，立即输出最终总结：',
-	// ─── 封死「把调用写成文本」这条退路（与主 agent hardLimitWrapUpReminder 同一缺陷）──
-	// 本轮 excludedTools:['*'] → tools=0 → 结构化调用通道已关闭；但 stable 层系统提示词
-	// 每轮仍在说「需要工具时 emit a NATIVE function call」。两者夹击下，模型会把调用
-	// **写成文本**当作唯一可行解 —— 日志 1788011997897 实证：SubAgent 轮 toolsSent=0 时
-	// 模型在讨论 "Hermes's `tool` role replay" 时举例写下伪 XML
-	// （`tool_calls:6124c78e` / `tool_call:...` / `tool_sep:...`），并被下游提取器
-	// 当成真实调用执行（[file_read, search_files]）。
-	// 故此处必须点明**任何语法都不执行**，而不只是"禁止调用工具" ——
-	// 否则模型会理解成"不能真调，但可以先把调用记下来"。
-	'工具调用通道已完全关闭：原生函数调用不可用，写成文本（XML 标签、JSON、代码块或散文描述）同样不会执行 —— 任何语法都不行。',
-	'不要把工具调用以任何形式写下来当作占位或备忘，它不会运行，只会浪费这次总结。',
-	'1. 已完成的部分：关键发现、结论、涉及的文件/位置；',
-	'2. 未完成的部分：原计划中尚未完成的事项；',
-	'3. 建议的下一步：如果由他人接手，应该怎么做。',
-	'直接输出总结文本。',
-].join('\n');
-
-/**
- * P3 辅助：从模型输出中提取首个 JSON 对象（容忍 markdown 围栏与前后杂文）。
- * 仅接受对象（非数组/标量）；失败返回 undefined。
- */
-function _tryParseJsonObject(text: string): Record<string, unknown> | undefined {
-	let s = text.trim();
-	// 剥 markdown 代码围栏（```json ... ``` / ``` ... ```）
-	const fence = s.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
-	if (fence) { s = fence[1].trim(); }
-	// 截取首个 { 到末个 }（容忍结论前后多余的说明文字）
-	const start = s.indexOf('{');
-	const end = s.lastIndexOf('}');
-	if (start < 0 || end <= start) { return undefined; }
-	try {
-		const parsed: unknown = JSON.parse(s.slice(start, end + 1));
-		if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-			return parsed as Record<string, unknown>;
-		}
-	} catch { /* not JSON */ }
-	return undefined;
-}
-
-/** P3 辅助：轻量 schema 校验——仅检查 schema.required 声明的键齐全。 */
-function _matchesRequiredKeys(obj: Record<string, unknown>, schema: Record<string, unknown>): boolean {
-	const required = (schema as { required?: unknown }).required;
-	if (!Array.isArray(required)) { return true; }
-	return required.every(k => typeof k === 'string' && k in obj);
-}
-
-// ─── SubAgent Event System (inspired by Hermes DelegateEvent) ───────────
-
-/**
- * Fine-grained sub-agent event types, inspired by Hermes-Agent's DelegateEvent enum.
- * These provide detailed observability into sub-agent execution lifecycle.
- *
- * Hermes DelegateEvent has 7 types: TASK_SPAWNED, TASK_PROGRESS, TASK_COMPLETED,
- * TASK_FAILED, TASK_THINKING, TASK_TOOL_STARTED, TASK_TOOL_COMPLETED.
- * We align with that set and add 'interrupted' for our interrupt mechanism.
- */
-export const enum SubAgentEventType {
-	/** Sub-agent has been spawned and is about to start execution */
-	Spawned = 'spawned',
-	/** Sub-agent is thinking (LLM inference in progress) */
-	Thinking = 'thinking',
-	/** Sub-agent has started a tool call */
-	ToolStarted = 'tool_started',
-	/** Sub-agent has completed a tool call */
-	ToolCompleted = 'tool_completed',
-	/** General progress update (e.g., batch progress summary) */
-	Progress = 'progress',
-	/** Sub-agent completed successfully */
-	Completed = 'completed',
-	/** Sub-agent failed with an error */
-	Failed = 'failed',
-	/** Sub-agent was interrupted by user or parent */
-	Interrupted = 'interrupted',
-	/** Live LLM text delta (streaming output, for real-time card rendering) */
-	TextDelta = 'text_delta',
-}
-
-/**
- * Sub-agent event emitted during execution.
- * Inspired by Hermes-Agent's DelegateEvent — provides fine-grained
- * observability into the sub-agent lifecycle.
- *
- * The event sink receives these so the caller (e.g. the webview controller)
- * can translate them into IChatStreamDelta deltas and forward to the WebView.
- */
-export interface SubAgentEvent {
-	/** Fine-grained event type (inspired by Hermes DelegateEvent) */
-	readonly type: SubAgentEventType;
-	readonly subAgentId: string;
-	readonly subAgentType: SubAgentType;
-	readonly task: string;
-	readonly parentId: string;
-	readonly timestamp: number;
-
-	// ── Type-specific payloads ──
-
-	/** Tool name (for ToolStarted / ToolCompleted) */
-	readonly toolName?: string;
-	/** Tool call arguments preview (for ToolStarted, truncated) */
-	readonly toolArgsPreview?: string;
-	/** Tool result preview (for ToolCompleted, truncated) */
-	readonly toolResultPreview?: string;
-	/** Tool execution status (for ToolCompleted) */
-	readonly toolStatus?: 'ok' | 'error';
-	/** Thinking text (for Thinking) */
-	readonly thinkingText?: string;
-	/** Human-readable progress note (for Progress) */
-	readonly progressNote?: string;
-	/** Progress metrics: tool calls completed so far */
-	readonly toolsCompleted?: number;
-	/** Final output text (for Completed) */
-	readonly output?: string;
-	/** Live text delta chunk (for TextDelta, accumulates into streamingOutput on the card) */
-	readonly textDelta?: string;
-	/** Error message (for Failed / Interrupted) */
-	readonly error?: string;
-	/** Duration in ms (for Completed / Failed) */
-	readonly durationMs?: number;
-	/** Token usage (for Completed) */
-	readonly tokensUsed?: { input: number; output: number };
-	/**
-	 * ★ 2026-09-13：**累计**积分消耗（网关 usage.credit）。
-	 *
-	 * 执行中随 `Progress` 事件实时下发（与 `tokensUsed` 同一时机），完成后由
-	 * `Completed` 事件给终值 —— 卡片左下角据此展示。
-	 */
-	readonly creditUsed?: number;
-	/** Exit reason (for Completed / Failed / Interrupted) */
-	readonly exitReason?: SubAgentExitReason;
-	/** Group id to cluster parallel sub-agents into one card */
-	readonly groupId?: string;
-}
-
-/** Why a sub-agent stopped executing. */
-export type SubAgentExitReason =
-	| 'completed'       // Task finished normally
-	| 'partial'         // Finished its loop but self-reported partial/blocked (findings salvaged, not a failure)
-	| 'max_iterations'  // Hit iteration budget
-	| 'timeout'         // Exceeded time limit
-	| 'interrupted'     // Interrupted by user or parent
-	| 'error';          // Unhandled exception
-
-/** Sink that receives sub-agent events. Errors thrown here are swallowed. */
-export type SubAgentEventSink = (event: SubAgentEvent) => void;
-
-// ─── Backward-compatible legacy aliases ─────────────────────────────────
-
-/**
- * @deprecated Use SubAgentEvent instead. Kept for backward compatibility
- * with existing callers that reference SubAgentLifecycleEvent.
- */
-export type SubAgentLifecycleEvent = SubAgentEvent;
-
-export interface SubAgentStatusReport {
-	readonly id: string;
-	readonly type: SubAgentType;
-	readonly status: SubAgentStatus;
-	readonly task: string;
-	readonly createdAt: number;
-	readonly budget: string;
-}
+// ─── 声明块已拆出（A3 同款策略，2026-09-20）：本文件只留 UnifiedSubAgentDispatch 类 ──────
+// 声明族见 subAgentModel.ts（类型/权限/标签/隔离/预览）与 subAgentLifecycle.ts
+// （实例/事件/退出原因/超时错误）。以 `export *` 转出 ⇒ 调用点零改动；
+// 同时显式 import 本类自身用到的符号（`export *` 不建立本地绑定）。
+import {
+	_EXPLORE_REAL_TOOLS,
+	previewStructured,
+	SUB_AGENT_PERMISSIONS,
+	SubAgentType,
+} from './subAgentModel.js';
+import {
+	_matchesRequiredKeys,
+	_STALL_CONTENT_DELTA_TYPES,
+	_STALL_SUMMARY_PROMPT,
+	_tryParseJsonObject,
+	SUBAGENT_SOFT_BUDGET_RATIO,
+	SubAgentEventType,
+	SubAgentTimeoutError,
+} from './subAgentLifecycle.js';
+import type {
+	_AttemptControl,
+	_BoundEmit,
+	_ExecResult,
+	_ProgramResult,
+	SubAgentEventSink,
+	SubAgentExitReason,
+	SubAgentInstance,
+	SubAgentLifecycleEvent,
+	SubAgentOptions,
+	SubAgentResult,
+	SubAgentStatusReport,
+	SubAgentToolTraceEntry,
+} from './subAgentLifecycle.js';
+export * from './subAgentModel.js';
+export * from './subAgentLifecycle.js';
+// 第二刀（2026-09-20）：零 `this` 依赖的纯逻辑已搬出（判定依据 = 实测各方法体内 `this.` 计数为 0）
+import { buildSubAgentGateContext, buildSubAgentMessages, buildSubAgentSystemPrompt, extractModifiedFile, formatBytes, isToolAllowedForType } from './subAgentPureHelpers.js';
 
 // ─── Unified SubAgent Dispatch ────────────────────────────────────────────
 
@@ -1127,7 +500,7 @@ export class UnifiedSubAgentDispatch {
 
 		try {
 			// Build the request with context injection
-			const messages = this._buildMessages(subAgent);
+			const messages = buildSubAgentMessages(subAgent);
 
 			const request: IAgentTurnRequest = {
 				agentId: subAgent.id,
@@ -1151,27 +524,27 @@ export class UnifiedSubAgentDispatch {
 				// Stable ChatMode policy + mutable WorkMode permission ceiling.
 				chatMode: subAgent.options.parentChatMode as 'craft' | 'plan' | 'ask' | undefined,
 				workMode: subAgent.options.parentWorkMode,
-			// v17: delegate_task may constrain the sub-agent's toolset scope
-			// (e.g. an Explore sub-agent limited to ['core']) and/or pin a
-			// specific model. Both flow through to agentOSService.
-		toolsetsOverride: subAgent.options.toolsets,
-		excludedTools: this._effectiveExcludedTools(subAgent),
-		// agentId 驱动（2026-07-27）：内置 Agent 的 `tools` 作为白名单，使子代理可见工具
-		// 忠实收敛到该 Agent 定义的工具面（与 toolsetsOverride/excludedTools 叠加取交集）。
-		allowedTools: subAgent.options.allowedTools,
-		modelOverride: subAgent.options.model,
-			// 软预算：默认按 timeout×比例推导（显式 options.softDeadlineMs 优先）；
-			// 主循环耗时超过即注入一次收尾提醒，引导子代理在硬超时前收敛产出。
-			softDeadlineMs: subAgent.options.softDeadlineMs
-				?? (subAgent.timeout > 0 ? Math.floor(subAgent.timeout * SUBAGENT_SOFT_BUDGET_RATIO) : undefined),
-			// Fork 前缀缓存：子 agent 携带父级冻结 ForkContext，使其 (system+tools)
-			// 前缀与父级对齐 → 请求构造端在该前缀边界打 cache 断点，命中父级 prompt cache。
-			forkContext: subAgent.options.forkContext,
-			// P1: 后台子 agent 标记 —— 使工具审批闸门（decideAskRouting）对该 turn
-			// 走「继承父授权（非交互放行）」，而非弹交互确认阻塞父级 loop。
-			// subAgent.type 的值即 SubAgentType 字符串（explore/general/scout）。
-			subAgent: { type: subAgent.type, background: true },
-		};
+				// v17: delegate_task may constrain the sub-agent's toolset scope
+				// (e.g. an Explore sub-agent limited to ['core']) and/or pin a
+				// specific model. Both flow through to agentOSService.
+				toolsetsOverride: subAgent.options.toolsets,
+				excludedTools: this._effectiveExcludedTools(subAgent),
+				// agentId 驱动（2026-07-27）：内置 Agent 的 `tools` 作为白名单，使子代理可见工具
+				// 忠实收敛到该 Agent 定义的工具面（与 toolsetsOverride/excludedTools 叠加取交集）。
+				allowedTools: subAgent.options.allowedTools,
+				modelOverride: subAgent.options.model,
+				// 软预算：默认按 timeout×比例推导（显式 options.softDeadlineMs 优先）；
+				// 主循环耗时超过即注入一次收尾提醒，引导子代理在硬超时前收敛产出。
+				softDeadlineMs: subAgent.options.softDeadlineMs
+					?? (subAgent.timeout > 0 ? Math.floor(subAgent.timeout * SUBAGENT_SOFT_BUDGET_RATIO) : undefined),
+				// Fork 前缀缓存：子 agent 携带父级冻结 ForkContext，使其 (system+tools)
+				// 前缀与父级对齐 → 请求构造端在该前缀边界打 cache 断点，命中父级 prompt cache。
+				forkContext: subAgent.options.forkContext,
+				// P1: 后台子 agent 标记 —— 使工具审批闸门（decideAskRouting）对该 turn
+				// 走「继承父授权（非交互放行）」，而非弹交互确认阻塞父级 loop。
+				// subAgent.type 的值即 SubAgentType 字符串（explore/general/scout）。
+				subAgent: { type: subAgent.type, background: true, isolationLevel: subAgent.options.isolationLevel },
+			};
 
 			const emitWrapped: _BoundEmit = (event) =>
 				this._emit(eventSink, {
@@ -1263,78 +636,78 @@ export class UnifiedSubAgentDispatch {
 			const control: _AttemptControl = { watchdog, signal: ctx.signal, isStalled: () => stalled };
 
 			// 总时长双层（2026-07-26 MiMo 对齐）：①循环内 wall-clock 检查（同值）——
-		// 超时走 stalled/salvage（保产出+总结，主路径）；②timeout() 组合器
-		// +1s 余量——竞态必须让①先触发（实测同值时组合器在下一 delta 到达前
-		// 先杀，salvage 路径被旁路）；仅在限后 1s 内完全零 delta 的挂起场景
-		// 才由组合器硬杀（无产出可保，failure 可接受）。
-		const runOnce = (req: IAgentTurnRequest) => subAgent.timeout > 0
-			? timeout(
-				this._executeWithBudget(executeFn, req, subAgent.budget, subAgent.tokenCollector, emitWrapped, control, subAgent.timeout),
-				subAgent.timeout + 1_000,
-				() => new SubAgentTimeoutError(subAgent.timeout),
-				ctx.signal,
-			)
-			: this._executeWithBudget(executeFn, req, subAgent.budget, subAgent.tokenCollector, emitWrapped, control, 0);
-
-		// ── Main execution ──
-		let execResult = await runOnce(request);
-		// P3: 被取消时直接以 FiberInterrupt 展开（跳过所有门控复核，不对已取消的
-		// 子 agent 空耗 token），由 fiber exit 统一映射为 cancelled 结果。
-		if (execResult.interrupted) { throw new FiberInterrupt(ctx.signal.reason ?? 'user'); }
-
-		// 全新看门狗的补充轮执行器（P1 停滞总结 / P3 结构化输出共用）。
-		// attempt 级 stalled 标志不可逆（tick 不清），任何补充轮都必须用全新
-		// watchdog/control，否则首个 delta 检查即沿用旧停滞状态误判。
-		const runFreshRound = async (req: IAgentTurnRequest): Promise<_ExecResult> => {
-			let roundStalled = false;
-			const roundWatchdog = new StallWatchdog({
-				idleTimeoutMs: this._stallTimeoutMs,
-				onStall: () => { roundStalled = true; },
-			});
-			attemptScope.addFinalizer(() => roundWatchdog.dispose());
-			const roundControl: _AttemptControl = { watchdog: roundWatchdog, signal: ctx.signal, isStalled: () => roundStalled };
-			return subAgent.timeout > 0
+			// 超时走 stalled/salvage（保产出+总结，主路径）；②timeout() 组合器
+			// +1s 余量——竞态必须让①先触发（实测同值时组合器在下一 delta 到达前
+			// 先杀，salvage 路径被旁路）；仅在限后 1s 内完全零 delta 的挂起场景
+			// 才由组合器硬杀（无产出可保，failure 可接受）。
+			const runOnce = (req: IAgentTurnRequest) => subAgent.timeout > 0
 				? timeout(
-					this._executeWithBudget(executeFn, req, subAgent.budget, subAgent.tokenCollector, emitWrapped, roundControl, subAgent.timeout),
-					subAgent.timeout + 1_000, // 同 runOnce：+1s 余量让循环内 wall-clock salvage 先触发
+					this._executeWithBudget(executeFn, req, subAgent.budget, subAgent.tokenCollector, emitWrapped, control, subAgent.timeout),
+					subAgent.timeout + 1_000,
 					() => new SubAgentTimeoutError(subAgent.timeout),
 					ctx.signal,
 				)
-				: this._executeWithBudget(executeFn, req, subAgent.budget, subAgent.tokenCollector, emitWrapped, roundControl, 0);
-		};
+				: this._executeWithBudget(executeFn, req, subAgent.budget, subAgent.tokenCollector, emitWrapped, control, 0);
 
-		// ── P1: 停滞时「禁工具强制总结」（2026-07-26，对齐 MiMo max-steps）──
-		// 旧行为：停滞 → output=原始片段+静态 [部分完成] 头。新行为：若有有效工具
-		// 产出（与 salvage 同资格），先用同一 session 复跑一轮禁工具总结
-		// （excludedTools:['*']，对齐 MiMo toolChoice:"none"），让模型自己梳理
-		// 「已完成/未完成/建议」作为交接正文；总结轮也失败（模型真死/再停滞）
-		// → 回退原始片段。salvage 头仍在 settle 路径统一添加（见 _settleSubAgentResult）。
-		if (execResult.stalled && execResult.toolTrace.some(t => t.status === 'ok')) {
-			try {
-				const summaryResult = await runFreshRound({
-					...request,
-					messages: [...request.messages, { role: 'user', content: _STALL_SUMMARY_PROMPT }],
-					excludedTools: ['*'],
+			// ── Main execution ──
+			let execResult = await runOnce(request);
+			// P3: 被取消时直接以 FiberInterrupt 展开（跳过所有门控复核，不对已取消的
+			// 子 agent 空耗 token），由 fiber exit 统一映射为 cancelled 结果。
+			if (execResult.interrupted) { throw new FiberInterrupt(ctx.signal.reason ?? 'user'); }
+
+			// 全新看门狗的补充轮执行器（P1 停滞总结 / P3 结构化输出共用）。
+			// attempt 级 stalled 标志不可逆（tick 不清），任何补充轮都必须用全新
+			// watchdog/control，否则首个 delta 检查即沿用旧停滞状态误判。
+			const runFreshRound = async (req: IAgentTurnRequest): Promise<_ExecResult> => {
+				let roundStalled = false;
+				const roundWatchdog = new StallWatchdog({
+					idleTimeoutMs: this._stallTimeoutMs,
+					onStall: () => { roundStalled = true; },
 				});
-				if (summaryResult.interrupted) { throw new FiberInterrupt(ctx.signal.reason ?? 'user'); }
-				if (!summaryResult.stalled && summaryResult.output.trim().length > 0) {
-					execResult = {
-						...execResult,
-						output: summaryResult.output,
-						// 保留原 toolTrace/filesModified/stalled：停滞事实与打捞轨迹不变
-					};
+				attemptScope.addFinalizer(() => roundWatchdog.dispose());
+				const roundControl: _AttemptControl = { watchdog: roundWatchdog, signal: ctx.signal, isStalled: () => roundStalled };
+				return subAgent.timeout > 0
+					? timeout(
+						this._executeWithBudget(executeFn, req, subAgent.budget, subAgent.tokenCollector, emitWrapped, roundControl, subAgent.timeout),
+						subAgent.timeout + 1_000, // 同 runOnce：+1s 余量让循环内 wall-clock salvage 先触发
+						() => new SubAgentTimeoutError(subAgent.timeout),
+						ctx.signal,
+					)
+					: this._executeWithBudget(executeFn, req, subAgent.budget, subAgent.tokenCollector, emitWrapped, roundControl, 0);
+			};
+
+			// ── P1: 停滞时「禁工具强制总结」（2026-07-26，对齐 MiMo max-steps）──
+			// 旧行为：停滞 → output=原始片段+静态 [部分完成] 头。新行为：若有有效工具
+			// 产出（与 salvage 同资格），先用同一 session 复跑一轮禁工具总结
+			// （excludedTools:['*']，对齐 MiMo toolChoice:"none"），让模型自己梳理
+			// 「已完成/未完成/建议」作为交接正文；总结轮也失败（模型真死/再停滞）
+			// → 回退原始片段。salvage 头仍在 settle 路径统一添加（见 _settleSubAgentResult）。
+			if (execResult.stalled && execResult.toolTrace.some(t => t.status === 'ok')) {
+				try {
+					const summaryResult = await runFreshRound({
+						...request,
+						messages: [...request.messages, { role: 'user', content: _STALL_SUMMARY_PROMPT }],
+						excludedTools: ['*'],
+					});
+					if (summaryResult.interrupted) { throw new FiberInterrupt(ctx.signal.reason ?? 'user'); }
+					if (!summaryResult.stalled && summaryResult.output.trim().length > 0) {
+						execResult = {
+							...execResult,
+							output: summaryResult.output,
+							// 保留原 toolTrace/filesModified/stalled：停滞事实与打捞轨迹不变
+						};
+					}
+				} catch (summaryErr) {
+					if (summaryErr instanceof FiberInterrupt) { throw summaryErr; }
+					// 总结轮失败（模型真死/超时）——best effort，回退原始片段
+					this._log?.('warn', `[SubAgent] stall summary round failed, falling back to raw partial output: ${summaryErr}`);
 				}
-			} catch (summaryErr) {
-				if (summaryErr instanceof FiberInterrupt) { throw summaryErr; }
-				// 总结轮失败（模型真死/超时）——best effort，回退原始片段
-				this._log?.('warn', `[SubAgent] stall summary round failed, falling back to raw partial output: ${summaryErr}`);
 			}
-		}
 
 			// ── Completion Gate (MiMo TaskGate) ──
 			// P2d: 首轮 gateResult 注入 DB 真相（若有 taskLookup）。无 taskLookup → undefined，退化为现状。
 			const firstIncomplete = await this._queryIncompleteTasks(subAgent);
-			let structured = gateResult(execResult.output, this._buildGateContext(subAgent, execResult, firstIncomplete?.map(t => t.id)));
+			let structured = gateResult(execResult.output, buildSubAgentGateContext(subAgent, execResult, firstIncomplete?.map(t => t.id)));
 
 			// ── postStop self-verification round (MiMo preStop/postStop ReAct) ──
 			const postStop = subAgent.options.postStop;
@@ -1349,7 +722,7 @@ export class UnifiedSubAgentDispatch {
 				});
 				if (execResult.interrupted) { throw new FiberInterrupt(ctx.signal.reason ?? 'user'); }
 				const postStopIncomplete = await this._queryIncompleteTasks(subAgent);
-				structured = gateResult(execResult.output, this._buildGateContext(subAgent, execResult, postStopIncomplete?.map(t => t.id)));
+				structured = gateResult(execResult.output, buildSubAgentGateContext(subAgent, execResult, postStopIncomplete?.map(t => t.id)));
 				postStopRound++;
 			}
 
@@ -1371,43 +744,43 @@ export class UnifiedSubAgentDispatch {
 					...request,
 					messages: [...request.messages, { role: 'user', content: gateDecision.reentryText }],
 				});
-			if (execResult.interrupted) { throw new FiberInterrupt(ctx.signal.reason ?? 'user'); }
-			structured = gateResult(execResult.output, this._buildGateContext(subAgent, execResult, incomplete.map(t => t.id)));
-			taskGateRound++;
-		}
+				if (execResult.interrupted) { throw new FiberInterrupt(ctx.signal.reason ?? 'user'); }
+				structured = gateResult(execResult.output, buildSubAgentGateContext(subAgent, execResult, incomplete.map(t => t.id)));
+				taskGateRound++;
+			}
 
-		// ── P3: output_schema 结构化交接（2026-07-26，对齐 MiMo output_schema）──
-		// 主执行正常结束（未停滞）且委派方指定 outputSchema 时，追加禁工具结构化轮：
-		// 要求模型把最终结论整理为符合 schema 的 JSON 对象；轻量校验（可解析 +
-		// schema.required 键齐全），不合格重试 1 次；成功则 output=序列化对象，
-		// 失败回退自由文本（best effort，不硬失败）。
-		if (subAgent.options.outputSchema && !execResult.stalled) {
-			const schemaText = JSON.stringify(subAgent.options.outputSchema);
-			for (let schemaAttempt = 0; schemaAttempt < 2; schemaAttempt++) {
-				try {
-					const prompt = schemaAttempt === 0
-						? `请把最终结论整理为符合以下 JSON Schema 的 JSON 对象并输出。禁止调用任何工具；只输出 JSON 对象本体，不要输出其他文字或 markdown 代码块：\n${schemaText}`
-						: `上次输出不符合要求。请只输出符合以下 JSON Schema 的 JSON 对象本体（不要输出其他文字，不要用 markdown 代码块包裹）：\n${schemaText}`;
-					const schemaResult = await runFreshRound({
-						...request,
-						messages: [...request.messages, { role: 'user', content: prompt }],
-						excludedTools: ['*'],
-					});
-					if (schemaResult.interrupted) { throw new FiberInterrupt(ctx.signal.reason ?? 'user'); }
-					if (schemaResult.stalled) { continue; }
-					const parsed = _tryParseJsonObject(schemaResult.output);
-					if (parsed && _matchesRequiredKeys(parsed, subAgent.options.outputSchema)) {
-						execResult = { ...execResult, output: JSON.stringify(parsed) };
-						break;
+			// ── P3: output_schema 结构化交接（2026-07-26，对齐 MiMo output_schema）──
+			// 主执行正常结束（未停滞）且委派方指定 outputSchema 时，追加禁工具结构化轮：
+			// 要求模型把最终结论整理为符合 schema 的 JSON 对象；轻量校验（可解析 +
+			// schema.required 键齐全），不合格重试 1 次；成功则 output=序列化对象，
+			// 失败回退自由文本（best effort，不硬失败）。
+			if (subAgent.options.outputSchema && !execResult.stalled) {
+				const schemaText = JSON.stringify(subAgent.options.outputSchema);
+				for (let schemaAttempt = 0; schemaAttempt < 2; schemaAttempt++) {
+					try {
+						const prompt = schemaAttempt === 0
+							? `请把最终结论整理为符合以下 JSON Schema 的 JSON 对象并输出。禁止调用任何工具；只输出 JSON 对象本体，不要输出其他文字或 markdown 代码块：\n${schemaText}`
+							: `上次输出不符合要求。请只输出符合以下 JSON Schema 的 JSON 对象本体（不要输出其他文字，不要用 markdown 代码块包裹）：\n${schemaText}`;
+						const schemaResult = await runFreshRound({
+							...request,
+							messages: [...request.messages, { role: 'user', content: prompt }],
+							excludedTools: ['*'],
+						});
+						if (schemaResult.interrupted) { throw new FiberInterrupt(ctx.signal.reason ?? 'user'); }
+						if (schemaResult.stalled) { continue; }
+						const parsed = _tryParseJsonObject(schemaResult.output);
+						if (parsed && _matchesRequiredKeys(parsed, subAgent.options.outputSchema)) {
+							execResult = { ...execResult, output: JSON.stringify(parsed) };
+							break;
+						}
+					} catch (schemaErr) {
+						if (schemaErr instanceof FiberInterrupt) { throw schemaErr; }
+						this._log?.('warn', `[SubAgent] output_schema round ${schemaAttempt + 1} failed: ${schemaErr}`);
 					}
-				} catch (schemaErr) {
-					if (schemaErr instanceof FiberInterrupt) { throw schemaErr; }
-					this._log?.('warn', `[SubAgent] output_schema round ${schemaAttempt + 1} failed: ${schemaErr}`);
 				}
 			}
-		}
 
-		return { execResult, structured };
+			return { execResult, structured };
 		}), {
 			times: 1,
 			// 仅重试非超时的瞬态失败；中断/超时/已取消信号不重试（对齐旧语义）。
@@ -1555,43 +928,43 @@ export class UnifiedSubAgentDispatch {
 			// salvage 保留原 exitReason（父代理可见 partial 性质），gate 成功才归一 completed；
 			// completedPartial 归一为 'partial'，让 formatDelegationResult 标 RESULT: partial。
 			exitReason: gateSuccess ? 'completed' : (completedPartial ? 'partial' : exitReason),
-		toolTrace: execResult.toolTrace,
-		filesModified: execResult.filesModified.length > 0 ? execResult.filesModified : undefined,
-		structured,
-	};
-	subAgent.status = effectiveSuccess ? 'done' : 'error';
-	// 登记会话复用（done/error 均可被后续单任务 delegate_task follow-up 续跑）
-	this._markReusable(subAgent);
+			toolTrace: execResult.toolTrace,
+			filesModified: execResult.filesModified.length > 0 ? execResult.filesModified : undefined,
+			structured,
+		};
+		subAgent.status = effectiveSuccess ? 'done' : 'error';
+		// 登记会话复用（done/error 均可被后续单任务 delegate_task follow-up 续跑）
+		this._markReusable(subAgent);
 
-	// P3：output_schema 结构化交接成功时，RESULT body 保持纯净 JSON——
-	// 跳过 files-modified NOTE 与 COMPLETION GATE footer（对齐 MiMo
-	// output_schema「schema requested ⇒ structured only, never prose」；
-	// 校验：output 可解析为对象且 schema.required 键齐全）。
-	const _cleanSchemaHandover = (() => {
-		if (!subAgent.options.outputSchema) { return false; }
-		const parsed = _tryParseJsonObject(subAgent.result.output ?? '');
-		return !!parsed && _matchesRequiredKeys(parsed, subAgent.options.outputSchema);
-	})();
+		// P3：output_schema 结构化交接成功时，RESULT body 保持纯净 JSON——
+		// 跳过 files-modified NOTE 与 COMPLETION GATE footer（对齐 MiMo
+		// output_schema「schema requested ⇒ structured only, never prose」；
+		// 校验：output 可解析为对象且 schema.required 键齐全）。
+		const _cleanSchemaHandover = (() => {
+			if (!subAgent.options.outputSchema) { return false; }
+			const parsed = _tryParseJsonObject(subAgent.result.output ?? '');
+			return !!parsed && _matchesRequiredKeys(parsed, subAgent.options.outputSchema);
+		})();
 
-	if (!_cleanSchemaHandover) {
-		// ── File change coordination (inspired by Hermes file_state) ──
-		// If the sub-agent modified files, append a warning to the output
-		// so the parent agent knows to re-read those files.
-		if (execResult.filesModified.length > 0) {
-			const fileList = execResult.filesModified.join(', ');
+		if (!_cleanSchemaHandover) {
+			// ── File change coordination (inspired by Hermes file_state) ──
+			// If the sub-agent modified files, append a warning to the output
+			// so the parent agent knows to re-read those files.
+			if (execResult.filesModified.length > 0) {
+				const fileList = execResult.filesModified.join(', ');
+				subAgent.result = {
+					...subAgent.result,
+					output: (subAgent.result.output ?? '') +
+						`\n\n[NOTE: subagent modified files — re-read before editing: ${fileList}]`,
+				};
+			}
+			// Append the Completion Gate verdict so the parent agent gets a reliable contract.
 			subAgent.result = {
 				...subAgent.result,
 				output: (subAgent.result.output ?? '') +
-					`\n\n[NOTE: subagent modified files — re-read before editing: ${fileList}]`,
+					`\n\n[COMPLETION GATE] status=${structured.status} acceptanceMet=${structured.acceptanceMet} — ${structured.reason}`,
 			};
 		}
-		// Append the Completion Gate verdict so the parent agent gets a reliable contract.
-		subAgent.result = {
-			...subAgent.result,
-			output: (subAgent.result.output ?? '') +
-				`\n\n[COMPLETION GATE] status=${structured.status} acceptanceMet=${structured.acceptanceMet} — ${structured.reason}`,
-		};
-	}
 
 		this._emit(eventSink, {
 			type: SubAgentEventType.Completed,
@@ -1618,27 +991,6 @@ export class UnifiedSubAgentDispatch {
 	 * Ground truth: files actually modified, whether it errored/truncated, and the
 	 * acceptance criteria the parent spelled out in the task briefing (ACCEPTANCE clause).
 	 */
-	private _buildGateContext(subAgent: SubAgentInstance, exec: _ExecResult, incompleteTasks?: readonly string[]): ICompletionGateContext {
-		const acceptance = extractAcceptanceCriteria(subAgent.task);
-		// B：探索型子代理 ground-truth — 该子代理调用了工具、但没有任何真正的探索类工具。
-		// 纯代码事实判定（toolTrace 是真实执行记录，不依赖 LLM 自述）：
-		//   - toolTrace.length > 0：要求子代理确实执行过工具（排除零工具调用场景——
-		//     零工具可能是合理的"从上下文直接作答"，也是重试测试的合法形态，不应误降级）。
-		//   - !usedRealExploration：但所有调用都不属于探索类工具（如只调用了索引/元工具），
-		//     说明子代理"看似忙了，实际没探索"，由 gateResult 把 status 降级为 partial。
-		const usedRealExploration = exec.toolTrace.some(t => _EXPLORE_REAL_TOOLS.has(t.toolName));
-		const noRealExploration = subAgent.type === SubAgentType.Explore
-			&& exec.toolTrace.length > 0
-			&& !usedRealExploration;
-		return {
-			filesTouched: exec.filesModified,
-			errored: false,
-			truncated: exec.budgetExhausted || !!exec.stalled,
-			acceptanceCriteria: acceptance.length > 0 ? acceptance : undefined,
-			incompleteTasks,
-			noRealExploration,
-		};
-	}
 
 	/**
 	 * P2d: Query the DB TaskBoard for non-terminal tasks owned by this sub-agent.
@@ -1835,25 +1187,9 @@ export class UnifiedSubAgentDispatch {
 	 * Check if a tool is allowed for a given sub-agent.
 	 */
 	isToolAllowed(type: SubAgentType, toolName: string): boolean {
-		const perms = SUB_AGENT_PERMISSIONS[type];
-		// If there's an explicit allow list that's not '*', check against it
-		if (perms.allowedToolPatterns.length > 0 && !perms.allowedToolPatterns.includes('*')) {
-			const matchesAllow = perms.allowedToolPatterns.some(pattern => {
-				if (pattern === toolName) { return true; }
-				if (pattern.endsWith('*') && toolName.startsWith(pattern.slice(0, -1))) { return true; }
-				return false;
-			});
-			if (!matchesAllow) { return false; }
-		}
-		// Check deny list
-		if (perms.deniedToolPatterns.includes(toolName) || perms.deniedToolPatterns.includes('*')) {
-			// Deny '*' means deny all except explicitly allowed
-			if (perms.deniedToolPatterns.includes('*') && perms.allowedToolPatterns.includes(toolName)) {
-				return true; // Explicitly allowed overrides deny-all
-			}
-			return false;
-		}
-		return true;
+		// 实现已搬至 subAgentPureHelpers.ts（零 this 依赖的纯逻辑，2026-09-20 第二刀）；
+		// 保留公开方法签名以兼容调用方（接口声明见 agentToolIsolator.ts）。
+		return isToolAllowedForType(type, toolName);
 	}
 
 	/**
@@ -1923,154 +1259,18 @@ export class UnifiedSubAgentDispatch {
 	 * Build messages array for the sub-agent.
 	 * Injects context (e.g., repo_overview) if provided.
 	 */
-	private _buildMessages(subAgent: SubAgentInstance): IChatMessage[] {
-		const messages: IChatMessage[] = [];
-
-		// MiMo RETURN_FORMAT 契约（2026-07-23）：非 forkContext 子代理的任务消息
-		// 注入强制返回格式（**Status**/**Summary** 头）。契约随任务消息下发，
-		// 系统提示词保持不变（冻结前缀缓存不受影响）；完成门据此优先采信
-		// 模型自报状态（parseReturnHeader），无头时回退推断。
-		// forkContext（peer/plan，主 agent 级角色）不注入 —— 保持父级语义。
-		const task = subAgent.options.forkContext
-			? subAgent.task
-			: injectReturnFormatIntoTask(subAgent.task);
-
-		// Inject context as a system-like user message prefix
-		// task 用 <user_query>...</user_query> 包装，使子 agent 明确区分「用户真实指令」
-		// 与注入的 codebase 上下文。
-		if (subAgent.options.context) {
-			messages.push({
-				role: 'user',
-				content: `## Codebase Context\n\n${subAgent.options.context}\n\n---\n\n## Task\n\n${wrapUserQuery(task)}`,
-			});
-		} else {
-			messages.push({
-				role: 'user',
-				content: wrapUserQuery(task),
-			});
-		}
-
-		return messages;
-	}
 
 	/**
 	 * Build system prompt based on SubAgentType.
 	 * Inspired by OpenCode's per-agent prompt files.
 	 */
 	private _buildSystemPrompt(subAgent: SubAgentInstance): string {
-		// Fork prefix-cache alignment (MiMo): reuse the parent's frozen system
-		// prompt verbatim so the LLM provider's prompt cache hits.
-		if (subAgent.options.forkContext) {
-			return subAgent.options.forkContext.systemPrompt;
-		}
-		const typePrompts: Record<SubAgentType, string> = {
-			[SubAgentType.Explore]: `You are a code-explorer sub-agent. You excel at thoroughly navigating and understanding codebases.
-
-## TOOL CALL BUDGET (strictly enforced):
-| Tool | Max Calls | Purpose |
-|------|-----------|---------|
-| search_graph | 5 | Find symbols, classes, functions by name |
-| search_code | 5 | Grep content patterns across ALL files |
-| search_files | 10 | List file names matching a pattern ONLY |
-| file_read | 15 | Read specific files you ALREADY identified |
-| get_code_snippet | 3 | Get full code for a specific symbol |
-TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
-
-## MANDATORY WORKFLOW (follow this exact sequence):
-1. **search_graph** — Find key symbols/classes/functions related to the task (3-5 calls)
-2. **search_code** — Grep for content patterns if search_graph didn't find them (2-3 calls)
-3. **search_files** — ONLY to verify file names exist (5-10 calls max)
-4. **file_read** — Read ONLY the files you identified as relevant (10-15 calls)
-5. **get_code_snippet** — Get full code for 2-3 most critical symbols
-6. **STOP** — You now have enough information. Produce your output.
-
-## ANTI-PATTERNS (never do these):
-- ❌ Calling search_files 20+ times to scan a directory — use search_code instead
-- ❌ Repeating the same search_files query — if it returned no results, it won't magically work
-- ❌ Reading files you haven't verified are relevant — read only after search confirms relevance
-- ❌ Searching for the same pattern in different directories — search_code searches ALL files at once
-- ❌ Continuing to search after finding the key files — STOP and START reading
-
-## CRITICAL TOOL DISTINCTION:
-- **search_code** = grep. Searches file CONTENTS for a pattern across ALL files. Use this to find where a variable/function is used.
-- **search_files** = file listing. Searches file NAMES matching a pattern. Use this ONLY when you need to know what files exist, not what's inside them.
-- **search_graph** = structural search. Finds symbols, callers, dependencies. Use this FIRST.
-
-## Rules:
-- DO NOT edit/modify any files — you are in read-only mode
-- NEVER call delegate_task recursively (you ARE a sub-agent)
-- Always use search_graph as your FIRST tool
-- When you have found the key files (usually after 15-20 tool calls), STOP searching and START reading
-- Report findings in a clear structured format`,
-
-			[SubAgentType.General]: `You are a general-purpose agent. You can read, write, and execute commands.
-- Complete the task described by the user
-- You CAN spawn sub-agents using delegate_task when the task can be decomposed into independent parallel subtasks
-- Report your results clearly
-- If you encounter errors, explain what went wrong
-
-## When to use delegate_task:
-- The task can be decomposed into 2+ independent subtasks
-- You need to run multiple independent investigations simultaneously
-- The subtask is complex enough to benefit from a dedicated context
-
-## When NOT to use delegate_task:
-- The task is simple and can be completed in one turn
-- You need to maintain ongoing context/memory across steps
-- You are already at maximum spawn depth (check parent agent constraints)
-
-## Writing a good delegated task (CRITICAL):
-- The sub-agent you spawn starts BLANK — it has no access to your conversation.
-- Write each task as a self-contained briefing:
-  GOAL (what to accomplish + why), CONTEXT (what you already know / ruled out),
-  ACCEPTANCE (how to know it is done + output limits, e.g. "report in <200 words").
-- Batch tasks (tasks: [...]) must be mutually independent; sequence dependent steps inside one task string.
-- Pick a role with \`type\`: General (read+write), Explore (read-only investigate), Scout (read-only research).
-  Batch tasks default to Explore — set General if the batched task must write files.`,
-
-			[SubAgentType.Scout]: `You are a research agent for external libraries, dependency source, and documentation.
-- Use repo_clone first when the task involves a GitHub repository
-- After cloning, use Glob, Search Code, Read to inspect the cloned repository
-- Use WebFetch for official documentation pages
-- Use WebSearch to find relevant documentation
-- DO NOT edit any files — you are in read-only mode
-- Focus on understanding architecture, patterns, and key abstractions`,
-		};
-
-	// 经统一 composer 组装（stable-only：子 agent 无 context/volatile 膨胀），
-	// 保证与主 loop 相同的 \n\n 分节与前缀指纹口径（P4 单源构造器）。
-	// 子代理用 GLOBAL_SYSTEM_PREFIX_SUBAGENT（2026-07-26）：去除委派导向段落，
-	// 杜绝子代理被诱导嵌套委派（事故 1785037741973）。
-	// agentId 驱动（2026-07-27）：委派 / plan_explore / pre-loop 解析到内置 Agent 后，
-	// 直接用其真实 systemPrompt 作为 stable 主体，替代按 type 选取的通用折中提示词。
-	const stablePrompt = subAgent.options.systemPrompt || typePrompts[subAgent.type] || typePrompts[SubAgentType.General];
-	// 回答语言限制（与父代理一致，Hermes 风格）：'auto' 跟随 Agent Studio 显示语言设置
-	//（this.languageSetting，默认 zh-CN），不探测操作系统语言。父代理显式覆盖场景经
-	// forkContext 路径复用父 frozen prompt 已含该指令。
-	const responseLangDirective = buildResponseLanguageDirective(this.responseLanguageSetting, this.languageSetting);
-	return composeFrozenPrefix({
-		stable: joinSections(
-			stablePrompt,
-			GLOBAL_SYSTEM_PREFIX_SUBAGENT,
-			GLOBAL_SYSTEM_SUFFIX,
-			responseLangDirective,
-		),
-			context: '',
-			volatile: '',
-		});
+		return buildSubAgentSystemPrompt(subAgent, this.responseLanguageSetting, this.languageSetting);
 	}
 
 	/**
 	 * Format bytes into a human-readable string (e.g., "1.5 KB", "2.3 MB").
 	 */
-	private _formatBytes(bytes: number): string {
-		if (bytes < 1024) { return `${bytes} B`; }
-		const units = ['KB', 'MB', 'GB'];
-		let i = 0;
-		let size = bytes / 1024;
-		while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
-		return `${size.toFixed(1)} ${units[i]}`;
-	}
 
 	/**
 	 * Execute the sub-agent with budget tracking and fine-grained event emission.
@@ -2121,28 +1321,28 @@ TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
 		// Size and (on error) text of the most recent tool_result, used to fill
 		// SubAgentToolTraceEntry.resultSizeBytes / error at the following tool_end.
 		let currentToolResultSize = 0;
-			let currentToolResultText: string | undefined;
+		let currentToolResultText: string | undefined;
 
-	// ── 流式追踪（定位 "subagent 草草结束/无输出" 类 bug）──
-	const _t0Stream = Date.now();
-	let _deltaCount = 0;
-	let _textDeltaCount = 0;
-	let _textBytes = 0;
-	let _lastTextPreview = '';
-	let _prevDeltaAt = 0;
-	// P1: 单响应软上限计时（2026-07-26）。0 = 等待新响应开始；首个内容 delta 起表。
-	// tool_end/'done'（模型流结束标记）归零——工具执行时间不计入响应窗口
-	// （执行自有 toolExecutionGuard 兜底，嵌套 delegate 可达 630s）。
-	let _responseStartAt = 0;
-	// ── 收敛检测：search_files 调用限制 + 无新文件发现计数 ──
-	// 2026-07-26 分析日志 1785068621468：subagent 在 UE5 大代码库上做线性扫描
-	// （127 次 search_files + 74 次 file_read 其中 21 次重复），15min 超时。
-	// 限制 search_files 调用次数，并在连续 N 次迭代无新文件发现时注入收敛提示。
-	const _searchFilesCount = { value: 0 };
-	const _SEARCH_FILES_LIMIT = 30;
-	const _CONVERGENCE_THRESHOLD = 5;
-	let _consecutiveNoNewFiles = 0;
-	const _uniqueFilesFound = new Set<string>();
+		// ── 流式追踪（定位 "subagent 草草结束/无输出" 类 bug）──
+		const _t0Stream = Date.now();
+		let _deltaCount = 0;
+		let _textDeltaCount = 0;
+		let _textBytes = 0;
+		let _lastTextPreview = '';
+		let _prevDeltaAt = 0;
+		// P1: 单响应软上限计时（2026-07-26）。0 = 等待新响应开始；首个内容 delta 起表。
+		// tool_end/'done'（模型流结束标记）归零——工具执行时间不计入响应窗口
+		// （执行自有 toolExecutionGuard 兜底，嵌套 delegate 可达 630s）。
+		let _responseStartAt = 0;
+		// ── 收敛检测：search_files 调用限制 + 无新文件发现计数 ──
+		// 2026-07-26 分析日志 1785068621468：subagent 在 UE5 大代码库上做线性扫描
+		// （127 次 search_files + 74 次 file_read 其中 21 次重复），15min 超时。
+		// 限制 search_files 调用次数，并在连续 N 次迭代无新文件发现时注入收敛提示。
+		const _searchFilesCount = { value: 0 };
+		const _SEARCH_FILES_LIMIT = 30;
+		const _CONVERGENCE_THRESHOLD = 5;
+		let _consecutiveNoNewFiles = 0;
+		const _uniqueFilesFound = new Set<string>();
 		const stream = executeFn(request, budget);
 		// Effect model — hung-stream escape hatch: if the fiber is interrupted
 		// while the stream produces no further deltas, actively return() the
@@ -2158,7 +1358,7 @@ TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
 			});
 		}
 		try {
-		for await (const delta of stream) {
+			for await (const delta of stream) {
 				_deltaCount++;
 				const _now = Date.now();
 				// DELTA GAP 检测：>10s 空窗（定位"模型在等什么"）
@@ -2181,387 +1381,387 @@ TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
 					}
 				}
 
-			// ── Thinking (inspired by Hermes TASK_THINKING) ──
-			if (delta.type === 'thinking' && emitEvent) {
-				const text = typeof delta.content === 'string' ? delta.content : '';
-				if (text) {
-					emitEvent({
-						type: SubAgentEventType.Thinking,
-						thinkingText: text.slice(0, 200),
-					});
+				// ── Thinking (inspired by Hermes TASK_THINKING) ──
+				if (delta.type === 'thinking' && emitEvent) {
+					const text = typeof delta.content === 'string' ? delta.content : '';
+					if (text) {
+						emitEvent({
+							type: SubAgentEventType.Thinking,
+							thinkingText: text.slice(0, 200),
+						});
+					}
 				}
-			}
 
-			// ── Tool started ──
-			// 子代理 tool_start/tool_end 通过 fireSubAgentTrace 旁路总线实时推送到
-			// SubAgentCard（不走 agentTurnExecutor 的 delta 流，不会触发 orphan 检测）。
-			if (delta.type === 'tool_start') {
-				currentToolName = delta.toolName || 'unknown';
-				currentToolArgsSize = 0;
-				currentToolArgs = undefined;
-				currentToolArgsRawChunks = [];
-				currentToolResultSize = 0;
-				currentToolResultText = undefined;
-				if (delta.metadata) {
-					try {
-						currentToolArgsSize = JSON.stringify(delta.metadata).length;
-						currentToolArgs = delta.metadata;
-					} catch { /* ignore */ }
-				}
-				this._log?.('info', `[SubAgent stream] tool_start | ${currentToolName} (argsSize~${currentToolArgsSize}B) delta#${_deltaCount} elapsed=${Math.round((Date.now() - _t0Stream) / 1000)}s agent=${request.agentId}`);
-				if (emitEvent) {
-					let argsPreview: string | undefined;
+				// ── Tool started ──
+				// 子代理 tool_start/tool_end 通过 fireSubAgentTrace 旁路总线实时推送到
+				// SubAgentCard（不走 agentTurnExecutor 的 delta 流，不会触发 orphan 检测）。
+				if (delta.type === 'tool_start') {
+					currentToolName = delta.toolName || 'unknown';
+					currentToolArgsSize = 0;
+					currentToolArgs = undefined;
+					currentToolArgsRawChunks = [];
+					currentToolResultSize = 0;
+					currentToolResultText = undefined;
 					if (delta.metadata) {
-						try { argsPreview = JSON.stringify(delta.metadata).slice(0, 200); } catch { /* ignore */ }
+						try {
+							currentToolArgsSize = JSON.stringify(delta.metadata).length;
+							currentToolArgs = delta.metadata;
+						} catch { /* ignore */ }
 					}
-					emitEvent({
-						type: SubAgentEventType.ToolStarted,
-						toolName: currentToolName,
-						toolArgsPreview: argsPreview,
-						toolsCompleted: apiCallCount,
-					});
-				}
-			}
-
-			// ── Tool arguments streaming ──
-			if (delta.type === 'tool_args' && delta.content) {
-				currentToolArgsSize += delta.content.length;
-				// Accumulate the raw argument JSON so it can be parsed at tool_end.
-				// This is the primary source of args for file-change detection,
-				// since tool_start.metadata is empty on the main execution path.
-				currentToolArgsRawChunks.push(delta.content);
-			}
-
-			// ── Tool result (captured for trace size / error text) ──
-			if (delta.type === 'tool_result' && typeof delta.content === 'string') {
-				currentToolResultSize = delta.content.length;
-				currentToolResultText = delta.content;
-			}
-
-			// ── Tool completed (inspired by Hermes TASK_TOOL_COMPLETED) ──
-			if (delta.type === 'tool_end') {
-				apiCallCount++;
-				const toolStatus: 'ok' | 'error' = delta.success === false ? 'error' : 'ok';
-				// 在此将分块累积的 raw args 拼成最终字符串（仅末尾 join 一次，不产生绳索串）
-				const currentToolArgsRaw = currentToolArgsRawChunks.join('');
-
-				// Resolve tool arguments: prefer the accumulated `tool_args` JSON
-				// stream (authoritative on the main path); fall back to metadata
-				// seeded at tool_start. Without this, file-change detection never
-				// fires because tool_start carries no parameters.
-				if (!currentToolArgs && currentToolArgsRaw) {
-					try {
-						const parsed = JSON.parse(currentToolArgsRaw);
-						if (parsed && typeof parsed === 'object') {
-							currentToolArgs = parsed as Record<string, unknown>;
+					this._log?.('info', `[SubAgent stream] tool_start | ${currentToolName} (argsSize~${currentToolArgsSize}B) delta#${_deltaCount} elapsed=${Math.round((Date.now() - _t0Stream) / 1000)}s agent=${request.agentId}`);
+					if (emitEvent) {
+						let argsPreview: string | undefined;
+						if (delta.metadata) {
+							try { argsPreview = JSON.stringify(delta.metadata).slice(0, 200); } catch { /* ignore */ }
 						}
-					} catch { /* incomplete or non-JSON args — ignore */ }
-				}
-				if (currentToolArgsRaw && !currentToolArgsSize) {
-					currentToolArgsSize = currentToolArgsRaw.length;
-				}
-
-				const traceEntry: SubAgentToolTraceEntry = {
-					toolName: currentToolName || 'unknown',
-					status: toolStatus,
-					argsSizeBytes: currentToolArgsSize || undefined,
-					resultSizeBytes: currentToolResultSize || undefined,
-					error: toolStatus === 'error' ? (currentToolResultText?.slice(0, 500) || undefined) : undefined,
-				};
-				toolTrace.push(traceEntry);
-				this._log?.('info', `[SubAgent stream] tool_end | ${currentToolName} status=${toolStatus} resultSize=${currentToolResultSize}B apiCalls=${apiCallCount} delta#${_deltaCount} elapsed=${Math.round((Date.now() - _t0Stream) / 1000)}s agent=${request.agentId}`);
-
-				// ── File change coordination (inspired by Hermes file_state) ──
-				// Track files modified by file-writing tools so the parent agent
-				// can be warned that its cached file reads may be stale.
-				if (currentToolName && currentToolArgs && toolStatus === 'ok') {
-					const filePath = this._extractModifiedFile(currentToolName, currentToolArgs);
-					if (filePath && !filesModified.includes(filePath)) {
-						filesModified.push(filePath);
+						emitEvent({
+							type: SubAgentEventType.ToolStarted,
+							toolName: currentToolName,
+							toolArgsPreview: argsPreview,
+							toolsCompleted: apiCallCount,
+						});
 					}
 				}
 
-			// 通过 fireSubAgentTrace 旁路总线实时推送工具完成事件到 SubAgentCard
-			if (emitEvent) {
-				// P4: 结构化截断（previewStructured 模块级实现：先解内容包装，
-				// 对象保留顶层 key 截断 value，数组给元素摘要，不产生索引键垃圾）
-				let resultPreview: string | undefined;
-				if (currentToolResultText !== undefined) {
-					resultPreview = previewStructured(currentToolResultText, 500);
-				} else if (currentToolResultSize > 0) {
-					resultPreview = `[result: ${this._formatBytes(currentToolResultSize)}]`;
+				// ── Tool arguments streaming ──
+				if (delta.type === 'tool_args' && delta.content) {
+					currentToolArgsSize += delta.content.length;
+					// Accumulate the raw argument JSON so it can be parsed at tool_end.
+					// This is the primary source of args for file-change detection,
+					// since tool_start.metadata is empty on the main execution path.
+					currentToolArgsRawChunks.push(delta.content);
 				}
-				let argsPreview: string | undefined;
-				if (currentToolArgsRaw) {
-					argsPreview = previewStructured(currentToolArgsRaw, 200);
-				} else if (currentToolArgs) {
-						try { argsPreview = JSON.stringify(currentToolArgs); } catch { /* ignore */ }
-						if (argsPreview && argsPreview.length > 200) { argsPreview = argsPreview.slice(0, 200) + '…'; }
+
+				// ── Tool result (captured for trace size / error text) ──
+				if (delta.type === 'tool_result' && typeof delta.content === 'string') {
+					currentToolResultSize = delta.content.length;
+					currentToolResultText = delta.content;
+				}
+
+				// ── Tool completed (inspired by Hermes TASK_TOOL_COMPLETED) ──
+				if (delta.type === 'tool_end') {
+					apiCallCount++;
+					const toolStatus: 'ok' | 'error' = delta.success === false ? 'error' : 'ok';
+					// 在此将分块累积的 raw args 拼成最终字符串（仅末尾 join 一次，不产生绳索串）
+					const currentToolArgsRaw = currentToolArgsRawChunks.join('');
+
+					// Resolve tool arguments: prefer the accumulated `tool_args` JSON
+					// stream (authoritative on the main path); fall back to metadata
+					// seeded at tool_start. Without this, file-change detection never
+					// fires because tool_start carries no parameters.
+					if (!currentToolArgs && currentToolArgsRaw) {
+						try {
+							const parsed = JSON.parse(currentToolArgsRaw);
+							if (parsed && typeof parsed === 'object') {
+								currentToolArgs = parsed as Record<string, unknown>;
+							}
+						} catch { /* incomplete or non-JSON args — ignore */ }
 					}
-					emitEvent({
-						type: SubAgentEventType.ToolCompleted,
+					if (currentToolArgsRaw && !currentToolArgsSize) {
+						currentToolArgsSize = currentToolArgsRaw.length;
+					}
+
+					const traceEntry: SubAgentToolTraceEntry = {
 						toolName: currentToolName || 'unknown',
-						toolStatus,
-						toolsCompleted: apiCallCount,
-						toolResultPreview: resultPreview,
-						toolArgsPreview: argsPreview,
-					});
-				}
+						status: toolStatus,
+						argsSizeBytes: currentToolArgsSize || undefined,
+						resultSizeBytes: currentToolResultSize || undefined,
+						error: toolStatus === 'error' ? (currentToolResultText?.slice(0, 500) || undefined) : undefined,
+					};
+					toolTrace.push(traceEntry);
+					this._log?.('info', `[SubAgent stream] tool_end | ${currentToolName} status=${toolStatus} resultSize=${currentToolResultSize}B apiCalls=${apiCallCount} delta#${_deltaCount} elapsed=${Math.round((Date.now() - _t0Stream) / 1000)}s agent=${request.agentId}`);
 
-				// ── search_files 调用限制 + search_code 引导 ──
-				if (currentToolName === 'search_files') {
-					_searchFilesCount.value++;
-					// 在达到限制前，先引导使用 search_code
-					if (_searchFilesCount.value === 8) {
-						this._log?.('info', `[SubAgent convergence] search_files count 8, suggesting search_code agent=${request.agentId}`);
-						outputChunks.push(`\n\n[SYSTEM] You have called search_files ${_searchFilesCount.value} times. If you are looking for content patterns (variable usage, function calls, text matches), use search_code instead — it searches ALL file contents at once. search_files only lists file NAMES, not content.`);
-					}
-					if (_searchFilesCount.value > _SEARCH_FILES_LIMIT) {
-						this._log?.('warn', `[SubAgent convergence] search_files limit reached (${_SEARCH_FILES_LIMIT}), injecting stop hint agent=${request.agentId}`);
-						outputChunks.push(`\n\n[SYSTEM] You have called search_files ${_searchFilesCount.value} times (limit: ${_SEARCH_FILES_LIMIT}). STOP searching and START reading the files you have already found. If you have enough information, produce your final output NOW.`);
-					}
-				}
-
-				// ── search_code 未使用检测 ──
-				// 如果 search_files 被频繁调用但 search_code 从未被调用，引导使用 search_code
-				if (currentToolName === 'search_files' && _searchFilesCount.value === 5) {
-					const searchCodeCalls = toolTrace.filter(t => t.toolName === 'search_code').length;
-					if (searchCodeCalls === 0) {
-						this._log?.('info', `[SubAgent convergence] search_files used ${_searchFilesCount.value}x but search_code never used, suggesting search_code agent=${request.agentId}`);
-						outputChunks.push(`\n\n[SYSTEM] HINT: You are using search_files repeatedly. If you need to find WHERE a pattern appears in file CONTENTS (not just file names), use search_code with a regex pattern. Example: search_code(pattern="CollectGarbage", filePattern="*.cpp")`);
-					}
-				}
-
-				// ── file_read 重复读取检测 ──
-				if (currentToolName === 'file_read' && currentToolArgs) {
-					const filePath = String(currentToolArgs['path'] ?? currentToolArgs['file_path'] ?? '');
-					if (filePath && _uniqueFilesFound.has(filePath)) {
-						// 文件已在 search_files 中发现过，正常读取
-					} else if (filePath) {
-						// 检查是否已读过（简单路径匹配）
-						const readFiles = toolTrace.filter(t => t.toolName === 'file_read').length;
-						if (readFiles > 20) {
-							this._log?.('warn', `[SubAgent convergence] file_read count ${readFiles} exceeds 20, may be reading too many files agent=${request.agentId}`);
+					// ── File change coordination (inspired by Hermes file_state) ──
+					// Track files modified by file-writing tools so the parent agent
+					// can be warned that its cached file reads may be stale.
+					if (currentToolName && currentToolArgs && toolStatus === 'ok') {
+						const filePath = extractModifiedFile(currentToolName, currentToolArgs);
+						if (filePath && !filesModified.includes(filePath)) {
+							filesModified.push(filePath);
 						}
 					}
+
+					// 通过 fireSubAgentTrace 旁路总线实时推送工具完成事件到 SubAgentCard
+					if (emitEvent) {
+						// P4: 结构化截断（previewStructured 模块级实现：先解内容包装，
+						// 对象保留顶层 key 截断 value，数组给元素摘要，不产生索引键垃圾）
+						let resultPreview: string | undefined;
+						if (currentToolResultText !== undefined) {
+							resultPreview = previewStructured(currentToolResultText, 500);
+						} else if (currentToolResultSize > 0) {
+							resultPreview = `[result: ${formatBytes(currentToolResultSize)}]`;
+						}
+						let argsPreview: string | undefined;
+						if (currentToolArgsRaw) {
+							argsPreview = previewStructured(currentToolArgsRaw, 200);
+						} else if (currentToolArgs) {
+							try { argsPreview = JSON.stringify(currentToolArgs); } catch { /* ignore */ }
+							if (argsPreview && argsPreview.length > 200) { argsPreview = argsPreview.slice(0, 200) + '…'; }
+						}
+						emitEvent({
+							type: SubAgentEventType.ToolCompleted,
+							toolName: currentToolName || 'unknown',
+							toolStatus,
+							toolsCompleted: apiCallCount,
+							toolResultPreview: resultPreview,
+							toolArgsPreview: argsPreview,
+						});
+					}
+
+					// ── search_files 调用限制 + search_code 引导 ──
+					if (currentToolName === 'search_files') {
+						_searchFilesCount.value++;
+						// 在达到限制前，先引导使用 search_code
+						if (_searchFilesCount.value === 8) {
+							this._log?.('info', `[SubAgent convergence] search_files count 8, suggesting search_code agent=${request.agentId}`);
+							outputChunks.push(`\n\n[SYSTEM] You have called search_files ${_searchFilesCount.value} times. If you are looking for content patterns (variable usage, function calls, text matches), use search_code instead — it searches ALL file contents at once. search_files only lists file NAMES, not content.`);
+						}
+						if (_searchFilesCount.value > _SEARCH_FILES_LIMIT) {
+							this._log?.('warn', `[SubAgent convergence] search_files limit reached (${_SEARCH_FILES_LIMIT}), injecting stop hint agent=${request.agentId}`);
+							outputChunks.push(`\n\n[SYSTEM] You have called search_files ${_searchFilesCount.value} times (limit: ${_SEARCH_FILES_LIMIT}). STOP searching and START reading the files you have already found. If you have enough information, produce your final output NOW.`);
+						}
+					}
+
+					// ── search_code 未使用检测 ──
+					// 如果 search_files 被频繁调用但 search_code 从未被调用，引导使用 search_code
+					if (currentToolName === 'search_files' && _searchFilesCount.value === 5) {
+						const searchCodeCalls = toolTrace.filter(t => t.toolName === 'search_code').length;
+						if (searchCodeCalls === 0) {
+							this._log?.('info', `[SubAgent convergence] search_files used ${_searchFilesCount.value}x but search_code never used, suggesting search_code agent=${request.agentId}`);
+							outputChunks.push(`\n\n[SYSTEM] HINT: You are using search_files repeatedly. If you need to find WHERE a pattern appears in file CONTENTS (not just file names), use search_code with a regex pattern. Example: search_code(pattern="CollectGarbage", filePattern="*.cpp")`);
+						}
+					}
+
+					// ── file_read 重复读取检测 ──
+					if (currentToolName === 'file_read' && currentToolArgs) {
+						const filePath = String(currentToolArgs['path'] ?? currentToolArgs['file_path'] ?? '');
+						if (filePath && _uniqueFilesFound.has(filePath)) {
+							// 文件已在 search_files 中发现过，正常读取
+						} else if (filePath) {
+							// 检查是否已读过（简单路径匹配）
+							const readFiles = toolTrace.filter(t => t.toolName === 'file_read').length;
+							if (readFiles > 20) {
+								this._log?.('warn', `[SubAgent convergence] file_read count ${readFiles} exceeds 20, may be reading too many files agent=${request.agentId}`);
+							}
+						}
+					}
+
+					// ── 收敛检测：跟踪新文件发现 ──
+					// search_files 结果中的文件路径提取（简单启发式：匹配含 / 或 \ 的路径片段）
+					if (currentToolName === 'search_files' && currentToolResultText) {
+						const beforeSize = _uniqueFilesFound.size;
+						const pathMatches = currentToolResultText.match(/[A-Za-z]:[\\/][^\s"',;|]+\.(cpp|h|hpp|cs|ts|js|py|rs|java|go|rb|c|cc|cxx|hxx|inl|md|txt|json|xml|yaml|yml|toml|cfg|ini|bat|sh|ps1)/gi);
+						if (pathMatches) {
+							for (const p of pathMatches) { _uniqueFilesFound.add(p); }
+						}
+						if (_uniqueFilesFound.size === beforeSize) {
+							_consecutiveNoNewFiles++;
+						} else {
+							_consecutiveNoNewFiles = 0;
+						}
+						if (_consecutiveNoNewFiles >= _CONVERGENCE_THRESHOLD) {
+							this._log?.('warn', `[SubAgent convergence] ${_consecutiveNoNewFiles} consecutive iterations with no new files, injecting convergence hint agent=${request.agentId}`);
+							outputChunks.push(`\n\n[SYSTEM] You have not discovered any new files in the last ${_consecutiveNoNewFiles} search iterations. The files you need are likely already found. STOP searching and START reading/analyzing them. If you have enough information, produce your final output NOW.`);
+							_consecutiveNoNewFiles = 0; // Reset to avoid spamming hints
+						}
+					}
+
+					budget.consume(1);
+					if (!budget.hasRemaining()) {
+						outputChunks.push('\n\n[Budget exhausted — sub-agent stopped]');
+						budgetExhausted = true;
+						break;
+					}
 				}
 
-				// ── 收敛检测：跟踪新文件发现 ──
-				// search_files 结果中的文件路径提取（简单启发式：匹配含 / 或 \ 的路径片段）
-				if (currentToolName === 'search_files' && currentToolResultText) {
-					const beforeSize = _uniqueFilesFound.size;
-					const pathMatches = currentToolResultText.match(/[A-Za-z]:[\\/][^\s"',;|]+\.(cpp|h|hpp|cs|ts|js|py|rs|java|go|rb|c|cc|cxx|hxx|inl|md|txt|json|xml|yaml|yml|toml|cfg|ini|bat|sh|ps1)/gi);
-					if (pathMatches) {
-						for (const p of pathMatches) { _uniqueFilesFound.add(p); }
-					}
-					if (_uniqueFilesFound.size === beforeSize) {
-						_consecutiveNoNewFiles++;
+				// ── Usage/token tracking ──
+				if (delta.type === 'usage' && delta.usage) {
+					// Accumulate across multiple usage events (one per LLM turn) rather
+					// than overwriting, so multi-iteration sub-agents report total cost.
+					const inTok = delta.usage.inputTokens ?? 0;
+					const outTok = delta.usage.outputTokens ?? 0;
+					if (!tokensUsed) {
+						tokensUsed = { input: inTok, output: outTok };
 					} else {
-						_consecutiveNoNewFiles = 0;
+						tokensUsed.input += inTok;
+						tokensUsed.output += outTok;
 					}
-					if (_consecutiveNoNewFiles >= _CONVERGENCE_THRESHOLD) {
-						this._log?.('warn', `[SubAgent convergence] ${_consecutiveNoNewFiles} consecutive iterations with no new files, injecting convergence hint agent=${request.agentId}`);
-						outputChunks.push(`\n\n[SYSTEM] You have not discovered any new files in the last ${_consecutiveNoNewFiles} search iterations. The files you need are likely already found. STOP searching and START reading/analyzing them. If you have enough information, produce your final output NOW.`);
-						_consecutiveNoNewFiles = 0; // Reset to avoid spamming hints
+					// Record to SubagentTokenCollector for detailed per-turn tracking
+					// (inspired by deer-flow SubagentTokenCollector)
+					tokenCollector.recordUsage({
+						inputTokens: inTok,
+						outputTokens: outTok,
+						cacheHitTokens: delta.usage.cachedTokens,
+						cacheWriteTokens: delta.usage.cacheWriteTokens,
+					});
+					// ★ 2026-09-13：积分累计 —— 网关末块 usage.credit（`IModelUsage.credit`）。
+					//   subagent 级此前**完全没有**采集积分（只有消息级 tokenUsage.credit），
+					//   而卡片左下角需要展示「本次委派花了多少积分」。
+					if (typeof delta.usage.credit === 'number') {
+						creditUsed += delta.usage.credit;
+					}
+					// ★ 2026-09-13（用户需求「subagent 工具卡片执行过程中实时显示 token 消耗」）：
+					//   每个 LLM turn 的 usage 到达时立刻 emit 一条 Progress 事件，带上**累计**用量。
+					//   此前 tokensUsed 只在 Completed 事件里下发 → 执行期间卡片完全看不到消耗，
+					//   要等子代理跑完才有数字。
+					//   复用 Progress 而非新增事件类型：它已是「轻量状态更新」通道，且
+					//   reduceCardState 对该事件的字段是增量赋值，不破坏既有语义。
+					if (emitEvent) {
+						emitEvent({
+							type: SubAgentEventType.Progress,
+							tokensUsed: { ...tokensUsed },
+							creditUsed,
+						});
 					}
 				}
 
-				budget.consume(1);
-				if (!budget.hasRemaining()) {
-					outputChunks.push('\n\n[Budget exhausted — sub-agent stopped]');
-					budgetExhausted = true;
+				// ── Terminal events ──
+				// ⚠ 'done' 不能作为终止信号：executeAgentTurn 会在「每个迭代的 provider 流结束」
+				// 透传一个 done（languageModelsBridge 流尾统一 yield done，executor 经
+				// _adaptModelDelta 原样转发，见 agentChatService L1894 注释「agent loop 中每次
+				// LLM turn 结束都会 yield done」）。若在 done 处 break，for-await 会 return() 掉
+				// executor 生成器 —— 本轮工具调用尚未执行、后续迭代全部夭折，子代理带着
+				// 「开场白」文本空转返回（2026-07-25 线上事故：3 个 code-explorer 子代理各自
+				// 仅 1 次 LLM 调用、0 次工具执行、4s 内"成功"返回）。
+				// 正确做法：done 只是迭代边界事件，继续消费；executeAgentTurn 在真正的轮末
+				// yield 自己的 done 后生成器自然 return，for-await 随之结束。
+				if (delta.type === 'error') {
 					break;
 				}
-			}
 
-			// ── Usage/token tracking ──
-			if (delta.type === 'usage' && delta.usage) {
-				// Accumulate across multiple usage events (one per LLM turn) rather
-				// than overwriting, so multi-iteration sub-agents report total cost.
-				const inTok = delta.usage.inputTokens ?? 0;
-				const outTok = delta.usage.outputTokens ?? 0;
-				if (!tokensUsed) {
-					tokensUsed = { input: inTok, output: outTok };
-				} else {
-					tokensUsed.input += inTok;
-					tokensUsed.output += outTok;
+				// ── Interruption point (Effect model): user interrupt or parent abort (P3) ──
+				try {
+					control?.signal.throwIfInterrupted();
+				} catch (e) {
+					if (!isFiberInterrupt(e)) { throw e; }
+					outputChunks.push('\n\n[Interrupted by user or parent agent]');
+					interrupted = true;
+					if (emitEvent) {
+						emitEvent({
+							type: SubAgentEventType.Interrupted,
+							exitReason: 'interrupted',
+						});
+					}
+					break;
 				}
-				// Record to SubagentTokenCollector for detailed per-turn tracking
-				// (inspired by deer-flow SubagentTokenCollector)
-				tokenCollector.recordUsage({
-					inputTokens: inTok,
-					outputTokens: outTok,
-					cacheHitTokens: delta.usage.cachedTokens,
-					cacheWriteTokens: delta.usage.cacheWriteTokens,
-				});
-				// ★ 2026-09-13：积分累计 —— 网关末块 usage.credit（`IModelUsage.credit`）。
-				//   subagent 级此前**完全没有**采集积分（只有消息级 tokenUsage.credit），
-				//   而卡片左下角需要展示「本次委派花了多少积分」。
-				if (typeof delta.usage.credit === 'number') {
-					creditUsed += delta.usage.credit;
+
+				// ── Stall watchdog（2026-07-26 MiMo-Code 分层超时对齐重构，attempt-local）──
+				// 活动语义（P1）：模型流期间「内容级 delta」计活——长最终答案的持续流式输出
+				// 是健康状态，不再误判停滞（旧语义仅 tool_start/tool_end 计活：线上事故
+				// 1785037741973 中，子代理阻塞等待嵌套 delegate 子代理 150.8s，看门狗在
+				// 子代理完成前 37ms 误杀父代理；>阈值的最终答案流同理会误杀）。
+				// usage/done/phase_change/memory_injected 等帧外事件不计活（对齐 MiMo：
+				// keep-alive 只证明连接活着，不证明模型在产出）。
+				// 工具执行窗口（P0）：tool_start→pause / tool_end→resume（引用计数），
+				// 覆盖「参数流式 + 全部在飞工具执行」整段盲区；工具执行由 toolExecutionGuard
+				// 兜底（编排工具 630s）。tool_args 虽处暂停窗口仍是模型活动 → tick 记录。
+				if (delta.type === 'tool_start') {
+					control?.watchdog.pause();
+				} else if (delta.type === 'tool_end') {
+					control?.watchdog.resume();
 				}
-				// ★ 2026-09-13（用户需求「subagent 工具卡片执行过程中实时显示 token 消耗」）：
-				//   每个 LLM turn 的 usage 到达时立刻 emit 一条 Progress 事件，带上**累计**用量。
-				//   此前 tokensUsed 只在 Completed 事件里下发 → 执行期间卡片完全看不到消耗，
-				//   要等子代理跑完才有数字。
-				//   复用 Progress 而非新增事件类型：它已是「轻量状态更新」通道，且
-				//   reduceCardState 对该事件的字段是增量赋值，不破坏既有语义。
-				if (emitEvent) {
-					emitEvent({
-						type: SubAgentEventType.Progress,
-						tokensUsed: { ...tokensUsed },
-						creditUsed,
-					});
+				if (_STALL_CONTENT_DELTA_TYPES.has(delta.type)) {
+					control?.watchdog.tick();
+				}
+				if (control?.isStalled()) {
+					outputChunks.push('\n\n[Stalled — no progress for too long, aborted]');
+					stalled = true;
+					break;
+				}
+				// Wall-clock 总时长上限（2026-07-26 规则变更：要求限时，MiMo 对齐）——
+				// 与停滞看门狗同一 delta 检查点：超时走 stalled/salvage 路径（保留产出 +
+				// P1 禁工具总结），对齐 MiMo「timeout 状态照交结果」而非硬失败。
+				// 注：完全零 delta 的极端挂起不经过此点，由外层 timeout() 组合器硬杀。
+				if (wallClockTimeoutMs > 0 && _now - _t0Stream > wallClockTimeoutMs) {
+					outputChunks.push(`\n\n[总时长上限 ${Math.round(wallClockTimeoutMs / 1000)}s 已到，保留已完成结果并收尾]`);
+					stalled = true;
+					break;
+				}
+				// ── P1: 单响应软上限（对齐 MiMo chunkTimeout=480s）──
+				// 连续模型响应段（两次工具边界之间的内容流）超过 responseSoftCapMs → 判停滞，
+				// 防止「空谈永动」（无限文本流从不调用工具）。tool_end/'done' 归零：
+				// 工具执行时间不计入响应窗口。健康长答案（实测 80s 级）充分放行。
+				if (delta.type === 'tool_end' || delta.type === 'done') {
+					_responseStartAt = 0;
+				} else if (_STALL_CONTENT_DELTA_TYPES.has(delta.type)) {
+					if (_responseStartAt === 0) {
+						_responseStartAt = _now;
+					} else if (_now - _responseStartAt > this.responseSoftCapMs) {
+						outputChunks.push(`\n\n[Stalled — single response exceeded soft cap (${Math.round(this.responseSoftCapMs / 1000)}s), aborted]`);
+						stalled = true;
+						break;
+					}
 				}
 			}
-
-		// ── Terminal events ──
-		// ⚠ 'done' 不能作为终止信号：executeAgentTurn 会在「每个迭代的 provider 流结束」
-		// 透传一个 done（languageModelsBridge 流尾统一 yield done，executor 经
-		// _adaptModelDelta 原样转发，见 agentChatService L1894 注释「agent loop 中每次
-		// LLM turn 结束都会 yield done」）。若在 done 处 break，for-await 会 return() 掉
-		// executor 生成器 —— 本轮工具调用尚未执行、后续迭代全部夭折，子代理带着
-		// 「开场白」文本空转返回（2026-07-25 线上事故：3 个 code-explorer 子代理各自
-		// 仅 1 次 LLM 调用、0 次工具执行、4s 内"成功"返回）。
-		// 正确做法：done 只是迭代边界事件，继续消费；executeAgentTurn 在真正的轮末
-		// yield 自己的 done 后生成器自然 return，for-await 随之结束。
-		if (delta.type === 'error') {
-			break;
-		}
-
-		// ── Interruption point (Effect model): user interrupt or parent abort (P3) ──
-		try {
-			control?.signal.throwIfInterrupted();
-		} catch (e) {
-			if (!isFiberInterrupt(e)) { throw e; }
-			outputChunks.push('\n\n[Interrupted by user or parent agent]');
-			interrupted = true;
-			if (emitEvent) {
-				emitEvent({
-					type: SubAgentEventType.Interrupted,
-					exitReason: 'interrupted',
-				});
-			}
-			break;
-		}
-
-	// ── Stall watchdog（2026-07-26 MiMo-Code 分层超时对齐重构，attempt-local）──
-	// 活动语义（P1）：模型流期间「内容级 delta」计活——长最终答案的持续流式输出
-	// 是健康状态，不再误判停滞（旧语义仅 tool_start/tool_end 计活：线上事故
-	// 1785037741973 中，子代理阻塞等待嵌套 delegate 子代理 150.8s，看门狗在
-	// 子代理完成前 37ms 误杀父代理；>阈值的最终答案流同理会误杀）。
-	// usage/done/phase_change/memory_injected 等帧外事件不计活（对齐 MiMo：
-	// keep-alive 只证明连接活着，不证明模型在产出）。
-	// 工具执行窗口（P0）：tool_start→pause / tool_end→resume（引用计数），
-	// 覆盖「参数流式 + 全部在飞工具执行」整段盲区；工具执行由 toolExecutionGuard
-	// 兜底（编排工具 630s）。tool_args 虽处暂停窗口仍是模型活动 → tick 记录。
-	if (delta.type === 'tool_start') {
-		control?.watchdog.pause();
-	} else if (delta.type === 'tool_end') {
-		control?.watchdog.resume();
-	}
-	if (_STALL_CONTENT_DELTA_TYPES.has(delta.type)) {
-		control?.watchdog.tick();
-	}
-	if (control?.isStalled()) {
-		outputChunks.push('\n\n[Stalled — no progress for too long, aborted]');
-		stalled = true;
-		break;
-	}
-	// Wall-clock 总时长上限（2026-07-26 规则变更：要求限时，MiMo 对齐）——
-	// 与停滞看门狗同一 delta 检查点：超时走 stalled/salvage 路径（保留产出 +
-	// P1 禁工具总结），对齐 MiMo「timeout 状态照交结果」而非硬失败。
-	// 注：完全零 delta 的极端挂起不经过此点，由外层 timeout() 组合器硬杀。
-	if (wallClockTimeoutMs > 0 && _now - _t0Stream > wallClockTimeoutMs) {
-		outputChunks.push(`\n\n[总时长上限 ${Math.round(wallClockTimeoutMs / 1000)}s 已到，保留已完成结果并收尾]`);
-		stalled = true;
-		break;
-	}
-	// ── P1: 单响应软上限（对齐 MiMo chunkTimeout=480s）──
-	// 连续模型响应段（两次工具边界之间的内容流）超过 responseSoftCapMs → 判停滞，
-	// 防止「空谈永动」（无限文本流从不调用工具）。tool_end/'done' 归零：
-	// 工具执行时间不计入响应窗口。健康长答案（实测 80s 级）充分放行。
-	if (delta.type === 'tool_end' || delta.type === 'done') {
-		_responseStartAt = 0;
-	} else if (_STALL_CONTENT_DELTA_TYPES.has(delta.type)) {
-		if (_responseStartAt === 0) {
-			_responseStartAt = _now;
-		} else if (_now - _responseStartAt > this.responseSoftCapMs) {
-			outputChunks.push(`\n\n[Stalled — single response exceeded soft cap (${Math.round(this.responseSoftCapMs / 1000)}s), aborted]`);
-			stalled = true;
-			break;
-		}
-	}
-		}
 		} finally {
 			unlinkInterrupt?.();
 		}
-	// The generator may have been unwound externally (hung-stream escape hatch)
-	// without passing an interruption point — still report the interruption.
-	if (!interrupted && control?.signal.interrupted && !stalled) {
-		outputChunks.push('\n\n[Interrupted by user or parent agent]');
-		interrupted = true;
-	}
-	// ── 交接日志：子 agent 结束时的完整总结（定位"为什么 output 这么少"）──
-	const _duration = Date.now() - _t0Stream;
-	this._log?.('info', `[SubAgent handover] DONE | agent=${request.agentId} duration=${_duration}ms totalDeltas=${_deltaCount} textDeltas=${_textDeltaCount} textBytes=${_textBytes} toolCalls=${apiCallCount} tokens=${tokensUsed ? `in=${tokensUsed.input}/out=${tokensUsed.output}` : 'n/a'} stalled=${stalled} interrupted=${interrupted} budgetExhausted=${budgetExhausted} outputLen=${outputChunks.join('').length} lastTextPreview="${_lastTextPreview}"`);
+		// The generator may have been unwound externally (hung-stream escape hatch)
+		// without passing an interruption point — still report the interruption.
+		if (!interrupted && control?.signal.interrupted && !stalled) {
+			outputChunks.push('\n\n[Interrupted by user or parent agent]');
+			interrupted = true;
+		}
+		// ── 交接日志：子 agent 结束时的完整总结（定位"为什么 output 这么少"）──
+		const _duration = Date.now() - _t0Stream;
+		this._log?.('info', `[SubAgent handover] DONE | agent=${request.agentId} duration=${_duration}ms totalDeltas=${_deltaCount} textDeltas=${_textDeltaCount} textBytes=${_textBytes} toolCalls=${apiCallCount} tokens=${tokensUsed ? `in=${tokensUsed.input}/out=${tokensUsed.output}` : 'n/a'} stalled=${stalled} interrupted=${interrupted} budgetExhausted=${budgetExhausted} outputLen=${outputChunks.join('').length} lastTextPreview="${_lastTextPreview}"`);
 
-	// ── 弱输出兜底：LLM 只产生极短文本（如"I'll start"这类占位语，无实质内容）
-	// 或完全无 text delta（只有 tool calls）时，若不干预，gateResult('') /
-	// gateResult('I'll start') 会默认判 success（无错误/无截断），最终父 agent
-	// 只看到一句空话，看不到子代理实际做了什么——这正是"subagent 不干活"的
-	// 表现之一（子代理其实调用了工具，但输出内容空洞，父 agent 误判为无产出）。
-	// 从 tool traces 合成结构化摘要追加到弱输出之后，确保父 agent 始终能看到
-	// 子代理实际执行的工具轨迹，即使模型没有生成有意义的文字总结。
-	const _rawOutput = outputChunks.join('');
-	const _isEmptyOutput = _rawOutput.trim().length === 0;
-	// 弱输出阈值：短于 40 字符且非空——大概率是"I'll start..."/"Let me..."之类的
-	// 未完成占位语，而非真正的分析结论。
-	const _isWeakOutput = !_isEmptyOutput && _rawOutput.trim().length < 40;
-	if ((_isEmptyOutput || _isWeakOutput) && toolTrace.length > 0) {
-		// 探测"只调用了 index_repository（建索引）就自然结束"这种典型的过早终止——
-		// LLM 把索引启动的确认信息误当成任务完成信号，未继续调用 search_graph 等
-		// 真正的探索工具。这是本次日志问题 2 的具体根因，显式标注便于父 agent
-		// 及排障人员识别，而不是简单认为「探索完成但无发现」。
-		const _exploreToolNames = new Set(['search_graph', 'query_graph', 'get_code_snippet', 'trace_path', 'get_architecture', 'search_files', 'file_read']);
-		const _onlyIndexed = toolTrace.length > 0 && toolTrace.every(t => t.toolName === 'index_repository') && !toolTrace.some(t => _exploreToolNames.has(t.toolName));
-		const summaryLines: string[] = [];
-		if (_onlyIndexed) {
-			// 用 'partial'（SubAgentGateStatus 合法值）而非自造状态词，确保
-			// parseReturnHeader 能正确解析并让 Completion Gate 按「未完成」处理，
-			// 而不是被默认判定为 success。
-			summaryLines.push(`**Status**: partial`);
-			summaryLines.push(`**Summary**: Sub-agent only called \`index_repository\` (index build) and then stopped ` +
-				`without performing any actual exploration (search_graph/query_graph/get_code_snippet/etc). ` +
-				`No real findings were produced — this looks like a premature stop after indexing. ` +
-				`The parent agent should re-delegate this task or perform the exploration directly.`);
-		} else if (_isWeakOutput) {
-			// 保留模型原始（弱）文本作为上下文，避免信息丢失。
-			summaryLines.push(`**Status**: success`);
-			summaryLines.push(`**Summary**: Model output was too short ("${_rawOutput.trim()}") to be a real finding. ` +
-				`Falling back to tool execution trace below — the parent agent should treat this as a ` +
-				`potentially incomplete exploration and verify or re-delegate if the trace looks insufficient.`);
-		} else {
-			summaryLines.push(`**Status**: success`);
-			summaryLines.push(`**Summary**: Executed ${apiCallCount} tool call(s) — no text summary was generated by the model.`);
+		// ── 弱输出兜底：LLM 只产生极短文本（如"I'll start"这类占位语，无实质内容）
+		// 或完全无 text delta（只有 tool calls）时，若不干预，gateResult('') /
+		// gateResult('I'll start') 会默认判 success（无错误/无截断），最终父 agent
+		// 只看到一句空话，看不到子代理实际做了什么——这正是"subagent 不干活"的
+		// 表现之一（子代理其实调用了工具，但输出内容空洞，父 agent 误判为无产出）。
+		// 从 tool traces 合成结构化摘要追加到弱输出之后，确保父 agent 始终能看到
+		// 子代理实际执行的工具轨迹，即使模型没有生成有意义的文字总结。
+		const _rawOutput = outputChunks.join('');
+		const _isEmptyOutput = _rawOutput.trim().length === 0;
+		// 弱输出阈值：短于 40 字符且非空——大概率是"I'll start..."/"Let me..."之类的
+		// 未完成占位语，而非真正的分析结论。
+		const _isWeakOutput = !_isEmptyOutput && _rawOutput.trim().length < 40;
+		if ((_isEmptyOutput || _isWeakOutput) && toolTrace.length > 0) {
+			// 探测"只调用了 index_repository（建索引）就自然结束"这种典型的过早终止——
+			// LLM 把索引启动的确认信息误当成任务完成信号，未继续调用 search_graph 等
+			// 真正的探索工具。这是本次日志问题 2 的具体根因，显式标注便于父 agent
+			// 及排障人员识别，而不是简单认为「探索完成但无发现」。
+			const _exploreToolNames = new Set(['search_graph', 'query_graph', 'get_code_snippet', 'trace_path', 'get_architecture', 'search_files', 'file_read']);
+			const _onlyIndexed = toolTrace.length > 0 && toolTrace.every(t => t.toolName === 'index_repository') && !toolTrace.some(t => _exploreToolNames.has(t.toolName));
+			const summaryLines: string[] = [];
+			if (_onlyIndexed) {
+				// 用 'partial'（SubAgentGateStatus 合法值）而非自造状态词，确保
+				// parseReturnHeader 能正确解析并让 Completion Gate 按「未完成」处理，
+				// 而不是被默认判定为 success。
+				summaryLines.push(`**Status**: partial`);
+				summaryLines.push(`**Summary**: Sub-agent only called \`index_repository\` (index build) and then stopped ` +
+					`without performing any actual exploration (search_graph/query_graph/get_code_snippet/etc). ` +
+					`No real findings were produced — this looks like a premature stop after indexing. ` +
+					`The parent agent should re-delegate this task or perform the exploration directly.`);
+			} else if (_isWeakOutput) {
+				// 保留模型原始（弱）文本作为上下文，避免信息丢失。
+				summaryLines.push(`**Status**: success`);
+				summaryLines.push(`**Summary**: Model output was too short ("${_rawOutput.trim()}") to be a real finding. ` +
+					`Falling back to tool execution trace below — the parent agent should treat this as a ` +
+					`potentially incomplete exploration and verify or re-delegate if the trace looks insufficient.`);
+			} else {
+				summaryLines.push(`**Status**: success`);
+				summaryLines.push(`**Summary**: Executed ${apiCallCount} tool call(s) — no text summary was generated by the model.`);
+			}
+			summaryLines.push('', '**Tool execution trace**:');
+			for (const t of toolTrace) {
+				const statusIcon = t.status === 'ok' ? '✅' : '❌';
+				const argsPreview = t.argsSizeBytes ? ` (${t.argsSizeBytes}B args)` : '';
+				const resultPreview = t.resultSizeBytes ? ` → ${t.resultSizeBytes}B result` : '';
+				summaryLines.push(`- ${statusIcon} \`${t.toolName}\`${argsPreview}${resultPreview}`);
+			}
+			if (filesModified.length > 0) {
+				summaryLines.push('', `**Files touched**: ${filesModified.join(', ')}`);
+			}
+			outputChunks.push('\n\n' + summaryLines.join('\n'));
+			this._log?.('info', `[SubAgent handover] synthesized output from ${toolTrace.length} tool traces ` +
+				`(${_isEmptyOutput ? 'empty' : 'weak'} LLM text, rawLen=${_rawOutput.trim().length}) agent=${request.agentId}`);
 		}
-		summaryLines.push('', '**Tool execution trace**:');
-		for (const t of toolTrace) {
-			const statusIcon = t.status === 'ok' ? '✅' : '❌';
-			const argsPreview = t.argsSizeBytes ? ` (${t.argsSizeBytes}B args)` : '';
-			const resultPreview = t.resultSizeBytes ? ` → ${t.resultSizeBytes}B result` : '';
-			summaryLines.push(`- ${statusIcon} \`${t.toolName}\`${argsPreview}${resultPreview}`);
-		}
-		if (filesModified.length > 0) {
-			summaryLines.push('', `**Files touched**: ${filesModified.join(', ')}`);
-		}
-		outputChunks.push('\n\n' + summaryLines.join('\n'));
-		this._log?.('info', `[SubAgent handover] synthesized output from ${toolTrace.length} tool traces ` +
-			`(${_isEmptyOutput ? 'empty' : 'weak'} LLM text, rawLen=${_rawOutput.trim().length}) agent=${request.agentId}`);
-	}
 
-	return { output: outputChunks.join(''), apiCallCount, budgetExhausted, tokensUsed, creditUsed, toolTrace, filesModified, stalled, interrupted };
-}
+		return { output: outputChunks.join(''), apiCallCount, budgetExhausted, tokensUsed, creditUsed, toolTrace, filesModified, stalled, interrupted };
+	}
 
 	/** Safely deliver a lifecycle event to the sink, swallowing any sink errors. */
 	private _emit(sink: SubAgentEventSink | undefined, event: SubAgentLifecycleEvent): void {
@@ -2578,29 +1778,4 @@ TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
 	 * Inspired by Hermes-Agent's file_state coordination which tracks which files
 	 * sub-agents read/write to warn the parent about stale cache.
 	 */
-	private _extractModifiedFile(toolName: string, args: Record<string, unknown>): string | undefined {
-		// File-writing tools and their argument key containing the file path
-		const FILE_WRITE_TOOLS: Record<string, string> = {
-			'write_to_file': 'path',
-			'apply_diff': 'path',
-			'create_file': 'path',
-			'edit_file': 'path',
-			'write': 'path',
-			'edit': 'path',
-			'rename_file': 'path',
-			'delete_file': 'path',
-			'file_write': 'path',
-			'file_edit': 'path',
-		};
-
-		const pathKey = FILE_WRITE_TOOLS[toolName];
-		if (!pathKey) { return undefined; }
-
-		const filePath = args[pathKey];
-		if (typeof filePath === 'string' && filePath.length > 0) {
-			return filePath;
-		}
-
-		return undefined;
-	}
 }

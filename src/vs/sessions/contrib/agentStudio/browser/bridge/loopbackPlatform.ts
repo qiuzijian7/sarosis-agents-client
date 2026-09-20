@@ -17,9 +17,30 @@ import {
 	OutboundMessage,
 } from "../../common/bridge/bridgeTypes.js";
 
+/**
+ * 本平台产生的**唯一**入站 userId（见 `postInbound()`）。
+ * 与 `allowFrom` 共用此常量 ⇒ 两者不会漂移 ✓。
+ */
+const LOOPBACK_USER_ID = "tester";
+
 export class LoopbackPlatform implements IBridgePlatform {
 	readonly id = "loopback";
 	readonly name = "Loopback (测试/演示)";
+
+	/**
+	 * ★ 2026-09-20：显式白名单（**只放行本平台自己产生的 userId** ✓）。
+	 *
+	 * 背景：`bridgeEngine` 会对每个注册平台跑
+	 * `checkAllowFromConfig(p.id, p.allowFrom, …)`；`allowFrom` 为空 ⇒ 记一条安全告警
+	 * 「[Bridge] 平台 loopback 未配置 allow_from — 将允许所有用户」✗。
+	 *
+	 * 取值理由 ✓：本平台**不接外部输入** —— 入站只能由进程内 `postInbound()` 注入，
+	 * 且其 `userId` 恒为 `LOOPBACK_USER_ID` ⇒ 白名单填它即可：
+	 *   · 告警消失（非空 ⇒ 不 warn ✓）；
+	 *   · 白名单**真实且最小**（除该 id 外一律拒绝 ✓）；
+	 *   · **行为不变**（`allowFromCheck("tester", "tester") === true` ✓）。
+	 */
+	readonly allowFrom = LOOPBACK_USER_ID;
 
 	private _handler?: (msg: InboundMessage) => void;
 	private readonly _onOutbound = new Emitter<OutboundMessage>();
@@ -48,7 +69,7 @@ export class LoopbackPlatform implements IBridgePlatform {
 			sessionKey,
 			platform: this.id,
 			messageId,
-			userId: "tester",
+			userId: LOOPBACK_USER_ID,
 			userName: "Tester",
 			content,
 			replyCtx: replyCtx ?? messageId,

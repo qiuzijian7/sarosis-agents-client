@@ -28,9 +28,23 @@ import { ConfigurationTarget } from '../../../../platform/configuration/common/c
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
+import { isEqualOrParent } from '../../../../base/common/resources.js';
 
 
 const { $: $$ } = DOM;
+
+/**
+ * 判断某个扩展是否是「插件目录的宿主扩展」。
+ *
+ * 插件通过 `contributes.chatPlugins: [{ path: './plugin' }]` 声明，其目录必然**位于该扩展目录之内**，
+ * 所以「URI 包含关系」是确定性的归属判定；而 `plugin.label` 只是 `basename(插件目录的父目录)`
+ * （见 `agentPluginServiceImpl.ts` 的 `label: fromMarketplace?.name ?? basename(parentUri)`），
+ * 一旦扩展**目录名与包名不一致**（如目录 `saros-pocket` / 包名 `saros-agents-pocket`），
+ * 旧的模糊包含匹配就会全部落空，详情页的 Configuration 区随之缺失。
+ */
+function isPluginOwnerExtension(plugin: IAgentPlugin, extensionLocation: URI): boolean {
+	return isEqualOrParent(plugin.uri, extensionLocation);
+}
 
 /**
  * Represents a configuration property extracted from a plugin's package.json
@@ -423,6 +437,18 @@ export class PluginDetailEditorPane extends EditorPane {
 	// ─── Configuration Helpers ─────────────────────────────────
 
 	/**
+	 * 候选扩展：**宿主扩展**（插件目录位于其扩展目录内）排在最前，其余扩展追加在后兜底。
+	 *
+	 * 顺序很重要——下面的循环取「第一个命中者」。宿主关系是确定性的，模糊的 ID/名称包含
+	 * 匹配只是兼容旧数据的兜底（它可能让名字恰好互相包含的无关扩展抢答）。
+	 */
+	private _candidateExtensions(plugin: IAgentPlugin) {
+		const all = this.extensionService.extensions;
+		const owners = all.filter(ext => isPluginOwnerExtension(plugin, ext.extensionLocation));
+		return owners.length > 0 ? [...owners, ...all] : all;
+	}
+
+	/**
 	 * Load models from the extension's model.json file.
 	 * Returns null if the file cannot be read or parsed.
 	 */
@@ -431,11 +457,13 @@ export class PluginDetailEditorPane extends EditorPane {
 			const pluginLabel = plugin.label.toLowerCase();
 			const pluginUriStr = plugin.uri.toString().toLowerCase();
 
-			for (const ext of this.extensionService.extensions) {
+			for (const ext of this._candidateExtensions(plugin)) {
 				const extId = ext.identifier.value.toLowerCase();
 				const extName = (ext.displayName || ext.name || '').toLowerCase();
 
+				// 宿主扩展（URI 包含）优先；其余按 ID / 显示名 / 目录名模糊匹配兜底
 				const isMatch =
+					isPluginOwnerExtension(plugin, ext.extensionLocation) ||
 					extId.includes(pluginLabel) || pluginLabel.includes(extId) ||
 					extName.includes(pluginLabel) || pluginLabel.includes(extName) ||
 					pluginUriStr.includes(extId.replace(/\./g, '-'));
@@ -465,12 +493,13 @@ export class PluginDetailEditorPane extends EditorPane {
 		const pluginLabel = plugin.label.toLowerCase();
 		const pluginUriStr = plugin.uri.toString().toLowerCase();
 
-		for (const ext of this.extensionService.extensions) {
+		for (const ext of this._candidateExtensions(plugin)) {
 			const extId = ext.identifier.value.toLowerCase();
 			const extName = (ext.displayName || ext.name || '').toLowerCase();
 
-			// Match by extension ID, name, or URI containing the extension folder
+			// 宿主扩展（URI 包含）优先；其余按 ID / 显示名 / 目录名模糊匹配兜底
 			const isMatch =
+				isPluginOwnerExtension(plugin, ext.extensionLocation) ||
 				extId.includes(pluginLabel) || pluginLabel.includes(extId) ||
 				extName.includes(pluginLabel) || pluginLabel.includes(extName) ||
 				pluginUriStr.includes(extId.replace(/\./g, '-'));

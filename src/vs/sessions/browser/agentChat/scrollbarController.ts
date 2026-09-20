@@ -1,5 +1,6 @@
 import { Disposable, DisposableStore } from '../../../base/common/lifecycle.js';
 import { addDisposableListener, EventType } from '../../../base/browser/dom.js';
+import { markRenderActivity } from '../../../base/common/renderActivityTrace.js';
 import type { IAgentChatMessage } from './agentChatTypes.js';
 import { chatPerf } from './agentChatPanel.perf.js';
 
@@ -167,6 +168,9 @@ export class ScrollbarController extends Disposable {
 		// 这样 rAF 合并版、懒加载 chunk、CLI 模式重算等**所有调用点**都被计入 ✓
 		// 实测（日志 1789724924165）：本方法单次 **535~602ms**，是首屏卡顿的头号来源 ✗
 		// 它有内部早退（无 custom/el/track、trackHeight<=0）⇒ 用「公开壳 + 私有实现」覆盖全部出口 ✓
+		// ★ 2026-09-20：同时打**活动标记**（零分配常量 tag）—— 这样它独占主线程触发的
+		//   LONG_TASK 会写成 `因=[scrollbar-markers×N]`，不再是无标记（真机 775ms 无从归因）。
+		markRenderActivity('scrollbar-markers');
 		return chatPerf.span(
 			'scrollbar.refreshMarkers',
 			() => this._refreshScrollMarkersImpl(),

@@ -42,6 +42,7 @@ import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { INativeEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { IRequestService } from '../../../../../../platform/request/common/request.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult } from '../../../common/providers.js';
+import { AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING } from '../../../common/constants.js';
 import { ISkillRegistry } from '../../../common/skills.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { ITerminalService } from '../../../../../../workbench/contrib/terminal/browser/terminal.js';
@@ -89,6 +90,7 @@ import { executeToolImpl } from './toolExecutor.js';
 import { registerHandoffTools } from './handoffTools.js';
 import { registerMermaidTools } from './mermaidTools.js';
 import { registerDrawioTools } from './drawioTools.js';
+import { registerUnrealTools } from './unrealTools.js';
 import { registerSessionSearchTools } from './sessionSearchTools.js';
 import { registerVisionAnalyzeTools, readLocalImageAsBase64 } from './visionAnalyzeTools.js';
 import {
@@ -294,6 +296,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// （渲染器 drawioInlineRenderer / 卡片 drawioCard / 预览命令）成为永远走不到
 		// 的死代码。与 _registerImageGenTools 同一模式（见其上方注释）。
 		this._registerDrawioTools();
+		// ★ 2026-09-20：unreal_* 真实实现（BunnySeek bridge HTTP 客户端）。
+		//   此前 unrealTools.ts 只有定义、无调用点 ⇒ 7 个工具从未注册，模型看不到。
+		this._registerUnrealTools();
 		// ★ 2026-09-11：session_search 真实实现，同样必须在 _registerBundledTools 之前
 		// —— 否则 bundled 里的 session_search 定义会被注册成 stub（isStub → listTools
 		// 跳过）→ 模型永远看不到（此前正是此状态：配置项 / 工具名映射 / 白名单俱全，
@@ -797,6 +802,30 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		registerDrawioTools({
 			register: d => this.register(d),
 			logService: this.logService,
+		});
+	}
+
+	/**
+	 * Unreal Engine 工具（`unreal_*`，2026-09-20 接线）。
+	 *
+	 * 实现见 unrealTools.ts：它是 BunnySeek 插件 bridge 的 HTTP 客户端
+	 * （默认 `http://127.0.0.1:8765/bridge/*`），把工具调用转成 REST 请求，
+	 * 因此**不需要知道 UE 装在哪**，也无需任何路径配置。
+	 *
+	 * 前置条件：Unreal Editor 已启动且启用 `BunnySeekAgent` 插件。bridge 不可达
+	 * 时各工具返回可读错误文本（而非抛异常），LLM 据此可提示用户打开编辑器。
+	 *
+	 * 注册**时机**：`unreal_*` 不在 bundledTools 定义表中，故不受
+	 * 「须在 _registerBundledTools 之前」约束；但为与其它真实实现保持一致，
+	 * 调用点同样放在 `_registerBundledTools()` 之前。
+	 */
+	private _registerUnrealTools(): void {
+		registerUnrealTools({
+			register: d => this.register(d),
+			logService: this.logService,
+			// bridge 基址走配置（sessions.agentStudio.unreal.bridgeUrl），
+			// 留空时 unrealTools 回退内置默认地址。
+			getBridgeUrl: () => this.configurationService.getValue<string>(AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING) ?? '',
 		});
 	}
 
