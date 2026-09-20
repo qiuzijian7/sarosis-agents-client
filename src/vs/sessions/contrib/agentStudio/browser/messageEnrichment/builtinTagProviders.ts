@@ -210,6 +210,22 @@ export class WorkingMemoryTagProvider implements IUserMessageTagProvider {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Provider 6.5: kb_overview — 知识库目录摘要（L1 常驻注入，OpenViking/Aider 式渐进加载）
+// ═══════════════════════════════════════════════════════════════════════════
+
+export class KbOverviewTagProvider implements IUserMessageTagProvider {
+	readonly tagName = 'kb_overview';
+	readonly tagDescription = 'User knowledge base directory summaries (one `.overview.md` per topic directory, auto-maintained). Skim these to learn what the user\'s knowledge base covers; use kb_search / kb_suggest_links / kb_topic_overviews tools to dig into details. Do NOT quote them as-is unless directly relevant.';
+
+	/** 由外部设置（agentOSService 按 TTL 从 IKbNativeKernelService 拉取后填充）。 */
+	overviewContent: string | null = null;
+
+	buildContent(_ctx: IEnrichContext): string | null {
+		return this.overviewContent || null;
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Provider 7: additional_data
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -335,6 +351,7 @@ export function createBuiltinTagProviders(): IUserMessageTagProvider[] {
 		new ProjectContextTagProvider(),
 		new ConversationSummaryTagProvider(),
 		new WorkingMemoryTagProvider(),
+		new KbOverviewTagProvider(),
 		new AdditionalDataTagProvider(),
 		new CanvasContextTagProvider(),
 		new SystemReminderTagProvider(),

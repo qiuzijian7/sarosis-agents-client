@@ -18,6 +18,7 @@ import {
 	AGENT_STUDIO_AUX_EMBEDDING_PROVIDER,
 	AGENT_STUDIO_AUX_EMBEDDING_MODEL,
 	AGENT_STUDIO_AUX_EMBEDDING_DIMENSIONS,
+	AGENT_STUDIO_KB_AGENTIC_BUILD,
 } from '../../../common/constants.js';
 import { formatSizeFull } from './kbViewUtils.js';
 
@@ -40,6 +41,8 @@ export interface IKbSettingsPanelContext {
 	sqliteActive: boolean;
 	/** 已关联工作区数量（统计块展示；0 表示不展示） */
 	linkedWorkspaceCount: number;
+	/** 当前 agentic 构建开关状态（AGENT_STUDIO_KB_AGENTIC_BUILD） */
+	agenticBuild: boolean;
 	/** 操作日志回调（settings.embedding.*） */
 	logOp: (code: string, detail: Record<string, unknown>) => void;
 	/** 打开文件夹选择框 */
@@ -73,6 +76,27 @@ export function renderKbSettingsPanel(ctx: IKbSettingsPanelContext): HTMLElement
 
 	const hint = $('div.kb-set-hint'); hint.textContent = '点击 📂 选择文件夹，或 📄 手动输入路径（Vault 及其「库」「笔记」子文件夹均在此目录下）';
 	dd.appendChild(hint);
+
+	// ── 构建方式（agentic 构建开关，默认开启）──
+	const buildDivider = $('div.kb-divider');
+	dd.appendChild(buildDivider);
+
+	const buildRow = $('div.kb-set-row');
+	const buildLabel = $('span.kb-set-label'); buildLabel.textContent = '⚙️ 构建方式';
+	const buildToggle = $('input') as HTMLInputElement;
+	buildToggle.type = 'checkbox'; buildToggle.id = 'kbAgenticBuild'; buildToggle.checked = ctx.agenticBuild;
+	buildToggle.title = 'Agentic 构建（knowledge-base-expert agent）';
+	const buildToggleText = $('span.kb-set-hint-inline'); buildToggleText.textContent = 'Agentic 构建（知识库专家 Agent）';
+	buildToggle.onchange = () => {
+		ctx.configurationService.updateValue(AGENT_STUDIO_KB_AGENTIC_BUILD, buildToggle.checked);
+		ctx.logOp('settings.kb.agenticBuild', { target: buildToggle.checked ? 'on' : 'off' });
+	};
+	buildRow.append(buildLabel, buildToggle, buildToggleText);
+	dd.appendChild(buildRow);
+
+	const buildHint = $('div.kb-set-hint');
+	buildHint.textContent = '开启后由知识库专家 Agent 构建笔记（技能注入 + 工具能力，质量更高但更慢）；失败自动回退直连管线';
+	dd.appendChild(buildHint);
 
 	// ── Embedding 模型配置 ──
 	const embDivider = $('div.kb-divider');

@@ -8,6 +8,7 @@
 } from '../common/providers.js';
 import { isToolCallDeniedByTurnPolicy } from '../common/toolPermission.js';
 import type { DeliveryQueue } from '../common/deliveryQueue.js';
+import { isPiKernelEnabled, piKernelSupports, runPiKernelTurn } from './piLoop/piTurnKernel.js';
 import { runIterationGate, computeForkContext } from './turnIterationGate.js';
 import { handlePlanModeTools } from './parts/turnPlanModeTools.js';
 import type { IPlanModeToolsHost } from './parts/turnPlanModeTools.js';
@@ -516,6 +517,8 @@ interface ITurnContext {
 					// 只读注入 working_memory_content 标签（数据源为 MemoryProvider，
 					// 非 .codebuddy/memory/ 文件）
 					await host._refreshWorkingMemoryContent?.(request.agentId, request.sessionId);
+					// kb_overview 标签：L1 常驻目录摘要（TTL 60s + 1.5s 超时 + 预算截断，内部不抛）
+					await host._refreshKbOverviewContent?.();
 					// ⚠ 必须在替换**之前**取原长度（2026-08-22 修，日志 1787368358120）：
 					// 早前在替换后才读 `messages[lastUserIdx].content`，那时它已经是 enriched
 					// 本身，`enriched.length - origLen` 恒为 0 → 日志永远打印
@@ -661,6 +664,18 @@ interface ITurnContext {
 		const trivialRequest = isTrivialRequest(extractUserText(request));
 		if (trivialRequest) {
 			host._logService.info('[AgentOS] trivial request detected — will restrict exploration tools');
+		}
+		// ─── pi 内核门控分流（2026-09-20，doc/agentloop-pi-core-redesign.md §5 P1 的门控实现）──
+		// 默认 legacy。`window.__SAROSIS_PI_KERNEL = true`（或 env SAROSIS_PI_KERNEL=1）后，
+		// 受支持形态（非 plan / 非 chatOnly / 非断点续跑 / 非子代理）的**内核**改由 piLoop 驱动，
+		// 输出契约不变（IChatStreamDelta）⇒ UI/会话/审批零改动；不支持形态自动回落 legacy。
+		// ⚠ 双跑为准入：`__SAROSIS_PI_RUN` 现场对拍 + 现有测试族全绿之前，不得翻转默认值。
+		// 插入点刻意选在「initTurnContext 成功 + 工具门控（plan-exclusive/chatOnly/trivial）
+		// 已应用」之后：pi 路径直接消费最终 enabledTools 与已注入记忆的 ctx.messages。
+		if (isPiKernelEnabled() && piKernelSupports(request)) {
+			host._logService.info(`[AgentOS] pi-kernel gate ON：本 turn 由 piLoop 内核驱动（agentId=${request.agentId}）`);
+			yield* runPiKernelTurn(host, request, { modelProvider, selection, enabledTools, messages: ctx.messages });
+			return undefined;
 		}
 		/**
 		 * checkpoint 恢复的 loop messages；作为 runState.messages 的种子（优先于 ctx.messages）。

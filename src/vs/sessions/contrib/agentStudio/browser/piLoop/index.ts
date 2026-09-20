@@ -44,6 +44,25 @@ export {
 } from './toolAdapter.js';
 export type { ToolExecutor, ToolExecutionOutcome, ToAgentToolOptions } from './toolAdapter.js';
 
+// ── 聊天契约缝 + 宿主桥（2026-09-19 自 piCore 并入）────────────────────────
+export { createPiLoopEventMapper } from './eventAdapter.js';
+
+// ── 真路径轮驱动器（2026-09-20，doc §5 P1 门控实现）─────────────────────────
+export {
+	runPiKernelTurn,
+	isPiKernelEnabled,
+	piKernelSupports,
+	loopMessagesToPiMessages,
+} from './piTurnKernel.js';
+export type { IPiKernelHost, PiKernelTurnDeps } from './piTurnKernel.js';
+export {
+	chatMessagesToPiMessages,
+	createReadOnlyPiTools,
+	installPiLoopDualRunGlobal,
+	piLoopConvertToLlm,
+} from './hostBridge.js';
+export type { PiDualRunSummary } from './hostBridge.js';
+
 export type {
 	// ── LLM 层（pi-ai 契约的本地声明）──
 	LlmMessageRole,

@@ -127,6 +127,23 @@ async function sampleNotes(fileService: IFileService, dir: URI): Promise<string[
 }
 
 /**
+ * 从命中文档 URI 列表推导其所属一级目录（相对库根），按命中频次降序取 top N。
+ * 纯函数（供 kbNativeKernelService.getTopicOverviewsForDocs 与测试使用）。
+ */
+export function extractTopTopicDirs(docIds: string[], libRootPrefix: string, topN = 3): string[] {
+	const prefix = libRootPrefix.endsWith('/') ? libRootPrefix : libRootPrefix + '/';
+	const counts = new Map<string, number>();
+	for (const id of docIds) {
+		if (!id.startsWith(prefix)) { continue; }
+		const rest = id.slice(prefix.length);
+		if (!rest.includes('/')) { continue; } // 库根直接文件无目录归属
+		const seg = rest.split('/')[0];
+		if (seg && !seg.startsWith('.')) { counts.set(seg, (counts.get(seg) ?? 0) + 1); }
+	}
+	return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN).map(e => e[0]);
+}
+
+/**
  * 刷新 notesDir 下各一级目录的 `.overview.md`。
  * 仅对「首次生成」或「变更比例 ≥10%」的目录付 LLM 成本；内部不抛。
  * @returns 本次实际重算摘要的目录名列表。

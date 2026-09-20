@@ -132,6 +132,7 @@ import {
 	AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY,
 	AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL,
 	AGENT_STUDIO_EMBEDDING_PROVIDER,
+	AGENT_STUDIO_KB_AGENTIC_BUILD,
 	AGENT_STUDIO_EMBEDDING_MODEL,
 	AGENT_STUDIO_EMBEDDING_DIMENSIONS,
 	AGENT_STUDIO_EMBEDDING_API_KEY,
@@ -658,6 +659,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[AGENT_STUDIO_EMBEDDING_LOCAL_MODEL]: {
 			type: 'string', default: 'Xenova/all-MiniLM-L6-v2',
 			description: localize('agentStudio.embedding.local.model', "Local embedding model id for transformers.js (e.g. Xenova/all-MiniLM-L6-v2 or a multilingual variant)."),
+		},
+		// --- Knowledge Base ---
+		[AGENT_STUDIO_KB_AGENTIC_BUILD]: {
+			type: 'boolean', default: true,
+			description: localize('agentStudio.kb.agenticBuild', "Agentic KB build (default ON): run note construction through the knowledge-base-expert agent (skill injection + tools) instead of a single direct LLM call. Falls back to the direct pipeline on failure. Higher quality, higher latency/cost. Also configurable in the Knowledge Base view settings panel."),
 		},
 		// --- Auxiliary Models ---
 		[AGENT_STUDIO_AUX_VISION_PROVIDER]: {

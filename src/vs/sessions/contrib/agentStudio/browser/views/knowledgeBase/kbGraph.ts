@@ -153,6 +153,47 @@ export class KbLinkGraph {
 		}
 	}
 
+	// -----------------------------------------------------------------------
+	// 单文档即时更新（P1-5 增量清理；对齐 Obsidian metadataCache 的事件驱动口径）
+	// -----------------------------------------------------------------------
+
+	/**
+	 * 即时移除单个文档的图谱痕迹：节点、name/title 注册、出链、反向索引、文本缓存。
+	 * 仅移除指向该 URI 的注册键（同名/title 冲突时不误伤其他文档）。
+	 */
+	removeDoc(uri: URI): void {
+		const docId = uri.toString();
+		this._docs = this._docs.filter(d => d.uri.toString() !== docId);
+		for (const [key, meta] of [...this._nameToDoc]) {
+			if (meta.uri.toString() === docId) { this._nameToDoc.delete(key); }
+		}
+		this._outgoing.delete(docId);
+		for (const [key, set] of [...this._byTarget]) {
+			set.delete(docId);
+			if (set.size === 0) { this._byTarget.delete(key); }
+		}
+		this._textCache.delete(docId);
+	}
+
+	/** 即时移除目录（前缀）下全部文档的图谱痕迹。 */
+	removeDocsUnder(dirUri: URI): void {
+		const prefix = dirUri.toString() + '/';
+		const victims = this._docs.filter(d => d.uri.toString().startsWith(prefix)).map(d => d.uri);
+		for (const v of victims) { this.removeDoc(v); }
+	}
+
+	/**
+	 * 即时更新单个文档（重命名/移动/保存后调用）：等价于 removeDoc + 重新索引。
+	 * 系统维护文件与非图谱覆盖类型会被跳过（与 buildFromDocs 口径一致）。
+	 */
+	upsertDoc(uri: URI, name: string, section: KbSection, mtime: number, text: string): void {
+		this.removeDoc(uri);
+		if (SYS_FILES.has(name)) { return; }
+		const ext = name.split('.').pop()?.toLowerCase();
+		if (!ext || !GRAPH_NODE_EXTS.has(ext)) { return; }
+		this._indexDoc({ uri, name, section, mtime }, text);
+	}
+
 	/** 某文档的向外链接（指向其他笔记）。 */
 	outgoingLinks(docId: string): IOutgoingLink[] {
 		const raw = this._outgoing.get(docId) ?? [];

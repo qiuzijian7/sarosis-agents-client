@@ -23,12 +23,18 @@ import { IEmbeddingService, IEmbeddingResult } from '../../../common/embeddingPr
 /** bag-of-words 假 embedding（与 kbVectorIndex.test.ts 同思路：cosine 与词重叠相关）。 */
 class FakeEmbeddingService implements IEmbeddingService {
 	readonly _serviceBrand: undefined = undefined;
+	/** embed 调用统计（embed 缓存测试用）。 */
+	calls = 0;
+	texts: string[] = [];
+	constructor(private readonly _tag = 'fake/model@64') { }
 	async embed(texts: string[]): Promise<IEmbeddingResult> {
+		this.calls++;
+		this.texts.push(...texts);
 		const vectors = texts.map(t => this._vec(t));
-		return { vectors, tag: 'fake/model@64', providerId: 'fake', model: 'model', dimensions: 64 };
+		return { vectors, tag: this._tag, providerId: 'fake', model: 'model', dimensions: 64 };
 	}
-	getActiveTag(): string { return 'fake/model@64'; }
-	getTagForProvider(): string | undefined { return 'fake/model@64'; }
+	getActiveTag(): string { return this._tag; }
+	getTagForProvider(): string | undefined { return this._tag; }
 	getActiveDimensions(): number { return 64; }
 	listProviders(): any[] { return []; }
 	getStatus(): any { return {}; }
@@ -65,7 +71,12 @@ function createMockFileService() {
 			if (!file) { throw new Error('File not found'); }
 			return { value: { toString: () => file.content, byteLength: file.content.length } };
 		},
-		async writeFile(): Promise<void> {},
+		async writeFile(uri: any, content: any): Promise<void> {
+			// 落盘（embed 缓存测试依赖跨实例读回）
+			const key = uri.toString();
+			const text = content?.toString?.() ?? String(content);
+			files.set(key, { name: key.split('/').pop() ?? key, content: text, mtime: Date.now(), size: text.length });
+		},
 		async createFolder(): Promise<void> {},
 		addFile(uri: string, name: string, content: string, mtime = 1000, size = content.length): void {
 			files.set(uri, { name, content, mtime, size });
@@ -133,5 +144,41 @@ suite('kbVectorIndex P1 extras', () => {
 		assert.deepStrictEqual(idx.findSimilarDocs('file:///x.md'), []);
 		const { idx: built } = await buildFixture();
 		assert.deepStrictEqual(built.findSimilarDocs('file:///nonexistent.md'), []);
+	});
+});
+
+suite('kbVectorIndex embed 文本缓存（P3②）', () => {
+
+	test('同 tag 二次构建零 embed 调用（缓存跨实例经磁盘命中）', async () => {
+		const fs = createMockFileService();
+		fs.addFile('file:///vault/lib/algo.md', 'algo.md', '# 算法\n\n算法与数据结构基础。', 1000, 30);
+		fs.addFile('file:///vault/lib/cooking.md', 'cooking.md', '# 烹饪\n\n晚餐菜谱。', 1000, 20);
+		const emb = new FakeEmbeddingService();
+		const roots = [{ uri: URI.file('/vault/lib'), section: 'library' as const }];
+
+		const idx1 = new KbVectorIndex(fs as any, emb);
+		await idx1.build(roots);
+		const callsAfterFirst = emb.calls;
+		assert.ok(callsAfterFirst > 0, '首次构建应调用 embed');
+
+		// 新实例（模拟重启）同 tag：embed 缓存应从磁盘载入并全命中
+		const idx2 = new KbVectorIndex(fs as any, emb);
+		await idx2.build(roots);
+		assert.strictEqual(emb.calls, callsAfterFirst, '缓存命中 ⇒ 零新增 embed 调用');
+		assert.ok(idx2.chunkCount > 0);
+	});
+
+	test('tag 隔离：换 provider 后缓存不命中（不串向量）', async () => {
+		const fs = createMockFileService();
+		fs.addFile('file:///vault/lib/algo.md', 'algo.md', '# 算法\n\n算法基础。', 1000, 20);
+		const roots = [{ uri: URI.file('/vault/lib'), section: 'library' as const }];
+
+		const idx1 = new KbVectorIndex(fs as any, new FakeEmbeddingService('fake/model-a@64'));
+		await idx1.build(roots);
+
+		const embB = new FakeEmbeddingService('fake/model-b@64');
+		const idx2 = new KbVectorIndex(fs as any, embB);
+		await idx2.build(roots);
+		assert.ok(embB.calls > 0, 'tag 不同 ⇒ 缓存 miss ⇒ 必须重新 embed');
 	});
 });

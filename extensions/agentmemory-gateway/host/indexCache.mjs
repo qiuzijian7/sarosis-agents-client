@@ -78,8 +78,9 @@ export async function writeCacheFile(file, obj, { sync = false } = {}) {
 	const gz = await new Promise((resolve, reject) => {
 		zlib.gzip(Buffer.from(json, 'utf8'), (err, buf) => (err ? reject(err) : resolve(buf)));
 	});
-	fs.writeFileSync(tmp, gz);
-	fs.renameSync(tmp, file);
+	// 异步写文件 + 原子替换：writeFileSync/renameSync 会阻塞事件循环（数十 MB 时明显）
+	await fs.promises.writeFile(tmp, gz);
+	await fs.promises.rename(tmp, file);
 }
 
 /** 读制品；不存在返回 null，损坏抛出（调用方按「不可用 ⇒ 重建」处理）。 */

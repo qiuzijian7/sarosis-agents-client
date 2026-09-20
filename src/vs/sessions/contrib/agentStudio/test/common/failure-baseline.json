@@ -35,6 +35,15 @@
         "computeAdaptiveFirstTokenTimeout"
       ]
     },
+    "shellCommandSafety": {
+      "file": "test/common/shellCommandSafety.test.ts",
+      "failing": 1,
+      "_kind": "aggregate-pollution",
+      "_note": "★ 非本套件缺陷 —— 单独跑（esbuild bundle + mocha --ui tdd）为 81 passing / 0 failing。仅在聚合 run-all 里报 1 failing，成因是 ensureNoDisposablesAreLeakedInTestSuite 在单进程 mocha 中捕获到**前序套件泄漏的 disposable** 并误报到本套件。2026-09-19 诊断确认。",
+      "cases": [
+        "（聚合环境污染，非固定用例名）"
+      ]
+    },
     "toolExtraction": {
       "file": "test/common/toolExtraction.test.ts",
       "failing": 1,

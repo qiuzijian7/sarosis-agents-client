@@ -20,7 +20,7 @@
  *  内部全量 try/catch，任何异常都转为 error 事件。
  *--------------------------------------------------------------------------------------------*/
 
-import type { IChatContext, IChatMessage, IModelDelta, IModelOptions, IModelProvider } from '../../common/providers.js';
+import type { IChatContext, IChatMessage, IModelDelta, IModelOptions, IModelProvider, IToolDefinition } from '../../common/providers.js';
 import type {
 	AssistantContent,
 	AssistantMessage,
@@ -66,11 +66,16 @@ export function createPiStreamFn(provider: IModelProvider, options: PiStreamFnOp
 			try {
 				const chatMessages = convertToChatMessages(context.messages);
 				const modelId = options.modelId ?? model.id;
+				// ★ 2026-09-20（真机双跑实证）：工具定义必须随每次请求送达模型（TranscriptContext.tools
+				// 是唯一通道；缺失时模型看不到任何工具 ⇒ 自称"无法访问文件系统"）。
+				const toolDefs = (context.tools ?? []).map(t => ({
+					name: t.name, description: t.description, inputSchema: t.inputSchema,
+				} as IToolDefinition));
 
 				const iterator = provider.chat(
 					modelId,
 					chatMessages,
-					buildModelOptions(options.modelOptions, streamOptions),
+					buildModelOptions(options.modelOptions, streamOptions, toolDefs.length > 0 ? toolDefs : undefined),
 					options.chatContext,
 				);
 
@@ -332,12 +337,16 @@ function convertOneMessage(message: Message): IChatMessage {
 	return result;
 }
 
-/** 合并本仓选项与 pi 透传选项；后者优先。 */
+/** 合并本仓选项与 pi 透传选项；后者优先。`tools` 仅在调用方未自带时补入。 */
 function buildModelOptions(
 	base: IModelOptions | undefined,
 	streamOptions: SimpleStreamOptions | undefined,
+	tools?: readonly IToolDefinition[],
 ): IModelOptions {
 	const merged: Record<string, unknown> = { ...base };
+	if (tools && tools.length > 0 && merged['tools'] === undefined) {
+		merged['tools'] = [...tools];
+	}
 
 	if (streamOptions) {
 		if (typeof streamOptions.temperature === 'number') {

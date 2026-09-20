@@ -94,15 +94,25 @@ function fuse(fulltext: IRecallHit[], semantic: IRecallHit[], limit: number): IR
 		.map(e => ({ ...e.hit, source: (e.channels.size > 1 ? 'semantic' : e.hit.source) as IRecallHit['source'] }));
 }
 
-function render(query: string, hits: IRecallHit[], notes: string[]): string {
+/** wikilink 引用形式（去扩展名，与图谱节点口径一致）。导出供单测。 */
+export function wikilinkOf(title: string): string {
+	return `[[${title.replace(/\.(md|markdown)$/i, '')}]]`;
+}
+
+function render(query: string, hits: IRecallHit[], notes: string[], topics?: { dir: string; summary: string }[]): string {
 	const lines: string[] = [];
 	lines.push(`知识库检索「${query}」命中 ${hits.length} 条：`);
 	hits.forEach((h, i) => {
 		lines.push('');
-		lines.push(`${i + 1}. ${h.title}  [${h.source}] score=${h.score.toFixed(3)}`);
+		lines.push(`${i + 1}. ${h.title}  [${h.source}] score=${h.score.toFixed(3)} · 引用 ${wikilinkOf(h.title)}`);
 		lines.push(`   uri: ${h.uri}`);
 		if (h.snippet) { lines.push(`   ${h.snippet}`); }
 	});
+	if (topics?.length) {
+		lines.push('');
+		lines.push('相关目录摘要（.overview.md 中间层，可先看摘要再决定是否深入）：');
+		for (const t of topics) { lines.push(`- ${t.dir}：${t.summary}`); }
+	}
 	if (notes.length) {
 		lines.push('');
 		lines.push(`说明：${notes.join('；')}`);
@@ -216,15 +226,68 @@ export function registerKbVaultRecallTools(ctx: KbVaultRecallContext): void {
 				);
 			}
 
+			// P1-3 消费端：命中目录的 .overview.md 摘要（渐进式加载，失败不影响检索）
+			let topics: { dir: string; summary: string }[] = [];
+			try {
+				topics = await ctx.kernelService.getTopicOverviewsForDocs(merged.map(h => h.uri));
+			} catch { /* 摘要读取失败静默 */ }
+
 			return {
-				content: text(render(query, merged, notes)),
+				content: text(render(query, merged, notes, topics)),
 				details: {
 					query,
 					mode,
 					count: merged.length,
 					hits: merged,
+					topicOverviews: topics,
 				},
 			};
+		},
+	});
+
+	// P1-3 消费端：目录摘要一览（OpenViking 式渐进下钻入口——先看摘要，再决定对哪个目录深入检索）。
+	ctx.register({
+		definition: {
+			name: 'kb_topic_overviews',
+			category: 'knowledge',
+			description:
+				'列出知识库各目录的摘要（.overview.md 目录摘要中间层产物）。' +
+				'用于在深入检索前先了解库内容分布：先看目录摘要，再决定用 kb_search 对哪个主题深入。' +
+				'摘要由笔记构建管线自动维护（freshness ≥10% 才重算）；尚未生成摘要的目录不出现在结果中。',
+			inputSchema: {
+				type: 'object',
+				properties: {},
+			},
+		},
+		handler: async () => {
+			if (!ctx.kernelService.hasActiveVault()) {
+				return text(
+					'当前没有已打开的知识库（Vault），无法读取目录摘要。\n' +
+					'请先在侧边栏「知识库」视图中打开或创建一个知识库。'
+				);
+			}
+			try {
+				const overviews = await ctx.kernelService.readTopicOverviews();
+				if (!overviews.length) {
+					return text(
+						'暂无目录摘要。目录摘要（.overview.md）在「构建笔记」时自动生成；\n' +
+						'也可直接使用 kb_search 做全文/语义检索。'
+					);
+				}
+				const lines: string[] = [`知识库目录摘要（共 ${overviews.length} 个目录）：`];
+				for (const o of overviews) {
+					lines.push('');
+					lines.push(`## ${o.dir}`);
+					lines.push(o.summary);
+				}
+				return {
+					content: text(lines.join('\n')),
+					details: { count: overviews.length, overviews },
+				};
+			} catch (err) {
+				ctx.logService.warn('[kb_topic_overviews] failed', err);
+				return text('目录摘要读取失败，请改用 kb_search 直接检索。');
+			}
 		},
 	});
 
@@ -286,7 +349,7 @@ export function registerKbVaultRecallTools(ctx: KbVaultRecallContext): void {
 				const lines: string[] = [`笔记「${docUri}」的隐式关联建议（语义相似但尚未建立双链），命中 ${hits.length} 条：`];
 				hits.forEach((h, i) => {
 					lines.push('');
-					lines.push(`${i + 1}. ${h.docName}  score=${h.score.toFixed(3)}`);
+					lines.push(`${i + 1}. ${h.docName}  score=${h.score.toFixed(3)} · 建议链接 ${wikilinkOf(h.docName)}`);
 					lines.push(`   uri: ${h.docId}`);
 					const snip = trimSnippet(h.text);
 					if (snip) { lines.push(`   ${snip}`); }

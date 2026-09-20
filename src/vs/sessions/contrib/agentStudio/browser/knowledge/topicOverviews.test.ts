@@ -21,6 +21,7 @@ import {
 	fileStamp,
 	topicChangeRatio,
 	parseTopicOverviews,
+	extractTopTopicDirs,
 	refreshTopicOverviews,
 	TOPIC_OVERVIEW_FILE,
 	TOPIC_OVERVIEW_CACHE_FILE,
@@ -171,5 +172,31 @@ suite('topicOverviews', () => {
 		const { model, stats } = trackedModel('### 目录 概念\n摘要：x');
 		assert.deepStrictEqual(await refreshTopicOverviews(fs2.service, DIR, model), []);
 		assert.strictEqual(stats.calls, 0);
+	});
+
+	suite('extractTopTopicDirs（P1-3 消费端目录推导）', () => {
+		const ROOT = 'file:///vault/lib';
+		test('按命中频次降序取 top N', () => {
+			const docs = [
+				`${ROOT}/概念/a.md`, `${ROOT}/概念/b.md`, `${ROOT}/概念/c.md`,
+				`${ROOT}/会议/x.md`, `${ROOT}/会议/y.md`,
+				`${ROOT}/技术/z.md`,
+			];
+			assert.deepStrictEqual(extractTopTopicDirs(docs, ROOT, 3), ['概念', '会议', '技术']);
+			assert.deepStrictEqual(extractTopTopicDirs(docs, ROOT, 1), ['概念']);
+		});
+		test('库外文档与点开头目录被排除；前缀边界安全', () => {
+			const docs = [
+				`${ROOT}/概念/a.md`,
+				'file:///other/lib/会议/b.md',   // 库外
+				`${ROOT}/.hidden/c.md`,          // 点开头目录
+			];
+			assert.deepStrictEqual(extractTopTopicDirs(docs, ROOT), ['概念']);
+			// 前缀必须是「目录边界」：/vault/library 不应匹配 /vault/lib
+			assert.deepStrictEqual(extractTopTopicDirs(['file:///vault/library/x.md'], ROOT), []);
+		});
+		test('根下直接文件（无目录段）不产生目录', () => {
+			assert.deepStrictEqual(extractTopTopicDirs([`${ROOT}/index.md`], ROOT), []);
+		});
 	});
 });

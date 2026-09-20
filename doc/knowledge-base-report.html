@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VsSaros 知识库（Knowledge Base）使用报告</title>
+<style>
+	:root {
+		--bg: #f7f8fa;
+		--panel: #ffffff;
+		--ink: #1f2328;
+		--ink-soft: #57606a;
+		--line: #d8dee4;
+		--accent: #2f6feb;
+		--accent-soft: #eaf1fe;
+		--ok: #1a7f37;
+		--warn: #9a6700;
+		--code-bg: #f2f3f5;
+		--radius: 10px;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; background: var(--bg); color: var(--ink);
+		font-family: "Segoe UI", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, sans-serif;
+		line-height: 1.7; font-size: 15px;
+	}
+	.layout { display: flex; max-width: 1280px; margin: 0 auto; gap: 28px; padding: 28px 24px 80px; }
+	nav.toc {
+		position: sticky; top: 24px; align-self: flex-start; width: 238px; flex: none;
+		background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+		padding: 16px 14px; max-height: calc(100vh - 48px); overflow: auto;
+	}
+	nav.toc h3 { margin: 4px 0 10px; font-size: 13px; color: var(--ink-soft); letter-spacing: .5px; }
+	nav.toc a { display: block; padding: 5px 8px; color: var(--ink-soft); text-decoration: none; font-size: 13.5px; border-radius: 6px; }
+	nav.toc a:hover { background: var(--accent-soft); color: var(--accent); }
+	main { flex: 1; min-width: 0; }
+	header.hero {
+		background: linear-gradient(135deg, #20304a, #2f6feb); color: #fff;
+		border-radius: var(--radius); padding: 26px 30px; margin-bottom: 24px;
+	}
+	header.hero h1 { margin: 0 0 6px; font-size: 25px; }
+	header.hero p { margin: 0; opacity: .9; font-size: 14px; }
+	.badges { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+	.badge { background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.25); padding: 3px 10px; border-radius: 999px; font-size: 12.5px; }
+	section.card {
+		background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+		padding: 22px 26px; margin-bottom: 20px;
+	}
+	h2 { margin: 0 0 14px; font-size: 19px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+	h3 { margin: 20px 0 8px; font-size: 15.5px; color: var(--accent); }
+	p { margin: 8px 0; }
+	ul, ol { margin: 8px 0; padding-left: 22px; }
+	li { margin: 4px 0; }
+	code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 13px; font-family: Consolas, "SF Mono", monospace; }
+	pre { background: #1f2430; color: #e6e6e6; padding: 14px 16px; border-radius: 8px; overflow: auto; font-size: 12.5px; line-height: 1.6; }
+	pre code { background: none; color: inherit; padding: 0; }
+	table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+	th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+	th { background: var(--code-bg); font-weight: 600; }
+	.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 14px; margin: 14px 0 4px; }
+	.feature { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; background: #fcfcfd; }
+	.feature h4 { margin: 0 0 6px; font-size: 14.5px; }
+	.feature p { margin: 0; font-size: 13.5px; color: var(--ink-soft); }
+	.note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13.5px; }
+	.warn { border-left: 3px solid var(--warn); background: #fff8e6; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13.5px; }
+	.ok { border-left: 3px solid var(--ok); background: #eaf6ec; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13.5px; }
+	.path { font-size: 12.5px; color: var(--ink-soft); word-break: break-all; }
+	.kbd { display: inline-block; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 0 6px; background: #fff; font-size: 12.5px; }
+	footer { color: var(--ink-soft); font-size: 13px; text-align: center; padding: 12px 0 0; }
+	@media (max-width: 900px) { .layout { flex-direction: column; } nav.toc { position: static; width: auto; max-height: none; } }
+
+	/* ── Mockup 通用 ── */
+	.mock {
+		border: 1px solid var(--line); border-radius: 10px; background: #fbfbfd;
+		margin: 14px 0 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(31,35,40,.06);
+	}
+	.mock-bar {
+		display: flex; align-items: center; gap: 6px; background: #eceef2;
+		border-bottom: 1px solid var(--line); padding: 7px 12px; font-size: 12px; color: var(--ink-soft);
+	}
+	.mock-bar .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+	.mock-bar .dot.r { background: #ff5f57; } .mock-bar .dot.y { background: #febc2e; } .mock-bar .dot.g { background: #28c840; }
+	.mock-body { display: flex; min-height: 0; font-size: 13px; }
+	.mock-side { width: 300px; flex: none; border-right: 1px solid var(--line); background: #f5f6f8; padding: 10px 12px; }
+	.mock-main { flex: 1; padding: 12px 16px; background: #fff; }
+	.mock-toolbar { display: flex; gap: 6px; align-items: center; padding-bottom: 8px; border-bottom: 1px solid var(--line); margin-bottom: 8px; flex-wrap: wrap; }
+	.mock-btn { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 2px 8px; font-size: 12px; color: var(--ink); white-space: nowrap; }
+	.mock-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+	.mock-tree { font-family: Consolas, monospace; font-size: 12.5px; line-height: 1.9; color: var(--ink); }
+	.mock-tree .dir { color: var(--accent); font-weight: 600; }
+	.mock-tree .sys { color: var(--ink-soft); }
+	.mock-hit { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin: 6px 0; background: #fff; }
+	.mock-hit.semantic { border-left: 3px solid var(--accent); }
+	.mock-hit .t { font-weight: 600; font-size: 12.5px; }
+	.mock-hit .s { color: var(--ink-soft); font-size: 12px; }
+	.mock-head { font-size: 12px; color: var(--ink-soft); margin: 10px 0 4px; padding-top: 8px; border-top: 1px dashed var(--line); }
+	.mock-head.warnline { color: var(--warn); }
+	.mock-check { accent-color: var(--accent); }
+	.mock-note { font-size: 12px; color: var(--ink-soft); }
+	.num {
+		display: inline-flex; align-items: center; justify-content: center;
+		width: 18px; height: 18px; border-radius: 50%; background: var(--accent); color: #fff;
+		font-size: 11px; font-weight: 700; vertical-align: -3px; margin: 0 2px;
+	}
+	.mock-cols { display: flex; gap: 18px; align-items: flex-start; }
+	.mock-cols .mock { flex: 1.4; }
+	.mock-guide { flex: 1; font-size: 13.5px; }
+	.mock-guide ol { padding-left: 20px; }
+	@media (max-width: 1000px) { .mock-cols { flex-direction: column; } .mock-side { width: auto; border-right: none; border-bottom: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+	<h3>目录</h3>
+	<a href="#overview">1. 定位与总览</a>
+	<a href="#arch">2. 框架结构</a>
+	<a href="#storage">2.2 存储与产物</a>
+	<a href="#pipeline">2.3 导入管线时序</a>
+	<a href="#features">3. 特色功能</a>
+	<a href="#mockup">4. 界面 Mockup 与使用说明</a>
+	<a href="#mk-view">4.1 视图总览</a>
+	<a href="#mk-import">4.2 导入与构建</a>
+	<a href="#mk-settings">4.3 设置面板</a>
+	<a href="#mk-search">4.4 搜索与语义提示</a>
+	<a href="#mk-insights">4.5 摘要产物</a>
+	<a href="#mk-agent">4.6 Agent 工具</a>
+	<a href="#agent">5. Agent 工具参数</a>
+	<a href="#config">6. 前置配置</a>
+	<a href="#opt">7. 本轮优化记录</a>
+	<a href="#limits">8. 已知边界</a>
+</nav>
+
+<main>
+
+<header class="hero">
+	<h1>VsSaros 知识库（Knowledge Base）使用报告</h1>
+	<p>框架结构 · 特色功能 · 界面 Mockup 与使用说明 —— 基于代码实证整理（2026-09-20 最新状态）</p>
+	<div class="badges">
+		<span class="badge">IDE 内嵌 · 零外部服务</span>
+		<span class="badge">本地优先 / 离线可用</span>
+		<span class="badge">Agentic 构建（默认开启）</span>
+		<span class="badge">BM25 + 向量 RRF 混合检索</span>
+		<span class="badge">目录摘要 L1 自动注入</span>
+		<span class="badge">Obsidian 风味笔记</span>
+	</div>
+</header>
+
+<section class="card" id="overview">
+	<h2>1. 定位与总览</h2>
+	<p>知识库（简称 KB）是 Agent Studio 里的「个人资料库」：把聊天消息、工作区文件、网页内容沉淀成结构化 Markdown 笔记，并建立双链图谱与语义索引，供用户浏览、检索，也供 Agent 在对话中调用。</p>
+	<table>
+		<tr><th style="width:150px">维度</th><th>说明</th></tr>
+		<tr><td>运行形态</td><td>全部在渲染进程内完成（<code>KbNativeKernel</code> 内置内核），<strong>无需外部二进制、无需 IPC、无需主进程改动</strong>；离线可用</td></tr>
+		<tr><td>笔记格式</td><td>Obsidian 风味 Markdown（frontmatter + <code>[[双链]]</code> + callout），与 Obsidian 生态兼容</td></tr>
+		<tr><td>构建方式</td><td><strong>Agentic 构建（默认开启）</strong>：由 knowledge-base-expert agent 构建（技能注入 + 工具），失败回退直连管线</td></tr>
+		<tr><td>Embedding</td><td>可选。未配置时全文/图谱照常工作，语义通道自动降级（不报错）；embed 结果有磁盘缓存</td></tr>
+		<tr><td>核心入口</td><td>侧边栏「知识库」视图 + 三处「导入知识库」按钮 + 三个 Agent 工具 + <code>kb_overview</code> 自动注入</td></tr>
+	</table>
+	<div class="note">与记忆系统（agentmemory）的分工：agentmemory 管「运行时记忆」（由网关子进程承载）；知识库管「用户沉淀的笔记资料」，落盘为可读可编辑的 Markdown 文件。</div>
+</section>
+
+<section class="card" id="arch">
+	<h2>2. 框架结构</h2>
+	<p>代码集中在 <code>src/vs/sessions/contrib/agentStudio/</code>，分五层：</p>
+	<table>
+		<tr><th style="width:120px">层</th><th style="width:230px">关键文件</th><th>职责</th></tr>
+		<tr>
+			<td>视图层</td>
+			<td class="path">views/knowledgeBaseView.ts<br>kbSettingsPanel.ts<br>kbGraphEditorPane.ts</td>
+			<td>知识库侧边栏视图（树、搜索、构建、删除、回收站）、设置面板（目录 / 构建方式 / Embedding）、图谱编辑器</td>
+		</tr>
+		<tr>
+			<td>控制器</td>
+			<td class="path">browser/kbImportController.ts</td>
+			<td>导入全生命周期：分类 → 落盘「库」→ 构建笔记（<strong>agentic 分支</strong>：经 AgentDriverService 走 knowledge-base-expert，失败回退直连）→ 导航维护 → 门控 → 摘要</td>
+		</tr>
+		<tr>
+			<td>内核</td>
+			<td class="path">views/knowledgeBase/kbNativeKernel.ts<br>kbIndex.ts / kbGraph.ts<br>kbVectorIndex.ts / kbLuteRenderer.ts</td>
+			<td>四大能力：全文倒排索引（BM25）、双链图谱（支持<strong>单文档即时更新</strong>）、向量索引（含 <strong>embed 文本缓存</strong>）、Lute 渲染</td>
+		</tr>
+		<tr>
+			<td>知识管线</td>
+			<td class="path">browser/knowledge/（schema、classifier、frontmatter、kbAliases、enrichWikilinks、communityDetection、llm、obsidianNoteFormat、communitySummaries、topicOverviews）</td>
+			<td>类型体系与分类、来源/状态、别名归一、确定性补链、Louvain 社区检测与摘要、目录摘要、笔记格式真源</td>
+		</tr>
+		<tr>
+			<td>服务 / 工具层</td>
+			<td class="path">browser/kbNativeKernelService.ts<br>providers/tool/kbVaultRecallTools.ts</td>
+			<td>内核实例共享服务；Agent 工具（<code>kb_search</code> / <code>kb_suggest_links</code> / <code>kb_topic_overviews</code>）；<code>kb_overview</code> 消息标签注入（agentOSService）</td>
+		</tr>
+		<tr>
+			<td>异步加速</td>
+			<td class="path">views/knowledgeBase/kbWorker.ts<br>kbWorkerManager.ts</td>
+			<td>Worker 预计算图谱与提及索引并注入内核，避免主线程二次全量读盘</td>
+		</tr>
+	</table>
+
+	<h3>2.1 内核的三份索引（+即时一致性）</h3>
+	<ul>
+		<li><strong>全文索引</strong> <code>KbFullTextIndex</code>：进程内倒排，BM25（文件名 +10、标签 +5），有持久化缓存与增量 reconcile</li>
+		<li><strong>图谱索引</strong> <code>KbLinkGraph</code>：节点 = 文档 + 标签；边 = wikilink / blockref / tag；<strong>删除/重命名即时移除节点与边</strong>（removeDoc / removeDocsUnder / upsertDoc）</li>
+		<li><strong>向量索引</strong> <code>KbVectorIndex</code>：语义切块 → 批量向量化 → cosine；持久化 <code>.kbrag.json</code> / <code>.kvindex</code>；provider tag 隔离 + <strong>embed 文本磁盘缓存</strong>（切换/切回 provider 不重复计算）</li>
+	</ul>
+</section>
+
+<section class="card" id="storage">
+	<h2>2.2 存储布局与产物</h2>
+	<p>Vault 根默认为 <code>~/.vssaros/knowledge-base/&lt;vault-id&gt;/</code>（可在设置面板改用任意文件夹）。</p>
+	<table>
+		<tr><th style="width:230px">路径 / 文件</th><th>说明</th></tr>
+		<tr><td><code>库/raw/</code></td><td>原始材料：导入的消息或文件原样落盘（去重缓存 <code>.kb-ingest-cache.json</code>）</td></tr>
+		<tr><td><code>库/&lt;typeDir&gt;/&lt;topic&gt;/</code></td><td>构建产出的笔记，按 schema 类型目录 + 主题目录归类</td></tr>
+		<tr><td><code>笔记/</code></td><td>笔记分区（由视图管理）</td></tr>
+		<tr><td><code>index.md</code> / <code>overview.md</code></td><td>索引（按 type 分组）与总览（类型 × 主题统计），自动维护</td></tr>
+		<tr><td><code>insights.md</code></td><td>图谱洞察：Louvain 社区 + <strong>社区语义摘要</strong>（主题名 + 2~3 句）</td></tr>
+		<tr><td><code>log.md</code></td><td>操作留痕</td></tr>
+		<tr><td><code>&lt;目录&gt;/.overview.md</code></td><td><strong>目录摘要中间层</strong>：聊天注入与检索优先读取（点开头，不被笔记扫描）</td></tr>
+		<tr><td><code>.kbrag.json</code> / <code>.kvindex</code></td><td>向量索引持久化（二进制体积约为 JSON 的 1/8）</td></tr>
+		<tr><td><code>.kbembedcache.json</code></td><td><strong>embed 文本缓存</strong>（跨重启/跨重建复用向量，tag 隔离）</td></tr>
+		<tr><td><code>.kb-build-cache.json</code></td><td>构建缓存（agentic 与直连两条路径共享）</td></tr>
+		<tr><td><code>.kb-insights-cache.json</code></td><td>社区摘要缓存（键 = 成员标题指纹）</td></tr>
+		<tr><td><code>.kb-topic-overview-cache.json</code></td><td>目录摘要 freshness 缓存（变更 ≥10% 才重算）</td></tr>
+		<tr><td><code>.kbkernel.json</code></td><td>全文索引缓存 / Vault 标记</td></tr>
+	</table>
+</section>
+
+<section class="card" id="pipeline">
+	<h2>2.3 导入与构建时序</h2>
+	<ol>
+		<li><strong>阶段 1 落盘</strong>：解析 Vault 根 → schema 分类（失败降级 safeSchemaFallback）→ 写 <code>库/raw/</code> → 追加 log.md → 打开知识库视图</li>
+		<li><strong>阶段 2 构建</strong>（默认 agentic；直连为回退）：
+			<ul>
+				<li><strong>agentic 路径（默认）</strong>：素材交给 AgentDriverService（agentId = knowledge-base-expert，<code>chatOnly</code>），技能注入 + 工具能力；产出 FILE 块文本</li>
+				<li><strong>直连路径（回退/显式关闭时）</strong>：Stage 1 结构化分析 → Stage 2 按 <code>---FILE:</code> 块格式产出</li>
+				<li>共用后半段：FILE 块落盘 → 注入来源双链 → 确定性补链（零 LLM 成本）→ 维护导航（index / overview / insights + 社区摘要 + 目录摘要）→ 去抽象化门控（派生类 ≥2 来源才 active）</li>
+			</ul>
+		</li>
+	</ol>
+	<div class="note">构建缓存命中时直接返回已生成笔记（验证文件仍存在，两条构建路径共享缓存）；系统导航文件不作为构建源，避免「笔记→笔记」递归。</div>
+</section>
+
+<section class="card" id="features">
+	<h2>3. 特色功能</h2>
+	<div class="grid">
+		<div class="feature">
+			<h4>Agentic 构建（默认开启）</h4>
+			<p>构建笔记由 knowledge-base-expert agent 完成：obsidian-markdown / defuddle 等技能强制注入 + 工具能力（可查已有笔记避免重复）；失败自动回退直连管线，缓存共享。</p>
+		</div>
+		<div class="feature">
+			<h4>目录摘要 L1 自动注入</h4>
+			<p>每轮用户消息自动携带 <code>&lt;kb_overview&gt;</code> 标签（各目录 .overview.md 摘要，TTL 60s + 1.5s 超时 + 1500 字符预算截断）；agent 可经工具渐进下钻。</p>
+		</div>
+		<div class="feature">
+			<h4>混合检索（RRF）</h4>
+			<p>BM25 全文 + 语义向量双通道按 <code>1/(k+rank)</code>（k=60）融合；结果带 <code>[[引用]]</code> 与命中目录摘要；无索引时静默降级并给引导。</p>
+		</div>
+		<div class="feature">
+			<h4>双链图谱 + 即时一致性</h4>
+			<p>LLM 产链 + enrichWikilinks 确定性补链；删除/重命名后 FTS、向量、图谱、提及<strong>四份索引即时剔除</strong>，不再残留幽灵文档。</p>
+		</div>
+		<div class="feature">
+			<h4>社区检测与语义摘要</h4>
+			<p>Louvain 社区 + 一次批量 LLM 生成主题名与摘要写入 insights.md；按成员指纹缓存，失败回退纯成员列表。</p>
+		</div>
+		<div class="feature">
+			<h4>隐式双链建议</h4>
+			<p>基于已存向量纯本地计算，排除已建链，推荐「语义相关但尚未链接」的笔记（<code>kb_suggest_links</code>）。</p>
+		</div>
+		<div class="feature">
+			<h4>embed 文本缓存</h4>
+			<p>向量计算结果按「tag + 文本指纹」落盘复用：重建大库、切换/切回 provider 不重复付费；容量 2 万条淘汰。</p>
+		</div>
+		<div class="feature">
+			<h4>provider 一致性提示</h4>
+			<p>向量索引 tag 与当前 embedding provider 不一致时，搜索语义区头部直接提示重建（无命中也提示）。</p>
+		</div>
+		<div class="feature">
+			<h4>Schema 驱动分类</h4>
+			<p>可配置类型体系指导分类与目录归类；模型未按前缀输出时按 frontmatter <code>type</code> 二次归类兜底。</p>
+		</div>
+		<div class="feature">
+			<h4>去抽象化门控</h4>
+			<p>派生类笔记需「≥2 个不同来源」确认才 active，配合别名归一抑制碎片噪音。</p>
+		</div>
+		<div class="feature">
+			<h4>格式约定单源化</h4>
+			<p>笔记格式规则集中在 <code>obsidianNoteFormat.ts</code>，构建提示词由它生成，与 obsidian-markdown 技能互为同步指针。</p>
+		</div>
+		<div class="feature">
+			<h4>内核实例共享</h4>
+			<p>视图与笔记编辑器共用同一内核实例（一次扫描、两份界面），编辑器可懒构建。</p>
+		</div>
+	</div>
+</section>
+
+<section class="card" id="mockup">
+	<h2>4. 界面 Mockup 与使用说明</h2>
+	<p>以下为按真实界面还原的示意图（HTML/CSS 绘制），编号对应右侧操作说明。</p>
+
+	<h3 id="mk-view">4.1 知识库视图总览</h3>
+	<div class="mock-cols">
+		<div class="mock">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;知识库 — VsSaros</div>
+			<div class="mock-body">
+				<div class="mock-side">
+					<div class="mock-toolbar">
+						<span class="mock-btn primary">＋ 导入 <span class="num">1</span></span>
+						<span class="mock-btn">构建 <span class="num">2</span></span>
+						<span class="mock-btn">🕸️ 图谱 <span class="num">3</span></span>
+						<span class="mock-btn">⚙ 设置 <span class="num">4</span></span>
+					</div>
+					<div class="mock-tree">
+						<div><span class="dir">▾ 库 <span class="num">5</span></span></div>
+						<div>&nbsp;&nbsp;<span class="dir">▾ raw</span></div>
+						<div>&nbsp;&nbsp;&nbsp;&nbsp;└ 收藏-GC讨论-2026-09-19.md</div>
+						<div>&nbsp;&nbsp;<span class="dir">▾ 概念</span></div>
+						<div>&nbsp;&nbsp;&nbsp;&nbsp;├ GC 机制.md</div>
+						<div>&nbsp;&nbsp;&nbsp;&nbsp;└ JVM 运行时.md</div>
+						<div>&nbsp;&nbsp;<span class="dir">▸ 会议</span></div>
+						<div><span class="dir">▾ 笔记</span></div>
+						<div class="sys">&nbsp;&nbsp;index.md · overview.md · insights.md <span class="num">6</span></div>
+					</div>
+				</div>
+				<div class="mock-main">
+					<div class="mock-note">中间栏：打开的笔记 / 图谱编辑器 / 搜索结果</div>
+					<div class="mock-hit">
+						<div class="t">GC 机制</div>
+						<div class="s">type: concept · status: active · sources: 2</div>
+						<div class="s">垃圾回收的核心机制与分代策略。相关：[[JVM 运行时]]</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<ol>
+				<li><strong>导入</strong>：聊天消息卡片、write_file 卡片、工作区文件右键均有「导入知识库」；落盘到 <code>库/raw/</code></li>
+				<li><strong>构建</strong>：把 raw 素材构建为结构化笔记（默认 agentic，见 4.2）</li>
+				<li><strong>图谱</strong>：打开双链关系图谱（节点可点击跳笔记）</li>
+				<li><strong>设置</strong>：目录 / 构建方式 / Embedding 配置（见 4.3）</li>
+				<li><strong>库树</strong>：<code>raw/</code> 是原始素材；<code>概念/</code> 等是构建产出的笔记，按 schema 类型分目录</li>
+				<li><strong>系统文件</strong>：index / overview / insights 由管线自动维护，<strong>不要手改</strong></li>
+			</ol>
+		</div>
+	</div>
+
+	<h3 id="mk-import">4.2 导入与构建流程</h3>
+	<div class="mock-cols">
+		<div class="mock">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;聊天 → 导入 → 构建</div>
+			<div class="mock-body">
+				<div class="mock-main">
+					<div class="mock-hit">
+						<div class="t">助手回答（关于 GC 的对比讨论）</div>
+						<div class="s">……GC 与 ARC 的核心差异在于……</div>
+						<div class="s" style="margin-top:4px">
+							<span class="mock-btn">复制</span>
+							<span class="mock-btn primary">导入知识库 <span class="num">1</span></span>
+						</div>
+					</div>
+					<div class="mock-head">阶段 1：落盘 <span class="num">2</span></div>
+					<div class="mock-note">schema 分类（clipping/GC）→ <code>库/raw/GC/…-2026-09-20.md</code> → 通知「已导入」</div>
+					<div class="mock-head">阶段 2：构建 <span class="num">3</span></div>
+					<div class="mock-note">knowledge-base-expert agent（技能注入 + 工具）→ FILE 块 → <code>库/概念/GC 机制.md</code> + 双链 + 导航 + 摘要</div>
+					<div class="mock-head">失败回退 <span class="num">4</span></div>
+					<div class="mock-note">agent 无产出 / 出错 ⇒ 自动回退直连管线（两次 LLM 调用），构建缓存两路径共享</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<ol>
+				<li>点「导入知识库」即完成阶段 1，素材原样进 <code>库/raw/</code>（可随时回溯原文）</li>
+				<li>阶段 1 走直连 LLM 分类（便宜、即时）</li>
+				<li>阶段 2 点「构建」或对 raw 文件右键构建；默认 <strong>agentic</strong>（质量更高，延迟/成本也更高），日志可见 <code>[KbImportController] agentic build wrote N note(s)</code></li>
+				<li>不想用 agent 可在设置面板关掉（见 4.3）；关闭后走确定性直连管线</li>
+			</ol>
+		</div>
+	</div>
+
+	<h3 id="mk-settings">4.3 设置面板（含「构建方式」开关）</h3>
+	<div class="mock-cols">
+		<div class="mock" style="max-width:520px">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;知识库设置</div>
+			<div class="mock-body">
+				<div class="mock-main">
+					<div class="mock-hit">
+						<div class="t">📁 知识库目录 <span class="num">1</span></div>
+						<div class="s">C:\Users\you\.vssaros\knowledge-base\vault-1</div>
+					</div>
+					<div class="mock-hit">
+						<div class="t">⚙️ 构建方式 <span class="num">2</span>&nbsp;&nbsp;<input type="checkbox" class="mock-check" checked disabled> Agentic 构建（知识库专家 Agent）</div>
+						<div class="s">开启后由知识库专家 Agent 构建笔记（技能注入 + 工具能力，质量更高但更慢）；失败自动回退直连管线</div>
+					</div>
+					<div class="mock-hit">
+						<div class="t">🧠 Embedding 模型 <span class="num">3</span></div>
+						<div class="s">Provider: openai · Model: text-embedding-3-small · 512d</div>
+						<div class="s"><span class="mock-btn">重新构建向量索引 <span class="num">4</span></span></div>
+					</div>
+					<div class="mock-hit">
+						<div class="t">📊 统计</div>
+						<div class="s">文档 128 · 共 3.2 MB · 回收站 2</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<ol>
+				<li>Vault 根目录（📂 浏览 / 📄 手动输入）</li>
+				<li><strong>构建方式开关（新）</strong>：勾选 = agentic（默认），取消 = 纯直连管线；实时生效、有操作日志。等价配置项 <code>sessions.agentStudio.kb.agenticBuild</code>（VS Code 设置里搜 <code>agentStudio.kb.agenticBuild</code>）</li>
+				<li>Embedding provider/模型（语义检索与双链建议的前提；不配也能用全文与图谱）</li>
+				<li>手动全量重建向量索引（换 provider 后按提示点这里；embed 缓存会让重建便宜很多）</li>
+			</ol>
+		</div>
+	</div>
+
+	<h3 id="mk-search">4.4 搜索与语义提示</h3>
+	<div class="mock-cols">
+		<div class="mock" style="max-width:560px">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;搜索：GC</div>
+			<div class="mock-body">
+				<div class="mock-main">
+					<div class="mock-hit">
+						<div class="t">GC 机制 <span class="mock-note">score 12.4</span></div>
+						<div class="s">…垃圾回收的<strong>核心机制</strong>与分代策略…</div>
+					</div>
+					<div class="mock-head">🧠 语义相关 2 条（向量索引）<span class="num">1</span></div>
+					<div class="mock-hit semantic">
+						<div class="t">JVM 运行时 <span class="mock-note">86%</span></div>
+						<div class="s">…运行时数据区与 GC 的关系…</div>
+					</div>
+					<div class="mock-head warnline">🧠 语义索引与当前 embedding 模型不一致（索引 openai/…@512 / 当前 local/…@384），结果可能不准——请在设置中「重新构建向量索引」<span class="num">2</span></div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<ol>
+				<li>语义区：向量索引已构建时自动追加；未构建时静默跳过（不影响全文结果）</li>
+				<li><strong>一致性提示（新）</strong>：索引与当前 provider 不一致时直接显示（即使零命中也提示），按提示到设置面板重建即可</li>
+			</ol>
+			<p style="margin-top:10px">提示：标签检索可用 <code>#标签</code> 前缀；删除的文档会<strong>即时</strong>从结果与图谱消失（不再有幽灵命中）。</p>
+		</div>
+	</div>
+
+	<h3 id="mk-insights">4.5 自动维护的摘要产物</h3>
+	<div class="mock-cols">
+		<div class="mock" style="max-width:560px">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;insights.md（自动维护）</div>
+			<div class="mock-body">
+				<div class="mock-main">
+					<div class="mock-note"># 知识图谱洞察</div>
+					<div class="mock-note">&gt; 128 篇笔记，342 条链接，6 个社区。</div>
+					<div class="mock-hit">
+						<div class="t">## 社区 c0（23 节点）：垃圾回收与运行时 <span class="num">1</span></div>
+						<div class="s">&gt; 该社区围绕 JVM/V8 的 GC 机制、分代策略与性能调优展开，与「前端构建」社区存在桥接。 <span class="num">2</span></div>
+						<div class="s">- [[GC 机制]] - [[JVM 运行时]] - [[内存模型]] …</div>
+					</div>
+					<div class="mock-hit">
+						<div class="t">## 社区 c1（17 节点）：前端构建</div>
+						<div class="s">&gt; 围绕 esbuild / transpile 的性能优化与产物核对方法。</div>
+					</div>
+					<div class="mock-head">库/概念/.overview.md <span class="num">3</span></div>
+					<div class="mock-note">&gt; 概念目录覆盖 GC、构建系统与性能优化三大主题；近期新增集中在向量索引与缓存策略。</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<ol>
+				<li>社区标题后为主题名（LLM 生成，Louvain 之后一次批量调用）</li>
+				<li>引用块为社区摘要；按成员指纹缓存，结构不变不再花钱</li>
+				<li>每个一级目录有 <code>.overview.md</code>（freshness ≥10% 才重算）；它是 <code>&lt;kb_overview&gt;</code> 自动注入与 <code>kb_search</code> 附带摘要的数据源</li>
+			</ol>
+		</div>
+	</div>
+
+	<h3 id="mk-agent">4.6 Agent 工具使用示意</h3>
+	<div class="mock-cols">
+		<div class="mock" style="max-width:620px">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;Agent 对话</div>
+			<div class="mock-body">
+				<div class="mock-main">
+					<div class="mock-note">用户消息（自动携带）：
+					<code>&lt;kb_overview&gt;</code> - 概念: GC 与构建系统概念… - 会议: 周会纪要… <code>&lt;/kb_overview&gt;</code> <span class="num">1</span></div>
+					<div class="mock-hit">
+						<div class="t">kb_search { "query": "GC 的对比结论" } <span class="num">2</span></div>
+						<div class="s">1. GC 机制 [semantic] score=0.910 · 引用 [[GC 机制]] <span class="num">3</span></div>
+						<div class="s">2. JVM 运行时 [fulltext] score=0.874 · 引用 [[JVM 运行时]]</div>
+						<div class="s">相关目录摘要：概念：GC 与构建系统概念… <span class="num">4</span></div>
+					</div>
+					<div class="mock-hit">
+						<div class="t">kb_suggest_links { "docUri": "…/GC 机制.md" } <span class="num">5</span></div>
+						<div class="s">1. 内存模型 score=0.860 · 建议链接 [[内存模型]]</div>
+					</div>
+					<div class="mock-hit">
+						<div class="t">kb_topic_overviews {} <span class="num">6</span></div>
+						<div class="s">## 概念 — GC 与内存管理相关概念。 ## 会议 — 周会纪要。</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<ol>
+				<li><strong>L1 常驻注入</strong>：每轮自动带目录摘要（无需 agent 主动检索即可知道库里有什么）</li>
+				<li>检索：hybrid = BM25 + 向量 RRF 融合</li>
+				<li>每条命中带 <code>[[引用]]</code>，回答时可直接回链笔记</li>
+				<li>结果尾部附命中目录摘要（渐进下钻）</li>
+				<li>补链建议：语义相似但未建链的笔记</li>
+				<li>目录摘要一览：先看分布再决定深入哪个主题</li>
+			</ol>
+		</div>
+	</div>
+</section>
+
+<section class="card" id="agent">
+	<h2>5. Agent 工具参数</h2>
+
+	<h3>kb_search —— 检索笔记</h3>
+	<pre><code>{
+  "query": "GC 机制的对比结论",
+  "limit": 10,              // 可选，默认 10，最大 50
+  "mode": "hybrid"          // hybrid（默认）| fulltext | semantic
+}</code></pre>
+
+	<h3>kb_suggest_links —— 隐式双链建议</h3>
+	<pre><code>{
+  "docUri": "file:///…/库/概念/GC.md",
+  "limit": 5,               // 可选，默认 5
+  "minScore": 0.72          // 可选，cosine 阈值 [0,1]
+}</code></pre>
+
+	<h3>kb_topic_overviews —— 目录摘要一览</h3>
+	<pre><code>{}    // 无参数</code></pre>
+
+	<div class="warn">工具定位：知识库检的是<strong>用户沉淀的资料</strong>（剪藏网页、纪要、设计文档）；检索<strong>代码仓库源码</strong>请用 <code>search_code</code> / <code>search_files</code>。</div>
+</section>
+
+<section class="card" id="config">
+	<h2>6. 前置配置</h2>
+	<table>
+		<tr><th style="width:200px">配置</th><th style="width:130px">必需性</th><th>说明</th></tr>
+		<tr><td>Chat Provider</td><td>必需（构建用）</td><td>用于分类与笔记构建；未配置时构建会提示</td></tr>
+		<tr><td><code>sessions.agentStudio.kb.agenticBuild</code></td><td>默认开启</td><td><strong>UI 入口：知识库视图 → 设置下拉 → 「构建方式」复选框</strong>；也可在 VS Code 设置搜索 <code>agentStudio.kb.agenticBuild</code>。关闭 = 纯直连管线</td></tr>
+		<tr><td>Embedding Provider</td><td>可选</td><td>语义检索与双链建议的前提；<code>sessions.agentStudio.embedding.provider</code>。切换后向量索引按 tag 增量重建，embed 结果有磁盘缓存</td></tr>
+	</table>
+	<div class="note">笔记格式约定（frontmatter 必填 <code>type</code> / <code>title</code> / <code>created</code>；<code>sources</code> 与 <code>status</code> 由管线管理，不要手写）的唯一真源是 <code>browser/knowledge/obsidianNoteFormat.ts</code>。</div>
+</section>
+
+<section class="card" id="opt">
+	<h2>7. 本轮优化记录（2026-09-19 ~ 09-20）</h2>
+	<table>
+		<tr><th style="width:110px">项</th><th style="width:230px">内容</th><th>要点</th></tr>
+		<tr><td>P0-1</td><td>笔记格式约定单源化</td><td><code>obsidianNoteFormat.ts</code> ↔ obsidian-markdown 技能同步指针</td></tr>
+		<tr><td>P0-2</td><td>社区语义摘要</td><td>Louvain 后一次批量调用；成员指纹缓存；失败回退（GraphRAG 思路）</td></tr>
+		<tr><td>P1-4</td><td>隐式双链建议</td><td><code>kb_suggest_links</code>：纯本地向量 + 排除已建链（Smart Connections 思路）</td></tr>
+		<tr><td>P1-5</td><td>选择性删除</td><td>FTS/向量即时剔除（LightRAG 思路）；修复批量删除缺 invalidate 的现有 bug</td></tr>
+		<tr><td>P1-3</td><td>目录摘要中间层 + 消费端</td><td><code>.overview.md</code> + freshness ≥10% + <code>kb_topic_overviews</code> + kb_search 附摘要（OpenViking 思路）</td></tr>
+		<tr><td>P2-8</td><td>引用回链</td><td>检索与建议结果附 <code>[[笔记名]]</code>（obsidian-copilot 风格）</td></tr>
+		<tr><td>边界-1</td><td><strong>目录摘要 L1 自动注入</strong></td><td><code>&lt;kb_overview&gt;</code> 消息标签：TTL 60s + 1.5s 超时 + 预算截断（Aider repo map 思路）</td></tr>
+		<tr><td>边界-2</td><td><strong>Agentic 构建（默认开启）</strong></td><td>构建走 knowledge-base-expert agent（技能注入 + 工具），失败回退直连；设置面板新增「构建方式」开关</td></tr>
+		<tr><td>边界-3</td><td><strong>provider 一致性提示 + embed 缓存</strong></td><td>搜索语义区提示重建；<code>.kbembedcache.json</code> 跨重启/跨 provider 复用向量（CacheBacked 思路）</td></tr>
+		<tr><td>边界-4</td><td><strong>图谱即时化</strong></td><td>删除/重命名即时清 FTS+向量+图谱+提及四份索引（Obsidian metadataCache 思路）</td></tr>
+	</table>
+	<p>验证：<code>compile-check-ts-native</code> exit 0；KB 测试矩阵 <strong>49 passing</strong>（communitySummaries 11 / topicOverviews 10 / kbImportControllerAgentic 6 / kbVaultRecallTools 12 / kbVectorIndexExtras 6 / kbGraphExtras 4，均直跑 <code>src/</code> 不依赖 <code>out/</code>）。</p>
+</section>
+
+<section class="card" id="limits">
+	<h2>8. 已知边界与后续项</h2>
+	<ul>
+		<li><strong>agentic 构建尚未真机验证</strong>：需重载 dev 后实际导入一篇验证（单测已覆盖正常/作废/空产出/缓存命中 6 例）</li>
+		<li><strong>文档理解层未接入</strong>：PDF / 图片 OCR 等深度解析不在本期范围；需要时可接外部解析（MinerU / RAGFlow）的输出再进导入管线，不建议自建</li>
+		<li><strong>阶段 1 分类始终是直连</strong>：导入落盘的 schema 分类是高频轻操作，刻意不做 agentic；只有构建阶段走 agent</li>
+		<li><strong>upsertDoc 接线待扩展</strong>：图谱单文档更新 API 已备好（含测试），编辑器保存路径的即时 upsert 接线留待后续</li>
+		<li><strong>语义质量依赖 provider</strong>：一致性提示与 embed 缓存已大幅缓解，但维度不同的 provider 切换仍需一次全量重建</li>
+	</ul>
+</section>
+
+<footer>VsSaros · 知识库使用报告 · 依据 <code>src/vs/sessions/contrib/agentStudio</code> 代码实证整理 · 2026-09-20</footer>
+
+</main>
+</div>
+</body>
+</html>

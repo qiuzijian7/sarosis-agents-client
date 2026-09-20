@@ -30,6 +30,8 @@ import { detectCommunities } from './knowledge/communityDetection.js';
 import type { CommunityEdge } from './knowledge/communityDetection.js';
 import { IKBSchema, loadKbSchema, buildSchemaPromptText, sanitizeKbTopic } from './knowledge/kbSchema.js';
 import type { SchemaClassifyResult } from './knowledge/classifier.js';
+import type { IAgentDriverService } from '../common/agentDriver.js';
+import { AGENT_STUDIO_KB_AGENTIC_BUILD } from '../common/constants.js';
 import { buildFileBlockPrompt, parseFileBlocks } from '../common/fileBlockParser.js';
 import { enrichWikilinks } from './knowledge/enrichWikilinks.js';
 import { KB_NOTE_FORMAT_RULES } from './knowledge/obsidianNoteFormat.js';
@@ -74,6 +76,8 @@ export class KbImportController extends Disposable {
 		private readonly _editorService: IEditorService,
 		private readonly _notificationService: INotificationService,
 		@IRequestService private readonly _requestService: IRequestService,
+		/** 可选：agentic 构建模式（AGENT_STUDIO_KB_AGENTIC_BUILD=true 时）经它跑 agent 轮次。 */
+		private readonly _agentDriverService?: IAgentDriverService,
 	) {
 		super();
 	}
@@ -193,9 +197,22 @@ export class KbImportController extends Disposable {
 	 * 实例方法：由 nativeChatEditorPane 使用；自动从 `this` 获取服务依赖和 vault root。
 	 */
 	async buildNotesFromLibrary(libFileUri: URI, vaultRootUri?: URI): Promise<string | null> {
+		const vaultRoot = vaultRootUri ?? this._resolveKbRootUri();
+		// agentic 构建模式（默认开启，!== false 口径使未显式设置时也生效）：
+		// 经 AgentDriverService 以 knowledge-base-expert agent 跑一轮，
+		// 获得技能注入（obsidian-markdown/defuddle 等）与工具能力；无产出/失败回退确定性直连管线。
+		if (this._agentDriverService && this._configurationService.getValue<boolean>(AGENT_STUDIO_KB_AGENTIC_BUILD) !== false) {
+			try {
+				const agenticResult = await this._buildNoteAgentic(libFileUri, vaultRoot);
+				if (agenticResult) { return agenticResult; }
+				this._logService.warn('[KbImportController] agentic build produced no notes, falling back to direct pipeline');
+			} catch (e) {
+				this._logService.warn('[KbImportController] agentic build failed, falling back to direct pipeline:', e);
+			}
+		}
 		return KbImportController._buildNoteCore(
 			libFileUri,
-			vaultRootUri ?? this._resolveKbRootUri(),
+			vaultRoot,
 			this._fileService,
 			this._configurationService,
 			this._logService,
@@ -203,6 +220,99 @@ export class KbImportController extends Disposable {
 			this._agentStudioService,
 			this._requestService,
 		);
+	}
+
+	/**
+	 * agentic 构建路径：素材交给 AgentDriverService（agentId = knowledge-base-expert），
+	 * 收集其 FILE 块文本产出，落盘/缓存/导航/门控复用与 _buildNoteCore 相同的后半段。
+	 * chatOnly=true：构建产出以文本 FILE 块返回，落盘统一由本控制器完成（不写会话之外的文件）。
+	 */
+	private async _buildNoteAgentic(libFileUri: URI, vaultRoot: URI): Promise<string | null> {
+		const driver = this._agentDriverService;
+		if (!driver) { return null; }
+		const libDir = URI.joinPath(vaultRoot, KbImportController.KB_LIBRARY_SUBPATH);
+		if (!libFileUri.fsPath.toLowerCase().startsWith(libDir.fsPath.toLowerCase())) { return null; }
+		const baseName = libFileUri.path.split('/').pop() ?? '';
+		if (KbImportController.SYS_INDEX_FILES.includes(baseName)) { return null; }
+
+		// 构建缓存（与直连管线同一缓存文件）
+		const cache = await KbImportController._readBuildCache(this._fileService, vaultRoot);
+		const cachedNote = cache[libFileUri.fsPath];
+		if (cachedNote) {
+			try { await this._fileService.resolve(URI.file(cachedNote)); return cachedNote; } catch { delete cache[libFileUri.fsPath]; }
+		}
+
+		const libContent = (await this._fileService.readFile(libFileUri)).value.toString();
+		const schema = await KbImportController._getSchemaStatic(this._fileService, vaultRoot);
+		const schemaText = buildSchemaPromptText(schema);
+		const { typeToDir, defaultTypeDir } = KbImportController._typeDirMapping(schema);
+		const formatHint = buildFileBlockPrompt(libDir.fsPath);
+		const userPrompt = [
+			'请将下面这份知识库素材构建为结构化笔记（先规划，再按 FILE 块格式输出全部笔记）。',
+			'', '## Schema 类型定义', schemaText,
+			'', '## 原始素材', libContent,
+			'', '## 指令', '为规划出的每篇笔记输出一个 FILE 块。', formatHint,
+		].join('\n');
+
+		const sessionId = `kb-build-${Date.now().toString(36)}`;
+		const chunks: string[] = [];
+		for await (const d of driver.executeFromChatOptions('knowledge-base-expert', userPrompt, {
+			chatOnly: true,
+			agentSessionId: sessionId,
+			temperature: 0.3,
+		})) {
+			// 对齐 Hermes 合成恢复语义：discard_prior_text ⇒ 已累计文本作废
+			if (d.type === 'discard_prior_text') { chunks.length = 0; continue; }
+			if (d.type === 'content_replace' && typeof (d as { content?: unknown }).content === 'string') {
+				chunks.length = 0; chunks.push((d as unknown as { content: string }).content); continue;
+			}
+			if (d.type === 'text' && typeof (d as { content?: unknown }).content === 'string') {
+				chunks.push((d as unknown as { content: string }).content);
+			}
+		}
+		const gen = chunks.join('');
+		if (!gen.trim()) { return null; }
+
+		const outputDir = libDir;
+		const salvageDir = URI.joinPath(libFileUri, '..');
+		const blocks = parseFileBlocks(gen, outputDir);
+		let written: string[];
+		if (blocks.length === 0) {
+			this._logService.warn(`[KbImportController] agentic stage2 no FILE blocks parsed (output len=${gen.length})`);
+			const libCat = KbImportController._parseLibCategory(libContent, libDir, libFileUri, this._logService);
+			const safeName = KbImportController._sanitizeFsName(libCat.topic) || '未命名';
+			const salvaged = await KbImportController._salvageSingleNoteToDir(gen, safeName, salvageDir, this._fileService);
+			written = salvaged ? [salvaged] : [];
+		} else {
+			written = await KbImportController._writeFileBlocks(blocks, outputDir, vaultRoot, this._fileService, this._logService, typeToDir, defaultTypeDir);
+		}
+		if (written.length === 0) { return null; }
+
+		this._logService.info(`[KbImportController] agentic build wrote ${written.length} note(s): ${written.join('; ')}`);
+		cache[libFileUri.fsPath] = written[0];
+		await KbImportController._writeBuildCache(this._fileService, vaultRoot, cache);
+		const relFromLib = KbImportController._relativeFromLib(libFileUri, libDir);
+		await KbImportController._injectSourcesIntoFiles(this._fileService, written, relFromLib);
+		await KbImportController._enrichNewNotes(this._fileService, libDir, written, this._logService);
+		// 导航 + 摘要：agentic 路径尝试解析 chatModel（仅用于社区/目录摘要），失败则无摘要（同视图路径行为）
+		const chatModel = await KbImportController._resolveKbChatModel(this._agentStudioService, this._configurationService, this._requestService) ?? undefined;
+		await KbImportController.maintainKbNavigation(this._fileService, libDir, chatModel);
+		const gate = await KbImportController.applyDeabstractionGating(this._fileService, libDir);
+		this._logService.info(`[KbImportController] de-abstraction gating (agentic): ${gate.active} active, ${gate.pending} pending`);
+		this._agentStudioService.requestKbRefresh();
+		this._notificationService.notify({ severity: Severity.Info, message: `笔记构建完成（agentic）: ${written.join('; ')}`, source: 'kb-build' });
+		return written[0];
+	}
+
+	/** 类型 → 目录映射（含 id / label / dir 三种键），供直连与 agentic 两条构建路径共用。 */
+	private static _typeDirMapping(schema: IKBSchema): { typeToDir: Map<string, string>; defaultTypeDir: string | undefined } {
+		const typeToDir = new Map<string, string>();
+		for (const t of schema.types) {
+			if (t.id) { typeToDir.set(t.id, t.dir); }
+			if (t.label) { typeToDir.set(t.label, t.dir); }
+			if (t.dir) { typeToDir.set(t.dir, t.dir); }
+		}
+		return { typeToDir, defaultTypeDir: schema.types.find(t => t.id === schema.defaultType)?.dir };
 	}
 
 	/**
@@ -296,13 +406,7 @@ export class KbImportController extends Disposable {
 			const schemaText = buildSchemaPromptText(schema);
 		// 类型 → 目录映射（含 id / label / dir 三种键）：模型未按 prompt 输出类型前缀时，
 		// 依据笔记 frontmatter 的 type 字段二次归类到 库/<typeDir>/，避免笔记平铺到库根。
-		const typeToDir = new Map<string, string>();
-		for (const t of schema.types) {
-			if (t.id) { typeToDir.set(t.id, t.dir); }
-			if (t.label) { typeToDir.set(t.label, t.dir); }
-			if (t.dir) { typeToDir.set(t.dir, t.dir); }
-		}
-		const defaultTypeDir = schema.types.find(t => t.id === schema.defaultType)?.dir;
+		const { typeToDir, defaultTypeDir } = KbImportController._typeDirMapping(schema);
 		const dirCandidates = await KbImportController._listAllNoteSubdirs(fileService, libDir);
 			const dirCandidateList = dirCandidates.length
 				? dirCandidates.map(s => `  - ${s}`).join('\n')

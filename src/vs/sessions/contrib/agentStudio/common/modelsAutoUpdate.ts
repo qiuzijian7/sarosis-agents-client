@@ -13,6 +13,10 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+// ★ 2026-09-20：缓存必须存**应用级存储** ✓ —— 配置服务只接受**已注册**的键 ✗
+//（用未注册的键会弹：「Unable to write to User Settings because
+//  sessions.agentStudio.provider.lastModelsUpdate is not a registered configuration」✗）
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { VSSAROS_LLM_CHANNEL, type IHttpRequestResult } from './llmBridge.js';
 import { AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING } from './constants.js';
 import { buildModelsUrl, type CustomProviderData } from '../browser/views/providerView.js';
@@ -49,6 +53,7 @@ export class ModelsAutoUpdateService extends Disposable implements IModelsAutoUp
 	private readonly _configurationService: IConfigurationService;
 	private readonly _logService: ILogService;
 	private readonly _mainProcessService: IMainProcessService;
+	private readonly _storageService: IStorageService;
 	private _providerResolver: (() => IProviderHint[]) | undefined;
 	private _scanInFlight: Promise<void> | null = null;
 
@@ -56,11 +61,14 @@ export class ModelsAutoUpdateService extends Disposable implements IModelsAutoUp
 		@IConfigurationService configurationService: IConfigurationService,
 		@ILogService logService: ILogService,
 		@IMainProcessService mainProcessService: IMainProcessService,
+		// ★ 2026-09-20：缓存落点从「配置服务」改为「应用级存储」✓（见 _writeCache 注释 ✓）
+		@IStorageService storageService: IStorageService,
 	) {
 		super();
 		this._configurationService = configurationService;
 		this._logService = logService;
 		this._mainProcessService = mainProcessService;
+		this._storageService = storageService;
 	}
 
 	registerProviderResolver(resolver: () => IProviderHint[]): void {
@@ -135,14 +143,31 @@ export class ModelsAutoUpdateService extends Disposable implements IModelsAutoUp
 		// 合并：保留用户已勾选的，新拉到的加进去
 		const existing = new Set(customProviders[idx].models || []);
 		const merged = Array.from(new Set([...models, ...existing]));
-		customProviders[idx] = { ...customProviders[idx], models: merged };
-		this._configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders);
+		// ★★★ 2026-09-20：**不可变更新** ✓ —— 原写法 `customProviders[idx] = {...}` ✗
+		// 在 **dev（未构建）** 形态下会抛：`Cannot assign to read only property 'N' of
+		// object '[object Array]'` ✗✓（`getValue()` 返回的值是**深度冻结**的 ✓）
+		// ⇒ 异常被 `_doScan` 的 catch 吞掉 ✗ ⇒ 该 provider 的模型列表**永远更新不了** ✓
+		//（此修复在 2026-09-18 已做过一次 ✓，被并行会话的覆盖保存冲掉了 ✗ ⇒ 本次重做 ✓）
+		const next = customProviders.map((cp, i) => (i === idx ? { ...cp, models: merged } : cp));
+		this._configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, next);
 	}
 
+	/**
+	 * ★★★ 2026-09-20：缓存改存 **IStorageService**（应用级状态）✓
+	 *
+	 * 原实现用 `_configurationService.getValue/updateValue(STORAGE_KEY)` ✗ ——
+	 * 而配置服务**只接受已在 `configurationRegistry` 注册过的键** ✗ ⇒ 写入时报
+	 * 「Unable to write to User Settings because sessions.agentStudio.provider.lastModelsUpdate
+	 *   is not a registered configuration」✗✓（用户可见弹窗 ✓）；
+	 * 且 `getValue` 永远拿不到值 ✗ ⇒ **1 小时 TTL 从未生效** ✗ ⇒ 每次触发都重拉所有 provider ✓。
+	 * 缓存本来就不是"用户设置" ✗ ⇒ 正确的落点是**应用级存储** ✓。
+	 */
 	private _readCache(): Record<string, IProviderModelsSnapshot> {
 		try {
-			const raw = this._configurationService.getValue<Record<string, IProviderModelsSnapshot>>(STORAGE_KEY);
-			return raw ?? {};
+			const raw = this._storageService.get(STORAGE_KEY, StorageScope.APPLICATION);
+			// 存储层可能回字符串（不同后端/旧写入）⇒ 两种形态都兼容 ✓
+			if (typeof raw === 'string') { return raw ? JSON.parse(raw) : {}; }
+			return (raw as Record<string, IProviderModelsSnapshot> | undefined) ?? {};
 		} catch {
 			return {};
 		}
@@ -150,9 +175,9 @@ export class ModelsAutoUpdateService extends Disposable implements IModelsAutoUp
 
 	private _writeCache(cache: Record<string, IProviderModelsSnapshot>): void {
 		try {
-			this._configurationService.updateValue(STORAGE_KEY, cache);
+			this._storageService.store(STORAGE_KEY, JSON.stringify(cache), StorageScope.APPLICATION, StorageTarget.MACHINE);
 		} catch {
-			// 配置不支持该类型，忽略
+			// 存储不可用时忽略：缓存只是优化 ✓ 丢了下次重拉 ✓
 		}
 	}
 

@@ -196,15 +196,31 @@ export class KbNativeKernel extends Disposable {
 
 	/**
 	 * P1-5 选择性删除（对齐 LightRAG selective deletion）：文档/目录删除后
-	 * 即时从 FTS 与向量索引剔除，避免语义/全文检索命中幽灵文档。
-	 * 图谱与提及索引由 invalidate() 后的下次重建兜底（低频操作，不即时清理）。
+	 * 即时从 FTS / 向量 / 图谱 / 提及四份索引剔除，避免检索与反链命中幽灵文档。
+	 * （图谱与提及此前靠 invalidate() 下次重建兜底，删除窗口期内残留 ✗ 现已即时化。）
 	 * @returns 移除的向量块数（FTS 删除无计数）。
 	 */
 	removeDocFromIndexes(uri: URI): { vectorRemoved: number } {
 		this._index.removeDoc(uri);
 		let vectorRemoved = this._vector.removeDoc(uri.toString());
 		vectorRemoved += this._vector.removeDocsUnder(uri.toString());
+		// 图谱节点/边即时清理（文件 + 目录前缀两种形态）
+		this._graph.removeDoc(uri);
+		this._graph.removeDocsUnder(uri);
+		// 提及索引与文档名注册即时剔除
+		this._removeFromMentionIndexes(uri.toString());
 		return { vectorRemoved };
+	}
+
+	/** 从 _mentionIndex / _docNames 中剔除指定文档（uri 字符串口径）。 */
+	private _removeFromMentionIndexes(docId: string): void {
+		for (const [key, set] of [...this._mentionIndex]) {
+			set.delete(docId);
+			if (set.size === 0) { this._mentionIndex.delete(key); }
+		}
+		for (const [key, meta] of [...this._docNames]) {
+			if (meta.uri.toString() === docId) { this._docNames.delete(key); }
+		}
 	}
 
 	/**

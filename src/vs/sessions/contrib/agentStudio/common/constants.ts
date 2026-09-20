@@ -113,6 +113,9 @@ export const AGENT_STUDIO_EMBEDDING_BASE_URL = 'sessions.agentStudio.embedding.b
 export const AGENT_STUDIO_EMBEDDING_LOCAL_ENABLED = 'sessions.agentStudio.embedding.local.enabled';
 export const AGENT_STUDIO_EMBEDDING_LOCAL_MODEL = 'sessions.agentStudio.embedding.local.model';
 
+/** 知识库 agentic 构建模式（**默认开启**）：「构建笔记」走 AgentDriverService（knowledge-base-expert agent + 技能注入 + 工具），失败回退直连管线。显式设为 false 可回退纯直连。 */
+export const AGENT_STUDIO_KB_AGENTIC_BUILD = 'sessions.agentStudio.kb.agenticBuild';
+
 // Configuration keys — CLI
 export const AGENT_STUDIO_CLI_PATH_SETTING = 'sessions.agentStudio.cli.cliPath';
 export const AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING = 'sessions.agentStudio.cli.defaultWorkdir';

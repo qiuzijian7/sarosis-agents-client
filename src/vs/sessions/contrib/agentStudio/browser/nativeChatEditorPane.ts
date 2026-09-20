@@ -59,6 +59,7 @@ import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
 import { IAgentStudioService, IAgentChatService, IAgentTaskBoardService, IChatAttachmentSend } from '../../../common/agentStudioService.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
+import { IAgentDriverService } from '../common/agentDriver.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { isChatCapableModel } from '../common/chatModelFilter.js';
 import { ICheckpointService } from '../common/checkpointService.js';
@@ -475,6 +476,7 @@ export class NativeChatEditorPane extends EditorPane {
 		// 进 LLM 上下文），UI 侧需要经主进程媒体库把它换成 data URL 才能显示。
 		// （图片模型偏好走既有的 _configurationService，见上方构造参数，无需重复注入。）
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
+		@IAgentDriverService private readonly _agentDriverService: IAgentDriverService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, _storageService);
 		NativeChatEditorPane._livePanes.push(this);
@@ -2704,7 +2706,7 @@ export class NativeChatEditorPane extends EditorPane {
 			this._configurationService, this._logService, this._fileService, this._envService,
 			this._storageService, this._agentStudioService,
 			this._viewsService, this._editorService, this._notificationService,
-			this._requestService,
+			this._requestService, this._agentDriverService,
 		));
 
 		// Skill extraction controller — encapsulates "save skill" feature (host bridges pane state)

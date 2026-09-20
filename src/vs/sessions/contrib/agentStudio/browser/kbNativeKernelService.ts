@@ -22,6 +22,7 @@ import { KbNativeKernel, INativeBacklinkResult } from './views/knowledgeBase/kbN
 import { KbSection } from './views/knowledgeBase/kbTypes.js';
 import { IEmbeddingService } from '../common/embeddingProvider.js';
 import { IKbVectorSearchHit, IKbVectorStatus, IKbVectorBuildOptions } from './views/knowledgeBase/kbVectorIndex.js';
+import { TOPIC_OVERVIEW_FILE, extractTopTopicDirs } from './knowledge/topicOverviews.js';
 
 export interface IKbBuildRoot {
 	uri: URI;
@@ -99,6 +100,12 @@ export interface IKbNativeKernelService {
 
 	/** P1-4 隐式双链建议：向量相似但尚未建链的笔记（需向量索引已构建）。 */
 	suggestLinks(docId: string, topK?: number, minScore?: number): Promise<IKbVectorSearchHit[]>;
+
+	/** P1-3 消费端：读取 vault 全部目录摘要（`.overview.md` 中间层产物），供渐进式下钻。 */
+	readTopicOverviews(): Promise<{ dir: string; summary: string }[]>;
+
+	/** P1-3 消费端：读取指定文档所属一级目录的摘要（按命中频次取 top N 目录）。 */
+	getTopicOverviewsForDocs(docIds: string[], maxDirs?: number): Promise<{ dir: string; summary: string }[]>;
 }
 
 export class KbNativeKernelService extends Disposable implements IKbNativeKernelService {
@@ -296,5 +303,43 @@ export class KbNativeKernelService extends Disposable implements IKbNativeKernel
 	async suggestLinks(docId: string, topK?: number, minScore?: number): Promise<IKbVectorSearchHit[]> {
 		if (!this._kernel || !this._kernel.isBuilt) { return []; }
 		return this._kernel.suggestLinks(docId, topK, minScore);
+	}
+
+	async readTopicOverviews(): Promise<{ dir: string; summary: string }[]> {
+		const libRoot = this._roots.find(r => r.section === 'library')?.uri;
+		if (!libRoot) { return []; }
+		let stat;
+		try { stat = await this._fileService.resolve(libRoot); } catch { return []; }
+		const out: { dir: string; summary: string }[] = [];
+		for (const child of stat.children ?? []) {
+			if (!child.isDirectory || child.name.startsWith('.')) { continue; }
+			const summary = await this._readOverviewBody(child.resource);
+			if (summary) { out.push({ dir: child.name, summary }); }
+		}
+		return out;
+	}
+
+	async getTopicOverviewsForDocs(docIds: string[], maxDirs = 3): Promise<{ dir: string; summary: string }[]> {
+		const libRoot = this._roots.find(r => r.section === 'library')?.uri;
+		if (!libRoot) { return []; }
+		const out: { dir: string; summary: string }[] = [];
+		for (const dir of extractTopTopicDirs(docIds, libRoot.toString(), maxDirs)) {
+			const summary = await this._readOverviewBody(URI.joinPath(libRoot, dir));
+			if (summary) { out.push({ dir, summary }); }
+		}
+		return out;
+	}
+
+	/** 读目录 `.overview.md` 的正文（跳过标题与引用说明行；不存在/失败返回 undefined）。 */
+	private async _readOverviewBody(dirUri: URI): Promise<string | undefined> {
+		try {
+			const raw = (await this._fileService.readFile(URI.joinPath(dirUri, TOPIC_OVERVIEW_FILE))).value.toString();
+			const body = raw.split('\n')
+				.map(l => l.trim())
+				.filter(l => l && !l.startsWith('#') && !l.startsWith('>'))
+				.join(' ')
+				.trim();
+			return body ? body.slice(0, 300) : undefined;
+		} catch { return undefined; }
 	}
 }

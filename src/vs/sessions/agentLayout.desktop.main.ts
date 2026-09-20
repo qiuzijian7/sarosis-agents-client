@@ -67,6 +67,10 @@ import '../workbench/workbench.desktop.main.js';
 
 import './contrib/agentStudio/browser/agentStudio.contribution.js';
 import './browser/paneCompositePartService.js';
+// pi 对拍入口（__SAROSIS_PI_RUN）：agents 布局不引 sessions.common.main.js（见上方 ⚠⚠ 注释），
+// 故此处单独按需引入 —— 该贡献点仅装一个全局函数（不写会话/不落盘/AfterRestored），
+// 且 IAgentOSService 为可选解析，服务缺失时优雅跳过而不是打爆启动（2026-09-20 实证）。
+import './contrib/agentStudio/browser/piLoopDualRun.contribution.js';
 
 //#endregion
 

@@ -1003,7 +1003,9 @@ function rebuildVectorIndexesOnly() {
 // ═══════════════════════════════════════════════════════════════════════════
 const INDEX_SAVE_THROTTLE_MS = (() => {
 	const n = Number(process.env['AGENTMEMORY_INDEX_SAVE_THROTTLE_MS']);
-	return Number.isFinite(n) && n >= 0 ? n : 30_000;
+	// 2026-09-19：30s → 60s。cold-start 分析发现落盘平均 17.81s（最慢 241.60s），
+	// 且压测期间指纹命中率仅 22.6% ⇒ 频繁落盘是写入瓶颈的元凶。加大节流减少落盘次数。
+	return Number.isFinite(n) && n >= 0 ? n : 60_000;
 })();
 const INDEX_SAVE_MAX_DELAY_MS = (() => {
 	const n = Number(process.env['AGENTMEMORY_INDEX_SAVE_MAX_DELAY_MS']);
@@ -1012,6 +1014,8 @@ const INDEX_SAVE_MAX_DELAY_MS = (() => {
 let _indexCacheCtx = null;
 let _indexSaveTimer = null;
 let _indexDirtySince = 0;
+/** Worker 构建 promise（2026-09-20：shutdown 时等待 Worker 完成，避免制品不完整） */
+let _modelVectorsBuildPromise = null;
 
 function setIndexCacheCtx(ctx) { _indexCacheCtx = ctx; }
 
@@ -1366,7 +1370,7 @@ async function main() {
 
 	// P0-1（**默认开启**，`AGENTMEMORY_MODEL_EMBEDDING=off` 才关）：后台构建真语义向量。
 	// 不 await —— 启动可用性不受影响（BM25 已就绪）；完成后原子切换 mode 并落盘。
-	void buildModelVectorsIfEnabled();
+	_modelVectorsBuildPromise = buildModelVectorsIfEnabled();
 	// A4：启动即剪枝一次（subagent 遗留/旧格式巨型键），之后每 24h 由 sweep 触发
 	pruneOrphanData(true);
 
@@ -1905,8 +1909,16 @@ async function main() {
 	// Graceful shutdown
 	const shutdown = (sig) => {
 		emit('log', `${TAG} received ${sig}, shutting down... (pending writes: ${pendingWrites})`);
-		setTimeout(() => {
+		setTimeout(async () => {
 			try {
+				// 2026-09-20：shutdown 时等待 Worker 构建完成（超时 5s），避免制品不完整导致下次启动时 0 文档
+				if (_modelVectorsBuildPromise) {
+					emit('log', `${TAG} waiting for model vectors build to complete (timeout 5s)...`);
+					await Promise.race([
+						_modelVectorsBuildPromise,
+						new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000)),
+					]);
+				}
 				// P0-2：索引制品必须在 db.close() **之前**落盘（指纹要查 kv_store）；
 				// 且必须走同步版——异步的 await 在 process.exit 前根本轮不到。
 				saveIndexCacheSync('shutdown');

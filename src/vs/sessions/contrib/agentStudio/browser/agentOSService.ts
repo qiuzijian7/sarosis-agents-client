@@ -213,7 +213,8 @@ import { executeAgentTurnDirect } from './agentTurnExecutor.js';
 import type { ITurnHost } from './turnHost.js';
 import { isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { UserMessageEnricher } from './messageEnrichment/userMessageEnricher.js';
-import { createBuiltinTagProviders, WorkingMemoryTagProvider } from './messageEnrichment/builtinTagProviders.js';
+import { createBuiltinTagProviders, WorkingMemoryTagProvider, KbOverviewTagProvider } from './messageEnrichment/builtinTagProviders.js';
+import { IKbNativeKernelService } from './kbNativeKernelService.js';
 
 export class AgentOSService extends Disposable implements IAgentOSService {
 
@@ -543,6 +544,7 @@ private readonly _sandboxGuard: SandboxGuard;
 		@IFileService private readonly _fileService: IFileService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IKbNativeKernelService private readonly _kbNativeKernelService: IKbNativeKernelService,
 	) {
 		super();
 		this._logService = logService;
@@ -1201,11 +1203,14 @@ private readonly _sandboxGuard: SandboxGuard;
 		const providers = createBuiltinTagProviders();
 		this._userMessageEnricher = new UserMessageEnricher(providers);
 		this._workingMemoryTagProvider = providers.find(p => p instanceof WorkingMemoryTagProvider) as WorkingMemoryTagProvider | undefined;
+		this._kbOverviewTagProvider = providers.find(p => p instanceof KbOverviewTagProvider) as KbOverviewTagProvider | undefined;
 		this._logService.info('[AgentOS] User message XML enricher initialized');
 	}
 
 	/** 只读工作记忆注入：working_memory_content 标签的数据源（存 provider 实例引用）。 */
 	private _workingMemoryTagProvider: WorkingMemoryTagProvider | undefined;
+	/** 知识库目录摘要注入：kb_overview 标签的数据源（L1 常驻，OpenViking/Aider 式渐进加载）。 */
+	private _kbOverviewTagProvider: KbOverviewTagProvider | undefined;
 
 	/**
 	 * 2026-08-06 修正：working_memory_content 标签的数据源**从 agentmemory
@@ -1308,6 +1313,58 @@ private readonly _sandboxGuard: SandboxGuard;
 			this._workingMemoryTagProvider.workingMemoryContent = null;
 			this._workingMemoryCache = { key: cacheKey, content: null, at: Date.now() };
 			this._logService.warn(`[AgentOS] Failed to load working memory from agentmemory: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// ─── KB 目录摘要注入（kb_overview 标签，L1 常驻）─────────────────────
+
+	private _kbOverviewCache: { content: string | null; at: number } | undefined;
+	private static readonly KB_OVERVIEW_TTL_MS = 60_000;
+	/** Aider 式预算：目录摘要注入总量上限（字符）。 */
+	private static readonly KB_OVERVIEW_MAX_CHARS = 1500;
+
+	/**
+	 * 刷新 kb_overview 标签内容：从知识库内核服务读取各目录 `.overview.md` 摘要。
+	 * 设计要点（对齐 _refreshWorkingMemoryContent 的纪律）：
+	 *   - TTL 缓存 60s：避免每轮白付一次目录扫描；
+	 *   - Promise.race 1.5s 超时：摘要读取绝不阻塞 turn；
+	 *   - 预算截断：超出 KB_OVERVIEW_MAX_CHARS 的目录省略（Aider repo map 式）；
+	 *   - 无 vault / 无摘要 / 失败 ⇒ null（标签不输出），绝不报错。
+	 */
+	public async _refreshKbOverviewContent(): Promise<void> {
+		if (!this._kbOverviewTagProvider) { return; }
+		const cached = this._kbOverviewCache;
+		if (cached && Date.now() - cached.at < AgentOSService.KB_OVERVIEW_TTL_MS) {
+			this._kbOverviewTagProvider.overviewContent = cached.content;
+			return;
+		}
+		try {
+			const overviews = await Promise.race([
+				this._kbNativeKernelService.readTopicOverviews(),
+				new Promise<null>(resolve => setTimeout(() => resolve(null), 1500)),
+			]);
+			if (!overviews || overviews.length === 0) {
+				this._kbOverviewTagProvider.overviewContent = null;
+				this._kbOverviewCache = { content: null, at: Date.now() };
+				return;
+			}
+			const lines: string[] = [];
+			let used = 0;
+			for (const o of overviews) {
+				const line = `- ${o.dir}: ${o.summary}`;
+				if (used + line.length > AgentOSService.KB_OVERVIEW_MAX_CHARS) { break; }
+				lines.push(line);
+				used += line.length;
+			}
+			const omitted = overviews.length - lines.length;
+			if (omitted > 0) { lines.push(`- ... 另有 ${omitted} 个目录（用 kb_topic_overviews 工具查看全部）`); }
+			const content = lines.join('\n');
+			this._kbOverviewTagProvider.overviewContent = content;
+			this._kbOverviewCache = { content, at: Date.now() };
+		} catch (err) {
+			this._kbOverviewTagProvider.overviewContent = null;
+			this._kbOverviewCache = { content: null, at: Date.now() };
+			this._logService.warn(`[AgentOS] Failed to load KB topic overviews: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 

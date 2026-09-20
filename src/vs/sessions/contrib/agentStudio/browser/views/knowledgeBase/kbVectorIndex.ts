@@ -39,6 +39,22 @@ const VECTOR_INDEX_VERSION = 1;
 const MAX_CHUNK_CHARS = 1000;
 const EMBED_BATCH = 64;
 
+/** P3② embed 文本缓存文件名（vault 根；对齐 LangChain CacheBackedEmbeddings 思路）。 */
+export const KB_EMBED_CACHE_FILE = '.kbembedcache.json';
+/** 缓存容量上限：超出时按插入序淘汰最早一半。 */
+const EMBED_CACHE_MAX_ENTRIES = 20000;
+
+/** embed 缓存键：tag 隔离（换 provider 不串向量）+ 双 hash + 长度（防碰撞）。 */
+export function embedTextKey(text: string, tag: string): string {
+	let h1 = 0x811c9dc5, h2 = 0x01000193;
+	for (let i = 0; i < text.length; i++) {
+		const c = text.charCodeAt(i);
+		h1 = Math.imul(h1 ^ c, 0x01000193);
+		h2 = Math.imul(h2 ^ c, 0x85ebca6b);
+	}
+	return `${tag}:${(h1 >>> 0).toString(36)}${(h2 >>> 0).toString(36)}:${text.length}`;
+}
+
 /** 单条向量块。 */
 export interface IKbVectorChunk {
 	/** 块 ID（docId + 偏移）。 */
@@ -102,6 +118,11 @@ export class KbVectorIndex {
 	private _built = false;
 	private _tag: string | undefined;
 	private _dimensions: number | undefined;
+	/** P3② embed 文本缓存：换 provider/重建时避免重复向量化（切回旧 provider 零成本）。 */
+	private _embedCache = new Map<string, number[]>();
+	private _embedCacheUri: URI | undefined;
+	private _embedCacheLoaded = false;
+	private _embedCacheDirty = false;
 
 	constructor(
 		private readonly _fileService: IFileService,
@@ -185,14 +206,15 @@ export class KbVectorIndex {
 		//    保证「每个语义块 = 1 个向量」；超长块内部会被切分再聚合，避免超 token 上限报错。
 		let builtDimensions: number | undefined;
 		if (newChunks.length > 0) {
+			await this._loadEmbedCache();
 			const texts = newChunks.map(c => c.text);
 			let builtTag: string | undefined;
-			const embedFn = async (batch: string[]): Promise<number[][]> => {
+			const embedFn = this._wrapEmbedWithCache(async (batch: string[]): Promise<number[][]> => {
 				const result = await this._embedding!.embed(batch, { token: opts?.token, providerId: this._embeddingProviderId });
 				builtTag = result.tag;
 				builtDimensions = result.dimensions;
 				return result.vectors;
-			};
+			}, activeTag);
 			const vectors = await embedWithPooling(embedFn, texts, { maxBatchSize: EMBED_BATCH });
 			const tag = builtTag ?? activeTag;
 			for (let idx = 0; idx < newChunks.length; idx++) {
@@ -218,6 +240,74 @@ export class KbVectorIndex {
 		this._tag = activeTag;
 		this._dimensions = builtDimensions ?? this._embedding.getActiveDimensions();
 		this._built = true;
+		await this._saveEmbedCache();
+	}
+
+	// -----------------------------------------------------------------------
+	// P3② embed 文本缓存（CacheBacked 式）
+	// -----------------------------------------------------------------------
+
+	/** 缓存包装：批内先查缓存，缺失部分才调真实 embed，结果回填缓存。 */
+	private _wrapEmbedWithCache(rawEmbed: (batch: string[]) => Promise<number[][]>, tag: string): (batch: string[]) => Promise<number[][]> {
+		return async (batch) => {
+			if (batch.length === 0) { return []; }
+			const out: (number[] | undefined)[] = new Array(batch.length);
+			const missingIdx: number[] = [];
+			for (let i = 0; i < batch.length; i++) {
+				const hit = this._embedCache.get(embedTextKey(batch[i], tag));
+				if (hit) { out[i] = hit; } else { missingIdx.push(i); }
+			}
+			if (missingIdx.length > 0) {
+				const vectors = await rawEmbed(missingIdx.map(i => batch[i]));
+				vectors.forEach((v, j) => {
+					const i = missingIdx[j];
+					out[i] = v;
+					if (v?.length) { this._embedCacheSet(embedTextKey(batch[i], tag), v); }
+				});
+			}
+			return out as number[][];
+		};
+	}
+
+	private _embedCacheSet(key: string, v: number[]): void {
+		if (this._embedCache.size >= EMBED_CACHE_MAX_ENTRIES && !this._embedCache.has(key)) {
+			// 容量上限：淘汰插入序最早的一半
+			const drop = Math.floor(EMBED_CACHE_MAX_ENTRIES / 2);
+			let i = 0;
+			for (const k of this._embedCache.keys()) {
+				this._embedCache.delete(k);
+				if (++i >= drop) { break; }
+			}
+		}
+		this._embedCache.set(key, v);
+		this._embedCacheDirty = true;
+	}
+
+	private async _loadEmbedCache(): Promise<void> {
+		// 缓存文件位置：以「库」分区的上一级（vault 根）落盘，跨重建共享
+		if (!this._embedCacheUri) {
+			const libRoot = this._roots.find(r => r.section === 'library')?.uri ?? this._roots[0]?.uri;
+			if (libRoot) { this._embedCacheUri = URI.joinPath(libRoot, '..', KB_EMBED_CACHE_FILE); }
+		}
+		if (!this._embedCacheUri || this._embedCacheLoaded) { return; }
+		this._embedCacheLoaded = true;
+		try {
+			const raw = (await this._fileService.readFile(this._embedCacheUri)).value.toString();
+			const parsed = JSON.parse(raw);
+			if (parsed && typeof parsed === 'object') {
+				for (const [k, v] of Object.entries(parsed)) {
+					if (Array.isArray(v)) { this._embedCache.set(k, v as number[]); }
+				}
+			}
+		} catch { /* 无缓存文件或损坏：从零开始 */ }
+	}
+
+	private async _saveEmbedCache(): Promise<void> {
+		if (!this._embedCacheUri || !this._embedCacheDirty) { return; }
+		try {
+			await this._fileService.writeFile(this._embedCacheUri, VSBuffer.fromString(JSON.stringify(Object.fromEntries(this._embedCache))));
+			this._embedCacheDirty = false;
+		} catch { /* 缓存写失败不影响构建结果 */ }
 	}
 
 	/** Phase 3：只重算 tag 与激活 provider 不匹配的块（provider/model 切换后调用）。 */
@@ -255,14 +345,15 @@ export class KbVectorIndex {
 
 		// 用保存的 text 重新向量化（token 级切块 + 均值池化，与 build 同路径）。
 		if (reembed.length > 0) {
+			await this._loadEmbedCache();
 			const texts = reembed.map(c => c.text);
 			let rebuiltTag: string | undefined;
-			const embedFn = async (batch: string[]): Promise<number[][]> => {
+			const embedFn = this._wrapEmbedWithCache(async (batch: string[]): Promise<number[][]> => {
 				const result = await this._embedding!.embed(batch, { token, providerId: this._embeddingProviderId });
 				rebuiltTag = result.tag;
 				builtDimensions = result.dimensions;
 				return result.vectors;
-			};
+			}, activeTag);
 			const vectors = await embedWithPooling(embedFn, texts, { maxBatchSize: EMBED_BATCH });
 			const tag = rebuiltTag ?? activeTag;
 			for (let idx = 0; idx < reembed.length; idx++) {
@@ -284,6 +375,7 @@ export class KbVectorIndex {
 		}
 
 		if (builtDimensions !== undefined) { this._dimensions = builtDimensions; }
+		await this._saveEmbedCache();
 		return stale.length;
 	}
 

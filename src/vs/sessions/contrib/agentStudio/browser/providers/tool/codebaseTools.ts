@@ -22,6 +22,7 @@ import { type SearchHelpers, redactSecrets } from './searchHelpers.js';
 import { prepareQueryForRipgrep, escapeLiteralForRegex } from './regexValidator.js';
 import { normalizeFileGlobForSearch, normalizeSearchPathFilter, searchRootCandidates, searchOutcomeHint } from './pathFilterNormalize.js';
 import type { IAgentStudioService } from '../../../common/agentStudio.js';
+import { truncateToTokenBudget } from '../../../common/outputTokenBudget.js';
 import type { IWorkspaceFolder } from '../../../../../../platform/workspace/common/workspace.js';
 import { detectProjectTemplates, type IProjectIndexTemplate } from '../../../common/codebaseProjectTemplates.js';
 
@@ -575,12 +576,13 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				fields: { type: 'array', items: { type: 'string' }, description: 'Extra per-node property columns to return (e.g. ["cyclomaticComplexity","returnType","paramTypes","signature","docstring","isTest"]). Pulled from node.properties; missing keys emit as null.' },
 			semantic_query: { type: 'array', items: { type: 'string' }, description: 'MUST be an ARRAY of keyword strings (e.g. ["send","pubsub","publish"]) — NOT a single string. Each keyword is scored independently via 6-signal fusion; results reflect nodes that score well on ALL keywords (min-score re-ranking). Results appear in "semantic_results" field (separate from "results"). Requires index with similarity/semantic passes enabled (moderate or full mode).' },
 			format: { type: 'string', enum: ['json', 'toon'], default: 'toon', description: 'Output format. "toon" (default) returns a compact pipe-delimited table (header row + one row per node), saving ~60% tokens — recommended for large result sets. Extra "fields" columns are appended after the degree columns; semantic_results render as a second table. "json" returns the full structured object.' },
+			max_output_tokens: { type: 'number', description: 'Deterministic output cap in tokens (1 token ≈ 4 chars — an approximation, NOT an exact tokenizer count). Output is truncated to WHOLE lines within this budget, then a narrowing hint is appended. Default: no cap. Use it to keep huge results from flooding your context.' },
 			},
 			},
 			category: 'codebase',
 			source: 'saros.builtin-tools',
-		},
-		handler: async (args: Record<string, unknown>) => {
+			},
+			handler: async (args: Record<string, unknown>) => {
 			// SQLite 后端感知：启用时先查后端计数（避免 Phase 2f 把全图回载内存）；
 			// 未启用时 hasGraphDataAsync===hasGraphData，走原 ensureGraph 磁盘回载路径。
 			if (!await ctx.codebaseGraphService.hasGraphDataAsync() && !await ensureGraph()) { return noGraphGuidance('search_graph'); }
@@ -732,11 +734,20 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		response.truncated_hint = _truncHint(((response.nodes as any[]) || []).length, Number(response.total) || 0);
 	}
 	const format = (args['format'] as string) || 'toon';
+		// ★ 2026-09-20（P0-4）：确定性 token 预算（对齐 codebase-memory-mcp 的 max_output_tokens ✓）。
+		// 整行截断保持 TOON 表结构 ✓；未传 ⇒ 不截（行为不变 ✓）。
+		const maxTokens = args['max_output_tokens'] as number | undefined;
 		if (format === 'toon') {
 			let out = _buildSearchGraphToon(response, fieldList);
 			// TOON 尾部追加 HINT 行（单列短行，UI 解析按 cols<4 跳过，安全）
 			if (response.truncated_hint) { out += `\nHINT: ${response.truncated_hint}`; }
-			return text(out);
+			const { text: outText, truncated } = truncateToTokenBudget(out, maxTokens, 'pass a more specific query / filePattern, or page with offset+limit.');
+			if (truncated) { ctx.logService.info(`[BuiltinTools] search_graph: output truncated to ~${maxTokens} tokens（整行取舍 ✓）`); }
+			return text(outText);
+		}
+		if (maxTokens && maxTokens > 0) {
+			const { text: jsonText } = truncateToTokenBudget(JSON.stringify(response, null, 2), maxTokens, 'pass a more specific query / filePattern, or page with offset+limit.');
+			return text(jsonText);
 		}
 		return json(response);
 		},
@@ -757,6 +768,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 					project: { type: 'string', description: 'Project name (optional, defaults to current workspace)' },
 					max_rows: { type: 'integer', description: 'Row limit (optional, default unlimited up to 100k ceiling)' },
 					graph: { type: 'string', description: 'Graph selector. Omit for the main code graph. Use "missed" to return the structural graph of NOT-fully-indexed files (Project→Folder→File with kind=skipped/parse_error/timeout/partial and detail=reason).' },
+					max_output_tokens: { type: 'number', description: 'Deterministic output cap in tokens (1 token ≈ 4 chars — approximation, NOT exact tokenizer count). Output is truncated to WHOLE lines within this budget, then a narrowing hint is appended. Default: no cap.' },
 				},
 				required: ['query'],
 			},
@@ -775,6 +787,12 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			const maxRows = args['max_rows'] as number | undefined;
 			try {
 				const result = ctx.codebaseGraphService.executeCypher(query, maxRows);
+				// ★ 2026-09-20（P0-4）：确定性 token 预算（与 search_graph 同 helper ✓；未传 ⇒ 不截 ✓）
+				const maxTokens = args['max_output_tokens'] as number | undefined;
+				if (maxTokens && maxTokens > 0) {
+					const { text: outText } = truncateToTokenBudget(JSON.stringify(result, null, 2), maxTokens, 'add a WHERE filter / LIMIT, or page the query.');
+					return text(outText);
+				}
 				return json(result);
 			} catch (err: any) {
 				return text(`query_graph error: ${err?.message || err}`);
@@ -1002,6 +1020,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 					riskLabels: { type: 'boolean', default: false, description: 'Add risk classification (CRITICAL/HIGH/MEDIUM/LOW) per hop based on in/out degree and depth.' },
 				edgeTypes: { type: 'array', items: { type: 'string' }, description: 'Restrict traversal to these edge types (e.g. ["CALLS","HTTP_CALLS"]). Overrides mode-derived edge types when provided.' },
 				format: { type: 'string', enum: ['json', 'toon'], default: 'toon', description: 'Output format. "toon" (default) returns a compact pipe-delimited table (depth|type|qn|loc[|risk]), saving ~60% tokens. "json" returns the full structured object.' },
+				max_output_tokens: { type: 'number', description: 'Deterministic output cap in tokens (1 token ≈ 4 chars — approximation, NOT exact tokenizer count). Output is truncated to WHOLE lines within this budget, then a narrowing hint is appended. Default: no cap.' },
 			},
 				required: ['sourceName'],
 			},
@@ -1039,8 +1058,15 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 	// [CBSearch] trace 结果追踪：hops 数与源解析状态（排查"找不到内容"）
 	ctx.logService.info(`[BuiltinTools] [CBSearch][trace] trace_path source="${sourceName}" target=${targetName ?? '-'} mode=${mode} hops=${result?.hops?.length ?? 0}${result?.error ? ` error=${result.error}` : ''}`);
 	const traceFormat = (args['format'] as string) || 'toon';
+		// ★ 2026-09-20（P0-4）：确定性 token 预算（与 search_graph 同 helper ✓；未传 ⇒ 不截 ✓）
+		const maxTokens = args['max_output_tokens'] as number | undefined;
 		if (traceFormat === 'toon') {
-			return text(_buildTraceToon(result));
+			const { text: outText } = truncateToTokenBudget(_buildTraceToon(result), maxTokens, 'narrow with maxDepth / direction, or a more specific sourceName.');
+			return text(outText);
+		}
+		if (maxTokens && maxTokens > 0) {
+			const { text: jsonText } = truncateToTokenBudget(JSON.stringify(result, null, 2), maxTokens, 'narrow with maxDepth / direction, or a more specific sourceName.');
+			return text(jsonText);
 		}
 		return json(result);
 		},

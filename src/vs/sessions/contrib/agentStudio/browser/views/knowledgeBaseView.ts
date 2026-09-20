@@ -104,6 +104,7 @@ import { IEmbeddingService } from '../../common/embeddingProvider.js';
 import { resolveAuxEmbeddingProviderId, resolveAuxEmbeddingConfig } from '../knowledge/embeddingConfigResolver.js';
 import { KbWorkerManager } from './knowledgeBase/kbWorkerManager.js';
 import { renderKbSettingsPanel } from './knowledgeBase/kbSettingsPanel.js';
+import { AGENT_STUDIO_KB_AGENTIC_BUILD } from '../../common/constants.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
 import { MemoryDetailEditorInput } from '../memoryDetailEditorInput.js';
 import { CodebaseMemoryDetailEditorInput } from '../codebaseMemoryDetailEditorInput.js';
@@ -2963,6 +2964,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			totalSize,
 			sqliteActive: !!this._kbSqliteStore,
 			linkedWorkspaceCount: this._activeVault?.linkedWorkspaces?.length ?? 0,
+			agenticBuild: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_AGENTIC_BUILD) !== false,
 			logOp: (code, detail) => { void this._logOp(code, 'success', detail); },
 			onPickDir: (current) => { void this.pickKbDir(current); },
 			onApplyDir: (dir) => { void this.applyKbDir(dir); },
@@ -4933,10 +4935,17 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		try {
 			const status = this._kbKernelService.getVectorStatus();
 			if (!status.built || status.chunkCount === 0) { return; }
+			// P3① provider 一致性提示：索引 tag 与当前激活 embedding provider 不一致时，
+			// 语义结果质量已降级（维度不同会直接搜不出），在语义区头部提示重建。
+			const activeTag = this._ragEmbeddingService.getActiveTag?.();
+			const staleIndex = !!(activeTag && status.tag && status.tag !== activeTag);
 			const hits = await this._kbKernelService.searchVector(q, 5, resolveAuxEmbeddingProviderId(this.configurationService));
 			if (token !== this._searchToken) { return; } // 已被新搜索取代
-			if (!hits.length) { return; }
-			const sep = $('div.kb-search-head'); sep.textContent = `🧠 语义相关 ${hits.length} 条（向量索引）`;
+			if (!hits.length && !staleIndex) { return; }
+			const sep = $('div.kb-search-head');
+			sep.textContent = staleIndex
+				? `🧠 语义索引与当前 embedding 模型不一致（索引 ${status.tag} / 当前 ${activeTag}），结果可能不准——请在设置中「重新构建向量索引」`
+				: `🧠 语义相关 ${hits.length} 条（向量索引）`;
 			resultsEl.appendChild(sep);
 			for (const h of hits) {
 				resultsEl.appendChild(this._renderVectorHit(h));

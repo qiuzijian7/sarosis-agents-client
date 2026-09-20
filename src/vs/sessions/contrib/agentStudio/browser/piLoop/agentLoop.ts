@@ -31,6 +31,7 @@ import type {
 	AgentEventSink,
 	AgentLoopConfig,
 	AgentMessage,
+	AgentTool,
 	AgentToolCall,
 	AgentToolResult,
 	AssistantMessage,
@@ -41,6 +42,7 @@ import type {
 	StreamFn,
 	ToolCallPreparation,
 	ToolResultMessage,
+	TranscriptContext,
 } from './types.js';
 
 /**
@@ -242,7 +244,7 @@ async function streamAssistantResponse(
 	}
 
 	const llmMessages = await config.convertToLlm(messages);
-	const transcript = normalizeTranscript(llmMessages);
+	const transcript = normalizeTranscript(llmMessages, context.tools);
 
 	const resolvedApiKey = config.getApiKey
 		? (await config.getApiKey(config.model.provider)) || config.apiKey
@@ -308,9 +310,9 @@ async function streamAssistantResponse(
 	return accumulated;
 }
 
-/** 将 LLM 消息归一化为 transcript 上下文。 */
-function normalizeTranscript(messages: readonly Message[]): { messages: readonly Message[] } {
-	return { messages };
+/** 将 LLM 消息归一化为 transcript 上下文（工具定义随附 —— 模型层唯一工具通道）。 */
+function normalizeTranscript(messages: readonly Message[], tools?: readonly AgentTool[]): TranscriptContext {
+	return tools && tools.length > 0 ? { messages, tools } : { messages };
 }
 
 /** 构造一条表示失败的助手消息，避免 loop 因 `null` 而中断。 */

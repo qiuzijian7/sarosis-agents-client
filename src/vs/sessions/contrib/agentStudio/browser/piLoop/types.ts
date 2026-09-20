@@ -97,9 +97,17 @@ export interface Model<TApi extends string = string> {
 	readonly api: TApi;
 }
 
-/** 归一化后的 transcript 上下文。system prompt 与工具声明走 system messages，不走此处。 */
+/**
+ * 归一化后的 transcript 上下文。system prompt 走 system messages，不走此处。
+ * ⚠ 工具声明**必须**走此处的 `tools` 通道（2026-09-20 真机双跑实证）：fork 时曾假定
+ * 「工具声明走 system messages」—— 但本仓 provider 的结构化工具调用只认
+ * `IModelOptions.tools`（native function calling）；写进 system 文本不会产出
+ * `tool_call` 增量 ⇒ 模型自称"无法访问文件系统"。mock streamFn 的测试暴露不出。
+ */
 export interface TranscriptContext {
 	readonly messages: readonly Message[];
+	/** 本轮可用工具 —— streamFn 把工具定义转交给模型层的**唯一**通道。 */
+	readonly tools?: readonly AgentTool[];
 }
 
 // ─── 流式事件（对应 pi-ai AssistantMessageEvent）─────────────────────────────

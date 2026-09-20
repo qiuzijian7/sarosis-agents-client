@@ -37,6 +37,7 @@ import { IFileDialogService, IDialogService } from '../../../../../platform/dial
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
+import { IAgentDriverService } from '../../common/agentDriver.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 import { IRequestService } from '../../../../../platform/request/common/request.js';
@@ -455,12 +456,13 @@ export class WorkspaceViewPane extends ViewPane {
 		@INativeEnvironmentService private readonly _envService: INativeEnvironmentService,
 		@IViewsService private readonly _viewsService: IViewsService,
 		@IRequestService private readonly _requestService: IRequestService,
+		@IAgentDriverService private readonly _agentDriverService: IAgentDriverService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._kbImport = new KbImportController(
 			configurationService, this.logService, this.fileService, this._envService,
 			this.storageService, this.agentStudioService, this._viewsService, this.editorService,
-			this.notificationService, this._requestService,
+			this.notificationService, this._requestService, this._agentDriverService,
 		);
 	}
 

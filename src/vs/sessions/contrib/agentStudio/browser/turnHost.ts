@@ -116,6 +116,12 @@ export interface ITurnHostContext {
 	_refreshWorkingMemoryContent?(agentId?: string, sessionId?: string): Promise<void>;
 
 	/**
+	 * 刷新知识库目录摘要注入（kb_overview 标签，L1 常驻目录摘要）。
+	 * 可选成员 —— 调用点用 `?.()` 保护。
+	 */
+	_refreshKbOverviewContent?(): Promise<void>;
+
+	/**
 	 * ⚠ 修复历史缺陷（原为 `host._currentAgent`，宿主上从未声明 → 恒 `undefined`）。
 	 *
 	 * Agent 注册表的同步查询入口，宿主构造时接好（`agentOSService.ts:549-551`，
@@ -199,6 +205,7 @@ export interface ITurnHostExecution {
 	_consumeStashedFiles(sessionKey: string): string[];
 	_resolveContextWindow(provider: IModelProvider, modelId: string): Promise<number>;
 	_refreshWorkingMemoryContent(agentId?: string, sessionId?: string): Promise<void>;
+	_refreshKbOverviewContent(): Promise<void>;
 	_awaitPlanApproval(confirmationId: string, timeoutMs?: number): Promise<'approved' | 'rejected'>;
 	_orchestratePlan(request: IAgentTurnRequest, args: { plan_summary?: string; next_mode?: string; idempotencyKey?: string }, tasks: Array<{ title: string; description: string; files?: string[]; complexity?: string; suggestedRole?: string; dependencies?: string[]; deliverable?: string }>, _toolCallId: string): AsyncGenerator<IChatStreamDelta>;
 	_readPlanFile(filePath: string): Promise<string>;
