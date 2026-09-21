@@ -692,6 +692,40 @@ suite('护栏接线不变量（源码级）', () => {
 			'读 + 解析 + 应用抽成共用方法');
 	});
 
+	// ── ㉑ 能力插件清单 capability-plugins.js：打包必须带上，且加载失败在打包形态必须是 error ──
+	//
+	// 背景（**安装版**日志 2026-09-21）：`Failed to load capability-plugins.js manifest.
+	// Falling back to hardcoded plugin list (dev mode)` ＋ `Primary import() failed …
+	// (module=…/src/extension.js)` ⇒ 生产包里跑的是 **dev 回退清单**，且 primary 导入必然失败一次 ✗。
+	// 根因：该清单由 `build/next/index.ts` **生成**到 `out/vs/extensions/`，renderer 按
+	// **运行时路径**动态 import ⇒ 与 tree-sitter wasm / kbWorker.js 同一类"生成产物漏拷" ✗✗。
+	// ⚠ 它**静默**（有硬编码回退 ⇒ 功能看似正常，只是每次多一次失败导入 + 两条告警）⇒ 必须钉住。
+	test('㉑ 能力插件清单必须进包（strip + verify 双闸），且打包形态加载失败必须升级为 error', () => {
+		const contrib = readSource('browser/agentStudio.contribution.ts');
+		// 打包脚本在**仓库根**下（不在 AGENT_STUDIO 基准内）⇒ 直接按 cwd 读 ✓
+		const readRepoFile = (rel: string): string => {
+			const abs = path.join(process.cwd(), rel);
+			assert.ok(fs.existsSync(abs), `文件不存在（路径基准变了？）：${abs}`);
+			return fs.readFileSync(abs, 'utf8');
+		};
+		const strip = readRepoFile('build/saros/strip-before-pack.mjs');
+		const verify = readRepoFile('.ci/scripts/verify-staging.ps1');
+
+		// ① 打包侧双闸（与 tree-sitter wasm 同一模式：缺一不可 ✓）
+		assert.ok(strip.includes('out/vs/extensions/capability-plugins.js'),
+			'strip-before-pack 必须校验/自愈该清单（它是生成产物，不拷就在包里消失 ✗）');
+		assert.ok(verify.includes('out\\vs\\extensions\\capability-plugins.js'),
+			'verify-staging 必须把它列进硬性清单（否则带病出包 ✗）');
+
+		// ② 运行时：打包形态缺清单 = 打包缺陷 ⇒ 必须 error（不是 warn ✗）
+		assert.ok(/isPackaged[\s\S]{0,400}logService\.error/.test(contrib),
+			'打包形态下清单加载失败必须 error —— 否则被当成"dev 没跑 transpile-client"而忽略 ✗');
+
+		// ③ 运行时：打包形态**先走 appResource**（module 指向 src/，生产包里必然失败 ✗）
+		assert.ok(/isPackaged[\s\S]{0,200}pushAppResource\(\); pushModule\(\);/.test(contrib),
+			'打包形态必须先试 appResource(dist) —— manifest 的 module 指向 src/，在生产包里必失败 ✗');
+	});
+
 	// ── ⑳ PanelPart 内容高度必须钳到 ≥0（否则 -12 一路传下去）──────────────
 	//
 	// 背景（2026-09-15 用户日志）：切换右侧栏时打出

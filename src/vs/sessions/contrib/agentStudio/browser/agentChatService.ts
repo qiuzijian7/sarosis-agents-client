@@ -3074,6 +3074,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		let usageCreditSeen = false; // 2026-07-27：区分"网关返回 credit=0"与"网关根本未提供该字段"
 		let usageTotalReported = 0; // total_tokens as reported by the gateway (preferred over input+output)
 		let usageSeen = false;
+		/**
+		 * ★ 2026-09-21：**最近一次** usage delta 的 input（= 当前 prompt 大小，**非累加**）。
+		 *
+		 * `usageInput` 是本 turn 全程累加消费（footer 展示用；多轮 agent loop 逐轮累加）；
+		 * 上下文环需要的是「当前 prompt 多大」——两者此前共用同一个值 ⇒ 长 turn 后环暴涨
+		 * （实测 1,465,040 vs 真实 prompt 80,724）⇒ 显示 100% 却永不触发压缩（压缩判定用
+		 * ContextManager 的 real usage，一直远低于 140k 线）。详见 DETAIL §44。
+		 *
+		 * 落盘意义：重启/恢复会话时，环能用**真实占用**（而非对全部历史做字符估算）。
+		 */
+		let usagePromptTokens = 0;
 		// ★★★ 2026-09-21（用户报「tokens tip 显示内容不全 + **重启后数据丢失**」✓）：
 		// 落盘路径此前只存 input/output/total/cached/cacheWrite ✗ —— 而 **live** 路径
 		//（`nativeChatEditorPane` 的 usage delta 处理 ✓）还会写 `reasoning` / `cacheMiss` /
@@ -3414,6 +3425,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				if (delta.type === 'usage' && delta.usage) {
 					usageSeen = true;
 					if (typeof delta.usage.inputTokens === 'number') { usageInput += delta.usage.inputTokens; }
+					// ★ 2026-09-21：同时记录**最近一次**的 input（= 当前上下文占用）——只覆盖、不累加。
+					if (typeof delta.usage.inputTokens === 'number') { usagePromptTokens = delta.usage.inputTokens; }
 					if (typeof delta.usage.outputTokens === 'number') { usageOutput += delta.usage.outputTokens; }
 					if (typeof delta.usage.cachedTokens === 'number') { usageCached += delta.usage.cachedTokens; }
 					if (typeof delta.usage.cacheWriteTokens === 'number') { usageCacheWrite += delta.usage.cacheWriteTokens; }
@@ -3520,6 +3533,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						// Prefer the gateway-reported total_tokens when present (it may
 						// account for tokens not split into input/output); otherwise derive.
 						total: usageTotalReported > 0 ? usageTotalReported : usageInput + usageOutput,
+						// ★ 2026-09-21：**当前上下文占用**（末次请求的 prompt 大小）——与 live 路径
+						// （`nativeChatEditorPane` 采集的同名字段）同义；落盘后重启/恢复会话时
+						// 上下文环能显示真实占用，不再回退到「对全部历史做字符估算」（会高估十倍以上）。
+						promptTokens: usagePromptTokens,
 						cached: cachedRead,
 						cachedRead,
 						cacheWrite: usageCacheWrite,

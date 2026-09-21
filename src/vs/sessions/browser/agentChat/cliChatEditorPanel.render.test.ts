@@ -125,6 +125,17 @@ suite('TUI 流式重绘防闪烁契约（2026-09-21 第二轮）', () => {
 		assert.ok(/_afterContentMutation\(/.test(all), '_renderAllMessages 同样必须恢复锚点 ✓');
 	});
 
+	test('★★★★★★ 必须有 ResizeObserver 总闸（贴底后高度还会涨 ⇒ "看着到底其实还有内容" ✗✓）', () => {
+		const src = readSrc();
+		// 用户第六轮截图：滚动条已到底，但**异步代码块**之后的内容仍被截断 ✗✓
+		// ⇒ 根因 = 非流式的高亮渲染是**异步**的 ⇒ 贴底之后才插入 ⇒ scrollHeight 再涨 ✗✓
+		assert.ok(/new ResizeObserver\(/.test(src), '必须监听内容容器高度变化 ✓');
+		assert.ok(/ro\.observe\(this\._messagesContainer\)/.test(src), '必须观察消息容器 ✓');
+		assert.ok(/if \(!this\._autoScroll\) \{ return; \}/.test(src),
+			'贴底前必须判断跟随态（否则与用户上滚**抢** ✗✓）');
+		assert.ok(/ro\.disconnect\(\)/.test(src), 'dispose 时必须断开 ✓');
+	});
+
 	test('★★★★★ 贴底必须"滚两次"（布局未刷新时 `scrollHeight` 偏小 ⇒ 停在离底一行 ✗✓）', () => {
 		const src = readSrc();
 		const pin = methodBody(src, 'private _pinToBottom(scroller: HTMLElement): void {');

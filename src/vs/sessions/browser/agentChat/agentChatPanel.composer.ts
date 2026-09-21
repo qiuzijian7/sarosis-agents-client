@@ -1,4 +1,5 @@
 import { $, append, clearNode, addDisposableListener, addStandardDisposableListener, EventType } from '../../../base/browser/dom.js';
+import { ContextManager } from '../../contrib/agentStudio/common/contextManager.js';
 import { IChatAttachment, IContextUsage, CHAT_MODE_UI } from './agentChatTypes.js';
 import { renderContextUsageRing } from './modules/contextRing.js';
 import { chatPerf } from './agentChatPanel.perf.js';
@@ -1807,6 +1808,13 @@ protected override _computeInputBaselineTokens(): number {
 		for (let i = this._messages.length - 1; i >= 0; i--) {
 			const m = this._messages[i];
 			if (m.tokenUsage && (m.tokenUsage.input > 0 || m.tokenUsage.total > 0)) {
+				// ★ 2026-09-21：优先用「最近一次请求的 prompt 大小」——`input` 的语义是**本 turn 累加消费**
+				// （多轮 agent loop 每轮 LLM 调用各发一次 usage delta 并累加，供 footer 展示总消耗），
+				// 拿它当上下文占用会让长 turn 后环暴涨：实测 1,465,040 vs 真实 prompt 80,724
+				// ⇒ 环显示 100%/danger，而压缩判定（real usage < 140k 线）永不触发 —— 用户观感"超标却不压缩"。
+				if (m.tokenUsage.promptTokens && m.tokenUsage.promptTokens > 0) {
+					return m.tokenUsage.promptTokens;
+				}
 				if (m.tokenUsage.input > 0) {
 					return m.tokenUsage.input + (m.tokenUsage.output || 0);
 				}
@@ -1870,7 +1878,11 @@ protected override _computeContextUsage(): IContextUsage | null {
 		// 大窗口模型（contextWindow>200k，如 1M 模型解析出 936000）此前分母用原始
 		// maxInputTokens → 环显示 60601/936000≈6%，实际判定 30% 触发压缩——
 		// 即「UI 显示没满却压缩」的主因。无推送（空闲/刷新后）回退模型声明值。
-		const limit = this._contextUsage?.effectiveWindow ?? declaredLimit;
+		// ★ 2026-09-21：兜底分母也必须与压缩判定同口径（clamp(声明窗口, 64k, 200k)）。
+		// 此前直接回退 declaredLimit（1M 模型 ⇒ 1,000,000）⇒ 推送缺失时（守卫失败 / 刚重载窗口）
+		// 环的满刻度与压缩线错位，出现「146% 却不压缩」的观感。
+		const limit = this._contextUsage?.effectiveWindow
+			?? (declaredLimit > 0 ? ContextManager.resolveEffectiveWindowDefault(declaredLimit).effectiveWindow : 0);
 
 		const isStreaming = this._streamPhase !== 'idle' && this._streamPhase !== 'error';
 

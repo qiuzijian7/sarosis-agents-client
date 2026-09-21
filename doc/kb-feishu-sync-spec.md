@@ -81,29 +81,48 @@ feishu:
 
 ## 3. 图片
 
-### 3.1 实测结论（重要）
+### 3.1 实测结论（CLI 1.0.9x 复测）
 
-**飞书 markdown 导入不处理本地图片**：`![](x.png)` 会被转成 `<image token="" width="100" height="100"/>`
-（**空 token 占位**，图片实际丢失）；`![[x.png]]`（Obsidian embed）原样保留为纯文本。
-⇒ 必须走「上传 + 定位插入」链路。
+**飞书 markdown 导入不处理本地图片**：`docs +create` 会直接丢弃并告警
+`degrade_code=2119 Invalid resource token`；`![[x.png]]`（Obsidian embed）原样保留为纯文本。
 
-### 3.2 已落地实现（占位 → 插图 → 删占位）
+### 3.2 已落地实现（占位 → `block_replace` 为 `<img>`，**已真机验证**）
 
 ```
-1. 预处理：本地图片引用（![](x.png) / ![[x.png]]）替换为占位标记 KBSYNCIMG<N>
-2. 同步：create / update（占位随正文一起写入）
-3. 逐张：docs +media-insert --doc <token> --file <相对路径> --type image \
-          --selection-with-ellipsis "KBSYNCIMG<N>"     # 4 步编排：定位→建块→上传→绑定
-4. 删除占位：docs +update --mode delete_range --selection-with-ellipsis "KBSYNCIMG<N>"
-5. 记录 remoteHash（必须在插图之后）
+1. 预处理：本地图片引用（![](x.png) / ![[x.png]]）→ 占位 KBSYNCIMG<N>
+   ⚠ 占位必须**独占段落**（前后补空行）——插图用 block_replace，属「整块替换」
+2. 同步：create / update 写入正文（占位随正文一起进入飞书）
+3. 定位：docs +fetch --doc <token> --detail with-ids ⇒ 找「文本恰为占位」的块 id
+4. 插图：docs +update --doc <token> --command block_replace --block-id <块id> \
+          --content '@./repl.xml' --doc-format xml          # repl.xml: <img path="@./x.png"/>
+   ⇒ CLI 自动上传本地图片并原位替换（实测返回 block_type: "image"）
+5. 记录 remoteHash（必须在插图之后，否则下次误报「远端被手工修改」）
 ```
 
-- ⚠ **`--file` 只接受「当前目录内相对路径」**（与 `--markdown @file` 同约束）⇒ 执行时 `cwd` 设为笔记目录
-- ⚠ `media-insert` 把图片插到**匹配块的顶层祖先**（若占位在表格/嵌套列表里，图片会落容器外）⇒ 占位应独立成段
-- 失败时保留占位文本（便于人工定位），不阻塞其它图片
-- 引用形态覆盖：`![](相对路径)`、`![[x.png]]`、`![](saros-media://<id>)`（先「保存到笔记」沉淀拿到本地路径）；
-  `http(s)` 外链与绝对路径**不处理**（保持原样，由使用者决定）
-- 缓存 `(docToken, imgSha256) → file_token` 尚未实现（同一图重复出现会重复上传；待优化）
+- ⚠ **本地图片只支持 `append` / `block_insert_after` / `block_replace` / `overwrite`**
+  （`str_replace` 报 `local images and files are only supported with …`）
+- ⚠ `<img>` 必须用 **`path="本地相对路径"`**；用 `img_key="<file_token>"` 报 `Image resource resolve failed`
+- ⚠ `--content @file` 与 `path="@./x.png"` 的相对路径都基于 **cwd** ⇒ cwd 设为笔记目录，临时 xml 也写在那里（用完即删）
+- 行内 / 表格内引用**无法自动插入**（占不了独立段落）⇒ 保留占位文本并**显式告警**（`inline` 列表）
+- 图片文件找不到 ⇒ 保留原引用并**显式告警**（`missing` 列表）——不再静默，避免用户误以为已同步
+- 引用形态覆盖：`![](相对路径)`、`![[x.png]]`、`![](saros-media://<id>)`（先「保存到笔记」沉淀本地路径）；
+  `http(s)` 外链与绝对路径**不处理**（保持原样）
+- 缓存 `(docToken, imgSha256) → file_token` 仍未实现（同一图重复出现会重复上传；待优化）
+
+### 3.3 标题同步（**已实现并验证**，CLI 1.0.9x）
+
+`docs +update` 在 1.0.9x 下**没有** `--new-title`（`block_replace` 改 `<title>` 块实测无效，返回 `degrade_code=1011`）
+⇒ 改用 **`drive +update-title`**（官方支持 rename「云文档 / wiki 节点」）：
+
+```
+drive +update-title --token <docx_token> --type docx --title "<新标题>"    # 实测 data.updated: true
+```
+
+- **触发条件**：`collectPlan` 比较「文件名（= 标题）」与 frontmatter 记录的 `feishu.title`
+  ⇒ 不一致时**把动作提升为 `update`**（复用同一条通路：冲突检测 / 图片链路 / remoteHash 记录）✓
+- **顺序**：必须在「记录 remoteHash」**之前**（标题会进入远端 markdown 的 `<title>` 行）
+- **老笔记兼容**：`feishu.title` 为空（尚未记录）⇒ 不因标题触发全量重写；等下次内容变化时自然补记
+- 实测：`标题已更新: 位置验证-改名 → 位置验证-最终名`，`drive +inspect` 回读一致 ✓
 
 ## 4. 布局映射（md → 飞书）
 
@@ -164,14 +183,24 @@ lark-cli doc +update --token <docx_token> --mode replace --markdown "$(cat note.
 
 | # | 坑 | 结论/对策 |
 |---|---|---|
-| 1 | 本机 CLI 1.0.27 是 **v1 参数形态** | `--title` / `--markdown` / `--mode` / `--doc`；技能文档里的 v2 写法（`--content`/`--parent-position`/`--doc-format`）不适用，且 CLI 明确警告**不要混用版本** |
-| 2 | `--markdown @file` 与 `--file` **只接受「当前目录内相对路径」** | 必须 `mkdtempSync` + `cwd` 指向目标目录 + `@./note.md` |
+| 1 | ~~本机 CLI 1.0.27 是 v1 参数形态~~ **已升级到 1.0.96（v2 形态）** | 命令契约见 §13；脚本已按 1.0.9x 适配。旧形态命令（`--markdown`/`--mode`/`--wiki-space`）**全部失效** ⇒ 升级 CLI 后必须回归本清单 |
+| 2 | `--content @file` 与 `<img path="…">` **只接受当前目录内相对路径** | 必须 `mkdtempSync` + `cwd` 指向目标目录 + `@./note.md` |
 | 3 | **Windows 命令行长度限制（32K）** | 长文档必须走 `@file`，不能塞进 argv |
 | 4 | 创建返回形态是 **`data.doc_id` / `data.doc_url`**（wiki URL） | 解析必须宽松匹配 `doc_id|document_id|node_token|objToken` + `url|doc_url`；⚠ 曾因未识别 `doc_id` 导致「创建成功但未记账」 |
 | 5 | **`done` 计数不增导致雪崩** | 失败若不计入 `done`，`--limit 1` 会把全部笔记都试一遍 ⇒ 见 §9 事故。已修：失败也 `done++` |
 | 6 | 表格内 `[[a\|b]]` 的 `\|` 冲突 | 飞书导入会把行内 `\|` 当表格分隔符**截断后续内容** ⇒ 同步前把 `[[a\|b]]` 替换为别名 `b` |
 | 7 | 注入 `# {title}` 造成重复 H1 | 文档标题已由 `--title` 设置 ⇒ 正文不再注入 H1 |
 | 8 | `docs +fetch` v1 无 `revision_id` | 用 `remoteHash` 指纹替代 rev 比对（§2.2.1） |
+| 9 | `FileAccess.asFileUri` 的参数类型是 `AppResourcePath`（字符串字面量联合） | 动态拼接的路径需断言：`as AppResourcePath`（从 `base/common/network.js` 导入类型） |
+| 10 | `KbOpStatus` 只有 `'success' \| 'failure'`（**没有 `'error'`**） | `_logOp(code, status, detail)` 传 `'failure'`；自定义字段放进 `detail` |
+| 11 | `base/common/path.js` **无 default export** | 用 `import * as path from '.../base/common/path.js'`（或具名导入 `dirname`/`join`） |
+| 12 | **CLI 1.0.9x 全面 v2 参数**（升级后实测） | create：`--title --doc-format markdown --content @file`；update：`--command overwrite\|block_replace\|str_replace`；父级：`--parent-position` / `--parent-token` |
+| 13 | 类别落点不再有 `--wiki-space` | 改 `wiki +node-create --space-id <id> --title <t>` ⇒ 拿 `obj_token`（写正文）+ `node_token`（搬迁） |
+| 14 | `docs +fetch` 返回结构变了 | `--doc-format markdown`，正文在 `data.document.content`（旧为 `data.markdown`）⇒ 不修则 `remoteHash` 恒空、冲突检测**静默失效** |
+| 15 | `wiki +node-get` 参数改为 `--node-token` | 可传 node_token / obj_token / URL；旧 `--obj-token` 已不存在 |
+| 16 | `docs +media-insert` 移除 `--selection-with-ellipsis`（只能插文末） | 图片改走「fetch with-ids 找占位块 → `block_replace` 为 `<img path="@./x.png"/>`」（§3.2，已真机验证） |
+| 17 | 占位必须**独占段落** | 插图是 `block_replace`（整块替换）⇒ 同段有其它文字会被一起替换掉；行内/表格内引用无法自动插图（保留占位+告警） |
+| 18 | `migrateIndexEntries` 必须**迁移**而非删除条目 | 若只删旧路径条目，而该文档本轮因「无需处理」被 `continue`，索引记录会**永久丢失** ⇒ 之后读不到 `prevSpace`，跨知识库搬迁永远不再触发（E2E 实测踩到） |
 
 ## 9. 事故记录：61 篇孤儿文档（2026-09-21）
 
@@ -198,7 +227,233 @@ lark-cli doc +update --token <docx_token> --mode replace --markdown "$(cat note.
     · 两者均 true ⇒ 执行同步。
   （两个键的 schema 默认均为 false，即「未显式开启 = 不同步」。）
 - **手动同步不受开关约束**：设置面板的「预览同步计划 / 立即同步到飞书」按钮与命令行始终可用。
-- **闭环**：知识库视图 → 设置（⚙）→ 📤 飞书同步 → 勾选「启用飞书同步」，经 `IConfigurationService.updateValue`
-  写入**用户设置**，与 automation 读取位置一致。
+- **闭环**：知识库视图 → ⚙ 设置（在**中间栏 EditorPane** 中打开，原侧栏下拉形态已废弃）→ 📤 飞书同步 →
+  勾选「启用飞书同步」，经 `IConfigurationService.updateValue` 写入**用户设置**，与 automation 读取位置一致。
 - **当前状态（2026-09-21）**：两处设置文件均无 `agentStudio.kb.*` 键 ⇒ 两个开关均按默认 false 处理，
   定时任务会跳过；需先在设置面板勾选「启用飞书同步」**与**「允许定时自动同步」（或手动写入两个键为 true）。
+
+## 11. 脚本内置化与 CLI 检测（2026-09-21 用户拍板）
+
+### 11.1 同步脚本内置（不要外部实现）
+
+- 脚本随产品发布：**`resources/.agents/kb/feishu-sync.mjs`**（与 `resources/.agents/skills/` 同级）。
+  ⇒ 用户无需自备脚本，也**不再暴露「脚本路径」配置项**（原 `feishu.scriptPath` 已移除）。
+- 产品侧定位：`browser/knowledge/feishuSyncCore.ts#resolveSyncScript`，多候选（按可靠性）：
+  1. `FileAccess.asFileUri('vs/../../resources/.agents/kb/feishu-sync.mjs')`（dev / 打包通用，与技能目录同策略）
+  2. `<appRoot>/resources/.agents/kb/feishu-sync.mjs`
+  3. `<dirname(appRoot)>/resources/...`（appRoot 位于 out/ 子目录的布局）
+  4. `<process.resourcesPath>/app/resources/...`（安装包布局）
+  全部不存在 ⇒ 面板与执行前均给「安装可能不完整」提示（不静默失败）。
+- 开发期副本：`.codebuddy/kb-feishu-sync.mjs`（保持与内置脚本一致，仅用于本工作区命令行调试）。
+
+**`--parent` 语义（面板显示为「同步到」）**：
+
+| 取值 | 脚本翻译为 | 落点 |
+|---|---|---|
+| `my_library`（默认） | `docs +create --wiki-space my_library` | 飞书**个人知识库**（wiki 空间） |
+| 其它（文件夹 token） | `docs +create --folder-token <token>` | 飞书**云空间指定文件夹** |
+
+⚠ 仅在**新建**文档时使用；已同步文档走 `docs +update --doc <token>`，**位置不变**。
+（面板标签原为「目标位置」，因自解释性差已改为「同步到」并加说明行 —— 用户反馈 2026-09-21。）
+
+### 11.2 飞书 CLI 检测（lark-cli 是外部依赖）
+
+- 检测：`feishuSyncCore.ts#detectLarkCli` —— 经主进程通道 `vscode:execCode`（与 `execute_code` 同一原语）
+  跑 `lark-cli --version` 判安装，再跑 `lark-cli auth status` 判登录态。
+- 三态语义（**不误报**）：`installed`（含版本 / 登录态）/ `missing`（命令不可用）/ `unknown`（执行通道不可用，如实说明）。
+- UI：设置面板「飞书 CLI」行 = 路径输入（`feishu.cliPath`，默认 `lark-cli`）+ 「🔄 重新检测」+ 状态文案；
+  「立即同步」前也做一次预检，未安装则**直接给安装引导并中止**（不让脚本跑到一半失败）。
+- 自定义路径：`feishu.cliPath` 非默认值时，执行命令追加 `--cli <path>` 透传给脚本（脚本内 `CLI` 变量替代硬编码
+  `lark-cli`）；因脚本仍硬编码默认名，安装到非 PATH 位置**必须**走这个选项。
+- ⚠ 未安装时的引导文案明确「安装并确保在 PATH 中，或填写可执行文件完整路径」——**不假设**具体安装方式。
+
+### 11.3 CLI 升级（真机接口，2026-09-21 实测）
+
+- **权威接口**：
+  - `lark-cli update --check --json` —— **只读检查**，实测返回
+    `{ action: "update_available", current_version: "1.0.27", latest_version: "1.0.96", message, url, changelog, auto_update, ok }`
+    （已是最新时 `action: "up_to_date"`）
+  - `lark-cli update` —— 升级，**自动识别安装方式**（npm 全局 ⇒ `npm i -g @larksuite/cli@<version>`；
+    手动安装 ⇒ 输出 GitHub Releases 下载地址）
+  - 其它：`--force`（强制重装）、`--json`（结构化输出）
+- 实现（`feishuSyncCore.ts`）：
+  - `parseUpdateCheck`：JSON 优先（括号配对提取，容忍前置彩色码/日志行），文本回退解析
+    `Update available: 1.0.27 -> 1.0.96`；无法解析 ⇒ `undefined` ⇒ **不误报可升级**
+  - `hasUpdate`：仅 `action === 'update_available'` 或版本号确有差异才为真
+  - `checkCliUpdate`：`update --check --json`（短命令通道，15s 超时）；`buildUpgradeArgs()` ⇒ `['update']`
+- UI（设置面板「飞书 CLI」区）：`🔄 重新检测` 同时检查更新；检测到可升级时显示
+  「⬆️ 可升级：1.0.27 → 1.0.96」+ `⬆️ 升级 lark-cli` + `📄 查看版本说明`（打开 Release 页，可从检测结果取 URL）。
+- ★ 升级走**终端**（`executable = cliPath`、args = `['update']`、`waitOnExit`）：下载耗时较长，
+  终端可见进度、失败可读 ⇒ 不适合单次缓冲的短命令通道；升级后提示点「重新检测」刷新版本与登录态。
+- 未安装时**不做**更新检查（无意义且会误导）。
+
+### 11.4 执行器：Electron 自带 node（2026-09-21 用户要求）
+
+目标：同步执行**不依赖用户系统安装的 node**。
+
+做法（仍是终端执行，但换执行器）：
+
+```
+createTerminal({ config: {
+  executable: <Electron 二进制路径>,        // = process.execPath
+  args: [内置脚本, ...buildSyncArgs(...)],
+  env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  cwd, waitOnExit: true,
+} })
+```
+
+- helper：`feishuSyncCore.ts#electronNodeLaunch()`（复用 common 层既有的 `nodeExecPath()` 防御式读取）。
+- ⚠ **必须带 `ELECTRON_RUN_AS_NODE=1`**：`process.execPath` 在 Electron 里是 Electron 二进制，
+  直接跑 `.mjs` 会被当作 app 入口加载后立即退出（既有范式见 `electron-main/configHtmlServerChannel.ts:140-146`）。
+- ⚠ **`env` 必须保留完整进程环境**：脚本内部仍要 `spawn('lark-cli')`，丢掉 PATH ⇒ 「CLI 明明装了却找不到」。
+- 取不到 Electron 路径 ⇒ 回退系统 `node`（保持可用，不硬失败）；实际执行器记入操作日志
+  `feishu.sync` 的 `detail.runner = electron-node | system-node`。
+
+**实测记录（本机 2026-09-21）**：
+
+| 项 | 结果 |
+|---|---|
+| Electron 二进制以 node 模式执行 JS（`.build/electron/VsSaros.exe` + flag） | ✅ `NODE=v22.22.1` |
+| 该环境下子进程调用 CLI：`spawnSync('lark-cli', ['--version'])` | ✅ `STATUS=0`，输出 `lark-cli version 1.0.27`（**PATH 有效**） |
+| 内置脚本在 **Electron-as-node + 无控制台（管道/重定向捕获）** | ⚠ 未见 stdout（exit=0） |
+| 内置脚本在 **PTY 终端**下（本产品实际路径） | 未能本机模拟验证 |
+
+| 内置脚本在 **Electron-as-node** 下（修复入口守卫后重测） | ✅ `--help` 与 dry-run 输出均正常 |
+
+⚠ **曾误判为「无控制台时 stdout 丢失」**：当时资源副本运行零输出（exit=0）被归因于输出通道。
+**真因是脚本末尾入口守卫写死了 `endsWith('kb-feishu-sync.mjs')`**，而内置副本名为 `feishu-sync.mjs`
+（资源目录去掉了 `kb-` 前缀）⇒ **`main()` 从不执行**（静默、退出码 0）。已改为宽松匹配 `*feishu-sync.mjs`。
+★ 教训：**「进程正常退出但零输出」优先怀疑入口/守卫条件不匹配，而非输出通道**；
+素材/脚本**改名（加去前缀）必须同步检查所有按文件名判断的代码**。
+
+⇒ 仍**以 `.feishu-sync.log`（脚本自行逐篇落盘）作为结果兜底**：面板「📄 查看同步日志」可核对
+create/update/skip/move 与失败原因（对自动化任务等捕获场景尤其有用）。
+
+### 11.5 多类别 → 多飞书知识库（2026-09-21 用户确认后实现）
+
+**用户决策**：① 类别 = 同步源目录下的**一级目录**；② 未映射类别**自动创建**同名知识库；
+③ 本地删除**默认保留远端**，可显式开启清理。
+
+- **索引 v2**（`<vault>/.feishu-sync.json`）：
+  `{ version: 2, spaces: { <类别>: { spaceId, name, createdAt } }, files: { <相对路径>: { token, hash, space, node, url } } }`
+  - 读取时**自动兼容 v1 扁平结构**（顶层 `{路径:{token,hash}}` ⇒ 迁入 `files`）
+  - 新增字段：`space`（知识库 id）、`node`（wiki node_token —— 跨知识库移动需要）
+- **脚本新增参数**：`--category-depth N`（默认 1；0 = 不分类别）/
+  `--auto-create-spaces`、`--no-auto-create-spaces`（默认**开**）/ `--prune`（默认**关**）
+- **同步行为**：
+  - 每个类别查 `spaces` 映射 ⇒ `docs +create --wiki-space <spaceId>`；未映射且开关开 ⇒
+    `wiki +space-create --name <类别名>` 建库并记入映射
+  - **类别变更**（`files[rel].space` ≠ 目标知识库）⇒ `wiki +move --node-token <node> --target-space-id <new>`
+    跨知识库搬迁；`node` 缺失时用 `wiki +node-get --obj-token <docToken>` 反查
+  - **仅类别变化、内容未变**（skip + needsMove）⇒ **只搬迁**节点 + 更新 frontmatter/索引，不重写正文
+  - `--prune`：索引中本地已不存在的条目 ⇒ `wiki +node-delete --node-token <node> --yes`（默认不做）
+  - ⚠ v1 索引没有 `space` 记录 ⇒ 首轮会把全部已同步文档视为「需搬迁」（`move` 幂等；
+    已在目标库时由飞书返回错误并记入日志，不影响内容更新）
+- **产品侧**：新增配置 `feishu.categoryDepth`（number，默认 1）/ `feishu.autoCreateSpaces`（boolean，默认 true）/
+  `feishu.pruneRemote`（boolean，默认 false）；面板「飞书同步」区新增「类别层级 / 自动建库 / 删除清理」三行控件。
+- **实测（本机，2026-09-21）**：dry-run 正确识别 **10 个类别**、预告「将创建 10 个知识库 + **搬迁 58 篇**」。
+  ⚠ **尚未执行 apply** —— 它会创建 10 个真实知识库并把 58 篇移动过去，需用户确认后再跑。
+
+## 12. 测试与验证（2026-09-21 新增）
+
+### 12.1 自动化测试 `kbFeishuSyncScript.test.ts`（35 例，全绿）
+
+| 分区 | 覆盖内容 |
+|---|---|
+| 指纹口径 | 剥 frontmatter（回写不触发 update）/ CRLF / 本地绝对路径归一 ⇒ 不误判「内容变了」；正文真变 ⇒ 指纹必变 |
+| frontmatter | 无 frontmatter / 有其它键 / 重复写入幂等 / 正文 `---` 不破坏 |
+| markdown | 表格内 `[[a\|b]]` 截断修复、`[[a]]` 保留、表格·代码块·列表逐字保真 |
+| 图片抽取 | embed 与 md 两种引用、多图编号、文件缺失保留原样、远程/绝对路径/非图片不处理 |
+| 类别推导 | depth 0/1/2、src 根下文件 ⇒ null、前缀不匹配 ⇒ null |
+| 索引 | 缺失/损坏 ⇒ 空结构、v1→v2 迁移、save/load 往返 |
+| **改名 / 移动** | 改名后仍 update/skip（**绝不 create**）、索引旧条目可迁移（**否则 prune 误删远端**）、换类别 ⇒ targetSpace + needsMove、未映射 ⇒ null、新建文档不搬迁 |
+| **类别改名** | 复用原 spaceId（映射键迁移）、不重复迁移、无历史 ⇒ 交自动建库 |
+| 返回解析 | `doc_id`/`document_id`/`node_token` + `doc_url`/`url` 兼容（§9 事故防回归） |
+
+运行：
+
+```
+node src/vs/sessions/contrib/agentStudio/test/browser/run-browser-test.mjs \
+     src/vs/sessions/contrib/agentStudio/browser/knowledge/kbFeishuSyncScript.test.ts
+```
+
+### 12.2 测试暴露并已修复的两个真实缺陷
+
+1. **改名 / 移动后历史丢失**：`collectPlan` 只按**路径**查索引 ⇒ 改名或换目录后 `prevSpace`/`prevNode` 为空
+   ⇒ 「类别改名」被误判为新类别（新建多余知识库）、搬迁还需额外 API 反查旧节点。
+   **修**：按 frontmatter `token` 反查历史记录（`byToken` 兜底）✓
+2. **prune 误删风险**：索引里「同 token 的旧路径」残留会被 `--prune` 当成「本地已删除」⇒ 删掉远端节点（数据丢失级）。
+   **修**：`migrateIndexEntries`（写回前迁移旧条目）+ prune 内 `liveTokens` 保险丝（仍被现存文档引用的 token 绝不删）✓
+
+### 12.3 真机端到端清单（需用户确认后执行；会在飞书产生测试知识库）
+
+| 步骤 | 验证点 |
+|---|---|
+| 沙盒建 `库/_feishu-sync-test/01-测试类别/格式验证.md`（含表格 + 代码块 + 图片 + wikilink） | 格式保真 |
+| `--apply` | 自动创建/复用知识库「01-测试类别」+ 创建文档 |
+| `docs +fetch` 看远端 markdown | 表格变 lark-table、图片 `token` 非空、`[[a\|b]]` 已替换为别名 |
+| 本地**改文件名** → `--apply` | 远端仍是**同一篇**（token 不变）+ 标题更新 + 无新增副本 |
+| 本地**移到另一类别目录** → `--apply` | 节点被 `wiki +move` 到目标知识库（`wiki +node-list` 可核对） |
+| 本地**改类别目录名** → `--apply` | 复用原知识库（不新建）、文档位置不变 |
+| 开 `--prune` 删除一篇 → `--apply` | 仅该篇远端节点被移除；**改名残留不被误删** |
+
+清理：测试产生的知识库用 `lark-cli wiki +delete-space` 删除（或保留为样例库）。
+
+### 12.4 真机 E2E 结果（2026-09-21 已执行，CLI 1.0.96）
+
+沙盒：`库/_feishu-sync-e2e`（格式样本 + 类别样本 + 本地图片）
+
+| 场景 | 结果 | 证据 |
+|---|---|---|
+| 格式保真 | ✅ 标题 / H2 / 代码块（python）/ 嵌套列表 / 加粗斜体 **全部保真** | `docs +fetch` 回读比对 |
+| 表格 + wikilink | ✅ 预处理后 `\| 双链别名 \| 知识库首页 \| 待验证 \|` **三列完整** | ⚠ 对照组（不预处理）实测被拆成两列且第三列丢失 ⇒ 印证 §8#6 修复必要 |
+| 图片（2 张） | ✅ 远端生成真实图片块（`feishu.cn/file/…`、`block_type: image`），占位消失、位置正确 | `docs +fetch --detail with-ids` |
+| 无类别文档落点 | ✅ `my_library`（`--parent-position`） | 索引 `space: my_library` |
+| 类别文档落点 | ✅ 自动建知识库 + `wiki +node-create` 建节点（记 `space`/`node`） | 索引 + frontmatter |
+| **改文件名** | ✅ 识别为 **update 同一篇**（token 不变、**未重复创建**），索引条目被迁移 | `[update] ✓ … → B9PQd8…`、`[索引] 迁移改名/移动记录：…` |
+| **换类别目录** | ✅ 自动创建目标知识库 + `wiki +move` 搬迁；`wiki +node-list` 确认节点已在目标库 | `[move] ✓ … → 知识库「98-e2e-类别B」` |
+| **类别目录改名** | ✅ 映射复用原知识库（**不新建**），文档位置不变（无需搬迁） | `[space] 类别改名：映射「…B」→「…B-改名」（复用 7687902…）` |
+| **标题跟随文件名** | ✅ **已实现**（§3.3：`drive +update-title`）⇒ `标题已更新: 位置验证-改名 → 位置验证-最终名` | `drive +inspect` 回读标题一致 |
+
+### 12.5 E2E 暴露并已修复的三个缺陷
+
+1. **索引记录永久丢失**（最严重）：`migrateIndexEntries` 只删旧路径条目，而该文档本轮可能因「内容未变、无需处理」被 `continue` ⇒ 新条目从未写入 ⇒ `prevSpace` 丢失 ⇒ **跨知识库搬迁永远不再触发**。
+   **修**：迁移条目（`idx.files[新路径] = 旧记录`）而非删除 ✓（§8#18）
+2. **「文档换目录」被误判为「目录改名」**：两者数据特征相同 ⇒ 误复用旧知识库（新类别不建库、文档也不搬迁）。
+   **修**：加入文件系统判据——**旧类别目录是否仍存在**（存在 ⇒ 换目录；不存在 ⇒ 目录改名）✓
+3. **无类别文档自我搬迁**：`prevSpace=''` 与目标 `my_library` 不等 ⇒ 每次同步多一次无谓 `wiki +move`。
+   **修**：`needsMove` 要求 `prevSpace` 非空；无类别文档的目标落点显式记为 `my_library`（`computeTargets` 增 `parentSpace` 参数）✓
+
+> 另新增两类**显式告警**（此前静默保留、用户会误以为已同步）：「图片引用找不到文件」与「行内/表格内图片无法自动插入」。
+
+## 13. CLI 1.0.9x 参数契约（脚本唯一真源，2026-09-21 实测）
+
+| 用途 | 命令（**当前 CLI 形态**） | 关键返回 |
+|---|---|---|
+| 建文档（无类别） | `docs +create --title T --doc-format markdown --content @./note.md --parent-position my_library` | `data.document.document_id` / `url` / `revision_id` |
+| 建 wiki 节点（类别） | `wiki +node-create --space-id <id> --title T` | `data.node_token` / `obj_token` / `space_id` / `url` |
+| 写正文 | `docs +update --doc <token> --command overwrite --doc-format markdown --content @./note.md` | `ok: true`；失败含 `error.message` |
+| 读正文（指纹核对） | `docs +fetch --doc <token> --doc-format markdown` | `data.document.content` |
+| 读结构（找块 id） | `docs +fetch --doc <token> --detail with-ids` | DocxXML（含 `id="…"`） |
+| 插图 | `docs +update --doc <token> --command block_replace --block-id <块id> --content @./repl.xml --doc-format xml` | `data.document.new_blocks[]`（`block_type: image`） |
+| 建知识库 | `wiki +space-create --name N --as user` | `data.space_id` |
+| 搬节点 | `wiki +move --node-token <node> --target-space-id <spaceId>` | `ok: true` |
+| 列节点 | `wiki +node-list --space-id <id>` | 节点数组（`node_token` / `obj_token` / `title`） |
+| 解析节点 | `wiki +node-get --node-token <token\|url>` | `node_token` / `obj_token` |
+| 删节点 | `wiki +node-delete --node-token <node> [--include-children=false] --yes` | `ok: true`（`--yes` 为本机实测存在的确认参数） |
+| **改标题**（云文档 / wiki 节点） | `drive +update-title --token <docx> --type docx --title "<新>"` | `data.updated` / `data.title` / `url` |
+
+- ⚠ 所有 docs 命令的 `--content` 支持 `@file`（**相对 cwd**）；长文必须走 `@file`（Windows 32K 限制）。
+- ⚠ 解析一律**宽松匹配**（`pickDocInfo` / `pickNodeInfo`）：CLI 小版本间字段位置会变
+  （如 `data.document.document_id` 与 `data.doc_id`）⇒ 不要写死路径。
+- ⚠ **升级 lark-cli 后必须做两件事**（§11.3 升级入口 + 本流程 = 应对 CLI 变更的完整闭环）：
+  1. **回归本表**：命令形态可能整体变化（1.0.27 → 1.0.96 换掉了全部参数）；
+  2. **重建远端指纹基线**：
+     ```
+     node .codebuddy/kb-feishu-sync.mjs --vault <vault> --src <src> --refresh-remote --apply
+     ```
+     原因：`docs +fetch` 的导出格式随版本变化 ⇒ 已记录的 `remoteHash` 与新格式**全面失配**
+     （实测：61 篇中 55 篇失配、一致 0）⇒ 若不刷新，下次任何一篇内容变化都会误报「远端被手工修改」。
+     `--refresh-remote` 只改本地 frontmatter 的 `remoteHash`（不写远端、不改索引），并顺带为缺失该字段的老笔记补记；
+     刷新后 `--dry-run` 应仍为全 `skip`（证明不改变同步语义）。
+- `--prune` 依赖的 `wiki +node-delete --yes` 参数**已实测存在**；注意 `--include-children` 默认 `true`（**级联删除子树**）。

@@ -501,6 +501,31 @@ suite('piTurnKernel（pi 内核真路径驱动器）', () => {
 			'无用量信息不得产出 usage delta（否则下游会按 input=0 覆盖基线 ✗）');
 	});
 
+	test('★★ 工具名被上游伪 XML 污染 ⇒ 合成错误结果携带纠正指令（勿盲重试）', async () => {
+		// 真机取证（http-debug SSE）：上游把并行调用按标记粘进 name —
+		// 「index_status</tool_call:6124c78e><tool_call:6124c78e>search_files」。
+		// 注：本链路绕过了 LMBridge 归一化（正常流里会在入口归一化为 search_files）；
+		// 这里驱动内核直收坏名字，验证内核**兜底**不崩且给纠正指令（而非泛泛「未找到」）。
+		const provider = {
+			chat: async function* (): AsyncIterable<IModelDelta> {
+				yield { type: 'tool_call', toolCall: { id: 'c1', name: 'index_status</tool_call:6124c78e><tool_call:6124c78e>search_files', arguments: '{"pattern":"*"}' } } as IModelDelta;
+				yield { type: 'done', finishReason: 'tool_calls' } as IModelDelta;
+			},
+		} as unknown as IModelProvider;
+		const deltas = await collect(runPiKernelTurn(makeHost(), fakeRequest, {
+			modelProvider: provider, selection: fakeSelection, enabledTools: [],
+			messages: [{ role: 'user', content: 'hi' }],
+		}));
+		const results = deltas.filter(d => d.type === 'tool_result').map(d => String(d.content));
+		// 内核语义：坏名字 → prepareToolCall 立即合成错误结果（**不执行**）。
+		// mock provider 每轮都产出同一个坏名字 ⇒ 内核重试直到护栏截停（halt/上限）——
+		// 这是既有护栏职责；本用例钉的是**第一次**就给出纠正指令、且自始至终没有任何真实执行。
+		assert.ok(results.length >= 1, '必须合成错误结果 ✗');
+		assert.ok(results[0].includes('伪 XML 标记'), '首个错误结果必须点名「伪 XML 标记」✗');
+		assert.ok(results[0].includes('逐个重新发起调用'), '首个错误结果必须给出纠正指令（勿盲重试 ✗）');
+		assert.ok(results.every(r => !r.startsWith('ok:')), '任何一轮都不得真实执行（host mock 的 ok: 标记不得出现 ✗）');
+	});
+
 	test('工具循环护栏：同签名第 4 次被拦（threshold=3），合成错误结果后续跑', async () => {
 		let round = 0;
 		const provider = {

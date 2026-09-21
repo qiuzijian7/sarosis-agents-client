@@ -3577,17 +3577,35 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 	 */
 	private _initStreamingMessage(): void {
 		if (this._streamingAssistantId) {
-			// ★ 2026-08-27 诊断（多聊天框 UI 不刷新，日志 20260827T173319/window1）：
-			// 上一次发送的流尚未收尾（_streamingAssistantId 未清空）就又发起新发送时，
-			// 新流无法创建自己的气泡，其 delta 会被 _processDelta 追加到【旧消息】上
-			// （或直接因 assistantMsg 被 reset 而丢弃）→ 表现为「发了消息但 UI 不刷新」。
-			// 此处打点，便于下次复现时确认该路径是否被触发。
+			// ★ 2026-08-27 诊断（多聊天框 UI 不刷新）→ ★★ 2026-09-21 **自愈**（日志实锤：
+			//   独立窗口 vscode-app-1789976022508.log:2263 ✓ —— 上一轮流的 done 从未到达本 pane
+			//   （弹窗/handoff 场景 ✓）⇒ `_streamingAssistantId` 永久残留 ⇒ 旧实现此处直接
+			//   **SKIPPED + return** ⇒ 新轮 delta 全追加到**不在面板里**的旧消息对象 ⇒
+			//   **LLM 在输出、聊天框空白** ✗✗✓（用户截图实锤 ✓）。
+			//
+			// 自愈三步 ✓：① 旧气泡**就地收尾**（它的流已死 ✓ —— 留着只会继续吞新轮 delta ✗）；
+			//   ② 清掉 stale 句柄（`_resetStreamingMessage` ✓）；③ 继续往下为新轮建泡 ✓。
+			// ⚠ 若旧流"其实还活着"（服务侧同会话串行 ⇒ 新发送开始时旧执行必已终结 ✓ 不可能 ✓），
+			//   其迟到 delta 会因句柄已换而被丢弃 ✓ —— 与"新轮必无 UI"相比是可接受代价 ✓✓。
+			const staleId = this._streamingAssistantId;
+			const staleMsg = this._streamingAssistantMsg;
 			this._logService.warn(
-				`[NativeChatEditorPane#${this._paneId}] _initStreamingMessage SKIPPED — stale streaming msg ` +
-				`${this._streamingAssistantId} (session=${this._currentSessionId}, isSending=${this._isSending}, ` +
-				`isExternalSend=${this._isExternalSend}). New turn content may not render.`
+				`[NativeChatEditorPane#${this._paneId}] _initStreamingMessage: **自愈 stale 流式句柄** ` +
+				`${staleId}（session=${this._currentSessionId}, isSending=${this._isSending}, ` +
+				`isExternalSend=${this._isExternalSend}）— 旧气泡就地收尾 + 句柄清除 + 新轮照常建泡 ✓`,
 			);
-			return;
+			if (staleMsg) {
+				staleMsg.isStreaming = false;
+				staleMsg.isThinking = false;
+				if (staleMsg.streamPhase !== 'error') { staleMsg.streamPhase = 'idle'; }
+				// 面板里的旧气泡（若在 ✓）同步收尾 ⇒ 不再转圈 ✓
+				this._chatPanel?.updateMessage(staleMsg.id, {
+					isStreaming: false,
+					isThinking: false,
+					streamPhase: staleMsg.streamPhase,
+				});
+			}
+			this._resetStreamingMessage();
 		}
 		// 2026-09-10：真正开始一条新流 —— 解除「流式已放弃」标记（见字段注释）。
 		// 置于 stale 检查之后：自愈路径调用本方法时该标记必为 false，复位无副作用。
@@ -4948,7 +4966,7 @@ private _handleStreamDelta(delta: any): void {
 			// 全局覆盖等场景）。Token 明细 UI 用此字段展示真实命中。
 			const realProvider = delta.usage.providerId || this._localProviderId || undefined;
 			const realModel = delta.usage.modelId || this._localModelId || undefined;
-			const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: reasoning || undefined, cacheHitRate, credit: creditSeen ? creditSum : undefined, providerId: realProvider, model: realModel };
+			const tokenUsage = { input, output, total, promptTokens: delta.usage.inputTokens ?? 0, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: reasoning || undefined, cacheHitRate, credit: creditSeen ? creditSum : undefined, providerId: realProvider, model: realModel };
 				assistantMsg.tokenUsage = tokenUsage;
 				this._chatPanel?.updateMessage(assistantId, { tokenUsage });
 					// ★ 2026-09-20：`setStreamUsage` **移出** `limit > 0` 守卫 ——

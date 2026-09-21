@@ -310,6 +310,19 @@ ensureDir(
 	}
 }
 
+// 2.7) ★ 2026-09-21：能力插件清单 `out/vs/extensions/capability-plugins.js`
+// 由 `build/next/index.ts` 在 `npm run transpile-client` 时**生成**（不是源码、不被静态 import），
+// 而 renderer 侧按**运行时路径** `../../../../extensions/capability-plugins.js` 动态 import 它
+// ⇒ 与 tree-sitter wasm / kbWorker.js 同一类"生成产物漏拷" ✗。
+// 真机后果（安装版日志 2026-09-21）：`Failed to load capability-plugins.js manifest.
+// Falling back to hardcoded plugin list (dev mode)` ⇒ 生产包里却在跑 **dev 回退清单**，
+// 且随后每个插件的 primary import 都指向 `src/extension.js`（dev 路径）⇒ 必然失败一次 ✗。
+ensureFile(
+	'out/vs/extensions/capability-plugins.js',
+	'resources/app/out/vs/extensions/capability-plugins.js',
+	['out/vs/extensions/capability-plugins.js'],
+);
+
 // 3) kbWorker.js（KB 内核 Worker 按 URL 加载；bundle 不产出 per-file 时需独立入口）
 ensureFile(
 	'kbWorker.js',

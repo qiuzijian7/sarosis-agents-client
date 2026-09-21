@@ -103,17 +103,27 @@ import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelServ
 import { IEmbeddingService } from '../../common/embeddingProvider.js';
 import { resolveAuxEmbeddingProviderId, resolveAuxEmbeddingConfig } from '../knowledge/embeddingConfigResolver.js';
 import { KbWorkerManager } from './knowledgeBase/kbWorkerManager.js';
-import { renderKbSettingsPanel } from './knowledgeBase/kbSettingsPanel.js';
-import { AGENT_STUDIO_KB_AGENTIC_BUILD } from '../../common/constants.js';
+import { KbSettingsEditorInput, IKbSettingsHost } from '../kbSettingsEditorInput.js';
 import {
-	AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED,
-	AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT,
+	AGENT_STUDIO_KB_FEISHU_CLI_PATH,
 	AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS,
 	AGENT_STUDIO_KB_FEISHU_SYNC_PARENT,
 	AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT,
 	AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL,
-	AGENT_STUDIO_KB_FEISHU_AUTO_SYNC,
+	AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH,
+	AGENT_STUDIO_KB_FEISHU_AUTO_CREATE_SPACES,
+	AGENT_STUDIO_KB_FEISHU_PRUNE_REMOTE,
 } from '../../common/constants.js';
+import {
+	DEFAULT_LARK_CLI,
+	KB_FEISHU_SYNC_SCRIPT_REL,
+	LARK_CLI_MISSING_HINT,
+	buildSyncArgs,
+	detectLarkCli,
+	electronNodeLaunch,
+	parseSrcDirs,
+	resolveSyncScript,
+} from '../knowledge/feishuSyncCore.js';
 import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
@@ -169,9 +179,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _scroll!: HTMLElement;
 	private _searchInput?: HTMLInputElement;
 
-	/** ⚙ 设置面板按钮与下拉容器 */
-	private _settingsBtn!: HTMLElement;
-	private _settingsDD!: HTMLElement;
+	// 注：⚙ 设置入口已从「侧栏下拉面板」改为「中间栏 EditorPane」
+	// （KbSettingsEditorPane / KbSettingsEditorInput），不再需要下拉容器字段。
 
 	/**
 	 * 当前激活的顶部 Tab。
@@ -491,17 +500,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		header.appendChild(this._headerBtn('codicon-map', '思维导图（打开或生成 .canvas）', () => void this._openMindmap()));
 		header.appendChild(this._headerBtn('codicon-refresh', '刷新', () => this.refresh()));
 		header.appendChild(this._headerBtn('codicon-tools', '批量构建笔记（将库中所有未处理文件转为笔记）', () => { void this._batchBuildAll(); }));
-		const settingsBtn = this._headerBtn('codicon-settings-gear', '资料库设置（根目录等）', (e) => { e.stopPropagation(); this.toggleSettingsPanel(); });
-		this._settingsBtn = settingsBtn;
-		header.appendChild(settingsBtn);
+		// ⚙ 设置：在中间栏打开 KbSettingsEditorPane（原先的侧栏下拉已移除）
+		header.appendChild(this._headerBtn('codicon-settings-gear', '知识库设置（在中间栏打开）', (e) => { e.stopPropagation(); this.openSettingsEditor(); }));
 		this._body.appendChild(header);
-
-		// 设置面板（⚙ 下拉）
-		this._settingsDD = $('div.kb-dropdown.kb-settings');
-		// 面板项较多（目录 / 构建方式 / Embedding / 飞书同步 / 统计）：限高并允许滚动，
-		// 否则小窗口下底部区块（飞书同步按钮等）会被视口截断而无法操作。
-		this._settingsDD.style.maxHeight = 'calc(100vh - 56px)';
-		this._settingsDD.style.overflowY = 'auto';
 
 		// ── ═══ 顶部 Tab：资料 / 记忆 / 代码 ═══ ──
 		// 2026-09-15 重构：原先「文件树 + 记忆库 + 代码库」纵向堆叠，三段常驻 ⇒
@@ -2956,101 +2957,132 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	//  Settings panel (⚙) — 根目录自定义
 	// ═══════════════════════════════════════════════════════════
 
-	private toggleSettingsPanel(): void {
-		if (this._settingsDD.classList.contains('show')) {
-			this._settingsDD.classList.remove('show');
-			return;
+	/**
+	 * 打开知识库设置面板（中间栏 EditorPane）。
+	 *
+	 * 取代原 ⚙ 下拉面板：设置项已增至 5 组（目录 / 构建方式 / Embedding / 飞书同步 / 状态），
+	 * 下拉受侧栏宽度限制显示拥挤、小窗口下还会被视口截断。
+	 * host 提供 Pane 需要的视图上下文（目录、统计、需要视图状态的动作）；
+	 * 纯配置项读写由 Pane 直接用 IConfigurationService 完成（全局服务）。
+	 */
+	private openSettingsEditor(): void {
+		try {
+			const input = new KbSettingsEditorInput(this._createSettingsHost());
+			void this.editorService.openEditor(input, { pinned: true });
+			void this._logOp('settings.open', 'success', {});
+		} catch (err) {
+			this.logService.error(`[KB] failed to open settings editor: ${err}`);
 		}
-		// 关闭其它下拉（导入/排序/设置互斥）
-		this._body.querySelectorAll('.kb-dropdown.show').forEach(d => { if (d !== this._settingsDD) d.classList.remove('show'); });
-		this.renderSettingsPanel();
-		this.positionDropdown(this._settingsDD, this._settingsBtn);
-		this._settingsDD.classList.add('show');
 	}
 
-	private renderSettingsPanel(): void {
-		const docs = this._activeVault ? (this._nativeKernel?.allDocs() ?? []) : [];
-		const totalSize = docs.reduce((sum, d) => sum + (d.size || 0), 0);
-		renderKbSettingsPanel({
-			container: this._settingsDD,
-			configurationService: this.configurationService,
-			providers: this._ragEmbeddingService.listProviders(),
-			rootPath: this.rootUri.fsPath,
-			hasActiveVault: !!this._activeVault,
-			docCount: docs.length,
-			totalSize,
-			sqliteActive: !!this._kbSqliteStore,
-			linkedWorkspaceCount: this._activeVault?.linkedWorkspaces?.length ?? 0,
-			agenticBuild: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_AGENTIC_BUILD) !== false,
-			feishuSync: {
-				enabled: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED) === true,
-				scriptPath: this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT) || '.codebuddy/kb-feishu-sync.mjs',
-				srcDirs: this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS) ?? '',
-				parent: this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_PARENT) || 'my_library',
-				onConflict: this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT) === 'skip' ? 'skip' : 'overwrite',
-				interval: this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL) ?? 800,
-				autoSync: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_AUTO_SYNC) === true,
-				syncedCount: this._feishuSyncedCount,
-			},
+	/**
+	 * 组装设置面板所需的视图能力。
+	 * 每次打开时创建，取值全部惰性（方法而非快照值）⇒ 始终反映最新状态；
+	 * matches() 复用的 Tab 即便持有旧 host，行为也等价（host 闭包指向同一视图实例）。
+	 */
+	private _createSettingsHost(): IKbSettingsHost {
+		return {
+			getRootPath: () => this.rootUri.fsPath,
+			hasActiveVault: () => !!this._activeVault,
+			getDocCount: () => (this._activeVault ? (this._nativeKernel?.allDocs() ?? []).length : 0),
+			getTotalSize: () => (this._activeVault
+				? (this._nativeKernel?.allDocs() ?? []).reduce((sum, d) => sum + (d.size || 0), 0)
+				: 0),
+			isSqliteActive: () => !!this._kbSqliteStore,
+			getLinkedWorkspaceCount: () => this._activeVault?.linkedWorkspaces?.length ?? 0,
 			logOp: (code, detail) => { void this._logOp(code, 'success', detail); },
-			onPickDir: (current) => { void this.pickKbDir(current); },
-			onApplyDir: (dir) => { void this.applyKbDir(dir); },
-			onRebuildVectorIndex: () => { void this.rebuildVectorIndex(); },
-			onOpenKbFolder: () => { void this.openKbFolder(); },
-			onFeishuSync: (mode) => { void this.syncToFeishu(mode); },
-			onOpenFeishuLog: () => { void this.openFeishuLog(); },
-			onRerender: () => this.renderSettingsPanel(),
-		});
-		// 已同步篇数为异步统计（读 frontmatter）：面板先渲染，统计完成后局部更新提示文案
-		void this._refreshFeishuSyncedCount();
+			pickDir: (current) => { void this.pickKbDir(current); },
+			applyDir: (dir) => { void this.applyKbDir(dir); },
+			rebuildVectorIndex: () => { void this.rebuildVectorIndex(); },
+			openKbFolder: () => { void this.openKbFolder(); },
+			feishuSync: (mode) => { void this.syncToFeishu(mode); },
+			openFile: (uri) => { void this._openSettingsFile(uri); },
+		};
+	}
+
+	/** 打开设置面板引用的文件（如同步日志）；不存在时提示而非静默失败。 */
+	private async _openSettingsFile(uri: URI): Promise<void> {
+		try {
+			await this.fileService.stat(uri);
+		} catch {
+			this.notificationService.info(localize('kb.fileMissing', '文件不存在：{0}', uri.fsPath));
+			return;
+		}
+		await this.openerService.open(uri);
 	}
 
 	// ═══════════════════════════════════════════════════════════
 	//  飞书同步（可选能力）：命令拼装 + 终端执行 + 日志
 	// ═══════════════════════════════════════════════════════════
 
-	/** 缓存的「已同步篇数」（-1 = 未统计）；面板快照与提示文案共用。 */
-	private _feishuSyncedCount = -1;
-
 	/**
 	 * 拼装并执行飞书同步脚本（在集成终端里跑，输出对用户可见）。
 	 * dry-run = 只打印计划（默认）；apply = 实际写入飞书。
 	 */
 	private async syncToFeishu(mode: 'dry-run' | 'apply'): Promise<void> {
-		const script = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT) || '.codebuddy/kb-feishu-sync.mjs').trim();
-		if (!script) {
-			this.notificationService.warn(localize('kb.feishuNoScript', '未配置飞书同步脚本路径。'));
-			return;
-		}
 		if (!this._activeVault) {
 			this.notificationService.warn(localize('kb.feishuNoVault', '没有可用的知识库 Vault，无法同步。'));
 			return;
 		}
 
-		const srcDirs = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS) ?? '')
-			.split(',').map(s => s.trim()).filter(Boolean);
+		// ① 运行环境预检：飞书 CLI 未安装时立刻给安装引导，而不是让脚本跑到一半失败
+		const cliPath = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_CLI_PATH) || DEFAULT_LARK_CLI).trim();
+		const cli = await detectLarkCli(cliPath);
+		if (cli.state === 'missing') {
+			void this._logOp('feishu.sync', 'failure', { target: mode, error: 'lark-cli missing' });
+			this.notificationService.warn(LARK_CLI_MISSING_HINT);
+			return;
+		}
+
+		// ② 同步脚本内置：从产品资源目录定位（不再依赖工作区外部脚本）
+		const script = await resolveSyncScript(this.fileService, this.environmentService as INativeEnvironmentService);
+		if (!script) {
+			void this._logOp('feishu.sync', 'failure', { target: mode, error: 'builtin script not found' });
+			this.notificationService.warn(localize('kb.feishuScriptMissing', '未找到内置同步脚本（{0}）——安装可能不完整，请重新安装应用。', KB_FEISHU_SYNC_SCRIPT_REL));
+			return;
+		}
+
+		const rawInterval = this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL);
+		const srcDirs = parseSrcDirs(this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS));
 		const parent = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_PARENT) || 'my_library').trim();
 		const onConflict = this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT) === 'skip' ? 'skip' : 'overwrite';
-		const rawInterval = this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL);
-		const interval = Number.isFinite(rawInterval) && rawInterval >= 0 ? rawInterval : 800;
 
-		// 与 kb-feishu-sync.mjs 的 CLI 契约保持一致（--vault/--src/--parent/--on-conflict/--interval）
-		const args: string[] = [script, '--vault', this.rootUri.fsPath];
-		for (const d of srcDirs) { args.push('--src', d); }
-		args.push('--parent', parent, '--on-conflict', onConflict, '--interval', String(interval));
-		args.push(mode === 'apply' ? '--apply' : '--dry-run');
+		// ③ 参数拼装走共享纯函数（与面板 / 脚本契约单点维护）
+		const rawDepth = this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH);
+		const args = buildSyncArgs(script.fsPath, {
+			vaultPath: this.rootUri.fsPath,
+			srcDirs,
+			parent,
+			onConflict,
+			intervalMs: Number.isFinite(rawInterval) && rawInterval >= 0 ? rawInterval : 800,
+			// 多类别 → 多知识库：类别层级 / 未映射自动建库 / 删除清理（默认关）
+			categoryDepth: Number.isFinite(rawDepth) && rawDepth >= 0 ? rawDepth : 1,
+			autoCreateSpaces: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_AUTO_CREATE_SPACES) !== false,
+			prune: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_PRUNE_REMOTE) === true,
+			mode,
+		});
+		// 自定义 CLI 路径透传给脚本（脚本内部用它替代默认 lark-cli）
+		if (cliPath && cliPath !== DEFAULT_LARK_CLI) { args.push('--cli', cliPath); }
 
-		// 脚本路径默认相对工作区根目录 ⇒ cwd 取第一个工作区文件夹
 		const cwd = this.workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
-		void this._logOp('feishu.sync', 'success', { target: mode, detail: { srcCount: srcDirs.length, parent, onConflict } });
+
+		// 执行器：优先用 **Electron 自带的 node**（不依赖用户系统安装 node）；
+		// `process.execPath` 在 Electron 里是 Electron 二进制 ⇒ 必须配 ELECTRON_RUN_AS_NODE=1
+		// 才能以纯 Node 模式跑 .mjs（否则会被当 app 入口加载后立即退出）。
+		// 取不到 Electron 路径时回退系统 `node`（保持可用，不硬失败）。
+		// ⚠ env 保留完整进程环境：脚本内部仍要调用 lark-cli，丢 PATH 会导致「CLI 装了却找不到」。
+		const launch = electronNodeLaunch();
+		const runner = launch.executable ? 'electron-node' : 'system-node';
+		void this._logOp('feishu.sync', 'success', { target: mode, detail: { srcCount: srcDirs.length, parent, onConflict, cli: cli.version ?? cliPath, runner } });
 
 		try {
 			const terminal = await this.terminalService.createTerminal({
 				config: {
 					name: `KB → 飞书同步（${mode === 'apply' ? '同步' : '预览'}）`,
-					executable: 'node',
+					executable: launch.executable ?? 'node',
 					args,
 					cwd,
+					env: launch.executable ? launch.env : undefined,
 					waitOnExit: true, // 结束后保留终端，便于查看输出
 				},
 			});
@@ -3062,45 +3094,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 	}
 
-	/** 打开同步日志（<vault>/.feishu-sync.log）；不存在时给出提示。 */
-	private async openFeishuLog(): Promise<void> {
-		const logUri = URI.joinPath(this.rootUri, '.feishu-sync.log');
-		try {
-			await this.fileService.stat(logUri);
-		} catch {
-			this.notificationService.info(localize('kb.feishuLogMissing', '暂无同步日志（{0}）——先执行一次同步。', logUri.fsPath));
-			return;
-		}
-		await this.openerService.open(logUri);
-	}
-
-	/**
-	 * 统计已同步笔记数（frontmatter 含 feishu 块且带 token），并局部更新面板提示。
-	 * 跳过点开头目录与「库」原件判定依赖：库文件不带 feishu 块，天然不计入。
-	 */
-	private async _refreshFeishuSyncedCount(): Promise<void> {
-		if (!this._activeVault) { this._feishuSyncedCount = -1; return; }
-		let count = 0;
-		const walk = async (dir: URI): Promise<void> => {
-			let stat;
-			try { stat = await this.fileService.resolve(dir); } catch { return; }
-			for (const child of stat.children ?? []) {
-				if (child.name.startsWith('.')) { continue; }
-				if (child.isDirectory) { await walk(child.resource); continue; }
-				if (!/\.(md|markdown)$/i.test(child.name)) { continue; }
-				try {
-					const text = (await this.fileService.readFile(child.resource)).value.toString();
-					if (/^feishu:\s*$/m.test(text) && /^\s+token:\s*\S+/m.test(text)) { count++; }
-				} catch { /* 读取失败跳过 */ }
-			}
-		};
-		await walk(this.rootUri);
-		this._feishuSyncedCount = count;
-		const el = this._settingsDD.querySelector('#kbFeishuSyncedCount') as HTMLElement | null;
-		if (el) {
-			el.textContent = `已同步 ${count} 篇（按笔记 frontmatter 的 feishu.token 统计）· 同步前需完成 lark-cli 登录`;
-		}
-	}
+	// 说明：「已同步篇数」统计与同步日志打开已迁入 KbSettingsEditorPane
+	// （Pane 用 IFileService 自行扫描 vault；日志经 host.openFile 打开）。
 
 	/** 调原生文件夹选择框，选取知识库目录。 */
 	private async pickKbDir(current: string): Promise<void> {
@@ -3131,9 +3126,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this._activeVault.path = this.vaultUri(this._activeVault).fsPath;
 			await this.activateVault(this._activeVault);
 		}
-		// 刷新设置面板内的路径展示
-		const rp = this._settingsDD.querySelector('#kbRootPath') as HTMLElement | null;
-		if (rp) { rp.textContent = this.rootUri.fsPath; }
+		// 刷新设置面板：重开一次（matches() 复用同一 Tab 并重渲染，路径与统计随之更新）
+		this.openSettingsEditor();
 		this.notificationService.info(localize('kb.rootChanged', '知识库目录已切换为：{0}', fsPath));
 	}
 

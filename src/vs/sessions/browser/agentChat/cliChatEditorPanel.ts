@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import "./media/cli-chat.css";
-import { Disposable, DisposableStore, type IDisposable } from "../../../base/common/lifecycle.js";
+import { Disposable, DisposableStore, toDisposable, type IDisposable } from "../../../base/common/lifecycle.js";
 // ★ 2026-09-21 第三轮：`clearNode` 已**全部移除** ✓ —— 本文件所有渲染入口都改成
 //   「离屏构建 + 一次换入（内容未变则不碰 DOM）」✗⇒✓，不再有"先清空再重建"的写法 ✓。
 //   （留着未使用的 import 会被 tsgo 的 noUnusedLocals 拦下 ✓ —— 这道严格性正好防止回退 ✓。）
@@ -205,6 +205,23 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 		this._container.appendChild(this._messagesScroll);
 		this._container.appendChild(inputArea);
 		this._container.appendChild(this._statusBar);
+
+		// ★★★ 2026-09-21 第六轮（用户截图 ✗✓：滚动条已到底，但 `- diff` **代码块之后**的内容仍被截断 ✗）：
+		//   根因 = **高度在我们贴底之后还会再涨** ✗✓ —— 非流式渲染会走**异步代码块高亮**
+		//   （`codeBlockRenderer` 是 Promise ✓）⇒ 先贴底、代码块随后插入 ⇒ `scrollHeight` 再涨 ⇒
+		//   我们停在"旧底部" ⇒ **看着像到底、其实底下还有内容** ✗✓✓。
+		//   ⇒ 不再逐个修"谁会长高" ✗，而是上**总闸** ✓✓：
+		//   `ResizeObserver` 监听内容容器 ⇒ **任何来源的长高**（异步高亮 / 图片 / 字体 ✓）
+		//   只要在跟随态就**再贴一次底** ✓✓；用户已上滚（`_autoScroll=false` ✓）则不动 ✓。
+		//   ⚠ 屏蔽标记 `_suppressScrollSync` 必须生效 ✓，否则这次贴底派发的 scroll 事件
+		//     会把 `_autoScroll` 误判为 false ✗✓（上一轮的教训 ✓）。
+		const ro = new ResizeObserver(() => {
+			if (!this._autoScroll) { return; }
+			this._pinToBottom(this._messagesScroll);
+		});
+		ro.observe(this._messagesContainer);   // 内容长高 ✓
+		ro.observe(this._messagesScroll);      // 视口变化（窗口/面板 resize ✓）⇒ 贴底的也应保持贴底 ✓
+		this._disposables.add(toDisposable(() => ro.disconnect()));
 
 		// Wire events
 		this._disposables.add(addDisposableListener(this._textarea, EventType.KEY_DOWN, (e: KeyboardEvent) => {

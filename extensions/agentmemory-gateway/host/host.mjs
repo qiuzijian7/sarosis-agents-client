@@ -1780,6 +1780,18 @@ async function main() {
 	// AGENTMEMORY_HOST：默认 127.0.0.1（仅本机）。mesh 跨机联邦需显式绑定
 	// 0.0.0.0 并配置 AGENTMEMORY_SECRET（/mesh/* 路由强制 Bearer 鉴权）。
 	const bindHost = process.env.AGENTMEMORY_HOST || '127.0.0.1';
+	// ★ 2026-09-21 修复（安装版网关反复重启事故）：listen 失败（最常见 EADDRINUSE）此前
+	//   没有 error handler ⇒ unhandled 'error' 事件 ⇒ 进程退出 code=1，且**真实错误被吞**
+	//   （stderr 只有 ExperimentalWarning），主进程只看到「子进程异常退出」 ⇒ 自愈重启 ⇒
+	//   同样的 listen 失败 ⇒ 无限循环（实测反复重启 5 次）。现在显式捕获并打日志，退出码仍为 1
+	//   （让主进程走自愈/降级），但 stderr 能拿到真正的错误原因。
+	server.on('error', (err) => {
+		const code = err && typeof err === 'object' && 'code' in err ? err.code : undefined;
+		emit('error', `${TAG} listen 失败 port=${port} host=${bindHost} code=${code ?? 'unknown'}: ${err instanceof Error ? err.message : String(err)}`, {
+			stack: err instanceof Error ? err.stack : undefined,
+		});
+		process.exit(1);
+	});
 	server.listen(port, bindHost, () => {
 		emit('ready', `KV store ready on port ${port}`, { port, dataDir, engine: backendKind, host: bindHost });
 		// 启动后 5s 输出一次各 agent 健康度（不等首轮清扫）

@@ -59,6 +59,9 @@
 
 .xterm-cli-terminal .xterm {
 	padding: 4px 8px;
+	/* ★ 必须 border-box：content-box 下 height:100% + 上下 padding 会溢出宿主 8px，
+	     溢出部分被 .xterm-cli-terminal 的 overflow:hidden 裁掉（底部行不可见 ✗✓） */
+	box-sizing: border-box;
 	height: 100%;
 	width: 100%;
 }

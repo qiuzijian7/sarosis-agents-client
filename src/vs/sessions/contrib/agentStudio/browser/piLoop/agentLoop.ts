@@ -28,6 +28,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { hardLimitWrapUpReminder } from '../../common/loopReminders.js';
+import { hasPseudoXmlMarkers } from '../../common/toolCallNameSanitizer.js';
 import { hasPruneEffect, pruneOrphanedToolCalls } from './kernelTranscriptHygiene.js';
 import type {
 	AfterToolCallResult,
@@ -693,6 +694,20 @@ async function prepareToolCall(
 ): Promise<ToolCallPreparation> {
 	const tool = context.tools?.find((candidate) => candidate.name === toolCall.name);
 	if (!tool) {
+		// ★★ 2026-09-21（真机取证 http-debug SSE：上游把并行调用按伪 XML 标记粘进 name 字段）——
+		//   名字含 `<tool_call:hexid>` 之类标记 ⇒ 给模型**纠正指令**（勿输出标记、逐个原生调用），
+		//   而不是泛泛的「未找到」（那样模型只会盲重试、可能再次粘连）。
+		//   能提取出合法 token 的情形已在 LMBridge 入口归一化，到不了这里；本分支兜底"纯垃圾"情形。
+		if (hasPseudoXmlMarkers(toolCall.name)) {
+			return {
+				kind: 'immediate',
+				result: createErrorToolResult(
+					`工具名「${toolCall.name}」包含伪 XML 标记（上游把并行工具调用粘连进了 name 字段）。` +
+					`不要输出 <tool_call:...> 之类标记；请用原生 function call 逐个重新发起调用（每次一条，不要拼接）。`,
+				),
+				isError: true,
+			};
+		}
 		return {
 			kind: 'immediate',
 			result: createErrorToolResult(`未找到名为「${toolCall.name}」的工具`),

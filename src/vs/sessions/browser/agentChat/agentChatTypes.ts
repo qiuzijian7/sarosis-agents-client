@@ -37,6 +37,15 @@ export interface IAgentChatMessage {
 		input: number;
 		output: number;
 		total: number;
+		/**
+		 * ★ 2026-09-21：**最近一次请求**的 prompt 大小（= 当前上下文占用），**不含**本轮历史轮次的累加。
+		 *
+		 * 为什么需要它：`input` 的语义是「本 turn 全程消费」（多轮 agent loop 下每轮 LLM 调用各发一次
+		 * usage delta，此处按轮累加 —— 供 footer 展示总消耗）。而上下文环需要的是「当前 prompt 多大」。
+		 * 两者此前共用 `input` ⇒ 长 turn（20+ 轮迭代）后环暴涨（实测 1,465,040 vs 真实 prompt ~80,724），
+		 * 显示 100% 却永不触发压缩（压缩判定用 ContextManager 的 real usage，一直远低于 140k 线）。
+		 */
+		promptTokens?: number;
 		/** KV Cache: tokens read from prompt cache (缓存命中). */
 		cached?: number;
 		/** KV Cache: tokens written to cache (缓存写入). */

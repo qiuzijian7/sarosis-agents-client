@@ -57,6 +57,7 @@ import { shouldRecordHashAfterParse, EXTENSION_TO_WASM_LANG, AST_TO_NODE_TYPE, p
 import { resetMaxBlockMs, takeMaxBlockMs, wsStage, wsStageEnd } from './wsSwitchDiag.js';
 import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../common/asyncSlice.js';
 import { CodebaseGraphExcludeResolver } from './codebaseGraphExcludeResolver.js';
+import { resolveParseHeapAction } from './codebaseGraphMemoryWatchdog.js';
 import { CodebaseGraphScanner } from './codebaseGraphScanner.js';
 import { CodebaseGraphParserPool } from './codebaseGraphParserPool.js';
 import { buildWorkerCode } from './codebaseGraphWorkerCode.js';
@@ -1920,6 +1921,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 * 越过了 512MB 默认档 ⇒ 每轮一开场就误报超预算）。
 	 */
 	private _memBaselineBytes = 0;
+	// ── 解析期内存看门狗状态（每轮索引开始时重置；见 `_parseMemoryWatchdog`）──
+	private _parseMemHardAbortFired = false;
+	private _parseMemSoftWarned = false;
 
 	/**
 	 * ★★★ 2026-09-19（P1-5 内存预算）：图谱内存预算（字节）。
@@ -1983,6 +1987,55 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		return text;
 	}
 
+	/**
+	 * 解析期内存看门狗（2026-09-21，UE 95k 文件 OOM 实证）。
+	 *
+	 * 挂在解析循环里按固定文件数调用（全量/增量/主线程兜底三处）。语义：
+	 *   · 越过硬上限 ⇒ WARN + 进度提示 + `cts.cancel()` —— 循环各点都认 token ⇒ 本轮解析中止，
+	 *     **已解析部分照常走收尾（post-pass/落盘/SQLite 补丁）**：哈希只记已解析文件 ⇒
+	 *     下次增量把剩余文件自动补齐（渐进收敛，不再「崩溃留残缺 → 下次又全量」）；
+	 *   · 本轮增量超预算 ×1.5 ⇒ WARN 一次，继续跑。
+	 * `performance.memory` 不可用（非 Chromium）⇒ 直接跳过（看门狗失效但不阻断）。
+	 */
+	private _parseMemoryWatchdog(cts: CancellationTokenSource, label: string): void {
+		const { usedBytes } = this._graphMemoryUsedBytes();
+		if (usedBytes <= 0) { return; }
+		const action = resolveParseHeapAction({
+			usedBytes,
+			baselineBytes: this._memBaselineBytes,
+			budgetBytes: this._graphMemoryBudgetBytes(),
+			hardLimitBytes: this._parseHardHeapLimitBytes(),
+		});
+		if (action === 'ok') { return; }
+		if (action === 'soft') {
+			if (this._parseMemSoftWarned) { return; }
+			this._parseMemSoftWarned = true;
+			this._logService.warn('[CodebaseGraph]',
+				`★ 解析期内存增长超预算 1.5x（+${((usedBytes - this._memBaselineBytes) / 1048576).toFixed(0)}MB `
+				+ `/ 预算 ${(this._graphMemoryBudgetBytes() / 1048576).toFixed(0)}MB @ ${label}）—— 继续观察，越硬上限将中止解析`);
+			return;
+		}
+		// abort
+		if (this._parseMemHardAbortFired) { return; }
+		this._parseMemHardAbortFired = true;
+		const usedMb = (usedBytes / 1048576).toFixed(0);
+		const hardMb = (this._parseHardHeapLimitBytes() / 1048576).toFixed(0);
+		this._logService.warn('[CodebaseGraph]',
+			`★ 解析期堆越过硬上限（${usedMb}MB > ${hardMb}MB @ ${label}）⇒ **中止本轮解析**（防 renderer OOM）：`
+			+ `已解析部分照常收尾落盘，剩余文件哈希未记 ⇒ 后续增量索引会自动补齐。`
+			+ `若需放宽请调 \`saros.codebaseGraph.hardHeapLimitMb\`（0=默认 3072MB）。`);
+		this._onDidIndexProgress.fire(`⚠ 内存超限（${usedMb}MB > ${hardMb}MB），已中止解析 —— 已解析部分照常保留，剩余文件将由增量索引逐步补齐`);
+		cts.cancel();
+	}
+
+	/** 解析期硬堆上限（字节）。`saros.codebaseGraph.hardHeapLimitMb` > 0 时用配置；否则默认 3072MB。 */
+	private _parseHardHeapLimitBytes(): number {
+		const cfgMb = this._configurationService.getValue<number>('saros.codebaseGraph.hardHeapLimitMb') ?? 0;
+		if (cfgMb > 0) { return cfgMb * 1024 * 1024; }
+		// Chromium 渲染进程 V8 堆上限 ~4GB；留 ~1GB 给 UI/编辑器/压缩器工作集。
+		return 3072 * 1024 * 1024;
+	}
+
 	async indexWorkspace(rootPath: string, config: IIndexConfig, token?: CancellationToken): Promise<IIndexResult> {
 		// [TRACE] 追踪 indexWorkspace 的所有调用入口，帮助定位"启动时总是自动重新索引"的来源
 		try {
@@ -2002,6 +2055,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		this._isIndexing = true;
 		this._indexCts = cts;
+		// 解析期内存看门狗状态每轮重置（见 `_parseMemoryWatchdog`）；基线堆供软告警按增量判定
+		this._parseMemHardAbortFired = false;
+		this._parseMemSoftWarned = false;
+		this._memBaselineBytes = this._graphMemoryUsedBytes().usedBytes;
 
 		let releaseLock: () => void;
 		try {
@@ -2076,6 +2133,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				while (true) {
 					const idx = nextFile();
 					if (idx === -1) { break; }
+					// ★ 2026-09-21 内存看门狗：越硬上限即取消本轮（已解析部分照常收尾落盘 ✓）
+					if (idx % CodebaseGraphService.PARSE_MEM_CHECK_EVERY === 0) {
+						this._parseMemoryWatchdog(cts, `全量并行解析 ${idx}/${filesScanned}`);
+					}
 
 			const filePath = files[idx];
 			const relPath = this._getRelativePath(filePath);
@@ -2159,6 +2220,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				if (i % 50 === 0) {
 					const pct = Math.round(i / filesScanned * 100);
 					this._onDidIndexProgress.fire(`🔍 解析中 (${i}/${filesScanned}) ${pct}% - ${nodesExtracted} 节点, ${edgesExtracted} 边`);
+					// ★ 2026-09-21 内存看门狗（与并行路径同一道保险丝 ✓）
+					this._parseMemoryWatchdog(cts, `主线程解析 ${i}/${filesScanned}`);
 				}
 				const filePath = files[i];
 				const relPath = this._getRelativePath(filePath);
@@ -2336,7 +2399,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			this._logIndexSummary('full');
 			const result: IIndexResult = {
 				success: true,
-				message: `索引完成: ${filesScanned} 文件, ${nodesExtracted} 节点, ${edgesExtracted} 边`,
+				message: `索引完成: ${filesScanned} 文件, ${nodesExtracted} 节点, ${edgesExtracted} 边`
+				+ (this._parseMemHardAbortFired ? ' ⚠（内存超限已提前中止解析，剩余文件将由后续增量索引逐步补齐）' : ''),
 				duration,
 				stats: { filesScanned, nodesExtracted, edgesExtracted },
 				rootPath,
@@ -2488,6 +2552,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		this._memBudgetWarned = false;   // 每轮重置「只告警一次」闸（见 `_reportGraphMemory`）
 		// ★ 2026-09-19：同时记录本轮**基线堆** —— 判据是「本轮增长」而非绝对堆占用（见 `_memBaselineBytes`）
 		this._memBaselineBytes = this._graphMemoryUsedBytes().usedBytes;
+		// 解析期内存看门狗状态每轮重置（见 `_parseMemoryWatchdog`）
+		this._parseMemHardAbortFired = false;
+		this._parseMemSoftWarned = false;
 		this._isIndexing = true;
 		this._indexCts = cts;
 
@@ -2640,6 +2707,13 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 						try {
 							const result = await this._parseFile(t.abs, cts.token);
 							parseResults.push({ idx, rel: t.rel, abs: t.abs, result });
+							// ★ 2026-09-21 内存看门狗（UE 95k 文件 OOM 实证）：解析结果全部攒在
+							// parseResults（阶段 2 才写入 store）⇒ 解析阶段是内存无出口的最长段——
+							// 阶段边界的 `_reportGraphMemory` 来不及响 ⇒ 必须在循环内检查。
+							// 越硬上限即取消本轮；已解析部分照常写入/落盘（渐进收敛 ✓）。
+							if (parseResults.length % CodebaseGraphService.PARSE_MEM_CHECK_EVERY === 0) {
+								this._parseMemoryWatchdog(cts, `增量解析 ${parseResults.length}/${parseTargets.length}`);
+							}
 						} catch (err: any) {
 							this._logService.debug('[CodebaseGraph]', `Incremental parse failed ${t.abs}: ${err?.message || err}`);
 						}
@@ -2766,7 +2840,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			changedFilesBrief = [...classification.added, ...classification.modified, ...classification.deleted].join(', ');
 
 			const duration = Math.round((Date.now() - startTime) / 1000);
-			const message = `增量索引完成: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} (${nodesExtracted} 节点, ${edgesExtracted} 边, ${similarEdges} 克隆边, ${duration}s, ${zstThrottled ? 'zst落盘已节流(SQLite已持久化)' : '落盘已排队'})`;
+			const message = `增量索引完成: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} (${nodesExtracted} 节点, ${edgesExtracted} 边, ${similarEdges} 克隆边, ${duration}s, ${zstThrottled ? 'zst落盘已节流(SQLite已持久化)' : '落盘已排队'})`
+				+ (this._parseMemHardAbortFired ? ' ⚠（内存超限已提前中止解析，剩余文件将由后续增量索引逐步补齐）' : '');
 			this._onDidIndexProgress.fire(`✓ ${message}`);
 			const result: IIndexResult = {
 				success: true,
@@ -4925,6 +5000,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	/** 上次 SQLite 新鲜度校验时刻（节流基准）。 */
 	private _lastSqliteFreshnessCheckAt = 0;
 	private static readonly SQLITE_FRESHNESS_CHECK_INTERVAL_MS = 60_000;
+
+	/** 解析期内存看门狗的检查间隔（每 N 个文件查一次堆；见 `_parseMemoryWatchdog`）。 */
+	private static readonly PARSE_MEM_CHECK_EVERY = 250;
 
 	/**
 	 * SQLite 新鲜度校验（2026-09-09，P0-1 第一步）。

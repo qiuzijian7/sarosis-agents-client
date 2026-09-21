@@ -63,7 +63,10 @@ $required = @(
   "node_modules\@vscode\tree-sitter-wasm\wasm\tree-sitter.js",
   "out\vs\sessions\contrib\agentStudio\browser\views\knowledgeBase\kbWorker.js",
   "out\vs\sessions\sessions.desktop.main.js",
-  "out\vs\sessions\contrib\agentStudio\webview\media\kbblocks.js"
+  "out\vs\sessions\contrib\agentStudio\webview\media\kbblocks.js",
+  # 2026-09-21：能力插件清单（build/next 生成的**运行时路径加载**产物，同 wasm 一类 ✗）。
+  # 缺它 ⇒ 安装版静默退到「dev 硬编码回退清单」，且每个插件的 primary import 指向 src/ ✗。
+  "out\vs\extensions\capability-plugins.js"
 )
 # 2026-09-20：逐语言 wasm 也进**硬性**清单（sentinel 只证包目录在 ✗ —— 那次安装版缺 10 个语言
 # 照样绿灯放行 ✗✗）。以仓库侧目录为准动态展开（防清单漂移 ✓）。

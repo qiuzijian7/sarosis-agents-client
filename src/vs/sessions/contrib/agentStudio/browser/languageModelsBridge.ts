@@ -38,6 +38,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { ILanguageModelsService, IChatMessage, IChatMessagePart, IChatMessageToolResultPart, IChatResponsePart, IChatResponseToolUsePart, IChatResponseStepPart, ChatMessageRole, ILanguageModelChatMetadata, ChatImageMimeType } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { ensureTrailingUserBoundary, normalizeMessages } from '../common/agentRunState.js';
+import { sanitizeToolCallName } from '../common/toolCallNameSanitizer.js';
 import { ContextManager } from '../common/contextManager.js';
 import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING, AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING } from '../common/constants.js';
 import { join } from '../../../../base/common/path.js';
@@ -1158,11 +1159,26 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 					argsStr = JSON.stringify(rawParams ?? {});
 				}
 
+				// ★★ 2026-09-21 归一化（真机取证 http-debug SSE：上游把并行调用按伪 XML 标记粘进 name）——
+				//   上游曾下发 `"name": "index_status</tool_call:6124c78e><tool_call:6124c78e>search_files"`，
+				//   args 属**最后一个** tag。此前坏名字一路走到 piLoop `prepareToolCall` →
+				//   「未找到名为…的工具」→ 白烧一轮 + 一张失败卡。这里在**唯一入口**归一化：
+				//   下游 UI 卡、pi/legacy 执行、历史落盘全部拿到干净名字 ✓。
+				const sanitizedName = sanitizeToolCallName(toolPart.name);
+				if (sanitizedName.tainted) {
+					this._logService.warn(
+						`[LMBridge] tool_call name 含伪 XML 标记（上游把并行调用粘连）⇒ 归一化: ` +
+						`"${toolPart.name}" → "${sanitizedName.name}"` +
+						`${sanitizedName.repaired ? '' : '（无可提取 token，保持原值）'}` +
+						` fragments=[${sanitizedName.fragments.join(' | ')}]`,
+					);
+				}
+
 				return {
 					type: 'tool_call',
 					toolCall: {
 						id: toolPart.toolCallId,
-						name: toolPart.name,
+						name: sanitizedName.name,
 						arguments: argsStr,
 						displayName,
 						renderType,

@@ -136,12 +136,15 @@ import {
 	AGENT_STUDIO_EMBEDDING_PROVIDER,
 	AGENT_STUDIO_KB_AGENTIC_BUILD,
 	AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED,
-	AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT,
+	AGENT_STUDIO_KB_FEISHU_CLI_PATH,
 	AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS,
 	AGENT_STUDIO_KB_FEISHU_SYNC_PARENT,
 	AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT,
 	AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL,
 	AGENT_STUDIO_KB_FEISHU_AUTO_SYNC,
+	AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH,
+	AGENT_STUDIO_KB_FEISHU_AUTO_CREATE_SPACES,
+	AGENT_STUDIO_KB_FEISHU_PRUNE_REMOTE,
 	AGENT_STUDIO_EMBEDDING_MODEL,
 	AGENT_STUDIO_EMBEDDING_DIMENSIONS,
 	AGENT_STUDIO_EMBEDDING_API_KEY,
@@ -244,6 +247,8 @@ import { KnowledgeBaseViewPane } from './views/knowledgeBaseView.js';
 // 该模块在文件末尾自行 registerWorkbenchContribution2，这里只需副作用引入。
 import './libraryActivityBadge.js';
 import { KbBlocksEditorPane } from './kbBlocksEditorPane.js';
+import { KbSettingsEditorPane } from './kbSettingsEditorPane.js';
+import { KbSettingsEditorInput } from './kbSettingsEditorInput.js';
 import { KbNoteEditorInput } from './kbNoteEditorInput.js';
 import { KnowledgeBaseGraphEditorPane } from './kbGraphEditorPane.js';
 import { KbGraphEditorInput } from './kbGraphEditorInput.js';
@@ -472,6 +477,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			minimum: 0,
 			markdownDescription: localize('agentStudio.codebaseGraph.memoryBudgetMb', "Codebase 图谱的**单轮内存增长预算**（MB）—— 判据是「**本轮索引期间堆的增长量**」而非绝对占用（renderer 静止堆本就包含编辑器/扩展/webview，用绝对值会每轮误报 ✗）。`0` = 自动按设备内存分档（≤4GB→256 / ≤8GB→512 / 更大→768）。超预算时：① 索引阶段对账行会带上「本轮+XMB / 上限YMB（堆…，基线…）」（便于定位是哪一段吃掉内存）；② 单条**响亮告警**（绝不静默）+ 提示如何放宽。对齐 C 版 `mem.c` 的内存预算思想 —— 本仓检索已由主进程 SQLite/FTS5 承担，内存里可重建的结构（BM25/layout）按需重建而不常驻。"),
 		},
+		'saros.codebaseGraph.hardHeapLimitMb': {
+			type: 'number',
+			default: 0,
+			minimum: 0,
+			markdownDescription: localize('agentStudio.codebaseGraph.hardHeapLimitMb', "Codebase 图谱解析期的**硬堆上限**（MB，`0` = 默认 3072）。真机实证（UE 项目 9.5 万文件全量重建）：解析结果累积在渲染进程内存里，heap 每 30s 涨近 1GB，60-90 秒内越过 V8 上限直接 OOM 崩溃——而阶段边界的内存告警根本来不及响。本上限是**最后保险丝**：解析循环每 250 个文件检查一次，越过即**中止本轮解析**（已解析部分照常收尾落盘，剩余文件由后续增量索引逐步补齐），把「崩溃丢图」降级为「部分索引 + 明确提示」。"),
+		},
 		'saros.codebaseGraph.excludeProfile': {
 			type: 'string',
 			enum: ['balanced', 'full'],
@@ -681,9 +692,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean', default: false,
 			description: localize('agentStudio.kb.feishu.enabled', "Enable Feishu (Lark) sync for the knowledge base. Requires lark-cli authentication. Also configurable in the Knowledge Base view settings panel."),
 		},
-		[AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT]: {
-			type: 'string', default: '.codebuddy/kb-feishu-sync.mjs',
-			description: localize('agentStudio.kb.feishu.scriptPath', "Path to the Feishu sync script, relative to the workspace root (or an absolute path)."),
+		[AGENT_STUDIO_KB_FEISHU_CLI_PATH]: {
+			type: 'string', default: 'lark-cli',
+			description: localize('agentStudio.kb.feishu.cliPath', "Feishu CLI (lark-cli) executable path; 'lark-cli' resolves through PATH. The sync script itself ships with the product (resources/.agents/kb/feishu-sync.mjs) and needs no configuration."),
 		},
 		[AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS]: {
 			type: 'string', default: '',
@@ -704,6 +715,18 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[AGENT_STUDIO_KB_FEISHU_AUTO_SYNC]: {
 			type: 'boolean', default: false,
 			description: localize('agentStudio.kb.feishu.autoSync', "Allow the scheduled task (automation 'kb', weekdays 10:00) to run Feishu sync automatically. AND-ed with feishu.enabled; manual sync is not affected."),
+		},
+		[AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH]: {
+			type: 'number', default: 1, minimum: 0, maximum: 5,
+			description: localize('agentStudio.kb.feishu.categoryDepth', "Nth-level directory under each sync source acts as a 'category'; each category maps to one Feishu wiki space (knowledge base). 0 disables categorisation."),
+		},
+		[AGENT_STUDIO_KB_FEISHU_AUTO_CREATE_SPACES]: {
+			type: 'boolean', default: true,
+			description: localize('agentStudio.kb.feishu.autoCreateSpaces', "Auto-create a Feishu knowledge base (wiki space) named after the category when the category has no mapping yet."),
+		},
+		[AGENT_STUDIO_KB_FEISHU_PRUNE_REMOTE]: {
+			type: 'boolean', default: false,
+			description: localize('agentStudio.kb.feishu.pruneRemote', "When a synced document is deleted locally, also remove its remote wiki node. Off by default (destructive)."),
 		},
 		// --- Auxiliary Models ---
 		[AGENT_STUDIO_AUX_VISION_PROVIDER]: {
@@ -1474,6 +1497,20 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(KbNoteEditorInput)
+	]
+);
+
+// Register KbSettingsEditorPane — 知识库设置面板（中间栏 EditorPane）。
+// 取代原先挂在知识库视图 ⚙ 按钮上的下拉面板：设置项已增至 5 组（目录 / 构建方式 /
+// Embedding / 飞书同步 / 状态），下拉受侧栏宽度限制显示拥挤、小窗口下会被截断。
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		KbSettingsEditorPane,
+		KbSettingsEditorPane.ID,
+		localize('kbSettingsEditor', "知识库设置"),
+	),
+	[
+		new SyncDescriptor(KbSettingsEditorInput)
 	]
 );
 
@@ -3251,12 +3288,16 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 				+ `[ids=${manifest.map(p => p.id).join(',') || '<none>'}]`,
 			);
 		} catch (err) {
-			this.logService.warn(
-				'[AgentCapabilityPlugins] Failed to load capability-plugins.js manifest. '
+			// ★★ 2026-09-21：安装版**缺这个清单是打包缺陷**（build/next 生成、按运行时路径加载，
+			// 曾被漏拷 —— 与 tree-sitter wasm 同一类 ✗）⇒ **打包形态升级为 error**，别再被当成
+			// "dev 没跑 transpile-client"的提示而忽略 ✓（dev 形态仍是 warn ✓）。
+			const isPackaged = this.environmentService?.isBuilt === true;
+			const msg = '[AgentCapabilityPlugins] Failed to load capability-plugins.js manifest. '
 				+ 'Falling back to hardcoded plugin list (dev mode). '
-				+ 'For production, run "npm run transpile-client" to regenerate the manifest from extensions/*/package.json.',
-				err,
-			);
+				+ 'For production, run "npm run transpile-client" to regenerate the manifest from extensions/*/package.json.'
+				+ (isPackaged ? ' ⚠⚠ 打包形态缺该清单 = 打包缺陷（见 build/saros/strip-before-pack.mjs 2.7 ✓）' : '');
+			if (isPackaged) { this.logService.error(msg, err); }
+			else { this.logService.warn(msg, err); }
 		}
 
 		// Merge in any fallback-listed plugins that the manifest does not already
@@ -3304,69 +3345,63 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 		this.logService.info(
 			`[AgentCapabilityPlugins][Diag] activating "${entry.id}" -- import("${entry.module}")`,
 		);
+		// ★★ 2026-09-21（安装版实证）：manifest 的 `module` 指向 `extensions/<id>/src/extension.js`
+		// —— 那是 **dev 就地编译**产物的路径，生产包里**不存在** ⇒ 必然失败一次，白付一次动态
+		// 导入 + 一条 WARN（日志：`Primary import() failed … src/extension.js`）✗。
+		// ⇒ 打包形态（isBuilt）**先试 `appResource`**（dist/extension.js，strip-before-pack 已保证 ✓），
+		//   dev 形态维持原顺序（module 才是常态，dist 可能没构建）。两种形态都保留另一个作兜底 ✓。
+		const isPackaged = this.environmentService?.isBuilt === true;
+		const appResourceSpec = entry.appResource;
+		const candidates: { desc: string; load: () => Promise<any> }[] = [];
+		const pushModule = () => candidates.push({
+			desc: `module=${entry.module}`,
+			load: () => import(entry.module),
+		});
+		const pushAppResource = () => {
+			if (!appResourceSpec) { return; }
+			const url = FileAccess.asBrowserUri(appResourceSpec).toString(true);
+			candidates.push({ desc: `appResource=${url}`, load: () => import(url) });
+		};
+		if (isPackaged && appResourceSpec) { pushAppResource(); pushModule(); }
+		else { pushModule(); pushAppResource(); }
+
 		let pluginModule: any;
 		let importedFrom = entry.module;
-		try {
-			pluginModule = await import(entry.module);
-		} catch (err) {
-			const e = err as any;
-			const errMsg = e?.message ?? String(err);
-
-			// CommonJS modules cannot be loaded via ESM import() in the renderer.
-			// This is expected for extensions built as CJS — downgrade to info.
-			if (this._isCjsModuleError(errMsg)) {
-				this.logService.info(
-					`[AgentCapabilityPlugins] ${entry.id} is a CommonJS module — skipped (cannot load via ESM import() in renderer).`,
-				);
-				return;
-			}
-
-			this.logService.warn(
-				`[AgentCapabilityPlugins][Diag] Primary import() failed for ${entry.id} (module=${entry.module}). `
-				+ `Error: ${errMsg}`,
-			);
-
-			// Fallback: try the app-resource path (extensions/<id>/dist/extension.js)
-			// converted to a vscode-file:// URL via FileAccess. This works in dev
-			// mode without `npm run transpile-client`.
-			if (entry.appResource) {
-				try {
-					const browserUri = FileAccess.asBrowserUri(entry.appResource);
-					const fallbackUrl = browserUri.toString(true);
+		let loaded = false;
+		let lastErr: any;
+		for (const c of candidates) {
+			try {
+				this.logService.info(`[AgentCapabilityPlugins][Diag] trying ${entry.id} via ${c.desc}`);
+				pluginModule = await c.load();
+				importedFrom = c.desc;
+				loaded = true;
+				break;
+			} catch (err) {
+				lastErr = err;
+				const msg = (err as any)?.message ?? String(err);
+				// CommonJS modules cannot be loaded via ESM import() in the renderer.
+				// This is expected for extensions built as CJS — downgrade to info.
+				if (this._isCjsModuleError(msg)) {
 					this.logService.info(
-						`[AgentCapabilityPlugins][Diag] Trying appResource fallback for ${entry.id}: ${fallbackUrl}`,
-					);
-					pluginModule = await import(fallbackUrl);
-					importedFrom = fallbackUrl;
-				} catch (err2) {
-					const e2 = err2 as any;
-					const err2Msg = e2?.message ?? String(err2);
-
-					// CommonJS fallback also fails — same CJS-in-renderer issue
-					if (this._isCjsModuleError(err2Msg)) {
-						this.logService.info(
-							`[AgentCapabilityPlugins] ${entry.id} appResource is also CommonJS — skipped.`,
-						);
-						return;
-					}
-
-					this.logService.warn(
-						`[AgentCapabilityPlugins][Diag] Fallback import() also failed for ${entry.id} `
-						+ `(appResource=${entry.appResource}). `
-						+ `Error: ${err2Msg}\nStack: ${e2?.stack ?? '<no stack>'}\n`
-						+ `Hint: ensure either "npm run transpile-client" was run (produces out/vs/extensions/${entry.id}/src/extension.js) `
-						+ `or the extension itself has been built (produces extensions/${entry.id}/dist/extension.js).`,
+						`[AgentCapabilityPlugins] ${entry.id} is a CommonJS module — skipped (cannot load via ESM import() in renderer).`,
 					);
 					return;
 				}
-			} else {
 				this.logService.warn(
-					`[AgentCapabilityPlugins][Diag] No appResource fallback declared for ${entry.id}. `
-					+ `Run "npm run transpile-client" to generate the manifest artifact, or add an appResource path to the fallback manifest.\n`
-					+ `Stack: ${e?.stack ?? '<no stack>'}`,
+					`[AgentCapabilityPlugins][Diag] import() failed for ${entry.id} (${c.desc}). Error: ${msg}`,
 				);
-				return;
 			}
+		}
+		if (!loaded) {
+			this.logService.warn(
+				`[AgentCapabilityPlugins][Diag] all import attempts failed for ${entry.id} `
+				+ `(${candidates.map(x => x.desc).join(' | ')}). `
+				+ `Stack: ${(lastErr as any)?.stack ?? '<no stack>'}\n`
+				+ `Hint: ensure either "npm run transpile-client" was run (produces out/vs/extensions/capability-plugins.js `
+				+ `+ out/vs/extensions/${entry.id}/src/extension.js) or the extension itself has been built `
+				+ `(produces extensions/${entry.id}/dist/extension.js).`,
+			);
+			return;
 		}
 
 		try {

@@ -203,7 +203,7 @@
 				<li><strong>＋ 导入</strong>——把当前上下文（聊天消息 / 工作区文件）导入「库」分区。</li>
 				<li><strong>构建</strong>——批量处理所有未构建的库文件。</li>
 				<li><strong>图谱</strong>——打开关系图谱（双链共现 + Louvain 社区）。</li>
-				<li><strong>设置</strong>——构建方式开关、向量索引、文件夹快捷入口。</li>
+				<li><strong>设置</strong>——点击后在<strong>中间栏</strong>打开完整设置面板（EditorPane，不再是侧栏下拉）：知识库目录、构建方式、Embedding 模型、飞书同步、状态统计五组。</li>
 				<li><strong>两个分区</strong>：<code>库/</code> 是资料原件（只进不改），<code>笔记/</code> 是 LLM 产出的结构化笔记（按类型/主题分目录）。</li>
 				<li><strong>构建中提示</strong>：构建是异步的，可继续做别的事。</li>
 			</ol>
@@ -465,6 +465,9 @@ status: active
 <section class="card" id="settings">
 	<h2>9. 设置与配置</h2>
 
+	<div class="note"><strong>入口形态</strong>：点击知识库视图右上角的 <strong>⚙</strong> 后，设置面板在<strong>中间栏以 EditorPane 打开</strong>（单例 Tab，重复点击聚焦同一面板），采用「分组卡片 + 宽行控件」布局，不再受侧栏宽度限制。下面 Mockup 示意其五组内容。</div>
+
+
 	<div class="mock-cols">
 		<div class="mock" style="max-width:540px">
 			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;知识库设置</div>
@@ -490,7 +493,12 @@ status: active
 					<div class="mock-hit">
 						<div class="t">📤 飞书同步 <span class="num">5</span></div>
 						<div class="s"><input type="checkbox" class="mock-check" checked disabled> 启用飞书同步 &nbsp; <input type="checkbox" class="mock-check" disabled> 允许定时自动同步（工作日 10:00）</div>
-						<div class="s">范围 <code>库/ObsidianWorkspace/AI_Workspace</code> · 目标 <code>my_library</code> · 远端手改时：本地覆盖 / 跳过并记录冲突 · 间隔 800ms</div>
+						<div class="s">飞书 CLI <code>lark-cli</code> <span class="mock-btn dim">🔄 重新检测</span> · ✅ 已检测到 v1.0.27 · 已登录</div>
+						<div class="s">⬆️ 可升级：1.0.27 → 1.0.96 <span class="mock-btn">📄 查看版本说明</span> <span class="mock-btn primary">⬆️ 升级 lark-cli</span></div>
+						<div class="s">内置同步脚本：<code>resources/.agents/kb/feishu-sync.mjs</code>（随产品发布，无需配置）</div>
+						<div class="s">同步范围 <code>库/ObsidianWorkspace/AI_Workspace</code> · 同步到 <code>my_library</code>（无类别文件）· 远端手改时：本地覆盖 / 跳过并记录冲突 · 间隔 800ms</div>
+						<div class="s">类别层级 <code>1</code> · ☑ 自动建库（类别无知识库时自动创建同名知识库）· ☐ 删除清理（本地删除同步移除远端）</div>
+						<div class="s">多类别 → 多知识库：<code>01-基础概念</code> → 飞书知识库「01-基础概念」、<code>02-架构设计</code> → 「02-架构设计」…；类别变更时其文档自动跨知识库搬迁</div>
 						<div class="s"><span class="mock-btn">🔍 预览同步计划（dry-run）</span> <span class="mock-btn primary">📤 立即同步到飞书</span> <span class="mock-btn dim">📄 查看同步日志</span></div>
 						<div class="s">已同步 61 篇（按笔记 frontmatter 的 feishu.token 统计）</div>
 					</div>
@@ -514,7 +522,8 @@ status: active
 	<table>
 		<tr><th>项</th><th>位置 / 键</th><th>说明</th></tr>
 		<tr><td>Agentic 构建</td><td><code>sessions.agentStudio.kb.agenticBuild</code></td><td>默认 true；false = 走直连 LLM 管线</td></tr>
-		<tr><td>飞书同步</td><td><code>sessions.agentStudio.kb.feishu.enabled</code>（总开关）<br><code>.autoSync</code>（定时同步开关）<br><code>.scriptPath</code> · <code>.srcDirs</code> · <code>.parent</code> · <code>.onConflict</code> · <code>.interval</code></td><td>两个开关默认均关闭；设置面板「📤 飞书同步」区块可全部配置，并一键「预览 / 立即同步 / 查看日志」（在集成终端执行）。<br><strong>定时同步</strong>需 <code>enabled</code> 与 <code>autoSync</code> 同时开启（「与」关系），手动同步不受开关约束</td></tr>
+		<tr><td>飞书同步</td><td><code>sessions.agentStudio.kb.feishu.enabled</code>（总开关）<br><code>.autoSync</code>（定时同步开关）<br><code>.cliPath</code>（lark-cli 路径，默认走 PATH）<br><code>.srcDirs</code> · <code>.parent</code> · <code>.onConflict</code> · <code>.interval</code></td></td><td>两个开关默认均关闭；设置面板「📤 飞书同步」区块可全部配置，并一键「预览 / 立即同步 / 查看日志」（在集成终端执行）。<br><strong>同步脚本已内置</strong>（<code>resources/.agents/kb/feishu-sync.mjs</code>，随产品发布，<strong>无需自备外部脚本</strong>）；面板自动检测 <code>lark-cli</code> 是否安装（并检查是否有新版本，可一键在终端升级），未安装时给出安装引导。<br><strong>定时同步</strong>需 <code>enabled</code> 与 <code>autoSync</code> 同时开启（「与」关系），手动同步不受开关约束</td></tr>
+		<tr><td>多类别 → 多知识库</td><td><code>feishu.categoryDepth</code>（默认 1）<br><code>.autoCreateSpaces</code>（默认 true）<br><code>.pruneRemote</code>（默认 false）</td><td><strong>类别</strong> = 同步源目录下第 N 级目录，各自对应<strong>一个飞书知识库</strong>；未映射时自动创建同名知识库（可关）。类别变更（如把笔记从 <code>01-基础概念</code> 移到 <code>02-架构设计</code>）⇒ 文档<strong>自动跨知识库搬迁</strong>（<code>wiki +move</code>）。「删除清理」默认关：本地删除不影响飞书侧</td></tr>
 		<tr><td>库与笔记</td><td><code>&lt;vault&gt;/库/</code>、<code>&lt;vault&gt;/笔记/</code></td><td>资料原件与结构化笔记</td></tr>
 		<tr><td>导航与洞察</td><td><code>&lt;vault&gt;/index.md</code>、<code>overview.md</code>、<code>insights.md</code></td><td>自动维护</td></tr>
 		<tr><td>目录摘要</td><td><code>&lt;vault&gt;/笔记/&lt;目录&gt;/.overview.md</code></td><td>点开头，不参与笔记扫描</td></tr>
@@ -529,7 +538,7 @@ status: active
 <section class="card" id="feishu">
 	<h2>10. 飞书同步（可选）</h2>
 	<p>把知识库笔记增量镜像到飞书个人知识库（wiki），保留目录结构，支持图片与冲突检测。</p>
-	<div class="note"><strong>不必记命令</strong>：知识库视图 → <strong>设置（⚙）→ 📤 飞书同步</strong>，其中可配置<strong>总开关</strong>、<strong>定时同步开关</strong>、同步脚本路径、同步范围、目标位置、远端手改策略与限流间隔，并直接点击 <strong>预览同步计划 / 立即同步到飞书 / 查看同步日志</strong>（对应下面的 dry-run / apply / 日志文件，命令在集成终端执行，输出可见）。<br><strong>两个开关的分工</strong>：<em>启用飞书同步</em> = 同步能力总开关；<em>允许定时自动同步</em> = 是否让定时任务（工作日 10:00）自动执行——两者是「与」关系，都开启才会自动同步；<strong>手动同步不受这两个开关限制</strong>。</div>
+	<div class="note"><strong>不必记命令</strong>：知识库视图 → <strong>设置（⚙）→ 📤 飞书同步</strong>，其中可配置<strong>总开关</strong>、<strong>定时同步开关</strong>、<strong>飞书 CLI 路径</strong>（含「重新检测」与版本升级：检测到新版本时显示「⬆️ 可升级」并可一键在终端执行 <code>lark-cli update</code>；未装 CLI 会提示安装）、同步范围、目标位置、远端手改策略与限流间隔，并直接点击 <strong>预览同步计划 / 立即同步到飞书 / 查看同步日志</strong>（对应下面的 dry-run / apply / 日志文件，命令在集成终端执行，输出可见）。<br><strong>同步脚本已内置</strong>（随产品发布，<strong>无需自备外部脚本</strong>）；唯一的对外依赖是飞书官方 CLI <code>lark-cli</code>，面板会自动检测并引导安装。<br><strong>两个开关的分工</strong>：<em>启用飞书同步</em> = 同步能力总开关；<em>允许定时自动同步</em> = 是否让定时任务（工作日 10:00）自动执行——两者是「与」关系，都开启才会自动同步；<strong>手动同步不受这两个开关限制</strong>。</div>
 
 	<pre><code># 预览（默认 dry-run，不产生任何飞书写操作）
 node .codebuddy/kb-feishu-sync.mjs --vault "$env:USERPROFILE\.vssaros-dev\knowledge-base\&lt;vault-id&gt;" \
@@ -549,7 +558,7 @@ node .codebuddy/kb-feishu-sync.mjs --vault ... --src ... --apply --on-conflict s
 		<tr><td><code>--limit N</code></td><td>本批最多处理 N 篇（分批放量用）</td></tr>
 		<tr><td><code>--interval ms</code></td><td>每篇间隔（默认 800ms，避免触发限流）</td></tr>
 		<tr><td><code>--on-conflict</code></td><td><code>overwrite</code> 默认 / <code>skip</code></td></tr>
-		<tr><td><code>--parent</code></td><td><code>my_library</code>（默认）或指定文件夹 token</td></tr>
+		<tr><td><code>--parent</code></td><td>新建文档的落点（面板显示为「<strong>同步到</strong>」）：<code>my_library</code> = 飞书个人知识库（默认）；或填云空间文件夹 token。<strong>仅影响新建文档</strong>，已同步的按原位置更新</td></tr>
 	</table>
 
 	<h3>10.1 同步做了什么</h3>

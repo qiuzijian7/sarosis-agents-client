@@ -1,0 +1,178 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Sarosis. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/*
+ * 知识库设置 EditorPane 样式（KbSettingsEditorPane）。
+ * 全部使用 VS Code 主题变量，随主题切换自动适配。
+ */
+
+.kb-settings-editor {
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-editor-foreground);
+	font-family: var(--vscode-font-family);
+	font-size: var(--vscode-font-size, 13px);
+}
+
+.kbs-scroll {
+	height: 100%;
+	overflow-y: auto;
+	padding: 18px 24px 60px;
+	box-sizing: border-box;
+}
+
+/* ── 头部 ── */
+.kbs-header {
+	border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, .35));
+	padding-bottom: 14px;
+	margin-bottom: 18px;
+}
+
+.kbs-title {
+	margin: 0 0 6px;
+	font-size: 19px;
+	font-weight: 600;
+}
+
+.kbs-sub {
+	margin: 0 0 10px;
+	font-size: 12.5px;
+	opacity: .8;
+}
+
+.kbs-root {
+	background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, .17));
+	padding: 1px 6px;
+	border-radius: 4px;
+	font-family: var(--vscode-editor-font-family, Consolas, monospace);
+	font-size: 12px;
+	word-break: break-all;
+}
+
+/* ── 分组卡片 ── */
+.kbs-section {
+	border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, .35));
+	border-radius: 8px;
+	padding: 14px 16px;
+	margin-bottom: 16px;
+	max-width: 860px;
+}
+
+.kbs-section-title {
+	margin: 0 0 10px;
+	font-size: 14px;
+	font-weight: 600;
+}
+
+/* ── 行 / 控件 ── */
+.kbs-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 8px 0;
+	flex-wrap: wrap;
+}
+
+.kbs-label {
+	flex: 0 0 104px;
+	font-size: 12.5px;
+	opacity: .85;
+}
+
+.kbs-control {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 1 1 260px;
+	min-width: 0;
+	flex-wrap: wrap;
+}
+
+.kbs-input {
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	padding: 4px 8px;
+	font-size: 12.5px;
+	font-family: inherit;
+	box-sizing: border-box;
+}
+
+.kbs-input:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.kbs-input[readonly] {
+	opacity: .85;
+}
+
+.kbs-grow {
+	flex: 1 1 240px;
+	min-width: 0;
+}
+
+.kbs-num {
+	width: 96px;
+}
+
+.kbs-select {
+	background: var(--vscode-dropdown-background);
+	color: var(--vscode-dropdown-foreground);
+	border: 1px solid var(--vscode-dropdown-border, transparent);
+	border-radius: 4px;
+	padding: 3px 6px;
+	font-size: 12.5px;
+	font-family: inherit;
+}
+
+.kbs-checkbox {
+	accent-color: var(--vscode-checkbox-background, #0e639c);
+	margin: 0;
+}
+
+.kbs-check-label {
+	font-size: 12.5px;
+}
+
+.kbs-hint {
+	margin: 4px 0 0;
+	font-size: 12px;
+	opacity: .7;
+	line-height: 1.6;
+}
+
+.kbs-btn {
+	background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, .25));
+	color: var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground));
+	border: none;
+	border-radius: 4px;
+	padding: 5px 12px;
+	font-size: 12.5px;
+	font-family: inherit;
+	cursor: pointer;
+}
+
+.kbs-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, .35));
+}
+
+.kbs-btn.kbs-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.kbs-btn.kbs-primary:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.kbs-stats {
+	font-size: 12.5px;
+	opacity: .85;
+	line-height: 1.7;
+}

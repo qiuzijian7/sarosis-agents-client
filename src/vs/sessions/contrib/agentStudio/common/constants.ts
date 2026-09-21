@@ -124,8 +124,12 @@ export const AGENT_STUDIO_KB_AGENTIC_BUILD = 'sessions.agentStudio.kb.agenticBui
 // ── 知识库：飞书同步 ────────────────────────────────────────────────────────
 /** 飞书同步总开关（默认关）。开启后设置面板展示完整同步配置，并可被定时任务读取。 */
 export const AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED = 'sessions.agentStudio.kb.feishu.enabled';
-/** 飞书同步脚本路径（相对工作区根目录；也支持绝对路径）。 */
-export const AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT = 'sessions.agentStudio.kb.feishu.scriptPath';
+/**
+ * 飞书 CLI（lark-cli）可执行路径：默认 `lark-cli`（走 PATH），安装在非标准位置时填完整路径。
+ * 注：**同步脚本已内置随产品发布**（`resources/.agents/kb/feishu-sync.mjs`），
+ * 不再暴露「脚本路径」配置项 —— 用户无需自备外部脚本。
+ */
+export const AGENT_STUDIO_KB_FEISHU_CLI_PATH = 'sessions.agentStudio.kb.feishu.cliPath';
 /** 要同步的库内相对目录（多个用逗号分隔；留空 = 同步整个知识库）。 */
 export const AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS = 'sessions.agentStudio.kb.feishu.srcDirs';
 /** 同步目标位置：my_library（个人知识库）或指定文件夹 token。 */
@@ -140,6 +144,17 @@ export const AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL = 'sessions.agentStudio.kb.fei
  * 手动「立即同步」不受此开关约束。
  */
 export const AGENT_STUDIO_KB_FEISHU_AUTO_SYNC = 'sessions.agentStudio.kb.feishu.autoSync';
+
+// ── 知识库：飞书同步 · 多类别 → 多知识库 ─────────────────────────────────────
+/**
+ * 类别层级深度：同步源目录下第 N 级目录作为一个「类别」，每个类别对应一个飞书知识库。
+ * 0 = 不分类别（全部落到 `feishu.parent` 默认落点）。
+ */
+export const AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH = 'sessions.agentStudio.kb.feishu.categoryDepth';
+/** 未映射的类别是否自动创建同名飞书知识库（默认**开**）。 */
+export const AGENT_STUDIO_KB_FEISHU_AUTO_CREATE_SPACES = 'sessions.agentStudio.kb.feishu.autoCreateSpaces';
+/** 本地已删除的文档是否同时移除远端节点（默认**关**，安全）。 */
+export const AGENT_STUDIO_KB_FEISHU_PRUNE_REMOTE = 'sessions.agentStudio.kb.feishu.pruneRemote';
 
 // Configuration keys — CLI
 export const AGENT_STUDIO_CLI_PATH_SETTING = 'sessions.agentStudio.cli.cliPath';

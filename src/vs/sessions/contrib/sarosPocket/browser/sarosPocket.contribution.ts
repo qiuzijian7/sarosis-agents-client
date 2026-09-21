@@ -93,7 +93,25 @@ class SarosPocketListSessionsAction extends Action2 {
 	override async run(accessor: ServicesAccessor): Promise<unknown> {
 		const sessions = accessor.get(ISessionsManagementService).getSessions();
 		const list = Array.isArray(sessions) ? sessions : [];
-		return list.map(toPlainSession).filter(Boolean);
+
+		// ★ 诊断元信息：为什么要把 providers / mode 一起返回？
+		// 「会话列表为空」有两种完全不同的成因，光看 sessions.length 分不开：
+		//   ① providers 为空 ⇒ 没有任何会话 provider 注册（localAgentHost 只在 desktop 入口
+		//      加载、chat.agentHost.enabled / sessions.agentStudio.enabled 未开），
+		//      此时用户开多少会话列表都是空的，属于配置/形态问题；
+		//   ② providers 非空但 sessions 为空 ⇒ 只是还没开会话，开一个就有。
+		// 让 Pocket 侧能直接区分这两者，省掉"到底是我没开会话还是坏了"的猜测。
+		// 返回结构从纯数组升级为对象：Saros-agents-pocket 的 fetchRealSessions() 已做
+		// 宽容解包（数组 / {sessions} 都能吃），老版扩展不会因此整列表空掉。
+		const providers = accessor.get(ISessionsProvidersService).getProviders()
+			.map(provider => String(provider?.id ?? ''))
+			.filter(Boolean);
+
+		return {
+			sessions: list.map(toPlainSession).filter(Boolean),
+			providers,
+			mode: isWeb ? 'web' : 'desktop',
+		};
 	}
 }
 

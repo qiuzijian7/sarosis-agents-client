@@ -379,7 +379,8 @@
 		</div>
 	</div>
 
-	<h3 id="mk-settings">4.3 设置面板（含「构建方式」开关）</h3>
+	<h3 id="mk-settings">4.3 设置面板（中间栏 EditorPane）</h3>
+	<p class="path">形态已从「侧栏 ⚙ 下拉」升级为<strong>中间栏 EditorPane</strong>（<code>KbSettingsEditorPane</code> + <code>KbSettingsEditorInput</code>）：设置项增至 5 组后，下拉受侧栏宽度限制显示拥挤、小窗口下还会被视口截断。下图 Mockup 示意其内容分组（目录 / 构建方式 / Embedding / 飞书同步 / 状态）。</p>
 	<div class="mock-cols">
 		<div class="mock" style="max-width:520px">
 			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;知识库设置</div>
@@ -540,8 +541,8 @@
 	<table>
 		<tr><th style="width:200px">配置</th><th style="width:130px">必需性</th><th>说明</th></tr>
 		<tr><td>Chat Provider</td><td>必需（构建用）</td><td>用于分类与笔记构建；未配置时构建会提示</td></tr>
-		<tr><td><code>sessions.agentStudio.kb.agenticBuild</code></td><td>默认开启</td><td><strong>UI 入口：知识库视图 → 设置下拉 → 「构建方式」复选框</strong>；也可在 VS Code 设置搜索 <code>agentStudio.kb.agenticBuild</code>。关闭 = 纯直连管线</td></tr>
-		<tr><td><code>sessions.agentStudio.kb.feishu.*</code><br>（enabled / autoSync / scriptPath / srcDirs / parent / onConflict / interval）</td><td>默认关闭</td><td><strong>UI 入口：知识库视图 → 设置下拉 → 「📤 飞书同步」区块</strong>（总开关 / 定时同步开关 / 脚本路径 / 同步范围 / 目标位置 / 远端手改策略 / 限流间隔 + 预览·立即同步·查看日志三个动作，命令在集成终端执行）。<br><strong>定时同步</strong>：<code>autoSync</code> 与 <code>enabled</code> 为「与」关系，两者都开启时自动化任务（kb，工作日 10:00）才会自动执行；手动同步不受该开关约束</td></tr>
+		<tr><td><code>sessions.agentStudio.kb.agenticBuild</code></td><td>默认开启</td><td><strong>UI 入口：知识库视图 → ⚙ 设置（在中间栏打开的设置面板）→ 「构建方式」复选框</strong>；也可在 VS Code 设置搜索 <code>agentStudio.kb.agenticBuild</code>。关闭 = 纯直连管线</td></tr>
+		<tr><td><code>sessions.agentStudio.kb.feishu.*</code><br>（enabled / autoSync / cliPath / srcDirs / parent / onConflict / interval）</td><td>默认关闭</td><td><strong>UI 入口：知识库视图 → ⚙ 设置（中间栏打开的设置面板）→ 「📤 飞书同步」区块</strong>（总开关 / 定时同步开关 / 飞书 CLI 路径 + 检测状态 / 同步范围 / 目标位置 / 远端手改策略 / 限流间隔 + 预览·立即同步·查看日志三个动作，命令在集成终端执行）。<br><strong>同步脚本已内置</strong>：随产品发布（<code>resources/.agents/kb/feishu-sync.mjs</code>），用户无需自备外部脚本；面板会检测 <code>lark-cli</code> 是否安装并提示安装引导。<br><strong>定时同步</strong>：<code>autoSync</code> 与 <code>enabled</code> 为「与」关系，两者都开启时自动化任务（kb，工作日 10:00）才会自动执行；手动同步不受该开关约束</td></tr>
 		<tr><td>Embedding Provider</td><td>可选</td><td>语义检索与双链建议的前提；<code>sessions.agentStudio.embedding.provider</code>。切换后向量索引按 tag 增量重建，embed 结果有磁盘缓存</td></tr>
 	</table>
 	<div class="note">笔记格式约定（frontmatter 必填 <code>type</code> / <code>title</code> / <code>created</code>；<code>sources</code> 与 <code>status</code> 由管线管理，不要手写）的唯一真源是 <code>browser/knowledge/obsidianNoteFormat.ts</code>。</div>

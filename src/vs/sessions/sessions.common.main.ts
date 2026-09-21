@@ -567,4 +567,16 @@ import './contrib/memory/browser/memory.contribution.js';
 import './contrib/sessionHistory/browser/sessionHistory.contribution.js';
 
 import './services/sessions/browser/sessionsManagementService.js';
+
+// ★ [Saros] Pocket 会话桥：`sarosPocket.listSessions` / `sendRequest` /
+// `archiveSession` / `getChatContext` / `setChatContext` 五条命令的**唯一注册处**。
+//
+// ⚠ **必须显式列进来**（与上面 zenMode 同一个坑）：本文件是手写的精选贡献清单，
+// 不是全量入口 ⇒ 文件存在 ≠ 被加载。少了这行，`SarosPocketContribution`
+// 的构造函数永不执行，五条命令一个都不注册，Pocket 侧 `fetchRealSessions()`
+// 每次都抛错 ⇒ 会话列表永远空（diag.ok=false），且聊天头降级。
+//
+// 放在 `sessionsManagementService.js` 之后：它 `accessor.get(ISessionsManagementService)`，
+// 服务注册需先于贡献实例化。
+import './contrib/sarosPocket/browser/sarosPocket.contribution.js';
 //#endregion
