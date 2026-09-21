@@ -20,11 +20,12 @@ variables:
       description: 升级服务器地址
       required: true
   WOA_GITLAB_TOKEN:
-    value: 4P22eyRQhyhmf4OhHm_u
+    value: ${{ settings.WOA_GITLAB_TOKEN.password }}
     readonly: true
+    allow-modify-at-startup: false
     props:
       type: vuex-input
-      description: 工蜂 PAT（PRIVATE-TOKEN 头），create-release 步骤创建 GitLab Release 用；建议后续迁到凭据管理加密存储
+      description: 工蜂 PAT（PRIVATE-TOKEN 头），create-release 步骤创建 GitLab Release 用；值引用蓝盾凭据管理 Key=WOA_GITLAB_TOKEN（Password 类型），不落明文
       required: true
 stages:
 - name: 编译与打包
