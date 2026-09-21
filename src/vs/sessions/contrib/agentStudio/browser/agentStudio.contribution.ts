@@ -135,6 +135,13 @@ import {
 	AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL,
 	AGENT_STUDIO_EMBEDDING_PROVIDER,
 	AGENT_STUDIO_KB_AGENTIC_BUILD,
+	AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED,
+	AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT,
+	AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS,
+	AGENT_STUDIO_KB_FEISHU_SYNC_PARENT,
+	AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT,
+	AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL,
+	AGENT_STUDIO_KB_FEISHU_AUTO_SYNC,
 	AGENT_STUDIO_EMBEDDING_MODEL,
 	AGENT_STUDIO_EMBEDDING_DIMENSIONS,
 	AGENT_STUDIO_EMBEDDING_API_KEY,
@@ -669,6 +676,34 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[AGENT_STUDIO_KB_AGENTIC_BUILD]: {
 			type: 'boolean', default: true,
 			description: localize('agentStudio.kb.agenticBuild', "Agentic KB build (default ON): run note construction through the knowledge-base-expert agent (skill injection + tools) instead of a single direct LLM call. Falls back to the direct pipeline on failure. Higher quality, higher latency/cost. Also configurable in the Knowledge Base view settings panel."),
+		},
+		[AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED]: {
+			type: 'boolean', default: false,
+			description: localize('agentStudio.kb.feishu.enabled', "Enable Feishu (Lark) sync for the knowledge base. Requires lark-cli authentication. Also configurable in the Knowledge Base view settings panel."),
+		},
+		[AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT]: {
+			type: 'string', default: '.codebuddy/kb-feishu-sync.mjs',
+			description: localize('agentStudio.kb.feishu.scriptPath', "Path to the Feishu sync script, relative to the workspace root (or an absolute path)."),
+		},
+		[AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.kb.feishu.srcDirs', "Comma-separated knowledge-base relative directories to sync (empty = whole knowledge base)."),
+		},
+		[AGENT_STUDIO_KB_FEISHU_SYNC_PARENT]: {
+			type: 'string', default: 'my_library',
+			description: localize('agentStudio.kb.feishu.parent', "Sync target: 'my_library' (personal knowledge base) or a folder token."),
+		},
+		[AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT]: {
+			type: 'string', default: 'overwrite', enum: ['overwrite', 'skip'],
+			description: localize('agentStudio.kb.feishu.onConflict', "Strategy when the remote document was edited manually: 'overwrite' (local wins) or 'skip' (report conflict)."),
+		},
+		[AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL]: {
+			type: 'number', default: 800, minimum: 0, maximum: 10000,
+			description: localize('agentStudio.kb.feishu.interval', "Delay in milliseconds between documents during Feishu sync (rate limiting)."),
+		},
+		[AGENT_STUDIO_KB_FEISHU_AUTO_SYNC]: {
+			type: 'boolean', default: false,
+			description: localize('agentStudio.kb.feishu.autoSync', "Allow the scheduled task (automation 'kb', weekdays 10:00) to run Feishu sync automatically. AND-ed with feishu.enabled; manual sync is not affected."),
 		},
 		// --- Auxiliary Models ---
 		[AGENT_STUDIO_AUX_VISION_PROVIDER]: {

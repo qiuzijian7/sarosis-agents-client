@@ -9,6 +9,10 @@
 *{box-sizing:border-box}
 body{margin:0;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg);padding:16px}
 h1{font-size:16px;margin:0 0 4px}
+/* 品牌：与 VsSaros 同款 logo（src 由扩展在注入 HTML 时替换为 webview URI） */
+.brand{display:flex;align-items:center;gap:9px;margin:0 0 4px}
+.brand h1{margin:0}
+.brand .logo{height:19px;width:auto;display:block}
 .sub{color:var(--mut);font-size:12px;margin:0 0 16px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
 .card h2{font-size:13px;margin:0 0 10px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;font-weight:600}
@@ -34,7 +38,10 @@ hr{border:none;border-top:1px solid var(--line);margin:14px 0}
 </style>
 </head>
 <body>
-<h1>🔐 Saros Pocket</h1>
+<div class="brand">
+  <img class="logo" src="{{LOGO_URI}}" alt="VsSaros">
+  <h1>Saros Pocket</h1>
+</div>
 <p class="sub">手机扫码即远程同步访问电脑上的 VsSaros（局域网 + 公网，实时同屏）。</p>
 
 <div class="card" id="appCard">
@@ -71,16 +78,51 @@ hr{border:none;border-top:1px solid var(--line);margin:14px 0}
     <span class="muted">局域网访问密码</span>
   </div>
   <div id="lanBody" class="hidden">
+    <!--
+      二维码 = **Pocket App 局域网入口**（`lanAppQr`，即 http://<ip>:<port>/pocket/）。
+      早先这里放的是代理根路径的二维码（同屏 web 入口），而桌面版 VsSaros 不监听 HTTP 端口
+      ⇒ 那个码扫进去必然是「同屏 web 暂不可用」页 —— 一张「扫码即用」的卡片扫了打不开。
+      同屏 web 入口降级为下面一行的状态 + 可用时才出现的链接。
+    -->
     <div class="row" id="lanQrRow">
-      <img class="qr" id="lanQr" alt="局域网二维码">
+      <img class="qr" id="lanAppQr" alt="Pocket App 局域网二维码">
       <div>
-        <div class="url" id="lanUrl">—</div>
+        <div class="url" id="lanAppUrl">—</div>
+        <div class="muted" style="margin-top:4px">手机连同一 WiFi 扫码即用（也可直接在手机浏览器打开上面的地址）。</div>
         <div style="margin-top:8px" class="row">
           <span class="muted">访问密码</span><span class="pin" id="lanPin">—</span>
           <button class="ghost" id="refreshLanPin">刷新</button>
         </div>
+        <div style="margin-top:8px" class="row">
+          <!-- 一键在本机浏览器打开 App：地址里带 ?token=<访问密码>，代理据此种 cookie ⇒ 免手动输密码；
+               顺手打开的是本机（loopback），密码不会跑到网络上去 -->
+          <button id="openLanBrowser" title="用本机默认浏览器打开 App，自动带上访问密码（无需手输）">在浏览器打开（自动填密码）</button>
+        </div>
       </div>
     </div>
+    <!--
+      手机「网站无响应」的第一大原因：自动挑中的地址不是无线网卡的（VPN / WSL / Hyper-V 等
+      虚拟网卡也是私网 IP，启发式会挑错），手机根本路由不到 ⇒ 超时。
+      这里把所有候选地址摆出来（标注网卡名与「VPN/虚拟网卡」），点一下即写入 lanIpOverride。
+    -->
+    <div class="row hidden" id="lanAltRow" style="margin-top:8px;align-items:flex-start">
+      <span class="muted" style="flex:0 0 auto;padding-top:6px">换地址</span>
+      <span id="lanAltChips" style="display:flex;flex-wrap:wrap;gap:6px"></span>
+      <button class="ghost hidden" id="clearLanIpOverride">用自动检测</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span class="muted">手机连不上？</span><span class="badge" id="lanCheckBadge">未检测</span>
+      <button class="ghost" id="checkLan">检测本机</button>
+    </div>
+    <div class="muted hidden" id="lanCheckDetail" style="margin-top:4px"></div>
+    <div class="muted hidden" id="lanHelp" style="margin-top:4px;color:var(--warn)"></div>
+    <div class="row" style="margin-top:10px">
+      <span class="muted">同屏 web 入口</span><span class="badge" id="upstreamBadge">检测中…</span>
+      <a class="muted hidden" id="webEntryLink" target="_blank" rel="noreferrer">打开</a>
+      <button class="ghost" id="probeUpstream">重新探测</button>
+    </div>
+    <div class="muted hidden" id="upstreamDownNote">桌面版 VsSaros 不监听 HTTP 端口 ⇒ 同屏 web 入口不可用（属预期，<b>App 不受影响</b>）。
+      要用它就以 <code>vssaros --server</code> 启动，或改设置 <code>sarosPocket.upstreamPort</code>。</div>
   </div>
   <div id="lanDisabledMsg" class="muted hidden">局域网访问已关闭。</div>
 </div>
@@ -144,6 +186,17 @@ bindSwitch('lanAuthSwitch','toggleLanAuth');
 document.getElementById('startTunnel').onclick=()=>post({command:'startTunnel'});
 document.getElementById('stopTunnel').onclick=()=>post({command:'stopTunnel'});
 document.getElementById('refreshLanPin').onclick=()=>post({command:'refreshLanToken'});
+document.getElementById('probeUpstream').onclick=()=>{
+  const b=document.getElementById('upstreamBadge'); b.textContent='探测中…'; b.className='badge';
+  post({command:'probeUpstream'});
+};
+document.getElementById('checkLan').onclick=()=>{
+  const b=document.getElementById('lanCheckBadge'); b.textContent='检测中…'; b.className='badge';
+  post({command:'checkLan'});
+};
+// 一键在浏览器打开（地址由扩展带 ?token=<访问密码> 拼好 ⇒ 免手输密码）
+document.getElementById('openLanBrowser').onclick=()=>post({command:'openApp'});
+document.getElementById('clearLanIpOverride').onclick=()=>post({command:'setLanIpOverride', value:''});
 document.getElementById('saveTunnel').onclick=()=>{
   const mode=document.querySelector('input[name=tmode]:checked').value;
   post({command:'setTunnelConfig',mode,hostname:document.getElementById('tHost').value, token:document.getElementById('tToken').value});
@@ -174,9 +227,23 @@ function render(s){
   document.getElementById('lanBody').classList.toggle('hidden', !lanOn);
   document.getElementById('lanDisabledMsg').classList.toggle('hidden', lanOn);
   if(lanOn){
-    document.getElementById('lanUrl').textContent=s.lanUrl||'（未检测到局域网 IP）';
-    const lq=document.getElementById('lanQr'); if(s.lanQr) lq.src=s.lanQr; else lq.classList.add('hidden');
+    // 本卡的二维码 = App 局域网入口（**不是**根路径的同屏 web 入口：桌面版扫了打不开）
+    document.getElementById('lanAppUrl').textContent=s.lanAppUrl||'（未检测到局域网 IP）';
+    const lq=document.getElementById('lanAppQr');
+    if(s.lanAppQr){ lq.src=s.lanAppQr; lq.classList.remove('hidden'); } else { lq.classList.add('hidden'); }
     document.getElementById('lanPin').textContent=s.lanToken||'—';
+    // 同屏 web 入口：只有上游真的在监听时才给链接；不可达时只留一行说明（不再铺一大段）
+    const up=s.upstreamOk;
+    const ub=document.getElementById('upstreamBadge');
+    const link=document.getElementById('webEntryLink');
+    ub.textContent = up===true ? '可用' : up===false ? '不可达' : '检测中…';
+    ub.className = 'badge' + (up===true ? ' ok' : up===false ? ' err' : '');
+    if(up===true && s.lanUrl){ link.href=s.lanUrl; link.classList.remove('hidden'); }
+    else { link.removeAttribute('href'); link.classList.add('hidden'); }
+    // 上游不可达 ⇒ 才显示那一行说明（可达时说明连同链接一起收起来，别占地方）
+    document.getElementById('upstreamDownNote').classList.toggle('hidden', up!==false);
+    renderLanAlt(s);
+    renderLanCheck(s);
   }
   const tb=document.getElementById('tunnelBadge'); const ph=s.tunnelState?.phase||'idle';
   tb.textContent=ph; tb.className='badge'+(ph==='ready'?' ok':ph==='error'?' err':'');
@@ -194,6 +261,48 @@ function render(s){
   document.getElementById('tHost').value=tc.hostname||'';
   if(tc.tokenSet) document.getElementById('tToken').value='********';
   document.getElementById('lanIpOverride').value=s.lanIpOverride||'';
+}
+
+/** 候选网卡地址：多个候选 / 当前用的是覆盖值时才出现，点一下即换。 */
+function renderLanAlt(s){
+  const row=document.getElementById('lanAltRow'), box=document.getElementById('lanAltChips');
+  const all=Array.isArray(s.lanInterfaces)?s.lanInterfaces:[];
+  const cur=s.lanIpOverride||null;
+  const others=all.filter(i=>i.ip!==(cur||s.lanUrl?.replace(/^https?:\/\//,'').split(':')[0]));
+  box.textContent='';
+  for(const i of all){
+    const b=document.createElement('button');
+    b.className='ghost';
+    b.textContent=i.ip + (i.virtual?'（VPN/虚拟网卡）':'') + (i.ip===cur?' ✓':'') + (i.iface?` · ${i.iface}`:'');
+    b.title = i.virtual ? '虚拟/VPN 网卡：手机通常路由不到，别选它' : '点一下改用这个地址';
+    b.disabled = i.ip===cur;
+    b.onclick=()=>post({command:'setLanIpOverride', value:i.ip});
+    box.appendChild(b);
+  }
+  const clear=document.getElementById('clearLanIpOverride');
+  clear.classList.toggle('hidden', !cur);
+  // 只有当候选不止一个（或用了覆盖值）时才占一行：单一地址的常见情况保持卡片简洁
+  row.classList.toggle('hidden', all.length<2 && !cur);
+}
+
+/** 「本机 → 局域网地址」自检结果：给结论 + 一句可操作的话，不铺长文。 */
+function renderLanCheck(s){
+  const c=s.lanCheck||{};
+  const badge=document.getElementById('lanCheckBadge');
+  const detail=document.getElementById('lanCheckDetail');
+  const help=document.getElementById('lanHelp');
+  if(c.ok===true){ badge.textContent='本机可连'; badge.className='badge ok'; }
+  else if(c.ok===false){ badge.textContent='本机连不上'; badge.className='badge err'; }
+  else { badge.textContent='未检测'; badge.className='badge'; }
+  detail.textContent=c.detail||'';
+  detail.classList.toggle('hidden', !c.detail);
+  const helpText = c.ok===false
+    ? '这个地址不是本机当前网卡的地址（常见于 VPN / 虚拟网卡）：点上面「换地址」选无线网卡那个再扫。'
+    : (c.ok===true
+      ? '本机可连只说明代理绑在这个地址上。手机仍无响应就查这三点：① 手机与电脑在同一 WiFi（关掉手机流量）；② 公司/校园 WiFi 常开「客户端隔离」；③ Windows 防火墙放行 TCP 端口。'
+      : '');
+  help.textContent=helpText;
+  help.classList.toggle('hidden', !helpText);
 }
 window.addEventListener('message',e=>{
   const m=e.data||{};

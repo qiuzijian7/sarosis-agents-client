@@ -258,12 +258,7 @@
 }
 
 /* ─── Configuration Section ──────────────────────────── */
-
-.plugin-detail-config-container {
-	display: flex;
-	flex-direction: column;
-	gap: 16px;
-}
+/* 容器/分组/网格等新布局样式见文件末尾「Configuration 区」一节（2026-09-21 重做布局）。 */
 
 .plugin-detail-config-field {
 	display: flex;
@@ -413,14 +408,9 @@
 	background: var(--vscode-button-foreground);
 }
 
-/* Action buttons row */
-.plugin-detail-config-actions {
-	display: flex;
-	gap: 8px;
-	margin-top: 16px;
-	padding-top: 12px;
-	border-top: 1px solid var(--vscode-panel-border, #42424233);
-}
+/* 说明：保存按钮行原来在这里（`.plugin-detail-config-actions` 的顶部分隔线样式）。
+   新布局里 `x-action` 按钮也用同一个类名，但它是**流式按钮行**（样式见文件末尾），
+   保存按钮则移到底部 sticky 操作条 —— 所以这组「顶部分隔线」样式已无用处，删除以免误伤按钮行。 */
 
 .plugin-detail-config-save-btn {
 	padding: 6px 20px;
@@ -810,3 +800,672 @@
 	color: var(--vscode-descriptionForeground);
 }
 
+/* ─── Configuration 区：状态条 + 左栏分组导航 + 右栏卡片 + 底部 sticky 操作条 ─────
+ *
+ * 为什么重做（2026-09-21 方案 A，效果图见 pocket 仓 docs/settings-mockup.html）：
+ *   v1 一节扁平列表、每项占一整行 ⇒ pocket 40 项（28 设置 + 12 按钮）时又长又混；
+ *   v2 分组 + 过滤 + 紧凑行 + sticky 保存 ⇒ 零滚动仍做不到（找「桌面画面」要滚过 27 项）；
+ *   v3 **左栏点一下即切换右侧内容**（找一项 = 一次点击）、状态条把连通性提到顶部、
+ *      动作按钮收进「快捷操作卡」、低频项进「高级」。判定规则见 pluginConfigLayout.ts，
+ *      DOM 结构见 pluginConfigView.ts（两者都有单测）。
+ */
+
+.plugin-detail-editor .hidden {
+	display: none !important;
+}
+
+/* ── 标题行：左标题、右工具（过滤 + 搜索结果 + 改动计数） ── */
+
+.plugin-detail-config-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.plugin-detail-config-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.plugin-detail-config-filter {
+	min-width: 160px;
+	max-width: 240px;
+	padding: 4px 8px;
+	font-size: 12px;
+	font-family: var(--vscode-font-family);
+	color: var(--vscode-input-foreground);
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, #424242));
+	border-radius: 4px;
+	outline: none;
+}
+
+.plugin-detail-config-filter:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.plugin-detail-config-searchhint {
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.plugin-detail-config-modified-badge {
+	font-size: 11px;
+	padding: 2px 8px;
+	border-radius: 999px;
+	border: 1px solid var(--vscode-charts-blue, var(--vscode-focusBorder));
+	color: var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+	white-space: nowrap;
+}
+
+/* ── 状态条（连通性一眼可见；探测失败时整条不渲染） ── */
+
+.plugin-detail-config-statusrow {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 0 0 4px 0;
+}
+
+.plugin-detail-config-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 10px;
+	font-family: var(--vscode-font-family);
+	font-size: 11.5px;
+	color: var(--vscode-foreground);
+	background: var(--vscode-sideBar-background, rgba(128, 128, 128, 0.08));
+	border: 1px solid var(--vscode-panel-border, #42424266);
+	border-radius: 999px;
+}
+
+.plugin-detail-config-pill.clickable {
+	cursor: pointer;
+}
+
+.plugin-detail-config-pill.clickable:hover {
+	background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.14));
+}
+
+.plugin-detail-config-pill:disabled {
+	opacity: 1;
+	cursor: default;
+}
+
+.plugin-detail-config-pill.warn {
+	border-color: var(--vscode-charts-yellow, #cca700);
+}
+
+.plugin-detail-config-pilldot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--vscode-charts-green, #89d185);
+	flex: 0 0 auto;
+}
+
+.plugin-detail-config-pill.off .plugin-detail-config-pilldot {
+	background: #6b7280;
+}
+
+.plugin-detail-config-pill.warn .plugin-detail-config-pilldot {
+	background: var(--vscode-charts-yellow, #cca700);
+}
+
+/* ── 两栏：左栏分组导航 + 右栏内容 ── */
+
+.plugin-detail-config-split {
+	display: grid;
+	grid-template-columns: 220px minmax(0, 1fr);
+	align-items: start;
+	margin-top: 12px;
+	border-top: 1px solid var(--vscode-panel-border, #42424233);
+}
+
+.plugin-detail-config-nav {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 12px 10px 12px 0;
+	border-right: 1px solid var(--vscode-panel-border, #42424233);
+	min-width: 0;
+}
+
+.plugin-detail-config-navitem {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 6px 8px;
+	margin: 0;
+	font-family: var(--vscode-font-family);
+	font-size: 12.5px;
+	font-weight: 400;
+	text-align: left;
+	color: var(--vscode-foreground);
+	background: transparent;
+	border: none;
+	border-radius: 5px;
+	cursor: pointer;
+}
+
+.plugin-detail-config-navitem:hover {
+	background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.14));
+}
+
+.plugin-detail-config-navitem.active {
+	background: var(--vscode-list-activeSelectionBackground, #37373d);
+	color: var(--vscode-list-activeSelectionForeground, #ffffff);
+}
+
+.plugin-detail-config-navicon {
+	flex: 0 0 auto;
+	width: 16px;
+	text-align: center;
+	opacity: 0.85;
+}
+
+.plugin-detail-config-navname {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.plugin-detail-config-navcount {
+	flex: 0 0 auto;
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.plugin-detail-config-navitem.active .plugin-detail-config-navcount {
+	color: inherit;
+	opacity: 0.8;
+}
+
+.plugin-detail-config-navmod {
+	flex: 0 0 auto;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--vscode-charts-blue, #3794ff);
+}
+
+.plugin-detail-config-navitem.advanced {
+	margin-top: 6px;
+}
+
+.plugin-detail-config-navitem.dangerish {
+	color: var(--vscode-descriptionForeground);
+}
+
+.plugin-detail-config-navfoot {
+	margin-top: 10px;
+	padding-top: 8px;
+	border-top: 1px dashed var(--vscode-panel-border, #42424266);
+}
+
+.plugin-detail-config-main {
+	padding: 14px 0 8px 18px;
+	min-width: 0;
+}
+
+.plugin-detail-config-panehead {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+}
+
+.plugin-detail-config-panetitle {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.plugin-detail-config-panecount {
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.plugin-detail-config-panesub {
+	font-size: 11.5px;
+	line-height: 1.5;
+	color: var(--vscode-descriptionForeground);
+	margin: 2px 0 12px 0;
+}
+
+.plugin-detail-config-advhint {
+	font-size: 11.5px;
+	color: var(--vscode-charts-yellow, #cca700);
+	margin: 2px 0 12px 0;
+}
+
+/* ── 子卡片（快捷操作 / 开关 / 需要填写 / 状态） ── */
+
+.plugin-detail-config-card {
+	border: 1px solid var(--vscode-panel-border, #42424266);
+	border-radius: 6px;
+	padding: 10px 12px 12px 12px;
+	margin-bottom: 12px;
+}
+
+.plugin-detail-config-cardhead {
+	font-size: 11.5px;
+	font-weight: 600;
+	letter-spacing: 0.3px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 8px;
+}
+
+/* 动作按钮：按用途分行 + 主色 / 危险样式 */
+.plugin-detail-config-actionrow {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 8px;
+}
+
+/* 动作按钮只占按钮本身（描述进 tooltip）——旧实现把长描述一起渲染，按钮被撑成整行 */
+.plugin-detail-config-field--action {
+	flex: 0 0 auto;
+	padding: 0;
+	border: none;
+}
+
+.plugin-detail-config-field--action .plugin-detail-config-action-btn {
+	padding: 5px 12px;
+}
+
+.plugin-detail-config-actionrow:last-child {
+	margin-bottom: 0;
+}
+
+.plugin-detail-config-actionrowlabel {
+	flex: 0 0 64px;
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+	padding-top: 5px;
+}
+
+.plugin-detail-config-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 7px;
+	margin: 0;
+	padding: 0;
+	border: none;
+}
+
+.plugin-detail-config-action-btn {
+	padding: 5px 12px;
+	font-size: 12px;
+	font-family: var(--vscode-font-family);
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.17));
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.plugin-detail-config-action-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.25));
+}
+
+.plugin-detail-config-action-btn.primary {
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+}
+
+.plugin-detail-config-action-btn.primary:hover {
+	background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+}
+
+.plugin-detail-config-action-btn.danger {
+	color: var(--vscode-errorForeground, #f48771);
+	border-color: var(--vscode-errorForeground, #f48771);
+	background: transparent;
+}
+
+.plugin-detail-config-action-btn:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+/* 只读派生值：键值对 + 一键复制 */
+.plugin-detail-config-kv {
+	display: grid;
+	grid-template-columns: minmax(84px, auto) minmax(0, 1fr) auto;
+	gap: 6px 10px;
+	align-items: center;
+	font-size: 12px;
+}
+
+/* 每行用 display:contents 的包裹层：既走上面的 grid，又能整行隐藏（过滤时） */
+.plugin-detail-config-kvrow {
+	display: contents;
+}
+
+.plugin-detail-config-kvkey {
+	color: var(--vscode-descriptionForeground);
+}
+
+.plugin-detail-config-kvvalue {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--vscode-editor-font-family, monospace);
+	color: var(--vscode-foreground);
+	user-select: text;
+}
+
+.plugin-detail-config-copy {
+	padding: 1px 7px;
+	font-size: 10.5px;
+	font-family: var(--vscode-font-family);
+	color: var(--vscode-descriptionForeground);
+	background: transparent;
+	border: 1px solid var(--vscode-panel-border, #42424266);
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.plugin-detail-config-copy:hover:not(:disabled) {
+	color: var(--vscode-foreground);
+	background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.14));
+}
+
+.plugin-detail-config-copy:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+/* ── 内嵌视图（「快速访问」页签里的访问面板） ──
+ * 面板作为 webview 元素挂在这里：不必跳转独立标签页，进页签就能直接操作。
+ */
+
+.plugin-detail-config-embed {
+	margin-bottom: 12px;
+}
+
+.plugin-detail-config-embedhead {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+
+.plugin-detail-config-embedtitle {
+	font-size: 11.5px;
+	font-weight: 600;
+	letter-spacing: 0.3px;
+	color: var(--vscode-descriptionForeground);
+	text-transform: uppercase;
+}
+
+.plugin-detail-config-embedaction {
+	margin-left: auto;
+	padding: 1px 7px;
+	font-size: 10.5px;
+	font-family: var(--vscode-font-family);
+	color: var(--vscode-descriptionForeground);
+	background: transparent;
+	border: 1px solid var(--vscode-panel-border, #42424266);
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.plugin-detail-config-embedaction + .plugin-detail-config-embedaction {
+	margin-left: 0;
+}
+
+.plugin-detail-config-embedaction:hover {
+	color: var(--vscode-foreground);
+	background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.14));
+}
+
+.plugin-detail-config-embedhint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 6px;
+}
+
+.plugin-detail-config-embedhost {
+	border: 1px solid var(--vscode-panel-border, #42424266);
+	border-radius: 6px;
+	overflow: hidden;
+	background: var(--vscode-editor-background);
+}
+
+/* webview 宿主：给个固定高度，否则 webview 元素没有内在高度会塌成 0 */
+.plugin-detail-config-panelhost {
+	position: relative;
+	height: 520px;
+	min-height: 320px;
+	display: flex;
+	flex-direction: column;
+}
+
+.plugin-detail-config-panelhost > div,
+.plugin-detail-config-panelhost iframe {
+	flex: 1 1 auto;
+	width: 100%;
+	min-height: 0;
+	border: none;
+}
+
+.plugin-detail-config-panelnote {
+	padding: 14px 12px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.plugin-detail-config-panelnote.warn {
+	color: var(--vscode-charts-yellow, #cca700);
+}
+
+/* ── 网格与字段 ── */
+
+.plugin-detail-config-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+	gap: 14px 20px;
+	margin: 0;
+}
+
+.plugin-detail-config-grid--compact {
+	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+	gap: 0 20px;
+}
+
+.plugin-detail-config-field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+}
+
+/* 开关行：label 在左、开关在右，一行只占 ~30px（原来是整行 + 描述占 3 行） */
+.plugin-detail-config-field--compact {
+	flex-direction: row;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 5px 0;
+	border-bottom: 1px solid var(--vscode-panel-border, #4242421a);
+}
+
+.plugin-detail-config-field--compact .plugin-detail-config-head {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.plugin-detail-config-field--compact .plugin-detail-config-desc {
+	margin: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.plugin-detail-config-field--compact .plugin-detail-config-toggle {
+	flex: 0 0 auto;
+}
+
+.plugin-detail-config-head {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+/* 组内输入控件撑满所在列（原实现固定在 480px，两列时右侧留大片空白） */
+.plugin-detail-config-grid .plugin-detail-config-input:not(.plugin-detail-config-input-number),
+.plugin-detail-config-grid .plugin-detail-config-textarea,
+.plugin-detail-config-grid .plugin-detail-config-readonly {
+	max-width: 100%;
+}
+
+/* 「已修改」标记 + 单字段恢复默认：默认隐藏，字段带 .modified 时才出现 */
+.plugin-detail-config-modified-dot {
+	display: none;
+	margin-left: 6px;
+	font-size: 9px;
+	line-height: 1;
+	vertical-align: middle;
+	color: var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+}
+
+.plugin-detail-config-field.modified .plugin-detail-config-modified-dot {
+	display: inline;
+}
+
+.plugin-detail-config-reset {
+	display: none;
+	margin-left: 6px;
+	padding: 0 4px;
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--vscode-descriptionForeground);
+	background: transparent;
+	border: 1px solid var(--vscode-panel-border, #42424266);
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.plugin-detail-config-field.modified .plugin-detail-config-reset {
+	display: inline;
+}
+
+.plugin-detail-config-reset:hover {
+	color: var(--vscode-foreground);
+	background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.14));
+}
+
+.plugin-detail-config-field--compact .plugin-detail-config-label {
+	display: inline;
+}
+
+.plugin-detail-config-empty {
+	padding: 14px 4px;
+	font-size: 12px;
+	font-style: italic;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* ── 底部 sticky 操作条：保存不必滚到底 ── */
+
+.plugin-detail-config-footer {
+	position: sticky;
+	bottom: 0;
+	z-index: 2;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 12px;
+	padding: 10px 0;
+	background: var(--vscode-editor-background);
+	border-top: 1px solid var(--vscode-panel-border, #42424233);
+}
+
+.plugin-detail-config-footer .plugin-detail-config-status {
+	margin: 0;
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.plugin-detail-config-footer-summary {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.plugin-detail-config-footer-spacer {
+	flex: 0 1 auto;
+}
+
+/* ── 窄屏（编辑器面板 < 760px）：左栏 → 顶部 chips，网格降为单列 ── */
+
+@media (max-width: 760px) {
+	.plugin-detail-config-split {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.plugin-detail-config-nav {
+		flex-direction: row;
+		align-items: center;
+		gap: 6px;
+		padding: 10px 0;
+		border-right: none;
+		border-bottom: 1px solid var(--vscode-panel-border, #42424233);
+		overflow-x: auto;
+	}
+
+	.plugin-detail-config-navitem {
+		width: auto;
+		flex: 0 0 auto;
+		padding: 4px 10px;
+		border: 1px solid var(--vscode-panel-border, #42424266);
+		border-radius: 999px;
+	}
+
+	.plugin-detail-config-navcount {
+		display: none;
+	}
+
+	.plugin-detail-config-navfoot {
+		margin: 0;
+		padding: 0;
+		border: none;
+	}
+
+	.plugin-detail-config-main {
+		padding: 12px 0 0 0;
+	}
+
+	.plugin-detail-config-grid,
+	.plugin-detail-config-grid--compact {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.plugin-detail-config-actionrow {
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.plugin-detail-config-actionrowlabel {
+		padding-top: 0;
+	}
+
+	.plugin-detail-config-kv {
+		grid-template-columns: minmax(0, 1fr) auto;
+	}
+}

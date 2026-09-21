@@ -8,6 +8,21 @@
 
 import { isRelativeLocalHref } from './relativePath';
 
+/** 媒体库资产引用 scheme（`saros-media://<assetId>`）。 */
+export const KB_MEDIA_SCHEME = 'saros-media://';
+
+/** src 是否媒体库引用。 */
+export function isMediaAssetSrc(src: string | undefined): boolean {
+	return !!src && src.startsWith(KB_MEDIA_SCHEME);
+}
+
+/** 提取 `saros-media://<id>` 的 assetId（非该协议返回 undefined）。 */
+export function mediaAssetId(src: string | undefined): string | undefined {
+	if (!isMediaAssetSrc(src)) { return undefined; }
+	const id = (src as string).slice(KB_MEDIA_SCHEME.length).split(/[?#]/)[0].trim();
+	return id || undefined;
+}
+
 /** 归一化相对引用（去 `./`、处理 `../` 与重复分隔符）。 */
 export function normalizeRelativeRef(src: string): string {
 	const out: string[] = [];

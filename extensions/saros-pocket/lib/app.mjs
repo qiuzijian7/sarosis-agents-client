@@ -25,7 +25,15 @@ const CONTENT_TYPES = {
 };
 
 /** 允许对外暴露的文件白名单（避免把整个扩展目录挂出去）。 */
-const ALLOWED_FILES = new Set(['index.html', 'app.js', 'app.css']);
+const ALLOWED_FILES = new Set([
+  'index.html',
+  'app.js',
+  'app.css',
+  // 品牌资源（与 VsSaros 同款 logo）：favicon 用 SVG wordmark，
+  // iOS「添加到主屏幕」不认 SVG，所以另备方形 mark PNG。
+  'saros-logo.svg',
+  'apple-touch-icon.png',
+]);
 
 /**
  * 创建 App 静态服务。

@@ -63,7 +63,7 @@ interface AgentMdRaw {
 	avatar?: string;
 	createdAt?: string;
 	updatedAt?: string;
-	// AgentLoop 循环范式配置（可选）
+	// ⚠ 2026-09-21 范式概念下线：不再从 .agent.md 读写 paradigm（下面字段仅为兼容旧文件的类型占位，不再生效）。
 	paradigm?: string;
 	budgetMaxTotal?: number;
 	[key: string]: unknown;
@@ -228,7 +228,6 @@ export function buildAgentMd(agent: Agent): string {
 	if (agent.sandbox) { fm.sandbox = agent.sandbox; }
 	if (agent.configHtml) { fm.configHtml = agent.configHtml; }
 	if (agent.visibility) { fm.visibility = agent.visibility; }
-	if (agent.paradigm) { fm.paradigm = agent.paradigm; }
 	if (agent.budgetMaxTotal !== undefined) { fm.budgetMaxTotal = agent.budgetMaxTotal; }
 	fm.createdAt = agent.createdAt;
 	fm.updatedAt = agent.updatedAt;
@@ -305,7 +304,6 @@ export function parseAgentMd(content: string): { agent: Partial<Agent>; systemPr
 		parallelStrategy: (raw.parallelStrategy === 'voting' || raw.parallelStrategy === 'coverage') ? raw.parallelStrategy : undefined,
 		sandbox: typeof raw.sandbox === 'string' ? raw.sandbox as Agent['sandbox'] : undefined,
 		configHtml: raw.configHtml && typeof raw.configHtml === 'object' ? raw.configHtml as Agent['configHtml'] : undefined,
-		paradigm: typeof raw.paradigm === 'string' ? raw.paradigm : undefined,
 		budgetMaxTotal: typeof raw.budgetMaxTotal === 'number' ? raw.budgetMaxTotal : undefined,
 		// 读取 VS Code 标准 `handoffs` 字段（也兼容旧 `handOffs`）
 		handOffs: Array.isArray(raw.handoffs) ? raw.handoffs as Agent['handOffs']

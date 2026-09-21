@@ -5967,6 +5967,18 @@
 	padding: 2px 0;
 }
 
+/* ★★ 2026-09-21（用户报「TUI 风格下底部内容被截看不到」✓）：
+   flex 收缩链条的**最后一环** —— 宿主 pane 自身也是（编辑器的）flex 子项 ✗，
+   同样需要 `min-height: 0` 才能被内容撑高时**收缩** ✓。
+   链条 = `.native-chat-editor-pane`（本规则）→ `.cli-chat-panel`（cli-chat.css ✓）
+   → `.cli-messages-scroll`（cli-chat.css ✓）—— **任何一环缺失都会静默失效** ✗✓，
+   表现为「底部内容被裁 + 滚不动 + 无滚动条」（纯布局、零报错 ✓）。
+   注：pane 的 width/height/overflow/display 是**内联样式**（nativeChatEditorPane.ts:763 ✓），
+   但 `min-height` 没有内联 ⇒ 本规则生效 ✓。 */
+.native-chat-editor-pane {
+	min-height: 0;
+}
+
 /* 流式期间占位：预留与真实 footer 等高的空间，loop 结束时 footer 淡入替换，
    避免整段会话因 footer 突然出现而位移（对齐 Hermes footer 常驻占位思路） */
 .chat-bubble-footer-placeholder {

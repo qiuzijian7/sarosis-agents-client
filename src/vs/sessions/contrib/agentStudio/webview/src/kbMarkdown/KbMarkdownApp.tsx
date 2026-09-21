@@ -206,6 +206,22 @@ export function KbMarkdownApp(): React.ReactElement {
 		}
 	}, [content, editContent, mode]);
 
+	// ── 媒体库图片沉淀（方案 C）：保存到笔记附件并替换正文引用 ──────────────
+	const [mediaSavedHint, setMediaSavedHint] = useState<string | null>(null);
+	const onSaveMediaToNote = useCallback((assetId: string, relRef: string) => {
+		const needle = `saros-media://${assetId}`;
+		const swap = (md: string) => md.split(needle).join(relRef);
+		const nextContent = swap(content);
+		const nextEdit = swap(editContent);
+		setContent(nextContent);
+		setEditContent(nextEdit);
+		setDirty(false);
+		// 立即落盘：附件已复制，正文引用必须同步替换（否则笔记仍指向媒体库）
+		postMessage('kbblocks.save', { markdown: nextContent, kind: 'mediaSaved' });
+		setMediaSavedHint(`已保存到笔记附件：${relRef}`);
+		window.setTimeout(() => setMediaSavedHint(null), 2500);
+	}, [content, editContent]);
+
 	// ── Copy ────────────────────────────────────────────────────────────────
 	const copyMarkdown = useCallback(() => {
 		postMessage('kbblocks.copy', { markdown: effectiveContent });
@@ -244,6 +260,7 @@ export function KbMarkdownApp(): React.ReactElement {
 					onOpenExternal={onOpenExternal}
 					onToggleTask={onToggleTask}
 					assetBaseUri={assetBaseUri}
+					onSaveMediaToNote={onSaveMediaToNote}
 				/>
 			</div>
 		</div>
@@ -339,6 +356,7 @@ export function KbMarkdownApp(): React.ReactElement {
 			</div>
 			<span className="kb-version">pipeline v0.3</span>
 			{copied && <span className="kb-copied">已复制!</span>}
+			{mediaSavedHint && <span className="kb-copied">{mediaSavedHint}</span>}
 		</div>
 
 		{showToc && (
@@ -392,7 +410,8 @@ export function KbMarkdownApp(): React.ReactElement {
 													onOpenExternal={onOpenExternal}
 													onToggleTask={onToggleTask}
 													assetBaseUri={assetBaseUri}
-												/>
+													onSaveMediaToNote={onSaveMediaToNote}
+													/>
 											</div>
 										</div>
 									)}

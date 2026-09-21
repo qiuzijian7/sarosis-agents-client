@@ -4,6 +4,17 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './media/pluginDetailEditorPane.css';
+import { IConfigFieldInput, IConfigGroupInput, IConfigStatusItem, IConfigView, renderConfigView } from './pluginConfigView.js';
+import {
+	configFieldKind,
+	groupConfigProperties,
+	isConfigValueModified,
+	isHiddenConfigProperty,
+	matchesConfigFilter,
+	orderConfigFields,
+	readConfigSections,
+	splitMarkdownDescription,
+} from './pluginConfigLayout.js';
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -16,6 +27,8 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { PluginDetailEditorInput } from './pluginDetailEditorInput.js';
 import * as DOM from '../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../base/browser/window.js';
+import { IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { renderLabelWithIcons } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { IAgentPlugin, IAgentPluginService } from '../../../../workbench/contrib/chat/common/plugins/agentPluginService.js';
 import { IEnablementModel, ContributionEnablementState, isContributionEnabled } from '../../../../workbench/contrib/chat/common/enablement.js';
@@ -58,6 +71,23 @@ interface IPluginConfigProperty {
 	markdownDescription?: string;
 	scope?: string;
 	items?: { type?: string; properties?: Record<string, unknown> };
+	/** 该属性所属的 configuration section 标题（扩展用数组形态声明分组时才有） */
+	group?: string;
+	/** 所属 section 的说明 / 图标（非标准字段，扩展可用来给分组加副标题与图标） */
+	groupDescription?: string;
+	groupIcon?: string;
+	/** `x-advanced`：低频 / 易错项，收进「高级」（默认收起） */
+	advanced?: boolean;
+	/** `x-actionRow`：动作按钮所在行（同一行排在一起，如「连接」「公网隧道」「密码」） */
+	actionRow?: string;
+	/** `x-actionPrimary`：主操作按钮（主色） */
+	actionPrimary?: boolean;
+	/** `x-actionDanger`：危险操作（红色，执行前需确认） */
+	actionDanger?: boolean;
+	/** `x-panel`：该动作在详情页里由**内嵌面板**承担（按钮不再出现，避免又跳一个独立页面） */
+	inlinePanel?: boolean;
+	/** 枚举值（string/number 类型）：存在时渲染为下拉框 */
+	enum?: unknown[];
 	/**
 	 * 可选：由 schema 的 `x-action` 声明的命令 id。存在时该属性渲染为**动作按钮**
 	 * （点击即执行命令），而不是输入控件，且不参与保存——它不是真正的配置值。
@@ -80,8 +110,6 @@ export class PluginDetailEditorPane extends EditorPane {
 	private _container: HTMLElement | undefined;
 	private _plugin: IAgentPlugin | undefined;
 	private _initialized = false;
-	/** Runtime state for inline configuration fields: key → current value */
-	private readonly _configFieldValues = new Map<string, unknown>();
 
 	constructor(
 		group: IEditorGroup,
@@ -93,6 +121,9 @@ export class PluginDetailEditorPane extends EditorPane {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IExtensionService private readonly extensionService: IExtensionService,
 		@IFileService private readonly fileService: IFileService,
+		// 「快速访问」页签里的内嵌访问面板：用 webview 元素挂载（工作台 CSP 只放行 vscode-webview:，
+		// 直接 iframe 一个 http:// 页面会被拦）。
+		@IWebviewService private readonly _webviewService: IWebviewService,
 	) {
 		super(PluginDetailEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -364,73 +395,290 @@ export class PluginDetailEditorPane extends EditorPane {
 		// 现由 `contributes.configuration` + `x-action` / `x-readonly` 统一驱动，无 plugin.label 特例。
 
 		// ─── Configuration Section (from contributes.configuration) ──
+		// 布局（分组 / 折叠 / 过滤 / sticky 保存条）见 pluginConfigView.ts，
+		// 判定规则（分组、紧凑化、改动检测）见 pluginConfigLayout.ts。
 		const configProperties = this._getPluginConfigProperties(plugin);
 		if (configProperties.length > 0) {
-			this._configFieldValues.clear();
-			const section = $$('div.plugin-detail-section');
-			const sectionTitle = $$('h2.plugin-detail-section-title');
-			sectionTitle.textContent = localize('configuration', 'Configuration ({0})', configProperties.length);
-			section.appendChild(sectionTitle);
+			scrollContainer.appendChild(await this._buildConfigurationSection(plugin, configProperties));
+		}
+	}
 
-			const configContainer = $$('div.plugin-detail-config-container');
+	/**
+	 * 构建 Configuration 区。
+	 *
+	 * 把「manifest 里的 schema」翻译成「视图要的字段列表」：
+	 *  - `x-action` → 动作按钮；`x-readonly` → 只读展示；其余按类型渲染控件；
+	 *  - 任意 `*.models` 在无用户值且默认值为空时，回退读插件目录下的 `model.json`；
+	 *  - `agents` / `models` 这类结构复杂的数组交给本类已有的展开列表控件（custom 回调）。
+	 */
+	private async _buildConfigurationSection(plugin: IAgentPlugin, configProperties: IPluginConfigProperty[]): Promise<HTMLElement> {
+		const visible = configProperties.filter(prop => !isHiddenConfigProperty(prop));
+		const groups = groupConfigProperties(visible);
+		// `x-panel` 标记的动作（如「打开访问面板」）在详情页里由**内嵌面板**承担：
+		// 它的按钮不再出现（否则点了还会开一个独立标签页，与"在页签内显示"矛盾）。
+		const inlinePanelActions = visible.filter(prop => prop.inlinePanel === true);
 
-		for (const prop of configProperties) {
-				// Skip standalone "models" configs — models are configured per agent for knot agents
-			// Skip internal agentId (used for identification, not user-configurable)
-			if (prop.key.endsWith('.agentId')) {
-				continue;
-			}
-
-			// Skip standalone knot.models — models are configured per agent in the agents list
-			if (prop.key === 'knot.models') {
-				continue;
-			}
-
-				// Load current value from configuration service
-				let currentValue = this.configurationService.getValue(prop.key);
-
-				// 通用：任何 *.models 配置，若无用户值且默认值为空，尝试从插件目录下的 model.json 加载
-				if (prop.key.endsWith('.models')) {
-					const isEmpty =
-						currentValue === undefined || currentValue === null ||
-						(Array.isArray(currentValue) && currentValue.length === 0);
-					const defaultIsEmpty = !prop.default || (Array.isArray(prop.default) && prop.default.length === 0);
-					if (isEmpty && defaultIsEmpty) {
-						const jsonModels = await this._loadModelsFromJsonFile(plugin);
-						if (jsonModels && jsonModels.length > 0) {
-							currentValue = jsonModels;
+		const groupInputs: IConfigGroupInput[] = [];
+		for (const group of groups) {
+			const fields: IConfigFieldInput[] = [];
+			const isActionsGroup = group.kind === 'actions';
+			for (const prop of orderConfigFields(group.props)) {
+				if (isActionsGroup && prop.inlinePanel === true) { continue; }
+				const value = await this._resolveConfigValue(plugin, prop);
+				const { description, links } = splitMarkdownDescription(prop.markdownDescription, prop.description);
+				fields.push({
+					key: prop.key,
+					label: prop.actionLabel ?? this._formatConfigKey(prop.key),
+					description,
+					links,
+					type: prop.type,
+					value,
+					defaultValue: prop.default,
+					kind: configFieldKind(prop),
+					actionId: prop.action,
+					actionRow: prop.actionRow,
+					primary: prop.actionPrimary === true,
+					danger: prop.actionDanger === true,
+					secret: /token|password|secret/i.test(prop.key),
+					options: prop.enum?.map(v => ({ value: String(v), label: String(v) })),
+					custom: (ctx) => {
+						if (prop.readOnly || prop.action) { return null; }
+						if (prop.key.endsWith('.agents')) {
+							return this._renderAgentsExpandableList(prop, ctx.value, ctx.setValue);
 						}
-					}
-				}
-
-				const value = currentValue !== undefined && currentValue !== null
-					? currentValue
-					: prop.default;
-				this._configFieldValues.set(prop.key, value);
-
-				const fieldEl = this._renderConfigField(prop, value);
-				configContainer.appendChild(fieldEl);
+						if (/\.(image|video|model3d|audio)?models$/i.test(prop.key)) {
+							return this._renderModelsExpandableList(prop, ctx.value, ctx.setValue);
+						}
+						return null;
+					},
+				});
 			}
+			groupInputs.push({
+				id: group.id,
+				title: group.title,
+				subtitle: group.description,
+				icon: group.props.find(p => !!p.groupIcon)?.groupIcon,
+				kind: group.kind === 'advanced' ? 'advanced' : group.kind === 'actions' ? 'actions' : 'normal',
+				fields,
+				// 「快速访问」页签里把访问面板**内嵌**显示（用户要求：不要再跳转独立页面）
+				embed: isActionsGroup && inlinePanelActions.length > 0
+					? this._createInlinePanelEmbed(plugin, inlinePanelActions[0])
+					: undefined,
+			});
+		}
 
-			section.appendChild(configContainer);
+		const view = renderConfigView(
+			{
+				title: localize('configuration', 'Configuration ({0})', visible.length),
+				groups: groupInputs,
+				labels: {
+					filterPlaceholder: localize('filterSettings', '过滤设置…'),
+					noMatch: localize('noMatchingSettings', '没有匹配的设置项'),
+					modified: localize('modifiedSetting', '已修改（与默认值不同）'),
+					resetField: localize('resetSetting', '恢复默认值'),
+					modifiedSummary: (count: number) => localize('modifiedSummary', '{0} 项已修改', count),
+					save: localize('saveSettings', '保存设置'),
+					saved: localize('settingsSaved', '已保存'),
+					resetAll: localize('resetAllSettings', '全部重置为默认'),
+					undo: localize('undoSettings', '撤销更改'),
+					fallbackTitles: {
+						switch: localize('switchesGroup', '开关'),
+						value: localize('valuesGroup', '其他设置'),
+						readonly: localize('statusGroup', '状态'),
+						// 动作按钮统一进「快速访问」页签（与「手机连接」「App 能力与安全」同级）
+						action: localize('quickAccessGroup', '快速访问'),
+						advanced: localize('advancedGroup', '高级'),
+					},
+					quickActionsTitle: localize('quickActions', '⚡ 快捷操作'),
+					switchesTitle: localize('switchesCard', '开关'),
+					valuesTitle: localize('valuesCard', '需要填写'),
+					statusTitle: localize('statusCard', '状态'),
+					advancedHint: localize('advancedHint', '低频 / 易错项：端口、令牌、路径等。改错会导致连不上，请对照文档修改。'),
+					copy: localize('copy', '复制'),
+					copied: localize('copied', '已复制'),
+					searchHint: (count: number) => localize('searchHint', '搜索结果：{0} 项', count),
+				},
+				onSave: () => this._saveConfigValues(visible, view.getValues(), view),
+				onResetAll: () => view.setStatus(localize('resetToDefaults', '已重置为默认值（点「保存设置」生效）')),
+				onAction: (actionId, button) => this._runConfigAction(actionId, button),
+			},
+			{ isModified: isConfigValueModified, matches: (field, query) => matchesConfigFilter(field, field.label, query) },
+		);
 
-		// ─── Action Buttons ──────────────────────────────────
-		const actionsRow = $$('div.plugin-detail-config-actions');
+		// 状态条：数据来自扩展注册的命令（老版本 / 其他插件没有这条命令 → 状态条自动隐藏，不显示假状态）
+		void this._probeStatusItems(plugin).then(items => {
+			try { view.setStatusItems(items); } catch { /* 视图已销毁 */ }
+		});
 
-		// Save button
-		const saveBtn = $$('button.plugin-detail-config-save-btn');
-			saveBtn.textContent = localize('saveSettings', '保存设置');
-			saveBtn.onclick = () => this._saveConfigFields(configProperties, saveBtn);
-			actionsRow.appendChild(saveBtn);
+		return view.element;
+	}
 
-			section.appendChild(actionsRow);
+	/**
+	 * 构建「快速访问」页签里的**内嵌访问面板**。
+	 *
+	 * 为什么这么做：原来点「打开访问面板」会另开一个 webview 标签页（跳走），
+	 * 用户反馈「不要再跳转打开独立页面」。这里用 `IWebviewService` 在页签内容区里
+	 * 挂一个 webview 元素 —— 面板 HTML 与消息处理都复用扩展那一份：
+	 *   · HTML  ← 命令 `<prefix>.panelHtml`（扩展注入 CSP 与 logo data URI）
+	 *   · 消息  → 命令 `<prefix>.panel`（与独立面板共用同一个 handlePanelCommand）
+	 * 拿不到命令（旧版扩展 / 别的插件）时不硬撑：给一行说明 + 「在新标签打开」的退路。
+	 */
+	private _createInlinePanelEmbed(plugin: IAgentPlugin, panelAction: IPluginConfigProperty): IConfigGroupInput['embed'] {
+		const prefix = this._pluginConfigPrefix(plugin);
+		const host = DOM.$('div.plugin-detail-config-panelhost');
+		const note = DOM.$('div.plugin-detail-config-panelnote');
+		note.textContent = localize('inlinePanelLoading', '正在加载访问面板…');
+		host.appendChild(note);
 
-			// Status message area
-			const statusEl = $$('div.plugin-detail-config-status');
-			statusEl.id = 'plugin-config-status';
-			section.appendChild(statusEl);
+		void (async () => {
+			try {
+				const html = await this.commandService.executeCommand(`${prefix}.panelHtml`) as string | undefined;
+				if (!html) { throw new Error('empty panel html'); }
+				const webview = this._webviewService.createWebviewElement({
+					title: localize('pocketPanel', 'Saros Pocket · 访问面板'),
+					options: { retainContextWhenHidden: true },
+					contentOptions: { allowScripts: true, allowForms: true },
+					extension: undefined,
+				});
+				this._register(webview);
+				// 面板消息 → 命令中转（扩展侧是同一套处理逻辑）→ 结果回投给 webview
+				// ★★★ 2026-09-21：**订阅必须登记** ✗ —— `onMessage()` 返回的是一个
+				// `IDisposable`（事件订阅 ✓），原来直接丢掉 ⇒ 触发
+				// `[LEAKED DISPOSABLE] ... CREATED via ElectronWebviewElement._event [as onMessage]`
+				// ✗✓（`GCBasedDisposableTracker` 在 GC 时报告未释放 ✓）。
+				// 交给 `_register` ⇒ 面板 dispose 时自动释放 ✓，与上面 `_register(webview)` 同源 ✓。
+				// ⚠ 时序安全 ✓：本块是 `await executeCommand(...)` **之后**才执行的 ✓，
+				// 若面板已在这期间被销毁 ⇒ `_register` 会**立即释放**该订阅 ✓
+				//（DisposableStore 对已 dispose 的 store 新增项一律即刻 dispose ✓），不会二次泄漏 ✓。
+				this._register(webview.onMessage(async (e: { message: unknown }) => {
+					try {
+						const r = await this.commandService.executeCommand(`${prefix}.panel`, e.message) as
+							{ status?: unknown; error?: string } | undefined;
+						if (r?.status) { webview.postMessage({ command: 'status', status: r.status }); }
+						if (r?.error) { webview.postMessage({ command: 'error', text: r.error }); }
+					} catch (err) {
+						webview.postMessage({ command: 'error', text: err instanceof Error ? err.message : String(err) });
+					}
+				}));
+				webview.mountTo(host, mainWindow);
+				webview.setHtml(html);
+				note.remove(); // 面板接管显示
+			} catch (err) {
+				console.warn('[PluginDetail] inline panel unavailable:', err);
+				note.textContent = localize('inlinePanelUnavailable',
+					'内嵌面板不可用（需要 {0} 提供 panelHtml 命令）；可点右上角「在新标签打开」。', prefix || 'pocket');
+				note.classList.add('warn');
+			}
+		})();
 
-			scrollContainer.appendChild(section);
+		return {
+			element: host,
+			title: panelAction.actionLabel ?? localize('panelInlineTitle', '访问面板（已内嵌）'),
+			hint: localize('panelInlineHint', '面板直接显示在这里，不再另外打开页面。'),
+			actions: [
+				{ label: localize('panelOpenInTab', '在新标签打开'), onClick: () => void this.commandService.executeCommand(`${prefix}.openPanel`) },
+				{ label: localize('panelReload', '刷新'), onClick: () => this._rerender() },
+			],
+		};
+	}
+
+	/** 取某插件配置区的键前缀（如 `sarosPocket`），用于命令名拼装。 */
+	private _pluginConfigPrefix(plugin: IAgentPlugin): string {
+		const first = this._getPluginConfigProperties(plugin)[0];
+		return first ? first.key.split('.')[0] : '';
+	}
+
+	/**
+	 * 探测状态条数据：优先用宿主扩展注册的 `<prefix>.status` 命令（pocket 提供），
+	 * 失败就返回空数组（状态条整条不渲染）—— 只有真实数据，不猜。
+	 */
+	private async _probeStatusItems(plugin: IAgentPlugin): Promise<IConfigStatusItem[]> {
+		const props = this._getPluginConfigProperties(plugin);
+		const prefix = props.length > 0 ? props[0].key.split('.')[0] : '';
+		const groupIdFor = (keyFragment: string) => {
+			const hit = props.find(p => p.group && p.key.includes(keyFragment));
+			return hit?.group ? `declared:${hit.group}` : undefined;
+		};
+		let raw: any = null;
+		for (const command of [`${prefix}.status`, `${prefix}.getStatus`]) {
+			try {
+				raw = await this.commandService.executeCommand(command);
+				if (raw && typeof raw === 'object') { break; }
+			} catch { /* 命令不存在 / 旧版本 */ }
+		}
+		if (!raw || typeof raw !== 'object') { return []; }
+
+		const items: IConfigStatusItem[] = [];
+		if (raw.lanEnabled !== undefined) {
+			items.push({
+				label: localize('statusLan', '局域网'),
+				value: raw.lanEnabled === false ? localize('statusOff', '已关闭') : String(raw.lanUrl ?? localize('statusOn', '已开启')),
+				state: raw.lanEnabled === false ? 'off' : 'ok',
+				groupId: groupIdFor('lanEnabled'),
+			});
+		}
+		if (raw.tunnelUrl !== undefined || raw.tunnelRunning !== undefined) {
+			items.push({
+				label: localize('statusPublic', '公网'),
+				value: raw.tunnelUrl ? String(raw.tunnelUrl) : localize('statusNotEnabled', '未开启'),
+				state: raw.tunnelUrl ? 'ok' : 'off',
+				groupId: groupIdFor('tunnelMode'),
+			});
+		}
+		if (raw.desktopInputSupported !== undefined) {
+			items.push({
+				label: localize('statusInput', '远程键鼠'),
+				value: raw.desktopInputAllowed
+					? localize('statusInputAllowed', '电脑端已允许 · 手机上打开才生效')
+					: localize('statusInputDenied', '电脑端未允许'),
+				state: raw.desktopInputAllowed ? 'ok' : 'warn',
+				groupId: groupIdFor('allowDesktopInput'),
+			});
+		}
+		if (raw.upstreamOk !== undefined) {
+			items.push({
+				label: localize('statusUpstream', '上游'),
+				value: raw.upstreamOk ? localize('statusUpstreamOk', '已连接') : localize('statusUpstreamOff', '未启动（桌面版正常）'),
+				state: raw.upstreamOk ? 'ok' : 'off',
+			});
+		}
+		return items;
+	}
+
+	/** 取设置当前值；`*.models` 无用户值且默认值空时回退读插件目录的 model.json。 */
+	private async _resolveConfigValue(plugin: IAgentPlugin, prop: IPluginConfigProperty): Promise<unknown> {
+		const currentValue = this.configurationService.getValue(prop.key);
+		if (prop.key.endsWith('.models')) {
+			const isEmpty = currentValue === undefined || currentValue === null
+				|| (Array.isArray(currentValue) && currentValue.length === 0);
+			const defaultIsEmpty = !prop.default || (Array.isArray(prop.default) && prop.default.length === 0);
+			if (isEmpty && defaultIsEmpty) {
+				const jsonModels = await this._loadModelsFromJsonFile(plugin);
+				if (jsonModels && jsonModels.length > 0) {
+					return jsonModels;
+				}
+			}
+		}
+		return currentValue !== undefined && currentValue !== null ? currentValue : prop.default;
+	}
+
+	/** 执行 x-action 按钮：命令跑完重建 UI（命令通常会改配置），期间按钮禁用并显示进度。 */
+	private async _runConfigAction(actionId: string, button: HTMLButtonElement): Promise<void> {
+		const original = button.textContent;
+		button.disabled = true;
+		button.textContent = localize('running', '执行中…');
+		try {
+			await this.commandService.executeCommand(actionId);
+			this._rerender();
+		} catch (err) {
+			console.error(`[PluginDetail] action "${actionId}" failed:`, err);
+			this._showActionMessage(
+				localize('actionFailed', '❌ 执行失败：{0}', err instanceof Error ? err.message : String(err)),
+				'error',
+			);
+		} finally {
+			button.textContent = original;
+			button.disabled = false;
 		}
 	}
 
@@ -509,10 +757,13 @@ export class PluginDetailEditorPane extends EditorPane {
 			const contributes = (ext as any).contributes;
 			if (!contributes?.configuration) { continue; }
 
-			const config = contributes.configuration;
-			const properties: Record<string, any> = config.properties || {};
+			// 两种合法形态：单对象（整个插件一个 Configuration 区），或**数组**（多个带 title 的 section）
+			// ——后者是 VS Code 原生的分组机制，详情页据此分组渲染。统一收敛成 section 列表。
+			const sections = readConfigSections(contributes.configuration);
 			const result: IPluginConfigProperty[] = [];
 
+			for (const section of sections) {
+			const properties: Record<string, any> = section.properties || {};
 			for (const [key, schema] of Object.entries(properties)) {
 				if (!schema || typeof schema !== 'object') { continue; }
 				const s = schema as Record<string, unknown>;
@@ -528,10 +779,22 @@ export class PluginDetailEditorPane extends EditorPane {
 					markdownDescription: s.markdownDescription ? String(s.markdownDescription) : undefined,
 					scope: s.scope ? String(s.scope) : undefined,
 					items: s.items as IPluginConfigProperty['items'],
+					group: typeof section.title === 'string' && section.title ? section.title : undefined,
+					groupDescription: typeof (section as { description?: unknown }).description === 'string'
+						? String((section as { description?: unknown }).description) : undefined,
+					groupIcon: typeof (section as { 'x-icon'?: unknown })['x-icon'] === 'string'
+						? String((section as { 'x-icon'?: unknown })['x-icon']) : undefined,
+					advanced: s['x-advanced'] === true,
+					actionRow: typeof s['x-actionRow'] === 'string' && s['x-actionRow'] ? String(s['x-actionRow']) : undefined,
+					actionPrimary: s['x-actionPrimary'] === true,
+					actionDanger: s['x-actionDanger'] === true,
+					inlinePanel: s['x-panel'] === true,
+					enum: Array.isArray(s.enum) ? s.enum : undefined,
 					action: typeof xAction === 'string' && xAction ? xAction : undefined,
 					actionLabel: typeof xActionLabel === 'string' && xActionLabel ? xActionLabel : undefined,
 					readOnly: s['x-readonly'] === true,
 				});
+			}
 			}
 
 			return result;
@@ -540,178 +803,7 @@ export class PluginDetailEditorPane extends EditorPane {
 		return [];
 	}
 
-	/**
-	 * Render a single configuration field as a form row.
-	 */
-	private _renderConfigField(prop: IPluginConfigProperty, value: unknown): HTMLElement {
-		const row = $$('div.plugin-detail-config-field');
 
-		// Label
-		const labelEl = $$('label.plugin-detail-config-label');
-		labelEl.textContent = this._formatConfigKey(prop.key);
-		labelEl.setAttribute('for', `config-${prop.key}`);
-		row.appendChild(labelEl);
-
-		// Description (with optional markdown link support)
-		if (prop.markdownDescription || prop.description) {
-			const descEl = $$('div.plugin-detail-config-desc');
-			if (prop.markdownDescription) {
-				// Parse markdown links: [label](url)
-				const md = prop.markdownDescription;
-				const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
-				let lastIndex = 0;
-				let match: RegExpExecArray | null;
-				while ((match = linkRegex.exec(md)) !== null) {
-					// Text before the link
-					if (match.index > lastIndex) {
-						descEl.appendChild(document.createTextNode(md.slice(lastIndex, match.index)));
-					}
-					// The link itself
-					const linkEl = document.createElement('a');
-					linkEl.className = 'plugin-detail-config-link';
-					linkEl.textContent = match[1];
-					linkEl.href = match[2];
-					linkEl.title = match[2];
-					linkEl.onclick = (e) => {
-						e.preventDefault();
-						window.open(match![2], '_blank', 'noopener');
-					};
-					descEl.appendChild(linkEl);
-					lastIndex = match.index + match[0].length;
-				}
-				// Remaining text after the last link
-				if (lastIndex < md.length) {
-					descEl.appendChild(document.createTextNode(md.slice(lastIndex)));
-				}
-			} else {
-				descEl.textContent = prop.description!;
-			}
-			row.appendChild(descEl);
-		}
-
-		// ─── 只读展示（x-readonly）────────────────────────────
-		// 由插件自动写入的派生值（登录态 / Token / User ID 等）不适合让用户手改，
-		// 这里渲染为只读文本，并且不写入 _configFieldValues（否则保存时会把值清成 undefined）。
-		if (prop.readOnly) {
-			const valueEl = $$('div.plugin-detail-config-readonly');
-			const raw = value === undefined || value === null || value === '' ? '—' : String(value);
-			valueEl.textContent = raw;
-			valueEl.title = raw;
-			row.appendChild(valueEl);
-			return row;
-		}
-
-		// ─── 动作按钮（x-action）──────────────────────────────
-		// 声明了 `x-action` 的属性渲染为按钮而非输入控件：点击直接执行命令，
-		// 无需「保存设置」，也不写入配置。这样插件可自助扩展详情页交互，
-		// 避免继续在此文件里堆积 `plugin.label === 'xxx'` 的特例分支。
-		if (prop.action) {
-			const actionBtn = $$('button.plugin-detail-config-save-btn') as HTMLButtonElement;
-			actionBtn.type = 'button';
-			actionBtn.textContent = prop.actionLabel || this._formatConfigKey(prop.key);
-			actionBtn.onclick = async () => {
-				actionBtn.disabled = true;
-				const original = actionBtn.textContent;
-				actionBtn.textContent = localize('running', '执行中…');
-				try {
-					await this.commandService.executeCommand(prop.action!);
-					// 命令通常会改动配置（如登录后写入可用模型列表），
-					// 重建 UI 让详情页立即反映最新值，无需手动关闭再打开。
-					this._rerender();
-				} catch (err) {
-					console.error(`[PluginDetail] action "${prop.action}" failed:`, err);
-					this._showActionMessage(
-						localize('actionFailed', '❌ 执行失败：{0}', err instanceof Error ? err.message : String(err)),
-						'error',
-					);
-				} finally {
-					actionBtn.textContent = original;
-					actionBtn.disabled = false;
-				}
-			};
-			row.appendChild(actionBtn);
-			return row;
-		}
-
-		// Input control based on type
-		switch (prop.type) {
-			case 'string': {
-				const isPassword = prop.key.toLowerCase().includes('token') || prop.key.toLowerCase().includes('password') || prop.key.toLowerCase().includes('secret');
-				const input = document.createElement('input');
-				input.type = isPassword ? 'password' : 'text';
-				input.id = `config-${prop.key}`;
-				input.className = 'plugin-detail-config-input';
-				input.value = String(value || '');
-				input.placeholder = prop.default !== undefined ? String(prop.default) : '';
-				input.oninput = () => { this._configFieldValues.set(prop.key, input.value); };
-				row.appendChild(input);
-				break;
-			}
-			case 'number': {
-				const input = document.createElement('input');
-				input.type = 'number';
-				input.id = `config-${prop.key}`;
-				input.className = 'plugin-detail-config-input plugin-detail-config-input-number';
-				input.value = String(value ?? prop.default ?? 0);
-				input.oninput = () => { this._configFieldValues.set(prop.key, Number(input.value) || 0); };
-				row.appendChild(input);
-				break;
-			}
-			case 'boolean': {
-				const toggle = $$('label.plugin-detail-config-toggle');
-				const checkbox = document.createElement('input');
-				checkbox.type = 'checkbox';
-				checkbox.id = `config-${prop.key}`;
-				checkbox.checked = !!value;
-				checkbox.onchange = () => { this._configFieldValues.set(prop.key, checkbox.checked); };
-				toggle.appendChild(checkbox);
-				const slider = $$('span.plugin-detail-config-toggle-slider');
-				toggle.appendChild(slider);
-				row.appendChild(toggle);
-				break;
-			}
-		case 'array': {
-				// Special handling for agents list: expandable entries with id, name, per-agent models
-				if (prop.key.endsWith('.agents')) {
-					const agentsContainer = this._renderAgentsExpandableList(prop, value);
-					row.appendChild(agentsContainer);
-				} else if (/\.(image|video|model3d|audio)?models$/i.test(prop.key)) {
-					// 通用：任何 *.models / *.imageModels / *.videoModels / *.model3dModels /
-					// *.audioModels 的 array 配置都用可展开列表渲染（id / name /
-					// maxInputTokens / maxAllowedSize…），与 codebuddy.models 保持一致；
-					// 同时兼容 string[] 与 object[] 两种形态。
-					const modelsContainer = this._renderModelsExpandableList(prop, value);
-					row.appendChild(modelsContainer);
-				} else {
-					const textarea = document.createElement('textarea');
-					textarea.id = `config-${prop.key}`;
-					textarea.className = 'plugin-detail-config-textarea';
-					const jsonValue = Array.isArray(value)
-						? JSON.stringify(value, undefined, 2)
-						: String(value || '[]');
-					textarea.value = jsonValue;
-					textarea.placeholder = '[]';
-					textarea.rows = 5;
-					textarea.oninput = () => { this._configFieldValues.set(prop.key, textarea.value); };
-					row.appendChild(textarea);
-				}
-				break;
-			}
-			default: {
-				// Fallback to text input
-				const input = document.createElement('input');
-				input.type = 'text';
-				input.id = `config-${prop.key}`;
-				input.className = 'plugin-detail-config-input';
-				input.value = String(value || '');
-				input.oninput = () => { this._configFieldValues.set(prop.key, input.value); };
-				row.appendChild(input);
-				break;
-			}
-		}
-
-		return row;
-	}
 
 	/**
 	 * 在配置区底部的状态条显示一条消息（复用「保存设置」下方的 status 元素）。
@@ -733,7 +825,7 @@ export class PluginDetailEditorPane extends EditorPane {
 	 * Render the agents configuration as an expandable list.
 	 * Each entry has: id, name, models.
 	 */
-	private _renderAgentsExpandableList(prop: IPluginConfigProperty, value: unknown): HTMLElement {
+	private _renderAgentsExpandableList(prop: IPluginConfigProperty, value: unknown, setValue: (value: unknown) => void): HTMLElement {
 		const container = $$('div.plugin-detail-agents-list');
 		const agents: Array<{ id?: string; name?: string; models?: string[] }> = Array.isArray(value) ? [...value] : [];
 
@@ -755,7 +847,7 @@ export class PluginDetailEditorPane extends EditorPane {
 				name: a.name,
 				models: a.models ? a.models.split(',').map(m => m.trim()).filter(Boolean) : [],
 			}));
-			this._configFieldValues.set(prop.key, result);
+			setValue(result);
 		};
 
 		const renderEntries = () => {
@@ -901,7 +993,7 @@ export class PluginDetailEditorPane extends EditorPane {
 	 * onlyReasoning, reasoning, relatedModels, disabledMultimodal, descriptionEn,
 	 * descriptionZh, credits, tags, top_p, top_k, repetition_penalty, isDefault, supportsExtra.
 	 */
-	private _renderModelsExpandableList(prop: IPluginConfigProperty, value: unknown): HTMLElement {
+	private _renderModelsExpandableList(prop: IPluginConfigProperty, value: unknown, setValue: (value: unknown) => void): HTMLElement {
 		console.log(`[PluginDetail] _renderModelsExpandableList called for ${prop.key}, value:`, value);
 		const container = $$('div.plugin-detail-models-list');
 
@@ -982,7 +1074,7 @@ export class PluginDetailEditorPane extends EditorPane {
 		const syncToConfig = () => {
 			// 原始是字符串数组 → 保存回字符串数组，保持插件读取格式不变
 			if (isStringList) {
-				this._configFieldValues.set(prop.key, modelsData.map(m => m.id).filter(id => !!id));
+				setValue(modelsData.map(m => m.id).filter(id => !!id));
 				return;
 			}
 			const result = modelsData.map(m => ({
@@ -1010,7 +1102,7 @@ export class PluginDetailEditorPane extends EditorPane {
 				isDefault: m.isDefault,
 				supportsExtra: m.supportsExtra
 			}));
-			this._configFieldValues.set(prop.key, result);
+			setValue(result);
 		};
 
 		const renderEntries = () => {
@@ -1290,62 +1382,33 @@ export class PluginDetailEditorPane extends EditorPane {
 	/**
 	 * Save all configuration field values to the configuration service.
 	 */
-	private _saveConfigFields(configProperties: IPluginConfigProperty[], saveBtn: HTMLElement): void {
-		const statusEl = this._container?.querySelector('#plugin-config-status') as HTMLElement | null;
+	private _saveConfigValues(configProperties: IPluginConfigProperty[], values: Map<string, unknown>, view: IConfigView): void {
+		// 动作按钮（x-action）只是触发命令；只读展示（x-readonly）由插件自动维护 —— 两者都不写回，
+		// 否则会把值清成 undefined。
+		const propsToSave = configProperties.filter(p => !p.action && !p.readOnly && !isHiddenConfigProperty(p));
 
-		// Filter out internal properties (e.g. agentId used for identification)
-		const propsToSave = configProperties.filter(p => {
-			if (p.key.endsWith('.agentId')) { return false; }
-			// 动作按钮（x-action）只是触发命令，不是配置值，不参与保存
-			if (p.action) { return false; }
-			// 只读展示（x-readonly）不写回：它们由插件自动维护，
-			// 且 _renderConfigField 未把它们放入 _configFieldValues，强行保存会把值清成 undefined
-			if (p.readOnly) { return false; }
-			return true;
-		});
-
-		// Validate JSON/array fields (only for non-agents arrays)
+		// array 字段先是文本域里的字符串，校验 JSON 后再解析；agents / models 已是对象数组
+		const parsed = new Map<string, unknown>();
 		for (const prop of propsToSave) {
-			if (prop.type === 'array' && !prop.key.endsWith('.agents')) {
-				const rawValue = this._configFieldValues.get(prop.key);
-				if (typeof rawValue === 'string') {
-					try {
-						JSON.parse(rawValue);
-					} catch {
-						if (statusEl) {
-							statusEl.textContent = `⚠️ ${this._formatConfigKey(prop.key)} 必须是有效的 JSON 格式`;
-							statusEl.className = 'plugin-detail-config-status error';
-						}
-						return;
-					}
+			let value = values.get(prop.key);
+			const isStructuredArray = prop.type === 'array' && !prop.key.endsWith('.agents')
+				&& !/\.(image|video|model3d|audio)?models$/i.test(prop.key);
+			if (isStructuredArray && typeof value === 'string') {
+				try {
+					value = JSON.parse(value);
+				} catch {
+					view.setStatus(localize('invalidJson', '⚠️ {0} 必须是有效的 JSON 格式', this._formatConfigKey(prop.key)), 'error');
+					return;
 				}
 			}
+			parsed.set(prop.key, value);
 		}
 
-		// Save each field
-		for (const prop of propsToSave) {
-			let value = this._configFieldValues.get(prop.key);
-			// Parse JSON strings for array type (non-agents)
-			if (prop.type === 'array' && !prop.key.endsWith('.agents') && typeof value === 'string') {
-				try { value = JSON.parse(value); } catch { /* skip */ }
-			}
-			// agents field value is already an object array from _renderAgentsExpandableList
-			this.configurationService.updateValue(prop.key, value, ConfigurationTarget.USER);
+		for (const [key, value] of parsed) {
+			this.configurationService.updateValue(key, value, ConfigurationTarget.USER);
 		}
 
-		if (statusEl) {
-			statusEl.textContent = '✅ 设置已保存';
-			statusEl.className = 'plugin-detail-config-status success';
-			setTimeout(() => {
-				statusEl.textContent = '';
-				statusEl.className = 'plugin-detail-config-status';
-			}, 3000);
-		}
-
-		// Brief visual feedback on button
-		const originalText = saveBtn.textContent;
-		saveBtn.textContent = '✅ 已保存';
-		setTimeout(() => { saveBtn.textContent = originalText; }, 2000);
+		view.setStatus(localize('settingsSaved', '✅ 设置已保存'), 'success');
 	}
 
 	// ─── Enablement ─────────────────────────────────────────

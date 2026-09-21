@@ -497,6 +497,24 @@ export function tryExtractSkillName(content: string): string {
  *   1. 第一段非空非标题文本（最多 200 字符）
  *   2. 兜底 "Extracted skill from chat message"
  */
+/**
+ * 工具/系统注入的标记行（不是用户内容，**绝不能**进 description）。
+ *
+ * 背景（2026-09-20 审计）：此前只跳过 `#` 标题与 ``` 代码块 ⇒ `[Tool Failed: file_read] []`、
+ * `[Context Compressed] ## Active Task（当前任务）` 这类运行时标记被当成 description 段落，
+ * 产出垃圾技能（见 `~/.vssaros-dev/skills/tool-failed-file-read/SKILL.md`）。
+ */
+const SYSTEM_MARKER_RES: RegExp[] = [
+	/^\[(?:Tool Failed|Tool Result|Tool Use|Tool Error|Context Compressed|Context|System|Reminder|Notice)\b/i,
+	/^<(?:agentmemory-|system-|tool-|context-)[^>]*>/i,
+	/^\[(?:Tool|Context)\b[^\]]*\]\s*$/i,
+];
+
+/** 该行是否为系统/工具注入的标记（而非用户/模型正文）。 */
+function isSystemMarkerLine(t: string): boolean {
+	return SYSTEM_MARKER_RES.some(re => re.test(t));
+}
+
 export function tryExtractSkillDescription(content: string): string {
 	const lines = content.split('\n');
 	const paragraphs: string[] = [];
@@ -508,6 +526,8 @@ export function tryExtractSkillDescription(content: string): string {
 		if (t.startsWith('#')) { continue; }
 		// 跳过代码块
 		if (t.startsWith('```')) { continue; }
+		// ★ 2026-09-20：跳过系统/工具标记行（否则会污染 description，见上方注释）
+		if (isSystemMarkerLine(t)) { continue; }
 
 		if (t.length === 0) {
 			// 空行 → 段落结束

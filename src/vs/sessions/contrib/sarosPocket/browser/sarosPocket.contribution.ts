@@ -16,6 +16,24 @@ import { Action2, registerAction2 } from '../../../../platform/actions/common/ac
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
 import { SessionStatus } from '../../../services/sessions/common/session.js';
+import { IAgentStudioService } from '../../../common/agentStudioService.js';
+import { IModelSelectorService } from '../../agentStudio/common/modelSelector.js';
+// ★ 类型一律 `import type`（编译期擦除）：本文件是**扩展桥的命令实现**，
+//   运行时只应依赖服务令牌（上面两个 createDecorator）——不要把 UI 层模块拖进这个进程，
+//   否则命令注册所在的贡献模块可能在加载期就被牵连（那时所有 sarosPocket.* 命令会一起消失，
+//   现场表现就是"会话列表空 + 聊天头降级"，很难查）。
+import type { Agent, AgentBinding, Workspace } from '../../../common/agentStudioTypes.js';
+import type { IModelSelectorItem } from '../../agentStudio/common/modelSelector.js';
+import type { IModelSelection } from '../../agentStudio/common/providers.js';
+
+/**
+ * 输入框可选的聊天模式 id（与 `sessions/browser/agentChat/agentChatTypes.ts` 的
+ * `CHAT_MODE_ORDER` 等价：craft/ask/plan；`workflow` 由工作流编辑器驱动，不作为手选项）。
+ *
+ * 为什么在这里内联而不是 import：见上面的注释（不要为三个常量把 UI 层模块拖进命令进程）。
+ * 标签与说明由手机端按 id 映射（pocket 侧有一份同样的兜底文案），id 才是契约。
+ */
+const POCKET_CHAT_MODE_IDS = ['craft', 'ask', 'plan'] as const;
 
 /** 与 SessionStatus 对齐的稳定字符串，避免扩展侧依赖数值枚举。 */
 const STATUS_BY_CODE: Record<number, string> = {
@@ -153,6 +171,150 @@ class SarosPocketArchiveSessionAction extends Action2 {
 	}
 }
 
+/** 任一子读取失败都不该让整份上下文为空（例如没有 worktree 的仓库）。 */
+async function readOr<T>(p: Promise<T>, fallback: T): Promise<T> {
+	try {
+		return await p;
+	} catch {
+		return fallback;
+	}
+}
+
+/**
+ * 读取「聊天上下文」——手机端聊天框据此渲染与 VsSaros 聊天框同构的头部
+ * （chatmode / agent / 工作区 / worktree / provider+model）。
+ *
+ * 为什么走命令：聊天框是工作台进程里的 DOM 面板，扩展进程拿不到
+ * `IAgentStudioService` / `IModelSelectorService`，只能跨进程取（与 listSessions 同法）。
+ *
+ * ⚠ 语义边界：这里返回的是**可选项列表 + 当前生效值**。
+ *   · agent / workspace / worktree / model 的「当前值」是全局或 per-agent 持久化的 ✓ 可读；
+ *   · chatMode 是**每个聊天面板自己的本地状态**（不落共享服务）⇒ 这里只给可选模式清单，
+ *     手机端自己记住所选模式并随后续请求下发（见 setChatContext 的说明）。
+ */
+class SarosPocketGetChatContextAction extends Action2 {
+	static readonly ID = 'sarosPocket.getChatContext';
+
+	constructor() {
+		super({
+			id: SarosPocketGetChatContextAction.ID,
+			title: 'Saros Pocket: Get Chat Context',
+			f1: false,
+		});
+	}
+
+	override async run(accessor: ServicesAccessor): Promise<unknown> {
+		const studio = accessor.get(IAgentStudioService);
+		const selector = accessor.get(IModelSelectorService);
+
+		const agents = await readOr<Agent[]>(studio.getAgents(), []);
+		const workspaces = await readOr<Workspace[]>(studio.getWorkspaces(), []);
+		const workspaceId = studio.getActiveWorkspaceId() ?? null;
+		const worktrees = workspaceId ? await readOr(studio.getWorktrees(workspaceId), []) : [];
+		const models = await readOr<IModelSelectorItem[]>(selector.getAvailableModels(), []);
+		const selection = selector.getSelection() as IModelSelection | undefined;
+		const selected = selection as unknown as { providerId?: string; modelId?: string } | undefined;
+
+		return {
+			// 输入框可选的 3 档：只给 id（标签由客户端映射，见 POCKET_CHAT_MODE_IDS 的注释）
+			chatModes: POCKET_CHAT_MODE_IDS.map(id => ({ id })),
+			agents: agents.map(a => ({
+				id: String(a.id ?? ''),
+				name: String(a.name ?? ''),
+				icon: typeof a.icon === 'string' ? a.icon : '',
+				description: String(a.description ?? ''),
+				role: String(a.role ?? ''),
+			})),
+			workspaces: workspaces.map(w => ({
+				id: String(w.id ?? ''),
+				name: String(w.name ?? ''),
+				path: String(w.path ?? ''),
+				worktreePath: w.worktreePath ?? null,
+				worktreeBranch: w.worktreeBranch ?? null,
+			})),
+			workspaceId,
+			// 契约：worktrees 是**主仓库之外**的其他 worktree（主仓库由 workspace 本身表示）
+			worktrees: worktrees.map(t => ({
+				path: String(t.path ?? ''),
+				branch: String(t.branch ?? ''),
+				uncommitted: Number(t.uncommittedChanges ?? 0),
+			})),
+			models: models.map(m => ({
+				providerId: String(m.provider?.id ?? ''),
+				providerName: String(m.provider?.name ?? ''),
+				modelId: String(m.model?.id ?? ''),
+				modelName: String(m.model?.name ?? ''),
+			})),
+			selection: selected?.providerId && selected?.modelId
+				? { providerId: selected.providerId, modelId: selected.modelId }
+				: null,
+		};
+	}
+}
+
+/**
+ * 写「聊天上下文」——把手机端聊天框的选择**真的落到 VsSaros**：
+ *   · workspaceId  → 切活动工作区（`setActiveWorkspace`）
+ *   · worktreePath → 写进该 (workspace × agent) 的 AgentBinding（与桌面端选择 worktree 同一存储）
+ *   · providerId/modelId → 全局或 per-agent 的模型选择
+ *
+ * chatMode 不在此列：它是聊天面板的本地状态，没有可写的共享服务；
+ * 手机端把它随每条消息下发（`chat.send` 的 `context.chatMode`），由发送方决定语义。
+ */
+class SarosPocketSetChatContextAction extends Action2 {
+	static readonly ID = 'sarosPocket.setChatContext';
+
+	constructor() {
+		super({
+			id: SarosPocketSetChatContextAction.ID,
+			title: 'Saros Pocket: Set Chat Context',
+			f1: false,
+		});
+	}
+
+	override async run(accessor: ServicesAccessor, patch?: unknown): Promise<unknown> {
+		const p = (patch ?? {}) as {
+			workspaceId?: string;
+			worktreePath?: string | null;
+			agentId?: string;
+			providerId?: string;
+			modelId?: string;
+		};
+		const studio = accessor.get(IAgentStudioService);
+		const selector = accessor.get(IModelSelectorService);
+		const applied: string[] = [];
+
+		if (typeof p.workspaceId === 'string' && p.workspaceId) {
+			await studio.setActiveWorkspace(p.workspaceId);
+			applied.push('workspace');
+		}
+
+		if (p.worktreePath !== undefined) {
+			const wsId = (typeof p.workspaceId === 'string' && p.workspaceId) || studio.getActiveWorkspaceId();
+			const agentId = String(p.agentId ?? '').trim();
+			if (wsId && agentId) {
+				const patchBinding: Partial<AgentBinding> = { worktreePath: p.worktreePath ?? undefined };
+				await studio.upsertAgentBinding(wsId, agentId, patchBinding);
+				applied.push('worktree');
+			}
+		}
+
+		if (typeof p.providerId === 'string' && typeof p.modelId === 'string' && p.providerId && p.modelId) {
+			const sel = { providerId: p.providerId, modelId: p.modelId } as unknown as IModelSelection;
+			const agentId = String(p.agentId ?? '').trim();
+			if (agentId) {
+				selector.setSelectionForAgent(agentId, sel);
+				applied.push('model:agent');
+			} else {
+				selector.setSelection(sel);
+				applied.push('model');
+			}
+		}
+
+		return { ok: true, applied };
+	}
+}
+
 class SarosPocketContribution implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.sarosPocket';
 
@@ -160,6 +322,8 @@ class SarosPocketContribution implements IWorkbenchContribution {
 		registerAction2(SarosPocketListSessionsAction);
 		registerAction2(SarosPocketSendRequestAction);
 		registerAction2(SarosPocketArchiveSessionAction);
+		registerAction2(SarosPocketGetChatContextAction);
+		registerAction2(SarosPocketSetChatContextAction);
 	}
 }
 

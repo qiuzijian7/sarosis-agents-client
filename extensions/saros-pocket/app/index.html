@@ -9,6 +9,9 @@
      由 mobile/sync-web.mjs 在同步时按目标平台改写这条 meta。 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' http: https:; font-src 'self'">
 <title>Saros Pocket · VsSaros 随身助手</title>
+<!-- 品牌：与 VsSaros 同款 logo（wordmark 用 SVG；「添加到主屏幕」用方形 mark PNG） -->
+<link rel="icon" href="saros-logo.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -17,7 +20,7 @@
      因此 app.js 的 switchTab() 无需改动即可同时驱动两套导航（见 app.css）。 -->
 <nav class="sidenav" id="sidenav" aria-label="主导航">
   <button class="tab" data-view="inbox" type="button">
-    <span class="tab-ico" aria-hidden="true">📥</span><span class="tab-text">收件箱</span>
+    <span class="tab-ico" aria-hidden="true">📥</span><span class="tab-text">会话列表</span>
   </button>
   <button class="tab" data-view="chat" type="button">
     <span class="tab-ico" aria-hidden="true">💬</span><span class="tab-text">当前会话</span>
@@ -41,6 +44,7 @@
 <div class="shell">
 <header class="top">
   <div class="brand">
+    <img class="logo" src="saros-logo.svg" alt="VsSaros">
     <span class="dot" id="connDot"></span>
     <div>
       <div class="title">Saros Pocket</div>
@@ -51,7 +55,7 @@
 </header>
 
 <main id="views">
-  <!-- 收件箱：会话列表 + 状态徽标 + 筛选芯片（design-spec 2.1 四页签） -->
+  <!-- 会话列表（原「收件箱」）：VsSaros 的 Agent 会话 + 本地会话，状态徽标 + 筛选芯片 -->
   <section class="view" id="view-inbox">
     <div class="chips" id="sessionChips">
       <button class="chip active" data-status="all" type="button">全部</button>
@@ -59,7 +63,11 @@
       <button class="chip" data-status="waiting" type="button">待授权</button>
       <button class="chip" data-status="done" type="button">已完成</button>
       <button class="chip" data-status="failed" type="button">失败</button>
+      <!-- 归档 = Pocket 里的「结束」；只有真的存在归档会话时才显示（见 renderArchivedChip） -->
+      <button class="chip hidden" data-status="archived" type="button">已归档</button>
     </div>
+    <!-- 会话桥不可用时的诊断提示（老版本 VsSaros / 命令失败）——避免"列表空"无从判断成因 -->
+    <div class="session-diag hidden" id="sessionDiag"></div>
     <div class="sessions" id="sessionList"></div>
     <div class="inbox-foot">
       <button class="ghost small" id="reloadSessions" type="button">刷新</button>
@@ -68,9 +76,35 @@
   </section>
 
   <section class="view hidden" id="view-chat">
-    <div class="chat-bar">
-      <select id="modelSelect" aria-label="模型"></select>
-      <button class="ghost small" id="clearChat" type="button">清空</button>
+    <!-- 聊天头：与 VsSaros 聊天框同构 —— Agent / 工作区 / Worktree / 模型 + 聊天模式。
+         数据来自 VsSaros 的 sarosPocket.getChatContext（工作台进程的 IAgentStudioService），
+         改选即写回 VsSaros（切活动工作区 / 写 AgentBinding.worktreePath / 写模型选择）。 -->
+    <div class="chat-head" id="chatContextBar">
+      <div class="chat-ctx-row">
+        <label class="chat-ctx-field">
+          <span class="chat-ctx-label">Agent</span>
+          <select id="chatAgent" aria-label="Agent"></select>
+        </label>
+        <label class="chat-ctx-field">
+          <span class="chat-ctx-label">工作区</span>
+          <select id="chatWorkspace" aria-label="工作区"></select>
+        </label>
+      </div>
+      <div class="chat-ctx-row">
+        <label class="chat-ctx-field">
+          <span class="chat-ctx-label">Worktree</span>
+          <select id="chatWorktree" aria-label="Worktree"></select>
+        </label>
+        <label class="chat-ctx-field">
+          <span class="chat-ctx-label">模型</span>
+          <select id="modelSelect" aria-label="模型"></select>
+        </label>
+      </div>
+      <div class="chat-ctx-row chat-ctx-row--modes">
+        <div class="chat-modes" id="chatModes" role="group" aria-label="聊天模式"></div>
+        <button class="ghost small" id="clearChat" type="button">清空</button>
+      </div>
+      <div class="chat-ctx-hint" id="chatCtxHint"></div>
     </div>
     <div class="messages" id="messages"></div>
     <div class="composer">
@@ -96,28 +130,37 @@
         <option value="6">6 fps</option>
         <option value="10">10 fps</option>
       </select>
-      <select id="screenScale" aria-label="清晰度">
-        <option value="0.4">流畅</option>
+      <!-- 「清晰度」只决定**传输分辨率**（省流量），画面始终铺满显示区；
+           放大倍数越大越糊，想更清楚就选右边的高分辨率档（更耗流量）。 -->
+      <select id="screenScale" aria-label="清晰度（传输分辨率）">
+        <option value="0.4">省流量</option>
         <option value="0.5" selected>标准</option>
-        <option value="0.75">清晰</option>
-        <option value="1">原尺寸</option>
+        <option value="0.75">高清</option>
+        <option value="1">原尺寸（最清晰・最耗流量）</option>
       </select>
       <button class="ghost small" id="screenShot" type="button">截图</button>
       <button class="ghost small" id="screenFull" type="button">全屏</button>
       <button class="ghost small" id="screenReload" type="button">重连</button>
     </div>
     <div class="screen-wrap" id="screenWrap">
+      <!-- 尺寸由 app.js 的 fitScreenImage() 按可用区域算（保持比例铺满）；
+           别在这里写死 width/height，否则全屏后画面只占中间一小块。 -->
       <img id="screenImg" alt="VsSaros 桌面画面">
+      <!-- 远程操作生效时的常显标识（默认开启 ⇒ 必须让人一眼看到自己的电脑正被操控） -->
+      <div class="screen-inputbadge hidden" id="screenInputBadge" role="status">⌨ 远程操作中</div>
       <div class="screen-hint" id="screenStatus">…</div>
+      <button class="screen-exit hidden" id="screenExit" type="button">退出全屏</button>
     </div>
     <div class="screen-input hidden" id="screenInputBar">
       <label class="switchline"><input type="checkbox" id="screenInputOn"> 允许远程操作（点击 / 滚轮 / 键盘）</label>
+      <div class="screen-inputnote" id="screenInputNote"></div>
       <div class="screen-keys">
         <button class="ghost small" data-key="enter" type="button">Enter</button>
         <button class="ghost small" data-key="esc" type="button">Esc</button>
         <button class="ghost small" data-key="ctrl+s" type="button">Ctrl+S</button>
         <button class="ghost small" data-key="up" type="button">↑</button>
         <button class="ghost small" data-key="down" type="button">↓</button>
+        <button class="ghost small" id="screenInputRecheck" type="button">重新检测</button>
       </div>
       <input id="screenText" type="text" placeholder="输入文字，回车发送到 VsSaros">
     </div>
@@ -162,7 +205,7 @@
 </main>
 
 <nav class="tabs">
-  <button class="tab active" data-view="inbox" type="button">收件箱</button>
+  <button class="tab active" data-view="inbox" type="button">会话列表</button>
   <button class="tab" data-view="chat" type="button">当前会话</button>
   <button class="tab" data-view="screen" type="button">屏幕</button>
   <button class="tab" data-view="changes" type="button">变更</button>

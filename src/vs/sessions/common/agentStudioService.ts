@@ -27,6 +27,9 @@ import type {
 	ConfigHtmlCapability,
 } from "./agentStudioTypes.js";
 import type { IWorktreeWorkspaceOptions } from "../contrib/worktree/common/worktreeTypes.js";
+// ★ P1-5：会话**事件流**游标协议的类型（纯 type 导入 ⇒ 运行时零依赖 ✓；
+//   与上面的 worktree 同款跨 contrib 的 type 依赖 ✓）。
+import type { IReadSessionEventsResult, ISessionEventCursor } from "../contrib/agentStudio/common/sessionEventStream.js";
 
 // --- Agent Preset type ---
 
@@ -776,6 +779,15 @@ export interface IAgentChatService {
 	): Promise<ChatMessage>;
 
 	getHistory(agentId: string, sessionId?: string): Promise<ChatMessage[]>;
+	/**
+	 * ★ P1-5（2026-09-21）：按**游标**增量读取会话事件 ✓
+	 * （跨进程/跨窗口消费的唯一入口 ⇒ 不再依赖进程内内存共享 ✓）。
+	 *
+	 * 事件语义（`message` / `reset` ✓）与压缩安全见
+	 * `contrib/agentStudio/common/sessionEventStream.ts` 头注释 ✓；
+	 * ⚠ 收到 `reset` ⇒ 重新 `getHistory`（它会合并**快照** ✓）。
+	 */
+	readSessionEvents(agentId: string, sessionId: string, cursor?: ISessionEventCursor): Promise<IReadSessionEventsResult>;
 	clearHistory(agentId: string, sessionId?: string): Promise<void>;
 	cancelStream(agentId: string, agentSessionId?: string): void;
 

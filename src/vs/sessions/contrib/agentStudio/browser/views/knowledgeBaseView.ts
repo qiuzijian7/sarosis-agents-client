@@ -105,6 +105,17 @@ import { resolveAuxEmbeddingProviderId, resolveAuxEmbeddingConfig } from '../kno
 import { KbWorkerManager } from './knowledgeBase/kbWorkerManager.js';
 import { renderKbSettingsPanel } from './knowledgeBase/kbSettingsPanel.js';
 import { AGENT_STUDIO_KB_AGENTIC_BUILD } from '../../common/constants.js';
+import {
+	AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED,
+	AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT,
+	AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS,
+	AGENT_STUDIO_KB_FEISHU_SYNC_PARENT,
+	AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT,
+	AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL,
+	AGENT_STUDIO_KB_FEISHU_AUTO_SYNC,
+} from '../../common/constants.js';
+import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
 import { MemoryDetailEditorInput } from '../memoryDetailEditorInput.js';
 import { CodebaseMemoryDetailEditorInput } from '../codebaseMemoryDetailEditorInput.js';
@@ -330,6 +341,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IUndoRedoService private readonly undoRedoService: IUndoRedoService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@IAgentOSService private readonly _agentOSService: IAgentOSService,
+		@ITerminalService private readonly terminalService: ITerminalService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._index = new KbFullTextIndex(this.fileService);
@@ -485,6 +498,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		// 设置面板（⚙ 下拉）
 		this._settingsDD = $('div.kb-dropdown.kb-settings');
+		// 面板项较多（目录 / 构建方式 / Embedding / 飞书同步 / 统计）：限高并允许滚动，
+		// 否则小窗口下底部区块（飞书同步按钮等）会被视口截断而无法操作。
+		this._settingsDD.style.maxHeight = 'calc(100vh - 56px)';
+		this._settingsDD.style.overflowY = 'auto';
 
 		// ── ═══ 顶部 Tab：资料 / 记忆 / 代码 ═══ ──
 		// 2026-09-15 重构：原先「文件树 + 记忆库 + 代码库」纵向堆叠，三段常驻 ⇒
@@ -2965,13 +2982,124 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			sqliteActive: !!this._kbSqliteStore,
 			linkedWorkspaceCount: this._activeVault?.linkedWorkspaces?.length ?? 0,
 			agenticBuild: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_AGENTIC_BUILD) !== false,
+			feishuSync: {
+				enabled: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED) === true,
+				scriptPath: this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT) || '.codebuddy/kb-feishu-sync.mjs',
+				srcDirs: this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS) ?? '',
+				parent: this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_PARENT) || 'my_library',
+				onConflict: this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT) === 'skip' ? 'skip' : 'overwrite',
+				interval: this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL) ?? 800,
+				autoSync: this.configurationService.getValue<boolean>(AGENT_STUDIO_KB_FEISHU_AUTO_SYNC) === true,
+				syncedCount: this._feishuSyncedCount,
+			},
 			logOp: (code, detail) => { void this._logOp(code, 'success', detail); },
 			onPickDir: (current) => { void this.pickKbDir(current); },
 			onApplyDir: (dir) => { void this.applyKbDir(dir); },
 			onRebuildVectorIndex: () => { void this.rebuildVectorIndex(); },
 			onOpenKbFolder: () => { void this.openKbFolder(); },
+			onFeishuSync: (mode) => { void this.syncToFeishu(mode); },
+			onOpenFeishuLog: () => { void this.openFeishuLog(); },
 			onRerender: () => this.renderSettingsPanel(),
 		});
+		// 已同步篇数为异步统计（读 frontmatter）：面板先渲染，统计完成后局部更新提示文案
+		void this._refreshFeishuSyncedCount();
+	}
+
+	// ═══════════════════════════════════════════════════════════
+	//  飞书同步（可选能力）：命令拼装 + 终端执行 + 日志
+	// ═══════════════════════════════════════════════════════════
+
+	/** 缓存的「已同步篇数」（-1 = 未统计）；面板快照与提示文案共用。 */
+	private _feishuSyncedCount = -1;
+
+	/**
+	 * 拼装并执行飞书同步脚本（在集成终端里跑，输出对用户可见）。
+	 * dry-run = 只打印计划（默认）；apply = 实际写入飞书。
+	 */
+	private async syncToFeishu(mode: 'dry-run' | 'apply'): Promise<void> {
+		const script = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT) || '.codebuddy/kb-feishu-sync.mjs').trim();
+		if (!script) {
+			this.notificationService.warn(localize('kb.feishuNoScript', '未配置飞书同步脚本路径。'));
+			return;
+		}
+		if (!this._activeVault) {
+			this.notificationService.warn(localize('kb.feishuNoVault', '没有可用的知识库 Vault，无法同步。'));
+			return;
+		}
+
+		const srcDirs = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS) ?? '')
+			.split(',').map(s => s.trim()).filter(Boolean);
+		const parent = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_PARENT) || 'my_library').trim();
+		const onConflict = this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT) === 'skip' ? 'skip' : 'overwrite';
+		const rawInterval = this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL);
+		const interval = Number.isFinite(rawInterval) && rawInterval >= 0 ? rawInterval : 800;
+
+		// 与 kb-feishu-sync.mjs 的 CLI 契约保持一致（--vault/--src/--parent/--on-conflict/--interval）
+		const args: string[] = [script, '--vault', this.rootUri.fsPath];
+		for (const d of srcDirs) { args.push('--src', d); }
+		args.push('--parent', parent, '--on-conflict', onConflict, '--interval', String(interval));
+		args.push(mode === 'apply' ? '--apply' : '--dry-run');
+
+		// 脚本路径默认相对工作区根目录 ⇒ cwd 取第一个工作区文件夹
+		const cwd = this.workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+		void this._logOp('feishu.sync', 'success', { target: mode, detail: { srcCount: srcDirs.length, parent, onConflict } });
+
+		try {
+			const terminal = await this.terminalService.createTerminal({
+				config: {
+					name: `KB → 飞书同步（${mode === 'apply' ? '同步' : '预览'}）`,
+					executable: 'node',
+					args,
+					cwd,
+					waitOnExit: true, // 结束后保留终端，便于查看输出
+				},
+			});
+			this.terminalService.setActiveInstance(terminal);
+			await this.terminalService.revealTerminal(terminal);
+		} catch (err) {
+			this.logService.warn(`[KB] feishu sync launch failed: ${err instanceof Error ? err.message : String(err)}`);
+			this.notificationService.warn(localize('kb.feishuLaunchFailed', '飞书同步启动失败：{0}', err instanceof Error ? err.message : String(err)));
+		}
+	}
+
+	/** 打开同步日志（<vault>/.feishu-sync.log）；不存在时给出提示。 */
+	private async openFeishuLog(): Promise<void> {
+		const logUri = URI.joinPath(this.rootUri, '.feishu-sync.log');
+		try {
+			await this.fileService.stat(logUri);
+		} catch {
+			this.notificationService.info(localize('kb.feishuLogMissing', '暂无同步日志（{0}）——先执行一次同步。', logUri.fsPath));
+			return;
+		}
+		await this.openerService.open(logUri);
+	}
+
+	/**
+	 * 统计已同步笔记数（frontmatter 含 feishu 块且带 token），并局部更新面板提示。
+	 * 跳过点开头目录与「库」原件判定依赖：库文件不带 feishu 块，天然不计入。
+	 */
+	private async _refreshFeishuSyncedCount(): Promise<void> {
+		if (!this._activeVault) { this._feishuSyncedCount = -1; return; }
+		let count = 0;
+		const walk = async (dir: URI): Promise<void> => {
+			let stat;
+			try { stat = await this.fileService.resolve(dir); } catch { return; }
+			for (const child of stat.children ?? []) {
+				if (child.name.startsWith('.')) { continue; }
+				if (child.isDirectory) { await walk(child.resource); continue; }
+				if (!/\.(md|markdown)$/i.test(child.name)) { continue; }
+				try {
+					const text = (await this.fileService.readFile(child.resource)).value.toString();
+					if (/^feishu:\s*$/m.test(text) && /^\s+token:\s*\S+/m.test(text)) { count++; }
+				} catch { /* 读取失败跳过 */ }
+			}
+		};
+		await walk(this.rootUri);
+		this._feishuSyncedCount = count;
+		const el = this._settingsDD.querySelector('#kbFeishuSyncedCount') as HTMLElement | null;
+		if (el) {
+			el.textContent = `已同步 ${count} 篇（按笔记 frontmatter 的 feishu.token 统计）· 同步前需完成 lark-cli 登录`;
+		}
 	}
 
 	/** 调原生文件夹选择框，选取知识库目录。 */

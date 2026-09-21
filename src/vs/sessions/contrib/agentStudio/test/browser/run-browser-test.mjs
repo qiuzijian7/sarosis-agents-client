@@ -16,6 +16,9 @@ import * as esbuild from 'esbuild';
 //   bridgeStub 是 `.mjs`（纯 JS）正因为本 runner 不经 esbuild 打包，只能 import `.mjs`。
 //   这样才能杜绝「Node mocha / 浏览器 visual」两份 stub 各自演进导致行为漂移。
 import { installBridgeMock } from '../../webview/visual/bridgeStub.mjs';
+// DOM stub（jsdom）同理：由 runner 原生装载（esbuild 打包 jsdom 会破坏它的运行时资源解析）。
+// 惰性创建 ⇒ 不碰 DOM 的测试不受影响。
+import { installDomStub } from './domStub.mjs';
 
 const require = createRequire(import.meta.url);
 const Mocha = require('mocha');
@@ -81,6 +84,8 @@ const mocha = new Mocha({ ui: 'tdd', timeout: 10000 });
 if (!(globalThis).__vssarosBridge) {
 	installBridgeMock('node');
 }
+// DOM 全局（jsdom）：只依赖 DOM 的模块可直接单测；不在浏览器里运行时才装
+installDomStub();
 mocha.addFile(out);
 mocha.run((failures) => {
 	process.exit(failures ? 1 : 0);

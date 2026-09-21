@@ -261,6 +261,9 @@ export function registerPlanExploreTool(ctx: {
 					try {
 						ctx.agentOS.fireSubAgentTrace({
 							groupId: batchGroupId,
+							// 2026-09-21 归属：旁路总线是全局的，快照必须带**父回合**身份，
+							// 否则旁观面板无法过滤（刷 WARN）、双会话并行时会跨会话错挂 ✗。
+							agentId, sessionId,
 							subagentData: [...cardMap.values()].map(c => ({
 								id: c.id, type: c.type, task: c.task, status: c.status,
 								progress: c.progress, output: c.output, streamingOutput: c.streamingOutput, error: c.error, groupId: c.groupId,

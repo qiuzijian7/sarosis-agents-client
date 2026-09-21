@@ -44,3 +44,35 @@ export async function writeFileAtomicSafe(fileService: IFileService, resource: U
 	}
 	await fileService.writeFile(resource, content);
 }
+
+/**
+ * 追加写（**只追加，不重写** ✓）—— 2026-09-21（P0-1 会话追加日志）。
+ *
+ * 与 `writeFileAtomicSafe` 同款「先探能力、探不到就降级」策略 ✓：
+ * `diskFileSystemProvider` / `indexedDBFileSystemProvider` 都声明了 `FileAppend` ✓，
+ * 但会话数据可能落在 remote / 虚拟 FS 上 ⇒ 缺能力时 `fileService.writeFile(..., { append: true })`
+ * 会**直接 throw**（`platform/files/common/fileService.ts` 的 `writeFailedFileAppendUnsupported` 分支 ✗）。
+ * ⇒ 降级为「读-拼接-原子写」：语义相同（末尾追加），代价是该次写入退化成整文件重写
+ * （少一层增量收益，但**绝不失败、也绝不半写** ✓）。
+ *
+ * ⚠ 调用方须知：`append` 不保证「多字节写入的原子性」—— 进程若在写入中途被 kill，
+ * 文件末尾可能留下**半行 JSON** ✓。消费侧必须容忍（见 `sessionHistoryLog.replaySessionLog`
+ * 的「只丢那一行」策略 ✓），不要在此处加校验后抛错 ✗。
+ */
+export async function appendFileSafe(fileService: IFileService, resource: URI, content: VSBuffer): Promise<void> {
+	if (fileService.hasCapability(resource, FileSystemProviderCapabilities.FileAppend)) {
+		// ⚠ 不需要（也不能）显式传 `create: true` —— `IFileWriteOptions.append` 的语义已隐含
+		// 「文件不存在则创建」（见 `platform/files/common/files.ts` 的注释 ✓）。
+		await fileService.writeFile(resource, content, { append: true });
+		return;
+	}
+	let existing: VSBuffer | undefined;
+	try {
+		if (await fileService.exists(resource)) {
+			existing = (await fileService.readFile(resource)).value;
+		}
+	} catch {
+		existing = undefined; // 读不到就当作空文件（宁可丢旧尾巴，也不要写入失败 ✗）
+	}
+	await writeFileAtomicSafe(fileService, resource, existing ? VSBuffer.concat([existing, content]) : content);
+}

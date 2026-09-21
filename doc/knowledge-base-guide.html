@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VsSaros 知识库使用说明（含界面 Mockup）</title>
+<style>
+	:root {
+		--bg: #f7f8fa; --panel: #ffffff; --ink: #1f2328; --ink-soft: #57606a;
+		--line: #d8dee4; --accent: #2f6feb; --accent-soft: #eaf1fe;
+		--ok: #1a7f37; --warn: #9a6700; --danger: #b42318;
+		--code-bg: #f2f3f5; --radius: 10px;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; background: var(--bg); color: var(--ink);
+		font-family: "Segoe UI", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, sans-serif;
+		line-height: 1.7; font-size: 15px;
+	}
+	.layout { display: flex; max-width: 1300px; margin: 0 auto; gap: 28px; padding: 28px 24px 80px; }
+	nav.toc {
+		position: sticky; top: 24px; align-self: flex-start; width: 246px; flex: none;
+		background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+		padding: 16px 14px; max-height: calc(100vh - 48px); overflow: auto;
+	}
+	nav.toc h3 { margin: 4px 0 10px; font-size: 13px; color: var(--ink-soft); letter-spacing: .5px; }
+	nav.toc a { display: block; padding: 5px 8px; color: var(--ink-soft); text-decoration: none; font-size: 13.5px; border-radius: 6px; }
+	nav.toc a:hover { background: var(--accent-soft); color: var(--accent); }
+	nav.toc a.sub { padding-left: 20px; font-size: 12.8px; }
+	main { flex: 1; min-width: 0; }
+	header.hero {
+		background: linear-gradient(135deg, #20304a, #2f6feb); color: #fff;
+		border-radius: var(--radius); padding: 26px 30px; margin-bottom: 24px;
+	}
+	header.hero h1 { margin: 0 0 6px; font-size: 25px; }
+	header.hero p { margin: 0; opacity: .92; font-size: 14px; }
+	.badges { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+	.badge { background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.28); padding: 3px 10px; border-radius: 999px; font-size: 12.5px; }
+	section.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 26px; margin-bottom: 20px; }
+	h2 { margin: 0 0 14px; font-size: 19px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+	h3 { margin: 22px 0 8px; font-size: 15.5px; color: var(--accent); }
+	h4 { margin: 16px 0 6px; font-size: 14.5px; }
+	p { margin: 8px 0; }
+	ul, ol { margin: 8px 0; padding-left: 22px; }
+	li { margin: 4px 0; }
+	code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 13px; font-family: Consolas, "SF Mono", monospace; }
+	pre { background: #1f2430; color: #e6e6e6; padding: 14px 16px; border-radius: 8px; overflow: auto; font-size: 12.5px; line-height: 1.6; }
+	pre code { background: none; color: inherit; padding: 0; }
+	table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+	th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+	th { background: var(--code-bg); font-weight: 600; }
+	.note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13.5px; }
+	.warn { border-left: 3px solid var(--warn); background: #fff8e6; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13.5px; }
+	.ok { border-left: 3px solid var(--ok); background: #eaf6ec; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13.5px; }
+	.danger { border-left: 3px solid var(--danger); background: #fdecea; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13.5px; }
+	.kbd { display: inline-block; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 0 6px; background: #fff; font-size: 12.5px; }
+	.path { font-size: 12.5px; color: var(--ink-soft); word-break: break-all; }
+	.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; margin: 14px 0 4px; }
+	.step { border: 1px solid var(--line); border-radius: 8px; padding: 13px 15px; background: #fcfcfd; }
+	.step .n { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 11.5px; font-weight: 700; margin-right: 6px; }
+	.step h4 { margin: 0 0 6px; font-size: 14px; }
+	.step p { margin: 0; font-size: 13px; color: var(--ink-soft); }
+	footer { color: var(--ink-soft); font-size: 13px; text-align: center; padding: 12px 0 0; }
+
+	/* ── Mockup 通用 ── */
+	.mock { border: 1px solid var(--line); border-radius: 10px; background: #fbfbfd; margin: 14px 0 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(31,35,40,.06); }
+	.mock-bar { display: flex; align-items: center; gap: 6px; background: #eceef2; border-bottom: 1px solid var(--line); padding: 7px 12px; font-size: 12px; color: var(--ink-soft); }
+	.mock-bar .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+	.mock-bar .dot.r { background: #ff5f57; } .mock-bar .dot.y { background: #febc2e; } .mock-bar .dot.g { background: #28c840; }
+	.mock-body { display: flex; min-height: 0; font-size: 13px; }
+	.mock-side { width: 292px; flex: none; border-right: 1px solid var(--line); background: #f5f6f8; padding: 10px 12px; }
+	.mock-main { flex: 1; padding: 12px 16px; background: #fff; min-width: 0; }
+	.mock-toolbar { display: flex; gap: 6px; align-items: center; padding-bottom: 8px; border-bottom: 1px solid var(--line); margin-bottom: 8px; flex-wrap: wrap; }
+	.mock-btn { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 2px 8px; font-size: 12px; color: var(--ink); white-space: nowrap; display: inline-block; }
+	.mock-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+	.mock-btn.dim { color: var(--ink-soft); }
+	.mock-tree { font-family: Consolas, monospace; font-size: 12.5px; line-height: 1.95; color: var(--ink); }
+	.mock-tree .dir { color: var(--accent); font-weight: 600; }
+	.mock-tree .sys { color: var(--ink-soft); }
+	.mock-tree .sel { background: var(--accent-soft); border-radius: 4px; display: inline-block; padding: 0 4px; }
+	.mock-hit { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin: 6px 0; background: #fff; }
+	.mock-hit.semantic { border-left: 3px solid var(--accent); }
+	.mock-hit.full { border-left: 3px solid var(--ok); }
+	.mock-hit .t { font-weight: 600; font-size: 12.5px; }
+	.mock-hit .s { color: var(--ink-soft); font-size: 12px; }
+	.mock-head { font-size: 12px; color: var(--ink-soft); margin: 10px 0 4px; padding-top: 8px; border-top: 1px dashed var(--line); }
+	.mock-head.warnline { color: var(--warn); }
+	.mock-check { accent-color: var(--accent); }
+	.mock-note { font-size: 12px; color: var(--ink-soft); }
+	.num { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; vertical-align: -3px; margin: 0 2px; }
+	.mock-cols { display: flex; gap: 18px; align-items: flex-start; }
+	.mock-cols .mock { flex: 1.4; }
+	.mock-guide { flex: 1; font-size: 13.5px; }
+	.mock-guide ol { padding-left: 20px; }
+	.mock-guide h4 { margin: 0 0 6px; font-size: 14px; }
+	.mock-menu { border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 6px 18px rgba(31,35,40,.12); padding: 5px 0; width: 210px; font-size: 12.5px; }
+	.mock-menu div { padding: 3px 12px; }
+	.mock-menu div.hl { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+	.mock-menu div.sep { border-top: 1px solid var(--line); margin: 4px 0; padding: 0; height: 0; }
+	.mock-menu .dim { color: var(--ink-soft); }
+	.flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; font-size: 12.5px; }
+	.flow .box { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 6px 10px; }
+	.flow .box.acc { border-color: var(--accent); background: var(--accent-soft); }
+	.flow .arw { color: var(--ink-soft); }
+	@media (max-width: 1000px) { .mock-cols { flex-direction: column; } .mock-side { width: auto; border-right: none; border-bottom: 1px solid var(--line); } }
+	@media (max-width: 900px) { .layout { flex-direction: column; } nav.toc { position: static; width: auto; max-height: none; } }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+	<h3>目录</h3>
+	<a href="#quick">1. 五分钟上手</a>
+	<a href="#ui">2. 界面总览</a>
+	<a href="#import">3. 导入资料</a>
+	<a href="#build">4. 构建为笔记</a>
+	<a href="#search">5. 检索与问答</a>
+	<a href="#tools">6. Agent 工具</a>
+	<a href="#graph">7. 图谱与摘要</a>
+	<a href="#files">8. 文件管理</a>
+	<a href="#settings">9. 设置与配置</a>
+	<a href="#feishu">10. 飞书同步</a>
+	<a href="#faq">11. 排错与已知问题</a>
+</nav>
+
+<main>
+
+<header class="hero">
+	<h1>VsSaros 知识库 · 使用说明</h1>
+	<p>从资料导入到 Agent 检索：一套运行在 IDE 内、零外部服务、离线可用的个人知识库。</p>
+	<div class="badges">
+		<span class="badge">渲染进程内运行</span>
+		<span class="badge">Markdown / Obsidian 兼容</span>
+		<span class="badge">BM25 + 向量混合检索（RRF）</span>
+		<span class="badge">双链知识图谱</span>
+		<span class="badge">可用飞书同步</span>
+	</div>
+</header>
+
+<!-- ═══════════════ 1 ═══════════════ -->
+<section class="card" id="quick">
+	<h2>1. 五分钟上手</h2>
+	<div class="grid">
+		<div class="step"><h4><span class="n">1</span>打开视图</h4><p>侧边栏「知识库」视图 → <span class="kbd">新建知识库</span>（默认名「我的知识库」，落在 <code>~/.vssaros/knowledge-base/&lt;vault-id&gt;/</code>），或 <span class="kbd">选择文件夹作为知识库</span> 复用已有 Obsidian 库。</p></div>
+		<div class="step"><h4><span class="n">2</span>导入资料</h4><p>三处任意一处点「导入知识库」：聊天消息按钮 / write_file 卡片按钮 / 工作区文件右键。资料即刻落盘到「库」分区（<code>库/raw/</code>）。</p></div>
+		<div class="step"><h4><span class="n">3</span>构建为笔记</h4><p>右键库文件 →「构建为笔记」（或批量构建全部未处理项）。产出结构化笔记 + 双链 + 导航与摘要。</p></div>
+		<div class="step"><h4><span class="n">4</span>建向量索引</h4><p>设置面板 →「重新构建向量索引」（需先配置 Embedding Provider；未配置时全文检索仍可用）。</p></div>
+		<div class="step"><h4><span class="n">5</span>开始提问</h4><p>在聊天里直接问 —— Agent 会调用 <code>kb_search</code> 检索你的笔记，回答带 <code>[[笔记名]]</code> 引用。</p></div>
+		<div class="step"><h4><span class="n">+</span>可选：同步飞书</h4><p><code>node .codebuddy/kb-feishu-sync.mjs --vault &lt;vault&gt; --src &lt;目录&gt; --apply</code>，让笔记出现在飞书个人知识库（见第 10 节）。</p></div>
+	</div>
+	<div class="ok"><strong>依赖说明</strong>：导入与构建需要 <strong>Chat Provider</strong>（LLM）；语义检索需要 <strong>Embedding Provider</strong>（可选，未配置则只有全文检索）。两者都在通用模型设置里配置。</div>
+</section>
+
+<!-- ═══════════════ 2 ═══════════════ -->
+<section class="card" id="ui">
+	<h2>2. 界面总览</h2>
+
+	<div class="mock-cols">
+		<div class="mock">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;知识库 — VsSaros</div>
+			<div class="mock-body">
+				<div class="mock-side">
+					<div class="mock-toolbar">
+						<span class="mock-btn primary">＋ 导入 <span class="num">1</span></span>
+						<span class="mock-btn">构建 <span class="num">2</span></span>
+						<span class="mock-btn">图谱 <span class="num">3</span></span>
+						<span class="mock-btn">设置 <span class="num">4</span></span>
+					</div>
+					<div class="mock-tree">
+						<span class="dir">▾ 库</span> <span class="sys">（导入的原始资料）</span><br>
+						&nbsp;&nbsp;&nbsp;▾ raw<br>
+						&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="sel">什么是Agent-2026-09-20.md</span> <span class="sys">⟳</span><br>
+						&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;动态派生子Agent-2026-09-21.md<br>
+						<span class="dir">▾ 笔记</span> <span class="sys">（构建后的结构化笔记）</span><br>
+						&nbsp;&nbsp;&nbsp;▾ 01-基础概念<br>
+						&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;什么是 Agent.md<br>
+						&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;大模型幻觉.md<br>
+						&nbsp;&nbsp;&nbsp;▾ 07-多Agent系统<br>
+						&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;动态派生子Agent.md<br>
+						<span class="sys">── 导航文件 ──</span><br>
+						&nbsp;&nbsp;index.md<br>
+						&nbsp;&nbsp;overview.md<br>
+						&nbsp;&nbsp;insights.md
+					</div>
+				</div>
+				<div class="mock-main">
+					<div class="mock-note">中间栏：点击笔记 = WYSIWYG 编辑器；点击工具栏「图谱」= 关系图谱视图</div>
+					<div class="mock-head">文件预览 <span class="num">5</span></div>
+					<div class="mock-hit">
+						<div class="t">什么是 Agent.md</div>
+						<div class="s">frontmatter：type: 概念 · title · created · sources（指向库文件）· status</div>
+						<div class="s">正文含双链 [[大模型幻觉]] · [[Agent Loop 构建指南]]</div>
+					</div>
+					<div class="mock-head">构建中状态 <span class="num">6</span></div>
+					<div class="mock-note">正在「构建为笔记」的库文件会显示旋转图标，构建完成后自动消失</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<h4>三栏布局与工具栏</h4>
+			<ol>
+				<li><strong>＋ 导入</strong>——把当前上下文（聊天消息 / 工作区文件）导入「库」分区。</li>
+				<li><strong>构建</strong>——批量处理所有未构建的库文件。</li>
+				<li><strong>图谱</strong>——打开关系图谱（双链共现 + Louvain 社区）。</li>
+				<li><strong>设置</strong>——构建方式开关、向量索引、文件夹快捷入口。</li>
+				<li><strong>两个分区</strong>：<code>库/</code> 是资料原件（只进不改），<code>笔记/</code> 是 LLM 产出的结构化笔记（按类型/主题分目录）。</li>
+				<li><strong>构建中提示</strong>：构建是异步的，可继续做别的事。</li>
+			</ol>
+			<div class="note">导航文件 <code>index.md</code> / <code>overview.md</code> / <code>insights.md</code> 由系统自动维护，<strong>不要手工编辑</strong>（下次构建会覆盖）。</div>
+		</div>
+	</div>
+</section>
+
+<!-- ═══════════════ 3 ═══════════════ -->
+<section class="card" id="import">
+	<h2>3. 导入资料</h2>
+
+	<h3>3.1 三个入口，同一条管线</h3>
+	<table>
+		<tr><th>入口</th><th>位置</th><th>适合场景</th></tr>
+		<tr><td>聊天消息按钮</td><td>任意助手回复下方的「导入知识库」</td><td>把一段高价值对话沉淀为资料</td></tr>
+		<tr><td>write_file 卡片按钮</td><td>聊天里文件写入卡片上的「导入知识库」</td><td>Agent 刚生成的文档直接入库</td></tr>
+		<tr><td>工作区文件右键</td><td>资源管理器 / 工作区视图文件右键「导入知识库」</td><td>把手头的 md / 资料文件批量入库</td></tr>
+	</table>
+	<div class="note">三者共用 <code>KbImportController</code>：<strong>阶段 1 落盘</strong> → 立即（或稍后）<strong>阶段 2 构建</strong>。聊天入口默认两步连做，工作区右键同理。</div>
+
+	<h3>3.2 导入两阶段流程</h3>
+	<div class="mock-cols">
+		<div class="mock">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;聊天 → 导入 → 构建</div>
+			<div class="mock-body">
+				<div class="mock-main">
+					<div class="mock-hit">
+						<div class="t">助手回复：RAG 的进化路径…</div>
+						<div class="s"><span class="mock-btn">复制</span> <span class="mock-btn primary">导入知识库 <span class="num">1</span></span></div>
+					</div>
+					<div class="mock-head">阶段 1：分类 + 落盘 <span class="num">2</span></div>
+					<div class="mock-note">schema 分类（type / topic）→ 写入 <code>库/raw/&lt;类型&gt;/&lt;标题&gt;-&lt;日期&gt;.md</code>（带 frontmatter 保留溯源）<br>
+					通知：<em>已保存到知识库「库/raw」分区（概念/RAG）。可右键库文件「构建为笔记」生成结构化笔记。</em></div>
+					<div class="mock-head">阶段 2：构建笔记 <span class="num">3</span></div>
+					<div class="mock-note">两阶段 LLM（分析规划 → FILE 块批量产出）→ <code>笔记/01-基础概念/RAG 进化.md</code>，同时建立 <code>[[双链]]</code>、更新导航、生成摘要</div>
+					<div class="mock-head">构建方式 <span class="num">4</span></div>
+					<div class="mock-note">默认走 <strong>Agentic 构建</strong>（<code>knowledge-base-expert</code> Agent，可用工具与技能）；Agent 无产出或报错时<strong>自动回退</strong>直连 LLM 管线，两条路径共享构建缓存</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<h4>要点</h4>
+			<ol>
+				<li>导入即落盘，<strong>不会丢失</strong>——即使构建失败，原件仍在 <code>库/</code> 里，可稍后重试。</li>
+				<li>分类由 schema 驱动（概念 / 方法 / 案例 / 问答…），决定笔记落到哪个目录。</li>
+				<li>阶段 2 会自动补 <code>sources</code> 溯源双链，指向 <code>库/</code> 中的原件。</li>
+				<li>构建方式可在设置中关闭（见第 9 节），关闭后为纯 LLM 直连，更快更省但无工具能力。</li>
+			</ol>
+			<div class="warn">导入需要可用 Chat Provider；若报 <em>CORS 被拦截</em>，请检查 Provider 配置与网络代理。</div>
+		</div>
+	</div>
+</section>
+
+<!-- ═══════════════ 4 ═══════════════ -->
+<section class="card" id="build">
+	<h2>4. 构建为笔记</h2>
+
+	<div class="mock-cols">
+		<div class="mock" style="max-width:420px">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;库文件右键菜单</div>
+			<div class="mock-body">
+				<div class="mock-main" style="background:#f5f6f8">
+					<div class="mock-menu">
+						<div class="hl">构建为笔记 <span class="num">1</span></div>
+						<div class="sep"></div>
+						<div>打开</div>
+						<div>在系统资源管理器中显示</div>
+						<div class="sep"></div>
+						<div>剪切 / 复制 / 粘贴</div>
+						<div>复制路径 / 复制相对路径</div>
+						<div>重命名</div>
+						<div class="sep"></div>
+						<div>新建文件 / 新建文件夹</div>
+						<div class="dim">删除</div>
+						<div class="dim">永久删除</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<h4>单个构建 vs 批量构建</h4>
+			<ol>
+				<li><strong>单个</strong>：库文件右键「构建为笔记」——只处理这一份资料。</li>
+				<li><strong>批量</strong>：工具栏「构建」——处理所有未构建的库文件；全部处理完会提示「所有库文件已构建」。</li>
+				<li><strong>构建中</strong>：文件名旁出现旋转图标；完成后发出通知「笔记构建完成」。</li>
+				<li><strong>缓存</strong>：同内容重复构建走缓存，不会重复消耗 LLM 额度。</li>
+			</ol>
+			<div class="ok"><strong>产出物清单</strong>：结构化笔记（按类型/主题分目录）+ <code>[[双链]]</code> + 确定性补链（零 LLM 成本扫描全库标题）+ 导航（index / overview）+ 社区洞察（insights）+ 目录摘要（各目录 <code>.overview.md</code>）。</div>
+		</div>
+	</div>
+
+	<h3>4.1 笔记长什么样</h3>
+	<pre><code>---
+type: 概念
+title: 什么是 AI Agent
+created: 2026-09-20
+sources: ["[[库/raw/概念/什么是Agent-2026-09-20.md]]"]
+status: active
+---
+
+# 什么是 AI Agent
+
+> 一句话定义……
+
+## 核心特征
+
+- 自主性、反应性、主动性……
+- 相关：[[大模型幻觉]]、[[Agent Loop 构建指南]]</code></pre>
+	<div class="note"><code>type</code> / <code>title</code> / <code>created</code> 是格式约定；<code>sources</code> 与 <code>status</code> 由管线维护（<strong>不要手改</strong>）。派生类笔记需 ≥2 个来源才会被标为 <code>active</code>（去抽象化门控）。</div>
+</section>
+
+<!-- ═══════════════ 5 ═══════════════ -->
+<section class="card" id="search">
+	<h2>5. 检索与问答</h2>
+
+	<div class="mock-cols">
+		<div class="mock" style="max-width:560px">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;Agent 对话 · kb_search（hybrid）</div>
+			<div class="mock-body">
+				<div class="mock-main">
+					<div class="mock-note">用户：知识库里关于「死循环防御」是怎么说的？</div>
+					<div class="mock-head">Agent 调用 kb_search <span class="num">1</span></div>
+					<div class="mock-hit full">
+						<div class="t">Agent 死循环检测与防御 <span class="mock-note">score 11.8 · 引用 [[Agent 死循环检测与防御]]</span></div>
+						<div class="s">uri: file:///…/笔记/03-核心组件/Agent死循环检测与防御.md</div>
+						<div class="s">…重复工具调用、状态无变化、预算耗尽三类信号…</div>
+					</div>
+					<div class="mock-hit semantic">
+						<div class="t">Agent Loop 构建指南 <span class="mock-note">score 9.2 · 引用 [[Agent Loop 构建指南]]</span></div>
+						<div class="s">…循环终止条件与最大步数上限…</div>
+					</div>
+					<div class="mock-head">相关目录摘要（.overview.md 中间层）<span class="num">2</span></div>
+					<div class="mock-note">03-核心组件：覆盖感知/规划/记忆/工具/行动与循环防御，近期新增集中在 Loop 终止与预算控制。</div>
+					<div class="mock-head warnline">语义索引与当前 embedding 模型不一致时的提示 <span class="num">3</span></div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<h4>三种检索模式</h4>
+			<ol>
+				<li><strong>hybrid（默认）</strong>——全文（BM25）与语义（向量）双通道结果做 <strong>RRF 融合排序</strong>（k=60，命中的笔记带有 ■ 双通道标记）。</li>
+				<li><strong>fulltext</strong>——纯 BM25（含中文单字 + 二元切分），无需 Embedding，秒回。</li>
+				<li><strong>semantic</strong>——纯向量相似（需先建索引），能召回同义表述。</li>
+			</ol>
+			<h4>结果里的三样东西</h4>
+			<ul>
+				<li><strong>引用回链</strong>：每条命中附 <code>[[笔记名]]</code>，可直接点开或写进回答。</li>
+				<li><strong>目录摘要</strong>：命中目录的 <code>.overview.md</code> 摘要随结果返回，用于「先看概览再决定深入」。</li>
+				<li><strong>不一致警告</strong>：索引 tag 与当前 Embedding Provider 不一致时提示重建，避免用错向量算相似度。</li>
+			</ul>
+			<div class="note">在聊天里<strong>不需要显式指定工具</strong>——问知识库相关问题，Agent 会自行调用检索。</div>
+		</div>
+	</div>
+</section>
+
+<!-- ═══════════════ 6 ═══════════════ -->
+<section class="card" id="tools">
+	<h2>6. Agent 工具</h2>
+	<p>三个知识库工具可在聊天中被自动调用，也可显式要求使用。</p>
+
+	<h3>6.1 <code>kb_search</code>——知识库检索</h3>
+	<pre><code>{
+  "query":  "死循环防御",        // 必填，自然语言或关键词
+  "mode":   "hybrid",           // hybrid（默认）| fulltext | semantic
+  "limit":  10                  // 返回条数，默认 10，最大 50
+}</code></pre>
+	<p class="path">返回：知识库检索「…」命中 N 条 + 每条 score / uri / 摘要 / <code>[[引用]]</code> + 相关目录摘要。</p>
+
+	<h3>6.2 <code>kb_suggest_links</code>——隐式双链建议</h3>
+	<pre><code>{
+  "docUri":   "file:///…/笔记/03-核心组件/Agent死循环检测与防御.md",  // 必填
+  "limit":    5,      // 默认 5
+  "minScore": 0.72    // cosine 阈值 [0,1]，默认 0.72；调高更严格
+}</code></pre>
+	<p class="path">找出「语义相似但尚未建立 <code>[[双链]]</code>」的笔记（本地向量运算，零 LLM 成本），建议补链以增强图谱连通性。</p>
+
+	<h3>6.3 <code>kb_topic_overviews</code>——目录摘要一览</h3>
+	<pre><code>{}   // 无参数</code></pre>
+	<p class="path">列出所有目录的摘要（<code>.overview.md</code> 中间层产物），用于在深入检索前先了解库内容分布。</p>
+
+	<table>
+		<tr><th>场景</th><th>建议用法</th></tr>
+		<tr><td>不知道库里有没有某主题</td><td>先 <code>kb_topic_overviews</code> 看概览，再 <code>kb_search</code> 深入</td></tr>
+		<tr><td>答案需要出处</td><td><code>kb_search</code>，用返回的 <code>[[笔记名]]</code> 作引用</td></tr>
+		<tr><td>整理笔记、完善图谱</td><td><code>kb_suggest_links</code> 找候选，人工确认后补链</td></tr>
+		<tr><td>只想知道原文，不需要推断</td><td><code>kb_search</code> 用 <code>fulltext</code> 模式</td></tr>
+	</table>
+	<div class="note">上下文注入：除了被动调用，聊天消息还会自动携带「知识库目录摘要」标签（L1 常驻，见第 9 节），让 Agent 在无检索调用时也知道库里大致有什么。</div>
+</section>
+
+<!-- ═══════════════ 7 ═══════════════ -->
+<section class="card" id="graph">
+	<h2>7. 图谱与摘要</h2>
+
+	<div class="mock-cols">
+		<div class="mock" style="max-width:520px">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;关系图谱</div>
+			<div class="mock-body">
+				<div class="mock-main">
+					<svg viewBox="0 0 460 190" width="100%" height="190" role="img" aria-label="图谱示意">
+						<line x1="90" y1="60" x2="200" y2="40" stroke="#c9d3e0" stroke-width="1.5"></line>
+						<line x1="90" y1="60" x2="180" y2="120" stroke="#c9d3e0" stroke-width="1.5"></line>
+						<line x1="200" y1="40" x2="320" y2="70" stroke="#c9d3e0" stroke-width="1.5"></line>
+						<line x1="180" y1="120" x2="320" y2="70" stroke="#c9d3e0" stroke-width="1.5"></line>
+						<line x1="180" y1="120" x2="300" y2="150" stroke="#e2b8b8" stroke-width="1.5" stroke-dasharray="4 3"></line>
+						<circle cx="90" cy="60" r="15" fill="#2f6feb"></circle>
+						<text x="90" y="64" font-size="10" fill="#fff" text-anchor="middle">Agent</text>
+						<circle cx="200" cy="40" r="12" fill="#5b8def"></circle>
+						<text x="200" y="44" font-size="9" fill="#fff" text-anchor="middle">Loop</text>
+						<circle cx="180" cy="120" r="13" fill="#3aa76d"></circle>
+						<text x="180" y="124" font-size="9" fill="#fff" text-anchor="middle">记忆</text>
+						<circle cx="320" cy="70" r="14" fill="#3aa76d"></circle>
+						<text x="320" y="74" font-size="9" fill="#fff" text-anchor="middle">RAG</text>
+						<circle cx="300" cy="150" r="11" fill="#e2b8b8"></circle>
+						<text x="300" y="154" font-size="8" fill="#7a3b3b" text-anchor="middle">待补链</text>
+					</svg>
+					<div class="mock-note">实线 = 已有 <code>[[双链]]</code>；虚线 = <code>kb_suggest_links</code> 建议的隐式关联 <span class="num">1</span></div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<h4>图谱怎么来的</h4>
+			<ol>
+				<li><strong>节点/边</strong>来自笔记正文的 <code>[[wikilink]]</code>，外加构建期「确定性补链」（扫描全库标题互链，零 LLM）。</li>
+				<li><strong>社区检测</strong>：Louvain 算法聚类，再对每个社区做一次 LLM <strong>语义摘要</strong>（GraphRAG 思路），写入 <code>insights.md</code>。</li>
+				<li><strong>增量一致性</strong>（重要）：删除 / 重命名 / 移动笔记后，图谱与索引<strong>立即更新</strong>，不需等下次全量重建。</li>
+			</ol>
+			<h4>三份自动产物</h4>
+			<ul>
+				<li><code>index.md</code>：全库目录索引。</li>
+				<li><code>overview.md</code>：整体概览。</li>
+				<li><code>insights.md</code>：社区列表 + 每社区主题与摘要。</li>
+				<li><code>&lt;目录&gt;/.overview.md</code>：单目录摘要（变更 ≥10% 才重算，省 LLM 成本）。</li>
+			</ul>
+		</div>
+	</div>
+</section>
+
+<!-- ═══════════════ 8 ═══════════════ -->
+<section class="card" id="files">
+	<h2>8. 文件管理</h2>
+
+	<table>
+		<tr><th>操作</th><th>方式</th><th>说明</th></tr>
+		<tr><td>新建 / 重命名</td><td>右键菜单</td><td>改扩展名会弹确认（可能影响打开方式）；命名限制：不含 <code>\ / : * ? " &lt; &gt; |</code>，不以 <code>.</code> 或空格结尾</td></tr>
+		<tr><td>剪切 / 复制 / 粘贴</td><td>右键菜单 / 快捷键</td><td>目标有同名文件时询问「替换 / 跳过」（可对本次全部冲突应用）</td></tr>
+		<tr><td>删除</td><td><span class="kbd">Delete</span></td><td>移入回收站，可还原</td></tr>
+		<tr><td>永久删除</td><td><span class="kbd">Shift</span>+<span class="kbd">Delete</span></td><td><strong>不可恢复</strong>，有二次确认</td></tr>
+		<tr><td>撤销</td><td><span class="kbd">Ctrl</span>+<span class="kbd">Z</span></td><td>撤销知识库文件操作（移动/重命名/删除等）</td></tr>
+		<tr><td>批量操作</td><td>多选后右键</td><td>批量删除同样区分「回收站 / 永久」</td></tr>
+	</table>
+
+	<div class="ok"><strong>删除后索引会即时清理</strong>（选择性删除）：该文档从全文索引、向量索引、图谱节点与边中同步移除，不会出现「搜到的笔记已经不存在」的幽灵结果。</div>
+	<div class="warn">删除笔记<strong>不会</strong>删除 <code>库/</code> 中的资料原件；反之删原件也不影响已构建的笔记（除 <code>sources</code> 溯源会失效）。</div>
+</section>
+
+<!-- ═══════════════ 9 ═══════════════ -->
+<section class="card" id="settings">
+	<h2>9. 设置与配置</h2>
+
+	<div class="mock-cols">
+		<div class="mock" style="max-width:540px">
+			<div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>&nbsp;知识库设置</div>
+			<div class="mock-body">
+				<div class="mock-main">
+					<div class="mock-hit">
+						<div class="t">📁 知识库位置 <span class="num">1</span></div>
+						<div class="s">我的知识库 · <span class="mock-btn">打开知识库文件夹</span></div>
+					</div>
+					<div class="mock-hit">
+						<div class="t">⚙️ 构建方式 <span class="num">2</span>&nbsp;&nbsp;<input type="checkbox" class="mock-check" checked disabled> Agentic 构建（知识库专家 Agent）</div>
+						<div class="s">开启：Agent 可用工具与技能，产出质量更高；关闭：纯 LLM 直连，更快更省</div>
+					</div>
+					<div class="mock-hit">
+						<div class="t">🧠 语义索引（RAG）<span class="num">3</span></div>
+						<div class="s">当前：128 篇 · 342 块 · <code>local/bge-m3@1024d</code></div>
+						<div class="s"><span class="mock-btn">重新构建向量索引</span> <span class="mock-btn dim">增量重建（provider 切换后）</span></div>
+					</div>
+					<div class="mock-hit">
+						<div class="t">🔌 模型配置 <span class="num">4</span></div>
+						<div class="s">Chat Provider（必需）· Embedding Provider（可选，缺失则仅全文检索）</div>
+					</div>
+					<div class="mock-hit">
+						<div class="t">📤 飞书同步 <span class="num">5</span></div>
+						<div class="s"><input type="checkbox" class="mock-check" checked disabled> 启用飞书同步 &nbsp; <input type="checkbox" class="mock-check" disabled> 允许定时自动同步（工作日 10:00）</div>
+						<div class="s">范围 <code>库/ObsidianWorkspace/AI_Workspace</code> · 目标 <code>my_library</code> · 远端手改时：本地覆盖 / 跳过并记录冲突 · 间隔 800ms</div>
+						<div class="s"><span class="mock-btn">🔍 预览同步计划（dry-run）</span> <span class="mock-btn primary">📤 立即同步到飞书</span> <span class="mock-btn dim">📄 查看同步日志</span></div>
+						<div class="s">已同步 61 篇（按笔记 frontmatter 的 feishu.token 统计）</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-guide">
+			<h4>五项设置</h4>
+			<ol>
+				<li><strong>知识库位置</strong>：默认 <code>~/.vssaros/knowledge-base/&lt;vault-id&gt;/</code>；也可指向已有 Obsidian 库目录（<code>库/</code> 与 <code>笔记/</code> 会建于其中）。</li>
+				<li><strong>Agentic 构建</strong>：唯一的知识库配置项 <code>sessions.agentStudio.kb.agenticBuild</code>，<strong>默认开启</strong>；开启时构建交给 <code>knowledge-base-expert</code> Agent（获得工具与技能注入），失败自动回退直连管线。</li>
+				<li><strong>语义索引</strong>：查看规模与模型 tag；换 Embedding Provider 后用「增量重建」只重算 tag 不匹配的块（不必全量）。</li>
+				<li><strong>模型配置</strong>：Chat 必填；Embedding 可选。</li>
+				<li><strong>飞书同步</strong>：总开关 + 同步脚本路径 + 同步范围（库内相对目录，逗号分隔，留空 = 整个知识库）+ 目标位置（<code>my_library</code> 或文件夹 token）+ 远端手改策略（本地覆盖 / 跳过并记录冲突）+ 限流间隔；下方三个动作按钮在集成终端执行并在结束时保留输出。</li>
+			</ol>
+			<div class="warn">切换 Embedding Provider 后，旧向量与旧模型维度不一致 ⇒ 请执行「重新构建向量索引」；本地模型首次会自动下载。</div>
+		</div>
+	</div>
+
+	<h3>9.1 配置项与存储位置</h3>
+	<table>
+		<tr><th>项</th><th>位置 / 键</th><th>说明</th></tr>
+		<tr><td>Agentic 构建</td><td><code>sessions.agentStudio.kb.agenticBuild</code></td><td>默认 true；false = 走直连 LLM 管线</td></tr>
+		<tr><td>飞书同步</td><td><code>sessions.agentStudio.kb.feishu.enabled</code>（总开关）<br><code>.autoSync</code>（定时同步开关）<br><code>.scriptPath</code> · <code>.srcDirs</code> · <code>.parent</code> · <code>.onConflict</code> · <code>.interval</code></td><td>两个开关默认均关闭；设置面板「📤 飞书同步」区块可全部配置，并一键「预览 / 立即同步 / 查看日志」（在集成终端执行）。<br><strong>定时同步</strong>需 <code>enabled</code> 与 <code>autoSync</code> 同时开启（「与」关系），手动同步不受开关约束</td></tr>
+		<tr><td>库与笔记</td><td><code>&lt;vault&gt;/库/</code>、<code>&lt;vault&gt;/笔记/</code></td><td>资料原件与结构化笔记</td></tr>
+		<tr><td>导航与洞察</td><td><code>&lt;vault&gt;/index.md</code>、<code>overview.md</code>、<code>insights.md</code></td><td>自动维护</td></tr>
+		<tr><td>目录摘要</td><td><code>&lt;vault&gt;/笔记/&lt;目录&gt;/.overview.md</code></td><td>点开头，不参与笔记扫描</td></tr>
+		<tr><td>向量索引</td><td><code>.kbrag.json</code> / <code>.kvindex</code></td><td>后者为二进制紧凑格式（体积约为 JSON 的 1/8）</td></tr>
+		<tr><td>各类缓存</td><td><code>.kb-build-cache.json</code>、<code>.kb-insights-cache.json</code>、<code>.kb-topic-overview-cache.json</code>、<code>.kbembedcache.json</code></td><td>可安全删除，删后下次运行重建</td></tr>
+	</table>
+
+	<div class="note"><strong>上下文注入（L1）</strong>：聊天时会自动附带当前知识库的目录摘要标签（带缓存），Agent 无需检索即知库里有哪些主题；实际内容检索仍由 <code>kb_search</code> 按需完成。</div>
+</section>
+
+<!-- ═══════════════ 10 ═══════════════ -->
+<section class="card" id="feishu">
+	<h2>10. 飞书同步（可选）</h2>
+	<p>把知识库笔记增量镜像到飞书个人知识库（wiki），保留目录结构，支持图片与冲突检测。</p>
+	<div class="note"><strong>不必记命令</strong>：知识库视图 → <strong>设置（⚙）→ 📤 飞书同步</strong>，其中可配置<strong>总开关</strong>、<strong>定时同步开关</strong>、同步脚本路径、同步范围、目标位置、远端手改策略与限流间隔，并直接点击 <strong>预览同步计划 / 立即同步到飞书 / 查看同步日志</strong>（对应下面的 dry-run / apply / 日志文件，命令在集成终端执行，输出可见）。<br><strong>两个开关的分工</strong>：<em>启用飞书同步</em> = 同步能力总开关；<em>允许定时自动同步</em> = 是否让定时任务（工作日 10:00）自动执行——两者是「与」关系，都开启才会自动同步；<strong>手动同步不受这两个开关限制</strong>。</div>
+
+	<pre><code># 预览（默认 dry-run，不产生任何飞书写操作）
+node .codebuddy/kb-feishu-sync.mjs --vault "$env:USERPROFILE\.vssaros-dev\knowledge-base\&lt;vault-id&gt;" \
+     --src "库/ObsidianWorkspace/AI_Workspace/AI-Agent-Knowledge-Base" --dry-run
+
+# 真正同步（分批，建议每批 10 篇观察）
+node .codebuddy/kb-feishu-sync.mjs --vault ... --src ... --apply --limit 10
+
+# 远端被手工改过时的策略：overwrite（默认，本地覆盖）| skip（跳过并记冲突）
+node .codebuddy/kb-feishu-sync.mjs --vault ... --src ... --apply --on-conflict skip</code></pre>
+
+	<table>
+		<tr><th>参数</th><th>说明</th></tr>
+		<tr><td><code>--vault</code></td><td>知识库根目录（必填）</td></tr>
+		<tr><td><code>--src</code></td><td>要同步的库内相对目录，可多次指定</td></tr>
+		<tr><td><code>--dry-run</code> / <code>--apply</code></td><td>预览计划 / 实际执行（默认 dry-run）</td></tr>
+		<tr><td><code>--limit N</code></td><td>本批最多处理 N 篇（分批放量用）</td></tr>
+		<tr><td><code>--interval ms</code></td><td>每篇间隔（默认 800ms，避免触发限流）</td></tr>
+		<tr><td><code>--on-conflict</code></td><td><code>overwrite</code> 默认 / <code>skip</code></td></tr>
+		<tr><td><code>--parent</code></td><td><code>my_library</code>（默认）或指定文件夹 token</td></tr>
+	</table>
+
+	<h3>10.1 同步做了什么</h3>
+	<div class="flow">
+		<span class="box">扫描笔记</span><span class="arw">→</span>
+		<span class="box">内容指纹比对</span><span class="arw">→</span>
+		<span class="box acc">新建 / 更新 / 跳过</span><span class="arw">→</span>
+		<span class="box">图片占位 → 上传插图 → 删占位</span><span class="arw">→</span>
+		<span class="box">回写 token / url / hash</span>
+	</div>
+	<ul>
+		<li><strong>增量</strong>：前端 frontmatter 记录 <code>hash</code>（本地原文）与 <code>remoteHash</code>（远端同步后指纹）+ <code>token</code>/<code>url</code>。内容未变 ⇒ <code>skip</code>（零 API 调用）。</li>
+		<li><strong>格式适配</strong>：表格内的 <code>[[别名|目标]]</code> 会转成别名文本（否则竖线会被当表格分隔符截断内容）；不再注入重复 H1。</li>
+		<li><strong>图片</strong>：飞书导入<strong>不认本地图片路径</strong>（会变空占位），脚本改为「占位标记 → <code>docs +media-insert</code> 定位插图 → 删占位」。</li>
+		<li><strong>手动修改检测</strong>：<code>remoteHash</code> 与当前远端指纹不一致 ⇒ 判定远端被手工编辑，按 <code>--on-conflict</code> 处理。</li>
+	</ul>
+
+	<h3>10.2 定时同步</h3>
+	<p>已配置 IDE 自动化任务（<code>automation kb</code>，<strong>工作日 10:00</strong> 增量同步）；也可手动执行上述命令，或按需改成其它时间。</p>
+	<div class="warn">首次同步前需完成 <code>lark-cli auth login</code>（user 身份）。若脚本提示未登录，重新登录即可，不要尝试其它修复。</div>
+</section>
+
+<!-- ═══════════════ 11 ═══════════════ -->
+<section class="card" id="faq">
+	<h2>11. 排错与已知问题</h2>
+
+	<table>
+		<tr><th>现象</th><th>原因 / 处理</th></tr>
+		<tr><td>导入报「CORS 被拦截」</td><td>Chat Provider 不可达或代理问题——检查模型配置与网络</td></tr>
+		<tr><td>检索只有全文、没有语义</td><td>未配置 Embedding Provider，或未构建向量索引（设置面板 → 重新构建）</td></tr>
+		<tr><td>语义结果明显不准</td><td>索引 tag 与当前 Embedding Provider 不一致——执行「重新构建向量索引」</td></tr>
+		<tr><td>构建没产出笔记</td><td>Agentic 构建无产出会自动回退直连管线；仍失败时看日志 <code>[KbImportController]</code> 前缀</td></tr>
+		<tr><td>图谱里少了刚建的链接</td><td>新笔记构建后图谱会在维护阶段刷新；删除/重命名则即时生效</td></tr>
+		<tr><td>删了笔记还能搜到</td><td>不应出现（选择性删除已即时清理）；若遇到请提供复现步骤</td></tr>
+		<tr><td>删除笔记后悔了</td><td><span class="kbd">Ctrl</span>+<span class="kbd">Z</span> 撤销，或从回收站还原</td></tr>
+		<tr><td>飞书出现重复文档</td><td>历史事故遗留（详见下）——新脚本已修复，重复文档需人工清理</td></tr>
+	</table>
+
+	<div class="danger">
+		<strong>已知问题：飞书侧存在 61 篇历史重复文档</strong><br>
+		早期脚本版本存在「创建成功但未记账」缺陷（且失败未计入配额，导致整库被重复创建一轮）。该缺陷已修复（失败计入配额 + 返回解析宽松化），当前同步状态一致（<code>create=0 / skip=61</code>）。飞书侧的历史重复文档需人工删除（删除不可逆，建议在飞书 wiki 中按创建时间批量清理）。
+	</div>
+
+	<div class="note">
+		<strong>设计边界（非缺陷）</strong>
+		<ul>
+			<li>导入管线的 LLM 调用<strong>不经过 Agent 驱动</strong>（除开启 Agentic 构建），因此不会自动激活内置技能——技能仅在聊天中手动激活或由 <code>knowledge-base-expert</code> Agent 注入。</li>
+			<li>PDF / 图片等复杂文档的解析（OCR、版面）<strong>未内置</strong>；可先转成 Markdown 再导入。</li>
+			<li>笔记语义质量取决于所选 LLM / Embedding Provider。</li>
+		</ul>
+	</div>
+</section>
+
+<footer>
+	VsSaros 知识库使用说明 · 基于仓库代码实证整理（含界面示意图）<br>
+	示意图为交互与信息结构的还原，实际界面以当前版本为准。
+</footer>
+
+</main>
+</div>
+</body>
+</html>

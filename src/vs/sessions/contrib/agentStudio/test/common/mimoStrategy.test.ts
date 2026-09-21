@@ -19,6 +19,14 @@ import type { PreLoopContext } from '../../common/agentLoopStrategy.js';
 import type { IIncompleteTask } from '../../common/taskGate.js';
 import type { IAgentOSService } from '../../common/agentOS.js';
 
+// ── 钉 legacy（2026-09-21）────────────────────────────────────────────────────
+// `switch_paradigm` 的注册被 `if (!isPiKernelEnabled())` 门控（compatibilityTools），而 pi 内核
+// **没有范式机制**（piTurnKernel.ts:22 自述「范式在 pi 路径不存在」）⇒ E2 翻转默认值后该工具
+// 仅在 legacy 路径注册。本文件测的正是「工具 handler + 覆盖注册表」这一 legacy 语义，
+// 故显式关断内核开关（与 agentTurnExecutorBehavior.test.ts 同款做法）。
+// ⚠ 范式概念正在下线中（产品入口与提示词许诺已清）；本套件保留至 legacy 主循环删除（阶段 4b）。
+(globalThis as { __SAROSIS_PI_KERNEL?: unknown }).__SAROSIS_PI_KERNEL = false;
+
 function resultText(result: unknown): string {
 	const arr = result as Array<{ type: string; text?: string }>;
 	return arr.map(c => c.text ?? '').join('\n');

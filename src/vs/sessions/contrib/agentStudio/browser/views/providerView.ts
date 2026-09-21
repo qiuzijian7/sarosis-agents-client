@@ -125,15 +125,19 @@ export interface CustomProviderData {
 // ─── Provider View ───────────────────────────────────────────────────────────
 
 /**
- * 构建模型发现端点 URL。
- * grnexus 等网关的 API 挂在 `/v1/` 下（`GET {base}/v1/models`），
- * 而 base URL 常填根域名（不带 /v1）。若 base 已含 `/vN` 版本段则直接拼 `/models`，
- * 否则补 `/v1/models`。避免出现 `.../v1/v1/models` 或 `.../models`（缺版本段）。
+ * 构建模型发现端点 URL（实现已下沉 ✓，此处仅为**兼容再导出**）。
+ *
+ * ★ 2026-09-21：实现移到 `common/modelsAutoUpdate.ts` ✓ —— 它原本定义在本文件里，
+ *   而 common 层的 `modelsAutoUpdate` 又要用它 ⇒ 形成 `common → browser` 的**值导入** ✗
+ *   （等于把 browser 代码拖进 common 的每个消费者，分层方向被打破 ✗）。
+ *   现由 common 定义、本文件再导出 ⇒ **调用点零改动** ✓，且 common 对 browser
+ *   只剩 `import type` ✓（护栏：`test/common/architectureBoundaries.test.ts` ✓）。
  */
-export function buildModelsUrl(baseUrl: string): string {
-	const base = baseUrl.replace(/\/+$/, '');
-	return /\/v\d+(\.\d+)*$/i.test(base) ? `${base}/models` : `${base}/v1/models`;
-}
+// ⚠ 必须「先 import 再 export」而不是 `export { x } from '…'` ✗ —— 后者**不会**把
+//   `x` 引入本文件作用域，本文件内部仍有 3 处调用它（TS2304 ✓）。
+//   循环依赖安全性：对面只有 `import type { CustomProviderData }` ⇒ 运行时无环 ✓。
+import { buildModelsUrl } from '../../common/modelsAutoUpdate.js';
+export { buildModelsUrl };
 
 /**
  * Provider View - Provider 配置面板

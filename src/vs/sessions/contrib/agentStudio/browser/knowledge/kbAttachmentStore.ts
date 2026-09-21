@@ -43,6 +43,19 @@ export class KbAttachmentStore {
 		return URI.file(namePrefix + '.attachments');
 	}
 
+	/**
+	 * 笔记正文里引用该附件的相对路径（笔记与 `<note>.attachments/` 同级）。
+	 * 例：`库/概念/GC 机制.md` + id `m1abc` + `x.png` → `GC 机制.attachments/m1abc.png`
+	 * （路径段保持原样，URL 编码由渲染层 resolveAssetSrc 负责）。
+	 */
+	static relativeRef(noteUri: URI, id: string, filename: string): string {
+		const base = noteUri.path.split('/').pop() ?? 'note.md';
+		const noteBase = base.replace(/\.(md|markdown)$/i, '');
+		const dot = filename.lastIndexOf('.');
+		const ext = dot > 0 ? filename.slice(dot) : '';
+		return `${noteBase}.attachments/${id}${ext}`;
+	}
+
 	/** 获取笔记的所有附件清单。 */
 	async list(noteUri: URI): Promise<IKbAttachment[]> {
 		const manifestUri = URI.joinPath(KbAttachmentStore.dirUri(noteUri), 'manifest.json');

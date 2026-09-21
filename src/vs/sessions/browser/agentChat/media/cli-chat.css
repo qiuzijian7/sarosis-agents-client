@@ -37,6 +37,29 @@
 	--cli-diff-del-bg: var(--vscode-diffEditor-removedTextBackground, rgba(244,135,113,0.12));
 	--cli-mono: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', Consolas, monospace);
 
+	/* ── Markdown 语义令牌（★ 2026-09-21：对齐 pi TUI 的语义令牌体系 ✓）──
+	   pi（`packages/coding-agent/src/modes/interactive/theme/dark.json` ✓）用 40+ 语义令牌
+	   驱动渲染（mdHeading / mdLink / mdLinkUrl / mdCode / mdCodeBlock / mdCodeBlockBorder /
+	   mdQuote(+Border) / mdHr / mdListBullet ✓）；我们此前让这些元素**各自继承** fg/border ✗
+	   ⇒ 层级不清、也没有统一调色入口 ✓。
+	   此处补齐同名令牌 ✓ —— 值**全部取 VS Code 主题变量** ✓（不引入硬编码色相 ✗；
+	   accent 是否改成 pi 的青绿 `#8abeb7` 是独立的审美决定 ✓，未动 ✓）。
+	   ⚠ `--cli-md-gap` = **块间距**：pi 的 markdown 渲染器在每个块后**追加一个空行**
+	   （`packages/tui/src/components/markdown.ts` 的 heading:486 / code:537 / blockquote:600 /
+	   hr:608 / table:1011 ✓）⇒ 间距 ≈ 一行高（12.5px × 1.5 ≈ 19px ✓）；
+	   这里取 16px 并做成**单点可调** ✓（嫌密/嫌松只改这一行 ✓，与 `--tool-card-gap` 同思路 ✓）。 */
+	--cli-md-gap: 16px;
+	--cli-md-heading: var(--vscode-foreground);
+	--cli-md-link: var(--vscode-textLink-foreground, #4aa3ff);
+	--cli-md-link-url: var(--cli-fg-muted);
+	--cli-md-code: var(--vscode-textPreformat-foreground, var(--cli-fg));
+	--cli-md-code-block: var(--cli-fg);
+	--cli-md-code-block-border: var(--cli-border);
+	--cli-md-quote: var(--cli-fg-muted);
+	--cli-md-quote-border: var(--cli-border);
+	--cli-md-hr: var(--cli-border);
+	--cli-md-bullet: var(--cli-agent-color);
+
 	font-family: var(--cli-mono);
 	font-size: 12.5px;
 	line-height: 1.5;
@@ -149,8 +172,12 @@
 	color: var(--cli-fg);
 }
 
+/* ★★ 2026-09-21（用户报 TUI 下「文件显示间隔异常」✓ + 要求对齐 pi TUI ✓）：
+   ① **块间距提到空行级** —— pi 的 markdown 渲染器在每个块后追加一个空行 ✓（≈19px ✓），
+      我们此前只有 2px ✗（中文行高下等于无间距 ✓）⇒ 现统一走 `--cli-md-gap`（16px ✓，单点可调 ✓）；
+   ② 各块改用 **md 语义令牌** ✓（此前各自继承 fg/border ✗ ⇒ 层级不清、无统一调色入口 ✓）。 */
 .cli-assistant-text p {
-	margin: 0 0 2px 0;
+	margin: 0 0 var(--cli-md-gap) 0;
 }
 
 .cli-assistant-text p:last-child {
@@ -161,26 +188,61 @@
 .cli-assistant-text pre,
 .cli-assistant-text .cli-code-block {
 	border-radius: 0;
-	border-left: 2px solid var(--cli-border);
+	border-left: 2px solid var(--cli-md-code-block-border);
 	border-top: none;
 	border-right: none;
 	border-bottom: none;
 	background: rgba(0,0,0,0.15);
 	padding: 4px 8px;
-	margin: 2px 0;
+	margin: var(--cli-md-gap) 0;
 	font-size: 12px;
 	overflow-x: auto;
+	color: var(--cli-md-code-block);
 }
 
+/* ── 高亮代码块（★ 2026-09-21：对齐 pi 的 `syntax*` 令牌 ✓）────────────────────
+   走平台渲染器 `EditorMarkdownCodeBlockRenderer`（`workbench.ts` 经 globalThis 暴露 ✓）
+   ⇒ 产物 = `<div class="code">`（base 渲染器统一包装 ✓）内嵌
+   `<span class="monaco-tokenized-source">` + `.mtk*` 令牌 span ✓；
+   `.mtk*` 的**颜色由工作台按当前主题注入** ✓（与编辑器同源，天然随主题 ✓）。 */
+.cli-assistant-text .code {
+	margin: var(--cli-md-gap) 0;
+}
+
+.cli-assistant-text .monaco-tokenized-source {
+	display: block;
+	font-family: var(--cli-mono);
+	font-size: 12px;
+	line-height: 1.5;
+	white-space: pre;
+	overflow-x: auto;
+	border-left: 2px solid var(--cli-md-code-block-border);
+	background: rgba(0,0,0,0.15);
+	padding: 4px 8px;
+	color: var(--cli-md-code-block);
+}
+
+/* 行内 code = `mdCode` ✓；块内 code 另走 `mdCodeBlock` ✓（pi 同样区分两者 ✓） */
 .cli-assistant-text code {
 	font-family: var(--cli-mono);
 	font-size: 12px;
+	color: var(--cli-md-code);
+}
+
+.cli-assistant-text pre code,
+.cli-assistant-text .cli-code-block code {
+	color: var(--cli-md-code-block);
 }
 
 .cli-assistant-text ul,
 .cli-assistant-text ol {
-	margin: 2px 0;
+	margin: 0 0 var(--cli-md-gap) 0;
 	padding-left: 16px;
+}
+
+/* 列表符号用 accent ✓（pi 的 `mdListBullet: accent` ✓） */
+.cli-assistant-text li::marker {
+	color: var(--cli-md-bullet);
 }
 
 .cli-assistant-text h1,
@@ -188,19 +250,47 @@
 .cli-assistant-text h3 {
 	font-size: 13px;
 	font-weight: 700;
-	margin: 8px 0 4px 0;
+	color: var(--cli-md-heading);
+	margin: var(--cli-md-gap) 0 calc(var(--cli-md-gap) * 0.4) 0;
+}
+
+/* h4-h6 此前无规则 ⇒ 与正文同字号同间距、层级不清 ✗ */
+.cli-assistant-text h4,
+.cli-assistant-text h5,
+.cli-assistant-text h6 {
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--cli-md-heading);
+	margin: calc(var(--cli-md-gap) * 0.6) 0 calc(var(--cli-md-gap) * 0.3) 0;
 }
 
 .cli-assistant-text blockquote {
-	border-left: 2px solid var(--cli-border);
-	margin: 2px 0;
+	border-left: 2px solid var(--cli-md-quote-border);
+	margin: var(--cli-md-gap) 0;
 	padding: 0 8px;
-	color: var(--cli-fg-muted);
+	color: var(--cli-md-quote);
+}
+
+/* ★ 表格：此前**零规则** ⇒ 与前后段落粘连 ✗（用户截图里的密集表格 ✓）*/
+.cli-assistant-text table {
+	margin: var(--cli-md-gap) 0;
+	border-collapse: collapse;
+}
+
+.cli-assistant-text hr {
+	border: none;
+	border-top: 1px solid var(--cli-md-hr);
+	margin: var(--cli-md-gap) 0;
 }
 
 .cli-assistant-text a {
-	color: var(--vscode-textLink-foreground, #4aa3ff);
+	color: var(--cli-md-link);
 	text-decoration: underline;
+}
+
+/* 链接 URL（若渲染器输出 `.cli-md-link-url` ✓）用弱化色 ✓（pi 的 `mdLinkUrl: dimGray` ✓） */
+.cli-assistant-text .cli-md-link-url {
+	color: var(--cli-md-link-url);
 }
 
 /* ═══════════════════════════════════════════════════════════════════

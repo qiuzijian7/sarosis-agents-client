@@ -1,5 +1,11 @@
 import { $, append } from '../../../base/browser/dom.js';
 import { renderMarkdown, MarkdownRenderOptions } from '../../../base/browser/markdownRenderer.js';
+// ★ 2026-09-21：代码块语法高亮（对齐 TUI 面板与 pi 的 syntax* ✓）需要安全注入 HTML
+//（本 fork Trusted Types 很严 ✗，直接用 innerHTML 会被拦 ✓）。
+import { safeSetInnerHtml } from '../../../base/browser/domSanitize.js';
+
+/** ★ 2026-09-21：代码块高亮的**一次性诊断**开关（每次会话只打一行 ✓，避免刷屏 ✗）。 */
+let _hlDiagDone = false;
 import { DisposableStore, IDisposable } from '../../../base/common/lifecycle.js';
 import type { IMarkdownString } from '../../../base/common/htmlContent.js';
 import { IAgentChatMessage, IMessagePart, IThinkingMessagePart } from './agentChatTypes.js';
@@ -597,8 +603,49 @@ protected override _getMarkdownOptions(isStreaming: boolean = false): MarkdownRe
 				const pre = document.createElement('pre');
 				const codeEl = document.createElement('code');
 				if (lang) { codeEl.classList.add(`language-${lang}`); }
-				codeEl.textContent = code;
+				// ★★ 2026-09-21：代码块**语法高亮**（此前是纯文本 ✗；与 TUI 面板同源 ✓）。
+				// 走工作台暴露的**同步**钩子 ✓（本渲染器是 `codeBlockRendererSync` ✗ ——
+				// 换异步渲染器会**回退**掉 2026-09-05 修好的流式竞态 ✗，所以必须同步 ✓）；
+				// 钩子内部用 `tokenizeToStringSync` ✓ 产出 `.mtk*` 令牌 span ✓，
+				// 颜色由工作台按主题注入 ✓（随主题切换 ✓）。
+				// ⚠ 两块保护：**大代码块不分词** ✓（同编辑器渲染器的性能约定 ✓）；
+				//   HTML 注入必须走 `safeSetInnerHtml` ✓，失败回退纯文本 ✓。
+				const hlSync = (globalThis as unknown as {
+					__SAROSIS_MD_HIGHLIGHT_SYNC__?: (alias: string | undefined, code: string) => string;
+				}).__SAROSIS_MD_HIGHLIGHT_SYNC__;
+				const tokenized = (!isLarge && hlSync) ? hlSync(lang, code) : '';
+				if (tokenized) {
+					try {
+						safeSetInnerHtml(codeEl, tokenized);
+					} catch {
+						codeEl.textContent = code;
+					}
+				} else {
+					codeEl.textContent = code;
+				}
 				pre.appendChild(codeEl);
+				// ★★★ 2026-09-21 诊断（用户报高亮「未生效」✓）：**每次会话只打一行** ✓，四个判据 ——
+				//   ① 钩子装没装上 ✓ ② 分词产出长度 ✓ ③ 是否含 `mtk` 令牌 ✓
+				//   ④ **令牌 span 的实际计算颜色** ✓（决定性 ✗）。
+				//   为何④关键：`.mtk*` 的着色 CSS 由编辑器在**创建 editor 时**注入 ✗ ——
+				//   若聊天面板此刻没有任何编辑器实例 ⇒ class 在、颜色未定义 ⇒ **看起来仍是纯文本** ✓✓。
+				if (!_hlDiagDone) {
+					_hlDiagDone = true;
+					window.setTimeout(() => {
+						try {
+							const span = codeEl.querySelector('span[class*="mtk"]') as HTMLElement | null;
+							const tokenColor = span ? getComputedStyle(span).color : 'n/a';
+							const bodyColor = getComputedStyle(codeEl).color;
+							console.info(
+								`[MdHighlight] main-chat diag: lang=${lang || '(none)'} isLarge=${isLarge}`
+								+ ` hook=${hlSync ? 'yes' : 'NO'} tokenizedLen=${tokenized.length}`
+								+ ` hasMtkTokenized=${tokenized.includes('mtk')} spanFound=${!!span}`
+								+ ` tokenColor=${tokenColor} bodyColor=${bodyColor}`
+								+ (span && tokenColor === bodyColor ? ' ⇒ ⚠ 令牌色与正文同色（token CSS 未注入？）' : ''),
+							);
+						} catch { /* 诊断失败不影响渲染 ✓ */ }
+					}, 400);
+				}
 				wrapper.appendChild(pre);
 
 				// Mermaid 预览插在代码块上方（图优先，源码在下可折叠）

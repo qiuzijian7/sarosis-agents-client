@@ -623,6 +623,9 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 				try {
 					ctx.agentOS.fireSubAgentTrace({
 						groupId: batchGroupId,
+						// 2026-09-21 归属：旁路总线是全局的，快照必须带**父回合**身份，
+						// 否则旁观面板无法过滤（刷 WARN）、双会话并行时会跨会话错挂 ✗。
+						agentId, sessionId,
 						// groupId 不出现在 MutableCardState 上，所有卡片共享 batchGroupId。
 						// delegate_task 子代理：skipSubAgentCard=true → 不创建独立卡片，
 						// 执行内容全部内嵌在 delegate_task 卡片中。
@@ -769,6 +772,8 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 
 					ctx.agentOS.fireSubAgentTrace({
 						groupId: batchGroupId,
+						// 2026-09-21：终态快照同样带父回合身份（见 flushNow 注释）
+						agentId, sessionId,
 						subagentData: [{
 							id: saId,
 							type: agentTypeLabel,
@@ -850,6 +855,8 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 
 				ctx.agentOS.fireSubAgentTrace({
 					groupId: batchGroupId,
+					// 2026-09-21：批模式终态快照同样带父回合身份（见 flushNow 注释）
+					agentId, sessionId,
 					subagentData,
 				});
 

@@ -51,6 +51,11 @@ import { AccessibleViewRegistry } from '../../platform/accessibility/browser/acc
 import { NotificationAccessibleView } from './parts/notifications/notificationAccessibleView.js';
 import { IMarkdownRendererService } from '../../platform/markdown/browser/markdownRenderer.js';
 import { EditorMarkdownCodeBlockRenderer } from '../../editor/browser/widget/markdownRenderer/browser/editorMarkdownCodeBlockRenderer.js';
+// ★ 2026-09-21：聊天代码块语法高亮的两个 globalThis 钩子（与 sessions/browser/workbench.ts 同款 ✓）
+import { ILanguageService } from '../../editor/common/languages/language.js';
+import { PLAINTEXT_LANGUAGE_ID } from '../../editor/common/languages/modesRegistry.js';
+import { tokenizeToStringSync } from '../../editor/common/languages/textToHtmlTokenizer.js';
+import { TokenizationRegistry } from '../../editor/common/languages.js';
 
 export interface IWorkbenchOptions {
 
@@ -154,6 +159,50 @@ export class Workbench extends Layout {
 
 				// Set code block renderer for markdown rendering
 				markdownRendererService.setDefaultCodeBlockRenderer(instantiationService.createInstance(EditorMarkdownCodeBlockRenderer));
+
+				// ★★ 2026-09-21：两个代码块高亮钩子（★★ 与 `sessions/browser/workbench.ts`
+				//   **同一份实现** ✓ —— 本仓有**两个** `Workbench` 类 ✗，只改一个就会出现
+				//   「改了但没生效」✓✓，故两处都装 ✓，并各自打一行安装日志以便定位 ✓）。
+				//   异步钩子给 CLI 面板（`codeBlockRenderer` ✓）、同步钩子给主聊天
+				//  （`codeBlockRendererSync` ✗ 异步用不上 ✓）。纯字符串返回 ✓，
+				//   落 DOM 由调用方走 `safeSetInnerHtml` ✓（Trusted Types ✓）。
+				{
+					const logService = accessor.get(ILogService);
+					const hlRenderer = instantiationService.createInstance(EditorMarkdownCodeBlockRenderer);
+					const languageService = accessor.get(ILanguageService);
+					(globalThis as unknown as {
+						__SAROSIS_MD_CODE_BLOCK_RENDERER__?: (alias: string | undefined, code: string) => Promise<HTMLElement>;
+						__SAROSIS_MD_HIGHLIGHT_SYNC__?: (alias: string | undefined, code: string) => string;
+					}).__SAROSIS_MD_CODE_BLOCK_RENDERER__ = (alias, code) =>
+						hlRenderer.renderCodeBlock(alias, code, {} as Parameters<typeof hlRenderer.renderCodeBlock>[2]);
+					(globalThis as unknown as {
+						__SAROSIS_MD_HIGHLIGHT_SYNC__?: (alias: string | undefined, code: string) => string;
+					}).__SAROSIS_MD_HIGHLIGHT_SYNC__ = (() => {
+						// ★ 2026-09-21：**分词结果缓存** ✓ —— 流式期间代码块随消息反复重建
+						//   （rAF 合并后仍约每帧一次 ✓）⇒ 每帧重新分词代价高 ✗（块越长越明显 ✓）。
+						//   key = 语言 + 源码；上限 60 条 ⇒ 内存可控 ✓（满了直接清空，简单且够用 ✓）。
+						const cache = new Map<string, string>();
+						return (alias: string | undefined, code: string): string => {
+							try {
+								const languageId = (alias && languageService.getLanguageIdByLanguageName(alias))
+									|| PLAINTEXT_LANGUAGE_ID;
+								const key = `${languageId}\u0000${code}`;
+								const hit = cache.get(key);
+								if (hit !== undefined) { return hit; }
+								// ⚠ 同步分词器的懒加载限制：`Registry.get` 拿不到未加载的语言 ✗
+								//   ⇒ 顺手预热（fire-and-forget ✓），下次渲染即有令牌 ✓（同 sessions 侧 ✓）。
+								try { void TokenizationRegistry.getOrCreate(languageId); } catch { /* ignore */ }
+								const html = tokenizeToStringSync(languageService, code, languageId);
+								if (cache.size > 60) { cache.clear(); }
+								cache.set(key, html);
+								return html;
+							} catch {
+								return '';
+							}
+						};
+					})();
+					logService.info('[MdHighlight] hooks installed (workbench/browser ✓): async=✓ sync=✓');
+				}
 
 				// Default Hover Delegate must be registered before creating any workbench/layout components
 				// as these possibly will use the default hover delegate

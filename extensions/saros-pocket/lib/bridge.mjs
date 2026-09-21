@@ -33,6 +33,50 @@ const CHAT_TIMEOUT_MS = 10 * 60 * 1000;
 /** 目录列举上限。 */
 const LIST_MAX = 500;
 
+/**
+ * 会话列表上限。
+ *
+ * 取 200 而不是 50：需求是「把 VsSaros 的会话都同步到 Pocket」，
+ * 50 会在会话多的仓库里静默截断（用户以为会话丢了）。手机端一屏本来也放不下更多。
+ */
+const LIST_LIMIT_MAX = 200;
+
+/** 聊天上下文为空时的形状（老版本 VsSaros 降级用）。 */
+const EMPTY_CHAT_CONTEXT = Object.freeze({
+  chatModes: [], agents: [], workspaces: [], workspaceId: null, worktrees: [], models: [], selection: null,
+});
+
+/** 跨进程来的载荷一律**白名单化**：只取认识的字段，长度与类型都收口。 */
+function normalizeChatContext(raw) {
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  const str = (v, max = 200) => String(v ?? '').slice(0, max);
+  return {
+    chatModes: arr(raw.chatModes).map((m) => ({
+      id: str(m?.id, 32), label: str(m?.label, 32), description: str(m?.description, 200),
+    })).filter((m) => m.id),
+    agents: arr(raw.agents).map((a) => ({
+      id: str(a?.id, 120), name: str(a?.name, 80), icon: str(a?.icon, 400), description: str(a?.description, 200),
+    })).filter((a) => a.id),
+    workspaces: arr(raw.workspaces).map((w) => ({
+      id: str(w?.id, 200), name: str(w?.name, 80), path: str(w?.path, 400),
+      worktreePath: w?.worktreePath ? str(w.worktreePath, 400) : null,
+      worktreeBranch: w?.worktreeBranch ? str(w.worktreeBranch, 200) : null,
+    })).filter((w) => w.id),
+    // id 必须是字符串：数字/对象被 String() 化之后永远匹配不上真实 id，只会让人误以为"选中了"
+    workspaceId: typeof raw.workspaceId === 'string' && raw.workspaceId ? raw.workspaceId.slice(0, 200) : null,
+    worktrees: arr(raw.worktrees).map((t) => ({
+      path: str(t?.path, 400), branch: str(t?.branch, 200), uncommitted: Number(t?.uncommitted ?? 0) || 0,
+    })).filter((t) => t.path),
+    models: arr(raw.models).map((m) => ({
+      providerId: str(m?.providerId, 120), providerName: str(m?.providerName, 80),
+      modelId: str(m?.modelId, 200), modelName: str(m?.modelName, 120),
+    })).filter((m) => m.providerId && m.modelId),
+    selection: raw.selection && raw.selection.providerId && raw.selection.modelId
+      ? { providerId: str(raw.selection.providerId, 120), modelId: str(raw.selection.modelId, 200) }
+      : null,
+  };
+}
+
 function truncate(s, max) {
   const str = String(s ?? '');
   return str.length > max ? `${str.slice(0, max)}…（已截断，共 ${str.length} 字符）` : str;
@@ -175,6 +219,12 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
     const text = String(payload?.text ?? '').trim();
     const history = Array.isArray(payload?.messages) ? payload.messages : [];
     if (!text && history.length === 0) throw new Error('缺少消息内容 | missing message');
+
+    // 本次对话的上下文（模式 / agent / 工作区 / worktree）：发送前先落到 VsSaros，
+    // 让执行环境与手机上的选择一致。best-effort —— 落不下去也不能拦下发消息。
+    if (payload?.context && typeof payload.context === 'object') {
+      try { await chatContextSet(payload.context); } catch { /* 老版本 VsSaros 没有这条命令 */ }
+    }
 
     const models = await selectModels(payload?.modelId ?? cfg().chatModel);
     const model = models[0];
@@ -622,26 +672,58 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
    * 失败一律返回 null：老版本 VsSaros 没有这条命令，此时收件箱必须
    * 优雅降级到扩展自己登记的会话，而不是空白或报错。
    */
+  /**
+   * 会话桥最近一次的结果（诊断用）：`ok` = 命令是否可用；`count` = 真实会话条数；`error` = 失败原因。
+   * 面板与 App 的「列表为空」提示靠它区分两种成因：命令不可用（版本旧）vs 真的没有会话。
+   */
+  let sessionsDiag = { ok: null, count: 0, error: '', at: null };
+
   async function fetchRealSessions() {
     try {
-      const list = await vscode.commands.executeCommand('sarosPocket.listSessions');
-      if (!Array.isArray(list)) return null;
-      return list
-        .filter((s) => s && typeof s === 'object' && s.sessionId)
+      const raw = await vscode.commands.executeCommand('sarosPocket.listSessions');
+      // 宽容解包：正常是数组；若上游改成 { sessions: [...] } 也不至于整列表空掉
+      const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.sessions) ? raw.sessions : null);
+      if (!list) {
+        sessionsDiag = { ok: false, count: 0, error: `命令返回的不是数组（${raw === null ? 'null' : typeof raw}）`, at: Date.now() };
+        logLine(`Saros Pocket: 会话桥 sarosPocket.listSessions 返回异常 ⇒ ${sessionsDiag.error}`);
+        return null;
+      }
+      const mapped = list
+        .filter((s) => s && typeof s === 'object' && (s.sessionId || s.id))
         .map((s) => ({
           // 复用本地会话的字段形态，前端无需分支
-          id: String(s.sessionId),
+          id: String(s.sessionId ?? s.id),
           kind: 'agent',
           title: String(s.title || '').trim() || '（未命名会话）',
           status: REAL_STATUS_TO_LOCAL[String(s.status ?? '')] ?? 'running',
           preview: '',
+          startedAt: typeof s.createdAt === 'number' ? s.createdAt : null,
           updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null,
           real: true,
+          // ★ 「结束」在 Pocket 里的实现是**归档**（可逆）：列表默认收起它们，
+          //   否则用户点了结束、会话还在列表里，看着像没生效（见 sessionsList）。
+          archived: s.isArchived === true,
+          unread: s.isRead === false,
           providerId: String(s.providerId ?? ''),
           sessionType: String(s.sessionType ?? ''),
           resource: String(s.resource ?? ''),
-        }));
-    } catch {
+        }))
+        // 会话列表按「最近更新在前」；缺时间的排最后（稳定排序，便于断言与翻页心智一致）
+        .sort((a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1));
+
+      sessionsDiag = { ok: true, count: mapped.length, error: '', at: Date.now() };
+      // 上游命令在、但一条会话都没有（或字段对不上被过滤掉）——这是「列表空」的两种成因之一，
+      // 必须留痕，否则现场只有一句「还没有会话」，无从判断是版本旧还是真没会话。
+      if (mapped.length === 0 && list.length > 0) {
+        const keys = Object.keys(list[0] ?? {}).slice(0, 8).join(',');
+        logLine(`Saros Pocket: 会话桥拿到 ${list.length} 条但全部被过滤（首条字段：${keys}）——请检查会话字段名`);
+      } else {
+        logLine(`Saros Pocket: 会话桥 sarosPocket.listSessions → ${mapped.length} 条真实会话`);
+      }
+      return mapped;
+    } catch (err) {
+      sessionsDiag = { ok: false, count: 0, error: String(err?.message ?? err), at: Date.now() };
+      logLine(`Saros Pocket: 会话桥不可用（sarosPocket.listSessions 调用失败）⇒ ${sessionsDiag.error} —— 列表会退回 Pocket 自己登记的会话`);
       return null;
     }
   }
@@ -655,8 +737,58 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
     failed: 'failed',
   };
 
+  // ---------- 聊天上下文（手机端聊天框头部：模式 / agent / 工作区 / worktree / 模型）----------
+  /**
+   * 读取聊天上下文。
+   *
+   * 数据源是 VsSaros 命令 `sarosPocket.getChatContext`（工作台进程才有
+   * `IAgentStudioService` / `IModelSelectorService`，扩展进程拿不到）。
+   * 失败（老版本 VsSaros 没这条命令）⇒ `degraded: true` + 空清单：
+   * 手机端据此**隐藏**头部，而不是显示一堆假选项。
+   */
+  async function chatContext() {
+    try {
+      const raw = await vscode.commands.executeCommand('sarosPocket.getChatContext');
+      if (!raw || typeof raw !== 'object') {
+        const why = `命令返回异常（${raw === null ? 'null' : typeof raw}）`;
+        logLine(`Saros Pocket: 聊天上下文桥不可用 ⇒ ${why}（手机端聊天头会显示为降级）`);
+        return { degraded: true, error: why, ...EMPTY_CHAT_CONTEXT };
+      }
+      return { degraded: false, ...normalizeChatContext(raw) };
+    } catch (err) {
+      // 老版本 VsSaros 没有这条命令 ⇒ 手机端不该显示空下拉，而要说清"为什么空"
+      const why = String(err?.message ?? err);
+      logLine(`Saros Pocket: 聊天上下文桥不可用（sarosPocket.getChatContext 调用失败）⇒ ${why}`);
+      return { degraded: true, error: why, ...EMPTY_CHAT_CONTEXT };
+    }
+  }
+
+  /**
+   * 写聊天上下文 —— 手机端的 agent / 工作区 / worktree / 模型选择**真的落到 VsSaros**
+   * （切活动工作区、写 AgentBinding.worktreePath、写模型选择），所以不是"只改手机本地显示"。
+   *
+   * chatMode 不在这里写：VsSaros 的 chatMode 是每个聊天面板的本地状态，没有可写的共享服务；
+   * 手机端把所选模式随每条消息下发（`chat.send` 的 `context.chatMode`），发送前经这里落一次
+   * agent/工作区/worktree，保证执行环境与选择一致。
+   */
+  async function chatContextSet(payload = {}) {
+    const patch = {
+      workspaceId: typeof payload.workspaceId === 'string' ? payload.workspaceId : undefined,
+      worktreePath: payload.worktreePath === undefined ? undefined : (payload.worktreePath || null),
+      agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
+      providerId: typeof payload.providerId === 'string' ? payload.providerId : undefined,
+      modelId: typeof payload.modelId === 'string' ? payload.modelId : undefined,
+    };
+    const out = await vscode.commands.executeCommand('sarosPocket.setChatContext', patch);
+    const applied = Array.isArray(out?.applied) ? out.applied.map(String) : [];
+    emit('chat.context', { applied, workspaceId: patch.workspaceId ?? null });
+    return { ok: out?.ok !== false, applied };
+  }
+
   async function sessionsList(payload = {}) {
-    const limit = Math.min(Math.max(Number(payload?.limit) || 50, 1), 50);
+    // 上限从 50 提到 200：需求是「把 VsSaros 的会话都同步过来」，不该悄悄截断
+    const limit = Math.min(Math.max(Number(payload?.limit) || LIST_LIMIT_MAX, 1), LIST_LIMIT_MAX);
+    const wantArchived = payload?.archived === true;
     const real = await fetchRealSessions();
 
     // 真实会话优先：它们才是用户想看的「Agent 在跑什么」。
@@ -667,18 +799,35 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
       limit,
     });
 
-    let merged = real ?? [];
-    if (real && local.length) {
-      // 真实会话已覆盖的场景不再重复显示本地影子会话，按标题去重
-      const titles = new Set(real.map((s) => s.title));
-      merged = real.concat(local.filter((s) => !titles.has(s.title)));
+    // 归档 = Pocket 里的「结束」：默认收起；想看就明确点「已归档」
+    // （归档是纯 VsSaros 概念，本地影子会话没有这个字段 ⇒ 归档视图里不掺它们）
+    const realVisible = real ? real.filter((s) => (wantArchived ? s.archived === true : s.archived !== true)) : null;
+    const archivedCount = real ? real.filter((s) => s.archived === true).length : 0;
+
+    let merged;
+    if (!real) {
+      merged = wantArchived ? [] : local;
+    } else if (wantArchived) {
+      merged = realVisible;
+    } else {
+      merged = realVisible.concat(local.filter((s) => !realVisible.some((r) => r.title === s.title)));
     }
-    if (!real) merged = local;
 
     if (payload?.status) {
       merged = merged.filter((s) => s.status === payload.status);
     }
-    return { sessions: merged.slice(0, limit), source: real ? 'vsaros' : 'pocket' };
+    // 统一按「最近更新在前」：真实会话内部已排好，但本地影子会话可能比它们更新
+    merged = merged.slice().sort((a, b) => (b.updatedAt ?? b.startedAt ?? -1) - (a.updatedAt ?? a.startedAt ?? -1));
+    return {
+      sessions: merged.slice(0, limit),
+      source: real ? 'vsaros' : 'pocket',
+      // 面板据此决定要不要显示「已归档」芯片（0 就不显示，别放一个点进去是空的入口）
+      archivedCount,
+      total: merged.length,
+      // 诊断：`{ok:false,error}` = VsSaros 侧的会话桥不可用（老版本 / 命令失败）；
+      // App 据此把「还没有会话」换成有指向的说明，而不是让人以为真的没会话
+      diag: { ...sessionsDiag },
+    };
   }
 
   function sessionsGet(payload) {
@@ -812,6 +961,9 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
     'sessions.send': sessionsSend,
     'sessions.archive': sessionsArchive,
     'sessions.cancel': sessionsCancel,
+    // 聊天框头部（模式 / agent / 工作区 / worktree / 模型）：读渲染、写落回 VsSaros
+    'chat.context': chatContext,
+    'chat.context.set': chatContextSet,
     'files.list': filesList,
     'files.read': filesRead,
     'files.diff': filesDiff,

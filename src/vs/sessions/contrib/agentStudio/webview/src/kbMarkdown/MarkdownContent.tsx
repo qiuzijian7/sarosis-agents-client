@@ -11,8 +11,10 @@ import { buildRemarkPlugins, buildRehypePlugins } from './pipeline';
 import { parseFrontmatter } from './frontmatter';
 import { EmbedProvider, useEmbedContext } from './EmbedContext';
 import { resolveAssetSrc } from './assetPath';
+import { isMediaAssetSrc } from './mediaAssetBridge';
 import { LinkComponent } from './components/LinkComponent';
 import { ImageComponent } from './components/ImageComponent';
+import { MediaAssetImage } from './components/MediaAssetImage';
 import { CodeBlockComponent } from './components/CodeBlockComponent';
 import { EmbedComponent } from './components/EmbedComponent';
 import { MarkdownHeading } from './components/MarkdownHeading';
@@ -36,6 +38,8 @@ export interface MarkdownContentProps {
 	showFrontmatter?: boolean;
 	/** 文档目录的 webview URI 前缀（宿主注入）；相对路径图片据此解析（嵌套 embed 经 EmbedContext 继承）。 */
 	assetBaseUri?: string;
+	/** 媒体库图片「保存到笔记」成功后回调（assetId, 相对引用）——上层替换正文并持久化。 */
+	onSaveMediaToNote?: (assetId: string, relRef: string) => void;
 }
 
 // 图文显示：相对路径图片解析逻辑在 ./assetPath.ts（纯函数，可单测）
@@ -107,6 +111,7 @@ export function MarkdownContent(props: MarkdownContentProps): React.ReactElement
 		onToggleTask,
 		showFrontmatter = true,
 		assetBaseUri,
+		onSaveMediaToNote,
 	} = props;
 
 	const frontmatter = useMemo(
@@ -171,12 +176,16 @@ export function MarkdownContent(props: MarkdownContentProps): React.ReactElement
 		[onToggleTask],
 	);
 
-	// 图文显示：相对路径图片经 assetBaseUri 解析后再渲染（lightbox 复用同一 src）
+	// 图文显示：相对路径图片经 assetBaseUri 解析；`saros-media://` 走媒体库引用桥（方案 B/C）
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const ImgResolved = useCallback(
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(p: any) => <ImageComponent {...p} src={resolveAssetSrc(p.src, effectiveAssetBaseUri)} />,
-		[effectiveAssetBaseUri],
+		(p: any) => (
+			isMediaAssetSrc(p.src as string | undefined)
+				? <MediaAssetImage {...p} onSaved={onSaveMediaToNote} />
+				: <ImageComponent {...p} src={resolveAssetSrc(p.src, effectiveAssetBaseUri)} />
+		),
+		[effectiveAssetBaseUri, onSaveMediaToNote],
 	);
 
 	return (

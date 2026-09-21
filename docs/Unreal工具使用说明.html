@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Unreal 工具使用说明 · Agent Studio</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #f0a35e;
+    --accent-2: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.hero {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: linear-gradient(135deg, #1c2128 0%, #161b22 100%);
+    padding: 28px 32px;
+    margin-bottom: 28px;
+  }
+  h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: .5px; }
+  h1 .badge {
+    font-size: 12px; vertical-align: middle; margin-left: 10px;
+    background: #2d1f10; color: var(--accent); border: 1px solid #5c3a17;
+    border-radius: 999px; padding: 3px 10px; font-weight: 600;
+  }
+  .sub { color: var(--muted); margin: 0; font-size: 14px; }
+  h2 {
+    font-size: 21px; margin: 40px 0 14px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 .n { color: var(--accent); margin-right: 8px; }
+  h3 { font-size: 17px; margin: 26px 0 10px; color: var(--accent-2); }
+  p { margin: 10px 0; }
+  code {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; font-size: 13px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    color: #ffa657;
+  }
+  pre {
+    background: #010409; border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; margin: 12px 0;
+    font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; border: none; padding: 0; color: #c9d1d9; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel-2); font-weight: 600; color: var(--text); }
+  tbody tr:nth-child(even) { background: rgba(255,255,255,.02); }
+  .card {
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel); padding: 18px 20px; margin: 16px 0;
+  }
+  .card > h3:first-child { margin-top: 0; }
+  .tool-card { border-left: 3px solid var(--accent); }
+  .tool-card h3 { color: var(--accent); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .tag {
+    font-size: 11px; font-weight: 600; border-radius: 4px; padding: 2px 7px;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+  }
+  .tag.req { background: #2d1416; border-color: #6e2b2b; color: #ff9492; }
+  .tag.opt { background: #101d2e; border-color: #1f4b7a; color: #79c0ff; }
+  .tag.to { background: #2a2010; border-color: #6b4d16; color: var(--accent); }
+  ul, ol { margin: 10px 0; padding-left: 24px; }
+  li { margin: 5px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .stat { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); padding: 14px 16px; }
+  .stat .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
+  .stat .v { font-size: 20px; font-weight: 700; margin-top: 4px; color: var(--accent-2); }
+  .note, .warn, .ok {
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; border-left: 4px solid;
+  }
+  .note { background: #101d2e; border-color: var(--accent-2); }
+  .warn { background: #2d1f10; border-color: var(--accent); }
+  .ok { background: #0f2a16; border-color: var(--green); }
+  .note strong, .warn strong, .ok strong { color: #fff; }
+  .cmp-win { color: var(--green); font-weight: 600; }
+  .cmp-own { color: var(--accent-2); font-weight: 600; }
+  .cmp-lose { color: var(--red); font-weight: 600; }
+  .cmp-eq { color: var(--muted); font-weight: 600; }
+  footer { margin-top: 50px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+  .toc { columns: 2; column-gap: 32px; }
+  .toc a { color: var(--accent-2); text-decoration: none; display: block; padding: 3px 0; }
+  .toc a:hover { text-decoration: underline; }
+  @media print {
+    body { background: #fff; color: #000; }
+    .wrap { max-width: none; }
+    pre, table, .card { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>🎮 Unreal 工具使用说明<span class="badge">Agent Studio 内置工具</span></h1>
+  <p class="sub">
+    通过 <code>unreal_*</code> 系列工具驱动本地 Unreal Editor 进行资产检索、Python 执行、反射内省与构建。
+    本文档同时给出与 <strong>UE 官方 Unreal MCP</strong> 的详细差异对比。
+  </p>
+  <div class="grid" style="margin-top:20px">
+    <div class="stat"><div class="k">工具数量</div><div class="v">7 个</div></div>
+    <div class="stat"><div class="k">默认 Bridge</div><div class="v">127.0.0.1:8765</div></div>
+    <div class="stat"><div class="k">传输方式</div><div class="v">HTTP REST</div></div>
+    <div class="stat"><div class="k">最长超时</div><div class="v">30 分钟 (wait)</div></div>
+  </div>
+</header>
+
+<h2><span class="n">§</span>目录</h2>
+<nav class="toc">
+  <a href="#arch">1. 架构与工作原理</a>
+  <a href="#prereq">2. 前置条件与配置</a>
+  <a href="#tools">3. 七个工具详解</a>
+  <a href="#workflow">4. 推荐工作流</a>
+  <a href="#errors">5. 错误处理与超时</a>
+  <a href="#compare">6. 与 UE 官方 MCP 对比</a>
+  <a href="#advice">7. 选型建议</a>
+</nav>
+
+<h2 id="arch"><span class="n">1</span>架构与工作原理</h2>
+
+<p>
+  本工具集<strong>不是</strong> MCP 实现，而是一层直接访问本地 <strong>Bridge 服务</strong> 的 HTTP 客户端。
+  工具本身运行在 Agent Studio 进程内，通过 <code>fetch</code> 调用编辑器侧 Bridge 暴露的 <code>/bridge/*</code> 端点。
+</p>
+
+<pre><code>┌──────────────────────┐        HTTP (127.0.0.1:8765)        ┌────────────────────────────┐
+│  Agent Studio        │                                     │  Unreal Editor 进程        │
+│                      │                                     │                            │
+│  unreal_health       │──── GET  /bridge/health         ───▶│  BunnySeekAgent 插件       │
+│  unreal_exec         │──── POST /bridge/exec           ───▶│  (Python Editor Script     │
+│  unreal_wait         │──── POST /bridge/wait_probe     ───▶│   Plugin + EditorScripting │
+│  unreal_help         │──── POST /bridge/help           ───▶│   Utilities)               │
+│  unreal_dump         │──── POST /bridge/dump           ───▶│                            │
+│  unreal_build        │──── POST /bridge/build          ───▶│  内嵌 Python 解释器        │
+│  unreal_find_asset   │──── POST /bridge/find_asset     ───▶│  (GameThread 上执行)       │
+└──────────────────────┘                                     └────────────────────────────┘</code></pre>
+
+<div class="note">
+  <strong>关键设计点：</strong>所有工具共用同一个 <code>callBridge</code> 函数。它把「调用方 AbortSignal」与
+  「工具自身超时计时器」合并为一个 <code>AbortController</code>，
+  因此无论是上层取消还是工具超时，都能干净地中止请求而<strong>不会挂死</strong>。
+</div>
+
+<h3>统一行为约定</h3>
+<ul>
+  <li><strong>失败不抛异常</strong>：连接失败、HTTP 错误、超时全部转成普通文本结果返回，保证对话不会因此中断。</li>
+  <li><strong>响应格式化</strong>：返回 JSON 时会走 <code>formatPayload</code> 美化；解析失败则原样返回文本。</li>
+  <li><strong>地址规范化</strong>：Base URL 末尾的多余 <code>/</code> 会被剥离，避免拼出 <code>//bridge/health</code>。</li>
+</ul>
+
+<h2 id="prereq"><span class="n">2</span>前置条件与配置</h2>
+
+<div class="warn">
+  <strong>必须先在 Unreal Editor 中启用插件</strong>，否则所有工具都会返回「无法连接 Bridge」。
+  需要在编辑器中启用：
+  <ul>
+    <li><code>BunnySeekAgent</code> 插件（提供 <code>/bridge/*</code> 端点）</li>
+    <li><code>Python Editor Script Plugin</code>（提供内嵌 Python 解释器）</li>
+    <li><code>EditorScriptingUtilities</code>（提供编辑器脚本 API）</li>
+  </ul>
+</div>
+
+<h3>修改 Bridge 地址</h3>
+<p>
+  默认地址为 <code>http://127.0.0.1:8765</code>。如需修改（例如端口冲突），在
+  <strong>设置 → 工具配置 → Unreal Engine 工具 → Bridge 地址</strong> 中填写：
+</p>
+<pre><code>配置键：sessions.agentStudio.unreal.bridgeUrl
+默认值：（空）→ 回退到 http://127.0.0.1:8765
+
+示例：
+  http://127.0.0.1:9000
+  http://localhost:8765</code></pre>
+<p>
+  留空即表示使用内置默认地址，无需手动填写默认值。
+</p>
+
+<h2 id="tools"><span class="n">3</span>七个工具详解</h2>
+
+<!-- unreal_health -->
+<div class="card tool-card">
+  <h3><code>unreal_health</code><span class="tag to">5s 超时</span><span class="tag">无参数</span></h3>
+  <p>检查 Bridge 是否可达，返回状态、项目名、进程 PID 与运行时长。</p>
+  <p><strong>用途</strong>：当任何其它 <code>unreal_*</code> 工具失败时，<strong>应当第一个调用它</strong>来定位问题。</p>
+  <pre><code>// 无需参数
+{}</code></pre>
+  <div class="note">
+    <strong>为什么不是空 schema？</strong>该工具使用 <code>_no_params</code> 占位属性。
+    因为部分模型网关（如 IOA）要求 object 至少包含一个属性，否则整份 schema 会被判为不兼容。
+  </div>
+</div>
+
+<!-- unreal_exec -->
+<div class="card tool-card">
+  <h3><code>unreal_exec</code><span class="tag to">120s 超时</span><span class="tag req">code 必填</span></h3>
+  <p>
+    在 Unreal Editor 内嵌 Python 解释器中执行代码（运行于 <strong>GameThread</strong>）。
+    <strong>状态跨调用持久保留</strong>（Jupyter 风格），最后一个裸表达式的 <code>repr</code> 会被回显。
+    <code>unreal</code> 模块已预先导入。
+  </p>
+
+  <table>
+    <thead><tr><th>参数</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>code</code> <span class="tag req">必填</span></td><td>string</td><td>要执行的 Python 源码，可跨多条语句</td></tr>
+      <tr><td><code>reset</code> <span class="tag opt">可选</span></td><td>boolean</td><td>为 <code>true</code> 时先丢弃此前所有全局变量再执行</td></tr>
+      <tr><td><code>timeout_seconds</code> <span class="tag opt">可选</span></td><td>integer</td><td>硬超时秒数，默认 60，最小 1</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code>// 基础：列出当前关卡中的 Actor
+{
+  "code": "import unreal\nacts = unreal.EditorLevelLibrary.get_all_level_actors()\nlen(acts)"
+}
+
+// 复用上一次调用定义的变量（状态持久）
+{
+  "code": "[a.get_actor_label() for a in acts[:10]]"
+}
+
+// 清空状态重新开始
+{
+  "code": "acts = None",
+  "reset": true
+}</code></pre>
+
+  <div class="warn">
+    <strong>严禁 sleep / 忙等待。</strong><code>unreal_exec</code> 运行于 GameThread，
+    阻塞会直接<strong>冻结整个编辑器 UI</strong>。需要等待异步条件时请改用 <code>unreal_wait</code>。
+  </div>
+</div>
+
+<!-- unreal_wait -->
+<div class="card tool-card">
+  <h3><code>unreal_wait</code><span class="tag to">最长 30 分钟</span></h3>
+  <p>
+    等待异步 Unreal 条件，<strong>且不会阻塞 GameThread</strong>。
+    可提供 <code>condition</code>（Python 表达式，轮询直到为真）和/或
+    <code>log_pattern</code>（对新增日志行做正则匹配）。<strong>二者谁先满足谁生效</strong>。
+  </p>
+
+  <table>
+    <thead><tr><th>参数</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>condition</code> <span class="tag opt">可选</span></td><td>string</td><td>在 <code>unreal_exec</code> 命名空间中求值的 Python 表达式</td></tr>
+      <tr><td><code>log_pattern</code> <span class="tag opt">可选</span></td><td>string</td><td>与新增项目日志行匹配的正则表达式</td></tr>
+      <tr><td><code>timeout</code> <span class="tag opt">可选</span></td><td>number</td><td>总等待预算（秒），默认 300，最大 1800</td></tr>
+      <tr><td><code>poll_interval</code> <span class="tag opt">可选</span></td><td>number</td><td>探测间隔（秒），默认 2</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code>// 等待构建完成（条件轮询）
+{
+  "condition": "unreal.get_editor_subsystem(unreal.EditorActorSubsystem) is not None",
+  "timeout": 600,
+  "poll_interval": 3
+}
+
+// 等待日志中出现特定行（正则匹配）
+{
+  "log_pattern": "Build completed successfully",
+  "timeout": 1200
+}</code></pre>
+
+  <div class="ok">
+    <strong>这是本工具集相对「在 exec 里 sleep」的核心优势。</strong>
+    它把等待动作从 GameThread 挪到轮询探针上，编辑器在等待期间保持可响应。
+  </div>
+</div>
+
+<!-- unreal_help -->
+<div class="card tool-card">
+  <h3><code>unreal_help</code><span class="tag to">30s 超时</span></h3>
+  <p>
+    内省编辑器中的 <code>unreal</code> Python 模块：返回指定符号的文档字符串、成员与方法签名。
+    传入空 symbol 描述顶层模块。
+  </p>
+
+  <table>
+    <thead><tr><th>参数</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>symbol</code> <span class="tag opt">可选</span></td><td>string</td><td>相对 unreal 模块的点分路径；空字符串返回顶层摘要</td></tr>
+      <tr><td><code>filter</code> <span class="tag opt">可选</span></td><td>string</td><td>对成员名做大小写不敏感的子串过滤</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code>// 查看顶层模块
+{ "symbol": "" }
+
+// 查看某个类，并用 filter 收敛结果
+{
+  "symbol": "unreal.EditorLevelLibrary",
+  "filter": "actor"
+}</code></pre>
+
+  <div class="note">
+    <strong>强烈建议对大型类使用 <code>filter</code>。</strong>
+    Unreal 类动辄数百个成员，不加过滤会<strong>洪水般淹没你的上下文窗口</strong>。
+    在不确定 API 形状时，<strong>应在调用 <code>unreal_exec</code> 之前</strong>先调用本工具。
+  </div>
+</div>
+
+<!-- unreal_dump -->
+<div class="card tool-card">
+  <h3><code>unreal_dump</code><span class="tag to">60s 超时</span><span class="tag req">code 必填</span></h3>
+  <p>
+    利用反射元数据<strong>递归导出</strong> UE 对象/结构体的每一个可达编辑器属性为 JSON。
+    相比手写 <code>get_editor_property</code> 循环，它能捕获到被遗漏的<strong>嵌套 USTRUCT</strong>。
+    传入的 Python 代码，其<strong>最后一条语句必须是要导出的表达式</strong>。
+  </p>
+
+  <table>
+    <thead><tr><th>参数</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>code</code> <span class="tag req">必填</span></td><td>string</td><td>Python 代码，最后一句为待导出表达式</td></tr>
+      <tr><td><code>depth</code> <span class="tag opt">可选</span></td><td>integer</td><td>嵌套值的递归深度</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code>// 导出某个 Actor 的全部属性（最后一句是表达式）
+{
+  "code": "unreal.EditorLevelLibrary.get_all_level_actors()[0]",
+  "depth": 4
+}</code></pre>
+
+  <div class="warn">
+    <strong>注意最后一句的写法。</strong>若写成
+    <code>a = get_all_level_actors()[0]</code>（赋值语句），则没有可导出的表达式结果。
+    应直接写表达式本身。
+  </div>
+</div>
+
+<!-- unreal_build -->
+<div class="card tool-card">
+  <h3><code>unreal_build</code><span class="tag to">15 分钟超时</span><span class="tag req">mode 必填</span></h3>
+  <p>在 Unreal Editor 中触发构建。两种模式二选一。</p>
+
+  <table>
+    <thead><tr><th>参数</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>mode</code> <span class="tag req">必填</span></td><td>string (enum)</td><td><code>live_coding</code> = 编译并热重载 C++ 改动；<code>ubt</code> = 执行完整 UnrealBuildTool 构建</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code>// 快速热重载（日常改动首选）
+{ "mode": "live_coding" }
+
+// 完整构建（耗时很长，配 long timeout）
+{ "mode": "ubt" }</code></pre>
+
+  <div class="note">
+    <strong>模式选择：</strong>修改了 C++ 源码做增量验证用 <code>live_coding</code>（秒级~分钟级）；
+    发布前或改动了构建文件用 <code>ubt</code>（可达数十分钟）。
+    工具侧为 <code>ubt</code> 预留了 900 秒（15 分钟）超时。
+  </div>
+</div>
+
+<!-- unreal_find_asset -->
+<div class="card tool-card">
+  <h3><code>unreal_find_asset</code><span class="tag to">60s 超时</span></h3>
+  <p>在 Unreal AssetRegistry 中按名称或路径检索资产。所有参数均可选（无参调用返回全部/默认结果集）。</p>
+
+  <table>
+    <thead><tr><th>参数</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>search_term</code> <span class="tag opt">可选</span></td><td>string</td><td>名称或路径的子串</td></tr>
+      <tr><td><code>name</code> <span class="tag opt">可选</span></td><td>string</td><td>资产名过滤</td></tr>
+      <tr><td><code>path</code> <span class="tag opt">可选</span></td><td>string</td><td>包路径过滤，如 <code>/Game/BluePrints</code></td></tr>
+      <tr><td><code>class_names</code> <span class="tag opt">可选</span></td><td>string[]</td><td>限定返回的资产类型</td></tr>
+      <tr><td><code>max_results</code> <span class="tag opt">可选</span></td><td>integer</td><td>返回命中数量的上限</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code>// 按路径 + 类型精确检索
+{
+  "path": "/Game/BluePrints",
+  "class_names": ["Blueprint", "StaticMesh"],
+  "max_results": 20
+}
+
+// 模糊搜索
+{ "search_term": "Character" }</code></pre>
+</div>
+
+<h2 id="workflow"><span class="n">4</span>推荐工作流</h2>
+
+<h3>标准调用序列</h3>
+<ol>
+  <li><strong><code>unreal_health</code></strong> — 确认 Bridge 在线、拿到项目名与 PID。</li>
+  <li><strong><code>unreal_find_asset</code></strong> — 定位目标资产，拿到确切路径。</li>
+  <li><strong><code>unreal_help</code></strong>（配合 <code>filter</code>）— 确认 API 形状，避免凭记忆臆造 API。</li>
+  <li><strong><code>unreal_dump</code></strong> — 读取对象当前完整属性状态。</li>
+  <li><strong><code>unreal_exec</code></strong> — 执行修改。</li>
+  <li><strong><code>unreal_wait</code></strong> — 若改动触发异步任务（构建、导入、编译），用它等待。</li>
+  <li><strong><code>unreal_build</code></strong> — 需要编译 C++ 时调用。</li>
+</ol>
+
+<div class="ok">
+  <strong>黄金法则：先内省，后执行。</strong>
+  第 3 步的 <code>unreal_help</code> 是防止「幻觉 API 名」的关键。
+  Unreal Python API 面积极大，模型凭记忆写出的类名/方法名错误率很高；
+  一次 <code>unreal_help</code> 的成本远低于一次失败的 <code>unreal_exec</code>。
+</div>
+
+<h3>典型场景：批量修改资产属性</h3>
+<pre><code>1. unreal_find_asset  { "path": "/Game/Characters", "class_names": ["StaticMesh"], "max_results": 50 }
+     → 拿到资产路径列表
+
+2. unreal_help        { "symbol": "unreal.StaticMesh", "filter": "lod" }
+     → 确认 LOD 相关 API 的准确名称与签名
+
+3. unreal_dump        { "code": "unreal.load_asset('/Game/Characters/Hero')", "depth": 3 }
+     → 查看当前属性值
+
+4. unreal_exec        { "code": "..." }
+     → 批量修改
+
+5. unreal_wait        { "log_pattern": "Saved.*Hero", "timeout": 300 }
+     → 等待保存完成</code></pre>
+
+<h2 id="errors"><span class="n">5</span>错误处理与超时</h2>
+
+<h3>超时分级</h3>
+<table>
+  <thead><tr><th>工具</th><th>超时</th><th>设计意图</th></tr></thead>
+  <tbody>
+    <tr><td><code>unreal_health</code></td><td>5 秒</td><td>健康检查应当快速失败</td></tr>
+    <tr><td><code>unreal_help</code></td><td>30 秒</td><td>反射内省，中等耗时</td></tr>
+    <tr><td><code>unreal_dump</code></td><td>60 秒</td><td>深递归可能较慢</td></tr>
+    <tr><td><code>unreal_find_asset</code></td><td>60 秒</td><td>AssetRegistry 查询</td></tr>
+    <tr><td><code>unreal_exec</code></td><td>120 秒</td><td>GameThread 执行，不宜过长</td></tr>
+    <tr><td><code>unreal_build</code></td><td>900 秒（15 分钟）</td><td>完整 UBT 构建可达数十分钟</td></tr>
+    <tr><td><code>unreal_wait</code></td><td>1800 秒（30 分钟）</td><td>长时异步等待专用通道</td></tr>
+  </tbody>
+</table>
+
+<h3>三类错误形态</h3>
+<table>
+  <thead><tr><th>场景</th><th>返回文本</th><th>应对</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>HTTP 非 2xx</td>
+      <td><code>[Unreal] &lt;tool&gt; failed: bridge returned HTTP &lt;status&gt;.</code></td>
+      <td>查看附带的响应体，通常是 Bridge 侧参数校验失败</td>
+    </tr>
+    <tr>
+      <td>工具超时</td>
+      <td><code>[Unreal] &lt;tool&gt; timed out after Ns.</code></td>
+      <td>缩小操作范围（如减小 <code>depth</code>、加 <code>max_results</code>），或改用 <code>unreal_wait</code></td>
+    </tr>
+    <tr>
+      <td>连不上 Bridge</td>
+      <td><code>[Unreal] &lt;tool&gt; cannot reach the Unreal bridge at &lt;url&gt;</code></td>
+      <td>启动 Unreal Editor 并启用 BunnySeekAgent 插件；确认端口配置一致</td>
+    </tr>
+    <tr>
+      <td>用户/上层取消</td>
+      <td><code>[Unreal] &lt;tool&gt; cancelled.</code></td>
+      <td>正常中断，无需处理</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>连接失败排查清单</h3>
+<ol>
+  <li>Unreal Editor 是否已启动？</li>
+  <li><code>BunnySeekAgent</code> 插件是否已启用？</li>
+  <li><code>Python Editor Script Plugin</code> 与 <code>EditorScriptingUtilities</code> 是否已启用？</li>
+  <li>Bridge 实际监听的端口是多少？与设置中的 Bridge 地址是否一致？</li>
+  <li>是否有其它服务占用了 8765 端口？</li>
+</ol>
+
+<h2 id="compare"><span class="n">6</span>与 UE 官方 Unreal MCP 对比</h2>
+
+<p>
+  Epic 在 <strong>UE 5.8</strong> 中引入了官方的 <strong>Unreal MCP</strong> 插件（引擎内标识为 <code>ModelContextProtocol</code>）。
+  它把 MCP server <strong>内嵌在编辑器进程里</strong>，默认监听 <code>http://127.0.0.1:8000/mcp</code>。
+  下面从多个维度对比它与本工具集的差异。
+</p>
+
+<h3>6.1 核心参数对照表</h3>
+<table>
+  <thead>
+    <tr><th>维度</th><th>本项目 <code>unreal_*</code> 工具集</th><th>UE 官方 Unreal MCP</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>协议</strong></td>
+      <td>直接 HTTP REST（<code>/bridge/*</code>）</td>
+      <td>标准 MCP（JSON-RPC：initialize / tools/list / tools/call）</td>
+    </tr>
+    <tr>
+      <td><strong>Server 位置</strong></td>
+      <td>外部 Bridge 进程/插件（BunnySeekAgent），客户端在 Agent Studio 内</td>
+      <td>MCP server <strong>内嵌于 Unreal Editor 进程</strong></td>
+    </tr>
+    <tr>
+      <td><strong>默认地址</strong></td>
+      <td><code>http://127.0.0.1:8765</code></td>
+      <td><code>http://127.0.0.1:8000/mcp</code></td>
+    </tr>
+    <tr>
+      <td><strong>工具数量</strong></td>
+      <td><span class="cmp-own">固定 7 个</span>（通用元工具）</td>
+      <td><span class="cmp-win">数百个</span>（由 Toolset Registry 动态提供）</td>
+    </tr>
+    <tr>
+      <td><strong>工具粒度</strong></td>
+      <td>粗粒度：<code>unreal_exec</code> 可执行任意 Python</td>
+      <td>细粒度：单个 Tool 只做一件事（spawn actor、改光照、建材质实例…）</td>
+    </tr>
+    <tr>
+      <td><strong>能力边界</strong></td>
+      <td><span class="cmp-own">无限</span> —— 受限于 Python API 而非工具定义</td>
+      <td><span class="cmp-lose">受限于已注册的 Toolset</span>（SceneTools / ActorTools / MaterialInstanceTools / ObjectTools…）</td>
+    </tr>
+    <tr>
+      <td><strong>功能未覆盖时</strong></td>
+      <td>直接写 Python 绕过</td>
+      <td>需自行撰写 Toolset（Python 或 C++）并 <code>RefreshTools</code></td>
+    </tr>
+    <tr>
+      <td><strong>扩展性</strong></td>
+      <td>改工具集源码</td>
+      <td><span class="cmp-win">一等公民</span>：继承 <code>unreal.ToolsetDefinition</code> + <code>@tool_call</code> 装饰器即可</td>
+    </tr>
+    <tr>
+      <td><strong>类型/schema 质量</strong></td>
+      <td><span class="cmp-lose">弱</span>：<code>unreal_exec</code> 的 <code>code</code> 只是 string，无参数结构</td>
+      <td><span class="cmp-win">强</span>：类型提示 + Google 风格 docstring 自动反射为 JSON Schema</td>
+    </tr>
+    <tr>
+      <td><strong>工具发现</strong></td>
+      <td><code>unreal_help</code> / <code>unreal_dump</code> 运行时反射内省</td>
+      <td>Tool Search 三个元工具：<code>list_toolsets</code> / <code>describe_toolset</code> / <code>call_tool</code></td>
+    </tr>
+    <tr>
+      <td><strong>上下文体积控制</strong></td>
+      <td>天然小（仅 7 个工具）</td>
+      <td>依赖 Tool Search 折叠（默认开启），否则 schema 体积巨大</td>
+    </tr>
+    <tr>
+      <td><strong>线程模型</strong></td>
+      <td>exec 在 GameThread；<code>unreal_wait</code> 走轮询探针<strong>不占 GameThread</strong></td>
+      <td>所有 Tool 调用在 GameThread <strong>串行</strong>执行，客户端不应并发调用</td>
+    </tr>
+    <tr>
+      <td><strong>超时控制</strong></td>
+      <td><span class="cmp-own">分级超时</span>（5s ~ 30min）＋ 外部 signal 合并</td>
+      <td>未暴露等价的分级超时机制</td>
+    </tr>
+    <tr>
+      <td><strong>状态管理</strong></td>
+      <td><span class="cmp-own">exec 命名空间跨调用持久</span>（Jupyter 风格，可 <code>reset</code>）</td>
+      <td>无状态 Tool 调用</td>
+    </tr>
+    <tr>
+      <td><strong>客户端耦合</strong></td>
+      <td>仅 Agent Studio 内置可用</td>
+      <td><span class="cmp-win">任意 MCP 客户端</span>：Claude Code / Cursor / VS Code / Gemini / Codex / MCP Inspector</td>
+    </tr>
+    <tr>
+      <td><strong>成熟度</strong></td>
+      <td>稳定实现</td>
+      <td><span class="cmp-lose">Experimental</span>：许多功能不完整，API 与数据格式随时可能变更</td>
+    </tr>
+    <tr>
+      <td><strong>依赖插件</strong></td>
+      <td>BunnySeekAgent + Python Editor Script Plugin + EditorScriptingUtilities</td>
+      <td>Unreal MCP + All Toolsets（依赖 Toolset Registry，自动启用）</td>
+    </tr>
+    <tr>
+      <td><strong>可服务 cooked build</strong></td>
+      <td>否（需编辑器）</td>
+      <td><span class="cmp-win">是</span>：runtime 模块可在打包版本中启动 server</td>
+    </tr>
+    <tr>
+      <td><strong>安全模型</strong></td>
+      <td><span class="cmp-lose">任意代码执行</span>（等同授予编辑器内完全 Python 权限）</td>
+      <td>受限 Tool 集合（但仍无认证层，仅本机绑定）</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>6.2 本质差异：两种截然不同的哲学</h3>
+
+<div class="grid">
+  <div class="card">
+    <h3 style="color:var(--accent-2)">本项目：<strong>通用执行器</strong></h3>
+    <p>
+      把 Unreal 编辑器当作一个<strong>可编程的 REPL</strong>。
+      7 个工具本质是「连接 + 执行 + 等待 + 内省」四个原语的封装，
+      真正的业务能力由运行时写出的 Python 代码决定。
+    </p>
+    <ul>
+      <li><span class="cmp-own">优点</span>：能力上限高、不受工具定义迭代速度限制、上下文占用极小</li>
+      <li><span class="cmp-lose">缺点</span>：schema 弱（模型不知道该传什么）、无参数校验、错误只能靠运行时反馈、安全风险高</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3 style="color:var(--accent)">官方 MCP：<strong>结构化能力目录</strong></h3>
+    <p>
+      把编辑器功能<strong>逐项声明为带类型的 Tool</strong>，
+      由 Toolset Registry 在启动时收集，MCP 包装后对外广告。
+      模型面对的是一份「菜单」而非一台「解释器」。
+    </p>
+    <ul>
+      <li><span class="cmp-win">优点</span>：schema 精确、参数有校验、模型不易犯错、跨平台客户端通用、可扩展</li>
+      <li><span class="cmp-lose">缺点</span>：能力受限于已注册 Toolset、工具多时 schema 体积大（需靠 Tool Search 缓解）、目前仍是 Experimental</li>
+    </ul>
+  </div>
+</div>
+
+<h3>6.3 一个值得注意的趋同点</h3>
+<div class="note">
+  <strong>两者都选择了「元工具 + 按需发现」来对抗上下文膨胀，只是层级不同。</strong>
+  <ul>
+    <li>官方 MCP：默认开启 <code>bEnableToolSearch = true</code>，<code>tools/list</code> 只返回
+      <code>list_toolsets</code> / <code>describe_toolset</code> / <code>call_tool</code> 三个元工具，
+      agent 走发现路径按需展开，避免数百个 schema 一次性灌入。</li>
+    <li>本项目：<code>unreal_help</code> 就是「按需查 API」的等价物 —— 用一次内省调用换取准确的 API 形状，
+      而不是预先把所有 Unreal API 塞进提示词。</li>
+  </ul>
+  结论：<strong>「不要预先广告全部能力，让模型按需查询」已是这类集成的共识做法。</strong>
+</div>
+
+<h3>6.4 能力覆盖差异（官方明确列举的能力）</h3>
+<p>Epic 文档点名的官方能力包括：生成 Actor、配置光照、创建材质实例、检查 Slate 控件、运行自动化测试。</p>
+<table>
+  <thead><tr><th>官方能力</th><th>本工具集是否覆盖</th><th>如何达成</th></tr></thead>
+  <tbody>
+    <tr><td>生成 / 操作 Actor</td><td><span class="cmp-eq">间接</span></td><td><code>unreal_exec</code> 调 <code>EditorLevelLibrary</code></td></tr>
+    <tr><td>配置光照</td><td><span class="cmp-eq">间接</span></td><td><code>unreal_exec</code> + <code>unreal_dump</code> 读改属性</td></tr>
+    <tr><td>创建材质实例</td><td><span class="cmp-eq">间接</span></td><td><code>unreal_exec</code></td></tr>
+    <tr><td>检查 Slate 控件</td><td><span class="cmp-eq">间接</span></td><td><code>unreal_exec</code>（需相应 Python 暴露）</td></tr>
+    <tr><td>运行自动化测试</td><td><span class="cmp-eq">间接</span></td><td><code>unreal_exec</code> + <code>unreal_wait</code> 等待结果</td></tr>
+    <tr><td>资产检索</td><td><span class="cmp-own">原生支持</span></td><td><code>unreal_find_asset</code> 专用工具</td></tr>
+    <tr><td>C++ 构建 / 热重载</td><td><span class="cmp-own">原生支持</span></td><td><code>unreal_build</code>（含 live_coding 模式）</td></tr>
+    <tr><td>反射式属性导出</td><td><span class="cmp-own">原生支持</span></td><td><code>unreal_dump</code>（含嵌套 USTRUCT）</td></tr>
+  </tbody>
+</table>
+<p>
+  可见：<strong>官方有的能力本工具集大多能「曲线达成」，但需要模型自己写出正确的 Python；
+  而资产检索、构建、属性导出这三项在本工具集中有专门的原生工具，官方侧反而要依赖对应 Toolset。</strong>
+</p>
+
+<h2 id="advice"><span class="n">7</span>选型建议</h2>
+
+<div class="ok">
+  <strong>优先用本工具集 <code>unreal_*</code> 的场景：</strong>
+  <ul>
+    <li>已在 Agent Studio 中工作，不希望额外配置 MCP 客户端</li>
+    <li>任务需要<strong>超出官方 Toolset 覆盖</strong>的能力（自定义 Python 逻辑）</li>
+    <li>需要<strong>长时异步等待</strong>（构建、导入）—— <code>unreal_wait</code> 的 30 分钟预算与 GameThread 保护是硬优势</li>
+    <li>需要<strong>反射式排查</strong>对象真实属性（<code>unreal_dump</code> 对嵌套 USTRUCT 的捕获很实用）</li>
+    <li>关注上下文体积，不希望数百个工具 schema 进 prompt</li>
+  </ul>
+</div>
+
+<div class="warn">
+  <strong>应改用 / 补充官方 MCP 的场景：</strong>
+  <ul>
+    <li>需要在 <strong>Claude Code / Cursor / VS Code 等多个客户端</strong>中复用同一套能力</li>
+    <li>希望模型调用有<strong>强 schema 校验</strong>，降低参数写错的概率</li>
+    <li>不想承担「任意 Python 执行」的安全风险</li>
+    <li>需要为团队<strong>沉淀可复用、有文档的 Tool 资产</strong>（Toolset 扩展机制成熟）</li>
+    <li>需要在 <strong>cooked / shipping build</strong> 中托管 server</li>
+  </ul>
+</div>
+
+<div class="note">
+  <strong>两者并非互斥。</strong>官方 MCP 的 server 与本项目 Bridge 监听不同端口（8000 vs 8765），
+  完全可以同时启用：日常结构化操作走官方 Toolset，
+  遇到 Toolset 未覆盖或需要长时等待 / 深度内省的任务再用 <code>unreal_*</code> 兜底。
+</div>
+
+<footer>
+  文档基于 <code>unrealTools.ts</code> 源码（7 个工具注册）与 Epic 官方文档
+  <em>“Unreal MCP in Unreal Editor”（UE 5.8）</em> 编写。<br>
+  官方 Unreal MCP 目前处于 <strong>Experimental</strong> 状态，其 API 与数据格式可能变更，请以 Epic 最新文档为准。<br>
+  生成时间：2026-09-21
+</footer>
+
+</div>
+</body>
+</html>

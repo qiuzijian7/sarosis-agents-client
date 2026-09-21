@@ -124,8 +124,102 @@ function parseCookies(header) {
   return out;
 }
 
-/** 登录页：按访问来源显示提示（局域网 / 公网）。 */
-function loginPageHtml(error, isPublic, retryAfter = 0) {
+/** HTML 属性值转义（登录页要把原路径回填到 hidden input）。 */
+function escapeAttr(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * 登录后要跳回的原路径 —— **只接受站内路径**，防开放重定向。
+ *
+ * 为什么需要：登录页是「任意路径未鉴权」时都会出现的，早期实现把成功跳转写死成 `/`，
+ * 于是手机从 `/pocket/` 扫码进来、输完密码会被弹回 VsSaros web（桌面版没有上游 ⇒ 直接 502），
+ * 用户得再手打一次 `/pocket/`。这里把原路径带回去（只保留 pathname，丢掉 query 以免把
+ * 用户拼在 URL 上的东西（如错误的 ?token=）一起回显）。
+ *
+ * @param {string} rawUrl 原始 req.url
+ * @returns {string} 安全可跳的路径；空串表示「没有可信目标」（调用方退回默认行为）
+ */
+export function safeNextPath(rawUrl) {
+  const raw = String(rawUrl ?? '').trim();
+  // ★ 必须先看**原始**字符串再解析：WHATWG URL 会把 `\` 规范成 `/`（`/\evil.com` 被当成 `//evil.com`，
+  //   主机直接变成 evil.com），空串/相对路径也会被解析成 `/` —— 只信 `new URL().pathname` 会把它们放进来。
+  if (!raw.startsWith('/')) return '';
+  if (raw.startsWith('//') || raw.startsWith('/\\')) return ''; // 协议相对 URL / 反斜杠绕过
+  if (raw.length > 512) return '';
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return '';
+  let pathname;
+  try {
+    pathname = new URL(raw, 'http://x.invalid').pathname; // 顺带丢掉 ?query#hash
+  } catch {
+    return '';
+  }
+  if (!pathname.startsWith('/') || pathname.startsWith('//')) return '';
+  return pathname;
+}
+
+/**
+ * 上游 VsSaros server 不可达时的页面（502，仅对浏览器导航请求）。
+ *
+ * 为什么需要：代理的**同屏 web 入口**（`/`）需要上游 HTTP 端口，而桌面版 VsSaros
+ * （vssaros.exe，Electron）**不监听** HTTP 端口 ⇒ 这个入口天然打不开；但 **Pocket App
+ * （`/pocket/`）走扩展本地路由，完全不经过上游**，照样可用。
+ * 早期这里只吐一行 `connect ECONNREFUSED`，用户看不出「哪条入口坏了、该怎么办」，
+ * 所以改成把两条出路直接写在页面上（App 入口 / 启动 server 模式 / 改端口 / 重试）。
+ *
+ * @param {object} o
+ * @param {string} o.host 上游主机（通常 127.0.0.1）
+ * @param {number} o.port 上游端口（通常 8000）
+ * @param {string} [o.err] 原始错误消息（诊断用，小字展示）
+ * @param {string} [o.appPrefix] Pocket App 路径前缀（如 `/pocket/`），用于给「打开 App」链接
+ * @param {string} [o.triedPath] 用户原本请求的路径（重试链接用）
+ */
+export function upstreamDownPageHtml({ host, port, err = '', appPrefix = '', triedPath = '/' } = {}) {
+  const retry = triedPath.startsWith('/') && !triedPath.startsWith('//') ? triedPath : '/';
+  const appLink = appPrefix ? `<p class="act"><a class="btn" href="${escapeAttr(appPrefix)}">打开 Pocket App →</a></p>` : '';
+  return `<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Saros Pocket · 同屏 web 暂不可用</title>
+<style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:20px 0}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px 22px;max-width:420px;width:calc(100% - 40px)}
+h1{font-size:16px;margin:0 0 6px;color:#111827}
+p{font-size:13px;line-height:1.6;color:#4b5563;margin:0 0 12px}
+ol{font-size:13px;line-height:1.7;color:#374151;margin:0 0 12px;padding-left:20px}
+code{background:#f3f4f6;border-radius:4px;padding:1px 5px;font-size:12px;color:#111827}
+a{color:#4f6ef7}
+.btn{display:inline-block;background:#4f6ef7;color:#fff;text-decoration:none;border-radius:8px;padding:9px 14px;font-size:14px}
+.act{margin:0 0 14px}
+.raw{font-size:11px;color:#9ca3af;word-break:break-all;margin:0}
+</style></head><body><div class="card">
+<h1>VsSaros 同屏 web 暂不可用</h1>
+<p>代理连不上上游 <code>${escapeAttr(host)}:${escapeAttr(String(port))}</code>。你打开的是<strong>同屏 web 入口</strong>，
+它需要 VsSaros 以 <strong>server/web 模式</strong>运行；桌面版 <code>vssaros.exe</code> 不监听 HTTP 端口，所以这个入口打不开。</p>
+<p><strong>Pocket App 不受影响</strong> —— 对话 / 收件箱 / 变更 / 状态 / 屏幕都走扩展本地通道，不需要上游。</p>
+${appLink}
+<ol>
+<li>只想用手机：用上面的 App 入口（或面板里「Pocket App · 手机连接」的二维码）。</li>
+<li>要用同屏 web：以 server 模式启动 —— <code>vssaros --server --port ${escapeAttr(String(port))}</code></li>
+<li>端口不是 ${escapeAttr(String(port))}：改设置 <code>sarosPocket.upstreamPort</code>（面板或插件设置页）。</li>
+<li>已经启动了 server：<a href="${escapeAttr(retry)}">重试一次</a>。</li>
+</ol>
+<p class="raw">${escapeAttr(err)}</p>
+</div></body></html>`;
+}
+
+/**
+ * 登录页：按访问来源显示提示（局域网 / 公网）。
+ * @param {string} [brandHtml] 品牌 logo 的 HTML（由扩展读 app/saros-logo.svg 转 data URI 传入）；
+ *   空则退回文字标题 —— 代理本身拿不到扩展路径，所以品牌由外面注入。
+ * @param {string} [next] 登录成功后跳回的站内路径（已过 safeNextPath）
+ */
+export function renderLoginPage(error, isPublic, retryAfter = 0, brandHtml = '', next = '') {
   const where = isPublic ? '此公网地址' : '此局域网地址';
   const whereEn = isPublic ? 'This public address' : 'This LAN address';
   const errMsg = error === 'locked'
@@ -143,12 +237,17 @@ input{width:100%;box-sizing:border-box;padding:10px 12px;font-size:18px;letter-s
 input:focus{border-color:#4f6ef7}
 button{width:100%;padding:10px;font-size:15px;background:#4f6ef7;color:#fff;border:none;border-radius:8px;cursor:pointer}
 .err{color:#dc2626;font-size:12px;margin-bottom:10px;min-height:16px}
+/* 品牌条：wordmark 是白字+橙，只在深色底上可读，因此给它一条深色底 */
+.brand{background:#0f1115;border-radius:10px;padding:11px 12px;display:flex;align-items:center;justify-content:center;margin-bottom:14px}
+.brand img{height:22px;width:auto;display:block}
 </style></head><body><div class="card">
-<h1>🔐 Saros Pocket</h1>
+${brandHtml ? `<div class="brand">${brandHtml}</div>` : ''}
+<h1>Saros Pocket</h1>
 <p>${where}受访问密码保护，请输入 8 位密码（英文字母或数字） | ${whereEn} is password-protected — enter the 8-character PIN (letters/digits)</p>
 <div class="err">${errMsg}</div>
 <form method="post" action="/pocket-login">
 <input name="token" type="password" maxlength="8" autocomplete="one-time-code" autofocus required>
+${next ? `<input type="hidden" name="next" value="${escapeAttr(next)}">` : ''}
 <button type="submit">进入 | Enter</button>
 </form>
 </div></body></html>`;
@@ -297,9 +396,13 @@ function authCheck(req, tokens, sessionKey) {
 
 function maybeSeedAuthCookie(req, res, rawToken, sessionKey) {
   if (!rawToken || !sessionKey) return;
-  if (parseCookies(req.headers.cookie)[TOKEN_COOKIE]) return;
   const expected = cookieFor(rawToken, sessionKey);
   if (!expected) return;
+  // ★ 只有「已有 cookie 且**值就是我们要的**」才跳过。
+  //   早先这里是「存在同名 cookie 就跳过」，于是：VsSaros 重启 → sessionKey 变了 → 旧 cookie 失效，
+  //   但用 ?token= 打开时它**不会被替换** ⇒ 页面里的子资源（app.css / app.js）带着失效 cookie 请求 → 401
+  //   ⇒ 表现为「页面裸奔、JS 不执行、地址栏的 ?token= 也摘不掉」（用户报的现象）。
+  if (parseCookies(req.headers.cookie)[TOKEN_COOKIE] === expected) return;
   const origWriteHead = res.writeHead.bind(res);
   res.writeHead = function (statusCode, headers) {
     const h = { ...(headers ?? {}) };
@@ -485,6 +588,12 @@ function isCompressed(headers) {
  *   代理自行处理的本地路由（Pocket App 静态资源 + RPC 通道）。
  *   ★ 判定顺序即安全边界：这些路由排在「访问密码校验 + 局域网开关」之后、转发上游之前，
  *   所以能打开 App 的前提是先过了 PIN，不会绕过既有栅栏另开一条口子。
+ * @param {string} [opts.brandHtml] 登录页顶部的品牌 HTML（扩展注入 VsSaros 同款 logo 的 data URI）；
+ *   空字符串则登录页不显示品牌条（纯文字标题仍在）。
+ * @param {string} [opts.appPrefix] Pocket App 路径前缀（如 `/pocket/`），用于上游不可达页面里
+ *   给一个「打开 Pocket App」的出路链接；空则不展示该链接。
+ * @param {(err: Error) => void} [opts.onUpstreamError] 上游不可达回调（含 HTTP 与 WebSocket 两条路径），
+ *   服务层用它把「上游未启动」状态标出来供面板展示。
  */
 export function createPocketProxy({
   port = 3081,
@@ -501,7 +610,17 @@ export function createPocketProxy({
   launchAuthCookieName = 'vscode-tkn',
   handshakeLimit,
   routes = [],
+  brandHtml = '',
+  appPrefix = '',
+  onUpstreamError = null,
 } = {}) {
+  /**
+   * 登录页渲染（注入品牌 + 记住原路径）。四个调用点都走这里，避免每处都传一遍。
+   * 名字沿用 loginPageHtml，调用点只需多传一个 req。
+   */
+  const loginPageHtml = (req, error, isPublic, retryAfter = 0) =>
+    renderLoginPage(error, isPublic, retryAfter, brandHtml, safeNextPath(req?.url));
+
   const limiter = auth ? createRateLimiter(rateLimit ?? {}) : null;
   const handshake = createHandshakeTracker(
     typeof handshakeLimit === 'number' ? { max: handshakeLimit } : {},
@@ -531,18 +650,23 @@ export function createPocketProxy({
           const rl = limiter?.status(ip) ?? { locked: false, retryAfter: 0 };
           if (rl.locked) {
             res.writeHead(429, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'retry-after': String(rl.retryAfter) });
-            res.end(loginPageHtml('locked', isPublic, rl.retryAfter));
+            res.end(loginPageHtml(req, 'locked', isPublic, rl.retryAfter));
             return;
           }
           let body = '';
           req.on('data', (c) => { body += c; if (body.length > 1024) req.destroy(); });
           req.on('end', () => {
-            const submitted = String(new URLSearchParams(body).get('token') ?? '');
+            const params = new URLSearchParams(body);
+            const submitted = String(params.get('token') ?? '');
+            // 回到用户原本要去的页面（例如手机扫码进 App 的 /pocket/）；
+            // 根路径保留旧行为：带 saros-pocket-auth 标记，强制上游注入连接令牌（既有握手链路）。
+            const wanted = safeNextPath(params.get('next'));
+            const location = wanted && wanted !== '/' ? wanted : '/?saros-pocket-auth=1';
             const matched = acceptedTokens.find((candidate) => safeEqual(submitted, candidate));
             if (matched !== undefined) {
               limiter?.clear(ip);
               res.writeHead(302, {
-                location: '/?saros-pocket-auth=1',
+                location,
                 'set-cookie': `${TOKEN_COOKIE}=${cookieFor(matched, sessionKey)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${COOKIE_MAX_AGE}`,
                 'cache-control': 'no-store',
               });
@@ -551,7 +675,7 @@ export function createPocketProxy({
               limiter?.record(ip);
               log?.(`saros-pocket: login failed from ${ip}`);
               res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-              res.end(loginPageHtml(true, isPublic, 0));
+              res.end(loginPageHtml(req, true, isPublic, 0));
             }
           });
           return;
@@ -562,7 +686,7 @@ export function createPocketProxy({
           if (rl.locked) {
             if (isHtmlRequest(req)) {
               res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-              res.end(loginPageHtml('locked', isPublic, rl.retryAfter));
+              res.end(loginPageHtml(req, 'locked', isPublic, rl.retryAfter));
             } else {
               res.writeHead(429, { 'content-type': 'application/json', 'cache-control': 'no-store', 'retry-after': String(rl.retryAfter) });
               res.end('{"error":"too-many-attempts"}');
@@ -579,7 +703,7 @@ export function createPocketProxy({
           if (isHtmlRequest(req)) {
             const rl = limiter?.status(ip) ?? { locked: false, retryAfter: 0 };
             res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(loginPageHtml(rl.locked ? 'locked' : false, isPublic, rl.retryAfter));
+            res.end(loginPageHtml(req, rl.locked ? 'locked' : false, isPublic, rl.retryAfter));
           } else {
             res.writeHead(401, { 'content-type': 'application/json', 'cache-control': 'no-store' });
             res.end('{"error":"unauthorized"}');
@@ -709,6 +833,28 @@ export function createPocketProxy({
       },
     );
     proxyReq.on('error', (err) => {
+      log?.(`saros-pocket: 上游不可达 ${upstream.host}:${upstream.port} | ${err.message}`);
+      try { onUpstreamError?.(err); } catch { /* 回调不该影响响应 */ }
+      // 浏览器导航：给一张能看懂、有出路的页面（桌面版下这个入口本来就打不开）；
+      // 非导航（API / 脚本 / 探活）：保持单行文本，便于 grep 与自动化断言。
+      if (isHtmlRequest(req)) {
+        const page = Buffer.from(upstreamDownPageHtml({
+          host: upstream.host,
+          port: upstream.port,
+          err: err.message,
+          appPrefix,
+          triedPath: String(req.url ?? '/'),
+        }), 'utf8');
+        if (!res.headersSent) {
+          res.writeHead(502, {
+            'content-type': 'text/html; charset=utf-8',
+            'content-length': String(page.length),
+            'cache-control': 'no-store',
+          });
+        }
+        res.end(page);
+        return;
+      }
       if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
       res.end(`saros-pocket: 无法连接上游 VsSaros（${upstream.host}:${upstream.port}）——请确认 VsSaros 已以 server/web 模式启动 | ${err.message}`);
     });
@@ -785,7 +931,12 @@ export function createPocketProxy({
         proxyRes.resume();
       } catch { socket.destroy(); }
     });
-    proxyReq.on('error', () => socket.destroy());
+    proxyReq.on('error', (err) => {
+      // WebSocket 没法回一张错误页，但至少要留痕：否则手机上「转圈不动」且无从排查
+      log?.(`saros-pocket: 上游不可达（WebSocket）${upstream.host}:${upstream.port} | ${err?.message ?? err}`);
+      try { onUpstreamError?.(err); } catch { /* 忽略 */ }
+      socket.destroy();
+    });
     if (head?.length) proxyReq.write(head);
     proxyReq.end();
     socket.on('error', () => socket.destroy());

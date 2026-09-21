@@ -1,6 +1,6 @@
 {
   "name": "vssaros",
-  "version": "2.2.26040",
+  "version": "2.2.26041",
   "distro": "adf5d4ef5d36b1829d04e2a6f5255c5344cb0316",
   "author": {
     "name": "Microsoft Corporation"
@@ -30,6 +30,10 @@
     "test-emoji-transparent-video-ui-e2e": "node scripts/test-emoji-transparent-video-ui-e2e.mjs",
     "test-emoji-three-stage-chain": "node scripts/test-emoji-three-stage-chain.mjs",
     "check-cyclic-dependencies": "node build/lib/checkCyclicDependencies.ts out",
+    "check:pi-drift": "node scripts/check-pi-drift.mjs",
+    "session:tail": "node scripts/session-tail.mjs",
+    "session:digest": "node scripts/session-digest.mjs",
+    "verify:session-health": "node scripts/verify-session-health.mjs",
     "preinstall": "node build/npm/preinstall.ts",
     "postinstall": "node build/npm/postinstall.ts",
     "compile": "npm run gulp compile && npm run compile-agentmemory-memory && npm run compile-agentmemory-gateway && npm run compile-shared && npm run compile-codebuddy-provider",

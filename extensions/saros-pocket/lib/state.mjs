@@ -20,10 +20,29 @@ function newPin() {
 }
 
 /**
+ * 「开关类」状态：有 settings 适配器时以**设置为唯一真源**（插件设置页与访问面板同源，
+ * 改一处两边生效）；没有适配器（测试 / 无宿主）时退回 state.json。
+ *
+ * ⚠ 密码（PIN）与隧道 Token **永远不进 settings.json** —— 它们只在 globalStorage 里，
+ * 文件 0600；设置文件会被同步/被别的扩展读到，不适合放凭据。
+ */
+const SETTING_DEFAULTS = {
+  lanEnabled: true,
+  lanAuthEnabled: true,
+  lanIpOverride: '',
+  tunnelMode: 'quick',
+  tunnelHostname: '',
+};
+
+/**
  * 创建一个绑定到 storageDir 的状态仓库。
  * @param {string} storageDir 扩展 globalStorage 目录（绝对路径）
+ * @param {object} [opts]
+ * @param {{ get:(name:string)=>unknown, update:(name:string, value:unknown)=>unknown }|null} [opts.settings]
+ *   宿主配置适配器（extension.js 注入，name 是不带 `sarosPocket.` 前缀的短名）。
+ *   只覆盖上面 SETTING_DEFAULTS 里的 5 个开关类键。
  */
-export function createStateStore(storageDir) {
+export function createStateStore(storageDir, { settings = null } = {}) {
   const base = join(storageDir, 'saros-pocket');
   const stateRel = join('saros-pocket', 'state.json');
   const statePath = () => join(storageDir, stateRel);
@@ -62,19 +81,44 @@ export function createStateStore(storageDir) {
     return fresh;
   }
 
+  // ---------- 开关类：设置优先（插件页 / 面板同源），无适配器时回退 state.json ----------
+  /** 读开关：有 settings 就读设置（缺省用兜底值），否则读 state.json。 */
+  function switchGet(name, fromFile) {
+    if (!settings) return fromFile();
+    const v = settings.get(name);
+    return v === undefined ? SETTING_DEFAULTS[name] : v;
+  }
+  /** 写开关：有 settings 就写设置，返回 true 表示已由设置接管。 */
+  function switchSet(name, value) {
+    if (!settings) return false;
+    // 适配器内部已记日志并吞掉异常；这里再包一层只为防 unhandled rejection
+    // （写入是异步的，而调用点（面板消息处理）是同步的）。
+    try {
+      Promise.resolve(settings.update(name, value)).catch(() => { /* 已由适配器记录 */ });
+    } catch { /* 同步抛也吞掉 */ }
+    return true;
+  }
+
   // ---------- 局域网访问开关（默认开启） ----------
-  const lanEnabled = () => readState().lanEnabled !== false;
-  const setLanEnabled = (on) => { const s = readState(); s.lanEnabled = !!on; writeState(s); return s.lanEnabled; };
+  const lanEnabled = () => switchGet('lanEnabled', () => readState().lanEnabled !== false) !== false;
+  const setLanEnabled = (on) => {
+    if (switchSet('lanEnabled', !!on)) return !!on;
+    const s = readState(); s.lanEnabled = !!on; writeState(s); return s.lanEnabled;
+  };
 
   // ---------- 局域网访问密码开关（默认开启） ----------
-  const lanAuthEnabled = () => readState().lanAuthEnabled !== false;
-  const setLanAuthEnabled = (on) => { const s = readState(); s.lanAuthEnabled = !!on; writeState(s); return s.lanAuthEnabled; };
+  const lanAuthEnabled = () => switchGet('lanAuthEnabled', () => readState().lanAuthEnabled !== false) !== false;
+  const setLanAuthEnabled = (on) => {
+    if (switchSet('lanAuthEnabled', !!on)) return !!on;
+    const s = readState(); s.lanAuthEnabled = !!on; writeState(s); return s.lanAuthEnabled;
+  };
 
   // ---------- 局域网地址手动覆盖 ----------
-  const lanIpOverride = () => readState().lanIpOverride ?? '';
+  const lanIpOverride = () => String(switchGet('lanIpOverride', () => readState().lanIpOverride ?? '') ?? '');
   const setLanIpOverride = (value) => {
     const ip = String(value ?? '').trim();
     if (ip && !isValidIpv4(ip)) throw new Error('局域网地址必须是 IPv4 地址 | LAN address must be an IPv4 address');
+    if (switchSet('lanIpOverride', ip)) return ip;
     const s = readState();
     if (ip) s.lanIpOverride = ip; else delete s.lanIpOverride;
     writeState(s);
@@ -117,6 +161,8 @@ export function createStateStore(storageDir) {
     throw new Error('未知密码类型 | unknown PIN kind');
   }
   function resetPocketState() {
+    // 开关类若由设置接管，一并回落默认值 —— 否则「恢复出厂设置」看起来没生效
+    for (const [name, def] of Object.entries(SETTING_DEFAULTS)) switchSet(name, def);
     try { rmSync(statePath(), { force: true }); } catch { /* 忽略 */ }
     try { rmSync(tokenRelPath('token'), { force: true }); } catch { /* 忽略 */ }
     try { rmSync(tokenRelPath('token-lan'), { force: true }); } catch { /* 忽略 */ }
@@ -124,9 +170,13 @@ export function createStateStore(storageDir) {
   }
 
   // ---------- 命名隧道配置 ----------
-  const tunnelMode = () => readState().tunnelMode === 'named' ? 'named' : 'quick';
+  const tunnelMode = () => {
+    const v = switchGet('tunnelMode', () => readState().tunnelMode);
+    return v === 'named' ? 'named' : 'quick';
+  };
   const setTunnelMode = (mode) => {
     if (mode !== 'quick' && mode !== 'named') throw new Error('隧道模式必须是 quick 或 named');
+    if (switchSet('tunnelMode', mode)) return mode;
     const s = readState(); if (mode === 'quick') delete s.tunnelMode; else s.tunnelMode = mode; writeState(s); return mode;
   };
   const tunnelToken = () => { const v = readState().tunnelToken; return typeof v === 'string' ? v : ''; };
@@ -135,7 +185,10 @@ export function createStateStore(storageDir) {
     if (v) { if (v.length < 20 || !/^[A-Za-z0-9+/_=-]+$/.test(v)) throw new Error('Tunnel Token 格式不对 | invalid tunnel token'); }
     const s = readState(); if (v) s.tunnelToken = v; else delete s.tunnelToken; writeState(s); return v;
   };
-  const tunnelHostname = () => { const v = readState().tunnelHostname; return typeof v === 'string' ? v : ''; };
+  const tunnelHostname = () => {
+    const v = switchGet('tunnelHostname', () => readState().tunnelHostname);
+    return typeof v === 'string' ? v : '';
+  };
   const setTunnelHostname = (value) => {
     let v = String(value ?? '').trim().toLowerCase();
     v = v.replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split(/[/?#\s]/)[0].replace(/:\d+$/, '').replace(/\.$/, '');
@@ -144,6 +197,7 @@ export function createStateStore(storageDir) {
       const IS_IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
       if (IS_IPV4.test(v) || !v.includes('.') || !HOSTNAME_RE.test(v)) throw new Error('固定域名格式不对（如 pocket.example.com） | invalid tunnel hostname');
     }
+    if (switchSet('tunnelHostname', v)) return v;
     const s = readState(); if (v) s.tunnelHostname = v; else delete s.tunnelHostname; writeState(s); return v;
   };
 

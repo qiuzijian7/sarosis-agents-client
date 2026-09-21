@@ -19,10 +19,25 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { VSSAROS_LLM_CHANNEL, type IHttpRequestResult } from './llmBridge.js';
 import { AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING } from './constants.js';
-import { buildModelsUrl, type CustomProviderData } from '../browser/views/providerView.js';
+// ★ 2026-09-21：只保留 **type** 导入 ✓ —— 此前这里还从 providerView 值导入了
+// `buildModelsUrl`，等于让 common 层在运行时依赖 browser 层 ✗（分层方向被打破 ✓）。
+// 该函数已下沉到本文件（下方 ✓），browser 侧改为**再导出**（调用点零改动 ✓）。
+import type { CustomProviderData } from '../browser/views/providerView.js';
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 小时，仿 opencode
 const STORAGE_KEY = 'sessions.agentStudio.provider.lastModelsUpdate';
+
+/**
+ * 构建模型发现端点 URL（2026-09-21 从 `browser/views/providerView.ts` 下沉 ✓）。
+ *
+ * grnexus 等网关的 API 挂在 `/v1/` 下（`GET {base}/v1/models`），而 base URL 常填根域名
+ * （不带 /v1）。若 base 已含 `/vN` 版本段则直接拼 `/models`，否则补 `/v1/models`。
+ * 避免出现 `.../v1/v1/models` 或 `.../models`（缺版本段）。
+ */
+export function buildModelsUrl(baseUrl: string): string {
+	const base = baseUrl.replace(/\/+$/, '');
+	return /\/v\d+(\.\d+)*$/i.test(base) ? `${base}/models` : `${base}/v1/models`;
+}
 
 export const IModelsAutoUpdateService = createDecorator<IModelsAutoUpdateService>('modelsAutoUpdateService');
 

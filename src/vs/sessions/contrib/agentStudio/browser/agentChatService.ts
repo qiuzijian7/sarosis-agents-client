@@ -28,7 +28,19 @@ import { IConfigurationService } from "../../../../platform/configuration/common
 import { ILifecycleService } from "../../../../workbench/services/lifecycle/common/lifecycle.js";
 import { URI } from "../../../../base/common/uri.js";
 import { VSBuffer } from "../../../../base/common/buffer.js";
-import { writeFileAtomicSafe } from "../common/atomicWrite.js";
+import { appendFileSafe, writeFileAtomicSafe } from "../common/atomicWrite.js";
+import {
+	replaySessionLog,
+	serializeSessionLogAppends,
+	serializeSessionLogBarrier,
+	upsertMessageById,
+	SESSION_LOG_SUFFIX,
+} from "../common/sessionHistoryLog.js";
+import {
+	readSessionEvents as readEventsFromLog,
+	type IReadSessionEventsResult,
+	type ISessionEventCursor,
+} from "../common/sessionEventStream.js";
 import {
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	DATA_FILE_CHAT_HISTORY,
@@ -335,6 +347,40 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	/** 内存副本存活时间（无 dirty 时）。多实例场景下过期后重读，感知外部修改。 */
 	private static readonly SESSION_INDEX_DATA_TTL_MS = 10_000;
 
+	// ─── 会话追加日志（P0-1，2026-09-21）──────────────────────────────────────
+	// 会话历史此前每 append/update 一次就**整会话重写** ✗（成本 ∝ 消息数；且崩溃丢整轮 ✗）。
+	// 现改为「追加日志 + 定期快照」：追加是 O(1) 增量写 ✓，崩溃最多丢最后一行 ✓。
+	// 语义与屏障机制详见 `common/sessionHistoryLog.ts` 头注释 ✓。
+	/**
+	 * 触发压缩（快照 + 屏障 + 截断）的**追加条数**阈值。
+	 *
+	 * 取值权衡：太小 ⇒ 快照写（整文件，MB 级）频繁 ✗，退化成改造前的成本；
+	 * 太大 ⇒ 打开会话时要重放的日志行多（每行 parse 一次 ✓ 微秒级，可接受 ✓），
+	 * 且日志文件体积大 ✗。512 条 ≈ 一个长 turn 的量级 ✓，典型会话压缩 1–2 次 ✓。
+	 */
+	private static readonly SESSION_LOG_COMPACT_AFTER = 512;
+	/**
+	 * 触发压缩的**字节**阈值（4MB）。
+	 *
+	 * **为什么条数阈值不够** ✗：单条消息可以是 MB 级（工具结果全文、大段代码 ✓），
+	 * 512 条 × 大消息 ⇒ 日志能涨到几百 MB ✗（每次打开会话都要整份重放 ✗）。
+	 * 两个阈值取「先到者」✓。
+	 */
+	private static readonly SESSION_LOG_COMPACT_AFTER_BYTES = 4 * 1024 * 1024;
+	/**
+	 * 每会话的写串行化链。
+	 *
+	 * **为什么必需**：`replaceHistory` / `deleteMessagesAfter` / 压缩快照走的是
+	 * 「写快照 → 追加屏障 → 删日志」三步 ✓，若与并发追加**交错**（屏障插到别人追加的
+	 * 前面 ✗），那条追加就会被重放丢弃 ✗（静默丢消息）。⇒ 同一会话的所有日志/快照写
+	 * 必须串行 ✓（与 `_sessionIndexWriteQueue` 同一套路 ✓）。
+	 */
+	private readonly _sessionLogChain = new Map<string, Promise<void>>();
+	/** key → 上次压缩后累计的追加条数（重放日志时按实际条数恢复 ✓）。 */
+	private readonly _sessionLogAppends = new Map<string, number>();
+	/** key → 上次压缩后累计的追加字节数（条数阈值兜不住 MB 级消息 ⇒ 双阈值 ✓）。 */
+	private readonly _sessionLogBytes = new Map<string, number>();
+
 	private _historyLoaded = false;
 	private _globalDataUri: URI | undefined;
 
@@ -578,6 +624,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 	private _sessionFileUri(sessionsDirUri: URI, sessionId: string): URI {
 		return URI.joinPath(sessionsDirUri, `${sessionId}.json`);
+	}
+
+	/** ★ P0-1：会话**追加日志**（`sessions/{sessionId}.jsonl`）—— 与快照同目录、同名不同扩展 ✓。 */
+	private _sessionLogUri(sessionsDirUri: URI, sessionId: string): URI {
+		return URI.joinPath(sessionsDirUri, `${sessionId}${SESSION_LOG_SUFFIX}`);
 	}
 
 	private _cacheKey(agentId: string, sessionId?: string): string {
@@ -1308,21 +1359,127 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			return;
 		} // No session assigned yet — skip per-file persist
 		try {
-			const { sessionsDirUri } = await this._resolveAgentPaths(agentId);
-			if (!(await this.fileService.exists(sessionsDirUri))) {
-				await this.fileService.createFolder(sessionsDirUri);
-			}
-			const fileUri = this._sessionFileUri(sessionsDirUri, sessionId);
-			// ★ 2026-09-15：**会话本体**是高频整文件覆盖写、且启动即读 ⇒ 必须原子写。
-			// 此前只有 session index 走了原子写（见 `_writeSessionIndex`），本体反而没有 ——
-			// 半写后果是"对话历史突然读不出来"。详见 `common/atomicWrite.ts`。
-			await writeFileAtomicSafe(this.fileService, fileUri, VSBuffer.fromString(JSON.stringify(messages, null, 2)));
-			await this._updateSessionIndex(agentId, sessionId, messages.length);
+			// ★ P0-1（2026-09-21）：本方法语义 = 「以 messages 为**完整权威**」⇒ 走快照路径
+			//   （原子写 + 屏障 + 截断日志 ✓）。**增量追加**请用 `_appendToSessionLog` ✓ ——
+			//   正常对话路径（append/update）已全部切换到追加；此处只剩「整段改写」的调用方：
+			//   压缩后写回、LRU 淘汰前写回、加载期修复（refs 解析 / 内联大图清理）、
+			//   deleteMessagesAfter（截断）✓。
+			const key = this._cacheKey(agentId, sessionId);
+			await this._withSessionLogLock(key, async () => {
+				const { sessionsDirUri } = await this._resolveAgentPaths(agentId);
+				if (!(await this.fileService.exists(sessionsDirUri))) {
+					await this.fileService.createFolder(sessionsDirUri);
+				}
+				await this._writeSessionSnapshotLocked(agentId, sessionId, sessionsDirUri, messages);
+			});
 		} catch (err) {
 			this.logService.error(
 				"[AgentChatService] _persistToSessionFile failed:",
 				err,
 			);
+		}
+	}
+
+	/**
+	 * ★ P0-1（2026-09-21）：写**快照**（完整会话）+ 屏障 + 截断日志。
+	 *
+	 * 语义 = 「以 `messages` 为完整权威」⇒ 此前写入的日志条目必须失效 ✓：
+	 * ① 原子写快照（旧内容 / 新内容二选一，绝不半截 ✓）；
+	 * ② 追加**屏障**：重放时屏障之前的条目一律丢弃 ✓（此步之后崩了也正确 ✓）；
+	 * ③ 尽力删除日志（删不掉只是体积问题 ✓ 正确性已由屏障兜住 ✓）。
+	 *
+	 * ⚠ 必须在 `_withSessionLogLock` **内**调用 —— 三步之间不允许插入任何追加 ✗，
+	 * 否则「先追加、后屏障」的那条追加会被重放丢弃（静默丢消息 ✗✓）。
+	 */
+	private async _writeSessionSnapshotLocked(
+		agentId: string,
+		sessionId: string,
+		sessionsDirUri: URI,
+		messages: readonly ChatMessage[],
+	): Promise<void> {
+		if (!(await this.fileService.exists(sessionsDirUri))) {
+			await this.fileService.createFolder(sessionsDirUri);
+		}
+		const fileUri = this._sessionFileUri(sessionsDirUri, sessionId);
+		// ★ 2026-09-15：**会话本体**是高频覆盖写、且启动即读 ⇒ 必须原子写（详见 common/atomicWrite.ts）。
+		await writeFileAtomicSafe(this.fileService, fileUri, VSBuffer.fromString(JSON.stringify(messages, null, 2)));
+		const logUri = this._sessionLogUri(sessionsDirUri, sessionId);
+		await appendFileSafe(this.fileService, logUri, VSBuffer.fromString(serializeSessionLogBarrier()));
+		try {
+			if (await this.fileService.exists(logUri)) { await this.fileService.del(logUri); }
+		} catch { /* 删不掉无妨：重放遇到屏障即丢弃旧条目 ✓ */ }
+		this._sessionLogAppends.set(this._cacheKey(agentId, sessionId), 0);
+		this._sessionLogBytes.set(this._cacheKey(agentId, sessionId), 0);
+		await this._updateSessionIndex(agentId, sessionId, messages.length).catch(err =>
+			this.logService.warn(
+				`[AgentChatService] session index update after snapshot failed for ${agentId}::${sessionId}: ${err instanceof Error ? err.message : err}`,
+			),
+		);
+	}
+
+	/** 同一会话的日志/快照写串行化（见 `_sessionLogChain` 字段注释 ✓）。 */
+	private async _withSessionLogLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+		const prev = this._sessionLogChain.get(key) ?? Promise.resolve();
+		// ⚠ 前一笔失败不能阻塞后续 —— 否则一次写失败会让该会话**永久**无法落盘 ✗
+		const run = prev.then(fn, fn);
+		const tail = run.then(() => { }, () => { });
+		this._sessionLogChain.set(key, tail);
+		try {
+			return await run;
+		} finally {
+			if (this._sessionLogChain.get(key) === tail) { this._sessionLogChain.delete(key); }
+		}
+	}
+
+	/**
+	 * ★ P0-1：**追加**消息到会话日志（增量写 ✓，不动快照 ✓）。
+	 *
+	 * 累计条数超阈值时在锁内顺带压缩（快照 + 屏障 + 截断）⇒ 日志不会无限增长 ✓。
+	 * 失败只记日志 —— 与改造前的 `_persistToSessionFile` 一致：落盘失败不该打断对话 ✓。
+	 */
+	private async _appendToSessionLog(
+		agentId: string,
+		sessionId: string | undefined,
+		msgs: readonly ChatMessage[],
+	): Promise<void> {
+		if (!sessionId || msgs.length === 0) { return; }
+		const text = serializeSessionLogAppends(msgs);
+		if (!text) { return; } // 全部无 id ⇒ 无法在重放时定位（写了只会变成重复气泡 ✗）
+		const key = this._cacheKey(agentId, sessionId);
+		try {
+			await this._withSessionLogLock(key, async () => {
+				const { sessionsDirUri } = await this._resolveAgentPaths(agentId);
+				if (!(await this.fileService.exists(sessionsDirUri))) {
+					await this.fileService.createFolder(sessionsDirUri);
+				}
+				await appendFileSafe(this.fileService, this._sessionLogUri(sessionsDirUri, sessionId), VSBuffer.fromString(text));
+				const pending = (this._sessionLogAppends.get(key) ?? 0) + msgs.length;
+				const pendingBytes = (this._sessionLogBytes.get(key) ?? 0) + text.length;
+				this._sessionLogAppends.set(key, pending);
+				this._sessionLogBytes.set(key, pendingBytes);
+				if (pending >= AgentChatService.SESSION_LOG_COMPACT_AFTER
+					|| pendingBytes >= AgentChatService.SESSION_LOG_COMPACT_AFTER_BYTES) {
+					const messages = this._historyCache.get(key);
+					if (messages) {
+						await this._writeSessionSnapshotLocked(agentId, sessionId, sessionsDirUri, messages);
+						this.logService.info(
+							`[AgentChatService] compacted session log ${key} after ${pending} appends → snapshot ${messages.length} msgs`,
+						);
+					} else {
+						// 缓存已被 LRU 淘汰：无从写快照 ⇒ 只重置计数（下次加载按重放条数恢复 ✓）
+						this._sessionLogAppends.set(key, 0);
+					}
+				} else {
+					const total = this._historyCache.get(key)?.length ?? msgs.length;
+					await this._updateSessionIndex(agentId, sessionId, total).catch(err =>
+						this.logService.warn(
+							`[AgentChatService] session index update failed for ${key}: ${err instanceof Error ? err.message : err}`,
+						),
+					);
+				}
+			});
+		} catch (err) {
+			this.logService.error("[AgentChatService] _appendToSessionLog failed:", err);
 		}
 	}
 
@@ -1336,11 +1493,54 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		try {
 			const paths = await this._resolveAgentPaths(agentId);
 			const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
-			if (!(await this.fileService.exists(fileUri))) {
+			const logUri = this._sessionLogUri(paths.sessionsDirUri, sessionId);
+			const hasSnapshot = await this.fileService.exists(fileUri);
+			const hasLog = await this.fileService.exists(logUri);
+			if (!hasSnapshot && !hasLog) {
 				return [];
 			}
-			const content = await this.fileService.readFile(fileUri);
-			const messages = JSON.parse(content.value.toString()) as ChatMessage[];
+			// ① 快照（完整 ChatMessage[]，原子写 ⇒ 不会是半截 ✓）
+			let messages: ChatMessage[] = [];
+			if (hasSnapshot) {
+				try {
+					const parsed = JSON.parse(
+						(await this.fileService.readFile(fileUri)).value.toString(),
+					) as ChatMessage[];
+					messages = Array.isArray(parsed) ? parsed : [];
+				} catch (err) {
+					// 快照读不出来（历史遗留半写 / 外部损坏 ✗）⇒ **不整段丢弃**：改为尽量从日志重建 ✓
+					this.logService.warn(
+						`[AgentChatService] session snapshot unreadable for ${agentId}::${sessionId} ` +
+						`— rebuilding from append-only log: ${err instanceof Error ? err.message : err}`,
+					);
+					messages = [];
+				}
+			}
+			// ② 追加日志（★ P0-1）：只取**屏障之后**的条目，按 id 归并（幂等 ✓）
+			if (hasLog) {
+				try {
+					const replay = replaySessionLog(
+						(await this.fileService.readFile(logUri)).value.toString(),
+					);
+					if (replay.tornLines > 0) {
+						// 追加途中被 kill ⇒ 尾行可能只有半行 JSON —— 这是**正常情况** ✓
+						// （损失仅最后一条消息 ✓），不是数据损坏，不必告警到 error ✓
+						this.logService.warn(
+							`[AgentChatService] session log for ${agentId}::${sessionId} had ` +
+							`${replay.tornLines} unparsable line(s) (crash-truncated tail) — ignored`,
+						);
+					}
+					for (const m of replay.messages) { upsertMessageById(messages, m); }
+					// 压缩阈值计数按**实际重放条数与字节**恢复（跨进程重启后依然有界 ✓）
+					this._sessionLogAppends.set(this._cacheKey(agentId, sessionId), replay.appends);
+					this._sessionLogBytes.set(this._cacheKey(agentId, sessionId), replay.bytes);
+				} catch (err) {
+					this.logService.warn(
+						`[AgentChatService] session log unreadable for ${agentId}::${sessionId}: ` +
+						`${err instanceof Error ? err.message : err}`,
+					);
+				}
+			}
 			// P1: resolve externalised tool result refs (from prior LRU eviction)
 			const resolved = await this._resolveToolResultRefs(agentId, sessionId, messages);
 			// ★ 2026-09-12：存量历史脏数据清理 —— 移除内联的超长 data URI（详见方法注释）。
@@ -1937,13 +2137,15 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		this._persistGlobalHistory().catch((err) =>
 			this.logService.error("[AgentChatService] Global persist failed:", err),
 		);
-		this._persistToSessionFile(
+		// ★ P0-1（2026-09-21）：**追加**这一条（O(1) 增量写 ✓），不再整会话重写 ✗。
+		//   messages 数组早已在内存里更新（上面 push/replace ✓）⇒ 只把**变更的那条**落盘 ✓。
+		this._appendToSessionLog(
 			agentId,
 			message.agentSessionId,
-			messages,
+			[message],
 		).catch((err) =>
 			this.logService.error(
-				"[AgentChatService] Session file persist failed:",
+				"[AgentChatService] Session log append failed:",
 				err,
 			),
 		);
@@ -2025,10 +2227,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				}
 				totalBytes += AgentChatService._estimateMessageBytes(m);
 			}
-			// ★ 每个会话只落盘一次（原逐条路径在这里会执行 batch.length 次）。
-			this._persistToSessionFile(agentId, sid || undefined, messages).catch((err) =>
+			// ★ P0-1：每个会话只**追加一次**（原逐条路径会执行 batch.length 次；
+			//   且追加的是**本批新消息** `batch` ✓ —— 不再是整个 `messages` ✗，
+			//   写盘量与批次大小成正比、与会话长度**无关** ✓✓）。
+			this._appendToSessionLog(agentId, sid || undefined, batch).catch((err) =>
 				this.logService.error(
-					"[AgentChatService] Session file persist failed:",
+					"[AgentChatService] Session log append failed:",
 					err,
 				),
 			);
@@ -2074,11 +2278,49 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		if (idx < 0) { return; }
 		// In-place update (mutate the cached object so panel.updateMessage also sees it)
 		Object.assign(messages[idx], updates);
-		// Persist
-		await this._persistToSessionFile(agentId, sessionId, messages);
+		// ★ P0-1：把**改后的整条消息**追加进日志（重放按 id 覆盖 ⇒ 就地更新可复现 ✓）。
+		//   该方法被工作流 trace delta 高频调用（每次都 mutate 同一条 assistant 消息 ✓）
+		//   ⇒ 日志里同一 id 会有多条覆盖条目：重放结果仍是「最后一条胜出」✓，
+		//   且条数由压缩阈值（SESSION_LOG_COMPACT_AFTER）兜住 ✓。
+		await this._appendToSessionLog(agentId, sessionId, [messages[idx]]);
 	}
 
 	// ─── Public: getHistory / clearHistory ──────────────────────────────────
+
+	/**
+	 * ★ P1-5（2026-09-21）：**按游标读取会话事件**（增量 ✓）。
+	 *
+	 * 用途（跨进程/跨窗口消费的**唯一入口** ✓ —— 不再依赖进程内内存共享 ✓）：
+	 *   · 第二个窗口/面板"跟上"正在跑的会话 ✓；
+	 *   · headless 观察（`npm run session:tail` ✓）；
+	 *   · 确定性回放测试（按批次断言增量 ✓）。
+	 *
+	 * ⚠ 收到 `reset` 事件（屏障 / 日志被压缩重写 ✓）时的正确动作 = **重新 `getHistory`**
+	 * ——它会合并**快照** ✓；只按事件折叠是拿不到快照内容的 ✗。
+	 * 游标语义、压缩安全与半行处理详见 `common/sessionEventStream.ts` 头注释 ✓。
+	 */
+	async readSessionEvents(
+		agentId: string,
+		sessionId: string,
+		cursor?: ISessionEventCursor,
+	): Promise<IReadSessionEventsResult> {
+		const paths = await this._resolveAgentPaths(agentId);
+		const logUri = this._sessionLogUri(paths.sessionsDirUri, sessionId);
+		let text = '';
+		try {
+			if (await this.fileService.exists(logUri)) {
+				text = (await this.fileService.readFile(logUri)).value.toString();
+			}
+		} catch (err) {
+			// 读不到（刚被压缩删除 / 权限 ✗）⇒ 当作空日志 ✓：消费方会得到"无新事件"，
+			// 而不是异常中断 —— 跟随型消费方不应因一次读失败而退出 ✗。
+			this.logService.warn(
+				`[AgentChatService] readSessionEvents: session log unreadable for ${agentId}::${sessionId}: ` +
+				`${err instanceof Error ? err.message : err}`,
+			);
+		}
+		return readEventsFromLog(text, cursor);
+	}
 
 	async getHistory(
 		agentId: string,
@@ -2312,12 +2554,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			try {
 				const paths = await this._resolveAgentPaths(agentId);
 				const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
+				const logUri = this._sessionLogUri(paths.sessionsDirUri, sessionId);
 				if (await this.fileService.exists(fileUri)) {
-					await this.fileService.writeFile(
-						fileUri,
-						VSBuffer.fromString("[]"),
-					);
+					// ★ P0-1：清空 = 写**空快照**（原子 ✓）+ **删日志** ——
+					//   只清快照不清日志 ⇒ 重放会把刚删掉的消息原样搬回来 ✗✓
+					await writeFileAtomicSafe(this.fileService, fileUri, VSBuffer.fromString("[]"));
 				}
+				if (await this.fileService.exists(logUri)) {
+					await this.fileService.del(logUri);
+				}
+				this._sessionLogAppends.set(this._cacheKey(agentId, sessionId), 0);
+				this._sessionLogBytes.set(this._cacheKey(agentId, sessionId), 0);
 			} catch {
 				/* ignore */
 			}
@@ -2339,9 +2586,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		if (sessionId) {
 			try {
 				const paths = await this._resolveAgentPaths(agentId);
-				const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
-				const json = JSON.stringify(messages, null, 2);
-				await this.fileService.writeFile(fileUri, VSBuffer.fromString(json));
+				// ★ P0-1：整段改写 ⇒ 走**快照路径**（原子写 ✓ + 屏障 ✓ + 截断日志 ✓）——
+				//   否则旧日志会在下次加载时把被替换掉的消息重放回来 ✗✓。
+				//   注：不吞异常（调用方依赖 throw ✓，与改造前一致 ✓）。
+				await this._withSessionLogLock(key, async () => {
+					await this._writeSessionSnapshotLocked(agentId, sessionId, paths.sessionsDirUri, messages);
+				});
 				this.logService.info(
 					`[AgentChatService] replaceHistory: wrote ${messages.length} msgs to ${key}`,
 				);
@@ -2401,6 +2651,138 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			/^检测到模型未真正调用工具/, // 我们自己的 nudge 提示，也不应回灌历史
 		];
 		return patterns.some(re => re.test(head));
+	}
+
+	/**
+	 * ★★★ 2026-09-21：`priorMessages` 为空时的**决定性取证** ✓（三种成因必须分开 ✗✓）。
+	 *
+	 * 背景（用户实测：「切换模型后 LLM 对上下文一无所知」✓）：`priorMessages` 是模型能看到
+	 * 的全部历史 ✗ —— 它为 0 时模型只剩当前 user 消息 ✓，但既有日志只有一行 `priorMsgs=0` ✗，
+	 * **无法区分**下面三种成因，导致排查只能猜 ✗：
+	 *   ① `history.length === 0` 且盘上也空 ⇒ 本会话确实还没有历史（正常 ✓）；
+	 *   ② `history.length > 0` 但 prior 为 0 ⇒ 历史**被过滤/裁剪光了** ✗（压缩边界 `sliceAtCompactionBoundary`
+	 *      或污染过滤 `_isContaminated` ⇒ 前者通常是主因）；
+	 *   ③ `history.length === 0` 但**盘上有内容**（快照或日志非空）⇒ **key 不匹配** ✗✗
+	 *      —— 本次用的 `agentSessionId` 取到的桶是空的，而真实历史挂在别的 session 上 ✗
+	 *      （这正是"UI 里明明有对话、模型却失忆"的最可能形态 ✓）。
+	 *
+	 * 只在**为空**时调用（低频 ✓）+ 内部全 try/catch ✓ ⇒ 绝不影响发送主路径 ✓。
+	 */
+	private async _diagnoseEmptyPriorMessages(
+		agentId: string,
+		sessionId: string | undefined,
+		historyLength: number,
+	): Promise<void> {
+		try {
+			if (!sessionId) {
+				this.logService.warn(
+					`[AgentChatService][PriorDiag] ⚠ priorMessages 为空且 **sessionId 缺失** ⇒ ` +
+					`模型本轮看不到任何历史（若 UI 里已有对话，说明这是"新会话/未分配 session"路径 ✗）。agentId=${agentId}`,
+				);
+				return;
+			}
+			const paths = await this._resolveAgentPaths(agentId);
+			const countMessages = async (uri: URI): Promise<number> => {
+				try {
+					if (!(await this.fileService.exists(uri))) { return -1; } // -1 = 文件不存在（与 0 条区分 ✓）
+					const text = (await this.fileService.readFile(uri)).value.toString();
+					const parsed = JSON.parse(text) as unknown;
+					return Array.isArray(parsed) ? parsed.length : -2; // -2 = 存在但解析失败 ✗
+				} catch { return -3; }
+			};
+			const countLogLines = async (uri: URI): Promise<number> => {
+				try {
+					if (!(await this.fileService.exists(uri))) { return -1; }
+					const text = (await this.fileService.readFile(uri)).value.toString();
+					return text.split('\n').filter(l => l.trim().length > 0).length;
+				} catch { return -3; }
+			};
+			const snapshotCount = await countMessages(this._sessionFileUri(paths.sessionsDirUri, sessionId));
+			const logLines = await countLogLines(this._sessionLogUri(paths.sessionsDirUri, sessionId));
+			const diskHasContent = snapshotCount > 0 || logLines > 0;
+			const key = this._cacheKey(agentId, sessionId);
+
+			if (historyLength > 0) {
+				// ② 历史有，但组装后为 0 ⇒ 被过滤/裁剪 ✗
+				this.logService.warn(
+					`[AgentChatService][PriorDiag] ⚠ 历史共 ${historyLength} 条却组装出 **0** 条 prior ⇒ ` +
+					`历史被**过滤/裁剪光**（压缩边界 sliceAtCompactionBoundary / 污染过滤 / 配对过滤 ✗）。key=${key} ` +
+					`disk(snapshot=${snapshotCount}, logLines=${logLines}) ⇒ 请查本 turn 之前是否插入了 ` +
+					`metadata.type='compaction' 的边界消息 ✗`,
+				);
+				return;
+			}
+			if (diskHasContent) {
+				// ③ 桶空但盘上有 ⇒ key 不匹配 ✗✗（最严重）
+				this.logService.warn(
+					`[AgentChatService][PriorDiag] ⚠⚠ **疑似 session key 不匹配**：本次 key=${key} 的历史为 0，` +
+					`但盘上有内容（snapshot=${snapshotCount} 条, logLines=${logLines} 行）⇒ 模型将失去全部上下文 ✗✗。` +
+					`请核对 sendMessage 的 agentSessionId 来源（pane 的 _currentSessionId / 任务执行的 session ✗）`,
+				);
+				return;
+			}
+			// ① 真空 ⇒ 正常 ✓（但仍记录，便于对照 ✓）
+			this.logService.info(
+				`[AgentChatService][PriorDiag] priorMessages 为空且盘上也为空（snapshot=${snapshotCount}, logLines=${logLines}）` +
+				` ⇒ 本会话确实还没有历史 ✓ key=${key}`,
+			);
+		} catch (err) {
+			this.logService.warn(`[AgentChatService][PriorDiag] 取证失败（不影响发送 ✓）：${err instanceof Error ? err.message : err}`);
+		}
+	}
+
+	/**
+	 * ★★★ 2026-09-21：构造**压缩边界消息**（两条 fail-safe 的落点 ✓）。
+	 *
+	 * ── 真机取证（用户报「切换模型后 LLM 对上下文一无所知」✓）──────────────────────
+	 * 现场：`sess_ms5kriv8_0j6atj` ✓ 含 1 条边界，其摘要把 `## Active Task` 与 `## Goal`
+	 * **都写成「无」** ✗，`metadata.tokensSaved = **-73**`（压缩反而变大 ✗）。而模型能看到的
+	 * 边界之前的内容**只有这条边界** ✗（`sliceAtCompactionBoundary` 丢弃边界之前全部消息 ✓）
+	 * ⇒ 用户接着说「执行」⇒ 模型回答「当前对话里没有待执行的任务指令」✓✓ 与截图逐字吻合 ✓。
+	 *
+	 * ── 两条 fail-safe（本方法 + 调用方 guard ✓）──────────────────────────────────
+	 * ① **原文兜底**：边界里追加**最近 N 条 user 消息原文** ✓ —— 摘要质量再差，也不会丢
+	 *    "用户到底要什么" ✗（此前完全依赖摘要质量 ⇒ 摘要一失手，任务就消失了 ✗✓）；
+	 * ② **无收益就不插**（调用方 `tokensSaved > 0` guard ✓）：压缩没省下 token 时，
+	 *    边界只有"销毁上下文"这一种效果 ✗✓。
+	 */
+	private _buildCompactionBoundaryMessage(
+		agentId: string,
+		agentSessionId: string | undefined,
+		pending: { originalCount: number; compressedCount: number; tokensSaved: number; summary: string },
+		currentMessage: string | undefined,
+	): ChatMessage {
+		// ① 最近 2 条 user 原文（排除"当前这条"以避免与 driver 追加的当前消息重复 ✓）
+		const recent: string[] = [];
+		try {
+			const cache = this._historyCache.get(this._cacheKey(agentId, agentSessionId)) ?? [];
+			for (let i = cache.length - 1; i >= 0 && recent.length < 2; i--) {
+				const m = cache[i];
+				if (m.role !== 'user') { continue; }
+				const text = (m.content ?? '').trim();
+				if (!text) { continue; }
+				if (currentMessage !== undefined && text === currentMessage.trim()) { continue; }
+				recent.unshift(text);
+			}
+		} catch { /* 取不到原文不影响主流程 ✓ */ }
+		const tail = recent.length > 0
+			? `\n\n---\n**用户最近的指令（原文保留 —— 摘要可能失真，以下为准确来源 ✗）**：\n` +
+				recent.map((t, i) => `${i + 1}. ${t.length > 400 ? t.slice(0, 400) + '…' : t}`).join('\n')
+			: '';
+		return {
+			id: `msg_compaction_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+			role: 'assistant',
+			content: `[上下文压缩] 此前的对话历史（${pending.originalCount} 条消息）已压缩为以下摘要：\n\n${pending.summary}${tail}`,
+			agentId,
+			agentSessionId,
+			timestamp: new Date().toISOString(),
+			metadata: {
+				type: COMPACTION_METADATA_TYPE,
+				originalCount: pending.originalCount,
+				compressedCount: pending.compressedCount,
+				tokensSaved: pending.tokensSaved,
+			},
+		};
 	}
 
 	private _toDriverMessages(history: readonly ChatMessage[]): IChatMessage[] {
@@ -2692,6 +3074,14 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		let usageCreditSeen = false; // 2026-07-27：区分"网关返回 credit=0"与"网关根本未提供该字段"
 		let usageTotalReported = 0; // total_tokens as reported by the gateway (preferred over input+output)
 		let usageSeen = false;
+		// ★★★ 2026-09-21（用户报「tokens tip 显示内容不全 + **重启后数据丢失**」✓）：
+		// 落盘路径此前只存 input/output/total/cached/cacheWrite ✗ —— 而 **live** 路径
+		//（`nativeChatEditorPane` 的 usage delta 处理 ✓）还会写 `reasoning` / `cacheMiss` /
+		// `cacheHitRate` / `providerId` / `model` ✓✓ ⇒ 重启后这些富字段全丢 ✗（明细浮层随之残缺 ✓）。
+		// 现按 live 路径**同款字段集**落盘 ✓（含 0 ✓ —— 零值也是真实读数 ✗）。
+		let usageReasoning = 0;
+		let usageProviderId: string | undefined;
+		let usageModelId: string | undefined;
 
 		try {
 			// Persist user message (fire-and-forget, don't block AI response)
@@ -2755,6 +3145,16 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				this.logService.info(
 					`[AgentChatService] Assembled ${priorMessages.length} prior driver messages from ${history.length} history msgs (key=${this._cacheKey(agentId, options.agentSessionId)})`,
 				);
+				// ★★★ 2026-09-21（用户报：「切换模型后 LLM 对上下文一无所知」✓）：
+				// `priorMessages` 为空 ⇒ 模型**只剩当前这一条 user 消息** ✗（症状就是模型
+				// 回"当前对话里没有待执行的任务指令"✓）。而这一路在日志里只留下一行
+				// `priorMsgs=0` ✗ —— 极易被淹没、且**无法区分三种完全不同的原因** ✗✓：
+				//   ① 会话真的还没有历史（正常 ✓）；② 历史存在但被**过滤/裁剪**光了（✗ 压缩边界/污染过滤）；
+				//   ③ 盘上有历史但本次 `agentSessionId` 取到的桶是空的（**key 不匹配** ✗✗ 最严重）。
+				// 仅在为空时（低频 ✓）做一次磁盘探针，把三者分开 ✓ —— 附带把 key 与长度都打出来 ✓。
+				if (priorMessages.length === 0) {
+					void this._diagnoseEmptyPriorMessages(agentId, options.agentSessionId, history.length);
+				}
 			} catch (err) {
 				this.logService.warn(
 					`[AgentChatService] Failed to assemble prior messages (continuing with current message only): ${err}`,
@@ -3017,6 +3417,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					if (typeof delta.usage.outputTokens === 'number') { usageOutput += delta.usage.outputTokens; }
 					if (typeof delta.usage.cachedTokens === 'number') { usageCached += delta.usage.cachedTokens; }
 					if (typeof delta.usage.cacheWriteTokens === 'number') { usageCacheWrite += delta.usage.cacheWriteTokens; }
+					// ★ 与 live 路径对齐 ✓：推理 token（OpenAI reasoning_tokens 系 ✓）与真实命中的 provider/model ✓
+					if (typeof delta.usage.reasoning === 'number') { usageReasoning += delta.usage.reasoning; }
+					if (delta.usage.providerId) { usageProviderId = delta.usage.providerId; }
+					if (delta.usage.modelId) { usageModelId = delta.usage.modelId; }
 					if (typeof delta.usage.totalTokens === 'number') { usageTotalReported += delta.usage.totalTokens; }
 					if (typeof delta.usage.credit === 'number') { usageCredit += delta.usage.credit; usageCreditSeen = true; }
 				}
@@ -3099,17 +3503,37 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			fullThinking = _fullThinkingChunks.join('');
 
 			// 共享的 token usage 对象（多条 turn 时仅挂在最后一条上）
+			// ★★★ 2026-09-21：字段集与 **live** 路径（`nativeChatEditorPane` usage delta ✓）
+			// **完全对齐** ✓ —— 否则"重启后明细浮层缺行"✗（用户实测 ✓）。要点：
+			//  · `cached/cachedRead/cacheWrite/reasoning` **零值也写** ✓（零值 = 真实读数 ✗；
+			//    此前 `> 0 ? : undefined` 会把它抹成"无数据" ✓ → 重启后整行消失 ✗）；
+			//  · `cacheMiss` / `cacheHitRate` 是**派生量** ✓（口径与 live/UIS 一致 ✓）；
+			//  · `credit` 保留"是否出现过"语义 ✓（0 与"未提供"必须区分 ✓）。
 			const sharedTokenUsage = usageSeen
-				? {
-					input: usageInput,
-					output: usageOutput,
-					// Prefer the gateway-reported total_tokens when present (it may
-					// account for tokens not split into input/output); otherwise derive.
-					total: usageTotalReported > 0 ? usageTotalReported : usageInput + usageOutput,
-					cached: usageCached > 0 ? usageCached : undefined,
-					cacheWrite: usageCacheWrite > 0 ? usageCacheWrite : undefined,
-					credit: usageCreditSeen ? usageCredit : undefined,
-				}
+				? (() => {
+					const input = usageInput;
+					const cachedRead = usageCached;
+					const cacheMiss = Math.max(0, input - cachedRead - usageCacheWrite);
+					return {
+						input,
+						output: usageOutput,
+						// Prefer the gateway-reported total_tokens when present (it may
+						// account for tokens not split into input/output); otherwise derive.
+						total: usageTotalReported > 0 ? usageTotalReported : usageInput + usageOutput,
+						cached: cachedRead,
+						cachedRead,
+						cacheWrite: usageCacheWrite,
+						cacheMiss,
+						// 命中率：与 live 路径同式 ✓（百分比，一位小数展示由 UI 负责 ✓）
+						cacheHitRate: input > 0 ? (cachedRead / input) * 100 : 0,
+						reasoning: usageReasoning,
+						credit: usageCreditSeen ? usageCredit : undefined,
+						// 真实命中的 provider/model（"UI 选 A 实际用 B"场景的真相 ✓）——
+						// 此前完全没落盘 ✗ ⇒ 重启后明细里的「模型」行消失 ✗✓
+						providerId: usageProviderId,
+						model: usageModelId,
+					};
+				})()
 				: undefined;
 
 			let chatMessage: ChatMessage;
@@ -3174,25 +3598,19 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			// 本回合发生过压缩时，把边界消息插入到压缩点位置（压缩时已有 turnCount
 			// 条 turn 消息，每条 turn 恰好产出一条持久化消息）。边界之后的消息
 			// 是压缩后继续执行的真实迭代；下一 turn 回灌从边界处重放。
-			if (pendingCompaction) {
-				const boundaryMsg: ChatMessage = {
-					id: `msg_compaction_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-					role: "assistant",
-					content: `[上下文压缩] 此前的对话历史（${pendingCompaction.originalCount} 条消息）已压缩为以下摘要：\n\n${pendingCompaction.summary}`,
-					agentId,
-					agentSessionId: options.agentSessionId,
-					timestamp: new Date().toISOString(),
-					metadata: {
-						type: COMPACTION_METADATA_TYPE,
-						originalCount: pendingCompaction.originalCount,
-						compressedCount: pendingCompaction.compressedCount,
-						tokensSaved: pendingCompaction.tokensSaved,
-					},
-				};
+			if (pendingCompaction && pendingCompaction.tokensSaved > 0) {
+				const boundaryMsg = this._buildCompactionBoundaryMessage(agentId, options.agentSessionId, pendingCompaction, message);
 				const insertAt = Math.min(pendingCompaction.turnCount, builtMessages.length);
 				builtMessages.splice(insertAt, 0, boundaryMsg);
 				this.logService.info(
-					`[AgentChatService][P5] Persisting compaction boundary at position ${insertAt}/${builtMessages.length} (cross-turn compression persistence)`,
+					`[AgentChatService][P5] Persisting compaction boundary at position ${insertAt}/${builtMessages.length} (cross-turn compression persistence, tokensSaved=${pendingCompaction.tokensSaved})`,
+				);
+			} else if (pendingCompaction) {
+				// ★ 2026-09-21 fail-safe ②：压缩**没省下 token** 时插边界只有"销毁上下文"一个效果 ✗✓
+				//（真机：tokensSaved=-73 ✗ + 摘要把任务写成"无" ⇒ 下一轮模型失忆 ✓）
+				this.logService.warn(
+					`[AgentChatService][P5] 跳过压缩边界：tokensSaved=${pendingCompaction.tokensSaved} ≤ 0 ` +
+					`（压缩无收益 ⇒ 保留完整历史，避免边界把上下文裁没 ✗✓）`,
 				);
 			}
 
@@ -3215,23 +3633,14 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			// P5: 若本回合发生过压缩（executionProvider 路径也会 yield
 			// context_compacted），先把压缩边界消息单独落盘，再落盘本条 ——
 			// 下一 turn 回灌从边界处重放，语义与多 turn 路径一致。
-			if (pendingCompaction) {
-				const boundaryMsg: ChatMessage = {
-					id: `msg_compaction_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-					role: "assistant",
-					content: `[上下文压缩] 此前的对话历史（${pendingCompaction.originalCount} 条消息）已压缩为以下摘要：\n\n${pendingCompaction.summary}`,
-					agentId,
-					agentSessionId: options.agentSessionId,
-					timestamp: new Date().toISOString(),
-					metadata: {
-						type: COMPACTION_METADATA_TYPE,
-						originalCount: pendingCompaction.originalCount,
-						compressedCount: pendingCompaction.compressedCount,
-						tokensSaved: pendingCompaction.tokensSaved,
-					},
-				};
+			if (pendingCompaction && pendingCompaction.tokensSaved > 0) {
+				const boundaryMsg = this._buildCompactionBoundaryMessage(agentId, options.agentSessionId, pendingCompaction, message);
 				this.appendMessage(agentId, boundaryMsg).catch((err) =>
 					this.logService.error("[AgentChatService] Failed to persist compaction boundary message:", err),
+				);
+			} else if (pendingCompaction) {
+				this.logService.warn(
+					`[AgentChatService][P5] 跳过压缩边界（回退路径）：tokensSaved=${pendingCompaction.tokensSaved} ≤ 0（保留完整历史 ✓）`,
 				);
 			}
 			chatMessage = {
@@ -3685,6 +4094,15 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		} catch {
 			/* ignore */
 		}
+		// ★ P0-1：日志与快照是**两份文件** ⇒ 删除必须成对 ✗（漏删会留下孤儿日志 ✓）
+		try {
+			const logUri = this._sessionLogUri(paths.sessionsDirUri, sessionId);
+			if (await this.fileService.exists(logUri)) { await this.fileService.del(logUri); }
+		} catch {
+			/* ignore */
+		}
+		this._sessionLogAppends.delete(this._cacheKey(agentId, sessionId));
+		this._sessionLogBytes.delete(this._cacheKey(agentId, sessionId));
 		// P1: clean up sidecar directory
 		await this._deleteSidecarDir(agentId, sessionId);
 
@@ -3752,14 +4170,20 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		//    cache (never flushed), persist that snapshot into the new file.
 		const srcFile = this._sessionFileUri(paths.sessionsDirUri, sessionId);
 		const dstFile = this._sessionFileUri(paths.sessionsDirUri, newId);
+		const srcLog = this._sessionLogUri(paths.sessionsDirUri, sessionId);
+		const dstLog = this._sessionLogUri(paths.sessionsDirUri, newId);
 		if (await this.fileService.exists(srcFile)) {
 			await this.fileService.copy(srcFile, dstFile, true);
 		} else {
-			const cached = this._historyCache.get(this._cacheKey(agentId, sessionId)) ?? [];
-			await this.fileService.writeFile(
-				dstFile,
-				VSBuffer.fromString(JSON.stringify(cached, null, 2)),
-			);
+			// ★ P0-1：快照可能**尚不存在**（新会话只写了日志 ✓）⇒ 内存缓存为空时
+			//   必须回落到「快照 + 日志重放」的结果，否则 fork 出来是**空会话** ✗✓。
+			const cached = this._historyCache.get(this._cacheKey(agentId, sessionId))
+				?? await this._loadFromSessionFile(agentId, sessionId);
+			await writeFileAtomicSafe(this.fileService, dstFile, VSBuffer.fromString(JSON.stringify(cached, null, 2)));
+		}
+		// ★ P0-1：日志一并复制（否则分叉会丢掉「快照之后」的增量消息 ✗）
+		if (await this.fileService.exists(srcLog)) {
+			await this.fileService.copy(srcLog, dstLog, true);
 		}
 
 		// 2) Copy the sidecar directory (externalised oversize tool results).

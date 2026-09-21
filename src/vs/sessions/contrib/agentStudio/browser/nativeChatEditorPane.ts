@@ -16,6 +16,7 @@ import { IEditorGroupView } from '../../../../workbench/browser/parts/editor/edi
 import { EditorActivation, IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { addDisposableListener } from '../../../../base/browser/dom.js';
 import { toDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { SessionFollower } from './sessionFollower.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -29,7 +30,7 @@ import { IRequestService } from '../../../../platform/request/common/request.js'
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { sanitizeAssistantVisibleText, addSanitizeTraceSink } from '../common/assistantVisibleText.js';
-import { IAgentOSService } from '../common/agentOS.js';
+import { IAgentOSService, type ISubAgentTraceSnapshot } from '../common/agentOS.js';
 import { buildPromptOptimizeMessages, sanitizeOptimizedOutput } from '../../../browser/agentChat/promptOptimize.js';
 import { filterUserFacingAgents } from '../common/builtinAgents.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -242,6 +243,18 @@ export class NativeChatEditorPane extends EditorPane {
 	 * _sendMessageInternal 拦截发送并提示，防止双写覆盖聊天历史。
 	 */
 	private _sessionReadOnly = false;
+
+	/**
+	 * ★ P1-5 收尾（2026-09-21）：只读态的**游标跟随器** ✓。
+	 *
+	 * 只读侧（另一实例持锁 ✓）此前**不会活更新** ✗ —— 对端写入的内容要等用户手动重开
+	 * 才可见 ✓。现改为：只读期间跟随磁盘事件流（`SessionFollower` ✓），有新事件就复用
+	 * 既有 `_reloadChatHistory`（保留滚动位置 ✓）刷新 ✓。
+	 * ⚠ 只在 `_sessionReadOnly === true` 时启动 ⇒ **正常单窗口路径零改动** ✓（风险面 = 双开 ✓）。
+	 */
+	private _sessionFollower: SessionFollower | undefined;
+	/** 跟随触发的重载是否在途（合并高频事件 ⇒ 不堆 getHistory ✗）。 */
+	private _followerReloadInFlight = false;
 
 	/** 本 pane 在 `_sessionLockHolders` 中登记的 key（undefined = 未登记/不持有）。 */
 	private _sessionLockKey: string | undefined;
@@ -2558,11 +2571,30 @@ export class NativeChatEditorPane extends EditorPane {
 			this._logService.warn(`[SubAgentCard] trace dropped: 无 chat panel（count=${_traceCount} groupId=${snapshot?.groupId ?? '?'}）`);
 			return;
 		}
+		// ★★ 2026-09-21 归属过滤（取证：旁观面板每帧刷 WARN ×16/会话；双会话并行还会**跨会话错挂** ✗）
+		//   旁路总线是**全局**的（每个 pane 都订阅），快照原先不带归属 ⇒ 非流式面板只能丢弃却打 WARN。
+		//   快照带父回合 agentId/sessionId 后：非本会话 ⇒ **静默**丢弃（trace 级，不刷屏）。
+		if (!this._isSubAgentTraceMine(snapshot)) {
+			this._logService.trace(
+				`[SubAgentCard] trace skipped: 非本会话（owner=${snapshot?.agentId ?? '?'}/${snapshot?.sessionId ?? '?'} `
+				+ `this=${this._currentAgentId ?? '?'}/${this._currentSessionId ?? '?'} count=${_traceCount} groupId=${snapshot?.groupId ?? '?'}）`,
+			);
+			return;
+		}
 		// 流式记录：subagent 旁路总线快照（与主流 delta 同一文件，便于完整回放）
 		this._streamRecorder?.record({ type: 'subagent_trace', groupId: snapshot?.groupId, subagentData: snapshot?.subagentData });
 		const assistantId = this._streamingAssistantId;
 		const assistantMsg = this._streamingAssistantMsg;
 		if (!assistantId || !assistantMsg) {
+			// ★★ 2026-09-21 兜底挂载（本会话但此刻无流式消息：回合已收尾 / 迭代间隙 / 终态回刷）——
+			//   挂到历史里**含该父工具卡**的那条 assistant 消息，而不是直接丢（自校验，绝不猜测 ✗）。
+			if (this._mountSubAgentTraceToHistory(snapshot?.subagentData as any[] | undefined)) {
+				this._logService.info(
+					`[SubAgentCard] trace mounted to history: count=${_traceCount} groupId=${snapshot?.groupId ?? '?'}`
+					+ '（无流式消息 ⇒ 回填已完成消息）',
+				);
+				return;
+			}
 			this._logService.warn(`[SubAgentCard] trace dropped: 无流式 assistant 消息（count=${_traceCount}）—— 快照无处挂载`);
 			return;
 		}
@@ -3948,6 +3980,57 @@ private _handleStreamDelta(delta: any): void {
 			}
 		}
 		assistantMsg.subAgents = saData;
+	}
+
+	/**
+	 * 归属判定（2026-09-21）：快照若带**父回合身份**，必须与本 pane 当前会话一致。
+	 *
+	 * 背景（真机取证）：`onDidSubAgentTrace` 是全局总线，每个 pane 都订阅；快照不带归属时，
+	 * 空闲面板每帧都会走「丢弃 + WARN」，两个会话并行流式时更会把别人的子代理快照
+	 * `updateMessage(asstId, { subAgents })` 挂进本会话（跨会话错挂 ✗）。
+	 * 缺省身份（如 workflow 画布直连暂未接线）⇒ 放行走旧行为（向后兼容 ✓）；
+	 * 有身份但本 pane 无会话 ⇒ 拒收（没有可挂的消息，收了必错挂 ✗）。
+	 */
+	private _isSubAgentTraceMine(snapshot: ISubAgentTraceSnapshot | undefined): boolean {
+		const ownerSession = snapshot?.sessionId;
+		const ownerAgent = snapshot?.agentId;
+		if (ownerSession && (!this._currentSessionId || ownerSession !== this._currentSessionId)) { return false; }
+		if (ownerAgent && (!this._currentAgentId || ownerAgent !== this._currentAgentId)) { return false; }
+		return true;
+	}
+
+	/**
+	 * 兜底挂载（2026-09-21）：无流式 assistant 消息时，把快照挂到历史里**最后一条含该父工具卡**
+	 * （`parentToolCallId` 严格相等）的 assistant 消息上。
+	 *
+	 * 场景：子代理 trace 落在「回合已收尾 / 迭代间隙 / 终态回刷」的窗口 —— 此前直接丢弃，
+	 * 卡片内容缺失（`trace dropped: 无流式 assistant 消息`）。命中后走与流式相同的
+	 * 「合并 → 按父卡重映射 → 仅传 subAgents」轻量原地重建路径。
+	 * 自校验：找不到对应父卡 ⇒ 返回 false（不猜测、不误挂到别的消息 ✗）。
+	 */
+	private _mountSubAgentTraceToHistory(subagentData: any[] | undefined): boolean {
+		if (!this._chatPanel || !subagentData || subagentData.length === 0) { return false; }
+		const parentIds = new Set<string>();
+		for (const sa of subagentData) {
+			if (sa?.parentToolCallId) { parentIds.add(String(sa.parentToolCallId)); }
+		}
+		if (parentIds.size === 0) { return false; }
+		const messages = this._chatPanel.getMessages() as any[];
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const m = messages[i];
+			if (m?.role !== 'assistant') { continue; }
+			const toolCalls = (m.toolCalls ?? []) as any[];
+			if (!toolCalls.some((tc: any) => tc?.id && parentIds.has(String(tc.id)))) { continue; }
+			const merged = new Map<string, any>((m.subAgents ?? []).map((s: any) => [s.id, s]));
+			for (const sa of subagentData) { if (sa?.id) { merged.set(sa.id, sa); } }
+			m.subAgents = [...merged.values()];
+			// 把子代理挂到对应父卡（渲染侧按 tc.subAgents 过滤，见 delegateCards）
+			this._remapAndAttachSubAgents(m);
+			// 仅传 subAgents ⇒ panel 走 _updateSubAgentCardsInPlace（轻量原地重建，同流式路径 ✗ 勿带 isStreaming）
+			this._chatPanel.updateMessage(m.id, { subAgents: m.subAgents });
+			return true;
+		}
+		return false;
 	}
 
 	/**
@@ -6275,6 +6358,7 @@ private async _updateSessionLock(): Promise<void> {
 		// popout / 多开聊天框）—— 直接释放会把**它们的锁**一起删掉。
 		// 交给引用计数决定是否真释放（旧 key 迁移后无人持有才释放）。
 		this._trackSessionLock(undefined);
+		this._syncReadOnlyFollower();
 		return;
 	}
 
@@ -6286,6 +6370,7 @@ private async _updateSessionLock(): Promise<void> {
 	if (this._hasSiblingLockHolder(lockKey)) {
 		this._trackSessionLock(lockKey);
 		this._sessionReadOnly = false;
+		this._syncReadOnlyFollower();
 		return;
 	}
 
@@ -6315,6 +6400,68 @@ private async _updateSessionLock(): Promise<void> {
 			this._logService.warn(`[NativeChatEditorPane] session ${sessionId} lock DEGRADED (no mutual exclusion) — see [AgentChatService] log for the cause`);
 		}
 	}
+	this._syncReadOnlyFollower();
+}
+
+/**
+ * ★ P1-5 收尾（2026-09-21）：按当前只读态**对齐**跟随器（幂等 ✓ —— 可重复调用 ✓）。
+ *
+ * 只读 ⇒ 启动跟随 ✓（跨实例活更新 ✓）；可写/无会话 ⇒ 停止 ✓。
+ * 为什么必须幂等：`_updateSessionLock()` 在每次会话激活后都会调 ✓，重复 start 会造出
+ * 多个轮询器（叠加读盘 ✗✓）。
+ */
+private _syncReadOnlyFollower(): void {
+	const agentId = this._currentAgentId;
+	const sessionId = this._currentSessionId;
+	const shouldFollow = this._sessionReadOnly && !!agentId && !!sessionId;
+	if (!shouldFollow) {
+		this._stopReadOnlyFollower();
+		return;
+	}
+	if (this._sessionFollower && this._sessionFollower.running) {
+		// 已跟随同一会话 ⇒ 无事可做 ✓；会话变了 ⇒ 重建 ✓（游标绑定 session ✓）
+		return;
+	}
+	this._stopReadOnlyFollower();
+	const follower = new SessionFollower({
+		reader: this._chatService,
+		agentId: agentId!,
+		sessionId: sessionId!,
+		pollMs: 1500,
+		logService: this._logService,
+		// 事件粒度是**消息级** ✓（不是逐 token ✗）：有新消息就刷新（保留滚动位置 ✓）
+		onEvent: () => this._scheduleFollowerReload(agentId!),
+		// 历史被整段改写 / 日志被压缩重写 ⇒ 快照是权威 ⇒ 同样刷新 ✓
+		onReset: () => this._scheduleFollowerReload(agentId!),
+	});
+	this._sessionFollower = follower;
+	this._register(follower); // ⇒ pane 释放时自动停止 ✓（dispose 幂等 ✓）
+	follower.start();
+	this._logService.info(
+		`[NativeChatEditorPane#${this._paneId}] read-only follower started (session ${agentId}::${sessionId}) — 只读窗口将跟随另一实例的写入`,
+	);
+}
+
+private _stopReadOnlyFollower(): void {
+	const follower = this._sessionFollower;
+	if (!follower) { return; }
+	this._sessionFollower = undefined;
+	this._logService.info(`[NativeChatEditorPane#${this._paneId}] read-only follower stopped`);
+	follower.dispose();
+}
+
+/**
+ * 触发一次跟随重载（**合并** ✓：同一时刻只跑一次 ✓ —— 否则流式期会堆一串 `getHistory` ✗）。
+ * 复用 `_reloadChatHistory`：它保持滚动位置 ✓、且 `_isSending` 期间跳过 ✓（只读 pane 恒不发送 ✓）。
+ */
+private _scheduleFollowerReload(agentId: string): void {
+	if (this._followerReloadInFlight || !this._chatPanel || !this._currentSessionId) { return; }
+	this._followerReloadInFlight = true;
+	void this._reloadChatHistory(agentId)
+		.catch(err => this._logService.warn(
+			`[NativeChatEditorPane#${this._paneId}] follower reload failed: ${err instanceof Error ? err.message : err}`,
+		))
+		.finally(() => { this._followerReloadInFlight = false; });
 }
 
 /**

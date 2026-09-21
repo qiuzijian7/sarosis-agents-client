@@ -1084,19 +1084,24 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			}
 
 			return { ...validated, source: 'llm' };
-		} catch {
-			// 降级：纯启发式提取
-			const { extractSkillComponents } = await import('../common/extractSkill.js');
-			const heuristic = extractSkillComponents(content);
+		} catch (err) {
+			// ★ 2026-09-20 修复（真机审计发现「垃圾技能」）：
+			// 原实现降级到启发式提取并**无条件 `isSkill: true`** ⇒ 只要 LLM 不可用（未配 key），
+			// **任何消息**都能被"沉淀"成技能。实测产物：
+			//   · `tool-failed-file-read`     description="当遇到错误或异常时。[Tool Failed: file_read] []…"
+			//   · `context-compressed-active-task` description="…[Context Compressed] ## Active Task…"
+			// 启发式提取**无法可靠判断"是否值得沉淀"**（`prefilterSkillIntent` 也很宽松：
+			// 只要 ≥50 字符、非纯代码块、非寒暄 ⇒ likely=true）。**宁可不沉淀，也不产出垃圾**：
+			// 明确告知用户需要配置模型。技能正文的 prompt 同样会被 `tryExtractSkillPrompt`
+			// 原样灌入（含 `[Tool Failed…]` 等系统标记），质量不可接受。
+			const reason = err instanceof Error ? err.message : String(err);
 			return {
-				isSkill: true,
-				name: heuristic.name,
-				description: heuristic.description,
-				prompt: heuristic.prompt,
-				category: heuristic.category,
-				scripts: heuristic.scripts ? heuristic.scripts.map(s => ({ filename: s.filename, content: s.content, language: s.language })) : undefined,
+				isSkill: false,
+				name: '',
+				description: '',
+				prompt: '',
 				source: 'heuristic',
-				reason: 'LLM extraction failed, using heuristic fallback',
+				reason: `需要可用的模型才能沉淀技能（提取失败：${reason}）`,
 			};
 		}
 	}

@@ -121,6 +121,26 @@ export const AGENT_STUDIO_EMBEDDING_LOCAL_MODEL = 'sessions.agentStudio.embeddin
 /** 知识库 agentic 构建模式（**默认开启**）：「构建笔记」走 AgentDriverService（knowledge-base-expert agent + 技能注入 + 工具），失败回退直连管线。显式设为 false 可回退纯直连。 */
 export const AGENT_STUDIO_KB_AGENTIC_BUILD = 'sessions.agentStudio.kb.agenticBuild';
 
+// ── 知识库：飞书同步 ────────────────────────────────────────────────────────
+/** 飞书同步总开关（默认关）。开启后设置面板展示完整同步配置，并可被定时任务读取。 */
+export const AGENT_STUDIO_KB_FEISHU_SYNC_ENABLED = 'sessions.agentStudio.kb.feishu.enabled';
+/** 飞书同步脚本路径（相对工作区根目录；也支持绝对路径）。 */
+export const AGENT_STUDIO_KB_FEISHU_SYNC_SCRIPT = 'sessions.agentStudio.kb.feishu.scriptPath';
+/** 要同步的库内相对目录（多个用逗号分隔；留空 = 同步整个知识库）。 */
+export const AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS = 'sessions.agentStudio.kb.feishu.srcDirs';
+/** 同步目标位置：my_library（个人知识库）或指定文件夹 token。 */
+export const AGENT_STUDIO_KB_FEISHU_SYNC_PARENT = 'sessions.agentStudio.kb.feishu.parent';
+/** 远端被手工修改时的策略：overwrite（本地覆盖）| skip（跳过并记冲突）。 */
+export const AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT = 'sessions.agentStudio.kb.feishu.onConflict';
+/** 每篇之间的间隔毫秒数（限流保护，默认 800）。 */
+export const AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL = 'sessions.agentStudio.kb.feishu.interval';
+/**
+ * 定时同步开关（默认关）：是否允许 IDE 自动化任务（automation `kb`，工作日 10:00）
+ * 自动执行增量同步。与总开关 `feishu.enabled` 是**与**关系 —— 两者都为 true 才会自动同步；
+ * 手动「立即同步」不受此开关约束。
+ */
+export const AGENT_STUDIO_KB_FEISHU_AUTO_SYNC = 'sessions.agentStudio.kb.feishu.autoSync';
+
 // Configuration keys — CLI
 export const AGENT_STUDIO_CLI_PATH_SETTING = 'sessions.agentStudio.cli.cliPath';
 export const AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING = 'sessions.agentStudio.cli.defaultWorkdir';

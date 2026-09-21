@@ -88,6 +88,19 @@ export interface ISubAgentCardSnapshot {
  */
 export interface ISubAgentTraceSnapshot {
 	readonly groupId?: string;
+	/**
+	 * ★★ 2026-09-21 归属身份（**父回合**的 agentId/sessionId，不是子代理自己的 id）。
+	 *
+	 * 旁路总线是**全局**的（每个 pane 都订阅），而快照原先不带任何归属信息 ⇒
+	 * ① 非流式的旁观面板每帧都只能丢弃并刷 WARN（实证：
+	 * `[SubAgentCard] trace dropped: 无流式 assistant 消息` ×16 / 一次会话）；
+	 * ② **更危险**：两个会话同时流式时，pane#B 会把 pane#A 的子代理快照
+	 *    `updateMessage(asstId, { subAgents })` 挂进**自己的**会话（跨会话错挂）。
+	 * 订阅方据此过滤：非本会话 ⇒ 静默丢弃。
+	 * 缺省（如 workflow 画布直连暂未接线）⇒ 订阅方按"无身份"走旧行为（向后兼容 ✓）。
+	 */
+	readonly agentId?: string;
+	readonly sessionId?: string;
 	readonly subagentData: ReadonlyArray<ISubAgentCardSnapshot>;
 }
 

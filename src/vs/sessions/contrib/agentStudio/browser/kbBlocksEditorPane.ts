@@ -46,6 +46,10 @@ import { IKbNativeKernelService } from './kbNativeKernelService.js';
 import { KbVersionService, IKbVersionService } from './kbVersionService.js';
 import type { KbCommitMeta, KbDiffResult } from './kbVersionTypes.js';
 import { IMermaidInlineRenderer } from './mermaidInlineRenderer.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { MEDIA_STORE_CHANNEL, type IMediaBackend } from '../common/mediaStoreChannel.js';
+import { createMediaStoreProxy } from './mediaStoreProxy.js';
+import { KbAttachmentStore } from './knowledge/kbAttachmentStore.js';
 
 interface KbHostMessage {
 	direction: 'toHost';
@@ -70,6 +74,17 @@ export class KbBlocksEditorPane extends EditorPane {
 	/** `#heading` to scroll to after the note renders (`[[note#heading]]` jump). */
 	private _pendingHeading: string | undefined;
 
+	/** 媒体库代理（惰性创建）：解析笔记里的 `saros-media://<id>` 引用 + 沉淀到笔记附件。 */
+	private _mediaBackendForKb: IMediaBackend | undefined;
+	private _attachmentStore: KbAttachmentStore | undefined;
+
+	private _getKbMediaBackend(): IMediaBackend | undefined {
+		if (!this._mediaBackendForKb && this._mainProcessService?.getChannel(MEDIA_STORE_CHANNEL)) {
+			this._mediaBackendForKb = createMediaStoreProxy(this._mainProcessService);
+		}
+		return this._mediaBackendForKb;
+	}
+
 	private readonly _onReady = this._register(new Emitter<{ docId: string }>());
 	readonly onReady: Event<{ docId: string }> = this._onReady.event;
 
@@ -88,6 +103,7 @@ export class KbBlocksEditorPane extends EditorPane {
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@IKbVersionService private readonly _versionService: KbVersionService,
 		@IMermaidInlineRenderer private readonly _mermaidRenderer: IMermaidInlineRenderer,
+		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
 	) {
 		super(KbBlocksEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -202,9 +218,13 @@ export class KbBlocksEditorPane extends EditorPane {
 		}
 
 		// 图文显示：把「当前笔记所在目录」加入资源根，webview 内的相对路径图片
-		// （![](x.png) / ![[x.png]]）经 asWebviewUri 前缀（init.assetBaseUri）加载。
+		// （![](x.png) / ![[x.png]]）经 asWebviewUri 前缀（init.assetBaseUri）加载；
+		// 媒体库根一并授权 ⇒ `saros-media://<id>` 引用（resolveMediaAsset 桥）可直接加载。
 		const docDir = this._currentResource ? URI.joinPath(this._currentResource, '..') : undefined;
-		const localResourceRoots = docDir ? [...this._mediaCandidates(), docDir] : this._mediaCandidates();
+		const mediaLibDir = URI.joinPath(URI.file(this._environmentService.userDataPath), 'media');
+		const localResourceRoots = docDir
+			? [...this._mediaCandidates(), docDir, mediaLibDir]
+			: [...this._mediaCandidates(), mediaLibDir];
 
 		this._webview = this._webviewService.createWebviewElement({
 			title: 'Markdown KB',
@@ -315,7 +335,69 @@ export class KbBlocksEditorPane extends EditorPane {
 			if (typeof payload?.source === 'string' && typeof payload?.requestId === 'string') {
 				void this._handleRenderMermaid(payload.source, payload.requestId, payload.theme);
 			}
+		} else if (msg.type === 'kbblocks.resolveMediaAsset') {
+			// 同源化方案 B（引用层）：把笔记里 `saros-media://<id>` 解析为 webview 可加载 URL
+			const payload = msg.payload as { assetId?: string; requestId?: string } | undefined;
+			if (typeof payload?.assetId === 'string' && typeof payload?.requestId === 'string') {
+				void this._handleResolveMediaAsset(payload.assetId, payload.requestId);
+			}
+		} else if (msg.type === 'kbblocks.saveMediaToNote') {
+			// 同源化方案 C（沉淀层）：媒体库资产显式复制进笔记附件目录并回报相对引用
+			const payload = msg.payload as { assetId?: string; requestId?: string } | undefined;
+			if (typeof payload?.assetId === 'string' && typeof payload?.requestId === 'string') {
+				void this._handleSaveMediaToNote(payload.assetId, payload.requestId);
+			}
 		}
+	}
+
+	/**
+	 * 方案 B：`saros-media://<id>` → 媒体库文件绝对路径 → asWebviewUri（webview 可加载）。
+	 * 失败（资产不存在 / 无媒体库）回 url=null，webview 显示占位而非裂图。
+	 */
+	private async _handleResolveMediaAsset(assetId: string, requestId: string): Promise<void> {
+		let url: string | null = null;
+		try {
+			const backend = this._getKbMediaBackend();
+			const filePath = backend ? await backend.getFilePath(assetId) : null;
+			if (filePath) { url = asWebviewUri(URI.file(filePath)).toString(); }
+		} catch (err) {
+			this._logService.warn('[KbBlocksEditorPane] resolveMediaAsset failed', err);
+		}
+		this._webview?.postMessage({
+			direction: 'toWebview',
+			type: 'kbblocks.mediaAssetUrl',
+			data: { requestId, assetId, url },
+		});
+	}
+
+	/**
+	 * 方案 C：把媒体库资产复制到 `<note>.attachments/`，回报可写进正文的相对引用。
+	 * 复制即快照——媒体库后续版本更新不影响笔记（刻意不联动）。
+	 */
+	private async _handleSaveMediaToNote(assetId: string, requestId: string): Promise<void> {
+		let relRef: string | null = null;
+		let error: string | undefined;
+		try {
+			if (!this._currentResource) { throw new Error('no open note'); }
+			const backend = this._getKbMediaBackend();
+			if (!backend) { throw new Error('media backend unavailable'); }
+			const asset = await backend.get(assetId);
+			const filePath = await backend.getFilePath(assetId);
+			if (!asset || !filePath) { throw new Error('asset not found'); }
+			const bytes = (await this._fileService.readFile(URI.file(filePath))).value.buffer;
+			this._attachmentStore ??= new KbAttachmentStore(this._fileService);
+			const fileName = asset.fileName ?? `${assetId}.png`;
+			const id = await this._attachmentStore.save(this._currentResource, bytes, fileName, asset.mime ?? 'image/png');
+			relRef = KbAttachmentStore.relativeRef(this._currentResource, id, fileName);
+		} catch (err) {
+			error = err instanceof Error ? err.message : String(err);
+			this._logService.warn('[KbBlocksEditorPane] saveMediaToNote failed', err);
+		}
+		this._webview?.postMessage({
+			direction: 'toWebview',
+			type: 'kbblocks.mediaSaved',
+			data: { requestId, assetId, relRef, error },
+		});
 	}
 
 	/** Render Mermaid source via the shared inline renderer and stream the SVG back to the webview. */

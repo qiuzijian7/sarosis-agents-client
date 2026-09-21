@@ -63,6 +63,10 @@ import { CommandsRegistry } from '../../platform/commands/common/commands.js';
 import { NotificationsToasts } from '../../workbench/browser/parts/notifications/notificationsToasts.js';
 import { IMarkdownRendererService } from '../../platform/markdown/browser/markdownRenderer.js';
 import { EditorMarkdownCodeBlockRenderer } from '../../editor/browser/widget/markdownRenderer/browser/editorMarkdownCodeBlockRenderer.js';
+import { ILanguageService } from '../../editor/common/languages/language.js';
+import { PLAINTEXT_LANGUAGE_ID } from '../../editor/common/languages/modesRegistry.js';
+import { tokenizeToStringSync } from '../../editor/common/languages/textToHtmlTokenizer.js';
+import { TokenizationRegistry } from '../../editor/common/languages.js';
 import { SyncDescriptor } from '../../platform/instantiation/common/descriptors.js';
 import { TitleService } from './parts/titlebarPart.js';
 import { SidebarPart } from './parts/sidebarPart.js';
@@ -541,6 +545,65 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 				// Set code block renderer for markdown rendering
 				markdownRendererService.setDefaultCodeBlockRenderer(instantiationService.createInstance(EditorMarkdownCodeBlockRenderer));
+
+				// ★★ 2026-09-21（用户要求 TUI 样式对齐 pi ✓ —— pi 有 `syntax*` 7 色令牌，
+				//   我们聊天里的代码块**一直是纯文本** ✗）：把「**带语法高亮**的代码块渲染器」
+				//   也暴露到 `globalThis` ✓。
+				//
+				// 为什么走 globalThis 而不是 DI ✗：聊天面板（CLI 面板 + 主聊天）用的是
+				//   **base 版** `renderMarkdown`（`base/browser/markdownRenderer.ts` ✓）——
+				//   它**没有默认代码块渲染器** ✗，且这两个面板都拿不到 `IMarkdownRendererService`
+				//  （`CliChatEditorPanel` 的入参只有 `IChatPanelCallbacks` ✗）⇒ 无法注入 ✓。
+				// 复用**同一个** `EditorMarkdownCodeBlockRenderer` ✓ —— 它内含
+				//   `tokenizeToString` + **自己的 Trusted Types policy** ✓ ⇒ 零新依赖 ✓、
+				//   与编辑器/悬浮提示同源 ✓（不会出现"两套高亮"✗）。
+				// 产物 = `<span class="monaco-tokenized-source">` + `.mtk*` 令牌 span ✓，
+				//   颜色由工作台按当前主题注入 ✓（等价于 pi 的 `syntax*` 令牌 ✓）。
+				{
+					const hlRenderer = instantiationService.createInstance(EditorMarkdownCodeBlockRenderer);
+					(globalThis as unknown as {
+						__SAROSIS_MD_CODE_BLOCK_RENDERER__?: (alias: string | undefined, code: string) => Promise<HTMLElement>;
+					}).__SAROSIS_MD_CODE_BLOCK_RENDERER__ = (alias, code) =>
+						hlRenderer.renderCodeBlock(alias, code, {} as Parameters<typeof hlRenderer.renderCodeBlock>[2]);
+
+					// ★★ 2026-09-21：**同步**版高亮钩子（主聊天用 `codeBlockRendererSync` ✗，
+					//   异步钩子在那里用不上 ✓）。复用编辑器的**同步**分词器
+					//   `tokenizeToStringSync` ✓（与异步版同源 ✓，无需 DI ✓）。
+					//   只返回**字符串**（HTML ✓）——落 DOM 由调用方走 `safeSetInnerHtml` ✓
+					//   （Trusted Types 由那个函数统一处理 ✓，此处不必再建 policy ✓）。
+					const languageService = accessor.get(ILanguageService);
+					(globalThis as unknown as {
+						__SAROSIS_MD_HIGHLIGHT_SYNC__?: (alias: string | undefined, code: string) => string;
+					}).__SAROSIS_MD_HIGHLIGHT_SYNC__ = (() => {
+						// ★ 2026-09-21：分词结果缓存（流式期间同块反复重建 ⇒ 每帧重新分词太贵 ✗；
+						//   上限 60 条 ⇒ 内存可控 ✓）。与 workbench/browser 侧同款 ✓。
+						const cache = new Map<string, string>();
+						return (alias: string | undefined, code: string): string => {
+							try {
+								const languageId = (alias && languageService.getLanguageIdByLanguageName(alias))
+									|| PLAINTEXT_LANGUAGE_ID;
+								const key = `${languageId}\u0000${code}`;
+								const hit = cache.get(key);
+								if (hit !== undefined) { return hit; }
+								// ⚠ 已知限制（**同步**分词器 ✗）：`tokenizeToStringSync` 内部用
+								//   `TokenizationRegistry.get` ⇒ **只有已加载**的语言才有分词器 ✗，
+								//   而语言支持是**懒加载**的 ✓ ⇒ 首次渲染某语言可能返回纯文本 ✓
+								//  （表现为"高亮没生效 / 时有时无" ✗✓ —— 用户报的正是这个症状 ✓）。
+								//   顺手**预热**（fire-and-forget ✓）：下一次渲染该语言就有令牌 ✓。
+								try { void TokenizationRegistry.getOrCreate(languageId); } catch { /* ignore */ }
+								const html = tokenizeToStringSync(languageService, code, languageId);
+								if (cache.size > 60) { cache.clear(); }
+								cache.set(key, html);
+								return html;
+							} catch {
+								return ''; // 分词不可用 ⇒ 调用方回退纯文本 ✓
+							}
+						};
+					})();
+					// ★ 2026-09-21 诊断：本仓有**两个** Workbench 类 ✗ ⇒ 必须能分辨
+					//   "钩子装在哪一个、实际启动的是哪一个"（用户报「改了但没生效」✓）。
+					accessor.get(ILogService).info('[MdHighlight] hooks installed (sessions/browser ✓): async=✓ sync=✓');
+				}
 
 				// Default Hover Delegate must be registered before creating any workbench/layout components
 				setHoverDelegateFactory((placement, enableInstantHover) => instantiationService.createInstance(WorkbenchHoverDelegate, placement, { instantHover: enableInstantHover }, {}));

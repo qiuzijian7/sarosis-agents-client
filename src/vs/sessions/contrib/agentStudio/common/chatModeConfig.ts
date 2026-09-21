@@ -550,6 +550,8 @@ export const GLOBAL_SYSTEM_PREFIX_SUBAGENT = [
 
 /**
  * Strategy guidance — paradigm-specific instructions injected into the system prompt
+ * ⚠ 2026-09-21 概念下线：mimo / plan-explore 两段已删除（pi 内核无对应机制，曾造成「提示词承诺≠行为」）；
+ *   `plan_register` 相关承诺同步删除（该工具在 pi 路径已不注册）。
  * so the LLM knows its execution model and recommended tool chain.
  *
  * Each paradigm maps to an IAgentLoopStrategy implementation. The LLM doesn't need to
@@ -579,10 +581,6 @@ export function getStrategyGuidance(paradigm: string | undefined): string[] {
 			'   `delegate_task(type="code-explorer")` to launch sub-agents (see <code_explorer_subagent_usage>).',
 			'   Create sub-agents on demand — scale their count to the actual scope of the task.',
 			'   Do NOT use `new_agent` to create a generic "General Assistant" for exploration — that is what `delegate_task(type="code-explorer")` is for.',
-			'4. **Ordered multi-step execution**: If the goal decomposes into ordered steps AFTER',
-			'   research, call `plan_register` with the task list — the system injects a CURRENT TASK',
-			'   reminder per task and auto-advances the queue when you finish a task and stop calling',
-			'   tools. Execute the current task only; the loop drives the sequence.',
 			'5. **Budget awareness**: You have a limited iteration budget. If budget is low,',
 			'   prioritize summarizing findings and delivering a concrete result over',
 			'   starting new explorations.',
@@ -594,61 +592,6 @@ export function getStrategyGuidance(paradigm: string | undefined): string[] {
 				'- **Explore broadly**: `delegate_task(type="code-explorer", task="...")` for parallel sub-agents',
 				'- **Edit code**: `file_write` / `patch` → `file_read` to verify',
 				'- **Execute**: `execute_command` (with user approval for risky operations)',
-				'',
-			];
-		case 'mimo':
-			return [
-				'',
-				'## <strategy_guidance> — MiMo Task-Gated ReAct',
-				'',
-				'You are operating under the **mimo** paradigm: a budgeted ReAct loop with a',
-				'DB-truth completion gate (MiMo-Code style). Your work is task-centric and',
-				'verifiable — the loop checks ground truth, not your claims.',
-				'',
-				'### How to work',
-				'1. **Track work on the task board**: for multi-step goals, create tasks with',
-				'   `kanban_create` and complete them with `kanban_complete` as you finish.',
-				'   The board is the ground truth the stop-gate checks.',
-				'2. **Explore via sub-agents**: delegate research to `delegate_task(type="code-explorer")`',
-				'   or `plan_explore` — sub-agents run in parallel and return structured',
-				'   **Status** reports (success/partial/failed/blocked).',
-				'3. **The stop gate is real**: when you stop calling tools, the loop queries the',
-				'   task board for unfinished tasks in this session (including sub-agent tasks).',
-				'   If any remain, you are re-entered with a reminder — up to 3 times. Complete',
-				'   each task or explicitly abandon it; the board must be clean to finish.',
-				'4. **Report honestly**: do not claim completion the board contradicts —',
-				'   the gate checks DB truth, and a false claim triggers re-entry, not success.',
-				'5. **Budget awareness**: same iteration budget as budgeted-react; if low,',
-				'   summarize findings and close out tasks instead of starting new work.',
-				'',
-				'### Recommended tool chain',
-				'- **Track**: `kanban_create` / `kanban_complete` / `kanban_block` (the gate\'s truth)',
-				'- **Explore**: `delegate_task(type="code-explorer")` / `plan_explore` (parallel sub-agents)',
-				'- **Execute**: `file_write` / `patch` / `execute_command` → verify with `file_read`',
-				'',
-			];
-		case 'plan-explore':
-			return [
-				'',
-				'## <strategy_guidance> — Plan-Explore-Execute',
-				'',
-				'You are operating under the **plan-explore** paradigm: a three-phase execution model.',
-				'',
-				'### How to work',
-				'1. **Plan phase**: Analyze the user request and produce a structured plan document',
-				'   using `update_plan`. Break the task into ordered, verifiable steps.',
-				'2. **Explore phase**: Use `plan_explore` to launch parallel read-only exploration',
-				'   sub-agents. Collect findings, then call `exit_plan_mode` to transition.',
-			'3. **Execute phase**: Execute the plan steps in order, using `file_write` / `patch` /',
-			'   `execute_command` as needed. Mark each step complete in the plan.',
-			'   For hard sequential enforcement, call `plan_register` with the ordered steps —',
-			'   the loop injects per-task reminders and auto-advances on each completion.',
-			'',
-			'### Recommended tool chain',
-			'- **Plan**: `update_plan` (create/update the plan document)',
-			'- **Explore**: `plan_explore(goal, areas)` → aggregate findings → `exit_plan_mode`',
-			'- **Execute**: `plan_register(tasks)` (optional: queue enforcement) → `file_write` /',
-			'  `patch` / `execute_command` → verify with `file_read`',
 				'',
 			];
 		case 'react':
@@ -738,8 +681,6 @@ export function getStrategyGuidance(paradigm: string | undefined): string[] {
 			'You are operating under the default ReAct paradigm.',
 		'Explore the codebase with `search_graph` / `delegate_task(type="code-explorer")` before',
 		'making changes. Make targeted edits and verify with `file_read`.',
-		'For ordered multi-step goals, call `plan_register` after research — the loop injects',
-		'per-task reminders and auto-advances the queue on each task completion.',
 		'',
 		'## 📊 DIAGRAM REQUESTS — ALWAYS USE THE TOOL',
 		'',
@@ -806,7 +747,7 @@ export const GLOBAL_SYSTEM_SUFFIX = [
 //
 // ⚠ 名单只收「plan 模式专属」的工具，**不含通用工具**：
 //   - `update_plan`   → 任何模式都可用的短期工作计划跟踪（Track short work plan）
-//   - `plan_register` → 任何模式都可用的顺序任务队列注册
+//   - `plan_register` → （2026-09-21）顺序任务队列注册；⚠ legacy 专属——pi 路径已不注册该工具（范式概念下线中）
 // 误收这两个会削弱 craft/ask 模式的正常能力。
 
 /**

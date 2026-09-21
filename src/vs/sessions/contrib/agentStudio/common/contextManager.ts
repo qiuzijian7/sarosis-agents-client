@@ -1161,6 +1161,28 @@ export class ContextManager implements IContextManager {
 			})
 			.join('\n\n');
 
+		// ★★★ 2026-09-21（真机事故：摘要把「当前任务」写成「无」⇒ 模型失忆 ✓）──────────
+		// 现场 `sess_ms5kriv8_0j6atj`：任务「test-qiuzijian 存储路径在哪里」**已被回答完** ✓
+		// ⇒ 摘要器按"此刻在做的活"理解 `Active Task` ⇒ 诚实地写「无」✗ ⇒ 边界取代全部早期
+		// 历史后，用户说「执行」时模型只看到「当前任务：无」✗✓（与截图逐字吻合 ✓）。
+		// ⇒ 两条修补：
+		//  ① 把**用户最近消息原文**显式放进 prompt ✓（模型可直接复制，不必从工具结果里"回忆" ✗）；
+		//  ② 明确"**看起来已完成也要保留**""**只要本段有用户消息就不得写无**"✓（消除语义歧义 ✓）。
+		const recentUserMessages = messages.filter(m => m.role === 'user').slice(-3);
+		if (recentUserMessages.length === 0) {
+			// 本段没有用户消息 ⇒ 摘要器**不可能**知道任务是什么 ✗ —— 明确告警（便于定位 ✓）。
+			// 正常情况不该发生：受保护尾部之外的压缩段通常至少含一条 user 消息 ✓。
+			this._log('warn',
+				`[ContextManager][Compression] 摘要输入（${messages.length} 条）**不含任何 user 消息** ` +
+				`⇒ 摘要无法给出 Active Task（下游将只能依赖边界的"原文兜底"✓）✗`,
+			);
+		}
+		const recentUserBlock = recentUserMessages.length > 0
+			? `\n\n【用户最近的消息（原文）—— 必须逐字复制进 Active Task，不得改写、不得写"无"】\n"""\n` +
+				recentUserMessages.map((m, i) => `${i + 1}. ${(m.content || '').slice(0, 600)}`).join('\n') +
+				`\n"""\n`
+			: '';
+
 		// 增量摘要：已有旧摘要时，要求「精简合并」而非「逐条重述历史」。
 		// 2026-08-22 日志 1787363991734 实测：summaryChars 1122→2862→4283→5814 每次翻倍，
 		// 逼近 dynamicMaxTokens=6400（window×5%）。膨胀根因是旧指令「不要丢弃仍然有效的
@@ -1180,7 +1202,10 @@ export class ContextManager implements IContextManager {
 请严格按以下分区输出（无内容的分区写"无"）：
 
 ## Active Task（当前任务）
-逐字保留用户最近正在要求完成的核心任务描述，不要改写。
+逐字保留用户最近要求完成的核心任务描述，不要改写。
+⚠ 三条硬性要求（2026-09-21 真机事故后补充）：① 只要上文出现过用户消息，本分区**不得写"无"** ✗；
+② **即使该任务看起来已经完成，也必须原样保留** ✗（"当前任务"= 用户最近一次要什么，不是"此刻在做什么"）；
+③ 若下文给出了「用户最近的消息（原文）」，**逐字复制最近一条**（可再附上更早一条作为背景）。
 
 ## Goal（总体目标）
 本次会话要达成的整体目标。
@@ -1216,7 +1241,7 @@ export class ContextManager implements IContextManager {
 """
 ${conversationText}
 """
-
+${recentUserBlock}
 结构化摘要：`;
 	}
 

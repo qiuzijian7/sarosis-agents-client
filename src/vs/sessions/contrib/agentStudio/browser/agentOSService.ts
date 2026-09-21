@@ -538,10 +538,13 @@ private readonly _sandboxGuard: SandboxGuard;
 		const cnt = saData?.length ?? 0;
 		const pids = saData?.map(s => s?.parentToolCallId).filter(Boolean) ?? [];
 		const groupId = snapshot?.groupId ?? '(none)';
+		// 2026-09-21：归属身份进签名与日志 —— 同一 groupId 若换了归属（跨会话复用/串台）
+		// 不得被内容去重吞掉 ✗；日志带上 owner 后，配合 pane 侧 `trace skipped` 可一眼定位串台。
+		const owner = `${snapshot?.agentId ?? '-'}/${snapshot?.sessionId ?? '-'}`;
 
 		// 内容签名：长度 + 尾 8 字符（流式追加场景长度恒增；尾段指纹兜住同长替换）。
 		// 终态翻转由 status/completedAt 覆盖，不会被误吞。
-		const contentSig = (saData ?? []).map(s =>
+		const contentSig = `${owner}#` + (saData ?? []).map(s =>
 			`${s?.id}:${s?.status}:${s?.completedAt ?? ''}` +
 			`:p${s?.progress?.length ?? 0}${(s?.progress ?? '').slice(-8)}` +
 			`:o${s?.output?.length ?? 0}${(s?.output ?? '').slice(-8)}` +
@@ -558,13 +561,13 @@ private readonly _sandboxGuard: SandboxGuard;
 			this._lastSubAgentTraceStructSig.delete(this._lastSubAgentTraceStructSig.keys().next().value!);
 		}
 
-		// 结构签名（数量/挂载/状态集）变化才打 info；内容-only 更新降 trace。
-		const structSig = `${cnt}:[${pids.join(',')}]:( ${(saData ?? []).map(s => s?.status).join(',')})`;
+		// 结构签名（数量/挂载/状态集 + 归属）变化才打 info；内容-only 更新降 trace。
+		const structSig = `${owner}${cnt}:[${pids.join(',')}]:( ${(saData ?? []).map(s => s?.status).join(',')})`;
 		if (this._lastSubAgentTraceStructSig.get(groupId) !== structSig) {
 			this._lastSubAgentTraceStructSig.set(groupId, structSig);
-			this._logService.info(`[fireSubAgentTrace] count=${cnt} parentToolCallIds=[${pids.join(',') || '(none)'}] groupId=${groupId}`);
+			this._logService.info(`[fireSubAgentTrace] count=${cnt} owner=${owner} parentToolCallIds=[${pids.join(',') || '(none)'}] groupId=${groupId}`);
 		} else {
-			this._logService.trace(`[fireSubAgentTrace] content-only update groupId=${groupId}`);
+			this._logService.trace(`[fireSubAgentTrace] content-only update owner=${owner} groupId=${groupId}`);
 		}
 		this._onDidSubAgentTrace.fire(snapshot);
 	}

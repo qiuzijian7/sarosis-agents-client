@@ -10,7 +10,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { createPocketProxy, classifyHost } from './proxy.mjs';
 import { startQuickTunnel, startNamedTunnel } from './tunnel.mjs';
-import { lanIPv4, listLanCandidates } from './host.mjs';
+import { lanIPv4, listLanCandidates, probeUpstreamPort } from './host.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -32,11 +32,12 @@ export async function qrDataUrl(text, { width = 220, margin = 1 } = {}) {
  * @param {(mode:'quick'|'named') => string} [opts.onTunnelReady]
  * @param {Array<{prefix:string, handle:(req,res)=>Promise<boolean>}>} [opts.routes]
  *   代理本地路由（Pocket App 静态资源 + RPC 通道），由代理在鉴权之后接管
+ * @param {string} [opts.brandHtml] 登录页品牌 HTML（扩展读 app/saros-logo.svg 转 data URI 传入）
  * @param {string} [opts.appPrefix] Pocket App 的路径前缀（如 `/pocket/`）。
  *   有值时 status() 额外给出 `lanAppUrl` / `tunnelAppUrl` 与对应二维码 ——
  *   手机扫码直接进 App，而不是先进 VsSaros web 首页再手动改地址。
  * @param {object} [opts.log] 日志（VS Code OutputChannel 形状：info/warn/error）
- * @param {object} [opts.deps] 依赖替换（仅供测试）：{ createProxy, startQuickTunnel, startNamedTunnel }
+ * @param {object} [opts.deps] 依赖替换（仅供测试）：{ createProxy, startQuickTunnel, startNamedTunnel, probeUpstream }
  */
 export function createPocketService({
   upstreamPort,
@@ -48,6 +49,7 @@ export function createPocketService({
   onTunnelReady,
   routes = [],
   appPrefix = '',
+  brandHtml = '',
   log = console,
   deps = {},
 } = {}) {
@@ -106,6 +108,11 @@ export function createPocketService({
   let tunnelAbort = null;
   let tunnelPromise = null;
   const tunnelState = { phase: 'idle', detail: '', startedAt: null };
+  /**
+   * 上游（VsSaros server，即「同屏 web」入口的上游）可用性。
+   * ok=null 表示还没探测过。启动时探一次，之后由「上游报错」与面板的重新探测更新。
+   */
+  const upstreamState = { ok: null, checkedAt: null, error: '' };
   const qrCache = new Map();
   const encodeQr = qrDataUrl;
   async function qrCached(text) {
@@ -140,6 +147,26 @@ export function createPocketService({
 
   return {
     upstreamPort,
+    /**
+     * 探测上游 VsSaros server 是否在监听。
+     *
+     * 面板用它回答「同屏 web 到底能不能用」——桌面版 vssaros.exe 不监听 HTTP 端口，
+     * 这条入口本来就不可用（App 不受影响），提前说明比让用户撞 502 强。
+     * @returns {Promise<{ok:boolean|null, checkedAt:number|null, error:string}>}
+     */
+    async probeUpstream() {
+      const probe = deps.probeUpstream ?? probeUpstreamPort;
+      try {
+        upstreamState.ok = await probe(upstreamPort);
+      } catch {
+        upstreamState.ok = false;
+      }
+      upstreamState.checkedAt = Date.now();
+      if (upstreamState.ok) upstreamState.error = '';
+      else if (!upstreamState.error) upstreamState.error = `connect ECONNREFUSED 127.0.0.1:${upstreamPort}`;
+      return { ...upstreamState };
+    },
+
     async startProxy() {
       if (proxy) return proxy;
       let lastErr = null;
@@ -155,6 +182,14 @@ export function createPocketService({
             launchAuthCookieName: 'vscode-tkn',
             lanAccessEnabled: () => state.lanEnabled(),
             routes,
+            brandHtml,
+            appPrefix,
+            // 上游不可达（HTTP / WebSocket 两条路径）→ 记下来，面板据实显示
+            onUpstreamError: (err) => {
+              upstreamState.ok = false;
+              upstreamState.checkedAt = Date.now();
+              upstreamState.error = String(err?.message ?? err ?? '');
+            },
             auth: {
               sessionKey: require('node:crypto').randomBytes(16).toString('hex'),
               getToken: (host) => state.tokenForHost(host),
@@ -169,6 +204,8 @@ export function createPocketService({
         }
       }
       if (!proxy) throw lastErr ?? new Error('代理启动失败 | proxy start failed');
+      // 不阻塞启动：探测失败要等超时（约 600ms），面板里显示「检测中…」即可
+      void this.probeUpstream().catch(() => { /* 探测失败不影响代理 */ });
       return proxy;
     },
 
@@ -261,7 +298,9 @@ export function createPocketService({
         lanToken: state.getLanToken(),
         publicPin: state.getAccessToken(),
         lanUrl,
-        lanQr: await qrCached(lanUrl),
+        // ★ 刻意**不**再产出 `lanQr`（代理根路径 = 同屏 web 入口的二维码）：
+        //   桌面版 VsSaros 不监听 HTTP 端口 ⇒ 那个码扫进去必然是「同屏 web 暂不可用」页，
+        //   面板的「局域网访问」卡早就改用它下面的 `lanAppQr`（= `/pocket/`）。留着只会被人再接回去。
         lanAppUrl,
         lanAppQr: await qrCached(lanAppUrl),
         lanCandidates,
@@ -277,6 +316,10 @@ export function createPocketService({
           return { mode: cfg?.mode === 'named' ? 'named' : 'quick', hostname: typeof cfg?.hostname === 'string' ? cfg.hostname : '', tokenSet: Boolean(cfg?.token) };
         })(),
         upstreamPort,
+        // 上游（同屏 web 入口）可用性：null = 还没探测过
+        upstreamOk: upstreamState.ok,
+        upstreamError: upstreamState.error,
+        upstreamCheckedAt: upstreamState.checkedAt,
       };
     },
 

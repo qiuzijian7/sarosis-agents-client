@@ -120,8 +120,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _bindingListContainer: HTMLElement | undefined;
 	private _bindingInput: HTMLInputElement | undefined;
 	private _bindingDefaultToggle: HTMLInputElement | undefined;
-	// Runtime config (paradigm + budget)
-	private _paradigmSelect: HTMLSelectElement | undefined;
+	// Runtime config (budget)
 	private _budgetInput: HTMLInputElement | undefined;
 	private _modelProviderSelect: HTMLSelectElement | undefined;
 	private _modelIdSelect: HTMLSelectElement | undefined;
@@ -622,7 +621,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 			if (this._bindingDefaultToggle) { this._bindingDefaultToggle.disabled = true; }
 			if (this._bindingAddBtn) { this._bindingAddBtn.disabled = true; }
 			if (this._renameInput) { this._renameInput.disabled = true; }
-			if (this._paradigmSelect) { this._paradigmSelect.disabled = true; }
 			if (this._budgetInput) { this._budgetInput.disabled = true; }
 			if (this._modelProviderSelect) { this._modelProviderSelect.disabled = true; }
 			if (this._modelIdSelect) { this._modelIdSelect.disabled = true; }
@@ -661,7 +659,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 			if (this._bindingDefaultToggle) { this._bindingDefaultToggle.disabled = false; }
 			if (this._bindingAddBtn) { this._bindingAddBtn.disabled = false; }
 			if (this._renameInput) { this._renameInput.disabled = false; }
-			if (this._paradigmSelect) { this._paradigmSelect.disabled = false; }
 			if (this._budgetInput) { this._budgetInput.disabled = false; }
 			if (this._modelProviderSelect) { this._modelProviderSelect.disabled = false; }
 			if (this._modelIdSelect) { this._modelIdSelect.disabled = false; }
@@ -1152,44 +1149,12 @@ export class AgentSettingsEditorPane extends EditorPane {
 		}
 	}
 
-	// ── Runtime Config Tab (paradigm + budget) ──
+	// ── Runtime Config Tab (budget) ──
 
 	private _buildRuntimeTab(): void {
 		const section = $$('div.agent-settings-tab-pane');
 		section.dataset.tabPane = 'runtime';
 
-		// ── Paradigm selector ──
-		const paradigmGroup = $$('div.agent-settings-form-group');
-		const paradigmLabel = $$('label.agent-settings-label');
-		paradigmLabel.textContent = 'AgentLoop 循环范式';
-		paradigmGroup.appendChild(paradigmLabel);
-
-		const paradigmDesc = $$('div.agent-settings-desc');
-		paradigmDesc.textContent = '决定 Agent 的执行模型：ReAct 循环 + 预算门控（默认）、计划-探索、图模式等';
-		paradigmGroup.appendChild(paradigmDesc);
-
-		this._paradigmSelect = document.createElement('select');
-		this._paradigmSelect.className = 'agent-settings-select';
-		const paradigms = [
-			{ value: '', label: '默认（按 ChatMode 自动选择）' },
-			{ value: 'budgeted-react', label: 'Budgeted ReAct — 预算门控 + 委托编排（Hermes 范式）' },
-			{ value: 'plan-explore', label: 'Plan-Explore — 三阶段：分析 → 并行探索 → DAG 执行' },
-			{ value: 'react', label: 'Pure ReAct — 纯 ReAct 循环（无预算限制）' },
-			{ value: 'graph', label: 'Graph — 声明式图 / BSP 超步（LangGraph 模式）' },
-			{ value: 'delegation', label: 'Delegation — Supervisor + 子 Agent 委托树' },
-			{ value: 'readonly', label: 'Readonly — 只读收集模式' },
-		];
-		for (const p of paradigms) {
-			const opt = document.createElement('option');
-			opt.value = p.value;
-			opt.textContent = p.label;
-			this._paradigmSelect.appendChild(opt);
-		}
-		this._paradigmSelect.onchange = () => {
-			void this._saveRuntimeConfig();
-		};
-		paradigmGroup.appendChild(this._paradigmSelect);
-		section.appendChild(paradigmGroup);
 
 		// ── Budget input ──
 		const budgetGroup = $$('div.agent-settings-form-group');
@@ -1450,11 +1415,9 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private async _saveRuntimeConfig(): Promise<void> {
 		if (!this._agentId || this._readOnly) { return; }
 		try {
-			const paradigm = this._paradigmSelect?.value || undefined;
 			const budgetVal = this._budgetInput?.value.trim();
 			const budgetMaxTotal = budgetVal ? parseInt(budgetVal, 10) : undefined;
 			await this.agentStudioService.updateAgent(this._agentId, {
-				paradigm: paradigm || undefined,
 				budgetMaxTotal: (budgetMaxTotal && !isNaN(budgetMaxTotal)) ? budgetMaxTotal : undefined,
 			} as Partial<Agent>);
 		} catch (err) {
@@ -1590,9 +1553,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 			//   「两个设置面板显示不同地址」的不同步（_showTab 只在切 tab 时才填表单）。
 			this._fillConfigHtmlTab();
 
-			// Update runtime config (paradigm + budget)
-			if (this._paradigmSelect && this._budgetInput) {
-				this._paradigmSelect.value = this._agent.paradigm || '';
+			// Update runtime config (budget)
+			if (this._budgetInput) {
 				this._budgetInput.value = this._agent.budgetMaxTotal !== undefined ? String(this._agent.budgetMaxTotal) : '';
 			}
 

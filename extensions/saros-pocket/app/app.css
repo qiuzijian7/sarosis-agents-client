@@ -39,6 +39,9 @@ body {
 }
 
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+/* 品牌 logo：与 VsSaros 同款 wordmark（resources/.agents/saros-logo.svg），
+   白字+橙，天然适配暗色主题；高度固定、宽度自适应。 */
+.logo { height: 16px; width: auto; flex: 0 0 auto; display: block; opacity: .96; }
 .title { font-size: 15px; font-weight: 600; }
 .subtitle { font-size: 11px; color: var(--mut); }
 .host { font-size: 11px; color: var(--mut); text-align: right; max-width: 45%; word-break: break-all; }
@@ -229,6 +232,8 @@ button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radi
 .screen-wrap img {
   max-width: 100%;
   max-height: 100%;
+  /* object-fit 只在「盒子 ≠ 图片自身尺寸」时生效，所以不能只靠它铺满：
+     实际尺寸由 app.js 的 fitScreenImage() 按可用区域算好写在盒子上，这里只保证不拉伸变形。 */
   object-fit: contain;
   /* 画面里就是电脑桌面，浏览器不该再帮我们缩放/平滑 */
   image-rendering: auto;
@@ -250,8 +255,135 @@ button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radi
   pointer-events: none;
 }
 
+/* 会话桥诊断行：列表空/只有本地会话时，必须说清「为什么」而不是只显示空 */
+.session-diag {
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--warn);
+  background: rgba(245, 158, 11, .08);
+}
+
+/* ---------- 聊天头（与 VsSaros 聊天框同构：Agent / 工作区 / Worktree / 模型 / 模式）----------
+   桌面端把这些放在聊天框顶部与输入区（agent+工作区+worktree 在头部，模式+模型在 composer）。
+   手机屏窄，收成两行两列 + 一行模式芯片，信息层级保持一致：先 agent/工作区，再 worktree/模型，最后模式。 */
+.chat-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card2);
+}
+
+.chat-ctx-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.chat-ctx-row--modes { justify-content: space-between; }
+
+.chat-ctx-field {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-ctx-label {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--mut);
+}
+
+.chat-ctx-field select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  border-radius: 8px;
+}
+
+.chat-modes { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.chat-mode {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--mut);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.chat-mode.active {
+  color: #fff;
+  background: var(--acc);
+  border-color: var(--acc);
+}
+
+.chat-ctx-hint { font-size: 11px; color: var(--mut); line-height: 1.5; }
+.chat-ctx-hint.warn { color: var(--warn); }
+
 .screen-input { border-top: 1px solid var(--line); padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--card2); }
 .switchline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--mut); }
+
+/* 远程操作说明：把「为什么开不了 / 开了会怎样」写在开关下面，别让开关变成点不动的死控件 */
+.screen-inputnote { font-size: 11.5px; color: var(--mut); line-height: 1.5; margin: 5px 0 0; }
+.screen-inputnote.warn { color: var(--warn); }
+.screen-inputnote code { font-size: 11px; }
+
+/* 全屏：真全屏（Fullscreen API）与**伪全屏**（CSS，WebView 里 API 不可用时兜底）
+   —— 两条路都让画面区铺满屏幕，并在右上角留一个「退出全屏」。 */
+.screen-wrap:fullscreen,
+.screen-wrap:-webkit-full-screen,
+.screen-wrap.pseudo-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 9999;
+  background: #000;
+}
+/* 兜底：即使 fitScreenImage() 没跑到（旧缓存脚本 / 首帧尚未到达就已全屏），
+   全屏下也让画面铺满可用区域 —— object-fit 保证只留黑边、不拉伸。 */
+.screen-wrap:fullscreen img,
+.screen-wrap:-webkit-full-screen img,
+.screen-wrap.pseudo-fullscreen img {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+}
+
+/* 「远程操作中」标识：常显在画面左上角（全屏时也在）——默认开启后靠它让人知情 */
+.screen-inputbadge {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 8px;
+  z-index: 6;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #11141a;
+  background: var(--warn);
+  opacity: .92;
+  pointer-events: none;
+}
+
+.screen-exit {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top));
+  right: 8px;
+  z-index: 5;
+  opacity: .85;
+}
 .screen-keys { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .screen-keys button { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radius: 8px; }
 .screen-input input[type=text] { width: 100%; margin-top: 8px; padding: 8px 10px; font-size: 13px; border-radius: 8px; }

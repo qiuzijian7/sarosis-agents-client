@@ -42,8 +42,8 @@
       },
       "sarosPocket.allowDesktopInput": {
         "type": "boolean",
-        "default": false,
-        "description": "允许从手机远程操作本机鼠标/键盘（仅 Windows）。默认关闭，开启后请自行承担风险。"
+        "default": true,
+        "description": "允许从手机远程操作本机鼠标/键盘（仅 Windows）。默认开启：手机「屏幕」页打开开关即可操控，画面左上角会显示「远程操作中」。不需要时在这里关掉（手机端也可单独关闭）。"
       },
       "sarosPocket.chatModel": {
         "type": "string",
@@ -63,7 +63,133 @@
       "sarosPocket.maxFileBytes": {
         "type": "number",
         "default": 262144,
-        "description": "Pocket App 单次读取文件的上限（字节，默认 256 KB）。"
+        "description": "Pocket App 单次读取文件的上限（字节，默认 256 KB）。",
+        "x-advanced": true
+      },
+      "sarosPocket.lanEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "局域网访问总开关（手机连同一 WiFi 时用）。与访问面板里的开关是同一个值。"
+      },
+      "sarosPocket.lanAuthEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "局域网访问需要密码。关掉后同一局域网内任何设备都能直接打开（公网入口仍强制密码）。"
+      },
+      "sarosPocket.lanIpOverride": {
+        "type": "string",
+        "default": "",
+        "description": "局域网地址覆盖（IPv4）。多网卡 / VPN 导致探测到的地址不对时填，如 192.168.1.9；留空 = 自动探测。"
+      },
+      "sarosPocket.tunnelMode": {
+        "type": "string",
+        "default": "quick",
+        "description": "公网隧道模式：quick = 随机域名（trycloudflare.com）；named = 固定域名（需先设置隧道 Token 与固定域名）。"
+      },
+      "sarosPocket.tunnelHostname": {
+        "type": "string",
+        "default": "",
+        "description": "命名隧道的固定域名，如 pocket.example.com（tunnelMode = named 时必填）。"
+      },
+      "sarosPocket.openPanelAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "扫码、看状态、改密码都在面板里（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.openPanel",
+        "x-actionLabel": "打开访问面板",
+        "x-actionRow": "连接",
+        "x-actionPrimary": true,
+        "x-panel": true
+      },
+      "sarosPocket.openAppAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "在本机浏览器打开 /pocket/（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.openApp",
+        "x-actionLabel": "打开随身 App",
+        "x-actionRow": "连接",
+        "x-actionPrimary": true
+      },
+      "sarosPocket.copyAppUrlAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "把本机 App 地址写入剪贴板（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.copyAppUrl",
+        "x-actionLabel": "复制 App 地址",
+        "x-actionRow": "连接"
+      },
+      "sarosPocket.startTunnelAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "启动 cloudflared 隧道，拿到公网 https 地址（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.startTunnel",
+        "x-actionLabel": "开启公网访问",
+        "x-actionRow": "公网隧道"
+      },
+      "sarosPocket.stopTunnelAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "停掉隧道（手机改用局域网入口）（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.stopTunnel",
+        "x-actionLabel": "关闭公网访问",
+        "x-actionRow": "公网隧道"
+      },
+      "sarosPocket.quickTunnelAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "适合临时用；重启后域名会变（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.useQuickTunnel",
+        "x-actionLabel": "用快速隧道（随机域名）",
+        "x-actionRow": "公网隧道"
+      },
+      "sarosPocket.namedTunnelAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "需要先设置隧道 Token 与固定域名（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.useNamedTunnel",
+        "x-actionLabel": "用命名隧道（固定域名）",
+        "x-actionRow": "公网隧道"
+      },
+      "sarosPocket.tunnelTokenAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "Cloudflare Tunnel Token（凭据只进扩展目录，不写进设置文件）（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.setTunnelToken",
+        "x-actionLabel": "设置隧道 Token",
+        "x-actionRow": "公网隧道"
+      },
+      "sarosPocket.lanPinAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "8 位字母数字；手机首次访问要输它（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.setLanPin",
+        "x-actionLabel": "设置局域网密码",
+        "x-actionRow": "密码"
+      },
+      "sarosPocket.refreshLanPinAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "随机生成一个新的 8 位密码（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.refreshLanPin",
+        "x-actionLabel": "刷新局域网密码",
+        "x-actionRow": "密码"
+      },
+      "sarosPocket.publicPinAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "公网入口强制校验（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.setPublicPin",
+        "x-actionLabel": "设置公网密码",
+        "x-actionRow": "密码"
+      },
+      "sarosPocket.resetAction": {
+        "type": "boolean",
+        "default": false,
+        "description": "清空开关与密码（会二次确认）（点击即执行，无需保存）。",
+        "x-action": "sarosPocket.reset",
+        "x-actionLabel": "恢复出厂设置",
+        "x-actionRow": "维护",
+        "x-actionDanger": true
       }
     }
   }

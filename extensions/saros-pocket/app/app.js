@@ -30,22 +30,56 @@
     filePath: null,
     events: [],
     status: null,
-    // 收件箱（design-spec 2.1）
+    // 会话列表（原「收件箱」，design-spec 2.1）
     sessions: [],
     sessionFilter: 'all',
+    /** 已归档会话数（VsSaros 侧归档 = Pocket 的「结束」）；0 时不显示「已归档」芯片 */
+    archivedCount: 0,
+    /** 会话来源：'vsaros' = 真实 VsSaros 会话；'pocket' = 老版本降级到本地登记 */
+    sessionSource: '',
+    /** 会话桥诊断（{ok,count,error}）：列表为空时用来区分"命令不可用"与"真的没会话" */
+    sessionDiag: null,
     activeSessionId: null,
+    /**
+     * 聊天上下文（与 VsSaros 聊天框同构的头部）：agent / 工作区 / worktree / 模式。
+     * 由 `chat.context` 填充；老版本 VsSaros 读不到时 degraded=true（头部隐藏真实列表）。
+     */
+    chatContext: { degraded: false, chatModes: [], agents: [], workspaces: [], worktrees: [], workspaceId: '', worktreePath: '', agentId: '', selection: null },
+    /** 聊天模式：craft（完整工具）/ ask（只读）/ plan（只读+任务拆解），与桌面端输入框同档 */
+    chatMode: 'craft',
+    /** 聊天上下文是否已拉过（首次进「当前会话」页时惰性加载） */
+    chatContextLoaded: false,
   };
 
   var el = {};
   ['connDot', 'connText', 'hostInfo', 'modelSelect', 'messages', 'input', 'send', 'toAgent',
     'clearChat', 'entries', 'pathText', 'upDir', 'reloadFiles', 'fileView', 'fileName',
     'fileBody', 'openInEditor', 'closeFile', 'statusCards', 'events', 'clearEvents', 'toast',
-    'sessionList', 'sessionChips', 'reloadSessions', 'browseFiles', 'changes', 'reloadChanges',
+    'sessionList', 'sessionChips', 'reloadSessions', 'browseFiles', 'changes', 'reloadChanges', 'sessionDiag',
     'screenImg', 'screenStatus', 'screenMode', 'screenFps', 'screenScale', 'screenShot',
-    'screenReload', 'screenInputBar', 'screenInputOn', 'screenText', 'screenFull', 'screenWrap']
+    'screenReload', 'screenInputBar', 'screenInputOn', 'screenText', 'screenFull', 'screenWrap',
+    'screenExit', 'screenInputNote', 'screenInputRecheck', 'screenInputBadge',
+    'chatContextBar', 'chatAgent', 'chatWorkspace', 'chatWorktree', 'chatModes', 'chatCtxHint']
     .forEach(function (id) {
       el[id] = document.getElementById(id);
     });
+
+  /**
+   * 把 `?token=<访问密码>` 从地址栏摘掉。
+   *
+   * 为什么：面板的「在浏览器打开（免输密码）」会用带 `?token=` 的地址打开本机浏览器，
+   * 代理**在响应头里已经种下 HttpOnly cookie**（后续请求靠 cookie 鉴权），所以参数此刻已经没用了；
+   * 留着只会进浏览器历史、被截图/分享带走。用 replaceState（不是 push）⇒ 不产生返回栈残留。
+   */
+  function stripTokenFromAddressBar() {
+    try {
+      var u = new URL(window.location.href);
+      if (!u.searchParams.has('token')) return;
+      u.searchParams.delete('token');
+      var clean = u.pathname + (u.searchParams.toString() ? '?' + u.searchParams.toString() : '') + u.hash;
+      window.history.replaceState(null, '', clean);
+    } catch (e) { /* 老浏览器/异常 URL：保持原样，不影响功能 */ }
+  }
 
   function uid() {
     if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
@@ -175,6 +209,8 @@
         text: text,
         messages: state.history.slice(-20, -1),
         modelId: state.modelId || undefined,
+        // 本次对话的上下文（模式/agent/工作区/worktree）：服务端会先落到 VsSaros 再发请求
+        context: chatContextPayload(),
       });
       if (!bubble.textContent) bubble.textContent = (res && res.text) || '（模型没有输出）';
       bubble.classList.remove('streaming');
@@ -209,6 +245,140 @@
     }
   }
 
+  // ---------- 聊天上下文（与 VsSaros 聊天框同构：Agent / 工作区 / Worktree / 模式）----------
+  // 模式与桌面端输入框一致的三档（craft/ask/plan；workflow 由工作流编辑器驱动，不作为手选项）
+  var CHAT_MODE_FALLBACK = [
+    { id: 'craft', label: 'Craft', description: '完整工具访问，可直接修改代码和执行命令' },
+    { id: 'ask', label: 'Ask', description: '只读工具访问，提供技术解答和建议' },
+    { id: 'plan', label: 'Plan', description: '只读探索 + 任务拆解' },
+  ];
+
+  /**
+   * 给 VsSaros 返回的模式 id 配上本地文案。
+   * VsSaros 只给 id（契约是 id，标签在客户端）；缺标签时退回 id 本身，不至于显示空白。
+   */
+  function mergeChatModeLabels(list) {
+    if (!Array.isArray(list) || list.length === 0) return CHAT_MODE_FALLBACK;
+    return list.map(function (m) {
+      var id = m && m.id ? String(m.id) : '';
+      var known = CHAT_MODE_FALLBACK.filter(function (f) { return f.id === id; })[0];
+      return {
+        id: id,
+        label: (m && m.label) || (known && known.label) || id,
+        description: (m && m.description) || (known && known.description) || '',
+      };
+    }).filter(function (m) { return !!m.id; });
+  }
+
+  /** 空选项文案（列表为空 / 老版本 VsSaros 时不能留一个空白下拉让人困惑）。 */
+  function fillSelect(sel, items, value, emptyLabel) {
+    if (!sel) return;
+    if (!items.length) {
+      sel.innerHTML = '<option value="">' + esc(emptyLabel) + '</option>';
+      sel.disabled = true;
+      return;
+    }
+    sel.disabled = false;
+    sel.innerHTML = items.map(function (it) {
+      var label = it.label || it.name || it.id;
+      if (it.extra) label += ' · ' + it.extra;
+      return '<option value="' + esc(it.id) + '">' + esc(label) + '</option>';
+    }).join('');
+    if (value) sel.value = value;
+  }
+
+  async function loadChatContext() {
+    var ctx = null;
+    try { ctx = await rpc('chat.context', {}); } catch (err) { ctx = null; }
+    var degraded = !ctx || ctx.degraded === true;
+    state.chatContext = {
+      degraded: degraded,
+      // VsSaros 只给 id（标签是客户端的事）⇒ 按 id 映射回本地文案；未知 id 退回原样显示
+      error: (ctx && ctx.error) || '',
+      chatModes: mergeChatModeLabels(ctx && Array.isArray(ctx.chatModes) ? ctx.chatModes : []),
+      agents: (ctx && Array.isArray(ctx.agents)) ? ctx.agents : [],
+      workspaces: (ctx && Array.isArray(ctx.workspaces)) ? ctx.workspaces : [],
+      worktrees: (ctx && Array.isArray(ctx.worktrees)) ? ctx.worktrees : [],
+      workspaceId: (ctx && ctx.workspaceId) || '',
+      selection: (ctx && ctx.selection) || null,
+    };
+    // 默认选第一个 agent / 活动工作区（与桌面端"当前值"对齐）
+    if (!state.chatContext.agentId && state.chatContext.agents.length) {
+      state.chatContext.agentId = state.chatContext.agents[0].id;
+    }
+    if (!state.chatContext.workspaceId && state.chatContext.workspaces.length) {
+      state.chatContext.workspaceId = state.chatContext.workspaces[0].id;
+    }
+    renderChatContext();
+  }
+
+  function renderChatContext() {
+    var c = state.chatContext;
+    fillSelect(el.chatAgent, c.agents.map(function (a) {
+      return { id: a.id, label: a.name || a.id };
+    }), c.agentId, '（VsSaros 暂无 Agent）');
+    fillSelect(el.chatWorkspace, c.workspaces.map(function (w) {
+      return { id: w.id, label: w.name || w.id, extra: w.worktreeBranch || '' };
+    }), c.workspaceId, '（VsSaros 暂无工作区）');
+    // worktree：主仓库用空值表示（与桌面端契约一致：列表只含"主仓库之外"的 worktree）
+    fillSelect(el.chatWorktree, [{ id: '', label: '主仓库' }].concat(c.worktrees.map(function (t) {
+      return { id: t.path, label: t.branch || t.path, extra: t.uncommitted ? t.uncommitted + ' 改动' : '' };
+    })), state.chatContext.worktreePath || '', '主仓库');
+    renderChatModes();
+    renderChatCtxHint();
+  }
+
+  function renderChatModes() {
+    if (!el.chatModes) return;
+    var modes = state.chatContext.chatModes;
+    el.chatModes.innerHTML = modes.map(function (m) {
+      return '<button type="button" class="chat-mode' + (m.id === state.chatMode ? ' active' : '')
+        + '" data-mode="' + esc(m.id) + '" title="' + esc(m.description || '') + '">' + esc(m.label || m.id) + '</button>';
+    }).join('');
+  }
+
+  function renderChatCtxHint() {
+    if (!el.chatCtxHint) return;
+    var c = state.chatContext;
+    if (c.degraded) {
+      // 带上原因：这行文字要能直接回答「为什么 Agent/工作区是空的」
+      el.chatCtxHint.textContent = '没读到 VsSaros 的工作区/Agent 列表：' + (c.error || '会话桥不可用')
+        + ' —— 模式仍可用；请确认 VsSaros 已重新编译到包含 sarosPocket.getChatContext 的版本。';
+      el.chatCtxHint.className = 'chat-ctx-hint warn';
+      return;
+    }
+    var ws = c.workspaces.filter(function (w) { return w.id === c.workspaceId; })[0];
+    var parts = [];
+    if (ws) parts.push(ws.name || ws.id);
+    if (c.worktreePath) parts.push('worktree: ' + (c.worktreePath.split(/[\\/]/).pop() || c.worktreePath));
+    if (state.modelId) {
+      var model = (state.models || []).filter(function (m) { return m.id === state.modelId; })[0];
+      if (model) parts.push(model.name || model.id);
+    }
+    var mode = c.chatModes.filter(function (m) { return m.id === state.chatMode; })[0];
+    if (mode) parts.push(mode.label);
+    el.chatCtxHint.textContent = parts.join(' · ');
+    el.chatCtxHint.className = 'chat-ctx-hint';
+  }
+
+  /** 随每条消息下发的上下文（模式 + agent + 工作区 + worktree）。 */
+  function chatContextPayload() {
+    var c = state.chatContext;
+    return {
+      chatMode: state.chatMode,
+      agentId: c.agentId || '',
+      workspaceId: c.workspaceId || '',
+      worktreePath: c.worktreePath || '',
+    };
+  }
+
+  /** 把选择**真的落到 VsSaros**（切工作区 / 写 worktree 绑定 / 写模型选择）；失败只提示，不拦操作。 */
+  function pushChatContext() {
+    rpc('chat.context.set', chatContextPayload()).catch(function (err) {
+      toast('上下文没能写到 VsSaros：' + (err.message || err));
+    });
+  }
+
   async function loadModels() {
     try {
       var models = await rpc('chat.models', {});
@@ -218,12 +388,14 @@
     }
     if (state.models.length === 0) {
       el.modelSelect.innerHTML = '<option value="">（没有可用模型，用「交给 Agent」）</option>';
+      renderChatCtxHint();
       return;
     }
     el.modelSelect.innerHTML = state.models.map(function (m) {
       return '<option value="' + esc(m.id) + '">' + esc(m.name || m.id) + '</option>';
     }).join('');
     state.modelId = el.modelSelect.value;
+    renderChatCtxHint(); // 上下文摘要里带上模型名
   }
 
   // ---------- 文件 ----------
@@ -322,20 +494,37 @@
     if (!el.sessionList) return;
     var list = state.sessions || [];
     if (list.length === 0) {
-      el.sessionList.innerHTML = '<div class="empty">还没有会话。发一条消息或交给 Agent 试试。</div>';
+      var degraded = state.sessionDiag && state.sessionDiag.ok === false;
+      if (state.sessionFilter === 'archived') {
+        el.sessionList.innerHTML = '<div class="empty">还没有已归档的会话。</div>';
+      } else if (degraded) {
+        // ★ 「列表空」有两种成因，必须分开说：命令不可用（版本/异常）vs 真的没有会话
+        el.sessionList.innerHTML = '<div class="empty">'
+          + '没能读到 VsSaros 的会话列表 —— ' + esc(state.sessionDiag.error || '会话桥不可用') + '。<br>'
+          + '这里显示的是 Pocket 自己记录的会话。请确认 VsSaros 已重启到包含 <code>sarosPocket.listSessions</code> 的版本；'
+          + '细节见 VsSaros「输出 → Saros Pocket」里的会话桥日志。</div>';
+      } else {
+        el.sessionList.innerHTML = '<div class="empty">VsSaros 里还没有会话。在电脑上开一个 Agent 会话，或直接发一条消息试试。</div>';
+      }
       return;
     }
     el.sessionList.innerHTML = list.map(function (s) {
-      var meta = (s.kind === 'agent' ? 'Agent' : '对话') + ' · ' + timeAgo(s.updatedAt || s.startedAt);
+      // 列表里混着 VsSaros 真实会话与本地影子会话 ⇒ meta 要能一眼分辨
+      var meta = (s.archived ? '已归档 · ' : '')
+        + (s.kind === 'agent' ? 'Agent' : '对话')
+        + (s.sessionType ? '（' + s.sessionType + '）' : '')
+        + ' · ' + timeAgo(s.updatedAt || s.startedAt);
       if (s.error) meta += ' · ' + esc(s.error);
-      // 真实 VsSaros 会话才有「继续/结束」：影子会话没有上游实体，操作会失败
+      // 真实 VsSaros 会话才有「继续/结束」：影子会话没有上游实体，操作会失败。
+      // 已归档的会话不再给「结束」（它就是归档态），保留「继续」以便重新激活。
       var actions = s.real
         ? '<div class="session-actions">'
         + '<button class="ghost small session-send" type="button">继续</button>'
-        + '<button class="ghost small session-archive" type="button">结束</button>'
+        + (s.archived ? '' : '<button class="ghost small session-archive" type="button">结束</button>')
         + '</div>'
         : '';
-      return '<div class="session" data-id="' + esc(s.id) + '" data-real="' + (s.real ? '1' : '') + '">'
+      return '<div class="session" data-id="' + esc(s.id) + '" data-real="' + (s.real ? '1' : '') + '"'
+        + (s.archived ? ' data-archived="1"' : '') + '>'
         + '<div class="session-top">'
         + '<div class="session-title">' + esc(s.title) + '</div>'
         + '<span class="badge ' + esc(s.status) + '">' + esc(statusLabel(s.status)) + '</span>'
@@ -375,17 +564,60 @@
   async function loadSessions() {
     if (!el.sessionList) return;
     try {
-      var out = await rpc('sessions.list', {
-        status: state.sessionFilter === 'all' ? undefined : state.sessionFilter,
-        limit: 50,
-      });
+      // 「已归档」是单独的视图（VsSaros 的归档 = Pocket 的「结束」，默认收起）
+      var query = state.sessionFilter === 'archived'
+        ? { archived: true, limit: 200 }
+        : { status: state.sessionFilter === 'all' ? undefined : state.sessionFilter, limit: 200 };
+      var out = await rpc('sessions.list', query);
       state.sessions = out.sessions || [];
+      state.archivedCount = typeof out.archivedCount === 'number' ? out.archivedCount : 0;
+      state.sessionSource = out.source || '';
+      state.sessionDiag = out.diag || null;
     } catch (err) {
       state.sessions = [];
       if (el.sessionList) el.sessionList.innerHTML = '<div class="empty">' + esc(err.message) + '</div>';
       return;
     }
+    renderArchivedChip();
+    renderSessionDiag();
     renderSessions();
+  }
+
+  /**
+   * 会话桥诊断提示：命令不可用时在列表上方留一行（**即使列表有内容也显示** ——
+   * 那种情况下用户看到的是"只有 Pocket 自己记的会话"，同样需要知道原因）。
+   */
+  function renderSessionDiag() {
+    if (!el.sessionDiag) return;
+    var d = state.sessionDiag;
+    var degraded = d && d.ok === false;
+    if (!degraded) {
+      el.sessionDiag.classList.add('hidden');
+      el.sessionDiag.textContent = '';
+      return;
+    }
+    el.sessionDiag.textContent = 'VsSaros 会话桥不可用：' + (d.error || '未知原因')
+      + '（列表可能只显示 Pocket 自己记录的会话）';
+    el.sessionDiag.classList.remove('hidden');
+  }
+
+  /** 「已归档」芯片：只有真的存在归档会话时才出现（点进去空的入口比没有更糟）。 */
+  function renderArchivedChip() {
+    if (!el.sessionChips) return;
+    var chip = el.sessionChips.querySelector('[data-status="archived"]');
+    if (!chip) return;
+    var has = (state.archivedCount || 0) > 0;
+    chip.classList.toggle('hidden', !has);
+    chip.textContent = has ? '已归档 ' + state.archivedCount : '已归档';
+    // 停在归档视图里、但它已经空了 → 退回「全部」，避免看起来像"空了/坏了"
+    if (!has && state.sessionFilter === 'archived') {
+      state.sessionFilter = 'all';
+      var all = el.sessionChips.querySelector('[data-status="all"]');
+      Array.prototype.forEach.call(el.sessionChips.querySelectorAll('.chip'), function (c) {
+        c.classList.toggle('active', c === all);
+      });
+      loadSessions().catch(function () { /* 下一次刷新会自愈 */ });
+    }
   }
 
   /** 点会话 → 切到「当前会话」页并聚焦它。 */
@@ -408,6 +640,11 @@
     if (name === 'inbox') loadSessions().catch(function (e) { toast(e.message); });
     if (name === 'files' && !el.entries.childElementCount) loadDir('').catch(function (e) { toast(e.message); });
     if (name === 'status') { loadStatus(); renderEvents(); }
+    // 聊天页首次进入时拉一次上下文（Agent / 工作区 / worktree / 可用模式）
+    if (name === 'chat' && !state.chatContextLoaded) {
+      state.chatContextLoaded = true;
+      loadChatContext().catch(function () { /* 头部会显示降级提示 */ });
+    }
     if (name === 'changes') loadChanges().catch(function (e) { toast(e.message); });
     if (name === 'screen') startScreen().catch(function (e) { if (el.screenStatus) el.screenStatus.textContent = e.message; });
   }
@@ -415,19 +652,69 @@
   // ---------- 屏幕：远程看 VsSaros.exe 的 UI ----------
   // 画面走 MJPEG（<img> 直接渲染 multipart/x-mixed-replace）；
   // 个别浏览器不支持 multipart 时自动降级为「按帧拉 screen.jpg + blob」的轮询。
+  // 观看端「愿意发键鼠」的偏好：**默认开**（用户要求：打开就能远程操控），
+  // 但用户亲手关掉后要**记住**（localStorage）—— 默认开不等于"每次偷偷打开"。
+  // ★ 必须定义在 screenState **之前**：`var` 不会提升赋值，写在后面的话
+  //   `readInputOptIn()` 里的键名会是 undefined，读到 null ⇒ 永远回默认开（真被这个坑到过）。
+  var INPUT_OPTIN_KEY = 'sarosPocket.screenInputOptIn';
+  function readInputOptIn() {
+    try { var v = localStorage.getItem(INPUT_OPTIN_KEY); return v === null ? true : v === '1'; } catch (e) { return true; }
+  }
+  function writeInputOptIn(on) {
+    try { localStorage.setItem(INPUT_OPTIN_KEY, on ? '1' : '0'); } catch (e) { /* 隐私模式等：忽略 */ }
+  }
+
   var screenState = {
     mode: 'window', fps: 4, scale: 0.5,
     loaded: false, polling: false, lastBlob: null,
     loadTimer: null, pollTimer: null, statusTimer: null,
-    inputOn: false, inputSupported: false, supported: false,
+    // 远程操作分两层，别混：
+    //   inputSupported 主机端**能不能**转发键鼠（仅 Windows）
+    //   inputAllowed   主机端**是否允许**（sarosPocket.allowDesktopInput，电脑上改，默认已开）
+    //   inputOptIn     本机（这台手机）**是否愿意**发键鼠 —— **默认开**，但用户关掉后要记住
+    // ★ 旧实现把「主机已允许」直接当成开关的选中态、并用它决定 disabled，
+    //   于是主机没允许时开关既点不动、也不说为什么（用户反馈「远程操作无法开启」）。
+    inputSupported: false, inputAllowed: false, inputOptIn: readInputOptIn(),
+    supported: false, pseudoFull: false,
     lastFrames: 0, lastFramesAt: 0, fps: '',
   };
+
+  /** 当前是否真的会把键鼠发到电脑：主机允许 + 本机已开启。 */
+  function inputActive() {
+    return screenState.inputAllowed === true && screenState.inputOptIn === true;
+  }
+
+  /** 同步远程操作区的可用态与说明文字（主机未允许时给出「去哪开」的可操作指引）。 */
+  function updateScreenInputUI() {
+    var allowed = screenState.inputAllowed === true;
+    if (el.screenInputOn) {
+      el.screenInputOn.disabled = !allowed;
+      el.screenInputOn.checked = allowed && screenState.inputOptIn === true;
+    }
+    // ★ 「远程操作中」必须看得见：默认开启后，用户不该在不知情时把键鼠发到电脑。
+    //   画面上贴一个常显标识（全屏时也在），比只在设置区写一行字可靠得多。
+    if (el.screenInputBadge) {
+      el.screenInputBadge.classList.toggle('hidden', !inputActive());
+    }
+    if (!el.screenInputNote) return;
+    if (!allowed) {
+      el.screenInputNote.textContent = '电脑端还没允许远程操作：在 VsSaros 的插件页 → 桌面画面 → 打开「Allow Desktop Input」，然后点「重新检测」。';
+      el.screenInputNote.className = 'screen-inputnote warn';
+    } else if (screenState.inputOptIn) {
+      el.screenInputNote.textContent = '已开启（默认）：点击 / 滚轮 / 键盘会发到电脑，画面左上角有「远程操作中」。不需要时关掉这个开关。';
+      el.screenInputNote.className = 'screen-inputnote';
+    } else {
+      el.screenInputNote.textContent = '已按你的设置关闭。打开上面的开关后，点击 / 滚轮 / 键盘才会发到电脑。';
+      el.screenInputNote.className = 'screen-inputnote';
+    }
+  }
 
   function setScreenHint(text) {
     if (el.screenStatus) el.screenStatus.textContent = text;
   }
 
   function stopScreen() {
+    if (isScreenFull()) exitScreenFull();
     if (screenState.loadTimer) { clearTimeout(screenState.loadTimer); screenState.loadTimer = null; }
     if (screenState.pollTimer) { clearTimeout(screenState.pollTimer); screenState.pollTimer = null; }
     if (screenState.statusTimer) { clearInterval(screenState.statusTimer); screenState.statusTimer = null; }
@@ -487,13 +774,10 @@
       var st = await rpc('desktop.status', {});
       screenState.supported = st.supported === true;
       screenState.inputSupported = st.inputSupported === true;
-      screenState.inputOn = st.inputAllowed === true;
+      // 主机端允许与否（每 4s 刷新 ⇒ 电脑上改完设置，手机上最多 4s 就能打开开关）
+      screenState.inputAllowed = st.inputAllowed === true;
       if (el.screenInputBar) el.screenInputBar.classList.toggle('hidden', !screenState.inputSupported);
-      // 主机端没开 allowDesktopInput → 复选框禁用并复位（前端不假装能操作）
-      if (el.screenInputOn) {
-        el.screenInputOn.checked = screenState.inputOn;
-        el.screenInputOn.disabled = !screenState.inputOn;
-      }
+      updateScreenInputUI();
       // 实测帧率：用服务端累计帧数做差（客户端数不了 MJPEG 的帧）
       if (typeof st.frames === 'number') {
         var now = Date.now();
@@ -529,6 +813,7 @@
     // 支持采集 → 先下发参数（含观看端宽度上限）再起流；不支持就直接试一次（服务端会给 503 文案）
     if (screenState.supported) await applyScreenConfig();
     else startMjpeg();
+    fitScreenImage(); // 首帧到达前先按当前（无尺寸）算一次没关系，load 后还会再算
     if (screenState.statusTimer) clearInterval(screenState.statusTimer);
     screenState.statusTimer = setInterval(refreshScreenStatus, 4000);
   }
@@ -554,10 +839,51 @@
     }
   }
 
-  /** 图像上的点击/滚轮 → 归一化坐标（0~1）→ 主机侧映射回屏幕绝对坐标。 */
+  /**
+   * 把画面**铺满**可用区域（保持比例，只在比例不一致的那一侧留黑边）。
+   *
+   * 为什么必须自己算尺寸：`object-fit` 只在「盒子尺寸 ≠ 图片自身尺寸」时才起作用 ——
+   * 早先样式里只写了 `max-width/max-height:100%` + `object-fit:contain`，盒子等于图片的像素尺寸，
+   * 于是画面按**帧的像素 1:1** 显示：帧分辨率 = 观看端宽度 × 质量系数（默认 0.5），
+   * 桌面浏览器（DPR=1）下就正好是半宽 ⇒ 全屏后画面只占中间一小块、四周全黑（用户报的「没有真正全屏」）。
+   *
+   * 显示尺寸与传输分辨率因此**解耦**：这里只决定「画多大」，帧分辨率仍由「质量」下拉决定（省流量）。
+   * 注意：尺寸直接写在 `img` 盒子上（不用 transform / 不用 letterbox），点击坐标换算才能继续用盒子矩形。
+   */
+  function fitScreenImage() {
+    var wrap = el.screenWrap, img = el.screenImg;
+    if (!wrap || !img) return;
+    var nw = img.naturalWidth || 0, nh = img.naturalHeight || 0;
+    if (!nw || !nh) return;                       // 还没有首帧，无从计算
+    var availW = wrap.clientWidth, availH = wrap.clientHeight;
+    if (!availW || !availH) return;               // 不可见（比如切到别的页签）
+    var scale = Math.min(availW / nw, availH / nh);
+    var w = Math.max(1, Math.round(nw * scale));
+    var h = Math.max(1, Math.round(nh * scale));
+    if (img.__fitW === w && img.__fitH === h) return;  // 每帧都会触发 load，别反复写样式
+    img.__fitW = w; img.__fitH = h;
+    img.style.width = w + 'px';
+    img.style.height = h + 'px';
+  }
+
+  /**
+   * 图像上的点击/滚轮 → 归一化坐标（0~1）→ 主机侧映射回屏幕绝对坐标。
+   *
+   * ★ 按「**画面实际占的那块内容区**」算，而不是盒子矩形：盒子可能比画面大
+   * （`max-width/max-height` 夹住、或样式兜底给了 `object-fit:contain`），
+   * 那时用盒子算会把坐标算偏 —— 远程点击就点错地方。
+   */
   function screenPoint(ev) {
-    var r = el.screenImg.getBoundingClientRect();
-    return { x: (ev.clientX - r.left) / r.width, y: (ev.clientY - r.top) / r.height };
+    var img = el.screenImg;
+    var r = img.getBoundingClientRect();
+    var nw = img.naturalWidth || r.width, nh = img.naturalHeight || r.height;
+    var s = Math.min(r.width / nw, r.height / nh);   // object-fit: contain
+    var w = nw * s, h = nh * s;
+    var left = r.left + (r.width - w) / 2, top = r.top + (r.height - h) / 2;
+    return {
+      x: Math.min(1, Math.max(0, (ev.clientX - left) / w)),
+      y: Math.min(1, Math.max(0, (ev.clientY - top) / h)),
+    };
   }
 
   async function sendDesktopInput(action) {
@@ -567,6 +893,95 @@
       toast(err.message);
     }
   }
+
+  // ---------- 全屏 ----------
+  // 为什么需要两条路：桌面浏览器有 Fullscreen API，但**原生壳（Capacitor WebView）**
+  // 与 iOS Safari 对「普通元素」全屏要么不支持、要么 `requestFullscreen()` 存在却什么都不做
+  // （Android WebView 需要宿主实现 onShowCustomView；iOS 只支持 video 元素）。
+  // 旧实现只调 API、且没有失败兜底 ⇒ 手机上点「全屏」毫无反应（用户反馈）。
+  // 现在：先试 API，**用 document.fullscreenElement 校验是否真的生效**，没生效就退回
+  // 「CSS 伪全屏」（把画面区 position:fixed 铺满 + 右上角「退出全屏」）。
+  function isScreenFull() {
+    var doc = document;
+    return !!(doc.fullscreenElement === el.screenWrap || doc.webkitFullscreenElement === el.screenWrap)
+      || screenState.pseudoFull === true;
+  }
+
+  /** 原生壳里顺手收起系统状态栏（没有 Capacitor 就静默跳过，不影响网页端）。 */
+  function hideNativeStatusBar(hide) {
+    try {
+      var plugins = window.Capacitor && window.Capacitor.Plugins;
+      var sb = plugins && plugins.StatusBar;
+      if (sb && typeof sb.hide === 'function' && typeof sb.show === 'function') {
+        (hide ? sb.hide() : sb.show()).catch(function () { /* 忽略 */ });
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  function setPseudoFull(on) {
+    screenState.pseudoFull = on === true;
+    if (el.screenWrap) el.screenWrap.classList.toggle('pseudo-fullscreen', screenState.pseudoFull);
+    hideNativeStatusBar(screenState.pseudoFull);
+    updateFullUI();
+    // 可用区域变了（铺满整个视口）⇒ 重算画面尺寸，下一帧再算（等布局落定）
+    requestAnimationFrame(fitScreenImage);
+  }
+
+  function updateFullUI() {
+    var on = isScreenFull();
+    if (el.screenFull) el.screenFull.textContent = on ? '退出全屏' : '全屏';
+    if (el.screenExit) el.screenExit.classList.toggle('hidden', !on);
+  }
+
+  /** API 调了但没生效（WebView 常见）→ 退回伪全屏。 */
+  function verifyFullscreen() {
+    if (screenState.pseudoFull) return;
+    if (document.fullscreenElement !== el.screenWrap && document.webkitFullscreenElement !== el.screenWrap) {
+      setPseudoFull(true);
+    } else {
+      updateFullUI();
+    }
+  }
+
+  function exitScreenFull() {
+    if (screenState.pseudoFull) { setPseudoFull(false); return; }
+    var doc = document;
+    var exit = doc.exitFullscreen || doc.webkitExitFullscreen;
+    if (isScreenFull() && exit) {
+      try { exit.call(doc); } catch (e) { /* 忽略 */ }
+    }
+    updateFullUI();
+  }
+
+  function toggleScreenFull() {
+    var node = el.screenWrap;
+    if (!node) return;
+    if (isScreenFull()) { exitScreenFull(); return; }
+    var req = node.requestFullscreen || node.webkitRequestFullscreen;
+    if (!req) { setPseudoFull(true); return; }
+    try {
+      var p = req.call(node, { navigationUI: 'hide' });
+      if (p && typeof p.then === 'function') {
+        p.then(function () { setTimeout(verifyFullscreen, 80); }, function () { setPseudoFull(true); });
+      } else {
+        setTimeout(verifyFullscreen, 150);
+      }
+    } catch (e) {
+      setPseudoFull(true);
+    }
+  }
+
+  function onFullscreenChange() {
+    updateFullUI();
+    // 进/退全屏后可用区域变化 ⇒ 画面要重新铺满（真全屏由浏览器改布局，会晚一拍）
+    requestAnimationFrame(fitScreenImage);
+  }
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+  // 伪全屏下没有浏览器的 Esc 退出，自己接一下（真全屏由浏览器处理）
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && screenState.pseudoFull) exitScreenFull();
+  });
 
   /** 变更页：文件清单 + 按需展开的 diff 文本（files.diff 驱动）。 */
   var changesState = { files: [], source: '', repoRoot: '' };
@@ -672,7 +1087,46 @@
     el.input.style.height = 'auto';
     el.input.style.height = Math.min(el.input.scrollHeight, 120) + 'px';
   });
-  el.modelSelect.addEventListener('change', function () { state.modelId = el.modelSelect.value; });
+  el.modelSelect.addEventListener('change', function () {
+    state.modelId = el.modelSelect.value;
+    renderChatCtxHint();
+  });
+
+  // 聊天上下文头部：改选即写回 VsSaros（切工作区 / 写 worktree 绑定），摘要行同步刷新
+  if (el.chatAgent) {
+    el.chatAgent.addEventListener('change', function () {
+      state.chatContext.agentId = el.chatAgent.value;
+      renderChatCtxHint();
+      pushChatContext();
+    });
+  }
+  if (el.chatWorkspace) {
+    el.chatWorkspace.addEventListener('change', function () {
+      state.chatContext.workspaceId = el.chatWorkspace.value;
+      // 换工作区后 worktree 列表会变 ⇒ 退回主仓库，等下次拉上下文时再给新列表
+      state.chatContext.worktreePath = '';
+      if (el.chatWorktree) el.chatWorktree.value = '';
+      renderChatCtxHint();
+      pushChatContext();
+      loadChatContext().catch(function () { /* 保持现状 */ });
+    });
+  }
+  if (el.chatWorktree) {
+    el.chatWorktree.addEventListener('change', function () {
+      state.chatContext.worktreePath = el.chatWorktree.value;
+      renderChatCtxHint();
+      pushChatContext();
+    });
+  }
+  if (el.chatModes) {
+    el.chatModes.addEventListener('click', function (e) {
+      var btn = e.target.closest ? e.target.closest('.chat-mode') : null;
+      if (!btn || !btn.dataset.mode) return;
+      state.chatMode = btn.dataset.mode;
+      renderChatModes();
+      renderChatCtxHint();
+    });
+  }
 
   el.entries.addEventListener('click', function (e) {
     var node = e.target.closest ? e.target.closest('.entry') : null;
@@ -737,34 +1191,43 @@
       }
     });
     el.screenImg.addEventListener('click', function (ev) {
-      if (!screenState.inputOn) return;
+      if (!inputActive()) return;
       var p = screenPoint(ev);
       sendDesktopInput({ type: 'click', x: p.x, y: p.y });
     });
     el.screenImg.addEventListener('wheel', function (ev) {
-      if (!screenState.inputOn) return;
+      if (!inputActive()) return;
       ev.preventDefault();
       var p = screenPoint(ev);
       sendDesktopInput({ type: 'wheel', x: p.x, y: p.y, delta: ev.deltaY > 0 ? -120 : 120 });
     }, { passive: false });
     el.screenImg.addEventListener('dblclick', function (ev) {
-      if (!screenState.inputOn) return;
+      if (!inputActive()) return;
       var p = screenPoint(ev);
       sendDesktopInput({ type: 'dblclick', x: p.x, y: p.y });
     });
     // 长按/右键：手机上没有右键，用 contextmenu（长按即可触发）
     el.screenImg.addEventListener('contextmenu', function (ev) {
       ev.preventDefault();
-      if (!screenState.inputOn) return;
+      if (!inputActive()) return;
       var p = screenPoint(ev);
       sendDesktopInput({ type: 'click', x: p.x, y: p.y, button: 'right' });
     });
-    el.screenFull.addEventListener('click', function () {
-      var node = el.screenWrap;
-      if (!node) return;
-      if (document.fullscreenElement) document.exitFullscreen();
-      else if (node.requestFullscreen) node.requestFullscreen().catch(function () { toast('全屏被浏览器拒绝'); });
-    });
+    el.screenFull.addEventListener('click', function () { toggleScreenFull(); });
+    if (el.screenExit) el.screenExit.addEventListener('click', function () { exitScreenFull(); });
+    // 画面铺满：首帧到达（MJPEG 与轮询两种取帧方式都会触发 load）、窗口/方向变化时重算
+    // （不重算就会按帧的像素 1:1 显示 —— 全屏后画面只占中间一小块，见 fitScreenImage 注释）
+    el.screenImg.addEventListener('load', fitScreenImage);
+    window.addEventListener('resize', fitScreenImage);
+    window.addEventListener('orientationchange', function () { setTimeout(fitScreenImage, 120); });
+    if (el.screenInputRecheck) {
+      el.screenInputRecheck.addEventListener('click', function () {
+        toast('重新检测…');
+        refreshScreenStatus().then(function () {
+          toast(screenState.inputAllowed ? '电脑端已允许远程操作' : '电脑端仍未允许');
+        });
+      });
+    }
     Array.prototype.forEach.call(el.screenInputBar.querySelectorAll('[data-key]'), function (b) {
       b.addEventListener('click', function () { sendDesktopInput({ type: 'key', key: b.dataset.key }); });
     });
@@ -776,13 +1239,22 @@
       sendDesktopInput({ type: 'text', text: text });
     });
     el.screenInputOn.addEventListener('change', function () {
-      screenState.inputOn = el.screenInputOn.checked === true;
-      if (screenState.inputOn && !screenState.inputSupported) {
-        screenState.inputOn = false;
-        el.screenInputOn.checked = false;
+      // 主机没允许 → 开关不可用，直接说明原因（不要静默把用户的操作吞掉）
+      if (el.screenInputOn.checked && screenState.inputAllowed !== true) {
+        screenState.inputOptIn = false;
+        updateScreenInputUI();
+        toast('电脑端还没允许远程操作，请先在 VsSaros 插件页打开 Allow Desktop Input');
+        return;
+      }
+      screenState.inputOptIn = el.screenInputOn.checked === true;
+      if (screenState.inputOptIn && screenState.inputSupported !== true) {
+        screenState.inputOptIn = false;
         toast('主机端不支持桌面输入（仅 Windows）');
       }
+      writeInputOptIn(screenState.inputOptIn); // 记住用户的选择（默认开，但关掉就别再自动打开）
+      updateScreenInputUI();
     });
+    updateScreenInputUI();
   }
 
   // 收件箱交互
@@ -898,6 +1370,9 @@
     var hash = (location.hash || '').replace(/^#/, '');
     if (hash) switchTab(hash);
   }
+
+  // 打开即摘掉地址栏里的 ?token=<访问密码>（cookie 已由响应头种下，见 stripTokenFromAddressBar）
+  stripTokenFromAddressBar();
 
   if (BASE) {
     start();

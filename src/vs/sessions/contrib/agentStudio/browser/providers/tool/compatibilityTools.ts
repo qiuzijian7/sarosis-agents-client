@@ -35,6 +35,7 @@ import { sensitiveWriteRejection } from './sensitivePaths.js';
 import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 import { computePatch } from '../../../common/patchMatcher.js';
 import { shellApprovalGuidance } from '../../../common/shellCommandSafety.js';
+import { isPiKernelEnabled } from '../../piLoop/piTurnKernel.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { ICheckpointService } from '../../../common/checkpointService.js';
 import { encodeBase64, decodeBase64 } from '../../../../../../base/common/buffer.js';
@@ -67,9 +68,19 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 
 		// read_skill / list_skills 已在 _registerSkillTools 中注册
 
-	// ── switch_paradigm: 运行时切换 AgentLoop 范式（turn 边界生效）─────────
-	// 写入 per-agent 范式覆盖；主循环每次 resolve 策略与注入策略提示词时优先
+	// ── switch_paradigm: 运行时切换 AgentLoop 范式（turn 边界生效；**仅 legacy 路径可用**）──
+	// 写入 per-agent 范式覆盖；legacy 主循环每次 resolve 策略与注入策略提示词时优先
 	// 读取覆盖值。切换只在下一 turn 生效（策略/预算本就 per-turn 创建，无中间态）。
+	// ⚠ 2026-09-21 更正：此处原写「pi 内核已原生管理范式/策略切换（kernel 侧接管）」——**不实**。
+	// pi 路径**没有范式机制**：piTurnKernel.ts:22 自述「范式在 pi 路径不存在 ⇒ 无恢复对象」，
+	// 且 piLoop/ 全目录对 paradigm 仅此一处（注释）命中、也没有 mimo 的「任务板 DB-truth 停止门」
+	// （piLoop 搜 kanban/taskBoard/mimo 唯一命中是 turnStopGate 的 ping-pong 分类器，与 mimo 无关），
+	// agentOSService 里 paradigm 0 处。⇒ E2 翻转默认值后本工具**不再注册**、模型不可见；
+	// 范式在 pi 路径只剩 getStrategyGuidance 注进系统提示词的**文案**
+	// （agentDriverService.ts:914：override ?? agent.paradigm）⇒ 存在「提示词承诺 ≠ 行为」的错配
+	// （正是下方 R4 注释警告的形态：mimo 文案宣称"结束前检查任务板"，内核并不实现该门）。
+	// 若将来在 pi 内核补出等价机制，再移除本门控；否则应考虑从产品面正式下线范式概念。
+	if (!isPiKernelEnabled()) {
 	ctx.register({
 		definition: {
 			name: 'switch_paradigm',
@@ -112,11 +123,14 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			);
 		},
 	});
+	}
 
 	// ── plan_register: 注册有序任务队列（方案1：调研 → 拆任务 → 依次执行）────
 	// 与 update_plan 的区别：update_plan 是软追踪（仅 UI 卡片，不回读）；
 	// plan_register 把任务写入当前 turn 的执行队列 —— 主循环在每轮无工具调用时
 	// 自动推进队列并注入 CURRENT TASK 提醒，形成强引导的依次执行。
+	// pi 内核已原生提供有序任务队列，此处不再注册 legacy 工具。
+	if (!isPiKernelEnabled()) {
 	ctx.register({
 		definition: {
 			name: 'plan_register',
@@ -166,6 +180,7 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			return text(`✅ Registered ${tasks.length} tasks for sequential execution. The queue auto-advances when you finish each task and stop calling tools.\n\n${reminder}`);
 		},
 	});
+	}
 
 	// ── update_plan: LLM 自主规划（对齐 OpenClaw update_plan）─────────
 	// 极简模型：LLM 传入完整步骤列表（替换语义），系统仅校验约束。

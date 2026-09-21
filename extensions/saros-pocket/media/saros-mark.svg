@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="SAROASIS mark">
+  <!-- SAROASIS 方形 mark（白底 + 橙描边）。
+       与 VsSaros 的 src/vs/sessions/browser/media/sessions-logo-dark.svg 几何完全一致，
+       仅多一条 1px 的 #D3D1C7 描边 —— 纯白圆角块在白底（插件卡片 / 商城 / 浅色 Dock）上
+       没有边界，加这条描边才看得出形状。
+       media/icon.png 与 app/apple-touch-icon.png 都由本文件渲染（命令见 README「品牌资源」）。 -->
+  <title>SAROASIS mark (graphic only)</title>
+  <rect width="512" height="512" rx="96" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="1"/>
+  <g fill="none" stroke="#FF5A2E">
+    <g stroke-width="16">
+      <path d="M145.7 169.8 A140 140 0 0 1 366.3 169.8"/>
+      <path d="M366.3 342.2 A140 140 0 0 1 145.7 342.2"/>
+    </g>
+    <circle cx="256" cy="256" r="58" stroke-width="30"/>
+  </g>
+</svg>

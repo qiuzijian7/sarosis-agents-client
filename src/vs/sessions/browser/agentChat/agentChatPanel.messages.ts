@@ -3,6 +3,7 @@ import { markRenderActivity } from '../../../base/common/renderActivityTrace.js'
 // ★ 2026-09-19：用量药丸（耗时 / tokens / 积分）统一走这一入口 —— 此前本文件**手搓 DOM** ✗，
 // 与委派卡的写法分叉（图标相同但类名/标签/冒号宽度不同 ✓）⇒ 用户报「各个位置图标不一致」✓
 import { appendFooterPill, formatCreditAmount, formatTokenCount, PILL_ITEM_CLASS, type FooterPillKind } from './agentChatPanel.footerPills.js';
+import { appendTokenUsagePopup } from './agentChatPanel.tokenPopup.js';
 import { mainWindow } from '../../../base/browser/window.js';
 import { IAgentChatMessage, IToolCall, ITextMessagePart, IThinkingMessagePart, IMessagePart, IConfirmationData, IChatAttachment, CHAT_MODE_UI } from './agentChatTypes.js';
 // ★ 2026-09-19：气泡「复制」需要写 composer 的**富剪贴板**格式（否则粘贴回来 pill 全丢 ✗）。
@@ -2285,98 +2286,11 @@ protected override _createFooter(msg: IAgentChatMessage): HTMLElement {
 			});
 
 			// ── Token 消耗明细 Popup ──
-			const tu = msg.tokenUsage;
-			const cachedRead = tu.cachedRead ?? tu.cached ?? 0;
-			const cacheWrite = tu.cacheWrite ?? 0;
-			const cacheMiss = tu.cacheMiss ?? Math.max(0, tu.input - cachedRead - cacheWrite);
-			const reasoning = tu.reasoning ?? 0;
-			const contentTokens = Math.max(0, tu.output - reasoning);
-			const hitRate = tu.cacheHitRate ?? (tu.input > 0 ? (cachedRead / tu.input) * 100 : 0);
-
-			const popup = append(tokenWrap, $('div.tokens-popup'));
-			// 标题行：左侧 "Token 消耗明细" + 右侧 "总计 X"
-			const titleRow = append(popup, $('div.tokens-popup-header'));
-			append(titleRow, $('span.tokens-popup-title', undefined, 'Token 消耗明细'));
-			const totalEl = append(titleRow, $('span.tokens-popup-total-inline'));
-			append(totalEl, $('span.label', undefined, '总计'));
-			append(totalEl, $('span.value', undefined, tu.total.toLocaleString()));
-			// Provider/Model 行：在标题下方展示本次消耗对应的 provider + modelId，
-			// 便于用户跨模型对比时直接识别（多轮时取最近一轮；tokenUsage 上由累加点注入）
-			if (tu.providerId || tu.model) {
-				const metaRow = append(popup, $('div.tokens-popup-meta'));
-				const metaText = [tu.providerId, tu.model].filter(Boolean).join(' / ');
-				append(metaRow, $('span.meta-label', undefined, '模型'));
-				append(metaRow, $('span.meta-value', undefined, metaText));
-			}
-			// 输入分组
-			const inputGroup = append(popup, $('div.tokens-popup-group'));
-			const inputTitle = append(inputGroup, $('div.tokens-popup-group-title'));
-			append(inputTitle, $('span.group-name', undefined, '输入'));
-			append(inputTitle, $('span.group-value', undefined, tu.input.toLocaleString()));
-			if (cachedRead > 0 || cacheMiss > 0 || cacheWrite > 0) {
-				if (cachedRead > 0) {
-					const row = append(inputGroup, $('div.tokens-popup-sub-row'));
-					append(row, $('span.sub-dot.hit'));
-					append(row, $('span.sub-label', undefined, '缓存命中'));
-					append(row, $('span.sub-value.highlight', undefined, cachedRead.toLocaleString()));
-				}
-				if (cacheMiss > 0) {
-					const row = append(inputGroup, $('div.tokens-popup-sub-row'));
-					append(row, $('span.sub-dot.miss'));
-					append(row, $('span.sub-label', undefined, '缓存未命中'));
-					append(row, $('span.sub-value', undefined, cacheMiss.toLocaleString()));
-				}
-				if (cacheWrite > 0) {
-					const row = append(inputGroup, $('div.tokens-popup-sub-row'));
-					append(row, $('span.sub-dot.write'));
-					append(row, $('span.sub-label', undefined, '缓存写入'));
-					append(row, $('span.sub-value', undefined, cacheWrite.toLocaleString()));
-				}
-			}
-			// 输出分组
-			const outputGroup = append(popup, $('div.tokens-popup-group'));
-			const outputTitle = append(outputGroup, $('div.tokens-popup-group-title'));
-			append(outputTitle, $('span.group-name', undefined, '输出'));
-			append(outputTitle, $('span.group-value', undefined, tu.output.toLocaleString()));
-			if (reasoning > 0 || contentTokens > 0) {
-				if (reasoning > 0) {
-					const row = append(outputGroup, $('div.tokens-popup-sub-row'));
-					append(row, $('span.sub-label', undefined, '思考过程'));
-					append(row, $('span.sub-value', undefined, reasoning.toLocaleString()));
-				}
-				const row = append(outputGroup, $('div.tokens-popup-sub-row'));
-				append(row, $('span.sub-label', undefined, '回复内容'));
-				append(row, $('span.sub-value', undefined, contentTokens.toLocaleString()));
-			}
-			// 缓存命中率（带三段组合进度条：命中绿 + 写入黄 + 未命中红）
-			if (hitRate > 0 || cachedRead > 0) {
-				const hitRateEl = append(popup, $('div.tokens-popup-hit-rate'));
-				const rateHeader = append(hitRateEl, $('div.rate-header'));
-				append(rateHeader, $('span.rate-icon.codicon.codicon-zap'));
-				append(rateHeader, $('span.rate-label', undefined, '缓存命中率'));
-				append(rateHeader, $('span.rate-value', undefined, `${hitRate.toFixed(1)}%`));
-				// 进度条：三段按占 input 比例拼接（与图例配色一致）
-				const bar = append(hitRateEl, $('div.tokens-popup-hit-bar'));
-				if (tu.input > 0) {
-					const hitSeg = append(bar, $('span.seg.hit')) as HTMLElement;
-					hitSeg.style.width = `${(cachedRead / tu.input) * 100}%`;
-					const writeSeg = append(bar, $('span.seg.write')) as HTMLElement;
-					writeSeg.style.width = `${(cacheWrite / tu.input) * 100}%`;
-					const missSeg = append(bar, $('span.seg.miss')) as HTMLElement;
-					missSeg.style.width = `${(cacheMiss / tu.input) * 100}%`;
-				}
-				// 底部图例
-				const legend = append(hitRateEl, $('div.tokens-popup-legend'));
-				const lg1 = append(legend, $('span.legend-item'));
-				append(lg1, $('span.legend-dot.hit'));
-				append(lg1, $('span.legend-label', undefined, '命中'));
-				const lg2 = append(legend, $('span.legend-item'));
-				append(lg2, $('span.legend-dot.write'));
-				append(lg2, $('span.legend-label', undefined, '写入'));
-				const lg3 = append(legend, $('span.legend-item'));
-				append(lg3, $('span.legend-dot.miss'));
-				append(lg3, $('span.legend-label', undefined, '未命中'));
-			}
+			// ★ 2026-09-21：浮层实现抽到 `agentChatPanel.tokenPopup.ts` ✓ ——
+			//   ① 它此前内联在这个 6.3k 行方法里 ⇒ 没法用 DOM 测试锁"格式" ✗；
+			//   ② 用户要求「内容与格式固定」✓ ⇒ 现在由 `agentChatPanel.tokenPopup.test.ts`
+			//      逐行断言（含**零值行也必须在** ✓）。改动请只动那个模块 ✓。
+			appendTokenUsagePopup(tokenWrap, msg.tokenUsage);
 		}
 
 		// ── 耗时（pill 样式，时钟图标 + 耗时 + 数值）──

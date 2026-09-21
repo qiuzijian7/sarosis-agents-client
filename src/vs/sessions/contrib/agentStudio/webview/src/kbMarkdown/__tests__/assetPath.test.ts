@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeRelativeRef, resolveAssetSrc } from '../assetPath.js';
+import { normalizeRelativeRef, resolveAssetSrc, isMediaAssetSrc, mediaAssetId } from '../assetPath.js';
 
 const BASE = 'https://file+.vscode-resource.vscode-cdn.net/vault/库/概念';
 
@@ -45,4 +45,25 @@ test('resolveAssetSrc：绝对/协议路径原样返回', () => {
 test('resolveAssetSrc：缺 assetBaseUri 时原样返回（宿主未注入的安全降级）', () => {
 	assert.equal(resolveAssetSrc('x.png', undefined), 'x.png');
 	assert.equal(resolveAssetSrc(undefined, BASE), undefined);
+});
+
+test('resolveAssetSrc：saros-media:// 协议不被当相对路径改写（走媒体库桥）', () => {
+	const src = 'saros-media://m1abc';
+	assert.equal(resolveAssetSrc(src, BASE), src);
+});
+
+test('isMediaAssetSrc / mediaAssetId：协议识别与 id 提取', () => {
+	assert.equal(isMediaAssetSrc('saros-media://m1abc'), true);
+	assert.equal(isMediaAssetSrc('https://x.png'), false);
+	assert.equal(isMediaAssetSrc(undefined), false);
+	assert.equal(mediaAssetId('saros-media://m1abc'), 'm1abc');
+	assert.equal(mediaAssetId('saros-media://m1abc?w=300'), 'm1abc', '忽略 query');
+	assert.equal(mediaAssetId('saros-media://'), undefined);
+	assert.equal(mediaAssetId('other://x'), undefined);
+});
+
+test('normalizeRelativeRef：防范越出目录的 ../ 与空段', () => {
+	assert.equal(normalizeRelativeRef('../../x.png'), 'x.png');
+	assert.equal(normalizeRelativeRef('..'), '');
+	assert.equal(normalizeRelativeRef('./'), '');
 });

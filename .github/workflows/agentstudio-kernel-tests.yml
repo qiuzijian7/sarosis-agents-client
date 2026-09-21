@@ -51,7 +51,12 @@ jobs:
             'piLoopDualRun.test.ts',
             'turnHostContract.test.ts',
             'agentSteeringWiring.test.ts',
-            'sessionEventShadowLog.test.ts'
+            'sessionEventShadowLog.test.ts',
+            # ★ 2026-09-21（P0-1）：会话历史「追加日志 + 快照 + 屏障」的接线与端到端重载
+            #   （新实例重载 = 崩溃重启 ✓ / 整段改写不被旧日志重放复活 ✓）—— 属**结构不变量**，
+            #   丢了不会被别处发现 ✗，必须在 CI 门里 ✓。
+            'sessionHistoryLog.test.ts',
+            'agentChatBatchPersist.test.ts'
           )
           foreach ($s in $suites) {
             Write-Host "=== $s ==="

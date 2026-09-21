@@ -162,4 +162,109 @@ suite('CLI/TUI 面板滚动不变量（2026-09-20）', () => {
 		assert.ok(css.includes('--vscode-scrollbarSlider-background'),
 			'滑轨必须用 VS Code 标准变量（此前 --cli-border 对比度偏低 ✗）');
 	});
+
+	test('★★★ 块间距必须走单一令牌且达「空行级」（2026-09-21 对齐 pi TUI ✓）', () => {
+		// pi 的 markdown 渲染器每个块后追加一个空行（≈19px ✓）；我们此前只有 2px ✗ ⇒ 观感"挤" ✓
+		const css = readCss();
+		assert.ok(/--cli-md-gap:\s*\d+px/.test(css), '必须有 --cli-md-gap 单一令牌（便于一处调松紧 ✓）');
+		const gapUses = css.split('var(--cli-md-gap)').length - 1;
+		assert.ok(gapUses >= 6,
+			`块规则（p/pre/ul/h/blockquote/table/hr）都要走该令牌，实际只有 ${gapUses} 处 ✗`);
+		const m = css.match(/--cli-md-gap:\s*(\d+)px/);
+		assert.ok(m && Number(m[1]) >= 12,
+			`块间距必须达"空行级"（≥12px ✓，pi ≈19px ✓），实际 ${m?.[1] ?? '?'}px ✗`);
+	});
+
+	test('★★★ accent 必须**保持蓝色**（用户 2026-09-21 决策 ✓，勿在"对齐 pi"时顺手改成青绿 ✗）', () => {
+		// pi 的 accent 是青绿 `#8abeb7`（dark.json ✓）；用户明确**保留当前蓝色** ✓
+		// ⇒ 这里钉住：`--cli-agent-color` 必须取自 `--vscode-textLink-foreground` ✓，
+		//   且**不得**出现 pi 的青绿字面量 ✗（否则是无声的观感变更 ✓）。
+		const css = readCss();
+		const m = css.match(/--cli-agent-color:\s*([^;]+);/);
+		assert.ok(m, '找不到 --cli-agent-color ✗');
+		assert.ok(m![1].includes('textLink-foreground'),
+			`accent 必须仍取 VS Code 链接色（蓝 ✓），实际：${m![1]} ✗`);
+		// ⚠ 必须**先去掉注释**再查字面量 ✓ —— 注释里**刻意**写着「pi 的青绿 #8abeb7」作为决策依据 ✓，
+		//   连注释一起查必然红 ✗（与「黑白灰」那次同一个坑 ✓：注释可以解释、活代码不行 ✓）。
+		const code = css.replace(/\/\*[\s\S]*?\*\//g, '');
+		assert.ok(!code.toLowerCase().includes('#8abeb7'),
+			'活代码里不得引入 pi 的青绿 #8abeb7（用户已裁定保留蓝色 ✗）');
+	});
+
+	test('★★★ 代码块必须走「带语法高亮」渲染器（对齐 pi 的 syntax* ✓，且要有回退 ✗）', () => {
+		// 此前 CLI 面板用**朴素 `<pre>`**（纯文本 ✗）⇒ 无着色 ✓；现改走工作台暴露的
+		// `EditorMarkdownCodeBlockRenderer`（内含 tokenizeToString + Trusted Types policy ✓）。
+		const panel = fs.readFileSync(path.join(process.cwd(),
+			'src/vs/sessions/browser/agentChat/cliChatEditorPanel.ts'), 'utf8');
+		assert.ok(panel.includes('__SAROSIS_MD_CODE_BLOCK_RENDERER__'),
+			'CLI 面板必须读取高亮钩子 ✗（否则代码块仍是纯文本 ✓）');
+		assert.ok(panel.includes('cli-code-block'),
+			'必须保留朴素 `<pre>` 回退（拿不到钩子时行为不变 ✓）');
+		const wb = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/browser/workbench.ts'), 'utf8');
+		assert.ok(wb.includes('EditorMarkdownCodeBlockRenderer') && wb.includes('__SAROSIS_MD_CODE_BLOCK_RENDERER__'),
+			'workbench 必须把带高亮的代码块渲染器暴露到 globalThis ✓');
+		const css = readCss();
+		assert.ok(css.includes('.monaco-tokenized-source'),
+			'CSS 必须样式化高亮产物 `.monaco-tokenized-source` ✓');
+	});
+
+	test('★★★ 主聊天代码块也必须高亮（同步钩子 ✓ + 大块跳过 ✓ + 安全注入 ✓）', () => {
+		// 主聊天走 `codeBlockRendererSync`（同步 ✗）⇒ 必须用**同步**钩子 ✓；
+		// 换异步渲染器会回退掉 2026-09-05 的流式竞态修复 ✗（见该处注释 ✓）。
+		const md = fs.readFileSync(path.join(process.cwd(),
+			'src/vs/sessions/browser/agentChat/agentChatPanel.markdown.ts'), 'utf8');
+		assert.ok(md.includes('__SAROSIS_MD_HIGHLIGHT_SYNC__'), '主聊天必须读同步高亮钩子 ✗');
+		assert.ok(md.includes('(!isLarge && hlSync)'), '大代码块必须跳过高亮（性能 ✓）');
+		assert.ok(md.includes('safeSetInnerHtml(codeEl, tokenized)'),
+			'HTML 注入必须走 safeSetInnerHtml（Trusted Types ✓）');
+		const wb = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/browser/workbench.ts'), 'utf8');
+		assert.ok(wb.includes('__SAROSIS_MD_HIGHLIGHT_SYNC__') && wb.includes('tokenizeToStringSync'),
+			'workbench 必须提供**同步**分词钩子（tokenizeToStringSync ✓）');
+	});
+
+	test('★★★ TUI 面板必须 rAF 合并重建（2026-09-21 用户报「闪烁严重」✗）', () => {
+		// 根因：`_updateMessageElement` 走 `clearNode(el)` 整条重建 ✗，却被**每个流式 delta** 调用 ⇒
+		// 每秒几十次「清空+重建」⇒ 严重闪烁 ✓✓。修法：合并到**一帧一次** ✓（同主聊天做法 ✓）。
+		const cli = fs.readFileSync(path.join(process.cwd(),
+			'src/vs/sessions/browser/agentChat/cliChatEditorPanel.ts'), 'utf8');
+		assert.ok(cli.includes('_scheduleUpdateMessageElement('), '必须有 rAF 合并入口 ✗');
+		assert.ok(cli.includes('window.requestAnimationFrame('), '必须真正走 rAF（否则仍是每 delta 一渲染 ✗）');
+		assert.ok(cli.includes('this._pendingRenderIds.add('), '必须按消息 id 去重（一帧内多次更新只重建一次 ✓）');
+		// 流式路径不得再直接调 `_updateMessageElement`（否则合并被绕过 ✗）
+		const direct = (cli.split('this._updateMessageElement(').length - 1);
+		assert.ok(direct <= 1,
+			`流式路径必须走合并入口（直接调用应只剩合并器内部那 1 处；实际 ${direct} ✗）`);
+	});
+
+	test('★★ 同步高亮钩子必须有分词缓存（流式每帧重建 ⇒ 每帧重新分词太贵 ✗）', () => {
+		for (const rel of ['src/vs/workbench/browser/workbench.ts', 'src/vs/sessions/browser/workbench.ts']) {
+			const src = fs.readFileSync(path.join(process.cwd(), rel), 'utf8');
+			assert.ok(/const cache = new Map<string, string>\(\)/.test(src),
+				`${rel} 的同步钩子必须有分词缓存 ✗（否则流式期间每帧重新分词 ✓）`);
+		}
+	});
+
+	test('★★★ 钩子必须装在**两个** Workbench 上（本仓有两个入口 ✗，只改一个＝没生效 ✓）', () => {
+		// 2026-09-21 用户实测「未生效」✗：本仓有 `sessions/browser/workbench.ts` 与
+		// `workbench/browser/workbench.ts` **两个** `Workbench` 类 ✗ —— 只装一个，
+		// 若启动走的是另一个 ⇒ 钩子不存在 ⇒ 静默回退纯文本 ✓✓（无任何报错 ✗）。
+		const a = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/browser/workbench.ts'), 'utf8');
+		const b = fs.readFileSync(path.join(process.cwd(), 'src/vs/workbench/browser/workbench.ts'), 'utf8');
+		for (const [name, src] of [['sessions/browser', a], ['workbench/browser', b]] as const) {
+			assert.ok(src.includes('__SAROSIS_MD_CODE_BLOCK_RENDERER__'), `${name} 必须装**异步**钩子 ✗`);
+			assert.ok(src.includes('__SAROSIS_MD_HIGHLIGHT_SYNC__'), `${name} 必须装**同步**钩子 ✗`);
+			assert.ok(src.includes('TokenizationRegistry.getOrCreate'),
+				`${name} 的同步钩子必须**预热**语言分词器（懒加载 ⇒ 首次渲染拿不到令牌 ✗）`);
+			assert.ok(src.includes('[MdHighlight] hooks installed'),
+				`${name} 必须打安装日志（否则"没生效"时无法判断装没装上 ✗）`);
+		}
+	});
+
+	test('★★ md 语义令牌必须齐（对齐 pi 的 mdHeading/mdLink/mdCode/mdQuote/mdHr/mdListBullet ✓）', () => {
+		const css = readCss();
+		for (const t of ['--cli-md-heading', '--cli-md-link', '--cli-md-code', '--cli-md-code-block',
+			'--cli-md-quote', '--cli-md-hr', '--cli-md-bullet']) {
+			assert.ok(css.includes(t + ':'), `缺少语义令牌 ${t} ✗（pi 有同名令牌 ✓）`);
+		}
+	});
 });

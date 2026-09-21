@@ -381,6 +381,30 @@ html, body {
 }
 .kb-lightbox-img { max-width: 90%; max-height: 90%; box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6); }
 
+/* 媒体库引用图片（方案 B/C）：引用态带角标，悬停出现「保存到笔记」 */
+.kb-media-asset { position: relative; display: inline-block; max-width: 100%; }
+.kb-media-asset::after {
+	content: "媒体库";
+	position: absolute; top: 4px; left: 4px;
+	font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 3px;
+	background: rgba(0, 0, 0, .55); color: #fff; pointer-events: none;
+}
+.kb-media-save {
+	position: absolute; right: 6px; bottom: 6px;
+	font-size: 11px; padding: 3px 8px; border-radius: 4px; cursor: pointer;
+	border: 1px solid rgba(255, 255, 255, .35);
+	background: rgba(0, 0, 0, .6); color: #fff;
+	opacity: 0; transition: opacity .15s ease;
+}
+.kb-media-asset:hover .kb-media-save { opacity: 1; }
+.kb-media-save:disabled { opacity: .45; cursor: default; }
+.kb-media-loading, .kb-media-missing {
+	display: inline-block; padding: 6px 10px; border-radius: 4px; font-size: 12px;
+	border: 1px dashed var(--vscode-panel-border, rgba(128,128,128,.4));
+	color: var(--vscode-descriptionForeground, #888);
+}
+.kb-media-missing { border-style: solid; }
+
 /* CSV table */
 .kb-csv-table-wrap { overflow-x: auto; margin: 0.9em 0; }
 .kb-csv-table { border-collapse: collapse; font-size: 13px; }
