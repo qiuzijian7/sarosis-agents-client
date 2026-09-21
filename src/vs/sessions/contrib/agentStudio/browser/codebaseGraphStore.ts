@@ -130,6 +130,22 @@ export interface FileHash {
 	sha256: string;
 	mtimeNs: number;
 	size: number;
+	/**
+	 * ★★ 2026-09-21：**这是「解析失败后放弃重试」的哈希，不是「成功索引过」的哈希**。
+	 *
+	 * 为什么必须区分（真机 2026-09-21，安装版 UE 工作区）：
+	 * `shouldRecordHashAfterParse` 在 `parse_error`/`timeout` 达 `PARSE_FAIL_RETRY_MAX(3)` 次后
+	 * **也会记哈希**（为停止"每轮重报 added"的翻烧饼 ✓）—— 但这些文件**没有任何节点** ✗。
+	 * 而健康度判据用 `节点数 / 哈希数 < 2` ⇒ 把"放弃的哈希"当成"成功索引过的文件" ⇒
+	 * 大仓出现 `4547 节点 / 95532 哈希` 被判**残缺** ⇒ 触发 **95k 文件全量重索引**（内存暴涨、
+	 * 与解析期看门狗 abort 互相打架 ✗✗）。
+	 *
+	 * 两条语义必须分开（本字段就是分界线）：
+	 *   · **增量分类基线**（`hasBaseline` / classifyFiles）⇒ 必须**含** gaveUp（否则每轮重报 added ✗）；
+	 *   · **健康度 / 残缺判据** ⇒ 必须**只算**非 gaveUp（否则把放弃当成功 ✗✓）。
+	 * 缺省 `undefined` = 成功路径（旧制品无此字段 ⇒ 自动按成功读 ✓ 向后兼容）。
+	 */
+	gaveUp?: boolean;
 }
 
 export interface SearchParams {
@@ -1117,14 +1133,80 @@ export class CodebaseGraphStore {
 		return this._fileHashes.get(`${project}:${relPath}`);
 	}
 
-	/** 基线规模（零拷贝）：为 0 说明从未完成全量索引（增量快路径不可信，见 _runIncrementalIndex）。 */
-	getFileHashCount(): number {
-		return this._fileHashes.size;
+	/**
+	 * 基线规模（零拷贝）：为 0 说明**该项目**从未完成全量索引
+	 * （增量快路径不可信，见 `_runIncrementalIndex` 的空基线守卫）。
+	 *
+	 * ★★ 2026-09-21：**支持按项目**（原实现恒为全库总数 ✗）——
+	 * 判据必须是「本项目的基线」，否则多项目（同一 store 里并存 UE 9.5 万 + 本仓）
+	 * 会互相污染：某个大而残缺的项目会把**健康项目**也拉进「残缺」判定 ✗✗。
+	 */
+	getFileHashCount(project?: string): number {
+		if (!project) { return this._fileHashes.size; }
+		let count = 0;
+		for (const h of this._fileHashes.values()) {
+			if (h.project === project) { count++; }
+		}
+		return count;
 	}
 
-	/** 清空全部文件哈希基线（残缺图强制全量重建用：无哈希 → classifyFiles 全判 added）。 */
-	clearFileHashes(): void {
-		this._fileHashes.clear();
+	/**
+	 * ★★ 2026-09-21：「**放弃重试**」的哈希条数（`gaveUp === true`）—— 它们**不是**成功索引过的文件。
+	 *
+	 * 用途：健康度/残缺判据要拿 `getFileHashCount() - getGaveUpFileHashCount()` 当分母，
+	 * 否则「解析失败被固化」会被当成「成功索引过 ⇒ 每文件节点太少 ⇒ 残缺」✗✓（真机 UE 95k 实证）。
+	 * ⚠ 与之相对，**增量分类基线必须用总数**（含 gaveUp）—— 否则那些文件每轮都被重报 added ✗。
+	 */
+	getGaveUpFileHashCount(project?: string): number {
+		let count = 0;
+		for (const h of this._fileHashes.values()) {
+			if (h.gaveUp !== true) { continue; }
+			if (project && h.project !== project) { continue; }
+			count++;
+		}
+		return count;
+	}
+
+	/** 成功索引过的哈希条数（= 总数 − 放弃数）——**健康度判据的唯一合法分母** ✓。 */
+	getOkFileHashCount(project?: string): number {
+		return this.getFileHashCount(project) - this.getGaveUpFileHashCount(project);
+	}
+
+	/**
+	 * 清文件哈希基线（残缺图强制全量重建用：无哈希 → classifyFiles 全判 added）。
+	 *
+	 * ★★ 2026-09-21：**支持按项目**（原实现清全库 ✗）—— 只清「被判残缺的那个项目」，
+	 * 否则一个坏项目会让**所有**项目（含健康项目）付一次全量重索引 ✗✗✗。
+	 */
+	clearFileHashes(project?: string): void {
+		if (!project) { this._fileHashes.clear(); return; }
+		for (const key of [...this._fileHashes.keys()]) {
+			if (this._fileHashes.get(key)?.project === project) { this._fileHashes.delete(key); }
+		}
+	}
+
+	/**
+	 * ★★ 2026-09-21：**分批**清哈希 —— 超大仓的残缺修复用（见 `_runIncrementalIndex` 的 deficient 分支）。
+	 *
+	 * 为什么不能一次清光：清光 ⇒ classifyFiles 把**全部**文件判 added ⇒ 95k 文件一次全量解析 ⇒
+	 * 解析结果堆在渲染进程 ⇒ 撞解析期硬堆上限被中止（真机 UE：heap 每 30s +~1GB ✗✗）
+	 * ⇒ 「崩溃/中止 → 残缺制品 → 下次又全量」不收敛 ✗。
+	 *
+	 * 只清 `limit` 个（**Map 插入顺序** ⇒ 确定性 ✓）：被清的文件本轮被重解析、重解析后哈希**追加到末尾**
+	 * ⇒ 下一轮「取前 N 个」自然轮到**下一批** ⇒ 整集合**轮转覆盖** ⇒ 每轮内存有界、进度可累积 ⇒ 能收敛 ✓✓。
+	 *
+	 * @returns 实际清掉的条数（项目无哈希 / `limit <= 0` ⇒ 0）
+	 */
+	clearFileHashesBounded(project: string, limit: number): number {
+		if (!project || limit <= 0) { return 0; }
+		let cleared = 0;
+		for (const key of [...this._fileHashes.keys()]) {
+			if (cleared >= limit) { break; }
+			if (this._fileHashes.get(key)?.project !== project) { continue; }
+			this._fileHashes.delete(key);
+			cleared++;
+		}
+		return cleared;
 	}
 
 	deleteFileHash(project: string, relPath: string): void {

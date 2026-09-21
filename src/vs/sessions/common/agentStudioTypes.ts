@@ -823,6 +823,13 @@ export interface ChatMessageMetadata {
 	/** compaction 边界：节省的估算 tokens。 */
 	tokensSaved?: number;
 	/**
+	 * compaction 边界：**纯摘要**字符数（2026-09-21）。
+	 * 供 `historyCompaction.isValidCompactionBoundary` 判「摘要饥饿」⇒ 可信才切片。
+	 * 起因：`tokensSaved > 0` 是错的成功判据（毁内容最容易省 token）—— 真机事故里
+	 * 153 条消息被换成 129 token 的检索摘要却 `saved=24836`，边界照插 ⇒ 模型失忆。
+	 */
+	summaryChars?: number;
+	/**
 	 * 流式输出未结束时关闭 app，落盘的是**半截内容**（2026-09-06）。
 	 * 由 nativeChatEditorPane 在 onWillShutdown 写草稿、agentChatService 在
 	 * getHistory 消费时打上；UI 在气泡 footer 显示「已中断」，避免用户误读为

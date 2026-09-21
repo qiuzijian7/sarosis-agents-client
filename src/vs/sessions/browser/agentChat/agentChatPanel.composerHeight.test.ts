@@ -129,6 +129,23 @@ suite('输入框自适应高度 — 顺序不变量（2026-09-18）', () => {
 			`[${COMPOSER_SRC}] 写回后必须同步 _lastComposerHeight ✓`,
 		);
 	});
+
+	test('★★★ 高度变化后贴底用户必须**重新钉底**（打字导致聊天区滚动 ✗✓ —— 2026-09-21）', () => {
+		const body = applyComposerHeightBody(read(COMPOSER_SRC), COMPOSER_SRC);
+		// 机制：输入框变高 ⇒ flex 挤压 ⇒ 消息区 clientHeight 变小 ⇒ maxScroll 变大 ⇒
+		// scrollTop 不变 ⇒ 视窗相对内容下滑 ⇒ "打字引发滚动" ✗✓。
+		// 只恢复 savedScrollTop（旧 maxScroll）⇒ 贴底用户永久偏离底部 Δh ✗✓。
+		assert.ok(
+			/this\._isAtBottom\)[\s\S]{0,200}?scrollTop = this\._messagesContainer\.scrollHeight/.test(body),
+			`[${COMPOSER_SRC}] 高度变化后：_isAtBottom ⇒ 必须 scrollTop = scrollHeight（重新钉底 ✓）；`
+			+ '否则贴底用户每敲一行就偏离底部一截 ✗✓',
+		);
+		// 非贴底（上滚阅读）⇒ 必须仍走 savedScrollTop 恢复（保住阅读锚点 ✓）
+		assert.ok(
+			/else if \(this\._messagesContainer\.scrollTop !== savedScrollTop\)/.test(body),
+			`[${COMPOSER_SRC}] 非贴底路径必须保留 savedScrollTop 恢复 ✓`,
+		);
+	});
 });
 
 // ─── ★★★ CLI/TUI 面板滚动不变量（2026-09-20 用户报：内容显示不全 / 无法滚动 / 无滚动条）──

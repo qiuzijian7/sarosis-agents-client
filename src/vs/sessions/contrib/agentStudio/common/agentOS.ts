@@ -216,6 +216,14 @@ export interface IAgentOSService {
 	 */
 	skipCurrentTool(): void;
 
+	/**
+	 * 转后台当前工具（terminal 长命令卡片上的「转后台」按钮，2026-09-21）：
+	 * 与「跳过」的关键差别 —— **不中止进程** ✓：只是让当前工具的**等待**立即返回
+	 * （terminal 工具的进程在其真实终端实例里继续跑 ✓，控制台会自动打开 ✓），
+	 * turn 拿到"已转后台"结果后继续后续步骤 ✓。
+	 */
+	detachCurrentTool(): void;
+
 	// ─── 统一执行入口（替代原 IAgentChatService.sendMessage）────────
 
 	/**

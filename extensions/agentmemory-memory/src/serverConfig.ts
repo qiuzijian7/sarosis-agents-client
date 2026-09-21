@@ -46,10 +46,30 @@ function hostInjectedUrl(): string | null {
 }
 
 /** 宿主探到的「属于其他数据目录」的地址：本窗口必须**排除**，否则会读写到另一形态的库。 */
+const _foreignBases: Set<string> = new Set();
 function hostForeignBases(): Set<string> {
 	const v = (globalThis as { __SAROS_AGENTMEMORY_FOREIGN__?: unknown }).__SAROS_AGENTMEMORY_FOREIGN__;
 	const list = Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
-	return new Set(list.map(x => x.replace(/\/+$/, '')));
+	for (const x of list) {
+		_foreignBases.add(x.replace(/\/+$/, ''));
+	}
+	return _foreignBases;
+}
+
+/** 运行时标记为异己（checkHealth 校验 dataDir 失败时调用）。 */
+function markForeign(base: string): void {
+	_foreignBases.add(base.replace(/\/+$/, ''));
+}
+
+/** 宿主告知的「本窗口该连哪份数据」（归一化后）；未注入则不做校验。 */
+function hostWantDataDir(): string | null {
+	const v = (globalThis as { __SAROS_AGENTMEMORY_WANT_DATADIR__?: unknown }).__SAROS_AGENTMEMORY_WANT_DATADIR__;
+	return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/** 与宿主同一套归一化：Windows 大小写不敏感、分隔符可能混用。 */
+function normalizePath(p: string): string {
+	return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
 /**
@@ -101,12 +121,35 @@ export function serverBaseCandidates(): string[] {
  * @param base 可选基址；缺省用 `serverBase()`（探测场景需要显式传候选地址）。
  */
 export async function checkHealth(base?: string): Promise<boolean> {
+	const target = base ?? serverBase();
 	try {
+		// 已确认属于其他数据目录 ⇒ 直接跳过，不浪费一次探测，也杜绝误连。
+		if (hostForeignBases().has(target.replace(/\/+$/, ''))) {
+			return false;
+		}
 		const ctrl = new AbortController();
 		const timer = setTimeout(() => ctrl.abort(), 3000);
-		const resp = await fetch(`${base ?? serverBase()}/health`, { signal: ctrl.signal });
+		const resp = await fetch(`${target}/health`, { signal: ctrl.signal });
 		clearTimeout(timer);
-		return resp.ok;
+		if (!resp.ok) {
+			return false;
+		}
+		// ★ 身份校验：只看响应码无法判断「连的是不是自己的库」。
+		// 多开/跨形态时端口上可能是别人的网关，此处比对 /health 返回的 dataDir，
+		// 不一致即判不可达并标记异己 —— 让「躲开」从宿主的一次性快照变成每次探测都生效。
+		const want = hostWantDataDir();
+		if (want) {
+			try {
+				const body = await resp.json() as { dataDir?: string };
+				if (typeof body?.dataDir === 'string' && body.dataDir.length > 0) {
+					if (normalizePath(body.dataDir) !== normalizePath(want)) {
+						markForeign(target);
+						return false;
+					}
+				}
+			} catch { /* 旧版网关无 json body ⇒ 退化为仅看响应码 */ }
+		}
+		return true;
 	} catch {
 		return false;
 	}

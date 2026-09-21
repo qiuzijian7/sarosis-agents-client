@@ -11,8 +11,10 @@
  *  MAX_TASK_GATE_MAIN_REACT(3)（与 MiMo-Code 主会话 cap 一致）；任务板未接线 /
  *  查询失败 → 失败开放（退化为 Hermes 行为，绝不困住 loop）。
  *
- *  本类仅作为「mimo」范式的具名标识存在（paradigm='mimo'），便于
- *  switch_paradigm 与产品侧区分；若未来 mimo 需要额外扩展点，在此 override。
+ *  本类仅作为「mimo」范式的具名标识存在（paradigm='mimo'），便于与产品侧区分；
+ *  若未来 mimo 需要额外扩展点，在此 override。
+ *  ⚠ 2026-09-21：`switch_paradigm` 工具已正式退役（pi 路径无范式机制）⇒ 这个具名标识
+ *  现在只可能由 Agent 配置 / resume 回填指定，不能再被模型运行时切换。
  *--------------------------------------------------------------------------------------------*/
 
 import { HermesReActStrategy } from './hermesReActStrategy.js';

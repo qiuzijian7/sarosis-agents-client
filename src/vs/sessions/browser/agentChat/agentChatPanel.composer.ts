@@ -2056,8 +2056,20 @@ protected _applyComposerHeight(): void {
 		//   同时 `[MemSnap] dom nodes=106137`（93 条消息 ⇒ ~1140 节点/条 ✗）⇒ layout 成本 ∝ DOM ✓。
 		// 逻辑依据：**高度没变 ⇒ 消息区尺寸也不可能变 ⇒ 浏览器不会自动调整它的 scrollTop**
 		//   ⇒ 既不需要读、也不需要恢复 ✓ ⇒ 常见情形（打字不换行、高度不变）**省掉一次全文档 layout** ✓✓
-		if (heightChanged && this._messagesContainer && this._messagesContainer.scrollTop !== savedScrollTop) {
-			this._messagesContainer.scrollTop = savedScrollTop;
+		if (heightChanged && this._messagesContainer) {
+			// ★★★ 2026-09-21（用户报「**输入框输入过程中，上方聊天框滚动条会滚动**」✗✓）：
+			//   输入框变高 ⇒ flex 列挤压 ⇒ 消息区 `clientHeight` 变小 ⇒ `scrollHeight` 不变而
+			//   **maxScroll 变大** ⇒ `scrollTop` 不变 ⇒ **视窗相对内容下滑** ⇒ 每敲出一个新行，
+			//   聊天内容就"被顶上去"一截 ✗✓（用户看到的"打字引发滚动" ✓）。
+			//   ⇒ 分两种语义处理 ✓：
+			//     · **贴底用户**（`_isAtBottom` ✓）：必须**重新钉底**（scrollTop = scrollHeight ✓）
+			//       —— 只恢复 savedScrollTop（旧 maxScroll）会**永久偏离底部 Δh** ✗✓；
+			//     · **上滚阅读的用户**：恢复 savedScrollTop ✓（保住阅读锚点 ✓）。
+			if (this._isAtBottom) {
+				this._messagesContainer.scrollTop = this._messagesContainer.scrollHeight;
+			} else if (this._messagesContainer.scrollTop !== savedScrollTop) {
+				this._messagesContainer.scrollTop = savedScrollTop;
+			}
 		}
 	}
 

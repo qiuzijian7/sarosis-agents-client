@@ -39,7 +39,13 @@ suite('commandFailureHints — 退出码专项提示', () => {
 		assert.ok(h);
 		assert.strictEqual(h.id, 'exit-124');
 		assert.ok(h.text.includes('timeout'));
-		assert.ok(h.text.includes('120s'), '应给出 timeout 上限');
+		// ★ 2026-09-21：本行原为 `includes('120s')`（钉旧文案 "raise the timeout argument (max 120s)"）——
+		// 那个数字**已过期**：execute_code 自 2026-08-29 起不再封顶（`0` = 完全不限时），
+		// terminal 的上限也已提到 300s。过期文案会把模型的上限认知钉死在 120s（不敢往上报，
+		// 也不会想到 0=不限时），故断言改为按**现状**钉两条真实出路。
+		assert.ok(h.text.includes('0 = no limit'),
+			'必须给出「0 = 不限时」这条真正可执行的出路（旧的 max 120s 已过期 ✗）');
+		assert.ok(/max 300s/.test(h.text), 'terminal 的实际上限是 300s ✗');
 		assert.ok(h.text.includes('background'), '应提到后台方案');
 	});
 

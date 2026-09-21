@@ -59,7 +59,10 @@ export class AgentMemoryProviderProxy {
 				// ★ 每轮**重新取**候选，不能提前取快照：宿主的 dataDir 认领是异步的，实测比扩展
 				//   activate 晚 ~1.6s 才写 `globalThis.__SAROS_AGENTMEMORY_URL__`。提前取快照会让
 				//   注入**永远看不到** ⇒ 只能靠 `[3111, 3112]` 硬猜，而 3111 上有异己网关时
-				//   （`checkHealth` 只看响应码）会**先猜错并锁定**，正是端口隔离要防的跨环境串味。
+				//   会**先猜错并锁定**，正是端口隔离要防的跨环境串味。
+				//   ★ 猜错这一环已被堵住：`checkHealth` 现在会拿宿主注入的
+				//   `__SAROS_AGENTMEMORY_WANT_DATADIR__` 比对 `/health` 的 `dataDir`，
+				//   不一致即判不可达并标记异己 ⇒ 即便注入迟到也只会「探测失败」，不会连错库。
 				for (const base of serverBaseCandidates()) {
 					if (await checkHealth(base)) {
 						setResolvedServerBase(base);

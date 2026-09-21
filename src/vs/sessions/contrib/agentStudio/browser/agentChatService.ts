@@ -2745,11 +2745,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 *    "用户到底要什么" ✗（此前完全依赖摘要质量 ⇒ 摘要一失手，任务就消失了 ✗✓）；
 	 * ② **无收益就不插**（调用方 `tokensSaved > 0` guard ✓）：压缩没省下 token 时，
 	 *    边界只有"销毁上下文"这一种效果 ✗✓。
+	 * ③ **摘要信息量指纹**（2026-09-21 补 ✓）：`metadata.summaryChars` 记录**纯摘要**长度，
+	 *    供回放侧 `isValidCompactionBoundary` 判"摘要饥饿"⇒ 不切片 ⇒ 不丢历史 ✗✓。
+	 *    ★ 起因：`tokensSaved > 0` 是**错误的成功判据** —— 毁内容最容易省 token ✓。
+	 *    真机取证（日志 `vscode-app-1789994132110.log`）：切模型后窗口塌到 64k ⇒ 强制压缩
+	 *    走 RETRIEVAL 模式 `tokens=129`（153 条消息只换回 129 token），`saved=24836 > 0`
+	 *    顺利通过 ② 的 guard ⇒ 边界照插 ⇒ 模型永久失忆、转去 `session_search` 抓别的任务。
 	 */
 	private _buildCompactionBoundaryMessage(
 		agentId: string,
 		agentSessionId: string | undefined,
-		pending: { originalCount: number; compressedCount: number; tokensSaved: number; summary: string },
+		pending: { originalCount: number; compressedCount: number; tokensSaved: number; summary: string; summaryChars?: number },
 		currentMessage: string | undefined,
 	): ChatMessage {
 		// ① 最近 2 条 user 原文（排除"当前这条"以避免与 driver 追加的当前消息重复 ✓）
@@ -2781,6 +2787,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				originalCount: pending.originalCount,
 				compressedCount: pending.compressedCount,
 				tokensSaved: pending.tokensSaved,
+				// ③ 摘要信息量指纹（2026-09-21）：`historyCompaction.isValidCompactionBoundary`
+				// 用它判边界是否可信（摘要饥饿 ⇒ 不切片 ⇒ 不丢历史）。记录**核心摘要**长度
+				// —— 不含固定前缀、"最近指令原文"尾部、以及确定性追加的文件清单
+				// （它们都会把空壳/饥饿摘要撑过门槛 ✗）。优先用压缩侧透传的精确值。
+				summaryChars: pending.summaryChars ?? pending.summary.trim().length,
 			},
 		};
 	}
@@ -3297,6 +3308,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						originalCount: (delta as any).compressionOriginalCount ?? 0,
 						compressedCount: (delta as any).compressionCompressedCount ?? 0,
 						tokensSaved: (delta as any).compressionTokensSaved ?? 0,
+						// 核心摘要字符数（2026-09-21）：由 compressContext 产出、emit 透传；
+						// 摘要饥饿判据只认它（不含确定性追加的文件清单）。
+						summaryChars: (delta as any).compressionSummaryChars,
 					};
 					this.logService.info(
 						`[AgentChatService][P5] Captured compaction boundary: turnCount=${turns.length}, original=${pendingCompaction.originalCount}→compressed=${pendingCompaction.compressedCount}, saved=${pendingCompaction.tokensSaved} tokens`,

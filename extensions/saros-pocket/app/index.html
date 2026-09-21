@@ -44,7 +44,11 @@
 <div class="shell">
 <header class="top">
   <div class="brand">
-    <img class="logo" src="saros-logo.svg" alt="VsSaros">
+    <!-- 点 logo = 看「App 信息」（版本号 / 运行环境 / 升级源）。
+         刻意用 button 而不是给 img 加 onclick：键盘可聚焦、屏幕阅读器能读（旧写法做不到）。 -->
+    <button class="logo-btn" id="aboutOpen" type="button" title="App 信息（版本号）" aria-label="App 信息">
+      <img class="logo" src="saros-logo.svg" alt="">
+    </button>
     <span class="dot" id="connDot"></span>
     <div>
       <div class="title">Saros Pocket</div>
@@ -110,6 +114,10 @@
     <div class="composer">
       <textarea id="input" rows="1" placeholder="问 VsSaros 点什么…" enterkeyhint="send"></textarea>
       <div class="composer-actions">
+        <!-- 语音输入：浏览器原生 SpeechRecognition，**只在安全上下文可用**
+             （https / localhost / capacitor://localhost）。局域网 http 下浏览器
+             根本不给麦克风 ⇒ 按钮置灰并说明出路（见 app.js 的 setupVoiceInput）。 -->
+        <button class="ghost voice" id="voice" type="button" title="语音输入" aria-label="语音输入">🎙</button>
         <button id="send" type="button">发送</button>
         <button class="ghost" id="toAgent" type="button" title="把这条消息交给 VsSaros 的 Agent 执行">交给 Agent</button>
       </div>
@@ -196,6 +204,31 @@
 
   <section class="view hidden" id="view-status">
     <div class="cards" id="statusCards"></div>
+    <!--
+      App 自升级：**只在原生壳里显示**（浏览器没有安装能力，app.js 会保持它隐藏）。
+      刻意不挤进 #statusCards —— 那块每 15s 整块重渲染，进度条会被刷掉；
+      这里给一块稳定 DOM，由 app.js 命令式更新。
+    -->
+    <div class="update-wrap hidden" id="updateWrap">
+      <div class="card update-card">
+        <div class="k">App 升级</div>
+        <div class="v" id="updateState">—</div>
+        <div class="update-actions">
+          <button class="ghost small" id="updateCheck" type="button">检查更新</button>
+          <button class="small hidden" id="updateInstall" type="button">下载并安装</button>
+          <button class="ghost small hidden" id="updateGrant" type="button">去授权</button>
+        </div>
+        <div class="update-bar hidden" id="updateBarWrap"><div class="update-bar-in" id="updateBar"></div></div>
+        <div class="update-cur" id="updateCur">—</div>
+        <div class="update-notes hidden" id="updateNotes"></div>
+        <label class="update-opt"><input type="checkbox" id="updateAuto" checked> 启动时自动检查</label>
+        <details class="update-src">
+          <summary>升级源</summary>
+          <input id="updateUrl" type="url" inputmode="url" placeholder="update.json 的地址（留空则不检查）">
+          <div class="update-hint" id="updateSrcHint">流水线产物里的 update.json；可填内网地址（http 也可以）。</div>
+        </details>
+      </div>
+    </div>
     <div class="events-head">
       <span>事件流</span>
       <button class="ghost small" id="clearEvents" type="button">清空</button>
@@ -212,6 +245,30 @@
   <button class="tab" data-view="status" type="button">连接</button>
   <button class="tab tab-hidden" data-view="files" type="button">文件</button>
 </nav>
+</div>
+
+<!--
+  App 信息弹层（点顶部 logo 打开）：**只读**面板 —— 版本号、运行环境、连的哪台电脑、升级源与说明。
+  出问题时用户截这一屏就够了（避免"你装的是哪个版本？"来回问）。
+  内容由 app.js 的 renderAbout() 填；浏览器里也能看（版本号退化成「网页版」）。
+-->
+<div class="about-mask hidden" id="aboutMask">
+  <div class="about" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+    <div class="about-head">
+      <img class="about-logo" src="saros-logo.svg" alt="">
+      <div>
+        <div class="about-title" id="aboutTitle">Saros Pocket</div>
+        <div class="about-sub" id="aboutVer">版本 …</div>
+      </div>
+      <button class="ghost small about-close" id="aboutClose" type="button" aria-label="关闭">✕</button>
+    </div>
+    <div class="about-rows" id="aboutRows"></div>
+    <p class="about-note" id="aboutNote"></p>
+    <div class="about-actions">
+      <button class="ghost small" id="aboutCheck" type="button">去检查更新</button>
+      <button class="small" id="aboutOk" type="button">知道了</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>

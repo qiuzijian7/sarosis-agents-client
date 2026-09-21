@@ -274,6 +274,13 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private _toolSkipController: AbortController | undefined;
 
 	/**
+	 * 工具级「转后台」信号（per-turn 懒重建 ✓ 与 skip 同套路 ✓）：abort 时**带 reason='detach'** ✓
+	 * —— 组合信号透传 reason（`_composeParentSignal` ✓），工具侧据此区分「跳过（杀进程）」
+	 * 与「转后台（进程留着 ✓）」✓✓。
+	 */
+	private _toolDetachController: AbortController | undefined;
+
+	/**
 	 * Per-turn AbortController 表 —— 支持多聊天窗口/多 Session 并发执行时的取消隔离。
 	 * key = `${agentId}::${sessionId}`（见 _turnKey）。
 	 * executeAgentTurn 进入时按 turnKey 建一个 controller，finally 时删除；
@@ -3097,6 +3104,28 @@ private readonly _sandboxGuard: SandboxGuard;
 		}
 	}
 
+	/**
+	 * 转后台当前正在执行的工具（terminal 卡片「转后台」✓ 2026-09-21）。
+	 * **不中止进程** ✓ —— 只解除工具的等待（abort 带 reason='detach' ✓），
+	 * terminal 工具的实例留在终端面板继续跑 ✓，turn 继续 ✓。
+	 */
+	detachCurrentTool(): void {
+		if (this._toolDetachController && !this._toolDetachController.signal.aborted) {
+			this._toolDetachController.abort('detach');
+			this._logService.info('[AgentOS] detachCurrentTool: releasing the wait — process keeps running in its terminal');
+		} else {
+			this._logService.info('[AgentOS] detachCurrentTool: no active tool execution to detach (or already detached)');
+		}
+	}
+
+	/** 取当前工具级 detach 信号；已 abort 则重建（与 skip 信号同一生命周期约定 ✓）。 */
+	private _ensureToolDetachSignal(): AbortSignal {
+		if (!this._toolDetachController || this._toolDetachController.signal.aborted) {
+			this._toolDetachController = new AbortController();
+		}
+		return this._toolDetachController.signal;
+	}
+
 	/** 取当前工具级 skip 信号；已 abort 则重建，保证「跳过」只影响当前这一个工具。 */
 	private _ensureToolSkipSignal(): AbortSignal {
 		if (!this._toolSkipController || this._toolSkipController.signal.aborted) {
@@ -3105,16 +3134,20 @@ private readonly _sandboxGuard: SandboxGuard;
 		return this._toolSkipController.signal;
 	}
 
-	/** 组合 turn 级 abort 与工具级 skip：任一触发即中止当前工具执行。 */
+	/** 组合 turn 级 abort + 工具级 skip + 工具级 detach：任一触发即中止当前工具执行；
+	 *  detach 必须**带 reason** ✓（工具侧据此区分"杀进程"与"转后台" ✓✓）。 */
 	private _composeParentSignal(abortSignal?: AbortSignal | null): AbortSignal | undefined {
 		const base = abortSignal ?? this._loopAbortController?.signal;
 		const skip = this._ensureToolSkipSignal();
-		if (!base) { return skip; }
-		if (base.aborted) { return base; }
+		const detach = this._ensureToolDetachSignal();
 		const ctrl = new AbortController();
 		const onAbort = () => ctrl.abort();
-		base.addEventListener('abort', onAbort, { once: true });
+		const onDetach = () => ctrl.abort('detach');
 		skip.addEventListener('abort', onAbort, { once: true });
+		detach.addEventListener('abort', onDetach, { once: true });
+		if (!base) { return ctrl.signal; }
+		if (base.aborted) { return base; }
+		base.addEventListener('abort', onAbort, { once: true });
 		return ctrl.signal;
 	}
 

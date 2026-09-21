@@ -45,8 +45,18 @@ export function extractUsage(parsed: any, onCacheHit?: (cachedTokens: number, in
 		return null;
 	}
 	const usage = parsed.usage;
-	const cachedTokens = usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens ?? undefined;
-	const cacheWriteTokens = usage.cache_creation_input_tokens ?? undefined;
+	// 缓存字段多厂商兜底（★ 2026-09-21，hy4 命中率排查取证）：
+	// 命中 —— OpenAI `prompt_tokens_details.cached_tokens` / Anthropic `cache_read_input_tokens` /
+	//   DeepSeek·Zhipu·hy 系 `prompt_cache_hit_tokens`；
+	// 写入 —— Anthropic `cache_creation_input_tokens` / DeepSeek 系 `prompt_cache_write_tokens`。
+	// 只认前两者的旧实现，会在只回 DeepSeek 风格字段的网关上把「缓存其实在工作」漏报成 0。
+	const cachedTokens = usage.prompt_tokens_details?.cached_tokens
+		?? usage.cache_read_input_tokens
+		?? usage.prompt_cache_hit_tokens
+		?? undefined;
+	const cacheWriteTokens = usage.cache_creation_input_tokens
+		?? usage.prompt_cache_write_tokens
+		?? undefined;
 	const inputTokens = usage.prompt_tokens ?? usage.input_tokens ?? undefined;
 	const outputTokens = usage.completion_tokens ?? usage.output_tokens ?? undefined;
 	// Reasoning tokens：OpenAI/OpenRouter 于 completion_tokens_details.reasoning_tokens，

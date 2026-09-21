@@ -716,8 +716,24 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				}
 			}));
 
-			// 右侧：跳过（running）+ 复制 + 时长
+			// 右侧：转后台（running·terminal ✓）+ 跳过（running）+ 复制 + 时长
 			const right = append(row, $('.tool-header-right.terminal-right'));
+			// ★ 2026-09-21：「转后台」按钮 ✓ —— 与「跳过」互补（语义对照见按钮 title ✓）：
+			//   **进程留在真实终端里继续跑**（不杀 ✓✓）+ **自动打开其控制台** ✓ +
+			//   当前轮立即放行（工具返回 DETACHED 结果 ⇒ agent 继续后续步骤 ✓）。
+			//   ⚠ 只对 `terminal` 工具开放 ✓ —— 它是真实 PTY 终端实例 ✓；
+			//   `execute_code` 是 child_process（无终端可开 ✗），且已有 background:true 参数 ✓。
+			if (isRunning && key === 'terminal' && this._onDetachCurrentTool) {
+				const detachBtn = append(right, $('button.terminal-detach-btn')) as HTMLButtonElement;
+				detachBtn.textContent = nls.localize('agentChat.detachToBackground', '转后台');
+				detachBtn.title = nls.localize('agentChat.detachToBackgroundTooltip', '命令继续在终端运行（自动打开其控制台），Agent 不等待、继续后续步骤');
+				this._register(addDisposableListener(detachBtn, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					detachBtn.disabled = true;
+					detachBtn.textContent = nls.localize('agentChat.detachedToBackground', '已转后台');
+					this._onDetachCurrentTool?.();
+				}));
+			}
 			// 「跳过」按钮：仅 running 态显示——中止当前长命令、不取消整个 turn。
 			// 折叠态也常驻可见（避免用户折叠后找不到「跳过」入口）。
 			if (isRunning && this._onSkipCurrentTool) {

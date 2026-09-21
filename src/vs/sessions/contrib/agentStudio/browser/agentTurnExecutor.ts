@@ -136,8 +136,6 @@ import {
 	formatCurrentTaskReminder,
 	formatExplorationFindings,
 } from '../common/preLoopOrchestrator.js';
-import { registerPlanQueueHandle } from '../common/planQueueRegistry.js';
-import { getParadigmOverride, setParadigmOverride } from '../common/paradigmOverride.js';
 import {
 	toolConsecutiveFailureReminder,
 	terminalEmptyOutputReminder,
@@ -797,22 +795,26 @@ interface ITurnContext {
 		: MAX_TOOL_ITERATIONS;
 	// ─── AgentLoop 策略 + 预算门控（默认 Hermes-ReAct 范式）──
 	// 策略实例 per-turn 创建（resolve 每次 new），保证多聊天框/多 session 预算与状态隔离。
-	// 范式解析链：运行时覆盖（switch_paradigm 工具写入，turn 边界生效）> request.paradigm（Agent 配置）
-	// ─── V3: resume 时从 checkpoint 重建范式覆盖（R3：避免范式漂移）──
-	// 新进程/新会话下 paradigmOverride 内存注册表为空，需从落盘 checkpoint.paradigm
-	// 回填，使 resume 复用中断前完全一致的范式，而非回退到 agent 配置/默认。
-	if (request.resumeFrom?.paradigm && !getParadigmOverride(request.agentId)) {
-		setParadigmOverride(request.agentId, request.resumeFrom.paradigm);
-		host._logService.info(`[AgentOS] Resume: restored paradigm override (${request.resumeFrom.paradigm})`);
-	}
-	const paradigmOverride = getParadigmOverride(request.agentId);
-	const resolvedParadigm = (paradigmOverride ?? request.paradigm) as AgentParadigm;
+	// ─── V3(R3): resume 复用 checkpoint 范式 —— ★ 2026-09-21 改为**纯局部解析** ──
+	// 解析链（与 driver 侧 guidance 同形）：`request.resumeFrom?.paradigm ?? request.paradigm`
+	//
+	// 历史与下线理由：`switch_paradigm` 工具退役后，`paradigmOverride` 注册表只剩「resume 回填」
+	// 一个写入者（见 common/paradigmOverride.ts 删除记录）。而该注册表是**进程级、跨 turn** 的，
+	// 且生产代码里**没有任何 clear 调用方** ⇒ 一旦某个 session resume 过，该 agentId 在**本进程
+	// 剩余生命周期内永久**钉在 checkpoint 范式上（strategy 与 guidance 双双如此）：用户之后改
+	// Agent 配置范式**不生效**，直到重启应用，且日志只留一句 "Paradigm override active" ——
+	// 与模块头注释声明的「覆盖在 turn 边界生效」自相矛盾。就地解析后：
+	//   · 带 resumeFrom 的那一轮仍用 checkpoint 范式（R3 意图不变 ✓）；
+	//   · 后续 turn 回到配置值（不再有跨 turn 粘滞，配置变更立即可见）。
+	const resumeParadigm = request.resumeFrom?.paradigm;
+	const resolvedParadigm = (resumeParadigm ?? request.paradigm) as AgentParadigm;
 	const strategy = strategyFactory.resolve(
 		request,
 		resolvedParadigm,
 	);
-	if (paradigmOverride && paradigmOverride !== request.paradigm) {
-		host._logService.info(`[AgentOS] Paradigm override active: ${paradigmOverride} (config: ${String(request.paradigm ?? 'unset')})`);
+	if (resumeParadigm && request.paradigm && resumeParadigm !== request.paradigm) {
+		host._logService.info(
+			`[AgentOS] Resume paradigm: ${resumeParadigm} (config: ${request.paradigm}) — this turn only`);
 	}
 		const budgetMaxTotal = request.budgetMaxTotal ?? DEFAULT_BUDGET_MAX;
 		let budget = new IterationBudget(budgetMaxTotal);
@@ -830,19 +832,14 @@ interface ITurnContext {
 	// 主循环不应再发起任何 provider 迭代，直接进入收尾。
 	let strategySkipMainLoop = false;
 
-	// ─── 计划队列工具注册（方案1：plan_register → 本 turn 执行队列）────────
-	// LLM 在调研后调用 plan_register 把有序任务列表写入本队列（闭包直接改写
-	// planTasks/currentTaskIdx）；主循环现有的"无工具调用轮推进 + 每轮注入
-	// CURRENT TASK 提醒"逻辑驱动依次执行。try/finally 保证句柄在 turn 结束
-	// （正常/异常/中断 return）时注销，不泄漏到下一个 turn。
-	const _unregisterPlanQueue = registerPlanQueueHandle(request.agentId, {
-		setPlan: (tasks) => {
-			planTasks = tasks.map(t => ({ ...t }));
-			currentTaskIdx = 0;
-			host._logService.info(`[AgentOS] plan_register: ${planTasks.length} tasks enqueued for sequential execution`);
-		},
-		getPlan: () => ({ tasks: planTasks, currentIndex: currentTaskIdx }),
-	});
+	// ─── 本 turn 执行队列：**注册句柄已随 `planQueueRegistry` 下线**（2026-09-21）────
+	// 历史：`plan_register` 工具注册后，主循环用「无工具调用轮推进 + 每轮注入 CURRENT TASK 提醒」
+	// 依次执行任务。该工具与其门控已于 2026-09-21 正式退役（pi 路径不消费 legacy 计划队列），
+	// 于是 `planQueueRegistry` 的**唯一生产者消失** ⇒ 本模块注册的句柄再也无人写入 ⇒
+	// 机制与 UI 卡片一同彻底下线（见 `planQueueRegistry.ts` 的删除记录）。
+	// ⚠ 保留的相邻能力：`planTasks` / `currentTaskIdx` 与「推进 + CURRENT TASK 提醒」逻辑**仍然活着**，
+	//   因为 **strategy `preLoop` 的 `meta.planTasks`** 是另一条独立写入路径（见下方 `meta.planTasks ?? []`）。
+	//   若要重新引入工具驱动的队列，请按 **pi 契约**接线，不要再复活一个 module 级注册表。
 
 	// ─── [ToolAudit] 工具调用合理性审计容器（2026-08-22）────────────────────────
 	// ⚠ **必须声明在下面这个 `try` 之前**：SUMMARY 在配对的 `finally` 里输出，而
@@ -3718,11 +3715,10 @@ interface ITurnContext {
 			yield { type: 'done' };
 		}
 	} finally {
-		// 注销计划队列句柄（覆盖正常结束/异常/generator return 全部退出路径）。
-		_unregisterPlanQueue();
+	// ★ 2026-09-21：`_unregisterPlanQueue()` 调用随 planQueueRegistry 一并删除（见上方注册块注释）。
 
-		// 注销本 turn 注册的钩子 handler。与 _unregisterPlanQueue 同姿态放在
-		// finally：hookBus 虽是 turn 局部对象（随 turn 一起被 GC），但 handler
+		// 注销本 turn 注册的钩子 handler。放在 finally 的姿态与原先的计划队列句柄一致
+		// （★ 2026-09-21：该句柄已随 `planQueueRegistry` 下线 —— 见上方注册块的删除说明）。
 		// 闭包持有 memoryProvider 引用，abort / 异常路径下显式解绑更可预期。
 		disposeMemoryHooks();
 

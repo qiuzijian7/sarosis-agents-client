@@ -152,6 +152,95 @@ suite('codebaseGraph contracts (2026-09-09 regressions)', () => {
 		assert.strictEqual(store.getFileHashCount(), 0);
 	});
 
+	// ── 契约 4b：基线判据/清理必须**按项目**（2026-09-21，安装版 UE 95k 实证）────
+	//
+	// 真机链：UE 工作区 ~~9547 节点 / 95532 哈希~~ 被判「残缺」⇒ 触发**清哈希 + 95k 文件全量重索引**
+	// （内存暴涨、与解析期看门狗 abort 互相打架）。而 store 里多项目共享（同一 Session 内含本仓 + UE），
+	// 旧实现读**全库**计数、清**全库**哈希 ⇒ 一个坏项目把**健康项目**也拖进全量重建 ✗✗。
+	test('★★ 基线判据/清理必须按项目 —— 坏项目不得拖累健康项目', () => {
+		const store = new CodebaseGraphStore();
+		// 健康项目 test：2 个文件 × 2 节点（每文件 2 个 ⇒ 不残缺）
+		addFn(store, 'a1', 'src/a.ts'); addFn(store, 'a2', 'src/a.ts');
+		addFn(store, 'b1', 'src/b.ts'); addFn(store, 'b2', 'src/b.ts');
+		store.upsertFileHash({ project: PROJECT, relPath: 'src/a.ts', sha256: '', mtimeNs: 1, size: 10 });
+		store.upsertFileHash({ project: PROJECT, relPath: 'src/b.ts', sha256: '', mtimeNs: 1, size: 10 });
+		// 坏项目 ue：有哈希**无节点**（解析大面积失败被固化 —— deficient 的典型形态）
+		store.upsertFileHash({ project: 'ue', relPath: 'src/x.ts', sha256: '', mtimeNs: 1, size: 10 });
+
+		assert.strictEqual(store.getNodeCount(PROJECT), 4);
+		assert.strictEqual(store.getFileHashCount(PROJECT), 2, '必须支持按项目计数 ✓');
+		assert.strictEqual(store.getFileHashCount('ue'), 1);
+		assert.strictEqual(store.getFileHashCount(), 3, '不传参仍是全库（向后兼容 ✓）');
+
+		// 清「坏项目」：健康项目的基线必须原样保留 ✗✓
+		store.clearFileHashes('ue');
+		assert.strictEqual(store.getFileHashCount('ue'), 0, '坏项目应被清空（触发它自己的全量重建）');
+		assert.strictEqual(store.getFileHashCount(PROJECT), 2, '清一个项目**不得**动到另一个项目 ✗✗');
+		assert.strictEqual(store.getNodeCount(PROJECT), 4, '清哈希不得动节点');
+	});
+
+	// ── 契约 4c：gaveUp 哈希不得当作「成功索引过」（2026-09-21，UE 95k 实证）────
+	//
+	// 解析失败达上限也会记哈希（为停"每轮重报 added"的翻烧饼 ✓），但那些文件**没有节点** ✗。
+	// 旧判据把它们当成功基线 ⇒ `4547 节点 / 95532 哈希 < 2` ⇒ 判残缺 ⇒ **95k 文件全量重索引** ✗✗。
+	test('★★ gaveUp 哈希：仍算基线（防翻烧饼），但不计入健康度分母', () => {
+		const store = new CodebaseGraphStore();
+		addFn(store, 'ok1', 'src/ok.ts'); addFn(store, 'ok2', 'src/ok.ts');
+		store.upsertFileHash({ project: PROJECT, relPath: 'src/ok.ts', sha256: '', mtimeNs: 1, size: 10 });
+		// 3 个"放弃"哈希（解析失败被固化 —— 无节点）
+		for (const p of ['x', 'y', 'z']) {
+			store.upsertFileHash({ project: PROJECT, relPath: `src/${p}.ts`, sha256: '', mtimeNs: 1, size: 10, gaveUp: true });
+		}
+
+		assert.strictEqual(store.getFileHashCount(PROJECT), 4, '总数含 gaveUp（增量基线口径 ✓）');
+		assert.strictEqual(store.getGaveUpFileHashCount(PROJECT), 3, '必须能单独数出放弃数');
+		assert.strictEqual(store.getOkFileHashCount(PROJECT), 1, '成功份 = 总数 − 放弃数 ✓');
+
+		// 健康度：用"成功份"当分母 ⇒ 2 节点 / 1 文件 = 2 ⇒ 不残缺 ✓（旧口径 2/4 = 0.5 ⇒ 误判残缺 ✗✗）
+		const nodesPerFile = store.getNodeCount(PROJECT) / store.getOkFileHashCount(PROJECT);
+		assert.ok(nodesPerFile >= 2, `按成功份算应健康，实际 ${nodesPerFile}`);
+	});
+
+	// ── 契约 4d：分批清哈希必须**轮转覆盖**（2026-09-21，超大仓修复）────────
+	//
+	// 真机（UE 9.5 万文件）：一次清光 ⇒ 全量解析 ⇒ 内存撞硬上限被中止 ⇒ 永不收敛 ✗。
+	// 分批的前提是「每轮取**下一批**」——靠 Map 插入顺序 + "被清者重解析后追加到末尾"实现 ✓。
+	// 若哪天有人改成"清最后 N 个"或"随机 N 个"，就会**反复清同一批** ⇒ 永远修不完 ✗✗ ⇒ 必须钉住。
+	test('★★ 分批清哈希必须轮转覆盖（不清光、每轮轮到下一批、不跨项目）', () => {
+		const store = new CodebaseGraphStore();
+		for (const p of ['a', 'b', 'c', 'd', 'e']) {
+			store.upsertFileHash({ project: PROJECT, relPath: `src/${p}.ts`, sha256: '', mtimeNs: 1, size: 10 });
+		}
+		// 另一个项目（UE 那类）：不得被本项目的修复波及 ✗
+		store.upsertFileHash({ project: 'ue', relPath: 'src/x.ts', sha256: '', mtimeNs: 1, size: 10 });
+
+		// 第 1 轮：清 2 个（按插入序 ⇒ a, b）
+		assert.strictEqual(store.clearFileHashesBounded(PROJECT, 2), 2);
+		assert.strictEqual(store.getFileHash(PROJECT, 'src/a.ts'), undefined);
+		assert.strictEqual(store.getFileHash(PROJECT, 'src/b.ts'), undefined);
+
+		// 模拟"重解析后哈希追加到末尾"（真实路径就是这样）
+		for (const p of ['a', 'b']) {
+			store.upsertFileHash({ project: PROJECT, relPath: `src/${p}.ts`, sha256: '', mtimeNs: 2, size: 11 });
+		}
+
+		// 第 2 轮：必须轮到 **c, d**（不得又清刚重解析的 a, b ✗）
+		assert.strictEqual(store.clearFileHashesBounded(PROJECT, 2), 2);
+		assert.strictEqual(store.getFileHash(PROJECT, 'src/c.ts'), undefined, '第 2 轮应轮到下一批 ✓');
+		assert.strictEqual(store.getFileHash(PROJECT, 'src/d.ts'), undefined);
+		assert.ok(store.getFileHash(PROJECT, 'src/a.ts') !== undefined, '刚重解析的那批不得被立刻再清 ✗✗');
+
+		// 第 3 轮：剩下的一把清完（e, a, b）
+		assert.strictEqual(store.clearFileHashesBounded(PROJECT, 99), 3);
+		assert.strictEqual(store.getFileHashCount(PROJECT), 0);
+
+		// 全程未动别的项目 ✓
+		assert.strictEqual(store.getFileHashCount('ue'), 1, '分批清理必须严格限定在目标项目 ✗');
+		// 边界：limit<=0 ⇒ 不清（防「配置填 0 被误当成清光」✗）
+		assert.strictEqual(store.clearFileHashesBounded('ue', 0), 0);
+		assert.strictEqual(store.getFileHashCount('ue'), 1, 'limit=0 不得清任何东西 ✗');
+	});
+
 	// ── 契约 5：目录名排除匹配语义（为 _scanDir 搬迁建回归锚点）────────
 	test('exclude matching is exact-on-dir-name and case-insensitive', () => {
 		const excl = new Set(['node_modules', 'build', 'Out']);
@@ -821,6 +910,103 @@ suite('★★★ 图谱关键不变量（勿回退）', () => {
 			'冲突时必须删掉占位的那条再插（保留本次的显式 id ⇒ 与内存 id 仍对齐 ✓）');
 		assert.ok(/if \(!isUniqueQualifiedNameError\(err\)\) \{ throw err; \}/.test(nodeStore),
 			'非该冲突的错误必须原样抛出（不能把 IO/其它约束错误也吞掉 ✗）');
+	});
+
+	/**
+	 * ⑯ 为什么值得钉（**2026-09-21，安装版 UE 实证**）：UE 工作区报
+	 * `[baseline] deficient graph: 4547 nodes / 95532 hashes — clearing hashes to force full re-index`
+	 * ⇒ 触发 **95k 文件全量重索引**（heap 228→656→1221MB 一路涨，与解析期内存看门狗 abort 互相打架 ✗✗）。
+	 * 而 store 是**多项目共享**的（同一窗口内含本仓 + UE）⇒ 旧实现读**全库**计数、清**全库**哈希，
+	 * 一个坏项目会把**健康项目**也拖进全量重建 ✗。判据必须落回「本轮回合的那个 project」✓。
+	 */
+	/**
+	 * ⑰ 为什么值得钉（**2026-09-21**）：`gaveUp` 是「基线」与「健康度」两条语义的**唯一分界线**：
+	 *   · 增量分类基线（`hasBaseline`）⇒ 必须**含** gaveUp（否则失败文件每轮重报 added ⇒ 翻烧饼 ✗）；
+	 *   · 健康度/残缺判据 ⇒ 必须**只算**非 gaveUp（否则把"放弃"当"成功" ⇒ 大仓误判残缺 ⇒ 95k 全量 ✗✗）。
+	 * 谁把这行改回 `getFileHashCount(...)` 当分母，UE 那种仓就会**静默**回到全量重建 ✗ ⇒ 钉住。
+	 */
+	test('⑰ gaveUp 必须由解析侧标记，且健康度/残缺判据只能用它当分母', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		const store = read4(B + 'codebaseGraphStore.ts');
+		// ① 解析侧：失败达上限记哈希时必须带 gaveUp 标记
+		assert.ok(/const gaveUp = status === 'parse_error' \|\| status === 'timeout';/.test(svc),
+			'解析侧必须把「放弃」识别出来（parse_error/timeout 达上限）');
+		assert.ok(svc.includes('await this._recordFileHash(project, relPath, absPath, gaveUp);'),
+			'记哈希时必须把 gaveUp 传下去（否则健康度仍会把放弃当成功 ✗）');
+		assert.ok(svc.includes('...(gaveUp ? { gaveUp: true } : {}),'),
+			'非放弃路径**不得**写该字段（缺省 = 成功，旧制品同口径 ✓）');
+		// ② 判据侧：分母只能用「成功份」
+		assert.ok(svc.includes('this._graph.store.getOkFileHashCount(project)'),
+			'残缺判据的分母必须是 getOkFileHashCount（成功份）✗✓');
+		assert.ok(!/const nodesPerFile = hashCount > 0 \? nodeCount \/ hashCount/.test(svc) || svc.includes('getOkFileHashCount'),
+			'健康度的 nodesPerFile 必须按成功份算');
+		// ③ store 侧：两条计数必须真的分开
+		assert.ok(/getGaveUpFileHashCount\(project\?: string\)/.test(store) && /getOkFileHashCount\(project\?: string\)/.test(store),
+			'store 必须提供 gaveUp / ok 两个计数');
+		// ④ 反向保护：增量基线仍须含 gaveUp（不得顺手也换成 ok 口径 ✗）
+		assert.ok(/const hasBaseline = graphNodeCount > 0 && this\._graph\.store\.getFileHashCount\(project\) > 0;/.test(svc),
+			'hasBaseline 必须仍用**总数**（含 gaveUp）—— 否则失败文件每轮重报 added 翻烧饼 ✗');
+	});
+
+	/**
+	 * ⑱ 为什么值得钉（**2026-09-21**）：超大仓（UE 9.5 万文件）残缺修复**必须分批** ——
+	 * 一次清光哈希 ⇒ 全判 added ⇒ 一次解析 95k 文件 ⇒ 堆每 30s +~1GB ⇒ 撞硬上限中止
+	 * ⇒ 「残缺 → 全量 → 中止 → 仍残缺」**永不收敛** ✗✗（真机实测）。
+	 * 三步缺一不可：① 用 `clearFileHashesBounded` 只清一批；② 本轮**强制走全量扫描**
+	 * （快路径只解析 watcher 变更集，被清的那批不在里面 ⇒ 清了等于没清 ✗✗）；
+	 * ③ 批次可配（默认 4000 ≈ +170MB，依据 43MB/1000 文件的实测）。
+	 */
+	test('⑱ 残缺修复必须分批（bounded clear + 强制扫描轮 + 批次可配且已注册）', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		const store = read4(B + 'codebaseGraphStore.ts');
+		const contrib = fs.readFileSync(path.join(process.cwd(), B + 'agentStudio.contribution.ts'), 'utf8');
+
+		// ① 只清一批（不得退回全清 ✗）
+		assert.ok(svc.includes('this._graph.store.clearFileHashesBounded(project, batch)'),
+			'残缺修复必须分批清哈希（一次清光 ⇒ 95k 全量 ⇒ 撞硬上限不收敛 ✗✗）');
+		assert.ok(!/this\._graph\.store\.clearFileHashes\(project\)/.test(svc),
+			'不得退回「一次清光本项目哈希」（那是旧的不收敛实现 ✗）');
+		assert.ok(/clearFileHashesBounded\(project: string, limit: number\): number/.test(store),
+			'store 必须提供 bounded clear 并返回实际清掉的条数（日志要报账 ✓）');
+
+		// ② 修复轮**必须走全量扫描**（否则清了的文件没人重解析）
+		assert.ok(/let repairRound = false;/.test(svc) && /if \(hasChangeSet && hasBaseline && !repairRound\)/.test(svc),
+			'修复轮必须强制走扫描分支 —— 快路径只解析 watcher 变更集，被清的批次不在里面 ⇒ 清了等于没清 ✗✗');
+
+		// ③ 批次可配 + 依据可查 + 设置项已注册（契约 ① 的口径：读了就必须注册 ✓）
+		assert.ok(/const DEFICIENT_REPAIR_BATCH_FILES = 4000;/.test(svc),
+			'默认批次必须有常量（4000）且带取值依据注释（43MB/1000 文件实测 ✓）');
+		assert.ok(svc.includes('saros.codebaseGraph.repairBatchFiles'), '批次必须可配（大仓可调）');
+		assert.ok(contrib.includes("'saros.codebaseGraph.repairBatchFiles'"),
+			'读了配置就必须注册设置项（否则用户看不到也改不了、永远拿默认值 ✗）');
+		// ④ 轮数必须可见（否则"修了没修完"无从判断）
+		assert.ok(/≈ \$\{rounds\} 轮收敛/.test(svc) || svc.includes('轮收敛'),
+			'日志必须报「预计多少轮收敛」（进度可判 ✓）');
+
+		// ⑤ 安全阀：分批必须**有界** —— 若项目天生"每文件 < 2 节点"，比率永不达标 ⇒
+		//   不加上限会**无界重解析**（每轮内存有界但白烧 CPU/IO ✗）
+		assert.ok(/const DEFICIENT_REPAIR_MAX_ROUNDS = \d+;/.test(svc),
+			'分批修复必须有会话内轮数上限（防无界重解析 ✗）');
+		assert.ok(/attempt\.rounds >= DEFICIENT_REPAIR_MAX_ROUNDS/.test(svc) && svc.includes('停止自动修复'),
+			'到上限必须停止自动修复并**明确提示**手动处理（绝不静默 ✗）');
+		assert.ok(/private readonly _repairAttempts = new Map/.test(svc),
+			'轮数记账必须按项目（多项目不得互相影响 ✓）');
+	});
+
+	test('⑯ 残缺图判据/清理必须按项目（否则一个坏项目让全库全量重建 ✗✗）', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		const store = read4(B + 'codebaseGraphStore.ts');
+		// 正向：判据与清理都带本轮回合的 project
+		assert.ok(svc.includes('this._graph.store.getFileHashCount(project)'), '判据必须按项目读基线规模');
+		// 2026-09-21 形态更新：清理已从「一次清光本项目」升级为「**分批**清本项目」（见 ⑱ ✓）——
+		// 语义要求不变：**必须限定在本项目**（不得退回 `clearFileHashes()` 全库 ✗）
+		assert.ok(svc.includes('this._graph.store.clearFileHashesBounded(project, batch)'),
+			'清理必须按项目且分批（只清被判残缺的那个项目，且一轮只清一批 ✓）');
+		// 负向：不得退回全库清理（一个坏项目会拖累全部项目付一次全量 ✗✗）
+		assert.ok(!/clearFileHashes\(\)/.test(svc), '不得退回 `clearFileHashes()`（全库清理 ✗）');
+		// store 侧必须真的支持按项目（可选参数 = 向后兼容 ✓）
+		assert.ok(/getFileHashCount\(project\?: string\)/.test(store), 'store.getFileHashCount 必须支持可选 project');
+		assert.ok(/clearFileHashes\(project\?: string\)/.test(store), 'store.clearFileHashes 必须支持可选 project');
 	});
 
 	/**

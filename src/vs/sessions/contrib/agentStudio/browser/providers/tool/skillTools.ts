@@ -51,7 +51,7 @@ function tokenize(text: string): Set<string> {
 	);
 }
 
-import type { IToolResultContent } from '../../../common/providers.js';
+import { NonRetryableToolError, type IToolResultContent } from '../../../common/providers.js';
 import type { URI } from '../../../../../../base/common/uri.js';
 import { SkillManagerTool } from '../../skillManagerTool.js';
 import type { ISkillRegistry } from '../../../common/skills.js';
@@ -363,45 +363,45 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 				const content = String(args['content'] ?? '');
 				const category = args['category'] ? String(args['category']).trim() || undefined : undefined;
 
-				if (!name) { return text('Error: name is required'); }
+				if (!name) { throw new NonRetryableToolError('Error: name is required'); }
 
 				if (action === 'create') {
-					if (!content) { return text('Error: content is required for create. Provide the full SKILL.md text (frontmatter + body).'); }
+					if (!content) { throw new NonRetryableToolError('Error: content is required for create. Provide the full SKILL.md text (frontmatter + body).'); }
 					const result = await ctx.skillManagerTool.createSkill({ name, content, category });
 					if (result.success) {
 						return text(`${result.message}\n\nThe skill is now available. Use read_skill to verify.`);
 					}
 					// 如果是"已存在"错误，提示使用 edit 或 patch
 					if (result.error?.includes('already exists')) {
-						return text(
+						throw new NonRetryableToolError(
 							`Error: ${result.error}\n\n`
 							+ `Tip: Use skill_manage(action="edit", content="<full SKILL.md>") to rewrite the existing skill, `
 							+ `or skill_manage(action="patch", old_string="...", new_string="...") for targeted fixes.`
 						);
 					}
-					return text(`Error: ${result.error ?? result.message}`);
+					throw new Error(`Error: ${result.error ?? result.message}`);
 				}
 
 				if (action === 'edit') {
-					if (!content) { return text('Error: content is required for edit. Provide the full updated SKILL.md text (frontmatter + body).'); }
+					if (!content) { throw new NonRetryableToolError('Error: content is required for edit. Provide the full updated SKILL.md text (frontmatter + body).'); }
 					const result = await ctx.skillManagerTool.updateSkill({ name, content, category });
 					if (result.success) {
 						return text(`${result.message}\n\nThe updated skill is now available. Use read_skill to verify.`);
 					}
-					return text(`Error: ${result.error ?? result.message}`);
+					throw new Error(`Error: ${result.error ?? result.message}`);
 				}
 
 				if (action === 'patch') {
 					const oldString = String(args['old_string'] ?? '');
 					const newString = String(args['new_string'] ?? '');
 					const replaceAll = Boolean(args['replace_all']);
-					if (!oldString) { return text('Error: old_string is required for patch. Provide the exact text to replace (matching whitespace and newlines exactly).'); }
+					if (!oldString) { throw new NonRetryableToolError('Error: old_string is required for patch. Provide the exact text to replace (matching whitespace and newlines exactly).'); }
 
 					const result = await ctx.skillManagerTool.patchSkill(name, oldString, newString, replaceAll);
 					if (result.success) {
 						return text(`${result.message}\n\nUse read_skill to verify the patch was applied correctly.`);
 					}
-					return text(`Error: ${result.error ?? result.message}`);
+					throw new Error(`Error: ${result.error ?? result.message}`);
 				}
 
 				if (action === 'delete') {
@@ -411,7 +411,7 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 					} catch { /* ignore */ }
 					const existingSkill = ctx.skillRegistry.getSkill(name);
 					if (existingSkill?.source === 'builtin') {
-						return text(`Skill "${name}" is a builtin skill and cannot be deleted.`);
+						throw new NonRetryableToolError(`Skill "${name}" is a builtin skill and cannot be deleted.`);
 					}
 					try {
 						const fs = await import('fs/promises');
@@ -420,10 +420,10 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 						await fs.rm(skillPath, { recursive: true, force: true });
 						return text(`Skill "${name}" deleted successfully.`);
 					} catch (e) {
-						return text(`Error deleting skill "${name}": ${e instanceof Error ? e.message : String(e)}`);
+						throw new Error(`Error deleting skill "${name}": ${e instanceof Error ? e.message : String(e)}`);
 					}
 				}
 
-				return text(`Unknown action: ${action}. Use: create, patch, edit, delete`);
+				throw new NonRetryableToolError(`Unknown action: ${action}. Use: create, patch, edit, delete`);
 			},
 		});}

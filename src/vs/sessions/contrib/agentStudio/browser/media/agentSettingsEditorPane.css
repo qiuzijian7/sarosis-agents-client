@@ -49,6 +49,28 @@
 	gap: 4px;
 }
 
+/* 头像外层：可点击（点击打开头像编辑浮层） */
+.agent-settings-avatar-wrap {
+	position: relative;
+	width: 48px;
+	height: 48px;
+	flex-shrink: 0;
+	cursor: pointer;
+	border-radius: 10px;
+}
+
+.agent-settings-avatar-wrap:hover .agent-settings-avatar {
+	box-shadow: 0 0 0 2px var(--vscode-focusBorder, #007fd4);
+}
+
+.agent-settings-avatar-wrap.readonly {
+	cursor: default;
+}
+
+.agent-settings-avatar-wrap.readonly:hover .agent-settings-avatar {
+	box-shadow: none;
+}
+
 .agent-settings-avatar {
 	width: 48px;
 	height: 48px;
@@ -59,6 +81,163 @@
 	font-size: 28px;
 	background: var(--vscode-editor-inactiveSelectionBackground, rgba(255 255 255 0.04));
 	flex-shrink: 0;
+	overflow: hidden;
+}
+
+.agent-settings-avatar-img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+}
+
+.agent-settings-avatar-badge {
+	position: absolute;
+	right: -4px;
+	bottom: -4px;
+	width: 18px;
+	height: 18px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 10px;
+	line-height: 1;
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #fff);
+	border: 1px solid var(--vscode-editor-background, #1e1e1e);
+	opacity: 0;
+	transition: opacity 0.12s;
+	pointer-events: none;
+}
+
+.agent-settings-avatar-wrap:hover .agent-settings-avatar-badge {
+	opacity: 1;
+}
+
+.agent-settings-avatar-wrap.readonly .agent-settings-avatar-badge {
+	display: none;
+}
+
+/* ── 头像编辑浮层（挂在 body，position: fixed） ── */
+.agent-avatar-popover {
+	position: fixed;
+	z-index: 3000;
+	width: 296px;
+	box-sizing: border-box;
+	padding: 10px 12px 12px;
+	border-radius: 8px;
+	background: var(--vscode-editorWidget-background, #252526);
+	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.36);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	font-size: 12px;
+}
+
+.agent-avatar-popover-title {
+	font-weight: 600;
+	color: var(--vscode-editor-foreground);
+}
+
+/* 分组切换：机器人 / 造型 / Emoji */
+.agent-avatar-tabs {
+	display: flex;
+	gap: 4px;
+}
+
+.agent-avatar-tab {
+	flex: 1;
+	padding: 3px 4px;
+	cursor: pointer;
+	border-radius: 4px;
+	font-size: 11px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: var(--vscode-descriptionForeground, #cccccc);
+	white-space: nowrap;
+}
+
+.agent-avatar-tab:hover {
+	background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.08));
+}
+
+.agent-avatar-tab.active {
+	background: var(--vscode-list-activeSelectionBackground, #094771);
+	color: var(--vscode-list-activeSelectionForeground, #ffffff);
+}
+
+/* SVG 预设网格 */
+.agent-avatar-presets {
+	display: grid;
+	grid-template-columns: repeat(6, 1fr);
+	gap: 5px;
+	max-height: 236px;
+	overflow-y: auto;
+	padding: 2px;
+}
+
+.agent-avatar-preset {
+	padding: 0;
+	border: 2px solid transparent;
+	border-radius: 8px;
+	background: transparent;
+	cursor: pointer;
+	line-height: 0;
+	overflow: hidden;
+	transition: border-color 0.12s, transform 0.12s;
+}
+
+.agent-avatar-preset img {
+	width: 100%;
+	height: auto;
+	display: block;
+	border-radius: 6px;
+	pointer-events: none;
+}
+
+.agent-avatar-preset:hover {
+	border-color: var(--vscode-focusBorder, #007fd4);
+	transform: translateY(-1px);
+}
+
+.agent-avatar-preset.active {
+	border-color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+.agent-avatar-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.agent-avatar-actions button {
+	flex: 1;
+	padding: 4px 8px;
+	cursor: pointer;
+	border-radius: 4px;
+	font-size: 12px;
+	border: 1px solid transparent;
+	background: var(--vscode-button-secondaryBackground, #3a3d41);
+	color: var(--vscode-button-secondaryForeground, #cccccc);
+}
+
+.agent-avatar-actions button:hover:not(:disabled) {
+	background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.agent-avatar-actions button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.agent-avatar-actions button.primary {
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+}
+
+.agent-avatar-actions button.primary:hover:not(:disabled) {
+	background: var(--vscode-button-hoverBackground, #1177bb);
 }
 
 .agent-settings-title-line {

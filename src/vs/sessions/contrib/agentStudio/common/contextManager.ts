@@ -55,6 +55,7 @@ import {
 } from './contextTypes.js';
 import type { Agent, ChatMessage, PlanTask, PlanTaskStatus } from './types.js';
 import { weightedCharCount } from './promptBudget.js';
+import { extractFileOperations, formatFileOperationSummary, isCompactionSummaryStarved, requiredCompactionSummaryChars } from './historyCompaction.js';
 import type { IAgentStudioService } from '../../../common/agentStudioService.js';
 import type { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 
@@ -174,6 +175,18 @@ export class ContextManager implements IContextManager {
 	// === Anti-thrashing State (P2: 防止反复低效压缩抖动) ===
 	/** 连续低效压缩计数。达到 MAX_INEFFECTIVE_COMPRESSIONS 后 compressContext 直接 noop。 */
 	private _ineffectiveCompressionCount = 0;
+	/**
+	 * 本会话已见过的**最大** effectiveWindow（单调递增，2026-09-21 窗口收缩守卫用）。
+	 * 用途：识别"切换模型/元信息变化导致窗口骤降" ⇒ 该轮禁止检索式摘要替代
+	 * （见 `WINDOW_SHRINK_GUARD_RATIO`）。
+	 */
+	private _observedMaxEffectiveWindow = 0;
+	/**
+	 * 窗口未知（unknown_window）跳过的 once-warn 闸门（2026-09-21）：
+	 * 该状态下每轮都会跳过 ⇒ warn 只发一次，其余降为 info，避免整轮会话刷屏
+	 * （对齐 MiMo `overflow.ts` 的 once-warn 集合）。
+	 */
+	private _warnedUnknownWindow = false;
 	/** 上次压缩时的真实 prompt token 数。用于检测 token 显著增长后重置 anti-thrashing。 */
 	private _lastCompressRealTokens: number | null = null;
 	/** 上次压缩的时间戳。用于冷却期判定，避免短时间内反复压缩。 */
@@ -1792,11 +1805,47 @@ ${recentUserBlock}
 	/** 保护尾硬顶条数（防止 tail 过大导致无中间段可压缩）。 */
 	private static readonly TAIL_MAX_MESSAGES = 15;
 	/**
+	 * 保护尾 **token 硬下限**（2026-09-21，对齐 pi `keepRecentTokens=20000`）。
+	 * 窗口塌到 64k 下限时比例预算只剩 12.8k —— 不足以保住"当前轮任务现场"，
+	 * 会放大切模型事故的上下文损失。给硬下限后，小窗口的收敛是"少压一点"，
+	 * 而不是"把任务现场也压掉"。
+	 */
+	private static readonly TAIL_TOKEN_FLOOR = 20000;
+	/**
+	 * 保护尾 token 预算（比例 × 窗口，带硬下限）。抽成静态方法只为**可测**
+	 * （`contextTriggerGate` 直测它，避免从压缩产物反推预算——口径漂移教训）。
+	 */
+	public static computeTailBudget(effectiveWindow: number): number {
+		return Math.max(effectiveWindow * ContextManager.TAIL_BUDGET_RATIO, ContextManager.TAIL_TOKEN_FLOOR);
+	}
+	/**
 	 * 高水位压力比：effectiveTokens 达到窗口的此比例时，强制触发压缩并豁免
 	 * 消息数下限 / 冷却期 / anti-thrashing 等防抖门。防止"消息数 < 下限但 token
 	 * 已逼近/超窗口"的早溢场景（见 2026-07-23 hy3-ioa 107% 压力 → HTTP 400 案例）。
 	 */
 	private static readonly HIGH_PRESSURE_COMPRESSION_RATIO = 0.8;
+	/**
+	 * 窗口收缩守卫判据（2026-09-21，日志 `vscode-app-1789994132110.log`）。
+	 *
+	 * 场景（用户报「输入框切模型后 llm 好像都不知道」）：切到小窗口/元信息未解析的
+	 * 模型 ⇒ `resolveEffectiveWindow` 让 effectiveWindow 塌到**下限 64k**（会话历史里
+	 * 曾见过 936000），而既有会话已 76k ⇒ 被判"120% 超压"⇒ **强制压缩**。收敛动作
+	 * 本身合理（不压就 400），但**不能用"省 token"的代价换掉上下文**：此时必须走真
+	 * 摘要、且不得让摘要饥饿的边界生效。
+	 *
+	 * 判据用**本会话历史最大 effectiveWindow**（单调量）而非"上一次"：`_evaluateTrigger`
+	 * 每轮会被 `willAttemptCompression`（UI）与 `compressContext`（真压缩）各调一次，
+	 * 用单调量可保证两次判定结果一致（不会"第一次消耗掉收缩信号、第二次看不到"）。
+	 */
+	private static readonly WINDOW_SHRINK_GUARD_RATIO = 0.8;
+	/**
+	 * 检索式重构的**最小回收量**（token）：低于此值一律放弃检索结果、回退真摘要。
+	 * 真机事故：`source=recall tokens=129` 替换 153 条消息（`contextManager.ts`
+	 * 原判据只有 `context.trim().length > 0`）⇒ 上下文被静默掏空。
+	 */
+	private static readonly MIN_RETRIEVAL_RECOVERY_TOKENS = 1500;
+	/** 检索式重构的最小回收比（相对被替换中间段的估算 token）。 */
+	private static readonly MIN_RETRIEVAL_RECOVERY_RATIO = 0.2;
 	/** 上下文窗口硬地板：低于此值按此值计算阈值，避免小窗口频繁压缩。 */
 	private static readonly MINIMUM_CONTEXT_WINDOW = 64000;
 	/**
@@ -2025,7 +2074,7 @@ ${recentUserBlock}
 		force?: boolean,
 	): {
 		shouldCompress: boolean;
-		skipReason?: 'below_token_threshold' | 'below_token_threshold_and_message_min' | 'below_message_min';
+		skipReason?: 'below_token_threshold' | 'below_token_threshold_and_message_min' | 'below_message_min' | 'unknown_window';
 		estimatedTokens: number;
 		hasRealUsage: boolean;
 		effectiveTokens: number;
@@ -2034,6 +2083,8 @@ ${recentUserBlock}
 		highPressure: boolean;
 		skipTriggerGate: boolean;
 		toolsSchemaTokens: number;
+		/** 本会话窗口骤降（切换模型/元信息变化）⇒ 收敛必须走真摘要，禁用检索式替代。 */
+		windowShrunk: boolean;
 	} {
 		const estimatedTokens = this._estimateTokens(messages as any);
 		const hasRealUsage = typeof realPromptTokens === 'number' && realPromptTokens > 0;
@@ -2070,15 +2121,36 @@ ${recentUserBlock}
 		// 硬地板，防止极少数消息被无意义压缩。小窗口（固定开销占比高）可能略早触发压缩，
 		// 但压缩本就有益，且由 minMessagesToCompress + anti-thrashing 兜底防抖。
 		const highPressure = effectiveTokens >= effectiveWindow * ContextManager.HIGH_PRESSURE_COMPRESSION_RATIO;
+		// ── 窗口收缩守卫（2026-09-21）────────────────────────────────────────
+		// 本会话曾见过更大的有效窗口，而本轮骤降 ⇒ 判定为"模型切换 / 元信息变化"。
+		// 此时收敛仍要做（否则真实溢出），但**必须走真摘要**、且不得让饥饿摘要的
+		// 边界生效（见 compressContext 中的禁用分支）。用单调最大量保证
+		// willAttemptCompression / compressContext 两次调用得到同一结论。
+		const windowShrunk = this._observedMaxEffectiveWindow > 0
+			&& effectiveWindow < this._observedMaxEffectiveWindow * ContextManager.WINDOW_SHRINK_GUARD_RATIO;
+		if (effectiveWindow > this._observedMaxEffectiveWindow) {
+			this._observedMaxEffectiveWindow = effectiveWindow;
+		}
 		const belowTokenThreshold = effectiveTokens < thresholdTokens;
 		const belowMessageMin = messages.length < compressionConfig.minMessagesToCompress;
 		const skipTriggerGate = (force === true && messages.length >= 2);
 
 		const base = {
 			estimatedTokens, hasRealUsage, effectiveTokens, effectiveWindow,
-			thresholdTokens, highPressure, skipTriggerGate,
+			thresholdTokens, highPressure, skipTriggerGate, windowShrunk,
 			toolsSchemaTokens: normalizedToolsSchemaTokens,
 		};
+		// ── 窗口未知守卫（2026-09-21，对齐 MiMo `overflow.ts` 的取舍）────────────
+		// limit.context 未知（undefined/0）时**不做主动压缩**：此时判据的窗口是假的
+		// （`resolveEffectiveWindow` 会 clamp 到 64k 下限），会把正常会话误判为超压 ⇒
+		// 强行压缩（切模型事故的根因之一；真机日志里 `ctxWin=?` 真实出现过）。
+		// 取舍与 MiMo 一致：元信息缺失时**等 400 走反应式 force 路径**，而不是拿
+		// 保守值硬压。`force=true` 穿透此门（反应式恢复必须能用）。
+		const windowUnknown = typeof contextWindow !== 'number'
+			|| !Number.isFinite(contextWindow) || contextWindow <= 0;
+		if (!skipTriggerGate && windowUnknown) {
+			return { shouldCompress: false, skipReason: 'unknown_window', ...base };
+		}
 		if (!skipTriggerGate && (belowTokenThreshold || belowMessageMin) && !highPressure) {
 			const skipReason = belowTokenThreshold && belowMessageMin
 				? 'below_token_threshold_and_message_min' as const
@@ -2138,6 +2210,7 @@ ${recentUserBlock}
 			minMessagesToCompress: compressionConfig.minMessagesToCompress,
 			ineffectiveCompressionCount: this._ineffectiveCompressionCount,
 			toolsSchemaTokens: diagToolsSchemaTokens,
+			windowShrunk: trigger.windowShrunk,
 		};
 
 			const noop = (reason: string): IContextCompressionResult => {
@@ -2146,7 +2219,13 @@ ${recentUserBlock}
 			// 低于阈值，一律 WARN 会让用户误判为异常（实测单会话 21 条 WARN 全是
 			// below_token_threshold，用户专门拿来问"是否合理"）。降为 info；
 			// anti_thrashing 等防抖/异常类跳过才是真信号，保留 warn。
-			const _skipLevel: 'info' | 'warn' = reason.startsWith('below_') ? 'info' : 'warn';
+			// 窗口未知时每轮都会跳过（unknown_window）⇒ warn 只发一次、其余降为 info，
+			// 避免整轮会话刷屏（对齐 MiMo `overflow.ts` 的 once-warn 集合）。
+			let _skipLevel: 'info' | 'warn' = reason.startsWith('below_') ? 'info' : 'warn';
+			if (reason === 'unknown_window') {
+				_skipLevel = this._warnedUnknownWindow ? 'info' : 'warn';
+				this._warnedUnknownWindow = true;
+			}
 			this._log(_skipLevel,
 				`[ContextManager][Compression] SKIPPED reason=${reason} | ` +
 				`effectiveTokens=${effectiveTokens} thresholdTokens=${thresholdTokens} ` +
@@ -2175,9 +2254,22 @@ ${recentUserBlock}
 		// 本地 window×0.3，本地阈值判定会误判为 below_token_threshold 而 skip——那 P0-1
 		// 的「强制压缩 + 重试」就失效了。force 时跳过阈值/消息数判定（仍保留 messageCount
 		// >= 2 兜底，避免对仅 1 条消息的空历史做无意义压缩）。
-		const { highPressure, skipTriggerGate } = trigger;
+		const { highPressure, skipTriggerGate, windowShrunk } = trigger;
 		if (!trigger.shouldCompress) {
 			return noop(trigger.skipReason!);
+		}
+		// ── 窗口收缩守卫（2026-09-21，详见 WINDOW_SHRINK_GUARD_RATIO）────────────
+		// 本轮窗口比本会话历史最大值骤降（<80%）⇒ 判定为模型切换/元信息变化。
+		// 收敛照做（否则真实溢出），但**不得**用检索结果替代 LLM 摘要：检索式重构
+		// 在窗口塌陷时可能只召回极少内容（真机 `tokens=129` vs 153 条消息），
+		// 而它省下的 token 正是被销毁的上下文 —— 这正是"切模型后 llm 失忆"的直接成因。
+		if (windowShrunk) {
+			this._log('warn',
+				`[ContextManager][Compression] WINDOW SHRINK GUARD: effectiveWindow=${effectiveWindow} ` +
+				`< ${(this._observedMaxEffectiveWindow * ContextManager.WINDOW_SHRINK_GUARD_RATIO).toFixed(0)} ` +
+				`(本会话最大 ${this._observedMaxEffectiveWindow}，比例 <${ContextManager.WINDOW_SHRINK_GUARD_RATIO}) ⇒ ` +
+				`本轮禁用检索式摘要替代，强制 LLM 结构化摘要（切换模型不得以"省 token"换掉上下文）`
+			);
 		}
 		if (skipTriggerGate) {
 			this._log('info',
@@ -2346,7 +2438,7 @@ ${recentUserBlock}
 		const correctionFactor = (hasRealUsage && estimatedTokens > 0)
 			? Math.min(Math.max(realPromptTokens! / estimatedTokens, 1), 10)
 			: 1;
-		const tailBudget = effectiveWindow * ContextManager.TAIL_BUDGET_RATIO;
+		const tailBudget = ContextManager.computeTailBudget(effectiveWindow);
 		const tailBudgetEstimated = tailBudget / correctionFactor;
 		const remaining = conversation.slice(head.length);
 		let tail = this._alignTailBoundary(
@@ -2414,10 +2506,25 @@ ${recentUserBlock}
 		// 检索式上下文重构（对齐 agentmemory mem::context）：
 		// 开关开启且提供了 retrieveContext 时，优先用记忆检索结果替代同步 LLM 摘要，
 		// 避免每轮压缩阻塞首 token（原 _generateStructuredSummary 可达 37s）。
+		//
+		// ⚠ 2026-09-21 最小回收比（日志 `vscode-app-1789994132110.log`）：**"非空即采用"是
+		// 致命判据** —— 真机检索只回了 `tokens=129`（被替换的是 153 条消息），照样替代了
+		// 摘要 ⇒ 上下文被掏空，模型失忆后转去 `session_search` 抓别的任务（用户报
+		// 「llm 好像都不知道」）。检索式重构省下的 token **就是被丢弃的上下文** ⇒
+		// 必须要求"回收量与被替换内容相称"，否则回退真摘要（对齐 pi：摘要必须是有信息量
+		// 的 LLM 产物，从不允许"非空即可替代"）。
 		let summary = '';
 		let summaryMs = 0;
 		let usedRetrieval = false;
-		if (RETRIEVAL_COMPACTION_ENABLED && retrieveContext) {
+		const middleTokensEstimated = this._estimateTokens(prunedMiddle as any);
+		const requiredRetrievalTokens = Math.max(
+			Math.min(
+				ContextManager.MIN_RETRIEVAL_RECOVERY_TOKENS,
+				Math.floor(middleTokensEstimated * 0.5)
+			),
+			Math.floor(middleTokensEstimated * ContextManager.MIN_RETRIEVAL_RECOVERY_RATIO)
+		);
+		if (RETRIEVAL_COMPACTION_ENABLED && retrieveContext && !windowShrunk) {
 			const agentId = (messages as any[])[0]?.metadata?.['agentId'] ?? 'default';
 			const sessionId = (messages as any[])[0]?.metadata?.['sessionId'] ?? '';
 			const retrievalBudget = Math.floor(effectiveWindow * RETRIEVAL_BUDGET_RATIO);
@@ -2428,14 +2535,32 @@ ${recentUserBlock}
 					contextWindow: effectiveWindow, budget: retrievalBudget,
 				});
 				if (retrieved && retrieved.context && retrieved.context.trim().length > 0) {
-					summary = retrieved.context;
-					summaryMs = Date.now() - tR;
-					usedRetrieval = true;
-					this._log('info',
-						`[ContextManager][Compression] RETRIEVAL mode: ` +
-						`source=${retrieved.source} tokens=${retrieved.tokens} ` +
-						`(replaced synchronous LLM summary, avoided ~summary latency)`
+					// 回收量取"检索自称的 tokens"与"文本粗估"的较大者（对检索侧公平：
+					// 声称 129 token 但文本其实更长的，不该被误判为饥饿）。
+					const recoveredTokens = Math.max(
+						typeof retrieved.tokens === 'number' ? retrieved.tokens : 0,
+						Math.floor(retrieved.context.length / 4)
 					);
+					if (recoveredTokens < requiredRetrievalTokens) {
+						// 摘要饥饿：回收量远低于被替换内容 ⇒ 放弃替代，落回下面 `!usedRetrieval`
+						// 分支走真 LLM 结构化摘要。这是本次"切模型失忆"事故的止血点 ✓。
+						this._log('warn',
+							`[ContextManager][Compression] RETRIEVAL STARVED: source=${retrieved.source} ` +
+							`recovered=${recoveredTokens}tok < required=${requiredRetrievalTokens}tok ` +
+							`(middle≈${middleTokensEstimated}tok/${middle.length} 条) ⇒ ` +
+							`放弃检索式替代，回退 LLM 结构化摘要（不得以"省 token"换掉上下文）`
+						);
+					} else {
+						summary = retrieved.context;
+						summaryMs = Date.now() - tR;
+						usedRetrieval = true;
+						this._log('info',
+							`[ContextManager][Compression] RETRIEVAL mode: ` +
+							`source=${retrieved.source} tokens=${retrieved.tokens} ` +
+							`(recovered=${recoveredTokens}tok ≥ required=${requiredRetrievalTokens}tok, ` +
+							`replaced synchronous LLM summary, avoided ~summary latency)`
+						);
+					}
 				}
 			} catch (reErr) {
 				this._log('warn',
@@ -2459,6 +2584,18 @@ ${recentUserBlock}
 			);
 			summary = await this._generateStructuredSummary(prunedMiddle, existingSummary, dynamicMaxTokens);
 			summaryMs = Date.now() - tSummary;
+		}
+
+		// ── 文件操作累计（2026-09-21，对齐 pi `formatFileOperations`）────────────
+		// 编码任务里"改过哪些文件"是压缩后最贵的一类信息（摘要 LLM 可能漏掉）。
+		// 从本轮消息的工具调用**确定性**提取并追加 —— 不依赖摘要质量，永远在场。
+		// ⚠ 顺序约束：先固定**核心摘要**再追加 —— 摘要饥饿守卫（下方
+		//    `isCompactionSummaryStarved`）只度量核心部分；文件清单是确定性产物，
+		//    若计入度量会让"星饿检索 + 大文件清单"伪装成信息充足 ✗。
+		const coreSummary = summary;
+		const fileOpsText = formatFileOperationSummary(extractFileOperations(messages));
+		if (fileOpsText) {
+			summary = summary ? `${summary}\n\n${fileOpsText}` : fileOpsText;
 		}
 
 		// ── 3. 重组：保护头(system) + 摘要 + 保护头(对话) + 保护尾 ──────
@@ -2586,7 +2723,23 @@ ${recentUserBlock}
 				}
 			}
 		}
-		if (savingRatio < ContextManager.MIN_EFFECTIVE_SAVING_RATIO) {
+		// ── 摘要饥饿守卫（2026-09-21，与回放侧 `isValidCompactionBoundary` 共用唯一真源）──
+		// **"省了 token"是错的成功判据** —— 毁掉内容最容易省下 token。真机事故：153 条消息
+		// → 129 token 的检索摘要，savingRatio 高达 69% ⇒ 被判 EFFECTIVE 且 reset 计数，
+		// 于是"上下文已被掏空"在日志里看起来是一次成功压缩（§事故的诊断难点正在此）。
+		// 只要摘要在信息量上饥饿，就必须记低效（不 reset），让 anti-thrashing 与后续观测
+		// 都能看见"这次压缩没换来可用上下文"。
+		const summaryChars = coreSummary.trim().length;
+		if (isCompactionSummaryStarved(summaryChars, middle.length)) {
+			this._ineffectiveCompressionCount++;
+			this._log('warn',
+				`[ContextManager][Compression] SUMMARY STARVED: summaryChars=${summaryChars} ` +
+				`< required=${requiredCompactionSummaryChars(middle.length)} ` +
+				`(middle=${middle.length} 条/${middleTokensEstimated}tok, savingRatio=${(savingRatio * 100).toFixed(1)}%, ` +
+				`retrieval=${usedRetrieval}) ⇒ 记低效、**不** reset ineffectiveCompressionCount` +
+				`=${this._ineffectiveCompressionCount}/${ContextManager.MAX_INEFFECTIVE_COMPRESSIONS}`
+			);
+		} else if (savingRatio < ContextManager.MIN_EFFECTIVE_SAVING_RATIO) {
 			this._ineffectiveCompressionCount++;
 			this._log('warn',
 				`[ContextManager][Compression] LOW-EFFICIENCY: savingRatio=${(savingRatio * 100).toFixed(1)}% ` +
@@ -2723,6 +2876,9 @@ ${recentUserBlock}
 				iterativeSummary: !!existingSummary,
 				retrievalMode: usedRetrieval,
 				preCompactInjectedTokens: injectedTokens,
+				// 核心摘要字符数（不含确定性追加的文件清单）：摘要饥饿判据只度量"信息量"
+				// 部分；经 `context_compacted.compressionSummaryChars` 透传到边界 metadata。
+				summaryChars: coreSummary.trim().length,
 			},
 		};
 	}

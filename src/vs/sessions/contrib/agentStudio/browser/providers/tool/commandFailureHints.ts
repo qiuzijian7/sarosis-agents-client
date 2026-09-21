@@ -60,9 +60,15 @@ const EXIT_CODE_HINTS: ReadonlyMap<number, string> = new Map([
 	],
 	[
 		124,
-		'Exit 124 means the command hit the timeout. Do not simply retry the same way — ' +
-		'either narrow the work so it finishes sooner, or raise the "timeout" argument (max 120s). ' +
-		'For long-running processes, start them in the background instead of blocking on completion.',
+		// ★ 2026-09-21：原文案写「raise the "timeout" argument (max 120s)」—— **已过期**：
+		// execute_code 自 2026-08-29 起不再封顶 120s（`0` = 完全不限时），terminal 的上限
+		// 也已是 300s。过期文案会把模型的上限认知钉在 120s（不敢往上报），而它本可直接
+		// 用 background；这里按现状改写，并保留「别原样重发」的表态。
+		'Exit 124 means the timeout(1) wrapper killed the command. Do not simply retry the same way — ' +
+		'either narrow the work so it finishes sooner, or raise the "timeout" argument ' +
+		'(execute_code: 0 = no limit; terminal: max 300s). ' +
+		'For long-running processes, run them in the background (execute_code background:true + poll) ' +
+		'instead of blocking on completion.',
 	],
 ]);
 
@@ -131,7 +137,11 @@ const FAILURE_PATTERNS: readonly IFailurePattern[] = [
 		id: 'spawn-cwd-enoent',
 		test: /\[ENOENT diagnosis\][^\n]*cwd does not exist/i,
 		text: 'The "cwd" directory passed to this tool does not exist — the command was never started. ' +
-			'Verify the directory exists (search_files / read_dir), then reissue with an existing cwd.',
+			// ★ 2026-09-21：原文案指向 `read_dir` —— **该工具在本仓并不存在**
+			// （全仓仅出现在 `toolsetConfig.CORE_TOOLS` 白名单与本行文案里，既不在已注册工具中、
+			// 也不在 BUNDLED_TOOL_DEFINITIONS 里）⇒ 模型照做必然浪费一轮。改为真实可用的
+			// `search_files`（glob 列目录）。
+			'Verify the directory exists (e.g. search_files with a glob like "<dir>/*"), then reissue with an existing cwd.',
 	},
 	{
 		id: 'no-such-file',

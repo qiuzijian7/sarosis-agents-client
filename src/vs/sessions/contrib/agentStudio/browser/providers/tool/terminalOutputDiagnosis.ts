@@ -247,3 +247,76 @@ export function emptyTerminalOutputMessage(command: string, waitedMs: number): s
 		`and returns stdout, stderr and the real exit code.`
 	);
 }
+
+// ─── 超限输出：头+尾保留 + 全量落盘 footer（2026-09-21，pi/bash 对比后引入）───────
+//
+// 对标事实：pi 的 bash 工具用「**尾部保留** 2000 行/50KB + **全量落临时文件** +
+// `[Showing lines x-y of total. Full output: <path>]`」把「看最终错误/结果」当作默认语义，
+// 且被丢掉的部分**永远可找回**。
+//
+// 本项目此前只有 head+tail：中段**直接丢弃、不落盘、不给总量** ⇒ 模型既拿不到中段，
+// 也无从知道丢了什么、丢了多少，只能**重跑命令**（重跑一次构建的代价远大于读文件）。
+// 现补齐「落盘 + 总量 + 检索引导」；落盘失败时退化为纯截断（本模块纯函数不碰 IO ✓）。
+
+/** 截断结果（`omittedChars` 用于给模型一个「丢了多少」的可信数字）。 */
+export interface ITruncatedTerminalOutput {
+	/** 截断后的文本（保留头尾，中段以省略标记替换）。 */
+	readonly text: string;
+	/** 是否发生了截断。 */
+	readonly truncated: boolean;
+	/** 被丢弃的中段字符数（未截断时为 0）。 */
+	readonly omittedChars: number;
+}
+
+/**
+ * 超限输出按「头 + 省略标记 + 尾」保留。
+ *
+ * 头尾各半（不是 pi 的纯尾部）是**刻意保留**：本项目的 terminal 常用于"带前导上下文的
+ * 命令输出"（例如先打印命令自身的解析结果再报错），纯尾部会把前导结论切掉；而错误与
+ * 结论通常在尾部 ⇒ 头尾兼顾最稳。真正解决"中段丢失"的是**落盘**，不是保留比例。
+ */
+export function truncateTerminalOutput(text: string, maxLen: number): ITruncatedTerminalOutput {
+	if (text.length <= maxLen) { return { text, truncated: false, omittedChars: 0 }; }
+	const half = Math.floor(maxLen / 2);
+	const kept = half * 2;
+	const omittedChars = text.length - kept;
+	return {
+		text: text.slice(0, half)
+			+ `\n... (${omittedChars} chars omitted from the middle) ...\n`
+			+ text.slice(text.length - half),
+		truncated: true,
+		omittedChars,
+	};
+}
+
+/**
+ * 落盘成功后的 footer —— 必须做到 ① 明确「输出没有丢」② 给出**可直接执行**的取回方式
+ * ③ 劝阻重跑（与 `execOutputSpill.spillNoticeMessage` 同一套原则）。
+ */
+export function spilledOutputFooter(filePath: string, totalChars: number): string {
+	return (
+		`[FULL OUTPUT SAVED]\n`
+		+ `Only the head and tail above are shown; the command produced ${totalChars} characters in total.\n`
+		+ `The COMPLETE output was written to:\n  ${filePath}\n`
+		+ `Nothing was lost. To inspect the omitted middle, use the file tools on that path `
+		+ `(file_read with offset/limit — or search_code with path set to it) instead of re-running the command.`
+	);
+}
+
+/**
+ * `none` 档（PTY 无 shell integration）拿不到退出码时的定性说明（2026-09-21，pi 对比后补）。
+ *
+ * pi 的 bash 因走 `spawn` 而**恒有真实退出码**；我们走交互式 PTY，在 shell integration
+ * 未被注入时（Git Bash 等）**结构上不可能**拿到 —— 这是路线差异，不是缺陷。但不能静默：
+ * 没有退出码时模型会按「有输出 = 成功」理解（本项目此前已因此误判过 `no-such-file`）。
+ * 故显式声明「退出码不可观测」+ 给出出路（结果导向的命令走 `execute_code`）。
+ */
+export function unavailableExitCodeNote(): string {
+	return (
+		`[exit code unavailable] This command ran in an interactive terminal session without shell ` +
+		`integration, so its real exit code could not be observed — do NOT read this as success or failure.\n` +
+		`If you need the outcome to act on it (build / type check / test run / lint / any command whose ` +
+		`exit code or full output you intend to trust), use execute_code for it: it runs the command once, ` +
+		`waits for real completion, and returns stdout, stderr and the real exit code.`
+	);
+}

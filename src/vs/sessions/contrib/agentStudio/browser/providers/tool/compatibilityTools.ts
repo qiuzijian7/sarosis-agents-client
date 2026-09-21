@@ -13,13 +13,16 @@ import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IAgentOSService } from '../../../common/agentOS.js';
 import { IToolResultContent, NonRetryableToolError, ToolSecurityLevel } from '../../../common/providers.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
-import type { ParsedPlanTask } from '../../../common/workMode.js';
-import { getPlanQueueHandle } from '../../../common/planQueueRegistry.js';
-import { formatCurrentTaskReminder } from '../../../common/preLoopOrchestrator.js';
-import type { AgentParadigm } from '../../../common/agentLoopStrategy.js';
-import { setParadigmOverride, getParadigmOverride, clearParadigmOverride, SWITCHABLE_PARADIGMS } from '../../../common/paradigmOverride.js';
+// ★ 2026-09-21：随 switch_paradigm / plan_register 正式退役，以下 5 个导入一并删除
+//   （退役说明见本文件 registerCompatibilityTools 内的「已正式退役」注释块）：
+//     ParsedPlanTask / getPlanQueueHandle / formatCurrentTaskReminder / AgentParadigm /
+//     set|get|clearParadigmOverride + SWITCHABLE_PARADIGMS
+//   ★ 2026-09-21 第二轮：`common/paradigmOverride.ts` 已**整体下线**（其唯一运行时写入方就是本文件的
+//     switch_paradigm handler；工具退役后注册表只剩 resume 回填，还引入跨 turn 粘滞缺陷）。
+//     范式现为每 turn 就地解析：`request.resumeFrom?.paradigm ?? request.paradigm`。
 import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDANCE, rewriteUnixPipelineToPowerShell, powerShellEncodedCommand, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, isCommandNotFoundFailure, isDeterministicScriptFailure, deterministicScriptFailureMessage, describeReadGap, hasEverReadSuccessfully, markFileModified, detectBenignSearchExit, detectExternalModification, describeExternalModification, parseTimeoutSecondsFromStderr, timeoutGuidanceMessage } from './executeCodeGuards.js';
-import { buildEditedRegionContext, computeInsert } from '../../../common/patchMatcher.js';
+import { buildEditedRegionContext, computeInsert, computeBatchPatch, type IBatchEdit } from '../../../common/patchMatcher.js';
+import { buildUnifiedDiff, diffStat } from '../../../common/unifiedDiff.js';
 import { runExecOutputPipeline } from './execOutputPipeline.js';
 import { ProcessOutputCollector } from '../../../common/processOutputDecoder.js';
 import { appendTerminalLiveOutput } from '../../../../../browser/agentChat/terminalLiveOutput.js';
@@ -35,7 +38,6 @@ import { sensitiveWriteRejection } from './sensitivePaths.js';
 import { detectStaleWorktreeAccess, staleWorktreeWarning } from '../../../common/worktreeBinding.js';
 import { computePatch } from '../../../common/patchMatcher.js';
 import { shellApprovalGuidance } from '../../../common/shellCommandSafety.js';
-import { isPiKernelEnabled } from '../../piLoop/piTurnKernel.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { ICheckpointService } from '../../../common/checkpointService.js';
 import { encodeBase64, decodeBase64 } from '../../../../../../base/common/buffer.js';
@@ -68,119 +70,22 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 
 		// read_skill / list_skills 已在 _registerSkillTools 中注册
 
-	// ── switch_paradigm: 运行时切换 AgentLoop 范式（turn 边界生效；**仅 legacy 路径可用**）──
-	// 写入 per-agent 范式覆盖；legacy 主循环每次 resolve 策略与注入策略提示词时优先
-	// 读取覆盖值。切换只在下一 turn 生效（策略/预算本就 per-turn 创建，无中间态）。
-	// ⚠ 2026-09-21 更正：此处原写「pi 内核已原生管理范式/策略切换（kernel 侧接管）」——**不实**。
-	// pi 路径**没有范式机制**：piTurnKernel.ts:22 自述「范式在 pi 路径不存在 ⇒ 无恢复对象」，
-	// 且 piLoop/ 全目录对 paradigm 仅此一处（注释）命中、也没有 mimo 的「任务板 DB-truth 停止门」
-	// （piLoop 搜 kanban/taskBoard/mimo 唯一命中是 turnStopGate 的 ping-pong 分类器，与 mimo 无关），
-	// agentOSService 里 paradigm 0 处。⇒ E2 翻转默认值后本工具**不再注册**、模型不可见；
-	// 范式在 pi 路径只剩 getStrategyGuidance 注进系统提示词的**文案**
-	// （agentDriverService.ts:914：override ?? agent.paradigm）⇒ 存在「提示词承诺 ≠ 行为」的错配
-	// （正是下方 R4 注释警告的形态：mimo 文案宣称"结束前检查任务板"，内核并不实现该门）。
-	// 若将来在 pi 内核补出等价机制，再移除本门控；否则应考虑从产品面正式下线范式概念。
-	if (!isPiKernelEnabled()) {
-	ctx.register({
-		definition: {
-			name: 'switch_paradigm',
-			description: 'Switch the agent-loop paradigm for subsequent turns. Use "mimo" for task-gated execution (DB-truth stop gate: the loop checks the task board before finishing), "budgeted-react" for the default Hermes-style loop. The switch takes effect on the NEXT turn — the current turn keeps its current paradigm. Pass paradigm="default" to clear the override and fall back to the agent configuration.',
-			inputSchema: {
-				type: 'object',
-				properties: {
-					paradigm: {
-						type: 'string',
-						enum: [...SWITCHABLE_PARADIGMS, 'default'],
-						description: 'budgeted-react (Hermes: budget gate + delegation) | mimo (MiMo-Code: budgeted-react + task-board stop gate) | react | plan-explore | readonly | delegation | default (clear override)',
-					},
-				},
-				required: ['paradigm'],
-			},
-			category: 'utility', source: ctx.id,
-		},
-		handler: async (args, _signal, agentId) => {
-			if (!agentId) {
-				return text('Error: switch_paradigm requires an active agent context.');
-			}
-			const target = String(args['paradigm'] ?? '');
-			if (target === 'default') {
-				clearParadigmOverride(agentId);
-				return text('✅ Paradigm override cleared — the agent configuration takes effect from the next turn.');
-			}
-			if (!SWITCHABLE_PARADIGMS.includes(target as AgentParadigm)) {
-				return text(`Error: unknown paradigm "${target}". Allowed: ${[...SWITCHABLE_PARADIGMS, 'default'].join(' | ')}`);
-			}
-			const previous = getParadigmOverride(agentId);
-			setParadigmOverride(agentId, target as AgentParadigm);
-			const notes: string[] = [];
-			if (target === 'mimo') {
-				notes.push('MiMo mode: the loop will check the task board (kanban) before finishing — unfinished session tasks trigger re-entry (max 3). Create/complete tasks with kanban_create/kanban_complete so the gate has ground truth.');
-			}
-			return text(
-				`✅ Paradigm switch scheduled: ${previous ? `${previous} → ` : ''}${target} (effective from your NEXT turn). ` +
-				`Note: the system prompt strategy section changes with the paradigm, so the prompt cache rebuilds once on the next turn (one-time cost).` +
-				(notes.length > 0 ? `\n\n${notes.join('\n')}` : ''),
-			);
-		},
-	});
-	}
-
-	// ── plan_register: 注册有序任务队列（方案1：调研 → 拆任务 → 依次执行）────
-	// 与 update_plan 的区别：update_plan 是软追踪（仅 UI 卡片，不回读）；
-	// plan_register 把任务写入当前 turn 的执行队列 —— 主循环在每轮无工具调用时
-	// 自动推进队列并注入 CURRENT TASK 提醒，形成强引导的依次执行。
-	// pi 内核已原生提供有序任务队列，此处不再注册 legacy 工具。
-	if (!isPiKernelEnabled()) {
-	ctx.register({
-		definition: {
-			name: 'plan_register',
-			description: 'Register an ordered task queue for sequential execution in this turn. Use AFTER research/exploration (delegate_task/plan_explore) when the goal decomposes into multiple ordered steps: the system injects a CURRENT TASK reminder per task and auto-advances the queue when you finish a task and stop calling tools. Tasks execute in THIS agent turn (not delegated); for parallel independent work use delegate_task instead.',
-			inputSchema: {
-				type: 'object',
-				properties: {
-					tasks: {
-						type: 'array',
-						description: 'Ordered tasks (2-8). They execute strictly in order — put blocking/foundational steps first.',
-						items: {
-							type: 'object',
-							properties: {
-								title: { type: 'string', description: 'Short imperative title, e.g. "Add retry logic to fetcher"' },
-								description: { type: 'string', description: 'What to do, including key findings from prior research relevant to this task' },
-								deliverable: { type: 'string', description: 'Expected output of this task (optional)' },
-								files: { type: 'array', items: { type: 'string' }, description: 'Priority files to touch (optional)' },
-							},
-							required: ['title', 'description'],
-						},
-					},
-				},
-				required: ['tasks'],
-			},
-			category: 'planning', source: ctx.id,
-		},
-		handler: async (args, _signal, agentId) => {
-			const rawTasks = Array.isArray(args['tasks']) ? args['tasks'] as Array<Record<string, unknown>> : [];
-			const tasks: ParsedPlanTask[] = rawTasks
-				.map(t => ({
-					title: String(t?.['title'] ?? '').trim(),
-					description: String(t?.['description'] ?? '').trim(),
-					deliverable: typeof t?.['deliverable'] === 'string' ? String(t['deliverable']) : undefined,
-					files: Array.isArray(t?.['files']) ? (t['files'] as unknown[]).map(String) : undefined,
-				}))
-				.filter(t => t.title.length > 0);
-			if (tasks.length === 0) {
-				return text('Error: plan_register requires at least 1 task with a non-empty title.');
-			}
-			const handle = agentId ? getPlanQueueHandle(agentId) : undefined;
-			if (!handle) {
-				// 无活动 turn 队列（如非 agent loop 上下文）—— 降级为文本指引，不阻塞流程。
-				return text(`No active execution queue for this agent — execute the following tasks in order manually:\n${tasks.map((t, i) => `${i + 1}. ${t.title}`).join('\n')}`);
-			}
-			handle.setPlan(tasks);
-			const reminder = formatCurrentTaskReminder(tasks[0], 0, tasks.length);
-			return text(`✅ Registered ${tasks.length} tasks for sequential execution. The queue auto-advances when you finish each task and stop calling tools.\n\n${reminder}`);
-		},
-	});
-	}
+	// ── 【已正式退役】switch_paradigm / plan_register（2026-09-21）────────────
+	//
+	// 这两个工具此前被包在 `if (!isPiKernelEnabled())` 门控里：pi 内核成为默认路径（E2 翻转）后
+	// 它们**不再注册、模型不可见**，于是留下「一半已死、一半留着将来复活」的模糊态。
+	// 本次**正式退役**（连同门控一起删除），理由与证据：
+	//   · switch_paradigm：pi 路径**没有范式机制**（piTurnKernel.ts:22 自述「范式在 pi 路径不存在」，
+	//     piLoop/ 全目录对 paradigm 仅注释命中）⇒ 注册它等于承诺一个不会发生的机制，
+	//     正是 chatModeConfig.ts:553 已先行「概念下线」的那类「提示词承诺 ≠ 行为」错配。
+	//   · plan_register：语义是「写入本 turn 的 legacy 执行队列」，而 pi 内核自带有序任务队列
+	//     ⇒ 它在 pi 路径同样是空承诺。
+	// 保留的相邻能力：`update_plan`（软追踪，**未门控**，仍在注册）；
+	// ⚠ 2026-09-21 第二轮：`planQueueRegistry`（turn 队列句柄注册表）**也一并彻底下线** ——
+	// 它唯一的生产者就是 `plan_register`，生产者退役后注册表再也无人写入 ⇒ 连 UI 定制卡片一起删除。
+	// loop 侧仍活着的相邻路径是 **strategy `preLoop` 的 `meta.planTasks`**（与注册表无关）。
+	// 复活条件（写清楚，避免将来凭印象加回）：若 pi 内核补出等价的范式切换 / 有序任务队列控制面，
+	// 应以 **pi 契约**（工具 schema + 事件）重新引入，而不是恢复这两个 legacy 工具。
 
 	// ── update_plan: LLM 自主规划（对齐 OpenClaw update_plan）─────────
 	// 极简模型：LLM 传入完整步骤列表（替换语义），系统仅校验约束。
@@ -228,22 +133,22 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 		handler: async (args) => {
 			const plan = args['plan'];
 			if (!Array.isArray(plan) || plan.length === 0) {
-				return text('update_plan error: "plan" must be a non-empty array of steps');
+				throw new NonRetryableToolError('update_plan error: "plan" must be a non-empty array of steps');
 			}
 			// 校验约束：最多一个 in_progress（对齐 OpenClaw）
 			const inProgressCount = plan.filter(
 				(s: any) => s?.status === 'in_progress'
 			).length;
 			if (inProgressCount > 1) {
-				return text(`update_plan error: at most one step may be in_progress (found ${inProgressCount})`);
+				throw new NonRetryableToolError(`update_plan error: at most one step may be in_progress (found ${inProgressCount})`);
 			}
 			// 校验每个步骤
 			for (const s of plan) {
 				if (!s || typeof s.step !== 'string' || !s.step.trim()) {
-					return text('update_plan error: each step must have a non-empty "step" string');
+					throw new NonRetryableToolError('update_plan error: each step must have a non-empty "step" string');
 				}
 				if (!['pending', 'in_progress', 'completed'].includes(s.status)) {
-					return text(`update_plan error: invalid status "${s.status}" for step "${s.step}"`);
+					throw new NonRetryableToolError(`update_plan error: invalid status "${s.status}" for step "${s.step}"`);
 				}
 			}
 			const explanation = args['explanation'] as string | undefined;
@@ -268,9 +173,9 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 		ctx.register({
 			definition: {
 				name: 'patch',
-				description: 'Apply a targeted edit to an existing file. TWO MODES — pick by intent: (A) TEXT MODE (default, for REWRITING existing content): pass "search" (copied verbatim from the file) + "replace". The match must be exact except for line endings, which are handled automatically. If "search" occurs more than once the call fails, so include enough surrounding context to make it unique (or pass replace_all=true deliberately). (B) LINE MODE (for INSERTING new content with no existing text to anchor on — a new import, a new function, appending at EOF): pass "insert_line" + put the new text in "replace", and OMIT "search". insert_line is the 1-based line number the text is inserted BEFORE (valid 1..totalLines+1; use totalLines+1 to append at EOF) — take it from file_read output (LINE_NUM|CONTENT). Prefer LINE MODE when there is nothing to match; prefer TEXT MODE when you are rewriting existing lines. ALWAYS read the file first (file_read): patch requires a prior successful file_read. Do not issue multiple patch calls for the same file in one batch; apply them one at a time so each sees the previous result.' +
-				' RULES: (1) "search" and "replace" MUST differ — a pure-whitespace change is rejected as a no-op. (2) A successful patch returns the "Updated region" (current text WITH line numbers) — reuse it verbatim to continue editing this file; no need to re-read. You only need file_read again if your next "search" targets a region you already modified (its old text is gone), if your next "insert_line" is AFTER a region you already changed (line numbers there have shifted), or if the returned region does not cover what you need.',
-				inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'File to patch. MUST be grounded: copy it verbatim from the file_read call you made on this file (patch requires a prior successful file_read) — never assemble or recall a path from memory. Relative paths resolve against the primary workspace root; in a multi-folder workspace prefer the absolute path from the tool output.' }, search: { type: 'string', description: 'TEXT MODE: exact text to search for, copied verbatim from the file. Omit entirely when using insert_line.' }, replace: { type: 'string', description: 'TEXT MODE: the replacement text. LINE MODE: the text to insert.' }, insert_line: { type: 'integer', description: 'LINE MODE: insert "replace" BEFORE this 1-based line number instead of searching. Valid 1..totalLines+1 (totalLines+1 appends at EOF). Line numbers come from file_read output (LINE_NUM|CONTENT). When set, omit "search".' }, replace_all: { type: 'boolean', description: 'TEXT MODE only: replace all occurrences (default: false)' } }, required: ['path', 'replace'] },
+				description: 'Apply a targeted edit to an existing file. THREE MODES — pick by intent: (A) TEXT MODE (default, for REWRITING existing content): pass "search" (copied verbatim from the file) + "replace". The match must be exact except for line endings, which are handled automatically. If "search" occurs more than once the call fails, so include enough surrounding context to make it unique (or pass replace_all=true deliberately). (B) LINE MODE (for INSERTING new content with no existing text to anchor on — a new import, a new function, appending at EOF): pass "insert_line" + put the new text in "replace", and OMIT "search". insert_line is the 1-based line number the text is inserted BEFORE (valid 1..totalLines+1; use totalLines+1 to append at EOF) — take it from file_read output (LINE_NUM|CONTENT). (C) BATCH TEXT MODE (for SEVERAL independent changes in ONE call — PREFER THIS over N separate patch calls): pass "edits": [{ "search", "replace" }, …]. Same rules as (A) for every entry, plus: all searches are matched against the ORIGINAL file content (order-independent), edits must not overlap in the file, and the batch is ATOMIC — if any entry fails, NOTHING is written. Cannot be combined with "search" or "insert_line". Prefer LINE MODE when there is nothing to match; prefer TEXT/BATCH MODE when you are rewriting existing lines. ALWAYS read the file first (file_read): patch requires a prior successful file_read.' +
+				' RULES: (1) "search" and "replace" MUST differ — a pure-whitespace change is rejected as a no-op. (2) A successful patch returns the "Updated region" (current text WITH line numbers) plus a unified diff and a +A/-R summary of the change — reuse the region verbatim to continue editing this file; no need to re-read. You only need file_read again if your next "search" targets a region you already modified (its old text is gone), if your next "insert_line" is AFTER a region you already changed (line numbers there have shifted), or if the returned region does not cover what you need.',
+				inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'File to patch. MUST be grounded: copy it verbatim from the file_read call you made on this file (patch requires a prior successful file_read) — never assemble or recall a path from memory. Relative paths resolve against the primary workspace root; in a multi-folder workspace prefer the absolute path from the tool output.' }, search: { type: 'string', description: 'TEXT MODE: exact text to search for, copied verbatim from the file. Omit entirely when using insert_line or edits.' }, replace: { type: 'string', description: 'TEXT MODE: the replacement text. LINE MODE: the text to insert.' }, insert_line: { type: 'integer', description: 'LINE MODE: insert "replace" BEFORE this 1-based line number instead of searching. Valid 1..totalLines+1 (totalLines+1 appends at EOF). Line numbers come from file_read output (LINE_NUM|CONTENT). When set, omit "search".' }, edits: { type: 'array', description: 'BATCH TEXT MODE — the preferred way to make MULTIPLE changes to one file in ONE call (instead of N separate patch calls). Each entry is { search, replace } with the same semantics as the top-level fields: every "search" must be copied verbatim from the file AND must match exactly once. All searches are matched against the ORIGINAL file content (so they are independent and order does not matter), edits must not overlap, and the whole batch is atomic — if ANY entry fails, nothing is written. Cannot be combined with "search" or "insert_line".', items: { type: 'object', properties: { search: { type: 'string', description: 'Exact existing text, copied verbatim from the file; must match exactly once.' }, replace: { type: 'string', description: 'Replacement text for this block.' } }, required: ['search', 'replace'] } }, replace_all: { type: 'boolean', description: 'TEXT MODE only: replace all occurrences (default: false)' } }, required: ['path', 'replace'] },
 				// category 必须是 'filesystem'（不是 'file'）：inferSecurityLevel 只在
 				// category==='filesystem' 分支里检查 name.includes('patch')。旧值 'file'
 				// 使 patch 一路落到名称模式表（其中并无 'patch'）→ 被判 Safe → 全程
@@ -292,9 +197,43 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				const rawInsertLine = args['insert_line'];
 				const hasInsertLine = rawInsertLine !== undefined && rawInsertLine !== null && rawInsertLine !== '';
 				const insertLine = hasInsertLine ? Number(rawInsertLine) : NaN;
+				// ── 批量模式入参（2026-09-21，对齐 pi `edit` 的 `edits[]`）─────────
+				// 宽松归一：接受数组、JSON 字符串（部分模型会把数组序列化成串）、单对象。
+				// 解析失败必须**明确报错**而不是静默当作「没传 edits」—— 后者会落到下面的
+				// 「provide search or insert_line」错误上，把模型引向错误的方向 ✗。
+				// 每项缺 search/replace 一律补空串：精确报错交给纯函数（`computeBatchPatch`），
+				// 它能把「哪一条坏了」说清楚（`edits[i].search is empty`）。
+				let batchEdits: IBatchEdit[] | undefined;
+				const rawEdits = args['edits'];
+				if (rawEdits !== undefined && rawEdits !== null && rawEdits !== '') {
+					let parsed: unknown = rawEdits;
+					if (typeof parsed === 'string') {
+						try {
+							parsed = JSON.parse(parsed);
+						} catch {
+							throw new NonRetryableToolError(
+								'patch failed: "edits" must be an ARRAY of { search, replace } objects — the value ' +
+								'you sent is a string that is not valid JSON. Re-send it as a real JSON array.',
+							);
+						}
+					}
+					if (!Array.isArray(parsed)) { parsed = [parsed]; } // 单对象 → 宽容成一条
+					batchEdits = (parsed as unknown[]).map(e => {
+						const o = (e ?? {}) as Record<string, unknown>;
+						return { search: String(o['search'] ?? ''), replace: String(o['replace'] ?? '') };
+					});
+				}
+				const hasEdits = batchEdits !== undefined;
 				// 入参缺失是模型的确定性错误，重试同样的参数无意义 → 直接抛不可重试
 				if (!filePath) {
 					throw new NonRetryableToolError('patch failed: "path" is required.');
+				}
+				if (hasEdits && (search || hasInsertLine)) {
+					throw new NonRetryableToolError(
+						'patch failed: "edits" (BATCH mode) cannot be combined with "search" or "insert_line". ' +
+						'Put every change in "edits" — or, for a single change, use top-level "search"+"replace". ' +
+						'(In batch mode the top-level "replace" is ignored; pass "" for it.)',
+					);
 				}
 				if (hasInsertLine && search) {
 					throw new NonRetryableToolError(
@@ -302,10 +241,11 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 						'To insert new text at a line number, drop "search" and keep "insert_line" + "replace".',
 					);
 				}
-				if (!hasInsertLine && !search) {
+				if (!hasEdits && !hasInsertLine && !search) {
 					throw new NonRetryableToolError(
-						'patch failed: provide "search" (text mode — rewrite existing content) or "insert_line" ' +
-						'(line mode — insert new content at a line number). Line numbers come from file_read output.',
+						'patch failed: provide "search" (text mode — rewrite ONE block), "edits" (batch mode — ' +
+						'rewrite SEVERAL blocks in one atomic call), or "insert_line" (line mode — insert new ' +
+						'content at a line number). Line numbers come from file_read output.',
 					);
 				}
 				const resolved = await ctx.resolveAndCheckWorkspacePath(agentId, filePath);
@@ -353,9 +293,11 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				const currentMtime = Number((buf as { mtime?: number }).mtime ?? 0);
 				const externallyModified = detectExternalModification(resolved, currentMtime);
 
-				const outcome = hasInsertLine
-					? computeInsert(original, insertLine, replace, filePath)
-					: computePatch(original, search, replace, replaceAll, filePath);
+				const outcome = hasEdits
+					? computeBatchPatch(original, batchEdits!, filePath)
+					: hasInsertLine
+						? computeInsert(original, insertLine, replace, filePath)
+						: computePatch(original, search, replace, replaceAll, filePath);
 				if (!outcome.ok) {
 					// 必须抛错：走 return 会被 executeTool 记成 OK、模型收到"成功"。
 					// 用 NonRetryableToolError —— 同参数重试必然同样失败，只会浪费
@@ -388,9 +330,11 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				// 的注释）。此处 markFileModified 只登记 patchedSinceRead 供失败路径定向纠偏；
 				// 因为下面的返回值已把「改动区域的最新文本」交给模型，它无需重读即可继续 patch。
 				markFileModified(resolved);
-				let msg = hasInsertLine
-					? `Patched ${filePath} — inserted at line ${outcome.editedLineStart}.`
-					: `Patched ${filePath} — replaced ${outcome.replacedCount} occurrence${outcome.replacedCount === 1 ? '' : 's'}.`;
+				let msg = hasEdits
+					? `Patched ${filePath} — applied ${outcome.replacedCount} edit${outcome.replacedCount === 1 ? '' : 's'} in ONE atomic batch.`
+					: hasInsertLine
+						? `Patched ${filePath} — inserted at line ${outcome.editedLineStart}.`
+						: `Patched ${filePath} — replaced ${outcome.replacedCount} occurrence${outcome.replacedCount === 1 ? '' : 's'}.`;
 				if (outcome.lineEndingAdjusted) {
 					// 明确告知，避免模型下次仍按 \n 提交而以为是自己运气好
 					msg += hasInsertLine
@@ -401,9 +345,13 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				// 此前只回一句 "Patched …"，模型手里仍是被改动**之前**的文本 —— 要继续改
 				// 邻近区域就只能重读整个文件（同一文件连续 patch 时反复付出读+上下文的代价）。
 				// replaceAll 多处替换时只展示首处（单一行范围无法表达多处）。
-				const multiReplacement = !hasInsertLine && outcome.replacedCount > 1;
+				// 批量模式（hasEdits）展示的是**并集区间**（覆盖全部 edit），故不适用该措辞。
+				const multiReplacement = !hasInsertLine && !hasEdits && outcome.replacedCount > 1;
+				const regionLabel = hasEdits
+					? `, spanning all ${outcome.replacedCount} edits`
+					: multiReplacement ? `, showing the first of ${outcome.replacedCount} replacements` : '';
 				msg += `\n\nUpdated region (lines ${outcome.editedLineStart}-${outcome.editedLineEnd}` +
-					`${multiReplacement ? `, showing the first of ${outcome.replacedCount} replacements` : ''}):\n` +
+					`${regionLabel}):\n` +
 					buildEditedRegionContext(outcome.content, outcome.editedLineStart, outcome.editedLineEnd) +
 					`\n(This text is CURRENT — you may patch this file again using it directly. Re-read only if your next ` +
 					`"search" targets a region you already changed` +
@@ -411,6 +359,16 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 				// P3（2026-09-12）：文件在本会话读取后被外部改过，而本次 search 恰好仍命中
 				// （改动落在别的区域）→ 本次不阻断（inform 语义，与 file_write 一致），
 				// 但必须提示：模型手里**其他区域**的内容已过时，后续编辑前应先重读。
+				// ★ P1-③（2026-09-21，pi 对照）：附 **unified diff** —— 「Updated region」能续编，
+				// 但**看不出改动的形状**（删了几行 / 加了几行 / 有没有删多），多行替换与批量编辑时尤甚。
+				// pi 的 edit 成功时正是回传 diff；这里对齐，并带 `+A/-R` 摘要（免得模型自己数）。
+				// 双闸（60 行 / 4000 字符）在 unifiedDiff 内部，超限以 `… (diff truncated) …` 收尾
+				// ⇒ 回执是辅助信息，绝不顶爆上下文 ✓；diff 生成失败返回空串 ⇒ 跳过追加（不影响 patch 本身）。
+				const stat = diffStat(original, outcome.content);
+				const diffText = buildUnifiedDiff(original, outcome.content, { filePath });
+				if (diffText) {
+					msg += `\n\nDiff (${stat.added} added, ${stat.removed} removed):\n\`\`\`diff\n${diffText}\n\`\`\``;
+				}
 				if (externallyModified) {
 					msg += describeExternalModification(resolved, currentMtime);
 				}
@@ -1183,7 +1141,8 @@ function _pipeExecOutput(s: string, command: string): string {
 let _spillSeq = 0;
 
 /**
- * 超限输出落盘：把全量写入 `~/.vssaros/tmp/`，返回「内联头部 + 检索引导」。
+ * 超限输出落盘：把全量写入 `~/.vssaros/tmp/`，返回「内联头尾片段 + 检索引导」。
+ * （内联片段自 2026-09-21 起为 **头 + 省略标记 + 尾** —— 见 `decideOutputSpill`。）
  *
  * 为什么落这里而不是工作区：`~/.vssaros` 是沙箱 5 个允许根之一，模型后续
  * `file_read` 该路径不会触发越界确认卡片；写工作区 tmp/ 会污染用户仓库与
@@ -1229,10 +1188,10 @@ async function _spillIfNeeded(
 		);
 		return {
 			stdout: dOut.shouldSpill
-				? spillNoticeMessage(target.fsPath, dOut.totalChars, dOut.inlineHead)
+				? spillNoticeMessage(target.fsPath, dOut.totalChars, dOut.inlineExcerpt)
 				: stdout,
 			stderr: dErr.shouldSpill
-				? spillNoticeMessage(target.fsPath, dErr.totalChars, dErr.inlineHead)
+				? spillNoticeMessage(target.fsPath, dErr.totalChars, dErr.inlineExcerpt)
 				: stderr,
 		};
 	} catch (e) {

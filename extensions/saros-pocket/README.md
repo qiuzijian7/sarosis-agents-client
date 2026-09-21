@@ -68,6 +68,13 @@ App 不加载整个工作台，只通过两条通道与 VsSaros 通信：
    `运行中 / 待授权 / 已完成 / 失败` 筛选。卡片上的「**结束**」= **归档**（可逆）——
    归档后的会话从列表收起，点「**已归档**」芯片可以再看（真没有归档会话时该芯片不出现）。
 
+   **当前会话**（聊天框）= 与 VsSaros 聊天框同构的头部：**聊天模式**（Craft / Ask / Plan）、
+   **Agent**、**工作区**、**Worktree**、**模型** 五个选择器 + 一行上下文摘要。
+   这些列表来自 VsSaros（命令 `sarosPocket.getChatContext`），**改选会写回 VsSaros**
+   （切活动工作区 / 写 `AgentBinding.worktreePath` / 写模型选择）——不是只改手机上的显示。
+   所选**模式**随每条消息下发（`chat.send` 的 `context.chatMode`），点「**交给 Agent**」时
+   由 VsSaros 的 Agent 在该工作区 / worktree 上执行。
+
 外出（不在同一 WiFi）时：面板 → 「公网访问」→ **开启公网** → 用 **App 的公网二维码**。
 公网入口**强制**密码，且 `https` 域名对 iOS Safari 更友好（纯 `http://IP` 的局域网入口 Safari 不存 cookie，会卡在登录握手——面板会给出明确提示与重试链接）。
 
@@ -300,6 +307,9 @@ vssaros --server --port 8000 --without-connection-token
 - 公网访问**强制** 8 位访问密码；局域网默认也要求，可关。
 - 登录失败有滑动窗口限速（单 IP 60s 内 ≥5 次锁 60s，全局 1 分钟 >50 次锁 30s），成功登录清空计数。
 - 密码 cookie 为 HttpOnly、有效期 30 天；VsSaros 重启 → 会话密钥变化 → 手机需重输。
+- **重启后旧 cookie 会被自动替换**：带着失效旧 cookie 用 `?token=<PIN>` 打开（「在浏览器打开（自动填密码）」就是这么打开的）时，
+  代理会**重发**新 cookie，所以页面里的 `app.css` / `app.js` 不会因旧 cookie 失效而 401（曾经的表现是：页面裸奔、JS 不执行、地址栏 `?token=` 也摘不掉）。
+  不必手动清站点 cookie。
 - **「在浏览器打开（自动填密码）」**：只用于 `openExternal`（本机浏览器，地址固定走 `127.0.0.1`，
   密码不会经网络外传）；**「复制 App 地址」给的是干净地址，永远不带密码** —— 这条有断言守着。
 - 非安全上下文（http://IP）下 Safari 不保存 cookie，会导致握手循环——此时请用 Chrome/Edge，或改用公网 HTTPS 入口。
@@ -320,7 +330,7 @@ vssaros --server --port 8000 --without-connection-token
 
 | 位置 | 内容 |
 | --- | --- |
-| [`.ci/package-android.yml`](.ci/package-android.yml) | **真正的打包定义**（stages / jobs / cache / artifacts）；说明见 [`.ci/README.md`](.ci/README.md) |
+| [`.ci/gitlab/package-android.yml`](.ci/gitlab/package-android.yml) | **GitLab 打包定义**（stages / jobs / cache / artifacts）；说明见 [`.ci/README.md`](.ci/README.md) |
 | [`scripts/`](scripts/README.md) | 流水线调用的脚本（`verify.sh` / `android-sdk.sh` / `build-android.sh` / `build-ios.sh` / `package-vsix.sh`）—— **本地可原样跑** |
 | `.ci/out/` | 所有产物（`*.vsix` / `*.apk` / `*.ipa`），已被 `.gitignore` 忽略 |
 

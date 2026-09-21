@@ -24,7 +24,6 @@ import { AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING, AGENT_STUDIO_RESPON
 import { buildResponseLanguageDirective } from '../common/responseLanguage.js';
 import { buildEnvironmentDirective } from '../common/environmentDirective.js';
 import { GLOBAL_SYSTEM_SUFFIX, GLOBAL_SYSTEM_PREFIX, getStrategyGuidance } from '../common/chatModeConfig.js';
-import { getParadigmOverride } from '../common/paradigmOverride.js';
 import { joinSections, composeFrozenPrefix, composeVolatileMessage, buildCompactToolSection, type ISystemPromptTiers } from '../common/systemPromptComposer.js';
 import { detectModelFamily } from '../common/modelFamilyPrompt.js';
 import { createDeliveryQueue } from '../common/deliveryQueue.js';
@@ -657,6 +656,26 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	}
 
 	/**
+	 * 解析本 turn 的 resume 来源：**调用方显式传入优先**，否则读该 session 的 checkpoint。
+	 *
+	 * ★ R4 修复（2026-09-21）：本方法必须在 **prompt 组装之前**调用 —— 策略提示词
+	 * （strategy-guidance）与主循环（`agentTurnExecutor` 的 `resumeFrom?.paradigm ?? request.paradigm`）
+	 * 都按 `resumeFrom.paradigm` 解析范式。此前 checkpoint 晚于 prompt 组装才加载，导致
+	 * **resume 那一轮**出现「提示词说范式 A、策略按范式 B 跑」的错配，且恰好发生在该机制
+	 * 最该生效的那一轮。统一为一处解析后，prompt 与 graphRequest 读的是同一个值。
+	 *
+	 * 不传 `sessionId`（无 session 的临时 turn）时**不触碰存储** —— 与旧行为一致（旧实现有
+	 * `if (enrichedRequest.sessionId)` 守卫）。
+	 */
+	private _resolveTurnResumeFrom(
+		request: { readonly resumeFrom?: AgentRunState; readonly sessionId?: string },
+	): AgentRunState | undefined {
+		if (request.resumeFrom) { return request.resumeFrom; }
+		const sid = request.sessionId;
+		return sid ? this._loadTurnCheckpoint(sid) : undefined;
+	}
+
+	/**
 	 * 从 workspace storage 恢复上一次 turn 落盘的快照（容错），返回裸 AgentRunState
 	 * 供 request.resumeFrom 使用。无 checkpoint / 解析失败 → undefined。
 	 * 支持 V2（graph only）和 V3（budget + preExplore + loopMessages）两种格式。
@@ -833,6 +852,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	// ② Prompt 分层组装（stable / context / volatile）
 	const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
 	let enrichedRequest = request;
+	// ★★ R4 修复（2026-09-21）：resume 来源**必须在这里**解析 —— prompt 组装（下方 strategy-guidance）
+	// 需要它的 paradigm。此前 checkpoint 是在 :1370 附近（prompt 组装**之后**）才 load 的：
+	//   · resume 那一轮：策略按 checkpoint 范式解析（executor 侧 `resumeFrom?.paradigm ?? request.paradigm`），
+	//     而策略提示词按 `agent?.paradigm` 渲染 ⇒ **提示词说范式 A、实际按范式 B 跑**（R4 错配），
+	//     恰好发生在该机制最该生效的那一轮；
+	//   · 后续轮：靠已删除的 `paradigmOverride` 注册表"粘"住范式（那个缺陷已随注册表下线）。
+	// 现在统一为一处解析、两处使用（prompt + graphRequest）⇒ 口径不可能漂移，也不再重复读存储。
+	const resumeFromForTurn = this._resolveTurnResumeFrom(request);
 	this._logService.info(`[AgentDriver] Step 2: enriching request (memoryScope=${resolvedMemoryScope})`);
 
 			try {
@@ -909,9 +936,15 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			}
 
 			// 策略提示词（按 paradigm 注入：执行模型 + 推荐工具链）
-			// 解析链与主循环一致：运行时覆盖（switch_paradigm）> Agent 配置 ——
+			// ★ 2026-09-21：解析链与主循环**同形**：`resumeFrom?.paradigm ?? agent?.paradigm`
+			// （executor 侧 `request.resumeFrom?.paradigm ?? request.paradigm`，而 request.paradigm
+			//   正是这里的 `agent?.paradigm` —— 见下方 request 组装处）。原先读的
+			// `getParadigmOverride()` 注册表已随 switch_paradigm 退役一并删除。
 			// 必须同步切换，否则提示词说范式 A 而策略行为是范式 B（错配风险 R4）。
-			const strategyGuidance = getStrategyGuidance(getParadigmOverride(request.agentId) ?? agent?.paradigm);
+			//
+			// ⚠ 这里用的 `resumeFromForTurn` 是在**方法开头**（prompt 组装之前）解析的 —— 这正是 R4
+			// 修复的关键：checkpoint 携带的范式必须能在本段被读到（此前它晚于本段才加载）。
+			const strategyGuidance = getStrategyGuidance(resumeFromForTurn?.paradigm ?? agent?.paradigm);
 			if (strategyGuidance.length > 0) {
 				pushSeg(stableParts, 'strategy-guidance', strategyGuidance.join('\n'));
 			}
@@ -1364,7 +1397,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			const sid = enrichedRequest.sessionId;
 			graphRequest = {
 				...enrichedRequest,
-				resumeFrom: enrichedRequest.resumeFrom ?? this._loadTurnCheckpoint(sid),
+				// ★ 复用方法开头解析好的同一份 resumeFrom（R4 修复）：既保证与 prompt 组装读的是
+				// 同一个值，也避免同一 turn 内对同一 checkpoint 做第二次存储读取。
+				resumeFrom: resumeFromForTurn,
 				checkpointSink: enrichedRequest.checkpointSink ?? ((snapshot: AgentRunStateSnapshot) => this._saveTurnCheckpoint(sid, snapshot)),
 			};
 		}

@@ -146,6 +146,76 @@ export function isRetryableStreamError(msg: string): boolean {
 	return /SSE read timed out|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|socket hang up|network(?:\s|error)|HTTP 429|HTTP 5\d\d|Bad Gateway|Service Unavailable|Gateway Timeout|timed? ?out/i.test(msg);
 }
 
+// ─── [CacheDiag] 请求级缓存指纹（2026-09-21，hy4 命中率排查）────────────────────
+//
+// 动因：缓存命中率排查日志里**只有结果没有原因** —— 能看到每次请求 hit 多少，
+// 却回答不了「是我方改了前缀，还是网关没缓存」。此前只有一个 `[PromptFingerprint]`
+// 但它只覆盖 system 三档，不覆盖工具块与消息序列。
+//
+// 这里把每次请求的**可缓存前缀**落成指纹并记录：
+//   sysHash   —— 首条 system 消息（冻结前缀）内容哈希；
+//   toolsHash —— 工具块（name+description+inputSchema）哈希；
+//   msgHashes —— 每条消息的内容哈希（用于与上一次请求比「共享前缀条数」）。
+// 判读规则（与流尾 usage 的 hit/miss 联合使用）：
+//   · sysHash/toolsHash 变了           ⇒ 我方改写了系统提示/工具块（自家问题）；
+//   · shared 明显小于上一次             ⇒ 早期消息被改写（剪枝/压缩/reasoning 回填）；
+//   · 三个都没变而 hit=0               ⇒ 网关侧（路由到无缓存副本 / TTL 过期 / 未落盘），
+//                                        此时不要再在我方调优上打转。
+
+/** FNV-1a 32-bit —— 稳定、够快，够用于「相同/不同」判定（不用于安全）。 */
+function fnv1a(text: string): string {
+	let h = 0x811c9dc5; // FNV offset basis
+	for (let i = 0; i < text.length; i++) {
+		h ^= text.charCodeAt(i);
+		h = Math.imul(h, 0x01000193); // FNV prime
+	}
+	return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/** 消息 → 稳定哈希（role + 内容；content 可能是 string 或 parts 数组）。 */
+function hashMessage(msg: unknown): string {
+	const m = msg as { role?: unknown; content?: unknown };
+	let payload: string;
+	try {
+		payload = JSON.stringify({ role: m?.role ?? '?', content: m?.content ?? '' });
+	} catch {
+		payload = String(m?.role) + ':' + String(m?.content);
+	}
+	return fnv1a(payload);
+}
+
+/** 请求级缓存指纹（纯函数、无副作用 —— 供测试与 chat() 复用）。 */
+export interface ICacheFingerprint {
+	readonly sysHash: string;
+	readonly toolsHash: string;
+	readonly msgHashes: readonly string[];
+}
+
+export function computeCacheFingerprint(messages: readonly unknown[], tools: readonly unknown[] | undefined): ICacheFingerprint {
+	const first = messages[0] as { role?: unknown } | undefined;
+	const sysHash = first && first.role === 'system' ? hashMessage(first) : 'nosys';
+	let toolsPayload: string;
+	try {
+		toolsPayload = JSON.stringify((tools ?? []).map(t => {
+			const d = t as { name?: unknown; description?: unknown; inputSchema?: unknown };
+			return [d?.name, d?.description, d?.inputSchema];
+		}));
+	} catch {
+		toolsPayload = `len=${(tools ?? []).length}`;
+	}
+	const toolsHash = fnv1a(toolsPayload);
+	const msgHashes = messages.map(hashMessage);
+	return { sysHash, toolsHash, msgHashes };
+}
+
+/** 与上一次的指纹比，算出共享前缀条数（leading 完全一致的消息数）。 */
+export function sharedPrefixCount(current: readonly string[], previous: readonly string[] | undefined): number {
+	if (!previous) { return 0; }
+	let n = 0;
+	while (n < current.length && n < previous.length && current[n] === previous[n]) { n++; }
+	return n;
+}
+
 /**
  * One IModelProvider instance per LM vendor.
  *
@@ -600,6 +670,14 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		return out;
 	}
 
+	/**
+	 * 当前请求的缓存指纹（按会话分组保存上一次，供共享前缀比对）。
+	 *
+	 * ⚠ 键是会话（conversationId）而非 provider 实例：同一 provider 实例会被多个会话
+	 * 复用，按实例保存会让两个会话的指纹互相污染（误报 diverged）。
+	 */
+	private readonly _cacheDiagMsgHashes = new Map<string, string[]>();
+
 	async *chat(
 		modelId: string,
 		messages: IAgentChatMessage[],
@@ -722,6 +800,25 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			`[LMBridge] preflight done — normalized=${normalizedMessages.length}, guarded=${guardedMessages.length}, lm=${lmMessages.length}, tools=${options.tools?.length ?? 0} → calling extension`,
 		);
 
+		// ── [CacheDiag] 请求级缓存指纹（2026-09-21，hy4 命中率排查）──────────
+		// 与流尾的 usage 对账联合使用（判读规则见 computeCacheFingerprint 上方注释）。
+		// 指纹取自**最终将要上行的形状**（normalize/sanitize/守卫之后的 lmMessages +
+		// options.tools）——不是上游历史，因此它度量的是「网关真正看到的东西」。
+		const _fp = computeCacheFingerprint(lmMessages, options.tools);
+		const _convKey = context?.conversationId ?? context?.sessionId ?? modelId ?? 'nosession';
+		const _prevFp = this._cacheDiagMsgHashes.get(_convKey);
+		const _shared = sharedPrefixCount(_fp.msgHashes, _prevFp);
+		this._cacheDiagMsgHashes.set(_convKey, [..._fp.msgHashes]);
+		// LRU 上限：防长进程多会话下 Map 无限增长（与会话态对象同一姿态）
+		if (this._cacheDiagMsgHashes.size > 64 && !this._cacheDiagMsgHashes.has(_convKey)) {
+			const oldest = this._cacheDiagMsgHashes.keys().next().value;
+			if (oldest !== undefined) { this._cacheDiagMsgHashes.delete(oldest); }
+		}
+		this._logService.info(
+			`[LMBridge][CacheDiag] prefix sys=${_fp.sysHash} tools=${_fp.toolsHash} msgs=${_fp.msgHashes.length} ` +
+			`shared=${_shared}/${_prevFp?.length ?? 0}${_shared < (_prevFp?.length ?? 0) ? ` divergedAt=${_shared}` : ''} conv=${_convKey}`,
+		);
+
 		// 将 options 传递给 sendChatRequest，以便扩展可以访问 tools 等配置
 		// 注意：systemPrompt 已经在 _toLanguageModelMessages 中处理，不应重复传递
 		const requestOptions: any = {
@@ -830,6 +927,8 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				let capturedResponseId: string | undefined;
 				let capturedFinishReason: string | undefined;
 				let _firstPartReceived = false;
+				// [CacheDiag] 流尾对账用的 usage（usage data part 只在流尾出现一次）
+				let _lastUsage: IModelUsage | undefined;
 				const streamIterator = response.stream[Symbol.asyncIterator]();
 				while (true) {
 					const next = await raceIteratorNext(streamIterator, LM_BRIDGE_CHUNK_TIMEOUT_MS);
@@ -899,6 +998,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 					}
 						const delta = this._toModelDelta(p, modelId);
 						if (delta) {
+							if (delta.type === 'usage' && delta.usage) { _lastUsage = delta.usage; }
 							yieldedContent = true;
 							yield delta;
 						}
@@ -912,6 +1012,18 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 					...(capturedFinishReason ? { finishReason: capturedFinishReason } : {}),
 				};
 				yield doneDelta;
+
+				// [CacheDiag] 流尾对账：与 preflight 处的指纹行配对 ——
+				// 指纹没变而 hit=0 ⇒ 网关侧；指纹变了 ⇒ 我方改写（看 shared/divergedAt 定位哪段）。
+				if (_lastUsage) {
+					const inTok = _lastUsage.inputTokens ?? 0;
+					const hitTok = _lastUsage.cachedTokens ?? 0;
+					const writeTok = _lastUsage.cacheWriteTokens ?? 0;
+					this._logService.info(
+						`[LMBridge][CacheDiag] usage conv=${_convKey} input=${inTok} hit=${hitTok} write=${writeTok} ` +
+						`hitRate=${inTok > 0 ? (100 * hitTok / inTok).toFixed(1) : '0.0'}%`,
+					);
+				}
 				return; // 成功 — 结束生成器
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -1199,16 +1311,28 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				}
 				try {
 					const raw = JSON.parse(dataPart.data.toString());
-					// OpenAI 风格 usage 字段：prompt_tokens / completion_tokens / total_tokens；
-					// 缓存细分在 prompt_tokens_details.cached_tokens；计费在 credit（CodeBuddy 扩展）。
+					// OpenAI 风格 usage 字段：prompt_tokens / completion_tokens / total_tokens。
+					// 缓存细分要**多厂商兜底**（★ 2026-09-21，hy4 命中率排查取证）：
+					//   命中 —— OpenAI `prompt_tokens_details.cached_tokens` / Anthropic `cache_read_input_tokens` /
+					//     DeepSeek·Zhipu·hy 系 `prompt_cache_hit_tokens`；
+					//   写入 —— `prompt_tokens_details.cache_write_tokens` / `prompt_cache_write_tokens` /
+					//     `cache_creation_input_tokens`。
+					// 不兜底的话，只回 DeepSeek 风格字段的网关会让面板**恒显示 0 命中**，
+					// 从而把「网关其实在工作」误判成「缓存完全没生效」。
+					const _cachedTokens = raw.prompt_tokens_details?.cached_tokens
+						?? raw.cache_read_input_tokens
+						?? raw.prompt_cache_hit_tokens
+						?? undefined;
+					const _cacheWriteTokens = raw.prompt_tokens_details?.cache_write_tokens
+						?? raw.prompt_cache_write_tokens
+						?? raw.cache_creation_input_tokens
+						?? undefined;
 					const usage: IModelUsage = {
 						inputTokens: typeof raw.prompt_tokens === 'number' ? raw.prompt_tokens : undefined,
 						outputTokens: typeof raw.completion_tokens === 'number' ? raw.completion_tokens : undefined,
 						totalTokens: typeof raw.total_tokens === 'number' ? raw.total_tokens : undefined,
-						cachedTokens: raw.prompt_tokens_details?.cached_tokens != null
-							? raw.prompt_tokens_details.cached_tokens
-							: undefined,
-						cacheWriteTokens: raw.prompt_tokens_details?.cache_write_tokens ?? undefined,
+						cachedTokens: typeof _cachedTokens === 'number' ? _cachedTokens : undefined,
+						cacheWriteTokens: typeof _cacheWriteTokens === 'number' ? _cacheWriteTokens : undefined,
 						credit: typeof raw.credit === 'number' ? raw.credit : undefined,
 						// 真实使用的 provider/model（与面板「选择」可能不同——用户选 A 但实际用 B，
 						// 例如 defaultModel 兜底。Token 明细 UI 用此字段展示真实命中，避免误导）

@@ -244,7 +244,13 @@ export type PatchFailureReason =
 	/** P2（2026-09-12）：insert_line 非整数或越界（合法范围 1..totalLines+1）。 */
 	| 'invalid_insert_line'
 	/** P2（2026-09-12）：insert_line 模式下待插入文本为空。 */
-	| 'empty_insert';
+	| 'empty_insert'
+	/** 2026-09-21 批量模式（`computeBatchPatch`）：edits 为空数组。 */
+	| 'empty_edits'
+	/** 2026-09-21 批量模式：某条 edit 的 search 为空。 */
+	| 'empty_search'
+	/** 2026-09-21 批量模式：两条 edit 的匹配区间相交（含义歧义，须合并成一条）。 */
+	| 'overlapping_edits';
 
 export interface IPatchFailure {
 	readonly ok: false;
@@ -439,6 +445,189 @@ export function computePatch(
 	return {
 		ok: true, content, replacedCount: targets.length, lineEnding, lineEndingAdjusted,
 		editedLineStart, editedLineEnd,
+	};
+}
+
+/** 批量编辑中的一条（TEXT 模式语义，与单条 `search`/`replace` 完全一致）。 */
+export interface IBatchEdit {
+	readonly search: string;
+	readonly replace: string;
+}
+
+/**
+ * 批量原子编辑 —— **一次调用改多处**（2026-09-21，pi `edit` 的 `edits[]` 对齐）。
+ *
+ * ## 为什么值得做（pi 的对照事实）
+ *
+ * pi 的 `edit` 一次调用即可改多处：全部 edit 对**原始内容**匹配、按 matchIndex 逆序应用、
+ * 区间重叠直接拒绝、且**任一处失败整批不落盘**（`edits` 是原子的）。本仓此前只有单处
+ * （`computePatch`）⇒「改 3 个不相干位置」= **3 次工具调用 = 3 轮 LLM 往返**（每轮重传
+ * 全部上下文），而内容本身完全可以在一次调用里说清。
+ *
+ * ## 语义契约（与单条模式严格一致，只是批量化）
+ *
+ *  - **全部对原文匹配**：任一 edit 的 `search` 都按**文件原始内容**定位 —— 因此多条 edit
+ *    之间互不影响、顺序无关（这也是为什么逆序应用是安全的）。相邻（首尾相接）不算重叠。
+ *  - **唯一性**：每条 edit 的 `search` 在原文中必须只出现一次（批量模式不提供 replace_all，
+ *    否则「多处命中」与「多条 edit 指向同一处」将无法区分）。
+ *  - **原子**：任何一条失败（空 search / 未命中 / 多处命中 / 无变化 / 与其它 edit 重叠）
+ *    ⇒ 整批返回失败，**不落盘**。绝不「改一半再报错」。
+ *  - **不猜**：与单条模式同款 —— 只在**行尾**做确定性归一（CRLF/LF），其余差异一律报错
+ *    并把文件里最接近的原文回给模型照抄（`findClosestMatch`）。
+ *
+ * 失败消息都带 `edits[i]`（1-based）定位，模型能立刻知道是哪一条坏了。
+ *
+ * @param fileContent        文件原始内容。
+ * @param edits              待应用编辑（顺序无关；内部会按原文位置排序）。
+ * @param filePathForMessage 错误消息中的文件路径。
+ */
+export function computeBatchPatch(
+	fileContent: string,
+	edits: readonly IBatchEdit[],
+	filePathForMessage: string,
+): PatchOutcome {
+	if (edits.length === 0) {
+		return {
+			ok: false,
+			reason: 'empty_edits',
+			message:
+				`patch failed: "edits" is empty. Pass at least one { search, replace } entry, ` +
+				`or use TEXT MODE with top-level "search"/"replace" for a single edit.`,
+		};
+	}
+
+	const lineEnding = detectLineEnding(fileContent);
+	let lineEndingAdjusted = false;
+	/** 已定位的替换点（按原文下标升序）。 */
+	const resolved: Array<{ start: number; end: number; replace: string; editIndex: number }> = [];
+
+	for (let i = 0; i < edits.length; i++) {
+		const label = `edits[${i}]`;
+		const rawSearch = edits[i].search ?? '';
+		const rawReplace = edits[i].replace ?? '';
+		if (rawSearch.length === 0) {
+			return {
+				ok: false,
+				reason: 'empty_search',
+				message:
+					`patch failed: ${label}.search is empty. Each edit needs the exact existing text to ` +
+					`replace — copy it verbatim from file_read output (or use insert_line for pure insertions).`,
+			};
+		}
+		const normSearch = normalizeLineEndings(rawSearch);
+		const normReplace = normalizeLineEndings(rawReplace);
+		if (normSearch === normReplace) {
+			return {
+				ok: false,
+				reason: 'identical_search_replace',
+				message:
+					`patch aborted: ${label} has identical "search" and "replace" after line-ending ` +
+					`normalization — that edit would be a no-op. Fix ${label} (or drop it) and retry; ` +
+					`the whole batch was rejected, nothing was written.`,
+			};
+		}
+		const search = convertToLineEnding(normSearch, lineEnding);
+		const replace = convertToLineEnding(normReplace, lineEnding);
+		if (search !== rawSearch) { lineEndingAdjusted = true; }
+
+		const hits = findAllOccurrences(fileContent, search);
+		if (hits.length === 0) {
+			// 与单条模式同款诊断（脱敏 + 截断），并点名是哪一条 edit
+			const closest = findClosestMatch(fileContent, search);
+			let message =
+				`patch failed: ${label}.search text not found in ${filePathForMessage}. ` +
+				`It must match the file exactly, including whitespace and indentation. ` +
+				`Nothing was written (the batch is atomic).`;
+			if (lineEnding === 'CRLF') {
+				message +=
+					` (This file uses CRLF line endings; line-ending differences are normalized ` +
+					`automatically, so the mismatch is in the text itself.)`;
+			}
+			if (closest) {
+				// 脱敏 → 截断（顺序不可颠倒：截断会把密钥切成两半导致正则失配）
+				const redacted = redactSecrets(closest.snippet);
+				const snippet = redacted.length > CLOSEST_MATCH_HINT_LIMIT
+					? `${redacted.slice(0, CLOSEST_MATCH_HINT_LIMIT)}\n… (truncated)`
+					: redacted;
+				message +=
+					`\n\nClosest match in the file (differs only by ${closest.strategy}). ` +
+					`Copy this verbatim into ${label}.search and retry:\n` +
+					'```\n' + snippet + '\n```';
+			} else {
+				message +=
+					`\n\nNo similar block was found either — re-read the file with file_read ` +
+					`and copy the exact text for ${label}.search.`;
+			}
+			return { ok: false, reason: 'not_found', message };
+		}
+		if (hits.length > 1) {
+			return {
+				ok: false,
+				reason: 'multiple_occurrences',
+				message:
+					`patch failed: ${label}.search occurs ${hits.length} times in ${filePathForMessage}. ` +
+					`Batch mode requires each "search" to match exactly once (there is no replace_all here) — ` +
+					`extend ${label}.search with surrounding context until it is unique. ` +
+					`Nothing was written (the batch is atomic).`,
+			};
+		}
+		resolved.push({ start: hits[0], end: hits[0] + search.length, replace, editIndex: i });
+	}
+
+	// ── 重叠检测（按原文区间，升序）──────────────────────────────────────────
+	// 相邻（前一条 end === 后一条 start）合法；真正相交才拒绝 —— 相交时「谁先应用」
+	// 会改变结果，且模型的两段 text 必然来自相互重叠的文件区域 ⇒ 应合并成一条 edit。
+	const ordered = [...resolved].sort((a, b) => a.start - b.start);
+	for (let i = 1; i < ordered.length; i++) {
+		if (ordered[i].start < ordered[i - 1].end) {
+			return {
+				ok: false,
+				reason: 'overlapping_edits',
+				message:
+					`patch failed: edits[${ordered[i - 1].editIndex}] and edits[${ordered[i].editIndex}] ` +
+					`overlap in ${filePathForMessage}. Overlapping edits are ambiguous — merge them into a ` +
+					`single edit whose "search" spans the whole region. Nothing was written (the batch is atomic).`,
+			};
+		}
+	}
+
+	// ── 逆序应用（下标在原文坐标系里计算 ⇒ 逆序后始终有效）──────────────────
+	let content = fileContent;
+	for (let i = ordered.length - 1; i >= 0; i--) {
+		const e = ordered[i];
+		content = content.slice(0, e.start) + e.replace + content.slice(e.end);
+	}
+
+	// ── 改动区域（并集）行号 ────────────────────────────────────────────────
+	// 起始行：逆序替换不触碰首处之前的文本 ⇒ 数原文中首处之前的换行即可（与单条同款推理）。
+	const firstStart = ordered[0].start;
+	let newlinesBefore = 0;
+	for (let i = 0; i < firstStart; i++) {
+		if (fileContent.charCodeAt(i) === 10 /* \n */) { newlinesBefore++; }
+	}
+	const editedLineStart = newlinesBefore + 1;
+	// 结束行：末处（原文坐标最大的那条）在新内容中的结束偏移 = 原偏移 + 之前所有 edit 的长度增量。
+	const last = ordered[ordered.length - 1];
+	let deltaBeforeLast = 0;
+	for (const e of ordered) {
+		if (e === last) { break; }
+		deltaBeforeLast += e.replace.length - (e.end - e.start);
+	}
+	const lastEndInNew = last.start + deltaBeforeLast + last.replace.length;
+	let newlinesToEnd = 0;
+	for (let i = 0; i < lastEndInNew && i < content.length; i++) {
+		if (content.charCodeAt(i) === 10 /* \n */) { newlinesToEnd++; }
+	}
+	const editedLineEnd = newlinesToEnd + 1;
+
+	return {
+		ok: true,
+		content,
+		replacedCount: ordered.length,
+		lineEnding,
+		lineEndingAdjusted,
+		editedLineStart,
+		editedLineEnd,
 	};
 }
 

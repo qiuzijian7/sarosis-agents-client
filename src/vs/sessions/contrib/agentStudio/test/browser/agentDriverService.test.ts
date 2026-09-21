@@ -14,9 +14,12 @@ import type { IAgentStudioService } from '../../common/agentStudio.js';
 import type { ILogService } from '../../../../../platform/log/common/log.js';
 import type { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import type { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
-import type { IFileService } from '../../../../../platform/files/common/files.js';
+import type { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import type { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import type { IMcpService } from '../../../../../workbench/contrib/mcp/common/mcpTypes.js';
+// R4 顺序契约用（读源文本断言"解析在 prompt 组装之前"）
+import * as fs from 'fs';
+import * as path from 'path';
 
 suite('Agent Driver Service (Phase 2)', () => {
 
@@ -307,6 +310,10 @@ class InMemoryAgentStudioService {
 function makeDriver(studio: InMemoryAgentStudioService): AgentDriverService {
 	const log = new P1bLogService();
 	const config = { getValue: () => undefined } as unknown as IConfigurationService;
+	// ⚠ 2026-09-21 修正：此前这里按**旧签名**注入（第 7 个位置传 IFileService、且缺最后的
+	// IInstantiationService）⇒ `_mcpService`/`_storageService` 双双错位成 `{}`。因为错位后
+	// 两边都是空对象、且这些用例不触碰 MCP/存储，所以一直"绿着"。现按真实构造签名对齐
+	// （agentOS, skills, log, config, studio, workspaceContext, **mcp**, **storage**, **instantiation**）。
 	return new AgentDriverService(
 		{} as unknown as IAgentOSService,
 		{} as unknown as ISkillRegistry,
@@ -314,9 +321,9 @@ function makeDriver(studio: InMemoryAgentStudioService): AgentDriverService {
 		config,
 		studio as unknown as IAgentStudioService,
 		{} as unknown as IWorkspaceContextService,
-		{} as unknown as IFileService,
 		{} as unknown as IMcpService,
 		{} as unknown as IStorageService,
+		{} as unknown as IInstantiationService,
 	);
 }
 
@@ -460,5 +467,96 @@ suite('Agent Driver Service — temp worktree startup recovery (P1b)', () => {
 		assert.strictEqual(a.worktreePath, '/orig/wt', '构造时自愈应已恢复临时覆盖');
 		assert.strictEqual('tempWorktreeOverride' in a, false);
 		driver.dispose();
+	});
+});
+
+suite('Agent Driver Service — resume 范式与策略提示词一致（R4 修复）', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const DRIVER_SRC = () => fs.readFileSync(
+		path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/agentDriverService.ts'), 'utf8');
+
+	/** 剥掉注释后的源码 —— 防止"注释里写着 R4 但代码没做"式假绿。 */
+	function strippedSource(): string {
+		return DRIVER_SRC()
+			.replace(/\/\*[\s\S]*?\*\//g, '')
+			.replace(/^[ \t]*\/\/.*$/gm, '');
+	}
+
+	/** 带可控 workspace storage 的 driver（checkpoint 由 storage.get 返回）。参数顺序同真实构造签名。 */
+	function makeDriverWithStorage(
+		studio: InMemoryAgentStudioService,
+		storageGet: (key: string) => string | undefined,
+		onGet?: () => void,
+	): AgentDriverService {
+		return new AgentDriverService(
+			{} as unknown as IAgentOSService,
+			{} as unknown as ISkillRegistry,
+			new P1bLogService() as unknown as ILogService,
+			{ getValue: () => undefined } as unknown as IConfigurationService,
+			studio as unknown as IAgentStudioService,
+			{} as unknown as IWorkspaceContextService,
+			{} as unknown as IMcpService,
+			{ get: (k: string) => { onGet?.(); return storageGet(k); } } as unknown as IStorageService,
+			{} as unknown as IInstantiationService,
+		);
+	}
+
+	type ResumeResolver = (req: { resumeFrom?: unknown; sessionId?: string }) => { paradigm?: string } | undefined;
+
+	test('★★★ 调用方显式传入的 resumeFrom 优先，且**不读存储**', () => {
+		const studio = new InMemoryAgentStudioService();
+		let storageReads = 0;
+		const driver = makeDriverWithStorage(studio, () => JSON.stringify({ paradigm: 'readonly' }), () => { storageReads++; });
+
+		const explicit = { paradigm: 'graph' };
+		const got = (driver as unknown as { _resolveTurnResumeFrom: ResumeResolver })
+			._resolveTurnResumeFrom({ resumeFrom: explicit, sessionId: 's1' });
+
+		assert.strictEqual(got, explicit, '显式 resumeFrom 必须原样返回（它是调用方的权威输入）✗');
+		assert.strictEqual(storageReads, 0, '显式给了就不该再去读 checkpoint ✗');
+		driver.dispose();
+	});
+
+	test('★★★ 未显式给 + 有 sessionId ⇒ 从 checkpoint 解析出范式（prompt 组装要靠它）', () => {
+		const studio = new InMemoryAgentStudioService();
+		const driver = makeDriverWithStorage(studio, () => JSON.stringify({ paradigm: 'readonly' }));
+
+		const got = (driver as unknown as { _resolveTurnResumeFrom: ResumeResolver })
+			._resolveTurnResumeFrom({ sessionId: 's1' });
+
+		assert.strictEqual(got?.paradigm, 'readonly',
+			'checkpoint 里的范式必须能被解析出来 —— 否则 resume 那一轮的策略提示词会按 Agent 配置渲染，'
+			+ '与主循环实际采用的范式错配（R4）✗');
+		driver.dispose();
+	});
+
+	test('★ 无 sessionId ⇒ 不触碰存储（与旧 `if (sessionId)` 守卫同语义）', () => {
+		const studio = new InMemoryAgentStudioService();
+		let storageReads = 0;
+		const driver = makeDriverWithStorage(studio, () => { throw new Error('不该被调用'); }, () => { storageReads++; });
+
+		const got = (driver as unknown as { _resolveTurnResumeFrom: ResumeResolver })._resolveTurnResumeFrom({});
+		assert.strictEqual(got, undefined);
+		assert.strictEqual(storageReads, 0, '无 sessionId 时不得读存储 ✗');
+		driver.dispose();
+	});
+
+	test('★★★ 顺序契约：resume 解析必须在 prompt 组装**之前**，且 graphRequest 复用同一变量', () => {
+		// 为什么用源码顺序断言：这是**时序**类缺陷 —— 解析写得再对，只要位置晚于 prompt 组装，
+		// 就回到 R4（提示词范式 A / 策略范式 B），且没有任何单元级可观察量能捕获它。
+		const src = strippedSource();
+		const declIdx = src.indexOf('const resumeFromForTurn = this._resolveTurnResumeFrom(request);');
+		const guidanceIdx = src.indexOf('getStrategyGuidance(resumeFromForTurn?.paradigm ?? agent?.paradigm)');
+		assert.ok(declIdx !== -1, '必须统一解析一次 resumeFromForTurn ✗');
+		assert.ok(guidanceIdx !== -1, '策略提示词必须读 resumeFromForTurn（否则 checkpoint 范式到不了 prompt）✗');
+		assert.ok(declIdx < guidanceIdx,
+			'resume 解析必须**早于**策略提示词组装 —— 晚于它就会退回 R4 错配（prompt 范式与策略范式不一致）✗');
+
+		assert.ok(src.includes('resumeFrom: resumeFromForTurn,'),
+			'graphRequest 必须复用同一份 resumeFrom（否则 prompt 与实际恢复的消息/范式口径可能漂移）✗');
+		assert.ok(!/resumeFrom:\s*enrichedRequest\.resumeFrom\s*\?\?/.test(src),
+			'不得退回"在 :1370 附近二次解析"的旧写法 —— 那正是 R4 的来源 ✗');
 	});
 });

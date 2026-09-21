@@ -1,15 +1,11 @@
 /*---------------------------------------------------------------------------------------------
- *  Tests for MiMoStrategy（主会话 TaskGate）+ paradigmOverride 注册表 + switch_paradigm 工具。
+ *  Tests for MiMoStrategy（主会话 TaskGate）+ 已退役范式工具的反向契约。
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IterationBudget } from '../../common/iterationBudget.js';
 import { classifyIterationStop } from '../../common/turnStopGate.js';
-import {
-	setParadigmOverride, getParadigmOverride, clearParadigmOverride,
-	SWITCHABLE_PARADIGMS,
-} from '../../common/paradigmOverride.js';
 import { registerSessionTaskLookup, getSessionTaskLookup } from '../../browser/sessionTaskGateBridge.js';
 import { HermesReActStrategy } from '../../browser/strategies/hermesReActStrategy.js';
 import { MiMoStrategy } from '../../browser/strategies/mimoStrategy.js';
@@ -19,18 +15,14 @@ import type { PreLoopContext } from '../../common/agentLoopStrategy.js';
 import type { IIncompleteTask } from '../../common/taskGate.js';
 import type { IAgentOSService } from '../../common/agentOS.js';
 
-// ── 钉 legacy（2026-09-21）────────────────────────────────────────────────────
-// `switch_paradigm` 的注册被 `if (!isPiKernelEnabled())` 门控（compatibilityTools），而 pi 内核
-// **没有范式机制**（piTurnKernel.ts:22 自述「范式在 pi 路径不存在」）⇒ E2 翻转默认值后该工具
-// 仅在 legacy 路径注册。本文件测的正是「工具 handler + 覆盖注册表」这一 legacy 语义，
-// 故显式关断内核开关（与 agentTurnExecutorBehavior.test.ts 同款做法）。
-// ⚠ 范式概念正在下线中（产品入口与提示词许诺已清）；本套件保留至 legacy 主循环删除（阶段 4b）。
+// ── 钉 legacy（2026-09-21 更新：范式工具与范式覆盖注册表**均已退役**）──────────
+// `switch_paradigm` 曾由 `if (!isPiKernelEnabled())` 门控 —— 该工具与其门控已于 2026-09-21
+// **正式退役并删除**（pi 路径没有范式机制 ⇒ 注册即空承诺；见 compatibilityTools.ts 的
+// 「已正式退役」注释块）。随后其唯一运行时写入入口消失 ⇒ **`paradigmOverride` 注册表也整体下线**
+// （范式改为每 turn 就地解析 `resumeFrom?.paradigm ?? request.paradigm`，见 agentTurnExecutor.ts
+// 解析段注释与 common/paradigmOverride.ts 的删除记录）。故本文件不再有注册表用例。
+// 下方内核开关仍显式关断：其余 legacy 语义（MiMo 策略 / 任务门）需要它。
 (globalThis as { __SAROSIS_PI_KERNEL?: unknown }).__SAROSIS_PI_KERNEL = false;
-
-function resultText(result: unknown): string {
-	const arr = result as Array<{ type: string; text?: string }>;
-	return arr.map(c => c.text ?? '').join('\n');
-}
 
 function stubPreLoopContext(agentId: string): PreLoopContext {
 	return {
@@ -42,42 +34,6 @@ function stubPreLoopContext(agentId: string): PreLoopContext {
 	} as unknown as PreLoopContext;
 }
 
-suite('paradigmOverride — runtime switching registry', () => {
-
-	ensureNoDisposablesAreLeakedInTestSuite();
-
-	test('set / get / clear cycle', () => {
-		clearParadigmOverride('agent-switch-1');
-		assert.strictEqual(getParadigmOverride('agent-switch-1'), undefined);
-		setParadigmOverride('agent-switch-1', 'mimo');
-		assert.strictEqual(getParadigmOverride('agent-switch-1'), 'mimo');
-		setParadigmOverride('agent-switch-1', 'budgeted-react');
-		assert.strictEqual(getParadigmOverride('agent-switch-1'), 'budgeted-react');
-		clearParadigmOverride('agent-switch-1');
-		assert.strictEqual(getParadigmOverride('agent-switch-1'), undefined);
-	});
-
-	test('undefined value clears (idempotent)', () => {
-		setParadigmOverride('agent-switch-2', 'react');
-		setParadigmOverride('agent-switch-2', undefined);
-		assert.strictEqual(getParadigmOverride('agent-switch-2'), undefined);
-	});
-
-	test('agents are isolated', () => {
-		setParadigmOverride('agent-A', 'mimo');
-		setParadigmOverride('agent-B', 'readonly');
-		assert.strictEqual(getParadigmOverride('agent-A'), 'mimo');
-		assert.strictEqual(getParadigmOverride('agent-B'), 'readonly');
-		clearParadigmOverride('agent-A');
-		clearParadigmOverride('agent-B');
-	});
-
-	test('SWITCHABLE_PARADIGMS includes mimo + budgeted-react and excludes graph', () => {
-		assert.ok(SWITCHABLE_PARADIGMS.includes('mimo'));
-		assert.ok(SWITCHABLE_PARADIGMS.includes('budgeted-react'));
-		assert.ok(!SWITCHABLE_PARADIGMS.includes('graph' as any), 'graph 走独立路由，不应可热切换');
-	});
-});
 
 suite('MiMoStrategy — paradigm identity + 主会话 TaskGate', () => {
 
@@ -195,12 +151,13 @@ suite('MiMoStrategy — paradigm identity + 主会话 TaskGate', () => {
 	});
 });
 
-suite('switch_paradigm 工具 — 写入覆盖 + 校验 + 提示', () => {
+suite('【已正式退役】switch_paradigm（2026-09-21）', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	let tool: IBuiltinToolRegistration;
-	setup(() => {
+	test('★★★ 退役契约：即便 legacy 内核开关关断，也不得再注册 switch_paradigm', () => {
+		// 关键点：退役 ≠ 「换个开关还能回来」。门控代码已删除 ⇒ 无论内核开关如何，
+		// 这个工具都不该出现在注册结果里（挡住"凭印象加回门控"）。
 		const registrations: IBuiltinToolRegistration[] = [];
 		const stubCtx: CompatToolContext = {
 			register: (d) => { registrations.push(d); },
@@ -208,40 +165,10 @@ suite('switch_paradigm 工具 — 写入覆盖 + 校验 + 提示', () => {
 			fileService: {} as CompatToolContext['fileService'],
 			logService: { info: () => { }, warn: () => { }, error: () => { } } as unknown as CompatToolContext['logService'],
 			id: 'test.compat',
-			resolveAndCheckWorkspacePath: async (_a, p) => p,
+			resolveAndCheckWorkspacePath: async (_a, path) => path,
 		};
 		registerCompatibilityTools(stubCtx);
-		tool = registrations.find(r => r.definition.name === 'switch_paradigm')!;
-		assert.ok(tool, 'switch_paradigm 必须被注册');
-	});
-	teardown(() => {
-		clearParadigmOverride('agent-switch-tool');
-	});
-
-	test('happy path: 切到 mimo 写入覆盖 + 提示下一 turn 生效 + 缓存重建成本', async () => {
-		const result = await tool.handler({ paradigm: 'mimo' }, undefined, 'agent-switch-tool');
-		const out = resultText(result);
-		assert.strictEqual(getParadigmOverride('agent-switch-tool'), 'mimo');
-		assert.ok(out.includes('mimo'));
-		assert.ok(out.includes('NEXT turn'), '必须明确仅下一 turn 生效');
-		assert.ok(out.includes('prompt cache rebuilds'), '必须提示缓存重建的一次性成本');
-		assert.ok(out.includes('task board') || out.includes('kanban'), 'mimo 必须提示任务板语义');
-	});
-
-	test('paradigm=default 清除覆盖', async () => {
-		setParadigmOverride('agent-switch-tool', 'mimo');
-		await tool.handler({ paradigm: 'default' }, undefined, 'agent-switch-tool');
-		assert.strictEqual(getParadigmOverride('agent-switch-tool'), undefined);
-	});
-
-	test('未知范式 → Error 文本，不写入', async () => {
-		const result = await tool.handler({ paradigm: 'nonexistent' }, undefined, 'agent-switch-tool');
-		assert.ok(resultText(result).startsWith('Error:'));
-		assert.strictEqual(getParadigmOverride('agent-switch-tool'), undefined);
-	});
-
-	test('缺 agentId → Error', async () => {
-		const result = await tool.handler({ paradigm: 'mimo' });
-		assert.ok(resultText(result).startsWith('Error:'));
+		assert.ok(!registrations.some(r => r.definition.name === 'switch_paradigm'),
+			'switch_paradigm 已正式退役 —— 不得再注册（pi 路径没有范式机制；回归须按 pi 契约重新引入）✗');
 	});
 });

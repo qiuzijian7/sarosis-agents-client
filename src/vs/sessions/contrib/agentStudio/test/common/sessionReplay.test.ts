@@ -72,14 +72,18 @@ suite('会话回放 / digest / 不变量（P1-7）', () => {
 		assert.ok(formatDigestLine(d).includes('模型可见=4/4'), `摘要行必须以"模型可见"开头 ✓：${formatDigestLine(d)}`);
 	});
 
-	test('★★★ 「模型可见条数」必须与请求侧同源：压缩边界**丢弃边界之前全部消息** ✗✓', () => {
+	test('★★★ 「模型可见条数」必须与请求侧同源：**可信**边界丢弃边界之前全部消息 ✗✓', () => {
 		// 真机事故（2026-09-21）：13 条会话里含 1 条压缩边界 ⇒ 模型只看到 7 条 ✓，
 		// 且边界摘要写着「当前任务：无」✗ ⇒ 用户说「执行」时模型失忆 ✓✓。
+		// ⚠ 2026-09-21 起切片还要求边界**可信**（摘要信息量与压缩量相称 + tokensSaved>0）：
+		//   本用例给"可信"边界（长摘要 + 正收益）⇒ 语义与事故当时一致 ✓；
+		//   "不可信"边界的行为见下一个用例（不切片 ⇒ 不丢历史 ✓）。
 		const messages: ChatMessage[] = [
 			user('u1', '请把 agent 存储路径找出来'),
 			assistant('a1', '我先看看'),
-			assistant('boundary', '[上下文压缩] 此前的对话历史（11 条消息）已压缩为以下摘要：\n## Active Task（当前任务）\n无',
-				{ metadata: { type: 'compaction', originalCount: 11, compressedCount: 10, tokensSaved: -73 } }),
+			assistant('boundary', '[上下文压缩] 此前的对话历史（11 条消息）已压缩为以下摘要：\n'
+				+ '## Active Task（当前任务）\n先定位 agent 存储路径，再核对默认数据目录与迁移脚本。\n'.repeat(20),
+				{ metadata: { type: 'compaction', originalCount: 11, compressedCount: 10, tokensSaved: 4200 } }),
 			assistant('a2', '找到了路径'),
 		];
 		const d = buildSessionDigest(messages);
@@ -94,6 +98,27 @@ suite('会话回放 / digest / 不变量（P1-7）', () => {
 		assert.ok(f, `必须有 compaction-boundary-hides-history 提示 ✓：${JSON.stringify(findings.map(x => x.kind))}`);
 		assert.strictEqual(f.severity, 'warning', '它是提示而非违规（压缩是正常机制 ✓）');
 		assert.ok(f.detail.includes('2/4'), '提示里要带比例（一眼看出裁了多少 ✓）');
+	});
+
+	test('★★★ 「摘要饥饿」边界**不得**切片：模型恢复看到全部历史（2026-09-21 fail-safe ✓）', () => {
+		// 真机数据（`sess_ms5kriv8_0j6atj`）：`tokensSaved=-73`（压缩反而变大）+
+		// 摘要只写着「当前任务：无」⇒ 该边界生效就是**纯丢上下文** ✗。
+		// 切模型事故（`vscode-app-1789994132110.log`）同理：153 条消息 → 129 token 的
+		// 检索摘要、`saved=24836 > 0` ⇒ 用"省了 token"当成功判据 ⇒ 模型永久失忆 ✗✗。
+		const messages: ChatMessage[] = [
+			user('u1', '请把 agent 存储路径找出来'),
+			assistant('a1', '我先看看'),
+			assistant('boundary', '[上下文压缩] 此前的对话历史（11 条消息）已压缩为以下摘要：\n## Active Task（当前任务）\n无',
+				{ metadata: { type: 'compaction', originalCount: 11, compressedCount: 10, tokensSaved: -73 } }),
+			assistant('a2', '找到了路径'),
+		];
+		const d = buildSessionDigest(messages);
+		assert.strictEqual(d.hasCompactionBoundary, true, '历史里确实有边界（这是事实，与是否切片无关 ✓）');
+		assert.strictEqual(d.modelVisibleMessages, 3,
+			'不可信边界 ⇒ 不切片 ⇒ 3 条历史全部可见，边界标记本身被剔除 ✓');
+		assert.strictEqual(d.droppedByCompactionBoundary, 0,
+			'⚠ 不得从"看不见的条数"反推：被剔除的是标记而非历史 ⇒ 历史丢失为 0 ✓');
+		assert.ok(formatDigestLine(d).includes('模型可见=3/4'), `不应告警"历史被裁"（未丢历史 ✓）：${formatDigestLine(d)}`);
 	});
 
 	test('★★ 健康数据必须**零**发现（否则体检就是噪音 ✗）', () => {

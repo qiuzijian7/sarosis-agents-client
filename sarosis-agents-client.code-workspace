@@ -11,6 +11,10 @@
 		{
 			"name": "saros-marketplace",
 			"path": "../saros-marketplace"
+		},
+		{
+			"name": "vssaros-homepage",
+			"path": "../../CustomWorkspaces/AIProjects/vssaros-homepage"
 		}
 	],
 	"settings": {

@@ -31,6 +31,17 @@ export const SPILL_THRESHOLD_BYTES = 65536;
 /** 内联保留的头部字节数 —— 落盘后仍给模型一段开头，避免它为了「看一眼」就得再读文件。 */
 export const SPILL_INLINE_HEAD_BYTES = 8192;
 
+/**
+ * 内联保留的**尾部**字节数（2026-09-21，pi/bash 对比后新增）。
+ *
+ * 此前内联片段**只有头部**：对构建/测试日志，头部基本是进度与 warning 噪音，而
+ * **错误与结论在尾部** —— 模型必须再花一次 `file_read` 才知道构建到底过没过。
+ * pi 的 bash 正是基于这一点选择「**尾部优先**」保留（`truncateTail`，
+ * 2000 行/50KB，先到者胜）。本仓做头+尾双段：既保留"命令开头的解析/回显结论"，
+ * 又让**结尾的成败结论直接可见**，中段仍靠落盘文件按需检索 ✓。
+ */
+export const SPILL_INLINE_TAIL_BYTES = 8192;
+
 /** 落盘文件保留上限（个）。超出则删最旧的。 */
 export const SPILL_MAX_FILES = 40;
 
@@ -41,27 +52,46 @@ export const SPILL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export interface ISpillDecision {
 	/** 是否需要落盘。 */
 	readonly shouldSpill: boolean;
-	/** 内联返回的头部片段（`shouldSpill` 为 true 时有值）。 */
-	readonly inlineHead: string;
+	/**
+	 * 内联返回的片段（`shouldSpill` 为 true 时有值）——
+	 * **头 + 省略标记 + 尾**（头尾均切在行边界），不是单纯的头部。
+	 */
+	readonly inlineExcerpt: string;
 	/** 原始总长度（字符）。 */
 	readonly totalChars: number;
 }
 
 /**
- * 判断输出是否需要落盘，并切出内联头部。
+ * 判断输出是否需要落盘，并切出**内联片段（头 + 省略标记 + 尾）**。
  *
  * 注意按**字符**而非字节判断：上游 `EXEC_OUTPUT_MAX` 也是字符语义，两者保持一致
  * 便于推理；且此处的目的是控制上下文占用，字符数与 token 数更相关。
+ *
+ * 头尾都切在**行边界**（头取最后一个换行之前，尾从换行之后开始）—— 半行会误导模型
+ * 把截断处当成内容 ✗。头尾各 8KB，中段以省略标记替代并说明「完整输出在下方」。
  */
 export function decideOutputSpill(text: string): ISpillDecision {
 	const totalChars = text.length;
 	if (totalChars <= SPILL_THRESHOLD_BYTES) {
-		return { shouldSpill: false, inlineHead: text, totalChars };
+		return { shouldSpill: false, inlineExcerpt: text, totalChars };
 	}
-	// 切在行边界上，避免把一行截成两半误导模型
-	let cut = text.lastIndexOf('\n', SPILL_INLINE_HEAD_BYTES);
-	if (cut < SPILL_INLINE_HEAD_BYTES / 2) { cut = SPILL_INLINE_HEAD_BYTES; }
-	return { shouldSpill: true, inlineHead: text.slice(0, cut), totalChars };
+	// 头部：切在行边界上，避免把一行截成两半误导模型
+	let headCut = text.lastIndexOf('\n', SPILL_INLINE_HEAD_BYTES);
+	if (headCut < SPILL_INLINE_HEAD_BYTES / 2) { headCut = SPILL_INLINE_HEAD_BYTES; }
+	// 尾部：同样切在行边界（从一个换行**之后**开始，保证不出现半行）
+	const tailFrom = Math.max(headCut, text.length - SPILL_INLINE_TAIL_BYTES);
+	const nlAfter = text.indexOf('\n', tailFrom);
+	// ⚠ 无换行（超长单行）⇒ 找不到行边界，只能按字符切 —— 此时**必须回退到 tailFrom**
+	// 而不是 text.length：后者会让尾段变成空串（等于又退回"只给头部"，把结论丢掉 ✗）。
+	const tailCut = nlAfter === -1 ? tailFrom : nlAfter + 1;
+	const omitted = Math.max(0, tailCut - headCut);
+	return {
+		shouldSpill: true,
+		inlineExcerpt: text.slice(0, headCut)
+			+ `\n... (${omitted} chars omitted — full output below) ...\n`
+			+ text.slice(tailCut),
+		totalChars,
+	};
 }
 
 /** 生成落盘文件名（可排序 + 唯一）。 */
@@ -79,13 +109,14 @@ export function spillFileName(now: Date, seq: number): string {
  * 必须做到：① 明确「输出没有丢」② 给出**可直接执行**的检索方式 —— 否则模型会以为
  * 信息不可得而重跑命令（重跑构建的代价远大于读文件）。
  */
-export function spillNoticeMessage(filePath: string, totalChars: number, inlineHead: string): string {
+export function spillNoticeMessage(filePath: string, totalChars: number, inlineExcerpt: string): string {
 	return (
-		`${inlineHead}\n\n`
+		`${inlineExcerpt}\n\n`
 		+ `[OUTPUT TRUNCATED IN CONTEXT — FULL OUTPUT SAVED]\n`
-		+ `The command produced ${totalChars} characters; only the first ${inlineHead.length} are shown above.\n`
-		+ `The COMPLETE output was written to:\n  ${filePath}\n`
-		+ `Nothing was lost. To inspect the rest, use the file tools on that path instead of re-running the command:\n`
+		+ `The command produced ${totalChars} characters; the excerpt above is its HEAD and TAIL `
+		+ `(${inlineExcerpt.length} characters) — the middle was omitted from the context here.\n`
+		+ `Nothing was lost: the COMPLETE output was written to:\n  ${filePath}\n`
+		+ `To inspect the omitted middle, use the file tools on that path instead of re-running the command:\n`
 		+ `  - search_code with path set to that file — to jump straight to an error/symbol\n`
 		+ `  - file_read with offset/limit — to page through it\n`
 		+ `Do NOT re-run the command just to see the output again.`

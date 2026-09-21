@@ -65,8 +65,9 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		// 可折叠进 tool_search 桥接；`memory_list` 仍由 CORE_TOOLS 白名单兜底不可折叠。
 		prefixes: ['file_', 'search_files', 'terminal'],
 		exactNames: [
-			'update_plan', 'plan_explore', 'plan_enter', 'plan_exit', 'plan_register',
-			'switch_paradigm',
+			// ★ 2026-09-21：`plan_register` 与 `switch_paradigm` 已正式退役（随门控一并删除），
+			//   从 core 名单移除 —— 留着会让 `getToolsetForTool` 对**不存在的工具名**返回 core。
+			'update_plan', 'plan_explore', 'plan_enter', 'plan_exit',
 			'patch', 'process',
 		'web_search', 'web_extract',
 		'skill_manage',
@@ -206,6 +207,28 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		deferrable: true,
 	},
 	{
+		// ★ 2026-09-21：Unreal Engine 工具集（`unreal_*`，7 个）。
+		//
+		// **事故背景（用户报「打出的版本中找不到 unreal_* 工具」）**：`unrealTools.ts` 早已实现并在
+		// `builtinToolProvider._registerUnrealTools()` 无条件注册（2026-09-20 接线），但**本表从未登记
+		// `unreal_`** ⇒ `getToolsetForTool` 兜底归入 `utility`（Low + deferrable）⇒ 被 focus 模式
+		// 收窄整条剔除（Step3a 只保留「推荐 toolset / 桥接 / core / Always」）⇒ **LLM 与 tool_search
+		// 均不可见**（日志实证：`tool_describe "unreal_exec" → Error: Tool not found`）。
+		// 这与 `image_gen` / `renderMermaidDiagram` / `canvas_*` 落 utility 的历史坑**完全同型**。
+		//
+		// priority 取 Always 的理由（同 image_gen）：Unreal 工具是**用户显式意图**（在 Unreal 项目里
+		// 让 LLM 驱动编辑器），不属于「按项目信号推荐的代码类工具集」——`focusMode.CODE_PROJECT_MARKERS`
+		// 虽已声明 `*.uproject` / `*.uplugin` 信号，但 `detectFocusModeWithProbe` 当前**只取信号、
+		// 不消费 per-marker 的 toolsets**（那份数据是死的）⇒ 挂在 focus 推荐上不可靠；且 Always 可不
+		// 受限地进入可见集（`toolSearchAssembler` 的 `MAX_VISIBLE_TOOLS` 软上限**不计数 Always**）。
+		// 代价：7 个 schema 常驻（仅前缀匹配，不与 core 名冲突）。
+		id: 'unreal',
+		label: 'Unreal Engine',
+		priority: ToolsetPriority.Always,
+		prefixes: ['unreal_'],
+		deferrable: false,
+	},
+	{
 		id: 'utility',
 		label: 'Utility',
 		priority: ToolsetPriority.Low,
@@ -300,6 +323,19 @@ export function isToolsetDeferrable(toolsetId: string): boolean {
 export function isDynamicToolset(toolsetId: string): boolean {
 	return toolsetId.startsWith('mcp-');
 }
+
+/**
+ * 允许落 `utility` 兜底桶的白名单 —— 生产侧（`builtinToolProvider` 注册收尾的归类自检 warn）
+ * 与测试侧（`test/browser/toolRegistrationWiring.test.ts` 的 ①）**共用同一份**，防两处漂移。
+ *
+ * 唯一成员 `transfer_to_agent`：supervisor 交接工具（handoffTools.ts），**显式**标
+ * `toolset: 'utility'` —— 设计意图是「只在多代理 graph 运行时被 runtime 拦截」
+ * （直发无意义，handler 对直接调用报错）。
+ *
+ * 新加白名单项之前，必须先回答：「它为什么不该被 focus 模式下的用户直接看到？」
+ * —— 答不上来就给它登记一个真正的 toolset（unreal_* 事故的教训）。
+ */
+export const UTILITY_BUCKET_WHITELIST: ReadonlySet<string> = new Set(['transfer_to_agent']);
 
 // ─── 默认启用的 toolset ─────────────────────────────────────────────────
 // ★ 2026-09-11 删除 `DEFAULT_ENABLED_TOOLSETS`（死代码 + 误导）：

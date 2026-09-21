@@ -208,7 +208,7 @@ export function registerKbVaultRecallTools(ctx: KbVaultRecallContext): void {
 				} catch (err) {
 					ctx.logService.warn('[kb_search] vector search failed', err);
 					if (mode === 'semantic') {
-						return text('语义检索执行失败，请改用 mode="fulltext" 重试。');
+						throw new Error('语义检索执行失败，请改用 mode="fulltext" 重试。');
 					}
 					notes.push('语义检索失败，已降级为全文结果');
 				}
@@ -288,7 +288,7 @@ export function registerKbVaultRecallTools(ctx: KbVaultRecallContext): void {
 				};
 			} catch (err) {
 				ctx.logService.warn('[kb_topic_overviews] failed', err);
-				return text('目录摘要读取失败，请改用 kb_search 直接检索。');
+				throw new Error('目录摘要读取失败，请改用 kb_search 直接检索。');
 			}
 		},
 	});
@@ -364,7 +364,7 @@ export function registerKbVaultRecallTools(ctx: KbVaultRecallContext): void {
 				};
 			} catch (err) {
 				ctx.logService.warn('[kb_suggest_links] failed', err);
-				return text('隐式关联建议生成失败，请稍后重试。');
+				throw new Error('隐式关联建议生成失败，请稍后重试。');
 			}
 		},
 	});

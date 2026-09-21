@@ -47,6 +47,13 @@ body {
 .host { font-size: 11px; color: var(--mut); text-align: right; max-width: 45%; word-break: break-all; }
 
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); flex: 0 0 auto; }
+/* logo 现在是按钮（点它看 App 信息）：去掉按钮默认外观，保留原尺寸 */
+.logo-btn {
+  background: transparent; border: none; padding: 2px 4px; margin: -2px 0;
+  border-radius: 8px; display: flex; align-items: center; cursor: pointer;
+}
+.logo-btn:active { background: rgba(255, 255, 255, .08); }
+.logo-btn:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--err); }
 
@@ -128,6 +135,18 @@ button:disabled { opacity: .5; cursor: default; }
 button.ghost { background: transparent; border: 1px solid var(--line); color: var(--fg); }
 button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radius: 8px; }
 .composer-actions #send { flex: 1; }
+
+/* 语音输入：正方形图标按钮（不抢「发送」的宽度）；录音中用红色 + 呼吸动画常显，
+   让人一眼看出麦克风还开着 —— 手机端最容易忘的就是"它还在听"。 */
+.composer-actions .voice { flex: 0 0 auto; width: 44px; padding: 0; font-size: 16px; line-height: 1; }
+.composer-actions .voice.disabled { opacity: .45; }
+.composer-actions .voice.recording {
+  background: var(--err);
+  border-color: var(--err);
+  color: #fff;
+  animation: voicePulse 1.2s ease-in-out infinite;
+}
+@keyframes voicePulse { 50% { opacity: .65; } }
 
 /* ---------- 文件 ---------- */
 .path-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
@@ -527,4 +546,117 @@ button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radi
   #view-status > .events { grid-area: events; padding: 0 16px 12px; }
 
   .toast { bottom: 16px; }
+}
+
+/* ---------- App 自升级（原生壳专用；浏览器里这整块是 hidden） ---------- */
+.update-wrap {
+  padding: 12px;
+  padding-top: 0;
+}
+
+.update-card .v {
+  word-break: break-word;
+}
+
+/* ---------- App 信息（点顶部 logo 弹出）---------- */
+/* 目标是「随时能查到装的是哪个版本」：出问题时用户截这一屏就够了，省掉来回问版本。 */
+.about-mask {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(0, 0, 0, .55);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+/* 关闭态靠 .hidden 的 display:none !important（见文件上方定义）⇒ 这里不需要再写一条 */
+.about {
+  width: min(520px, 100%); max-height: min(82vh, 640px); overflow: auto;
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .55);
+}
+.about-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.about-logo { height: 18px; width: auto; flex: 0 0 auto; }
+.about-title { font-size: 15px; font-weight: 600; }
+/* 版本号是本弹层的重点 ⇒ 用正文色而不是灰色（对比度更高，截图也看得清） */
+.about-sub { font-size: 12px; color: var(--fg); margin-top: 3px; word-break: break-all; }
+.about-close { margin-left: auto; flex: 0 0 auto; }
+/* 两列网格：奇数格=标签（灰）、偶数格=值 —— 不额外加 class，避免和卡片的 .k/.v 语义打架 */
+.about-rows { display: grid; grid-template-columns: auto 1fr; gap: 7px 12px; font-size: 13px; }
+.about-rows > div:nth-child(odd) { color: var(--mut); white-space: nowrap; }
+.about-rows > div:nth-child(even) { word-break: break-all; }
+.about-note { font-size: 12px; color: var(--mut); line-height: 1.65; margin: 12px 0 0; white-space: pre-line; }
+.about-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+.update-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.update-bar {
+  margin-top: 10px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.update-bar-in {
+  height: 100%;
+  width: 0%;
+  background: var(--ok);
+  transition: width .2s ease;
+}
+
+.update-cur {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--mut);
+}
+
+.update-notes {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--mut);
+  line-height: 1.5;
+}
+
+.update-notes ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.update-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--mut);
+}
+
+.update-src {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--mut);
+}
+
+.update-src summary {
+  cursor: pointer;
+}
+
+.update-src input {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.update-hint {
+  margin-top: 4px;
+  line-height: 1.5;
 }

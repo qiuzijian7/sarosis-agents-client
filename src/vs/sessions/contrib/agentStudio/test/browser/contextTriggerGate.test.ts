@@ -47,9 +47,11 @@ suite('ContextManager 压缩触发门控', () => {
 
 		// 断言必须落到 _evaluateTrigger 的返回值上——willAttemptCompression 只回 bool，
 		// 会把「token 不足」「消息数不足」「两者都不足」压成同一个 false（弱断言）。
+		// ⚠ 2026-09-21 M1：contextWindow 传 undefined 会命中「窗口未知守卫」（unknown_window，
+		// 见本文件末尾新套件）——测 below_* 组合原因必须给**已知**窗口。
 		const trigger = (cm as any)._evaluateTrigger(
 			messages, { ...CONFIG, maxRecentMessages: 20, summaryModelId: 'm' } as any,
-			undefined, undefined, undefined, undefined,
+			200000, undefined, undefined, undefined,
 		);
 
 		assert.strictEqual(trigger.shouldCompress, false, '3 条消息 + 小 token 不得触发压缩');
@@ -77,9 +79,11 @@ suite('ContextManager 压缩触发门控', () => {
 	test('消息数达标但 token 不足：skipReason 为 below_token_threshold', () => {
 		const cm = makeManager(CONFIG);
 
+		// ⚠ 2026-09-21 M1：contextWindow 传 undefined 会命中「窗口未知守卫」（unknown_window）
+		// ——测 below_token_threshold 必须给**已知**窗口。
 		const trigger = (cm as any)._evaluateTrigger(
 			makeMessages(30), { ...CONFIG, maxRecentMessages: 20, summaryModelId: 'm' } as any,
-			undefined, 100, undefined, undefined,
+			200000, 100, undefined, undefined,
 		);
 
 		assert.strictEqual(trigger.shouldCompress, false, 'token 远低于阈值应 skip');
@@ -230,6 +234,113 @@ suite('ContextManager 压缩触发门控', () => {
 			);
 		}
 	});
+
+/**
+ * 2026-09-21 事故防线（日志 `vscode-app-1789994132110.log`，用户报「输入框切模型后
+ * llm 好像都不知道」）：
+ *   ① **窗口收缩守卫**：切到小窗口模型 ⇒ effectiveWindow 从 936k 塌到 **64k 下限**，
+ *      76k 的既有会话被判"120% 超压"⇒ 收敛仍必须做（否则真实溢出），但**不得**用
+ *      检索结果替代真摘要；
+ *   ② **检索式最小回收比**：真机 `source=recall tokens=129` 替换 153 条消息，旧的
+ *      "非空即采用"判据放行 ⇒ 上下文被静默掏空。现在回收量必须与被替换内容相称。
+ */
+suite('ContextManager 窗口收缩守卫 / 检索式摘要最小回收比', () => {
+
+	function makeMessagesWithBody(count: number, chars: number): Array<{ role: string; content: string }> {
+		return Array.from({ length: count }, (_, i) => ({
+			role: i % 2 === 0 ? 'user' : 'assistant',
+			content: `m${i} `.padEnd(chars, 'x'),
+		}));
+	}
+	const CFG = { ...CONFIG, minMessagesToCompress: 4, maxRecentMessages: 4, summaryModelId: 'm' } as any;
+
+	test('★ 窗口骤降（936k → 64k）⇒ windowShrunk=true；两次调用结论一致（UI 与真压缩不得漂移）', () => {
+		const cm = makeManager(CONFIG);
+		const t1 = (cm as any)._evaluateTrigger(makeMessages(20), CFG, 936000, 100000, undefined, undefined);
+		assert.strictEqual(t1.effectiveWindow, 200000, '有效窗口被硬顶 clamp 到 200k ✓');
+		assert.strictEqual(t1.windowShrunk, false, '首轮无"历史更大窗口"参照 ⇒ 不算收缩 ✓');
+
+		const t2 = (cm as any)._evaluateTrigger(makeMessages(20), CFG, 64000, 100000, undefined, undefined);
+		const t3 = (cm as any)._evaluateTrigger(makeMessages(20), CFG, 64000, 100000, undefined, undefined);
+		assert.strictEqual(t2.windowShrunk, true, '936k→64k（<80%）⇒ 判窗口收缩 ✓');
+		assert.strictEqual(t3.windowShrunk, true, '用单调最大量 ⇒ 第二次（真压缩那次）仍看到同一结论 ✓');
+
+		const t4 = (cm as any)._evaluateTrigger(makeMessages(20), CFG, 190000, 100000, undefined, undefined);
+		assert.strictEqual(t4.windowShrunk, false, '窗口恢复到 ≥80% 历史最大 ⇒ 回到常规路径 ✓');
+	});
+
+	test('★ 检索结果饥饿（129 token 替换 30 条）⇒ 放弃替代、回退真摘要', async () => {
+		const cm = makeManager(CONFIG);
+		const messages = makeMessagesWithBody(30, 400);
+		const result = await (cm as any).compressContext(
+			messages, CFG, 64000, 60000,
+			undefined,
+			async () => ({ context: 'SHOULD-NOT-BE-USED recall blob', tokens: 129, source: 'recall' }),
+			undefined, undefined,
+		);
+		const text = (result.compressedMessages as any[]).map((m: any) => m.content ?? '').join('\n');
+		assert.ok(!text.includes('SHOULD-NOT-BE-USED'), '饥饿的检索结果不得进入摘要位 ✓（本次事故的止血点）');
+		assert.ok((result.summary ?? '').length > 0, '必须回退到真摘要路径（provider 不可用时为确定性 fallback）✓');
+	});
+
+	test('检索结果充足 ⇒ 仍采用检索式替代（加守卫不得把该路径废掉）', async () => {
+		const cm = makeManager(CONFIG);
+		const messages = makeMessagesWithBody(30, 400);
+		const rich = 'RICH-RETRIEVAL-CONTEXT '.repeat(120);
+		const result = await (cm as any).compressContext(
+			messages, CFG, 64000, 60000,
+			undefined,
+			async () => ({ context: rich, tokens: 1500, source: 'recall' }),
+			undefined, undefined,
+		);
+		const text = (result.compressedMessages as any[]).map((m: any) => m.content ?? '').join('\n');
+		assert.ok(text.includes('RICH-RETRIEVAL-CONTEXT'), '回收量与被替换内容相称时应照常采用 ✓');
+	});
+
+	test('★ 保护尾 token 硬下限（对齐 pi keepRecentTokens=20000）：小窗口不再压掉任务现场', () => {
+		assert.strictEqual((ContextManager as any).computeTailBudget(64000), 20000,
+			'64k 下限窗口：0.2×64k=12.8k < 20k ⇒ 取硬下限 ✓（§事故时窗口塌陷的情形）');
+		assert.strictEqual((ContextManager as any).computeTailBudget(120000), 24000,
+			'比例优先于下限（0.2×120k=24k）✓');
+		assert.strictEqual((ContextManager as any).computeTailBudget(200000), 40000,
+			'大窗口维持 0.2×200k=40k ✓（既有行为不变）');
+	});
+
+	test('★ 压缩摘要必带「文件操作」累计段（确定性提取，与摘要质量无关）', async () => {
+		const cm = makeManager(CONFIG);
+		const messages = makeMessagesWithBody(30, 400);
+		// 在中间段混入两条工具调用（写/读）——摘要 LLM 可能漏掉它们，确定性提取不会。
+		(messages as any[]).splice(5, 0,
+			{ role: 'assistant', content: 'x', toolCalls: [{ name: 'file_write', arguments: '{"filePath":"src/target.ts"}' }] },
+			{ role: 'assistant', content: 'x', toolCalls: [{ name: 'file_read', arguments: '{"filePath":"src/another.ts"}' }] },
+		);
+		const result = await (cm as any).compressContext(
+			messages, CFG, 64000, 60000,
+			undefined, undefined, undefined, undefined,
+		);
+		const text = (result.compressedMessages as any[]).map((m: any) => m.content ?? '').join('\n');
+		assert.ok(text.includes('文件操作'), '压缩产物的摘要必须带文件操作段 ✓');
+		assert.ok(text.includes('src/target.ts') && text.includes('src/another.ts'), '读/写文件都必须出现在清单里 ✓');
+	});
+
+	test('★ 窗口未知（undefined/0）⇒ 不做主动压缩（对齐 MiMo：等反应式 400 路径）', () => {
+		const cm = makeManager(CONFIG);
+		for (const w of [undefined, 0]) {
+			const t = (cm as any)._evaluateTrigger(makeMessages(30), CFG, w as any, 100000, undefined, undefined);
+			assert.strictEqual(t.shouldCompress, false,
+				`窗口未知（${w}）时不得主动压缩 ✓（此时判据窗口是 clamp 出的假值 ✗）`);
+			assert.strictEqual(t.skipReason, 'unknown_window',
+				'原因必须可区分（不是 below_* 的常态跳过，诊断/日志要能认出它）✓');
+		}
+		// force=true（反应式溢出恢复）必须穿透此门
+		const forced = (cm as any)._evaluateTrigger(makeMessages(30), CFG, undefined, 100000, undefined, true);
+		assert.strictEqual(forced.shouldCompress, true,
+			'force=true ⇒ 反应式溢出恢复不受窗口未知门影响 ✓');
+		// 已知窗口不受影响
+		const known = (cm as any)._evaluateTrigger(makeMessages(30), CFG, 64000, 60000, undefined, undefined);
+		assert.strictEqual(known.shouldCompress, true, '已知窗口照常判定 ✓');
+	});
+});
 
 	test('resolveEffectiveWindow：硬地板 64000、硬顶 200000、阈值 = 窗口 × 比例', () => {
 		const floor = ContextManager.resolveEffectiveWindow(1000, 0.3);

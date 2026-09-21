@@ -1133,6 +1133,12 @@ export class NativeChatEditorPane extends EditorPane {
 			onSkipCurrentTool: () => {
 				this._agentOSService.skipCurrentTool();
 			},
+			// 「转后台」（2026-09-21 ✓）：terminal 进程留在其真实终端继续跑 ✓ +
+			// 控制台自动打开 ✓（核心在 coreTools.executeTerminalCommand 的 detach 分支 ✓），
+			// 当前轮立即放行 ✓ —— 与「跳过」（杀进程 ✗）互补 ✓。
+			onDetachCurrentTool: () => {
+				this._agentOSService.detachCurrentTool();
+			},
 			onCancelExecution: () => {
 				try {
 					// Cancel workflow if active (delegated to controller)

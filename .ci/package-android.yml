@@ -1,0 +1,226 @@
+# Saros Pocket · 蓝盾（devops.woa.com / BK-CI）Android 打包流水线 —— PAC（Pipeline as Code）
+#
+# 写法**对齐主仓 `.ci/package-win-exe.yml`**（同方言、同样的字段习惯）：
+#   version v3.0 → name → on.push.action → variables → stages[].jobs → runs-on.pool-name
+#   → steps（checkout / run+shell / uses: UploadArtifactory@8.*）→ concurrency → syntax-dialect
+# 差异只在"要跑什么"：主仓在 windows 池上打 EXE，这里在 linux 池上打 **Android APK**。
+#
+# PAC 生效方式（一次性，控制台）：
+#   1. 蓝盾「代码库服务」关联 **woa.git**（PAC 只对接内部版工蜂）；
+#   2. 该代码库页开启 **PAC 模式**（OAUTH 授权）⇒ 之后 `.ci/` 下的 YAML 就是流水线定义，提交即同步；
+#   3. `.ci/<子目录>/` 会成为一个**流水线组**（组名 = 子目录名）⇒ 本文件 → 组 `bkci`。
+#      ⚠ 所以 GitLab 的流水线文件放在 `.ci/gitlab/`（PAC 会把 `.ci/` 下的 YAML 都当流水线定义）。
+#
+# ⚠ **唯一需要按你们环境改的一行**：`runs-on.pool-name`（下面 jobs 里）。
+#   本文件写的是 `linux`（与主仓的 `windows` 对称）。构建机需要：JDK 17 + Node 18+ + unzip/curl。
+#   Android SDK 不用预装 —— `scripts/android-sdk.sh` 会自己下载并装 platform/build-tools（幂等）。
+#
+# 版本号：`scripts/version.sh` 每次运行算一次 ⇒ **自动 +1**（构建号取蓝盾运行号，无需回写提交，
+#   所以不会自己触发自己）。产物名与安装包内的 versionCode/versionName 都用它。
+
+version: v3.0
+name: VsSarosPocket_Android
+on:
+  push:
+    name: Git事件触发
+    branches:
+    - '*'
+    action:
+    - push-file
+    - new-branch
+  manual: enabled
+variables:
+  # 产物目录（scripts/lib.sh 的同名默认值；artifacts 从这里收集）
+  POCKET_OUT_DIR:
+    value: .ci/out
+  # 版本号方案：rev = 0.1.0.<运行号>（默认，Android 4 段）；patch = 0.1.<patch+运行号>（3 段）
+  POCKET_VERSION_SCHEME:
+    value: rev
+  # 升级服务器（AnyDev 上的 vssaros-update-server）—— 两个平台名都已加到服务器白名单
+  # ASSET_NAME_BY_PLATFORM（2026-09-21）：android-arm64（APK）、saros-pocket-manifest（清单）。
+  # 上传后托管在 {server}/downloads/<文件名>，都是匿名可读。
+  POCKET_UPDATE_SERVER:
+    value: http://zijianqiu-any1.devcloud.woa.com:3030
+  POCKET_UPDATE_PLATFORM:
+    value: android-arm64
+  # 清单也传上去（伪平台）⇒ 跑完流水线**无需任何手工步骤**，App 读这里即可。
+  POCKET_UPDATE_MANIFEST_PLATFORM:
+    value: saros-pocket-manifest
+  # 构建期注入 App 的默认「升级源」：就是上面那份清单的地址（稳定地址，写死即可）。
+  # App 里仍可在「升级源」里改（localStorage 覆盖）。
+  POCKET_UPDATE_URL:
+    value: http://zijianqiu-any1.devcloud.woa.com:3030/downloads/pocket-update.json
+  # 若要出**已签名**的 release APK，把下面四个凭据变量取消注释（先在蓝盾「凭据管理」建 Password 类型的
+  # ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD），
+  # 四个齐全时 scripts/build-android.sh 才会签名，缺省只出 debug APK（不阻塞）。
+  #
+  # ANDROID_KEYSTORE_BASE64:
+  #   value: ${{ settings.ANDROID_KEYSTORE_BASE64.password }}
+  #   readonly: true
+  #   allow-modify-at-startup: false
+  #   props:
+  #     type: vuex-input
+  #     description: 签名密钥库（base64）
+  #     required: true
+  # ANDROID_KEYSTORE_PASSWORD:
+  #   value: ${{ settings.ANDROID_KEYSTORE_PASSWORD.password }}
+  #   readonly: true
+  #   props: { type: vuex-input, description: 密钥库口令, required: true }
+  # ANDROID_KEY_ALIAS:
+  #   value: ${{ settings.ANDROID_KEY_ALIAS.password }}
+  #   readonly: true
+  #   props: { type: vuex-input, description: 签名 Key Alias, required: true }
+  # ANDROID_KEY_PASSWORD:
+  #   value: ${{ settings.ANDROID_KEY_PASSWORD.password }}
+  #   readonly: true
+  #   props: { type: vuex-input, description: Key 口令, required: true }
+stages:
+- name: 编译与打包
+  label:
+  - Build
+  jobs:
+    package-android:
+      name: Build & Package Android APK
+      runs-on:
+        # ⚠ 池名按你们的实际构建机池填（主仓那份用的是 windows）
+        pool-name: linux
+      steps:
+      # checkout 的专属字段（如 repo-id）写在 `checkout:` 里，name / with 是**步骤级**字段 ——
+      # 主仓那份是 `checkout: {repo-id: yWNpX}` + `name:` + `with: {refName: main}`，这里保持同样结构。
+      # repo-id 留空即可：PAC 流水线自身绑定了本代码库；若 UI 里的「拉取代码」步骤没选中仓库，
+      # 把 UI 生成的 repo-id 填回 `checkout:` 下即可（写法照主仓）。
+      - checkout: {repo-id: YOZgr}
+        name: 拉取源码
+        with:
+          refName: master
+      - name: 环境自检（JDK 17 / Node / unzip / curl）
+        with:
+          charsetType: UTF_8
+        run: |
+          missing=0
+          command -v node >/dev/null 2>&1 || { echo "缺 node —— 跑测试与算版本号需要（Node 18+）"; missing=1; }
+          command -v java >/dev/null 2>&1 || { echo "缺 java —— Gradle 与 sdkmanager 需要 JDK 17"; missing=1; }
+          command -v unzip >/dev/null 2>&1 || { echo "缺 unzip —— Android SDK 引导需要"; missing=1; }
+          command -v curl >/dev/null 2>&1 || { echo "缺 curl —— Android SDK 引导需要"; missing=1; }
+          if [ "$missing" != "0" ]; then
+            echo "⇒ 请把本 job 的 runs-on.pool-name 换成具备上述工具的构建机池"
+            exit 1
+          fi
+          node -v
+          java -version 2>&1 | head -2
+        shell: bash
+      - name: 设置版本号（每次运行自动 +1）
+        with:
+          charsetType: UTF_8
+        run: bash scripts/version.sh
+        shell: bash
+      # 出包前先跑全量测试：破损的包比没包更贵。
+      # （浏览器 UI 用例在没有 playwright 的机器上会自动 SKIP，不会因此失败）
+      - name: 跑测试
+        with:
+          charsetType: UTF_8
+        run: bash scripts/verify.sh
+        shell: bash
+      - name: 引导 Android SDK（JDK 17 + cmdline-tools → platform / build-tools，幂等）
+        with:
+          charsetType: UTF_8
+        run: bash scripts/android-sdk.sh
+        shell: bash
+      - name: 打包 Android APK（cap add android → 注入版本号 → assembleDebug）
+        with:
+          charsetType: UTF_8
+        run: bash scripts/build-android.sh
+        shell: bash
+      # 打包后**按硬性清单验一遍**（照主仓 .ci/scripts/verify-staging.ps1 的思路）：
+      # 包名 / versionCode / versionName / 权限 / FileProvider / web 资源 / 自升级卡片，
+      # 缺一即失败。这三种问题都**不会**让 assembleDebug 失败，只会在用户手机上现形（真机踩过）。
+      - name: 验证产物关键构件
+        with:
+          charsetType: UTF_8
+        run: node scripts/verify-apk.mjs --apk ".ci/out/saros-pocket-android-*.apk" --env .ci/out/version.env
+        shell: bash
+      - name: 汇总版本号与产物
+        with:
+          charsetType: UTF_8
+        run: |
+          if [ -f .ci/out/version.env ]; then cat .ci/out/version.env; fi
+          ls -l .ci/out/ || true
+        shell: bash
+      - name: 归档 APK
+        uses: UploadArtifactory@8.*
+        with:
+          filePath: .ci/out/**/*.apk
+          downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
+      # App 自升级的版本清单：把它和 APK 一起放到「App 能匿名访问的地址」，
+      # 手机端「检查更新」才有东西可读（清单里含 versionCode / APK 地址 / SHA-256）。
+      - name: 归档升级清单
+        uses: UploadArtifactory@8.*
+        with:
+          filePath: .ci/out/update.json
+          downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
+
+      # ---------- 可选：顺带出扩展 vsix（与 App 同源，很多同学直接装 vsix）----------
+      # 需要就在下面追加两步（脚本已备好，无需改任何东西）：
+      #
+      # - name: 打包扩展 vsix
+      #   with:
+      #     charsetType: UTF_8
+      #   run: bash scripts/package-vsix.sh
+      #   shell: bash
+      # - name: 归档 vsix
+      #   uses: UploadArtifactory@8.*
+      #   with:
+      #     filePath: .ci/out/**/*.vsix
+      #     downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
+
+      # ---------- 发布到升级服务器（AnyDev 上的 vssaros-update-server）----------
+      # 照主仓 bk-pipeline-upload.ps1：POST {server}/admin/upload?platform=&commit=&productVersion=
+      # 上传后**读回**服务器给的 /downloads/... 地址，用它写 update.json（不猜 URL 规则）。
+      # ⚠ 平台名是**服务器端白名单**（实测 android-apk 会 400 unknown platform）⇒ 设好
+      #    POCKET_UPDATE_PLATFORM 才会真正上传；没设就明确跳过（不让流水线假红）。
+      #    需要的变量：POCKET_UPDATE_PLATFORM（必填才上传）、POCKET_UPDATE_SERVER（默认主仓那台）、
+      #    SAROS_UPLOAD_TOKEN（可选，走蓝盾凭据管理）、POCKET_UPDATE_NOTES（可选更新说明）。
+      - name: 发布到升级服务器
+        with:
+          charsetType: UTF_8
+        run: node scripts/publish-update.mjs --apk ".ci/out/saros-pocket-android-*.apk" --env .ci/out/version.env
+        shell: bash
+
+      # ---------- 创建 Release（tag + changelog）：照主仓 create-release.ps1 的做法 ----------
+      # changelog **从提交历史生成**（按 新功能/问题修复/性能优化 分组），tag 用 version.env 里的
+      # POCKET_VERSION_TAG（如 v0.1.42）⇒ 版本号与安装包一一对应。
+      # 凭据：蓝盾「凭据管理」建 WOA_GITLAB_TOKEN（同主仓），想创建工蜂 Release 时取消下面注释。
+      # 没有 token ⇒ 脚本自动 dry-run（只打 tag + 打印 changelog，不失败）。
+      - name: 创建 Release（tag + changelog）
+        with:
+          charsetType: UTF_8
+        run: node scripts/create-release.mjs --env .ci/out/version.env --push
+        shell: bash
+      #   ↑ 要同时创建工蜂 Release，把它改成：
+      #      node scripts/create-release.mjs --env .ci/out/version.env --push --create
+      #   并在 variables 里加：
+      #      WOA_GITLAB_TOKEN:
+      #        value: ${{ settings.WOA_GITLAB_TOKEN.password }}
+      #        readonly: true
+      #        props: { type: vuex-input, description: 工蜂 PAT（创建 Release 用）, required: true }
+
+      # ---------- 上传已完成：见上面的「发布到升级服务器」----------
+      # 那一步用 `scripts/publish-update.mjs` 把 **APK + update.json 两个文件**都传到
+      # `{server}/downloads/`（APK → 平台 `android-arm64`；清单 → 伪平台 `saros-pocket-manifest`），
+      # 都是匿名可读 ⇒ 打包结束后无需任何手工步骤。
+      # 清单的稳定地址就是 variables 里的 POCKET_UPDATE_URL（构建期注入 App 的默认升级源）。
+
+      # ---------- iOS 不在这里：xcodebuild 要 macOS 池 ----------
+      # 需要 iOS 时另建一条流水线，把 runs-on.pool-name 换成 macos，调用 bash scripts/build-ios.sh。
+notices:
+- if: FAILURE
+  type:
+  - email
+  - wework-message
+  receivers:
+  - "${{ci.actor}}"
+  content: "【${{ci.project_name}}】- 【${{ci.pipeline_name}}】#${{ci.build_num}} 执行失败，耗时${{ci.pipeline_execute_time}}, 触发人: ${{ci.actor}}。"
+concurrency:
+  queue-timeout-minutes: 10
+syntax-dialect: INHERIT
+cancel-policy: RESTRICTED

@@ -551,7 +551,8 @@ export const GLOBAL_SYSTEM_PREFIX_SUBAGENT = [
 /**
  * Strategy guidance — paradigm-specific instructions injected into the system prompt
  * ⚠ 2026-09-21 概念下线：mimo / plan-explore 两段已删除（pi 内核无对应机制，曾造成「提示词承诺≠行为」）；
- *   `plan_register` 相关承诺同步删除（该工具在 pi 路径已不注册）。
+ *   `plan_register` 相关承诺同步删除 —— 该工具与 `switch_paradigm` 已**正式退役**（门控代码一并删除，
+ *   见 compatibilityTools.ts 的「已正式退役」注释块），故此处不应再出现任何相关承诺。
  * so the LLM knows its execution model and recommended tool chain.
  *
  * Each paradigm maps to an IAgentLoopStrategy implementation. The LLM doesn't need to

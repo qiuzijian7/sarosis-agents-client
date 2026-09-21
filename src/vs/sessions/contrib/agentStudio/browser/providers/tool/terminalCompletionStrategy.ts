@@ -120,6 +120,42 @@ export function lastNonEmptyLine(text: string): string {
 	return '';
 }
 
+// ─── none 档等待窗口（与 timeout 联动）──────────────────────────────────────
+
+/** none 档基础等待窗口：非慢启动命令的 idle 上限。 */
+export const NONE_TIER_IDLE_BASE_MS = 6_000;
+
+/** 慢启动命令（构建/测试/安装）的最小等待窗口 —— 它们启动期可能静默数十秒。 */
+export const NONE_TIER_SLOW_START_MIN_MS = 15_000;
+
+/** 外层 timeout 的兜底下限（与 coreTools 的 clamp 保持一致：timeout 最小 1s）。 */
+const OUTER_TIMEOUT_FLOOR_MS = 1_000;
+
+/**
+ * none 档允许的最长等待。
+ *
+ * ## 不变量：**内层窗口绝不得超过外层 timeout**
+ *
+ * ★ 2026-09-21（P0-③ 的连带修复）：`timeout` 去掉 60s 硬顶后（handler 允许到 300s），
+ * 旧公式 `min(max(timeoutSec*1000, 15s), 60s)` 出现了**两个窗口互相打架**：
+ * 内层固定 60s 封顶，而外层可达 300s ⇒ 慢启动命令在 60s 被"猜"成结束、以**半截输出**
+ * 返回，而模型明明要求等 5 分钟 ✗（这正是日志 1787324352413「8 次只拿到提示符」的同族缺陷，
+ * 只是换了触发条件：先前是 1.5s 立刻收工，现在是 60s 提前收工）。
+ *
+ * 故窗口 = **min(期望值, 外层 timeout)**：
+ *  - 非慢启动：期望 6s（保守，快命令不必等）；
+ *  - 慢启动：期望取外层 timeout（模型显式要求等多久就等多久，且 ≥15s）。
+ * 提示符启发式（{@link decideIdleWaitAction}）仍可在窗口内**提前**判定完成 ⇒
+ * 窗口只是上界，加大它不会拖慢正常命令 ✓。
+ */
+export function resolveNoneTierMaxWaitMs(timeoutMs: number, isSlowStart: boolean): number {
+	const outer = Math.max(OUTER_TIMEOUT_FLOOR_MS, timeoutMs);
+	const desired = isSlowStart
+		? Math.max(outer, NONE_TIER_SLOW_START_MIN_MS)
+		: NONE_TIER_IDLE_BASE_MS;
+	return Math.min(desired, outer);
+}
+
 /** `none` 档的等待窗口决策输入。 */
 export interface IIdleWaitInput {
 	/** 距上次收到数据已静默的毫秒数达到了基础 idle 阈值时调用本决策。 */

@@ -11048,90 +11048,10 @@
 }
 .tool-card-plan .plan-phase-lock { color: var(--vscode-charts-yellow, #cca700); font-size: 11px; }
 
-/* ── plan_register 注册卡（2026-09-17）────────────────────────────────
-   渲染 `agentChatPanel.delegateCards.ts::_createPlanRegisterCard`。
-   语义：把**有序任务队列**写进本 turn 的执行队列（主循环每轮自动推进，见
-   `common/planQueueRegistry.ts`）⇒ 视觉重点是「顺序」与「起始任务」，
-   而不是步骤完成度（那是 update_plan / plan-phase-steps 的职责）。
-   壳沿用 .tool-card-plan（中性），内部用主题色区分语义：
-   起始任务 = 蓝（与 .plan-phase .current 同色系）；交付物 = 青；降级/参数错 = 黄/红。 */
-.tool-card-plan .plan-register-meta {
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
-	padding-bottom: 6px;
-	border-bottom: 1px dashed var(--vscode-widgetBorder, rgba(128,128,128,.25));
-}
-.tool-card-plan .plan-register-list {
-	list-style: none;
-	margin: 0; padding: 0;
-	display: flex; flex-direction: column; gap: 6px;
-}
-.tool-card-plan .plan-register-item {
-	display: flex; align-items: flex-start; gap: 8px;
-	font-size: 12px;
-	padding: 4px 6px;
-	border-radius: 4px;
-	background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
-}
-/* 起始任务：左侧色条 + 蓝底，一眼看出"队列从这项开始" */
-.tool-card-plan .plan-register-item:first-child {
-	background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 10%, transparent);
-	box-shadow: inset 2px 0 0 var(--vscode-charts-blue, #3794ff);
-}
-.tool-card-plan .plan-register-idx {
-	flex-shrink: 0;
-	width: 18px; height: 18px;
-	border-radius: 50%;
-	display: inline-flex; align-items: center; justify-content: center;
-	font-size: 10px;
-	font-family: var(--vscode-editor-font-family, monospace);
-	border: 1px solid var(--vscode-widgetBorder, rgba(128,128,128,.35));
-	color: var(--vscode-descriptionForeground);
-}
-.tool-card-plan .plan-register-item:first-child .plan-register-idx {
-	border-color: var(--vscode-charts-blue, #3794ff);
-	color: var(--vscode-charts-blue, #3794ff);
-}
-.tool-card-plan .plan-register-main {
-	flex: 1; min-width: 0;
-	display: flex; flex-direction: column; gap: 2px;
-}
-.tool-card-plan .plan-register-title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.tool-card-plan .plan-register-title { color: var(--vscode-foreground); font-weight: 500; overflow-wrap: anywhere; }
-.tool-card-plan .plan-register-start {
-	flex-shrink: 0;
-	font-size: 10px;
-	padding: 0 5px;
-	border-radius: 8px;
-	background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 18%, transparent);
-	color: var(--vscode-charts-blue, #3794ff);
-}
-.tool-card-plan .plan-register-desc {
-	color: var(--vscode-descriptionForeground);
-	font-size: 11.5px;
-	overflow-wrap: anywhere;
-}
-.tool-card-plan .plan-register-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 1px; }
-.tool-card-plan .plan-register-chip {
-	font-size: 10.5px;
-	padding: 0 6px;
-	border-radius: 8px;
-	background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
-	color: var(--vscode-descriptionForeground);
-	max-width: 100%;
-	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.tool-card-plan .plan-register-chip.plan-register-deliverable { color: var(--vscode-charts-green, #4ec9b0); }
-.tool-card-plan .plan-register-chip.plan-register-files { font-family: var(--vscode-editor-font-family, monospace); }
-.tool-card-plan .plan-register-more { font-size: 11px; color: var(--vscode-descriptionForeground); }
-.tool-card-plan .plan-register-warn {
-	margin-top: 6px; padding-top: 6px;
-	border-top: 1px dashed var(--vscode-widgetBorder, rgba(128,128,128,.25));
-	font-size: 11px;
-	color: var(--vscode-charts-yellow, #cca700);
-	overflow-wrap: anywhere;
-}
-.tool-card-plan .plan-register-warn-err { color: var(--vscode-charts-red, #f14c4c); }
+/* ── plan_register 注册卡：**已彻底下线**（2026-09-21）─────────────
+   该工具与 `planQueueRegistry` 已退役删除，渲染方 `_createPlanRegisterCard` 同步移除，
+   故 `.plan-register-*` 全套样式一并删除（无任何渲染方 ⇒ 死样式）。
+   ⚠ 历史会话里遗留的 plan_register 调用现在落到通用工具卡片渲染。 */
 .tool-card-plan .plan-phase-lock.approved { color: var(--vscode-charts-green, #4ec9b0); }
 
 /* update_plan：进度条占位（running 无步骤时） */
@@ -12703,6 +12623,28 @@
 	background: var(--vscode-button-hoverBackground, #1177bb);
 }
 .terminal-skip-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+/* ★ 2026-09-21：「转后台」按钮 ✓ —— 与「跳过」同形但用**次要按钮**配色（非破坏动作 ⇒ 不用主色 ✓）：
+   进程留在终端继续跑（可逆 ✓）⇒ 视觉上应比"跳过"（杀进程 ✗）更轻 ✓。 */
+.terminal-detach-btn {
+	margin-left: 8px;
+	padding: 2px 8px;
+	font-size: 11px;
+	border-radius: 3px;
+	background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.18));
+	border: 1px solid var(--vscode-button-border, transparent);
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #ccc));
+	cursor: pointer;
+	white-space: nowrap;
+	transition: background 0.15s, border-color 0.15s;
+}
+.terminal-detach-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.28));
+}
+.terminal-detach-btn:disabled {
 	opacity: 0.5;
 	cursor: default;
 }

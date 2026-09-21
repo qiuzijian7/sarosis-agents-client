@@ -319,6 +319,31 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		return configured || this._definition.defaultBaseUrl;
 	}
 
+	/**
+	 * 本 provider 的 strict 工具模式判定（2026-09-21）。
+	 *
+	 * - **官方 OpenAI / Azure OpenAI 端点 → 开**：这两家真支持 structured outputs 的 strict 子集
+	 *   （schema 由 `toolSchemaStrict` 清洗成合法子集 + 按工具回退）；
+	 * - **其余端点 → 交给模型级声明**（返回 `undefined`）：OpenRouter / Nous / Ollama / Gemini
+	 *   OpenAI 兼容端点 / 任意自建网关对 `strict` 字段的处理各不相同（透传 / 忽略 / 直接 400），
+	 *   默认开启等于把 400 风险平摊给所有用户 ⇒ 想做的人可以在模型 `capabilityConfig` 里显式声明
+	 *   `strictToolSchema: true`（也可声明 false 强行关掉官方端点上的 strict）。
+	 *
+	 * ⚠ 这里按 **host** 判定而非 provider id：`main` / `custom` 的 baseUrl 由用户配置，
+	 * 同一个 provider id 可能指向 api.openai.com，也可能指向内网网关。
+	 */
+	protected _resolveStrictToolSchema(): boolean | undefined {
+		try {
+			const host = new URL(this._getBaseUrl()).host.toLowerCase();
+			if (host === 'api.openai.com' || host.endsWith('.openai.azure.com')) {
+				return true;
+			}
+		} catch {
+			// baseUrl 为空/非法（例如未配置的 main/custom）：不判定，交给模型级声明
+		}
+		return undefined;
+	}
+
 	private _checkAuth(): void {
 		const apiKey = this._getApiKey();
 		const baseUrl = this._getBaseUrl();
@@ -570,6 +595,9 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 				responseFormat: this._definition.responseFormat,
 				isAnthropic: this._definition.isAnthropic,
 				getModel: modelId => this._models.find(m => m.id === modelId),
+				// strict 工具模式：官方 OpenAI / Azure 端点自动开；其余 `undefined` ⇒ 由模型级
+				// `capabilityConfig.strictToolSchema` 决定（详见 `_resolveStrictToolSchema`）。
+				strictToolSchema: this._resolveStrictToolSchema(),
 			},
 			(level, message) => this._logService[level](message),
 			this.id,

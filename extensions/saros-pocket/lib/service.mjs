@@ -10,7 +10,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { createPocketProxy, classifyHost } from './proxy.mjs';
 import { startQuickTunnel, startNamedTunnel } from './tunnel.mjs';
-import { lanIPv4, listLanCandidates, probeUpstreamPort } from './host.mjs';
+import { lanIPv4, listLanCandidates, listLanInterfaces, probeHttp, probeUpstreamPort } from './host.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -33,11 +33,12 @@ export async function qrDataUrl(text, { width = 220, margin = 1 } = {}) {
  * @param {Array<{prefix:string, handle:(req,res)=>Promise<boolean>}>} [opts.routes]
  *   代理本地路由（Pocket App 静态资源 + RPC 通道），由代理在鉴权之后接管
  * @param {string} [opts.brandHtml] 登录页品牌 HTML（扩展读 app/saros-logo.svg 转 data URI 传入）
- * @param {string} [opts.appPrefix] Pocket App 的路径前缀（如 `/pocket/`）。
+ * @param {string} [opts.appPrefix] Pocket App 的路径前缀（如 `/pocket/`；缺省按 `/pocket/` 处理，
+ *   因为「局域网自检」必须打 App 入口 —— 根路径是桌面版必然打不开的同屏 web 入口）。
  *   有值时 status() 额外给出 `lanAppUrl` / `tunnelAppUrl` 与对应二维码 ——
  *   手机扫码直接进 App，而不是先进 VsSaros web 首页再手动改地址。
  * @param {object} [opts.log] 日志（VS Code OutputChannel 形状：info/warn/error）
- * @param {object} [opts.deps] 依赖替换（仅供测试）：{ createProxy, startQuickTunnel, startNamedTunnel, probeUpstream }
+ * @param {object} [opts.deps] 依赖替换（仅供测试）：{ createProxy, startQuickTunnel, startNamedTunnel, probeUpstream, probeHttp }
  */
 export function createPocketService({
   upstreamPort,
@@ -98,16 +99,28 @@ export function createPocketService({
   const getLanCandidates = async () => {
     const now = Date.now();
     if (!lanCandidateCache || now - lanCandidateCache.at > 15000) {
-      lanCandidateCache = { at: now, ips: await listLanCandidates() };
+      lanCandidateCache = { at: now, ips: await listLanCandidates(), ifaces: listLanInterfaces() };
     }
     return lanCandidateCache.ips;
   };
+  /** 候选网卡明细（ip / 网卡名 / 是否疑似虚拟网卡）——手机连不上时用来换地址。 */
+  const getLanInterfaces = async () => {
+    await getLanCandidates();
+    return lanCandidateCache.ifaces;
+  };
+
+  /**
+   * 「本机 → 当前局域网地址」的可达性自检结果。
+   * ok=null 表示还没测过。手机连不上时的第一步排查：这个地址是不是本机网卡的地址。
+   * ⚠ 本机访问自己的局域网 IP 走 loopback 捷径、不经防火墙入站规则 ⇒ ok=true **不能**证明手机能连。
+   */
+  const lanCheckState = { ip: null, url: null, ok: null, status: null, detail: '', checkedAt: null };
 
   let proxy = null;
   let tunnel = null;
   let tunnelAbort = null;
   let tunnelPromise = null;
-  const tunnelState = { phase: 'idle', detail: '', startedAt: null };
+  const tunnelState = { phase: 'idle', detail: '', startedAt: null, download: null };
   /**
    * 上游（VsSaros server，即「同屏 web」入口的上游）可用性。
    * ok=null 表示还没探测过。启动时探一次，之后由「上游报错」与面板的重新探测更新。
@@ -154,6 +167,42 @@ export function createPocketService({
      * 这条入口本来就不可用（App 不受影响），提前说明比让用户撞 502 强。
      * @returns {Promise<{ok:boolean|null, checkedAt:number|null, error:string}>}
      */
+    /**
+     * 自检「本机 → 当前局域网地址」这一跳。
+     *
+     * 手机报「网站无响应」（超时而非拒绝）时的第一步排查：这个地址到底是不是本机网卡的地址？
+     * ok=false ⇒ 多半是自动挑中了 VPN / 虚拟网卡的地址（手机路由不到）⇒ 面板让用户换候选地址。
+     * ok=true 只说明代理确实绑在该地址上，**不**代表手机能连（本机到自己的 IP 走 loopback，不经防火墙）。
+     * @returns {Promise<{ip:string|null, url:string|null, ok:boolean|null, status:number|null, detail:string, checkedAt:number}>}
+     */
+    async checkLanReachability() {
+      const ip = await getLan();
+      const port = proxy?.port ?? null;
+      // ★ 自检必须打**用户真正会访问的入口**（App）。缺省前缀时不能退化成根路径：
+      //   根路径 = 同屏 web 入口，桌面版 VsSaros 不监听 HTTP 端口 ⇒ 必然"连不上"，
+      //   用它自检会得出误导结论（让人以为网卡选错了）。
+      const url = ip && port ? `http://${ip}:${port}${appPrefix || '/pocket/'}` : null;
+      if (!url) {
+        Object.assign(lanCheckState, {
+          ip, url: null, ok: null, status: null,
+          detail: '代理未启动或没检测到局域网地址', checkedAt: Date.now(),
+        });
+        return { ...lanCheckState };
+      }
+      const probe = deps.probeHttp ?? probeHttp;
+      const r = await probe(url);
+      Object.assign(lanCheckState, {
+        ip, url,
+        ok: r.ok === true,
+        status: r.status ?? null,
+        detail: r.ok
+          ? `本机可连（HTTP ${r.status}）—— 说明代理就绑在这个地址上`
+          : `本机连不上：${r.error ?? '未知错误'} —— 这个地址很可能不是本机当前网卡的地址（VPN / 虚拟网卡）`,
+        checkedAt: Date.now(),
+      });
+      return { ...lanCheckState };
+    },
+
     async probeUpstream() {
       const probe = deps.probeUpstream ?? probeUpstreamPort;
       try {
@@ -222,6 +271,17 @@ export function createPocketService({
         else if (phase === 'starting') tunnelState.detail = '启动隧道进程…';
         else if (phase === 'registering') tunnelState.detail = '连接 Cloudflare 边缘（通常 5-30 秒）';
         else if (phase === 'ready') tunnelState.detail = '隧道就绪';
+        // 离开下载阶段就别再留旧进度，否则面板会一直显示"已下 X MB"
+        if (phase !== 'downloading') tunnelState.download = null;
+      };
+      // 下载进度（真实字节数，不是假动画）：透给面板/手机端显示百分比
+      const onProgress = ({ received, total }) => {
+        tunnelState.download = { received, total, percent: total > 0 ? Math.min(100, Math.round((received / total) * 100)) : null };
+        if (tunnelState.phase === 'downloading') {
+          tunnelState.detail = total > 0
+            ? `下载 cloudflared ${formatBytes(received)} / ${formatBytes(total)}`
+            : `下载 cloudflared ${formatBytes(received)}`;
+        }
       };
       const p = (async () => {
         await null;
@@ -229,21 +289,28 @@ export function createPocketService({
           const cfg = typeof getTunnelConfig === 'function' ? (getTunnelConfig() ?? {}) : {};
           if (cfg?.mode === 'named') {
             if (!cfg.token || !cfg.hostname) throw new Error('命名隧道未配置完整：需要 Tunnel Token 和固定域名');
-            const result = await startNamed({ token: cfg.token, home: storageDir, signal: controller.signal, onPhase });
+            const result = await startNamed({ token: cfg.token, home: storageDir, signal: controller.signal, onPhase, onProgress });
             tunnel = { url: `https://${cfg.hostname}`, kill: result.kill, onExit: result.onExit };
           } else {
-            const result = await startTunnel({ port: proxy.port, home: storageDir, signal: controller.signal, onPhase });
+            const result = await startTunnel({ port: proxy.port, home: storageDir, signal: controller.signal, onPhase, onProgress });
             tunnel = typeof result === 'string' ? { url: result, kill: () => {} } : result;
           }
           tunnelState.phase = 'ready';
+          // 先取 url：onExit 回调里会把 tunnel 置空（URL 失效则断流），
+          // 最后 `return tunnel.url` 会踩到 null。
+          const readyUrl = tunnel.url;
           tunnel.onExit?.((code) => {
             if (controller.signal.aborted) return;
             tunnelState.phase = 'error';
             tunnelState.detail = `隧道进程退出（code=${code}）`;
+            // ★ 进程已死 ⇒ URL 立刻失效。留着它会让面板继续展示这个地址、
+            // 用户扫码得到一个 Cloudflare 边缘的 502（回源没了），极难自查。
+            // status 的 tunnelUrl 取的是 `tunnel?.url`，所以置空 tunnel 即可断流。
+            tunnel = null;
           });
           void persistAutoTunnel();
           try { onTunnelReady?.(cfg?.mode === 'named' ? 'named' : 'quick'); } catch { /* 忽略 */ }
-          return tunnel.url;
+          return readyUrl;
         } catch (err) {
           if (!controller.signal.aborted) { tunnelState.phase = 'error'; tunnelState.detail = err?.message ?? String(err); }
           tunnelState.startedAt = null;
@@ -304,10 +371,18 @@ export function createPocketService({
         lanAppUrl,
         lanAppQr: await qrCached(lanAppUrl),
         lanCandidates,
+        // 候选地址明细（ip / 网卡名 / 是否虚拟）+ 已配的覆盖值：面板让用户一键换地址
+        lanInterfaces: await getLanInterfaces(),
         lanIpOverride,
+        // 「本机 → 局域网地址」自检结果（ok=null 表示还没测过；由面板的「检测本机」触发）
+        lanCheck: { ...lanCheckState },
         tunnelRunning: tunnel !== null,
         tunnelUrl: tunnel?.url ?? null,
-        tunnelQr: await qrCached(tunnel?.url ?? null),
+        // ★ 与 `lanQr` 同因：根路径 = 同屏 web 入口，桌面版 VsSaros 不监听 HTTP 端口
+        //   ⇒ 扫这个码进去必然是代理返回的 502（proxy.mjs 上游不可达分支）。
+        //   公网二维码因此改用 App 入口（/pocket/）；根路径地址仍在 `tunnelUrl`
+        //   里以文本/链接形式给出，上游真可用时照样能进同屏 web，不丢入口。
+        tunnelQr: await qrCached(tunnelAppUrl ?? tunnel?.url ?? null),
         tunnelAppUrl,
         tunnelAppQr: await qrCached(tunnelAppUrl),
         tunnelState: { ...tunnelState },
@@ -323,9 +398,26 @@ export function createPocketService({
       };
     },
 
+    /**
+     * 只停代理（不动隧道状态）。
+     *
+     * 为什么单独给一个：**代理是真监听 0.0.0.0 的 HTTP server**，忘了关就会
+     * ① 占住端口（后续测试/启动撞 EADDRINUSE）② 事件循环里留着 handle ⇒ 进程**不退出**。
+     * 测试里每个用例结束都该调它（见 test/service.test.mjs 的 withService）；
+     * 扩展的 `deactivate` 也该走它，避免"关了 VsSaros 代理还活着"。
+     * @returns {Promise<boolean>} 是否真的关掉了一个在跑的代理
+     */
+    async stopProxy() {
+      if (!proxy) return false;
+      const p = proxy;
+      proxy = null;
+      try { await p.close(); } catch { /* 忽略：关不掉也不能让调用方炸 */ }
+      return true;
+    },
+
     async dispose() {
       this.stopTunnel({ keepAutoMarker: true });
-      if (proxy) { const p = proxy; proxy = null; try { await p.close(); } catch { /* 忽略 */ } }
+      await this.stopProxy();
     },
   };
 }

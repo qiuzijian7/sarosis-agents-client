@@ -43,6 +43,7 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
 import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
+import { AVATAR_PRESET_GROUPS, AVATAR_PRESET_TOTAL, findAvatarPreset, type IAgentAvatarPreset } from '../common/agentAvatarPresets.js';
 
 const { $: $$ } = DOM;
 
@@ -64,6 +65,9 @@ const TABS: TabDef[] = [
 	{ id: 'binding', label: 'Channel 绑定', icon: '🔗' },
 	{ id: 'confightml', label: 'ConfigHtml', icon: '🌐' },
 ];
+
+/** 自定义头像（data URI）压缩后的最大边长（px）——控制 .agent.md 体积 */
+const AVATAR_MAX_SIZE = 128;
 
 /**
  * AgentSettingsEditorPane — Native DOM-based editor pane for agent settings.
@@ -87,6 +91,16 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _tabContentContainer: HTMLElement | undefined;
 	private _nameEl: HTMLElement | undefined;
 	private _iconEl: HTMLElement | undefined;
+	/** 头像外层容器（承载点击 + hover 相机角标），_iconEl 是它的内容区 */
+	private _avatarWrap: HTMLElement | undefined;
+	/** 隐藏的图片选择器：上传自定义头像用 */
+	private _avatarFileInput: HTMLInputElement | undefined;
+	/** 头像编辑浮层（挂在 document.body 上，避免被 header 的 overflow 裁切） */
+	private _avatarPopover: HTMLElement | undefined;
+	/** 头像预设当前分组（AVATAR_PRESET_GROUPS 的 id） */
+	private _avatarPresetGroupId = AVATAR_PRESET_GROUPS[0].id;
+	/** 浮层内的预设网格容器 */
+	private _avatarPresetGrid: HTMLElement | undefined;
 	private _descEl: HTMLElement | undefined;
 	private _statsEl: HTMLElement | undefined;
 	private _agentIdEl: HTMLElement | undefined;
@@ -186,6 +200,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 		}
 
 		this._agentId = input.agentId;
+		// 重建 UI 前先收掉挂在 body 上的头像浮层，避免残留孤儿节点
+		this._closeAvatarEditor();
 		this._container.replaceChildren();
 		this._buildUI(this._container);
 
@@ -249,10 +265,31 @@ export class AgentSettingsEditorPane extends EditorPane {
 		// ── Row 1: Avatar + Title line + Actions ──
 		const row1 = $$('div.agent-settings-row1');
 
-		// Avatar
+		// Avatar（点击可编辑：上传图片 / 选 Emoji / 恢复默认）
+		this._avatarWrap = $$('div.agent-settings-avatar-wrap');
+		this._avatarWrap.title = '点击编辑头像';
+		this._avatarWrap.onclick = (e) => {
+			e.stopPropagation();
+			this._toggleAvatarEditor();
+		};
+
 		this._iconEl = $$('div.agent-settings-avatar');
 		this._iconEl.textContent = '🤖';
-		row1.appendChild(this._iconEl);
+		this._avatarWrap.appendChild(this._iconEl);
+
+		const avatarBadge = $$('span.agent-settings-avatar-badge');
+		avatarBadge.textContent = '📷';
+		this._avatarWrap.appendChild(avatarBadge);
+
+		row1.appendChild(this._avatarWrap);
+
+		// 隐藏的图片选择器（上传自定义头像）
+		this._avatarFileInput = document.createElement('input');
+		this._avatarFileInput.type = 'file';
+		this._avatarFileInput.accept = 'image/png,image/jpeg,image/jpg,image/webp,image/gif,image/svg+xml';
+		this._avatarFileInput.style.display = 'none';
+		this._avatarFileInput.onchange = () => { void this._handleAvatarFileSelected(); };
+		row1.appendChild(this._avatarFileInput);
 
 		// Title line (name + rename trigger)
 		const titleLine = $$('div.agent-settings-title-line');
@@ -612,6 +649,13 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 		// 先清除已有横幅（auth 竞态恢复后重新评估时，旧横幅必须移除）
 		main.querySelectorAll('.agent-settings-readonly-banner').forEach(el => el.remove());
+
+		// 头像编辑入口：只读时禁用点击并关闭已打开的浮层
+		if (this._avatarWrap) {
+			this._avatarWrap.classList.toggle('readonly', this._readOnly);
+			this._avatarWrap.title = this._readOnly ? '仅创建者(owner)可编辑' : '点击编辑头像';
+		}
+		if (this._readOnly) { this._closeAvatarEditor(); }
 
 		if (this._readOnly) {
 			// 禁用固定编辑控件
@@ -1605,7 +1649,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 	private _renderHeader(): void {
 		if (!this._agent) { return; }
-		if (this._iconEl) { this._iconEl.textContent = this._agent.icon || '🤖'; }
+		this._renderAvatar();
 		if (this._nameEl) { this._nameEl.textContent = this._agent.name; }
 		if (this._descEl) { this._descEl.textContent = this._agent.description || this._agent.role; }
 		if (this._agentIdEl) { this._agentIdEl.textContent = `ID: ${this._agentId}`; }
@@ -1638,6 +1682,268 @@ export class AgentSettingsEditorPane extends EditorPane {
 				this._statsEl.appendChild(stat3);
 			}
 		}
+	}
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	//  Avatar（可编辑：agent.icon = Emoji，agent.avatar = 自定义图片 data URI）
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	private _renderAvatar(): void {
+		if (!this._iconEl) { return; }
+		this._iconEl.replaceChildren();
+		const avatar = this._agent?.avatar;
+		if (avatar) {
+			const img = document.createElement('img');
+			img.className = 'agent-settings-avatar-img';
+			img.src = avatar;
+			img.alt = this._agent?.name || 'avatar';
+			// data URI 损坏 / 图片被删除 → 回退 Emoji，避免出现空白方块
+			img.onerror = () => {
+				if (this._iconEl) { this._iconEl.textContent = this._agent?.icon || '🤖'; }
+			};
+			this._iconEl.appendChild(img);
+		} else {
+			this._iconEl.textContent = this._agent?.icon || '🤖';
+		}
+	}
+
+	private _toggleAvatarEditor(): void {
+		if (this._readOnly) {
+			this.notificationService.warn(this._readOnlyReason || '只读模式：仅创建者(owner)可编辑此 Agent');
+			return;
+		}
+		if (this._avatarPopover) {
+			this._closeAvatarEditor();
+			return;
+		}
+		this._openAvatarEditor();
+	}
+
+	private _openAvatarEditor(): void {
+		if (!this._agent || !this._avatarWrap) { return; }
+		this._closeAvatarEditor();
+
+		// 当前头像若来自预设，打开时自动切到它所在的分组，让选中态可见
+		const hit = findAvatarPreset(this._agent.avatar);
+		if (hit) {
+			const owner = AVATAR_PRESET_GROUPS.find(g => g.presets.some(p => p.id === hit.id));
+			if (owner) { this._avatarPresetGroupId = owner.id; }
+		}
+
+		const popover = $$('div.agent-avatar-popover');
+		popover.onclick = (e) => e.stopPropagation();
+		popover.oncontextmenu = (e) => e.stopPropagation();
+
+		const title = $$('div.agent-avatar-popover-title');
+		title.textContent = `编辑头像（${AVATAR_PRESET_TOTAL} 款 SVG 预设）`;
+		popover.appendChild(title);
+
+		// ── 分组切换：机器人 / 造型 / Emoji ──
+		const tabBar = $$('div.agent-avatar-tabs');
+		for (const group of AVATAR_PRESET_GROUPS) {
+			const tab = $$('button.agent-avatar-tab') as HTMLButtonElement;
+			tab.textContent = group.label;
+			tab.title = group.title;
+			tab.dataset.groupId = group.id;
+			if (group.id === this._avatarPresetGroupId) { tab.classList.add('active'); }
+			tab.onclick = () => {
+				this._avatarPresetGroupId = group.id;
+				tabBar.querySelectorAll('.agent-avatar-tab').forEach(el => {
+					el.classList.toggle('active', (el as HTMLElement).dataset.groupId === group.id);
+				});
+				this._renderAvatarPresets();
+			};
+			tabBar.appendChild(tab);
+		}
+		popover.appendChild(tabBar);
+
+		// ── 预设网格（SVG data URI，点击即写入 agent.avatar + 配套 icon） ──
+		this._avatarPresetGrid = $$('div.agent-avatar-presets');
+		popover.appendChild(this._avatarPresetGrid);
+		this._renderAvatarPresets();
+
+		// ── 操作按钮 ──
+		const actions = $$('div.agent-avatar-actions');
+
+		const uploadBtn = $$('button.primary') as HTMLButtonElement;
+		uploadBtn.textContent = '📤 上传图片';
+		uploadBtn.title = '从本地选择图片作为头像（自动压缩，无需手动裁剪）';
+		uploadBtn.onclick = () => {
+			this._closeAvatarEditor();
+			this._avatarFileInput?.click();
+		};
+		actions.appendChild(uploadBtn);
+
+		const currentIcon = this._agent.icon || '🤖';
+		const resetBtn = $$('button') as HTMLButtonElement;
+		resetBtn.textContent = '↺ 恢复默认';
+		resetBtn.title = '清除自定义头像，恢复默认图标';
+		resetBtn.disabled = !this._agent.avatar && currentIcon === '🤖';
+		resetBtn.onclick = () => { void this._saveAvatarPatch({ icon: '🤖', avatar: undefined }, '已恢复默认头像'); };
+		actions.appendChild(resetBtn);
+
+		popover.appendChild(actions);
+		document.body.appendChild(popover);
+		this._avatarPopover = popover;
+
+		// 定位：默认在头像下方，空间不足则向上翻转，并做水平收边
+		const rect = this._avatarWrap.getBoundingClientRect();
+		const pw = popover.offsetWidth;
+		const ph = popover.offsetHeight;
+		let left = rect.left;
+		let top = rect.bottom + 8;
+		if (left + pw > window.innerWidth - 8) { left = Math.max(8, window.innerWidth - pw - 8); }
+		if (top + ph > window.innerHeight - 8) { top = Math.max(8, rect.top - ph - 8); }
+		popover.style.left = `${Math.round(left)}px`;
+		popover.style.top = `${Math.round(top)}px`;
+
+		// 点击浮层外部 / Esc → 关闭（延后一帧注册，避免吞掉触发本次打开的 mousedown）
+		setTimeout(() => {
+			if (this._avatarPopover === popover) {
+				document.addEventListener('mousedown', this._avatarOutsideHandler, true);
+			}
+		}, 0);
+		document.addEventListener('keydown', this._avatarKeydownHandler, true);
+	}
+
+	/** 渲染当前分组的 SVG 预设网格；切换分组时复用同一个容器。 */
+	private _renderAvatarPresets(): void {
+		const grid = this._avatarPresetGrid;
+		if (!grid) { return; }
+		grid.replaceChildren();
+
+		const group = AVATAR_PRESET_GROUPS.find(g => g.id === this._avatarPresetGroupId) ?? AVATAR_PRESET_GROUPS[0];
+		const current = this._agent?.avatar;
+		for (const preset of group.presets) {
+			grid.appendChild(this._buildAvatarPresetItem(preset, preset.dataUri === current));
+		}
+	}
+
+	private _buildAvatarPresetItem(preset: IAgentAvatarPreset, active: boolean): HTMLElement {
+		const item = $$('button.agent-avatar-preset') as HTMLButtonElement;
+		item.title = preset.label;
+		item.type = 'button';
+		item.dataset.presetId = preset.id;
+		if (active) { item.classList.add('active'); }
+
+		const img = document.createElement('img');
+		img.src = preset.dataUri;
+		img.alt = preset.label;
+		img.draggable = false;
+		item.appendChild(img);
+
+		item.onclick = () => {
+			void this._saveAvatarPatch(
+				{ avatar: preset.dataUri, icon: preset.icon },
+				`头像已切换为「${preset.label}」`
+			);
+		};
+		return item;
+	}
+
+	private _closeAvatarEditor(): void {
+		document.removeEventListener('mousedown', this._avatarOutsideHandler, true);
+		document.removeEventListener('keydown', this._avatarKeydownHandler, true);
+		this._avatarPopover?.remove();
+		this._avatarPopover = undefined;
+		this._avatarPresetGrid = undefined;
+	}
+
+	private readonly _avatarOutsideHandler = (e: MouseEvent): void => {
+		const target = e.target as Node | null;
+		if (this._avatarPopover?.contains(target)) { return; }
+		if (this._avatarWrap?.contains(target)) { return; }
+		this._closeAvatarEditor();
+	};
+
+	private readonly _avatarKeydownHandler = (e: KeyboardEvent): void => {
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			this._closeAvatarEditor();
+		}
+	};
+
+	private async _handleAvatarFileSelected(): Promise<void> {
+		const input = this._avatarFileInput;
+		const file = input?.files?.[0];
+		// 立即清空 value，保证连续选择同一个文件也能触发 change
+		if (input) { input.value = ''; }
+		if (!file || !this._agentId) { return; }
+		if (!file.type.startsWith('image/')) {
+			this.notificationService.warn('请选择图片文件（png / jpg / webp / gif / svg）');
+			return;
+		}
+		try {
+			const avatar = await this._readImageAsAvatar(file);
+			await this._saveAvatarPatch({ avatar }, '头像已更新');
+		} catch (err) {
+			this.notificationService.error(`头像上传失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private async _saveAvatarPatch(patch: Partial<Agent>, successMessage?: string): Promise<void> {
+		if (this._readOnly) {
+			this.notificationService.warn(this._readOnlyReason || '只读模式：仅创建者(owner)可编辑此 Agent');
+			return;
+		}
+		if (!this._agentId || !this._agent) { return; }
+		try {
+			await this.agentStudioService.updateAgent(this._agentId, patch);
+			// 乐观更新，避免 onDidChangeAgents 回读完成前的闪烁
+			this._agent = { ...this._agent, ...patch };
+			this._renderAvatar();
+			this._closeAvatarEditor();
+			if (successMessage) { this.notificationService.info(successMessage); }
+		} catch (err) {
+			this.notificationService.error(`头像保存失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	/** 读取本地图片为 data URI；位图统一压缩到 AVATAR_MAX_SIZE，SVG 保持矢量内联。 */
+	private async _readImageAsAvatar(file: File): Promise<string> {
+		const dataUrl = await new Promise<string>((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => resolve(String(reader.result ?? ''));
+			reader.onerror = () => reject(reader.error ?? new Error('读取文件失败'));
+			reader.readAsDataURL(file);
+		});
+		if (!dataUrl) { throw new Error('读取文件失败'); }
+		// SVG 本身极小且无损缩放，直接内联；canvas 位图化反而会丢矢量优势
+		if (/^data:image\/svg\+xml/i.test(dataUrl)) { return dataUrl; }
+		try {
+			return await this._downscaleImage(dataUrl, AVATAR_MAX_SIZE);
+		} catch {
+			// 压缩失败（如无 canvas）时退回原图，保证功能可用
+			return dataUrl;
+		}
+	}
+
+	private _downscaleImage(dataUrl: string, maxSize: number): Promise<string> {
+		return new Promise<string>((resolve, reject) => {
+			const img = new Image();
+			img.onload = () => {
+				try {
+					const w = img.naturalWidth || maxSize;
+					const h = img.naturalHeight || maxSize;
+					const scale = Math.min(1, maxSize / Math.max(w, h));
+					const tw = Math.max(1, Math.round(w * scale));
+					const th = Math.max(1, Math.round(h * scale));
+					const canvas = document.createElement('canvas');
+					canvas.width = tw;
+					canvas.height = th;
+					const ctx = canvas.getContext('2d');
+					if (!ctx) { reject(new Error('canvas 不可用')); return; }
+					ctx.drawImage(img, 0, 0, tw, th);
+					// 优先 WebP（体积约为 PNG 的 1/4，且支持透明），不支持时回退 PNG
+					const webp = canvas.toDataURL('image/webp', 0.85);
+					resolve(webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/png'));
+				} catch (err) {
+					reject(err instanceof Error ? err : new Error(String(err)));
+				}
+			};
+			img.onerror = () => reject(new Error('图片解码失败'));
+			img.src = dataUrl;
+		});
 	}
 
 	private _renderSkills(): void {
@@ -2487,6 +2793,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	}
 
 	override dispose(): void {
+		this._closeAvatarEditor();
 		super.dispose();
 	}
 }

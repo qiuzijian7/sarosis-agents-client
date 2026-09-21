@@ -26,6 +26,7 @@
 import type { BuiltRequest, IRequestBuilder, ParseMode, RequestBuildInput } from './chatProtocol.js';
 import type { IModelInfo } from '../providers.js';
 import { MessageFormatConverter } from '../adapters/messageFormatConverter.js';
+import { isStrictApplicable } from '../adapters/toolSchemaStrict.js';
 
 /** 结构化日志回调（与 `ChatStreamHooks.log` 同形，便于直连调用方直接透传）。 */
 export type RequestBuildLogFn = (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -48,6 +49,17 @@ export interface RequestBuilderProfile {
 	 * 差异用注入吸收，构造逻辑本身仍只有一份。
 	 */
 	readonly getModel?: (modelId: string) => IModelInfo | undefined;
+	/**
+	 * **provider 级** strict 工具开关（2026-09-21）。
+	 *
+	 * - `true` / `false`：provider 明确判定（覆盖模型级声明）；
+	 * - `undefined`：交给模型级 `capabilityConfig.strictToolSchema` 决定（官方 OpenAI / Azure
+	 *   端点的 provider 会直接给 `true`）。
+	 *
+	 * 之所以放在 profile：本模块在 `common/`，不应反向依赖 `browser/` 的 provider 判定逻辑，
+	 * 由调用方把"这家 provider 能不能 strict"作为协议特征注入（与 responseFormat 同姿态）。
+	 */
+	readonly strictToolSchema?: boolean;
 }
 
 /** 默认端点路径 —— 未显式配置时按协议推定。 */
@@ -189,7 +201,7 @@ export class RequestBuilder implements IRequestBuilder {
 			body.max_tokens = options.maxTokens;
 		}
 
-		this._applyTools(body, options);
+		this._applyTools(body, options, modelId);
 
 		// ── Thinking / Reasoning 参数注入 ─────────────────────────────
 		// 按模型 capabilityConfig.reasoningType 决定 API 形态（参考 void）：
@@ -201,17 +213,41 @@ export class RequestBuilder implements IRequestBuilder {
 		return body;
 	}
 
+	/**
+	 * strict 工具模式是否生效：**provider 级声明优先**，否则看模型级 `capabilityConfig`。
+	 *
+	 * 不做"全局强制开"：OpenRouter / Ollama / Nous / 任意自建 OpenAI 兼容网关对 `strict`
+	 * 字段的处理各不相同（透传 / 忽略 / 直接 400），全局开会把风险平摊给所有用户。
+	 */
+	private _resolveStrictToolSchema(modelId: string): boolean {
+		if (this._profile.strictToolSchema !== undefined) {
+			return this._profile.strictToolSchema;
+		}
+		return this._profile.getModel?.(modelId)?.capabilityConfig?.strictToolSchema === true;
+	}
+
 	/** 工具面：注入 tool 定义与 `tool_choice`，并记录工具统计。 */
-	private _applyTools(body: Record<string, unknown>, options: RequestBuildInput['options']): void {
+	private _applyTools(body: Record<string, unknown>, options: RequestBuildInput['options'], modelId: string): void {
 		if (options.tools && options.tools.length > 0) {
 			// Fork 前缀缓存：Anthropic 兼容时把最后一个工具定义也打上 cache 断点，
 			// 使 system + tools 共同构成父/子 fork 共享的冻结缓存前缀。
+			const strictToolSchema = this._resolveStrictToolSchema(modelId);
 			body.tools = MessageFormatConverter.toOpenAIToolDefinitions(
 				options.tools,
 				options.forkContext,
 				this._profile.isAnthropic,
 				options.systemPrompt,
+				strictToolSchema,
 			);
+			if (strictToolSchema) {
+				// 可观测性：strict 是**按工具**生效的，必须能回答"哪些工具没进 strict、为什么"
+				// （否则线上只会看到参数结构偶发变化，无从归因）。
+				const fallback = options.tools.filter(t => !isStrictApplicable(t.inputSchema)).map(t => t.name);
+				this._log('info',
+					`tools strict mode ON: ${options.tools.length - fallback.length}/${options.tools.length} `
+					+ `tools declared strict, ${fallback.length} fell back to plain mode`
+					+ (fallback.length > 0 ? ` [${fallback.join(', ')}]` : ''));
+			}
 			// 透传上层（agent loop 续跑兜底）指定的 tool_choice；默认 'auto'。
 			// 'required' 用于强制模型在续跑这一轮必须调用工具，治"宣告意图却不动手"。
 			body.tool_choice = options.toolChoice ?? 'auto';

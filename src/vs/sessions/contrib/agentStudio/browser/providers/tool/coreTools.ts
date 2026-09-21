@@ -28,8 +28,21 @@ import type { IToolResultContent } from '../../../common/providers.js';
 import { SearchHelpers, redactSecrets } from './searchHelpers.js';
 import { detectTerminalSearchCommand, terminalSearchCommandHint } from './terminalCommandGuards.js';
 import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS, GIT_BASH_INSTALL_GUIDANCE, detectPowerShellOnlyCmdlet, powerShellCmdletGuardMessage, recordFileReadSuccess, recordFileReadFailure } from './executeCodeGuards.js';
-import { stripShellNoise, isSlowStartCommand, emptyTerminalOutputMessage, createShellNoiseStripper } from './terminalOutputDiagnosis.js';
-import { pickTerminalStrategy, decideIdleWaitAction } from './terminalCompletionStrategy.js';
+import {
+	stripShellNoise,
+	isSlowStartCommand,
+	emptyTerminalOutputMessage,
+	createShellNoiseStripper,
+	truncateTerminalOutput,
+	spilledOutputFooter,
+	unavailableExitCodeNote,
+} from './terminalOutputDiagnosis.js';
+import { pickTerminalStrategy, decideIdleWaitAction, resolveNoneTierMaxWaitMs } from './terminalCompletionStrategy.js';
+import { SPILL_THRESHOLD_BYTES, spillFileName, selectSpillFilesToDelete } from './execOutputSpill.js';
+import { SarosPath, resolveSarosPath, userDataRootFromPath } from '../../../common/sarosPaths.js';
+import { longLineTruncationHint } from '../../../common/fileReadHints.js';
+import { joinPath } from '../../../../../../base/common/resources.js';
+import { INativeEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { runExecOutputPipeline } from './execOutputPipeline.js';
 import { TerminalCapability } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
 import type { ICommandDetectionCapability, ITerminalCommand } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
@@ -116,6 +129,11 @@ export interface CoreToolContext {
 	workspaceService: IWorkspaceContextService;
 	configurationService: IConfigurationService;
 	/**
+	 * 环境服务 —— 仅用于解析**输出落盘目录**（`~/.vssaros/tmp/`，与 `execute_code` 同一约定）。
+	 * 可选：未注入时 terminal 退化为纯截断（中段丢弃），不影响命令执行本身。
+	 */
+	environmentService?: INativeEnvironmentService;
+	/**
 	 * 该 agent **实际绑定**的 worktree 根（`resolveEffectiveWorktreeRoot` 结果，未绑定为
 	 * undefined）。用于 file_read 判定「读到的是未绑定的 worktree 过期副本」
 	 * （2026-08-20，日志 1787217670299）。可选：未注入时退化为不告警。
@@ -143,6 +161,31 @@ const READ_REPEAT_BLOCK = 4;
 const READ_DEDUP_BLOCK = 2;
 const READ_DEDUP_CAP = 500;
 const READ_REPEAT_CAP = 1000;
+
+/** terminal 落盘序号 —— 同一毫秒内多次落盘也不重名（与 execute_code 的 spill 各自独立编号）。 */
+let _terminalSpillSeq = 0;
+
+/**
+ * shell integration 能力**负结果**缓存（2026-09-21，pi/bash 对比后引入）。
+ *
+ * ## 为什么值得缓存
+ *
+ * 能力探测必须等满 `COMMAND_DETECTION_WAIT_MS`（3s）—— 因为能力是 shell 启动时注入脚本
+ * 注册的，只能"就绪后再等一会儿"。而 **Git Bash（自定义 executable）从不被注入** ⇒
+ * 每次 terminal 调用都白等 3s（真机实测 p50 ≈ 7.6s/次，这 3s 是其中的固定开销）。
+ *
+ * ## 为什么只缓存**负**结果
+ *
+ * 正结果（探测到能力）若被缓存，后续调用会跳过探测 ⇒ 拿不到 `commandDetection` 对象 ⇒
+ * `onCommandFinished` 注册不上 ⇒ **静默退化成 idle 猜判定**（丢掉真实 exit code）✗。
+ * 负结果则不同：跳过探测后的行为与"探测再到超时"**完全等价**（都是 none 档），
+ * 语义零变化 ✓。正结果本身也便宜（能力已随实例就绪）⇒ 无需缓存。
+ *
+ * 键含 shell profile：换 shell（gitBash 路径 / 默认 profile）即换键，不会互相污染。
+ * TTL 兜底"用户中途开启 shell integration"的场景（最坏 10 分钟内退化为 none 档）。
+ */
+const _capabilityProbeNegativeCache = new Map<string, number>();
+const PROBE_NEGATIVE_TTL_MS = 10 * 60 * 1000;
 
 /** 计算两个字符串的 Levenshtein 编辑距离（Wagner-Fischer 算法）。 */
 function _levenshtein(a: string, b: string): number {
@@ -223,6 +266,10 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			const outputChunks: string[] = [];
 			let dataListener: IDisposable | undefined;
 			let exitListener: IDisposable | undefined;
+			// ★ 2026-09-21：「转后台」标记 ✓ —— abort 信号的 `reason === 'detach'` 时置位
+			//   （agentOS._composeParentSignal 透传 ✓）⇒ 与「跳过」走完全不同的收尾：
+			//   **不销毁终端实例**（进程继续跑 ✓✓）+ 自动打开控制台 ✓ + 返回 DETACHED 文案 ✓。
+			let detachedToBackground = false;
 
 			const IDLE_TIMEOUT_MS = 1500; // 基础 idle 轮询间隔（none 档专用）
 
@@ -241,10 +288,18 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			//
 			// 慢启动形态仅用于 none 档的等待预算（rich/basic 档由事件驱动，与快慢无关）。
 			const slowStart = isSlowStartCommand(command);
-			/** none 档允许的最长等待：慢启动给足 timeout 预算，其余给保守下限。 */
-			const noneMaxWaitMs = slowStart
-				? Math.min(Math.max(timeoutSec * 1000, 15_000), 60_000)
-				: 6_000;
+			// ★ 2026-09-21（P0-③，pi/bash 对比）：**去掉 60s 硬顶**，timeout 完全由调用方决定
+			// （上限由 handler clamp 到 300 —— schema 已标注）。pi 的 bash 则默认**无超时**、
+			// 只在调用方传 `timeout` 秒时才计时；旧实现 `min(timeoutSec*1000, 60_000)` 让任何
+			// >60 的 timeout **静默失效**，对 dev server / watch / 大构建等于"必然超时且参数
+			// 无能为力"，而模型完全看不出参数被吃掉了。
+			const timeoutMs = timeoutSec * 1000;
+			/**
+			 * none 档允许的最长等待 —— **不得超过外层 timeout**（详见
+			 * `resolveNoneTierMaxWaitMs` 的不变量注释：内层 60s 封顶 + 外层 300s 的组合
+			 * 会让慢启动命令被提前"猜"成结束并返回半截输出 ✗）。
+			 */
+			const noneMaxWaitMs = resolveNoneTierMaxWaitMs(timeoutMs, slowStart);
 
 			// ── 等待 shell 就绪（processReady + 首次输出）──
 			// PowerShell profile 加载需 1.5-3s，若在 shell 未就绪时 sendText，
@@ -272,7 +327,12 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			// 就绪后再给一个短窗口等待；等不到就落 none 档（自定义 executable 的
 			// Git Bash 通常不被注入，常落此档）。
 			const COMMAND_DETECTION_WAIT_MS = 3000;
-			const commandDetection = await (async () => {
+			// ★ 2026-09-21（P1-④，pi/bash 对比）：负结果缓存 —— Git Bash 等永不注入 shell integration 的
+			// profile 直接跳过这 3s 空等（详见 `_capabilityProbeNegativeCache` 注释）。
+			const profileKey = gitBash ? `gitbash:${gitBash.bashPath}` : 'default';
+			const probeSkipped = (_capabilityProbeNegativeCache.get(profileKey) ?? 0) > Date.now();
+			const probeStartedAt = Date.now();
+			const commandDetection = probeSkipped ? undefined : await (async () => {
 				const existing = instance.capabilities.get(TerminalCapability.CommandDetection);
 				if (existing) { return existing; }
 				return await new Promise<ICommandDetectionCapability | undefined>((resolve) => {
@@ -291,6 +351,15 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 					}, COMMAND_DETECTION_WAIT_MS);
 				});
 			})();
+			// 只缓存「等满了超时窗口」的负结果：瞬时缺失可能只是启动慢，不能当成「永不注入」。
+			if (!probeSkipped && !commandDetection
+				&& Date.now() - probeStartedAt >= COMMAND_DETECTION_WAIT_MS - 100) {
+				_capabilityProbeNegativeCache.set(profileKey, Date.now() + PROBE_NEGATIVE_TTL_MS);
+				ctx.logService.info(
+					`[BuiltinTools] terminal: no shell integration for profile '${profileKey}' — ` +
+					`cached (none-tier) for ${PROBE_NEGATIVE_TTL_MS / 60_000}min; ` +
+					`subsequent calls skip the ${COMMAND_DETECTION_WAIT_MS}ms capability wait`);
+			}
 
 			const strategy = pickTerminalStrategy({
 				hasCommandDetection: !!commandDetection,
@@ -380,21 +449,22 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				idleTimer = setTimeout(onIdle, IDLE_TIMEOUT_MS);
 			});
 
-			// v27: hard cap timeout at 60s regardless of user input.
-			const hardCapMs = 60_000;
-			const timeoutMs = Math.min(timeoutSec * 1000, hardCapMs);
+			// ★ timeoutMs 已在上方（能力探测之前）计算 —— 因为 none 档窗口需要它做上界，
+			// 见 `noneMaxWaitMs` / `resolveNoneTierMaxWaitMs`。
 
 			// v27: log the actual command at the start of execution.
+			// ★ 2026-09-21（P0-③/P1-④）：去掉 `hardCap` 字段（60s 硬顶已移除），补 `probe` 字段 ——
+			// 「本次能力探测是查了缓存还是真等了 3s」是验证 P1-④ 收益的唯一现场证据（原先不可见）。
 			ctx.logService.info(
 				`[BuiltinTools] terminal: command="${redactSecrets(command).slice(0, 200)}" cwd=${effectiveCwd ?? '(none)'} ` +
-				`timeout=${timeoutSec}s hardCap=${hardCapMs}ms strategy=${strategy} slowStart=${slowStart}`,
+				`timeout=${timeoutMs}ms strategy=${strategy} probe=${probeSkipped ? 'cached-none' : 'fresh'} slowStart=${slowStart}`,
 			);
 
 			// 快照：用于覆盖「命令在监听器注册前就已完成」的竞态（见下方注释）
 			const commandCountBeforeSend = commandDetection?.commands.length ?? 0;
 
 			// v27: defensive `await instance.sendText(command, true)`.
-			const sendTextTimeoutMs = hardCapMs + 5_000;
+			const sendTextTimeoutMs = timeoutMs + 5_000;
 			const sendTextTimeout = new Promise<void>((resolve) => {
 				setTimeout(() => resolve(), sendTextTimeoutMs);
 			});
@@ -431,13 +501,35 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				? new Promise<string>((resolve) => {
 					// 中性文案：无论整轮取消还是「跳过」跳过当前命令，LLM 都应理解
 					// 命令被中断，但可继续处理后续步骤（避免误读为「用户取消了整个请求」）。
-					const onAbort = () => resolve('[INTERRUPTED] Command execution was interrupted by the user to continue with other steps. The command may have partially completed.\n');
+					// ★ 2026-09-21：按 `signal.reason` 区分「转后台」（**进程留着** ✓ 实例不销毁 ✓✓）
+					//   与「跳过/取消」（中断 ✓）—— 两条路的收尾语义截然不同 ✓✓。
+					const onAbort = () => {
+						if (signal.reason === 'detach') {
+							detachedToBackground = true;
+							resolve('[DETACHED]\n');
+							return;
+						}
+						resolve('[INTERRUPTED] Command execution was interrupted by the user to continue with other steps. The command may have partially completed.\n');
+					};
 					signal.addEventListener('abort', onAbort, { once: true });
 				})
 				: new Promise<string>(() => { /* never resolves */ });
 
+			// ★ 2026-09-21（P0-③）：超时文案必须**可执行** —— 旧文案只有一句
+			// `[TIMEOUT] Command timed out after Ns`：既不说"命令有没有跑完"，也不给任何出路，
+			// 模型只能原样重发（必然再超时）或换写法绕（pi 的对照做法：超时是结构性文案
+			// `Command timed out after N seconds`，且 pi 默认根本不会超时——只在调用方要求时才有）。
+			// 现在点破 ① 未证明完成 ② 会话已关 ③ 两条出路（更大 timeout / execute_code background）。
 			const timeoutPromise = new Promise<string>((resolve) => {
-				setTimeout(() => resolve(`[TIMEOUT] Command timed out after ${timeoutMs / 1000}s\n`), timeoutMs);
+				setTimeout(() => resolve(
+					`[TIMEOUT] The wait window (${timeoutMs / 1000}s) closed before this command reported completion — ` +
+					`it was NOT proven to have finished, and the terminal session is now closed.\n` +
+					`Do NOT re-send it through terminal unchanged. Instead pick ONE:\n` +
+					`  • if the command does finish on its own, just raise "timeout" (seconds, max 300) and re-run it; or\n` +
+					`  • for long-running processes (dev server, watcher, large install/build/test suite) run it with ` +
+					`execute_code({ background:true }) — that returns a taskId immediately, ` +
+					`execute_code({ action:"poll", taskId }) reads its output, and action:"kill" stops it.\n`
+				), timeoutMs);
 			});
 
 			// rich/basic 档把 commandFinished 一并纳入竞速：谁先到用谁。
@@ -476,7 +568,41 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			// terminalOutputDiagnosis.stripShellNoise。
 			const fullOutput = stripShellNoise(rawMerged, { command });
 
+			// ── 「转后台」收尾（2026-09-21 ✓）：与所有其它分支**根本不同** ✓✓ ——
+			//   ① **不销毁实例** ✗✗（dispose → pty kill ⇒ 进程被杀 ✗ —— 转后台的全部意义就是留着它 ✓✓）；
+			//   ② **自动打开控制台** ✓（setActiveInstance + showPanel ⇒ 用户立刻看到后台运行过程 ✓✓）；
+			//   ③ 返回 DETACHED 文案（明确告知模型：别等它 ✓ 需要结果用 execute_code background ✓）；
+			//   ④ 直播订阅清理由卡片侧正常收尾（工具结果到达 → 卡片重渲染 → `_disposeLiveTerminalSub` ✓）。
+			if (detachedToBackground) {
+				try {
+					// revealTerminal = 显示终端面板 + 置为活动实例 ✓（ITerminalService:547 ✓，
+					// 一个调用 ✓；用户明确要求"自动打开 console 显示后台运行过程" ⇒ 不 preserveFocus ✓）
+					void ctx.terminalService.revealTerminal(instance);
+				} catch { /* 打开控制台失败不影响 detach 本身 ✓ */ }
+				dataListener?.dispose();
+				exitListener?.dispose();
+				commandFinishedListener?.dispose();
+				const partial = stripShellNoise(outputChunks.join(''), { command });
+				return text(
+					`[DETACHED] The command keeps running in its own terminal — the user moved it to the background ` +
+					`and its console has been opened for them. Do NOT wait for it; continue with other steps. ` +
+					`If its final result matters later, ask the user, or run long tasks via execute_code({ background:true }) ` +
+					`next time (which supports action:"poll" / action:"kill").\n` +
+					(partial ? `\n--- partial output so far ---\n${partial.slice(-2000)}` : ''),
+				);
+			}
+
 			// 尝试销毁终端实例
+			//
+			// ★ 2026-09-21（P2-⑥ 结论：**无需在此另杀进程树**，此前列为待办，核实后撤销）：
+			//   对标 pi 时它显式做 `detached` + `process.kill(-pid)` / `taskkill /F /T`。
+			//   本仓 `dispose()` → pty host `TerminalProcess#_kill()` → `node-pty.kill()`
+			//   （`platform/terminal/node/terminalProcess.ts:389-409`）：Windows 走 ConPTY teardown、
+			//   Unix 关掉 pty 会向会话进程组发 SIGHUP ⇒ **进程树回收在这一层已经发生**，
+			//   在 renderer 侧再补一次既拿不到 pid（renderer 无 process API），也会与 pty host 打架。
+			//   ⚠ 已知残留面：**自己 daemonize / setsid 脱离会话的孙进程**仍可能存活（pty 语义使然，
+			//   pi 的 kill(-pid) 对这类同样无效）。这类场景应引导模型用 `execute_code background:true`
+			//   （那里有显式 taskkill /T /F + poll/kill 控制面）。
 			try {
 				if (instance) {
 					instance.dispose();
@@ -499,14 +625,20 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			}
 			const sanitizedOutput = piped.text;
 
-			// 截断过长输出 — head-tail 策略（对齐 Hermes）
-			const maxLen = 65536;
-			const truncated = sanitizedOutput.length > maxLen;
-			const finalOutput = truncated
-				? sanitizedOutput.slice(0, maxLen / 2)
-					+ `\n... (${sanitizedOutput.length - maxLen} chars omitted from the middle) ...\n`
-					+ sanitizedOutput.slice(sanitizedOutput.length - maxLen / 2)
-				: sanitizedOutput;
+			// ── 截断 + 落盘（2026-09-21，P0-②，pi/bash 对比后改）──────────────
+			// 旧实现：head+tail 64KB，中段**直接丢弃**、不落盘、不给总量 ⇒ 模型既拿不到中段，
+			// 也无从知道丢了什么，只能重跑命令（一次构建的重跑代价远大于读文件）。
+			// 现对齐 pi 的「保留头尾 + 全量落临时文件 + 明确总量与路径 + 检索引导」：
+			// 截断时把**全量**写入 `~/.vssaros/tmp/`，footer 直接给出取回方式。
+			// 阈值共用 `SPILL_THRESHOLD_BYTES`（与 execute_code 落盘同一常量，避免两处漂移）。
+			const maxLen = SPILL_THRESHOLD_BYTES;
+			const trunc = truncateTerminalOutput(sanitizedOutput, maxLen);
+			let finalOutput = trunc.text;
+			if (trunc.truncated) {
+				const footer = await spillTerminalOutput(command, sanitizedOutput);
+				// 落盘失败 ⇒ 仅保留内联截断（footer 为 undefined），绝不因落盘把成功命令变错误 ✓
+				if (footer) { finalOutput = `${finalOutput}\n\n${footer}`; }
+			}
 
 			// ── exit code：优先真实值，回退正则 ─────────────────────────────────
 			// ★ 2026-08-22：`ITerminalCommand.exitCode` 是 shell integration 报告的**真实
@@ -563,9 +695,12 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			}
 			// 仅在「非 0 退出码」或「未知退出码但输出含错误特征」时才尝试提示，
 			// 避免给成功命令加噪音。
+			/** 是否已产出「可疑/失败」类提示 —— 供下方 none 档退出码说明决定是否需要加税。 */
+			let suspicionRaised = false;
 			if (parsedExit === undefined || parsedExit !== 0) {
 				const hint = annotateCommandFailure(parsedExit, finalOutput);
 				if (hint) {
+					suspicionRaised = true;
 					hintedOutput = `${hintedOutput}\n\n${renderFailureHint(hint)}`;
 					ctx.logService.info(
 						`[BuiltinTools] terminal failure hint: ${hint.id} ` +
@@ -578,6 +713,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				// 成功侧也要有兜底，否则模型会把这类 exit 0 当成「构建通过」。
 				const masked = annotateMaskedSuccess(command, finalOutput);
 				if (masked) {
+					suspicionRaised = true;
 					hintedOutput = `${hintedOutput}\n\n${renderFailureHint(masked)}`;
 					ctx.logService.warn(
 						`[BuiltinTools] terminal masked-success hint: ${masked.id} ` +
@@ -586,10 +722,76 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				}
 			}
 
+			// ★ 2026-09-21（P1-⑤，pi/bash 对比）：none 档**拿不到退出码**（PTY 无 shell integration
+			// 注入，Git Bash 常态）—— 而 pi 的 `bash` 因走 spawn 恒有真实退出码。这是路线差异，
+			// 但**不能静默**：没有退出码时模型会按「有输出 = 成功」理解（本项目此前已因此把
+			// `no-such-file` 误判为成功）。故显式声明不可观测 + 给出出路（结果导向命令走 execute_code）。
+			//
+			// ⚠ 触发面刻意收窄（否则 Git Bash 下**每次** terminal 调用都加约 80 token 税：
+			// 而 `ls` / `git status` 这类命令的输出本身自解释，"退出码不可得"对决策毫无增量）：
+			//   · 已出现可疑/失败提示（suspicionRaised）→ 必须说明"别把它读成失败"，否则模型
+			//     会按提示去改一个其实成功的命令；或
+			//   · 命令是**结果导向**形态（`isSlowStartCommand`：构建/测试/安装/lint）→ 这正是
+			//     "退出码决定一切"的场景，必须点名。
+			if (strategy === 'none' && parsedExit === undefined
+				&& (suspicionRaised || isSlowStartCommand(command))) {
+				hintedOutput = `${hintedOutput}\n\n${unavailableExitCodeNote()}`;
+				ctx.logService.info(
+					`[BuiltinTools] terminal: exit code unavailable (strategy=none, suspicion=${suspicionRaised}) ` +
+					`— appended caller guidance`,
+				);
+			}
+
 			return [{ type: 'text', text: hintedOutput }];
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			return [{ type: 'text', text: `Error executing command: ${msg}` }];
+		}
+	}
+
+	/**
+	 * terminal 超限输出落盘 —— 与 `execute_code` 的 `_spillIfNeeded` 同一约定：
+	 * 全量写入 `~/.vssaros/tmp/`（沙箱允许根内 ⇒ 模型后续 `file_read` 不触发越界确认卡片），
+	 * 文件名可排序 + 唯一，按数量/时长回收，**任何 IO 失败都返回 undefined**（上层退化为纯截断）。
+	 *
+	 * 为什么不复用 `execOutputSpill.spillNoticeMessage`：那个文案面向"只内联头部"的场景
+	 * （stdout/stderr 分流），而 terminal 是「头+尾」保留 + 单流全文，footer 口径不同（见
+	 * `spilledOutputFooter`）。阈值/文件名/回收策略则共用同一份常量与实现，避免漂移 ✓。
+	 */
+	async function spillTerminalOutput(command: string, fullText: string): Promise<string | undefined> {
+		try {
+			const env = ctx.environmentService;
+			if (!env) { return undefined; }
+			const tmpDir = resolveSarosPath(userDataRootFromPath(env.userDataPath), SarosPath.tmp);
+			await ctx.fileService.createFolder(tmpDir);
+			// 回收：目录不可读时静默跳过（落盘只是优化，不阻塞命令结果）
+			try {
+				const stat = await ctx.fileService.resolve(tmpDir, { resolveMetadata: true });
+				const files = (stat.children ?? [])
+					.filter(c => !c.isDirectory)
+					.map(c => ({ name: c.name, mtimeMs: c.mtime ?? 0 }));
+				for (const name of selectSpillFilesToDelete(files, Date.now())) {
+					try { await ctx.fileService.del(joinPath(tmpDir, name)); } catch { /* 单个失败跳过 */ }
+				}
+			} catch { /* 目录列举失败 → 本轮不回收 */ }
+
+			const now = new Date();
+			const target = joinPath(tmpDir, spillFileName(now, ++_terminalSpillSeq));
+			const body = [
+				`# tool: terminal`,
+				`# command: ${command}`,
+				`# captured: ${now.toISOString()}`,
+				'',
+				fullText,
+			].join('\n');
+			await ctx.fileService.writeFile(target, VSBuffer.fromString(body));
+			ctx.logService.info(
+				`[BuiltinTools] terminal: output spilled to ${target.fsPath} (${fullText.length} chars)`);
+			return spilledOutputFooter(target.fsPath, fullText.length);
+		} catch (e) {
+			ctx.logService.warn(
+				`[BuiltinTools] terminal: output spill failed, falling back to inline truncation: ${e}`);
+			return undefined;
 		}
 	}
 
@@ -604,7 +806,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 	}
 
 	/** 按行读取 [offset, offset+limit) 行，对齐 Hermes sed -n 语义。 */
-	async function readFileLines(resolvedPath: string, offset: number, limit: number, signal?: AbortSignal): Promise<{ page: string[]; hasMore: boolean; totalLines: number; fileSize: number; mtime: number }> {
+	async function readFileLines(resolvedPath: string, offset: number, limit: number, signal?: AbortSignal): Promise<{ page: string[]; hasMore: boolean; totalLines: number; fileSize: number; mtime: number; truncatedLines: number[] }> {
 		const normalizedUri = URI.file(resolvedPath);
 		const content = await ctx.fileService.readFile(normalizedUri);
 		const textContent = typeof content.value === 'string' ? content.value : content.value.toString();
@@ -622,9 +824,18 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		}
 
 		const page: string[] = [];
+		// ★ P2-⑦（2026-09-21，pi 对照）：记录**被截断的行号**（1-based）—— 调用侧据此给出
+		// 「怎么拿到整行」的可执行出路（见 fileReadHints.longLineTruncationHint）。
+		// 此前只截断不告知 ⇒ 模型要么误以为内容就这么多，要么重读整个大文件 ✗。
+		const truncatedLines: number[] = [];
 		for (let i = startIndex; i < Math.min(endIndex, rawLines.length); i++) {
 			const line = rawLines[i];
-			page.push(line.length > READ_LINE_MAX_CHARS ? line.slice(0, READ_LINE_MAX_CHARS) : line);
+			if (line.length > READ_LINE_MAX_CHARS) {
+				page.push(line.slice(0, READ_LINE_MAX_CHARS));
+				truncatedLines.push(i + 1);
+			} else {
+				page.push(line);
+			}
 		}
 
 		const hasMore = rawLines.length > endIndex;
@@ -635,7 +846,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			throw new Error('aborted');
 		}
 
-		return { page, hasMore, totalLines, fileSize, mtime };
+		return { page, hasMore, totalLines, fileSize, mtime, truncatedLines };
 	}
 
 	/** mtime-based 去重 stub（对齐 Hermes _dedup_read_file）。 */
@@ -785,7 +996,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 						options: Array.isArray(q.options) ? (q.options as unknown[]).map(String) : undefined,
 					}));
 				if (items.length === 0) {
-					return text('Error: at least one valid question is required');
+					throw new NonRetryableToolError('Error: at least one valid question is required');
 				}
 				return [{
 					type: 'text' as const,
@@ -796,7 +1007,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			// ── 单问题模式（向后兼容） ─────────────────
 			const question = String(args['question'] ?? '').trim();
 			if (!question) {
-				return text('Error: question or questions[] parameter is required');
+				throw new NonRetryableToolError('Error: question or questions[] parameter is required');
 			}
 			const options = Array.isArray(args['options']) ? (args['options'] as unknown[]).map(String) : undefined;
 			return [{
@@ -910,6 +1121,8 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			let totalLines: number;
 			let fileSize: number;
 			let mtime: number;
+			/** 本页中被截断的长行（1-based 行号）—— 供尾部长行提示使用（P2-⑦）。 */
+			let truncatedLines: number[] = [];
 
 			try {
 				const result = await readFileLines(resolvedPath, offset, limit, signal);
@@ -918,6 +1131,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				totalLines = result.totalLines;
 				fileSize = result.fileSize;
 				mtime = result.mtime;
+				truncatedLines = result.truncatedLines;
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				// ── 畸形路径识别（2026-09-07，日志 1788763596406）────────────────
@@ -1029,6 +1243,17 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		//
 		// 仅在 limit 很小且确实还有后续内容时输出：正常分段阅读（limit 数百）不受影响，
 		// 读完整小文件时也不输出（那种情况规模已一目了然），避免给常规路径加噪音。
+		// ★ P2-⑦（2026-09-21，pi 对照）：超长行被截断时必须给出**可执行出路** ——
+		// 否则模型只会：① 以为内容就这么多（误判），或 ② 重读整个文件（长行文件往往极大）✗。
+		// 文案真源在 common/fileReadHints（纯函数、可单测；含方言分支与「别重读」劝阻）。
+		if (truncatedLines.length > 0) {
+			tailParts.push(longLineTruncationHint({
+				firstLine: truncatedLines[0],
+				truncatedCount: truncatedLines.length,
+				maxChars: READ_LINE_MAX_CHARS,
+			}, resolvedPath));
+		}
+
 		if (limit <= PROBE_LIMIT_MAX && hasMore) {
 			tailParts.push(`[File info: ${totalLines} 行, ${(fileSize / 1024).toFixed(1)}KB。此为规模探查读取；不要用 shell 命令数行数。]`);
 		}
@@ -1178,14 +1403,19 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		definition: {
 			name: 'terminal',
 			// 分工说明（2026-08-22，对齐 MiMo-Code 把交互式需求单独抽成 bash-interactive
-			// 的做法）：terminal 走**交互式 PTY**，在 UI 中可见、可被用户接管、复用同一
-			// 个 shell 会话；代价是完成判定依赖 shell integration，未注入时只能靠提示符
-			// 启发式推断，且拿不到退出码。日志 1787324352413 中模型用 terminal 跑
-			// `npx tsc --noEmit`（纯粹要一个确定结果）本身就是次优选择 —— 8 次全部没
-			// 拿到输出。把边界写进 description，让模型在选工具时就分流。
+			// 的做法）：terminal 走**交互式 PTY**，在 UI 中可见、命令执行期间用户可接管。
+			// 代价是完成判定依赖 shell integration，未注入时只能靠提示符启发式推断，
+			// 且拿不到退出码。日志 1787324352413 中模型用 terminal 跑 `npx tsc --noEmit`
+			// （纯粹要一个确定结果）本身就是次优选择 —— 8 次全部没拿到输出。把边界写进
+			// description，让模型在选工具时就分流。
+			//
+			// ★ 2026-09-21 更正（P2-⑦）：此前注释写「复用同一个 shell 会话」，**与实现不符** ——
+			// 每次调用都 `createTerminal` 新建实例、竞速结束后 `dispose`（不复用，也不保留
+			// cwd/env 的跨调用状态）。注释失实会误导后续维护者在「会话复用」这个不存在的
+			// 前提上做设计（例如以为可以依赖上次的 cd），故按实现更正。
 			description: 'Execute a shell command in an interactive terminal and return the output. Works on desktop only.'
-				+ ' Use this for commands where you want the terminal visible and reusable (interactive sessions, long-running dev servers,'
-				+ ' commands the user may want to take over).'
+				+ ' Use this for commands where you want the terminal visible while it runs (interactive sessions, long-running dev servers,'
+				+ ' commands the user may want to take over mid-flight). Each call gets its own fresh terminal session.'
 				+ ' For commands where you mainly need a deterministic result — builds, type checks, test runs, linters, anything whose'
 				+ ' exit code or full output you intend to act on — prefer execute_code, which runs the command once, waits for real'
 				+ ' completion and returns stdout, stderr and the real exit code.'
@@ -1199,7 +1429,9 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				properties: {
 					command: { type: 'string', description: 'Shell command to execute' },
 					cwd: { type: 'string', description: 'Working directory (defaults to workspace root)' },
-					timeout: { type: 'number', description: 'Command timeout in seconds (default: 30)' },
+					// ★ 2026-09-21（P0-③）：显式给出**上限** —— 此前 Schema 只写 default:30，
+					// 而实现另有 60s 静默硬顶，模型传 300 会被无声截断（现已去掉硬顶）。
+					timeout: { type: 'number', description: 'Command timeout in seconds (default: 30, max: 300)' },
 				},
 				required: ['command'],
 			},

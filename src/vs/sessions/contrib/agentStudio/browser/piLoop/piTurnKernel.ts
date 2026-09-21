@@ -19,8 +19,10 @@
  *    · **hookBus `before_tool`**（executor:3040+）：唯一 handler 是 memory provider 的
  *      pre_tool_use 转发（上下文丰富化）。pi 路径经 `_observeToolResult` 仍喂结果侧信号；
  *      pre 侧缺失只影响记忆系统的细粒度上下文，不改行为。
- *    · **checkpoint 的 preExploreDone / paradigmOverride** 恢复：preLoop/范式在 pi 路径
- *      不存在 ⇒ 无恢复对象；phase 与 legacy 一样**故意不恢复**（防副作用工具重跑）。
+ *    · **checkpoint 的 preExploreDone / 范式**恢复：preLoop/范式在 pi 路径
+ *      不存在 ⇒ 无恢复对象（范式覆盖注册表 `paradigmOverride` 已于 2026-09-21 随 switch_paradigm
+ *      退役一并删除；legacy 侧现为每 turn 就地解析 `resumeFrom?.paradigm ?? request.paradigm`）；
+ *      phase 与 legacy 一样**故意不恢复**（防副作用工具重跑）。
  *    · **incomplete-turn 重试的 `tool-call-lost` 诊断增强**（outputTokens 判据日志）未复刻 ——
  *      纯日志增强，重试行为已对齐。
  *  D2 已接（2026-09-20）：resumeFrom 恢复（messages 优先/loopMessages 回落 + 划痕

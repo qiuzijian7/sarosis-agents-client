@@ -112,8 +112,14 @@ suite('ToolSearchAssembler — isDeferrableTool', () => {
 	});
 
 	test('medium/low priority tools ARE deferrable', () => {
+		// ⚠ 2026-09-21 更正过期断言：原用 `browser_navigate` 代表 Medium 档 —— 但它**在 CORE_TOOLS
+		// 白名单**里（toolsetConfig.ts：浏览器基础导航被双重保护）⇒ 永远不可折叠，HEAD 即失败。
+		// 换成同属 browser（Medium, deferrable）但不在白名单的 `browser_screenshot`。
 		assert.strictEqual(isDeferrableTool(makeDeferrableTool('kanban_create', 'Create card')), true);
-		assert.strictEqual(isDeferrableTool(makeDeferrableTool('browser_navigate', 'Navigate')), true);
+		assert.strictEqual(isDeferrableTool(makeTool('browser_screenshot', 'Screenshot', undefined, 'browser')), true);
+		// 反向钉：白名单优先于 toolset（这正是上一条过期的原因）
+		assert.strictEqual(isDeferrableTool(makeDeferrableTool('browser_navigate', 'Navigate')), false,
+			'browser_navigate 在 CORE_TOOLS 白名单里，不可折叠 ✗');
 	});
 
 	test('workflow tools are NOT deferrable (High priority)', () => {
@@ -158,7 +164,7 @@ suite('ToolSearchAssembler — classifyTools', () => {
 			makeCoreTool('file_read', 'Read'),
 			makeCoreTool('terminal', 'Terminal'),
 			makeDeferrableTool('kanban_create', 'Create card'),
-			makeDeferrableTool('browser_navigate', 'Navigate'),
+			makeDeferrableTool('browser_screenshot', 'Screenshot'), // ⚠ 2026-09-21：browser_navigate 已入 CORE_TOOLS 白名单，改用未入名单的 browser_screenshot
 		];
 		const { visible, deferrable } = classifyTools(tools);
 		assert.strictEqual(visible.length, 2);
@@ -311,8 +317,12 @@ suite('ToolSearchAssembler — assembleToolDefs', () => {
 		];
 		const result = assembleToolDefs(tools, { contextLength: 200000 });
 		assert.strictEqual(result.activated, false);
-		// passthrough: all tools visible
-		assert.strictEqual(result.toolDefs.length, 2);
+		// ⚠ 2026-09-21 更正过期期望：现行设计里 deferrable 工具**从不直发**（进 deferredDefs 供
+		// 桥接目录），且桥接三件套在**未激活**时也随发 ⇒ toolDefs = 1 visible + 3 bridge。
+		// 旧期望 `2`（"passthrough 时全部直发"）与该设计矛盾，HEAD 即失败。
+		assert.strictEqual(result.toolDefs.length, 1 + 3);
+		assert.ok(!result.toolDefs.some(t => t.name === 'kanban_create'), 'deferrable 工具不得直发 ✗');
+		assert.ok(result.deferredDefs.some(t => t.name === 'kanban_create'), '但它必须经桥接目录可达 ✗');
 	});
 
 	test('activated when on mode with deferrable tools', () => {
@@ -332,30 +342,32 @@ suite('ToolSearchAssembler — assembleToolDefs', () => {
 		const tools = [
 			makeCoreTool('file_read', 'Read'),
 			makeDeferrableTool('kanban_create', 'Create card'),
-			makeDeferrableTool('browser_navigate', 'Navigate'),
+			makeDeferrableTool('browser_screenshot', 'Screenshot'), // ⚠ 2026-09-21：browser_navigate 已入 CORE_TOOLS 白名单，改用未入名单的 browser_screenshot
 		];
 		const config: IToolSearchConfig = { ...DEFAULT_TOOL_SEARCH_CONFIG, enabled: 'on' };
 		const result = assembleToolDefs(tools, { config });
 		assert.strictEqual(result.deferredDefs.length, 2);
 		assert.strictEqual(result.deferredDefs[0].name, 'kanban_create');
-		assert.strictEqual(result.deferredDefs[1].name, 'browser_navigate');
+		assert.strictEqual(result.deferredDefs[1].name, 'browser_screenshot');
 	});
 
-	test('hard cap: visible (core) tools exceeding maxVisible are forced into bridge', () => {
-		// 复现 incident：单轮下发 53 个核心工具 → 请求体过大 → 网关在生成大响应时 stall。
-		// 期望：visible 被截断到 maxVisible(30)，溢出核心工具强制折叠进 tool_search 桥接。
+	test('hard cap: visible (core) tools exceeding MAX_TOTAL_VISIBLE are forced into bridge', () => {
+		// ⚠ 2026-09-21 对齐现行契约重写：旧契约「core/Always 工具按 maxVisible 截断」已废 ——
+		// 现行设计（对齐 Hermes）：核心工具**永远直发**，唯一保底是 L2 硬上限
+		// MAX_TOTAL_VISIBLE（= MAX_VISIBLE_TOOLS + 20 = 80）；`maxVisible` 选项对 Always 无效。
+		// 旧期望（40 个 core + maxVisible:30 → 33 件）在 HEAD 即失败。
 		const tools: Array<IToolDefinition & { enabled: boolean }> = [];
-		for (let i = 0; i < 40; i++) {
+		for (let i = 0; i < 90; i++) {
 			tools.push(makeCoreTool(`core_tool_${i}`, `Core tool number ${i}`));
 		}
-		const result = assembleToolDefs(tools, { maxVisible: 30 });
-		// 30 visible + 3 bridge
-		assert.strictEqual(result.toolDefs.length, 30 + 3, `expected 33 toolDefs, got ${result.toolDefs.length}`);
+		const result = assembleToolDefs(tools);
+		// 80 visible（L2 截断）+ 3 bridge
+		assert.strictEqual(result.toolDefs.length, 80 + 3, `expected 83 toolDefs, got ${result.toolDefs.length}`);
 		assert.strictEqual(result.activated, true, 'bridge must be activated when cap is exceeded');
 		assert.strictEqual(result.deferredCount, 10, `expected 10 forced-deferred, got ${result.deferredCount}`);
 		// 溢出的核心工具仍在 catalog 中可达
 		const names = result.deferredDefs.map(t => t.name);
-		assert.ok(names.includes('core_tool_39'), 'overflow core tool should be discoverable via bridge');
+		assert.ok(names.includes('core_tool_89'), 'overflow core tool should be discoverable via bridge');
 		// 桥接工具自身不应进入 deferredDefs（避免重复）
 		assert.ok(!names.includes('tool_search'), 'bridge tools must not be in deferredDefs');
 	});
@@ -393,8 +405,8 @@ suite('ToolSearchAssembler — assembleToolDefs', () => {
 		const config: IToolSearchConfig = { ...DEFAULT_TOOL_SEARCH_CONFIG, enabled: 'off' };
 		const result = assembleToolDefs(tools, { config });
 		assert.strictEqual(result.activated, false);
-		// passthrough
-		assert.strictEqual(result.toolDefs.length, 2);
+		// ⚠ 2026-09-21：桥接三件套在未激活时也随发（deferrable 工具不直发）⇒ 1 visible + 3 bridge
+		assert.strictEqual(result.toolDefs.length, 1 + 3);
 	});
 
 	test('result includes deferredTokens and thresholdTokens', () => {
@@ -423,12 +435,12 @@ suite('ToolSearchAssembler — scopedDeferrableNames', () => {
 		const tools = [
 			makeCoreTool('file_read', 'Read'),
 			makeDeferrableTool('kanban_create', 'Create card'),
-			makeDeferrableTool('browser_navigate', 'Navigate'),
+			makeDeferrableTool('browser_screenshot', 'Screenshot'), // ⚠ 2026-09-21：browser_navigate 已入 CORE_TOOLS 白名单，改用未入名单的 browser_screenshot
 		];
 		const names = scopedDeferrableNames(tools);
 		assert.strictEqual(names.size, 2);
 		assert.ok(names.has('kanban_create'));
-		assert.ok(names.has('browser_navigate'));
+		assert.ok(names.has('browser_screenshot'));
 	});
 
 	test('does NOT include bridge tool names', () => {

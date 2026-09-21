@@ -149,6 +149,20 @@ export interface IModelCapabilityConfig {
 	 */
 	readonly specialToolFormat?: 'openai-style' | 'anthropic-style' | 'gemini-style';
 
+	/**
+	 * 是否启用 OpenAI **strict 工具模式**（2026-09-21 接入）。
+	 *
+	 * - `true`：按工具声明 `strict: true`（schema 会被清洗成 strict 子集：补
+	 *   `additionalProperties:false` / `required` 全覆盖 / 删掉 `pattern`、`format` 等不允许的关键字；
+	 *   结构上无法清洗的工具（`oneOf`/`$ref`/`type` 数组）**自己退回**普通模式，绝不拖垮整批）；
+	 * - `false`：明确关闭（即使 provider 判定为官方 OpenAI 端点也不开）；
+	 * - `undefined`：由 provider 判定（官方 OpenAI / Azure OpenAI 端点自动开，其余关 —— 见
+	 *   `builtInBYOKModelProvider._resolveStrictToolSchema`）。
+	 *
+	 * ⚠ 只对 **OpenAI 兼容**格式有意义；Anthropic/Gemini 原生格式没有该概念（传了也会被忽略）。
+	 */
+	readonly strictToolSchema?: boolean;
+
 	// ─── 推理/思考能力 ──────────────────────────────────────────
 	/**
 	 * 推理能力类型：
@@ -1617,6 +1631,12 @@ export interface IChatStreamDelta {
 	readonly compressionCompressedCount?: number;
 	readonly compressionTokensSaved?: number;
 	readonly compressionDurationMs?: number;
+	/**
+	 * 核心摘要字符数（2026-09-21）：摘要饥饿判据（`historyCompaction.isCompactionSummaryStarved`）
+	 * 只度量"信息量"部分（不含确定性追加的文件清单），由 compressContext 产出、
+	 * 经此透传到压缩边界 metadata，供回放侧判边界可信度。
+	 */
+	readonly compressionSummaryChars?: number;
 	/**
 	 * Sub-agent lifecycle fields. Carried on `sub_agent_start | sub_agent_progress | sub_agent_end`
 	 * delta types so that the Host can drive the WebView's SubAgentCard. Field names are kept

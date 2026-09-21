@@ -31,7 +31,7 @@
 import { replaySessionLog, upsertMessageById } from './sessionHistoryLog.js';
 // ★ 与**请求侧同一条**裁剪逻辑 ✓（`_toDriverMessages` 首行用的就是它 ✓）——
 //   绝不在这里重写一遍 ✗（否则体检结论会和模型实际看到的不一致 ✗✓）。
-import { findLastCompactionBoundaryIndex, sliceAtCompactionBoundary } from './historyCompaction.js';
+import { findLastCompactionBoundaryIndex, findLastValidCompactionBoundaryIndex, sliceAtCompactionBoundary } from './historyCompaction.js';
 
 import type { ChatMessage } from './types.js';
 
@@ -147,7 +147,12 @@ export function buildSessionDigest(messages: readonly ChatMessage[]): ISessionDi
 		messages: messages.length,
 		// ★ 「模型实际能看到的条数」✓ —— 与请求侧同源（`sliceAtCompactionBoundary` ✓）
 		modelVisibleMessages: sliceAtCompactionBoundary(messages as readonly (ChatMessage & { metadata?: { type?: string } })[]).length,
-		droppedByCompactionBoundary: messages.length - sliceAtCompactionBoundary(messages as readonly (ChatMessage & { metadata?: { type?: string } })[]).length,
+		// 「被压缩边界丢弃的**历史**条数」= 最后一条**可信**边界之前的条数（2026-09-21）。
+		// ⚠ 不从 `messages - modelVisible` 反推：模型看不见的条数里还包含"摘要饥饿⇒被剔除的
+		//   不可信边界标记"（`sliceAtCompactionBoundary` 的过滤），那不算历史丢失 ⇒ 反推会把
+		//   它误报成"压缩裁掉了 N 条"（体检的 ⚠ 行是给用户看"历史是否被裁"的 ✗）。
+		droppedByCompactionBoundary: Math.max(0, findLastValidCompactionBoundaryIndex(
+			messages as readonly (ChatMessage & { metadata?: { type?: string } })[])),
 		hasCompactionBoundary: findLastCompactionBoundaryIndex(messages as readonly (ChatMessage & { metadata?: { type?: string } })[]) >= 0,
 		byRole,
 		turns: turns.size,

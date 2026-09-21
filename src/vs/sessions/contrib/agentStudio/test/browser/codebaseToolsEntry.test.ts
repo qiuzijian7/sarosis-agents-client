@@ -567,8 +567,16 @@ suite('codebase tool entries: export/import artifact (slim tier)', () => {
 		assert.strictEqual(okJson.edgeCount, 3);
 
 		const failTools = makeCtx({ importArtifact: async () => false });
-		const failOut = await getTool(failTools, 'import_artifact').handler({ source_path: '/tmp/g/graph.db.zst' });
-		assert.ok(resultText(failOut).includes('integrity check'), `failure message should mention integrity check, got: ${resultText(failOut)}`);
+		// ★ 2026-09-21（P1-⑤，pi 错误契约对齐）：失败路径由「成功形状的文本」改为**抛错** ——
+		// 工具内部 throw，由 loop 统一转成 isError；否则 executeTool 记 OK，熔断/统计/失败提示
+		// 全看不见 ✗。**文案逐字保留**：模型看到的内容不变，变的是「这次调用是失败」这一事实。
+		await assert.rejects(
+			() => getTool(failTools, 'import_artifact').handler({ source_path: '/tmp/g/graph.db.zst' }),
+			(err: Error) => {
+				assert.ok(err.message.includes('integrity check'),
+					`failure message should mention integrity check, got: ${err.message}`);
+				return true;
+			});
 	});
 });
 

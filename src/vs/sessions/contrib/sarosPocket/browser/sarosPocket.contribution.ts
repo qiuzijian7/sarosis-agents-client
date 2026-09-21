@@ -15,6 +15,8 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
+import { ISessionsProvidersService } from '../../../services/sessions/browser/sessionsProvidersService.js';
+import { isWeb } from '../../../../base/common/platform.js';
 import { SessionStatus } from '../../../services/sessions/common/session.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../../agentStudio/common/modelSelector.js';

@@ -178,8 +178,19 @@ export const TOOL_MERMAID_TOOLS = new Set(['rendermermaiddiagram', 'mermaid_rend
 /** Draw.io 图示族（renderDrawioDiagram 等，需专用渲染卡片；mxGraphModel 只读预览） */
 export const TOOL_DRAWIO_TOOLS = new Set(['renderDrawioDiagram', 'renderdrawiodiagram', 'drawio_render', 'render_diagram']);
 
-/** Unreal Engine 工具（unreal_*，BunnySeek bridge）。 */
-export const TOOL_UNREAL_TOOLS = new Set(['unreal_run_command', 'unreal_exec', 'unreal_query', 'unreal_editor_command', 'unreal_console_command', 'unreal_get_actors', 'unreal_get_asset_info', 'unreal_screenshot']);
+/** Unreal Engine 工具（unreal_*，BunnySeek bridge）。
+ *
+ * ⚠ 2026-09-21 修（名单与注册脱节的活 bug）：此处曾写 `unreal_run_command / unreal_query /
+ * unreal_editor_command / unreal_console_command / unreal_get_actors / unreal_get_asset_info /
+ * unreal_screenshot`（8 个），而 `unrealTools.ts` 实际注册的是 health/exec/wait/help/dump/
+ * build/find_asset（7 个）——**只有 `unreal_exec` 重合** ⇒ 其余 6 个已注册工具永远拿不到
+ * 专用卡片（落到通用卡），而集合里 7 个名字对应的工具**根本不存在**。名单必须与
+ * `unrealTools.ts` 的 UNREAL_*_TOOL_NAME 逐一对齐（`unrealToolCard.test.ts` 已钉住）。
+ */
+export const TOOL_UNREAL_TOOLS = new Set([
+	'unreal_health', 'unreal_exec', 'unreal_wait', 'unreal_help',
+	'unreal_dump', 'unreal_build', 'unreal_find_asset',
+]);
 
 export function _patchNestedMarkdown(source: string): string {
 	// 2026-09-11 快速路径：不含 ``` 直接返回。超长媒体 content（单条可达 8MB 的
@@ -834,6 +845,13 @@ protected readonly _onCancelExecution: () => void;
 	 */
 	protected readonly _onSkipCurrentTool?: () => void;
 
+	/**
+	 * 转后台当前工具（terminal 卡片「转后台」，2026-09-21）：**不中止进程** ✓ ——
+	 * 进程留在其真实终端实例里继续跑 + 控制台自动打开 ✓，当前轮立即放行 ✓。
+	 * 与「跳过」（杀进程 ✗）互补：转后台 = "这活我还要，只是别挡路" ✓✓。
+	 */
+	protected readonly _onDetachCurrentTool?: () => void;
+
 protected readonly _onSelectAgent: (id: string) => void;
 
 protected readonly _onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
@@ -997,6 +1015,8 @@ constructor(opts: {
 		onInterruptAndSend?: (text: string, attachments?: IChatAttachment[]) => void;
 		onCancelExecution: () => void;
 		onSkipCurrentTool?: () => void;
+		/** 转后台当前工具（terminal 卡片「转后台」✓）：进程留着 + 控制台打开 ✓，不杀进程 ✗ */
+		onDetachCurrentTool?: () => void;
 		onToggleCollapse: () => void;
 		onSelectAgent: (id: string) => void;
 		onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
@@ -1097,6 +1117,7 @@ constructor(opts: {
 		this._onInterruptAndSend = opts.onInterruptAndSend;
 		this._onCancelExecution = opts.onCancelExecution;
 		this._onSkipCurrentTool = opts.onSkipCurrentTool;
+		this._onDetachCurrentTool = opts.onDetachCurrentTool;
 		this._onSelectAgent = opts.onSelectAgent;
 		this._onSelectWorktree = opts.onSelectWorktree;
 		this._onClearWorktree = opts.onClearWorktree;

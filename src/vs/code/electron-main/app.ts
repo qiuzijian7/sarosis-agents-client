@@ -778,16 +778,32 @@ export class CodeApplication extends Disposable {
 				if (!handle.settled) {
 					const partialOut = stdoutCollector.decode(localEncoding);
 					const partialErr = stderrCollector.decode(localEncoding);
+					// ★★ 2026-09-21（P0-①，pi/bash 对比取证）：超时 marker **必须同时写进 stderrCollector**。
+					//
+					// 此前只把 marker 拼进「传给 onDone 的结果对象」—— 而**后台任务没有 onDone**
+					// （`if (payload?.background)` 分支调用 `startExec()` 不传回调），渲染侧
+					// `execute_code` 的"直播"模式又恰恰全程走后台任务 + poll（`poll` 只回
+					// `stderrCollector.decode()`）⇒ marker 被丢弃 ⇒ 渲染侧
+					// `parseTimeoutSecondsFromStderr` 判不出超时 ⇒ 走泛化失败分支
+					// （真机实证：`stderr=0c` + `execute_code failed (exit -1)`），
+					// 于是专为长任务写的 `timeoutGuidanceMessage`（background:true / 更大 timeout
+					// 两条出路 + "别原样重发"）**永远打不出来** ✗ —— 恰好是它最该生效的场景。
+					// 现在 marker 双写：collector（poll 可见）+ 结果对象（前台路径不变 ✓）。
+					const killedAfter = Math.round(timeoutMs / 1000);
+					const useTreeKill = process.platform === 'win32' && !!child.pid;
+					const marker = useTreeKill
+						? `\n[timeout: process tree killed after ${killedAfter}s]`
+						: `\n[timeout: process killed after ${killedAfter}s]`;
+					stderrCollector.push(Buffer.from(marker, 'utf8'));
+					const settleTimeout = () => finish({ success: false, stdout: partialOut, stderr: partialErr + marker, exitCode: -1 });
 					// Windows：shell:true 时 child 是 cmd.exe/bash，child.kill() 只杀 shell
 					// 进程，不杀其 spawn 的子进程（如 node script.mjs 卡在 top-level await）。
 					// 用 taskkill /T /F 杀整棵进程树；失败则回退 child.kill()。
-					if (process.platform === 'win32' && child.pid) {
-						execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {
-							finish({ success: false, stdout: partialOut, stderr: partialErr + `\n[timeout: process tree killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
-						});
+					if (useTreeKill) {
+						execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => settleTimeout());
 					} else {
 						try { child.kill('SIGKILL'); } catch { /* ignore */ }
-						finish({ success: false, stdout: partialOut, stderr: partialErr + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
+						settleTimeout();
 					}
 				}
 			}, timeoutMs) : undefined;
@@ -2425,11 +2441,15 @@ export class CodeApplication extends Disposable {
 				try { remoteDataDir = ((await res.json()) as { dataDir?: string })?.dataDir; } catch { /* 旧版网关无 json body */ }
 				const same = remoteDataDir !== undefined && this._isSamePath(remoteDataDir, localDataDir);
 				if (remoteDataDir !== undefined && !same) {
+					// 多开同形态（多个 --user-data-dir 但端口相同）时，后启者会撞上先启者的网关。
+					// 旧实现在此「复用远端网关」⇒ 两个实例的记忆读写落到**同一份 dataDir**，
+					// 正是端口隔离要防的串味。改为不复用：交给 spawn，由派生端口起自己的网关。
 					this.logService.warn(
 						`[agentmemory-gateway] 端口 ${port} 已被**其他数据目录**的网关占用：远端 dataDir=${remoteDataDir}，本窗口 dataDir=${localDataDir}。`
-						+ '本窗口将复用远端网关 —— 记忆读写会落到远端数据目录（跨环境共享）。'
-						+ '如需隔离，请为不同环境设置不同的 AGENTMEMORY_PORT。'
+						+ '本窗口不复用该网关（避免记忆串库），将改用自己的端口重新拉起。'
 					);
+					this._spawnAgentMemoryGateway(hostPath);
+					return;
 				} else {
 					this.logService.info(`[agentmemory-gateway] 端口 ${port} 已被占用（dataDir=${remoteDataDir ?? '未知'}），复用既有网关`);
 				}
@@ -2467,7 +2487,32 @@ export class CodeApplication extends Disposable {
 		if (Number.isInteger(explicit) && explicit > 0 && explicit < 65536) { return explicit; }
 		// isBuilt（= !VSCODE_DEV，见 platform/environment/common/environmentService.ts）是 dev / 打包 的
 		// 正确判据（**不能**用 app.isPackaged）。
-		return this.environmentMainService.isBuilt ? 3111 : 3112;
+		const base = this.environmentMainService.isBuilt ? 3111 : 3112;
+		// 多开隔离：端口若只按形态分配，则「同形态 + 不同 user-data-dir」的多个实例
+		// 必然撞同一个端口（后启者 EADDRINUSE）。这里对**非默认数据目录**做确定性偏移，
+		// 使每个实例稳定拿到自己的端口 —— 确定性意味着同一实例重启后端口不变，
+		// 且渲染侧可用同一算法独立推导，无需跨进程通信。
+		const defaultDataDir = join(this.environmentMainService.userDataPath, '.agentmemory');
+		const dataDir = process.env['AGENTMEMORY_DATA_DIR'] ?? defaultDataDir;
+		if (this._isSamePath(dataDir, defaultDataDir)) {
+			return base;
+		}
+		return base + 10 + (this._hashString(this._normalizePathForHash(dataDir)) % 90);
+	}
+
+	/** 与 `_isSamePath` 同一套归一化：Windows 大小写不敏感、分隔符可能混用。 */
+	private _normalizePathForHash(p: string): string {
+		return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+	}
+
+	/** 稳定字符串哈希（FNV-1a 32 位）：仅用于端口派生，不涉安全。 */
+	private _hashString(s: string): number {
+		let h = 0x811c9dc5;
+		for (let i = 0; i < s.length; i++) {
+			h ^= s.charCodeAt(i);
+			h = Math.imul(h, 0x01000193) >>> 0;
+		}
+		return h;
 	}
 
 	/**
@@ -2533,7 +2578,10 @@ export class CodeApplication extends Disposable {
 	/** 自愈重试状态：只在「子进程异常退出」时推进；成功复用/重新拉起后归零。 */
 	private _agentMemoryGatewayRetryCount = 0;
 	private _agentMemoryGatewayRetryTimer: ReturnType<typeof setTimeout> | undefined;
-	private static readonly AGENTMEMORY_GATEWAY_RETRY_DELAYS_MS = [3_000, 10_000, 30_000, 60_000];
+	// 首探 1s：网关重建索引实测约 4.3s，旧值 3s 偏长会让竞争期 loadContext 返空。
+	// 超出表长后不再「永久放弃」，改为 5 分钟长期重试（占端口者退出后仍能拿回）。
+	private static readonly AGENTMEMORY_GATEWAY_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000, 60_000];
+	private static readonly AGENTMEMORY_GATEWAY_RETRY_STEADY_MS = 300_000;
 
 	/**
 	 * 网关于进程异常退出后的自愈。
@@ -2546,11 +2594,12 @@ export class CodeApplication extends Disposable {
 	 */
 	private _scheduleAgentMemoryGatewayRetry(hostPath: string): void {
 		const delays = CodeApplication.AGENTMEMORY_GATEWAY_RETRY_DELAYS_MS;
-		if (this._agentMemoryGatewayRetryCount >= delays.length) {
-			this.logService.warn(`[agentmemory-gateway] 自愈重试 ${delays.length} 次仍未成功，放弃（本窗口记忆降级；如需换端口请设置 AGENTMEMORY_PORT）。`);
-			return;
+		if (this._agentMemoryGatewayRetryCount === delays.length) {
+			this.logService.warn(`[agentmemory-gateway] 自愈重试 ${delays.length} 次仍未成功，转入 ${CodeApplication.AGENTMEMORY_GATEWAY_RETRY_STEADY_MS / 1000}s 长期重试（本窗口记忆降级；如需换端口请设置 AGENTMEMORY_PORT）。`);
 		}
-		const delay = delays[this._agentMemoryGatewayRetryCount];
+		const delay = this._agentMemoryGatewayRetryCount < delays.length
+			? delays[this._agentMemoryGatewayRetryCount]
+			: CodeApplication.AGENTMEMORY_GATEWAY_RETRY_STEADY_MS;
 		this._agentMemoryGatewayRetryCount++;
 		this._agentMemoryGatewayRetryTimer = setTimeout(() => {
 			this._agentMemoryGatewayRetryTimer = undefined;

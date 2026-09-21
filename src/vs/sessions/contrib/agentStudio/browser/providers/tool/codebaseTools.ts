@@ -12,7 +12,7 @@
  */
 
 import { URI } from '../../../../../../base/common/uri.js';
-import { IToolResultContent } from '../../../common/providers.js';
+import { IToolResultContent, NonRetryableToolError } from '../../../common/providers.js';
 import type { ICodebaseGraphService } from '../../codebaseGraphService.js';
 import type { AdrManager } from '../../codebaseGraphAdr.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
@@ -386,7 +386,10 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				: [];
 			const folders = await getSearchFolders();
 			if (folders.length === 0) {
-				return text('index_repository error: no workspace folder open');
+				// ★ 2026-09-21（P1-⑤，pi 错误契约对齐）：确定性错误必须**抛错**而不是"成功形状的文本"——
+			// 后者会被 executeTool 记成 OK，熔断/统计/失败提示一律看不见。本文件 17 处已统一：
+			// 参数/环境类（确定性）用 `NonRetryableToolError`，服务层异常用普通 `Error`（瞬时性未知）。
+			throw new NonRetryableToolError('index_repository error: no workspace folder open');
 			}
 
 			// 指定了 repo_path → 单目录索引；未指定 → 依次索引所有工作区目录
@@ -537,7 +540,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		},
 		handler: async (args: Record<string, unknown>) => {
 			const project = String(args['project'] ?? '');
-			if (!project) { return text('delete_project error: "project" is required'); }
+			if (!project) { throw new NonRetryableToolError('delete_project error: "project" is required'); }
 			ctx.codebaseGraphService.deleteProject(project);
 			return text(`Deleted project: ${project}`);
 		},
@@ -609,7 +612,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		const fieldList = args['fields'] as string[] | undefined;
 		// relType 校验：必须全大写字母+下划线
 		if (searchParams.relType && !/^[A-Z][A-Z_]*$/.test(searchParams.relType)) {
-			return text(`search_graph error: relType must be uppercase letters and underscores, got "${searchParams.relType}"`);
+			throw new NonRetryableToolError(`search_graph error: relType must be uppercase letters and underscores, got "${searchParams.relType}"`);
 		}
 
 			// ── Semantic query (6-signal fusion, per-keyword min-score re-ranking) ──
@@ -618,7 +621,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			if (semanticQuery && Array.isArray(semanticQuery) && semanticQuery.length > 0) {
 				// Validate: must be array of strings
 				if (semanticQuery.some(q => typeof q !== 'string')) {
-					return text('search_graph error: semantic_query must be an array of keyword strings, e.g. ["send","pubsub","publish"] — not a single string.');
+					throw new NonRetryableToolError('search_graph error: semantic_query must be an array of keyword strings, e.g. ["send","pubsub","publish"] — not a single string.');
 				}
 				// Cap at 32 keywords (matching C version limit)
 				const keywords = semanticQuery.slice(0, 32);
@@ -642,7 +645,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				result.nodes = result.nodes.filter((n: any) => n.qualifiedName && re.test(n.qualifiedName));
 				result.total = result.nodes.length;
 			} catch {
-				return text(`search_graph error: invalid qnPattern regex "${qnPattern}"`);
+				throw new NonRetryableToolError(`search_graph error: invalid qnPattern regex "${qnPattern}"`);
 			}
 		}
 
@@ -783,7 +786,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				return json(missed);
 			}
 			const query = String(args['query'] ?? '');
-			if (!query) { return text('query_graph error: "query" is required (unless graph="missed")'); }
+			if (!query) { throw new NonRetryableToolError('query_graph error: "query" is required (unless graph="missed")'); }
 			const maxRows = args['max_rows'] as number | undefined;
 			try {
 				const result = ctx.codebaseGraphService.executeCypher(query, maxRows);
@@ -795,7 +798,8 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				}
 				return json(result);
 			} catch (err: any) {
-				return text(`query_graph error: ${err?.message || err}`);
+				// 服务层异常：瞬时性未知 ⇒ 用普通 Error（保留重试可能），文案逐字不变
+			throw new Error(`query_graph error: ${err?.message || err}`);
 			}
 		},
 	});
@@ -907,7 +911,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 
 				return json(fullReport);
 			} catch (err: any) {
-				return text(`get_architecture error: ${err?.message || err}`);
+				throw new Error(`get_architecture error: ${err?.message || err}`);
 			}
 		},
 	});
@@ -936,7 +940,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			// alias: qualified_name → qualifiedName (MCP compatibility)
 			if (!args['qualifiedName'] && args['qualified_name']) { args['qualifiedName'] = args['qualified_name']; }
 			const qualifiedName = String(args['qualifiedName'] ?? '');
-			if (!qualifiedName) { return text('get_code_snippet error: "qualifiedName" (or "qualified_name") is required'); }
+			if (!qualifiedName) { throw new NonRetryableToolError('get_code_snippet error: "qualifiedName" (or "qualified_name") is required'); }
 			const contextLines = (args['contextLines'] as number | undefined) ?? 3;
 			const includeNeighbors = (args['includeNeighbors'] as boolean | undefined) ?? false;
 		const result = await ctx.codebaseGraphService.getCodeSnippet(qualifiedName, contextLines, includeNeighbors);
@@ -1628,7 +1632,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				});
 				return json(result);
 			} catch (err: any) {
-				return text(`detect_changes error: ${err?.message || err}`);
+				throw new Error(`detect_changes error: ${err?.message || err}`);
 			}
 		},
 	});
@@ -1657,12 +1661,12 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		},
 		handler: async (args: Record<string, unknown>) => {
 			const otlpJson = String(args['otlp_json'] ?? '');
-			if (!otlpJson) { return text('ingest_traces error: "otlp_json" is required'); }
+			if (!otlpJson) { throw new NonRetryableToolError('ingest_traces error: "otlp_json" is required'); }
 			try {
 				const result = ctx.codebaseGraphService.ingestTraces(otlpJson);
 				return json(result);
 			} catch (err: any) {
-				return text(`ingest_traces error: ${err?.message || err}`);
+				throw new Error(`ingest_traces error: ${err?.message || err}`);
 			}
 		},
 	});
@@ -1739,10 +1743,10 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 						return json({ action: 'delete', id, success });
 					}
 					default:
-						return text(`manage_adr: unknown action "${action}". Use list/get/create/update/delete.`);
+						throw new NonRetryableToolError(`manage_adr: unknown action "${action}". Use list/get/create/update/delete.`);
 				}
 		} catch (err: any) {
-			return text(`manage_adr error: ${err?.message || err}`);
+			throw new Error(`manage_adr error: ${err?.message || err}`);
 		}
 	},
 	});
@@ -1775,7 +1779,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			if (!targetPath) {
 				const folders = await getSearchFolders();
 				if (folders.length === 0) {
-					return text('export_artifact error: no workspace folder open and no target_path provided');
+					throw new NonRetryableToolError('export_artifact error: no workspace folder open and no target_path provided');
 				}
 				targetPath = URI.joinPath(URI.file(folders[0].uri.fsPath), '.codebase-memory', 'graph.db.zst').fsPath;
 			}
@@ -1784,7 +1788,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				const result = await ctx.codebaseGraphService.exportArtifact(targetPath, { slim });
 				return json({ success: true, path: targetPath, slim, ...result });
 			} catch (err: any) {
-				return text(`export_artifact error: ${err?.message || err}`);
+				throw new Error(`export_artifact error: ${err?.message || err}`);
 			}
 		},
 	});
@@ -1812,19 +1816,19 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			if (!sourcePath) {
 				const folders = await getSearchFolders();
 				if (folders.length === 0) {
-					return text('import_artifact error: no workspace folder open and no source_path provided');
+					throw new NonRetryableToolError('import_artifact error: no workspace folder open and no source_path provided');
 				}
 				sourcePath = URI.joinPath(URI.file(folders[0].uri.fsPath), '.codebase-memory', 'graph.db.zst').fsPath;
 			}
 			try {
 				const ok = await ctx.codebaseGraphService.importArtifact(sourcePath);
 				if (!ok) {
-					return text(`import_artifact: failed to load artifact at ${sourcePath} (file missing, unrecognized format, or failed integrity check)`);
+					throw new NonRetryableToolError(`import_artifact: failed to load artifact at ${sourcePath} (file missing, unrecognized format, or failed integrity check)`);
 				}
 				const status = ctx.codebaseGraphService.getIndexStatus();
 				return json({ success: true, path: sourcePath, nodeCount: status.nodeCount, edgeCount: status.edgeCount });
 			} catch (err: any) {
-				return text(`import_artifact error: ${err?.message || err}`);
+				throw new Error(`import_artifact error: ${err?.message || err}`);
 			}
 		},
 	});

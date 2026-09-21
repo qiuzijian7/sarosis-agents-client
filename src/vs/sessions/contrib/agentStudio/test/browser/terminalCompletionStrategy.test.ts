@@ -15,6 +15,7 @@
 import assert from 'assert';
 import {
 	pickTerminalStrategy, detectsCommonPromptPattern, lastNonEmptyLine, decideIdleWaitAction,
+	resolveNoneTierMaxWaitMs, NONE_TIER_IDLE_BASE_MS, NONE_TIER_SLOW_START_MIN_MS,
 } from '../../browser/providers/tool/terminalCompletionStrategy.js';
 
 suite('terminalCompletionStrategy — pickTerminalStrategy', () => {
@@ -149,5 +150,42 @@ suite('terminalCompletionStrategy — decideIdleWaitAction', () => {
 		const b = decideIdleWaitAction({ collectedOutput: 'x', elapsedMs: 1, maxWaitMs: 9 });
 		assert.ok(a.reason.length > 0);
 		assert.ok(b.reason.length > 0);
+	});
+});
+
+suite('terminalCompletionStrategy — resolveNoneTierMaxWaitMs', () => {
+
+	test('★★★ 不变量：内层窗口**绝不得超过**外层 timeout（否则会提前"猜"成结束）', () => {
+		for (const t of [1_000, 5_000, 30_000, 60_000, 61_000, 120_000, 300_000]) {
+			for (const slow of [false, true]) {
+				const w = resolveNoneTierMaxWaitMs(t, slow);
+				assert.ok(w <= t, `timeout=${t} slow=${slow} ⇒ 窗口 ${w} 超过外层 timeout ✗`);
+				assert.ok(w > 0, '窗口必须为正 ✗');
+			}
+		}
+	});
+
+	test('★★★ 回归（P0-③ 连带）：慢启动 + timeout=300s ⇒ 窗口跟随到 300s，不再 60s 封顶', () => {
+		// 旧公式 min(max(300_000, 15_000), 60_000) = 60_000 ⇒ 慢启动命令 60s 被提前收工、
+		// 返回半截输出，而模型明确要求等 5 分钟 ✗（日志 1787324352413 的同族缺陷）
+		assert.strictEqual(resolveNoneTierMaxWaitMs(300_000, true), 300_000);
+		assert.strictEqual(resolveNoneTierMaxWaitMs(120_000, true), 120_000);
+	});
+
+	test('★ 非慢启动：保守 6s 上限（快命令不必白等），且仍受外层 timeout 限制', () => {
+		assert.strictEqual(resolveNoneTierMaxWaitMs(30_000, false), NONE_TIER_IDLE_BASE_MS);
+		assert.strictEqual(resolveNoneTierMaxWaitMs(300_000, false), NONE_TIER_IDLE_BASE_MS);
+		assert.strictEqual(resolveNoneTierMaxWaitMs(3_000, false), 3_000, '外层更短时必须听外层的 ✗');
+	});
+
+	test('★ 慢启动 + 很短的 timeout：听外层的（窗口 = timeout，不强行拉到 15s）', () => {
+		assert.strictEqual(resolveNoneTierMaxWaitMs(5_000, true), 5_000);
+		// 15s 下限只在模型允许时生效（== 期望值就是外层 timeout，故此处只是记录语义）
+		assert.ok(resolveNoneTierMaxWaitMs(15_000, true) >= NONE_TIER_SLOW_START_MIN_MS);
+	});
+
+	test('非法/极小 timeout 有兜底下限（不产生 0 或负窗口 ⇒ 无限等待 ✗）', () => {
+		assert.strictEqual(resolveNoneTierMaxWaitMs(0, false), 1_000);
+		assert.strictEqual(resolveNoneTierMaxWaitMs(-5, false), 1_000);
 	});
 });

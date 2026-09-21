@@ -12,6 +12,7 @@ import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 import type { IMindmapData } from '../../../common/mindmap/mindmapTypes.js';
 import { getActiveCanvasPane } from '../../canvasEditor/canvasEditorPane.js';
 import { buildForest, getDirectChildNodes } from '../../../common/mindmap/treeModel.js';
+import { NonRetryableToolError } from '../../../common/providers.js';
 
 export interface IMindmapToolContext {
 	register(reg: IBuiltinToolRegistration): IDisposable;
@@ -109,16 +110,16 @@ export function registerMindmapTools(ctx: IMindmapToolContext): void {
 			const parentId = String(args['parentNodeId'] ?? '').trim();
 			const childText = String(args['text'] ?? '').trim();
 			if (!parentId || !childText) {
-				return text('Error: parentNodeId and text are required');
+				throw new NonRetryableToolError('Error: parentNodeId and text are required');
 			}
 
 			const pane = getActiveCanvasPane();
-			if (!pane?.controller) { return text('Error: no canvas editor is open'); }
+			if (!pane?.controller) { throw new NonRetryableToolError('Error: no canvas editor is open'); }
 
 			// Check parent exists
 			const parentExists = pane.controller.data.nodes.find(n => n.id === parentId);
 			if (!parentExists) {
-				return text(`Error: node "${parentId}" not found in canvas`);
+				throw new NonRetryableToolError(`Error: node "${parentId}" not found in canvas`);
 			}
 
 			// Select parent and add child
@@ -165,7 +166,7 @@ export function registerMindmapTools(ctx: IMindmapToolContext): void {
 		},
 		handler: async () => {
 			const pane = getActiveCanvasPane();
-			if (!pane?.controller) { return text('Error: no canvas editor is open'); }
+			if (!pane?.controller) { throw new NonRetryableToolError('Error: no canvas editor is open'); }
 
 			pane.cmdRelayout();
 			return text('Layout recalculated successfully');

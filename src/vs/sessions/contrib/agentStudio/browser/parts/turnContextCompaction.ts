@@ -785,6 +785,9 @@ export async function compactContextIfNeededImpl(
 			compressionBeforeText: beforeText,
 			compressionAfterText: afterText,
 			compressionSummary: compressionResult.summary || '',
+			// 核心摘要字符数（2026-09-21）：摘要饥饿判据只认"信息量"部分；
+			// 与边界 metadata.summaryChars 同源，回放侧用它判边界是否可信。
+			compressionSummaryChars: (compressionResult.metadata as { summaryChars?: number } | undefined)?.summaryChars,
 		} as IChatStreamDelta);
 
 		// ⚠ 行为等价性注记（期 2 迁出时发现的既有缺陷，**刻意保持原样**）：

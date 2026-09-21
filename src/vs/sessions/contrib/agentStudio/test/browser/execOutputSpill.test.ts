@@ -23,7 +23,7 @@ suite('execOutputSpill — decideOutputSpill', () => {
 		for (const s of ['', 'ok', 'a'.repeat(1000), 'b'.repeat(SPILL_THRESHOLD_BYTES)]) {
 			const d = decideOutputSpill(s);
 			assert.strictEqual(d.shouldSpill, false, `len=${s.length}`);
-			assert.strictEqual(d.inlineHead, s, '不落盘时内容必须完整保留');
+			assert.strictEqual(d.inlineExcerpt, s, '不落盘时内容必须完整保留');
 		}
 	});
 
@@ -31,22 +31,41 @@ suite('execOutputSpill — decideOutputSpill', () => {
 		const d = decideOutputSpill('c'.repeat(SPILL_THRESHOLD_BYTES + 1));
 		assert.strictEqual(d.shouldSpill, true);
 		assert.strictEqual(d.totalChars, SPILL_THRESHOLD_BYTES + 1);
+		assert.ok(d.inlineExcerpt.length < d.totalChars, '内联片段必须短于全文（否则落盘无意义）');
 	});
 
-	test('★ 内联头部切在行边界（不把一行截半误导模型）', () => {
+	test('★★★ 内联片段必须**头尾都在**（构建日志的结论在尾部 —— 2026-09-21 pi 对比修正）', () => {
+		// 形态取自真实构建日志：短头部 + 巨大中段 + 尾部结论
+		const headLine = 'HEAD: command accepted, resolving workspace';
+		const tailLine = 'ERROR: 3 type errors found — exit 1';
+		const text = [headLine, 'w'.repeat(100_000), tailLine].join('\n');
+		const d = decideOutputSpill(text);
+		assert.strictEqual(d.shouldSpill, true);
+		assert.ok(d.inlineExcerpt.includes(headLine), '头部必须保留（命令开头的解析结论）✗');
+		assert.ok(d.inlineExcerpt.includes(tailLine),
+			'尾部必须保留 —— 此前只内联头部，模型得再花一次 file_read 才知道构建过没过 ✗');
+		assert.ok(d.inlineExcerpt.trimEnd().endsWith(tailLine), '尾段应位于片段末尾（读到最后即结论）✗');
+		assert.ok(/chars omitted/.test(d.inlineExcerpt), '中段必须给出明确的省略标记 ✗');
+	});
+
+	test('★ 头尾都切在行边界（不把一行截半误导模型）', () => {
 		const line = 'x'.repeat(100);
 		const text = Array.from({ length: 2000 }, () => line).join('\n');
 		const d = decideOutputSpill(text);
 		assert.strictEqual(d.shouldSpill, true);
-		assert.ok(!d.inlineHead.endsWith('x'.repeat(1)) || d.inlineHead.split('\n').pop() === line,
-			'末尾应是完整行');
-		assert.ok(d.inlineHead.length <= SPILL_INLINE_HEAD_BYTES, '头部不应超过预算');
+		assert.ok(d.inlineExcerpt.startsWith(line + '\n'), '片段必须以完整行开头 ✗');
+		assert.ok(d.inlineExcerpt.trimEnd().endsWith(line), '片段必须以完整行结尾 ✗');
+		assert.ok(d.inlineExcerpt.split('\n').every(l => l === line || /omitted/.test(l)),
+			'不得出现半行 ✗');
 	});
 
 	test('★ 无换行的超长单行仍能切（不能因找不到换行而返回全文）', () => {
 		const d = decideOutputSpill('y'.repeat(SPILL_THRESHOLD_BYTES * 2));
 		assert.strictEqual(d.shouldSpill, true);
-		assert.strictEqual(d.inlineHead.length, SPILL_INLINE_HEAD_BYTES);
+		// 无换行 ⇒ 无行边界可切 ⇒ 退化为按字节切：头 8KB + 标记 + 尾 8KB
+		assert.ok(d.inlineExcerpt.startsWith('y'.repeat(SPILL_INLINE_HEAD_BYTES)));
+		assert.ok(d.inlineExcerpt.endsWith('y'.repeat(SPILL_INLINE_HEAD_BYTES)));
+		assert.ok(d.inlineExcerpt.length < d.totalChars, '必须比全文短 ✗');
 	});
 
 	test('totalChars 反映原始长度（供提示文案用）', () => {
@@ -75,9 +94,11 @@ suite('execOutputSpill — spillFileName', () => {
 
 suite('execOutputSpill — spillNoticeMessage', () => {
 
-	test('★ 明确「没有丢」+ 给出可执行的检索方式 + 禁止重跑', () => {
-		const msg = spillNoticeMessage('C:\\Users\\me\\.vssaros\\tmp\\exec-1.log', 200_000, 'first lines here');
-		assert.match(msg, /first lines here/, '必须包含内联头部');
+	test('★ 明确「没有丢」+ 说明片段是头尾 + 给出可执行的检索方式 + 禁止重跑', () => {
+		const msg = spillNoticeMessage('C:\\Users\\me\\.vssaros\\tmp\\exec-1.log', 200_000, 'first lines here\n...omitted...\nlast lines here');
+		assert.match(msg, /first lines here/, '必须包含内联片段头部');
+		assert.match(msg, /last lines here/, '必须包含内联片段尾部 ✗');
+		assert.match(msg, /HEAD and TAIL/i, '必须说明片段是头+尾（否则模型以为上面就是全文开头）✗');
 		assert.match(msg, /Nothing was lost/i, '必须澄清信息未丢失');
 		assert.match(msg, /exec-1\.log/, '必须给出路径');
 		assert.match(msg, /search_code/, '必须给出检索方式');

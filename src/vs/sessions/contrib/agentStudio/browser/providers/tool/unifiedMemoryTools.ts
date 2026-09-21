@@ -13,7 +13,7 @@
  *   - memory_forget  : 软删除记忆（保留审计历史）
  */
 
-import type { IToolResultContent } from '../../../common/providers.js';
+import { NonRetryableToolError, type IToolResultContent } from '../../../common/providers.js';
 import type { IAgentOSService } from '../../../common/agentOS.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
@@ -46,9 +46,9 @@ export function registerUnifiedMemoryTools(ctx: UnifiedMemoryToolContext): void 
 			source,
 		},
 		handler: async (args, _signal, agentId) => {
-			if (!agentId) { return text('memory_recall error: agentId is required'); }
+			if (!agentId) { throw new NonRetryableToolError('memory_recall error: agentId is required'); }
 			const query = args['query'] as string;
-			if (!query) { return text('memory_recall error: query is required'); }
+			if (!query) { throw new NonRetryableToolError('memory_recall error: query is required'); }
 			const memProvider = ctx.agentOS.getActiveMemoryProvider();
 			if (!memProvider) { return text('memory_recall: no memory provider available'); }
 			const strategy = (args['strategy'] as string) ?? 'hybrid';
@@ -68,7 +68,7 @@ export function registerUnifiedMemoryTools(ctx: UnifiedMemoryToolContext): void 
 				).join('\n');
 				return text(`Recalled ${limited.length} memories:\n${summary}`);
 			} catch (err) {
-				return text(`memory_recall failed: ${err}`);
+				throw new Error(`memory_recall failed: ${err}`);
 			}
 		},
 	});
@@ -91,7 +91,7 @@ export function registerUnifiedMemoryTools(ctx: UnifiedMemoryToolContext): void 
 			source,
 		},
 		handler: async (args, _signal, agentId) => {
-			if (!agentId) { return text('memory_improve error: agentId is required'); }
+			if (!agentId) { throw new NonRetryableToolError('memory_improve error: agentId is required'); }
 			const memId = args['memory_id'] as string;
 			const action = args['action'] as string;
 			const newContent = args['new_content'] as string | undefined;
@@ -128,7 +128,7 @@ export function registerUnifiedMemoryTools(ctx: UnifiedMemoryToolContext): void 
 				}
 				return text(`memory_improve: unknown action "${action}"`);
 			} catch (err) {
-				return text(`memory_improve failed: ${err}`);
+				throw new Error(`memory_improve failed: ${err}`);
 			}
 		},
 	});
@@ -150,7 +150,7 @@ export function registerUnifiedMemoryTools(ctx: UnifiedMemoryToolContext): void 
 			source,
 		},
 		handler: async (args, _signal, agentId) => {
-			if (!agentId) { return text('memory_forget error: agentId is required'); }
+			if (!agentId) { throw new NonRetryableToolError('memory_forget error: agentId is required'); }
 			const memId = args['memory_id'] as string;
 			const reason = args['reason'] as string | undefined;
 			const memProvider = ctx.agentOS.getActiveMemoryProvider();
@@ -173,7 +173,7 @@ export function registerUnifiedMemoryTools(ctx: UnifiedMemoryToolContext): void 
 				});
 				return text(`Memory ${memId} has been forgotten.${reason ? ` Reason: ${reason}` : ''}`);
 			} catch (err) {
-				return text(`memory_forget failed: ${err}`);
+				throw new Error(`memory_forget failed: ${err}`);
 			}
 		},
 	});

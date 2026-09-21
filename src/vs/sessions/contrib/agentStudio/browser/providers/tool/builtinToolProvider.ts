@@ -43,8 +43,11 @@ import { INativeEnvironmentService } from '../../../../../../platform/environmen
 import { IRequestService } from '../../../../../../platform/request/common/request.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult } from '../../../common/providers.js';
 import { AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING } from '../../../common/constants.js';
+import { getToolsetForTool, UTILITY_BUCKET_WHITELIST } from '../../../common/toolsetConfig.js';
 import { ISkillRegistry } from '../../../common/skills.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
+import { URI } from '../../../../../../base/common/uri.js';
+import { resolveToolMutationKey, withFileMutationQueue } from '../../../common/fileMutationQueue.js';
 import { ITerminalService } from '../../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IAgentStudioService, ITaskOrchestrationService, IAgentTaskBoardService, IAgentChatService } from '../../../../../common/agentStudioService.js';
 import { ITriageService } from '../../../common/triageService.js';
@@ -139,6 +142,24 @@ export { workflowAppliedEmitter } from './workflowShared.js';
 export { type IBuiltinToolRegistration } from './toolRegistry.js';
 
 
+
+/**
+ * 工具入参的容错解析（2026-09-21）。
+ *
+ * `IToolCall.arguments` 在类型上是 `Record<string, unknown>`，但真实链路上**存在字符串形态**
+ * （不同 provider / 桥接层会把 arguments 序列化成 JSON 串）。文件写队列需要读 `path` 入参，
+ * 解析失败时**返回 undefined 并直通**（不串行）—— 宁可少锁一次，也绝不因此把工具调用搞失败 ✗。
+ */
+function _parseToolArgsLenient(toolCall: IToolCall): Record<string, unknown> | undefined {
+	const raw: unknown = toolCall.arguments;
+	if (typeof raw === 'string') {
+		try {
+			const parsed = JSON.parse(raw) as unknown;
+			return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined;
+		} catch { return undefined; }
+	}
+	return raw && typeof raw === 'object' ? raw as Record<string, unknown> : undefined;
+}
 
 /**
  * 安全沙箱违规错误 — 路径不在允许的工作区目录内时抛出。
@@ -330,6 +351,45 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerMermaidTools(); // Mermaid 图示渲染工具
 		// _registerMcpBridgeTools() 已废弃 — MCP 工具统一走 tool_search/tool_describe/tool_call
 		// 保留方法定义以备审计/兼容老调用
+		// ★ 2026-09-21：注册收尾后做**归类自检**（unreal_* 事故的可观测信号 —— 见方法注释）
+		this._warnOnUtilityBucketTools();
+	}
+
+	/**
+	 * 归类自检（2026-09-21，unreal_* 事故的可观测信号）。
+	 *
+	 * unreal_* 事故的第一断点不是「没注册」，而是「注册了但 `toolsetConfig` 没登记 `unreal_`
+	 * 前缀」⇒ `getToolsetForTool` 静默归 `utility`（Low）⇒ focus 模式整条剔除 ⇒
+	 * **LLM 与 tool_search 均不可见，且全程零日志**。这类失败最毒的地方就在于"静默"。
+	 *
+	 * 故注册收尾后扫一遍：任何注册工具落进 utility 兜底桶（除共享白名单
+	 * {@link UTILITY_BUCKET_WHITELIST}）都**立刻打 warn**，把静默不可见变成启动日志里
+	 * 一眼可见。与测试侧的类级钉（`test/browser/toolRegistrationWiring.test.ts` ①）
+	 * 共用同一份白名单 —— 两处**不得漂移**。
+	 *
+	 * 说明：显式带 `definition.toolset` 的工具尊重显式值（与 assembly Step 2 的
+	 * `t.toolset ?? getToolsetForTool(name)` 同序）；stub 工具本就不可见（listTools 跳过），跳过。
+	 */
+	private _warnOnUtilityBucketTools(): void {
+		try {
+			const inUtility: string[] = [];
+			for (const name of this._registry.toolNames()) {
+				const desc = this._registry.resolveTool(name);
+				if (!desc || desc.isStub) { continue; }
+				const ts = (desc.definition as { toolset?: string }).toolset ?? getToolsetForTool(name);
+				if (ts === 'utility' && !UTILITY_BUCKET_WHITELIST.has(name)) { inUtility.push(name); }
+			}
+			if (inUtility.length > 0) {
+				this.logService.warn(
+					`[BuiltinTools] ⚠ 归类自检：${inUtility.length} 个已注册工具落进 utility 兜底桶 —— ` +
+					`focus 模式会把它们整条剔除（LLM 与 tool_search 均不可见）。` +
+					`请到 toolsetConfig.ts 给它们登记独立 toolset（前缀/exactNames）：[${inUtility.join(', ')}]`,
+				);
+			}
+		} catch (e) {
+			// 自检失败绝不阻断注册
+			this.logService.warn(`[BuiltinTools] 归类自检失败（不影响注册）：${e}`);
+		}
 	}
 
 	// ─── MCP Bridge Tools (DEPRECATED) ───────────────────────────────────────
@@ -370,11 +430,27 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	}
 
 	async executeTool(_agentId: string, toolCall: IToolCall, signal?: AbortSignal): Promise<IToolResult> {
-		return executeToolImpl({
+		const run = (): Promise<IToolResult> => executeToolImpl({
 			resolveTool: name => this._registry.resolveTool(name),
 			listToolNames: () => this._registry.toolNames(),
 			logService: this.logService,
 		}, _agentId, toolCall, signal);
+		// ★★ 2026-09-21（P0-2，对齐 pi `withFileMutationQueue`）：**文件写工具按目标文件串行**。
+		//
+		// 为什么在「唯一收口处」做而不是各个工具里各写一份：这里是所有内置工具调用的必经之路，
+		// 一处接线即可覆盖 `patch` / `file_write`（以及将来新增的任何文件写工具），
+		// 且能在这里拿到 `fileService` 做 **realpath 归一**（相对↔绝对、分隔符、Windows 大小写、
+		// 符号链接别名都会落到同一个键）—— 工具内部各写一份必然遗漏别名形态。
+		//
+		// 当前主循环串行（`MAIN_LOOP_PARALLEL_TOOLS_ENABLED=false`）⇒ 这里的锁是**零竞争**的；
+		// 它是为「恢复主循环并行」准备的正确性基建（详见 common/fileMutationQueue.ts 头注释：
+		// 并行判定里的路径重叠检查是字符串级的，会漏别名 ⇒ 恢复并行即出现丢更新 ✗）。
+		// 非写工具 / 无路径入参 ⇒ `key === undefined` ⇒ 直通（不引入任何额外 await 语义）。
+		const key = await resolveToolMutationKey(toolCall.name, _parseToolArgsLenient(toolCall), {
+			rootPath: this.workspaceService.getWorkspace().folders[0]?.uri.fsPath,
+			realpath: async p => (await this.fileService.realpath(URI.file(p)))?.fsPath,
+		});
+		return key ? withFileMutationQueue(key, run) : run();
 	}
 
 
@@ -437,6 +513,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			terminalService: this.terminalService,
 			workspaceService: this.workspaceService,
 			configurationService: this.configurationService,
+			// terminal 超限输出落盘（2026-09-21）：与 execute_code 共用 `~/.vssaros/tmp/` 约定。
+			environmentService: this.environmentService,
 			getBoundWorktreeRoot: agentId => this._resolveBoundWorktreeRoot(agentId),
 		});
 		this._corePerTurnReset = coreControl.resetPerTurn;

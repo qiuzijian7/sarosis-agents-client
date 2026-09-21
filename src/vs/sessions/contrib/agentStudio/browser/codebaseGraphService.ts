@@ -197,7 +197,12 @@ export interface IIndexCoverageReport {
  */
 export interface IIndexHealthReport {
 	nodeCount: number;
-	fileCount: number;        // fileHashes 基线条数（参与过索引的文件数）
+	fileCount: number;        // **成功索引过**的文件数（`gaveUp` 的已排除，见 FileHash.gaveUp ✓）
+	/**
+	 * ★ 2026-09-21：解析失败达重试上限、**已放弃**（无节点）的文件数。
+	 * 它们仍在基线里（防"每轮重报 added"翻烧饼 ✓），但**不算**成功 ⇒ 不参与 nodesPerFile 分母 ✗✓。
+	 */
+	gaveUpFileCount: number;
 	nodesPerFile: number;     // nodeCount / fileCount，正常 ≥ 2
 	parseFailedFiles: number; // 本轮覆盖率里 parse_error + timeout 数
 	absPathViolations: number;// filePath 写成绝对路径的契约违规数
@@ -621,6 +626,26 @@ const FULL_SYNC_MIN_INTERVAL_MS = 5 * 60 * 1000;
  * 首个待发请求超过本上限时，不再等待，立即落盘。
  */
 const SAVE_MAX_DEFER_MS = 120000;
+
+/**
+ * ★★ 2026-09-21：残缺图修复的**默认批次**（文件数；`saros.codebaseGraph.repairBatchFiles` 可覆盖）。
+ *
+ * 取值依据（真机 UE 9.5 万文件实证）：解析 ~18,750 个 UE 文件时 heap 涨 +800MB
+ * （≈ 43MB / 1000 文件）⇒ **4000 文件 ≈ +170MB**，远低于单轮预算（512MB）与硬上限（3072MB）✓；
+ * 95k 文件约 **24 轮**收敛（每轮由 watcher / 下次增量索引 / 下次索引调用驱动）✓。
+ * 对齐 C 版「分块推进」思想：宁可多轮，也不要一次把渲染进程顶到 OOM ✗。
+ */
+const DEFICIENT_REPAIR_BATCH_FILES = 4000;
+
+/**
+ * ★★ 2026-09-21：分批修复的**会话内轮数上限**（安全阀）。
+ *
+ * 为什么需要：分批是对的，但若某项目"天生"每文件 < 2 节点（如只含 1 个符号的头文件），
+ * 比率永远不达标 ⇒ 每轮都清一批重解析 ⇒ **无界重解析** ✗（虽然每轮内存有界，但白烧 CPU/IO）。
+ * 上限按「正常收敛所需轮数」留足余量：95k / 4000 ≈ 24 轮 ⇒ 40 轮足够 ✓；
+ * 到顶后停止自动修复并**明确提示**手动重新索引（绝不静默 ✗）。
+ */
+const DEFICIENT_REPAIR_MAX_ROUNDS = 40;
 
 /**
  * ★ 2026-09-20（方案 B：有检索在飞 ⇒ 推迟落盘）：被推迟后的重试间隔（ms）。
@@ -2036,6 +2061,19 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		return 3072 * 1024 * 1024;
 	}
 
+	/**
+	 * ★★ 2026-09-21：残缺修复的**批次大小**（文件数）—— `saros.codebaseGraph.repairBatchFiles` > 0 时用配置，
+	 * 否则默认 {@link DEFICIENT_REPAIR_BATCH_FILES}（4000）。
+	 *
+	 * 为什么必须分批（真机 UE 9.5 万文件实证）：一次清光哈希 ⇒ classifyFiles 全判 added ⇒
+	 * 一次解析 95k 文件 ⇒ 结果堆在渲染进程 ⇒ heap 每 30s +~1GB ⇒ 撞硬上限被中止 ⇒
+	 * 「残缺 → 全量 → 中止 → 仍残缺」**不收敛** ✗✗。分批后每轮内存有界、进度可累积 ⇒ 能收敛 ✓✓。
+	 */
+	private _resolveRepairBatchFiles(): number {
+		const cfg = this._configurationService.getValue<number>('saros.codebaseGraph.repairBatchFiles') ?? 0;
+		return cfg > 0 ? Math.floor(cfg) : DEFICIENT_REPAIR_BATCH_FILES;
+	}
+
 	async indexWorkspace(rootPath: string, config: IIndexConfig, token?: CancellationToken): Promise<IIndexResult> {
 		// [TRACE] 追踪 indexWorkspace 的所有调用入口，帮助定位"启动时总是自动重新索引"的来源
 		try {
@@ -2600,15 +2638,52 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			// 旧实现解析失败（parse_error/timeout）也记哈希 → classifyFiles 全判 unchanged →
 			// **失败永久固化**（6017 文件全部 skipped，只有被编辑过的文件产出节点）。
 			// 每文件平均节点数 < 2 即判残缺（正常项目 ≥ 5），清哈希强制全量重建。
-			const graphNodeCount = this._graph.store.getNodeCount();
-			const hashCount = this._graph.store.getFileHashCount();
+			// ★★ 2026-09-21：判据与清理都**按本项目**（原实现读全库计数、清全库哈希 ✗✗）。
+			// 真机（安装版日志 2026-09-21）：UE 工作区 9547 节点 / 95532 哈希被判残缺 ⇒
+			// 清全库哈希 ⇒ **95k 文件全量重索引**（内存暴涨 + 与解析期看门狗 abort 互相打架 ✗）。
+			// 多项目共享一个 store 时，全库口径还会让**健康项目**被连带清哈希 ✗。
+			const graphNodeCount = this._graph.store.getNodeCount(project);
+			// ★★ 2026-09-21：分母用「**成功索引过**的哈希数」（= 总数 − 放弃数）✗✓。
+			// 用总数会把"解析失败被固化"的 95k 个哈希当成"成功基线" ⇒ 节点/文件 < 2 ⇒ 误判残缺 ⇒ 全量重建 ✗✗。
+			const hashCount = this._graph.store.getOkFileHashCount(project);
 			const deficientGraph = graphNodeCount > 0 && hashCount > 0 && graphNodeCount / hashCount < 2;
+			/**
+			 * ★★ 2026-09-21：本轮是「**分批修复**」轮（只清了一小批哈希）⇒ 必须走**全量扫描 + 分类**路径。
+			 *
+			 * 为什么不能走 watcher 快路径：快路径只重解析「watcher 报的变更文件」，
+			 * 而刚被清哈希的那批文件**不在变更集里** ⇒ 本轮谁都不会重解析它们 ⇒ 清了等于没清 ✗✗
+			 * （旧的"清全库"实现是靠 `hasBaseline=false` 顺带掉进扫描分支的 ✓ —— 改成分批后这条必须显式表达）。
+			 */
+			let repairRound = false;
 			if (deficientGraph) {
-				this._graph.store.clearFileHashes();
-				this._logService.warn('[CodebaseGraph]', `[baseline] deficient graph: ${graphNodeCount} nodes / ${hashCount} hashes — clearing hashes to force full re-index`);
+				// ★ 安全阀（2026-09-21）：分批修复**必须有界** —— 若项目"天生"每文件 < 2 节点
+				// （例如全是只含 1 个符号的头文件），比率永远不达标 ⇒ 会**无界地**每轮重解析一批 ✗。
+				// 故按项目记轮数，超上限即停止自动修复并提示手动处理 ✓（正常收敛只需 95k/4000 ≈ 24 轮）。
+				const attempt = this._repairAttempts.get(project) ?? { rounds: 0 };
+				if (attempt.rounds >= DEFICIENT_REPAIR_MAX_ROUNDS) {
+					if (!attempt.warned) {
+						attempt.warned = true;
+						this._repairAttempts.set(project, attempt);
+						this._logService.warn('[CodebaseGraph]', `[baseline] "${project}" 已自动分批修复 ${attempt.rounds} 轮仍判残缺`
+							+ `（${graphNodeCount} 节点 / ${hashCount} 成功哈希）⇒ **停止自动修复**（避免无界重解析 ✗）；`
+							+ `请手动「重新索引」，或调大 \`saros.codebaseGraph.repairBatchFiles\` ✓`);
+					}
+				} else {
+					attempt.rounds++;
+					this._repairAttempts.set(project, attempt);
+					const totalHashes = this._graph.store.getFileHashCount(project);
+					const batch = this._resolveRepairBatchFiles();
+					const cleared = this._graph.store.clearFileHashesBounded(project, batch);
+					repairRound = cleared > 0;
+					const rounds = Math.max(1, Math.ceil(totalHashes / Math.max(1, batch)));
+					this._logService.warn('[CodebaseGraph]', `[baseline] deficient graph: ${graphNodeCount} nodes / ${hashCount} ok-hashes（project=${project}）`
+						+ ` — **分批修复**（第 ${attempt.rounds}/${DEFICIENT_REPAIR_MAX_ROUNDS} 轮）：本轮只清 ${cleared}/${totalHashes} 个哈希（≈ ${rounds} 轮收敛）`
+						+ `；⚠ 不再一次清光（95k 文件一次全量 ⇒ 内存暴涨 + 撞硬堆上限中止 ⇒ 不收敛 ✗；`
+						+ `批大小可用 \`saros.codebaseGraph.repairBatchFiles\` 调整 ✓）`);
+				}
 			}
-			const hasBaseline = graphNodeCount > 0 && this._graph.store.getFileHashCount() > 0;
-			if (hasChangeSet && hasBaseline) {
+			const hasBaseline = graphNodeCount > 0 && this._graph.store.getFileHashCount(project) > 0;
+			if (hasChangeSet && hasBaseline && !repairRound) {
 				const added = changeSet!.added;
 				const modified = changeSet!.modified;
 				const deleted = changeSet!.deleted;
@@ -3804,6 +3879,12 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private static readonly PARSE_FAIL_RETRY_MAX = 3;
 
 	/**
+	 * ★ 2026-09-21：分批修复的**会话内轮数记账**（按项目）—— 安全阀，见 `DEFICIENT_REPAIR_MAX_ROUNDS`。
+	 * `warned` 保证「达到上限」的告警只打一次（否则每轮都刷屏 ✗）。
+	 */
+	private readonly _repairAttempts = new Map<string, { rounds: number; warned?: boolean }>();
+
+	/**
 	 * 解析后按结果决定是否记录哈希基线（统一全量/增量两条路径的策略）。
 	 *
 	 * Bug（2026-09-09，快照取证）：旧实现**无论解析成败都记哈希**——全量轮 6000 文件
@@ -3827,11 +3908,19 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		if (fails > 0) {
 			this._logService.debug('[CodebaseGraph]', `[parse] ${relPath} failed ${fails}x — recording hash to stop retrying (restart to reset)`);
 		}
-		await this._recordFileHash(project, relPath, absPath);
+		// ★★ 2026-09-21：标记「放弃重试」的哈希 —— 它**不是**"成功索引过"（无节点）✗。
+		// 不标记的后果（真机 UE）：健康度把 95k 个放弃哈希当成功基线 ⇒ 判"残缺" ⇒
+		// 触发 95k 文件全量重索引（内存暴涨）✗✗。标记后：基线照旧（不翻烧饼 ✓），
+		// 但健康度只按"成功份"算（不再误判残缺 ✓）。
+		const gaveUp = status === 'parse_error' || status === 'timeout';
+		await this._recordFileHash(project, relPath, absPath, gaveUp);
 	}
 
-	/** 记录文件哈希（仅 mtime+size，避免 SHA-256 开销），供增量重索引的 mtime/size 分类使用。 */
-	private async _recordFileHash(project: string, relPath: string, absPath: string): Promise<void> {
+	/**
+	 * 记录文件哈希（仅 mtime+size，避免 SHA-256 开销），供增量重索引的 mtime/size 分类使用。
+	 * @param gaveUp `true` = 解析失败达上限后的"放弃"标记（见 `FileHash.gaveUp` ✓）。
+	 */
+	private async _recordFileHash(project: string, relPath: string, absPath: string, gaveUp = false): Promise<void> {
 		try {
 			const stat = await this._fileService.stat(URI.file(absPath));
 			this._graph.store.upsertFileHash({
@@ -3840,6 +3929,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				sha256: '',
 				mtimeNs: stat.mtime * 1_000_000,
 				size: stat.size,
+				...(gaveUp ? { gaveUp: true } : {}),
 			});
 			// Phase 2 接线：同步到主进程 SQLite 后端（默认关闭）
 			this._syncFileHashToSqlite(project, relPath, '', stat.mtime * 1_000_000, stat.size);
@@ -4976,7 +5066,11 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 */
 	getIndexHealth(): IIndexHealthReport {
 		const nodeCount = this._graph.store.getNodeCount();
-		const hashCount = this._graph.store.getFileHashCount();
+		// ★★ 2026-09-21：分母只算「成功索引过」的文件（`gaveUp` 的排除在外 ✗✓）——
+		// 否则"解析失败被固化"会被读成"成功索引过但每文件节点太少 ⇒ 残缺"，进而触发全量重建 ✗✗
+		// （真机 UE：4547 节点 / 95532 哈希 ⇒ 被判残缺 ⇒ 95k 文件全量重索引）。
+		const hashCount = this._graph.store.getOkFileHashCount();
+		const gaveUpFileCount = this._graph.store.getGaveUpFileHashCount();
 		const nodesPerFile = hashCount > 0 ? nodeCount / hashCount : 0;
 		const entries = [...this._indexCoverage.values()];
 		let parseFailed = 0;
@@ -4987,13 +5081,16 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		return {
 			nodeCount,
 			fileCount: hashCount,
+			gaveUpFileCount,
 			nodesPerFile: Math.round(nodesPerFile * 100) / 100,
 			parseFailedFiles: parseFailed,
 			absPathViolations: this._graph.store.getAbsPathViolationCount(),
 			deficient,
 			message: deficient
 				? `图谱残缺：${nodeCount} 节点 / ${hashCount} 文件（每文件 ${nodesPerFile.toFixed(2)} 节点，正常 ≥ 2）— 请重新索引`
-				: undefined,
+				: (gaveUpFileCount > 0
+					? `有 ${gaveUpFileCount} 个文件解析失败已达重试上限（已停止重试，未产出节点）— 若要补齐请重新索引（大仓建议分批）`
+					: undefined),
 		};
 	}
 
@@ -5082,6 +5179,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				`[summary] ${kind}: indexed=${indexed} skipped=${skipped} failed=${failed}` +
 				`${top ? ` | top reasons: ${top}` : ''}` +
 				` | health: ${health.nodeCount} nodes / ${health.fileCount} files = ${health.nodesPerFile} per file` +
+				// ★ 2026-09-21：gaveUp 数要单独可见 —— `fileCount` 已只算「成功份」，
+				// 不把放弃数打出来 ⇒ 日志会"看起来全绿"，掩盖"大批文件解析失败被放弃"的事实 ✗✓
+				`${health.gaveUpFileCount > 0 ? `（另有 ${health.gaveUpFileCount} 个文件解析失败已放弃重试 ✗）` : ''}` +
 				`${health.deficient ? ` ⚠ DEFICIENT — ${health.message}` : ' ✓ ok'}`);
 		} catch (err) {
 			this._logService.debug('[CodebaseGraph]', `[summary] failed: ${err}`);

@@ -483,6 +483,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			minimum: 0,
 			markdownDescription: localize('agentStudio.codebaseGraph.hardHeapLimitMb', "Codebase 图谱解析期的**硬堆上限**（MB，`0` = 默认 3072）。真机实证（UE 项目 9.5 万文件全量重建）：解析结果累积在渲染进程内存里，heap 每 30s 涨近 1GB，60-90 秒内越过 V8 上限直接 OOM 崩溃——而阶段边界的内存告警根本来不及响。本上限是**最后保险丝**：解析循环每 250 个文件检查一次，越过即**中止本轮解析**（已解析部分照常收尾落盘，剩余文件由后续增量索引逐步补齐），把「崩溃丢图」降级为「部分索引 + 明确提示」。"),
 		},
+		'saros.codebaseGraph.repairBatchFiles': {
+			type: 'number',
+			default: 0,
+			minimum: 0,
+			markdownDescription: localize('agentStudio.codebaseGraph.repairBatchFiles', "残缺图谱**分批修复**的批次大小（文件数；`0` = 默认 **4000**）。真机实证（UE 项目 9.5 万文件）：一次清光哈希 ⇒ 全部文件判为「新增」⇒ 一次解析 9.5 万文件 ⇒ 解析结果堆在渲染进程，heap 每 30s 涨近 1GB ⇒ 撞解析期硬上限被中止 ⇒ **「残缺 → 全量 → 中止 → 仍残缺」永不收敛** ✗。改为分批后：每轮只重解析一批（默认 4000 个 ≈ +170MB，远低于预算 ✓），进度可累积 ⇒ 多轮收敛 ✓。调大 = 收敛更快但每轮内存更高；调小 = 更稳但轮数更多。"),
+		},
 		'saros.codebaseGraph.excludeProfile': {
 			type: 'string',
 			enum: ['balanced', 'full'],
@@ -3213,6 +3219,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 		const g = globalThis as {
 			__SAROS_AGENTMEMORY_URL__?: string;
 			__SAROS_AGENTMEMORY_FOREIGN__?: string[];
+			__SAROS_AGENTMEMORY_WANT_DATADIR__?: string;
 			__SAROS_AGENTMEMORY_INJECT__?: boolean | string;
 		};
 		if (typeof g.__SAROS_AGENTMEMORY_URL__ === 'string' && g.__SAROS_AGENTMEMORY_URL__.length > 0) {
@@ -3234,8 +3241,25 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 		const userDataPath = (this.environmentService as INativeEnvironmentService).userDataPath;
 		const wantDataDir = this._normalizeFsPath(`${userDataPath}/.agentmemory`);
 		const foreign: string[] = [];
-		// 候选端口与主进程 `_resolveAgentMemoryPort()` 同规则：安装版 3111 / dev 3112。
-		for (const base of ['http://127.0.0.1:3111', 'http://127.0.0.1:3112']) {
+		// 候选端口排序：**本形态优先**。旧实现恒先探 3111 ⇒ 只要安装版在跑，dev 窗口
+		// 必然先撞上它：白付一次 1.2s 超时，并刷一条看起来像故障的 WARN（而跨形态共存是常态）。
+		// ⚠ 不能照抄主进程 `_resolveAgentMemoryPort()`：上方注释已说明 `isBuilt` 在渲染侧恒为
+		// true ⇒ 改由 userDataPath 是否落在 dev 数据目录推导本形态端口。
+		const candidates: string[] = [];
+		const pushPort = (p: number) => {
+			const url = `http://127.0.0.1:${p}`;
+			if (!candidates.includes(url)) {
+				candidates.push(url);
+			}
+		};
+		const explicitPort = Number.parseInt(sandboxEnv?.['AGENTMEMORY_PORT'] ?? '', 10);
+		if (Number.isInteger(explicitPort) && explicitPort > 0 && explicitPort < 65536) {
+			pushPort(explicitPort);
+		}
+		pushPort(this._normalizeFsPath(userDataPath).includes('.vssaros-dev') ? 3112 : 3111);
+		pushPort(3111);
+		pushPort(3112);
+		for (const base of candidates) {
 			try {
 				const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(1200) });
 				if (!res.ok) {
@@ -3248,20 +3272,28 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 				if (this._normalizeFsPath(body.dataDir) === wantDataDir) {
 					g.__SAROS_AGENTMEMORY_URL__ = base;
 					g.__SAROS_AGENTMEMORY_FOREIGN__ = foreign;
+					g.__SAROS_AGENTMEMORY_WANT_DATADIR__ = wantDataDir;
 					this.logService.info(`[AgentMemory] 网关地址已认领: ${base}（dataDir 与本窗口一致: ${body.dataDir}）`);
 					return;
 				}
 				foreign.push(base);
-				this.logService.warn(
-					`[AgentMemory] ${base} 上的网关属于**其他数据目录**（${body.dataDir}），本窗口是 ${wantDataDir} `
-					+ '⇒ 排除该地址（避免记忆读写串到另一形态的库）',
+				// dev + 安装版同时开着是常态 ⇒ 记 info。真正的告警留给下方「都没认领到」的情况。
+				this.logService.info(
+					`[AgentMemory] 跳过 ${base} 上的网关：属于**其他数据目录**（${body.dataDir}），本窗口是 ${wantDataDir}`,
 				);
 			} catch { /* 端口空闲 / 超时 ⇒ 只是还没起来，不算异己 */ }
 		}
 		g.__SAROS_AGENTMEMORY_FOREIGN__ = foreign;
-		this.logService.info(
-			`[AgentMemory] 暂未认领到网关（本窗口 dataDir=${wantDataDir}；已排除 ${foreign.length} 个异己地址）—— 交由扩展侧候选探测`,
-		);
+		// 把「本窗口该连哪份数据」交给扩展侧：checkHealth 据此校验 /health 的 dataDir，
+		// 使「躲开异己」从宿主的一次性快照升级为每次探测的动态校验。
+		g.__SAROS_AGENTMEMORY_WANT_DATADIR__ = wantDataDir;
+		const notClaimedMsg = `[AgentMemory] 暂未认领到网关（本窗口 dataDir=${wantDataDir}；已排除 ${foreign.length} 个异己地址）—— 交由扩展侧候选探测`;
+		if (foreign.length > 0) {
+			// 有异己网关在跑、自己那份却没起来 ⇒ 本窗口记忆会降级，这才值得 warn
+			this.logService.warn(notClaimedMsg);
+		} else {
+			this.logService.info(notClaimedMsg);
+		}
 	}
 
 	/** Windows 路径大小写不敏感、分隔符可能混用 ⇒ 归一化后比较（同主进程 `_isSamePath`）。 */

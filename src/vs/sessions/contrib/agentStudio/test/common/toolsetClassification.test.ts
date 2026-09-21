@@ -22,7 +22,7 @@
  *--------------------------------------------------------------------------------------------*/
 import * as assert from 'assert';
 
-import { getToolsetForTool } from '../../common/toolsetConfig.js';
+import { getToolsetForTool, getToolsetPriority, ToolsetPriority } from '../../common/toolsetConfig.js';
 
 suite('Toolset 归类（2026-09-11 遗漏修复锁定）', () => {
 
@@ -96,5 +96,34 @@ suite('Toolset 归类（2026-09-11 遗漏修复锁定）', () => {
 		// 若这条失败，说明 `getToolsetForTool` 的兜底行为变了 —— 上面所有
 		// notStrictEqual(..., 'utility') 断言将失去意义。
 		assert.strictEqual(getToolsetForTool('some_totally_unknown_tool_xyz'), 'utility');
+	});
+});
+
+suite('Toolset 归类（2026-09-21 遗漏修复锁定：unreal_*）', () => {
+
+	test('unreal_* 归入 unreal toolset（此前全部落 utility ⇒ focus 模式被整条剔除）', () => {
+		const unrealTools = [
+			'unreal_health', 'unreal_exec', 'unreal_wait', 'unreal_help',
+			'unreal_dump', 'unreal_build', 'unreal_find_asset',
+		];
+		for (const t of unrealTools) {
+			assert.strictEqual(getToolsetForTool(t), 'unreal', `${t} 应归入 unreal toolset`);
+		}
+	});
+
+	test('★ unreal toolset 必须是 Always（仅登记还不够 —— 非 Always 仍会被 focus 剔除）', () => {
+		// 事故现场（用户报「打出的版本中找不到 unreal_* 工具」，日志 `tool_describe "unreal_exec"`
+		// → `Error: Tool "unreal_exec" not found`）：`unrealTools.ts` 早已实现、`builtinToolProvider`
+		// 也**无条件注册**（2026-09-20 接线），但本表无 `unreal_` 记录 ⇒ 落 `utility`(Low) ⇒
+		// focus 模式 Step3a 只保留「推荐 toolset / 桥接 / core / Always」⇒ 被剔 ⇒ LLM 与 tool_search 均不可见。
+		assert.strictEqual(getToolsetPriority('unreal'), ToolsetPriority.Always,
+			'unreal 必须 Always —— 否则登记了也仍会被 focus 模式剔除（image_gen 同款理由）');
+	});
+
+	test('★ 新前缀不得挤掉既有归类（同族双前缀/精确名的既有规则仍胜出）', () => {
+		assert.strictEqual(getToolsetForTool('renderMermaidDiagram'), 'core');
+		assert.strictEqual(getToolsetForTool('mindmap_generate'), 'canvas');
+		assert.strictEqual(getToolsetForTool('kanban_create'), 'kanban');
+		assert.strictEqual(getToolsetForTool('kb_search'), 'knowledge');
 	});
 });

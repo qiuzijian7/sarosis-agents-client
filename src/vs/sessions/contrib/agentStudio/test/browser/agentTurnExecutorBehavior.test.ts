@@ -32,12 +32,14 @@ import type { ModelAccessDeps } from '../../browser/agentModelAccess.js';
 import { extractToolCallsFromText } from '../../browser/agentToolExtractor.js';
 import { SubagentLimitMiddleware } from '../../common/subagentLimitMiddleware.js';
 import { registerSessionTaskLookup } from '../../browser/sessionTaskGateBridge.js';
-import { getPlanQueueHandle } from '../../common/planQueueRegistry.js';
 import { MAX_TASK_GATE_MAIN_REACT } from '../../common/taskGate.js';
 import { createDeliveryQueue } from '../../common/deliveryQueue.js';
 import { classifyIterationStop } from '../../common/turnStopGate.js';
 import { AgentLoopStrategyFactory } from '../../browser/agentLoopStrategyFactory.js';
 import type { AgentParadigm } from '../../common/agentLoopStrategy.js';
+// 2026-09-21：计划队列机制下线后，其反向契约钉改为**源码文本断言**（见文件内「计划队列：机制已…下线」）。
+import * as fs from 'fs';
+import * as path from 'path';
 
 // ── 钉 legacy 路径（2026-09-20 E2 翻转后必须显式关断）────────────────────────
 // 本套件是 legacy 主循环的行为钉（S3 拆分的前置护栏）；E2 后 isPiKernelEnabled()
@@ -2024,6 +2026,55 @@ suite('executeAgentTurnDirect — 断点续跑恢复（resumeFrom）', () => {
 			'无 resumeFrom 时不应出现任何恢复内容',
 		);
 	});
+
+	test('★★★ resume 的范式只作用于**带 resumeFrom 的那一轮**，不得跨 turn 粘滞', async () => {
+		// 缺陷现场（2026-09-21 下线前）：范式由进程级 `paradigmOverride` 注册表承载，且**生产代码
+		// 没有任何 clear 调用方** ⇒ 一次 resume 之后，该 agentId 在本进程剩余生命周期内**永久**钉在
+		// checkpoint 范式上（策略与提示词引导双双如此）：用户之后改 Agent 配置范式**不生效**，
+		// 直到重启，而日志只有一句 "Paradigm override active"（看起来还像是正常工作）。
+		// 现在改为每 turn 就地解析 ⇒ 本用例钉住两个方向：① 该轮仍用 checkpoint 范式（R3 不退化）；
+		// ② 下一轮必须回到配置值（不粘滞）。
+		const provider = {
+			id: 'mock-provider', name: 'Mock',
+			chat: () => (async function* () {
+				yield { type: 'text', content: 'ok' } as IModelDelta;
+				yield { type: 'done', finishReason: 'stop' } as IModelDelta;
+			})(),
+		};
+		const host = mockHost({
+			_getActiveModelProvider: () => provider,
+			getActiveModelSelection: () => ({ modelId: 'mock-model' }),
+			_getEnabledTools: async () => [],
+		});
+
+		// 「策略按哪个范式跑」的唯一可观察点：工厂 resolve 的第二个参数。
+		const proto = AgentLoopStrategyFactory.prototype as unknown as {
+			resolve: (req: unknown, paradigm: unknown) => unknown;
+		};
+		const original = proto.resolve;
+		const seen: unknown[] = [];
+		proto.resolve = function (this: unknown, req: unknown, paradigm: unknown): unknown {
+			seen.push(paradigm);
+			return original.call(this, req, paradigm);
+		};
+		try {
+			await drain(executeAgentTurnDirect(host, mockRequest({
+				resumeFrom: { messages: [{ role: 'user', content: 'hi' }], paradigm: 'readonly' },
+			}) as never) as AsyncGenerator<IChatStreamDelta, unknown>);
+			await drain(
+				executeAgentTurnDirect(host, mockRequest() as never) as AsyncGenerator<IChatStreamDelta, unknown>,
+			);
+		} finally {
+			proto.resolve = original;
+		}
+
+		assert.ok(seen.length >= 2, `两轮都应解析策略（实际 ${seen.length} 次）`);
+		assert.strictEqual(seen[0], 'readonly',
+			'带 resumeFrom 的那一轮必须用 checkpoint 范式（R3：避免范式漂移）✗');
+		assert.notStrictEqual(seen[1], 'readonly',
+			'resume 的范式**不得粘滞**到后续 turn —— 否则一次 resume 会永久钉死该 agent 的范式，'
+			+ '用户改配置静默失效直到重启（这正是注册表下线要修的缺陷）✗');
+	});
 });
 
 suite('executeAgentTurnDirect — 流式循环控制流出口（迭代级 break/continue/return）', () => {
@@ -2836,142 +2887,22 @@ suite('executeAgentTurnDirect — 轮顶门控出口（abort / 预算收尾 / �
 		);
 	});
 
-	test('计划队列未走完 → 无工具调用轮推进到下一任务，而不是结束 turn', async () => {
-		// 出口 P（`agentTurnExecutor.ts:2780` continue）。
-		//
-		// 队列由 `plan_register` 工具经 `planQueueRegistry` 的句柄写入本 turn
-		// （句柄在 turn 开始时注册、finally 注销）。主循环的推进条件是
-		// 「本轮无工具调用 + currentTaskIdx < length-1」——即模型说完
-		// "任务 N 做完了" 就自动切到 N+1，而不是收尾。
-		//
-		// 失败模式：
-		//   · 不推进直接结束 → plan_register 形同虚设，只执行第 1 个任务
-		//   · 推进但不注入 reminder → 模型不知道下一个任务是什么，原地打转
-		//   · 越界推进 → 最后一个任务做完后无限续跑
-		const { provider, snapshots, roundCount } = gatedProvider(() => [
-			{ type: 'text', content: '这一步做完了。' } as IModelDelta,
-			{ type: 'done', finishReason: 'stop' } as IModelDelta,
-		]);
-
-		const host = mockHost({
-			_getActiveModelProvider: () => provider,
-			getActiveModelSelection: () => ({ modelId: 'mock-model' }),
-			_getEnabledTools: async () => ONE_TOOL,
-		});
-
-		// 在 turn 运行中写入队列：executor 注册句柄 → 这里模拟 plan_register
-		// 的写入时机（首轮 LLM 调用时句柄已就绪）。
-		const gen = executeAgentTurnDirect(
-			host,
-			mockRequest() as never,
-		) as AsyncGenerator<IChatStreamDelta, unknown>;
-
-		// 先推进到首轮 LLM 调用之后，此时 registerPlanQueueHandle 已执行。
-		let step = await gen.next();
-		let queueInjected = false;
-		const deltas: IChatStreamDelta[] = [];
-		while (!step.done) {
-			deltas.push(step.value);
-			if (!queueInjected) {
-				const handle = getPlanQueueHandle('test-agent');
-				if (handle) {
-					handle.setPlan([
-						{ title: 'T-A 读取配置', description: '读取并理解现有配置' },
-						{ title: 'T-B 修改超时', description: '把超时改成 30s' },
-					]);
-					queueInjected = true;
-				}
-			}
-			step = await gen.next();
-		}
-
-		assert.ok(queueInjected, '前置条件：必须成功拿到本 turn 的计划队列句柄');
-
-		assert.strictEqual(
-			roundCount(), 2,
-			`两个任务应各占一轮（实际 ${roundCount()} 轮）——`
-			+ `1 轮说明队列没有推进（plan_register 白注册），`
-			+ `>2 轮说明越界推进（最后一个任务做完仍不肯结束）`,
-		);
-
-		const advanceReminder = lastUserText(snapshots[1] ?? []);
-		assert.ok(
-			advanceReminder.includes('CURRENT TASK (2/2)') && advanceReminder.includes('T-B 修改超时'),
-			`推进时必须注入带序号与标题的 CURRENT TASK 提醒（实际=`
-			+ `${JSON.stringify(advanceReminder.slice(0, 200))}）——`
-			+ `不点名任务，模型无从知道该做哪一步`,
-		);
-
-		assert.ok(
-			deltas.some(d => (d as { type?: string }).type === 'done'),
-			'队列走完后必须正常结束并 yield done',
-		);
-	});
-
-	test('计划队列走完最后一个任务 → 正常结束，不得再推进', async () => {
-		// 出口 P 的边界（`currentTaskIdx < planTasks.length - 1` 的右边界）。
-		// 单任务队列是最容易写出 off-by-one 的形态：条件写成 `<=` 会让
-		// 队列在最后一个任务上反复推进，turn 一直跑到迭代上限。
-		const { provider, roundCount } = gatedProvider(() => [
-			{ type: 'text', content: '唯一的任务已完成。' } as IModelDelta,
-			{ type: 'done', finishReason: 'stop' } as IModelDelta,
-		]);
-
-		const host = mockHost({
-			_getActiveModelProvider: () => provider,
-			getActiveModelSelection: () => ({ modelId: 'mock-model' }),
-			_getEnabledTools: async () => ONE_TOOL,
-		});
-
-		const gen = executeAgentTurnDirect(
-			host,
-			mockRequest() as never,
-		) as AsyncGenerator<IChatStreamDelta, unknown>;
-
-		let step = await gen.next();
-		let queueInjected = false;
-		while (!step.done) {
-			if (!queueInjected) {
-				const handle = getPlanQueueHandle('test-agent');
-				if (handle) {
-					handle.setPlan([{ title: 'T-only', description: '唯一任务' }]);
-					queueInjected = true;
-				}
-			}
-			step = await gen.next();
-		}
-
-		assert.ok(queueInjected, '前置条件：必须成功拿到本 turn 的计划队列句柄');
-		assert.strictEqual(
-			roundCount(), 1,
-			`单任务队列必须当轮结束（实际 ${roundCount()} 轮）——`
-			+ `多于 1 说明推进条件把最后一个任务算成了"还有下一个"（off-by-one）`,
-		);
-	});
-
-	test('turn 结束后计划队列句柄必须注销，不得泄漏到下一个 turn', async () => {
-		// 生命周期契约（`planQueueRegistry.ts:14-15` + executor 的 finally）。
-		// 失败模式：句柄泄漏 → 下一个 turn 的 plan_register 写进了**上一个 turn**
-		// 的闭包，队列看似注册成功实则永不执行（且无任何报错）。
-		const { provider } = gatedProvider(() => [
-			{ type: 'text', content: '完成。' } as IModelDelta,
-			{ type: 'done', finishReason: 'stop' } as IModelDelta,
-		]);
-
-		const host = mockHost({
-			_getActiveModelProvider: () => provider,
-			getActiveModelSelection: () => ({ modelId: 'mock-model' }),
-			_getEnabledTools: async () => ONE_TOOL,
-		});
-
-		await drain(
-			executeAgentTurnDirect(host, mockRequest() as never) as AsyncGenerator<IChatStreamDelta, unknown>,
-		);
-
-		assert.strictEqual(
-			getPlanQueueHandle('test-agent'), undefined,
-			'turn 结束后句柄必须已注销——残留句柄会让下一个 turn 的 plan_register 静默写空',
-		);
+	// ─── 计划队列：机制已随 `planQueueRegistry` 彻底下线（2026-09-21）───────────
+	// 原三条用例（推进 / 右边界 / 句柄注销）都是**经注册表句柄**注入队列来验证
+	// 「无工具调用轮推进 + CURRENT TASK 提醒」的。注册表删除后该注入面不复存在，
+	// 三条用例的前置条件无法再构造 ⇒ 随机制一并退役（保留下面的反向钉）。
+	// ⚠ 仍活着的相邻能力：strategy `preLoop` 的 `meta.planTasks` 那条写入路径（与注册表无关），
+	//   其行为由 preLoopOrchestrator 侧用例覆盖。
+	test('★★★ 退役契约：executor 不得再注册计划队列句柄（机制已彻底下线）', () => {
+		const src = fs.readFileSync(
+			path.join(process.cwd(), 'src/vs/sessions/contrib/agentStudio/browser/agentTurnExecutor.ts'), 'utf8')
+			.replace(/\/\*[\s\S]*?\*\//g, '')
+			.replace(/^\s*\/\/.*$/gm, '');
+		assert.ok(!src.includes('registerPlanQueueHandle'),
+			'executor 不得再注册计划队列句柄（生产者工具已退役 ⇒ 注册表已删除）✗');
+		assert.ok(!fs.existsSync(path.join(process.cwd(),
+			'src/vs/sessions/contrib/agentStudio/common/planQueueRegistry.ts')),
+			'planQueueRegistry 已删除 —— 不要复活 module 级队列注册表（要重做请按 pi 契约）✗');
 	});
 });
 // ─────────────────────────────────────────────────────────────────────────

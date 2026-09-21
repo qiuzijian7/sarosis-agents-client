@@ -374,8 +374,10 @@ export class AnthropicStreamState {
 function _extractAnthropicUsage(u: any): IModelDelta | null {
 	const inputTokens = u?.input_tokens;
 	const outputTokens = u?.output_tokens;
-	const cachedTokens = u?.cache_read_input_tokens;
-	const cacheWriteTokens = u?.cache_creation_input_tokens;
+	// ★ 2026-09-21：同样补 DeepSeek/Zhipu/hy 系兜底（与 sseParsers.extractUsage 同姿态，
+	// 否则只回 `prompt_cache_hit_tokens` 的网关在此路径漏报命中）。
+	const cachedTokens = u?.cache_read_input_tokens ?? u?.prompt_cache_hit_tokens ?? undefined;
+	const cacheWriteTokens = u?.cache_creation_input_tokens ?? u?.prompt_cache_write_tokens ?? undefined;
 	if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined || cacheWriteTokens !== undefined) {
 		return { type: 'usage', usage: { inputTokens, outputTokens, cachedTokens, cacheWriteTokens } };
 	}

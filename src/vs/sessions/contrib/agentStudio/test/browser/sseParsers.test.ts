@@ -65,6 +65,19 @@ suite('sseParsers / extractUsage', () => {
 		assert.strictEqual((anthropic as any).usage.cacheWriteTokens, 20);
 	});
 
+	test('★★★ 缓存字段：DeepSeek/Zhipu/hy 系（prompt_cache_hit/miss/write_tokens）必须读到（2026-09-21 实测 hy4 网关）', () => {
+		// 实测 hy4-preview-ioa 的 usage keys=[..., prompt_cache_hit_tokens, prompt_cache_miss_tokens,
+		// cache_read_input_tokens, cache_creation_input_tokens, prompt_cache_write_tokens, ...]。
+		// 若只认 OpenAI/Anthropic 字段，这条路径上「缓存其实在工作」会被漏报成 0 ⇒ 面板误导排查方向。
+		const d = extractUsage({ usage: { prompt_tokens: 50000, prompt_cache_hit_tokens: 11200, prompt_cache_miss_tokens: 38800, prompt_cache_write_tokens: 50000 } });
+		assert.strictEqual((d as any).usage.cachedTokens, 11200, 'prompt_cache_hit_tokens 必须读出来 ✗');
+		assert.strictEqual((d as any).usage.cacheWriteTokens, 50000, 'prompt_cache_write_tokens 必须读出来 ✗');
+
+		// 优先级：OpenAI 嵌套字段优先于 DeepSeek 平铺字段（不回退已有语义）
+		const both = extractUsage({ usage: { prompt_tokens: 100, prompt_tokens_details: { cached_tokens: 7 }, prompt_cache_hit_tokens: 99 } });
+		assert.strictEqual((both as any).usage.cachedTokens, 7, '两类字段同时存在时保持旧优先级 ✗');
+	});
+
 	test('reasoning tokens 两种来源', () => {
 		const a = extractUsage({ usage: { completion_tokens: 5, completion_tokens_details: { reasoning_tokens: 7 } } });
 		assert.strictEqual((a as any).usage.reasoning, 7);

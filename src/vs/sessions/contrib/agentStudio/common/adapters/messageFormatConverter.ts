@@ -28,6 +28,7 @@
  */
 
 import { IChatMessage, IModelOptions, IToolDefinition, IModelCapabilityConfig } from '../providers.js';
+import { prepareToolSchemaForStrict } from './toolSchemaStrict.js';
 import {
 	OpenAILLMChatMessage, OpenAIToolCall,
 	AnthropicLLMChatMessage, AnthropicContentBlock, AnthropicUserContentBlock,
@@ -223,15 +224,20 @@ export class MessageFormatConverter {
 	 *   （system + tools 共同构成父/子 fork 共享的缓存前缀）。
 	 * @param isAnthropic 是否 Anthropic 兼容 provider（cache_control 为 Anthropic 专有字段）。
 	 * @param systemPrompt agent 冻结 system（仅用于对齐判定，不参与组装）。
+	 * @param strictToolSchema 是否启用 OpenAI strict 工具模式（★ 2026-09-21 新增）。
+	 *   true 时**按工具**判定：能 strict 的清洗 schema 后声明 `strict: true`，不能的（结构阻断：
+	 *   `oneOf`/`$ref`/`type` 数组等）**自己退回**普通模式 —— 绝不因个别工具让整批 400。
+	 *   为 false/undefined 时**一个字节不改**（默认行为不变）。
 	 */
 	static toOpenAIToolDefinitions(
 		tools: IToolDefinition[],
 		forkContext?: IForkContext,
 		isAnthropic?: boolean,
 		systemPrompt?: string,
+		strictToolSchema?: boolean,
 	): Array<{
 		type: 'function';
-		function: { name: string; description: string; parameters: Record<string, unknown> };
+		function: { name: string; description: string; parameters: Record<string, unknown>; strict?: boolean };
 		cache_control?: { type: 'ephemeral' };
 	}> {
 		// 仅 Anthropic 兼容 provider 给 tools 打 cache 断点（OpenAI 原生不识别该字段）。
@@ -240,16 +246,20 @@ export class MessageFormatConverter {
 			!!forkContext &&
 			evaluateForkPrefixCache(forkContext, systemPrompt ?? '', tools).aligned;
 		return tools.map((t, idx) => {
+			const toolSchema = strictToolSchema === true
+				? prepareToolSchemaForStrict(t.inputSchema)
+				: { parameters: t.inputSchema, strict: false };
 			const def: {
 				type: 'function';
-				function: { name: string; description: string; parameters: Record<string, unknown> };
+				function: { name: string; description: string; parameters: Record<string, unknown>; strict?: boolean };
 				cache_control?: { type: 'ephemeral' };
 			} = {
 				type: 'function' as const,
 				function: {
 					name: t.name,
 					description: t.description,
-					parameters: t.inputSchema,
+					parameters: toolSchema.parameters,
+					...(toolSchema.strict ? { strict: true } : {}),
 				},
 			};
 			if (cacheTools && idx === tools.length - 1) {
@@ -643,6 +653,7 @@ export class MessageFormatConverter {
 		forkContext?: IForkContext,
 		isAnthropic?: boolean,
 		systemPrompt?: string,
+		strictToolSchema?: boolean,
 	): unknown {
 		const toolFormat = capabilityConfig?.specialToolFormat;
 
@@ -655,6 +666,6 @@ export class MessageFormatConverter {
 		// TODO: 当添加 GeminiModelProvider 原生支持时，实现 toGeminiToolDefinitions()
 
 		// 默认：OpenAI 格式
-		return this.toOpenAIToolDefinitions(tools, forkContext, isAnthropic, systemPrompt);
+		return this.toOpenAIToolDefinitions(tools, forkContext, isAnthropic, systemPrompt, strictToolSchema);
 	}
 }

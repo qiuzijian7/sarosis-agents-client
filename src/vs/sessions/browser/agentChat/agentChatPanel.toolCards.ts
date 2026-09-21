@@ -446,15 +446,6 @@ protected _createPlanWorkflowCard(tc: IToolCall, key: string): HTMLElement {
 	throw new Error('[moved-to-feature] _createPlanWorkflowCard');
 }
 
-/**
- * plan_register 定制卡片（计划队列注册）。
- * 已抽取到 agentChatPanel.delegateCards.ts（计划族卡片集中在那里）；
- * 保留 stub 供 dispatcher `_createToolCallCardCore` 调用，运行时由子类 override 提供实现。
- */
-protected _createPlanRegisterCard(tc: IToolCall, key: string): HTMLElement {
-	throw new Error('[moved-to-feature] _createPlanRegisterCard');
-}
-
 protected _createDelegateTaskCard(tc: IToolCall, key: string): HTMLElement {
 	throw new Error('[moved-to-feature] _createDelegateTaskCard');
 }
@@ -640,14 +631,11 @@ private _createToolCallCardCore(tc: IToolCall, confirmation?: IConfirmationData)
 			return this._createReadFileCard(tc, key);
 		}
 
-		// ── plan_register：**计划队列注册**定制卡片（2026-09-17）──
-		// 刻意**不并入** TOOL_PLAN_TOOLS：那一族走 `_createPlanWorkflowCard`（按
-		// plan_explore/plan_enter/plan_exit/update_plan 分支渲染），而 plan_register
-		// 的语义是「写入本 turn 的执行队列」，卡片要突出**顺序**与**起始任务**，
-		// 形态与那四张都不同 ⇒ 独立分支 + 独立构建函数（实现见 delegateCards）。
-		if (key === 'plan_register') {
-			return this._createPlanRegisterCard(tc, key);
-		}
+		// ── plan_register：**已彻底下线**（2026-09-21）──
+		// 该工具（含其门控）已正式退役，且其驱动机制 `planQueueRegistry` 的唯一生产者消失 ⇒
+		// 定制卡片与 registry 一并删除。历史会话里遗留的 `plan_register` 调用会落到下方**通用卡片**
+		// 渲染（不再有「注册计划队列」专卡）—— 这是刻意接受的代价：为一个不可再产生的调用保留
+		// 专用卡片的维护面不划算。
 
 		// ── 计划编排：探索/进入/退出 ──
 		if (TOOL_PLAN_TOOLS.has(key)) {
