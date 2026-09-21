@@ -31,8 +31,10 @@ const path = require('path');
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const GITLAB_API = 'https://git.woa.com/api/v3';
 const GITLAB_WEB = 'https://git.woa.com';
-const GITLAB_PROJECT = '1790708'; // zijianqiu/vssarosis_issue
+const GITLAB_PROJECT = '1790708'; // zijianqiu/vssarosis_issue（EXE 托管 + 完整 Release）
 const GITLAB_PROJECT_PATH = 'zijianqiu/vssarosis_issue';
+const GITLAB_MAIN_PROJECT = '1764429'; // zijianqiu/sarosis-agents-client（镜像 Release：changelog + EXE 下载直链，不重复托管 EXE）
+const GITLAB_MAIN_PROJECT_PATH = 'zijianqiu/sarosis-agents-client';
 const GITHUB_API = 'https://api.github.com';
 const GITHUB_UPLOADS = 'https://uploads.github.com';
 const GITHUB_REPO = 'qiuzijian7/sarosis-agents-client';
@@ -160,7 +162,7 @@ function ensureGitTag(tag, dryRun) {
 // ---------- GitLab (woa.git vssarosis_issue) ----------
 async function gitlabCreateRelease(tag, changelog, dryRun) {
 	const token = gitlabToken();
-	if (!token) { throw new Error('no git.woa.com token (set WOA_GITLAB_TOKEN or git credential)'); }
+	if (!token) { throw new Error('no git.woa.com token (set WOA_GITLAB_TOKEN in BK-CI pipeline variables, or git credential)'); }
 	// 工蜂私人令牌(PAT)必须用 PRIVATE-TOKEN 头；Authorization: Bearer 会 401
 	const glHeaders = { 'PRIVATE-TOKEN': token };
 
@@ -220,7 +222,7 @@ async function gitlabCreateRelease(tag, changelog, dryRun) {
 	].join('\n');
 
 	// 4. create or update release
-	if (dryRun) { log(`[dry-run] would PUT/POST GitLab release ${tag} (desc ${desc.length} chars)`); return; }
+	if (dryRun) { log(`[dry-run] would PUT/POST GitLab release ${tag} (desc ${desc.length} chars)`); return []; }
 	let r = curl('PUT', `${GITLAB_API}/projects/${GITLAB_PROJECT}/releases/${encodeURIComponent(tag)}`,
 		{ headers: glHeaders, json: { name: `VsSarosis ${tag}`, description: desc } });
 	if (r.status === 404 || r.status === 405) {
@@ -231,6 +233,72 @@ async function gitlabCreateRelease(tag, changelog, dryRun) {
 		log(`GitLab release: ${GITLAB_WEB}/${GITLAB_PROJECT_PATH}/-/releases/${tag}`);
 	} else {
 		throw new Error(`GitLab release failed -> ${r.status}: ${brief(r.data)}`);
+	}
+	return downloads;
+}
+
+// ---------- GitLab main repo (sarosis-agents-client, mirror release) ----------
+// 主仓库镜像 Release：changelog + EXE 下载直链（release asset links），不重复托管 EXE 本体
+// （EXE 仍在 vssarosis_issue uploads，避免主仓库撞 100MB 限制与体积膨胀）。
+async function gitlabCreateMainRepoRelease(tag, changelog, downloads, dryRun) {
+	const token = gitlabToken();
+	if (!token) { throw new Error('no git.woa.com token (set WOA_GITLAB_TOKEN in BK-CI pipeline variables, or git credential)'); }
+	const glHeaders = { 'PRIVATE-TOKEN': token };
+
+	// 1. ensure tag via API（git push 失败时的兜底；已存在则 400/409 忽略）
+	if (dryRun) {
+		log(`[dry-run] would ensure main-repo tag ${tag}`);
+	} else {
+		const r = curl('POST',
+			`${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/repository/tags?tag_name=${encodeURIComponent(tag)}&ref=main&message=${encodeURIComponent(`VsSaros ${tag}`)}`,
+			{ headers: glHeaders });
+		if (r.status === 201) { log(`main-repo tag ${tag} created via API`); }
+		else if (r.status === 400 || r.status === 409) { log(`main-repo tag ${tag} already exists`); }
+		else { warn(`main-repo create tag -> ${r.status}: ${brief(r.data)}`); }
+	}
+
+	// 2. description（changelog + 下载表；直链与下方 asset links 一致）
+	const dlRows = downloads.map((d) => `| Windows x64 | ${d.kind} | [${d.name}](${d.url}) (${d.sizeMB} MiB) |`).join('\n');
+	const issueRel = `${GITLAB_WEB}/${GITLAB_PROJECT_PATH}/-/releases/${tag}`;
+	const desc = [
+		`## VsSaros ${tag}`,
+		'',
+		`**发布日期**：${new Date().toISOString().slice(0, 10)}`,
+		'',
+		changelog.trim(),
+		'',
+		'### 下载',
+		'| 平台 | 类型 | 下载 |',
+		'|------|------|------|',
+		dlRows || `| Windows x64 | - | 见 [发布仓库 Release](${issueRel}) |`,
+		'',
+		`> 安装包托管于 [vssarosis_issue Releases](${issueRel})（避免主仓库膨胀）；本 Release 资产区附同名直链。`,
+	].join('\n');
+
+	// 3. create or update release
+	if (dryRun) { log(`[dry-run] would PUT/POST main-repo release ${tag} (desc ${desc.length} chars, ${downloads.length} asset links)`); return; }
+	let r = curl('PUT', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${encodeURIComponent(tag)}`,
+		{ headers: glHeaders, json: { name: `VsSaros ${tag}`, description: desc } });
+	if (r.status === 404 || r.status === 405) {
+		r = curl('POST', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases`,
+			{ headers: glHeaders, json: { tag_name: tag, name: `VsSaros ${tag}`, description: desc } });
+	}
+	if (!(r.status >= 200 && r.status < 300)) {
+		throw new Error(`main-repo release failed -> ${r.status}: ${brief(r.data)}`);
+	}
+	log(`main-repo release: ${GITLAB_WEB}/${GITLAB_MAIN_PROJECT_PATH}/-/releases/${tag}`);
+
+	// 4. attach EXE 直链 as release asset links（幂等：先查重）
+	const existing = curl('GET', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${encodeURIComponent(tag)}/assets/links`,
+		{ headers: glHeaders });
+	const existingNames = new Set(
+		existing.status === 200 && Array.isArray(existing.data) ? existing.data.map((l) => l.name) : []);
+	for (const d of downloads) {
+		if (existingNames.has(d.name)) { log(`asset link exists: ${d.name}`); continue; }
+		const lr = curl('POST', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${encodeURIComponent(tag)}/assets/links`,
+			{ headers: glHeaders, json: { name: d.name, url: d.url, link_type: 'other' } });
+		if (lr.status === 201) { log(`asset link added: ${d.name}`); }
+		else { warn(`asset link ${d.name} -> ${lr.status}: ${brief(lr.data)}`); }
 	}
 }
 
@@ -315,7 +383,8 @@ async function githubCreateRelease(tag, changelog, dryRun) {
 	ensureGitTag(tag, args.dryRun);
 
 	try {
-		await gitlabCreateRelease(tag, changelog, args.dryRun);
+		const downloads = await gitlabCreateRelease(tag, changelog, args.dryRun);
+		await gitlabCreateMainRepoRelease(tag, changelog, downloads || [], args.dryRun);
 	} catch (e) {
 		console.error(`[release][ERROR] GitLab: ${e.message}`);
 		process.exitCode = 1;
