@@ -103,20 +103,41 @@ export function registerUnrealTools(ctx: UnrealToolContext): void {
 		const onAbort = () => controller.abort();
 		signal?.addEventListener('abort', onAbort, { once: true });
 
-		try {
-			const response = await fetch(url, {
-				method: body === undefined ? 'GET' : 'POST',
-				headers: body === undefined
-					? { 'Accept': 'application/json' }
-					: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-				body: body === undefined ? undefined : JSON.stringify(body),
-				signal: controller.signal,
-			});
+		const method = body === undefined ? 'GET' : 'POST';
+		const headers: Record<string, string> = body === undefined
+			? { 'Accept': 'application/json' }
+			: { 'Accept': 'application/json', 'Content-Type': 'application/json' };
+		const bodyText = body === undefined ? undefined : JSON.stringify(body);
 
-			const raw = await response.text();
-			if (!response.ok) {
+		// ★ 2026-09-22（打包版 CORS 事故，测试 unrealToolsBridge 钉住 ✓）：打包版
+		//   renderer 页面 origin 是 `vscode-file://vscode-app`，直连 bridge 被 Chromium
+		//   按 CORS 拦截（bridge 不回 Access-Control-Allow-Origin）⇒ 优先走主进程 IPC
+		//   `vscode:webFetch`（Chromium net.fetch，无 CORS，与 webTools 同一契约 ✓）；
+		//   无 IPC 的环境（纯 web / 测试）回退 renderer fetch。
+		//   ⚠ IPC 路径不支持 AbortSignal 中途取消（主进程 fetch 一旦发起不可中断）——
+		//   长耗时工具（unreal_wait=30min）仍走同一通道，超时由桥端与主进程各自兜底 ✓。
+		const vscodeBridge = (globalThis as { vscode?: { ipcRenderer?: { invoke?: (ch: string, payload: unknown) => Promise<unknown> } } }).vscode;
+
+		try {
+			let ok: boolean; let status: number; let statusText: string; let raw: string;
+			if (typeof vscodeBridge?.ipcRenderer?.invoke === 'function') {
+				const resp = await vscodeBridge.ipcRenderer.invoke('vscode:webFetch', {
+					url, method, headers, body: bodyText,
+				}) as { ok: boolean; status: number; statusText: string; body: unknown };
+				ok = resp.ok; status = resp.status; statusText = resp.statusText ?? '';
+				raw = typeof resp.body === 'string' ? resp.body : String(resp.body ?? '');
+			} else {
+				const response = await fetch(url, { method, headers, body: bodyText, signal: controller.signal });
+				ok = response.ok; status = response.status; statusText = response.statusText;
+				raw = await response.text();
+			}
+
+			if (!ok) {
+				// ★ 回传「实际发送的参数」（真机日志 1790077760068：模型靠它从 search_term
+				//   自我纠偏到桥端认识的 name_contains ✓）。
+				const sentEcho = bodyText ? `\nSent body: ${bodyText.slice(0, 800)}` : '';
 				return textResult(
-					`[Unreal] ${toolName} failed: bridge returned HTTP ${response.status}.\n${raw}`
+					`[Unreal] ${toolName} failed: bridge returned HTTP ${status} ${statusText}.\n${raw}${sentEcho}`
 				);
 			}
 			try {
@@ -302,13 +323,22 @@ export function registerUnrealTools(ctx: UnrealToolContext): void {
 
 	register(
 		UNREAL_FIND_ASSET_TOOL_NAME,
-		'Search the Unreal AssetRegistry for assets by name or path.',
+		'Search the Unreal AssetRegistry for assets by name or path. ' +
+		'Prefer `name_contains` / `name` / `path` (bridge-native params).',
 		{
 			type: 'object',
 			properties: {
+				// ★ 2026-09-22 真机修正（日志 1790077760068）：桥端 `/bridge/find_asset`
+				//   要求至少一个 `name`/`name_contains`/`path` 类参数，**不认识** `search_term`
+				//   ⇒ 只发 search_term 的调用全部 400（"provide at least one of …"）。
+				//   schema 补上桥端原生参数名 `name_contains`，并保留 search_term 作别名 ✓。
+				name_contains: {
+					type: 'string',
+					description: 'Asset name substring filter (bridge-native; preferred).',
+				},
 				search_term: {
 					type: 'string',
-					description: 'Name or path substring to search for.',
+					description: 'Alias of name_contains — mapped to name_contains when forwarding.',
 				},
 				name: { type: 'string', description: 'Asset name filter.' },
 				path: { type: 'string', description: 'Package path filter, e.g. /Game/BluePrints.' },
@@ -322,6 +352,10 @@ export function registerUnrealTools(ctx: UnrealToolContext): void {
 		},
 		'/bridge/find_asset',
 		args => ({
+			// name_contains 优先；只有 search_term 时映射为 name_contains（桥端不认识前者 ✗✓）
+			...(args.name_contains !== undefined ? { name_contains: args.name_contains } : {}),
+			...(args.name_contains === undefined && args.search_term !== undefined
+				? { name_contains: args.search_term } : {}),
 			...(args.search_term !== undefined ? { search_term: args.search_term } : {}),
 			...(args.name !== undefined ? { name: args.name } : {}),
 			...(args.path !== undefined ? { path: args.path } : {}),

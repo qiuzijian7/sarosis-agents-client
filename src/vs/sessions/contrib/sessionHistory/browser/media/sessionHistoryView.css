@@ -382,14 +382,17 @@
 }
 
 .session-history-actions .session-history-rename-btn,
-.session-history-actions .session-history-delete-btn {
+.session-history-actions .session-history-delete-btn,
+.session-history-actions .session-history-bind-btn {
 	visibility: hidden;
 }
 
 .session-history-item-header:hover .session-history-actions .session-history-rename-btn,
 .session-history-item-header:hover .session-history-actions .session-history-delete-btn,
+.session-history-item-header:hover .session-history-actions .session-history-bind-btn,
 .session-history-item.selected .session-history-actions .session-history-rename-btn,
-.session-history-item.selected .session-history-actions .session-history-delete-btn {
+.session-history-item.selected .session-history-actions .session-history-delete-btn,
+.session-history-item.selected .session-history-actions .session-history-bind-btn {
 	visibility: visible;
 }
 
@@ -407,6 +410,43 @@
 	color: #4ec9b0;
 	flex-shrink: 0;
 	white-space: nowrap;
+}
+
+/* 飞书绑定标记（内联 SVG；与 pin 标记同风格，蓝色区分） */
+.session-history-feishu-tag {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	color: #3794ff;
+	opacity: 0.9;
+}
+
+/* 绑定操作按钮：常驻占位、hover 可见（可见性规则见上方 actions 组） */
+.session-history-bind-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground, #9d9d9d);
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s;
+	flex-shrink: 0;
+}
+
+.session-history-bind-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground, #2d2d30);
+	color: var(--vscode-foreground, #cccccc);
+}
+
+/* 已绑定态：按钮常显蓝色（不随 hover 隐藏） */
+.session-history-bind-btn.bound {
+	visibility: visible;
+	color: #3794ff;
 }
 
 /* ========== Messages Container ========== */

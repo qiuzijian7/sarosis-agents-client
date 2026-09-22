@@ -45,6 +45,7 @@ import { IToolProvider, IToolDefinition, IToolCall, IToolResult } from '../../..
 import { AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING } from '../../../common/constants.js';
 import { getToolsetForTool, UTILITY_BUCKET_WHITELIST } from '../../../common/toolsetConfig.js';
 import { ISkillRegistry } from '../../../common/skills.js';
+import { IModelSelectorService } from '../../../common/modelSelector.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { resolveToolMutationKey, withFileMutationQueue } from '../../../common/fileMutationQueue.js';
@@ -265,6 +266,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		@IAgentSchedulerService private readonly schedulerService: IAgentSchedulerService,
 		@IAgentOSService private readonly agentOS: IAgentOSService,
+		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
 		@ITaskOrchestrationService private readonly orchestrationService: ITaskOrchestrationService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
 		@ITriageService private readonly triageService: ITriageService,
@@ -949,6 +951,21 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				const sel = this.agentOS.getActiveModelSelection();
 				const provider = this.agentOS.getModelProviders().find(p => p.id === sel?.providerId);
 				return resolveSupportsImages(provider, sel?.modelId);
+			},
+			// ★ 2026-09-22：多模态的**默认**模型 = 「知识库专家」配置的模型。
+			//
+			// 需求：用户在知识库专家里配了看图能力强的模型，图片分析就应当用它 ——
+			// 此前两者完全脱节（本工具只读 Vision 辅助设置 + 自动路由）。
+			//
+			// ⚠ 只取**显式配置**的选择（`getExplicitSelectionForAgent`，与
+			//   `agentStudioService._resolveKbChatModel` 读同一个 key）：未配置时返回 undefined，
+			//   由 `visionAnalyzeTools` 继续走自动路由 ⇒ 无专家配置时行为与改动前**完全一致**。
+			// ⚠ 是否支持图片由 `visionAnalyzeTools` 侧校验（专家可能配的是纯文本模型）。
+			getKbExpertModel: () => {
+				const sel = this.modelSelectorService.getExplicitSelectionForAgent('knowledge-base-expert');
+				return (sel?.providerId && sel.modelId)
+					? { providerId: sel.providerId, modelId: sel.modelId }
+					: undefined;
 			},
 			// ★ 2026-09-13：本地图片路径支持 —— **复用 `file_read` 的同一套读护栏**
 			// （沙箱路径解析 / 设备伪文件系统 / 敏感路径读守卫）。

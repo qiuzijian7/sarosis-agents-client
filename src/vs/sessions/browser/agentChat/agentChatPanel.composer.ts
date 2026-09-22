@@ -1243,22 +1243,40 @@ protected override _openSlashMenu(filter: string): void {
 	this._highlightSlashMenuItem();
 }
 
-/** 收集 slash 菜单条目：skills + workflows（工作流按 id/name 过滤）。 */
-private _collectSlashItems(filter: string): Array<{ kind: 'skill' | 'workflow'; id: string; label: string; description: string }> {
+/**
+ * 收集 slash 菜单条目：**命令 + skills + workflows** ✓（2026-09-22 新增命令 ✓）。
+ *
+ * ⚠ 命令排在最前 ✓：它们与 skill/workflow 的**语义不同** —— skill/workflow 是"插入一个 chip
+ * 组成提示词"✗，命令是"**立即执行**一个动作"✓（如 `/compact`）⇒ 放前面既能被优先看到 ✓，
+ * 也避免用户误以为命令也会被插成 chip ✓。
+ * ⚠ 命令列表**缺失/为空就不出现** ✗✓（宿主拿不到执行器时不应给出死条目 ✓）。
+ *
+ * ⚠ 条目类型**用内联结构类型** ✗✓：本类是模块内的类，**不能**在类体里声明 `interface`/`type`
+ * （会导致整份文件语法错 ✓ —— 我第一版就这么写错了一次 ✓）。
+ */
+private _collectSlashItems(filter: string): Array<{ kind: 'skill' | 'workflow' | 'command'; id: string; label: string; description: string; command?: string }> {
 	const skills = this._onListSkills();
 	const workflows: ReadonlyArray<IWorkflowChipItem> = this._onListWorkflows?.() ?? [];
+	const commands = this._onListSlashCommands?.() ?? [];
 
+	const f = filter.toLowerCase();
+	const cmdFiltered = filter
+		? commands.filter(c => c.command.toLowerCase().includes(f) || c.label.toLowerCase().includes(f))
+		: commands;
 	const skillFiltered = filter
 		? skills.filter(s =>
-			s.id.toLowerCase().includes(filter.toLowerCase()) ||
-			s.name.toLowerCase().includes(filter.toLowerCase()))
+			s.id.toLowerCase().includes(f) ||
+			s.name.toLowerCase().includes(f))
 		: skills;
 	const wfFiltered = filterWorkflowItems(
 		workflows.map(w => ({ id: w.id, name: w.name, description: w.description })),
 		filter,
 	);
 
-	const items: Array<{ kind: 'skill' | 'workflow'; id: string; label: string; description: string }> = [];
+	const items: Array<{ kind: 'skill' | 'workflow' | 'command'; id: string; label: string; description: string; command?: string }> = [];
+	for (const c of cmdFiltered) {
+		items.push({ kind: 'command', id: c.command, label: `/${c.command}`, description: c.description, command: c.command });
+	}
 	for (const s of skillFiltered) {
 		items.push({ kind: 'skill', id: s.id, label: s.id, description: s.name || s.id });
 	}
@@ -1268,10 +1286,10 @@ private _collectSlashItems(filter: string): Array<{ kind: 'skill' | 'workflow'; 
 	return items;
 }
 
-/** 渲染 slash 菜单条目到列表容器（skill 与 workflow 混排，靠 dataset 区分）。 */
+/** 渲染 slash 菜单条目到列表容器（command / skill / workflow 混排，靠 dataset 区分 ✓）。 */
 private _renderSlashItems(
 	list: HTMLElement,
-	items: Array<{ kind: 'skill' | 'workflow'; id: string; label: string; description: string }>,
+	items: Array<{ kind: 'skill' | 'workflow' | 'command'; id: string; label: string; description: string; command?: string }>,
 ): void {
 	for (const it of items) {
 		const item = this._createEl('div');
@@ -1279,10 +1297,17 @@ private _renderSlashItems(
 		// 2026-09-10：skill 与 workflow 可能同名（如「表情包工作流」既有 skill 又有
 		// workflow），此前菜单无任何 kind 标识，用户会误以为重复。加 --skill/--workflow
 		// 修饰类 + 右侧 kind badge，让两类条目一眼可辨（skill 蓝 / workflow 橙）。
-		item.classList.add(it.kind === 'workflow' ? 'slash-menu-item--workflow' : 'slash-menu-item--skill');
+		// 2026-09-22：新增 --command（紫）+ 「command」badge ⇒ 三类一眼可辨 ✓。
+		item.classList.add(
+			it.kind === 'workflow' ? 'slash-menu-item--workflow'
+				: it.kind === 'command' ? 'slash-menu-item--command'
+					: 'slash-menu-item--skill');
 		if (it.kind === 'skill') {
 			item.dataset.skillId = it.id;
 			item.dataset.skillName = it.label;
+		} else if (it.kind === 'command') {
+			// ⚠ 命令**不插 chip**，而是执行 ✓ ⇒ dataset 只存命令名 ✓
+			item.dataset.commandId = it.command ?? it.id;
 		} else {
 			item.dataset.workflowId = it.id;
 			item.dataset.workflowName = it.label;
@@ -1304,12 +1329,14 @@ private _renderSlashItems(
 		item.appendChild(info);
 		const kindBadge = this._createEl('span');
 		kindBadge.className = 'slash-menu-item-kind';
-		kindBadge.textContent = it.kind === 'workflow' ? 'workflow' : 'skill';
+		kindBadge.textContent = it.kind === 'workflow' ? 'workflow' : it.kind === 'command' ? 'command' : 'skill';
 		item.appendChild(kindBadge);
 		item.addEventListener('mousedown', (e) => {
 			e.preventDefault();
 			if (it.kind === 'workflow') {
 				this._insertSlashWorkflow(it.id, it.label);
+			} else if (it.kind === 'command') {
+				this._runSlashCommand(it.command ?? it.id, '');
 			} else {
 				this._insertSlashSkill(it.id, it.label);
 			}
@@ -1318,6 +1345,22 @@ private _renderSlashItems(
 		list.appendChild(item);
 	}
 }
+
+/**
+ * 执行一条斜杠命令 ✓（2026-09-22）：清空输入框 → 交给宿主执行 ✓。
+ *
+ * ⚠ 面板**不**关心命令语义 ✗✓（`/compact` 的实现在宿主/服务侧 ✓）：面板只做
+ * 「识别 → 清空 → 调用」三件事 ✓ ⇒ 新增命令**不需要动面板** ✓✓。
+ * ⚠ 宿主缺失执行器 ⇒ 静默返回 ✓（菜单本来就不会显示这类命令 ✓，双保险 ✓）。
+ */
+protected _runSlashCommand(command: string, arg: string): void {
+	const run = this._onRunSlashCommand;
+	if (!run) { return; }
+	this._setComposerText?.('');
+	this._closeSlashMenu();
+	void Promise.resolve(run(command, arg.trim())).catch(() => { /* 执行失败由宿主自行提示 ✓ */ });
+}
+
 
 protected override _renderSlashMenuItems(filter: string): void {
 	if (!this._slashMenuEl) { return; }
@@ -1758,6 +1801,12 @@ protected override _selectSlashMenuItem(): void {
 		const items = this._slashMenuEl?.querySelectorAll('.slash-menu-item');
 		if (!items?.length) { return; }
 		const selected = items[Math.min(this._slashMenuIndex, items.length - 1)] as HTMLElement | undefined;
+		// 命令条目：**执行**命令（不是插 chip ✓）—— 2026-09-22 ✓
+		if (selected?.dataset.commandId) {
+			this._runSlashCommand(selected.dataset.commandId, '');
+			this._closeSlashMenu();
+			return;
+		}
 		if (selected?.dataset.workflowId) {
 			this._insertSlashWorkflow(selected.dataset.workflowId, selected.dataset.workflowName || selected.dataset.workflowId);
 		} else if (selected?.dataset.skillId) {
@@ -2045,18 +2094,33 @@ protected _applyComposerHeight(): void {
 		//   ⇒ 输入框塌成 1 行且不恢复 ✓（CSS 无 transition ⇒ 瞬间塌 ✓，与真机现象一致 ✓）
 		//   修法：**无条件写回**（把值设成同一个 px 不会触发额外重排：`auto` 那次已经弄脏布局，
 		//   同一任务内写回只合并为一次 layout ✓）。
-		const heightChanged = target !== this._lastComposerHeight;
+		// ★ 2026-09-22 修复判据（完整说明见下方恢复段的注释 ✓）：**真正的扰动信号是 `auto` 那次
+		//   测量**，而不是"最终目标高度是否变化" ✗✓。
+		//   判据取自**已有值**（`measured` = 本帧刚量到的内容高 ✓；`_lastComposerHeight` = 本次测量
+		//   前生效的 inline 高 ✓）⇒ **零额外布局读取** ✓ ⇒ 2026-09-19 的性能修复收益不变 ✓。
+		const autoDisturbed = measured !== this._lastComposerHeight;
 		t.style.height = target + 'px';
 		this._lastComposerHeight = target;
 
-		// ★★ 2026-09-19 性能修复：**只在高度真的变了**时才去动消息区的滚动位置。
+		// ★★ 2026-09-19 性能修复：**只在布局真的被扰动过**时才去动消息区的滚动位置。
 		// 下面那句读 `_messagesContainer.scrollTop` 会**强制一次同步布局** ✗，而上一行刚写完
 		// `height` 已把布局弄脏 ⇒ 这一次 layout 是**整文档级**的。真机实测（日志 `[ChatPerf]`）：
 		//   `composer.applyHeight ×174 total=11766ms avg=67.6ms max=83ms` ✗✗（每次击键 ~68ms！）
 		//   同时 `[MemSnap] dom nodes=106137`（93 条消息 ⇒ ~1140 节点/条 ✗）⇒ layout 成本 ∝ DOM ✓。
-		// 逻辑依据：**高度没变 ⇒ 消息区尺寸也不可能变 ⇒ 浏览器不会自动调整它的 scrollTop**
-		//   ⇒ 既不需要读、也不需要恢复 ✓ ⇒ 常见情形（打字不换行、高度不变）**省掉一次全文档 layout** ✓✓
-		if (heightChanged && this._messagesContainer) {
+		// ⚠⚠ 2026-09-22 **修正上面那句推理** ✗✓：「最终目标高度没变」**不等于**「消息区尺寸没变」✗✗ ——
+		//   因为 `:2081` 的 `height='auto'` 会先**真实压扁**输入框（清掉 inline 高 ⇒ 塌到内容高 ✓）⇒
+		//   消息区 `clientHeight` 瞬时**变大** ⇒ `maxScroll` 变小 ⇒ `:2082` 那次读 `scrollHeight` 触发的
+		//   强制布局会把 `scrollTop` **钳制下调** ✗ ⇒ 这正是用户报的「输入文字过程中上方滚动条莫名
+		//   向上滚一下」✓✓。
+		//   命中它的典型场景恰恰是 `heightChanged === false` ✗：用户拖高过输入框（`_userHasAdjustedHeight` ✓）
+		//   时 `target` 恒等于拖动高 ⇒ 每次击键都被判"没变" ⇒ 钳制造成的上跳**永不恢复** ✗✗
+		//   （一次可跳数十~数百 px ✓ 与用户"莫名向上滚一下"的描述完全吻合 ✓）。
+		//   ⇒ 门控改用 `autoDisturbed`（= `auto` 这一步是否真的改变了高度 ✓）：它才是"消息区尺寸被
+		//     扰动过"的**充要信号** ✓；常见情形（未拖高 + 打字不换行 ⇒ measured === _lastComposerHeight）
+		//     仍走**零成本快路径** ✓ ⇒ 2026-09-19 的收益保持不变 ✓✓。
+		//   代价（刻意接受 ✓）：拖高过输入框的用户每次击键会多做一次恢复（一次布局 ✓）—— 这是为
+		//     正确性付的有限代价 ✓。彻底解法是"在**离屏克隆**上测量内容高"（改动面大 ✗ 未在本轮做 ✓）。
+		if (autoDisturbed && this._messagesContainer) {
 			// ★★★ 2026-09-21（用户报「**输入框输入过程中，上方聊天框滚动条会滚动**」✗✓）：
 			//   输入框变高 ⇒ flex 列挤压 ⇒ 消息区 `clientHeight` 变小 ⇒ `scrollHeight` 不变而
 			//   **maxScroll 变大** ⇒ `scrollTop` 不变 ⇒ **视窗相对内容下滑** ⇒ 每敲出一个新行，

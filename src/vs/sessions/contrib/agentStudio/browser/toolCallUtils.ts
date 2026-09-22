@@ -553,6 +553,30 @@ export function coerceArgsToSchema(
 		}
 	}
 
+	// P0-b（2026-09-22，日志 vscode-app-1790077760068）：模型/网关流式组帧偶发把
+	// 参数分隔哨兵残片（`</arg_value:6124c78e><arg_key:6124c78e>` 这类
+	// "标签名+冒号+ID"变体）漏进**键名**——实证：
+	//   `unreal_find_asset` 的键 `name_contains</arg_value:6124c78e><arg_key:6124c78e>name`
+	//   （尾段 `name` 是下一个参数键的开头残片）⇒ 顶层出现 schema 不认识的怪键 ⇒
+	//   Coerce 丢弃 ⇒ 真正参数缺失 ⇒ 桥端 400（"provide at least one of …"）。
+	// 兜底：键名在**首个哨兵残片处截断**；截断后是合法键且该键尚不存在 ⇒
+	// 抢救该参数（值保留 ✓）；否则丢弃怪键并告警（交回既有 unknown-argument 语义）。
+	for (const k of Object.keys(args)) {
+		if (!/<\/?(?:arg_key|arg_value|parameter|tool_sep)(?::[\w-]+)?>/.test(k)) { continue; }
+		const cleanKey = k.split(/<\/?(?:arg_key|arg_value|parameter|tool_sep)/)[0].trim();
+		const value = (args as Record<string, unknown>)[k];
+		delete (args as Record<string, unknown>)[k];
+		if (cleanKey && cleanKey !== k && !(cleanKey in args)) {
+			(args as Record<string, unknown>)[cleanKey] = value;
+			warnings.push(
+				`salvaged argument "${cleanKey}": key carried stream-sentinel fragments ` +
+				`(dropped suffix after "${cleanKey}")`
+			);
+		} else {
+			warnings.push(`dropped argument with sentinel-tainted key: "${k.slice(0, 60)}"`);
+		}
+	}
+
 	// Snapshot before coercion
 	const beforeKeys = Object.keys(args);
 	const beforeSnap: Record<string, { type: string; json: string }> = {};

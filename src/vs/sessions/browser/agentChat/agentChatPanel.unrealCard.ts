@@ -2,6 +2,8 @@ import { $, append, addDisposableListener, EventType } from '../../../base/brows
 import { IToolCall } from './agentChatTypes.js';
 import { AgentChatPanelDrawioCard } from './agentChatPanel.drawioCard.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
+// ★ 2026-09-22：摘要/规模/截断识别抽成**纯函数**（可单测 ✓；「只剩 `{`」事故说明见模块头部 ✓）
+import { resultStats, summarizeToolResult } from './toolResultPreview.js';
 
 
 /**
@@ -9,18 +11,25 @@ import { parseToolArgsLoose } from './toolArgsJson.js';
  *
  * 与 Mermaid / Draw.io 卡片同构：header（chevron / 图标 / 标题 / 状态 / 耗时）+
  * 可折叠正文（摘要行 + 完整结果）。差异点：
- *   - 无图形预览，正文直接展示 bridge 返回的文本/JSON（结果普遍较短且为纯文本，
- *     无需 Blob URL 或 TrustedHTML）。
+ *   - 无图形预览，正文直接展示 bridge 返回的文本/JSON。
  *   - `unreal_exec` 额外展示待执行的 Python 代码片段（LLM 与用户核对实际执行内容
  *     的主要依据 —— 这是本族工具最需要被看清的信息）。
+ *
+ * ★ 2026-09-22 按**真实返回形态**优化（用户报「unreal_help 显示不全」+ 要求按返回内容优化 UI ✓）：
+ *   本族工具的结构化响应统一被 `unrealTools.ts:69` 的 `formatPayload` **美化**
+ *   （`JSON.stringify(payload, null, 2)` ✓）⇒ 结果是**多行 JSON** ✓。据此：
+ *     · **摘要行**不再取"首行" ✗（那恒等于 `{` ✓ 就是用户看到的"显示不全" ✓），
+ *       改由 `summarizeToolResult` 产出：JSON ⇒ 单行紧凑预览（能看见字段名 ✓）/ 文本 ⇒ 首个有意义行 ✓；
+ *     · 「完整结果」**标出规模**（N 行 · M 字符）✓ ⇒ 用户知道点开有多少 ✓；
+ *     · 结果**被截断时如实标注** ✓（服务侧发给模型时确实会截断 ✓ 见 `historyCompaction` 的
+ *       `TRUNCATED_FOR_IPC_SUFFIX` ✓）⇒ 不让用户误判成"工具坏了" ✗✓；
+ *     · 错误态（bridge 不可达 / HTTP 错误都只是**普通文本结果** ✓）加状态类 ⇒ 一眼可辨 ✓；
+ *     · 结果块由 CSS 给 `pre-wrap` + **自带滚动** ⇒ 既换行、也不受祖先 `max-height` 裁切 ✓✓。
  *
  * 混入位置：`DrawioCard → UnrealCard → Markdown`（在继承链末端，可复用 mermaidCard
  * 的 `_svgIcon` / `_mcBtn` 等 UI 辅助方法）。
  */
 export abstract class AgentChatPanelUnrealCard extends AgentChatPanelDrawioCard {
-
-	/** 摘要行最多展示的字符数；超出部分折叠进正文，避免卡片过长。 */
-	private static readonly SUMMARY_LIMIT = 160;
 
 	/** `unreal_exec` 代码片段最多展示的字符数。 */
 	private static readonly CODE_SNIPPET_LIMIT = 600;
@@ -85,7 +94,11 @@ export abstract class AgentChatPanelUnrealCard extends AgentChatPanelDrawioCard 
 		// ── 正文：摘要 + 完整结果（默认折叠，与 mermaid/drawio 一致）──
 		const args: Record<string, unknown> = parseToolArgsLoose(tc.args);
 		const resultText = typeof tc.result === 'string' ? tc.result : '';
-		const summary = AgentChatPanelUnrealCard._summarize(resultText);
+		// ★ 2026-09-22 修复「unreal_help 显示不全」✗✓：旧实现取结果**首行**当摘要 ✗，而本族结果
+		//   是**美化 JSON** ⇒ 首行恒为 `{` ⇒ 正文只剩一个 `{` ✗✗。现在由纯函数产出摘要 ✓，
+		//   并同时拿到规模/截断信息 ✓（用于「完整结果（N 行 · M 字符）」与截断标注 ✓）。
+		const summary = summarizeToolResult(resultText);
+		const stats = resultStats(resultText);
 
 		const body = append(wrapper, $('.tool-header-children'));
 
@@ -108,11 +121,19 @@ export abstract class AgentChatPanelUnrealCard extends AgentChatPanelDrawioCard 
 			summaryEl.textContent = summary;
 		}
 
-		// 完整结果：默认折叠，点击展开（内容较长时有意义）
+		// 完整结果：默认折叠，点击展开（内容较长时有意义 ✓ 本族 JSON 常上千行 ✓）
 		if (resultText.trim()) {
 			const resultSection = append(body, $('.unreal-result-section'));
+			// ⚠ 错误态必须**一眼可辨** ✗✓：bridge 不可达 / HTTP 错误在本族里都只是"普通文本结果" ✓
+			//   ⇒ 若只在正文给一段灰字，用户会当成正常输出 ✓
+			if (isError) { resultSection.classList.add('unreal-result-error'); }
+			// ⚠ 截断必须**如实标注** ✗✓（服务侧发给模型时确实会截断 ✓）⇒ 否则用户以为工具只返回了这点 ✓
+			if (stats.truncated) { resultSection.classList.add('unreal-result-truncated'); }
+
 			const toggle = append(resultSection, $('span.unreal-result-toggle'));
-			toggle.textContent = '完整结果';
+			const toggleLabel = (): string =>
+				`完整结果（${stats.lines} 行 · ${stats.chars} 字符${stats.truncated ? ' · 已截断' : ''}）`;
+			toggle.textContent = toggleLabel();
 			const pre = append(resultSection, $('pre.unreal-result-block'));
 			pre.textContent = resultText;
 			pre.style.display = 'none';
@@ -120,7 +141,7 @@ export abstract class AgentChatPanelUnrealCard extends AgentChatPanelDrawioCard 
 				e.stopPropagation();
 				const shown = pre.style.display !== 'none';
 				pre.style.display = shown ? 'none' : 'block';
-				toggle.textContent = shown ? '完整结果' : '收起结果';
+				toggle.textContent = shown ? toggleLabel() : '收起结果';
 			}));
 		}
 
@@ -148,15 +169,5 @@ export abstract class AgentChatPanelUnrealCard extends AgentChatPanelDrawioCard 
 		svg.setAttribute('class', className);
 		container.appendChild(svg);
 		return svg;
-	}
-
-	/** 取结果首段非空文本作为摘要。 */
-	private static _summarize(resultText: string): string {
-		const trimmed = resultText.trim();
-		if (!trimmed) { return ''; }
-		const firstLine = trimmed.split('\n')[0];
-		return firstLine.length > AgentChatPanelUnrealCard.SUMMARY_LIMIT
-			? firstLine.slice(0, AgentChatPanelUnrealCard.SUMMARY_LIMIT) + '…'
-			: firstLine;
 	}
 }

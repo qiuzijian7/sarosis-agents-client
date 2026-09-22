@@ -27,6 +27,7 @@ import { BridgeScheduler } from "./bridgeScheduler.js";
 import { createFileTaskStore } from "./bridgeSchedulerStore.js";
 import { createFileUsageStore } from "./bridgeUsageStore.js";
 import { createFileBindingStore } from "./bridgeBindings.js";
+import { createFileSessionMapStore } from "./bridgeSessionMap.js";
 import { BridgeServer } from "./bridgeServer.js";
 
 export const IBridgeService = createDecorator<IBridgeService>("bridgeService");
@@ -39,6 +40,9 @@ export interface IBridgeService {
 
 	/** 注册一个平台适配器工厂（由 contribution 在启动时调用）。 */
 	registerPlatform(factory: IBridgePlatformFactory): IDisposable;
+
+	/** 按 id 取平台实例（未注册返回 undefined）。供设置页渠道状态展示用。 */
+	getPlatform(id: string): IBridgePlatform | undefined;
 
 	/** 取得核心引擎（惰性创建）。 */
 	getEngine(): BridgeEngine;
@@ -106,6 +110,8 @@ export class BridgeService extends Disposable implements IBridgeService {
 				configurationService: this._configurationService,
 				// 会话→Agent 绑定持久化（<workDir>/bindings.json）
 				bindingsStore: createFileBindingStore(this._resolveBridgeWorkDir(), this._log),
+				// 会话→专属 Agent 会话映射持久化（<workDir>/sessionMap.json）
+				sessionMapStore: createFileSessionMapStore(this._resolveBridgeWorkDir(), this._log),
 			});
 		}
 		return this._engine;
@@ -153,6 +159,10 @@ export class BridgeService extends Disposable implements IBridgeService {
 				this._platforms.delete(platform.id);
 			},
 		};
+	}
+
+	getPlatform(id: string): IBridgePlatform | undefined {
+		return this._platforms.get(id);
 	}
 
 	async start(): Promise<void> {

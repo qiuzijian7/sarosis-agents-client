@@ -11,7 +11,24 @@ import { URI } from '../../../../base/common/uri.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IRequestService } from '../../../../platform/request/common/request.js';
+import { IRequestService, asText } from '../../../../platform/request/common/request.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
+import type { IWebContentExtractorService, ISharedWebContentExtractorService } from '../../../../platform/webContentExtractor/common/webContentExtractor.js';
+import {
+	composeArticleMarkdown,
+	composeVideoMarkdown,
+	detectPlatform,
+	findMarkdownImageUrls,
+	htmlToPlainText,
+	parseMetaTags,
+	planImagePath,
+	rewriteMarkdownImageUrls,
+	slugifyTitle,
+	toSecureScheme,
+	parseSubtitlesToText,
+	type IKbMetaTags,
+	} from './views/knowledgeBase/kbUrlScraper.js';
+import { DEFAULT_YTDLP, fetchVideoMeta, fetchVideoSubtitles } from './knowledge/kbVideoFetch.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -59,6 +76,8 @@ export class KbImportController extends Disposable {
 	static readonly KB_LIBRARY_SUBPATH = '库';
 	static readonly KB_RAW_SUBPATH = 'raw';
 	static readonly KB_NOTES_SUBPATH = '笔记';
+	/** 视频字幕抓取的库内临时目录（读回后即清理，不留在知识库里）。 */
+	static readonly KB_SUBS_TMP_SUBPATH = '.kb-subs-tmp';
 	static readonly SYS_INDEX_FILES: readonly string[] = ['index.md', 'overview.md', 'insights.md', 'log.md', 'lint-report.md', 'dedup-report.md'];
 	static readonly SKILL_DIR = '.kb-skills';
 	/** P0-1 去抽象化门控：仅对这些派生知识类施加「≥2 来源才 active」约束。 */
@@ -189,6 +208,182 @@ export class KbImportController extends Disposable {
 	// ─── 阶段 2：构建笔记 ────────────────────────────────────────────────────
 
 	/**
+	 * 「导入链接 / URL」（2026-09-22）：抓取网页正文 → **下载图片到知识库** → 改写引用 → 组装 markdown
+	 * → 落盘 `库/raw/<slug>.md`。之后可直接「构建为笔记」，其本地图片也能被飞书同步上传
+	 * （飞书链路只认本地相对引用，见 doc/kb-feishu-sync-spec.md §3）。
+	 *
+	 * 设计：服务由**调用方注入**（视图侧已有），不改进本类构造签名 ⇒ 避免改动 3 处 new 点与测试。
+	 * 抓取优先级：`IWebContentExtractorService.extract`（主进程 reader-mode，可读强 SPA 之外的正文）
+	 * → 降级 `IRequestService` 取 HTML + `htmlToPlainText` 兜底；图片二进制走
+	 * `ISharedWebContentExtractorService.readImage`（共享进程读取，不受 renderer CSP 限制）。
+	 */
+	static async importUrl(opts: {
+		url: string;
+		vaultRoot: URI;
+		fileService: IFileService;
+		logService: ILogService;
+		requestService?: IRequestService;
+		extractor?: IWebContentExtractorService;
+		imageReader?: ISharedWebContentExtractorService;
+		/** yt-dlp 可执行名/路径（默认 PATH 里的 `yt-dlp`）；未安装时自动降级为「仅记链接」。 */
+		ytdlpPath?: string;
+	}): Promise<{ ok: boolean; path?: string; title?: string; images: number; message: string }> {
+		const { vaultRoot, fileService, logService } = opts;
+		const target = toSecureScheme((opts.url ?? '').trim());
+		if (!/^https?:\/\//i.test(target)) {
+			return { ok: false, images: 0, message: '请输入以 http(s):// 开头的链接。' };
+		}
+		const platform = detectPlatform(target);
+
+		// ── 1. 正文：主进程提取器优先，失败降级为「请求 HTML + 去标签」──────────
+		let body = '';
+		let title = '';
+		let html = '';
+		if (opts.extractor) {
+			try {
+				let r = (await opts.extractor.extract([URI.parse(target)]))[0];
+				if (r?.status === 'redirect') { r = (await opts.extractor.extract([r.toURI]))[0]; }
+				if (r?.status === 'ok' && r.result) {
+					body = r.result;
+					title = r.title ?? '';
+				} else if (r?.status === 'error') {
+					return { ok: false, images: 0, message: `抓取失败：${r.error}${r.statusCode ? ` (HTTP ${r.statusCode})` : ''}` };
+				}
+			} catch (e) {
+				logService.warn(`[KB importUrl] extract failed: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
+		if (!body && opts.requestService) {
+			try {
+				const ctx = await opts.requestService.request(
+					{ type: 'GET', url: target, timeout: 20000, callSite: 'saros.kb.importUrl' }, CancellationToken.None);
+				html = (await asText(ctx)) ?? '';
+			} catch (e) {
+				logService.warn(`[KB importUrl] request failed: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
+		let meta: IKbMetaTags = parseMetaTags(html);
+		// ── 1.5 视频元信息（yt-dlp 扩展点）：仅视频/混合平台尝试；失败只降级、不中断导入 ──
+		const isVideoPlatform = platform.type === 'video' || platform.type === 'mixed';
+		let videoUnavailable = '';
+		if (isVideoPlatform) {
+			try {
+				const v = await fetchVideoMeta(target, opts.ytdlpPath ?? DEFAULT_YTDLP);
+				if (v.ok) {
+					// yt-dlp 的标题/时长/封面/作者/日期比 OG 元数据可靠 ⇒ 覆盖（描述保留更完整的一侧）
+					meta = { ...meta, ...v.meta, description: v.meta.description ?? meta.description };
+				} else {
+					videoUnavailable = v.reason;
+					logService.info(`[KB importUrl] yt-dlp 降级（仅记链接）：${v.reason}`);
+				}
+			} catch (e) {
+				logService.warn(`[KB importUrl] yt-dlp failed: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
+
+		// ── 1.6 视频字幕（yt-dlp）：用于「总结视频内容」；无字幕/未安装 ⇒ 静默降级 ──
+		// ⚠ 字幕是**文件**（stdout 单次缓冲装不下）⇒ 先写进库内临时目录，读回清洗后立即清理。
+		if (isVideoPlatform) {
+			const tmpDir = URI.joinPath(vaultRoot, KbImportController.KB_LIBRARY_SUBPATH, KbImportController.KB_SUBS_TMP_SUBPATH);
+			try {
+				try { await fileService.createFolder(tmpDir); } catch { /* 已存在 */ }
+				const sub = await fetchVideoSubtitles(target, tmpDir.fsPath, opts.ytdlpPath ?? DEFAULT_YTDLP);
+				if (sub.ok) {
+					const entries = await fileService.resolve(tmpDir);
+					const subFile = (entries.children ?? []).find(c => !c.isDirectory && /\.(vtt|srt)$/i.test(c.name));
+					if (subFile) {
+						const text = parseSubtitlesToText((await fileService.readFile(subFile.resource)).value.toString());
+						if (text) { meta = { ...meta, subtitleText: text }; }
+					}
+					// 清理临时文件（不在知识库里留垃圾）
+					for (const c of entries.children ?? []) {
+						try { await fileService.del(c.resource, { recursive: true }); } catch { /* ignore */ }
+					}
+				} else {
+					logService.info(`[KB importUrl] 视频字幕不可用（降级为仅元信息）：${sub.reason}`);
+				}
+			} catch (e) {
+				logService.warn(`[KB importUrl] 字幕抓取失败：${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
+		if (!title) { title = meta.title ?? ''; }
+		if (!body) { body = htmlToPlainText(html); }
+		// 视频页通常没有「正文」⇒ 只要拿到标题/元信息就算成功（否则才报失败）
+		if (!body.trim() && !meta.title && !meta.videoUrl) {
+			return {
+				ok: false, images: 0,
+				message: videoUnavailable
+					? `未能获取内容（yt-dlp：${videoUnavailable}；且页面无可读正文）。`
+					: '未能获取正文（页面可能需要登录、为强 SPA，或主进程提取器不可用）。',
+			};
+		}
+
+		// ── 2. 图片本地化：下载到 库/raw/assets/<slug>/，并把正文里的远程引用改写为相对路径 ──
+		const slug = slugifyTitle(title, target);
+		const assetsDir = URI.joinPath(vaultRoot, KbImportController.KB_LIBRARY_SUBPATH, KbImportController.KB_RAW_SUBPATH, 'assets', slug);
+		const urlMap = new Map<string, string>();
+		let images = 0;
+		const candidates = [...new Set([...findMarkdownImageUrls(body), ...(meta.cover ? [meta.cover] : [])])];
+		if (candidates.length && opts.imageReader) {
+			try { await fileService.createFolder(assetsDir); } catch { /* 已存在 */ }
+			for (let i = 0; i < candidates.length; i++) {
+				const remote = toSecureScheme(candidates[i]);
+				try {
+					const buf = await opts.imageReader.readImage(URI.parse(remote), CancellationToken.None);
+					if (!buf) { continue; }
+					const plan = planImagePath(slug, i + 1, remote);
+					const abs = URI.joinPath(vaultRoot, KbImportController.KB_LIBRARY_SUBPATH, KbImportController.KB_RAW_SUBPATH, ...plan.rel.split('/'));
+					await fileService.writeFile(abs, buf);
+					urlMap.set(candidates[i], plan.rel);
+					images++;
+				} catch (e) {
+					logService.warn(`[KB importUrl] image failed ${remote}: ${e instanceof Error ? e.message : String(e)}`);
+				}
+			}
+		} else if (candidates.length) {
+			logService.info(`[KB importUrl] 图片读取器不可用 ⇒ 跳过 ${candidates.length} 张图（保留远程引用）`);
+		}
+		const rewrittenBody = urlMap.size ? rewriteMarkdownImageUrls(body, urlMap) : body;
+		const coverLocal = meta.cover ? urlMap.get(meta.cover) : undefined;
+		// 视频 / 混合平台 ⇒ 走视频块（含「未下载本体」说明 + 原文链接），并附**字幕**（供 agent 总结视频内容）。
+		// ⚠ 刻意**不下载视频本体**：动辄几十 MB～GB，会拖慢索引与飞书同步（飞书同步也不处理视频）。
+		const md = isVideoPlatform
+			? composeVideoMarkdown({
+				url: target,
+				platformName: platform.name,
+				meta: { ...meta, cover: coverLocal ?? meta.cover },
+				downloaded: false,
+			})
+			+ (meta.subtitleText ? `\n\n## 字幕（用于总结视频内容）\n\n${meta.subtitleText}\n` : '')
+			+ (rewrittenBody.trim().length > 80 ? `\n\n## 正文\n\n${rewrittenBody.trim()}\n` : '')
+			: composeArticleMarkdown({
+				url: target,
+				platformName: platform.name,
+				meta: { ...meta, cover: coverLocal },
+				body: rewrittenBody,
+			});
+
+		// ── 3. 落盘（防覆盖：同名追加 -2 / -3 …）────────────────────────────────
+		const rawDir = URI.joinPath(vaultRoot, KbImportController.KB_LIBRARY_SUBPATH, KbImportController.KB_RAW_SUBPATH);
+		let dest = URI.joinPath(rawDir, `${slug}.md`);
+		for (let n = 2; n <= 50 && await fileService.exists(dest); n++) {
+			dest = URI.joinPath(rawDir, `${slug}-${n}.md`);
+		}
+		try {
+			await fileService.createFolder(rawDir);
+		} catch { /* 已存在 */ }
+		await fileService.writeFile(dest, VSBuffer.fromString(md));
+		logService.info(`[KB importUrl] ✓ ${target} → ${dest.fsPath}（图片 ${images} 张）`);
+		return {
+			ok: true,
+			path: dest.fsPath,
+			title: title || slug,
+			images,
+			message: `已导入「${title || slug}」（图片 ${images} 张）`,
+		};
+	}
+
+	/**
 	 * 阶段 2：「构建为笔记」—— 双阶段 LLM（分析 + FILE 块生成）将库文件转为结构化笔记。
 	 *
 	 * P2-1 Stage 1：LLM 结构化分析（类型 / 主题 / 落盘路径规划）
@@ -247,11 +442,33 @@ export class KbImportController extends Disposable {
 		const schemaText = buildSchemaPromptText(schema);
 		const { typeToDir, defaultTypeDir } = KbImportController._typeDirMapping(schema);
 		const formatHint = buildFileBlockPrompt(libDir.fsPath);
+		// 图片清单 + 视觉总结指令（2026-09-22）：导入链接时图片已本地化到 `库/raw/assets/<素材名>/`，
+		// 这里把清单交给 agent ⇒ 它逐张调用 vision_analyze 总结图片内容（该工具一次只接受一张图）。
+		// 笔记正文必须保留**相对引用**（`assets/<素材名>/<文件名>`）：预览与飞书同步都按相对路径解析。
+		let assetSection = '';
+		try {
+			const stem = (libFileUri.path.split('/').pop() ?? '').replace(/\.md$/i, '');
+			const entries = await this._fileService.resolve(URI.joinPath(dirname(libFileUri), 'assets', stem));
+			const imgs = (entries.children ?? []).filter(c => !c.isDirectory && /\.(png|jpe?g|gif|webp)$/i.test(c.name));
+			if (imgs.length) {
+				assetSection = [
+					'## 图片清单（已下载到本地，请用 vision_analyze **逐张**总结图片内容）',
+					...imgs.map((c, i) => `${i + 1}. ${c.name}（相对引用：assets/${stem}/${c.name}）`),
+					'',
+					`要求：对以上最多 ${Math.min(imgs.length, 8)} 张图片逐张调用 vision_analyze（一次一张图），把图片要点并入笔记；`,
+					'正文引用必须写**相对路径** `assets/<素材名>/<文件名>`（写绝对路径会导致预览与飞书同步都失效）。',
+				].join('\n');
+			}
+		} catch { /* 无 assets 目录 ⇒ 该素材没有图片 */ }
+
 		const userPrompt = [
 			'请将下面这份知识库素材构建为结构化笔记（先规划，再按 FILE 块格式输出全部笔记）。',
 			'', '## Schema 类型定义', schemaText,
 			'', '## 原始素材', libContent,
-			'', '## 指令', '为规划出的每篇笔记输出一个 FILE 块。', formatHint,
+			...(assetSection ? ['', assetSection] : []),
+			'', '## 指令', '为规划出的每篇笔记输出一个 FILE 块。',
+			'若素材含视频原始链接，笔记中必须保留该 URL（原文行）；若含「字幕」段，据此总结视频内容。',
+			formatHint,
 		].join('\n');
 
 		const sessionId = `kb-build-${Date.now().toString(36)}`;

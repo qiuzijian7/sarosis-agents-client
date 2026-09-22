@@ -305,11 +305,11 @@ export interface IChannelConfigField {
 function commonFields(ch: string): IChannelConfigField[] {
 	return [
 		{ key: `sessions.channel.${ch}.enabled`, label: '启用', description: `启用 ${ch} 渠道`, type: 'boolean', default: false },
-		{ key: `sessions.channel.${ch}.dmPolicy`, label: 'DM Policy', description: '私聊消息策略', type: 'select', default: 'pairing', options: DM_POLICY_OPTIONS },
-		{ key: `sessions.channel.${ch}.allowFrom`, label: 'Allow From', description: '允许的发送者 ID 列表（每行一个）', type: 'textarea', default: '' },
-		{ key: `sessions.channel.${ch}.groupPolicy`, label: 'Group Policy', description: '群聊消息策略', type: 'select', default: 'disabled', options: GROUP_POLICY_OPTIONS },
-		{ key: `sessions.channel.${ch}.groupAllowFrom`, label: 'Group Allow From', description: '允许的群聊 ID 列表（每行一个）', type: 'textarea', default: '' },
-		{ key: `sessions.channel.${ch}.defaultAccount`, label: 'Default Account', description: '多帐号时的默认帐号名称', type: 'string', default: '' },
+		{ key: `sessions.channel.${ch}.dmPolicy`, label: 'DM Policy', description: '私聊消息策略（当前版本未生效）', type: 'select', default: 'pairing', options: DM_POLICY_OPTIONS },
+		{ key: `sessions.channel.${ch}.allowFrom`, label: 'Allow From', description: '允许的发送者 ID 列表（逗号或换行分隔，留空表示不限制）', type: 'textarea', default: '' },
+		{ key: `sessions.channel.${ch}.groupPolicy`, label: 'Group Policy', description: '群聊消息策略（当前版本未生效）', type: 'select', default: 'disabled', options: GROUP_POLICY_OPTIONS },
+		{ key: `sessions.channel.${ch}.groupAllowFrom`, label: 'Group Allow From', description: '允许的群聊 ID 列表（当前版本未生效）', type: 'textarea', default: '' },
+		{ key: `sessions.channel.${ch}.defaultAccount`, label: 'Default Account', description: '多帐号时的默认帐号名称（当前版本未生效）', type: 'string', default: '' },
 		{ key: `sessions.channel.${ch}.defaultAgent`, label: '默认 Agent', description: '该渠道新建会话时默认使用的 Agent（留空跟随引擎默认）', type: 'agent', default: '' },
 	];
 }
@@ -506,8 +506,10 @@ export const CHANNEL_DEFINITIONS: IChannelDefinition[] = [
 			...commonFields('feishu'),
 			{ key: 'sessions.channel.feishu.appId', label: 'App ID', description: '飞书应用 App ID', type: 'string', default: '' },
 			{ key: 'sessions.channel.feishu.appSecret', label: 'App Secret', description: '飞书应用 App Secret', type: 'password', default: '' },
-			{ key: 'sessions.channel.feishu.verificationToken', label: 'Verification Token', description: '事件订阅验证 Token', type: 'password', default: '' },
-			{ key: 'sessions.channel.feishu.encryptKey', label: 'Encrypt Key', description: '事件加密密钥', type: 'password', default: '' },
+			// ★ 2026-09-22（D-07）：入站唯一路径是长连接；官方协议 POST /callback/ws/endpoint 换 wss 地址
+			{ key: 'sessions.channel.feishu.useWs', label: '长连接接收事件', description: '通过 WebSocket 长连接接收飞书事件（无需公网回调地址，推荐开启）', type: 'boolean', default: true },
+			{ key: 'sessions.channel.feishu.verificationToken', label: 'Verification Token', description: '事件订阅验证 Token（仅 Webhook 回调模式使用，当前版本未启用该模式）', type: 'password', default: '' },
+			{ key: 'sessions.channel.feishu.encryptKey', label: 'Encrypt Key', description: '事件加密密钥（仅 Webhook 回调模式使用，当前版本未启用该模式）', type: 'password', default: '' },
 		],
 	},
 	// ─── 12. LINE ─────────────────────────────────────────────

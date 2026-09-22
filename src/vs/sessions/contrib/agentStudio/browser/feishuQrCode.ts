@@ -344,7 +344,11 @@ export function qrMatrix(text: string): boolean[][] {
 			else if (i === 6) { m[8][7] = bit; }
 			else if (i === 7) { m[8][8] = bit; }
 			else { m[8][size - 15 + i] = bit; }
+			// ★ 2026-09-22 修复（D-10）：i=8 原先落到 m[14-8][8]=m[6][8] —— 那是横向定时图案
+			//   模块（i=8 为偶 ⇒ 必须为暗），被格式位覆写；而格式位 8 的正确位置 (7,8)
+			//   （QR 规范：左上副本的第 8 位写在 row 7 / col 8）从未被写入。
 			if (i < 8) { m[size - 1 - i][8] = bit; }
+			else if (i === 8) { m[7][8] = bit; }
 			else { m[14 - i][8] = bit; }
 		}
 		m[8][size - 8] = 1;

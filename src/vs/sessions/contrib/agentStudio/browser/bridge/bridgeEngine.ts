@@ -41,6 +41,10 @@ import {
 	createMemoryBindingStore,
 	IConversationBindingStore,
 } from "./bridgeBindings.js";
+import {
+	createMemorySessionMapStore,
+	IConversationSessionStore,
+} from "./bridgeSessionMap.js";
 import type { IModelUsage } from "../../common/providers.js";
 
 export interface BridgeEngineDeps {
@@ -58,6 +62,8 @@ export interface BridgeEngineDeps {
 	readonly configurationService?: IConfigurationService;
 	/** 可选会话→Agent 绑定持久化存储；不提供则退化为内存态。 */
 	readonly bindingsStore?: IConversationBindingStore;
+	/** 可选会话→专属 Agent 会话映射持久化存储；不提供则退化为内存态。 */
+	readonly sessionMapStore?: IConversationSessionStore;
 }
 
 export class BridgeEngine extends Disposable implements IBridgeEngineOps {
@@ -69,6 +75,7 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 	private readonly _bridgeWorkDir?: string;
 	private readonly _configurationService?: IConfigurationService;
 	private readonly _bindings: IConversationBindingStore;
+	private readonly _sessionMap: IConversationSessionStore;
 
 	private readonly _platforms = new Map<string, IBridgePlatform>();
 	private readonly _sessions = new Map<string, BridgeSessionState>();
@@ -79,6 +86,9 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 	private readonly _onPlatformOutbound = this._register(new Emitter<OutboundMessage>());
 	readonly onPlatformOutbound = this._onPlatformOutbound.event;
 
+	private readonly _onDidChangeBindings = this._register(new Emitter<{ platform: string; conversationId?: string }>());
+	readonly onDidChangeBindings = this._onDidChangeBindings.event;
+
 	constructor(deps: BridgeEngineDeps) {
 		super();
 		this._chat = deps.chat;
@@ -88,6 +98,7 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 		this._bridgeWorkDir = deps.bridgeWorkDir;
 		this._configurationService = deps.configurationService;
 		this._bindings = deps.bindingsStore ?? createMemoryBindingStore();
+		this._sessionMap = deps.sessionMapStore ?? createMemorySessionMapStore();
 		this._registry = deps.commands ?? new BridgeCommandRegistry();
 		if (!deps.commands) {
 			for (const c of createBuiltinCommands()) {
@@ -182,7 +193,21 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 			const parsed = this._registry.parse(msg.content);
 			if (parsed) {
 				const session = await this.ensureSession(msg.sessionKey, msg.platform, msg.conversationId);
-				const ctx = this._makeCommandContext(session, parsed.args, msg.content, msg.conversationId);
+				// ★ 2026-09-22 修复：命令回复必须带上**入站消息**的 replyCtx。
+				//   此前用的是 session.replyCtx（ensureSession 从不写它 ⇒ 恒为 undefined），
+				//   导致 _emitOutbound 退化成 platform.send() —— 飞书 send 需要 chat_id，
+				//   于是 /sessions 之类命令一律报「send 缺少 chat_id（无法主动发送）」。
+				//   同时把句柄写回 session：调度器/relay 等无入站消息的路径靠它回传。
+				if (msg.replyCtx !== undefined) {
+					session.replyCtx = msg.replyCtx;
+				}
+				const ctx = this._makeCommandContext(
+					session,
+					parsed.args,
+					msg.content,
+					msg.conversationId,
+					msg.replyCtx,
+				);
 				this._log.info(`[Bridge] command /${parsed.cmd.name} from ${msg.sessionKey}`);
 				await parsed.cmd.run(ctx);
 				return;
@@ -198,6 +223,15 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 
 	private async _routeToAgent(msg: InboundMessage): Promise<void> {
 		const session = await this.ensureSession(msg.sessionKey, msg.platform, msg.conversationId);
+		// 记录最近回包句柄：handleSynthetic（调度器/relay）未显式传 replyCtx 时，
+		// 出站经 session.replyCtx 兜底回传到该会话最近活跃的群/私聊。
+		if (msg.replyCtx !== undefined) {
+			session.replyCtx = msg.replyCtx;
+		}
+		// ★ 出站句柄：入站消息优先，否则回退到会话已存句柄（兑现 handleSynthetic 注释里
+		//   「replyCtx 回退到会话已存」的语义——此前出站全程只用 msg.replyCtx，
+		//   调度器/relay 路径恒为 undefined → 飞书 send 缺 chat_id 报错）。
+		const replyCtx = msg.replyCtx ?? session.replyCtx;
 
 		// 附件落盘：入站文件写入工作目录，prompt 末尾追加本地路径引用。
 		let content = msg.content;
@@ -228,7 +262,7 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 					break;
 				case "tool_start":
 					if (delta.toolName) {
-						this._emitOutbound(msg.sessionKey, msg.replyCtx, "tool_use", `⚙️ ${delta.toolName}`);
+						this._emitOutbound(msg.sessionKey, replyCtx, "tool_use", `⚙️ ${delta.toolName}`);
 					}
 					break;
 				case "tool_end":
@@ -236,7 +270,7 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 						const ok = delta.success !== false;
 						this._emitOutbound(
 							msg.sessionKey,
-							msg.replyCtx,
+							replyCtx,
 							"tool_result",
 							`${ok ? "✅" : "⚠️"} ${delta.toolName} 完成`,
 						);
@@ -244,7 +278,7 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 					break;
 				case "error":
 					if (delta.content) {
-						this._emitOutbound(msg.sessionKey, msg.replyCtx, "error", delta.content);
+						this._emitOutbound(msg.sessionKey, replyCtx, "error", delta.content);
 					}
 					break;
 				case "usage":
@@ -255,9 +289,9 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 					break;
 				case "done":
 					if (textBuf.trim().length > 0) {
-						this._emitOutbound(msg.sessionKey, msg.replyCtx, "result", textBuf);
+						this._emitOutbound(msg.sessionKey, replyCtx, "result", textBuf);
 					} else if (!thinkingSeen) {
-						this._emitOutbound(msg.sessionKey, msg.replyCtx, "result", "（无文本输出）");
+						this._emitOutbound(msg.sessionKey, replyCtx, "result", "（无文本输出）");
 					}
 					break;
 			}
@@ -266,7 +300,7 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 		try {
 			await this._chat.sendMessage(session.agentId, content, options, onDelta);
 		} catch (err) {
-			this._emitOutbound(msg.sessionKey, msg.replyCtx, "error", `Agent 执行失败：${String(err)}`);
+			this._emitOutbound(msg.sessionKey, replyCtx, "error", `Agent 执行失败：${String(err)}`);
 		}
 	}
 
@@ -276,16 +310,20 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 		session: BridgeSessionState,
 		args: string[],
 		raw: string,
-		conversationId?: string,
+		conversationId: string | undefined,
+		/** 触发该命令的入站消息的回包句柄（优先于 session.replyCtx）。 */
+		replyCtx?: unknown,
 	): BridgeCommandContext {
+		// 回包句柄取自入站消息；session.replyCtx 兜底（入站时已写入最近句柄）
+		const handle = replyCtx ?? session.replyCtx;
 		return {
 			engine: this,
 			session,
 			args,
 			raw,
 			conversationId,
-			reply: (text: string) => this._emitOutbound(session.sessionKey, session.replyCtx, "result", text),
-			replyCard: (card: BridgeCard) => this._emitCard(session, card),
+			reply: (text: string) => this._emitOutbound(session.sessionKey, handle, "result", text),
+			replyCard: (card: BridgeCard) => this._emitCard(session, card, handle),
 		};
 	}
 
@@ -309,12 +347,12 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 		Promise.resolve(op).catch(err => this._log.error(`[Bridge] outbound failed:`, err));
 	}
 
-	private _emitCard(session: BridgeSessionState, card: BridgeCard): void {
+	private _emitCard(session: BridgeSessionState, card: BridgeCard, replyCtx?: unknown): void {
 		const platform = this._platformForSession(session.sessionKey);
 		if (!platform) {
 			return;
 		}
-		const ctx: BridgeReplyCtx = { sessionKey: session.sessionKey, replyCtx: session.replyCtx };
+		const ctx: BridgeReplyCtx = { sessionKey: session.sessionKey, replyCtx: replyCtx ?? session.replyCtx };
 		if (platform.replyCard) {
 			Promise.resolve(platform.replyCard(ctx, card)).catch(err => this._log.error(`[Bridge] replyCard failed:`, err));
 		} else if (platform.sendCard) {
@@ -344,7 +382,10 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 		conversationId?: string,
 	): Promise<BridgeSessionState> {
 		let session = this._sessions.get(sessionKey);
-		const convId = conversationId ?? session?.conversationId;
+		// conversationId 缺省时从 sessionKey 三段式（platform:chatId:userId，feishu/telegram
+		// 均遵循）兜底解析 —— 调度器/relay 的合成消息不带 conversationId，
+		// 重启后内存会话丢失，靠此回到群的专属会话。
+		const convId = conversationId ?? session?.conversationId ?? this._parseConvIdFromKey(sessionKey);
 		// 优先：会话级绑定（群聊 chat_id → Agent）
 		const boundAgent = convId ? this._bindings.getBinding(platform, convId) : undefined;
 		if (session) {
@@ -353,27 +394,85 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 				session.agentId = boundAgent;
 				this._log.info(`[Bridge] session ${sessionKey} 应用绑定 agent=${boundAgent}`);
 			}
+			// ★ 默认会话漂移跟随：该群无精确会话映射、且渠道默认会话与当前钉住的不同
+			//   → 切到默认会话（换默认会话后，未精确绑定的群即时跟随）。
+			if (convId && !this._sessionMap.get(platform, convId)) {
+				const def = this.getChannelDefaultSession(platform);
+				if (def && def.agentId === session.agentId && def.agentSessionId !== session.agentSessionId) {
+					session.agentSessionId = def.agentSessionId;
+					this._log.info(`[Bridge] session ${sessionKey} 跟随渠道默认会话 → ${def.agentSessionId}`);
+				}
+			}
 			return session;
 		}
 		const agentId = boundAgent ?? (await this._resolveDefaultAgent(platform));
-		const created = await this._chat.getOrCreateActiveSession(agentId);
+		// ★ 群消息进**专属会话**（platform+convId 持久化映射），不再随
+		//   getOrCreateActiveSession 漂移到「最近活跃」会话；无 convId 的
+		//   合成消息（loopback 等）保留旧语义。
+		const agentSessionId = convId
+			? await this._resolveDedicatedSession(platform, convId, agentId)
+			: (await this._chat.getOrCreateActiveSession(agentId)).id;
 		session = {
 			sessionKey,
 			platform,
 			agentId,
-			agentSessionId: created.id,
+			agentSessionId,
 			conversationId: convId,
 			chatMode: "craft",
 		};
 		this._sessions.set(sessionKey, session);
-		this._log.info(`[Bridge] new session ${sessionKey} → agent=${agentId} (conv=${convId ?? "—"}) session=${created.id}`);
+		this._log.info(`[Bridge] new session ${sessionKey} → agent=${agentId} (conv=${convId ?? "—"}) session=${agentSessionId}`);
 		return session;
+	}
+
+	/**
+	 * 群维度专属会话解析：命中映射且会话仍存在 → 复用；否则新建专属会话并写映射。
+	 * 换绑（映射 agentId ≠ 当前 agentId）或会话被删时旧映射作废重建。
+	 */
+	private async _resolveDedicatedSession(platform: string, conversationId: string, agentId: string): Promise<string> {
+		const mapped = this._sessionMap.get(platform, conversationId);
+		if (mapped && mapped.agentId === agentId && await this._sessionExists(agentId, mapped.agentSessionId)) {
+			return mapped.agentSessionId;
+		}
+		if (mapped) {
+			this._sessionMap.clear(platform, conversationId);
+		}
+		// ★ 渠道默认会话：配置了且属于当前 agent 且仍存在 → 直接复用。
+		//   **不写 sessionMap**：保持「未精确绑定」状态，换默认会话后即时跟随。
+		const def = this.getChannelDefaultSession(platform);
+		if (def && def.agentId === agentId && await this._sessionExists(agentId, def.agentSessionId)) {
+			return def.agentSessionId;
+		}
+		const created = await this._chat.createAgentSession(agentId, `[${platform}] ${conversationId}`);
+		this._sessionMap.set(platform, conversationId, agentId, created.id);
+		this._log.info(`[Bridge] dedicated session for ${platform}:${conversationId} → agent=${agentId} session=${created.id}`);
+		this._onDidChangeBindings.fire({ platform, conversationId });
+		return created.id;
+	}
+
+	/** 校验会话是否仍在索引中；查询异常时保守信任映射（返回 true），避免误清。 */
+	private async _sessionExists(agentId: string, agentSessionId: string): Promise<boolean> {
+		try {
+			const sessions = await this._chat.listAgentSessions(agentId);
+			return sessions.some(s => s.id === agentSessionId);
+		} catch (err) {
+			this._log.warn(`[Bridge] session-exists check failed for ${agentId}/${agentSessionId}:`, err);
+			return true;
+		}
+	}
+
+	/** 从 sessionKey 三段式（platform:chatId:userId）解析 conversationId；非三段返回 undefined。 */
+	private _parseConvIdFromKey(sessionKey: string): string | undefined {
+		const parts = sessionKey.split(":");
+		return parts.length === 3 && parts[1] ? parts[1] : undefined;
 	}
 
 	// ─── 会话→Agent 绑定（持久化、跨重启）────────────────────
 
 	setConversationAgent(platform: string, conversationId: string, agentId: string): void {
 		this._bindings.setBinding(platform, conversationId, agentId);
+		// 专属会话映射一并作废：下次入站为新 Agent 建新的专属会话（避免沿用旧 Agent 的会话）。
+		this._sessionMap.clear(platform, conversationId);
 		// 清除该会话既有内存会话，使下次入站以新 Agent 重新建会话（避免历史串台）。
 		for (const [key, s] of this._sessions) {
 			if (s.platform === platform && s.conversationId === conversationId) {
@@ -381,6 +480,7 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 			}
 		}
 		this._log.info(`[Bridge] bound ${platform}:${conversationId} → agent ${agentId}`);
+		this._onDidChangeBindings.fire({ platform, conversationId });
 	}
 
 	getConversationAgent(platform: string, conversationId: string): string | undefined {
@@ -389,12 +489,66 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 
 	clearConversationAgent(platform: string, conversationId: string): void {
 		this._bindings.clearBinding(platform, conversationId);
+		this._sessionMap.clear(platform, conversationId);
 		for (const [key, s] of this._sessions) {
 			if (s.platform === platform && s.conversationId === conversationId) {
 				this._sessions.delete(key);
 			}
 		}
 		this._log.info(`[Bridge] cleared binding ${platform}:${conversationId}`);
+		this._onDidChangeBindings.fire({ platform, conversationId });
+	}
+
+	// ─── 会话→专属 Agent 会话绑定（UI 绑定操作入口）─────────────────
+
+	bindConversationToSession(platform: string, conversationId: string, agentId: string, agentSessionId: string): void {
+		// 同时建立 chat→Agent 绑定（保证路由到该 Agent）+ chat→专属会话映射（消息进指定会话）。
+		this._bindings.setBinding(platform, conversationId, agentId);
+		this._sessionMap.set(platform, conversationId, agentId, agentSessionId);
+		// 清该群内存会话，下次入站立即按新映射路由。
+		for (const [key, s] of this._sessions) {
+			if (s.platform === platform && s.conversationId === conversationId) {
+				this._sessions.delete(key);
+			}
+		}
+		this._log.info(`[Bridge] bound ${platform}:${conversationId} → agent=${agentId} session=${agentSessionId}`);
+		this._onDidChangeBindings.fire({ platform, conversationId });
+	}
+
+	getConversationSession(platform: string, conversationId: string): { agentId: string; agentSessionId: string } | undefined {
+		return this._sessionMap.get(platform, conversationId);
+	}
+
+	listSessionBindings(platform: string): Array<{ conversationId: string; agentId: string; agentSessionId: string }> {
+		return this._sessionMap.list(platform);
+	}
+
+	unbindConversationSession(platform: string, conversationId: string): void {
+		this._sessionMap.clear(platform, conversationId);
+		for (const [key, s] of this._sessions) {
+			if (s.platform === platform && s.conversationId === conversationId) {
+				this._sessions.delete(key);
+			}
+		}
+		this._log.info(`[Bridge] unbound session mapping ${platform}:${conversationId}`);
+		this._onDidChangeBindings.fire({ platform, conversationId });
+	}
+
+	// ─── 渠道默认会话（默认 Agent 勾选项的配套 session）─────────────────
+
+	getChannelDefaultSession(platform: string): { agentId: string; agentSessionId: string } | undefined {
+		if (!this._configurationService) { return undefined; }
+		const agentId = this._configurationService.getValue<string>(`sessions.channel.${platform}.defaultAgent`);
+		const agentSessionId = this._configurationService.getValue<string>(`sessions.channel.${platform}.defaultSession`);
+		if (!agentId || !agentSessionId) { return undefined; }
+		return { agentId, agentSessionId };
+	}
+
+	setChannelDefaultSession(platform: string, agentId: string, agentSessionId: string | undefined): void {
+		if (!this._configurationService) { return; }
+		this._configurationService.updateValue(`sessions.channel.${platform}.defaultSession`, agentSessionId ?? '');
+		this._log.info(`[Bridge] channel ${platform} default session → ${agentSessionId ?? '(cleared)'} (agent=${agentId})`);
+		this._onDidChangeBindings.fire({ platform });
 	}
 
 	listConversationBindings(platform: string): Array<{ conversationId: string; agentId: string }> {
@@ -439,12 +593,21 @@ export class BridgeEngine extends Disposable implements IBridgeEngineOps {
 		const session = this._sessions.get(sessionKey);
 		if (session) {
 			session.agentSessionId = agentSessionId;
+			// /new、/switch 手动切换的会话同步写映射，重启后该群仍落在所选会话。
+			if (session.conversationId) {
+				this._sessionMap.set(session.platform, session.conversationId, session.agentId, agentSessionId);
+				this._onDidChangeBindings.fire({ platform: session.platform, conversationId: session.conversationId });
+			}
 		}
 	}
 
 	async listSessions(agentId: string): Promise<Array<{ id: string; name: string; messageCount: number }>> {
 		const sessions = await this._chat.listAgentSessions(agentId);
-		return sessions.map(s => ({ id: s.id, name: s.name, messageCount: s.messageCount }));
+		// 最近活跃在前：/list 与 /switch <序号> 两次调用序号一致，用户可预期。
+		return sessions
+			.slice()
+			.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+			.map(s => ({ id: s.id, name: s.name, messageCount: s.messageCount }));
 	}
 
 	setAgent(sessionKey: string, agentId: string): void {

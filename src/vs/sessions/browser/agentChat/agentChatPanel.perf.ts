@@ -39,11 +39,16 @@
  * `[FullRefresh]`（整卡/整消息重建计数）各自管一段；本模块管**"函数级耗时与最慢一次"**。
  */
 
+import { registerRenderActivityFallbackSource } from '../../../base/common/renderActivityTrace.js';
+
 /** 统一日志标签（grep 用）。 */
 export const CHAT_PERF_TAG = '[ChatPerf]';
 
 /** 单次调用超过它 ⇒ **立刻**打一行（默认档唯一的"单点"输出）。 */
 export const CHAT_PERF_SLOW_MS = 50;
+
+/** 近期 span 环容量（2026-09-22）：够覆盖一个长任务窗口内的 span 密度（流式爆发 ~百级/秒）。 */
+const SPAN_RING_CAPACITY = 256;
 
 /** 汇总行自动上报间隔（ms）。仅汇总本周期内被调用过的标签。 */
 const SUMMARY_INTERVAL_MS = 30_000;
@@ -156,7 +161,48 @@ export class ChatPerf {
 		}
 	}
 
+	/**
+	 * 窗口查询（给 RenderHeartbeat 的兜底归因，2026-09-22）。
+	 *
+	 * 返回形如 `perf=[card.create.tool×3/612ms, render.messages.total×1/89ms]` ——
+	 * 与活动标记的 `tag×n` 形状对齐，但多了**累计耗时**（回答"谁是窗口内的主要占用者"，
+	 * 单个 5ms×200 次的标签比 100ms×1 次更该背锅）。窗口内无 span 返回 `undefined`。
+	 */
+	formatWindow(startMs: number, endMs: number, maxItems = 5): string | undefined {
+		try {
+			const agg = new Map<string, { n: number; total: number }>();
+			const n = Math.min(this._ringWritten, SPAN_RING_CAPACITY);
+			for (let i = 0; i < n; i++) {
+				const idx = this._ringWritten <= SPAN_RING_CAPACITY ? i : (this._ringCursor + i) % SPAN_RING_CAPACITY;
+				const start = this._ringStart[idx]!;
+				const end = this._ringEnd[idx]!;
+				// 重叠判定：span 与窗口有交集即计入（span 可能跨窗口边界）
+				if (end < startMs || start > endMs) { continue; }
+				const label = this._ringLabel[idx]!;
+				if (!label) { continue; }
+				const a = agg.get(label) ?? { n: 0, total: 0 };
+				a.n++;
+				a.total += this._ringMs[idx]!;
+				agg.set(label, a);
+			}
+			if (agg.size === 0) { return undefined; }
+			const rows = [...agg.entries()].sort((a, b) => b[1].total - a[1].total);
+			const head = rows.slice(0, maxItems)
+				.map(([label, a]) => `${label}×${a.n}/${Math.round(a.total)}ms`)
+				.join(', ');
+			return `perf=[${head}${rows.length > maxItems ? `, …(共${rows.length}类)` : ''}]`;
+		} catch { return undefined; }
+	}
+
 	// ─── 内部 ──────────────────────────────────────────────────────────────
+
+	// 近期 span 环（平行数组 + 游标 ⇒ 记录零分配；容量够覆盖一个长任务窗口的密度）
+	private readonly _ringLabel: string[] = new Array<string>(SPAN_RING_CAPACITY).fill('');
+	private readonly _ringStart: number[] = new Array<number>(SPAN_RING_CAPACITY).fill(0);
+	private readonly _ringEnd: number[] = new Array<number>(SPAN_RING_CAPACITY).fill(0);
+	private readonly _ringMs: number[] = new Array<number>(SPAN_RING_CAPACITY).fill(0);
+	private _ringCursor = 0;
+	private _ringWritten = 0;
 
 	private _record(label: string, ms: number, detail?: string): void {
 		let s = this._stats.get(label);
@@ -168,6 +214,17 @@ export class ChatPerf {
 		s.totalMs += ms;
 		s.touched = true;
 		if (ms > s.maxMs) { s.maxMs = ms; s.maxDetail = detail ?? ''; }
+
+		// ★ 2026-09-22：写入近期 span 环（供 RenderHeartbeat「无标记」LONG_TASK 兜底归因）。
+		// 与 renderActivityTrace 的标记环同构：平行数组 + 游标 ⇒ **零分配**（label 多为字面量，
+		// 环只存引用；detail 不进环 —— 它才是分配大头）。
+		const endWall = Date.now();
+		this._ringLabel[this._ringCursor] = label;
+		this._ringStart[this._ringCursor] = endWall - ms;   // 近似墙钟开始（ms 为 perf 时长）
+		this._ringEnd[this._ringCursor] = endWall;
+		this._ringMs[this._ringCursor] = ms;
+		this._ringCursor = (this._ringCursor + 1) % SPAN_RING_CAPACITY;
+		this._ringWritten++;
 
 		if (ms >= CHAT_PERF_SLOW_MS || this._verbose) {
 			this._log(`${CHAT_PERF_TAG} ${ms >= CHAT_PERF_SLOW_MS ? '⚠ SLOW ' : ''}${label}=${ms.toFixed(1)}ms${detail ? ` | ${detail}` : ''}`);
@@ -209,3 +266,9 @@ export function installChatPerfGlobals(): void {
 // ★ 模块加载即安装（幂等）——刻意做成**模块副作用**：本模块被多处静态 import，
 //   这样不必去改各面板的构造函数（接线面最小 ✓）。诊断模块的全局入口，物有所值。
 installChatPerfGlobals();
+
+// ★ 2026-09-22：注册为 RenderHeartbeat 的「无标记 LONG_TASK」兜底归因源 ——
+//   长任务发生在没打活动标记的代码里时，`因=[(窗口内无标记…)]` 之后还能拼出
+//   `perf=[card.create.tool×3/612ms]`（窗口内的 span 聚合），归因不再只能靠猜。
+//   见 base/common/renderActivityTrace.ts 的兜底源约定（异常自吞、低频调用）。
+registerRenderActivityFallbackSource((startMs, endMs) => chatPerf.formatWindow(startMs, endMs));

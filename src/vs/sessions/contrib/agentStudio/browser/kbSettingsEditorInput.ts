@@ -40,6 +40,21 @@ export interface IKbSettingsHost {
 	openKbFolder(): void;
 	/** 触发飞书同步（dry-run 预览 / apply 实际写入） */
 	feishuSync(mode: 'dry-run' | 'apply'): void;
+	/**
+	 * 读取用户自定义的「本地目录 ↔ 飞书知识库」映射（vault 内 `.feishu-space-map.json`；不存在 ⇒ 空数组）。
+	 * 结构内联声明以避免 Input 反向依赖 knowledge/ 模块（同一契约由 feishuSyncCore 定义）。
+	 */
+	loadSpaceMap(): Promise<Array<{ dir: string; spaceId: string; spaceName?: string }>>;
+	/** 保存「目录 ↔ 知识库」映射（写回 vault 内配置文件）。 */
+	saveSpaceMap(list: ReadonlyArray<{ dir: string; spaceId: string; spaceName?: string }>): Promise<void>;
+	/** 列出可选的飞书知识库（`wiki +space-list`；未安装 CLI / 未登录 ⇒ 空数组）。 */
+	listSpaces(): Promise<Array<{ spaceId: string; name: string }>>;
+	/** 弹出输入框让用户填写新知识库名称（取消 / 空 ⇒ undefined）。 */
+	promptSpaceName(): Promise<string | undefined>;
+	/** 在飞书**新建**知识库（`wiki +space-create`）；失败 ⇒ undefined（UI 给出提示）。 */
+	createSpace(name: string): Promise<{ spaceId: string; name: string } | undefined>;
+	/** 选择知识库内的目录（返回相对知识库根的路径；取消 ⇒ undefined） */
+	pickDirForMapping(): Promise<string | undefined>;
 	/** 打开任意文件（用于查看同步日志） */
 	openFile(uri: URI): void;
 	/** 配置或数据变化后，Pane 自身重渲染（由视图在必要时调用） */

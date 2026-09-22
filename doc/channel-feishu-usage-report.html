@@ -1,0 +1,2000 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Channel 配置 · 飞书渠道 可用性分析与使用报告</title>
+<style>
+	:root {
+		--bg: #1e1e1e;
+		--bg-soft: #252526;
+		--panel: #2d2d30;
+		--border: #3c3c3c;
+		--border-soft: #333336;
+		--fg: #cccccc;
+		--fg-strong: #e8e8e8;
+		--desc: #9d9d9d;
+		--muted: #6f6f6f;
+		--accent: #3794ff;
+		--btn: #0e639c;
+		--btn-hover: #1177bb;
+		--green: #4caf50;
+		--green-soft: rgba(76, 175, 80, 0.14);
+		--amber: #d7a24a;
+		--amber-soft: rgba(215, 162, 74, 0.14);
+		--red: #f48771;
+		--red-soft: rgba(244, 135, 113, 0.13);
+		--input-bg: #3c3c3c;
+		--input-border: #3c3c3c;
+		--badge-bg: #4d4d4d;
+		--hover: #2a2d2e;
+		--mono: 'Cascadia Code', 'Consolas', 'Menlo', monospace;
+	}
+
+	* { box-sizing: border-box; }
+
+	body {
+		margin: 0;
+		background: var(--bg);
+		color: var(--fg);
+		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+		font-size: 14px;
+		line-height: 1.65;
+	}
+
+	a { color: var(--accent); text-decoration: none; }
+	a:hover { text-decoration: underline; }
+
+	code {
+		font-family: var(--mono);
+		font-size: 12.5px;
+		background: rgba(255, 255, 255, 0.06);
+		padding: 1px 5px;
+		border-radius: 4px;
+		color: #ce9178;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+
+	/* ─── Layout ─────────────────────────────────────────── */
+	.wrap { max-width: 1360px; margin: 0 auto; padding: 0 28px 96px; }
+
+	header.hero {
+		border-bottom: 1px solid var(--border);
+		padding: 44px 0 28px;
+		margin-bottom: 32px;
+		background: linear-gradient(180deg, rgba(55, 148, 255, 0.07), transparent 78%);
+	}
+
+	.hero h1 { margin: 0 0 10px; font-size: 29px; font-weight: 700; color: var(--fg-strong); letter-spacing: -0.2px; }
+	.hero .sub { color: var(--desc); font-size: 14.5px; max-width: 900px; }
+	.hero .meta { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; }
+	.chip {
+		font-size: 12px; padding: 3px 11px; border-radius: 999px;
+		background: var(--panel); border: 1px solid var(--border); color: var(--desc);
+	}
+	.chip.ok { background: var(--green-soft); border-color: rgba(76, 175, 80, 0.35); color: var(--green); }
+	.chip.warn { background: var(--amber-soft); border-color: rgba(215, 162, 74, 0.35); color: var(--amber); }
+	.chip.bad { background: var(--red-soft); border-color: rgba(244, 135, 113, 0.35); color: var(--red); }
+
+	nav.toc {
+		display: flex; flex-wrap: wrap; gap: 8px;
+		padding: 12px 0 20px; border-bottom: 1px solid var(--border-soft); margin-bottom: 34px;
+	}
+	nav.toc a {
+		font-size: 12.5px; padding: 4px 12px; border: 1px solid var(--border);
+		border-radius: 6px; color: var(--desc); background: var(--bg-soft);
+	}
+	nav.toc a:hover { color: var(--fg-strong); border-color: var(--accent); text-decoration: none; }
+
+	h2 {
+		font-size: 21px; margin: 54px 0 8px; color: var(--fg-strong);
+		padding-bottom: 10px; border-bottom: 1px solid var(--border-soft);
+	}
+	h2 .idx { color: var(--accent); font-family: var(--mono); font-size: 15px; margin-right: 10px; font-weight: 400; }
+	h3 { font-size: 16px; margin: 30px 0 10px; color: var(--fg-strong); }
+	h4 { font-size: 14px; margin: 22px 0 8px; color: var(--fg-strong); }
+	p { margin: 10px 0; }
+	ul, ol { margin: 10px 0; padding-left: 22px; }
+	li { margin: 5px 0; }
+	.lead { color: var(--desc); font-size: 13.5px; margin: 8px 0 18px; }
+
+	/* ─── Verdict cards ───────────────────────────────────── */
+	.verdict-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin: 22px 0; }
+	.verdict {
+		background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px;
+		padding: 16px 18px; border-top: 3px solid var(--muted);
+		min-width: 0; overflow-wrap: anywhere;
+	}
+	.verdict.bad { border-top-color: var(--red); }
+	.verdict.warn { border-top-color: var(--amber); }
+	.verdict.ok { border-top-color: var(--green); }
+	.verdict .vt { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+	.verdict .vv { font-size: 17px; font-weight: 700; margin: 6px 0 8px; color: var(--fg-strong); }
+	.verdict .vd { font-size: 13px; color: var(--desc); }
+
+	.callout {
+		border-left: 3px solid var(--accent); background: rgba(55, 148, 255, 0.07);
+		padding: 13px 18px; border-radius: 0 8px 8px 0; margin: 18px 0; font-size: 13.5px;
+	}
+	.callout.bad { border-left-color: var(--red); background: var(--red-soft); }
+	.callout.warn { border-left-color: var(--amber); background: var(--amber-soft); }
+	.callout.ok { border-left-color: var(--green); background: var(--green-soft); }
+	.callout b { color: var(--fg-strong); }
+
+	/* ─── Tables ─────────────────────────────────────────── */
+	table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 13px; }
+	th {
+		text-align: left; padding: 10px 12px; background: var(--panel);
+		border-bottom: 1px solid var(--border); color: var(--fg-strong);
+		font-weight: 600; font-size: 12.5px; white-space: nowrap;
+	}
+	td { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+	tbody tr:hover { background: var(--hover); }
+	td.ev { font-family: var(--mono); font-size: 11.5px; color: var(--desc); }
+	.st { font-weight: 600; white-space: nowrap; font-size: 12px; }
+	.st.ok { color: var(--green); }
+	.st.warn { color: var(--amber); }
+	.st.bad { color: var(--red); }
+
+	/* ─── Flow diagram ───────────────────────────────────── */
+	.lane { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin: 16px 0; }
+	.lane-title { font-size: 12px; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+	.chain { display: flex; align-items: stretch; flex-wrap: wrap; gap: 8px; }
+	.node {
+		background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+		padding: 10px 13px; min-width: 150px; flex: 0 1 auto;
+	}
+	.node .n-t { font-size: 12.5px; font-weight: 600; color: var(--fg-strong); }
+	.node .n-s { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: 3px; }
+	.node.dead { border-color: rgba(244, 135, 113, 0.5); background: var(--red-soft); }
+	.node.live { border-color: rgba(76, 175, 80, 0.45); background: var(--green-soft); }
+	.node.ghost { border-style: dashed; opacity: 0.75; }
+	.arrow { align-self: center; color: var(--muted); font-size: 16px; padding: 0 2px; }
+	.arrow.broken { color: var(--red); font-weight: 700; }
+	.break-note {
+		font-size: 12px; color: var(--red); background: var(--red-soft);
+		border: 1px dashed rgba(244, 135, 113, 0.45); border-radius: 6px;
+		padding: 8px 12px; margin: 12px 0 0;
+	}
+
+	/* ─── Defect cards ───────────────────────────────────── */
+	.defect {
+		background: var(--bg-soft); border: 1px solid var(--border); border-left: 3px solid var(--muted);
+		border-radius: 8px; padding: 16px 18px; margin: 14px 0;
+	}
+	.defect.p0 { border-left-color: var(--red); }
+	.defect.p1 { border-left-color: var(--amber); }
+	.defect.p2 { border-left-color: var(--accent); }
+	.defect .dh { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+	.pri {
+		font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px;
+		background: var(--badge-bg); color: #fff; letter-spacing: 0.5px;
+	}
+	.pri.p0 { background: #b3312a; }
+	.pri.p1 { background: #9a6a1c; }
+	.pri.p2 { background: #1f5c99; }
+	.defect .dt { font-size: 14.5px; font-weight: 600; color: var(--fg-strong); }
+	.fixstatus { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 4px; margin-left: auto; white-space: nowrap; }
+	.fixstatus.ok { background: var(--green-soft); color: var(--green); }
+	.fixstatus.warn { background: var(--amber-soft); color: var(--amber); }
+	.fixstatus.bad { background: var(--red-soft); color: var(--red); }
+	.defect.fixed { opacity: 0.92; }
+	.defect dl { margin: 8px 0 0; display: grid; grid-template-columns: 74px 1fr; gap: 4px 12px; font-size: 13px; }
+	.defect dt { color: var(--muted); font-size: 12px; padding-top: 1px; }
+	.defect dd { margin: 0; color: var(--fg); }
+	.defect dd.fix { color: #9fd0a0; }
+
+	/* ─── Mockups ────────────────────────────────────────── */
+	.mock-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 22px; margin: 22px 0; }
+	.mock { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg); display: flex; flex-direction: column; }
+	.mock.span-2 { grid-column: 1 / -1; }
+	.mock-cap {
+		display: flex; align-items: center; justify-content: space-between; gap: 10px;
+		padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--border);
+		font-size: 12.5px; color: var(--fg-strong); font-weight: 600;
+	}
+	.mock-cap .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+	.tag.ok { background: var(--green-soft); color: var(--green); }
+	.tag.bad { background: var(--red-soft); color: var(--red); }
+	.tag.warn { background: var(--amber-soft); color: var(--amber); }
+	.mock-note {
+		padding: 9px 14px; font-size: 12px; color: var(--desc);
+		background: var(--bg-soft); border-top: 1px solid var(--border-soft);
+	}
+	.mock-note b { color: var(--amber); }
+
+	/* VS Code 工作台骨架 */
+	.workbench { display: flex; min-height: 420px; font-size: 13px; background: var(--bg); }
+	.wb-activity {
+		width: 44px; flex-shrink: 0; background: #333333; display: flex; flex-direction: column;
+		align-items: center; padding-top: 8px; gap: 4px;
+	}
+	.wb-act-icon {
+		width: 44px; height: 40px; display: flex; align-items: center; justify-content: center;
+		font-size: 19px; opacity: 0.55; border-left: 2px solid transparent;
+	}
+	.wb-act-icon.active { opacity: 1; border-left-color: var(--fg-strong); }
+	.wb-side { width: 268px; flex-shrink: 0; background: var(--bg-soft); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+	.wb-side.wide { width: 330px; }
+	.wb-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+	.wb-tabs { display: flex; background: var(--bg-soft); border-bottom: 1px solid var(--border); }
+	.wb-tab {
+		padding: 8px 14px; font-size: 12.5px; color: var(--desc); display: flex; align-items: center; gap: 7px;
+		border-right: 1px solid var(--border); background: var(--bg-soft);
+	}
+	.wb-tab.active { background: var(--bg); color: var(--fg-strong); }
+	.wb-tab .close { opacity: 0.5; font-size: 14px; }
+	.wb-body { flex: 1; overflow: auto; position: relative; }
+	.wb-status {
+		height: 24px; background: var(--btn); color: #fff; display: flex; align-items: center;
+		gap: 14px; padding: 0 12px; font-size: 11.5px;
+	}
+
+	/* 侧栏渠道列表（channelView.ts 还原） */
+	.cv { display: flex; flex-direction: column; height: 100%; }
+	.cv-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+	.cv-title { font-size: 14px; font-weight: 600; color: var(--fg-strong); display: flex; align-items: center; gap: 8px; }
+	.cv-count { font-size: 11px; background: var(--badge-bg); color: #fff; padding: 1px 6px; border-radius: 8px; }
+	.cv-list { flex: 1; overflow: hidden; }
+	.cv-item {
+		display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+		border-bottom: 1px solid var(--border); cursor: default;
+	}
+	.cv-item.enabled { border-left: 3px solid var(--green); padding-left: 9px; }
+	.cv-item:hover { background: var(--hover); }
+	.cv-icon {
+		width: 32px; height: 32px; flex-shrink: 0; display: flex; align-items: center;
+		justify-content: center; font-size: 22px; border-radius: 8px; background: var(--input-bg);
+	}
+	.cv-info { flex: 1; min-width: 0; }
+	.cv-name { font-weight: 600; font-size: 13px; color: var(--fg-strong); }
+	.cv-desc { font-size: 11px; color: var(--desc); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.cv-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--desc); opacity: 0.4; flex-shrink: 0; }
+	.cv-dot.on { background: var(--green); opacity: 1; box-shadow: 0 0 4px rgba(76, 175, 80, 0.4); }
+	.cv-chevron { color: var(--desc); font-size: 16px; }
+
+	/* 渠道编辑器面板（channelEditorPane.ts 还原） */
+	.ce { display: flex; flex-direction: column; height: 100%; overflow: auto; }
+	.ce-head { display: flex; align-items: center; gap: 16px; padding: 20px 24px; border-bottom: 1px solid var(--border); }
+	.ce-head-icon {
+		width: 56px; height: 56px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+		font-size: 36px; border-radius: 12px; background: var(--input-bg);
+	}
+	.ce-head-info { flex: 1; min-width: 0; }
+	.ce-title { margin: 0; font-size: 20px; font-weight: 700; color: var(--fg-strong); }
+	.ce-subdesc { margin-top: 4px; font-size: 13px; color: var(--desc); }
+	.ce-badge { padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+	.ce-badge.enabled { background: var(--green-soft); color: var(--green); }
+	.ce-badge.disabled { background: var(--input-bg); color: var(--desc); }
+	.ce-bind { margin: 16px 24px; padding: 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--bg); }
+	.ce-bind-title { font-size: 14px; font-weight: 600; color: var(--fg-strong); margin-bottom: 6px; }
+	.ce-bind-hint { font-size: 12px; line-height: 1.5; color: var(--desc); margin-bottom: 14px; }
+	.ce-bind-panel { margin-top: 14px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+	.ce-bind-status { font-size: 12px; text-align: center; color: var(--desc); }
+	.ce-bind-status.ok { color: var(--green); font-weight: 600; }
+	.ce-form { padding: 16px 24px; flex: 1; }
+	.ce-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+	.ce-row:last-of-type { border-bottom: none; }
+	.ce-row:hover { background: var(--hover); margin: 0 -8px; padding: 12px 8px; border-radius: 6px; }
+	.ce-labels { flex: 1; min-width: 0; }
+	.ce-label { font-weight: 600; font-size: 13px; color: var(--fg-strong); }
+	.ce-fdesc { font-size: 11px; color: var(--desc); margin-top: 2px; line-height: 1.4; }
+	.ce-ctrl { flex-shrink: 0; min-width: 240px; display: flex; align-items: center; }
+	.ce-input, .ce-select, .ce-textarea {
+		width: 100%; padding: 6px 10px; border: 1px solid var(--input-border); border-radius: 6px;
+		background: var(--input-bg); color: #e8e8e8; font-size: 12.5px; font-family: inherit;
+	}
+	.ce-textarea { font-family: var(--mono); font-size: 12px; min-height: 58px; resize: vertical; }
+	.ce-actions { display: flex; gap: 10px; padding: 20px 0; border-top: 1px solid var(--border); margin-top: 8px; }
+	.ce-btn { padding: 8px 20px; border-radius: 6px; font-size: 13px; font-weight: 500; border: none; cursor: default; font-family: inherit; }
+	.ce-btn.primary { background: var(--btn); color: #fff; }
+	.ce-btn.secondary { background: #3a3d41; color: #fff; }
+	.ce-btn.danger { background: transparent; color: var(--red); border: 1px solid var(--red); }
+	.ce-statusbar { padding: 0 24px; font-size: 12px; min-height: 32px; display: flex; align-items: center; color: var(--desc); }
+	.ce-statusbar.ok { color: var(--green); }
+	.ce-statusbar.err { color: var(--red); }
+
+	/* Toggle */
+	.toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
+	.toggle .track { position: absolute; inset: 0; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 11px; }
+	.toggle .knob { position: absolute; width: 16px; height: 16px; left: 2px; top: 2px; background: var(--fg); border-radius: 50%; }
+	.toggle.on .track { background: var(--btn); border-color: var(--btn); }
+	.toggle.on .knob { transform: translateX(18px); background: #fff; }
+
+	/* 设置页 TOC 布局 */
+	.st-layout { display: flex; height: 100%; }
+	.st-toc { width: 132px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 10px 0; background: var(--bg-soft); overflow: hidden; }
+	.st-toc-item { padding: 7px 16px; font-size: 13px; color: var(--desc); display: flex; gap: 8px; align-items: center; }
+	.st-toc-item.active { color: var(--fg-strong); background: var(--hover); border-left: 2px solid var(--accent); }
+	.st-content { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px; }
+	.st-sec { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; background: var(--bg-soft); }
+	.st-sec-head { padding: 11px 14px; display: flex; align-items: center; gap: 9px; font-size: 13.5px; font-weight: 600; color: var(--fg-strong); }
+	.st-sec-head .arrow { font-size: 11px; color: var(--desc); }
+	.st-sec-head .sec-desc { font-weight: 400; font-size: 11.5px; color: var(--muted); margin-left: auto; }
+	.st-sec-body { padding: 4px 14px 14px; border-top: 1px solid var(--border-soft); }
+	.st-field { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border-soft); }
+	.st-field:last-child { border-bottom: none; }
+	.st-field-label { font-size: 12px; font-weight: 600; color: var(--fg-strong); overflow-wrap: anywhere; }
+	.st-field-desc { font-size: 10.5px; color: var(--desc); margin-top: 2px; overflow-wrap: anywhere; }
+	.st-field-ctrl { flex-shrink: 0; width: 132px; }
+	.st-field > div:first-child { min-width: 0; }
+
+	/* Agent 设置页「渠道绑定」 */
+	.as-pane { padding: 16px 20px; overflow: auto; height: 100%; }
+	.as-desc { font-size: 12.5px; color: var(--desc); margin-bottom: 16px; line-height: 1.6; }
+	.as-group { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); }
+	.as-group-head { padding: 10px 14px; display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--fg-strong); border-bottom: 1px solid var(--border-soft); }
+	.as-sec { padding: 12px 14px; border-bottom: 1px solid var(--border-soft); }
+	.as-sec:last-child { border-bottom: none; }
+	.as-sec-title { font-size: 12.5px; font-weight: 600; color: var(--fg-strong); margin-bottom: 8px; }
+	.as-default-row { display: flex; align-items: center; gap: 9px; font-size: 12.5px; }
+	.as-hint { font-size: 11.5px; color: var(--muted); margin-bottom: 9px; }
+	.as-add-row { display: flex; gap: 8px; margin-bottom: 10px; }
+	.as-add-row .ce-input { flex: 1; }
+	.as-item { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font-size: 12.5px; margin-bottom: 6px; }
+	.as-item .rm { color: var(--desc); }
+
+	/* 注释标记（红/黄框说明） */
+	.annot {
+		position: relative;
+		outline: 1px dashed var(--red);
+		outline-offset: 3px;
+		border-radius: 3px;
+	}
+	.annot.warn { outline-color: var(--amber); }
+	.badge-float {
+		position: absolute; top: -10px; right: 8px; z-index: 3;
+		background: var(--red); color: #fff; font-size: 10.5px; font-weight: 700;
+		padding: 1px 7px; border-radius: 4px; white-space: nowrap;
+	}
+	.badge-float.warn { background: #9a6a1c; }
+	.badge-float.ok { background: #2e7d32; }
+
+	/* QR */
+	.qr-wrap {
+		width: 198px; height: 198px; background: #fff; padding: 8px; border-radius: 8px;
+		box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35); display: grid; flex-shrink: 0;
+	}
+	.qr-wrap i { display: block; width: 100%; height: 100%; background: #fff; }
+	.qr-wrap i.d { background: #000; }
+
+	/* 测试用例 */
+	.suite-block { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; overflow: hidden; }
+	.suite-head { padding: 9px 14px; background: var(--panel); font-size: 13px; font-weight: 600; color: var(--fg-strong); display: flex; justify-content: space-between; align-items: center; }
+	.suite-head .cnt { font-size: 11.5px; color: var(--green); font-weight: 600; }
+	.suite-body { padding: 8px 14px 12px; }
+	.suite-body li { font-size: 12.5px; color: var(--fg); margin: 3px 0; overflow-wrap: anywhere; }
+	.suite-body li::marker { color: var(--green); }
+	.suite-body li.gap::marker { color: var(--amber); }
+	.suite-body li.bug::marker { color: var(--red); }
+
+	pre.term {
+		background: #141414; border: 1px solid var(--border); border-radius: 8px;
+		padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px;
+		line-height: 1.55; color: #d4d4d4; margin: 12px 0;
+	}
+	pre.term .g { color: var(--green); }
+	pre.term .c { color: var(--muted); }
+	pre.term .y { color: var(--amber); }
+
+	.foot { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--border-soft); color: var(--muted); font-size: 12px; }
+	.two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; }
+	.kv { font-size: 12.5px; }
+	.kv div { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px dashed var(--border-soft); }
+	.kv div span:first-child { color: var(--muted); min-width: 128px; flex-shrink: 0; }
+	.checklist { list-style: none; padding-left: 0; }
+	.checklist li { padding-left: 26px; position: relative; font-size: 13px; }
+	.checklist li::before { content: '☐'; position: absolute; left: 4px; color: var(--desc); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+	<h1>Channel 配置 · 飞书（Feishu）渠道 可用性分析与使用报告</h1>
+	<div class="sub">
+		针对「聊天框 / Agent 设置 → Channel 配置 → 飞书」链路做端到端代码走查 + 运行时行为验证，给出可用性判定、缺陷清单、修复建议，
+		并附「现状 / 建议修复后」的界面 mockup 与自动化测试用例（飞书 90 条 + 主进程出口 12 条，全部通过）。
+	</div>
+	<div class="meta">
+		<span class="chip">仓库 sarosis-agents-client</span>
+		<span class="chip">分析日期 2026-09-22</span>
+		<span class="chip">范围 <code>sessions/contrib/agentStudio</code></span>
+		<span class="chip bad">分析结论（修复前）：不可用（链路三重断裂）</span>
+		<span class="chip ok">修复后：P0 链路已打通</span>
+		<span class="chip warn">运行时二轮修复：CORS 出口（D-12）</span>
+		<span class="chip ok">测试 194 passing</span>
+		<span class="chip">TS 编译 exit 0</span>
+	</div>
+</header>
+
+<nav class="toc">
+	<a href="#fixes">⓿ 修复记录</a>
+	<a href="#verdict">① 结论速览</a>
+	<a href="#chain">② 调用链现状</a>
+	<a href="#matrix">③ 逐项可用性矩阵</a>
+	<a href="#defects">④ 缺陷与断层清单</a>
+	<a href="#mockup">⑤ 界面 Mockup</a>
+	<a href="#tests">⑥ 测试用例</a>
+	<a href="#manual">⑦ 手工验收</a>
+	<a href="#appendix">⑧ 关键代码索引</a>
+</nav>
+
+<!-- ═══════════════════════ 0. 修复记录 ═══════════════════════ -->
+<h2 id="fixes"><span class="idx">00</span>修复记录（2026-09-22）</h2>
+<p class="lead">
+	本次修复共改动 8 个文件（1 个配置定义、4 个运行时/UI、1 个装配、1 个二维码、1 个测试），
+	<code>npm run compile-check-ts-native</code> <b>exit 0</b>，飞书渠道测试 <b>90 passing / 0 failing</b>。
+	逐条明细见 §04，测试见 §06。<br>
+	<b>★ 2026-09-22 运行后追加（D-12）：</b>首轮修复在真实桌面端<b>被 CORS 拦死</b>，
+	追加改动 9 个文件（2 个新增：主进程出口适配器 <code>browser/mainProcessRequestService.ts</code>
+	与其测试 <code>test/browser/mainProcessRequestService.test.ts</code>；7 个修改：主进程 HTTP 代理补
+	<code>body</code> 转发、装配与配置页改走主进程出口、相关注释/契约更正）。<br>
+	<b>★ 2026-09-22 第二次运行追加（D-07）：</b>CORS 解除后拿到飞书真实响应 ——
+	端点 <code>404 page not found</code>，据此按官方 SDK 重写长连接协议，
+	追加改动 5 个文件（2 个新增：<code>browser/bridge/platforms/feishuWsProtocol.ts</code> 与其测试
+	<code>test/browser/feishuWsProtocol.test.ts</code>；3 个修改：<code>feishu.ts</code> 长连接主体、
+	两个测试文件的端点/帧契约同步）。<br>
+	<b>★ 同批追加（D-13）：</b>长连接复检时发现入口只认历史事件名 <code>im.message.message_received</code>，
+	而飞书 v2 推送用 <code>im.message.receive_v1</code> ⇒ 真实事件会被静默丢弃；
+	已改为两者兼容 + 未知消息类事件名记日志 + 非文本消息跳过（同一个文件 <code>feishu.ts</code>，3 条新用例）。<br>
+	<b>★ 同类排查追加（D-14，Telegram）：</b>把同一根因（renderer 网络出口）推到 Telegram，
+	用浏览器实测证明它的 <b>出站 POST 已被 CORS 预检拦死</b>（GET 能过、POST 不行 ⇒ 只能收不能回），
+	已改走同一主进程出口，并顺带把轮询失败从静默改为可诊断、消掉单测里对真实 api.telegram.org 的空转。
+	改动 4 个文件（<code>telegram.ts</code> / <code>telegram.contribution.ts</code> / <code>bridge.contribution.ts</code> /
+	测试 <code>telegramPlatform.test.ts</code> 重写）。<br>
+	最终测试总计 <b>194 passing / 0 failing</b>
+	（飞书渠道 101 + 长连接协议 24 + 主进程出口 12 + Telegram 16 + 渠道图标 13 + 桥接引擎 15 + 桥接安全 10 + 真连联测 3）。
+</p>
+
+<table>
+	<thead>
+		<tr><th style="width:70px;">编号</th><th style="width:200px;">问题</th><th style="width:110px;">状态</th><th>本次改动</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><b>D-01</b></td>
+			<td>渠道配置 UI 入口不可达</td>
+			<td class="st ok">✓ 已修</td>
+			<td>在 <code>agentStudio.contribution.ts</code> 按现有 <code>_registerToolIcon()</code> 模式注册侧栏容器 + <code>ChannelViewPane</code>（<code>viewId: AGENT_STUDIO_CHANNEL_VIEW_ID</code>，order 130，新增 <code>channelIcon</code>）→ 编辑器面板（含扫码绑定）获得可达 opener。<br>
+				<b>★ 2026-09-22 其后（按用户要求）：</b>移除该 Activity Bar 页签 —— 渠道管理统一收敛到
+				「Agent Studio 设置 → Channel 配置」；侧栏容器/视图注册与图标常量已撤（<code>ChannelViewPane</code> 保留但不再注册）。
+				为免「📷 扫码绑定 / 🧪 测试连接」随之失去唯一入口，把渠道配置编辑器的 opener 迁到
+				<b>设置页渠道条目的状态徽章</b>（点击即打开该渠道的配置编辑器，见下文 D-01 卡片）。</td>
+		</tr>
+		<tr>
+			<td><b>D-02</b></td>
+			<td>UI 凭证与运行时装配完全不通</td>
+			<td class="st ok">✓ 已修</td>
+			<td><code>registerFeishuPlatformIfConfigured(bridge, configurationService, log)</code> 现接收配置服务：<b>env 优先（运维覆盖）→ 配置兜底</b>，配置路径需 <code>enabled===true</code> 且 appId/appSecret 非空；新增 <code>resolveFeishuConfig()</code> / <code>readConfig()</code> / <code>readEnv()</code> 纯函数；白名单经 <code>normalizeAllowFrom()</code> 归一化为逗号分隔（此前多行白名单永远匹配不上）。</td>
+		</tr>
+		<tr>
+			<td><b>D-03</b></td>
+			<td>「测试连接」恒返回成功</td>
+			<td class="st ok">✓ 已修</td>
+			<td>新增 <code>probeFeishuCredentials()</code>（走 <code>IRequestService</code> 调 <code>tenant_access_token</code>，避开 CORS）；成功回显 token 前缀+有效期，失败回显 HTTP 状态与飞书 <code>code/msg</code>，且对 appSecret 用 <code>redactToken()</code> 脱敏；非飞书渠道明确提示「暂未实现自检」而不是假装成功。</td>
+		</tr>
+		<tr>
+			<td><b>D-05</b></td>
+			<td>渠道配置无热重载</td>
+			<td class="st ok">✓ 已修</td>
+			<td><code>bridge.contribution.ts</code> 注入 <code>IConfigurationService</code>，订阅 <code>sessions.channel.feishu</code> 变更 → 800ms 防抖 → 卸载旧注册（<code>IDisposable</code>）后重新装配并写日志；无需重启窗口。</td>
+		</tr>
+		<tr>
+			<td><b>D-06</b></td>
+			<td>扫码绑定失败状态机是死代码</td>
+			<td class="st ok">✓ 已修</td>
+			<td><code>postForm()</code> 不再因 <code>error</code> 字段抛错（协议层返回原样交给 <code>pollFeishuRegistration</code> 映射）；<code>denied / expired / slow_down / error</code> 四个分支全部可达，UI 恢复精确提示；仅传输/解析失败仍抛错。</td>
+		</tr>
+		<tr>
+			<td><b>D-07</b><br><span class="st bad">实测结案</span></td>
+			<td>长连接端点臆测 + 消息格式错误（实为 protobuf 二进制帧）</td>
+			<td class="st ok">✓ 已修</td>
+			<td>
+				实测报错：<code>非 JSON 响应：HTTP 404 /event/v1/outbound_event/subscribe → 404 page not found</code>
+				—— 该端点是臆测出来的，飞书并不存在。<br>
+				按官方协议重写（权威来源：飞书官方 SDK <code>lark_oapi/ws/</code> 的
+				<code>const.py</code> / <code>enum.py</code> / <code>model.py</code> / <code>pb/pbbp2_pb2.py</code> / <code>client.py</code>）：<br>
+				① 换地址改用 <code>POST /callback/ws/endpoint</code>，请求体 <code>{AppID, AppSecret}</code>（PascalCase），
+				响应 <code>data.URL</code> + <code>data.ClientConfig</code>；<br>
+				② <b>消息是 protobuf 二进制帧（pbbp2），不是 JSON</b> —— 新增
+				<code>feishuWsProtocol.ts</code> 做帧编解码（字段号 1–9 与官方 proto 一致、
+				uint64 用十进制字符串无损承载、未识别字段原样回写、proto2 required 零值也写出）；<br>
+				③ 按官方语义实现 <code>type=ping</code> 心跳（<code>service</code> 取自 wss 地址的 <code>service_id</code>）、
+				<code>sum/seq</code> 分片重组（5s TTL）、<b>回执</b>（官方没有 ack 帧类型：复用原帧、
+				payload 换成 <code>{"code":200}</code>、附 <code>biz_rt</code> 后回写）、
+				<code>pong</code> 携带新 <code>ClientConfig</code> 时热更新心跳、按 <code>ReconnectCount/Interval/Nonce</code> 重连；<br>
+				④ <b>最后一环 —— 基址前缀</b>：改对路径后仍 404，因为基址带了 <code>/open-apis</code>，
+				而该端点在<b>域名根</b>下。用无效凭证探测真实网络坐实（可复现、无敏感信息）：<br>
+				<code>POST https://open.feishu.cn/callback/ws/endpoint → 200 {"code":1000040346,"msg":"app_id is invalid","data":{"URL":""}}</code>；
+				<code>POST …/open-apis/callback/ws/endpoint → 404 page not found</code>。
+				据此新增 <code>resolveWsEndpointBase()</code>（由 OpenAPI 基址去掉 <code>/open-apis</code>），
+				并把测试从「断言路径片段」升级为<b>断言完整 URL</b>（这正是漏掉该缺陷的原因）。
+			</td>
+		</tr>
+		<tr>
+			<td><b>D-08</b></td>
+			<td><code>enabled</code> / 策略字段无消费者</td>
+			<td class="st warn">△ 部分修</td>
+			<td><code>enabled</code> 现为配置路径的**注册前置条件**（真实生效）；<code>dmPolicy / groupPolicy / groupAllowFrom / defaultAccount</code> 仍未接线，但已在 UI description 中如实标注「当前版本未生效」，不再给出错误的能力承诺。</td>
+		</tr>
+		<tr>
+			<td><b>D-10</b></td>
+			<td>二维码格式信息覆写定时图案</td>
+			<td class="st ok">✓ 已修</td>
+			<td><code>feishuQrCode.ts</code>：bit 8 改写入规范位置 <code>(7,8)</code>（原 <code>m[14-i][8]</code> 在 <code>i=8</code> 时落到横向定时模块 <code>(6,8)</code>）；<code>(6,8)</code> 恢复为定时图案，格式信息副本 1 竖直段完整。</td>
+		</tr>
+		<tr>
+			<td><b>D-11</b></td>
+			<td>「保存配置」空壳按钮</td>
+			<td class="st ok">✓ 已修</td>
+			<td>删除该按钮，改为说明文案「配置修改即时生效（保存于用户设置），无需重启窗口」（配合 D-05 热重载，语义现在是真的）。</td>
+		</tr>
+		<tr>
+			<td><b>D-04</b></td>
+			<td>webhook 入站没有 HTTP 入口</td>
+			<td class="st bad">✗ 未修</td>
+			<td>本次选择「明确声明仅长连接」路线：修正 <code>feishu.ts</code> 头注释（删除与实现不符的「回调指向 BridgeServer」），UI 上把 <code>verificationToken</code> / <code>encryptKey</code> 标注为「仅 Webhook 回调模式使用，当前版本未启用该模式」。补 HTTP 入口 + 验签 + AES 解密属独立课题（渲染进程无 Node http，需走主进程 IPC）。</td>
+		</tr>
+		<tr>
+			<td><b>D-09</b></td>
+			<td>事件加密与验签未实现</td>
+			<td class="st bad">✗ 未修</td>
+			<td>与 D-04 绑定：无 webhook 入口时解密/验签无处可用。测试中保留锁定用例，避免被无声"修复"。</td>
+		</tr>
+		<tr>
+			<td><b>D-12</b><br><span class="st bad">运行时新发现</span></td>
+			<td>renderer 的 HTTP 出口被 CORS 拦截（本案实际阻断点）</td>
+			<td class="st ok">✓ 已修<br><span class="st bad">首轮修错，二轮才对</span></td>
+			<td>
+				实测报错：<code>Access to fetch at '…/event/v1/outbound_event/subscribe' from origin 'vscode-file://vscode-app' has been blocked by CORS policy</code>
+				（飞书 OpenAPI 不返回 <code>Access-Control-Allow-Origin</code>）。<br>
+				影响面：<b>全部 4 个 REST 调用点</b>（订阅长连接 / 换 token / 发消息 / 回复）在桌面端均不可用；
+				<b>单元测试因 stub 了 <code>fetch</code> 而未暴露该断层</b> —— 这是「测试全绿 ≠ 桌面端可用」的典型样本。<br>
+				<b>⚠ 首轮修复无效（重要教训）</b>：把 HTTP 改走 DI 注入的 <code>IRequestService</code> 后<b>报错一字未变</b> ——
+				因为桌面端注册的是 <code>workbench/services/request/electron-browser/requestService.ts</code>
+				（<code>NativeRequestService</code>），其 <code>request()</code> 最终就是
+				<code>base/parts/request/common/requestImpl.ts:33</code> 的 <code>fetch</code>，
+				<b>仍在 renderer 网络栈里</b>（二次报错的栈正好证死了这一点）。<br>
+				<b>正解（第 2 轮）</b>：改用本 fork 既定的主进程网络出口 ——
+				<code>VSSAROS_LLM_CHANNEL</code> 的 <code>httpRequest</code>
+				（<code>electron-main/llmMainChannel.ts</code> → <code>node/llmBridgeNode.ts</code>，主进程 Node fetch，无 CORS；
+				已有成熟消费者：外链图片内联 <code>agentStudioWebviewController</code>）。
+				为此新增适配器 <code>browser/mainProcessRequestService.ts</code>（把 channel 包装成 <code>IRequestService</code> 形状），
+				使飞书 REST / 测试连接 / 扫码注册<b>三处零改动</b>获得主进程出口；
+				并给主进程代理补上<b>请求体转发</b>（原 <code>IHttpRequestParams</code> 无 <code>body</code> 字段，只能发 GET）。
+				<b>WebSocket 不受同源策略限制，长连接仍由渲染进程直连</b>；装配日志标注 <code>http=主进程 httpRequest</code> 便于现场核对。
+			</td>
+		</tr>
+		<tr>
+			<td><b>D-13</b><br><span class="st bad">修 D-07 时发现</span></td>
+			<td>只认 <code>im.message.message_received</code>，丢弃飞书 v2 官方事件名</td>
+			<td class="st ok">✓ 已修</td>
+			<td>
+				飞书 <b>v2 事件推送</b>的 <code>header.event_type</code> 是 <code>im.message.receive_v1</code>
+				（官方 SDK <code>onP2MessageReceiveV1</code>），而实现只匹配 cc-connect 的历史写法
+				<code>im.message.message_received</code> ⇒ <b>真实事件会被静默丢弃</b>
+				（帧解出来了、却在入口被挡掉，表现为「长连接成功但机器人不回话」）。<br>
+				修复：两种事件名都接受；未知的「带 message 体」事件名记日志（不再静默）；
+				非文本消息（图片/文件）跳过并记日志 —— 此前会把空内容转成消息送给 Agent。
+			</td>
+		</tr>
+		<tr>
+			<td><b>D-16</b><br><span class="st bad">运行时新发现</span></td>
+			<td>命令（/sessions 等）回包丢失 replyCtx ⇒ 退化成 send ⇒ 报「缺少 chat_id」</td>
+			<td class="st ok">✓ 已修</td>
+			<td>
+				实测报错：<code>ERR [Bridge] outbound failed: Error: [Feishu] send 缺少 chat_id（无法主动发送）</code>
+				（栈：<code>listSessionsRun → ctx.reply → _emitOutbound → platform.send</code>）。<br>
+				<b>根因：</b>命令上下文 <code>ctx.reply</code> 用的是 <b><code>session.replyCtx</code></b>，
+				而 <code>ensureSession()</code> 从不写该字段 ⇒ 恒为 <code>undefined</code> ⇒
+				<code>_emitOutbound</code> 判定「无回包句柄」而走 <code>platform.send()</code>（飞书主动发送需要 chat_id）；
+				普通消息路径用的是 <code>msg.replyCtx</code>，所以<b>只有命令会炸</b>。<br>
+				修复：① <code>_makeCommandContext</code> 接收并优先使用<b>入站消息</b>的 replyCtx（<code>reply</code> 与
+				<code>replyCard</code> 同源）；② 平台侧加固 —— 飞书/Telegram 的 <code>send</code> 在句柄缺 chat_id 时
+				<b>从 sessionKey 兜底解析</b>（<code>feishu:&lt;chatId&gt;:&lt;userId&gt;</code> 三段式），
+				<code>reply</code>/<code>replyCard</code> 缺 message_id 时<b>降级为发到群</b>而不是抛错中断整条出站。<br>
+				守卫用例：<code>bridgeEngine.test.ts</code>「命令回包句柄」套件（断言命令回复走 <code>platform.reply</code>
+				且句柄等于入站消息那一份；无句柄时仍走 send），飞书/Telegram 出站各补兜底与降级用例。
+			</td>
+		</tr>
+		<tr>
+			<td><b>D-17</b><br><span class="st bad">运行时新发现</span></td>
+			<td>被飞书绑定的会话，其聊天框 header 看不到「关联标签」</td>
+			<td class="st ok">✓ 已修</td>
+			<td>
+				<b>根因（DOM 有、肉眼无）</b>：徽章元素在 <code>agentChatPanel.header.ts</code> 里是**创建**了的
+				（由 <code>_feishuBoundChatId</code> / <code>_feishuBindingIsDefault</code> 字段驱动，宿主
+				<code>nativeChatEditorPane._refreshFeishuBindingBadge()</code> 在新建/切换/恢复/绑定变更时推送），
+				但 <code>.chat-header-feishu-badge</code> 的**样式只存在于旧 webview**
+				（<code>webview/src/styles/globals.css</code>），native 面板的
+				<code>media/agentChat.css</code> 里一条规则都没有 ⇒ 裸 <code>&lt;span&gt;</code> 在
+				<code>.chat-header-left</code>（<code>display:flex; min-width:0</code>）里按 flex 规则被压成 0 宽。
+				同一份标签在**会话列表**里是好的（<code>.session-history-feishu-tag</code> 有样式）⇒ 用户看到的就是「列表有、聊天框没有」。<br>
+				<b>修复：</b>① 把徽章样式补进 <code>media/agentChat.css</code>，关键是
+				<code>flex: 0 0 auto</code> + <code>white-space: nowrap</code>（不再被挤没）+ 蓝框药丸与
+				<code>.is-default</code> 实底态；② 徽章改用**飞书官方品牌 SVG**
+				（<code>createChannelIcon('feishu', …)</code> —— 面板在 <code>sessions/browser</code> 层不能反向依赖
+				contrib 的 channelIcons，故由宿主构造元素经 <code>setFeishuBinding(chatId, isDefault, icon)</code> 注入，
+				与设置页渠道条目同一份图标），文案拆成 <code>.chat-header-feishu-badge-label</code>。<br>
+				<b>守卫用例：</b><code>agentChatPanel.channelBinding.test.ts</code> 新增「聊天框 header · 渠道绑定标签护栏」——
+				断言 native CSS 必须有该规则且声明 <code>flex: 0 0 auto</code>、默认态与 logo 各有样式、
+				header 渲染必须由**字段**驱动（header 每次全量重绘，只挂 DOM 会被刷掉）。
+			</td>
+		</tr>
+		<tr>
+			<td><b>D-14</b><br><span class="st bad">同类排查（Telegram）</span></td>
+			<td>Telegram 出站 POST 被 CORS 预检拦死（机器人只能收不能回）</td>
+			<td class="st ok">✓ 已修</td>
+			<td>
+				用浏览器（透明 origin，等价桌面端渲染进程）实测 <code>api.telegram.org</code>：
+				<code>GET /getMe</code>、<code>GET /getUpdates</code> <b>通过</b>（简单请求有 ACAO，401 正常返回）；
+				<code>POST /sendMessage</code>（<code>Content-Type: application/json</code>）<b>被拦</b>
+				（<code>TypeError: Failed to fetch</code>，Telegram 不支持 OPTIONS 预检）
+				⇒ 正是「能收到消息、永远不回话」。<br>
+				修复：出站 POST 改走同一主进程出口；GET（长轮询 / 附件下载）留在渲染进程并写明理由
+				（长轮询需可中断、附件需二进制字节，而主进程出口不支持取消且只有文本通路）。<br>
+				顺带：轮询失败从「静默吞掉」改为 <code>lastError</code> + 节流日志（首条 + 每 10 次），
+				并把 <code>ok=false</code> 视为失败（原先静默返回空更新 ⇒ 鉴权错误时无限空转）。
+			</td>
+		</tr>
+		<tr>
+			<td><b>D-15</b><br><span class="st bad">联测才发现</span></td>
+			<td>握手失败时（只发 onerror 不发 onclose）不重连 → 渠道永久死链</td>
+			<td class="st ok">✓ 已修</td>
+			<td>
+				真连联测（进程内 WS 服务端，见 §06 ⑮）把「重连只在 onclose 里触发」逼出了原形：
+				undici 在<b>握手失败时只发 <code>error</code>、不发 <code>close</code></b> —— 一次握手失败，
+				平台既不重连也不报「不再重连」，渠道无声死链到下次重启窗口。<br>
+				修复：断线处理收敛为单入口 <code>_linkDown()</code>（error/close 双事件按连接幂等），
+				error-only 路径照常安排重连；新增单元用例「只发 onerror 也重连」+ 联测「握手被拒 → 可诊断提示 + 重连」。
+			</td>
+		</tr>
+	</tbody>
+</table>
+
+<div class="callout ok">
+	<b>修复后可用路径（两条都通）：</b><br>
+	① <b>纯 UI</b>：侧栏「📡 渠道管理」→ Feishu → 「📷 扫码绑定」或手填 App ID/Secret → 打开「启用」→ <b>无需重启</b>（热重载生效）→ 「🧪 测试连接」可验证凭证真伪。<br>
+	② <b>纯 env（CI/headless）</b>：<code>FEISHU_APP_ID</code> + <code>FEISHU_APP_SECRET</code>（+ <code>FEISHU_ALLOW_FROM</code> / <code>FEISHU_USE_WS</code>），env 优先于配置。<br>
+	③ 两者都配 → 以 Agent 设置页「渠道绑定」把 Agent 绑到渠道/群聊。
+</div>
+
+<!-- ═══════════════════════ 1. 结论 ═══════════════════════ -->
+<h2 id="verdict"><span class="idx">01</span>结论速览</h2>
+<p class="lead">
+	分析结论（修复前）：<b>飞书渠道的「代码」写得相当完整（协议、出入站、卡片、绑定），但「装配」是断的 —— 从产品 UI 上既打不开配置页，配好的值也不会被运行时读取。</b><br>
+	修复后（2026-09-22）：<b>P0 三重断裂全部打通</b> —— 侧栏入口可打开、UI 凭证参与运行时装配、渠道开关成为真实前置条件，「测试连接」改为真实探测；仅 Webhook 入站（D-04/D-09）与连接自检的联网实测仍待跟进。
+</p>
+
+<div class="verdict-grid">
+	<div class="verdict ok">
+		<div class="vt">入口可达性 <span style="color:var(--green);">· D-01 已修</span> <span style="color:var(--amber);">· 活动栏入口已移除</span></div>
+		<div class="vv">△ 可达（入口已迁移到设置页）</div>
+		<div class="vd">
+			原先侧栏「📡 渠道管理」（order 130）已按 <code>_registerToolIcon()</code> 模式注册；
+			<b>2026-09-22 按用户要求移除该 Activity Bar 页签</b>，渠道管理收敛到
+			「Agent Studio 设置 → Channel 配置」。渠道配置编辑器（「📷 扫码绑定」/「🧪 测试连接」）
+			改为<b>点击渠道条目的状态徽章</b>打开，能力不减。
+		</div>
+	</div>
+	<div class="verdict ok">
+		<div class="vt">配置 → 运行时 <span style="color:var(--green);">· D-02 已修</span></div>
+		<div class="vv">✓ 已打通</div>
+		<div class="vd">
+			装配读取 <code>sessions.channel.feishu.*</code>（<b>env 优先、配置兜底</b>）；
+			配置路径需 <code>enabled===true</code>。多行白名单归一化为逗号分隔，不再静默失效。
+		</div>
+	</div>
+	<div class="verdict warn">
+		<div class="vt">渠道开关 / 策略 <span style="color:var(--amber);">· D-08 部分修</span></div>
+		<div class="vv">△ 开关已生效，策略字段未接线</div>
+		<div class="vd">
+			<code>enabled</code> 现在是真实的注册前置条件；<code>dmPolicy</code> / <code>groupPolicy</code> /
+			<code>groupAllowFrom</code> / <code>defaultAccount</code> 仍未接线，UI 已标注「当前版本未生效」。
+		</div>
+	</div>
+	<div class="verdict ok">
+		<div class="vt">长连接入站 <span style="color:var(--green);">· D-07 已修</span> <span style="color:var(--green);">· D-12 已修</span></div>
+		<div class="vv">✓ 已按官方协议实现（待真实凭证端到端连一次）</div>
+		<div class="vd">
+			<b>D-12（已修，两轮）</b>：renderer <code>fetch</code> 与 DI 的 <code>IRequestService</code> 都会被同源策略拦
+			（后者最终也是 <code>requestImpl.ts</code> 的 fetch）；现改用主进程
+			<code>VSSAROS_LLM_CHANNEL#httpRequest</code>。<br>
+			<b>D-07（已修）</b>：臆测端点 404 → 官方 <code>/callback/ws/endpoint</code> + <b>protobuf 二进制帧</b>协议，
+			含心跳/分片重组/回执/重连（编解码由 22 条用例对手算字节锁定）。
+		</div>
+	</div>
+	<div class="verdict ok">
+		<div class="vt">会话 → Agent 绑定</div>
+		<div class="vv">✓ 可用</div>
+		<div class="vd">
+			Agent 设置页「渠道绑定」Tab：默认 Agent 开关 + 按 <code>chat_id</code> 绑定，落盘
+			<code>bindings.json</code>，<code>/bind</code> 命令可用，跨重启保持。
+		</div>
+	</div>
+	<div class="verdict ok">
+		<div class="vt">自检按钮 <span style="color:var(--green);">· D-03 已修</span></div>
+		<div class="vv">✓ 真实探测</div>
+		<div class="vd">
+			「🧪 测试连接」现调 <code>tenant_access_token</code> 真实校验凭证：成功回显 token 前缀与有效期，
+			失败回显 HTTP 状态与飞书 <code>code/msg</code>（appSecret 已脱敏）。
+		</div>
+	</div>
+</div>
+
+<div class="callout ok">
+	<b>修复后的推荐操作步骤（UI 路径）：</b>
+	（1）左侧栏点「📡 渠道管理」→ Feishu；
+	（2）用「📷 扫码绑定」或手填 App ID / App Secret，打开「启用」，按需填 Allow From（逗号或换行均可）；
+	（3）点「🧪 测试连接」确认凭证有效（会回显飞书返回码）；
+	（4）在 <b>Agents → 某 Agent → 设置 → 渠道绑定</b> 里把 Agent 设为飞书默认 Agent 或绑定具体 <code>chat_id</code>。
+	全程<b>无需重启窗口</b>（配置变更会触发渠道热重载）。
+</div>
+
+<div class="callout warn">
+	<b>仍未修（本次有意排除）：</b>D-04 Webhook 回调入口、D-09 事件验签/解密 —— 渲染进程无 Node <code>http</code>，
+	要补需走主进程 IPC 链路；当前产品口径统一为「入站仅支持长连接」，相关字段在 UI 上已标注未启用。
+</div>
+
+<div class="callout warn">
+	<b>D-12 · 运行时实测才暴露的 CORS 阻断（已修，且首轮修错）：</b>
+	桌面端 origin 是 <code>vscode-file://vscode-app</code>，飞书 OpenAPI 不返回 CORS 头 ⇒
+	renderer 直连全部被拦（<code>net::ERR_FAILED</code>）。这解释了「单元测试全绿但渠道不工作」：
+	测试 stub 了 <code>fetch</code>，恰好掩盖了唯一的真实网络出口问题。<br>
+	<b>两条容易踩反的结论（都有实测栈证据）：</b><br>
+	① <b>不要以为 <code>IRequestService</code> 就是主进程</b> —— 桌面端它是
+	<code>NativeRequestService → requestImpl.ts#fetch</code>，仍在 renderer 网络栈；
+	栈里出现 <code>requestImpl.ts:33 net::ERR_FAILED</code> 就是它。<br>
+	② <b>本 fork 真正的主进程出口是 <code>VSSAROS_LLM_CHANNEL#httpRequest</code></b>
+	（对齐 <code>gitVersionCore ↔ node/gitVersionEngine ↔ electron-main/gitVersionChannel</code> 这条既定范式；
+	renderer 沙箱无 Node，凡需网络/文件能力都须如此）。<br>
+	<b>落地纪律</b>：渠道类网络代码只认装配侧注入的出口，并保留一条「禁止回落 fetch」的契约用例
+	（<code>FeishuPlatform · HTTP 出口</code> 套件用「一旦被调用即抛错的 fetch」锁定；
+	出口实现本身由 <code>mainProcessRequestService.test.ts</code> 12 条用例锁定）。
+</div>
+
+<div class="callout warn">
+	<b>D-13 · 修 D-07 时顺带挖出的「静默丢事件」：</b>长连接通了也不代表消息会到 Agent ——
+	入口只认 <code>im.message.message_received</code>，而飞书 v2 推送的名字是
+	<code>im.message.receive_v1</code>（官方 SDK <code>onP2MessageReceiveV1</code>）。
+	这类缺陷的共性是<b>判定条件写死在一个未经真实数据校验的字符串上</b>，
+	所以修复同时改成「两名字兼容 + 未知消息类事件名记日志」，
+	让下一次契约漂移表现为<b>一条可读日志</b>，而不是「渠道又不工作了」。<br>
+	同批还修了一处体感问题：非文本消息（图片/文件）原先会被解析成空文本转发给 Agent，
+	现在明确跳过并记日志。
+</div>
+
+<!-- ═══════════════════════ 2. 调用链 ═══════════════════════ -->
+<h2 id="chain"><span class="idx">02</span>调用链现状（配置面 / 运行面）</h2>
+<p class="lead">把链路拆成「配置面（UI 写值）」与「运行面（Bridge 起平台）」两段看，断裂点一目了然。</p>
+
+<div class="lane">
+	<div class="lane-title">配置面 · UI → 持久化（这一半是通的）</div>
+	<div class="chain">
+		<div class="node dead">
+			<div class="n-t">侧栏「📡 渠道管理」</div>
+			<div class="n-s">ChannelViewPane · 未注册 ✕</div>
+		</div>
+		<div class="arrow">→</div>
+		<div class="node dead">
+			<div class="n-t">渠道配置编辑器</div>
+			<div class="n-s">ChannelEditorPane · 无 opener ✕</div>
+		</div>
+		<div class="arrow">→</div>
+		<div class="node ghost">
+			<div class="n-t">扫码绑定卡（飞书专属）</div>
+			<div class="n-s">_startFeishuBind · 不可达</div>
+		</div>
+	</div>
+	<div class="break-note" style="border-color:rgba(76,175,80,.45); color:var(--green); background:var(--green-soft);">
+		✓ 已修（D-01）：<code>ChannelViewPane</code> 与 <code>AGENT_STUDIO_CHANNEL_VIEW_ID</code>（order 130）已在
+		<code>agentStudio.contribution.ts</code> 注册，这条侧栏 → 编辑器的链当时是通的（编辑器面板已含扫码绑定与测试连接）。<br>
+		<b>★ 2026-09-22 其后：该 Activity Bar 页签已按用户要求移除</b>，本链路的入口改为<b>设置页渠道条目的状态徽章</b> →
+		<code>ChannelEditorInput.getOrCreate(key)</code> → 侧栏打开 <code>ChannelEditorPane</code>（能力不变）。
+	</div>
+
+	<div class="chain" style="margin-top:18px;">
+		<div class="node live">
+			<div class="n-t">Agent Studio 设置页</div>
+			<div class="n-s">SettingsEditorPane · 可达 ✓</div>
+		</div>
+		<div class="arrow">→</div>
+		<div class="node live">
+			<div class="n-t">TOC「📡 Channel 配置」</div>
+			<div class="n-s">CHANNEL_SECTIONS（动态生成）</div>
+		</div>
+		<div class="arrow">→</div>
+		<div class="node live">
+			<div class="n-t">🐦 Feishu 分组 · 11 字段</div>
+			<div class="n-s">onchange → updateValue</div>
+		</div>
+		<div class="arrow">→</div>
+		<div class="node live">
+			<div class="n-t">sessions.channel.feishu.*</div>
+			<div class="n-s">IConfigurationService · MACHINE scope</div>
+		</div>
+	</div>
+	<div class="break-note" style="border-color:rgba(76,175,80,.45); color:var(--green); background:var(--green-soft);">
+		✓ 修复后有两个入口：侧栏「📡 渠道管理」（功能完整：扫码绑定 + 测试连接 + 全部字段）与
+		Agent Studio 设置页 TOC（轻量：仅字段读写）。两者都写入同一组配置键。
+	</div>
+</div>
+
+<div class="lane">
+	<div class="lane-title">运行面 · 装配 → 平台（这里读的不是 UI 写的值）</div>
+	<div class="chain">
+		<div class="node live">
+			<div class="n-t">环境变量</div>
+			<div class="n-s">FEISHU_APP_ID / _APP_SECRET / _ALLOW_FROM / _USE_WS</div>
+		</div>
+		<div class="arrow">→</div>
+		<div class="node live">
+			<div class="n-t">registerFeishuPlatformIfConfigured</div>
+			<div class="n-s">feishu.contribution.ts:29</div>
+		</div>
+		<div class="arrow">→</div>
+		<div class="node live">
+			<div class="n-t">FeishuPlatform</div>
+			<div class="n-s">feishu.ts:44</div>
+		</div>
+		<div class="arrow">→</div>
+		<div class="node live">
+			<div class="n-t">飞书开放平台</div>
+			<div class="n-s">open.feishu.cn/open-apis</div>
+		</div>
+	</div>
+
+	<div class="chain" style="margin-top:16px;">
+		<div class="node">
+			<div class="n-t">BridgeEngine 路由</div>
+			<div class="n-s">bridgeEngine.ts:171 / 199</div>
+		</div>
+		<div class="arrow">←</div>
+		<div class="node">
+			<div class="n-t">会话→Agent 绑定</div>
+			<div class="n-s">bindings.json · /bind</div>
+		</div>
+		<div class="arrow">←</div>
+		<div class="node">
+			<div class="n-t">渠道默认 Agent</div>
+			<div class="n-s">sessions.channel.feishu.defaultAgent ✓ 唯一被读的配置项</div>
+		</div>
+	</div>
+
+	<div class="break-note" style="border-color:rgba(76,175,80,.45); color:var(--green); background:var(--green-soft);">
+		✓ 已修（D-02/D-05）：<code>registerFeishuPlatformIfConfigured(bridge, configurationService, log)</code> 现在读取
+		<code>sessions.channel.feishu.*</code>（env 优先、配置兜底，配置路径受 <code>enabled</code> 门控），
+		并在配置变更时经 800ms 防抖热重载平台。配置面与运行面之间已架桥。
+	</div>
+</div>
+
+<!-- ═══════════════════════ 3. 矩阵 ═══════════════════════ -->
+<h2 id="matrix"><span class="idx">03</span>逐项可用性矩阵</h2>
+<p class="lead">
+	状态口径：<span class="st ok">✓ 可用</span> / <span class="st warn">△ 有缺陷或未实测</span> / <span class="st bad">✕ 不可用</span>。「证据」列给出文件与行号。<br>
+	<b>说明：本表是「修复前」的分析基线（保留作为问题记录）</b>；各条目的当前状态请看 §00 修复记录表。
+</p>
+
+<table>
+	<thead>
+		<tr><th style="width:230px;">功能项</th><th style="width:88px;">状态</th><th>说明</th><th style="width:300px;">证据</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>渠道定义与配置 schema（18 个渠道）</td>
+			<td class="st ok">✓ 可用</td>
+			<td>飞书含 11 个字段（7 通用 + appId/appSecret/verificationToken/encryptKey），键统一 <code>sessions.channel.feishu.*</code>，<code>ConfigurationScope.MACHINE</code> 已保证不读工作区设置。</td>
+			<td class="ev">constants.ts:496-512<br>agentStudio.contribution.ts:366-405</td>
+		</tr>
+		<tr>
+			<td>侧栏「渠道管理」列表视图</td>
+			<td class="st bad">✕ 不可达</td>
+			<td><code>ChannelViewPane</code> 未注册；<code>AGENT_STUDIO_CHANNEL_VIEW_ID</code> 无任何注册引用。</td>
+			<td class="ev">views/channelView.ts:24<br>constants.ts:202（仅定义）</td>
+		</tr>
+		<tr>
+			<td>渠道配置编辑器面板（含扫码绑定）</td>
+			<td class="st bad">✕ 不可达</td>
+			<td>面板已注册，但唯一 opener 是不可达的侧栏视图 → 死代码。</td>
+			<td class="ev">agentStudio.contribution.ts:1164-1173<br>channelView.ts:128-136</td>
+		</tr>
+		<tr>
+			<td>设置页「Channel 配置」TOC（可达入口）</td>
+			<td class="st ok">✓ 可用</td>
+			<td>由 <code>CHANNEL_DEFINITIONS</code> 动态生成折叠分组，字段读写配置项正常。</td>
+			<td class="ev">settingsEditorPane.ts:295-330</td>
+		</tr>
+		<tr>
+			<td>配置持久化</td>
+			<td class="st ok">✓ 可用</td>
+			<td>所有字段 onchange 即时写入 <code>IConfigurationService</code>。</td>
+			<td class="ev">settingsEditorPane.ts:601+<br>channelEditorPane.ts:387/398/424/435</td>
+		</tr>
+		<tr>
+			<td>「🔄 恢复默认」</td>
+			<td class="st ok">✓ 可用</td>
+			<td>逐字段写回 default 并重渲染。</td>
+			<td class="ev">channelEditorPane.ts:334-344</td>
+		</tr>
+		<tr>
+			<td>「💾 保存配置」</td>
+			<td class="st warn">△ 空壳</td>
+			<td>仅弹「✅ 配置已保存」提示，无实际写入（写入早已由 onchange 完成），易造成「未保存」误解。</td>
+			<td class="ev">channelEditorPane.ts:315-321</td>
+		</tr>
+		<tr>
+			<td>「🧪 测试连接」</td>
+			<td class="st bad">✕ 假实现</td>
+			<td>无任何网络探测，1.5s 后恒显示成功 —— 凭证错误也报「连接成功」。</td>
+			<td class="ev">channelEditorPane.ts:323-332</td>
+		</tr>
+		<tr>
+			<td>扫码绑定（Device Flow）协议实现</td>
+			<td class="st warn">△ 逻辑完整 / 未联网实测</td>
+			<td>init → begin → poll 三段齐全，成功后写回 appId/appSecret/enabled/allowFrom；依赖外部 <code>accounts.feishu.cn</code>，本地无法验证真伪。</td>
+			<td class="ev">feishuRegistration.ts:84-157<br>channelEditorPane.ts:163-304</td>
+		</tr>
+		<tr>
+			<td>扫码绑定的失败细分（拒绝/过期/限流）</td>
+			<td class="st bad">✕ 不可达</td>
+			<td><code>postForm()</code> 对除 <code>authorization_pending</code> 外的任何 <code>error</code> 直接抛错 ⇒ poll 的 denied/expired/slow_down/error 分支是死代码，UI 只能落到「轮询失败：飞书注册失败（xxx）」。</td>
+			<td class="ev">feishuRegistration.ts:75-79 vs :142-156</td>
+		</tr>
+		<tr>
+			<td>二维码生成</td>
+			<td class="st warn">△ 有规范偏差</td>
+			<td>自实现 V1–V7（EC-L），零依赖；格式信息副本 2 的竖直部分写到了 <code>(6,8)</code>，覆写横向定时图案，且 <code>(7,8)</code> 恒为亮（格式位 8 无写入路径）。</td>
+			<td class="ev">feishuQrCode.ts:341-359</td>
+		</tr>
+		<tr>
+			<td>二维码容量兜底</td>
+			<td class="st ok">✓ 可用</td>
+			<td>超 154 字节抛错 → UI 回落「复制授权链接」，处理得当。</td>
+			<td class="ev">feishuQrCode.ts:102-109<br>channelEditorPane.ts:196-200,217-219</td>
+		</tr>
+		<tr>
+			<td>运行时平台装配</td>
+			<td class="st warn">△ 仅 env</td>
+			<td>只看 <code>process.env</code>：<code>FEISHU_APP_ID</code>/<code>FEISHU_APP_SECRET</code>/<code>FEISHU_ALLOW_FROM</code>/<code>FEISHU_USE_WS</code>；缺任一凭证则完全不注册。Telegram 同构。</td>
+			<td class="ev">feishu.contribution.ts:13-43<br>telegram.contribution.ts:13-39</td>
+		</tr>
+		<tr>
+			<td>UI 凭证 → 运行时生效</td>
+			<td class="st bad">✕ 断层</td>
+			<td>配置项与 env 无任何打通路径；且装配只在 workbench <code>AfterRestored</code> 执行一次（无热重载，改配置必须重启窗口）。</td>
+			<td class="ev">bridge.contribution.ts:19-31</td>
+		</tr>
+		<tr>
+			<td><code>enabled</code> 渠道开关</td>
+			<td class="st bad">✕ 无消费者</td>
+			<td>只用于 UI 徽章与侧栏计数；<code>enabled=false</code> 不影响平台注册/启动。</td>
+			<td class="ev">channelView.ts:65-68<br>channelEditorPane.ts:108-115</td>
+		</tr>
+		<tr>
+			<td><code>dmPolicy</code> / <code>groupPolicy</code> / <code>groupAllowFrom</code> / <code>defaultAccount</code></td>
+			<td class="st bad">✕ 无消费者</td>
+			<td>全仓无读取点（测试已锁定：BridgeEngine 仅 getValue <code>…defaultAgent</code>）。</td>
+			<td class="ev">测试套件「配置→运行时断层」</td>
+		</tr>
+		<tr>
+			<td><code>verificationToken</code> / <code>encryptKey</code></td>
+			<td class="st bad">✕ 无消费者</td>
+			<td>事件验签/AES 解密均未实现；加密事件体 <code>{"encrypt":"…"}</code> 被静默丢弃。</td>
+			<td class="ev">测试「【断层④】」</td>
+		</tr>
+		<tr>
+			<td><code>defaultAgent</code>（渠道默认 Agent）</td>
+			<td class="st ok">✓ 可用</td>
+			<td>唯一被运行时读取的渠道配置项；优先级：会话绑定 &gt; 渠道默认 Agent &gt; 引擎默认 &gt; 偏好 coder。</td>
+			<td class="ev">bridgeEngine.ts:404-426</td>
+		</tr>
+		<tr>
+			<td>会话（群聊）→ Agent 绑定</td>
+			<td class="st ok">✓ 可用</td>
+			<td>Agent 设置页可开关默认 Agent、按 <code>chat_id</code> 增删绑定；落盘 <code>&lt;workDir&gt;/bindings.json</code>；<code>/bind</code> 命令同源。</td>
+			<td class="ev">agentSettingsEditorPane.ts:481-637<br>bridgeBindings.ts:38-112<br>bridgeCommands.ts:249-315</td>
+		</tr>
+		<tr>
+			<td>入站 · WS 长连接（useWs）</td>
+			<td class="st ok">✓ 按官方协议实现</td>
+			<td>换地址 <code>POST /callback/ws/endpoint</code>（<code>{AppID,AppSecret}</code> → <code>data.URL</code> + <code>ClientConfig</code>）；
+				收发 <b>protobuf 二进制帧</b>（pbbp2，编解码在 <code>feishuWsProtocol.ts</code>）；
+				心跳 <code>type=ping</code>、分片重组 <code>sum/seq</code>、回执复用原帧 + <code>biz_rt</code>。</td>
+			<td class="ev">feishu.ts（长连接）+ feishuWsProtocol.ts</td>
+		</tr>
+		<tr>
+			<td>入站 · webhook 回调</td>
+			<td class="st bad">✕ 无入口</td>
+			<td><code>handleWebhookEvent()</code> 无任何外部调用方；全仓无 <code>http.createServer</code>；<code>BridgeServer</code> 只认 subscribe/inbound/ping（传 <code>webhook</code> 会被回 <code>unknown type</code>）。</td>
+			<td class="ev">feishu.ts:127-168<br>bridgeServer.ts:121-143</td>
+		</tr>
+		<tr>
+			<td>出站 · 文本 / 回复 / 交互卡片</td>
+			<td class="st ok">✓ 代码完整</td>
+			<td>tenant_access_token（含 60s 安全窗口缓存）→ <code>im/v1/messages</code> create/reply；卡片 markdown/hr/note/action 映射齐全。</td>
+			<td class="ev">feishu.ts:172-206, 210-304</td>
+		</tr>
+		<tr>
+			<td>allowFrom 白名单</td>
+			<td class="st warn">△ 仅 env 模式生效</td>
+			<td>校验在引擎侧执行并回「角色未授权」；但白名单值来自 env，UI 里的 Allow From 不生效。</td>
+			<td class="ev">bridgeEngine.ts:173-179<br>bridgeSecurity.ts:19-51</td>
+		</tr>
+		<tr>
+			<td>流式回包与错误上报</td>
+			<td class="st ok">✓ 可用</td>
+			<td>thinking/tool_start/tool_end/error/usage 均映射为出站消息；无文本输出时回「（无文本输出）」，不静默丢包。</td>
+			<td class="ev">bridgeEngine.ts:216-271, 294-310</td>
+		</tr>
+	</tbody>
+</table>
+
+<!-- ═══════════════════════ 4. 缺陷 ═══════════════════════ -->
+<h2 id="defects"><span class="idx">04</span>缺陷与断层清单</h2>
+<p class="lead">
+	按「阻断可用性」到「体验/规范问题」排序。每条含现象、证据、影响与建议修复。
+	<b>每条已标注当前修复状态</b>（右上徽章），但正文的「现象/证据/影响」保留为修复前的记录以便追溯。
+</p>
+
+<div class="defect p0 fixed">
+	<div class="dh"><span class="pri p0">P0</span><span class="dt">D-01 · 渠道配置 UI 入口不可达（侧栏视图未注册 / 编辑器无 opener）</span><span class="fixstatus ok">✓ 已修 · 2026-09-22 · <b>后按需移除该入口并迁移</b></span></div>
+	<dl>
+		<dt>现象</dt><dd>侧栏没有「渠道管理」入口；<code>ChannelEditorPane</code> 注册了但没有任何代码路径能打开它。</dd>
+		<dt>证据</dt><dd><code>constants.ts:202</code> 定义 <code>AGENT_STUDIO_CHANNEL_VIEW_ID</code>，全仓无注册；<code>agentStudio.contribution.ts:3752-3893</code> 注册的左侧栏视图清单里没有它；<code>ChannelEditorInput.getOrCreate()</code> 唯一调用方是 <code>channelView.ts:129</code>。</dd>
+		<dt>影响</dt><dd>扫码绑定、渠道表单编辑器（含「测试连接」按钮）在 UI 上完全无法触达 —— 飞书接入的「一键绑定」实际不可用。</dd>
+		<dt>建议</dt><dd class="fix">在 <code>_registerToolbarIcons()</code> 里按现有 <code>_registerToolIcon()</code> 模式注册侧栏容器 + <code>ChannelViewPane</code>（<code>viewId: AGENT_STUDIO_CHANNEL_VIEW_ID</code>）；或若产品已决定收敛到设置页，则删除 <code>channelView.ts</code> + 面板，把扫码绑定卡片移入设置页，避免死代码误导。<br>
+			<b>实际经过（2026-09-22）：</b>先按第一条修（注册侧栏入口），随后<b>按用户要求移除该 Activity Bar 页签</b>，收敛为第二条路线的轻量版：<br>
+			① 渠道管理留在「Agent Studio 设置 → Channel 配置」（同一份 <code>CHANNEL_SECTIONS</code> + 状态徽章 + 品牌图标）；<br>
+			② 侧栏容器注册、<code>channelIcon</code> 常量与相关 import 一并移除（<code>noUnusedLocals</code> 下不留未使用符号）；<br>
+			③ <b>关键补偿</b>：<code>ChannelEditorInput.getOrCreate()</code> 原来的唯一调用方就在被移除的 <code>channelView.ts</code>，
+			若只删注册，「📷 扫码绑定 / 🧪 测试连接」会整块不可达 ⇒ 已把 opener 迁到<b>设置页渠道条目的状态徽章</b>
+			（点击徽章打开该渠道的配置编辑器，<code>stopPropagation</code> 避免顺带折叠分组）。<br>
+			<code>views/channelView.ts</code> 暂留（已不再注册，等同未使用文件）；若要彻底清理，直接删该文件 + 其 <code>media/channelView.css</code> 即可。</dd>
+	</dl>
+</div>
+
+<div class="defect p0 fixed">
+	<div class="dh"><span class="pri p0">P0</span><span class="dt">D-02 · UI 凭证与运行时装配完全不通（配置 → env 断层）</span><span class="fixstatus ok">✓ 已修 · 2026-09-22</span></div>
+	<dl>
+		<dt>现象</dt><dd>在 UI 里填好 / 扫码写入 App ID、App Secret，重启后飞书渠道依然不工作。</dd>
+		<dt>证据</dt><dd>写值：<code>channelEditorPane.ts:290-292</code>（<code>sessions.channel.feishu.appId/appSecret/enabled</code>）；取值：<code>feishu.contribution.ts:19-26</code>（仅 <code>process.env</code>）。测试用例已锁定：无 env 时 <code>registerPlatform</code> 调用次数为 0，且装配函数 <code>length === 1</code>（无配置服务入口）。</dd>
+		<dt>影响</dt><dd>「配置成功」是幻觉。用户按 UI 提示操作后完全不会生效，且没有任何日志/提示说明原因。</dd>
+		<dt>建议</dt><dd class="fix">把装配改为配置优先、env 兜底：<code>registerFeishuPlatformIfConfigured(bridge, configurationService)</code>，内部读 <code>sessions.channel.feishu.*</code>（env 作为 override，便于 CI/调试）。同时把 <code>enabled</code> 作为注册前置条件，并订阅 <code>onDidChangeConfiguration</code> 做平台热重载（见 D-05）。</dd>
+	</dl>
+</div>
+
+<div class="defect p0 fixed">
+	<div class="dh"><span class="pri p0">P0</span><span class="dt">D-03 ·「🧪 测试连接」恒返回成功，属误导性假实现</span><span class="fixstatus ok">✓ 已修 · 2026-09-22</span></div>
+	<dl>
+		<dt>现象</dt><dd>点击后 1.5s 显示「✅ 连接成功」，无论凭证是否有效、网络是否可达。</dd>
+		<dt>证据</dt><dd><code>channelEditorPane.ts:326-331</code>：仅 <code>_showStatus</code> + <code>setTimeout</code>，无请求。</dd>
+		<dt>影响</dt><dd>用户据此认为凭证正确，把排障引向错误方向（尤其叠加 D-02 时几乎必然误判）。</dd>
+		<dt>建议</dt><dd class="fix">改为真实探测：飞书分支调 <code>POST /auth/v3/tenant_access_token/internal</code> 校验 appId/appSecret，成功显示 <code>tenant_access_token</code> 前缀 + 有效期，失败回显 <code>code</code>/<code>msg</code>（用 <code>redactToken()</code> 脱敏）。Telegram 分支同理调 <code>getMe</code>。</dd>
+	</dl>
+</div>
+
+<div class="defect p1">
+	<div class="dh"><span class="pri p1">P1</span><span class="dt">D-04 · webhook 入站没有 HTTP 入口，注释与实现不符</span><span class="fixstatus bad">✗ 未修（选了「仅长连接」路线）</span></div>
+	<dl>
+		<dt>现象</dt><dd><code>feishu.ts</code> 头注释称「需在飞书开放平台配置事件订阅回调指向 BridgeServer」，但实际没有可接收回调的服务。</dd>
+		<dt>证据</dt><dd><code>handleWebhookEvent()</code> 仅被 <code>_connectWs()</code> 内部调用（<code>feishu.ts:104</code>）；<code>BridgeServer._handleClientMessage()</code> 只处理 <code>subscribe</code>/<code>inbound</code>/<code>ping</code>；全仓无 <code>http.createServer</code>。测试已锁定：传 <code>webhook</code> 类型回 <code>unknown type</code>。</dd>
+		<dt>影响</dt><dd>用户若按注释去开放平台配 webhook，回调无处落地；只能用长连接模式（该路线已按官方协议补齐，见 D-07）。</dd>
+		<dt>建议</dt><dd class="fix">二选一并保持文档一致：① 补一个受限 HTTP 回调入口（校验 <code>verificationToken</code>、<code>encryptKey</code> AES 解密、应答 <code>url_verification</code> challenge），仅监听 127.0.0.1 且默认关闭；② 明确声明「仅支持长连接」，修正注释与 UI 文案。</dd>
+	</dl>
+</div>
+
+<div class="defect p1 fixed">
+	<div class="dh"><span class="pri p1">P1</span><span class="dt">D-05 · 渠道配置无热重载，必须重启窗口才生效</span><span class="fixstatus ok">✓ 已修 · 2026-09-22</span></div>
+	<dl>
+		<dt>现象</dt><dd>改完渠道配置没有任何「重新装配平台」的动作。</dd>
+		<dt>证据</dt><dd><code>bridge.contribution.ts:19-31</code> 只在 <code>WorkbenchPhase.AfterRestored</code> 调用一次 <code>registerFeishuPlatformIfConfigured()</code> 与 <code>start()</code>；<code>_started</code> 后不会重新读配置。</dd>
+		<dt>影响</dt><dd>即便修好 D-02，用户改配置后仍需重启，且现状下（D-01/D-02）会产生「明明配了却没反应」的困惑。</dd>
+		<dt>建议</dt><dd class="fix">在 <code>BridgeLifecycleContribution</code> 中订阅 <code>configurationService.onDidChangeConfiguration</code>，对 <code>sessions.channel.feishu.*</code> 做防抖后卸载并重新 <code>registerPlatform</code>（<code>IDisposable</code> 已返回，支持卸载）；UI 增加「凭证已变更，正在重载渠道…」状态。</dd>
+	</dl>
+</div>
+
+<div class="defect p1 fixed">
+	<div class="dh"><span class="pri p1">P1</span><span class="dt">D-06 · 扫码绑定的失败状态机是死代码，用户看不到精确原因</span><span class="fixstatus ok">✓ 已修 · 2026-09-22</span></div>
+	<dl>
+		<dt>现象</dt><dd>用户拒绝授权 / 二维码过期 / 轮询过快时，界面不会出现「你已拒绝授权」「二维码已过期」等提示，而是统一显示「轮询失败：飞书注册失败（xxx）」。</dd>
+		<dt>证据</dt><dd><code>postForm()</code> 在 <code>feishuRegistration.ts:75-79</code> 对 <code>error</code> 字段（除 <code>authorization_pending</code>）一律 <code>throw</code>；<code>pollFeishuRegistration()</code> 在 <code>:142-156</code> 的 <code>slow_down</code>/<code>access_denied</code>/<code>expired_token</code>/<code>default</code> 分支永不可达；UI 的 <code>switch(res.status)</code>（<code>channelEditorPane.ts:239-261</code>）因此只可能走 <code>pending</code>/<code>completed</code>。测试已锁定此现状。</dd>
+		<dt>影响</dt><dd>失败可恢复性差；且「重新扫码绑定」按钮会同时把二维码留在屏幕上，语义混乱。</dd>
+		<dt>建议</dt><dd class="fix">让 <code>postForm</code> 把 OAuth device-flow 的 <code>error</code> 原样返回（区分「传输/解析类致命错误」与「协议状态类 error」），交由 <code>pollFeishuRegistration</code> 映射 status；已 <code>denied</code>/<code>expired</code> 时清空二维码并禁用轮询。</dd>
+	</dl>
+</div>
+
+<div class="defect p1">
+	<div class="dh"><span class="pri p1">P1</span><span class="dt">D-07 · 长连接端点臆测 + 消息格式错误（实测 404 结案）</span><span class="fixstatus ok">✓ 已修 · 2026-09-22</span></div>
+	<dl>
+		<dt>现象</dt><dd>代码用 <code>POST {base}/event/v1/outbound_event/subscribe</code>，取响应 <code>data.url</code>，并把入站消息当 JSON 解析。<b>实测该端点返回 <code>404 page not found</code></b>；且官方长连接发的是 <b>protobuf 二进制帧</b>（pbbp2），按 JSON 解析必然失败。</dd>
+		<dt>证据</dt><dd>
+			① 臆测端点：<code>[Feishu] WS 长连接失败：非 JSON 响应：HTTP 404 …/event/v1/outbound_event/subscribe → 404 page not found</code>；<br>
+			② 改对路径后仍失败：<code>…/open-apis/callback/ws/endpoint → 404 page not found</code> —— 基址多了 <code>/open-apis</code>；<br>
+			③ 无效凭证探测真实网络（无敏感信息）：域名根端点返回
+			<code>200 {"code":1000040346,"msg":"app_id is invalid","data":{"URL":""}}</code>，确认端点存在、响应形状与实现一致、且**错误也是 HTTP 200**；<br>
+			④ 权威契约：官方 SDK <code>lark_oapi/ws/{const,enum,model}.py</code>、<code>pb/pbbp2_pb2.py</code>、<code>client.py</code>（字段号/端点/心跳/回执逐条对齐）。
+		</dd>
+		<dt>影响</dt><dd>原实现下 <code>FEISHU_USE_WS=1</code> 必定失败（仅一条 console.error，界面无提示），渠道静默不可用 —— 即「配置成功但渠道不工作」的最后一环。</dd>
+		<dt>建议</dt><dd class="fix">协议已按官方 SDK 对齐（含 22 条字节级编解码用例）；仍需用真实凭证做一次端到端握手。
+			另外建议把「换地址/握手失败」从日志升级为对用户可见的状态（渠道状态徽章 / 通知），避免静默失败。</dd>
+	</dl>
+</div>
+
+<div class="defect p1">
+	<div class="dh"><span class="pri p1">P1</span><span class="dt">D-08 · <code>enabled</code> 与策略类字段无运行时消费者</span><span class="fixstatus warn">△ 部分修 · 2026-09-22</span></div>
+	<dl>
+		<dt>现象</dt><dd>UI 上「启用」开关、DM Policy、Group Policy、Group Allow From、Default Account 配了没有任何效果。</dd>
+		<dt>证据</dt><dd><code>enabled</code> 仅用于徽章/计数（<code>channelView.ts:65-68</code>、<code>channelEditorPane.ts:108-115</code>）；其余字段全仓无 getValue。测试已锁定 BridgeEngine 在一次会话建立中只读取 <code>sessions.channel.feishu.defaultAgent</code>。</dd>
+		<dt>影响</dt><dd>「渠道已启用」的绿色徽章不能作为可用性判断依据。</dd>
+		<dt>建议</dt><dd class="fix">要么接线（<code>enabled</code> 作为注册前置条件；<code>dmPolicy</code>/<code>groupPolicy</code> 落到 BridgeEngine 的消息准入判定），要么在 UI 上明确标注「暂未生效」并默认折叠，避免给出错误的能力承诺。</dd>
+	</dl>
+</div>
+
+<div class="defect p1">
+	<div class="dh"><span class="pri p1">P1</span><span class="dt">D-09 · 事件加密与验签未实现</span><span class="fixstatus bad">✗ 未修（随 D-04 一起挂起）</span></div>
+	<dl>
+		<dt>现象</dt><dd>开放平台开启「Encrypt Key」后，事件体为 <code>{"encrypt":"&lt;base64&gt;"}</code>，被直接丢弃；<code>verificationToken</code> 也不参与校验。</dd>
+		<dt>证据</dt><dd><code>handleWebhookEvent()</code>（<code>feishu.ts:130-168</code>）只认 <code>header</code>/<code>event</code> 结构；两个字段仅在 <code>constants.ts:509-510</code> 出现。测试已锁定：加密事件不会触达 handler。</dd>
+		<dt>影响</dt><dd>安全性方面：若未来接入 webhook（D-04），缺少验签与解密会引入伪造事件风险。这是修复 D-04 时必须一并补齐的部分。</dd>
+		<dt>建议</dt><dd class="fix">实现 AES-256-CBC 解密（key = SHA256(encryptKey)，IV 取密文前 16 字节）与 token 校验；对 <code>url_verification</code> 回包 challenge。</dd>
+	</dl>
+</div>
+
+<div class="defect p2 fixed">
+	<div class="dh"><span class="pri p2">P2</span><span class="dt">D-10 · 二维码格式信息副本 2 覆写横向定时图案 <code>(6,8)</code></span><span class="fixstatus ok">✓ 已修 · 2026-09-22</span></div>
+	<dl>
+		<dt>现象</dt><dd>格式信息 15 bit 的写入位置有偏差：bit 8 写到了 <code>(6,8)</code>（应为 <code>(7,8)</code>）。</dd>
+		<dt>证据</dt><dd><code>feishuQrCode.ts:341-348</code>：<code>else { m[14 - i][8] = bit; }</code> 在 <code>i=8..14</code> 时写入 <code>(6,8)…(0,8)</code>。实测 <code>qrMatrix('x')</code>：<code>m[6][8] === false</code>（定时图案应为暗），<code>m[7][8] === false</code> 且无写入路径（恒为亮）。当所选掩码使格式位 8 = 1 时该缺陷被巧合掩盖（如 33×33 用例中 <code>m[6][8] === true</code>）。</dd>
+		<dt>影响</dt><dd>格式信息冗余被破坏、定时图案局部失真。因副本 1（<code>(8,i)/(i,8)</code> 部分）写入正确，多数解码器仍可识别，但会降低容错/抗污损能力。</dd>
+		<dt>建议</dt><dd class="fix">补 <code>else if (i === 8) { m[7][8] = bit; }</code>，并删除第二段的 <code>else { m[14 - i][8] = bit; }</code>；建议用标准测试向量（如 <code>"HELLO WORLD"</code> V1-Q）对拍外部解码器。</dd>
+	</dl>
+</div>
+
+<div class="defect p2 fixed">
+	<div class="dh"><span class="pri p2">P2</span><span class="dt">D-11 ·「💾 保存配置」空壳按钮</span><span class="fixstatus ok">✓ 已修 · 2026-09-22</span></div>
+	<dl>
+		<dt>现象</dt><dd>点击后弹「✅ 配置已保存」，但没有任何写入动作。</dd>
+		<dt>证据</dt><dd><code>channelEditorPane.ts:318-320</code>。</dd>
+		<dt>影响</dt><dd>与 onchange 即时落盘的模型冲突，用户可能因「没点保存」而误以为配置未生效（与 D-05 叠加更明显）。</dd>
+		<dt>建议</dt><dd class="fix">移除该按钮，或在设置页顶部加一行说明「渠道配置修改即时生效」；若保留，则改为显式 <code>flush</code> + 展示实际写入的键值。</dd>
+	</dl>
+</div>
+
+<!-- ═══════════════════════ 5. Mockup ═══════════════════════ -->
+<h2 id="mockup"><span class="idx">05</span>界面 Mockup</h2>
+<p class="lead">
+	下方 5 张 mockup 按 1:1 还原现有 UI 结构（DOM 层级、文案、配色 token 取自
+	<code>channelView.css</code> / <code>channelEditorPane.css</code>），并在其上叠加「可达性 / 缺陷」标注。
+	前 4 张为<b>分析时</b>的界面，最后 1 张为<b>建议修复后</b>的目标形态。
+</p>
+
+<div class="callout ok">
+	<b>后续变更（2026-09-22 稍后）：渠道图标已改为真实品牌 SVG。</b>
+	设置页 Channel 配置列表此前把 emoji 同时写进章节 <code>label</code> 前缀与 <code>icon</code> 槽 ⇒ 每个渠道显示<b>两个</b>相同图标；
+	现已修正为「纯文本标题 + 品牌 logo 槽」。图标数据见新增的
+	<code>browser/channelIcons.ts</code>（22 个渠道：19 个取自 Simple Icons / Iconify tdesign 的官方商标字形，
+	另 3 个 feishu / tlon / nostr 为 2026-09-22 网络检索补齐，见下方说明；仅 <code>irc</code> / <code>yuanbao</code> 保留 emoji 兜底）。
+	因此下方 mockup 中的渠道 emoji（🐦 / ✈️ / 🎮 …）<b>在最新代码里已换成品牌 SVG</b>（仅 irc / yuanbao 仍为 emoji）。<br>
+	<b>★ 2026-09-22 复查：该修正曾被在途 Git 操作还原</b>（设置页渠道条目又出现「同一个 logo 显示两遍」的
+	<code>label: icon + label</code> 拼接写法），已重新落地，并补两条守卫用例防再犯：<br>
+	① <code>channelIcons.test.ts</code>「渠道条目标题是纯文本：不得再拼 icon emoji」（遍历全部渠道定义，
+	断言标题等于 <code>def.label</code> 且不含 <code>def.icon</code>）；<br>
+	② 同套件「每个渠道条目都有可渲染的 logo（品牌 SVG 或 emoji 兜底，不会留空白）」。<br>
+	另外渠道编辑页（<code>ChannelEditorPane</code>）头部 logo 也一并统一为品牌 SVG 优先，避免同一语义两处不一致。
+</div>
+
+<div class="callout ok">
+	<b>★ 2026-09-22 网络检索补齐品牌矢量：从 5 个 emoji 兜底收敛到 2 个。</b>
+	按渠道逐个到「品牌自有站点 / 官方图标集」取证，新增 3 条（<code>channelIcons.ts</code>，slug 前缀即来源可信级别）：<br>
+	· <b>feishu</b> ← <code>official:open.feishu.cn/favicon-logo.svg</code>：飞书官网（www.feishu.cn）只有 PNG/ICO，
+	但<b>开放平台</b>的站点图标是 SVG，三色恰为飞书品牌色（<code>#3370FF</code> 主蓝 / <code>#00D6B9</code> 青 / <code>#133C9A</code> 深蓝），
+	与官方 <code>share-logo.png</code> 目视同形同色 ⇒ 判定为官方矢量。入库时去掉了源文件的白底圆角 <code>&lt;rect&gt;</code>，
+	与其余 logo 统一为透明底。<br>
+	· <b>tlon</b> ← <code>official:tlon.io/icon.svg</code>：Tlon（Urbit 背后的公司）官网图标；源内 fill 写死，这里改走
+	<code>currentColor</code> 以随主题变色。<br>
+	· <b>nostr</b> ← <code>community-cc0:mbarulli/nostr-logo@main</code>：<b>nostr 没有官方 logo</b> ——
+	官方设计指引原话「Since Nostr doesn't have a logo that everyone can agree on…」，故标 <code>community-cc0</code> 而非
+	<code>official</code>，来源是社区 CC0-1.0 图标集（不冒充官方）。<br>
+	<b>仍保留 emoji 的 2 个（宁缺毋滥，非遗漏）：</b><br>
+	· <code>irc</code> —— IRC 是协议、无品牌标识；Iconify 里只有第三方客户端图标（<code>arcticons:irc</code>，且为 CC BY-SA 4.0，许可档位与本项目其余图标不同档）；<br>
+	· <code>yuanbao</code> —— 腾讯元宝：Iconify 的 <code>thesvg:yuanbao</code> 实为其站点上的「AI 创作」UI 图标、
+	<code>mingcute:yuanbao-*</code> 是「金元宝（货币）」图形（已渲染比对，均非品牌标记），官网只提供 PNG（绿底吉祥物脸）。<br>
+	<b>质量把关方式：</b>① 逐字转写校验 —— 用脚本把入库的 path 与官方源 SVG 归一化后比对，
+	三个新条目的 path 数量与内容<b>完全一致</b>（源⊆我方 且 我方⊆源）；② 目视比对 —— 与官方参考图并排渲染确认形状/配色正确；
+	③ 用例守卫 —— <code>channelIcons.test.ts</code> 收紧到 <code>EXPECTED_FALLBACK_KEYS = ['irc','yuanbao']</code>，
+	并要求 <code>official:</code> 的 slug 必须能指认到具体站点资源（正则校验 domain/path）。
+</div>
+
+<div class="callout warn">
+	<b>★ 2026-09-22 追加加固：品牌色改用 inline style（防「图标位在、图形不在」）。</b>
+	原实现的品牌色只写在 SVG 的 <code>fill="…"</code> <b>presentation attribute</b> 上 —— 它在 CSS 层叠里
+	<b>优先级最低</b>，任何命中 <code>svg</code> 的规则（主题 / 全局样式 / 插件注入的 css，哪怕只是
+	<code>svg { fill: … }</code>）都会覆盖它，使「单 path 继承色」的 logo <b>整片消失</b>；
+	而飞书那条 logo 是<b>每个 path 自带 fill</b>，不受 svg 级规则影响 ——
+	因此「<b>只有飞书有图标、其它渠道空白</b>」正是本加固要防的形态。
+	现在品牌色同时写入 <code>style.fill</code>（多色 logo 的每条 path 同样处理），inline style 优先级最高，
+	从根本上杜绝这类静默失效。该失败模式的判别式：图标位占位正常但图形空白，且<b>只有多色 logo（飞书/企业微信）可见</b>。
+</div>
+
+<div class="mock-grid">
+
+	<!-- Mock 1: 侧栏渠道管理（未注册） -->
+	<div class="mock">
+		<div class="mock-cap"><span>M1 · 侧栏「📡 渠道管理」</span><span class="tag warn">入口已移除 · 历史形态</span></div>
+		<div class="workbench">
+			<div class="wb-activity">
+				<div class="wb-act-icon">🗂️</div>
+				<div class="wb-act-icon">🔍</div>
+				<div class="wb-act-icon">🤖</div>
+				<div class="wb-act-icon">✅</div>
+				<div class="wb-act-icon">🧩</div>
+			</div>
+			<div class="wb-side">
+				<div class="cv">
+					<div class="cv-head">
+						<div class="cv-title">📡 渠道管理</div>
+						<span class="cv-count">1/18</span>
+					</div>
+					<div class="cv-list">
+						<div class="cv-item"><div class="cv-icon">💬</div><div class="cv-info"><div class="cv-name">WhatsApp</div><div class="cv-desc">WhatsApp Web (Baileys) — QR 码扫描连接</div></div><div class="cv-dot"></div><div class="cv-chevron">›</div></div>
+						<div class="cv-item"><div class="cv-icon">✈️</div><div class="cv-info"><div class="cv-name">Telegram</div><div class="cv-desc">Telegram Bot API 连接</div></div><div class="cv-dot"></div><div class="cv-chevron">›</div></div>
+						<div class="cv-item"><div class="cv-icon">🎮</div><div class="cv-info"><div class="cv-name">Discord</div><div class="cv-desc">Discord Bot API 连接</div></div><div class="cv-dot"></div><div class="cv-chevron">›</div></div>
+						<div class="cv-item enabled"><div class="cv-icon">🐦</div><div class="cv-info"><div class="cv-name">Feishu</div><div class="cv-desc">飞书/Lark 企业通信 — 含文档/知识库/云盘工具</div></div><div class="cv-dot on"></div><div class="cv-chevron">›</div></div>
+						<div class="cv-item"><div class="cv-icon">🟢</div><div class="cv-info"><div class="cv-name">LINE</div><div class="cv-desc">LINE Messaging API — Webhook Bot</div></div><div class="cv-dot"></div><div class="cv-chevron">›</div></div>
+					</div>
+				</div>
+			</div>
+			<div class="wb-main">
+				<div class="wb-tabs"><div class="wb-tab active">📡 Channel: feishu <span class="close">✕</span></div></div>
+				<div class="wb-body" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;text-align:center;padding:24px;">
+					<div>
+						<div style="font-size:34px;margin-bottom:10px;">📡</div>
+						<div style="color:var(--green);font-weight:600;">点击渠道项即在中间栏打开其配置编辑器</div>
+						<div style="margin-top:8px;font-size:12px;line-height:1.7;">
+							<code>AGENT_STUDIO_CHANNEL_VIEW_ID</code>（order 130）已注册<br>
+							<code>ChannelEditorInput.getOrCreate()</code> 由此视图调用 → 打开 ChannelEditorPane
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-note"><b>修复（D-01）：</b>Activity Bar 最左侧新增「📡 Channels」图标（本 mockup 中省略以保持与修复前对比）；注册方式复用既有 <code>_registerToolIcon()</code>，与 Agents / Tasks / Workflow 等图标同构。<br>
+			<b>★ 2026-09-22 其后：该 Activity Bar 页签已按用户要求移除</b> —— 上图仅作历史形态留存；渠道管理改由设置页 Channel 配置承担（见 M2）。</div>
+	</div>
+
+	<!-- Mock 2: Agent Studio 设置页 Channel TOC（可达） -->
+	<div class="mock">
+		<div class="mock-cap"><span>M2 · Agent Studio 设置页 · 「📡 Channel 配置」</span><span class="tag warn">✓ 可达 / 仅写值</span></div>
+		<div class="workbench" style="min-height:470px;">
+			<div class="wb-activity">
+				<div class="wb-act-icon">🗂️</div>
+				<div class="wb-act-icon">🤖</div>
+				<div class="wb-act-icon">🧩</div>
+			</div>
+			<div class="wb-main">
+				<div class="wb-tabs"><div class="wb-tab active">⚙️ Agent Studio Settings <span class="close">✕</span></div></div>
+				<div class="wb-body">
+					<div class="st-layout">
+						<div class="st-toc">
+							<div class="st-toc-item">⚙️ 通用设置</div>
+							<div class="st-toc-item">🧠 辅助模型</div>
+							<div class="st-toc-item">💻 CLI 设置</div>
+							<div class="st-toc-item">🛠️ 工具配置</div>
+							<div class="st-toc-item active">📡 Channel 配置</div>
+							<div class="st-toc-item">🔌 Provider</div>
+						</div>
+						<div class="st-content">
+							<div class="st-sec">
+								<div class="st-sec-head"><span class="arrow">▾</span>🐦 Feishu <span class="sec-desc">飞书/Lark 企业通信 — 含文档/知识库/云盘工具</span></div>
+								<div class="st-sec-body">
+									<div class="st-field">
+										<div><div class="st-field-label">启用</div><div class="st-field-desc">启用 feishu 渠道</div></div>
+										<div class="st-field-ctrl" style="display:flex;justify-content:flex-end;"><div class="toggle on annot warn"><span class="badge-float warn">enabled 无消费者</span><span class="track"></span><span class="knob"></span></div></div>
+									</div>
+									<div class="st-field">
+										<div><div class="st-field-label">DM Policy</div><div class="st-field-desc">私聊消息策略</div></div>
+										<div class="st-field-ctrl"><div class="ce-select annot warn"><span class="badge-float warn">无消费者</span>Pairing（配对模式）</div></div>
+									</div>
+									<div class="st-field">
+										<div><div class="st-field-label">Allow From</div><div class="st-field-desc">允许的发送者 ID 列表（每行一个）</div></div>
+										<div class="st-field-ctrl"><div class="ce-textarea annot warn"><span class="badge-float warn">仅 env 生效</span>ou_9b1c…</div></div>
+									</div>
+									<div class="st-field">
+										<div><div class="st-field-label">默认 Agent</div><div class="st-field-desc">该渠道新建会话时默认使用的 Agent（留空跟随引擎默认）</div></div>
+										<div class="st-field-ctrl"><div class="ce-select annot"><span class="badge-float ok" style="background:#2e7d32;">✓ 唯一生效项</span>Saros Coder (claude-sonnet)</div></div>
+									</div>
+									<div class="st-field">
+										<div><div class="st-field-label">App ID</div><div class="st-field-desc">飞书应用 App ID</div></div>
+										<div class="st-field-ctrl"><div class="ce-input annot"><span class="badge-float">写入配置 ≠ 生效</span>cli_a3f7…</div></div>
+									</div>
+									<div class="st-field">
+										<div><div class="st-field-label">App Secret</div><div class="st-field-desc">飞书应用 App Secret</div></div>
+										<div class="st-field-ctrl"><div class="ce-input annot">••••••••••••</div></div>
+									</div>
+									<div class="st-field">
+										<div><div class="st-field-label">长连接接收事件</div><div class="st-field-desc">通过 WebSocket 长连接接收飞书事件（无需公网回调地址，推荐开启）</div></div>
+										<div class="st-field-ctrl" style="display:flex;justify-content:flex-end;"><div class="toggle on annot"><span class="badge-float ok" style="background:#2e7d32;">✓ 新增 · 已接入</span><span class="track"></span><span class="knob"></span></div></div>
+									</div>
+									<div class="st-field">
+										<div><div class="st-field-label">Verification Token</div><div class="st-field-desc">事件订阅验证 Token（仅 Webhook 回调模式使用，当前版本未启用该模式）</div></div>
+										<div class="st-field-ctrl"><div class="ce-input annot warn"><span class="badge-float warn">无消费者</span>••••••••</div></div>
+									</div>
+									<div class="st-field">
+										<div><div class="st-field-label">Encrypt Key</div><div class="st-field-desc">事件加密密钥</div></div>
+										<div class="st-field-ctrl"><div class="ce-input annot warn"><span class="badge-float warn">无消费者</span>••••••••</div></div>
+									</div>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-note">
+			<b>说明：</b>本界面由 <code>CHANNEL_SECTIONS</code> 动态生成（TOC id <code>channel</code>），是轻量入口 ——
+			<b>没有</b>扫码绑定卡片与「测试连接」按钮（那些在 M3 的渠道编辑器里）；红框标注的字段为 D-08 未接线项（UI 已标注「当前版本未生效」）。
+		</div>
+	</div>
+
+	<!-- Mock 3: 飞书渠道编辑器（已注册但无 opener） -->
+	<div class="mock span-2">
+		<div class="mock-cap"><span>M3 · 飞书渠道配置编辑器（<code>ChannelEditorPane</code>，含扫码绑定）</span><span class="tag ok">✓ 已可达 · 按钮已改真实实现</span></div>
+		<div class="workbench" style="min-height:560px;">
+			<div class="wb-activity">
+				<div class="wb-act-icon">🗂️</div>
+				<div class="wb-act-icon">🤖</div>
+				<div class="wb-act-icon">🧩</div>
+			</div>
+			<div class="wb-side wide">
+				<div class="cv">
+					<div class="cv-head"><div class="cv-title">📡 渠道管理</div><span class="cv-count">1/18</span></div>
+					<div class="cv-list">
+						<div class="cv-item"><div class="cv-icon">✈️</div><div class="cv-info"><div class="cv-name">Telegram</div><div class="cv-desc">Telegram Bot API 连接</div></div><div class="cv-dot"></div><div class="cv-chevron">›</div></div>
+						<div class="cv-item enabled"><div class="cv-icon">🐦</div><div class="cv-info"><div class="cv-name">Feishu</div><div class="cv-desc">飞书/Lark 企业通信 — 含文档/知识库/云盘工具</div></div><div class="cv-dot on"></div><div class="cv-chevron">›</div></div>
+						<div class="cv-item"><div class="cv-icon">🟢</div><div class="cv-info"><div class="cv-name">LINE</div><div class="cv-desc">LINE Messaging API — Webhook Bot</div></div><div class="cv-dot"></div><div class="cv-chevron">›</div></div>
+						<div class="cv-item"><div class="cv-icon">🟣</div><div class="cv-info"><div class="cv-name">Matrix</div><div class="cv-desc">Matrix 去中心化通信</div></div><div class="cv-dot"></div><div class="cv-chevron">›</div></div>
+					</div>
+				</div>
+			</div>
+			<div class="wb-main">
+				<div class="wb-tabs"><div class="wb-tab active">📡 Channel: feishu <span class="close">✕</span></div></div>
+				<div class="wb-body">
+					<div class="ce">
+						<div class="ce-head">
+							<div class="ce-head-icon">🐦</div>
+							<div class="ce-head-info">
+								<h2 class="ce-title">Feishu</h2>
+								<div class="ce-subdesc">飞书/Lark 企业通信 — 含文档/知识库/云盘工具</div>
+							</div>
+							<span class="ce-badge enabled">已启用</span>
+						</div>
+
+						<div class="ce-bind">
+							<div class="ce-bind-title">📷 扫码绑定飞书（PersonalAgent）</div>
+							<div class="ce-bind-hint">点击下方按钮，用飞书 App「扫一扫」即可创建机器人并自动写入 App ID / App Secret，完成与 vssaros 的链接。</div>
+							<button class="ce-btn primary">📷 开始扫码绑定</button>
+						</div>
+
+						<div class="ce-form">
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">启用</div><div class="ce-fdesc">启用 feishu 渠道</div></div><div class="ce-ctrl" style="justify-content:flex-end;"><div class="toggle on"><span class="track"></span><span class="knob"></span></div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">DM Policy</div><div class="ce-fdesc">私聊消息策略</div></div><div class="ce-ctrl"><div class="ce-select">Pairing（配对模式）</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">Allow From</div><div class="ce-fdesc">允许的发送者 ID 列表（每行一个）</div></div><div class="ce-ctrl"><div class="ce-textarea">ou_9b1c4d2e8a7f</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">Group Policy</div><div class="ce-fdesc">群聊消息策略</div></div><div class="ce-ctrl"><div class="ce-select">Disabled（禁用）</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">Group Allow From</div><div class="ce-fdesc">允许的群聊 ID 列表（每行一个）</div></div><div class="ce-ctrl"><div class="ce-textarea" style="color:var(--muted);">（空）</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">Default Account</div><div class="ce-fdesc">多帐号时的默认帐号名称</div></div><div class="ce-ctrl"><div class="ce-input" style="color:var(--muted);">（空）</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">默认 Agent</div><div class="ce-fdesc">该渠道新建会话时默认使用的 Agent（留空跟随引擎默认）</div></div><div class="ce-ctrl"><div class="ce-select">Saros Coder (claude-sonnet)</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">App ID</div><div class="ce-fdesc">飞书应用 App ID</div></div><div class="ce-ctrl"><div class="ce-input">cli_a3f7c9d21e</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">App Secret</div><div class="ce-fdesc">飞书应用 App Secret</div></div><div class="ce-ctrl"><div class="ce-input">••••••••••••••••</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">Verification Token</div><div class="ce-fdesc">事件订阅验证 Token</div></div><div class="ce-ctrl"><div class="ce-input">••••••••</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">Encrypt Key</div><div class="ce-fdesc">事件加密密钥</div></div><div class="ce-ctrl"><div class="ce-input">••••••••</div></div></div>
+
+							<div class="ce-actions">
+								<button class="ce-btn primary annot warn"><span class="badge-float warn">空壳：无写入</span>💾 保存配置</button>
+								<button class="ce-btn secondary annot"><span class="badge-float">假实现：恒成功</span>🧪 测试连接</button>
+								<button class="ce-btn danger">🔄 恢复默认</button>
+							</div>
+						</div>
+						<div class="ce-statusbar"> </div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-note">
+			<b>修复后：</b>D-01 让本面板可达（侧栏点击打开）；D-03 把「🧪 测试连接」改为真实凭证探测（mockup 中标注仍保留修复前的警示，以便对照）；
+			D-11 删除空壳「💾 保存配置」，改为「配置修改即时生效（保存于用户设置），无需重启窗口」说明文案。
+		</div>
+	</div>
+
+	<!-- Mock 4: 扫码绑定进行中 -->
+	<div class="mock">
+		<div class="mock-cap"><span>M4 · 扫码绑定进行中（真实二维码矩阵）</span><span class="tag warn">△ 失败分支不可达</span></div>
+		<div class="workbench" style="min-height:420px;">
+			<div class="wb-main">
+				<div class="wb-tabs"><div class="wb-tab active">📡 Channel: feishu <span class="close">✕</span></div></div>
+				<div class="wb-body">
+					<div class="ce">
+						<div class="ce-bind" style="margin-top:18px;">
+							<div class="ce-bind-title">📷 扫码绑定飞书（PersonalAgent）</div>
+							<div class="ce-bind-hint">点击下方按钮，用飞书 App「扫一扫」即可创建机器人并自动写入 App ID / App Secret，完成与 vssaros 的链接。</div>
+							<button class="ce-btn primary" style="opacity:.55;">⏳ 正在发起…</button>
+							<div class="ce-bind-panel">
+								<div class="qr-wrap" id="qr"></div>
+								<div style="display:flex;gap:10px;"><button class="ce-btn secondary">🔗 复制授权链接</button></div>
+								<div class="ce-bind-status">请用飞书 App 扫描上方二维码完成授权…</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-note">
+			二维码由仓库内的自实现生成器 <code>qrMatrix()</code> <b>真实渲染</b>（33×33，内容为示例授权 URL，非截图）。
+			<b>注意：</b>「你已拒绝授权」「二维码已过期」等状态因 D-06 永远不会出现。
+		</div>
+	</div>
+
+	<!-- Mock 5: Agent 设置 → 渠道绑定（可用） -->
+	<div class="mock">
+		<div class="mock-cap"><span>M5 · Agent 设置 →「渠道绑定」Tab</span><span class="tag ok">✓ 可用</span></div>
+		<div class="workbench" style="min-height:420px;">
+			<div class="wb-main">
+				<div class="wb-tabs"><div class="wb-tab active">🤖 Agent Settings — Saros Coder <span class="close">✕</span></div></div>
+				<div class="wb-body">
+					<div class="as-pane">
+						<div class="as-desc">配置此 Agent 与各消息渠道（Channel）的绑定关系。当前已支持「飞书」渠道：可设为渠道默认处理 Agent，或按会话（chat_id）精确绑定。绑定的渠道会话消息将自动路由给本 Agent。</div>
+						<div class="as-group">
+							<div class="as-group-head">🔵 飞书 (Feishu)</div>
+							<div class="as-sec">
+								<div class="as-sec-title">飞书渠道默认 Agent</div>
+								<div class="as-default-row">
+									<input type="checkbox" checked disabled>
+									<span>将此 Agent 设为飞书渠道的默认处理 Agent（无精确群绑定时生效）</span>
+								</div>
+							</div>
+							<div class="as-sec">
+								<div class="as-sec-title">群聊绑定（按会话）</div>
+								<div class="as-hint">在飞书群中发送 /bind list 可查看本群 chat_id。绑定的群聊消息将自动路由给本 Agent。</div>
+								<div class="as-add-row">
+									<div class="ce-input" style="color:var(--muted);">输入飞书群聊会话 ID（chat_id）</div>
+									<button class="ce-btn primary">➕ 绑定</button>
+								</div>
+								<div class="as-item"><span>oc_7f3a1b9d42e5</span><span class="rm">✕</span></div>
+								<div class="as-item"><span>oc_2c8e4f6a1d90</span><span class="rm">✕</span></div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-note">这是当前飞书链路里<b>唯一完整可用</b>的界面：默认 Agent 写入 <code>sessions.channel.feishu.defaultAgent</code>（运行时真的会读）；群聊绑定写入 <code>bindings.json</code>（跨重启保持）。</div>
+	</div>
+
+	<!-- Mock 6: 建议修复后 -->
+	<div class="mock span-2">
+		<div class="mock-cap"><span>M6 · 目标形态（入口打通 + 真实自检 + 即时生效）</span><span class="tag ok">✓ 关键项已实施 · 2026-09-22</span></div>
+		<div class="workbench" style="min-height:520px;">
+			<div class="wb-activity">
+				<div class="wb-act-icon">🗂️</div>
+				<div class="wb-act-icon">🤖</div>
+				<div class="wb-act-icon active">📡</div>
+				<div class="wb-act-icon">🧩</div>
+			</div>
+			<div class="wb-side wide">
+				<div class="cv">
+					<div class="cv-head"><div class="cv-title">📡 渠道管理</div><span class="cv-count">1/18</span></div>
+					<div class="cv-list">
+						<div class="cv-item enabled"><div class="cv-icon">🐦</div><div class="cv-info"><div class="cv-name">Feishu</div><div class="cv-desc">飞书/Lark — 已连接 · 长连接正常</div></div><div class="cv-dot on"></div><div class="cv-chevron">›</div></div>
+						<div class="cv-item"><div class="cv-icon">✈️</div><div class="cv-info"><div class="cv-name">Telegram</div><div class="cv-desc">未配置凭证</div></div><div class="cv-dot"></div><div class="cv-chevron">›</div></div>
+						<div class="cv-item"><div class="cv-icon">🎮</div><div class="cv-info"><div class="cv-name">Discord</div><div class="cv-desc">未配置凭证</div></div><div class="cv-dot"></div><div class="cv-chevron">›</div></div>
+					</div>
+				</div>
+			</div>
+			<div class="wb-main">
+				<div class="wb-tabs"><div class="wb-tab active">📡 Channel: feishu <span class="close">✕</span></div></div>
+				<div class="wb-body">
+					<div style="padding:10px 24px;background:var(--green-soft);color:var(--green);font-size:12.5px;border-bottom:1px solid var(--border);">
+						✓ 渠道配置修改已即时生效（平台已重新装配，无需重启窗口）
+					</div>
+					<div class="ce">
+						<div class="ce-head">
+							<div class="ce-head-icon">🐦</div>
+							<div class="ce-head-info">
+								<h2 class="ce-title">Feishu</h2>
+								<div class="ce-subdesc">飞书/Lark 企业通信 — 含文档/知识库/云盘工具</div>
+							</div>
+							<span class="ce-badge enabled">已启用 · 运行中</span>
+						</div>
+						<div class="ce-bind">
+							<div class="ce-bind-title">📷 扫码绑定飞书（PersonalAgent）</div>
+							<div class="ce-bind-hint">点击下方按钮，用飞书 App「扫一扫」即可创建机器人并自动写入 App ID / App Secret。</div>
+							<div style="display:flex;gap:10px;align-items:center;">
+								<button class="ce-btn primary">📷 重新扫码绑定</button>
+								<span style="font-size:12px;color:var(--green);">✓ 已绑定：cli_a3f7…（owner ou_9b1c…）</span>
+							</div>
+						</div>
+						<div class="ce-form">
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">启用</div><div class="ce-fdesc">关闭后会卸载飞书平台（不再接收/发送消息）</div></div><div class="ce-ctrl" style="justify-content:flex-end;"><div class="toggle on"><span class="track"></span><span class="knob"></span></div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">App ID</div><div class="ce-fdesc">飞书应用 App ID</div></div><div class="ce-ctrl"><div class="ce-input">cli_a3f7c9d21e</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">App Secret</div><div class="ce-fdesc">飞书应用 App Secret（32 位）</div></div><div class="ce-ctrl"><div class="ce-input">••••••••••••••••</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">接收模式</div><div class="ce-fdesc">长连接（推荐，无需公网回调）或 Webhook 事件订阅</div></div><div class="ce-ctrl"><div class="ce-select">长连接（WebSocket）</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">Verification Token</div><div class="ce-fdesc">Webhook 模式下校验事件来源</div></div><div class="ce-ctrl"><div class="ce-input">••••••••</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">Encrypt Key</div><div class="ce-fdesc">Webhook 模式下解密事件体</div></div><div class="ce-ctrl"><div class="ce-input">••••••••</div></div></div>
+							<div class="ce-row"><div class="ce-labels"><div class="ce-label">默认 Agent</div><div class="ce-fdesc">该渠道新建会话时默认使用的 Agent</div></div><div class="ce-ctrl"><div class="ce-select">Saros Coder (claude-sonnet)</div></div></div>
+							<div class="ce-actions">
+								<button class="ce-btn secondary">🧪 测试连接</button>
+								<button class="ce-btn danger">🔄 恢复默认</button>
+							</div>
+						</div>
+						<div class="ce-statusbar ok">✅ 连接成功：tenant_access_token 已获取（有效期 7200s）· 长连接 ws://open.feishu.cn/… 已建立</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mock-note">
+			<b>4 处改动本次均已落地：</b>① 注册侧栏渠道视图并挂上 opener（D-01）；② 装配函数接收 <code>IConfigurationService</code>，env 优先/配置兜底 + <code>enabled</code> 门控（D-02）；
+			③「测试连接」改为真实探测并回显 <code>code/msg</code>（D-03）；④ 订阅配置变更做平台热重载（D-05）。并移除空壳「保存配置」（D-11）。<br>
+			<b>仅一点为设计示意、尚未实现：</b>顶部「✓ 配置已即时生效」横幅 —— 当前生效证据落在日志（<code>[Bridge] 飞书渠道配置已变更 → 平台已重新装配</code>），UI 横幅未加。
+		</div>
+	</div>
+
+</div>
+
+<div class="callout">
+	<b>关于 mockup 的真实性：</b>所有 DOM 结构、字段顺序、文案（含「📷 扫码绑定飞书（PersonalAgent）」提示语、「🔄 恢复默认」等按钮标签）、
+	配色 token（<code>--vscode-input-background</code> / <code>#4caf50</code> 徽章 / 左侧 3px 绿边等）均取自仓库源码 CSS 与 TS 模板字符串，非自由创作。
+	M4 的二维码由 <code>feishuQrCode.qrMatrix()</code> 实际计算得出。
+</div>
+
+<!-- ═══════════════════════ 6. 测试 ═══════════════════════ -->
+<h2 id="tests"><span class="idx">06</span>测试用例</h2>
+<p class="lead">
+	测试文件 <code>src/vs/sessions/contrib/agentStudio/test/browser/feishuChannel.test.ts</code>，
+	<b>13 个套件 · 101 条用例 · 全部通过</b>（另有长连接协议 24 条、主进程出口适配器 12 条、Telegram 16 条、node 真连联测 3 条，见下）。用例分三类：<b>契约/行为验证</b>（绿）、
+	<b>修复回归</b>（标注「D-xx 已修」，锁定修复后的契约）、
+	<b>未修缺口锁定</b>（标注「【仍未修 D-xx】」，防止被无声"修复"）。
+</p>
+
+<div class="two-col">
+	<div>
+		<div class="suite-block">
+			<div class="suite-head"><span>① 飞书渠道 · 定义与配置键</span><span class="cnt">7 passing</span></div>
+			<div class="suite-body"><ul>
+				<li>CHANNEL_DEFINITIONS 中存在 feishu 定义且别名含 lark</li>
+				<li>凭证字段齐全：appId/appSecret/verificationToken/encryptKey</li>
+				<li>通用字段齐全（enabled/dmPolicy/allowFrom/groupPolicy/groupAllowFrom/defaultAccount/defaultAgent）</li>
+				<li>全部字段键统一落在 <code>sessions.channel.feishu.</code> 命名空间下</li>
+				<li>enabled 默认 false</li>
+				<li>defaultAgent 为 agent 类型</li>
+				<li>CHANNEL_ORDER 覆盖 feishu</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>② FeishuPlatform · 入站事件解析</span><span class="cnt">7 passing</span></div>
+			<div class="suite-body"><ul>
+				<li><code>im.message.message_received</code> → 完整 InboundMessage（sessionKey/platform/userId/conversationId/content/replyCtx）</li>
+				<li>非消息事件被忽略</li>
+				<li>未 start() 时静默忽略不抛异常</li>
+				<li>content 非法 JSON → 文本退化为空串</li>
+				<li>缺 sender.open_id → 退化为 union_id / unknown</li>
+				<li class="gap">【断层④】加密事件（encrypt）被静默丢弃</li>
+				<li class="gap">【断层⑤】webhook 入口不响应 url_verification</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>③ FeishuPlatform · 出站 REST</span><span class="cnt">11 passing</span></div>
+			<div class="suite-body"><ul>
+				<li>reply 缺 message_id → 抛错且不发出请求</li>
+				<li>send 缺 chat_id → 抛错</li>
+				<li>reply 成功：token → Bearer 调 <code>/im/v1/messages/{id}/reply</code></li>
+				<li>send 主动发送：receive_id_type=chat_id</li>
+				<li>token 缓存：expire 充足时两次 reply 只取一次 token</li>
+				<li>token 缓存窗口（&lt;60s）内重新获取</li>
+				<li>token 获取失败 / 发送失败 → 抛错并带上飞书 msg</li>
+				<li>网络异常（fetch reject）向上抛出</li>
+				<li>sendCard → interactive + 卡片结构（markdown/hr/note/action+button）</li>
+				<li>replyCard 缺 message_id → 抛错</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>④ FeishuPlatform · WS 长连接</span><span class="cnt">9 passing</span></div>
+			<div class="suite-body"><ul>
+				<li>useWs 未开启 → start() 不发请求</li>
+				<li>useWs=true → 订阅取 wss 地址并建立连接，事件可路由</li>
+				<li>用官方端点 + PascalCase 请求体换 wss 地址，二进制事件帧可路由</li>
+				<li><b>回执：</b>复用原帧回写 <code>payload={"code":200}</code> 并附 <code>biz_rt</code>（官方无独立 ack 帧类型）</li>
+				<li><b>回执 code=500：</b>事件处理抛错时如实上报失败</li>
+				<li><b>分片重组：</b>sum=2 未收齐不路由，收齐后合并路由一次</li>
+				<li><b>心跳：</b>连接建立即发 <code>type=ping</code> 的 CONTROL 帧，<code>service</code> 取自 URL 的 <code>service_id</code></li>
+				<li><b>pong 携带新 ClientConfig：</b>心跳间隔热更新</li>
+				<li>换地址失败（code!=0 / 缺 URL）→ 记原因含端点与飞书错误码，不建连、按配置重连</li>
+				<li>握手失败与连接后断连的提示区分；主动 stop() 不误报</li>
+				<li>url_verification challenge（文本帧兜底）经 WS 回包（不路由给 Agent）</li>
+				<li>stop() 关闭连接、停心跳与重连定时器、清空 handler/token</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>⑬ 飞书长连接协议 · pbbp2 编解码</span><span class="cnt">24 passing</span></div>
+			<div class="suite-body">
+			<ul>
+				<li><b>帧解码：</b>手算字节 fixture 逐字段还原（把字段号 1–9 钉死，不靠 encode↔decode 自证）</li>
+				<li>uint64 用十进制字符串承载，不做 float 截断（2⁶³ 用例）</li>
+				<li>负数 int32（method=-1）按符号扩展解码回 -1</li>
+				<li>未识别字段原样保留 → round-trip 字节完全一致</li>
+				<li>截断帧 / 非法 wire type 抛错（不静默返回半个帧）</li>
+				<li><b>帧编码：</b>proto2 required 零值也写出；ping 帧精确字节断言</li>
+				<li>回执帧结构：复用原帧 + <code>{"code":200}</code> + <code>biz_rt</code>；失败用 <code>500</code> 且 <code>biz_rt</code> 不为负</li>
+				<li>中文/emoji payload UTF-8 往返无损</li>
+				<li><b>换地址解析：</b>官方 <code>data.URL</code> + <code>ClientConfig</code>（PascalCase）；端点常量防回退到 404 臆测值</li>
+				<li>容错：小写 <code>data.url</code> / 缺 ClientConfig 用默认；非法值（0/负数/NaN）不采纳</li>
+				<li><code>code!=0</code> 抛错带 code/msg（1 → system busy 提示）；缺 URL 抛错</li>
+				<li><code>service_id</code> 解析（无/非法回落 1）</li>
+				<li><b>分片重组：</b>乱序（1,0 / 2,0,1）、多消息互不干扰、5s TTL 淘汰不拼脏数据、收齐后清空、clear()</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>⑭ Telegram 渠道 · 出口 / 轮询 / 装配</span><span class="cnt">16 passing</span></div>
+			<div class="suite-body">
+			<ul>
+				<li>入站解析：message → InboundMessage、callback_query 标记为权限响应、photo 附件占位</li>
+				<li><b>出站经主进程出口（D-14）：</b>sendCard/reply 的 POST 全走出口，渲染进程 fetch 完全不参与</li>
+				<li>按钮矩阵（多行 inline_keyboard）经出口透传</li>
+				<li>未注入出口 → 回落 fetch（非 Electron 宿主边界）</li>
+				<li><code>ok:false</code> → 抛错带 HTTP 状态与 Telegram description；非 JSON → 抛错带片段</li>
+				<li>缺少 chat_id → 直接抛错、不发起请求</li>
+				<li><b>长轮询：</b>GET 带 offset+timeout，update 消费后 offset 前进；<code>stop()</code> 后不再轮询</li>
+				<li><b>失败可诊断（D-14）：</b><code>lastError</code> 可读 + 节流日志；恢复后清空；<code>ok=false</code> 不再静默</li>
+				<li>附件下载失败 → 保留占位附件（data 为空）且不抛错</li>
+				<li>装配：无 token 不注册；有 token 注册并透传出口 + 日志标注 <code>http=主进程 httpRequest</code></li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>⑮ 飞书长连接「真连」联测（node，进程内 WS 服务端）</span><span class="cnt">3 passing</span></div>
+			<div class="suite-body">
+			<ul>
+				<li><b>为什么必须有这层：</b>单元测试 stub 了 WebSocket，证明不了「真的连得上」——
+					它只钉编解码与接线，不钉 <b>真实握手 + 真实二进制帧</b>。这层让生产 <code>FeishuPlatform</code>
+					对一个自己实现的 RFC6455 服务端跑完整链路。</li>
+				<li><b>完整闭环：</b>换地址（断言 PascalCase 请求体）→ 握手 → ping（service=service_id）→
+					服务端推 v2 事件 → 路由到 handler → 回执复用原帧（<code>{"code":200}</code> + <code>biz_rt</code> + SeqID/LogID 带回）</li>
+				<li><b>断连重连：</b>服务端主动断 socket → 平台按 ClientConfig 抖动/间隔重连，第二条连接重新 ping 成功</li>
+				<li><b>握手被拒：</b>服务端拒绝升级 → 平台给出「握手失败（请确认应用已开启长连接…）」提示，
+					并按 <code>ReconnectCount=0</code> 提示不再重连（这条逼出了 <b>D-15</b>）</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>⑯ 真实凭证联调探针（生产编解码 + 真实网络）</span><span class="cnt">npm run probe-feishu-ws</span></div>
+			<div class="suite-body">
+			<ul>
+				<li>用途：用真实 App ID/Secret 在真实网络上跑「换地址 → 握手 → 心跳 → 收帧 → 回执」，把失败定位到具体环节。</li>
+				<li>用法：<code>npm run probe-feishu-ws -- --appId cli_xxx --appSecret yyy</code>
+					（可选 <code>--base</code> / <code>--timeoutSec</code> / <code>--keep</code>；环境变量 <code>FEISHU_APP_ID/SECRET</code> 亦可）。</li>
+				<li>退出码脚本化：<code>0</code>=可用；<code>1</code>=缺凭证；<code>2</code>=换地址失败（带飞书 code/msg + 对症提示）；
+					<code>3</code>=握手失败；<code>4</code>=建连成功但超时无帧（多半没开长连接/没勾事件）。</li>
+				<li>全程脱敏：不打 AppSecret；wss 地址只打 origin+path+查询键名（签名参数不落日志）。</li>
+				<li>探针复用生产 <code>feishuWsProtocol.ts</code>（同一份编解码，不存在「探针能通产品不能通」的分叉）。</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>⑤ 飞书渠道 · 平台装配（env 门控）</span><span class="cnt">6 passing</span></div>
+			<div class="suite-body"><ul>
+				<li>未设置 FEISHU_APP_ID/SECRET → 不注册平台</li>
+				<li>只设 appId 不设 appSecret → 不注册</li>
+				<li>凭证齐全 → 注册 id=feishu，allowFrom 归一化透传</li>
+				<li>FEISHU_USE_WS=0 / =1 → 分别不建 / 建立长连接</li>
+				<li>日志出口：装配输出凭证来源；长连接失败落到注入 logger 且可从 <code>lastError</code> 读取</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>⑤b 凭证解析优先级（D-02 修复核心）</span><span class="cnt">7 passing</span></div>
+			<div class="suite-body"><ul>
+				<li>无 env 时用配置（source=config）</li>
+				<li><b>env 优先于配置</b>（source=env，运维覆盖）</li>
+				<li>配置路径受 <code>enabled</code> 门控；env 路径不受其影响（纯 env 部署向后兼容）</li>
+				<li>useWs：env 显式值 &gt; 配置 &gt; 默认 true</li>
+				<li>allowFrom 归一化（换行/分号/逗号混用、去空）</li>
+				<li>配置里的多行白名单被归一化为逗号分隔</li>
+				<li>配置缺凭证 → undefined</li>
+			</ul></div>
+		</div>
+	</div>
+
+	<div>
+		<div class="suite-block">
+			<div class="suite-head"><span>⑥ 修复回归（D-02 / D-05 / D-08）+ 未修锁定</span><span class="cnt">6 passing</span></div>
+			<div class="suite-body"><ul>
+				<li><b>D-02 已修：</b>UI 写入的 appId/appSecret 会被运行时消费（无 env 也能注册）</li>
+				<li><b>D-02 已修：</b><code>enabled=false</code> 阻止配置路径注册（开关获得消费者）</li>
+				<li><b>D-05 已修：</b>返回卸载句柄，热重载可先 dispose 再重装</li>
+				<li class="gap">【仍未修 D-04】BridgeServer 不认识 webhook 类型 —— 回调仍无 HTTP 入口</li>
+				<li class="gap">【仍未修 D-04/D-09】加密事件被静默丢弃</li>
+				<li class="gap">【仍未修 D-08】dmPolicy / groupPolicy / groupAllowFrom / defaultAccount 仍无消费者</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>⑦ BridgeEngine · 飞书渠道路由</span><span class="cnt">5 passing</span></div>
+			<div class="suite-body"><ul>
+				<li>渠道默认 Agent 生效</li>
+				<li>未配置 → 回退引擎默认（偏好 coder 类）</li>
+				<li>会话→Agent 绑定 set/get/list/clear 且优先于默认 Agent</li>
+				<li><b>端到端：</b>飞书事件回调 → 绑定 Agent → 回复同一条消息（校验 reply 端点与文本）</li>
+				<li><b>端到端：</b>allowFrom 白名单拒绝未授权用户（不触达 Agent）</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>⑧ 飞书扫码绑定 · feishuRegistration</span><span class="cnt">13 passing</span></div>
+			<div class="suite-body"><ul>
+				<li>begin：解析 device_code / 二维码 URL / interval / expire_in（init + begin 两次请求）</li>
+				<li>begin：init 失败被吞掉仍可继续</li>
+				<li>begin：缺字段 → 抛错</li>
+				<li>begin：interval/expire_in 非法 → 回退 5s / 300s</li>
+				<li>begin：非 JSON / 空响应 → 抛错</li>
+				<li>poll：client_id/client_secret → completed（含 ownerOpenId）</li>
+				<li>poll：tenant_brand=Lark → platform=lark 且回带 LARK baseUrl</li>
+				<li>poll：authorization_pending → pending</li>
+				<li><b>D-06 已修：</b>协议状态错误码映射为对应 status（pending/slow_down/denied/expired/error）</li>
+				<li><b>D-06 已修：</b>error 字段不再在 postForm 层抛错（含未知错误码走 status=error）</li>
+				<li>五态映射完整：completed/pending/denied/expired/slow_down 均可返回</li>
+				<li>传输/解析层失败（空响应、非 JSON）仍抛错</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>⑧b 飞书凭证自检 · probeFeishuCredentials</span><span class="cnt">7 passing（D-03 新增）</span></div>
+			<div class="suite-body"><ul>
+				<li>缺少凭证 → ok:false，不发起请求</li>
+				<li>成功 → ok:true，回显有效期与 token 前缀，请求打到 <code>tenant_access_token</code></li>
+				<li>code!=0 → ok:false，带 HTTP 状态、code 与飞书 msg</li>
+				<li>非 JSON / 空响应 → ok:false</li>
+				<li>网络异常不抛错，且回显消息中 appSecret 被脱敏为 <code>[REDACTED]</code></li>
+				<li>Lark 域名可覆盖（openBase 参数）</li>
+			</ul></div>
+		</div>
+
+		<div class="suite-block">
+			<div class="suite-head"><span>⑨ 飞书扫码绑定 · 二维码矩阵</span><span class="cnt">7 passing</span></div>
+			<div class="suite-body"><ul>
+				<li>返回方形布尔矩阵，尺寸符合 21 + 4×version</li>
+				<li>三个定位图案 + 分隔符 + 纵向定时图案按规范绘制</li>
+				<li><b>D-10 已修：</b>横向定时图案 <code>(6,8)</code> 完整，不再被格式信息覆写</li>
+				<li><b>D-10 已修：</b>格式位 8 写入 <code>(7,8)</code>（跨多输入验证写入路径存在）</li>
+				<li>数据变长时矩阵尺寸单调不减</li>
+				<li>容量边界：154B 可编码（V7=45×45），155B 抛错</li>
+				<li>多字节字符按 UTF-8 字节数计容量（中文 3 字节/字）</li>
+			</ul></div>
+		</div>
+	</div>
+</div>
+
+<div class="callout ok">
+	<b>D-07 结案后的用例结构：</b>套件 ④（长连接）已按官方协议重写 —— 覆盖换地址请求体、二进制事件帧路由、回执
+	（<code>{"code":200}</code> + <code>biz_rt</code>）、异常回执 <code>500</code>、分片重组、心跳帧（<code>service_id</code>）、
+	<code>pong</code> 热更新配置、换地址失败/握手失败的诊断分流；
+	新增套件 ⑬（<code>feishuWsProtocol.test.ts</code>，22 条）用**手算字节 fixture** 把 protobuf 字段号钉死，
+	避免「编码/解码一起错但互相自证」的假绿。
+</div>
+
+<h3>运行方式与实测输出</h3>
+<pre class="term"><span class="c"># 单文件运行（新增用例）</span>
+node src/vs/sessions/contrib/agentStudio/test/browser/run-browser-test.mjs ^
+  src/vs/sessions/contrib/agentStudio/test/browser/feishuChannel.test.ts
+
+<span class="c"># 全量 browser 套件（含本文件，按 20 文件/分片）</span>
+npm run test-agentstudio-browser
+
+<span class="c"># 类型检查</span>
+npm run compile-check-ts-native</pre>
+
+<pre class="term"><span class="g">  FeishuPlatform · 入站事件解析</span>
+    <span class="g">✔</span> im.message.message_received → 完整的 InboundMessage
+    <span class="g">✔</span> 【仍未修 D-09】加密事件（encrypt 字段）被静默丢弃
+    <span class="g">✔</span> 【仍未修 D-04】webhook 入口不响应 url_verification（仅 WS 分支回 challenge）
+  <span class="g">飞书渠道 · 凭证解析优先级（resolveFeishuConfig）</span>
+    <span class="g">✔</span> env 优先于配置（source=env，运维覆盖）
+    <span class="g">✔</span> 配置路径受 enabled 门控；env 路径不受其影响（纯 env 部署向后兼容）
+    <span class="g">✔</span> 配置里的多行白名单被归一化为逗号分隔（allowFromCheck 只按逗号切分）
+  <span class="g">飞书渠道 · 修复回归（D-02 / D-05 / D-08）</span>
+    <span class="g">✔</span> D-02 已修：UI 写入的 sessions.channel.feishu.appId/appSecret 会被运行时消费（无 env 也能注册）
+    <span class="g">✔</span> D-05 已修：返回卸载句柄，热重载可先 dispose 再重装
+  <span class="g">飞书扫码绑定 · feishuRegistration</span>
+    <span class="g">✔</span> D-06 已修：协议状态错误码被映射为对应 status（不再被 postForm 拦截）
+    <span class="g">✔</span> 五态映射完整：completed/pending/denied/expired/slow_down 均可从 poll 返回
+  <span class="g">飞书凭证自检 · probeFeishuCredentials</span>
+    <span class="g">✔</span> 成功 → ok:true，回显有效期与 token 前缀
+    <span class="g">✔</span> 网络异常不抛错，且回显消息中的 appSecret 被脱敏
+  <span class="g">飞书扫码绑定 · 二维码矩阵（qrMatrix）</span>
+    <span class="g">✔</span> D-10 已修：横向定时图案 (6,8) 完整，不再被格式信息覆写
+
+  <span class="g">101 passing</span> / 0 failing  <span class="c">（13 个套件；长连接协议套件见下）</span>
+  <span class="c">npm run compile-check-ts-native  →  exit 0</span>
+  <span class="c">回归抽检：bridgeEngine / bridgeSecurity / bridgeUsage / bridgeScheduler / bridgeRelay 全绿</span>
+
+  <span class="g">  FeishuPlatform · HTTP 出口（CORS 修复）</span>
+    <span class="g">✔</span> 出站 REST 全部经注入出口；渲染进程 fetch 完全不参与
+    <span class="g">✔</span> 长连接订阅经注入出口（报错里的调用点），wss 仍由渲染进程直连
+    <span class="g">✔</span> 未注入 requestService → 回退 fetch（单测/非 Electron 宿主仍可用）
+    <span class="g">✔</span> 装配侧把 requestService 透传给平台（日志可核对出口）</pre>
+
+<pre class="term"><span class="c"># 新增：主进程出口适配器（12 条）</span>
+  mainProcessRequestService.test.ts  →  <span class="g">12 passing</span> / 0 failing
+
+  <span class="g">  渠道 HTTP 出口 · 主进程适配器</span>
+    <span class="g">✔</span> 主进程服务缺失 / 通道不可用 → 返回 undefined（调用方回退，装配不炸）
+    <span class="g">✔</span> 请求参数完整透传：url / method / headers / body / 默认超时
+    <span class="g">✔</span> 响应映射：statusCode + body 文本回流（形状与 core 实现一致）
+    <span class="g">✔</span> 请求头净化：content-length/host 等由网络栈管理的头不透传，数组头合并
+  <span class="g">  渠道 HTTP 出口 · FeishuPlatform 接线</span>
+    <span class="g">✔</span> 出站 REST 经主进程：token + send 两次 call，渲染进程 fetch 不参与
+    <span class="g">✔</span> 长连接订阅经主进程（本次故障的实际调用点），返回的 wss 地址用于建连
+    <span class="g">✔</span> 主进程通道不可用 → 适配器返回 undefined，平台回落 fetch（非 Electron 宿主边界）</pre>
+
+<pre class="term"><span class="c"># Telegram 渠道（D-14）</span>
+  telegramPlatform.test.ts  →  <span class="g">16 passing</span> / 0 failing
+
+  <span class="g">  TelegramPlatform · 出站经主进程出口（D-14）</span>
+    <span class="g">✔</span> sendCard/reply 的 POST 全部经出口；渲染进程 fetch 完全不参与
+    <span class="g">✔</span> ok:false → 抛错带 HTTP 状态与 Telegram description
+  <span class="g">  TelegramPlatform · 长轮询（offset / 失败可诊断 / stop 可中断）</span>
+    <span class="g">✔</span> 拉取更新：GET 带 offset+timeout，update 路由后 offset 前进
+    <span class="g">✔</span> 轮询失败 → lastError 可读 + 落日志（不再静默）；恢复后清空
+    <span class="g">✔</span> stop() 停止轮询：不再发起新的 getUpdates</pre>
+
+<div class="callout warn">
+	<b>两类"锁定"用例的用法：</b>
+	标 <b>「D-xx 已修」</b>的用例锁定修复后的契约 —— 若有人回退实现，它们会失败；
+	标 <b>「【仍未修 D-xx】」</b>的用例锁定本次**有意未修**的缺口（D-04/D-09/D-08 策略字段）——
+	若哪天补齐了这些能力，请显式改写这些用例，而不是删除，以留下决策痕迹。
+</div>
+
+<!-- ═══════════════════════ 7. 手工验收 ═══════════════════════ -->
+<h2 id="manual"><span class="idx">07</span>手工验收清单</h2>
+
+<h3>修复后验证清单（本次改动）</h3>
+<ul class="checklist">
+	<li><b>D-01（已改为设置页入口）：</b>启动 VsSaros，左侧 Activity Bar <b>不再有</b>「📡 Channels」页签；
+		改为「Agent Studio 设置 → Channel 配置 → Feishu 条目」<b>点击状态徽章</b>（如「● 已连接」）→
+		侧栏打开渠道配置页（含「📷 扫码绑定」与「🧪 测试连接」）。点徽章不应顺带折叠该渠道分组。</li>
+	<li><b>D-01：</b>Agent Studio 设置页 → TOC「📡 Channel 配置」仍可用（轻量入口未受影响），Feishu 分组现含 12 个字段（新增「长连接接收事件」）。</li>
+	<li><b>D-02：</b>仅通过 UI 填写 App ID / App Secret 并打开「启用」（<b>不设任何环境变量</b>）→ 日志出现
+		<code>[Bridge] feishu 凭证来源=config …</code> 与 <code>[Bridge] registered platform: feishu</code>，<b>无需重启</b>。</li>
+	<li><b>D-02：</b>把「启用」关掉 → 日志出现 <code>[Bridge] 飞书渠道配置已变更 → 未启用或凭证不完整，平台已卸载</code>。</li>
+	<li><b>D-02：</b>Allow From 用「每行一个」填写多个 ID → 属主用户可正常对话，非白名单用户被拒（此前多行白名单会整体失效）。</li>
+	<li><b>D-03：</b>「🧪 测试连接」→ 凭证错误时显示 <code>凭证校验失败（HTTP 200 / code 99991663）：app not found</code>；凭证正确时显示 <code>连接成功：已获取 tenant_access_token（有效期 7200s）</code>。</li>
+	<li><b>D-05：</b>改任意飞书字段后 1 秒内日志出现热重载记录，渠道无需重启窗口即生效。</li>
+	<li><b>D-06：</b>扫码绑定流程中点击「拒绝授权」→ 界面出现「❌ 你已拒绝授权，绑定已取消」（此前只会显示「轮询失败：飞书注册失败（…）」）；等待二维码过期 → 「⌛ 二维码已过期，请重新发起」。</li>
+	<li><b>D-10：</b>扫码绑定生成的二维码可被飞书 App 正常识别（格式信息位置修正后），且超长授权链接仍回落「复制授权链接」。</li>
+	<li><b>D-11：</b>配置页按钮区为「🧪 测试连接 / 🔄 恢复默认」+ 一行说明文案，不再有「💾 保存配置」。</li>
+	<li><b>D-12：</b>启用长连接后重跑，控制台<b>不再</b>出现
+		<code>blocked by CORS policy … vscode-file://vscode-app</code>，
+		也不再出现 <code>requestImpl.ts:33 net::ERR_FAILED</code>；
+		启动日志出现 <code>[Bridge] feishu 凭证来源=… http=主进程 httpRequest …</code>，
+		且主进程日志出现 <code>[vssaros-llm] httpRequest POST https://open.feishu.cn/…</code>。
+		若订阅接口本身有问题，<code>[Feishu] 订阅长连接失败：HTTP &lt;code&gt; &lt;路径&gt; → …</code> 会给出飞书返回码
+		（此时即为 D-07 的端点为伪，按错误信息换用官方 <code>/callback/ws/endpoint</code>）。</li>
+</ul>
+
+<h3>仍未修项：如何确认现状（复现步骤保留）</h3>
+<ul class="checklist">
+	<li><b>D-04：</b>若按旧注释去飞书开放平台配置「事件订阅回调」指向本机 → 无任何监听者（渲染进程无 Node <code>http</code>，BridgeServer 只做本地 WS 调试协议）→ 回调不通。当前产品口径：入站仅支持长连接。</li>
+	<li><b>D-17（已修）：</b>打开一个被飞书绑定的会话，聊天框 header（agent 选择器右侧）出现<b>蓝框药丸「飞书」标签</b>
+		（内含飞书品牌 logo）；若该会话是渠道默认会话，则显示<b>实底蓝药丸「飞书 · 默认会话」</b>。
+		会话列表里同一会话也应有对应标记（<code>.session-history-feishu-tag</code>），两处口径一致。
+		在 Channel 绑定 tab 里加/删绑定，标签应即时增删（<code>onDidChangeBindings</code> 驱动）。</li>
+	<li><b>D-13（已修，端到端一并验证）：</b>在飞书里 @ 机器人发一条<b>文字</b>消息 → 机器人应回话；
+		发图片 → 不应回话，但日志出现 <code>忽略暂不支持的消息类型：image</code>。
+		若换了自建应用的事件名/新增事件类型而消息不再路由，日志会出现 <code>忽略未处理的消息事件类型：…</code>（不再静默）。</li>
+	<li><b>D-12（复核）：</b>判别式 —— 把注入的出口换成 DI 的 <code>IRequestService</code>（renderer fetch），
+		CORS 报错立刻复现；用 <code>createMainProcessRequestService(mainProcessService)</code> 则消失。
+		产品装配路径（<code>bridge.contribution</code> / <code>channelEditorPane</code>）已强制走主进程出口；
+		<b>勿在渠道平台里直接用 <code>fetch</code></b>，也勿把 DI 的 <code>IRequestService</code> 当作主进程出口。</li>
+	<li><b>D-07（已修，且联测已真连；端到端待连一次）：</b>
+		<b>先跑探针</b>（不需要启动客户端）：<code>npm run probe-feishu-ws -- --appId &lt;AppID&gt; --appSecret &lt;AppSecret&gt;</code>
+		—— 退出码 0 即长连接可用；2/3/4 分别对应「换地址失败 / 握手失败 / 建连成功但无帧」，并自带对症提示。
+		再用真实凭证以 <code>FEISHU_USE_WS=1</code> 启动客户端，期望日志依次出现：
+		① <code>[vssaros-llm] httpRequest POST https://open.feishu.cn/callback/ws/endpoint</code>
+		（主进程执行，无 CORS；<b>注意是域名根，不带 <code>/open-apis</code></b> —— 带前缀会得到 404 page not found）；
+		② <code>[Feishu] WS 长连接已建立（service_id=…，心跳 120s）</code>；
+		③ 在飞书里 @ 机器人发消息 → <code>[Bridge]</code> 侧出现事件路由、机器人回消息，
+		且 <code>platform.lastFrameAt</code> 有值（说明 pong 在回来）。
+		<b>失败时的诊断分流：</b>换地址被拒 → 错误带飞书 <code>code/msg</code>（如 App 未开启长连接、凭证错误）；
+		换地址成功但连不上 → 日志为 <code>长连接握手失败（请确认应用已开启长连接、事件已勾选、App 凭证与权限正确）</code>
+		（浏览器 WebSocket 读不到官方的 <code>handshake-status/msg</code> 响应头，只能给可能性提示）。</li>
+	<li><b>D-08：</b>修改 DM Policy / Group Policy / Group Allow From / Default Account → 无任何运行时行为变化（UI 已标注「当前版本未生效」）。</li>
+	<li><b>D-09：</b>若日后接入 Webhook，事件体为 <code>{"encrypt":"…"}</code> 时会被静默丢弃 —— 需先补 AES 解密与 <code>verificationToken</code> 校验。</li>
+</ul>
+
+<!-- ═══════════════════════ 8. 索引 ═══════════════════════ -->
+<h2 id="appendix"><span class="idx">08</span>关键代码索引</h2>
+
+<div class="two-col">
+	<div>
+		<h4>配置面（定义 / UI / 持久化）</h4>
+		<div class="kv">
+			<div><span>渠道定义</span><span><code>common/constants.ts</code> · L241-265（ChannelKey / CHANNEL_ORDER）<br>L282-315（IChannelDefinition / commonFields）<br><b>Feishu（含新增 useWs 字段）</b></span></div>
+			<div><span>配置 schema 注册</span><span><code>browser/agentStudio.contribution.ts</code> · L366-405（<code>channelConfigProperties()</code> + <code>ConfigurationScope.MACHINE</code>）<br><b>侧栏渠道视图注册（D-01，order 130）已于 2026-09-22 移除</b></span></div>
+			<div><span>设置页 Channel TOC</span><span><code>browser/settingsEditorPane.ts</code> · L295-330</span></div>
+			<div><span>侧栏渠道视图</span><span><code>browser/views/channelView.ts</code> · L24-141（<b>2026-09-22 已撤注册</b>：活动栏入口移除后不再可达，文件暂留）</span></div>
+			<div><span>渠道编辑器面板</span><span><code>browser/channelEditorPane.ts</code> · 渲染 / 扫码绑定<br><b>_renderFields（按钮区：真实自检 + 说明文案）</b><br><b>_testConnection（D-03）</b><br><b>_showStatus（支持 holdMs 与防覆盖）</b></span></div>
+			<div><span>编辑器输入</span><span><code>browser/channelEditorInput.ts</code> · L16-68</span></div>
+			<div><span>扫码注册协议</span><span><code>browser/feishuRegistration.ts</code> · <code>beginFeishuRegistration</code> / <code>pollFeishuRegistration</code><br><b>+ <code>probeFeishuCredentials</code>（D-03）</b><br><b>+ <code>FEISHU_OPEN_BASE</code> / <code>DEVICE_FLOW_STATUS_ERRORS</code>（D-06）</b></span></div>
+			<div><span>二维码生成</span><span><code>browser/feishuQrCode.ts</code> · <code>qrMatrix</code>（格式信息位置修正 D-10）<br><code>drawQrToCanvas</code></span></div>
+			<div><span>Agent 设置·渠道绑定</span><span><code>browser/agentSettingsEditorPane.ts</code> · L481-637</span></div>
+		</div>
+	</div>
+	<div>
+		<h4>运行面（装配 / 平台 / 路由）</h4>
+		<div class="kv">
+			<div><span>平台装配 + 生命周期</span><span><code>browser/bridge/bridge.contribution.ts</code> · <b>注入 IConfigurationService + 配置变更防抖热重载（D-05）</b></span></div>
+			<div><span>凭证解析（env 优先 / 配置兜底）</span><span><code>browser/bridge/platforms/feishu.contribution.ts</code> · <code>readEnv</code> / <code>readConfig</code> / <code>normalizeAllowFrom</code> / <code>resolveFeishuConfig</code> / <code>registerFeishuPlatformIfConfigured</code><br><code>…/telegram.contribution.ts</code>（仍仅 env）</span></div>
+			<div><span>飞书适配器</span><span><code>browser/bridge/platforms/feishu.ts</code> · <code>FeishuPlatform</code>（类）<br><code>start</code> / <code>_connectWs</code>（<b>字段名容错 + 端点/状态入错误信息 + lastError</b>）<br><code>_noteDisconnect</code>（异常断连 vs 主动 stop）<br>入站解析 / 出站 / token / REST / 卡片</span></div>
+			<div><span>桥接服务</span><span><code>browser/bridge/bridgeService.ts</code> · L62-220</span></div>
+			<div><span>路由引擎</span><span><code>browser/bridge/bridgeEngine.ts</code> · L171-197（入站）<br>L199-271（Agent 路由/流式回包）<br>L294-333（出站分发）<br>L341-402（会话/绑定）<br>L404-426（默认 Agent 解析）</span></div>
+			<div><span>绑定持久化</span><span><code>browser/bridge/bridgeBindings.ts</code> · L27-137</span></div>
+			<div><span>本地 WS 服务</span><span><code>browser/bridge/bridgeServer.ts</code> · L61-157</span></div>
+			<div><span>Slash 命令（/bind）</span><span><code>common/bridge/bridgeCommands.ts</code> · L249-315</span></div>
+			<div><span>安全（白名单/脱敏）</span><span><code>common/bridge/bridgeSecurity.ts</code> · L19-110</span></div>
+			<div><span>测试</span><span><code>test/browser/feishuChannel.test.ts</code> · <b>13 套件 / 101 用例</b>；<code>feishuWsProtocol.test.ts</code> · <b>24 用例</b>；<code>mainProcessRequestService.test.ts</code> · <b>12 用例</b>；<code>telegramPlatform.test.ts</code> · <b>16 用例</b>（含 D-07 / D-12 / D-13 / D-14 回归）</span></div>
+		</div>
+	</div>
+</div>
+
+<div class="callout ok">
+	<b>本次已完成（按原优先级建议执行）：</b>
+	D-01（入口）→ D-02（装配打通）→ D-03（真实自检）→ D-05（热重载）→ D-06（扫码失败状态机）→ D-10（二维码格式信息）→ D-11（空壳按钮），
+	并对 D-08 做了如实标注。<br>
+	<b>运行后追加（真实环境才暴露的两条）：</b>
+	D-12（renderer 网络出口被 CORS 拦，两轮才对 → 主进程 <code>httpRequest</code> 出口）→
+	D-07（长连接端点臆测 404 → 官方 <code>/callback/ws/endpoint</code> + <b>protobuf 二进制帧</b>协议重写）→
+	D-13（入口只认历史事件名，飞书 v2 的 <code>im.message.receive_v1</code> 会被静默丢弃）。
+</div>
+
+<div class="callout warn">
+	<b>后续待办（建议顺序）：</b>
+	⓪ <b>Telegram（D-14，已修）</b>：出站 POST 已走主进程出口；
+	若日后要支持 Telegram 附件「真正下载成功」，注意其文件下载走 renderer GET（简单请求，当前不受拦），
+	一旦对端收紧需改走主进程 + 二进制通路（适配器目前只有文本通路）。<br>
+	① <b>D-07 端到端实测</b>：用真实凭证跑一次官方长连接（协议已按官方 SDK 对齐、编解码有 22 条字节级用例兜底）；
+	若握手被拒，先在开放平台确认「事件订阅方式 = 长连接」且已勾选 <code>im.message.receive_v1</code>；
+	② <b>D-04 + D-09</b>：若确定要支持 Webhook 回调，需在主进程补 HTTP 入口（渲染进程无 Node <code>http</code>）+ <code>verificationToken</code> 校验 + <code>encryptKey</code> AES 解密 + challenge 应答；
+	③ <b>D-08 剩余</b>：把 <code>dmPolicy</code> / <code>groupPolicy</code> / <code>groupAllowFrom</code> 落到 <code>BridgeEngine</code> 的消息准入判定；
+	④ 可选：把「配置已即时生效」做成 UI 横幅（当前证据仅落在日志）；把同样的配置优先装配复制到 Telegram 等其它渠道。
+</div>
+
+<div class="foot">
+	报告由代码走查（含 registry/引用图核查）+ 修复实施 + 194 条自动化测试实测产出 · 2026-09-22 ·
+	代码位置 <code>doc/channel-feishu-usage-report.html</code> · 测试文件 <code>src/vs/sessions/contrib/agentStudio/test/browser/feishuChannel.test.ts</code>
+</div>
+
+</div>
+
+<script>
+	// 用仓库内 qrMatrix() 的真实输出渲染二维码（33×33，内容为示例授权 URL）
+	const QR = ["111111101100110111000010001111111","100000101110011110011001001000001","101110101101100011001011101011101","101110101011000001101111101011101","101110101011011110100010101011101","100000100000100110011101001000001","111111101010101010101010101111111","000000000000000000000000000000000","010101101110011101000101111011111","100011000100100010010111011000111","110100100100110101101010000101010","001110000110001110011111111000100","000101100101110101001110100011000","011111001011001010011111001000011","000000101011011110010010111110010","011100001000100010110111001010100","001101101110000001000111110110010","110011000100101010000101101001011","100010101100110111101010010001010","011000001110001000111000001000100","011010100101110101000100010010010","110101000111000010100101001001011","001111100101011110101000110011010","111110001010100010011000110011100","100001101110010011001011111110001","000000001110100000000110100010101","111111100000110100000011101011110","100000101110001010111111100011101","101110100001100001001010111110000","101110101001001011111101010110100","101110100011111110110000101001010","100000101010100010010111001011100","111111100000010001001101110100010"];
+	const host = document.getElementById('qr');
+	if (host) {
+		const n = QR.length;
+		host.style.gridTemplateColumns = 'repeat(' + n + ', 1fr)';
+		host.style.gridAutoRows = '1fr';
+		let html = '';
+		for (let r = 0; r < n; r++) {
+			for (let c = 0; c < n; c++) {
+				html += QR[r][c] === '1' ? '<i class="d"></i>' : '<i></i>';
+			}
+		}
+		host.innerHTML = html;
+	}
+</script>
+</body>
+</html>

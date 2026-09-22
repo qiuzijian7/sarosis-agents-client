@@ -170,6 +170,33 @@ protected override _renderHeader(): void {
 
 		// Auto-orchestrate toggle (PM only) — REMOVED: task orchestration entry point closed
 
+		// ── 渠道绑定标识：当前会话绑定了飞书 chat_id（或为渠道默认会话）时显示 ──
+		//   ★ 2026-09-22 修复「聊天框看不到关联标签」：徽章此前只创建不设样式
+		//   （`.chat-header-feishu-badge` 的规则仅存在于旧 webview 的 CSS），裸 <span> 在
+		//   `.chat-header-left`（flex + min-width:0）里会被压成 0 宽 ⇒ 肉眼不可见。
+		//   现在样式补进 media/agentChat.css，并按状态区分「精确绑定 / 默认会话」。
+		if (this._feishuBoundChatId) {
+			const badge = append(left, $("span.chat-header-feishu-badge"));
+			if (this._feishuBindingIsDefault) {
+				badge.classList.add("is-default");
+			}
+			// 品牌 logo 由 host 注入（面板层拿不到 contrib 的 channelIcons）
+			if (this._feishuBindingIcon) {
+				badge.appendChild(this._feishuBindingIcon);
+			}
+			append(
+				badge,
+				$(
+					"span.chat-header-feishu-badge-label",
+					undefined,
+					this._feishuBindingIsDefault ? "飞书 · 默认会话" : "飞书",
+				),
+			);
+			badge.title = this._feishuBindingIsDefault
+				? `本会话是飞书渠道的默认会话\n所有未精确绑定的群/私聊消息将进入此会话`
+				: `本会话已绑定飞书会话：${this._feishuBoundChatId}\n该群/私聊的消息将路由到此会话`;
+		}
+
 		// ── 工作区 + Worktree 选择器（从输入框 toolbar 移到 header agent 选择器右侧） ──
 		const wsLabel = this._workspaces.find(w => w.id === this._selectedWorkspaceId)?.name ||
 			this._workspaces[0]?.name || '工作区';

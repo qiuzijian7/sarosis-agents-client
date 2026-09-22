@@ -20,6 +20,9 @@ import type { FullRefreshSource } from './agentChatPanel.refreshLog.js';
 // ★ 2026-09-20：函数级性能埋点（见 perf 模块头注释）。本文件是「session 切换/首屏」
 // 的耗时大头（`setMessages` 的 render 段），此前**无埋点** ⇒ 无法归因 539ms 级长任务。
 import { chatPerf } from './agentChatPanel.perf.js';
+// ★ 2026-09-22（方案 C「收纳手风琴」）：压缩分组视图（**独立函数模块** ⇒ 不占面板继承链 ✓，
+//   避免改到正被并发改动的 base.ts / iChatPanel.ts ✓）
+import { createCompactionElement } from './compactionGroupView.js';
 
 /** P5b：_updateMessageDom 责任链上下文（预计算的结构标志，供各 rule 共享）。 */
 interface IMsgUpdateCtx {
@@ -1912,6 +1915,19 @@ protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentC
 }
 
 protected override _createMessageElement(msg: IAgentChatMessage): HTMLElement {
+	// ★ 2026-09-22（方案 C「收纳手风琴」）：压缩分组 / 边界提示**接管整条消息元素** ✓。
+	//   ⚠ 必须在常规气泡之前返回：分组元素自带 `.chat-message` + `data-msg-id` ✓ ⇒
+	//   懒加载分块、DOM 裁剪（firstElementChild + data-msg-id ✓）与滚动标记全部照旧 ✓✓。
+	//   组内归档气泡经**同一函数**递归创建 ✓（它们没有 compactionGroup ⇒ 不再进本分支 ✓）。
+	const compactionEl = createCompactionElement(msg, {
+		createArchivedElement: (m) => this._createMessageElement(m),
+		getScrollHost: () => this._messagesContainer,
+		isAtBottom: () => this._isAtBottom,
+		refreshScrollMarkers: () => this._scrollbar.scheduleRefreshScrollMarkers(),
+		runSlashCommand: (command, arg) => this._runSlashCommand(command, arg),
+	});
+	if (compactionEl) { return compactionEl; }
+
 	const isUser = msg.role === "user";
 	const messageEl = $(`.chat-message.${isUser ? "user" : "assistant"}`);
 		messageEl.setAttribute('data-msg-id', msg.id);

@@ -388,6 +388,18 @@ export class CodebaseGraphSqliteStore {
 		await dbExec(this.db, `PRAGMA mmap_size = ${this._mmap}`);
 		await dbExec(this.db, 'PRAGMA journal_mode = WAL');
 		await dbExec(this.db, 'PRAGMA synchronous = NORMAL');
+		// ★★★ 2026-09-22（真机判决实验，**重放**）：关掉 WAL autocheckpoint —— 它是追了几轮的
+		// 「补丁 130–1350ms 波动 / 1184ms / 2154ms、`写节点(963)=1386ms`」唯一元凶 ✓✓。
+		// 实测（真库 1.5GB **副本**，10 轮 × 500 行独立事务，WAL + synchronous=NORMAL）：
+		//   · 默认 autocheckpoint=1000 页 ⇒ COMMIT: 2, **657**, 6, 2, 2, 2, 1, 44, 18, 2（最大 **657ms** ✗✗）
+		//   · autocheckpoint=0        ⇒ COMMIT: 3, 3, 2, 3, 6, 4, 3, 2, 6, 3（最大 **6ms** ✓✓）
+		// 两栏「写循环」都稳定 5–10ms ⇒ SQL 无辜，贵的是 COMMIT 里顺手做的 checkpoint（WAL ≈4MB 时
+		// 写回 1.5GB 主库 + fsync ✗）。而**增量轮从来没人做 checkpoint**（service 里那句
+		// `store.checkpoint()` 是**内存 store 的 no-op** ✗，其实现自陈 "In-memory store: checkpoint is a no-op"）
+		// ⇒ 全靠 autocheckpoint 兜 ⇒ 卡顿随机落进某次 COMMIT 且 renderer 侧测不到 ✗✗。
+		// ⇒ 改为**自己摊销**（见 `_scheduleAmortizedCheckpoint`：PASSIVE + 按行数 + 尾接写队列 ✓，
+		//   同法实测 COMMIT 最大 **20ms**、摊销 ≈23ms/1000 行、WAL 有界 3.2MB ✓）。
+		await dbExec(this.db, 'PRAGMA wal_autocheckpoint = 0');
 		// 多开（--instance）：并发写时等待锁释放而非立即 SQLITE_BUSY（5s 上限）
 		await dbExec(this.db, 'PRAGMA busy_timeout = 5000');
 		// 页面缓存（负数表示 KiB）：-131072 = 128 MiB
@@ -640,12 +652,63 @@ export class CodebaseGraphSqliteStore {
 
 	async upsertNodesBatch(nodes: (GraphNode & { id?: string | number })[]): Promise<number[]> {
 		const ids: number[] = [];
+		const tEnter = Date.now();
+		let tBody = tEnter;
 		await this.transaction(async () => {
+			tBody = Date.now();   // ★ 事务真正开始 = 排队结束 ✓
 			for (const n of nodes) {
 				ids.push(await this.upsertNode(n));
 			}
 		});
+		const tEnd = Date.now();
+		this._reportBatchTiming('nodes', nodes[0]?.project ?? '_default', nodes.length, tBody - tEnter, tEnd - tBody);
+		this._scheduleAmortizedCheckpoint(nodes.length);
 		return ids;
+	}
+
+	/**
+	 * ★★★ 2026-09-22（**重放**，并行写入曾覆盖一次 ✗）：批次耗时上报钩子（**主进程侧**，
+	 * 由 `electron-main/codebaseGraphStoreChannel` 接日志 ✓）。
+	 *
+	 * 为什么：renderer 报 `写节点(963)=1386ms`，而同一套 SQL 在真库副本上只要 36–42ms ✗✗
+	 * ⇒ 必须把三级分开才能修对地方：① `queuedMs` 写队列排队；② `execMs` 真正执行；
+	 * ③ renderer 总数 − 本次 totalMs = IPC/序列化/调度 ✓。
+	 *
+	 * ⚠ 刻意**不做成 IPC 方法**（「契约→分发器→实现→ProxyChannel」是**四方**一致，多一个方法就多一处
+	 *   漏接机会 ✗ —— 09-19 已踩过"只加三方、漏分发器 ⇒ invalid call ⇒ 静默降级"✗✗）。
+	 */
+	onBatchTiming?: (info: { kind: 'nodes' | 'edges'; project: string; count: number; queuedMs: number; execMs: number; totalMs: number }) => void;
+
+	private _reportBatchTiming(kind: 'nodes' | 'edges', project: string, count: number, queuedMs: number, execMs: number): void {
+		if (!this.onBatchTiming) { return; }
+		try {
+			this.onBatchTiming({ kind, project, count, queuedMs, execMs, totalMs: queuedMs + execMs });
+		} catch { /* 上报失败不得影响写库 ✓ */ }
+	}
+
+	/**
+	 * ★★★ 2026-09-22（**重放**）：WAL checkpoint **自己摊销**（替代已关闭的 autocheckpoint）。
+	 *
+	 * 不能不管 WAL（不收敛则无限增长：实测同样 5000 行，不收敛 10.9MB vs 摊销后 3.2MB ✗）
+	 * ⇒ 按**已写行数**摊销，每 `_CHECKPOINT_ROWS` 行做一次 **PASSIVE** checkpoint ✓
+	 * （PASSIVE 不阻塞写者、可被中断 ✓；TRUNCATE 仍留给显式维护入口 `checkpoint()` ✓）。
+	 * 执行方式：**尾接写队列且不 await** ⇒ ①不污染调用方（renderer 那段"写节点"保持干净 ✓）
+	 * ②天然排在两次事务之间，不会与进行中事务交错（同连接上会 SQLITE_BUSY ✗✗）。
+	 */
+	private _rowsSinceCheckpoint = 0;
+	/** 摊销阈值（行）：实测 1000 行 ≈1MB WAL ⇒ 5000 行 ≈5MB，与原 autocheckpoint 同量级 ✓。 */
+	private static readonly _CHECKPOINT_ROWS = 5000;
+
+	private _scheduleAmortizedCheckpoint(rows: number): void {
+		this._rowsSinceCheckpoint += rows;
+		if (this._rowsSinceCheckpoint < CodebaseGraphSqliteStore._CHECKPOINT_ROWS) { return; }
+		if (this._explicitTx || !this.db) { return; }   // 显式事务存续期**绝不做**（会被拒 ✗）
+		this._rowsSinceCheckpoint = 0;
+		const p = this._writeQueue.then(async () => {
+			if (this._txActive || this._explicitTx || !this.db) { return; }
+			try { await dbExec(this.db, 'PRAGMA wal_checkpoint(PASSIVE)'); } catch { /* 忙/被中断 ⇒ 下次再来 ✓ */ }
+		}, async () => { /* 前一棒失败也照做 ✓ */ });
+		this._writeQueue = p.then(() => undefined, () => undefined);
 	}
 
 	async upsertEdge(edge: GraphEdge & { sourceId?: number; targetId?: number }): Promise<void> {
@@ -660,9 +723,18 @@ export class CodebaseGraphSqliteStore {
 	}
 
 	async upsertEdgesBatch(edges: (GraphEdge & { sourceId?: number; targetId?: number })[]): Promise<void> {
+		const tEnter = Date.now();
+		let tBody = tEnter;
 		await this.transaction(async () => {
+			tBody = Date.now();
 			for (const e of edges) { await this.upsertEdge(e); }
 		});
+		const tEnd = Date.now();
+		// ⚠ 边载荷**没有** project（renderer 侧映射只传 source/target/type/properties ✗）⇒ 占位即可，
+		// 慢轮次一定有同轮的 nodes 那条可对齐 ✓
+		const project = (edges[0] as unknown as { project?: string } | undefined)?.project ?? '(n/a)';
+		this._reportBatchTiming('edges', project, edges.length, tBody - tEnter, tEnd - tBody);
+		this._scheduleAmortizedCheckpoint(edges.length);
 	}
 
 	async setFileHash(key: string, data: Record<string, any>): Promise<void> {

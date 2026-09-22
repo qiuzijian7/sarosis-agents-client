@@ -82,10 +82,39 @@ export function collectRenderActivity(startMs: number, endMs: number): { inWindo
 export function formatRenderActivityWindow(startMs: number, endMs: number, maxItems = 4): string {
 	const { inWindow, before } = collectRenderActivity(startMs, endMs);
 	if (inWindow.length === 0) {
-		return before ? `(窗口内无标记; 之前最近=${before.tag}@${before.ts})` : '(无标记)';
+		// ★ 2026-09-22：无标记 ≠ 无线索 —— 业务侧的细粒度 perf 计时（如 chatPerf 的 span 环）
+		// 可能覆盖了这个窗口。注册了兜底源就拼上（如 `perf=[card.create.tool×3/612ms]`）。
+		let extra = '';
+		for (const src of _fallbackSources) {
+			try {
+				const s = src(startMs, endMs);
+				if (s) { extra += (extra ? ' ' : '') + s; }
+			} catch { /* 纯诊断：静默 */ }
+		}
+		const base = before ? `(窗口内无标记; 之前最近=${before.tag}@${before.ts})` : '(无标记)';
+		return extra ? `${base} ${extra}` : base;
 	}
 	const head = inWindow.slice(0, maxItems).map(e => `${e.tag}×${e.count}`).join(', ');
 	return inWindow.length > maxItems ? `${head}, …(共${inWindow.length}类)` : head;
+}
+
+// ─── 兜底归因源（2026-09-22，LONG_TASK「窗口内无标记」的归因补网）──────────────
+// 背景：`因=[(窗口内无标记; 之前最近=scrollbar-markers@…)]` 意味着长任务发生在
+// **没打活动标记**的代码里 —— 而业务侧往往另有细粒度 perf 计时（chatPerf.span 等）。
+// 把它们注册为兜底源后，无标记时 LONG_TASK 行仍能给出「窗口内有哪些 perf span」，
+// 不再只能猜。只在 LONG_TASK 告警路径（低频）被调用 ⇒ 允许分配（与标记环的零分配
+// 约束不冲突）。源必须**快速、无副作用、异常自吞**（本模块也会再包一层 try）。
+export type RenderActivityFallbackSource = (startMs: number, endMs: number) => string | undefined;
+
+const _fallbackSources: RenderActivityFallbackSource[] = [];
+
+/** 注册兜底归因源；返回反注册函数。 */
+export function registerRenderActivityFallbackSource(src: RenderActivityFallbackSource): () => void {
+	_fallbackSources.push(src);
+	return () => {
+		const i = _fallbackSources.indexOf(src);
+		if (i >= 0) { _fallbackSources.splice(i, 1); }
+	};
 }
 
 /** 测试用：清空环。 */

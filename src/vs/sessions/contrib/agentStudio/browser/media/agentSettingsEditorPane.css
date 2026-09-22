@@ -866,6 +866,66 @@
 	border-color: var(--vscode-focusBorder, #0e639c);
 }
 
+/* 会话下拉（原生 select ✓ 灰色化，与面板其他下拉/输入框同主题 ✓）
+ *
+ * ★ 2026-09-22 修复（用户报「会话下拉框是**原生白底 + 蓝色高亮**，与其他下拉框风格不一致」✗✓）。
+ *   两个真实机制（不是审美问题 ✓）：
+ *   ① **语义 token 用错** ✗：这里原用 `--vscode-input-*`（输入框语义 ✓），而面板其他下拉与
+ *      VS Code 原生下拉用的是 `--vscode-dropdown-*`（下拉语义 ✓）⇒ 部分主题下颜色不同 ✗✓；
+ *   ② **真正扎眼的是那个"弹出列表"** ✗ —— 它由**浏览器**绘制 ⇒ 原先那条 `option { background }`
+ *      规则 **Chromium 直接忽略** ✗✓（这就是它一直白底蓝高亮的原因 ✓）。唯一能让弹层跟随主题的
+ *      手段是声明 `color-scheme` ✓；而 `color-scheme` **必须按主题分别声明** ✗（否则浅色主题下
+ *      弹层会被搞成深色 ⇒ 制造**新的**不一致 ✗✓）。
+ *      `.vs-dark` / `.vs` / `.hc-black` 是 VS Code 打在**根元素**上的主题类 ✓✓（既有约定 ✓）。
+ */
+select.binding-input {
+	cursor: pointer;
+	flex: none;
+	min-width: 220px;
+	padding: 6px 8px;
+	/* ⚠ 对齐**面板内其他下拉**（`.agent-settings-select`，本文件 :985 ✓）：同样用 input 语义
+	 *   token + panel-border ✓ —— 这才是"和其他下拉框风格保持一致"的字面落点 ✓✓
+	 *   （我第一版改成了 dropdown 语义 token ✗ ⇒ 反而与同面板其他 select 产生新的不一致 ⇒ 已回退 ✓）。 */
+	background: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, #d4d4d4);
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 4px;
+	font-size: 12px;
+	font-family: inherit;
+	outline: none;
+}
+
+select.binding-input:focus {
+	border-color: var(--vscode-focusBorder, #007acc);
+}
+
+select.binding-input:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+/* ⚠ 关键：让**浏览器绘制的下拉弹层**跟随主题 ✓（Chromium 会忽略下面的 option 背景 ✗）。
+ * 面板内**所有**原生 select 一起声明 ⇒ 弹层风格彼此一致 ✓✓（此前只有会话下拉缺失 ✓）。
+ *
+ * ⚠⚠ 策略刻意是「**默认 dark、仅浅色主题显式覆盖**」而不是「按主题类分别声明」✗✓ —— 因为该面板
+ *   根容器用的是 `var(--vscode-editor-background)`（本文件 :10 ✓），一旦渲染上下文**没提供主题变量/
+ *   主题类**（例如被嵌进无变量的宿主 ✓），"按主题类分别声明"会**一条都不命中** ⇒ 弹层又退回原生白底 ✗✗
+ *   （用户报的正是白底 ✓）。默认 dark 保证：**拿不到主题信息时也能得到灰色** ✓✓；浅色主题（`.vs`）再覆盖 ✅。 */
+select.binding-input,
+select.agent-settings-select {
+	color-scheme: dark;
+}
+.vs select.binding-input,
+.vs select.agent-settings-select {
+	color-scheme: light;
+}
+
+/* Firefox 会尊重 option 背景 ✓；Chromium 忽略（其弹层靠上面的 color-scheme ✓）。 */
+select.binding-input option {
+	background: var(--vscode-dropdown-background, #252526);
+	color: var(--vscode-dropdown-foreground, #d4d4d4);
+}
+
 .binding-list {
 	display: flex;
 	flex-direction: column;

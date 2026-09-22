@@ -96,6 +96,137 @@ export function parseSrcDirs(raw: string | undefined | null): string[] {
 	return (raw ?? '').split(',').map(s => s.trim()).filter(Boolean);
 }
 
+// ─── 用户自定义「本地目录 ↔ 飞书知识库」映射（2026-09-22）────────────────────
+// 由设置面板维护、存放在 vault 内（与脚本 loadSpaceMap / applyExplicitMappings 同一份契约）：
+//   { version: 1, mappings: [{ dir: '库/…/01-基础概念', spaceId: '769…', spaceName: '01-基础概念' }] }
+// ⚠ 为什么落文件而不是 CLI 参数：JSON 经 argv 在 Windows（shell:true）下会被引号破坏。
+
+/** 映射文件名（与内置脚本 `SPACE_MAP_FILE` 保持一致）。 */
+export const FEISHU_SPACE_MAP_FILE = '.feishu-space-map.json';
+
+/** 一条映射：知识库内相对目录 → 飞书 wiki 知识库。 */
+export interface IKbSpaceMapping {
+	/** 知识库内相对目录（如 `库/AI/01-基础概念`）；其**子目录**也会一同绑定 */
+	dir: string;
+	/** 飞书 wiki 知识库 id */
+	spaceId: string;
+	/** 知识库名称（仅用于展示；可缺省） */
+	spaceName?: string;
+}
+
+/** 解析映射文件内容（宽容：非法项忽略；损坏/空 ⇒ 空数组）。与脚本端语义一致。 */
+export function parseSpaceMap(text: string | undefined | null): IKbSpaceMapping[] {
+	let raw: unknown;
+	try { raw = JSON.parse(((text ?? '').trim() || '{}')); } catch { return []; }
+	const src = (raw as { mappings?: unknown } | null)?.mappings;
+	const out: IKbSpaceMapping[] = [];
+	if (Array.isArray(src)) {
+		for (const item of src) {
+			const rec = (item ?? {}) as Record<string, unknown>;
+			const dir = typeof rec.dir === 'string' ? rec.dir.trim() : '';
+			const spaceId = typeof rec.spaceId === 'string' ? rec.spaceId.trim() : '';
+			if (dir && spaceId) {
+				out.push({ dir, spaceId, spaceName: typeof rec.spaceName === 'string' ? rec.spaceName : '' });
+			}
+		}
+	} else if (src && typeof src === 'object') {
+		// 极简写法：{ mappings: { '库/AI/01-x': '<spaceId>' } }
+		for (const [dir, spaceId] of Object.entries(src as Record<string, unknown>)) {
+			if (dir.trim() && typeof spaceId === 'string' && spaceId.trim()) {
+				out.push({ dir, spaceId, spaceName: '' });
+			}
+		}
+	}
+	return out;
+}
+
+/** 序列化映射（stable 顺序 + version 字段便于后续演进）。 */
+export function serializeSpaceMap(list: readonly IKbSpaceMapping[]): string {
+	const mappings = list.map(m => ({
+		dir: m.dir,
+		spaceId: m.spaceId,
+		...(m.spaceName ? { spaceName: m.spaceName } : {}),
+	}));
+	return JSON.stringify({ version: 1, mappings }, null, 2) + '\n';
+}
+
+/**
+ * 解析 `lark-cli wiki +space-list` 的输出，得到「可选知识库」列表（纯函数，便于单测）。
+ * 兼容：顶层为数组 / `{ data: { items: [...] } }` / 任意嵌套；字段名 `space_id` 或 `spaceId`。
+ */
+export function parseSpaceList(raw: string): Array<{ spaceId: string; name: string }> {
+	const text = (raw ?? '').replace(/\u001b\[[0-9;]*m/g, '').trim();
+	if (!text) { return []; }
+	let root: unknown;
+	try { root = JSON.parse(text); } catch { root = extractFirstJsonObject(text); }
+	if (!root) { return []; }
+	const out: Array<{ spaceId: string; name: string }> = [];
+	const seen = new Set<string>();
+	const walk = (node: unknown, depth: number): void => {
+		if (!node || typeof node !== 'object' || depth > 8) { return; }
+		if (Array.isArray(node)) { for (const x of node) { walk(x, depth + 1); } return; }
+		const rec = node as Record<string, unknown>;
+		const spaceId = typeof rec.space_id === 'string' ? rec.space_id
+			: (typeof rec.spaceId === 'string' ? rec.spaceId : '');
+		const name = typeof rec.name === 'string' ? rec.name : '';
+		if (spaceId && name && !seen.has(spaceId)) { seen.add(spaceId); out.push({ spaceId, name }); }
+		for (const v of Object.values(rec)) { walk(v, depth + 1); }
+	};
+	walk(root, 0);
+	return out;
+}
+
+/** 列出当前账号可见的飞书知识库（未安装 CLI / 未登录 / 解析失败 ⇒ 空数组，由 UI 兜底提示）。 */
+export async function listWikiSpaces(cliPath: string = DEFAULT_LARK_CLI): Promise<Array<{ spaceId: string; name: string }>> {
+	const exe = (cliPath ?? '').trim() || DEFAULT_LARK_CLI;
+	const res = await execShortCommand(`${exe} wiki +space-list --page-all --format json`, 20000);
+	if (!res) { return []; }
+	return parseSpaceList(res.stdout || res.stderr);
+}
+
+/**
+ * 规范化知识库名称：去掉会破坏 shell 引号的字符（`"`、换行/回车）并裁剪空白。
+ * ⚠ 命令行经 `shell: true` 执行 ⇒ 名称必须能安全地放进一对双引号里。
+ */
+export function sanitizeSpaceName(name: string | undefined | null): string {
+	return (name ?? '').replace(/["\r\n]/g, '').trim();
+}
+
+/** 从 `wiki +space-create` 的输出里提取新建知识库 id（宽松：任意嵌套的 space_id / spaceId）。 */
+export function parseCreatedSpaceId(raw: string): string {
+	const text = (raw ?? '').replace(/\u001b\[[0-9;]*m/g, '').trim();
+	if (!text) { return ''; }
+	let root: unknown;
+	try { root = JSON.parse(text); } catch { root = extractFirstJsonObject(text); }
+	if (!root) { return ''; }
+	let found = '';
+	const walk = (node: unknown, depth: number): void => {
+		if (found || !node || typeof node !== 'object' || depth > 8) { return; }
+		if (Array.isArray(node)) { for (const x of node) { walk(x, depth + 1); } return; }
+		const rec = node as Record<string, unknown>;
+		const id = typeof rec.space_id === 'string' ? rec.space_id
+			: (typeof rec.spaceId === 'string' ? rec.spaceId : '');
+		if (id) { found = id; return; }
+		for (const v of Object.values(rec)) { walk(v, depth + 1); }
+	};
+	walk(root, 0);
+	return found;
+}
+
+/**
+ * 新建飞书知识库（`wiki +space-create --name <名称> --as user`）。
+ * 失败（未安装 CLI / 未登录 / 无权限）⇒ undefined，由 UI 给出提示。
+ */
+export async function createWikiSpace(name: string, cliPath: string = DEFAULT_LARK_CLI): Promise<{ spaceId: string; name: string } | undefined> {
+	const clean = sanitizeSpaceName(name);
+	if (!clean) { return undefined; }
+	const exe = (cliPath ?? '').trim() || DEFAULT_LARK_CLI;
+	const res = await execShortCommand(`${exe} wiki +space-create --name "${clean}" --as user`, 30000);
+	if (!res) { return undefined; }
+	const spaceId = parseCreatedSpaceId(res.stdout || res.stderr);
+	return spaceId ? { spaceId, name: clean } : undefined;
+}
+
 /**
  * 内置脚本的候选 URI（按可靠性排序，调用方取第一个存在的）：
  *  1. `FileAccess.asFileUri` —— 基于 vs 源码根推算（dev / 打包通用，与技能目录同策略）

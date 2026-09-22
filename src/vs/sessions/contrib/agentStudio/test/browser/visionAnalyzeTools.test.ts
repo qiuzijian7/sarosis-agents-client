@@ -53,6 +53,11 @@ function makeRunner(opts: {
 	loadLocalImage?: (p: string, agentId?: string) => Promise<{ data: string; mimeType: string }>;
 	/** 主模型是否支持图片输入（`mode:auto/attach` 的分流开关）。缺省 = 不支持。 */
 	mainModelSupportsImages?: () => Promise<boolean>;
+	/**
+	 * 「知识库专家」配置的模型（2026-09-22 新增：多模态的**默认**模型来源）。
+	 * 缺省 = 不注入 ⇒ 模拟旧调用方，用于验证向后兼容（仍走自动路由）。
+	 */
+	kbExpertModel?: { providerId: string; modelId: string };
 }) {
 	const registered: any[] = [];
 	const ctx: any = {
@@ -69,6 +74,9 @@ function makeRunner(opts: {
 		loadLocalImage: opts.loadLocalImage,
 		mainModelSupportsImages: opts.mainModelSupportsImages,
 	};
+	// ⚠ 缺省**不注入**该字段（而非注入 `undefined`）—— 与「旧调用方」形态一致，
+	//   这样「新增依赖没接上」时也必须能安全降级（fail-open 到自动路由）。
+	if (opts.kbExpertModel) { ctx.getKbExpertModel = () => opts.kbExpertModel!; }
 	registerVisionAnalyzeTools(ctx);
 	const handler = registered[0].handler;
 	return {
@@ -332,5 +340,57 @@ suite('Vision Analyze Tool (vision_analyze)', () => {
 		});
 		const text = await r.invoke({ image: DATA_URL, query: 'q' });
 		assert.ok(text.includes('auto-routed'), "'auto' 应被视为未配置并走自动路由");
+	});
+
+	// ─── 多模态默认模型 = 「知识库专家」配置的模型（2026-09-22）──────────────
+	// 优先级：① Vision 辅助模型显式配置 > ② 知识库专家模型（默认）> ③ 自动路由
+
+	test('★ 知识库专家配置了支持图片的模型 ⇒ 默认使用它（压过自动路由的另一个模型）', async () => {
+		const r = makeRunner({
+			kbExpertModel: { providerId: 'kb-vision', modelId: 'kb-vision' },
+			// 自动路由本会先命中列表里第一个（auto-routed）——专家配置必须胜出
+			providers: [
+				makeProvider({ modelId: 'auto-routed', supportsImages: true, deltas: [{ type: 'text', content: 'A' }] }),
+				makeProvider({ modelId: 'kb-vision', supportsImages: true, deltas: [{ type: 'text', content: 'B' }] }),
+			],
+		});
+		const text = await r.invoke({ image: DATA_URL, query: 'q' });
+		assert.ok(text.includes('kb-vision'), '应使用知识库专家配置的模型');
+		assert.ok(!text.includes('auto-routed'), '不得被自动路由抢先选中');
+	});
+
+	test('★ 知识库专家配的是纯文本模型 ⇒ 回退自动路由（fail-safe，不因专家配置而不可用）', async () => {
+		const r = makeRunner({
+			kbExpertModel: { providerId: 'kb-text', modelId: 'kb-text' },
+			providers: [
+				makeProvider({ modelId: 'kb-text', supportsImages: false, deltas: [] }),
+				makeProvider({ modelId: 'fallback-vision', supportsImages: true, deltas: [{ type: 'text', content: 'ok' }] }),
+			],
+		});
+		const text = await r.invoke({ image: DATA_URL, query: 'q' });
+		assert.ok(text.includes('fallback-vision'), '不支持图片的专家模型必须被跳过（否则发图会 400）');
+	});
+
+	test('★ 用户显式配置 Vision 模型 ⇒ 优先于知识库专家（显式 > 默认）', async () => {
+		const r = makeRunner({
+			auxProvider: 'explicit-vision',
+			auxModel: 'explicit-vision',
+			kbExpertModel: { providerId: 'kb-vision', modelId: 'kb-vision' },
+			providers: [
+				makeProvider({ modelId: 'explicit-vision', supportsImages: true, deltas: [{ type: 'text', content: 'E' }] }),
+				makeProvider({ modelId: 'kb-vision', supportsImages: true, deltas: [{ type: 'text', content: 'K' }] }),
+			],
+		});
+		const text = await r.invoke({ image: DATA_URL, query: 'q' });
+		assert.ok(text.includes('explicit-vision'), '用户显式配置必须优先于默认（专家模型）');
+		assert.ok(!text.includes('kb-vision'), '不得越过显式配置改用专家模型');
+	});
+
+	test('未注入 getKbExpertModel（旧调用方）⇒ 自动路由行为不变（向后兼容）', async () => {
+		const r = makeRunner({
+			providers: [makeProvider({ modelId: 'auto-routed', supportsImages: true, deltas: [{ type: 'text', content: 'ok' }] })],
+		});
+		const text = await r.invoke({ image: DATA_URL, query: 'q' });
+		assert.ok(text.includes('auto-routed'), '缺少新依赖时必须安全降级（不抛错、不改旧行为）');
 	});
 });

@@ -78,6 +78,26 @@ export interface VisionAnalyzeToolContext {
 	 * 缺省 / 返回 false → 一律回退文本模式（fail-closed：对不支持图片的模型发图会 400）。
 	 */
 	mainModelSupportsImages?: () => Promise<boolean>;
+	/**
+	 * **知识库专家**（`knowledge-base-expert`）当前配置的模型选择（可选，2026-09-22 新增）。
+	 *
+	 * ## 为什么
+	 *
+	 * 需求：**多模态默认使用「知识库专家」配置的模型**。此前本工具的模型来源只有
+	 * 「设置面板的 Vision 辅助模型 → 自动路由第一个 `supportsImages` 的模型」，与用户
+	 * 实际在用的知识库专家模型**完全脱节** —— 用户在专家里配了看图能力强的模型，图片分析
+	 * 却交由另一个自动挑出的模型处理（能力/质量不匹配，且用户无从感知）。
+	 *
+	 * ## 优先级（见下方「2. 选择 provider / model」）
+	 *
+	 * ① Vision 辅助模型**显式**配置（用户显式指定，最高优先，维持原语义）→
+	 * ② **知识库专家配置的模型**（本次新增的默认）→
+	 * ③ 自动路由（原兜底）
+	 *
+	 * ⚠ ②仍会校验该模型 `supportsImages`：专家也可能配的是**纯文本**模型，直接发图会 400
+	 *   ⇒ 不满足时继续回退到 ③（fail-safe，不会因专家配置而让多模态整体不可用）。
+	 */
+	getKbExpertModel?: () => { providerId: string; modelId: string } | undefined;
 }
 
 /** `mode` 参数归一化：非法值一律退回 `auto`（宽容解析，与本项目其它工具同纪律）。 */
@@ -330,8 +350,9 @@ export function registerVisionAnalyzeTools(ctx: VisionAnalyzeToolContext): void 
 			}
 
 			// ── 2. 选择 provider / model ──
-			// ① 用户级 Vision 辅助模型配置（设置面板「Vision（图像分析）」写入）；
-			// ② 自动路由：第一个声明 supportsImages 的模型。
+			// ① 用户级 Vision 辅助模型配置（设置面板「Vision（图像分析）」写入）——显式指定，最高优先；
+			// ② 知识库专家（knowledge-base-expert）配置的模型 —— **多模态的默认模型**（2026-09-22）；
+			// ③ 自动路由：第一个声明 supportsImages 的模型。
 			let providerId: string | undefined;
 			let modelId: string | undefined;
 			if (ctx.configurationService) {
@@ -347,6 +368,26 @@ export function registerVisionAnalyzeTools(ctx: VisionAnalyzeToolContext): void 
 			let provider: IModelProvider | undefined = providerId
 				? providers.find(p => p.id === providerId)
 				: undefined;
+
+			// ② 知识库专家配置的模型（★ 2026-09-22：多模态的**默认**模型来源）。
+			//    ⚠ 仅当用户**没有**显式指定 Vision provider 时生效（显式配置优先，维持原语义）。
+			//    ⚠ 必须校验该模型 `supportsImages`：专家可能配的是纯文本模型，直接发图会 400
+			//      ⇒ 不满足时继续往下走自动路由（fail-safe，不会让多模态整体不可用）。
+			if (!providerId && (!provider || !modelId)) {
+				try {
+					const kb = ctx.getKbExpertModel?.();
+					if (kb?.providerId && kb.modelId) {
+						const kbProvider = providers.find(p => p.id === kb.providerId);
+						if (kbProvider && typeof kbProvider.chat === 'function') {
+							const kbModels = await kbProvider.listModels().catch(() => []);
+							if (kbModels.some(m => m.id === kb.modelId && m.supportsImages)) {
+								provider = kbProvider;
+								modelId = kb.modelId;
+							}
+						}
+					}
+				} catch { /* 读取专家配置失败 ⇒ 走自动路由 */ }
+			}
 
 			if (!provider || !modelId) {
 				for (const p of providers) {

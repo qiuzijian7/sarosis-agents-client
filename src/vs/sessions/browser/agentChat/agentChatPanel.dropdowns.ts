@@ -856,6 +856,12 @@ protected override _renderSettingsChannelTab(container: HTMLElement): void {
 		}
 		const agentId = this._agent.id;
 
+		// 会话列表（Section 1 默认会话下拉 + Section 2 绑定下拉共享一次加载）
+		let sessionOptions: ReadonlyArray<{ id: string; name: string }> = [];
+		const sessionsReady = (this._onListAgentSessions?.() ?? Promise.resolve([])).then(list => {
+			sessionOptions = list;
+		}).catch(() => { /* 加载失败：下拉保持占位 */ });
+
 		// ── 渠道分组：飞书（Feishu） ──
 		const group = append(container, $(".chat-channel-group"));
 		const groupHeader = append(group, $(".chat-channel-group-header"));
@@ -882,12 +888,49 @@ protected override _renderSettingsChannelTab(container: HTMLElement): void {
 		defLabel.textContent = '将此 Agent 设为飞书渠道的默认处理 Agent（无精确群绑定时生效）';
 		defLabel.setAttribute('for', 'chat-feishu-default-toggle');
 
-		// Section 2: 群聊绑定（按会话 chat_id）
+		// 默认会话下拉：勾选默认 Agent 后，未精确绑定的飞书消息统一进入所选会话
+		const defSessionRow = append(sec1, $("div.chat-binding-default-row"));
+		const defSessionLabel = append(defSessionRow, $("label.chat-binding-default-label"));
+		defSessionLabel.textContent = '默认会话：';
+		const defSessionSelect = document.createElement('select');
+		defSessionSelect.className = 'chat-binding-select';
+		defSessionSelect.disabled = !toggle.checked;
+		append(defSessionRow, defSessionSelect);
+		const renderDefSessionOptions = () => {
+			defSessionSelect.replaceChildren();
+			const autoOpt = document.createElement('option');
+			autoOpt.value = '';
+			autoOpt.textContent = '（每群自动建专属会话）';
+			defSessionSelect.appendChild(autoOpt);
+			const cur = this._onGetFeishuDefaultSession?.();
+			for (const s of sessionOptions) {
+				const opt = document.createElement('option');
+				opt.value = s.id;
+				opt.textContent = s.name || s.id;
+				if (s.id === cur) { opt.selected = true; }
+				defSessionSelect.appendChild(opt);
+			}
+		};
+		renderDefSessionOptions();
+		void sessionsReady.then(() => renderDefSessionOptions());
+		defSessionSelect.onchange = () => {
+			this._onSetFeishuDefaultSession?.(defSessionSelect.value || undefined);
+		};
+		// 勾选/取消默认 Agent 联动启用态（取消时 pane 侧会同步清除默认会话配置）
+		const origToggleHandler = toggle.onchange;
+		toggle.onchange = (e) => {
+			origToggleHandler?.call(toggle, e);
+			defSessionSelect.disabled = !toggle.checked;
+		};
+
+		// Section 2: 群聊绑定（chat_id ↔ 指定会话）
 		const sec2 = append(group, $(".chat-binding-section"));
 		const sec2Title = append(sec2, $("div.chat-binding-section-title"));
-		sec2Title.textContent = '群聊绑定（按会话）';
+		sec2Title.textContent = '群聊绑定（chat_id ↔ 指定会话）';
 		const hint = append(sec2, $("div.chat-binding-hint"));
-		hint.textContent = '在飞书群中发送 /bind list 可查看本群 chat_id。绑定的群聊消息将自动路由给本 Agent。';
+		// ⚠ 文案以**用户口述的实际取号路径**为准 ✗✓（2026-09-22 用户纠错：不是"在群里发 /bind list"，
+		//   而是「客户端飞书 → 群设置 → 底部 会话 ID 字段」✓）—— textContent 不渲染 markdown ⇒ 纯文本 ✓。
+		hint.textContent = '在客户端飞书中打开该群 → 点右上角「⋯」进入群设置 → 拉到底部，「会话 ID」字段就是本群 chat_id。绑定后该群消息将进入所选会话（可在下拉框中选择本 Agent 名下的任意会话）。';
 		const addRow = append(sec2, $("div.chat-binding-add-row"));
 		const input = document.createElement('input');
 		input.type = 'text';
@@ -897,6 +940,36 @@ protected override _renderSettingsChannelTab(container: HTMLElement): void {
 			if (e.key === 'Enter') { e.preventDefault(); void doBind(); }
 		};
 		append(addRow, input);
+
+		// session 下拉：仅显示本 Agent 名下会话；共享上方 sessionsReady，默认选中当前打开的会话
+		const sessionSelect = document.createElement('select');
+		sessionSelect.className = 'chat-binding-select';
+		const loadingOpt = document.createElement('option');
+		loadingOpt.textContent = '加载会话列表…';
+		loadingOpt.value = '';
+		sessionSelect.appendChild(loadingOpt);
+		append(addRow, sessionSelect);
+		const curSessionId = this._getSessionId();
+		void sessionsReady.then(() => {
+			sessionSelect.replaceChildren();
+			if (sessionOptions.length === 0) {
+				const none = document.createElement('option');
+				none.textContent = '（本 Agent 暂无会话）';
+				none.value = '';
+				sessionSelect.appendChild(none);
+			} else {
+				for (const s of sessionOptions) {
+					const opt = document.createElement('option');
+					opt.value = s.id;
+					opt.textContent = s.name || s.id;
+					if (s.id === curSessionId) { opt.selected = true; }
+					sessionSelect.appendChild(opt);
+				}
+			}
+			// 会话名就绪后重绘绑定列表（否则列表项只能显示 session id）
+			renderList();
+		});
+
 		const addBtn = append(addRow, $("button.monaco-button.monaco-text-button.chat-settings-add-btn")) as HTMLButtonElement;
 		addBtn.textContent = '➕ 绑定';
 
@@ -904,8 +977,9 @@ protected override _renderSettingsChannelTab(container: HTMLElement): void {
 
 		const doBind = () => {
 			const chatId = input.value.trim();
-			if (!chatId) { return; }
-			this._onAddFeishuBinding?.(chatId);
+			const sessionId = sessionSelect.value;
+			if (!chatId || !sessionId) { return; }
+			this._onBindFeishuSession?.(chatId, sessionId);
 			// 乐观重渲染：列表从回调实时读取，失败绑定自然不会出现在列表
 			this._renderSettingsChannelTab(container);
 		};
@@ -913,18 +987,35 @@ protected override _renderSettingsChannelTab(container: HTMLElement): void {
 
 		const renderList = () => {
 			listContainer.replaceChildren();
-			const bindings = this._onListFeishuBindings!();
-			const mine = bindings.filter(b => b.agentId === agentId);
-			if (mine.length === 0) {
+			// 会话级映射（chat_id → 专属会话）；session 名经 onListAgentSessions 反查
+			const sessionBindings = (this._onListFeishuSessionBindings?.() ?? []).filter(b => b.agentId === agentId);
+			// chat→Agent 级绑定（尚无专属会话映射的，例如经 /bind 命令绑定的群）
+			const agentBindings = (this._onListFeishuBindings?.() ?? [])
+				.filter(b => b.agentId === agentId && !sessionBindings.some(s => s.conversationId === b.conversationId));
+			if (sessionBindings.length === 0 && agentBindings.length === 0) {
 				const empty = append(listContainer, $("div.skills-empty"));
 				empty.textContent = '暂无绑定的飞书群聊';
 				return;
 			}
-			for (const b of mine) {
+			const nameOf = (sid: string) => sessionOptions.find(s => s.id === sid)?.name || sid;
+			for (const b of sessionBindings) {
 				const item = append(listContainer, $("div.skill-item.installed"));
 				const info = append(item, $("div.skill-item-info"));
 				const nameEl = append(info, $("span.skill-item-name"));
-				nameEl.textContent = b.conversationId;
+				nameEl.textContent = `${b.conversationId} → ${nameOf(b.agentSessionId)}`;
+				const removeBtn = append(item, $("button.skill-remove-btn")) as HTMLButtonElement;
+				removeBtn.title = '解除绑定';
+				removeBtn.textContent = '✕';
+				removeBtn.onclick = () => {
+					this._onUnbindFeishuSession?.(b.conversationId);
+					this._renderSettingsChannelTab(container);
+				};
+			}
+			for (const b of agentBindings) {
+				const item = append(listContainer, $("div.skill-item.installed"));
+				const info = append(item, $("div.skill-item-info"));
+				const nameEl = append(info, $("span.skill-item-name"));
+				nameEl.textContent = `${b.conversationId} → （自动专属会话）`;
 				const removeBtn = append(item, $("button.skill-remove-btn")) as HTMLButtonElement;
 				removeBtn.title = '解除绑定';
 				removeBtn.textContent = '✕';
@@ -935,7 +1026,7 @@ protected override _renderSettingsChannelTab(container: HTMLElement): void {
 			}
 		};
 		renderList();
-	}
+		}
 
 protected override _renderMsgNavOverlay(): void {
 		this._msgNavOverlayEl = append(this._container, $(".chat-msg-nav-overlay"));

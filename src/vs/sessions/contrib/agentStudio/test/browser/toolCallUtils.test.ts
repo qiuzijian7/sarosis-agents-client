@@ -20,7 +20,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { safeStringifyToolResult, MAX_TOOL_RESULT_CHARS } from '../../browser/toolCallUtils.js';
+import { safeStringifyToolResult, MAX_TOOL_RESULT_CHARS, coerceArgsToSchema } from '../../browser/toolCallUtils.js';
 import { redactSecrets } from '../../common/redactSecrets.js';
 
 suite('toolCallUtils — safeStringifyToolResult 统一脱敏出口', () => {
@@ -99,5 +99,39 @@ suite('toolCallUtils — safeStringifyToolResult 统一脱敏出口', () => {
 		assert.strictEqual(redactSecrets('Authorization: Basic dXNlcjpwYXNz'), 'Authorization: Basic <redacted>');
 		// 已掩码内容幂等（不丢标签）
 		assert.strictEqual(redactSecrets('Authorization: <redacted:Bearer>'), 'Authorization: <redacted:Bearer>');
+	});
+
+	test('★★★ 哨兵残片污染的键名 ⇒ 截断抢救（真机：unreal_find_asset 400 三连）', () => {
+		// 真机（日志 1790077760068）：流式组帧把参数分隔哨兵漏进键名 ——
+		//   `name_contains</arg_value:6124c78e><arg_key:6124c78e>name`
+		// 顶层出现 schema 不认识的怪键 ⇒ 真参数被丢弃 ⇒ 桥端 400。
+		// 修法：键名在首个哨兵残片处截断；截断后合法且不冲突 ⇒ 抢救（值保留 ✓）。
+		const schema = {
+			type: 'object',
+			properties: {
+				name_contains: { type: 'string' },
+				max_results: { type: 'integer' },
+			},
+		};
+		const r = coerceArgsToSchema(
+			{ 'name_contains</arg_value:6124c78e><arg_key:6124c78e>name': 'Cube', max_results: 5 },
+			schema,
+		);
+		assert.strictEqual(r.args['name_contains'], 'Cube', '污染键名必须截断抢救出真参数 ✗✓');
+		assert.strictEqual(r.args['max_results'], 5, '正常参数不受影响 ✓');
+		assert.ok(!Object.keys(r.args).some(k => k.includes('arg_value')), '哨兵残片不得留在键名里 ✗✓');
+		assert.ok(r.warnings.some(w => w.includes('salvaged argument "name_contains"')),
+			`必须留下抢救告警（实际 ${JSON.stringify(r.warnings)} ✗）`);
+	});
+
+	test('★★ 哨兵污染的键截断后与已有键冲突 ⇒ 丢弃怪键（不覆盖正确值 ✓）', () => {
+		const schema = { type: 'object', properties: { name: { type: 'string' } } };
+		const r = coerceArgsToSchema(
+			{ name: 'right', 'name</arg_key:abc>': 'wrong' },
+			schema,
+		);
+		assert.strictEqual(r.args['name'], 'right', '已有正确键 ⇒ 不得被抢救覆盖 ✗✓');
+		assert.ok(r.warnings.some(w => w.includes('dropped argument with sentinel-tainted key')),
+			'冲突的污染键必须丢弃并告警 ✓');
 	});
 });

@@ -63,6 +63,7 @@ import { ICodebaseGraphService } from '../codebaseGraphService.js';
 import { IIndexConfig, IndexMode, ICodebaseMemoryMcpService } from '../codebaseMemoryMcpService.js';
 import { COMMON_EXCLUDE_DIRS } from '../../common/codebaseIndexDefaults.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
+import { IWebContentExtractorService, ISharedWebContentExtractorService } from '../../../../../platform/webContentExtractor/common/webContentExtractor.js';
 import { createKbSqliteStoreProxy } from '../kbSqliteStoreProxy.js';
 import type { IKbSqliteBackend, IKbSqliteDoc } from '../../common/kbSqliteStoreChannel.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -118,11 +119,18 @@ import {
 	DEFAULT_LARK_CLI,
 	KB_FEISHU_SYNC_SCRIPT_REL,
 	LARK_CLI_MISSING_HINT,
+	FEISHU_SPACE_MAP_FILE,
 	buildSyncArgs,
 	detectLarkCli,
 	electronNodeLaunch,
+	listWikiSpaces,
+	createWikiSpace,
+	sanitizeSpaceName,
+	parseSpaceMap,
 	parseSrcDirs,
 	resolveSyncScript,
+	serializeSpaceMap,
+	type IKbSpaceMapping,
 } from '../knowledge/feishuSyncCore.js';
 import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
@@ -140,6 +148,8 @@ import { IKbVectorSearchHit } from './knowledgeBase/kbVectorIndex.js';
 const KB_ROOT_SUBPATH = '.vssaros/knowledge-base';
 const STORAGE_SORT_PREFIX = 'agentStudio.kb.sort.';
 const STORAGE_EXPANDED_PREFIX = 'agentStudio.kb.expanded.';
+/** 分区高度（用户拖拽调整后）持久化前缀：`<prefix><vaultId>` ⇒ `{ regionId: px }` 的 JSON。 */
+const STORAGE_SECTION_HEIGHTS_PREFIX = 'agentStudio.kb.sectionHeights.';
 
 /**
  * Episodic 层的 6 个原生类型（与 memoryDetailEditorPane 的 EPISODIC_TYPES 同源）。
@@ -177,6 +187,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _vaultBar!: HTMLElement;
 	private _vaultMenu!: HTMLElement;
 	private _scroll!: HTMLElement;
+	/**
+	 * 区域高度（用户拖拽分隔条后固定的 px 值；key = 区域 id：library/notes/backlinks/tagclass/recent）。
+	 * 2026-09-22：面板每次重建都会复用这里的值 ⇒ 拖拽结果不会因一次刷新而丢失；并按 vault 持久化。
+	 */
+	private _regionHeights = new Map<string, number>();
+	/** `_regionHeights` 当前对应的 vault id（切换知识库时重载）。 */
+	private _regionHeightsVaultId = '';
 	private _searchInput?: HTMLInputElement;
 
 	// 注：⚙ 设置入口已从「侧栏下拉面板」改为「中间栏 EditorPane」
@@ -334,6 +351,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@IDialogService private readonly dialogService: IDialogService,
+		@IWebContentExtractorService private readonly webContentExtractorService: IWebContentExtractorService,
+		@ISharedWebContentExtractorService private readonly sharedWebContentExtractorService: ISharedWebContentExtractorService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@ILogService private readonly logService: ILogService,
@@ -469,6 +488,89 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	private saveSort(vaultId: string, mode: KbSortMode): void {
 		this.storageService.store(STORAGE_SORT_PREFIX + vaultId, mode, StorageScope.APPLICATION, StorageTarget.MACHINE);
+	}
+
+	// ── 分区高度：展开占满 + 拖拽调整（2026-09-22）──────────────────────────────
+	// 布局：`.kb-scroll` 是纵向 flex 容器 ⇒ 展开的分区 `flex: 1 1 0` 自动**占满**剩余高度
+	// （多个展开则平分）；区域之间插入 `.kb-resizer`，拖拽把上方区域钉成固定像素高。
+
+	/** 按 vault 读取已保存的区域高度（同一 vault 只读一次；切换知识库时重载）。 */
+	private _loadRegionHeightsIfNeeded(): void {
+		const vid = this._activeVault?.id ?? '';
+		if (this._regionHeightsVaultId === vid) { return; }
+		this._regionHeightsVaultId = vid;
+		this._regionHeights.clear();
+		if (!vid) { return; }
+		try {
+			const raw = this.storageService.get(STORAGE_SECTION_HEIGHTS_PREFIX + vid, StorageScope.APPLICATION, '');
+			const parsed = raw ? JSON.parse(raw) as Record<string, number> : {};
+			for (const [k, v] of Object.entries(parsed)) {
+				if (typeof v === 'number' && Number.isFinite(v) && v > 0) { this._regionHeights.set(k, v); }
+			}
+		} catch { /* 数据损坏 ⇒ 忽略，退回默认「占满」布局 */ }
+	}
+
+	private _saveRegionHeights(): void {
+		const vid = this._activeVault?.id;
+		if (!vid) { return; }
+		const obj: Record<string, number> = {};
+		for (const [k, v] of this._regionHeights) { obj[k] = v; }
+		this.storageService.store(STORAGE_SECTION_HEIGHTS_PREFIX + vid, JSON.stringify(obj), StorageScope.APPLICATION, StorageTarget.MACHINE);
+	}
+
+	/**
+	 * 追加一个「区域」（分区 / 双链 / 标签分类 / 最近编辑），并在相邻区域之间插入可拖拽分隔条。
+	 * 区域节点带 `data-kb-region=<id>`，已保存过高度的会立即按固定高度渲染。
+	 */
+	private _appendRegion(id: string, render: () => void): void {
+		if (this._scroll.childElementCount > 0) {
+			this._scroll.appendChild(this._createResizer());
+		}
+		render();
+		const node = this._scroll.lastElementChild as HTMLElement | null;
+		if (!node || node.classList.contains('kb-resizer')) { return; }
+		node.dataset.kbRegion = id;
+		const h = this._regionHeights.get(id);
+		if (h) {
+			node.dataset.kbResized = '1';
+			node.style.setProperty('--kb-region-h', `${Math.round(h)}px`);
+		}
+	}
+
+	/** 区域之间的拖拽分隔条：下移 = 上方区域变高（下方区域保持弹性，占满剩余）。 */
+	private _createResizer(): HTMLElement {
+		const bar = $('div.kb-resizer');
+		bar.title = '拖拽调整高度';
+		bar.onpointerdown = (ev: PointerEvent) => {
+			const upper = bar.previousElementSibling as HTMLElement | null;
+			if (!upper) { return; }
+			ev.preventDefault();
+			const startY = ev.clientY;
+			const startH = upper.getBoundingClientRect().height;
+			const minH = 40; // 至少留一个标题行，避免被拖成 0 后无法再拖回来
+			let current = Math.round(startH);
+			const apply = (px: number) => {
+				current = px;
+				upper.dataset.kbResized = '1';
+				upper.style.setProperty('--kb-region-h', `${px}px`);
+			};
+			apply(current);
+			bar.classList.add('dragging');
+			try { bar.setPointerCapture(ev.pointerId); } catch { /* 不支持则退化为普通 move 监听 */ }
+			const onMove = (e: PointerEvent) => { apply(Math.max(minH, Math.round(startH + (e.clientY - startY)))); };
+			const finish = () => {
+				bar.classList.remove('dragging');
+				bar.removeEventListener('pointermove', onMove);
+				bar.removeEventListener('pointerup', finish);
+				bar.removeEventListener('pointercancel', finish);
+				const id = upper.dataset.kbRegion;
+				if (id) { this._regionHeights.set(id, current); this._saveRegionHeights(); }
+			};
+			bar.addEventListener('pointermove', onMove);
+			bar.addEventListener('pointerup', finish);
+			bar.addEventListener('pointercancel', finish);
+		};
+		return bar;
 	}
 
 	private saveExpanded(vaultId: string, section: KbSection): void {
@@ -1556,13 +1658,15 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._searchToken++;
 		this.renderVaultBar();
 		this._scroll.replaceChildren();
+		this._loadRegionHeightsIfNeeded();
+		// 区域按顺序追加（`_appendRegion` 会在相邻区域之间插入可拖拽分隔条，见 _createResizer）
 		if (this._viewMode === 'recent') {
-			this.renderRecentView();
+			this._appendRegion('recent', () => this.renderRecentView());
 		} else {
-			this._scroll.appendChild(this.renderSection('library'));
-			this._scroll.appendChild(this.renderSection('notes'));
+			this._appendRegion('library', () => { this._scroll.appendChild(this.renderSection('library')); });
+			this._appendRegion('notes', () => { this._scroll.appendChild(this.renderSection('notes')); });
 		}
-		this.renderBacklinksPanel();
+		this._appendRegion('backlinks', () => this.renderBacklinksPanel());
 		// 填充 section body 内容（DOM 是当前主可见内容）。
 		// 两个分区互不依赖，并行 await 一次即可；原先的两次 `void` 调用既不等待、
 		// 也无法被下方计时埋点覆盖真实耗时。
@@ -1573,7 +1677,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this.logService.info(`[KB perf] renderAll #${callId} sections loaded: ${(performance.now() - t0).toFixed(1)}ms`);
 		});
 		// 标签分类区块（设计图：单一可折叠标题，内含 标签搜索 + 分组列表）
-		this._scroll.appendChild(this.renderTagClassificationSection());
+		this._appendRegion('tagclass', () => { this._scroll.appendChild(this.renderTagClassificationSection()); });
 		const _lf = this._activeVault?.linkedFolders?.length ?? -1;
 		const _ws = this._activeVault?.linkedWorkspaces?.length ?? -1;
 		this.logService.info(`[KB perf] renderAll #${callId} total: ${(performance.now() - t0).toFixed(1)}ms linkedFolders=${_lf} linkedWS=${_ws}`);
@@ -1644,9 +1748,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			groupsEl.replaceChildren();
 			countBadge.textContent = String(tags.length + (untagged.length ? 1 : 0));
 			if (tags.length === 0 && untagged.length === 0) {
-				const empty = $('div.kb-empty-inline');
-				empty.textContent = q ? '无匹配标签' : '暂无标签（在笔记中使用 #标签# 格式即可创建标签）';
-				groupsEl.append(empty);
+				groupsEl.append(this._createEmptyInline(q ? '无匹配标签' : '暂无标签（在笔记中使用 #标签# 格式即可创建标签）'));
 				return;
 			}
 			for (const t of tags) {
@@ -1745,6 +1847,23 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._scroll.appendChild(el);
 	}
 
+	/**
+	 * 内联空态提示（对齐 VS Code 原生风格）。
+	 *
+	 * 原生对应物：扩展树视图的 `.message`（`views.css`：
+	 * `.tree-explorer-viewlet-tree-view .message { display:flex; padding:4px 12px 4px 18px; user-select:text; }`）
+	 * —— 普通块元素（**不是** list row ⇒ 不可聚焦/不可选中语义），文案用 `--vscode-descriptionForeground` 弱化。
+	 * 视图级「整体为空」的原生做法是 `viewsWelcome`（居中 region）；本侧栏树的分区空态用等价的内联弱化提示即可。
+	 */
+	private _createEmptyInline(text: string): HTMLElement {
+		const el = $('div.kb-empty-inline');
+		el.textContent = text;
+		el.style.color = 'var(--vscode-descriptionForeground)';
+		el.style.padding = '4px 12px 4px 18px';
+		el.style.userSelect = 'text';
+		return el;
+	}
+
 	private renderVaultBar(): void {
 		this._vaultBar.replaceChildren();
 		const icon = $('span.kb-vault-icon');
@@ -1757,11 +1876,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		select.onclick = (e) => { e.stopPropagation(); this.toggleVaultMenu(); };
 		this._vaultBar.appendChild(select);
 
-		// 「记忆」按钮：切到「记忆」Tab（记忆数据由 MemoryDetailEditorPane 维护）
-		const memBtn = $('span.kb-abtn.codicon.codicon-database');
-		memBtn.title = '记忆库';
-		memBtn.onclick = (e) => { e.stopPropagation(); this._switchTab('mem'); };
-		this._vaultBar.appendChild(memBtn);
+		// 注：2026-09-22 移除「记忆库」按钮（原 codicon-database，点击 = 切到记忆 Tab）——
+		// 顶部已有「记忆」Tab 可直达，该按钮纯冗余（用户要求精简）。
 
 		// 视图切换按钮：文件树 ⇄ 最近编辑
 		const viewBtn = $('span.kb-abtn');
@@ -2058,6 +2174,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const newFolderBtn = $('span.kb-tool-btn.codicon.codicon-new-folder'); newFolderBtn.title = '新建文件夹';
 		newFolderBtn.onclick = (e) => { e.stopPropagation(); void this.newFolder(section); };
 		toolbar.append(newFileBtn, newFolderBtn);
+		if (section === 'library') {
+			// 「导入链接 / URL」（2026-09-22）：抓正文 + 图片本地化 → 落 库/raw ⇒ 再「构建为笔记」
+			const importUrlBtn = $('span.kb-tool-btn.codicon.codicon-link-external');
+			importUrlBtn.title = '导入链接 / URL（小红书 · 抖音 · 知乎 · YouTube · B站…）';
+			importUrlBtn.onclick = (e) => { e.stopPropagation(); void this.importFromUrl(); };
+			toolbar.append(importUrlBtn);
+		}
 
 		header.append(arrow, title, count, spacer, toolbar);
 		// 展开态由 CSS 的 .kb-section.open 规则驱动箭头旋转，不再手改 textContent
@@ -2127,8 +2250,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			}
 			body.replaceChildren();
 			if (nodes.length === 0) {
-				const empty = $('div.kb-empty-inline'); empty.textContent = '暂无内容';
-				body.appendChild(empty);
+				body.appendChild(this._createEmptyInline('暂无内容'));
 			} else {
 				await this._appendNodesChunked(body, nodes, 0);
 			}
@@ -2478,8 +2600,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				el.after(childrenEl);
 			}
 			if (nodes.length === 0) {
-				const empty = $('div.kb-empty-inline'); empty.style.paddingLeft = '20px'; empty.textContent = '空文件夹';
-				childrenEl.appendChild(empty);
+				// 2026-09-22 对齐 VS Code 原生：**空目录不渲染任何占位行**。
+				// 原生 Explorer 展开空文件夹就是 0 行（explorerViewer 无 placeholder 分支），
+				// 且目录行自带计数徽标（`kb-count`）已表达「0 项」⇒ 不需要「空文件夹」这类人造行。
+				childrenEl.replaceChildren();
 			} else {
 				await this._appendNodesChunked(childrenEl, nodes, this.depthOf(el) + 1);
 				// 递归恢复已展开的子目录（fire-and-forget，不阻塞分片渲染）
@@ -2996,8 +3120,126 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			rebuildVectorIndex: () => { void this.rebuildVectorIndex(); },
 			openKbFolder: () => { void this.openKbFolder(); },
 			feishuSync: (mode) => { void this.syncToFeishu(mode); },
+			loadSpaceMap: () => this.loadFeishuSpaceMap(),
+			saveSpaceMap: (list) => this.saveFeishuSpaceMap(list),
+			listSpaces: () => this.listFeishuSpaces(),
+			promptSpaceName: () => this.promptFeishuSpaceName(),
+			createSpace: (name) => this.createFeishuSpace(name),
+			pickDirForMapping: () => this.pickDirForMapping(),
 			openFile: (uri) => { void this._openSettingsFile(uri); },
 		};
+	}
+
+	// ── 「本地目录 ↔ 飞书知识库」映射：读写 vault 内配置文件（供设置面板编辑）──────
+	// 契约与内置脚本一致：`{ version: 1, mappings: [{ dir, spaceId, spaceName }] }`，
+	// 脚本启动时读同一文件并让显式映射**覆盖**类别层级推导结果。
+
+	private _spaceMapUri(): URI {
+		return URI.joinPath(this.rootUri, FEISHU_SPACE_MAP_FILE);
+	}
+
+	/** 读取映射（文件不存在 / 读取失败 ⇒ 空数组 = 未配置）。 */
+	private async loadFeishuSpaceMap(): Promise<IKbSpaceMapping[]> {
+		try {
+			return parseSpaceMap((await this.fileService.readFile(this._spaceMapUri())).value.toString());
+		} catch {
+			return [];
+		}
+	}
+
+	private async saveFeishuSpaceMap(list: ReadonlyArray<IKbSpaceMapping>): Promise<void> {
+		try {
+			await this.fileService.writeFile(this._spaceMapUri(), VSBuffer.fromString(serializeSpaceMap(list)));
+		} catch (err) {
+			this.logService.warn(`[KB] save space map failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	/** 列出可选飞书知识库（未安装 CLI / 未登录 / 解析失败 ⇒ 空数组，面板据此给出提示）。 */
+	private async listFeishuSpaces(): Promise<Array<{ spaceId: string; name: string }>> {
+		const cliPath = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_CLI_PATH) || DEFAULT_LARK_CLI).trim() || DEFAULT_LARK_CLI;
+		try {
+			return await listWikiSpaces(cliPath);
+		} catch {
+			return [];
+		}
+	}
+
+	/** 弹出输入框获取新知识库名称（取消 / 去引号后为空 ⇒ undefined）。 */
+	private async promptFeishuSpaceName(): Promise<string | undefined> {
+		const r = await this.dialogService.input({
+			message: localize('kb.feishuNewSpace', '新建飞书知识库名称'),
+			inputs: [{ value: '我的知识库' }],
+		});
+		if (!r.confirmed) { return undefined; }
+		return sanitizeSpaceName(r.values?.[0]) || undefined;
+	}
+
+	/** 在飞书**新建**知识库（与内置脚本共用同一 lark-cli 路径；失败 ⇒ undefined 由面板提示）。 */
+	private async createFeishuSpace(name: string): Promise<{ spaceId: string; name: string } | undefined> {
+		const cliPath = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_CLI_PATH) || DEFAULT_LARK_CLI).trim() || DEFAULT_LARK_CLI;
+		try {
+			const created = await createWikiSpace(name, cliPath);
+			if (created) {
+				this.notificationService.info(localize('kb.feishuSpaceCreated', '已新建飞书知识库：{0}', created.name));
+			}
+			return created;
+		} catch (err) {
+			this.logService.warn(`[KB] create feishu space failed: ${err instanceof Error ? err.message : String(err)}`);
+			return undefined;
+		}
+	}
+
+	/**
+	 * 「导入链接 / URL」：抓取网页正文 + 把网页图片下载到知识库（`库/raw/assets/<slug>/`），
+	 * 引用改写为本地相对路径后落盘 `库/raw/<slug>.md`。
+	 * 之后：① 右键「构建为笔记」产出结构化笔记；② 本地图片可被飞书同步上传（只认本地图片）。
+	 */
+	private async importFromUrl(): Promise<void> {
+		const r = await this.dialogService.input({
+			message: localize('kb.importUrlHint', '导入链接 / URL（支持小红书 · 抖音 · 知乎 · YouTube · B站…）'),
+			inputs: [{ value: 'https://', placeholder: '粘贴网页链接后回车' }],
+		});
+		if (!r.confirmed) { return; }
+		const url = (r.values?.[0] ?? '').trim();
+		if (!url || url === 'https://') { return; }
+		this.notificationService.info(localize('kb.importUrlStart', '正在抓取并导入：{0}', url));
+		const res = await KbImportController.importUrl({
+			url,
+			vaultRoot: this.rootUri,
+			fileService: this.fileService,
+			logService: this.logService,
+			requestService: this.requestService,
+			extractor: this.webContentExtractorService,
+			imageReader: this.sharedWebContentExtractorService,
+		});
+		if (res.ok) {
+			void this._logOp('kb.importUrl', 'success', { target: url, detail: { images: res.images } });
+			this.notificationService.info(localize('kb.importUrlDone', '已导入：{0}（图片 {1} 张）', res.title ?? '', String(res.images)));
+			this.refreshSection('library');
+		} else {
+			void this._logOp('kb.importUrl', 'failure', { target: url, detail: { message: res.message } });
+			this.notificationService.warn(localize('kb.importUrlFailed', '导入失败：{0}', res.message));
+		}
+	}
+
+	/** 选择知识库内的目录（返回**相对知识库根**的路径；取消/越界 ⇒ undefined）。 */
+	private async pickDirForMapping(): Promise<string | undefined> {
+		const picked = await this.fileDialogService.showOpenDialog({
+			canSelectFiles: false, canSelectFolders: true, canSelectMany: false,
+			defaultUri: this.rootUri,
+			title: '选择要映射到飞书知识库的目录（知识库内）',
+		});
+		const uri = picked?.[0];
+		if (!uri) { return undefined; }
+		// 用字符串前缀比较（避免额外引入 path 模块）；只在知识库根内选取
+		const root = this.rootUri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '');
+		const full = uri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '');
+		if (full === root || !full.startsWith(root + '/')) {
+			this.notificationService.warn(localize('kb.spaceMapOutsideVault', '请选择知识库目录（或其子目录）内的文件夹。'));
+			return undefined;
+		}
+		return full.slice(root.length + 1);
 	}
 
 	/** 打开设置面板引用的文件（如同步日志）；不存在时提示而非静默失败。 */
@@ -4453,10 +4695,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const topCount = Array.from(body.children).filter(c => (c as HTMLElement).classList?.contains('kb-node')).length;
 		const countEl = body.parentElement?.querySelector('.kb-count') as HTMLElement | null;
 		if (countEl) { countEl.textContent = String(topCount); }
-		// 分区变空时显示空态
+		// 分区变空时显示空态（原生风格弱化提示，见 _createEmptyInline）
 		if (topCount === 0 && !body.querySelector('.kb-empty-inline')) {
-			const empty = $('div.kb-empty-inline'); empty.textContent = '暂无内容';
-			body.replaceChildren(empty);
+			body.replaceChildren(this._createEmptyInline('暂无内容'));
 		}
 	}
 
@@ -4501,10 +4742,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		const depth = folderPath === null ? 0 : (this.depthOf(container.previousElementSibling as HTMLElement) + 1);
 		if (nodes.length === 0) {
-			// 对齐原渲染的空态文案（顶层「暂无内容」/ 子目录「空文件夹」）
-			const empty = $('div.kb-empty-inline');
-			if (folderPath === null) { empty.textContent = '暂无内容'; } else { empty.style.paddingLeft = '20px'; empty.textContent = '空文件夹'; }
-			container.replaceChildren(empty);
+			// 顶层分区为空 ⇒ 内联弱化提示（原生风格，见 _createEmptyInline）；
+			// 子目录为空 ⇒ **不渲染占位行**（对齐 VS Code 原生 Explorer 行为，2026-09-22）
+			if (folderPath === null) {
+				container.replaceChildren(this._createEmptyInline('暂无内容'));
+			} else {
+				container.replaceChildren();
+			}
 		} else {
 			await this._appendNodesChunked(container, nodes, depth);
 		}
@@ -4646,8 +4890,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		h.textContent = `找到 ${matches.length} 个结果（库 + 笔记）`;
 		resultsEl.appendChild(h);
 		if (matches.length === 0) {
-			const empty = $('div.kb-empty-inline'); empty.textContent = '无匹配内容';
-			resultsEl.appendChild(empty);
+			resultsEl.appendChild(this._createEmptyInline('无匹配内容'));
 		} else {
 			for (const m of matches) { resultsEl.appendChild(this.renderSearchHit(m, q)); }
 		}

@@ -127,6 +127,108 @@ function widgetToScreen(
 }
 
 /**
+ * ★ 2026-09-21：**安全算术求值**，用来替代原来的 `eval(v)` ✗。
+ *
+ * 为什么要换（两个理由，任一都足够 ✓）：
+ *  1. **安全** ✗：原实现先过一道从 ComfyUI 抄来的正则
+ *     `/^[\d\s()*+/-]+|\d+\.\d+$/` —— 那个 `|` 两侧都没锚定 ⇒
+ *     只要**以数字开头**就算"通过" ✓ ⇒ `1;alert(1)` 这种输入会**被 eval 整段执行** ✗✓
+ *     （webview 里就是任意代码执行 ✓）。本函数改为**只认算术字符 + 必须整串消费完** ✓，
+ *     `1;alert(1)` 直接判为不合法 ✓。
+ *  2. **构建** ✗：`eval` 触发 esbuild `[direct-eval]` 警告 ✓
+ *     （"Using direct eval with a bundler is not recommended" ✓），且妨碍压缩优化 ✓。
+ *
+ * 语义与 ComfyUI 原行为**对齐** ✓：解析成功返回数值 ✓，失败返回 `null` ⇒
+ * 调用方保持原文本不变（后续 `Number(v)` 判定照旧 ✓）。
+ * 支持：十进制字面量 / `+ - * /` / `**` / 括号 / 一元正负 / 空白 ✓（优先级同数学 ✓）。
+ * 不支持（不会静默改变原文本 ✓）：函数调用 / 变量 / 十六进制等 ✓
+ * —— 这些仍走原来的 `Number(v)` 分支 ✓。
+ * ⚠ 与原 eval 的两点**已知差异** ✓（都更严格 ✓，且仅影响刁钻输入 ✓）：
+ *   · `1e3` / `0b101` ⇒ 本函数返回 null ⇒ 由 `Number(v)` 兜底 ⇒ **结果依旧相同** ✓；
+ *   · `1_000`（数值分隔符）⇒ 原 eval 得 1000 ✓，现判不合法 ⇒ `Number` 为 NaN ⇒ 拒绝 ✗
+ *     （用户想表达 1000 会看到"输入被清空"✓；如需支持，把 `_` 加入白名单并剥离即可 ✓）。
+ *
+ * ⚠ `1/0` 这类**非有限**结果按失败处理 ✗（原 eval 会得到 `"Infinity"` ✓，
+ *   但那不是合法数值 ✓，按失败回退更安全 ✓）。
+ */
+function evalArithmeticExpression(expr: string): number | null {
+	// 白名单：只允许数字、空白、小数点与四则运算符/括号 ✓
+	if (!/^[\d\s.+\-*/()]+$/.test(expr) || !/\d/.test(expr)) { return null; }
+
+	let i = 0;
+	const skipWs = (): void => { while (i < expr.length && /\s/.test(expr[i])) { i++; } };
+
+	/** factor := number | '(' sum ')' | ('+' | '-') factor */
+	const parseFactor = (): number => {
+		skipWs();
+		const c = expr[i];
+		if (c === '+') { i++; return parseFactor(); }
+		if (c === '-') { i++; return -parseFactor(); }
+		if (c === '(') {
+			i++;
+			const inner = parseSum();
+			skipWs();
+			if (expr[i] !== ')') { throw new Error('unbalanced ( '); }
+			i++;
+			return inner;
+		}
+		const start = i;
+		while (i < expr.length && /[\d.]/.test(expr[i])) { i++; }
+		if (i === start) { throw new Error('number expected'); }
+		const n = Number(expr.slice(start, i));
+		if (!isFinite(n)) { throw new Error('bad number'); }
+		return n;
+	};
+
+	/** power := factor ('**' power)? —— **右结合** ✓，与 JS 一致 ✓（`2**3**2` = 512 ✓） */
+	const parsePower = (): number => {
+		const base = parseFactor();
+		skipWs();
+		if (expr[i] === '*' && expr[i + 1] === '*') {
+			i += 2;
+			return Math.pow(base, parsePower());
+		}
+		return base;
+	};
+
+	/** product := power (('*' | '/') power)* */
+	const parseProduct = (): number => {
+		let v = parsePower();
+		for (;;) {
+			skipWs();
+			const op = expr[i];
+			if (op !== '*' && op !== '/') { return v; }
+			i++;
+			const rhs = parsePower();
+			v = op === '*' ? v * rhs : v / rhs;
+		}
+	};
+
+	/** sum := product (('+' | '-') product)* */
+	function parseSum(): number {
+		let v = parseProduct();
+		for (;;) {
+			skipWs();
+			const op = expr[i];
+			if (op !== '+' && op !== '-') { return v; }
+			i++;
+			const rhs = parseProduct();
+			v = op === '+' ? v + rhs : v - rhs;
+		}
+	}
+
+	try {
+		const result = parseSum();
+		skipWs();
+		// 必须整串消费完 ⇒ `1+2abc` 这类直接判失败 ✓（不留残余 ✓）
+		if (i !== expr.length || !isFinite(result)) { return null; }
+		return result;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Patch the given LGraphCanvas instance so widget clicks open an inline DOM
  * input over the widget itself instead of a floating dialog. The original
  * `prompt()` is preserved and used as a fallback when we can't locate a widget
@@ -169,12 +271,16 @@ export function patchInlineWidgetEditor(
 		// before storing. The original NumberWidget.onClick does this inline
 		// in its callback; mirror that here so downstream code (comfyDrawWidgets
 		// etc.) sees the same numeric value it would have seen with the dialog.
+		//
+		// ★ 2026-09-21：**求值改用 `evalArithmeticExpression`** ✓ ——
+		// 原来是 `eval(v)` ✗，既触发 esbuild `[direct-eval]` 警告 ✓，
+		// 又因前置正则不锚定而可执行任意代码 ✗（详见该函数注释 ✓）。
+		// 行为对齐 ✓：能求值就替换成结果 ✓，求不了就原样往下走 `Number(v)` ✓。
 		const commit: (v: string | null) => void = (v) => {
 			if (v === null) { callback(null); return; }
 			if (widget.type === 'number') {
-				if (/^[\d\s()*+/-]+|\d+\.\d+$/.test(v)) {
-					try { v = String(eval(v)); } catch { /* leave as-is */ }
-				}
+				const evaluated = evalArithmeticExpression(v);
+				if (evaluated !== null) { v = String(evaluated); }
 				const n = Number(v);
 				if (isNaN(n)) { callback(null); return; }
 			}

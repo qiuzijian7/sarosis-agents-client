@@ -359,6 +359,7 @@ const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize(
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
 const kbIcon = registerIcon('agent-studio-knowledge-base', Codicon.book, localize('kbIcon', "Knowledge Base"));
 const workflowIcon = registerIcon('agent-studio-workflow', Codicon.listTree, localize('workflowIcon', "Workflow"));
+// （2026-09-22：原 `agent-studio-channel` 图标随 Channels 活动栏入口一并移除）
 
 // --- Configuration ---------------------------------------------------------------
 //qiuzijian debug
@@ -403,6 +404,16 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	scope: ConfigurationScope.MACHINE,
 	properties: {
 		...channelConfigProperties(),
+		// 渠道默认会话（chat_id 精确绑定之外的兜底路由）：Agent 视角字段，
+		// 由聊天框/Agent 设置的「Channel 绑定」页签管理，不进渠道配置页表单 ⇒ 单独注册。
+		...Object.fromEntries(CHANNEL_DEFINITIONS.map(d => [
+			`sessions.channel.${d.key}.defaultSession`,
+			{
+				type: 'string',
+				default: '',
+				description: localize('agentStudio.channel.defaultSession', "渠道默认 Agent 的默认会话 ID（由 Channel 绑定页签管理）：未精确绑定的消息进入此会话；留空则每个群/私聊自动建专属会话。"),
+			},
+		])),
 		// ★★★ 2026-09-15：任务栏 jump list 的「New Window」默认回到**原生模型 A（同进程内开新窗口）**。
 		// 依据：`doc/multi-instance-analysis.md` §3.2「共享面 ≫ 拆分面」+ §6.2 P3-2；
 		// 实现见 `platform/workspaces/electron-main/workspacesHistoryMainService.ts` 的 `getNewWindowMode()`。
@@ -742,7 +753,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_VISION_MODEL]: {
 			type: 'string', default: '',
-			description: localize('agentStudio.aux.vision.model', "Model for Vision. Leave empty for default."),
+			// 2026-09-22：留空的语义明确了 —— 不再是「随便挑一个 supportsImages 的模型」，
+			// 而是「跟随知识库专家（knowledge-base-expert）配置的模型」；专家未配置模型、
+			// 或其模型不支持图片输入时才回退到自动路由。
+			description: localize('agentStudio.aux.vision.model', "Model for Vision. Leave empty to follow the Knowledge Base Expert's configured model (auto-routes to the first image-capable model if unset)."),
 		},
 		[AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER]: {
 			type: 'string', default: 'auto',
@@ -3878,6 +3892,12 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			order: 110,
 			viewCtor: KnowledgeBaseViewPane,
 		});
+
+		// ★ 2026-09-22：Channels 的 Activity Bar 入口（原 order: 130，📡）**已按要求移除** ——
+		//   渠道管理统一收敛到「Agent Studio 设置 → Channel 配置」（同一份 CHANNEL_SECTIONS、
+		//   渠道状态徽章与品牌图标），活动栏不再单开一个页签。
+		//   `views/channelView.ts`（ChannelViewPane）保留但当前**不再注册**；
+		//   若日后需要恢复侧栏入口，照本函数其它 _registerToolIcon 调用补一段即可（含上方图标 registerIcon）。
 
 		// Dashboard (order: 150) — Agent 运维监控面板
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {

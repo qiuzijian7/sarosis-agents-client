@@ -15,3 +15,5 @@ _archive/
 .codebuddy/
 .claude/
 .worktrees/
+# 一次性排查脚本（诊断用的临时 .mjs/.cjs 放这里，不该进图谱）★ 2026-09-22 重放
+_diag/

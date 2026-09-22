@@ -22,7 +22,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IAgentStudioService } from '../common/agentStudio.js';
+import { IAgentChatService, IAgentStudioService } from '../common/agentStudio.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { IMarketplaceService, IMarketplaceVersion, PackageKind } from '../common/marketplace.js';
@@ -134,6 +134,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _bindingListContainer: HTMLElement | undefined;
 	private _bindingInput: HTMLInputElement | undefined;
 	private _bindingDefaultToggle: HTMLInputElement | undefined;
+	private _bindingDefaultSessionSelect: HTMLSelectElement | undefined;
 	// Runtime config (budget)
 	private _budgetInput: HTMLInputElement | undefined;
 	private _modelProviderSelect: HTMLSelectElement | undefined;
@@ -171,6 +172,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		@IEditorService private readonly editorService: IEditorService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IBridgeService private readonly bridgeService: IBridgeService,
+		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@IAgentVersionService private readonly agentVersionService: IAgentVersionService,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
@@ -514,6 +516,17 @@ export class AgentSettingsEditorPane extends EditorPane {
 		defRow.appendChild(this._bindingDefaultToggle);
 		defRow.appendChild(defLabel);
 		sec1.appendChild(defRow);
+
+		// 默认会话下拉：勾选默认 Agent 后，未精确绑定的飞书消息统一进入所选会话
+		const defSessionRow = $$('div.binding-default-row');
+		const defSessionLabel = $$('label.binding-default-label');
+		defSessionLabel.textContent = '默认会话（未精确绑定的消息进入此会话；留空则每群自动建专属会话）：';
+		defSessionRow.appendChild(defSessionLabel);
+		this._bindingDefaultSessionSelect = document.createElement('select');
+		this._bindingDefaultSessionSelect.className = 'binding-input';
+		this._bindingDefaultSessionSelect.onchange = () => this._setFeishuDefaultSession();
+		defSessionRow.appendChild(this._bindingDefaultSessionSelect);
+		sec1.appendChild(defSessionRow);
 		group.appendChild(sec1);
 
 		// Section 2: 群聊绑定（按会话 chat_id）
@@ -523,7 +536,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 		sec2.appendChild(sec2Title);
 
 		const hint = $$('div.binding-hint');
-		hint.textContent = '在飞书群中发送 /bind list 可查看本群 chat_id。绑定的群聊消息将自动路由给本 Agent。';
+		// ⚠ 同 `agentChatPanel.dropdowns.ts` 的口径 ✓：取号路径 = 客户端飞书 → 群设置 → 底部「会话 ID」✓
+		hint.textContent = '在客户端飞书中打开该群 → 点右上角「⋯」进入群设置 → 拉到底部，「会话 ID」字段就是本群 chat_id。绑定的群聊消息将自动路由给本 Agent。';
 		sec2.appendChild(hint);
 
 		const addRow = $$('div.binding-add-row');
@@ -558,6 +572,9 @@ export class AgentSettingsEditorPane extends EditorPane {
 			const cur = this.configurationService.getValue<string>('sessions.channel.feishu.defaultAgent');
 			this._bindingDefaultToggle.checked = (cur === this._agentId);
 		}
+
+		// 默认会话下拉：启用态跟随勾选，选项为本 Agent 名下会话
+		void this._refreshDefaultSessionSelect();
 
 		// 群聊绑定列表
 		if (!this._bindingListContainer) { return; }
@@ -632,7 +649,60 @@ export class AgentSettingsEditorPane extends EditorPane {
 			this.notificationService.info('已设为飞书渠道默认 Agent');
 		} else if (cur === this._agentId) {
 			this.configurationService.updateValue(key, '');
+			// 取消默认 Agent 时同步清除默认会话（会话归属本 agent，留着是悬空引用）
+			try {
+				this.bridgeService.getEngine().setChannelDefaultSession('feishu', this._agentId, undefined);
+			} catch { /* 引擎未就绪：忽略 */ }
 			this.notificationService.info('已取消飞书渠道默认 Agent');
+		}
+		if (this._bindingDefaultSessionSelect) {
+			this._bindingDefaultSessionSelect.disabled = !this._bindingDefaultToggle.checked;
+		}
+	}
+
+	/** 填充默认会话下拉：本 Agent 名下会话 + 当前选中态；启用态跟随默认 Agent 勾选。 */
+	private async _refreshDefaultSessionSelect(): Promise<void> {
+		const select = this._bindingDefaultSessionSelect;
+		if (!select || !this._agentId) { return; }
+		select.disabled = this._readOnly || !(this._bindingDefaultToggle?.checked ?? false);
+		let sessions: Array<{ id: string; name: string }> = [];
+		try {
+			const list = await this.agentChatService.listAgentSessions(this._agentId);
+			sessions = list
+				.slice()
+				.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+				.map(s => ({ id: s.id, name: s.name }));
+		} catch { /* 列表加载失败：仅显示占位项 */ }
+		select.replaceChildren();
+		const autoOpt = document.createElement('option');
+		autoOpt.value = '';
+		autoOpt.textContent = '（每群自动建专属会话）';
+		select.appendChild(autoOpt);
+		let cur: string | undefined;
+		try {
+			const def = this.bridgeService.getEngine().getChannelDefaultSession('feishu');
+			cur = def && def.agentId === this._agentId ? def.agentSessionId : undefined;
+		} catch { /* 引擎未就绪 */ }
+		for (const s of sessions) {
+			const opt = document.createElement('option');
+			opt.value = s.id;
+			opt.textContent = s.name || s.id;
+			if (s.id === cur) { opt.selected = true; }
+			select.appendChild(opt);
+		}
+	}
+
+	private _setFeishuDefaultSession(): void {
+		if (this._readOnly) { return; }
+		if (!this._agentId || !this._bindingDefaultSessionSelect) { return; }
+		const sessionId = this._bindingDefaultSessionSelect.value || undefined;
+		try {
+			this.bridgeService.getEngine().setChannelDefaultSession('feishu', this._agentId, sessionId);
+			this.notificationService.info(sessionId
+				? '已设置飞书默认会话（未精确绑定的消息将进入此会话）'
+				: '已恢复为每群自动建专属会话');
+		} catch (err) {
+			this.notificationService.error(`设置失败: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 

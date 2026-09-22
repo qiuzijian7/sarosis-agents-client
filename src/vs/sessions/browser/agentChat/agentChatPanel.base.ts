@@ -4,12 +4,24 @@
  *--------------------------------------------------------------------------------------------*/
 
 import "./media/agentChat.css";
-import { Disposable, IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
+import {
+	Disposable,
+	IDisposable,
+	toDisposable } from '../../../base/common/lifecycle.js';
 import type { ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlConfig.js';
-import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
+import { $,
+	append,
+	clearNode,
+	addDisposableListener,
+	EventType } from '../../../base/browser/dom.js';
 import { ILogService } from '../../../platform/log/common/log.js';
 import { MarkdownRenderOptions } from '../../../base/browser/markdownRenderer.js';
-import { decideDomTrim, describeDensityOverBudget, DOM_TRIM_LIMITS, withProtectedRange } from './domBudgetDecision.js';
+import { decideDomTrim,
+	describeDensityOverBudget,
+	DOM_TRIM_LIMITS,
+	withProtectedRange,
+	trimScrollCompensation,
+} from './domBudgetDecision.js';
 import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, IImageModelGroup, HeaderPanelType, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowPickerSelect, ILiveWorkflowNodeInteraction, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, IPlanTaskCard, OrchestrationPlan, PlanTask, AgentStatus } from './agentChatTypes.js';
 // ChatMode removed — replaced by chatOnly boolean toggle
 import type { IChatPanel } from './iChatPanel.js';
@@ -17,6 +29,7 @@ import { TabbedPanelManager } from './modules/tabbedPanel.js';
 import { ScrollbarController, type IScrollbarHost } from './scrollbarController.js';
 import { StreamingRenderScheduler } from './streamingRenderScheduler.js';
 import { decidePinScrollTop, needsPinPass } from './streamPinDecision.js';
+import { markRenderActivity } from '../../../base/common/renderActivityTrace.js';
 import { FullRefreshLogger, type FullRefreshSource } from './agentChatPanel.refreshLog.js';
 
 
@@ -907,6 +920,14 @@ protected readonly _onListSkills: () => ReadonlyArray<{ id: string; name: string
 
 protected readonly _onListWorkflows?: () => ReadonlyArray<{ id: string; name: string; description?: string; variables?: ReadonlyArray<{ name: string; defaultValue: string }> }>;
 
+/**
+ * 斜杠命令（2026-09-22：`/compact` 等 ✓）：两条都由宿主注入 ✓。
+ * ⚠ 列表为**空/缺失 ⇒ 菜单里不出现命令条目** ✗✓（避免"点了没反应"的死条目 ✓）。
+ */
+protected readonly _onListSlashCommands?: () => ReadonlyArray<{ command: string; label: string; description: string }>;
+
+protected readonly _onRunSlashCommand?: (command: string, arg: string) => void | Promise<void>;
+
 protected readonly _onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
 
 protected readonly _onOpenMcpSettings?: () => void;
@@ -1001,6 +1022,26 @@ protected readonly _importedKbFileToolIds = new Set<string>();
 	protected readonly _onRemoveFeishuBinding?: (chatId: string) => void;
 	protected readonly _onGetFeishuDefaultAgent?: () => string | undefined;
 	protected readonly _onSetFeishuDefaultAgent?: (agentId: string | undefined) => void;
+	// ── Channel 会话级绑定（chat_id ↔ 指定会话）回调 ──
+	protected readonly _onListAgentSessions?: () => Promise<ReadonlyArray<{ id: string; name: string }>>;
+	protected readonly _onListFeishuSessionBindings?: () => ReadonlyArray<{ conversationId: string; agentId: string; agentSessionId: string }>;
+	protected readonly _onBindFeishuSession?: (chatId: string, sessionId: string) => void;
+	protected readonly _onUnbindFeishuSession?: (chatId: string) => void;
+	/** 渠道默认会话（默认 Agent 配套）：未精确绑定的飞书消息进入此会话。 */
+	protected readonly _onGetFeishuDefaultSession?: () => string | undefined;
+	protected readonly _onSetFeishuDefaultSession?: (sessionId: string | undefined) => void;
+	/** 当前会话绑定的飞书 chat_id（host 推送；header 标识用）。 */
+	protected _feishuBoundChatId: string | null = null;
+	/** 是否为渠道默认会话（区别于 chat_id 精确绑定）。 */
+	protected _feishuBindingIsDefault = false;
+	/**
+	 * 标识里的品牌 logo（host 注入 `createChannelIcon('feishu', …)` 的产物）。
+	 *
+	 * ★ 2026-09-22：面板在 `sessions/browser` 层，**不能反向依赖** `contrib/agentStudio` 的
+	 *   `channelIcons.ts` ⇒ 由 host 建好元素传进来（与设置页渠道条目共用同一份品牌 SVG；
+	 *   未注入时徽章退化为纯文字，不会空白）。
+	 */
+	protected _feishuBindingIcon?: HTMLElement;
 
 	// ── ConfigHtml（URL 面板 / 本地 HTML）回调 ──
 	protected readonly _onGetConfigHtmlCfg?: () => Promise<ConfigHtmlCfg | undefined>;
@@ -1017,6 +1058,11 @@ constructor(opts: {
 		onSkipCurrentTool?: () => void;
 		/** 转后台当前工具（terminal 卡片「转后台」✓）：进程留着 + 控制台打开 ✓，不杀进程 ✗ */
 		onDetachCurrentTool?: () => void;
+		/**
+		 * 服务层「本会话是否仍有活跃流」查询（入队判定用，见 `_onIsStreamActive`）。
+		 * 缺省 = 未接入服务层 ⇒ 只按 UI 状态判定（回退路径，不弱化原有行为）。
+		 */
+		onIsStreamActive?: () => boolean;
 		onToggleCollapse: () => void;
 		onSelectAgent: (id: string) => void;
 		onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
@@ -1107,6 +1153,24 @@ constructor(opts: {
 	onRemoveFeishuBinding?: (chatId: string) => void;
 	onGetFeishuDefaultAgent?: () => string | undefined;
 	onSetFeishuDefaultAgent?: (agentId: string | undefined) => void;
+	/** 列出当前 Agent 名下会话（channel 页签绑定表单的 session 下拉用）。 */
+	onListAgentSessions?: () => Promise<ReadonlyArray<{ id: string; name: string }>>;
+	/** 列出飞书全部 chat_id ↔ 专属会话映射。 */
+	onListFeishuSessionBindings?: () => ReadonlyArray<{ conversationId: string; agentId: string; agentSessionId: string }>;
+	/** 绑定 chat_id 到当前 Agent 的指定会话。 */
+	onBindFeishuSession?: (chatId: string, sessionId: string) => void;
+	/** 解除 chat_id 的专属会话绑定。 */
+	onUnbindFeishuSession?: (chatId: string) => void;
+	/** 读取渠道默认会话 id（默认 Agent 配套；undefined = 未设置）。 */
+	onGetFeishuDefaultSession?: () => string | undefined;
+	/** 设置渠道默认会话（undefined = 清除，恢复每群自动建专属会话）。 */
+	onSetFeishuDefaultSession?: (sessionId: string | undefined) => void;
+	/**
+	 * 斜杠命令（2026-09-22：聊天框支持 `/compact` 等 ✓）——
+	 * 列表为**空/缺失 ⇒ 菜单不出现命令条目** ✗✓（不给出"点了没反应"的死条目 ✓）。
+	 */
+	onListSlashCommands?: () => ReadonlyArray<{ command: string; label: string; description: string }>;
+	onRunSlashCommand?: (command: string, arg: string) => void | Promise<void>;
 	/** 渲染层诊断日志需要落到 renderer.log，故注入 host 的 logService */
 	logService: ILogService;
 	}) {
@@ -1118,6 +1182,7 @@ constructor(opts: {
 		this._onCancelExecution = opts.onCancelExecution;
 		this._onSkipCurrentTool = opts.onSkipCurrentTool;
 		this._onDetachCurrentTool = opts.onDetachCurrentTool;
+		this._onIsStreamActive = opts.onIsStreamActive;
 		this._onSelectAgent = opts.onSelectAgent;
 		this._onSelectWorktree = opts.onSelectWorktree;
 		this._onClearWorktree = opts.onClearWorktree;
@@ -1142,6 +1207,9 @@ constructor(opts: {
 		this._onEditMessage = opts.onEditMessage;
 		this._onListSkills = opts.onListSkills;
 		this._onListWorkflows = opts.onListWorkflows;
+		// 斜杠命令（2026-09-22 ✓）：缺失时下方 `_collectSlashItems` 就收集不到命令 ⇒ 菜单无命令条目 ✓
+		this._onListSlashCommands = opts.onListSlashCommands;
+		this._onRunSlashCommand = opts.onRunSlashCommand;
 		this._onListMcpServers = opts.onListMcpServers;
 		this._onOpenMcpSettings = opts.onOpenMcpSettings;
 		this._onOpenHtmlPreview = opts.onOpenHtmlPreview;
@@ -1191,6 +1259,13 @@ constructor(opts: {
 		this._onRemoveFeishuBinding = opts.onRemoveFeishuBinding;
 		this._onGetFeishuDefaultAgent = opts.onGetFeishuDefaultAgent;
 		this._onSetFeishuDefaultAgent = opts.onSetFeishuDefaultAgent;
+		// Channel 会话级绑定回调
+		this._onListAgentSessions = opts.onListAgentSessions;
+		this._onListFeishuSessionBindings = opts.onListFeishuSessionBindings;
+		this._onBindFeishuSession = opts.onBindFeishuSession;
+		this._onUnbindFeishuSession = opts.onUnbindFeishuSession;
+		this._onGetFeishuDefaultSession = opts.onGetFeishuDefaultSession;
+		this._onSetFeishuDefaultSession = opts.onSetFeishuDefaultSession;
 
 	// TabbedPanelManager — 替代 systemMsgBar + queueBar，DOM 在 _renderInputArea 中创建
 		const self = this;
@@ -1228,15 +1303,28 @@ get element(): HTMLElement {
 		return this._container;
 	}
 
-	setAgent(agent: IAgentInfo | null): void {
-		if ((window as unknown as Record<string, unknown>).__SAROSIS_SCROLL_DIAG) {
-			// eslint-disable-next-line no-console
-			console.info('[AgentChatPanel] setAgent:', agent ? `id="${agent.id}", name="${agent.name}"` : 'null', `stack=${new Error().stack?.split('\n').slice(2, 5).join(' ← ')}`);
-		}
-		this._agent = agent;
-		if (agent) { this._agentLoadedOnce = true; }
-		const t0 = performance.now();
+	/**
+	 * host 推送当前会话的渠道（飞书）绑定状态（header 标识）；null = 未绑定。
+	 * @param icon 品牌 logo 元素（可选，host 用 `createChannelIcon` 构造后注入）
+	 */
+	setFeishuBinding(chatId: string | null, isDefault = false, icon?: HTMLElement): void {
+		// 图标**只存不参与变更判定**：host 每次都新建元素，若拿它做比较会让每次刷新都全量重绘
+		if (icon) { this._feishuBindingIcon = icon; }
+		if (this._feishuBoundChatId === chatId && this._feishuBindingIsDefault === isDefault) { return; }
+		this._feishuBoundChatId = chatId;
+		this._feishuBindingIsDefault = isDefault;
 		this._render();
+	}
+
+setAgent(agent: IAgentInfo | null): void {
+	if ((window as unknown as Record<string, unknown>).__SAROSIS_SCROLL_DIAG) {
+		// eslint-disable-next-line no-console
+		console.info('[AgentChatPanel] setAgent:', agent ? `id="${agent.id}", name="${agent.name}"` : 'null', `stack=${new Error().stack?.split('\n').slice(2, 5).join(' ← ')}`);
+	}
+	this._agent = agent;
+	if (agent) { this._agentLoadedOnce = true; }
+	const t0 = performance.now();
+	this._render();
 		console.info(`[AgentChatPanel] setAgent: _render done in ${(performance.now() - t0).toFixed(1)}ms`);
 	}
 
@@ -1271,8 +1359,18 @@ setAgentStatus(status: AgentStatus): void {
 /** 当前 agent 运行状态（发送中 = working，其余 = idle）。 */
 protected _agentStatus: AgentStatus = AgentStatus.Idle;
 
-/** 底层是否仍有活跃流（含收尾窗口）。用于入队判断，避免打断未收尾的流。 */
-protected _isStreamActive = false;
+/**
+ * 底层是否仍有活跃流（含「已取消、未收尾」窗口期）—— **服务层是唯一真源**。
+ *
+ * 由宿主注入（`AgentChatService.isSessionStreaming`）。未注入时视为 false，
+ * 退回「仅按 UI 状态判定」，与未接入服务层的行为一致。
+ *
+ * 为什么必须是**拉取**而不是面板自己维护一个布尔：`cancelStream()` 会把 UI 状态
+ * 立即复位，而底层流要到 `finally` 才清理 —— 任何「推」过来的镜像值都会在这段
+ * 窗口期失真，这正是「流式中连发两条，第二条打断第一条」的成因
+ * （详见 `agentChatPanel.send.ts` 头注释）。
+ */
+protected readonly _onIsStreamActive?: () => boolean;
 
 /**
  * 「进入视口才执行」的延迟构建（★★ 2026-09-20 性能，全卡片族共用）。
@@ -2017,14 +2115,21 @@ protected _findMessageElementById(id: string): HTMLElement | null {
 			return;
 		}
 
-		// ③ 卸载 + 补偿 scrollTop（上方被删 ⇒ 内容变短 ⇒ scrollTop 要同量减少 ✓）
+		// ③ 卸载 + 补偿 scrollTop（**上方**被删 ⇒ 内容变短 ⇒ scrollTop 要同量减少 ✓）
+		// ★★ 2026-09-22 修复（用户报「输入文字过程中上方滚动条莫名向上滚一下」✗✓）：
+		//   旧实现在**上下都删完之后**才取一次 `scrollHeight` ✗ ⇒ 下方被删的高度也被算进补偿量
+		//   ⇒ **多减** ⇒ 视图额外向上跳 ✗✗（下方内容不改变视口锚点 ✓，绝不能参与补偿 ✓）。
+		//   正确顺序：记 prev 值 → **先删上方** → 读一次 `scrollHeight` 得"只含上方"的补偿量 →
+		//   **再删下方**（不参与补偿 ✓）。数学在 `domBudgetDecision.trimScrollCompensation` ✓（有单测 ✓）。
 		const prevScrollHeight = container.scrollHeight;
 		const prevScrollTop = container.scrollTop;
 		for (const el of removeAbove) { el.remove(); }
+		const aboveRemovedHeight = removeAbove.length > 0
+			? trimScrollCompensation(prevScrollHeight, container.scrollHeight)
+			: 0;
 		for (const el of removeBelow) { el.remove(); }
-		const removedHeight = prevScrollHeight - container.scrollHeight;
-		if (removeAbove.length > 0 && removedHeight > 0) {
-			container.scrollTop = Math.max(0, prevScrollTop - removedHeight);
+		if (aboveRemovedHeight > 0) {
+			container.scrollTop = Math.max(0, prevScrollTop - aboveRemovedHeight);
 		}
 
 		// ④ 顶部被删 ⇒ 按新首元素重锚懒加载（否则上游历史再也滚不出来 ✗）
@@ -2050,6 +2155,9 @@ protected _findMessageElementById(id: string): HTMLElement | null {
 	 */
 	protected _countDocumentNodes(): number {
 		try {
+			// O(全文档节点数) 读取本身通常快，但调用方（密度点名/体检）常伴随更重遍历 ⇒
+			// 打活动标记，让 LONG_TASK 能区分「是 DOM 普查在占线程」（2026-09-22）
+			markRenderActivity('dom-census');
 			return this._container.ownerDocument.getElementsByTagName('*').length;
 		} catch {
 			return 0;
@@ -2119,6 +2227,8 @@ protected _findMessageElementById(id: string): HTMLElement | null {
 		if (this._domBudgetWatchTimer !== null) { return; }
 		this._domBudgetWatchTimer = window.setInterval(() => {
 			if (!this._messagesContainer) { return; }
+			// O(全文档节点数) 的周期体检：打活动标记，LONG_TASK 可直接归因（2026-09-22）
+			markRenderActivity('dom-budget-watch');
 			const nodes = this._countDocumentNodes();
 			if (nodes > DOM_TRIM_LIMITS.nodeBudget) {
 				this._logService.warn(

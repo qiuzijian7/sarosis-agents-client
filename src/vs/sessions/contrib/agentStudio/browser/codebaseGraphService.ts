@@ -1431,11 +1431,25 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		if (!this._sqliteBackendEnabled || changedRels.length === 0) { return; }
 		const store = this._graph.store;
 		const tStart = Date.now();
+		// ★★★ 2026-09-22（**重放**：并行写入曾把这段覆盖掉 ✗）：**分段计时 + 全段记账** ——
+		// 要区分的是：`del`（逐文件删旧节点/边/FTS，**每个文件一次 IPC** ✗）、`收集节点`（内存索引 ✓）、
+		// `写节点`/`写边`（各 1 次 IPC，但主进程内逐行执行 ✗）、`收集边`（内存 ✓）。
+		// ⚠ 三条硬要求（首版踩过 ✗✓）：① 段要**穷尽**（首版漏了最后一段 `写边` ⇒ 真机那轮
+		// `合计 1184ms` 只解释得了 194ms，剩 ≈990ms "无解释" ✗✗）；② 记账要**全量**（不能只留慢段）；
+		// ③ 分解行必须显式报**余项** ⇒ 每一毫秒都有主 ✓。
+		let tPhase = Date.now();
+		const allPhases: { name: string; ms: number }[] = [];
+		const markPhase = (name: string): void => {
+			const now = Date.now();
+			allPhases.push({ name, ms: now - tPhase });
+			tPhase = now;
+		};
 		try {
 			// 1. 删除变更文件的旧节点/边/FTS（sqlite 侧，含其他文件指向变更节点的边）
 			for (const rel of changedRels) {
 				await this._sqliteBackend.deleteNodesByFile(project, rel);
 			}
+			markPhase(`del(${changedRels.length}文件)`);
 			// 2. 收集变更文件的内存节点（显式 id = 内存 id，与 sqlite id 保持一致）
 			const nodes: GraphNode[] = [];
 			const changedNodeIds = new Set<number>();
@@ -1468,7 +1482,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 					if (typeof n.id === 'number') { changedNodeIds.add(n.id); }
 				}
 			}
+			markPhase(`收集节点(${nodes.length})`);
 			await this._sqliteBackend.upsertNodesBatch(nodes as (GraphNode & { id?: string | number })[]);
+			markPhase(`写节点(${nodes.length})`);
 			// 3. 收集涉及变更文件节点的边（源或目标 ∈ 变更节点），用内存 id 引用，去重后批量 upsert
 			const edgeMap = new Map<string, { sourceId: number; targetId: number; type: string; properties?: Record<string, any> }>();
 			for (const nid of changedNodeIds) {
@@ -1482,9 +1498,19 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				}
 			}
 			const edges = [...edgeMap.values()];
+			markPhase(`收集边(${edges.length})`);
 			await this._sqliteBackend.upsertEdgesBatch(edges as (GraphEdge & { sourceId?: number; targetId?: number })[]);
+			markPhase(`写边(${edges.length})`);
 			const dur = Date.now() - tStart;
 			this._logService.info('[CodebaseGraph]', `SQLite incremental patch done: ${nodes.length} nodes + ${edges.length} edges (${changedRels.length} files, ${dur}ms)`);
+			// 慢轮次把**全部**段打出来（含余项）—— 每毫秒都要有主 ✓（正常轮次这行不出现 ⇒ 不刷屏 ✓）
+			if (dur >= 300) {
+				const accounted = allPhases.reduce((s, p) => s + p.ms, 0);
+				const tail = Math.max(0, dur - accounted);
+				const shown = allPhases.map(p => `${p.name}=${p.ms}ms`).join(' | ');
+				this._logService.info('[CodebaseGraph]', `[sqlite-patch] 慢轮次分解（合计 ${dur}ms）：${shown}`
+					+ `${tail > 0 ? ` | 余项=${tail}ms` : ''}`);
+			}
 			// 增量补丁**写入成功**即清除「空库」标记（见 _sqliteEmptyProjects）。
 			// Bug（2026-09-09）：旧实现只在 `nodes.length > 0` 时清除——若本轮变更没有
 			// 新节点（仅删除文件 / 改动文件解析失败），标记会**永久残留**，此后即使
@@ -1867,13 +1893,42 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				this._indexLockHeartbeat = undefined;
 			}
 			void (async () => {
+				/** 锁是否已不被别人持有（我们删掉了 / 本来不存在 / 是陈旧锁）⇒ 只有此时才能动目录 ✓。 */
+				let lockFree = true;
 				try {
 					const cur = await this._fileService.readFile(lockUri);
 					const content = parseIndexLock(cur.value.toString());
 					if (content?.token === token) {
 						await this._fileService.del(lockUri);
+					} else if (content) {
+						// ⚠ 判陈旧的依据是**锁文件 mtime**（不是内容里的 acquiredAt）—— 心跳会刷新 mtime ✓，
+						//   故「mtime 过旧」= 心跳早已停了 = 持有者已死 ✓（与获取侧 L1862 判据同源 ✓）。
+						const mtime = (await this._fileService.stat(lockUri)).mtime;
+						if (isIndexLockStale(mtime, Date.now())) {
+							// 陈旧锁（上次索引被中断 / 进程被杀）：**顺手清掉** ✓ —— 真机 `vssaros-homepage`
+							// 目录里躺的正是这样一把 64B `index.lock`，旧实现从不清理它 ⇒ 目录永不空 ✗✗。
+							await this._fileService.del(lockUri);
+						} else {
+							// ★★ 2026-09-22（v2）：**别人正持有（心跳新鲜）⇒ 目录一个字节都不许动** ✗
+							// （删掉会破坏它的互斥 ✓）
+							lockFree = false;
+						}
 					}
-				} catch { /* 锁已被删/被接管，忽略 */ }
+				} catch { /* 锁不存在 ⇒ 无锁残留 ✓ */ }
+				if (!lockFree) { return; }
+				// ★★ 2026-09-22（v2）：**判据从「完全空」改成「没有制品」** ✗✓ ——
+				// 首版要求完全空，但真机目录里躺着一把陈旧 `index.lock` ⇒ 条件**永远不成立** ⇒
+				// 「空项目不留残骸」形同虚设 ✗✗（用户连看两次同一条 WARN 就是证据）。
+				// 以「有无制品」为判据：有 `graph.db*` / `artifact*` ⇒ 保留 ✓；只有锁/临时文件 ⇒ 删掉 ✓。
+				try {
+					const cbmDir = URI.joinPath(URI.file(rootPath), '.codebase-memory');
+					const dirStat = await this._fileService.resolve(cbmDir);
+					const names = (dirStat.children ?? []).map(c => c.name.toLowerCase());
+					const hasArtifact = names.some(n => n.startsWith('graph.db') || n.includes('artifact'));
+					if (!hasArtifact) {
+						await this._fileService.del(cbmDir, { recursive: true });
+					}
+				} catch { /* 目录不存在 / 被占用 / 只读 ⇒ 忽略（下次再试 ✓） */ }
 			})();
 			this._indexLocked = false;
 		};
@@ -2150,8 +2205,16 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		this._graph.store.setDeferBM25(true);
 
 		// 尝试初始化 Worker 池（将 tree-sitter 解析移到独立线程，避免阻塞 UI）
-		this._onDidIndexProgress.fire('🔧 初始化并行解析器...');
-		const workersReady = await this._ensureWorkerPool();
+		// ★★ 2026-09-22：**0 个源文件就不起 worker 池** ✗✓ —— 真机（空 folder `vssaros-homepage`）
+		// 每轮索引都白起 16 个进程 + 白读 11 个语言 wasm（几秒 ✗），而这类 folder 会**每次启动
+		// 都重跑**索引（见 bootstrap 的 `graphLost` 判定）⇒ 每次启动都白付这几秒 ✗✗。
+		// 语义完全等价：`files.length === 0` 时并行分支本来就一轮都不转 ✓。
+		const workersReady = files.length > 0 ? await this._ensureWorkerPool() : false;
+		if (files.length === 0) {
+			this._onDidIndexProgress.fire('（0 个源文件，跳过并行解析器初始化 ✓）');
+		} else {
+			this._onDidIndexProgress.fire('🔧 初始化并行解析器...');
+		}
 
 		if (workersReady && this._parserWorkers.length > 0) {
 			// ── Worker 池并行解析：每个 Worker 从共享队列取文件 ──
@@ -3093,7 +3156,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private async _saveGraph(rootPath: string, project?: string): Promise<void> {
 		const graphDir = URI.joinPath(URI.file(rootPath), '.codebase-memory');
 		try {
-			await this._fileService.createFolder(graphDir);
+			// ★★ 2026-09-22（**重放**）：目录创建**移到「真要写」之后**（见下方守卫处）✗ ——
+			// 旧顺序会在**空项目**上留下一个没有制品的 `.codebase-memory/`，而 bootstrap 正是用
+			// 「目录在 + 制品无」判定 `graphLost` ⇒ 每次启动 WARN + 重跑索引 ✗✗
+			// （真机 `vssaros-homepage` 就是空目录，此循环已复现多轮）。
 			const artifactFile = URI.joinPath(graphDir, 'graph.db.zst');
 			try {
 			const persistence = new GraphPersistence(this._fileService, this._logService);
@@ -3118,11 +3184,21 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			const savedCount = project ? this._graph.store.getNodeCount(project) : this._graph.nodeCount;
 			const totalCount = this._graph.store.getNodeCount();
 			if (savedCount === 0) {
+				// ★ 2026-09-22（**重放**）：文案如实化 ✗✓ —— 旧文案断言"拒绝覆盖**好**制品"，但真机这条
+				// `vssaros-homepage` 是**制品根本不存在**（空目录、0 个可索引文件）⇒ 判据对、说法错，
+				// 排查时会被"外部删除了？"带偏 ✗；且 `storeNodes` 是**全库**计数，更误导 ✗。
+				const artifactExists = await this._fileService.exists(artifactFile);
 				this._logService.warn('[CodebaseGraph]',
-					`Graph save SKIPPED (refusing to overwrite a good artifact with an empty graph) | ` +
-					`artifact=${artifactFile.fsPath} project=${project ?? 'all'} savedNodes=0 storeNodes=${totalCount}`);
+					`Graph save SKIPPED | artifact=${artifactFile.fsPath} project=${project ?? 'all'} `
+					+ `savedNodes=0（本项目 0 节点）artifactExists=${artifactExists} storeNodes=${totalCount}（全库，非本项目 ✗）`
+					+ (artifactExists
+						? ' ⇒ 拒绝用空图覆盖磁盘上的完好制品 ✓（见本方法头注的 99 字节事故）'
+						: ' ⇒ 本项目本来就没有可索引文件（空目录等）时属**正常** ✓；目录不再提前创建 ⇒ 下轮不会误判"图谱丢失"✗'));
 				return;
 			}
+
+			// ★★ 2026-09-22（**重放**）：**只有真要写盘时才创建目录** ✓（守卫已过 ⇒ savedCount > 0）
+			await this._fileService.createFolder(graphDir);
 
 			// ★★★ 2026-09-18（P1-1 第二步+）：制品写出策略 = `saros.codebaseGraph.artifactFormat`
 			//   · `'json'`（**默认** —— 行为与改动前**完全一致**，随时可回退 ✓）：流式 gzip+JSON，

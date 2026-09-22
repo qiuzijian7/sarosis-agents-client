@@ -349,9 +349,13 @@ export async function httpRequest(params: IHttpRequestParams, log?: LogFn): Prom
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 	try {
+		// ★ 2026-09-22：转发请求体。GET/HEAD 带 body 会被 fetch 直接拒绝（TypeError），故按方法过滤；
+		// 渠道类 POST（飞书换 wss 地址 / 换 token / 发消息、Telegram sendMessage）依赖此字段。
+		const canHaveBody = method !== 'GET' && method !== 'HEAD';
 		const response = await fetch(params.url, {
 			method,
 			headers: params.headers ?? {},
+			body: canHaveBody ? params.body : undefined,
 			signal: controller.signal,
 		});
 		if (params.binary) {
@@ -450,6 +454,10 @@ async function insecureHttpRequest(params: IHttpRequestParams, timeoutMs: number
 			log?.('warn', `[vssaros-llm] insecureHttpRequest error: ${err}`);
 			reject(err);
 		});
+		// ★ 2026-09-22：与 fetch 路径口径一致 —— 非 GET/HEAD 才写 body。
+		if (params.body && (params.method ?? 'GET').toUpperCase() !== 'GET' && (params.method ?? 'GET').toUpperCase() !== 'HEAD') {
+			req.write(params.body);
+		}
 		req.end();
 	});
 }

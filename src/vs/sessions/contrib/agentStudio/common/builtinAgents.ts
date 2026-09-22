@@ -545,7 +545,9 @@ General note conventions:
 - **Report progress**: After completing operations, summarize what was imported/generated and where files are located.
 - **Handle errors gracefully**: If a URL can't be scraped, note it and move on. If a file can't be read, suggest alternatives.`,
 			skills: ['obsidian-markdown', 'obsidian-bases', 'json-canvas', 'defuddle', 'writing', 'summarize', 'analysis'],
-			tools: ['file_write', 'file_read', 'search_files', 'terminal', 'kb_search'],
+			// 2026-09-22：加入 vision_analyze —— 导入小红书等图文链接后，需要**总结图片内容**
+		// （单图工具，agent 自行逐张调用；模型走 AGENT_STUDIO_AUX_VISION_* 或多模态主模型）。
+		tools: ['file_write', 'file_read', 'search_files', 'terminal', 'kb_search', 'vision_analyze'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,

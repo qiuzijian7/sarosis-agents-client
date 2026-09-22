@@ -17,6 +17,9 @@ import { EditorActivation, IEditorOptions } from '../../../../platform/editor/co
 import { addDisposableListener } from '../../../../base/browser/dom.js';
 import { toDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { SessionFollower } from './sessionFollower.js';
+// ★ 2026-09-22：聊天框 header 的渠道绑定标识要显示品牌 logo（与设置页渠道条目同一份 SVG）。
+//   面板在 sessions/browser 层拿不到本模块 ⇒ 由这里构造元素后注入（见 _refreshFeishuBindingBadge）。
+import { createChannelIcon } from './channelIcons.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -83,7 +86,7 @@ import { AGENT_STUDIO_IMAGE_GEN_PROVIDER, AGENT_STUDIO_IMAGE_GEN_MODEL } from '.
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ContextManager } from '../common/contextManager.js';
 import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IImageModelGroup as IPanelImageModelGroup, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment, IToolCall } from '../../../browser/agentChat/agentChatTypes.js';
-import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
+import { adaptPersistedChatMessage, coalesceCompactionGroups } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
 import { TaskBoardStatus } from '../../../common/agentStudioTypes.js';
 // OrchestrationPlan import removed — task orchestration entry point closed
@@ -669,6 +672,90 @@ export class NativeChatEditorPane extends EditorPane {
 		}, 1500);
 	}
 
+	/**
+	 * 斜杠命令：**可执行清单**（2026-09-22 用户需求「聊天框支持 `/compact`」✓）。
+	 *
+	 * ⚠ 只列**真能执行的** ✗✓（与 Channel 绑定 tab 的"缺失则隐藏"同一条纪律 ✓）：
+	 *   · `/compact-reset` —— 只用公共 API（读历史 → 去边界 → 写回 ✓）⇒ 现在就能跑 ✓；
+	 *   · `/compact` —— 需要服务侧压缩入口（`handleCompactSlashCommand` ✓，实现见
+	 *     `contextMaintenance.handleCompactSlashCommand` ✓）：该分支尚无 ⇒ **不列** ✗✓；
+	 *     等它接入后**自动出现** ✓，本方法不必改 ✓✓。
+	 */
+	private _listSlashCommands(): ReadonlyArray<{ command: string; label: string; description: string }> {
+		const svc = this._chatService as unknown as Record<string, unknown> | undefined;
+		const list: Array<{ command: string; label: string; description: string }> = [];
+		// ⚠ 顺序即菜单顺序：压缩类命令放最前（最常用 ✓）
+		if (typeof svc?.['handleCompactSlashCommand'] === 'function') {
+			list.push({
+				command: 'compact',
+				label: '/compact',
+				description: '压缩本会话上下文；可带重点，如 /compact 只保留接口约定',
+			});
+		}
+		list.push({
+			command: 'compact-reset',
+			label: '/compact-reset',
+			description: '移除本会话全部压缩边界 —— 模型重新看到完整历史',
+		});
+		return list;
+	}
+
+	/**
+	 * 斜杠命令：执行（2026-09-22 ✓）。
+	 *
+	 * 反馈**落到会话里**（追加一条 assistant 消息 ✓ + 刷新聊天区 ✓）—— 与"命令是聊天里
+	 * 一等公民"一致 ✓，也避免面板再长出一套 toast 机制 ✗✓。
+	 */
+	private async _runSlashCommand(command: string, arg: string): Promise<void> {
+		const agentId = this._currentAgentId;
+		const sessionId = this._currentSessionId ?? undefined;
+		if (!agentId) {
+			this._logService.info(`[NativeChatEditorPane] /${command}: 未选择 agent ⇒ 忽略`);
+			return;
+		}
+		const svc = this._chatService as unknown as Record<string, unknown> | undefined;
+		try {
+			if (command === 'compact') {
+				const handler = svc?.['handleCompactSlashCommand'] as
+					| ((agentId: string, cmd: 'compact' | 'compact-reset', focus: string, options: { agentSessionId?: string }) => Promise<unknown>)
+					| undefined;
+				if (!handler) {
+					this._logService.warn('[NativeChatEditorPane] /compact 不可用：服务侧尚未提供 handleCompactSlashCommand');
+					return;
+				}
+				// ⚠ 服务侧实现自己会落盘回复 ✓（见 contextMaintenance ✓）⇒ 这里只需刷新 UI ✓
+				await handler.call(this._chatService, agentId, 'compact', arg, { agentSessionId: sessionId });
+				await this._reloadChatHistory(agentId);
+				return;
+			}
+			if (command === 'compact-reset') {
+				const history = await this._chatService.getHistory(agentId, sessionId);
+				// ⚠ 字面量 'compaction' 与 `COMPACTION_METADATA_TYPE` 同值 ✓ —— 本文件不便再引一条
+				//   跨模块导入 ✗；由 `agentChatPanel.slashCommands.test.ts` **断言两者相等** ✓✓
+				//   ⇒ 常量若变更，测试立刻红 ✓（比"记得同步"可靠 ✓）。
+				const kept = history.filter(m => (m as { metadata?: { type?: string } })?.metadata?.type !== 'compaction');
+				const removed = history.length - kept.length;
+				const reply = {
+					id: `msg_slashcmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+					role: 'assistant' as const,
+					content: removed === 0
+						? '本会话没有压缩边界，无需重置。'
+						: `已移除 ${removed} 条压缩边界 —— 下一条消息起，模型将重新看到完整历史（${kept.length} 条）。`,
+					agentId,
+					agentSessionId: sessionId,
+					timestamp: new Date().toISOString(),
+				};
+				// 一次写盘：去边界 + 追加回复 ✓（分两次写会多一轮全量序列化 ✗✓）
+				await this._chatService.replaceHistory(agentId, sessionId, [...kept, reply as never]);
+				await this._reloadChatHistory(agentId);
+				return;
+			}
+			this._logService.warn(`[NativeChatEditorPane] 未知斜杠命令：/${command}`);
+		} catch (err) {
+			this._logService.error(`[NativeChatEditorPane] /${command} 执行失败:`, err);
+		}
+	}
+
 	private _writeStreamingDraftNow(): void {
 		const msg = this._streamingAssistantMsg;
 		const agentId = this._currentAgentId;
@@ -882,6 +969,18 @@ export class NativeChatEditorPane extends EditorPane {
 		const PanelCtor = useCliPanel ? XtermCliPanel : AgentChatPanel;
 		this._chatPanel = this._register(new PanelCtor({
 			logService: this._logService,
+			// ★ P0（2026-09-22）：把「服务层真实流状态」真正接到面板的入队判定上。
+			//
+			// 此前面板 base.ts 的 `_isStreamActive` 字段**从未被赋值**（恒为 false），
+			// 于是 `shouldQueueOutgoingMessage` 的第二个判据恒定失效 —— 即
+			// send.ts 头注释所记载的「流式中连打两条，第二条打断第一条」修复
+			// 实际上并未生效。这里改为「拉取」语义：每次判定实时查询服务层，
+			// 不存在「推」过来的镜像值在取消窗口期失真的问题。
+			onIsStreamActive: () => {
+				const agentId = this._currentAgentId ?? 'claw';
+				const sessionId = this._currentSessionId ?? undefined;
+				return this._chatService.isSessionStreaming(agentId, sessionId);
+			},
 			// 任务队列「↑ 插队立即发送」：中断当前流式输出，把排队的该条任务立刻发出。
 			// 复刻 _handleEditMessage 的既有模式 —— cancelStream → setSending(false)（不触发 executeNext，
 			// 避免排空队列与随后的直接发送竞态）→ 直接走 _sendMessageInternal 派发。
@@ -1005,11 +1104,8 @@ export class NativeChatEditorPane extends EditorPane {
 
 				// 广播 user 消息：让同 agent + 同 session 的其它窗口（popout 独立窗口）
 				// 同步显示该用户消息气泡（对方 onDidStreamDelta 监听 'user_message' delta）。
-				try {
-					this._chatService.fireUserMessageAdded(agentId, sessionId ?? '', userMsg);
-				} catch (e) {
-					this._logService.warn('[NativeChatEditorPane] fireUserMessageAdded failed:', e);
-				}
+				// ★ 2026-09-22：广播已收口到 agentChatService.sendMessage 内部
+				//   （持久化后广播，id 与落盘一致）；此处不再重复广播（否则双 id 双气泡）。
 
 				// Set sending state BEFORE await — switches send button to stop icon immediately
 				this._chatPanel?.setSending(true);
@@ -1259,6 +1355,14 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 				return this._workflowCache;
 			},
+			// ── 斜杠命令（2026-09-22：`/compact` 等 ✓）──
+			// ⚠ 列表里**只放真能执行的** ✗✓（见 `_listSlashCommands` 注释 ✓）：
+			//   `/compact-reset` 只用公共 API ⇒ 现在就能跑 ✓；
+			//   `/compact` 需要服务侧压缩入口 ⇒ 服务提供后**自动出现** ✓（不必改这里 ✓）。
+			onListSlashCommands: () => this._listSlashCommands(),
+			// ⚠ 参数必须**显式标注** ✗✓：本对象字面量在此处没有回调类型上下文 ⇒ 否则两个 TS7006 ✓
+			//（同 ④-b2「回调注入丢类型上下文」的教训 ✓）。
+			onRunSlashCommand: (command: string, arg: string) => this._runSlashCommand(command, arg),
 			onListMcpServers: () => {
 				// 从 IMcpService 获取 MCP 服务器列表
 				const servers = this._mcpService.servers.get();
@@ -1413,6 +1517,7 @@ export class NativeChatEditorPane extends EditorPane {
 				const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
 				this._currentSessionId = session.id;
 				void this._updateSessionLock();
+				this._refreshFeishuBindingBadge();
 					this._logService.debug(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
 					// 持久化 session 到 input（拖拽到新 group 时恢复用），页签显示 session 名
 					if (this.input instanceof NativeChatEditorInput && this._currentAgentId) {
@@ -1490,6 +1595,7 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 				this._currentSessionId = sessionId;
 				void this._updateSessionLock();
+				this._refreshFeishuBindingBadge();
 				this._logService.debug(`[NativeChatEditorPane] onOpenSession: switched to session ${sessionId}`);
 					// 查找 session name 作为页签标题
 					let sessionName: string | undefined;
@@ -2071,7 +2177,69 @@ export class NativeChatEditorPane extends EditorPane {
 					this._notificationService.notify({ severity: Severity.Info, message: '已设为飞书渠道默认 Agent' });
 				} else if (cur) {
 					this._configurationService.updateValue(key, '');
+					// 取消默认 Agent 时同步清除默认会话（会话归属旧 agent，留着是悬空引用）
+					try {
+						this._bridgeService.getEngine().setChannelDefaultSession('feishu', cur, undefined);
+					} catch { /* 引擎未就绪：忽略 */ }
 					this._notificationService.notify({ severity: Severity.Info, message: '已取消飞书渠道默认 Agent' });
+				}
+			},
+			onGetFeishuDefaultSession: () => {
+				try {
+					const def = this._bridgeService.getEngine().getChannelDefaultSession('feishu');
+					// 默认会话仅在其属于当前 agent 时有意义
+					return def && def.agentId === this._currentAgentId ? def.agentSessionId : undefined;
+				} catch {
+					return undefined;
+				}
+			},
+			onSetFeishuDefaultSession: (sessionId: string | undefined) => {
+				if (!this._currentAgentId) { return; }
+				try {
+					this._bridgeService.getEngine().setChannelDefaultSession('feishu', this._currentAgentId, sessionId);
+					this._notificationService.notify({
+						severity: Severity.Info,
+						message: sessionId ? '已设置飞书默认会话（未精确绑定的消息将进入此会话）' : '已恢复为每群自动建专属会话',
+					});
+				} catch (err) {
+					this._notificationService.notify({ severity: Severity.Error, message: `设置失败: ${err instanceof Error ? err.message : String(err)}` });
+				}
+			},
+			// ── Channel 会话级绑定（chat_id ↔ 指定会话）──
+			onListAgentSessions: async () => {
+				if (!this._currentAgentId) { return []; }
+				try {
+					const sessions = await this._chatService.listAgentSessions(this._currentAgentId);
+					return sessions
+						.slice()
+						.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+						.map(s => ({ id: s.id, name: s.name }));
+				} catch {
+					return [];
+				}
+			},
+			onListFeishuSessionBindings: () => {
+				try {
+					return this._bridgeService.getEngine().listSessionBindings('feishu');
+				} catch {
+					return [];
+				}
+			},
+			onBindFeishuSession: (chatId: string, sessionId: string) => {
+				if (!this._currentAgentId) { return; }
+				try {
+					this._bridgeService.getEngine().bindConversationToSession('feishu', chatId, this._currentAgentId, sessionId);
+					this._notificationService.notify({ severity: Severity.Info, message: `已将飞书群聊 ${chatId} 绑定到所选会话` });
+				} catch (err) {
+					this._notificationService.notify({ severity: Severity.Error, message: `绑定失败: ${err instanceof Error ? err.message : String(err)}` });
+				}
+			},
+			onUnbindFeishuSession: (chatId: string) => {
+				try {
+					this._bridgeService.getEngine().unbindConversationSession('feishu', chatId);
+					this._notificationService.notify({ severity: Severity.Info, message: `已解除飞书群聊 ${chatId} 的会话绑定` });
+				} catch (err) {
+					this._notificationService.notify({ severity: Severity.Error, message: `解除失败: ${err instanceof Error ? err.message : String(err)}` });
 				}
 			},
 			// ── ConfigHtml（URL 面板 / 本地 HTML）—— 对齐 AgentSettingsEditorPane ──
@@ -2169,6 +2337,13 @@ export class NativeChatEditorPane extends EditorPane {
 				this._logService.error('[NativeChatEditorPane] Failed to open codebase memory detail:', err);
 			});
 		});
+
+		// ── 飞书绑定标识：订阅绑定变更即时刷新 + 初次刷新 ──
+		try {
+			const engine = this._bridgeService.getEngine();
+			this._register(engine.onDidChangeBindings(() => this._refreshFeishuBindingBadge()));
+		} catch { /* 引擎未就绪：跳过订阅 */ }
+		this._refreshFeishuBindingBadge();
 		this._logService.debug(`[NativeChatEditorPane][Init] callbacks set up t=${(performance.now() - t0).toFixed(1)}ms`);
 
 		// Load available agents
@@ -3102,11 +3277,15 @@ export class NativeChatEditorPane extends EditorPane {
 	 * （取代 textPosition 交织），独立 'tool' 角色消息被过滤。与 ChatBarPart 完全对齐。
 	 */
 	private _adaptHistoryMessages(history: ChatMessage[]): IAgentChatMessage[] {
+		// ★ 2026-09-22（用户选定方案 C「收纳手风琴」）：**保留压缩边界**（opt-in ✓）⇒ 交给
+		//   coalesceCompactionGroups 收纳为可展开分组；不可信边界则只留一条提示行 ✓。
+		//   ⚠ `_backfillPlanPhase` 仍作用在**收纳前**的全量列表上 ⇒ 阶段卡推导行为逐字不变 ✓✓
+		//   （否则归档区间里的 plan_enter/plan_exit 配对会推不出阶段卡 ✗）。
 		const adapted = (history ?? [])
-			.map(m => adaptPersistedChatMessage(m))
+			.map(m => adaptPersistedChatMessage(m, { keepCompactionBoundary: true }))
 			.filter((m): m is IAgentChatMessage => !!m);
 		this._backfillPlanPhase(adapted);
-		return adapted;
+		return coalesceCompactionGroups(adapted);
 	}
 
 	/**
@@ -5876,6 +6055,7 @@ private _handleStreamDelta(delta: any): void {
 
 		// 从 NativeChatEditorInput 恢复状态（单一真相源）
 		this._currentSessionId = input.sessionId ?? null;
+		this._refreshFeishuBindingBadge();
 
 		// ── 3. 恢复新 chat 的运行时状态 ──
 		const saved = input.getRuntimeState();
@@ -6365,6 +6545,34 @@ override dispose(): void {
 	this._chatPanel = undefined;
 	this._isInitialized = false;
 	super.dispose();
+}
+
+/**
+ * 刷新聊天框顶部的飞书绑定标识：反查当前 session 是否被某 feishu chat_id 绑定。
+ * 在会话切换/新建/绑定变更事件后调用。
+ */
+private _refreshFeishuBindingBadge(): void {
+	try {
+		const sid = this._currentSessionId;
+		let chatId: string | null = null;
+		let isDefault = false;
+		if (sid) {
+			const engine = this._bridgeService.getEngine();
+			// 优先精确绑定；否则若本会话是渠道默认会话，显示默认态标识
+			chatId = engine.listSessionBindings('feishu').find(b => b.agentSessionId === sid)?.conversationId ?? null;
+			if (!chatId) {
+				const def = engine.getChannelDefaultSession('feishu');
+				if (def && def.agentSessionId === sid && def.agentId === this._currentAgentId) {
+					chatId = '(default)';
+					isDefault = true;
+				}
+			}
+		}
+		this._chatPanel?.setFeishuBinding?.(chatId, isDefault, chatId ? createChannelIcon('feishu', '🔵', 12) : undefined);
+	} catch {
+		// 引擎未就绪等：静默降级为不显示标识
+		this._chatPanel?.setFeishuBinding?.(null);
+	}
 }
 
 /**

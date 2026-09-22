@@ -1211,4 +1211,112 @@ suite('★★★ 图谱关键不变量（勿回退）', () => {
 				'「自上次读取以来」的全局最大阻塞（真机：`解压制品=537ms[阻塞2999ms]` 物理上不可能 ✗✗）');
 		}
 	});
+
+	/**
+	 * ㉓ 为什么值得钉（**真机谜题，2026-09-22**）：renderer 报 `写节点(963)=1386ms`，而**同一套 SQL
+	 * 在真库副本上实测 963 行只要 36–42ms**（+FTS 13–20ms）✗✗ ⇒ SQL 被排除，剩下的时间只可能在
+	 * 「写队列排队 / 执行 / IPC+序列化」三者之一，而**三者修法完全不同** ✗ ⇒ 必须分别可见。
+	 * 做法：store 内测 queuedMs/execMs，经 `onBatchTiming` 钩子交给主进程 channel 打日志，
+	 * 与 renderer 的 markPhase 相减即得 IPC 分量 ✓。
+	 * ⚠ 钩子**刻意不做成 IPC 方法** ——「契约→分发器→实现→ProxyChannel」是**四方**一致，
+	 * 09-19 已踩过「只加三方、漏分发器 ⇒ invalid call ⇒ 静默降级」✗✗ ⇒ 钉住。
+	 */
+	test('㉓ 批量写必须能分清「排队 / 执行 / IPC」三级耗时（钩子不得是 IPC 方法）', () => {
+		const store = read4(N + 'codebaseGraphSqliteStore.ts');
+		const chan = read4('src/vs/sessions/contrib/agentStudio/electron-main/codebaseGraphStoreChannel.ts');
+		assert.ok(store.includes('onBatchTiming?') && store.includes('private _reportBatchTiming('),
+			'store 必须有 onBatchTiming 钩子 + 统一上报口（防两处漂移 ✗）');
+		assert.ok(store.includes(`this._reportBatchTiming('nodes'`) && store.includes(`this._reportBatchTiming('edges'`),
+			'两个批量口都必须上报 ✓');
+		assert.ok(/tBody = Date\.now\(\);/.test(store), '必须记录「事务真正开始」时刻（否则排队与执行分不开 ✗）');
+		assert.ok(chan.includes('this._sqliteStore.onBatchTiming ='), '主进程 channel 必须接上钩子');
+		assert.ok(chan.includes('[sqlite-batch]') && chan.includes('排队 ') && chan.includes('执行 '),
+			'日志必须同时给出「排队」与「执行」（否则等于没分解 ✗）');
+		assert.ok(!chan.includes(`case 'onBatchTiming'`) && !chan.includes(`case '_reportBatchTiming'`),
+			'钩子**不得**进 IPC 分发器 —— 四方一致每多一处就多一次漏接机会 ✗（09-19 真机事故）');
+	});
+
+	/**
+	 * ㉔ 为什么值得钉（**判决实验，2026-09-22**）：追了几轮的「SQLite 增量补丁耗时波动
+	 * 130–1350ms / 1184ms / 2154ms、`写节点(963)=1386ms`」真凶 = **WAL autocheckpoint 在 COMMIT 内触发** ✗✗。
+	 * 实测（真库 1.5GB 副本，10 轮 × 500 行独立事务，WAL + synchronous=NORMAL）：
+	 *   · 默认 `wal_autocheckpoint=1000` 页 ⇒ COMMIT 最大 **657ms**
+	 *   · `wal_autocheckpoint=0`        ⇒ COMMIT 最大 **6ms**
+	 * 两栏「写循环」都稳定 5–10ms ⇒ SQL 无辜。而**增量轮无人做 checkpoint**（`store.checkpoint()`
+	 * 落在**内存 store**、其实现自陈 no-op ✗）⇒ 此前全靠 autocheckpoint 兜 ⇒ 卡顿随机落进某次
+	 * COMMIT、renderer 侧还只能看到误导的「写节点=1386ms」✗✗。
+	 */
+	test('㉔ 必须关闭 WAL autocheckpoint 并改为自己摊销（否则 COMMIT 内随机卡 0.7–1.4s ✗✗）', () => {
+		const store = read4(N + 'codebaseGraphSqliteStore.ts');
+		assert.ok(store.includes(`'PRAGMA wal_autocheckpoint = 0'`), '必须关掉 autocheckpoint（实测 COMMIT 657ms ✗✗）');
+		assert.ok(store.includes('private _scheduleAmortizedCheckpoint('), '必须有摊销式 checkpoint');
+		assert.ok(/this\._scheduleAmortizedCheckpoint\(nodes\.length\);/.test(store)
+			&& /this\._scheduleAmortizedCheckpoint\(edges\.length\);/.test(store), '两个批量口都要参与摊销 ✓');
+		assert.ok(store.includes(`'PRAGMA wal_checkpoint(PASSIVE)'`),
+			'摊销必须用 PASSIVE（用 TRUNCATE 会把卡顿换个地方出现 ✗）');
+		assert.ok(/const p = this\._writeQueue\.then\(async \(\) => \{/.test(store),
+			'摊销必须**尾接写队列**（同连接上 checkpoint 撞写事务会 SQLITE_BUSY ✗✗）');
+		assert.ok(!/await this\._scheduleAmortizedCheckpoint/.test(store),
+			'摊销**不得**被 await —— 否则它就成了 renderer 那段「写节点」的耗时 ✗');
+		assert.ok(store.includes('PRAGMA wal_checkpoint(TRUNCATE)'),
+			'显式 checkpoint() 的 TRUNCATE 不能删（全量同步收尾要收敛 WAL ✓）');
+	});
+
+	/**
+	 * ㉕ 为什么值得钉（**真机复现多轮，2026-09-22**）：`g:\SarosWorkspace\vssaros-homepage` 是**空目录**
+	 * （实测：只有 `.codebase-memory` 一个条目，且里面 **0 条目** ✗）。于是每轮上演：
+	 * 索引（0 文件）→ `_saveGraph` 正确拒绝写空图 → 但 `.codebase-memory` **已被创建** ⇒ bootstrap 判
+	 * `graphLost` ⇒ WARN「外部删除？」+ **再跑一遍索引**（还白起 16 个 parser worker ✗✗）。
+	 * 三处修：① 守卫通过后才建目录；② 索引锁释放时顺带清空目录（① 拦不住：锁自己会建目录 ✗✗）；
+	 * ③ 0 文件不起 worker 池。⚠ 必须「完全空」才删（有 graph.db.zst/artifact.json/sqlite ⇒ 保留 ✓）。
+	 */
+	test('㉕ 空项目不得留下「目录在、制品无」残骸（否则每次启动都误判图谱丢失并重索引 ✗✗）', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		const guardIdx = svc.indexOf('if (savedCount === 0) {');
+		const mkdirIdx = svc.indexOf('await this._fileService.createFolder(graphDir);');
+		assert.ok(guardIdx >= 0 && mkdirIdx > guardIdx,
+			'建目录必须在「savedCount === 0 ⇒ return」**之后** —— 否则空项目每轮都留下目录残骸 ✗✗');
+		// ⚠ 只断言**代码**：`read4` 会剥掉注释 ⇒ 拿注释文字当断言必假红 ✗✗（本仓已踩两次）
+		assert.ok(/const hasArtifact = names\.some\(n => n\.startsWith\('graph\.db'\) \|\| n\.includes\('artifact'\)\);/.test(svc)
+			&& /this\._fileService\.del\(cbmDir, \{ recursive: true \}\)/.test(svc),
+			'清理判据必须是「**没有制品**」而非「完全空」✗✗ —— 真机目录里躺着一把陈旧 index.lock，'
+			+ '「完全空」永远不成立（用户连看两次同一条 WARN 即证据）');
+		// ⚠ 陈旧判据必须用**锁文件 mtime**（心跳会刷新它 ⇒ 过旧 = 持有者已死 ✓），
+		//   与获取侧同一判据 —— 传 content 会 TS 报错（真机踩过一次 ✗✓）
+		assert.ok(/isIndexLockStale\(mtime, Date\.now\(\)\)/.test(svc) && /lockFree = false;/.test(svc),
+			'别人正持锁（心跳新鲜）时不得动目录（删掉会破坏其互斥 ✗）；陈旧锁则应顺手清掉 ✓');
+		// ②b bootstrap：只有锁的目录不得判成"图谱丢失"（否则每轮报「外部删除？」✗）
+		const boot = read4(B + 'codebaseGraphBootstrap.ts');
+		assert.ok(/graphLost = \(cbm\.children \?\? \[\]\)\.some\(/.test(boot),
+			'bootstrap 必须按「有无制品」判 graphLost（空目录 + 陈旧锁 ⇒ 属正常 ✓）');
+		assert.ok(svc.includes('files.length > 0 ? await this._ensureWorkerPool() : false'),
+			'0 个源文件不得初始化 worker 池（真机白起 16 进程 + 读 11 个 wasm，几秒 ✗）');
+		assert.ok(!svc.includes('refusing to overwrite a good artifact with an empty graph') && svc.includes('artifactExists='),
+			'WARN 文案必须如实（空项目里 artifactExists=false，旧文案"拒绝覆盖好制品"会把排查带偏 ✗✓）');
+	});
+
+	/**
+	 * ㉒ 为什么值得钉（**2026-09-22 用户报「补丁耗时波动大」**）：增量补丁的耗时归因只能靠这段分解；
+	 * 而它的首版有两个缺陷，**都被真机日志当场抓到** ✗✓：
+	 *   ① **漏了最后一段**（`upsertEdgesBatch` 没打点）⇒ 真机那轮 `合计 1184ms` 只列了 `写节点=194ms`，
+	 *      剩 **≈990ms "无解释"** ✗✗ —— 仪器自己成了盲点；
+	 *   ② 只记 ≥50ms 的段 ⇒ 慢段清单**不等于**全貌（余量无处安放）✗。
+	 * ⇒ 三条硬要求：**段要穷尽**（含最后一段）、**全段记账**、**分解行必须带余项** ✓。
+	 * ⚠ 这段曾被并行写入整段覆盖，本断言是"重放后不许再丢"的守门人 ✗✓。
+	 */
+	test('㉒ 增量补丁必须有分段计时（段穷尽 + 全段记账 + 余项），且 _diag/ 在忽略清单里', () => {
+		const svc = read4(B + 'codebaseGraphService.ts');
+		assert.ok(svc.includes('const markPhase = (name: string): void =>'), '必须有分段计时器');
+		for (const phase of ['del(', '收集节点(', '写节点(', '收集边(', '写边(']) {
+			assert.ok(svc.includes('markPhase(`' + phase), `缺少分段：${phase}）—— 慢轮次会留下无法解释的余量 ✗`);
+		}
+		assert.ok(/allPhases\.push\(\{ name, ms: now - tPhase \}\);/.test(svc),
+			'必须**全段**记账（只记慢段 ⇒ 余量无解释 ✗）');
+		assert.ok(/const tail = Math\.max\(0, dur - accounted\);/.test(svc) && svc.includes('余项='),
+			'分解行必须带余项（调度/收尾开销也要可见 ✓）');
+		assert.ok(/if \(dur >= 300\) \{/.test(svc), '分段只在慢轮次（≥300ms）打印 —— 否则每轮刷屏 ✗');
+		assert.ok(svc.includes('[sqlite-patch] 慢轮次分解'), '必须有一条可直接 grep 的分解行 ✓');
+		const ignore = fs.readFileSync(path.join(process.cwd(), '.cbmignore'), 'utf8');
+		assert.ok(/^_diag\/$/m.test(ignore), '_diag/ 必须在本仓忽略清单里（临时脚本不该进图谱 ✓）');
+	});
 });

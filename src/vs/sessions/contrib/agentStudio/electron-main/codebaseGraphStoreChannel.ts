@@ -77,6 +77,15 @@ export class CodebaseGraphStoreChannel<TContext> extends Disposable implements I
 	) {
 		super();
 		this._dbPath = dbPath;
+		// ★★ 2026-09-22（重放）：接上 store 的批次耗时钩子（主进程侧实测）—— 与 renderer 的
+		// 慢轮次分解一对照，就能把 1386ms 分成：排队 / 执行 / IPC 三段 ✓。
+		// 直接字段赋值，不是 IPC 方法 ⇒ 无需四方接线 ✓。
+		this._sqliteStore.onBatchTiming = info => {
+			if (info.totalMs < 300) { return; }
+			this._log('warn', `[sqlite-batch] ${info.kind} project="${info.project}" n=${info.count} `
+				+ `主进程侧=${info.totalMs}ms（排队 ${info.queuedMs}ms + 执行 ${info.execMs}ms）`
+				+ `⇒ 与 renderer 侧同轮 markPhase 对照：差值即 IPC/序列化开销 ✓`);
+		};
 	}
 
 	private _log(level: LogLevel, msg: string, ...args: unknown[]): void {

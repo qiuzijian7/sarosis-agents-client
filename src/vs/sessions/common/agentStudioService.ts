@@ -792,6 +792,14 @@ export interface IAgentChatService {
 	cancelStream(agentId: string, agentSessionId?: string): void;
 
 	/**
+	 * 底层是否仍有本会话的活跃流（含「已取消、未收尾」窗口期）。
+	 *
+	 * UI 入队判定用：为 true 时应排队而非直接发送 —— 因为该窗口期内 UI 状态
+	 * （`_isSending`）可能已复位，但底层流仍在收尾，直接发送会把它打断。
+	 */
+	isSessionStreaming(agentId: string, agentSessionId?: string): boolean;
+
+	/**
 	 * 尝试获取会话跨实例锁（多开 --instance 同会话双开只读）。
 	 * acquired=false 表示另一实例正在编辑（含持锁实例 ID）；锁过期自动接管。
 	 */

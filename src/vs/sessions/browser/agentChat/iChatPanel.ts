@@ -32,6 +32,14 @@ import type {
 export interface IChatPanelCallbacks {
 	onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => void;
 	onCancelExecution: () => void;
+	/**
+	 * 服务层「本会话是否仍有活跃流」查询（入队判定用）。
+	 *
+	 * 缺省 = 未接入服务层 ⇒ 面板只按自身 UI 状态判定（回退路径）。
+	 * 放在共用回调形状里，是为了让宿主可以不带类型断言地把同一个 opts 对象
+	 * 交给 `AgentChatPanel` / `CliChatEditorPanel` / `XtermCliPanel`（见文件头注释）。
+	 */
+	onIsStreamActive?: () => boolean;
 	onToggleCollapse: () => void;
 	onSelectAgent: (id: string) => void;
 	onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
@@ -126,6 +134,19 @@ export interface IChatPanelCallbacks {
 	/** 设置/取消飞书渠道默认 Agent（传 undefined 表示取消）。 */
 	onSetFeishuDefaultAgent?: (agentId: string | undefined) => void;
 
+	// ── 输入框斜杠命令（2026-09-22：`/compact` 等 ✓）──
+	/**
+	 * 列出可执行的斜杠命令（在斜杠菜单里以 `command` 类条目出现 ✓）。
+	 * ⚠ 只列出**能真正执行**的命令 ✗✓：宿主若拿不到执行器，就应返回空数组 ⇒
+	 * 菜单不出现"点了没反应"的死条目 ✓（与 Channel 绑定 tab 的"缺失则隐藏"同一条纪律 ✓）。
+	 */
+	onListSlashCommands?: () => ReadonlyArray<{ command: string; label: string; description: string }>;
+	/**
+	 * 执行斜杠命令（`command` 不含前导 `/` ✓、`arg` 已 trim ✓）。
+	 * 反馈由宿主自己落到会话里（例如追加一条本地提示 ✓）⇒ 面板只负责清空输入并调用 ✓。
+	 */
+	onRunSlashCommand?: (command: string, arg: string) => void | Promise<void>;
+
 	// ── ConfigHtml（URL 面板 / 本地 HTML）相关回调（对齐 AgentSettingsEditorPane）──
 	/** 读取 ConfigHtml 配置（url / htmlPath / displayMode / server）。 */
 	onGetConfigHtmlCfg?: () => Promise<ConfigHtmlCfg | undefined>;
@@ -154,6 +175,8 @@ export interface IChatPanel extends IDisposable {
 	// ── Agent / providers ──
 	setAgent(agent: IAgentInfo | null): void;
 	getAgent(): IAgentInfo | null;
+	/** 推送当前会话的飞书绑定状态（header 标识）；null = 未绑定；isDefault = 渠道默认会话（非精确绑定）。 */
+	setFeishuBinding?(chatId: string | null, isDefault?: boolean, icon?: HTMLElement): void;
 	/**
 	 * 就地更新当前 agent 的定义字段（icon / name / role…）并只重绘 header，
 	 * 不重建消息区/输入区。

@@ -379,6 +379,138 @@ export class KbSettingsEditorPane extends EditorPane {
 		depthControl.appendChild(depthInput);
 		this._hint(fsSec, '每个「类别」= 同步源目录下的第 N 级目录，各自对应一个飞书知识库；类别变化时其文档会自动跨知识库搬迁（wiki move）。0 = 不分类别。');
 
+		// ── 目录 ↔ 知识库映射（**用户显式配置**，优先于上面的「类别层级」自动推导）──
+		// 落盘在 vault 内 `.feishu-space-map.json`（与内置脚本同一契约）⇒ 无需经 CLI 参数传递（避免引号转义问题）。
+		const mapRow = this._row(fsSec, '目录映射');
+		const addMapBtn = $('button.kbs-btn');
+		addMapBtn.textContent = '＋ 添加目录';
+		addMapBtn.title = '选择知识库内的一个目录，为它显式指定飞书知识库（该目录的子目录一并绑定）';
+		const reloadMapBtn = $('button.kbs-btn');
+		reloadMapBtn.textContent = '🔄 刷新知识库列表';
+		reloadMapBtn.title = '重新拉取飞书知识库列表（lark-cli wiki +space-list）';
+		mapRow.append(addMapBtn, reloadMapBtn);
+
+		const mapList = $('div.kbs-map-list');
+		fsSec.appendChild(mapList);
+		const mapStatus = $('p.kbs-hint');
+		mapStatus.id = 'kbsSpaceMapStatus';
+		fsSec.appendChild(mapStatus);
+		this._hint(fsSec, '显式映射**优先于**「类别层级」：映射目录（含其子目录）下的笔记会同步到你指定的飞书知识库；未映射的目录仍按类别层级自动推导（必要时自动建库）。');
+
+		/** 可选的知识库列表（惰性拉取一次；「刷新知识库列表」可重拉）。 */
+		let spaceOptions: Array<{ spaceId: string; name: string }> = [];
+		/** 下拉里的「＋ 新建飞书知识库…」哨兵值（不与真实 spaceId 冲突）。 */
+		const NEW_SPACE_OPTION = '__kb_new_space__';
+		const renderMapList = async (reloadSpaces = false): Promise<void> => {
+			if (reloadSpaces || spaceOptions.length === 0) {
+				spaceOptions = await host.listSpaces();
+			}
+			const mappings = await host.loadSpaceMap();
+			mapList.replaceChildren();
+			mapStatus.textContent = spaceOptions.length > 0
+				? `已获取 ${spaceOptions.length} 个飞书知识库`
+				: '未获取到飞书知识库列表（确认 lark-cli 已安装并登录，再点「刷新知识库列表」）';
+			if (mappings.length === 0) {
+				const empty = $('p.kbs-hint');
+				empty.textContent = '（未配置显式映射 —— 全部按类别层级自动推导）';
+				mapList.appendChild(empty);
+				return;
+			}
+			for (const m of mappings) {
+				const row = $('div.kbs-row');
+				const dirEl = $('span.kbs-grow');
+				dirEl.textContent = m.dir;
+				dirEl.title = m.dir;
+				dirEl.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:12px;';
+				const sel = document.createElement('select');
+				sel.className = 'kbs-input';
+				sel.title = '该目录对应的飞书知识库（也可选「＋ 新建飞书知识库…」直接创建）';
+				// 下拉即入口：选中「＋ 新建飞书知识库…」⇒ 弹输入框 ⇒ `wiki +space-create` ⇒ 自动选中新库
+				const newOpt = document.createElement('option');
+				newOpt.value = NEW_SPACE_OPTION;
+				newOpt.textContent = '＋ 新建飞书知识库…';
+				sel.appendChild(newOpt);
+				if (!spaceOptions.some(o => o.spaceId === m.spaceId)) {
+					const opt = document.createElement('option');
+					opt.value = m.spaceId;
+					opt.textContent = `${m.spaceName || m.spaceId}（已配置，不在当前列表）`;
+					sel.appendChild(opt);
+				}
+				for (const o of spaceOptions) {
+					const opt = document.createElement('option');
+					opt.value = o.spaceId;
+					opt.textContent = o.name;
+					sel.appendChild(opt);
+				}
+				sel.value = m.spaceId;
+				sel.onchange = () => {
+					void (async () => {
+						if (sel.value === NEW_SPACE_OPTION) {
+							const name = await host.promptSpaceName();
+							if (!name) { sel.value = m.spaceId; return; }
+							mapStatus.textContent = `正在新建飞书知识库「${name}」…`;
+							const created = await host.createSpace(name);
+							if (!created) {
+								mapStatus.textContent = '新建飞书知识库失败：请确认 lark-cli 已安装并登录，然后点「刷新知识库列表」重试。';
+								sel.value = m.spaceId;
+								return;
+							}
+							const cur = await host.loadSpaceMap();
+							await host.saveSpaceMap(cur.map(x => x.dir === m.dir
+								? { dir: x.dir, spaceId: created.spaceId, spaceName: created.name }
+								: x));
+							host.logOp('settings.kb.feishu.spaceCreate', { target: `${created.name} (${created.spaceId})` });
+							spaceOptions = await host.listSpaces();
+							await renderMapList();
+							return;
+						}
+						const picked = spaceOptions.find(o => o.spaceId === sel.value);
+						const list = await host.loadSpaceMap();
+						await host.saveSpaceMap(list.map(x => x.dir === m.dir
+							? { dir: x.dir, spaceId: sel.value, spaceName: picked?.name ?? x.spaceName ?? '' }
+							: x));
+						host.logOp('settings.kb.feishu.spaceMap', { target: `${m.dir} → ${sel.value}` });
+						await renderMapList();
+					})();
+				};
+				const delBtn = $('button.kbs-btn');
+				delBtn.textContent = '🗑';
+				delBtn.title = '删除该映射（删除后该目录回到「类别层级」自动推导）';
+				delBtn.onclick = () => {
+					void (async () => {
+						const list = await host.loadSpaceMap();
+						await host.saveSpaceMap(list.filter(x => x.dir !== m.dir));
+						host.logOp('settings.kb.feishu.spaceMap', { target: `remove ${m.dir}` });
+						await renderMapList();
+					})();
+				};
+				row.append(dirEl, sel, delBtn);
+				mapList.appendChild(row);
+			}
+		};
+		addMapBtn.onclick = () => {
+			void (async () => {
+				const dir = await host.pickDirForMapping();
+				if (!dir) { return; }
+				const list = await host.loadSpaceMap();
+				if (list.some(x => x.dir === dir)) {
+					mapStatus.textContent = `该目录已在映射中：${dir}`;
+					return;
+				}
+				if (spaceOptions.length === 0) { spaceOptions = await host.listSpaces(); }
+				const first = spaceOptions[0];
+				if (!first) {
+					mapStatus.textContent = '未能获取飞书知识库列表：请确认 lark-cli 已安装并登录，再点「刷新知识库列表」。';
+					return;
+				}
+				await host.saveSpaceMap([...list, { dir, spaceId: first.spaceId, spaceName: first.name }]);
+				host.logOp('settings.kb.feishu.spaceMap', { target: `${dir} → ${first.name}` });
+				await renderMapList();
+			})();
+		};
+		reloadMapBtn.onclick = () => { void renderMapList(true); };
+		void renderMapList();
+
 		const autoCreateControl = this._row(fsSec, '自动建库');
 		this._check(
 			autoCreateControl,

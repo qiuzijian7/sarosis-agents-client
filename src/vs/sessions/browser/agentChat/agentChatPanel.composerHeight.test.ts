@@ -130,11 +130,27 @@ suite('输入框自适应高度 — 顺序不变量（2026-09-18）', () => {
 		);
 	});
 
-	test('★★★ 高度变化后贴底用户必须**重新钉底**（打字导致聊天区滚动 ✗✓ —— 2026-09-21）', () => {
+	test('★★★ 布局被扰动后贴底用户必须**重新钉底**（打字导致聊天区滚动 ✗✓ 2026-09-21 / 09-22）', () => {
 		const body = applyComposerHeightBody(read(COMPOSER_SRC), COMPOSER_SRC);
-		// 机制：输入框变高 ⇒ flex 挤压 ⇒ 消息区 clientHeight 变小 ⇒ maxScroll 变大 ⇒
-		// scrollTop 不变 ⇒ 视窗相对内容下滑 ⇒ "打字引发滚动" ✗✓。
+		// 机制（两个方向都会被扰动 ✓）：
+		//  · 输入框**变高** ⇒ flex 挤压 ⇒ 消息区 clientHeight 变小 ⇒ maxScroll 变大 ⇒ scrollTop 不变
+		//    ⇒ 视窗相对内容下滑 ⇒ "打字引发滚动" ✗✓；
+		//  · 输入框**被测量压扁**（`:2081` 的 `height='auto'` ✓）⇒ 消息区变大 ⇒ maxScroll 变小 ⇒
+		//    浏览器把 scrollTop **钳制下调** ⇒ 向上跳一下 ✗✓（2026-09-22 用户报的就是这一支 ✓）。
 		// 只恢复 savedScrollTop（旧 maxScroll）⇒ 贴底用户永久偏离底部 Δh ✗✓。
+		// ★ 2026-09-22：门控必须是「**布局被扰动过**」（`autoDisturbed` = `auto` 是否真改变了高度 ✓），
+		//   而**不是**「最终目标高度是否变化」（`heightChanged` ✗✓：拖高过输入框时它恒为 false ⇒
+		//   钳制上跳**永不恢复** ✗✗ —— 这就是用户报的那个 bug ✓）。
+		assert.ok(
+			/if \(autoDisturbed && this\._messagesContainer\)/.test(body),
+			`[${COMPOSER_SRC}] 恢复必须由 autoDisturbed 门控 ✓；用 heightChanged 门控会让「拖高过输入框」的用户\n`
+			+ '每次击键都被钳制上跳且永不恢复 ✗✗（2026-09-22 用户报的 bug ✓）',
+		);
+		assert.ok(
+			!/if \(heightChanged && this\._messagesContainer\)/.test(body),
+			`[${COMPOSER_SRC}] 不得回退成 heightChanged 门控 ✗（该门控漏掉"测量压扁"这一支 ✓）`,
+		);
+		// 正向不变量（原断言，逐字保留 ✓）
 		assert.ok(
 			/this\._isAtBottom\)[\s\S]{0,200}?scrollTop = this\._messagesContainer\.scrollHeight/.test(body),
 			`[${COMPOSER_SRC}] 高度变化后：_isAtBottom ⇒ 必须 scrollTop = scrollHeight（重新钉底 ✓）；`

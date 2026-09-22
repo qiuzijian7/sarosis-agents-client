@@ -90,6 +90,15 @@ export interface IHttpRequestParams {
 	readonly headers?: Record<string, string>;
 	readonly timeoutMs?: number;
 	/**
+	 * 请求体（已序列化字符串，调用方自行 `JSON.stringify`）。
+	 *
+	 * ★ 2026-09-22 新增：此前只支持无 body 的请求（GET），
+	 * 导致渠道类 POST（飞书 `/callback/ws/endpoint`、`/auth/v3/...`、
+	 * `/im/v1/messages`、Telegram `/sendMessage`）无法经主进程出口发送。
+	 * GET/HEAD 会忽略该字段（`fetch` 对 GET 带 body 直接抛错）。
+	 */
+	readonly body?: string;
+	/**
 	 * 二进制响应：body 以 base64 返回（`base64` + `contentType` 字段填充，
 	 * `body` 为空）。用于下载图片等二进制资源——文本路径的 `response.text()`
 	 * 会按 UTF-8 解码破坏字节。

@@ -6,6 +6,9 @@
 // Agent Chat — Type definitions (ported from saros-webui)
 
 import { AgentStatus } from '../../common/agentStudioTypes.js';
+// ★ 2026-09-22（用户选定方案 C「收纳手风琴」）：压缩分组的**纯函数核心**在 contrib/common ✓
+//   （与 historyCompaction 同目录 ⇒ 判据唯一真源 ✓；本目录已有 contrib/common import 先例 ✓）
+import { planCompactionGroup, type ICompactionGroupMeta, type ICompactionGroupOptions } from '../../contrib/agentStudio/common/compactionGroupPlan.js';
 
 /** Chat message with streaming/tool-call/thinking support */
 export interface IAgentChatMessage {
@@ -66,6 +69,14 @@ export interface IAgentChatMessage {
 		model?: string;
 	};
 	metadata?: Record<string, unknown>;
+	/**
+	 * ★ 2026-09-22（用户选定方案 C「收纳手风琴」）：压缩分组元信息。
+	 * **存在即代表本条是合成出来的分组消息**（不是真实历史消息 ✓），
+	 * 由 `coalesceCompactionGroups` 在有**可信**压缩边界时产出；
+	 * 组头/组体/组脚由 `compactionGroupView.ts` 渲染 ✓。
+	 * 泛型实参 = 本类型自身 ⇒ 组内归档消息有**完整类型**（无需 as 断言 ✓）。
+	 */
+	compactionGroup?: ICompactionGroupMeta<IAgentChatMessage>;
 	attachments?: IChatAttachment[];
 	subAgents?: ISubAgentData[];
 	confirmation?: IConfirmationData;
@@ -447,13 +458,36 @@ export function adaptPersistedToolCall(c: any, i: number): IToolCall {
  * - assistant 消息总是带 parts（优先用已存的 parts，否则由 content+toolCalls 派生）。
  * 调用方：`history.map(adaptPersistedChatMessage).filter((m): m is IAgentChatMessage => !!m)`。
  */
-export function adaptPersistedChatMessage(m: any): IAgentChatMessage | null {
+export function adaptPersistedChatMessage(
+	m: any,
+	/** ★ 2026-09-22：opt-in 保留压缩边界（默认 false ⇒ 行为逐字不变 ✓）。 */
+	opts?: { readonly keepCompactionBoundary?: boolean },
+): IAgentChatMessage | null {
 	if (!m) { return null; }
 	if (m.role === 'tool') { return null; }
 	// 过滤 compaction 边界消息——它是 LLM 上下文管理的内部标记
 	// （由 sliceAtCompactionBoundary 用于历史切片），不应作为普通
 	// assistant 气泡渲染在聊天 UI 中。
-	if (m.metadata?.type === 'compaction') { return null; }
+	//
+	// ★ 2026-09-22（用户选定方案 C「收纳手风琴」）：**opt-in 保留** ✓ ——
+	//   `nativeChatEditorPane._adaptHistoryMessages` 传 `keepCompactionBoundary:true`，
+	//   把它适配为一条**系统消息**（metadata.type 原样保留 ✓），随后交给
+	//   `coalesceCompactionGroups` 决定"收纳成组 / 只留提示行" ✓✓。
+	//   ⚠ 默认（不传 opts）行为**逐字不变**：仍返回 null ⇒ 其它宿主与既有测试零影响 ✓。
+	if (m.metadata?.type === 'compaction') {
+		if (!opts?.keepCompactionBoundary) { return null; }
+		const boundaryTs = (() => {
+			const t = typeof m.timestamp === 'string' ? Date.parse(m.timestamp) : Number(m.timestamp);
+			return Number.isFinite(t) ? t : Date.now();
+		})();
+		return {
+			id: typeof m.id === 'string' && m.id.length > 0 ? m.id : `compaction-boundary-${boundaryTs}`,
+			role: 'system',
+			content: m.content ?? '',
+			timestamp: boundaryTs,
+			metadata: m.metadata,
+		};
+	}
 	const role: IAgentChatMessage['role'] = m.role === 'user' ? 'user' : (m.role === 'assistant' ? 'assistant' : 'system');
 	const ts = (() => {
 		const t = typeof m.timestamp === 'string' ? Date.parse(m.timestamp) : Number(m.timestamp);
@@ -567,6 +601,43 @@ export function adaptPersistedChatMessage(m: any): IAgentChatMessage | null {
 		// 可恢复的文本类附件 ✓；`kind` 随对象回来 ⇒ 恢复后仍是「代码片段」pill ✓。
 		attachments: Array.isArray(m.attachments) ? m.attachments : undefined,
 	};
+}
+
+/**
+ * ★ 2026-09-22（用户选定方案 C「收纳手风琴」）：把"已滚出模型视野"的历史区间**收纳**为
+ * 一个分组消息（组头/组体/组脚由 `compactionGroupView.ts` 渲染 ✓）。
+ *
+ * **为什么放在适配层而不是渲染层**（关键设计决策 ✓）：
+ *   收纳是**消息语义**变换，不是渲染细节 ✗✓。变换后 `_messages` 与 DOM 仍是 **1:1** ✓ ⇒
+ *   懒加载分块（按 index 取 `_messages[i]` 建元素 ✓）、DOM 裁剪（`firstElementChild` +
+ *   `data-msg-id` 反查下标 ✓）、导航计数、滚动锚点、滚动条标记**全部照旧** ✓✓。
+ *   反之若在渲染层"包一层容器"，`firstElementChild` 就不再是消息元素 ⇒ 会打断这些既有映射 ✗✓。
+ *
+ * **不做收纳的两种情形**（都由 `planCompactionGroup` 判定 ✓ 判据唯一真源于 historyCompaction ✓）：
+ *   · 边界**不可信**（摘要饥饿 / tokensSaved<=0 / 空摘要）⇒ 模型其实仍看得见全部历史 ⇒
+ *     收纳就是在**撒谎** ✗✓；边界消息原样留在数组里 ⇒ 视图渲染为**提示行** ✓。
+ *   · 边界之前已无可收纳内容（边界位于首位）⇒ 不建空组 ✓。
+ */
+export function coalesceCompactionGroups(
+	messages: readonly IAgentChatMessage[],
+	/** ★ 2026-09-22：透传收纳计划选项（默认 = **移除模式** ⇒ 不持有原文 ✓✓）。 */
+	opts?: ICompactionGroupOptions,
+): IAgentChatMessage[] {
+	const plan = planCompactionGroup(messages, opts);
+	if (!plan.hasGroup || !plan.group) { return messages.slice(); }
+	const group = plan.group;
+	const tail = messages.slice(plan.archiveEnd);
+	const boundary = messages[plan.archiveEnd - 1];
+	const synthetic: IAgentChatMessage = {
+		// id 稳定（`compaction-group:<边界id>` ✓）⇒ 折叠状态可跨 rebuild / 懒加载重渲染保留 ✓
+		id: group.id,
+		role: 'system',
+		// content = 摘要正文 ⇒ 导航/搜索仍能命中摘要文本 ✓（归档原文不再逐条列出，见报告 ✓）
+		content: group.summary,
+		timestamp: boundary?.timestamp ?? Date.now(),
+		compactionGroup: group,
+	};
+	return [synthetic, ...tail];
 }
 
 /** Status display mapping */

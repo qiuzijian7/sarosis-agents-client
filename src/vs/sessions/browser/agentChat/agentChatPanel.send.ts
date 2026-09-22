@@ -101,7 +101,7 @@ protected override _handleSendMessage(): void {
 		// 把还没收尾的第一条彻底打断。
 		//
 		// 改为「UI 状态 or 服务层有活跃流」：只要底层还有流（含收尾窗口），就排队。
-		if (shouldQueueOutgoingMessage(this._isSending, () => this._isStreamActive)) {
+		if (shouldQueueOutgoingMessage(this._isSending, this._onIsStreamActive)) {
 			const queueId = `queue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 			// ★ 2026-09-18（用户需求）：入队时把 pill（代码片段 / 图片 / 文件 / 技能 / 工作流）
 			//   一并带上 ⇒ 队列行也能显示它们 ✓（原来只留纯文本，附件还被压成 `[2 个附件]` ✗）。

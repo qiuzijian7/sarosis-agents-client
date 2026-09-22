@@ -17,6 +17,7 @@ import { IKeybindingService } from '../../../../../platform/keybinding/common/ke
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import { CHANNEL_DEFINITIONS, IChannelDefinition } from '../../common/constants.js';
+import { createChannelIcon } from '../channelIcons.js';
 import { ChannelEditorInput } from '../channelEditorInput.js';
 import { IEditorService, SIDE_GROUP } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
@@ -94,9 +95,9 @@ export class ChannelViewPane extends ViewPane {
 			item.classList.add('channel-item-enabled');
 		}
 
-		// Icon
+		// Icon（★ 2026-09-22：有官方品牌 SVG 时用品牌 logo，未收录时内部回退 emoji）
 		const icon = $('span.channel-item-icon');
-		icon.textContent = def.icon;
+		icon.appendChild(createChannelIcon(def.key, def.icon, 18));
 		item.appendChild(icon);
 
 		// Info

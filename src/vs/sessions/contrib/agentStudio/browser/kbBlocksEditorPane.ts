@@ -148,20 +148,97 @@ export class KbBlocksEditorPane extends EditorPane {
 		this._currentMarkdown = mdContent;
 
 		// Enumerate the vault notes so the webview can resolve `[[wikilinks]]`.
-		// Best-effort: if the kernel can't build (no KB view yet / cold start),
-		// fall back to an empty index — the note still renders, wikilinks just
-		// appear broken until the index becomes available.
-		try {
-			this._workspaceFiles = await this._kbKernelService.getWorkspaceFiles(resource.toString());
-		} catch (err) {
-			this._logService.warn('[KbBlocksEditorPane] failed to build workspace file index', err);
-			this._workspaceFiles = [];
-		}
+		//
+		// ⚠ 2026-09-22：内核索引**不保证完整**。实测某 vault：`.kbkernel.json` 里
+		// `totalDocs: 1`，而磁盘上有 15 篇 md（同一份数据跑真实 `KbFullTextIndex.build()`
+		// 得到 15 篇 ⇒ 构建逻辑没问题，是运行时拿到的是残缺/陈旧索引）。
+		// 后果：所有 `[[链接]]` 被判为断链 ⇒ 点击**静默无反应**、出链面板只能显示
+		// 未解码的原始 URI。而链接解析要的只是「文件名清单」，文件系统才是权威真源
+		// ⇒ 这里改为**磁盘枚举为主、内核索引补充**。
+		this._workspaceFiles = await this._loadWorkspaceFiles(resource);
 
 		await this._ensureWebview();
 	}
 
 	// ── Media resolution (out/ for prod, src/ for dev) ──────────────────────
+
+	/**
+	 * 收集用于 `[[wikilink]]` 解析的文件清单：**磁盘枚举为主 + 内核索引补充**。
+	 *
+	 * ## 为什么不只信内核索引
+	 *
+	 * 索引可能「不存在 / 构建失败 / 缓存陈旧不完整」。2026-09-22 实测到的真实案例：
+	 * 索引里只有 1 篇而磁盘有 15 篇 ⇒ 全部链接变断链，且断链在 UI 上**完全静默**
+	 * （`LinkComponent` 直接 return），用户只看到「点了没反应」。
+	 *
+	 * 链接解析需要的只是「文件名清单」，而**文件系统才是权威真源**；枚举 15 篇 md
+	 * 实测仅数十毫秒 ⇒ 用磁盘结果兜底/合并，语义上也更符合用户直觉
+	 * （文件确实存在 ⇒ 链接就该能跳）。
+	 */
+	private async _loadWorkspaceFiles(resource: URI): Promise<{ uri: string; name: string }[]> {
+		let kernelFiles: { uri: string; name: string }[] = [];
+		try {
+			kernelFiles = await this._kbKernelService.getWorkspaceFiles(resource.toString());
+		} catch (err) {
+			this._logService.warn('[KbBlocksEditorPane] kernel workspace index unavailable', err);
+		}
+
+		const diskFiles = await this._enumerateVaultNotes(resource);
+		if (diskFiles.length === 0) { return kernelFiles; }
+
+		// 合并去重：**磁盘优先**（name 以磁盘为准，避免索引里的陈旧命名）
+		const byUri = new Map<string, { uri: string; name: string }>();
+		for (const f of kernelFiles) { byUri.set(f.uri, f); }
+		for (const f of diskFiles) { byUri.set(f.uri, f); }
+		return [...byUri.values()];
+	}
+
+	/** 枚举 vault 的 `库` / `笔记` 两个分区下的 markdown（找不到 vault 根则返回空）。 */
+	private async _enumerateVaultNotes(resource: URI): Promise<{ uri: string; name: string }[]> {
+		const root = await this._findVaultRoot(resource);
+		if (!root) { return []; }
+		const files: { uri: string; name: string }[] = [];
+		for (const section of ['库', '笔记']) {
+			await this._collectMarkdownFiles(URI.joinPath(root, section), files);
+		}
+		return files;
+	}
+
+	/** 递归收集 markdown（带条目上限，避免超大库把打开笔记拖慢）。 */
+	private async _collectMarkdownFiles(dir: URI, out: { uri: string; name: string }[]): Promise<void> {
+		if (out.length > 20000) { return; }
+		let stat;
+		try { stat = await this._fileService.resolve(dir); } catch { return; }
+		if (!stat.children) { return; }
+		for (const c of stat.children) {
+			if (c.isDirectory) {
+				await this._collectMarkdownFiles(c.resource, out);
+			} else if (/\.(md|markdown)$/i.test(c.name)) {
+				out.push({ uri: c.resource.toString(), name: c.name });
+			}
+		}
+	}
+
+	/**
+	 * 从笔记 URI 向上找 vault 根：**含 `笔记` 子目录的最近祖先**。
+	 *
+	 * 与 `kbNativeKernelService._inferBuildContext` 同规则，但**不依赖 `.kbkernel.json`**
+	 * （该缓存文件可能不存在 —— 例如刚被清理或从未生成，此时内核侧的根推断会失败）。
+	 */
+	private async _findVaultRoot(resource: URI): Promise<URI | undefined> {
+		let cur: URI | undefined = URI.joinPath(resource, '..');
+		for (let depth = 0; depth < 12 && cur; depth++) {
+			if (await this._isDirectory(URI.joinPath(cur, '笔记'))) { return cur; }
+			const parent = URI.joinPath(cur, '..');
+			if (parent.toString() === cur.toString()) { break; }
+			cur = parent;
+		}
+		return undefined;
+	}
+
+	private async _isDirectory(uri: URI): Promise<boolean> {
+		try { const s = await this._fileService.resolve(uri); return !!s?.children; } catch { return false; }
+	}
 
 	private _mediaCandidates(): URI[] {
 		const appRoot = this._environmentService.appRoot;

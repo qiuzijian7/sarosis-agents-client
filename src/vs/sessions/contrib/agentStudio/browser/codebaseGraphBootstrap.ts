@@ -402,15 +402,27 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			// 说明图谱曾被创建过（外部删除 / 保存中断 / 引擎目录被刷新），值得 warn 提醒。
 			let graphLost = false;
 			try {
-				await this._fileService.stat(URI.joinPath(folder.uri, '.codebase-memory'));
-				graphLost = true;
+				// ★★ 2026-09-22（v2）：**只有锁/临时文件的目录不算"图谱丢失"** ✗✓ ——
+				// 真机 `vssaros-homepage` 是空目录 + 一把**陈旧 index.lock**（上次索引被中断留下的 ✓），
+				// 旧判据"目录存在即丢失"⇒ 每轮都报「external deletion？？」✗（用户连看两次同一条 WARN）。
+				// 改为按「**有无制品**」判：有 graph.db* / artifact*（而制品又没读出来）才算真丢失 ✓。
+				const cbm = await this._fileService.resolve(URI.joinPath(folder.uri, '.codebase-memory'));
+				graphLost = (cbm.children ?? []).some(c => {
+					const n = c.name.toLowerCase();
+					return n.startsWith('graph.db') || n.includes('artifact');
+				});
 			} catch { /* 目录也不存在 = 首次索引 */ }
 			if (!allowAutoIndex) {
 				this._logService.info(LOG_TAG, `No existing graph for folder "${project}", but auto-index is disabled (no .code-workspace file) — deferring to manual/LLM-triggered indexing.`);
 				continue;
 			}
 			if (graphLost) {
-				this._logService.warn(LOG_TAG, `Graph artifact missing but .codebase-memory dir exists for "${project}" (external deletion or interrupted save?), scheduling auto-index...`);
+				// ★ 2026-09-22：补上第二种成因 —— 真机 `vssaros-homepage` 是**空目录**（0 个可索引
+				// 文件）：索引跑完 0 节点 ⇒ `_saveGraph` 正确地拒绝写空图 ⇒ 目录却已（被索引锁）留下
+				// ⇒ 每轮都判成"制品丢失"✗。旧文案只说"外部删除/保存中断"，会把排查带偏 ✗✓。
+				// （现在索引锁释放时会**顺带清掉空目录** ⇒ 这一路只剩"首次索引"的正常 INFO ✓）
+				this._logService.warn(LOG_TAG, `Graph artifact missing but .codebase-memory dir exists for "${project}" `
+					+ `(external deletion / interrupted save / 该 folder 无可索引文件——末者属正常 ✓), scheduling auto-index...`);
 			} else {
 				this._logService.info(LOG_TAG, `No existing graph for folder "${project}", scheduling auto-index...`);
 			}

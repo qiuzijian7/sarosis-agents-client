@@ -52,6 +52,12 @@
 	flex-shrink: 0;
 }
 
+/* 品牌 SVG 的尺寸写在元素 width/height 上（createChannelIcon），这里只防 flex 拉伸 */
+.channel-editor-header-icon svg {
+	display: block;
+	flex-shrink: 0;
+}
+
 .channel-editor-header-info {
 	flex: 1;
 	min-width: 0;
@@ -266,6 +272,13 @@
 	padding: 20px 0;
 	border-top: 1px solid var(--vscode-panel-border);
 	margin-top: 8px;
+}
+
+/* ★ 2026-09-22（D-11）：「即时生效」说明文案（替代被移除的空壳「保存配置」按钮） */
+.channel-editor-actions-note {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 6px;
 }
 
 .channel-editor-btn {

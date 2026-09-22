@@ -48,6 +48,7 @@ import {
 	AGENTS_DIR,
 } from "../common/constants.js";
 import { createIndexLockToken, isIndexLockStale, parseIndexLock, serializeIndexLock } from './codebaseIndexLock.js';
+import { diagnoseEmptyPriorMessagesImpl } from './contextMaintenance.js';
 
 /** 会话锁过期阈值：2min 未心跳视为持有方崩溃，可接管（短于索引锁的 5min——会话崩溃恢复应更快）。 */
 const SESSION_LOCK_STALE_MS = 2 * 60 * 1000;
@@ -961,6 +962,20 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	private _isBucketOpen(key: string): boolean {
 		// key format: agentId::sessionId  or  agentId
 		return this._activeStreams.has(key) || this._activeOnDeltas.has(key);
+	}
+
+	/**
+	 * 底层是否仍有**本会话**的活跃流（含「已取消、未收尾」窗口期）。
+	 *
+	 * 语义：`_activeStreams` 要等流的 `finally` 才清理，因此 `cancelStream()` 之后
+	 * 该方法仍会短暂返回 true —— 这正是入队判定需要的语义：此刻 UI 状态已复位，
+	 * 但旧流还在收尾，新消息必须排队，否则会把未收尾的旧流彻底打断。
+	 *
+	 * 只统计本会话（`agentId::sessionId`），后台其它会话的流不参与判定
+	 * —— 否则会在 A 会话发消息时被 B 会话的流误判为「忙」。
+	 */
+	isSessionStreaming(agentId: string, agentSessionId?: string): boolean {
+		return this._isBucketOpen(this._cacheKey(agentId, agentSessionId));
 	}
 
 	/**
@@ -2668,67 +2683,29 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 *
 	 * 只在**为空**时调用（低频 ✓）+ 内部全 try/catch ✓ ⇒ 绝不影响发送主路径 ✓。
 	 */
+	/**
+	 * ★ 2026-09-22：实现已**收口**到 `contextMaintenance.ts` 的 `diagnoseEmptyPriorMessagesImpl` ✓
+	 * （此处曾是第二份拷贝，漏掉了同日早些时候加在 ContextMaintenance 拷贝上的屏障行排除 ⇒
+	 *  双份漂移的实证 ✗）。本方法只剩**适配器**：把 service 的路径学/IO 包成最小依赖面 ✓。
+	 *
+	 * @param historyLength **本轮之前**的历史条数（调用方须先剔除当前 user 消息 ✓）
+	 * @param currentMessage 本轮当前 user 消息原文 —— 探针须排除它
+	 *   （fire-and-forget 落盘与磁盘探针存在竞态：jsonl 里那 1 行可能就是它自己 ✗✓）
+	 */
 	private async _diagnoseEmptyPriorMessages(
 		agentId: string,
 		sessionId: string | undefined,
 		historyLength: number,
+		currentMessage?: string,
 	): Promise<void> {
-		try {
-			if (!sessionId) {
-				this.logService.warn(
-					`[AgentChatService][PriorDiag] ⚠ priorMessages 为空且 **sessionId 缺失** ⇒ ` +
-					`模型本轮看不到任何历史（若 UI 里已有对话，说明这是"新会话/未分配 session"路径 ✗）。agentId=${agentId}`,
-				);
-				return;
-			}
-			const paths = await this._resolveAgentPaths(agentId);
-			const countMessages = async (uri: URI): Promise<number> => {
-				try {
-					if (!(await this.fileService.exists(uri))) { return -1; } // -1 = 文件不存在（与 0 条区分 ✓）
-					const text = (await this.fileService.readFile(uri)).value.toString();
-					const parsed = JSON.parse(text) as unknown;
-					return Array.isArray(parsed) ? parsed.length : -2; // -2 = 存在但解析失败 ✗
-				} catch { return -3; }
-			};
-			const countLogLines = async (uri: URI): Promise<number> => {
-				try {
-					if (!(await this.fileService.exists(uri))) { return -1; }
-					const text = (await this.fileService.readFile(uri)).value.toString();
-					return text.split('\n').filter(l => l.trim().length > 0).length;
-				} catch { return -3; }
-			};
-			const snapshotCount = await countMessages(this._sessionFileUri(paths.sessionsDirUri, sessionId));
-			const logLines = await countLogLines(this._sessionLogUri(paths.sessionsDirUri, sessionId));
-			const diskHasContent = snapshotCount > 0 || logLines > 0;
-			const key = this._cacheKey(agentId, sessionId);
-
-			if (historyLength > 0) {
-				// ② 历史有，但组装后为 0 ⇒ 被过滤/裁剪 ✗
-				this.logService.warn(
-					`[AgentChatService][PriorDiag] ⚠ 历史共 ${historyLength} 条却组装出 **0** 条 prior ⇒ ` +
-					`历史被**过滤/裁剪光**（压缩边界 sliceAtCompactionBoundary / 污染过滤 / 配对过滤 ✗）。key=${key} ` +
-					`disk(snapshot=${snapshotCount}, logLines=${logLines}) ⇒ 请查本 turn 之前是否插入了 ` +
-					`metadata.type='compaction' 的边界消息 ✗`,
-				);
-				return;
-			}
-			if (diskHasContent) {
-				// ③ 桶空但盘上有 ⇒ key 不匹配 ✗✗（最严重）
-				this.logService.warn(
-					`[AgentChatService][PriorDiag] ⚠⚠ **疑似 session key 不匹配**：本次 key=${key} 的历史为 0，` +
-					`但盘上有内容（snapshot=${snapshotCount} 条, logLines=${logLines} 行）⇒ 模型将失去全部上下文 ✗✗。` +
-					`请核对 sendMessage 的 agentSessionId 来源（pane 的 _currentSessionId / 任务执行的 session ✗）`,
-				);
-				return;
-			}
-			// ① 真空 ⇒ 正常 ✓（但仍记录，便于对照 ✓）
-			this.logService.info(
-				`[AgentChatService][PriorDiag] priorMessages 为空且盘上也为空（snapshot=${snapshotCount}, logLines=${logLines}）` +
-				` ⇒ 本会话确实还没有历史 ✓ key=${key}`,
-			);
-		} catch (err) {
-			this.logService.warn(`[AgentChatService][PriorDiag] 取证失败（不影响发送 ✓）：${err instanceof Error ? err.message : err}`);
-		}
+		return diagnoseEmptyPriorMessagesImpl({
+			logService: this.logService,
+			fileService: this.fileService,
+			resolveAgentPaths: a => this._resolveAgentPaths(a),
+			sessionFileUri: (dir, sid) => this._sessionFileUri(dir, sid),
+			sessionLogUri: (dir, sid) => this._sessionLogUri(dir, sid),
+			cacheKey: (a, sid) => this._cacheKey(a, sid),
+		}, agentId, sessionId, historyLength, currentMessage);
 	}
 
 	/**
@@ -3142,6 +3119,16 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				this.appendMessage(agentId, userMessage).catch(err =>
 					this.logService.error('[AgentChatService] Failed to persist user message:', err)
 				);
+				// ★ 2026-09-22：广播源统一收口到此处（此前仅 nativeChatEditorPane 本地发送路径
+				//   自行广播，且用的是本地构造的临时 id，与持久化 id 不一致）。
+				//   桥接（飞书/Telegram）、看板、workflow 等外部发送路径由此获得 user 消息广播，
+				//   正在显示该会话的聊天框经 onDidStreamDelta 'user_message' 即时渲染气泡。
+				//   本地发送 pane 由 _localSendActiveSessionId 守卫跳过，不会重复渲染。
+				try {
+					this.fireUserMessageAdded(agentId, options.agentSessionId ?? '', userMessage);
+				} catch (e) {
+					this.logService.warn('[AgentChatService] fireUserMessageAdded failed:', e);
+				}
 			} else {
 				console.info(`[TaskPromptCard] sendMessage BLOCKED by alreadyPersisted (source=${options.source ?? 'user'}), msg="${message.slice(0, 50)}"`);
 				this.logService.info(`[AgentChatService] Skipping duplicate user message persist: "${message.substring(0, 40)}..."`);
@@ -3175,7 +3162,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				//   ③ 盘上有历史但本次 `agentSessionId` 取到的桶是空的（**key 不匹配** ✗✗ 最严重）。
 				// 仅在为空时（低频 ✓）做一次磁盘探针，把三者分开 ✓ —— 附带把 key 与长度都打出来 ✓。
 				if (priorMessages.length === 0) {
-					void this._diagnoseEmptyPriorMessages(agentId, options.agentSessionId, history.length);
+					// ★ 2026-09-22 第二轮修正（真机 `sess_…` 首条消息误报「key 不匹配」）：
+					//   ① 传 **trimmed.length**（剔除当前 user 之后）—— 此前传 history.length，
+					//      新会话首条的形态是 history=1（刚写入的当前消息）→ pop → prior=0，
+					//      会被误报成 ②「历史被过滤/裁剪光」✗；
+					//   ② 传 **message 原文** —— 探针须排除它：appendMessage 是 fire-and-forget，
+					//      磁盘探针可能跑在"本条消息已写进 jsonl"之后 ⇒ logLines=1 就是它自己 ✗✓。
+					void this._diagnoseEmptyPriorMessages(agentId, options.agentSessionId, trimmed.length, message);
 				}
 			} catch (err) {
 				this.logService.warn(

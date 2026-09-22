@@ -457,3 +457,135 @@ node src/vs/sessions/contrib/agentStudio/test/browser/run-browser-test.mjs \
      `--refresh-remote` 只改本地 frontmatter 的 `remoteHash`（不写远端、不改索引），并顺带为缺失该字段的老笔记补记；
      刷新后 `--dry-run` 应仍为全 `skip`（证明不改变同步语义）。
 - `--prune` 依赖的 `wiki +node-delete --yes` 参数**已实测存在**；注意 `--include-children` 默认 `true`（**级联删除子树**）。
+
+## 14. 知识库根目录的「目录思维导图」（mindnote，2026-09-22 新增）
+
+需求：同步文件夹（= 飞书知识库）根目录要有一份**飞书原生思维导图**文档，且新增/改名/移动笔记后自动更新。
+
+### 14.1 形态与位置
+
+- 每个**类别知识库**根下一份，标题固定 `目录思维导图`（`MINDMAP_TITLE`，**不带 emoji** —— 原因见 §14.4#1）
+- 结构：根（库名）→ 目录（逐级）→ 笔记标题（叶子）
+
+### 14.2 命令契约（2026-09-22 实测）
+
+| 步骤 | 命令 | 关键返回 |
+|---|---|---|
+| 建文档 | `wiki +node-create --space-id <id> --title <T> --obj-type mindnote` | `obj_token`（= mindnote_id）/ `node_token` |
+| 写节点 | `mindnotes nodes create --mindnote-id <id> --data @nodes.json` | `data.ids[]`（**服务端生成**的 node_id，按请求顺序） |
+| 读节点 | `mindnotes nodes list --mindnote-id <id>` | `data.nodes[]`（含 `parent_id`，可还原层级） |
+| 删文档 | `wiki +node-delete --node-token <t> --obj-type mindnote --yes` | `ok: true` |
+
+节点 JSON（**三个硬约束**，均逐一实测）：
+
+```json
+{ "client_token": "<每次唯一>",
+  "nodes": [ { "parent_id": "<已有节点的服务端 id；根层省略>",
+               "texts": [ { "element_type": "text", "text": { "content": "文本" } } ] } ] }
+```
+
+1. 文本必须是 **`texts[]` + `text.content`**（写成 `text: "串"` 报 `9499`；写成 `text: { text: … }` 报 `99992402 field validation failed`）
+2. **不接受自定义 `node_id`**（传了报 `3411001 system internal error`）⇒ id 只能由服务端生成，`parent_id` 必须引用**已存在**的 id ⇒ **必须逐层写**（`writeMindmapTree`：BFS，同层一次批量提交）
+3. **`client_token` 是幂等键**：同 token 重复请求被**忽略**（既不重复建、也不更新）；换 token 则**追加** ⇒ 该接口**只增不改**，没有删除/更新节点的能力
+
+### 14.3 更新策略（为什么是「删旧建新」）
+
+因 14.2#3（只增不改）且无节点删除接口 ⇒ 若直接追加，每新增一篇笔记都会让导图**累积一批重复节点**。
+
+⇒ 故：结构指纹（`mindmapHash`）变化时 **删旧文档 → 重建 → 逐层写入**；指纹未变 ⇒ **零 API 调用**。
+
+- ⚠ 代价：每次结构变化后**文档 URL 会变**（旧链接失效）。作为自动生成的导图可接受。
+- 记账：索引 `mindmaps[spaceId] = { objToken, nodeToken, hash, title, updatedAt }`
+- 开关：`--no-mindmap`；⚠ `my_library`（非 wiki space）**暂不支持**（CLI 无 mindnote 创建途径）
+
+### 14.4 实测坑
+
+| # | 坑 | 现象 | 处理 |
+|---|---|---|---|
+| 1 | **标题不能含 emoji** | `wiki +node-create` 静默失败（连错误都解析不出来） | `lark()` 在 Windows 用 `shell: true`（`lark-cli` 是批处理）⇒ 参数经 cmd.exe 按**本地代码页**解释 ⇒ emoji 无法表示。标题只用中文 |
+| 2 | 节点 `text` 结构 | `9499` / `99992402` | 必须 `texts:[{element_type:'text',text:{content}}]` |
+| 3 | 自定义 `node_id` | `3411001 system internal error` | 不传，改用响应 `data.ids[]` |
+| 4 | 导图多出无意义层级 | 出现「库 / 知识库根 / 类别」嵌套 | `p.rel` 是**相对 vault** 的 ⇒ 需依次剥掉 `p.src` 前缀与类别前缀 |
+| 5 | **`wiki +node-delete` 必须带 `--obj-type`** | 报 `--obj-type is required (one of: …)` | 导图传 `mindnote`；**prune 传 `docx`**（顺手修复，未单独真机验证） |
+| 6 | 同层批量依赖顺序 | — | `data.ids[]` 与请求顺序一致；数量不符即**中止**（宁可不写，也不写层级错乱的导图） |
+
+### 14.5 验证记录（2026-09-22）
+
+沙盒 `库/_mindmap-e2e`（4 篇笔记，含 `sub` 子目录、2 个类别）：
+
+| 项 | 结果 |
+|---|---|
+| 首次同步 | 建 2 个知识库 + 3 篇笔记 + 2 份导图（7 / 5 节点）✓ |
+| 导树读回 | `01-目录A → 笔记甲 / sub → 笔记乙` 层级正确 ✓ |
+| **新增笔记后** | 导图重建为 5 节点，含新笔记 ✓ |
+| **结构未变复跑** | 无任何 mindmap 动作（幂等，零调用）✓ |
+| 清理 | 测试知识库 3 个（`ok=true`）+ 本地沙盒 + 索引残留（`spaces`/`mindmaps` 已空）✓ |
+
+## 14. 用户自定义「目录 ↔ 飞书知识库」映射（2026-09-22）
+
+- **配置文件**：`<vault>/.feishu-space-map.json`
+  ```json
+  { "version": 1, "mappings": [{ "dir": "库/AI/01-基础概念", "spaceId": "769…", "spaceName": "01-基础概念" }] }
+  ```
+  兼容极简写法：`{ "mappings": { "库/AI/01-基础概念": "769…" } }`
+- **语义**：显式映射**优先于**「类别层级」推导；映射目录**及其子目录**的笔记绑定到指定知识库（**最长前缀**匹配）。
+  未映射目录仍按 `--category-depth` 推导、必要时自动建库 ⇒ 两种方式可混用（映射目录**不会**被自动建库）。
+- **为什么落文件而不是 CLI 参数**：JSON 经 argv 在 Windows（`shell: true`）下会被引号破坏；文件还能让 UI 与脚本读写同一份契约。
+- **实现位置**：
+  - 脚本：`SPACE_MAP_FILE` / `loadSpaceMap()` / `applyExplicitMappings()`（导出的纯函数，有单测）。
+    ⚠ 调用必须**最早**（先于 `categories` 计算与自动建库）——否则映射目录会被当成「新类别」多建一个无用知识库（真机验证踩到）。
+  - TS：`feishuSyncCore.ts` 的 `parseSpaceMap` / `serializeSpaceMap` / `parseSpaceList` / `listWikiSpaces`
+    （`wiki +space-list --page-all --format json`；这是本仓库**首个**列取飞书知识库的能力）。
+  - UI：设置面板「📤 飞书同步 → 目录映射」= `＋ 添加目录` + 每行「知识库下拉」+ `🗑` + `🔄 刷新知识库列表`；
+    host 扩展 4 个方法（`loadSpaceMap` / `saveSpaceMap` / `listSpaces` / `pickDirForMapping`，目录限定在 vault 内）。
+- **新建知识库**（面板内置）：目录映射的下拉首项是「＋ 新建飞书知识库…」⇒ 弹输入框填写名称 ⇒
+  `wiki +space-create --name "<名称>" --as user` ⇒ 成功后自动选中并写回映射。
+  名称先经 `sanitizeSpaceName()` 去掉 `"` 与换行（CLI 走 shell ⇒ 不净化会被引号破坏）；失败在面板给出原因（未装 CLI / 未登录）。
+- **验证**（真机 dry-run）：`库/_feishu-map-test/01-x → FAKE_SPACE_0001`（映射生效、**不建库**）；
+  `02-y → (将创建)`（未映射照旧自动推导）；`将创建知识库 1 个：02-y` ✓
+
+## 15. 导入链接 / URL（2026-09-22 实现）
+
+**链路**：库分区工具栏「🔗 导入链接」→ 输入 URL →
+
+1. **正文**：`IWebContentExtractorService.extract()`（主进程 reader-mode；`redirect` 重抓一次；`error` 直接回报）；
+   降级：`IRequestService.request({type:'GET'})` + `htmlToPlainText()` 兜底。
+2. **图片本地化**：`ISharedWebContentExtractorService.readImage()`（共享进程读二进制，不受 renderer CSP 限制）
+   → 落 `库/raw/assets/<slug>/<序号>-<名>.<ext>` → `rewriteMarkdownImageUrls()` 把远程引用改写为**相对 md 目录**的本地路径。
+3. **组装**：`composeArticleMarkdown()`（标题 / 作者 / 来源 / 日期 / 封面本地路径）。
+4. **落盘**：`库/raw/<slug>.md`（同名自动 `-2`/`-3`，不覆盖）⇒ 之后可「构建为笔记」。
+
+- **为什么必须图片本地化**：飞书同步只认**本地相对引用**（§3）；远程 `https://` 图会被当成「未找到文件」跳过。
+  改写后的相对路径同时满足两处基准：笔记预览 `resolveAssetSrc`（相对笔记目录）与 `feishu-sync extractImages`（`path.dirname(note)`）。
+- **平台识别**：`kbUrlScraper.KB_URL_PLATFORMS`（小红书 / 抖音 / B站 / YouTube / 微博 / 公众号 / 知乎 / 掘金 / CSDN / 飞书 + 通用兜底）。
+- **实现位置**：`kbImportController.importUrl()`（**静态**方法，服务由调用方注入 ⇒ 不改类构造签名）；
+  视图 `knowledgeBaseView.importFromUrl()`（已注入两个提取器服务）+ library 分区工具栏按钮。
+- **视频（yt-dlp 扩展点，2026-09-22 已接）**：平台为 video / mixed（抖音 / B站 / YouTube / 快手 / TikTok / 微博）时，
+  先用 **yt-dlp** 取元信息（标题 / 时长 / 封面 / 作者 / 发布日期 / 简介）：
+
+  ```
+  yt-dlp --no-playlist --no-warnings --skip-download --print "<6 字段，||| 分隔>" "<url>"
+  ```
+
+  - ⚠ 用 `--print` 而**非** `--dump-json`：主进程命令通道（`vscode:execCode`）是**单次缓冲**，dump-json 含 `formats` 数组可达数百 KB；
+  - ⚠ 字段分隔用 `|||`（TAB 经 shell 传递易被规范化）；`parseYtDlpPrint()` 同时兼容真实 TSV，`NA` 视为空；
+  - 封面本地化后交给 `composeVideoMarkdown()`（含「未下载本体」说明 + 原文链接），抓到正文时附在 `## 正文`；
+  - **未安装 / 未登录 / 抓取失败 ⇒ 自动降级为「仅记链接 + OG 元数据」**，不中断导入（单测覆盖该降级路径）；
+  - **刻意不下载视频本体**：几十 MB～GB 会拖慢索引与飞书同步（飞书同步也不处理视频）。需要时自行 `yt-dlp <url>`；
+    后续可接 terminal 长任务 + 可执行路径配置项（同 `feishuCli` 模式）。
+  - 安装：`pipx install yt-dlp` / `pip install -U yt-dlp` / `winget install yt-dlp`（需在 PATH 中）。
+- **内容总结（2026-09-22 扩展）**：
+  - **图片**：图片本地化到 `库/raw/assets/<slug>/` 后，「构建笔记」时 `_buildNoteAgentic` 会把**图片清单**注入 prompt，
+    并要求 agent 逐张调用 **`vision_analyze`** 总结图片内容（该工具一次只接受一张图 ⇒ 循环，上限 8 张）。
+    前提：`knowledge-base-expert` 白名单已加入 `vision_analyze`（`common/builtinAgents.ts`），
+    且配置了多模态模型（`AGENT_STUDIO_AUX_VISION_PROVIDER` / `_MODEL`；未配置时自动路由到第一个支持图像的模型）。
+  - **视频**：`fetchVideoSubtitles()`（yt-dlp `--write-subs --write-auto-subs --sub-langs "zh.*,en.*"`）
+    → `parseSubtitlesToText()` 清洗（去时间轴/序号、**自动字幕重复行去重**、截断 20k 字）
+    → 写入素材 md 的 `## 字幕（用于总结视频内容）` 段 → 构建笔记时 agent 据此总结，并把 `> 原文：<url>` 保留在笔记中。
+    ⚠ 字幕是**文件**（stdout 单次缓冲装不下）⇒ 先落库内临时目录 `库/.kb-subs-tmp/`，读回后**立即清理**。
+  - ⚠ **无字幕视频无法「总结内容」**：项目**没有 ASR**（只有方向相反的 TTS：`generate_audio` / `text_to_speech`），
+    纯音乐或无字幕视频只能总结到「标题 + 简介 + 封面」层级；真正转写需新建 ASR（本地 whisper 或云端接口）。
+- **已知限制**：强 SPA / 登录墙（小红书详情页等）仍可能只拿到 OG 元数据；`m3u8` 明确不下载
+  （`isDownloadableMedia` 排除）；**Playwright / headless 仍是未接的扩展点**（项目内 playwright 目前只服务 browserView 平台层）。
+- **验证**：新增纯函数（`slugifyTitle` / `planImagePath` / `htmlToPlainText`）单测 3 例 ✓；`tsgo` 0 ✓；lint 0 ✓。
+  **真实抓取需在 IDE 重编译后点按钮**（依赖主进程提取器服务）。

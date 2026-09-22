@@ -35,6 +35,25 @@
  * @param protectedIdx 必须保留的下标（负数/越界/非整数自动忽略 ✓）
  * @returns 扩大后的窗口；`count <= 0` 或窗口本身为空时**原样返回**（不越权改动 ✓）
  */
+/**
+ * ★ 2026-09-22 修复：DOM 裁剪后 `scrollTop` 的补偿量 —— **只算"上方"被卸载的高度** ✗✓。
+ *
+ * 事故（用户报「输入文字过程中上方滚动条莫名向上滚一下」同源的"向上跳" ✗✓）：
+ *   旧实现把 `prevScrollHeight - scrollHeight` 直接当成补偿量 ✗ —— 而一次裁剪同时删掉了**上方**
+ *   与**下方**元素 ✓：下方被删同样让 `scrollHeight` 变小，但它**不改变视口锚点** ✓（视口在它上面 ✓）
+ *   ⇒ 合并计算会**多减**下方那段高度 ⇒ 视图额外向上跳 ✗✗。
+ *
+ * 唯一正确姿势（顺序即不变量 ✓ 已由接线断言钉住 ✓）：
+ *   1. 记 `prevScrollHeight` / `prevScrollTop`；
+ *   2. **先**卸载上方元素，读一次 `scrollHeight` ⇒ 与 `prev` 的差值就是真实补偿量 ✓；
+ *   3. **再**卸载下方元素（它不参与补偿 ✓）；
+ *   4. `scrollTop = max(0, prevScrollTop - 补偿量)` ✓。
+ */
+export function trimScrollCompensation(prevScrollHeight: number, scrollHeightAfterAboveRemoval: number): number {
+	const delta = prevScrollHeight - scrollHeightAfterAboveRemoval;
+	return Number.isFinite(delta) && delta > 0 ? delta : 0;
+}
+
 export function withProtectedRange(
 	keepFrom: number,
 	keepTo: number,

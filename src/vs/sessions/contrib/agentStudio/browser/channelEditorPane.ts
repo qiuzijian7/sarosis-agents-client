@@ -16,12 +16,15 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IRequestService } from '../../../../platform/request/common/request.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 import * as DOM from '../../../../base/browser/dom.js';
 import { CHANNEL_DEFINITIONS, IChannelDefinition, IChannelConfigField, ChannelKey } from '../common/constants.js';
-import { beginFeishuRegistration, pollFeishuRegistration, FEISHU_BASE, LARK_BASE } from './feishuRegistration.js';
+import { beginFeishuRegistration, pollFeishuRegistration, probeFeishuCredentials, FEISHU_BASE, LARK_BASE } from './feishuRegistration.js';
 import { drawQrToCanvas } from './feishuQrCode.js';
+import { createMainProcessRequestService } from './mainProcessRequestService.js';
+import { createChannelIcon } from './channelIcons.js';
 
 const { $ } = DOM;
 
@@ -34,16 +37,24 @@ export class ChannelEditorPane extends EditorPane {
 	/** 递增令牌：任何重新渲染或新一次绑定都会使先前的轮询循环失效。 */
 	private _bindToken = 0;
 
+	/** HTTP 出口：主进程 `httpRequest`（无 CORS），宿主不支持时回退 renderer fetch。 */
+	private readonly requestService: IRequestService;
+
 	constructor(
 		group: IEditorGroup,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IRequestService private readonly requestService: IRequestService,
+		@IRequestService rendererRequestService: IRequestService,
+		@IMainProcessService mainProcessService: IMainProcessService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 	) {
 		super(ChannelEditorPane.ID, group, telemetryService, themeService, storageService);
+		// ★ 2026-09-22（CORS）：桌面端 DI 注入的 IRequestService 最终是 renderer 的 fetch
+		// （requestImpl.ts），origin `vscode-file://vscode-app` 会被飞书 OpenAPI 的 CORS 策略拦掉
+		// ⇒「测试连接」「扫码绑定」都会报 net::ERR_FAILED。优先改用主进程出口。
+		this.requestService = createMainProcessRequestService(mainProcessService) ?? rendererRequestService;
 	}
 
 	protected createEditor(parent: HTMLElement): void {
@@ -91,7 +102,9 @@ export class ChannelEditorPane extends EditorPane {
 		// ─── Header ──────────────────────────────────────
 		const header = $('div.channel-editor-header');
 		const iconEl = $('span.channel-editor-header-icon');
-		iconEl.textContent = def.icon;
+		// ★ 2026-09-22：与设置页渠道条目保持一致 —— 品牌 SVG 优先，未收录品牌回退 emoji
+		//   尺寸 32 是配合 56×56 的图标底座（24 会显得空）
+		iconEl.appendChild(createChannelIcon(def.key, def.icon, 32));
 		header.appendChild(iconEl);
 
 		const headerInfo = $('div.channel-editor-header-info');
@@ -312,24 +325,20 @@ export class ChannelEditorPane extends EditorPane {
 		// Actions
 		const actions = $('div.channel-editor-actions');
 
-		const saveBtn = document.createElement('button');
-		saveBtn.className = 'channel-editor-btn channel-editor-btn-primary';
-		saveBtn.textContent = '💾 保存配置';
-		saveBtn.onclick = () => {
-			this._showStatus(def.key, '✅ 配置已保存', 'success');
-		};
-		actions.appendChild(saveBtn);
+		// ★ 2026-09-22（D-11）：移除空壳「保存配置」—— 它只回显成功、什么都不做，
+		//   字段改动本来就即时持久化（onchange → updateValue），该按钮是纯误导。
+		//   用一行说明文案替代，把「即时生效」的事实告诉用户。
 
-		const testBtn = document.createElement('button');
-		testBtn.className = 'channel-editor-btn channel-editor-btn-secondary';
-		testBtn.textContent = '🧪 测试连接';
-		testBtn.onclick = () => {
-			this._showStatus(def.key, '⏳ 正在测试连接...', 'info');
-			setTimeout(() => {
-				this._showStatus(def.key, '✅ 连接成功', 'success');
-			}, 1500);
-		};
-		actions.appendChild(testBtn);
+		if (def.key === 'feishu') {
+			// ★ 2026-09-22（D-03）：测试连接改为真实探测（调 tenant_access_token 换权接口），
+			//   不再 setTimeout 假成功；凭证错误会把飞书的 code/msg 原样回显。
+			const testBtn = document.createElement('button');
+			testBtn.className = 'channel-editor-btn channel-editor-btn-secondary';
+			testBtn.id = 'feishu-test-connection';
+			testBtn.textContent = '🧪 测试连接';
+			testBtn.onclick = () => { void this._probeFeishu(def); };
+			actions.appendChild(testBtn);
+		}
 
 		const resetBtn = document.createElement('button');
 		resetBtn.className = 'channel-editor-btn channel-editor-btn-danger';
@@ -344,6 +353,24 @@ export class ChannelEditorPane extends EditorPane {
 		actions.appendChild(resetBtn);
 
 		container.appendChild(actions);
+
+		// 说明文案：配置即时持久化，无需「保存」
+		const note = $('div.channel-editor-actions-note');
+		note.textContent = '字段改动即时生效（含热重载装配），无需保存';
+		container.appendChild(note);
+	}
+
+	/** 飞书「测试连接」：真实探测凭证（D-03）。 */
+	private async _probeFeishu(def: IChannelDefinition): Promise<void> {
+		const appId = String(this.configurationService.getValue('sessions.channel.feishu.appId') ?? '').trim();
+		const appSecret = String(this.configurationService.getValue('sessions.channel.feishu.appSecret') ?? '').trim();
+		if (!appId || !appSecret) {
+			this._showStatus(def.key, '❌ 请先填写 App ID 与 App Secret，或使用上方「扫码绑定」', 'error', 10000);
+			return;
+		}
+		this._showStatus(def.key, '⏳ 正在测试连接…', 'info');
+		const res = await probeFeishuCredentials(this.requestService, appId, appSecret);
+		this._showStatus(def.key, `${res.ok ? '✅' : '❌'} ${res.message}`, res.ok ? 'success' : 'error', 12000);
 	}
 
 	private _renderFieldRow(field: IChannelConfigField, _channelKey: ChannelKey): HTMLElement {
@@ -484,7 +511,11 @@ export class ChannelEditorPane extends EditorPane {
 		return toggle;
 	}
 
-	private _showStatus(channelKey: ChannelKey, message: string, type: 'success' | 'error' | 'info'): void {
+	/**
+	 * 状态栏回显。
+	 * @param timeoutMs 成功/失败提示的保留时长（默认 3s；凭证类提示给 10-12s 便于用户读完错误码）
+	 */
+	private _showStatus(channelKey: ChannelKey, message: string, type: 'success' | 'error' | 'info', timeoutMs = 3000): void {
 		const statusEl = document.getElementById(`channel-status-${channelKey}`);
 		if (statusEl) {
 			statusEl.textContent = message;
@@ -493,7 +524,7 @@ export class ChannelEditorPane extends EditorPane {
 				setTimeout(() => {
 					statusEl.textContent = '';
 					statusEl.className = 'channel-editor-statusbar';
-				}, 3000);
+				}, timeoutMs);
 			}
 		}
 	}

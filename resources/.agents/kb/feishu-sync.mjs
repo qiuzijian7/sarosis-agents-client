@@ -70,6 +70,8 @@ function parseArgs(argv) {
 		else if (a === '--no-auto-create-spaces') { out.autoCreateSpaces = false; }
 		else if (a === '--prune') { out.prune = true; }
 		else if (a === '--refresh-remote') { out.refreshRemote = true; }
+		else if (a === '--space-map') { out.spaceMap = next(); }
+		else if (a === '--no-mindmap') { out.noMindmap = true; }
 		else if (a === '-h' || a === '--help') { out.help = true; }
 	}
 	if (out.src.length === 0) { out.src = ['库']; }
@@ -289,15 +291,175 @@ export function upsertFeishuBlock(raw, block) {
 
 // ─── 索引（v2：spaces 映射 + files 明细；读取兼容 v1 扁平结构） ───────────────
 
+/**
+ * 把层级节点树写入指定 mindnote（**逐层 BFS**，已实测可行的唯一路径）。
+ *
+ * ## 为什么必须逐层
+ *
+ * 2026-09-22 实测的节点接口约束：
+ *  · **不接受客户端自定义 `node_id`**（传了就报 `3411001 system internal error`）——
+ *    节点 id 只能由服务端生成，并在响应 `data.ids[]` 里按请求顺序返回；
+ *  · 子节点要挂到父节点上，`parent_id` 必须是**已存在**的服务端 id。
+ * ⇒ 只能「先写父层 → 拿到 id → 再写下一层」。
+ *
+ * ⚠ 同层**一次批量提交**（而非每节点一次调用）：50 篇笔记的树若逐节点写要 50 次 API 调用，
+ *   每次新增笔记都会重来一遍。这里依赖 `data.ids[]` 与请求顺序一致（批量接口的常规约定）；
+ *   若数量不符则**中止**（宁可失败重来，也不写出层级错乱的导图）。
+ *
+ * @returns 写入的节点总数；**-1** 表示失败（调用方跳过本次）
+ */
+function writeMindmapTree(mindnoteId, nodes, tmpDir) {
+	const children = new Map();      // 逻辑 id → 子节点[]
+	for (const n of nodes) {
+		const key = n.parent_id || '';
+		if (!children.has(key)) { children.set(key, []); }
+		children.get(key).push(n);
+	}
+
+	const serverId = new Map();      // 逻辑 id → 服务端 node_id
+	let frontier = children.get('') ?? [];   // 根层（parent_id 为空）
+	let total = 0;
+	let round = 0;
+	const dataFile = 'mind-nodes.json';
+
+	while (frontier.length) {
+		const payload = {
+			// 每次调用唯一（幂等键；同一棵树不会重试同一 token，故用随机值即可）
+			client_token: crypto.randomUUID(),
+			nodes: frontier.map(n => ({
+				// 根层省略 parent_id（顶层节点）
+				...(n.parent_id ? { parent_id: serverId.get(n.parent_id) } : {}),
+				texts: [{ element_type: 'text', text: { content: n.text } }],
+			})),
+		};
+		fs.writeFileSync(path.join(tmpDir, dataFile), JSON.stringify(payload), 'utf8');
+		const r = lark(['mindnotes', 'nodes', 'create', '--mindnote-id', mindnoteId,
+			'--data', `@./${dataFile}`, '--as', 'user'], tmpDir);
+		const p = extractJson(r.stdout);
+		if (!p || p.ok === false) {
+			console.warn(`        ↳ 节点写入失败（第 ${round + 1} 层）：${p?.error?.message ?? (r.stderr || r.stdout).slice(0, 200)}`);
+			return -1;
+		}
+		const ids = Array.isArray(p.data?.ids) ? p.data.ids : [];
+		if (ids.length !== frontier.length) {
+			console.warn(`        ↳ 返回 id 数（${ids.length}）与请求（${frontier.length}）不符 ⇒ 中止（避免层级错乱）`);
+			return -1;
+		}
+		const next = [];
+		frontier.forEach((n, i) => {
+			serverId.set(n.node_id, ids[i]);
+			next.push(...(children.get(n.node_id) ?? []));
+		});
+		total += frontier.length;
+		frontier = next;
+		round++;
+	}
+	return total;
+}
+
+/**
+ * 维护各知识库根目录下的「🗺 目录思维导图」（**mindnote**，飞书原生思维导图文档）。
+ *
+ * 需求来源：同步文件夹（知识库）根目录要有一份「飞书支持的思维导图」，且新增笔记后自动更新。
+ *
+ * 实现要点：
+ *  · 每个 **wiki 知识库** 一篇；`my_library` 不是 wiki space（CLI 无 mindnote 创建途径）⇒ 跳过并提示；
+ *  · 首次：`wiki +node-create --space-id <id> --title <MINDMAP_TITLE> --obj-type mindnote`
+ *    ⇒ 拿 `obj_token`（= mindnote_id，写节点用）与 `node_token`（记账用）；
+ *  · 更新：`mindnotes nodes create --mindnote-id <id> --data @nodes.json`；
+ *  · 结构指纹（`mindmapHash`）未变 ⇒ **完全跳过**，不产生任何 API 调用（幂等、不打扰用户）。
+ *
+ * ⚠ 节点 `node_id` 由结构确定性生成（见 `buildMindmapNodes`）⇒ 重复写入是「更新同一批节点」，
+ *   而不是每次追加新节点（否则导图会无限膨胀）。
+ */
+function updateMindmaps(args, idx, plan, spaces, logLines) {
+	idx.mindmaps = idx.mindmaps ?? {};
+	const groups = new Map();
+	for (const p of plan) {
+		const spaceId = p.targetSpace ?? '';
+		if (!spaceId || spaceId === 'my_library') { continue; }   // my_library 不是 wiki space
+		// 库内相对路径：`p.rel` 是**相对 vault** 的（如 `库/知识库/01-类别/笔记.md`），
+		// 需依次剥掉 ①同步源根前缀（`p.src`）②类别目录前缀 —— 否则导图会多出
+		// 「库 / 知识库根 / 01-类别」这几层无意义嵌套（真机实测踩到）。
+		const relFromSrc = p.rel.startsWith(p.src + '/') ? p.rel.slice(p.src.length + 1) : p.rel;
+		const inner = (p.category && relFromSrc.startsWith(p.category + '/'))
+			? relFromSrc.slice(p.category.length + 1)
+			: relFromSrc;
+		if (!groups.has(spaceId)) { groups.set(spaceId, []); }
+		groups.get(spaceId).push({ rel: inner, title: p.title });
+	}
+	if (!groups.size) { return; }
+
+	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kbmind-'));
+	try {
+		for (const [spaceId, entries] of groups) {
+			const key = Object.keys(spaces).find(k => spaces[k]?.spaceId === spaceId);
+			const rootText = spaces[key]?.name || key || '知识库';
+			const nodes = buildMindmapNodes(rootText, entries);
+			const hash = mindmapHash(nodes);
+			const rec = idx.mindmaps[spaceId];
+			if (rec?.hash === hash) { continue; }     // 结构未变 ⇒ 跳过
+
+			// ⚠ 节点接口**只增不改**（2026-09-22 实测）：同 `client_token` 重复请求被**忽略**
+			//    （既不重复创建、也不更新内容），换 token 则**追加** ⇒ 无法增量更新；
+			//    且**不接受自定义 `node_id`**（传了报 3411001）⇒ 只好「删旧文档 + 重建」，
+			//    否则每次新增笔记都会让导图累积一批重复节点。
+			if (rec?.nodeToken) {
+				// ⚠ `wiki +node-delete` **必须带 `--obj-type`**（2026-09-22 实测：缺了会被拒绝，
+				//   报 `--obj-type is required (one of: wiki, doc, docx, sheet, bitable, mindnote, slides, file)`）
+				const del = lark(['wiki', '+node-delete', '--node-token', rec.nodeToken,
+					'--obj-type', 'mindnote', '--yes', '--as', 'user'], tmpDir);
+				const dp = extractJson(del.stdout);
+				if (!dp || dp.ok === false) {
+					console.warn(`[mindmap] ⚠ 旧导图节点删除失败 ⇒ 跳过本次更新（避免累积重复）：${dp?.error?.message ?? (del.stderr || del.stdout).slice(0, 160)}`);
+					continue;
+				}
+			}
+
+			const nc = lark(['wiki', '+node-create', '--space-id', spaceId, '--title', MINDMAP_TITLE,
+				'--obj-type', 'mindnote', '--as', 'user'], tmpDir);
+			const np = extractJson(nc.stdout);
+			if (!np || np.ok === false) {
+				console.warn(`[mindmap] ⚠ 无法在知识库「${rootText}」创建思维导图节点：${np?.error?.message ?? (nc.stderr || nc.stdout).slice(0, 160)}`);
+				continue;
+			}
+			const ni = pickNodeInfo(np);
+			const mindnoteId = ni.objToken;
+			const nodeTokenForRecord = ni.nodeToken;
+			if (!mindnoteId) { console.warn(`[mindmap] ⚠ 响应无 obj_token：${nc.stdout.slice(0, 160)}`); continue; }
+
+			// 逐层写入（节点只能挂到已存在的服务端 id 上，见 writeMindmapTree 说明）
+			const written = writeMindmapTree(mindnoteId, nodes, tmpDir);
+			if (written < 0) {
+				console.warn(`[mindmap] ⚠ 节点写入失败（${rootText}）⇒ 本次跳过（下次同步会重建）`);
+				continue;
+			}
+			idx.mindmaps[spaceId] = {
+				objToken: mindnoteId,
+				nodeToken: nodeTokenForRecord,
+				hash,
+				title: MINDMAP_TITLE,
+				updatedAt: new Date().toISOString(),
+			};
+			console.log(`[mindmap] ✓ 已重建「${rootText}」的目录思维导图（${written} 个节点）`);
+			logLines.push(`${new Date().toISOString()} MINDMAP ${spaceId} ${written} ${hash}`);
+		}
+	} finally {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	}
+}
+
 /** 读取索引并归一化为 v2 结构。v1（扁平 `{路径: {token,hash}}`）自动迁移进 `files`。 */
 export function loadIndex(vaultRoot) {
-	const out = { version: INDEX_VERSION, spaces: {}, files: {} };
+	const out = { version: INDEX_VERSION, spaces: {}, files: {}, mindmaps: {} };
 	let raw = null;
 	try { raw = JSON.parse(fs.readFileSync(path.join(vaultRoot, INDEX_FILE), 'utf8')); } catch { return out; }
 	if (!raw || typeof raw !== 'object') { return out; }
 	if (raw.files && typeof raw.files === 'object') {
 		out.spaces = (raw.spaces && typeof raw.spaces === 'object') ? raw.spaces : {};
 		out.files = raw.files;
+		// mindmaps：每个知识库一篇「🗺 目录思维导图」的记账 { nodeToken, objToken, hash, updatedAt }
+		out.mindmaps = (raw.mindmaps && typeof raw.mindmaps === 'object') ? raw.mindmaps : {};
 		return out;
 	}
 	for (const [rel, v] of Object.entries(raw)) { // v1 扁平结构
@@ -311,6 +473,7 @@ export function saveIndex(vaultRoot, idx) {
 		version: INDEX_VERSION,
 		spaces: idx.spaces ?? {},
 		files: idx.files ?? {},
+		mindmaps: idx.mindmaps ?? {},
 	}, null, 1), 'utf8');
 }
 
@@ -327,6 +490,67 @@ export function categoryOf(relPath, srcDir, depth = 1) {
 	const dirParts = rel.slice(prefix.length).split('/').slice(0, -1).filter(Boolean);
 	if (dirParts.length < depth) { return null; }
 	return dirParts.slice(0, depth).join('/');
+}
+
+/**
+ * 思维导图文档的固定标题（放在知识库根节点下）。
+ *
+ * ⚠ **不要加 emoji / 非 GBK 字符**（2026-09-22 实测踩坑）：`lark()` 在 Windows 上用
+ * `shell: true`（因为 `lark-cli` 是批处理，必须经 cmd.exe 调用），参数会被拼进命令行并由
+ * cmd 按**本地代码页**解释 ⇒ emoji（如 🗺）在 GBK 下无法表示 ⇒ 建节点命令静默失败
+ * （表现为 `wiki +node-create` 返回解析不出错误细节、导图建不出来）。
+ * 纯中文标题实测正常（同步文档标题一直如此），故此处只用中文。
+ */
+export const MINDMAP_TITLE = '目录思维导图';
+
+/**
+ * 生成某知识库的**思维导图节点结构**（纯函数，便于单测）。
+ *
+ * 结构：根 = 库名 → 目录（逐级嵌套）→ 笔记标题（叶子）。
+ * `node_id` 由「层级 + 名称」**确定性哈希**得到 ⇒ 同一结构两次生成得到相同 id
+ * （写入时可幂等更新，而不是不断追加新节点）。
+ *
+ * @param {string} rootText 根节点文字（库名）
+ * @param {Array<{rel: string, title: string}>} entries 该库下的笔记（rel = 库内相对路径）
+ * @returns {Array<{node_id: string, parent_id: string, text: string}>} 扁平节点列表
+ */
+export function buildMindmapNodes(rootText, entries) {
+	const idFor = (kind, key) => `${kind}_${contentHash(key).slice(0, 10)}`;
+	const nodes = [];
+	const seen = new Set();
+	const rootId = idFor('r', rootText || 'root');
+	nodes.push({ node_id: rootId, parent_id: '', text: rootText || '知识库' });
+	seen.add(rootId);
+
+	// 目录节点按需创建（逐级向上补齐父目录）
+	const dirIds = new Map([['', rootId]]);
+	const ensureDir = (dir) => {
+		if (dirIds.has(dir)) { return dirIds.get(dir); }
+		const parts = dir.split('/');
+		const parent = ensureDir(parts.slice(0, -1).join('/'));
+		const id = idFor('d', dir);
+		if (!seen.has(id)) {
+			nodes.push({ node_id: id, parent_id: parent, text: parts[parts.length - 1] });
+			seen.add(id);
+		}
+		dirIds.set(dir, id);
+		return id;
+	};
+
+	for (const e of [...(entries ?? [])].sort((a, b) => a.rel.localeCompare(b.rel, 'zh'))) {
+		const dir = e.rel.includes('/') ? e.rel.slice(0, e.rel.lastIndexOf('/')) : '';
+		const parent = ensureDir(dir);
+		const id = idFor('f', e.rel);
+		if (seen.has(id)) { continue; }
+		nodes.push({ node_id: id, parent_id: parent, text: e.title || e.rel });
+		seen.add(id);
+	}
+	return nodes;
+}
+
+/** 思维导图**结构指纹**（纯函数）：内容未变 ⇒ 跳过远端更新，避免每次同步都写飞书。 */
+export function mindmapHash(nodes) {
+	return contentHash(JSON.stringify((nodes ?? []).map(n => `${n.parent_id}>${n.text}`).join('\n')));
 }
 
 /**
@@ -373,6 +597,70 @@ export function migrateIndexEntries(idx, plan) {
  *
  * @returns 重命名清单 `[{ from, to, spaceId }]`
  */
+// ─── 用户自定义「本地目录 ↔ 飞书知识库」映射（2026-09-22）────────────────────
+// 由来：原先只有「类别层级」自动推导（第 N 级目录名 = 知识库名，未映射则自动建库）。
+// 现在支持用户显式指定：配置文件放在 vault 内（`<vault>/.feishu-space-map.json`），
+// 由设置面板编辑；**显式映射优先于**类别层级推导。
+// 为什么用文件而不是命令行参数：JSON 经 argv 传递在 Windows（shell:true）下会被引号破坏。
+
+/** 映射配置文件（相对 vault 根）。 */
+export const SPACE_MAP_FILE = '.feishu-space-map.json';
+
+/**
+ * 读取用户映射表（宽容解析：文件不存在/损坏 ⇒ 返回空数组，不影响同步）。
+ * 结构：`{ version: 1, mappings: [{ dir: '库/…/01-基础概念', spaceId: '769…', spaceName: '01-基础概念' }] }`
+ * 兼容极简写法：`{ mappings: { '库/…/01-基础概念': '769…' } }`（目录 → spaceId）
+ */
+export function loadSpaceMap(vaultRoot, fileName = SPACE_MAP_FILE) {
+	let raw = null;
+	try { raw = JSON.parse(fs.readFileSync(path.join(vaultRoot, fileName), 'utf8')); } catch { return []; }
+	const src = raw?.mappings;
+	const out = [];
+	if (Array.isArray(src)) {
+		for (const m of src) {
+			if (m && typeof m.dir === 'string' && typeof m.spaceId === 'string' && m.dir.trim() && m.spaceId.trim()) {
+				out.push({ dir: m.dir, spaceId: m.spaceId, spaceName: typeof m.spaceName === 'string' ? m.spaceName : '' });
+			}
+		}
+	} else if (src && typeof src === 'object') {
+		for (const [dir, spaceId] of Object.entries(src)) {
+			if (typeof dir === 'string' && typeof spaceId === 'string' && dir.trim() && spaceId.trim()) {
+				out.push({ dir, spaceId, spaceName: '' });
+			}
+		}
+	}
+	return out;
+}
+
+/**
+ * 应用「用户自定义映射」（纯函数，便于单测）。
+ *
+ * 语义：把映射目录（vault 内相对路径）**及其子目录**下的笔记，绑定到指定的飞书知识库；
+ * 取**最长前缀**匹配（更具体的目录优先）。命中后：
+ *  - `p.category` 设为该目录（类别 = 映射目录本身，而非层级推导的目录名）⇒ 后续搬迁判定自然以它为准；
+ *  - `spaces[目录]` 写入 `{ spaceId, name }`（已存在则以用户配置为准覆盖）。
+ *
+ * ⚠ 必须在 `migrateSpaceMappings`（类别改名复用）与「未映射类别自动建库」**之前**调用，
+ *    否则这些目录会先被当成「未映射类别」而新建知识库。
+ *
+ * @returns 应用清单 `[{ rel, dir, spaceId }]`（供日志/UI 展示）
+ */
+export function applyExplicitMappings(plan, spaces, mappings) {
+	const list = (mappings ?? [])
+		.map(m => ({ ...m, dir: String(m?.dir ?? '').replace(/\\/g, '/').replace(/\/+$/, '') }))
+		.filter(m => m.dir && m.spaceId)
+		.sort((a, b) => b.dir.length - a.dir.length); // 长目录优先 ⇒ 天然实现「最长前缀」
+	const applied = [];
+	for (const p of plan) {
+		const hit = list.find(m => p.rel === m.dir || p.rel.startsWith(m.dir + '/'));
+		if (!hit) { continue; }
+		p.category = hit.dir;
+		spaces[hit.dir] = { spaceId: hit.spaceId, name: hit.spaceName || hit.dir };
+		applied.push({ rel: p.rel, dir: hit.dir, spaceId: hit.spaceId });
+	}
+	return applied;
+}
+
 export function migrateSpaceMappings(spaces, plan, opts = {}) {
 	// ★ 关键判据：**旧类别目录是否仍存在于本地**。
 	//   「目录改名」与「文档换目录」在数据上都会表现为「旧类别无文档 + 新类别有文档 + prevSpace 指向旧类别空间」，
@@ -636,10 +924,28 @@ function main() {
 	const spaces = idx.spaces;
 	const createdSpaces = [];
 	const unresolved = new Set();
+	// ── 用户自定义映射优先（vault 内 `.feishu-space-map.json`，由设置面板维护）──
+	// 用户显式指定的「本地目录 → 飞书知识库」会**覆盖**类别层级推导结果。
+	// ⚠ 必须**最早**执行：后面的 `categories`（未映射类别）与「自动建库」都基于它改写后的 `p.category`，
+	//    否则映射目录会先被当成一个「新类别」而多建一个无用知识库（真机验证踩到）。
+	const spaceMap = loadSpaceMap(args.vault, args.spaceMap);
+	const explicit = applyExplicitMappings(plan, spaces, spaceMap);
+	if (explicit.length) {
+		const dirs = [...new Set(explicit.map(e => e.dir))];
+		console.log(`[map] 应用用户自定义映射 ${dirs.length} 条（命中 ${explicit.length} 篇）：`);
+		for (const d of dirs) {
+			const sp = spaces[d];
+			console.log(`  · ${d} → ${sp?.spaceId}${sp?.name ? `（${sp.name}）` : ''}`);
+		}
+	} else if (spaceMap.length) {
+		console.log(`[map] 已配置 ${spaceMap.length} 条映射，但本次没有文档命中（检查目录是否在 --src 范围内）`);
+	}
+
 	const categories = [...new Set(plan.map(p => p.category).filter(Boolean))].sort();
 
 	// 类别（目录）**改名** ⇒ 复用原知识库映射，而不是新建一个。
 	// ⚠ 必须在「未映射类别自动建库」之前执行，否则会先建出一个多余的知识库。
+
 	// 旧类别目录是否仍存在于本地（用于区分「目录改名」与「文档换目录」）
 	const categoryExists = (cat) => args.src.some(dir => fs.existsSync(path.join(args.vault, dir, ...String(cat).split('/'))));
 	const renamedSpaces = migrateSpaceMappings(spaces, plan, { categoryExists });
@@ -931,7 +1237,9 @@ function main() {
 				if (args.dryRun) { console.log(`  · ${rel} → 将移除远端节点`); continue; }
 				const nodeToken = rec?.node || (rec?.token ? resolveNodeToken(rec.token) : '');
 				if (!nodeToken) { console.warn(`  · ⚠ ${rel}: 无 node_token，跳过（远端保留）`); continue; }
-				const r = lark(['wiki', '+node-delete', '--node-token', nodeToken, '--yes']);
+				// ⚠ 必须带 `--obj-type`（缺了 CLI 直接拒绝，见 mindmap 删除处的实测说明）；
+				//   被同步的笔记统一是 docx。
+				const r = lark(['wiki', '+node-delete', '--node-token', nodeToken, '--obj-type', 'docx', '--yes']);
 				const pl = extractJson(r.stdout);
 				if (pl && pl.ok !== false) {
 					console.log(`  · ✓ 已移除远端节点：${rel}`);
@@ -946,11 +1254,20 @@ function main() {
 		}
 	}
 
+	if (!args.dryRun && !args.noMindmap) {
+		// 知识库根目录的「🗺 目录思维导图」（mindnote）：新增/改名/移动后自动重建（结构未变则零调用）
+		try {
+			updateMindmaps(args, idx, plan, spaces, logLines);
+		} catch (e) {
+			console.warn(`[mindmap] ⚠ 思维导图更新失败（不影响同步结果）：${e.message}`);
+		}
+	}
+
 	if (!args.dryRun) {
 		if (logLines.length) {
 			fs.appendFileSync(path.join(args.vault, LOG_FILE), logLines.join('\n') + '\n', 'utf8');
 		}
-		// 索引写回（v2：类别→知识库映射 + 每篇 token/hash/space/node）
+		// 索引写回（v2：类别→知识库映射 + 每篇 token/hash/space/node + 每库思维导图）
 		saveIndex(args.vault, idx);
 	}
 	console.log(`\n完成 ${done} 篇（skip ${counts.skip} 篇无需处理）。`);

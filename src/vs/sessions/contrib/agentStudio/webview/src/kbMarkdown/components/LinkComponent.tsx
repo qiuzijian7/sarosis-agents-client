@@ -24,7 +24,15 @@ export function LinkComponent(props: LinkComponentProps): React.ReactElement {
 		async (e: React.MouseEvent<HTMLAnchorElement>) => {
 			if (isWikilink) {
 				e.preventDefault();
-				if (wikilinkBroken || !wikilinkPath) return;
+				if (wikilinkBroken || !wikilinkPath) {
+					// ★ 2026-09-22：此前这里是**裸 return** ⇒ 点击完全静默（无跳转、无提示、无日志），
+					// 用户只能感知「点了没反应」，无从判断原因（索引未就绪？文件被删？）。
+					// 断链是**数据问题**而非交互问题，至少要留下可见线索。
+					// eslint-disable-next-line no-console
+					console.warn(`[wikilink] 未能解析「${String(wikilinkTarget ?? '')}」——`
+						+ '可能知识库索引尚未就绪，或目标笔记已删除/改名。');
+					return;
+				}
 				onOpenWikilink?.(wikilinkPath, wikilinkHeading);
 				return;
 			}
@@ -49,7 +57,16 @@ export function LinkComponent(props: LinkComponentProps): React.ReactElement {
 	if (isWikilink) {
 		return (
 			// Wikilinks resolve to in-app file URIs, not URLs — navigation routes through onClick by design.
-			<a href="#" onClick={handleClick} aria-disabled={wikilinkBroken ? true : undefined} {...rest}>
+			<a
+				href="#"
+				onClick={handleClick}
+				aria-disabled={wikilinkBroken ? true : undefined}
+				{...rest}
+				// ★ 2026-09-22：断链补一条 hover 提示（此前无任何 UI 反馈）
+				title={wikilinkBroken
+					? `未找到笔记「${String(wikilinkTarget ?? '')}」：可能索引尚未就绪，或目标已删除/改名`
+					: (rest as { title?: string }).title}
+			>
 				{children}
 			</a>
 		);

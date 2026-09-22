@@ -17,6 +17,7 @@ import {
 	describeDensityOverBudget,
 	DOM_TRIM_LIMITS,
 	withProtectedRange,
+	trimScrollCompensation,
 	type DomTrimLimits,
 } from './domBudgetDecision.js';
 
@@ -151,5 +152,42 @@ suite('DOM 裁剪：保护"不得卸载"的尾部（气泡消失回归）', () =
 			'裁剪必须把视口窗口与"保护尾部"合并（否则正在执行的气泡又会被卸载 ✗）');
 		assert.ok(src.includes('_protectedTailIndexes(els)'),
 			'保护下标必须来自 `_protectedTailIndexes`（尾部那条 + 最后一条 assistant ✓）');
+	});
+});
+
+// ─── DOM 裁剪的滚动补偿（2026-09-22「打字时上方滚动条莫名向上滚一下」修复 ✓）────────────
+// ⚠ 这一支与 composer 的测量扰动是**同源症状**（都表现为"视图向上跳"）✓，但根因不同 ✓：
+//   这里是**裁剪补偿把"下方"被删的高度也算进去了** ⇒ 多减 ⇒ 额外上跳 ✗✓。
+suite('DOM 裁剪的滚动补偿（向上跳修复 ✓）', () => {
+
+	test('★★★ 只算「上方」被卸载的高度 ✓（下方被删不得进入补偿 ✗✓）', () => {
+		// 上方删了 500px、下方删了 300px（合并式会算 800 ⇒ 多减 300 ⇒ 向上跳 ✗）
+		assert.strictEqual(trimScrollCompensation(2000, 1500), 500,
+			'补偿量 = 仅上方高度差 ✓（旧的"上下合并"式会把 300px 的下方高度也减掉 ✗✓）');
+	});
+
+	test('★★ 只删下方（上方高度未变）⇒ 补偿必须为 0 ✓（视口锚点没动 ✓）', () => {
+		assert.strictEqual(trimScrollCompensation(2000, 2000), 0,
+			'下方内容不改变视口锚点 ⇒ 补偿必须为 0 ✗✓（否则每裁一次就向上跳一截 ✓）');
+	});
+
+	test('★ 脏输入安全：负值 / NaN / Infinity ⇒ 0（绝不把 NaN 写进 scrollTop ✗✓）', () => {
+		assert.strictEqual(trimScrollCompensation(1000, 1200), 0, '内容变高 ⇒ 不需要补偿 ✓');
+		assert.strictEqual(trimScrollCompensation(NaN, 100), 0);
+		assert.strictEqual(trimScrollCompensation(100, NaN), 0);
+		assert.strictEqual(trimScrollCompensation(Infinity, 0), 0);
+	});
+
+	test('★★★ 接线：必须是「先删上方 → 量高度 → 再删下方」✗✓（顺序反了就退回旧 bug ✓）', () => {
+		const s = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/browser/agentChat/agentChatPanel.base.ts'), 'utf8');
+		const at = s.indexOf('_trimDistantMessages');
+		assert.ok(at > 0, '找不到 _trimDistantMessages ✗（被改名了？本测试需同步 ✓）');
+		const iAbove = s.indexOf('for (const el of removeAbove) { el.remove(); }', at);
+		const iMeasure = s.indexOf('trimScrollCompensation(prevScrollHeight, container.scrollHeight)', at);
+		const iBelow = s.indexOf('for (const el of removeBelow) { el.remove(); }', at);
+		assert.ok(iAbove > 0 && iMeasure > iAbove && iBelow > iMeasure,
+			`顺序必须是 删上方(${iAbove}) → 量高度(${iMeasure}) → 删下方(${iBelow}) ✓ —— 中间那次读 scrollHeight 才只含"上方" ✓`);
+		assert.ok(!/prevScrollHeight - container\.scrollHeight/.test(s),
+			'不得再出现"上下合并"的旧补偿式 ✗✓（它就是"向上跳"的根因 ✓）');
 	});
 });

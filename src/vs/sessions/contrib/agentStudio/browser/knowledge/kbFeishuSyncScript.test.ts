@@ -26,6 +26,12 @@ import * as syncModule from '../../../../../../../resources/.agents/kb/feishu-sy
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sync: any = syncModule;
+
+// 同一份「映射文件」契约的 TS 侧实现（设置面板用它读写 vault 内配置）——与脚本端语义必须一致
+import { parseSpaceMap, serializeSpaceMap, parseSpaceList, sanitizeSpaceName, parseCreatedSpaceId } from './feishuSyncCore.js';
+// URL 导入纯函数（slug / 图片路径 / HTML 兜底）：与飞书同步同属「知识库 ↔ 外部内容」链路，统一在此回归
+import { slugifyTitle, planImagePath, htmlToPlainText, parseYtDlpPrint, parseSubtitlesToText } from '../views/knowledgeBase/kbUrlScraper.js';
+import { detectYtDlp, fetchVideoMeta } from './kbVideoFetch.js';
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -248,9 +254,9 @@ suite('feishu-sync 脚本 · 改名 / 移动 / 类别改名', () => {
 	suite('索引读写与 v1 迁移', () => {
 		test('缺失或损坏的索引 ⇒ 空 v2 结构（不抛错）', () => {
 			const vault = tmpVault();
-			assert.deepStrictEqual(sync.loadIndex(vault), { version: 2, spaces: {}, files: {} });
+			assert.deepStrictEqual(sync.loadIndex(vault), { version: 2, spaces: {}, files: {}, mindmaps: {} });
 			fs.writeFileSync(path.join(vault, '.feishu-sync.json'), '{ not json', 'utf8');
-			assert.deepStrictEqual(sync.loadIndex(vault), { version: 2, spaces: {}, files: {} });
+			assert.deepStrictEqual(sync.loadIndex(vault), { version: 2, spaces: {}, files: {}, mindmaps: {} });
 		});
 		test('v1 扁平结构自动迁移进 files', () => {
 			const vault = tmpVault();
@@ -493,6 +499,67 @@ suite('feishu-sync 脚本 · 改名 / 移动 / 类别改名', () => {
 		});
 	});
 
+	suite('★ 用户自定义「目录 ↔ 知识库」映射', () => {
+		test('最长前缀匹配：更具体的目录优先', () => {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const plan: any[] = [{ rel: '库/AI/01-x/a.md' }, { rel: '库/AI/02-y/b.md' }];
+			const spaces: Record<string, { spaceId: string; name?: string }> = {};
+			const applied = sync.applyExplicitMappings(plan, spaces, [
+				{ dir: '库/AI', spaceId: 'SP_ROOT', spaceName: '根库' },
+				{ dir: '库/AI/01-x', spaceId: 'SP_X', spaceName: 'X 库' },
+			]);
+			assert.strictEqual(plan[0].category, '库/AI/01-x');
+			assert.strictEqual(plan[1].category, '库/AI');
+			assert.strictEqual(spaces['库/AI/01-x'].spaceId, 'SP_X');
+			assert.strictEqual(spaces['库/AI'].spaceId, 'SP_ROOT');
+			assert.strictEqual(applied.length, 2);
+		});
+
+		test('未命中的文档保持原类别（不影响类别层级推导结果）', () => {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const plan: any[] = [{ rel: '库/别的/a.md', category: '别的' }];
+			const spaces: Record<string, { spaceId: string }> = {};
+			assert.deepStrictEqual(sync.applyExplicitMappings(plan, spaces, [{ dir: '库/AI', spaceId: 'S1' }]), []);
+			assert.strictEqual(plan[0].category, '别的');
+			assert.deepStrictEqual(spaces, {});
+		});
+
+		test('路径归一（反斜杠 / 尾斜杠）且忽略非法项', () => {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const plan: any[] = [{ rel: '库/AI/01-x/a.md' }];
+			const spaces: Record<string, { spaceId: string }> = {};
+			const applied = sync.applyExplicitMappings(plan, spaces, [
+				{ dir: '库\\AI\\01-x\\', spaceId: 'SP_X' },
+				{ dir: '', spaceId: 'BAD' },
+				{ dir: '库/AI/02', spaceId: '' },
+			]);
+			assert.deepStrictEqual(applied.map((a: { spaceId: string }) => a.spaceId), ['SP_X']);
+			assert.strictEqual(plan[0].category, '库/AI/01-x');
+		});
+
+		test('以用户配置覆盖已有 spaceId（用户显式配置即权威）', () => {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const plan: any[] = [{ rel: '库/AI/01-x/a.md', category: '01-x' }];
+			const spaces: Record<string, { spaceId: string; name?: string }> = { '库/AI/01-x': { spaceId: 'OLD' } };
+			sync.applyExplicitMappings(plan, spaces, [{ dir: '库/AI/01-x', spaceId: 'NEW', spaceName: '新名' }]);
+			assert.strictEqual(spaces['库/AI/01-x'].spaceId, 'NEW');
+			assert.strictEqual(spaces['库/AI/01-x'].name, '新名');
+		});
+
+		test('loadSpaceMap：数组 / 极简对象 / 缺失 / 损坏 一律不抛错', () => {
+			const vault = tmpVault();
+			assert.deepStrictEqual(sync.loadSpaceMap(vault), [], '文件不存在 ⇒ 空表');
+			fs.writeFileSync(path.join(vault, '.feishu-space-map.json'), '{ broken', 'utf8');
+			assert.deepStrictEqual(sync.loadSpaceMap(vault), [], '损坏 JSON ⇒ 空表（不影响同步）');
+			fs.writeFileSync(path.join(vault, '.feishu-space-map.json'),
+				JSON.stringify({ version: 1, mappings: [{ dir: '库/A', spaceId: 'S1', spaceName: 'A 库' }] }), 'utf8');
+			assert.deepStrictEqual(sync.loadSpaceMap(vault), [{ dir: '库/A', spaceId: 'S1', spaceName: 'A 库' }]);
+			fs.writeFileSync(path.join(vault, '.feishu-space-map.json'),
+				JSON.stringify({ mappings: { '库/B': 'S2' } }), 'utf8');
+			assert.deepStrictEqual(sync.loadSpaceMap(vault), [{ dir: '库/B', spaceId: 'S2', spaceName: '' }]);
+		});
+	});
+
 	suite('返回解析兼容（pickDocInfo · 事故防回归）', () => {
 		test('识别 doc_id / document_id / node_token 与 doc_url / url', () => {
 			const cases: Array<[Record<string, unknown>, string, string]> = [
@@ -510,5 +577,175 @@ suite('feishu-sync 脚本 · 改名 / 移动 / 类别改名', () => {
 		test('无标识 ⇒ 返回空 token（调用方必须据此报错，绝不静默记账）', () => {
 			assert.strictEqual(sync.pickDocInfo({ data: {} }).token, '');
 		});
+	});
+});
+
+// ─── 设置面板侧：映射文件读写 / 知识库列表解析（feishuSyncCore）────────────────
+
+suite('feishuSyncCore · 映射配置与知识库列表', () => {
+	test('parseSpaceMap 与脚本端语义一致（数组 / 极简对象 / 损坏 / 非法项）', () => {
+		assert.deepStrictEqual(parseSpaceMap(''), []);
+		assert.deepStrictEqual(parseSpaceMap('{ broken'), []);
+		assert.deepStrictEqual(
+			parseSpaceMap(JSON.stringify({ version: 1, mappings: [{ dir: '库/A', spaceId: 'S1', spaceName: 'A 库' }] })),
+			[{ dir: '库/A', spaceId: 'S1', spaceName: 'A 库' }]);
+		assert.deepStrictEqual(parseSpaceMap(JSON.stringify({ mappings: { '库/B': 'S2' } })),
+			[{ dir: '库/B', spaceId: 'S2', spaceName: '' }]);
+		assert.deepStrictEqual(
+			parseSpaceMap(JSON.stringify({ mappings: [{ dir: '', spaceId: 'S' }, { dir: '库/C', spaceId: '' }] })),
+			[], '缺 dir 或 spaceId 的项应被忽略');
+	});
+
+	test('serializeSpaceMap → parseSpaceMap 往返无损（面板保存后脚本可读）', () => {
+		const list = [{ dir: '库/A/01-x', spaceId: 'S1', spaceName: 'X 库' }, { dir: '库/B', spaceId: 'S2' }];
+		assert.deepStrictEqual(parseSpaceMap(serializeSpaceMap(list)), [
+			{ dir: '库/A/01-x', spaceId: 'S1', spaceName: 'X 库' },
+			{ dir: '库/B', spaceId: 'S2', spaceName: '' },
+		]);
+	});
+
+	test('parseSpaceList：兼容顶层数组 / 嵌套 data.items，字段 space_id 与 spaceId', () => {
+		assert.deepStrictEqual(
+			parseSpaceList(JSON.stringify([{ space_id: 'S1', name: 'A 库' }, { spaceId: 'S2', name: 'B 库' }])),
+			[{ spaceId: 'S1', name: 'A 库' }, { spaceId: 'S2', name: 'B 库' }]);
+		assert.deepStrictEqual(
+			parseSpaceList(JSON.stringify({ ok: true, data: { items: [{ space_id: 'S3', name: 'C 库' }] } })),
+			[{ spaceId: 'S3', name: 'C 库' }]);
+		assert.deepStrictEqual(parseSpaceList('not json'), []);
+		assert.deepStrictEqual(parseSpaceList(''), []);
+	});
+
+	test('同一 spaceId 去重（下拉不出现重复项）', () => {
+		const raw = JSON.stringify([{ spaceId: 'S1', name: 'A' }, { spaceId: 'S1', name: '重复' }, { spaceId: 'S2', name: 'B' }]);
+		assert.deepStrictEqual(parseSpaceList(raw), [{ spaceId: 'S1', name: 'A' }, { spaceId: 'S2', name: 'B' }]);
+	});
+
+	test('sanitizeSpaceName：剔除会破坏 shell 引号的字符（名称经双引号传入 CLI）', () => {
+		assert.strictEqual(sanitizeSpaceName('  我的 知识库 '), '我的 知识库');
+		assert.strictEqual(sanitizeSpaceName('a"b'), 'ab');
+		assert.strictEqual(sanitizeSpaceName('x\ny\r'), 'xy');
+		assert.strictEqual(sanitizeSpaceName(''), '');
+		assert.strictEqual(sanitizeSpaceName(undefined), '');
+	});
+
+	test('parseCreatedSpaceId：从 space-create 输出提取 id（嵌套 / 日志混排 / 失败可辨）', () => {
+		assert.strictEqual(parseCreatedSpaceId(JSON.stringify({ ok: true, data: { space_id: 'NEW1' } })), 'NEW1');
+		assert.strictEqual(parseCreatedSpaceId(JSON.stringify({ data: { space: { spaceId: 'NEW2' } } })), 'NEW2');
+		assert.strictEqual(parseCreatedSpaceId('log line\n{"data":{"space_id":"NEW3"}}\n'), 'NEW3');
+		assert.strictEqual(parseCreatedSpaceId('{"ok":false,"error":{"message":"x"}}'), '', '失败 ⇒ 空（UI 据此提示）');
+		assert.strictEqual(parseCreatedSpaceId(''), '');
+	});
+});
+
+// ─── URL 导入（抓取正文 + 图片本地化）纯函数 ────────────────────────────────
+
+// ─── 知识库根目录的「思维导图」（mindnote）结构 ──────────────────────────────
+
+suite('思维导图结构（buildMindmapNodes / mindmapHash）', () => {
+	test('层级树：根 → 目录（逐级）→ 笔记叶子，且同一结构 id 稳定', () => {
+		const entries = [
+			{ rel: '01-x/a.md', title: 'A' },
+			{ rel: '01-x/sub/b.md', title: 'B' },
+			{ rel: 'root.md', title: 'R' },
+		];
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const nodes: any[] = sync.buildMindmapNodes('测试库', entries);
+		const byText = (t: string) => nodes.find(n => n.text === t);
+		const byId = (id: string) => nodes.find(n => n.node_id === id);
+		assert.ok(byText('测试库'), '应有根节点（库名）');
+		assert.ok(byText('01-x'), '应有目录节点');
+		assert.ok(byText('sub'), '应有子目录节点');
+		assert.strictEqual(byId(byText('A').parent_id).text, '01-x', '笔记挂在所属目录');
+		assert.strictEqual(byId(byText('B').parent_id).text, 'sub', '嵌套目录层级正确');
+		assert.strictEqual(byId(byText('R').parent_id).text, '测试库', '库根下的笔记直接挂在根节点');
+		// ★ 稳定性：同结构两次生成必须完全一致（否则每次同步都会“新增”节点，导图会越来越乱）
+		assert.deepStrictEqual(sync.buildMindmapNodes('测试库', entries), nodes);
+	});
+
+	test('结构指纹：结构未变 ⇒ 指纹相同（据此跳过远端更新）', () => {
+		const a = sync.buildMindmapNodes('库', [{ rel: 'x/a.md', title: 'A' }]);
+		const b = sync.buildMindmapNodes('库', [{ rel: 'x/a.md', title: 'A' }]);
+		const c = sync.buildMindmapNodes('库', [{ rel: 'x/a.md', title: 'A' }, { rel: 'x/b.md', title: 'B' }]);
+		assert.strictEqual(sync.mindmapHash(a), sync.mindmapHash(b));
+		assert.notStrictEqual(sync.mindmapHash(a), sync.mindmapHash(c), '新增笔记必须让指纹变化');
+		assert.strictEqual(sync.mindmapHash([]), sync.mindmapHash([]));
+	});
+});
+
+suite('KB URL 导入 · 纯函数（slug / 图片路径 / HTML 兜底）', () => {
+	test('slugifyTitle：中文保留、非法字符折叠、超长截断、空标题回退 URL 末段', () => {
+		assert.strictEqual(slugifyTitle('知识库 入门指南', 'https://x.com/a'), '知识库-入门指南');
+		assert.strictEqual(slugifyTitle('a/b:c?d"e', 'https://x.com/a'), 'a-b-c-d-e');
+		assert.strictEqual(slugifyTitle('', 'https://x.com/posts/hello-world'), 'hello-world');
+		assert.strictEqual(slugifyTitle(undefined, 'not a url'), 'untitled');
+		assert.ok(slugifyTitle('x'.repeat(200), 'https://x.com').length <= 60);
+	});
+
+	test('planImagePath：产出相对 md 目录的路径（预览与飞书同步都按此基准解析）', () => {
+		assert.deepStrictEqual(planImagePath('slug1', 1, 'https://cdn.example.com/img/photo.jpg'),
+			{ rel: 'assets/slug1/1-photo.jpg', ext: 'jpg' });
+		// 无扩展名 ⇒ 按 mime 推断，且不带点前缀（否则会写出 img..png）
+		assert.strictEqual(planImagePath('s', 2, 'https://x.com/a/b/img', 'image/png').rel, 'assets/s/2-img.png');
+		// 非法 URL ⇒ 兜底名，不抛错
+		assert.ok(planImagePath('s', 3, '::::').rel.startsWith('assets/s/3-'));
+	});
+
+	test('parseSubtitlesToText：VTT/SRT 去时间轴与序号、自动字幕重复行去重、超长截断', () => {
+		const vtt = [
+			'WEBVTT', '', 'Kind: captions', 'Language: zh',
+			'00:00:00.000 --> 00:00:02.000', 'hello',
+			'00:00:02.000 --> 00:00:04.000', 'hello',
+			'00:00:04.000 --> 00:00:06.000', '<c>world</c>&amp;more',
+		].join('\n');
+		assert.strictEqual(parseSubtitlesToText(vtt), 'hello\nworld&more', '头部/时间轴/重复行应清理，行内标签与实体应处理');
+		const srt = ['1', '00:00:01,000 --> 00:00:02,000', '第一句', '', '2', '00:00:03,000 --> 00:00:04,000', '第二句'].join('\n');
+		assert.strictEqual(parseSubtitlesToText(srt), '第一句\n第二句', 'SRT 序号应去掉');
+		assert.strictEqual(parseSubtitlesToText(''), '');
+		const long = Array.from({ length: 500 }, (_, i) => `line ${i}`).join('\n');
+		assert.ok(parseSubtitlesToText(long, 200).length <= 260, '超长字幕应截断（避免塞爆 prompt）');
+	});
+
+	test('parseYtDlpPrint：解析 yt-dlp --print 行（||| 与 TSV 均支持，NA 视为空、超长截断）', () => {
+		const sep = '|||';
+		const m = parseYtDlpPrint(['标题 A', '3661', 'https://x/cover.jpg', '作者B', '20260921', '简介 C'].join(sep));
+		assert.strictEqual(m.title, '标题 A');
+		assert.strictEqual(m.durationSec, 3661);
+		assert.strictEqual(m.cover, 'https://x/cover.jpg');
+		assert.strictEqual(m.author, '作者B');
+		assert.strictEqual(m.date, '2026-09-21', 'upload_date YYYYMMDD 应格式化');
+		assert.strictEqual(m.description, '简介 C');
+		// 分隔符自适应：真实 TSV 也能解析
+		assert.strictEqual(parseYtDlpPrint('T\t90\tNA\tNA\tNA\tNA').durationSec, 90);
+		// 不可用字段（NA）按空处理
+		const na = parseYtDlpPrint(['T', 'NA', 'NA', 'NA', 'NA', 'NA'].join(sep));
+		assert.strictEqual(na.durationSec, undefined);
+		assert.strictEqual(na.cover, undefined);
+		assert.strictEqual(na.date, undefined);
+		// 超长简介截断（避免把巨量文本落进笔记）
+		assert.ok((parseYtDlpPrint(['T', '1', 'NA', 'NA', 'NA', 'x'.repeat(2000)].join(sep)).description ?? '').length <= 500);
+	});
+
+	test('yt-dlp 降级：无主进程桥/未安装时只返回「不可用」，绝不抛异常（导入应继续）', async () => {
+		// 测试环境没有 Electron 的 vscode.ipcRenderer 桥 ⇒ execShortCommand 返回 undefined
+		const d = await detectYtDlp();
+		assert.strictEqual(d.installed, false, '无桥环境应判为未安装');
+		const v = await fetchVideoMeta('https://www.bilibili.com/video/BV1xx411c7mD');
+		assert.strictEqual(v.ok, false, '抓取失败不得抛异常，由调用方降级为「仅记链接」');
+		assert.ok(typeof (v as { reason: string }).reason === 'string' && (v as { reason: string }).reason.length > 0);
+		// 空 URL 直接拒绝（不发起命令）
+		const empty = await fetchVideoMeta('   ');
+		assert.strictEqual(empty.ok, false);
+	});
+
+	test('htmlToPlainText：去掉 script/style、标题与列表转 markdown、实体解码', () => {
+		const html = '<html><head><style>p{color:red}</style><script>var x=1;</script></head>'
+			+ '<body><h2>标题</h2><p>A &amp; B</p><ul><li>一</li><li>二</li></ul></body></html>';
+		const out = htmlToPlainText(html);
+		assert.ok(!out.includes('var x'), 'script 内容应被移除');
+		assert.ok(!out.includes('color:red'), 'style 内容应被移除');
+		assert.ok(out.includes('## 标题'), '标题应转为 markdown 标题');
+		assert.ok(out.includes('- 一') && out.includes('- 二'), '列表项应转为 markdown 列表');
+		assert.ok(out.includes('A & B'), '实体应被解码');
+		assert.strictEqual(htmlToPlainText(''), '');
 	});
 });

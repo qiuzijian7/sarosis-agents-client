@@ -148,11 +148,47 @@
 /* ── Scroll area ── */
 /* tabIndex=-1 + focus() 会让浏览器绘制默认聚焦框（曾表现为面板中央一大片蓝框）⇒ 显式去掉。 */
 .kb-scroll, .kb-panel-content { flex: 1; overflow-y: auto; outline: none; min-height: 0; }
+/* 2026-09-22：知识页签改为纵向 flex 布局 —— 展开的分区可**占满**剩余高度，
+   分区之间插入 `.kb-resizer` 可拖拽调整高度（详见下方 section / resizer 规则）。
+   仍保留 overflow-y:auto 作为兜底：内容总和超出面板时照常整体滚动。 */
+.kb-scroll { display: flex; flex-direction: column; }
+
+/* ── Scroll area ── */
+/* 展开的分区之间可拖拽调整高度：分隔条随分区一同滚动，视觉上是一条细线，hover/拖拽时高亮。 */
+.kb-resizer {
+	flex: 0 0 auto;
+	height: 5px;
+	cursor: row-resize;
+	position: relative;
+	background: transparent;
+}
+.kb-resizer::after {
+	content: '';
+	position: absolute;
+	left: 0; right: 0; top: 2px;
+	height: 1px;
+	background: transparent;
+}
+.kb-resizer:hover::after,
+.kb-resizer.dragging::after { background: var(--vscode-focusBorder, #007fd4); }
 
 /* 滚动条统一由 sessions 全局样式提供（sessions/browser/media/style.css），此处不再单独定义。 */
 
 /* ── Section (库 / 笔记) ── */
-.kb-section { border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border)); }
+/* 2026-09-22：分区改为纵向 flex 项 —— 展开时**占满**剩余高度（多个展开则平分），
+   折叠时只占 header 高度；body 内部自行滚动（内容多也不会把整个面板撑爆）。 */
+.kb-section {
+	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+	display: flex; flex-direction: column;
+	min-height: 0;
+}
+.kb-section.open { flex: 1 1 0; }
+.kb-section:not(.open) { flex: 0 0 auto; }
+/* 被拖拽调整过高度的区域（JS 打 data-kb-region / data-kb-resized 并按需设 --kb-region-h）：
+   · 普通区域（双链/最近编辑等）恒为固定高度；
+   · `.kb-section` 只在展开时固定，折叠后自动回到 header 高（否则折叠了仍占着一片空白）。 */
+.kb-scroll > [data-kb-region][data-kb-resized="1"] { flex: 0 0 auto; height: var(--kb-region-h); min-height: 0; }
+.kb-scroll > .kb-section[data-kb-region][data-kb-resized="1"]:not(.open) { height: auto; }
 .kb-section-header {
 	display: flex; align-items: center; gap: 6px;
 	padding: 5px 8px;
@@ -185,8 +221,8 @@
 .kb-sec-btn:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); opacity: 1; }
 .kb-sec-btn.primary:hover { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
 
-.kb-section-body { padding-bottom: 4px; display: none; }
-.kb-section.open .kb-section-body { display: block; }
+.kb-section-body { padding-bottom: 4px; display: none; min-height: 0; }
+.kb-section.open .kb-section-body { display: block; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .kb-section-body.kb-drop-target { background: rgba(77,163,255,.08); border-radius: 4px; }
 
 /* ── Tree node (b3-list-item style) ── */

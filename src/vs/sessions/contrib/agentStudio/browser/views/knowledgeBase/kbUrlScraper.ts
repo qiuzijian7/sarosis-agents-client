@@ -83,6 +83,11 @@ export interface IKbMetaTags {
 	/** 视频时长（秒，尽量解析） */
 	durationSec?: number;
 	tags?: string[];
+	/**
+	 * 视频**字幕纯文本**（yt-dlp `--write-subs/--write-auto-subs` 抓取后，经
+	 * `parseSubtitlesToText()` 清洗）—— 供 agent 总结视频内容；无字幕时为空。
+	 */
+	subtitleText?: string;
 }
 
 const ENTITY_MAP: Record<string, string> = {
@@ -230,6 +235,136 @@ export function composeArticleMarkdown(opts: {
 }
 
 /** 组装视频 Markdown（元信息 + 媒体文件引用 + 原链接）。 */
+// ─── URL 导入：文件名 / 图片路径规划 / HTML 兜底（2026-09-22）─────────────────
+
+/**
+ * 由标题（优先）或 URL 生成**安全文件名 slug**：保留中文/字母/数字，其余折叠为 `-`。
+ * 用于 `库/raw/<slug>.md` 与图片目录 `库/raw/assets/<slug>/`。
+ */
+export function slugifyTitle(title: string | undefined, url: string, maxLen = 60): string {
+	const base = (title ?? '').trim() || (() => {
+		try { return new URL(url).pathname.split('/').filter(Boolean).pop() ?? ''; } catch { return ''; }
+	})() || 'untitled';
+	const cleaned = base
+		.replace(/[\\/:*?"<>|#%{}]+/g, '-')   // 文件系统/URL 非法字符
+		.replace(/[\s\u3000]+/g, '-')          // 空白 → 连字符
+		.replace(/-{2,}/g, '-')
+		.replace(/^-+|-+$/g, '');
+	const out = cleaned.slice(0, Math.max(1, maxLen)).replace(/-+$/g, '');
+	return out || 'untitled';
+}
+
+/**
+ * 规划网页图片在知识库内的**相对路径**（相对 markdown 所在目录）。
+ * 形如 `assets/<slug>/<序号>-<原名>.<ext>`；序号保证同名图不互相覆盖。
+ * ⚠ 该相对形式同时满足两处解析约定：笔记预览 `resolveAssetSrc`（相对笔记目录）
+ *    与飞书同步 `extractImages`（`path.dirname(note)`）。
+ */
+export function planImagePath(slug: string, index: number, imgUrl: string, mime?: string): { rel: string; ext: string } {
+	let name = '';
+	try { name = decodeURIComponent(new URL(imgUrl).pathname.split('/').filter(Boolean).pop() ?? ''); } catch { /* 非法 URL 用兜底名 */ }
+	const stem = name.replace(/\.[A-Za-z0-9]{1,6}$/, '') || 'image';
+	const safeStem = stem.replace(/[\\/:*?"<>|#%{}]+/g, '-').replace(/\s+/g, '-').slice(0, 40) || 'image';
+	const ext = guessMediaExt(imgUrl, mime).replace(/^\./, '');   // 规范化：去掉可能的点前缀
+	return { rel: `assets/${slug}/${index}-${safeStem}.${ext}`, ext };
+}
+
+/**
+ * 极简 HTML → 纯文本兜底（当主进程提取器不可用时使用）：去掉 script/style，块级标签转换行，
+ * 再解码常见实体、压缩空行。**不追求格式保真**，只保证「有正文可用」。
+ */
+export function htmlToPlainText(html: string): string {
+	if (!html) { return ''; }
+	let s = html
+		.replace(/<script[\s\S]*?<\/script>/gi, '')
+		.replace(/<style[\s\S]*?<\/style>/gi, '')
+		.replace(/<!--[\s\S]*?-->/g, '');
+	// 保留结构语义：标题/列表/段落 → markdown 近似
+	s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, lvl: string, inner: string) => `\n\n${'#'.repeat(Number(lvl))} ${inner}\n\n`);
+	s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_m, inner: string) => `\n- ${inner}`);
+	s = s.replace(/<\/(p|div|section|article|br|tr|ul|ol|table|h[1-6])>/gi, '\n\n');
+	s = s.replace(/<(br)\s*\/?>/gi, '\n');
+	s = s.replace(/<[^>]+>/g, '');   // 剩余标签去掉
+	return s
+		.replace(/&[a-z#0-9]+;/gi, m => ENTITY_MAP[m.toLowerCase()] ?? m)
+		.replace(/[ \t\u3000]+/g, ' ')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
+}
+
+// ─── 视频元信息（yt-dlp 扩展点，2026-09-22）───────────────────────────────────
+
+/**
+ * yt-dlp `--print` 的字段顺序（与 `kbVideoFetch.PRINT_TEMPLATE` 必须一致）。
+ * ⚠ 刻意不用 `--dump-json`：主进程命令通道是**单次缓冲**，dump-json 含 formats 数组可达数百 KB。
+ */
+export const YTDLP_PRINT_FIELDS = ['title', 'duration', 'thumbnail', 'uploader', 'upload_date', 'description'] as const;
+
+/** `--print` 字段分隔符：用 `|||` 而非 TAB（TAB 经 shell 传递易被规范化/吃掉）。 */
+export const YTDLP_SEP = '|||';
+
+/** yt-dlp 不可用字段的输出标记（统一按「无值」处理）。 */
+function ytdlpClean(s: string): string {
+	const v = (s ?? '').trim();
+	return (!v || v === 'NA' || v === 'None') ? '' : v;
+}
+
+function truncateText(s: string, max: number): string {
+	const t = s.replace(/\s+/g, ' ').trim();
+	return t.length > max ? t.slice(0, max - 1) + '…' : t;
+}
+
+/**
+ * 解析 `yt-dlp --print` 输出的一行 TSV → 元信息（纯函数，便于单测）。
+ * 字段顺序见 `YTDLP_PRINT_FIELDS`；`upload_date` 为 `YYYYMMDD` 时格式化为 `YYYY-MM-DD`。
+ */
+/**
+ * 字幕（WebVTT / SRT）→ 纯文本（纯函数，便于单测）。
+ * 去掉 `WEBVTT` 头、NOTE/Kind/Language 行、时间轴、序号与行内标签；**自动字幕逐词重复行会去重**，
+ * 并按 `maxChars` 截断（避免把整集字幕塞进 prompt / 笔记）。
+ */
+export function parseSubtitlesToText(raw: string, maxChars = 20000): string {
+	if (!raw) { return ''; }
+	const out: string[] = [];
+	const seen = new Set<string>();
+	let last = '';
+	let total = 0;
+	for (const line of raw.split(/\r?\n/)) {
+		const t = line.trim();
+		if (!t) { continue; }
+		if (t === 'WEBVTT' || /^NOTE\b/.test(t) || /^(Kind|Language):/.test(t)) { continue; }
+		if (t.includes('-->')) { continue; }            // 时间轴行
+		if (/^\d+$/.test(t)) { continue; }              // SRT 序号
+		const text = t.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();
+		if (!text || text === last || seen.has(text)) { continue; }
+		seen.add(text);
+		last = text;
+		out.push(text);
+		total += text.length;
+		if (total > maxChars) { break; }
+	}
+	return out.join('\n').trim();
+}
+
+export function parseYtDlpPrint(line: string, opts?: { platformName?: string }): IKbMetaTags {
+	// 分隔符自适应：kbVideoFetch 用 `|||`（避免 shell 转义 TAB），单测/其它调用方可能给真实 TSV
+	const parts = (line ?? '').split(line.includes(YTDLP_SEP) ? YTDLP_SEP : '\t');
+	const at = (i: number) => ytdlpClean(parts[i] ?? '');
+	const dur = Number.parseInt(at(1), 10);
+	const rawDate = at(4);
+	return {
+		title: at(0) || undefined,
+		durationSec: Number.isFinite(dur) && dur > 0 ? dur : undefined,
+		cover: at(2) || undefined,
+		author: at(3) || undefined,
+		date: /^\d{8}$/.test(rawDate)
+			? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`
+			: (rawDate || undefined),
+		siteName: opts?.platformName || undefined,
+		description: at(5) ? truncateText(at(5), 500) : undefined,
+	};
+}
+
 export function composeVideoMarkdown(opts: {
 	url: string;
 	platformName: string;

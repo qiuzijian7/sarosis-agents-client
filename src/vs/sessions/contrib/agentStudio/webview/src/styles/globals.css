@@ -2976,6 +2976,70 @@ html, body, #root {
   line-height: 1.1;
 }
 
+/* 飞书绑定标识（当前会话绑定了飞书 chat_id 时显示在 header） */
+.chat-header-feishu-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  color: var(--vscode-charts-blue, #3794ff);
+  border: 1px solid var(--vscode-charts-blue, #3794ff);
+  border-radius: 8px;
+  padding: 0 6px;
+  margin-left: 6px;
+  white-space: nowrap;
+  cursor: default;
+  opacity: 0.9;
+}
+
+/* Channel 绑定表单控件（chat-binding-input 原无定义，select 默认白底与深色主题不符） */
+.chat-binding-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, #d4d4d4);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.chat-binding-input:focus {
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+/* 会话下拉（原生 select 深色化；选项列表配色在 Windows 原生弹出层同样生效） */
+.chat-binding-select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  background: var(--vscode-dropdown-background, var(--vscode-input-background, #3c3c3c));
+  color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground, #d4d4d4));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, #3c3c3c));
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.chat-binding-select:focus {
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.chat-binding-select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.chat-binding-select option {
+  background: var(--vscode-dropdown-background, #252526);
+  color: var(--vscode-dropdown-foreground, #d4d4d4);
+}
+
 /* Status badge in header */
 .chat-header-status {
   display: inline-flex;

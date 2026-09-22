@@ -93,6 +93,19 @@ export interface BridgeCard {
 
 // ─── 平台适配器端口（对齐 cc-connect core.Platform）────────────────────
 
+/**
+ * 平台连接状态（供设置页 / 诊断页展示）。
+ *
+ * ★ 2026-09-22（渠道状态展示）：统一四态，各平台自己实现 getStatus()；
+ *   未实现的平台 UI 上显示为「已注册」（见 settingsEditorPane 的兜底）。
+ */
+export interface BridgePlatformStatus {
+	/** disconnected=未连接 / connecting=连接中或重连中 / connected=链路活跃 / error=有失败原因 */
+	readonly state: "disconnected" | "connecting" | "connected" | "error";
+	/** 面向用户的单行说明（失败原因、链路细节如最近帧时间 / 轮询健康度）。 */
+	readonly detail?: string;
+}
+
 export interface IBridgePlatform {
 	readonly id: string;
 	readonly name: string;
@@ -101,6 +114,8 @@ export interface IBridgePlatform {
 	 * 由 BridgeEngine 在路由前做 allowFrom 校验（对齐 cc-connect AllowList）。
 	 */
 	readonly allowFrom?: string;
+	/** 可选：当前连接状态（供设置页渠道条目展示）。 */
+	getStatus?(): BridgePlatformStatus;
 	/** 启动平台，注册入站消息回调。可异步（如建立 WS 连接）。 */
 	start(handler: (msg: InboundMessage) => void): Promise<void> | void;
 	/** 停止平台并释放资源。 */
@@ -149,6 +164,8 @@ export interface BridgeSessionState {
 
 export interface IBridgeEngineOps {
 	readonly onPlatformOutbound: Event<OutboundMessage>;
+	/** 会话绑定（chat→agent 或 chat→专属会话）变更事件；UI 订阅后即时刷新标识。 */
+	readonly onDidChangeBindings: Event<{ platform: string; conversationId?: string }>;
 	getSession(sessionKey: string): BridgeSessionState | undefined;
 	ensureSession(sessionKey: string, platform: string): Promise<BridgeSessionState>;
 	listAgents(): Promise<Array<{ id: string; name: string; model: string }>>;
@@ -164,6 +181,18 @@ export interface IBridgeEngineOps {
 	clearConversationAgent(platform: string, conversationId: string): void;
 	/** 列出某平台所有会话→Agent 绑定。 */
 	listConversationBindings(platform: string): Array<{ conversationId: string; agentId: string }>;
+	/** 把某平台会话 id 绑定到指定 Agent 的指定会话（群消息进该会话；覆盖式，持久化）。 */
+	bindConversationToSession(platform: string, conversationId: string, agentId: string, agentSessionId: string): void;
+	/** 读取某平台会话 id 绑定的专属 Agent 会话（未绑定返回 undefined）。 */
+	getConversationSession(platform: string, conversationId: string): { agentId: string; agentSessionId: string } | undefined;
+	/** 列出某平台所有会话→专属 Agent 会话映射。 */
+	listSessionBindings(platform: string): Array<{ conversationId: string; agentId: string; agentSessionId: string }>;
+	/** 解除某平台会话 id 的专属会话绑定（下条消息将新建专属会话；chat→Agent 绑定不受影响）。 */
+	unbindConversationSession(platform: string, conversationId: string): void;
+	/** 读取渠道默认会话（默认 Agent 勾选项的配套 session；未配置返回 undefined）。 */
+	getChannelDefaultSession(platform: string): { agentId: string; agentSessionId: string } | undefined;
+	/** 设置渠道默认会话（undefined = 清除，恢复每群自动建专属会话）。 */
+	setChannelDefaultSession(platform: string, agentId: string, agentSessionId: string | undefined): void;
 	setModelOverride(sessionKey: string, model: string): void;
 	setChatMode(sessionKey: string, mode: string): void;
 	cancel(sessionKey: string): void;

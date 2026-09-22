@@ -548,7 +548,10 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		for (const cp of remaining) {
 			for (const id of cp.fileSnapshotIds) { stillReferenced.add(id); }
 		}
-		const deletable = selectUnreferencedSnapshotIds(releasedIds, stillReferenced);
+		// ★ 2026-09-22 真机修正：并发清扫（两次 createCheckpoint 各触发一次 _pruneSnapshots）
+		//   会对同一快照删两遍 ⇒ 第二条必报 ENOENT ✗。① Set 去重；② ENOENT = 目标状态
+		//   已达成（文件已不在 ✓）⇒ 静默跳过，不刷 WARN（真机日志同一 id 连续两条 ✗）。
+		const deletable = [...new Set(selectUnreferencedSnapshotIds(releasedIds, stillReferenced))];
 		let deleted = 0;
 		for (const id of deletable) {
 			const uri = this._snapshotUri(sessionDir, id);
@@ -558,6 +561,9 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 					deleted++;
 				}
 			} catch (err) {
+				if (err instanceof Error && err.message.includes('ENOENT')) {
+					continue; // 已被并发清扫删除 ⇒ 目标状态已达成 ✓
+				}
 				this.logService.warn(`[CheckpointService] Failed to delete snapshot ${uri.toString()}: ${err}`);
 			}
 		}

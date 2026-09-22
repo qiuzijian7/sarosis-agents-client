@@ -20,6 +20,10 @@ const FEISHU_ACCOUNTS_BASE = 'https://accounts.feishu.cn';
 const LARK_ACCOUNTS_BASE = 'https://accounts.larksuite.com';
 const REGISTRATION_ENDPOINT = '/oauth/v1/app/registration';
 
+/** 飞书 / Lark 开放平台 OpenAPI 基址（自检探针用）。 */
+export const FEISHU_OPEN_BASE = 'https://open.feishu.cn/open-apis';
+export const LARK_OPEN_BASE = 'https://open.larksuite.com/open-apis';
+
 export interface FeishuBeginResult {
 	readonly deviceCode: string;
 	readonly qrUrl: string;
@@ -72,11 +76,12 @@ async function postForm(
 	} catch (e) {
 		throw new Error('飞书注册接口返回非 JSON：' + text.slice(0, 200));
 	}
-	const err = json['error'];
-	if (typeof err === 'string' && err && err !== 'authorization_pending') {
-		const desc = typeof json['error_description'] === 'string' ? json['error_description'] : '';
-		throw new Error(`飞书注册失败（${err}）：${desc}`);
-	}
+	// ★ 2026-09-22 修复（D-06）：**不再在这里因 `error` 字段抛错**。
+	//   Device Flow 的协议状态（authorization_pending / slow_down / access_denied /
+	//   expired_token / 未知错误）是「轮询状态」而不是「传输失败」——必须原样交给
+	//   `pollFeishuRegistration` 做状态映射，否则 UI 只能看到笼统的「失败」，
+	//   用户被提示「被拒绝」「已过期」的精确信息全部丢失。
+	//   只有真实的传输/解析失败（空响应 / 非 JSON）才在上面抛错。
 	return json;
 }
 
@@ -159,3 +164,71 @@ export async function pollFeishuRegistration(
 /** Lark 域名自动切换（仅当用户账号属于 Lark 时由调用方处理，这里仅暴露常量）。 */
 export const FEISHU_BASE = FEISHU_ACCOUNTS_BASE;
 export const LARK_BASE = LARK_ACCOUNTS_BASE;
+
+// ─── 凭证自检探针（★ 2026-09-22 新增，修复 D-03）─────────────────────────
+//
+// 此前「测试连接」只做「字段非空」的假检查，用户填错凭证也会显示成功，
+// 导致「配置成功但渠道不工作」的最后一环假象。现在做真实探测：
+// 调 `/auth/v3/tenant_access_token/internal`，用飞书返回码说话。
+// 网络出口走注入的 IRequestService（装配侧应传主进程出口，见 D-12）。
+
+export interface FeishuProbeResult {
+	readonly ok: boolean;
+	readonly message: string;
+	/** 成功时回显的 token 前缀（仅前 6 字符 + 省略号，用于交叉核对）。 */
+	readonly tokenPrefix?: string;
+}
+
+/**
+ * 真实探测 appId/appSecret 是否可换取 tenant_access_token。
+ *
+ * @param openBase OpenAPI 基址（Lark 用 LARK_OPEN_BASE）。
+ * 约定：任何失败都以 `{ok:false, message}` 返回（不抛错），网络异常消息中的 appSecret 会被脱敏。
+ */
+export async function probeFeishuCredentials(
+	requestService: IRequestService,
+	appId: string,
+	appSecret: string,
+	openBase: string = FEISHU_OPEN_BASE,
+): Promise<FeishuProbeResult> {
+	if (!appId || !appSecret) {
+		return { ok: false, message: '请先填写 App ID 与 App Secret（或使用扫码绑定）' };
+	}
+	const url = `${openBase}/auth/v3/tenant_access_token/internal`;
+	try {
+		const ctx = await requestService.request(
+			{
+				url,
+				type: 'POST',
+				data: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+				headers: { 'Content-Type': 'application/json' },
+				callSite: 'feishuProbe',
+			},
+			CancellationToken.None,
+		);
+		const status = ctx.res.statusCode ?? 0;
+		const text = (await asText(ctx)) ?? '';
+		if (!text) {
+			return { ok: false, message: `凭证自检失败：空响应（HTTP ${status}）` };
+		}
+		let data: { code?: number; msg?: string; tenant_access_token?: string; expire?: number };
+		try {
+			data = JSON.parse(text) as typeof data;
+		} catch {
+			return { ok: false, message: `凭证自检失败：非 JSON 响应（HTTP ${status}）→ ${text.slice(0, 120)}` };
+		}
+		if (data.code !== 0 || !data.tenant_access_token) {
+			return { ok: false, message: `凭证自检失败（HTTP ${status} code=${data.code ?? '?'}）：${data.msg ?? '(无 msg)'}` };
+		}
+		const expire = typeof data.expire === 'number' ? data.expire : 7200;
+		return {
+			ok: true,
+			message: `连接成功：token 有效期 ${expire}s`,
+			tokenPrefix: `${data.tenant_access_token.slice(0, 6)}…`,
+		};
+	} catch (err) {
+		// 网络异常：不抛错；回显里绝不能出现 appSecret（错误栈可能带请求参数）
+		const raw = err instanceof Error ? err.message : String(err);
+		return { ok: false, message: `凭证自检请求失败：${raw.split(appSecret).join('[REDACTED]')}` };
+	}
+}

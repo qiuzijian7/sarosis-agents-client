@@ -78,6 +78,23 @@ function buttonRow(label: string, value: string, type: "primary" | "default" | "
 // ─── 内置命令 ───────────────────────────────────────────────────
 
 export function createBuiltinCommands(): IBridgeCommand[] {
+	/** /sessions 与 /list 共用的列表实现：标注当前会话（●），提示切换方式。 */
+	const listSessionsRun = async (ctx: BridgeCommandContext): Promise<void> => {
+		const sessions = await ctx.engine.listSessions(ctx.session.agentId);
+		if (sessions.length === 0) {
+			ctx.reply("暂无会话，可用 /new [名称] 新建");
+			return;
+		}
+		const curId = ctx.session.agentSessionId;
+		const body = sessions
+			.map((s, i) => `${s.id === curId ? "●" : "○"} ${i + 1}. ${s.name} — ${s.messageCount} 条消息 (${s.id})`)
+			.join("\n");
+		ctx.reply(
+			`Agent ${ctx.session.agentId} 的会话列表（● = 本会话正在使用）：\n` +
+			body +
+			`\n\n切换：/switch <序号|会话id|名称>`,
+		);
+	};
 	return [
 		{
 			name: "help",
@@ -91,46 +108,75 @@ export function createBuiltinCommands(): IBridgeCommand[] {
 		},
 		{
 			name: "new",
-			description: "新建一个对话会话",
+			description: "新建一个对话会话（可带名称）",
+			usage: "[名称]",
 			run: async (ctx: BridgeCommandContext) => {
-				const id = await ctx.engine.createSession(ctx.session.sessionKey, ctx.session.agentId, "Bridge 会话");
+				const name = ctx.args.join(" ").trim() || "Bridge 会话";
+				const id = await ctx.engine.createSession(ctx.session.sessionKey, ctx.session.agentId, name);
 				ctx.engine.switchSession(ctx.session.sessionKey, id);
-				ctx.reply(`已新建并切换到会话：${id}`);
+				ctx.reply(`已新建并切换到会话：${name} (${id})`);
 			},
 		},
 		{
 			name: "switch",
-			description: "切换对话会话",
-			usage: "<序号>",
+			description: "切换对话会话（序号/会话id/名称均可，名称支持模糊匹配）",
+			usage: "<序号|会话id|名称>",
 			run: async (ctx: BridgeCommandContext) => {
-				if (ctx.args.length < 1) {
-					ctx.reply("用法：/switch <序号>（先用 /sessions 查看序号）");
+				const arg = ctx.args.join(" ").trim();
+				if (!arg) {
+					ctx.reply("用法：/switch <序号|会话id|名称>（先用 /list 查看）");
 					return;
 				}
-				const idx = parseInt(ctx.args[0], 10) - 1;
 				const sessions = await ctx.engine.listSessions(ctx.session.agentId);
-				if (idx < 0 || idx >= sessions.length) {
-					ctx.reply(`序号越界，共 ${sessions.length} 个会话`);
+				if (sessions.length === 0) {
+					ctx.reply("暂无会话，可用 /new [名称] 新建");
 					return;
 				}
-				ctx.engine.switchSession(ctx.session.sessionKey, sessions[idx].id);
-				ctx.reply(`已切换到会话：${sessions[idx].name} (${sessions[idx].id})`);
+				let target: { id: string; name: string } | undefined;
+				if (/^\d+$/.test(arg)) {
+					// 序号（/list 中的编号，最近活跃在前）
+					const idx = parseInt(arg, 10) - 1;
+					if (idx < 0 || idx >= sessions.length) {
+						ctx.reply(`序号越界，共 ${sessions.length} 个会话（先用 /list 查看）`);
+						return;
+					}
+					target = sessions[idx];
+				} else {
+					// 会话 id 精确匹配 → 名称精确匹配 → 名称子串唯一命中
+					target = sessions.find(s => s.id === arg) ?? sessions.find(s => s.name === arg);
+					if (!target) {
+						const hits = sessions.filter(s => s.name.includes(arg));
+						if (hits.length === 1) {
+							target = hits[0];
+						} else if (hits.length > 1) {
+							const body = hits
+								.map(s => {
+									const idx = sessions.indexOf(s);
+									return `○ ${idx + 1}. ${s.name} (${s.id})`;
+								})
+								.join("\n");
+							ctx.reply(`「${arg}」匹配到多个会话，请用序号或 id 指定：\n${body}`);
+							return;
+						}
+					}
+				}
+				if (!target) {
+					ctx.reply(`未找到会话：${arg}（先用 /list 查看）`);
+					return;
+				}
+				ctx.engine.switchSession(ctx.session.sessionKey, target.id);
+				ctx.reply(`✅ 已切换到会话：${target.name} (${target.id})\n后续消息将在此会话中进行`);
 			},
 		},
 		{
 			name: "sessions",
-			description: "列出当前 Agent 的会话",
-			run: async (ctx: BridgeCommandContext) => {
-				const sessions = await ctx.engine.listSessions(ctx.session.agentId);
-				if (sessions.length === 0) {
-					ctx.reply("暂无会话");
-					return;
-				}
-				const body = sessions
-					.map((s, i) => `${i + 1}. ${s.name} (${s.id}) — ${s.messageCount} 条消息`)
-					.join("\n");
-				ctx.reply("会话列表：\n" + body);
-			},
+			description: "列出当前 Agent 的会话（同 /list）",
+			run: listSessionsRun,
+		},
+		{
+			name: "list",
+			description: "列出当前 Agent 的会话（同 /sessions）",
+			run: listSessionsRun,
 		},
 		{
 			name: "agents",
