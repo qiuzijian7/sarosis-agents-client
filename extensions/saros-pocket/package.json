@@ -311,20 +311,10 @@
             "type": "string",
             "default": "你是 VsSaros 的随身助手，回答请简洁、可直接在手机上阅读。",
             "description": "Pocket App 对话时的系统提示词（仅作用于 App 内的模型直连，不影响 VsSaros 的 Agent）。"
-          },
-          "sarosPocket.agentCommand": {
-            "type": "string",
-            "default": "workbench.action.chat.open",
-            "description": "「交给 Agent」时执行的命令：把消息送进 VsSaros 自己的 Agent 会话。"
-          },
-          "sarosPocket.agentMode": {
-            "type": "string",
-            "default": "agent",
-            "description": "「交给 Agent」时使用的聊天模式（agent / ask / edit）。"
           }
         },
         "x-icon": "💬",
-        "description": "App 里「对话」与「交给 Agent」用哪个模型、什么提示词。"
+        "description": "App 直连模型时用哪个模型、什么提示词（与某个 Agent 会话对话是另一条通路，不受这里影响）。"
       },
       {
         "title": "桌面画面",

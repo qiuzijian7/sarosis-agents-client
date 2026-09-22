@@ -61,6 +61,20 @@
 <main id="views">
   <!-- 会话列表（原「收件箱」）：VsSaros 的 Agent 会话 + 本地会话，状态徽标 + 筛选芯片 -->
   <section class="view" id="view-inbox">
+    <!-- 列表头：会话数 + 样式切换「入口 A」（▤ 图标 → 弹出菜单三选一）。
+         不占竖向空间（与筛选芯片同层）；选择记在 localStorage（sarosPocket.sessionListView），
+         默认卡片式 = 现状，不改变老用户的第一印象。方案见 docs/session-list-styles-mockup.html。 -->
+    <div class="inbox-head">
+      <b>会话列表</b>
+      <span class="t" id="sessionCount"></span>
+      <button class="viewbtn" id="viewStyleBtn" type="button" title="列表样式" aria-label="会话列表样式"
+        aria-haspopup="menu" aria-expanded="false">▤</button>
+    </div>
+    <div class="view-menu hidden" id="viewStyleMenu" role="menu" aria-label="会话列表样式">
+      <button class="view-row" data-view="s1" type="button" role="menuitemradio" aria-checked="false">🗂 卡片式（默认）<span class="ck">✓</span></button>
+      <button class="view-row" data-view="s2" type="button" role="menuitemradio" aria-checked="false">☰ 列表式（最紧凑）<span class="ck">✓</span></button>
+      <button class="view-row" data-view="s3" type="button" role="menuitemradio" aria-checked="false">▦ 网格式（两列）<span class="ck">✓</span></button>
+    </div>
     <div class="chips" id="sessionChips">
       <button class="chip active" data-status="all" type="button">全部</button>
       <button class="chip" data-status="running" type="button">运行中</button>
@@ -80,46 +94,74 @@
   </section>
 
   <section class="view hidden" id="view-chat">
-    <!-- 聊天头：与 VsSaros 聊天框同构 —— Agent / 工作区 / Worktree / 模型 + 聊天模式。
-         数据来自 VsSaros 的 sarosPocket.getChatContext（工作台进程的 IAgentStudioService），
-         改选即写回 VsSaros（切活动工作区 / 写 AgentBinding.worktreePath / 写模型选择）。 -->
+    <!-- 聊天头（M2 · 手机紧凑，2026-09-22 重设计，对齐桌面「聊天板」）：
+         一行 = 头像 + 名称 · 状态 + 工作区/主仓库 chip，右侧 ⚙ 展开完整设置。
+         四个下拉（Agent/工作区/Worktree/模型）与模式芯片**一个都没少**，只是收进了 ⚙ 面板
+         （原来它们常驻 4 行、占掉 ~150px，把消息挤压得只剩几行）。
+         数据仍来自 sarosPocket.getChatContext，改选仍写回 VsSaros（行为未变）。 -->
     <div class="chat-head" id="chatContextBar">
-      <div class="chat-ctx-row">
-        <label class="chat-ctx-field">
-          <span class="chat-ctx-label">Agent</span>
-          <select id="chatAgent" aria-label="Agent"></select>
-        </label>
-        <label class="chat-ctx-field">
-          <span class="chat-ctx-label">工作区</span>
-          <select id="chatWorkspace" aria-label="工作区"></select>
-        </label>
+      <div class="chat-head-line">
+        <span class="chat-ava" id="chatHeadAvatar" aria-hidden="true">🤖</span>
+        <div class="chat-head-name">
+          <b id="chatHeadName">Saros Pocket</b>
+          <span id="chatHeadStatus">未连接</span>
+        </div>
+        <span class="chat-head-ws" id="chatHeadWs" hidden></span>
+        <button class="icon-btn" id="chatPanelToggle" type="button" aria-expanded="false"
+                aria-controls="chatCtxPanel" title="模式 / 模型 / Agent / 工作区设置">⚙</button>
       </div>
-      <div class="chat-ctx-row">
-        <label class="chat-ctx-field">
-          <span class="chat-ctx-label">Worktree</span>
-          <select id="chatWorktree" aria-label="Worktree"></select>
-        </label>
-        <label class="chat-ctx-field">
-          <span class="chat-ctx-label">模型</span>
-          <select id="modelSelect" aria-label="模型"></select>
-        </label>
+      <div class="chat-ctx-panel hidden" id="chatCtxPanel">
+        <div class="chat-ctx-row">
+          <label class="chat-ctx-field">
+            <span class="chat-ctx-label">Agent</span>
+            <select id="chatAgent" aria-label="Agent"></select>
+          </label>
+        </div>
+        <div class="chat-ctx-row">
+          <label class="chat-ctx-field">
+            <span class="chat-ctx-label">工作区</span>
+            <select id="chatWorkspace" aria-label="工作区"></select>
+          </label>
+        </div>
+        <div class="chat-ctx-row">
+          <label class="chat-ctx-field">
+            <span class="chat-ctx-label">Worktree</span>
+            <select id="chatWorktree" aria-label="Worktree"></select>
+          </label>
+        </div>
+        <div class="chat-ctx-row">
+          <label class="chat-ctx-field">
+            <span class="chat-ctx-label">模型</span>
+            <select id="modelSelect" aria-label="模型"></select>
+          </label>
+        </div>
+        <div class="chat-ctx-row chat-ctx-row--modes">
+          <div class="chat-modes" id="chatModes" role="group" aria-label="聊天模式"></div>
+          <button class="ghost small" id="clearChat" type="button">清空</button>
+        </div>
+        <div class="chat-ctx-hint" id="chatCtxHint"></div>
       </div>
-      <div class="chat-ctx-row chat-ctx-row--modes">
-        <div class="chat-modes" id="chatModes" role="group" aria-label="聊天模式"></div>
-        <button class="ghost small" id="clearChat" type="button">清空</button>
-      </div>
-      <div class="chat-ctx-hint" id="chatCtxHint"></div>
     </div>
     <div class="messages" id="messages"></div>
     <div class="composer">
-      <textarea id="input" rows="1" placeholder="问 VsSaros 点什么…" enterkeyhint="send"></textarea>
-      <div class="composer-actions">
-        <!-- 语音输入：浏览器原生 SpeechRecognition，**只在安全上下文可用**
-             （https / localhost / capacitor://localhost）。局域网 http 下浏览器
-             根本不给麦克风 ⇒ 按钮置灰并说明出路（见 app.js 的 setupVoiceInput）。 -->
-        <button class="ghost voice" id="voice" type="button" title="语音输入" aria-label="语音输入">🎙</button>
-        <button id="send" type="button">发送</button>
-        <button class="ghost" id="toAgent" type="button" title="把这条消息交给 VsSaros 的 Agent 执行">交给 Agent</button>
+      <!-- M2 输入行 + V1 语音（长按说话）：
+           键盘态 = 输入框 + 🎙（点一下切语音）+ ➤；语音态 = 整条「按住说话」+ ⌨（点一下切回）。
+           🎙/⌨ 是**同一个按钮**（#voice），它只管"切模式"，不再管"开始/结束录音"（那是长按/松手的事）。
+           录音中浮层（波形 + 计时 + 上滑取消）由 app.js 的 renderRecBar 控制显隐。 -->
+      <div class="rec-bar hidden" id="recBar">
+        <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        <span class="rec-time" id="recTime">00:00</span>
+        <span class="rec-note" id="recNote">松开发送 · 上滑取消</span>
+        <button class="rec-x hidden" id="recCancel" type="button" aria-label="取消这条语音">✕</button>
+      </div>
+      <!-- 语音不可用时的**可见**说明：安全上下文之外（局域网 http）浏览器不给麦克风。
+           以前只写在按钮 title 里 ⇒ 手机上永远看不到，点了没反应也没解释。 -->
+      <div class="notice hidden" id="voiceNotice" role="status"></div>
+      <div class="composer-row" id="composerRow">
+        <textarea id="input" rows="1" placeholder="Message Saros Claw…" enterkeyhint="send"></textarea>
+        <button class="ptt hidden" id="ptt" type="button">🎙 按住说话</button>
+        <button class="icon-btn voice" id="voice" type="button" title="语音输入" aria-label="语音输入">🎙</button>
+        <button class="send-btn" id="send" type="button" title="发送" aria-label="发送">➤</button>
       </div>
     </div>
   </section>

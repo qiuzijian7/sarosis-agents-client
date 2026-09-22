@@ -2,7 +2,7 @@
   "name": "saros-agents-pocket",
   "version": "0.1.0",
   "publisher": "saros",
-  "description": "Saros Pocket —— 用手机远程访问 VsSaros：对话（走 VsSaros 配好的模型）、交给 Agent、看/改工作区文件、看变更 diff、远程查看桌面画面（含远程键鼠，默认关闭）。\n\n入口：命令面板执行 `Saros Pocket: 打开访问面板` 扫码；或在电脑上执行 `Saros Pocket: 打开随身 App`。\n\n安全默认：写文件 / 发终端 / 远程键鼠全部默认关闭；文件操作限制在工作区内；命令只认白名单。",
+  "description": "Saros Pocket —— 用手机远程访问 VsSaros：对话（走 VsSaros 配好的模型）、点会话与 Agent 会话对话、看/改工作区文件、看变更 diff、远程查看桌面画面（含远程键鼠，默认关闭）。\n\n入口：命令面板执行 `Saros Pocket: 打开访问面板` 扫码；或在电脑上执行 `Saros Pocket: 打开随身 App`。\n\n安全默认：写文件 / 发终端 / 远程键鼠全部默认关闭；文件操作限制在工作区内；命令只认白名单。",
   "configuration": {
     "properties": {
       "sarosPocket.allowFileWrite": {
@@ -49,11 +49,6 @@
         "type": "string",
         "default": "",
         "description": "Pocket App 默认使用的模型 ID（留空 = 用 VsSaros 里第一个可用模型）。"
-      },
-      "sarosPocket.agentMode": {
-        "type": "string",
-        "default": "agent",
-        "description": "「交给 Agent」时使用的聊天模式（agent / ask / edit）。"
       },
       "sarosPocket.fileRoot": {
         "type": "string",

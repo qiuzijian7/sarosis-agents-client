@@ -118,7 +118,6 @@ select { flex: 1; min-width: 0; padding: 7px 8px; font-size: 13px; }
 
 .composer { border-top: 1px solid var(--line); padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--card2); }
 .composer textarea { width: 100%; resize: none; padding: 10px 12px; max-height: 120px; }
-.composer-actions { display: flex; gap: 8px; margin-top: 8px; }
 
 button {
   font: inherit;
@@ -134,19 +133,6 @@ button {
 button:disabled { opacity: .5; cursor: default; }
 button.ghost { background: transparent; border: 1px solid var(--line); color: var(--fg); }
 button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radius: 8px; }
-.composer-actions #send { flex: 1; }
-
-/* 语音输入：正方形图标按钮（不抢「发送」的宽度）；录音中用红色 + 呼吸动画常显，
-   让人一眼看出麦克风还开着 —— 手机端最容易忘的就是"它还在听"。 */
-.composer-actions .voice { flex: 0 0 auto; width: 44px; padding: 0; font-size: 16px; line-height: 1; }
-.composer-actions .voice.disabled { opacity: .45; }
-.composer-actions .voice.recording {
-  background: var(--err);
-  border-color: var(--err);
-  color: #fff;
-  animation: voicePulse 1.2s ease-in-out infinite;
-}
-@keyframes voicePulse { 50% { opacity: .65; } }
 
 /* ---------- 文件 ---------- */
 .path-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
@@ -192,8 +178,19 @@ button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radi
 
 .sessions, .changes { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
 
-.session { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; cursor: pointer; }
+.session { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; cursor: pointer; display: flex; gap: 10px; align-items: flex-start; }
 .session:active { background: var(--card2); }
+/* 会话 item 的头像位（V4）：agent.avatar 图片 > agent.icon emoji > 首字母兜底。
+   与 VsSaros 桌面同一套规则，见 app.js renderSessions 的注释。 */
+.session-ico {
+  flex: 0 0 auto; width: 28px; height: 28px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; line-height: 1; margin-top: 1px;
+}
+.session-ico img { width: 100%; height: 100%; border-radius: 8px; display: block; }
+/* 只有"既没 avatar 也没 icon"时才走到这条（字母圈） */
+.session-ico.fb { background: #39404d; color: #cbd3e1; font-size: 12px; font-weight: 700; border-radius: 50%; }
+.session-body { flex: 1; min-width: 0; }
 .session-top { display: flex; align-items: center; gap: 8px; }
 .session-title { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -209,6 +206,64 @@ button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radi
 .session-actions { margin-top: 8px; display: flex; gap: 8px; }
 .session-actions .ghost { padding: 4px 10px; font-size: 12px; }
 .session-preview { margin-top: 4px; font-size: 12px; color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 会话列表的三种样式：S1 卡片 / S2 列表 / S3 网格 ----------
+   纯展示层：数据、排序、点击行为完全不变（取舍见 docs/session-list-styles-mockup.html）。
+   当前样式写在容器 class 上（`sessions s1|s2|s3`，见 app.js 的 applyListView），并记进 localStorage。
+   ⚠ 宽屏那段 media query 会把 `.sessions` 改成 grid（1 个类）；这里用 `.sessions.s2/.s3`
+     （2 个类）覆盖 —— **媒体查询不增加优先级**，所以「列表式」在平板下也能保持单列竖排。 */
+.sessions.s2 { display: flex; flex-direction: column; padding: 0; gap: 0; }
+.sessions.s2 .session {
+  background: transparent; border: none; border-bottom: 1px solid var(--line);
+  border-radius: 0; padding: 9px 12px; align-items: center;
+}
+.sessions.s2 .session:last-child { border-bottom: none; }
+.sessions.s2 .session-meta { margin-top: 2px; }
+
+.sessions.s3 { display: grid; align-content: start; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* 不改 JS 生成的 DOM：把两层包裹摊平（display:contents）⇒ 头像/徽标/标题/元信息直接进网格 */
+.sessions.s3 .session-body, .sessions.s3 .session-top { display: contents; }
+.sessions.s3 .session {
+  display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 5px 6px;
+  padding: 9px 10px; min-height: 104px;
+}
+.sessions.s3 .session-ico { width: 20px; height: 20px; border-radius: 6px; font-size: 12px; margin-top: 0; }
+.sessions.s3 .badge { justify-self: end; }
+.sessions.s3 .session-title {
+  font-size: 12.5px; line-height: 1.35; white-space: normal; min-height: 34px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.sessions.s3 .session-meta {
+  display: block; margin-top: 0; font-size: 10.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sessions.s3 .session-preview { display: none; }   /* 网格里放不下预览行（那是 S4 的需求） */
+.sessions.s3 .session-actions { grid-column: 1 / -1; margin-top: 0; }
+/* 空态 / 诊断文案跨满整行，别被塞进一个 180px 的小格子里 */
+.sessions.s3 .empty { grid-column: 1 / -1; }
+
+/* ---------- 列表头：会话数 + 样式切换入口 A（▤ 图标 → 弹出菜单）---------- */
+.inbox-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px 0; }
+.inbox-head b { font-size: 13px; }
+.inbox-head .t { color: var(--mut); font-size: 11px; }
+.viewbtn {
+  margin-left: auto; width: 28px; height: 26px; flex: 0 0 auto; cursor: pointer;
+  background: transparent; color: var(--mut); border: 1px solid var(--line); border-radius: 7px;
+  font-size: 13px; display: flex; align-items: center; justify-content: center;
+}
+.viewbtn[aria-expanded="true"] { border-color: var(--acc); color: var(--fg); }
+.view-menu { margin: 6px 12px 2px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.view-row {
+  display: flex; align-items: center; gap: 9px; width: 100%; cursor: pointer;
+  padding: 9px 12px; background: transparent; color: var(--fg); border: none; font-size: 13px; text-align: left;
+}
+.view-row + .view-row { border-top: 1px solid var(--line); }
+.view-row[aria-checked="true"] { background: rgba(79, 110, 247, .12); }
+.view-row .ck { margin-left: auto; color: var(--acc); visibility: hidden; }
+.view-row[aria-checked="true"] .ck { visibility: visible; }
+
+/* 「载入更早的消息」：只在还有更早历史时出现（见 app.js 的 updateLoadMore） */
+.history-more { align-self: center; margin: 2px 0 8px; }
 
 .inbox-foot, .changes-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -289,13 +344,77 @@ button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radi
 /* ---------- 聊天头（与 VsSaros 聊天框同构：Agent / 工作区 / Worktree / 模型 / 模式）----------
    桌面端把这些放在聊天框顶部与输入区（agent+工作区+worktree 在头部，模式+模型在 composer）。
    手机屏窄，收成两行两列 + 一行模式芯片，信息层级保持一致：先 agent/工作区，再 worktree/模型，最后模式。 */
+/* M2（2026-09-22）：头部收成一行 —— 头像 + 名称·状态 + 工作区 chip + ⚙。
+   完整设置（4 个下拉 + 模式芯片）在 .chat-ctx-panel 里，点 ⚙ 才展开。 */
 .chat-head {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--card2);
+}
+
+.chat-head-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+/* 头像：与会话列表同一套规则（avatar 图片 > icon emoji > 兜底） */
+.chat-ava {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.chat-ava img { width: 100%; height: 100%; border-radius: 8px; display: block; }
+
+.chat-head-name { flex: 1; min-width: 0; }
+.chat-head-name b { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-head-name span { font-size: 11px; color: var(--mut); }
+
+.chat-head-ws {
+  flex: 0 1 auto;
+  max-width: 40%;
+  font-size: 10.5px;
+  color: var(--mut);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--mut);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-btn[aria-expanded="true"] { color: var(--fg); border-color: var(--acc); }
+
+.chat-ctx-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 10px;
 }
 
 .chat-ctx-row {
@@ -348,6 +467,73 @@ button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radi
 
 .chat-ctx-hint { font-size: 11px; color: var(--mut); line-height: 1.5; }
 .chat-ctx-hint.warn { color: var(--warn); }
+
+/* ---------- M2 输入区（输入框 + 🎙/⌨ + 圆形发送同一行）---------- */
+.composer-row { display: flex; align-items: flex-end; gap: 8px; }
+.composer-row textarea { flex: 1 1 auto; width: auto; min-width: 0; }
+
+/* ---------- V1 语音：长按说话（浮层 + 按住说话按钮）---------- */
+/* 录音浮层：波形 + 计时 + 提示 + （取消态才出现）✕。 */
+.rec-bar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+  padding: 9px 11px; background: #101319; border: 1px solid var(--acc); border-radius: 12px;
+}
+.rec-bar.cancel { border-color: var(--err); background: rgba(239, 68, 68, .10); }
+/* ⚠ 波形只是"在听"的**指示**，不是真实音量：SpeechRecognition 不给音频电平（见 app.js 注释）。 */
+.wave { display: flex; align-items: center; gap: 3px; height: 20px; flex: 0 0 auto; }
+.wave i { display: block; width: 3px; border-radius: 2px; background: var(--acc); height: 6px;
+  animation: waveBounce 1s ease-in-out infinite; }
+.rec-bar.cancel .wave i { background: var(--err); }
+.wave i:nth-child(1) { animation-delay: 0s; }   .wave i:nth-child(2) { animation-delay: .12s; }
+.wave i:nth-child(3) { animation-delay: .24s; } .wave i:nth-child(4) { animation-delay: .36s; }
+.wave i:nth-child(5) { animation-delay: .48s; } .wave i:nth-child(6) { animation-delay: .6s; }
+.wave i:nth-child(7) { animation-delay: .72s; } .wave i:nth-child(8) { animation-delay: .84s; }
+@keyframes waveBounce { 0%, 100% { height: 6px; } 50% { height: 20px; } }
+/* 等宽 + tabular-nums：否则秒数跳动时整行会左右抖 */
+.rec-time { flex: 0 0 auto; font: 12px/1 ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; }
+.rec-note { flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--mut);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-x { flex: 0 0 auto; width: 26px; height: 26px; min-height: 0; padding: 0; border-radius: 50%;
+  background: transparent; border: 1px solid var(--line); color: var(--mut); font-size: 12px; }
+/* 「按住说话」：语音态下取代输入框，占满整行 */
+.ptt {
+  flex: 1 1 auto; min-width: 0; height: 40px; display: flex; align-items: center;
+  justify-content: center; gap: 8px; font-size: 13px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; color: var(--fg);
+}
+.ptt.holding { background: rgba(79, 110, 247, .18); border-color: var(--acc); }
+.ptt.cancel { background: rgba(239, 68, 68, .16); border-color: var(--err); color: #ffb4b4; }
+/* 可见的不可用说明（替换原来只写在 title 里的那句） */
+.notice {
+  margin: 0 0 8px; padding: 7px 10px; border: 1px solid var(--warn); border-radius: 10px;
+  font-size: 12px; line-height: 1.55; color: #ffd9a0; background: rgba(245, 158, 11, .08);
+}
+
+/* 语音按钮：录音中变红 + 呼吸（手机端最容易忘的就是"它还在听"）。
+   ⚠ 它的**文字**现在表示模式（🎙/⌨），由 app.js 的 applyComposerMode 管，这里只管颜色。 */
+.icon-btn.voice { font-size: 15px; }
+.icon-btn.voice.recording {
+  background: var(--err);
+  border-color: var(--err);
+  color: #fff;
+  animation: voicePulse 1.4s ease-in-out infinite;
+}
+@keyframes voicePulse { 50% { opacity: .5; } }
+/* 发送：圆形主色按钮；思考中变暗并禁用（文案改由头部状态行承担，避免图标被文字挤走） */
+.send-btn {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--acc);
+  color: #fff;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.send-btn.busy { background: #2c3446; color: #aab6cc; }
 
 .screen-input { border-top: 1px solid var(--line); padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--card2); }
 .switchline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--mut); }
@@ -524,6 +710,8 @@ button.small { padding: 6px 10px; min-height: 32px; font-size: 12px; border-radi
   }
   /* 展开的变更条目跨满整行，diff 才有足够宽度读 */
   .change.expanded { grid-column: 1 / -1; }
+  /* 网格式在宽屏自动升到 3 列（手机 2 列，见上面的 .sessions.s3） */
+  .sessions.s3 { grid-template-columns: repeat(3, 1fr); }
 
   /* diff 在大屏下不受 50vh 限制，横向更宽、纵向更从容 */
   .diff { max-height: none; font-size: 12px; }

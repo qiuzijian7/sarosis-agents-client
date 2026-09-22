@@ -92,6 +92,13 @@ const REQUIRED_POCKET_COMMANDS = [
 	'sarosPocket.archiveSession',
 	'sarosPocket.getChatContext',
 	'sarosPocket.setChatContext',
+	// ★ 2026-09-22 双向实时同步新增的三条（漏注册的现场表现同样是"功能静默降级"）：
+	//   sendToSession      —— 手机发的消息进真实会话（桌面聊天框才会同步）
+	//   readSessionEvents  —— 按游标增量读（手机端实时看桌面正在跑的消息）
+	//   readSessionHistory —— 按窗口读历史（手机端「载入更早的消息」）
+	'sarosPocket.sendToSession',
+	'sarosPocket.readSessionEvents',
+	'sarosPocket.readSessionHistory',
 ] as const;
 
 const SAROS_POCKET_CONTRIB = 'contrib/sarosPocket/browser/sarosPocket.contribution.ts';

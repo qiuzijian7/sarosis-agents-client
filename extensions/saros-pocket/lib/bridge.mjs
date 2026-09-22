@@ -16,6 +16,57 @@ import { readdir, readFile, stat, writeFile, mkdir, realpath } from 'node:fs/pro
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createSessionStore } from './sessions.mjs';
 
+// ---------- 会话列表 item 的头像 emoji（方案 B：按 category/role 兜底）----------
+//
+// 为什么需要它：产品的头像是 `agent.avatar`（自定义图片 / 预设 SVG data URI）> `agent.icon`（emoji），
+// 而 **icon 的缺省值是 `🤖`** —— 用户没设过时，所有 agent 会显示同一个 🤖（毫无区分度，比旧的色块还差）。
+// 于是这里按 agent 的 category / role / id 关键词推一个**稳定的**默认 emoji：
+//   · 同一个 agent 永远得到同一个 emoji（按 agentId 哈希在同组候选里选，不同 agent 会错开）；
+//   · 用户在 VsSaros 里**设过** icon（不是空、也不是默认 🤖）或以 avatar 指定图片时，一律以他为准。
+// 纯展示策略、不写盘：改不动用户的 agent 定义 ✓。
+const EMOJI_GROUPS = [
+  [/ppt|slide|演示|幻灯片|presentation/i, ['📽️', '🎞️']],
+  [/知识库|knowledge|kb-|rag|文档|docs?/i, ['📚', '📖']],
+  [/设计|design|视觉|visual|ui|ux|theme/i, ['🎨', '🖌️']],
+  [/\bgc\b|性能|performance|profiler|insights|内存|memory/i, ['📊', '📈']],
+  [/测试|test|qa|质量|quality/i, ['🧪', '🔍']],
+  [/规划|plan|roadmap|方案|架构|architect/i, ['🗺️', '🧭']],
+  [/研究|research|分析|analy|调研/i, ['🔬', '🧠']],
+  [/写作|writer|文案|blog|文档撰写/i, ['✍️', '📝']],
+  // ⚠ 不要用"客户端 / client"当游戏特征：`VsSaros 客户端开发专家` 会被误判成游戏组（实测踩到）。
+  //   有 `UE5` / `游戏` 已足够识别游戏类 agent。
+  [/游戏|game|ue5|unity|引擎|engine/i, ['🎮', '🕹️']],
+  [/工作流|workflow|自动化|automation|pipeline/i, ['⚙️', '🔁']],
+  [/im\b|消息|chat|对话|客服/i, ['💬', '📨']],
+  [/前端|frontend|web|html|css|界面/i, ['🧩', '🖼️']],
+  [/开发|dev|工程|engineering|coder|编程|代码|code/i, ['🛠️', '⌨️', '🧰', '🔧']],
+];
+const EMOJI_FALLBACK = ['🤖', '🧠', '✨', '🔹'];
+
+/** djb2 hash（与桌面 `_getAgentColorIndex` 同款）：同 id 稳定、不同 id 分散。 */
+function djb2(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i += 1) { h = ((h << 5) + h) + s.charCodeAt(i); h &= h; }
+  return Math.abs(h);
+}
+
+/**
+ * 算出该 agent 在手机端显示的头像 emoji。
+ *
+ * @param {{icon?:string, avatar?:string, agentId?:string, category?:string, role?:string}} a
+ * @returns {string} emoji（可能为空字符串：表示"交给前端走字母兜底"——只有 avatar 存在时才会空）
+ */
+export function resolveAgentEmoji(a = {}) {
+  const icon = String(a.icon ?? '').trim();
+  // 用户设过（不是空、也不是桌面默认的 🤖）⇒ 以用户为准
+  if (icon && icon !== '🤖') return icon;
+  if (String(a.avatar ?? '').trim()) return '';   // 有自定义图片 ⇒ 不需要 emoji
+  const hay = `${a.category ?? ''} ${a.role ?? ''} ${a.agentId ?? ''}`;
+  const hit = EMOJI_GROUPS.find(([re]) => re.test(hay));
+  const pool = hit ? hit[1] : EMOJI_FALLBACK;
+  return pool[djb2(String(a.agentId ?? '')) % pool.length];
+}
+
 /** 默认允许远程触发的命令（只读/无副作用）。 */
 export const DEFAULT_ALLOWED_COMMANDS = [
   'workbench.action.files.save',
@@ -106,18 +157,6 @@ async function resolveInside(root, relPath) {
 
 function isTextBuffer(buf) {
   return !buf.subarray(0, 8192).includes(0);
-}
-
-function sanitizeAgentResult(result) {
-  if (!result || typeof result !== 'object') {
-    return { completed: result !== null && result !== undefined };
-  }
-  const out = { completed: true };
-  const msg = result.errorDetails?.message;
-  if (typeof msg === 'string' && msg) out.error = msg;
-  if (typeof result.details === 'string' && result.details) out.details = truncate(result.details, 2000);
-  if (typeof result.type === 'string') out.type = result.type;
-  return out;
 }
 
 /**
@@ -229,13 +268,13 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
     const models = await selectModels(payload?.modelId ?? cfg().chatModel);
     const model = models[0];
     if (!model) {
-      throw new Error('VsSaros 当前没有可用的语言模型：请先在 VsSaros 里配置好模型（Agent Studio / vscode.lm 提供者）。也可以用「交给 Agent」把任务直接丢给 VsSaros 的 Agent。| no language model available');
+      throw new Error('VsSaros 当前没有可用的语言模型：请先在 VsSaros 里配置好模型（Agent Studio / vscode.lm 提供者）。| no language model available');
     }
     if (typeof model.sendRequest !== 'function') {
       throw new Error('该模型不支持 sendRequest | model does not support sendRequest');
     }
     if (!vscode.LanguageModelChatMessage) {
-      throw new Error('当前 VsSaros 版本没有暴露 vscode.lm 消息类型，无法直连模型；请改用「交给 Agent」| LanguageModelChatMessage unavailable');
+      throw new Error('当前 VsSaros 版本没有暴露 vscode.lm 消息类型，无法直连模型 | LanguageModelChatMessage unavailable');
     }
 
     const messages = [];
@@ -330,34 +369,6 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
     try { cts.cancel(); } catch { /* 忽略 */ }
     // 会话状态由 chatSend 的 catch 分支收尾（cancelled），此处不重复结束
     return { cancelled: true, runId, sessionId: runSession.get(runId) ?? sessionId ?? null };
-  }
-
-  /** 把任务交给 VsSaros 自己的 Agent（真实进入 Agent 会话，会以完整工具链执行）。 */
-  async function agentSend(payload) {
-    const text = String(payload?.text ?? '').trim();
-    if (!text) throw new Error('缺少消息内容 | missing message');
-    const command = String(cfg().agentCommand ?? 'workbench.action.chat.open').trim() || 'workbench.action.chat.open';
-    const mode = String(cfg().agentMode ?? 'agent').trim();
-    const wait = payload?.wait !== false;
-    const args = { query: text, mode, blockOnResponse: wait };
-
-    // 登记会话：clientRunId 优先用调用方给的，缺省用文本内容本身做幂等键
-    const session = sessions.start({
-      kind: 'agent',
-      title: text,
-      clientRunId: String(payload?.runId ?? '').trim() || `agent:${text}`,
-    });
-
-    let result;
-    try {
-      result = await vscode.commands.executeCommand(command, args);
-    } catch (err) {
-      sessions.finish(session.id, { status: 'failed', error: String(err?.message ?? err) });
-      throw new Error(`交给 VsSaros Agent 失败（${command}）：${err?.message ?? err} | failed to dispatch to the VsSaros agent`);
-    }
-    sessions.finish(session.id, { status: 'done' });
-    emit('agent.sent', { command, mode, wait, sessionId: session.id });
-    return { command, mode, sessionId: session.id, result: sanitizeAgentResult(result) };
   }
 
   // ---------- 文件 ----------
@@ -695,6 +706,13 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
       const meta = Array.isArray(raw) || !raw || typeof raw !== 'object' ? {} : raw;
       const metaProviders = Array.isArray(meta.providers) ? meta.providers.map((p) => String(p)).slice(0, 16) : null;
       const metaMode = typeof meta.mode === 'string' ? meta.mode : null;
+      // sideview 的自诊断（`{count, agents, notes}`）：`count=0` 时它就是"为什么空"的答案，
+      // 直接透给手机端显示（见 app.js 的空态分支）—— 省掉"看不到会话也问不出原因"。
+      const metaSideview = meta.sideview && typeof meta.sideview === 'object' ? {
+        count: Number(meta.sideview.count) || 0,
+        agents: Number.isFinite(Number(meta.sideview.agents)) ? Number(meta.sideview.agents) : null,
+        notes: Array.isArray(meta.sideview.notes) ? meta.sideview.notes.map((n) => String(n)).slice(0, 3) : [],
+      } : null;
       if (!list) {
         sessionsDiag = { ok: false, count: 0, error: `命令返回的不是数组（${raw === null ? 'null' : typeof raw}）`, at: Date.now() };
         logLine(`Saros Pocket: 会话桥 sarosPocket.listSessions 返回异常 ⇒ ${sessionsDiag.error}`);
@@ -730,6 +748,17 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
           worktreePath: String(s.worktreePath ?? ''),
           agentModelId: String(s.agentModelId ?? ''),
           agentProviderId: String(s.agentProviderId ?? ''),
+          // ★ 头像（V4 + 方案 B，见 resolveAgentEmoji 的说明）：
+          //   avatar 优先（自定义图片 / 预设 SVG data URI）→ 否则 icon（用户设过的 emoji，
+          //   或按 category/role 推的稳定默认 emoji）→ 两者都空则前端用首字母兜底。
+          avatar: String(s.agentAvatar ?? ''),
+          icon: resolveAgentEmoji({
+            icon: s.agentIcon,
+            avatar: s.agentAvatar,
+            agentId: s.agentId,
+            category: s.agentCategory,
+            role: s.agentRole,
+          }),
           // ★ 能不能"继续/结束"：sideview 的会话是 Agent Studio 的历史记录，
           //   上游的 sendRequest/archive 认的是 ISessionsManagementService 的会话 id ⇒
           //   对这些会话给按钮只会点了报错。前端据此**不给**操作按钮（s.sendable === false）。
@@ -749,6 +778,7 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
         dropped: list.length - mapped.length,
         providers: metaProviders,
         mode: metaMode,
+        sideview: metaSideview,
         error: '',
         at: Date.now(),
       };
@@ -900,33 +930,45 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
       throw new Error('Agent 控制已关闭：请在 VsSaros 设置里开启 sarosPocket.allowAgentControl | agent control disabled');
     }
     const id = String(payload?.id ?? '').trim();
+    const agentIdHint = String(payload?.agentId ?? '').trim();
     const text = String(payload?.text ?? '').trim();
-    if (!id) throw new Error('缺少会话 id | missing session id');
+    // ★ 2026-09-22：允许**只给 agentId**（手机端没点具体会话时）。上游会用该 agent 最近的会话，
+    //   一条都没有就新建 ⇒ 手机发的消息必然落在真实会话里，
+    //   VsSaros 的聊天框（user 气泡 + 后续流式）与 sideview item 才能同步（用户需求：双向实时）。
+    if (!id && !agentIdHint) throw new Error('缺少会话 id | missing session id');
     if (!text) throw new Error('缺少消息内容 | missing text');
 
-    const real = await fetchRealSessions();
-    const target = (real ?? []).find((s) => s.id === id);
-    if (!target) {
-      throw new Error('只能向 VsSaros 的真实 Agent 会话发消息 | not a real VsSaros session');
+    // 给了 id 仍要确认真实性（本地影子会话没有上游实体，发了没人接 ⇒ 直接拒绝而不是静默成功）
+    let target = null;
+    if (id) {
+      const real = await fetchRealSessions();
+      target = (real ?? []).find((s) => s.id === id);
+      if (!target) {
+        throw new Error('只能向 VsSaros 的真实 Agent 会话发消息 | not a real VsSaros session');
+      }
     }
 
     // ★ sideview 的会话（Agent Studio）必须走 `sarosPocket.sendToSession`：
     //   只有它经过 IAgentChatService ⇒ 消息真的写进会话文件 ⇒ VsSaros 侧的
     //   **sideview item**（消息数/时间/标题）与**聊天框 UI**（已打开的面板立刻出现这条
-    //   user 气泡 + 后续流式回复）才会同步更新（用户 2026-09-21 需求）。
+    //   user 气泡 + 后续流式回复）才会同步更新。
     //   老路 `sendRequest` 认的是 ISessionsManagementService 的会话 id，对这些会话无效。
-    if (target.agentId) {
+    const agentId = (target && target.agentId) || agentIdHint;
+    if (agentId) {
       const out = await vscode.commands.executeCommand('sarosPocket.sendToSession', {
-        agentId: target.agentId,
-        sessionId: id,
+        agentId,
+        sessionId: id || undefined,
         text,
-        workspaceId: target.workspaceId || undefined,
-        modelId: target.agentModelId || undefined,
-        providerId: target.agentProviderId || undefined,
+        workspaceId: (target && target.workspaceId) || undefined,
+        modelId: (target && target.agentModelId) || undefined,
+        providerId: (target && target.agentProviderId) || undefined,
         chatMode: String(payload?.chatMode ?? '').trim() || undefined,
       });
-      emit('sessions.send', { id, bytes: text.length, via: 'agent-studio' });
-      return { id, sent: true, ok: out?.ok !== false, reply: String(out?.reply ?? '') };
+      const sid = String(out?.sessionId ?? id ?? '');
+      // 发完立刻开盯：assistant 回复（以及后续工具消息）会实时流回手机
+      if (sid) { watchSession(agentId, sid); }
+      emit('sessions.send', { id: sid, bytes: text.length, via: 'agent-studio' });
+      return { id: sid, sessionId: sid, agentId, sent: true, ok: out?.ok !== false, reply: String(out?.reply ?? '') };
     }
 
     const out = await vscode.commands.executeCommand('sarosPocket.sendRequest', id, text);
@@ -1015,6 +1057,203 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
     return result;
   }
 
+  // ---------- 会话事件流：上游游标增量 ⇒ 手机实时同步 ----------
+  //
+  // 为什么是"轮询游标"而不是订阅事件：上游的 `onDidStreamDelta` 是**工作台进程内**的 Emitter，
+  // 跑在扩展宿主里的桥拿不到 ✗；而会话日志是「只追加 + 快照」的 ✓ ⇒ 按 `seq` 游标读新增消息即可。
+  // 这正是上游 `sessionEventStream` 的用途（其头注释：跨进程/跨窗口消费的唯一入口 ✓）。
+  //
+  // 节流：700ms 一次；连续 4 次没有新增 ⇒ 认为这一轮执行结束（发 `session.done`，前端收起"运行中"）；
+  //      连续 60 次没有新增（≈42s）⇒ 停止轮询（不为了没人看的会话一直打上游）。
+  const WATCH_INTERVAL_MS = 700;
+  const WATCH_DONE_TICKS = 4;
+  const WATCH_STOP_TICKS = 60;
+  const WATCH_REPLAY_MAX = 40;   // 首次重放最多推多少条历史（手机上看尾部就够）
+  const HISTORY_PAGE = 30;       // 往前翻页每页多少条（手机「载入更早的消息」）
+  const watches = new Map();   // `${agentId}::${sessionId}` → 观察状态
+
+  function watchKey(agentId, sessionId) { return agentId + '::' + sessionId; }
+
+  /**
+   * 首跳：把最近一屏历史放给手机（`session.message` 带 `history: true`），并告诉它"还有没有更早的"。
+   *
+   * 用**有界**的 `readSessionHistory`（窗口读），而不是从 seq 0 全量读回来再截断 ——
+   * 一个 500 条的会话全量回传（单条最多 8KB）纯属浪费 ✗。
+   * 老版本 VsSaros 没有这条命令 ⇒ 退回"从 0 读到末尾、取最后 N 条"（与之前的行为一致 ✓）。
+   *
+   * ⚠ 历史**不算"正在执行"**：不发 `session.start`，否则手机头部一开会话就显示「运行中」✗。
+   */
+  async function primeWatch(w) {
+    let events = [];
+    let hasMore = false;
+    try {
+      const res = await vscode.commands.executeCommand('sarosPocket.readSessionHistory', {
+        agentId: w.agentId, sessionId: w.sessionId, limit: WATCH_REPLAY_MAX,
+      });
+      events = Array.isArray(res?.events) ? res.events : [];
+      hasMore = res?.hasMore === true;
+      const seq = Number(res?.cursor?.seq);
+      if (Number.isFinite(seq)) { w.seq = seq; }   // 历史已单独推过 ⇒ 游标直接落到末尾
+    } catch (err) {
+      logQuiet(`[sessions.watch] 历史窗口不可用，退回全量回放：${String(err?.message ?? err).slice(0, 140)}`);
+      const res = await vscode.commands.executeCommand('sarosPocket.readSessionEvents', {
+        agentId: w.agentId, sessionId: w.sessionId, seq: 0,
+      });
+      const all = Array.isArray(res?.events) ? res.events : [];
+      events = all.length > WATCH_REPLAY_MAX ? all.slice(-WATCH_REPLAY_MAX) : all;
+      hasMore = all.length > events.length;
+      const seq = Number(res?.cursor?.seq);
+      if (Number.isFinite(seq)) { w.seq = seq; }
+    }
+    for (const e of events) {
+      if (e?.kind === 'reset' || !e?.msg) { continue; }   // 历史里的屏障对"往上看"没意义
+      emit('session.message', { agentId: w.agentId, sessionId: w.sessionId, seq: e.seq, message: e.msg, history: true });
+    }
+    const oldestSeq = events.length && events[0] ? Number(events[0].seq) || 0 : 0;
+    emit('session.history', {
+      agentId: w.agentId, sessionId: w.sessionId, hasMore, oldestSeq, count: events.length,
+    });
+    w.primed = true;
+  }
+
+  function logQuiet(msg) {
+    try { log?.appendLine?.(msg); } catch { /* 日志失败不影响功能 */ }
+  }
+
+  /**
+   * 开始盯一个会话（幂等）。新增消息以 `session.message` 推给手机；
+   * `session.reset` = 日志被压缩/屏障（前端须重载历史）；`session.start/done` 用于"运行中"指示。
+   */
+  function watchSession(agentId, sessionId) {
+    const a = String(agentId || '').trim();
+    const s = String(sessionId || '').trim();
+    if (!a || !s) return { watching: false };
+    const key = watchKey(a, s);
+    const existed = watches.get(key);
+    if (existed) { existed.idle = 0; return { watching: true, already: true }; }
+
+    const w = { agentId: a, sessionId: s, seq: 0, idle: 0, active: false, busy: false, failed: 0, timer: null, primed: false };
+    watches.set(key, w);
+
+    const tick = async () => {
+      if (w.busy) return;                       // 上一次请求还没回来 ⇒ 不叠加
+      w.busy = true;
+      try {
+        // 首跳：先把最近一屏历史放给手机（有界），之后才是增量
+        if (!w.primed) { await primeWatch(w); return; }
+        const res = await vscode.commands.executeCommand('sarosPocket.readSessionEvents', {
+          agentId: w.agentId, sessionId: w.sessionId, seq: w.seq,
+        });
+        const events = Array.isArray(res?.events) ? res.events : [];
+        const nextSeq = Number(res?.cursor?.seq);
+        if (Number.isFinite(nextSeq)) { w.seq = nextSeq; }
+
+        if (events.length === 0) {
+          w.idle += 1;
+          if (w.active && w.idle >= WATCH_DONE_TICKS) {
+            w.active = false;
+            emit('session.done', { agentId: w.agentId, sessionId: w.sessionId, seq: w.seq });
+          }
+          if (w.idle >= WATCH_STOP_TICKS) { stopWatch(w.agentId, w.sessionId, { quiet: true }); }
+          return;
+        }
+
+        w.idle = 0;
+        w.failed = 0;
+        if (!w.active) {
+          w.active = true;
+          emit('session.start', { agentId: w.agentId, sessionId: w.sessionId });
+        }
+        // 首次（reset 后）会把整个会话重推一遍 ⇒ 只发**最近 N 条**，不然一个 500 条消息的会话
+        // 会一次性灌到手机上（上游单条已截断到 8KB，但仍没必要）。
+        // ⚠ 这里**不能**发 `session.reset` 表示"截断了"：reset 会让前端清空并再来一次 ⇒ 死循环 ✗。
+        const shown = events.length > WATCH_REPLAY_MAX ? events.slice(-WATCH_REPLAY_MAX) : events;
+        for (const e of shown) {
+          if (e?.kind === 'reset') {
+            emit('session.reset', { agentId: w.agentId, sessionId: w.sessionId, reason: e.reason ?? '' });
+            continue;
+          }
+          if (e?.msg) {
+            emit('session.message', { agentId: w.agentId, sessionId: w.sessionId, seq: e.seq, message: e.msg });
+          }
+        }
+        // 会话列表要跟着变（消息数 / 更新时间 / 顺序）⇒ 前端收到就刷新列表
+        emit('session.update', { agentId: w.agentId, sessionId: w.sessionId, seq: w.seq });
+      } catch (err) {
+        w.failed += 1;
+        // 老版本 VsSaros 没这条命令 / 会话还没有日志文件 ⇒ 退化成"不实时"，但别死循环
+        if (w.failed === 1) { logQuiet(`[sessions.watch] 事件流不可用（${w.agentId}/${w.sessionId}）：${String(err?.message ?? err).slice(0, 140)}`); }
+        if (w.failed >= 5) { stopWatch(w.agentId, w.sessionId, { quiet: true }); }
+      } finally {
+        w.busy = false;
+      }
+    };
+
+    w.timer = setInterval(() => { void tick(); }, WATCH_INTERVAL_MS);
+    if (w.timer && typeof w.timer.unref === 'function') { w.timer.unref(); }   // 别拖住扩展宿主退出
+    void tick();
+    return { watching: true };
+  }
+
+  /** 停止观察（quiet=true 不发 session.done：调用方已经知道结束了）。 */
+  function stopWatch(agentId, sessionId, { quiet = false } = {}) {
+    const w = watches.get(watchKey(agentId, sessionId));
+    if (!w) return { watching: false };
+    watches.delete(watchKey(agentId, sessionId));
+    if (w.timer) { clearInterval(w.timer); w.timer = null; }
+    if (w.active && !quiet) { emit('session.done', { agentId: w.agentId, sessionId: w.sessionId, seq: w.seq }); }
+    return { watching: false };
+  }
+
+  function stopAllWatches() {
+    for (const w of Array.from(watches.values())) { stopWatch(w.agentId, w.sessionId, { quiet: true }); }
+  }
+
+  /** RPC：开始观察某个会话（手机端点进会话时、或发完消息后调用）。 */
+  function sessionsWatch(payload) {
+    const agentId = String(payload?.agentId ?? '').trim();
+    const sessionId = String(payload?.id ?? payload?.sessionId ?? '').trim();
+    if (!agentId || !sessionId) throw new Error('缺少 agentId / sessionId | missing agentId/sessionId');
+    // reset=true：清掉现有游标，让上游从 seq 0 重推（前端"从头显示这个会话"时用；
+    // 也是 `session.reset`（日志压缩/屏障）后的正确恢复动作）。
+    if (payload?.reset === true) { stopWatch(agentId, sessionId, { quiet: true }); }
+    return { ...watchSession(agentId, sessionId), agentId, sessionId };
+  }
+
+  function sessionsUnwatch(payload) {
+    const agentId = String(payload?.agentId ?? '').trim();
+    const sessionId = String(payload?.id ?? payload?.sessionId ?? '').trim();
+    if (!agentId || !sessionId) throw new Error('缺少 agentId / sessionId | missing agentId/sessionId');
+    return { ...stopWatch(agentId, sessionId), agentId, sessionId };
+  }
+
+  /**
+   * 往前翻页：读更早的一屏消息（手机端「载入更早的消息」按钮）。
+   *
+   * `before` = 手机当前**最早那条**的 seq（0 = 从最后一页开始）。
+   * 与实时流不同，这里用 RPC 直接回给调用方：它是一次性请求-响应，顺序天然确定 ✓，
+   * 也不必让"翻页"和"实时推送"在同一队列里抢先后（翻出来的都是历史，与新增消息不冲突 ✓）。
+   */
+  async function sessionsHistory(payload) {
+    const agentId = String(payload?.agentId ?? '').trim();
+    const id = String(payload?.id ?? payload?.sessionId ?? '').trim();
+    const before = Math.max(0, Number(payload?.before ?? 0) || 0);
+    const limit = Math.max(1, Math.min(100, Number(payload?.limit ?? HISTORY_PAGE) || HISTORY_PAGE));
+    if (!agentId || !id) throw new Error('缺少 agentId / sessionId | missing agentId/sessionId');
+
+    const res = await vscode.commands.executeCommand('sarosPocket.readSessionHistory', {
+      agentId, sessionId: id, before, limit,
+    });
+    const events = Array.isArray(res?.events) ? res.events : [];
+    return {
+      agentId, sessionId: id,
+      messages: events.filter((e) => e?.kind !== 'reset' && e?.msg).map((e) => e.msg),
+      hasMore: res?.hasMore === true,
+      oldestSeq: events.length && events[0] ? Number(events[0].seq) || 0 : 0,
+      totalLines: Number(res?.totalLines) || 0,
+    };
+  }
+
   const endpoints = {
     'pocket.status': pocketStatus,
     'desktop.status': desktopStatus,
@@ -1024,12 +1263,16 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
     'chat.models': chatModels,
     'chat.send': chatSend,
     'chat.cancel': chatCancel,
-    'agent.send': agentSend,
     'sessions.list': sessionsList,
     'sessions.get': sessionsGet,
     'sessions.send': sessionsSend,
     'sessions.archive': sessionsArchive,
     'sessions.cancel': sessionsCancel,
+    // 实时同步：盯/放开某个会话的事件流（上游游标增量 ⇒ SSE 推给手机）
+    'sessions.watch': sessionsWatch,
+    'sessions.unwatch': sessionsUnwatch,
+    // 往前翻页：读更早的一屏消息（手机端「载入更早的消息」）
+    'sessions.history': sessionsHistory,
     // 聊天框头部（模式 / agent / 工作区 / worktree / 模型）：读渲染、写落回 VsSaros
     'chat.context': chatContext,
     'chat.context.set': chatContextSet,
@@ -1049,6 +1292,7 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
     endpoints,
     sessions,
     dispose() {
+      stopAllWatches();   // 扩展停用/重载时别留着轮询定时器
       for (const d of disposables.reverse()) {
         try { d?.dispose?.(); } catch { /* 忽略 */ }
       }

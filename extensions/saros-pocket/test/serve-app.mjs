@@ -64,7 +64,9 @@ const upstreamPort = upstream.address().port;
 const now = Date.now();
 const MOCK_SESSIONS = [
   { id: 's-1', title: '重构 rpc 层', status: 'running', kind: 'agent', real: true, startedAt: now - 3 * 60_000, updatedAt: now - 20_000, preview: '正在改 lib/rpc.mjs 的错误分支…' },
-  { id: 's-2', title: '为什么手机打不开', status: 'waiting', kind: 'agent', real: true, startedAt: now - 25 * 60_000, updatedAt: now - 4 * 60_000, preview: '等待你授权执行 git diff' },
+  // ★ s-2 带 agentId：UI 测试要靠它驱动「实时同步 + 逐字流 + 往前翻页」
+  //   （app 只对带 agentId 的会话绑定聊天；其余会话保持原样，别的用例点它们时不会被塞消息）
+  { id: 's-2', title: '为什么手机打不开', status: 'waiting', kind: 'agent', real: true, agentId: 'vssaros-dev-expert', startedAt: now - 25 * 60_000, updatedAt: now - 4 * 60_000, preview: '等待你授权执行 git diff' },
   { id: 's-3', title: '闲聊', status: 'done', kind: 'chat', real: false, startedAt: now - 90 * 60_000, updatedAt: now - 88 * 60_000, preview: '好的，已记录。' },
   { id: 's-4', title: '跑测试', status: 'failed', kind: 'agent', real: true, startedAt: now - 50 * 60_000, updatedAt: now - 49 * 60_000, preview: undefined, error: '命令超时' },
 ];
@@ -138,6 +140,28 @@ function desktopStatus() {
 }
 
 /** mock bridge：每个 endpoint 的返回形状与 lib/bridge.mjs 一致。 */
+// ★ 实时流的 mock：只对 `s-2` 播一段"助手消息逐渐变长"的事件流，用来验证
+//   「逐字流」（文字要一个字一个字长出来）+「session.history」（决定「载入更早」按钮显隐）。
+//   事件形状与真实 bridge 一致（session.message / session.history）。
+const STREAM_MOCK_ID = 's-2';
+let mockStreamStarted = false;
+function startMockStream(agentId, sessionId) {
+  if (mockStreamStarted) return;   // 只播一次：重开页面/重复 watch 不该把同一段再灌一遍
+  mockStreamStarted = true;
+  events.emit('session.history', { agentId, sessionId, hasMore: true, oldestSeq: 30, count: 2 });
+  events.emit('session.start', { agentId, sessionId });
+  const burst = [
+    { at: 0, msg: { id: 'm-u1', role: 'user', content: '这版逐字流能测吗？' } },
+    { at: 300, msg: { id: 'm-a1', role: 'assistant', content: '能' } },
+    { at: 1000, msg: { id: 'm-a1', role: 'assistant', content: '能，正在逐字往外吐——' } },
+    { at: 1900, msg: { id: 'm-a1', role: 'assistant', content: '能，正在逐字往外吐——这一段是逐字流的完整终态。' } },
+  ];
+  for (const b of burst) {
+    setTimeout(() => events.emit('session.message', { agentId, sessionId, seq: 31, message: b.msg }), b.at);
+  }
+  setTimeout(() => events.emit('session.done', { agentId, sessionId }), 2900);
+}
+
 const endpoints = {
   'pocket.status': async () => ({
     pocket: { upstreamPort, proxyPort: null, proxyRunning: true, lanUrl: 'http://127.0.0.1:3081', tunnelUrl: null, tunnelState: { phase: 'idle' } },
@@ -154,10 +178,6 @@ const endpoints = {
     return { text: `（mock 回复）你说了：${text}` };
   },
   'chat.cancel': async () => ({ cancelled: true }),
-  'agent.send': async ({ text }) => {
-    events.emit('agent.sent', { text });
-    return { command: 'workbench.action.chat.open', mode: 'agent', sessionId: 's-1', result: { ok: true } };
-  },
   'sessions.list': async ({ status }) => ({
     sessions: status ? MOCK_SESSIONS.filter((s) => s.status === status) : MOCK_SESSIONS,
   }),
@@ -168,6 +188,22 @@ const endpoints = {
   },
   'sessions.archive': async ({ id }) => ({ ok: true, id, archived: true }),
   'sessions.cancel': async ({ id }) => ({ sessionId: id, cancelled: true, status: 'cancelled' }),
+  // ---------- 实时同步 / 逐字流 / 往前翻页（只对 s-2 播，事件形状与真实 bridge 一致）----------
+  'sessions.watch': async ({ agentId, id }) => {
+    if (id === STREAM_MOCK_ID) { startMockStream(agentId, id); }
+    return { watching: true, agentId, sessionId: id, mock: true };
+  },
+  'sessions.unwatch': async ({ agentId, id }) => ({ watching: false, agentId, sessionId: id, mock: true }),
+  // 翻页：before=0（最后一页）说"还有更早"；before>0 给两条更早的消息并说"没有了"
+  'sessions.history': async ({ id, before }) => (before
+    ? {
+      messages: [
+        { id: 'h-1', role: 'user', content: '帮我看下 CI 为什么红' },
+        { id: 'h-2', role: 'assistant', content: '先看最近一次流水线的日志。' },
+      ],
+      hasMore: false, oldestSeq: 11, sessionId: id, mock: true,
+    }
+    : { messages: [], hasMore: true, oldestSeq: 0, sessionId: id, mock: true }),
   'files.list': async () => MOCK_FILES,
   'files.read': async ({ path }) => ({ path, content: `这是 mock 文件内容：${path}\n\n${MOCK_DIFF_TEXT}` }),
   'files.diff': async ({ path }) => (path ? { source: 'git-api', repoRoot: MOCK_CHANGES.repoRoot, path, diff: MOCK_DIFF_TEXT } : MOCK_CHANGES),

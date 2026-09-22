@@ -132,17 +132,39 @@ function readStringArray(storageService: IStorageService, key: string): string[]
  * ① pinned 在前 → ② 手动拖拽顺序 → ③ updatedAt 倒序。
  * 只取内容不复刻顺序，用户看到的就是"内容对了、顺序不对"。
  */
-async function listSideviewSessions(accessor: ServicesAccessor): Promise<unknown[]> {
+/**
+ * `listSideviewSessions()` 的返回结构：会话数组 + 诊断信息。
+ *
+ * ⚠ 必须显式声明：函数体返回的是 `{ sessions, diag }`。若签名写成 `Promise<unknown[]>`，
+ * 调用方的 `sideview.sessions` / `sideview.diag` 会全部报 TS2339
+ * （而且只在 `watch-client` 的类型检查里暴露，`transpile-client` 不做类型检查 ⇒ 容易漏）。
+ * 元素类型用 `unknown`：该结构由本函数自己拼装，调用方只做展开与 `.length`。
+ */
+interface ISideviewSessionsResult {
+	sessions: unknown[];
+	diag: { agents: number; notes: string[] };
+}
+
+async function listSideviewSessions(accessor: ServicesAccessor): Promise<ISideviewSessionsResult> {
+	// ★★ 所有服务必须在**第一个 await 之前**同步取完！
+	//   `ServicesAccessor` 只在"目标方法被调用的那一刻"有效（VSCode 的 DI 约定）——
+	//   一旦 await 过，再 `accessor.get(...)` 会抛
+	//   `Illegal state: service accessor is only valid during the invocation of its target method`。
+	//   这个坑 2026-09-22 真踩到：取完 fileService 就 await，之后再 get(IAgentStudioService)
+	//   ⇒ 整段被 catch 吞掉 ⇒ 手机端显示"读到 0 条会话"，而错误信息直到把诊断做进空态才看见。
 	const chatService = accessor.get(IAgentChatService);
 	const fileService = accessor.get(IFileService);
 	const environmentService = accessor.get(IEnvironmentService);
 	const storageService = accessor.get(IStorageService);
+	const agentStudio = accessor.get(IAgentStudioService);
 
 	// ① agent 目录发现：~/.vssaros/chat-history/<agentId>/sessions.json（与 sideview 同一套约定，
 	//    只认"目录里真的有索引文件"的 agent —— 否则会凭空多出空 agent）。
 	const chatHistoryRoot = URI.joinPath(userDataRootFromRoamingHome(environmentService.userRoamingDataHome), 'chat-history');
 	if (!(await fileService.exists(chatHistoryRoot))) {
-		return [];
+		// ⚠ 返回**对象**（见 ISideviewSessionsResult）：这里曾经返回裸数组，与声明不符，
+		// 调用方解包 `.sessions` 会直接拿到 undefined。
+		return { sessions: [], diag: { agents: 0, notes: ['chat-history 目录不存在'] } };
 	}
 	const root = await fileService.resolve(chatHistoryRoot);
 	const agentIds: string[] = [];
@@ -158,17 +180,27 @@ async function listSideviewSessions(accessor: ServicesAccessor): Promise<unknown
 	// ② 拉会话索引（只读索引、不读历史：与 sideview 一样，几十条也不慢），
 	//    并**带上每个会话自己的配置** —— 手机端「点会话 → 跳到当前会话」时，上下文要立刻切成
 	//    这个会话的 agent / provider+model / 工作区 / 工作树（用户 2026-09-21 需求）。
-	const agentStudio = accessor.get(IAgentStudioService);
 	const rows: Array<{
 		agentId: string; id: string; name: string; updatedAt: number; messageCount: number;
 		workspaceId: string; worktreePath: string; agentModelId: string; agentProviderId: string;
+		agentIcon: string; agentAvatar: string; agentCategory: string; agentRole: string;
 	}> = [];
+	// 诊断：**为什么会话是空的**（每个 agent 最多记 1 条错误）—— 手机端会把它显示在空态里，
+	// 免得又变成"看不到会话，也不知道为什么"（这次现场就是这种情况）。
+	const notes: string[] = [];
 	for (const agentId of agentIds) {
 		try {
 			// agent 定义只查一次/agent：默认模型与 provider 写在 .agent.md（Agent.model / Agent.providerId）
 			const agent = await agentStudio.getAgent(agentId).catch(() => undefined);
 			const agentModelId = String(agent?.model ?? '');
 			const agentProviderId = String(agent?.providerId ?? '');
+			// 头像：**原样**带下去（`avatar` = 自定义图片/预设 SVG 的 data URI，`icon` = emoji）。
+			// 这里不做任何默认值猜测 —— 桌面 `icon` 缺省是 `🤖`，而手机端想按 category/role 兜底
+			// 一个更有区分度的 emoji（方案 B），那属于 pocket 侧的展示策略（见 bridge.mjs）。
+			const agentIcon = String(agent?.icon ?? '');
+			const agentAvatar = String(agent?.avatar ?? '');
+			const agentCategory = String((agent as { category?: string } | undefined)?.category ?? '');
+			const agentRole = String(agent?.role ?? '');
 			const sessions = await chatService.listAgentSessions(agentId);
 			for (const s of sessions ?? []) {
 				const id = String(s?.id ?? '');
@@ -197,9 +229,19 @@ async function listSideviewSessions(accessor: ServicesAccessor): Promise<unknown
 					worktreePath,
 					agentModelId,
 					agentProviderId,
+					agentIcon,
+					agentAvatar,
+					agentCategory,
+					agentRole,
 				});
 			}
-		} catch { /* 单个 agent 失败不影响其它 agent（与 sideview 一致） */ }
+		} catch (err) {
+			// 单个 agent 失败不影响其它 agent（与 sideview 一致），但**必须留痕**：
+			// 全部 agent 都失败 ⇒ 列表空，而现场只看得到"还没有会话"，无从判断。
+			if (notes.length < 3) {
+				notes.push(`${agentId}: ${String((err as { message?: string })?.message ?? err).slice(0, 140)}`);
+			}
+		}
 	}
 
 	// ③ 排序 = sideview 的 _compareSessions()
@@ -218,7 +260,8 @@ async function listSideviewSessions(accessor: ServicesAccessor): Promise<unknown
 	});
 
 	// ④ 转成 Pocket 侧稳定的会话形态（字段与 toPlainSession 对齐，手机端无需分支）
-	return rows
+	return {
+		sessions: rows
 		.filter(r => !!r.id)
 		.map(r => ({
 			sessionId: r.id,
@@ -242,7 +285,15 @@ async function listSideviewSessions(accessor: ServicesAccessor): Promise<unknown
 			worktreePath: r.worktreePath,
 			agentModelId: r.agentModelId,
 			agentProviderId: r.agentProviderId,
-		}));
+			// 头像原料（手机端按 avatar > icon > 字母 渲染；默认 emoji 的兜底在 pocket 侧做）
+			agentIcon: r.agentIcon,
+			agentAvatar: r.agentAvatar,
+			agentCategory: r.agentCategory,
+			agentRole: r.agentRole,
+		})),
+		// 诊断（手机端空态直接显示）：扫到几个 agent、每个 agent 的首个错误
+		diag: { agents: agentIds.length, notes },
+	};
 }
 
 class SarosPocketListSessionsAction extends Action2 {
@@ -276,15 +327,21 @@ class SarosPocketListSessionsAction extends Action2 {
 		// sideview（Session History）的会话：手机端列表的**主体**（用户看到的 VsSaros 会话都在这里），
 		// 且只有它自带 pinned/手动顺序 —— 手机端的顺序一致性就靠这段。
 		// 取不到（老版本没有该服务 / 读盘失败）不能影响老链路 ⇒ 失败即空数组。
-		const sideview = await listSideviewSessions(accessor).catch(() => []);
+		// 取不到（老版本没有该服务 / 读盘失败）不能影响老链路 ⇒ 失败即空数组，
+		// 但**原因要带回去**：否则手机端只有一句"还没有会话"，这就是本次现场问题的成因。
+		const sideview = await listSideviewSessions(accessor).catch((err) => ({
+			sessions: [] as unknown[],
+			// agents 用 null = "不知道"（别写 0：那会让人以为目录是空的，实际是整段失败了）
+			diag: { agents: null, notes: [String((err as { message?: string })?.message ?? err).slice(0, 200)] },
+		}));
 
 		// sideview 排前面：ISessionsManagementService 的会话（agent-host / copilot）保留在后面，
 		// 既有场景不丢；两者同源重复的情况由手机端按标题去重。
 		return {
-			sessions: [...sideview, ...list.map(toPlainSession).filter(Boolean)],
+			sessions: [...sideview.sessions, ...list.map(toPlainSession).filter(Boolean)],
 			providers,
 			mode: isWeb ? 'web' : 'desktop',
-			sideview: { count: sideview.length },
+			sideview: { count: sideview.sessions.length, ...sideview.diag },
 		};
 	}
 }
@@ -359,13 +416,26 @@ class SarosPocketSendToSessionAction extends Action2 {
 	override async run(accessor: ServicesAccessor, payload?: unknown): Promise<unknown> {
 		const p = (payload ?? {}) as Record<string, unknown>;
 		const agentId = String(p.agentId ?? '').trim();
-		const sessionId = String(p.sessionId ?? '').trim();
+		let sessionId = String(p.sessionId ?? '').trim();
 		const text = String(p.text ?? '').trim();
 		if (!agentId) { throw new Error('sarosPocket.sendToSession: 缺少 agentId'); }
-		if (!sessionId) { throw new Error('sarosPocket.sendToSession: 缺少 sessionId'); }
 		if (!text) { throw new Error('sarosPocket.sendToSession: 缺少 text'); }
 
 		const chatService = accessor.get(IAgentChatService);
+		// ★ 2026-09-22：`sessionId` 改成**可选** —— 手机端「当前会话」页没点具体会话时也要能发出去。
+		//   否则那些消息只存在于手机上，VsSaros 的聊天框与 sideview 一无所知 ✗
+		//   （用户要求「web 中的消息内容要实时同步到 vssaros 的聊天框中」）。
+		//   规则：没给 sessionId ⇒ 用该 agent **最近一条**会话（listAgentSessions 已按 updatedAt 倒序 ✓）；
+		//   一条都没有 ⇒ 新建一条。这样手机发的每条消息都必然落在某个真实 Agent Studio 会话里 ✓。
+		if (!sessionId) {
+			const list = await chatService.listAgentSessions(agentId).catch(() => []);
+			sessionId = String(list?.[0]?.id ?? '');
+			if (!sessionId) {
+				const created = await chatService.createAgentSession(agentId, '手机端会话');
+				sessionId = String(created?.id ?? '');
+			}
+			if (!sessionId) { throw new Error('sarosPocket.sendToSession: 无法确定会话（新建失败）'); }
+		}
 		// 与面板自己发消息时**同一套 options**（见 agentStudioWebviewController 的调用）：
 		// 会话用 agentSessionId 指定；模型/工作区随会话配置一起带上，保证执行环境与桌面一致。
 		const options: IChatSendOptions = {
@@ -393,6 +463,130 @@ class SarosPocketSendToSessionAction extends Action2 {
 		const reply = await chatService.sendMessage(agentId, text, options, () => { /* 流式由面板消费 */ });
 		const replyText = String((reply as { content?: unknown })?.content ?? '');
 		return { ok: true, agentId, sessionId, reply: replyText.slice(0, 20000) };
+	}
+}
+
+/**
+ * 按**游标**增量读取会话事件（`seq` = 会话日志行号）。
+ *
+ * ★ 2026-09-22 用户需求：VsSaros 里**正在执行**的会话要实时流到手机（会话列表 + 当前会话），
+ *   手机上发的消息也要实时出现在 VsSaros 的聊天框里。
+ *
+ * 为什么用这条而不是订阅事件：pocket 扩展跑在**扩展宿主进程**，拿不到工作台进程内的
+ *   `onDidStreamDelta`（它只是进程内 Emitter ✗）。而会话日志是「只追加 + 快照」的 ✓，
+ *   按 `seq` 游标轮询就能拿到**新增消息** —— 这正是 `sessionEventStream` 被设计出来的用途
+ *   （见其头注释：「跨进程/跨窗口消费的唯一入口 ⇒ 不再依赖进程内内存共享」✓）。
+ *
+ * ⚠ 消费方必须处理 `reset`（日志被压缩/屏障 ⇒ 行号重置）：收到就重新 `getHistory` 或
+ *   把游标归零重读（桥侧已按这个语义处理 ✓）。
+ */
+/**
+ * 会话事件 → 手机端的精简结构（增量读 / 翻历史 两个 action 共用）。
+ *
+ * 手机端一次性拿到整段 tool result 没意义（会话里真有 1.4 MB 的单条消息 ✗）⇒ 截断并带
+ * `truncated` 标记，前端据此显示"内容过长，已截断"。角色/时间/是否有 parts 都保留（做富文本要用）。
+ */
+function mapSessionEventsForPocket(
+	// 结构化类型（不 import 具体类型）：只用得上这四个字段，跨 contrib 少一条依赖 ⇒ 也少一处"路径猜错"的风险
+	events: readonly { seq?: unknown; kind?: unknown; reason?: unknown; msg?: unknown }[],
+): Array<Record<string, unknown>> {
+	const MAX = 8000;
+	return (events ?? []).map((e) => {
+		const msg = e.msg as { id?: unknown; role?: unknown; content?: unknown; timestamp?: unknown; parts?: unknown } | undefined;
+		const content = typeof msg?.content === 'string' ? msg.content : '';
+		return {
+			seq: e.seq,
+			kind: e.kind,
+			reason: e.reason,
+			msg: msg ? {
+				id: String(msg.id ?? ''),
+				role: String(msg.role ?? ''),
+				content: content.length > MAX ? content.slice(0, MAX) : content,
+				truncated: content.length > MAX,
+				timestamp: String(msg.timestamp ?? ''),
+				hasParts: Array.isArray(msg.parts) && msg.parts.length > 0,
+			} : undefined,
+		};
+	});
+}
+
+class SarosPocketReadSessionEventsAction extends Action2 {
+	static readonly ID = 'sarosPocket.readSessionEvents';
+
+	constructor() {
+		super({
+			id: SarosPocketReadSessionEventsAction.ID,
+			title: 'Saros Pocket: Read Session Events (cursor)',
+			f1: false,
+		});
+	}
+
+	override async run(accessor: ServicesAccessor, payload?: unknown): Promise<unknown> {
+		const p = (payload ?? {}) as Record<string, unknown>;
+		const agentId = String(p.agentId ?? '').trim();
+		const sessionId = String(p.sessionId ?? '').trim();
+		const seq = Number(p.seq ?? 0) || 0;
+		if (!agentId) { throw new Error('sarosPocket.readSessionEvents: 缺少 agentId'); }
+		if (!sessionId) { throw new Error('sarosPocket.readSessionEvents: 缺少 sessionId'); }
+
+		const chatService = accessor.get(IAgentChatService);
+		const res = await chatService.readSessionEvents(agentId, sessionId, seq > 0 ? { seq } : undefined);
+
+		return {
+			cursor: res.cursor,
+			totalLines: res.totalLines,
+			tornLines: res.tornLines,
+			events: mapSessionEventsForPocket(res.events ?? []),
+		};
+	}
+}
+
+/**
+ * 按**窗口**读会话历史（手机端"载入更早的消息"）。
+ *
+ * 为什么单独一条：`readSessionEvents` 是**增量**语义（从游标往后读到末尾 ✓），**不能往前翻** ✗。
+ * 而手机一次只显示最近几十条、要能往上翻页 ⇒ 这里用"算起点 + 只回传窗口"的办法：
+ *   · `before > 0`：只要 `[before-limit, before)` 这一段（`before` = 手机当前最早那条的 seq）；
+ *   · `before == 0`：`limit = 0` 之外的"最后一页"（取末尾 `limit` 条）。
+ * ⚠ 上游的 `readSessionEvents` 内部仍会扫到文件末尾（本地文件 IO，可接受 ✓），
+ *   但**回传量与映射量都被窗口限制住了** ✓ —— 这是这条命令的真正价值（手机与扩展宿主是跨进程通信）。
+ */
+class SarosPocketReadSessionHistoryAction extends Action2 {
+	static readonly ID = 'sarosPocket.readSessionHistory';
+
+	constructor() {
+		super({
+			id: SarosPocketReadSessionHistoryAction.ID,
+			title: 'Saros Pocket: Read Session History (window)',
+			f1: false,
+		});
+	}
+
+	override async run(accessor: ServicesAccessor, payload?: unknown): Promise<unknown> {
+		const p = (payload ?? {}) as Record<string, unknown>;
+		const agentId = String(p.agentId ?? '').trim();
+		const sessionId = String(p.sessionId ?? '').trim();
+		const before = Math.max(0, Number(p.before ?? 0) || 0);
+		const limit = Math.max(1, Math.min(200, Number(p.limit ?? 40) || 40));
+		if (!agentId) { throw new Error('sarosPocket.readSessionHistory: 缺少 agentId'); }
+		if (!sessionId) { throw new Error('sarosPocket.readSessionHistory: 缺少 sessionId'); }
+
+		const chatService = accessor.get(IAgentChatService);
+		const startSeq = before > 0 ? Math.max(0, before - limit) : 0;
+		const res = await chatService.readSessionEvents(agentId, sessionId, startSeq > 0 ? { seq: startSeq } : undefined);
+		const all = res.events ?? [];
+
+		// 往前翻：从 startSeq 读到的那一段，只要前 limit 条（`seq > startSeq` 是开区间 ⇒ 正好覆盖 [startSeq+1, startSeq+limit]）
+		// 最后一页：取末尾 limit 条
+		const slice = before > 0 ? all.slice(0, limit) : all.slice(-limit);
+		const hasMore = before > 0 ? startSeq > 0 : all.length > slice.length;
+
+		return {
+			events: mapSessionEventsForPocket(slice),
+			cursor: res.cursor,
+			totalLines: res.totalLines,
+			hasMore,
+		};
 	}
 }
 
@@ -582,6 +776,8 @@ class SarosPocketContribution implements IWorkbenchContribution {
 		registerAction2(SarosPocketListSessionsAction);
 		registerAction2(SarosPocketSendRequestAction);
 		registerAction2(SarosPocketSendToSessionAction);
+		registerAction2(SarosPocketReadSessionEventsAction);
+		registerAction2(SarosPocketReadSessionHistoryAction);
 		registerAction2(SarosPocketArchiveSessionAction);
 		registerAction2(SarosPocketGetChatContextAction);
 		registerAction2(SarosPocketSetChatContextAction);

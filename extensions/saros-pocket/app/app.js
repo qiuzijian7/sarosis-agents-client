@@ -40,6 +40,12 @@
     /** 会话桥诊断（{ok,count,error}）：列表为空时用来区分"命令不可用"与"真的没会话" */
     sessionDiag: null,
     activeSessionId: null,
+    /** VsSaros 侧这个会话是否正在执行（来自 session.start / session.done）—— 头部显示「运行中」 */
+    sessionRunning: false,
+    /** 历史分页：上游说还有更早的消息 / 当前最早那条的 seq / 是否正在载入 */
+    historyHasMore: false,
+    oldestSeq: 0,
+    historyLoading: false,
     /**
      * 聊天上下文（与 VsSaros 聊天框同构的头部）：agent / 工作区 / worktree / 模式。
      * 由 `chat.context` 填充；老版本 VsSaros 读不到时 degraded=true（头部隐藏真实列表）。
@@ -49,18 +55,25 @@
     chatMode: 'craft',
     /** 聊天上下文是否已拉过（首次进「当前会话」页时惰性加载） */
     chatContextLoaded: false,
+    /** 会话列表样式：s1 卡片（默认）/ s2 列表 / s3 网格 —— 纯展示层，见 setupListView */
+    listView: 's1',
   };
 
   var el = {};
-  ['connDot', 'connText', 'hostInfo', 'modelSelect', 'messages', 'input', 'send', 'toAgent',
+  ['connDot', 'connText', 'hostInfo', 'modelSelect', 'messages', 'input', 'send',
     'clearChat', 'entries', 'pathText', 'upDir', 'reloadFiles', 'fileView', 'fileName',
     'fileBody', 'openInEditor', 'closeFile', 'statusCards', 'events', 'clearEvents', 'toast',
     'sessionList', 'sessionChips', 'reloadSessions', 'browseFiles', 'changes', 'reloadChanges', 'sessionDiag',
-    'voice',
+    // 会话列表样式切换（入口 A：列表头的 ▤ 按钮 + 弹出菜单）
+    'sessionCount', 'viewStyleBtn', 'viewStyleMenu',
+    // V1 语音（长按说话）：按住说话按钮 + 录音浮层 + 可见的不可用说明
+    'voice', 'ptt', 'recBar', 'recTime', 'recNote', 'recCancel', 'voiceNotice',
     'screenImg', 'screenStatus', 'screenMode', 'screenFps', 'screenScale', 'screenShot',
     'screenReload', 'screenInputBar', 'screenInputOn', 'screenText', 'screenFull', 'screenWrap',
     'screenExit', 'screenInputNote', 'screenInputRecheck', 'screenInputBadge',
     'chatContextBar', 'chatAgent', 'chatWorkspace', 'chatWorktree', 'chatModes', 'chatCtxHint',
+    // M2 聊天头（一行 + ⚙ 面板）与会话头像
+    'chatHeadAvatar', 'chatHeadName', 'chatHeadStatus', 'chatHeadWs', 'chatPanelToggle', 'chatCtxPanel',
     // App 自升级（原生壳专用；浏览器里 updateWrap 保持隐藏）
     'updateWrap', 'updateState', 'updateCheck', 'updateInstall', 'updateGrant',
     'updateBarWrap', 'updateBar', 'updateNotes', 'updateAuto', 'updateUrl', 'updateSrcHint', 'updateCur',
@@ -140,13 +153,24 @@
     source.addEventListener('error', function () { setConn('off', '连接断开，重连中…'); });
     ['chat.delta', 'chat.done', 'chat.error', 'chat.start', 'editor.change', 'file.save',
       'window.state', 'files.list', 'files.read', 'commands.run', 'notify', 'agent.sent', 'terminal.send',
-      'session.start', 'session.update', 'session.done']
+      'session.start', 'session.update', 'session.done',
+      // ★ 实时同步：上游正在执行的会话，按游标增量推过来的消息 / reset / 历史窗口信息
+      'session.message', 'session.reset', 'session.history']
       .forEach(function (type) {
         source.addEventListener(type, function (ev) {
           var data = null;
           try { data = JSON.parse(ev.data); } catch (e) { data = null; }
           pushEvent(type, data);
           if (type === 'chat.delta') onDelta(data);
+          // ★ 实时同步：VsSaros 里正在跑的消息 → 手机「当前会话」实时上屏
+          if (type === 'session.message') onSessionMessage(data);
+          // 首屏历史推完 ⇒ 上游告诉我们"还有没有更早的"，据此决定「载入更早」按钮的显隐
+          if (type === 'session.history') onSessionHistory(data);
+          // reset = 会话日志被压缩 / 整段改写（行号重置）⇒ 手机上的旧气泡作废，从头再来一遍
+          if (type === 'session.reset') { clearConversation(); reloadSessionStream(data); }
+          if (type === 'session.start') { state.sessionRunning = true; renderChatHead(); }
+          // 这一轮结束 ⇒ 把还在"打字"的消息一次补全（别让用户盯着半截文字）
+          if (type === 'session.done') { state.sessionRunning = false; stopTyping(true); setBusy(false); renderChatHead(); }
           // 会话状态变化 → 收件箱可见时立即刷新，用户不必手动点
           if (type.indexOf('session.') === 0 && state.tab === 'inbox') {
             loadSessions().catch(function () { /* 后台静默刷新 */ });
@@ -193,12 +217,15 @@
   function setBusy(on) {
     state.busy = on;
     el.send.disabled = on;
-    el.toAgent.disabled = on;
-    el.send.textContent = on ? '思考中…' : '发送';
+    // M2：发送改成圆形图标按钮 ⇒ 不再用文字去挤它；「思考中…」交给头部状态行表达
+    el.send.classList.toggle('busy', on);
+    renderChatHead();
     // 开始等待回复时停掉录音：否则「思考中」期间还在听，说出来的话会被追加进输入框，
     // 看着像识别串了台。已识别的文字保留在输入框里，不丢。
-    if (on && voice.on) stopVoice();
-    if (el.voice) el.voice.disabled = on || !voice.supported;
+    // 语音：思考中不能**开始**录音；但若用户已经停在语音态，⌨ 要留着 ——
+    // 否则他被锁在语音态里出不来，只能等回复结束 ✗
+    if (on && voice.on) stopVoice(false);
+    if (el.voice) el.voice.disabled = !voice.supported || (on && voice.mode !== 'voice');
   }
 
   /** 当前点进来的会话（必须是带 agentId 的 Agent Studio 会话），否则返回 null。 */
@@ -208,26 +235,218 @@
     return (s && s.agentId) ? s : null;
   }
 
+  // ---------- 实时同步：上游会话事件流 → 当前会话 ----------
+  //
+  // 上游按 `seq` 游标推 `session.message`（VsSaros 里正在执行的会话），手机「当前会话」跟着上屏；
+  // 同一条消息会因流式增量被**反复推送** ⇒ 必须按 message.id **upsert**，否则每个 delta 多一个气泡 ✗。
+  var streamNodes = {};   // messageId → DOM 节点
+
+  function clearConversation() {
+    stopTyping(false);                       // 清屏时别留着还在"打字"的定时器
+    streamNodes = {};
+    state.historyHasMore = false;
+    state.oldestSeq = 0;
+    if (el.messages) el.messages.innerHTML = '';
+    updateLoadMore();                        // 按钮刚被清掉 ⇒ 重建（保持隐藏）
+  }
+
+  // ---------- 逐字流 ----------
+  //
+  // 上游是"按游标增量"给的（助手消息内容随 delta 变长 ⇒ 同一条被反复覆盖 ✓），所以逐字显示是
+  // **真增量**，不是把整段文字假装切开。落后越多补得越快（最多 3 字/帧），但始终一个字一个字出 ——
+  // 观感是"AI 在打字"，而不是"每 700ms 蹦一整段"。
+  var typers = [];        // [{node, full, shown}]
+  var typerTimer = null;
+
+  function typerTick() {
+    var alive = 0;
+    for (var i = 0; i < typers.length; i += 1) {
+      var t = typers[i];
+      if (t.shown >= t.full.length) continue;
+      alive += 1;
+      t.shown = Math.min(t.full.length, t.shown + Math.max(1, Math.ceil((t.full.length - t.shown) / 30)));
+      t.node.textContent = t.full.slice(0, t.shown);
+      if (t.shown >= t.full.length) t.node.classList.remove('streaming');
+    }
+    stickToBottom();
+    if (!alive) stopTyping(false);
+  }
+
+  function stopTyping(flush) {
+    if (typerTimer) { clearInterval(typerTimer); typerTimer = null; }
+    if (flush) {
+      typers.forEach(function (t) { t.node.textContent = t.full; t.node.classList.remove('streaming'); });
+      stickToBottom();
+    }
+    typers = [];
+  }
+
+  function queueTyping(node, full) {
+    var t = typers.filter(function (x) { return x.node === node; })[0];
+    if (!t) { t = { node: node, full: '', shown: 0 }; node.textContent = ''; typers.push(t); }
+    t.full = full;
+    if (!typerTimer) typerTimer = setInterval(typerTick, 24);
+  }
+
+  /** 只在"本来就贴着底"时才自动滚到底 —— 用户往上翻的时候别把他拽回来。 */
+  function stickToBottom() {
+    if (!el.messages) return;
+    var gap = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight;
+    if (gap < 80) el.messages.scrollTop = el.messages.scrollHeight;
+  }
+
+  // ---------- 更早的历史（往前翻页） ----------
+  /** 上游推完首屏历史后告诉我们"还有没有更早的"。 */
+  function onSessionHistory(data) {
+    var active = activeSessionWithAgent();
+    if (!active || String((data && data.sessionId) || '') !== String(active.id || '')) return;
+    state.historyHasMore = !!(data && data.hasMore);
+    if (data && Number(data.oldestSeq) > 0) state.oldestSeq = Number(data.oldestSeq);
+    updateLoadMore();
+  }
+
+  /** 「载入更早的消息」按钮：只在"当前会话 + 还有更早"时出现（没有就不占位置）。 */
+  function updateLoadMore() {
+    if (!el.messages) return;
+    var btn = el.messages.querySelector('.history-more');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'history-more ghost small';
+      btn.addEventListener('click', loadMoreHistory);
+      el.messages.insertBefore(btn, el.messages.firstChild);   // 永远在最上面
+    }
+    btn.classList.toggle('hidden', !(activeSessionWithAgent() && (state.historyHasMore || state.historyLoading)));
+    btn.disabled = !!state.historyLoading;
+    btn.textContent = state.historyLoading ? '正在载入…' : '载入更早的消息';
+  }
+
+  async function loadMoreHistory() {
+    var active = activeSessionWithAgent();
+    if (!active || state.historyLoading) return;
+    state.historyLoading = true;
+    updateLoadMore();
+    var anchorGap = el.messages.scrollHeight - el.messages.scrollTop;   // 记住"我正在看的位置"
+    try {
+      var res = await rpc('sessions.history', {
+        agentId: active.agentId, id: active.id, before: state.oldestSeq || 0, limit: 30,
+      });
+      var msgs = (res && res.messages) || [];
+      var anchor = el.messages.querySelector('.msg');   // 固定锚点：整页插在它之前（顺序才不会反）
+      msgs.forEach(function (m) { upsertStreamMessage(m, true, anchor); });
+      if (res && Number(res.oldestSeq) > 0) state.oldestSeq = Number(res.oldestSeq);
+      state.historyHasMore = !!(res && res.hasMore);
+      if (!msgs.length) toast('没有更早的消息了');
+    } catch (err) {
+      toast(err.message || String(err));
+    } finally {
+      state.historyLoading = false;
+      updateLoadMore();
+      // 前面插了内容 ⇒ 按"距底距离"复原视口（否则用户正看的那几条会被顶下去 ✗）
+      el.messages.scrollTop = el.messages.scrollHeight - anchorGap;
+    }
+  }
+
+  /**
+   * 收到一条上游会话消息 ⇒ 上屏（只有"当前在看的那条会话"才上屏；别的会话只用来刷列表）。
+   *
+   * ⚠ 刻意**不判断 `state.tab === 'chat'`**：游标是"消费即推进"的，跳过就等于**丢消息** ✗。
+   *   别的页签时照样写进 DOM（反正看不见），切回来时内容才是完整的。
+   */
+  function onSessionMessage(data) {
+    if (!data || !data.message) return;
+    var active = activeSessionWithAgent();
+    if (!active || String(data.sessionId || '') !== String(active.id || '')) return;
+    upsertStreamMessage(data.message);
+  }
+
+  /**
+   * 渲染/更新一条会话消息。
+   * @param {object} m 上游消息（`{id, role, content, truncated}`）
+   * @param {boolean} [isHistory] true = 往前翻出来的历史（插到最前、不做打字机、不抢滚动位置）
+   * @param {Node} [historyAnchor] 历史插入的**固定锚点** —— 一页多条时必须传同一个锚点：
+   *   若每条都重新 `querySelector('.msg')`，第二条会被插到**刚插进去的第一条之前** ⇒ 顺序反了 ✗（踩过）。
+   */
+  function upsertStreamMessage(m, isHistory, historyAnchor) {
+    var id = String(m.id || '');
+    if (!id) return;
+    var role = String(m.role || '');
+    var full = String(m.content || '') + (m.truncated ? '\n\n…（内容过长，已截断）' : '');
+    var node = streamNodes[id];
+    if (!node) {
+      if (!isHistory) {
+        // 本地上屏过的乐观气泡（user / 提示）在真消息到达时移除，避免重复
+        var stale = el.messages.querySelector('.msg.user[data-local="1"], .msg.system[data-local="1"]');
+        if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
+      }
+      node = document.createElement('div');
+      node.className = 'msg ' + (role === 'user' ? 'user' : (role === 'system' ? 'system' : 'assistant'));
+      streamNodes[id] = node;
+      if (isHistory) {
+        // 逐条插到**同一个**锚点之前 ⇒ 保持升序（锚点必须是调用方传进来的那一个，见上面注释）
+        el.messages.insertBefore(node, historyAnchor || el.messages.querySelector('.msg'));
+      } else {
+        el.messages.appendChild(node);
+      }
+    }
+    if (isHistory || role === 'user' || role === 'system') {
+      node.textContent = full;            // 历史 / 用户 / 系统消息直接显示，不上打字机
+      node.classList.remove('streaming');
+      return;
+    }
+    node.classList.add('streaming');
+    queueTyping(node, full);
+    stickToBottom();
+  }
+
+  /** 让上游开始推这个会话的事件（点进会话 / 发完消息后调用；幂等）。 */
+  function watchSession(agentId, sessionId, reset) {
+    if (!agentId || !sessionId) return Promise.resolve(null);
+    return rpc('sessions.watch', { agentId: agentId, id: sessionId, reset: reset === true })
+      .catch(function () { return null; });   // 老版本 VsSaros 没这条命令 ⇒ 退化成"非实时"，不打扰用户
+  }
+
+  /** reset 之后重新拉一遍历史（清空游标 ⇒ 上游会把整个会话重推一次）。 */
+  function reloadSessionStream(data) {
+    var active = activeSessionWithAgent();
+    if (!active) return;
+    var who = (data && data.agentId) ? data.agentId : active.agentId;
+    watchSession(who, active.id, true);
+  }
+
   async function sendToChat() {
     var text = el.input.value.trim();
     if (!text || state.busy) return;
-    // ★ 从列表点进了某个会话 ⇒ 这条消息要发到**那个会话**里（VsSaros 的 sideview item 与
-    //   聊天框 UI 都会同步更新，见 bridge.mjs 的 sessionsSend）。没点会话时保持原来的行为。
-    if (activeSessionWithAgent()) {
+    // ★ 实时同步（2026-09-22）：只要**知道是哪个 agent**（点进去的会话，或头部选中的 agent），
+    //   就走会话通道 —— 消息真的写进 Agent Studio 会话 ⇒ VsSaros 聊天框实时出现这条 user 消息，
+    //   回复也实时流回手机（session.message）。只有"连 agent 都没有"时才退回 vscode.lm 直连
+    //  （那种消息本来就不属于任何会话，无可同步）。
+    var sessionTarget = activeSessionWithAgent();
+    var sessionAgentId = sessionTarget ? sessionTarget.agentId : ((state.chatContext && state.chatContext.agentId) || '');
+    if (sessionAgentId) {
       el.input.value = '';
       el.input.style.height = 'auto';
-      addMsg('user', text);
-      var replyBubble = addMsg('assistant streaming', '');
+      // 乐观气泡标 data-local：真正的 user 消息（带 message.id）到达时会被替换掉，不会重复
+      addMsg('user', text).dataset.local = '1';
+      addMsg('system', '已发到 VsSaros 会话，正在运行…').dataset.local = '1';
       setBusy(true);
       try {
-        var out = await rpc('sessions.send', { id: state.activeSessionId, text: text, chatMode: state.chatMode });
-        replyBubble.classList.remove('streaming');
-        replyBubble.textContent = (out && out.reply) || '（已发到 VsSaros，回复见桌面端该会话）';
+        var sent = await rpc('sessions.send', {
+          id: (sessionTarget && sessionTarget.id) || undefined,   // 没点具体会话时只给 agentId（上游解析/新建）
+          agentId: sessionAgentId,
+          text: text,
+          chatMode: state.chatMode,
+        });
+        var sid = String((sent && (sent.sessionId || sent.id)) || '');
+        if (sid) {
+          state.activeSessionId = sid;              // 采纳上游解析/新建出来的会话
+          watchSession(sessionAgentId, sid);        // 幂等：桥在发完时已经自己盯上了
+        }
       } catch (err) {
-        replyBubble.classList.remove('streaming');
-        replyBubble.className = 'msg error';
-        replyBubble.textContent = err.message || String(err);
-      } finally {
+        Array.prototype.forEach.call(el.messages.querySelectorAll('.msg[data-local="1"]'), function (n) {
+          if (n.parentNode) n.parentNode.removeChild(n);
+        });
+        addMsg('error', err.message || String(err));
         setBusy(false);
       }
       return;
@@ -264,31 +483,17 @@
     }
   }
 
-  async function sendToAgent() {
-    var text = el.input.value.trim();
-    if (!text || state.busy) return;
-    el.input.value = '';
-    addMsg('user', text);
-    setBusy(true);
-    try {
-      var res = await rpc('agent.send', { text: text });
-      var r = (res && res.result) || {};
-      addMsg('system', r.error
-        ? 'Agent 返回错误：' + r.error
-        : '已交给 VsSaros Agent（' + (res && res.command ? res.command : 'workbench.action.chat.open') + '）执行，回复请在 VsSaros 里查看。');
-    } catch (err) {
-      addMsg('error', err.message || String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   // ---------- 语音输入 ----------
   // 为什么不用「录音上传 + 服务端转写」：那条路要 getUserMedia，而它和
   // SpeechRecognition 一样**只在安全上下文可用**。局域网 http://<IP>:3081 下浏览器
   // 根本不给麦克风，上传方案同样救不了，却要多背一条音频通道和一个外部 ASR 依赖。
   // 所以用浏览器原生识别（零依赖），并在非安全上下文下把按钮讲清楚，而不是假装能用。
-  var voice = { recognition: null, on: false, base: '', supported: false, blocked: '' };
+  var voice = {
+    recognition: null, on: false, base: '', supported: false, blocked: '',
+    // V1：mode=键盘/语音两态；phase=录音浮层的三态（off/rec/cancel）；
+    // timer=录音计时器；before=**开始录音前**输入框的内容（上滑取消时用它还原）
+    mode: 'kb', phase: 'off', timer: null, startedAt: 0, before: '',
+  };
 
   /** 安全上下文之外一律不可用：http 局域网是 Pocket 的默认访问方式，必须显式说明。 */
   function voiceUnavailableReason() {
@@ -298,13 +503,135 @@
     return '';
   }
 
+  // ---------- V1：键盘 ⇄ 语音 两种模式（🎙/⌨ 只管切模式）----------
+  //
+  // 为什么记进 localStorage：与微信一致 —— 上次用语音，下次打开还在语音（省一次点击）。
+  // 默认仍是键盘态，不改变老用户的第一印象。
+  var COMPOSER_MODE_KEY = 'sarosPocket.composerMode';
+  var PTT_CANCEL_SLOP = 60;          // 上滑超过这个距离 = 取消（松手不写进输入框）
+
+  function readComposerMode() {
+    try { return localStorage.getItem(COMPOSER_MODE_KEY) === 'voice' ? 'voice' : 'kb'; } catch (e) { return 'kb'; }
+  }
+  function writeComposerMode(m) {
+    try { localStorage.setItem(COMPOSER_MODE_KEY, m); } catch (e) { /* 隐私模式等：忽略 */ }
+  }
+
+  /**
+   * 切键盘/语音模式。
+   * ⚠ 语音态**隐藏输入框与发送键**、换成「按住说话」整条 ⇒ 从根上解决"录音中误发没定稿的字"。
+   * ⚠ 不可用时不允许停在语音态（否则用户进了语音态却按不出声，只剩困惑）。
+   */
+  function applyComposerMode(mode) {
+    var want = (mode === 'voice' && voice.supported) ? 'voice' : 'kb';
+    voice.mode = want;
+    var inVoice = want === 'voice';
+    if (el.input) el.input.classList.toggle('hidden', inVoice);
+    if (el.ptt) el.ptt.classList.toggle('hidden', !inVoice);
+    if (el.send) el.send.classList.toggle('hidden', inVoice);
+    if (el.voice) {
+      el.voice.textContent = inVoice ? '⌨' : '🎙';
+      el.voice.title = inVoice ? '切回键盘输入' : '切到语音输入（长按说话）';
+      el.voice.setAttribute('aria-label', inVoice ? '切回键盘输入' : '语音输入');
+      el.voice.disabled = !voice.supported;
+      el.voice.classList.toggle('disabled', !voice.supported);
+    }
+    if (!inVoice) stopVoice(false);   // 从语音态回键盘 ⇒ 结束录音但**保留**已识别的字
+  }
+
+  /** 录音浮层：'off' 隐藏 / 'rec' 录音中 / 'cancel' 已进入取消区（松手丢弃）。 */
+  function renderRecBar(phase) {
+    if (!el.recBar) return;
+    el.recBar.classList.toggle('hidden', phase === 'off');
+    el.recBar.classList.toggle('cancel', phase === 'cancel');
+    if (phase === 'off') return;
+    var sec = Math.max(0, Math.round((Date.now() - (voice.startedAt || Date.now())) / 1000));
+    if (el.recTime) {
+      el.recTime.textContent = ('0' + Math.floor(sec / 60)).slice(-2) + ':' + ('0' + (sec % 60)).slice(-2);
+    }
+    if (el.recNote) {
+      el.recNote.textContent = phase === 'cancel' ? '松开取消这条语音（不写进输入框）' : '松开发送 · 上滑取消';
+    }
+    if (el.recCancel) el.recCancel.classList.toggle('hidden', phase !== 'cancel');
+    if (el.ptt) {
+      el.ptt.classList.toggle('holding', phase === 'rec');
+      el.ptt.classList.toggle('cancel', phase === 'cancel');
+      el.ptt.textContent = phase === 'cancel' ? '松手取消' : (phase === 'rec' ? '🎙 松开发送' : '🎙 按住说话');
+    }
+  }
+
+  /** 把"为什么不能语音"显示出来（以前只写在 title 里，手机上永远看不到）。点一下可收起。 */
+  function showVoiceNotice() {
+    if (!el.voiceNotice || !voice.blocked) return;
+    el.voiceNotice.textContent = voice.blocked;
+    el.voiceNotice.classList.remove('hidden');
+  }
+
+  /**
+   * 长按说话（push-to-talk）。
+   * 用 pointer 事件：触摸 / 鼠标 / 触控笔一套代码；`setPointerCapture` 保证手指移出按钮后
+   * 仍能收到 pointerup（否则"上滑到取消区再松开"会漏事件 ⇒ 卡在录音中 ✗）。
+   *
+   * ⚠ 波形只是"在听"的指示，**不是真实音量**：SpeechRecognition 不暴露音频电平
+   *   （要真实波形得自己开 getUserMedia + AudioContext，那是另一条链路，暂不做）。
+   */
+  function setupPushToTalk() {
+    if (!el.ptt) return;
+    var startY = 0;
+    el.ptt.addEventListener('pointerdown', function (e) {
+      if (voice.on) return;
+      if (!voice.supported) { showVoiceNotice(); return; }          // 说清原因，不要静默
+      if (state.busy) { toast('思考中不能录音：等这条回复结束再按住说话'); return; }
+      startY = e.clientY;
+      voice.phase = 'rec';
+      voice.before = el.input ? el.input.value : '';                // 取消时还原成这个
+      startVoice();
+      voice.startedAt = Date.now();
+      renderRecBar('rec');
+      voice.timer = setInterval(function () { renderRecBar(voice.phase); }, 250);
+      e.preventDefault();
+    });
+    // ⚠ move / up 绑在 **document** 上：手指（或鼠标）滑出按钮后，事件不再落到按钮上，
+    //   绑在按钮上会漏掉"上滑到取消区再松开" ⇒ 卡在录音中 ✗（比 setPointerCapture 更省心）。
+    document.addEventListener('pointermove', function (e) {
+      if (!voice.on) return;
+      var phase = (startY - e.clientY) >= PTT_CANCEL_SLOP ? 'cancel' : 'rec';
+      if (phase !== voice.phase) { voice.phase = phase; renderRecBar(phase); }
+    });
+    var finish = function () {
+      if (!voice.on) return;
+      var discard = voice.phase === 'cancel';
+      stopVoice(discard);
+      if (discard) toast('已取消这条语音');
+    };
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', finish);
+    if (el.recCancel) {
+      el.recCancel.addEventListener('click', function () {
+        if (!voice.on) return;
+        stopVoice(true);
+        toast('已取消这条语音');
+      });
+    }
+  }
+
+  /** 🎙/⌨ 点击：只切模式（不再承担"开始/结束录音"，那是长按与松手的事）。 */
+  function setupVoiceToggle() {
+    if (!el.voice) return;
+    el.voice.addEventListener('click', function () {
+      if (voice.mode === 'voice') { applyComposerMode('kb'); writeComposerMode('kb'); return; }
+      if (!voice.supported) { showVoiceNotice(); return; }
+      applyComposerMode('voice');
+      writeComposerMode('voice');
+    });
+  }
+
   function setVoiceState(on) {
     voice.on = on;
     if (!el.voice) return;
-    el.voice.classList.toggle('recording', on);
+    el.voice.classList.toggle('recording', on);   // 红色 + 呼吸：一眼看出"它还在听"
     el.voice.setAttribute('aria-pressed', on ? 'true' : 'false');
-    el.voice.textContent = on ? '停止' : '🎙';
-    el.voice.title = on ? '停止并保留已识别的文字' : '语音输入';
+    // ⚠ 不再改 el.voice 的文字：它现在表示**模式**（🎙/⌨），由 applyComposerMode 管
   }
 
   function startVoice() {
@@ -322,11 +649,19 @@
     }
   }
 
-  function stopVoice() {
+  /** 结束录音。`discard=true`（上滑取消）时把输入框还原成开始录音前的内容。 */
+  function stopVoice(discard) {
     if (voice.recognition) {
       try { voice.recognition.stop(); } catch (err) { /* 已停止 */ }
     }
+    if (voice.timer) { clearInterval(voice.timer); voice.timer = null; }
+    if (discard && el.input) {
+      el.input.value = voice.before || '';      // interim 已经写进 value 了 ⇒ 必须还原
+      el.input.dispatchEvent(new Event('input'));   // 让 textarea 高度重算
+    }
+    voice.phase = 'off';
     setVoiceState(false);
+    renderRecBar('off');
   }
 
   function setupVoiceInput() {
@@ -337,6 +672,8 @@
       el.voice.disabled = true;
       el.voice.classList.add('disabled');
       el.voice.title = voice.blocked;
+      showVoiceNotice();          // 可见提示条（不只 title）—— 手机上才看得到原因
+      applyComposerMode('kb');    // 不可用 ⇒ 不允许停在语音态
       return;
     }
 
@@ -374,8 +711,59 @@
     rec.onend = function () { setVoiceState(false); };
 
     voice.recognition = rec;
-    el.voice.addEventListener('click', function () {
-      if (voice.on) stopVoice(); else startVoice();
+    setupVoiceToggle();
+    setupPushToTalk();
+    if (el.voiceNotice) {
+      el.voiceNotice.addEventListener('click', function () { el.voiceNotice.classList.add('hidden'); });
+    }
+    applyComposerMode(readComposerMode());   // 恢复上次的模式（默认键盘态）
+  }
+
+  /**
+   * 聊天头（M2）：一行显示「谁 · 状态 · 在哪个工作区」，并维护 ⚙ 面板展开态。
+   *
+   * 名称优先级：点进来的会话标题 > 当前 agent 名 > 兜底；头像与会话列表**同一套规则**
+   * （avatar 图片 > icon emoji > 🤖），所以同一 agent 在两处看起来一致。
+   */
+  function renderChatHead() {
+    if (!el.chatHeadName) return;
+    var s = activeSessionWithAgent();
+    var c = state.chatContext || {};
+    var agent = (c.agents || []).filter(function (a) { return a.id === c.agentId; })[0] || null;
+
+    el.chatHeadName.textContent = (s && s.title) || (agent && (agent.name || agent.id)) || 'Saros Pocket';
+    // 「运行中」有两个来源：本机在等回复（busy），或 VsSaros 侧这个会话正在执行（sessionRunning）
+    el.chatHeadStatus.textContent = (state.busy || state.sessionRunning === true)
+      ? '思考中…'
+      : (c.degraded ? '未连上 VsSaros' : 'AI Assistant · 空闲');
+
+    var ws = (c.workspaces || []).filter(function (w) { return w.id === c.workspaceId; })[0];
+    var wsName = (ws && (ws.name || ws.id)) || '';
+    var wt = c.worktreePath ? c.worktreePath.split(/[\\/]/).pop() : '';
+    var label = [wsName, wt].filter(Boolean).join(' · ');
+    if (el.chatHeadWs) {
+      el.chatHeadWs.textContent = label;
+      el.chatHeadWs.hidden = !label;
+    }
+    if (el.chatHeadAvatar) {
+      var avatar = (s && s.avatar) || '';
+      var icon = (s && s.icon) || '';
+      if (!avatar && !icon && agent) { avatar = agent.avatar || ''; icon = agent.icon || ''; }
+      el.chatHeadAvatar.innerHTML = avatar
+        ? '<img alt="" src="' + esc(avatar) + '">'
+        : esc(icon || '🤖');
+    }
+  }
+
+  // ⚙ 展开/收起完整设置（Agent / 工作区 / Worktree / 模型 + 模式芯片）。
+  // 默认收起：它们常驻 4 行会吃掉 ~150px，把消息区挤到只剩几行（M2 的动机）。
+  if (el.chatPanelToggle && el.chatCtxPanel) {
+    el.chatPanelToggle.addEventListener('click', function () {
+      var open = el.chatCtxPanel.classList.contains('hidden');
+      el.chatCtxPanel.classList.toggle('hidden', !open);
+      el.chatPanelToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      // 展开时顺手刷新一次（可能刚在 VsSaros 里改了工作区/模型）
+      if (open) loadChatContext().catch(function () { /* 头部会显示降级提示 */ });
     });
   }
 
@@ -460,6 +848,7 @@
     })), state.chatContext.worktreePath || '', '主仓库');
     renderChatModes();
     renderChatCtxHint();
+    renderChatHead();   // M2：头部一行的名称/状态/工作区 chip 也跟着上下文刷新
   }
 
   function renderChatModes() {
@@ -521,7 +910,7 @@
       state.models = [];
     }
     if (state.models.length === 0) {
-      el.modelSelect.innerHTML = '<option value="">（没有可用模型，用「交给 Agent」）</option>';
+      el.modelSelect.innerHTML = '<option value="">（没有可用模型）</option>';
       renderChatCtxHint();
       return;
     }
@@ -658,9 +1047,79 @@
     return !!d && d.ok === true && (d.raw || 0) > 0 && d.dropped === d.raw;
   }
 
+  /** 头像兜底用的首字母（中文取首字，英文取首字母大写）。 */
+  function initialOf(text) {
+    var s = String(text || '').trim();
+    return s ? s.charAt(0).toUpperCase() : '·';
+  }
+
+  // ---------- 会话列表样式：S1 卡片 / S2 列表 / S3 网格 ----------
+  //
+  // **纯展示层**：数据、顺序、点击行为完全不变，只换排布（取舍见 docs/session-list-styles-mockup.html）。
+  // 选择记在 localStorage；默认 `s1`（卡片式）= 现状 ⇒ 不改变老用户的第一印象。
+  // ⚠ 键名与读写函数必须定义在**使用之前**：`var` 只提升声明、不提升赋值
+  //   （本项目被这个坑过一次，见屏幕页 INPUT_OPTIN_KEY 的注释）。
+  var LIST_VIEW_KEY = 'sarosPocket.sessionListView';
+  var LIST_VIEWS = { s1: '卡片式', s2: '列表式', s3: '网格式' };
+
+  function readListView() {
+    try {
+      var v = localStorage.getItem(LIST_VIEW_KEY);
+      // 脏值（手改过 / 版本回退）⇒ 回默认，不要留一个"四个样式都不匹配"的空白列表
+      return LIST_VIEWS[v] ? v : 's1';
+    } catch (e) { return 's1'; }
+  }
+
+  function writeListView(v) {
+    try { localStorage.setItem(LIST_VIEW_KEY, v); } catch (e) { /* 隐私模式等：忽略 */ }
+  }
+
+  /** 应用样式：容器上换 `sessions s1|s2|s3`（renderSessions 只写 innerHTML ⇒ 不会冲掉 class）。 */
+  function applyListView(v) {
+    var view = LIST_VIEWS[v] ? v : 's1';
+    state.listView = view;
+    if (el.sessionList) el.sessionList.className = 'sessions ' + view;
+    if (el.viewStyleMenu) {
+      Array.prototype.forEach.call(el.viewStyleMenu.querySelectorAll('.view-row'), function (row) {
+        row.setAttribute('aria-checked', row.dataset.view === view ? 'true' : 'false');
+      });
+    }
+    if (el.viewStyleBtn) el.viewStyleBtn.title = '列表样式：' + LIST_VIEWS[view] + '（点开可换）';
+  }
+
+  function closeViewMenu() {
+    if (!el.viewStyleMenu) return;
+    el.viewStyleMenu.classList.add('hidden');
+    if (el.viewStyleBtn) el.viewStyleBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  function setupListView() {
+    if (!el.viewStyleBtn || !el.viewStyleMenu) return;   // 老页面没有这段 DOM 也不报错
+    applyListView(readListView());                       // 打开页面即恢复上次选择
+    el.viewStyleBtn.addEventListener('click', function (e) {
+      // 别让 document 的"点别处关闭"立刻把它关掉（按钮与菜单不是祖孙关系）
+      e.stopPropagation();
+      var willOpen = el.viewStyleMenu.classList.contains('hidden');
+      el.viewStyleMenu.classList.toggle('hidden', !willOpen);
+      el.viewStyleBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    });
+    el.viewStyleMenu.addEventListener('click', function (e) {
+      var row = e.target && e.target.closest ? e.target.closest('.view-row') : null;
+      if (!row) return;
+      writeListView(row.dataset.view);
+      applyListView(row.dataset.view);
+      closeViewMenu();
+    });
+    document.addEventListener('click', closeViewMenu);                              // 点别处关闭
+    document.addEventListener('keydown', function (e) {                            // Esc 关闭
+      if (e.key === 'Escape') closeViewMenu();
+    });
+  }
+
   function renderSessions() {
     if (!el.sessionList) return;
     var list = state.sessions || [];
+    if (el.sessionCount) el.sessionCount.textContent = list.length ? list.length + ' 条' : '';
     if (list.length === 0) {
       var degraded = state.sessionDiag && state.sessionDiag.ok === false;
       if (state.sessionFilter === 'archived') {
@@ -681,6 +1140,14 @@
         el.sessionList.innerHTML = '<div class="empty">'
           + '读到 ' + state.sessionDiag.raw + ' 条会话，但字段对不上、全部被过滤掉了。<br>'
           + '细节（首条字段名）见 VsSaros「输出 → Saros Pocket」的会话桥日志。</div>';
+      } else if (state.sessionDiag && state.sessionDiag.sideview) {
+        // ★ 上游把"为什么空"带回来了（扫到几个 agent / 取数报的错）—— 直接显示出来。
+        // 之前只有一句"还没有会话"，现场无法判断是没开会话、版本旧、还是取数失败。
+        var sv = state.sessionDiag.sideview;
+        el.sessionList.innerHTML = '<div class="empty">'
+          + '读到 0 条会话（sideview 诊断：扫到 ' + esc(String(sv.agents === null || sv.agents === undefined ? '?' : sv.agents)) + ' 个 agent'
+          + (sv.notes && sv.notes.length ? '；错误：' + esc(sv.notes.join(' | ')) : '')
+          + '）。<br>把这一行发给 VsSaros 团队即可定位。</div>';
       } else {
         el.sessionList.innerHTML = '<div class="empty">VsSaros 里还没有会话。在电脑上开一个 Agent 会话，或直接发一条消息试试。</div>';
       }
@@ -707,8 +1174,18 @@
         + (s.archived ? '' : '<button class="ghost small session-archive" type="button">结束</button>')
         + '</div>'
         : '';
+      // 头像（V4）：与 VsSaros 桌面同一套规则 ——
+      //   ① `avatar`（自定义图片 / 预设 SVG 的 data URI）→ <img>
+      //   ② 否则 `icon`（用户设过的 emoji，或桥按 category/role 兜底的 emoji）
+      //   ③ 都没有 → 首字母兜底（旧的样子，只在这里出现）
+      var ico = s.avatar
+        ? '<span class="session-ico"><img alt="" src="' + esc(s.avatar) + '"></span>'
+        : '<span class="session-ico' + (s.icon ? '' : ' fb') + '">'
+          + esc(s.icon || initialOf(s.agentId || s.title)) + '</span>';
       return '<div class="session" data-id="' + esc(s.id) + '" data-real="' + (s.real ? '1' : '') + '"'
         + (s.archived ? ' data-archived="1"' : '') + '>'
+        + ico
+        + '<div class="session-body">'
         + '<div class="session-top">'
         + '<div class="session-title">' + esc(s.title) + '</div>'
         + '<span class="badge ' + esc(s.status) + '">' + esc(statusLabel(s.status)) + '</span>'
@@ -716,6 +1193,7 @@
         + '<div class="session-meta">' + esc(meta) + '</div>'
         + (s.preview ? '<div class="session-preview">' + esc(s.preview) + '</div>' : '')
         + actions
+        + '</div>'
         + '</div>';
     }).join('');
   }
@@ -832,6 +1310,11 @@
    * 应用后回读一次 `chat.context`，让头部选择器显示的值与实际生效的值一致。
    */
   async function applySessionContext(s) {
+    // ★ 实时同步**先接上**：必须在任何可能提前 return 的操作之前 ——
+    //   上游没实现 `chat.context.set`（老版本 / 桥不可用）时下面会 return ✗，
+    //   订阅若放在后面就永远订不上，表现就是"点进会话一片空白"（被这个坑到过）。
+    clearConversation();
+    watchSession(s.agentId, s.id, true);
     var patch = {};
     if (s.agentId) patch.agentId = s.agentId;
     if (s.workspaceId) patch.workspaceId = s.workspaceId;
@@ -1182,6 +1665,12 @@
       try { exit.call(doc); } catch (e) { /* 忽略 */ }
     }
     updateFullUI();
+    // ★ 2026-09-22 修：`exitFullscreen()` 是**异步**的，而 `fullscreenchange` 可能在
+    //   `fullscreenElement` 清空**之前**就派发 ⇒ 那一刻 updateFullUI() 仍判定"在全屏"，
+    //   按钮文案卡在「退出全屏」不放（现场表现为偶发失败：同样是点退出，有时对有时错）。
+    //   再等一拍 + 一个短延时各刷一次，覆盖两种派发时序。
+    requestAnimationFrame(function () { updateFullUI(); });
+    setTimeout(updateFullUI, 120);
   }
 
   function toggleScreenFull() {
@@ -1302,7 +1791,6 @@
   }
 
   el.send.addEventListener('click', function () { sendToChat(); });
-  el.toAgent.addEventListener('click', function () { sendToAgent(); });
   el.clearChat.addEventListener('click', function () {
     state.history = [];
     el.messages.innerHTML = '';
@@ -2002,7 +2490,7 @@
     setupVoiceInput();
     connectEvents();
     loadModels().then(loadStatus).catch(function () { /* 状态页会自己重试 */ });
-    addMsg('system', '已连上 Pocket。直接对话 = 用 VsSaros 配置的模型；「交给 Agent」= 把任务丢进 VsSaros 的 Agent 会话。');
+    addMsg('system', '已连上 Pocket。直接对话 = 用 VsSaros 配置的模型；在「会话列表」点进一个会话，就能与那个 Agent 会话对话（桌面端实时同步）。');
     loadSessions().catch(function () { /* 启动时静默，进收件箱会再试 */ });
     setInterval(function () { if (state.tab === 'status') loadStatus(); }, 15000);
     // 深链直达：/pocket/#screen（「打开屏幕」命令 / 二维码分享）
@@ -2017,6 +2505,8 @@
   setupUpdater();
   // App 信息（点 logo）：同样在配对分支之外 —— 版本号在"还没连上电脑"时最有用（排查用）。
   setupAbout();
+  // 会话列表样式（入口 A）：也是纯前端，未配对时就能切（不依赖 VsSaros）
+  setupListView();
 
   /**
    * 是否在**原生壳**里。

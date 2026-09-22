@@ -72,8 +72,8 @@ App 不加载整个工作台，只通过两条通道与 VsSaros 通信：
    **Agent**、**工作区**、**Worktree**、**模型** 五个选择器 + 一行上下文摘要。
    这些列表来自 VsSaros（命令 `sarosPocket.getChatContext`），**改选会写回 VsSaros**
    （切活动工作区 / 写 `AgentBinding.worktreePath` / 写模型选择）——不是只改手机上的显示。
-   所选**模式**随每条消息下发（`chat.send` 的 `context.chatMode`），点「**交给 Agent**」时
-   由 VsSaros 的 Agent 在该工作区 / worktree 上执行。
+   所选**模式**随每条消息下发（`sessions.send` 的 `chatMode`）：在「会话列表」点进某个会话后，
+   消息会**直接写进那个 Agent 会话** ⇒ 桌面端聊天框与 sideview 实时同步，回复也实时流回手机。
 
 外出（不在同一 WiFi）时：面板 → 「公网访问」→ **开启公网** → 用 **App 的公网二维码**。
 公网入口**强制**密码，且 `https` 域名对 iOS Safari 更友好（纯 `http://IP` 的局域网入口 Safari 不存 cookie，会卡在登录握手——面板会给出明确提示与重试链接）。
@@ -91,7 +91,6 @@ App 不加载整个工作台，只通过两条通道与 VsSaros 通信：
 | 能力 | endpoint | 说明 |
 | --- | --- | --- |
 | 对话（模型直连） | `chat.send` / `chat.models` | 用 **VsSaros 里配置好的模型**（`vscode.lm`）聊天，流式增量经 SSE 实时回显 |
-| 交给 Agent | `agent.send` | 把消息送进 **VsSaros 自己的 Agent 会话**（默认 `workbench.action.chat.open`，可配），带完整工具链执行 |
 | 看信息 | `vsaros.info` / `pocket.status` | VsSaros 版本、工作区、当前编辑器、代理/隧道状态、能力开关 |
 | 看文件 | `files.list` / `files.read` | 浏览工作区、读文本（默认 256 KB 上限，二进制拒绝） |
 | 改文件 | `files.write` | **默认关闭**（`sarosPocket.allowFileWrite`） |
@@ -236,8 +235,7 @@ vssaros --server --port 8000 --without-connection-token
 | `sarosPocket.launchPublicOnStart` | `false` | 激活时是否自动开公网隧道 |
 | `sarosPocket.chatModel` | `""` | App 默认模型 ID（留空 = 第一个可用模型） |
 | `sarosPocket.chatSystemPrompt` | 见设置页 | App 对话的系统提示词（只影响 App 内模型直连） |
-| `sarosPocket.agentCommand` | `workbench.action.chat.open` | 「交给 Agent」执行的命令 |
-| `sarosPocket.agentMode` | `agent` | 「交给 Agent」的聊天模式 |
+
 | `sarosPocket.allowedCommands` | 3 个只读命令 | App 可远程触发的命令白名单（精确匹配） |
 | `sarosPocket.allowFileWrite` | `false` | 是否允许 App 写工作区文件 |
 | `sarosPocket.allowTerminal` | `false` | 是否允许 App 向终端发送文本 |
@@ -316,7 +314,7 @@ vssaros --server --port 8000 --without-connection-token
 - **VsSaros 能执行代码，公网二维码/链接请勿泄露。**
 - Pocket App 的 RPC/SSE 与网页共用同一套 PIN 与局域网开关（代理在鉴权之后才接管这些路由），不额外开认证口子。
 - App 的**写操作默认全关**：`files.write` 需 `allowFileWrite`、`terminal.send` 需 `allowTerminal`、`commands.run` 只认白名单；文件读写一律限制在工作区根目录内（`..` 与跨盘符路径会被拒）。
-- 聊天走的是 VsSaros 已配置的模型（`vscode.lm`）；若 VsSaros 未暴露该 API，App 会自动隐藏模型直连，只保留「交给 Agent」。
+- 聊天走的是 VsSaros 已配置的模型（`vscode.lm`）；若 VsSaros 未暴露该 API，App 会自动隐藏「模型直连」，只留「会话列表 → 点进会话」那条通路（`sessions.send`，需开启 `sarosPocket.allowAgentControl`）。
 - **桌面画面会把你的屏幕实时发给连进来的设备**：默认只抓 VsSaros 窗口（`desktopMode=window`），可用 `desktopEnabled=false` 一键关闭；画面路由与 App 共用 PIN 栅栏。
 - **远程键鼠默认开启**（`sarosPocket.allowDesktopInput=true`）：方便即开即用，但意味着**拿到密码的人可以点击/打字**。
   两道闸门都保留：电脑侧设置 + 手机侧开关（默认开、关掉后记住）；远程操作生效时**画面左上角常显「⌨ 远程操作中」**。
@@ -330,7 +328,7 @@ vssaros --server --port 8000 --without-connection-token
 
 | 位置 | 内容 |
 | --- | --- |
-| [`.ci/gitlab/package-android.yml`](.ci/gitlab/package-android.yml) | **GitLab 打包定义**（stages / jobs / cache / artifacts）；说明见 [`.ci/README.md`](.ci/README.md) |
+| [`.ci/package-android.yml`](.ci/package-android.yml) | **蓝盾 PAC 打包流水线**（与主仓 `.ci/package-win-exe.yml` 同方言）；[`.gitlab-ci.yml`](.gitlab-ci.yml) 是 GitLab 那份；说明见 [`.ci/README.md`](.ci/README.md) |
 | [`scripts/`](scripts/README.md) | 流水线调用的脚本（`verify.sh` / `android-sdk.sh` / `build-android.sh` / `build-ios.sh` / `package-vsix.sh`）—— **本地可原样跑** |
 | `.ci/out/` | 所有产物（`*.vsix` / `*.apk` / `*.ipa`），已被 `.gitignore` 忽略 |
 
