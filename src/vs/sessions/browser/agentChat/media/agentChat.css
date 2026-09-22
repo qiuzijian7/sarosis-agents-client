@@ -13743,62 +13743,127 @@
 	color: var(--vscode-descriptionForeground, #999);
 }
 /* ═══════════════════════════════════════════════════════════════════════════
- * unreal_* 工具卡片（2026-09-22 补齐 ✓ 用户报「unreal_help 显示不全」+ 要求按真实返回内容优化 ✓）
+ * unreal_* 工具卡片 —— **终端风格 · 时间线（方案 E）**
+ *   2026-09-22 用户拍板方案 E ✓ 并要求「限制高度，与 mockup 一致」✓✓
  *
- * ⚠ 修复前本文件里**一条 `unreal-*` 规则都没有** ✗✓ —— 卡片把类名建出来了却从未被样式化 ⇒
- *   ① 结果块按 <pre> 默认 `white-space: pre` ⇒ 长 JSON 行**横向溢出** ✗；
- *   ② 结果块没有 `max-height`/`overflow` ⇒ 超长内容撞上祖先
- *      `.tool-header-children-expanded { max-height: 1200px }`（见本文件上文 ✓）后被**截断** ✗✓。
- *   ⇒ 两者都表现为用户说的「显示不全」✓。
+ * ⚠ **限高取值来自 mockup 的 Chrome 实测**（不是估算 ✓）：
+ *   · 结果面板上限 = **190px**（mockup plan E 原值 ✓ —— dump / long 场景实测正好顶到 190 ✓）
+ *   · 代码区上限 = **96px**（mockup 未限 ✗ 本处新增 ✓，为满足"限制高度"✓）
+ *   · 两者叠加后整卡最坏 ≈ 380px ≤ mockup 实测最坏 386px ✓
+ *     实测区间（mockup plan E）：running 192 / execOk 269 / build 233 / dump 331 / long 386
+ *   ⚠ 常量同步：`unrealTerminalView.ts` 的 UNREAL_RESULT_MAX_HEIGHT_PX / UNREAL_CODE_MAX_HEIGHT_PX
+ *     与本文件数值必须一致 ✓（单测会核对"常量 = CSS 值" ✗✓）
  *
- * 本族工具的真实返回形态（据 `unrealTools.ts:69` 的 `formatPayload` ✓）：
- *   · help / dump / health / find_asset ⇒ **美化 JSON**（JSON.stringify(payload, null, 2) ✓ 常上千行 ✓）
- *   · exec / build / wait ⇒ bridge 生成的**多行文本报告** ✓
- *   · bridge 不可达 / HTTP 错误 ⇒ 也是普通文本（**必须一眼可辨** ✓ 见 `.unreal-result-error` ✓）
+ * 结构：竖轴 + 节点①（请求）/ 节点②（结果）⇒ 视觉上**只有 1 段** ✓（取代原先 3~4 段 ✗）
+ * ⚠ **结果始终可见** ✗✓：正文无任何折叠；限高只作用于**显示**，数据全量留在 DOM（滚动看全 ✓）
  * ═══════════════════════════════════════════════════════════════════════════ */
-.unreal-summary {
-	margin: 2px 0 0;
-	white-space: pre-wrap;
-	word-break: break-word;
-	font-size: 12px;
-	line-height: 1.5;
-	color: var(--vscode-descriptionForeground, #999);
-}
-.unreal-result-section, .unreal-code-section { margin-top: 6px; }
-.unreal-result-toggle, .unreal-code-label {
-	display: inline-block;
-	margin-bottom: 4px;
-	font-size: 11px;
-	color: var(--vscode-textLink-foreground, #4daafc);
-	cursor: pointer;
-	user-select: none;
-}
-.unreal-result-toggle:hover { text-decoration: underline; }
-.unreal-code-label { color: var(--vscode-descriptionForeground, #999); cursor: default; }
-/* ⚠ 结果块：pre-wrap（长行必须换行 ✓）+ **自带滚动**（绝不依赖祖先的 max-height ✗✓） */
-.unreal-result-block, .unreal-code-block {
-	margin: 0;
-	padding: 8px 10px;
-	max-height: 420px;
-	overflow: auto;
-	white-space: pre-wrap;
-	word-break: break-word;
-	background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
-	border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.25));
-	border-radius: 4px;
+.unreal-term {
 	font-family: var(--vscode-editor-font-family, monospace);
-	font-size: 12px;
-	line-height: 1.5;
-	color: var(--vscode-foreground, #ccc);
+	font-size: 11.5px;
+	line-height: 1.6;
+	color: var(--vscode-foreground, #d4d4d4);
 }
-/* 错误态：bridge 不可达 / HTTP 错误都是普通文本结果 ⇒ 必须一眼可辨 ✗✓ */
-.unreal-result-error > .unreal-result-toggle { color: var(--vscode-errorForeground, #f48771); }
-.unreal-result-error > .unreal-result-block {
-	border-left: 3px solid var(--vscode-errorForeground, #f48771);
-	background: rgba(244, 135, 113, 0.08);
+/* 失败态：**只染标签**（节点头 / exit ✓），真实输出保持正常色 ✗✓（整段变红会被误读成全是错 ✓）
+ *   ⚠ 必须排在基础规则**之后**：两者同为 0,2,0 级 ⇒ 靠顺序取胜 ✓ */
+.unreal-term .unreal-term-failed { color: var(--vscode-errorForeground, #f48771); }
+.unreal-term .unreal-term-failed .unreal-term-out { color: var(--vscode-foreground, #d4d4d4); }
+/* 时间线容器（竖轴 ✓） */
+/* ⚠⚠ **唯一的滚动容器**（用户要求② ✓✓）：竖向只有一个滚动条 —— 内容多就整体滚 ✓ */
+.unreal-term .unreal-term-tl {
+	position: relative;
+	padding: 6px 10px 8px 30px;
+	max-height: 354px;
+	overflow: auto;
 }
-/* 截断提示：如实告知「只有这些」，避免用户误判为工具坏了 ✗✓ */
-.unreal-result-truncated > .unreal-result-toggle::after {
-	content: " ⚠ 已截断";
-	color: var(--vscode-editorWarning-foreground, #d29922);
+.unreal-term .unreal-term-tl::before {
+	content: '';
+	position: absolute;
+	left: 17px;
+	top: 9px;
+	bottom: 10px;
+	width: 2px;
+	background: var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+}
+.unreal-term .unreal-term-node { position: relative; margin-top: 5px; }
+.unreal-term .unreal-term-node::before {
+	content: '';
+	position: absolute;
+	left: -16px;
+	top: 4px;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--vscode-terminal-ansiBlue, #7fb2ff);
+	box-shadow: 0 0 0 2px var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.22));
+}
+.unreal-term .unreal-term-node-ok::before { background: var(--vscode-terminal-ansiGreen, #8fd694); }
+.unreal-term .unreal-term-node-bad::before { background: var(--vscode-errorForeground, #f48771); }
+.unreal-term .unreal-term-node-head {
+	font-size: 10.5px;
+	letter-spacing: 0.3px;
+	margin-bottom: 2px;
+	opacity: 0.85;
+}
+.unreal-term .unreal-term-cmd {
+	color: var(--vscode-terminal-ansiGreen, #8fd694);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+/* ⚠ 代码区：**不自带限高、不自带滚动** ✗✓（滚动权全部交给 `.unreal-term-tl` 用户要求② ✓） */
+.unreal-term .unreal-term-code {
+	margin: 2px 0 0;
+	padding: 4px 8px 6px;
+	max-height: none;
+	overflow: visible;
+	white-space: pre-wrap;
+	word-break: break-word;
+	background: transparent;
+	border: 0;
+	color: var(--vscode-terminal-ansiMagenta, #c792ea);
+	font: inherit;
+}
+/* ⚠ **结果面板**：始终可见 + 换行 + 自带滚动；上限 190px = mockup 实测原值 ✓✓
+ *   ⚠ 分区**不再限高**（滚动上移到本体 ✓）—— 本体上限 354px = TS 常量 UNREAL_BODY_MAX_HEIGHT_PX ✓ */
+.unreal-term .unreal-term-out {
+	margin: 0;
+	padding: 4px 8px 6px;
+	max-height: none;
+	overflow: visible;
+	white-space: pre-wrap;
+	word-break: break-word;
+	background: transparent;
+	border: 0;
+	color: inherit;
+	font: inherit;
+}
+/* 扁平对象（如 `unreal_health` ✓）⇒ 终端式 `key = value` 两列 ✓（随本体一起滚动 ✓） */
+.unreal-term .unreal-term-kv {
+	display: grid;
+	grid-template-columns: max-content 12px 1fr;
+	gap: 1px 0;
+	align-items: baseline;
+}
+.unreal-term .unreal-term-key { color: var(--vscode-terminal-ansiBlue, #7fb2ff); }
+.unreal-term .unreal-term-eq { color: var(--vscode-descriptionForeground, #777); text-align: center; }
+.unreal-term .unreal-term-val { word-break: break-word; }
+/* 规模 / 截断 / 摘要 —— 贴在结果节点内（不额外占一段 ✓） */
+.unreal-term .unreal-term-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 4px;
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+.unreal-term .unreal-term-exit {
+	font-weight: 600;
+	color: var(--vscode-terminal-ansiGreen, #8fd694);
+}
+.unreal-term .unreal-term-exit.bad { color: var(--vscode-errorForeground, #f48771); }
+.unreal-term .unreal-term-warn { color: var(--vscode-editorWarning-foreground, #d29922); }
+.unreal-term .unreal-term-summary {
+	flex: 1 1 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }

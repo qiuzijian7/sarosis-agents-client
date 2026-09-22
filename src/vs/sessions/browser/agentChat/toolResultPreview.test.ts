@@ -38,6 +38,34 @@ suite('工具结果摘要（unreal_help 「显示不全」回归）', () => {
 		assert.strictEqual(s.includes('\n'), false, '摘要必须是**一行** ✓（换行会把卡片撑开 ✗）');
 	});
 
+	test('★★★ 内容字段优先：unreal_exec 的 `{ok,repr,output}` ⇒ 摘要取 **output** ✓✓（真机取证 ✓）', () => {
+		// 真机日志原文（vscode-app-1790084962792.log 的 6274-6277 行 ✓）
+		const real = '{\n  "ok": true,\n  "repr": null,\n  "output": "UE version: 5.8.1-0+UE5\\nproject dir: /Game/Demo"\n}';
+		const s = summarizeToolResult(real);
+		assert.ok(s.startsWith('UE version: 5.8.1'),
+			`必须取 output 的**内容**（实际「${s}」✗✓ —— 上一版会把 output 挤成 JSON 噪音 ✗）`);
+		assert.strictEqual(s.includes('"ok"'), false, '不得把 JSON 键名挤进摘要 ✗✓');
+		assert.strictEqual(s.includes('\\n'), false, '换行必须折叠成一行 ✓');
+	});
+
+	test('★★★ 用户线索「有的工具会返回结果字段」⇒ `result` / `message` 同样必须被识别 ✓', () => {
+		assert.strictEqual(summarizeToolResult('{\n  "result": "找到了 3 个资产"\n}'), '找到了 3 个资产');
+		assert.strictEqual(summarizeToolResult('{ "message": "bridge unreachable" }'), 'bridge unreachable');
+	});
+
+	test('★★ 无内容字段（unreal_health ✓）⇒ 退化为**紧凑单行 JSON**（保留字段名 ✓）', () => {
+		// 真机日志原文（:6227-6232 ✓）
+		const health = '{\n  "status": "ok",\n  "project": "unknown",\n  "pid": 82016,\n  "uptime_seconds": 17\n}';
+		const s = summarizeToolResult(health);
+		assert.ok(s.includes('"status"') && s.includes('"pid"'), `必须保留字段名（实际「${s}」✗）`);
+		assert.strictEqual(s.includes('\n'), false);
+	});
+
+	test('★ 内容字段为空串 / null ⇒ **不得**当成命中（继续走紧凑 JSON ✓）', () => {
+		const s = summarizeToolResult('{\n  "ok": true,\n  "output": "",\n  "repr": null\n}');
+		assert.ok(s.includes('"ok"'), `空内容字段必须被跳过（实际「${s}」✗✓）`);
+	});
+
 	test('★★★ 纯 `{` / `[` 行必须被跳过 ⇒ 取后面的有信息行 ✓', () => {
 		assert.strictEqual(summarizeToolResult('{\n  Actor\n  Blueprint\n}'), 'Actor',
 			'跳过一个孤零零的 `{`，取下一行 ✓');
@@ -93,49 +121,55 @@ suite('工具结果摘要（unreal_help 「显示不全」回归）', () => {
 	});
 });
 
-suite('unreal 卡片「显示不全」—— 接线与样式断言', () => {
+suite('unreal 终端卡 —— 接线与样式断言（★ 实现搬到终端模块后同步 ✓）', () => {
 
-	test('★★★ 卡片必须用纯函数产出摘要/规模（不得再自己取首行 ✗✓）', () => {
+	const TERM_REL = 'src/vs/sessions/browser/agentChat/unrealTerminalView.ts';
+
+	test('★★★ 终端正文必须用纯函数产出摘要/规模（不得自己取首行 ✗✓）', () => {
+		const term = read(TERM_REL);
+		assert.ok(/import\s*\{[^}]*summarizeToolResult/.test(term), '必须 import summarizeToolResult ✓');
+		assert.ok(term.includes('summarizeToolResult('), '摘要必须由纯函数产出 ✓');
+		assert.ok(term.includes('resultStats('), '规模必须由纯函数产出 ✓');
 		const card = read(CARD_REL);
-		assert.ok(/import\s*\{[^}]*summarizeToolResult/.test(card), '必须 import summarizeToolResult ✓');
-		assert.ok(card.includes('summarizeToolResult(resultText)'), '摘要必须由纯函数产出 ✓');
-		assert.ok(card.includes('resultStats(resultText)'), '规模必须由纯函数产出 ✓');
 		assert.strictEqual(/_summarize\(/.test(card), false,
-			'不得再保留"取首行"的私有实现 ✗✓（它正是只剩 `{` 的根因 ✓）');
+			'卡片不得再自己取首行 ✗✓（它正是只剩 `{` 的根因 ✓ 现已搬到终端模块 ✓）');
 	});
 
-	test('★★★ 规模与截断必须真的接到 UI（否则用户把"只有这么点"当成工具坏了 ✗✓）', () => {
-		const card = read(CARD_REL);
-		assert.ok(/stats\.lines/.test(card) && /stats\.chars/.test(card), '必须显示 N 行 · M 字符 ✓');
-		assert.ok(/stats\.truncated/.test(card), '必须显示「已截断」✓');
-		assert.ok(card.includes('unreal-result-truncated'), '截断必须有状态类（CSS 有 ⚠ 标注 ✓）');
-		assert.ok(card.includes('unreal-result-error'),
-			'错误态必须有状态类 ✓（bridge 不可达/HTTP 错误在本族里都只是普通文本结果 ✓）');
+	test('★★★ 规模与截断必须真的接到 UI（否则用户把「只有这么点」当成工具坏了 ✗✓）', () => {
+		const term = read(TERM_REL);
+		assert.ok(/stats\.lines/.test(term) && /stats\.chars/.test(term), '必须显示 N 行 · M 字符 ✓');
+		assert.ok(/stats\.truncated/.test(term), '必须显示「已截断」✓');
+		assert.ok(term.includes('unreal-term-warn'), '截断必须有状态类 ✓');
+		assert.ok(term.includes('unreal-term-failed'),
+			'失败态必须有状态类 ✓（`ok:false` / bridge 不可达 都要显式标出 ✗✓）');
 	});
 
-	test('★★★ 样式必须防**裁切**与**不换行**（旧状态：该卡一条 CSS 都没有 ✗✗）', () => {
+	test('★★★ 结果面板必须防**裁切**与**不换行** + 滚动权归**本体**（2026-09-22 用户两条反馈 ✓）', () => {
 		const css = read(CSS_REL);
-		const at = css.indexOf('.unreal-result-block');
-		assert.ok(at > 0, '.unreal-result-block 必须有样式 ✗✓（此前整族 unreal-* 规则都不存在 ✓）');
+		// ⚠ 锚定「规则行首 + 父类前缀」✗✓ —— 否则会先命中复合/裸类名规则 ✗（本轮已踩两次 ✓）
+		let at = css.indexOf('\n.unreal-term .unreal-term-out {');
+		if (at < 0) { at = css.indexOf('.unreal-term-out {'); }
+		assert.ok(at > 0, '.unreal-term-out 必须有样式 ✗✓');
 		const block = css.slice(at, css.indexOf('}', at));
-		assert.ok(block.includes('white-space: pre-wrap'),
-			'必须 pre-wrap ✗✓（默认 pre 会让长 JSON 行横向溢出 ⇒ 看起来"显示不全" ✓）');
+		assert.ok(block.includes('white-space: pre-wrap'), '长行必须换行 ✓（终端里最丑的横向跑飞 ✗）');
 		assert.ok(block.includes('word-break: break-word'), '长 token 必须能断行 ✓');
-		assert.ok(block.includes('overflow: auto'),
-			'必须**自己滚动** ✗✓：祖先 `.tool-header-children-expanded` 有 max-height 上限（1200px ✓）'
-			+ '，不自己滚动就会在超长结果上被裁掉 ✓');
-		assert.ok(block.includes('max-height'), '必须自带 max-height ⇒ 内容尺度可控 ✓');
+		// ★ 用户反馈②：分区**不得**自带滚动 ⇒ 屏幕上只允许一根滚动条 ✓✓
+		assert.ok(block.includes('max-height: none'), '分区不得自带限高 ✗✓（旧版 ⇒ 出现 2~3 根滚动条 ✗）');
+		assert.ok(block.includes('overflow: visible'), '分区不得自带滚动 ✗✓（滚动权归 .unreal-term-tl ✓）');
+		// 限高与滚动必须真的落在**本体**上 ✓
+		const tlAt = css.indexOf('.unreal-term .unreal-term-tl {');
+		assert.ok(tlAt > 0, '本体必须有限高规则 ✓（且必须是带前缀的高优先级选择器 ✓）');
+		const tlBlock = css.slice(tlAt, css.indexOf('}', tlAt));
+		assert.ok(/max-height:\s*\d+px/.test(tlBlock) && tlBlock.includes('overflow: auto'),
+			'本体必须 max-height + overflow: auto ⇒ **唯一**滚动条 ✓✓');
 	});
 
-	test('★ 样式必须覆盖新增的截断/错误态（否则加了类也白加 ✗）', () => {
+	test('★ 终端各态样式必须齐备（bar / cmd / code / kv / foot / exit ✓）', () => {
 		const css = read(CSS_REL);
-		assert.ok(css.includes('.unreal-result-truncated'), '截断态样式必须存在 ✓');
-		assert.ok(css.includes('.unreal-result-error'), '错误态样式必须存在 ✓');
-		assert.ok(css.includes('.unreal-summary'), '摘要行样式必须存在 ✓（它是用户第一眼看到的东西 ✓）');
-	});
-
-	test('★ 卡片容器必须允许展开态可见（回归护栏 ✓）', () => {
-		const css = read(CSS_REL);
+		// ★ 2026-09-22 方案 E（时间线）落地后同步 ✓：bar/foot 已并入"时间线节点" ✓
+		for (const sel of ['.unreal-term-tl', '.unreal-term-node', '.unreal-term-cmd', '.unreal-term-code', '.unreal-term-kv', '.unreal-term-meta', '.unreal-term-exit']) {
+			assert.ok(css.includes(sel), `必须存在 ${sel} 样式 ✓`);
+		}
 		assert.ok(css.includes('.tool-header-children-expanded'), '通用展开态规则必须仍在 ✓');
 	});
 });

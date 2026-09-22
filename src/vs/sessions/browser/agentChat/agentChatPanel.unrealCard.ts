@@ -2,37 +2,29 @@ import { $, append, addDisposableListener, EventType } from '../../../base/brows
 import { IToolCall } from './agentChatTypes.js';
 import { AgentChatPanelDrawioCard } from './agentChatPanel.drawioCard.js';
 import { parseToolArgsLoose } from './toolArgsJson.js';
-// ★ 2026-09-22：摘要/规模/截断识别抽成**纯函数**（可单测 ✓；「只剩 `{`」事故说明见模块头部 ✓）
-import { resultStats, summarizeToolResult } from './toolResultPreview.js';
+// ★ 2026-09-22：终端风格正文抽成**独立模块**（可 jsdom 单测 ✓ 不进继承链 ✓）
+import { createUnrealTerminalBody } from './unrealTerminalView.js';
 
 
 /**
- * Unreal Engine 工具卡片（unreal_*）
+ * Unreal Engine 工具卡片（unreal_*）—— **终端风格**（2026-09-22 用户要求重新设计 ✓）
  *
- * 与 Mermaid / Draw.io 卡片同构：header（chevron / 图标 / 标题 / 状态 / 耗时）+
- * 可折叠正文（摘要行 + 完整结果）。差异点：
- *   - 无图形预览，正文直接展示 bridge 返回的文本/JSON。
- *   - `unreal_exec` 额外展示待执行的 Python 代码片段（LLM 与用户核对实际执行内容
- *     的主要依据 —— 这是本族工具最需要被看清的信息）。
+ * 定位：只负责**外壳与折叠**（chevron / UE 图标 / UNREAL 徽标 / 标题 / 状态 / 耗时 + 整卡折叠 ✓），
+ * 正文（终端块：命令 → 代码 → **结果** → exit 页脚 ✓）全部委派给 `unrealTerminalView` ✓
+ * （那样才能在 jsdom 里直接单测 ✓ —— 本卡在继承链末端，直接实例化整条链代价太高 ✗）。
  *
- * ★ 2026-09-22 按**真实返回形态**优化（用户报「unreal_help 显示不全」+ 要求按返回内容优化 UI ✓）：
- *   本族工具的结构化响应统一被 `unrealTools.ts:69` 的 `formatPayload` **美化**
- *   （`JSON.stringify(payload, null, 2)` ✓）⇒ 结果是**多行 JSON** ✓。据此：
- *     · **摘要行**不再取"首行" ✗（那恒等于 `{` ✓ 就是用户看到的"显示不全" ✓），
- *       改由 `summarizeToolResult` 产出：JSON ⇒ 单行紧凑预览（能看见字段名 ✓）/ 文本 ⇒ 首个有意义行 ✓；
- *     · 「完整结果」**标出规模**（N 行 · M 字符）✓ ⇒ 用户知道点开有多少 ✓；
- *     · 结果**被截断时如实标注** ✓（服务侧发给模型时确实会截断 ✓ 见 `historyCompaction` 的
- *       `TRUNCATED_FOR_IPC_SUFFIX` ✓）⇒ 不让用户误判成"工具坏了" ✗✓；
- *     · 错误态（bridge 不可达 / HTTP 错误都只是**普通文本结果** ✓）加状态类 ⇒ 一眼可辨 ✓；
- *     · 结果块由 CSS 给 `pre-wrap` + **自带滚动** ⇒ 既换行、也不受祖先 `max-height` 裁切 ✓✓。
+ * ★ 用户硬要求「**要求包含结果的显示**」✓✓：
+ *   正文里**没有任何默认折叠** ✗ —— 结果面板一律可见 ✓，只靠**自带滚动**控制高度 ✓；
+ *   「看不全」绝不由**隐藏**解决 ✗✓（该不变量已写成单测：正文里不得出现任何隐藏元素 ✓）。
  *
- * 混入位置：`DrawioCard → UnrealCard → Markdown`（在继承链末端，可复用 mermaidCard
- * 的 `_svgIcon` / `_mcBtn` 等 UI 辅助方法）。
+ * ★ 真机契约（`vscode-app-1790084962792.log` 取证 ✓）：`unreal_exec → {ok, repr, output}` ⇒
+ *   结果取 **output** ✓；`unreal_health → {status, project, pid, uptime_seconds}` ⇒ 终端 `key = value` ✓；
+ *   `ok:false` ⇒ **`exit ✗`** ✗✓（HTTP 200 ≠ Python 成功 ✓）。
+ *
+ * 混入位置：`DrawioCard → UnrealCard → Markdown`（在继承链末端，可复用 mermaidCard 的
+ * `_svgIcon` / `_svgChevron` 等 UI 辅助方法 ✓）。
  */
 export abstract class AgentChatPanelUnrealCard extends AgentChatPanelDrawioCard {
-
-	/** `unreal_exec` 代码片段最多展示的字符数。 */
-	private static readonly CODE_SNIPPET_LIMIT = 600;
 
 	protected override _createUnrealToolCard(tc: IToolCall, key: string): HTMLElement {
 		const isRunning = tc.status === 'running';
@@ -91,64 +83,26 @@ export abstract class AgentChatPanelUnrealCard extends AgentChatPanelDrawioCard 
 			durEl.textContent = this._formatDuration(tc.duration);
 		}
 
-		// ── 正文：摘要 + 完整结果（默认折叠，与 mermaid/drawio 一致）──
-		const args: Record<string, unknown> = parseToolArgsLoose(tc.args);
-		const resultText = typeof tc.result === 'string' ? tc.result : '';
-		// ★ 2026-09-22 修复「unreal_help 显示不全」✗✓：旧实现取结果**首行**当摘要 ✗，而本族结果
-		//   是**美化 JSON** ⇒ 首行恒为 `{` ⇒ 正文只剩一个 `{` ✗✗。现在由纯函数产出摘要 ✓，
-		//   并同时拿到规模/截断信息 ✓（用于「完整结果（N 行 · M 字符）」与截断标注 ✓）。
-		const summary = summarizeToolResult(resultText);
-		const stats = resultStats(resultText);
+		// ── 正文：终端块（**结果一律可见** ✓ 无任何默认折叠 ✗✓）──────────────────
+		const args = parseToolArgsLoose(tc.args);
+		const argPairs: Array<readonly [string, string]> = Object.entries(args ?? {})
+			.filter(([, v]) => v !== undefined && v !== null)
+			.map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)] as const);
 
 		const body = append(wrapper, $('.tool-header-children'));
+		append(body, createUnrealTerminalBody({
+			toolName: key,
+			args: argPairs,
+			code: key === 'unreal_exec' ? String(args?.code ?? '') : '',
+			resultText: typeof tc.result === 'string' ? tc.result : '',
+			// ⚠ `tc.status` 是**可选**字段 ⇒ 缺省视为 done ✓（与本方法上方 `isDone` 的判定完全一致 ✓
+			//   否则同样一条消息会出现"外壳显示 ✓、终端却按运行中渲染"的两套口径 ✗✓）
+			status: tc.status ?? 'done',
+			durationMs: tc.duration,
+		}));
 
-		// unreal_exec：展示待执行的 Python 代码
-		if (key === 'unreal_exec') {
-			const code = (args?.code ?? '').toString();
-			if (code.trim()) {
-				const codeSection = append(body, $('.unreal-code-section'));
-				const codeLabel = append(codeSection, $('span.unreal-code-label'));
-				codeLabel.textContent = '执行代码';
-				const pre = append(codeSection, $('pre.unreal-code-block'));
-				pre.textContent = code.length > AgentChatPanelUnrealCard.CODE_SNIPPET_LIMIT
-					? code.slice(0, AgentChatPanelUnrealCard.CODE_SNIPPET_LIMIT) + '\n… (已截断)'
-					: code;
-			}
-		}
-
-		if (summary) {
-			const summaryEl = append(body, $('.unreal-summary'));
-			summaryEl.textContent = summary;
-		}
-
-		// 完整结果：默认折叠，点击展开（内容较长时有意义 ✓ 本族 JSON 常上千行 ✓）
-		if (resultText.trim()) {
-			const resultSection = append(body, $('.unreal-result-section'));
-			// ⚠ 错误态必须**一眼可辨** ✗✓：bridge 不可达 / HTTP 错误在本族里都只是"普通文本结果" ✓
-			//   ⇒ 若只在正文给一段灰字，用户会当成正常输出 ✓
-			if (isError) { resultSection.classList.add('unreal-result-error'); }
-			// ⚠ 截断必须**如实标注** ✗✓（服务侧发给模型时确实会截断 ✓）⇒ 否则用户以为工具只返回了这点 ✓
-			if (stats.truncated) { resultSection.classList.add('unreal-result-truncated'); }
-
-			const toggle = append(resultSection, $('span.unreal-result-toggle'));
-			const toggleLabel = (): string =>
-				`完整结果（${stats.lines} 行 · ${stats.chars} 字符${stats.truncated ? ' · 已截断' : ''}）`;
-			toggle.textContent = toggleLabel();
-			const pre = append(resultSection, $('pre.unreal-result-block'));
-			pre.textContent = resultText;
-			pre.style.display = 'none';
-			this._register(addDisposableListener(toggle, EventType.CLICK, (e: MouseEvent) => {
-				e.stopPropagation();
-				const shown = pre.style.display !== 'none';
-				pre.style.display = shown ? 'none' : 'block';
-				toggle.textContent = shown ? toggleLabel() : '收起结果';
-			}));
-		}
-
-		// ── 折叠策略 ──
-		// 与 drawio 卡片完全对齐：整卡 header 点击切换；chevron 同步旋转。
-		// unreal_* 无图形预览，无需跨重建保留展开态（那套逻辑是 mermaid/terminal
-		// 为「运行中自动展开」准备的，本卡片没有该语义）。
+		// ── 折叠策略：整卡 header 点击切换（与 drawio 卡片一致 ✓ chevron 同步旋转 ✓）
+		//   ⚠ 折叠只收**整卡**（用户主动 ✓）；正文内部没有任何二级折叠 ✗✓ —— 见文件头硬要求 ✓
 		this._register(addDisposableListener(header, EventType.CLICK, () => {
 			const nowExpanded = body.classList.toggle('tool-header-children-expanded');
 			chevron.classList.toggle('tool-header-chevron-expanded', nowExpanded);
