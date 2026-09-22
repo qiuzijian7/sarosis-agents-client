@@ -201,9 +201,37 @@
     if (el.voice) el.voice.disabled = on || !voice.supported;
   }
 
+  /** 当前点进来的会话（必须是带 agentId 的 Agent Studio 会话），否则返回 null。 */
+  function activeSessionWithAgent() {
+    if (!state.activeSessionId) return null;
+    var s = (state.sessions || []).filter(function (x) { return x.id === state.activeSessionId; })[0];
+    return (s && s.agentId) ? s : null;
+  }
+
   async function sendToChat() {
     var text = el.input.value.trim();
     if (!text || state.busy) return;
+    // ★ 从列表点进了某个会话 ⇒ 这条消息要发到**那个会话**里（VsSaros 的 sideview item 与
+    //   聊天框 UI 都会同步更新，见 bridge.mjs 的 sessionsSend）。没点会话时保持原来的行为。
+    if (activeSessionWithAgent()) {
+      el.input.value = '';
+      el.input.style.height = 'auto';
+      addMsg('user', text);
+      var replyBubble = addMsg('assistant streaming', '');
+      setBusy(true);
+      try {
+        var out = await rpc('sessions.send', { id: state.activeSessionId, text: text, chatMode: state.chatMode });
+        replyBubble.classList.remove('streaming');
+        replyBubble.textContent = (out && out.reply) || '（已发到 VsSaros，回复见桌面端该会话）';
+      } catch (err) {
+        replyBubble.classList.remove('streaming');
+        replyBubble.className = 'msg error';
+        replyBubble.textContent = err.message || String(err);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     el.input.value = '';
     el.input.style.height = 'auto';
     addMsg('user', text);
@@ -659,15 +687,21 @@
       return;
     }
     el.sessionList.innerHTML = list.map(function (s) {
-      // 列表里混着 VsSaros 真实会话与本地影子会话 ⇒ meta 要能一眼分辨
-      var meta = (s.archived ? '已归档 · ' : '')
-        + (s.kind === 'agent' ? 'Agent' : '对话')
-        + (s.sessionType ? '（' + s.sessionType + '）' : '')
-        + ' · ' + timeAgo(s.updatedAt || s.startedAt);
+      // 第二行与 VsSaros 的会话 sideview 对齐：`agent 名 · 相对时间(· 消息数)`
+      // （sideview 里第二个信息行就是"状态点 + agent 名 · 时间 … 计数"）——
+      // 真实 Agent Studio 会话带 agentId，就显示 agent 名而不是笼统的 "Agent（sideview）"。
+      var meta = (s.pinned ? '📌 ' : '')
+        + (s.archived ? '已归档 · ' : '')
+        + (s.agentId ? s.agentId : (s.kind === 'agent' ? 'Agent' : '对话'))
+        + (s.sessionType && s.sessionType !== 'sideview' ? '（' + s.sessionType + '）' : '')
+        + ' · ' + timeAgo(s.updatedAt || s.startedAt)
+        + (s.messageCount ? ' · ' + s.messageCount + ' 条' : '');
       if (s.error) meta += ' · ' + esc(s.error);
       // 真实 VsSaros 会话才有「继续/结束」：影子会话没有上游实体，操作会失败。
       // 已归档的会话不再给「结束」（它就是归档态），保留「继续」以便重新激活。
-      var actions = s.real
+      // ⚠ `sendable === false`：来自 sideview（Session History）的历史会话，上游发不了消息、
+      //   也归档不了 ⇒ 不给按钮，免得点了报错（列表内容与顺序已与 sideview 一致）。
+      var actions = s.real && s.sendable !== false
         ? '<div class="session-actions">'
         + '<button class="ghost small session-send" type="button">继续</button>'
         + (s.archived ? '' : '<button class="ghost small session-archive" type="button">结束</button>')
@@ -775,10 +809,52 @@
     }
   }
 
-  /** 点会话 → 切到「当前会话」页并聚焦它。 */
+  /**
+   * 点会话 → 切到「当前会话」页，并把**上下文切成该会话自己的配置**
+   * （agent / provider+model / 工作区 / worktree）—— 用户 2026-09-21 需求。
+   *
+   * 为什么是"写回 VsSaros"而不是只改手机上的显示：`chat.context.set` 落到上游
+   * `sarosPocket.setChatContext`，它真的改 AgentBinding.worktreePath / 活动工作区 / 模型选择。
+   * 这样手机与桌面看到的是同一套配置，接着发的消息也落在同一执行环境里 ——
+   * 这才是"配置与会话对应的配置保持一致"的实质。
+   */
   function openSession(id) {
+    var s = (state.sessions || []).filter(function (x) { return x.id === id; })[0] || null;
     state.activeSessionId = id;
     switchTab('chat');
+    if (s) applySessionContext(s).catch(function () { /* 内部已 toast */ });
+  }
+
+  /**
+   * 把某个会话的配置应用为当前聊天上下文。
+   *
+   * 只覆盖**拿得到**的项（空串 = 上游没给这一项 ⇒ 保持当前值，宁可不动也不写错）；
+   * 应用后回读一次 `chat.context`，让头部选择器显示的值与实际生效的值一致。
+   */
+  async function applySessionContext(s) {
+    var patch = {};
+    if (s.agentId) patch.agentId = s.agentId;
+    if (s.workspaceId) patch.workspaceId = s.workspaceId;
+    // worktree 为空表示"主仓库"（与桌面端契约一致）⇒ 空值不覆盖，避免把主仓库误当"没配置"
+    if (s.worktreePath) patch.worktreePath = s.worktreePath;
+    if (s.agentModelId) patch.modelId = s.agentModelId;
+    if (s.agentProviderId) patch.providerId = s.agentProviderId;
+
+    if (Object.keys(patch).length > 0) {
+      try {
+        await rpc('chat.context.set', patch);
+      } catch (err) {
+        toast('切换上下文失败：' + (err && err.message ? err.message : err));
+        return;
+      }
+    }
+    // 模型选择器也要跟着动（它是上下文的一部分）
+    if (s.agentModelId && el.modelSelect) {
+      var has = Array.prototype.some.call(el.modelSelect.options, function (o) { return o.value === s.agentModelId; });
+      if (has) { el.modelSelect.value = s.agentModelId; state.modelId = s.agentModelId; }
+    }
+    try { await loadChatContext(); } catch (e) { /* 头部会显示降级提示 */ }
+    toast('已切到「' + (s.title || '该会话') + '」的配置');
   }
 
   // ---------- 交互绑定 ----------

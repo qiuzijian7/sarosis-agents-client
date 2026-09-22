@@ -255,20 +255,56 @@ export class SessionHistoryViewPane extends ViewPane {
 
 		// Reload sessions when sessions change in any chat editor (debounced)
 		this._register(this.chatService.onDidChangeAgentSessions(() => {
-			if (this._reloadTimer) { clearTimeout(this._reloadTimer); }
-			this._reloadTimer = setTimeout(() => {
-				this._reloadTimer = undefined;
-				this.logService.info('[SessionHistoryView] onDidChangeAgentSessions: reloading sessions');
-				// 抖动修复（2026-09-15）：这条路径每次发消息都会触发（messageCount 变化）。
-				// 必须以 silent 刷新 —— 否则列表被清成 "Loading sessions..." 单行 + 跨帧
-				// 回填，用户看到的就是列表高度反复崩塌回弹的「抖动」✗。
-				// 同时先暂存滚动位置，供重建后还原（本类是 clearNode 全量重建，无 diff）。
-				if (this.sessionListEl) {
-					this._pendingScrollTop = this.sessionListEl.scrollTop;
-				}
-				this._loadSessions({ silent: true });
-			}, 300);
+			this.logService.info('[SessionHistoryView] onDidChangeAgentSessions: reloading sessions');
+			this._scheduleSilentReload();
 		}));
+
+		// ★ 2026-09-21（用户需求）：**切换 agent / 工作区 / provider 后 item 要同步更新**。
+		// ⚠ 这条路径**不会** fire `onDidChangeAgentSessions`（它只在会话 CRUD / 消息数变化时 fire）
+		// ⇒ 必须显式订阅，否则切了 agent/工作区列表还停在上一套数据上。
+		this._register(this.agentStudioService.onDidChangeActiveWorkspace(() => {
+			this._reloadForContextChange('active workspace changed');
+		}));
+		this._register(this.agentStudioService.onDidChangeWorkspace(() => {
+			this._reloadForContextChange('workspace list changed');
+		}));
+		this._register(this.agentStudioService.onDidChangeAgents(() => {
+			this._reloadForContextChange('agents changed');
+		}));
+		this._register(this.agentStudioService.onDidSelectAgent(() => {
+			this._reloadForContextChange('active agent changed');
+		}));
+	}
+
+	/**
+	 * 防抖 + silent 刷新（保留滚动位置）。
+	 *
+	 * 抖动修复（2026-09-15）：`silent` 表示这是一次**后台刷新**而非首次加载。
+	 * 若照常插入 "Loading sessions..." 占位行，列表会被清成单行 → 高度崩塌 → 重建
+	 * → 高度回弹，表现为列表抖动 ⇒ 后台刷新一律 silent，并在重建前暂存 `scrollTop`
+	 * 供重建后还原（本类是 `clearNode` 全量重建，无 keyed diff）。
+	 */
+	private _scheduleSilentReload(): void {
+		if (this._reloadTimer) { clearTimeout(this._reloadTimer); }
+		this._reloadTimer = setTimeout(() => {
+			this._reloadTimer = undefined;
+			if (this.sessionListEl) {
+				this._pendingScrollTop = this.sessionListEl.scrollTop;
+			}
+			this._loadSessions({ silent: true });
+		}, 300);
+	}
+
+	/**
+	 * agent / 工作区这类**上下文**变化后的刷新：走一次防抖 silent 重载。
+	 *
+	 * `_discoverAgentIds()` 每次都重新扫目录（早期版本的 30s TTL 缓存已被移除），
+	 * 所以这里只需触发重载 —— 重载会重新发现 agent 并重新读取每个 agent 的会话索引，
+	 * item 上的 agent 名 / 归属 / 时间随之同步。
+	 */
+	private _reloadForContextChange(reason: string): void {
+		this.logService.info(`[SessionHistoryView] context changed (${reason}) → reload sessions`);
+		this._scheduleSilentReload();
 	}
 
 	private _renderFilterBar(parent: HTMLElement): void {

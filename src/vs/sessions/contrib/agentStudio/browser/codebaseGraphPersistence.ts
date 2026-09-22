@@ -26,7 +26,7 @@
  */
 
 import { CodebaseGraphStore } from './codebaseGraphStore.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileOperationError, FileOperationResult, IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 // ★ 2026-09-16：切换工作区「卡住」诊断 —— 本文件的 `loadMerge` 是切换后最重的同步段（分阶段计时见该方法）。
@@ -37,6 +37,23 @@ import { SLICE_CHECK_EVERY, sliceBudgetExceeded, yieldToEventLoop } from '../com
 
 // Legacy format header (for backward compatibility)
 const LEGACY_MAGIC = 0x43424d47;  // "CBMG" = CodeBase Memory Graph
+
+/**
+ * ★ 2026-09-21：判断读取失败是否只是「**制品不存在**」（= 该 folder 尚未索引过，属正常路径 ✓）。
+ *
+ * 判据双保险：
+ *  ① 优先按**类型**（`FileOperationError` + `FileOperationResult.FILE_NOT_FOUND`）—— 最可靠 ✓；
+ *  ② 兜底匹配消息（不同 provider / 包装层可能把错误重包，报错文案随平台而异：
+ *    真机实测为 `Unable to resolve nonexistent file '…'` ✗）。
+ * ⚠ 必须**窄**：只认"不存在"这一种，其它读/解压/权限错误仍走 `error`（否则会把真故障静默 ✗✗）。
+ */
+function isArtifactMissingError(e: unknown): boolean {
+	if (e instanceof FileOperationError && e.fileOperationResult === FileOperationResult.FILE_NOT_FOUND) {
+		return true;
+	}
+	const msg = (e as { message?: string } | undefined)?.message ?? String(e);
+	return /nonexistent file|no such file|ENOENT|FileNotFound/i.test(msg);
+}
 
 // Artifact metadata schema version (matches codebase-memory-mcp)
 const ARTIFACT_SCHEMA_VERSION = 1;
@@ -769,6 +786,17 @@ export class GraphPersistence {
 
 			return new TextDecoder().decode(jsonBytes);
 		} catch (e) {
+			// ★★ 2026-09-21：**「制品不存在」是一条正常路径**，不是错误 ✗✓。
+			//
+			// 真机（用户报障）：工作区 `g:\SarosWorkspace\vssaros-homepage` 尚未索引过 ⇒
+			// `_bootstrap` 照例调 `loadGraphMerge` ⇒ 读制品 ENOENT ⇒ 旧实现在这里无差别打
+			// `ERR [GraphPersistence] failed to read graph artifact: …（Unable to resolve nonexistent file）` + 堆栈 ✗。
+			// 行为本身是**对的**（本方法返回 null ⇒ `loaded=false` ⇒ 走自动索引 ✓），但日志级别错：
+			// ① 让用户以为自己环境坏了（其实只是"还没索引"）✗；② 真出问题时的读取失败会被这类噪音淹没 ✗✗。
+			if (isArtifactMissingError(e)) {
+				this._logService?.debug('[GraphPersistence]', `graph artifact not found（正常：该 folder 尚未索引）: ${sourcePath}`);
+				return null;
+			}
 			this._logService?.error('[GraphPersistence]', `failed to read graph artifact: ${sourcePath}`, e);
 			return null;
 		}

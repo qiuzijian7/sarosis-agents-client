@@ -14,7 +14,7 @@
 		},
 		{
 			"name": "vssaros-homepage",
-			"path": "../../CustomWorkspaces/AIProjects/vssaros-homepage"
+			"path": "../vssaros-homepage"
 		}
 	],
 	"settings": {

@@ -993,6 +993,27 @@ suite('★★★ 图谱关键不变量（勿回退）', () => {
 			'轮数记账必须按项目（多项目不得互相影响 ✓）');
 	});
 
+	/**
+	 * ⑲ 为什么值得钉（**用户报障 2026-09-21**）：未索引过的 folder（如 `vssaros-homepage`）
+	 * 在 bootstrap 里照例读制品 ⇒ ENOENT ⇒ 旧实现无差别
+	 * `ERR [GraphPersistence] failed to read graph artifact: … nonexistent file` + 堆栈 ✗。
+	 * 行为其实是对的（返回 null ⇒ `loaded=false` ⇒ 走自动索引 ✓），**错的只是日志级别**：
+	 * ① 用户以为环境坏了；② 真故障的读取失败会被这类噪音淹没 ✗✗。
+	 */
+	test('⑲ 制品不存在 = 正常待索引（debug），不得报 ERR；判断必须窄', () => {
+		const p = read4(B + 'codebaseGraphPersistence.ts');
+		assert.ok(p.includes('function isArtifactMissingError'), '必须有「制品不存在」的判定函数');
+		assert.ok(/FileOperationResult\.FILE_NOT_FOUND/.test(p),
+			'必须优先按**类型**判定（FileOperationResult.FILE_NOT_FOUND 最可靠 ✓）');
+		assert.ok(/nonexistent file\|no such file\|ENOENT\|FileNotFound/.test(p),
+			'还必须有消息兜底（provider 包装后类型可能丢失 ✓）');
+		assert.ok(p.includes('graph artifact not found'), '不存在 ⇒ 必须降到 debug（不再是 ERR ✗）');
+		assert.ok(/if \(isArtifactMissingError\(e\)\)/.test(p), 'catch 必须先判"不存在"再决定级别');
+		// 反向保护：非"不存在"的错误仍必须 error（不得顺手全降级 ⇒ 真故障静默 ✗✗）
+		assert.ok(/this\._logService\?\.error\('\[GraphPersistence\]', `failed to read graph artifact/.test(p),
+			'其它读取/解压失败仍必须 error（真故障不得静默 ✗）');
+	});
+
 	test('⑯ 残缺图判据/清理必须按项目（否则一个坏项目让全库全量重建 ✗✗）', () => {
 		const svc = read4(B + 'codebaseGraphService.ts');
 		const store = read4(B + 'codebaseGraphStore.ts');

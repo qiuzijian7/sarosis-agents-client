@@ -673,16 +673,28 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
    * 优雅降级到扩展自己登记的会话，而不是空白或报错。
    */
   /**
-   * 会话桥最近一次的结果（诊断用）：`ok` = 命令是否可用；`count` = 真实会话条数；`error` = 失败原因。
-   * 面板与 App 的「列表为空」提示靠它区分两种成因：命令不可用（版本旧）vs 真的没有会话。
+   * 会话桥最近一次的结果（诊断用）。字段含义（App 与输出面板都靠它把「空列表」讲清楚）：
+   * - `ok`：命令是否可用；`false` = 版本旧 / 命令执行失败；`null` = 还没调过
+   * - `count`：留下的真实会话条数；`raw`：上游返回条数；`dropped`：被字段过滤掉的条数
+   * - `providers`：上游注册的会话 provider id 列表；**空数组 = 一个都没注册**（列表必空），
+   *   `null` = 老版上游没给这个字段（此时不能当成 0 个，否则会误报）
+   * - `mode`：工作台形态（web / desktop），老版上游为 null
+   * - `error`：失败原因
    */
-  let sessionsDiag = { ok: null, count: 0, error: '', at: null };
+  let sessionsDiag = { ok: null, count: 0, raw: 0, dropped: 0, providers: null, mode: null, error: '', at: null };
 
   async function fetchRealSessions() {
     try {
       const raw = await vscode.commands.executeCommand('sarosPocket.listSessions');
       // 宽容解包：正常是数组；若上游改成 { sessions: [...] } 也不至于整列表空掉
       const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.sessions) ? raw.sessions : null);
+      // 诊断元信息（只有新版上游才带）：providers = 当前注册的会话 provider，mode = 工作台形态。
+      // 有了它，「命令通但列表空」能再拆成两类：provider 一个都没注册（配置/入口问题，
+      // 开多少会话都没用） vs provider 在、只是没开会话（用户侧问题，开一个就有）。
+      // 老版上游没有这些字段 ⇒ 一律 null；**null 不能当「0 个 provider」用**，否则会误报。
+      const meta = Array.isArray(raw) || !raw || typeof raw !== 'object' ? {} : raw;
+      const metaProviders = Array.isArray(meta.providers) ? meta.providers.map((p) => String(p)).slice(0, 16) : null;
+      const metaMode = typeof meta.mode === 'string' ? meta.mode : null;
       if (!list) {
         sessionsDiag = { ok: false, count: 0, error: `命令返回的不是数组（${raw === null ? 'null' : typeof raw}）`, at: Date.now() };
         logLine(`Saros Pocket: 会话桥 sarosPocket.listSessions 返回异常 ⇒ ${sessionsDiag.error}`);
@@ -707,22 +719,54 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
           providerId: String(s.providerId ?? ''),
           sessionType: String(s.sessionType ?? ''),
           resource: String(s.resource ?? ''),
-        }))
-        // 会话列表按「最近更新在前」；缺时间的排最后（稳定排序，便于断言与翻页心智一致）
-        .sort((a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1));
+          // sideview 专有字段（手机端展示 / 排查用）：属于哪个 agent、消息数、是否置顶
+          agentId: String(s.agentId ?? ''),
+          messageCount: typeof s.messageCount === 'number' ? s.messageCount : 0,
+          pinned: s.pinned === true,
+          // ★ 该会话自己的配置（点会话 → 跳到当前会话时把上下文切成一致的）：
+          //   workspaceId/worktreePath 来自 AgentBinding；agentModelId/agentProviderId 来自 agent 定义。
+          //   空串 = 上游拿不到 ⇒ 前端**不覆盖**当前值（宁可不动，也不写错）。
+          workspaceId: String(s.workspaceId ?? ''),
+          worktreePath: String(s.worktreePath ?? ''),
+          agentModelId: String(s.agentModelId ?? ''),
+          agentProviderId: String(s.agentProviderId ?? ''),
+          // ★ 能不能"继续/结束"：sideview 的会话是 Agent Studio 的历史记录，
+          //   上游的 sendRequest/archive 认的是 ISessionsManagementService 的会话 id ⇒
+          //   对这些会话给按钮只会点了报错。前端据此**不给**操作按钮（s.sendable === false）。
+          sendable: String(s.sessionType ?? '') !== 'sideview',
+        }));
+      // ⚠ 这里**刻意不重新排序**：上游（VsSaros 的 sideview）给的就是最终顺序
+      //   （pinned → 手动拖拽顺序 → updatedAt 倒序，见 sarosPocket.contribution.ts 的
+      //   listSideviewSessions）。再按时间重排一次就会"内容对了、顺序不对"。
 
-      sessionsDiag = { ok: true, count: mapped.length, error: '', at: Date.now() };
+      // raw = 上游实际返回条数，dropped = 因字段不合规被丢弃的条数。
+      // 「列表空」的两种成因靠它们分开：raw=0 ⇒ 工作台确实没有会话（provider 没注册 /
+      // 没开会话）；raw>0 且 dropped=raw ⇒ 命令是通的，但字段名对不上被整列表过滤掉。
+      sessionsDiag = {
+        ok: true,
+        count: mapped.length,
+        raw: list.length,
+        dropped: list.length - mapped.length,
+        providers: metaProviders,
+        mode: metaMode,
+        error: '',
+        at: Date.now(),
+      };
       // 上游命令在、但一条会话都没有（或字段对不上被过滤掉）——这是「列表空」的两种成因之一，
       // 必须留痕，否则现场只有一句「还没有会话」，无从判断是版本旧还是真没会话。
       if (mapped.length === 0 && list.length > 0) {
         const keys = Object.keys(list[0] ?? {}).slice(0, 8).join(',');
         logLine(`Saros Pocket: 会话桥拿到 ${list.length} 条但全部被过滤（首条字段：${keys}）——请检查会话字段名`);
+      } else if (mapped.length === 0 && metaProviders !== null && metaProviders.length === 0) {
+        // 最该被看见的一类空列表：provider 一个都没注册 ⇒ 列表永远是空的，
+        // 与用户开不开会话无关。常见于 web 工作台 / 功能开关未开。
+        logLine(`Saros Pocket: 会话桥通，但 VsSaros 没注册任何会话 provider（mode=${metaMode ?? '?'}）——检查 chat.agentHost.enabled / sessions.agentStudio.enabled`);
       } else {
         logLine(`Saros Pocket: 会话桥 sarosPocket.listSessions → ${mapped.length} 条真实会话`);
       }
       return mapped;
     } catch (err) {
-      sessionsDiag = { ok: false, count: 0, error: String(err?.message ?? err), at: Date.now() };
+      sessionsDiag = { ok: false, count: 0, raw: 0, dropped: 0, providers: null, mode: null, error: String(err?.message ?? err), at: Date.now() };
       logLine(`Saros Pocket: 会话桥不可用（sarosPocket.listSessions 调用失败）⇒ ${sessionsDiag.error} —— 列表会退回 Pocket 自己登记的会话`);
       return null;
     }
@@ -810,14 +854,20 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
     } else if (wantArchived) {
       merged = realVisible;
     } else {
+      // 真实会话**保持上游顺序**（= VsSaros sideview 的顺序）；Pocket 自己登记的影子会话
+      // （手机发起的对话、且标题不与真实会话重复）追加在后面 —— 不去打扰那份顺序，
+      // 因为用户要求的是"手机端会话列表与 sideview 一致，包括显示顺序"。
       merged = realVisible.concat(local.filter((s) => !realVisible.some((r) => r.title === s.title)));
     }
 
     if (payload?.status) {
       merged = merged.filter((s) => s.status === payload.status);
     }
-    // 统一按「最近更新在前」：真实会话内部已排好，但本地影子会话可能比它们更新
-    merged = merged.slice().sort((a, b) => (b.updatedAt ?? b.startedAt ?? -1) - (a.updatedAt ?? a.startedAt ?? -1));
+    // 只有**拿不到真实会话**时（老版本 VsSaros / 桥不可用）才退化成本地按「最近更新」倒序；
+    // 有真实会话时顺序属于 sideview，任何重排都是"改坏"。
+    if (!real) {
+      merged = merged.slice().sort((a, b) => (b.updatedAt ?? b.startedAt ?? -1) - (a.updatedAt ?? a.startedAt ?? -1));
+    }
     return {
       sessions: merged.slice(0, limit),
       source: real ? 'vsaros' : 'pocket',
@@ -860,8 +910,27 @@ export function createVsSarosBridge({ vscode, context, events = null, statusProv
       throw new Error('只能向 VsSaros 的真实 Agent 会话发消息 | not a real VsSaros session');
     }
 
+    // ★ sideview 的会话（Agent Studio）必须走 `sarosPocket.sendToSession`：
+    //   只有它经过 IAgentChatService ⇒ 消息真的写进会话文件 ⇒ VsSaros 侧的
+    //   **sideview item**（消息数/时间/标题）与**聊天框 UI**（已打开的面板立刻出现这条
+    //   user 气泡 + 后续流式回复）才会同步更新（用户 2026-09-21 需求）。
+    //   老路 `sendRequest` 认的是 ISessionsManagementService 的会话 id，对这些会话无效。
+    if (target.agentId) {
+      const out = await vscode.commands.executeCommand('sarosPocket.sendToSession', {
+        agentId: target.agentId,
+        sessionId: id,
+        text,
+        workspaceId: target.workspaceId || undefined,
+        modelId: target.agentModelId || undefined,
+        providerId: target.agentProviderId || undefined,
+        chatMode: String(payload?.chatMode ?? '').trim() || undefined,
+      });
+      emit('sessions.send', { id, bytes: text.length, via: 'agent-studio' });
+      return { id, sent: true, ok: out?.ok !== false, reply: String(out?.reply ?? '') };
+    }
+
     const out = await vscode.commands.executeCommand('sarosPocket.sendRequest', id, text);
-    emit('sessions.send', { id, bytes: text.length });
+    emit('sessions.send', { id, bytes: text.length, via: 'sessions-management' });
     return { id, sent: true, ok: out?.ok === true };
   }
 
