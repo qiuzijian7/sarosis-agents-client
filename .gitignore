@@ -1,4 +1,4 @@
-# Build outputs
+﻿# Build outputs
 out/
 out-test/
 out-build/
@@ -305,3 +305,6 @@ extensions/agentmemory-memory/benchmark/dist/
 MASS系列.pdf
 SLua VS UnLua.pdf
 UI优化篇.pdf
+
+# 技能使用追踪 sidecar（运行时生成并自动重建，不入库）
+resources/.agents/skills/**/.usage.json
