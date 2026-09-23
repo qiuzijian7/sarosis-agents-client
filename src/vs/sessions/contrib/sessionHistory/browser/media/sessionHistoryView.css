@@ -235,6 +235,47 @@
 	opacity: 0.9;
 }
 
+/* Agent 头像（2026-09-23 用户需求）——**三级回退**：
+   `Agent.avatar`（SVG data URI）→ `Agent.icon`（emoji）→ 首字母。
+   下面这套底色 / 字号是**首字母形态**的样式；emoji 形态由 `.is-emoji` 覆盖。
+   尺寸恒 18px ⇒ 同一列表里图标形态混排时行高与文字起点不抖动。 */
+.session-history-agent-avatar {
+	flex-shrink: 0;
+	width: 18px;
+	height: 18px;
+	border-radius: 50%;
+	overflow: hidden;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	/* 首字母形态底色：按 agentId 哈希取色（与运行指示灯同源 `_getAgentColor`） */
+	background: var(--agent-color, #4d4d4d);
+	color: #ffffff;
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1;
+	user-select: none;
+}
+
+/* 真头像铺满整圆 —— 预设 SVG 自带不透明渐变底，会盖住上面的回退底色。 */
+.session-history-agent-avatar-img {
+	width: 100%;
+	height: 100%;
+	display: block;
+	object-fit: cover;
+}
+
+/* emoji 回退形态：**去掉圆底** —— emoji 自带轮廓，留底色会在它四周露出突兀的色圈。
+   仍保持 18px 占位。字体显式指定 emoji 族，避免落到 serif 后渲染成单色轮廓。 */
+.session-history-agent-avatar.is-emoji {
+	background: transparent;
+	font-size: 14px;
+	font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+	/* 首字母形态是 700；emoji 无粗细概念，且个别单色 emoji 会吃 font-weight ⇒ 归位。 */
+	font-weight: normal;
+	line-height: 1;
+}
+
 /* Status dot — 无运行状态时由 --agent-color 决定颜色 */
 .session-history-status-dot {
 	width: 8px;

@@ -888,7 +888,16 @@ export const enum FlowControlConstants {
 	 * The number characters that are accumulated on the client side before sending an ack event.
 	 * This must be less than or equal to LowWatermarkChars or the terminal max never unpause.
 	 */
-	CharCountAckSize = 5000
+	CharCountAckSize = 5000,
+	/**
+	 * ★ 2026-09-23（真机事故，dump 实证）：pty 因 renderer 端 xterm 解析停摆而 pause() 后
+	 * （窗口最小化/隐藏 ⇒ Chromium 节流 ⇒ setTimeout 冻结 ⇒ ack 断流 ⇒ unack 超
+	 * HighWatermark），若**长时间无人 ack** 则强制 resume —— 否则子进程下一次写 stdout
+	 * 会在内核态永久阻塞（NtWriteFile 无超时），表现为「从集成终端启动的 GUI 应用无故
+	 * 卡死数小时」。代价是 renderer 追不上时 ptyHost 侧缓冲增长 —— 内存换活路，
+	 * 远优于死锁。
+	 */
+	PauseTimeoutMs = 30000
 }
 
 export interface IProcessDataEvent {

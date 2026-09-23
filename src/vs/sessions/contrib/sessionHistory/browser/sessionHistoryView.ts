@@ -97,6 +97,15 @@ const ICON_LINK = 'M7.775 3.275a.75.75 0 001.06 1.06l1.25-1.25a2 2 0 112.83 2.83
 interface SessionInfo {
 	agentId: string;
 	agentName: string;
+	/**
+	 * ★ 2026-09-23（用户需求）：agent 头像 —— `Agent.avatar` 是 **SVG data URI**
+	 * （见 `common/agentAvatarPresets.ts`，预设可直接喂给 `img.src`）。
+	 *
+	 * 回退链：`avatar`（SVG 图）→ `icon`（emoji）→ 首字母。
+	 */
+	agentAvatar?: string;
+	/** ★ 2026-09-23：`Agent.icon`（emoji 字符串）—— 没有 `avatar` 时的第一回退。 */
+	agentIcon?: string;
 	sessionId: string;
 	sessionName: string;
 	messageCount: number;
@@ -277,6 +286,11 @@ export class SessionHistoryViewPane extends ViewPane {
 			this._reloadForContextChange('workspace list changed');
 		}));
 		this._register(this.agentStudioService.onDidChangeAgents(() => {
+			// ★ 2026-09-23（用户需求）：显示名 / 头像可能被改了 ⇒ 必须让 `id → {name,avatar,icon}`
+			// 缓存失效，否则 item 会一直显示旧名字、旧头像（缓存见 `_getAgentInfoMap`）。
+			// `updateAgent()`（Agent 设置页改名 / 换头像都走它）末尾**一定**会 fire 本事件 ⇒
+			// 这条就是「改头像后 session item 同步更新」的落点。
+			this._agentInfoCache = undefined;
 			this._reloadForContextChange('agents changed');
 		}));
 		this._register(this.agentStudioService.onDidSelectAgent(() => {
@@ -484,6 +498,11 @@ export class SessionHistoryViewPane extends ViewPane {
 			const sessionDataList: SessionData[] = [];
 			let totalCount = 0;
 
+			// ★ 2026-09-23（用户需求）：item 要显示 agent 名称与头像 —— `listAgentSessions()`
+			// 只返回会话索引、不含 agent 显示信息 ⇒ 这里取一次 `id → {name,avatar,icon}` 映射
+			// （带缓存，见 `_getAgentInfoMap`）。
+			const agentInfos = await this._getAgentInfoMap();
+
 			// Load only session index (fast, no history) to avoid blocking the UI
 			// when there are hundreds of sessions. History is lazy-loaded on expand.
 			for (const agentId of agentIds) {
@@ -495,7 +514,12 @@ export class SessionHistoryViewPane extends ViewPane {
 						sessionDataList.push({
 							info: {
 								agentId,
-								agentName: agentId,
+								// 显示名优先，查不到（agent 定义缺失 / 别处手写的目录）回退到 id
+								agentName: agentInfos.get(agentId)?.name ?? agentId,
+								// ★ 头像（SVG data URI）；undefined ⇒ 渲染端逐级回退 emoji → 首字母
+								agentAvatar: agentInfos.get(agentId)?.avatar,
+								// ★ emoji（`Agent.icon`）—— 没有 avatar 时的第一回退
+								agentIcon: agentInfos.get(agentId)?.icon,
 								sessionId: session.id,
 								sessionName: session.name,
 								messageCount: session.messageCount,
@@ -984,6 +1008,9 @@ export class SessionHistoryViewPane extends ViewPane {
 			pinEl.title = 'Pinned';
 			pinEl.appendChild(_icon(ICON_PIN, 11));
 		}
+		// ★ 2026-09-23（用户需求）：agent 头像。有 `avatar`（SVG data URI）就画图，
+		// 否则回退 emoji（`Agent.icon`），再退首字母 —— 详见 `_renderAgentAvatar`。
+		this._renderAgentAvatar(titleLine, info);
 		const title = DOM.append(titleLine, $('.session-history-title'));
 		title.textContent = info.sessionName || 'Untitled Session';
 		title.title = `${info.sessionName || 'Untitled Session'} — Double-click to open chat, Ctrl/Cmd+click to multi-select, right-click for actions`;
@@ -1414,20 +1441,93 @@ export class SessionHistoryViewPane extends ViewPane {
 	// ─── Session actions: pin / rename / delete / open / reorder ──────────
 
 	/**
-	 * Resolve human-readable agent names for the given agent IDs. Falls back
-	 * to the raw ID when the agent definition is unavailable.
+	 * ★ 2026-09-23（用户需求）：`agentId → { name, avatar, icon }` 的**带缓存**映射。
+	 *
+	 * ⚠ 为什么要缓存：`_loadSessions()` 是高频路径（发消息触发的 silent 重载也走它），
+	 * 每次都 `getAgents()` 是纯浪费 ⇒ 复用缓存；由 `onDidChangeAgents`
+	 * （`updateAgent()` 一定会 fire）清掉 ⇒ 改名字 / 换头像后 item 能同步更新。
 	 */
-	private async _resolveAgentNames(agentIds: string[]): Promise<ReadonlyMap<string, string>> {
-		const names = new Map<string, string>();
+	private _agentInfoCache: ReadonlyMap<string, { name: string; avatar?: string; icon?: string }> | undefined;
+
+	private async _getAgentInfoMap(): Promise<ReadonlyMap<string, { name: string; avatar?: string; icon?: string }>> {
+		if (this._agentInfoCache) { return this._agentInfoCache; }
+
+		const infos = new Map<string, { name: string; avatar?: string; icon?: string }>();
 		try {
 			const agents = await this.agentStudioService.getAgents();
 			for (const agent of agents) {
-				if (agentIds.includes(agent.id) && agent.name && agent.name.trim()) {
-					names.set(agent.id, agent.name.trim());
+				// ⚠ 只收「有显示名」的；空名/纯空白视为没有 ⇒ 调用方回退到 agentId。
+				if (agent.name && agent.name.trim()) {
+					infos.set(agent.id, {
+						name: agent.name.trim(),
+						// `avatar` 是 SVG data URI、`icon` 是 emoji 字符串；两者都缺 ⇒ 渲染端退到首字母。
+						avatar: agent.avatar || undefined,
+						icon: agent.icon || undefined,
+					});
 				}
 			}
 		} catch (err) {
-			this.logService.warn('[SessionHistoryView] failed to resolve agent names:', err);
+			this.logService.warn('[SessionHistoryView] failed to resolve agent display info:', err);
+		}
+		// 失败也写缓存（空 map）：否则 I/O 出错会退化成「每次重载都重试一次慢查询」。
+		this._agentInfoCache = infos;
+		return infos;
+	}
+
+	/**
+	 * ★ 2026-09-23（用户需求）：渲染 agent 头像（标题行最左，**恒占 18px 位**）。
+	 *
+	 * 三级回退：`Agent.avatar`（SVG data URI）→ `Agent.icon`（emoji）→ 首字母。
+	 *
+	 * ⚠ 三级各自的必要性：`avatar` 只有「选预设 / 上传图片」才有；手写 `.agent.md` 的旧 agent
+	 * 可能只有 `icon`（emoji）；两者都缺才落到首字母（零字体依赖的兜底）。
+	 * ⚠ 无论命中哪一级都保持 18px ⇒ 列表里图标形态混排时**行高与文字起点不抖动**。
+	 */
+	private _renderAgentAvatar(parent: HTMLElement, info: SessionInfo): void {
+		const el = DOM.append(parent, $('.session-history-agent-avatar'));
+		el.style.setProperty('--agent-color', _getAgentColor(info.agentId));
+		el.title = `Agent: ${info.agentName}`;
+
+		// 最后兜底：首字母。用 `Array.from` 取第一个「字」以兼容非 BMP 字符（emoji/生僻字）。
+		const applyInitialFallback = () => {
+			el.classList.remove('is-emoji');
+			el.textContent = Array.from(info.agentName.trim())[0] ?? '?';
+		};
+
+		// 第一回退：emoji（`Agent.icon`）。
+		const applyEmojiFallback = () => {
+			const icon = info.agentIcon?.trim();
+			if (!icon) {
+				applyInitialFallback();
+				return;
+			}
+			el.classList.add('is-emoji');
+			el.textContent = icon;
+		};
+
+		if (info.agentAvatar) {
+			const img = DOM.append(el, $<HTMLImageElement>('img.session-history-agent-avatar-img'));
+			img.src = info.agentAvatar;
+			// 纯装饰（agent 名就在同一行）⇒ alt 留空，避免读屏器重复播报。
+			img.alt = '';
+			// ⚠ data URI 损坏 / 头像被删 ⇒ 退到 emoji（再退首字母），避免留下一个**空白圆**。
+			img.onerror = () => {
+				img.remove();
+				applyEmojiFallback();
+			};
+			return;
+		}
+
+		applyEmojiFallback();
+	}
+
+	/** `agentId → 显示名`（由 `_getAgentInfoMap()` 派生；供新建会话面板的 chips 使用）。 */
+	private async _resolveAgentNames(agentIds: string[]): Promise<ReadonlyMap<string, string>> {
+		const all = await this._getAgentInfoMap();
+		const names = new Map<string, string>();
+		for (const id of agentIds) {
+			const name = all.get(id)?.name;
+			if (name) { names.set(id, name); }
 		}
 		return names;
 	}

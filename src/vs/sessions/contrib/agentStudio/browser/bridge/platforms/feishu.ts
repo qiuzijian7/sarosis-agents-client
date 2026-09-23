@@ -389,6 +389,11 @@ export class FeishuPlatform implements IBridgePlatform {
 	 * @param asText 入站为文本帧时回包也用文本（长连接主路径为二进制帧）
 	 */
 	private _dispatchJsonEvent(payload: unknown, asText = false): void {
+		// ★ 观测：事件分发入口打 INFO。此前正常路径无日志，「服务端没推帧」与
+		//   「收到但被过滤」在日志里无法分辨（2026-09-23 排查「群里发消息 agent 无反应」）。
+		const kind = (payload as { header?: { event_type?: string }; type?: string })?.header?.event_type
+			?? (payload as { type?: string })?.type ?? "(unknown)";
+		this._log(`[Feishu] WS 收到事件帧：${kind}`);
 		const p = payload as { type?: string; challenge?: string; token?: string };
 		if (p?.type === "url_verification" && p.challenge) {
 			const reply = JSON.stringify({ challenge: p.challenge, token: p.token });

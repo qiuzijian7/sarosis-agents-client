@@ -114,6 +114,8 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 
 	private _isPtyPaused: boolean = false;
 	private _unacknowledgedCharCount: number = 0;
+	/** 背压死锁保险丝（见 FlowControlConstants.PauseTimeoutMs 注释）。 */
+	private _pauseWatchdog: Timeout | undefined;
 	get exitMessage(): string | undefined { return this._exitMessage; }
 
 	get currentTitle(): string { return this._windowsShellHelper?.shellTitle || this._currentTitle; }
@@ -144,6 +146,12 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		@IProductService private readonly _productService: IProductService
 	) {
 		super();
+		this._register(toDisposable(() => {
+			if (this._pauseWatchdog) {
+				clearTimeout(this._pauseWatchdog);
+				this._pauseWatchdog = undefined;
+			}
+		}));
 		let name: string;
 		if (isWindows) {
 			name = path.basename(this.shellLaunchConfig.executable || '');
@@ -326,6 +334,25 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 				this._logService.trace(`Flow control: Pause (${this._unacknowledgedCharCount} > ${FlowControlConstants.HighWatermarkChars})`);
 				this._isPtyPaused = true;
 				ptyProcess.pause();
+				// ★ 2026-09-23 背压死锁保险丝（真机：dev app 被冻死 7 小时，dump 实证，
+				//   见 FlowControlConstants.PauseTimeoutMs）：renderer 停摆 ⇒ ack 永不到达
+				//   ⇒ 若不强制 resume，子进程写 stdout 将在内核态永久阻塞。超时 ⇒
+				//   强制 resume（ptyHost 侧缓冲增长，内存换活路 ✓ 远优于死锁）。
+				if (this._pauseWatchdog) {
+					clearTimeout(this._pauseWatchdog);
+				}
+				this._pauseWatchdog = setTimeout(() => {
+					this._pauseWatchdog = undefined;
+					if (this._isPtyPaused) {
+						this._logService.warn(
+							`Flow control: pause watchdog fired after ${FlowControlConstants.PauseTimeoutMs}ms ` +
+							`without acks (unacknowledged=${this._unacknowledgedCharCount}) — force resuming pty ` +
+							`(renderer likely throttled/hidden; buffering instead of deadlocking the child process)`
+						);
+						this._ptyProcess?.resume();
+						this._isPtyPaused = false;
+					}
+				}, FlowControlConstants.PauseTimeoutMs);
 			}
 
 			// Refire the data event
@@ -581,6 +608,10 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		this._logService.trace(`Flow control: Ack ${charCount} chars (unacknowledged: ${this._unacknowledgedCharCount})`);
 		if (this._isPtyPaused && this._unacknowledgedCharCount < FlowControlConstants.LowWatermarkChars) {
 			this._logService.trace(`Flow control: Resume (${this._unacknowledgedCharCount} < ${FlowControlConstants.LowWatermarkChars})`);
+			if (this._pauseWatchdog) {
+				clearTimeout(this._pauseWatchdog);
+				this._pauseWatchdog = undefined;
+			}
 			this._ptyProcess?.resume();
 			this._isPtyPaused = false;
 		}
@@ -589,6 +620,10 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 	clearUnacknowledgedChars(): void {
 		this._unacknowledgedCharCount = 0;
 		this._logService.trace(`Flow control: Cleared all unacknowledged chars, forcing resume`);
+		if (this._pauseWatchdog) {
+			clearTimeout(this._pauseWatchdog);
+			this._pauseWatchdog = undefined;
+		}
 		if (this._isPtyPaused) {
 			this._ptyProcess?.resume();
 			this._isPtyPaused = false;
