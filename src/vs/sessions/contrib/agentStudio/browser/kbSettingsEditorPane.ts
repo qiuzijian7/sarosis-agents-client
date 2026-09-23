@@ -150,9 +150,18 @@ export class KbSettingsEditorPane extends EditorPane {
 		const pathInput = document.createElement('input');
 		pathInput.type = 'text'; pathInput.className = 'kbs-input kbs-grow';
 		pathInput.value = rootPath; pathInput.readOnly = true;
-		pathInput.title = 'Vault 及其「库」「笔记」子文件夹均在此目录下';
+		pathInput.title = '所选目录即知识库（Vault）根目录，「库」「笔记」子文件夹直接建在此目录下';
 		const browseBtn = $('button.kbs-btn'); browseBtn.textContent = '浏览…';
-		browseBtn.onclick = () => host.pickDir(pathInput.value);
+		// ★ 2026-09-23：选定后**回填输入框并重渲染**。
+		// 此前 `pickDir` 是单向 void 调用（host 内部持久化后不回传），而面板唯一的重渲染
+		// 入口是 `setInput()` —— 复用同一个设置 Tab 时 `KbSettingsEditorInput.matches()`
+		// 恒为 true ⇒ `doSetInput` 提前返回 ⇒ 面板永不重渲染。
+		// 结果就是用户看到的「选了目录，路径没变」（顶部「当前知识库」同样停在旧值）。
+		browseBtn.onclick = async () => {
+			const picked = await host.pickDir(pathInput.value);
+			if (picked) { pathInput.value = picked; }
+			this._render();
+		};
 		const manualBtn = $('button.kbs-btn'); manualBtn.textContent = '手动输入';
 		manualBtn.onclick = () => {
 			pathInput.readOnly = false;
@@ -163,14 +172,20 @@ export class KbSettingsEditorPane extends EditorPane {
 			if (e.key === 'Enter') {
 				e.preventDefault();
 				const v = pathInput.value.trim();
-				if (v) { host.applyDir(v); }
+				if (v) {
+					void host.applyDir(v).then(applied => {
+						if (applied) { pathInput.value = applied; }
+						this._render();
+					});
+				}
 			} else if (e.key === 'Escape') {
 				e.preventDefault();
 				this._render();
 			}
 		};
 		dirControl.append(pathInput, browseBtn, manualBtn);
-		this._hint(dirSec, '点击「浏览…」选择文件夹，或「手动输入」后按回车应用（Vault 及其「库」「笔记」子文件夹均在此目录下）');
+		this._hint(dirSec, '点击「浏览…」选择文件夹，或「手动输入」后按回车应用。所选目录**即知识库根目录**：'
+			+ '已有「库」「笔记」子文件夹与笔记 ⇒ 直接加载；没有 ⇒ 自动创建。');
 
 		// ── 2. 构建方式 ──
 		const buildSec = this._section(scroll, '⚙️ 构建方式');
@@ -333,8 +348,10 @@ export class KbSettingsEditorPane extends EditorPane {
 		const srcInput = document.createElement('input');
 		srcInput.type = 'text'; srcInput.className = 'kbs-input kbs-grow';
 		srcInput.value = this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS) ?? '';
-		srcInput.placeholder = '留空 = 整个知识库';
-		srcInput.title = '库内相对目录，多个用逗号分隔';
+		// ★ 2026-09-23：把「留空」的含义写清楚 —— 现在它真的会同步「库」+「笔记」两个分区
+		// （此前留空会传空 src ⇒ 计划为空 ⇒ 终端只打印「完成 0 篇」）。
+		srcInput.placeholder = '留空 = 库 + 笔记（整个知识库）';
+		srcInput.title = '库内相对目录，多个用逗号分隔；留空 = 同步「库」与「笔记」两个分区';
 		srcInput.onchange = () => {
 			const v = srcInput.value.trim();
 			this.configurationService.updateValue(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS, v);

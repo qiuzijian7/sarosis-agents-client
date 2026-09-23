@@ -80,6 +80,14 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+// ★ 2026-09-23：Channel 绑定页签的「飞书 CLI」能力（与编辑器面板 settingsEditorPane /
+//   agentSettingsEditorPane 共用同一套实现，避免两份口径）
+import { getLarkCliStatus, installLarkCli } from './larkCliService.js';
+import { fetchFeishuChats } from './feishuChatList.js';
+import { beginFeishuRegistration, pollFeishuRegistration } from './feishuRegistration.js';
+import { drawQrToCanvas } from './feishuQrCode.js';
+import { createMainProcessRequestService } from './mainProcessRequestService.js';
+import type { IFeishuBotCreationUpdate } from '../common/larkCli.js';
 import { createMediaStoreProxy } from './mediaStoreProxy.js';
 import type { IMediaBackend } from '../common/mediaStoreChannel.js';
 import { AGENT_STUDIO_IMAGE_GEN_PROVIDER, AGENT_STUDIO_IMAGE_GEN_MODEL } from '../common/constants.js';
@@ -2240,6 +2248,73 @@ export class NativeChatEditorPane extends EditorPane {
 					this._notificationService.notify({ severity: Severity.Info, message: `已解除飞书群聊 ${chatId} 的会话绑定` });
 				} catch (err) {
 					this._notificationService.notify({ severity: Severity.Error, message: `解除失败: ${err instanceof Error ? err.message : String(err)}` });
+				}
+			},
+			// ── 飞书 CLI（2026-09-23）—— 聊天框 Channel 绑定页签的「飞书 CLI」区块 ──
+			//    探测/安装在主进程（渲染进程无 child_process）；群列表与扫码走渠道自身 app 凭证，
+			//    与设置页、渠道编辑器的「📷 扫码绑定」是同一套实现（避免三处口径漂移）。
+			onGetLarkCliStatus: () => getLarkCliStatus(),
+			// ★ 绑定表在主进程持久化（IPC 异步水合）：面板首渲染后再等一次，避免「重启后看起来丢了」
+			onEnsureBindingsLoaded: () => this._bridgeService.ensureBindingsLoaded(),
+			onInstallLarkCli: () => installLarkCli(),
+			onListFeishuChats: async () => {
+				const appId = String(this._configurationService.getValue('sessions.channel.feishu.appId') ?? '').trim();
+				const appSecret = String(this._configurationService.getValue('sessions.channel.feishu.appSecret') ?? '').trim();
+				if (!appId || !appSecret) {
+					throw new Error('尚未配置飞书应用凭证：先点上方「创建机器人（扫码授权）」，或到设置页「Channel 配置 → 飞书」填写 app_id / app_secret');
+				}
+				// 主进程出口（无 CORS）；非 Electron 宿主回退渲染进程 IRequestService
+				const requestService = createMainProcessRequestService(this._mainProcessService) ?? this._requestService;
+				const chats = await fetchFeishuChats(requestService, appId, appSecret);
+				return chats.map(c => ({ chatId: c.chatId, name: c.name, memberCount: c.memberCount }));
+			},
+			onCreateFeishuBot: async (onUpdate: (update: IFeishuBotCreationUpdate) => void) => {
+				const requestService = createMainProcessRequestService(this._mainProcessService) ?? this._requestService;
+				try {
+					const begin = await beginFeishuRegistration(requestService);
+					// 二维码在 host 侧画好并导出 PNG data URL（面板不依赖 QR 库，只显示图片）
+					let qrDataUrl: string | undefined;
+					try {
+						const canvas = document.createElement('canvas');
+						drawQrToCanvas(canvas, begin.qrUrl);
+						qrDataUrl = canvas.toDataURL('image/png');
+					} catch { /* 绘制失败：下方文案仍给出可点提示，不阻断流程 */ }
+					onUpdate({ message: `请用飞书扫码授权（链接 ${begin.expiresIn}s 内有效）`, qrDataUrl });
+
+					const deadline = Date.now() + begin.expiresIn * 1000;
+					let interval = begin.interval;
+					while (Date.now() < deadline) {
+						await new Promise(r => setTimeout(r, interval * 1000));
+						const polled = await pollFeishuRegistration(requestService, begin.deviceCode);
+						if (polled.status === 'completed') {
+							const appId = polled.appId ?? '';
+							const appSecret = polled.appSecret ?? '';
+							if (!appId || !appSecret) {
+								onUpdate({ message: '❌ 飞书未返回有效凭证', done: true, ok: false });
+								return;
+							}
+							await this._configurationService.updateValue('sessions.channel.feishu.appId', appId);
+							await this._configurationService.updateValue('sessions.channel.feishu.appSecret', appSecret);
+							await this._configurationService.updateValue('sessions.channel.feishu.enabled', true);
+							if (polled.ownerOpenId) {
+								const cur = this._configurationService.getValue<string>('sessions.channel.feishu.allowFrom') ?? '';
+								const lines = cur.split('\n').map(s => s.trim()).filter(Boolean);
+								if (!lines.includes(polled.ownerOpenId)) {
+									await this._configurationService.updateValue('sessions.channel.feishu.allowFrom', (cur ? cur.replace(/\s*$/, '') + '\n' : '') + polled.ownerOpenId);
+								}
+							}
+							this._notificationService.notify({ severity: Severity.Info, message: `飞书机器人已创建：${appId}` });
+							onUpdate({ message: `✅ 机器人已创建：${appId}（凭证已写入渠道配置并启用）`, done: true, ok: true });
+							return;
+						}
+						if (polled.status === 'denied') { onUpdate({ message: '❌ 授权被拒绝', done: true, ok: false }); return; }
+						if (polled.status === 'expired') { onUpdate({ message: '⌛ 授权已过期，请重新发起', done: true, ok: false }); return; }
+						if (polled.status === 'error') { onUpdate({ message: `❌ ${polled.error ?? '授权失败'}`, done: true, ok: false }); return; }
+						if (polled.status === 'slow_down') { interval += 5; }
+					}
+					onUpdate({ message: '⌛ 等待超时，请重新发起', done: true, ok: false });
+				} catch (err) {
+					onUpdate({ message: `❌ 发起失败：${err instanceof Error ? err.message : String(err)}`, done: true, ok: false });
 				}
 			},
 			// ── ConfigHtml（URL 面板 / 本地 HTML）—— 对齐 AgentSettingsEditorPane ──

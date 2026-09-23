@@ -12,6 +12,9 @@ import { ILogService } from "../../../../../platform/log/common/log.js";
 import { IEnvironmentService } from "../../../../../platform/environment/common/environment.js";
 import { IConfigurationService } from "../../../../../platform/configuration/common/configuration.js";
 import { resolveSarosPath, userDataRootFromRoamingHome } from "../../common/sarosPaths.js";
+// ★ 2026-09-23：绑定/会话映射改走**主进程**文件存储（渲染进程沙箱拿不到 fs ⇒ 旧 file store
+//   永远返回 undefined ⇒ 绑定退化为内存、重启即丢）。见 bridgeIpcStores.ts 头注释。
+import { createIpcBindingStore, createIpcSessionMapStore, type IIpcBindingStore, type IIpcSessionMapStore } from "./bridgeIpcStores.js";
 import {
 	IAgentChatService,
 	IAgentStudioService,
@@ -47,6 +50,17 @@ export interface IBridgeService {
 	/** 取得核心引擎（惰性创建）。 */
 	getEngine(): BridgeEngine;
 
+	/**
+	 * ★ 等待绑定表 / 会话映射从**磁盘水合**完成（2026-09-23）。
+	 *
+	 * 为什么需要：持久化在**主进程**（IPC 读盘必然是异步的），而引擎的读接口是同步的
+	 * ⇒ UI 若在启动瞬间渲染绑定列表，会读到「尚未水合」的空表，看起来就像「重启后绑定丢了」
+	 * （实测：磁盘 `<userData>/bridge/bindings.json` 里明明有数据，面板列表却是空的）。
+	 * ⇒ UI 侧应在首次渲染后 `await` 本方法，然后**再渲染一次**列表。
+	 * 已水合时立即 resolve（幂等）。
+	 */
+	ensureBindingsLoaded(): Promise<void>;
+
 	/** 取得定时任务调度器（cron/timer，惰性创建）。 */
 	getScheduler(): BridgeScheduler;
 
@@ -72,6 +86,9 @@ export class BridgeService extends Disposable implements IBridgeService {
 	private readonly _configurationService: IConfigurationService;
 
 	private _engine?: BridgeEngine;
+	/** ★ 主进程 IPC store 的引用（用于 `ensureBindingsLoaded()` 等待水合）。 */
+	private _bindingsStore?: IIpcBindingStore;
+	private _sessionMapStore?: IIpcSessionMapStore;
 	private _scheduler?: BridgeScheduler;
 	private _server?: BridgeServer;
 	private readonly _platforms = new Map<string, IBridgePlatform>();
@@ -97,6 +114,15 @@ export class BridgeService extends Disposable implements IBridgeService {
 		});
 	}
 
+	/**
+	 * ★ 等待绑定/会话映射水合完成（幂等）。见接口处的说明：
+	 * 主进程读盘是异步的，UI 首次渲染可能读到空表 ⇒ 需要「渲染 → await → 再渲染一次」。
+	 */
+	async ensureBindingsLoaded(): Promise<void> {
+		this._ensureEngine();   // 惰性创建：两个 store 是在引擎构造时建立的
+		await Promise.all([this._bindingsStore?.hydrate(), this._sessionMapStore?.hydrate()]);
+	}
+
 	private _ensureEngine(): BridgeEngine {
 		if (!this._engine) {
 			this._engine = 			new BridgeEngine({
@@ -108,10 +134,13 @@ export class BridgeService extends Disposable implements IBridgeService {
 				usageStore: createFileUsageStore(this._resolveBridgeWorkDir(), this._log),
 				// 读取各渠道「默认 Agent」静态绑定
 				configurationService: this._configurationService,
-				// 会话→Agent 绑定持久化（<workDir>/bindings.json）
-				bindingsStore: createFileBindingStore(this._resolveBridgeWorkDir(), this._log),
-				// 会话→专属 Agent 会话映射持久化（<workDir>/sessionMap.json）
-				sessionMapStore: createFileSessionMapStore(this._resolveBridgeWorkDir(), this._log),
+				// ★ 会话→Agent 绑定持久化：**主进程** `<userData>/bridge/bindings.json`
+				//   （2026-09-23 修「重启后 chat_id 绑定丢失」：渲染进程沙箱里
+				//    createFileBindingStore 永远返回 undefined ⇒ 绑定只活在内存里。
+				//    IPC 优先；file store 仅作为 node 宿主/单测的兜底，顺序不能反。）
+				bindingsStore: (this._bindingsStore = createIpcBindingStore(this._log)) ?? createFileBindingStore(this._resolveBridgeWorkDir(), this._log),
+				// ★ 会话→专属 Agent 会话映射持久化：同上，`<userData>/bridge/sessionMap.json`
+				sessionMapStore: (this._sessionMapStore = createIpcSessionMapStore(this._log)) ?? createFileSessionMapStore(this._resolveBridgeWorkDir(), this._log),
 			});
 		}
 		return this._engine;

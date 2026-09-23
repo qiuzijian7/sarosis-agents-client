@@ -351,17 +351,13 @@ export function startMainThreadWatchdog(logService: ILogService, options: IWatch
 	/** 连续阻塞的累计时长（跨多个心跳周期）：只在恢复时清零，供「恢复」行报总时长。 */
 	let blockedAccum = 0;
 
-	// ★★ 2026-09-19：把「当前阶段名」发布到 **globalThis**，供 `focusTrace`（browser 层 ✗ 不能反向
-	// import 本目录）读取。为什么不放 `wsSwitchDiag.contribution.ts` ✗：真机日志反复出现
-	// 「（未注册阶段提供者）」✓，查证是那个贡献文件里加的注册**被外部回退**了 ✗（该目录今日被
-	// 并行会话覆盖多次 ✓）。而本函数**一定**会被调用 —— 日志里的 `[WsSwitchDiag] ⚠ 交互延迟…`
-	// 就是它打的 ✓ ⇒ 放这里最稳 ✓✓。
-	// （`focusTrace._currentStage()` **优先**读这个全局钩子 ✓；它跨模块实例共享 ⇒ 同时免疫
-	//  "同一模块被加载成两个实例"的问题 ✓）
-	try {
-		(globalThis as unknown as { __SAROSIS_WS_STAGE__?: () => string }).__SAROSIS_WS_STAGE__ =
-			() => wsStageText();
-	} catch { /* 只读 globalThis 的宿主环境 ⇒ 忽略 ✓ */ }
+	// ★ 2026-09-22：这里原本把「当前阶段名」发布到 `globalThis.__SAROSIS_WS_STAGE__` ✓，
+	// 唯一消费者是 `browser/agentChat/focusTrace.ts` ✗（browser 层不能反向 import 本目录 ✓）。
+	// FocusTrace 已整体移除（用户要求 ✓）⇒ 该全局钩子一并删除 ✓。
+	// ⚠ 2026-09-23：该移除曾被**并行会话回退**（文件又被恢复 ✗）⇒ 已重新移除 ✓，
+	//   并在 `wsSwitchDiag.test.ts` 加了**防回退守卫** ✓。
+	// ⚠ `wsStageText()` 本身**保留** ✓ —— 它是本模块日志里「当前阶段」文案的唯一真源 ✓，
+	//   与 focusTrace 无关 ✓。
 
 	// ② 排队延迟探针的窗口状态
 	let latencyWindowStart = Date.now();

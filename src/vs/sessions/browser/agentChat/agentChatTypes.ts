@@ -418,6 +418,92 @@ export function deriveUiMessageParts(content: string, toolCalls: readonly IToolC
 	return parts;
 }
 
+/**
+ * ★ 2026-09-23：**合并相邻的 text part**（用户报「一条消息被拆成 2 段」的**根治** ✓）。
+ *
+ * 现象（DOM 实测 ✓ 不是推断）：`bubble.children` 出现
+ *   `… text:…#t62 → tool:…(63) → text:…#t64(h19) → text:…#t65(h1611) → footer`
+ * —— 两个**相邻** text part 各建一个 `.parts-text-segment` ⇒ 视觉上就是两块 ✗。
+ *
+ * 判据（为什么可以安全合并 ✓）：
+ *   · `deriveUiMessageParts` **每个 text 后面必跟一个 tool** ⇒ 它**不可能**产出相邻 text ✗
+ *     ⇒ 数据里出现相邻 text 只可能是"写入/迁移过程中的缝隙" ✓；
+ *   · 两个相邻 text 在语义上就是**同一段连续正文** ✓ ⇒ 直接拼接**不丢任何信息** ✓（顺序、文本全保留 ✓）；
+ *   · 空 text part 会被**吸收** ✓ —— 它本来在渲染层返回 `null`（建不出元素 ✓），
+ *     留着只会在两段之间留一道"看不见的缝" ✗✓。
+ *
+ * ⚠⚠ 必须【在**渲染之前**】调用（本函数放在 `adaptPersistedChatMessage` 与面板的
+ *   `Object.assign(_messages[idx], updates)` 之后 ✓）：
+ *   这样 `buildKeyedParts` 与 `_createPartElement` 看到的是**同一份**数组 ⇒
+ *   keyed 一致性校验（见 `agentChatPanel.keyedParts.ts` 头注 ✓）天然成立 ✓✓；
+ *   若改在渲染层合并 ⇒ `expected/actual` 计数漂移 ⇒ 全量重建 = **闪烁** ✗✓。
+ *
+ * ⚠ 不修改入参（**返回新数组、新对象** ✓）：实时路径的 parts 与 pane 共享引用 ✗✓，
+ *   就地改写会让"谁拥有这份数组"变得不可推。
+ */
+export function coalesceAdjacentTextParts(parts: readonly IMessagePart[]): IMessagePart[] {
+	if (!parts || parts.length < 2) { return parts ? parts.slice() : []; }
+	const out: IMessagePart[] = [];
+	for (const p of parts) {
+		const last = out[out.length - 1];
+		if (p.kind === 'text' && last && last.kind === 'text') {
+			const merged: ITextMessagePart = {
+				kind: 'text',
+				text: `${(last as ITextMessagePart).text ?? ''}${(p as ITextMessagePart).text ?? ''}`,
+			};
+			out[out.length - 1] = merged;
+			continue;
+		}
+		out.push(p);
+	}
+	return out;
+}
+
+/**
+ * ★ 2026-09-23：**turn 聚合时的相邻文本段合并**（用户报「一条消息被拆成 2 段」的**数据源修复** ✓）。
+ *
+ * 现象（DOM 实测 ✓）：聚合后 bubble 的 children 出现 `… text#t64(h19) → text#t65(h1611) → footer`
+ *   —— 两个**相邻** text part 各建一个 `.parts-text-segment` ⇒ 视觉上"两块" ✗。
+ * 诞生地：`agentChatPanel.header.ts` 的 turn 聚合器 —— 旧实现"给上一个 text part 追加 `\n\n`
+ *   + 再 push 另一个 text part" ⇒ parts 数组里**本来就产生相邻 text** ✗✓ ⇒ 两块 ✓。
+ * 本函数：相邻 text **合并成一个 part** ⇒ 一个 part ⇒ **一块** ✓✓。
+ *
+ * ⚠ 行为约定（与旧实现逐一对齐 ✓）：
+ *   · **跨消息**边界 ⇒ 用 `\n\n` 串联（旧实现的视觉间距 ✓）；
+ *   · **同一消息内**的相邻 text（数据缝隙 ✓）⇒ **直接拼接**（它们本来就是连续正文 ✗ 不该多一个空行 ✓）；
+ *   · 中间隔着 tool 的文本**不合并**（那是真·两段 ✓）；
+ *   · 合并写入的对象是本函数**自建**的（不改入参 ✓）；
+ *   · ⚠ thinking / subagent 等其它 kind **沿用旧聚合行为：丢弃** ✗ —— 这是旧实现就有的行为，
+ *     本函数保持原样 ✓（若要把 thinking 并入聚合，需单独立项 ✗ 不在本修复范围内 ✓）。
+ */
+export function mergeTurnMessageParts(turnMessages: readonly IAgentChatMessage[]): IMessagePart[] {
+	const mergedParts: IMessagePart[] = [];
+	for (const tm of turnMessages) {
+		const tmParts = (tm.parts && tm.parts.length > 0)
+			? tm.parts
+			: deriveUiMessageParts(tm.content ?? '', tm.toolCalls ?? []);
+		let firstInMsg = true;
+		for (const p of tmParts) {
+			const last = mergedParts[mergedParts.length - 1];
+			if (p.kind === 'text') {
+				const text = (p as ITextMessagePart).text ?? '';
+				if (last && last.kind === 'text') {
+					// 相邻 text ⇒ 合并（跨消息补 `\n\n` 视觉间距 ✓；同消息内（缝隙 ✓）直接拼接 ✓）
+					(last as ITextMessagePart).text =
+						`${(last as ITextMessagePart).text}${firstInMsg ? '\n\n' : ''}${text}`;
+				} else {
+					mergedParts.push({ kind: 'text', text });
+				}
+			} else if (p.kind === 'tool') {
+				mergedParts.push({ kind: 'tool', tool: (p as IToolMessagePart).tool });
+			}
+			// ⚠ thinking / subagent：沿用旧聚合行为（不并入 ✓ 范围外 ✗ 见函数头注）
+			firstInMsg = false;
+		}
+	}
+	return mergedParts;
+}
+
 /** 将一个持久化 ToolCall（任意来源字段名）规整为 UI 的 IToolCall。 */
 export function adaptPersistedToolCall(c: any, i: number): IToolCall {
 	return {
@@ -540,6 +626,11 @@ export function adaptPersistedChatMessage(
 			&& parts && !parts.some(p => p.kind === 'thinking')) {
 			parts.unshift({ kind: 'thinking', text: m.thinking });
 		}
+		// ★ 2026-09-23（用户报「一条消息被拆成 2 段」✓）：**接缝处归一** —— 合并相邻 text part ✓。
+		//   放在这里（渲染**之前** ✓）⇒ `buildKeyedParts` 与 `_createPartElement` 看到同一份数组
+		//   ⇒ keyed 一致性校验天然成立 ✓✓（渲染层合并会计数漂移 ⇒ 闪烁 ✗）。
+		//   实测形态：`…text#t64(h19) → text#t65(h1611) → footer` ✓（DOM dump 取证 ✓）。
+		if (parts) { parts = coalesceAdjacentTextParts(parts); }
 		// 恢复 msg.subAgents 到对应 tool call 的 subAgents（旧数据兼容）
 		if (Array.isArray(m.subAgents) && m.subAgents.length > 0 && toolCalls) {
 			for (const sa of m.subAgents) {

@@ -208,18 +208,25 @@ suite('切换卡住诊断 — 接线不变量', () => {
 		assert.strictEqual(WS_LATENCY_WINDOW_MS, 5000);
 	});
 
-	test('★★★ 阶段名必须能跨模块边界送到焦点埋点（真机连续出现「未注册阶段提供者」✗）', () => {
-		// 背景：焦点埋点在 `sessions/browser/`，阶段名在 `sessions/contrib/`（反向 import 不允许 ✗）
-		// ⇒ 靠"注入"传值。教训：注入写在**贡献文件**里被并行会话回退过多次 ✗（该目录今日被覆盖 3+ 次），
-		// 而 `startMainThreadWatchdog()` **一定**会被调用（日志里的「交互延迟」行就是它打的 ✓）
-		// ⇒ 主路径改为在**看门狗内部**直接发布 `globalThis.__SAROSIS_WS_STAGE__` ✓（跨模块实例共享 ✓）。
-		// ⚠ 刻意**只断言 `wsSwitchDiag.ts`**（稳定 ✓），**不断言** contribution 文件里的那份双保险 ✗
-		//   —— 它随时可能被别的会话整体回退，断言它只会让测试常年红 ✗✓
+	// ★★ 2026-09-22：**删除了「阶段名必须能跨模块边界送到焦点埋点」这条断言** ✗。
+	//
+	// 它断言的是两件事 ✓：
+	//   ① `wsSwitchDiag.ts` 里发布 `globalThis.__SAROSIS_WS_STAGE__` ✓；
+	//   ② `sessions/browser/agentChat/focusTrace.ts` **优先读**该全局钩子 ✓。
+	// 而用户已要求「移除 FocusTrace 日志」⇒ 该诊断**整体移除** ✓，
+	// 上面两处也就一并删掉了 ✓ ⇒ 旧断言会变成"要求两个不存在的符号/文件存在" ⇒ **常年红** ✗✓。
+	// ⚠ 保留的边界 ✓：`wsStageText()`（本模块日志里「当前阶段」文案的唯一真源 ✓）
+	//   及其 `wsStageAge()` 计时仍在 ✓，与 focusTrace 无关 ✓。
+
+	test('★★★ FocusTrace 必须保持「已移除」状态（防并行会话回退 ✗）', () => {
+		// ⚠ 2026-09-23 真事：2026-09-22 的移除**被并行会话整体回退过一次** ✗
+		//   （`focusTrace.ts` / `focusTrace.test.ts` 又出现 ✓，`[FocusTrace]` 日志又有了 ✗）
+		//   ⇒ 这条断言把"移除仍在"钉住 ✓：一旦有人再回退，它**立刻变红** ✓✓
+		//   （刻意断言 `wsSwitchDiag.ts` 里的**标记注释**而非"文件不存在" ✗ ——
+		//    无需引入 fs/path ✓，与本文件既有的 wired() 手法一致 ✓。
+		//    若将来要恢复 FocusTrace，请**连本断言一起删** ✓。）
 		const WATCHDOG_REL = 'src/vs/sessions/contrib/agentStudio/browser/wsSwitchDiag.ts';
-		const FOCUS_TRACE_REL = 'src/vs/sessions/browser/agentChat/focusTrace.ts';
-		wired(WATCHDOG_REL, '__SAROSIS_WS_STAGE__', '看门狗必须把"当前阶段名"发布到 globalThis（否则焦点埋点读不到 ⇒ 又白测一轮 ✗）');
-		wired(WATCHDOG_REL, 'wsStageAge()', '发布内容要带"已持续 Ns"（区分"刚进入阶段"与"阶段里卡久了" ✓）');
-		// 消费端必须**优先**读全局钩子 ✓（模块级注册在"同一模块被加载成两个实例"时会静默失效 ✗）
-		wired(FOCUS_TRACE_REL, '__SAROSIS_WS_STAGE__', '焦点埋点必须优先读全局钩子，否则又会写「未注册阶段提供者」✗');
+		wired(WATCHDOG_REL, 'FocusTrace 已整体移除',
+			'wsSwitchDiag.ts 必须保留「FocusTrace 已整体移除」标记 ⇒ 否则说明移除被回退了 ✗');
 	});
 });

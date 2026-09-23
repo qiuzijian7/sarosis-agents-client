@@ -7,6 +7,7 @@
 /* eslint-disable local/code-no-unexternalized-strings */
 import { Disposable } from "../../../../base/common/lifecycle.js";
 import { Emitter, Event } from "../../../../base/common/event.js";
+import { isDraftAlreadyPersisted, normDraftCompareText, dropCoveredInterruptedDrafts, messageVisibleText } from "../common/interruptedDraftGuard.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
 import {
 	IAgentChatService,
@@ -2428,12 +2429,20 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					//   （实证 idx 668/669：回合落盘与草稿相差仅 66ms）。尾部连续 assistant
 					//   消息（同回合 per-iteration 组）拼接内容已包含草稿文本 ⇒ 早已正式
 					//   落盘 ⇒ 丢弃（文件已被 _consumeInterruptedDraft 删除，天然不重复）。
-					if (this._isDraftAlreadyPersisted(messages, draftMsg.content)) {
+					// ★★ 2026-09-23 加固（用户报「一条回答被拆成 2 段」✓ DOM 取证 ✓）：
+					//   判据抽到 `common/interruptedDraftGuard.ts`（纯函数 ✓ 可单测 ✓）——
+					//   旧守卫的三个漏口见该文件头注 ✓。方向保守：**只放宽"丢弃"，不放宽"保留"** ✓✓。
+					if (isDraftAlreadyPersisted(messages, draftMsg.content)) {
 						this.logService.info(
 							`[AgentChatService] getHistory: skipped stale interrupted draft ` +
 							`(${draftMsg.content.length} chars) for ${key} — content already persisted by completed turn`,
 						);
 					} else {
+						// ★ 2026-09-23：保留路径**也落一条日志** —— 下次再漏 ⇒ 用 draftHead 直接对照 ✓
+						this.logService.info(
+							`[AgentChatService] getHistory: kept interrupted draft (NOT covered by history) ` +
+							`for ${key} — draftHead=${JSON.stringify(normDraftCompareText(draftMsg.content).slice(0, 60))}`
+						);
 						messages = [...(messages || []), draftMsg];
 						this._historyCache.set(key, messages);
 						void this.appendMessage(agentId, draftMsg).catch(err =>
@@ -2441,6 +2450,29 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						);
 					}
 				}
+			}
+		}
+
+		// ★★ 2026-09-23 读取期兜底清洗（用户报「一条回答被拆成 2 段」✓ 二次修复 ✓）：
+		//   上面的守卫只挡**新**注入 ✗ —— 但已落盘的 `metadata.streamInterrupted` 消息
+		//   （中断快照 ✓ 之前漏进来并已 appendMessage 持久化 ✗）现在是**普通历史消息** ✗
+		//   ⇒ 每次重开都会再渲染 ✗✓。此处用同一套判据在**读取时**把"已被其它 assistant
+		//   消息覆盖"的旧中断快照滤掉 ✓（不改盘 ✓ 只影响返回列表 ⇒ UI 与模型上下文同时受益 ✓✓）。
+		//
+		// ★★★ 2026-09-23 逐条判定日志（用户报"洗了还在" ✗✓ —— DOM 侧已证明判据该覆盖 ✓
+		//   ⇒ 那只能是**服务里看到的输入与 DOM 不同** ✗ ⇒ 必须把判定时刻的输入落出来 ✗✓
+		//   —— 只在没有中断快照时零噪音 ✓）：
+		const _preDropDrafts = (messages || []).filter(m => (m.metadata as { streamInterrupted?: boolean } | undefined)?.streamInterrupted === true);
+		messages = dropCoveredInterruptedDrafts(messages || []);
+		if (_preDropDrafts.length > 0) {
+			const _keptIds = new Set(messages.map(m => m.id));
+			for (const m of _preDropDrafts) {
+				this.logService.info(
+					`[AgentChatService] getHistory: interrupted draft ${m.id} → ` +
+					`${_keptIds.has(m.id) ? 'KEPT ✗ (not covered by history)' : 'dropped ✓'} ` +
+					`head=${JSON.stringify(normDraftCompareText(messageVisibleText(m)).slice(0, 60))} ` +
+					`parts=${Array.isArray(m.parts) ? m.parts.length : '-'} contentLen=${(m.content ?? '').length}`
+				);
 			}
 		}
 
@@ -2517,22 +2549,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		} catch { /* 删不掉 → 下次消费时按一次性草稿处理（最坏多一条"已中断"消息，可接受 ✓） */ }
 	}
 
-	/**
-	 * 草稿去重判定（2026-09-20）：尾部连续 assistant 消息（同一回合的 per-iteration
-	 * 消息组）拼接内容若已包含草稿文本，说明草稿内容早已随回合正式落盘
-	 * （残留的 journal 是 clear 竞态的遗物）⇒ 不应再注入。
-	 */
-	private _isDraftAlreadyPersisted(messages: ChatMessage[] | undefined, draftContent: string): boolean {
-		const draft = draftContent.trim();
-		if (!draft || !messages || messages.length === 0) { return false; }
-		let tail = '';
-		for (let i = messages.length - 1; i >= 0 && tail.length < draft.length; i--) {
-			const m = messages[i];
-			if (m.role !== 'assistant') { break; }
-			if (typeof m.content === 'string' && m.content) { tail = m.content + tail; }
-		}
-		return tail.includes(draft);
-	}
+	// ⚠ 2026-09-23：草稿去重判定已抽到 `../common/interruptedDraftGuard.js`（纯函数 ✓ 可单测 ✓）。
+	//   旧实现（本处原 `_isDraftAlreadyPersisted`）有三个漏口 ✗：① 只拼 `content`（stage-E 正文
+	//   可能只在 `parts` ✗）；② 字符级 `includes`（草稿=流式原文 vs 落盘=清洗后 ✓ ⇒ 空白失配 ✗）；
+	//   ③ 循环上界 `tail.length < draft.length`（草稿更长 ⇒ 凑不满 ⇒ 必 false ✗）。
+	//   —— 用户报「一条回答被拆成 2 段」正是它漏掉所致（`msg_…_interrupted` 与 turn 气泡并存 ✗✓）。
 
 	/** 读取并**删除**草稿（消费一次，避免重复合并）。无草稿返回 undefined。 */
 	private async _consumeInterruptedDraft(agentId: string, sessionId: string): Promise<ChatMessage | undefined> {

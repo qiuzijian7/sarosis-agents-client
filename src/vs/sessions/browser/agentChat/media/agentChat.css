@@ -9998,6 +9998,173 @@
 	margin-bottom: 10px;
 }
 
+/* ═══ Channel 绑定 · 飞书 CLI（2026-09-23）═══════════════════════════════
+   与编辑器面板（agentSettingsEditorPane.css 的 .larkcli-* / .chatid-*）**逐值对齐**：
+   字号 / 内距 / 圆角 / 行距 / 按钮族都与那边保持一致（用户要求「两处样式一致」）。
+   类名加 `chat-` 前缀以符合本文件命名；parity 由 larkCli.test.ts 的数值比对守卫兜住。
+
+   ★ 按钮族：本文件原有 `.chat-settings-add-btn` 是**父级限定**的
+   （`.chat-binding-add-row .chat-settings-add-btn`），因此放在别的容器里（如群列表行内）
+   会一条样式都吃不到；裸的 `.monaco-text-button` 又是 `display:block; width:100%`
+   ⇒ 把整行撑满、群名/ID 被挤成 0 宽（2026-09-23 用户截图即此现象）。
+   这里新增**不限父级**的 `.chat-settings-btn`（对齐 editorpane 的 `.agent-settings-btn`），
+   CLI 区块内的全部按钮都用它，不再用 monaco 按钮类。 */
+
+/* CLI 区块的行：**镜像 pane 的 `.binding-add-row`**（display:flex; gap:8px; margin-bottom:12px;
+   ★ 同样**不设 align-items** —— pane 那边是默认 stretch，徽章/按钮的高度就由它决定；
+   早先我用 .chat-binding-add-row（center + margin 10px）⇒ 徽章矮 6px、行距差 2px，实测不一致）。 */
+.chat-larkcli-row {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+
+.chat-settings-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 5px 10px;
+	font-size: 12px;
+	/* font-family 必须 inherit：pane 的按钮最终解析成应用字体（工作台全局规则），
+	   不设则退回 UA 字体（Arial）⇒ 字形与宽度都不同（实测按钮宽 61.3 vs 46）。 */
+	font-family: inherit;
+	border: 1px solid var(--vscode-panel-border, #464647);
+	border-radius: 4px;
+	background: var(--vscode-editor-background, transparent);
+	color: var(--vscode-descriptionForeground, #888);
+	cursor: pointer;
+	white-space: nowrap;
+}
+.chat-settings-btn:hover {
+	background: var(--vscode-list-hoverBackground, #2a2d2e);
+	color: var(--vscode-foreground, #d4d4d4);
+	border-color: var(--vscode-button-background, #0e639c);
+}
+.chat-settings-btn.primary {
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+	border-color: var(--vscode-button-background, #0e639c);
+}
+.chat-settings-btn.primary:hover {
+	background: var(--vscode-button-hoverBackground, #1177bb);
+}
+.chat-settings-btn:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.chat-larkcli-badge {
+	display: inline-flex;
+	align-items: center;
+	flex-shrink: 0;
+	padding: 1px 8px;
+	border-radius: 999px;
+	border: 1px solid transparent;
+	font-size: 11px;
+	line-height: 1.7;
+	white-space: nowrap;
+}
+.chat-larkcli-badge.tone-ok { color: #4caf50; border-color: rgba(76, 175, 80, 0.4); background: rgba(76, 175, 80, 0.12); }
+.chat-larkcli-badge.tone-warn { color: #d7a24a; border-color: rgba(215, 162, 74, 0.4); background: rgba(215, 162, 74, 0.12); }
+.chat-larkcli-badge.tone-bad { color: #f48771; border-color: rgba(244, 135, 113, 0.4); background: rgba(244, 135, 113, 0.12); }
+.chat-larkcli-badge.tone-dim {
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888));
+	border-color: var(--vscode-panel-border, #3c3c3c);
+}
+
+.chat-larkcli-detail {
+	flex: 1;
+	min-width: 0;
+	font-size: 12px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888));
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* 安装/升级命令输出：等宽 + 可滚动 + 自动换行（不撑破浮层宽度） */
+.chat-larkcli-output {
+	margin: 8px 0;
+	padding: 8px 10px;
+	max-height: 220px;
+	overflow: auto;
+	font-family: var(--vscode-editor-font-family, Consolas, monospace);
+	font-size: 11.5px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	background: var(--vscode-textCodeBlock-background, #2a2a2a);
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 4px;
+	color: var(--as-fg-primary, var(--vscode-foreground, #d4d4d4));
+}
+
+/* 扫码创建机器人：内联二维码卡片（不弹窗，避免遮挡页签上下文） */
+.chat-larkcli-qr {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	margin: 8px 0;
+	padding: 12px;
+	border: 1px dashed var(--vscode-panel-border, #3c3c3c);
+	border-radius: 6px;
+}
+.chat-larkcli-qr-img {
+	width: 132px;
+	height: 132px;
+	background: #ffffff;   /* 二维码必须浅底深码，深色主题下固定白底才可扫 */
+	border-radius: 4px;
+	padding: 6px;
+}
+.chat-larkcli-qr-status {
+	font-size: 12px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888));
+	text-align: center;
+	line-height: 1.5;
+}
+
+/* 群列表（获取 chat_id） */
+.chat-chatid-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-bottom: 10px;
+	max-height: 240px;
+	overflow: auto;
+}
+.chat-chatid-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 4px;
+	background: var(--vscode-input-background, #3c3c3c);
+}
+.chat-chatid-info {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.chat-chatid-name {
+	font-size: 13px;
+	color: var(--as-fg-primary, var(--vscode-editor-foreground, #d4d4d4));
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.chat-chatid-id {
+	font-family: var(--vscode-editor-font-family, Consolas, monospace);
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888));
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /*
  * ⚠ 必须用「行内限定」的选择器提高权重 ✗✓（2026-09-22 用户截图：输入框被挤成一个方块、按钮撑满一行 ✓）。
  * 缘由：按钮带 `monaco-button monaco-text-button`（工作台**全局**样式 ✓），全局表里 `.monaco-button`
@@ -13866,4 +14033,45 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * parts 分段**视觉归一**（2026-09-23 ✓ 用户反馈「重启后一条消息像被拆成 2 段」）
+ *
+ * 根因（代码取证 ✓ **不是 bug** ✓）：
+ *   渲染层 **每个 text part 各建一个块** —— `agentChatPanel.markdown.ts:750-755`
+ *   （_renderPartsContentImpl）与 `:808-815`（_createPartElement）⇒
+ *   `className = "message-content parts-text-segment"` ✓；
+ *   恢复层在消息无 parts 时按 **`textPosition`** 把正文切开（`agentChatTypes.ts:386-408`
+ *   deriveUiMessageParts ✓，调用点 `:535` adaptPersistedChatMessage ✓）
+ *   ⇒ **切点正好落在工具卡插入处** ✓；
+ *   而 `.parts-text-segment` 此前**没有任何专门样式** ✗ ⇒ 段边界处"双份外边距"
+ *   ＋ 中间那张（恢复后常是折叠的、很矮的）工具卡 ⇒ 视觉上就是两个独立块 ✗✓。
+ *
+ * ⚠⚠ 本修复**只动 CSS、绝不动结构** ✗✓：
+ *   绝不合并 part —— `keyedParts.ts` 硬约束「buildKeyedParts 的收录范围必须与
+ *   `_createPartElement` 的创建范围**严格一致**」✗✓；合并渲染会破坏该一致性校验，
+ *   退化为每次 finalize 全量重建 = **闪烁**（已有两次真机故障先例 ✓）。
+ *
+ * 四条规则（保守 ✓ 无结构风险 ✓）：
+ *   ① 段自身不留额外外边距；段内首/末元素外边距归零 ⇒ 消掉段边界处的双份空隙 ✓
+ *   ② 连续两段紧贴 ✓
+ *   ③ 仅在「文字段 → 卡 → 文字段」的**夹心结构**里收紧卡的外距 ✓（`:has()` ✓——
+ *      浏览器不支持 `:has()` 时整条规则**自动失效** ⇒ 回落到当前观感 ✓ 无副作用 ✓）
+ *   ④ 卡与段之间留 2px（不是 0 ✓：完全贴合会让卡"粘"在文字上，反而更难读 ✓）
+ * ═══════════════════════════════════════════════════════════════════════════ */
+.parts-text-segment { margin: 0; }
+.parts-text-segment > :first-child { margin-top: 0; }
+.parts-text-segment > :last-child { margin-bottom: 0; }
+.parts-text-segment + .parts-text-segment { margin-top: 0; }
+/* 夹心结构：文字段 → 工具卡 → 文字段（恢复后那张卡常是折叠的 ⇒ 越矮越像"两段文字" ✗） */
+.parts-text-segment:has(+ .tool-header-wrapper + .parts-text-segment) { margin-bottom: 0; }
+.parts-text-segment:has(+ .thinking-card + .parts-text-segment) { margin-bottom: 0; }
+.parts-text-segment + .tool-header-wrapper:has(+ .parts-text-segment) {
+	margin-top: 2px;
+	margin-bottom: 0;
+}
+.parts-text-segment + .thinking-card:has(+ .parts-text-segment) {
+	margin-top: 2px;
+	margin-bottom: 0;
 }

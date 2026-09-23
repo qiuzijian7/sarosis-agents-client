@@ -9,6 +9,9 @@ import {
 	IDisposable,
 	toDisposable } from '../../../base/common/lifecycle.js';
 import type { ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlConfig.js';
+// ★ 2026-09-23：Channel 绑定页签的「飞书 CLI」契约（common 层，允许被本层依赖；
+//   真正的实现由 host 注入回调 —— 见下方 _onGetLarkCliStatus 等 hook 的注释）
+import type { IFeishuBotCreationUpdate, IFeishuChatSummary, ILarkCliRunResult, ILarkCliStatus } from '../../contrib/agentStudio/common/larkCli.js';
 import { $,
 	append,
 	clearNode,
@@ -22,7 +25,7 @@ import { decideDomTrim,
 	withProtectedRange,
 	trimScrollCompensation,
 } from './domBudgetDecision.js';
-import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, IImageModelGroup, HeaderPanelType, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowPickerSelect, ILiveWorkflowNodeInteraction, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, IPlanTaskCard, OrchestrationPlan, PlanTask, AgentStatus } from './agentChatTypes.js';
+import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, IImageModelGroup, HeaderPanelType, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowPickerSelect, ILiveWorkflowNodeInteraction, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, IPlanTaskCard, OrchestrationPlan, PlanTask, AgentStatus, coalesceAdjacentTextParts } from './agentChatTypes.js';
 // ChatMode removed — replaced by chatOnly boolean toggle
 import type { IChatPanel } from './iChatPanel.js';
 import { TabbedPanelManager } from './modules/tabbedPanel.js';
@@ -1043,6 +1046,34 @@ protected readonly _importedKbFileToolIds = new Set<string>();
 	 */
 	protected _feishuBindingIcon?: HTMLElement;
 
+	// ── 飞书 CLI（2026-09-23）───────────────────────────────────────────────
+	//
+	// ★ 为什么是回调而不是直接 import：本面板在 `sessions/browser` 层，**不能反向依赖**
+	//   `contrib/agentStudio` 的 browser 实现（`larkCliService.ts` / `feishuChatList.ts` /
+	//   `feishuRegistration.ts`）。契约类型放 common 层（`common/larkCli.ts`），
+	//   实现由 host（`nativeChatEditorPane.ts`）注入 —— 与 `_onBindFeishuSession` 同一套路。
+	// 未注入时该区块只显示「不可用」，不影响其余绑定功能（非 Electron / 无凭证环境）。
+
+	/** CLI 状态探测（是否安装 / 版本 / npm 最新版本）。 */
+	protected readonly _onGetLarkCliStatus?: () => Promise<ILarkCliStatus>;
+	/** 安装 / 升级（同一条命令；host 在主进程执行）。 */
+	protected readonly _onInstallLarkCli?: () => Promise<ILarkCliRunResult>;
+	/** 列「机器人所在的群」（host 用渠道凭证查飞书；失败抛错，由面板显示原因）。 */
+	protected readonly _onListFeishuChats?: () => Promise<ReadonlyArray<IFeishuChatSummary>>;
+	/**
+	 * 扫码创建机器人：host 跑完 device-flow 全流程（含二维码 PNG 生成），
+	 * 通过 `onUpdate` 持续回推进度；面板只负责显示二维码与状态文案。
+	 */
+	protected readonly _onCreateFeishuBot?: (onUpdate: (update: IFeishuBotCreationUpdate) => void) => Promise<void>;
+	/**
+	 * ★ 等待绑定表从磁盘水合完成（2026-09-23）。
+	 *
+	 * 绑定持久化在**主进程**（IPC 读盘异步），引擎读接口却是同步的 ⇒ 启动后首次渲染
+	 * 列表会读到空表；实测磁盘 bindings.json 有数据而列表为空，用户会认为「重启后绑定丢了」。
+	 * ⇒ 面板渲染后再 `await` 一次并重绘列表（未注入时跳过，行为与旧版一致）。
+	 */
+	protected readonly _onEnsureBindingsLoaded?: () => Promise<void>;
+
 	// ── ConfigHtml（URL 面板 / 本地 HTML）回调 ──
 	protected readonly _onGetConfigHtmlCfg?: () => Promise<ConfigHtmlCfg | undefined>;
 	protected readonly _onSaveConfigHtmlCfg?: (cfg: ConfigHtmlCfg) => Promise<void>;
@@ -1159,6 +1190,13 @@ constructor(opts: {
 	onListFeishuSessionBindings?: () => ReadonlyArray<{ conversationId: string; agentId: string; agentSessionId: string }>;
 	/** 绑定 chat_id 到当前 Agent 的指定会话。 */
 	onBindFeishuSession?: (chatId: string, sessionId: string) => void;
+	/** 飞书 CLI（2026-09-23）：状态探测 / 安装升级 / 群列表 / 扫码创建机器人 —— 由 host 注入实现。 */
+	onGetLarkCliStatus?: () => Promise<ILarkCliStatus>;
+	onInstallLarkCli?: () => Promise<ILarkCliRunResult>;
+	onListFeishuChats?: () => Promise<ReadonlyArray<IFeishuChatSummary>>;
+	onCreateFeishuBot?: (onUpdate: (update: IFeishuBotCreationUpdate) => void) => Promise<void>;
+	/** 等待绑定表水合完成（见 _onEnsureBindingsLoaded 的说明）。 */
+	onEnsureBindingsLoaded?: () => Promise<void>;
 	/** 解除 chat_id 的专属会话绑定。 */
 	onUnbindFeishuSession?: (chatId: string) => void;
 	/** 读取渠道默认会话 id（默认 Agent 配套；undefined = 未设置）。 */
@@ -1263,6 +1301,12 @@ constructor(opts: {
 		this._onListAgentSessions = opts.onListAgentSessions;
 		this._onListFeishuSessionBindings = opts.onListFeishuSessionBindings;
 		this._onBindFeishuSession = opts.onBindFeishuSession;
+		// 飞书 CLI（2026-09-23）：未注入时面板显示「不可用」并禁用按钮，其余绑定功能不受影响
+		this._onGetLarkCliStatus = opts.onGetLarkCliStatus;
+		this._onInstallLarkCli = opts.onInstallLarkCli;
+		this._onListFeishuChats = opts.onListFeishuChats;
+		this._onCreateFeishuBot = opts.onCreateFeishuBot;
+		this._onEnsureBindingsLoaded = opts.onEnsureBindingsLoaded;
 		this._onUnbindFeishuSession = opts.onUnbindFeishuSession;
 		this._onGetFeishuDefaultSession = opts.onGetFeishuDefaultSession;
 		this._onSetFeishuDefaultSession = opts.onSetFeishuDefaultSession;
@@ -1652,6 +1696,13 @@ updateMessage(
 		const prevToolSig = (this._messages[idx].toolCalls ?? []).map(t => `${t.id}:${t.status}`).join(',');
 		Object.assign(this._messages[idx], updates);
 		const m = this._messages[idx];
+		// ★ 2026-09-23（用户报「一条消息被拆成 2 段」✓）：**实时路径的同一个接缝** —— 合并相邻
+		//   text part ✓。这是**唯一**让 parts 落地的点（`updates.parts` 就由此进数组 ✓）⇒
+		//   在此归一 ⇒ 之后所有消费者（keyedParts / _createPartElement / 结构变化判据）看到的
+		//   都是**同一份**数组 ✓✓；放渲染层则计数漂移 ⇒ 全量重建闪烁 ✗✓。
+		if (m.parts && m.parts.length > 1) {
+			m.parts = coalesceAdjacentTextParts(m.parts);
+		}
 
 		// ★★ 2026-09-20：完成态 footer 的**用量药丸补建** ✓。
 		// 为什么需要：footer 在流结束时**只创建一次**（`_ensureLastBubbleFooter` ✓），而

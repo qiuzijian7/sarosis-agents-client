@@ -95,7 +95,10 @@ import {
 	normalizePathForCompare,
 	isAbsolutePath,
 } from './knowledgeBase/kbViewUtils.js';
-import { STORAGE_VAULTS, STORAGE_ACTIVE, STORAGE_KB_DIR } from '../knowledge/kbVaultState.js';
+import {
+	STORAGE_VAULTS, STORAGE_ACTIVE, STORAGE_KB_DIR,
+	isKbDirOccupied, nextVaultDirName, sanitizeVaultDirName,
+} from '../knowledge/kbVaultState.js';
 import type { IChatModel } from '../knowledge/llm.js';
 import { KbFullTextIndex, IKbSearchHit } from './knowledgeBase/kbIndex.js';
 import { KbLinkGraph, IKbGraphRoot } from './knowledgeBase/kbGraph.js';
@@ -1597,8 +1600,22 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}, 30_000);
 	}
 
+	/**
+	 * 新建 Vault。
+	 *
+	 * ## ★ 2026-09-23：目录用**可读名**，不再用 21 位时间戳 ID
+	 *
+	 * 此前固定 `joinPath(kbDir, vault.id)` ⇒ 磁盘上出现 `20260922123131-827wo3k/` 这种
+	 * 不可读目录。现在按用户需求：
+	 *   ① **知识库目录尚未被占用** ⇒ 直接复用它（Vault 根 == kbDir，不再套子目录）；
+	 *   ② 已被占用 ⇒ 在 kbDir 下用**可读目录名**（Vault 名称 sanitize），重名自动 ` 2`、` 3`…
+	 *
+	 * ⚠ 只避让**其它 Vault 已用的路径**，不检查磁盘是否已有同名目录 —— 那正是
+	 *   「目录里已有内容就直接加载」的期望行为（`ensureVaultFolders` 会先 exists 再 create）。
+	 * ⚠ `vault.id` 仍保留时间戳：它是稳定标识（storage 键 / 排序 / 缓存），目录布局只由
+	 *   `customPath` 决定 —— 这样「改名」不会牵动数据路径。
+	 */
 	private async createVault(name: string, icon = '📚'): Promise<void> {
-		this.logService.info(`[KB DEBUG] createVault called name=${name}; existingActiveVault=${(this._activeVault as any)?.id ?? 'none'}; _vaults.length=${this._vaults?.length ?? -1}; stack=${(new Error()).stack}`);
 		const vault: IKbVault = {
 			id: newVaultId(),
 			name,
@@ -1608,7 +1625,22 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			closed: false,
 			path: '',
 		};
-		vault.path = this.vaultUri(vault).fsPath;
+
+		const kbDir = this.rootUri;
+		const usedRoots = this._vaults.map(v => this.vaultUri(v).fsPath);
+		let root: URI;
+		if (!isKbDirOccupied(kbDir.fsPath, usedRoots)) {
+			root = kbDir;                                        // ① 直接复用知识库目录
+		} else {
+			const used = new Set(usedRoots.map(p => p.toLowerCase()));
+			const dirName = nextVaultDirName(sanitizeVaultDirName(name),
+				d => used.has(URI.joinPath(kbDir, d).fsPath.toLowerCase()));   // ② 可读名子目录
+			root = URI.joinPath(kbDir, dirName);
+		}
+		vault.path = root.fsPath;
+		vault.customPath = root.fsPath;
+		this._vaultFoldersReady.delete(vault.id);   // 新 id ⇒ 本就未就绪，这里显式保证语义
+
 		this._vaults.push(vault);
 		this.saveVaults();
 		await this.ensureVaultFolders(vault);
@@ -3115,11 +3147,22 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			isSqliteActive: () => !!this._kbSqliteStore,
 			getLinkedWorkspaceCount: () => this._activeVault?.linkedWorkspaces?.length ?? 0,
 			logOp: (code, detail) => { void this._logOp(code, 'success', detail); },
-			pickDir: (current) => { void this.pickKbDir(current); },
-			applyDir: (dir) => { void this.applyKbDir(dir); },
+			// ★ 2026-09-23：透传 Promise（供设置面板回填路径 + 重渲染）
+			pickDir: (current) => this.pickKbDir(current),
+			applyDir: (dir) => this.applyKbDir(dir),
 			rebuildVectorIndex: () => { void this.rebuildVectorIndex(); },
 			openKbFolder: () => { void this.openKbFolder(); },
-			feishuSync: (mode) => { void this.syncToFeishu(mode); },
+			feishuSync: (mode) => {
+				// ★ 2026-09-23：必须接住 rejection。
+				// 此前是 `void this.syncToFeishu(mode)` ⇒ 内部任何 await 抛错都会变成
+				// **未处理的 Promise 拒绝**，UI 上毫无反馈 —— 用户看到的就是「点了没反应」
+				// （op-log 里连 `feishu.sync` 条目都没有，无法判断到底走到哪一步）。
+				void this.syncToFeishu(mode).catch(err => {
+					const msg = err instanceof Error ? err.message : String(err);
+					this.logService.error(`[KB feishu] sync launch failed: ${err instanceof Error ? err.stack ?? msg : msg}`);
+					this.notificationService.warn(localize('kb.feishuLaunchFailed', '飞书同步启动失败：{0}', msg));
+				});
+			},
 			loadSpaceMap: () => this.loadFeishuSpaceMap(),
 			saveSpaceMap: (list) => this.saveFeishuSpaceMap(list),
 			listSpaces: () => this.listFeishuSpaces(),
@@ -3286,6 +3329,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		const rawInterval = this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_SYNC_INTERVAL);
 		const srcDirs = parseSrcDirs(this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_SRC_DIRS));
+		// ★ 2026-09-23：「留空 = 整个知识库」此前**只是文案**：留空会把 `--src` 整个省掉
+		// ⇒ 脚本侧 `args.src = []` ⇒ `collectPlan` 得到空计划 ⇒ 终端只打印「完成 0 篇」
+		// （用户观感就是「点了没反应 / 同步了但什么都没发生」）。
+		// 这里把「留空」落实为知识库的两个标准分区：`库` 与 `笔记`。
+		const effectiveSrcDirs = srcDirs.length ? srcDirs : ['库', '笔记'];
 		const parent = (this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_PARENT) || 'my_library').trim();
 		const onConflict = this.configurationService.getValue<string>(AGENT_STUDIO_KB_FEISHU_SYNC_ON_CONFLICT) === 'skip' ? 'skip' : 'overwrite';
 
@@ -3293,7 +3341,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const rawDepth = this.configurationService.getValue<number>(AGENT_STUDIO_KB_FEISHU_CATEGORY_DEPTH);
 		const args = buildSyncArgs(script.fsPath, {
 			vaultPath: this.rootUri.fsPath,
-			srcDirs,
+			srcDirs: effectiveSrcDirs,
 			parent,
 			onConflict,
 			intervalMs: Number.isFinite(rawInterval) && rawInterval >= 0 ? rawInterval : 800,
@@ -3330,6 +3378,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			});
 			this.terminalService.setActiveInstance(terminal);
 			await this.terminalService.revealTerminal(terminal);
+			// ★ 2026-09-23：给一条**显式反馈**。同步是在新终端里跑（终端可能开在别的面板/被折叠），
+			// 没有提示时用户只会觉得「点了没反应」（此前正是这种反馈缺失）。
+			this.notificationService.info(localize('kb.feishuLaunched',
+				'已启动飞书同步（{0}），正在终端中运行，可切到终端查看进度。', mode === 'apply' ? '同步' : '预览'));
 		} catch (err) {
 			this.logService.warn(`[KB] feishu sync launch failed: ${err instanceof Error ? err.message : String(err)}`);
 			this.notificationService.warn(localize('kb.feishuLaunchFailed', '飞书同步启动失败：{0}', err instanceof Error ? err.message : String(err)));
@@ -3339,38 +3391,57 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	// 说明：「已同步篇数」统计与同步日志打开已迁入 KbSettingsEditorPane
 	// （Pane 用 IFileService 自行扫描 vault；日志经 host.openFile 打开）。
 
-	/** 调原生文件夹选择框，选取知识库目录。 */
-	private async pickKbDir(current: string): Promise<void> {
+	/** 调原生文件夹选择框，选取知识库目录（返回最终生效路径；取消 ⇒ undefined）。 */
+	private async pickKbDir(current: string): Promise<string | undefined> {
 		const picked = await this.fileDialogService.showOpenDialog({
 			title: localize('kb.pickRoot', '选择知识库目录'),
 			canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
 			defaultUri: URI.file(current),
 		});
-		if (!picked || !picked.length) { return; }
-		await this.applyKbDir(picked[0].fsPath);
+		if (!picked || !picked.length) { return undefined; }
+		return this.applyKbDir(picked[0].fsPath);
 	}
 
-	/** 应用新的知识库目录：持久化 + 迁移默认 Vault 路径 + 重新激活。 */
-	private async applyKbDir(dir: string): Promise<void> {
+	/**
+	 * 应用新的知识库目录。
+	 *
+	 * ## ★ 2026-09-23 语义调整：**所选目录本身就是 Vault 根**
+	 *
+	 * 此前对「无 `customPath` 的 Vault」执行 `URI.joinPath(所选目录, v.id)` —— 而 `v.id` 是
+	 * 21 位时间戳 ID ⇒ 在用户选的目录里凭空多出一层 `<时间戳>/`，其下才是「库」「笔记」。
+	 * 用户反馈「不要在该目录中再新建一个目录，直接用该目录即可」。
+	 *
+	 * 现在统一为 `customPath` 语义（与 «配置文件夹为知识库»(`configFolderAsVault`) 一致）：
+	 * Vault 根 = 所选目录 ⇒ `vaultUri()` 直接返回它，`sectionUri()` 在此之下取「库」「笔记」。
+	 *
+	 * ## 「已有则加载、没有才创建」
+	 *
+	 * 由 `ensureVaultFolders` 保证：它对 root / 库 / 笔记 三处都是**先 `exists` 再 `createFolder`**
+	 * ⇒ 目录里已存在这些子目录（及笔记文件）时只做加载，不会清空或重建。
+	 * ⚠ 必须清掉 `_vaultFoldersReady` 缓存，否则换了目录后会被「该 Vault 已就绪」短路。
+	 *
+	 * @returns 最终生效的目录路径（供设置面板回填输入框）
+	 */
+	private async applyKbDir(dir: string): Promise<string | undefined> {
 		const fsPath = URI.file(dir).fsPath;
+		const vault = this._activeVault ?? this._vaults.find(v => !v.closed) ?? this._vaults[0];
+		if (!vault) {
+			this.notificationService.warn(localize('kb.noVaultForDir', '没有可用的知识库 Vault，请先创建。'));
+			return undefined;
+		}
+
 		this.storageService.store(STORAGE_KB_DIR, fsPath, StorageScope.APPLICATION, StorageTarget.MACHINE);
 		void this._logOp('vault.kbDir', 'success', { target: fsPath });
 
-		// 默认 Vault（无 customPath）的路径跟随新目录；外部配置的 Vault 不受影响
-		for (const v of this._vaults) {
-			if (!v.customPath) {
-				v.path = URI.joinPath(URI.file(fsPath), v.id).fsPath;
-			}
-		}
+		// 所选目录即 Vault 根；`path` 与 `customPath` 保持同一真源
+		vault.customPath = fsPath;
+		vault.path = fsPath;
+		this._vaultFoldersReady.delete(vault.id);   // 路径已变 ⇒ 重新判定「库/笔记」是否存在
 		this.saveVaults();
 
-		if (this._activeVault) {
-			this._activeVault.path = this.vaultUri(this._activeVault).fsPath;
-			await this.activateVault(this._activeVault);
-		}
-		// 刷新设置面板：重开一次（matches() 复用同一 Tab 并重渲染，路径与统计随之更新）
-		this.openSettingsEditor();
+		await this.activateVault(vault);
 		this.notificationService.info(localize('kb.rootChanged', '知识库目录已切换为：{0}', fsPath));
+		return fsPath;
 	}
 
 	/** 使用当前 Embedding 设置重新构建所有 Vault 的向量索引。 */

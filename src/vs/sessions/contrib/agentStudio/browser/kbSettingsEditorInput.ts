@@ -30,10 +30,16 @@ export interface IKbSettingsHost {
 	getLinkedWorkspaceCount(): number;
 	/** 操作日志（settings.*） */
 	logOp(code: string, detail: Record<string, unknown>): void;
-	/** 打开文件夹选择框（选定后由视图完成持久化与 Vault 迁移） */
-	pickDir(current: string): void;
-	/** 手动输入路径后提交 */
-	applyDir(dir: string): void;
+	/**
+	 * 打开文件夹选择框（选定后由视图完成持久化与 Vault 迁移）。
+	 *
+	 * ★ 2026-09-23：**返回最终生效的目录路径**。此前是 `void` 单向调用 ⇒ 面板无从知道
+	 * 用户选了什么、也无法回填输入框，表现为「选了目录，路径没变」。
+	 * 取消 ⇒ `undefined`。
+	 */
+	pickDir(current: string): Promise<string | undefined>;
+	/** 手动输入路径后提交；返回最终生效的目录路径（无效/无 Vault ⇒ `undefined`）。 */
+	applyDir(dir: string): Promise<string | undefined>;
 	/** 用当前 Embedding 配置重建所有 Vault 的向量索引 */
 	rebuildVectorIndex(): void;
 	/** 在系统资源管理器中打开知识库文件夹 */

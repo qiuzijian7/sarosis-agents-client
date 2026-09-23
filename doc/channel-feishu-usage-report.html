@@ -1207,6 +1207,134 @@
 	并要求 <code>official:</code> 的 slug 必须能指认到具体站点资源（正则校验 domain/path）。
 </div>
 
+<div class="callout ok">
+	<b>★ 2026-09-23 新增：聊天框「Agent 配置 → Channel 绑定」页签内的「飞书 CLI」区块。</b>
+	（入口：聊天框右上角设置 → Agent 配置 → Channel 绑定。）<br>
+	<b>⚠ 投递点修正（2026-09-23，第一版做错了地方）：</b>聊天框里这个「Agent 配置」浮层<b>不是</b>
+	<code>AgentSettingsEditorPane</code>（那是另一处同名的编辑器面板），而是
+	<code>src/vs/sessions/browser/agentChat/agentChatPanel.base.ts</code>（声明与构造）+
+	<code>agentChatPanel.dropdowns.ts</code>（<code>_renderSettingsChannelTab()</code> 渲染），
+	样式在 <code>sessions/browser/agentChat/media/agentChat.css</code>（class 前缀 <code>chat-</code>）。
+	第一版只改了编辑器面板 ⇒ 用户截图里看不到任何变化。<b>现两处都有该区块</b>，共用同一套底层实现。<br>
+	<b>聊天框侧的分层约定（本仓既有规则）：</b>面板在 <code>sessions/browser</code> 层，<b>不能反向依赖</b>
+	<code>contrib/agentStudio</code> 的 browser 实现 ⇒ 走 <b>host 注入回调</b>：
+	<code>base.ts</code> 声明 <code>_onGetLarkCliStatus / _onInstallLarkCli / _onListFeishuChats / _onCreateFeishuBot</code>
+	（契约类型放 <code>contrib/agentStudio/common/larkCli.ts</code>，先例是 <code>configHtmlConfig.ts</code>），
+	由 <code>contrib/agentStudio/browser/nativeChatEditorPane.ts</code> 注入实现。<br>
+	<b>二维码怎么进面板：</b>host 用离屏 canvas 画好后 <code>toDataURL('image/png')</code> 回推，
+	面板只 <code>&lt;img&gt;</code> 显示 —— 面板既不依赖 QR 库，也不知道飞书 device-flow 细节。<br>
+	<b>三件事与各自的落地方式：</b><br>
+	① <b>CLI 安装 / 状态 / 升级</b> —— 探测与安装都要 <code>child_process</code>（渲染进程没有），
+	故按本仓既有范式走主进程：<code>electron-main/larkCliChannel.ts</code>
+	（<code>validatedIpcMain.handle('vscode:larkCliStatus' | 'vscode:larkCliInstall')</code>，
+	在 <code>src/vs/code/electron-main/app.ts</code> 一行注册）← 渲染层薄壳 <code>browser/larkCliService.ts</code>
+	（用 <code>nativeIpcBridge()</code>，桥不可用时降级为 <code>available:false</code>，<b>永不抛</b>）。
+	安装与升级是同一条命令 <code>npx @larksuite/cli@latest install</code>（官方文档未提供独立 upgrade 子命令）。<br>
+	② <b>创建机器人</b> —— <b>复用产品内已验证的 PersonalAgent 扫码流程</b>
+	（<code>feishuRegistration.begin/poll</code> + <code>feishuQrCode.drawQrToCanvas</code>，与渠道编辑器的「📷 扫码绑定」同一协议），
+	授权成功后写入 <code>sessions.channel.feishu.appId/appSecret/enabled</code>（与手工绑定<b>同一落点</b>）。
+	<b>没有</b>走飞书 CLI 的 <code>config init --new</code>：那条路要浏览器交互、输出是给人看的文本，不适合内联解析。<br>
+	③ <b>获取 chat_id</b> —— 用<b>渠道自身 app 凭证</b>列「机器人所在的群」
+	（<code>browser/feishuChatList.ts</code>：tenant_access_token → <code>GET /open-apis/im/v1/chats</code>，
+	经主进程 HTTP 出口，与扫码/测试连接同一条链路），列表每行可「填入」或「绑定到本 Agent」。
+	刻意不依赖 CLI：CLI 要先 <code>config init</code>/<code>auth login</code> 才有凭证，而渠道配置里已经有。<br>
+	<b>守卫用例</b>（<code>test/browser/larkCli.test.ts</code>，17 条）：状态徽章四态、版本比较（含 0.9.9 &lt; 0.10.0）、
+	群列表解析容错（缺 items / 缺 chat_id / 缺群名），以及<b>接线断言</b> —— app.ts 必须注册通道、
+	通道必须用 <code>validatedIpcMain</code>、页签必须调用 <code>_buildLarkCliSection()</code> 与状态探测、
+	扫码创建后必须写那三个配置键、二维码画布必须白底（深色主题下才可扫）。<br>
+	<b>⚠ 尚未端到端验证的部分：</b>本机未跑通「真的装一次 CLI」与「真机拉一次群列表」；
+	<code>npm view</code> 取最新版本失败时按「不误报可升级」处理（显示为已安装态），需实机确认一次。
+</div>
+
+<div class="callout ok">
+	<b>★ 2026-09-23 修复：重启后 chat_id 绑定信息丢失（绑定从未真正落盘）。</b><br>
+	<b>根因（代码级）：</b><code>bridgeService._ensureEngine()</code> 注入的是
+	<code>createFileBindingStore()</code> / <code>createFileSessionMapStore()</code>，而它们的首行是
+	<code>const fs = nodeRequire('fs')</code> —— 桌面端渲染进程是<b>沙箱 Chromium</b>，
+	<code>nodeRequire</code> 在生产环境<b>必然返回 undefined</b>（本仓
+	<code>browser/rendererNodeRequire.ts</code> 头注释已写明原因：<code>globalThis.require</code> 被
+	AMD shim 取代、preload 的 require 只有 electron/events/timers/url）。
+	于是两个 store 工厂都返回 <code>undefined</code>，<code>BridgeEngine</code> 退回
+	<code>createMemoryBindingStore()</code> ⇒ 绑定只活在内存里，<b>每次重启全丢</b>。
+	（磁盘上从来就没有 <code>bindings.json</code>，已实机核对：三个 <code>.saros</code> 目录里只有
+	agents/presets/templates，无 bridge 子目录。）<br>
+	<b>修法（按本仓既定链路：真正的 node 能力放主进程 + IPC）：</b><br>
+	① <code>electron-main/bridgeStoreChannel.ts</code>（新）—— <code>vscode:bridgeStoreRead/Write</code>，
+	存储目录 <code>&lt;userData&gt;/bridge/&lt;file&gt;</code>；<b>文件名走白名单</b>（bindings/sessionMap/usage 三个 JSON，
+	不接受任意路径）、<b>写前强制 JSON.parse 校验</b>（宁可不写也不写坏）、写前大小上限。<br>
+	② <code>common/bridgeStore.ts</code>（新）—— 白名单 / 目录 / 路径拼接的纯逻辑（可单测，且不 import
+	<code>node:path</code>，免得把 node 依赖带进浏览器测试包）。<br>
+	③ <code>browser/bridge/bridgeIpcStores.ts</code>（新）—— 渲染层 store：<b>同步读内存缓存</b>
+	（引擎大量同步调用，接口不能改成异步）+ <b>启动即异步水合</b> + <b>写后防抖落盘</b>（150ms）；
+	桥不可用时返回 <code>undefined</code>（沿用内存兜底，不阻断渠道功能）。<br>
+	④ <code>bridgeService.ts</code> 改为 <code>createIpcBindingStore(this._log) ?? createFileBindingStore(...)</code>
+	（IPC 优先，file store 仅作 node 宿主的兜底；顺序反了就等于没修）。<br>
+	<b>另一处相关缺陷一并修掉：</b>原 <code>_resolveBridgeWorkDir()</code> 优先取 <code>process.cwd()</code> ——
+	cwd 随启动方式变化（IDE 启动 / 命令行 / 安装版 / 换工作区），同一份数据两次启动会落到不同路径，
+	即使能写盘也表现为「绑定凭空消失」。新实现固定用 Electron 的 <code>app.getPath('userData')</code>。<br>
+	<b>水合冲突语义（容易漏的细节）：</b>绑定表（用户显式操作）水合时<b>内存优先</b>
+	（刚绑的不能被磁盘旧值翻回去）；会话映射（引擎可能自动写入）水合时<b>磁盘优先</b>
+	（启动瞬间给某群新建的会话不能顶掉已持久化映射 —— 那正是该映射要防的「串台」）。<br>
+	<b>用例</b>（<code>test/browser/bridgeIpcStores.test.ts</code>，14 条）：
+	用「假主进程」在内存里模拟那个目录，因此能真的模拟重启 —— store A 写入 → store B（新实例）读回同一份数据；
+	另有 sessionMap 跨重启、水合期间写不丢、首次运行无文件、桥不可用退化、
+	主进程写失败不抛错，以及接线守卫（bridgeService 必须 IPC 优先、app.ts 必须注册通道、
+	主进程必须走白名单 + userData）。<br>
+	<b>⚠ 已丢失的历史绑定无法找回</b>（从未落盘）；请重新绑定一次后重启验证。
+	另：<code>usage.json</code>（用量统计）仍是内存态，本次未动（与绑定功能无关）。
+</div>
+
+<div class="callout ok">
+	<b>★ 2026-09-23 修复：聊天框与 editorpane 两处「飞书 CLI」区块样式不一致。</b><br>
+	<b>现象（用户截图）：</b>聊天框那侧的群列表行只剩一个被拉满整行的「填入」按钮，群名/chat_id 不可见；
+	且与 editorpane 相比，徽章偏矮、按钮字体不同。<br>
+	<b>根因（三条，已逐条实测）：</b><br>
+	① <b>按钮样式是「父级限定」的</b>：本文件里 <code>.chat-settings-add-btn</code> 只写成
+	<code>.chat-binding-add-row .chat-settings-add-btn</code> ⇒ 放在群列表行（<code>.chat-chatid-item</code>）
+	里一条样式都吃不到，退化成裸的 <code>.monaco-text-button</code>；而它带
+	<code>display:block; width:100%</code> ⇒ <b>撑满整行、把群名/ID 挤成 0 宽</b>（截图即此）。<br>
+	② <b>行容器机制不同</b>：pane 的 <code>.binding-add-row</code> 是 <code>display:flex; gap:8px; margin-bottom:12px</code>
+	且<b>不设 align-items</b>（默认 stretch，徽章/按钮高度由它决定）；聊天框原先复用 <code>.chat-binding-add-row</code>
+	（<code>center</code> + <code>margin-bottom:10px</code>）⇒ 实测徽章矮 6px、按钮矮 1px、行距差 2px。<br>
+	③ <b>按钮字体</b>：pane 的 <code>.agent-settings-btn</code> 不写 <code>font-family</code>，最终由工作台全局规则继承应用字体；
+	聊天框若不写 <code>font-family: inherit</code> 就退回 UA 字体（Arial）⇒ 同一按钮 46px vs 61.3px（字形差异）。<br>
+	<b>修法：</b>新增<b>不限父级</b>的 <code>.chat-settings-btn</code>（+<code>.primary</code>/<code>:hover</code>/<code>:disabled</code>，
+	逐值对齐 pane 的 <code>.agent-settings-btn</code>）替换 CLI 区块内全部按钮（不再用 monaco 按钮类）；
+	新增 <code>.chat-larkcli-row</code> 镜像 pane 的 <code>.binding-add-row</code>；徽章/详情/命令输出/二维码卡片/群列表行
+	（<code>.chat-larkcli-*</code> / <code>.chat-chatid-*</code>）的 <b>字号、内距、圆角、行距、颜色 token 全部对齐 pane</b>；
+	群列表行补齐 <b>「填入」+「绑定到本 Agent」</b>两个按钮（后者复用既有 <code>_onAddFeishuBinding</code>，绑定后只刷新绑定列表、
+	不整页重渲染以免清空刚拉取的群列表）。<br>
+	<b>验证方式（不是「看着像」）：</b>把两份真实 CSS 与真实 DOM 结构并排渲染，
+	<b>用计算样式逐项比对</b>：状态行高 29=29、徽章高 29=29、按钮宽 89.8=89.8，
+	徽章/按钮/群名/chat_id/行的字号·内距·圆角·颜色全部相等，两侧均无横向溢出（差异项 <code>[]</code>）。
+	另有 14 条<b>数值一致性守卫</b>（<code>larkCli.test.ts</code>）：成对选择器的几何/字号必须逐值相等、
+	颜色必须引用同一 VS Code token、行容器都不得设 <code>align-items</code>、按钮必须 <code>font-family: inherit</code>，
+	以及「CLI 区块内不得再出现 monaco 按钮类」（正是 ① 的坑）。<br>
+	<b>⚠ 两处是两份 CSS</b>（<code>agentChat.css</code> / <code>agentSettingsEditorPane.css</code>）—— 守卫能防漂移，
+	但若日后再改该区块，请同时改两边（或用同一份样式表）。
+</div>
+
+<div class="callout ok">
+	<b>★ 2026-09-23 续查「重启后 chat_id 绑定丢失」：数据其实没丢，是列表渲染早于水合。</b><br>
+	<b>实测证据：</b>运行实例的 userData 是 <code>~/.vssaros-dev</code>（<code>.vscode/launch.json</code> 里
+	<code>userDataDir: ${userHome}/.vssaros-dev</code>；产品正式目录是 <code>~/.vssaros</code>，
+	历史目录 <code>~/.saros</code>，见 <code>common/sarosPaths.ts</code> 的迁移逻辑）——
+	<b>按 <code>%APPDATA%</code> 找是找不到的</b>（那里的 <code>VsSarosis</code>/<code>VsSaros</code> 只剩 8 月的旧日志）。
+	该目录下 <code>bridge/bindings.json</code> 与 <code>bridge/sessionMap.json</code> <b>确实已落盘且内容完整</b>：<br>
+	<code>bindings.json → {"feishu":{"oc_aad77fd3…4f1b":"knowledge-base-expert"}}</code><br>
+	<code>sessionMap.json → {"feishu":{"oc_aad77fd3…4f1b":{"agentId":"knowledge-base-expert","agentSessionId":"sess_mucnljbk_dperzk"}}}</code><br>
+	<b>根因（时序）：</b>持久化在**主进程**（IPC 读盘必然异步），而引擎的读接口是同步的
+	⇒ 启动后首次渲染绑定列表时，水合（hydrate）常常还没完成，于是读到空表；
+	列表只在重开页签/切换页签时重绘 ⇒ 用户看到的是「空的」，而磁盘上明明有数据。<br>
+	<b>修法：</b><code>IBridgeService.ensureBindingsLoaded()</code>（await 两个 store 的 <code>hydrate()</code>，幂等）；
+	UI 侧「先渲染 → <code>await</code> → 再渲染一次列表」——
+	聊天框面板新增 host 回调 <code>onEnsureBindingsLoaded</code>（<code>_renderSettingsChannelTab</code> 里
+	<code>void this._onEnsureBindingsLoaded().then(() => renderList())</code>），
+	editorpane 直接 <code>this.bridgeService.ensureBindingsLoaded().then(...)</code> + <code>_bindingsHydrated</code> 只补一次。<br>
+	<b>另一个容易误判的点：</b>绑定是 <b>per-Agent</b> 的 —— 若在别的 Agent（如「知识收集」）的页签里看，
+	列表本就为空；上例绑定属于 <code>knowledge-base-expert</code>，要看它那一页。
+</div>
+
 <div class="callout warn">
 	<b>★ 2026-09-22 追加加固：品牌色改用 inline style（防「图标位在、图形不在」）。</b>
 	原实现的品牌色只写在 SVG 的 <code>fill="…"</code> <b>presentation attribute</b> 上 —— 它在 CSS 层叠里

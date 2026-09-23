@@ -1049,3 +1049,115 @@ select.binding-input option {
 .agent-settings-number-input:focus {
 	border-color: var(--vscode-focusBorder, #007acc);
 }
+
+/* ═══ Channel 绑定 · 飞书 CLI（2026-09-23）═══════════════════════════════
+   复用既有 .binding-section / .binding-add-row / .agent-settings-btn 的节奏，
+   这里只补「状态徽章 / 命令输出 / 二维码 / 群列表」四块新外观。
+   四态色与设置页 .as-channel-status 保持一致（口径统一）。 */
+
+.larkcli-badge {
+	display: inline-flex;
+	align-items: center;
+	flex-shrink: 0;
+	padding: 1px 8px;
+	border-radius: 999px;
+	border: 1px solid transparent;
+	font-size: 11px;
+	line-height: 1.7;
+	white-space: nowrap;
+}
+.larkcli-badge.tone-ok { color: #4caf50; border-color: rgba(76, 175, 80, 0.4); background: rgba(76, 175, 80, 0.12); }
+.larkcli-badge.tone-warn { color: #d7a24a; border-color: rgba(215, 162, 74, 0.4); background: rgba(215, 162, 74, 0.12); }
+.larkcli-badge.tone-bad { color: #f48771; border-color: rgba(244, 135, 113, 0.4); background: rgba(244, 135, 113, 0.12); }
+.larkcli-badge.tone-dim {
+	color: var(--vscode-descriptionForeground, #9d9d9d);
+	border-color: var(--vscode-panel-border, #3c3c3c);
+}
+
+.larkcli-detail {
+	flex: 1;
+	min-width: 0;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground, #9d9d9d);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* 安装/升级命令输出：等宽、可滚动、可换行（不撑破页签宽度） */
+.larkcli-output {
+	margin: 8px 0;
+	padding: 8px 10px;
+	max-height: 220px;
+	overflow: auto;
+	font-family: var(--vscode-editor-font-family, Consolas, monospace);
+	font-size: 11.5px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	background: var(--vscode-textCodeBlock-background, #2a2a2a);
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 4px;
+	color: var(--vscode-editor-foreground, #d4d4d4);
+}
+
+/* 扫码创建机器人：内联二维码卡片（不做弹窗，避免遮挡上下文） */
+.larkcli-qr {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	margin: 8px 0;
+	padding: 12px;
+	border: 1px dashed var(--vscode-panel-border, #3c3c3c);
+	border-radius: 6px;
+}
+.larkcli-qr-canvas {
+	background: #ffffff;   /* 二维码必须在白底上才可扫（二维码规范要求浅底深码） */
+	border-radius: 4px;
+	padding: 6px;
+}
+.larkcli-qr-status {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground, #9d9d9d);
+	text-align: center;
+}
+
+/* 群列表（chat_id） */
+.chatid-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 8px;
+}
+.chatid-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 4px;
+	background: var(--vscode-input-background, #3c3c3c);
+}
+.chatid-item-info {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.chatid-item-name {
+	font-size: 13px;
+	color: var(--vscode-editor-foreground, #d4d4d4);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.chatid-item-id {
+	font-family: var(--vscode-editor-font-family, Consolas, monospace);
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #9d9d9d);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}

@@ -1,6 +1,6 @@
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { mainWindow } from '../../../base/browser/window.js';
-import { IAgentChatMessage, IMessagePart, deriveUiMessageParts, flattenMessageParts, STATUS_MAP, AgentStatus } from './agentChatTypes.js';
+import { IAgentChatMessage, IMessagePart, flattenMessageParts, STATUS_MAP, AgentStatus, mergeTurnMessageParts } from './agentChatTypes.js';
 import { AgentChatPanelSend } from './agentChatPanel.send.js';
 
 // Feature: header. Extracted from AgentChatPanelBase.
@@ -637,26 +637,12 @@ protected override _aggregateTurns(messages: IAgentChatMessage[]): IAgentChatMes
 				// 阶段E：按 turn 顺序拼接有序 parts（不再做 textPosition 偏移运算）。
 				// 每条 turn 消息的 parts 已表达其自身顺序，顺次连接即为整回合的正确顺序，
 				// 结构上不可能错位。content/toolCalls 由 parts 反推为派生兼容字段。
-				const mergedParts: IMessagePart[] = [];
-				for (const tm of turnMessages) {
-					const tmParts = (tm.parts && tm.parts.length > 0)
-						? tm.parts
-						: deriveUiMessageParts(tm.content || '', tm.toolCalls || []);
-					// 多 turn 文本之间补一个空行分隔，保持原有 \n\n 视觉间距。
-					if (mergedParts.length > 0 && tmParts.length > 0 && tmParts[0].kind === 'text') {
-						const lastPart = mergedParts[mergedParts.length - 1];
-						if (lastPart.kind === 'text') {
-							lastPart.text = `${lastPart.text}\n\n`;
-						}
-					}
-					for (const p of tmParts) {
-						if (p.kind === 'text') {
-							mergedParts.push({ kind: 'text', text: p.text });
-						} else if (p.kind === 'tool') {
-							mergedParts.push({ kind: 'tool', tool: p.tool });
-						}
-					}
-				}
+				//
+				// ★ 2026-09-23：**相邻文本段必须合并成一个 part**（用户报「一条消息被拆成 2 段」的
+				//   数据源修复 ✓）。旧实现是"改上一个 part + 再 push 另一个" ⇒ parts 数组里
+				//   产生**相邻 text part** ⇒ 渲染层各建一块 ⇒ 视觉上"两块" ✗✓（t64/t65 实测 ✓）。
+				//   逻辑搬到纯函数 `mergeTurnMessageParts`（可单测 ✓ 红线见 mergeTurnMessageParts.test.ts ✓）。
+				const mergedParts: IMessagePart[] = mergeTurnMessageParts(turnMessages);
 				const flat = flattenMessageParts(mergedParts);
 
 				const lastMsg = turnMessages[turnMessages.length - 1];

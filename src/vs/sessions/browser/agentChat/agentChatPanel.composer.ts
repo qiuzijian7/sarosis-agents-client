@@ -3,7 +3,6 @@ import { ContextManager } from '../../contrib/agentStudio/common/contextManager.
 import { IChatAttachment, IContextUsage, CHAT_MODE_UI } from './agentChatTypes.js';
 import { renderContextUsageRing } from './modules/contextRing.js';
 import { chatPerf } from './agentChatPanel.perf.js';
-import { focusTrace } from './focusTrace.js';
 import { AgentChatPanelMarkdown } from './agentChatPanel.markdown.js';
 import {
 	filterWorkflowItems,
@@ -120,14 +119,6 @@ protected override _renderInputArea(): void {
 		this._textarea.setAttribute('aria-label', `Message ${emp.name}...`);
 		// 流式输出过程中不再禁用输入框——用户可继续输入新消息排队
 		// this._textarea.disabled = this._isSending;  ← 已移除
-
-		// ★ 2026-09-18 焦点轨迹埋点（用户报「多窗口切换到输入框卡顿」）：
-		//   这里记录**输入框真正拿到焦点**的时刻 ⇒ 与窗口 focus 事件对比，
-		//   差值就是用户"点了输入框却没反应"的**感知延迟** ✓
-		//   （focusin 用捕获阶段 ✓：即使输入框内部有子元素先收到事件也能命中 ✓）
-		this._register(addDisposableListener(this._textarea, 'focusin', () => {
-			focusTrace.mark('input.focusin', 'composer');
-		}, true));
 
 		// 防御修复：流式期间 DOM 更新可能破坏 contentEditable 状态。
 		// 每次用户点击/mousedown 显式确保 contentEditable=true + tabIndex=0。

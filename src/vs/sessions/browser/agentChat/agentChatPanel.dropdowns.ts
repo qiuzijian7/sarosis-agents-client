@@ -6,6 +6,8 @@ import { positionDropdownAbove, positionDropdownBelow, disposeOutsideClick, regi
 import { renderHistoryOverlay } from './modules/historyOverlay.js';
 import { AgentChatPanelComposer } from './agentChatPanel.composer.js';
 import { defaultPortOf, normalizeConfigHtml, normalizePanelUrl, validatePanelUrl, type ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlConfig.js';
+// ★ 2026-09-23：Channel 绑定页签新增「飞书 CLI」区块（common 层：允许被本层依赖）
+import { LARK_CLI_INSTALL_COMMAND, LARK_CLI_PACKAGE, larkCliStatusBadge, type ILarkCliStatus } from '../../contrib/agentStudio/common/larkCli.js';
 
 // Feature: dropdowns. Extracted from AgentChatPanelBase.
 export class AgentChatPanelDropdowns extends AgentChatPanelComposer {
@@ -970,7 +972,7 @@ protected override _renderSettingsChannelTab(container: HTMLElement): void {
 			renderList();
 		});
 
-		const addBtn = append(addRow, $("button.monaco-button.monaco-text-button.chat-settings-add-btn")) as HTMLButtonElement;
+		const addBtn = append(addRow, $("button.chat-settings-btn.primary")) as HTMLButtonElement;
 		addBtn.textContent = '➕ 绑定';
 
 		const listContainer = append(sec2, $("div.chat-binding-list"));
@@ -1026,7 +1028,19 @@ protected override _renderSettingsChannelTab(container: HTMLElement): void {
 			}
 		};
 		renderList();
+
+		// ★ 绑定表来自主进程（IPC 读盘是异步的）：先按当前内容渲染，水合完成后再渲染一次 ——
+		//   否则启动后首次打开会看到空列表，用户会以为「重启后绑定丢了」
+		//   （2026-09-23 实测：磁盘 bindings.json 里有数据，面板列表却是空的）。
+		if (this._onEnsureBindingsLoaded) {
+			void this._onEnsureBindingsLoaded().then(() => renderList());
 		}
+
+		// ★ 2026-09-23 新增 Section 3「飞书 CLI」—— 与 AgentSettingsEditorPane 的同一区块**同款样式与交互**
+		//   （用户要求两处一致）。放最后 ⇒ 视觉落在「群聊绑定」下方；传入 renderList 供
+		//   「绑定到本 Agent」后刷新绑定列表（不整页重渲染，避免把刚拉取的群列表清掉）。
+		this._renderLarkCliSection(group, input, renderList);
+	}
 
 protected override _renderMsgNavOverlay(): void {
 		this._msgNavOverlayEl = append(this._container, $(".chat-msg-nav-overlay"));
@@ -1563,6 +1577,197 @@ protected override _disposeOutsideClick(d: IDisposable | null): void {
 	}
 
 protected override _registerOutsideClickClose(panel: HTMLElement, trigger: HTMLElement | null, onClose: () => void): IDisposable {
-		return registerOutsideClickClose(panel, trigger, onClose, (d) => this._register(d));
-	}
+	return registerOutsideClickClose(panel, trigger, onClose, (d) => this._register(d));
+}
+
+/**
+ * 「飞书 CLI」区块（Channel 绑定页签内，2026-09-23 新增）。
+ *
+ * 三件事，能力**全部由 host 回调注入**（本层在 `sessions/browser`，不能反向依赖
+ * `contrib/agentStudio` 的 browser 实现）：
+ *   ① CLI 安装 / 状态 / 升级 —— `_onGetLarkCliStatus` / `_onInstallLarkCli`（host 走主进程）；
+ *   ② 扫码创建机器人 —— `_onCreateFeishuBot`，二维码由 host 生成 PNG data URL，这里只显示；
+ *   ③ 获取 chat_id —— `_onListFeishuChats`（host 用渠道凭证查群），每行可「填入」上方输入框。
+ *
+ * 回调缺失（非 Electron / 桥不可用）时：徽章显示「不可用」+ 禁用按钮，**不影响**其余绑定功能。
+ */
+private _renderLarkCliSection(group: HTMLElement, chatIdInput: HTMLInputElement, onBindingsChanged: () => void): void {
+	const sec = append(group, $(".chat-binding-section"));
+	const title = append(sec, $("div.chat-binding-section-title"));
+	title.textContent = '飞书 CLI';
+
+	const hint = append(sec, $("div.chat-binding-hint"));
+	hint.textContent = `官方 CLI（${LARK_CLI_PACKAGE}）：装好后可在终端用 lark-cli 直接操作飞书（发消息 / 查群 / 读写文档），也供 AI 技能调用。安装与升级是同一条命令 —— 官方文档未提供独立的 upgrade 子命令。`;
+
+	// ── ① 状态 + 安装/升级 ──
+	// 行容器镜像 pane 的 `.binding-add-row`（stretch + margin 12px）⇒ 徽章/按钮高度与那边一致
+	const statusRow = append(sec, $("div.chat-larkcli-row"));
+	const badge = append(statusRow, $("span.chat-larkcli-badge.tone-dim"));
+	badge.textContent = '检测中…';
+	const detail = append(statusRow, $("span.chat-larkcli-detail"));
+	const checkBtn = append(statusRow, $("button.chat-settings-btn")) as HTMLButtonElement;
+	checkBtn.textContent = '🔄 重新检测';
+	const installBtn = append(statusRow, $("button.chat-settings-btn.primary")) as HTMLButtonElement;
+	installBtn.textContent = '⬇ 安装';
+
+	const output = append(sec, $("div.chat-larkcli-output"));
+	output.style.display = 'none';
+
+	let probing = false;
+	let installing = false;
+	const canProbe = !!this._onGetLarkCliStatus;
+	const canInstall = !!this._onInstallLarkCli;
+
+	const applyStatus = (status?: ILarkCliStatus): void => {
+		const tone = larkCliStatusBadge(status);
+		badge.textContent = canProbe ? tone.label : '不可用';
+		badge.className = `chat-larkcli-badge tone-${canProbe ? tone.tone : 'dim'}`;
+		badge.title = status?.error ?? '';
+		const parts: string[] = [];
+		if (status?.path) { parts.push(status.path); }
+		if (status?.latestVersion) { parts.push(`npm 最新 ${status.latestVersion}`); }
+		if (status?.available && !status.installed) { parts.push(`将执行：${LARK_CLI_INSTALL_COMMAND}`); }
+		if (!canProbe) { parts.push('当前环境未注入 CLI 能力'); }
+		else if (status && !status.available) { parts.push(status.error ?? '探测不可用'); }
+		if (parts.length === 0) { parts.push(`安装命令：${LARK_CLI_INSTALL_COMMAND}`); }
+		detail.textContent = parts.join(' · ');
+		installBtn.textContent = installing ? '⏳ 安装中…' : (status?.installed ? '⬆ 升级' : '⬇ 安装');
+	};
+	const applyBusy = (): void => {
+		checkBtn.disabled = !canProbe || probing || installing;
+		installBtn.disabled = !canProbe || !canInstall || probing || installing;
+		checkBtn.textContent = probing ? '⏳ 检测中…' : '🔄 重新检测';
+	};
+	const refresh = async (): Promise<void> => {
+		if (!this._onGetLarkCliStatus || probing) { return; }
+		probing = true;
+		applyBusy();
+		try {
+			applyStatus(await this._onGetLarkCliStatus());
+		} catch (err) {
+			badge.textContent = '探测失败';
+			badge.className = 'chat-larkcli-badge tone-bad';
+			detail.textContent = err instanceof Error ? err.message : String(err);
+		} finally {
+			probing = false;
+			applyBusy();
+		}
+	};
+	checkBtn.onclick = () => void refresh();
+	installBtn.onclick = async () => {
+		if (!this._onInstallLarkCli || installing) { return; }
+		installing = true;
+		applyBusy();
+		output.textContent = `⏳ 正在执行：${LARK_CLI_INSTALL_COMMAND}\n（首次安装会下载依赖，可能 1-2 分钟）`;
+		output.style.display = '';
+		try {
+			const r = await this._onInstallLarkCli();
+			output.textContent = `${r.ok ? '✅' : '❌'} ${r.message}${r.output ? `\n\n${r.output}` : ''}`;
+		} catch (err) {
+			output.textContent = `❌ 安装失败：${err instanceof Error ? err.message : String(err)}`;
+		} finally {
+			installing = false;
+			applyBusy();
+			await refresh();
+		}
+	};
+	applyBusy();
+
+	// ── ② 扫码创建机器人（二维码由 host 生成）──
+	const botRow = append(sec, $("div.chat-larkcli-row"));
+	const createBtn = append(botRow, $("button.chat-settings-btn")) as HTMLButtonElement;
+	createBtn.textContent = '🤖 创建机器人（扫码授权）';
+	const botHint = append(botRow, $("span.chat-larkcli-detail"));
+	botHint.textContent = '扫码授权后自动写入渠道凭证（app_id / app_secret）。';
+	const qrBox = append(sec, $("div.chat-larkcli-qr"));
+	qrBox.style.display = 'none';
+	const qrImg = document.createElement('img');
+	qrImg.className = 'chat-larkcli-qr-img';
+	qrImg.alt = '飞书授权二维码';
+	const qrStatus = append(qrBox, $("div.chat-larkcli-qr-status"));
+	const showQrImage = (dataUrl: string): void => {
+		qrImg.src = dataUrl;
+		if (!qrImg.parentElement) { qrBox.insertBefore(qrImg, qrStatus); }
+	};
+	createBtn.disabled = !this._onCreateFeishuBot;
+	createBtn.onclick = async () => {
+		if (!this._onCreateFeishuBot) { return; }
+		createBtn.disabled = true;
+		qrBox.style.display = '';
+		qrStatus.textContent = '正在向飞书申请授权…';
+		try {
+			await this._onCreateFeishuBot((update) => {
+				if (update.qrDataUrl) { showQrImage(update.qrDataUrl); }
+				qrStatus.textContent = update.message;
+				if (update.done) {
+					createBtn.disabled = false;
+					createBtn.textContent = update.ok ? '🤖 重新创建机器人' : '🤖 创建机器人（扫码授权）';
+					// 成功后二维码已失效：收起图片，只留结果文案
+					if (update.ok) { qrImg.remove(); }
+				}
+			});
+		} catch (err) {
+			qrStatus.textContent = `❌ ${err instanceof Error ? err.message : String(err)}`;
+			createBtn.disabled = false;
+		}
+	};
+
+	// ── ③ 获取 chat_id（列机器人所在的群）──
+	const chatRow = append(sec, $("div.chat-larkcli-row"));
+	const chatBtn = append(chatRow, $("button.chat-settings-btn")) as HTMLButtonElement;
+	chatBtn.textContent = '📋 获取 chat_id（机器人所在的群）';
+	chatBtn.disabled = !this._onListFeishuChats;
+	const chatList = append(sec, $("div.chat-chatid-list"));
+	chatBtn.onclick = async () => {
+		if (!this._onListFeishuChats) { return; }
+		chatBtn.disabled = true;
+		chatBtn.textContent = '⏳ 拉取中…';
+		chatList.replaceChildren();
+		try {
+			const chats = await this._onListFeishuChats();
+			if (chats.length === 0) {
+				const tip = append(chatList, $("div.skills-empty"));
+				tip.textContent = '机器人还没有加入任何群：把机器人拉进一个群后重新拉取。';
+			} else {
+				for (const chat of chats) {
+					const item = append(chatList, $("div.chat-chatid-item"));
+					const info = append(item, $("div.chat-chatid-info"));
+					const nameEl = append(info, $("span.chat-chatid-name"));
+					nameEl.textContent = chat.name;
+					const idEl = append(info, $("span.chat-chatid-id"));
+					idEl.textContent = chat.memberCount ? `${chat.chatId} · ${chat.memberCount} 人` : chat.chatId;
+					// 行内按钮与 editorpane **同款**：默认（灰）「填入」+ primary（蓝）「绑定到本 Agent」
+					// ⚠ 必须用不限父级的 .chat-settings-btn：一旦用 monaco 按钮类，会被
+					//   `.monaco-text-button { display:block; width:100% }` 撑满整行，
+					//   把群名/ID 挤成 0 宽（2026-09-23 用户截图里的「只有一个大填入按钮」即此因）。
+					const fillBtn = append(item, $("button.chat-settings-btn")) as HTMLButtonElement;
+					fillBtn.textContent = '填入';
+					fillBtn.title = '填入上方「输入飞书群聊会话 ID」输入框';
+					fillBtn.onclick = () => {
+						chatIdInput.value = chat.chatId;
+						chatIdInput.focus();
+					};
+					const bindBtn = append(item, $("button.chat-settings-btn.primary")) as HTMLButtonElement;
+					bindBtn.textContent = '绑定到本 Agent';
+					bindBtn.disabled = !this._onAddFeishuBinding;
+					bindBtn.title = '把该群绑定到本 Agent';
+					bindBtn.onclick = () => {
+						chatIdInput.value = chat.chatId;
+						this._onAddFeishuBinding?.(chat.chatId);
+						onBindingsChanged();   // 刷新下方绑定列表；不整页重渲染，保留已拉取的群列表
+					};
+				}
+			}
+		} catch (err) {
+			const tip = append(chatList, $("div.skills-empty"));
+			tip.textContent = `拉取群列表失败：${err instanceof Error ? err.message : String(err)}`;
+		} finally {
+			chatBtn.disabled = false;
+			chatBtn.textContent = '📋 获取 chat_id（机器人所在的群）';
+		}
+	};
+
+	// 初始探测（无 host 回调时上面已渲染为「不可用」，这里直接跳过）
+	void refresh();
+}
 }

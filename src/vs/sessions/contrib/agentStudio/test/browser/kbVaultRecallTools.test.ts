@@ -36,23 +36,36 @@ class FakeKernel {
 	}
 }
 
-/** 注册工具并返回 { handler, definition, kernel }。 */
+/**
+ * 注册工具并返回 `{ handler, definition, kernel }`。
+ *
+ * ⚠ 2026-09-23：`registerKbVaultRecallTools` 现在**一次注册多个工具**
+ * （`kb_search` / `kb_suggest_links` / …），而这里原先只用一个 `captured` 变量接收
+ * ⇒ 会被**最后一个**注册覆盖 ⇒ 测试实际拿到的是别的工具的 handler，
+ * 表现为一大片莫名其妙的失败（错误信息里能看到 `kb_suggest_links …`）。
+ * 现在按**工具名**收集，并显式取 `kb_search`。
+ */
 function setup(o: IFakeKernelOptions) {
 	const kernel = new FakeKernel(o);
 	const warnings: string[] = [];
-	let captured: any;
+	const tools: Record<string, any> = {};
 	registerKbVaultRecallTools({
-		register: (reg: any) => { captured = reg; return { dispose(): void { } }; },
+		register: (reg: any) => {
+			const name = reg?.definition?.name ?? '';
+			if (name) { tools[name] = reg; }
+			return { dispose(): void { } };
+		},
 		kernelService: kernel as any,
 		logService: { warn: (m: string) => { warnings.push(m); } },
 	});
-	assert.ok(captured, 'kb_search 未被注册');
+	const tool = tools['kb_search'];
+	assert.ok(tool, `kb_search 未被注册（实际注册了：${Object.keys(tools).join(', ') || '（无）'}）`);
 	return {
 		kernel,
 		warnings,
-		definition: captured.definition,
+		definition: tool.definition,
 		run: (args: Record<string, unknown>): Promise<ToolResult | Array<{ type: string; text?: string }>> =>
-			captured.handler(args),
+			tool.handler(args),
 	};
 }
 

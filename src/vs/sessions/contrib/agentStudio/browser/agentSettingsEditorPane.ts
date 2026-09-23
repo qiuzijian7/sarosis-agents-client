@@ -44,6 +44,16 @@ import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
 import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
 import { AVATAR_PRESET_GROUPS, AVATAR_PRESET_TOTAL, findAvatarPreset, type IAgentAvatarPreset } from '../common/agentAvatarPresets.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { IRequestService } from '../../../../platform/request/common/request.js';
+// ★ 2026-09-23：Channel 绑定页签新增「飞书 CLI」能力（安装/状态/升级 + 创建机器人 + 获取 chat_id）
+import { LARK_CLI_INSTALL_COMMAND, LARK_CLI_PACKAGE, larkCliStatusBadge, type ILarkCliStatus } from '../common/larkCli.js';
+import { getLarkCliStatus, installLarkCli } from './larkCliService.js';
+import { fetchFeishuChats } from './feishuChatList.js';
+import { createMainProcessRequestService } from './mainProcessRequestService.js';
+import { beginFeishuRegistration, pollFeishuRegistration } from './feishuRegistration.js';
+import { drawQrToCanvas } from './feishuQrCode.js';
+import { createChannelIcon } from './channelIcons.js';
 
 const { $: $$ } = DOM;
 
@@ -132,6 +142,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 	// ── Feishu Binding tab ──
 	private _bindingListContainer: HTMLElement | undefined;
+	/** ★ 是否已等到「绑定表从磁盘水合完成」（只补一次重渲染，避免无限循环）。 */
+	private _bindingsHydrated = false;
 	private _bindingInput: HTMLInputElement | undefined;
 	private _bindingDefaultToggle: HTMLInputElement | undefined;
 	private _bindingDefaultSessionSelect: HTMLSelectElement | undefined;
@@ -158,6 +170,26 @@ export class AgentSettingsEditorPane extends EditorPane {
 	/** 本地已安装/已发布的商城版本号，用于隐藏「安装此版本」 */
 	private _localMarketVersion: string | undefined;
 
+	// ── Channel 绑定页签 · 飞书 CLI（2026-09-23）──
+	/**
+	 * 渠道 HTTP 出口：**优先主进程**（渲染进程直连飞书 OpenAPI 会被 CORS 拦，
+	 * 见 `mainProcessRequestService.ts` 的实测事故记录），非 Electron 宿主回退渲染进程。
+	 */
+	private readonly _requestService: IRequestService;
+	private _larkCliStatus: ILarkCliStatus | undefined;
+	private _larkCliProbing = false;
+	private _larkCliInstalling = false;
+	private _larkCliStatusEl: HTMLElement | undefined;
+	private _larkCliDetailEl: HTMLElement | undefined;
+	private _larkCliCheckBtn: HTMLButtonElement | undefined;
+	private _larkCliInstallBtn: HTMLButtonElement | undefined;
+	private _larkCliOutputEl: HTMLElement | undefined;
+	private _larkCliQrEl: HTMLElement | undefined;
+	private _larkCliQrPolling = false;
+	private _larkCliCreateBtn: HTMLButtonElement | undefined;
+	private _chatIdListEl: HTMLElement | undefined;
+	private _chatIdFetchBtn: HTMLButtonElement | undefined;
+
 	constructor(
 		group: IEditorGroup,
 		@ITelemetryService telemetryService: ITelemetryService,
@@ -178,8 +210,13 @@ export class AgentSettingsEditorPane extends EditorPane {
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@IMainProcessService mainProcessService: IMainProcessService,
+		@IRequestService requestService: IRequestService,
 	) {
 		super(AgentSettingsEditorPane.ID, group, telemetryService, themeService, storageService);
+		// ★ 2026-09-23：飞书 CLI 区块（扫码创建机器人 / 列群取 chat_id）需要 HTTP 出口 ——
+		//   优先主进程（渲染进程直连飞书 OpenAPI 会被 CORS 拦），非 Electron 宿主回退渲染进程
+		this._requestService = createMainProcessRequestService(mainProcessService) ?? requestService;
 	}
 
 	protected createEditor(parent: HTMLElement): void {
@@ -478,6 +515,291 @@ export class AgentSettingsEditorPane extends EditorPane {
 		this._tabContentContainer?.appendChild(section);
 	}
 
+	// ── Channel 绑定 · 飞书 CLI（2026-09-23）──────────────────────────────
+	//
+	// 三件事：
+	//   ① CLI 的安装 / 状态 / 升级 —— 探测与安装都要 child_process ⇒ 走主进程
+	//      （`electron-main/larkCliChannel.ts` ← `browser/larkCliService.ts`）；
+	//   ② 创建机器人 —— 复用产品内**已验证**的 PersonalAgent 扫码流程。飞书 CLI 自己的
+	//      `config init --new` 需要浏览器交互、输出是给人看的文本（解析不稳定），不适合内联做；
+	//   ③ 获取 chat_id —— 用渠道自身 app 凭证列「机器人所在的群」（与扫码绑定/测试连接同一条链路）。
+	//      刻意不依赖 CLI：CLI 要先 `config init` / `auth login` 才有凭证，而渠道配置里已经有了。
+
+	/** 构建「飞书 CLI」分组（加入 Channel 绑定页签的飞书渠道分组）。 */
+	private _buildLarkCliSection(): HTMLElement {
+		const sec = $$('div.binding-section');
+		const title = $$('div.binding-section-title');
+		title.textContent = '飞书 CLI';
+		sec.appendChild(title);
+
+		const hint = $$('div.binding-hint');
+		hint.textContent = `官方 CLI（${LARK_CLI_PACKAGE}）：装好后可在终端用 lark-cli 直接操作飞书（发消息 / 查群 / 读写文档），也供 AI 技能调用。安装与升级是同一条命令 —— 官方文档未提供独立的 upgrade 子命令。`;
+		sec.appendChild(hint);
+
+		// 状态行：徽章 + 版本/路径 + 两个动作
+		const statusRow = $$('div.binding-add-row');
+		this._larkCliStatusEl = $$('span.larkcli-badge');
+		this._larkCliStatusEl.textContent = '检测中…';
+		statusRow.appendChild(this._larkCliStatusEl);
+		this._larkCliDetailEl = $$('span.larkcli-detail');
+		statusRow.appendChild(this._larkCliDetailEl);
+		this._larkCliCheckBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		this._larkCliCheckBtn.textContent = '🔄 重新检测';
+		this._larkCliCheckBtn.onclick = () => void this._refreshLarkCliStatus(true);
+		statusRow.appendChild(this._larkCliCheckBtn);
+		this._larkCliInstallBtn = $$('button.agent-settings-btn primary') as HTMLButtonElement;
+		this._larkCliInstallBtn.onclick = () => void this._installLarkCli();
+		statusRow.appendChild(this._larkCliInstallBtn);
+		sec.appendChild(statusRow);
+
+		this._larkCliOutputEl = $$('div.larkcli-output');
+		this._larkCliOutputEl.style.display = 'none';
+		sec.appendChild(this._larkCliOutputEl);
+
+		// 创建机器人（扫码）
+		const botRow = $$('div.binding-add-row');
+		this._larkCliCreateBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		this._larkCliCreateBtn.textContent = '🤖 创建机器人（扫码授权）';
+		this._larkCliCreateBtn.onclick = () => void this._createFeishuBotByQr();
+		botRow.appendChild(this._larkCliCreateBtn);
+		const botHint = $$('span.larkcli-detail');
+		botHint.textContent = '扫码授权后自动写入渠道凭证（app_id / app_secret），无需手工复制。';
+		botRow.appendChild(botHint);
+		sec.appendChild(botRow);
+		this._larkCliQrEl = $$('div.larkcli-qr');
+		this._larkCliQrEl.style.display = 'none';
+		sec.appendChild(this._larkCliQrEl);
+
+		// 获取 chat_id
+		const chatRow = $$('div.binding-add-row');
+		this._chatIdFetchBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		this._chatIdFetchBtn.textContent = '📋 获取 chat_id（机器人所在的群）';
+		this._chatIdFetchBtn.onclick = () => void this._fetchChatIds();
+		chatRow.appendChild(this._chatIdFetchBtn);
+		sec.appendChild(chatRow);
+		this._chatIdListEl = $$('div.chatid-list');
+		sec.appendChild(this._chatIdListEl);
+
+		return sec;
+	}
+
+	/** 刷新 CLI 状态（页签切入时静默探测；手动点击给通知）。 */
+	private async _refreshLarkCliStatus(manual: boolean): Promise<void> {
+		if (this._larkCliProbing) { return; }
+		this._larkCliProbing = true;
+		this._applyLarkCliBusy();
+		try {
+			const status = await getLarkCliStatus();
+			this._larkCliStatus = status;
+			this._renderLarkCliStatus();
+			if (manual) {
+				if (!status.available) {
+					this.notificationService.warn(`飞书 CLI 探测不可用：${status.error ?? '未知原因'}`);
+				} else if (!status.installed) {
+					this.notificationService.info(`未检测到飞书 CLI${status.latestVersion ? `（npm 最新 ${status.latestVersion}）` : ''}，可点「安装」`);
+				} else {
+					const badge = larkCliStatusBadge(status);
+					this.notificationService.info(badge.tone === 'warn'
+						? `飞书 CLI ${status.version} 可升级到 ${status.latestVersion}`
+						: `飞书 CLI 就绪：${badge.label}`);
+				}
+			}
+		} finally {
+			this._larkCliProbing = false;
+			this._applyLarkCliBusy();
+		}
+	}
+
+	/** 按状态刷新徽章 / 详情 / 按钮文案。 */
+	private _renderLarkCliStatus(): void {
+		const status = this._larkCliStatus;
+		const badge = larkCliStatusBadge(status);
+		if (this._larkCliStatusEl) {
+			this._larkCliStatusEl.textContent = badge.label;
+			this._larkCliStatusEl.className = `larkcli-badge tone-${badge.tone}`;
+			this._larkCliStatusEl.title = status?.error ?? '';
+		}
+		if (this._larkCliDetailEl) {
+			const parts: string[] = [];
+			if (status?.path) { parts.push(status.path); }
+			if (status?.latestVersion) { parts.push(`npm 最新 ${status.latestVersion}`); }
+			if (status?.available && !status.installed) { parts.push(`将执行：${LARK_CLI_INSTALL_COMMAND}`); }
+			if (!status?.available && status?.error) { parts.push(status.error); }
+			this._larkCliDetailEl.textContent = parts.join(' · ');
+		}
+		if (this._larkCliInstallBtn) {
+			this._larkCliInstallBtn.textContent = this._larkCliInstalling ? '⏳ 安装中…' : (status?.installed ? '⬆ 升级' : '⬇ 安装');
+			this._larkCliInstallBtn.disabled = this._readOnly || this._larkCliInstalling || !status?.available;
+		}
+	}
+
+	/** 忙碌态统一处理（探测 / 安装期间禁用按钮并改文案）。 */
+	private _applyLarkCliBusy(): void {
+		const busy = this._larkCliProbing || this._larkCliInstalling;
+		if (this._larkCliCheckBtn) {
+			this._larkCliCheckBtn.disabled = this._readOnly || busy;
+			this._larkCliCheckBtn.textContent = this._larkCliProbing ? '⏳ 检测中…' : '🔄 重新检测';
+		}
+		if (this._larkCliInstallBtn) {
+			this._larkCliInstallBtn.disabled = this._readOnly || busy || this._larkCliStatus?.available === false;
+		}
+	}
+
+	/** 安装 / 升级（同一命令）；完成后自动重新探测并回显输出尾部。 */
+	private async _installLarkCli(): Promise<void> {
+		if (this._larkCliInstalling) { return; }
+		this._larkCliInstalling = true;
+		this._applyLarkCliBusy();
+		this._showLarkCliOutput(`⏳ 正在执行：${LARK_CLI_INSTALL_COMMAND}\n（首次安装会下载依赖，可能 1-2 分钟）`);
+		this.notificationService.info('正在主进程执行飞书 CLI 安装 / 升级');
+		try {
+			const r = await installLarkCli();
+			this._showLarkCliOutput(`${r.ok ? '✅' : '❌'} ${r.message}${r.output ? `\n\n${r.output}` : ''}`);
+			if (r.ok) {
+				this.notificationService.info(r.message);
+			} else {
+				this.notificationService.error(`飞书 CLI 安装失败：${r.message}`);
+			}
+		} finally {
+			this._larkCliInstalling = false;
+			this._applyLarkCliBusy();
+			await this._refreshLarkCliStatus(false);
+		}
+	}
+
+	private _showLarkCliOutput(text: string): void {
+		if (!this._larkCliOutputEl) { return; }
+		this._larkCliOutputEl.textContent = text;
+		this._larkCliOutputEl.style.display = '';
+	}
+
+	/**
+	 * 创建机器人：复用 PersonalAgent 扫码流程（与渠道编辑器的「📷 扫码绑定」同一协议）。
+	 * 授权完成后把 app_id / app_secret 写入渠道配置并启用（与手工绑定同一落点）。
+	 */
+	private async _createFeishuBotByQr(): Promise<void> {
+		if (this._larkCliQrPolling) { return; }
+		const host = this._larkCliQrEl;
+		const createBtn = this._larkCliCreateBtn;
+		if (!host) { return; }
+
+		host.replaceChildren();
+		host.style.display = '';
+		const canvas = document.createElement('canvas');
+		canvas.className = 'larkcli-qr-canvas';
+		const statusEl = $$('div.larkcli-qr-status');
+		statusEl.textContent = '正在向飞书申请授权…';
+		host.appendChild(canvas);
+		host.appendChild(statusEl);
+
+		this._larkCliQrPolling = true;
+		if (createBtn) { createBtn.disabled = true; }
+		const setStatus = (msg: string): void => { statusEl.textContent = msg; };
+
+		try {
+			const begin = await beginFeishuRegistration(this._requestService);
+			drawQrToCanvas(canvas, begin.qrUrl);
+			setStatus('请用飞书扫码授权（授权后自动创建机器人并回填凭证）');
+
+			// 间隔与超时都取自服务端返回，避免写死
+			const deadline = Date.now() + begin.expiresIn * 1000;
+			let interval = begin.interval;
+			while (Date.now() < deadline) {
+				await this._larkCliSleep(interval * 1000);
+				const r = await pollFeishuRegistration(this._requestService, begin.deviceCode);
+				if (r.status === 'completed') {
+					const appId = r.appId ?? '';
+					const appSecret = r.appSecret ?? '';
+					if (!appId || !appSecret) { setStatus('❌ 飞书未返回有效凭证'); return; }
+					await this.configurationService.updateValue('sessions.channel.feishu.appId', appId);
+					await this.configurationService.updateValue('sessions.channel.feishu.appSecret', appSecret);
+					await this.configurationService.updateValue('sessions.channel.feishu.enabled', true);
+					setStatus(`✅ 机器人已创建：${appId}（凭证已写入渠道配置并启用）`);
+					this.notificationService.info(`飞书机器人已创建：${appId}`);
+					return;
+				}
+				if (r.status === 'denied') { setStatus('❌ 授权被拒绝'); return; }
+				if (r.status === 'expired') { setStatus('⌛ 授权已过期，请重新发起'); return; }
+				if (r.status === 'error') { setStatus(`❌ ${r.error ?? '授权失败'}`); return; }
+				if (r.status === 'slow_down') { interval += 5; }
+			}
+			setStatus('⌛ 等待超时，请重新发起');
+		} catch (e) {
+			setStatus(`❌ 发起失败：${e instanceof Error ? e.message : String(e)}`);
+		} finally {
+			this._larkCliQrPolling = false;
+			if (createBtn) { createBtn.disabled = false; }
+		}
+	}
+
+	/** 获取 chat_id：列「机器人所在的群」，可一键填入输入框或直接绑定到本 Agent。 */
+	private async _fetchChatIds(): Promise<void> {
+		const listEl = this._chatIdListEl;
+		if (!listEl) { return; }
+		const appId = String(this.configurationService.getValue('sessions.channel.feishu.appId') ?? '').trim();
+		const appSecret = String(this.configurationService.getValue('sessions.channel.feishu.appSecret') ?? '').trim();
+		listEl.replaceChildren();
+		if (!appId || !appSecret) {
+			const tip = $$('div.skills-empty');
+			tip.textContent = '尚未配置飞书应用凭证：先点上方「创建机器人（扫码授权）」，或手工填写 app_id / app_secret。';
+			listEl.appendChild(tip);
+			return;
+		}
+		if (this._chatIdFetchBtn) { this._chatIdFetchBtn.disabled = true; this._chatIdFetchBtn.textContent = '⏳ 拉取中…'; }
+		try {
+			const chats = await fetchFeishuChats(this._requestService, appId, appSecret);
+			if (chats.length === 0) {
+				const tip = $$('div.skills-empty');
+				tip.textContent = '机器人还没有加入任何群：把机器人拉进一个群后重新拉取。';
+				listEl.appendChild(tip);
+				return;
+			}
+			for (const chat of chats) {
+				const item = $$('div.chatid-item');
+				const info = $$('div.chatid-item-info');
+				const nameEl = $$('span.chatid-item-name');
+				nameEl.textContent = chat.name;
+				const idEl = $$('span.chatid-item-id');
+				idEl.textContent = chat.memberCount ? `${chat.chatId} · ${chat.memberCount} 人` : chat.chatId;
+				info.appendChild(nameEl);
+				info.appendChild(idEl);
+				item.appendChild(info);
+
+				const fillBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+				fillBtn.textContent = '填入';
+				fillBtn.title = '填入上方「输入飞书群聊会话 ID」输入框';
+				fillBtn.onclick = () => {
+					if (this._bindingInput) { this._bindingInput.value = chat.chatId; this._bindingInput.focus(); }
+				};
+				item.appendChild(fillBtn);
+
+				const bindBtn = $$('button.agent-settings-btn primary') as HTMLButtonElement;
+				bindBtn.textContent = '绑定到本 Agent';
+				bindBtn.disabled = this._readOnly;
+				bindBtn.onclick = () => {
+					if (this._bindingInput) { this._bindingInput.value = chat.chatId; }
+					void this._addFeishuBinding();
+				};
+				item.appendChild(bindBtn);
+				listEl.appendChild(item);
+			}
+		} catch (e) {
+			const tip = $$('div.skills-empty');
+			tip.textContent = `拉取群列表失败：${e instanceof Error ? e.message : String(e)}`;
+			listEl.appendChild(tip);
+		} finally {
+			if (this._chatIdFetchBtn) {
+				this._chatIdFetchBtn.disabled = false;
+				this._chatIdFetchBtn.textContent = '📋 获取 chat_id（机器人所在的群）';
+			}
+		}
+	}
+
+	/** 轮询间隔用的简单延时（独立命名，避免与其它页签的同名 helper 冲突）。 */
+	private _larkCliSleep(ms: number): Promise<void> {
+		return new Promise(resolve => setTimeout(resolve, ms));
+	}
+
 	// ── Channel Binding Tab ──
 
 	private _buildBindingTab(): void {
@@ -492,7 +814,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 		const group = $$('div.channel-group');
 		const groupHeader = $$('div.channel-group-header');
 		const groupIcon = $$('span.channel-group-icon');
-		groupIcon.textContent = '🔵';
+		// ★ 2026-09-23：与设置页渠道条目一致 —— 用飞书**官方品牌 SVG**（未收录品牌才回退 emoji）
+		groupIcon.appendChild(createChannelIcon('feishu', '🔵', 18));
 		const groupTitle = $$('span.channel-group-title');
 		groupTitle.textContent = '飞书 (Feishu)';
 		groupHeader.appendChild(groupIcon);
@@ -560,12 +883,27 @@ export class AgentSettingsEditorPane extends EditorPane {
 		sec2.appendChild(this._bindingListContainer);
 		group.appendChild(sec2);
 
+		// Section 3: 飞书 CLI（安装 / 状态 / 升级 + 创建机器人 + 获取 chat_id）
+		group.appendChild(this._buildLarkCliSection());
+
 		section.appendChild(group);
 		this._tabContentContainer?.appendChild(section);
 	}
 
 	private _renderBindingTab(): void {
 		if (!this._agentId) { return; }
+
+		// 飞书 CLI 区块：切入页签时静默探测一次（手动「重新检测」按钮才会弹通知）
+		void this._refreshLarkCliStatus(false);
+
+		// ★ 绑定表在主进程持久化（IPC 读盘异步）：水合完成后再渲染一次，
+		//   否则启动后首次打开列表为空 —— 看起来像「重启后绑定丢了」（实测磁盘上有数据）。
+		if (!this._bindingsHydrated) {
+			void this.bridgeService.ensureBindingsLoaded().then(() => {
+				this._bindingsHydrated = true;
+				this._renderBindingTab();
+			});
+		}
 
 		// 飞书渠道默认 Agent 开关
 		if (this._bindingDefaultToggle) {
